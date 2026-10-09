@@ -66,14 +66,18 @@ static bool on(uint64_t e)
     return (e & (VTD_PTE_R | VTD_PTE_W)) != 0;
 }
 
-/* An entry the unit sees: present ones exactly in the module's format. */
+/* An entry the unit sees: present ones exactly in the module's format
+ * (a leaf may be read only: a read-only pin's). */
 static void check_entry(struct tctx *t, uint64_t e, unsigned level)
 {
     if (!on(e)) {
         KT_EQ(e, 0);
         return;
     }
-    KT_EQ(e & (VTD_PTE_R | VTD_PTE_W), VTD_PTE_R | VTD_PTE_W);
+    if (level == 1 && !(e & VTD_PTE_W))
+        KT_EQ(e & (VTD_PTE_R | VTD_PTE_W), VTD_PTE_R);
+    else
+        KT_EQ(e & (VTD_PTE_R | VTD_PTE_W), VTD_PTE_R | VTD_PTE_W);
     uint64_t snp = level == 1 && t->pt.geom.snoop ? VTD_PTE_SNP : 0;
     KT_EQ(e & ~(VTD_PTE_ADDR | VTD_PTE_SW_MASK | VTD_PTE_R | VTD_PTE_W), snp);
     KT_EQ((e & VTD_PTE_ADDR) >> t->pt.geom.addr_bits, 0);
@@ -284,6 +288,15 @@ static status_t map1(struct tctx *t, uint64_t pa, uint64_t n)
     return st;
 }
 
+static status_t map1_ro(struct tctx *t, uint64_t pa, uint64_t n)
+{
+    struct vtd_pt_gather g;
+    begin(t, &g);
+    status_t st = vtd_pt_map_ro(&t->pt, pa, n, &g);
+    KT_EQ(vtd_pt_gather_finish(&t->pt, &g), OK);
+    return st;
+}
+
 static status_t unmap1(struct tctx *t, uint64_t pa, uint64_t n)
 {
     struct vtd_pt_gather g;
@@ -489,6 +502,56 @@ KTEST(vtd_pt_pin_counts)
     KT_EQ(t->pt.mapped, 0);
     KT_EQ(t->pt.tables, 1);
     KT_EQ(unmap1(t, a + 2 * K4, 1), ERR_NOT_FOUND);
+    finish(t, NULL);
+}
+
+/* Read-only leaves (a read-only pin's): read and no write permission,
+ * as the unit sees them. A page holds one permission while mapped: the
+ * other one is refused and changes nothing, a run that meets such a page
+ * leaves the pages before it as they were; once its last pin goes it may
+ * be mapped the other way. */
+static bool dev_writable(struct tctx *t, uint64_t iova)
+{
+    uint64_t pa;
+    KT_ASSERT(dev_translate(t, iova, &pa));
+    uint32_t pins;
+    bool w;
+    KT_EQ(vtd_pt_lookup_perm(&t->pt, iova, &pins, &w), OK);
+    uint64_t *d = dev_of(t, t->pt.root);
+    for (unsigned l = t->pt.geom.levels; l > 1; l--)
+        d = dev_of(t, d[(iova >> (12 + 9 * (l - 1))) & 511] & VTD_PTE_ADDR);
+    bool dev_w = (d[(iova >> 12) & 511] & VTD_PTE_W) != 0;
+    KT_EQ(dev_w, w);   /* the unit sees what lookup says */
+    return w;
+}
+
+KTEST(vtd_pt_read_only_leaves)
+{
+    struct tctx *t = new_ctx();
+    struct vtd_pt_geom geom = geom_of(4);
+    start(t, &geom, NULL, 64);
+    uint64_t a = 0x40000000;
+    KT_EQ(map1_ro(t, a, 2), OK);
+    KT_EQ(map1(t, a + 2 * K4, 2), OK);
+    KT_ASSERT(!dev_writable(t, a) && !dev_writable(t, a + K4));
+    KT_ASSERT(dev_writable(t, a + 2 * K4));
+    KT_EQ(map1_ro(t, a + K4, 1), OK);                 /* the same permission: one more pin */
+    KT_EQ(pins_of(t, a + K4), 2);
+    KT_EQ(map1(t, a + K4, 1), ERR_BAD_STATE);         /* the other: refused */
+    KT_EQ(map1_ro(t, a + 2 * K4, 1), ERR_BAD_STATE);
+    KT_EQ(map1(t, a - K4, 3), ERR_BAD_STATE);         /* a run that meets one */
+    KT_EQ(pins_of(t, a - K4), 0);
+    KT_ASSERT(!dev_maps(t, a - K4));
+    KT_EQ(pins_of(t, a), 1);
+    KT_ASSERT(!dev_writable(t, a + K4));
+    KT_EQ(pins_of(t, a + 2 * K4), 1);
+    KT_EQ(t->pt.mapped, 4);
+    KT_EQ(unmap1(t, a, 2), OK);
+    KT_EQ(unmap1(t, a + K4, 1), OK);
+    KT_EQ(map1(t, a, 2), OK);                          /* gone: free to be writable now */
+    KT_ASSERT(dev_writable(t, a) && dev_writable(t, a + K4));
+    KT_EQ(unmap1(t, a, 4), OK);
+    KT_EQ(t->pt.mapped, 0);
     finish(t, NULL);
 }
 

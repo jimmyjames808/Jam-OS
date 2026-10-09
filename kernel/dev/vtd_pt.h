@@ -6,9 +6,15 @@
  *   - IOVA = physical address: a page is mapped at its own address, so
  *     the numbers a driver writes into its device are the ones vmo_pin
  *     gave it, and what isn't pinned for the domain isn't in its table
- *     (docs/M11-PLAN.md, question 1). Only 4 KiB leaves, read and write,
+ *     (docs/M11-PLAN.md, question 1). Only 4 KiB leaves, read and write
+ *     or (a read-only pin: the device only reads the page) read only,
  *     with the snoop bit where the unit has snoop control.
- *   - Pin counts: two pins of one page in one domain share the mapping.
+ *   - Pin counts: two pins of one page in one domain share the mapping,
+ *     and so its permission: a pin that would give a mapped page the other
+ *     one is refused (ERR_BAD_STATE), so a leaf's permission is exactly
+ *     what each of its pins asked for (a read-only pin is never writable
+ *     because another pin of the page once was). One domain is one
+ *     driver's, so this only ever refuses a driver its own mix.
  *     A leaf keeps its pin count in the entry's software bits (52-61,
  *     ignored by the unit), and is cleared when the count drops to 0. A
  *     table entry keeps, in the same bits, how many entries of the table
@@ -145,15 +151,18 @@ status_t vtd_pt_init(struct vtd_pt *pt, const struct vtd_pt_geom *geom,
  * ERR_BAD_STATE (nothing freed) while a gather still holds table pages. */
 status_t vtd_pt_destroy(struct vtd_pt *pt);
 
-/* Map n pages at IOVA = pa (page-aligned): a page not mapped yet gets a
- * leaf with pin count 1, a mapped one its count + 1. All or nothing: on
+/* Map n pages at IOVA = pa (page-aligned), read and write
+ * (vtd_pt_map) or read only (vtd_pt_map_ro): a page not mapped yet gets
+ * a leaf with pin count 1, a mapped one its count + 1. All or nothing: on
  * failure no count has changed, and table pages that the attempt left
  * empty are on g. ERR_INVALID_ARGS (unaligned pa, n = 0), ERR_OUT_OF_RANGE
  * (past addr_bits), ERR_NO_RESOURCES (the max_tables cap, or a page
  * already pinned VTD_PT_MAX_PINS times), ERR_NO_MEMORY (the job's limit,
- * or no page). In caching mode the new leaves are recorded on g. Finish g
- * whatever the result. */
+ * or no page), ERR_BAD_STATE (a page mapped already with the other
+ * permission). In caching mode the new leaves are recorded on g. Finish
+ * g whatever the result. */
 status_t vtd_pt_map(struct vtd_pt *pt, uint64_t pa, uint64_t n, struct vtd_pt_gather *g);
+status_t vtd_pt_map_ro(struct vtd_pt *pt, uint64_t pa, uint64_t n, struct vtd_pt_gather *g);
 
 /* Drop one pin of each of n pages at IOVA = pa: a leaf whose count drops
  * to 0 is cleared and recorded on g, and a table page left empty goes on
@@ -172,6 +181,9 @@ status_t vtd_pt_gather_finish(struct vtd_pt *pt, struct vtd_pt_gather *g);
 /* What the CPU's copy of the tables says for iova: OK with its pin count,
  * or ERR_NOT_FOUND. For tests and the debug command. */
 status_t vtd_pt_lookup(const struct vtd_pt *pt, uint64_t iova, uint32_t *out_pins);
+/* vtd_pt_lookup, and whether the device may write the page (*writable). */
+status_t vtd_pt_lookup_perm(const struct vtd_pt *pt, uint64_t iova, uint32_t *out_pins,
+                            bool *writable);
 
 /* For the context entry: the top table's physical address, and the
  * address-width field (AW: 1 for 3 levels, 2 for 4). */

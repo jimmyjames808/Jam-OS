@@ -115,7 +115,7 @@ bool ramdisk_create(struct ramdisk *rd, uint64_t blocks)
 {
     memset(rd, 0, offsetof(struct ramdisk, stack));
     uint64_t addr = 0;
-    CHECK_ST(jam_vmo_create(blocks * RAMDISK_SECTOR, 0, HANDLE_INVALID, &rd->mem_vmo), OK);
+    CHECK_ST(jam_vmo_create(blocks * RAMDISK_SECTOR, 0, &rd->mem_vmo), OK);
     CHECK_ST(jam_vmar_map(startup_handle(SR_SELF_VMAR), rd->mem_vmo, 0, blocks * RAMDISK_SECTOR,
                           VMAR_READ | VMAR_WRITE, &addr), OK);
     rd->mem = (uint8_t *)(uintptr_t)addr;
@@ -130,7 +130,7 @@ bool ramdisk_serve(struct ramdisk *rd, bool read_only, handle_t *out_client)
     rd->buf_given = false;
     rd->served = 0;
     __atomic_store_n(&rd->stop, false, __ATOMIC_RELAXED);
-    CHECK_ST(jam_vmo_create(RAMDISK_BUF, 0, HANDLE_INVALID, &rd->buf_vmo), OK);
+    CHECK_ST(jam_vmo_create(RAMDISK_BUF, 0, &rd->buf_vmo), OK);
     CHECK_ST(jam_vmar_map(startup_handle(SR_SELF_VMAR), rd->buf_vmo, 0, RAMDISK_BUF,
                           VMAR_READ | VMAR_WRITE, &addr), OK);
     rd->buf = (uint8_t *)(uintptr_t)addr;

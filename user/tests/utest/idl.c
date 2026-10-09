@@ -50,7 +50,7 @@ static status_t answer(struct server *s, struct kept *k)
     if (!k->vmo)
         return idltest_reply_wait(k->txn, OK, k->key, s->answered++);
     handle_t vmo = HANDLE_INVALID;
-    status_t st = jam_vmo_create(k->size, 0, HANDLE_INVALID, &vmo);
+    status_t st = jam_vmo_create(k->size, 0, &vmo);
     return idltest_reply_make_vmo(k->txn, st, vmo, k->size);
 }
 
@@ -321,7 +321,7 @@ bool t_idl_later_handles(void)
     CHECK_ST(idltest_make_vmo_result(rep, &m, NULL, NULL), ERR_INTERNAL);
 
     /* The client is gone: the reply fails and its handle is closed. */
-    CHECK_ST(jam_vmo_create(4096, 0, HANDLE_INVALID, &vmo), OK);
+    CHECK_ST(jam_vmo_create(4096, 0, &vmo), OK);
     CHECK_ST(jam_handle_close(c), OK);
     CHECK_ST(idltest_reply_make_vmo(txn, OK, vmo, 4096), ERR_PEER_CLOSED);
     CHECK_ST(jam_handle_close(vmo), ERR_BAD_HANDLE);

@@ -23,8 +23,8 @@
  * owner"): the new owner (its driver) turns bus mastering on with
  * dma_cap_bus_master only once it has quiesced the device (reset it, or
  * seen its DMA engine idle), so a transfer the previous driver left queued
- * can't land anywhere. Nobody else turns it on: the pci_bus_master system
- * call only turns it off. vmo_pin with a bound cap needs the cap to be
+ * can't land anywhere. Nobody else turns it on: the pci_bus_master_off
+ * system call only turns it off. vmo_pin with a bound cap needs the cap to be
  * current and Bus Master Enable on.
  *
  * Closing the last handle (a process kill closes them the same way) runs

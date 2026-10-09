@@ -58,7 +58,7 @@ static int heap_init(void)
     handle_t vmar = startup_handle(SR_SELF_VMAR), vmo;
     uint64_t addr = 0;
     status_t st = vmar == HANDLE_INVALID ? ERR_BAD_HANDLE
-                : jam_vmo_create(HEAP_SIZE, 0, HANDLE_INVALID, &vmo);
+                : jam_vmo_create(HEAP_SIZE, 0, &vmo);
     if (st == OK) {
         st = jam_vmar_map(vmar, vmo, 0, HEAP_SIZE, VMAR_READ | VMAR_WRITE, &addr);
         jam_handle_close(vmo);   /* the mapping keeps the VMO alive */

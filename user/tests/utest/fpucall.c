@@ -278,7 +278,7 @@ bool t_fpu_ring3_switch_keeps_all(void)
     fill(pat, sizeof(pat), 9);
     handle_t vmo, vmar = startup_handle(SR_SELF_VMAR);
     uint64_t len = (uint64_t)SLICES * PAGES * 4096, addr = 0;
-    CHECK_ST(jam_vmo_create(len, 0, HANDLE_INVALID, &vmo), OK);
+    CHECK_ST(jam_vmo_create(len, 0, &vmo), OK);
     CHECK_ST(jam_vmar_map(vmar, vmo, 0, len, VMAR_READ | VMAR_WRITE, &addr), OK);
     if (!rivals_start())
         return false;

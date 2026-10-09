@@ -96,15 +96,18 @@
 44  port_wait         status    handle_t port, uint64_t deadline_ns, struct port_packet *out
 
 # VMOs ----------------------------------------------------------------------
-# vmo_create flags: DRV_VMO_CONTIGUOUS / DRV_VMO_DMA32 (bits 0, 1: drivers,
-# with a dma_cap) and VMO_KEEP_PAGES (bit 2, <jam/abi.h>): every page
-# committed at creation and charged to the creator's job (ERR_NO_MEMORY, no
-# VMO, if the job can't pay for all of them), and none ever leaves:
-# vmo_decommit and a shrinking vmo_set_size are ERR_BAD_STATE for every
-# handle, a growing vmo_set_size commits the new pages before it returns
-# (ERR_NO_MEMORY with the size unchanged if it can't). Not with bits 0-1
-# (ERR_INVALID_ARGS). No VMO has a clone or copy-on-write child.
-50  vmo_create        status    uint64_t size, uint32_t flags, handle_t dma_cap, handle_t *out
+# vmo_create: a VMO of size bytes (rounded up to pages; VMO_MAX_SIZE at
+# most, ERR_OUT_OF_RANGE past it), its pages charged to the creator's job.
+# flags: 0 or VMO_KEEP_PAGES (<jam/abi.h>): every page committed at
+# creation and charged then (ERR_NO_MEMORY, no VMO, if the job can't pay
+# for all of them), and none ever leaves: vmo_decommit and a shrinking
+# vmo_set_size are ERR_BAD_STATE for every handle, a growing vmo_set_size
+# commits the new pages before it returns (ERR_NO_MEMORY with the size
+# unchanged if it can't). Any other bit is ERR_INVALID_ARGS: contiguous and
+# below-4-GiB memory is dma_vmo_create's. No VMO has a clone or
+# copy-on-write child. (Number 50 was vmo_create with a dma_cap argument
+# until M12: retired.)
+58  vmo_create        status    uint64_t size, uint32_t flags, handle_t *out
 51  vmo_read          status    handle_t h, uint64_t offset, void *buf, uint64_t len
 52  vmo_write         status    handle_t h, uint64_t offset, const void *buf, uint64_t len
 53  vmo_get_size      status    handle_t h, uint64_t *size
@@ -124,11 +127,11 @@
 
 # address spaces (flags: VMAR_READ/WRITE/EXEC/FIXED) --------------------------
 # vmar_map also takes VMAR_KEPT_ONLY (bit 4): only a VMO_KEEP_PAGES VMO
-# (ERR_WRONG_TYPE otherwise), only VMAR_READ (ERR_INVALID_ARGS for write or
-# exec), and every page-table entry is filled before the call returns, the
-# tables charged to the mapper's job then (ERR_NO_MEMORY, nothing mapped),
-# so no access through the mapping ever faults, whatever the VMO's other
-# holders do. vmar_protect refuses to change such a mapping
+# (ERR_NOT_SUPPORTED for another VMO), only VMAR_READ (ERR_INVALID_ARGS
+# for write or exec), and every page-table entry is filled before the call
+# returns, the tables charged to the mapper's job then (ERR_NO_MEMORY,
+# nothing mapped), so no access through the mapping ever faults, whatever
+# the VMO's other holders do. vmar_protect refuses to change such a mapping
 # (ERR_ACCESS_DENIED); a VMO grown later is mapped again for its new pages.
 60  vmar_map          status    handle_t vmar, handle_t vmo, uint64_t vmo_off, uint64_t len, uint32_t flags, uint64_t *addr
 61  vmar_unmap        status    handle_t vmar, uint64_t addr, uint64_t len
@@ -166,11 +169,9 @@
 93  pci_config_read   status    handle_t dev, uint32_t offset, uint32_t width, uint32_t *value
 94  pci_config_write  status    handle_t dev, uint32_t offset, uint32_t width, uint32_t value
 95  pci_bar_resource  status    handle_t dev, uint32_t bar, handle_t *out
-# Bus Master Enable OFF (enable = 0) needs RIGHT_MANAGE on the device
-# (devmgr has it, drivers don't). Turning it on is refused
-# (ERR_ACCESS_DENIED): only the function's current dma_cap does that
-# (dma_cap_bus_master).
-96  pci_bus_master    status    handle_t dev, uint32_t enable
+# pci_bus_master_off (104, below) turns a function's bus mastering off.
+# (Number 96 was pci_bus_master, with an `enable` argument that could only
+# be 0, until M12: retired.)
 # Interrupt objects: MSI or MSI-X (flags IRQ_MSIX) vector `index` of the
 # function; bind to a port PERSISTENT for SIG_INTERRUPT; ack re-arms.
 97  interrupt_create_msi status handle_t dev, uint32_t index, uint32_t flags, handle_t *out
@@ -178,13 +179,45 @@
 # MMIO for processes: a physical VMO over [res.base + offset, + size) with
 # cache type VMO_CACHE_*; refused over RAM or an MSI-X table/PBA page.
 99  vmo_create_physical status  handle_t res, uint64_t offset, uint64_t size, uint32_t cache, handle_t *out
-# DMA: a capability bound to the function; vmo_pin writes one device
-# address per page to addrs[] and the pin's id to *pin_id. vmo_unpin needs
-# the cap the pin was made with (ERR_ACCESS_DENIED for any other): holding
-# the VMO isn't enough to take a page away from a device still using it.
-100 dma_cap_create    status    handle_t dev, handle_t *out
-101 vmo_pin           status    handle_t vmo, handle_t dma, uint64_t offset, uint64_t len, uint64_t *addrs, uint64_t *pin_id
+# DMA: a capability bound to the function (dma_cap_create, 105 below);
+# vmo_pin (106 below) writes one device address per page to addrs[] and
+# the pin's id to *pin_id. vmo_unpin needs the cap the pin was made with
+# (ERR_ACCESS_DENIED for any other): holding the VMO isn't enough to take
+# a page away from a device still using it; RIGHT_READ on the VMO. (Numbers
+# 100, dma_cap_create without its job, and 101, vmo_pin with six
+# arguments, were retired in M12.)
 102 vmo_unpin         status    handle_t vmo, handle_t dma, uint64_t pin_id
+# vmo_create for a driver: flags VMO_CONTIGUOUS and VMO_DMA32 (either,
+# both or none; any other bit is ERR_INVALID_ARGS), memory its device
+# reaches by DMA, which the dma_cap `dma` lets it ask for: one bound to a
+# function (ERR_ACCESS_DENIED otherwise), any rights.
+103 dma_vmo_create    status    handle_t dma, uint64_t size, uint32_t flags, handle_t *out
+# Bus Master Enable off; needs RIGHT_MANAGE on the device (devmgr has it,
+# drivers don't). Nothing turns it on but the function's current dma_cap
+# (dma_cap_bus_master).
+104 pci_bus_master_off status   handle_t dev
+# A dma_cap for the function `dev` (RIGHT_MANAGE: devmgr's), charged to
+# `job` (RIGHT_MANAGE: a job the caller manages, the driver's own, made
+# first): the cap (one JOB_LIMIT_HANDLES unit) and, while the IOMMU
+# translates, its domain's table pages (JOB_LIMIT_PAGES), now and as pins
+# grow it. It becomes the function's current cap: bus mastering off until
+# its holder turns it on (dma_cap_bus_master), the device reaching only
+# what the cap pins.
+105 dma_cap_create    status    handle_t dev, handle_t job, handle_t *out
+# Pin args->len bytes of args->vmo from args->offset (struct vmo_pin_args,
+# <jam/abi.h>) for the device of the dma_cap args->dma: committed, kept in
+# place until vmo_unpin, and (while the IOMMU translates) mapped for the
+# device. RIGHT_WRITE on the VMO; with VMO_PIN_READ_ONLY (the device only
+# reads them) the pages are mapped for it read only and RIGHT_READ is
+# enough, where the IOMMU translates (else the flag changes nothing and
+# RIGHT_WRITE is still needed). ERR_INVALID_ARGS: offset or len not
+# page-aligned, len 0, an unknown flag, reserved not 0;
+# ERR_OUT_OF_RANGE: past the VMO or more than VMO_PIN_MAX_PAGES pages;
+# ERR_ACCESS_DENIED: the rights, or a cap bound to no function;
+# ERR_BAD_STATE: the cap isn't its function's current one, its bus
+# mastering is off, a page is pinned through it the other way (read only
+# or writable) already, or the VMO is sealed and the pin writes.
+106 vmo_pin           status    @vmo_pin_args
 
 # console services ----------------------------------------------------------
 # Rights are on a RES_ROOT handle: each call that takes the root needs its

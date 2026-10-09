@@ -341,8 +341,8 @@ bool t_driver_handle_limits(void)
     CHECK_ST(jam_pci_config_write(dev, cap + 2, 2, ctl), ERR_ACCESS_DENIED);
     CHECK_ST(jam_pci_config_write(dev, 0x10, 4, 0xffffffffu), ERR_ACCESS_DENIED);   /* BAR 0 */
     /* No RIGHT_MANAGE. */
-    CHECK_ST(jam_pci_bus_master(dev, 1), ERR_ACCESS_DENIED);
-    CHECK_ST(jam_dma_cap_create(dev, &x), ERR_ACCESS_DENIED);
+    CHECK_ST(jam_pci_bus_master_off(dev), ERR_ACCESS_DENIED);
+    CHECK_ST(jam_dma_cap_create(dev, startup_handle(SR_JOB), &x), ERR_ACCESS_DENIED);
     CHECK_ST(jam_interrupt_create_msi(dev, 0, IRQ_MSIX, &x), ERR_ACCESS_DENIED);
     /* No other function: its handle is one function, and can't be sliced. */
     struct pci_dev_info info;
@@ -373,13 +373,22 @@ bool t_driver_handle_limits(void)
     CHECK_ST(jam_handle_close(ca), OK);
     CHECK_ST(jam_handle_close(cb), OK);
     /* No dma_cap: no DMA memory, no pins. */
-    CHECK_ST(jam_vmo_create(4096, DRV_VMO_CONTIGUOUS | DRV_VMO_DMA32, HANDLE_INVALID, &x),
-             ERR_ACCESS_DENIED);
-    CHECK_ST(jam_vmo_create(4096, DRV_VMO_DMA32, dev, &x), ERR_ACCESS_DENIED);
-    CHECK_ST(jam_vmo_create(4096, 0, HANDLE_INVALID, &v), OK);
+    CHECK_ST(jam_vmo_create(4096, DRV_VMO_CONTIGUOUS | DRV_VMO_DMA32, &x), ERR_INVALID_ARGS);
+    CHECK_ST(jam_dma_vmo_create(HANDLE_INVALID, 4096, DRV_VMO_DMA32, &x), ERR_BAD_HANDLE);
+    CHECK_ST(jam_dma_vmo_create(dev, 4096, DRV_VMO_DMA32, &x), ERR_WRONG_TYPE);
+    CHECK_ST(jam_vmo_create(4096, 0, &v), OK);
     uint64_t addr = 0, pin = 0;
-    CHECK_ST(jam_vmo_pin(v, HANDLE_INVALID, 0, 4096, &addr, &pin), ERR_BAD_HANDLE);
-    CHECK_ST(jam_vmo_pin(v, dev, 0, 4096, &addr, &pin), ERR_WRONG_TYPE);
+    struct vmo_pin_args pa = { .vmo = v, .dma = HANDLE_INVALID, .len = 4096,
+                               .addrs = (uint64_t)(uintptr_t)&addr,
+                               .pin_id = (uint64_t)(uintptr_t)&pin };
+    CHECK_ST(jam_vmo_pin(&pa), ERR_BAD_HANDLE);
+    pa.dma = dev;
+    CHECK_ST(jam_vmo_pin(&pa), ERR_WRONG_TYPE);
+    pa.reserved = 1;
+    CHECK_ST(jam_vmo_pin(&pa), ERR_INVALID_ARGS);
+    pa.reserved = 0;
+    pa.flags = 2;   /* not a VMO_PIN_* */
+    CHECK_ST(jam_vmo_pin(&pa), ERR_INVALID_ARGS);
     CHECK_ST(jam_handle_close(v), OK);
     for (uint32_t i = 0; i < nh; i++)
         CHECK_ST(jam_handle_close(hs[i]), OK);

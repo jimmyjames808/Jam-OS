@@ -133,7 +133,7 @@ static status_t copy_and_hash(handle_t src, uint64_t size, handle_t *out,
         st = ERR_OUT_OF_RANGE;
     handle_t dst = HANDLE_INVALID;
     if (st == OK)
-        st = jam_vmo_create((size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1), 0, HANDLE_INVALID, &dst);
+        st = jam_vmo_create((size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1), 0, &dst);
     uint8_t *buf = st == OK ? malloc(CHUNK) : NULL;
     if (st == OK && !buf)
         st = ERR_NO_MEMORY;

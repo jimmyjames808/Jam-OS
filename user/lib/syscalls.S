@@ -218,15 +218,6 @@ jam_port_wait:
     ret
     .size jam_port_wait, . - jam_port_wait
 
-    .globl jam_vmo_create
-    .type jam_vmo_create, @function
-jam_vmo_create:
-    mov %rcx, %r10
-    mov $SYS_vmo_create, %eax
-    syscall
-    ret
-    .size jam_vmo_create, . - jam_vmo_create
-
     .globl jam_vmo_read
     .type jam_vmo_read, @function
 jam_vmo_read:
@@ -284,6 +275,14 @@ jam_vmo_make_exec:
     syscall
     ret
     .size jam_vmo_make_exec, . - jam_vmo_make_exec
+
+    .globl jam_vmo_create
+    .type jam_vmo_create, @function
+jam_vmo_create:
+    mov $SYS_vmo_create, %eax
+    syscall
+    ret
+    .size jam_vmo_create, . - jam_vmo_create
 
     .globl jam_vmar_map
     .type jam_vmar_map, @function
@@ -454,14 +453,6 @@ jam_pci_bar_resource:
     ret
     .size jam_pci_bar_resource, . - jam_pci_bar_resource
 
-    .globl jam_pci_bus_master
-    .type jam_pci_bus_master, @function
-jam_pci_bus_master:
-    mov $SYS_pci_bus_master, %eax
-    syscall
-    ret
-    .size jam_pci_bus_master, . - jam_pci_bus_master
-
     .globl jam_interrupt_create_msi
     .type jam_interrupt_create_msi, @function
 jam_interrupt_create_msi:
@@ -488,6 +479,31 @@ jam_vmo_create_physical:
     ret
     .size jam_vmo_create_physical, . - jam_vmo_create_physical
 
+    .globl jam_vmo_unpin
+    .type jam_vmo_unpin, @function
+jam_vmo_unpin:
+    mov $SYS_vmo_unpin, %eax
+    syscall
+    ret
+    .size jam_vmo_unpin, . - jam_vmo_unpin
+
+    .globl jam_dma_vmo_create
+    .type jam_dma_vmo_create, @function
+jam_dma_vmo_create:
+    mov %rcx, %r10
+    mov $SYS_dma_vmo_create, %eax
+    syscall
+    ret
+    .size jam_dma_vmo_create, . - jam_dma_vmo_create
+
+    .globl jam_pci_bus_master_off
+    .type jam_pci_bus_master_off, @function
+jam_pci_bus_master_off:
+    mov $SYS_pci_bus_master_off, %eax
+    syscall
+    ret
+    .size jam_pci_bus_master_off, . - jam_pci_bus_master_off
+
     .globl jam_dma_cap_create
     .type jam_dma_cap_create, @function
 jam_dma_cap_create:
@@ -499,19 +515,10 @@ jam_dma_cap_create:
     .globl jam_vmo_pin
     .type jam_vmo_pin, @function
 jam_vmo_pin:
-    mov %rcx, %r10
     mov $SYS_vmo_pin, %eax
     syscall
     ret
     .size jam_vmo_pin, . - jam_vmo_pin
-
-    .globl jam_vmo_unpin
-    .type jam_vmo_unpin, @function
-jam_vmo_unpin:
-    mov $SYS_vmo_unpin, %eax
-    syscall
-    ret
-    .size jam_vmo_unpin, . - jam_vmo_unpin
 
     .globl jam_klog_open
     .type jam_klog_open, @function

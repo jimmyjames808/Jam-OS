@@ -124,7 +124,7 @@ bool t_time_wallclock_calls(void)
     CHECK(w2.utc_ns - w.utc_ns == (int64_t)(w2.uptime_ns - w.uptime_ns));
     CHECK_ST(jam_wallclock_get((struct wall_clock *)8), ERR_INVALID_ARGS);
     handle_t v, root = startup_handle(SR_RESOURCE), rd;
-    CHECK_ST(jam_vmo_create(4096, 0, HANDLE_INVALID, &v), OK);
+    CHECK_ST(jam_vmo_create(4096, 0, &v), OK);
     CHECK_ST(jam_wallclock_set(v, &w), ERR_WRONG_TYPE);
     CHECK_ST(jam_wallclock_set(0x7fff0000u, &w), ERR_BAD_HANDLE);
     CHECK_ST(jam_handle_close(v), OK);

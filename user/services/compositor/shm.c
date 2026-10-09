@@ -47,8 +47,10 @@ static status_t map_pool(handle_t vmo, uint32_t size, uint64_t *addr)
 static const char *map_refusal(status_t st)
 {
     switch (st) {
-    case ERR_WRONG_TYPE:
+    case ERR_NOT_SUPPORTED:
         return "not a VMO made with VMO_KEEP_PAGES";
+    case ERR_WRONG_TYPE:
+        return "not a VMO";
     case ERR_ACCESS_DENIED:
         return "the handle lacks read or map rights";
     case ERR_OUT_OF_RANGE:

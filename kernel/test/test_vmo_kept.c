@@ -266,8 +266,8 @@ KTEST(vmo_kept_map_refusals)
     KT_EQ(vmo_create(2 * PG, VMO_KEEP_PAGES, &kept), OK);
     KT_EQ(vmo_create(2 * PG, VMO_CONTIGUOUS, &contig), OK);
     uint64_t a = 0;
-    KT_EQ(aspace_map(as, plain, 0, PG, R | KEPT, &a), ERR_WRONG_TYPE);
-    KT_EQ(aspace_map(as, contig, 0, PG, R | KEPT, &a), ERR_WRONG_TYPE);
+    KT_EQ(aspace_map(as, plain, 0, PG, R | KEPT, &a), ERR_NOT_SUPPORTED);
+    KT_EQ(aspace_map(as, contig, 0, PG, R | KEPT, &a), ERR_NOT_SUPPORTED);
     KT_EQ(aspace_map(as, kept, 0, PG, RW | KEPT, &a), ERR_INVALID_ARGS);
     KT_EQ(aspace_map(as, kept, 0, PG, R | ASPACE_EXEC | KEPT, &a), ERR_INVALID_ARGS);
     KT_EQ(aspace_map(as, kept, 0, PG, KEPT, &a), ERR_INVALID_ARGS);
@@ -293,11 +293,11 @@ KTEST(vmo_kept_map_refusals)
     handle_table_init(&t);
     handle_t vh, kh, ph, nomap, ro;
     KT_EQ(sys_vmar_create(&t, &vh), OK);
-    KT_EQ(sys_vmo_create(&t, 2 * PG, VMO_KEEP_PAGES, HANDLE_INVALID, &kh), OK);
-    KT_EQ(sys_vmo_create(&t, 2 * PG, 0, HANDLE_INVALID, &ph), OK);
+    KT_EQ(sys_vmo_create(&t, 2 * PG, VMO_KEEP_PAGES, &kh), OK);
+    KT_EQ(sys_vmo_create(&t, 2 * PG, 0, &ph), OK);
     KT_EQ(handle_duplicate(&t, kh, RIGHTS_BASIC | RIGHT_READ, &nomap), OK);
     KT_EQ(handle_duplicate(&t, kh, RIGHTS_BASIC | RIGHT_READ | RIGHT_MAP, &ro), OK);
-    KT_EQ(sys_vmar_map(&t, vh, ph, 0, PG, R | KEPT, &a), ERR_WRONG_TYPE);
+    KT_EQ(sys_vmar_map(&t, vh, ph, 0, PG, R | KEPT, &a), ERR_NOT_SUPPORTED);   /* a VMO, not kept */
     KT_EQ(sys_vmar_map(&t, vh, nomap, 0, PG, R | KEPT, &a), ERR_ACCESS_DENIED);
     KT_EQ(sys_vmar_map(&t, vh, vh, 0, PG, R | KEPT, &a), ERR_WRONG_TYPE);
     KT_EQ(sys_vmar_map(&t, vh, kh, 0, PG, R | KEPT | (1u << 5), &a), ERR_INVALID_ARGS);

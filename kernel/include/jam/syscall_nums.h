@@ -28,7 +28,6 @@
 #define SYS_port_unbind          42
 #define SYS_port_queue           43
 #define SYS_port_wait            44
-#define SYS_vmo_create           50
 #define SYS_vmo_read             51
 #define SYS_vmo_write            52
 #define SYS_vmo_get_size         53
@@ -36,6 +35,7 @@
 #define SYS_vmo_commit           55
 #define SYS_vmo_decommit         56
 #define SYS_vmo_make_exec        57
+#define SYS_vmo_create           58
 #define SYS_vmar_map             60
 #define SYS_vmar_unmap           61
 #define SYS_vmar_protect         62
@@ -56,13 +56,14 @@
 #define SYS_pci_config_read      93
 #define SYS_pci_config_write     94
 #define SYS_pci_bar_resource     95
-#define SYS_pci_bus_master       96
 #define SYS_interrupt_create_msi 97
 #define SYS_interrupt_ack        98
 #define SYS_vmo_create_physical  99
-#define SYS_dma_cap_create       100
-#define SYS_vmo_pin              101
 #define SYS_vmo_unpin            102
+#define SYS_dma_vmo_create       103
+#define SYS_pci_bus_master_off   104
+#define SYS_dma_cap_create       105
+#define SYS_vmo_pin              106
 #define SYS_klog_open            110
 #define SYS_klog_read            111
 #define SYS_framebuffer_take     112

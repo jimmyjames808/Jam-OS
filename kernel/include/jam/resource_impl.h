@@ -59,7 +59,7 @@ bool pci_cfg_write_changes_power(struct pci_dev *d, uint32_t off, uint32_t width
 /* Width 1, 2 or 4, offset aligned to it and < 4096: else ERR_INVALID_ARGS. */
 status_t pci_cfg_access_ok(uint32_t off, uint32_t width);
 /* Serialises every change of a command register made on a process's
- * behalf: filtered config writes (check + write), pci_bus_master and the
+ * behalf: filtered config writes (check + write), pci_bus_master_off and the
  * dma_cap close path (BME off + read-back). A spinlock (irqsave), ranked
  * above the PCI core's config lock. */
 uint64_t pci_cmd_lock(void);
@@ -170,9 +170,7 @@ void dma_quarantine_flush(struct pci_dev *d);
 /* ---- the handle layer (kernel/abi/sysc_hw.c) -------------------------------
  * Same rules as <jam/sys.h>: kernel pointers, the caller's table. */
 
-/* Syscall pins report at most this many pages per call (the address list
- * is built in a kernel buffer). 4096 pages = 16 MiB. */
-#define VMO_PIN_SYS_MAX_PAGES 4096
+/* A pin through the system call: at most VMO_PIN_MAX_PAGES (<jam/abi.h>). */
 
 status_t sys_resource_create(struct handle_table *t, handle_t parent, uint32_t kind,
                              uint64_t base, uint64_t size, handle_t *out);
@@ -184,13 +182,23 @@ status_t sys_pci_config_read(struct handle_table *t, handle_t dev, uint32_t off,
 status_t sys_pci_config_write(struct handle_table *t, handle_t dev, uint32_t off, uint32_t width,
                               uint32_t value);
 status_t sys_pci_bar_resource(struct handle_table *t, handle_t dev, uint32_t bar, handle_t *out);
-status_t sys_pci_bus_master(struct handle_table *t, handle_t dev, uint32_t enable);
+status_t sys_pci_bus_master_off(struct handle_table *t, handle_t dev);
 status_t sys_vmo_create_physical(struct handle_table *t, handle_t res, uint64_t offset,
                                  uint64_t size, uint32_t cache, handle_t *out);
-status_t sys_dma_cap_create(struct handle_table *t, handle_t dev, handle_t *out);
+/* Charged to the job `job` names (RIGHT_MANAGE), not t's. */
+status_t sys_dma_cap_create(struct handle_table *t, handle_t dev, handle_t job, handle_t *out);
 status_t sys_dma_cap_bus_master(struct handle_table *t, handle_t dma, uint32_t on);
-/* addrs: kernel array of at least len / PAGE_SIZE entries. */
-status_t sys_vmo_pin(struct handle_table *t, handle_t vmo, handle_t dma, uint64_t offset,
-                     uint64_t len, uint64_t *addrs, uint64_t *pin_id);
-/* Only with the dma_cap the pin was made with (vmo_unpin). */
+/* addrs: kernel array of at least len / PAGE_SIZE entries. flags:
+ * VMO_PIN_READ_ONLY or 0 (abi/syscalls.def's vmo_pin has the rights);
+ * sys_vmo_pin is flags 0. */
+status_t sys_vmo_pin_flags(struct handle_table *t, handle_t vmo, handle_t dma, uint64_t offset,
+                           uint64_t len, uint32_t flags, uint64_t *addrs, uint64_t *pin_id);
+static inline status_t sys_vmo_pin(struct handle_table *t, handle_t vmo, handle_t dma,
+                                   uint64_t offset, uint64_t len, uint64_t *addrs,
+                                   uint64_t *pin_id)
+{
+    return sys_vmo_pin_flags(t, vmo, dma, offset, len, 0, addrs, pin_id);
+}
+/* Only with the dma_cap the pin was made with (vmo_unpin); RIGHT_READ on
+ * the VMO is enough (the cap is what lets a pin go). */
 status_t sys_vmo_unpin(struct handle_table *t, handle_t vmo, handle_t dma, uint64_t pin_id);

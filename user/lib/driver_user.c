@@ -16,9 +16,9 @@
 
 #define THREAD_STACK   (64u << 10)
 #define LOG_LINE       256
-/* <jam/vmo.h>'s vmo_create flags (the kernel's header; user code doesn't
- * see it): contiguous / DMA32 memory needs the driver's DMA capability. */
-#define VMO_NEEDS_DMA_CAP 0x3u
+/* Contiguous / DMA32 memory needs the driver's DMA capability
+ * (dma_vmo_create). */
+#define VMO_NEEDS_DMA_CAP (VMO_CONTIGUOUS | VMO_DMA32)
 
 const struct driver_start *libos_driver_start;
 
@@ -271,10 +271,10 @@ status_t drv_event_signal(handle_t ev, signals_t clear, signals_t set)
 
 status_t drv_vmo_create(uint64_t size, uint32_t flags, handle_t *out)
 {
-    handle_t dma = HANDLE_INVALID;
-    if ((flags & VMO_NEEDS_DMA_CAP) && libos_driver_start)
-        dma = drv_handle(libos_driver_start, DR_DMA);
-    return jam_vmo_create(size, flags, dma, out);
+    if (!(flags & VMO_NEEDS_DMA_CAP))
+        return jam_vmo_create(size, flags, out);
+    handle_t dma = libos_driver_start ? drv_handle(libos_driver_start, DR_DMA) : HANDLE_INVALID;
+    return jam_dma_vmo_create(dma, size, flags, out);
 }
 
 status_t drv_vmo_read(handle_t vmo, uint64_t off, void *buf, uint64_t len)
@@ -318,10 +318,27 @@ status_t drv_vmo_unmap(void *addr, uint64_t len)
     return jam_vmar_unmap(startup_handle(SR_SELF_VMAR), first, span);
 }
 
+static status_t pin(handle_t vmo, handle_t dma, uint64_t off, uint64_t len, uint32_t flags,
+                    uint64_t *addrs, uint64_t *pin_id)
+{
+    struct vmo_pin_args a = {
+        .vmo = vmo, .dma = dma, .offset = off, .len = len,
+        .addrs = (uint64_t)(uintptr_t)addrs, .pin_id = (uint64_t)(uintptr_t)pin_id,
+        .flags = flags,
+    };
+    return jam_vmo_pin(&a);
+}
+
 status_t drv_vmo_pin(handle_t vmo, handle_t dma, uint64_t off, uint64_t len, uint64_t *addrs,
                      uint64_t *pin_id)
 {
-    return jam_vmo_pin(vmo, dma, off, len, addrs, pin_id);
+    return pin(vmo, dma, off, len, 0, addrs, pin_id);
+}
+
+status_t drv_vmo_pin_read_only(handle_t vmo, handle_t dma, uint64_t off, uint64_t len,
+                               uint64_t *addrs, uint64_t *pin_id)
+{
+    return pin(vmo, dma, off, len, VMO_PIN_READ_ONLY, addrs, pin_id);
 }
 
 status_t drv_vmo_unpin(handle_t vmo, handle_t dma, uint64_t pin_id)

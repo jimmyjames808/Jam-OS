@@ -100,15 +100,15 @@ static bool kept_create_refusals(void)
 {
     handle_t v;
     struct job_info a, b;
-    CHECK_ST(jam_vmo_create(PG, VMO_KEEP_PAGES | (1u << 7), HANDLE_INVALID, &v),
+    CHECK_ST(jam_vmo_create(PG, VMO_KEEP_PAGES | (1u << 7), &v),
              ERR_INVALID_ARGS);
-    /* The drivers' bits need a DMA capability first, kept or not. */
-    CHECK_ST(jam_vmo_create(PG, VMO_KEEP_PAGES | 1u, HANDLE_INVALID, &v), ERR_ACCESS_DENIED);
-    CHECK_ST(jam_vmo_create(PG, VMO_KEEP_PAGES, HANDLE_INVALID, (handle_t *)8), ERR_INVALID_ARGS);
+    /* The drivers' bits are dma_vmo_create's, kept or not. */
+    CHECK_ST(jam_vmo_create(PG, VMO_KEEP_PAGES | VMO_CONTIGUOUS, &v), ERR_INVALID_ARGS);
+    CHECK_ST(jam_vmo_create(PG, VMO_KEEP_PAGES, (handle_t *)8), ERR_INVALID_ARGS);
 
     /* All its pages are charged at once: 10 pages, a mid and a leaf table. */
     CHECK_ST(jam_job_get_info(own_job(), &a), OK);
-    CHECK_ST(jam_vmo_create(10 * PG, VMO_KEEP_PAGES, HANDLE_INVALID, &v), OK);
+    CHECK_ST(jam_vmo_create(10 * PG, VMO_KEEP_PAGES, &v), OK);
     CHECK_ST(jam_job_get_info(own_job(), &b), OK);
     CHECK_EQ(b.used[JOB_LIMIT_PAGES] - a.used[JOB_LIMIT_PAGES], 12);
     CHECK_ST(jam_vmo_decommit(v, 0, PG), ERR_BAD_STATE);
@@ -136,12 +136,12 @@ static bool kept_map_refusals(void)
 {
     handle_t vmar = startup_handle(SR_SELF_VMAR), kv, pv, nomap, ev;
     uint64_t addr = 0;
-    CHECK_ST(jam_vmo_create(2 * PG, VMO_KEEP_PAGES, HANDLE_INVALID, &kv), OK);
-    CHECK_ST(jam_vmo_create(2 * PG, 0, HANDLE_INVALID, &pv), OK);
+    CHECK_ST(jam_vmo_create(2 * PG, VMO_KEEP_PAGES, &kv), OK);
+    CHECK_ST(jam_vmo_create(2 * PG, 0, &pv), OK);
     CHECK_ST(jam_event_create(&ev), OK);
     CHECK_ST(jam_handle_duplicate(kv, RIGHTS_BASIC | RIGHT_READ, &nomap), OK);
     const uint32_t r = VMAR_READ | VMAR_KEPT_ONLY;
-    CHECK_ST(jam_vmar_map(vmar, pv, 0, PG, r, &addr), ERR_WRONG_TYPE);       /* not kept */
+    CHECK_ST(jam_vmar_map(vmar, pv, 0, PG, r, &addr), ERR_NOT_SUPPORTED);    /* not kept */
     CHECK_ST(jam_vmar_map(vmar, ev, 0, PG, r, &addr), ERR_WRONG_TYPE);       /* not a VMO */
     CHECK_ST(jam_vmar_map(vmar, nomap, 0, PG, r, &addr), ERR_ACCESS_DENIED); /* no RIGHT_MAP */
     CHECK_ST(jam_vmar_map(vmar, kv, 0, PG, r | VMAR_WRITE, &addr), ERR_INVALID_ARGS);
@@ -175,9 +175,9 @@ bool t_kept_vmo_refusals(void)
 static int kept_big(void)
 {
     handle_t v;
-    if (jam_vmo_create(512 * PG, VMO_KEEP_PAGES, HANDLE_INVALID, &v) != ERR_NO_MEMORY)
+    if (jam_vmo_create(512 * PG, VMO_KEEP_PAGES, &v) != ERR_NO_MEMORY)
         return 1;
-    if (jam_vmo_create(4 * PG, VMO_KEEP_PAGES, HANDLE_INVALID, &v) != OK)
+    if (jam_vmo_create(4 * PG, VMO_KEEP_PAGES, &v) != OK)
         return 2;
     jam_handle_close(v);
     return 0;
@@ -190,7 +190,7 @@ static int kept_client(void)
     handle_t ch = startup_handle(SR_USER), v, mine;
     uint32_t word;
     handle_t none;
-    if (jam_vmo_create(KPAGES * PG, VMO_KEEP_PAGES, HANDLE_INVALID, &v) != OK ||
+    if (jam_vmo_create(KPAGES * PG, VMO_KEEP_PAGES, &v) != OK ||
         kstamp(v, 0, KPAGES) != OK || jam_handle_duplicate(v, RIGHT_SAME, &mine) != OK)
         return 1;
     if (ksend(ch, 0, v) != OK || krecv(ch, &word, &none) != OK)   /* until it is mapped */

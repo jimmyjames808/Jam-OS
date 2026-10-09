@@ -109,7 +109,7 @@ unsigned failures;
 static status_t clone(handle_t src, uint64_t keep, uint64_t size, handle_t *out)
 {
     handle_t v = HANDLE_INVALID;
-    status_t st = jam_vmo_create((size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1), 0, HANDLE_INVALID, &v);
+    status_t st = jam_vmo_create((size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1), 0, &v);
     uint8_t *buf = st == OK ? malloc(CHUNK) : NULL;
     if (st == OK && !buf)
         st = ERR_NO_MEMORY;
@@ -420,9 +420,9 @@ static status_t make_nak(struct build *b)
     jam_handle_close(m);
     b->manifest_len = (uint32_t)n;
     if (st == OK)
-        st = jam_vmo_create(sizeof(k), 0, HANDLE_INVALID, &b->vmo[0]);
+        st = jam_vmo_create(sizeof(k), 0, &b->vmo[0]);
     if (st == OK)
-        st = jam_vmo_create(sizeof(s), 0, HANDLE_INVALID, &b->vmo[1]);
+        st = jam_vmo_create(sizeof(s), 0, &b->vmo[1]);
     if (st == OK)
         st = jam_vmo_write(b->vmo[0], 0, k, sizeof(k));
     if (st == OK)

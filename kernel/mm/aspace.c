@@ -153,7 +153,7 @@
 #define CAN_SHIFT 8   /* ASPACE_CAN_x == ASPACE_x << CAN_SHIFT */
 #define MAP_FLAGS (PERMS | ASPACE_FIXED | ASPACE_KEPT_ONLY | ASPACE_CAN_READ | ASPACE_CAN_WRITE | \
                    ASPACE_CAN_EXEC)
-#define MAX_MAPPINGS 16384
+#define MAX_MAPPINGS VMAR_MAX_MAPPINGS   /* <jam/abi.h>: 16384 */
 
 #define SIZE_2M   (1ull << 21)
 #define SIZE_1G   (1ull << 30)
@@ -644,14 +644,15 @@ static struct mapping *split(struct aspace *as, struct mapping *m, uint64_t addr
 }
 
 /* ASPACE_KEPT_ONLY's own checks: read-only (a bad combination of flags),
- * then a kept VMO. */
+ * then a kept VMO (ERR_NOT_SUPPORTED for another: it is a VMO, the right
+ * type, of a kind this mapping can't be made of). */
 static status_t kept_check(const struct vmo *vmo, unsigned flags)
 {
     if (!(flags & ASPACE_KEPT_ONLY))
         return OK;
     if ((flags & PERMS) != ASPACE_READ)
         return ERR_INVALID_ARGS;
-    return vmo_is_kept(vmo) ? OK : ERR_WRONG_TYPE;
+    return vmo_is_kept(vmo) ? OK : ERR_NOT_SUPPORTED;
 }
 
 /* Region lock held: install every entry of m, a new kept mapping, as a

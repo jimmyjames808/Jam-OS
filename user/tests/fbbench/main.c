@@ -80,7 +80,7 @@ static bool borrow(char *why, size_t n)
 static bool make_win(void)
 {
     uint64_t bytes = (B.frame + 4095) & ~4095ull, addr = 0;
-    if (jam_vmo_create(bytes, 0, HANDLE_INVALID, &B.vmo) != OK)
+    if (jam_vmo_create(bytes, 0, &B.vmo) != OK)
         return false;
     if (jam_vmar_map(startup_handle(SR_SELF_VMAR), B.vmo, 0, bytes, VMAR_READ | VMAR_WRITE,
                      &addr) != OK)

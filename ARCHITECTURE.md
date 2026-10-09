@@ -826,7 +826,7 @@ Rules for userspace drivers:
   (`dma_cap_bus_master`, `drv_dma_bus_master`), which a driver does only
   after quiescing its device (reset it, or see its DMA engine idle), so a
   transfer a dead driver left queued never runs with the new driver's bus
-  mastering. Nobody else turns it on (`pci_bus_master` only turns it off).
+  mastering. Nobody else turns it on (`pci_bus_master_off` only turns it off).
   Closing the current cap clears Bus Master Enable (an older cap's close
   leaves it alone); pins still held then are *quarantined*, not freed
   (Fuchsia's BTI quarantine): the pages stay, charged to their VMO's job,
@@ -1097,10 +1097,14 @@ firmware left on) is the only trace, and DMA works as before the IOMMU
 - **Pins.** The device sees physical addresses (IOVA = physical): `vmo_pin`
   maps each pinned page at its own address in the cap's domain, two pins
   of one page share the mapping (a pin count in the entry's software
-  bits), so drivers and their numbers are unchanged. `vmo_unpin` unmaps,
+  bits), so drivers and their numbers are unchanged. A read-only pin
+  (`VMO_PIN_READ_ONLY`: a transmit buffer, a sound ring) is mapped
+  without write permission, so its device's writes there fault; a page is
+  pinned one way at a time in a domain. `vmo_unpin` unmaps,
   invalidates and waits, and only then lets the pages go. A domain's
-  table pages are charged to the job that made the cap (devmgr's: it
-  makes its drivers' caps) and capped at 2048 per domain (8 MiB): a leaf
+  table pages are charged to the job `dma_cap_create` is given (the
+  driver's: devmgr makes the driver's job first) and capped at 2048 per
+  domain (8 MiB): a leaf
   table maps 2 MiB, so that is up to 4 GiB of pins dense within 2 MiB
   blocks, but only about 2040 pages spread one per block (usb-bus pins
   about 450 on the PC); past either limit the pin fails

@@ -428,7 +428,7 @@ static status_t l_rings(void *ctx, uint32_t tx, uint32_t rx, handle_t *out_ring,
 {
     (void)ctx, (void)tx, (void)rx;
     uint64_t va = 0, bytes = sockring_bytes(SOCKRING_MIN, SOCKRING_MIN);
-    status_t st = jam_vmo_create(bytes, 0, HANDLE_INVALID, &L.vmo);
+    status_t st = jam_vmo_create(bytes, 0, &L.vmo);
     if (st == OK)
         st = jam_vmar_map(startup_handle(SR_SELF_VMAR), L.vmo, 0, bytes, VMAR_READ | VMAR_WRITE,
                           &va);

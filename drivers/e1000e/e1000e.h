@@ -244,8 +244,8 @@ struct e1k {
     /* DMA memory: both descriptor rings in one VMO, every buffer in another */
     handle_t ring_vmo, buf_vmo;
     uint8_t *ring, *bufs;         /* mapped */
-    uint64_t ring_pin, buf_pin;
-    bool     ring_pinned, buf_pinned, bus_master;
+    uint64_t ring_pin, buf_pin, txbuf_pin;   /* buf_pin: the receive half; txbuf_pin: the transmit half */
+    bool     ring_pinned, buf_pinned, txbuf_pinned, bus_master;
     uint64_t ring_addr;           /* the rings' device address */
     uint64_t buf_addr[BUF_PAGES]; /* each buffer page's device address */
     uint32_t rx_next;             /* the next receive descriptor to look at */

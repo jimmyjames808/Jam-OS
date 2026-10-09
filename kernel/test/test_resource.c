@@ -235,8 +235,8 @@ KTEST(resource_sys_rights_and_charges)
     KT_EQ(sys_pci_config_read(&t, pci, 0, 4, &val), ERR_WRONG_TYPE);
     KT_EQ(sys_pci_config_write(&t, root, 0x3c, 1, 0), ERR_WRONG_TYPE);
     KT_EQ(sys_pci_bar_resource(&t, mmio, 0, &x), ERR_WRONG_TYPE);
-    KT_EQ(sys_pci_bus_master(&t, pci, 1), ERR_WRONG_TYPE);
-    KT_EQ(sys_dma_cap_create(&t, pci, &x), ERR_WRONG_TYPE);
+    KT_EQ(sys_pci_bus_master_off(&t, pci), ERR_WRONG_TYPE);
+    KT_EQ(sys_dma_cap_create(&t, pci, HANDLE_INVALID, &x), ERR_WRONG_TYPE);
     KT_EQ(sys_vmo_create_physical(&t, pci, 0, PG, VMO_CACHE_UC, &x), ERR_WRONG_TYPE);
 
     /* Physical VMOs: never RAM, never kernel MMIO, inside the resource. */
@@ -275,10 +275,10 @@ KTEST(resource_sys_rights_and_charges)
     struct khandle ck = khandle_from_new(ucap, RIGHTS_BASIC);
     handle_t caph, rv;
     KT_EQ(handle_insert(&t, &ck, &caph), OK);
-    KT_EQ(sys_vmo_create(&t, 2 * PG, 0, HANDLE_INVALID, &rv), OK);
+    KT_EQ(sys_vmo_create(&t, 2 * PG, 0, &rv), OK);
     uint64_t addrs[2], pin;
     KT_EQ(sys_vmo_pin(&t, rv, caph, 0, 2 * PG, addrs, &pin), ERR_ACCESS_DENIED);
-    KT_EQ(sys_vmo_pin(&t, rv, caph, 0, (VMO_PIN_SYS_MAX_PAGES + 1) * PG, addrs, &pin),
+    KT_EQ(sys_vmo_pin(&t, rv, caph, 0, (VMO_PIN_MAX_PAGES + 1) * PG, addrs, &pin),
           ERR_OUT_OF_RANGE);
     KT_EQ(sys_vmo_pin(&t, rv, caph, 0, PG + 1, addrs, &pin), ERR_INVALID_ARGS);
     KT_EQ(sys_vmo_pin(&t, rv, rv, 0, PG, addrs, &pin), ERR_WRONG_TYPE);
@@ -760,19 +760,19 @@ KTEST(resource_dma_close_clears_bus_master)
     struct pci_dev *d = edu();
     /* A driver's copy has no RIGHT_MANAGE: no bus mastering, no dma_cap. */
     KT_EQ(handle_duplicate(&t, dev, RES_RIGHTS & ~RIGHT_MANAGE, &drv), OK);
-    KT_EQ(sys_pci_bus_master(&t, drv, 1), ERR_ACCESS_DENIED);
-    KT_EQ(sys_dma_cap_create(&t, drv, &x), ERR_ACCESS_DENIED);
-    /* Nor devmgr's: bus mastering goes on only through the dma_cap. */
-    KT_EQ(sys_pci_bus_master(&t, dev, 1), ERR_ACCESS_DENIED);
+    KT_EQ(sys_pci_bus_master_off(&t, drv), ERR_ACCESS_DENIED);
+    KT_EQ(sys_dma_cap_create(&t, drv, HANDLE_INVALID, &x), ERR_ACCESS_DENIED);
+    /* Nor devmgr's: bus mastering goes on only through the dma_cap (no
+     * call turns it on with the device's handle). */
 
-    KT_EQ(sys_dma_cap_create(&t, dev, &cap), OK);
+    KT_EQ(sys_dma_cap_create(&t, dev, kt_job_handle(&t, j), &cap), OK);
     KT_ASSERT(!(pci_cfg_read(d, 0x04, 2) & CMD_BME));   /* a new cap starts with it off */
-    KT_EQ(sys_vmo_create(&t, 2 * PG, VMO_CONTIGUOUS | VMO_DMA32, cap, &vh), OK);
+    KT_EQ(sys_dma_vmo_create(&t, cap, 2 * PG, VMO_CONTIGUOUS | VMO_DMA32, &vh), OK);
     uint64_t addrs[2], id;
     KT_EQ(sys_vmo_pin(&t, vh, cap, 0, 2 * PG, addrs, &id), ERR_BAD_STATE);   /* BME off */
     KT_EQ(sys_dma_cap_bus_master(&t, cap, 1), OK);
     KT_ASSERT(pci_cfg_read(d, 0x04, 2) & CMD_BME);
-    KT_EQ(sys_pci_bus_master(&t, dev, 0), OK);   /* devmgr may still turn it off */
+    KT_EQ(sys_pci_bus_master_off(&t, dev), OK);   /* devmgr may still turn it off */
     KT_EQ(sys_vmo_pin(&t, vh, cap, 0, 2 * PG, addrs, &id), ERR_BAD_STATE);
     KT_EQ(sys_dma_cap_bus_master(&t, cap, 1), OK);
     KT_EQ(sys_vmo_pin(&t, vh, cap, 0, 2 * PG, addrs, &id), OK);

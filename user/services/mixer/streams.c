@@ -146,7 +146,7 @@ static status_t make_stream(struct mixer *m, struct stream *s, handle_t *theirs)
     struct stream_own *w = stream_own(m, s);
     handle_t ours = HANDLE_INVALID, peer = HANDLE_INVALID;
     uint32_t slot = (uint32_t)(s - m->nums->s);
-    status_t st = jam_vmo_create(RING_BYTES, 0, HANDLE_INVALID, &w->vmo);
+    status_t st = jam_vmo_create(RING_BYTES, 0, &w->vmo);
     if (st == OK)
         st = jam_vmo_write(w->vmo, 0, &h, sizeof(h));
     if (st == OK)

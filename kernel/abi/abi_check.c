@@ -63,3 +63,10 @@ _Static_assert(sizeof(struct input_key_event) == 8, "input_key_event layout");
 _Static_assert(sizeof(struct input_mouse_event) == 12, "input_mouse_event layout");
 _Static_assert(offsetof(struct input_mouse_event, buttons) == 9, "input_mouse_event layout");
 _Static_assert(sizeof(struct input_want) == 8, "input_want layout");
+
+_Static_assert(VMO_CONTIGUOUS == 1u && VMO_DMA32 == 2u && VMO_KEEP_PAGES == 4u &&
+                   VMO_MAX_SIZE == 1ull << 36 && VMO_CONTIGUOUS_MAX == 4ull << 20 &&
+                   VMO_PIN_MAX_PAGES == 4096u && VMAR_MAX_MAPPINGS == 16384u,
+               "the VMO flags and limits user code sees");
+_Static_assert(sizeof(struct vmo_pin_args) == 48 && offsetof(struct vmo_pin_args, flags) == 40,
+               "vmo_pin_args layout");

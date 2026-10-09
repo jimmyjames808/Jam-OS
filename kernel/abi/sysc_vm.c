@@ -14,11 +14,19 @@
 
 #define SMALL 256
 
-int64_t sysc_vmo_create(uint64_t size, uint32_t flags, handle_t dma_cap, uint64_t out)
+int64_t sysc_vmo_create(uint64_t size, uint32_t flags, uint64_t out)
 {
     SYSC_TABLE(t);
     handle_t h;
-    status_t st = sys_vmo_create(t, size, flags, dma_cap, &h);
+    status_t st = sys_vmo_create(t, size, flags, &h);
+    return st == OK ? sysc_put_handle(t, out, h) : st;
+}
+
+int64_t sysc_dma_vmo_create(handle_t dma, uint64_t size, uint32_t flags, uint64_t out)
+{
+    SYSC_TABLE(t);
+    handle_t h;
+    status_t st = sys_dma_vmo_create(t, dma, size, flags, &h);
     return st == OK ? sysc_put_handle(t, out, h) : st;
 }
 

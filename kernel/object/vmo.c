@@ -68,7 +68,8 @@
  * and unmap/unpin ignore busy ranges.
  *
  * Pins and the IOMMU: with a dma_cap that has an IOMMU domain, a pin's
- * pages are mapped there before the pin is published and unmapped (the
+ * pages are mapped there (read only for a VMO_PIN_READ_ONLY pin: the
+ * device's writes fault) before the pin is published and unmapped (the
  * unit's invalidation waited for) before they may go; a pin whose unmap
  * the unit didn't confirm keeps its pages for good ("pins through the
  * IOMMU" below). No VMO lock is held across either: the IOMMU's locks are
@@ -79,8 +80,9 @@
  * vmo_commit, vmo_decommit, vmo_set_size) enters as a writer under the
  * lock: refused once sealed, and counted in `writers` until it returns, so
  * vmo_seal refuses while one is still copying. A writable user mapping,
- * a writable kernel mapping and a pin (a device may write) are refused
- * under the lock when they are recorded; vmo_seal refuses while any
+ * a writable kernel mapping and a pin a device may write through (any but
+ * a read-only pin the IOMMU enforces) are refused under the lock when
+ * they are recorded; vmo_seal refuses while any
  * mapping or pin exists. Both sides test under the one lock, so a call
  * that took its reference before the seal either finishes before it (and
  * the seal fails) or is refused after it: none lands afterwards.
@@ -118,6 +120,7 @@
 #define MID_PAGES     (LEAF_PAGES * TBL_ENTRIES)         /* pages per mid table: 1 GiB */
 #define ROOT_ENTRIES  (VMO_MAX_PAGES / MID_PAGES)        /* 64 */
 #define CONTIG_MAX    (PAGE_SIZE << MAX_ORDER)           /* 4 MiB */
+_Static_assert(CONTIG_MAX == VMO_CONTIGUOUS_MAX, "<jam/abi.h> says what one buddy block holds");
 
 _Static_assert(TBL_ENTRIES * sizeof(uint64_t) == PAGE_SIZE, "a table is one page");
 
@@ -1160,8 +1163,8 @@ status_t vmo_unmap_kernel(struct vmo *v, void *va)
  * close: one handle unit of the VMO's job, like any small object (a
  * driver could otherwise pin one page forever and fill the kernel
  * heap; test: m6r_pins_are_charged). A new busy pin range [first, end)
- * on v, charged and listed. */
-static status_t pin_range_new(struct vmo *v, uint64_t first, uint64_t end,
+ * on v, charged and listed; `writes`: the device may write through it. */
+static status_t pin_range_new(struct vmo *v, uint64_t first, uint64_t end, bool writes,
                               struct vmo_range **out)
 {
     uint64_t jf = vlock(v);
@@ -1176,7 +1179,7 @@ static status_t pin_range_new(struct vmo *v, uint64_t first, uint64_t end,
         return ERR_NO_MEMORY;
     }
     r->kind = RANGE_PIN;
-    r->writes = true;   /* the device may write */
+    r->writes = writes;
     r->first = first;
     r->end = end;
     r->v = v;
@@ -1307,10 +1310,10 @@ static status_t pin_publish(struct vmo *v, struct vmo_range *r, struct kobject *
     return OK;
 }
 
-status_t vmo_pin(struct vmo *v, struct kobject *dma_cap, uint64_t offset, uint64_t len,
-                 uint64_t *phys_out, uint64_t phys_cap, uint64_t *pin_id)
+status_t vmo_pin_flags(struct vmo *v, struct kobject *dma_cap, uint64_t offset, uint64_t len,
+                       uint32_t flags, uint64_t *phys_out, uint64_t phys_cap, uint64_t *pin_id)
 {
-    if (!dma_cap || !pin_id)
+    if (!dma_cap || !pin_id || (flags & ~VMO_PIN_READ_ONLY))
         return ERR_INVALID_ARGS;
     if (dma_cap->type != OBJ_DMA_CAP)
         return ERR_WRONG_TYPE;
@@ -1327,8 +1330,14 @@ status_t vmo_pin(struct vmo *v, struct kobject *dma_cap, uint64_t offset, uint64
     if (!dma_cap_bus_master_on(dma_cap))
         return ERR_BAD_STATE;
 
+    /* The cap's domain, if it has one, is fixed from its creation, and
+     * stays until this pin (on the cap's list) is gone. A read-only pin
+     * is read only only where the domain makes it so: without one the
+     * device can write whatever it reaches. */
+    struct iommu_domain *dom = dma_cap_from_kobject(dma_cap)->dom;
+    bool ro = (flags & VMO_PIN_READ_ONLY) != 0;
     struct vmo_range *r;
-    status_t st = pin_range_new(v, first, end, &r);
+    status_t st = pin_range_new(v, first, end, !(ro && dom), &r);
     if (st != OK)
         return st;
     st = pin_link_cap(r, dma_cap);
@@ -1338,11 +1347,9 @@ status_t vmo_pin(struct vmo *v, struct kobject *dma_cap, uint64_t offset, uint64
         range_remove(v, r);
         return st;
     }
-    /* The cap's domain, if it has one, is fixed from its creation, and
-     * stays until this pin (on the cap's list) is gone. */
-    struct iommu_domain *dom = dma_cap_from_kobject(dma_cap)->dom;
     range_addrs(v, first, end - first, phys_out);
-    if (dom && (st = iommu_map(dom, phys_out, end - first)) != OK) {
+    if (dom && (st = ro ? iommu_map_ro(dom, phys_out, end - first)
+                        : iommu_map(dom, phys_out, end - first)) != OK) {
         /* All or nothing; but a failed invalidation leaves the unit's
          * caches unknown: then the pages are kept. */
         if (st == ERR_TIMED_OUT || st == ERR_IO)

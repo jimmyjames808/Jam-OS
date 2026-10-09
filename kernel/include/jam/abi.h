@@ -112,8 +112,15 @@ struct port_packet {
 #define PORT_BIND_PERSISTENT 1   /* fire on every not-matching -> matching edge */
 
 /* VMOs ------------------------------------------------------------------------
- * vmo_create flags. Bits 0 and 1 (physically contiguous, below 4 GiB) are
- * for drivers: <jam/driver.h>'s DRV_VMO_*. */
+ * VMO flags. Bits 0 and 1 are dma_vmo_create's, for drivers (a dma_cap
+ * lets them ask; <jam/driver.h> also calls them DRV_VMO_*): memory a
+ * device reaches by DMA. vmo_create takes only VMO_KEEP_PAGES. */
+
+/* Physically contiguous, committed (zeroed) at creation, at most
+ * VMO_CONTIGUOUS_MAX bytes. */
+#define VMO_CONTIGUOUS (1u << 0)
+/* Every page below 4 GiB. */
+#define VMO_DMA32      (1u << 1)
 
 /* Pages that stay. Every page is committed at creation and charged to the
  * creator's job (vmo_create fails with ERR_NO_MEMORY, nothing made, if the
@@ -127,6 +134,15 @@ struct port_packet {
  * clone or copy-on-write child of a VMO, of this kind or any other. */
 #define VMO_KEEP_PAGES (1u << 2)
 
+/* The limits. A VMO's size: 64 GiB of address space (pages are committed
+ * as they are touched; ERR_OUT_OF_RANGE past it). A contiguous VMO's: 4
+ * MiB, the largest block the page allocator has. One vmo_pin: 4096 pages
+ * (16 MiB; ERR_OUT_OF_RANGE past it): the kernel builds the address list
+ * in a buffer of its own. */
+#define VMO_MAX_SIZE       (1ull << 36)
+#define VMO_CONTIGUOUS_MAX (4ull << 20)
+#define VMO_PIN_MAX_PAGES  4096u
+
 /* address spaces ------------------------------------------------------------
  * vmar_map / vmar_protect flags. Same values as ASPACE_* in <jam/aspace.h>
  * (checked at compile time in kernel/abi/abi_check.c). */
@@ -135,7 +151,7 @@ struct port_packet {
 #define VMAR_WRITE (1u << 1)
 #define VMAR_EXEC  (1u << 2)   /* never together with VMAR_WRITE */
 #define VMAR_FIXED (1u << 3)   /* map at *addr exactly (else first fit) */
-/* vmar_map only: map a VMO_KEEP_PAGES VMO (ERR_WRONG_TYPE for any other
+/* vmar_map only: map a VMO_KEEP_PAGES VMO (ERR_NOT_SUPPORTED for any other
  * VMO) read-only (VMAR_READ, maybe VMAR_FIXED; ERR_INVALID_ARGS for any
  * other permission), with every page-table entry filled before the call
  * returns, so no access through the mapping ever faults, whatever the
@@ -145,6 +161,10 @@ struct port_packet {
  * (vmar_protect: ERR_ACCESS_DENIED), and its length is what was mapped: a
  * VMO that grows later is mapped again to reach the new pages. */
 #define VMAR_KEPT_ONLY (1u << 4)
+
+/* Mappings an address space holds at most (a vmar_map past it, or an
+ * unmap or protect that would split one more off, is ERR_NO_RESOURCES). */
+#define VMAR_MAX_MAPPINGS 16384u
 
 /* jobs ---------------------------------------------------------------------
  * Every process belongs to a job. A job has a limit on each resource below
@@ -359,6 +379,29 @@ struct pci_dev_info {
 
 /* interrupt_create_msi flags */
 #define IRQ_MSIX  (1u << 0)   /* use MSI-X vector `index` (else MSI, index 0) */
+
+/* vmo_pin: pin [offset, offset + len) of a VMO for the device of a
+ * dma_cap (abi/syscalls.def has the rules). */
+struct vmo_pin_args {
+    handle_t vmo;              /* the VMO */
+    handle_t dma;              /* a dma_cap bound to a function */
+    uint64_t offset;           /* page-aligned */
+    uint64_t len;              /* page-aligned: 1 .. VMO_PIN_MAX_PAGES pages */
+    uint64_t addrs;            /* user address: len / 4096 uint64_t, one device address a page */
+    uint64_t pin_id;           /* user address of a uint64_t: the pin's id, for vmo_unpin */
+    uint32_t flags;            /* VMO_PIN_*; any other bit: ERR_INVALID_ARGS */
+    uint32_t reserved;         /* 0 */
+};
+
+/* The device only reads the pages (a transmit buffer, a sound stream):
+ * with the IOMMU translating (sys_info's SYSINFO_IOMMU: the dma_cap has a
+ * domain) they are mapped for it read only, so its writes there are
+ * refused and faulted, and the pin needs only RIGHT_READ on the VMO.
+ * Without the IOMMU nothing stops a device's write, so the flag changes
+ * nothing and the pin needs RIGHT_WRITE as any other. A page is pinned
+ * through one dma_cap one way at a time: a read-only pin of a page that
+ * cap has pinned writable (or the reverse) is ERR_BAD_STATE. */
+#define VMO_PIN_READ_ONLY (1u << 0)
 
 /* input (abi/idl/input.idl, console.idl) ------------------------------------- */
 

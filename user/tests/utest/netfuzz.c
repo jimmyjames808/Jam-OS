@@ -15,7 +15,7 @@ bool guard_open(struct guard *g)
 {
     handle_t vmar = startup_handle(SR_SELF_VMAR), vmo;
     uint64_t addr = 0;
-    CHECK_ST(jam_vmo_create(2 * PAGE_SIZE, 0, HANDLE_INVALID, &vmo), OK);
+    CHECK_ST(jam_vmo_create(2 * PAGE_SIZE, 0, &vmo), OK);
     status_t st = jam_vmar_map(vmar, vmo, 0, 2 * PAGE_SIZE, VMAR_READ | VMAR_WRITE, &addr);
     jam_handle_close(vmo);   /* the mapping keeps it */
     CHECK_ST(st, OK);

@@ -131,12 +131,13 @@ status_t drv_event_signal(handle_t ev, signals_t clear, signals_t set);
 
 /* ---- memory --------------------------------------------------------------- */
 
-/* drv_vmo_create flags (the same values as the kernel's VMO_CONTIGUOUS /
- * VMO_DMA32, which drivers can't see): memory a device reaches by DMA.
+/* drv_vmo_create flags: <jam/abi.h>'s VMO_CONTIGUOUS and VMO_DMA32, under
+ * the names drivers have always used: memory a device reaches by DMA.
  * Either one uses the driver's DR_DMA capability (no DR_DMA: refused).
- * Contiguous memory is committed (zeroed) at creation, at most 4 MiB. */
-#define DRV_VMO_CONTIGUOUS (1u << 0)
-#define DRV_VMO_DMA32      (1u << 1)   /* every page below 4 GiB */
+ * Contiguous memory is committed (zeroed) at creation, at most
+ * VMO_CONTIGUOUS_MAX (4 MiB). */
+#define DRV_VMO_CONTIGUOUS VMO_CONTIGUOUS
+#define DRV_VMO_DMA32      VMO_DMA32   /* every page below 4 GiB */
 
 status_t drv_vmo_create(uint64_t size, uint32_t flags, handle_t *out);
 status_t drv_vmo_read(handle_t vmo, uint64_t off, void *buf, uint64_t len);
@@ -147,6 +148,11 @@ status_t drv_vmo_unmap(void *addr, uint64_t len);
 /* DMA: one device address per page into addrs[len / 4096]. */
 status_t drv_vmo_pin(handle_t vmo, handle_t dma, uint64_t off, uint64_t len, uint64_t *addrs,
                      uint64_t *pin_id);
+/* The same for memory the device only reads (a transmit buffer, a sound
+ * stream): with the IOMMU the device can't write it (VMO_PIN_READ_ONLY).
+ * A page is pinned one way at a time (ERR_BAD_STATE). */
+status_t drv_vmo_pin_read_only(handle_t vmo, handle_t dma, uint64_t off, uint64_t len,
+                               uint64_t *addrs, uint64_t *pin_id);
 /* Needs the dma_cap the pin was made with (anyone else: ERR_ACCESS_DENIED). */
 status_t drv_vmo_unpin(handle_t vmo, handle_t dma, uint64_t pin_id);
 /* Bus Master Enable of the DR_DMA cap's function. A driver starts

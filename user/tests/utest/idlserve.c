@@ -41,7 +41,7 @@ static status_t s_make_vmo(void *ctx, uint32_t size, uint8_t fill, handle_t *out
     (void)fill;
     if (!size || size > 65536)
         return ERR_INVALID_ARGS;
-    status_t st = jam_vmo_create(size, 0, HANDLE_INVALID, out_vmo);
+    status_t st = jam_vmo_create(size, 0, out_vmo);
     if (st == OK)
         *out_size_back = size;
     return st;

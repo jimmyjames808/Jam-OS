@@ -673,20 +673,24 @@ KTEST(vmo_sys_rights)
     struct handle_table t;
     handle_table_init(&t);
     handle_t h, ro, wo, dh;
-    KT_EQ(sys_vmo_create(&t, 3 * PG, 1u << 9, HANDLE_INVALID, &h), ERR_INVALID_ARGS);
-    KT_EQ(sys_vmo_create(&t, 3 * PG, 0, HANDLE_INVALID, &h), OK);
+    KT_EQ(sys_vmo_create(&t, 3 * PG, 1u << 9, &h), ERR_INVALID_ARGS);
+    KT_EQ(sys_vmo_create(&t, 3 * PG, 0, &h), OK);
 
-    /* VMO_CONTIGUOUS / VMO_DMA32 need a DMA capability at the sys layer:
-     * contiguous and sub-4 GiB memory is scarce. */
+    /* VMO_CONTIGUOUS / VMO_DMA32 need a DMA capability at the sys layer
+     * (sys_dma_vmo_create): contiguous and sub-4 GiB memory is scarce. */
     handle_t dch;
-    KT_EQ(sys_vmo_create(&t, PG, VMO_CONTIGUOUS, HANDLE_INVALID, &dch), ERR_ACCESS_DENIED);
+    KT_EQ(sys_vmo_create(&t, PG, VMO_CONTIGUOUS, &dch), ERR_INVALID_ARGS);
+    KT_EQ(sys_dma_vmo_create(&t, h, PG, VMO_CONTIGUOUS, &dch), ERR_WRONG_TYPE);
     struct kobject *dcap;
     KT_EQ(dma_cap_create(&dcap), OK);
     struct khandle dcapk = khandle_from_new(dcap, RIGHTS_BASIC);
     handle_t dcaph;
     KT_EQ(handle_insert(&t, &dcapk, &dcaph), OK);
-    KT_EQ(sys_vmo_create(&t, PG, VMO_CONTIGUOUS, dcaph, &dch), OK);
-    KT_EQ(handle_close(&t, dch), OK);
+    KT_EQ(sys_dma_vmo_create(&t, dcaph, PG, VMO_KEEP_PAGES, &dch), ERR_INVALID_ARGS);
+    /* The cap must be bound to a function, as a driver's is
+     * (resource_dma_close_clears_bus_master uses one): an unbound one (a
+     * kernel test's) asks for nothing. */
+    KT_EQ(sys_dma_vmo_create(&t, dcaph, PG, VMO_CONTIGUOUS, &dch), ERR_ACCESS_DENIED);
     KT_EQ(handle_close(&t, dcaph), OK);
 
     struct kobject *obj;

@@ -60,7 +60,7 @@ static void rings_close(struct rings *r)
 static bool rings_open(struct rings *r, uint32_t framing, uint32_t tx, uint32_t rx)
 {
     *r = (struct rings){ .bytes = sockring_bytes(tx, rx) };
-    CHECK_ST(jam_vmo_create(r->bytes + PAGE_SIZE, 0, HANDLE_INVALID, &r->vmo), OK);
+    CHECK_ST(jam_vmo_create(r->bytes + PAGE_SIZE, 0, &r->vmo), OK);
     CHECK_ST(jam_handle_duplicate(r->vmo, SOCKRING_VMO_RIGHTS, &r->prog_vmo), OK);
     CHECK(map_guarded(r->vmo, r->bytes, &r->stack_map));
     CHECK(map_guarded(r->prog_vmo, r->bytes, &r->prog_map));

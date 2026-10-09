@@ -5,7 +5,9 @@
  * tally dump. The 2 KiB receive buffers (two per page) are an ordinary
  * VMO, pinned page by page; in full mode the transmit buffers are another
  * one of the same shape: the driver's own copy of every frame it sends,
- * which nothing outside the driver can see or write. Nothing asks for
+ * which nothing outside the driver can see or write, pinned read only
+ * (the chip only reads them; with the IOMMU it can't write there). The
+ * rings' VMO stays writable: the chip writes descriptors back. Nothing asks for
  * memory below 4 GiB: the chip does 64-bit DMA (the PC's stage-0 run).
  *
  * The receive side's descriptors are walked here for both modes:
@@ -14,16 +16,18 @@
  * the caller to read what it may (netframe.h). */
 #include "rtl8125.h"
 
-/* Make, map and pin `bytes` of DMA memory; one device address per page. */
-static status_t dma_vmo(struct rtl *t, uint64_t bytes, uint32_t flags, handle_t *vmo,
-                        uint8_t **map, uint64_t *addrs, uint64_t *pin)
+/* Make, map and pin `bytes` of DMA memory (read_only: the chip only
+ * reads it); one device address per page. */
+static status_t dma_vmo(struct rtl *t, uint64_t bytes, uint32_t flags, bool read_only,
+                        handle_t *vmo, uint8_t **map, uint64_t *addrs, uint64_t *pin)
 {
     status_t st = drv_vmo_create(bytes, flags, vmo);
     if (st != OK)
         return st;
     st = drv_vmo_map(*vmo, 0, bytes, VMAR_READ | VMAR_WRITE, (void **)map);
     if (st == OK)
-        st = drv_vmo_pin(*vmo, t->dma, 0, bytes, addrs, pin);
+        st = read_only ? drv_vmo_pin_read_only(*vmo, t->dma, 0, bytes, addrs, pin)
+                       : drv_vmo_pin(*vmo, t->dma, 0, bytes, addrs, pin);
     return st;   /* ring_free undoes what was done, whatever failed */
 }
 
@@ -60,15 +64,15 @@ static void log_where(const struct rtl *t)
 status_t ring_setup(struct rtl *t)
 {
     uint64_t addrs[RING_VMO / 4096];
-    status_t st = dma_vmo(t, RING_VMO, DRV_VMO_CONTIGUOUS, &t->ring_vmo, &t->ring, addrs,
+    status_t st = dma_vmo(t, RING_VMO, DRV_VMO_CONTIGUOUS, false, &t->ring_vmo, &t->ring, addrs,
                           &t->ring_pin);
     t->ring_pinned = st == OK;
     if (st == OK) {
-        st = dma_vmo(t, BUF_BYTES, 0, &t->buf_vmo, &t->bufs, t->buf_addr, &t->buf_pin);
+        st = dma_vmo(t, BUF_BYTES, 0, false, &t->buf_vmo, &t->bufs, t->buf_addr, &t->buf_pin);
         t->buf_pinned = st == OK;
     }
     if (st == OK && t->mode == RTL_MODE_FULL) {
-        st = dma_vmo(t, TXBUF_BYTES, 0, &t->txbuf_vmo, &t->txbufs, t->txbuf_addr,
+        st = dma_vmo(t, TXBUF_BYTES, 0, true, &t->txbuf_vmo, &t->txbufs, t->txbuf_addr,
                      &t->txbuf_pin);
         t->txbuf_pinned = st == OK;
     }

@@ -37,7 +37,6 @@ int64_t sysc_port_bind(handle_t port, handle_t obj, uint64_t key, signals_t mask
 int64_t sysc_port_unbind(handle_t port, handle_t obj, uint64_t key);
 int64_t sysc_port_queue(handle_t port, uint64_t pkt);
 int64_t sysc_port_wait(handle_t port, uint64_t deadline_ns, uint64_t out);
-int64_t sysc_vmo_create(uint64_t size, uint32_t flags, handle_t dma_cap, uint64_t out);
 int64_t sysc_vmo_read(handle_t h, uint64_t offset, uint64_t buf, uint64_t len);
 int64_t sysc_vmo_write(handle_t h, uint64_t offset, uint64_t buf, uint64_t len);
 int64_t sysc_vmo_get_size(handle_t h, uint64_t size);
@@ -45,6 +44,7 @@ int64_t sysc_vmo_set_size(handle_t h, uint64_t size);
 int64_t sysc_vmo_commit(handle_t h, uint64_t offset, uint64_t len);
 int64_t sysc_vmo_decommit(handle_t h, uint64_t offset, uint64_t len);
 int64_t sysc_vmo_make_exec(handle_t vmo, handle_t root, uint64_t out);
+int64_t sysc_vmo_create(uint64_t size, uint32_t flags, uint64_t out);
 int64_t sysc_vmar_map(handle_t vmar, handle_t vmo, uint64_t vmo_off, uint64_t len, uint32_t flags,
                       uint64_t addr);
 int64_t sysc_vmar_unmap(handle_t vmar, uint64_t addr, uint64_t len);
@@ -71,15 +71,15 @@ int64_t sysc_pci_device_open(handle_t pci, uint32_t index, uint64_t out);
 int64_t sysc_pci_config_read(handle_t dev, uint32_t offset, uint32_t width, uint64_t value);
 int64_t sysc_pci_config_write(handle_t dev, uint32_t offset, uint32_t width, uint32_t value);
 int64_t sysc_pci_bar_resource(handle_t dev, uint32_t bar, uint64_t out);
-int64_t sysc_pci_bus_master(handle_t dev, uint32_t enable);
 int64_t sysc_interrupt_create_msi(handle_t dev, uint32_t index, uint32_t flags, uint64_t out);
 int64_t sysc_interrupt_ack(handle_t irq);
 int64_t sysc_vmo_create_physical(handle_t res, uint64_t offset, uint64_t size, uint32_t cache,
                                  uint64_t out);
-int64_t sysc_dma_cap_create(handle_t dev, uint64_t out);
-int64_t sysc_vmo_pin(handle_t vmo, handle_t dma, uint64_t offset, uint64_t len, uint64_t addrs,
-                     uint64_t pin_id);
 int64_t sysc_vmo_unpin(handle_t vmo, handle_t dma, uint64_t pin_id);
+int64_t sysc_dma_vmo_create(handle_t dma, uint64_t size, uint32_t flags, uint64_t out);
+int64_t sysc_pci_bus_master_off(handle_t dev);
+int64_t sysc_dma_cap_create(handle_t dev, handle_t job, uint64_t out);
+int64_t sysc_vmo_pin(const struct vmo_pin_args *args);
 int64_t sysc_klog_open(handle_t root, uint64_t out);
 int64_t sysc_klog_read(handle_t reader, uint64_t pos, uint64_t buf, uint64_t cap, uint64_t first);
 int64_t sysc_framebuffer_take(handle_t root, uint64_t info, uint64_t vmo, uint64_t owner);

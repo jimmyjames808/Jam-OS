@@ -428,7 +428,7 @@ static uint32_t *map_new(uint64_t bytes)
 {
     handle_t v;
     uint64_t addr = 0;
-    if (jam_vmo_create(bytes, 0, HANDLE_INVALID, &v) != OK)
+    if (jam_vmo_create(bytes, 0, &v) != OK)
         return NULL;
     status_t st = jam_vmar_map(startup_handle(SR_SELF_VMAR), v, 0, bytes, VMAR_READ | VMAR_WRITE,
                                &addr);

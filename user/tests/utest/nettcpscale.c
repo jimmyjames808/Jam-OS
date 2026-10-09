@@ -45,7 +45,7 @@ bool fix_big_make(uint32_t tx, uint32_t rx, struct sockring *ss, struct sockring
 {
     uint64_t va = 0;
     b->len = sockring_bytes(tx, rx);
-    CHECK_ST(jam_vmo_create(b->len, 0, HANDLE_INVALID, &b->vmo), OK);
+    CHECK_ST(jam_vmo_create(b->len, 0, &b->vmo), OK);
     CHECK_ST(jam_vmar_map(startup_handle(SR_SELF_VMAR), b->vmo, 0, b->len,
                           VMAR_READ | VMAR_WRITE, &va), OK);
     b->map = (uint8_t *)(uintptr_t)va;

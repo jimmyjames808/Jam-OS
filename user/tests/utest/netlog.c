@@ -427,7 +427,7 @@ bool t_netlog_crash_stream(void)
         .text_len = sizeof(text) - 1, .name = "boot-0042", .message = "a test",
     };
     handle_t v;
-    CHECK_ST(jam_vmo_create(PAGE_SIZE, 0, HANDLE_INVALID, &v), OK);
+    CHECK_ST(jam_vmo_create(PAGE_SIZE, 0, &v), OK);
     CHECK_ST(jam_vmo_write(v, 0, &h, sizeof(h)), OK);
     CHECK_ST(jam_vmo_write(v, sizeof(h), text, sizeof(text) - 1), OK);
     struct netlog_vmo_ctx ctx;

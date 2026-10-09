@@ -26,7 +26,7 @@ static void *arena_alloc(size_t n)
     if (!arena) {
         handle_t v;
         uint64_t addr = 0;
-        if (jam_vmo_create(ARENA, 0, HANDLE_INVALID, &v) != OK)
+        if (jam_vmo_create(ARENA, 0, &v) != OK)
             return NULL;
         status_t st = jam_vmar_map(startup_handle(SR_SELF_VMAR), v, 0, ARENA,
                                    VMAR_READ | VMAR_WRITE, &addr);
