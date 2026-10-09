@@ -6,15 +6,21 @@
  *
  *   dma_pin_fuzz
  *       Random pins through the system call layer (sys_vmo_pin_flags,
- *       sys_vmo_unpin, sys_vmo_decommit) on three VMOs, with a writable and
- *       a read-only handle each: good and bad offsets and lengths (past the
+ *       sys_vmo_unpin, sys_vmo_commit, sys_vmo_decommit) on three sparse
+ *       VMOs of a client's job, with a writable and a read-only handle each
+ *       in the driver's table: good and bad offsets and lengths (past the
  *       end, unaligned, zero), unknown flags, read-only pins with either
- *       handle, pins overlapping others (one page pinned many times, and
- *       both ways), unpins of live, dead, made-up and other VMOs' ids, the
- *       cap closed now and then with pins held and a new one made. After
- *       every step: the call's result is what the model says (an error
- *       changes nothing), the cap's pin count is the model's, a pinned page
- *       can't be decommitted, and with the IOMMU every page of every VMO is
+ *       handle, over committed pages and over holes, pins overlapping
+ *       others (one page pinned many times, and both ways), unpins of live,
+ *       dead, made-up and other VMOs' ids, the cap closed now and then with
+ *       pins held and a new one made. After every step: the call's result
+ *       is what the model says (an error changes nothing, but a writable
+ *       pin commits what it covers before its map may fail), the cap's pin
+ *       count is the model's, a pinned page can't be decommitted, exactly
+ *       the model's pages are committed (a read-only pin commits none: over
+ *       a hole it fails), the driver's job pays one handle unit per live pin
+ *       and the client's none (review M12.1 KDEV finding 4), and with the
+ *       IOMMU every page of every VMO is
  *       mapped in the cap's domain exactly as often as live pins cover it,
  *       writable exactly when they are writable pins, and not at all
  *       otherwise. Fixed seeds and one from the clock (printed).
@@ -59,8 +65,10 @@ struct mpin {
 };
 
 struct fuzz {
-    struct handle_table t;
-    struct job         *job;
+    struct handle_table t;   /* the driver's */
+    struct job         *job;     /* the driver's: the cap's */
+    struct job         *cjob;    /* the client's: the VMOs' */
+    uint64_t            dh_base, ch_base;   /* their handle units with no pin */
     struct pci_dev     *dev;
     handle_t            devh, jobh, cap;
     handle_t            vh[NV], vro[NV];
@@ -68,6 +76,7 @@ struct fuzz {
     struct kobject     *capobj;  /* the current cap (a reference of ours) */
     bool                tr;      /* the cap has a domain */
     struct mpin         pins[MAXP];
+    bool                committed[NV][VPG];
     uint64_t            dead_ids[16];   /* ids of pins gone (unpinned or closed) */
     unsigned            ndead;
     uint64_t            rng;
@@ -138,6 +147,18 @@ static void check(struct fuzz *f, unsigned step)
         kprintf("ktest %s: step %u: %lu pin(s) on the cap, the model has %u\n", ktest_current,
                 step, on_cap, n);
     KT_EQ(on_cap, n);
+    /* The pinner pays for each pin, the VMOs' holder for none. */
+    KT_EQ(job_used(f->job, JOB_LIMIT_HANDLES), f->dh_base + n);
+    KT_EQ(job_used(f->cjob, JOB_LIMIT_HANDLES), f->ch_base);
+    for (unsigned v = 0; v < NV; v++)
+        for (unsigned p = 0; p < VPG; p++) {
+            bool c = vmo_page_phys(f->v[v], (uint64_t)p * PG) != 0;
+            if (c != f->committed[v][p])
+                kprintf("ktest %s: step %u: VMO %u page %u %scommitted, the model says %s\n",
+                        ktest_current, step, v, p, c ? "" : "not ",
+                        f->committed[v][p] ? "committed" : "not");
+            KT_EQ(c, f->committed[v][p]);
+        }
     if (!f->tr)
         return;
     struct vtd_dom *dom = dma_cap_from_kobject(f->capobj)->dom->dom;
@@ -190,12 +211,18 @@ static void step_pin(struct fuzz *f)
     if (pick(f, 40) == 0)
         off = ~0ull - PG * pick(f, 3);   /* far past the end (and past 2^64 with len) */
 
-    /* What the model expects: OK, or some error that changes nothing. */
+    /* What the model expects: OK, or some error that changes nothing
+     * (but a writable pin's commit, which comes before its map). */
     bool ro = flags & VMO_PIN_READ_ONLY;
-    bool expect = !(flags & ~VMO_PIN_READ_ONLY) && len && !(off % PG) && !(len % PG) &&
-                  off <= (uint64_t)VPG * PG && len <= (uint64_t)VPG * PG - off &&
-                  (!ro_handle || (ro && f->tr));
+    bool valid = !(flags & ~VMO_PIN_READ_ONLY) && len && !(off % PG) && !(len % PG) &&
+                 off <= (uint64_t)VPG * PG && len <= (uint64_t)VPG * PG - off &&
+                 (!ro_handle || (ro && f->tr));
+    bool expect = valid;
     unsigned first = (unsigned)(off / PG), n = (unsigned)(len / PG);
+    if (expect && ro)   /* a read-only pin takes only committed pages */
+        for (unsigned p = first; p < first + n; p++)
+            if (!f->committed[v][p])
+                expect = false;
     if (expect && f->tr)   /* one permission per page in the domain */
         for (unsigned p = first; p < first + n; p++) {
             unsigned cro, c = cover(f, v, p, &cro);
@@ -210,8 +237,14 @@ static void step_pin(struct fuzz *f)
         return;   /* the model is full: an unpin will come */
 
     uint64_t pa[VPG + 1], id = 0;
+    uint64_t cpages = job_used(f->cjob, JOB_LIMIT_PAGES);
     status_t st = sys_vmo_pin_flags(&f->t, ro_handle ? f->vro[v] : f->vh[v], f->cap, off, len,
                                     flags, pa, &id);
+    if (valid && !ro)   /* committed even if the map then failed */
+        for (unsigned p = first; p < first + n; p++)
+            f->committed[v][p] = true;
+    if (ro)   /* it never commits: the client's job pays for nothing new */
+        KT_EQ(job_used(f->cjob, JOB_LIMIT_PAGES), cpages);
     if ((st == OK) != expect)
         kprintf("ktest %s: pin of VMO %u [%lx, +%lx) flags %x with its %s handle: %s, the "
                 "model expected %s\n", ktest_current, v, off, len, flags,
@@ -265,6 +298,16 @@ static void step_decommit(struct fuzz *f)
     bool pinned = cover(f, v, p, &ro) != 0;
     status_t st = sys_vmo_decommit(&f->t, f->vh[v], (uint64_t)p * PG, PG);
     KT_EQ(st, pinned ? ERR_BAD_STATE : OK);
+    if (st == OK)
+        f->committed[v][p] = false;
+}
+
+/* The client fills a page (so read-only pins find some committed). */
+static void step_commit(struct fuzz *f)
+{
+    unsigned v = (unsigned)pick(f, NV), p = (unsigned)pick(f, VPG);
+    KT_EQ(sys_vmo_commit(&f->t, f->vh[v], (uint64_t)p * PG, PG), OK);
+    f->committed[v][p] = true;
 }
 
 static void fuzz_run(uint64_t seed)
@@ -274,28 +317,37 @@ static void fuzz_run(uint64_t seed)
     f.rng = seed;
     f.dev = kt_edu();
     f.job = kt_fresh_job();
+    f.cjob = kt_fresh_job();
     handle_table_init(&f.t);
     f.t.job = f.job;
     struct khandle kh = khandle_from_new(kt_pci_dev_res(f.dev), RES_RIGHTS);
     KT_EQ(handle_insert(&f.t, &kh, &f.devh), OK);
     f.jobh = kt_job_handle(&f.t, f.job);
     for (unsigned v = 0; v < NV; v++) {
-        KT_EQ(sys_vmo_create(&f.t, VPG * PG, 0, &f.vh[v]), OK);
+        /* The client's buffer, "sent" to the driver; page 0 filled. */
+        KT_EQ(vmo_create_for(f.cjob, VPG * PG, 0, &f.v[v]), OK);
+        KT_EQ(vmo_commit(f.v[v], 0, PG), OK);
+        f.committed[v][0] = true;
+        kobject_ref(vmo_kobject(f.v[v]));
+        rights_t rw = RIGHTS_BASIC | RIGHTS_IO | RIGHT_MAP | RIGHT_RESIZE;   /* commit too */
+        struct khandle kv = khandle_from_new(vmo_kobject(f.v[v]), rw);
+        KT_EQ(handle_insert(&f.t, &kv, &f.vh[v]), OK);
         KT_EQ(handle_duplicate(&f.t, f.vh[v], RIGHTS_BASIC | RIGHT_READ | RIGHT_MAP, &f.vro[v]),
               OK);
-        struct kobject *vo;
-        KT_EQ(handle_get(&f.t, f.vh[v], OBJ_VMO, 0, &vo, NULL), OK);
-        f.v[v] = vmo_from_kobject(vo);
     }
     new_cap(&f);
+    f.dh_base = job_used(f.job, JOB_LIMIT_HANDLES);
+    f.ch_base = job_used(f.cjob, JOB_LIMIT_HANDLES);
     for (unsigned s = 0; s < STEPS; s++) {
         unsigned what = (unsigned)pick(&f, 100);
-        if (what < 55)
+        if (what < 50)
             step_pin(&f);
-        else if (what < 82)
+        else if (what < 74)
             step_unpin(&f);
-        else if (what < 98)
+        else if (what < 87)
             step_decommit(&f);
+        else if (what < 98)
+            step_commit(&f);
         else {
             close_cap(&f);
             new_cap(&f);
@@ -311,7 +363,9 @@ static void fuzz_run(uint64_t seed)
     handle_table_destroy(&f.t);
     dma_quarantine_flush(f.dev);
     kt_job_is_empty(f.job);
+    kt_job_is_empty(f.cjob);
     job_unref(f.job);
+    job_unref(f.cjob);
 }
 
 KTEST(dma_pin_fuzz)

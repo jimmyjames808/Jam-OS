@@ -153,6 +153,10 @@ status_t drv_event_signal(handle_t ev, signals_t clear, signals_t set);
 status_t drv_vmo_create(uint64_t size, uint32_t flags, handle_t *out);
 status_t drv_vmo_read(handle_t vmo, uint64_t off, void *buf, uint64_t len);
 status_t drv_vmo_write(handle_t vmo, uint64_t off, const void *buf, uint64_t len);
+/* Commit (allocate) the pages of [off, off + len), charged to the VMO's
+ * job (the driver's, for a VMO it made): a read-only pin takes only
+ * committed pages. Contiguous VMOs are committed from the start. */
+status_t drv_vmo_commit(handle_t vmo, uint64_t off, uint64_t len);
 /* Map into the driver's address space; flags VMAR_READ/WRITE. */
 status_t drv_vmo_map(handle_t vmo, uint64_t off, uint64_t len, uint32_t flags, void **addr);
 status_t drv_vmo_unmap(void *addr, uint64_t len);
@@ -161,7 +165,9 @@ status_t drv_vmo_pin(handle_t vmo, handle_t dma, uint64_t off, uint64_t len, uin
                      uint64_t *pin_id);
 /* The same for memory the device only reads (a transmit buffer, a sound
  * stream): with the IOMMU the device can't write it (VMO_PIN_READ_ONLY).
- * A page is pinned one way at a time (ERR_BAD_STATE). */
+ * A page is pinned one way at a time (ERR_BAD_STATE). Unlike a writable
+ * pin it commits nothing: every page must be committed already
+ * (drv_vmo_commit, or a contiguous VMO), else ERR_BAD_STATE. */
 status_t drv_vmo_pin_read_only(handle_t vmo, handle_t dma, uint64_t off, uint64_t len,
                                uint64_t *addrs, uint64_t *pin_id);
 /* Needs the dma_cap the pin was made with (anyone else: ERR_ACCESS_DENIED). */

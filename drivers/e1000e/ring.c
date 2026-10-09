@@ -55,6 +55,10 @@ static status_t ring_alloc(struct e1k *t)
     if (st == OK && (st = drv_vmo_pin(t->buf_vmo, t->dma, RX_BUF_OFF, TX_BUF_OFF - RX_BUF_OFF,
                                       t->buf_addr, &t->buf_pin)) == OK)
         t->buf_pinned = true;
+    /* A read-only pin takes only committed pages: the transmit buffers'
+     * (the driver's own, charged to its job). */
+    if (st == OK)
+        st = drv_vmo_commit(t->buf_vmo, TX_BUF_OFF, BUFS_BYTES - TX_BUF_OFF);
     if (st == OK && (st = drv_vmo_pin_read_only(t->buf_vmo, t->dma, TX_BUF_OFF,
                                                 BUFS_BYTES - TX_BUF_OFF,
                                                 &t->buf_addr[TX_BUF_OFF / 4096],

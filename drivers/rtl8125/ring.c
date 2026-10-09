@@ -25,6 +25,8 @@ static status_t dma_vmo(struct rtl *t, uint64_t bytes, uint32_t flags, bool read
     if (st != OK)
         return st;
     st = drv_vmo_map(*vmo, 0, bytes, VMAR_READ | VMAR_WRITE, (void **)map);
+    if (st == OK && read_only)   /* a read-only pin takes only committed pages */
+        st = drv_vmo_commit(*vmo, 0, bytes);
     if (st == OK)
         st = read_only ? drv_vmo_pin_read_only(*vmo, t->dma, 0, bytes, addrs, pin)
                        : drv_vmo_pin(*vmo, t->dma, 0, bytes, addrs, pin);
