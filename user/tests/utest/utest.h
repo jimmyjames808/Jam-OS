@@ -150,6 +150,9 @@ bool t_idl_big_messages(void);
 bool t_idl_var_arrays(void);
 bool t_idl_var_refused(void);
 bool t_idl_scalar_arrays(void);
+/* idlevent.c: events both ways, with arrays and handles (idltest_ev). */
+bool t_idl_events_to_server(void);
+bool t_idl_events_to_client(void);
 
 /* main.c: the test running, and helpers the test files share. */
 extern const char *utest_cur;

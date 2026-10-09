@@ -549,7 +549,7 @@ $(foreach d,$(DRIVERS),$(eval $(call DRIVER,$(d))))
 check: all
 	python3 tools/gensyscalls.py check
 	python3 tools/genidl.py check
-	python3 tools/genidl.py selftest
+	CC="$(CC)" python3 tools/genidl.py selftest
 	python3 tools/genwl.py check
 	HOSTCC="$(HOSTCC)" python3 tools/genwl.py selftest
 	python3 tools/genkeymap.py check

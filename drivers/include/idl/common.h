@@ -39,6 +39,7 @@
 #define IDL_ID_COMPCTL       0x0020u   /* abi/idl/compctl.idl */
 #define IDL_ID_IDLTEST       0x0021u   /* abi/idl/idltest.idl */
 #define IDL_ID_IDLTEST_TWO   0x0022u   /* abi/idl/idltest.idl */
+#define IDL_ID_IDLTEST_EV    0x0023u   /* abi/idl/idltest.idl */
 #define IDL_ID_UPDATE_ANSWER 0x4150u   /* user/include/update.h: UPDATE_ANSWER_MAGIC "JUPA" */
 #define IDL_ID_STANDBY       0x4d4fu   /* kernel/include/jam/startup.h: STANDBY_MAGIC "PROM" (promotion) */
 #define IDL_ID_UPDATE_OFFER  0x4f50u   /* user/include/update.h: UPDATE_OFFER_MAGIC "JUPO" */
@@ -64,8 +65,8 @@ struct idl_rep_hdr {
 /* n rounded up to 8: where a second buffer starts after a first of n bytes. */
 #define IDL_ROUND8(n) (((n) + 7u) & ~7u)
 
-/* Handles a server reads with a request (all of them are closed: no
- * method takes handle arguments). */
+/* Handles a server reads with a message (only an event takes any: a
+ * method's request with handles is refused, its handles closed). */
 #define IDL_READ_HANDLES 8
 /* Handles one reply can carry (methods' handle results). */
 #define IDL_REP_HANDLES 8
@@ -223,12 +224,12 @@ static inline void idl_close_all(const handle_t *hs, uint32_t n)
 }
 
 /* Server: answer the request whose first n bytes are at req with a bare
- * status. No txid (n < 4): no reply. A reply that can't be written
+ * status. No txid (n < 4), or txid 0 (an event): no reply. A reply that can't be written
  * (the client is gone, or its queue is full) is dropped. */
 static inline void idl_reply_status(handle_t ch, const void *req, uint32_t n, status_t st)
 {
-    if (n < sizeof(uint32_t))
-        return;
+    if (n < sizeof(uint32_t) || !((const struct idl_req_hdr *)req)->txid)
+        return;   /* txid 0: an event, never answered */
     struct idl_rep_hdr idl_r;
     idl_r.txid = ((const struct idl_req_hdr *)req)->txid;
     idl_r.status = st;
@@ -264,12 +265,13 @@ static inline status_t idl_discard(handle_t ch, uint32_t n, uint32_t nh, uint32_
 
 /* Server: the next message didn't fit (n bytes, nh handles): bigger than
  * any request of the protocol. Take it off the queue anyway (or it would
- * block every later one), close its handles, answer ERR_INVALID_ARGS. */
+ * block every later one), close its handles, answer ERR_INVALID_ARGS
+ * (but not a txid of 0: an event's, never answered). */
 static inline status_t idl_drain(handle_t ch, uint32_t n, uint32_t nh)
 {
     uint32_t idl_txid = 0, idl_got = 0;
     status_t idl_st = idl_discard(ch, n, nh, &idl_txid, &idl_got);
-    if (idl_st == OK && idl_got >= sizeof(uint32_t)) {
+    if (idl_st == OK && idl_got >= sizeof(uint32_t) && idl_txid) {
         struct idl_rep_hdr idl_r = { idl_txid, ERR_INVALID_ARGS };
         drv_channel_write(ch, &idl_r, sizeof(idl_r), NULL, 0);
     } else if (idl_st == ERR_BUFFER_TOO_SMALL || idl_st == ERR_SHOULD_WAIT) {
@@ -291,13 +293,19 @@ struct idl_serve {
     uint32_t  rn;
     handle_t *rhs;    /* the reply's handles: rhn of them, moved once it is sent */
     uint32_t  rhn;
+    handle_t *hs;     /* the request's handles, nh of them, into room for hcap:
+                       * hcap 0 (a protocol whose events carry none) leaves a
+                       * request with handles queued, for idl_drain */
+    uint32_t  hcap;
+    uint32_t  nh;
 };
 
 /* Server: send the reply waiting in s, if any, and take the next request
  * into s->q, in one system call (drv_channel_reply_wait), waiting for one
- * if none is queued. OK: s->n bytes of a request without handles are in
- * s->q. A request carrying handles, or too big for s->q, is answered
- * ERR_INVALID_ARGS (idl_drain) and the next one taken. A reply that can't
+ * if none is queued. OK: s->n bytes of a request are in s->q, and its
+ * s->nh handles in s->hs. A request carrying more than s->hcap handles,
+ * or too big for s->q, is answered ERR_INVALID_ARGS (idl_drain) and the
+ * next one taken. A reply that can't
  * go out (the client is gone, or never called) is dropped and its
  * handles closed, as idl_reply_write's. Otherwise the wait's status:
  * ERR_PEER_CLOSED when the client is gone for good and nothing is
@@ -310,13 +318,15 @@ static inline status_t idl_serve_next(struct idl_serve *s)
          * and the request's sizes, in a row: the kernel writes them in one
          * copy. */
         struct { status_t rs; uint32_t n, nh; } idl_o = { 1, 0, 0 };
-        /* No room for handles: a request that carries any stays queued
-         * (ERR_BUFFER_TOO_SMALL) for idl_drain. */
+        /* A request with more handles than s->hcap (0 for most protocols)
+         * stays queued (ERR_BUFFER_TOO_SMALL) for idl_drain. */
         struct channel_reply_wait_args idl_a = {
             .h = idl_reply ? s->ch : HANDLE_INVALID,
             .wait = s->ch,
             .rd_bytes = (uint64_t)(uintptr_t)s->q,
             .rd_cap = s->qcap,
+            .rd_handles = (uint64_t)(uintptr_t)s->hs,
+            .rd_hcap = s->hcap,
             .rd_actual = (uint64_t)(uintptr_t)&idl_o.n,
             .rd_hactual = (uint64_t)(uintptr_t)&idl_o.nh,
             .deadline_ns = DEADLINE_NEVER,
@@ -342,6 +352,7 @@ static inline status_t idl_serve_next(struct idl_serve *s)
         if (idl_st != OK)
             return idl_st;
         s->n = idl_o.n;
+        s->nh = idl_o.nh;
         return OK;
     }
 }
@@ -523,13 +534,14 @@ static inline bool idl_reply_flush(struct idl_reply *rep)
 }
 
 /* Server: the request in slot carried handles: answered ERR_INVALID_ARGS
- * into slot->r without its handler seeing it. The reply's length. */
+ * into slot->r without its handler seeing it. The reply's length (0 for
+ * txid 0: an event's, never answered). */
 static inline uint32_t idl_refuse(const struct idl_slot *slot)
 {
     struct idl_rep_hdr *idl_r = (struct idl_rep_hdr *)slot->r;
     idl_r->txid = ((const struct idl_req_hdr *)slot->q)->txid;
     idl_r->status = ERR_INVALID_ARGS;
-    return sizeof(*idl_r);
+    return idl_r->txid ? sizeof(*idl_r) : 0;   /* txid 0: an event, never answered */
 }
 
 /* ---- answering later (a `later` method, or a loop of your own) ------- */

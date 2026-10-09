@@ -826,6 +826,8 @@ static const struct {
     { "idl_var_arrays", t_idl_var_arrays },
     { "idl_var_refused", t_idl_var_refused },
     { "idl_scalar_arrays", t_idl_scalar_arrays },
+    { "idl_events_to_server", t_idl_events_to_server },
+    { "idl_events_to_client", t_idl_events_to_client },
     { "keep_put_drop_restore", t_keep_put_drop_restore },
     { "keep_restore_batches", t_keep_restore_batches },
     { "keep_unknown_slots", t_keep_unknown_slots },

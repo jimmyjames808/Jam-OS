@@ -50,3 +50,20 @@ protocol idltest_two 34
 # A big reply answered later: data[i] = key + i (mod 256), when `release_big`
 # says so.
 3  big_later   (u32 key)           -> (u8[4096] data) later
+
+# idltest_ev: events (one way, txid 0, never answered) both ways in one
+# protocol, carrying arrays and handles, beside a call. utest only
+# (idlevent.c).
+#
+# Reconnect: as idltest's.
+
+protocol idltest_ev 35
+
+# A call beside the events: the notes and gifts the server has taken.
+1  count    ()                    -> (u32 notes, u32 gifts)
+# To the server: a note, and a handle given.
+2  note     (u32 key, str[<=16] text) event
+3  give     (u32 key, handle obj) event
+# To the client: a ring, and two handles given.
+4  ring     -> (u32 key, u8[<=8] data) event
+5  gift     -> (u32 key, handle a, handle b) event
