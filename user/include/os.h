@@ -4,6 +4,12 @@
  * message (argv, environment, handles by role; <jam/startup.h>), then calls
  * main(argc, argv) and passes its return value to process_exit.
  *
+ * libjam.a is libos without its C library: no malloc (heap.c), no string
+ * functions (string.c), no printf family (stdio.c), no crt0, environ or
+ * call of main (startmain.c). A POSIX program links it under musl, whose
+ * functions of those names its code then calls (docs/M13-PLAN.md
+ * section 2). Native programs link libos.a, which is libjam and those.
+ *
  * User code sees only a few kernel headers (<jam/abi.h>, <jam/status.h>,
  * <jam/startup.h>, <jam/syscall_nums.h>, <jam/bootfs.h>): the build copies
  * them into an include directory of their own, so kernel internals are
@@ -48,6 +54,16 @@ uint32_t os_random_u32(void);
 
 /* startup message ----------------------------------------------------------- */
 
+/* Read the startup message on ch (the channel the program started with,
+ * in rdi) into the table startup_handle reads; for a warm spare, wait for
+ * its promotion first (which may end the process: <roles.h>). *argc and
+ * *argv: its strings (argv[argc] is NULL, and the environment's
+ * "KEY=value" strings follow it, NULL-terminated). Never fails: an
+ * unusable message leaves argc 0 and no handles, startup_status() saying
+ * why and a line in the log. libos's start calls it before main; a POSIX
+ * program's crt calls it itself (it uses no heap, no printf and no
+ * thread-local storage). Once, at the start. */
+void        startup_read(handle_t ch, int *argc, char ***argv);
 /* The channel the startup message came on (still open). */
 handle_t    startup_channel(void);
 /* The first handle with this role (enum startup_role), or HANDLE_INVALID. */
