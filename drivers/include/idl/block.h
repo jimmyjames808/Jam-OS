@@ -696,7 +696,8 @@ static inline uint32_t block_run_slot(handle_t ch, const struct idl_slot *slot,
  * .idl): run again on the state its first run left, it gives the same
  * result and the same answer? A server that keeps nothing across a
  * restart may run such a request again; any other it answers with an
- * error. */
+ * error. (No server reads it yet: it is for the drivers that outlive
+ * their process, after M12.) */
 static inline bool block_idempotent(uint32_t ordinal)
 {
     switch (ordinal) {

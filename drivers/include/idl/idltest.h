@@ -1547,7 +1547,8 @@ static inline uint32_t idltest_run_slot(handle_t ch, const struct idl_slot *slot
  * .idl): run again on the state its first run left, it gives the same
  * result and the same answer? A server that keeps nothing across a
  * restart may run such a request again; any other it answers with an
- * error. */
+ * error. (No server reads it yet: it is for the drivers that outlive
+ * their process, after M12.) */
 static inline bool idltest_idempotent(uint32_t ordinal)
 {
     switch (ordinal) {
@@ -2118,7 +2119,8 @@ static inline uint32_t idltest_two_run_slot(handle_t ch, const struct idl_slot *
  * .idl): run again on the state its first run left, it gives the same
  * result and the same answer? A server that keeps nothing across a
  * restart may run such a request again; any other it answers with an
- * error. */
+ * error. (No server reads it yet: it is for the drivers that outlive
+ * their process, after M12.) */
 static inline bool idltest_two_idempotent(uint32_t ordinal)
 {
     (void)ordinal;
@@ -2666,7 +2668,8 @@ static inline uint32_t idltest_ev_run_slot(handle_t ch, const struct idl_slot *s
  * .idl): run again on the state its first run left, it gives the same
  * result and the same answer? A server that keeps nothing across a
  * restart may run such a request again; any other it answers with an
- * error. */
+ * error. (No server reads it yet: it is for the drivers that outlive
+ * their process, after M12.) */
 static inline bool idltest_ev_idempotent(uint32_t ordinal)
 {
     (void)ordinal;

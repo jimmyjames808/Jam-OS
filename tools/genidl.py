@@ -166,7 +166,10 @@ successor's re-run of the request in progress are then the same code.
 gives the same result and the same answer (a read, a write at an explicit
 offset, a stat). Recorded in <proto>_idempotent(wire ordinal), for a server
 that keeps no state across a restart: it may run such a request again and
-answers any other with an error. The client's side doesn't change.
+answers any other with an error. The client's side doesn't change. Read
+by nothing yet (only utest): the note is kept for the drivers that outlive
+their process (the milestone after M12), whose requests would be run again
+without a slot (the M12 review P's finding 9).
 
 `later`: the server may answer the method later, after its handler has
 returned and the loop has served other requests (a `recv` that waits for
@@ -2341,7 +2344,8 @@ def gen_protocol(p):
         " * .idl): run again on the state its first run left, it gives the same",
         " * result and the same answer? A server that keeps nothing across a",
         " * restart may run such a request again; any other it answers with an",
-        " * error. */",
+        " * error. (No server reads it yet: it is for the drivers that outlive",
+        " * their process, after M12.) */",
         f"static inline bool {P}_idempotent(uint32_t ordinal)",
         "{",
     ]
