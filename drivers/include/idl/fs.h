@@ -161,6 +161,8 @@ struct fs_view_rep {
 #define FS_REP_MAX 8208u   /* bytes: the biggest reply */
 #define FS_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
 #define FS_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
+#define FS_UNREAD_MSGS IDL_UNREAD_MSGS   /* the unread bound: messages ... */
+#define FS_UNREAD_BYTES IDL_UNREAD_BYTES   /* ... or bytes a client may leave unread */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -1487,6 +1489,15 @@ static inline uint32_t fs_dispatch(const struct fs_ops *ops, void *ctx, const vo
     return fs_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
 }
 
+/* The unread bound (tools/genidl.py): has ch's client left FS_UNREAD_MSGS
+ * messages or FS_UNREAD_BYTES bytes of ours unread? Then a loop of the
+ * server's own reads nothing more from ch for now: it leaves ch unserved
+ * and looks again later (struct idl_held). */
+static inline bool fs_unread_full(handle_t ch)
+{
+    return idl_unread_full(ch, FS_UNREAD_MSGS, FS_UNREAD_BYTES);
+}
+
 /* Take the next message on ch into slot (idl_take), a slot with room for
  * the protocol's biggest request (ERR_INVALID_ARGS if it has less). The
  * reply waiting in *rep (NULL or empty: none) goes out first in the same
@@ -1531,7 +1542,8 @@ static inline bool fs_idempotent(uint32_t ordinal)
     return false;   /* no method is marked */
 }
 
-/* Take one message off ch and answer it. OK once a message was handled
+/* Take one message off ch and answer it (the unread bound is the caller's:
+ * fs_unread_full first). OK once a message was handled
  * (its reply may still have been dropped: the client is gone, or never
  * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
  * nothing is queued, ERR_PEER_CLOSED when the client is gone for good;
@@ -1568,9 +1580,10 @@ static inline status_t fs_serve_one(handle_t ch, const struct fs_ops *ops, void 
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
  * (that status: ERR_CANCELED when the driver is being killed). Each reply
- * goes out in the system call that takes the next request
- * (idl_serve_next). Its buffers come from the heap, once (ERR_NO_MEMORY
- * if they can't): FS_REQ_MAX + FS_REP_MAX pass IDL_STACK_MAX. */
+ * goes out in the system call that takes the next request, and a client
+ * with FS_UNREAD_MSGS answers unread waits until it reads (idl_serve_next).
+ * Its buffers come from the heap, once (ERR_NO_MEMORY if they can't):
+ * FS_REQ_MAX + FS_REP_MAX pass IDL_STACK_MAX. */
 static inline status_t fs_serve(handle_t ch, const struct fs_ops *ops, void *ctx)
 {
     uint8_t *idl_q = (uint8_t *)drv_malloc(IDL_ROUND8(FS_REQ_MAX) + FS_REP_MAX);
@@ -1580,6 +1593,7 @@ static inline status_t fs_serve(handle_t ch, const struct fs_ops *ops, void *ctx
     handle_t idl_rhs[IDL_REP_HANDLES];
     struct idl_serve idl_s = {
         .ch = ch, .q = idl_q, .qcap = FS_REQ_MAX, .r = idl_r, .rhs = idl_rhs,
+        .umsgs = FS_UNREAD_MSGS, .ubytes = FS_UNREAD_BYTES,
     };
     status_t idl_st;
     while ((idl_st = idl_serve_next(&idl_s)) == OK)

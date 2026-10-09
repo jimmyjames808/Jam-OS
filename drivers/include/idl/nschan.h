@@ -72,6 +72,8 @@ struct nschan_set_msg {   /* an event: txid 0 */
 #define NSCHAN_REP_MAX 8u   /* bytes: the biggest message to the client */
 #define NSCHAN_REQ_HANDLES 40   /* handles: read with each message to the server */
 #define NSCHAN_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
+#define NSCHAN_UNREAD_MSGS IDL_UNREAD_MSGS   /* the unread bound: messages ... */
+#define NSCHAN_UNREAD_BYTES IDL_UNREAD_BYTES   /* ... or bytes a client may leave unread */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -320,6 +322,15 @@ static inline uint32_t nschan_dispatch(const struct nschan_ops *ops, void *ctx, 
     return nschan_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
 }
 
+/* The unread bound (tools/genidl.py): has ch's client left NSCHAN_UNREAD_MSGS
+ * messages or NSCHAN_UNREAD_BYTES bytes of ours unread? Then a loop of the
+ * server's own reads nothing more from ch for now: it leaves ch unserved
+ * and looks again later (struct idl_held). */
+static inline bool nschan_unread_full(handle_t ch)
+{
+    return idl_unread_full(ch, NSCHAN_UNREAD_MSGS, NSCHAN_UNREAD_BYTES);
+}
+
 /* Take the next message on ch into slot (idl_take), a slot with room for
  * the protocol's biggest request (ERR_INVALID_ARGS if it has less). The
  * reply waiting in *rep (NULL or empty: none) goes out first in the same
@@ -365,7 +376,8 @@ static inline bool nschan_idempotent(uint32_t ordinal)
     return false;   /* no method is marked */
 }
 
-/* Take one message off ch and answer it. OK once a message was handled
+/* Take one message off ch and answer it (the unread bound is the caller's:
+ * nschan_unread_full first). OK once a message was handled
  * (its reply may still have been dropped: the client is gone, or never
  * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
  * nothing is queued, ERR_PEER_CLOSED when the client is gone for good. */
@@ -394,8 +406,8 @@ static inline status_t nschan_serve_one(handle_t ch, const struct nschan_ops *op
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
  * (that status: ERR_CANCELED when the driver is being killed). Each reply
- * goes out in the system call that takes the next request
- * (idl_serve_next). */
+ * goes out in the system call that takes the next request, and a client
+ * with NSCHAN_UNREAD_MSGS answers unread waits until it reads (idl_serve_next). */
 static inline status_t nschan_serve(handle_t ch, const struct nschan_ops *ops, void *ctx)
 {
     _Alignas(8) uint8_t idl_q[NSCHAN_REQ_MAX];
@@ -404,6 +416,7 @@ static inline status_t nschan_serve(handle_t ch, const struct nschan_ops *ops, v
     struct idl_serve idl_s = {
         .ch = ch, .q = idl_q, .qcap = NSCHAN_REQ_MAX, .r = idl_r, .rhs = idl_rhs,
         .hs = idl_hs, .hcap = NSCHAN_REQ_HANDLES,
+        .umsgs = NSCHAN_UNREAD_MSGS, .ubytes = NSCHAN_UNREAD_BYTES,
     };
     status_t idl_st;
     while ((idl_st = idl_serve_next(&idl_s)) == OK)

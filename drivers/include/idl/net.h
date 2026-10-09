@@ -252,6 +252,8 @@ struct net_tcp_listener_rep {
 #define NET_REP_MAX 266u   /* bytes: the biggest reply */
 #define NET_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
 #define NET_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
+#define NET_UNREAD_MSGS IDL_UNREAD_MSGS   /* the unread bound: messages ... */
+#define NET_UNREAD_BYTES IDL_UNREAD_BYTES   /* ... or bytes a client may leave unread */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -1693,6 +1695,15 @@ static inline uint32_t net_dispatch(const struct net_ops *ops, void *ctx, const 
     return net_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
 }
 
+/* The unread bound (tools/genidl.py): has ch's client left NET_UNREAD_MSGS
+ * messages or NET_UNREAD_BYTES bytes of ours unread? Then a loop of the
+ * server's own reads nothing more from ch for now: it leaves ch unserved
+ * and looks again later (struct idl_held). */
+static inline bool net_unread_full(handle_t ch)
+{
+    return idl_unread_full(ch, NET_UNREAD_MSGS, NET_UNREAD_BYTES);
+}
+
 /* Take the next message on ch into slot (idl_take), a slot with room for
  * the protocol's biggest request (ERR_INVALID_ARGS if it has less). The
  * reply waiting in *rep (NULL or empty: none) goes out first in the same
@@ -1737,7 +1748,8 @@ static inline bool net_idempotent(uint32_t ordinal)
     return false;   /* no method is marked */
 }
 
-/* Take one message off ch and answer it. OK once a message was handled
+/* Take one message off ch and answer it (the unread bound is the caller's:
+ * net_unread_full first). OK once a message was handled
  * (its reply may still have been dropped: the client is gone, or never
  * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
  * nothing is queued, ERR_PEER_CLOSED when the client is gone for good. */
@@ -1770,8 +1782,8 @@ static inline status_t net_serve_one(handle_t ch, const struct net_ops *ops, voi
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
  * (that status: ERR_CANCELED when the driver is being killed). Each reply
- * goes out in the system call that takes the next request
- * (idl_serve_next). */
+ * goes out in the system call that takes the next request, and a client
+ * with NET_UNREAD_MSGS answers unread waits until it reads (idl_serve_next). */
 static inline status_t net_serve(handle_t ch, const struct net_ops *ops, void *ctx)
 {
     _Alignas(8) uint8_t idl_q[NET_REQ_MAX];
@@ -1779,6 +1791,7 @@ static inline status_t net_serve(handle_t ch, const struct net_ops *ops, void *c
     handle_t idl_rhs[IDL_REP_HANDLES];
     struct idl_serve idl_s = {
         .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+        .umsgs = NET_UNREAD_MSGS, .ubytes = NET_UNREAD_BYTES,
     };
     for (;;) {
         status_t idl_st = idl_serve_next(&idl_s);
@@ -1846,6 +1859,8 @@ struct net_socket_rings_rep {
 #define NET_SOCKET_REP_MAX 28u   /* bytes: the biggest reply */
 #define NET_SOCKET_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
 #define NET_SOCKET_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
+#define NET_SOCKET_UNREAD_MSGS IDL_UNREAD_MSGS   /* the unread bound: messages ... */
+#define NET_SOCKET_UNREAD_BYTES IDL_UNREAD_BYTES   /* ... or bytes a client may leave unread */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -2307,6 +2322,15 @@ static inline uint32_t net_socket_dispatch(const struct net_socket_ops *ops, voi
     return net_socket_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
 }
 
+/* The unread bound (tools/genidl.py): has ch's client left NET_SOCKET_UNREAD_MSGS
+ * messages or NET_SOCKET_UNREAD_BYTES bytes of ours unread? Then a loop of the
+ * server's own reads nothing more from ch for now: it leaves ch unserved
+ * and looks again later (struct idl_held). */
+static inline bool net_socket_unread_full(handle_t ch)
+{
+    return idl_unread_full(ch, NET_SOCKET_UNREAD_MSGS, NET_SOCKET_UNREAD_BYTES);
+}
+
 /* Take the next message on ch into slot (idl_take), a slot with room for
  * the protocol's biggest request (ERR_INVALID_ARGS if it has less). The
  * reply waiting in *rep (NULL or empty: none) goes out first in the same
@@ -2351,7 +2375,8 @@ static inline bool net_socket_idempotent(uint32_t ordinal)
     return false;   /* no method is marked */
 }
 
-/* Take one message off ch and answer it. OK once a message was handled
+/* Take one message off ch and answer it (the unread bound is the caller's:
+ * net_socket_unread_full first). OK once a message was handled
  * (its reply may still have been dropped: the client is gone, or never
  * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
  * nothing is queued, ERR_PEER_CLOSED when the client is gone for good. */
@@ -2384,8 +2409,8 @@ static inline status_t net_socket_serve_one(handle_t ch, const struct net_socket
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
  * (that status: ERR_CANCELED when the driver is being killed). Each reply
- * goes out in the system call that takes the next request
- * (idl_serve_next). */
+ * goes out in the system call that takes the next request, and a client
+ * with NET_SOCKET_UNREAD_MSGS answers unread waits until it reads (idl_serve_next). */
 static inline status_t net_socket_serve(handle_t ch, const struct net_socket_ops *ops, void *ctx)
 {
     _Alignas(8) uint8_t idl_q[NET_SOCKET_REQ_MAX];
@@ -2393,6 +2418,7 @@ static inline status_t net_socket_serve(handle_t ch, const struct net_socket_ops
     handle_t idl_rhs[IDL_REP_HANDLES];
     struct idl_serve idl_s = {
         .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+        .umsgs = NET_SOCKET_UNREAD_MSGS, .ubytes = NET_SOCKET_UNREAD_BYTES,
     };
     for (;;) {
         status_t idl_st = idl_serve_next(&idl_s);
@@ -2476,6 +2502,8 @@ struct net_stream_set_options_rep {
 #define NET_STREAM_REP_MAX 24u   /* bytes: the biggest reply */
 #define NET_STREAM_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
 #define NET_STREAM_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
+#define NET_STREAM_UNREAD_MSGS IDL_UNREAD_MSGS   /* the unread bound: messages ... */
+#define NET_STREAM_UNREAD_BYTES IDL_UNREAD_BYTES   /* ... or bytes a client may leave unread */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -2753,6 +2781,15 @@ static inline uint32_t net_stream_dispatch(const struct net_stream_ops *ops, voi
     return net_stream_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
 }
 
+/* The unread bound (tools/genidl.py): has ch's client left NET_STREAM_UNREAD_MSGS
+ * messages or NET_STREAM_UNREAD_BYTES bytes of ours unread? Then a loop of the
+ * server's own reads nothing more from ch for now: it leaves ch unserved
+ * and looks again later (struct idl_held). */
+static inline bool net_stream_unread_full(handle_t ch)
+{
+    return idl_unread_full(ch, NET_STREAM_UNREAD_MSGS, NET_STREAM_UNREAD_BYTES);
+}
+
 /* Take the next message on ch into slot (idl_take), a slot with room for
  * the protocol's biggest request (ERR_INVALID_ARGS if it has less). The
  * reply waiting in *rep (NULL or empty: none) goes out first in the same
@@ -2797,7 +2834,8 @@ static inline bool net_stream_idempotent(uint32_t ordinal)
     return false;   /* no method is marked */
 }
 
-/* Take one message off ch and answer it. OK once a message was handled
+/* Take one message off ch and answer it (the unread bound is the caller's:
+ * net_stream_unread_full first). OK once a message was handled
  * (its reply may still have been dropped: the client is gone, or never
  * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
  * nothing is queued, ERR_PEER_CLOSED when the client is gone for good. */
@@ -2830,8 +2868,8 @@ static inline status_t net_stream_serve_one(handle_t ch, const struct net_stream
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
  * (that status: ERR_CANCELED when the driver is being killed). Each reply
- * goes out in the system call that takes the next request
- * (idl_serve_next). */
+ * goes out in the system call that takes the next request, and a client
+ * with NET_STREAM_UNREAD_MSGS answers unread waits until it reads (idl_serve_next). */
 static inline status_t net_stream_serve(handle_t ch, const struct net_stream_ops *ops, void *ctx)
 {
     _Alignas(8) uint8_t idl_q[NET_STREAM_REQ_MAX];
@@ -2839,6 +2877,7 @@ static inline status_t net_stream_serve(handle_t ch, const struct net_stream_ops
     handle_t idl_rhs[IDL_REP_HANDLES];
     struct idl_serve idl_s = {
         .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+        .umsgs = NET_STREAM_UNREAD_MSGS, .ubytes = NET_STREAM_UNREAD_BYTES,
     };
     for (;;) {
         status_t idl_st = idl_serve_next(&idl_s);
@@ -2881,6 +2920,8 @@ struct net_listener_accept_rep {
 #define NET_LISTENER_REP_MAX 22u   /* bytes: the biggest reply */
 #define NET_LISTENER_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
 #define NET_LISTENER_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
+#define NET_LISTENER_UNREAD_MSGS IDL_UNREAD_MSGS   /* the unread bound: messages ... */
+#define NET_LISTENER_UNREAD_BYTES IDL_UNREAD_BYTES   /* ... or bytes a client may leave unread */
 
 /* ---- client ---------------------------------------------------------- */
 
@@ -3146,6 +3187,15 @@ static inline uint32_t net_listener_dispatch(const struct net_listener_ops *ops,
     return net_listener_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
 }
 
+/* The unread bound (tools/genidl.py): has ch's client left NET_LISTENER_UNREAD_MSGS
+ * messages or NET_LISTENER_UNREAD_BYTES bytes of ours unread? Then a loop of the
+ * server's own reads nothing more from ch for now: it leaves ch unserved
+ * and looks again later (struct idl_held). */
+static inline bool net_listener_unread_full(handle_t ch)
+{
+    return idl_unread_full(ch, NET_LISTENER_UNREAD_MSGS, NET_LISTENER_UNREAD_BYTES);
+}
+
 /* Take the next message on ch into slot (idl_take), a slot with room for
  * the protocol's biggest request (ERR_INVALID_ARGS if it has less). The
  * reply waiting in *rep (NULL or empty: none) goes out first in the same
@@ -3190,7 +3240,8 @@ static inline bool net_listener_idempotent(uint32_t ordinal)
     return false;   /* no method is marked */
 }
 
-/* Take one message off ch and answer it. OK once a message was handled
+/* Take one message off ch and answer it (the unread bound is the caller's:
+ * net_listener_unread_full first). OK once a message was handled
  * (its reply may still have been dropped: the client is gone, or never
  * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
  * nothing is queued, ERR_PEER_CLOSED when the client is gone for good. */
@@ -3223,8 +3274,8 @@ static inline status_t net_listener_serve_one(handle_t ch, const struct net_list
 
 /* Serve ch until the client closes it (OK), or a wait or read fails
  * (that status: ERR_CANCELED when the driver is being killed). Each reply
- * goes out in the system call that takes the next request
- * (idl_serve_next). */
+ * goes out in the system call that takes the next request, and a client
+ * with NET_LISTENER_UNREAD_MSGS answers unread waits until it reads (idl_serve_next). */
 static inline status_t net_listener_serve(handle_t ch, const struct net_listener_ops *ops, void *ctx)
 {
     _Alignas(8) uint8_t idl_q[NET_LISTENER_REQ_MAX];
@@ -3232,6 +3283,7 @@ static inline status_t net_listener_serve(handle_t ch, const struct net_listener
     handle_t idl_rhs[IDL_REP_HANDLES];
     struct idl_serve idl_s = {
         .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+        .umsgs = NET_LISTENER_UNREAD_MSGS, .ubytes = NET_LISTENER_UNREAD_BYTES,
     };
     for (;;) {
         status_t idl_st = idl_serve_next(&idl_s);
