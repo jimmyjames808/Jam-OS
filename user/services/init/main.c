@@ -14,23 +14,28 @@
  * or its netdev service),
  * "vlan=<id>" or "vlan=none" (the network's mode, for the network
  * drivers) and
- * "bootdisk=0x<id>" (the disk the machine booted from: devmgr's boot
+ * "bootdisk=0x<id>" (the disk the machine booted from: volumes' boot
  * disk). Otherwise (no mode, or "init", whose one option word is the
  * vlan= word) it starts the bootfs server (bin/bootfs: the boot
- * image as the mount /boot) and devmgr (bin/devmgr, if bootfs has it) in a
+ * image as the mount /boot), devmgr (bin/devmgr, if bootfs has it) in a
  * job of its own with a RES_PCI resource sliced from the root, waits until
- * devmgr has bound its drivers, and runs the programs listed in init.cfg
- * one after another, each as a real child process in a job of its own (a
- * child of init's job) with the root resource to read with (SR_RESOURCE:
- * TEST_ROOT's powers) and init's namespace as it is then (SR_NS: /boot, what
- * devmgr has mounted (mounts.c), and devmgr's query and control channels
- * as /svc/devmgr and /svc/devmgr-ctl); it waits for each to finish and reports how it
- * ended: the lines go into the kernel's RESULTS box. At the end it closes
- * its end of devmgr's channel, which stops devmgr and its drivers, waits
- * for that, and stops the bootfs server the same way. init exits 0 if
- * every program (and devmgr, and the bootfs server) exited 0. */
+ * devmgr has bound its drivers, then volumes (bin/volumes: the disks and
+ * their mounts, told of the disks by devmgr on a DISKS channel), and runs
+ * the programs listed in init.cfg one after another, each as a real child
+ * process in a job of its own (a child of init's job) with the root
+ * resource to read with (SR_RESOURCE: TEST_ROOT's powers) and init's
+ * namespace as it is then (SR_NS: /boot, what volumes has mounted
+ * (mounts.c), devmgr's query and control channels as /svc/devmgr and
+ * /svc/devmgr-ctl, and volumes' as /svc/volumes); it waits for each to
+ * finish and reports how it ended: the lines go into the kernel's RESULTS
+ * box. At the end it closes its end of volumes' channel, which stops
+ * volumes and its filesystem services, then of devmgr's, which stops
+ * devmgr and its drivers, waits for each, and stops the bootfs server the
+ * same way. init exits 0 if every program (and devmgr, volumes and the
+ * bootfs server) exited 0. */
 #include <devmgr.h>
 #include <os.h>
+#include <volumes.h>
 #include "init.h"
 
 #define MAX_WORDS     16
@@ -48,6 +53,9 @@
  * here), so the query channel never hands their drivers out. */
 static handle_t devmgr_ch, devmgr_q, devmgr_proc, devmgr_job;   /* 0: no devmgr */
 static handle_t devmgr_hda[INIT_MAX_CLAIMED], devmgr_net[INIT_MAX_CLAIMED];
+/* volumes' control channel (the test suites reach it as /svc/volumes),
+ * its process and job: 0: no volumes. */
+static handle_t volumes_ch, volumes_proc, volumes_job;
 static handle_t bootfs_proc, bootfs_job;                        /* 0: no bootfs server */
 
 bool init_hidboot;
@@ -200,12 +208,8 @@ static bool start_devmgr(handle_t console)
         int argc = 1;
         if (init_hidboot)
             argv[argc++] = "hidboot";
-        if (init_nospare)
-            argv[argc++] = "nospare";   /* no warm spare fat either */
         if (init_vlan)
             argv[argc++] = init_vlan;
-        if (init_bootdisk)
-            argv[argc++] = init_bootdisk;
         struct spawn_handle x[] = { { SR_RESOURCE, pci }, { SR_DEVMGR_CTL, b },
                                     { SR_DEVMGR, qb }, { SR_CONSOLE, console } };
         struct spawn_args sa = {
@@ -247,14 +251,102 @@ static bool start_devmgr(handle_t console)
         (void)ns_svc_set(SVC_DEVMGR, dq, true);   /* per opener; without it the tests skip */
     if (jam_handle_duplicate(devmgr_ch, RIGHT_SAME, &dc) == OK)
         (void)ns_svc_set(SVC_DEVMGR_CTL, dc, false);
+    return r.b == 0;
+}
+
+/* volumes: started after devmgr, stopped before it. devmgr tells it of
+ * its disks on a new DISKS channel. */
+static bool start_volumes(void)
+{
+    const struct bootfs_view *fs;
+    const void *data;
+    uint64_t size;
+    if (bootfs_default(&fs) != OK || bootfs_lookup(fs, "bin/volumes", &data, &size) != OK) {
+        printf("init: no bin/volumes in bootfs: no disks\n");
+        return true;
+    }
+    handle_t a = HANDLE_INVALID, b = HANDLE_INVALID, dc = HANDLE_INVALID, ds = HANDLE_INVALID;
+    status_t st = jam_job_create(startup_handle(SR_JOB), 0, &volumes_job);
+    if (st == OK)
+        st = jam_channel_create(&a, &b);
+    if (st == OK)
+        st = jam_channel_create(&dc, &ds);
+    if (st == OK) {
+        const char *argv[3] = { "bin/volumes" };
+        int argc = 1;
+        if (init_nospare)
+            argv[argc++] = "nospare";   /* no warm spare fat */
+        if (init_bootdisk)
+            argv[argc++] = init_bootdisk;
+        struct spawn_handle x[] = { { VOLUMES_SR_CTL, b }, { VOLUMES_SR_DISKS, ds } };
+        struct spawn_args sa = {
+            .path = "bin/volumes", .argc = argc, .argv = argv, .job = volumes_job,
+            .extra = x, .nextra = 2,
+        };
+        st = spawn(&sa, &volumes_proc);   /* consumes b and ds */
+        b = ds = HANDLE_INVALID;
+    }
+    if (st != OK) {
+        init_say("init: can't start volumes (%s)", status_str(st));
+        handle_t left[] = { a, b, dc, ds, volumes_job };
+        for (unsigned k = 0; k < 5; k++)
+            if (left[k])
+                jam_handle_close(left[k]);
+        volumes_job = HANDLE_INVALID;
+        return false;
+    }
+    volumes_ch = a;
+    if (devmgr_ch)
+        services_set_volumes(devmgr_ch, dc);   /* its disks, from now on */
+    else
+        jam_handle_close(dc);
+    /* The programs we run reach it through our namespace. */
+    handle_t vc = HANDLE_INVALID;
+    if (jam_handle_duplicate(volumes_ch, RIGHT_SAME, &vc) == OK)
+        (void)ns_svc_set(SVC_VOLUMES, vc, true);   /* per opener; without it the tests skip */
     /* Its mounts, as they come: a program gets those there when it starts. */
     handle_t watch;
-    st = jam_handle_duplicate(devmgr_ch, RIGHT_SAME, &watch);
+    st = jam_handle_duplicate(volumes_ch, RIGHT_SAME, &watch);
     if (st == OK)
         st = mounts_watch(watch, HANDLE_INVALID, 0);
     if (st != OK)
-        printf("init: not following devmgr's mounts (%s)\n", status_str(st));
-    return r.b == 0;
+        printf("init: not following volumes' mounts (%s)\n", status_str(st));
+    return true;
+}
+
+static bool stop_volumes(void)
+{
+    if (!volumes_proc)
+        return true;
+    (void)ns_svc_remove(SVC_VOLUMES);   /* our copies too: none may keep it */
+    jam_handle_close(volumes_ch);
+    volumes_ch = HANDLE_INVALID;
+    mounts_unwatch();   /* its last control client gone: it stops its services, exits */
+    uint64_t t0 = now();
+    struct process_info info;
+    status_t st = spawn_wait(volumes_proc, 30 * NS_PER_S, &info);
+    if (st == ERR_TIMED_OUT) {
+        init_say("init: volumes still running 30 s after its channel closed: killing its job");
+        jam_job_kill(volumes_job);
+        st = spawn_wait(volumes_proc, 10 * NS_PER_S, &info);
+    }
+    bool ok = st == OK && !info.killed && info.exit_code == 0;
+    if (st == OK)
+        init_say("init: volumes %s %ld after %lu ms",
+                 info.killed ? "was killed, code" : "exited with code", (long)info.exit_code,
+                 (unsigned long)((now() - t0) / NS_PER_MS));
+    struct job_info ji;
+    if (jam_job_get_info(volumes_job, &ji) == OK)
+        for (unsigned k = 1; k < JOB_LIMIT_COUNT; k++)
+            if (ji.used[k]) {
+                init_say("init: volumes' job still has %lu units of kind %u",
+                    (unsigned long)ji.used[k], k);
+                ok = false;
+            }
+    jam_handle_close(volumes_proc);
+    jam_handle_close(volumes_job);
+    volumes_proc = volumes_job = HANDLE_INVALID;
+    return ok;
 }
 
 static bool stop_devmgr(void)
@@ -273,8 +365,8 @@ static bool stop_devmgr(void)
     }
     memset(devmgr_hda, 0, sizeof(devmgr_hda));
     memset(devmgr_net, 0, sizeof(devmgr_net));
-    devmgr_ch = devmgr_q = HANDLE_INVALID;
-    mounts_unwatch();   /* its last control client gone: it stops its drivers, exits */
+    devmgr_ch = devmgr_q = HANDLE_INVALID;   /* its last control client gone: it stops its
+                                               * drivers, exits */
 
     uint64_t t0 = now();
     struct process_info info;
@@ -430,7 +522,7 @@ int main(int argc, char **argv)
      * choice: a plain boot without `verbose` or `nosplash`: the boot splash
      * plays first), "hidboot", "netprobe", "netsend", "net", "vlan=<id>"
      * or "vlan=none", "bootdisk=0x<id>", "splashhang", "nospare" (no warm
-     * spare mixer: spare.c; passed on to devmgr: no warm spare fat),
+     * spare mixer: spare.c; passed on to volumes: no warm spare fat),
      * "vtdtest" (passed on to devmgr: drv/hda's IOMMU fault checks),
      * "nocomp" (no compositor: the console draws the screen and takes
      * the input, one terminal; comp.c), "verbose" (the log on the first
@@ -486,7 +578,9 @@ int main(int argc, char **argv)
     }
     bool ok = start_bootfs();
     ok &= start_devmgr(HANDLE_INVALID);
+    ok &= start_volumes();
     ok &= run_config(cfg, len);
+    ok &= stop_volumes();
     ok &= stop_devmgr();
     ok &= stop_bootfs();
     return ok ? 0 : 1;

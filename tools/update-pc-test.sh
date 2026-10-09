@@ -137,7 +137,7 @@ boot() {
         QEMU_TIMEOUT=$((limit + 420)) QEMU_INPUT="$out/$1.txt" \
         tools/qemu-test.sh "$out" "$1" shell > "$out/$1.out" 2>&1 ||
         fail "$1: the script, or the VLAN checks (see $out/$1.out, $out/$1.log)"
-    grep -a "update: \|init: update: \|devmgr: /esp\|kexec: starting" "$out/$1.log" |
+    grep -a "update: \|init: update: \|volumes: /esp\|kexec: starting" "$out/$1.log" |
         sed "s/^/update-pc-test: $1: /"
 }
 

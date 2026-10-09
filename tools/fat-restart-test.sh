@@ -1,6 +1,6 @@
 #!/bin/sh
 # fat carries on from a dead instance's state (user/services/fat/adopt.c,
-# docs/M11.6-PLAN.md) in QEMU, on the boot stick's /data, through devmgr's
+# docs/M11.6-PLAN.md) in QEMU, on the boot stick's /data, through volumes'
 # kills. Two boots of tools/shell-tests/fat-restart.txt: with the warm
 # spare, and with `nospare` (a new process adopts the state the same way).
 # Checked: every instance that got going carried on (its restart line;
@@ -11,7 +11,7 @@
 # The exact deaths (each step of a request, the bad-request rule, the
 # replies that carried handles, FS_GATHER held across deaths, the disks
 # byte for byte) are utest's fat_restart_* tests, in the `init` run.
-# Prints kill-to-first-answer (devmgr's probe) and fat's own restart time,
+# Prints kill-to-first-answer (volumes' probe) and fat's own restart time,
 # with and without the spare. QEMU_SMP passes through.
 # Usage: tools/fat-restart-test.sh <outdir>; exit 0 on PASS.
 set -eu
@@ -50,7 +50,7 @@ for run in spare nospare; do
     # A kill that lands on an instance still starting (the bursts) ends it
     # before it took anything over: the next one carries on from the same
     # state. So fewer restart lines than kills, never one that starts fresh.
-    kills=$(count "devmgr: fat-data bin/fat was killed (KILL)" "$log")
+    kills=$(count "volumes: fat-data bin/fat was killed (KILL)" "$log")
     restarts=$(count "fat /data: restart (killed" "$log")
     [ "$kills" -ge 20 ] || { echo "fat-restart: $run: $kills kills, wanted 20 or more"; ok=0; }
     [ "$restarts" -ge 8 ] ||

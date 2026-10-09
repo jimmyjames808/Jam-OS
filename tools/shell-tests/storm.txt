@@ -14,7 +14,7 @@
 #      it plays, then the music stopped (its stream's close line has the
 #      late periods and the least written ahead);
 #   7. sync, `reboot -f`.
-# devmgr's, fat's and the mixer's lines reach the serial port through the
+# volumes', fat's and the mixer's lines reach the serial port through the
 # kernel log, the shell's through the console: their order isn't fixed,
 # hence `seen`. Ctrl+C ends the whole line, so `$?` is asked on the next.
 # (The markers are echoed as st-""1 so the typed line itself never matches.)
@@ -23,7 +23,7 @@ wait {prompt}
 seen 60 init: /data mounted
 monitor device_add usb-storage,id=s0,bus=xhci.0,port=2,drive=s0img
 seen 60 init: /usb0 mounted
-seen 60 devmgr: a warm spare bin/fat waits
+seen 60 volumes: a warm spare bin/fat waits
 send mount -w /usb0; echo st-""1 $?
 wait mount: /usb0 is now read-write
 wait st-1 0

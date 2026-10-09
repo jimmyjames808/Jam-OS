@@ -38,7 +38,14 @@ SOURCE_EXT = (".c", ".h", ".S", ".py", ".sh", ".idl", ".def", ".ld", ".cfg", ".c
 
 # Spans that look like paths but name something else, each with the reason:
 #     "boot/limine/": "the directory on the stick's ESP, not in the repo",
+_SPLIT = "devmgr's storage half before M12's split (track S1b): user/services/volumes/ now; " \
+         "the plans and reviews that name it describe the tree of their time"
 IGNORE = {
+    "user/services/devmgr/disk.c": _SPLIT,
+    "user/services/devmgr/disk.h": _SPLIT,
+    "user/services/devmgr/fsvc.c": _SPLIT,
+    "user/services/devmgr/mounts.c": _SPLIT,
+    "user/services/devmgr/spare.c": _SPLIT,
 }
 
 LINK = re.compile(r"!?\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
@@ -117,7 +124,7 @@ def check_link(md, target):
 
 def check_span(span, top, names, targets):
     s = span.strip()
-    if s in IGNORE:
+    if s in IGNORE or re.sub(r":\d+(-\d+)?$", "", s) in IGNORE:   # file.c:123 too
         return None
     if s.startswith("make "):
         words = [w for w in s.split()[1:] if "=" not in w and not w.startswith("-")]

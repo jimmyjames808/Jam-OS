@@ -25,9 +25,10 @@
  *
  * A mass-storage interface's driver (STORAGE_DRIVER, for the interfaces
  * usb_match gives it) is a class driver like hid, with two differences: it
- * serves devmgr the `storage` protocol on a DR_SERVE channel, and it gets
- * no DR_INPUT. Its binding carries a disk (disk.c), which asks it for its
- * partitions and mounts the boot disk's.
+ * serves the `storage` protocol on a DR_SERVE channel, and it gets no
+ * DR_INPUT. Its binding is a disk's (b->disk): devmgr asks it for a
+ * `storage` channel of volumes' own and hands it over (disks.c), and
+ * tells volumes when the device has gone.
  *
  * How a hid ends decides what happens:
  *   - its interface is gone (unplugged, or its usb-bus died): the binding
@@ -181,7 +182,8 @@ void usb_retire(struct binding *b, const char *why)
     b->state = DEVMGR_SUP_NONE;
     b->console_wait = false;
     b->input_gen = 0;
-    disk_detach(b);   /* a disk's driver: the disk is forgotten with it */
+    disks_gone(b);   /* a disk's driver: volumes forgets the disk */
+    b->disk = false;
     b->path = NULL;   /* a free slot now */
 }
 
@@ -258,12 +260,7 @@ static void bind_interface(unsigned slot, const char *path)
     /* "drv/hid" on port 6.1, interface 0: "hid-6.1:0" */
     snprintf(b->name, sizeof(b->name), "%s-%s:%u", path + 4, if_path(u), m->interface_number);
     u->bind = (int32_t)(b - devs);
-    if (strcmp(path, STORAGE_DRIVER) == 0 && !disk_attach(b, m->id)) {
-        say(true, "devmgr: usb %04x:%04x if%u -> %s: no room for another disk", m->vendor,
-            m->product, m->interface_number, path);
-        usb_retire(b, "not started");
-        return;
-    }
+    b->disk = strcmp(path, STORAGE_DRIVER) == 0;   /* its disk is volumes' (disks.c) */
     b->last = start_driver(b);
     if (b->last == ERR_SHOULD_WAIT) {
         b->state = DEVMGR_SUP_RESTARTING;

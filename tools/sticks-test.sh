@@ -76,14 +76,14 @@ want() {
 never() {
     ! grep -qE "$1" "$log" || { echo "$name: a line matching '$1'"; ok=0; }
 }
-want "devmgr: disk [0-9]+ partition 1 is /usb0, read-only"
-want "devmgr: disk [0-9]+ partition 1 is /usb0, read-write"
-want "devmgr: disk [0-9]+ partition 1 is /usb1, read-only"
-want "devmgr: disk [0-9]+ partition 1 \(type 0c\) holds no FAT volume bin/fat can read: left alone"
-want "devmgr: disk [0-9]+ partition 2: type 07 is not FAT: left alone"
-want "devmgr: disk [0-9]+: no FAT partition to mount: left alone"
+want "volumes: disk [0-9]+ partition 1 is /usb0, read-only"
+want "volumes: disk [0-9]+ partition 1 is /usb0, read-write"
+want "volumes: disk [0-9]+ partition 1 is /usb1, read-only"
+want "volumes: disk [0-9]+ partition 1 \(type 0c\) holds no FAT volume bin/fat can read: left alone"
+want "volumes: disk [0-9]+ partition 2: type 07 is not FAT: left alone"
+want "volumes: disk [0-9]+: no FAT partition to mount: left alone"
 never "formatting it|formatted"
-# The desktop's notices (devmgr's): one per stick mounted, `mount -w` and
+# The desktop's notices (volumes'): one per stick mounted, `mount -w` and
 # `mount -r` no news; one per stick pulled.
 want "compositor: notice [0-9]+: USB stick added: [0-9.]+ [MG]B at /usb0, read-only"
 want "compositor: notice [0-9]+: USB stick added: [0-9.]+ [MG]B at /usb1, read-only"

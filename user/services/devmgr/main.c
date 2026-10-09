@@ -57,8 +57,6 @@
  * driver of every network card (PCI class 02): the one way a network
  * driver learns the mode; without it (or with one that isn't valid) the
  * drivers start without one and keep the network off. The argument
- * "nospare" (the boot word, through init) keeps no warm spare fat
- * (spare.c): a filesystem service's restart starts a process. The argument
  * "vtdtest" (with "iommu=on", the IOMMU checks test entry) is passed on to
  * drv/hda, which runs its deliberate DMA faults before serving.
  *
@@ -71,10 +69,11 @@
  * or with the argument "comp" (init's, when the compositor draws the
  * screen) to the compositor: those channels are then compctl's.
  *
- * A mass-storage interface's driver makes a disk (disk.c): devmgr asks it
- * for its partitions and, if it is the disk Jam OS booted from, starts a
- * filesystem service on its ESP and its data partition, supervised the
- * same way, and hands their channels out through DEVMGR_MOUNTS (mounts.c).
+ * A mass-storage interface's driver (usb-storage) serves a disk, which is
+ * volumes' (user/services/volumes/, since M12's storage split): devmgr
+ * asks the driver for a `storage` channel of volumes' own and hands it
+ * over on the DISKS channel (disks.c); volumes looks at its partitions and
+ * mounts them.
  *
  * It runs until every client end of its control channel is gone (init
  * closes its own at the end of the boot): then it closes each driver's client end,
@@ -128,7 +127,6 @@ bool hidboot;
 bool comp_input;
 bool vtdtest;
 static bool netprobe, netsend, net;
-uint32_t boot_mbr_id;
 uint16_t net_vlan;
 uint64_t devmgr_started;
 bool shutdown_asked;
@@ -165,8 +163,6 @@ const char *bdf(const struct binding *b)
         snprintf(s, sizeof(s), "usb %s", b->name + (b->path ? strlen(b->path + 4) + 1 : 0));
         return s;
     }
-    if (b->kind == BIND_FS)
-        return b->name;
     if (b->kind != BIND_PCI)
         return "test";
     snprintf(s, sizeof(s), "%02x:%02x.%x", b->info.bus, b->info.dev, b->info.fn);
@@ -281,10 +277,6 @@ static status_t wait_event(void)
 {
     struct port_packet pkt;
     uint64_t deadline = sup_next_deadline();
-    if (disk_next_deadline() < deadline)
-        deadline = disk_next_deadline();
-    if (mounts_next_deadline() < deadline)
-        deadline = mounts_next_deadline();
     if (sup_job_next_deadline() < deadline)
         deadline = sup_job_next_deadline();
     status_t st = jam_port_wait(port, deadline, &pkt);
@@ -299,17 +291,11 @@ static status_t wait_event(void)
         if (b->client_key != pkt.key)
             return OK;   /* stale */
         if (b->disk)
-            disk_events(b);   /* a disk's driver, a filesystem service: answers */
+            disks_events(b);   /* a disk's driver: the channel asked for volumes */
         else
             usb_driver_events(b);
     } else if (pkt.key & KEY_USBIF) {
         usb_if_closed(pkt.key);
-    } else if (pkt.key & KEY_DISK) {
-        disk_key(pkt.key);
-    } else if (pkt.key == KEY_SPARE) {
-        spare_event();
-    } else if (pkt.key & KEY_KEEP) {
-        spare_keep_event(pkt.key);
     }
     return OK;
 }
@@ -331,8 +317,6 @@ static status_t run(void)
         if (st != OK && st != ERR_TIMED_OUT)
             return st;
         sup_run_due();
-        disk_run_due();
-        mounts_run_due();
         sup_job_run_due();
     }
 }
@@ -343,21 +327,20 @@ static status_t run(void)
  * The drivers at the bottom (usb-bus) are told first and waited for: what
  * runs on them ends because its device is gone, as when a stick is pulled.
  * Then each is stopped and its job checked for leftovers, from the top
- * down: the filesystem services, the USB class drivers, and last the
- * bottom ones. A job is charged for what its driver shared with the one
- * above until that one has ended too (usb-bus makes the bulk buffer that
- * usb-storage maps), so checking usb-bus's job first was a race. */
+ * down: the USB class drivers, and last the bottom ones. A job is charged
+ * for what its driver shared with the one above until that one has ended
+ * too (usb-bus makes the bulk buffer that usb-storage maps), so checking
+ * usb-bus's job first was a race. (The filesystems over the disks are
+ * volumes': init stops it first, which syncs them.) */
 static bool stop_all(void)
 {
-    static const int order[] = { BIND_FS, BIND_USB, -1 /* every other kind */ };
+    static const int order[] = { BIND_USB, -1 /* every other kind */ };
     bool ok = true;
     unsigned stopped = 0;
-    spare_stop();      /* the warm spare, and the `block` channel it had */
-    disk_sync_all();   /* before the drivers under the filesystems go */
     for (unsigned i = 0; i < ndevs; i++) {
         struct binding *b = &devs[i];
         sup_reset(b);
-        if (b->kind == BIND_FS || b->kind == BIND_USB || !b->proc)
+        if (b->kind == BIND_USB || !b->proc)
             continue;
         signals_t seen;
         uint64_t t0 = now();
@@ -373,7 +356,7 @@ static bool stop_all(void)
     for (unsigned k = 0; k < sizeof(order) / sizeof(order[0]); k++)
         for (unsigned i = 0; i < ndevs; i++) {
             struct binding *b = &devs[i];
-            bool bottom = b->kind != BIND_FS && b->kind != BIND_USB;
+            bool bottom = b->kind != BIND_USB;
             if (order[k] < 0 ? !bottom : (int)b->kind != order[k])
                 continue;
             if (b->proc) {
@@ -402,30 +385,10 @@ static bool stop_all(void)
     return ok;
 }
 
-/* "0x1234abcd" (or without 0x) as a number; it stops at the first
- * character that isn't a hex digit. */
-static uint32_t hex32(const char *s)
-{
-    if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X'))
-        s += 2;
-    uint32_t v = 0;
-    for (int n = 0; n < 8; n++, s++) {
-        char c = *s;
-        int d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10
-              : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
-        if (d < 0)
-            break;
-        v = v << 4 | (uint32_t)d;
-    }
-    return v;
-}
-
 int main(int argc, char **argv)
 {
     devmgr_started = now();
-    bool nospare = false;
     for (int i = 1; i < argc; i++) {
-        nospare |= !strcmp(argv[i], "nospare");
         nousb |= !strcmp(argv[i], "nousb");
         hidboot |= !strcmp(argv[i], "hidboot");
         vtdtest |= !strcmp(argv[i], "vtdtest");
@@ -433,8 +396,6 @@ int main(int argc, char **argv)
         netsend |= !strcmp(argv[i], "netsend");
         net |= !strcmp(argv[i], "net");
         comp_input |= !strcmp(argv[i], "comp");
-        if (!strncmp(argv[i], "bootdisk=", 9))
-            boot_mbr_id = hex32(argv[i] + 9);
     }
     net_vlan = netdev_vlan_args((const char *const *)argv + 1, (uint32_t)argc - 1);
     char word[NETDEV_MODE_TEXT];
@@ -458,7 +419,6 @@ int main(int argc, char **argv)
         return 1;
     }
     sup_log("devmgr", sup_sink);
-    spare_init(!nospare);
     notice_init(&devmgr_notices, startup_handle(DEVMGR_SR_NOTIFY));
     /* With a console, class drivers send their input to it. */
     if (startup_handle(SR_CONSOLE))
