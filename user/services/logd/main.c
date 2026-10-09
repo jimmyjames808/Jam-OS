@@ -210,16 +210,17 @@ static void save_crash(void)
     handle_t vmo = startup_handle(SR_CRASHLOG), to = startup_handle(LOGD_SR_CRASH_RESULT);
     if (!vmo)
         return;
-    struct crashlog_result r = { .status = 0 };
-    r.status = logd_save_crash(store, vmo, r.path, sizeof(r.path));
+    char path[CRASHLOG_PATH_MAX];
+    status_t status = logd_save_crash(store, vmo, path, sizeof(path));
     jam_handle_close(vmo);
-    if (r.status == OK)
-        printf("logd: the last boot's log is saved as %s\n", r.path);
+    if (status == OK)
+        printf("logd: the last boot's log is saved as %s\n", path);
     else
-        printf("logd: the last boot's log was NOT saved: %s%s(%s)\n", r.path, r.path[0] ? " " : "",
-               status_str(r.status));
+        printf("logd: the last boot's log was NOT saved: %s%s(%s)\n", path, path[0] ? " " : "",
+               status_str(status));
     if (to) {
-        (void)jam_channel_write(to, &r, sizeof(r), NULL, 0);   /* init gone: no one to tell */
+        /* init gone: no one to tell */
+        (void)crashres_result(to, status, path, (uint32_t)strnlen(path, sizeof(path)));
         jam_handle_close(to);
     }
 }

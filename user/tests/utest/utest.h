@@ -85,6 +85,10 @@ bool t_logd_without_data(void);
 bool t_logd_data_goes_away(void);
 bool t_logd_kernel_log(void);
 bool t_logd_openers(void);
+bool t_logd_crash_result(void);
+/* chanwire.c: the wire of init's channels with the splash and with logd (P6b). */
+bool t_splashch_wire(void);
+bool t_crashres_wire(void);
 bool t_klog_lines(void);
 
 /* audio.c: <audio.h>'s conversions and resampler, <wav.h>'s parser. */
