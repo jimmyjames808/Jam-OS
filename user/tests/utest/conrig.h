@@ -26,8 +26,13 @@ extern struct conrig rig;
 
 /* Start the console with argv (argc entries) and the kernel log if klog. */
 bool rig_start(const char *const *argv, int argc, bool klog);
-/* Close our ends (and kill its job unless ok). */
-void rig_stop(bool ok);
+/* Close our ends (and kill its job unless ok), then wait (up to CON_WAIT)
+ * for the console to end and its job to hold nothing. Its job is below
+ * ours, so until then our job counts the console's handles, threads and
+ * message bytes: a test after this one that compares its job's counts
+ * (jwlc_real_compositor does) must not see a console on its way out.
+ * False if it had to be killed or its job kept something. */
+bool rig_stop(bool ok);
 /* One message from the master, appended to out (until deadline). */
 bool rig_take(uint64_t until);
 /* Wait until the bytes needle (nl of them, or a string) come on the

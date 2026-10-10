@@ -162,8 +162,7 @@ bool t_con_tty_canonical(void)
 {
     const char *argv[] = { "console", "conn", "cols=100", "rows=30" };
     bool ok = rig_start(argv, 4, false) && canonical_flow();
-    rig_stop(ok);
-    return ok;
+    return rig_stop(ok) && ok;
 }
 
 /* ---- 2. raw mode, drain and flush ------------------------------------------------------ */
@@ -240,8 +239,7 @@ bool t_con_tty_raw(void)
 {
     const char *argv[] = { "console", "conn" };
     bool ok = rig_start(argv, 2, false) && raw_flow();
-    rig_stop(ok);
-    return ok;
+    return rig_stop(ok) && ok;
 }
 
 /* ---- 3. the focus, with a shell below -------------------------------------------------- */
@@ -340,6 +338,5 @@ bool t_con_tty_focus(void)
 {
     const char *argv[] = { "console", "conn" };
     bool ok = rig_start(argv, 2, false) && focus_flow();
-    rig_stop(ok);
-    return ok;
+    return rig_stop(ok) && ok;
 }
