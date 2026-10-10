@@ -1,8 +1,11 @@
 /* Threads (kernel/sched/thread.c): kernel stacks and the stack cache, and
  * the priority ceiling. */
+#include <jam/irq.h>
 #include <jam/ktest.h>
 #include <jam/mm.h>
 #include <jam/sched.h>
+
+#include "../sched/sched_internal.h"   /* thread_alloc, thread_reap */
 
 /* ---- thread stacks ---------------------------------------------------------- */
 
@@ -75,6 +78,45 @@ KTEST(stack_cache_limit_frees)
     uint64_t accounted1 = kt_free_pages() + sched_stack_cache_pages();
     KT_GLOBAL_ASSERT(accounted1 + 2 >= accounted0);   /* slot bookkeeping: a page or two */
     sched_stack_cache_set_limit(old);
+}
+
+/* A thread with no stack of the cache's: thread "main" runs on the stack
+ * kmain_stage2 was given (stack_top NULL) and exits at the end of every
+ * run. Its reap must leave the cache alone, full (it wrote the doomed
+ * list's link below address 0: the page fault in thread_reap that ended
+ * M13 B3's init run at 2 CPUs, a killed spawner's hundreds of children
+ * having filled the cache just before; proc_kill_spawner) or with room
+ * (it cached NULL, counted as a stack's 16 pages). A thread made the way
+ * main is, reaped once each way. */
+KTEST(stack_cache_skips_stackless_reap)
+{
+    KT_NEEDS_IDLE("exact size of the thread stack cache, which every exiting thread changes");
+    struct thread *t = thread_alloc("stackless", PRIO_DEFAULT);
+    KT_ASSERT(t);
+    KT_ASSERT(!t->stack_top);
+    t->refs = 3;   /* ours, and one for each reap to drop */
+    thread_set_state(t, T_DEAD);
+    for (int i = 0; i < 4; i++) {   /* earlier tests' threads reaped at each CPU's next switch */
+        thread_sleep_ms(2);
+        thread_yield();
+    }
+
+    unsigned old = sched_stack_cache_set_limit(0);   /* full: every stack put is doomed */
+    uint64_t f = irq_save();   /* as finish_switch reaps */
+    thread_reap(t);
+    uint64_t full = sched_stack_cache_pages();
+    irq_restore(f);
+    sched_stack_cache_set_limit(old);
+    KT_EQ(full, 0);
+
+    f = irq_save();
+    uint64_t pages = sched_stack_cache_pages();
+    thread_reap(t);
+    uint64_t room = sched_stack_cache_pages();
+    irq_restore(f);
+    KT_EQ(room, pages);
+    KT_EQ(t->refs, 1);
+    thread_detach(t);
 }
 
 /* ---- priority ceiling -------------------------------------------------------- */

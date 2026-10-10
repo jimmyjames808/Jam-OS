@@ -16,6 +16,7 @@
 #include <jam/ktest.h>
 #include <jam/mm.h>
 #include <jam/process.h>
+#include <jam/random.h>
 #include <jam/sched.h>
 #include <jam/startup.h>
 #include <jam/string.h>
@@ -503,6 +504,67 @@ KTEST(proc_start_window_refuses_other_threads)
     kobject_unref(process_kobject(p));
     kt_job_is_empty(j);
     job_unref(j);
+}
+
+/* "utest spawn-loop" spawns short-lived children ("exit7") into its own
+ * job for ever; kill it at a random point, 0-12 ms in, KILL_SPAWNER_ROUNDS
+ * times, each kill landing somewhere in a spawn: making the child,
+ * starting its thread, children starting and leaving meanwhile. The
+ * children pile up by the hundred (at 2 CPUs the spawner outruns them), up
+ * to the job's SPAWNER_THREADS, so once they have gone the thread stack
+ * cache is full. M13 B3's posixtest did the same, and its init run
+ * panicked at the end at 2 CPUs: thread "main", leaving at the end of the
+ * run, has no stack of the cache's, and its reap wrote below address 0
+ * with the cache full (stack_cache_skips_stackless_reap). This test run on
+ * its own at 2 CPUs (ktest=proc_kill_spawner) ended the same way.
+ *
+ * Its own page check: hundreds of threads at once extend the kernel
+ * stacks' page tables to a new high-water mark (kept for good). So a
+ * first spawner fills its job with sleeping children up to the same limit
+ * and is killed with them; the rounds after must give back every page. */
+#define KILL_SPAWNER_ROUNDS 40
+#define SPAWNER_THREADS     320   /* each job's limit: more than the stack cache holds */
+
+/* Wait until j's dead processes have given everything back. */
+static void spawner_job_settles(struct job *j)
+{
+    uint64_t end = uptime_ns() + kt_patience_ms(5000) * NS_PER_MS;
+    for (uint32_t k = 1; k < JOB_LIMIT_COUNT && uptime_ns() < end; k++)
+        while (job_used(j, k) && uptime_ns() < end)
+            thread_sleep_ms(1);
+    kt_job_is_empty(j);
+}
+
+KTEST(proc_kill_spawner)
+{
+    KT_OWN_LEAK_CHECK("hundreds of threads at once: the kernel stacks' page tables grow");
+    struct job *warm = kt_fresh_job();
+    KT_EQ(job_set_limit(warm, JOB_LIMIT_THREADS, SPAWNER_THREADS), OK);
+    struct process *p = start(warm, "spawn-loop", "sleep", NULL);
+    uint64_t end = uptime_ns() + kt_patience_ms(10000) * NS_PER_MS;
+    while (job_used(warm, JOB_LIMIT_THREADS) < SPAWNER_THREADS && uptime_ns() < end)
+        thread_sleep_ms(1);
+    KT_EQ(job_used(warm, JOB_LIMIT_THREADS), SPAWNER_THREADS);
+    unsigned killed = 0;
+    KT_EQ(job_kill(warm, &killed), OK);
+    KT_ASSERT(killed >= SPAWNER_THREADS);   /* the spawner, its children (and one unstarted) */
+    KT_ASSERT(finish(p).killed);
+    spawner_job_settles(warm);
+    job_unref(warm);
+
+    uint64_t before = ktest_accounted_pages();
+    struct job *j = kt_fresh_job();
+    KT_EQ(job_set_limit(j, JOB_LIMIT_THREADS, SPAWNER_THREADS), OK);
+    for (int round = 0; round < KILL_SPAWNER_ROUNDS; round++) {
+        p = start(j, "spawn-loop", NULL, NULL);
+        thread_sleep_ns(random_u64() % (12 * NS_PER_MS));
+        process_kill(p, PROCESS_KILLED_CODE, true);
+        KT_ASSERT(finish(p).killed);
+    }
+    spawner_job_settles(j);   /* the children it left end by themselves */
+    job_unref(j);
+    uint64_t after = ktest_accounted_pages();
+    KT_GLOBAL_ASSERT(after + 2 >= before);   /* the harness's slack: a partly used slab */
 }
 
 /* ---- what POSIX needs: the tid word, CPU time ---------------------------------- */
