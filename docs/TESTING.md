@@ -697,6 +697,7 @@ QEMU_INPUT=tools/shell-tests/<name>.txt tools/qemu-test.sh build/test <name> she
 | `serve-nonet.txt` | `serve` with no network card: "no network address yet" after bin/serve's 5 s wait | use `tools/serve-test.sh` |
 | `speed.txt` | `speed`: TCP both ways, UDP, a refused port, `speed -l`, Ctrl+C | use `tools/speed-test.sh` |
 | `usb.txt` | the `usb` command | `QEMU_USB="-device usb-hub,bus=xhci.0,port=2 -device usb-kbd,bus=xhci.0,port=2.1"` |
+| `usbdirty.txt` | `usbtest` run from the shell right after three copies onto `/data` (fat still holds the writes back): usbtest asks volumes to stop the boot stick's mounts in order before devmgr lets go of the disk, so the stick is not left mid-command and every storage check passes (the run ends on `exited with code 0`). Without usbtest's `svc volumes` want, devmgr killed usb-storage under the write-back about one run in four and six storage checks failed | |
 | `usbkeys.txt` | typing on a USB keyboard behind a hub; kill hid, the compositor (hid reconnects to the new one), the console, devmgr | use `tools/usbkeys-test.sh` |
 | `review-cad.txt` | a `run` program can't send Ctrl+Alt+Del | |
 | `review-killinit.txt` | the shell refuses to kill init; supervised services come back | |

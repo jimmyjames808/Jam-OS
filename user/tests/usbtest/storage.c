@@ -134,6 +134,8 @@ static uint64_t usb_wait(void)
 static status_t take_disk(const struct raw *r, handle_t *out)
 {
     handle_t vm = svc_get(SVC_VOLUMES);
+    if (!vm)   /* usbtest's JAM_WANTS asks for it: without it the disk is let go of under its mounts */
+        printf("usbtest: storage: no volumes service: the disk's mounts can't be stopped first\n");
     status_t st = vm ? volumes_release_disk_until(vm, in(60 * NS_PER_S), r->dev_id)
                      : ERR_NOT_FOUND;
     if (st != OK && st != ERR_NOT_FOUND)   /* not found: volumes doesn't have it */
