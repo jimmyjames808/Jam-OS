@@ -541,3 +541,149 @@ bool t_volumes_hostile(void)
     view_close(&v);
     return true;
 }
+
+/* ---- live servers: devmgr and init (M12.1 part 1b) --------------------------------- */
+
+#define LIVE_ROUNDS 600u
+
+/* A message one past the biggest request of every protocol a channel
+ * speaks, with a txid: the server can't read it into its buffer, and must
+ * still answer it (ERR_INVALID_ARGS) rather than leave its caller waiting. */
+static bool too_big_answered(struct fz *f, handle_t ch, uint32_t req_max, uint32_t ordinal)
+{
+    static uint8_t b[512];
+    uint32_t n = req_max + 8 < sizeof(b) ? req_max + 8 : (uint32_t)sizeof(b);
+    memset(b, 0x5a, n);
+    uint32_t txid = 0x7e570001u;
+    memcpy(b, &txid, 4);
+    memcpy(b + 4, &ordinal, 4);
+    status_t st = send_take(f, ch, b, n, NULL, 0);
+    if (st != OK)
+        FAIL("a %u-byte request (ordinal %08x) wasn't answered: %s", n, ordinal,
+             status_str(st));
+    return true;
+}
+
+/* Send `rounds` messages made from the protocols in ps (np of them) on ch,
+ * leaving out those harmful(ordinal) says: each with a txid answered. */
+static bool live_feed(struct fz *f, handle_t ch, const struct idl_fuzz_proto *const *ps,
+                      unsigned np, bool (*harmful_to)(uint32_t), unsigned rounds, unsigned *sent)
+{
+    static uint8_t msg[AREA];
+    for (unsigned k = 0; k < rounds; k++) {
+        const struct idl_fuzz_proto *p = ps[rnd(f) % np];
+        const struct idl_fuzz_msg *m = &p->msgs[rnd(f) % p->nmsgs];
+        uint32_t n = build(f, p, m, msg, AREA), ordinal = 0;
+        if (n >= 8)
+            memcpy(&ordinal, msg + 4, 4);
+        if (n >= 8 && harmful_to && harmful_to(ordinal))
+            continue;
+        handle_t hs[IDL_HANDLES_MAX];
+        uint32_t nh = handles_for(f, m, hs);
+        status_t st = send_take(f, ch, msg, n, hs, nh);
+        if (st != OK)
+            FAIL("message %u (%s, ordinal %08x, %u bytes, %u handles): %s", k, p->name, ordinal,
+                 n, nh, status_str(st));
+        (*sent)++;
+    }
+    return true;
+}
+
+/* A devmgrctl request the hostile test must not make on a control channel:
+ * it would stop, kill, rebind or release a real device's driver, rewire
+ * its input or its disks, start the crash-test driver, take a device's
+ * channel, or ask a disk's driver for a storage channel. */
+static bool devmgr_harmful(uint32_t ordinal)
+{
+    switch (ordinal) {
+    case DEVMGRCTL_KILL:
+    case DEVMGRCTL_REBIND:
+    case DEVMGRCTL_RELEASE:
+    case DEVMGRCTL_RELEASE_USB:
+    case DEVMGRCTL_TEST_DRIVER:
+    case DEVMGRCTL_SET_INPUT:
+    case DEVMGRCTL_SET_VOLUMES:
+    case DEVMGRCTL_DEVICE_CHANNEL:
+    case DEVMGRCTL_SHUTDOWN:
+    case DEVMGRCTL_KILL_PROCESS:
+    case DEVMGRCTL_DISK_STORAGE:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* The live devmgr fed idl_fuzz's messages of its protocols (devmgr,
+ * devmgrctl, svc) on channels of our own: a query opener gets all of
+ * them (the control protocol must be refused there, whatever its method),
+ * a control opener all but the harmful ones; first a request too big for
+ * either. Every request with a txid is answered within 5 s, and devmgr
+ * still answers `status` on both. M12.1 part 1b's finding 2 (devmgr took
+ * a too-big request off unanswered). */
+bool t_devmgr_hostile(void)
+{
+    struct fz f = { .seed = 0xde5a6e11ull };
+    handle_t q = HANDLE_INVALID, c = HANDLE_INVALID;
+    if (svc_open(SVC_DEVMGR, &q) != OK || svc_open(SVC_DEVMGR_CTL, &c) != OK) {
+        printf("utest: %s: no devmgr channels: skipped\n", utest_cur);
+        if (q)
+            jam_handle_close(q);
+        return true;
+    }
+    const struct idl_fuzz_proto *ps[3] = { proto_named("devmgr"), proto_named("devmgrctl"),
+                                           proto_named("svc") };
+    CHECK(ps[0] && ps[1] && ps[2]);
+    uint32_t req_max = DEVMGR_REQ_MAX > DEVMGRCTL_REQ_MAX ? DEVMGR_REQ_MAX : DEVMGRCTL_REQ_MAX;
+    if (!too_big_answered(&f, q, req_max, DEVMGR_STATUS) ||
+        !too_big_answered(&f, c, req_max, DEVMGRCTL_DRIVER_VIEW))
+        return false;
+    unsigned sent = 0;
+    if (!live_feed(&f, q, ps, 3, NULL, LIVE_ROUNDS, &sent) ||
+        !live_feed(&f, c, ps, 3, devmgr_harmful, LIVE_ROUNDS, &sent))
+        return false;
+    uint32_t bound = 0, failed = 0, skipped = 0;
+    CHECK_ST(devmgr_status_until(q, now() + 5 * NS_PER_S, &bound, &failed, &skipped), OK);
+    CHECK_ST(devmgr_status_until(c, now() + 5 * NS_PER_S, &bound, &failed, &skipped), OK);
+    printf("utest: devmgr_hostile: %u messages to devmgr, still answering\n", sent);
+    CHECK_ST(jam_handle_close(q), OK);
+    CHECK_ST(jam_handle_close(c), OK);
+    return true;
+}
+
+/* An initctl request the hostile test must not make: a reboot, the stored
+ * kernel replaced, a terminal opened. (kill's and mount's strings are
+ * made of "/abcab/.x/..yz~1": no process init or devmgr runs is called
+ * so, and no such path is a stick's mount; launch's can't spell an app.) */
+static bool initctl_harmful(uint32_t ordinal)
+{
+    return ordinal == INITCTL_REBOOT || ordinal == INITCTL_REBOOT_FIRMWARE ||
+           ordinal == INITCTL_KERNEL_LOAD || ordinal == INITCTL_TERMINAL;
+}
+
+/* The live init fed idl_fuzz's initctl messages on /svc/init (the shell's
+ * channel: every method), but the harmful ones; first a request too big
+ * for it. Every request with a txid is answered within 5 s, and init still
+ * answers a kill of a name nobody has. Needs `svc init` (the shell's
+ * utest); init's own run has none, and skips. */
+bool t_initctl_hostile(void)
+{
+    struct fz f = { .seed = 0x1417c711ull };
+    handle_t ctl = HANDLE_INVALID;
+    if (svc_open(SVC_INIT, &ctl) != OK) {
+        printf("utest: %s: no init channel (not the shell's utest?): skipped\n", utest_cur);
+        return true;
+    }
+    const struct idl_fuzz_proto *ps[1] = { proto_named("initctl") };
+    CHECK(ps[0]);
+    if (!too_big_answered(&f, ctl, INITCTL_REQ_MAX, INITCTL_KILL))
+        return false;
+    unsigned sent = 0;
+    if (!live_feed(&f, ctl, ps, 1, initctl_harmful, LIVE_ROUNDS, &sent))
+        return false;
+    uint64_t koid = 0;
+    CHECK_ST(initctl_kill_until(ctl, now() + 10 * NS_PER_S, "no-such-thing", 13, &koid),
+             ERR_NOT_FOUND);
+    printf("utest: initctl_hostile: %u messages to init, still answering\n", sent);
+    CHECK_ST(jam_handle_close(ctl), OK);
+    return true;
+}

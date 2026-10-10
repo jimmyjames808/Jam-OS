@@ -1,9 +1,10 @@
 /* utest: the children of the namespace tests (ns.c, nsfat.c, svc.c),
  * started as "utest ns-..." with a namespace the test chose, and "utest
  * fscat <path>", "utest fs-hold <path>" and "utest fs-put <path> <text>"
- * for the shell's scripts. Each returns 0, or a number that says which
- * check failed. */
+ * for the shell's scripts, and "utest ns-flood" (svc.c's shared ends).
+ * Each returns 0, or a number that says which check failed. */
 #include <idl/nschan.h>
+#include <idl/svc.h>
 #include <os.h>
 #include "utest.h"
 
@@ -157,6 +158,57 @@ static int fs_hold(const char *path)
     return 1;
 }
 
+/* ---- ns-flood: a program that never reads a shared channel's answers ---------- */
+
+#define FLOOD_SVCS 8
+#define FLOOD_EACH 16   /* requests on each shared end: twice the unread bound */
+
+/* The services our starter sent (its first `mount` or `set`), taken off
+ * SR_NS by hand, before libos looks: the shared ends themselves. */
+struct flood {
+    handle_t h[FLOOD_SVCS];
+    unsigned n;
+};
+
+static void flood_take(void *ctx, const uint8_t *paths, uint32_t paths_len,
+                       const uint8_t *connect, uint32_t connect_len, const handle_t *hs,
+                       uint32_t nh)
+{
+    struct flood *f = ctx;
+    for (uint32_t i = 0; i < nh; i++) {
+        bool svc = (i + 1) * NS_NAME_MAX <= paths_len && i < connect_len && connect[i] &&
+                   !strncmp((const char *)paths + i * NS_NAME_MAX, "/svc/", 5);
+        if (svc && f->n < FLOOD_SVCS)
+            f->h[f->n++] = hs[i];
+        else
+            jam_handle_close(hs[i]);
+    }
+}
+
+/* "ns-flood": what any program may do with the shared end of a service
+ * that hands out a channel per opener (`svc music` in its list): write
+ * svc.connect requests with txids of its own and never read the answers,
+ * then exit. The service must still serve its next opener (init reads
+ * what lands on its shared ends: M12.1 part 1b's finding 1). */
+static int ns_flood(void)
+{
+    static const struct nschan_ops ops = { .mount = flood_take, .set = flood_take };
+    struct flood f = { .n = 0 };
+    handle_t ns = startup_handle(SR_NS);
+    signals_t seen;
+    if (!ns || jam_object_wait_one(ns, SIG_READABLE, now() + 10 * NS_PER_S, &seen) != OK)
+        return 80;
+    if (nschan_serve_one(ns, &ops, &f) != OK || !f.n)
+        return 81;
+    for (unsigned s = 0; s < f.n; s++)
+        for (uint32_t k = 0; k < FLOOD_EACH; k++)
+            if (svc_connect_send(f.h[s], 0x0f100000u + s * 0x100u + k) != OK)
+                return 82;
+    printf("utest: ns-flood: %u requests on each of %u shared ends, none read\n", FLOOD_EACH,
+           f.n);
+    return 0;   /* the answers stay on the shared ends */
+}
+
 int ns_child(int argc, char **argv)
 {
     const char *m = argv[1];
@@ -174,6 +226,8 @@ int ns_child(int argc, char **argv)
         return ns_svc_child(argv[2]);
     if (!strcmp(m, "ns-view") && argc > 2)
         return ns_view_child(argv[2]);
+    if (!strcmp(m, "ns-flood"))
+        return ns_flood();
     if (!strcmp(m, "fscat") && argc > 2)
         return fscat(argv[2]);
     if (!strcmp(m, "fs-hold") && argc > 2)

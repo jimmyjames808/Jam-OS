@@ -245,6 +245,75 @@ bool t_svc_child_gets_views(void)
     return ram_stop(RAM, &r);
 }
 
+/* ---- a shared end that one holder never reads ---------------------------------------- */
+
+/* Do we have /svc/<name>? */
+static bool have_svc(const char *name)
+{
+    char got[SVC_NAME_MAX + 1];
+    for (unsigned i = 0; ns_svc_at(i, got); i++)
+        if (!strcmp(got, name))
+            return true;
+    return false;
+}
+
+/* A service's shared channel is served under the generated unread bound
+ * (8 answers or 8 KiB unread: it stops reading the channel), and its
+ * client end is every holder's at once. A child (nschild.c's "ns-flood")
+ * writes requests with txids of its own on the shared ends of the music
+ * player and the mixer (what any program whose list says `svc music` or
+ * `svc audio` may do), and exits without reading: the answers wait on
+ * ends init keeps for the boot. Each service must still open
+ * (svc.connect, its blocking call: answered straight to us, never left on
+ * the end). Twice, so a service that came back once is tried again.
+ * M12.1 part 1b's finding 1: init reads what lands on its shared ends.
+ * Needs the shell's utest (its list's `svc music`, `svc audio`); init's
+ * run has neither, and skips. */
+bool t_svc_shared_unread(void)
+{
+    static const char *const names[] = { SVC_MUSIC, SVC_AUDIO };
+    char paths[2][NS_NAME_MAX];
+    const char *grants[3];
+    unsigned n = 0;
+    for (unsigned i = 0; i < 2; i++)
+        if (have_svc(names[i])) {
+            snprintf(paths[n], sizeof(paths[n]), "/svc/%s", names[i]);
+            grants[n] = paths[n];
+            n++;
+        }
+    grants[n] = NULL;
+    if (!n) {
+        printf("utest: %s: neither music nor audio (not the shell's utest?): skipped\n",
+               utest_cur);
+        return true;
+    }
+    struct spawn_handle none = { 0, HANDLE_INVALID };
+    for (unsigned round = 0; round < 2; round++) {
+        handle_t proc;
+        CHECK_ST(ns_child_start("ns-flood", NULL, grants, none, NULL, &proc), OK);
+        CHECK(ns_child_exits(proc, 0));
+        for (unsigned i = 0; i < 2; i++) {
+            if (!have_svc(names[i]))
+                continue;
+            /* The openers the flood made fill the service's table for a
+             * moment (ERR_NO_RESOURCES): init closes them, and the service
+             * frees each at its next turn. A held channel is ERR_TIMED_OUT. */
+            handle_t ch = HANDLE_INVALID;
+            status_t st = svc_open(names[i], &ch);
+            for (uint64_t until = now() + 3 * NS_PER_S; st == ERR_NO_RESOURCES && now() < until;) {
+                jam_sleep_until(now() + 20 * NS_PER_MS);
+                st = svc_open(names[i], &ch);
+            }
+            if (st != OK)
+                FAIL("round %u: /svc/%s doesn't open after a holder left its answers unread: %s",
+                     round, names[i], status_str(st));
+            CHECK_ST(jam_handle_close(ch), OK);
+        }
+    }
+    printf("utest: %s: %u shared end(s) flooded twice, each opens\n", utest_cur, n);
+    return true;
+}
+
 /* ---- the children ------------------------------------------------------------------------ */
 
 /* "ns-svc <name>|-": the one service we were given is <name> ("-": none),

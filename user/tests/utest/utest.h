@@ -887,3 +887,8 @@ bool t_fat_hostile(void);
 bool t_volumes_hostile(void);
 /* initctl.c: init's control channel with names as strings (P6b). */
 bool t_initctl_strings(void);
+/* idlfuzz.c: devmgr and init fed the same messages, live; svc.c: a shared
+ * /svc end one holder never reads (M12.1 part 1b). */
+bool t_devmgr_hostile(void);
+bool t_initctl_hostile(void);
+bool t_svc_shared_unread(void);
