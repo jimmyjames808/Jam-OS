@@ -33,15 +33,46 @@ bool rig_start(const char *const *argv, int argc, bool klog)
     return true;
 }
 
-void rig_stop(bool ok)
+/* The console ended (killed if it hadn't within CON_WAIT) and its job
+ * empty. The job is checked too, as comp.c's ct_stop checks its
+ * compositor's: a process the test started in it (con_conn_shell's shell)
+ * must have ended as well. */
+static bool rig_ended(void)
+{
+    struct process_info info;
+    bool ok = true;
+    if (rig.proc && spawn_wait(rig.proc, CON_WAIT, &info) != OK) {
+        printf("utest: %s: the console didn't end when its channels closed: killed\n",
+               utest_cur);
+        (void)jam_job_kill(rig.job);
+        (void)spawn_wait(rig.proc, CON_WAIT, &info);
+        ok = false;
+    }
+    struct job_info ji;
+    uint64_t until = now() + CON_WAIT;
+    for (unsigned k = 1; rig.job && k < JOB_LIMIT_COUNT; k++) {
+        while (info_of(rig.job, &ji) == OK && ji.used[k] && now() < until)
+            (void)jam_sleep_until(now() + NS_PER_MS);
+        if (info_of(rig.job, &ji) == OK && ji.used[k]) {
+            printf("utest: %s: the console's job kept %lu units of job kind %u\n", utest_cur,
+                   (unsigned long)ji.used[k], k);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+bool rig_stop(bool ok)
 {
     if (!ok)
         (void)jam_job_kill(rig.job);
-    jam_handle_close(rig.proc);
     jam_handle_close(rig.admin);
-    jam_handle_close(rig.master);
+    jam_handle_close(rig.master);   /* the terminal hangs up: the console ends */
     jam_handle_close(rig.ctl);
+    bool ended = rig_ended();
+    jam_handle_close(rig.proc);
     jam_handle_close(rig.job);
+    return ended;
 }
 
 /* ---- the remote terminal ----------------------------------------------------------- */

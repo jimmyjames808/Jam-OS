@@ -1099,6 +1099,7 @@ static const struct {
     { "conwin_pointer", t_conwin_pointer },
     { "conwin_pointer_shape", t_conwin_pointer_shape },
     { "con_hostile_compositor", t_con_hostile_compositor },
+    { "con_conn_stop", t_con_conn_stop },
     { "con_conn_shell", t_con_conn_shell },
     { "con_conn_log", t_con_conn_log },
     { "con_conn_hostile", t_con_conn_hostile },

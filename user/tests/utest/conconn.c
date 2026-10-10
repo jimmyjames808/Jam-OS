@@ -24,7 +24,11 @@
  *
  * t_con_conn_backpressure: clients write more than the master's queue
  * holds while nobody reads it: the console stops serving them (a write
- * waits) and, once the master is read, every byte arrives, none dropped. */
+ * waits) and, once the master is read, every byte arrives, none dropped.
+ *
+ * t_con_conn_stop: once rig_stop returns, the console has ended and our
+ * job holds the handles, threads and message bytes it held before
+ * rig_start: nothing of it is left for the next test to count. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -123,8 +127,7 @@ bool t_con_conn_shell(void)
 {
     const char *argv[] = { "console", "conn", "cols=100", "rows=30" };
     bool ok = rig_start(argv, 4, false) && shell_flow();
-    rig_stop(ok);
-    return ok;
+    return rig_stop(ok) && ok;
 }
 
 /* ---- 2. the kernel log -------------------------------------------------------------- */
@@ -157,8 +160,7 @@ bool t_con_conn_log(void)
     jam_handle_close(probe);
     const char *argv[] = { "console", "conn" };
     bool ok = rig_start(argv, 2, true) && log_flow();
-    rig_stop(ok);
-    return ok;
+    return rig_stop(ok) && ok;
 }
 
 /* ---- 3. junk ------------------------------------------------------------------------- */
@@ -215,8 +217,7 @@ bool t_con_conn_hostile(void)
         rig.master = HANDLE_INVALID;
         ok = rig_exit_code_is(rig.proc, 0);
     }
-    rig_stop(ok);
-    return ok;
+    return rig_stop(ok) && ok;
 }
 
 /* ---- 4. a master nobody reads -------------------------------------------------------- */
@@ -275,6 +276,21 @@ bool t_con_conn_backpressure(void)
 {
     const char *argv[] = { "console", "conn" };
     bool ok = rig_start(argv, 2, false) && flood();
-    rig_stop(ok);
-    return ok;
+    return rig_stop(ok) && ok;
+}
+
+/* ---- 5. stopping ---------------------------------------------------------------------- */
+
+bool t_con_conn_stop(void)
+{
+    static const unsigned kinds[] = { JOB_LIMIT_HANDLES, JOB_LIMIT_THREADS, JOB_LIMIT_MSG_BYTES };
+    struct job_info before, after;
+    CHECK_ST(info_of(own_job(), &before), OK);
+    const char *argv[] = { "console", "conn" };
+    bool ok = rig_start(argv, 2, false) && rig_size_is(rig.admin, 80, 24);
+    CHECK(rig_stop(ok) && ok);
+    CHECK_ST(info_of(own_job(), &after), OK);
+    for (unsigned i = 0; i < sizeof(kinds) / sizeof(kinds[0]); i++)
+        CHECK_EQ(after.used[kinds[i]], before.used[kinds[i]]);
+    return true;
 }
