@@ -16,10 +16,11 @@
  * execve, system and popen, the hand-over cut short), tty.c (a program on
  * a terminal: a connection console it drives itself), files.c, files2.c
  * and fileskid.c (files and directories on /data and /boot: ptfiles.h).
- * start.c, clock.c, fds.c, poll.c, proc.c, tty.c and fileskid.c are the
- * ones that include libjam (<jamos/libjam.h>: children started with a
- * hand-over, the calls the clocks are checked against; fileskid.c through
- * the layer's fd.h); mem.c the only one with Linux's call numbers. */
+ * start.c, mem.c, clock.c, fds.c, poll.c, proc.c, tty.c and fileskid.c
+ * are the ones that include libjam (<jamos/libjam.h>: children started
+ * with a hand-over, a mapping libc didn't make, the calls the clocks are
+ * checked against; fileskid.c through the layer's fd.h); mem.c the only
+ * one with Linux's call numbers. */
 #pragma once
 
 #include <stdbool.h>

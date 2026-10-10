@@ -4,11 +4,17 @@
  *     hole and over a live mapping, MAP_FIXED_NOREPLACE refused, mprotect
  *     (execute refused), madvise(MADV_DONTNEED) reading zero after, and
  *     the arguments Linux refuses refused the same way;
+ *   - MAP_FIXED in one step: a thread reads four pages without pause
+ *     while they are mapped over again and again (a moment with nothing
+ *     there would kill the program), and a MAP_FIXED whose range holds a
+ *     mapping libc didn't make is ENOMEM with nothing changed;
  *   - brk moved up, written and moved back;
  *   - malloc of 1 GiB in 1 MiB pieces, every page written and read back,
  *     then freed, and the job's pages back near where they were. */
 #include <stdlib.h>
 #include <errno.h>
+#include <jamos/libjam.h>
+#include <pthread.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
@@ -19,6 +25,7 @@
 #define PIECE       (1ul << 20)        /* malloc's pieces */
 #define PIECES      1024               /* 1 GiB */
 #define SLACK_PAGES (8ul << 8)         /* 8 MiB malloc may keep for itself */
+#define FIXED_ROUNDS 2000              /* MAP_FIXED over a range being read */
 
 static void check_mmap(void)
 {
@@ -62,6 +69,70 @@ static void check_refusals(void)
     CHECK(munmap((void *)0x1001, PG) == -1 && errno == EINVAL);
     CHECK(madvise(NULL, PG, 9999) == -1 && errno == EINVAL);
     CHECK(mremap(NULL, PG, 2 * PG, MREMAP_MAYMOVE) == MAP_FAILED);
+}
+
+static volatile char *fixed_area;
+static volatile int fixed_stop;
+static long fixed_reads;
+
+static void *fixed_reader(void *arg)
+{
+    (void)arg;
+    long sum = 0;
+    while (!fixed_stop) {
+        for (unsigned i = 0; i < 4; i++)
+            sum += fixed_area[i * PG];
+        fixed_reads++;
+    }
+    return (void *)sum;
+}
+
+static void check_fixed_one_step(void)
+{
+    char *p = mmap(NULL, 4 * PG, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(p != MAP_FAILED);
+    if (p == MAP_FAILED)
+        return;
+    fixed_area = p;
+    fixed_stop = 0;
+    pthread_t t;
+    CHECK(pthread_create(&t, NULL, fixed_reader, NULL) == 0);
+    static const unsigned ranges[][2] = { { 0, 4 }, { 1, 3 }, { 0, 2 }, { 3, 4 } };
+    bool placed = true;
+    for (unsigned r = 0; r < FIXED_ROUNDS; r++) {
+        const unsigned *g = ranges[r % 4];
+        char *want = p + g[0] * PG;
+        placed &= mmap(want, (g[1] - g[0]) * PG, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) == want;
+    }
+    fixed_stop = 1;
+    CHECK(pthread_join(t, NULL) == 0);
+    CHECK(placed && fixed_reads > 0);
+    CHECK(munmap(p, 4 * PG) == 0);
+
+    /* A hole holding a mapping that isn't libc's: refused, nothing changed. */
+    p = mmap(NULL, 8 * PG, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(p != MAP_FAILED);
+    if (p == MAP_FAILED)
+        return;
+    CHECK(munmap(p + 4 * PG, 2 * PG) == 0);
+    handle_t v;
+    uint64_t at = (uint64_t)(uintptr_t)(p + 4 * PG);
+    CHECK(jam_vmo_create(2 * PG, 0, &v) == OK);
+    CHECK(jam_vmar_map(startup_handle(SR_SELF_VMAR), v, 0, 2 * PG,
+                       VMAR_READ | VMAR_WRITE | VMAR_FIXED, &at) == OK);
+    p[0] = 7;
+    p[4 * PG] = 9;
+    p[7 * PG] = 11;
+    errno = 0;
+    CHECK(mmap(p, 8 * PG, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1,
+               0) == MAP_FAILED && errno == ENOMEM);
+    CHECK(p[0] == 7 && p[4 * PG] == 9 && p[7 * PG] == 11);
+    CHECK(mmap(p, 4 * PG, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1,
+               0) == p && p[0] == 0 && p[4 * PG] == 9);
+    CHECK(jam_vmar_unmap(startup_handle(SR_SELF_VMAR), at, 2 * PG) == OK);
+    CHECK(jam_handle_close(v) == OK);
+    CHECK(munmap(p, 8 * PG) == 0);
 }
 
 static void check_brk(void)
@@ -118,6 +189,7 @@ void pt_mem(char **argv __attribute__((unused)))
 {
     check_mmap();
     check_refusals();
+    check_fixed_one_step();
     check_brk();
     check_malloc();
 }
