@@ -1950,3 +1950,117 @@ S1 and the shell use `posix_spawn_file_actions_addopen` for `>`, `>>` and
 `2>`, never a parent's writable descriptor. A file shared for writing
 between a parent and a child waits for Q5's (B), the `file` clone, with
 M15's shell.
+
+## K2 notes
+
+Track K2 (the time page and `VMAR_REPLACE`) as built, with the choices
+the plan left open.
+
+**The time page**
+- **The call** is `clock_page`, number 137 (the wall clock's group, next
+  to `wallclock_get` 134 and `wallclock_set` 135; 136 is K1's
+  `sys_public_info`). No handle or right needed; the handle has
+  `TIME_PAGE_RIGHTS` (read, map, the basic rights: never write or
+  resize), and every call hands out a handle to the one page.
+- **The page** is a kept VMO of one page (`VMO_KEEP_PAGES`: no holder can
+  decommit or shrink it, and a `VMAR_KEPT_ONLY` mapping of it never
+  faults), made at boot by `wallclock_init` and never freed, written by
+  the kernel through a mapping of its own. `struct time_page` (48 bytes,
+  pinned in abi_check.c): the sequence word, flags, `tsc_hz`, `tsc_boot`,
+  `mult`, `shift`, and the wall clock's flags and offset (UTC ns minus
+  uptime ns, so UTC is the uptime plus the offset, exactly
+  `wallclock_get`'s sum).
+- **Exact, not near.** The kernel's uptime is `floor((tsc - tsc_boot) *
+  1e9 / tsc_hz)` (tsc.c's `tsc_to_ns`), and a mult/shift product alone
+  drifts from it by up to a few µs an hour. So the page also has `tsc_hz`,
+  and `time_page_uptime` (an inline function in `<jam/abi.h>`, shared by
+  libc and the ktests) takes the mult/shift estimate (shift 64 for any
+  TSC from 1 GHz up: at most 2 ns under) and adds back whole nanoseconds
+  while the 128-bit remainder allows: the result is `clock_get`'s for the
+  same TSC value, to the nanosecond. The plan's "within 1 µs" holds with
+  0 ns of difference; the ktest checks it at eight TSC rates and 20,000
+  deltas each, from 0 to 2^64 - 1.
+- **The sequence word** covers only the wall clock's two fields (the TSC
+  fields are fixed at boot). The writer (`time_page_publish`, under the
+  wall clock's spinlock) stores the word odd, a release fence, the
+  fields, then the word even with a release store; a reader
+  (`time_page_begin`, `time_page_retry` in `<jam/abi.h>`) loads it with
+  acquire (waiting out an odd word), loads the fields, an acquire fence,
+  and loads the word again: equal means not torn. `wallclock_set` and the
+  RTC's reading at boot publish.
+- **The TSC read** in libc is `lfence; rdtsc`, so a clock read is never
+  made before the instructions ahead of it (the kernel's own `rdtsc` in
+  `uptime_ns` has no fence; the ktest fences around it too).
+- **Invariant TSC: the page is used either way** (a change from the
+  plan's "libc falls back to the calls if the TSC is not invariant").
+  The kernel's clock is the TSC whether CPUID calls it invariant or not,
+  with no other source to switch to, so the page always gives what
+  `clock_get` gives and a fallback would buy nothing. QEMU (with KVM on
+  the PC) reports `invariant-tsc=0` on every run, so the plan's rule would
+  have left the page unused under every test. The page keeps the bit
+  (`TIME_PAGE_INVARIANT`, for information) and has another,
+  `TIME_PAGE_TSC` ("the TSC fields are the kernel's clock"), set always
+  today, which libc checks: a kernel that one day keeps time some other
+  way clears it, and libc reads with the calls.
+- **libc** (user/posix/sys/time.c) maps the page at the first clock read
+  (`clock_page`, then `vmar_map` with `VMAR_READ | VMAR_KEPT_ONLY`), keeps
+  it for the process's life, and moves every clock read in the file onto
+  it (`clock_gettime` for the monotonic, boot-time and real-time clocks,
+  and the sleeps' deadlines). Two threads that map it at once keep one
+  mapping (a compare-and-swap; the loser unmaps its own). A process the
+  page can't be mapped into (its job can't pay for the page table) reads
+  with the calls for good: the same values, slower. The call is made in
+  time.c, not kposix.c: it is the clocks' alone.
+
+**`VMAR_REPLACE`**
+- **Bit 5 of `vmar_map`'s flags** (`ASPACE_REPLACE`), with `VMAR_FIXED`
+  only and never with `VMAR_KEPT_ONLY` (`ERR_INVALID_ARGS`): a kept
+  mapping's fill can fail half way (the job refuses a page table), and by
+  then what it replaced would be gone, against the call's rule that an
+  error changes nothing.
+- **One hold of the region lock**: every check that can fail comes first
+  (the mapping cap counted after the replace, the charge, a spare struct
+  for a split, the new mapping's reverse-map entry, which checks the
+  VMO's size), then the range is cut exactly as an unmap cuts it (entries
+  cleared and shot down, mappings trimmed, split or freed) and the new
+  mapping goes in. A fault on the range waits on the region lock, so it
+  finds the old mapping or the new one; the copier ktest shows a copy
+  never fails across 5,000 replaces. aspace_unmap's cut became
+  `first_in`, `maps_reserve` and `cut_locked`, shared by both (a separate
+  refactor commit, no change in behaviour).
+- **The answer is written first**: `sysc_vmar_map` undoes a map whose
+  address it can't copy out with an unmap, which can't give a replace
+  back what it took. So for `VMAR_REPLACE` the address (the one it was
+  given) is copied out before the map, and a bad pointer fails the call
+  with nothing changed.
+- **libc's `MAP_FIXED`** (mem.c) over the table's mappings is now one
+  replace. Holes between them in the range may hold mappings libc didn't
+  make (the program, a stack, libjam's): first every hole is mapped with
+  the new mapping's own pages as plain fixed maps, which fail (`ENOMEM`,
+  the holes filled so far emptied again, nothing else changed) on such a
+  mapping, so the replace never takes away what libc doesn't own; then
+  the replace covers the whole range and the table forgets the old
+  entries. Before, an unmap then a map left a moment with nothing there
+  (another thread's read killed the program), and a map that then failed
+  over a foreign mapping had already lost the table's pages. `MAP_FIXED`
+  where the table has nothing is a plain fixed map, as before.
+
+**Tests**
+- ktests (kernel/test/test_timepage.c): `timepage_conversion_exact`,
+  `timepage_against_clock_get` (10 s on up to 8 CPUs: never behind the
+  `clock_get` before it, never ahead of the one after, and the page's UTC
+  is `wallclock_get`'s), `timepage_set_mid_read` (a publish between a
+  reader's begin and retry makes it read again; the live page's word
+  moves by two on a `wallclock_set`), `timepage_no_torn_reads` (a writer
+  publishing two pairs as fast as it can against readers on the other
+  CPUs: no mixed pair). kernel/test/test_aspace_replace.c:
+  `aspace_replace_shapes`, `aspace_replace_under_faults`.
+- utest `time_clock_page`: the handle's rights, writes, decommit, resize
+  and a writable mapping refused, a kept mapping that reads the uptime and
+  wallclock_get's offset, a bad pointer.
+- posixtest: a clock section (8 threads for a second between two
+  `clock_get` calls, `CLOCK_REALTIME` against `wallclock_get`, getres,
+  nanosleep, time(), and the bench lines in BENCH.md), and in the mem
+  section `MAP_FIXED` 2,000 times over four pages a thread reads without
+  pause, and a `MAP_FIXED` over a foreign mapping refused with nothing
+  changed.
