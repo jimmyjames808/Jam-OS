@@ -295,8 +295,15 @@ bool t_svc_shared_unread(void)
         for (unsigned i = 0; i < 2; i++) {
             if (!have_svc(names[i]))
                 continue;
+            /* The openers the flood made fill the service's table for a
+             * moment (ERR_NO_RESOURCES): init closes them, and the service
+             * frees each at its next turn. A held channel is ERR_TIMED_OUT. */
             handle_t ch = HANDLE_INVALID;
             status_t st = svc_open(names[i], &ch);
+            for (uint64_t until = now() + 3 * NS_PER_S; st == ERR_NO_RESOURCES && now() < until;) {
+                jam_sleep_until(now() + 20 * NS_PER_MS);
+                st = svc_open(names[i], &ch);
+            }
             if (st != OK)
                 FAIL("round %u: /svc/%s doesn't open after a holder left its answers unread: %s",
                      round, names[i], status_str(st));
