@@ -32,6 +32,8 @@
 #define AGAINST_NS   (10 * NS_PER_S)   /* timepage_against_clock_get's run */
 #define TORN_NS      (300 * NS_PER_MS) /* timepage_no_torn_reads' run */
 #define MAX_READERS  8
+/* Each thread's least work, however late a loaded machine starts it. */
+#define MIN_ROUNDS   1000
 
 static inline uint64_t tsc_ordered(void)
 {
@@ -130,7 +132,7 @@ static void reader_main(void *arg)
     struct reader *r = arg;
     kt_pin_self(r->cpu);
     const struct time_page *p = wallclock_page_kernel();
-    while (uptime_ns() < r->until) {
+    do {
         for (unsigned i = 0; i < 4096; i++) {
             lfence();
             uint64_t c1 = uptime_ns();
@@ -144,7 +146,7 @@ static void reader_main(void *arg)
         }
         r->reads += 4096;
         r->wall_bad += !wall_agrees(p, &r->wall_checks);
-    }
+    } while (uptime_ns() < r->until);
     kt_unpin_self();
 }
 
@@ -232,7 +234,7 @@ static void torn_writer(void *arg)
 {
     struct torn *w = arg;
     kt_pin_self(w->cpu);
-    while (uptime_ns() < w->until) {
+    while (uptime_ns() < w->until || w->writes < MIN_ROUNDS) {
         bool a = w->writes++ & 1;
         time_page_publish(&torn_page, a ? PAIR_A_OFF : PAIR_B_OFF, a ? PAIR_A_FLAGS : PAIR_B_FLAGS);
     }
@@ -243,7 +245,7 @@ static void torn_reader(void *arg)
 {
     struct torn *r = arg;
     kt_pin_self(r->cpu);
-    while (uptime_ns() < r->until) {
+    while (uptime_ns() < r->until || r->reads < MIN_ROUNDS) {
         int64_t off;
         uint32_t s, flags;
         for (;;) {

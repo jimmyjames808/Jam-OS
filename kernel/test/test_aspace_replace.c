@@ -175,7 +175,7 @@ static void copier_main(void *arg)
                 c->failed++;
             else if (w != 0xa000 + i && w != 0xb000 + i)
                 c->wrong++;
-            c->copies++;
+            __atomic_add_fetch(&c->copies, 1, __ATOMIC_RELAXED);   /* the test waits for the first */
         }
     }
     irq_disable();
@@ -206,6 +206,14 @@ KTEST(aspace_replace_under_faults)
         cs[i].t = thread_create("replace-copy", copier_main, &cs[i], PRIO_DEFAULT);
         KT_ASSERT(cs[i].t);
     }
+    /* Every copier copying before the first replace, however late a
+     * loaded machine starts it. */
+    uint64_t deadline = uptime_ns() + kt_patience_ms(5000) * NS_PER_MS;
+    for (uint32_t i = 0; i < n; i++)
+        while (!__atomic_load_n(&cs[i].copies, __ATOMIC_RELAXED) && uptime_ns() < deadline)
+            thread_sleep_ms(1);
+    for (uint32_t i = 0; i < n; i++)
+        KT_ASSERT(__atomic_load_n(&cs[i].copies, __ATOMIC_RELAXED) > 0);
     /* All of it, its middle, its first half, its last page. */
     static const uint8_t ranges[][2] = { { 0, 4 }, { 1, 3 }, { 0, 2 }, { 3, 4 } };
     for (unsigned r = 0; r < ROUNDS; r++) {
