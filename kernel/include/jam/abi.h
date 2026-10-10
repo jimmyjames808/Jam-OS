@@ -214,6 +214,16 @@ struct port_packet {
  * (vmar_protect: ERR_ACCESS_DENIED), and its length is what was mapped: a
  * VMO that grows later is mapped again to reach the new pages. */
 #define VMAR_KEPT_ONLY (1u << 4)
+/* vmar_map only, with VMAR_FIXED (ERR_INVALID_ARGS without it, or with
+ * VMAR_KEPT_ONLY): whatever is mapped in [*addr, *addr + len) is unmapped
+ * and the new mapping made in one step, under the address space's lock.
+ * Another thread's access to the range finds the old mapping or the new
+ * one, never nothing (a fault there waits for the step to end). Mappings
+ * that reach past the range keep their parts outside it; holes are
+ * fine. On any error nothing has changed (ERR_OUT_OF_RANGE past the
+ * VMO's end, ERR_NO_RESOURCES past VMAR_MAX_MAPPINGS, ERR_NO_MEMORY).
+ * MAP_FIXED's call. */
+#define VMAR_REPLACE   (1u << 5)
 
 /* Mappings an address space holds at most (a vmar_map past it, or an
  * unmap or protect that would split one more off, is ERR_NO_RESOURCES). */

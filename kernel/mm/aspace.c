@@ -94,6 +94,16 @@
  *     then frees the page tables, so decommit never walks freed tables. No
  *     CPU can be using it (see aspace_unref), so it needs no shootdown.
  *
+ * Replacing (ASPACE_REPLACE, MAP_FIXED's call) is an unmap and a map under
+ * one hold of the region lock: every check that can fail (the cap, the
+ * charge, the spare struct, the new mapping's reverse-map entry, which
+ * checks the VMO's size) comes first, then the range is cut exactly as an
+ * unmap cuts it and the new mapping goes in. A fault on the range waits
+ * on the region lock throughout, so it finds the old mapping or the new
+ * one. The new entry is on the new VMO's reverse map a moment before the
+ * old entries go: a decommit of the new VMO then clears entries of the
+ * old mapping too, which only costs a fault.
+ *
  * Faults past a shrunk VMO's end fail with ERR_OUT_OF_RANGE; the mapping
  * stays and works again if the VMO grows back.
  *
@@ -158,8 +168,8 @@
 
 #define PERMS     (ASPACE_READ | ASPACE_WRITE | ASPACE_EXEC)
 #define CAN_SHIFT 8   /* ASPACE_CAN_x == ASPACE_x << CAN_SHIFT */
-#define MAP_FLAGS (PERMS | ASPACE_FIXED | ASPACE_KEPT_ONLY | ASPACE_CAN_READ | ASPACE_CAN_WRITE | \
-                   ASPACE_CAN_EXEC)
+#define MAP_FLAGS (PERMS | ASPACE_FIXED | ASPACE_KEPT_ONLY | ASPACE_REPLACE | ASPACE_CAN_READ | \
+                   ASPACE_CAN_WRITE | ASPACE_CAN_EXEC)
 #define MAX_MAPPINGS VMAR_MAX_MAPPINGS   /* <jam/abi.h>: 16384 */
 
 #define SIZE_2M   (1ull << 21)
@@ -831,6 +841,41 @@ static status_t map_place_locked(struct aspace *as, struct mapping *m, unsigned 
     return st;
 }
 
+/* Region lock held: m (not on any list yet) at base, in place of whatever
+ * [base, base + m->len) holds (ASPACE_REPLACE; see the file header). */
+static status_t map_replace_locked(struct aspace *as, struct mapping *m, uint64_t base)
+{
+    uint64_t end = base + m->len;
+    struct mapping *first = first_in(as, base, end), *spare = NULL;
+    uint32_t inside = 0;   /* mappings the range holds whole: they go */
+    for (struct mapping *o = first; o && o->base < end; o = next_of(as, o))
+        inside += o->base >= base && mend(o) <= end;
+    bool split = first && first->base < base && mend(first) > end;
+    status_t st = maps_reserve(as, as->nmaps - inside + split + 1, split, &spare);
+    if (st != OK)
+        return st;
+    m->base = base;
+    umap_fill(as, m);
+    st = vmo_umap_add(m->vmo, &m->umap, true);   /* bounds against the VMO size */
+    if (st != OK) {
+        kfree(spare);
+        (void)maps_account(as, as->nmaps);   /* back to what we have: can't fail */
+        return st;
+    }
+    if (first)
+        cut_locked(as, first, base, end, spare);
+    struct list_node *pos = &as->maps;   /* after the last mapping below base */
+    for (struct list_node *n = as->maps.next; n != &as->maps; n = n->next) {
+        if (container_of(n, struct mapping, node)->base > base)
+            break;
+        pos = n;
+    }
+    list_add(pos, &m->node);
+    as->nmaps++;
+    (void)maps_account(as, as->nmaps);   /* at most the reservation: can't fail */
+    return OK;
+}
+
 status_t aspace_map(struct aspace *as, struct vmo *vmo, uint64_t vmo_off, uint64_t len,
                     unsigned flags, uint64_t *addr)
 {
@@ -841,6 +886,8 @@ status_t aspace_map(struct aspace *as, struct vmo *vmo, uint64_t vmo_off, uint64
         return ERR_INVALID_ARGS;
     if ((flags & ASPACE_FIXED) && !range_ok(*addr, len))
         return ERR_INVALID_ARGS;
+    if ((flags & ASPACE_REPLACE) && (!(flags & ASPACE_FIXED) || (flags & ASPACE_KEPT_ONLY)))
+        return ERR_INVALID_ARGS;   /* a kept fill that failed couldn't put back what it replaced */
     if (len > USER_TOP - USER_BASE)
         return ERR_NO_RESOURCES;
     if (vmo_off > VMO_MAX_SIZE || len > VMO_MAX_SIZE)
@@ -853,7 +900,10 @@ status_t aspace_map(struct aspace *as, struct vmo *vmo, uint64_t vmo_off, uint64
     if (!m)
         return ERR_NO_MEMORY;
     mutex_lock(&as->lock);
-    st = map_place_locked(as, m, flags, *addr);
+    if (flags & ASPACE_REPLACE)
+        st = map_replace_locked(as, m, *addr);
+    else
+        st = map_place_locked(as, m, flags, *addr);
     mutex_unlock(&as->lock);
     if (st != OK) {
         kfree(m);

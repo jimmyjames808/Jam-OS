@@ -130,7 +130,13 @@ int64_t sysc_vmar_map(handle_t vmar, handle_t vmo, uint64_t vmo_off, uint64_t le
     uint64_t a = 0;
     if ((flags & VMAR_FIXED) && copy_from_user(&a, addr, sizeof(a)) != OK)
         return ERR_INVALID_ARGS;
+    /* A replace can't be undone by an unmap (what it replaced is gone), so
+     * its answer, the address it was given, is written first. */
+    if ((flags & VMAR_REPLACE) && copy_to_user(addr, &a, sizeof(a)) != OK)
+        return ERR_INVALID_ARGS;
     status_t st = sys_vmar_map(t, vmar, vmo, vmo_off, len, flags, &a);
+    if (st == OK && (flags & VMAR_REPLACE))
+        return OK;   /* a is what *addr holds already */
     if (st == OK && copy_to_user(addr, &a, sizeof(a)) != OK) {
         sys_vmar_unmap(t, vmar, a, len);   /* nobody learned where it went */
         return ERR_INVALID_ARGS;

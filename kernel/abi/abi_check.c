@@ -13,7 +13,7 @@
 
 _Static_assert(VMAR_READ == ASPACE_READ && VMAR_WRITE == ASPACE_WRITE &&
                VMAR_EXEC == ASPACE_EXEC && VMAR_FIXED == ASPACE_FIXED &&
-               VMAR_KEPT_ONLY == ASPACE_KEPT_ONLY,
+               VMAR_KEPT_ONLY == ASPACE_KEPT_ONLY && VMAR_REPLACE == ASPACE_REPLACE,
                "vmar_map flags are passed straight to aspace_map");
 
 _Static_assert(sizeof(struct port_packet) == 48, "port_packet layout");
