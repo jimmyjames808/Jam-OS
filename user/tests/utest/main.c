@@ -1177,6 +1177,7 @@ static const struct {
     { "fat_hostile", t_fat_hostile },
     { "volumes_hostile", t_volumes_hostile },
     { "initctl_strings", t_initctl_strings },
+    { "devmgr_hostile", t_devmgr_hostile },
     { "svc_shared_unread", t_svc_shared_unread },
 };
 

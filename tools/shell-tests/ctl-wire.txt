@@ -13,6 +13,8 @@
 #   update_offer_call the offer call between the fetcher's and init's halves
 #                     (updoffer.c); init's own check of malformed offers is
 #                     `updtest wire` (tools/update-test.sh)
+#   devmgr_hostile    the live devmgr fed idl_fuzz's messages (idlfuzz.c,
+#                     M12.1 part 1b's finding 2)
 #   svc_shared_unread a holder of /svc/music and /svc/audio that leaves its
 #                     answers unread doesn't stop the services' new openers
 #                     (svc.c, M12.1 part 1b's finding 1)
@@ -36,6 +38,9 @@ send utest only update_offer_call; echo wire5-$T-$?
 wait 60 wire5-x-0
 send utest only svc_shared_unread; echo wire6-$T-$?
 wait 120 wire6-x-0
+seen 5 utest: 1 passed
+send utest only devmgr_hostile; echo wire7-$T-$?
+wait 120 wire7-x-0
 seen 5 utest: 1 passed
 
 send reboot -f

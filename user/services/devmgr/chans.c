@@ -99,7 +99,14 @@ static status_t serve(const struct chan *c)
             .rd_hcap = DEVMGRCTL_REQ_HANDLES, .rd_hactual = (uint64_t)(uintptr_t)&nh,
         });
         if (st == ERR_BUFFER_TOO_SMALL) {
-            discard(ch, n, nh);   /* nothing of ours is that big */
+            /* Nothing of ours is that big: taken off, its handles closed,
+             * answered ERR_INVALID_ARGS (as a generated server does), so its
+             * caller isn't left waiting for its deadline. */
+            st = idl_drain(ch, n, nh);
+            if (st == ERR_NO_MEMORY)
+                return ERR_SHOULD_WAIT;   /* still queued: the channel's next turn */
+            if (st != OK)
+                return st;
             continue;
         }
         if (st != OK)
