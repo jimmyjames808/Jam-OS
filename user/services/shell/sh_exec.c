@@ -1,6 +1,8 @@
 /* Running a line: its lists (; && || &), each list's pipeline, each
  * stage's NAME=value words and alias, and then the command: one in the
- * table, else a program in /boot/bin. A command before a single & is a
+ * table, else a program in a directory of $PATH (/boot/bin and
+ * /boot/usr/bin to begin with); a POSIX program takes the stage's
+ * redirections (< > >> 2>&1: sh_posix.c). A command before a single & is a
  * program started in the background (sh_jobs.c): a program's name, `run`
  * or `jamjar` (a command that is only its program); another shell
  * command, an alias or a pipeline before & is refused. */
@@ -18,17 +20,48 @@ int sh_status(void)
     return last_status;
 }
 
-/* Not in the table: /boot/bin/<name> if there is one (bg: started in the
- * background). */
+/* The program called name (no '/') in the first directory of $PATH that
+ * has one (SH_PATH_DEFAULT when PATH is unset), as an absolute path into
+ * path. false if there is none. */
+static bool path_find(const char *name, char *path, size_t cap)
+{
+    const char *dirs = sh_getvar("PATH");
+    if (!dirs)
+        dirs = SH_PATH_DEFAULT;
+    while (*dirs) {
+        const char *end = strchr(dirs, ':');
+        size_t l = end ? (size_t)(end - dirs) : strlen(dirs);
+        char dir[SH_PATH_MAX], abs[SH_PATH_MAX];
+        bool is_dir;
+        uint64_t n;
+        if (l && l < sizeof(dir)) {
+            memcpy(dir, dirs, l);
+            dir[l] = '\0';
+            if (sh_resolve(dir, abs, sizeof(abs)) && sh_join(abs, name, path, cap) &&
+                sh_stat(path, &is_dir, &n) == OK && !is_dir)
+                return true;
+        }
+        dirs += end ? l + 1 : l;
+    }
+    return false;
+}
+
+/* Not in the table: a program of that name in a directory of $PATH if
+ * there is one (bg: started in the background). One in /boot/bin keeps its
+ * bare name (what it is called as, and said); one found elsewhere is
+ * started by its path. */
 static int exec_unknown(int argc, char **argv, bool bg)
 {
-    char path[SH_PATH_MAX];
-    bool dir;
-    uint64_t n;
-    if (!strchr(argv[0], '/')) {
-        snprintf(path, sizeof(path), "/boot/bin/%s", argv[0]);
-        if (sh_stat(path, &dir, &n) == OK && !dir)
-            return bg ? sh_start_background(argc, argv) : sh_run_program(argc, argv);
+    char path[SH_PATH_MAX], std[SH_PATH_MAX];
+    if (!strchr(argv[0], '/') && path_find(argv[0], path, sizeof(path))) {
+        snprintf(std, sizeof(std), "/boot/bin/%s", argv[0]);
+        char *by_path[SH_MAX_WORDS + 1];
+        if (strcmp(path, std)) {
+            memcpy(by_path, argv, (size_t)(argc + 1) * sizeof(argv[0]));
+            by_path[0] = path;
+            argv = by_path;
+        }
+        return bg ? sh_start_background(argc, argv) : sh_run_program(argc, argv);
     }
     sh_tty("%s: unknown command (try help)\n", argv[0]);
     return 127;
@@ -39,6 +72,10 @@ static int exec_unknown(int argc, char **argv, bool bg)
 static int exec_argv(int argc, char **argv, bool bg)
 {
     const struct sh_cmd *c = sh_find_cmd(argv[0]);
+    if (c && c->fn != shc_run && sh_redir_count()) {
+        sh_tty("sh: %s is a shell command: < and > work for POSIX programs only\n", argv[0]);
+        return 2;
+    }
     if (!bg)
         return c ? c->fn(argc, argv) : exec_unknown(argc, argv, false);
     if (!c)
@@ -129,8 +166,10 @@ static int exec_simple(const char *text, bool bg)
     struct sh_words w;
     if (!sh_split_words(text, &w))
         return 2;
-    if (!w.argc)
+    if (!w.argc) {
+        sh_words_free(&w);   /* a redirection alone makes no file here */
         return last_status;
+    }
     int st = 0;
     struct saved_var saved[MAX_SAVED];
     int nsaved = 0;
@@ -141,10 +180,16 @@ static int exec_simple(const char *text, bool bg)
             sh_tty("sh: & doesn't follow aliases (%s): type the program's name\n",
                    w.argv[na]);
             st = 2;
+        } else if (a && w.nredir) {
+            sh_tty("sh: < and > don't follow aliases (%s): type the program's name\n",
+                   w.argv[na]);
+            st = 2;
         } else if (a && depth < MAX_DEPTH) {
             st = exec_alias(a, w.argc - na, w.argv + na);
         } else {
+            sh_redir_set(w.redir, w.nredir);
             st = exec_argv(w.argc - na, w.argv + na, bg);
+            sh_redir_set(NULL, 0);
         }
     }
     restore_vars(saved, nsaved);
@@ -247,7 +292,7 @@ void sh_init(void)
     sh_handles_init();
     sh_setvar("USER", "jam", 1);
     sh_setvar("HOME", "/", 1);
-    sh_setvar("PATH", "/boot/bin", 1);
+    sh_setvar("PATH", SH_PATH_DEFAULT, 1);
     sh_setvar("HOSTNAME", "jamos", 0);
     sh_set_alias("lspci", "devices");
     sh_set_alias("lsusb", "usb");

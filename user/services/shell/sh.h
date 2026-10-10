@@ -121,7 +121,14 @@ size_t      sh_assignment(const char *word);
 /* "NAME=value" of every exported variable, NULL-terminated: a program's
  * environment (freed by sh_free_env). */
 char      **sh_make_env(void);
+/* A POSIX program's: the same, and where the shell exports none of them
+ * HOME, PATH, TERM, TZ, USER, LOGNAME and SHELL as a Unix program expects
+ * them, and PWD (the current directory) always. */
+char      **sh_make_env_posix(void);
 void        sh_free_env(char **env);
+/* The directories a bare program name is looked for in (after the shell's
+ * own commands), colon-separated, when PATH is unset. */
+#define SH_PATH_DEFAULT "/boot/bin:/boot/usr/bin"
 
 const char *sh_alias_of(const char *name);   /* NULL if none */
 bool        sh_set_alias(const char *name, const char *value);

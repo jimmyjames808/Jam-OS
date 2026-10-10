@@ -106,20 +106,72 @@ bool sh_var_at(int i, const char **name, const char **value, bool *exported)
     return true;
 }
 
+/* "NAME=value" as a new string. */
+static char *env_entry(const char *name, const char *value)
+{
+    size_t l = strlen(name) + strlen(value) + 2;
+    char *s = malloc(l);
+    if (s)
+        snprintf(s, l, "%s=%s", name, value);
+    return s;
+}
+
 char **sh_make_env(void)
 {
     char **env = calloc(SH_MAX_VARS + 1, sizeof(char *));
     int n = 0;
     for (int i = 0; env && i < SH_MAX_VARS; i++) {
-        if (!vars[i].value || !vars[i].exported)
-            continue;
-        size_t l = strlen(vars[i].name) + strlen(vars[i].value) + 2;
-        char *s = malloc(l);
-        if (!s)
-            continue;
-        snprintf(s, l, "%s=%s", vars[i].name, vars[i].value);
-        env[n++] = s;
+        char *s = vars[i].value && vars[i].exported ? env_entry(vars[i].name, vars[i].value)
+                                                    : NULL;
+        if (s)
+            env[n++] = s;
     }
+    return env;
+}
+
+/* A variable a POSIX program expects: exported by the shell, else this. */
+static const struct { const char *name, *value; } posix_defaults[] = {
+    { "HOME", "/" },
+    { "PATH", SH_PATH_DEFAULT },
+    { "TERM", "vt100" },   /* what a window draws (the console's escapes) */
+    { "USER", "jam" },
+    { "LOGNAME", "jam" },
+    { "SHELL", "/boot/bin/shell" },
+};
+
+/* NAME=value onto env[*n] (the slot is there: SH_MAX_VARS + 8). */
+static void env_add(char **env, int *n, const char *name, const char *value)
+{
+    char *s = env_entry(name, value);
+    if (s)
+        env[(*n)++] = s;
+}
+
+/* Variable `name` is exported by the shell. */
+static bool is_exported(const char *name)
+{
+    const struct var *v = find_var(name);
+    return v && v->exported;
+}
+
+char **sh_make_env_posix(void)
+{
+    char **env = calloc(SH_MAX_VARS + 1 + 8, sizeof(char *));
+    if (!env)
+        return NULL;
+    int n = 0;
+    for (int i = 0; i < SH_MAX_VARS; i++)
+        if (vars[i].value && vars[i].exported && strcmp(vars[i].name, "PWD"))   /* ours, below */
+            env_add(env, &n, vars[i].name, vars[i].value);
+    for (unsigned k = 0; k < sizeof(posix_defaults) / sizeof(posix_defaults[0]); k++)
+        if (!is_exported(posix_defaults[k].name))
+            env_add(env, &n, posix_defaults[k].name, posix_defaults[k].value);
+    if (!is_exported("TZ")) {
+        struct tz tz;
+        (void)clock_now(NULL, &tz);   /* the system's zone, else the default one */
+        env_add(env, &n, "TZ", tz.name);
+    }
+    env_add(env, &n, "PWD", sh_cwd());
     return env;
 }
 

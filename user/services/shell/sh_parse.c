@@ -1,6 +1,6 @@
 /* Parsing a line: cutting it at ; && || | & (sh_segments), and one simple
- * command's text into words with quotes, escapes and $ references
- * (sh_split_words). */
+ * command's text into words with quotes, escapes and $ references, and
+ * the redirections among them (sh_split_words). */
 #include "sh_core.h"
 
 /* ---- words: quotes, escapes, $ -------------------------------------------------------- */
@@ -10,6 +10,9 @@ void sh_words_free(struct sh_words *w)
     for (int i = 0; i < w->argc; i++)
         free(w->argv[i]);
     w->argc = 0;
+    for (int i = 0; i < w->nredir; i++)
+        free(w->redir[i].path);
+    w->nredir = 0;
 }
 
 /* Append the value of the $ reference at *pp (just after '$') to b. */
@@ -79,7 +82,7 @@ static bool double_quoted(const char **pp, struct sh_buf *b)
 static bool one_word(const char **pp, struct sh_buf *b, bool *quoted)
 {
     const char *p = *pp;
-    while (*p && *p != ' ' && *p != '\t') {
+    while (*p && *p != ' ' && *p != '\t' && *p != '<' && *p != '>') {
         char c = *p;
         if (c == '\\' && p[1]) {
             sh_buf_add(b, p + 1, 1);
@@ -109,42 +112,137 @@ static bool one_word(const char **pp, struct sh_buf *b, bool *quoted)
     return true;
 }
 
+/* The file a redirection names, at *pp: one word, expanded as any is;
+ * malloc'd. NULL (said) if there is none. op: the operator, for the
+ * message. */
+static char *redirect_target(const char **pp, const char *op)
+{
+    const char *p = *pp;
+    while (*p == ' ' || *p == '\t')
+        p++;
+    struct sh_buf b = { 0 };
+    bool quoted = false;
+    char *name = NULL;
+    if (*p && one_word(&p, &b, &quoted) && (b.n || quoted)) {
+        name = malloc(b.n + 1);
+        if (name) {
+            if (b.n)
+                memcpy(name, b.p, b.n);
+            name[b.n] = '\0';
+            *pp = p;
+        }
+    } else {
+        sh_tty("sh: %s needs a file name\n", op);
+    }
+    free(b.p);
+    return name;
+}
+
+/* The descriptor number before a < or > at p (digits, no blank between),
+ * moving p past them; ~0 if there are none. */
+static unsigned long redirect_fd(const char **pp)
+{
+    const char *p = *pp, *d = p;
+    while (*d >= '0' && *d <= '9' && d - p < 8)
+        d++;
+    if (d == p || (*d != '<' && *d != '>'))
+        return ~0ul;
+    unsigned long fd = 0;
+    for (; p < d; p++)
+        fd = fd * 10 + (unsigned long)(*p - '0');
+    *pp = p;
+    return fd;
+}
+
+/* The redirection at *pp (on a word's first character), if one starts
+ * there: [N]< file, [N]> file, [N]>> file, [N]>&M or [N]<&M, N and M one
+ * of 0 to 2. 0: none there (*pp unchanged); 1: taken into w; -1: a
+ * syntax error (said). */
+static int redirection(const char **pp, struct sh_words *w)
+{
+    const char *p = *pp;
+    unsigned long fd = redirect_fd(&p);
+    if (*p != '<' && *p != '>')
+        return 0;
+    char c = *p++;
+    struct sh_redir r = { .kind = c == '<' ? SH_REDIR_IN : SH_REDIR_OUT };
+    if (c == '>' && *p == '>') {
+        r.kind = SH_REDIR_APPEND;
+        p++;
+    } else if (*p == '&') {
+        r.kind = SH_REDIR_DUP;
+        p++;
+    }
+    if (fd == ~0ul)
+        fd = c == '<' ? 0 : 1;
+    if (fd > 2) {
+        sh_tty("sh: only descriptors 0, 1 and 2 can be redirected\n");
+        return -1;
+    }
+    if (w->nredir == SH_MAX_REDIR) {
+        sh_tty("sh: more than %d redirections\n", SH_MAX_REDIR);
+        return -1;
+    }
+    r.fd = (uint8_t)fd;
+    if (r.kind == SH_REDIR_DUP) {
+        bool ends = !p[1] || p[1] == ' ' || p[1] == '\t' || p[1] == '<' || p[1] == '>';
+        if (*p < '0' || *p > '2' || !ends) {
+            sh_tty("sh: %c& needs a descriptor, 0 to 2\n", c);
+            return -1;
+        }
+        r.from = (uint8_t)(*p++ - '0');
+    } else if (!(r.path = redirect_target(&p, r.kind == SH_REDIR_IN ? "<" : ">"))) {
+        return -1;
+    }
+    w->redir[w->nredir++] = r;
+    *pp = p;
+    return 1;
+}
+
+/* One word at *pp into w; false (said) if it can't be taken. */
+static bool add_word(const char **pp, struct sh_words *w)
+{
+    if (w->argc == SH_MAX_WORDS) {
+        sh_tty("sh: more than %d words\n", SH_MAX_WORDS);
+        return false;
+    }
+    struct sh_buf b = { 0 };
+    bool quoted = false;
+    char *word = one_word(pp, &b, &quoted) ? malloc(b.n + 1) : NULL;
+    if (word) {
+        if (b.n)
+            memcpy(word, b.p, b.n);
+        word[b.n] = '\0';
+    }
+    free(b.p);
+    if (!word)
+        return false;
+    if (!word[0] && !quoted) {   /* $UNSET alone: no word at all */
+        free(word);
+        return true;
+    }
+    w->quoted[w->argc] = quoted;
+    w->argv[w->argc++] = word;
+    w->argv[w->argc] = NULL;
+    return true;
+}
+
 bool sh_split_words(const char *s, struct sh_words *w)
 {
     w->argc = 0;
+    w->nredir = 0;
     const char *p = s;
     for (;;) {
         while (*p == ' ' || *p == '\t')
             p++;
         if (!*p)
             return true;
-        if (w->argc == SH_MAX_WORDS) {
-            sh_tty("sh: more than %d words\n", SH_MAX_WORDS);
-            return false;
-        }
-        struct sh_buf b = { 0 };
-        bool quoted = false;
-        if (!one_word(&p, &b, &quoted)) {
-            free(b.p);
-            return false;
-        }
-        if (!b.n && !quoted) {   /* $UNSET alone: no word at all */
-            free(b.p);
-            continue;
-        }
-        char *word = malloc(b.n + 1);
-        if (!word) {
-            free(b.p);
-            return false;
-        }
-        if (b.n)
-            memcpy(word, b.p, b.n);
-        word[b.n] = '\0';
-        free(b.p);
-        w->quoted[w->argc] = quoted;
-        w->argv[w->argc++] = word;
-        w->argv[w->argc] = NULL;
+        int red = redirection(&p, w);
+        if (red < 0 || (!red && !add_word(&p, w)))
+            break;
     }
+    sh_words_free(w);
+    return false;
 }
 
 /* ---- segments: ; && || | --------------------------------------------------------------- */
@@ -205,6 +303,11 @@ int sh_segments(char *line, struct sh_seg *segs)
         }
         if (c == '#' && word_start)
             *p = c = '\0';
+        if (c == '&' && p > line && (p[-1] == '>' || p[-1] == '<')) {
+            p++;   /* the & of a redirection (2>&1), not a background & */
+            word_start = false;
+            continue;
+        }
         int op = !c ? SH_OP_END : c == ';' ? SH_OP_SEMI
                : c == '|' ? (p[1] == '|' ? SH_OP_OR : SH_OP_PIPE)
                : c == '&' ? (p[1] == '&' ? SH_OP_AND : SH_OP_BG) : -1;
