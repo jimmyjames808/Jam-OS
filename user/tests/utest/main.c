@@ -1179,6 +1179,7 @@ static const struct {
     { "initctl_strings", t_initctl_strings },
     { "devmgr_hostile", t_devmgr_hostile },
     { "svc_shared_unread", t_svc_shared_unread },
+    { "initctl_hostile", t_initctl_hostile },
 };
 
 int main(int argc, char **argv)

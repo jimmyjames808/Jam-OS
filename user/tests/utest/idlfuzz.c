@@ -649,3 +649,41 @@ bool t_devmgr_hostile(void)
     CHECK_ST(jam_handle_close(c), OK);
     return true;
 }
+
+/* An initctl request the hostile test must not make: a reboot, the stored
+ * kernel replaced, a terminal opened. (kill's and mount's strings are
+ * made of "/abcab/.x/..yz~1": no process init or devmgr runs is called
+ * so, and no such path is a stick's mount; launch's can't spell an app.) */
+static bool initctl_harmful(uint32_t ordinal)
+{
+    return ordinal == INITCTL_REBOOT || ordinal == INITCTL_REBOOT_FIRMWARE ||
+           ordinal == INITCTL_KERNEL_LOAD || ordinal == INITCTL_TERMINAL;
+}
+
+/* The live init fed idl_fuzz's initctl messages on /svc/init (the shell's
+ * channel: every method), but the harmful ones; first a request too big
+ * for it. Every request with a txid is answered within 5 s, and init still
+ * answers a kill of a name nobody has. Needs `svc init` (the shell's
+ * utest); init's own run has none, and skips. */
+bool t_initctl_hostile(void)
+{
+    struct fz f = { .seed = 0x1417c711ull };
+    handle_t ctl = HANDLE_INVALID;
+    if (svc_open(SVC_INIT, &ctl) != OK) {
+        printf("utest: %s: no init channel (not the shell's utest?): skipped\n", utest_cur);
+        return true;
+    }
+    const struct idl_fuzz_proto *ps[1] = { proto_named("initctl") };
+    CHECK(ps[0]);
+    if (!too_big_answered(&f, ctl, INITCTL_REQ_MAX, INITCTL_KILL))
+        return false;
+    unsigned sent = 0;
+    if (!live_feed(&f, ctl, ps, 1, initctl_harmful, LIVE_ROUNDS, &sent))
+        return false;
+    uint64_t koid = 0;
+    CHECK_ST(initctl_kill_until(ctl, now() + 10 * NS_PER_S, "no-such-thing", 13, &koid),
+             ERR_NOT_FOUND);
+    printf("utest: initctl_hostile: %u messages to init, still answering\n", sent);
+    CHECK_ST(jam_handle_close(ctl), OK);
+    return true;
+}
