@@ -4,6 +4,7 @@ build/
 compile_commands.json
 AGENTS.md
 AGENTS-HISTORY.md
+INVENTORY.md
 # This machine's build settings: the network's default (local.mk.example).
 local.mk
 
