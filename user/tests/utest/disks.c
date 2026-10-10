@@ -648,3 +648,39 @@ bool t_disk_vanishes(void)
         return false;
     return detach(vm, &v);
 }
+
+/* volumes.list_channel: a channel that speaks voldisks (the disk listing,
+ * digest and health) and nothing else, for the shell's `disks`. A control
+ * channel speaks voldisks too. */
+bool t_disk_list_channel(void)
+{
+    handle_t vm = volumes(), list = HANDLE_INVALID, other = HANDLE_INVALID, w = HANDLE_INVALID;
+    if (!vm)
+        return true;
+    const uint64_t until = now() + 10 * NS_PER_S;
+    CHECK_ST(volumes_list_channel_until(vm, until, &list), OK);
+    for (unsigned k = 0; k < 2; k++) {
+        handle_t ch = k ? vm : list;
+        uint32_t id, bs, parts, nl, ml, sl, fl;
+        uint64_t blocks;
+        uint8_t bus, ready, kind, scheme, ro, sha[32];
+        char name[9], model[41], serial[21], fw[9];
+        /* the real disks, if the machine has any: listed, or past the last */
+        status_t st = voldisks_disk_until(ch, until, 0, &id, &bus, &ready, &kind, &scheme, &ro,
+                                          &bs, &blocks, &parts, name, &nl, model, &ml, serial,
+                                          &sl, fw, &fl);
+        CHECK(st == OK || st == ERR_OUT_OF_RANGE);
+        CHECK_ST(voldisks_disk_until(ch, until, 1000, &id, &bus, &ready, &kind, &scheme, &ro,
+                                     &bs, &blocks, &parts, name, &nl, model, &ml, serial, &sl,
+                                     fw, &fl), ERR_OUT_OF_RANGE);
+        CHECK_ST(voldisks_digest_until(ch, until, 0xdeadbeef, 0, 1, sha), ERR_NOT_FOUND);
+    }
+    /* it speaks nothing of `volumes`: it changes no mount and kills nothing */
+    uint64_t koid;
+    CHECK_ST(volumes_watch_until(list, until, &w), ERR_ACCESS_DENIED);
+    CHECK_ST(volumes_kill_until(list, until, "/data", 5, &koid), ERR_ACCESS_DENIED);
+    CHECK_ST(volumes_remount_until(list, until, "/usb0", 5, 1), ERR_ACCESS_DENIED);
+    CHECK_ST(volumes_list_channel_until(list, until, &other), ERR_ACCESS_DENIED);
+    CHECK_ST(jam_handle_close(list), OK);
+    return true;
+}
