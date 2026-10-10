@@ -241,8 +241,12 @@ static bool region(struct digest_run *run, const char *name, uint64_t lba, uint6
     run->st = voldisks_digest_until(run->list, now() + DIGEST_WAIT, run->disk->id, lba, count,
                                     sha);
     if (run->st != OK) {
-        sh_tty("disk digest: %s: lba %lu count %lu: %s\n", name, (unsigned long)lba,
-               (unsigned long)count, status_str(run->st));
+        if (run->st == ERR_NOT_SUPPORTED)
+            sh_tty("disk digest: %s's driver can't hash a disk (only an NVMe drive's can)\n",
+                   run->disk->name);
+        else
+            sh_tty("disk digest: %s: lba %lu count %lu: %s\n", name, (unsigned long)lba,
+                   (unsigned long)count, status_str(run->st));
         return false;
     }
     hex(sha, h);
