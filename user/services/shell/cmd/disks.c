@@ -151,10 +151,13 @@ static void say_partition(handle_t list, const struct disk_row *r, unsigned n)
         sh_say("  %2u  (%s)\n", n + 1, status_str(st));
         return;
     }
-    sh_say("  %2u  %-21s %9s  %-30s %s\n", n + 1,
-           type_name(r->scheme, mbr, guid, tbuf, sizeof(tbuf)),
-           sh_human(blocks * r->block_size, size, sizeof(size)),
-           label[0] ? label : "-", fs_note(fs, r->block_size, mount, fbuf, sizeof(fbuf)));
+    const char *note = fs_note(fs, r->block_size, mount, fbuf, sizeof(fbuf));
+    const char *type = type_name(r->scheme, mbr, guid, tbuf, sizeof(tbuf));
+    sh_human(blocks * r->block_size, size, sizeof(size));
+    if (note[0])
+        sh_say("  %2u  %-21s %9s  %-30s %s\n", n + 1, type, size, label[0] ? label : "-", note);
+    else
+        sh_say("  %2u  %-21s %9s  %s\n", n + 1, type, size, label[0] ? label : "-");
 }
 
 static void say_disk(handle_t list, const struct disk_row *r)
