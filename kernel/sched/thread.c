@@ -161,7 +161,13 @@ void thread_reap(struct thread *t)
     fpu_ustate_free(t);   /* switched out for good: nothing saves into it now */
     kfree(t->msg_slot);   /* the channels' message slot, if it had one */
     t->msg_slot = NULL;
-    stack_put(t->stack_top);
+    /* Thread "main" has no stack of ours (it runs on the one kmain_stage2
+     * was given) and leaves at the end of a run: nothing to cache. Put
+     * anyway, NULL went into the cache as a stack, or with the cache full
+     * its link was written below address 0 (a page fault here).
+     * (test: stack_cache_skips_stackless_reap) */
+    if (t->stack_top)
+        stack_put(t->stack_top);
     thread_put(t);   /* the thread's reference to itself */
 }
 
