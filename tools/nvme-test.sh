@@ -166,8 +166,8 @@ for c in $cases; do
                 echo "wait /nvme0"
                 echo "wait {prompt}"
                 echo "send ls /nvme0/EFI/Microsoft/Boot"
+                echo "wait BCD"   # ls sorts upper case first: BCD, then bootmgfw.efi
                 echo "wait bootmgfw.efi"
-                echo "wait BCD"
                 echo "wait {prompt}"
                 if [ $c = kill ]; then
                     echo "send ls /nvme0 > /dev/null; kill nvme; sha256sum /nvme0/EFI/Microsoft/Boot/bootmgfw.efi"
