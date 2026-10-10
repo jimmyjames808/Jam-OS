@@ -409,7 +409,7 @@ long lx_epoll_pwait(long epfd, long evs, long max, long timeout, long mask, long
     if (!r) {
         r = epoll_run(ed->priv, (struct epoll_event *)(uintptr_t)evs, (int)max,
                       ready_deadline_ms((int)timeout));
-        ready_mask_restore((const void *)(uintptr_t)mask, old);
+        ready_mask_restore((const void *)(uintptr_t)mask, old, r);
     }
     fd_put(ed);
     return r;

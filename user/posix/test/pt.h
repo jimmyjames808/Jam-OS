@@ -14,7 +14,8 @@
  * libjam's spawn), proc.c (posix_spawn, the waits, the ids, groups,
  * execve, system and popen, the hand-over cut short), tty.c (a program on
  * a terminal: a connection console it drives itself), files.c, files2.c
- * and fileskid.c (files and directories on /data and /boot: ptfiles.h).
+ * and fileskid.c (files and directories on /data and /boot: ptfiles.h),
+ * signal.c and sigproc.c (signals in a process, and between processes).
  * start.c, fds.c, poll.c, proc.c, tty.c and fileskid.c are the ones that
  * include libjam (<jamos/libjam.h>: children started with a hand-over;
  * fileskid.c through the layer's fd.h); mem.c the only one with Linux's
@@ -48,6 +49,9 @@ void pt_proc(char **argv);
 void pt_tty(char **argv);
 void pt_files(char **argv);
 void pt_files_many(char **argv);   /* only when asked for by name */
+void pt_signal(char **argv);
+/* The signal section's second half (sigproc.c): between processes. */
+void pt_sigproc(void);
 
 /* The child modes start.c's checks start this program in (main.c runs
  * them instead of the sections): each checks what it was given and exits
@@ -59,6 +63,9 @@ int  pt_child_poll(void);
 int  pt_child_proc(int argc, char **argv);
 int  pt_child_tty(void);
 int  pt_child_tty_handover(void);
+int  pt_child_tty_sig(void);
+int  pt_child_tty_spin(void);
+int  pt_child_sig(int argc, char **argv);
 int  pt_child_files(void);
 int  pt_child_rofs(void);
 

@@ -6,6 +6,7 @@
 #include <signal.h>
 #include <string.h>
 #include "ready.h"
+#include "sig.h"
 
 uint32_t ready_interest(uint32_t events)
 {
@@ -87,20 +88,23 @@ long ready_deadline(long sec, long nsec, uint64_t *out)
     return 0;
 }
 
-/* The mask is nosig.c's (rt_sigprocmask) until signals exist: set for the
- * wait and put back after, which is all ppoll and pselect can mean while
- * no signal is ever delivered. Signals (signal.c) make the swap and the
- * wait one step, so a signal unblocked for the wait interrupts it. */
+/* The wait's mask is the thread's from before the wait starts until its
+ * handlers have run (signal.c's sig_wait_mask and sig_wait_unmask): a
+ * signal it unblocks that comes before the wait is pending when the wait
+ * starts, whose interrupt then ends it at once, so the swap and the wait
+ * are one step as Linux's are. */
 long ready_mask_set(const void *mask, long size, uint64_t *old)
 {
     if (!mask)
         return 0;
-    return lx_rt_sigprocmask(SIG_SETMASK, (long)(uintptr_t)mask, (long)(uintptr_t)old, size, 0,
-                             0);
+    if (size != sizeof(uint64_t))
+        return -EINVAL;
+    sig_wait_mask(mask, old);
+    return 0;
 }
 
-void ready_mask_restore(const void *mask, uint64_t old)
+void ready_mask_restore(const void *mask, uint64_t old, long r)
 {
-    if (mask)   /* can't fail: the size is right and the mask was ours */
-        (void)lx_rt_sigprocmask(SIG_SETMASK, (long)(uintptr_t)&old, 0, sizeof(old), 0, 0);
+    if (mask)
+        sig_wait_unmask(old, r);
 }

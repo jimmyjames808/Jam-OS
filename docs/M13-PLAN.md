@@ -1310,9 +1310,9 @@ need to know.
   own as the tracks' table says. Two of A1's files are stand-ins to be
   replaced: stdfd.c (descriptors 0 to 2: the null device, the log, or
   a pipe; B1's descriptor table replaced it and took its handlers'
-  table lines, and B2's kinds its pipe, null and log) and `user/posix/sys/nosig.c`
-  (`rt_sigprocmask` keeps a per-thread mask and nothing else; B4's
-  signal.c replaces it).
+  table lines, and B2's kinds its pipe, null and log) and nosig.c
+  (`rt_sigprocmask` kept a per-thread mask and nothing else; B4's
+  `user/posix/sys/signal.c` replaced it).
 - The start (`user/posix/crt/start.c`) reads the startup message, then
   the hand-over with `posixfds_read`; without one, stdfd's defaults. A
   hand-over's pipes and null devices at 0 to 2 are taken; every other
@@ -2052,3 +2052,182 @@ descriptors and the hand-over), `sh_program.c`, `sh_parse.c`, `sh_exec.c`,
   outlast a program (T2's note); the shell does not reset them. A
   redirection to a file whose `FS_TRUNCATE` open succeeded but whose
   other redirection then failed leaves the file empty.
+
+## B4 notes
+
+Track B4 (signals) as built, with the choices the plan left open. Files:
+`user/posix/sys/sig.h` (the model and what the layer shares),
+`user/posix/sys/signal.c` (dispositions, masks, pending sets, routing,
+delivery, the call boundary), `user/posix/sys/sigcalls.c` (the calls),
+`user/posix/sys/sigthread.c` (the signal thread),
+`user/posix/sys/sigtimer.c` (setitimer and the POSIX timers),
+`abi/idl/signal.idl`, the overrides
+`user/posix/musl/src/thread/x86_64/syscall_cp.c` (C now: the assembly's
+address window was only for musl's cancel handler) and
+`user/posix/musl/src/thread/pthread_cancel.c`; posixtest's signal.c and
+sigproc.c. nosig.c is gone.
+
+- **Protocol `signal`, id 44** (the plan's 93 is devmgr's block). One
+  event, `send (u8 signo, u8 code, i32 value)`: the plan's shape plus
+  `code` (`CODE_USER` for kill, `CODE_QUEUE` for sigqueue), so a handler's
+  `si_code` is right. The receiver drops a number out of range, SIGKILL
+  and an unknown code. X1 takes ids from 45.
+- **The boundary** is `sig_call` (signal.c), which calls.c's
+  `__jam_syscall` and syscall_cp's `__jam_syscall_cp` run every call
+  through: the handlers due run before the call and after it. calls.c's
+  `kind_of` names the exceptions: memory calls, futex wakes and requeues,
+  `exit` and `exit_group` see no delivery; poll, select, epoll_wait, the
+  sleeps, sigsuspend, sigtimedwait, pause and a timed futex wait are never
+  restarted (signal(7)'s list; musl recomputes a timed futex's time
+  itself); the write family, and sendto/sendmsg without `MSG_NOSIGNAL`,
+  raise SIGPIPE on `EPIPE`. Every other call is restarted after an EINTR
+  if every handler that ran had `SA_RESTART`.
+- **An EINTR with no handler run is restarted, always.** It is an
+  interrupt left latched (a signal delivered at a boundary before its
+  sender's interrupt was consumed), which ends the next wait at once, so
+  the restart costs nothing; and a bare `thread_interrupt` with no signal
+  behind it never shows as EINTR (posixtest's poll section checks both:
+  B5's check that a bare interrupt ends a poll became a real signal).
+  1,000 in a row give up with EINTR.
+- **Routing.** A signal sent to the process is given at once to one
+  thread that doesn't block it (the main thread first, one without it
+  pending already first), not left in the process's set for whoever
+  passes a boundary first: a thread asleep in a timed wait is never woken
+  for a signal another thread then takes (its restart would wait the whole
+  time again). With no such thread it stays in the process's set; a thread
+  that unblocks it takes it at its next boundary. A thread that blocks a
+  signal routed to it, or ends, gives it back to be routed again.
+- **Interrupting** only a thread inside a call (`calls` > 0, a Dekker pair
+  with the pending bit, both sequentially consistent: sig.h): a thread in
+  user code looks at its next call anyway, and fewer interrupts mean fewer
+  latched leftovers. The sender never interrupts itself.
+- **Default actions** happen in the sender (often the signal thread):
+  terminate is `process_exit(LX_EXIT_SIGNAL + N)` (B3's code), at once,
+  unless every thread blocks it (then pending, and done at the boundary of
+  the thread that unblocks it). A thread waiting in sigtimedwait counts as
+  blocking for that and for "ignored" (Linux's real_blocked). No job
+  control: SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU and SIGCONT are ignored;
+  SIGKILL to a child is `process_kill`, to ourselves the exit.
+- **Queues.** A standard signal pending twice is one (its first details
+  kept); real-time ones (32 to 64) queue, the first in its set's slot and
+  the rest on one queue of 1,024 for the process (`sigqueue` past it:
+  EAGAIN to ourselves; between processes the receiver drops it).
+- **Thread records** are allocated by each thread (`calloc`) and listed;
+  a thread finds its own through a thread-local pointer and, when that is
+  gone, by its thread pointer (%fs:0) in the list: musl's SIGEV_THREAD
+  notification thread resets its thread-local storage after each
+  notification (`__reset_tls`). A new thread starts with its creator's
+  mask, as on Linux (thread.c passes it through clone).
+- **The signal thread** is libjam's `thread_spawn` on a static 64 KiB
+  stack, with no thread-local storage: it never calls through musl, and the
+  boundary knows it by its stack (`sig_on_signal_thread`); everything that
+  reads thread-local storage is behind that test and a function the
+  compiler can't move ahead of it (`mine_now`, `me_ptr`: a first version
+  read the record's address early and faulted). It starts as a
+  constructor at priority 102, after the descriptor table's 101 (so the
+  hand-over's terminal is there to listen to), with the hand-over's mask
+  on the main thread and its ignored signals; a process that can't make
+  the port or the thread exits 127 with a line in the log (it could never
+  see a signal or a child's end).
+- **Children** (B3's proc.c, changed): every child is bound to the
+  signal thread's port, which is the port's only reader; the waits sleep
+  on B3's `gen` alone (B3's reader and its wake packet are gone), and a
+  WNOHANG wait asks each live child it matches whether it has ended, so an
+  end the signal thread hasn't taken yet shows at once. Whoever notices an
+  end sends SIGCHLD (`CLD_EXITED` or `CLD_KILLED`, the pid, the code or
+  signal); with SIGCHLD `SIG_IGN` or `SA_NOCLDWAIT` the child is reaped as
+  it is noticed and no wait sees it (Linux's rule). Each child's signal
+  channel is made in spawn.c's `start` (an extra handle, `SR_SIGNALS`) and
+  kept by the table (`lx_child_add`'s new argument), closed when the child
+  is reaped.
+- **kill.** Our pid: ourselves. A pid > 0: that child (one that has ended
+  but isn't reaped: 0 and nothing sent, as Linux's zombie). 0 or -pgid:
+  our children in the group, then us if it is ours. -1: every child (not
+  us). Anything else ESRCH. A send waits up to a second for room on a
+  full channel, then EAGAIN. `sigqueue` to another process needs a
+  negative `si_code` (EPERM otherwise, Linux's rule). `tkill`/`tgkill` of
+  musl's SIGCANCEL (33) only interrupts the thread (`pthread_cancel`).
+- **execve** forwards every signal from its channel and its terminal to
+  the program it waits for (`lx_exec_child`).
+- **The terminal** (T2's tty.h): the signal thread binds the process's
+  terminal's `tty` channel when it has one (`sig_tty_attached` from tty.c
+  when the first terminal description is made); a resize is SIGWINCH,
+  ISIG's keys with no shell below SIGINT and SIGQUIT, all `SI_KERNEL`.
+- **ppoll, pselect, epoll_pwait**: the wait's mask through
+  `sig_wait_mask`; a wait ended by EINTR runs its handlers with the wait's
+  mask, then the old mask is back (`ready_mask_restore` takes the wait's
+  result: a one-argument change in poll.c, select.c and epoll.c).
+- **sigsuspend and pause** sleep with `sleep_until` until a handler has
+  run on the thread (a signal whose action became "ignore" meanwhile
+  doesn't end them); sigtimedwait takes its set's signals itself (they are
+  unblocked for the wait, but no handler runs) and ends with EINTR for
+  another signal's handler.
+- **sigaction**: unknown flags are EINVAL (fail closed; Linux ignores
+  them); `SA_ONSTACK` is accepted; `sigaltstack` is accepted and says
+  disabled (handlers run on the thread's own stack, at a call). A handler
+  gets a siginfo_t (signo, code, pid, the one user's uid, value or
+  status, a timer's id and overrun) and a zeroed ucontext_t with
+  `uc_sigmask` set.
+- **Timers**: 32 POSIX timers (EAGAIN past them) on `CLOCK_REALTIME`,
+  `CLOCK_MONOTONIC` and `CLOCK_BOOTTIME` (an absolute realtime expiry is
+  turned into an uptime one when set); `ITIMER_REAL` only (the CPU-time
+  ones and clocks are EINVAL). Each is a kernel timer bound to the signal
+  port; a stale packet (the timer re-armed since) is told by the timer's
+  signal having been cleared by the arming. Overrun counts expirations
+  missed by a late signal thread and those while the signal was still
+  pending; `timer_getoverrun` gives the last signal's.
+- **pthread_cancel**: the flag and an interrupt; a cancellation point
+  checks the flag before its call and after an EINTR (upstream's
+  `__syscall_cp_c`). An asynchronous cancel acts at the next cancellation
+  point.
+- **Found and fixed**: `user/posix/posix.ld` kept `.init_array` but the
+  cross compiler puts constructors in `.ctors`, so no constructor of the
+  layer's or of any program ever ran (fd.c's start only ran because every
+  descriptor call also starts it). posixtest's start section checks a
+  constructor ran, after the layer's.
+- **Edits outside B4's files**: proc.c and proc.h (the port, the waits,
+  `lx_child_add`'s channel, `lx_child_signal`; `lx_sigchld_hook` and
+  `lx_child_port` are gone), spawn.c (the channel; the masks from
+  `sig_spawn_masks`), thread.c (a thread listed at its start and unlisted
+  at its end, its creator's mask), tty.c (`sig_tty_attached`), ready.c,
+  pollcore.h, poll.c, select.c, epoll.c (above), calls.c, calls.h,
+  glue.h, posix.ld; posixtest's pipe.c (SIGPIPE ignored around its EPIPE
+  check: the default would end the test), poll.c (above), tty.c (the
+  terminal's signals), main.c, pt.h, start.c; the shell's sh_program.c
+  (Ctrl+C is SIGINT to a POSIX program: below), pxio (`pxio sigint`) and
+  tools/shell-tests/posix.txt.
+- **The shell** (S1's hook, done here at the coordinator's word):
+  `start_program` makes each POSIX program's signal channel
+  (`SR_SIGNALS`) and keeps its end in `struct started`; Ctrl+C in
+  `interrupt_program` writes SIGINT on it and prints nothing (a full
+  channel falls back to killing the job). A background program's end is
+  closed at once (S2 should keep it in sh_jobs for `kill %n`'s SIGTERM).
+  Left for S2: the 2-second kill, `$?` as 128 + N for a code
+  `LX_EXIT_SIGNAL` + N (the shell's `ended` says "exited with code 65538"
+  today), Ctrl+\ (the key with code point 0x1c) as SIGQUIT, and sh_io.c's
+  own `^C` while a POSIX program holds the terminal (S1's note).
+- **For X1**: a session's shell is a native program and gets Ctrl+C as
+  keys; a POSIX program alone on a pty gets SIGINT and SIGQUIT from the
+  `signal` event (the signal thread already listens), and SIGWINCH from
+  `conn_ctl.resize`. A session as a child (`waitpid`) needs a signal
+  channel only if the session's owner should signal it. SIGHUP on a
+  hang-up is X1's to send (a `send` on the session program's channel).
+- **For B6**: sendto and sendmsg already raise SIGPIPE on EPIPE unless
+  `MSG_NOSIGNAL` (calls.c's `kind_of`); musl's `send` is sendto. A
+  socket's blocking waits must return EINTR on ERR_INTERRUPTED (the
+  boundary decides restarts); `connect` and a wait with `SO_RCVTIMEO` or
+  `SO_SNDTIMEO` are never restarted on Linux: add them to `kind_of`'s
+  never-restarted list (connect as a call; the timed ones by the socket's
+  option, which the call can't see, so the socket's code returns EINTR
+  only when it has no timeout, else EAGAIN as Linux does on a timeout).
+- **Found, not fixed**: thread.c keeps `self_tid` in thread-local storage,
+  which musl's SIGEV_THREAD notification thread resets after its first
+  notification: from then `gettid` gives 0 there, and its handle stays
+  open when it ends (`forget_self` finds no entry). The fix is thread.c's
+  (find the tid by thread pointer, as signal.c does). And libjam's
+  ns.c (`take_locked`'s first wait for the namespace message) gives up
+  early on ERR_INTERRUPTED: a signal routed to a thread inside a
+  program's first namespace call would leave it without mounts.
+- **Size**: signal.c is about 720 lines: one state with one lock, which
+  the calls' own steps (its last part) can't reach from another file
+  without a header of the state's internals.

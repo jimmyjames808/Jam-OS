@@ -1,0 +1,33 @@
+# signal: a POSIX program's signal channel (docs/M13-PLAN.md section 6,
+# "Signals"). Whoever starts a POSIX program makes the channel and keeps
+# its client end: posix_spawn (user/posix/sys/spawn.c), and the native
+# shell for the POSIX programs it runs. The program gets the server end on
+# its startup role SR_SIGNALS, and its signal thread
+# (user/posix/sys/sigthread.c) reads it. Holding the client end is the
+# power to signal the program: `kill(pid, sig)` of a child writes `send`
+# on it (SIGKILL is process_kill on the process handle instead, which no
+# program can ignore).
+#
+# Who serves it: the POSIX program's C library, never a service. Who
+# calls it: the program's starter.
+#
+# Reconnect: the channel is made once per program and never made again.
+# ERR_PEER_CLOSED on the client's side: the program has ended (a signal to
+# a program that has ended is dropped, as Linux's kill of a zombie
+# succeeds and does nothing). On the program's side: the starter has gone,
+# and nothing will be sent again; the program goes on.
+
+protocol signal 44
+
+# How a signal was sent: by kill (or the shell's Ctrl+C, a terminal's
+# hang-up), or by sigqueue with a value.
+const CODE_USER  0
+const CODE_QUEUE 1
+
+# Signal `signo` (Linux's number, 1 to 64; never SIGKILL) to the program.
+# `code` is CODE_USER or CODE_QUEUE; `value` is sigqueue's (0 for kill).
+# One way: the sender learns nothing of what the program does with it. A
+# full channel (ERR_SHOULD_WAIT) is the program falling behind: the
+# sender waits for room. A program drops what it can't use (a signal
+# number out of range, SIGKILL, an unknown code) without a word.
+1  send  (u8 signo, u8 code, i32 value) event

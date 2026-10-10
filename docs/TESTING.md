@@ -1466,8 +1466,29 @@ its rest), goes raw with `tcsetattr` (Ctrl+C the byte 3; `poll` for
 writing, and for the typing), times out a read with `VMIN` 0 and `VTIME`
 2, gets `EAGAIN` with `O_NONBLOCK`, and goes back with `TCSADRAIN`; a
 second child gets a terminal as descriptor 0 in a hand-over
-(`POSIXFDS_TTY`) and writes through it. A resize as SIGWINCH waits for
-signals (M13's B4).
+(`POSIXFDS_TTY`) and writes through it. Then the terminal's signals: a
+third child's blocked read ends with `EINTR` when Ctrl+C is typed (`ISIG`,
+no shell below: the `signal` event is SIGINT), and a resize of the
+connection (`conn_ctl.resize`) is SIGWINCH, with `TIOCGWINSZ` giving the
+new size; a fourth child, a busy loop making no calls, is ended by Ctrl+C
+(SIGINT's default action, from the signal thread).
+
+posixtest's signal section (the `init` run; `posixtest signal`):
+in one process, a handler runs on the thread a signal was routed to (the
+one not blocking it) and `pthread_kill`'s on the thread named; a blocked
+signal stays pending and runs once unblocked; an ignored pending signal is
+dropped; `SA_RESETHAND`; a `read` and a `poll` blocked on a pipe end with
+`EINTR`, the `read` restarted under `SA_RESTART` and the `poll` not; two
+signals sent back to back at a thread blocked in one wait both run, 1,000
+rounds (none lost); `sigwaitinfo`, `sigtimedwait`'s timeout, `sigsuspend`;
+SIGPIPE ignored (`EPIPE`) and handled (on the writing thread); `setitimer`
+every 10 ms, `alarm`, POSIX timers with `SIGEV_SIGNAL` and `SIGEV_THREAD`;
+`pthread_cancel` of a thread blocked in `read`. Between processes (each
+child its own signal channel): 10,000 SIGUSR1 to a child, each answered
+before the next, then 500 `sigqueue` values counted and summed; SIGCHLD
+reaping 200 children; default actions (SIGINT on a busy loop, SIGTERM,
+SIGKILL, `raise`, `abort`, SIGPIPE) seen by `waitpid` as `WIFSIGNALED`;
+`kill` of a process group; the ignored signals and mask a child keeps.
 
 ## The protocols' servers against hostile clients
 

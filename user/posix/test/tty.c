@@ -15,17 +15,22 @@
  *     back after a drain (TCSADRAIN);
  *   - --child-tty-handover, given a terminal as descriptor 0 in a
  *     hand-over (POSIXFDS_TTY, the two handles this process got from
- *     console.open_tty): it writes through it.
- * Not here yet: a resize as SIGWINCH (the size event reaches libc, whose
- * signal thread is B4's: tty.h's tty_take_signals). */
+ *     console.open_tty): it writes through it;
+ *   - --child-tty-sig: Ctrl+C typed (ISIG on, no shell below) is SIGINT,
+ *     which ends its blocked read with EINTR; a resize of the terminal
+ *     (conn_ctl.resize) is SIGWINCH, and TIOCGWINSZ has the new size;
+ *   - --child-tty-spin: a busy loop with no calls, ended by Ctrl+C
+ *     (SIGINT's default action: it exits as ended by SIGINT). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <idl/conn_ctl.h>
 #include <idl/console.h>
 #include <jamos/libjam.h>
 #include <poll.h>
 #include <posixfds.h>
+#include <signal.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <termconn.h>
@@ -37,6 +42,7 @@
 #define WAIT_NS   (10 * NS_PER_S)
 #define OUT_CAP   8192
 #define PROGRAM   2   /* console.new_client's PROGRAM level */
+#define EXIT_SIGNAL 0x10000   /* the layer's exit code for "ended by signal N" (proc.h) */
 
 /* ---- the child: a program on the terminal -------------------------------------------- */
 
@@ -125,6 +131,41 @@ int pt_child_tty(void)
     child_raw(&saved);
     say(pt_failures() ? "child-failed\n" : "child-done\n");
     return pt_failures() ? 1 : 0;
+}
+
+static volatile sig_atomic_t got_int, got_winch;
+
+static void on_tty_sig(int sig)
+{
+    if (sig == SIGINT)
+        got_int++;
+    else if (sig == SIGWINCH)
+        got_winch++;
+}
+
+int pt_child_tty_sig(void)
+{
+    struct sigaction sa = { .sa_handler = on_tty_sig };   /* no SA_RESTART: EINTR */
+    sigemptyset(&sa.sa_mask);
+    CHECK(sigaction(SIGINT, &sa, NULL) == 0 && sigaction(SIGWINCH, &sa, NULL) == 0);
+    say("ready-sig\n");
+    char b[8];
+    errno = 0;
+    CHECK(read(0, b, sizeof(b)) == -1 && errno == EINTR && got_int == 1);
+    say("ready-winch\n");
+    while (!got_winch)
+        pause();
+    struct winsize w;
+    CHECK(ioctl(1, TIOCGWINSZ, &w) == 0 && w.ws_col == 100 && w.ws_row == 30);
+    say(pt_failures() ? "child-failed\n" : "sig-done\n");
+    return pt_failures() ? 1 : 0;
+}
+
+int pt_child_tty_spin(void)
+{
+    say("spinning\n");
+    for (volatile unsigned long n = 0;; n++)   /* no calls at all */
+        ;
 }
 
 int pt_child_tty_handover(void)
@@ -252,6 +293,30 @@ static void handover_child(void)
     CHECK(child_end(proc) == 0);
 }
 
+/* Ctrl+C and a resize as signals; then Ctrl+C on a busy loop. The child
+ * says it is ready just before it blocks: the keys wait a little more, so
+ * they reach it inside its read. */
+static void signal_children(void)
+{
+    handle_t program = HANDLE_INVALID;
+    CHECK(console_new_client_within(con.admin, WAIT_NS, PROGRAM, &program) == OK);
+    handle_t proc = start_child("--child-tty-sig", program, NULL);
+    CHECK(shows("ready-sig\r\n"));
+    struct timespec nap = { 0, 200000000 };
+    nanosleep(&nap, NULL);
+    typed("\x03", 1);
+    CHECK(shows("ready-winch\r\n"));
+    CHECK(conn_ctl_resize_within(con.ctl, WAIT_NS, 100, 30) == OK);
+    CHECK(shows("sig-done\r\n"));
+    CHECK(child_end(proc) == 0);
+
+    CHECK(console_new_client_within(con.admin, WAIT_NS, PROGRAM, &program) == OK);
+    proc = start_child("--child-tty-spin", program, NULL);
+    CHECK(shows("spinning\r\n"));
+    typed("\x03", 1);
+    CHECK(child_end(proc) == EXIT_SIGNAL + SIGINT);
+}
+
 void pt_tty(char **argv)
 {
     (void)argv;
@@ -261,5 +326,6 @@ void pt_tty(char **argv)
     }
     drive_child();
     handover_child();
+    signal_children();   /* last: it resizes the terminal */
     stop_console();
 }

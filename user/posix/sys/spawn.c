@@ -42,6 +42,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "proc.h"
+#include "sig.h"
 #include "spawn.h"
 
 #define CHILD_STACK  (8ull << 20)   /* a POSIX child's stack: Linux's usual 8 MiB */
@@ -120,21 +121,6 @@ static long find_program(const struct jam_spawn_req *r, const char *dir, char *n
 
 /* ---- the hand-over's state ------------------------------------------------------------- */
 
-/* The signals this thread blocks and the ones we ignore (bit n - 1). */
-static void our_signals(uint64_t *mask, uint64_t *ignored)
-{
-    sigset_t s;
-    *mask = 0;
-    if (!pthread_sigmask(SIG_BLOCK, NULL, &s))
-        memcpy(mask, &s, sizeof(*mask));
-    *ignored = 0;
-    for (int n = 1; n <= 64; n++) {
-        struct sigaction sa;
-        if (!sigaction(n, NULL, &sa) && sa.sa_handler == SIG_IGN)
-            *ignored |= 1ull << (n - 1);
-    }
-}
-
 /* The child's process group and session as r asks: 0 means its own pid.
  * 0, or -errno. */
 static long child_ids(const struct jam_spawn_req *r, struct posixfds_state *s)
@@ -159,7 +145,7 @@ static long child_ids(const struct jam_spawn_req *r, struct posixfds_state *s)
 static long child_state(const struct jam_spawn_req *r, bool exec, struct posixfds_state *s)
 {
     uint64_t mask, ignored;
-    our_signals(&mask, &ignored);
+    sig_spawn_masks(&mask, &ignored);
     if (r->flags & POSIX_SPAWN_SETSIGMASK)
         mask = r->sigmask;
     if (r->flags & POSIX_SPAWN_SETSIGDEF)
@@ -202,12 +188,20 @@ static int count(char *const *v)
     return n;
 }
 
-/* Start the program name (a bootfs name) with ho; *proc on success.
- * ho's handles are consumed whatever happens. */
+/* Start the program name (a bootfs name) with ho and a signal channel
+ * (its end as SR_SIGNALS); *proc and our end of the channel (*sigch) on
+ * success. ho's handles are consumed whatever happens. */
 static status_t start(const struct jam_spawn_req *r, const char *name,
-                      const struct posixfds_out *ho, handle_t *proc)
+                      const struct posixfds_out *ho, handle_t *proc, handle_t *sigch)
 {
     static const char *const no_env[] = { NULL };
+    handle_t theirs;
+    status_t st = jam_channel_create(sigch, &theirs);
+    if (st != OK) {
+        posixfds_discard(ho);
+        return st;
+    }
+    struct spawn_handle x = { SR_SIGNALS, theirs };
     struct spawn_args a = {
         .path = name,
         .argc = count(r->argv),
@@ -217,15 +211,20 @@ static status_t start(const struct jam_spawn_req *r, const char *name,
         .ns = r->grants ? r->grants : NS_ALL,
         .stack_size = CHILD_STACK,
         .handover = ho,
+        .extra = &x,
+        .nextra = 1,
     };
-    return spawn(&a, proc);
+    st = spawn(&a, proc);
+    if (st != OK)
+        jam_handle_close(*sigch);
+    return st;
 }
 
 /* Everything but the table: the program, the state, the start, the pid.
- * 0 with *pid and *proc, or an errno value. The table's handles in ho are
- * consumed either way. */
+ * 0 with *pid, *proc and *sigch (start's), or an errno value. The table's
+ * handles in ho are consumed either way. */
 static int launch(const struct jam_spawn_req *r, bool exec, struct spawnfd *t,
-                  struct posixfds_out *ho, int *pid, handle_t *proc)
+                  struct posixfds_out *ho, int *pid, handle_t *proc, handle_t *sigch)
 {
     char *name = malloc(PATH_MAX);
     long e = !name ? -ENOMEM : r->path ? find_program(r, t->cwd, name) : -EFAULT;
@@ -237,15 +236,16 @@ static int launch(const struct jam_spawn_req *r, bool exec, struct spawnfd *t,
         return (int)-e;
     }
     ho->cwd = t->cwd;
-    status_t st = start(r, name, ho, proc);
+    status_t st = start(r, name, ho, proc, sigch);
     free(name);
     if (st != OK)
         return spawn_errno(st);
     struct process_info info;
     st = jam_process_get_info(*proc, &info);
-    if (st != OK) {   /* a child without a pid can't be waited for */
+    if (st != OK) {
         jam_process_kill(*proc);
         jam_handle_close(*proc);
+        jam_handle_close(*sigch);
         return (int)-lx_err(st);
     }
     *pid = (int32_t)info.pid;
@@ -266,14 +266,14 @@ static int spawn_child(const struct jam_spawn_req *r, bool exec, int *res)
     if (!e)
         e = spawnfd_export(t, &ho);
     int ec = (int)-e, pid = 0;
-    handle_t proc = HANDLE_INVALID;
+    handle_t proc = HANDLE_INVALID, sigch = HANDLE_INVALID;
     if (!e)
-        ec = launch(r, exec, t, &ho, &pid, &proc);
+        ec = launch(r, exec, t, &ho, &pid, &proc, &sigch);
     struct posixfds_state s = ho.state;   /* the ids it was told */
     spawnfd_end(t, &ho);
     if (ec)
         return ec;
-    e = lx_child_add(proc, pid, s.pgid ? (int32_t)s.pgid : pid, s.sid ? (int32_t)s.sid : pid);
+    e = lx_child_add(proc, sigch, pid, s.pgid ? (int32_t)s.pgid : pid, s.sid ? (int32_t)s.sid : pid);
     if (e)
         return (int)-e;
     if (res)

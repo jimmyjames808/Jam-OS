@@ -9,11 +9,13 @@
  *   - a child started with a hand-over message (a pipe as descriptor 1,
  *     the null device as 0, nothing at 2): it writes through 1 to us,
  *     reads the end of the file at once from 0, and 2 is EBADF;
- *   - the clocks, a sleep, getrandom and uname. */
+ *   - the clocks, a sleep, getrandom and uname;
+ *   - the program's constructors ran before main, the layer's first. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <elf.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <jamos/libjam.h>
 #include <posixfds.h>
 #include <string.h>
@@ -181,8 +183,19 @@ static void check_machine(void)
     CHECK(sysconf(_SC_PAGESIZE) == 4096);
 }
 
+/* Set by a constructor of ours: it ran, and the layer's (the descriptor
+ * table's and the signal thread's, priorities 101 and 102) ran before it,
+ * so stdout was already a descriptor. */
+static int ctor_ran;
+
+__attribute__((constructor)) static void note_ctor(void)
+{
+    ctor_ran = fcntl(1, F_GETFD) >= 0 ? 1 : 2;
+}
+
 void pt_start(char **argv)
 {
+    CHECK(ctor_ran == 1);
     check_aux(argv);
     check_time();
     check_machine();

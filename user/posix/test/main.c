@@ -29,6 +29,7 @@ static const struct {
     { "proc", pt_proc },
     { "tty", pt_tty },
     { "files", pt_files },
+    { "signal", pt_signal },
     { "files-many", pt_files_many },
 };
 
@@ -66,6 +67,12 @@ int main(int argc, char **argv)
         return pt_child_tty();
     if (argc >= 2 && !strcmp(argv[1], "--child-tty-handover"))
         return pt_child_tty_handover();
+    if (argc >= 2 && !strcmp(argv[1], "--child-tty-sig"))
+        return pt_child_tty_sig();
+    if (argc >= 2 && !strcmp(argv[1], "--child-tty-spin"))
+        return pt_child_tty_spin();
+    if (argc >= 2 && !strcmp(argv[1], "--child-sig"))
+        return pt_child_sig(argc, argv);
     if (argc >= 2 && !strcmp(argv[1], "--child-files"))
         return pt_child_files();
     if (argc >= 2 && !strcmp(argv[1], "--child-rofs"))

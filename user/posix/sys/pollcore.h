@@ -23,4 +23,7 @@ long ready_deadline(long sec, long nsec, uint64_t *out);
  * (a sigset_t of size bytes) or NULL for no change; *old gets the mask
  * that ready_mask_restore puts back. 0, or -errno. */
 long ready_mask_set(const void *mask, long size, uint64_t *old);
-void ready_mask_restore(const void *mask, uint64_t old);
+/* After the wait, which returned r: with a mask, a wait ended by a signal
+ * (EINTR) runs its handlers under the wait's mask, then the old mask is
+ * back (signal.c's sig_wait_unmask). */
+void ready_mask_restore(const void *mask, uint64_t old, long r);

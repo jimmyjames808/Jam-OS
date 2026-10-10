@@ -38,6 +38,7 @@
 #include <idl/nschan.h>
 #include <idl/null.h>
 #include <idl/serve.h>
+#include <idl/signal.h>
 #include <idl/splashch.h>
 #include <idl/storage.h>
 #include <idl/svc.h>
@@ -3605,6 +3606,27 @@ static const struct idl_fuzz_msg idl_fz_serve_msgs[] = {
     { 0x001f0004u, 18u, 0, 2, 0, 0, { IDL_OBJ_CHANNEL, IDL_OBJ_VMO }, 1, { { 1, 1, 127 } } },
 };
 
+/* ---- signal ---- */
+static void idl_fz_signal_send(void *ctx, uint8_t signo, uint8_t code, int32_t value)
+{
+    (void)ctx;
+    (void)signo;
+    (void)code;
+    (void)value;
+}
+static const struct signal_ops idl_fz_signal_ops = {
+    .send = idl_fz_signal_send,
+};
+static uint32_t idl_fz_signal_serve(const void *q, uint32_t n, const handle_t *hs,
+                                uint32_t nh, void *r, handle_t *rhs, uint32_t *rhn)
+{
+    idl_close_all(hs, nh);
+    return signal_dispatch_on(HANDLE_INVALID, &idl_fz_signal_ops, NULL, q, n, r, rhs, rhn);
+}
+static const struct idl_fuzz_msg idl_fz_signal_msgs[] = {
+    { 0x002c0001u, 14u, 1, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+};
+
 /* ---- splashch ---- */
 static void idl_fz_splashch_played(void *ctx)
 {
@@ -4684,6 +4706,7 @@ static const struct idl_fuzz_proto idl_fuzz_protos[] __attribute__((unused)) = {
     { "nschan", 81, NSCHAN_REQ_MAX, NSCHAN_REP_MAX, NSCHAN_REP_HANDLES, idl_fz_nschan_serve, NULL, idl_fz_nschan_msgs, 3 },
     { "null", 1, NULL_REQ_MAX, NULL_REP_MAX, NULL_REP_HANDLES, idl_fz_null_serve, NULL, idl_fz_null_msgs, 4 },
     { "serve", 31, SERVE_REQ_MAX, SERVE_REP_MAX, SERVE_REP_HANDLES, idl_fz_serve_serve, NULL, idl_fz_serve_msgs, 3 },
+    { "signal", 44, SIGNAL_REQ_MAX, SIGNAL_REP_MAX, SIGNAL_REP_HANDLES, idl_fz_signal_serve, NULL, idl_fz_signal_msgs, 1 },
     { "splashch", 83, SPLASHCH_REQ_MAX, SPLASHCH_REP_MAX, SPLASHCH_REP_HANDLES, idl_fz_splashch_serve, idl_fz_splashch_event, idl_fz_splashch_msgs, 2 },
     { "storage", 14, STORAGE_REQ_MAX, STORAGE_REP_MAX, STORAGE_REP_HANDLES, idl_fz_storage_serve, NULL, idl_fz_storage_msgs, 6 },
     { "svc", 25, SVC_REQ_MAX, SVC_REP_MAX, SVC_REP_HANDLES, idl_fz_svc_serve, NULL, idl_fz_svc_msgs, 1 },

@@ -29,9 +29,11 @@
  * A POSIX program (the word `posix` in its list) gets more: an 8 MiB stack,
  * the environment a Unix program expects (sh_make_env_posix), and in the
  * foreground its descriptors 0 to 2 as the POSIX hand-over (sh_posix.c):
- * its terminal, the pipe it is in, or what a redirection names. Only such
- * a program takes `<` and `>`. */
+ * its terminal, the pipe it is in, or what a redirection names, and its
+ * signal channel (SR_SIGNALS, the `signal` protocol): Ctrl+C is SIGINT to
+ * it, not its job killed. Only such a program takes `<` and `>`. */
 #include <idl/console.h>
+#include <idl/signal.h>
 #include <posixfds.h>
 #include <wants.h>
 #include "sh_core.h"
@@ -137,7 +139,8 @@ static bool find_program(const char *argv0, char *path, size_t cap)
     return st == OK && !dir;
 }
 
-#define RUN_HANDLES 3    /* the most program_handles gives */
+#define RUN_HANDLES 4    /* the most program_handles gives, and a POSIX program's signal channel */
+#define LINUX_SIGINT 2   /* Linux's number, the `signal` protocol's */
 
 /* The root resource's rights for a list's WANT_RIGHT_*: what the
  * program's copy gets. Never RIGHT_TRANSFER: it can narrow its copy
@@ -206,22 +209,21 @@ struct started {
     handle_t out_r;               /* its stdout's read end, or HANDLE_INVALID */
     uint64_t t0;                  /* when it started */
     bool     posix;               /* a POSIX program (its list has `posix`) */
+    handle_t sig;                 /* a POSIX program's signal channel (our end), or 0 */
 };
 
 /* Ctrl+C reached the shell while program s runs: the console sends the
  * key to the shell even while the program holds the terminal
- * (sh_interrupted noticed it). Today the program's job is killed, a
- * POSIX program's too.
- *
- * THE HOOK for signals (M13 B4, then S2): for s->posix, send SIGINT on the
- * program's signal channel here instead (the client end of the SR_SIGNALS
- * channel start_program will then make and keep in struct started), and
- * kill the job only if it hasn't ended 2 s later. The terminal's line
- * discipline has already echoed "^C" (ECHOCTL) for such a program, so the
- * shell should print none of its own: sh_io.c's interrupt() prints one, and
- * must stay quiet while a POSIX program holds the terminal. */
+ * (sh_interrupted noticed it). A POSIX program gets SIGINT on its signal
+ * channel, and nothing is printed: its terminal's line discipline has
+ * echoed "^C" already (ECHOCTL); what it does with the signal is its own
+ * (its default action ends it; killing its job if it hasn't ended a while
+ * later is not built yet). Any other program's job is killed. */
 static void interrupt_program(const struct started *s)
 {
+    if (s->posix && s->sig &&
+        signal_send(s->sig, LINUX_SIGINT, SIGNAL_CODE_USER, 0) != ERR_SHOULD_WAIT)
+        return;   /* sent, or it has ended (ERR_PEER_CLOSED) */
     sh_tty("^C: killing %s\n", s->path);
     sh_flush();
     jam_job_kill(s->job);
@@ -340,6 +342,7 @@ static int start_failed(struct started *s, status_t st, bool said)
                "allowed (`allow`)\n");
     if (s->out_r)
         jam_handle_close(s->out_r);
+    jam_handle_close(s->sig);
     jam_handle_close(s->job);
     return said ? 1 : 126;
 }
@@ -358,6 +361,7 @@ static int start_program(int argc, char **argv, bool bg, struct started *s)
         return 126;
     s->posix = w.posix;
     s->out_r = HANDLE_INVALID;
+    s->sig = HANDLE_INVALID;
     status_t st = OK;
     if (!redirections_ok(s, bg))
         st = ERR_INVALID_ARGS;
@@ -376,6 +380,11 @@ static int start_program(int argc, char **argv, bool bg, struct started *s)
     rights_t xr[RUN_HANDLES];
     /* A POSIX program in the foreground has its pipe in the hand-over. */
     unsigned nx = program_handles(&w, bg, bg || (sh_piped() && !s->posix), x, xr, &s->out_r);
+    handle_t theirs;
+    if (s->posix && jam_channel_create(&s->sig, &theirs) == OK) {
+        xr[nx] = RIGHT_SAME;
+        x[nx++] = (struct spawn_handle){ SR_SIGNALS, theirs };   /* kill's way to it */
+    }
     char **env = s->posix ? sh_make_env_posix() : sh_make_env();
     const char *args[20];
     int n = 0;
@@ -417,6 +426,7 @@ static int run_program(int argc, char **argv)
     clean_job(s.job, s.path);
     sh_show_log(false, NULL);
     jam_handle_close(s.proc);
+    jam_handle_close(s.sig);
     jam_handle_close(s.job);
     return code;
 }
@@ -443,6 +453,7 @@ int sh_start_background(int argc, char **argv)
     int code = start_program(argc, argv, true, &s);
     if (code)
         return code;
+    jam_handle_close(s.sig);   /* not kept for the background: kill %n ends its job */
     unsigned n = sh_jobs_add(s.path, argc, argv, s.proc, s.job, s.out_r);
     const struct sh_job *j = sh_job_at(n - 1);
     sh_tty("[%u] %lu %s: in the background (jobs lists it, kill %%%u ends it)\n", n,
