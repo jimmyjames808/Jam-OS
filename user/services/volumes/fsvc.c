@@ -478,9 +478,12 @@ void mount_others(struct disk *d)
     d->want = d->nofat = d->badsize = 0;
     for (unsigned i = 0; i < d->nparts && i < MAX_PARTS; i++) {
         bool gpt = d->scheme == STORAGE_SCHEME_GPT;
-        if (!(gpt ? fat_guid(d->info[i].type_guid) : fat_type(d->type[i])))
-            say(false, "volumes: %s partition %u: %s is not FAT: left alone", disk_name(d), i + 1,
-                gpt ? "its GPT type" : "type");
+        if (gpt && !fat_guid(d->info[i].type_guid))
+            say(false, "volumes: %s partition %u: its GPT type is not FAT: left alone",
+                disk_name(d), i + 1);
+        else if (!gpt && !fat_type(d->type[i]))
+            say(false, "volumes: %s partition %u: type %02x is not FAT: left alone", disk_name(d),
+                i + 1, d->type[i]);
         else if (d->block_size && d->block_size != FAT_BLOCK)
             d->badsize |= (uint16_t)(1u << i);   /* said below, once */
         else
