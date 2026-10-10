@@ -98,7 +98,10 @@ static uint32_t test_ids;   /* test disks made so far */
 const char *disk_name(const struct disk *d)
 {
     static char s[24];
-    snprintf(s, sizeof(s), d->test ? "test disk %u" : "disk %u", d->id & ~TEST_ID);
+    if (d->bus == DISKS_BUS_NVME)
+        snprintf(s, sizeof(s), "nvme%u", d->number);   /* its id is a PCI address */
+    else
+        snprintf(s, sizeof(s), d->test ? "test disk %u" : "disk %u", d->id & ~TEST_ID);
     return s;
 }
 
@@ -140,6 +143,7 @@ void not_boot(struct disk *d, const char *why)
 /* Step 1: ask d's driver what it holds. */
 static void ask_info(struct disk *d)
 {
+    d->known = false;
     txids = (txids + 1) & ~CHANNEL_TXID_KERNEL;
     if (txids == 0)
         txids++;
@@ -240,6 +244,7 @@ static void got_partitions(struct disk *d, status_t st)
 {
     char why[64];
     const uint8_t *type = d->type;
+    d->known = true;
     say(false, "volumes: %s: %s %s, %lu MiB, %u partition(s), types %02x %02x", disk_name(d),
         d->vendor, d->product, (unsigned long)(d->blocks * d->block_size >> 20), d->partitions,
         type[0], type[1]);
@@ -307,7 +312,8 @@ static void got_stat(struct disk *d, status_t st, bool is_dir)
 static void ask_partition(struct disk *d)
 {
     if (d->part_next >= MAX_PARTS || d->part_next >= d->partitions) {
-        got_partitions(d, OK);
+        if (!ident_ask(d))   /* an NVMe drive's model and serial first */
+            got_partitions(d, OK);
         return;
     }
     d->txid = call_txid();
@@ -331,14 +337,21 @@ static void disk_answers(struct disk *d)
             continue;   /* not storage's: dropped */
         if (st != OK)
             return;
-        if ((d->state != DISK_INFO && d->state != DISK_PARTS) || m.txid != d->txid) {
+        if ((d->state != DISK_INFO && d->state != DISK_PARTS && d->state != DISK_IDENT) ||
+            m.txid != d->txid) {
             if (!call_offer(d->ch, buf, &m))
                 idl_msg_drop(&m);   /* nobody waits for it: an answer that came too late */
             continue;
         }
+        if (d->state == DISK_IDENT) {
+            ident_answer(d, buf, &m);
+            got_partitions(d, OK);
+            continue;
+        }
         if (d->state == DISK_PARTS) {
-            st = storage_partition_result(buf, &m, &d->type[d->part_next], NULL, NULL, NULL,
-                                          NULL, NULL, NULL, NULL);
+            struct part_info *pi = &d->info[d->part_next];
+            st = storage_partition_result(buf, &m, &d->type[d->part_next], pi->type_guid, NULL,
+                                          &pi->start, &pi->blocks, NULL, pi->label, NULL);
             d->part_next++;
             if (st == OK)
                 ask_partition(d);
@@ -347,9 +360,10 @@ static void disk_answers(struct disk *d)
             continue;
         }
         st = storage_info_result(buf, &m, d->vendor, NULL, d->product, NULL, &d->block_size,
-                                 &d->blocks, NULL, &d->partitions, &d->mbr_id, NULL);
+                                 &d->blocks, &d->scheme, &d->partitions, &d->mbr_id, NULL);
         if (st == OK) {
             memset(d->type, 0, sizeof(d->type));
+            memset(d->info, 0, sizeof(d->info));
             d->nparts = d->partitions > 0xff ? 0xff : (uint8_t)d->partitions;
             d->part_next = 0;
             ask_partition(d);
@@ -464,15 +478,6 @@ static void forget_all(const char *why)
         say(false, "volumes: %s: %u disk(s) forgotten", why, n);
 }
 
-/* The real disk called id, or NULL. */
-static struct disk *disk_named(uint32_t id)
-{
-    for (unsigned i = 0; i < MAX_DISKS; i++)
-        if (disks[i].state != DISK_FREE && !disks[i].test && disks[i].id == id)
-            return &disks[i];
-    return NULL;
-}
-
 /* d's `storage` channel is ch (consumed), watched from now on. False: it
  * couldn't be watched (ch closed). */
 static bool take_ch(struct disk *d, handle_t ch)
@@ -495,12 +500,14 @@ static bool take_ch(struct disk *d, handle_t ch)
 static void attach(void *ctx, uint32_t id, uint8_t bus, handle_t ch)
 {
     (void)ctx;
-    (void)bus;   /* USB's ids alone, so far */
     struct disk *d = disk_named(id);
     if (d && d->state != DISK_DOWN)
         drop_services(d, DISK_DOWN);   /* its old channel's end not seen yet */
-    if (!d && (d = disk_alloc()) != NULL)
+    if (!d && (d = disk_alloc()) != NULL) {
         d->id = id;
+        d->bus = bus;
+        disk_number(d);
+    }
     if (!d) {
         say(true, "volumes: disk %u: no room for another disk", id);
         jam_handle_close(ch);
@@ -680,6 +687,8 @@ void disk_run_due(void)
             leave_alone(d, "its driver did not answer storage.info");
         else if (d->state == DISK_PARTS)
             got_partitions(d, ERR_TIMED_OUT);
+        else if (d->state == DISK_IDENT)
+            got_partitions(d, OK);   /* its identity is only for the listing */
         else if (d->state == DISK_ESP)
             not_boot(d, "its ESP's filesystem service did not answer");
         else if (d->state == DISK_HELD)
@@ -693,7 +702,7 @@ uint64_t disk_next_deadline(void)
     uint64_t next = DEADLINE_NEVER;
     for (unsigned i = 0; i < MAX_DISKS; i++)
         if ((disks[i].state == DISK_INFO || disks[i].state == DISK_PARTS ||
-             disks[i].state == DISK_ESP ||
+             disks[i].state == DISK_IDENT || disks[i].state == DISK_ESP ||
              disks[i].state == DISK_HELD) && disks[i].deadline < next)
             next = disks[i].deadline;
     return next;

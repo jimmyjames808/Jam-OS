@@ -12,9 +12,8 @@
  *             sent for it (whatever it answers, the round must come out
  *             right: a read the abort ended is read once more)
  *   slow      block.c: a channel's answers come BLK_SLOW_STEP apart
- *   on        nothing: devmgr binds drv/nvme only on a boot with an
- *             nvmetest= word (until stage 1's PC check), and the tests
- *             that want only the driver give this one
+ *   on        nothing: no test word (devmgr binds drv/nvme on every boot
+ *             now; the tests that want only the driver give this one)
  * Each of loop, reset and abort implies selftest. Reads only, like
  * everything in this driver.
  *
@@ -51,7 +50,7 @@ uint32_t selftest_words(const struct driver_start *s)
         { "reset", NVME_TEST_SELFTEST | NVME_TEST_RESET },
         { "abort", NVME_TEST_SELFTEST | NVME_TEST_ABORT },
         { "slow", NVME_TEST_SLOW },   /* block.c's: no test reads of its own */
-        { "on", 0 },                  /* just bound (devmgr's gate), no test */
+        { "on", 0 },                  /* no test word: just the driver */
     };
     static const char key[] = "nvmetest=";
     uint32_t bits = 0;

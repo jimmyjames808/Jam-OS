@@ -27,7 +27,7 @@
  * Open /svc/volumes again (init has the next one's control channel); the
  * next volumes mounts what devmgr hands it, and a new watch lists it.
  *
- * Protocols `volumes` (id 70), `volesp` (id 71), `disks` (id 72) and `mounts` (id 73): one for each
+ * Protocols `volumes` (id 70), `volesp` (id 71), `disks` (id 72), `mounts` (id 73) and `voldisks` (id 74): one for each
  * kind of channel, so a message of one protocol sent on a channel of
  * another is refused (ERR_NOT_SUPPORTED). For each <proto>:
  * Client: <proto>_<method>(ch, args..., &results...)
@@ -51,6 +51,7 @@
 #define VOLUMES_SYNC             0x00460007u
 #define VOLUMES_STOP             0x00460008u
 #define VOLUMES_SET_DISKS        0x00460009u
+#define VOLUMES_LIST_CHANNEL     0x0046000au
 
 /* Constants (the .idl's `const` lines). */
 /* A mount's service (supervision's `state`). */
@@ -142,6 +143,14 @@ struct volumes_set_disks_req {
     uint32_t ordinal;
 } __attribute__((packed));
 struct volumes_set_disks_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
+struct volumes_list_channel_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct volumes_list_channel_rep {
     uint32_t txid;
     int32_t  status;
 } __attribute__((packed));
@@ -549,6 +558,60 @@ static inline status_t volumes_set_disks(handle_t ch, handle_t disks)
     return volumes_set_disks_call(ch, false, DEADLINE_NEVER, disks);
 }
 
+/* volumes_list_channel_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t volumes_list_channel_call(handle_t ch, bool idl_within, uint64_t idl_t, handle_t *out_list)
+{
+    _Alignas(8) uint8_t idl_b0[8];
+    _Alignas(8) uint8_t idl_b1[8];
+    struct volumes_list_channel_req *idl_q = (struct volumes_list_channel_req *)idl_b0;
+    const struct volumes_list_channel_rep *idl_r = (const struct volumes_list_channel_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = VOLUMES_LIST_CHANNEL;
+    handle_t idl_rh[1];
+    if (idl_st == OK)
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 8, &idl_got[0], idl_rh, 1, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st != OK)
+        idl_got[1] = 0;   /* handles arrive only with OK */
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
+    if (idl_st == OK && idl_got[1] != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(idl_handle_is(idl_rh[0], IDL_OBJ_CHANNEL)))
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK)
+        idl_close_all(idl_rh, idl_got[1]);
+    if (idl_st == OK) {
+        if (out_list)
+            *out_list = idl_rh[0];
+        else
+            drv_handle_close(idl_rh[0]);
+    }
+    (void)idl_o;
+    return idl_st;
+}
+/* A new channel that speaks `voldisks` (below) alone: the list of the
+ * disks and their partitions, and the two questions about a whole disk
+ * that need no write (digest, health). init hands one to the shell
+ * (initctl.disks) for `disks` and `disk`; nothing on it can change a
+ * mount. ERR_NO_RESOURCES: as many channels as volumes keeps. */
+static inline status_t volumes_list_channel_until(handle_t ch, uint64_t deadline_ns, handle_t *out_list)
+{
+    return volumes_list_channel_call(ch, false, deadline_ns, out_list);
+}
+static inline status_t volumes_list_channel_within(handle_t ch, uint64_t timeout_ns, handle_t *out_list)
+{
+    return volumes_list_channel_call(ch, true, timeout_ns, out_list);
+}
+static inline status_t volumes_list_channel(handle_t ch, handle_t *out_list)
+{
+    return volumes_list_channel_call(ch, false, DEADLINE_NEVER, out_list);
+}
+
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
 
 /* volumes_watch without waiting: the request, with the caller's txid (not 0).
@@ -890,6 +953,46 @@ static inline status_t volumes_set_disks_result(const void *idl_rep, struct idl_
     return OK;
 }
 
+/* volumes_list_channel without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then volumes_list_channel_result. */
+static inline status_t volumes_list_channel_send(handle_t ch, uint32_t idl_txid)
+{
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    _Alignas(8) uint8_t idl_b0[8];
+    struct volumes_list_channel_req *idl_q = (struct volumes_list_channel_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = VOLUMES_LIST_CHANNEL;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
+}
+
+/* The status and results of a reply to volumes_list_channel_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t volumes_list_channel_result(const void *idl_rep, struct idl_msg *idl_m, handle_t *out_list)
+{
+    const struct volumes_list_channel_rep *idl_r = (const struct volumes_list_channel_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(idl_handle_is(idl_m->hs[0], IDL_OBJ_CHANNEL)))
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    if (out_list)
+        *out_list = idl_m->hs[0];
+    else
+        drv_handle_close(idl_m->hs[0]);
+    idl_m->nh = 0;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -906,6 +1009,7 @@ struct volumes_ops {
     status_t (*sync)(void *ctx, struct idl_txn idl_txn);
     status_t (*stop)(void *ctx, struct idl_txn idl_txn);
     status_t (*set_disks)(void *ctx, handle_t disks);
+    status_t (*list_channel)(void *ctx, handle_t *out_list);
 };
 
 /* Answer the volumes.watch request kept in txn: idl_st and, if it is OK, the
@@ -1076,6 +1180,30 @@ static inline status_t volumes_reply_set_disks(struct idl_txn idl_txn, status_t 
         idl_rn = sizeof(struct idl_rep_hdr);
     }
     status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
+}
+
+/* Answer the volumes.list_channel request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t volumes_reply_list_channel(struct idl_txn idl_txn, status_t idl_st, handle_t list)
+{
+    handle_t idl_hs[1] = { list };
+    _Alignas(8) uint8_t idl_b0[8];
+    struct volumes_list_channel_rep *idl_r = (struct volumes_list_channel_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(list != HANDLE_INVALID))
+        idl_st = ERR_INTERNAL;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        if (idl_hs[0] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[0]);
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, idl_st == OK ? idl_hs : NULL, idl_st == OK ? 1 : 0);
     return idl_ws;
 }
 
@@ -1359,6 +1487,32 @@ static inline uint32_t volumes_dispatch_h(handle_t ch, const struct volumes_ops 
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
+        return sizeof(*idl_r);
+    }
+    case VOLUMES_LIST_CHANNEL: {
+        const struct volumes_list_channel_req *idl_q = (const struct volumes_list_channel_req *)req;
+        struct volumes_list_channel_rep *idl_r = (struct volumes_list_channel_rep *)rep;
+        handle_t out_list = HANDLE_INVALID;
+        if (n != sizeof(*idl_q) || idl_nh) {
+            idl_close_all(idl_hs, idl_nh);
+            return sizeof(*idl_h);
+        }
+        if (!ops->list_channel) {
+            idl_close_all(idl_hs, idl_nh);
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->list_channel(ctx, &out_list);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && !(out_list != HANDLE_INVALID))
+            idl_h->status = ERR_INTERNAL;   /* a handle result left unset */
+        if (idl_h->status != OK) {
+            if (out_list != HANDLE_INVALID)
+                drv_handle_close(out_list);
+            return sizeof(*idl_h);
+        }
+        rhs[0] = out_list;
+        *rhn = 1;
         return sizeof(*idl_r);
     }
     }
@@ -2645,5 +2799,1086 @@ static inline status_t mounts_serve(handle_t ch, const struct mounts_ops *ops, v
         if (idl_st != OK)
             return idl_st;
         idl_s.rn = mounts_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
+    }
+}
+
+
+/* ==== protocol `voldisks` (id 74) ===========================================
+ *
+ * voldisks: what the shell's `disks` and `disk` ask (M12.7 stage 1). The
+ * channel is read-only by construction: it can list, hash and ask for a
+ * drive's health, never mount, remount, kill or attach anything. volumes
+ * keeps what it asked each driver when the disk came (storage.info,
+ * .partition, and for an NVMe drive .ident) and answers from that; the
+ * digest and the health log are asked of the driver each time (a task
+ * answers later, volumes serves its other requests meanwhile). A test
+ * disk (volumes.test_disk) is not listed.
+ *
+ * Reconnect: ERR_PEER_CLOSED: volumes ended; ask init for a new channel
+ * (initctl.disks). */
+
+#define VOLDISKS_PROTOCOL_ID 74u
+#define VOLDISKS_DISK             0x004a0001u
+#define VOLDISKS_PARTITION        0x004a0002u
+#define VOLDISKS_DIGEST           0x004a0003u
+#define VOLDISKS_HEALTH           0x004a0004u
+
+/* Constants (the .idl's `const` lines). */
+/* A disk's `kind`: the Jam OS layout (an ESP then a FAT32 data partition on
+ * an MBR disk; stage 2 adds the GPT mark), a disk in which no partition
+ * table was found (blank, or in a form volumes does not read: the driver's
+ * blank rule, stage 2's, is stricter), or anything else. Only a Jam OS disk
+ * may ever be written. */
+#define VOLDISKS_KIND_OTHER 0u
+#define VOLDISKS_KIND_NO_TABLE 1u
+#define VOLDISKS_KIND_JAMOS 2u
+/* A partition's `fs`: what became of its filesystem service.
+ * its type says it holds no FAT volume: never started */
+#define VOLDISKS_FS_NONE 0u
+/* mounted at `mount` */
+#define VOLDISKS_FS_MOUNTED 1u
+/* a FAT type whose service has not started or not found its volume yet */
+#define VOLDISKS_FS_WAITING 2u
+/* started and found no FAT volume: left alone, nothing written */
+#define VOLDISKS_FS_NO_FAT 3u
+/* a FAT type on a disk whose block size is not 512: fat reads 512 only */
+#define VOLDISKS_FS_BLOCK_SIZE 4u
+/* not looked at: more partitions than volumes keeps (MAX_PARTS) */
+#define VOLDISKS_FS_UNLISTED 5u
+
+/* Messages (packed: no padding bytes ever cross the channel). */
+struct voldisks_disk_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t index;
+} __attribute__((packed));
+struct voldisks_disk_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint32_t id;
+    uint8_t bus;
+    uint8_t ready;
+    uint8_t kind;
+    uint8_t scheme;
+    uint8_t read_only;
+    uint32_t block_size;
+    uint64_t blocks;
+    uint32_t partitions;
+} __attribute__((packed));
+struct voldisks_partition_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t id;
+    uint32_t index;
+} __attribute__((packed));
+struct voldisks_partition_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint8_t mbr_type;
+    uint8_t type_guid[16];
+    uint64_t start;
+    uint64_t blocks;
+    uint8_t fs;
+} __attribute__((packed));
+struct voldisks_digest_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t id;
+    uint64_t lba;
+    uint64_t count;
+} __attribute__((packed));
+struct voldisks_digest_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint8_t sha256[32];
+} __attribute__((packed));
+struct voldisks_health_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t id;
+} __attribute__((packed));
+struct voldisks_health_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint64_t units_read;
+    uint64_t units_written;
+    uint64_t host_reads;
+    uint64_t host_writes;
+    uint64_t power_cycles;
+    uint64_t unsafe_shutdowns;
+    uint8_t percent_used;
+    uint8_t critical;
+} __attribute__((packed));
+
+#define VOLDISKS_REQ_MAX 28u   /* bytes: the biggest request */
+#define VOLDISKS_REP_MAX 169u   /* bytes: the biggest reply */
+#define VOLDISKS_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
+#define VOLDISKS_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
+#define VOLDISKS_UNREAD_MSGS IDL_UNREAD_MSGS   /* the unread bound: messages ... */
+#define VOLDISKS_UNREAD_BYTES IDL_UNREAD_BYTES   /* ... or bytes a client may leave unread */
+
+/* ---- client ---------------------------------------------------------- */
+
+/* voldisks_disk_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t voldisks_disk_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t index, uint32_t *out_id, uint8_t *out_bus, uint8_t *out_ready, uint8_t *out_kind, uint8_t *out_scheme, uint8_t *out_read_only, uint32_t *out_block_size, uint64_t *out_blocks, uint32_t *out_partitions, char out_name[8 + 1], uint32_t *out_name_len, char out_model[40 + 1], uint32_t *out_model_len, char out_serial[20 + 1], uint32_t *out_serial_len, char out_firmware[8 + 1], uint32_t *out_firmware_len)
+{
+    _Alignas(8) uint8_t idl_b0[12];
+    _Alignas(8) uint8_t idl_b1[117];
+    struct voldisks_disk_req *idl_q = (struct voldisks_disk_req *)idl_b0;
+    const struct voldisks_disk_rep *idl_r = (const struct voldisks_disk_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = VOLDISKS_DISK;
+    idl_q->index = index;
+    if (idl_st == OK)
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 117, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status_var(idl_b1, idl_got[0], sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    const void *idl_p1 = NULL;
+    uint32_t idl_l1 = 0;
+    const void *idl_p2 = NULL;
+    uint32_t idl_l2 = 0;
+    const void *idl_p3 = NULL;
+    uint32_t idl_l3 = 0;
+    if (idl_st == OK && !idl_get(idl_b1, idl_got[0], &idl_o, 8, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_get(idl_b1, idl_got[0], &idl_o, 40, 1, &idl_p1, &idl_l1))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p1, idl_l1))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_get(idl_b1, idl_got[0], &idl_o, 20, 1, &idl_p2, &idl_l2))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p2, idl_l2))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_get(idl_b1, idl_got[0], &idl_o, 8, 1, &idl_p3, &idl_l3))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p3, idl_l3))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_got[0])
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && out_id)
+        *out_id = idl_r->id;
+    if (idl_st == OK && out_bus)
+        *out_bus = idl_r->bus;
+    if (idl_st == OK && out_ready)
+        *out_ready = idl_r->ready;
+    if (idl_st == OK && out_kind)
+        *out_kind = idl_r->kind;
+    if (idl_st == OK && out_scheme)
+        *out_scheme = idl_r->scheme;
+    if (idl_st == OK && out_read_only)
+        *out_read_only = idl_r->read_only;
+    if (idl_st == OK && out_block_size)
+        *out_block_size = idl_r->block_size;
+    if (idl_st == OK && out_blocks)
+        *out_blocks = idl_r->blocks;
+    if (idl_st == OK && out_partitions)
+        *out_partitions = idl_r->partitions;
+    if (idl_st == OK && out_name) {
+        if (idl_l0)
+            __builtin_memcpy(out_name, idl_p0, idl_l0 * 1);
+        out_name[idl_l0] = 0;
+    }
+    if (idl_st == OK && out_name_len)
+        *out_name_len = idl_l0;
+    if (idl_st == OK && out_model) {
+        if (idl_l1)
+            __builtin_memcpy(out_model, idl_p1, idl_l1 * 1);
+        out_model[idl_l1] = 0;
+    }
+    if (idl_st == OK && out_model_len)
+        *out_model_len = idl_l1;
+    if (idl_st == OK && out_serial) {
+        if (idl_l2)
+            __builtin_memcpy(out_serial, idl_p2, idl_l2 * 1);
+        out_serial[idl_l2] = 0;
+    }
+    if (idl_st == OK && out_serial_len)
+        *out_serial_len = idl_l2;
+    if (idl_st == OK && out_firmware) {
+        if (idl_l3)
+            __builtin_memcpy(out_firmware, idl_p3, idl_l3 * 1);
+        out_firmware[idl_l3] = 0;
+    }
+    if (idl_st == OK && out_firmware_len)
+        *out_firmware_len = idl_l3;
+    return idl_st;
+}
+/* Disk number `index` (0-based, in the order they came; the real ones, not
+ * a test disk). `id` is the disk's (disks.attach's; digest and partition
+ * name a disk by it), `name` what the shell calls it ("nvme0", "usb0":
+ * numbered per bus in the order they came, and again if one goes), `bus`
+ * DISKS_BUS_*. `ready` 0: its driver has not answered yet (or has not
+ * answered at all, or is restarting): everything else but id, bus and name is
+ * zero. `kind` KIND_*, `scheme` storage.idl's SCHEME_*, `partitions` how
+ * many the driver lists (more than are given by `partition` when it is
+ * past MAX_PARTS), `read_only` 1: volumes opens none of its partitions
+ * writable (every NVMe drive, in stage 1). `model`, `serial` and `firmware`
+ * are the drive's own (storage.ident; a stick has the INQUIRY's vendor and
+ * product in `model` and the others empty). Past the last:
+ * ERR_OUT_OF_RANGE. */
+static inline status_t voldisks_disk_until(handle_t ch, uint64_t deadline_ns, uint32_t index, uint32_t *out_id, uint8_t *out_bus, uint8_t *out_ready, uint8_t *out_kind, uint8_t *out_scheme, uint8_t *out_read_only, uint32_t *out_block_size, uint64_t *out_blocks, uint32_t *out_partitions, char out_name[8 + 1], uint32_t *out_name_len, char out_model[40 + 1], uint32_t *out_model_len, char out_serial[20 + 1], uint32_t *out_serial_len, char out_firmware[8 + 1], uint32_t *out_firmware_len)
+{
+    return voldisks_disk_call(ch, false, deadline_ns, index, out_id, out_bus, out_ready, out_kind, out_scheme, out_read_only, out_block_size, out_blocks, out_partitions, out_name, out_name_len, out_model, out_model_len, out_serial, out_serial_len, out_firmware, out_firmware_len);
+}
+static inline status_t voldisks_disk_within(handle_t ch, uint64_t timeout_ns, uint32_t index, uint32_t *out_id, uint8_t *out_bus, uint8_t *out_ready, uint8_t *out_kind, uint8_t *out_scheme, uint8_t *out_read_only, uint32_t *out_block_size, uint64_t *out_blocks, uint32_t *out_partitions, char out_name[8 + 1], uint32_t *out_name_len, char out_model[40 + 1], uint32_t *out_model_len, char out_serial[20 + 1], uint32_t *out_serial_len, char out_firmware[8 + 1], uint32_t *out_firmware_len)
+{
+    return voldisks_disk_call(ch, true, timeout_ns, index, out_id, out_bus, out_ready, out_kind, out_scheme, out_read_only, out_block_size, out_blocks, out_partitions, out_name, out_name_len, out_model, out_model_len, out_serial, out_serial_len, out_firmware, out_firmware_len);
+}
+static inline status_t voldisks_disk(handle_t ch, uint32_t index, uint32_t *out_id, uint8_t *out_bus, uint8_t *out_ready, uint8_t *out_kind, uint8_t *out_scheme, uint8_t *out_read_only, uint32_t *out_block_size, uint64_t *out_blocks, uint32_t *out_partitions, char out_name[8 + 1], uint32_t *out_name_len, char out_model[40 + 1], uint32_t *out_model_len, char out_serial[20 + 1], uint32_t *out_serial_len, char out_firmware[8 + 1], uint32_t *out_firmware_len)
+{
+    return voldisks_disk_call(ch, false, DEADLINE_NEVER, index, out_id, out_bus, out_ready, out_kind, out_scheme, out_read_only, out_block_size, out_blocks, out_partitions, out_name, out_name_len, out_model, out_model_len, out_serial, out_serial_len, out_firmware, out_firmware_len);
+}
+
+/* voldisks_partition_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t voldisks_partition_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t id, uint32_t index, uint8_t *out_mbr_type, uint8_t out_type_guid[16], uint64_t *out_start, uint64_t *out_blocks, uint8_t *out_fs, char out_label[108 + 1], uint32_t *out_label_len, char out_mount[15 + 1], uint32_t *out_mount_len)
+{
+    _Alignas(8) uint8_t idl_b0[16];
+    _Alignas(8) uint8_t idl_b1[169];
+    struct voldisks_partition_req *idl_q = (struct voldisks_partition_req *)idl_b0;
+    const struct voldisks_partition_rep *idl_r = (const struct voldisks_partition_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = VOLDISKS_PARTITION;
+    idl_q->id = id;
+    idl_q->index = index;
+    if (idl_st == OK)
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 169, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status_var(idl_b1, idl_got[0], sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    const void *idl_p1 = NULL;
+    uint32_t idl_l1 = 0;
+    if (idl_st == OK && !idl_get(idl_b1, idl_got[0], &idl_o, 108, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_get(idl_b1, idl_got[0], &idl_o, 15, 1, &idl_p1, &idl_l1))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p1, idl_l1))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_got[0])
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && out_mbr_type)
+        *out_mbr_type = idl_r->mbr_type;
+    for (uint32_t idl_i = 0; idl_st == OK && out_type_guid && idl_i < 16; idl_i++)
+        out_type_guid[idl_i] = idl_r->type_guid[idl_i];
+    if (idl_st == OK && out_start)
+        *out_start = idl_r->start;
+    if (idl_st == OK && out_blocks)
+        *out_blocks = idl_r->blocks;
+    if (idl_st == OK && out_fs)
+        *out_fs = idl_r->fs;
+    if (idl_st == OK && out_label) {
+        if (idl_l0)
+            __builtin_memcpy(out_label, idl_p0, idl_l0 * 1);
+        out_label[idl_l0] = 0;
+    }
+    if (idl_st == OK && out_label_len)
+        *out_label_len = idl_l0;
+    if (idl_st == OK && out_mount) {
+        if (idl_l1)
+            __builtin_memcpy(out_mount, idl_p1, idl_l1 * 1);
+        out_mount[idl_l1] = 0;
+    }
+    if (idl_st == OK && out_mount_len)
+        *out_mount_len = idl_l1;
+    return idl_st;
+}
+/* Partition `index` (0-based, in table order) of disk `id`: storage.partition's
+ * MBR type byte, GPT type GUID, first block, length and GPT name, then `fs`
+ * (FS_*) and, mounted, its `mount` ("/nvme0"; empty otherwise). ERR_NOT_FOUND:
+ * no such disk; ERR_OUT_OF_RANGE: past the last partition volumes keeps. */
+static inline status_t voldisks_partition_until(handle_t ch, uint64_t deadline_ns, uint32_t id, uint32_t index, uint8_t *out_mbr_type, uint8_t out_type_guid[16], uint64_t *out_start, uint64_t *out_blocks, uint8_t *out_fs, char out_label[108 + 1], uint32_t *out_label_len, char out_mount[15 + 1], uint32_t *out_mount_len)
+{
+    return voldisks_partition_call(ch, false, deadline_ns, id, index, out_mbr_type, out_type_guid, out_start, out_blocks, out_fs, out_label, out_label_len, out_mount, out_mount_len);
+}
+static inline status_t voldisks_partition_within(handle_t ch, uint64_t timeout_ns, uint32_t id, uint32_t index, uint8_t *out_mbr_type, uint8_t out_type_guid[16], uint64_t *out_start, uint64_t *out_blocks, uint8_t *out_fs, char out_label[108 + 1], uint32_t *out_label_len, char out_mount[15 + 1], uint32_t *out_mount_len)
+{
+    return voldisks_partition_call(ch, true, timeout_ns, id, index, out_mbr_type, out_type_guid, out_start, out_blocks, out_fs, out_label, out_label_len, out_mount, out_mount_len);
+}
+static inline status_t voldisks_partition(handle_t ch, uint32_t id, uint32_t index, uint8_t *out_mbr_type, uint8_t out_type_guid[16], uint64_t *out_start, uint64_t *out_blocks, uint8_t *out_fs, char out_label[108 + 1], uint32_t *out_label_len, char out_mount[15 + 1], uint32_t *out_mount_len)
+{
+    return voldisks_partition_call(ch, false, DEADLINE_NEVER, id, index, out_mbr_type, out_type_guid, out_start, out_blocks, out_fs, out_label, out_label_len, out_mount, out_mount_len);
+}
+
+/* voldisks_digest_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t voldisks_digest_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t id, uint64_t lba, uint64_t count, uint8_t out_sha256[32])
+{
+    struct voldisks_digest_req idl_q;
+    struct voldisks_digest_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = VOLDISKS_DIGEST;
+    idl_q.id = id;
+    idl_q.lba = lba;
+    idl_q.count = count;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    for (uint32_t idl_i = 0; idl_st == OK && out_sha256 && idl_i < 32; idl_i++)
+        out_sha256[idl_i] = idl_r.sha256[idl_i];
+    return idl_st;
+}
+/* The SHA-256 of `count` blocks from `lba` of disk `id`, read in its driver
+ * (storage.digest; its errors come back as they are). ERR_NOT_FOUND: no
+ * such disk; ERR_BAD_STATE: its driver is not there (restarting). */
+static inline status_t voldisks_digest_until(handle_t ch, uint64_t deadline_ns, uint32_t id, uint64_t lba, uint64_t count, uint8_t out_sha256[32])
+{
+    return voldisks_digest_call(ch, false, deadline_ns, id, lba, count, out_sha256);
+}
+static inline status_t voldisks_digest_within(handle_t ch, uint64_t timeout_ns, uint32_t id, uint64_t lba, uint64_t count, uint8_t out_sha256[32])
+{
+    return voldisks_digest_call(ch, true, timeout_ns, id, lba, count, out_sha256);
+}
+static inline status_t voldisks_digest(handle_t ch, uint32_t id, uint64_t lba, uint64_t count, uint8_t out_sha256[32])
+{
+    return voldisks_digest_call(ch, false, DEADLINE_NEVER, id, lba, count, out_sha256);
+}
+
+/* voldisks_health_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t voldisks_health_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t id, uint64_t *out_units_read, uint64_t *out_units_written, uint64_t *out_host_reads, uint64_t *out_host_writes, uint64_t *out_power_cycles, uint64_t *out_unsafe_shutdowns, uint8_t *out_percent_used, uint8_t *out_critical)
+{
+    struct voldisks_health_req idl_q;
+    struct voldisks_health_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = VOLDISKS_HEALTH;
+    idl_q.id = id;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_units_read)
+        *out_units_read = idl_r.units_read;
+    if (idl_st == OK && out_units_written)
+        *out_units_written = idl_r.units_written;
+    if (idl_st == OK && out_host_reads)
+        *out_host_reads = idl_r.host_reads;
+    if (idl_st == OK && out_host_writes)
+        *out_host_writes = idl_r.host_writes;
+    if (idl_st == OK && out_power_cycles)
+        *out_power_cycles = idl_r.power_cycles;
+    if (idl_st == OK && out_unsafe_shutdowns)
+        *out_unsafe_shutdowns = idl_r.unsafe_shutdowns;
+    if (idl_st == OK && out_percent_used)
+        *out_percent_used = idl_r.percent_used;
+    if (idl_st == OK && out_critical)
+        *out_critical = idl_r.critical;
+    return idl_st;
+}
+/* The drive's health log (storage.health, NVMe's SMART page): the counters,
+ * percentage used and the critical warning. Errors as `digest`'s. */
+static inline status_t voldisks_health_until(handle_t ch, uint64_t deadline_ns, uint32_t id, uint64_t *out_units_read, uint64_t *out_units_written, uint64_t *out_host_reads, uint64_t *out_host_writes, uint64_t *out_power_cycles, uint64_t *out_unsafe_shutdowns, uint8_t *out_percent_used, uint8_t *out_critical)
+{
+    return voldisks_health_call(ch, false, deadline_ns, id, out_units_read, out_units_written, out_host_reads, out_host_writes, out_power_cycles, out_unsafe_shutdowns, out_percent_used, out_critical);
+}
+static inline status_t voldisks_health_within(handle_t ch, uint64_t timeout_ns, uint32_t id, uint64_t *out_units_read, uint64_t *out_units_written, uint64_t *out_host_reads, uint64_t *out_host_writes, uint64_t *out_power_cycles, uint64_t *out_unsafe_shutdowns, uint8_t *out_percent_used, uint8_t *out_critical)
+{
+    return voldisks_health_call(ch, true, timeout_ns, id, out_units_read, out_units_written, out_host_reads, out_host_writes, out_power_cycles, out_unsafe_shutdowns, out_percent_used, out_critical);
+}
+static inline status_t voldisks_health(handle_t ch, uint32_t id, uint64_t *out_units_read, uint64_t *out_units_written, uint64_t *out_host_reads, uint64_t *out_host_writes, uint64_t *out_power_cycles, uint64_t *out_unsafe_shutdowns, uint8_t *out_percent_used, uint8_t *out_critical)
+{
+    return voldisks_health_call(ch, false, DEADLINE_NEVER, id, out_units_read, out_units_written, out_host_reads, out_host_writes, out_power_cycles, out_unsafe_shutdowns, out_percent_used, out_critical);
+}
+
+/* ---- client, asynchronous (tools/genidl.py) --------------------------- */
+
+/* voldisks_disk without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then voldisks_disk_result. */
+static inline status_t voldisks_disk_send(handle_t ch, uint32_t idl_txid, uint32_t index)
+{
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    _Alignas(8) uint8_t idl_b0[12];
+    struct voldisks_disk_req *idl_q = (struct voldisks_disk_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = VOLDISKS_DISK;
+    idl_q->index = index;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
+}
+
+/* The status and results of a reply to voldisks_disk_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t voldisks_disk_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_id, uint8_t *out_bus, uint8_t *out_ready, uint8_t *out_kind, uint8_t *out_scheme, uint8_t *out_read_only, uint32_t *out_block_size, uint64_t *out_blocks, uint32_t *out_partitions, char out_name[8 + 1], uint32_t *out_name_len, char out_model[40 + 1], uint32_t *out_model_len, char out_serial[20 + 1], uint32_t *out_serial_len, char out_firmware[8 + 1], uint32_t *out_firmware_len)
+{
+    const struct voldisks_disk_rep *idl_r = (const struct voldisks_disk_rep *)idl_rep;
+    uint32_t idl_o = sizeof(*idl_r);
+    status_t idl_st = idl_rep_status_var(idl_rep, idl_m->n, sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    const void *idl_p1 = NULL;
+    uint32_t idl_l1 = 0;
+    const void *idl_p2 = NULL;
+    uint32_t idl_l2 = 0;
+    const void *idl_p3 = NULL;
+    uint32_t idl_l3 = 0;
+    if (idl_st == OK && !idl_get(idl_rep, idl_m->n, &idl_o, 8, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_get(idl_rep, idl_m->n, &idl_o, 40, 1, &idl_p1, &idl_l1))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p1, idl_l1))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_get(idl_rep, idl_m->n, &idl_o, 20, 1, &idl_p2, &idl_l2))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p2, idl_l2))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_get(idl_rep, idl_m->n, &idl_o, 8, 1, &idl_p3, &idl_l3))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p3, idl_l3))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_m->n)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_id)
+        *out_id = idl_r->id;
+    if (out_bus)
+        *out_bus = idl_r->bus;
+    if (out_ready)
+        *out_ready = idl_r->ready;
+    if (out_kind)
+        *out_kind = idl_r->kind;
+    if (out_scheme)
+        *out_scheme = idl_r->scheme;
+    if (out_read_only)
+        *out_read_only = idl_r->read_only;
+    if (out_block_size)
+        *out_block_size = idl_r->block_size;
+    if (out_blocks)
+        *out_blocks = idl_r->blocks;
+    if (out_partitions)
+        *out_partitions = idl_r->partitions;
+    if (out_name) {
+        if (idl_l0)
+            __builtin_memcpy(out_name, idl_p0, idl_l0 * 1);
+        out_name[idl_l0] = 0;
+    }
+    if (out_name_len)
+        *out_name_len = idl_l0;
+    if (out_model) {
+        if (idl_l1)
+            __builtin_memcpy(out_model, idl_p1, idl_l1 * 1);
+        out_model[idl_l1] = 0;
+    }
+    if (out_model_len)
+        *out_model_len = idl_l1;
+    if (out_serial) {
+        if (idl_l2)
+            __builtin_memcpy(out_serial, idl_p2, idl_l2 * 1);
+        out_serial[idl_l2] = 0;
+    }
+    if (out_serial_len)
+        *out_serial_len = idl_l2;
+    if (out_firmware) {
+        if (idl_l3)
+            __builtin_memcpy(out_firmware, idl_p3, idl_l3 * 1);
+        out_firmware[idl_l3] = 0;
+    }
+    if (out_firmware_len)
+        *out_firmware_len = idl_l3;
+    return OK;
+}
+
+/* voldisks_partition without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then voldisks_partition_result. */
+static inline status_t voldisks_partition_send(handle_t ch, uint32_t idl_txid, uint32_t id, uint32_t index)
+{
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    _Alignas(8) uint8_t idl_b0[16];
+    struct voldisks_partition_req *idl_q = (struct voldisks_partition_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = VOLDISKS_PARTITION;
+    idl_q->id = id;
+    idl_q->index = index;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
+}
+
+/* The status and results of a reply to voldisks_partition_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t voldisks_partition_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t *out_mbr_type, uint8_t out_type_guid[16], uint64_t *out_start, uint64_t *out_blocks, uint8_t *out_fs, char out_label[108 + 1], uint32_t *out_label_len, char out_mount[15 + 1], uint32_t *out_mount_len)
+{
+    const struct voldisks_partition_rep *idl_r = (const struct voldisks_partition_rep *)idl_rep;
+    uint32_t idl_o = sizeof(*idl_r);
+    status_t idl_st = idl_rep_status_var(idl_rep, idl_m->n, sizeof(*idl_r));
+    const void *idl_p0 = NULL;
+    uint32_t idl_l0 = 0;
+    const void *idl_p1 = NULL;
+    uint32_t idl_l1 = 0;
+    if (idl_st == OK && !idl_get(idl_rep, idl_m->n, &idl_o, 108, 1, &idl_p0, &idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_get(idl_rep, idl_m->n, &idl_o, 15, 1, &idl_p1, &idl_l1))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !idl_str_ok((const char *)idl_p1, idl_l1))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_o != idl_m->n)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_mbr_type)
+        *out_mbr_type = idl_r->mbr_type;
+    for (uint32_t idl_i = 0; out_type_guid && idl_i < 16; idl_i++)
+        out_type_guid[idl_i] = idl_r->type_guid[idl_i];
+    if (out_start)
+        *out_start = idl_r->start;
+    if (out_blocks)
+        *out_blocks = idl_r->blocks;
+    if (out_fs)
+        *out_fs = idl_r->fs;
+    if (out_label) {
+        if (idl_l0)
+            __builtin_memcpy(out_label, idl_p0, idl_l0 * 1);
+        out_label[idl_l0] = 0;
+    }
+    if (out_label_len)
+        *out_label_len = idl_l0;
+    if (out_mount) {
+        if (idl_l1)
+            __builtin_memcpy(out_mount, idl_p1, idl_l1 * 1);
+        out_mount[idl_l1] = 0;
+    }
+    if (out_mount_len)
+        *out_mount_len = idl_l1;
+    return OK;
+}
+
+/* voldisks_digest without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then voldisks_digest_result. */
+static inline status_t voldisks_digest_send(handle_t ch, uint32_t idl_txid, uint32_t id, uint64_t lba, uint64_t count)
+{
+    struct voldisks_digest_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = VOLDISKS_DIGEST;
+    idl_q.id = id;
+    idl_q.lba = lba;
+    idl_q.count = count;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to voldisks_digest_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t voldisks_digest_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t out_sha256[32])
+{
+    const struct voldisks_digest_rep *idl_r = (const struct voldisks_digest_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    for (uint32_t idl_i = 0; out_sha256 && idl_i < 32; idl_i++)
+        out_sha256[idl_i] = idl_r->sha256[idl_i];
+    return OK;
+}
+
+/* voldisks_health without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then voldisks_health_result. */
+static inline status_t voldisks_health_send(handle_t ch, uint32_t idl_txid, uint32_t id)
+{
+    struct voldisks_health_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = VOLDISKS_HEALTH;
+    idl_q.id = id;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to voldisks_health_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t voldisks_health_result(const void *idl_rep, struct idl_msg *idl_m, uint64_t *out_units_read, uint64_t *out_units_written, uint64_t *out_host_reads, uint64_t *out_host_writes, uint64_t *out_power_cycles, uint64_t *out_unsafe_shutdowns, uint8_t *out_percent_used, uint8_t *out_critical)
+{
+    const struct voldisks_health_rep *idl_r = (const struct voldisks_health_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_units_read)
+        *out_units_read = idl_r->units_read;
+    if (out_units_written)
+        *out_units_written = idl_r->units_written;
+    if (out_host_reads)
+        *out_host_reads = idl_r->host_reads;
+    if (out_host_writes)
+        *out_host_writes = idl_r->host_writes;
+    if (out_power_cycles)
+        *out_power_cycles = idl_r->power_cycles;
+    if (out_unsafe_shutdowns)
+        *out_unsafe_shutdowns = idl_r->unsafe_shutdowns;
+    if (out_percent_used)
+        *out_percent_used = idl_r->percent_used;
+    if (out_critical)
+        *out_critical = idl_r->critical;
+    return OK;
+}
+
+/* ---- server ---------------------------------------------------------- */
+
+/* Handlers: return OK and fill the results, or an ERR_* for the client.
+ * A NULL handler answers ERR_NOT_SUPPORTED. A `later` method's handler
+ * also gets the request's txn, and may return IDL_LATER and answer it
+ * with voldisks_reply_<method> (now, or later from anywhere). */
+struct voldisks_ops {
+    status_t (*disk)(void *ctx, uint32_t index, uint32_t *out_id, uint8_t *out_bus, uint8_t *out_ready, uint8_t *out_kind, uint8_t *out_scheme, uint8_t *out_read_only, uint32_t *out_block_size, uint64_t *out_blocks, uint32_t *out_partitions, char *out_name, uint32_t *out_name_len, char *out_model, uint32_t *out_model_len, char *out_serial, uint32_t *out_serial_len, char *out_firmware, uint32_t *out_firmware_len);
+    status_t (*partition)(void *ctx, uint32_t id, uint32_t index, uint8_t *out_mbr_type, uint8_t out_type_guid[16], uint64_t *out_start, uint64_t *out_blocks, uint8_t *out_fs, char *out_label, uint32_t *out_label_len, char *out_mount, uint32_t *out_mount_len);
+    status_t (*digest)(void *ctx, struct idl_txn idl_txn, uint32_t id, uint64_t lba, uint64_t count, uint8_t out_sha256[32]);
+    status_t (*health)(void *ctx, struct idl_txn idl_txn, uint32_t id, uint64_t *out_units_read, uint64_t *out_units_written, uint64_t *out_host_reads, uint64_t *out_host_writes, uint64_t *out_power_cycles, uint64_t *out_unsafe_shutdowns, uint8_t *out_percent_used, uint8_t *out_critical);
+};
+
+/* Answer the voldisks.disk request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't one). Returns the write's status
+ * (idl_reply_write). */
+static inline status_t voldisks_reply_disk(struct idl_txn idl_txn, status_t idl_st, uint32_t id, uint8_t bus, uint8_t ready, uint8_t kind, uint8_t scheme, uint8_t read_only, uint32_t block_size, uint64_t blocks, uint32_t partitions, const char *name, uint32_t name_len, const char *model, uint32_t model_len, const char *serial, uint32_t serial_len, const char *firmware, uint32_t firmware_len)
+{
+    _Alignas(8) uint8_t idl_b0[117];
+    struct voldisks_disk_rep *idl_r = (struct voldisks_disk_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r->id = id;
+    idl_r->bus = bus;
+    idl_r->ready = ready;
+    idl_r->kind = kind;
+    idl_r->scheme = scheme;
+    idl_r->read_only = read_only;
+    idl_r->block_size = block_size;
+    idl_r->blocks = blocks;
+    idl_r->partitions = partitions;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_rn, name, name_len, 8, 1) ||
+                             !idl_str_ok(name, name_len)))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_rn, model, model_len, 40, 1) ||
+                             !idl_str_ok(model, model_len)))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_rn, serial, serial_len, 20, 1) ||
+                             !idl_str_ok(serial, serial_len)))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_rn, firmware, firmware_len, 8, 1) ||
+                             !idl_str_ok(firmware, firmware_len)))
+        idl_st = ERR_INTERNAL;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
+}
+
+/* Answer the voldisks.partition request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID, or a varying result past its N (or a str that isn't one). Returns the write's status
+ * (idl_reply_write). */
+static inline status_t voldisks_reply_partition(struct idl_txn idl_txn, status_t idl_st, uint8_t mbr_type, const uint8_t type_guid[16], uint64_t start, uint64_t blocks, uint8_t fs, const char *label, uint32_t label_len, const char *mount, uint32_t mount_len)
+{
+    _Alignas(8) uint8_t idl_b0[169];
+    struct voldisks_partition_rep *idl_r = (struct voldisks_partition_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r->mbr_type = mbr_type;
+    for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
+        idl_r->type_guid[idl_i] = type_guid[idl_i];
+    idl_r->start = start;
+    idl_r->blocks = blocks;
+    idl_r->fs = fs;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_rn, label, label_len, 108, 1) ||
+                             !idl_str_ok(label, label_len)))
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_rn, mount, mount_len, 15, 1) ||
+                             !idl_str_ok(mount, mount_len)))
+        idl_st = ERR_INTERNAL;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
+}
+
+/* Answer the voldisks.digest request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t voldisks_reply_digest(struct idl_txn idl_txn, status_t idl_st, const uint8_t sha256[32])
+{
+    struct voldisks_digest_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    for (uint32_t idl_i = 0; idl_i < 32; idl_i++)
+        idl_r.sha256[idl_i] = sha256[idl_i];
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the voldisks.health request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t voldisks_reply_health(struct idl_txn idl_txn, status_t idl_st, uint64_t units_read, uint64_t units_written, uint64_t host_reads, uint64_t host_writes, uint64_t power_cycles, uint64_t unsafe_shutdowns, uint8_t percent_used, uint8_t critical)
+{
+    struct voldisks_health_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.units_read = units_read;
+    idl_r.units_written = units_written;
+    idl_r.host_reads = host_reads;
+    idl_r.host_writes = host_writes;
+    idl_r.power_cycles = power_cycles;
+    idl_r.unsafe_shutdowns = unsafe_shutdowns;
+    idl_r.percent_used = percent_used;
+    idl_r.critical = critical;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Decode the request of n bytes at req, which came on ch, call its handler,
+ * encode the reply into rep (VOLDISKS_REP_MAX bytes) and the handles it carries
+ * into rhs (VOLDISKS_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * length: 0 means no reply (the request has no txid, or a `later`
+ * handler answers it itself). No I/O; the caller sends the reply with the
+ * handles, or closes them if it never sends it. */
+static inline uint32_t voldisks_dispatch_on(handle_t ch, const struct voldisks_ops *ops, void *ctx,
+                                            const void *req, uint32_t n, void *rep, handle_t *rhs,
+                                            uint32_t *rhn)
+{
+    struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
+    *rhn = 0;
+    (void)rhs;
+    if (n < sizeof(uint32_t))
+        return 0;
+    idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
+    idl_h->status = ERR_INVALID_ARGS;
+    if (n < sizeof(struct idl_req_hdr))
+        return sizeof(*idl_h);
+    switch (((const struct idl_req_hdr *)req)->ordinal) {
+    case VOLDISKS_DISK: {
+        const struct voldisks_disk_req *idl_q = (const struct voldisks_disk_req *)req;
+        struct voldisks_disk_rep *idl_r = (struct voldisks_disk_rep *)rep;
+        uint32_t out_id = 0;
+        uint8_t out_bus = 0;
+        uint8_t out_ready = 0;
+        uint8_t out_kind = 0;
+        uint8_t out_scheme = 0;
+        uint8_t out_read_only = 0;
+        uint32_t out_block_size = 0;
+        uint64_t out_blocks = 0;
+        uint32_t out_partitions = 0;
+        char *out_name = (char *)((uint8_t *)rep + 35);
+        uint32_t out_name_len = 0;
+        char *out_model = (char *)((uint8_t *)rep + 45);
+        uint32_t out_model_len = 0;
+        char *out_serial = (char *)((uint8_t *)rep + 87);
+        uint32_t out_serial_len = 0;
+        char *out_firmware = (char *)((uint8_t *)rep + 109);
+        uint32_t out_firmware_len = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->disk) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->disk(ctx, idl_q->index, &out_id, &out_bus, &out_ready, &out_kind, &out_scheme, &out_read_only, &out_block_size, &out_blocks, &out_partitions, out_name, &out_name_len, out_model, &out_model_len, out_serial, &out_serial_len, out_firmware, &out_firmware_len);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && (out_name_len > 8 || !idl_str_ok(out_name, out_name_len)))
+            idl_h->status = ERR_INTERNAL;
+        if (idl_h->status == OK && (out_model_len > 40 || !idl_str_ok(out_model, out_model_len)))
+            idl_h->status = ERR_INTERNAL;
+        if (idl_h->status == OK && (out_serial_len > 20 || !idl_str_ok(out_serial, out_serial_len)))
+            idl_h->status = ERR_INTERNAL;
+        if (idl_h->status == OK && (out_firmware_len > 8 || !idl_str_ok(out_firmware, out_firmware_len)))
+            idl_h->status = ERR_INTERNAL;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->id = out_id;
+        idl_r->bus = out_bus;
+        idl_r->ready = out_ready;
+        idl_r->kind = out_kind;
+        idl_r->scheme = out_scheme;
+        idl_r->read_only = out_read_only;
+        idl_r->block_size = out_block_size;
+        idl_r->blocks = out_blocks;
+        idl_r->partitions = out_partitions;
+        uint32_t idl_rn = sizeof(*idl_r);
+        idl_place(rep, &idl_rn, 35, out_name_len, 1);
+        idl_place(rep, &idl_rn, 45, out_model_len, 1);
+        idl_place(rep, &idl_rn, 87, out_serial_len, 1);
+        idl_place(rep, &idl_rn, 109, out_firmware_len, 1);
+        return idl_rn;
+    }
+    case VOLDISKS_PARTITION: {
+        const struct voldisks_partition_req *idl_q = (const struct voldisks_partition_req *)req;
+        struct voldisks_partition_rep *idl_r = (struct voldisks_partition_rep *)rep;
+        uint8_t out_mbr_type = 0;
+        for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
+            idl_r->type_guid[idl_i] = 0;
+        uint64_t out_start = 0;
+        uint64_t out_blocks = 0;
+        uint8_t out_fs = 0;
+        char *out_label = (char *)((uint8_t *)rep + 44);
+        uint32_t out_label_len = 0;
+        char *out_mount = (char *)((uint8_t *)rep + 154);
+        uint32_t out_mount_len = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->partition) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->partition(ctx, idl_q->id, idl_q->index, &out_mbr_type, idl_r->type_guid, &out_start, &out_blocks, &out_fs, out_label, &out_label_len, out_mount, &out_mount_len);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && (out_label_len > 108 || !idl_str_ok(out_label, out_label_len)))
+            idl_h->status = ERR_INTERNAL;
+        if (idl_h->status == OK && (out_mount_len > 15 || !idl_str_ok(out_mount, out_mount_len)))
+            idl_h->status = ERR_INTERNAL;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->mbr_type = out_mbr_type;
+        idl_r->start = out_start;
+        idl_r->blocks = out_blocks;
+        idl_r->fs = out_fs;
+        uint32_t idl_rn = sizeof(*idl_r);
+        idl_place(rep, &idl_rn, 44, out_label_len, 1);
+        idl_place(rep, &idl_rn, 154, out_mount_len, 1);
+        return idl_rn;
+    }
+    case VOLDISKS_DIGEST: {
+        const struct voldisks_digest_req *idl_q = (const struct voldisks_digest_req *)req;
+        struct voldisks_digest_rep *idl_r = (struct voldisks_digest_rep *)rep;
+        uint8_t out_sha256[32];
+        for (uint32_t idl_i = 0; idl_i < 32; idl_i++)
+            out_sha256[idl_i] = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->digest) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        struct idl_txn idl_txn = { ch, idl_h->txid };
+        status_t idl_st = ops->digest(ctx, idl_txn, idl_q->id, idl_q->lba, idl_q->count, out_sha256);
+        /* IDL_LATER: the handler answers with voldisks_reply_digest. */
+        if (idl_st == IDL_LATER)
+            return 0;
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        for (uint32_t idl_i = 0; idl_i < 32; idl_i++)
+            idl_r->sha256[idl_i] = out_sha256[idl_i];
+        return sizeof(*idl_r);
+    }
+    case VOLDISKS_HEALTH: {
+        const struct voldisks_health_req *idl_q = (const struct voldisks_health_req *)req;
+        struct voldisks_health_rep *idl_r = (struct voldisks_health_rep *)rep;
+        uint64_t out_units_read = 0;
+        uint64_t out_units_written = 0;
+        uint64_t out_host_reads = 0;
+        uint64_t out_host_writes = 0;
+        uint64_t out_power_cycles = 0;
+        uint64_t out_unsafe_shutdowns = 0;
+        uint8_t out_percent_used = 0;
+        uint8_t out_critical = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->health) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        struct idl_txn idl_txn = { ch, idl_h->txid };
+        status_t idl_st = ops->health(ctx, idl_txn, idl_q->id, &out_units_read, &out_units_written, &out_host_reads, &out_host_writes, &out_power_cycles, &out_unsafe_shutdowns, &out_percent_used, &out_critical);
+        /* IDL_LATER: the handler answers with voldisks_reply_health. */
+        if (idl_st == IDL_LATER)
+            return 0;
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->units_read = out_units_read;
+        idl_r->units_written = out_units_written;
+        idl_r->host_reads = out_host_reads;
+        idl_r->host_writes = out_host_writes;
+        idl_r->power_cycles = out_power_cycles;
+        idl_r->unsafe_shutdowns = out_unsafe_shutdowns;
+        idl_r->percent_used = out_percent_used;
+        idl_r->critical = out_critical;
+        return sizeof(*idl_r);
+    }
+    }
+    idl_h->status = ERR_NOT_SUPPORTED;
+    return sizeof(*idl_h);
+}
+
+/* voldisks_dispatch_on without the channel (a `later` handler's txn then has none: use voldisks_dispatch_on). */
+static inline uint32_t voldisks_dispatch(const struct voldisks_ops *ops, void *ctx, const void *req, uint32_t n,
+                                         void *rep, handle_t *rhs, uint32_t *rhn)
+{
+    return voldisks_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
+}
+
+/* The unread bound (tools/genidl.py): has ch's client left VOLDISKS_UNREAD_MSGS
+ * messages or VOLDISKS_UNREAD_BYTES bytes of ours unread? Then a loop of the
+ * server's own reads nothing more from ch for now: it leaves ch unserved
+ * and looks again later (struct idl_held). */
+static inline bool voldisks_unread_full(handle_t ch)
+{
+    return idl_unread_full(ch, VOLDISKS_UNREAD_MSGS, VOLDISKS_UNREAD_BYTES);
+}
+
+/* Take the next message on ch into slot (idl_take), a slot with room for
+ * the protocol's biggest request (ERR_INVALID_ARGS if it has less). The
+ * reply waiting in *rep (NULL or empty: none) goes out first in the same
+ * system call (idl_take_after). It never waits: ERR_SHOULD_WAIT when
+ * nothing is queued. */
+static inline status_t voldisks_take_slot(handle_t ch, const struct idl_slot *slot,
+                                          struct idl_reply *rep)
+{
+    if (slot->qcap < VOLDISKS_REQ_MAX)
+        return ERR_INVALID_ARGS;
+    if (rep && rep->ch != HANDLE_INVALID)
+        return idl_take_after(ch, slot, rep);
+    return idl_take(ch, slot);
+}
+
+/* Run the request in slot (taken by voldisks_take_slot, or found there by a
+ * successor), which came on ch: as voldisks_dispatch_on, its reply built
+ * in slot->r and the handles that reply carries put into rhs
+ * (VOLDISKS_REP_HANDLES slots; *rhn of them). A request that carried handles is
+ * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
+ * reply's length: 0 means no reply (no txid, or a `later` handler
+ * answers it itself). No I/O; the caller sends the reply with the handles,
+ * or closes them if it never sends it. */
+static inline uint32_t voldisks_run_slot(handle_t ch, const struct idl_slot *slot,
+                                         const struct voldisks_ops *ops, void *ctx, handle_t *rhs, uint32_t *rhn)
+{
+    *rhn = 0;
+    if (*slot->n >= sizeof(uint32_t) && *slot->nh)
+        return idl_refuse(slot);
+    return voldisks_dispatch_on(ch, ops, ctx, slot->q, *slot->n, slot->r, rhs, rhn);
+}
+
+/* Is the method with this wire ordinal idempotent (its keyword in the
+ * .idl): run again on the state its first run left, it gives the same
+ * result and the same answer? A server that keeps nothing across a
+ * restart may run such a request again; any other it answers with an
+ * error. (No server reads it yet: it is for the drivers that outlive
+ * their process, after M12.) */
+static inline bool voldisks_idempotent(uint32_t ordinal)
+{
+    switch (ordinal) {
+    case VOLDISKS_DISK:
+    case VOLDISKS_PARTITION:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* Take one message off ch and answer it (the unread bound is the caller's:
+ * voldisks_unread_full first). OK once a message was handled
+ * (its reply may still have been dropped: the client is gone, or never
+ * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
+ * nothing is queued, ERR_PEER_CLOSED when the client is gone for good. */
+static inline status_t voldisks_serve_one(handle_t ch, const struct voldisks_ops *ops, void *ctx)
+{
+    _Alignas(8) uint8_t idl_q[VOLDISKS_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[VOLDISKS_REP_MAX];
+    handle_t idl_hs[IDL_READ_HANDLES];
+    uint32_t idl_n = 0, idl_nh = 0;
+    status_t idl_st = drv_channel_read(ch, idl_q, sizeof(idl_q), &idl_n, idl_hs, IDL_READ_HANDLES,
+                                       &idl_nh);
+    if (idl_st == ERR_BUFFER_TOO_SMALL)
+        return idl_drain(ch, idl_n, idl_nh);
+    if (idl_st != OK)
+        return idl_st;
+    if (idl_nh) {
+        idl_close_all(idl_hs, idl_nh);
+        idl_reply_status(ch, idl_q, idl_n, ERR_INVALID_ARGS);
+        return OK;
+    }
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    uint32_t idl_rhn = 0;
+    uint32_t idl_rn = voldisks_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
+    if (!idl_rn)
+        idl_close_all(idl_rhs, idl_rhn);   /* no reply: never sent */
+    else   /* the reply's handles are gone whatever the write's status */
+        (void)drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn);
+    return OK;
+}
+
+/* Serve ch until the client closes it (OK), or a wait or read fails
+ * (that status: ERR_CANCELED when the driver is being killed). Each reply
+ * goes out in the system call that takes the next request, and a client
+ * with VOLDISKS_UNREAD_MSGS answers unread waits until it reads (idl_serve_next). */
+static inline status_t voldisks_serve(handle_t ch, const struct voldisks_ops *ops, void *ctx)
+{
+    _Alignas(8) uint8_t idl_q[VOLDISKS_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[VOLDISKS_REP_MAX];
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    struct idl_serve idl_s = {
+        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+        .umsgs = VOLDISKS_UNREAD_MSGS, .ubytes = VOLDISKS_UNREAD_BYTES,
+    };
+    for (;;) {
+        status_t idl_st = idl_serve_next(&idl_s);
+        if (idl_st == ERR_PEER_CLOSED)
+            return OK;
+        if (idl_st != OK)
+            return idl_st;
+        idl_s.rn = voldisks_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
     }
 }

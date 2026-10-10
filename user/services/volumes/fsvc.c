@@ -28,7 +28,8 @@ const char *fs_mount_path(const struct vol *b)
     const struct disk *d = disk_of(b);
     bool test = d && d->test;
     if (b->other) {
-        snprintf(usb, sizeof(usb), "/usb%u%s", b->usbn, test ? "-test" : "");
+        snprintf(usb, sizeof(usb), "/%s%u%s", b->nvme ? "nvme" : "usb", b->usbn,
+                 test ? "-test" : "");
         return usb;
     }
     if (b->part == PART_ESP)
@@ -244,14 +245,14 @@ const char *fs_end_arg(const struct vol *b)
     return b->kill_at ? FAT_ARG_KILLED : FAT_ARG_CRASHED;
 }
 
-/* The lowest N no running or restarting service has as its /usbN (test
- * disks count apart: /usbN-test), or -1. */
-static int usb_number(bool test)
+/* The lowest N no running or restarting service has as its /usbN, or
+ * /nvmeN when `nvme` (test disks count apart: /usbN-test), or -1. */
+static int mount_number(bool test, bool nvme)
 {
-    for (unsigned n = 0; n < MAX_USB_MOUNTS; n++) {
+    for (unsigned n = 0; n < (nvme ? MAX_NVME_MOUNTS : MAX_USB_MOUNTS); n++) {
         bool used = false;
         for (unsigned i = 0; i < nvols && !used; i++)
-            used = vols[i].path && vols[i].other &&
+            used = vols[i].path && vols[i].other && vols[i].nvme == nvme &&
                    vols[i].test == test && vols[i].usbn == n;
         if (!used)
             return (int)n;
@@ -260,11 +261,13 @@ static int usb_number(bool test)
 }
 
 /* A free slot (or a new one) for partition `part` of d; `other`:
- * d is not the boot disk, and the service gets a /usbN. */
+ * d is not the boot disk, and the service gets a /usbN (an NVMe drive's:
+ * /nvmeN). */
 static struct vol *fs_slot(struct disk *d, unsigned part, bool other)
 {
     struct vol *b = NULL;
-    int usbn = other ? usb_number(d->test) : 0;
+    bool nvme = d->bus == DISKS_BUS_NVME;
+    int usbn = other ? mount_number(d->test, nvme) : 0;
     if (usbn < 0)
         return NULL;
     for (unsigned i = 0; i < nvols && !b; i++)
@@ -280,7 +283,7 @@ static struct vol *fs_slot(struct disk *d, unsigned part, bool other)
     *b = (struct vol){ .path = FAT_PATH, .test = d->test, .gen = gen, .serial = serial + 1,
                        .ctl_gen = ctl_gen,
                        .disk = (uint32_t)(d - disks) + 1, .part = (uint8_t)part,
-                       .other = other, .usbn = (uint8_t)usbn };
+                       .other = other, .nvme = other && nvme, .usbn = (uint8_t)usbn };
     snprintf(b->name, sizeof(b->name), "fat-%s", fs_mount_path(b) + 1);
     d->fs[part] = (uint32_t)(b - vols) + 1;
     return b;
@@ -340,9 +343,9 @@ status_t fs_start(struct disk *d, unsigned part, bool other,
 void disk_told_added(struct disk *d, const struct vol *b)
 {
     unsigned bit = 1u << b->part;
-    if (d->test || b->part >= MAX_PARTS || (d->told & bit))
-        return;
-    d->told |= (uint8_t)bit;
+    if (d->test || b->nvme || b->part >= MAX_PARTS || (d->told & bit))
+        return;   /* an internal drive is no news at every boot */
+    d->told |= (uint16_t)bit;
     snprintf(d->at[b->part], sizeof(d->at[0]), "%s", fs_mount_path(b));
     char body[96];
     if (d->mib >= 1024)
@@ -419,6 +422,20 @@ static bool fat_type(uint8_t type)
            type == 0x0c || type == 0x0e || type == TYPE_ESP;
 }
 
+/* May a GPT partition of this type GUID (its bytes on disk) hold a FAT
+ * volume? The ESP's type, and Microsoft's basic data, which is also NTFS's
+ * and exFAT's: fat looks at the boot sector and exits FAT_EXIT_NO_VOLUME
+ * having read one block. The MSR, recovery and anything else are listed,
+ * never started. */
+static bool fat_guid(const uint8_t *g)
+{
+    static const uint8_t esp[16] = { 0x28, 0x73, 0x2a, 0xc1, 0x1f, 0xf8, 0xd2, 0x11,
+                                     0xba, 0x4b, 0x00, 0xa0, 0xc9, 0x3e, 0xc9, 0x3b };
+    static const uint8_t basic[16] = { 0xa2, 0xa0, 0xd0, 0xeb, 0xe5, 0xb9, 0x33, 0x44,
+                                       0x87, 0xc0, 0x68, 0xb6, 0xb7, 0x26, 0x99, 0xc7 };
+    return !memcmp(g, esp, 16) || !memcmp(g, basic, 16);
+}
+
 /* A /usbN service's start went: one that failed lets the next one go. */
 static void other_started(struct disk *d, unsigned part, status_t st)
 {
@@ -446,7 +463,7 @@ void others_pump(void)
              part++) {
             if (!(d->want & 1u << part))
                 continue;
-            d->want &= (uint8_t)~(1u << part);
+            d->want &= (uint16_t)~(1u << part);
             if (fs_start(d, part, true, other_started) == OK)
                 return;
         }
@@ -458,14 +475,23 @@ void others_pump(void)
 void mount_others(struct disk *d)
 {
     d->state = DISK_OTHER;
-    d->want = 0;
+    d->want = d->nofat = d->badsize = 0;
     for (unsigned i = 0; i < d->nparts && i < MAX_PARTS; i++) {
-        if (fat_type(d->type[i]))
-            d->want |= (uint8_t)(1u << i);
-        else
+        bool gpt = d->scheme == STORAGE_SCHEME_GPT;
+        if (gpt && !fat_guid(d->info[i].type_guid))
+            say(false, "volumes: %s partition %u: its GPT type is not FAT: left alone",
+                disk_name(d), i + 1);
+        else if (!gpt && !fat_type(d->type[i]))
             say(false, "volumes: %s partition %u: type %02x is not FAT: left alone", disk_name(d),
                 i + 1, d->type[i]);
+        else if (d->block_size && d->block_size != FAT_BLOCK)
+            d->badsize |= (uint16_t)(1u << i);   /* said below, once */
+        else
+            d->want |= (uint16_t)(1u << i);
     }
+    if (d->badsize)
+        say(false, "volumes: %s: %u-byte blocks: %s reads 512-byte blocks only: its FAT-typed "
+            "partitions are left alone", disk_name(d), d->block_size, FAT_PATH);
     if (!d->want)
         say(false, "volumes: %s: no FAT partition to mount: left alone", disk_name(d));
     others_pump();
@@ -496,6 +522,7 @@ bool fs_check_ended(struct vol *b, bool no_volume)
     say(false, "volumes: %s partition %u (type %02x) holds no FAT volume %s can read: left alone, "
         "nothing written to it", disk_name(d), b->part + 1, d->type[b->part], FAT_PATH);
     problems += !sup_job_empty(b->job, b->path);
+    d->nofat |= (uint16_t)(1u << b->part);   /* the listing says so */
     fs_forget(b);
     fs_retire(b);
     return true;

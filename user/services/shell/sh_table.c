@@ -27,7 +27,7 @@ enum {
 };
 
 const char *const sh_categories[C_COUNT] = {
-    "Files (/data: your files on the stick; /usb0...: other sticks)",
+    "Files (/data: your files on the stick; /usb0...: other sticks; /nvme0...: NVMe drives)",
     "Text (read a file or a pipe)",
     "Programs and windows",
     "Music and sound",
@@ -105,6 +105,16 @@ static const struct sh_cmd cmds[] = {
       "  another). The programs it started with & end with it"),
     C(devices, C_HARDWARE, "devices", "PCI functions and the drivers devmgr bound (alias lspci)"),
     C(usb, C_HARDWARE, "usb", "USB devices from usb-bus (alias lsusb)"),
+    C(disk, C_HARDWARE, "disk digest <disk> [<lba> <count>] | disk smart <disk>",
+      "ask a whole disk, by the name `disks` shows (nvme0, usb0). digest: SHA-256s\n"
+      "  computed in its driver (the data never leaves it): without a range the\n"
+      "  regions tools/disk-regions.py makes on Linux from the partition table\n"
+      "  (the first 34 blocks, each partition under 1 GiB whole, a bigger one's\n"
+      "  first and last 64 MiB and 32 samples of 1 MiB, the last 33 blocks), one\n"
+      "  line each, also in the boot log, then \"disk digest: done\"; with a range, one\n"
+      "  line for those blocks. smart: the NVMe drive's health log: data read and\n"
+      "  written, host read and write commands (the write count not moving is the\n"
+      "  drive's own witness that nothing was written), power cycles, wear"),
     C(hda, C_HARDWARE, "hda [gain [dB] | bits [n] | jacks]",
       "the HD Audio codecs and their widget graphs, read now by drv/hda\n"
       "  (the lines it logged at boot; pipe it: hda | grep pin), then the path to the\n"
@@ -279,7 +289,12 @@ static const struct sh_cmd cmds[] = {
     C(sync, C_FILES, "sync", "make sure everything written is on the stick"),
     C(mount, C_FILES, "mount [-w|-r /usbN]",
       "the mounts, and which can be written. Another USB stick shows up\n"
-      "  read-only at /usb0, /usb1, ...: -w makes it writable, -r read-only again"),
+      "  read-only at /usb0, /usb1, ...: -w makes it writable, -r read-only again.\n"
+      "  An NVMe drive's partitions (/nvme0, ...) are read-only for good"),
+    C(disks, C_FILES, "disks",
+      "the disks (USB sticks and NVMe drives): the drive, size and partition table,\n"
+      "  then each partition: its type, size, name and where it is mounted. An NVMe\n"
+      "  drive is read-only (nvme0, mounted at /nvme0)"),
     C(cat, C_TEXT, "cat [file...]", "print files (or the pipe)"),
     C(hexdump, C_TEXT, "hexdump [-s offset] [-n bytes] [file]",
       "hex and ASCII, 16 bytes a line (also hd)"),

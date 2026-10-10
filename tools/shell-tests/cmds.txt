@@ -128,6 +128,21 @@ wait #     <path in bootfs> [arguments...]
 send wc init.cfg | grep init.cfg && echo ok-$T-wc
 wait ok-x-wc
 wait {prompt}
+# disks: the boot stick is listed as a Jam OS disk with its two partitions
+# mounted; an NVMe drive's mount is never writable; `disk` checks its arguments
+send disks | grep "Jam OS disk" && echo ok-$T-disks1
+wait ok-x-disks1
+send disks | grep -c "/data$" | grep ^1$ && echo ok-$T-disks2
+wait ok-x-disks2
+send disk digest nosuchdisk
+wait no disk called nosuchdisk
+send disk smart
+wait usage: disk digest <disk>
+send mount -w /nvme0
+wait not on a Jam OS disk
+send mount -r /nvme0
+wait read-only already
+wait {prompt}
 
 # ---- pipes and text ------------------------------------------------------------------
 send seq 5 | sort -rn | head -2 | tail -1 | grep ^4$ && echo ok-$T-p1

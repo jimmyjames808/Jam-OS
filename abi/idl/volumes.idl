@@ -97,6 +97,12 @@ const SUP_FINISHED   4
 # init made the pair). The disks of the old one are forgotten, without
 # notices.
 9  set_disks  (handle<channel> disks) -> ()
+# A new channel that speaks `voldisks` (below) alone: the list of the
+# disks and their partitions, and the two questions about a whole disk
+# that need no write (digest, health). init hands one to the shell
+# (initctl.disks) for `disks` and `disk`; nothing on it can change a
+# mount. ERR_NO_RESOURCES: as many channels as volumes keeps.
+10 list_channel  () -> (handle<channel> list)
 
 # volesp: the boot disk's ESP made writable, for init's stick write
 # (`update -w`, user/services/init/espwrite.c) alone: init made this
@@ -182,3 +188,67 @@ const UNREAD_MAX 256
 2  unmounted  -> (str[<=15] path, u32 generation) event
 # The list is whole as of `generation`: tell the namespaces now.
 3  settled  -> (u32 generation) event
+
+# voldisks: what the shell's `disks` and `disk` ask (M12.7 stage 1). The
+# channel is read-only by construction: it can list, hash and ask for a
+# drive's health, never mount, remount, kill or attach anything. volumes
+# keeps what it asked each driver when the disk came (storage.info,
+# .partition, and for an NVMe drive .ident) and answers from that; the
+# digest and the health log are asked of the driver each time (a task
+# answers later, volumes serves its other requests meanwhile). A test
+# disk (volumes.test_disk) is not listed.
+#
+# Reconnect: ERR_PEER_CLOSED: volumes ended; ask init for a new channel
+# (initctl.disks).
+
+protocol voldisks 74
+
+# A disk's `kind`: the Jam OS layout (an ESP then a FAT32 data partition on
+# an MBR disk; stage 2 adds the GPT mark), a disk in which no partition
+# table was found (blank, or in a form volumes does not read: the driver's
+# blank rule, stage 2's, is stricter), or anything else. Only a Jam OS disk
+# may ever be written.
+const KIND_OTHER    0
+const KIND_NO_TABLE 1
+const KIND_JAMOS    2
+
+# A partition's `fs`: what became of its filesystem service.
+# its type says it holds no FAT volume: never started
+const FS_NONE        0
+# mounted at `mount`
+const FS_MOUNTED     1
+# a FAT type whose service has not started or not found its volume yet
+const FS_WAITING     2
+# started and found no FAT volume: left alone, nothing written
+const FS_NO_FAT      3
+# a FAT type on a disk whose block size is not 512: fat reads 512 only
+const FS_BLOCK_SIZE  4
+# not looked at: more partitions than volumes keeps (MAX_PARTS)
+const FS_UNLISTED    5
+
+# Disk number `index` (0-based, in the order they came; the real ones, not
+# a test disk). `id` is the disk's (disks.attach's; digest and partition
+# name a disk by it), `name` what the shell calls it ("nvme0", "usb0":
+# numbered per bus in the order they came, and again if one goes), `bus`
+# DISKS_BUS_*. `ready` 0: its driver has not answered yet (or has not
+# answered at all, or is restarting): everything else but id, bus and name is
+# zero. `kind` KIND_*, `scheme` storage.idl's SCHEME_*, `partitions` how
+# many the driver lists (more than are given by `partition` when it is
+# past MAX_PARTS), `read_only` 1: volumes opens none of its partitions
+# writable (every NVMe drive, in stage 1). `model`, `serial` and `firmware`
+# are the drive's own (storage.ident; a stick has the INQUIRY's vendor and
+# product in `model` and the others empty). Past the last:
+# ERR_OUT_OF_RANGE.
+1  disk  (u32 index) -> (u32 id, u8 bus, u8 ready, u8 kind, u8 scheme, u8 read_only, u32 block_size, u64 blocks, u32 partitions, str[<=8] name, str[<=40] model, str[<=20] serial, str[<=8] firmware) idempotent
+# Partition `index` (0-based, in table order) of disk `id`: storage.partition's
+# MBR type byte, GPT type GUID, first block, length and GPT name, then `fs`
+# (FS_*) and, mounted, its `mount` ("/nvme0"; empty otherwise). ERR_NOT_FOUND:
+# no such disk; ERR_OUT_OF_RANGE: past the last partition volumes keeps.
+2  partition  (u32 id, u32 index) -> (u8 mbr_type, u8[16] type_guid, u64 start, u64 blocks, u8 fs, str[<=108] label, str[<=15] mount) idempotent
+# The SHA-256 of `count` blocks from `lba` of disk `id`, read in its driver
+# (storage.digest; its errors come back as they are). ERR_NOT_FOUND: no
+# such disk; ERR_BAD_STATE: its driver is not there (restarting).
+3  digest  (u32 id, u64 lba, u64 count) -> (u8[32] sha256) later
+# The drive's health log (storage.health, NVMe's SMART page): the counters,
+# percentage used and the critical warning. Errors as `digest`'s.
+4  health  (u32 id) -> (u64 units_read, u64 units_written, u64 host_reads, u64 host_writes, u64 power_cycles, u64 unsafe_shutdowns, u8 percent_used, u8 critical) later

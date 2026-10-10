@@ -100,7 +100,7 @@ macOS runs gets their files (`System Volume Information`, `.Spotlight-V100`,
 | 01:00.1 | NVIDIA HD Audio, 10de:22bb | HDMI/DP audio on the RTX: no driver, not planned |
 | 00:14.3 | Intel Wi-Fi (the board lists an AX201), 8086:7a70 (MSI-X 16) | not planned |
 | 00:0e.0 | Intel VMD/RAID, 8086:a77f | its 64-bit BAR has a hard-wired-zero upper half (see [HISTORY.md](HISTORY.md#m6-pci-msi-devmgr-drivers-through-handles)) |
-| 02:00.0 | Crucial NVMe, c0a9:5421 (MSI 8, MSI-X 9) | not used: storage is the USB stick; no driver planned |
+| 02:00.0 | Crucial NVMe, c0a9:5421 (MSI 8, MSI-X 9) | drv/nvme, **read-only** (M12.7, [plan](M12.7-PLAN.md)): bound on every boot since stage 1's N4; its FAT partitions are `/nvme0`, ..., `disks` lists it, `disk digest` and `disk smart` read it. Windows' drive on the owner's PC: never written ([USING](USING.md#files-and-sticks)). Writing and an installer are stages 2 and 3 |
 | | SATA, SMBus, I2C/SPI functions, 6 bridges | |
 
 ## The IOMMU (VT-d)

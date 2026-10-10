@@ -131,3 +131,12 @@ const APP_MAX      15
 # DESKAPPS_RUNNING run already; spawn's errors. The compositor's channel
 # (the search box) and the shell's; the consoles' ERR_ACCESS_DENIED.
 10 launch  (str[<=15] app) -> (u64 koid)
+# A new channel to volumes that speaks `voldisks` (abi/idl/volumes.idl)
+# alone: the list of the disks and their partitions, and a drive's digest
+# and health log. It can change nothing (no mount, no remount, no kill), so
+# the shell has it for `disks` and `disk` without volumes' control channel,
+# which tools/checkwants.py keeps from every program but a test. One
+# channel per call; the caller closes it. ERR_NOT_FOUND: no volumes runs;
+# ERR_NO_RESOURCES: volumes keeps as many channels as it can. The shell's
+# channel only (ERR_ACCESS_DENIED on the consoles' and the compositor's).
+11 disks  () -> (handle<channel> list)

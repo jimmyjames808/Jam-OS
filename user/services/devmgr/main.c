@@ -60,7 +60,8 @@
  * drivers start without one and keep the network off. The argument
  * "vtdtest" (with "iommu=on", the IOMMU checks test entry) is passed on to
  * drv/hda, which runs its deliberate DMA faults before serving. The
- * argument "nvmetest=<words>" (a test's) is passed on to every drv/nvme.
+ * argument "nvmetest=<words>" (a test's) is passed on to every drv/nvme
+ * (which is bound on every boot, with it or without).
  *
  * devmgrctl.shutdown (a kexec reboot) stops everything the way the last
  * control client leaving does, without waiting for the shell's copies.
@@ -116,11 +117,12 @@ static const struct {
     /* QEMU's Intel 82574L, the network tests' card (QEMU_NET; the PC has
      * none). Like every network driver it gets the boot's vlan=. */
     { 0x8086, 0x10d3, ANY_CLASS, "drv/e1000e", NULL },
-    /* Any NVM Express controller (class 01 08 02): read only (docs/M12.7-PLAN.md).
-     * Only on a boot with an nvmetest= word until stage 1's PC check signs
-     * the driver off: the PC's one NVMe drive is Windows', and an everyday
-     * boot (the M12 sign-off's) leaves it alone. */
-    { 0xffff, 0xffff, 0x010802, "drv/nvme", "nvmetest" },
+    /* Any NVM Express controller (class 01 08 02): on every boot (no boot word,
+     * since M12.7's N4). The driver is read only (tools/checknvme.py makes sure
+     * of it at build time) and volumes mounts a drive's partitions read-only as
+     * /nvmeN, apart from the sticks' /usbN, so the PC's Windows drive is safe
+     * to bind. An "nvmetest=" word only adds the driver's test reads. */
+    { 0xffff, 0xffff, 0x010802, "drv/nvme", NULL },
 };
 
 struct binding devs[MAX_DEVS];
@@ -179,7 +181,7 @@ const char *bdf(const struct binding *b)
 static bool pci_word_given(const char *word)
 {
     return (!strcmp(word, "netprobe") && netprobe) || (!strcmp(word, "netsend") && netsend) ||
-           (!strcmp(word, "net") && net) || (!strcmp(word, "nvmetest") && nvmetest);
+           (!strcmp(word, "net") && net);
 }
 
 /* The driver for function i (NULL: none). */

@@ -21,8 +21,12 @@
 #   twons    two namespaces: the second is logged "not served"
 #   4k       4096-byte blocks: listed and digested, not mounted (fat is 512 only)
 #   damaged  the primary GPT header broken: read from the backup, listed as damaged
-#   kill     drv/nvme killed right after a read: restarted, /nvme0 and the file are back
+#   kill     drv/nvme killed right after a read: its mounts go with it (volumes: "its driver
+#            ended"), then devmgr's restart is attached again and /nvme0 and the file are back
 #   iommu    the windows case behind QEMU's VT-d (QEMU_IOMMU=1, iommu=on)
+#   plain    the windows case booted with no nvmetest= word at all, as the PC's
+#            everyday entry boots (devmgr binds drv/nvme on every boot since
+#            M12.7's N4): the same checks
 #   block    the windows disk under utest's NVMe cases (user/tests/utest/
 #            nvme.c: storage, block, 32 reads in flight, a client that leaves
 #            with reads out), and their storage.digest region lines equal
@@ -56,7 +60,7 @@ set -eu
 out=$1
 shift
 cases=${*:-windows}
-[ "$cases" = all ] && cases="checker windows twons 4k damaged kill iommu block"
+[ "$cases" = all ] && cases="checker windows plain twons 4k damaged kill iommu block"
 mkdir -p "$out"
 
 sha256() { if command -v sha256sum > /dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
@@ -122,7 +126,7 @@ for c in $cases; do
     bs=512 props= words= iommu= dmg=
     img="$dir/disk.img" imgs="$img"
     case $c in
-    windows | kill) ;;
+    windows | kill | plain) ;;
     block) words="nvmetest=slow" ;;   # answers 20 ms apart: the drain rule is seen
     iommu) iommu=1 words="iommu=on" ;;
     twons) imgs="$img+$dir/ns2.img" ;;
@@ -133,8 +137,8 @@ for c in $cases; do
     # Level 1 has no client that reads: the driver's test word reads the
     # namespace's ends (drivers/nvme/selftest.c), so the trace has Reads.
     [ $level = 1 ] && words="${words:+$words }nvmetest=selftest"
-    # devmgr binds drv/nvme only on a boot with an nvmetest= word (main.c).
-    case " $words " in *" nvmetest="*) ;; *) words="${words:+$words }nvmetest=on" ;; esac
+    # nvmetest=on: no test words (drv/nvme binds on every boot; the plain case gives none).
+    case " $words " in *" nvmetest="*) ;; *) [ $c = plain ] || words="${words:+$words }nvmetest=on" ;; esac
     # shellcheck disable=SC2086
     python3 tools/nvme-img.py "$img" windows --block-size $bs $dmg
     before2=
@@ -166,11 +170,14 @@ for c in $cases; do
                 echo "wait /nvme0"
                 echo "wait {prompt}"
                 echo "send ls /nvme0/EFI/Microsoft/Boot"
+                echo "wait BCD"   # ls sorts upper case first: BCD, then bootmgfw.efi
                 echo "wait bootmgfw.efi"
-                echo "wait BCD"
                 echo "wait {prompt}"
                 if [ $c = kill ]; then
-                    echo "send ls /nvme0 > /dev/null; kill nvme; sha256sum /nvme0/EFI/Microsoft/Boot/bootmgfw.efi"
+                    # The driver's end takes the mounts with it (volumes: "its driver
+                    # ended"); they are back once devmgr's restart has attached the
+                    # disk again, a moment later.
+                    echo "send ls /nvme0 > /dev/null; kill nvme; sleep 2; sha256sum /nvme0/EFI/Microsoft/Boot/bootmgfw.efi"
                 else
                     echo "send sha256sum /nvme0/EFI/Microsoft/Boot/bootmgfw.efi"
                 fi
@@ -240,6 +247,8 @@ for c in $cases; do
     }
     L3() {
         if [ $c = 4k ]; then want "no FAT"; else want "EFI system"; fi
+        if [ $c = plain ] && grep -aq "hello from ring 3.*nvmetest" "$log"; then bad "the plain case was given an nvmetest= word"; fi
+        if [ $c = kill ]; then want "nvme0: its driver ended"; want "nvme0 partition 1 is /nvme0, read-only"; fi
         # `disk digest`'s lines against Linux's tool on the same image
         sed -nE 's/.*((gpt-head|part[0-9]+(-[a-z0-9]+)?|gpt-tail) lba [0-9]+ count [0-9]+ sha256 [0-9a-f]{64}).*/\1/p' \
             "$log" > "$dir/regions-guest.txt"

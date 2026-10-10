@@ -2262,6 +2262,16 @@ static status_t idl_fz_initctl_launch(void *ctx, const char *app, uint32_t app_l
     *out_koid = (uint64_t)0x5a5a5a5a5a5a5a5aull;
     return OK;
 }
+static status_t idl_fz_initctl_disks(void *ctx, handle_t *out_list)
+{
+    (void)ctx;
+    (void)out_list;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    if (drv_event_create(out_list) != OK)
+        return ERR_NO_MEMORY;
+    return OK;
+}
 static const struct initctl_ops idl_fz_initctl_ops = {
     .kill = idl_fz_initctl_kill,
     .sync = idl_fz_initctl_sync,
@@ -2273,6 +2283,7 @@ static const struct initctl_ops idl_fz_initctl_ops = {
     .update_offer = idl_fz_initctl_update_offer,
     .terminal = idl_fz_initctl_terminal,
     .launch = idl_fz_initctl_launch,
+    .disks = idl_fz_initctl_disks,
 };
 static uint32_t idl_fz_initctl_serve(const void *q, uint32_t n, const handle_t *hs,
                                 uint32_t nh, void *r, handle_t *rhs, uint32_t *rhn)
@@ -2291,6 +2302,7 @@ static const struct idl_fuzz_msg idl_fz_initctl_msgs[] = {
     { 0x00120008u, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x00120009u, 8u, 0, 0, 0, 0, { 0 }, 1, { { 1, 1, 127 } } },
     { 0x0012000au, 8u, 0, 0, 0, 0, { 0 }, 1, { { 1, 1, 15 } } },
+    { 0x0012000bu, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
 };
 
 /* ---- input ---- */
@@ -4352,6 +4364,16 @@ static status_t idl_fz_volumes_set_disks(void *ctx, handle_t disks)
         return ERR_IO;
     return OK;
 }
+static status_t idl_fz_volumes_list_channel(void *ctx, handle_t *out_list)
+{
+    (void)ctx;
+    (void)out_list;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    if (drv_event_create(out_list) != OK)
+        return ERR_NO_MEMORY;
+    return OK;
+}
 static const struct volumes_ops idl_fz_volumes_ops = {
     .watch = idl_fz_volumes_watch,
     .remount = idl_fz_volumes_remount,
@@ -4362,6 +4384,7 @@ static const struct volumes_ops idl_fz_volumes_ops = {
     .sync = idl_fz_volumes_sync,
     .stop = idl_fz_volumes_stop,
     .set_disks = idl_fz_volumes_set_disks,
+    .list_channel = idl_fz_volumes_list_channel,
 };
 static uint32_t idl_fz_volumes_serve(const void *q, uint32_t n, const handle_t *hs,
                                 uint32_t nh, void *r, handle_t *rhs, uint32_t *rhn)
@@ -4378,6 +4401,7 @@ static const struct idl_fuzz_msg idl_fz_volumes_msgs[] = {
     { 0x00460007u, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x00460008u, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x00460009u, 8u, 0, 1, 0, 0, { IDL_OBJ_CHANNEL }, 0, { { 0, 0, 0 } } },
+    { 0x0046000au, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
 };
 
 /* ---- volesp ---- */
@@ -4491,6 +4515,133 @@ static const struct idl_fuzz_msg idl_fz_mounts_msgs[] = {
     { 0x00490003u, 12u, 2, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
 };
 
+/* ---- voldisks ---- */
+static status_t idl_fz_voldisks_disk(void *ctx, uint32_t index, uint32_t *out_id, uint8_t *out_bus, uint8_t *out_ready, uint8_t *out_kind, uint8_t *out_scheme, uint8_t *out_read_only, uint32_t *out_block_size, uint64_t *out_blocks, uint32_t *out_partitions, char *out_name, uint32_t *out_name_len, char *out_model, uint32_t *out_model_len, char *out_serial, uint32_t *out_serial_len, char *out_firmware, uint32_t *out_firmware_len)
+{
+    (void)ctx;
+    (void)index;
+    (void)out_id;
+    (void)out_bus;
+    (void)out_ready;
+    (void)out_kind;
+    (void)out_scheme;
+    (void)out_read_only;
+    (void)out_block_size;
+    (void)out_blocks;
+    (void)out_partitions;
+    (void)out_name;
+    (void)out_name_len;
+    (void)out_model;
+    (void)out_model_len;
+    (void)out_serial;
+    (void)out_serial_len;
+    (void)out_firmware;
+    (void)out_firmware_len;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    *out_id = (uint32_t)0x5a5a5a5a5a5a5a5aull;
+    *out_bus = (uint8_t)0x5a5a5a5a5a5a5a5aull;
+    *out_ready = (uint8_t)0x5a5a5a5a5a5a5a5aull;
+    *out_kind = (uint8_t)0x5a5a5a5a5a5a5a5aull;
+    *out_scheme = (uint8_t)0x5a5a5a5a5a5a5a5aull;
+    *out_read_only = (uint8_t)0x5a5a5a5a5a5a5a5aull;
+    *out_block_size = (uint32_t)0x5a5a5a5a5a5a5a5aull;
+    *out_blocks = (uint64_t)0x5a5a5a5a5a5a5a5aull;
+    *out_partitions = (uint32_t)0x5a5a5a5a5a5a5a5aull;
+    __builtin_memset(out_name, 'a', 8u * sizeof(*out_name));
+    *out_name_len = 8;
+    __builtin_memset(out_model, 'a', 40u * sizeof(*out_model));
+    *out_model_len = 40;
+    __builtin_memset(out_serial, 'a', 20u * sizeof(*out_serial));
+    *out_serial_len = 20;
+    __builtin_memset(out_firmware, 'a', 8u * sizeof(*out_firmware));
+    *out_firmware_len = 8;
+    return OK;
+}
+static status_t idl_fz_voldisks_partition(void *ctx, uint32_t id, uint32_t index, uint8_t *out_mbr_type, uint8_t out_type_guid[16], uint64_t *out_start, uint64_t *out_blocks, uint8_t *out_fs, char *out_label, uint32_t *out_label_len, char *out_mount, uint32_t *out_mount_len)
+{
+    (void)ctx;
+    (void)id;
+    (void)index;
+    (void)out_mbr_type;
+    (void)out_type_guid;
+    (void)out_start;
+    (void)out_blocks;
+    (void)out_fs;
+    (void)out_label;
+    (void)out_label_len;
+    (void)out_mount;
+    (void)out_mount_len;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    *out_mbr_type = (uint8_t)0x5a5a5a5a5a5a5a5aull;
+    __builtin_memset(out_type_guid, 0x5a, 16);
+    *out_start = (uint64_t)0x5a5a5a5a5a5a5a5aull;
+    *out_blocks = (uint64_t)0x5a5a5a5a5a5a5a5aull;
+    *out_fs = (uint8_t)0x5a5a5a5a5a5a5a5aull;
+    __builtin_memset(out_label, 'a', 108u * sizeof(*out_label));
+    *out_label_len = 108;
+    __builtin_memset(out_mount, 'a', 15u * sizeof(*out_mount));
+    *out_mount_len = 15;
+    return OK;
+}
+static status_t idl_fz_voldisks_digest(void *ctx, struct idl_txn idl_txn, uint32_t id, uint64_t lba, uint64_t count, uint8_t out_sha256[32])
+{
+    (void)ctx;
+    (void)idl_txn;
+    (void)id;
+    (void)lba;
+    (void)count;
+    (void)out_sha256;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    __builtin_memset(out_sha256, 0x5a, 32);
+    return OK;
+}
+static status_t idl_fz_voldisks_health(void *ctx, struct idl_txn idl_txn, uint32_t id, uint64_t *out_units_read, uint64_t *out_units_written, uint64_t *out_host_reads, uint64_t *out_host_writes, uint64_t *out_power_cycles, uint64_t *out_unsafe_shutdowns, uint8_t *out_percent_used, uint8_t *out_critical)
+{
+    (void)ctx;
+    (void)idl_txn;
+    (void)id;
+    (void)out_units_read;
+    (void)out_units_written;
+    (void)out_host_reads;
+    (void)out_host_writes;
+    (void)out_power_cycles;
+    (void)out_unsafe_shutdowns;
+    (void)out_percent_used;
+    (void)out_critical;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    *out_units_read = (uint64_t)0x5a5a5a5a5a5a5a5aull;
+    *out_units_written = (uint64_t)0x5a5a5a5a5a5a5a5aull;
+    *out_host_reads = (uint64_t)0x5a5a5a5a5a5a5a5aull;
+    *out_host_writes = (uint64_t)0x5a5a5a5a5a5a5a5aull;
+    *out_power_cycles = (uint64_t)0x5a5a5a5a5a5a5a5aull;
+    *out_unsafe_shutdowns = (uint64_t)0x5a5a5a5a5a5a5a5aull;
+    *out_percent_used = (uint8_t)0x5a5a5a5a5a5a5a5aull;
+    *out_critical = (uint8_t)0x5a5a5a5a5a5a5a5aull;
+    return OK;
+}
+static const struct voldisks_ops idl_fz_voldisks_ops = {
+    .disk = idl_fz_voldisks_disk,
+    .partition = idl_fz_voldisks_partition,
+    .digest = idl_fz_voldisks_digest,
+    .health = idl_fz_voldisks_health,
+};
+static uint32_t idl_fz_voldisks_serve(const void *q, uint32_t n, const handle_t *hs,
+                                uint32_t nh, void *r, handle_t *rhs, uint32_t *rhn)
+{
+    idl_close_all(hs, nh);
+    return voldisks_dispatch_on(HANDLE_INVALID, &idl_fz_voldisks_ops, NULL, q, n, r, rhs, rhn);
+}
+static const struct idl_fuzz_msg idl_fz_voldisks_msgs[] = {
+    { 0x004a0001u, 12u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x004a0002u, 16u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x004a0003u, 28u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x004a0004u, 12u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+};
+
 static const struct idl_fuzz_proto idl_fuzz_protos[] __attribute__((unused)) = {
     { "audio", 22, AUDIO_REQ_MAX, AUDIO_REP_MAX, AUDIO_REP_HANDLES, idl_fz_audio_serve, NULL, idl_fz_audio_msgs, 1 },
     { "audio_stream", 50, AUDIO_STREAM_REQ_MAX, AUDIO_STREAM_REP_MAX, AUDIO_STREAM_REP_HANDLES, idl_fz_audio_stream_serve, NULL, idl_fz_audio_stream_msgs, 8 },
@@ -4515,7 +4666,7 @@ static const struct idl_fuzz_proto idl_fuzz_protos[] __attribute__((unused)) = {
     { "idltest_two", 34, IDLTEST_TWO_REQ_MAX, IDLTEST_TWO_REP_MAX, IDLTEST_TWO_REP_HANDLES, idl_fz_idltest_two_serve, NULL, idl_fz_idltest_two_msgs, 3 },
     { "idltest_ev", 35, IDLTEST_EV_REQ_MAX, IDLTEST_EV_REP_MAX, IDLTEST_EV_REP_HANDLES, idl_fz_idltest_ev_serve, idl_fz_idltest_ev_event, idl_fz_idltest_ev_msgs, 7 },
     { "idltest_h", 37, IDLTEST_H_REQ_MAX, IDLTEST_H_REP_MAX, IDLTEST_H_REP_HANDLES, idl_fz_idltest_h_serve, NULL, idl_fz_idltest_h_msgs, 8 },
-    { "initctl", 18, INITCTL_REQ_MAX, INITCTL_REP_MAX, INITCTL_REP_HANDLES, idl_fz_initctl_serve, NULL, idl_fz_initctl_msgs, 10 },
+    { "initctl", 18, INITCTL_REQ_MAX, INITCTL_REP_MAX, INITCTL_REP_HANDLES, idl_fz_initctl_serve, NULL, idl_fz_initctl_msgs, 11 },
     { "input", 11, INPUT_REQ_MAX, INPUT_REP_MAX, INPUT_REP_HANDLES, idl_fz_input_serve, idl_fz_input_event, idl_fz_input_msgs, 5 },
     { "jamcover", 26, JAMCOVER_REQ_MAX, JAMCOVER_REP_MAX, JAMCOVER_REP_HANDLES, idl_fz_jamcover_serve, NULL, idl_fz_jamcover_msgs, 1 },
     { "keepch", 80, KEEPCH_REQ_MAX, KEEPCH_REP_MAX, KEEPCH_REP_HANDLES, idl_fz_keepch_serve, idl_fz_keepch_event, idl_fz_keepch_msgs, 4 },
@@ -4540,9 +4691,10 @@ static const struct idl_fuzz_proto idl_fuzz_protos[] __attribute__((unused)) = {
     { "usb", 10, USB_REQ_MAX, USB_REP_MAX, USB_REP_HANDLES, idl_fz_usb_serve, NULL, idl_fz_usb_msgs, 11 },
     { "usbbus", 13, USBBUS_REQ_MAX, USBBUS_REP_MAX, USBBUS_REP_HANDLES, idl_fz_usbbus_serve, NULL, idl_fz_usbbus_msgs, 5 },
     { "usbbus_events", 36, USBBUS_EVENTS_REQ_MAX, USBBUS_EVENTS_REP_MAX, USBBUS_EVENTS_REP_HANDLES, idl_fz_usbbus_events_serve, NULL, idl_fz_usbbus_events_msgs, 1 },
-    { "volumes", 70, VOLUMES_REQ_MAX, VOLUMES_REP_MAX, VOLUMES_REP_HANDLES, idl_fz_volumes_serve, NULL, idl_fz_volumes_msgs, 9 },
+    { "volumes", 70, VOLUMES_REQ_MAX, VOLUMES_REP_MAX, VOLUMES_REP_HANDLES, idl_fz_volumes_serve, NULL, idl_fz_volumes_msgs, 10 },
     { "volesp", 71, VOLESP_REQ_MAX, VOLESP_REP_MAX, VOLESP_REP_HANDLES, idl_fz_volesp_serve, NULL, idl_fz_volesp_msgs, 2 },
     { "disks", 72, DISKS_REQ_MAX, DISKS_REP_MAX, DISKS_REP_HANDLES, idl_fz_disks_serve, NULL, idl_fz_disks_msgs, 2 },
     { "mounts", 73, MOUNTS_REQ_MAX, MOUNTS_REP_MAX, MOUNTS_REP_HANDLES, idl_fz_mounts_serve, idl_fz_mounts_event, idl_fz_mounts_msgs, 3 },
+    { "voldisks", 74, VOLDISKS_REQ_MAX, VOLDISKS_REP_MAX, VOLDISKS_REP_HANDLES, idl_fz_voldisks_serve, NULL, idl_fz_voldisks_msgs, 4 },
 };
 #define IDL_FUZZ_PROTOS (sizeof(idl_fuzz_protos) / sizeof(idl_fuzz_protos[0]))
