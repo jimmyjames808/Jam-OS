@@ -188,30 +188,45 @@ static bool program_wants(const char *path, struct wants *w, handle_t *vmo, uint
     return true;
 }
 
-/* Wait for it to end, copying its output and killing its job on Ctrl+C. */
-static status_t wait_program(handle_t proc, handle_t job, handle_t out_r, const char *path,
-                             struct process_info *info)
+/* A program spawn started: what start_program hands back. */
+struct started {
+    char     path[SH_PATH_MAX];   /* what was started (bin/x, /data/x) */
+    handle_t proc, job;           /* its process and its job */
+    handle_t out_r;               /* its stdout's read end, or HANDLE_INVALID */
+    uint64_t t0;                  /* when it started */
+};
+
+/* Ctrl+C reached the shell while program s runs: the console sends the
+ * key to the shell even while the program holds the terminal
+ * (sh_interrupted noticed it). The program's job is killed. */
+static void interrupt_program(const struct started *s)
+{
+    sh_tty("^C: killing %s\n", s->path);
+    sh_flush();
+    jam_job_kill(s->job);
+}
+
+/* Wait for it to end, copying its output and ending its job on Ctrl+C. */
+static status_t wait_program(const struct started *s, struct process_info *info)
 {
     status_t st;
-    bool killed = false;
-    while ((st = spawn_wait(proc, 50 * NS_PER_MS, info)) == ERR_TIMED_OUT) {
-        if (out_r)
-            drain(out_r, false);
+    bool interrupted = false;
+    while ((st = spawn_wait(s->proc, 50 * NS_PER_MS, info)) == ERR_TIMED_OUT) {
+        if (s->out_r)
+            drain(s->out_r, false);
         sh_jobs_poll(false);
-        if (sh_interrupted() && !killed) {
-            sh_tty("^C: killing %s\n", path);
-            sh_flush();
-            jam_job_kill(job);
-            killed = true;
+        if (sh_interrupted() && !interrupted) {
+            interrupt_program(s);
+            interrupted = true;
         }
     }
-    if (out_r) {
+    if (s->out_r) {
         /* What is left: the queue is capped (1024 messages), so this ends
          * unless something the program left running keeps writing, which
          * the guard (and Ctrl+C) cut short. */
-        for (unsigned guard = 0; guard < 64 && drain(out_r, false); guard++)
+        for (unsigned guard = 0; guard < 64 && drain(s->out_r, false); guard++)
             ;
-        jam_handle_close(out_r);
+        jam_handle_close(s->out_r);
     }
     return st;
 }
@@ -252,14 +267,6 @@ static void clean_job(handle_t job, const char *path)
                    (unsigned long)ji.used[JOB_LIMIT_THREADS]);
     }
 }
-
-/* A program spawn started: what start_program hands back. */
-struct started {
-    char     path[SH_PATH_MAX];   /* what was started (bin/x, /data/x) */
-    handle_t proc, job;           /* its process and its job */
-    handle_t out_r;               /* its stdout's read end, or HANDLE_INVALID */
-    uint64_t t0;                  /* when it started */
-};
 
 /* argv[0] found, its list read, a job made, its handles and spawned (bg:
  * to run in the background), into *s. 0, or the status to give back
@@ -330,7 +337,7 @@ static int run_program(int argc, char **argv)
     sh_tty("run: %s started (Ctrl+C kills it)\n", s.path);
     sh_flush();
     struct process_info info;
-    status_t st = wait_program(s.proc, s.job, s.out_r, s.path, &info);
+    status_t st = wait_program(&s, &info);
     code = ended(st, &info, s.path, s.t0);
     clean_job(s.job, s.path);
     sh_show_log(false, NULL);
