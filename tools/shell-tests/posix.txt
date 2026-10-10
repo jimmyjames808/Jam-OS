@@ -247,12 +247,20 @@ send two
 type \x04
 wait pxio: 2 lines, 8 bytes
 wait {prompt}
+# Ctrl+C is SIGINT on the program's signal channel: its default action
+# ends it (the layer's exit code for "ended by SIGINT", 0x10000 + 2); a
+# program with a handler goes on and exits as it likes
 send pxio cat
 wait run: bin/pxio started
 sleep 1
 type \x03
-wait ^C: killing bin/pxio
-wait run: bin/pxio was killed
+wait run: bin/pxio exited with code 65538
+wait {prompt}
+send pxio sigint
+wait pxio: waiting
+type \x03
+wait pxio: got SIGINT
+wait run: bin/pxio exited with code 3
 wait {prompt}
 send pxio out bg-$T &
 wait bg-x

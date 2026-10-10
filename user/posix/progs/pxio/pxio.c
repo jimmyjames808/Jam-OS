@@ -15,12 +15,15 @@
  *   pxio cat             descriptor 0 to descriptor 1, as it comes
  *   pxio count           "pxio: N lines, M bytes" of descriptor 0
  *   pxio exit N          exits with code N
+ *   pxio sigint          "pxio: waiting", then waits for SIGINT (the shell's
+ *                        Ctrl+C), says "pxio: got SIGINT" and exits with 3
  *
  * Writing is write(2) alone, so nothing is buffered between two modes'
  * lines. */
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <signal.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -121,6 +124,24 @@ static int copy_stdin(bool count)
     return 0;
 }
 
+static volatile sig_atomic_t got_int;
+
+static void on_int(int sig)
+{
+    (void)sig;
+    got_int = 1;
+}
+
+static int wait_sigint(void)
+{
+    signal(SIGINT, on_int);
+    put(1, "pxio: waiting\n");
+    while (!got_int)
+        pause();
+    put(1, "pxio: got SIGINT\n");
+    return 3;
+}
+
 int main(int argc, char **argv)
 {
     const char *m = argc > 1 ? argv[1] : "";
@@ -157,6 +178,8 @@ int main(int argc, char **argv)
         return copy_stdin(true);
     if (!strcmp(m, "exit") && argc == 3)
         return atoi(argv[2]);
-    put(2, "usage: pxio env|cwd|fds|stack|out T|err T|both O E|seq N|cat|count|exit N\n");
+    if (!strcmp(m, "sigint"))
+        return wait_sigint();
+    put(2, "usage: pxio env|cwd|fds|stack|out T|err T|both O E|seq N|cat|count|exit N|sigint\n");
     return 2;
 }
