@@ -8,7 +8,8 @@
  *       floor(d * 1e9 / hz) for TSC rates from 25 MHz to 4 GHz and for
  *       deltas from 0 to 2^64 - 1; for this boot's rate, tsc_to_ns's.
  *   timepage_against_clock_get
- *       on up to 8 CPUs for 10 s: the page read between two uptime_ns()
+ *       on up to 8 CPUs for 10 s (1 s on a live system: the soak runs it
+ *       five times within its time limit): the page read between two uptime_ns()
  *       calls is never behind the first nor ahead of the second (so within
  *       their gap, and the conversion is exact), and the page's UTC is
  *       wallclock_get's at the same uptime.
@@ -29,7 +30,8 @@
 #include <jam/time.h>
 #include <jam/wallclock.h>
 
-#define AGAINST_NS   (10 * NS_PER_S)   /* timepage_against_clock_get's run */
+#define AGAINST_NS   (10 * NS_PER_S)   /* timepage_against_clock_get's run ... */
+#define AGAINST_LIVE (1 * NS_PER_S)    /* ... from the shell or the soak */
 #define TORN_NS      (300 * NS_PER_MS) /* timepage_no_torn_reads' run */
 #define MAX_READERS  8
 /* Each thread's least work, however late a loaded machine starts it. */
@@ -157,7 +159,7 @@ KTEST(timepage_against_clock_get)
     uint32_t n = cpu_count < MAX_READERS ? cpu_count : MAX_READERS;
     static struct reader rs[MAX_READERS];
     memset(rs, 0, sizeof(rs));
-    uint64_t until = uptime_ns() + AGAINST_NS;
+    uint64_t until = uptime_ns() + (ktest_live ? AGAINST_LIVE : AGAINST_NS);
     for (uint32_t i = 0; i < n; i++) {
         rs[i].cpu = i;
         rs[i].until = until;
