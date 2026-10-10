@@ -25,7 +25,7 @@ _Static_assert(POSIXFDS_MSG_MAX <= CHANNEL_MAX_BYTES, "a message fits a channel 
 #define PAD8(n) (((n) + 7u) & ~7u)
 
 /* What a kind is (posixfds.h's enum). */
-enum data_rule { DATA_ANY, DATA_PATH, DATA_NAME };
+enum data_rule { DATA_ANY, DATA_PATH, DATA_NAME, DATA_FD };
 static const struct {
     uint8_t  nhandles;                        /* exactly this many */
     uint8_t  data;                            /* enum data_rule */
@@ -43,6 +43,7 @@ static const struct {
     [POSIXFDS_ETC] = { 0, DATA_PATH, false, { 0 } },
     [POSIXFDS_MEMFD] = { 1, DATA_ANY, false, { OBJ_VMO } },
     [POSIXFDS_EVENTFD] = { 1, DATA_ANY, false, { OBJ_EVENT } },
+    [POSIXFDS_DUP] = { 0, DATA_FD, false, { 0 } },
 };
 
 static lock_t   buf_lock;                              /* guards everything below */
@@ -88,6 +89,17 @@ static bool state_zero(const struct posixfds_state *s)
     return !s->umask && !s->ppid && !s->pgid && !s->sid && !s->sigmask && !s->sigignore;
 }
 
+/* A DUP record's data: the number of a descriptor already in the
+ * hand-over (so not its own), and the record has no status of its own. */
+static bool dup_ok(const struct posixfds_fd *r, const uint8_t *data)
+{
+    uint32_t target;
+    if (r->data_len != sizeof(target) || r->status)
+        return false;
+    memcpy(&target, data, sizeof(target));
+    return target < POSIXFDS_FD_MAX && (seen[target / 64] & 1ull << (target % 64));
+}
+
 /* A record and its data (data_len bytes, checked to be there); its fd is
  * marked in `seen`. */
 static bool record_ok(const struct posixfds_fd *r, const uint8_t *data)
@@ -97,6 +109,8 @@ static bool record_ok(const struct posixfds_fd *r, const uint8_t *data)
     uint64_t bit = 1ull << (r->fd % 64);
     if (seen[r->fd / 64] & bit)
         return false;   /* a descriptor twice */
+    if (kinds[r->kind].data == DATA_FD && !dup_ok(r, data))
+        return false;
     seen[r->fd / 64] |= bit;
     if (r->nhandles != kinds[r->kind].nhandles || (r->status & ~POSIXFDS_STATUS) ||
         (r->status & POSIXFDS_O_ACCMODE) == POSIXFDS_O_ACCMODE ||
