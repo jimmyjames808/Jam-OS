@@ -297,6 +297,15 @@ void net_init(handle_t port)
     if (dsys_srv && (jam_handle_duplicate(dsys_cli, RIGHT_SAME, &d) != OK ||
                      ns_svc_set(SVC_DNS_SYS, d, true) != OK))
         printf("init: /svc/dns-sys isn't published: no resolver reserve for sntp\n");
+    /* The shared ends (services.c publishes the network's): what lands on
+     * them is nobody's. Not netctl's: init's own calls go there (KEY_NETCTL),
+     * and the DHCP client's. */
+    shared_watch(SVC_NET, net_cli);
+    shared_watch(SVC_NET_LISTEN, listen_cli);
+    shared_watch(SVC_NET_LISTEN_LOW, low_cli);
+    shared_watch(SVC_NET_SYS, sys_cli);
+    shared_watch(SVC_DNS, dns_cli);
+    shared_watch(SVC_DNS_SYS, dsys_cli);
 }
 
 handle_t net_svc_channel(void)

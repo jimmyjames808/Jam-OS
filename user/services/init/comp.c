@@ -552,11 +552,13 @@ void comp_init(handle_t loop_port)
     }
     kept_end_mark(wl_srv);
     services_publish(SVC_WAYLAND, wl_cli, true);   /* a connection per opener (svc.connect) */
+    shared_watch(SVC_WAYLAND, wl_cli);   /* what lands there is nobody's (services.c) */
     if (jam_channel_create(&note_cli, &note_srv) != OK) {
         note_cli = note_srv = HANDLE_INVALID;   /* no notices: the log has them */
     } else {
         kept_end_mark(note_srv);
         services_publish(SVC_NOTIFY, note_cli, true);   /* a notify channel per opener */
+        shared_watch(SVC_NOTIFY, note_cli);   /* note_channel's connect blocks: not ours */
     }
     printf("init: the compositor draws the screen: each terminal is a window\n");
 }

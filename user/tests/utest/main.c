@@ -37,6 +37,8 @@ JAM_WANTS("svc devmgr\n"
           "svc init\n"
           "svc volumes\n"
           "svc wayland\n"
+          "svc music\n"
+          "svc audio\n"
           "mount * rw\n"
           "right klog\n"
           "right sysinfo\n");
@@ -1175,6 +1177,7 @@ static const struct {
     { "fat_hostile", t_fat_hostile },
     { "volumes_hostile", t_volumes_hostile },
     { "initctl_strings", t_initctl_strings },
+    { "svc_shared_unread", t_svc_shared_unread },
 };
 
 int main(int argc, char **argv)

@@ -174,6 +174,8 @@ enum { BOOTFS, COMPOSITOR, CONSOLE, SPLASH, SERIALIN, DEVMGR, VOLUMES, MIXER, MU
 #define KEY_COMP     0x900u   /* the compositor's answer on init's compctl channel (comp.c) */
 #define KEY_APPS     0xa00u   /* + a slot: a desktop app's process ended (apps.c) */
 #define KEY_DEVMGR   0xb00u   /* devmgr's answers to init's calls that don't wait (dm.c) */
+#define KEY_SHARED   0xc00u   /* + a slot: a shared /svc end has answers nobody reads
+                               * (services.c, shared_event) */
 
 struct svc {
     const char *path;          /* in bootfs */
@@ -339,6 +341,20 @@ void     comp_notice(const char *title, const char *body, char icon, uint8_t tin
  * compositor, or it refused: said in the log). */
 bool     comp_notice_run(const char *title, const char *body, char icon, uint8_t tint,
                          const char *const *buttons, const char *cmd);
+
+/* services.c: the shared client end h of /svc/<name> (a service that hands
+ * out a channel per opener; init's, kept for the boot, never closed) is
+ * read from now on, and whatever lands on it dropped: the answers to
+ * requests a holder sent with txids of its own and never read (a blocking
+ * call's answer goes straight to its caller). The service stops reading
+ * its shared channel while 8 of them wait there (the generated unread
+ * bound), so without this one such holder stops its new openers for the
+ * rest of the boot. Not for an end init makes calls of its own on with
+ * txids of its own. At most SHARED_MAX ends. */
+#define SHARED_MAX 16u
+void     shared_watch(const char *name, handle_t h);
+/* KEY_SHARED + i: end i has something to read. */
+void     shared_event(unsigned i);
 
 /* services.c: devmgr's class drivers type into what ch leads to (consumed):
  * the compositor's INPUT channel (devmgrctl.set_input, sent without waiting

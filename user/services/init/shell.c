@@ -550,6 +550,8 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
             comp_event();
         } else if (pkt.key >= KEY_APPS && pkt.key < KEY_APPS + DESKAPPS_RUNNING) {
             apps_event((unsigned)(pkt.key - KEY_APPS));
+        } else if (pkt.key >= KEY_SHARED && pkt.key < KEY_SHARED + SHARED_MAX) {
+            shared_event((unsigned)(pkt.key - KEY_SHARED));
         }
     }
 }

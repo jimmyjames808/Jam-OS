@@ -569,6 +569,74 @@ void shell_flush_log(uint64_t deadline)
         printf("init: the boot log's last lines were not saved (%s)\n", status_str(st));
 }
 
+/* ---- the shared ends: what nobody will read, dropped ------------------------------ */
+
+#define SHARED_ROUND 64u    /* messages dropped a turn: then the loop's other work */
+#define SHARED_BUF   256u   /* an answer's bytes read in place (bigger: idl_discard) */
+
+static struct {
+    handle_t    h;        /* the shared client end (init's; 0: a free slot) */
+    const char *name;     /* its service, for the log */
+    uint64_t    dropped;  /* answers dropped so far */
+} shared[SHARED_MAX];
+
+void shared_watch(const char *name, handle_t h)
+{
+    if (!h)
+        return;
+    for (unsigned i = 0; i < SHARED_MAX; i++) {
+        if (shared[i].h)
+            continue;
+        status_t st = jam_port_bind(port, h, KEY_SHARED + i, SIG_READABLE, PORT_BIND_PERSISTENT);
+        if (st != OK) {
+            printf("init: /svc/%s's answers nobody reads aren't dropped (%s)\n", name,
+                   status_str(st));
+            return;
+        }
+        shared[i].h = h;
+        shared[i].name = name;
+        shared[i].dropped = 0;
+        shared_event(i);   /* what came before the binding: it fires on new ones only */
+        return;
+    }
+    printf("init: /svc/%s's answers nobody reads aren't dropped (no slot)\n", name);
+}
+
+void shared_event(unsigned i)
+{
+    if (i >= SHARED_MAX || !shared[i].h)
+        return;
+    handle_t h = shared[i].h;
+    uint64_t before = shared[i].dropped;
+    unsigned n = 0;
+    for (; n < SHARED_ROUND; n++) {
+        _Alignas(8) uint8_t b[SHARED_BUF];
+        handle_t hs[IDL_HANDLES_MAX];
+        uint32_t got = 0, nh = 0;
+        status_t st = jam_channel_read(&(struct channel_read_args){
+            .h = h, .rd_cap = sizeof(b), .rd_bytes = (uint64_t)(uintptr_t)b,
+            .rd_actual = (uint64_t)(uintptr_t)&got, .rd_handles = (uint64_t)(uintptr_t)hs,
+            .rd_hcap = IDL_HANDLES_MAX, .rd_hactual = (uint64_t)(uintptr_t)&nh,
+        });
+        if (st == ERR_BUFFER_TOO_SMALL) {
+            uint32_t txid;
+            st = idl_discard(h, got, nh, &txid, &got);   /* its handles closed */
+        } else if (st == OK) {
+            idl_close_all(hs, nh);   /* a channel of the service's: it sees its opener go */
+        }
+        if (st != OK)
+            break;   /* empty (or the service gone for good: nothing more will come) */
+        shared[i].dropped++;
+    }
+    if (!before && shared[i].dropped)
+        printf("init: /svc/%s: answers nobody reads are dropped (a holder sent requests of "
+               "its own and didn't read them)\n", shared[i].name);
+    if (n == SHARED_ROUND) {   /* more may be queued: the binding fires on a new message only */
+        struct port_packet pkt = { .key = KEY_SHARED + i, .type = PORT_PACKET_USER };
+        (void)jam_port_queue(port, &pkt);   /* a full port: the next answer brings it back */
+    }
+}
+
 /* The mixer's three channels, once (all, or none). */
 static void make_audio_channels(void)
 {
@@ -786,6 +854,13 @@ void services_init(handle_t loop_port, bool no_usb, bool splash, const char *she
         serve_cli = serve_srv = HANDLE_INVALID;
     kept_end_mark(serve_srv);
     services_publish(SVC_SERVE, serve_cli, true);
+    /* Shared ends, kept for the boot: what lands on them is nobody's (init's
+     * calls there block: spare.c's probe, comp.c's connect). The network's
+     * are net.c's, the desktop's comp.c's. */
+    shared_watch(SVC_AUDIO, audio_cli[0]);
+    shared_watch(SVC_AUDIOCTL, audio_cli[1]);
+    shared_watch(SVC_MUSIC, music_cli);
+    shared_watch(SVC_SERVE, serve_cli);
     services_publish(SVC_NET, net_svc_channel(), true);
     services_publish(SVC_NET_LISTEN, net_listen_channel(), true);   /* the shell's to give */
     services_publish(SVC_NET_LISTEN_LOW, net_listen_low_channel(), true);   /* ... to bin/serve */
