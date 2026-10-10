@@ -121,6 +121,6 @@ long lx_pselect6(long n, long r, long w, long e, long ts, long data)
     if (rr)
         return rr;
     rr = select_run(n, r, w, e, deadline);
-    ready_mask_restore(mask, old);
+    ready_mask_restore(mask, old, rr);
     return rr;
 }

@@ -21,6 +21,31 @@
 
 typedef long lx_call(long a, long b, long c, long d, long e, long f);
 
+/* ---- the call boundary (signal.c, from calls.c) ------------------------------------- */
+
+/* What kind of call a frame is, for the boundary. */
+#define SIG_CALL_QUIET     1u   /* no delivery around it: memory, futex wakes, exits */
+#define SIG_CALL_NORESTART 2u   /* never restarted after a handler (poll, sleeps, waits
+                                 * for signals, timed futex waits): EINTR */
+#define SIG_CALL_PIPE      4u   /* EPIPE raises SIGPIPE on the calling thread */
+
+/* One call through the boundary: the handler and Linux's six arguments,
+ * and for a cancellation point the thread's cancel flag (musl's). */
+struct sig_frame {
+    lx_call      *fn;
+    unsigned      kind;     /* SIG_CALL_* */
+    volatile int *cancel;   /* a cancellation point's flag, or NULL */
+    long          a[6];
+};
+
+/* Run f's call as a call boundary: the handlers due before it run, then
+ * the call, then the handlers due after it. An EINTR is returned, or the
+ * call made again: when no handler ran (an interrupt left over from a
+ * signal already delivered), or when every handler that ran had
+ * SA_RESTART and the call may restart. A set cancel flag ends the call
+ * with EINTR (musl's cancellation acts on it). */
+long sig_call(const struct sig_frame *f);
+
 /* Memory (mem.c): anonymous mappings and the break. */
 lx_call lx_mmap, lx_munmap, lx_mprotect, lx_madvise, lx_mremap, lx_brk;
 
@@ -69,5 +94,9 @@ lx_call lx_poll, lx_ppoll, lx_select, lx_pselect6, lx_epoll_create, lx_epoll_cre
 lx_call lx_getpid, lx_getppid, lx_getpgid, lx_setpgid, lx_getsid, lx_setsid, lx_wait4,
         lx_waitid, lx_execve;
 
-/* Signals before signals exist (nosig.c). */
-lx_call lx_rt_sigprocmask;
+/* Signals (sigcalls.c) and the timers that send them (sigtimer.c). */
+lx_call lx_rt_sigaction, lx_rt_sigprocmask, lx_rt_sigpending, lx_rt_sigsuspend, lx_pause,
+        lx_rt_sigtimedwait, lx_sigaltstack, lx_kill, lx_tkill, lx_tgkill, lx_rt_sigqueueinfo,
+        lx_rt_tgsigqueueinfo;
+lx_call lx_getitimer, lx_setitimer, lx_timer_create, lx_timer_settime, lx_timer_gettime,
+        lx_timer_getoverrun, lx_timer_delete;

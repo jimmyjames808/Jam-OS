@@ -8,7 +8,7 @@
  *     whole, each writer's in order;
  *   - end of file only after the last writer closes (a dup of the write
  *     end, closed by another thread later);
- *   - EPIPE once the reader is gone, EAGAIN on a full pipe with
+ *   - EPIPE once the reader is gone (SIGPIPE ignored), EAGAIN on a full pipe with
  *     O_NONBLOCK, pipe2's flags, a leftover read in pieces, writev as one
  *     message, FIONREAD, the errors (EBADF, ESPIPE, EINVAL);
  *   - socketpair: both ends both ways, a socket to fstat;
@@ -20,6 +20,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <pthread.h>
+#include <signal.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
@@ -267,8 +268,10 @@ static void check_epipe_full(void)
     CHECK(read(p[0], &c, 1) == 1 && c == 'x');
     CHECK(write(p[1], "y", 1) == 1);   /* room again */
     close(p[0]);
+    signal(SIGPIPE, SIG_IGN);   /* its default would end us: the signal section checks it */
     errno = 0;
     CHECK(write(p[1], "z", 1) == -1 && errno == EPIPE);
+    signal(SIGPIPE, SIG_DFL);
     close(p[1]);
     errno = 0;
     CHECK(pipe2(p, O_DIRECT) == -1 && errno == EINVAL);

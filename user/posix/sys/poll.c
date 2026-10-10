@@ -359,6 +359,6 @@ long lx_ppoll(long fds, long n, long ts, long mask, long size, long f)
     if (r)
         return r;
     r = poll_run((struct pollfd *)(uintptr_t)fds, (unsigned long)n, deadline);
-    ready_mask_restore((const void *)(uintptr_t)mask, old);
+    ready_mask_restore((const void *)(uintptr_t)mask, old, r);
     return r;
 }

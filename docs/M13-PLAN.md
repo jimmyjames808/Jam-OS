@@ -1310,9 +1310,9 @@ need to know.
   own as the tracks' table says. Two of A1's files are stand-ins to be
   replaced: stdfd.c (descriptors 0 to 2: the null device, the log, or
   a pipe; B1's descriptor table replaced it and took its handlers'
-  table lines, and B2's kinds its pipe, null and log) and `user/posix/sys/nosig.c`
-  (`rt_sigprocmask` keeps a per-thread mask and nothing else; B4's
-  signal.c replaces it).
+  table lines, and B2's kinds its pipe, null and log) and nosig.c
+  (`rt_sigprocmask` kept a per-thread mask and nothing else; B4's
+  `user/posix/sys/signal.c` replaced it).
 - The start (`user/posix/crt/start.c`) reads the startup message, then
   the hand-over with `posixfds_read`; without one, stdfd's defaults. A
   hand-over's pipes and null devices at 0 to 2 are taken; every other

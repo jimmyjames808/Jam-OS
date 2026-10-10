@@ -10,6 +10,17 @@
  * Linux's result out (a value, or -errno). calls.c. */
 long __jam_syscall(long n, long a, long b, long c, long d, long e, long f);
 
+/* A cancellation point's call (the override of syscall_cp): as
+ * __jam_syscall, but with the thread's cancel flag, so a cancellation
+ * ends the call (EINTR, which musl's __syscall_cp_c turns into the
+ * cancellation) instead of being taken for a stray interrupt. */
+struct jam_cp_call {
+    volatile int *cancel;   /* the thread's cancel flag (musl's pthread self->cancel) */
+    long          nr;       /* Linux's number */
+    long          a[6];
+};
+long __jam_syscall_cp(const struct jam_cp_call *c);
+
 /* __set_thread_area: this thread's thread pointer (the FS base). 0, or
  * -errno. thread.c. */
 int __jam_set_thread_area(void *tp);

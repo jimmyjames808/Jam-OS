@@ -1,0 +1,256 @@
+/* The signal calls (docs/M13-PLAN.md section 6): rt_sigaction,
+ * rt_sigprocmask, rt_sigpending, rt_sigsuspend, pause, rt_sigtimedwait,
+ * sigaltstack, and sending: kill, tkill, tgkill, rt_sigqueueinfo and
+ * rt_tgsigqueueinfo. The state they act on is signal.c's (sig.h).
+ *
+ * Who can be signalled: this process, its threads, and its children
+ * (through the signal channel posix_spawn made for each: proc.c's
+ * lx_child_signal). Any other pid is ESRCH: a pid names nothing a program
+ * can reach otherwise. A process group is our children in it, and us if
+ * it is ours.
+ *
+ * The waits for a signal (sigsuspend, pause, sigtimedwait) sleep with
+ * sleep_until, an interruptible wait: a sender interrupts the thread it
+ * routed a signal to, and the wait looks again. sigaltstack is accepted
+ * and never used: handlers run on the thread's own stack, at a call
+ * boundary, so there is no stack overflow for one to catch. */
+#include <errno.h>
+#include <signal.h>
+#include <string.h>
+#include "proc.h"
+#include "sig.h"
+
+/* Linux's struct k_sigaction (x86-64), what musl's sigaction passes. */
+struct k_sigaction {
+    uintptr_t handler;
+    unsigned long flags;
+    uintptr_t restorer;   /* never used: handlers return to libc */
+    uint64_t mask;
+};
+
+#define SA_RESTORER_LX 0x04000000   /* musl always sets it */
+#define SA_KNOWN (SA_NOCLDSTOP | SA_NOCLDWAIT | SA_SIGINFO | SA_ONSTACK | SA_RESTART | \
+                  SA_NODEFER | SA_RESETHAND | SA_RESTORER_LX)
+
+static bool valid_signo(long sig)
+{
+    return sig >= 1 && sig <= SIG_MAX;
+}
+
+/* ---- dispositions and masks --------------------------------------------------------- */
+
+long lx_rt_sigaction(long sig, long act, long oact, long size, long e, long f)
+{
+    if (size != sizeof(uint64_t) || !valid_signo(sig))
+        return -EINVAL;
+    const struct k_sigaction *ka = (const struct k_sigaction *)(uintptr_t)act;
+    struct sig_act_io in, out;
+    if (ka) {
+        /* musl passes sa_flags, an int, sign-extended: SA_RESETHAND is bit 31. */
+        uint32_t flags = (uint32_t)ka->flags;
+        if (sig == SIGKILL || sig == SIGSTOP || (flags & ~(uint32_t)SA_KNOWN))
+            return -EINVAL;
+        in = (struct sig_act_io){ ka->handler, flags & ~(uint32_t)SA_RESTORER_LX, ka->mask };
+    }
+    long r = sig_action((int)sig, ka ? &in : NULL, oact ? &out : NULL);
+    if (!r && oact)
+        *(struct k_sigaction *)(uintptr_t)oact =
+            (struct k_sigaction){ .handler = out.handler, .flags = out.flags, .mask = out.mask };
+    return r;
+}
+
+long lx_rt_sigprocmask(long how, long set, long old, long size, long e, long f)
+{
+    if (size != sizeof(uint64_t))
+        return -EINVAL;
+    if (set && how != SIG_BLOCK && how != SIG_UNBLOCK && how != SIG_SETMASK)
+        return -EINVAL;
+    uint64_t s = set ? *(const uint64_t *)(uintptr_t)set : 0;
+    uint64_t was = sig_set_mask((int)how, s, set != 0);
+    if (old)
+        *(uint64_t *)(uintptr_t)old = was;
+    return 0;
+}
+
+long lx_rt_sigpending(long set, long size, long c, long d, long e, long f)
+{
+    if (size != sizeof(uint64_t))
+        return -EINVAL;
+    *(uint64_t *)(uintptr_t)set = sig_pending_set();
+    return 0;
+}
+
+long lx_sigaltstack(long ss, long old, long c, long d, long e, long f)
+{
+    const stack_t *in = (const stack_t *)(uintptr_t)ss;
+    if (in && (in->ss_flags & ~SS_DISABLE))
+        return -EINVAL;
+    if (old) {
+        stack_t *o = (stack_t *)(uintptr_t)old;
+        memset(o, 0, sizeof(*o));
+        o->ss_flags = SS_DISABLE;   /* handlers never run on one */
+    }
+    return 0;
+}
+
+/* ---- waiting for a signal ----------------------------------------------------------- */
+
+/* Sleep until a handler has run on this thread (or a cancellation is
+ * asked for): what pause and sigsuspend wait for. -EINTR. */
+static long until_handled(void)
+{
+    uint32_t h = sig_handled_self();
+    while (sig_handled_self() == h && !sig_cancel_asked()) {
+        if (sig_due_self())
+            sig_deliver_self();
+        else
+            (void)jam_sleep_until(DEADLINE_NEVER);   /* ended by the sender's interrupt */
+    }
+    return -EINTR;
+}
+
+long lx_pause(long a, long b, long c, long d, long e, long f)
+{
+    return until_handled();
+}
+
+long lx_rt_sigsuspend(long mask, long size, long c, long d, long e, long f)
+{
+    if (size != sizeof(uint64_t))
+        return -EINVAL;
+    uint64_t was = sig_set_mask(SIG_SETMASK, *(const uint64_t *)(uintptr_t)mask, true);
+    long r = until_handled();   /* the handlers run with the call's mask */
+    (void)sig_set_mask(SIG_SETMASK, was, true);
+    return r;
+}
+
+/* A relative timeout as an uptime deadline: 0, or -EINVAL. */
+static long deadline_of(const struct timespec *ts, uint64_t *out)
+{
+    if (!ts) {
+        *out = DEADLINE_NEVER;
+        return 0;
+    }
+    if (ts->tv_sec < 0 || ts->tv_nsec < 0 || ts->tv_nsec >= (long)NS_PER_S)
+        return -EINVAL;
+    uint64_t ns, at;
+    if (__builtin_mul_overflow((uint64_t)ts->tv_sec, NS_PER_S, &ns) ||
+        __builtin_add_overflow(ns, (uint64_t)ts->tv_nsec, &ns) || __builtin_add_overflow(now(), ns, &at))
+        at = DEADLINE_NEVER;
+    *out = at;
+    return 0;
+}
+
+/* Wait until one of want is pending (into *si: its number), deadline
+ * passes (-EAGAIN), or another signal's handler is due (-EINTR). */
+static long wait_for(uint64_t want, uint64_t deadline, struct sig_info *si)
+{
+    for (;;) {
+        if (sig_take_waited(want, si))
+            return si->signo;
+        if (sig_cancel_asked() || sig_due_self())
+            return -EINTR;   /* the boundary runs the handler, with the mask back */
+        if (jam_sleep_until(deadline) == OK)
+            return sig_take_waited(want, si) ? si->signo : -EAGAIN;
+    }
+}
+
+long lx_rt_sigtimedwait(long set, long info, long timeout, long size, long e, long f)
+{
+    if (size != sizeof(uint64_t))
+        return -EINVAL;
+    uint64_t want = *(const uint64_t *)(uintptr_t)set & ~SIG_NEVER_MASKED, deadline;
+    long r = deadline_of((const struct timespec *)(uintptr_t)timeout, &deadline);
+    if (r)
+        return r;
+    struct sig_info si;
+    if (!sig_take_waited(want, &si)) {
+        uint64_t was;
+        sig_wait_begin(want, &was);
+        r = wait_for(want, deadline, &si);
+        sig_wait_end(was);
+        if (r < 0)
+            return r;
+    }
+    if (info)
+        sig_fill_siginfo(&si, (void *)(uintptr_t)info);
+    return si.signo;
+}
+
+/* ---- sending ------------------------------------------------------------------------ */
+
+/* Signal pid's targets (kill's rules) with si (a child gets its signal
+ * number, code and value). */
+static long send_to(long pid, const struct sig_info *si)
+{
+    int32_t self = lx_pid(), group = lx_pgid();
+    if (pid > INT32_MAX || pid < -(long)INT32_MAX)
+        return -ESRCH;
+    if (pid == self) {
+        if (si->signo)
+            sig_send_process(si);
+        return 0;
+    }
+    long n;
+    if (pid > 0)
+        n = lx_child_signal((int32_t)pid, 0, si->signo, si->code, (int32_t)si->value);
+    else if (pid == -1)
+        n = lx_child_signal(0, 0, si->signo, si->code, (int32_t)si->value);
+    else
+        n = lx_child_signal(0, pid ? (int32_t)-pid : group, si->signo, si->code, (int32_t)si->value);
+    if (n < 0)
+        return n;
+    bool us = pid == 0 || -pid == group;
+    if (us && si->signo)
+        sig_send_process(si);   /* after the children: a default may end us */
+    return n || us ? 0 : -ESRCH;
+}
+
+long lx_kill(long pid, long sig, long c, long d, long e, long f)
+{
+    if (sig < 0 || sig > SIG_MAX)
+        return -EINVAL;
+    struct sig_info si = { .signo = (int32_t)sig, .code = SI_USER, .pid = lx_pid() };
+    return send_to(pid, &si);
+}
+
+long lx_rt_sigqueueinfo(long pid, long sig, long info, long d, long e, long f)
+{
+    if (sig < 0 || sig > SIG_MAX)
+        return -EINVAL;
+    const siginfo_t *in = (const siginfo_t *)(uintptr_t)info;
+    if (in->si_code >= 0 && pid != lx_pid())
+        return -EPERM;   /* only sigqueue's own codes go to another process (Linux's rule) */
+    struct sig_info si = { .signo = (int32_t)sig, .code = in->si_code, .pid = lx_pid(),
+                           .value = (intptr_t)in->si_value.sival_ptr };
+    return send_to(pid, &si);
+}
+
+long lx_tkill(long tid, long sig, long c, long d, long e, long f)
+{
+    if (sig < 0 || sig > SIG_MAX)
+        return -EINVAL;
+    if (tid <= 0 || tid > UINT32_MAX)
+        return -EINVAL;
+    struct sig_info si = { .signo = (int32_t)sig, .code = SI_TKILL, .pid = lx_pid() };
+    return sig_send_thread((uint32_t)tid, &si);
+}
+
+long lx_tgkill(long tgid, long tid, long sig, long d, long e, long f)
+{
+    if (tgid <= 0 || tid <= 0)
+        return -EINVAL;
+    return tgid == lx_pid() ? lx_tkill(tid, sig, 0, 0, 0, 0) : -ESRCH;
+}
+
+long lx_rt_tgsigqueueinfo(long tgid, long tid, long sig, long info, long e, long f)
+{
+    if (sig < 0 || sig > SIG_MAX || tid <= 0 || tid > UINT32_MAX)
+        return -EINVAL;
+    if (tgid != lx_pid())
+        return -ESRCH;
+    const siginfo_t *in = (const siginfo_t *)(uintptr_t)info;
+    struct sig_info si = { .signo = (int32_t)sig, .code = in->si_code, .pid = lx_pid(),
+                           .value = (intptr_t)in->si_value.sival_ptr };
+    return sig_send_thread((uint32_t)tid, &si);
+}

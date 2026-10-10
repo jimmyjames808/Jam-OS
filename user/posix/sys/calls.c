@@ -6,9 +6,16 @@
  * doesn't have, so musl falls back where it can and fails cleanly where
  * it can't.
  *
+ * Every call is a call boundary for signals (signal.c's sig_call: the
+ * handlers due run before and after it, and an EINTR is restarted or
+ * not), but for the kinds kind_of names: memory and futex wakes see no
+ * delivery (the plan's rule: musl's malloc and unlock paths), the waits
+ * Linux never restarts return EINTR, and a write's EPIPE raises SIGPIPE.
+ *
  * This is the only file of the layer that sees Linux's numbers
  * (<sys/syscall.h>): their names clash with Jam OS's own. */
 #include <errno.h>
+#include <sys/socket.h>
 #include <sys/syscall.h>
 #include "calls.h"
 #include "glue.h"
@@ -163,13 +170,74 @@ static lx_call *const calls[] = {
     [SYS_waitid] = lx_waitid,
     [SYS_execve] = lx_execve,
 
-    /* signals, until signals: nosig.c */
+    /* signals: sigcalls.c; their timers: sigtimer.c */
+    [SYS_rt_sigaction] = lx_rt_sigaction,
     [SYS_rt_sigprocmask] = lx_rt_sigprocmask,
+    [SYS_rt_sigpending] = lx_rt_sigpending,
+    [SYS_rt_sigsuspend] = lx_rt_sigsuspend,
+    [SYS_pause] = lx_pause,
+    [SYS_rt_sigtimedwait] = lx_rt_sigtimedwait,
+    [SYS_sigaltstack] = lx_sigaltstack,
+    [SYS_kill] = lx_kill,
+    [SYS_tkill] = lx_tkill,
+    [SYS_tgkill] = lx_tgkill,
+    [SYS_rt_sigqueueinfo] = lx_rt_sigqueueinfo,
+    [SYS_rt_tgsigqueueinfo] = lx_rt_tgsigqueueinfo,
+    [SYS_getitimer] = lx_getitimer,
+    [SYS_setitimer] = lx_setitimer,
+    [SYS_timer_create] = lx_timer_create,
+    [SYS_timer_settime] = lx_timer_settime,
+    [SYS_timer_gettime] = lx_timer_gettime,
+    [SYS_timer_getoverrun] = lx_timer_getoverrun,
+    [SYS_timer_delete] = lx_timer_delete,
 };
 
-long __jam_syscall(long n, long a, long b, long c, long d, long e, long f)
+/* Linux's futex operations, for kind_of. */
+#define FUTEX_OP(op) ((op) & 127)
+#define FUTEX_WAIT_OP 0
+
+/* What the boundary does around call n (sig.h's SIG_CALL_*). */
+static unsigned kind_of(long n, long b, long c, long d)
+{
+    switch (n) {
+    case SYS_mmap: case SYS_munmap: case SYS_mprotect: case SYS_madvise: case SYS_mremap:
+    case SYS_brk: case SYS_exit: case SYS_exit_group:
+        return SIG_CALL_QUIET;
+    case SYS_futex:
+        if (FUTEX_OP(b) != FUTEX_WAIT_OP)
+            return SIG_CALL_QUIET;   /* wakes and requeues: musl's unlocks */
+        return d ? SIG_CALL_NORESTART : 0;   /* a timed wait: musl recomputes its time */
+    case SYS_poll: case SYS_ppoll: case SYS_select: case SYS_pselect6: case SYS_epoll_wait:
+    case SYS_epoll_pwait: case SYS_nanosleep: case SYS_clock_nanosleep: case SYS_rt_sigsuspend:
+    case SYS_rt_sigtimedwait: case SYS_pause:
+        return SIG_CALL_NORESTART;   /* signal(7): never restarted */
+    case SYS_write: case SYS_writev: case SYS_pwrite64: case SYS_pwritev: case SYS_pwritev2:
+        return SIG_CALL_PIPE;
+    case SYS_sendto:
+        return d & MSG_NOSIGNAL ? 0 : SIG_CALL_PIPE;
+    case SYS_sendmsg:
+        return c & MSG_NOSIGNAL ? 0 : SIG_CALL_PIPE;
+    }
+    return 0;
+}
+
+/* The call through the boundary; cancel: a cancellation point's flag. */
+static long dispatch(long n, const long *args, volatile int *cancel)
 {
     if (n < 0 || (unsigned long)n >= sizeof(calls) / sizeof(calls[0]) || !calls[n])
         return -ENOSYS;
-    return calls[n](a, b, c, d, e, f);
+    struct sig_frame f = { calls[n], kind_of(n, args[1], args[2], args[3]), cancel,
+                           { args[0], args[1], args[2], args[3], args[4], args[5] } };
+    return sig_call(&f);
+}
+
+long __jam_syscall(long n, long a, long b, long c, long d, long e, long f)
+{
+    const long args[6] = { a, b, c, d, e, f };
+    return dispatch(n, args, 0);
+}
+
+long __jam_syscall_cp(const struct jam_cp_call *c)
+{
+    return dispatch(c->nr, c->a, c->cancel);
 }

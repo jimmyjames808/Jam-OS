@@ -28,10 +28,11 @@ int32_t lx_pid(void);
 int32_t lx_pgid(void);
 int32_t lx_sid(void);
 
-/* A child posix_spawn started: proc (moved into the table, closed when
- * the child is reaped), its pid, process group and session. 0, or -errno
- * (-EAGAIN: the table is full; the child is then killed and proc closed). */
-long    lx_child_add(handle_t proc, int32_t pid, int32_t pgid, int32_t sid);
+/* A child posix_spawn started: proc and sigch (our end of its signal
+ * channel, or 0; both moved into the table, closed when the child is
+ * reaped), its pid, process group and session. 0, or -errno (-EAGAIN: the
+ * table is full; the child is then killed and both handles closed). */
+long    lx_child_add(handle_t proc, handle_t sigch, int32_t pid, int32_t pgid, int32_t sid);
 /* pgid names a process group a child may be put in: ours, or one of our
  * children's in our session. */
 bool    lx_group_exists(int32_t pgid);
@@ -41,19 +42,16 @@ bool    lx_group_exists(int32_t pgid);
  * LX_EXIT_SIGNAL plus the signal that ended it). 0, or -errno. execve's
  * wait. */
 long    lx_child_wait(int32_t pid, int64_t *code);
-/* The child execve is waiting for (B4's signal thread forwards every
+/* The child execve is waiting for (the signal thread forwards every
  * signal to it), or 0. */
 int32_t lx_exec_child(void);
 
-/* The hook for SIGCHLD (the signal track's): called once for each child
- * whose end this process has noticed, with the table's lock not held. A
- * child's end is noticed when a thread of ours takes its packet from the
- * children's port (proc.c's notice): today in a wait; the signal thread
- * takes the port over (lx_child_port) to notice ends while nobody waits. */
-void    lx_sigchld_hook(int32_t pid);
-/* The port every child is bound to (SIG_TERMINATED, PORT_BIND_ONCE, keyed
- * by the child's serial number), or HANDLE_INVALID before the first
- * child; and the step that takes one packet of it (for a thread that
- * waits on it itself): the child's end noticed, the waits woken. */
-handle_t lx_child_port(void);
-void     lx_child_packet(const struct port_packet *pkt);
+/* Signal our children: pid > 0, that one; else those in group pgid (> 0),
+ * or all of them (pgid 0). SIGKILL is process_kill; any other signal a
+ * `send` on the child's channel with code (si_code) and value; 0 checks
+ * only. A child that has ended but isn't reaped matches and gets nothing.
+ * How many matched (0: none, kill's ESRCH), or -errno. */
+long    lx_child_signal(int32_t pid, int32_t pgid, int signo, int code, int32_t value);
+/* A packet from the signal thread's port with a child's key (below
+ * SIG_KEY_OURS): that child's end noticed, the waits woken, SIGCHLD. */
+void    lx_child_packet(const struct port_packet *pkt);

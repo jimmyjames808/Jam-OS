@@ -12,12 +12,15 @@
  * Each thread's handle is kept in a table by its id (threads, under
  * threads_lock) for the calls that act on another thread (signals); the
  * thread closes its own on the way out. The first thread's handle is the
- * startup message's (SR_SELF_THREAD) and stays open. */
+ * startup message's (SR_SELF_THREAD) and stays open. A new thread starts
+ * with its creator's signal mask and is listed for signals (sig.h) from
+ * before it runs musl's code until it leaves. */
 #include <errno.h>
 #include <limits.h>
 #include <sched.h>
 #include <time.h>
 #include "layer.h"
+#include "sig.h"
 
 /* Linux's values (x86-64): arch_prctl's codes and futex's operations. */
 #define ARCH_SET_FS          0x1002
@@ -52,6 +55,7 @@ struct clone_start {
     void  *arg;
     int   *clear_tid;   /* CLONE_CHILD_CLEARTID's word, or NULL */
     int   *set_tid;     /* CLONE_CHILD_SETTID's word, or NULL */
+    uint64_t sigmask;   /* the creator's signal mask: the new thread's */
 };
 
 int __jam_set_thread_area(void *tp)
@@ -115,6 +119,7 @@ static _Noreturn void clone_entry(struct clone_start *s)
     self_tid = (uint32_t)tid;
     if (c.set_tid)
         *c.set_tid = (int)tid;
+    sig_thread_begin(lx_self_thread(), self_tid, c.sigmask);
     int r = c.fn(c.arg);
     lx_exit(r, 0, 0, 0, 0, 0);
     __builtin_unreachable();
@@ -162,7 +167,7 @@ int __jam_clone(int (*fn)(void *), void *stack, int flags, void *arg, int *ptid,
     if (flags & CLONE_PARENT_SETTID)
         *ptid = (int)tid;
     struct clone_start s = { fn, arg, flags & CLONE_CHILD_CLEARTID ? ctid : NULL,
-                             flags & CLONE_CHILD_SETTID ? ctid : NULL };
+                             flags & CLONE_CHILD_SETTID ? ctid : NULL, sig_mask_self() };
     st = start_on(h, stack, &s, flags & CLONE_SETTLS ? tls : NULL);
     if (st != OK) {
         jam_handle_close(table_take(tid));
@@ -173,6 +178,7 @@ int __jam_clone(int (*fn)(void *), void *stack, int flags, void *arg, int *ptid,
 
 unsigned __jam_unmapself_prepare(void *base, unsigned long size)
 {
+    sig_thread_end();
     forget_self();
     mem_forget((uint64_t)(uintptr_t)base, size);
     return lx_self_vmar();
@@ -209,6 +215,7 @@ long lx_arch_prctl(long code, long addr, long c, long d, long e, long f)
 
 long lx_exit(long code, long b, long c, long d, long e, long f)
 {
+    sig_thread_end();
     forget_self();
     jam_thread_exit();
 }

@@ -9,40 +9,42 @@
  * this process and its children are told, never what the kernel knows.
  *
  * Children. posix_spawn puts each child here (lx_child_add): its process
- * handle, pid, group and session, and a serial number that keys its
- * binding on one port: SIG_TERMINATED, PORT_BIND_ONCE. A child is dead
- * once its packet has been taken from the port (notice); a wait reports
- * and reaps (closes) a dead child that matches it. A child nobody waits
- * for is just a handle, closed when we exit.
+ * handle, its signal channel (our end: kill's way to it), pid, group and
+ * session, and a serial number that keys its binding on the signal
+ * thread's port (sig.h's sig_port): SIG_TERMINATED, PORT_BIND_ONCE. The
+ * signal thread is the port's only reader: it hands each child's packet
+ * to lx_child_packet, which marks the child dead (notice), wakes the
+ * waits and sends SIGCHLD (sig_child_ended, once per child, whoever
+ * noticed it). A wait reports and reaps (closes) a dead child that matches
+ * it. A child nobody waits for is just two handles, closed when we exit;
+ * with SIGCHLD ignored (or SA_NOCLDWAIT) a child is reaped as it is
+ * noticed, and waits never see it.
  *
- * Waiting. A wait first takes every packet already queued (no waiting),
- * then looks for a dead child it matches: found, reported; none it could
- * ever match, ECHILD; WNOHANG, 0. Otherwise it blocks, in one of two
- * ways: one thread at a time (the reader) blocks on the port itself; the
- * others sleep on a futex word, `gen`, bumped (and every sleeper woken)
- * whenever a death is noticed or the reader leaves, so each looks again.
- * Whoever notices a death that isn't the reader (a WNOHANG wait's drain,
- * the signal thread through lx_child_packet) queues one user packet (key
- * 0) to wake the reader as well, since the packet it was blocked for may
- * be the one taken. Both waits are interruptible: EINTR, the reader's
- * place given up first.
+ * Waiting. A wait looks for a dead child it matches: found, reported;
+ * none it could ever match, ECHILD; WNOHANG, 0, after asking each live
+ * child it matches whether it has ended (so an end the signal thread
+ * hasn't taken yet is seen at once). Otherwise it sleeps on a futex word,
+ * `gen`, bumped (and every sleeper woken) whenever an end is noticed, and
+ * looks again. The sleep is interruptible: EINTR.
  *
  * Locks: `lock` guards everything below but `gen`, which is read and
  * bumped under it and waited on without it. No call that waits is made
  * with it held. */
+#include <stdlib.h>
 #include <errno.h>
 #include <signal.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
 #include "proc.h"
+#include "sig.h"
 
 #define CHILD_MAX  PORT_MAX_BINDINGS   /* children alive or unreaped at once */
-#define WAKE_KEY   0                   /* the user packet that wakes the reader */
 #define ONE_USER   1000                /* the one user's uid (M13 Q7) */
 
 struct child {
     uint64_t key;     /* its port binding's key: a serial, never 0, never reused */
     handle_t proc;    /* its process handle; ours until it is reaped */
+    handle_t sigch;   /* our end of its signal channel (`signal`), or 0 */
     int32_t  pid;     /* the kernel's pid */
     int32_t  pgid;    /* its process group */
     int32_t  sid;     /* its session */
@@ -52,10 +54,7 @@ struct child {
 static lock_t       lock;
 static struct child kids[CHILD_MAX];   /* the first nkids are in use; lock */
 static unsigned     nkids;             /* lock */
-static uint64_t     next_key = 1;      /* lock */
-static handle_t     port;              /* made with the first child; lock */
-static bool         reading;           /* a wait is blocked on the port; lock */
-static bool         wake_queued;       /* a WAKE_KEY packet is on the port; lock */
+static uint64_t     next_key = 1;      /* lock; below SIG_KEY_OURS */
 static uint32_t     gen;               /* bumped (under lock) on news; a futex */
 static int32_t      exec_child;        /* execve's child, or 0; lock */
 
@@ -135,24 +134,23 @@ bool lx_group_exists(int32_t pgid)
     return found;
 }
 
-long lx_child_add(handle_t proc, int32_t pid, int32_t pgid, int32_t sid)
+long lx_child_add(handle_t proc, handle_t sigch, int32_t pid, int32_t pgid, int32_t sid)
 {
     lock_take(&lock);
     status_t st = nkids == CHILD_MAX ? ERR_NO_RESOURCES : OK;
-    if (st == OK && !port)
-        st = jam_port_create(&port);
     uint64_t key = next_key;
     if (st == OK)
-        st = jam_port_bind(port, proc, key, SIG_TERMINATED, PORT_BIND_ONCE);
+        st = jam_port_bind(sig_port(), proc, key, SIG_TERMINATED, PORT_BIND_ONCE);
     if (st == OK) {
         next_key++;
-        kids[nkids++] = (struct child){ .key = key, .proc = proc, .pid = pid, .pgid = pgid,
-                                        .sid = sid };
+        kids[nkids++] = (struct child){ .key = key, .proc = proc, .sigch = sigch, .pid = pid,
+                                        .pgid = pgid, .sid = sid };
     }
     lock_give(&lock);
     if (st != OK) {
         jam_process_kill(proc);   /* a child we could never wait for */
         jam_handle_close(proc);
+        jam_handle_close(sigch);
         return st == ERR_NO_MEMORY ? -ENOMEM : -EAGAIN;
     }
     return 0;
@@ -169,59 +167,76 @@ static void wake_sleepers(void)
     (void)jam_futex_wake(&gen, UINT32_MAX, 0);   /* nobody asleep is fine */
 }
 
-/* A packet from the port: a child's end noticed (or the reader's wake).
- * by_reader: the reader took it (no need to wake the reader). */
-static void notice(const struct port_packet *pkt, bool by_reader)
+static void reap_locked(unsigned i)
 {
-    int32_t pid = 0;
-    lock_take(&lock);
-    if (pkt->type == PORT_PACKET_USER && pkt->key == WAKE_KEY) {
-        wake_queued = false;
-    } else {
-        for (unsigned i = 0; i < nkids && !pid; i++)
-            if (kids[i].key == pkt->key && !kids[i].dead) {
-                kids[i].dead = true;
-                pid = kids[i].pid;
-            }
-    }
-    news_locked();
-    if (pid && reading && !by_reader && !wake_queued) {
-        struct port_packet w = { .key = WAKE_KEY };
-        wake_queued = jam_port_queue(port, &w) == OK;
-    }
-    lock_give(&lock);
-    wake_sleepers();
-    if (pid)
-        lx_sigchld_hook(pid);
+    jam_handle_close(kids[i].proc);
+    jam_handle_close(kids[i].sigch);
+    kids[i] = kids[--nkids];
 }
 
-handle_t lx_child_port(void)
+static int wait_status(const struct process_info *info);
+
+/* Child i's end noticed (it was alive): marked, the waits woken (lock
+ * held); then, without it, SIGCHLD and, if SIGCHLD is ignored, its reaping. */
+static void ended(unsigned i)
 {
-    lock_take(&lock);
-    handle_t p = port;
+    struct child *c = &kids[i];
+    c->dead = true;
+    int32_t pid = c->pid;
+    uint64_t key = c->key;
+    struct process_info info;
+    if (jam_process_get_info(c->proc, &info) != OK)
+        info = (struct process_info){ .killed = 1, .exit_code = PROCESS_KILLED_CODE };
+    news_locked();
     lock_give(&lock);
-    return p;
+    wake_sleepers();
+    bool reap = sig_child_ended(pid, wait_status(&info));
+    lock_take(&lock);
+    for (unsigned j = 0; reap && j < nkids; j++)
+        if (kids[j].key == key) {   /* still there: no wait took it meanwhile */
+            reap_locked(j);
+            break;
+        }
 }
 
 void lx_child_packet(const struct port_packet *pkt)
 {
-    notice(pkt, false);
+    lock_take(&lock);
+    for (unsigned i = 0; i < nkids; i++)
+        if (kids[i].key == pkt->key && !kids[i].dead) {
+            ended(i);
+            break;
+        }
+    lock_give(&lock);
 }
 
-/* The SIGCHLD hook: signals are the signal track's; until then a child's
- * end only shows in a wait. */
-void lx_sigchld_hook(int32_t pid)
+long lx_child_signal(int32_t pid, int32_t pgid, int signo, int code, int32_t value)
 {
-    (void)pid;
-}
-
-/* Take every packet already on the port, without waiting. */
-static void drain(void)
-{
-    handle_t p = lx_child_port();
-    struct port_packet pkt;
-    while (p && jam_port_wait(p, 0, &pkt) == OK)
-        notice(&pkt, false);
+    lock_take(&lock);
+    unsigned n = 0, matched = 0;
+    handle_t *hs = malloc(sizeof(handle_t) * (nkids ? nkids : 1));
+    for (unsigned i = 0; hs && i < nkids; i++) {
+        struct child *c = &kids[i];
+        if ((pid > 0 && c->pid != pid) || (pgid > 0 && c->pgid != pgid))
+            continue;
+        matched++;
+        handle_t h = signo == SIGKILL ? c->proc : c->sigch;
+        if (!c->dead && signo && h && jam_handle_duplicate(h, RIGHT_SAME, &hs[n]) == OK)
+            n++;
+    }
+    lock_give(&lock);
+    if (!hs)
+        return -ENOMEM;
+    long r = 0;
+    for (unsigned i = 0; i < n; i++) {
+        long e = signo == SIGKILL ? lx_err(jam_process_kill(hs[i]))
+                                  : sig_channel_send(hs[i], signo, code, value);
+        if (e && !r)
+            r = e;
+        jam_handle_close(hs[i]);
+    }
+    free(hs);
+    return r ? r : (long)matched;
 }
 
 /* ---- waits ------------------------------------------------------------------------ */
@@ -261,58 +276,43 @@ static long take_locked(const struct want *w, struct found *out)
         out->pid = c->pid;
         if (jam_process_get_info(c->proc, &out->info) != OK)
             out->info = (struct process_info){ .killed = 1, .exit_code = PROCESS_KILLED_CODE };
-        if (!w->keep) {
-            jam_handle_close(c->proc);
-            kids[i] = kids[--nkids];
-        }
+        if (!w->keep)
+            reap_locked(i);
         return 1;
     }
     return any ? 0 : -ECHILD;
 }
 
-/* Block until there may be news: as the reader, on the port p; else on
- * gen (as it was, g). 0, or -EINTR. */
-static long block(handle_t p, bool reader, uint32_t g)
+/* Ask each live child w matches whether it has ended (a wait that won't
+ * sleep). lock held (given up and taken again for each end found, so the
+ * walk starts over). */
+static void peek_locked(const struct want *w)
 {
-    if (!reader) {
-        status_t st = jam_futex_wait(&gen, g, DEADLINE_NEVER, 0);
-        return st == ERR_INTERRUPTED ? -EINTR : 0;
+    for (unsigned i = 0; i < nkids; i++) {
+        signals_t seen = 0;
+        if (kids[i].dead || !matches(w, &kids[i]) ||
+            jam_object_wait_one(kids[i].proc, SIG_TERMINATED, 0, &seen) != OK)
+            continue;
+        ended(i);   /* gives the lock up and takes it again: start over */
+        i = (unsigned)-1;
     }
-    struct port_packet pkt;
-    status_t st = jam_port_wait(p, DEADLINE_NEVER, &pkt);
-    lock_take(&lock);
-    reading = false;
-    news_locked();   /* the reader's place is free: a sleeper may take it */
-    lock_give(&lock);
-    if (st == OK)
-        notice(&pkt, true);
-    else
-        wake_sleepers();
-    if (st == ERR_INTERRUPTED)
-        return -EINTR;
-    return st == OK ? 0 : lx_err(st);
 }
 
 /* The wait itself: 1 with *out, 0 (WNOHANG, none yet), or -errno. */
 static long wait_for(const struct want *w, struct found *out)
 {
     for (;;) {
-        drain();
         lock_take(&lock);
         ids_init_locked();
-        long r = take_locked(w, out);
-        if (r != 0 || w->nohang) {
-            lock_give(&lock);
-            return r;
-        }
+        if (w->nohang)
+            peek_locked(w);
         uint32_t g = __atomic_load_n(&gen, __ATOMIC_ACQUIRE);
-        bool reader = !reading;
-        reading = true;
-        handle_t p = port;   /* made: some child matched */
+        long r = take_locked(w, out);
         lock_give(&lock);
-        r = block(p, reader, g);
-        if (r)
+        if (r != 0 || w->nohang)
             return r;
+        if (jam_futex_wait(&gen, g, DEADLINE_NEVER, 0) == ERR_INTERRUPTED)
+            return -EINTR;
     }
 }
 

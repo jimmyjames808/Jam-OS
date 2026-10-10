@@ -32,6 +32,7 @@
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <termios.h>
+#include "sig.h"
 #include "tty.h"
 
 #define TTY_BUF     LD_REC_MAX   /* the longest message the console sends */
@@ -333,11 +334,14 @@ static long tty_new(const handle_t hs[TTY_HANDLES], uint32_t status, struct fd_d
     t->ch = hs[0];
     t->data = hs[1];
     lock_take(&ctty_lock);
-    if (!ctty) {
+    bool first = !ctty;
+    if (first) {
         fd_ref(d);
         ctty = d;
     }
     lock_give(&ctty_lock);
+    if (first)
+        sig_tty_attached();   /* the signal thread listens to it from now on */
     *out = d;
     return 0;
 }

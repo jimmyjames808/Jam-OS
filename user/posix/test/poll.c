@@ -12,8 +12,9 @@
  *     whose reader closed POLLERR; a closed descriptor is POLLNVAL;
  *   - a poll woken by a write from another process (a child polling its
  *     descriptor 0, a pipe from the hand-over);
- *   - a poll with no descriptors as a sleep; ppoll's timeout; thread_interrupt
- *     ending a poll with EINTR; a thread's set (its bindings) gone with
+ *   - a poll with no descriptors as a sleep; ppoll's timeout; a signal
+ *     ending a poll with EINTR (even with SA_RESTART), a bare
+ *     thread_interrupt not ending it; a thread's set (its bindings) gone with
  *     the thread;
  *   - select and pselect on the same pipes;
  *   - an epoll with 256 entries (and the 257th refused), level-triggered
@@ -28,6 +29,7 @@
 #include <poll.h>
 #include <posixfds.h>
 #include <pthread.h>
+#include <signal.h>
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/select.h>
@@ -261,13 +263,24 @@ static void check_other_process(void)
 
 /* ---- sleeps, timeouts and interrupts ---------------------------------------------- */
 
-static handle_t main_thread;
+static handle_t  main_thread;
+static pthread_t main_pthread;
 
-static void *interrupt_soon(void *arg __attribute__((unused)))
+/* After 50 ms, a signal for the main thread (arg non-NULL), or a bare
+ * interrupt with no signal behind it (thread_interrupt: the layer takes it
+ * for a leftover and goes on waiting). */
+static void *interrupt_soon(void *arg)
 {
     struct timespec nap = { 0, 50 * 1000 * 1000 };
     nanosleep(&nap, NULL);
+    if (arg)
+        return (void *)(uintptr_t)(pthread_kill(main_pthread, SIGUSR1) != 0);
     return (void *)(uintptr_t)(jam_thread_interrupt(main_thread) != OK);
+}
+
+static void on_usr1(int sig)
+{
+    (void)sig;
 }
 
 static void check_sleeps(void)
@@ -285,13 +298,23 @@ static void check_sleeps(void)
     CHECK(poll(&many, 1025, 0) == -1 && errno == EINVAL);
 
     main_thread = startup_handle(SR_SELF_THREAD);
+    main_pthread = pthread_self();
+    struct sigaction sa = { .sa_handler = on_usr1, .sa_flags = SA_RESTART };
+    sigemptyset(&sa.sa_mask);
+    CHECK(sigaction(SIGUSR1, &sa, NULL) == 0);
     pthread_t t;
     void *res = (void *)1;
-    CHECK(pthread_create(&t, NULL, interrupt_soon, NULL) == 0);
+    CHECK(pthread_create(&t, NULL, interrupt_soon, (void *)1) == 0);
     t0 = mono_ns();
     errno = 0;
-    CHECK(poll(NULL, 0, 10000) == -1 && errno == EINTR);
+    CHECK(poll(NULL, 0, 10000) == -1 && errno == EINTR);   /* never restarted */
     CHECK(mono_ns() - t0 < 5000000000ull);
+    CHECK(pthread_join(t, &res) == 0 && res == NULL);
+    signal(SIGUSR1, SIG_DFL);
+    CHECK(pthread_create(&t, NULL, interrupt_soon, NULL) == 0);
+    t0 = mono_ns();
+    CHECK(poll(NULL, 0, 200) == 0);   /* no signal: no EINTR */
+    CHECK(mono_ns() - t0 >= 200000000ull);
     CHECK(pthread_join(t, &res) == 0 && res == NULL);
 }
 

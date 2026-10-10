@@ -11,8 +11,7 @@
 # build until someone has read upstream's change, brought ours up to date
 # and recorded the new hash here.
 #
-# Later tracks add theirs the same way (pthread_cancel's syscall_cp,
-# lookup_name).
+# Later tracks add theirs the same way (lookup_name).
 
 # Every __syscallN a call to __jam_syscall (user/posix/sys/calls.c); no vDSO.
 arch/x86_64/syscall_arch.h 11982f6196c27975d0ab0c55e0810eaf8ff7abcf4d4166fc06917b30d025f306 user/posix/musl/arch/x86_64/syscall_arch.h
@@ -24,8 +23,10 @@ src/thread/x86_64/__set_thread_area.s 9a6299228be5f8f467652263e8f98c1f9ab2e09372
 src/thread/x86_64/clone.s 1046d162ddd8d902a657b8774bc9c0e8f029c24ea6394055b4ffb0a5c39d39f1 user/posix/musl/src/thread/x86_64/clone.c
 # A detached thread's end: vmar_unmap of its own stack, then thread_exit.
 src/thread/x86_64/__unmapself.s dab063e96f4c9874892b39545e3ea02cd6f6e71532d84705422bd0a8ad62eb00 user/posix/musl/src/thread/x86_64/__unmapself.S
-# A cancellation point's call: __jam_syscall (no cancellation by signal yet).
-src/thread/x86_64/syscall_cp.s 3d84c844e6a26b934f80fd35e0c7d814b184e489fdd71cd95b176b8ed15be618 user/posix/musl/src/thread/x86_64/syscall_cp.S
+# A cancellation point's call: __jam_syscall_cp, with the thread's cancel flag.
+src/thread/x86_64/syscall_cp.s 3d84c844e6a26b934f80fd35e0c7d814b184e489fdd71cd95b176b8ed15be618 user/posix/musl/src/thread/x86_64/syscall_cp.c
+# pthread_cancel: the flag and an interrupt (no SIGCANCEL handler, no address check).
+src/thread/pthread_cancel.c aedb26402bbafc18e00129040379d906f9e391302e41752584e3ac1ac3259fb1 user/posix/musl/src/thread/pthread_cancel.c
 # vfork: ENOSYS (no fork of any kind).
 src/process/x86_64/vfork.s 4d5aad85cb686f9cf66e32f5889471614d7b564503cb2038d21aa6e442287fdd user/posix/musl/src/process/x86_64/vfork.c
 # The signal restorer: never used (signals are delivered in libc).
