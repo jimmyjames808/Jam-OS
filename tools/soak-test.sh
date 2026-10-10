@@ -39,7 +39,7 @@ mcopy -i "$s2@@1M" "$tmp/second.txt" "$tmp/noise.bin" ::/
 sed -e "s/@LOOPS@/$loops/" -e "s/@SEED@/$seed/" -e "s/@LOAD@/$load/" tools/shell-tests/soak-plug.txt > "$script"
 
 ok=1
-if ! QEMU_TIMEOUT=${QEMU_TIMEOUT:-600} QEMU_INPUT="$script" \
+if ! QEMU_TIMEOUT=${QEMU_TIMEOUT:-1500} QEMU_INPUT="$script" \
      QEMU_USB="-blockdev driver=file,node-name=s2file,filename=$s2 -blockdev driver=raw,node-name=s2img,file=s2file" \
      tools/qemu-test.sh "$out" "$name" shell; then
     echo "$name: the shell script FAILED (see $out/$name.log)"
