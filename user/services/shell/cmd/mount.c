@@ -9,7 +9,9 @@
  *
  * /boot (the boot image, in memory) and /esp (the boot files) are never
  * writable, and /data always is: asking otherwise is refused here, by
- * init and by devmgr. A stick is never formatted, in either mode. */
+ * init and by volumes. A stick is never formatted, in either mode. An NVMe
+ * drive's /nvmeN is read-only for good in stage 1 (M12.7): refused here,
+ * by init (only /usbN goes on) and by volumes. */
 #include <idl/initctl.h>
 #include "sh.h"
 
@@ -58,7 +60,8 @@ SH_CMD(mount)
     if (argc != 3 || (!writable && strcmp(argv[1], "-r") != 0)) {
         sh_tty("usage: mount            the mounts\n"
                "       mount -w /usbN   make another stick's mount writable\n"
-               "       mount -r /usbN   read-only again\n");
+               "       mount -r /usbN   read-only again\n"
+               "  (an NVMe drive's /nvmeN is always read-only)\n");
         return 2;
     }
     const char *path = argv[2];
@@ -73,6 +76,13 @@ SH_CMD(mount)
     if (fixed(path)) {
         sh_tty("mount: %s %s\n", path, fixed(path));
         return 1;
+    }
+    if (!strncmp(path, "/nvme", 5)) {   /* an internal drive: stage 1 never writes one */
+        if (!writable)
+            sh_say("mount: %s is read-only already\n", path);
+        else
+            sh_tty("mount: %s is not on a Jam OS disk: an NVMe drive is read-only\n", path);
+        return writable ? 1 : 0;
     }
     /* init says "/usbN mounted" in the log before it has told us (its
      * main loop sends every follower the change after the mounts watcher

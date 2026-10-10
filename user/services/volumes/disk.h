@@ -5,12 +5,16 @@
 #include "internal.h"
 
 #define MAX_DISKS      8
-#define MAX_PARTS      4                   /* an MBR's primary partitions */
+#define MAX_PARTS      16                  /* partitions looked at (storage.idl lists as many
+                                            * as the driver's library: PT_MAX_PARTS) */
 #define MAX_USB_MOUNTS 4                   /* /usb0 .. /usb3 (and as many /usbN-test) */
+#define MAX_NVME_MOUNTS 4                  /* /nvme0 .. /nvme3 */
+#define LABEL_MAX 108                 /* a GPT partition's name, UTF-8 (storage.idl) */
 #define FAT_PATH       "bin/fat"
 #define BOOT_FILE      "/boot/jamos.elf"   /* on the ESP: what makes it the boot disk */
 #define TYPE_ESP       0xef                /* MBR partition types */
 #define TYPE_FAT32_LBA 0x0c
+#define FAT_BLOCK      512                 /* the only block size bin/fat reads */
 #define INFO_WAIT      (30 * NS_PER_S)     /* storage.info: the stick may be spinning up */
 #define ESP_WAIT       (10 * NS_PER_S)     /* the ESP's service: start, mount, one stat */
 #define CALL_WAIT      (2 * NS_PER_S)      /* a call to a driver that has answered info */
@@ -29,6 +33,7 @@ enum disk_state {
                    * closed, and the disk waits for devmgr's next ATTACH or its GONE */
     DISK_INFO,    /* storage.info asked, no answer yet */
     DISK_PARTS,   /* storage.partition asked for partition part_next, no answer yet */
+    DISK_IDENT,   /* an NVMe drive: storage.ident asked, no answer yet (listing.c) */
     DISK_HELD,    /* a Jam OS disk, but not the one the machine booted from (its MBR
                    * disk id): it waits a while for that one to come */
     DISK_ESP,     /* the ESP's service asked for BOOT_FILE, no answer yet */
@@ -37,9 +42,19 @@ enum disk_state {
     DISK_ALONE,   /* it didn't answer: left alone */
 };
 
+/* What storage.partition said of one partition (the listing's, listing.c). */
+struct part_info {
+    uint8_t  type_guid[16];     /* GPT type, on-disk bytes (zeros on MBR) */
+    uint64_t start, blocks;
+    char     label[LABEL_MAX + 1];   /* GPT name, UTF-8 */
+};
+
 struct disk {
     enum disk_state state;      /* where it is in the steps above */
     bool            test;       /* from VOLUMES_TEST_DISK */
+    uint8_t         bus;        /* DISKS_BUS_* (0: a test disk) */
+    bool            known;      /* the steps got its info and partitions (the listing's `ready`) */
+    uint8_t         number;     /* its N in "nvme0" / "usb0": the lowest free one of its bus */
     uint32_t        id;         /* usb-bus's device id (DISKS_ATTACH's), or TEST_ID | n */
     handle_t        ch;         /* our end of its `storage` channel (0: DISK_DOWN) */
     uint16_t        gen;        /* bumped at every use of the slot: in its port key */
@@ -53,13 +68,18 @@ struct disk {
     uint64_t        blocks;
     uint8_t         part_next;  /* DISK_PARTS: the partition asked for */
     uint32_t        mbr_id;     /* its MBR disk id (storage.info), 0: none or unknown */
+    uint8_t         scheme;     /* storage.idl's SCHEME_* */
     uint8_t         nparts;     /* partitions it lists (at most MAX_PARTS are looked at) */
     uint8_t         type[MAX_PARTS];   /* their MBR types */
+    struct part_info info[MAX_PARTS];  /* ... and the rest of storage.partition's answers */
     uint32_t        fs[MAX_PARTS];     /* vols index + 1 of each partition's service; 0: none */
     uint64_t        mib;        /* its size (storage.info), MiB */
-    uint8_t         told;       /* bit n: partition n's mount was on the desktop (a notice) */
+    uint16_t        told;       /* bit n: partition n's mount was on the desktop (a notice) */
     char            at[MAX_PARTS][16];   /* ... where it was mounted ("/usb0") */
-    uint8_t         want;       /* DISK_OTHER: bit n: partition n waits for its service */
+    uint16_t        want;       /* DISK_OTHER: bit n: partition n waits for its service */
+    uint16_t        nofat;      /* bit n: partition n's service found no FAT volume */
+    uint16_t        badsize;    /* bit n: partition n's blocks are not 512 bytes: no service */
+    char            model[41], serial[21], firmware[9];   /* storage.ident (NVMe); else empty */
     bool            boot_down;  /* DISK_DOWN: it was the boot disk when its driver stopped */
     bool            releasing;  /* volumes.release_disk's task stops its services: none
                                  * starts or restarts meanwhile */
@@ -67,6 +87,41 @@ struct disk {
 
 extern struct disk disks[MAX_DISKS];
 extern uint32_t txids;   /* the last transaction id written without waiting */
+
+/* The listing's answers (listing.c), filled for request.c to reply with. */
+struct list_disk {
+    uint32_t id, block_size, partitions, name_len, model_len, serial_len, firmware_len;
+    uint64_t blocks;
+    uint8_t  bus, ready, kind, scheme, read_only;
+    char     name[8], model[40], serial[20], firmware[8];
+};
+struct list_part {
+    uint64_t start, blocks;
+    uint32_t label_len, mount_len;
+    uint8_t  mbr_type, fs, type_guid[16];
+    char     label[LABEL_MAX], mount[15];
+};
+struct list_health {
+    uint64_t units_read, units_written, host_reads, host_writes, power_cycles, unsafe_shutdowns;
+    uint8_t  percent_used, critical;
+};
+
+/* listing.c */
+struct disk *disk_named(uint32_t id);             /* the real disk called id, or NULL */
+void        disk_number(struct disk *d);          /* d's N: the lowest free one of its bus */
+const char *disk_label(const struct disk *d);     /* "nvme0", "usb0" (static buffer) */
+/* DISK_IDENT: ask an NVMe drive's identity (true: asked, or given up on at once; false: not
+ * an NVMe drive, go on). Its answer: ident_answer. */
+bool        ident_ask(struct disk *d);
+void        ident_answer(struct disk *d, const void *rep, struct idl_msg *m);
+/* voldisks.disk / .partition: the index-th real disk, or partition `index` of disk `id`.
+ * ERR_OUT_OF_RANGE past the last; ERR_NOT_FOUND: no such disk. */
+status_t    list_disk(uint32_t index, struct list_disk *o);
+status_t    list_part(uint32_t id, uint32_t index, struct list_part *o);
+/* In a task: storage.digest / storage.health of disk id (waited for, the loop goes on).
+ * ERR_NOT_FOUND: no such disk; ERR_BAD_STATE: its driver isn't there. */
+status_t    disk_digest(uint32_t id, uint64_t lba, uint64_t count, uint8_t sha256[32]);
+status_t    disk_health(uint32_t id, struct list_health *o);
 
 /* disk.c */
 const char *disk_name(const struct disk *d);      /* "disk 7", "test disk 2" (static buffer) */

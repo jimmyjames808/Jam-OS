@@ -170,6 +170,55 @@ bool t_posixfds_malformed(void)
     return true;
 }
 
+/* POSIXFDS_DUP: a descriptor that is another of the hand-over, sent
+ * before it. One good form, and what the reader must refuse. */
+bool t_posixfds_dup(void)
+{
+    struct dup_case {
+        const char *what;
+        int32_t  fd;
+        uint32_t target, status, data_len;
+        uint64_t offset;
+        bool     good;
+    } cases[] = {
+        { "an earlier descriptor", 3, 0, 0, 4, 0, true },
+        { "a descriptor not sent", 3, 9, 0, 4, 0, false },
+        { "itself", 3, 3, 0, 4, 0, false },
+        { "one sent after it", 3, 5, 0, 4, 0, false },
+        { "past the table", 3, POSIXFDS_FD_MAX, 0, 4, 0, false },
+        { "data of 3 bytes", 3, 0, 0, 3, 0, false },
+        { "data of 8 bytes", 3, 0, 0, 8, 0, false },
+        { "no data", 3, 0, 0, 0, 0, false },
+        { "a status of its own", 3, 0, 2, 4, 0, false },
+        { "an offset of its own", 3, 0, 0, 4, 1, false },
+    };
+    handle_t a, b;
+    CHECK_ST(jam_channel_create(&a, &b), OK);
+    uint64_t before = pfd_handles();
+    for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        const struct dup_case *c = &cases[i];
+        uint8_t data[8] = { 0 };
+        memcpy(data, &c->target, sizeof(c->target));
+        pfd_raw_begin(&msgs[0], 0, true, "/data");
+        if (pfd_raw_fd(&msgs[0], 0, POSIXFDS_PIPE, 0, 0, NULL, 0) != OK ||
+            pfd_raw_fd(&msgs[0], c->fd, POSIXFDS_DUP, c->status, c->offset, data,
+                       c->data_len) != OK ||
+            pfd_raw_fd(&msgs[0], 5, POSIXFDS_DEV, 2, 0, "null", 5) != OK)
+            FAIL("dup case %u (%s): not built", i, c->what);
+        status_t st = send_and_read(a, b, 1);
+        if (c->good ? st != OK || col.n != 3u || col.got[1].rec.kind != POSIXFDS_DUP
+                    : st != ERR_INVALID_ARGS || col.n)
+            FAIL("dup case %u (%s): read gave %s, %u kept", i, c->what, status_str(st), col.n);
+        pfd_collect_close(&col);
+        if (pfd_queued(b) || pfd_handles() != before)
+            FAIL("dup case %u (%s): %u queued, %ld handles more", i, c->what, pfd_queued(b),
+                 (long)(pfd_handles() - before));
+    }
+    jam_handle_close(a);
+    jam_handle_close(b);
+    return true;
+}
+
 /* ---- the fuzz loop ------------------------------------------------------------------- */
 
 static uint64_t rnd_state;

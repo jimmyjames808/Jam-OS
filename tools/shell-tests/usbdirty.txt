@@ -1,0 +1,24 @@
+# usbtest right after /data was written to (a shell boot): the files just
+# copied are still in fat's write-back when usbtest takes the boot stick,
+# so the disk must be let go of by volumes (its mounts stopped in order),
+# not by devmgr killing usb-storage under them mid-write: that left the
+# stick mid-command and six storage tests failed (usbtest wants `svc volumes`)
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send T=x
+wait {prompt}
+send cp /boot/bin/utest /data/u1 && cp /boot/bin/utest /data/u2 && cp /boot/bin/utest /data/u3 && echo ok-$T-copied
+wait 30 ok-x-copied
+wait {prompt}
+send usbtest; echo st-$T=$?
+wait 120 run: bin/usbtest exited with code 0
+wait st-x=0
+wait {prompt}
+send rm /data/u1 /data/u2 /data/u3; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send sync
+wait {prompt}
+send reboot -f
+wait reboot: resetting

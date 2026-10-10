@@ -49,8 +49,14 @@
 #include <wants.h>
 #include "usbtest.h"
 
-/* What it is given when the shell runs it (<wants.h>). */
-JAM_WANTS("svc devmgr-ctl\n");
+/* What it is given when the shell runs it (<wants.h>). volumes is for
+ * storage.c's take_disk: the boot stick's mounts must be stopped in order
+ * (volumes.release_disk) before devmgr lets go of the disk. Without it
+ * devmgr killed usb-storage under live mounts, in the middle of a write-back
+ * of /data, and the device was left mid-command: the first transfer by hand
+ * failed (ERR_IO) and six storage tests with it. */
+JAM_WANTS("svc devmgr-ctl\n"
+          "svc volumes\n");
 
 const char *cur;
 unsigned skipped;

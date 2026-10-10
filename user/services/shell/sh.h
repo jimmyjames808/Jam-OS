@@ -121,7 +121,14 @@ size_t      sh_assignment(const char *word);
 /* "NAME=value" of every exported variable, NULL-terminated: a program's
  * environment (freed by sh_free_env). */
 char      **sh_make_env(void);
+/* A POSIX program's: the same, and where the shell exports none of them
+ * HOME, PATH, TERM, TZ, USER, LOGNAME and SHELL as a Unix program expects
+ * them, and PWD (the current directory) always. */
+char      **sh_make_env_posix(void);
 void        sh_free_env(char **env);
+/* The directories a bare program name is looked for in (after the shell's
+ * own commands), colon-separated, when PATH is unset. */
+#define SH_PATH_DEFAULT "/boot/bin:/boot/usr/bin"
 
 const char *sh_alias_of(const char *name);   /* NULL if none */
 bool        sh_set_alias(const char *name, const char *value);
@@ -452,6 +459,8 @@ SH_CMD(pwd); SH_CMD(cd); SH_CMD(ls); SH_CMD(find); SH_CMD(mkdir); SH_CMD(rm); SH
 SH_CMD(cp); SH_CMD(touch); SH_CMD(write); SH_CMD(df); SH_CMD(sync); SH_CMD(mount);
 SH_CMD(cat); SH_CMD(hexdump); SH_CMD(sha256sum); SH_CMD(wc);
 SH_CMD(head); SH_CMD(tail); SH_CMD(grep); SH_CMD(sort); SH_CMD(uniq); SH_CMD(seq);
+/* disks (cmd/disks.c) */
+SH_CMD(disks); SH_CMD(disk);
 /* shell */
 SH_CMD(help); SH_CMD(history); SH_CMD(clear); SH_CMD(echo); SH_CMD(set); SH_CMD(unset);
 SH_CMD(export); SH_CMD(env); SH_CMD(alias); SH_CMD(unalias); SH_CMD(type); SH_CMD(time);

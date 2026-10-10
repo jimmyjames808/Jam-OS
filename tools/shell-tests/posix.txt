@@ -1,0 +1,266 @@
+# What the shell gives a POSIX program (user/services/shell/sh_posix.c,
+# sh_program.c, sh_parse.c, sh_exec.c, sh_vars.c): pxio (user/posix/progs/
+# pxio) on its terminal, with each redirection, in pipes, and found by PATH.
+#   QEMU_INPUT=tools/shell-tests/posix.txt tools/qemu-test.sh <dir> posix shell
+# As in cmds.txt, a marker built from $T (x) never appears in the typed
+# line, only when the command before && succeeded.
+wait 120 Jam OS shell
+wait {prompt}
+send T=x
+wait {prompt}
+
+# ---- on the terminal: descriptors, environment, directory, stack -----------------------
+send pxio fds
+wait pxio: fd0 tty
+wait pxio: fd1 tty
+wait pxio: fd2 tty
+wait run: bin/pxio exited with code 0
+wait {prompt}
+send pxio env
+wait pxio: PWD=/
+wait pxio: HOME=/
+wait pxio: PATH=/boot/bin:/boot/usr/bin
+wait pxio: TERM=vt100
+wait pxio: TZ=
+wait pxio: USER=jam
+wait pxio: LOGNAME=jam
+wait pxio: SHELL=/boot/bin/shell
+wait {prompt}
+send cd /data; pxio cwd; pxio env | grep -c ^pxio:.PWD=/data$ | grep ^1$ && echo ok-$T-cwd
+wait pxio: cwd=/data
+wait ok-x-cwd
+wait {prompt}
+send export TERM=xterm-test; pxio env | grep -c ^pxio:.TERM=xterm-test$ | grep ^1$ && echo ok-$T-term
+wait ok-x-term
+wait {prompt}
+send unset TERM; pxio stack
+wait pxio: stack 7 MiB ok
+wait {prompt}
+# a native program's environment is untouched (the new variables are a POSIX program's)
+send run utest env | grep -c ^env:.TERM= | grep ^0$ && echo ok-$T-nativeenv
+wait ok-x-nativeenv
+wait {prompt}
+
+# ---- > and >>: the file is the program's descriptor 1 ---------------------------------------
+send pxio fds > /data/pxf1; echo st-$T=$?
+wait st-x=0
+send cat /data/pxf1
+wait pxio: fd0 tty
+wait pxio: fd1 file
+wait pxio: fd2 tty
+wait {prompt}
+send pxio out one-$T > /data/pxf2; cat /data/pxf2
+wait one-x
+wait {prompt}
+send pxio out two-$T >> /data/pxf2; pxio out three-$T >>/data/pxf2; cat /data/pxf2 | grep -c ^.*-x$ | grep ^3$ && echo ok-$T-append
+wait ok-x-append
+wait {prompt}
+# > makes it empty first, and nothing of the program's reached the screen between
+send pxio out four-$T > /data/pxf2; cat /data/pxf2 | grep -c x$ | grep ^1$ && echo ok-$T-trunc
+wait ok-x-trunc
+wait {prompt}
+send pxio seq 3000 > /data/pxf1; cat /data/pxf1 | wc -l | grep ^3000$ && echo ok-$T-big
+wait ok-x-big
+wait {prompt}
+# a quoted > is an argument
+send pxio out 'a > b'
+wait a > b
+wait {prompt}
+
+# ---- < : the file is descriptor 0 ----------------------------------------------------------------
+send pxio seq 5 > /data/pxf1; pxio count < /data/pxf1
+wait pxio: 5 lines, 35 bytes
+wait {prompt}
+send pxio fds < /data/pxf1
+wait pxio: fd0 file
+wait pxio: fd1 tty
+wait {prompt}
+send pxio cat </data/pxf1 | grep -c ^line | grep ^5$ && echo ok-$T-in
+wait ok-x-in
+wait {prompt}
+
+# ---- 2>, 2>&1 ------------------------------------------------------------------------------------
+send pxio both out-$T err-$T > /data/pxf1 2> /data/pxf2; cat /data/pxf1; cat /data/pxf2
+wait out-x
+wait err-x
+wait {prompt}
+send cat /data/pxf1 | grep -c err | grep ^0$ && echo ok-$T-split
+wait ok-x-split
+wait {prompt}
+send pxio both first-$T second-$T > /data/pxf1 2>&1; cat /data/pxf1
+wait first-x
+wait second-x
+wait {prompt}
+send cat /data/pxf1 | wc -l | grep ^2$ && echo ok-$T-both
+wait ok-x-both
+wait {prompt}
+send pxio fds > /data/pxf1 2>&1; cat /data/pxf1
+wait pxio: fd1 file
+wait pxio: fd2 file
+wait {prompt}
+# the order matters: 2>&1 first copies the terminal, then > moves only descriptor 1
+send pxio both only-out-$T only-err-$T 2>&1 > /data/pxf1; cat /data/pxf1 | grep -c only-out | grep ^1$ && echo ok-$T-order
+wait only-err-x
+wait ok-x-order
+wait {prompt}
+send cat /data/pxf1 | grep -c only-err | grep ^0$ && echo ok-$T-order2
+wait ok-x-order2
+wait {prompt}
+# the same file twice is one open: both lines arrive
+send pxio both p-$T q-$T > /data/pxf1 2>> /data/pxf1; cat /data/pxf1 | wc -l | grep ^2$ && echo ok-$T-twice
+wait ok-x-twice
+wait {prompt}
+# 1>&2: stdout to wherever 2 goes
+send pxio out via-err-$T 2> /data/pxf2 1>&2; cat /data/pxf2
+wait via-err-x
+wait {prompt}
+
+# ---- pipes: a POSIX program into a native command, and a native or POSIX one into it -----------
+send pxio seq 100 | wc -l | grep ^100$ && echo ok-$T-pipe1
+wait ok-x-pipe1
+wait {prompt}
+send pxio seq 100 | grep -c 9 | grep ^19$ && echo ok-$T-pipe2
+wait ok-x-pipe2
+wait {prompt}
+send echo hello-$T | pxio cat
+wait hello-x
+wait {prompt}
+send seq 5000 | pxio count
+wait pxio: 5000 lines, 23893 bytes
+wait {prompt}
+send pxio seq 100 | pxio count
+wait pxio: 100 lines, 792 bytes
+wait {prompt}
+send pxio seq 100 | pxio cat | pxio count
+wait pxio: 100 lines, 792 bytes
+wait {prompt}
+send pxio fds | grep -c ^pxio:.fd1.pipe$ | grep ^1$ && echo ok-$T-pipetty
+wait ok-x-pipetty
+wait {prompt}
+# stderr is the terminal in a pipe, and goes in with 2>&1
+send pxio both visible-$T hidden-$T | grep -c visible
+wait hidden-x
+wait {prompt}
+send pxio both seen-$T seen2-$T 2>&1 | grep -c seen | grep ^2$ && echo ok-$T-pipe2e
+wait ok-x-pipe2e
+wait {prompt}
+# a redirection and a pipe together: stdout to a file leaves the pipe empty
+send pxio out gone-$T > /data/pxf1 | wc -l | grep ^0$ && echo ok-$T-pipefile
+wait ok-x-pipefile
+wait {prompt}
+
+# ---- PATH: after the builtins, /boot/bin then /boot/usr/bin -------------------------------------------
+send pxio-usr out usr-$T
+wait usr-x
+wait run: usr/bin/pxio-usr exited with code 0
+wait {prompt}
+send PATH=/boot/usr/bin pxio-usr out only-usr-$T
+wait only-usr-x
+wait {prompt}
+send PATH=/boot/usr/bin pxio out nowhere-$T; echo st-$T=$?
+wait pxio: unknown command
+wait st-x=127
+wait {prompt}
+send PATH=/nowhere pxio out nowhere-$T; echo st-$T=$?
+wait pxio: unknown command
+wait st-x=127
+wait {prompt}
+send export PATH=/boot/usr/bin:/boot/bin; pxio-usr out late-$T; pxio out later-$T
+wait late-x
+wait later-x
+wait {prompt}
+send unset PATH; pxio out unset-$T
+wait unset-x
+wait {prompt}
+send export PATH=/boot/bin:/boot/usr/bin
+wait {prompt}
+# a builtin wins over a program of its name; echo is one
+send echo builtin-$T
+wait builtin-x
+wait {prompt}
+
+# ---- refusals and errors ---------------------------------------------------------------------------------
+send echo no > /data/pxf1; echo st-$T=$?
+wait echo is a shell command: < and > work for POSIX programs only
+wait st-x=2
+wait {prompt}
+send run utest env > /data/pxf1; echo st-$T=$?
+wait bin/utest isn't a POSIX program
+wait st-x=2
+wait {prompt}
+send pxio cat < /data/nosuch-$T; echo st-$T=$?
+wait /data/nosuch-x: no such file or directory
+wait st-x=1
+wait {prompt}
+send pxio out x > /data; echo st-$T=$?
+wait /data: is a directory
+wait st-x=1
+wait {prompt}
+send pxio out x > /data/nodir-$T/f; echo st-$T=$?
+wait /data/nodir-x/f:
+wait st-x=1
+wait {prompt}
+send pxio out x 3> /data/pxf1; echo st-$T=$?
+wait only descriptors 0, 1 and 2 can be redirected
+wait st-x=2
+wait {prompt}
+send pxio out x >; echo st-$T=$?
+wait > needs a file name
+wait st-x=2
+wait {prompt}
+send pxio out x >&7; echo st-$T=$?
+wait >& needs a descriptor, 0 to 2
+wait st-x=2
+wait {prompt}
+send alias pxa='pxio out'; pxa x > /data/pxf1; echo st-$T=$?
+wait < and > don't follow aliases (pxa)
+wait st-x=2
+wait {prompt}
+send unalias pxa
+wait {prompt}
+send pxio out x > /data/pxf1 &
+wait a program in the background can't take < and >
+wait {prompt}
+# a failed redirection starts nothing and leaves the terminal as it was
+send pxio exit 7; echo st-$T=$?
+wait run: bin/pxio exited with code 7
+wait st-x=7
+wait {prompt}
+send pxio out after-$T
+wait after-x
+wait {prompt}
+
+# ---- the terminal: typing to a program, end of file, Ctrl+C, the background ------------------------
+send pxio cat
+wait run: bin/pxio started
+sleep 1
+send typed-in
+wait typed-in
+type \x04
+wait run: bin/pxio exited with code 0
+wait {prompt}
+send pxio count
+wait run: bin/pxio started
+sleep 1
+send one
+send two
+type \x04
+wait pxio: 2 lines, 8 bytes
+wait {prompt}
+send pxio cat
+wait run: bin/pxio started
+sleep 1
+type \x03
+wait ^C: killing bin/pxio
+wait run: bin/pxio was killed
+wait {prompt}
+send pxio out bg-$T &
+wait bg-x
+wait {prompt}
+
+# ---- clean up --------------------------------------------------------------------------------------------------
+send rm /data/pxf1 /data/pxf2; ls /data | grep -c ^pxf | grep ^0$ && echo ok-$T-clean
+wait ok-x-clean
+wait {prompt}
+send reboot -f
+wait reboot: resetting

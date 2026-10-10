@@ -48,13 +48,28 @@ bool sh_cancelled(void);
 #define SH_MAX_WORDS 64
 #define SH_MAX_SEGS  32
 
+/* A redirection: `N<file`, `N>file`, `N>>file` or `N>&M`, N and M one of
+ * the descriptors 0 to 2 (a program's standard ones). Only a POSIX
+ * program takes them (sh_posix.c). */
+#define SH_MAX_REDIR 6
+enum sh_redir_kind { SH_REDIR_IN, SH_REDIR_OUT, SH_REDIR_APPEND, SH_REDIR_DUP };
+struct sh_redir {
+    uint8_t kind;   /* enum sh_redir_kind */
+    uint8_t fd;     /* the descriptor it redirects */
+    uint8_t from;   /* SH_REDIR_DUP: the descriptor it becomes a copy of */
+    char   *path;   /* the file named (malloc'd); NULL for SH_REDIR_DUP */
+};
+
 struct sh_words {
     int   argc;                      /* words */
     char *argv[SH_MAX_WORDS + 1];    /* each malloc'd; NULL after the last */
     bool  quoted[SH_MAX_WORDS];   /* had quotes or escapes (never an alias) */
+    int   nredir;                    /* redirections, in the order written */
+    struct sh_redir redir[SH_MAX_REDIR];
 };
 /* Split one simple command's text into words (malloc'd): quotes, escapes,
- * $ references. false on a syntax error (said). */
+ * $ references; the unquoted < > >> and N>&M (with the word after them)
+ * are redirections, not words. false on a syntax error (said). */
 bool sh_split_words(const char *s, struct sh_words *w);
 void sh_words_free(struct sh_words *w);
 
@@ -84,3 +99,19 @@ void sh_line(char *line);
 /* Tab: complete the word before *pos (a command name, else a path). May
  * print the choices on new lines. true: redraw the line. */
 bool sh_complete(char *line, unsigned *len, unsigned *pos, unsigned cap);
+
+/* ---- sh_posix.c: descriptors for a POSIX program ------------------------------------- */
+
+/* The redirections of the command about to run (n of them, in the order
+ * written; r must stay valid until set again with n 0). Only a POSIX
+ * program takes them: start_program refuses them for any other. */
+void sh_redir_set(const struct sh_redir *r, int n);
+int  sh_redir_count(void);
+/* The hand-over for a POSIX program started in the foreground, into *out:
+ * descriptors 0 to 2 as the redirections and the pipe the command is in
+ * make them (its terminal on the program's console channel, a PROGRAM
+ * client). *out_r gets the read end of the pipe its output goes down, when
+ * it is in a pipe. false (said) if a file can't be opened; nothing is held
+ * then. Else *out is for spawn_args.handover (spawn takes its handles);
+ * it stays valid until the next call. */
+bool sh_posix_prepare(struct posixfds_out *out, handle_t console, handle_t *out_r);

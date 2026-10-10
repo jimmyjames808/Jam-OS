@@ -35,6 +35,7 @@ bool t_posixfds_many_handles(void);
 bool t_posixfds_spawn_child(void);
 bool t_spawn_stack_size(void);
 bool t_posixfds_malformed(void);
+bool t_posixfds_dup(void);
 bool t_posixfds_fuzz(void);
 bool t_posixfds_writer_refuses(void);
 bool t_wants_posix(void);
@@ -86,6 +87,7 @@ bool t_disk_other(void);
 bool t_disk_fs_restart(void);
 bool t_disk_own_channel(void);
 bool t_disk_vanishes(void);
+bool t_disk_list_channel(void);   /* volumes.list_channel: voldisks alone */
 
 /* logd.c: bin/logd with the fat service over a RAM disk as its /data. */
 bool t_logd_writes_the_log(void);

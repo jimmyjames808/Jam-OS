@@ -67,6 +67,7 @@ struct disk;
 enum level {
     LEVEL_CONTROL,
     LEVEL_ESP,
+    LEVEL_LIST,   /* `voldisks` alone (volumes.list_channel) */
 };
 
 /* A filesystem service on one partition of a disk: bin/fat, supervised by
@@ -105,7 +106,8 @@ struct vol {
     bool                rw;         /* its `block` channel is opened read-write (`mount -w`;
                                      * the boot disk's ESP: init's volesp.open_writable) */
     bool                ready;      /* it answered its first fs.stat: a mount */
-    uint8_t             usbn;       /* the N of /usbN */
+    bool                nvme;       /* ... of /nvmeN (an NVMe drive's partition: never writable) */
+    uint8_t             usbn;       /* the N of /usbN (or /nvmeN) */
     uint32_t            probe;      /* that fs.stat's transaction id */
     /* What outlives its process (spare.c). Its `fs` channel is kept too:
      * client and serve stay volumes' from one instance to the next
@@ -176,12 +178,16 @@ status_t chans_serve(void);
 status_t chans_arm(void);
 /* A port packet: true if it was a channel's. */
 bool     chans_packet(uint64_t key);
+/* volumes.list_channel: a new channel that speaks `voldisks` alone (*out:
+ * its client end). ERR_NO_RESOURCES: no free slot. */
+status_t chans_add_list(handle_t *out);
 
 /* request.c: the handlers of `volumes` (the control channels) and
  * `volesp` (init's ESP channel); the `later` ones start a task that
  * answers. */
 extern const struct volumes_ops volumes_ops;
 extern const struct volesp_ops  volesp_ops;
+extern const struct voldisks_ops voldisks_ops;
 /* The stop (volumes.stop's, or with nobody to answer once every client
  * has gone): a task that syncs every writable mount, then stop_all. False
  * if it couldn't start (stop_all has run). */

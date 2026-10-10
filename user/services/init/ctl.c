@@ -38,6 +38,10 @@
  * volumes (volumes.remount) for /usbN and refused for every other path:
  * /boot, /esp and /data are what they are.
  *
+ * disks (the shell's `disks`, `disk`) asks volumes for a new channel that
+ * speaks voldisks alone (volumes.list_channel): it lists and hashes and
+ * changes nothing, so the shell needs no more of volumes than that.
+ *
  * Answered later: mount, sync and the kill of a filesystem service wait
  * for volumes (a remount stops a service in order and starts it again,
  * seconds on a slow stick), so init doesn't wait inside the request: it
@@ -67,6 +71,7 @@ _Static_assert(TERM_CMD_MAX == INITCTL_COMMAND_MAX + 1, "initctl.terminal's comm
 #define MOUNT_WAIT  (25 * NS_PER_S)   /* volumes.remount: its service's stop, then a start */
 #define KILL_WAIT   (15 * NS_PER_S)   /* a KILL: devmgr or volumes waits for it to die */
 #define SYNC_WAIT   (6 * NS_PER_S)    /* volumes.sync: it gives each mount 5 s */
+#define LIST_WAIT   (2 * NS_PER_S)    /* volumes.list_channel: answered at once */
 #define ROUND       16                /* requests answered before the main loop gets a turn */
 #define MAX_LATER   8                 /* requests waiting for volumes' answer at once */
 
@@ -478,6 +483,17 @@ static status_t op_terminal(void *ctx, const char *command, uint32_t command_len
     return st;
 }
 
+/* initctl.disks: a channel to volumes that lists the disks and asks for a
+ * digest and the health log, and changes nothing (voldisks). */
+static status_t op_disks(void *ctx, handle_t *out_list)
+{
+    const struct ctl *c = ctx;
+    if (!c->admin)
+        return ERR_ACCESS_DENIED;
+    handle_t vm = shell_volumes();
+    return vm ? volumes_list_channel_until(vm, now() + LIST_WAIT, out_list) : ERR_NOT_FOUND;
+}
+
 static status_t op_launch(void *ctx, const char *app, uint32_t app_len, uint64_t *out_koid)
 {
     const struct ctl *c = ctx;
@@ -495,7 +511,7 @@ static const struct initctl_ops ops = {
     .kill = op_kill, .sync = op_sync, .reboot = op_reboot, .mount = op_mount,
     .shell_ready = op_shell_ready, .reboot_firmware = op_reboot_firmware,
     .kernel_load = op_kernel_load, .update_offer = op_update_offer, .terminal = op_terminal,
-    .launch = op_launch,
+    .launch = op_launch, .disks = op_disks,
 };
 
 static void ctl_close(struct ctl *c)

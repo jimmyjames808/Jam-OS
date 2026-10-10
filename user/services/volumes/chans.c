@@ -18,8 +18,9 @@
 #include "internal.h"
 
 /* The biggest request and reply of the protocols the channels speak. */
-#define REQ_MAX (VOLUMES_REQ_MAX > VOLESP_REQ_MAX ? VOLUMES_REQ_MAX : VOLESP_REQ_MAX)
-#define REP_MAX (VOLUMES_REP_MAX > VOLESP_REP_MAX ? VOLUMES_REP_MAX : VOLESP_REP_MAX)
+#define MAX2(a, b) ((a) > (b) ? (a) : (b))
+#define REQ_MAX MAX2(MAX2(VOLUMES_REQ_MAX, VOLESP_REQ_MAX), VOLDISKS_REQ_MAX)
+#define REP_MAX MAX2(MAX2(VOLUMES_REP_MAX, VOLESP_REP_MAX), VOLDISKS_REP_MAX)
 _Static_assert(SVC_REQ_MAX <= REQ_MAX && SVC_REP_MAX <= REP_MAX, "a connect fits");
 
 #define MAX_CHANS 16   /* init's control and ESP channels, the openers' */
@@ -35,14 +36,14 @@ struct chan {
 
 static struct chan chans[MAX_CHANS];
 
-static status_t add_control(handle_t *out);
+static status_t add_chan(enum level lv, handle_t *out);
 
 /* svc.connect on a control channel: a control channel of the caller's
  * own. */
 static status_t s_connect(void *ctx, handle_t *out)
 {
     (void)ctx;
-    return add_control(out);
+    return add_chan(LEVEL_CONTROL, out);
 }
 
 static const struct svc_ops svc_ops = { .connect = s_connect };
@@ -61,6 +62,20 @@ static uint32_t dispatch(const struct chan *c, const void *q, uint32_t n, const 
             return 0;
         }
         return volesp_dispatch_on(c->h, &volesp_ops, NULL, q, n, r, rhs, rhn);
+    }
+    bool list = n >= sizeof(*h) && h->ordinal >> 16 == VOLDISKS_PROTOCOL_ID;
+    if (c->lv == LEVEL_LIST && !list) {   /* voldisks alone: it can change nothing */
+        idl_close_all(hs, nh);
+        idl_reply_status(c->h, q, n, ERR_ACCESS_DENIED);
+        return 0;
+    }
+    if (list) {   /* it carries no handles */
+        if (nh) {
+            idl_close_all(hs, nh);
+            idl_reply_status(c->h, q, n, ERR_INVALID_ARGS);
+            return 0;
+        }
+        return voldisks_dispatch_on(c->h, &voldisks_ops, NULL, q, n, r, rhs, rhn);
     }
     if (n >= sizeof(*h) && h->ordinal >> 16 == SVC_PROTOCOL_ID) {
         if (nh) {
@@ -182,9 +197,14 @@ bool chans_packet(uint64_t key)
     return true;   /* ours, stale or not */
 }
 
-/* A new control channel in a free slot, watched by the next chans_arm;
- * *out: its client end. */
-static status_t add_control(handle_t *out)
+status_t chans_add_list(handle_t *out)
+{
+    return add_chan(LEVEL_LIST, out);
+}
+
+/* A new channel in a free slot, watched by the next chans_arm; *out: its
+ * client end. */
+static status_t add_chan(enum level lv, handle_t *out)
 {
     for (unsigned i = SLOT_ESP + 1; i < MAX_CHANS; i++) {
         struct chan *c = &chans[i];
@@ -195,7 +215,7 @@ static status_t add_control(handle_t *out)
         if (st != OK)
             return st;
         c->h = mine;
-        c->lv = LEVEL_CONTROL;
+        c->lv = lv;
         *out = theirs;
         return OK;
     }

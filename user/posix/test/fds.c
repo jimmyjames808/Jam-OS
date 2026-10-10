@@ -185,6 +185,9 @@ int pt_child_devetc(void)
     CHECK(eventfd_read(8, &v) == 0 && v == 5);                 /* the counter, copied */
     CHECK(pread(9, buf, sizeof(buf), 0) == 6 && !memcmp(buf, "memfd!", 6));
     CHECK(lseek(9, 0, SEEK_CUR) == 2 && fstat(9, &st) == 0 && st.st_size == 6);
+    CHECK(lseek(10, 0, SEEK_CUR) == 2);                        /* 10 is 9 (a DUP record) */
+    CHECK(lseek(9, 4, SEEK_SET) == 4 && lseek(10, 0, SEEK_CUR) == 4);   /* one offset */
+    CHECK(close(9) == 0 && pread(10, buf, 2, 0) == 2 && !memcmp(buf, "me", 2));   /* it lives on */
     return pt_failures() ? 1 : 0;
 }
 
@@ -226,6 +229,7 @@ static void check_devetc_handover(void)
     CHECK(jam_event_create(&ev) == OK);
     const struct efd_wire ew = { .count = 5 };
     const struct memfd_wire mw = { .size = 6, .off = 2, .name = "handed" };
+    const uint32_t dup_of = 9;
     const struct posixfds_desc fds[] = {
         { .fd = 3, .kind = POSIXFDS_DEV, .status = 0, .data = "zero", .data_len = 5 },
         { .fd = 4, .kind = POSIXFDS_DEV, .status = 1, .data = "full", .data_len = 5 },
@@ -237,8 +241,9 @@ static void check_devetc_handover(void)
           .handles = &ev },
         { .fd = 9, .kind = POSIXFDS_MEMFD, .status = 2, .data = &mw, .data_len = sizeof(mw),
           .handles = &vmo },
+        { .fd = 10, .kind = POSIXFDS_DUP, .data = &dup_of, .data_len = sizeof(dup_of) },
     };
-    const struct posixfds_out ho = { .cwd = "/", .fds = fds, .nfds = 7 };
+    const struct posixfds_out ho = { .cwd = "/", .fds = fds, .nfds = 8 };
     const char *const argv[] = { "posixtest", "--child-devetc", NULL };
     struct spawn_args a = {
         .path = "bin/posixtest", .argc = 2, .argv = argv, .job = startup_handle(SR_JOB),

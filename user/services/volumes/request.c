@@ -19,7 +19,8 @@ struct op {
     struct idl_txn txn;      /* where the answer goes: a duplicate of the channel (0: nowhere) */
     struct vol    *b;        /* remount, the ESP: its filesystem service */
     bool           writable; /* ... made writable (or read-only) */
-    uint32_t       id;       /* release_disk: the disk */
+    uint32_t       id;       /* release_disk, digest, health: the disk */
+    uint64_t       lba, count;   /* digest: the blocks */
 };
 
 /* Start fn(o) for the request txn: IDL_LATER (fn answers), or why not
@@ -86,6 +87,8 @@ static status_t v_remount(void *ctx, struct idl_txn txn, const char *mount, uint
     struct vol *b = fs_find_mount(mount, len);
     if (!b || !b->other)
         return ERR_NOT_FOUND;   /* /esp and /data are what they are */
+    if (b->nvme && writable)
+        return ERR_ACCESS_DENIED;   /* stage 1: no NVMe partition is ever opened writable */
     status_t st = disk_can_restart(b, writable);
     if (st != IDL_LATER)
         return st;
@@ -247,6 +250,12 @@ static status_t v_set_disks(void *ctx, handle_t disks)
     return OK;
 }
 
+static status_t v_list_channel(void *ctx, handle_t *out_list)
+{
+    (void)ctx;
+    return chans_add_list(out_list);
+}
+
 const struct volumes_ops volumes_ops = {
     .watch = v_watch,
     .remount = v_remount,
@@ -257,6 +266,115 @@ const struct volumes_ops volumes_ops = {
     .sync = v_sync,
     .stop = v_stop,
     .set_disks = v_set_disks,
+    .list_channel = v_list_channel,
+};
+
+/* ---- voldisks ------------------------------------------------------------------------- */
+
+static status_t l_disk(void *ctx, uint32_t index, uint32_t *out_id, uint8_t *out_bus,
+                       uint8_t *out_ready, uint8_t *out_kind, uint8_t *out_scheme,
+                       uint8_t *out_read_only, uint32_t *out_block_size, uint64_t *out_blocks,
+                       uint32_t *out_partitions, char *out_name, uint32_t *out_name_len,
+                       char *out_model, uint32_t *out_model_len, char *out_serial,
+                       uint32_t *out_serial_len, char *out_firmware, uint32_t *out_firmware_len)
+{
+    (void)ctx;
+    struct list_disk o;
+    status_t st = list_disk(index, &o);
+    if (st != OK)
+        return st;
+    *out_id = o.id;
+    *out_bus = o.bus;
+    *out_ready = o.ready;
+    *out_kind = o.kind;
+    *out_scheme = o.scheme;
+    *out_read_only = o.read_only;
+    *out_block_size = o.block_size;
+    *out_blocks = o.blocks;
+    *out_partitions = o.partitions;
+    memcpy(out_name, o.name, o.name_len);
+    *out_name_len = o.name_len;
+    memcpy(out_model, o.model, o.model_len);
+    *out_model_len = o.model_len;
+    memcpy(out_serial, o.serial, o.serial_len);
+    *out_serial_len = o.serial_len;
+    memcpy(out_firmware, o.firmware, o.firmware_len);
+    *out_firmware_len = o.firmware_len;
+    return OK;
+}
+
+static status_t l_partition(void *ctx, uint32_t id, uint32_t index, uint8_t *out_mbr_type,
+                            uint8_t out_type_guid[16], uint64_t *out_start, uint64_t *out_blocks,
+                            uint8_t *out_fs, char *out_label, uint32_t *out_label_len,
+                            char *out_mount, uint32_t *out_mount_len)
+{
+    (void)ctx;
+    struct list_part o;
+    status_t st = list_part(id, index, &o);
+    if (st != OK)
+        return st;
+    *out_mbr_type = o.mbr_type;
+    memcpy(out_type_guid, o.type_guid, sizeof(o.type_guid));
+    *out_start = o.start;
+    *out_blocks = o.blocks;
+    *out_fs = o.fs;
+    memcpy(out_label, o.label, o.label_len);
+    *out_label_len = o.label_len;
+    memcpy(out_mount, o.mount, o.mount_len);
+    *out_mount_len = o.mount_len;
+    return OK;
+}
+
+/* A digest's task: asked of the driver (in the task, so the loop goes on),
+ * then answered. */
+static void digest_main(void *arg)
+{
+    struct op *o = arg;
+    uint8_t sha[32] = { 0 };
+    status_t st = disk_digest(o->id, o->lba, o->count, sha);
+    if (o->txn.ch)
+        (void)voldisks_reply_digest(o->txn, st, sha);
+    op_done(o);
+}
+
+static status_t l_digest(void *ctx, struct idl_txn txn, uint32_t id, uint64_t lba, uint64_t count,
+                         uint8_t out_sha256[32])
+{
+    (void)ctx;
+    (void)out_sha256;   /* answered later */
+    if (!disk_named(id))
+        return ERR_NOT_FOUND;
+    return later(txn, &(struct op){ .id = id, .lba = lba, .count = count }, digest_main);
+}
+
+static void health_main(void *arg)
+{
+    struct op *o = arg;
+    struct list_health h = { 0 };
+    status_t st = disk_health(o->id, &h);
+    if (o->txn.ch)
+        (void)voldisks_reply_health(o->txn, st, h.units_read, h.units_written, h.host_reads,
+                                    h.host_writes, h.power_cycles, h.unsafe_shutdowns,
+                                    h.percent_used, h.critical);
+    op_done(o);
+}
+
+static status_t l_health(void *ctx, struct idl_txn txn, uint32_t id, uint64_t *out_units_read,
+                         uint64_t *out_units_written, uint64_t *out_host_reads,
+                         uint64_t *out_host_writes, uint64_t *out_power_cycles,
+                         uint64_t *out_unsafe_shutdowns, uint8_t *out_percent_used,
+                         uint8_t *out_critical)
+{
+    (void)ctx;
+    (void)out_units_read, (void)out_units_written, (void)out_host_reads, (void)out_host_writes;
+    (void)out_power_cycles, (void)out_unsafe_shutdowns, (void)out_percent_used, (void)out_critical;
+    if (!disk_named(id))
+        return ERR_NOT_FOUND;
+    return later(txn, &(struct op){ .id = id }, health_main);
+}
+
+const struct voldisks_ops voldisks_ops = {
+    .disk = l_disk, .partition = l_partition, .digest = l_digest, .health = l_health,
 };
 
 /* ---- volesp ------------------------------------------------------------------------------ */

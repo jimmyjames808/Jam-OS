@@ -351,6 +351,18 @@ void fd_stage_default(void)
     stage_default = true;
 }
 
+/* POSIXFDS_DUP: the description an earlier descriptor of the hand-over
+ * made, as dup2 would share it (offset, flags and handles). It is gone
+ * (-EBADF) if that one was left out. */
+static long dup_adopt(const struct posixfds_fd *rec, const void *data, const handle_t *hs,
+                      struct fd_desc **out)
+{
+    uint32_t target;
+    memcpy(&target, data, sizeof(target));   /* four bytes: the reader checked */
+    *out = fd_get((long)target);
+    return *out ? 0 : -EBADF;
+}
+
 /* The hand-over's kinds, as this program takes them: one line per kind,
  * each the kind's own file's (fd.h). */
 fd_adopt_fn *const fd_adopters[POSIXFDS_KIND_COUNT] = {
@@ -362,6 +374,7 @@ fd_adopt_fn *const fd_adopters[POSIXFDS_KIND_COUNT] = {
     [POSIXFDS_MEMFD] = memfd_adopt,
     [POSIXFDS_EVENTFD] = eventfd_adopt,
     [POSIXFDS_TTY] = tty_adopt,
+    [POSIXFDS_DUP] = dup_adopt,
 };
 
 /* "posix: descriptor <n> (<kind>) left out: <why>\n" in the log. */

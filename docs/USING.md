@@ -151,6 +151,39 @@ boot's kernel log is saved to `/data/logs/` and can be read on another
 computer; after a panic the next boot saves the panicked boot's log too,
 and `crashlog` shows it ([ARCHITECTURE.md](../ARCHITECTURE.md#storage)).
 
+**Internal NVMe drives (read-only).** Jam OS binds an NVMe drive's driver on
+every boot (M12.7, stage 1) and never writes to it: the driver has no write
+command in it, which `make check` verifies. The drive's FAT partitions (a
+Windows drive's EFI system partition) appear read-only at `/nvme0`,
+`/nvme1`, ..., apart from the sticks' `/usbN`; the others (Windows' own
+NTFS, its reserved and recovery partitions) are listed and left alone.
+`mount -w /nvme0` is refused ("not on a Jam OS disk"). Drives whose blocks
+are not 512 bytes are listed and not mounted (the FAT service reads 512
+only).
+
+- `disks` lists every disk, a stick or a drive, by the name the other
+  commands use (`nvme0`, `usb0`): its model, serial number, firmware and
+  size, its partition table (GPT, MBR, or none), whether it is the Jam OS
+  disk, and under each its partitions: type (by name where known, else the
+  GUID), size, name and where each is mounted (or "no FAT volume" for one
+  that holds none). A drive that hasn't answered yet says so.
+- `disk digest nvme0` prints the SHA-256 of a list of regions of the whole
+  disk, computed in the driver (the data never leaves it): the first 34
+  blocks, each partition under 1 GiB whole, a bigger one's first and last
+  64 MiB and 32 samples of 1 MiB, and the last 33 blocks, one line each
+  (`part1 lba 2048 count 204800 sha256 ...`), ending with `disk digest:
+  done`. `tools/disk-regions.py` makes the same list on Linux from the
+  partition table alone, so diffing the two shows Jam OS read every region
+  right, and that Windows' disk didn't change across a session. The lines
+  are in the boot log too (`/data/logs`, in the form `disk digest: nvme0
+  part1 2048+204800 <hash>`). `disk digest nvme0 <lba> <count>` hashes one
+  range (at most 1 GiB).
+- `disk smart nvme0` prints the drive's own health log: data read and
+  written, host read and write commands, power cycles, unsafe shutdowns,
+  the percentage of its life used, the critical warning. "Host write
+  commands" not moving across a session is the drive's witness that nothing
+  wrote to it.
+
 **Services that outlive their process.** The FAT32 service and the sound
 mixer keep their state and their clients' channels outside the process,
 so when one is killed or crashes a waiting spare carries on where it

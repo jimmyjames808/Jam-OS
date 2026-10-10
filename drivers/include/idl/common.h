@@ -56,6 +56,7 @@
 #define IDL_ID_VOLESP         0x0047u   /* abi/idl/volumes.idl */
 #define IDL_ID_DISKS          0x0048u   /* abi/idl/volumes.idl */
 #define IDL_ID_MOUNTS         0x0049u   /* abi/idl/volumes.idl */
+#define IDL_ID_VOLDISKS       0x004au   /* abi/idl/volumes.idl */
 #define IDL_ID_KEEPCH         0x0050u   /* abi/idl/keepch.idl */
 #define IDL_ID_NSCHAN         0x0051u   /* abi/idl/nschan.idl */
 #define IDL_ID_UPDATE         0x0052u   /* abi/idl/update.idl */

@@ -38,6 +38,7 @@
 #define INITCTL_UPDATE_OFFER     0x00120008u
 #define INITCTL_TERMINAL         0x00120009u
 #define INITCTL_LAUNCH           0x0012000au
+#define INITCTL_DISKS            0x0012000bu
 
 /* Constants (the .idl's `const` lines). */
 /* The most bytes of kill's name, mount's path, terminal's command and
@@ -135,6 +136,14 @@ struct initctl_launch_rep {
     uint32_t txid;
     int32_t  status;
     uint64_t koid;
+} __attribute__((packed));
+struct initctl_disks_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct initctl_disks_rep {
+    uint32_t txid;
+    int32_t  status;
 } __attribute__((packed));
 
 #define INITCTL_REQ_MAX 137u   /* bytes: the biggest request */
@@ -587,6 +596,63 @@ static inline status_t initctl_launch(handle_t ch, const char *app, uint32_t app
     return initctl_launch_call(ch, false, DEADLINE_NEVER, app, app_len, out_koid);
 }
 
+/* initctl_disks_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t initctl_disks_call(handle_t ch, bool idl_within, uint64_t idl_t, handle_t *out_list)
+{
+    _Alignas(8) uint8_t idl_b0[8];
+    _Alignas(8) uint8_t idl_b1[8];
+    struct initctl_disks_req *idl_q = (struct initctl_disks_req *)idl_b0;
+    const struct initctl_disks_rep *idl_r = (const struct initctl_disks_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = INITCTL_DISKS;
+    handle_t idl_rh[1];
+    if (idl_st == OK)
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 8, &idl_got[0], idl_rh, 1, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st != OK)
+        idl_got[1] = 0;   /* handles arrive only with OK */
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
+    if (idl_st == OK && idl_got[1] != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(idl_handle_is(idl_rh[0], IDL_OBJ_CHANNEL)))
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK)
+        idl_close_all(idl_rh, idl_got[1]);
+    if (idl_st == OK) {
+        if (out_list)
+            *out_list = idl_rh[0];
+        else
+            drv_handle_close(idl_rh[0]);
+    }
+    (void)idl_o;
+    return idl_st;
+}
+/* A new channel to volumes that speaks `voldisks` (abi/idl/volumes.idl)
+ * alone: the list of the disks and their partitions, and a drive's digest
+ * and health log. It can change nothing (no mount, no remount, no kill), so
+ * the shell has it for `disks` and `disk` without volumes' control channel,
+ * which tools/checkwants.py keeps from every program but a test. One
+ * channel per call; the caller closes it. ERR_NOT_FOUND: no volumes runs;
+ * ERR_NO_RESOURCES: volumes keeps as many channels as it can. The shell's
+ * channel only (ERR_ACCESS_DENIED on the consoles' and the compositor's). */
+static inline status_t initctl_disks_until(handle_t ch, uint64_t deadline_ns, handle_t *out_list)
+{
+    return initctl_disks_call(ch, false, deadline_ns, out_list);
+}
+static inline status_t initctl_disks_within(handle_t ch, uint64_t timeout_ns, handle_t *out_list)
+{
+    return initctl_disks_call(ch, true, timeout_ns, out_list);
+}
+static inline status_t initctl_disks(handle_t ch, handle_t *out_list)
+{
+    return initctl_disks_call(ch, false, DEADLINE_NEVER, out_list);
+}
+
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
 
 /* initctl_kill without waiting: the request, with the caller's txid (not 0).
@@ -933,6 +999,46 @@ static inline status_t initctl_launch_result(const void *idl_rep, struct idl_msg
     return OK;
 }
 
+/* initctl_disks without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then initctl_disks_result. */
+static inline status_t initctl_disks_send(handle_t ch, uint32_t idl_txid)
+{
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    _Alignas(8) uint8_t idl_b0[8];
+    struct initctl_disks_req *idl_q = (struct initctl_disks_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = INITCTL_DISKS;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
+}
+
+/* The status and results of a reply to initctl_disks_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t initctl_disks_result(const void *idl_rep, struct idl_msg *idl_m, handle_t *out_list)
+{
+    const struct initctl_disks_rep *idl_r = (const struct initctl_disks_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(idl_handle_is(idl_m->hs[0], IDL_OBJ_CHANNEL)))
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    if (out_list)
+        *out_list = idl_m->hs[0];
+    else
+        drv_handle_close(idl_m->hs[0]);
+    idl_m->nh = 0;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -950,6 +1056,7 @@ struct initctl_ops {
     status_t (*update_offer)(void *ctx, handle_t *out_offer);
     status_t (*terminal)(void *ctx, const char *command, uint32_t command_len, uint8_t *out_number);
     status_t (*launch)(void *ctx, const char *app, uint32_t app_len, uint64_t *out_koid);
+    status_t (*disks)(void *ctx, handle_t *out_list);
 };
 
 /* Answer the initctl.kill request kept in txn: idl_st and, if it is OK, the
@@ -1127,6 +1234,30 @@ static inline status_t initctl_reply_launch(struct idl_txn idl_txn, status_t idl
         idl_rn = sizeof(struct idl_rep_hdr);
     }
     status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
+}
+
+/* Answer the initctl.disks request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t initctl_reply_disks(struct idl_txn idl_txn, status_t idl_st, handle_t list)
+{
+    handle_t idl_hs[1] = { list };
+    _Alignas(8) uint8_t idl_b0[8];
+    struct initctl_disks_rep *idl_r = (struct initctl_disks_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(list != HANDLE_INVALID))
+        idl_st = ERR_INTERNAL;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        if (idl_hs[0] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[0]);
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, idl_st == OK ? idl_hs : NULL, idl_st == OK ? 1 : 0);
     return idl_ws;
 }
 
@@ -1375,6 +1506,29 @@ static inline uint32_t initctl_dispatch_on(handle_t ch, const struct initctl_ops
         if (idl_h->status != OK)
             return sizeof(*idl_h);
         idl_r->koid = out_koid;
+        return sizeof(*idl_r);
+    }
+    case INITCTL_DISKS: {
+        const struct initctl_disks_req *idl_q = (const struct initctl_disks_req *)req;
+        struct initctl_disks_rep *idl_r = (struct initctl_disks_rep *)rep;
+        handle_t out_list = HANDLE_INVALID;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->disks) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->disks(ctx, &out_list);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && !(out_list != HANDLE_INVALID))
+            idl_h->status = ERR_INTERNAL;   /* a handle result left unset */
+        if (idl_h->status != OK) {
+            if (out_list != HANDLE_INVALID)
+                drv_handle_close(out_list);
+            return sizeof(*idl_h);
+        }
+        rhs[0] = out_list;
+        *rhn = 1;
         return sizeof(*idl_r);
     }
     }
