@@ -311,6 +311,32 @@ static int orphan(void)
     return 0;   /* our handles (proc, sub) close as we go */
 }
 
+/* Sleep until killed (proc_kill_spawner fills a job with these). */
+static int sleeper(void)
+{
+    jam_sleep_until(DEADLINE_NEVER);
+    return 99;
+}
+
+/* "spawn-loop [mode]": spawn "utest <mode>" children (exit7 by default)
+ * into our own job for ever, letting each go at once: the kernel's
+ * proc_kill_spawner kills us at random points of our spawns, while
+ * children we started are starting, running and leaving. Refusals (the
+ * job's thread limit reached) just go round again. */
+static _Noreturn int spawn_loop(int argc, char **argv)
+{
+    const char *cargv[] = { "utest", argc > 2 ? argv[2] : "exit7" };
+    for (;;) {
+        struct spawn_args a = {
+            .path = "bin/utest", .name = "utest-spawned", .argc = 2, .argv = cargv,
+            .job = startup_handle(SR_JOB),
+        };
+        handle_t proc;
+        if (spawn(&a, &proc) == OK)
+            jam_handle_close(proc);
+    }
+}
+
 /* The main thread leaves; the process lives on in its second thread,
  * which exits the process with 11. */
 static void finisher(void *arg)
@@ -444,6 +470,8 @@ int child_main(int argc, char **argv)
     if (!strcmp(m, "fill-hangup")) return fill_hangup();
     if (!strcmp(m, "ports"))      return ports();
     if (!strcmp(m, "orphan"))     return orphan();
+    if (!strcmp(m, "spawn-loop")) return spawn_loop(argc, argv);
+    if (!strcmp(m, "sleep"))      return sleeper();
     if (!strcmp(m, "main-exits")) return main_exits();
     if (!strcmp(m, "startup"))    return startup(argc, argv);
     if (!strcmp(m, "exit7"))      return 7;

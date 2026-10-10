@@ -1,4 +1,5 @@
-/* What the scheduler's three files share, and nothing else includes:
+/* What the scheduler's three files share, and nothing else includes but
+ * a test (test_thread.c reaps a thread it made):
  * sched.c (run queues, placement, the switch, waking, idle, the tick),
  * thread.c (thread lifecycle and the stack cache) and wait.c (blocking,
  * sleepers, wait queues, mutexes). */
