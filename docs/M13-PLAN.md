@@ -258,9 +258,12 @@ write, with `handle_replace`.
   first next time. `ERR_PEER_CLOSED` with nothing queued is end of file.
 - **Who pays**: the writer's job, until the reader reads or closes, also
   after the writer has closed (M12's Q2 as the owner changed it on
-  2026-10-09). The 1024-message queue bounds a pipe at 64 MiB of
-  the writer's memory, against Linux's 64 KiB; a writer of single bytes
-  fills the queue at 1024 bytes. Measured in BENCH.md (a new line: bytes a
+  2026-10-09). A pipe is full at 1024 messages or 1 MiB of unread bytes
+  (its ends are marked `CHANNEL_BYTE_BOUND`), against Linux's 64 KiB; a
+  writer of single bytes fills it at 1024 bytes. (Bounded by the
+  message count alone, a pipe of 64 KiB writes held up to 64 MiB, the
+  root job's whole message budget: a writer far ahead of a slow reader
+  got ENOMEM instead of waiting, and every other writer with it.) Measured in BENCH.md (a new line: bytes a
   second through a pipe between two processes, 4 KiB and 64 KiB writes,
   beside Linux's on the same PC); a byte stream object stays an addition
   if the numbers ask for it.
