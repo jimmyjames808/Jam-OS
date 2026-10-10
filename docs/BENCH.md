@@ -732,6 +732,9 @@ CPUs), build 0.1.0 + B2:
 The data stays in the caches (a 1 MiB pattern), so these are the call
 path's costs, not memory bandwidth; the two runs (the second beside a
 ktest run on the same PC) differ by up to 1.7x, so the figures are a
-range, not a baseline to compare to the percent. Not measured yet: the same between
+range, not a baseline to compare to the percent. With a pipe full at 1
+MiB unread (`CHANNEL_BYTE_BOUND`, 2026-10-11, 74503f6f and the bound, the
+`init` run on the PC): 7513 MB/s, 26632 MB/s and 285 ms, inside that
+range. Not measured yet: the same between
 two processes (that needs `posix_spawn`'s descriptors), and Linux's
 pipe on the same PC beside it.
