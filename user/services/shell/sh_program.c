@@ -24,10 +24,19 @@
  *
  * A program started in the background (`prog &`) gets no terminal: its
  * printf goes down an output channel the shell copies to the screen
- * (sh_jobs.c, which keeps it until it ends). */
+ * (sh_jobs.c, which keeps it until it ends).
+ *
+ * A POSIX program (the word `posix` in its list) gets more: an 8 MiB stack,
+ * the environment a Unix program expects (sh_make_env_posix), and in the
+ * foreground its descriptors 0 to 2 as the POSIX hand-over (sh_posix.c):
+ * its terminal, the pipe it is in, or what a redirection names. Only such
+ * a program takes `<` and `>`. */
 #include <idl/console.h>
+#include <posixfds.h>
 #include <wants.h>
-#include "sh.h"
+#include "sh_core.h"
+
+#define POSIX_STACK (8ull << 20)   /* a POSIX program's stack: address space, committed as used */
 
 /* One round of drain: a count and a time, so a program writing flat out
  * can't keep wait_program from Ctrl+C and from seeing the program end. */
@@ -144,10 +153,12 @@ static rights_t root_rights(uint32_t want)
 }
 
 /* The handles it starts with (see the top), each with the rights its copy
- * gets in xr; *out_r: its stdout's read end when we are in a pipe or it
- * runs in the background (bg: no terminal then). The number of them. */
-static unsigned program_handles(const struct wants *w, bool bg, struct spawn_handle *x,
-                                rights_t *xr, handle_t *out_r)
+ * gets in xr; *out_r: its stdout's read end when stdout_pipe (we are in a
+ * pipe, or it runs in the background: bg, no terminal then; a POSIX
+ * program in the foreground has its pipe in the hand-over instead). The
+ * number of them. */
+static unsigned program_handles(const struct wants *w, bool bg, bool stdout_pipe,
+                                struct spawn_handle *x, rights_t *xr, handle_t *out_r)
 {
     unsigned nx = 0;
     handle_t h, out_w;
@@ -161,7 +172,7 @@ static unsigned program_handles(const struct wants *w, bool bg, struct spawn_han
     }
     /* In a pipe or the background: its printf goes down a channel to us
      * (libos stdio.c). */
-    if ((bg || sh_piped()) && jam_channel_create(out_r, &out_w) == OK) {
+    if (stdout_pipe && jam_channel_create(out_r, &out_w) == OK) {
         xr[nx] = RIGHT_SAME;
         x[nx++] = (struct spawn_handle){ SR_STDOUT, out_w };
     }
@@ -188,30 +199,55 @@ static bool program_wants(const char *path, struct wants *w, handle_t *vmo, uint
     return true;
 }
 
-/* Wait for it to end, copying its output and killing its job on Ctrl+C. */
-static status_t wait_program(handle_t proc, handle_t job, handle_t out_r, const char *path,
-                             struct process_info *info)
+/* A program spawn started: what start_program hands back. */
+struct started {
+    char     path[SH_PATH_MAX];   /* what was started (bin/x, /data/x) */
+    handle_t proc, job;           /* its process and its job */
+    handle_t out_r;               /* its stdout's read end, or HANDLE_INVALID */
+    uint64_t t0;                  /* when it started */
+    bool     posix;               /* a POSIX program (its list has `posix`) */
+};
+
+/* Ctrl+C reached the shell while program s runs: the console sends the
+ * key to the shell even while the program holds the terminal
+ * (sh_interrupted noticed it). Today the program's job is killed, a
+ * POSIX program's too.
+ *
+ * THE HOOK for signals (M13 B4, then S2): for s->posix, send SIGINT on the
+ * program's signal channel here instead (the client end of the SR_SIGNALS
+ * channel start_program will then make and keep in struct started), and
+ * kill the job only if it hasn't ended 2 s later. The terminal's line
+ * discipline has already echoed "^C" (ECHOCTL) for such a program, so the
+ * shell should print none of its own: sh_io.c's interrupt() prints one, and
+ * must stay quiet while a POSIX program holds the terminal. */
+static void interrupt_program(const struct started *s)
+{
+    sh_tty("^C: killing %s\n", s->path);
+    sh_flush();
+    jam_job_kill(s->job);
+}
+
+/* Wait for it to end, copying its output and ending its job on Ctrl+C. */
+static status_t wait_program(const struct started *s, struct process_info *info)
 {
     status_t st;
-    bool killed = false;
-    while ((st = spawn_wait(proc, 50 * NS_PER_MS, info)) == ERR_TIMED_OUT) {
-        if (out_r)
-            drain(out_r, false);
+    bool interrupted = false;
+    while ((st = spawn_wait(s->proc, 50 * NS_PER_MS, info)) == ERR_TIMED_OUT) {
+        if (s->out_r)
+            drain(s->out_r, false);
         sh_jobs_poll(false);
-        if (sh_interrupted() && !killed) {
-            sh_tty("^C: killing %s\n", path);
-            sh_flush();
-            jam_job_kill(job);
-            killed = true;
+        if (sh_interrupted() && !interrupted) {
+            interrupt_program(s);
+            interrupted = true;
         }
     }
-    if (out_r) {
+    if (s->out_r) {
         /* What is left: the queue is capped (1024 messages), so this ends
          * unless something the program left running keeps writing, which
          * the guard (and Ctrl+C) cut short. */
-        for (unsigned guard = 0; guard < 64 && drain(out_r, false); guard++)
+        for (unsigned guard = 0; guard < 64 && drain(s->out_r, false); guard++)
             ;
-        jam_handle_close(out_r);
+        jam_handle_close(s->out_r);
     }
     return st;
 }
@@ -253,13 +289,60 @@ static void clean_job(handle_t job, const char *path)
     }
 }
 
-/* A program spawn started: what start_program hands back. */
-struct started {
-    char     path[SH_PATH_MAX];   /* what was started (bin/x, /data/x) */
-    handle_t proc, job;           /* its process and its job */
-    handle_t out_r;               /* its stdout's read end, or HANDLE_INVALID */
-    uint64_t t0;                  /* when it started */
-};
+/* This command's redirections, if the program can take them: only a POSIX
+ * program in the foreground can (said). */
+static bool redirections_ok(const struct started *s, bool bg)
+{
+    if (!sh_redir_count())
+        return true;
+    if (!s->posix)
+        sh_tty("sh: %s isn't a POSIX program: < and > work for those only\n", s->path);
+    else if (bg)
+        sh_tty("sh: a program in the background can't take < and >\n");
+    return s->posix && !bg;
+}
+
+/* The console channel among the extras, or HANDLE_INVALID. */
+static handle_t console_of(const struct spawn_handle *x, unsigned nx)
+{
+    for (unsigned i = 0; i < nx; i++)
+        if (x[i].role == SR_CONSOLE)
+            return x[i].h;
+    return HANDLE_INVALID;
+}
+
+/* What spawn is given only for a POSIX program: its stack and, in the
+ * foreground, the hand-over (into ho). false (said): a redirection's file
+ * won't open; the extras x are closed then, spawn will not run. */
+static bool posix_setup(struct started *s, bool bg, struct spawn_handle *x, unsigned nx,
+                        struct posixfds_out *ho, struct spawn_args *a)
+{
+    a->stack_size = POSIX_STACK;
+    if (bg)
+        return true;
+    if (sh_posix_prepare(ho, console_of(x, nx), &s->out_r)) {
+        a->handover = ho;
+        return true;
+    }
+    for (unsigned i = 0; i < nx; i++)
+        jam_handle_close(x[i].h);
+    return false;
+}
+
+/* The program is not started: say why (unless it was said), and let go of
+ * what start_program made. The status to give back. */
+static int start_failed(struct started *s, status_t st, bool said)
+{
+    if (!said)
+        sh_tty("run: can't start %s (%s)\n", s->path, status_str(st));
+    if (!said && st == ERR_ACCESS_DENIED && s->path[0] == '/')
+        sh_tty("run: only programs in /boot can run, and those on /data the owner "
+               "allowed (`allow`)\n");
+    if (s->out_r)
+        jam_handle_close(s->out_r);
+    jam_handle_close(s->job);
+    return said ? 1 : 126;
+}
 
 /* argv[0] found, its list read, a job made, its handles and spawned (bg:
  * to run in the background), into *s. 0, or the status to give back
@@ -273,13 +356,17 @@ static int start_program(int argc, char **argv, bool bg, struct started *s)
     static struct wants w;   /* the shell starts one program at a time */
     if (!program_wants(s->path, &w, &vmo, &size))
         return 126;
+    s->posix = w.posix;
     s->out_r = HANDLE_INVALID;
-    status_t st = jam_job_create(startup_handle(SR_JOB), 0, &s->job);
-    if (st != OK) {
+    status_t st = OK;
+    if (!redirections_ok(s, bg))
+        st = ERR_INVALID_ARGS;
+    else if ((st = jam_job_create(startup_handle(SR_JOB), 0, &s->job)) != OK)
         sh_tty("run: no job (%s)\n", status_str(st));
+    if (st != OK) {
         if (vmo)
             jam_handle_close(vmo);
-        return 126;
+        return st == ERR_INVALID_ARGS ? 2 : 126;
     }
     const char *grants[WANTS_MAX + 1];
     for (unsigned i = 0; i < w.n; i++)
@@ -287,34 +374,29 @@ static int start_program(int argc, char **argv, bool bg, struct started *s)
     grants[w.n] = NULL;
     struct spawn_handle x[RUN_HANDLES];
     rights_t xr[RUN_HANDLES];
-    unsigned nx = program_handles(&w, bg, x, xr, &s->out_r);
-    char **env = sh_make_env();
+    /* A POSIX program in the foreground has its pipe in the hand-over. */
+    unsigned nx = program_handles(&w, bg, bg || (sh_piped() && !s->posix), x, xr, &s->out_r);
+    char **env = s->posix ? sh_make_env_posix() : sh_make_env();
     const char *args[20];
     int n = 0;
     args[n++] = s->path;
     for (int i = 1; i < argc && n < 19; i++)
         args[n++] = argv[i];
     args[n] = NULL;
+    struct posixfds_out ho;
     struct spawn_args a = {
         .path = s->path, .vmo = vmo, .size = size, .argc = n, .argv = args, .job = s->job,
         .extra = x, .nextra = nx, .extra_rights = xr, .envp = (const char *const *)env,
         .ns = w.n ? grants : NULL,
     };
+    bool said = s->posix && !posix_setup(s, bg, x, nx, &ho, &a);
     s->t0 = now();
-    st = spawn(&a, &s->proc);
+    if (!said)
+        st = spawn(&a, &s->proc);
     sh_free_env(env);
     if (vmo)
         jam_handle_close(vmo);   /* the program maps what it runs: it keeps it */
-    if (st == OK)
-        return 0;
-    sh_tty("run: can't start %s (%s)\n", s->path, status_str(st));
-    if (st == ERR_ACCESS_DENIED && s->path[0] == '/')
-        sh_tty("run: only programs in /boot can run, and those on /data the owner "
-               "allowed (`allow`)\n");
-    if (s->out_r)
-        jam_handle_close(s->out_r);
-    jam_handle_close(s->job);
-    return 126;
+    return said || st != OK ? start_failed(s, st, said) : 0;
 }
 
 /* argv[0] as a program. Its status. */
@@ -330,7 +412,7 @@ static int run_program(int argc, char **argv)
     sh_tty("run: %s started (Ctrl+C kills it)\n", s.path);
     sh_flush();
     struct process_info info;
-    status_t st = wait_program(s.proc, s.job, s.out_r, s.path, &info);
+    status_t st = wait_program(&s, &info);
     code = ended(st, &info, s.path, s.t0);
     clean_job(s.job, s.path);
     sh_show_log(false, NULL);

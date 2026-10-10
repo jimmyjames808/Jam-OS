@@ -598,6 +598,7 @@ static const struct {
     { "posixfds_round_trip", t_posixfds_round_trip },
     { "posixfds_many_handles", t_posixfds_many_handles },
     { "posixfds_malformed", t_posixfds_malformed },
+    { "posixfds_dup", t_posixfds_dup },
     { "posixfds_fuzz", t_posixfds_fuzz },
     { "posixfds_writer_refuses", t_posixfds_writer_refuses },
     { "posixfds_spawn_child", t_posixfds_spawn_child },

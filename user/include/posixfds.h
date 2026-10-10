@@ -88,6 +88,9 @@ enum posixfds_kind {
     POSIXFDS_ETC = 9,         /* no handles; data: the file's path ("/etc/passwd"), a string */
     POSIXFDS_MEMFD = 10,      /* a VMO; data: any (its size, its name) */
     POSIXFDS_EVENTFD = 11,    /* an event; data: any (its counter) */
+    POSIXFDS_DUP = 12,        /* no handles; data: a u32, the number of a descriptor sent
+                               * before this one: this is the same open file description
+                               * (flags, offset, handles), as dup2 makes it; status 0 */
     POSIXFDS_KIND_COUNT,
 };
 

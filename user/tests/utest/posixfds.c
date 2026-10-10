@@ -168,11 +168,17 @@ static status_t test_desc(struct posixfds_desc *d, handle_t *hs, uint64_t *koids
         [POSIXFDS_DEV] = "null", [POSIXFDS_ETC] = "/etc/passwd", [POSIXFDS_MEMFD] = "",
     };
     const char *s = data[kind] ? data[kind] : "xyz";
+    static uint32_t dup_target;   /* a DUP's data: the descriptor sent just before (fd + 3) */
     *d = (struct posixfds_desc){
         .fd = fd, .kind = kind, .status = kind == POSIXFDS_FILE ? 2 | POSIXFDS_O_APPEND : 0,
         .offset = kind == POSIXFDS_FILE ? 123456789 : kind == POSIXFDS_DIR ? 7 : 0,
         .data = s, .data_len = (uint32_t)strlen(s) + (*s ? 1 : 0), .handles = hs,
     };
+    if (kind == POSIXFDS_DUP) {
+        dup_target = (uint32_t)fd + 3;
+        d->data = &dup_target;
+        d->data_len = sizeof(dup_target);
+    }
     status_t st = pfd_make(kind, hs);
     for (int i = 0; st == OK && i < posixfds_kind_handles(kind, NULL); i++)
         koids[i] = koid_of(hs[i]);

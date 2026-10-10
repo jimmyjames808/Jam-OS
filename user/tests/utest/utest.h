@@ -35,6 +35,7 @@ bool t_posixfds_many_handles(void);
 bool t_posixfds_spawn_child(void);
 bool t_spawn_stack_size(void);
 bool t_posixfds_malformed(void);
+bool t_posixfds_dup(void);
 bool t_posixfds_fuzz(void);
 bool t_posixfds_writer_refuses(void);
 bool t_wants_posix(void);

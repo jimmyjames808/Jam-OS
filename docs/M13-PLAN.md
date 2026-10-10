@@ -1950,3 +1950,105 @@ S1 and the shell use `posix_spawn_file_actions_addopen` for `>`, `>>` and
 `2>`, never a parent's writable descriptor. A file shared for writing
 between a parent and a child waits for Q5's (B), the `file` clone, with
 M15's shell.
+
+## S1 notes
+
+Track S1 (the shell gives programs descriptors) as built, with the choices
+the plan left open. Files: `user/services/shell/sh_posix.c` (new: the
+descriptors and the hand-over), `sh_program.c`, `sh_parse.c`, `sh_exec.c`,
+`sh_vars.c`; `pxio` (user/posix/progs/pxio, the test program, also at
+`/boot/usr/bin/pxio-usr`); `tools/shell-tests/posix.txt`.
+
+- **Which programs.** One whose list has `posix` (`struct wants.posix`).
+  Everything else is started as before; only these get an 8 MiB stack
+  (`stack_size`), the POSIX environment, and the hand-over.
+- **The hand-over, always, in the foreground.** The plan's "SR_CONSOLE is
+  enough" would have worked for the terminal, but a hand-over is the only
+  way to give the program the shell's current directory (libc takes its
+  cwd from it), its parent's pid and a umask, so every foreground POSIX
+  program gets one: the shell makes the PROGRAM client (as for any
+  program, and still passes it as SR_CONSOLE), calls `console.open_tty` on
+  it itself, and hands the result over as descriptors 0 to 2. The three
+  are one terminal description (see POSIXFDS_DUP below), as libc's own
+  defaults make them. A program in the background (`prog &`) gets no
+  hand-over and no terminal: libc's defaults on its SR_STDOUT pipe, as
+  native ones, plus the stack and the environment.
+- **Redirections** (`sh_parse.c`, `sh_posix.c`): `<`, `>`, `>>`, `N<`,
+  `N>`, `N>>`, `N>&M`, `N<&M` for N and M one of 0 to 2, applied left to
+  right (`2>&1 >f` leaves stderr on the terminal), the file name expanded
+  as any word. An unquoted `<` or `>` ends a word (`a>b` is `a >b`); quoted
+  ones are arguments. `&` after `<` or `>` is not a background `&`. Only a
+  foreground POSIX program takes them: a shell command (other than `run`),
+  a native program, an alias or a program with `&` is refused, before
+  anything runs, with status 2. A redirection alone (`> f`) does nothing.
+  An error opening a file says `sh: <path>: <why>` and the status is 1,
+  with the program not started (a `>` file already made empty stays so, as
+  in any shell).
+- **Files are opened by the program, in effect** (B1's answer). The shell
+  `file_open`s the file and `file_give`s the open (its file channel and
+  buffer) into the hand-over as a `POSIXFDS_FILE` record carrying the path;
+  the shell keeps no handle, so the program holds the file's only open and
+  fat's one-writer rule is never met. No `posix_spawn` is involved (the
+  shell is a native program); the hand-over is the equivalent. `<` is
+  `FS_READ`, `>` `FS_WRITE|FS_CREATE|FS_TRUNCATE` (status O_WRONLY), `>>`
+  `FS_WRITE|FS_CREATE` (O_WRONLY|O_APPEND, which the layer implements).
+- **POSIXFDS_DUP (a new hand-over kind, 12).** `> f 2>&1` needs two
+  descriptors on one open file, and the hand-over could only send two
+  descriptions: the file protocol's buffer VMO has no `RIGHT_DUPLICATE`
+  (fat gives it `READ|WRITE|MAP|TRANSFER`), so the shell could not even
+  send a second copy of the open, and fat refuses a second write open. A
+  DUP record has no handles and no status; its data is a u32, the number
+  of an earlier descriptor of the same hand-over, and it is the same open
+  file description (one offset, one set of flags), as `dup2` makes it. The
+  reader refuses one that names a descriptor not sent before it, itself,
+  a bad length, a status or an offset (utest `posixfds_dup`); the child's
+  adopter (`dup_adopt`, fd.c) takes a reference to the earlier
+  description. posixtest's fds section sends one. B3's table copy still
+  turns a description in two slots into two (its note above); it could
+  use DUP now.
+- **Pipes.** A POSIX program in a pipeline gets its stdout as a
+  `POSIXFDS_PIPE` (the shell keeps the read end and copies it into the
+  next stage's buffer as for native ones) and its stdin from the previous
+  stage's buffer: all of it written into a channel before the program
+  starts (a pipe holds at most 4 MiB here), the shell's end closed, so end
+  of file comes after the last byte. Stages still run one after the other
+  (S2 makes them concurrent). Stderr stays on the terminal unless `2>&1`.
+- **Environment** (`sh_make_env_posix`): the exported variables, and where
+  the shell exports none of them `HOME=/`, `PATH`, `TERM=vt100` (T2's
+  name), `TZ` (the system's zone), `USER=jam`, `LOGNAME=jam` and
+  `SHELL=/boot/bin/shell`; `PWD` is always the shell's current directory.
+  A native program's environment is unchanged. A `TERM` the shell
+  exports (a session's shell can, for X1) wins over `vt100`.
+- **PATH.** The shell's default `PATH` is now `/boot/bin:/boot/usr/bin`
+  (it was `/boot/bin`, used by nothing). A bare name that is not a shell
+  command is looked for in each directory of `$PATH` in order (unset:
+  the default; a prefix assignment `PATH=... cmd` works); a program found
+  in `/boot/bin` is started as before (by its bare name), one in another
+  directory by its path. A name with a `/` is still not a command (use
+  `run`); `run` does not search `PATH`; `type` and Tab know `/boot/bin`
+  only (not changed: not S1's files).
+- **THE HOOK for B4 (SIGINT).** Today a Ctrl+C reaches the shell as a key
+  while a POSIX program holds its terminal (the line discipline sends it
+  to the newest shell key channel below the tty), and `wait_program`
+  (sh_program.c) calls `interrupt_program(s)`, which says `^C: killing`
+  and kills the job. That function is the one place to change: for
+  `s->posix` write SIGINT on the program's signal channel instead (make
+  the SR_SIGNALS channel in `start_program` beside `program_handles`'
+  extras, keep its client end in `struct started`), kill the job only if
+  the program has not ended 2 s later (S2), and print nothing of its own.
+  The `^C` is currently printed twice, "^C^C" then the killing line:
+  `interrupt()` in sh_io.c (S2's file) prints one and the discipline's
+  ECHOCTL the other; it must go quiet while a POSIX program holds the
+  terminal.
+- **Edits outside S1's files**, small: `sh_core.h` and `sh.h`
+  (declarations), `user/include/posixfds.h`, `user/lib/fdmsg.c` and
+  `user/posix/sys/fd.c` (POSIXFDS_DUP), `user/tests/utest/` (posixfds.c,
+  posixfds_bad.c, main.c, utest.h: the DUP checks), `user/posix/test/fds.c`
+  (a DUP in the hand-over), `user/posix/posix.mk` (pxio).
+- **Limits.** A program with a redirected writable file that starts
+  children (`system`, `popen`, `posix_spawn` without `FD_CLOEXEC` on it)
+  gets `EBUSY` from `posix_spawn`: B1's `fd_give` of a writable file is
+  refused (fat's rule; Q5's (B) is the fix). The terminal's settings
+  outlast a program (T2's note); the shell does not reset them. A
+  redirection to a file whose `FS_TRUNCATE` open succeeded but whose
+  other redirection then failed leaves the file empty.
