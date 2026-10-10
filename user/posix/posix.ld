@@ -8,7 +8,12 @@
  *   - PT_TLS over .tdata and .tbss: thread-local storage (errno, ...),
  *     whose image sits in the writable segment;
  *   - .init and .fini (crti.o, crtn.o) and the init and fini arrays
- *     musl's start and exit walk (__init_array_start, ...).
+ *     musl's start and exit walk (__init_array_start, ...), with the
+ *     .ctors and .dtors sections in them: the cross compiler (x86_64-elf
+ *     GCC) puts constructors there, not in .init_array, and without these
+ *     lines they were dropped and never run. ld sorts both kinds by their
+ *     priority (a .ctors.N's priority is 65535 - N), as its own default
+ *     script does.
  *
  * Each segment starts on its own page, so every page is read+execute,
  * read-only or read+write, never writable and executable (W^X). The
@@ -47,14 +52,14 @@ SECTIONS
     .tbss : { *(.tbss .tbss.*) } :data :tls
     .init_array : {
         PROVIDE_HIDDEN(__init_array_start = .);
-        KEEP(*(SORT_BY_INIT_PRIORITY(.init_array.*)))
-        KEEP(*(.init_array))
+        KEEP(*(SORT_BY_INIT_PRIORITY(.init_array.*) SORT_BY_INIT_PRIORITY(.ctors.*)))
+        KEEP(*(.init_array .ctors))
         PROVIDE_HIDDEN(__init_array_end = .);
     } :data
     .fini_array : {
         PROVIDE_HIDDEN(__fini_array_start = .);
-        KEEP(*(SORT_BY_INIT_PRIORITY(.fini_array.*)))
-        KEEP(*(.fini_array))
+        KEEP(*(SORT_BY_INIT_PRIORITY(.fini_array.*) SORT_BY_INIT_PRIORITY(.dtors.*)))
+        KEEP(*(.fini_array .dtors))
         PROVIDE_HIDDEN(__fini_array_end = .);
     } :data
     .data : { *(.data .data.*) } :data
