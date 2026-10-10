@@ -22,6 +22,7 @@ static const struct {
 } sections[] = {
     { "start", pt_start },
     { "mem", pt_mem },
+    { "clock", pt_clock },
     { "thread", pt_thread },
     { "pipe", pt_pipe },
     { "fds", pt_fds },
