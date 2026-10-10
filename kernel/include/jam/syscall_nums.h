@@ -93,6 +93,7 @@
 #define SYS_wallclock_get        134
 #define SYS_wallclock_set        135
 #define SYS_sys_public_info      136
+#define SYS_clock_page           137
 #define SYS_kexec_load           140
 #define SYS_kexec_reboot         141
 #define SYS_random_get           150

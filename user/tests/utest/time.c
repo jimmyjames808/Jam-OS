@@ -143,6 +143,50 @@ bool t_time_wallclock_calls(void)
     return true;
 }
 
+/* The time page (clock_page): any program gets it with no handle; the
+ * handle reads and maps it and nothing more (no write, decommit, resize
+ * or writable mapping); a mapping of it reads clock_get's uptime and
+ * wallclock_get's offset. A bad pointer for the handle leaves none. */
+bool t_time_clock_page(void)
+{
+    handle_t h;
+    struct handle_info hi;
+    CHECK_ST(jam_clock_page(&h), OK);
+    CHECK_ST(jam_handle_info(h, &hi), OK);
+    CHECK(hi.type == OBJ_VMO && hi.rights == TIME_PAGE_RIGHTS);
+    uint8_t b = 1;
+    CHECK_ST(jam_vmo_write(h, 0, &b, 1), ERR_ACCESS_DENIED);
+    CHECK_ST(jam_vmo_decommit(h, 0, 4096), ERR_ACCESS_DENIED);
+    CHECK_ST(jam_vmo_set_size(h, 0), ERR_ACCESS_DENIED);
+    uint64_t a = 0;
+    CHECK_ST(jam_vmar_map(startup_handle(SR_SELF_VMAR), h, 0, 4096, VMAR_READ | VMAR_WRITE, &a),
+             ERR_ACCESS_DENIED);
+    CHECK_ST(jam_vmar_map(startup_handle(SR_SELF_VMAR), h, 0, 4096, VMAR_READ | VMAR_KEPT_ONLY, &a),
+             OK);
+    const struct time_page *p = (const struct time_page *)(uintptr_t)a;
+    CHECK(p->flags & TIME_PAGE_TSC);
+    CHECK(p->tsc_hz && p->shift >= 34 && p->shift <= 64 && !(p->seq & 1));
+    uint64_t lo, hi_;
+    __asm__ volatile("lfence; rdtsc" : "=a"(lo), "=d"(hi_) : : "memory");
+    uint64_t up = time_page_uptime(p, hi_ << 32 | lo), after = now();
+    CHECK(up <= after && after - up < NS_PER_S);
+    struct wall_clock w;
+    uint32_t s, flags;
+    int64_t off;
+    do {   /* again if sntp set the clock meanwhile */
+        s = time_page_begin(p);
+        flags = p->wall_flags;
+        off = p->wall_offset;
+        CHECK_ST(jam_wallclock_get(&w), OK);
+    } while (time_page_retry(p, s));
+    CHECK(flags == w.flags);
+    CHECK(off == w.utc_ns - (int64_t)w.uptime_ns);
+    CHECK_ST(jam_vmar_unmap(startup_handle(SR_SELF_VMAR), a, 4096), OK);
+    CHECK_ST(jam_handle_close(h), OK);
+    CHECK_ST(jam_clock_page((handle_t *)8), ERR_INVALID_ARGS);
+    return true;
+}
+
 /* ---- the settings file ------------------------------------------------------------ */
 
 /* settings_lookup of key in text: want (NULL: not there). */

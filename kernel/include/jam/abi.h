@@ -686,6 +686,80 @@ struct wall_clock {
 #define WALLCLOCK_SET 2u   /* set by wallclock_set: UTC */
 #define WALLCLOCK_NET 4u   /* ... from the network's time (SNTP), not the RTC */
 
+/* clock_page: the time page, one page every process may map (read only:
+ * the handle has TIME_PAGE_RIGHTS), from which clock_get's uptime and
+ * wallclock_get's UTC are read without a system call. The TSC fields are
+ * set once at boot; the wall clock's two change at every wallclock_set,
+ * under the sequence word: odd while the kernel writes them, bumped
+ * again (to even) when it is done. A reader takes time_page_begin's
+ * word, reads them (each with one 64- or 32-bit load), and reads again
+ * if time_page_retry says the word moved meanwhile.
+ *
+ * The uptime at TSC value t is time_page_uptime(p, t): exactly what
+ * clock_get answers for the same t, floor((t - tsc_boot) * 1e9 /
+ * tsc_hz), worked out from mult and shift (an estimate at most 2 ns
+ * under) and put right with tsc_hz. Read the TSC with `lfence; rdtsc`,
+ * so the read is not made before the instructions ahead of it. UTC is
+ * the uptime plus wall_offset when wall_flags isn't 0. */
+struct time_page {
+    uint32_t seq;           /* odd: wall_* being written; read with time_page_begin */
+    uint32_t flags;         /* TIME_PAGE_* (fixed at boot) */
+    uint64_t tsc_hz;        /* TSC ticks a second (the kernel's tsc_hz) */
+    uint64_t tsc_boot;      /* the TSC at uptime 0 */
+    uint64_t mult;          /* uptime ns ~ ((t - tsc_boot) * mult) >> shift, rounded down */
+    uint32_t shift;         /* 1 .. 64 */
+    uint32_t wall_flags;    /* the wall clock's WALLCLOCK_* (0: no clock); seq */
+    int64_t  wall_offset;   /* UTC ns = uptime ns + this; seq */
+};
+/* The kernel's clock is this conversion of the TSC: a reader may use the
+ * page instead of the calls. Without it, use clock_get and wallclock_get. */
+#define TIME_PAGE_TSC       1u
+/* CPUID says the TSC is invariant (it ticks at one rate in every power
+ * state). For information: the kernel's own clock is the TSC either way,
+ * so the page agrees with clock_get whether it is set or not. */
+#define TIME_PAGE_INVARIANT 2u
+/* clock_page's handle: read and map. Never RIGHT_WRITE or RIGHT_RESIZE:
+ * the page is the kernel's. */
+#define TIME_PAGE_RIGHTS (RIGHTS_BASIC | RIGHT_READ | RIGHT_MAP)
+
+/* The sequence word to read the wall_* fields under: it waits out a write
+ * in progress (a few stores with interrupts off). */
+static inline uint32_t time_page_begin(const struct time_page *p)
+{
+    uint32_t s;
+    while ((s = __atomic_load_n(&p->seq, __ATOMIC_ACQUIRE)) & 1) {
+#ifdef __x86_64__   /* (host tools on other machines include this header too) */
+        __asm__ volatile("pause");
+#endif
+    }
+    return s;
+}
+
+/* Non-zero if the wall_* fields read since time_page_begin's word s may be
+ * torn: read them again. */
+static inline int time_page_retry(const struct time_page *p, uint32_t s)
+{
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);   /* the reads above before the word's */
+    return __atomic_load_n(&p->seq, __ATOMIC_RELAXED) != s;
+}
+
+/* The uptime in ns at TSC value tsc, as clock_get computes it, for any
+ * uptime below 2^64 ns (584 years). The estimate from mult is at most
+ * (tsc - tsc_boot) >> shift, plus 1, ns under (2 with shift 64, which
+ * every TSC from 1 GHz up has): the loop adds those back one at a time.
+ * Only for a page with TIME_PAGE_TSC (tsc_hz isn't 0). */
+static inline uint64_t time_page_uptime(const struct time_page *p, uint64_t tsc)
+{
+    uint64_t d = tsc - p->tsc_boot;
+    uint64_t ns = (uint64_t)(((unsigned __int128)d * p->mult) >> p->shift);
+    unsigned __int128 rem = (unsigned __int128)d * 1000000000u - (unsigned __int128)ns * p->tsc_hz;
+    while (rem >= p->tsc_hz) {
+        ns++;
+        rem -= p->tsc_hz;
+    }
+    return ns;
+}
+
 /* random_get: the most bytes one call gives (libos's os_random asks in
  * pieces this size). The kernel makes them on its stack. */
 #define RANDOM_GET_MAX 256

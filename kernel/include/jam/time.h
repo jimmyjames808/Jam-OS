@@ -37,3 +37,11 @@ uint64_t tsc_to_ns(uint64_t cycles);
 /* The TSC value at which uptime_ns() reaches `ns` (UINT64_MAX for
  * UINT64_MAX): for arming timers. */
 uint64_t uptime_to_tsc(uint64_t ns);
+/* The time page's mult and shift for a TSC of hz ticks a second (hz > 0):
+ * mult = floor(1e9 * 2^shift / hz), shift the largest (at most 64) that
+ * keeps mult below 2^64. */
+void tsc_conversion(uint64_t hz, uint64_t *mult, uint32_t *shift);
+struct time_page;
+/* Fill the time page's TSC fields and flags from this boot's calibration
+ * (after tsc_calibrate_with_loader). */
+void tsc_time_page(struct time_page *p);

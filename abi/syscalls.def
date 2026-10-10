@@ -493,6 +493,11 @@
 # one set before); flags and reserved 0. RIGHT_ROOT_CLOCK on a RES_ROOT
 # handle.
 135 wallclock_set         status    handle_t root, const struct wall_clock *in
+# The time page (struct time_page, <jam/abi.h>): *out gets a handle to it,
+# a read-only VMO of one page (TIME_PAGE_RIGHTS) every process may map, to
+# read clock_get's uptime and wallclock_get's UTC without a call. No
+# handle or right needed. ERR_NOT_SUPPORTED if the boot couldn't make it.
+137 clock_page            status    handle_t *out
 
 # kexec: a fresh kernel started without the firmware (<jam/kexec.h>) -------
 # On a RES_ROOT handle: kexec_load needs RIGHT_ROOT_KEXEC, kexec_reboot

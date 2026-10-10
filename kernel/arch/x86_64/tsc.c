@@ -1,5 +1,9 @@
 /* TSC frequency. The HPET is the preferred reference, then the ACPI PM timer
- * (some recent Intel boards disable it), then CPUID 0x15, then the loader. */
+ * (some recent Intel boards disable it), then CPUID 0x15, then the loader.
+ * The conversion to nanoseconds, floor(cycles * 1e9 / tsc_hz), is also
+ * exported for the time page (struct time_page), so user code reads the
+ * same uptime without a system call. */
+#include <jam/abi.h>
 #include <jam/acpi.h>
 #include <jam/cpu.h>
 #include <jam/kprintf.h>
@@ -127,6 +131,31 @@ uint64_t uptime_ns(void)
 {
     PATH_COUNT(PATH_CLOCK);
     return tsc_to_ns(rdtsc() - tsc_boot);
+}
+
+void tsc_conversion(uint64_t hz, uint64_t *mult, uint32_t *shift)
+{
+    /* The largest shift whose 1e9 << shift divided by hz fits 64 bits:
+     * divq needs the numerator's high word below the divisor. A
+     * numerator of 1e9 << 34 or less has no high word at all. */
+    uint32_t s = 64;
+    while (s > 34 && (uint64_t)(((unsigned __int128)NS_PER_S << s) >> 64) >= hz)
+        s--;
+    unsigned __int128 num = (unsigned __int128)NS_PER_S << s;
+    uint64_t q, r;
+    __asm__("divq %4"
+            : "=a"(q), "=d"(r)
+            : "a"((uint64_t)num), "d"((uint64_t)(num >> 64)), "rm"(hz));
+    *mult = q;
+    *shift = s;
+}
+
+void tsc_time_page(struct time_page *p)
+{
+    p->tsc_hz = tsc_hz;
+    p->tsc_boot = tsc_boot;
+    tsc_conversion(tsc_hz, &p->mult, &p->shift);
+    p->flags = TIME_PAGE_TSC | (cpu_features.tsc_invariant ? TIME_PAGE_INVARIANT : 0);
 }
 
 uint64_t uptime_to_tsc(uint64_t ns)

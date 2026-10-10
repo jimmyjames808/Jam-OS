@@ -110,6 +110,7 @@ status_t jam_rtc_read(handle_t root, struct rtc_time *out);
 status_t jam_wallclock_get(struct wall_clock *out);
 status_t jam_wallclock_set(handle_t root, const struct wall_clock *in);
 status_t jam_sys_public_info(struct sys_public_info *out);
+status_t jam_clock_page(handle_t *out);
 status_t jam_kexec_load(handle_t root, handle_t kernel, handle_t bootfs, const char *cmdline, uint64_t len, uint32_t flags);
 status_t jam_kexec_reboot(handle_t root);
 status_t jam_random_get(void *buf, uint64_t len);

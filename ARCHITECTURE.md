@@ -2940,6 +2940,13 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
   `wallclock_set` takes; a set without it clears it): init then keeps
   that time when `/data` comes back and gives the kernel only the zone,
   `date -z` keeps the mark, and `date -r` says where the time came from.
+- **The time page** (`clock_page`, `struct time_page` in `<jam/abi.h>`)
+  is one read-only page any process may map, which the kernel writes:
+  the TSC's rate, its value at boot and the conversion to nanoseconds,
+  and the wall clock's offset and flags under a sequence word that
+  `wallclock_set` moves (a reader that sees it move reads again). From
+  it a program reads exactly `clock_get`'s uptime and `wallclock_get`'s
+  UTC without a system call; libc's `clock_gettime` does.
 - **Time zones are libos's** (`<wallclock.h>`): the calendar, a small
   table of named zones with their daylight-time rules (Australia's,
   Auckland, London, New York, Los Angeles; `Australia/Sydney` the
