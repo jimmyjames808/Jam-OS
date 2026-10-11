@@ -183,6 +183,15 @@ void disks_events(struct binding *b)
                 status_str(n >= sizeof(struct idl_rep_hdr) ? r->status : ERR_INTERNAL));
         }
     }
+    /* 64 read and maybe more queued (a driver that writes as fast as we
+     * read): the binding fires when the channel turns readable, not while
+     * it stays so, and without another turn the answer volumes' channel
+     * comes in would never be read. */
+    if (b->client && b->client_key &&
+        port_again(port, b->client, b->client_key, SIG_READABLE) != OK) {
+        say(false, "devmgr: %s: can't watch its channel for events", bdf(b));
+        b->client_key = 0;
+    }
 }
 
 void disks_device_gone(struct binding *b)
