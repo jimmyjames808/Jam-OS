@@ -187,3 +187,17 @@ Vendored third-party code:
   and a new src/locale/gb18030utf.h) is not applied: no Jam OS program
   uses iconv yet. Apply it as an override before one does, or take the
   next release.
+- libc-test/: musl's test suite (docs/M13-PLAN.md, track P2), from
+  https://repo.or.cz/libc-test.git (git.musl-libc.org, its home, answered
+  502 and "no repositories" on 2026-10-11) at commit
+  7b95dfa5f5d5ca4d949221e0228ccc290bacc14e (2026-08-25, "math: ld80 expl
+  test case", master then). MIT (COPYRIGHT; "libc-test is developed as
+  part of the musl project"). The tree as upstream has it, less its .git
+  and src/math/: the math tests' data includes crlibm's (LGPL, see its
+  COPYING there), which this tree does not take (CODING-GUIDE: no GPL or
+  LGPL code), and the math set is not run. Built as the one program
+  bin/libc-test by user/ports/libc-test/ (libc-test.mk): the functional
+  and regression sets, each test as upstream writes it but for its
+  tmpfile (user/ports/libc-test/shim.h), run by that directory's runner
+  against expected-failures.txt; api/ (compile-time header tests) and
+  musl/ are vendored and not built.
