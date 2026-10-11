@@ -2740,7 +2740,7 @@ and `sysbox-net.txt`, `tools/ping-test.sh`.
   ran, printed after it ends, so `mem | grep x` and `memmap > file` work. The
   only change in a command file is `mem.c`: the program leaves out its "shell's
   job" line (its job is its own).
-- **Boxes, one program per privilege.** A static POSIX program is about 315
+- **Boxes, one program per privilege.** A static POSIX program is about 320
   KB, so, as for sbase (P1), one multi-call program per list, started under a
   command's name (`bin/dmesg`; `mkbox.sh` writes the table; `bin/sys-info
   free` works too, and a box with no command name lists its commands). The
@@ -2749,14 +2749,14 @@ and `sysbox-net.txt`, `tools/ping-test.sh`.
 
   | box | commands (names in `bin/`) | list | size |
   |---|---|---|---|
-  | `sys-info` | free uptime version lscpu ps dmesg log | `right sysinfo`, `right klog` | 325 KB |
-  | `sys-debug` | mem memmap pci iommu bench | `right debug`, `right klog` | 312 KB |
+  | `sys-info` | free uptime version lscpu ps dmesg log | `right sysinfo`, `right klog` | 326 KB |
+  | `sys-debug` | mem memmap pci iommu bench | `right debug`, `right klog` | 316 KB |
   | `sys-net` | net ping host | `svc net`, `svc dns` | 329 KB |
-  | `sys-usb` | usb | `svc devmgr` (the query channel) | 315 KB |
+  | `sys-usb` | usb | `svc devmgr` (the query channel) | 320 KB |
   | `sys-ro` | df hexdump hd crashlog | `mount * r` (every mount, read-only) | 325 KB |
 
-  The boot image went from 16,936 KiB to 18,520 KiB (+1,584 KiB, 25
-  entries). Each box is `posix` (descriptors 0 to 2 as the shell or a pipe
+  The boot image went from 16,936 KiB to 18,528 KiB (+1,592 KiB, 25
+  entries: 168 files of the 256 bootfs allows). Each box is `posix` (descriptors 0 to 2 as the shell or a pipe
   gives them) and nothing else: no `/esp` write, no `svc init`, no
   `devmgr-ctl`.
 - **What a program is given depends on who starts it.** Started by the native
@@ -2839,6 +2839,16 @@ and `sysbox-net.txt`, `tools/ping-test.sh`.
   starts children is `EBUSY` (P1's finding 1), so the tests send the
   parent's output through a pipe. (3) The box programs are about 315 KB each
   because the POSIX layer's call table pulls the whole layer in (R1's item).
+  (4) The shell's drain of a POSIX program's pipe (`sh_program.c`, `drain` and
+  `sh_copy_output`: a 4096-byte buffer) drops any pipe message over 4096 bytes,
+  and a POSIX pipe's messages are up to 64 KiB, so `cat bigfile | wc` loses
+  data today (found by `dmesg | grep`: empty). The boxes write in pieces of 2 KiB
+  at most (`box_io.c`) and do not depend on the fix; S2's pipelines may
+  change it. (5) The console frees a terminal at the program's end with its
+  last output unread (X1's finding): `net stats` lost its last 30 lines. The
+  boxes `tcdrain` their terminals at exit; every other POSIX program
+  (sbase's `ls -l`, `cat`) has the same loss on long output until R2 fixes the
+  console.
 - **Tests.** `tools/shell-tests/sysbox.txt` (a plain shell boot, `QEMU_TIMEOUT`
   500): each deterministic command's builtin and program output compared with
   `cmp` (version, lscpu, hexdump and hd with offsets, from a file and a pipe,
