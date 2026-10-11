@@ -68,20 +68,18 @@ void mt_insert(const struct mt_entry *e)
     count++;
 }
 
-/* Does an entry other than i map vmo? */
-static bool vmo_shared(unsigned i, handle_t vmo)
+bool mt_vmo_shared(unsigned i)
 {
     for (unsigned j = 0; j < count; j++)
-        if (j != i && table[j].vmo == vmo)
+        if (j != i && table[j].vmo == table[i].vmo)
             return true;
     return false;
 }
 
 void mt_remove(unsigned i)
 {
-    handle_t vmo = table[i].vmo;
-    if (!vmo_shared(i, vmo))
-        jam_handle_close(vmo);
+    if (!mt_vmo_shared(i))
+        jam_handle_close(table[i].vmo);
     memmove(&table[i], &table[i + 1], (count - i - 1) * sizeof(*table));
     count--;
 }

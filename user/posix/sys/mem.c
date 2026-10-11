@@ -108,7 +108,8 @@ static long drop_locked(uint64_t addr, uint64_t end, bool kernel)
         } else {                    /* the tail went, or the middle */
             t[i].len = s - e.base;
             if (f < e.base + e.len) {
-                struct mt_entry tail = { f, e.base + e.len - f, e.vmo_off + (f - e.base), e.vmo, 0 };
+                struct mt_entry tail = { f, e.base + e.len - f, e.vmo_off + (f - e.base), e.vmo,
+                                         e.kind };
                 mt_insert(&tail);
             }
         }
@@ -132,10 +133,12 @@ void mem_forget(uint64_t addr, uint64_t len)
 }
 
 /* What a mapping maps: a VMO made for it (vmo HANDLE_INVALID: a new
- * anonymous one) or a descriptor's (file_map), from vmo_off. */
+ * anonymous one) or a descriptor's (file_map), from vmo_off; and the kind
+ * the table records for it (maptable.h's MT_*). */
 struct map_src {
     handle_t vmo;
     uint64_t vmo_off;
+    uint32_t kind;
 };
 
 /* src's VMO (or a new one) mapped for len bytes with perms (at *addr
@@ -160,7 +163,7 @@ static long map_new(uint64_t *addr, uint64_t len, uint32_t perms, bool fixed, bo
     }
     if (populate)
         (void)jam_vmo_commit(vmo, src->vmo_off, len);   /* a hint: pages still come on touch */
-    struct mt_entry e = { *addr, len, src->vmo_off, vmo, 0 };
+    struct mt_entry e = { *addr, len, src->vmo_off, vmo, src->kind };
     mt_insert(&e);
     return 0;
 }
@@ -240,7 +243,7 @@ static long replace_locked(uint64_t addr, uint64_t len, uint32_t perms, bool pop
     (void)drop_locked(addr, addr + len, false);   /* the kernel unmapped them; room checked */
     if (populate)
         (void)jam_vmo_commit(vmo, src->vmo_off, len);   /* a hint: pages still come on touch */
-    struct mt_entry e = { addr, len, src->vmo_off, vmo, 0 };
+    struct mt_entry e = { addr, len, src->vmo_off, vmo, src->kind };
     mt_insert(&e);
     return 0;
 }
@@ -258,6 +261,14 @@ static long mmap_check(long addr, long len, long prot, long flags, long off)
     return vmar_perms(prot, &perms);
 }
 
+/* The table's kind for a mapping made with mmap's flags. */
+static uint32_t mt_kind(long flags)
+{
+    if ((flags & MAP_TYPE) != MAP_PRIVATE)
+        return MT_SHARED;
+    return flags & MAP_ANONYMOUS ? MT_ANON : 0;
+}
+
 long lx_mmap(long addr, long len, long prot, long flags, long fd, long off)
 {
     long r = mmap_check(addr, len, prot, flags, off);
@@ -267,7 +278,7 @@ long lx_mmap(long addr, long len, long prot, long flags, long fd, long off)
     (void)vmar_perms(prot, &perms);   /* checked above */
     uint64_t size = page_round((uint64_t)len), at = (uint64_t)addr;
     bool fixed = flags & (MAP_FIXED | MAP_FIXED_NOREPLACE);
-    struct map_src src = { HANDLE_INVALID, 0 };
+    struct map_src src = { HANDLE_INVALID, 0, mt_kind(flags) };
     if (!(flags & MAP_ANONYMOUS)) {   /* outside mem_lock: reading a file may malloc */
         bool shared = (flags & MAP_TYPE) != MAP_PRIVATE;
         r = file_map(fd, off, size, shared, &src.vmo, &src.vmo_off);
@@ -400,7 +411,7 @@ long lx_mremap(long a, long b, long c, long d, long e, long f)
 static bool brk_reserve(void)
 {
     uint64_t addr = 0;
-    const struct map_src fresh = { HANDLE_INVALID, 0 };
+    const struct map_src fresh = { HANDLE_INVALID, 0, 0 };
     if (map_new(&addr, BRK_SIZE, VMAR_READ | VMAR_WRITE, false, false, &fresh))
         return false;
     handle_t vmo = mt_entries()[mt_first_after(addr)].vmo;
