@@ -89,7 +89,7 @@ struct pager_src {
  * caller gets the only reference. */
 status_t pager_create(struct job *job, uint64_t max_pages, uint64_t answer_ns,
                       struct pager **out);
-/* A pager VMO of size bytes (rounded up; VMO_MAX_SIZE at most, else
+/* A pager VMO of size bytes (rounded up; VMO_SMALL_MAX_SIZE at most, else
  * ERR_OUT_OF_RANGE) under key, every page absent; the caller gets the only
  * reference. ERR_ALREADY_EXISTS if key is taken (a live VMO, or a gone one
  * whose PAGER_REQ_GONE has no answer yet); ERR_BAD_STATE once the pager's
@@ -124,7 +124,7 @@ status_t pager_supply(struct pager *pg, uint64_t key, uint64_t offset, const str
  * pages of [offset, offset + len) from the table and every mapping; the
  * next access asks again (ERR_OUT_OF_RANGE past the size). Requests are
  * left as they are. PAGER_OP_SET_SIZE (offset: the size, rounded up to
- * pages, VMO_MAX_SIZE at most, else ERR_OUT_OF_RANGE; len and arg 0):
+ * pages, VMO_SMALL_MAX_SIZE at most, else ERR_OUT_OF_RANGE; len and arg 0):
  * grow (the new pages absent) or shrink: the pages past the end are
  * dropped as for INVALIDATE, and requests past it are answered so their
  * waiters look again and meet the end (a bus error for a fault); one that
@@ -205,9 +205,10 @@ void vmo_pager_evict(struct vmo *v, uint64_t idx, const struct page *p);
  * [offset, offset + len) dropped as vmo_pager_evict drops one.
  * ERR_OUT_OF_RANGE past the size. Interrupts on, no spinlock held. */
 status_t vmo_pager_invalidate(struct vmo *v, uint64_t offset, uint64_t len);
-/* PAGER_OP_SET_SIZE's work (size page-aligned, VMO_MAX_SIZE at most): the
- * size changed; shrinking cuts the pager's requests at the new end
- * (pager_cut_vlocked: any freed go on `dead`) and drops the pages past it.
+/* PAGER_OP_SET_SIZE's work (size page-aligned; past VMO_SMALL_MAX_SIZE
+ * ERR_OUT_OF_RANGE): the size changed; shrinking cuts the pager's requests
+ * at the new end (pager_cut_vlocked: any freed go on `dead`) and drops the
+ * pages past it.
  * ERR_PEER_CLOSED if detached, ERR_BAD_STATE if sealed. Interrupts on, no
  * spinlock held. */
 status_t vmo_pager_set_size(struct vmo *v, uint64_t size, struct list_node *dead);

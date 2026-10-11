@@ -277,7 +277,9 @@ Every driver and service is a userspace process from the start.
   drains every magazine and retries. Switch `heap_percpu`, boot
   `nokmcache`. Details at the top of `kernel/mm/heap.c`.
 - **VMO** kinds:
-  - *paged*: sparse 3-level page tree, pages committed on demand, up to 64 GiB;
+  - *paged*: a sparse page tree, pages committed on demand, up to 128 TiB
+    (a reservation costs nothing until touched; kept, pager and physical
+    VMOs up to 64 GiB, which the tree's inline root covers);
   - *contiguous*: one buddy block, up to 4 MiB, committed at creation;
   - *DMA32*: like contiguous, below 4 GiB;
   - *physical*: a fixed physical range (MMIO, framebuffer), never freed.

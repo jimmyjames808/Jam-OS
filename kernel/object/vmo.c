@@ -1,10 +1,20 @@
 /* Virtual memory objects (see vmo.h).
  *
- * Page tracking (paged VMOs): a fixed three-level table indexed by page
- * number, root[64] (inline) -> mid[512] -> leaf[512] of physical addresses,
- * 0 meaning "not committed". A leaf covers 2 MiB, a mid table 1 GiB, the
- * root all 64 GiB. Table pages come straight from the buddy allocator on
- * first touch; shrink and destroy free them (decommit leaves them).
+ * Page tracking (paged VMOs): a sparse table indexed by page number,
+ * root[64] (inline) -> mid[512] -> leaf[512] of physical addresses, 0
+ * meaning "not committed". A leaf covers 2 MiB, a mid table 1 GiB, the
+ * inline root the first 64 GiB: all of every VMO that size or smaller, so
+ * the thousands of small VMOs pay nothing for the rest. A plain paged VMO
+ * may be up to 128 TiB (a reservation); its pages from 64 GiB on are found
+ * through two more levels, top[512] -> upper[512] -> mid -> leaf, an upper
+ * table covering 512 GiB (only the top table's first 256 entries are used,
+ * and upper table 0's first 64, below 64 GiB, never are). Every table page
+ * comes straight from the buddy allocator on the first commit that needs
+ * it; shrink and destroy free them (decommit leaves them). A walk over a
+ * range (decommit, shrink, a child's creation) skips a missing table at
+ * any level, and scans past the run of missing entries after it in the
+ * same lock hold, so a whole untouched TiB costs a few looks, not one lock
+ * hold per GiB.
  *
  * Locking: the kobject's lock (class "vmo", taken with interrupts off like
  * every object lock) guards the size, the table, the committed count, the
@@ -28,9 +38,10 @@
  * the pages only after the TLB shootdown (a tlb_gather). mm/aspace.c's
  * header has the full argument.
  *
- * Latency: decommit and shrink work one leaf table (2 MiB,
- * at most 512 pages) per lock hold and flush/free every 512 pages or so,
- * re-checking under each re-lock: the range is clipped to the current size
+ * Latency: decommit and shrink work one leaf table (2 MiB, at most 512
+ * pages, or one run of missing tables: above) per lock hold and
+ * flush/free every 512 pages or so, re-checking under each re-lock: the
+ * range is clipped to the current size
  * (a racing shrink already took the rest), and a pin or kernel mapping that
  * appeared since the call started fails it with ERR_BAD_STATE, leaving the
  * pages before it decommitted. A commit racing the decommit of a slot it
@@ -49,8 +60,8 @@
  * JOB_LIMIT_PAGES unit to that job for every page it owns, from the moment
  * the page is published in the table (under the lock, so a failed charge
  * just drops the fresh page: ERR_NO_MEMORY) until it leaves the table;
- * `committed` and the charge move together. Its own table pages (mid and
- * leaf, `tables`) are charged the same way, one unit each from creation to
+ * `committed` and the charge move together. Its own table pages (every
+ * level, `tables`) are charged the same way, one unit each from creation to
  * free (uncharged, a job allowed 0 pages could make the kernel allocate
  * 128 MiB of leaf tables for one 64 GiB VMO). The page is
  * charged BEFORE any table is made for it, so a refused commit builds
@@ -204,11 +215,18 @@
 #define TBL_ENTRIES   512u
 #define LEAF_PAGES    ((uint64_t)TBL_ENTRIES)            /* pages per leaf: 2 MiB */
 #define MID_PAGES     (LEAF_PAGES * TBL_ENTRIES)         /* pages per mid table: 1 GiB */
-#define ROOT_ENTRIES  (VMO_MAX_PAGES / MID_PAGES)        /* 64 */
+#define UPPER_PAGES   (MID_PAGES * TBL_ENTRIES)          /* pages per upper table: 512 GiB */
+#define ROOT_ENTRIES  64u                                /* the inline root's mid tables */
+#define ROOT_PAGES    (MID_PAGES * ROOT_ENTRIES)         /* pages the inline root reaches: 64 GiB */
+#define TOP_ENTRIES   (VMO_MAX_PAGES / UPPER_PAGES)      /* upper tables in use: 256 */
 #define CONTIG_MAX    (PAGE_SIZE << MAX_ORDER)           /* 4 MiB */
 _Static_assert(CONTIG_MAX == VMO_CONTIGUOUS_MAX, "<jam/abi.h> says what one buddy block holds");
 
 _Static_assert(TBL_ENTRIES * sizeof(uint64_t) == PAGE_SIZE, "a table is one page");
+_Static_assert(ROOT_PAGES == VMO_SMALL_MAX_SIZE >> PAGE_SHIFT,
+               "every VMO but a plain paged one fits the inline root");
+_Static_assert(VMO_MAX_PAGES % UPPER_PAGES == 0 && TOP_ENTRIES <= TBL_ENTRIES,
+               "the top table reaches VMO_MAX_SIZE");
 
 enum vmo_kind { VMO_PAGED, VMO_CONTIG, VMO_PHYS };
 enum range_kind { RANGE_MAP, RANGE_PIN };
@@ -242,7 +260,7 @@ struct vmo {
     unsigned         cache;               /* physical: VM_UC / VM_WC / 0 */
     uint64_t         size;                /* bytes, a page multiple */
     uint64_t         committed;           /* pages owned right now */
-    uint64_t         tables;              /* paged: table pages (mid + leaf), charged like pages */
+    uint64_t         tables;              /* paged: table pages (every level), charged like pages */
     struct job      *job;                 /* charged for them (a reference), or NULL */
     uint64_t         phys;                /* contiguous / physical: first byte */
     unsigned         order;               /* contiguous: buddy order it came from */
@@ -268,7 +286,13 @@ struct vmo {
      * under the lock, by vmo_seal_verified (a release store; lockless
      * readers load it with acquire), never changed after. */
     struct vmo_verify *verify;
-    uint64_t       **root[ROOT_ENTRIES];  /* paged: root[r][m][l] = phys */
+    uint64_t       **root[ROOT_ENTRIES];  /* paged, pages below ROOT_PAGES: root[r][m][l] = phys */
+    /* Paged, pages from ROOT_PAGES on (only a plain paged VMO over 64 GiB
+     * has them): top[t][u][m][l] = phys for page t * UPPER_PAGES + u *
+     * MID_PAGES + m * LEAF_PAGES + l. The top table and each upper table
+     * are made on the first commit that needs them; upper table 0's
+     * entries below ROOT_PAGES stay empty. NULL: no page that far. */
+    uint64_t    ****top;
 };
 
 static uint64_t vlock(struct vmo *v)
@@ -284,6 +308,15 @@ static void vunlock(struct vmo *v, uint64_t f)
 static bool in_bounds(uint64_t offset, uint64_t len, uint64_t size)
 {
     return offset <= size && len <= size - offset;
+}
+
+/* The most v's size may grow to (<jam/abi.h>): VMO_MAX_SIZE for a plain
+ * paged VMO; a kept one, a pager VMO and a pager VMO's child keep within
+ * the inline root (VMO_SMALL_MAX_SIZE). All of it is fixed at creation. */
+static uint64_t size_max(const struct vmo *v)
+{
+    bool plain = !v->pv && !v->src && !(v->flags & VMO_KEEP_PAGES);
+    return plain ? VMO_MAX_SIZE : VMO_SMALL_MAX_SIZE;
 }
 
 /* Start a call that may change v's bytes or size: ERR_BAD_STATE once v is
@@ -391,14 +424,31 @@ static void table_free_locked(struct vmo *v, void *t)
     job_uncharge(v->job, JOB_LIMIT_PAGES, 1);
 }
 
+/* With the lock held: where page idx's mid table pointer lives. Below
+ * ROOT_PAGES (all of every VMO of 64 GiB or less) that is the inline root;
+ * past it, an upper table under the top table, which are made here if
+ * `create` (charged as every table page). NULL if they don't exist and
+ * `create` is false, or making one failed (what was made stays, charged). */
+static uint64_t ***mid_ref_locked(struct vmo *v, uint64_t idx, bool create)
+{
+    if (idx < ROOT_PAGES)
+        return &v->root[idx / MID_PAGES];
+    if (!v->top && (!create || !(v->top = table_alloc_locked(v))))
+        return NULL;
+    uint64_t ****upper = &v->top[idx / UPPER_PAGES];
+    if (!*upper && (!create || !(*upper = table_alloc_locked(v))))
+        return NULL;
+    return &(*upper)[(idx / MID_PAGES) % TBL_ENTRIES];
+}
+
 /* With the lock held: the table slot for page idx. NULL if its tables don't
  * exist and `create` is false, or creating them failed (the job refused a
  * table page, or no memory; any table made before the failure stays, and
  * stays charged). */
 static uint64_t *slot_locked(struct vmo *v, uint64_t idx, bool create)
 {
-    uint64_t ***mid = &v->root[idx / MID_PAGES];
-    if (!*mid && (!create || !(*mid = table_alloc_locked(v))))
+    uint64_t ***mid = mid_ref_locked(v, idx, create);
+    if (!mid || (!*mid && (!create || !(*mid = table_alloc_locked(v)))))
         return NULL;
     uint64_t **leaf = &(*mid)[(idx / LEAF_PAGES) % TBL_ENTRIES];
     if (!*leaf && (!create || !(*leaf = table_alloc_locked(v))))
@@ -406,23 +456,69 @@ static uint64_t *slot_locked(struct vmo *v, uint64_t idx, bool create)
     return &(*leaf)[idx % LEAF_PAGES];
 }
 
+/* mid_find_locked past the inline root (idx >= ROOT_PAGES). */
+static uint64_t **upper_mid_find_locked(const struct vmo *v, uint64_t idx, uint64_t *next)
+{
+    uint64_t t = idx / UPPER_PAGES, u = (idx / MID_PAGES) % TBL_ENTRIES;
+    uint64_t ***upper = v->top ? v->top[t] : NULL;
+    if (upper && upper[u])
+        return upper[u];
+    if (!v->top) {
+        *next = VMO_MAX_PAGES;
+    } else if (!upper) {
+        while (++t < TOP_ENTRIES && !v->top[t])
+            ;
+        *next = t * UPPER_PAGES;
+    } else {
+        while (++u < TBL_ENTRIES && !upper[u])
+            ;
+        *next = t * UPPER_PAGES + u * MID_PAGES;
+    }
+    return NULL;
+}
+
 /* With the lock held: page idx's mid table, or NULL if it has none; then
- * *next is the first page after idx that may have one. */
+ * *next is the first page after idx that may have one: past the missing
+ * tables that follow it in the table above (the root, an upper table or
+ * the top table), so a walk over an untouched range takes one look per
+ * table that exists, not one per GiB. It may lie past the size: callers
+ * clip it. */
 static uint64_t **mid_find_locked(const struct vmo *v, uint64_t idx, uint64_t *next)
 {
-    uint64_t **mid = v->root[idx / MID_PAGES];
+    if (idx >= ROOT_PAGES)
+        return upper_mid_find_locked(v, idx, next);
+    uint64_t r = idx / MID_PAGES;
+    if (v->root[r])
+        return v->root[r];
+    while (++r < ROOT_ENTRIES && !v->root[r])
+        ;
+    *next = r * MID_PAGES;   /* ROOT_PAGES if none: on in the top table */
+    return NULL;
+}
+
+/* With the lock held: page idx's leaf table, or NULL if it has none; then
+ * *next is the first page after idx that may have one, past the missing
+ * leaves that follow it in its mid table (or as mid_find_locked says). */
+static uint64_t *leaf_find_locked(const struct vmo *v, uint64_t idx, uint64_t *next)
+{
+    uint64_t **mid = mid_find_locked(v, idx, next);
     if (!mid)
-        *next = ALIGN_UP(idx + 1, MID_PAGES);
-    return mid;
+        return NULL;
+    uint64_t m = (idx / LEAF_PAGES) % TBL_ENTRIES;
+    if (mid[m])
+        return mid[m];
+    while (++m < TBL_ENTRIES && !mid[m])
+        ;
+    *next = ALIGN_DOWN(idx, MID_PAGES) + m * LEAF_PAGES;
+    return NULL;
 }
 
 /* With the lock held: where page idx's leaf table pointer lives, or NULL
- * if its mid table doesn't exist. */
-static uint64_t **leaf_ref_locked(const struct vmo *v, uint64_t idx)
+ * if the tables above it don't exist. */
+static uint64_t **leaf_ref_locked(struct vmo *v, uint64_t idx)
 {
-    uint64_t next;
-    uint64_t **mid = mid_find_locked(v, idx, &next);
-    return mid ? &mid[(idx / LEAF_PAGES) % TBL_ENTRIES] : NULL;
+    uint64_t ***mid = mid_ref_locked(v, idx, false);
+    return mid && *mid ? &(*mid)[(idx / LEAF_PAGES) % TBL_ENTRIES] : NULL;
 }
 
 /* With the lock held: is page idx charged to the job on its own while
@@ -503,6 +599,29 @@ static void drop_mid_from_locked(struct vmo *v, uint64_t ***ref, uint64_t base, 
     }
 }
 
+/* drop_from_locked's work past the inline root: the upper tables and the
+ * top table. Upper table t holds pages from t * UPPER_PAGES on, but never
+ * below ROOT_PAGES; the top table, none below it either. */
+static void drop_top_from_locked(struct vmo *v, uint64_t first)
+{
+    for (uint64_t t = 0; t < TOP_ENTRIES; t++) {
+        uint64_t ***upper = v->top[t];
+        uint64_t base = t * UPPER_PAGES;
+        if (!upper || base + UPPER_PAGES <= first)
+            continue;
+        for (uint64_t u = 0; u < TBL_ENTRIES; u++)
+            drop_mid_from_locked(v, &upper[u], base + u * MID_PAGES, first);
+        if ((base > ROOT_PAGES ? base : ROOT_PAGES) >= first) {
+            table_free_locked(v, upper);
+            v->top[t] = NULL;
+        }
+    }
+    if (ROOT_PAGES >= first) {
+        table_free_locked(v, v->top);
+        v->top = NULL;
+    }
+}
+
 /* Drop every page at index >= first, and free the table pages that lie
  * wholly past it, with no TLB care: for vmo_destroy (no references, so no
  * mappings and no lock needed), the tail of a shrink (which has already
@@ -512,6 +631,8 @@ static void drop_from_locked(struct vmo *v, uint64_t first)
 {
     for (uint64_t r = 0; r < ROOT_ENTRIES; r++)
         drop_mid_from_locked(v, &v->root[r], r * MID_PAGES, first);
+    if (v->top)
+        drop_top_from_locked(v, first);
 }
 
 static void zap_umaps_locked(const struct vmo *v, uint64_t first, uint64_t end,
@@ -775,7 +896,7 @@ static status_t vmo_new(uint64_t size, uint32_t flags, struct vmo **out)
         return ERR_INVALID_ARGS;
     if ((flags & VMO_KEEP_PAGES) && (flags & (VMO_CONTIGUOUS | VMO_DMA32)))
         return ERR_INVALID_ARGS;   /* contiguous memory stays anyway; DMA32 pages are scarce */
-    if (size > VMO_MAX_SIZE)
+    if (size > ((flags & VMO_KEEP_PAGES) ? VMO_SMALL_MAX_SIZE : VMO_MAX_SIZE))
         return ERR_OUT_OF_RANGE;
     size = ALIGN_UP(size, PAGE_SIZE);
 
@@ -843,7 +964,7 @@ status_t vmo_create_physical(uint64_t phys, uint64_t size, unsigned cache, struc
     if ((phys & (PAGE_SIZE - 1)) || size == 0 ||
         (cache != 0 && cache != VM_UC && cache != VM_WC))
         return ERR_INVALID_ARGS;
-    if (size > VMO_MAX_SIZE)
+    if (size > VMO_SMALL_MAX_SIZE)
         return ERR_OUT_OF_RANGE;
     size = ALIGN_UP(size, PAGE_SIZE);
     if (phys > (1ull << 52) || phys + size > (1ull << 52))   /* architectural limit */
@@ -1050,20 +1171,18 @@ static void zap_umaps_locked(const struct vmo *v, uint64_t first, uint64_t end,
 
 /* With the lock held: take the committed pages in [idx, end), at most up to
  * the end of idx's leaf, out of the table onto g and out of every user
- * mapping. Returns where to continue (past a missing leaf or mid table, or
- * at a shared page when g's array is full: finish g first). */
+ * mapping. Returns where to continue (past the missing tables that follow
+ * a missing leaf: leaf_find_locked; or at a shared page when g's array is
+ * full: finish g first). */
 static uint64_t take_batch_locked(struct vmo *v, uint64_t idx, uint64_t end, struct tlb_gather *g)
 {
     uint64_t next;
-    uint64_t **mid = mid_find_locked(v, idx, &next);
-    if (!mid)
+    uint64_t *leaf = leaf_find_locked(v, idx, &next);
+    if (!leaf)
         return next < end ? next : end;
     uint64_t stop = ALIGN_UP(idx + 1, LEAF_PAGES);
     if (stop > end)
         stop = end;
-    uint64_t *leaf = mid[(idx / LEAF_PAGES) % TBL_ENTRIES];
-    if (!leaf)
-        return stop;
     uint64_t taken = 0, charged = 0;
     for (uint64_t i = idx; i < stop; i++) {
         uint64_t *s = &leaf[i % LEAF_PAGES];
@@ -1105,8 +1224,51 @@ static void gather_maybe_finish(struct tlb_gather *g)
         tlb_gather_finish(g);
 }
 
+/* shrink_pages: does the table holding pages [base, base + span) lie
+ * wholly past the new end `first`, with the walk past its last page (or
+ * past old_end: no table lies wholly past the size, so nothing is left in
+ * it beyond)? */
+static bool table_done(uint64_t base, uint64_t span, uint64_t first, uint64_t next,
+                       uint64_t old_end)
+{
+    uint64_t end = base + span < old_end ? base + span : old_end;
+    return base >= first && next >= end;
+}
+
+/* shrink_pages, with the lock held, after the batch at idx: the walk took
+ * every page of [first, next), visiting every table that exists there
+ * (take_batch_locked skips only missing ones), so idx's leaf, mid and
+ * upper tables are empty once table_done says so: they go, the leaf first.
+ * Not if the batch stopped early (next is inside the leaf then). */
+static void free_passed_locked(struct vmo *v, uint64_t idx, uint64_t next, uint64_t first,
+                               uint64_t old_end)
+{
+    uint64_t ***mid = mid_ref_locked(v, idx, false);
+    uint64_t **leaf = leaf_ref_locked(v, idx);
+    if (leaf && *leaf &&
+        table_done(ALIGN_DOWN(idx, LEAF_PAGES), LEAF_PAGES, first, next, old_end)) {
+        table_free_locked(v, *leaf);
+        *leaf = NULL;
+    }
+    if (mid && *mid && table_done(ALIGN_DOWN(idx, MID_PAGES), MID_PAGES, first, next, old_end)) {
+        table_free_locked(v, *mid);
+        *mid = NULL;
+    }
+    if (idx < ROOT_PAGES || !v->top)
+        return;
+    uint64_t ****upper = &v->top[idx / UPPER_PAGES];
+    uint64_t ubase = ALIGN_DOWN(idx, UPPER_PAGES);
+    uint64_t lo = ubase > ROOT_PAGES ? ubase : ROOT_PAGES;   /* upper table 0 holds none below */
+    if (*upper && table_done(lo, ubase + UPPER_PAGES - lo, first, next, old_end)) {
+        table_free_locked(v, *upper);
+        *upper = NULL;
+    }
+}
+
 /* Shrink from old_end pages to first pages; v->size is already lowered and
- * v->resize held, so nothing can appear at or past `first` meanwhile. */
+ * v->resize held, so nothing can appear at or past `first` meanwhile.
+ * Tables wholly past first go as the walk passes them, a lock hold each;
+ * the last hold frees what straddles first and the top table. */
 static void shrink_pages(struct vmo *v, uint64_t first, uint64_t old_end)
 {
     struct tlb_gather g;
@@ -1114,21 +1276,13 @@ static void shrink_pages(struct vmo *v, uint64_t first, uint64_t old_end)
     for (uint64_t idx = first; idx < old_end;) {
         uint64_t f = vlock(v);
         uint64_t next = take_batch_locked(v, idx, old_end, &g);
-        /* A leaf wholly past the new end goes too, once its last pages
-         * just went (not if the batch stopped early). */
-        uint64_t lbase = ALIGN_DOWN(idx, LEAF_PAGES);
-        uint64_t lend = lbase + LEAF_PAGES < old_end ? lbase + LEAF_PAGES : old_end;
-        uint64_t **leaf = leaf_ref_locked(v, idx);
-        if (lbase >= first && next >= lend && leaf && *leaf) {
-            table_free_locked(v, *leaf);
-            *leaf = NULL;
-        }
+        free_passed_locked(v, idx, next, first, old_end);
         vunlock(v, f);
         gather_maybe_finish(&g);
         idx = next;
     }
     uint64_t f = vlock(v);
-    drop_from_locked(v, first);   /* only mid tables are left to free */
+    drop_from_locked(v, first);   /* only tables straddling first, and the top table, are left */
     vunlock(v, f);
     tlb_gather_finish(&g);
 }
@@ -1192,7 +1346,7 @@ status_t vmo_set_size(struct vmo *v, uint64_t size)
 {
     if (v->kind != VMO_PAGED || v->pv)
         return ERR_NOT_SUPPORTED;   /* a pager VMO's size is its pager's */
-    if (size > VMO_MAX_SIZE)
+    if (size > size_max(v))
         return ERR_OUT_OF_RANGE;
     size = ALIGN_UP(size, PAGE_SIZE);
     status_t st = writer_enter(v);
@@ -1559,7 +1713,7 @@ static status_t share_leaf_locked(struct vmo *p, struct vmo *c, uint64_t idx, ui
 static status_t share_pages(struct vmo *p, struct vmo *c, uint64_t offp)
 {
     uint64_t f = vlock(p);
-    uint64_t end = offp + (c->size >> PAGE_SHIFT);   /* (no overflow: both under 2^25) */
+    uint64_t end = offp + (c->size >> PAGE_SHIFT);   /* (no overflow: both at most 2^35) */
     if (end > p->size >> PAGE_SHIFT)
         end = p->size >> PAGE_SHIFT;   /* past it the child's pages are zero */
     p->protecting++;
@@ -1664,6 +1818,9 @@ status_t vmo_create_child(struct job *job, struct vmo *p, uint32_t flags, uint64
     /* A pager VMO's untouched pages follow the file: no true snapshot. */
     if ((p->pv || p->src) && flags == VMO_CHILD_SNAPSHOT)
         return ERR_NOT_SUPPORTED;
+    /* Its window is charged and given its tables whole at creation. */
+    if ((p->pv || p->src) && size > VMO_SMALL_MAX_SIZE)
+        return ERR_OUT_OF_RANGE;
     struct vmo *c;
     status_t st = vmo_create_for(job, size, 0, &c);
     if (st != OK)
@@ -1697,6 +1854,8 @@ status_t vmo_create_child(struct job *job, struct vmo *p, uint32_t flags, uint64
 
 status_t vmo_create_pager(struct job *job, uint64_t size, struct pager_vmo *pv, struct vmo **out)
 {
+    if (size > VMO_SMALL_MAX_SIZE)
+        return ERR_OUT_OF_RANGE;
     struct vmo *v;
     status_t st = vmo_new(size, 0, &v);
     if (st != OK)
@@ -1834,6 +1993,8 @@ status_t vmo_pager_invalidate(struct vmo *v, uint64_t offset, uint64_t len)
 
 status_t vmo_pager_set_size(struct vmo *v, uint64_t size, struct list_node *dead)
 {
+    if (size > VMO_SMALL_MAX_SIZE)
+        return ERR_OUT_OF_RANGE;
     status_t st = writer_enter(v);   /* a sealed VMO's size is fixed */
     if (st != OK)
         return st;
