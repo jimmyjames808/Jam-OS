@@ -10,7 +10,9 @@
  *   - `armed_rx` / `armed_tx`: this set raised that `waits` flag in the
  *     socket's rings and has not lowered it; flags are lowered when the
  *     entry is reported ready, changed or removed, so a socket that is
- *     being read never makes netstack signal once per datagram;
+ *     being read never makes netstack signal once per datagram (but an
+ *     edge socket entry's stay up when it is reported: its next edge is
+ *     netstack's next signal);
  *   - `dead`: the socket's channel saw SIG_PEER_CLOSED; its rings are
  *     never touched again (netstack may shrink their VMO);
  *   - an edge entry reported ready is not put back in the FIFO: it is
@@ -158,6 +160,34 @@ static uint32_t sock_arm(struct netwait *w, struct entry *e, status_t *err)
     return sock_ready(e, err);
 }
 
+/* An edge socket entry just reported ready: armed at once, without the
+ * second look a level arm makes (it is ready, so that look would report
+ * it again). The bits are cleared and the flags raised and left up, so
+ * netstack's next publish or change of state signals and queues a packet:
+ * the next edge. What came between the look and the clearing is the
+ * caller's to find, as it drains the socket (epoll(7)'s rule for EPOLLET). */
+static void sock_arm_edge(struct netwait *w, struct entry *e)
+{
+    struct sockring *r = e->sock.rings;
+    if (e->dead || e->broken)
+        return;   /* nothing more will come: reported once */
+    status_t st = jam_event_signal(e->sock.to_prog, SOCK_SIGS, 0);
+    if (st != OK) {
+        e->broken = st;
+        return;
+    }
+    w->stats.arms++;
+    if ((e->interest & NETWAIT_READ) && !e->armed_rx) {
+        __atomic_store_n(&r->rx.cons->waits, 1, __ATOMIC_RELAXED);
+        e->armed_rx = true;
+    }
+    if ((e->interest & NETWAIT_WRITE) && !r->tx.ended && !e->armed_tx) {
+        __atomic_store_n(&r->tx.prod->waits, 1, __ATOMIC_RELAXED);
+        e->armed_tx = true;
+    }
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);   /* the flags before netstack's next look */
+}
+
 /* ---- handles ----------------------------------------------------------------------- */
 
 /* The signals a handle entry watches: those of its interest and HUP's. */
@@ -285,9 +315,8 @@ static bool rings_ok(const struct sockring *r)
 status_t netwait_add_sock(struct netwait *w, const struct netwait_sock *s, uint32_t interest,
                           void *user, uint32_t *out_id)
 {
-    if (interest & NETWAIT_EDGE)
-        return ERR_NOT_SUPPORTED;
-    if ((interest & ~NETWAIT_INTEREST) || !rings_ok(s->rings) || s->tx_need > s->rings->tx.size)
+    if ((interest & ~(NETWAIT_INTEREST | NETWAIT_EDGE)) || !rings_ok(s->rings) ||
+        s->tx_need > s->rings->tx.size)
         return ERR_INVALID_ARGS;
     for (uint32_t i = 0; i < w->max; i++)
         if (w->e[i].kind == ENTRY_SOCK && w->e[i].sock.rings == s->rings)
@@ -359,8 +388,6 @@ status_t netwait_modify(struct netwait *w, uint32_t id, uint32_t interest)
         return ERR_NOT_FOUND;
     if (interest & ~(NETWAIT_INTEREST | NETWAIT_EDGE))
         return ERR_INVALID_ARGS;
-    if ((interest & NETWAIT_EDGE) && e->kind == ENTRY_SOCK)
-        return ERR_NOT_SUPPORTED;
     sock_disarm(e);
     if (e->kind == ENTRY_HANDLE) {
         /* Rebound for the new signals under the same keys: a packet of the
@@ -465,7 +492,10 @@ static uint32_t look(struct netwait *w, struct netwait_ready *out, uint32_t max)
             bits = sock_arm(w, e, &err);
         if (!bits)
             continue;   /* asleep: a packet brings it back */
-        sock_disarm(e);
+        if (sock && (e->interest & NETWAIT_EDGE))
+            sock_arm_edge(w, e);
+        else
+            sock_disarm(e);
         if (!(e->interest & NETWAIT_EDGE))
             make_pending(w, slot);   /* level: looked at again next time */
         out[n++] = (struct netwait_ready){ .id = (uint32_t)e->gen << 16 | slot, .ready = bits,

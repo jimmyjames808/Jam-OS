@@ -549,16 +549,21 @@ static void raise_pipe(struct sig_thread *t)
 long sig_call(const struct sig_frame *f)
 {
     struct sig_thread *t = self();
-    if (!t || (f->kind & SIG_CALL_QUIET))
-        return call(f);
+    long r;
+    if (!t || (f->kind & SIG_CALL_QUIET)) {
+        r = call(f);
+        return r == -LX_EINTR_FINAL ? -EINTR : r;
+    }
     uint32_t handled = t->handled, norestart = t->norestart;
     volatile int *outer = t->cancel;
     t->cancel = f->cancel;
-    long r;
     for (unsigned spurious = 0;;) {
         enter(t);
         r = f->cancel && *f->cancel ? -EINTR : call(f);
         __atomic_sub_fetch(&t->calls, 1, __ATOMIC_SEQ_CST);
+        bool final = r == -LX_EINTR_FINAL;   /* a socket's timed wait: never restarted */
+        if (final)
+            r = -EINTR;
         if (r == -EPIPE && (f->kind & SIG_CALL_PIPE))
             raise_pipe(t);
         if (due(t))
@@ -570,7 +575,7 @@ long sig_call(const struct sig_frame *f)
                 continue;   /* an interrupt left over: nothing to report */
             break;
         }
-        if ((f->kind & SIG_CALL_NORESTART) || t->norestart != norestart)
+        if (final || (f->kind & SIG_CALL_NORESTART) || t->norestart != norestart)
             break;
     }
     t->cancel = outer;

@@ -190,6 +190,25 @@ static lx_call *const calls[] = {
     [SYS_timer_gettime] = lx_timer_gettime,
     [SYS_timer_getoverrun] = lx_timer_getoverrun,
     [SYS_timer_delete] = lx_timer_delete,
+
+    /* sockets: socket.c, sockio.c, sockopt.c */
+    [SYS_socket] = lx_socket,
+    [SYS_bind] = lx_bind,
+    [SYS_connect] = lx_connect,
+    [SYS_listen] = lx_listen,
+    [SYS_accept] = lx_accept,
+    [SYS_accept4] = lx_accept4,
+    [SYS_shutdown] = lx_shutdown,
+    [SYS_getsockname] = lx_getsockname,
+    [SYS_getpeername] = lx_getpeername,
+    [SYS_sendto] = lx_sendto,
+    [SYS_recvfrom] = lx_recvfrom,
+    [SYS_sendmsg] = lx_sendmsg,
+    [SYS_recvmsg] = lx_recvmsg,
+    [SYS_sendmmsg] = lx_sendmmsg,
+    [SYS_recvmmsg] = lx_recvmmsg,
+    [SYS_setsockopt] = lx_setsockopt,
+    [SYS_getsockopt] = lx_getsockopt,
 };
 
 /* Linux's futex operations, for kind_of. */
@@ -209,8 +228,8 @@ static unsigned kind_of(long n, long b, long c, long d)
         return d ? SIG_CALL_NORESTART : 0;   /* a timed wait: musl recomputes its time */
     case SYS_poll: case SYS_ppoll: case SYS_select: case SYS_pselect6: case SYS_epoll_wait:
     case SYS_epoll_pwait: case SYS_nanosleep: case SYS_clock_nanosleep: case SYS_rt_sigsuspend:
-    case SYS_rt_sigtimedwait: case SYS_pause:
-        return SIG_CALL_NORESTART;   /* signal(7): never restarted */
+    case SYS_rt_sigtimedwait: case SYS_pause: case SYS_connect:
+        return SIG_CALL_NORESTART;   /* signal(7): never restarted (connect goes on) */
     case SYS_write: case SYS_writev: case SYS_pwrite64: case SYS_pwritev: case SYS_pwritev2:
         return SIG_CALL_PIPE;
     case SYS_sendto:

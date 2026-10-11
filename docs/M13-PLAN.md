@@ -2348,3 +2348,146 @@ the plan left open.
   section `MAP_FIXED` 2,000 times over four pages a thread reads without
   pause, and a `MAP_FIXED` over a foreign mapping refused with nothing
   changed.
+
+## B6 notes
+
+Track B6 (sockets and names) as built, with the choices the plan left
+open. Files: `user/posix/sys/sock.h` (the model, the openers, the locks),
+socket.c (the kind, socket, bind, listen, the drain at exit), sockconn.c
+(connect, accept, shutdown, the names), sockgive.c (a socket handed to a
+child), sockio.c (the bytes), sockwait.c (the one wait), sockopt.c (the
+options), resolve.c (names from `/svc/dns`) and the override of
+`src/network/lookup_name.c`; posixtest's socket.c (no network, every run)
+and sockets.c (the network peer, asked for by name), `tools/posix-net-test.sh`
+and `tools/shell-tests/posix-net.txt`.
+
+**Choices**
+- **Lazy.** `socket` makes only the description; netstack hears of it at
+  bind (a datagram socket), connect, listen or a datagram's first send.
+- **Openers and permissions.** Connections and ephemeral or port-0
+  datagram sockets use `/svc/net`; a fixed port from 1024 to 49151 needs
+  `/svc/net-listen` and one below 1024 `/svc/net-low`, checked at bind
+  (EACCES); `listen` always needs `/svc/net-listen` (EACCES). A program
+  whose list has no `svc net` gets EACCES at bind and connect.
+- **No loopback, one interface.** A bind to anything but INADDR_ANY or the
+  interface's address is EADDRNOTAVAIL; a connect to 127.0.0.0/8
+  ECONNREFUSED (nothing can listen there); a datagram connect netstack
+  refuses ENETUNREACH. A stream socket bound to a port of its own can
+  listen but not connect (EADDRNOTAVAIL): netstack picks a connection's
+  port.
+- **POSIX's defaults (N1's note).** Every connection, made or accepted,
+  gets one `net_stream.set_options` with the socket's options: Nagle's
+  algorithm on (`TCP_NODELAY` off) and keep-alive off unless set. An
+  accepted connection takes its listener's options (not `SO_REUSEADDR`).
+- **Ring sizes.** `SO_SNDBUF`/`SO_RCVBUF` round up to a power of two from
+  4 KiB to 2 MiB and size the rings at connect, listen or a datagram
+  socket's open; `getsockopt` says the rings' real size (not Linux's
+  doubled value).
+- **Closing.** netstack drops what it hasn't taken from the tx ring when a
+  connection's channel closes, so `close` waits up to 10 s (`SO_LINGER`'s
+  time when set; 0: not at all) for netstack to take every byte written,
+  and so does `exit_group` for every connection still open
+  (`sock_exit_drain`, called from thread.c). A signal doesn't end close's
+  wait. Bytes never read are still a reset, as Linux's.
+- **Errors.** A CLOSED connection's error (refused ECONNREFUSED, no
+  answer ETIMEDOUT, reset or netstack gone ECONNRESET, its address gone
+  ENETUNREACH, its own rings broken ECONNABORTED) is said once, by
+  whichever of read, write, connect again or `SO_ERROR` asks first; then
+  reads see 0 and writes EPIPE. A stream socket never connected: send is
+  EPIPE (Linux's, with SIGPIPE), recv ENOTCONN.
+- **Datagrams** go in the ring and the send returns: one netstack refuses
+  (a bad address, no route) is said by the next send (EINVAL,
+  ENETUNREACH), as Linux says an ICMP error on a later call. 1472 bytes at
+  most (EMSGSIZE); no broadcast (`SO_BROADCAST` is kept, netstack refuses).
+- **Flags.** recv takes `MSG_PEEK`, `MSG_DONTWAIT`, `MSG_WAITALL`,
+  `MSG_TRUNC` (datagrams only: on a stream EOPNOTSUPP), `MSG_NOSIGNAL` and
+  `MSG_CMSG_CLOEXEC`; send `MSG_DONTWAIT`, `MSG_NOSIGNAL` and the ignored
+  `MSG_MORE`, `MSG_CONFIRM`, `MSG_EOR`, `MSG_DONTROUTE`. `MSG_OOB` (and
+  `MSG_FASTOPEN`) is EOPNOTSUPP, `MSG_ERRQUEUE` EAGAIN, any other bit
+  EINVAL (fail closed: Linux ignores them). `sendmsg` with ancillary data
+  is EINVAL; `recvmsg` says none. `sendmmsg` and `recvmmsg` are loops;
+  recvmmsg's timeout is EINVAL (not built).
+- **Waits** (sockwait.c): each waiting thread binds the socket's event
+  (its side's bit and `SOCKRING_SIG_STATE`) and channel ONCE on a port of
+  its own and looks again after binding, and the rings' `waits` flags are
+  counted per side, so several threads may wait on one socket (posixtest
+  has one thread send while another sleeps in recv). A signal ends a wait
+  with EINTR; with a socket timeout (`SO_RCVTIMEO`, `SO_SNDTIMEO`, accept's
+  `SO_RCVTIMEO`) it returns `-LX_EINTR_FINAL`, which signal.c's `sig_call`
+  turns into EINTR never restarted (B4's note; a small change there).
+  `connect` is in calls.c's never-restarted list: it goes on, and a
+  second connect says EALREADY, then EISCONN.
+- **poll and epoll.** A connection or datagram socket arms a socket entry;
+  a listener its channel (one accept is always in flight, so readable
+  means a connection waits); a socket with nothing at netstack the
+  process's idle event, its readiness the kind's own (writable; a socket
+  handed away readable and writable, so calls answer ENOTCONN at once). An
+  epoll item is armed at `epoll_ctl`: a socket added before its connect or
+  listen keeps the idle arm, so add it after, or `EPOLL_CTL_MOD` it (re-arming
+  on a change of state is not built).
+- **EPOLLET on sockets** (B5's note): `<netwait.h>`'s edge entries take
+  sockets. An edge socket entry is armed as it is reported, its flags left
+  up, so its next edge is netstack's next signal (a datagram or bytes, room,
+  a change of state); what came between the look and the arming is found
+  by draining to EAGAIN, as epoll(7) asks. utest `netwait_edge` covers it.
+- **poll's socket places stay uncached** (B5's note): a socket's place
+  still goes at the end of each call (two binds, a clear and two unbinds a
+  socket a call). Keeping them needs the rings to outlive every thread's
+  place, and a close can't reach another thread's set; not worth it for
+  M13's users (tinyssh polls a handful). poll.c's `release` now takes the
+  places out before it puts the descriptions: a socket closed by another
+  thread during a poll had its rings unmapped by that last `fd_put` before
+  the place's removal wrote its flag.
+- **A socket handed to a child moves** (sockgive.c): its ring VMO and
+  events can't be duplicated, so `POSIXFDS_SOCKET` carries the channel,
+  the VMO and both events, and its data this side's counts, ends seen and
+  options; `POSIXFDS_LISTENER` the channel and the accept in flight's txid.
+  The parent's description is then SK_GONE (ENOTCONN); a spawn that fails
+  after the give loses the socket; a socket still SK_NEW is left out.
+  spawnfd.c (B3's) now gives a description in two of the child's slots
+  once and the second as `POSIXFDS_DUP`: a socket can move only once (the
+  inetd way, one socket as 0 and 1, needs it), and every kind gets dup2's
+  sharing.
+- **A socket lives as long as the process that made it**: netstack ends
+  an opener's sockets when its channel closes, and every socket is made on
+  the process's kept channel. A child given a connection keeps it only
+  while its parent lives (execve's spawn-wait-exit is fine).
+- **socketpair ends** through the socket calls: send, recv, sendmsg and
+  recvmsg go to pipe.c's read and write; `MSG_DONTWAIT` by a look at the
+  channel first; `MSG_PEEK`, `MSG_TRUNC` and shutdown are EOPNOTSUPP (a
+  channel has no half-close); the names are AF_UNIX with no path.
+- **Names.** The override keeps upstream's null name, numeric addresses
+  and `/etc/hosts`, then asks `/svc/dns` (`__jam_resolve`, glue.h): no
+  search domains, no RFC 6724 sorting (IPv4 first), an AF_INET6-only
+  lookup EAI_NODATA. No such name EAI_NONAME; no answer, no servers yet
+  or too many lookups EAI_AGAIN; the servers failed, or no `svc dns` in
+  the program's list, EAI_FAIL. The lookup is a channel call (about 15 s
+  at most): a signal doesn't end it.
+- **Found, not changed:** `res_query`, `res_send` and getnameinfo's
+  reverse lookups still use musl's own DNS client toward resolv.conf's
+  servers. libc's resolv.conf names none, so they ask 127.0.0.1 and wait
+  out their 10 s before a numeric answer. A follow-up: override
+  `src/network/res_msend.c` to fail at once (the resolver knows A
+  records only).
+
+**Edits outside B6's files**: calls.c and calls.h (B6's block; connect in
+`kind_of`'s never-restarted list), signal.c (`LX_EINTR_FINAL` in
+`sig_call`), fd.c (the two adopters), thread.c (`sock_exit_drain` in
+`lx_exit_group`), poll.c (`release`'s order), spawnfd.c (`POSIXFDS_DUP`),
+epoll.c (its header), `user/lib/netwait.c` and `<netwait.h>` (socket edge
+entries), utest netwait.c, glue.h (`__jam_resolve`), the OVERRIDES list,
+posixtest's main.c, pt.h and list (`svc net listen`, `svc dns`),
+docs/TESTING.md.
+
+**For X2 (tinyssh)**
+- An accept loop on port 22 needs `svc net listen low` (a service's:
+  init's), and hands each connection to tinysshd as descriptors 0 and 1
+  (`posix_spawn_file_actions_adddup2` twice; the listener and the
+  accepted descriptor `FD_CLOEXEC` so they don't go too). The loop must
+  outlive its connections: they end with its opener.
+- Interactive sessions want `TCP_NODELAY` on the accepted socket (POSIX's
+  default is Nagle's algorithm on); set it in the loop before the spawn:
+  options move with the socket.
+- SIGPIPE: a write to a closed connection raises it (tinysshd's own
+  handling decides); `MSG_NOSIGNAL` and `SIG_IGN` work.
+- No `AF_UNIX` sockets: agent forwarding stays off.

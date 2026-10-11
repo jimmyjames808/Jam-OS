@@ -382,7 +382,7 @@ static bool edge_channel(struct netwait *w, handle_t a, handle_t *b)
                                  .hup = SIG_PEER_CLOSED };
     struct netwait_sock none = { 0 };
     uint32_t id = 0;
-    CHECK_ST(netwait_add_sock(w, &none, NETWAIT_EDGE, NULL, &id), ERR_NOT_SUPPORTED);
+    CHECK_ST(netwait_add_sock(w, &none, NETWAIT_EDGE, NULL, &id), ERR_INVALID_ARGS);
     CHECK_ST(netwait_add_handle(w, &ch, NETWAIT_READ | NETWAIT_WRITE | NETWAIT_EDGE, NULL, &id),
              OK);
     CHECK_EQ(one(w), NETWAIT_WRITE);                   /* writable from the start: once */
@@ -405,6 +405,36 @@ static bool edge_channel(struct netwait *w, handle_t a, handle_t *b)
     CHECK_EQ(one(w), NETWAIT_HUP);
     CHECK_EQ(one(w), 0);                               /* hung up for good: once */
     return netwait_remove(w, id) == OK;
+}
+
+/* An edge entry on a socket: reported when netstack signals it, not again
+ * while what it said stays; again when more comes, drained or not (each
+ * datagram or write of netstack's is an edge, as Linux's EPOLLET says);
+ * writable once from the start; a change of state is an edge; netstack
+ * gone is reported once. */
+static bool edge_socket(struct netwait *w, struct fsock *k)
+{
+    CHECK(fsock_add(w, k, NETWAIT_READ | NETWAIT_WRITE | NETWAIT_EDGE));
+    CHECK_EQ(one(w), NETWAIT_WRITE);
+    CHECK_EQ(one(w), 0);
+    CHECK_EQ(stack_rx(k, 1, UINT64_MAX), 1);
+    CHECK_EQ(one(w), NETWAIT_READ | NETWAIT_WRITE);
+    CHECK_EQ(one(w), 0);                               /* still readable: no edge */
+    CHECK_EQ(stack_rx(k, 1, UINT64_MAX), 1);
+    CHECK_EQ(one(w), NETWAIT_READ | NETWAIT_WRITE);    /* more came: an edge */
+    CHECK_EQ(one(w), 0);
+    CHECK_EQ(prog_read(k, 10), 2);
+    CHECK_EQ(one(w), 0);                               /* drained: no edge */
+    CHECK_EQ(stack_rx(k, 1, UINT64_MAX), 1);
+    CHECK_EQ(one(w), NETWAIT_READ | NETWAIT_WRITE);
+    CHECK_EQ(prog_read(k, 10), 1);
+    stack_state(k, SOCKRING_STATE_CLOSED, ERR_PEER_CLOSED);
+    CHECK_EQ(one(w), NETWAIT_HUP | NETWAIT_ERROR);
+    CHECK_EQ(one(w), 0);                               /* closed for good: once */
+    stack_kill(k);
+    CHECK_EQ(one(w), NETWAIT_HUP | NETWAIT_ERROR);     /* netstack gone: once */
+    CHECK_EQ(one(w), 0);
+    return fsock_take_out(w, k);
 }
 
 /* netwait_block sleeps until a packet is queued and takes none. */
@@ -433,8 +463,10 @@ bool t_netwait_edge(void)
     handle_t a = HANDLE_INVALID, b = HANDLE_INVALID, c = HANDLE_INVALID, d = HANDLE_INVALID;
     uint64_t before = msg_bytes();
     bool ok = netwait_create(4, &w) == OK && jam_channel_create(&a, &b) == OK &&
-              edge_channel(w, a, &b) && jam_channel_create(&c, &d) == OK && edge_block(w, c, d);
+              edge_channel(w, a, &b) && jam_channel_create(&c, &d) == OK && edge_block(w, c, d) &&
+              fnet_open(&net, 2) && edge_socket(w, &net.sk[0]) && edge_socket(w, &net.sk[1]);
     netwait_destroy(w);
+    fnet_close(&net);
     handle_t hs[] = { a, b, c, d };
     for (unsigned i = 0; i < 4; i++)
         if (hs[i] != HANDLE_INVALID)

@@ -28,6 +28,7 @@
 #include "fd.h"
 #include "files.h"
 #include "kinds.h"
+#include "sock.h"
 #include "tty.h"
 
 /* The reserved mark: a slot fd_alloc gave out, not filled yet. */
@@ -374,6 +375,8 @@ fd_adopt_fn *const fd_adopters[POSIXFDS_KIND_COUNT] = {
     [POSIXFDS_ETC] = etc_adopt,
     [POSIXFDS_MEMFD] = memfd_adopt,
     [POSIXFDS_EVENTFD] = eventfd_adopt,
+    [POSIXFDS_SOCKET] = sock_adopt,
+    [POSIXFDS_LISTENER] = sock_listener_adopt,
     [POSIXFDS_TTY] = tty_adopt,
     [POSIXFDS_DUP] = dup_adopt,
 };

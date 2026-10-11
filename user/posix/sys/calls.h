@@ -100,3 +100,17 @@ lx_call lx_rt_sigaction, lx_rt_sigprocmask, lx_rt_sigpending, lx_rt_sigsuspend, 
         lx_rt_tgsigqueueinfo;
 lx_call lx_getitimer, lx_setitimer, lx_timer_create, lx_timer_settime, lx_timer_gettime,
         lx_timer_getoverrun, lx_timer_delete;
+
+/* Sockets (socket.c: making, binding, connecting and naming them;
+ * sockio.c: their bytes; sockopt.c: their options). A socket's wait that
+ * has a timeout (SO_RCVTIMEO, SO_SNDTIMEO) and is ended by a signal returns
+ * -LX_EINTR_FINAL, which the boundary turns into EINTR and never restarts
+ * (Linux's rule for those waits): no errno has this value. */
+#define LX_EINTR_FINAL 0x7ff
+lx_call lx_socket, lx_bind, lx_connect, lx_listen, lx_accept, lx_accept4, lx_shutdown,
+        lx_getsockname, lx_getpeername;
+lx_call lx_sendto, lx_recvfrom, lx_sendmsg, lx_recvmsg, lx_sendmmsg, lx_recvmmsg;
+lx_call lx_setsockopt, lx_getsockopt;
+/* exit_group, before the process ends: wait (up to the linger time) for
+ * netstack to take what the program wrote to its connections (socket.c). */
+void sock_exit_drain(void);
