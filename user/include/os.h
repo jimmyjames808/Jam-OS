@@ -506,6 +506,40 @@ status_t fs_statfs(const char *path, uint64_t *total, uint64_t *free_bytes, bool
  * size in bytes. ERR_OUT_OF_RANGE: bigger than max_size. */
 status_t file_read_vmo(const char *path, uint64_t max_size, handle_t *vmo, uint64_t *size);
 
+/* Mapped files (file.map, abi/idl/file.idl): a VMO whose pages the file's
+ * service supplies as they are touched. flags: FILE_MAP_READ (<fs_idl.h>),
+ * the file's one shared VMO, read and map only, or FILE_MAP_EXEC, a VMO of
+ * the caller's own for vmo_make_exec_verified. fs_map_file maps the open
+ * file f, file_map_path the file at path (opened and closed here: the VMO
+ * outlives the file); the VMO into *vmo (ours) and the file's size in
+ * bytes into *size. ERR_NOT_SUPPORTED: the mount's service has no pages to
+ * give; ERR_ACCESS_DENIED: f is not open FS_READ; ERR_IS_DIR: a
+ * directory; ERR_INVALID_ARGS: flags is neither. */
+status_t fs_map_file(struct jfile *f, uint32_t flags, handle_t *vmo, uint64_t *size);
+status_t file_map_path(const char *path, uint32_t flags, handle_t *vmo, uint64_t *size);
+
+/* A file mapped read-only into our own address space. A read of data[i]
+ * (i < size) waits for the service to supply the page; if it can't (the
+ * disk went, the file was cut short) the access ends the thread's process
+ * with a line saying why (a system call's copy from the mapping gets
+ * ERR_IO instead). */
+struct mapped_file {
+    handle_t       vmo;      /* the file's VMO (FILE_MAP_READ) */
+    const uint8_t *data;     /* its bytes, as of the mapping; NULL for an empty file */
+    uint64_t       size;     /* the file's size in bytes when mapped */
+    uint64_t       map_len;  /* bytes mapped: size rounded up to whole pages */
+};
+
+/* Map the file at path (file_map_path, then mapped_file_from_vmo). *out is
+ * ours until mapped_file_close; errors as file_map_path's, and ERR_INTERNAL if
+ * the service's VMO is smaller than the file. */
+status_t mapped_file_open(const char *path, struct mapped_file *out);
+/* The same for a VMO already in hand and the file's size (consumed
+ * whatever happens). */
+status_t mapped_file_from_vmo(handle_t vmo, uint64_t size, struct mapped_file *out);
+/* Unmap it and close the VMO; *mf is zeroed. */
+void     mapped_file_close(struct mapped_file *mf);
+
 /* devices ------------------------------------------------------------------------ */
 
 /* The config-space offset of PCI capability `id` of the function dev (a

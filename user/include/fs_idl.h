@@ -4,7 +4,7 @@
  * and the generated client stubs of the `fs` and `file` protocols (the same
  * names, but taking a channel) can't be declared in one file as they are.
  * Here the stubs that clash get the prefix idl_: idl_fs_stat(ch, ...),
- * idl_file_read(ch, ...). Everything else in the two headers keeps its
+ * idl_file_read(ch, ...), idl_file_map(ch, ...). Everything else in the two headers keeps its
  * name: fs_open, the _until forms (fs_stat_until, file_read_until, ...),
  * and the server side (struct fs_ops, fs_serve_one, ...). Who needs this:
  * libos's file calls, a server of the protocols (fat, the bootfs server),
@@ -28,6 +28,7 @@
 #define file_sync  idl_file_sync
 #define file_stat  idl_file_stat
 #define file_truncate idl_file_truncate
+#define file_map   idl_file_map
 
 #include <idl/file.h>
 #include <idl/fs.h>
@@ -44,6 +45,7 @@
 #undef file_sync
 #undef file_stat
 #undef file_truncate
+#undef file_map
 
 /* One record of fs.readdir's `entries`. name is not NUL-terminated: it
  * points into the batch (get) or the server's own name (put). */

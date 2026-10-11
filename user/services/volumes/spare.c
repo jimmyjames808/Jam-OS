@@ -13,8 +13,14 @@
  *   - a state VMO (<svcstate.h>), FAT_STATE_SIZE bytes, handed to every
  *     instance as SR_STATE; volumes never maps it. Its pages are committed
  *     only as fat uses them, and charged to volumes' job;
- *   - a keeper (<keep.h>): each instance gets a new keep channel (SR_KEEP).
- * All three go when the service is retired (its disk gone, no volume),
+ *   - a keeper (<keep.h>): each instance gets a new keep channel (SR_KEEP);
+ *   - a pager (the kernel's, abi/syscalls.def 160-164), made with the first
+ *     instance's handles and handed to every one after it and to a promoted
+ *     spare as FAT_SR_PAGER (READ WRITE WAIT only, so fat cannot pass it
+ *     on). volumes never uses it: the pages of the files fat maps come
+ *     through it, and its budget and answer time are set here. Its pages
+ *     are charged to volumes' job, within the budget (pager_init).
+ * All four go when the service is retired (its disk gone, no volume),
  * given up on, or stopped in order (a remount: fsvc.c's fs_restart): then
  * the kept objects close and their clients see ERR_PEER_CLOSED.
  *
@@ -54,6 +60,9 @@
 #include <supervise.h>
 #include "disk.h"
 
+#define PAGER_PAGES_DEFAULT 4096         /* a mount's pager budget when init gave none (16 MiB) */
+#define PAGER_ANSWER_NS     FS_CALL_TIMEOUT   /* how long a page request may wait: as a read can */
+
 #define SPARE_NAME   "fat-spare"
 #define SPARE_BOOT   (1 * NS_PER_S)      /* the first spare, after the first service's start */
 #define BLOCK_RETRY  (1 * NS_PER_S)      /* /data's channel in advance couldn't be opened */
@@ -72,6 +81,12 @@ const unsigned fat_nlimits = sizeof(fat_limits) / sizeof(fat_limits[0]);
 
 static struct sup_spare spare;   /* the warm spare fat */
 
+/* The mounts' pagers: made from pager_root (RIGHT_ROOT_PAGER alone), each
+ * with the budget pager_pages. Indexed like vols; 0: none (yet, or no root). */
+static handle_t pager_root;
+static uint64_t pager_pages = PAGER_PAGES_DEFAULT;
+static handle_t pagers[MAX_VOLS];
+
 /* /data's `block` channel, opened for the spare in advance. */
 static struct {
     handle_t block;       /* 0: none */
@@ -79,6 +94,15 @@ static struct {
     uint64_t block_try;   /* the next try to open it (uptime ns) */
     bool     opening;     /* prepare_main is at it */
 } adv;
+
+void pager_init(uint64_t pages)
+{
+    pager_root = startup_handle(SR_RESOURCE);
+    if (pages)
+        pager_pages = pages;
+    if (!pager_root)
+        say(false, "volumes: no pager power: files are not mapped");
+}
 
 void spare_init(bool on)
 {
@@ -211,8 +235,36 @@ void spare_stop(void)
 
 /* ---- the keeper and the state ---------------------------------------------------------- */
 
+/* b's pager into x (FAT_SR_PAGER): made the first time, a duplicate every
+ * time, arriving with READ WRITE WAIT (no duplicate or transfer). One that
+ * can't be made is said and left out: the instance maps nothing (file.map
+ * is ERR_NOT_SUPPORTED). */
+static void pager_handle(struct vol *b, struct spawn_handle *x, rights_t *xr, unsigned *n)
+{
+    handle_t *p = &pagers[b - vols];
+    if (!pager_root)
+        return;
+    status_t st = OK;
+    if (!*p) {
+        st = jam_pager_create(pager_root, pager_pages, PAGER_ANSWER_NS, 0, p);
+        if (st == OK)
+            say(false, "volumes: %s: pager made: %lu pages, answers within %lu s", b->name,
+                (unsigned long)pager_pages, (unsigned long)(PAGER_ANSWER_NS / NS_PER_S));
+    }
+    handle_t h = HANDLE_INVALID;
+    if (st == OK)
+        st = jam_handle_duplicate(*p, RIGHT_SAME, &h);
+    if (st != OK) {
+        say(false, "volumes: %s starts without a pager (%s)", b->name, status_str(st));
+        return;
+    }
+    x[*n] = (struct spawn_handle){ FAT_SR_PAGER, h };
+    xr[(*n)++] = RIGHT_READ | RIGHT_WRITE | RIGHT_WAIT;
+}
+
 void fs_kept_handles(struct vol *b, struct spawn_handle *x, rights_t *xr, unsigned *n)
 {
+    pager_handle(b, x, xr, n);
     if (!b->kept && (b->kept = calloc(1, sizeof(*b->kept))) != NULL)
         sup_kept_init(b->kept, port, FAT_STATE_SIZE, b->name);
     if (!b->kept) {
@@ -240,6 +292,12 @@ void spare_keep_event(uint64_t key)
 
 void fs_kept_release(struct vol *b)
 {
+    handle_t *p = &pagers[b - vols];
+    if (*p) {
+        jam_handle_close(*p);   /* every VMO it made is detached: mappings fail, not hang */
+        *p = HANDLE_INVALID;
+        say(false, "volumes: %s: pager closed", b->name);
+    }
     if (adv.block_for == (uint32_t)(b - vols) + 1)
         drop_block();
     if (!b->kept)

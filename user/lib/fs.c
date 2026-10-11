@@ -8,7 +8,9 @@
  * take it. Transfers larger than the buffer are split. Every call has a
  * time limit (FS_CALL_TIMEOUT, given to the kernel as a timeout: no clock
  * read first), and a service that died closes its channels, so none of
- * these can hang on a broken mount. */
+ * these can hang on a broken mount. A mapped file (fs_map_file, mapped_file_*)
+ * is the file's pages as a service supplies them (file.map): no copy
+ * through the buffer, and a page the service can't supply is a fault. */
 #include <fs_idl.h>
 #include "ns.h"
 
@@ -212,6 +214,77 @@ status_t file_read_vmo(const char *path, uint64_t max_size, handle_t *vmo, uint6
     *vmo = v;
     *size = total;
     return OK;
+}
+
+/* ---- mapped files ------------------------------------------------------------- */
+
+status_t fs_map_file(struct jfile *f, uint32_t flags, handle_t *vmo, uint64_t *size)
+{
+    if (flags != FILE_MAP_READ && flags != FILE_MAP_EXEC)
+        return ERR_INVALID_ARGS;
+    if (!f->ch)
+        return ERR_BAD_STATE;
+    if (!(f->flags & FS_READ))
+        return ERR_ACCESS_DENIED;   /* the service would say so too, on a view */
+    handle_t v = HANDLE_INVALID;
+    uint64_t sz = 0;
+    status_t st = file_map_within(f->ch, FS_CALL_TIMEOUT, flags, &v, &sz);
+    if (st != OK)
+        return st;
+    *vmo = v;
+    *size = sz;
+    return OK;
+}
+
+status_t file_map_path(const char *path, uint32_t flags, handle_t *vmo, uint64_t *size)
+{
+    struct jfile f;
+    status_t st = file_open(path, FS_READ, &f);
+    if (st != OK)
+        return st;
+    st = fs_map_file(&f, flags, vmo, size);
+    file_close(&f);   /* the mapping outlives the file, as an mmap outlives its close */
+    return st;
+}
+
+status_t mapped_file_from_vmo(handle_t vmo, uint64_t size, struct mapped_file *out)
+{
+    uint64_t have = 0, addr = 0;
+    status_t st = jam_vmo_get_size(vmo, &have);
+    uint64_t len = 0;
+    if (st == OK && size > UINT64_MAX - (PAGE_SIZE - 1))
+        st = ERR_OUT_OF_RANGE;
+    if (st == OK) {
+        len = (size + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
+        if (len > have)
+            st = ERR_INTERNAL;   /* a broken service: the VMO is smaller than the file */
+    }
+    if (st == OK && len)
+        st = jam_vmar_map(startup_handle(SR_SELF_VMAR), vmo, 0, len, VMAR_READ, &addr);
+    if (st != OK) {
+        jam_handle_close(vmo);
+        return st;
+    }
+    *out = (struct mapped_file){ .vmo = vmo, .data = (const uint8_t *)(uintptr_t)addr,
+                                 .size = size, .map_len = len };
+    return OK;
+}
+
+status_t mapped_file_open(const char *path, struct mapped_file *out)
+{
+    handle_t vmo = HANDLE_INVALID;
+    uint64_t size = 0;
+    status_t st = file_map_path(path, FILE_MAP_READ, &vmo, &size);
+    return st == OK ? mapped_file_from_vmo(vmo, size, out) : st;
+}
+
+void mapped_file_close(struct mapped_file *mf)
+{
+    if (mf->data)
+        jam_vmar_unmap(startup_handle(SR_SELF_VMAR), (uint64_t)(uintptr_t)mf->data, mf->map_len);
+    if (mf->vmo)
+        jam_handle_close(mf->vmo);
+    memset(mf, 0, sizeof(*mf));
 }
 
 /* ---- paths -------------------------------------------------------------------- */

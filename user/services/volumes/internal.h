@@ -398,14 +398,19 @@ void     mounts_close_all(void);
  * warm spare fat for every mount. */
 /* `on`: keep a warm spare (no boot word `nospare`). */
 void     spare_init(bool on);
+/* Every mount gets a pager of `pages` pages' budget (0: the default), made
+ * from the root resource init gave (SR_RESOURCE, RIGHT_ROOT_PAGER); without
+ * one no mount has a pager. */
+void     pager_init(uint64_t pages);
 /* Start b: for a `restart` after a death, the warm spare if one waits,
  * else (and for any other start) a new process (fs_spawn); either way
  * with its state and a new keep channel, whose keeper then hands it what
  * was kept. A restart is measured: the log says when it ran and when it
  * first answered. Errors as fs_spawn's. */
 status_t fs_run(struct vol *b, bool restart);
-/* b's state VMO (made the first time) and a new keep channel into x
- * (SR_STATE, SR_KEEP), for its next instance. One that can't be made is
+/* b's state VMO (made the first time), a new keep channel and b's pager
+ * (made the first time) into x (SR_STATE, SR_KEEP, FAT_SR_PAGER), for its
+ * next instance. One that can't be made is
  * said and left out: that instance starts fresh. */
 void     fs_kept_handles(struct vol *b, struct spawn_handle *x, rights_t *xr, unsigned *n);
 /* The `block` channel opened in advance for b (the boot disk's /data)
@@ -413,7 +418,8 @@ void     fs_kept_handles(struct vol *b, struct spawn_handle *x, rights_t *xr, un
 bool     fs_block_prepared(const struct vol *b, handle_t *out);
 /* b won't run again as it was (retired, given up on, stopped in order):
  * what its keeper kept closes (its clients see ERR_PEER_CLOSED), its state
- * VMO goes, and a `block` channel opened in advance for it. */
+ * VMO goes, its pager closes (the VMOs it made fail their next access), and
+ * a `block` channel opened in advance for it. */
 void     fs_kept_release(struct vol *b);
 /* Start the warm spare (and open /data's `block` channel for it) when due. */
 void     spare_due(void);
