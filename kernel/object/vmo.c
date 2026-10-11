@@ -13,7 +13,11 @@
  * (aspace_vmo.h): an address space's region lock (a mutex) is above it,
  * its page-table lock below it. The kernel page table lock is never taken
  * under it, and data is never copied under it. vmo_set_size is serialised
- * by a mutex ("vmo resize") above everything else.
+ * by a mutex ("vmo resize") above everything else but a region lock: a
+ * fault (region lock held) may wait on it for a copy-on-write child's
+ * creation (cow_wait), which holds it and takes no region lock. Two VMO
+ * locks nest only in that creation: the parent's, then the new child's
+ * (spin_lock_nested), which nobody else can reach yet.
  *
  * User mappings: each address-space mapping of a VMO is a struct
  * vmo_umap on v->umaps and holds a VMO reference. Unlike kernel mappings
