@@ -112,6 +112,8 @@ struct fobj {
     bool         lent;               /* our writable open was closed for a child's: jf is
                                       * empty until fobj_back_locked opens it again; lock */
     uint32_t     lent_flags;         /* ... with these FS_* flags */
+    uint64_t     lent_end;           /* the file's end when lent, or when last looked at
+                                      * since: a description there follows the end (file.c) */
 };
 
 /* The object for an open of p with ff (FS_READ, FS_WRITE, FS_CREATE,

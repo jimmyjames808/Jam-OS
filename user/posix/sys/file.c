@@ -112,6 +112,17 @@ static long transfer(const struct file *f, const struct iovec *iov, int n, size_
     return (long)done;
 }
 
+/* A description at the end of a file it lent to a child (offset was_end)
+ * moves to the end the child left (end): where a shared offset, Linux's,
+ * would be after a child that wrote on from it, as output to `> f` does
+ * (`xargs cmd > f`, `find -exec`). Offsets stay per process otherwise
+ * (M13 Q5's A). d->lock and the object's held. */
+static void follow_end_locked(struct fd_desc *d, uint64_t was_end, uint64_t end)
+{
+    if ((uint64_t)d->offset == was_end && end > was_end)
+        d->offset = (int64_t)end;
+}
+
 /* A read or write at pos (FD_AT_OFFSET: the description's offset); a
  * write with O_APPEND at the end unless noappend. */
 static long xfer(struct fd_desc *d, const struct iovec *iov, int n, int64_t pos, bool write,
@@ -124,7 +135,11 @@ static long xfer(struct fd_desc *d, const struct iovec *iov, int n, int64_t pos,
     uint32_t s = fd_status(d);
     lock_take(&d->lock);
     lock_take(&f->o->lock);
+    bool was_lent = f->o->lent;
+    uint64_t was_end = f->o->lent_end;
     status_t back = fobj_back_locked(f->o, f->path);   /* lent to a child: ours again */
+    if (back == OK && was_lent)
+        follow_end_locked(d, was_end, f->o->size);
     bool append = write && (s & O_APPEND) && !noappend;
     uint64_t off = append ? f->o->size : pos == FD_AT_OFFSET ? (uint64_t)d->offset : (uint64_t)pos;
     long r = back != OK ? file_err(f, back) : transfer(f, iov, n, (size_t)total, off, write);
@@ -300,21 +315,36 @@ static long reopen(const struct file *f, uint32_t s, handle_t *ch, handle_t *buf
     return st == OK ? 0 : path_err(&p, st);   /* ERR_BUSY: another child holds it to write */
 }
 
+/* A child's open to write f needs ours closed: lent, or, lent already
+ * (another child had it), the description at the end the last child left
+ * follows it (follow_end_locked), so this child writes after it. d->lock. */
+static void lend_locked(struct fd_desc *d, const struct file *f)
+{
+    struct fobj *o = f->o;
+    lock_take(&o->lock);
+    struct path p;
+    struct path_info i;
+    if (!o->lent) {
+        fobj_lend_locked(o);
+    } else if (!path_set(f->path, &p) && !path_info(&p, &i)) {
+        follow_end_locked(d, o->lent_end, i.size);
+        o->lent_end = i.size;
+    }
+    lock_give(&o->lock);
+}
+
 static long kind_give(struct fd_desc *d, struct fd_given *out)
 {
     const struct file *f = d->priv;
     uint32_t s = fd_status(d);
     if (!f->o || !f->path)
         return -ENOTSUP;   /* O_PATH, or a file we were given without its path */
-    if (fs_access(s) & FS_WRITE) {   /* the child's open to write needs ours closed: lent */
-        lock_take(&f->o->lock);
-        fobj_lend_locked(f->o);
-        lock_give(&f->o->lock);
-    }
     char *data = strdup(f->path);
     if (!data)
         return -ENOMEM;
     lock_take(&d->lock);
+    if (fs_access(s) & FS_WRITE)
+        lend_locked(d, f);
     int64_t off = d->offset;
     lock_give(&d->lock);
     *out = (struct fd_given){

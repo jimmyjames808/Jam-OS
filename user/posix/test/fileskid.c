@@ -7,7 +7,8 @@
  *   - a file open for writing given to a child (posix_spawn, as `cmd > f`
  *     starting children): fat lets a file have one writable open, so the
  *     parent lends its own while the child holds it and takes it back
- *     after; and a posix_spawn_file_actions_addopen for writing;
+ *     after (a description at the end following the end the child left,
+ *     as a shared offset would); and an addopen for writing;
  *   - a child given /data as a read-only view: every change is EROFS,
  *     mkdir of what is there EEXIST, reading works.
  *
@@ -174,6 +175,15 @@ static void writable_to_child(void)
     close(f);
     file_text(PT_DIR "/kidw", buf, sizeof(buf));
     CHECK(!strcmp(buf, "ABCD"));
+    /* Without O_APPEND (`cmd > f`): a description at the file's end follows
+     * the end its children leave, as a shared offset would. */
+    f = open(PT_DIR "/kidw", O_WRONLY | O_TRUNC);
+    CHECK(f >= 0 && write(f, "a", 1) == 1);
+    CHECK(spawn_writer(f, NULL, "b") == 0 && spawn_writer(f, NULL, "c") == 0);
+    CHECK(write(f, "d", 1) == 1 && lseek(f, 0, SEEK_CUR) == 4);
+    close(f);
+    file_text(PT_DIR "/kidw", buf, sizeof(buf));
+    CHECK(!strcmp(buf, "abcd"));
     CHECK(spawn_writer(-1, PT_DIR "/kidw2", "X") == 0);   /* the spawn's own open */
     file_text(PT_DIR "/kidw2", buf, sizeof(buf));
     CHECK(!strcmp(buf, "X"));

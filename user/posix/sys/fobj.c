@@ -236,6 +236,7 @@ void fobj_lend_locked(struct fobj *o)
     if (o->lent || !o->jf.ch || !(o->jf.flags & FS_WRITE))
         return;
     o->lent_flags = o->jf.flags;
+    o->lent_end = o->size;
     file_close(&o->jf);
     o->lent = true;
 }
