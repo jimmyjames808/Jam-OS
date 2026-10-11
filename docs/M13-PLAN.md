@@ -2614,3 +2614,95 @@ plan left open (the safest each time).
   `tty_event` → `ttys_hang_up`): a program that writes and exits at once
   can lose its last output if the console sees the close first. The pty
   test waits for the output before closing the slave for that reason.
+
+## X2 notes
+
+Track X2 (tinyssh) as built, with the choices the plan left open.
+
+- **One program, bin/sshd.** tinyssh 20261001 (third_party/tinyssh,
+  vendored unmodified; `third_party/VERSIONS.md`) built by
+  user/ports/tinyssh/tinyssh.mk with tools/jamos-cc, its configure probes
+  replaced by a fixed feature header (tinyssh-features.h: only `<limits.h>`
+  found). The listener (sshd.c, ours), tinysshd and its two helpers are
+  one program whose mode is argv[0]'s last part (the override of
+  tinysshd.c): each POSIX program carries musl and the layer (pxio alone
+  is about 300 KB), and the boot image is near its limit. bin/sshd is
+  434 KB stripped (about 130 KB of it tinyssh's). Left out: the files that
+  fork, set uids or write utmp (channel_fork.c, channel_forkpty.c,
+  channel_drop.c, loginshell.c, dropuidgid.c, logsys.c), makekey and
+  printkey, the outside libraries' crypto variants.
+- **The overrides** (user/ports/tinyssh/OVERRIDES, checked as musl's by
+  tools/checkoverrides.py, in the build and `make check`; each file says
+  what changed and why): channel.c (a session of init's,
+  `jamos_session_open`, for both a shell and an exec request; the pty-req
+  only records TERM and the size), subprocess_sign.c and subprocess_auth.c
+  (their helpers are bin/sshd started again with posix_spawn as
+  "tinysshd-sign" and "tinysshd-auth", namespace `/data:r` alone; the hash
+  goes on a pipe, the key's name in argv; the key list is
+  `/data/etc/authorized_keys`; no privileges dropped, but the account must
+  exist: only `jam`), tinysshd.c (the modes).
+- **A helper's descriptors 0 and 1 are always replaced** (pipes, or
+  /dev/null): tinysshd's own 0 and 1 are its connection, and a socket
+  given to a child moves to it (B6's notes).
+- **The listener** (sshd.c): port 22 with SO_REUSEADDR, at most 8
+  connections (a 9th is closed at once), TCP_NODELAY and SO_KEEPALIVE set
+  before the spawn, tinysshd `-v` (info lines: each login's key, each
+  session) with the connection as 0 and 1 and a namespace of `/data:r` and
+  `/svc/session`. Its children's log: descriptor 2 is the write end of one
+  pipe they share, whose other end the listener copies to its own 2 (the
+  kernel log): the layer's log descriptor can't be given to a child. SIGCHLD
+  ends its poll; each turn reaps. It never exits by itself but for a
+  listener that fails (netstack gone): init starts it again.
+- **Sessions.** Every SSH session is a terminal (there is no other way into
+  a shell): fd0 and fd1 are the master, fd2 none, so stderr comes on the
+  channel's data, every LF as CR LF, and what is typed is echoed (an exec
+  request's input too). A remote EOF isn't passed on (a terminal's end of
+  input is a typed Ctrl+D); a command longer than the shell's 240 bytes, or
+  a 9th session, fails the request and tinysshd ends the connection (said in
+  the log). The client's environment requests stay refused (upstream's
+  rule); `TERM` goes as the pty-req's when it is one a session takes
+  (`[A-Za-z0-9._+-]`, under 64 bytes), else the shell's own. exit-status is
+  the shell's code (`exit [n]`, the command's status, 2 for a hang-up).
+- **init** (user/services/init/ssh.c, and its lines in init.h, shell.c's
+  table, grants and start order, services.c's dispatch and init, the
+  settings template): service SSHD after netstack, once `/data` is
+  mounted, after a look at /data on a thread of its own (KEY_SSHD: the
+  stick can be slow and the loop never waits): `ssh = off` in the
+  settings, or no `ssh-ed25519` line in authorized_keys (<sshkey.h>'s count:
+  a line starting `ssh-ed25519 <key>`, as tinyssh takes it), and sshd is
+  given up for the boot (said once); a key added later counts from the next
+  boot. The host key is made by init if missing or broken (Monocypher's
+  Ed25519 from os_random; `/data/etc/ssh/ed25519.pk` and `.ed25519.sk`,
+  tinyssh's files; never replaced after an I/O error) and its fingerprint
+  logged as OpenSSH prints it. sshd's grants: `/svc/net`, `/svc/net-low`,
+  `/svc/session`, `/data:r`. tools/checkwants.py lets this one port ask for
+  `svc net listen low` (LOW_PORTS).
+- **The shell's `ssh`** (cmd/ssh.c): the fingerprint, the keys that may log
+  in, the server's state and its connections (its tinysshd processes:
+  every mode is named `sshd`, the listener being the first).
+- **Tests.** tools/ssh-test.sh (TESTING.md): OpenSSH's client on the test
+  host through the peer's `--tcp-forward`, two boots of one stick; utest's
+  `ssh_fingerprint` (against ssh-keygen's) and `ssh_count_keys`. pxio
+  gained `size` (TIOCGWINSZ) for the window-change check.
+- **Fixed on the way**: the console threw away what a POSIX program wrote
+  just before it closed its terminal (X1's "found, not changed"): a
+  closing tty's output is now shown to its end before it hangs up
+  (console tty.c's `tty_closing`). ssh-test's 4 sessions of 3000 lines lost
+  their last 300 lines without it.
+- **Found, not changed.**
+  - Killing sshd ends every open session: netstack ends a process's sockets
+    when it exits, the connections its tinysshds were given among them
+    (B6's notes). The sign-off's "`kill sshd`, the open sessions go on"
+    needs sockets that move to the child in netstack too (an opener per
+    connection), a netstack change. init does start sshd again at once,
+    and a new login works.
+  - Once, sshd exiting by itself (a since-fixed bug: poll's EINTR read after
+    waitpid's ECHILD) right after a connection ended, the restarted
+    listener on 22 answered every SYN with a reset for about 60 s (the old
+    connection's TIME_WAIT), then worked. `kill sshd`, with or without a
+    session open, never showed it. Not chased further (netstack's
+    listener reuse, N1's).
+  - The host's secret key is readable by any program given `/data` (a
+    list's `mount /data r`): FAT has no permissions and a read-only view
+    shows `etc`. Hiding `/data/etc/ssh` from every view but sshd's is a
+    namespace change (R2's question).
