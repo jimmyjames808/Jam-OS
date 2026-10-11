@@ -391,6 +391,8 @@ bool t_fat_ctl_queued(void);
 bool t_fat_restart_steps(void);
 bool t_fat_restart_handles(void);
 bool t_fat_restart_bad_request(void);
+/* ... and a mapped file's pages through it all (fat with a pager). */
+bool t_fat_restart_pager(void);
 /* fatlayout.c: FatFs's structs, as fat's state relies on them. */
 bool t_fat_layout(void);
 

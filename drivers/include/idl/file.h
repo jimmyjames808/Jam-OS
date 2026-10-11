@@ -324,8 +324,10 @@ static inline status_t file_map_call(handle_t ch, bool idl_within, uint64_t idl_
  * FILE_MAP_READ: the file's one shared VMO, read and map only.
  * FILE_MAP_EXEC: a VMO of its own, for vmo_make_exec_verified (the shell).
  * A view without the file's read right: ERR_ACCESS_DENIED. A directory:
- * ERR_IS_DIR. A service with no pager: ERR_NOT_SUPPORTED (fat answers that
- * until it serves pages). Restart: a successor answers its keys' requests. */
+ * ERR_IS_DIR. A service with no pager: ERR_NOT_SUPPORTED. A file open for
+ * writing: ERR_BUSY (fat; and while it is mapped it can't be opened for
+ * writing or removed, ERR_BUSY too). Restart: a successor answers its
+ * keys' requests. */
 static inline status_t file_map_until(handle_t ch, uint64_t deadline_ns, uint32_t flags, handle_t *out_vmo, uint64_t *out_size)
 {
     return file_map_call(ch, false, deadline_ns, flags, out_vmo, out_size);

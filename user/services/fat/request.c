@@ -344,6 +344,7 @@ static uint32_t rerun(const struct fat_chan *c, const void *req, uint32_t rn, ha
     }
     files_drop_unknown();
     views_drop_unknown();
+    maps_drop_unknown();
     begin(kind_of(c), op.seq, c->file, op.slot);
     uint32_t rn2 = dispatch(c, op.slot, rhs, rhn);
     if (rn2 != rn || memcmp(first, rep, rn) || held != kept->hold.held ||

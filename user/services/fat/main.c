@@ -17,7 +17,9 @@
  *
  * A restart: an instance started with a dead one's state (devmgr's
  * SR_STATE) carries on from it instead of mounting (adopt.c); its clients
- * see nothing but a slower answer.
+ * see nothing but a slower answer. The mount's pager (FAT_SR_PAGER) is the
+ * same for every instance: the page requests the dead one left are taken
+ * again (pager.c).
  *
  * Exit: 0 once there is nothing left to serve (the fs channel's client
  * closed it, after every file is closed and the volume settled; or the
@@ -264,6 +266,8 @@ static status_t run(handle_t serve, handle_t ctl)
             vol.disk_gone = true;
         } else if (pkt.key == FAT_KEY_OWN) {
             own_event();
+        } else if (pkt.key == FAT_KEY_PAGER) {
+            pager_event();
         } else if (pkt.key & FAT_KEY_FILE_BIT) {
             files_event(pkt.key);
         } else if (pkt.key & FAT_KEY_VIEW_BIT) {
@@ -314,6 +318,7 @@ int main(int argc, char **argv)
     vol.own = startup_handle(FAT_SR_OWN);
     vol.keep = startup_handle(SR_KEEP);
     vol.rtc_root = startup_handle(SR_RESOURCE);
+    vol.pager = startup_handle(FAT_SR_PAGER);   /* none: nothing is mapped (a test's fat) */
     vol.at[FAT_AT_MAIN] = now();
     status_t st = jam_port_create(&vol.port);
     if (st == OK)
@@ -337,6 +342,7 @@ int main(int argc, char **argv)
         printf("fat %s: not serving: %s\n", vol.name, status_str(st));
         return no_volume ? FAT_EXIT_NO_VOLUME : 1;
     }
+    pager_start();
     st = run(serve, vol.ctl);
     reply_flush();   /* the last request's answer (fsctl.stop's) before anything else */
     files_close_all();
