@@ -36,9 +36,16 @@ on each title bar close, minimise and go full screen.
   processes and jobs with quotas, reboot by kexec, a calm panic screen.
 - **Drivers**: user processes, restarted when they crash, behind the
   IOMMU (Intel VT-d): USB, Intel HD Audio, the Realtek RTL8125B network chip.
-- **Storage**: FAT32 on USB sticks.
+- **Storage**: FAT32 on USB sticks (a driver and a filesystem service per
+  stick, restarted without the programs noticing), and read-only access to
+  internal NVMe drives (a Windows drive's EFI partition shows at `/nvme0`;
+  nothing is ever written to them yet).
 - **Network**: DHCP, DNS, UDP and TCP, files over HTTP, and updates
   straight from the Mac.
+- **POSIX, partly** (M13, under way): programs built on the Mac against
+  musl 1.2.6 run from the shell with files, pipes, `poll` and `epoll`,
+  threads, signals, `posix_spawn`, redirections and a terminal. Sockets,
+  `ssh` and ported utilities are next; no `fork`, no Linux binaries.
 - **Testing**: kernel and user-space test suites, stress and soak tests,
   benchmarks.
 
@@ -57,7 +64,10 @@ whole disk), then boot it in UEFI mode with Secure Boot off. More in
 
 ## What's next
 
-NVMe drives, then POSIX. The plan: [docs/ROADMAP.md](docs/ROADMAP.md).
+Finishing POSIX (sockets, SSH into Jam OS, ported utilities and a real
+POSIX shell), user-space pagers for mapped files, and writing to NVMe
+drives, then installing Jam OS on one. The plan:
+[docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Documentation
 

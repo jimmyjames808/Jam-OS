@@ -87,8 +87,9 @@ status_t aspace_protect(struct aspace *as, uint64_t addr, uint64_t len, unsigned
  * A pager VMO's absent page is waited for, without the region lock, until
  * its pager answers, the request's deadline or a kill: ERR_IO (the pager
  * couldn't read it), ERR_PEER_CLOSED (the pager is gone: detached or
- * closed), ERR_TIMED_OUT (it didn't answer), ERR_CANCELED (the thread was
- * killed; thread_interrupt doesn't end the wait).
+ * closed), ERR_TIMED_OUT (it didn't answer), ERR_BAD_STATE (a verified
+ * VMO's page that didn't match its hash: <jam/vmo_verify.h>), ERR_CANCELED
+ * (the thread was killed; thread_interrupt doesn't end the wait).
  * May sleep (region lock): call with interrupts on and no spinlock held. */
 status_t aspace_fault(struct aspace *as, uint64_t addr, unsigned access);
 

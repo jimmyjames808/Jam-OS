@@ -5,7 +5,7 @@
  *
  *     cursorgen <cursorset.c> [preview.png]
  *
- * The set is the owner's "style C" (docs/G1-PLAN.md "The look"), whose
+ * The set is the owner's "style C" (docs/HISTORY.md, G1), whose
  * exact source is docs/design/cursors.svg: the arrow, the four resize
  * arrows, move, the text bar, the hand, and busy in CURSOR_BUSY_FRAMES
  * frames of its turn. Drawing them takes far too long on QEMU's emulated

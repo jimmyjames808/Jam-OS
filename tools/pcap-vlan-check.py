@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check a pcap of the guest's frames: every one tagged 802.1Q with the
 VLAN, or in the untagged mode (--vlan none) none tagged at all
-(docs/M9-PLAN.md "Testing without the real NIC").
+(docs/HISTORY.md, M9).
 
 QEMU's `-object filter-dump,...,queue=rx` on the NIC's netdev writes
 every frame the guest's NIC sends to a pcap file (tools/qemu-test.sh does
@@ -25,7 +25,7 @@ directions: the peer's own frames). Prints one line per bad frame (the
 first 8) and a summary line ending PASS or FAIL; exits 0 on PASS.
 
 --pc MAC: a capture taken on the Mac's end of a cable straight to the PC
-(docs/M9-PLAN.md, "R1 progress"; pcap or pcapng). Every frame from the
+(docs/HISTORY.md, M9; pcap or pcapng). Every frame from the
 PC's MAC must keep the rule and be sane (padded to 64 bytes, a well-formed
 ARP, IPv4 and ICMP checksums right); it also counts the PC's ARP probes
 and the replies to them, the Mac's pings and which the PC answered (a

@@ -3,7 +3,7 @@
 Status (2026-10-09): a plan, nothing built. Written against main ae859bee,
 with M12's waves C1 and C2 merged, S2a merged and P6a running. **Waiting
 for the owner's answers to the questions below before any agent starts.**
-M13 is part of wave 5 of [PLAN-M11-M12.5.md](PLAN-M11-M12.5.md#wave-5-m125-m127-and-m13-together),
+M13 is part of wave 5 ([ROADMAP.md](ROADMAP.md#now)),
 beside M12.5 (pagers) and M12.7 (NVMe). It becomes **release 0.2.0**
 (AGENTS: "0.2.0 at POSIX").
 
@@ -983,7 +983,7 @@ other but for A1 taking A2's first hand-back.
 | **R3. Kernel review** | Opus | K1 and K2: findings first, then High and Medium fixed with a test each (the standing rule); the interrupt's races and the tid word's timing first | once K1 and K2 are merged (in wave C) |
 | **R1. POSIX layer review** | Opus | A1, A2, B1 to B6, F1 if merged: findings first, then fixes; reads the call layer against musl's expectations (errno values, partial reads and writes, every handle closed on every path), the hand-over message as hostile input | after waves B and C merge |
 | **R2. Terminal, sessions, SSH and shell review** | Opus | T1, T2, X1, X2, S1, S2: who can get a shell (`svc session`, its refusal, sshd's grants), the host key's handling, the line discipline's bounds, the console's two modes; then fixes | after wave D merges |
-| **J. The join** | Sonnet | ARCHITECTURE (a "POSIX" section; the terminal, init's session service, the program's list, the Userland table), a new docs/PORTING.md (how to port a program: the sysroot, jamos-cc, a port's directory, its list, overrides), USING (SSH from the Mac: the key, the fingerprint, `ssh jam@pc`), TESTING (the new scripts), NETWORK (port 22), `third_party/VERSIONS.md`, CODING-GUIDE's tree table, ROADMAP and HISTORY, JAMOS_VERSION 0.2.0 (set at the release, after the PC sign-off), this plan to docs/history | last |
+| **J. The join** | Sonnet | ARCHITECTURE (a "POSIX" section; the terminal, init's session service, the program's list, the Userland table), a new docs/PORTING.md (how to port a program: the sysroot, jamos-cc, a port's directory, its list, overrides), USING (SSH from the Mac: the key, the fingerprint, `ssh jam@pc`), TESTING (the new scripts), NETWORK (port 22), `third_party/VERSIONS.md`, CODING-GUIDE's tree table, ROADMAP and HISTORY, JAMOS_VERSION 0.2.0 (set at the release, after the PC sign-off), this plan deleted once HISTORY.md covers it | last |
 
 ### Order and parallel work
 

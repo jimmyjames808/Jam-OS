@@ -1,5 +1,5 @@
-# Copy and paste between two terminal windows (docs/G1-PLAN.md, "As built:
-# copy and paste"), on a plain boot with a USB keyboard and mouse (the
+# Copy and paste between two terminal windows (docs/HISTORY.md, G1:
+# copy and paste), on a plain boot with a USB keyboard and mouse (the
 # compositor's): terminal 1 prints a command; a triple click on that line
 # (QEMU's mouse through the monitor) selects it, drawn on the blackcurrant
 # tint (`clip-selected`); Super+C copies it; `term` opens terminal 2, whose

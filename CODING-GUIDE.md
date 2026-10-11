@@ -811,7 +811,8 @@ the exact commands and each script's QEMU setup are in
 ## 8. Contributing
 
 - **Plan first.** Larger work starts from a written plan
-  (docs/M<n>-PLAN.md; finished ones move to [docs/history/](docs/history/))
+  (docs/M<n>-PLAN.md; a finished plan is deleted once [docs/HISTORY.md](docs/HISTORY.md)
+  covers its milestone, and stays reachable in git history)
   that splits it into tracks, each owning its files.
 - **Refactors and behaviour changes are separate commits.** A refactor
   keeps behaviour identical: same output, commands, ktest names, syscall

@@ -1,5 +1,5 @@
 #!/bin/sh
-# `storm` in QEMU (docs/M11.6-PLAN.md, "The demonstration and its tests";
+# `storm` in QEMU (docs/HISTORY.md, M11.6;
 # user/services/shell/cmd/storm.c): tools/shell-tests/storm.txt copies a
 # file of random bytes from a second stick (/usb0, made writable) to the
 # boot stick's /data at 0, 1, 10 and 100 kills a second, killing fat-usb0

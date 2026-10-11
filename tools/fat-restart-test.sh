@@ -1,6 +1,6 @@
 #!/bin/sh
 # fat carries on from a dead instance's state (user/services/fat/adopt.c,
-# docs/M11.6-PLAN.md) in QEMU, on the boot stick's /data, through volumes'
+# docs/HISTORY.md, M11.6) in QEMU, on the boot stick's /data, through volumes'
 # kills. Two boots of tools/shell-tests/fat-restart.txt: with the warm
 # spare, and with `nospare` (a new process adopts the state the same way).
 # Checked: every instance that got going carried on (its restart line;

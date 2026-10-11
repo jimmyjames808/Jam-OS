@@ -42,7 +42,7 @@ the test commands are in [TESTING.md](TESTING.md).
 ## The desktop
 
 A compositor of our own that speaks Wayland draws the screen (G1:
-[G1-PLAN.md](G1-PLAN.md), [ARCHITECTURE.md](../ARCHITECTURE.md#graphics)),
+[HISTORY: G1](HISTORY.md#g1-the-desktop), [ARCHITECTURE.md](../ARCHITECTURE.md#graphics)),
 and the shell runs in a terminal window on the jam wallpaper. Super+Enter
 (or `term`) opens another terminal, up to 16 (one more is refused with a
 "No more terminals" notice); apps open windows of their own
@@ -228,7 +228,7 @@ yet: [ARCHITECTURE.md](../ARCHITECTURE.md#services-that-outlive-their-process).)
   own covers (read from the MP3s' tags), stereo spectrum bars across the
   bottom of the window (left up, right down) and a sunburst in the
   full-screen view. The music goes on after Jamjar quits
-  ([history/MUSIC-GUI.md](history/MUSIC-GUI.md)).
+  ([HISTORY.md, audio](HISTORY.md#audio-a1-a2-as-and-m85-kexec)).
 
 ## The clock and the settings
 

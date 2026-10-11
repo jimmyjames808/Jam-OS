@@ -1,6 +1,5 @@
 #!/bin/sh
-# The network rule over every path that transmits (docs/M9-PLAN.md stage 8,
-# "the join"): every frame Jam OS sends is tagged 802.1Q VLAN 21, and with
+# The network rule over every path that transmits (docs/HISTORY.md, M9): every frame Jam OS sends is tagged 802.1Q VLAN 21, and with
 # `vlan=off` none is sent at all; or, given `none`, every frame is sent
 # untagged and none tagged (the untagged mode, a public build's default).
 # Plain boots with QEMU's e1000e and tools/netpeer.py (its DHCP and DNS
