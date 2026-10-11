@@ -3,7 +3,7 @@
  *
  *   - dup, dup2, dup3 and fcntl: a dup shares the offset and the status
  *     flags, FD_CLOEXEC is the slot's own; F_DUPFD's lowest free number;
- *     the locks accepted; the errors;
+ *     the locks accepted (fcntl's and flock's alike); the errors;
  *   - memfd: writes, reads at an offset, ftruncate up (zeros) and down,
  *     then up again (zeros, not the old bytes), the seals;
  *   - eventfd: the counter, the semaphore mode, EAGAIN, a read woken by
@@ -27,6 +27,7 @@
 #include <pwd.h>
 #include <string.h>
 #include <sys/eventfd.h>
+#include <sys/file.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
@@ -67,6 +68,11 @@ static void check_dup(void)
     CHECK(fcntl(fd, F_SETLK, &l) == 0 && fcntl(fd, F_SETLKW, &l) == 0);
     CHECK(fcntl(fd, F_GETLK, &l) == 0 && l.l_type == F_UNLCK);
     CHECK(lockf(fd, F_LOCK, 0) == 0);
+    CHECK(flock(fd, LOCK_EX) == 0 && flock(fd, LOCK_SH | LOCK_NB) == 0);
+    CHECK(flock(fd, LOCK_UN) == 0);
+    errno = 0;
+    CHECK(flock(fd, LOCK_EX | LOCK_SH) == -1 && errno == EINVAL);
+    CHECK(flock(999, LOCK_EX) == -1 && errno == EBADF);
     for (int x = 0; x < 5; x++)
         close((int[]){ fd, d, high, high2, 200 }[x]);
     close(201);

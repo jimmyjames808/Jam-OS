@@ -122,7 +122,7 @@ static lx_call *const calls[] = {
     [SYS_fadvise64] = lx_fadvise64,
     [SYS_fallocate] = lx_fallocate,
 
-    /* pipes, dup and fcntl, memfd, eventfd: pipe.c, dup.c, memfd.c, eventfd.c */
+    /* pipes, dup, fcntl and flock, memfd, eventfd: pipe.c, dup.c, memfd.c, eventfd.c */
     [SYS_pipe] = lx_pipe,
     [SYS_pipe2] = lx_pipe2,
     [SYS_socketpair] = lx_socketpair,
@@ -130,6 +130,7 @@ static lx_call *const calls[] = {
     [SYS_dup2] = lx_dup2,
     [SYS_dup3] = lx_dup3,
     [SYS_fcntl] = lx_fcntl,
+    [SYS_flock] = lx_flock,
     [SYS_memfd_create] = lx_memfd_create,
     [SYS_eventfd] = lx_eventfd,
     [SYS_eventfd2] = lx_eventfd2,

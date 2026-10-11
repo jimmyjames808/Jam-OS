@@ -79,8 +79,8 @@ lx_call lx_stat, lx_lstat, lx_newfstatat, lx_statfs, lx_fstatfs, lx_access, lx_f
 /* Pipes, dup and fcntl, memfd and eventfd (pipe.c, dup.c, memfd.c,
  * eventfd.c; /dev and /etc are dev.c's and etc.c's, reached through the
  * path calls). */
-lx_call lx_pipe, lx_pipe2, lx_socketpair, lx_dup, lx_dup2, lx_dup3, lx_fcntl, lx_memfd_create,
-        lx_eventfd, lx_eventfd2;
+lx_call lx_pipe, lx_pipe2, lx_socketpair, lx_dup, lx_dup2, lx_dup3, lx_fcntl, lx_flock,
+        lx_memfd_create, lx_eventfd, lx_eventfd2;
 
 /* The one user (user.c). */
 lx_call lx_getuid, lx_geteuid, lx_getgid, lx_getegid, lx_getresuid, lx_getresgid, lx_setuid,

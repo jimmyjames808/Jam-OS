@@ -23,9 +23,10 @@
  *   F_GETPIPE_SZ, F_SETPIPE_SZ a pipe holds 64 KiB a message; the size
  *                              never changes
  *   F_ADD_SEALS, F_GET_SEALS   a memfd's (memfd.c)
- * Anything else is EINVAL. */
+ * Anything else is EINVAL. flock's locks are as fcntl's: checked and granted. */
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/file.h>
 #include <sys/resource.h>
 #include "kinds.h"
 
@@ -96,6 +97,17 @@ static long flock_cmd(struct fd_desc *d, long cmd, struct flock *l)
     if ((l->l_type == F_RDLCK && !fd_can_read(d)) || (l->l_type == F_WRLCK && !fd_can_write(d)))
         return -EBADF;
     return 0;
+}
+
+/* flock: as fcntl's locks, checked and granted, never kept. */
+long lx_flock(long fd, long op, long c, long d, long e, long f)
+{
+    struct fd_desc *desc = fd_get(fd);
+    if (!desc)
+        return -EBADF;
+    fd_put(desc);
+    long how = op & ~(long)LOCK_NB;
+    return how == LOCK_SH || how == LOCK_EX || how == LOCK_UN ? 0 : -EINVAL;
 }
 
 static long setfl(struct fd_desc *d, long arg)
