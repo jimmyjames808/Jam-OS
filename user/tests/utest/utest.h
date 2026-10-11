@@ -622,6 +622,21 @@ bool t_conwin_pointer(void);
 bool t_conwin_pointer_shape(void);
 bool t_con_hostile_compositor(void);
 /* conconn.c: the console's connection back end (bin/console "conn"). */
+/* session.c, sessbad.c: init's sessions (/svc/session; sessrig.h). Only
+ * a shell-mode init serves them: elsewhere each says it is skipped. */
+bool t_session_shell(void);
+bool t_session_command(void);
+bool t_session_hangup(void);
+bool t_session_limit(void);
+bool t_session_posix(void);
+bool t_session_bad_args(void);
+bool t_session_garbage(void);
+bool t_session_ctl_first(void);
+bool t_session_unread(void);
+bool t_session_opens(void);
+bool t_session_no_grant(void);
+/* "utest session-probe" (sessbad.c). */
+int session_child(int argc, char **argv);
 bool t_con_conn_shell(void);
 bool t_con_conn_log(void);
 bool t_con_conn_hostile(void);

@@ -1,0 +1,37 @@
+# init's sessions (/svc/session: user/services/init/sessions.c,
+# abi/idl/session.idl) from the shell, where a shell-mode init serves them:
+# utest's session tests (a session's life, from a POSIX program too, and
+# the hostile cases, 1,000 opens among them: sessrig.h); posixtest's pty
+# section (pseudo-terminals) from the shell; and who may have sessions: a
+# program whose list asks for them (bin/wantsession) is given /svc/session
+# from /boot, and `allow` refuses a copy of it on /data.
+#   QEMU_INPUT=tools/shell-tests/sessions.txt tools/qemu-test.sh <dir> sessions shell
+# As in cmds.txt, a marker built from $T (x) never appears in the typed
+# line, only when the command before it ran.
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send T=x
+wait {prompt}
+send utest only session; echo st-$T=$?
+wait 600 utest: 11 passed
+wait st-x=0
+wait {prompt}
+send posixtest pty; echo st-$T=$?
+wait 120 posixtest: pty: ok
+wait posixtest: PASS
+wait st-x=0
+wait {prompt}
+send run wantsession; echo st-$T=$?
+wait wantsession: /svc/session given
+wait st-x=0
+wait {prompt}
+send cp /boot/bin/wantsession /data/w && allow /data/w; echo st-$T=$?
+wait allow: /data/w: asks for session, which no program from /data may have
+wait st-x=1
+wait {prompt}
+send rm /data/w; echo rm-$T=$?
+wait rm-x=0
+wait {prompt}
+send reboot -f
+wait reboot: resetting

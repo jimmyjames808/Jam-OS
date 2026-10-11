@@ -41,7 +41,8 @@ JAM_WANTS("svc devmgr\n"
           "svc audio\n"
           "mount * rw\n"
           "right klog\n"
-          "right sysinfo\n");
+          "right sysinfo\n"
+          "svc session\n");
 
 const char *utest_cur;   /* the test running */
 
@@ -1185,6 +1186,17 @@ static const struct {
     { "devmgr_hostile", t_devmgr_hostile },
     { "svc_shared_unread", t_svc_shared_unread },
     { "initctl_hostile", t_initctl_hostile },
+    { "session_shell", t_session_shell },
+    { "session_command", t_session_command },
+    { "session_hangup", t_session_hangup },
+    { "session_limit", t_session_limit },
+    { "session_posix", t_session_posix },
+    { "session_bad_args", t_session_bad_args },
+    { "session_garbage", t_session_garbage },
+    { "session_ctl_first", t_session_ctl_first },
+    { "session_unread", t_session_unread },
+    { "session_opens", t_session_opens },
+    { "session_no_grant", t_session_no_grant },
 };
 
 int main(int argc, char **argv)
