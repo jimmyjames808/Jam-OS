@@ -1,5 +1,5 @@
 /* See LICENSE file for copyright and license details. */
-/* Jam OS override of sbase's time.c (user/ports/sbase/OVERRIDES): Jam OS has no fork, so the
+/* Jam OS override of sbase's time.c (ports/sbase/OVERRIDES): Jam OS has no fork, so the
  * fork-then-execvp that starts the command is posix_spawnp, whose failure
  * is reported the way the forked child's was.
  * Everything else is upstream's file, byte for byte. The change is marked

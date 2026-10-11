@@ -1,23 +1,26 @@
-# Ported programs (docs/M13-PLAN.md section 14), included at the end of the
-# Makefile after user/posix/posix.mk: outside code built unmodified from
-# third_party/<name>/ by the port's own fragment, user/ports/<name>/<name>.mk,
-# with tools/jamos-cc against the sysroot, each program stripped, its list
-# (<wants.h>) checked by tools/checkwants.py as any boot-image program's,
-# and packed into bootfs. Where each port's programs go is the port's.
+# TRANSITIONAL: the make fragments of ports not yet recipes. sbase, Lua and
+# libc-test are recipes in ports/ now (docs/M13.7-PLAN.md, PO2), built by
+# tools/ports.py from the Makefile; only tinyssh (M13 X2) is still a
+# fragment, user/ports/tinyssh/tinyssh.mk, using the macros below. When
+# tinyssh is a recipe, delete this directory, its include in the Makefile
+# and "user/ports/" in tools/checkwants.py's SESSION_DIRS.
+#
+# Included at the end of the Makefile after user/posix/posix.mk: outside
+# code built by the port's own fragment with tools/jamos-cc against the
+# sysroot, each program stripped, its list (<wants.h>) checked by
+# tools/checkwants.py as any boot-image program's, and packed into bootfs.
 #
 # A port's directory holds:
 #   <name>.mk     the fragment: which programs, how its objects are built
-#   wants-*       the lists (<wants.h>) its programs are linked with: what
-#                 each one is given beyond a terminal (mounts, services)
-#   OVERRIDES,    the upstream files a program forks in (or otherwise cannot
-#   override/     build as released), each replaced by our file: the same
-#                 format as musl's (user/posix/musl/OVERRIDES) and the same
-#                 check (tools/checkoverrides.py): the build stops if
-#                 upstream's file is no longer the one ours was written
-#                 against. A port with none has no such files.
+#   wants-*       the lists (<wants.h>) its programs are linked with
+#   OVERRIDES,    the upstream files a program cannot build as released,
+#   override/     each replaced by our file (user/posix/musl/OVERRIDES's
+#                 format, tools/checkoverrides.py's check)
 #
 # Everything lands in $(BUILD)/ports/<name>/: obj/ (objects), bin/<program>
-# (linked) and bin/<program>.bootfs (stripped, what bootfs packs).
+# (linked) and bin/<program>.bootfs (stripped, what bootfs packs). (The
+# recipes' builds are in $(BUILD)/ports/<name>/ too, with other names:
+# stage/, work/, ...)
 
 PORTS     := user/ports
 PORTS_OUT := $(BUILD)/ports
@@ -64,5 +67,4 @@ $(1)-check:
 check: $(1)-check
 endef
 
-include $(PORTS)/sbase/sbase.mk
-include $(PORTS)/lua/lua.mk
+include $(wildcard $(PORTS)/*/*.mk)

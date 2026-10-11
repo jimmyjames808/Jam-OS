@@ -27,7 +27,7 @@ functional/ipc_msg enosys: msgget and msgctl are ENOSYS (SysV IPC is not built)
 functional/ipc_sem enosys: semget and semctl are ENOSYS (SysV IPC is not built)
 functional/ipc_shm enosys: shmget and shmctl are ENOSYS (SysV IPC is not built)
 
-# ---- no /tmp: musl's tmpfile is built to TMPDIR (user/ports/libc-test/shim.h), but these name /tmp ---
+# ---- no /tmp: musl's tmpfile is built to TMPDIR (ports/libc-test/files/shim.h), but these name /tmp ---
 functional/fdopen limit: mkstemp("/tmp/...") has no /tmp (a RAM /tmp is a follow-up, docs/M13-PLAN.md section 3)
 regression/ftello-unflushed-append limit: mkstemp("/tmp/...") has no /tmp (a RAM /tmp is a follow-up)
 regression/fflush-exit limit: mkstemp("/tmp/...") has no /tmp, and the test forks (fork is ENOSYS)

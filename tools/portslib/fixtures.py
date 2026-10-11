@@ -1,7 +1,7 @@
 """The self-test's fake ports: their sources and recipes, written into a
 temporary tree (selftest.py runs them; nothing here touches ports/).
 
-Five small ports whose builds prove the builder's rules with the real
+Six small ports whose builds prove the builder's rules with the real
 compiler and sysroot:
 
     liba    style make; a patch that adds A_PATCHED to a.h
@@ -13,6 +13,7 @@ compiler and sysroot:
     libx    a library nobody but sneaky mentions; an override of x.c and
             a new file (extra.h) it needs
     sneaky  needs liba only, but includes libx's header: must not build
+    bootapp place boot, one program and two multicall names
 
 Each source is a .tar.gz made here with fixed times, and each recipe
 names it by a file:// URL with its real size and hash.
@@ -78,6 +79,10 @@ SOURCES = {
         "data.txt": "app's data\n",
         "LICENSE": "app: ISC, for the test\n",
     },
+    "bootapp-1.0": {
+        "b.c": "int main(void) { return 0; }\n",
+        "LICENSE": "bootapp: MIT, for the test\n",
+    },
     "sneaky-1.0": {
         "s.c": "#include <a.h>\n#include <x.h>\nint main(void) { return a() + x(); }\n",
         "LICENSE": "sneaky: MIT, for the test\n",
@@ -101,6 +106,16 @@ install() {
     cp app helper "$destdir$prefix/bin/"
     cp data.txt "$destdir$prefix/share/app/data.txt"
     ln -s data.txt "$destdir$prefix/share/app/alias.txt"
+}
+"""
+
+BOOTAPP_BUILD = """build() {
+    "$CC" -O2 -o boxy b.c
+}
+
+install() {
+    mkdir -p "$destdir$prefix/bin"
+    cp boxy "$destdir$prefix/bin/"
 }
 """
 
@@ -150,9 +165,11 @@ def source_line(path):
 
 
 def recipe(name, style, licence, src, extra):
+    place = "boot" if "place boot" in extra else "package"
+    extra = [e for e in extra if e != "place boot"]
     lines = ["name %s" % name, "version 1.0", "revision 1", "summary %s, for the self-test" % name,
              "licence %s" % licence, "licence-file %s" % ("COPYING" if name == "libb" else "LICENSE"),
-             src, "place package", "style %s" % style]
+             src, "place %s" % place, "style %s" % style]
     return "\n".join(lines + extra) + "\n"
 
 
@@ -162,7 +179,9 @@ RECIPES = {
     "libb": ("configure-plain", "BSD-2-Clause", ["needs liba >= 1.0",
                                                  "library lib/libb.a include/b.h lib/pkgconfig/libb.pc"]),
     "app": ("custom", "ISC", ["needs libb", "program bin/app", "files share/app",
-                              "subpackage app-extra share/app/alias.txt"]),
+                              "subpackage app-extra share/app/alias.txt",
+                              "multicall bin/app app-a app-b"]),
+    "bootapp": ("custom", "MIT", ["place boot", "program bin/boxy", "multicall bin/boxy tool1 tool2"]),
     "sneaky": ("custom", "MIT", ["needs liba", "program bin/sneaky"]),
 }
 
@@ -184,7 +203,7 @@ def write_tree(root, up, real_ports):
     os.makedirs(os.path.join(root, "liba", "patches"))
     with open(os.path.join(root, "liba", "patches", "0001-mark.patch"), "w") as f:
         f.write(PATCH_A)
-    for name, sh in (("app", APP_BUILD), ("sneaky", SNEAKY_BUILD)):
+    for name, sh in (("app", APP_BUILD), ("sneaky", SNEAKY_BUILD), ("bootapp", BOOTAPP_BUILD)):
         with open(os.path.join(root, name, "build.sh"), "w") as f:
             f.write(sh)
     os.makedirs(os.path.join(root, "app", "wants"))

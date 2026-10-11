@@ -374,12 +374,19 @@ def _lint_lists(r):
             if not _safe_rel(g):
                 p.append("%s: subpackage '%s' must be a path under the prefix" % (r.path, g))
     progs = {path for path, _ in r.programs()}
+    taken = set(progs)
     for w in r.lines("multicall"):
         if w[0] not in progs:
             p.append("%s: multicall %s is not a program line" % (r.path, w[0]))
         for n in w[1:]:
             if not FILE_NAME.match(n):
                 p.append("%s: multicall name '%s'" % (r.path, n))
+                continue
+            # A name is a file beside its program: not another's, not twice.
+            full = os.path.join(os.path.dirname(w[0]), n)
+            if full in taken:
+                p.append("%s: multicall name '%s' is a program, or given twice" % (r.path, n))
+            taken.add(full)
     return p
 
 

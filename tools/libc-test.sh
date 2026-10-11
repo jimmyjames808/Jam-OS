@@ -1,7 +1,7 @@
 #!/bin/sh
 # libc-test's functional and regression sets on Jam OS (docs/M13-PLAN.md,
-# track P2): a plain boot to the shell, which runs bin/libc-test
-# (user/ports/libc-test/: every test as a child of its own, the results
+# track P2): a plain boot to the shell, which runs usr/bin/libc-test
+# (ports/libc-test/: every test as a child of its own, the results
 # against expected-failures.txt) as tools/shell-tests/libc-test.txt says.
 # Passes when the program ends with "libc-test: DONE ok": every failure on
 # the list, none off it, none of the list's tests passing. Prints the

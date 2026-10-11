@@ -1,0 +1,25 @@
+# Lua: the interpreter only (no luac), in the boot image as usr/bin/lua
+# (docs/M13-PLAN.md question 9's "small C program"). third_party/lua is
+# the release tarball whole; the build is lua.c and the libraries compiled
+# as upstream's Makefile does with LUA_USE_POSIX (popen, mkstemp, the
+# POSIX time and file calls musl has), without LUA_USE_LINUX and DLOPEN
+# (no dynamic loading: `require` finds Lua files only, C modules are an
+# error) and without readline (lua.c reads lines with fgets). No
+# overrides: nothing in it forks.
+name        lua
+version     5.4.9
+revision    1
+summary     the Lua interpreter
+homepage    https://www.lua.org/
+category    languages
+# The tarball has no licence file: third_party/lua/LICENSE is the text its
+# doc/readme.html carries.
+licence     MIT
+licence-file LICENSE
+vendored    lua
+place       boot
+style       custom
+# A POSIX program that reads and writes files and runs commands (os.execute,
+# io.popen: musl's system and popen, on /bin/sh): wants/lua.
+program     bin/lua
+cpe         cpe:2.3:a:lua:lua

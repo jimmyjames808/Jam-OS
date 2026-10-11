@@ -30,6 +30,8 @@ this one (the format is the builder's own, `jamos-stage 1`):
     licence <path> <size> <sha256>
     sub <subpackage> <path>       (the path is also a `file` line)
     copy <path> <its target>      (a symlink made a copy)
+    multicall <program> <name>    the program is also installed as <name>,
+                                  beside it (the recipe's `multicall`)
 """
 import glob
 import hashlib
@@ -216,10 +218,24 @@ def keep(r, destdir, srcdir, stage, epoch, say=print):
         lines.append(_line(kind, rel, dst, extra if kind == "program" else None))
         if kind == "file" and extra:
             lines.append("sub %s %s" % (extra, rel))
+    lines += _multicall(r, stage)
     lines += _licences(r, srcdir, stage)
     _times(stage, epoch)
     _dropped(r, destdir, root, kept, os.path.dirname(stage), say)
     return programs, lines
+
+
+def _multicall(r, stage):
+    """`multicall <program> <name>` lines: the names the program is also
+    installed under, beside it (a copy; FAT32 has no links). The stage
+    holds the program once; the boot image's list and the package make
+    the names."""
+    out = []
+    for w in r.lines("multicall"):
+        if not os.path.isfile(os.path.join(stage, w[0])):
+            raise StageError("multicall %s: no such program in the stage" % w[0])
+        out += ["multicall %s %s" % (w[0], n) for n in w[1:]]
+    return out
 
 
 def _line(kind, rel, path, wants):
@@ -288,6 +304,11 @@ def check(r, stage, programs, lines):
                      program_problems(os.path.join(stage, rel), want, r.place, src)]
     packaged = [(w.split()[1], int(w.split()[2])) for w in lines
                 if w.split()[0] in ("program", "file", "licence")]
+    sizes = dict(packaged)
+    for w in lines:
+        if w.split()[0] == "multicall":
+            _, prog, name = w.split()
+            packaged.append((os.path.join(os.path.dirname(prog), name), sizes[prog]))
     problems += PLACE_RULES[r.place](packaged)
     return problems
 

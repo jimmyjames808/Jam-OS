@@ -31,7 +31,7 @@
 #include <unistd.h>
 #include "lct.h"
 
-#define SELF        "/boot/bin/libc-test"
+#define SELF        "/boot/usr/bin/libc-test"
 #define TMPDIR      "/data/lct-tmp"
 #define TIMEOUT_S   20
 #define KEEP        2048    /* a child's output kept for the report */
