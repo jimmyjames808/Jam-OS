@@ -70,6 +70,8 @@ GPT_CHECK  := build/host/gptcheck
 # The ext library on the Mac, sanitised (tools/extcheck.c, below).
 EXT_CHECK  := build/host/extcheck
 ROOTPORT_CHECK := build/host/rootportcheck
+# The kernel's AVL tree on the Mac, sanitised (tools/avlcheck.c, below).
+AVL_CHECK  := build/host/avlcheck
 # The files a stick has once `update -w` has written a build: its own and
 # the previous one (what boot/limine.conf may name; `make check`).
 STICK_FILES := /boot/jamos.elf /boot/bootfs.img /boot/prev-jamos.elf /boot/prev-bootfs.img
@@ -641,6 +643,8 @@ check: all
 	$(GPT_CHECK) $(BUILD)/gptcheck
 	$(MAKE) -s $(ROOTPORT_CHECK)
 	$(ROOTPORT_CHECK)
+	$(MAKE) -s $(AVL_CHECK)
+	$(AVL_CHECK)
 	$(MAKE) -s $(EXT_CHECK) $(EXT_FIXTURES) $(EXT_CROSS)
 	$(EXT_CHECK) tools/extfix $(BUILD)/extfix
 
@@ -830,6 +834,14 @@ $(ROOTPORT_CHECK): tools/rootportcheck.c drivers/usb-bus/rootport.c drivers/usb-
 	$(HOSTCC) -std=gnu17 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined \
 	    -fno-sanitize-recover=all -Ikernel/include -Idrivers/include -o $@ \
 	    tools/rootportcheck.c drivers/usb-bus/rootport.c
+
+# avlcheck (tools/avlcheck.c): the kernel's AVL tree (kernel/lib/avl.c, the
+# same file) against a sorted array doing the same steps, with its
+# summaries checked from scratch after each; `make check` runs it.
+$(AVL_CHECK): tools/avlcheck.c kernel/lib/avl.c kernel/include/jam/avl.h kernel/include/jam/list.h
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -std=gnu17 -O2 -g -Wall -Wextra -Werror -Wvla -fsanitize=address,undefined \
+	    -fno-sanitize-recover=all -Ikernel/include -o $@ tools/avlcheck.c kernel/lib/avl.c
 
 # extcheck (tools/extcheck.c, extbreak.c, extmutate.c): the ext library (the
 # extfs service's format code, user/services/extfs/ext, the same files)
