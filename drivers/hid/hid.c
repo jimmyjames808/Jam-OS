@@ -574,6 +574,19 @@ static void input_news(struct hid *h)
             h->stop = STOP_CONSOLE_GONE;
         /* anything else (a message that is no event of ours): dropped */
     }
+    if (h->stop)
+        return;
+    /* 64 read and maybe more queued: the binding fires when the channel
+     * turns readable, not while it stays so, and without a new one no
+     * light, nor the console's end, would ever be read again. Bound
+     * again, it fires at once, after the packets already waiting. */
+    (void)drv_port_unbind(h->port, h->input, K_INPUT);
+    if (drv_port_bind(h->port, h->input, K_INPUT, SIG_READABLE | SIG_PEER_CLOSED,
+                      PORT_BIND_PERSISTENT) != OK) {
+        drv_log("hid %04x:%04x if %u: the console's channel can't be watched any more",
+                h->vendor, h->product, h->iface);
+        h->stop = STOP_CONSOLE_GONE;
+    }
 }
 
 static int run(struct hid *h)

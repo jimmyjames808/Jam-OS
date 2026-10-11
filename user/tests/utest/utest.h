@@ -876,6 +876,7 @@ bool t_replace_consumes(void);
 
 /* M12 P1b: input as events (hid.c, compseat.c). */
 bool t_hid_leds(void);
+bool t_hid_leds_storm(void);
 bool t_hid_queue_full(void);
 bool t_comp_seat_leds(void);
 /* fat.c: an open file is known by its directory entry (P5). */

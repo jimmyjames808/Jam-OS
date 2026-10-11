@@ -1172,6 +1172,7 @@ static const struct {
     { "length_limits", t_length_limits },
     { "replace_consumes", t_replace_consumes },
     { "hid_leds", t_hid_leds },
+    { "hid_leds_storm", t_hid_leds_storm },
     { "hid_queue_full", t_hid_queue_full },
     { "comp_seat_leds", t_comp_seat_leds },
     { "fat_open_moved", t_fat_open_moved },
