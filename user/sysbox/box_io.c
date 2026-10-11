@@ -2,13 +2,14 @@
  * user/sysbox/): what sh.h declares and sh_io.c, main.c and sh_handles.c
  * answer inside the shell, answered over standard input and output and the
  * program's own handles. The command files and the shell's library files
- * (sh_kernel.c, sh_sysinfo.c, sh_num.c, sh_time.c, sh_lookup.c, sh_vfs.c)
- * are the shell's, compiled into the box as they are: one copy of every
+ * (sh_kernel.c, sh_sysinfo.c, sh_num.c, sh_time.c, sh_lookup.c, sh_vfs.c,
+ * sh_text.c) are the shell's, compiled into the box as they are: one copy of every
  * command.
  *
  * What differs from the shell:
  *   output     sh_put and sh_say are standard output (a pipe or a file as
- *              the starter made it), sh_tty is standard error;
+ *              the starter made it) in writes of 2 KiB at most, sh_tty is
+ *              standard error; a terminal is drained at exit;
  *   input      sh_stdin reads standard input when it is no terminal;
  *   Ctrl+C     SIGINT is noted (sh_interrupted), not fatal, so a loop ends
  *              with its summary; the waits end with it (ERR_INTERRUPTED);
@@ -21,9 +22,10 @@
  *              logged while it ran, printed when it is over: the shell
  *              shows them as they come (sh_show_log), a program has no
  *              console to ask.
- * A command that needs a handle the program lacks says so with an
- * error from the call (sh_sysinfo: "free: access denied"), as it does in
- * a shell without the right. */
+ * A box whose commands use the root resource (mkbox.sh's `root`) refuses
+ * to run one when the program has none (box_init); a handle that is there
+ * but lacks the right fails in the call, as in a shell without the right
+ * (`ps -k`: "ps: ERR_ACCESS_DENIED"). */
 #include <jamos/libjam.h>
 
 #include <stdarg.h>
