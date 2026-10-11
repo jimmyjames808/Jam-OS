@@ -77,6 +77,8 @@ struct prog {
 
 static struct {
     bool        on;                         /* the network services were started */
+    handle_t    port;                       /* init's: volumes' mounts arrive on it */
+    bool        had_data;                   /* /data was there when the last program started */
     handle_t    ctl_cli;                    /* netstack's control channel, our end */
     struct prog netstack, dhcp, netlog, logd;
     handle_t    netlog_stop;                /* our end of netlog's stop channel */
@@ -356,6 +358,8 @@ void regnet_start(handle_t port, const handle_t *cards, unsigned ncards)
         return;
     }
     rn.on = true;
+    rn.port = port;
+    rn.had_data = true;
     if (addr_st != OK || !send_static(addr))
         start_dhcp();
     start_logd();
@@ -371,6 +375,33 @@ void regnet_start(handle_t port, const handle_t *cards, unsigned ncards)
  * the last one; main.c's wait calls regnet_tick at that time. */
 #define MOUNTS_QUIET (300 * NS_PER_MS)
 static uint64_t mounts_due;   /* uptime ns of the pending update (0: none) */
+
+void regnet_before_program(const char *name)
+{
+    if (!rn.on)
+        return;
+    bool data = have_mount(DATA_MOUNT);
+    if (!data && rn.had_data) {
+        /* usbtest hands the stick back to volumes and ends a few ms before the
+         * remount reaches us; a program started in that gap would get a
+         * namespace without /data for good (it is sent once). A plain run
+         * has the same gap, but with the network's processes beside it the
+         * margin shrinks: give volumes a moment. */
+        printf("init: " DATA_MOUNT " is not back yet: %s waits for it (2 s at most)\n", name);
+        uint64_t until = now() + 2 * NS_PER_S;
+        while (!data && rn.port) {
+            struct port_packet pkt;
+            if (jam_port_wait(rn.port, until, &pkt) != OK)
+                break;
+            if (pkt.key == KEY_MOUNTS) {
+                if (mounts_event())
+                    regnet_mounts();
+                data = have_mount(DATA_MOUNT);
+            }
+        }
+    }
+    rn.had_data = data;
+}
 
 void regnet_mounts(void)
 {

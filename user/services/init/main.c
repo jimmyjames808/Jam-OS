@@ -151,6 +151,7 @@ static status_t wait_program(handle_t proc, uint64_t timeout_ns, struct process_
 static bool run(int argc, char **argv)
 {
     follow_mounts();   /* what volumes mounted so far: the program's namespace has it */
+    regnet_before_program(argv[0]);
     handle_t job, proc;
     status_t st = jam_job_create(startup_handle(SR_JOB), 0, &job);
     if (st != OK) {

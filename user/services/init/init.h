@@ -129,6 +129,10 @@ void     regnet_start(handle_t port, const handle_t *cards, unsigned ncards);
  * says when (uptime ns, DEADLINE_NEVER: nothing pending), and regnet_tick, called
  * then, makes the update. */
 void     regnet_mounts(void);
+/* Before init starts program `name`: if /data was there for the one before
+ * and is not now (usbtest has just given the stick back), wait for it, 2 s
+ * at most. Does nothing without the network option. */
+void     regnet_before_program(const char *name);
 uint64_t regnet_due(void);
 void     regnet_tick(void);
 /* Before volumes stop: logd flushes, and is stopped. */
