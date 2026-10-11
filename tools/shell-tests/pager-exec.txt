@@ -1,0 +1,128 @@
+# Programs on /data run from their pages (tools/pager-test.sh, case exec,
+# boot 1 of 2; the shell's sh_dataprog.c). Copies of bin/pxtest on /data:
+# one not allowed is refused; `allow` writes its line and its page table
+# (one file in /data/etc/allow.d, named by its hash: the script checks the
+# name); run touching none of its table it fetches only some of its pages
+# (fat's "gone" line between the marks lazy0 and lazy1); with the tables
+# gone (an approval from before them) it runs once through the whole read,
+# which writes its table again, then from the table alone; two instances at
+# once run from one VMO (one "gone" line between share0 and share1, no page
+# fetched twice); the file can't be removed while one runs, and can once
+# the shell has let go; three more copies allowed share the one table. The
+# script then changes three of the copies on this side of the image, for
+# pager-exec2.txt.
+# QEMU_INPUT=this file, command line "shell", QEMU_SAVE the stick. The text
+# waited for is built from $T, so it never appears in the typed line.
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send T=e
+wait {prompt}
+send cp /boot/bin/pxtest /data/px && cp /boot/bin/pxtest /data/pn && echo cp-$T-ok
+wait 60 cp-e-ok
+wait {prompt}
+
+# ---- not allowed: refused; allowed: a line and a table ------------------------------------------
+send run /data/pn lazy; echo st-$T=$?
+wait run: /data/pn is not allowed to run: `allow /data/pn` first
+wait st-e=126
+wait {prompt}
+send allow /data/px; echo st-$T=$?
+wait allow px: /data (read)? y/n
+type y
+wait allow: /data/px may run
+wait st-e=0
+wait {prompt}
+send ls /data/etc/allow.d; echo ls-$T=$?
+wait ls-e=0
+wait {prompt}
+
+# ---- run from its pages, its table untouched: some pages fetched, not all -----------------------
+send echo mark-$T-lazy0
+wait mark-e-lazy0
+wait {prompt}
+send run /data/px lazy; echo st-$T=$?
+wait pxtest: lazy: none of the table touched
+wait st-e=0
+wait {prompt}
+send sleep 2; echo mark-$T-lazy1
+wait mark-e-lazy1
+wait {prompt}
+
+# ---- an approval from before tables: the whole read once, which writes it ----------------------
+send rm -r /data/etc/allow.d; echo st-$T=$?
+wait st-e=0
+wait {prompt}
+send run /data/px lazy; echo st-$T=$?
+wait run: /data/px: its approval had no page table: the whole file matched it
+wait pxtest: lazy: none of the table touched
+wait st-e=0
+wait {prompt}
+send run /data/px lazy; echo st-$T=$?
+wait pxtest: lazy: none of the table touched
+wait st-e=0
+wait {prompt}
+send ls /data/etc/allow.d; echo ls-$T=$?
+wait ls-e=0
+wait {prompt}
+
+# ---- two at once: one VMO, every page fetched once ----------------------------------------------
+send sleep 1; echo mark-$T-share0
+wait mark-e-share0
+wait {prompt}
+send run /data/px touch /data/cue1 &
+wait pxtest: touched 128 pages
+wait pxtest: waiting for /data/cue1
+wait {prompt}
+# the running program's file can't go
+send rm /data/px; echo st-$T=$?
+wait in use
+wait st-e=1
+wait {prompt}
+send run /data/px touch; echo st-$T=$?
+wait pxtest: touched 128 pages
+wait st-e=0
+wait {prompt}
+send write /data/cue1 go; echo st-$T=$?
+wait st-e=0
+wait 30 pxtest: touched 128 pages again
+wait {prompt}
+send sleep 2; echo mark-$T-share1
+wait mark-e-share1
+wait {prompt}
+seen 10 [1] done: px (exit 0)
+
+# ---- none runs: the shell has let go, the file can be removed --------------------------------
+send rm /data/cue1 && cp /data/px /data/pq && rm /data/px && cp /data/pq /data/px && echo go-$T-ok
+wait 60 go-e-ok
+wait {prompt}
+
+# ---- three more copies allowed: one table for the four -------------------------------------------
+send cp /data/px /data/py && cp /data/px /data/pz && echo cp-$T-more
+wait 60 cp-e-more
+wait {prompt}
+send allow /data/py; echo st-$T=$?
+wait allow py: /data (read)? y/n
+type y
+wait st-e=0
+wait {prompt}
+send allow /data/pz; echo st-$T=$?
+wait allow pz: /data (read)? y/n
+type y
+wait st-e=0
+wait {prompt}
+send allow /data/pq; echo st-$T=$?
+wait allow pq: /data (read)? y/n
+type y
+wait st-e=0
+wait {prompt}
+send ls /data/etc/allow.d | grep -c . | grep ^1$ && echo tables-$T-one
+wait tables-e-one
+wait {prompt}
+send run /data/pq lazy; echo st-$T=$?
+wait pxtest: lazy: none of the table touched
+wait st-e=0
+wait {prompt}
+send reboot -f
+wait init: /data synced
+wait reboot: resetting

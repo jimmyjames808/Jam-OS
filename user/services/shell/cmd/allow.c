@@ -1,8 +1,10 @@
 /* allow: the owner marks a program on /data runnable and grants it what it
  * asks for (sh_allow.c; docs/HISTORY.md, M8.6):
  *   allow <file>      show the file's list and ask y/n; y writes the approval
+ *                     (its line, and its page table: each page's hash)
  *   allow -l          the approvals
- *   allow -r <name>   take away those whose path or file name is <name>
+ *   allow -r <name>   take away those whose path or file name is <name> (and
+ *                     their tables)
  * Only the shell init starts can: it alone holds a /data whose etc may
  * change and a root that can make code executable. */
 #include <wants.h>
@@ -94,21 +96,24 @@ static int allow_file(const char *arg)
                sh_why(st));
         return 1;
     }
-    jam_handle_close(vmo);
+    /* vmo is kept until the answer: the page table is written from the
+     * very bytes that were hashed and shown. */
     const char *bad = sh_wants_refused(&w);
+    bool yes = false;
     if (bad) {
         sh_tty("allow: %s: asks for %s, which no program from /data may have\n", arg, bad);
-        return 1;
+    } else if (drop_typed_ahead()) {
+        sh_say("allow %s: %s? y/n ", sh_basename(abs),
+               w.text[0] ? w.text : "nothing but its terminal");
+        sh_flush();
+        yes = ask();
     }
-    if (!drop_typed_ahead())
+    st = yes ? sh_allow_add(abs, vmo, size, hex, w.text) : OK;
+    jam_handle_close(vmo);
+    if (!yes)
         return 1;
-    sh_say("allow %s: %s? y/n ", sh_basename(abs), w.text[0] ? w.text : "nothing but its terminal");
-    sh_flush();
-    if (!ask())
-        return 1;
-    st = sh_allow_add(abs, hex, w.text);
     if (st != OK) {
-        sh_tty("allow: can't write /data/etc/allow (%s)%s\n", sh_why(st),
+        sh_tty("allow: can't write the approval to /data/etc (%s)%s\n", sh_why(st),
                st == ERR_ACCESS_DENIED ? ": only the shell init starts can allow programs" : "");
         return 1;
     }
