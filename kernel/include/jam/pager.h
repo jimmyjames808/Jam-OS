@@ -17,7 +17,8 @@
  * (vmo_write, vmo_commit, writable mappings), take one away (vmo_decommit,
  * vmo_set_size), make a device or the kernel wait for it (vmo_pin,
  * vmo_map_kernel), keep it (VMAR_KEPT_ONLY) or run it unchecked
- * (vmo_seal).
+ * (vmo_seal: its code runs only through vmo_make_exec_verified, which
+ * checks each page as it arrives, <jam/vmo_verify.h>).
  *
  * Objects and lifetimes: the pager holds no reference to its VMOs: each
  * has a struct pager_vmo (pager.c) holding a reference to the pager, and
@@ -97,7 +98,11 @@ status_t pager_next(struct pager *pg, uint32_t flags, struct pager_request *out)
  * aligned, len 0, src unreadable; ERR_OUT_OF_RANGE: len past
  * PAGER_SUPPLY_MAX or the range past the VMO's size; ERR_NOT_FOUND: no
  * live VMO has key; ERR_NO_MEMORY: no page, or the job refused one (the
- * pages before it stay). Interrupts on, no spinlock held. */
+ * pages before it stay). A verified VMO's page that doesn't match its hash
+ * is never published: the rest of the range is supplied, then the
+ * requests waiting on such a page fail with ERR_BAD_STATE and the call
+ * returns ERR_IO (unless it stopped for one of the errors above). Interrupts
+ * on, no spinlock held. */
 status_t pager_supply(struct pager *pg, uint64_t key, uint64_t offset, const struct pager_src *src,
                       uint64_t len);
 /* PAGER_OP_FAIL: fail key's requests overlapping [offset, offset + len)
@@ -120,7 +125,9 @@ status_t pager_op(struct pager *pg, uint64_t key, uint32_t op, uint64_t offset, 
  * how r failed: ERR_IO or ERR_OUT_OF_RANGE (PAGER_OP_FAIL),
  * ERR_PEER_CLOSED (detached, the pager's last handle closed, the VMO
  * gone), ERR_TIMED_OUT (not answered in time: this waiter fails it for
- * everyone). No spinlock held, nor any lock the pager's progress needs. */
+ * everyone), ERR_BAD_STATE (a verified VMO's page that the pager
+ * supplied didn't match its hash: <jam/vmo_verify.h>). No spinlock held,
+ * nor any lock the pager's progress needs. */
 status_t pager_req_wait(struct pager_req *r);
 /* Drop the caller's reference to r (pager_req_wait's, or one from
  * vmo_page_request). */
@@ -146,10 +153,14 @@ status_t vmo_page_request(struct vmo *v, uint64_t idx, struct pager_req **out);
 /* Publish p (the caller's reference, consumed whatever happens) as page idx
  * of a pager VMO if that slot is absent, charged to the VMO's job, and
  * answer the requests it makes whole (any whose last reference goes is
- * put on `dead`, for pager.c to free once no lock is held). OK if
- * published or present already; ERR_OUT_OF_RANGE past the size;
- * ERR_PEER_CLOSED if detached; ERR_NO_MEMORY if the job refused it. */
-status_t vmo_pager_publish(struct vmo *v, uint64_t idx, struct page *p, struct list_node *dead);
+ * put on `dead`, for pager.c to free once no lock is held). `checked`:
+ * p's bytes were matched against v's table already (vmo_verify_supply);
+ * a verified VMO's page that wasn't is matched here. OK if published or
+ * present already; ERR_OUT_OF_RANGE past the size; ERR_PEER_CLOSED if
+ * detached; ERR_IO if v is verified and p doesn't match; ERR_NO_MEMORY if
+ * the job refused it. */
+status_t vmo_pager_publish(struct vmo *v, uint64_t idx, struct page *p, bool checked,
+                           struct list_node *dead);
 /* Cut a pager VMO off its pager for good: no page is published any more,
  * and every present one is dropped (from every mapping first, freed after
  * the shootdown). Interrupts on, no spinlock held. */

@@ -6,8 +6,8 @@
  * the current thread's address space (aspace_fault). A bad range or an
  * unresolvable fault returns ERR_INVALID_ARGS; part of the data may have
  * been copied by then. A page of a pager VMO (<jam/pager.h>) is waited
- * for: ERR_IO if its pager failed it, is gone or didn't answer in time,
- * ERR_CANCELED if the thread was killed meanwhile. Only reads can wait (a
+ * for: ERR_IO if its pager failed it, is gone or didn't answer in time
+ * (or it didn't match a verified VMO's hash), ERR_CANCELED if the thread was killed meanwhile. Only reads can wait (a
  * pager VMO is never mapped writable), so copy_to_user never does. A copy
  * may wait seconds for a pager: never make one holding a mutex another
  * process's progress needs (PK2's audit, docs/M12.5-PLAN.md). */

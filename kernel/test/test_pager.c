@@ -10,9 +10,11 @@
  * frees a pager whose VMOs died: a GONE link holds the pager until it is
  * answered or the pager closes.
  *
- * The fault path (the last section) has readers of its own: kernel
- * threads faulting or copying through an address space, and ring-3
- * threads (of no process) whose kills are read back from the log. */
+ * The fault path has readers of its own: kernel threads faulting or
+ * copying through an address space, and ring-3 threads (of no process)
+ * whose kills are read back from the log. The last section runs a
+ * verified program (vmo_make_exec_verified) on them, its pages checked
+ * against their hashes as they arrive. */
 #include <jam/aspace.h>
 #include <jam/aspace_vmo.h>
 #include <jam/handle.h>
@@ -26,12 +28,14 @@
 #include <jam/resource.h>
 #include <jam/resource_impl.h>
 #include <jam/sched.h>
+#include <jam/sha256.h>
 #include <jam/string.h>
 #include <jam/sys.h>
 #include <jam/time.h>
 #include <jam/uentry.h>
 #include <jam/usercopy.h>
 #include <jam/vmo.h>
+#include <jam/vmo_verify.h>
 
 #define PG     PAGE_SIZE
 #define ANSWER (600 * NS_PER_S)   /* long: only the deadline tests wait it out */
@@ -1376,4 +1380,350 @@ KTEST(pager_fault_hostile)
     pg_close(good);
     kt_job_is_empty(j);
     job_unref(j);
+}
+
+/* ---- verified pages (PK4) ----------------------------------------------------- */
+
+/* A program from /data: a pager VMO sealed with its pages' hashes
+ * (vmo_make_exec_verified, <jam/vmo_verify.h>). Its page 0 is code (uprog
+ * at the start), page 1 data (its words); the table is computed from
+ * those approved bytes, and a test changes a byte of `file` afterwards to
+ * play a file changed since its approval. A ring-3 thread runs the code
+ * from the VMO itself, mapped executable at V_CODE. */
+
+#define VF_PAGES 2
+#define V_CODE   0x30000000ull   /* a verified VMO, read and execute */
+
+struct vfix {
+    struct job          *j;
+    struct pager        *pg;
+    struct vmo          *v;       /* our own reference to the program's VMO */
+    struct handle_table  t;       /* job j's: the VMO's handle, the root's, the table's */
+    handle_t             h, root, table, x;   /* x: the VMO's handle after the call */
+    uint8_t             *file;    /* what the pager supplies, VF_PAGES pages */
+    uint64_t             key;
+};
+
+/* A table VMO for `pages` pages of bytes. */
+static struct vmo *table_of(const uint8_t *bytes, uint64_t pages)
+{
+    struct vmo *tv;
+    KT_EQ(vmo_create(pages * VMO_VERIFIED_HASH_BYTES, 0, &tv), OK);
+    for (uint64_t i = 0; i < pages; i++) {
+        uint8_t d[SHA256_BYTES];
+        sha256(bytes + i * PG, PG, d);
+        KT_EQ(vmo_write(tv, i * VMO_VERIFIED_HASH_BYTES, d, sizeof(d)), OK);
+    }
+    return tv;
+}
+
+/* A handle in t to obj (the caller's reference). */
+static handle_t insert(struct handle_table *t, struct kobject *obj, rights_t rights)
+{
+    struct khandle kh = khandle_from_new(obj, rights);
+    handle_t h;
+    KT_EQ(handle_insert(t, &kh, &h), OK);
+    return h;
+}
+
+/* Everything but the call: the program's VMO (handle h), the root with
+ * RIGHT_ROOT_VMEX, the table of the approved bytes. */
+static void vfix_new(struct vfix *f, uint64_t key)
+{
+    f->j = kt_fresh_job();
+    f->pg = pg_new(f->j, ANSWER);
+    f->key = key;
+    KT_EQ(pager_create_vmo(f->pg, key, VF_PAGES * PG, &f->v), OK);
+    f->file = kzalloc(VF_PAGES * PG);
+    KT_ASSERT(f->file);
+    memcpy(f->file, uprog, sizeof(uprog));
+    for (uint64_t i = 0; i < PG / 8; i++)
+        ((uint64_t *)(f->file + PG))[i] = word(key, 1);
+    handle_table_init(&f->t);
+    f->t.job = f->j;
+    kobject_ref(vmo_kobject(f->v));
+    f->h = insert(&f->t, vmo_kobject(f->v), PAGER_VMO_RIGHTS);
+    struct kobject *root = resource_root();
+    kobject_ref(root);
+    f->root = insert(&f->t, root, RIGHTS_BASIC | RIGHT_ROOT_VMEX);
+    f->table = insert(&f->t, vmo_kobject(table_of(f->file, VF_PAGES)), RIGHTS_BASIC | RIGHT_READ);
+}
+
+static void vfix_start(struct vfix *f, uint64_t key)
+{
+    vfix_new(f, key);
+    KT_EQ(sys_vmo_make_exec_verified(&f->t, f->h, f->root, f->table, 0, &f->x), OK);
+}
+
+static void vfix_end(struct vfix *f)
+{
+    handle_table_destroy(&f->t);
+    put(f->v);
+    pg_close(f->pg);
+    kfree(f->file);
+    kt_job_is_empty(f->j);   /* the table's pages went with the VMO */
+    job_unref(f->j);
+}
+
+/* Supply pages [first, first + n) of the file as it is now. */
+static status_t supply_file(struct vfix *f, uint64_t first, uint64_t n)
+{
+    struct pager_src src = { .addr = (uint64_t)(uintptr_t)(f->file + first * PG), .user = false };
+    return pager_supply(f->pg, f->key, first * PG, &src, n * PG);
+}
+
+/* The address space: the VMO at U_FILE (read) as uas_new maps it, and at
+ * V_CODE (read, execute). */
+static void vas_new(struct uas *u, struct vmo *prog)
+{
+    uas_new(u, prog, VF_PAGES * PG);
+    uint64_t a = V_CODE;
+    KT_EQ(aspace_map(u->as, prog, 0, VF_PAGES * PG, ASPACE_READ | ASPACE_EXEC | ASPACE_FIXED, &a),
+          OK);
+}
+
+static void vas_free(struct uas *u)
+{
+    KT_EQ(aspace_unmap(u->as, V_CODE, VF_PAGES * PG), OK);
+    uas_free(u);
+}
+
+/* ut_main, but the code is the verified VMO's (at V_CODE). */
+static void vt_main(void *arg)
+{
+    struct ut *u = arg;
+    struct thread *t = current_thread();
+    KT_ASSERT(fpu_ustate_alloc(t) == OK);
+    aspace_ref(u->as);   /* the thread's, dropped when it is reaped */
+    irq_disable();
+    t->aspace = u->as;
+    aspace_switch(NULL, u->as);
+    irq_enable();
+    arch_enter_user(V_CODE, U_DATA + PG, u->store, u->load);
+}
+
+static void vt_start(struct ut *u, struct uas *as, const char *name, uint64_t load)
+{
+    u->as = as->as;
+    u->load = load;
+    u->store = U_DATA;
+    u->t = thread_create(name, vt_main, u, PRIO_DEFAULT);
+}
+
+/* A program whose pages match runs: its code page and its data page come
+ * in one request, both pass, it stores its data word, nobody is killed.
+ * The new handle may execute and nothing more; the old one is gone. */
+KTEST(pager_verified_runs)
+{
+    struct vfix f;
+    vfix_start(&f, 40);
+    struct handle_info hi;
+    KT_EQ(handle_info(&f.t, f.h, &hi), ERR_BAD_HANDLE);
+    KT_EQ(handle_info(&f.t, f.x, &hi), OK);
+    KT_EQ(hi.rights, PAGER_VMO_RIGHTS | RIGHT_EXEC);
+    struct uas us;
+    vas_new(&us, f.v);
+    uint64_t faults0 = __atomic_load_n(&user_faults, __ATOMIC_RELAXED);
+    struct ut u;
+    vt_start(&u, &us, "pk4-runs", V_CODE + PG + 8);
+    struct pager_request q;
+    next(f.pg, 0, &q);
+    is_read(&q, 40, 0, VF_PAGES);   /* the code fetch, and the data after it */
+    KT_EQ(supply_file(&f, 0, VF_PAGES), OK);
+    wait_stored(&us, 0, word(40, 1));
+    ut_stop(&u);
+    KT_GLOBAL_EQ(__atomic_load_n(&user_faults, __ATOMIC_RELAXED), faults0);
+    KT_EQ(vmo_committed(f.v), VF_PAGES * PG);
+    none_queued(f.pg);
+    vas_free(&us);
+    vfix_end(&f);
+}
+
+/* The file changed after its approval (one bit of the data page): the
+ * code page still comes and runs, the data page never does, and the
+ * thread that loads it is killed with the reason. A supply of the
+ * approved bytes is taken after all. */
+KTEST(pager_verified_bad_page)
+{
+    struct vfix f;
+    vfix_start(&f, 41);
+    f.file[PG + 100] ^= 1;
+    struct uas us;
+    vas_new(&us, f.v);
+    uint64_t log0 = klog_head(), faults0 = __atomic_load_n(&user_faults, __ATOMIC_RELAXED);
+    struct ut u;
+    vt_start(&u, &us, "pk4-changed", V_CODE + PG + 8);
+    struct pager_request q;
+    next(f.pg, 0, &q);
+    is_read(&q, 41, 0, VF_PAGES);
+    KT_EQ(supply_file(&f, 0, VF_PAGES), ERR_IO);   /* page 0 in, page 1 refused */
+    KT_ASSERT(vmo_page_phys(f.v, 0));
+    KT_EQ(vmo_page_phys(f.v, PG), 0);
+    next(f.pg, 0, &q);   /* its code ran: now the load */
+    is_read(&q, 41, 1, 1);
+    KT_EQ(supply_file(&f, 1, 1), ERR_IO);
+    thread_join(u.t);
+    KT_ASSERT(killed_for(log0, "pk4-changed",
+                         "page fault: a page doesn't match the approved program"));
+    KT_GLOBAL_EQ(__atomic_load_n(&user_faults, __ATOMIC_RELAXED), faults0 + 1);
+    KT_EQ(stored(&us, 0), 0);
+    KT_EQ(vmo_page_phys(f.v, PG), 0);
+    none_queued(f.pg);
+    f.file[PG + 100] ^= 1;
+    KT_EQ(supply_file(&f, 1, 1), OK);
+    KT_ASSERT(vmo_page_phys(f.v, PG));
+    vas_free(&us);
+    vfix_end(&f);
+}
+
+/* A copy from a page that doesn't match is ERR_IO, and so is vmo_read of
+ * it; a copy from a good page of the same request goes on (its page is
+ * there when the request fails). */
+KTEST(pager_verified_copies)
+{
+    struct vfix f;
+    vfix_start(&f, 42);
+    f.file[PG] ^= 0x80;
+    struct uas us;
+    vas_new(&us, f.v);
+    struct cp c;
+    struct pager_request q;
+
+    cp_start(&c, us.as, V_CODE + PG + 16, CP_FROM, NULL);
+    next(f.pg, 0, &q);
+    is_read(&q, 42, 1, 1);
+    KT_EQ(supply_file(&f, 1, 1), ERR_IO);
+    KT_EQ(cp_end(&c), ERR_IO);
+
+    struct rd r;
+    rd_start(&r, f.v, PG, 8);
+    next(f.pg, 0, &q);
+    is_read(&q, 42, 1, 1);
+    KT_EQ(supply_file(&f, 1, 1), ERR_IO);
+    KT_EQ(rd_end(&r, 0), ERR_IO);
+
+    cp_start(&c, us.as, V_CODE, CP_FROM, NULL);
+    next(f.pg, 0, &q);
+    is_read(&q, 42, 0, VF_PAGES);
+    KT_EQ(supply_file(&f, 0, VF_PAGES), ERR_IO);   /* page 1 still bad */
+    KT_EQ(cp_end(&c), OK);
+    KT_EQ(memcmp(&c.word, uprog, sizeof(uprog)), 0);
+    none_queued(f.pg);
+    vas_free(&us);
+    vfix_end(&f);
+}
+
+/* Pages present before the call came unchecked: the call drops them. A
+ * supply that copied its page before the seal and publishes after it
+ * (unchecked) is matched under the VMO lock: a bad page is refused, a
+ * good one taken. A page past the table never matches. */
+KTEST(pager_verified_seal_and_late_publish)
+{
+    struct vfix f;
+    vfix_new(&f, 43);
+    KT_EQ(supply_file(&f, 0, VF_PAGES), OK);   /* before the call: not checked */
+    KT_EQ(vmo_committed(f.v), VF_PAGES * PG);
+    KT_EQ(sys_vmo_make_exec_verified(&f.t, f.h, f.root, f.table, 0, &f.x), OK);
+    KT_EQ(vmo_committed(f.v), 0);
+    struct vmo_verify *vf = vmo_verifier(f.v);
+    KT_ASSERT(vf);
+
+    struct list_node dead;
+    list_init(&dead);
+    struct page *p = pmm_alloc_pages(0, 0);
+    KT_ASSERT(p);
+    memcpy(page_to_virt(p), f.file + PG, PG);
+    ((uint8_t *)page_to_virt(p))[7] ^= 1;
+    KT_EQ(vmo_pager_publish(f.v, 1, p, false, &dead), ERR_IO);
+    KT_EQ(vmo_page_phys(f.v, PG), 0);
+    p = pmm_alloc_pages(0, 0);
+    KT_ASSERT(p);
+    memcpy(page_to_virt(p), f.file + PG, PG);
+    KT_EQ(vmo_pager_publish(f.v, 1, p, false, &dead), OK);
+    KT_ASSERT(vmo_page_phys(f.v, PG));
+    KT_ASSERT(list_empty(&dead));
+
+    KT_ASSERT(vmo_verify_match(vf, 0, f.file));
+    KT_ASSERT(!vmo_verify_match(vf, VF_PAGES, f.file));   /* no entry for it */
+    vfix_end(&f);
+}
+
+/* A pager VMO of the refusals test, its handle in t (key: the next one). */
+static handle_t refused_vmo(struct vfix *f, uint64_t key, uint64_t size, struct vmo **v)
+{
+    KT_EQ(pager_create_vmo(f->pg, key, size, v), OK);
+    return insert(&f->t, vmo_kobject(*v), PAGER_VMO_RIGHTS);
+}
+
+/* Is h gone from t? */
+static bool gone(struct handle_table *t, handle_t h)
+{
+    struct handle_info hi;
+    return handle_info(t, h, &hi) == ERR_BAD_HANDLE;
+}
+
+/* Each refusal, with the VMO's handle gone whatever the status and
+ * nothing left charged: flags, no power, not a pager VMO, the table's
+ * type, rights and length, a VMO too big, a second handle, a mapping, a
+ * detached VMO, and a VMO verified already. */
+KTEST(pager_verified_refusals)
+{
+    struct vfix f;
+    vfix_new(&f, 44);
+    struct handle_table *t = &f.t;
+    handle_t x, h, ev, ro, dup;
+    struct vmo *v;
+    KT_EQ(sys_event_create(t, &ev), OK);
+    KT_EQ(handle_duplicate(t, f.table, RIGHTS_BASIC, &ro), OK);
+    struct kobject *root = resource_root();
+    kobject_ref(root);
+    handle_t noroot = insert(t, root, ROOT_RIGHTS & ~RIGHT_ROOT_VMEX);
+
+    h = refused_vmo(&f, 100, PG, &v);
+    KT_EQ(sys_vmo_make_exec_verified(t, h, f.root, f.table, 1, &x), ERR_INVALID_ARGS);
+    KT_ASSERT(gone(t, h));
+    h = refused_vmo(&f, 101, PG, &v);
+    KT_EQ(sys_vmo_make_exec_verified(t, h, noroot, f.table, 0, &x), ERR_ACCESS_DENIED);
+    KT_ASSERT(gone(t, h));
+    KT_EQ(sys_vmo_create(t, PG, 0, &h), OK);
+    KT_EQ(sys_vmo_make_exec_verified(t, h, f.root, f.table, 0, &x), ERR_NOT_SUPPORTED);
+    KT_ASSERT(gone(t, h));
+    h = refused_vmo(&f, 102, PG, &v);
+    KT_EQ(sys_vmo_make_exec_verified(t, h, f.root, ev, 0, &x), ERR_WRONG_TYPE);
+    KT_ASSERT(gone(t, h));
+    h = refused_vmo(&f, 103, PG, &v);
+    KT_EQ(sys_vmo_make_exec_verified(t, h, f.root, ro, 0, &x), ERR_ACCESS_DENIED);
+    KT_ASSERT(gone(t, h));
+    h = refused_vmo(&f, 104, (PG / VMO_VERIFIED_HASH_BYTES + 1) * PG, &v);   /* 129 pages */
+    KT_EQ(sys_vmo_make_exec_verified(t, h, f.root, f.table, 0, &x), ERR_INVALID_ARGS);
+    KT_ASSERT(gone(t, h));
+    h = refused_vmo(&f, 105, VMO_VERIFIED_MAX + PG, &v);
+    KT_EQ(sys_vmo_make_exec_verified(t, h, f.root, f.table, 0, &x), ERR_OUT_OF_RANGE);
+    KT_ASSERT(gone(t, h));
+
+    h = refused_vmo(&f, 106, PG, &v);   /* a second handle */
+    KT_EQ(handle_duplicate(t, h, RIGHT_SAME, &dup), OK);
+    KT_EQ(sys_vmo_make_exec_verified(t, h, f.root, f.table, 0, &x), ERR_BAD_STATE);
+    KT_ASSERT(gone(t, h));
+    KT_EQ(handle_close(t, dup), OK);
+
+    h = refused_vmo(&f, 107, PG, &v);   /* mapped */
+    struct aspace *as;
+    KT_EQ(aspace_create(&as), OK);
+    uint64_t a = 0;
+    KT_EQ(aspace_map(as, v, 0, PG, ASPACE_READ, &a), OK);
+    KT_EQ(sys_vmo_make_exec_verified(t, h, f.root, f.table, 0, &x), ERR_BAD_STATE);
+    KT_ASSERT(gone(t, h));
+    KT_EQ(aspace_unmap(as, a, PG), OK);
+    aspace_unref(as);
+
+    h = refused_vmo(&f, 108, PG, &v);   /* detached */
+    KT_EQ(pager_op(f.pg, 108, PAGER_OP_DETACH, 0, 0, 0), OK);
+    KT_EQ(sys_vmo_make_exec_verified(t, h, f.root, f.table, 0, &x), ERR_BAD_STATE);
+    KT_ASSERT(gone(t, h));
+
+    KT_EQ(sys_vmo_make_exec_verified(t, f.h, f.root, f.table, 0, &h), OK);
+    KT_EQ(sys_vmo_make_exec_verified(t, h, f.root, f.table, 0, &x), ERR_BAD_STATE);
+    KT_ASSERT(gone(t, h));
+    vfix_end(&f);   /* every table freed, every page uncharged */
 }

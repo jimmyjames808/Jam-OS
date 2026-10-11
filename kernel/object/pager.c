@@ -49,6 +49,7 @@
 #include <jam/time.h>
 #include <jam/usercopy.h>
 #include <jam/vmo.h>
+#include <jam/vmo_verify.h>
 
 #define KEY_BUCKETS 64u
 
@@ -549,7 +550,8 @@ status_t pager_next(struct pager *pg, uint32_t flags, struct pager_request *out)
 /* ---- answers ------------------------------------------------------------------ */
 
 /* Page idx of v from src at byte `at`: copied into a fresh page with no
- * lock held, then published. */
+ * lock held, checked if v is verified, then published. ERR_IO: the bytes
+ * aren't the approved ones (<jam/vmo_verify.h>), and nothing changed. */
 static status_t supply_page(struct vmo *v, uint64_t idx, const struct pager_src *src, uint64_t at)
 {
     struct page *p = pmm_alloc_pages(0, 0);   /* every byte is written below */
@@ -561,16 +563,28 @@ static status_t supply_page(struct vmo *v, uint64_t idx, const struct pager_src 
         st = copy_from_user(dst, src->addr + at, PAGE_SIZE) == OK ? OK : ERR_INVALID_ARGS;
     else
         memcpy(dst, (const char *)(uintptr_t)src->addr + at, PAGE_SIZE);
+    bool checked = false;
+    if (st == OK && !vmo_verify_supply(v, idx, dst, &checked))
+        st = ERR_IO;
     if (st != OK) {
         page_unref(p);
         return st;
     }
     struct list_node dead;
     list_init(&dead);
-    st = vmo_pager_publish(v, idx, p, &dead);
+    st = vmo_pager_publish(v, idx, p, checked, &dead);
     reap(&dead);
     return st == ERR_PEER_CLOSED ? ERR_NOT_FOUND : st;   /* detached meanwhile */
 }
+
+/* The pages of one pager_supply call that didn't match (bit i: its i-th). */
+struct unapproved {
+    uint64_t bits[PAGER_SUPPLY_MAX / PAGE_SIZE / 64];
+    bool     any;
+};
+
+static void fail_unapproved(struct pager *pg, uint64_t key, uint64_t first,
+                            const struct unapproved *u);
 
 status_t pager_supply(struct pager *pg, uint64_t key, uint64_t offset, const struct pager_src *src,
                       uint64_t len)
@@ -582,11 +596,26 @@ status_t pager_supply(struct pager *pg, uint64_t key, uint64_t offset, const str
     struct vmo *v = lookup_vmo(pg, key);
     if (!v)
         return ERR_NOT_FOUND;
-    uint64_t size = vmo_size(v);
+    uint64_t size = vmo_size(v), first = offset >> PAGE_SHIFT;
     status_t st = offset <= size && len <= size - offset ? OK : ERR_OUT_OF_RANGE;
-    for (uint64_t at = 0; at < len && st == OK; at += PAGE_SIZE)
-        st = supply_page(v, (offset + at) >> PAGE_SHIFT, src, at);
+    struct unapproved bad = { { 0 }, false };
+    for (uint64_t i = 0; i < len >> PAGE_SHIFT && st == OK; i++) {
+        status_t one = supply_page(v, first + i, src, i << PAGE_SHIFT);
+        if (one == ERR_IO) {   /* a page that doesn't match: the rest still come */
+            bad.bits[i / 64] |= 1ull << (i % 64);
+            bad.any = true;
+        } else {
+            st = one;
+        }
+    }
     kobject_unref(vmo_kobject(v));
+    /* Only now, with the good pages of the range published: a waiter on
+     * one of them sees it there and goes on. */
+    if (bad.any) {
+        fail_unapproved(pg, key, first, &bad);
+        if (st == OK)
+            st = ERR_IO;
+    }
     return st;
 }
 
@@ -612,6 +641,17 @@ static status_t fail_range(struct pager *pg, uint64_t key, uint64_t first, uint6
     punlock(pg, f);
     reap(&dead);
     return OK;
+}
+
+/* The requests waiting on pages of a verified VMO that didn't match fail
+ * ERR_BAD_STATE (the faulters die with "a page doesn't match the approved
+ * program"); pages from first, bit by bit. */
+static void fail_unapproved(struct pager *pg, uint64_t key, uint64_t first,
+                            const struct unapproved *u)
+{
+    for (uint64_t i = 0; i < PAGER_SUPPLY_MAX / PAGE_SIZE; i++)
+        if (u->bits[i / 64] & (1ull << (i % 64)))
+            (void)fail_range(pg, key, first + i, first + i + 1, ERR_BAD_STATE);   /* (gone: none) */
 }
 
 /* PAGER_OP_DETACH: cut key's VMO off, or answer its PAGER_REQ_GONE. */

@@ -162,6 +162,11 @@ status_t sys_vmo_commit(struct handle_table *t, handle_t h, uint64_t offset,
 /* vmo_make_exec (abi/syscalls.def): RIGHT_ROOT_VMEX on root; h is gone
  * whatever the status. */
 status_t sys_vmo_make_exec(struct handle_table *t, handle_t h, handle_t root, handle_t *out);
+/* vmo_make_exec_verified (abi/syscalls.def): the same for a pager VMO,
+ * checked against table's page hashes from then on (<jam/vmo_verify.h>);
+ * RIGHT_READ on table, which stays. */
+status_t sys_vmo_make_exec_verified(struct handle_table *t, handle_t h, handle_t root,
+                                    handle_t table, uint32_t flags, handle_t *out);
 /* RIGHT_WRITE | RIGHT_RESIZE. */
 status_t sys_vmo_decommit(struct handle_table *t, handle_t h, uint64_t offset, uint64_t len);
 /* end VMOs */

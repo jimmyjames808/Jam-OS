@@ -300,6 +300,15 @@ jam_vmo_create:
     ret
     .size jam_vmo_create, . - jam_vmo_create
 
+    .globl jam_vmo_make_exec_verified
+    .type jam_vmo_make_exec_verified, @function
+jam_vmo_make_exec_verified:
+    mov %rcx, %r10
+    mov $SYS_vmo_make_exec_verified, %eax
+    syscall
+    ret
+    .size jam_vmo_make_exec_verified, . - jam_vmo_make_exec_verified
+
     .globl jam_vmar_map
     .type jam_vmar_map, @function
 jam_vmar_map:
