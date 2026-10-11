@@ -4,9 +4,9 @@
  * (tools/extfix/: how, in make.sh; the images gzipped, unpacked by make
  * into build/extfix).
  *
- *     extcheck <fixtures dir> <images dir> [--fuzz N] [--seed S]
+ *     extcheck <fixtures dir> <images dir> [--fuzz N] [--storm N] [--seed S]
  *
- * Five parts, each failing the run (exit 1, a line saying what) at the
+ * Six parts, each failing the run (exit 1, a line saying what) at the
  * first mistake:
  *   - the CRCs against their standard check values;
  *   - each fixture against its listing (<name>.list, made by
@@ -27,6 +27,10 @@
  *   - every feature bit set alone on Jam OS's own fixture: refused,
  *     read-only or written, as docs/M13.6-PLAN.md's table says (the table
  *     here is a copy written from the plan, not the library's);
+ *   - the names' writes and mkfs (extnames.c, checked by extinv.c's
+ *     invariants): directories, links, rename, orphans, the directory
+ *     hash, volumes made and compared with Linux's, a storm of N random
+ *     steps against a model (default 3000);
  *   - the fuzz pass (extmutate.c): N runs (default 3000) of mutated
  *     images, from --seed. A run neither crashes (ASan, UBSan), reads
  *     outside the image, reads without end, nor returns with a buffer
@@ -40,6 +44,7 @@
 #include "extcheck.h"
 
 #define FUZZ_DEFAULT 3000
+#define STORM_DEFAULT 3000
 #define MAX_LINES    4096
 #define PATH_MAX_    4096
 
@@ -580,12 +585,14 @@ static void check_crcs(void)
 
 int main(int argc, char **argv)
 {
-    unsigned nfuzz = FUZZ_DEFAULT;
+    unsigned nfuzz = FUZZ_DEFAULT, nstorm = STORM_DEFAULT;
     if (argc < 3)
-        fail("usage: extcheck <fixtures dir> <images dir> [--fuzz N] [--seed S]");
+        fail("usage: extcheck <fixtures dir> <images dir> [--fuzz N] [--storm N] [--seed S]");
     for (int i = 3; i + 1 < argc; i += 2) {
         if (!strcmp(argv[i], "--fuzz"))
             nfuzz = (unsigned)strtoul(argv[i + 1], NULL, 0);
+        else if (!strcmp(argv[i], "--storm"))
+            nstorm = (unsigned)strtoul(argv[i + 1], NULL, 0);
         else if (!strcmp(argv[i], "--seed"))
             rng = strtoull(argv[i + 1], NULL, 0) | 1;
         else
@@ -602,9 +609,11 @@ int main(int argc, char **argv)
         check_roundtrip(&imgs[i]);
     }
     check_features(&imgs[0]);
+    check_names(imgs, N, nstorm);
     for (unsigned i = 0; i < N; i++)
         fuzz(&imgs[i], nfuzz / N + (i < nfuzz % N));
-    printf("extcheck: %u fixtures, broken checksums, the feature table, %u fuzzed images: ok\n",
+    printf("extcheck: %u fixtures, broken checksums, the feature table, names and mkfs, "
+           "%u fuzzed images: ok\n",
            (unsigned)N, nfuzz);
     return 0;
 }
