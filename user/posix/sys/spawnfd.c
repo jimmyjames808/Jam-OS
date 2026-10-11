@@ -13,10 +13,11 @@
  *
  * Export asks each description what a child gets (ops->give, B1's
  * fd.h): new handles of the child's own (duplicates, or a file's fresh
- * open), so ours are never touched. A description in two slots (a dup2)
- * is given twice: two descriptions in the child, not one shared (the
- * hand-over has no way to say "the same"; offsets are per process anyway,
- * question 5).
+ * open), so ours are never touched (but a socket's, which move: sock.h).
+ * A description in two slots (a dup2) is given once, at the first, and
+ * the other is a POSIXFDS_DUP of it: the child shares one description, as
+ * dup2 makes it (a socket at 0 and 1, inetd's way, needs it: it can be
+ * given only once).
  *
  * Everything here is the spawning thread's own (malloc'd per spawn): no
  * lock. */
@@ -203,14 +204,41 @@ long spawnfd_apply(struct spawnfd *t, const struct jam_spawn_op *ops, unsigned n
     return 0;
 }
 
+/* The descriptor an earlier record of this hand-over gave d as, or -1. */
+static int32_t exported_as(struct spawnfd *t, const struct fd_desc *d)
+{
+    for (unsigned i = 0; i < t->nexported; i++) {
+        const struct spawnfd_slot *s = find(t, t->desc[i].fd);
+        if (s && s->desc == d && t->desc[i].kind != POSIXFDS_DUP)
+            return t->desc[i].fd;
+    }
+    return -1;
+}
+
+/* A POSIXFDS_DUP record for a description given already as descriptor
+ * first: the child shares it, as dup2 made it here. 0 or -ENOMEM. */
+static long dup_of(struct fd_given *g, int32_t first)
+{
+    uint32_t *data = malloc(sizeof(*data));
+    if (!data)
+        return -ENOMEM;
+    *data = (uint32_t)first;
+    *g = (struct fd_given){ .kind = POSIXFDS_DUP, .data = data, .data_len = sizeof(*data) };
+    return 0;
+}
+
 /* Slot s given to the child as the next descriptor: 0, -ENOTSUP (its
- * kind is left out), or -errno. */
+ * kind is left out), or -errno. A description in two slots is given once,
+ * and the later slot is a POSIXFDS_DUP of the first. */
 static long export_one(struct spawnfd *t, const struct spawnfd_slot *s)
 {
     unsigned i = t->nexported;
     struct fd_given *g = &t->given[i];
     memset(g, 0, sizeof(*g));
-    long e = s->desc->ops->give ? s->desc->ops->give(s->desc, g) : -ENOTSUP;
+    int32_t first = exported_as(t, s->desc);
+    long e = first >= 0          ? dup_of(g, first)
+             : s->desc->ops->give ? s->desc->ops->give(s->desc, g)
+                                  : -ENOTSUP;
     if (e) {
         fd_given_drop(g);
         return e;
