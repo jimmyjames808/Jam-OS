@@ -448,6 +448,7 @@ static bool minimised(struct ct_comp *p, struct vc *x, uint32_t v)
     CHECK(ack_commit(x, &t, serial, 0));
     ct_clear(&x->k);
     CHECK_ST(jwl_xdg_toplevel_set_minimized(x->k.c, t.top), OK);
+    CHECK_ST(jwl_conn_flush(x->k.c), OK);
     CHECK(pixel_is(p, SX + SIDE / 2, SY + SIDE / 2, RED, false));   /* gone from the screen */
     serial = configured(x, &t, &top);
     if (v >= 6) {
@@ -660,11 +661,15 @@ static bool deco_bad_case(unsigned i, struct vc *x, struct vt *t, unsigned *name
     case 4:   /* the toplevel destroyed before its decoration object */
         CHECK(decoration(x, t, SERVER_SIDE));
         return jwl_xdg_toplevel_destroy(c, t->top) == OK;
-    default:   /* a decoration for an object that isn't a toplevel */
+    default: {   /* a decoration for an object that isn't a toplevel (the stub would
+                  * refuse to send it: the words by hand, in a batch of their own) */
         *named = B_MANAGER;
-        t->deco = ct_new(&x->k, &jwl_zxdg_toplevel_decoration_v1_interface, 1);
-        return jwl_zxdg_decoration_manager_v1_get_toplevel_decoration(c, x->decos, t->deco,
-                                                                      t->xs) == OK;
+        CHECK_ST(jwl_conn_flush(c), OK);
+        uint32_t id = ct_new(&x->k, &jwl_zxdg_toplevel_decoration_v1_interface, 1);
+        uint32_t op = JWL_ZXDG_DECORATION_MANAGER_V1_REQ_GET_TOPLEVEL_DECORATION;
+        const uint32_t b[] = { JWL_MAGIC, 0, 0, 0, x->decos, 16u << 16 | op, id, t->xs };
+        return id && jam_channel_write(c->ch, b, sizeof(b), NULL, 0) == OK;
+    }
     }
 }
 
