@@ -11,7 +11,12 @@
  * Children. posix_spawn puts each child here (lx_child_add): its process
  * handle, its signal channel (our end: kill's way to it), pid, group and
  * session, and a serial number that keys its binding on the signal
- * thread's port (sig.h's sig_port): SIG_TERMINATED, PORT_BIND_ONCE. The
+ * thread's port (sig.h's sig_port): SIG_TERMINATED, PORT_BIND_ONCE. A
+ * session of init's (pty.c's jamos_session_open) is a child too
+ * (lx_session_add): its shell's process, which we may wait on and inspect
+ * but not kill, and its session_ctl channel in place of a signal channel
+ * (kill's signals go there as session_ctl.signal: SIGHUP, SIGTERM and
+ * SIGKILL hang it up). The
  * signal thread is the port's only reader: it hands each child's packet
  * to lx_child_packet, which marks the child dead (notice), wakes the
  * waits and sends SIGCHLD (sig_child_ended, once per child, whoever
@@ -32,6 +37,7 @@
  * with it held. */
 #include <stdlib.h>
 #include <errno.h>
+#include <idl/session.h>
 #include <signal.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
@@ -44,11 +50,13 @@
 struct child {
     uint64_t key;     /* its port binding's key: a serial, never 0, never reused */
     handle_t proc;    /* its process handle; ours until it is reaped */
-    handle_t sigch;   /* our end of its signal channel (`signal`), or 0 */
+    handle_t sigch;   /* our end of its signal channel (`signal`), or 0; a session's
+                       * session_ctl */
     int32_t  pid;     /* the kernel's pid */
     int32_t  pgid;    /* its process group */
     int32_t  sid;     /* its session */
     bool     dead;    /* its SIG_TERMINATED packet was taken */
+    bool     session; /* one of init's sessions (sigch is its session_ctl) */
 };
 
 static lock_t       lock;
@@ -134,23 +142,43 @@ bool lx_group_exists(int32_t pgid)
     return found;
 }
 
-long lx_child_add(handle_t proc, handle_t sigch, int32_t pid, int32_t pgid, int32_t sid)
+/* c into the table, its end bound to the signal thread's port. */
+static status_t add(struct child c)
 {
     lock_take(&lock);
     status_t st = nkids == CHILD_MAX ? ERR_NO_RESOURCES : OK;
-    uint64_t key = next_key;
+    c.key = next_key;
     if (st == OK)
-        st = jam_port_bind(sig_port(), proc, key, SIG_TERMINATED, PORT_BIND_ONCE);
+        st = jam_port_bind(sig_port(), c.proc, c.key, SIG_TERMINATED, PORT_BIND_ONCE);
     if (st == OK) {
         next_key++;
-        kids[nkids++] = (struct child){ .key = key, .proc = proc, .sigch = sigch, .pid = pid,
-                                        .pgid = pgid, .sid = sid };
+        kids[nkids++] = c;
     }
     lock_give(&lock);
+    return st;
+}
+
+long lx_child_add(handle_t proc, handle_t sigch, int32_t pid, int32_t pgid, int32_t sid)
+{
+    status_t st = add((struct child){ .proc = proc, .sigch = sigch, .pid = pid, .pgid = pgid,
+                                      .sid = sid });
     if (st != OK) {
         jam_process_kill(proc);   /* a child we could never wait for */
         jam_handle_close(proc);
         jam_handle_close(sigch);
+        return st == ERR_NO_MEMORY ? -ENOMEM : -EAGAIN;
+    }
+    return 0;
+}
+
+long lx_session_add(handle_t proc, handle_t ctl, int32_t pid)
+{
+    status_t st = add((struct child){ .proc = proc, .sigch = ctl, .pid = pid, .pgid = pid,
+                                      .sid = pid, .session = true });
+    if (st != OK) {
+        (void)session_ctl_hangup(ctl);   /* a session we could never wait for */
+        jam_handle_close(proc);
+        jam_handle_close(ctl);
         return st == ERR_NO_MEMORY ? -ENOMEM : -EAGAIN;
     }
     return 0;
@@ -210,32 +238,46 @@ void lx_child_packet(const struct port_packet *pkt)
     lock_give(&lock);
 }
 
+/* A signal to one child through h (a duplicate, closed here). */
+static long signal_one(handle_t h, bool session, int signo, int code, int32_t value)
+{
+    long e;
+    if (session) {   /* init's: only a hang-up means anything to it */
+        status_t st = session_ctl_signal(h, (uint8_t)signo);
+        e = st == ERR_NOT_SUPPORTED || st == ERR_BAD_STATE || st == ERR_PEER_CLOSED ? 0
+                                                                                    : lx_err(st);
+    } else {
+        e = signo == SIGKILL ? lx_err(jam_process_kill(h)) : sig_channel_send(h, signo, code, value);
+    }
+    jam_handle_close(h);
+    return e;
+}
+
 long lx_child_signal(int32_t pid, int32_t pgid, int signo, int code, int32_t value)
 {
     lock_take(&lock);
     unsigned n = 0, matched = 0;
-    handle_t *hs = malloc(sizeof(handle_t) * (nkids ? nkids : 1));
-    for (unsigned i = 0; hs && i < nkids; i++) {
+    struct { handle_t h; bool session; } *to = malloc(sizeof(*to) * (nkids ? nkids : 1));
+    for (unsigned i = 0; to && i < nkids; i++) {
         struct child *c = &kids[i];
         if ((pid > 0 && c->pid != pid) || (pgid > 0 && c->pgid != pgid))
             continue;
         matched++;
-        handle_t h = signo == SIGKILL ? c->proc : c->sigch;
-        if (!c->dead && signo && h && jam_handle_duplicate(h, RIGHT_SAME, &hs[n]) == OK)
+        handle_t h = signo == SIGKILL && !c->session ? c->proc : c->sigch;
+        to[n].session = c->session;
+        if (!c->dead && signo && h && jam_handle_duplicate(h, RIGHT_SAME, &to[n].h) == OK)
             n++;
     }
     lock_give(&lock);
-    if (!hs)
+    if (!to)
         return -ENOMEM;
     long r = 0;
     for (unsigned i = 0; i < n; i++) {
-        long e = signo == SIGKILL ? lx_err(jam_process_kill(hs[i]))
-                                  : sig_channel_send(hs[i], signo, code, value);
+        long e = signal_one(to[i].h, to[i].session, signo, code, value);
         if (e && !r)
             r = e;
-        jam_handle_close(hs[i]);
     }
-    free(hs);
+    free(to);
     return r ? r : (long)matched;
 }
 

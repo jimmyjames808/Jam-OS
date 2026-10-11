@@ -12,6 +12,12 @@
 /* A terminal of the console behind client channel con (console.open_tty;
  * con stays the caller's): 0 and *out (one reference), or -errno. */
 long tty_open(handle_t con, uint32_t status, struct fd_desc **out);
+/* The same for pseudo-terminal pty's slave (pty.c; generation gen: its
+ * TIOCSWINSZ is pty_resize's), named /dev/pts/<pty>; it becomes the
+ * process's terminal only if may_ctty (an open without O_NOCTTY) and the
+ * process has none. */
+long tty_open_pty(handle_t con, uint32_t status, int pty, uint32_t gen, bool may_ctty,
+                  struct fd_desc **out);
 
 /* No hand-over, and the starter gave a console channel (SR_CONSOLE): its
  * terminal at 0 and 2, and at 1 too unless the starter gave SR_STDOUT

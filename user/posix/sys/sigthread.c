@@ -6,7 +6,10 @@
  *   - the children's ends (proc.c binds each child to this port; their
  *     packets go to lx_child_packet, which calls sig_child_ended: SIGCHLD);
  *   - the process's terminal's events (tty.h): a resize is SIGWINCH, ISIG's
- *     keys with no shell below are SIGINT and SIGQUIT;
+ *     keys with no shell below are SIGINT and SIGQUIT; and its hang-up
+ *     (the console let go of it: the terminal's window closed, a session's
+ *     or a pseudo-terminal's master closed, the console gone) is SIGHUP,
+ *     once, as Linux's hang-up of a controlling terminal;
  *   - the timers (sigtimer.c): SIGALRM and the POSIX timers' signals.
  * Each signal is sent to the process (signal.c's sig_send_process: its
  * default action at once, or routed to a thread). While execve waits for
@@ -28,6 +31,7 @@
 #define KEY_CHANNEL  (SIG_KEY_OURS | 1)          /* the starter's signal channel */
 #define KEY_TTY      (SIG_KEY_OURS | 2)          /* the terminal's events */
 #define KEY_WAKE     (SIG_KEY_OURS | 3)          /* look for a terminal again */
+#define KEY_HUP      (SIG_KEY_OURS | 4)          /* the terminal has hung up */
 #define KEY_TIMER    (SIG_KEY_OURS | (1ull << 32))   /* | the timer's index */
 #define SEND_WAIT_NS NS_PER_S                    /* how long a send waits for room */
 
@@ -109,7 +113,16 @@ static void take_tty(void)
         }
 }
 
-/* Listen to the process's terminal, once it has one. */
+/* The terminal hung up: what it sent before, then SIGHUP. */
+static void hung_up(void)
+{
+    take_tty();
+    struct sig_info si = { .signo = SIGHUP, .code = SI_KERNEL };
+    arrived(&si);
+}
+
+/* Listen to the process's terminal, once it has one: its events, and its
+ * hang-up (a binding of its own, ONCE: the peer stays closed). */
 static void bind_tty(void)
 {
     if (tty)
@@ -121,6 +134,10 @@ static void bind_tty(void)
     if (h && jam_port_bind(port, h, KEY_TTY, SIG_READABLE, PORT_BIND_PERSISTENT) == OK) {
         tty = d;   /* kept for good: the process's terminal is held for its life anyway */
         take_tty();   /* what came before the binding */
+        if (jam_port_bind(port, h, KEY_HUP, SIG_PEER_CLOSED, PORT_BIND_ONCE) != OK) {
+            static const char why[] = "posix: signals: no SIGHUP from the terminal\n";
+            (void)jam_debug_write(why, sizeof(why) - 1);   /* the log: nothing else to do */
+        }
         return;
     }
     fd_put(d);
@@ -160,6 +177,8 @@ static void on_packet(const struct port_packet *p)
         take_channel();
     else if (p->key == KEY_TTY)
         take_tty();
+    else if (p->key == KEY_HUP)
+        hung_up();
     else if (p->key == KEY_WAKE)
         bind_tty();
     else if ((p->key & KEY_TIMER) == KEY_TIMER)
