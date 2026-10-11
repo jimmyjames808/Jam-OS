@@ -167,10 +167,10 @@ static int by_hand(struct jwl_client *c, unsigned frames)
 void wl_print_info(const struct jwl_client_info *in)
 {
     printf("wltest: connected: wl_compositor %u, wl_shm %u (formats %#x), wl_output %u "
-           "(%dx%d at %d mHz), wl_seat %u, xdg_wm_base %u\n",
+           "(%dx%d at %d mHz), wl_seat %u, xdg_wm_base %u, zxdg_decoration_manager_v1 %u\n",
            in->compositor_version, in->shm_version, in->shm_formats, in->output_version,
            in->output_width, in->output_height, in->output_refresh, in->seat_version,
-           in->wm_base_version);
+           in->wm_base_version, in->decoration_version);
 }
 
 /* A decimal number of at most 6 digits; 0 for anything else. */

@@ -6,6 +6,9 @@
  *              which the compositor maps when the pool is made;
  *   window     with xdg_wm_base: a window, its configure, frames drawn
  *              and answered by frame callbacks, one after the other;
+ *   decoration with zxdg_decoration_manager_v1: the window asked for the
+ *              compositor's title bar (libjwl does) and was told
+ *              server_side, again after a reconnect;
  *   surface    without it (the compositor before its xdg-shell): a
  *              surface of our own, the two buffers attached by turns,
  *              each commit's frame callback answered, the buffer a commit
@@ -18,6 +21,7 @@
 #define CHECK_PROG "wltest"
 #define CHECK_CUR  step
 #include <check.h>
+#include <jwl/xdg_decoration_unstable_v1.h>
 #include <jwl_client.h>
 #include <os.h>
 #include "wltest.h"
@@ -109,6 +113,20 @@ static bool surface_frames(struct jwl_client *c, struct pixels *px, unsigned fra
     return true;
 }
 
+/* w's decorations are the compositor's, when it offers the choice. */
+static bool decorated(struct jwl_client *c, const struct jwl_window *w)
+{
+    step = "decoration";
+    uint32_t v = jwl_client_info(c)->decoration_version;
+    if (!v) {
+        printf("wltest: decoration: no zxdg_decoration_manager_v1\n");
+        return true;
+    }
+    CHECK_EQ(jwl_window_decoration(w), JWL_ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+    printf("wltest: decoration: server-side (zxdg_decoration_manager_v1 %u)\n", v);
+    return true;
+}
+
 static bool window_frames(struct jwl_client *c, unsigned frames, struct jwl_window **w)
 {
     step = "window";
@@ -118,6 +136,8 @@ static bool window_frames(struct jwl_client *c, unsigned frames, struct jwl_wind
     if (!*w) {
         CHECK_ST(jwl_window_create(c, &wc, w), OK);
         CHECK(wl_wait_event(c, JWL_EV_CONFIGURE, now() + STEP_WAIT, &ev));
+        CHECK(decorated(c, *w));
+        step = "window";
     }
     for (unsigned i = 0; i < frames; i++) {
         struct jwl_frame fr;
@@ -149,6 +169,7 @@ static bool again(struct jwl_client *c, struct comp_child *k, struct pixels *px,
     if (*w) {
         CHECK(wl_wait_event(c, JWL_EV_CONFIGURE, now() + STEP_WAIT, &ev));
         CHECK(ev.configure.rebuilt);
+        CHECK(decorated(c, *w));   /* asked again on the new connection */
         return window_frames(c, 2, w);
     }
     return surface_frames(c, px, 2);
