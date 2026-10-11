@@ -1,0 +1,17 @@
+# posixtest, every default section, run from the shell. The init run gives it
+# every service and the null device as descriptor 0; from the shell its
+# descriptor 0 is the terminal and its namespace has only what its list asks
+# for (the mounts, no /svc). The checks that assumed init's run (epoll refuses
+# the null device: opened by the test itself now; /svc is a directory: skipped
+# with a printed reason) failed here on the real PC.
+#   QEMU_INPUT=tools/shell-tests/posix-run.txt tools/qemu-test.sh <dir> posix-run shell
+wait 120 Jam OS shell
+wait {prompt}
+send run posixtest
+wait 600 posixtest: files: the /svc row skipped: no /svc in this namespace
+wait 20 posixtest: files: stat of /svc skipped: no /svc in this namespace
+wait 600 posixtest: PASS
+wait 20 run: bin/posixtest exited with code 0
+wait {prompt}
+send reboot -f
+wait reboot: resetting

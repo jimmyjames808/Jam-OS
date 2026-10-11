@@ -237,7 +237,8 @@ static void stats(void)
     CHECK(stat("/boot/init.cfg", &cfg) == 0 && (cfg.st_mode & 07777) == 0444);
     CHECK(stat("/boot", &boot) == 0 && S_ISDIR(boot.st_mode) && boot.st_dev != a.st_dev);
     CHECK(stat("/", &root) == 0 && S_ISDIR(root.st_mode));
-    CHECK(stat("/svc", &root) == 0 && S_ISDIR(root.st_mode));
+    if (pt_have_svc("stat of /svc"))
+        CHECK(stat("/svc", &root) == 0 && S_ISDIR(root.st_mode));
     struct statvfs v;
     CHECK(statvfs("/boot", &v) == 0 && (v.f_flag & ST_RDONLY));
     CHECK(statvfs(PT_DIR, &v) == 0 && !(v.f_flag & ST_RDONLY) && v.f_bsize == 4096);

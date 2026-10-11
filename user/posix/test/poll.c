@@ -480,7 +480,12 @@ static void check_epoll_modes(int ep)
     close(sp[0]);
     close(sp[1]);
     ev.events = EPOLLIN;
-    CHECK(epoll_ctl(ep, EPOLL_CTL_ADD, 0, &ev) == -1 && errno == EPERM);   /* the null device */
+    /* The null device, opened here: descriptor 0 is it only in init's run (from the shell it is
+     * the terminal, which epoll takes). */
+    int nul = open("/dev/null", O_RDWR);
+    CHECK(nul >= 0);
+    CHECK(epoll_ctl(ep, EPOLL_CTL_ADD, nul, &ev) == -1 && errno == EPERM);
+    close(nul);
     CHECK(epoll_ctl(ep, EPOLL_CTL_ADD, ep, &ev) == -1 && errno == EINVAL);
     ev.events = 1u << 20;
     CHECK(pipe2(p, 0) == 0);

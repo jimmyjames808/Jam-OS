@@ -146,6 +146,19 @@ static long call(const struct row *r)
     return -2;
 }
 
+/* Does this namespace have a /svc? init's run gives posixtest every service; a program run
+ * from the shell gets the ones its list asks for (posixtest's asks for mounts only), and with
+ * none there is no /svc at all. Then the check that needs it says so and is skipped. */
+bool pt_have_svc(const char *what)
+{
+    struct stat st;
+    if (stat("/svc", &st) == 0 || errno != ENOENT)
+        return true;   /* (any other failure is the check's to report) */
+    printf("posixtest: files: %s skipped: no /svc in this namespace (run from the shell, a "
+           "program gets only the services its list asks for)\n", what);
+    return false;
+}
+
 static void errno_table(void)
 {
     memset(longname, 'n', sizeof(longname) - 1);
@@ -153,6 +166,8 @@ static void errno_table(void)
     memset(longpath, 'p', sizeof(longpath) - 1);
     longpath[0] = '/';
     for (unsigned i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+        if (!strcmp(rows[i].a, "/svc") && !pt_have_svc("the /svc row"))
+            continue;
         errno = 0;
         long got = call(&rows[i]);
         int e = got ? errno : 0;
