@@ -50,8 +50,10 @@
  *             hands it to nobody, update.c's stick write alone uses it)
  *             and a new DISKS channel (VOLUMES_SR_DISKS; its client end
  *             to devmgr), a duplicate of /svc/notify's channel (the
- *             sticks' notices), and the words "nospare" and
- *             "bootdisk=0x<id>". Its mounts (/data, /esp, /usbN) are
+ *             sticks' notices), the root with RIGHT_ROOT_PAGER alone
+ *             (SR_RESOURCE: it makes each mount's pager), and the words
+ *             "nospare", "bootdisk=0x<id>" and "pagerpages=<n>" (1/16 of
+ *             the memory: a pager's budget). Its mounts (/data, /esp, /usbN) are
  *             followed from then on (mounts.c)
  *   mixer     bin/mixer, once devmgr runs: a duplicate of each HD Audio
  *             controller's device channel (SR_DEVMGR_DEVICE, one handle
@@ -423,15 +425,29 @@ static status_t start_volumes(void)
                 jam_handle_close(left[k]);
         return st;
     }
-    const char *argv[3] = { svcs[VOLUMES].path };
+    /* Each mount's pager may hold 1/16 of the memory (volumes keeps its
+     * default if the figure is unknown). */
+    char budget[32] = "";
+    struct sys_info si;
+    if (jam_sys_info(root, &si) == OK && si.mem_total_pages >= 16)
+        snprintf(budget, sizeof(budget), "pagerpages=%lu",
+                 (unsigned long)(si.mem_total_pages / 16));
+    const char *argv[4] = { svcs[VOLUMES].path };
     int argc = 1;
     if (init_nospare)
         argv[argc++] = "nospare";   /* no warm spare fat either */
     if (init_bootdisk)
         argv[argc++] = init_bootdisk;
-    struct spawn_handle x[4] = { { VOLUMES_SR_CTL, b }, { VOLUMES_SR_ESP, eb },
+    if (budget[0])
+        argv[argc++] = budget;
+    struct spawn_handle x[5] = { { VOLUMES_SR_CTL, b }, { VOLUMES_SR_ESP, eb },
                                  { VOLUMES_SR_DISKS, ds } };
     unsigned nx = 3;
+    /* The pager power alone: volumes makes each mount's pager from it. */
+    x[nx] = (struct spawn_handle){ SR_RESOURCE,
+                                  services_root_with(RIGHTS_BASIC | RIGHT_ROOT_PAGER) };
+    if (x[nx].h)
+        nx++;
     /* Without it (no compositor) a stick's news is the console's notices alone. */
     x[nx] = (struct spawn_handle){ VOLUMES_SR_NOTIFY, comp_notify_client() };
     if (x[nx].h)
