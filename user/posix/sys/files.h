@@ -185,6 +185,10 @@ long proc_stat(const struct path *p, bool follow, struct stat *st);
 /* readlink of such a path: the link's bytes copied (at most size, no
  * NUL), -EINVAL for a directory, -ENOENT for anything not there. */
 long proc_readlink(const struct path *p, char *buf, size_t size);
+/* The program's own file, absolute ("/boot/bin/x" for a boot program),
+ * as /proc/self/exe names it; NULL if it can't be named. The first call
+ * finds it (procfs.c says how), the answer is kept for the process. */
+const char *proc_exe(void);
 
 /* ---- dir.c ------------------------------------------------------------------------ */
 

@@ -242,8 +242,7 @@ static bool from_scan(const struct bootfs_view *fs)
     return false;
 }
 
-/* The program's file, or NULL (not found, kept so). */
-static const char *exe(void)
+const char *proc_exe(void)
 {
     lock_take(&exe_lock);
     if (!exe_state) {
@@ -415,7 +414,7 @@ long proc_stat(const struct path *p, bool follow, struct stat *st)
         node_stat(a.node == N_SELF ? N_SELFLINK : a.node, a.fd, st);
         return 0;
     }
-    const char *e = a.node == N_EXE ? exe() : NULL;
+    const char *e = a.node == N_EXE ? proc_exe() : NULL;
     if (a.node == N_EXE)
         r = e ? lx_newfstatat(AT_FDCWD, (long)(uintptr_t)e, (long)(uintptr_t)st, 0, 0, 0) : -ENOENT;
     else if (a.node == N_FD)
@@ -453,7 +452,7 @@ long proc_readlink(const struct path *p, char *buf, size_t size)
         return copy_link(pid, buf, size);
     }
     if (a.node == N_EXE) {
-        const char *e = exe();
+        const char *e = proc_exe();
         return e ? copy_link(e, buf, size) : -ENOENT;
     }
     if (a.node != N_FD)
@@ -487,7 +486,7 @@ static long open_exe(const struct path *p, long flags)
         return -ENOTDIR;
     if ((flags & O_ACCMODE) != O_RDONLY || (flags & O_TRUNC))
         return -ETXTBSY;   /* the running program's file: Linux's answer */
-    const char *e = exe();
+    const char *e = proc_exe();
     if (!e)
         return -ENOENT;
     return lx_openat(AT_FDCWD, (long)(uintptr_t)e, flags & ~(long)(O_CREAT | O_NOFOLLOW), 0, 0, 0);
