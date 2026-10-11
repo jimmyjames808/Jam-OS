@@ -559,8 +559,8 @@ struct vmo_pin_args {
 
 /* pager_op's ops. */
 #define PAGER_OP_FAIL       1   /* fail the range's requests with arg (ERR_IO or ERR_OUT_OF_RANGE) */
-#define PAGER_OP_INVALIDATE 2   /* drop the range's present pages (not built yet) */
-#define PAGER_OP_SET_SIZE   3   /* offset is the new size (not built yet) */
+#define PAGER_OP_INVALIDATE 2   /* drop the range's present pages: the next access asks again */
+#define PAGER_OP_SET_SIZE   3   /* offset is the new size: grow, or shrink (past the end: bus error) */
 #define PAGER_OP_DETACH     4   /* cut the key's VMO off for good, or take its PAGER_REQ_GONE */
 
 /* struct pager_request's kinds. */
@@ -574,6 +574,13 @@ struct pager_request {
     uint32_t kind;       /* PAGER_REQ_* */
     uint32_t reserved;   /* 0 */
 };
+
+/* vmo_make_exec_verified (abi/syscalls.def 59): the largest pager VMO it
+ * takes (a program's limit, spawn's from a file), and its table's entry
+ * for each page: the SHA-256 of the page's 4096 bytes (the last page's
+ * zero past the file's end), page 0's at byte 0 of the table. */
+#define VMO_VERIFIED_MAX        (64ull << 20)
+#define VMO_VERIFIED_HASH_BYTES 32u
 
 /* console services (abi/syscalls.def 110-119) --------------------------------- */
 

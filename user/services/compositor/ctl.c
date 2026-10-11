@@ -463,6 +463,7 @@ void ctl_serve(void)
             serve_ctl(&ctls[i]);
     if (note_ready)
         serve_note_svc();
+    deskctl_serve();
     reboot_due();
 }
 

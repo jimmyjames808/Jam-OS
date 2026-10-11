@@ -287,6 +287,36 @@ bool t_hid_leds(void)
     return mock_finish(&m, 0);
 }
 
+/* More lights than hid reads in a few turns (64 each), queued while it
+ * waits for the keyboard to take the first: the last one is lit. DR_INPUT
+ * is bound PERSISTENT, which fires when the channel turns readable, not
+ * while it stays so: hid read one turn for the first light's packet and
+ * one for the second's (the channel was empty while it took the first),
+ * and never the rest, nor any light after them. */
+bool t_hid_leds_storm(void)
+{
+    hcur = "hid_leds_storm";
+    static struct mock m;
+    if (!mock_start(&m, &dev_kbd, 0, true, true))
+        return false;
+    uint8_t l[8];
+    CHECK_EQ(leds(&m, l, 8), 1);   /* dark at start */
+    /* Nobody serves DR_USB meanwhile: the first one's SET_REPORT waits,
+     * and the rest (the same lights: no request) queue behind it. */
+    for (unsigned i = 0; i < 199; i++)
+        CHECK_ST(input_leds(m.input, INPUT_LED_NUM), OK);
+    CHECK_ST(input_leds(m.input, INPUT_LED_CAPS), OK);
+    uint64_t until = now() + 10 * NS_PER_S;
+    while (leds(&m, l, 8) < 3 && now() < until)
+        mock_pump_for(&m, 10 * NS_PER_MS);
+    mock_pump_for(&m, 50 * NS_PER_MS);
+    CHECK_EQ(leds(&m, l, 8), 3);
+    CHECK_EQ(l[1], 0x01);
+    CHECK_EQ(l[2], 0x02);
+    mock_unplug(&m, true, true);
+    return mock_finish(&m, 0);
+}
+
 /* The compositor slow (its queue for this keyboard full: the mock stops
  * reading): hid keeps the events it can't send and sends them, in order,
  * once there is room; no key event is lost (review W6: the old calls gave

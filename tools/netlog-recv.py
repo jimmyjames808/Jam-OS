@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""Receive the PC's log over UDP (docs/M9-PLAN.md, "netlog: the log over
-UDP to the Mac"): bin/netlog sends every boot's log from its first line.
+"""Receive the PC's log over UDP (docs/HISTORY.md, M9): bin/netlog sends every boot's log from its first line.
 
     netlog-recv.py [--port 5021] [--bind ADDR] [--from ADDR] [--quiet] FOLDER
         write one file per boot into FOLDER, print the lines as they come

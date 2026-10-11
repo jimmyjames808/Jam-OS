@@ -191,6 +191,15 @@ KTEST(bootfs_corrupt)
         KT_ASSERT(why != NULL);
     }
 
+    /* One file under two names (mkbootfs stores identical files once) is fine;
+     * the same offset with another size is two files sharing pages. */
+    make_image(img);
+    ent(img, 1)->offset = ent(img, 0)->offset;
+    ent(img, 1)->size = ent(img, 0)->size;
+    KT_EQ(bootfs_validate(img, IMG_SIZE, &why), OK);
+    ent(img, 1)->size = ent(img, 0)->size + 1;
+    KT_EQ(bootfs_validate(img, IMG_SIZE, &why), ERR_INVALID_ARGS);
+
     /* Random damage to the header and entry table, and random truncation:
      * never a fault; anything accepted must really be sound. */
     unsigned accepted = 0;

@@ -224,6 +224,20 @@ typedef struct {
 void     lock_take(lock_t *l);
 void     lock_give(lock_t *l);
 
+/* ports --------------------------------------------------------------------------- */
+
+/* Another turn for h, which a loop stopped reading with messages still
+ * queued (a budget a turn, so one busy channel can't hold up the rest). h
+ * is bound PORT_BIND_PERSISTENT to port with key for mask, and such a
+ * binding queues a packet when h's signals turn to match, not while they
+ * stay so: without another turn no packet would come for what is left,
+ * and the loop would never read h again. A user packet with key is queued,
+ * behind what else waits; if the port takes none (PORT_MAX_USER_PACKETS
+ * queued, or our job's memory), h is bound again instead, which queues a
+ * packet at once while its signals match. OK, or the bind's status: h is
+ * then not watched any more (port_again.c). */
+status_t port_again(handle_t port, handle_t h, uint64_t key, signals_t mask);
+
 /* files ---------------------------------------------------------------------------
  * The namespace: the mount points a program was given, each with its `fs`
  * channel (abi/idl/fs.idl, file.idl), and the services (below: "/svc").
@@ -367,7 +381,7 @@ status_t ns_update(handle_t to, handle_t back, const char *const *grants);
  * user/services/ only (the shell's `notify`) */
 #define SVC_NOTIFY     "notify"
 /* init's sessions: a Jam OS shell on a connection console, a channel per
- * opener (session.idl, docs/M13-PLAN.md section 9; not built yet). It is a
+ * opener (session.idl, docs/M13-PLAN.md section 9; init's sessions.c). It is a
  * whole shell, so only a boot-image service, port or test may ask for it
  * (tools/checkwants.py), and `allow` refuses it for a program on /data. */
 #define SVC_SESSION    "session"

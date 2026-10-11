@@ -447,6 +447,10 @@ const char *sh_why(status_t st);
  * every terminal's shell: `exit` closes it), or 0: none (a shell run by a
  * shell, or one init started without a compositor). */
 extern unsigned sh_term_no;
+/* init's argument "session": this shell is a session's (/svc/session,
+ * user/services/init/sessions.c), on a connection console; `exit` ends it,
+ * and with it the session. */
+extern bool sh_session;
 
 /* ---- the commands (cmd/<name>.c) --------------------------------------------------- */
 

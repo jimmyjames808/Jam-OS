@@ -100,9 +100,10 @@ void splash_event(void)
     if (st == ERR_PEER_CLOSED) {
         played = true;
         close_channel();
-    } else if (ch && st == OK) {   /* more may be queued: the binding fires on a new edge */
-        struct port_packet pkt = { .key = ch_key, .type = PORT_PACKET_USER };
-        (void)jam_port_queue(ch_port, &pkt);
+    } else if (ch && st == OK &&   /* more may be queued: the binding fires on a new edge */
+               port_again(ch_port, ch, ch_key, SIG_READABLE | SIG_PEER_CLOSED) != OK) {
+        played = true;   /* it can't be heard: the shell waits for it no longer */
+        close_channel();
     }
 }
 

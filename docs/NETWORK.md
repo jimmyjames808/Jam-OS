@@ -12,12 +12,13 @@ ways (`fetch` from a web server, `serve` a file in the background), a
 throughput tester (`speed`, with `tools/speed.py` on the Mac), and
 `update`, which runs the Mac's newest build, signed with the owner's key,
 without moving the stick. The design is in
-[ARCHITECTURE.md](../ARCHITECTURE.md#networking); the plans and what each
-stage built are in [M9-PLAN.md](M9-PLAN.md) and
-[M9.5-PLAN.md](M9.5-PLAN.md); the status is in
-[ROADMAP.md](ROADMAP.md) (built and tested in QEMU; pings, names, the
-log to the Mac and `update` have also run on the PC; the PC sign-off is
-still to come).
+[ARCHITECTURE.md](../ARCHITECTURE.md#networking); what each stage built, and
+what the PC taught, is in [HISTORY: M9](HISTORY.md#m9-networking) and
+[M9.5](HISTORY.md#m95-network-streams); the status is in
+[ROADMAP.md](ROADMAP.md). All of it ran on the PC in October 2026 (pings,
+names, a DHCP lease, the log to the Mac, `update` and `update -w`,
+`speed` and `sntp`), and the network has been up in every PC sign-off's
+`soak 10` since, but M9 and M9.5 never had a sign-off of their own.
 
 ## The network's mode
 

@@ -8,7 +8,11 @@ bytes starting on a 4 KiB boundary, and the image padded to a whole number
 of pages (so a page-rounded VMO over any file stays inside the image).
 Names are bootfs paths like "bin/init": relative, '/'-separated, printable
 ASCII, no empty, "." or ".." components, unique, at most 55 bytes.
-Entries are written sorted by name so the image is reproducible."""
+Entries are written sorted by name so the image is reproducible. Files with
+identical contents are stored once: their entries have the same offset and
+size (the multi-call ports, user/ports/sbase, are installed under a name for
+every tool they hold). The kernel's check (kernel/proc/bootfs.c) allows
+exactly that and no other sharing of pages."""
 import struct
 import sys
 
@@ -53,12 +57,14 @@ def main():
 
     names = sorted(files)
     pos = (HEADER.size + ENTRY.size * len(names) + PAGE - 1) // PAGE * PAGE
-    entries, blobs = [], []
+    entries, blobs, placed = [], [], {}
     for name in names:
         data = files[name]
-        entries.append(ENTRY.pack(name.encode(), pos, len(data)))
-        blobs.append((pos, data))
-        pos = (pos + len(data) + PAGE - 1) // PAGE * PAGE
+        if data not in placed:
+            placed[data] = pos
+            blobs.append((pos, data))
+            pos = (pos + len(data) + PAGE - 1) // PAGE * PAGE
+        entries.append(ENTRY.pack(name.encode(), placed[data], len(data)))
 
     image = bytearray(pos)
     image[0:HEADER.size] = HEADER.pack(MAGIC, VERSION, len(names), pos)

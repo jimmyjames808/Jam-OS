@@ -3,7 +3,9 @@
  * (kernel/proc/bootfs.c; tools/mkbootfs.py builds the image).
  *
  * Image format (little-endian): a header, `count` entries, then file data,
- * each file starting on a 4 KiB boundary. */
+ * each file starting on a 4 KiB boundary. Two entries may have the same offset
+ * and size (one file under two names: tools/mkbootfs.py stores identical files
+ * once); no other two files share a page. */
 #pragma once
 
 #include <stdint.h>

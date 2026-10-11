@@ -12,7 +12,7 @@ send devices
 wait devmgr:
 wait {prompt}
 # A reboot (kexec) keeps `net`: the next boot's devmgr has the word too
-# (M9-REVIEW item 3; netprobe-test.sh counts the devmgr lines: two).
+# (M9 review item 3, docs/HISTORY.md; netprobe-test.sh counts the devmgr lines: two).
 send reboot
 wait 120 Jam OS shell
 wait {prompt}

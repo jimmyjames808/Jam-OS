@@ -2,7 +2,9 @@
  * connection (user/services/console/conn.c; docs/M13-PLAN.md, "The
  * terminal layer"). It is bin/console started with the argument "conn"
  * (and, as a window console's, "cols=<n>" and "rows=<n>": the terminal's
- * size until the control channel says another, 80x24 if not given). Its
+ * size until the control channel says another, 80x24 if not given; and
+ * "endidle": the console ends by itself once a shell or a program has
+ * been on it and none is left, its output sent). Its
  * owner (init's session service, a library's pseudo-terminal) starts it
  * with, besides the ADMIN client channels every console has (SR_USER + 0
  * to 7, the owner keeps the client ends and hands a shell its own through

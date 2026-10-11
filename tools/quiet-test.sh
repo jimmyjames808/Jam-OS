@@ -1,5 +1,5 @@
 #!/bin/sh
-# The quiet boot (docs/G1-PLAN.md, the polish track): the first terminal
+# The quiet boot (docs/HISTORY.md, G1): the first terminal
 # starts at the shell's banner and prompt, with no kernel or service log
 # line on its screen, and the log stays in `dmesg`, /data/logs and the
 # serial port. Three plain boots on the compositor (the default), each

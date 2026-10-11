@@ -28,8 +28,9 @@
  * "conn": a connection console (conn.c, <termconn.h>): no screen and no
  * COM1, the programs' output goes out as bytes on a master channel and the
  * keys come in on it; "cols=<n>" and "rows=<n>" (its owner's, from the
- * remote terminal) are its size at the start. Its kernel log stays off
- * unless a client asks (console.show_log), and starts at the log's end.
+ * remote terminal) are its size at the start, and "endidle" ends it once
+ * the last shell or program on it has gone (conn.c). Its kernel log stays
+ * off unless a client asks (console.show_log), and starts at the log's end.
  *
  * Startup handles:
  *   SR_RESOURCE     the root resource with RIGHT_ROOT_KLOG (klog_open) and

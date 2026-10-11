@@ -205,6 +205,12 @@ static int64_t call_vmo_create(const struct syscall_frame *f)
     return sysc_vmo_create(f->args[0], (uint32_t)f->args[1], f->args[2]);
 }
 
+static int64_t call_vmo_make_exec_verified(const struct syscall_frame *f)
+{
+    return sysc_vmo_make_exec_verified((handle_t)f->args[0], (handle_t)f->args[1],
+                                       (handle_t)f->args[2], (uint32_t)f->args[3], f->args[4]);
+}
+
 static int64_t call_vmar_map(const struct syscall_frame *f)
 {
     return sysc_vmar_map((handle_t)f->args[0], (handle_t)f->args[1], f->args[2], f->args[3],
@@ -583,6 +589,7 @@ static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_vmo_decommit] = call_vmo_decommit,
     [SYS_vmo_make_exec] = call_vmo_make_exec,
     [SYS_vmo_create] = call_vmo_create,
+    [SYS_vmo_make_exec_verified] = call_vmo_make_exec_verified,
     [SYS_vmar_map] = call_vmar_map,
     [SYS_vmar_unmap] = call_vmar_unmap,
     [SYS_vmar_protect] = call_vmar_protect,

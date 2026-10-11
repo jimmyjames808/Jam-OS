@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check a FAT32 volume for damage, read-only (docs/M11.6-PLAN.md: the
+"""Check a FAT32 volume for damage, read-only (docs/HISTORY.md, M11.6: the
 kill-storm's checker; tools/fat-storm-test.sh runs it on QEMU's images, the
 owner on the stick after the PC's storm).
 

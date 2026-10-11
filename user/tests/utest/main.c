@@ -41,7 +41,8 @@ JAM_WANTS("svc devmgr\n"
           "svc audio\n"
           "mount * rw\n"
           "right klog\n"
-          "right sysinfo\n");
+          "right sysinfo\n"
+          "svc session\n");
 
 const char *utest_cur;   /* the test running */
 const char *utest_only;  /* "utest only <prefix>": the prefix */
@@ -592,6 +593,7 @@ static const struct {
     { "kexec_refusals", t_kexec_refusals },
     { "root_powers", t_root_powers },
     { "vmo_make_exec", t_vmo_make_exec },
+    { "vmo_make_exec_verified", t_vmo_make_exec_verified },
     { "kept_vmo_refusals", t_kept_vmo_refusals },
     { "kept_vmo_client_and_compositor", t_kept_vmo_client_and_compositor },
     { "bad_pointers", t_bad_pointers },
@@ -615,6 +617,7 @@ static const struct {
     { "reply_wait_second_process", t_reply_wait_second_process },
     { "reply_wait_port", t_reply_wait_port },
     { "reply_wait_refusals", t_reply_wait_refusals },
+    { "port_again", t_port_again },
     { "handles_always_moved", t_handles_always_moved },
     { "channel_no_handles", t_channel_no_handles },
     { "unread_charged_to_writer", t_unread_charged_to_writer },
@@ -681,6 +684,7 @@ static const struct {
     { "disk_fs_restart", t_disk_fs_restart },
     { "disk_own_channel", t_disk_own_channel },
     { "disk_vanishes", t_disk_vanishes },
+    { "disk_answer_storm", t_disk_answer_storm },
     { "disk_list_channel", t_disk_list_channel },
     { "logd_writes_the_log", t_logd_writes_the_log },
     { "logd_without_data", t_logd_without_data },
@@ -1078,6 +1082,7 @@ static const struct {
     { "comp_bad_requests", t_comp_bad_requests },
     { "comp_caps", t_comp_caps },
     { "comp_connections", t_comp_connections },
+    { "comp_connect_storm", t_comp_connect_storm },
     { "comp_client_crash", t_comp_client_crash },
     { "comp_never_reads", t_comp_never_reads },
     { "comp_lost_clients", t_comp_lost_clients },
@@ -1175,6 +1180,7 @@ static const struct {
     { "length_limits", t_length_limits },
     { "replace_consumes", t_replace_consumes },
     { "hid_leds", t_hid_leds },
+    { "hid_leds_storm", t_hid_leds_storm },
     { "hid_queue_full", t_hid_queue_full },
     { "comp_seat_leds", t_comp_seat_leds },
     { "fat_open_moved", t_fat_open_moved },
@@ -1191,6 +1197,17 @@ static const struct {
     { "devmgr_hostile", t_devmgr_hostile },
     { "svc_shared_unread", t_svc_shared_unread },
     { "initctl_hostile", t_initctl_hostile },
+    { "session_shell", t_session_shell },
+    { "session_command", t_session_command },
+    { "session_hangup", t_session_hangup },
+    { "session_limit", t_session_limit },
+    { "session_posix", t_session_posix },
+    { "session_bad_args", t_session_bad_args },
+    { "session_garbage", t_session_garbage },
+    { "session_ctl_first", t_session_ctl_first },
+    { "session_unread", t_session_unread },
+    { "session_opens", t_session_opens },
+    { "session_no_grant", t_session_no_grant },
 };
 
 int main(int argc, char **argv)

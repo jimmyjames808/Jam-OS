@@ -3,7 +3,7 @@
 Status (2026-10-09): a plan, nothing built. Written against main ae859bee,
 with M12's waves C1 and C2 merged, S2a merged and P6a running. **Waiting
 for the owner's answers to the questions below before any agent starts.**
-M13 is part of wave 5 of [PLAN-M11-M12.5.md](PLAN-M11-M12.5.md#wave-5-m125-m127-and-m13-together),
+M13 is part of wave 5 ([ROADMAP.md](ROADMAP.md#now)),
 beside M12.5 (pagers) and M12.7 (NVMe). It becomes **release 0.2.0**
 (AGENTS: "0.2.0 at POSIX").
 
@@ -983,7 +983,7 @@ other but for A1 taking A2's first hand-back.
 | **R3. Kernel review** | Opus | K1 and K2: findings first, then High and Medium fixed with a test each (the standing rule); the interrupt's races and the tid word's timing first | once K1 and K2 are merged (in wave C) |
 | **R1. POSIX layer review** | Opus | A1, A2, B1 to B6, F1 if merged: findings first, then fixes; reads the call layer against musl's expectations (errno values, partial reads and writes, every handle closed on every path), the hand-over message as hostile input | after waves B and C merge |
 | **R2. Terminal, sessions, SSH and shell review** | Opus | T1, T2, X1, X2, S1, S2: who can get a shell (`svc session`, its refusal, sshd's grants), the host key's handling, the line discipline's bounds, the console's two modes; then fixes | after wave D merges |
-| **J. The join** | Sonnet | ARCHITECTURE (a "POSIX" section; the terminal, init's session service, the program's list, the Userland table), a new docs/PORTING.md (how to port a program: the sysroot, jamos-cc, a port's directory, its list, overrides), USING (SSH from the Mac: the key, the fingerprint, `ssh jam@pc`), TESTING (the new scripts), NETWORK (port 22), `third_party/VERSIONS.md`, CODING-GUIDE's tree table, ROADMAP and HISTORY, JAMOS_VERSION 0.2.0 (set at the release, after the PC sign-off), this plan to docs/history | last |
+| **J. The join** | Sonnet | ARCHITECTURE (a "POSIX" section; the terminal, init's session service, the program's list, the Userland table), a new docs/PORTING.md (how to port a program: the sysroot, jamos-cc, a port's directory, its list, overrides), USING (SSH from the Mac: the key, the fingerprint, `ssh jam@pc`), TESTING (the new scripts), NETWORK (port 22), `third_party/VERSIONS.md`, CODING-GUIDE's tree table, ROADMAP and HISTORY, JAMOS_VERSION 0.2.0 (set at the release, after the PC sign-off), this plan deleted once HISTORY.md covers it | last |
 
 ### Order and parallel work
 
@@ -2348,3 +2348,367 @@ the plan left open.
   section `MAP_FIXED` 2,000 times over four pages a thread reads without
   pause, and a `MAP_FIXED` over a foreign mapping refused with nothing
   changed.
+
+## B6 notes
+
+Track B6 (sockets and names) as built, with the choices the plan left
+open. Files: `user/posix/sys/sock.h` (the model, the openers, the locks),
+socket.c (the kind, socket, bind, listen, the drain at exit), sockconn.c
+(connect, accept, shutdown, the names), sockgive.c (a socket handed to a
+child), sockio.c (the bytes), sockwait.c (the one wait), sockopt.c (the
+options), resolve.c (names from `/svc/dns`) and the override of
+`src/network/lookup_name.c`; posixtest's socket.c (no network, every run)
+and sockets.c (the network peer, asked for by name), `tools/posix-net-test.sh`
+and `tools/shell-tests/posix-net.txt`.
+
+**Choices**
+- **Lazy.** `socket` makes only the description; netstack hears of it at
+  bind (a datagram socket), connect, listen or a datagram's first send.
+- **Openers and permissions.** Connections and ephemeral or port-0
+  datagram sockets use `/svc/net`; a fixed port from 1024 to 49151 needs
+  `/svc/net-listen` and one below 1024 `/svc/net-low`, checked at bind
+  (EACCES); `listen` always needs `/svc/net-listen` (EACCES). A program
+  whose list has no `svc net` gets EACCES at bind and connect.
+- **No loopback, one interface.** A bind to anything but INADDR_ANY or the
+  interface's address is EADDRNOTAVAIL; a connect to 127.0.0.0/8
+  ECONNREFUSED (nothing can listen there); a datagram connect netstack
+  refuses ENETUNREACH. A stream socket bound to a port of its own can
+  listen but not connect (EADDRNOTAVAIL): netstack picks a connection's
+  port.
+- **POSIX's defaults (N1's note).** Every connection, made or accepted,
+  gets one `net_stream.set_options` with the socket's options: Nagle's
+  algorithm on (`TCP_NODELAY` off) and keep-alive off unless set. An
+  accepted connection takes its listener's options (not `SO_REUSEADDR`).
+- **Ring sizes.** `SO_SNDBUF`/`SO_RCVBUF` round up to a power of two from
+  4 KiB to 2 MiB and size the rings at connect, listen or a datagram
+  socket's open; `getsockopt` says the rings' real size (not Linux's
+  doubled value).
+- **Closing.** netstack drops what it hasn't taken from the tx ring when a
+  connection's channel closes, so `close` waits up to 10 s (`SO_LINGER`'s
+  time when set; 0: not at all) for netstack to take every byte written,
+  and so does `exit_group` for every connection still open
+  (`sock_exit_drain`, called from thread.c). A signal doesn't end close's
+  wait. Bytes never read are still a reset, as Linux's.
+- **Errors.** A CLOSED connection's error (refused ECONNREFUSED, no
+  answer ETIMEDOUT, reset or netstack gone ECONNRESET, its address gone
+  ENETUNREACH, its own rings broken ECONNABORTED) is said once, by
+  whichever of read, write, connect again or `SO_ERROR` asks first; then
+  reads see 0 and writes EPIPE. A stream socket never connected: send is
+  EPIPE (Linux's, with SIGPIPE), recv ENOTCONN.
+- **Datagrams** go in the ring and the send returns: one netstack refuses
+  (a bad address, no route) is said by the next send (EINVAL,
+  ENETUNREACH), as Linux says an ICMP error on a later call. 1472 bytes at
+  most (EMSGSIZE); no broadcast (`SO_BROADCAST` is kept, netstack refuses).
+- **Flags.** recv takes `MSG_PEEK`, `MSG_DONTWAIT`, `MSG_WAITALL`,
+  `MSG_TRUNC` (datagrams only: on a stream EOPNOTSUPP), `MSG_NOSIGNAL` and
+  `MSG_CMSG_CLOEXEC`; send `MSG_DONTWAIT`, `MSG_NOSIGNAL` and the ignored
+  `MSG_MORE`, `MSG_CONFIRM`, `MSG_EOR`, `MSG_DONTROUTE`. `MSG_OOB` (and
+  `MSG_FASTOPEN`) is EOPNOTSUPP, `MSG_ERRQUEUE` EAGAIN, any other bit
+  EINVAL (fail closed: Linux ignores them). `sendmsg` with ancillary data
+  is EINVAL; `recvmsg` says none. `sendmmsg` and `recvmmsg` are loops;
+  recvmmsg's timeout is EINVAL (not built).
+- **Waits** (sockwait.c): each waiting thread binds the socket's event
+  (its side's bit and `SOCKRING_SIG_STATE`) and channel ONCE on a port of
+  its own and looks again after binding, and the rings' `waits` flags are
+  counted per side, so several threads may wait on one socket (posixtest
+  has one thread send while another sleeps in recv). A signal ends a wait
+  with EINTR; with a socket timeout (`SO_RCVTIMEO`, `SO_SNDTIMEO`, accept's
+  `SO_RCVTIMEO`) it returns `-LX_EINTR_FINAL`, which signal.c's `sig_call`
+  turns into EINTR never restarted (B4's note; a small change there).
+  `connect` is in calls.c's never-restarted list: it goes on, and a
+  second connect says EALREADY, then EISCONN.
+- **poll and epoll.** A connection or datagram socket arms a socket entry;
+  a listener its channel (one accept is always in flight, so readable
+  means a connection waits); a socket with nothing at netstack the
+  process's idle event, its readiness the kind's own (writable; a socket
+  handed away readable and writable, so calls answer ENOTCONN at once). An
+  epoll item is armed at `epoll_ctl`: a socket added before its connect or
+  listen keeps the idle arm, so add it after, or `EPOLL_CTL_MOD` it (re-arming
+  on a change of state is not built).
+- **EPOLLET on sockets** (B5's note): `<netwait.h>`'s edge entries take
+  sockets. An edge socket entry is armed as it is reported, its flags left
+  up, so its next edge is netstack's next signal (a datagram or bytes, room,
+  a change of state); what came between the look and the arming is found
+  by draining to EAGAIN, as epoll(7) asks. utest `netwait_edge` covers it.
+- **poll's socket places stay uncached** (B5's note): a socket's place
+  still goes at the end of each call (two binds, a clear and two unbinds a
+  socket a call). Keeping them needs the rings to outlive every thread's
+  place, and a close can't reach another thread's set; not worth it for
+  M13's users (tinyssh polls a handful). poll.c's `release` now takes the
+  places out before it puts the descriptions: a socket closed by another
+  thread during a poll had its rings unmapped by that last `fd_put` before
+  the place's removal wrote its flag.
+- **A socket handed to a child moves** (sockgive.c): its ring VMO and
+  events can't be duplicated, so `POSIXFDS_SOCKET` carries the channel,
+  the VMO and both events, and its data this side's counts, ends seen and
+  options; `POSIXFDS_LISTENER` the channel and the accept in flight's txid.
+  The parent's description is then SK_GONE (ENOTCONN); a spawn that fails
+  after the give loses the socket; a socket still SK_NEW is left out.
+  spawnfd.c (B3's) now gives a description in two of the child's slots
+  once and the second as `POSIXFDS_DUP`: a socket can move only once (the
+  inetd way, one socket as 0 and 1, needs it), and every kind gets dup2's
+  sharing.
+- **A socket lives as long as the process that made it**: netstack ends
+  an opener's sockets when its channel closes, and every socket is made on
+  the process's kept channel. A child given a connection keeps it only
+  while its parent lives (execve's spawn-wait-exit is fine).
+- **socketpair ends** through the socket calls: send, recv, sendmsg and
+  recvmsg go to pipe.c's read and write; `MSG_DONTWAIT` by a look at the
+  channel first; `MSG_PEEK`, `MSG_TRUNC` and shutdown are EOPNOTSUPP (a
+  channel has no half-close); the names are AF_UNIX with no path.
+- **Names.** The override keeps upstream's null name, numeric addresses
+  and `/etc/hosts`, then asks `/svc/dns` (`__jam_resolve`, glue.h): no
+  search domains, no RFC 6724 sorting (IPv4 first), an AF_INET6-only
+  lookup EAI_NODATA. No such name EAI_NONAME; no answer, no servers yet
+  or too many lookups EAI_AGAIN; the servers failed, or no `svc dns` in
+  the program's list, EAI_FAIL. The lookup is a channel call (about 15 s
+  at most): a signal doesn't end it.
+- **Found, not changed:** `res_query`, `res_send` and getnameinfo's
+  reverse lookups still use musl's own DNS client toward resolv.conf's
+  servers. libc's resolv.conf names none, so they ask 127.0.0.1 and wait
+  out their 10 s before a numeric answer. A follow-up: override
+  `src/network/res_msend.c` to fail at once (the resolver knows A
+  records only).
+
+**Edits outside B6's files**: calls.c and calls.h (B6's block; connect in
+`kind_of`'s never-restarted list), signal.c (`LX_EINTR_FINAL` in
+`sig_call`), fd.c (the two adopters), thread.c (`sock_exit_drain` in
+`lx_exit_group`), poll.c (`release`'s order), spawnfd.c (`POSIXFDS_DUP`),
+epoll.c (its header), `user/lib/netwait.c` and `<netwait.h>` (socket edge
+entries), utest netwait.c, glue.h (`__jam_resolve`), the OVERRIDES list,
+posixtest's main.c, pt.h and list (`svc net listen`, `svc dns`),
+docs/TESTING.md.
+
+**For X2 (tinyssh)**
+- An accept loop on port 22 needs `svc net listen low` (a service's:
+  init's), and hands each connection to tinysshd as descriptors 0 and 1
+  (`posix_spawn_file_actions_adddup2` twice; the listener and the
+  accepted descriptor `FD_CLOEXEC` so they don't go too). The loop must
+  outlive its connections: they end with its opener.
+- Interactive sessions want `TCP_NODELAY` on the accepted socket (POSIX's
+  default is Nagle's algorithm on); set it in the loop before the spawn:
+  options move with the socket.
+- SIGPIPE: a write to a closed connection raises it (tinysshd's own
+  handling decides); `MSG_NOSIGNAL` and `SIG_IGN` work.
+- No `AF_UNIX` sockets: agent forwarding stays off.
+
+## X1 notes
+
+Track X1 (sessions and pseudo-terminals) as built, with the choices the
+plan left open (the safest each time).
+
+- **Ids.** `session` is **45** and `session_ctl` **46** (`abi/idl/session.idl`):
+  the plan's 91 and 92 are devmgr's.
+- **The protocol.** `session.open (u16 cols, u16 rows, str[<=63] term,
+  str[<=4095] command) -> (handle master, handle ctl, handle proc)`: the
+  plan's, plus `proc`, the shell's process with `RIGHT_WAIT`,
+  `RIGHT_INSPECT` and `RIGHT_TRANSFER` only (never `RIGHT_WRITE`, which
+  would let the opener into a process with the shell's authority): its end
+  and exit code are the session's, which is how libc reports a session to
+  `waitpid`. `term` may hold only `[A-Za-z0-9._+-]`, `command` no byte below
+  0x20 nor 0x7f (`ERR_INVALID_ARGS`); a command longer than the shell's
+  240-byte line is `ERR_OUT_OF_RANGE` (nothing cut). `session_ctl`:
+  `resize`, `hangup`, `signal (u8 signo)` (kill(2)'s way: SIGHUP, SIGTERM,
+  SIGKILL hang up; 0 checks; any other `ERR_NOT_SUPPORTED`), and the event
+  `ended (i32 code)` (-1 when the shell was killed).
+- **init** (`user/services/init/sessions.c`, and small hooks: `sessions_init`
+  in services.c's `services_init`, `sessions_event`/`sessions_due` in
+  shell.c's loop, `sessions_tell` from `tell_mounts`, `terms_shell_powers`
+  split out of terms.c's `start_shell`, a refactor commit). A session is
+  bin/console "conn" "endidle" (process name `session-console`, in a job of
+  its own, the root with `RIGHT_ROOT_KLOG` alone) and bin/shell "session"
+  [`TERM=`] [`cmd=`] (`session-shell`, a job of its own, a SHELL client of
+  that console, every terminal shell's powers and init's whole namespace,
+  kept in step as the terminals' shells' is). init closes its ADMIN channel
+  once the shell has its client. Not supervised: a session that ends is
+  over. Openers: a channel each through `svc.connect`, at most 32; at most
+  8 sessions whose shell runs and nobody has hung up, and as many more
+  ending (a 17th slot takes the oldest ending one's place, killing what is
+  left of it). An opener or a control channel that leaves more answers
+  unread than the protocol's bound is cut off (its channel closed; the
+  session goes on): init's loop never waits for a client. A resize is
+  answered at once and passed on with `conn_ctl.resize_send`, one in
+  flight, the newest size winning.
+- **The end.** Closing the master (or `hangup`, or `signal` 1/9/15, which
+  kill the console) hangs up: the console ends, the shell (its console
+  gone) ends with 2. The shell's end sends `ended` with its code; 2 s later
+  (`HUP_GRACE`) init kills the shell's job (what it left in the background;
+  the POSIX programs on the terminal have had the time to act on SIGHUP).
+  The console is not killed after a normal end: with **"endidle"** (a new
+  argument of the connection back end, conn.c) it ends by itself once a
+  shell or a program (a client below ADMIN, or a tty) has been on it and
+  none is left and its output has gone out, so `ssh pc 'cat big'` loses
+  nothing to a slow reader: the master gives every byte, then its peer
+  closes. Without "endidle" a connection console behaves as before.
+- **The shell** (edits outside X1's files, small): "session" (`exit [code]`
+  ends it with that code: `exit` takes an optional code now, 0 to 255; no
+  `initctl.shell_ready`), "TERM=<name>" (exported), "cmd=<line>" (that line
+  alone, no banner or prompt, then the end with `$?`).
+- **SIGHUP on hang-up** is the process's own terminal hanging up, not a
+  `send` by init: the signal thread binds its terminal's `tty` channel for
+  `SIG_PEER_CLOSED` (ONCE) beside its events and raises SIGHUP (`SI_KERNEL`)
+  when the console lets go of it (a session's or a pseudo-terminal's master
+  closed, the terminal window closed, the console gone). init can't reach
+  the programs a session's shell runs (the shell holds their signal
+  channels), and this way every terminal's programs get it, a
+  pseudo-terminal's child too, with no channel to keep. A program whose
+  default it is ends as Linux's would (exit as by SIGHUP).
+- **Pseudo-terminals** (`user/posix/sys/pty.c`, `pty.h`; dev.c's /dev
+  routes there): `/dev/ptmx` starts bin/console "conn" "endidle" in a job
+  under the program's (`pty-console`) and gives a master descriptor (a kind
+  wrapping pipe.c's socketpair end over the master channel: read, write,
+  poll, O_NONBLOCK; a read at the end, and a write after it, is EIO as
+  Linux's master's); `/dev/pts/N` (N the slot, 0 to 7, `PTY_MAX`; the 9th
+  ptmx is ENOSPC, posix_openpt's EAGAIN) is `console.open_tty` on the ADMIN
+  channel libc keeps, so only this process can open it (a child gets the
+  slave as a descriptor). The master's TIOCSWINSZ and the slave's are
+  `conn_ctl.resize` (SIGWINCH on the slave), TIOCGPTN the slot, TIOCSPTLCK
+  accepted (nothing to unlock), grantpt and musl's unmodified openpty
+  work. Closing the master kills its console (its programs: SIGHUP). The
+  slave is named `/dev/pts/N` (tty.c's description has a name: ttyname,
+  stat's major 136); a slave opened with O_NOCTTY never becomes the
+  process's terminal (it did before: every first terminal description).
+- **The terminal's process-group calls** (tty.c): TIOCSCTTY makes a
+  terminal the process's when it has none and leads its session (0 if it
+  already is; EPERM else); TIOCGPGRP, TIOCSPGRP (a group of our session:
+  EPERM else) and TIOCGSID on the process's terminal only (ENOTTY else).
+  The foreground group is libc's bookkeeping on the description, our own
+  group until set: the console knows no groups (its focus is the
+  foreground). TIOCNOTTY stays ENOTTY.
+- **jamos_session_open** (`<jamos/session.h>`): `svc_open(SVC_SESSION)`,
+  `session.open`, the master as a descriptor of the master kind (opened
+  FD_CLOEXEC: its close is the hang-up), TIOCSWINSZ on it is
+  `session_ctl.resize`, and the session a child (proc.c's `lx_session_add`):
+  `waitpid` gives the shell's code, SIGCHLD comes, `kill` sends
+  `session_ctl.signal` (SIGHUP, SIGTERM, SIGKILL hang up; others accepted
+  and nothing done). ENOENT without `/svc/session`, EAGAIN at 8, E2BIG for a
+  long command.
+- **Who may.** `svc session` was already the build's (services, ports,
+  tests: tools/checkwants.py); `allow` now refuses it for a program on
+  /data (sh_allow.c). bin/wantsession (user/tests/) asks for it alone, for
+  the shell test. posixtest's list doesn't ask for it (it would put `/svc`
+  in its namespace from the shell and change posix-run.txt's checks):
+  utest's session_posix starts posixtest's session section with it.
+- **Tests.** utest (session.c, sessbad.c, sessrig.h; skipped where init
+  has no /svc/session, as in the regression run): an interactive session
+  (prompt, echo, TERM and a resize as a POSIX program on it sees them,
+  `exit 7`), commands (output, no banner, the status), hang-ups three ways
+  and SIGHUP reaching a POSIX program's handler, the limit of 8, posixtest's
+  session section, bad arguments, junk on the master, the control channel
+  and an opener's channel, the control channel closed first, answers left
+  unread, 1,000 connects and 1,000 opens closed at once, a namespace
+  without /svc/session. posixtest's pty section (in the regression run
+  too). tools/shell-tests/sessions.txt runs them from the shell, with
+  `allow` refusing wantsession on /data.
+- **For X2.** Use `jamos_session_open` for both channel_forkpty and
+  channel_fork (no pty without a request: `command` is the exec request's
+  line, TERM from the pty request or ""); the master is the channel's
+  descriptor (poll it; EIO is the end), `TIOCSWINSZ` on it for
+  window-change, `waitpid` on the pid for exit-status (SIGCHLD comes; 2
+  means the terminal hung up), `close(master)` or `kill(pid, SIGHUP)` to
+  end it. The shell's own line is at most 240 bytes. sshd's list needs
+  `svc session` (a port: allowed by the build). The output's LF arrives as
+  CR LF whatever the request (the console's rule, as a pty's ONLCR).
+- **Found, not changed.** The console frees a tty whose channel closed
+  without first reading what is left on its data channel (console tty.c's
+  `tty_event` → `ttys_hang_up`): a program that writes and exits at once
+  can lose its last output if the console sees the close first. The pty
+  test waits for the output before closing the slave for that reason.
+
+## P1 notes
+
+Track P1 (the first ports: sbase and Lua) as built, with the choices the
+plan left open. Files: third_party/sbase, third_party/lua (unmodified),
+user/ports/ (ports.mk, sbase/, lua/), tools/shell-tests/ports.txt; small
+edits outside them: the Makefile (one include), tools/mkbootfs.py (identical
+files stored once), kernel/proc/bootfs.c and its ktest (that sharing is
+allowed), tools/sortincludes.py (skips user/ports/*/override/).
+
+- **Sources.** sbase has no releases: the tree of commit c546c3a5 (2026-05-22,
+  master) as `git archive` gives it. Lua is the 5.4.9 tarball whole (the plan
+  said 5.4; lua.org's sha256 matches), plus a LICENSE file made from the text
+  in its doc/readme.html (the tarball has no licence file). Both MIT.
+  VERSIONS.md has the hashes. Both licence texts are in the boot image as
+  `/boot/share/licences/sbase` and `/boot/share/licences/lua` (musl's is not
+  there yet; M13.7 plans the licence directory).
+- **Layout.** `user/ports/ports.mk` has the two macros every port uses
+  (`PORT_PROGRAM`: link with the port's list, strip, pack; `PORT_LISTS`: one
+  `checkwants.py` run over the port's programs; `PORT_OVERRIDES_CHECK`:
+  musl's OVERRIDES check for the port's own `OVERRIDES` file, run before an
+  object is compiled and in `make check` with its self-test) and includes
+  each port's fragment. A port's own directory: `<name>.mk`, `wants-*`,
+  `OVERRIDES` and `override/` when it needs any.
+- **One program per class, not per tool.** A static POSIX program is about
+  250 KB (musl, libjam and the start) whatever it does, so 63 separate sbase
+  tools made the boot image 31.8 MB, right at `update`'s 32 MiB file limit
+  (UPDATE_FILE_MAX). So sbase is built the way upstream's own `sbase-box`
+  is: each tool's `main` renamed `<tool>_main` (`-Dmain=`), a generated table
+  (`user/ports/sbase/mkbox.sh`) that picks one by the basename of argv[0], and
+  one program for each of the three lists below (sbase-plain 393 KB, sbase-ro
+  469 KB, sbase-rw 498 KB). The shell starts a program under its bootfs name
+  (`usr/bin/sort`), so argv[0] names the tool and `usage:` lines say
+  `usr/bin/sort`; `usr/bin/sbase-rw sort file` works too, and a box with no
+  tool names lists its tools. The boot image holds each box once and names it
+  `usr/bin/<tool>` for every tool in it: **mkbootfs stores files of identical
+  contents once** (their entries have the same offset and size), and
+  `bootfs_validate` accepts exactly that sharing (a ktest case: the same
+  offset and size is fine, the same offset with another size is refused).
+  `bootfs-edit.py` rebuilds through mkbootfs, so it keeps the sharing. The
+  boot image went from 13.9 MB (main) to 15.3 MB with 70 sbase tools and Lua.
+- **Lists.** Three, by what a tool touches; each says `mount /boot r` and
+  never `/esp` (the stick's loader and kernel):
+  `wants-plain` (a terminal and pipes: basename dirname echo false true yes
+  seq printf sleep printenv tr uname whoami logname hostname pwd tty date expr
+  cal), `wants-ro` (`/data` and `/usb*` read: cat cmp comm cut du expand fold
+  grep head join ls md5sum nl od paste sha1sum sha256sum sha512sum tail test
+  uniq unexpand wc which cksum cols dc pathchk strings tsort uuencode), and
+  `wants-rw` (`/data` and `/usb*` read and written: cp mv rm rmdir mkdir touch
+  tee split dd tar ed sed (`w`) sort (`-o`) uudecode unlink, and find xargs env
+  time, which start other programs: a child gets its parent's namespace).
+  Lua has `wants` with the same mounts as rw.
+- **Names the shell has.** The shell's command wins by name for: cat cp date
+  echo env false find grep head hostname ls mkdir mv pwd rm seq sha256sum
+  sleep sort tail time touch true uname uniq wc which whoami. sbase's version
+  runs as `run /boot/usr/bin/<name>` (or `run usr/bin/<name>`); the rest
+  (sed tr cut paste nl comm fold od expr basename dirname printf tee tar dd ed
+  xargs cmp ...) run by name through PATH. A program started by a program
+  (`xargs echo`, `find -exec rm`, `env`) has no builtins: it is always the
+  sbase one.
+- **Overrides: 3 for sbase, 0 for Lua** (user/ports/sbase/OVERRIDES, files in
+  override/, checked by the build against upstream's sha256): `find.c`,
+  `time.c` and `xargs.c`, each the upstream file with its one fork + `execvp`
+  made `posix_spawnp`, a failure reported with the status the forked child's
+  `_exit` gave (127 for a missing command, 126 other). `env`, `nohup` and
+  `nice` use `execvp`, which is `execve` here (spawn, wait, exit: Q4), and
+  need none.
+- **Left out.** bc (needs yacc: bc.y), getconf (its header is generated by a
+  script), make (its `posix.c` forks, and it needs a real `/bin/sh`: M15),
+  rev (an upstream bug at this commit: `UTF8_POINT` is the start-byte test and
+  rev.c uses it as the continuation-byte test, so it copies a line unchanged;
+  not built until upstream is fixed), sponge and mktemp (their scratch files
+  are in `/tmp`, which the namespace does not have: ed honours `$TMPDIR`, so
+  `export TMPDIR=/data` makes ed work; sponge hard-codes `/tmp`), chgrp chown
+  chmod mknod mkfifo ln link readlink (FAT has no owners, modes or links;
+  sbase's `cp -p` and `tar` succeed anyway), chroot cron flock logger nice
+  nohup renice setsid sync kill (no meaning here or the shell has its own),
+  tftp (sockets: B6), xinstall, hostname's `-s`, and the hash sums sha224,
+  sha384, sha512-224, sha512-256 (to save size; a name in `SBASE_RO` adds one).
+  cp -p, `touch -t` and `chmod` were tried: `touch -t` is not in sbase, chmod
+  is not built.
+- **Found, not fixed (not P1's files).**
+  1. A POSIX program whose descriptor is a redirected writable file cannot
+     start children: `posix_spawn` gives `EBUSY` (the S1 notes' limit, Q5's
+     (B)). So `find -exec ... > out`, `xargs cmd > out` and `env cmd > out`
+     fail; through a pipe (`| cat > out`) they work, and the test does that.
+  2. The shell has no `/dev/null`: `cmd 2> /dev/null` says `sh: /dev/null: no
+     such file or directory`.
+  3. The namespace has no `/tmp` (ed and sponge above).
+  4. The shell runs a pipeline's stages one after another with the output
+     buffered, so `yes | head -n 2` never ends (S2).
+  5. The first POSIX program after `cd` printed its output after a stray
+     `lua`/space on the prompt line once (the first `lua -e` of ports.txt:
+     `luarun: ...` then ` 42`); not reproduced.
+- **Tests.** `tools/shell-tests/ports.txt` (see TESTING.md): about 40 checks of sbase tools and
+  Lua, each output compared to a file by sbase's `cmp`; hash and status
+  checks. Run on the PC with `QEMU_INPUT=tools/shell-tests/ports.txt
+  QEMU_TIMEOUT=240`, command line `shell`.

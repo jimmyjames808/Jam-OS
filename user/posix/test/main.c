@@ -31,11 +31,15 @@ static const struct {
     { "tty", pt_tty },
     { "files", pt_files },
     { "signal", pt_signal },
+    { "socket", pt_socket },
+    { "pty", pt_pty },
+    { "session", pt_session },
     { "files-many", pt_files_many },
+    { "sockets", pt_sockets },
 };
 
 /* The sections run only when named (long ones). */
-static const char *const asked_only[] = { "files-many" };
+static const char *const asked_only[] = { "files-many", "sockets", "session" };
 
 static bool by_default(const char *name)
 {
@@ -78,6 +82,14 @@ int main(int argc, char **argv)
         return pt_child_files();
     if (argc >= 2 && !strcmp(argv[1], "--child-rofs"))
         return pt_child_rofs();
+    if (argc >= 2 && !strcmp(argv[1], "--child-sock"))
+        return pt_child_sock();
+    if (argc >= 2 && !strcmp(argv[1], "--child-pty"))
+        return pt_child_pty();
+    if (argc >= 2 && !strcmp(argv[1], "--child-winsize"))
+        return pt_child_winsize();
+    if (argc >= 2 && !strcmp(argv[1], "--child-hup"))
+        return pt_child_hup();
     setvbuf(stdout, NULL, _IOLBF, 0);   /* each line out as it is made */
     unsigned n = sizeof(sections) / sizeof(sections[0]);
     for (unsigned i = 0; i < n; i++) {

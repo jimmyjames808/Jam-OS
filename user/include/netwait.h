@@ -35,13 +35,17 @@
  * So a wait costs the packets that came and the entries still pending (the
  * ready ones), never one look at every entry: O(ready), not O(entries).
  *
- * **Edge entries** (NETWAIT_EDGE, handles only: epoll's EPOLLET). An edge
- * entry reported ready is armed instead of staying pending: only a packet,
- * the next rise of one of its signals, brings it back. Its read signals
- * (with its hup ones) and its write signals are bound apart, so a read
- * signal rising is seen while a write signal stays up, and the other way
- * round. A signal that stays up is reported once; it rises again only
- * after it went down (the reader drained the channel).
+ * **Edge entries** (NETWAIT_EDGE: epoll's EPOLLET). An edge entry reported
+ * ready is armed instead of staying pending: only a packet brings it back.
+ * A handle's: the next rise of one of its signals. Its read signals (with
+ * its hup ones) and its write signals are bound apart, so a read signal
+ * rising is seen while a write signal stays up, and the other way round. A
+ * signal that stays up is reported once; it rises again only after it
+ * went down (the reader drained the channel). A socket's: netstack's next
+ * signal (a datagram or bytes put in the rx ring, room made in the tx ring,
+ * a change of state), since the entry is armed with its flags left up as
+ * it is reported; what came between the look and the arming is found by
+ * the reader draining the socket, as epoll(7) asks of EPOLLET.
  *
  * **Waiting outside the set** (netwait_block): a caller that keeps state
  * of its own beside the set (the POSIX layer's bytes already read off a
@@ -122,7 +126,7 @@
 #define NETWAIT_HUP    (1u << 2)   /* readiness only: always reported */
 #define NETWAIT_ERROR  (1u << 3)   /* readiness only: always reported */
 #define NETWAIT_RX_END (1u << 4)   /* readiness only: with NETWAIT_READ */
-#define NETWAIT_EDGE   (1u << 5)   /* interest only, handles only: an edge entry (above) */
+#define NETWAIT_EDGE   (1u << 5)   /* interest only: an edge entry (above) */
 #define NETWAIT_INTEREST (NETWAIT_READ | NETWAIT_WRITE)
 
 struct netwait;   /* a set: netwait_create */
@@ -173,22 +177,22 @@ void     netwait_destroy(struct netwait *w);
 
 /* Add a socket with this interest (NETWAIT_INTEREST bits, 0 for HUP and
  * ERROR only); user comes back with each report. It is looked at by the
- * next wait. *out_id: its id (never 0). ERR_INVALID_ARGS: an unknown
- * interest bit, no rings, rings not attached, tx_need over the tx ring;
- * ERR_BAD_STATE: those rings are in the set already; ERR_NO_RESOURCES: the
- * set is full; a binding's error (ERR_ACCESS_DENIED: a handle without
- * RIGHT_WAIT; ERR_NO_MEMORY: the job's message bytes). */
+ * next wait; interest may add NETWAIT_EDGE. *out_id: its id (never 0).
+ * ERR_INVALID_ARGS: an unknown interest bit, no rings, rings not attached,
+ * tx_need over the tx ring; ERR_BAD_STATE: those rings are in the set
+ * already; ERR_NO_RESOURCES: the set is full; a binding's error
+ * (ERR_ACCESS_DENIED: a handle without RIGHT_WAIT; ERR_NO_MEMORY: the job's
+ * message bytes). */
 status_t netwait_add_sock(struct netwait *w, const struct netwait_sock *s, uint32_t interest,
                           void *user, uint32_t *out_id);
 /* Add a handle (its read, write and hup signals as above); interest may
  * add NETWAIT_EDGE. Errors as netwait_add_sock's, and ERR_INVALID_ARGS for
- * no signals at all. (netwait_add_sock refuses NETWAIT_EDGE with
- * ERR_NOT_SUPPORTED: a socket's edges are not built yet.) */
+ * no signals at all. */
 status_t netwait_add_handle(struct netwait *w, const struct netwait_handle *h,
                             uint32_t interest, void *user, uint32_t *out_id);
 /* A new interest for entry id; it is looked at again by the next wait.
  * ERR_NOT_FOUND: no such entry (removed); ERR_INVALID_ARGS: an unknown bit;
- * ERR_NOT_SUPPORTED: NETWAIT_EDGE for a socket; a handle's binding errors. */
+ * a handle's binding errors. */
 status_t netwait_modify(struct netwait *w, uint32_t id, uint32_t interest);
 /* Take entry id out: its bindings go, the flags the set raised in a
  * socket's rings are lowered (unless netstack is gone), and its late

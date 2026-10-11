@@ -1,5 +1,5 @@
-# The background music player (bin/music, the shell's `music`; docs/history/A2-PLAN.md
-# "Music player"): use tools/music-test.sh (it makes the folder tree on the
+# The background music player (bin/music, the shell's `music`; docs/HISTORY.md,
+# audio A2): use tools/music-test.sh (it makes the folder tree on the
 # stick and a second stick, adds the audio devices and checks the capture).
 # Markers are echoed as mu-""N so the typed line itself never matches.
 #   1. usage, status while stopped, a missing folder, a folder without files

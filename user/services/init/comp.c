@@ -396,6 +396,12 @@ static void note_event(void)
         else
             idl_msg_drop(&m);
     }
+    /* 8 read and maybe more queued (a burst of notices' answers): the
+     * binding fires when the channel turns readable, not while it stays
+     * so, so without another turn no answer, press or end of it would be
+     * read again. Unwatched, it goes: the next notice connects anew. */
+    if (note_ch && port_again(port, note_ch, KEY_COMP, SIG_READABLE | SIG_PEER_CLOSED) != OK)
+        note_closed();
 }
 
 void comp_event(void)
@@ -424,6 +430,9 @@ void comp_event(void)
         if (st == OK)
             wait_layout();
     }
+    /* The same for the ADMIN channel (late answers piling up). */
+    if (admin && port_again(port, admin, KEY_COMP, SIG_READABLE | SIG_PEER_CLOSED) != OK)
+        printf("init: the compositor's answers can't be watched any more\n");
 }
 
 void comp_settings(void)

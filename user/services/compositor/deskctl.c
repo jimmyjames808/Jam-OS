@@ -269,6 +269,7 @@ static struct {
     char title[64], output[48];
     bool want;                     /* a set_master to send once the one out is answered */
     int32_t want_cb;
+    bool more;                     /* a turn stopped with answers maybe left (deskctl_serve) */
 } vol;
 
 static uint32_t pct_of(int32_t cb)
@@ -311,6 +312,7 @@ static void send_master(int32_t cb)
 
 static void volume_event(void)
 {
+    vol.more = false;
     for (unsigned n = 0; vol.ch && n < 16; n++) {   /* bounded: two kinds out at most */
         uint8_t rep[AUDIOCTL_REP_MAX];
         struct idl_msg m;
@@ -354,6 +356,10 @@ static void volume_event(void)
             idl_msg_drop(&m);   /* given up on, or not ours */
         }
     }
+    /* 16 read and maybe more queued (answers to the asks a stalled mixer
+     * left late, all at once): the binding fires when the channel turns
+     * readable, not while it stays so, so the next turn looks itself. */
+    vol.more = vol.ch != HANDLE_INVALID;
 }
 
 bool ctl_volume(uint32_t *percent)
@@ -400,6 +406,7 @@ static struct {
     struct desk_net now;
     struct desk_net said;          /* what the log was last told */
     uint64_t rx, tx, at;           /* the last summary's counts, and when it came */
+    bool more;                     /* a turn stopped with answers maybe left (deskctl_serve) */
 } net;
 
 static void ask_net(bool now_anyway)
@@ -453,6 +460,7 @@ static void take_summary(uint8_t link, uint32_t addr, uint32_t speed, uint64_t r
 
 static void net_event(void)
 {
+    net.more = false;
     for (unsigned n = 0; net.ch && n < 16; n++) {
         uint8_t rep[NETCTL_REP_MAX];
         struct idl_msg m;
@@ -482,6 +490,7 @@ static void net_event(void)
         if (pop.kind == POP_NETWORK)
             pop_refresh(now());
     }
+    net.more = net.ch != HANDLE_INVALID;   /* as the volume's: the next turn looks */
 }
 
 bool ctl_network(struct desk_net *out)
@@ -520,7 +529,17 @@ void deskctl_packet(uint64_t key)
         net_event();
 }
 
+void deskctl_serve(void)
+{
+    if (vol.more)
+        volume_event();
+    if (net.more)
+        net_event();
+}
+
 uint64_t deskctl_deadline(void)
 {
+    if (vol.more || net.more)
+        return 0;   /* answers left from a turn: the next one at once */
     return DEADLINE_NEVER;   /* nothing is due: a request given up on is asked again on demand */
 }

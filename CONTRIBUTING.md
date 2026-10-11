@@ -26,13 +26,26 @@ fix, because the design moves quickly and follows a plan
   read `area: what changed`.
 - Docs change in the same commit as the code that changes the fact they
   state.
-- Outside code goes only in `third_party/`, with its licence, and only
-  under a licence compatible with BSD-2-Clause (no GPL or LGPL).
+- Outside code goes only in `third_party/` (or a port's directory), with
+  its licence. Code inside the kernel, the libraries and every program
+  that isn't on its own must be under a licence compatible with
+  BSD-2-Clause (no GPL or LGPL).
+- GPL-2.0, GPL-3.0 and LGPL code is allowed only in a **separate
+  program**: a driver, a service or a package that is its own process
+  and links only Jam OS's BSD libraries and other code its licence allows
+  (the owner, 2026-10-11, so that Linux drivers can be ported). Such a
+  program is distributed under its own licence; every image or package
+  that ships it ships or links its complete source, with Jam OS's changes;
+  its changed files say so (what changed, and when); and nothing written
+  inside it is copied into Jam OS's BSD code. Its licence is recorded
+  beside it and in the image's list of licences.
 
 ## Licence
 
 Jam OS is under the BSD 2-Clause licence ([LICENSE](LICENSE)). By sending a
-change you agree it is distributed under the same licence.
+change you agree it is distributed under the same licence. A change to a
+separate GPL or LGPL program (above) is distributed under that program's
+licence.
 
 ## Security
 

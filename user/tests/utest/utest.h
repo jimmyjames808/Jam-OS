@@ -92,6 +92,7 @@ bool t_disk_other(void);
 bool t_disk_fs_restart(void);
 bool t_disk_own_channel(void);
 bool t_disk_vanishes(void);
+bool t_disk_answer_storm(void);
 bool t_disk_list_channel(void);   /* volumes.list_channel: voldisks alone */
 
 /* logd.c: bin/logd with the fat service over a RAM disk as its /data. */
@@ -248,6 +249,8 @@ bool t_reply_wait_gone_caller(void);
 bool t_reply_wait_second_process(void);
 bool t_reply_wait_port(void);
 bool t_reply_wait_refusals(void);
+/* portagain.c: port_again, the next turn of a reader that keeps to a budget. */
+bool t_port_again(void);
 bool t_handles_always_moved(void);
 bool t_channel_no_handles(void);
 bool t_unread_charged_to_writer(void);
@@ -334,9 +337,10 @@ bool t_view_etc_names(void);
 bool t_fat_views(void);
 bool t_fat_view_limits(void);
 
-/* rights.c: the root's powers, vmo_make_exec. */
+/* rights.c: the root's powers, vmo_make_exec and _verified. */
 bool t_root_powers(void);
 bool t_vmo_make_exec(void);
+bool t_vmo_make_exec_verified(void);
 #define NS_HELLO "hello from utest\n"   /* what the children expect in <mount>/hello */
 /* text into a new file at path. */
 status_t ns_put(const char *path, const char *text);
@@ -605,6 +609,7 @@ bool t_comp_surface(void);
 bool t_comp_bad_requests(void);
 bool t_comp_caps(void);
 bool t_comp_connections(void);
+bool t_comp_connect_storm(void);
 bool t_comp_client_crash(void);
 bool t_comp_never_reads(void);
 /* Clients lost every way, round after round: nothing stays charged to the compositor. */
@@ -630,6 +635,21 @@ bool t_conwin_pointer(void);
 bool t_conwin_pointer_shape(void);
 bool t_con_hostile_compositor(void);
 /* conconn.c: the console's connection back end (bin/console "conn"). */
+/* session.c, sessbad.c: init's sessions (/svc/session; sessrig.h). Only
+ * a shell-mode init serves them: elsewhere each says it is skipped. */
+bool t_session_shell(void);
+bool t_session_command(void);
+bool t_session_hangup(void);
+bool t_session_limit(void);
+bool t_session_posix(void);
+bool t_session_bad_args(void);
+bool t_session_garbage(void);
+bool t_session_ctl_first(void);
+bool t_session_unread(void);
+bool t_session_opens(void);
+bool t_session_no_grant(void);
+/* "utest session-probe" (sessbad.c). */
+int session_child(int argc, char **argv);
 bool t_con_conn_shell(void);
 bool t_con_conn_log(void);
 bool t_con_conn_hostile(void);
@@ -880,6 +900,7 @@ bool t_replace_consumes(void);
 
 /* M12 P1b: input as events (hid.c, compseat.c). */
 bool t_hid_leds(void);
+bool t_hid_leds_storm(void);
 bool t_hid_queue_full(void);
 bool t_comp_seat_leds(void);
 /* fat.c: an open file is known by its directory entry (P5). */

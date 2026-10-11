@@ -370,10 +370,13 @@ void sup_kept_event(struct sup_kept *k)
      * that writes as fast as we read (the mixer under churn) leaves the
      * queue not empty after our bound: no edge, and it finds the queue
      * full until the next restart took it. So we come back by a packet of
-     * our own, after what else the loop has to do. */
-    if (keeper_drain(&k->keeper)) {
-        struct port_packet p = { .key = k->key, .type = PORT_PACKET_USER };
-        (void)jam_port_queue(k->port, &p);
+     * our own, after what else the loop has to do (port_again: or by the
+     * binding made again, when the port takes no more packets). */
+    if (keeper_drain(&k->keeper) &&
+        port_again(k->port, k->keeper.ch, k->key, SIG_READABLE) != OK) {
+        k->bound = false;
+        SAY("%s's keeper can't listen any more: what it sends waits until its next start",
+            k->name);
     }
 }
 

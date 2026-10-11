@@ -484,6 +484,7 @@ int child_main(int argc, char **argv)
     if (!strncmp(m, "bench-", 6)) return bench_child(argc, argv);
     if (!strncmp(m, "fuzz-", 5))  return fuzz_child(argc, argv);
     if (!strncmp(m, "posix-", 6)) return posixfds_child(argc, argv);
+    if (!strncmp(m, "session-", 8)) return session_child(argc, argv);
     if (!strncmp(m, "svcstate-", 9)) return svcstate_child(argc, argv);
     if (!strncmp(m, "rw-", 3))    return replywait_child(argc, argv);
     if (!strncmp(m, "unread-", 7)) return unread_child(argc, argv);

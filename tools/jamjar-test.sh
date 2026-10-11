@@ -1,5 +1,5 @@
 #!/bin/sh
-# jamjar, the music player's window (docs/history/MUSIC-GUI.md), in QEMU:
+# jamjar, the music player's window (docs/HISTORY.md, audio), in QEMU:
 # a plain boot ("shell") with a usb-kbd and a usb-mouse, an hda-output
 # codec into a WAV file (so the player really plays and its bands are of
 # real sound), and a library made by this script on the stick's data

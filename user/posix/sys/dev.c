@@ -16,8 +16,9 @@
  *       was given; shm_unlink drops the name, and the object lives while
  *       a descriptor or a mapping holds it.
  *   /dev/tty  the process's terminal (tty.c's tty_controlling: its
- *       description shared, as a dup), ENXIO if it has none. /dev/ptmx:
- *       not built yet (ENOENT).
+ *       description shared, as a dup), ENXIO if it has none.
+ *   /dev/ptmx, /dev/pts, /dev/pts/N
+ *       pseudo-terminals: pty.c's.
  *
  * /dev, /dev/fd and /dev/shm stat as directories; listing them is not
  * built. The nodes are static: a description's priv is the node's entry
@@ -29,6 +30,7 @@
 #include <sys/sysmacros.h>
 #include "kinds.h"
 #include "memfd.h"
+#include "pty.h"
 #include "tty.h"
 
 #define SHM_DIR     "/dev/shm/"
@@ -202,6 +204,20 @@ static const struct node *node_named(const char *name)
     return NULL;
 }
 
+/* abs names something under a node that is no directory (/dev/null/x,
+ * /dev/tty/x): ENOTDIR, as on Linux, not ENOENT. */
+static bool under_node(const char *abs)
+{
+    const char *rest = abs + 5;   /* past "/dev/": dev_path's */
+    const char *slash = strchr(rest, '/');
+    char name[16];
+    if (!slash || (size_t)(slash - rest) >= sizeof(name))
+        return false;
+    memcpy(name, rest, (size_t)(slash - rest));
+    name[slash - rest] = '\0';
+    return node_named(name) || !strcmp(name, "tty");
+}
+
 /* A description of node n: nodes[] is never written through it (dev_ops
  * only reads its priv). */
 static struct fd_desc *node_desc(const struct node *n, uint32_t status)
@@ -352,13 +368,15 @@ long dev_open(const char *abs, int flags, mode_t mode)
         return err ? err : shm_open_path(name, flags);
     if (is_dir(abs))
         return (flags & O_ACCMODE) != O_RDONLY ? -EISDIR : -ENOTSUP;   /* no listing */
+    if (pty_path(abs))
+        return pty_open(abs, flags);
     if (!strcmp(abs, "/dev/tty")) {
         struct fd_desc *t = tty_controlling();
         return t ? fd_install(t, 0, flags & O_CLOEXEC) : -ENXIO;
     }
     const struct node *n = node_named(abs + 5);
     if (!n)
-        return (flags & O_CREAT) ? -EACCES : -ENOENT;
+        return under_node(abs) ? -ENOTDIR : (flags & O_CREAT) ? -EACCES : -ENOENT;
     if (flags & O_DIRECTORY)
         return -ENOTDIR;
     if ((flags & O_CREAT) && (flags & O_EXCL))
@@ -413,11 +431,16 @@ long dev_stat(const char *abs, struct stat *st)
     const char *name = shm_name_of(abs, &err);
     if (name)
         return err ? err : shm_stat(name, st);
+    if (pty_path(abs))
+        return pty_stat(abs, st);
     if (fd_node(abs) >= 0)
         return fd_stat(fd_node(abs), st);
     const struct node *n = node_named(abs + 5);
-    if (!n)
-        return !strcmp(abs, "/dev/tty") ? tty_stat_of(st) : -ENOENT;
+    if (!n) {
+        if (!strcmp(abs, "/dev/tty"))
+            return tty_stat_of(st);
+        return under_node(abs) ? -ENOTDIR : -ENOENT;
+    }
     memset(st, 0, sizeof(*st));
     node_stat_of(n, st);
     return 0;

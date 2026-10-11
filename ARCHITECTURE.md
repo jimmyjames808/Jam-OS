@@ -22,14 +22,14 @@ built yet, it says so.
 | Boot | Limine, behind `struct boot_info`; an own UEFI loader later |
 | Kernel | Mechanisms and enforcement only; drivers and services are processes |
 | SMP | From day one |
-| Native API | Capability handles; a POSIX layer (musl) possible later |
-| Process creation | No `fork`, ever; a POSIX layer gets `posix_spawn` |
+| Native API | Capability handles; a POSIX layer on musl (M13, under way: [docs/M13-PLAN.md](docs/M13-PLAN.md)) |
+| Process creation | No `fork` in the kernel, ever; the POSIX layer gets `posix_spawn` (M13.5 emulates `fork` in libc on copy-on-write child VMOs) |
 | Syscall ABI | Unstable until M14; numbers, wrappers and the kernel dispatch table are generated from one table (`abi/syscalls.def`); a call may clobber the vector registers, as a C call does ([The system call ABI](#the-system-call-abi)) |
 | IPC | Async channels + synchronous `channel_call`; ports for multi-wait |
 | Bulk data | Through shared VMOs (rings + offsets), not 64 KiB channel messages |
 | Memory API | VMOs + VMAR handles |
 | Scheduler | Per-CPU run queues, 32 priorities, work stealing |
-| Filesystem | FAT32 only, on USB mass storage; the boot partition (ESP) is read-only to every program; only init writes it, for `update` |
+| Filesystem | FAT32 only, on USB mass storage and (read-only so far) on NVMe partitions; the boot partition (ESP) is read-only to every program; only init writes it, for `update` |
 | Ported code | Limine, FatFs (the FAT32 code, in the `fat` service), dr_mp3 (MP3), pl_mpeg (the boot splash's video), stb_image (album covers), lwIP (netstack's IPv4, ARP, ICMP and UDP); uACPI when power management lands |
 | Executables | Static ELF64 |
 | Program output | A stdout channel in the startup message when the parent gives one (the shell does, for pipes); otherwise the `debug_write` syscall into the kernel log, which the console shows (on a plain boot only while the shell runs that program in the foreground: [Debugging](#debugging)) |
@@ -132,19 +132,21 @@ Every driver and service is a userspace process from the start.
 ## Layers
 
 ```
- Userland: init · shell · apps                                 ring 3
+ Userland: init · shell · apps · POSIX programs                ring 3
  libos runtime (syscalls, malloc, channels, IDL stubs, ELF loader,
-   the file namespace)
+   the file namespace); POSIX layer = musl + libjam (M13, under way)
  ─────────────────────────────────────────────────────────────
  Services (processes): devmgr · volumes · console · serialin · bootfs ·
    fat (one per volume) · logd · mixer · music
    netstack (lwIP) · dhcp · dns · netlog
    later: power
  Drivers (processes): usb-bus (xHCI + hubs) → hid, usb-storage
-   hda (HD Audio) · rtl8125, e1000e (network cards)
+   nvme (read-only so far) · hda (HD Audio)
+   rtl8125, e1000e (network cards)
  ───────────── <jam/driver.h> boundary (handles only) ────────
  Kernel core: objects & handles · channels · ports             ring 0
-   scheduler · VMOs & address spaces · PCI core · IRQ routing
+   scheduler · VMOs & address spaces (pager VMOs: the fault path waits
+   for a user-space pager, M12.5) · PCI core · IRQ routing
    IOMMU (VT-d: DMA and interrupt remapping)
    PMM · VMM · per-CPU · LAPIC/IOAPIC · timers · panic/klog
    later: uACPI
@@ -172,7 +174,7 @@ Every driver and service is a userspace process from the start.
   "main"), IPIs, IOAPIC, serial interrupts, LAPIC timer, AP startup,
   interrupts on, the PCI core and resources; then either the boot-time
   tests (ktest, bench, stress) or userboot → init.
-- **The boot splash** ([docs/history/AS-PLAN.md](docs/history/AS-PLAN.md)): on a plain
+- **The boot splash** ([docs/HISTORY.md, audio and AS](docs/HISTORY.md#audio-a1-a2-as-and-m85-kexec)): on a plain
   boot (without `verbose`, `nosplash`, `nousb` or `soak`) fbcon's first
   act fills the screen with the splash's background and it draws no text
   from then on (quiet: the log still goes to the ring and serial; a panic
@@ -188,7 +190,7 @@ Every driver and service is a userspace process from the start.
   (sent when the shell calls `initctl.shell_ready`), and fades out. No key skips it: what is typed
   meanwhile reaches the shell once it is up (below). `run splash` from the
   shell takes the keys, and there a key skips it.
-- **The desktop** ([docs/G1-PLAN.md](docs/G1-PLAN.md), as built: I1): on
+- **The desktop** ([HISTORY: G1](docs/HISTORY.md#g1-the-desktop)): on
   every plain boot init starts the compositor first, before the console;
   it takes the screen and fills it with the splash's background, and
   every terminal is a window on it. The splash then plays in a
@@ -414,7 +416,7 @@ Every driver and service is a userspace process from the start.
   if they differ); the boot log says if anything differs. The boot word
   `smp=loader` has Limine start them instead (it parks them; `boot_start_cpu`
   releases each), kept for troubleshooting. After a kexec there is no loader: the kernel's
-  startup is the only way. Design and reasons: [M8.5-AP-STARTUP.md](docs/history/M8.5-AP-STARTUP.md).
+  startup is the only way. Design and reasons: [docs/HISTORY.md, M8.5](docs/HISTORY.md#audio-a1-a2-as-and-m85-kexec).
   Loader-reclaimable memory is freed only once every AP is online.
 - Topology per CPU: P-core/E-core from CPUID 1Ah, core/thread ids from
   CPUID 1Fh/0Bh; the report says whether Hyper-Threading is on.
@@ -574,7 +576,9 @@ Every driver and service is a userspace process from the start.
     off and only a function's current `dma_cap` turns it on
     ([Drivers and services](#drivers-and-services)).
   - *Pagers* (160 to 164): a process that supplies the pages of VMOs made
-    from its pager object, for M12.5 ([docs/M12.5-PLAN.md](docs/M12.5-PLAN.md)).
+    from its pager object (M12.5: the object, its VMOs and the fault path
+    are built and tested; no service is a pager yet,
+    [docs/M12.5-PLAN.md](docs/M12.5-PLAN.md)).
 - **The register rule: a system call is a C function call.** The kernel
   keeps every general register but rax, rcx and r11 (the instruction
   itself overwrites rcx and r11), and keeps MXCSR and the x87 control
@@ -811,7 +815,7 @@ port, so while it handles one request every other client waits behind it.
   consoles and the mixer, while it starts them and while it stops
   everything for a reboot; what waits on volumes or devmgr is sent
   without waiting and answered later). The older list is
-  [ARCH-CHECK](docs/history/ARCH-CHECK.md#0-and-8-service-loops-that-wait-on-one-thing-at-a-time);
+  [the pre-M9 batch in docs/HISTORY.md, M8.6](docs/HISTORY.md#m86-cleanup-and-polish);
   the rest move to these tools one at a time. The network's services and
   drivers follow the rule from the start
   ([Networking](#networking), "the service-loop rule, as applied").
@@ -1042,7 +1046,7 @@ Rules for userspace drivers:
 fat and the mixer keep their queues and their state outside their
 process, so a successor carries on where a dead instance stopped and
 their clients never see the death: no error, no lost write, no gap in
-the sound, only a slower answer ([M11.6-PLAN.md](docs/M11.6-PLAN.md)).
+the sound, only a slower answer ([HISTORY: M11.6](docs/HISTORY.md#m116-services-that-outlive-their-process)).
 A service like that keeps three kinds of state apart:
 
 1. **Kernel objects its clients hold the other end of** (a mount's `fs`
@@ -1203,15 +1207,15 @@ copy, 2 vCPUs on a busy Mac) and to be measured on the PC: [BENCH.md](docs/BENCH
 
 What M11.6 does not cover: the drivers. A driver's restart is still a
 bind from scratch on purpose (the safe rebind above) and its clients
-still see `ERR_PEER_CLOSED`; the plan for usb-storage and hda is
-[M11.6-PLAN.md](docs/M11.6-PLAN.md#x-drivers-the-design-note).
+still see `ERR_PEER_CLOSED`; usb-storage and hda are a milestone of their
+own after M12 ([HISTORY: M11.6](docs/HISTORY.md#m116-services-that-outlive-their-process)).
 
 ## The IOMMU
 
 Intel VT-d's DMA remapping and interrupt remapping, in the kernel
 (`kernel/dev/vtd_*.c`; the rest of the kernel sees `<jam/iommu.h>` and
-`<jam/irq_remap.h>` only). The plan, with what each stage built and where
-it differs, is [M11-PLAN.md](docs/M11-PLAN.md); the PC's unit is in
+`<jam/irq_remap.h>` only). What each stage built is in
+[HISTORY: M11](docs/HISTORY.md#m11-the-iommu); the PC's unit is in
 [HARDWARE.md](docs/HARDWARE.md#the-iommu-vt-d). With it, a device reaches
 only the memory its driver pinned for it and raises only the interrupts
 it was given, so drivers are contained, not only crash-isolated
@@ -1403,8 +1407,9 @@ are proven on the PC only.
 ## Networking
 
 IPv4 with ARP, ICMP, UDP and TCP, through Jam OS's own NIC drivers and a
-network stack in a process of its own; no IPv6 yet. The plan,
-its stages and the PC's runs are in [M9-PLAN.md](docs/M9-PLAN.md); the
+network stack in a process of its own; no IPv6 yet. The stages
+and the PC's runs are in [HISTORY: M9](docs/HISTORY.md#m9-networking) and
+[M9.5](docs/HISTORY.md#m95-network-streams); the
 PC's chip and switch port in [HARDWARE.md](docs/HARDWARE.md#the-network).
 
 **Hard requirement: every frame Jam OS sends is in the configured
@@ -1597,7 +1602,7 @@ restarts:
   below 49152 without the listen permission, and sends no raw packets. A wait set (`<netwait.h>`) waits on many sockets at once.
 - **TCP** on the same channels (`user/services/netstack/tcpsock.c` for the
   calls, `tcp.c` for the connections, `stack.c`'s TCP edge for lwIP;
-  [M9.5-PLAN](docs/M9.5-PLAN.md#track-c-part-1-built-tcp-inside-netstack)):
+  [HISTORY: M9.5](docs/HISTORY.md#m95-network-streams)):
   `tcp(address, port, tx, rx)` opens a connection (CONNECTING at once; the
   status line says OPEN, or CLOSED and why), `tcp_listener(port, backlog,
   tx, rx, flags)` listens (only an opener of `/svc/net-listen`, ports from
@@ -1617,7 +1622,7 @@ restarts:
   lost; what a peer can pin that way is bounded (its window, its window
   in full segments of receive buffers, and its share of the 1024 buffers
   all connections' kept segments may hold: the last 128 are always left
-  for frames; [M9.5-PLAN](docs/M9.5-PLAN.md#out-of-order-segments-and-sack-as-built)).
+  for frames; [HISTORY: M9.5](docs/HISTORY.md#m95-network-streams)).
   Bytes go from the tx ring into lwIP only as the peer's window takes
   them (and a segment more), so a peer that stops reading holds no more
   than its window. **Window scaling** (RFC 7323, shift 6) is on: with a
@@ -1632,7 +1637,7 @@ restarts:
   past its first 64240 never the last 1 MiB beyond that or the last 1024
   segments, so bulk senders can't starve the rest; a listener's
   connection whose tx ring doesn't fit its opener's bytes gets the default
-  one instead of a reset ([M9.5-PLAN](docs/M9.5-PLAN.md#window-scaling-and-bulk-rings-as-built)
+  one instead of a reset ([HISTORY: M9.5](docs/HISTORY.md#m95-network-streams)
   has the memory's worst case). A segment the card's full tx ring refuses stays in
   lwIP and goes when the driver says it has room (`NETDEV_SIG_TX_ROOM`,
   the connections in turn), not on lwIP's next timer. A listener's connections get their rings when their
@@ -1866,7 +1871,7 @@ and `update`'s stick write runs on the same worker after it; its loop
 does only the `kexec_load` and `/esp`'s stat.
 
 **Waiting on many sockets** (`user/include/netwait.h`, libos;
-[M9.5-PLAN](docs/M9.5-PLAN.md#track-d-as-built-waiting-on-many-sockets)).
+[HISTORY: M9.5](docs/HISTORY.md#m95-network-streams)).
 A wait set is one port with up to 256 entries: sockets (their rings,
 `to_prog` event and channel) and any other handle, each with an interest
 (read, write). `netwait_wait` returns the ready entries. Readiness is
@@ -1880,7 +1885,7 @@ signalled, not all of them. Hung up (netstack's end of the channel closed,
 a stream closed) and errors are always reported. This is what M13's
 `poll`, `select` and `epoll` will be built on.
 
-**The programs on TCP** ([M9.5-PLAN](docs/M9.5-PLAN.md#track-e-as-built-fetch-serve-and-speed);
+**The programs on TCP** ([HISTORY: M9.5](docs/HISTORY.md#m95-network-streams);
 the commands are in [NETWORK.md](docs/NETWORK.md)). Each holds only
 what its job needs, because each parses what a stranger sends. `fetch`
 and `speed` are helpers of the shell's (`bin/fetch`, `bin/speed`): the
@@ -2048,9 +2053,11 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
   a starter names what a child gets (`<os.h>` "grants"): everything as
   it has it, one mount as it is or as a view (`/data:r`, `/data:w`), every
   other stick (`/usb*`), every mount as views (`*:r`, `*:w`), a service;
-  the views are made before the child starts. Not built yet: a POSIX
-  `open()` on top.
-- **The program's list** (`<wants.h>`, [M8.6-SVC.md](docs/history/M8.6-SVC.md)):
+  the views are made before the child starts. A POSIX `open()` sits on
+  top of the namespace in the POSIX layer's file calls (`user/posix/sys/`,
+  M13, under way: [docs/M13-PLAN.md](docs/M13-PLAN.md)), one writable open
+  of a file per process.
+- **The program's list** (`<wants.h>`, [docs/HISTORY.md, M8.6](docs/HISTORY.md#m86-cleanup-and-polish)):
   a program declares in its source what it wants (`JAM_WANTS("svc
   music\n" "mount /data r\n")`: services, mounts read-only or writable,
   the root resource's powers it needs, and `svc net listen` for the
@@ -2104,9 +2111,9 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
   `right debug` (the kernel's debug commands panic and crash the machine
   on purpose). Whoever holds
   the stick can edit the file on another computer, as they could replace
-  the kernel. User-space pagers
-  ([ROADMAP.md](docs/ROADMAP.md#design-ideas-not-scheduled)) would be the
-  clean way to map such code.
+  the kernel. User-space pagers (M12.5, [docs/M12.5-PLAN.md](docs/M12.5-PLAN.md);
+  the kernel's half is built, fat is not yet a pager) will be the clean
+  way to map such code.
 
 ## Graphics
 
@@ -2123,7 +2130,7 @@ monitor is on the RTX ([HARDWARE.md](docs/HARDWARE.md#the-machine)).
   2560x1440). It speaks the Wayland protocol (G1 in the roadmap):
   Wayland's model and wire format over channels, handles where Linux
   passes file descriptors, `wl_shm` pools as VMOs; our own compositor,
-  not a port ([docs/G1-PLAN.md](docs/G1-PLAN.md)).
+  not a port ([HISTORY: G1](docs/HISTORY.md#g1-the-desktop)).
 - **The transport (JWL2, `<jwl.h>`).** Each client is a channel of its
   own from `/svc/wayland`'s `svc.connect`. One channel message is a batch:
   a 16-byte header, then whole Wayland messages, at most 16 KiB and 28
@@ -2233,7 +2240,7 @@ extra glyphs.
   two built-in files: no call takes a font from outside.
 - `build/host/fontpreview` (`tools/fontpreview.c`) builds the same files
   on the Mac and draws `build/fontpreview.png` on every `make`: the
-  floating windows' title bars (docs/G1-PLAN.md "The look") at 1x and 2x
+  floating windows' title bars at 1x and 2x
   and sample text at six sizes.
 
 ### The terminal windows
@@ -2390,7 +2397,7 @@ and libjwl uses (`user/lib/jwl_data.c`, `jwl_clip_*` in `<jwl_client.h>`).
 ### The desktop's plumbing
 
 The desktop (the strip, the search box, the popovers, the notices:
-[docs/G1-PLAN.md](docs/G1-PLAN.md) "The look") reaches the rest of the
+[HISTORY: G1](docs/HISTORY.md#g1-the-desktop)) reaches the rest of the
 system through channels init gives the compositor, each as narrow as its
 feature. The compositor is the most exposed process (every client talks to
 it), so none of them lets it start an arbitrary program or reach a
@@ -2450,8 +2457,7 @@ each request goes out without waiting and its answer comes to the port
 init restarts a compositor that ends, and its clients reconnect on their
 own in whatever order; the new one puts the windows back where they were
 (`user/services/compositor/wmsave.c`;
-[G1-PLAN](docs/G1-PLAN.md), "As built: the compositor remembers the
-arrangement").
+[HISTORY: G1](docs/HISTORY.md#g1-the-desktop)).
 
 - **Where.** The compositor's state VMO (`<svcstate.h>`, the M11.6
   mechanism; `<compstate.h>`): init makes it once a boot, keeps it and
@@ -2525,7 +2531,7 @@ without one, so detection works either way. A change only logs: an unplug
 while playing stops nothing. `hda jacks` (`hda.jacks`) shows each jack's
 state and how it is watched.
 
-**The mixer** (`user/services/mixer`, [docs/history/A2-PLAN.md](docs/history/A2-PLAN.md))
+**The mixer** (`user/services/mixer`, [docs/HISTORY.md, A2](docs/HISTORY.md#audio-a1-a2-as-and-m85-kexec))
 is the driver's only client but for the tests (`hdatest` holds devmgr's
 control channel): init asks devmgr for each sound card's device channel
 before anyone else can ask, and gives them to the mixer, so devmgr hands
@@ -2603,7 +2609,7 @@ while the mixer is killed 20 times (`tools/mixer-restart-test.sh`); 20
 kills in 10 s while the music player played left at least 126 ms of
 lead, and no period was late ([BENCH.md](docs/BENCH.md#m116-qemu-2026-10-05)).
 
-**MP3** ([docs/history/A2-PLAN.md](docs/history/A2-PLAN.md#mp3)): `play` picks a file's
+**MP3** ([docs/HISTORY.md, A2](docs/HISTORY.md#audio-a1-a2-as-and-m85-kexec)): `play` picks a file's
 format by its first bytes, not its name (`RIFF`: WAV; MPEG audio frames,
 after any ID3v2 tag: MP3; anything else is refused), through a small
 source interface in libos (`<play_src.h>`, `user/lib/play_src.c`: open, read
@@ -2628,7 +2634,7 @@ state and a 64 KiB buffer while a file plays). Decoding costs about
 4 % of a core under QEMU's emulation (`play -n`), far less on the PC.
 
 **The music player** (`user/services/music`,
-[docs/history/A2-PLAN.md](docs/history/A2-PLAN.md#music-player)) is a service init starts
+[docs/HISTORY.md, A2](docs/HISTORY.md#audio-a1-a2-as-and-m85-kexec)) is a service init starts
 after the mixer, in a job of its own, so it plays on while the shell runs
 other commands, through Ctrl+C and a restart of the shell. init makes its
 `music` channel (`abi/idl/music.idl`: start (a folder, the file to play first,
@@ -2657,7 +2663,7 @@ each ~11 ms of what it writes, kept
 by stream frame because it writes up to 1.37 s ahead
 (`user/services/music/spectrum.c`).
 
-**jamjar** (`user/apps/jamjar`, [the design note](docs/history/MUSIC-GUI.md))
+**jamjar** (`user/apps/jamjar`, [docs/HISTORY.md, audio](docs/HISTORY.md#audio-a1-a2-as-and-m85-kexec))
 is the player's window, an app whose list asks for the player (it opens
 `/svc/music`, a channel of its own), `/data` and the other sticks
 read-only; it plays nothing itself. It reads the library through those
@@ -3014,7 +3020,7 @@ shows nothing but the splash background from the moment `reboot` starts
 splash. After a panic the next boot saves the panicked boot's log first
 and says so: a line in the shell, a notice on the desktop. Code in
 `kernel/kexec/`; the plan, with the layout and the
-decisions, is [docs/history/M8.5-PLAN.md](docs/history/M8.5-PLAN.md) ("Revision 2").
+decisions, is in [docs/HISTORY.md, M8.5](docs/HISTORY.md#audio-a1-a2-as-and-m85-kexec) ("Revision 2").
 
 - **The region** (48 MiB below 4 GiB, 2 MiB aligned: `crashkernel=<MiB>`,
   0 turns it all off) is unmapped from the running kernel, so a wild write

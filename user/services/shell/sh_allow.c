@@ -175,9 +175,13 @@ status_t sh_allow_remove(const char *name, unsigned *removed)
  * the file server's channel: with it a program could put any file it can
  * read on the network without the listen permission. Nor the root's debug
  * power: `debug_command` panics the machine, crashes it on purpose and runs
- * the stress test. */
+ * the stress test. Nor init's sessions (session): each is a whole shell, with
+ * init's namespace and the shell's root powers, past every view and grant;
+ * the build allows it only for a service, a port or a test
+ * (tools/checkwants.py). */
 static const char *const refused[] = { SVC_DEVMGR, SVC_DEVMGR_CTL, SVC_VOLUMES, SVC_INIT,
-                                       SVC_NET_SYS, SVC_DNS_SYS, SVC_SERVE, SVC_NET_LISTEN_LOW };
+                                       SVC_NET_SYS, SVC_DNS_SYS, SVC_SERVE, SVC_NET_LISTEN_LOW,
+                                       SVC_SESSION };
 
 const char *sh_wants_refused(const struct wants *w)
 {

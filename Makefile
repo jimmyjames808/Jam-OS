@@ -167,7 +167,7 @@ $(IDL_OK): $(IDL_SRCS) abi/idl/ids.txt tools/genidl.py $(wildcard $(IDL_GEN))
 idl:
 	python3 tools/genidl.py gen
 
-# Wayland (docs/G1-PLAN.md). tools/genwl.py turns upstream's interface files,
+# Wayland (docs/HISTORY.md, G1). tools/genwl.py turns upstream's interface files,
 # third_party/wayland-protocols/<name>.xml (and Jam OS's own, abi/wayland/<name>.xml),
 # into user/include/jwl/<protocol>.h
 # (versions, opcodes, enums, typed stubs) and user/lib/jwl_<protocol>.c (the
@@ -796,6 +796,11 @@ clean:
 
 # POSIX on musl: musl, the call layer, the sysroot, posixtest (its own file).
 include user/posix/posix.mk
+
+# libc-test, musl's test suite, as one program (user/ports/libc-test/).
+include user/ports/libc-test/libc-test.mk
+# Ported programs (sbase, Lua): third_party built with jamos-cc into usr/bin.
+include user/ports/ports.mk
 
 # compile_commands.json for editors (VS Code IntelliSense, clangd): the real
 # build's flags for every file, from a dry run (tools/compdb.py).

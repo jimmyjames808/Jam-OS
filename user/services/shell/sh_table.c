@@ -100,9 +100,10 @@ static const struct sh_cmd cmds[] = {
       "  say which (Ctrl+C stops waiting). During the boot splash it waits and shows\n"
       "  when the splash is over.\n"
       "  Example: notify -b Yes -b No -w Tea? Kettle is on"),
-    C(exit, C_PROGRAMS, "exit",
+    C(exit, C_PROGRAMS, "exit [code]",
       "end this shell and close its terminal (any of them; Super+Enter opens\n"
-      "  another). The programs it started with & end with it"),
+      "  another). The programs it started with & end with it. In a session\n"
+      "  (ssh) the code, 0 to 255 (0 if none), is the session's"),
     C(devices, C_HARDWARE, "devices", "PCI functions and the drivers devmgr bound (alias lspci)"),
     C(usb, C_HARDWARE, "usb", "USB devices from usb-bus (alias lsusb)"),
     C(disk, C_HARDWARE, "disk digest <disk> [<lba> <count>] | disk smart <disk>",

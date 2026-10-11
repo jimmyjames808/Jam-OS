@@ -33,6 +33,7 @@
  * each call's kernel calls, so two threads never interleave a split. */
 #include <errno.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include "files.h"
 #include "maptable.h"
 
@@ -381,7 +382,9 @@ long lx_brk(long want, long b, long c, long d, long e, long f)
         return 0;   /* no break at all: musl's malloc uses mmap alone */
     }
     uint64_t to = (uint64_t)want;
-    if (to >= brk_base && to <= brk_base + BRK_SIZE) {
+    /* The break grows no further than RLIMIT_DATA (libc-test's memfill sets it to 0). */
+    bool room = to <= brk_cur || to - brk_base <= rlimit_cur(RLIMIT_DATA);
+    if (to >= brk_base && to <= brk_base + BRK_SIZE && room) {
         uint64_t keep = page_round(to), had = page_round(brk_cur);
         if (keep < had)
             (void)jam_vmo_decommit(brk_vmo, keep - brk_base, had - keep);   /* give pages back */

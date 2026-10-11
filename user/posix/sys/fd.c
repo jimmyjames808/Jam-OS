@@ -24,10 +24,13 @@
 #include <limits.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include "fd.h"
 #include "files.h"
 #include "kinds.h"
+#include "layer.h"
+#include "sock.h"
 #include "tty.h"
 
 /* The reserved mark: a slot fd_alloc gave out, not filled yet. */
@@ -126,8 +129,9 @@ long fd_alloc(long min)
     if (!in_range(min))
         return -EINVAL;
     long r = -EMFILE;
+    uint64_t limit = rlimit_cur(RLIMIT_NOFILE);   /* no descriptor at or past it */
     lock_take(&table_lock);
-    for (long fd = min; fd < FD_MAX; fd++)
+    for (long fd = min; fd < FD_MAX && (uint64_t)fd < limit; fd++)
         if (!slots[fd]) {
             slots[fd] = RESERVED;
             r = fd;
@@ -374,6 +378,8 @@ fd_adopt_fn *const fd_adopters[POSIXFDS_KIND_COUNT] = {
     [POSIXFDS_ETC] = etc_adopt,
     [POSIXFDS_MEMFD] = memfd_adopt,
     [POSIXFDS_EVENTFD] = eventfd_adopt,
+    [POSIXFDS_SOCKET] = sock_adopt,
+    [POSIXFDS_LISTENER] = sock_listener_adopt,
     [POSIXFDS_TTY] = tty_adopt,
     [POSIXFDS_DUP] = dup_adopt,
 };
@@ -640,13 +646,16 @@ long lx_fstat(long fd, long out, long c, long d, long e, long f)
     return r;
 }
 
-long lx_ioctl(long fd, long req, long arg, long d, long e, long f)
+long lx_ioctl(long fd, long req_l, long arg, long d, long e, long f)
 {
+    /* Linux's request is an unsigned int: musl passes an int, which comes
+     * sign-extended (TIOCGPTN, 0x80045430, would match nothing). */
+    unsigned long req = (uint32_t)req_l;
     struct fd_desc *desc = fd_get(fd);
     if (!desc)
         return -EBADF;
     long r;
-    switch ((unsigned long)req) {
+    switch (req) {
     case FIONBIO:
         r = fd_status_set(desc, O_NONBLOCK, *(const int *)(uintptr_t)arg ? O_NONBLOCK : 0);
         break;
@@ -655,7 +664,7 @@ long lx_ioctl(long fd, long req, long arg, long d, long e, long f)
         r = fd_set_cloexec(fd, req == FIOCLEX);
         break;
     default:
-        r = desc->ops->ioctl ? desc->ops->ioctl(desc, (unsigned long)req, arg) : -ENOTTY;
+        r = desc->ops->ioctl ? desc->ops->ioctl(desc, req, arg) : -ENOTTY;
     }
     fd_put(desc);
     return r;

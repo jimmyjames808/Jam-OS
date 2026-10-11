@@ -17,11 +17,23 @@
  * cuts the bytes into messages. tcgetattr, tcsetattr, tcdrain, tcflush
  * and TIOCGWINSZ are `tty` calls: musl's struct termios is the protocol's
  * fields as they are (Linux's). isatty is TIOCGWINSZ answering; ttyname
- * is TTY_NAME (musl's ttyname_r is overridden: no /proc).
+ * is the terminal's name (musl's ttyname_r is overridden: no /proc):
+ * TTY_NAME, or a pseudo-terminal slave's /dev/pts/N (pty.c), whose
+ * TIOCSWINSZ sets its size (a console's own terminal has the size of its
+ * window, or of its remote terminal: EINVAL).
+ *
+ * The process's terminal (its controlling terminal) is the first terminal
+ * description it gets, but a slave opened with O_NOCTTY; TIOCSCTTY makes
+ * one its terminal if it has none and leads its session. The foreground
+ * process group (TIOCGPGRP, TIOCSPGRP: tcgetpgrp, tcsetpgrp) is libc's
+ * bookkeeping on the description, as the groups are (proc.c): our own
+ * group until set to another group of our session; the console knows no
+ * groups (the focus is its foreground).
  *
  * Locks: d->lock guards the buffer's bookkeeping, never a wait; two
  * threads reading one terminal at once is the program's race, as with a
  * pipe. */
+#include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -32,6 +44,8 @@
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <termios.h>
+#include "proc.h"
+#include "pty.h"
 #include "sig.h"
 #include "tty.h"
 
@@ -49,6 +63,11 @@ _Static_assert(TCSADRAIN - TCSANOW == TTY_WHEN_DRAIN && TCSAFLUSH - TCSANOW == T
 struct tty {
     handle_t ch, data;             /* the tty channel, the data channel */
     uint32_t have, at;             /* buf[at .. have) read from the input and not taken */
+    int      pty;                  /* a pseudo-terminal slave's index (pty.c), or -1 */
+    uint32_t pty_gen;              /* ... and its generation */
+    int32_t  fg;                   /* the foreground process group set (TIOCSPGRP); 0: ours */
+    uint64_t koid;                 /* the tty channel's: one terminal's descriptions share it */
+    char     name[16];             /* ttyname's: TTY_NAME, or "/dev/pts/N" */
     uint8_t  buf[TTY_BUF];
 };
 
@@ -239,6 +258,73 @@ static long readable(struct fd_desc *d, int *out)
     return 0;
 }
 
+/* TIOCSWINSZ: a pseudo-terminal slave's size; a console's own terminal
+ * has its window's (or its remote terminal's). */
+static long set_winsize(const struct tty *t, const struct winsize *w)
+{
+    struct winsize ws = *w;   /* read once */
+    if (t->pty < 0 || !ws.ws_col || !ws.ws_row)
+        return -EINVAL;
+    return pty_resize(t->pty, t->pty_gen, ws.ws_col, ws.ws_row);
+}
+
+/* d is the process's terminal: its description, or another description
+ * of the same terminal (a hand-over's 0 to 2 may come as three). */
+static bool is_ctty(struct fd_desc *d)
+{
+    const struct tty *t = d->priv;
+    lock_take(&ctty_lock);
+    bool yes = ctty && (ctty == d || ((const struct tty *)ctty->priv)->koid == t->koid);
+    lock_give(&ctty_lock);
+    return yes;
+}
+
+/* TIOCSCTTY: d becomes the process's terminal, if it has none and leads
+ * its session (Linux's rules; `force` changes nothing: no other session
+ * can hold it). */
+static long set_ctty(struct fd_desc *d)
+{
+    if (is_ctty(d))
+        return 0;
+    if (lx_sid() != lx_pid())
+        return -EPERM;
+    lock_take(&ctty_lock);
+    bool took = !ctty;
+    if (took) {
+        fd_ref(d);
+        ctty = d;
+    }
+    lock_give(&ctty_lock);
+    if (!took)
+        return -EPERM;
+    sig_tty_attached();   /* the signal thread listens to it from now on */
+    return 0;
+}
+
+/* The process-group calls: on the process's terminal only (ENOTTY else). */
+static long group_ioctl(struct fd_desc *d, unsigned long req, void *p)
+{
+    struct tty *t = d->priv;
+    if (!is_ctty(d))
+        return -ENOTTY;
+    if (req == TIOCGSID) {
+        *(pid_t *)p = lx_sid();
+        return 0;
+    }
+    if (req == TIOCGPGRP) {
+        int32_t fg = __atomic_load_n(&t->fg, __ATOMIC_RELAXED);
+        *(pid_t *)p = fg ? fg : lx_pgid();
+        return 0;
+    }
+    pid_t g = *(const pid_t *)p;   /* TIOCSPGRP: read once */
+    if (g <= 0)
+        return -EINVAL;
+    if (!lx_group_exists(g))
+        return -EPERM;
+    __atomic_store_n(&t->fg, g == lx_pgid() ? 0 : g, __ATOMIC_RELAXED);
+    return 0;
+}
+
 static long tty_ioctl(struct fd_desc *d, unsigned long req, long arg)
 {
     struct tty *t = d->priv;
@@ -253,21 +339,27 @@ static long tty_ioctl(struct fd_desc *d, unsigned long req, long arg)
     case TCXONC:     return arg >= TCOOFF && arg <= TCION ? 0 : -EINVAL;   /* no flow control */
     case TCFLSH:     return flush(d, arg);
     case TIOCGWINSZ: return winsize(t, p);
+    case TIOCSWINSZ: return set_winsize(t, p);
     case FIONREAD:   return readable(d, p);
+    case TIOCSCTTY:  return set_ctty(d);
+    case TIOCGPGRP:
+    case TIOCSPGRP:
+    case TIOCGSID:   return group_ioctl(d, req, p);
     }
-    /* TIOCSWINSZ: the size is the terminal's (its window, or the remote
-     * one's); process groups and the controlling terminal are not built. */
-    return req == TIOCSWINSZ ? -EINVAL : -ENOTTY;
+    return -ENOTTY;   /* TIOCNOTTY and the rest: not built */
 }
 
 /* ---- the rest of the kind ------------------------------------------------------------------ */
 
 static long tty_stat(struct fd_desc *d, struct stat *st)
 {
+    const struct tty *t = d->priv;
     st->st_mode = S_IFCHR | 0620;
     st->st_nlink = 1;
     st->st_blksize = 4096;
-    st->st_rdev = 5 << 8;   /* Linux's /dev/tty: major 5, minor 0 */
+    st->st_uid = st->st_gid = 1000;   /* the one user */
+    /* Linux's /dev/tty (major 5, minor 0), or its Unix98 slave N (136, N). */
+    st->st_rdev = t->pty < 0 ? 5 << 8 : (136u << 8) | (unsigned)t->pty;
     return 0;
 }
 
@@ -320,8 +412,11 @@ static const struct fd_ops tty_ops = {
 
 /* ---- making one ---------------------------------------------------------------------------- */
 
-/* A description over the two handles (consumed). */
-static long tty_new(const handle_t hs[TTY_HANDLES], uint32_t status, struct fd_desc **out)
+/* A description over the two handles (consumed): a pseudo-terminal's
+ * slave for pty >= 0. It is the process's terminal if it has none yet and
+ * may_ctty. */
+static long tty_new(const handle_t hs[TTY_HANDLES], uint32_t status, int pty, uint32_t gen,
+                    bool may_ctty, struct fd_desc **out)
 {
     struct tty *t = calloc(1, sizeof(*t));
     struct fd_desc *d = t ? fd_new(&tty_ops, status, t) : NULL;
@@ -333,8 +428,16 @@ static long tty_new(const handle_t hs[TTY_HANDLES], uint32_t status, struct fd_d
     }
     t->ch = hs[0];
     t->data = hs[1];
+    struct handle_info hi;
+    t->koid = jam_handle_info(t->ch, &hi) == OK ? hi.koid : (uint64_t)(uintptr_t)t;
+    t->pty = pty;
+    t->pty_gen = gen;
+    if (pty >= 0)
+        snprintf(t->name, sizeof(t->name), "/dev/pts/%d", pty);
+    else
+        memcpy(t->name, TTY_NAME, sizeof(TTY_NAME));
     lock_take(&ctty_lock);
-    bool first = !ctty;
+    bool first = !ctty && may_ctty;
     if (first) {
         fd_ref(d);
         ctty = d;
@@ -348,17 +451,23 @@ static long tty_new(const handle_t hs[TTY_HANDLES], uint32_t status, struct fd_d
 
 long tty_open(handle_t con, uint32_t status, struct fd_desc **out)
 {
+    return tty_open_pty(con, status, -1, 0, true, out);
+}
+
+long tty_open_pty(handle_t con, uint32_t status, int pty, uint32_t gen, bool may_ctty,
+                  struct fd_desc **out)
+{
     handle_t hs[TTY_HANDLES];
     status_t st = console_open_tty(con, &hs[0], &hs[1]);
     if (st != OK)
         return lx_err(st);
-    return tty_new(hs, status, out);
+    return tty_new(hs, status, pty, gen, may_ctty, out);
 }
 
 long tty_adopt(const struct posixfds_fd *rec, const void *data, const handle_t *hs,
                struct fd_desc **out)
 {
-    return tty_new(hs, rec->status, out);
+    return tty_new(hs, rec->status, -1, 0, true, out);
 }
 
 unsigned tty_stdfds(void)
@@ -436,12 +545,15 @@ int __jam_ttyname(int fd, char *name, unsigned long size)
     struct fd_desc *d = fd_get(fd);
     if (!d)
         return EBADF;
-    bool tty = d->ops == &tty_ops;
-    fd_put(d);
-    if (!tty)
+    if (d->ops != &tty_ops) {
+        fd_put(d);
         return ENOTTY;
-    if (size < sizeof(TTY_NAME))
-        return ERANGE;
-    memcpy(name, TTY_NAME, sizeof(TTY_NAME));
-    return 0;
+    }
+    const struct tty *t = d->priv;
+    size_t n = strlen(t->name) + 1;
+    int r = size < n ? ERANGE : 0;
+    if (!r)
+        memcpy(name, t->name, n);
+    fd_put(d);
+    return r;
 }

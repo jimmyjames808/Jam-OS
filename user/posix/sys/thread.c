@@ -14,7 +14,9 @@
  * thread closes its own on the way out. The first thread's handle is the
  * startup message's (SR_SELF_THREAD) and stays open. A new thread starts
  * with its creator's signal mask and is listed for signals (sig.h) from
- * before it runs musl's code until it leaves. */
+ * before it runs musl's code until it leaves; clone returns only once it
+ * is listed, so the creator's next pthread_kill or pthread_cancel finds
+ * it, as on Linux (the thread exists when clone returns). */
 #include <errno.h>
 #include <limits.h>
 #include <sched.h>
@@ -56,6 +58,7 @@ struct clone_start {
     int   *clear_tid;   /* CLONE_CHILD_CLEARTID's word, or NULL */
     int   *set_tid;     /* CLONE_CHILD_SETTID's word, or NULL */
     uint64_t sigmask;   /* the creator's signal mask: the new thread's */
+    volatile int *listed;   /* set to 1 once the thread is on the signal list (or never will be) */
 };
 
 int __jam_set_thread_area(void *tp)
@@ -114,12 +117,15 @@ static _Noreturn void clone_entry(struct clone_start *s)
 {
     struct clone_start c = *s;
     int64_t tid = kp_set_tid_word((uint32_t *)c.clear_tid);
-    if (tid <= 0)
-        jam_thread_exit();   /* only for a bad word: musl's is a global, always good */
+    if (tid <= 0) {   /* only for a bad word: musl's is a global, always good */
+        __atomic_store_n(c.listed, 1, __ATOMIC_RELEASE);
+        jam_thread_exit();
+    }
     self_tid = (uint32_t)tid;
     if (c.set_tid)
         *c.set_tid = (int)tid;
     sig_thread_begin(lx_self_thread(), self_tid, c.sigmask);
+    __atomic_store_n(c.listed, 1, __ATOMIC_RELEASE);
     int r = c.fn(c.arg);
     lx_exit(r, 0, 0, 0, 0, 0);
     __builtin_unreachable();
@@ -166,13 +172,16 @@ int __jam_clone(int (*fn)(void *), void *stack, int flags, void *arg, int *ptid,
     }
     if (flags & CLONE_PARENT_SETTID)
         *ptid = (int)tid;
+    volatile int listed = 0;
     struct clone_start s = { fn, arg, flags & CLONE_CHILD_CLEARTID ? ctid : NULL,
-                             flags & CLONE_CHILD_SETTID ? ctid : NULL, sig_mask_self() };
+                             flags & CLONE_CHILD_SETTID ? ctid : NULL, sig_mask_self(), &listed };
     st = start_on(h, stack, &s, flags & CLONE_SETTLS ? tls : NULL);
     if (st != OK) {
         jam_handle_close(table_take(tid));
         return clone_err(st);
     }
+    while (!__atomic_load_n(&listed, __ATOMIC_ACQUIRE))
+        jam_thread_yield();
     return (int)tid;
 }
 
@@ -222,6 +231,7 @@ long lx_exit(long code, long b, long c, long d, long e, long f)
 
 long lx_exit_group(long code, long b, long c, long d, long e, long f)
 {
+    sock_exit_drain();   /* netstack drops what it hasn't taken when the process ends */
     jam_process_exit(code);
 }
 

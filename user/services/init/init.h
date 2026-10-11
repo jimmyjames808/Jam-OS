@@ -210,6 +210,9 @@ enum { BOOTFS, COMPOSITOR, CONSOLE, SPLASH, SERIALIN, DEVMGR, VOLUMES, MIXER, MU
 #define KEY_DEVMGR   0xb00u   /* devmgr's answers to init's calls that don't wait (dm.c) */
 #define KEY_SHARED   0xc00u   /* + a slot: a shared /svc end has answers nobody reads
                                * (services.c, shared_event) */
+#define KEY_SESSION  0xd00u   /* + sessions.c's own: /svc/session, its openers, a session's
+                               * processes and channels (sessions_event) */
+#define KEY_SESSION_END 0xe00u
 
 struct svc {
     const char *path;          /* in bootfs */
@@ -310,6 +313,11 @@ bool     terms_never_given_up(unsigned i);
  * console and shell start at the loop's next turn. */
 #define TERM_CMD_MAX 128
 status_t terms_open(const char *cmd, uint8_t *number);
+/* A shell's powers, as every terminal's shell gets them, into x (room for
+ * 2): the root with the shell's rights (SR_RESOURCE) and RES_PCI to read
+ * (SHELL_SR_PCI); how many (one left out if it couldn't be made). For
+ * sessions.c's shells too. */
+unsigned terms_shell_powers(struct spawn_handle *x);
 /* "console-<n>", "shell-<n>" (n 2 to TERM_MAX: "console-16" too):
  * terminal n's service i ("console" and "shell" are the first's,
  * shell.c). */
@@ -318,6 +326,21 @@ bool     terms_named(const char *name, unsigned *i);
  * consoles started from now on ("font=bitmap"), and, if it changed, to
  * each running terminal's console (console.set_font). */
 void     terms_settings(void);
+
+/* ---- sessions.c: /svc/session (abi/idl/session.idl) ------------------------------- */
+
+/* Set up once before the loop (the loop's port): /svc/session's channel
+ * made, published (a channel per opener) and served from then on. */
+void     sessions_init(handle_t port);
+/* A packet with key KEY_SESSION + k (k below KEY_SESSION_END - KEY_SESSION). */
+void     sessions_event(unsigned k);
+/* At t: the sessions whose grace after their end is over lose what is
+ * left of them (their shell's job killed). The next time one is due, or
+ * DEADLINE_NEVER. */
+uint64_t sessions_due(uint64_t t);
+/* init's namespace changed: every session's shell gets it, as the
+ * terminals' shells do (tell_mounts). */
+void     sessions_tell(void);
 
 /* ---- apps.c: the desktop's apps (initctl.launch, <deskapps.h>) ------------------------- */
 
