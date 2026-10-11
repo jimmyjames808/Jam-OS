@@ -38,6 +38,7 @@
 #include <idl/nschan.h>
 #include <idl/null.h>
 #include <idl/serve.h>
+#include <idl/session.h>
 #include <idl/signal.h>
 #include <idl/splashch.h>
 #include <idl/storage.h>
@@ -3606,6 +3607,97 @@ static const struct idl_fuzz_msg idl_fz_serve_msgs[] = {
     { 0x001f0004u, 18u, 0, 2, 0, 0, { IDL_OBJ_CHANNEL, IDL_OBJ_VMO }, 1, { { 1, 1, 127 } } },
 };
 
+/* ---- session ---- */
+static status_t idl_fz_session_open(void *ctx, uint16_t cols, uint16_t rows, const char *term, uint32_t term_len, const char *command, uint32_t command_len, handle_t *out_master, handle_t *out_ctl, handle_t *out_proc)
+{
+    (void)ctx;
+    (void)cols;
+    (void)rows;
+    (void)term;
+    (void)term_len;
+    (void)command;
+    (void)command_len;
+    (void)out_master;
+    (void)out_ctl;
+    (void)out_proc;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    if (drv_event_create(out_master) != OK)
+        return ERR_NO_MEMORY;
+    if (drv_event_create(out_ctl) != OK)
+        return ERR_NO_MEMORY;
+    if (drv_event_create(out_proc) != OK)
+        return ERR_NO_MEMORY;
+    return OK;
+}
+static const struct session_ops idl_fz_session_ops = {
+    .open = idl_fz_session_open,
+};
+static uint32_t idl_fz_session_serve(const void *q, uint32_t n, const handle_t *hs,
+                                uint32_t nh, void *r, handle_t *rhs, uint32_t *rhn)
+{
+    idl_close_all(hs, nh);
+    return session_dispatch_on(HANDLE_INVALID, &idl_fz_session_ops, NULL, q, n, r, rhs, rhn);
+}
+static const struct idl_fuzz_msg idl_fz_session_msgs[] = {
+    { 0x002d0001u, 12u, 0, 0, 0, 0, { 0 }, 2, { { 1, 1, 63 }, { 1, 1, 4095 } } },
+};
+
+/* ---- session_ctl ---- */
+static status_t idl_fz_session_ctl_resize(void *ctx, uint16_t cols, uint16_t rows)
+{
+    (void)ctx;
+    (void)cols;
+    (void)rows;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    return OK;
+}
+static status_t idl_fz_session_ctl_hangup(void *ctx)
+{
+    (void)ctx;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    return OK;
+}
+static status_t idl_fz_session_ctl_signal(void *ctx, uint8_t signo)
+{
+    (void)ctx;
+    (void)signo;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    return OK;
+}
+static void idl_fz_session_ctl_ended(void *ctx, int32_t code)
+{
+    (void)ctx;
+    (void)code;
+}
+static const struct session_ctl_ops idl_fz_session_ctl_ops = {
+    .resize = idl_fz_session_ctl_resize,
+    .hangup = idl_fz_session_ctl_hangup,
+    .signal = idl_fz_session_ctl_signal,
+};
+static uint32_t idl_fz_session_ctl_serve(const void *q, uint32_t n, const handle_t *hs,
+                                uint32_t nh, void *r, handle_t *rhs, uint32_t *rhn)
+{
+    idl_close_all(hs, nh);
+    return session_ctl_dispatch_on(HANDLE_INVALID, &idl_fz_session_ctl_ops, NULL, q, n, r, rhs, rhn);
+}
+static const struct session_ctl_events idl_fz_session_ctl_events = {
+    .ended = idl_fz_session_ctl_ended,
+};
+static status_t idl_fz_session_ctl_event(const void *m, struct idl_msg *msg)
+{
+    return session_ctl_event_dispatch(&idl_fz_session_ctl_events, NULL, m, msg);
+}
+static const struct idl_fuzz_msg idl_fz_session_ctl_msgs[] = {
+    { 0x002e0001u, 12u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x002e0002u, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x002e0003u, 9u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x002e0004u, 12u, 2, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+};
+
 /* ---- signal ---- */
 static void idl_fz_signal_send(void *ctx, uint8_t signo, uint8_t code, int32_t value)
 {
@@ -4706,6 +4798,8 @@ static const struct idl_fuzz_proto idl_fuzz_protos[] __attribute__((unused)) = {
     { "nschan", 81, NSCHAN_REQ_MAX, NSCHAN_REP_MAX, NSCHAN_REP_HANDLES, idl_fz_nschan_serve, NULL, idl_fz_nschan_msgs, 3 },
     { "null", 1, NULL_REQ_MAX, NULL_REP_MAX, NULL_REP_HANDLES, idl_fz_null_serve, NULL, idl_fz_null_msgs, 4 },
     { "serve", 31, SERVE_REQ_MAX, SERVE_REP_MAX, SERVE_REP_HANDLES, idl_fz_serve_serve, NULL, idl_fz_serve_msgs, 3 },
+    { "session", 45, SESSION_REQ_MAX, SESSION_REP_MAX, SESSION_REP_HANDLES, idl_fz_session_serve, NULL, idl_fz_session_msgs, 1 },
+    { "session_ctl", 46, SESSION_CTL_REQ_MAX, SESSION_CTL_REP_MAX, SESSION_CTL_REP_HANDLES, idl_fz_session_ctl_serve, idl_fz_session_ctl_event, idl_fz_session_ctl_msgs, 4 },
     { "signal", 44, SIGNAL_REQ_MAX, SIGNAL_REP_MAX, SIGNAL_REP_HANDLES, idl_fz_signal_serve, NULL, idl_fz_signal_msgs, 1 },
     { "splashch", 83, SPLASHCH_REQ_MAX, SPLASHCH_REP_MAX, SPLASHCH_REP_HANDLES, idl_fz_splashch_serve, idl_fz_splashch_event, idl_fz_splashch_msgs, 2 },
     { "storage", 14, STORAGE_REQ_MAX, STORAGE_REP_MAX, STORAGE_REP_HANDLES, idl_fz_storage_serve, NULL, idl_fz_storage_msgs, 6 },
