@@ -11,7 +11,7 @@
 # build until someone has read upstream's change, brought ours up to date
 # and recorded the new hash here.
 #
-# Later tracks add theirs the same way (lookup_name).
+# Later tracks add theirs the same way.
 
 # Every __syscallN a call to __jam_syscall (user/posix/sys/calls.c); no vDSO.
 arch/x86_64/syscall_arch.h 11982f6196c27975d0ab0c55e0810eaf8ff7abcf4d4166fc06917b30d025f306 user/posix/musl/arch/x86_64/syscall_arch.h
@@ -37,3 +37,5 @@ src/process/posix_spawn.c d223cd70ee0bc2c5b8b1004cf9878ff9e4eba8b7f26187b8cda877
 src/unistd/ttyname_r.c fbb4807e4772630cd50cea943265357e619f258c350e7b88ad27855788bd8fb7 user/posix/musl/src/unistd/ttyname_r.c
 # Names: /etc/hosts, then the system resolver (/svc/dns through resolve.c), no DNS queries of its own.
 src/network/lookup_name.c dc2444b5626bb0549a1611e35174ac8722d71541000c44c96a303a16e7c43a69 user/posix/musl/src/network/lookup_name.c
+# Raw DNS queries (res_query, res_send, getnameinfo's reverse lookup): fail at once (the resolver takes names only).
+src/network/res_msend.c c14dc4baca3608efb40b0ab15de53018ac057fd22ad47b8b309b56a7834139b4 user/posix/musl/src/network/res_msend.c
