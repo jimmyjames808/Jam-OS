@@ -64,6 +64,8 @@ FONT_TOOL  := build/host/fontpreview
 FONT_CHECK := build/host/fontcheck
 # The partition table library on the Mac, sanitised (tools/gptcheck.c, below).
 GPT_CHECK  := build/host/gptcheck
+# The ext library on the Mac, sanitised (tools/extcheck.c, below).
+EXT_CHECK  := build/host/extcheck
 ROOTPORT_CHECK := build/host/rootportcheck
 # The files a stick has once `update -w` has written a build: its own and
 # the previous one (what boot/limine.conf may name; `make check`).
@@ -590,7 +592,9 @@ $(PT_LIB_OBJ): $(patsubst %,$(BUILD)/udrv/drivers/lib/%.o,$(PT_LIB)) tools/check
 # RTL8125 listen-only probe has no way to transmit (tools/checknotx.sh),
 # the NVMe driver has no way to write (tools/checknvme.py), and the
 # partition table library keeps to the driver rules and passes
-# tools/gptcheck.c (its cases, mutations and a short fuzz pass).
+# tools/gptcheck.c (its cases, mutations and a short fuzz pass), and the
+# ext library builds for Jam OS and passes tools/extcheck.c (Linux's
+# fixtures, broken checksums, the feature table, a fuzz pass).
 check: all
 	python3 tools/gensyscalls.py check
 	python3 tools/genidl.py check
@@ -618,6 +622,8 @@ check: all
 	$(GPT_CHECK) $(BUILD)/gptcheck
 	$(MAKE) -s $(ROOTPORT_CHECK)
 	$(ROOTPORT_CHECK)
+	$(MAKE) -s $(EXT_CHECK) $(EXT_FIXTURES) $(EXT_CROSS)
+	$(EXT_CHECK) tools/extfix $(BUILD)/extfix
 
 # The boot splash's video: boot/splash.mpg, committed. It is made from the
 # owner's animation (tools/mksplash.sh), which lives outside the repository
@@ -766,6 +772,33 @@ $(ROOTPORT_CHECK): tools/rootportcheck.c drivers/usb-bus/rootport.c drivers/usb-
 	$(HOSTCC) -std=gnu17 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined \
 	    -fno-sanitize-recover=all -Ikernel/include -Idrivers/include -o $@ \
 	    tools/rootportcheck.c drivers/usb-bus/rootport.c
+
+# extcheck (tools/extcheck.c, extbreak.c, extmutate.c): the ext library (the
+# extfs service's format code, user/services/extfs/ext, the same files)
+# with ASan and UBSan, against the images Linux's mke2fs made
+# (tools/extfix/make.sh made them; committed gzipped, unpacked here) and
+# thousands of mutated ones; `make check` runs it. The library is also
+# compiled as Jam OS compiles a program's files ($(EXT_CROSS)), since no
+# program links it yet.
+EXT_DIR      := user/services/extfs/ext
+EXT_SRCS     := $(wildcard $(EXT_DIR)/*.c)
+EXT_HDRS     := $(wildcard $(EXT_DIR)/*.h)
+EXT_FIXTURES := $(patsubst tools/extfix/%.img.gz,$(BUILD)/extfix/%.img,\
+                           $(wildcard tools/extfix/*.img.gz))
+EXT_CROSS    := $(patsubst $(EXT_DIR)/%.c,$(BUILD)/extcross/%.o,$(EXT_SRCS))
+EXT_TOOL     := tools/extcheck.c tools/extbreak.c tools/extmutate.c
+$(EXT_CHECK): $(EXT_TOOL) tools/extcheck.h $(EXT_SRCS) $(EXT_HDRS) drivers/lib/sha256.c \
+              drivers/include/jam/sha256.h kernel/include/jam/status.h
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -std=gnu17 -O1 -g -Wall -Wextra -Werror -Wvla -fsanitize=address,undefined \
+	    -fno-sanitize-recover=all -Idrivers/include -Ikernel/include -I$(EXT_DIR) -o $@ \
+	    $(EXT_TOOL) $(EXT_SRCS) drivers/lib/sha256.c
+$(EXT_FIXTURES): $(BUILD)/extfix/%.img: tools/extfix/%.img.gz
+	@mkdir -p $(dir $@)
+	gzip -dc $< > $@
+$(EXT_CROSS): $(BUILD)/extcross/%.o: $(EXT_DIR)/%.c $(EXT_HDRS) | $(UINC)
+	@mkdir -p $(dir $@)
+	$(CC) $(USER_CFLAGS) -c $< -o $@
 
 $(BUILD)/fontpreview.png: $(FONT_TOOL)
 	$(FONT_TOOL) $@
