@@ -40,6 +40,10 @@ void vol_mount(struct vol *v);
 void vol_sync(struct vol *v);
 void vol_check(struct vol *v, struct inv *out);
 void vol_remount(struct vol *v, struct inv *out);
+/* With --save: sync, then write the volume to <save_dir>/names-<what>.img
+ * (for Linux's e2fsck -fn) and, with `list`, the library's listing of it
+ * beside it (.list, for debugfs's to match: tools/ext-e2fsck.sh). */
+void vol_save(struct vol *v, const char *what, bool list);
 /* A volume of `size` bytes mkfs made, mounted. */
 void small_vol(struct vol *v, uint32_t block_size, uint64_t size);
 

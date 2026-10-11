@@ -2,6 +2,7 @@
  * orphan.c) share and no one else uses. */
 #pragma once
 
+#include "ext_alloc.h"
 #include "ext_int.h"
 #include "ext_names.h"
 
@@ -45,7 +46,12 @@ void ext_names_room_found(struct ext_fs *fs, const struct ext_inode *dir, uint32
 /* A gap opened in block lblk. */
 void ext_names_room_freed(struct ext_fs *fs, const struct ext_inode *dir, uint32_t lblk);
 
-/* links.c: link counts. Can `in` take one more link? */
+/* links.c: a block of its own for logical block lblk of in (a hole),
+ * mapped and counted (in written back); its bytes are the caller's to
+ * write (ext_bnew). */
+status_t ext_block_new(struct ext_fs *fs, struct ext_inode *in, uint32_t lblk,
+                       uint64_t *out_pblk);
+/* Link counts. Can `in` take one more link? */
 status_t ext_nlink_room(const struct ext_inode *in);
 void ext_nlink_inc(struct ext_inode *in);
 /* One less: a directory's count of subdirectories ("many" stays). */

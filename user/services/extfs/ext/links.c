@@ -8,9 +8,8 @@
  * table slot zeroed first, so no old attribute bytes survive), the
  * directory entry, the counts, the directory's times.
  *
- * A new inode: the generation one past the slot's last (so blocks left
- * from the inode's previous life never pass its checksums), the large
- * part's 32 bytes (nanosecond times and the creation time), an empty
+ * A new inode (ext_inode_new): the caller's generation (so blocks left
+ * from the inode's previous life never pass its checksums), an empty
  * extent tree for a file or directory, the four times the caller gave.
  * A directory's first block holds "." and ".."; it counts 2 links, and
  * its parent one more. A symbolic link under 60 bytes lives in i_block
@@ -74,46 +73,27 @@ static status_t name_free(struct ext_fs *fs, struct ext_inode *dir, const struct
     return st == ERR_NOT_FOUND ? OK : st;
 }
 
-/* Write inode ino whole for the first time: *out ready to fill in. */
-static status_t inode_new(struct ext_fs *fs, uint32_t ino, uint16_t mode,
-                          const struct ext_attrs *a, struct ext_inode *out)
+/* A new inode for dir's new name, written whole (its table slot zeroed
+ * first, so no old attribute bytes survive). */
+static status_t inode_make(struct ext_fs *fs, const struct ext_inode *dir, uint16_t mode,
+                           uint16_t links, const struct ext_attrs *a, struct ext_inode *out)
 {
-    uint64_t blk;
-    uint32_t off;
-    struct ext_buf *b;
-    status_t st = ext_iloc(fs, ino, &blk, &off);
-    if (st == OK)
-        st = ext_bread(fs, blk, &b);
-    if (st != OK)
-        return st;
-    uint32_t gen = ((const struct ext_disk_inode *)(b->data + off))->generation + 1;
-    __builtin_memset(b->data + off, 0, fs->inode_size);
-    ext_bdirty(fs, b);
-    ext_brelse(fs, b);
-    __builtin_memset(out, 0, sizeof(*out));
-    out->ino = ino;
-    out->seed = ext_inode_seed(fs, ino, gen);
-    out->d.mode = mode;
-    out->d.uid = (uint16_t)a->uid;
-    out->d.uid_high = (uint16_t)(a->uid >> 16);
-    out->d.gid = (uint16_t)a->gid;
-    out->d.gid_high = (uint16_t)(a->gid >> 16);
-    out->d.links_count = 1;
-    out->d.generation = gen;
-    out->d.extra_isize = fs->inode_size > EXT_GOOD_OLD_INODE ? 32 : 0;
-    static const enum ext_time_which all[] = { EXT_ATIME, EXT_CTIME, EXT_MTIME, EXT_CRTIME };
-    for (uint32_t i = 0; i < 4 && st == OK; i++)
-        if (all[i] != EXT_CRTIME || out->d.extra_isize)
-            st = ext_itime_set(out, all[i], &a->now);
-    return st;
+    struct ext_inode_spec spec = { .parent = dir->ino, .mode = mode, .links = links,
+                                   .uid = a->uid, .gid = a->gid, .generation = a->generation,
+                                   .time = a->now };
+    return ext_inode_new(fs, &spec, out);
 }
 
-/* An empty extent tree in the inode. */
-static void extent_root(struct ext_inode *in)
+status_t ext_block_new(struct ext_fs *fs, struct ext_inode *in, uint32_t lblk,
+                       uint64_t *out_pblk)
 {
-    struct ext_extent_header *h = (struct ext_extent_header *)in->d.block;
-    in->d.flags |= EXT_EXTENTS_FL;
-    *h = (struct ext_extent_header){ .magic = EXT_EXTENT_MAGIC, .max = 4 };
+    struct ext_run r;
+    status_t st = ext_map_alloc(fs, in, lblk, 1, &r);
+    if (st == OK && r.kind != EXT_RUN_DATA)
+        st = ext_damaged(fs, "a block where a hole was", in->ino, 0);
+    if (st == OK)
+        *out_pblk = r.pblk;
+    return st;
 }
 
 /* A new directory's first block: "." and "..". */
@@ -121,7 +101,7 @@ static status_t dir_first_block(struct ext_fs *fs, struct ext_inode *in, uint32_
 {
     uint64_t pblk;
     struct ext_buf *b;
-    status_t st = ext_alloc_lblk(fs, in, 0, &pblk);
+    status_t st = ext_block_new(fs, in, 0, &pblk);
     if (st == OK)
         st = ext_bnew(fs, pblk, &b);
     if (st != OK)
@@ -138,7 +118,6 @@ static status_t dir_first_block(struct ext_fs *fs, struct ext_inode *in, uint32_
     ext_leaf_seal(fs, in, b);
     ext_brelse(fs, b);
     in->d.size_lo = fs->block_size;
-    in->d.links_count = 2;
     return OK;
 }
 
@@ -168,15 +147,11 @@ status_t ext_create(struct ext_fs *fs, struct ext_inode *dir, const struct ext_n
     status_t st = name_free(fs, dir, name);
     if (st == OK && isdir)
         st = ext_nlink_room(dir);
-    uint32_t ino;
-    if (st == OK)
-        st = ext_ialloc(fs, dir->ino, isdir, &ino);
     struct ext_inode in;
     if (st == OK)
-        st = inode_new(fs, ino, a->mode, a, &in);
+        st = inode_make(fs, dir, a->mode, isdir ? 2 : 1, a, &in);
     if (st != OK)
         return st;
-    extent_root(&in);
     if (isdir)
         st = dir_first_block(fs, &in, dir->ino);
     if (st == OK)
@@ -204,8 +179,9 @@ static status_t target_block(struct ext_fs *fs, struct ext_inode *in, const stru
 {
     uint64_t pblk;
     struct ext_buf *b;
-    extent_root(in);
-    status_t st = ext_alloc_lblk(fs, in, 0, &pblk);
+    ext_extent_init(in);
+    in->d.size_lo = t->len;   /* a slow link's size first: a map reads it as one */
+    status_t st = ext_block_new(fs, in, 0, &pblk);
     if (st == OK)
         st = ext_bnew(fs, pblk, &b);
     if (st != OK)
@@ -223,12 +199,9 @@ status_t ext_symlink(struct ext_fs *fs, struct ext_inode *dir, const struct ext_
     status_t st = target_check(fs, target);
     if (st == OK)
         st = name_free(fs, dir, name);
-    uint32_t ino;
-    if (st == OK)
-        st = ext_ialloc(fs, dir->ino, false, &ino);
     struct ext_inode in;
     if (st == OK)
-        st = inode_new(fs, ino, EXT_S_IFLNK | 0777, a, &in);
+        st = inode_make(fs, dir, EXT_S_IFLNK | 0777, 1, a, &in);
     if (st != OK)
         return st;
     if (target->len < FAST_LINK_MAX)

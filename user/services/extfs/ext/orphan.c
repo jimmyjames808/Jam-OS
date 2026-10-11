@@ -10,13 +10,18 @@
  * is damage). It is short in practice: the files open after their
  * unlink, and the truncations of the current transaction.
  *
- * Freeing an orphan: off the list, its blocks freed (ext_truncate), its
- * attribute block counted down (freed by its last user: blocks are
- * shared), its deletion time set (never 0: e2fsck reads a deleted inode
- * with no deletion time as damage), the inode given back. Its mode and
- * the rest stay, as Linux leaves them. */
-#include "ext_alloc.h"
+ * Freeing an orphan: its blocks freed a truncation step at a time while it
+ * is still on the list (so a cut between the steps is finished at the
+ * next mount); a file too big for one transaction's steps is left on the
+ * list for the next (ERR_SHOULD_WAIT). Then off the list, and the inode
+ * freed (ext_inode_free: its attribute block counted down, its deletion
+ * time set, never 0: e2fsck reads a deleted inode with no deletion time
+ * as damage). Its mode and the rest stay, as Linux leaves them. A file
+ * mapped by blocks (ext2's, ext3's) can't be freed yet: ERR_NOT_SUPPORTED,
+ * and it stays on the list. */
 #include "names_int.h"
+
+#define DROP_STEPS 16   /* truncation steps one drop takes: a few dozen dirty blocks each */
 
 /* Is inode ino on the list already (a truncation's orphan losing its last
  * name)? */
@@ -94,54 +99,35 @@ status_t ext_orphan_remove(struct ext_fs *fs, uint32_t ino)
     return st;
 }
 
-/* in's attribute block counted down, freed by its last user. */
-static status_t drop_xattr(struct ext_fs *fs, struct ext_inode *in)
+/* Cut in (on the list) to `size`, at most DROP_STEPS steps: ERR_SHOULD_WAIT
+ * if more are left (commit, then call again: the list keeps it). A file
+ * without an extent tree has nothing to cut here. */
+static status_t cut(struct ext_fs *fs, struct ext_inode *in, uint64_t size)
 {
-    struct ext_buf *b;
-    status_t st = ext_xattr_block(fs, in, &b);
-    if (st == ERR_NOT_FOUND)
+    if (!(in->d.flags & EXT_EXTENTS_FL))
         return OK;
-    if (st != OK)
-        return st;
-    uint64_t blk = b->blk;
-    struct ext_xattr_header *h = (struct ext_xattr_header *)b->data;
-    bool last = h->refcount <= 1;
-    if (!last) {
-        h->refcount--;
-        if (fs->csum)
-            h->checksum = ext_xattr_csum(fs, blk, b->data);
-        ext_bdirty(fs, b);
+    for (uint32_t n = 0; n < DROP_STEPS; n++) {
+        bool done = false;
+        status_t st = ext_truncate(fs, in, size, &done);
+        if (st != OK || done)
+            return st;
     }
-    ext_brelse(fs, b);
-    if (last)
-        st = ext_bfree(fs, blk, 1);
-    in->d.file_acl_lo = 0;
-    in->d.file_acl_high = 0;
-    uint64_t sectors = ext_iblocks512(fs, in), one = fs->block_size / 512;
-    sectors = sectors > one ? sectors - one : 0;
-    in->d.blocks_lo = (uint32_t)sectors;
-    in->d.blocks_high = fs->huge_file ? (uint16_t)(sectors >> 32) : 0;
-    return st;
+    return ERR_SHOULD_WAIT;
 }
 
 /* Free orphan `in` (read; no links). */
 static status_t free_orphan(struct ext_fs *fs, struct ext_inode *in, const struct ext_time *now)
 {
     bool isdir = ext_itype(in) == EXT_FT_DIR;
-    status_t st = unchain(fs, in);
+    status_t st = cut(fs, in, 0);
     if (st == OK)
-        st = ext_truncate(fs, in, 0);
-    if (st == OK)
-        st = drop_xattr(fs, in);
+        st = unchain(fs, in);
     if (st != OK)
         return st;
-    in->d.dtime = now->sec > 0 && now->sec <= UINT32_MAX ? (uint32_t)now->sec : 1;
     if (isdir)
         ext_names_forget(fs, in->ino);
-    st = ext_iput(fs, in);
-    if (st == OK)
-        st = ext_ifree(fs, in->ino, isdir);
-    return st;
+    uint32_t dtime = now->sec > 0 && now->sec <= UINT32_MAX ? (uint32_t)now->sec : 1;
+    return ext_inode_free(fs, in, dtime);
 }
 
 status_t ext_orphan_drop(struct ext_fs *fs, uint32_t ino, const struct ext_time *now)
@@ -158,7 +144,7 @@ status_t ext_orphan_drop(struct ext_fs *fs, uint32_t ino, const struct ext_time 
 /* A truncation a cut stopped: finish it, and take the inode off the list. */
 static status_t finish_truncate(struct ext_fs *fs, struct ext_inode *in)
 {
-    status_t st = ext_truncate(fs, in, ext_isize(in));
+    status_t st = cut(fs, in, ext_isize(in));
     if (st == OK)
         st = unchain(fs, in);
     if (st == OK)
@@ -185,6 +171,10 @@ status_t ext_orphans_recover(struct ext_fs *fs, ext_keep_fn keep, void *ctx,
             st = finish_truncate(fs, &in);
         else if (!kept)
             st = free_orphan(fs, &in, now);
+        if (st == ERR_SHOULD_WAIT) {   /* a big one: the rest after a commit */
+            *out_done = max;
+            return OK;
+        }
         if (st != OK)
             return st;
         done += !kept;

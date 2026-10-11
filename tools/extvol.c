@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "extvol.h"
+#include "extwrite.h"
 
 int64_t clock_now = 1800000000;
 
@@ -74,6 +75,8 @@ void vol_mount_hash(struct vol *v, bool hash)
     v->fs.ro &= ~(uint32_t)EXT_RO_RECOVER;   /* the fixtures need no replay here */
     if (v->fs.ro)
         fail("mounted read-only: %#x", v->fs.ro);
+    if (ext_count_free(&v->fs) != OK)   /* a writer's mount: the allocator's rule */
+        fail("count free");
     if (hash && ext_names_init(&v->fs, v->names, v->names_bytes) != OK)
         fail("names init");
 }
@@ -91,10 +94,27 @@ void vol_sync(struct vol *v)
         fail("sync: %d", st);
 }
 
+void vol_save(struct vol *v, const char *what, bool list)
+{
+    char path[1024];
+    if (!save_dir)
+        return;
+    vol_sync(v);
+    snprintf(path, sizeof(path), "%s/names-%s.img", save_dir, what);
+    FILE *f = fopen(path, "wb");
+    if (!f || fwrite(v->bytes, 1, v->size, f) != v->size || fclose(f))
+        fail("%s: can't write it", path);
+    if (!list)
+        return;
+    snprintf(path, sizeof(path), "%s/names-%s.list", save_dir, what);
+    write_listing(&v->fs, path);
+}
+
 void vol_check(struct vol *v, struct inv *out)
 {
     struct inv dummy;
     check_invariants(&v->fs, out ? out : &dummy);
+    verify_volume(&v->fs);   /* the allocator's checker too: two views of the blocks */
 }
 
 /* Sync, mount again from the bytes, check. */
@@ -117,7 +137,8 @@ struct ext_time now(void)
 
 struct ext_attrs attrs(uint16_t mode)
 {
-    return (struct ext_attrs){ .mode = mode, .uid = 1000, .gid = 1000, .now = now() };
+    return (struct ext_attrs){ .mode = mode, .uid = 1000, .gid = 1000,
+                               .generation = (uint32_t)rnd(), .now = now() };
 }
 
 void expect(status_t got, status_t want, const char *what)

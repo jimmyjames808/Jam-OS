@@ -160,6 +160,7 @@ void check_big_dir(void)
              (unsigned long long)ext_isize(&dir));
     big_resume(&v);
     vol_remount(&v, &inv);
+    vol_save(&v, "big", false);
     vol_free(&v);
 }
 
@@ -423,5 +424,6 @@ void check_storm(unsigned steps)
     }
     s_verify(&v, &md);
     vol_remount(&v, NULL);
+    vol_save(&v, "storm", true);
     vol_free(&v);
 }

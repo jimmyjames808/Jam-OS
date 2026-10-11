@@ -58,6 +58,7 @@ static void mkfs_parity(const struct img *jam)
     vol_check(&v, &inv);
     if (inv.dirs != 2 || inv.names != 1 || !inv.exact)
         fail("a new volume: %u directories, %u names", inv.dirs, inv.names);
+    vol_save(&v, "mkfs-jam4k", true);
     vol_free(&v);
 }
 
@@ -101,7 +102,10 @@ static void mkfs_shapes(void)
         vol_remount(&v, &inv);
         if (inv.dirs != 3 || inv.names != 3)
             fail("after writing: %u directories, %u names", inv.dirs, inv.names);
-        vol_free(&v);
+            char name[32];
+        snprintf(name, sizeof(name), "mkfs-%u", i);
+        vol_save(&v, name, true);
+    vol_free(&v);
     }
 }
 

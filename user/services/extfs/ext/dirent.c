@@ -21,7 +21,6 @@
  * index becomes one unused entry the length of the block; the leaves are
  * left as they are; the inode loses its index flag. Nothing moves, so
  * cookies stay good. */
-#include "ext_alloc.h"
 #include "names_int.h"
 
 status_t ext_name_check(const struct ext_name *n)
@@ -128,7 +127,7 @@ static status_t add_block(struct ext_fs *fs, struct ext_inode *dir, uint32_t lbl
                           const struct ext_name *n, uint32_t ino, uint8_t type)
 {
     uint64_t pblk;
-    status_t st = ext_alloc_lblk(fs, dir, lblk, &pblk);
+    status_t st = ext_block_new(fs, dir, lblk, &pblk);
     struct ext_buf *b;
     if (st == OK)
         st = ext_bnew(fs, pblk, &b);

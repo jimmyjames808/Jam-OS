@@ -55,6 +55,7 @@ struct ext_name {
 struct ext_attrs {
     uint16_t mode;                  /* its type (EXT_S_IF*) and permission bits */
     uint32_t uid, gid;
+    uint32_t generation;            /* the caller's (random): seeds its checksums */
     struct ext_time now;            /* its times, and its directory's change */
 };
 
@@ -122,9 +123,12 @@ status_t ext_rename(struct ext_fs *fs, const struct ext_rename *r, uint32_t *out
 status_t ext_orphan_add(struct ext_fs *fs, struct ext_inode *in);
 /* Take inode `ino` off the list. ERR_NOT_FOUND if it isn't on it. */
 status_t ext_orphan_remove(struct ext_fs *fs, uint32_t ino);
-/* Free an orphan with no links: off the list, its blocks and attribute
- * block (shared ones counted down) freed, its deletion time `now`, its
- * inode freed. ERR_BAD_STATE if it still has links. */
+/* Free an orphan with no links: its blocks freed, off the list, its
+ * attribute block (shared ones counted down) released, its deletion time
+ * `now`, its inode freed. ERR_BAD_STATE if it still has links;
+ * ERR_SHOULD_WAIT when it holds more than a transaction should free
+ * (part of it freed, still on the list: commit and call again);
+ * ERR_NOT_SUPPORTED for a block-mapped file (it stays on the list). */
 status_t ext_orphan_drop(struct ext_fs *fs, uint32_t ino, const struct ext_time *now);
 
 /* Which orphans a successor keeps (still open in its state). */

@@ -137,6 +137,7 @@ static void renames(void)
     renames_files(&v);
     renames_dirs(&v);
     vol_remount(&v, NULL);
+    vol_save(&v, "renames", true);
     vol_free(&v);
 }
 
@@ -189,6 +190,7 @@ static void links(void)
     vol_remount(&v, &inv);
     if (inv.orphans || inv.names != 2)
         fail("after the drop: %u orphans, %u names", inv.orphans, inv.names);
+    vol_save(&v, "links", true);
     vol_free(&v);
 }
 
@@ -237,6 +239,9 @@ static void symlinks_on(uint32_t block_size)
     expect(rm(&v, "slow", 0, NULL), OK, "unlink a slow link");
     expect(rm(&v, "fast", 0, NULL), OK, "unlink a fast link");
     vol_remount(&v, NULL);
+    char name[32];
+    snprintf(name, sizeof(name), "symlinks-%u", block_size);
+    vol_save(&v, name, true);
     vol_free(&v);
 }
 
@@ -289,6 +294,7 @@ static void dirs(void)
     expect(make(&v, "a/c", EXT_S_IFREG | 0644, NULL), OK, "a file there");
     set_links(&v, ino_of(&v, "a"), 2);
     vol_remount(&v, NULL);
+    vol_save(&v, "dirs", true);
     vol_free(&v);
 }
 
@@ -319,6 +325,7 @@ static void bad_names(void)
     if (ino_of(&v, "Makefile") == ino_of(&v, "makefile"))
         fail("Makefile and makefile are one file");
     vol_remount(&v, NULL);
+    vol_save(&v, "names", true);
     vol_free(&v);
 }
 
@@ -402,6 +409,7 @@ static void orphans(void)
     vol_remount(&v, &inv);
     if (inv.orphans || inv.names != 2)
         fail("after recovery: %u orphans, %u names", inv.orphans, inv.names);
+    vol_save(&v, "orphans", true);
     vol_free(&v);
 }
 
@@ -443,6 +451,11 @@ static void indexed(const struct img *fx)
     expect(mv(&v, "many/entry-008-with-a-longer-name", "many/entry-007-with-a-longer-name", 0,
               NULL), OK, "rename");
     vol_remount(&v, NULL);
+    struct ext_time t = now();
+    uint32_t done;
+    expect(ext_orphans_recover(&v.fs, NULL, NULL, &t, 100, &done), OK, "linux1k's orphans");
+    vol_remount(&v, NULL);
+    vol_save(&v, "indexed", true);
     vol_free(&v);
 }
 
@@ -489,6 +502,7 @@ static void room_hint(void)
         fail("the new entry went to byte %llu, not the gap in block 0",
              (unsigned long long)d.pos);
     vol_remount(&v, NULL);
+    vol_save(&v, "room", true);
     vol_free(&v);
 }
 
