@@ -248,6 +248,10 @@ The rest:
   commands, the compositor, system tools); every other app is ported. A
   browser, when it comes, is a port of Chromium starting from its Fuchsia
   code (spawn and channels, no zygote, no `fork`), not its Linux code.
+  Ports are chosen by need, not collected (the owner, 2026-10-11): a
+  program is ported when something needs it (a dependency, a tool a track
+  uses) or when the owner sets it as a goal (vim, a browser, Doom), never
+  to fill a list.
   Jam OS's own general apps written so far (Jamjar, the music player;
   `play`, `fetch`, `speed`) were tests of the system more than products:
   the owner expects to replace them with ported alternatives once porting
