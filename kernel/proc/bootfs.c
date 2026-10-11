@@ -107,6 +107,10 @@ status_t bootfs_validate(const void *img, uint64_t len, const char **why)
             memcpy(&o, p + sizeof(h) + (uint64_t)j * sizeof(o), sizeof(o));
             if (!strcmp(e.name, o.name))
                 REJECT("duplicate file name");
+            /* The same bytes under two names (tools/mkbootfs.py stores identical
+             * files once): the same offset and size. Any other overlap is refused. */
+            if (e.offset == o.offset && e.size == o.size)
+                continue;
             if (e.offset < page_end(o.offset, o.size) && o.offset < page_end(e.offset, e.size))
                 REJECT("two files share a page");
         }

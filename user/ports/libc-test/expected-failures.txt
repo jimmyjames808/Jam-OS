@@ -38,7 +38,6 @@ functional/wordexp limit: wordexp runs /bin/sh, which is a stub until M13.5
 regression/execle-env limit: runs sh -c with a test ([), and /bin/sh is a stub until M13.5
 
 # ---- waiting for other tracks -----------------------------------------------------------------
-functional/spawn pending: P1 (sbase): posix_spawnp of echo finds no echo
 
 # ---- threads ----------------------------------------------------------------------------------
 functional/pthread_cancel limit: an asynchronous cancel of a thread in a busy loop never takes effect (signals are delivered at call boundaries only, docs/M13-PLAN.md section 6): the test hangs
