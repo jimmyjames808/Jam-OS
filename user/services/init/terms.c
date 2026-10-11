@@ -234,30 +234,32 @@ static void first_shell_extras(void)
     }
 }
 
+unsigned terms_shell_powers(struct spawn_handle *x)
+{
+    handle_t pci = HANDLE_INVALID, p2 = HANDLE_INVALID;
+    if (jam_resource_create(shell_root(), RES_PCI, 0, 0, &pci) == OK &&
+        jam_handle_replace(pci, RIGHTS_BASIC, &p2) != OK)
+        p2 = HANDLE_INVALID;
+    unsigned n = 0;
+    x[n] = (struct spawn_handle){ SR_RESOURCE, services_root_with(RIGHTS_BASIC | SHELL_ROOT) };
+    n += x[n].h != HANDLE_INVALID;   /* leave out the ones we don't have */
+    x[n] = (struct spawn_handle){ SHELL_SR_PCI, p2 };
+    n += x[n].h != HANDLE_INVALID;
+    return n;
+}
+
 /* Terminal k's shell, on its console. */
 static status_t start_shell(unsigned k)
 {
-    handle_t c = HANDLE_INVALID, pci = HANDLE_INVALID, p2 = HANDLE_INVALID;
+    handle_t c = HANDLE_INVALID;
     /* A SHELL-level console channel: no input sources of its own. */
     status_t st = console_new_client_until(terms[k].cons, now() + 5 * NS_PER_S, 1, &c);
     if (st != OK)
         return st;
-    if (jam_resource_create(shell_root(), RES_PCI, 0, 0, &pci) == OK &&
-        jam_handle_replace(pci, RIGHTS_BASIC, &p2) != OK)
-        p2 = HANDLE_INVALID;
     if (!k)
         first_shell_extras();
-    struct spawn_handle x[] = {
-        { SR_CONSOLE, c },
-        { SR_RESOURCE, services_root_with(RIGHTS_BASIC | SHELL_ROOT) },
-        { SHELL_SR_PCI, p2 },
-    };
-    /* Leave out the ones we don't have. */
-    struct spawn_handle y[3];
-    unsigned n = 0;
-    for (unsigned j = 0; j < 3; j++)
-        if (x[j].h)
-            y[n++] = x[j];
+    struct spawn_handle y[3] = { { SR_CONSOLE, c } };
+    unsigned n = 1 + terms_shell_powers(&y[1]);
     /* Its terminal's number (with a compositor: `exit` closes it); the
      * boot's first shell gets the boot word's command (shell_first_arg),
      * and one init restarts later is an ordinary shell; the command

@@ -306,6 +306,11 @@ bool     terms_never_given_up(unsigned i);
  * console and shell start at the loop's next turn. */
 #define TERM_CMD_MAX 128
 status_t terms_open(const char *cmd, uint8_t *number);
+/* A shell's powers, as every terminal's shell gets them, into x (room for
+ * 2): the root with the shell's rights (SR_RESOURCE) and RES_PCI to read
+ * (SHELL_SR_PCI); how many (one left out if it couldn't be made). For
+ * sessions.c's shells too. */
+unsigned terms_shell_powers(struct spawn_handle *x);
 /* "console-<n>", "shell-<n>" (n 2 to TERM_MAX: "console-16" too):
  * terminal n's service i ("console" and "shell" are the first's,
  * shell.c). */
