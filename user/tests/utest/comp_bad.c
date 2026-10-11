@@ -287,8 +287,8 @@ static bool bind_as(struct ct_client *k, uint32_t *obj, uint32_t name,
 
 static bool bad_bind_seat(struct ct_client *k, uint32_t *obj, uint32_t *code)
 {
-    *code = JWL_ERROR_INVALID_OBJECT;   /* we offer version 5 */
-    return bind_as(k, obj, 4, &jwl_wl_seat_interface, 6);
+    *code = JWL_ERROR_INVALID_OBJECT;   /* we offer version 9 */
+    return bind_as(k, obj, 4, &jwl_wl_seat_interface, 10);
 }
 
 static bool bad_bind_name(struct ct_client *k, uint32_t *obj, uint32_t *code)
@@ -299,8 +299,8 @@ static bool bad_bind_name(struct ct_client *k, uint32_t *obj, uint32_t *code)
 
 static bool bad_bind_newer(struct ct_client *k, uint32_t *obj, uint32_t *code)
 {
-    *code = JWL_ERROR_INVALID_OBJECT;   /* we offer version 4 */
-    return bind_as(k, obj, 1, &jwl_wl_compositor_interface, 5);
+    *code = JWL_ERROR_INVALID_OBJECT;   /* we offer version 6 */
+    return bind_as(k, obj, 1, &jwl_wl_compositor_interface, 7);
 }
 
 static bool bad_unknown_object(struct ct_client *k, uint32_t *obj, uint32_t *code)

@@ -783,6 +783,15 @@ bool t_xdg_tile_resize(void);
 bool t_xdg_popup(void);
 bool t_xdg_unacked(void);
 bool t_xdg_errors(void);
+/* compver.c: the versions above G1's (wl_compositor 6, wl_shm 2, wl_output
+ * 4, wl_seat 9, xdg_wm_base 6), each new event at its version and not
+ * below, and xdg-decoration's modes, toggled and refused. */
+bool t_comp_versions(void);
+bool t_comp_seat_v9(void);
+bool t_xdg_versions(void);
+bool t_xdg_tiled(void);
+bool t_xdg_decoration(void);
+bool t_xdg_decoration_bad(void);
 
 /* netdev.c: the netdev rings' code (<jam/netdev.h>): counts, a hostile
  * peer, the wake flags, the VLAN word, a fake driver thread's exchange. */

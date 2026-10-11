@@ -30,6 +30,12 @@
  * A client that is behind on reading (jwl_conn_backlogged) has its motion
  * coalesced: the newest position is sent once it has caught up.
  *
+ * The wheel, by the pointer's version: a notch is axis WHEEL_STEP, and
+ * from version 5 also axis_source wheel with axis_discrete 1 a notch, or
+ * from version 8 axis_value120 120 a notch in its place; from version 9
+ * axis_relative_direction says identical (the wheel and the content move
+ * the way the axis says: no natural scrolling).
+ *
  * The cursor: struct comp_cursor, read by the painting code. A client may
  * set its own (set_cursor with the serial of its latest enter; a surface
  * of the cursor role), or none, while the pointer is over its window;
@@ -272,11 +278,16 @@ static void wheel_turned(int8_t wheel)
     uint32_t t = comp_ms(now()), axis = JWL_WL_POINTER_AXIS_VERTICAL_SCROLL;
     int32_t notches = -wheel;   /* a wheel pushed away scrolls up; the axis is positive down */
     for (struct seat_res *r = seat_of(cl)->res[SEAT_POINTER]; r; r = r->next) {
-        if (r->version >= JWL_WL_POINTER_EV_AXIS_SOURCE_SINCE) {
+        if (r->version >= JWL_WL_POINTER_EV_AXIS_SOURCE_SINCE)
             (void)jwl_wl_pointer_send_axis_source(cl->conn, r->id,
                                                   JWL_WL_POINTER_AXIS_SOURCE_WHEEL);
+        if (r->version >= JWL_WL_POINTER_EV_AXIS_RELATIVE_DIRECTION_SINCE)
+            (void)jwl_wl_pointer_send_axis_relative_direction(
+                cl->conn, r->id, axis, JWL_WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);
+        if (r->version >= JWL_WL_POINTER_EV_AXIS_VALUE120_SINCE)
+            (void)jwl_wl_pointer_send_axis_value120(cl->conn, r->id, axis, notches * 120);
+        else if (r->version >= JWL_WL_POINTER_EV_AXIS_DISCRETE_SINCE)
             (void)jwl_wl_pointer_send_axis_discrete(cl->conn, r->id, axis, notches);
-        }
         (void)jwl_wl_pointer_send_axis(cl->conn, r->id, t, axis, notches * WHEEL_STEP * 256);
     }
     send_frame(cl);

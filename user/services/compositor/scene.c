@@ -77,7 +77,7 @@ struct comp_box window_frame(const struct comp_window *w)
 struct comp_box window_extent(const struct comp_window *w)
 {
     struct comp_box f = window_frame(w);
-    if (box_empty(f) || look_of(w) != LOOK_FLOATING)
+    if (box_empty(f) || !look_shadowed(look_of(w)))
         return f;
     return (struct comp_box){ f.x1 - LOOK_SHADOW_SIDE, f.y1 - LOOK_SHADOW_ABOVE,
                               f.x2 + LOOK_SHADOW_SIDE, f.y2 + LOOK_SHADOW_BELOW };

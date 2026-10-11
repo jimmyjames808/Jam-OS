@@ -164,25 +164,55 @@ static struct comp_box max_box(const struct wm_window *ww)
     return r;
 }
 
+bool wm_tiled(const struct wm_window *ww)
+{
+    return wm_layout_of(ww) == COMP_TILING && ww->want == WM_NORMAL;
+}
+
+bool wm_suspended(const struct wm_window *ww)
+{
+    return ww->win && !screens_shown(ww);
+}
+
+/* The configure's WM_ST_CSD for ww: what deco_inner and deco_sizes are
+ * given for ww's own decorations. */
+static uint32_t csd_bit(const struct wm_window *ww)
+{
+    return ww->csd ? WM_ST_CSD : 0;
+}
+
+void wm_bounds(const struct wm_window *ww, int32_t *width, int32_t *height)
+{
+    struct comp_box in = deco_inner(max_box(ww), csd_bit(ww), COMP_FLOATING);
+    *width = in.x2 - in.x1 > 1 ? in.x2 - in.x1 : 1;
+    *height = in.y2 - in.y1 > 1 ? in.y2 - in.y1 : 1;
+}
+
+void wm_shown_changed(struct wm_window *ww)
+{
+    if (ww->ops && ww->ops->shown)
+        ww->ops->shown(ww->ctx);
+}
+
 void wm_wanted(const struct wm_window *ww, struct wm_config *out)
 {
-    *out = (struct wm_config){ 0, 0, ww == wm.focused ? WM_ST_ACTIVATED : 0 };
+    *out = (struct wm_config){ 0, 0, (ww == wm.focused ? WM_ST_ACTIVATED : 0) | csd_bit(ww) };
     enum comp_layout layout = wm_layout_of(ww);
     struct comp_box b;
     switch (ww->want) {
     case WM_FULLSCREEN:
         out->states |= WM_ST_FULLSCREEN;
-        b = deco_inner(output_box(), WM_ST_FULLSCREEN, layout);
+        b = deco_inner(output_box(), out->states, layout);
         break;
     case WM_MAXIMIZED:
         out->states |= WM_ST_MAXIMIZED;
-        b = deco_inner(max_box(ww), WM_ST_MAXIMIZED, layout);
+        b = deco_inner(max_box(ww), out->states, layout);
         break;
     default:
         if (layout == COMP_TILING) {
             if (!wm_resizable(ww))
                 return;   /* 0 by 0: it keeps its own size */
-            b = deco_inner(wm_tile(ww), 0, layout);
+            b = deco_inner(wm_tile(ww), out->states, layout);
             out->width = limit(b.x2 - b.x1, ww->min_w, ww->max_w);
             out->height = limit(b.y2 - b.y1, ww->min_h, ww->max_h);
             return;
@@ -207,7 +237,7 @@ static void float_default(struct wm_window *ww)
 {
     if (!ww->win || ww->float_w || ww->float_h || wm_layout_of(ww) != COMP_FLOATING)
         return;
-    struct comp_box in = deco_inner(max_box(ww), 0, COMP_FLOATING);
+    struct comp_box in = deco_inner(max_box(ww), csd_bit(ww), COMP_FLOATING);
     int32_t rw = in.x2 - in.x1 > 1 ? in.x2 - in.x1 : 1, rh = in.y2 - in.y1 > 1 ? in.y2 - in.y1 : 1;
     int32_t w = limit(rw * FLOAT_SHARE / 100, ww->min_w, ww->max_w);
     int32_t h = limit(rh * FLOAT_SHARE / 100, ww->min_h, ww->max_h);
@@ -343,7 +373,7 @@ void wm_place(struct wm_window *ww)
     } else if (ww->shown & WM_ST_MAXIMIZED) {
         w->flags |= COMP_WIN_MAXIMIZED;
         struct comp_box b = max_box(ww);
-        centre_in(w, deco_inner(b, WM_ST_MAXIMIZED, layout), b.y1);
+        centre_in(w, deco_inner(b, ww->shown, layout), b.y1);
     } else if (layout == COMP_TILING) {
         w->tile = wm_tile(ww);
         struct comp_box in = deco_inner(w->tile, 0, layout);
@@ -423,6 +453,8 @@ status_t wm_commit(struct wm_window *ww, uint32_t states)
     }
     window_map(ww->win, screens_shown(ww));   /* the seat hears (a client's first window
                                                * takes the keys) */
+    if (!screens_shown(ww))
+        wm_shown_changed(ww);   /* mapped where it can't be seen: suspended */
     if (ww->want == WM_FULLSCREEN) {
         const struct desk_screen *shown = screens_cur();
         screens_fullscreen(ww, true);   /* asked before its first buffer */
@@ -591,12 +623,12 @@ static void float_from_tile(struct wm_window *ww, struct comp_box tile)
 {
     struct comp_box f = { tile.x1 + FLOAT_INSET, tile.y1 + FLOAT_INSET, tile.x2 - FLOAT_INSET,
                           tile.y2 - FLOAT_INSET };
-    struct comp_box in = deco_inner(f, 0, COMP_FLOATING);
+    struct comp_box in = deco_inner(f, csd_bit(ww), COMP_FLOATING);
     int32_t iw = in.x2 - in.x1 > 1 ? in.x2 - in.x1 : 1, ih = in.y2 - in.y1 > 1 ? in.y2 - in.y1 : 1;
     int32_t w = limit(iw, ww->min_w, ww->max_w), h = limit(ih, ww->min_h, ww->max_h);
     int32_t x = w > iw ? in.x1 : in.x1 + (iw - w) / 2;
     int32_t y = h > ih ? in.y1 : in.y1 + (ih - h) / 2;
-    struct deco_sizes d = deco_sizes(0, COMP_FLOATING);
+    struct deco_sizes d = deco_sizes(csd_bit(ww), COMP_FLOATING);
     if (x + w + d.right > scene.width)   /* a min bigger than the tile: still on the output */
         x = scene.width - d.right - w;
     if (y + h + d.bottom > scene.height)

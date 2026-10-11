@@ -7,8 +7,8 @@
  *     radius r (the other three corners are its mirror images), with the
  *     circle's centre at (r, r): `cov` how much of each pixel is inside
  *     the window's shape, `ring` how much of it is in the band of the given
- *     width along the edge (the outline, or tiling's border), which follows
- *     the curve;
+ *     width along the edge (the outline, or tiling's border; none for a
+ *     window drawing its own decorations), which follows the curve;
  *   - the title bar's circle, LOOK_BTN_D across;
  *   - the three symbols the circles show under the pointer: an x, a bar,
  *     and two arrowheads pointing out to opposite corners (full screen).
@@ -26,7 +26,7 @@ _Static_assert(LOOK_RADIUS <= MASK_CORNER_MAX && LOOK_TILE_RADIUS <= MASK_CORNER
 _Static_assert(DECO_OUTLINE < LOOK_RADIUS && DECO_BORDER < LOOK_TILE_RADIUS,
                "an edge band inside its corner");
 
-struct corner_mask mask_float, mask_tile;
+struct corner_mask mask_float, mask_tile, mask_csd;
 uint8_t mask_disc[LOOK_BTN_D * LOOK_BTN_D];
 uint8_t mask_symbol[TITLE_BUTTONS][LOOK_BTN_D * LOOK_BTN_D];
 
@@ -130,6 +130,7 @@ void mask_init(void)
 {
     make_corner(&mask_float, LOOK_RADIUS, DECO_OUTLINE);
     make_corner(&mask_tile, LOOK_TILE_RADIUS, DECO_BORDER);
+    make_corner(&mask_csd, LOOK_RADIUS, 0);
     for (int32_t j = 0; j < LOOK_BTN_D; j++)
         for (int32_t i = 0; i < LOOK_BTN_D; i++)
             mask_disc[j * LOOK_BTN_D + i] =

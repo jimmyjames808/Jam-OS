@@ -202,8 +202,10 @@ void screens_sync(void)
         if (!ww->win)
             continue;
         bool want = screens_shown(ww);
-        if (want != !!(ww->win->flags & COMP_WIN_MAPPED))
-            window_map(ww->win, want);
+        if (want == !!(ww->win->flags & COMP_WIN_MAPPED))
+            continue;
+        window_map(ww->win, want);
+        wm_shown_changed(ww);
     }
 }
 

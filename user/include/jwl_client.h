@@ -8,7 +8,8 @@
  *   - a struct jwl_client is one program's link to the compositor: the
  *     connection (a channel from /svc/wayland), the globals it bound
  *     (wl_compositor, wl_shm, xdg_wm_base, wl_seat, wl_output, and the
- *     optional cursor shapes, clipboard and window memory, at the versions below or
+ *     optional cursor shapes, clipboard, window memory and decoration
+ *     manager, at the versions below or
  *     lower if the compositor offers less), the seat's keyboard and
  *     pointer, the clipboard's data device, and a queue of events for the
  *     program (struct jwl_event);
@@ -17,7 +18,9 @@
  *     wl_shm_pool; buffers (struct jwl_buffer) are rectangles of a pool;
  *   - a window (struct jwl_window) is a wl_surface with the xdg_toplevel
  *     role, its configure/ack loop, two buffers of its own and frame
- *     callbacks.
+ *     callbacks; it asks for the compositor's title bar and frame
+ *     (xdg-decoration's server_side) when the compositor offers them, and
+ *     draws none of its own either way.
  *
  * Every object of the program's (pools, buffers, windows) outlives the
  * connection. When the compositor dies the library notices the channel
@@ -76,6 +79,8 @@
 #define JWL_CLIENT_DATA_VERSION       3u   /* wl_data_device_manager (optional): the clipboard */
 #define JWL_CLIENT_MEMORY_VERSION     1u   /* jam_window_memory_v1 (optional): windows back in
                                             * their places after a compositor restart */
+#define JWL_CLIENT_DECORATION_VERSION 1u   /* zxdg_decoration_manager_v1 (optional): the
+                                            * compositor's title bars */
 
 #define JWL_EVENT_QUEUE      256u    /* events waiting for the program (dispatch reads no more) */
 #define JWL_SIZE_MAX         8192    /* a window's or buffer's width and height, at most */
@@ -116,6 +121,7 @@ struct jwl_client_info {
     uint32_t cursor_shape_version;  /* 0: the compositor offers no cursor shapes */
     uint32_t data_version;        /* wl_data_device_manager's; 0: no clipboard */
     uint32_t memory_version;      /* jam_window_memory_v1's; 0: windows aren't remembered */
+    uint32_t decoration_version;  /* zxdg_decoration_manager_v1's; 0: no server-side title bars */
     uint32_t shm_formats;         /* bit n: wl_shm format n offered (n < 32) */
     int32_t  output_width;        /* the output's current mode; 0 until told */
     int32_t  output_height;
@@ -401,6 +407,11 @@ status_t jwl_window_move(struct jwl_window *w);
  * it and presents it for the window it makes again after a reconnect, so
  * a restarted compositor puts it back where it was. */
 uint64_t jwl_window_key(const struct jwl_window *w);
+/* Who draws the window's decorations, as the compositor last said
+ * (JWL_ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE or _CLIENT_SIDE: the
+ * window asks for server_side), 0 before it said or when it offers no
+ * decoration manager. */
+uint32_t jwl_window_decoration(const struct jwl_window *w);
 /* The program's own pointer for the window. */
 void     jwl_window_set_user(struct jwl_window *w, void *user);
 void    *jwl_window_user(const struct jwl_window *w);

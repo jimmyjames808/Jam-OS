@@ -1,6 +1,7 @@
 # G2 plan: ported Wayland programs
 
-Status (2026-10-11): a plan, nothing built. Written against main e30d7fec
+Status (2026-10-11): a plan; GC1 built ([GC1 notes](#gc1-notes)), the
+rest not. Written against main e30d7fec
 (M13's B1-B6, S1, T1, T2, X1, K1, K2 merged; X2, S2, P1 and P2 running;
 M13.6 and M13.7 planned and answered as recommended, their first tracks U1
 and PO1 running). **Waiting for the owner's answers to the questions
@@ -807,6 +808,97 @@ the docs.
   for it.
 - **The PC's QEMU slots**: GT's scripts run one QEMU per app; they
   stagger with the others.
+
+## GC1 notes
+
+*Built 2026-10-11.* What GC1 did, where it differs from the plan, and what
+the tracks after it (GC2 first) need to know.
+
+**Versions** (`user/services/compositor/comp.h` has the table): every
+request a new version adds is handled and every event it adds is sent
+only to an object of that version, so a client bound low sees nothing
+newer (utest's `compver.c` checks each at its version and below).
+
+| Global | Offered | What the versions add, as answered |
+|---|---|---|
+| `wl_compositor` | 6 | `wl_surface.offset` (5): double-buffered with the rest (`struct comp_state`'s `offset_set`, `dx`, `dy`); attach's x and y must be 0 from 5 (`invalid_offset`). `preferred_buffer_scale` 1 and `preferred_buffer_transform` normal (6), sent once when the surface is made. Upstream's 7 (`get_release`) is not offered |
+| `wl_shm` | 2 | `release` (it already had a handler) |
+| `wl_output` | 4 | `name` (`HEADLESS-1`, or `FB-1` on the framebuffer) and `description`, before `done` |
+| `wl_seat` | 9 | the wheel: `axis_value120` (120 a notch) in place of `axis_discrete` from 8, `axis_relative_direction` identical from 9 (`pointer.c`) |
+| `xdg_wm_base` | 6 | tiled_left/right/top/bottom (2) for a window in a tiling screen's tree, neither maximised nor full screen (`wm_tiled`); the positioner's `set_reactive`, `set_parent_size`, `set_parent_configure` accepted and `xdg_popup.reposition` checked (3: popups are still dismissed at once, so no `repositioned`); `configure_bounds` (4) when they change, the room under the strip less the window's own decorations (`wm_bounds`); `wm_capabilities` (5) once, before the first configure: maximize, fullscreen, minimize (no window menu), and `set_minimized` now minimises a mapped window; `suspended` (6) while a mapped window isn't shown (another screen, minimised: `wm_suspended`) |
+| `zxdg_decoration_manager_v1` | 1 | new (`xdgdeco.c`), global 9 |
+
+The tiled and suspended states and the bounds are not the window
+manager's configure (`struct wm_config` is unchanged, so its tests' expected
+states are too): `xdgtop.c` works them out when it sends (`struct
+xdg_extra`) and a change sends a configure as a size change would. A
+window shown or hidden without its configure changing reaches the role
+through a new optional hook, `wm_ops.shown`, called by `screens_sync` and
+by a first map onto a screen not shown.
+
+**Decorations, as built.** Q4's (A): a toplevel with a decoration object
+gets the compositor's title bar and frame; one without draws its own; libjwl
+binds the manager and asks `server_side` for every window (made again after
+a reconnect, destroyed before its toplevel). One difference from section 3:
+a client that binds the manager and **asks for `client_side` gets it**
+(draws its own), as the track's brief asked, where section 3 said it would
+be answered `server_side` anyway. Either way such a window has one title
+bar. `mode_for` in `xdgdeco.c` is the whole policy: one line makes it
+section 3's. Version 1 only: version 2's decoration object made for a
+mapped toplevel is refused (`unconfigured_buffer`) until a client needs it.
+- The mode travels in the configure (`WM_ST_CSD`, a state bit that is never
+  an xdg state), so the frame changes with the commit that acks it, like a
+  size; that holds for the decoration object's destroy too (the protocol
+  says "at the next commit": here, the commit acking the configure that
+  follows).
+- A client-side window (`COMP_WIN_CSD`, look.h's `LOOK_CSD`): floating, no
+  title bar or outline, the rounded corners (`mask_csd`, no edge colour)
+  and the floating shadow; maximised, nothing; tiled, tiling's border as
+  every tiled window (the focus's colour). It has no resize edges of the
+  compositor's: it moves and resizes itself (`xdg_toplevel.move`,
+  `resize`); Super+drag still works.
+- **Not done, for GC3 or the GTK spike**: `set_window_geometry` is still
+  kept and not used for placement. A client-side client that draws its
+  own shadow outside its geometry (GTK, libdecor) is placed, framed and
+  shadowed by its whole surface, our shadow and corners on top of its
+  own. The fix: place by the geometry, and for a client-side window whose
+  geometry is smaller than its surface draw neither corners nor shadow.
+- The compositor's raw-protocol tests whose windows have title bars ask
+  for server-side as libjwl does (`ct_server_side`); the others now run
+  their windows client-side, which is the default for a client that
+  doesn't ask.
+
+**What GC2 (subsurfaces) needs from this:**
+1. **The window's box.** Decorations, placement and hits all use the main
+   surface's size: `window_surface_box` and `window_frame` (scene.c),
+   `deco_set`, `deco_hit` and `edges_at` (deco.c), and in wm.c `centre_in`,
+   `first_place`, `keep_reachable`, `place_floating`'s anchors and
+   `note_floating_size` (`s->width`, `s->height`). A tree's window must
+   use the tree's box there (or the window geometry: foot sets one).
+2. **A client-side tree reaches outside its main surface.** foot drawing
+   its own decorations (`csd.preferred=client`; its default is server)
+   puts its title bar in a subsurface at a negative y. The tree's box then
+   starts above the main surface, and `COMP_WIN_CSD`'s corners and shadow
+   follow `window_frame`, so they follow that box.
+3. **Commits.** `on_commit` (surface.c) applies the pending state at once
+   and then calls the role's `commit`; a synchronized subsurface needs the
+   pending state cached and applied at its parent's commit, so the apply
+   step must be split from `on_commit`. The offset (`offset_set`, `dx`,
+   `dy`) is part of that state; each role says what it means (testwin
+   places by it, a toplevel ignores it; for a subsurface it moves the
+   content against `set_position`).
+4. **Visibility and frames.** `surface_visible` and the frame callbacks
+   (`surfaces_frame_done`) go by `s->window`; a subsurface has none of its
+   own and must answer as its root's window does. The suspended state
+   (`wm_ops.shown`) is the root toplevel's, nothing more to do.
+5. **Input.** `wm_window_at`'s `takes_input` (deco.c) and the seat's
+   `window_at` look at the window's one surface; they must walk the tree,
+   topmost first, each surface by its input region.
+6. **Wiring.** `wl_subcompositor` as global 10 in display.c's table, both
+   interfaces in conn.c's `known` and `requests` tables (as
+   `zxdg_decoration_manager_v1` was added), and the caps in comp.h.
+7. **Version 6 surfaces** get `preferred_buffer_scale` when made: a
+   subsurface's wl_surface too, nothing to add.
 
 ## Tests and the sign-off
 
