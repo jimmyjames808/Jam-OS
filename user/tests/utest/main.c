@@ -956,6 +956,7 @@ static const struct {
     { "netsock_ping", t_netsock_ping },
     { "netsock_iface", t_netsock_iface },
     { "netsock_limits", t_netsock_limits },
+    { "netsock_caps", t_netsock_caps },
     { "netsock_hostile", t_netsock_hostile },
     { "netsock_slow_reader", t_netsock_slow_reader },
     { "netsock_busy_client", t_netsock_busy_client },

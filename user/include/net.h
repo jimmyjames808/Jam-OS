@@ -43,7 +43,16 @@
  * gives it to dns, netlog and update alone, and no program from /data may
  * ask for it) may use the rest, so a program that takes its whole share
  * can't stop the network's own services. net_svc opens /svc/net-sys when
- * the namespace has it. */
+ * the namespace has it.
+ *
+ * Caps: one opener may hold half of all the sockets (NET_SOCKETS_PER_OPENER
+ * of NET_SOCKETS_MAX) and half of all the connections (NET_TCP_PER_OPENER of
+ * NET_TCP_MAX), enough for a browser's network process; netstack's memory
+ * stays bounded by the totals (its lwIP pools are sized to them, and the
+ * rings' bytes are budgeted in <sockring.h>: SOCKRING_OPENER_BYTES an
+ * opener, SOCKRING_TOTAL_BYTES in all, NET_PROG_RING_BYTES of them ordinary
+ * openers'), so a program that opens everything it may still takes no more
+ * than its share. */
 #pragma once
 
 #include <stdbool.h>
@@ -56,13 +65,13 @@
 #define NET_DGRAM_MAX          1472u   /* bytes of a datagram: one frame, never fragmented */
 #define NET_OPENERS            32u     /* channels from the shared channels' connect at once */
 #define NET_PROG_OPENERS       24u     /* ... of them /svc/net's (ordinary programs') */
-#define NET_SOCKETS_PER_OPENER 16u     /* sockets one opener may hold */
-#define NET_SOCKETS_MAX        48u     /* sockets of all openers together */
-#define NET_PROG_SOCKETS       24u     /* ... of them ordinary openers' */
+#define NET_SOCKETS_PER_OPENER 256u    /* sockets one opener may hold (half of all) */
+#define NET_SOCKETS_MAX        512u    /* sockets of all openers together */
+#define NET_PROG_SOCKETS       384u    /* ... of them ordinary openers' */
 #define NET_LATER_PER_OPENER   8u      /* waits, echoes and chip_counts in flight an opener */
 #define NET_LATER_MAX          64u     /* ... of all openers together */
 #define NET_PROG_LATER         48u     /* ... of them ordinary openers' */
-#define NET_PROG_RING_BYTES    (16u << 20)  /* ring bytes of ordinary openers' sockets */
+#define NET_PROG_RING_BYTES    (96u << 20)  /* ring bytes of ordinary openers' sockets */
 #define NET_PORT_LOW           1024u   /* ports below: only on /svc/net-low; up to ... */
 #define NET_PORT_EPHEMERAL     49152u  /* ... here only on /svc/net-listen; port 0: from here */
 #define NET_PORT_DHCP_SERVER   67u
@@ -71,9 +80,9 @@
  * waiting ones count against its opener), listeners and the listeners'
  * backlogs, each limited per opener, in all, and for ordinary openers
  * together (the rest is the network services' reserve). */
-#define NET_TCP_MAX              256u   /* connections of all openers */
-#define NET_PROG_TCP             192u   /* ... of them ordinary openers' */
-#define NET_TCP_PER_OPENER       64u    /* ... one opener's */
+#define NET_TCP_MAX              1024u  /* connections of all openers */
+#define NET_PROG_TCP             768u   /* ... of them ordinary openers' */
+#define NET_TCP_PER_OPENER       512u   /* ... one opener's (half of all) */
 #define NET_LISTENERS_MAX        16u    /* listeners of all openers */
 #define NET_PROG_LISTENERS       12u    /* ... of them ordinary openers' */
 #define NET_LISTENERS_PER_OPENER 4u     /* ... one opener's */

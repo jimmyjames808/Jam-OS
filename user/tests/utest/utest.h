@@ -498,6 +498,7 @@ bool t_netsock_udp(void);
 bool t_netsock_ping(void);
 bool t_netsock_iface(void);
 bool t_netsock_limits(void);
+bool t_netsock_caps(void);
 bool t_netsock_hostile(void);
 bool t_netsock_slow_reader(void);
 bool t_netsock_busy_client(void);

@@ -1605,10 +1605,12 @@ restarts:
   netstack's (its pages charged to netstack's job), so it is shrunk to
   nothing once the program's end of the channel closes; a socket whose
   opener went is ended (its status says CLOSED) but kept until then.
-  Limits: 32 openers, 16 sockets an opener and 48 in all, 8 requests in
-  flight an opener and 64 in all, 8 MiB of ring bytes an opener and 24 MiB
-  in all; of each, ordinary programs together get only their share
-  (24 openers, 24 sockets, 48 requests, 16 MiB), and the rest is the
+  Limits: 32 openers, 256 sockets an opener and 512 in all (an opener may
+  hold half of all, enough for a browser's network process), 8 requests in
+  flight an opener and 64 in all, 64 MiB of ring bytes an opener and 128 MiB
+  in all (budgets: the rings' pages are charged as they are touched); of
+  each, ordinary programs together get only their share (24 openers, 384
+  sockets, 48 requests, 96 MiB), and the rest is the
   network's own services' (`/svc/net-sys`, below). A program can't send to
   a broadcast, multicast or loopback address, can't bind a port below 1024
   without the low-port permission (`/svc/net-low`, below) nor one
@@ -1655,8 +1657,8 @@ restarts:
   lwIP and goes when the driver says it has room (`NETDEV_SIG_TX_ROOM`,
   the connections in turn), not on lwIP's next timer. A listener's connections get their rings when their
   handshake finishes (the bytes that come first wait there), counted
-  against the listener's opener. Limits: 64 connections an opener, 256 in
-  all (192 for ordinary programs), 4 listeners an opener, 16 in all, a
+  against the listener's opener. Limits: 512 connections an opener, 1,024 in
+  all (768 for ordinary programs), 4 listeners an opener, 16 in all, a
   backlog of 16 a listener and 128 together (96 for programs); half-open
   connections and the ones netstack let go of have lwIP's lowest priority,
   so a SYN flood fills only its listener's backlog and never takes a

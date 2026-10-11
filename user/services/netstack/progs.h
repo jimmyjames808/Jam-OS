@@ -41,9 +41,9 @@
  * reader. A socket's tx ring is read only while the card's tx ring has
  * room, at most SOCK_TX_BUDGET records a turn, the sockets in turn.
  *
- * Every slot carries a generation, in its port keys (bits 8 and up) and in
- * what refers to it, so a packet or a datagram left from a closed slot is
- * never taken for the slot's next user. */
+ * Every slot carries a generation, in its port keys and in what refers to it,
+ * so a packet or a datagram left from a closed slot is never taken for the
+ * slot's next user. */
 #pragma once
 
 #include <stdbool.h>
@@ -54,21 +54,24 @@
 #include "dev.h"
 #include "stack.h"
 
-/* Port keys (main.c's are below 0x10, dev.h's 0x10 to 0x21). The low byte
- * names the slot, the rest its generation. */
+/* Port keys (main.c's are below 0x10, dev.h's 0x10 to 0x21). An opener's:
+ * the low byte names the slot, the rest its generation. A socket's: KEY_UDP
+ * set, what it is (UK_*) at bit 48, the slot's generation at bit 16 and the
+ * slot in the low 16 bits (more slots than a byte holds; tcpsock.h's keys
+ * are made the same way, with KEY_TCP). */
 #define KEY_OPENER     0x40u   /* + the opener's slot */
-#define KEY_SOCK       0x80u   /* + the socket's slot: its channel */
-#define KEY_RING       0xc0u   /* + the socket's slot: its to_stack event */
-#define SOCK_SLOTS     (NET_SOCKETS_MAX + 1)   /* the DHCP socket has one of its own */
+#define KEY_UDP        (1ull << 62)   /* a port key of sock.c's */
+#define UK_SOCK        1u      /* a socket's channel */
+#define UK_RING        2u      /* a socket's to_stack event */
+#define SOCK_SLOTS     (NET_SOCKETS_MAX + 1)   /* the DHCP socket has slot 0 */
 #define LATER_MAX      NET_LATER_MAX
 #define PROGS_BUDGET   8u      /* requests taken off one channel a turn */
 #define SOCK_TX_BUDGET 32u     /* records taken off one socket's tx ring a turn */
 #define SOCK_CARD_ROOM 2u      /* card slots a datagram needs (one more: an ARP request) */
 #define CHIP_WAIT      (3 * NS_PER_S)   /* chip_counts: the driver's answer, at most */
 
-_Static_assert(KEY_OPENER + NET_OPENERS <= KEY_SOCK, "opener keys");
-_Static_assert(KEY_SOCK + SOCK_SLOTS <= KEY_RING, "socket keys");
-_Static_assert(KEY_RING + SOCK_SLOTS <= 0x100, "ring keys fit the low byte");
+_Static_assert(KEY_OPENER + NET_OPENERS <= 0x100, "opener keys fit the low byte");
+_Static_assert(SOCK_SLOTS <= 0x10000, "a socket's slot fits its key's low 16 bits");
 
 /* An opener's class: which shared channel it came from. */
 enum { CLASS_PROG, CLASS_SYS, CLASSES };
@@ -159,7 +162,8 @@ struct progs {
     bool           shared_pending[CLASSES];
     bool           shared_held[CLASSES];   /* left unread: their clients are behind */
     struct opener  o[NET_OPENERS];
-    struct sock    s[SOCK_SLOTS];
+    struct sock    s[SOCK_SLOTS];    /* slot 0: the DHCP socket's; programs' follow */
+    unsigned       stop;             /* one past the highest slot in use (loops end there) */
     struct later   l[LATER_MAX];
     struct share   held[CLASSES];    /* what each class holds now */
     unsigned       next_tx;          /* the socket the next turn's tx starts with */
@@ -231,8 +235,9 @@ void     sock_close(unsigned i);
 void     sock_close_opener(unsigned slot);
 /* Serve socket i's channel (its pending flag set). */
 void     sock_serve(unsigned i);
-/* A socket's to_stack event fired (KEY_RING): its rings need a look. */
-void     sock_ring_event(unsigned i, uint32_t gen);
+/* A packet with a KEY_UDP key (a socket's channel, or its to_stack event, whose
+ * rings then need a look): true if it was one. */
+bool     sock_packet(const struct port_packet *p);
 /* Read the tx rings that may hold records, the sockets in turn, while the
  * card has room. */
 void     sock_tx_all(void);

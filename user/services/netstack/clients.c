@@ -413,7 +413,7 @@ void progs_unheld(void)
         pg.o[i].pending |= pg.o[i].held;
         pg.o[i].held = false;
     }
-    for (unsigned i = 0; i < SOCK_SLOTS; i++) {
+    for (unsigned i = 0; i < pg.stop; i++) {
         pg.s[i].pending |= pg.s[i].held;
         pg.s[i].held = false;
     }
@@ -488,7 +488,7 @@ void progs_serve(void)
     for (unsigned i = 0; i < NET_OPENERS; i++)
         if (pg.o[i].ch && pg.o[i].pending)
             serve_opener(i);
-    for (unsigned i = 0; i < SOCK_SLOTS; i++)
+    for (unsigned i = 0; i < pg.stop; i++)
         if (pg.s[i].ch && pg.s[i].pending)
             sock_serve(i);
     sock_tx_all();
@@ -502,7 +502,7 @@ bool progs_pending(void)
     for (unsigned i = 0; i < NET_OPENERS; i++)
         if (pg.o[i].ch && pg.o[i].pending)
             return true;
-    for (unsigned i = 0; i < SOCK_SLOTS; i++)
+    for (unsigned i = 0; i < pg.stop; i++)
         if (pg.s[i].ch && pg.s[i].pending)
             return true;
     return sock_tx_pending();
@@ -515,20 +515,16 @@ void progs_flush(void)
 
 bool progs_packet(const struct port_packet *p)
 {
+    if (p->key & KEY_UDP)
+        return sock_packet(p);
     uint32_t low = (uint32_t)(p->key & 0xff), gen = (uint32_t)(p->key >> 8);
     if (p->key == shared_key[CLASS_PROG] || p->key == shared_key[CLASS_SYS]) {
         uint8_t c = p->key == shared_key[CLASS_SYS] ? CLASS_SYS : CLASS_PROG;
         pg.shared_pending[c] = pg.shared[c] != 0;
-    } else if (low >= KEY_RING && low < KEY_RING + SOCK_SLOTS) {
-        sock_ring_event(low - KEY_RING, gen);
     } else if (low >= KEY_OPENER && low < KEY_OPENER + NET_OPENERS) {
         struct opener *o = progs_opener(low - KEY_OPENER, gen);
         if (o)
             o->pending = true;
-    } else if (low >= KEY_SOCK && low < KEY_SOCK + SOCK_SLOTS) {
-        struct sock *s = &pg.s[low - KEY_SOCK];
-        if (s->ch && s->gen == gen)
-            s->pending = true;
     } else {
         return false;
     }

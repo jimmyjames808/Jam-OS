@@ -44,8 +44,8 @@
  * makes a socket with its rings, net_socket.rings gives a socket its rings.
  *
  * Limits, so one program can't use netstack up (<net.h>):
- * NET_SOCKETS_PER_OPENER (16) sockets an opener, NET_SOCKETS_MAX (48) in
- * all, NET_PROG_SOCKETS (24) of them ordinary openers'; NET_LATER_PER_OPENER
+ * NET_SOCKETS_PER_OPENER (256) sockets an opener, NET_SOCKETS_MAX (512) in
+ * all, NET_PROG_SOCKETS (384) of them ordinary openers'; NET_LATER_PER_OPENER
  * (8) waits, echoes and chip_counts in flight an opener; ring bytes
  * (sockring_bytes) SOCKRING_OPENER_BYTES an opener, SOCKRING_TOTAL_BYTES in
  * all, NET_PROG_RING_BYTES of them ordinary openers'. A datagram that

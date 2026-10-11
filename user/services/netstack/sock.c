@@ -43,9 +43,9 @@
 
 static uint8_t txbuf[NET_DGRAM_MAX];   /* the record being sent: our copy */
 
-static uint64_t key_of(unsigned i, uint32_t base)
+static uint64_t key_of(unsigned i, unsigned kind)
 {
-    return (base + i) | (uint64_t)pg.s[i].gen << 8;
+    return KEY_UDP | (uint64_t)kind << 48 | (uint64_t)pg.s[i].gen << 16 | i;
 }
 
 bool sock_sendable(uint32_t a)
@@ -61,13 +61,13 @@ bool sock_sendable(uint32_t a)
 status_t sock_open(unsigned slot, uint16_t port, bool dhcp, handle_t *out, uint16_t *out_port,
                    unsigned *out_i)
 {
-    unsigned i = dhcp ? NET_SOCKETS_MAX : 0;   /* programs' are the first NET_SOCKETS_MAX */
+    unsigned i = dhcp ? 0 : 1;   /* slot 0 is the DHCP socket's, programs' follow */
     uint8_t cls = dhcp ? CLASS_SYS : pg.o[slot].cls;
     if (dhcp && pg.s[i].ch)
         return ERR_ALREADY_BOUND;
-    while (!dhcp && i < NET_SOCKETS_MAX && pg.s[i].ch)
+    while (!dhcp && i < SOCK_SLOTS && pg.s[i].ch)
         i++;
-    if (!dhcp && (i == NET_SOCKETS_MAX || !progs_share_ok(cls, 1, 0, 0)))
+    if (!dhcp && (i == SOCK_SLOTS || !progs_share_ok(cls, 1, 0, 0)))
         return ERR_NO_RESOURCES;
     struct sock *s = &pg.s[i];
     handle_t mine, theirs;
@@ -77,7 +77,7 @@ status_t sock_open(unsigned slot, uint16_t port, bool dhcp, handle_t *out, uint1
     s->gen++;
     st = stack_udp_open(port, dhcp, s, &s->u, &s->port);
     if (st == OK)
-        st = jam_port_bind(pg.port, mine, key_of(i, KEY_SOCK), SIG_READABLE | SIG_PEER_CLOSED,
+        st = jam_port_bind(pg.port, mine, key_of(i, UK_SOCK), SIG_READABLE | SIG_PEER_CLOSED,
                            PORT_BIND_PERSISTENT);
     if (st != OK) {
         stack_udp_close(s->u);
@@ -92,6 +92,8 @@ status_t sock_open(unsigned slot, uint16_t port, bool dhcp, handle_t *out, uint1
     pg.held[cls].socks++;
     if (!dhcp)
         pg.o[slot].socks++;
+    if (i >= pg.stop)
+        pg.stop = i + 1;
     *out = theirs;
     *out_port = s->port;
     *out_i = i;
@@ -121,12 +123,12 @@ status_t sock_rings_make(unsigned i, uint32_t *tx, uint32_t *rx, handle_t hs[3])
     hs[0] = hs[1] = hs[2] = HANDLE_INVALID;
     status_t st = sockmem_make(&s->m, &s->r, SOCKRING_DGRAM, t, r);
     if (st == OK)
-        st = jam_port_bind(pg.port, s->m.to_stack, key_of(i, KEY_RING),
+        st = jam_port_bind(pg.port, s->m.to_stack, key_of(i, UK_RING),
                            SOCKRING_SIG_TX | SOCKRING_SIG_RX_ROOM, PORT_BIND_PERSISTENT);
     if (st == OK)
         st = sockmem_handles(&s->m, hs);
     if (st != OK) {
-        sockmem_drop(&s->m, pg.port, key_of(i, KEY_RING));
+        sockmem_drop(&s->m, pg.port, key_of(i, UK_RING));
         return st;
     }
     s->st = (struct sockring_status){ .state = SOCKRING_STATE_OPEN };
@@ -150,9 +152,9 @@ void sock_close(unsigned i)
         if (o)
             o->ring_bytes -= s->m.bytes;
         pg.held[s->cls].ring_bytes -= s->m.bytes;
-        sockmem_drop(&s->m, pg.port, key_of(i, KEY_RING));
+        sockmem_drop(&s->m, pg.port, key_of(i, UK_RING));
     }
-    (void)jam_port_unbind(pg.port, s->ch, key_of(i, KEY_SOCK));   /* bound since sock_open */
+    (void)jam_port_unbind(pg.port, s->ch, key_of(i, UK_SOCK));   /* bound since sock_open */
     jam_handle_close(s->ch);
     if (o && o->socks)
         o->socks--;
@@ -160,6 +162,8 @@ void sock_close(unsigned i)
     s->ch = HANDLE_INVALID;
     s->u = NULL;
     s->pending = s->tx_ready = s->rx_dirty = s->st_dirty = false;
+    while (pg.stop && !pg.s[pg.stop - 1].ch)
+        pg.stop--;
 }
 
 /* Socket s's opener went: end it (above, "Closing"). */
@@ -176,7 +180,7 @@ static void sock_end(struct sock *s)
 
 void sock_close_opener(unsigned slot)
 {
-    for (unsigned i = 0; i < NET_SOCKETS_MAX; i++) {
+    for (unsigned i = 1; i < pg.stop; i++) {   /* (slot 0 is the DHCP socket's: no opener) */
         struct sock *s = &pg.s[i];
         if (!s->ch || !s->u || s->opener != slot || s->opener_gen != pg.o[slot].gen)
             continue;
@@ -196,7 +200,7 @@ void sock_close_opener(unsigned slot)
 void sock_census(uint32_t *queued, uint32_t *open)
 {
     *queued = *open = 0;
-    for (unsigned i = 0; i < SOCK_SLOTS; i++) {
+    for (unsigned i = 0; i < pg.stop; i++) {
         struct sock *s = &pg.s[i];
         if (!s->ch)
             continue;
@@ -305,10 +309,10 @@ static bool tx_one(struct sock *s)
 
 void sock_tx_all(void)
 {
-    if (pg.card_full)
+    if (pg.card_full || !pg.stop)
         return;
-    for (unsigned n = 0; n < SOCK_SLOTS; n++) {
-        unsigned i = (pg.next_tx + n) % SOCK_SLOTS;
+    for (unsigned n = 0; n < pg.stop; n++) {
+        unsigned i = (pg.next_tx + n) % pg.stop;
         struct sock *s = &pg.s[i];
         if (!s->ch || !s->m.vmo || !s->u || !s->tx_ready || !tx_one(s))
             continue;
@@ -318,24 +322,33 @@ void sock_tx_all(void)
         if (pg.card_full)
             return;
     }
-    pg.next_tx = (pg.next_tx + 1) % SOCK_SLOTS;
+    pg.next_tx = (pg.next_tx + 1) % pg.stop;
 }
 
 bool sock_tx_pending(void)
 {
     if (pg.card_full)
         return false;
-    for (unsigned i = 0; i < SOCK_SLOTS; i++)
+    for (unsigned i = 0; i < pg.stop; i++)
         if (pg.s[i].ch && pg.s[i].m.vmo && pg.s[i].u && pg.s[i].tx_ready)
             return true;
     return false;
 }
 
-void sock_ring_event(unsigned i, uint32_t gen)
+bool sock_packet(const struct port_packet *p)
 {
+    if (!(p->key & KEY_UDP))
+        return false;
+    unsigned kind = (unsigned)(p->key >> 48) & 0xff, i = (unsigned)(p->key & 0xffff);
+    uint32_t gen = (uint32_t)(p->key >> 16);
     struct sock *s = i < SOCK_SLOTS ? &pg.s[i] : NULL;
-    if (s && s->ch && s->m.vmo && s->u && s->gen == gen)
+    if (!s || s->gen != gen)
+        return true;   /* a packet left from a slot's earlier user */
+    if (kind == UK_RING && s->ch && s->m.vmo && s->u)
         s->tx_ready = true;   /* SIG_RX_ROOM needs nothing: a full rx ring drops */
+    else if (kind == UK_SOCK && s->ch)
+        s->pending = true;
+    return true;
 }
 
 /* dev.h's dev_tx_room_came: the card's ring has room (or a new session). */
@@ -362,7 +375,7 @@ bool sock_tcp_card(void)
 
 void sock_flush(void)
 {
-    for (unsigned i = 0; i < SOCK_SLOTS; i++) {
+    for (unsigned i = 0; i < pg.stop; i++) {
         struct sock *s = &pg.s[i];
         if (!s->ch || !s->m.vmo || !(s->rx_dirty || s->st_dirty))
             continue;

@@ -79,11 +79,11 @@ struct taker {
  * out; all closed again after. */
 static bool take_ring_bytes(struct taker *t)
 {
-    struct net_sock big[24];
+    struct net_sock big[32];
     unsigned n = 0, per = SOCKRING_OPENER_BYTES / (unsigned)sockring_bytes(BIG, BIG);
     status_t st = OK;
     for (unsigned i = 0; st == OK && i < t->no; i++)
-        for (unsigned k = 0; st == OK && k <= per && n < 24; k++) {
+        for (unsigned k = 0; st == OK && k <= per && n < 32; k++) {
             st = net_udp_open_rings(t->o[i], 0, BIG, BIG, &big[n]);
             if (st == OK)
                 n++;

@@ -62,7 +62,7 @@
 /* Programs' sockets (<net.h> NET_SOCKETS_MAX: ordinary programs' share,
  * and the reserve DNS's names in flight share with netlog, update, sntp
  * and the shell) and the DHCP client's. */
-#define MEMP_NUM_UDP_PCB        49
+#define MEMP_NUM_UDP_PCB        (512 + 1)
 
 /* ---- the link: Ethernet with ARP, no tags ---------------------------------- */
 #define LWIP_ARP                1
@@ -165,7 +165,7 @@
  * Those two kinds have the lowest priority, so when the pool is full lwIP
  * recycles them (the oldest TIME_WAIT first) for a program's new
  * connection, and a flood of SYNs can never take a program's pcb. */
-#define MEMP_NUM_TCP_PCB        (256 + 128)
+#define MEMP_NUM_TCP_PCB        (1024 + 128)
 #define MEMP_NUM_TCP_PCB_LISTEN 16    /* stack.h's STACK_TCP_LISTENERS */
 /* SO_REUSEADDR for listeners (net.idl's LISTEN_REUSE; stack.c sets
  * SOF_REUSEADDR on those pcbs only): a bind skips the TIME_WAIT pcbs, and

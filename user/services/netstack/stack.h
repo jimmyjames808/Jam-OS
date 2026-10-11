@@ -206,7 +206,7 @@ status_t stack_echo_send(uint32_t to, uint16_t id, uint16_t seq, size_t size);
 #define STACK_TCP_MSS       1460u   /* a segment's bytes: one frame */
 #define STACK_TCP_WND       (2u << 20)   /* the largest window, when the peer scales too */
 #define STACK_TCP_WND_PLAIN (44u * STACK_TCP_MSS)   /* ... when it doesn't (64240 bytes) */
-#define STACK_TCP_CONNS     256u    /* connections netstack holds at most (lwIP keeps more pcbs) */
+#define STACK_TCP_CONNS     1024u   /* connections netstack holds at most (lwIP keeps more pcbs) */
 #define STACK_TCP_LISTENERS 16u     /* listening sockets at most */
 #define STACK_TCP_BACKLOG   16u     /* a listener's half-open and not-yet-accepted, at most */
 /* A connection's send buffer (bytes lwIP keeps until acked): what tcp.c
