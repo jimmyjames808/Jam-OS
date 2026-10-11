@@ -2,8 +2,8 @@
  * change the .idl and run `make idl`.
  *
  * block: one partition of a disk, as its driver serves it (storage.idl's
- * open_partition): usb-storage (a stick) and drv/nvme (an internal drive,
- * read-only). Block numbers are relative to the
+ * open_partition): usb-storage (a stick) and drv/nvme (an internal drive:
+ * writable only on a Jam OS drive). Block numbers are relative to the
  * partition's start; nothing outside it can be reached through this
  * channel. Data moves through a shared buffer (map_buffer), never through
  * messages.
@@ -271,8 +271,8 @@ static inline status_t block_write_call(handle_t ch, bool idl_within, uint64_t i
     return idl_st;
 }
 /* Write `count` blocks from the buffer at `offset` to `lba`. Read-only:
- * ERR_ACCESS_DENIED (a server with no write path at all, drv/nvme in
- * M12.7's stage 1, has no handler for it: ERR_NOT_SUPPORTED). */
+ * ERR_ACCESS_DENIED, before anything else. drv/nvme writes with FUA: the
+ * answer means the blocks are on the medium. */
 static inline status_t block_write_until(handle_t ch, uint64_t deadline_ns, uint64_t lba, uint32_t count, uint32_t offset)
 {
     return block_write_call(ch, false, deadline_ns, lba, count, offset);
@@ -302,8 +302,8 @@ static inline status_t block_sync_call(handle_t ch, bool idl_within, uint64_t id
     return idl_st;
 }
 /* Every write answered before this was sent is on the medium (SCSI
- * SYNCHRONIZE CACHE; on a read-only drv/nvme channel nothing was written:
- * OK at once). */
+ * SYNCHRONIZE CACHE; drv/nvme: a Flush, and on a read-only channel, or a
+ * drive without a volatile cache, OK at once). */
 static inline status_t block_sync_until(handle_t ch, uint64_t deadline_ns)
 {
     return block_sync_call(ch, false, deadline_ns);

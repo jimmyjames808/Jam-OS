@@ -1,7 +1,9 @@
 /* nvme: the NVM Express driver (drv/nvme), started by devmgr for every
- * PCI function of class 01 08 02. READ ONLY: it has no code that writes a
- * block or changes the drive (cmd.c, tools/checknvme.py; the plan is
- * docs/M12.7-PLAN.md).
+ * PCI function of class 01 08 02. It writes only a Jam OS drive's two
+ * partitions, and a blank drive's table when asked to make it Jam OS's
+ * (storage.create_table): every other drive, Windows' among them, is
+ * read-only, decided from the partition table the driver reads itself
+ * (cmd.c's gate, tools/checknvme.py; the plan is docs/M12.7-PLAN.md).
  *
  * Handles (roles from <jam/driver.h>):
  *   DR_BAR(0)   the registers and doorbells (the MSI-X table is the
@@ -15,8 +17,10 @@
  *               with svc.connect: a `storage` channel of the caller's own
  *               (devmgr asks one for volumes); closed: devmgr is stopping
  *               us
- * Arguments: `pci=<bus>:<dev>.<fn>` (devmgr's: the name in the log), and
- * the test words `nvmetest=selftest[,loop][,reset][,abort]` (selftest.c).
+ * Arguments: `pci=<bus>:<dev>.<fn>` (devmgr's: the name in the log),
+ * `ro` (devmgr's on a `diskro` boot: the drive is read-only whatever its
+ * table says), and the test words `nvmetest=selftest[,loop][,reset]
+ * [,abort][,slow]` (selftest.c).
  *
  * Start (ctrl.c): the controller disabled before bus mastering, the admin
  * queue, enabled, identify (the controller; the first usable namespace),
@@ -28,14 +32,14 @@
  * deadline (and every second while commands are out, so a lost interrupt
  * costs a second, never an answer).
  *
- * Ending: DR_SERVE closed: reads failed (answered ERR_PEER_CLOSED), the
+ * Ending: DR_SERVE closed: requests failed (answered ERR_PEER_CLOSED), the
  * I/O queues deleted, the
  * normal shutdown notification (the drive saves its state, its unsafe
  * shutdown count doesn't grow), bus mastering off, every channel closed
  * and everything unpinned,
  * exit 0. Exit 0 also when the controller has nothing to serve (no usable
  * namespace, not the NVM command set: said in the RESULTS box). Exit 1:
- * missing handles, or a command outside the read-only list (cmd.c); 3:
+ * missing handles, or a command outside the lists (cmd.c); 3:
  * the controller couldn't be brought up, went away, or needed more than
  * RESETS_MAX resets in RESET_WINDOW (devmgr restarts it with backoff). */
 #include <idl/common.h>
@@ -47,14 +51,17 @@
 static struct nvme ctrl;
 static char name[32];
 
-/* The name in the log: "nvme 02:00.0" from devmgr's pci= word. */
-static void set_name(struct nvme *c, const struct driver_start *s)
+/* The name in the log: "nvme 02:00.0" from devmgr's pci= word; and the
+ * `ro` word. */
+static void take_args(struct nvme *c, const struct driver_start *s)
 {
     drv_snprintf(name, sizeof(name), "nvme");
     for (uint32_t i = 0; i < s->nargs && i < DRV_MAX_ARGS; i++) {
         const char *a = s->args[i];
         if (a && a[0] == 'p' && a[1] == 'c' && a[2] == 'i' && a[3] == '=')
             drv_snprintf(name, sizeof(name), "nvme %s", a + 4);
+        if (a && a[0] == 'r' && a[1] == 'o' && !a[2])
+            c->ro = true;
     }
     c->name = name;
 }
@@ -103,8 +110,8 @@ static void report(struct nvme *c)
     char table[80];
     serve_describe(table, sizeof(table));
     unsigned shift = 20 - (unsigned)__builtin_ctz(c->ns.block_size);
-    drv_report("%s: %s, %lu MiB, %s, read-only", c->name, c->model,
-               (unsigned long)(c->ns.blocks >> shift), table);
+    drv_report("%s: %s, %lu MiB, %s, %s", c->name, c->model,
+               (unsigned long)(c->ns.blocks >> shift), table, cmd_mode_str());
     drv_log("%s: queues of %u entries, %u bytes a command at most, %s", c->name, c->io.depth,
             c->max_cmd, c->irq != HANDLE_INVALID ? "msi-x vector 0" : "polled");
 }
@@ -118,6 +125,8 @@ static status_t run(struct nvme *c)
             break;
         if (!serve_work(c))
             break;   /* DR_SERVE closed */
+        if ((st = c->failed) != OK)
+            break;   /* the table's read-back got no answer */
         blk_due(c);
         uint64_t now = drv_clock_ns(), d = queue_next_deadline(c);
         d = d < blk_next_due() ? d : blk_next_due();
@@ -145,7 +154,7 @@ int driver_main(const struct driver_start *s)
     struct nvme *c = &ctrl;
     *c = (struct nvme){ .port = HANDLE_INVALID, .data_vmo = HANDLE_INVALID,
                         .prp_vmo = HANDLE_INVALID };
-    set_name(c, s);
+    take_args(c, s);
     c->test = selftest_words(s);
     handle_t bar;
     int r = take_handles(c, s, &bar);
@@ -171,10 +180,12 @@ int driver_main(const struct driver_start *s)
     ctrl_stop(c);
     serve_stop(c);
     selftest_stop(c);
-    drv_log("%s: stopped (%s): %lu read(s), %lu failed, %lu completion(s) (%lu stale), %lu "
-            "interrupt(s), %lu poll(s), %lu abort(s), %u reset(s); bus mastering %s", c->name,
+    drv_log("%s: stopped (%s): %lu read(s), %lu failed, %lu write(s) and %lu flush(es), %lu "
+            "failed, %lu completion(s) (%lu stale), %lu interrupt(s), %lu poll(s), %lu abort(s), "
+            "%u reset(s); bus mastering %s", c->name,
             st == OK ? "devmgr closed our channel" : status_str(st),
-            (unsigned long)c->reads, (unsigned long)c->read_fail, (unsigned long)c->completions,
+            (unsigned long)c->reads, (unsigned long)c->read_fail, (unsigned long)c->writes,
+            (unsigned long)c->flushes, (unsigned long)c->write_fail, (unsigned long)c->completions,
             (unsigned long)c->stale, (unsigned long)c->irqs, (unsigned long)c->polls,
             (unsigned long)c->aborts, c->resets, c->bus_master ? "STILL ON" : "off");
     return st == OK ? 0 : 3;

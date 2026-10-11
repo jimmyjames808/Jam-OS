@@ -588,7 +588,7 @@ $(PT_LIB_OBJ): $(patsubst %,$(BUILD)/udrv/drivers/lib/%.o,$(PT_LIB)) tools/check
 # kmalloc call, a call into another driver, ...) and accepts a clean one,
 # the Markdown docs still match the tree (tools/checkdocs.py), the
 # RTL8125 listen-only probe has no way to transmit (tools/checknotx.sh),
-# the NVMe driver has no way to write (tools/checknvme.py), and the
+# the NVMe driver writes only a drive it found to be Jam OS's (tools/checknvme.py), and the
 # partition table library keeps to the driver rules and passes
 # tools/gptcheck.c (its cases, mutations and a short fuzz pass).
 check: all

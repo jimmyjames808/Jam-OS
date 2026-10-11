@@ -4,19 +4,25 @@
  * queues, command slots and ids, timeouts and abort, PRPs and reads;
  * cmd.c: submission queues, the ONE place a submission entry is written;
  * serve.c: the partition table and the `storage` protocol (digest,
- * health); block.c: the `block` channels; selftest.c: the test words'
- * reads.
+ * health, create_table); block.c: the `block` channels; selftest.c: the
+ * test words' reads.
  *
  * One thread; nothing is locked. Every command is a slot of its queue
  * (struct nvme_slot): its id is the slot's index and the slot's
  * generation, so a completion that arrives for a slot reused since (after
  * a reset, or an abort) is recognised and ignored.
  *
- * The read-only rule (docs/M12.7-PLAN.md, "The read-only guarantee"):
- * cmd.c alone knows the submission queues' memory (struct nvme_sq is
- * opaque here) and the opcodes; it builds only the commands its enum
- * lists and checks each one again at run time. tools/checknvme.py keeps
- * it that way at build time. Nothing in this driver can write a block. */
+ * The write rule (docs/M12.7-PLAN.md, "The read-only guarantee" and
+ * "Stage 2: writes to a Jam OS disk only"): cmd.c alone knows the
+ * submission queues' memory (struct nvme_sq is opaque here), the opcodes
+ * and the drive's mode (enum nvme_mode), which it sets itself from the
+ * partition table the driver read (cmd_arm). It builds only the commands
+ * its lists name, checks each one again at run time, and builds a Write
+ * in one function, sqe_write, which refuses anything but a Jam OS drive's
+ * own partitions (or a blank drive's table, for create_table) before it
+ * looks at the blocks. tools/checknvme.py keeps it that way at build
+ * time. Windows' drive, like every drive that isn't Jam OS's, is never
+ * written: its mode is MODE_OTHER and no Write or Flush can be built. */
 #pragma once
 
 #include <jam/driver.h>
@@ -62,7 +68,7 @@
 #define NVME_SQE_BYTES 64u
 #define NVME_CQE_BYTES 16u
 #define NVME_IO_QID    1u     /* the one I/O queue pair */
-#define NVME_CMD_MAX   (1u << 20)   /* bytes one read command moves at most (and MDTS) */
+#define NVME_CMD_MAX   (1u << 20)   /* bytes one read or write command moves at most (and MDTS) */
 #define NVME_PRP_PER_PAGE (NVME_PAGE / 8)
 
 #define ADMIN_TIMEOUT  (10 * NS_PER_S)
@@ -84,6 +90,20 @@
 struct nvme;
 struct nvme_io;
 struct nvme_sq;   /* cmd.c's alone */
+struct pt_table;
+
+/* What the driver may write on its drive (cmd.c's gate decides; cmd_mode
+ * tells). Only ever from the partition table the driver read itself,
+ * when it starts and after its own create_table. */
+enum nvme_mode {
+    MODE_OTHER = 0,   /* someone else's (Windows'), unreadable, or `ro`: never written */
+    MODE_BLANK,       /* blank: create_table may write its table's blocks, nothing else */
+    MODE_JAMOS,       /* Jam OS's: its two partitions may be written, nothing else */
+};
+
+/* A write's target that is no partition: the table's blocks, for
+ * create_table on a blank drive (an nvme_io's `part`). */
+#define PART_TABLE 0xffu
 
 /* One command in flight on a queue. */
 struct nvme_slot {
@@ -92,7 +112,7 @@ struct nvme_slot {
     bool     is_abort;       /* it IS an Abort */
     uint16_t gen;            /* bumped at every use: the id's upper bits */
     uint64_t deadline;       /* when it is aborted (or the controller reset) */
-    struct nvme_io *io;      /* the read it is part of (I/O queue), else NULL */
+    struct nvme_io *io;      /* the request it is part of (I/O queue), else NULL */
     /* An admin command's answer: status (NVME_SC_*) and completion dword 0. */
     void   (*done)(struct nvme *c, struct nvme_slot *s, uint16_t status, uint32_t dw0);
     void    *ctx;            /* done's */
@@ -134,12 +154,15 @@ struct nvme {
     uint64_t ready_wait;       /* CAP.TO in ns */
     bool     bus_master;
     bool     gone;             /* registers read all ones */
-    bool     stopping;         /* DR_SERVE closed: no new reads */
+    bool     stopping;         /* DR_SERVE closed: no new requests */
+    bool     ro;               /* the `ro` word (devmgr's, for `diskro`): every drive MODE_OTHER */
+    bool     vwc;              /* a volatile write cache: a Flush means something */
+    status_t failed;           /* not OK: the loop ends with it (the table's read-back stuck) */
     struct nvme_queue admin, io;
 
     /* Identify (CNS 1): strings trimmed, NUL-terminated. */
     char     model[41], serial[21], firmware[9];
-    uint32_t max_cmd;          /* bytes a read command may move */
+    uint32_t max_cmd;          /* bytes a read or write command may move */
     uint32_t nn;               /* namespaces the controller may have */
     struct nvme_ns ns;
 
@@ -156,11 +179,12 @@ struct nvme {
     uint64_t prp_pin;
     bool     prp_pinned;
 
-    /* Reads waiting for a slot, first to last (an io partly sent stays first). */
+    /* Requests waiting for a slot, first to last (an io partly sent stays first). */
     struct nvme_io *wait_head, *wait_tail;
 
     /* Counts, for the log. */
     uint64_t irqs, polls, completions, stale, reads, read_fail, aborts;
+    uint64_t writes, flushes, write_fail;
     uint32_t resets;
     uint64_t reset_at[RESETS_MAX];   /* the last resets' times */
 
@@ -178,14 +202,27 @@ struct nvme {
  * the drain rule waits for (utest's nvme_fence). */
 #define NVME_TEST_SLOW     (1u << 4)
 
-/* A read of `blocks` blocks at `lba` into a buffer whose pages the
- * device reaches at pages[0..npages), starting `offset` bytes in (a
- * multiple of 4). done is called once, from the loop, with OK or the
- * first failure: ERR_IO (the device failed a command or a reset failed
- * it twice), ERR_TIMED_OUT (aborted after its deadline), ERR_PEER_CLOSED
- * (the driver is stopping). The caller keeps io and the buffer until
- * then. */
+/* What an nvme_io asks: IO_READ (0, so a request made with no kind is a
+ * read), IO_WRITE (with FUA: answered means on the medium), IO_FLUSH. */
+enum io_kind {
+    IO_READ = 0,
+    IO_WRITE,
+    IO_FLUSH,
+};
+
+/* A read or write of `blocks` blocks at `lba`, from or into a buffer
+ * whose pages the device reaches at pages[0..npages), starting `offset`
+ * bytes in (a multiple of 4); or a Flush (no blocks, no buffer). A write
+ * names its target, `part`: the table's index of its partition, or
+ * PART_TABLE (cmd.c checks the lba against that, and the drive's mode,
+ * whatever the caller checked). done is called once, from the loop, with
+ * OK or the first failure: ERR_IO (the device failed a command, or a
+ * reset failed it: a read twice, a write or flush at once), ERR_TIMED_OUT
+ * (aborted after its deadline), ERR_PEER_CLOSED (the driver is
+ * stopping). The caller keeps io and the buffer until then. */
 struct nvme_io {
+    uint8_t  kind;             /* enum io_kind */
+    uint8_t  part;             /* a write's target (see above) */
     uint64_t lba;
     uint32_t blocks;
     const uint64_t *pages;
@@ -197,7 +234,7 @@ struct nvme_io {
     uint32_t sent;             /* blocks given to commands so far */
     uint32_t inflight;         /* its commands out */
     status_t st;               /* the first failure */
-    bool     retried;          /* resubmitted after a reset once already */
+    bool     retried;          /* a read resubmitted after a reset once already */
     bool     waiting;          /* on the wait list */
     struct nvme_io *next;      /* on the wait list */
 };
@@ -236,6 +273,14 @@ struct admin_args {
     uint32_t cdw10, cdw11;
 };
 
+/* The drive's mode from the table the driver read itself (t; NULL: none
+ * could be read), and where it may then be written: MODE_JAMOS, its two
+ * partitions; MODE_BLANK, the blocks pt_jamos_plan gives Jam OS's table;
+ * MODE_OTHER, nothing (also with c->ro). The one way the mode changes. */
+void     cmd_arm(struct nvme *c, const struct pt_table *t);
+enum nvme_mode cmd_mode(void);
+const char *cmd_mode_str(void);   /* for the log and the RESULTS line */
+
 /* Queue q's submission queue: its page, pinned read only, and its tail
  * doorbell. OK, or what failed (nothing kept). */
 status_t sq_create(struct nvme *c, struct nvme_queue *q);
@@ -243,17 +288,25 @@ void     sq_destroy(struct nvme *c, struct nvme_queue *q);
 /* Empty again (the controller was disabled): tail 0, entries zeroed. */
 void     sq_reset(struct nvme_queue *q);
 uint64_t sq_addr(const struct nvme_queue *q);   /* for ASQ */
-/* Send an admin command in slot s of c->admin, or a read in slot s of
- * c->io. Anything outside the stage's list ends the driver (exit 1,
- * a RESULTS line): they never return an error for it. */
+/* Send an admin command in slot s of c->admin, or a read, a write (to
+ * target `part`, see struct nvme_io) or a flush in slot s of c->io.
+ * Anything outside the lists ends the driver (exit 1, a RESULTS line):
+ * they never return an error for it. sqe_write refuses so a write while
+ * the mode isn't MODE_JAMOS (a partition) or MODE_BLANK (PART_TABLE), and
+ * then one outside its target's blocks; sqe_flush, a flush on a
+ * MODE_OTHER drive. The callers check first (block.c, serve.c): these
+ * are the last line. */
 void     sqe_admin(struct nvme *c, struct nvme_slot *s, enum admin_op op,
                    const struct admin_args *a);
 void     sqe_read(struct nvme *c, struct nvme_slot *s, uint64_t lba, uint32_t blocks,
                   uint64_t prp1, uint64_t prp2);
+void     sqe_write(struct nvme *c, struct nvme_slot *s, uint8_t part, uint64_t lba,
+                   uint32_t blocks, uint64_t prp1, uint64_t prp2);
+void     sqe_flush(struct nvme *c, struct nvme_slot *s);
 /* The command id a slot's command carries. */
 uint16_t slot_cid(const struct nvme_queue *q, const struct nvme_slot *s);
 
-/* ---- queue.c: completions, slots, timeouts, reads ------------------------------------ */
+/* ---- queue.c: completions, slots, timeouts, requests --------------------------------- */
 
 status_t queue_create(struct nvme *c, struct nvme_queue *q, uint16_t qid, uint16_t depth);
 void     queue_destroy(struct nvme *c, struct nvme_queue *q);
@@ -271,17 +324,19 @@ bool     queue_timeouts(struct nvme *c);
 /* The nearest deadline of any command out (DEADLINE_NEVER: none). */
 uint64_t queue_next_deadline(const struct nvme *c);
 /* Every command out failed (NVME_SC_RESET): admin commands' done with it,
- * reads put back at the front of the wait list (once; then ERR_IO). */
+ * reads put back at the front of the wait list (once; then ERR_IO),
+ * writes and flushes failed ERR_IO (a write may or may not have landed:
+ * its client hears so, and asks again). */
 void     queue_fail_all(struct nvme *c);
-/* Reads: see struct nvme_io. ERR_INVALID_ARGS / ERR_OUT_OF_RANGE before
- * anything is sent; else OK and io->done later. */
-status_t nvme_read(struct nvme *c, struct nvme_io *io);
+/* A request: see struct nvme_io. ERR_INVALID_ARGS / ERR_OUT_OF_RANGE
+ * before anything is sent; else OK and io->done later. */
+status_t nvme_submit(struct nvme *c, struct nvme_io *io);
 /* Take io off the wait list if none of its commands was ever sent (its
  * done is then never called): true. false: it is out, or not waiting. */
 bool     io_cancel(struct nvme *c, struct nvme_io *io);
 /* Send what the wait list can (slots permitting). */
 void     io_kick(struct nvme *c);
-/* Every read still waiting or out ends with st (the driver stops). */
+/* Every request still waiting or out ends with st (the driver stops). */
 void     io_end_all(struct nvme *c, status_t st);
 
 /* ---- ctrl.c: the controller ------------------------------------------------------------ */
@@ -305,9 +360,10 @@ status_t ctrl_admin_send(struct nvme *c, enum admin_op op, const struct admin_ar
  * timeouts. ERR_PEER_CLOSED: gone; ERR_IO: reset failed or too many. */
 status_t ctrl_poll(struct nvme *c);
 /* Disable, set the queues up again, enable, the I/O pair again; reads in
- * flight resubmitted. ERR_IO: RESETS_MAX in RESET_WINDOW, or it failed. */
+ * flight resubmitted (writes failed). ERR_IO: RESETS_MAX in RESET_WINDOW,
+ * or it failed. */
 status_t ctrl_reset(struct nvme *c, const char *why);
-/* The end: reads failed, the I/O queues deleted, the normal shutdown
+/* The end: requests failed, the I/O queues deleted, the normal shutdown
  * notification waited for, bus mastering off, everything unpinned. */
 void     ctrl_stop(struct nvme *c);
 /* The SMART / health log (02h; NVMe 1.4, Figure 194): what `disk smart`
@@ -358,10 +414,12 @@ void     serve_stop(struct nvme *c);
 
 /* ---- block.c: `block` channels ----------------------------------------------------------- */
 
-/* A read-only `block` channel limited to partition `part` (index `index`
- * of the table), bound to c->port; *out: the client's end.
- * ERR_NO_RESOURCES: BLK_MAX open already. */
-status_t blk_open(struct nvme *c, uint8_t index, uint64_t start, uint64_t blocks, handle_t *out);
+/* A `block` channel limited to partition `index` of the table (its
+ * blocks [start, start + blocks)), bound to c->port; *out: the client's
+ * end. Writable only on a MODE_JAMOS drive (ERR_ACCESS_DENIED otherwise:
+ * serve.c asks first). ERR_NO_RESOURCES: BLK_MAX open already. */
+status_t blk_open(struct nvme *c, uint8_t index, uint64_t start, uint64_t blocks, bool writable,
+                  handle_t *out);
 void     blk_packet(uint64_t key);
 /* Serve what the channels have queued; true if any was looked at. */
 bool     blk_serve(struct nvme *c);

@@ -201,6 +201,7 @@ static status_t identify_ctrl(struct nvme *c)
     if (c->max_cmd > NVME_CMD_MAX)
         c->max_cmd = NVME_CMD_MAX;
     c->nn = le32(d + 516);
+    c->vwc = d[525] & 1;   /* VWC: a volatile write cache is there */
     if ((d[512] & 0xf) > 6 || (d[513] & 0xf) > 4) {   /* SQES / CQES: the required sizes */
         drv_log("%s: entries of 2^%u and 2^%u bytes required: not 64 and 16", c->name,
                 d[512] & 0xf, d[513] & 0xf);

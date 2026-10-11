@@ -11,7 +11,7 @@
  *                  the GPT areas and the two small partitions, which the
  *                  test script compares with the host's
  *   nvme_block     block.info, map_buffer once, every refusal (range,
- *                  offset, buffer, write), sync
+ *                  offset, buffer, a write: the drive isn't Jam OS's), sync
  *   nvme_inflight  32 reads sent without waiting, each answered once by its
  *                  txid, in whatever order the drive finished them, with
  *                  the bytes a read of the same blocks alone gives
@@ -208,7 +208,8 @@ bool t_nvme_storage(void)
     CHECK(nl > 0);
     CHECK_ST(storage_partition_within(s, WAIT, d.parts, &mbr_type, type, uniq, &start, &blocks,
                                       &attr, name, &nl), ERR_OUT_OF_RANGE);
-    /* Writable: never, whatever the index; bad arguments: refused. */
+    /* Writable: never on this drive (not Jam OS's), whatever the index; bad
+     * arguments: refused. */
     CHECK_ST(storage_open_partition_within(s, WAIT, 0, 0, &blk), ERR_ACCESS_DENIED);
     CHECK_ST(storage_open_partition_within(s, WAIT, 0, 2, &blk), ERR_INVALID_ARGS);
     CHECK_ST(storage_open_partition_within(s, WAIT, d.parts, 1, &blk), ERR_OUT_OF_RANGE);
@@ -267,11 +268,11 @@ bool t_nvme_block(void)
     CHECK_ST(block_read_within(blk, WAIT, 0, BUF / bs + 1, 0), ERR_OUT_OF_RANGE);
     CHECK_ST(block_read_within(blk, WAIT, 0, BUF / bs, 4), ERR_OUT_OF_RANGE);
     CHECK_ST(block_read_within(blk, WAIT, 0, 1, BUF), ERR_OUT_OF_RANGE);
-    /* The last block, a whole buffer, and a sync; never a write. */
+    /* The last block, a whole buffer, and a sync; a write refused. */
     CHECK_ST(block_read_within(blk, WAIT, blocks - 1, 1, BUF - bs), OK);
     CHECK_ST(block_read_within(blk, WAIT, 0, BUF / bs, 0), OK);
     CHECK_ST(block_sync_within(blk, WAIT), OK);
-    CHECK_ST(block_write_within(blk, WAIT, 0, 1, 0), ERR_NOT_SUPPORTED);
+    CHECK_ST(block_write_within(blk, WAIT, 0, 1, 0), ERR_ACCESS_DENIED);
     unmap(map);
     jam_handle_close(blk);
     jam_handle_close(bare);

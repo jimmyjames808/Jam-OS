@@ -267,8 +267,8 @@ for c in $cases; do
             grep -qxF "$line" "$dir/regions-host.txt" || bad "utest's '$line' isn't the host's"
         done < "$dir/regions-utest.txt"
         # the client that left with reads out: dropped, the partition drained
-        want "partition 1: its client left with [1-9][0-9]* read\(s\) out"
-        want "partition 1: the gone client's reads are done"
+        want "partition 1: its client left with [1-9][0-9]* request\(s\) out"
+        want "partition 1: the gone client's requests are done"
     }
     if [ $level -ge 1 ]; then L1; fi
     if [ $level -ge 2 ]; then L2; fi

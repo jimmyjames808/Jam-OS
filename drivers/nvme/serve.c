@@ -4,8 +4,12 @@
  * channel (devmgr asks one for volumes, and one for a test that holds its
  * control channel). The `block` channels it opens are block.c's.
  *
- * READ ONLY: open_partition with read_only 0 is ERR_ACCESS_DENIED on
- * every disk, before anything else is looked at but its arguments.
+ * Writes (docs/M12.7-PLAN.md, "Stage 2"): what the drive is, Jam OS's,
+ * blank or someone else's, is cmd.c's to decide (cmd_arm) from the table
+ * read here, at the start and after create_table. open_partition with
+ * read_only 0 is ERR_ACCESS_DENIED on every drive but a Jam OS one, and
+ * create_table on every drive but a blank one, before anything else is
+ * looked at but the arguments' form.
  *
  * The table decides what a channel may reach: partition i's bounds are
  * the library's t.parts[i], which lie inside the disk, inside GPT's usable
@@ -19,13 +23,22 @@
  *   health  the health log, one Get Log Page out at a time
  *           (ctrl_admin_send), and every request waiting for it answered
  *           from it.
+ *   create_table  Jam OS's table (the library's pt_jamos_make) into a
+ *           64 KiB buffer of its own, pinned writable, then written one
+ *           piece at a time, each after the last one's answer, in the
+ *           plan's order: the backup entry array, the backup header, the
+ *           primary entry array, the primary header, a Flush, the
+ *           protective MBR (a cut leaves the drive blank-in-progress: it
+ *           runs again). Then the table is read back (from the loop, not
+ *           a completion) and the drive's mode set from it.
  * A request kept for later remembers its channel (struct conn); when a
  * connect's channel closes, its requests are forgotten (a digest under way
  * runs to its end, unanswered), so no answer goes to a closed handle.
  *
- * The table's reads at the start wait (read_wait): no client is served
- * yet, and the wait is bounded by the reads' own timeouts, abort and
- * reset (ctrl_poll) and START_WAIT. */
+ * The table's reads wait (read_wait): at the start no client is served
+ * yet; after create_table they are a few blocks on the loop's own drive.
+ * The wait is bounded by the reads' own timeouts, abort and reset
+ * (ctrl_poll) and START_WAIT. */
 #include <idl/storage.h>
 #include <idl/svc.h>
 #include <jam/parttable.h>
@@ -40,6 +53,8 @@
 #define PT_BUF      (64u << 10)             /* the table's reads: the buffer's first 64 KiB */
 #define HEALTH_WAIT 8                       /* health requests waiting for one log page */
 #define START_WAIT  (3 * IO_TIMEOUT)        /* one read of the table, at most */
+#define CT_BYTES    (64u << 10)             /* create_table's buffer: the table, its read-back */
+#define CT_PAGES    (CT_BYTES / NVME_PAGE)
 
 _Static_assert(PT_SCHEME_NONE == STORAGE_SCHEME_NONE && PT_SCHEME_MBR == STORAGE_SCHEME_MBR &&
                PT_SCHEME_GPT == STORAGE_SCHEME_GPT, "the library's schemes are storage's");
@@ -110,6 +125,13 @@ static struct {
     status_t fail;             /* why it is stuck */
 } rw;
 
+/* The buffer the table is read through: its pages as the device reaches them. */
+struct reader {
+    struct nvme    *c;
+    const uint64_t *pages;
+    uint32_t        npages;
+};
+
 static void read_waited(struct nvme *c, struct nvme_io *io, status_t st)
 {
     (void)c;
@@ -121,15 +143,16 @@ static void read_waited(struct nvme *c, struct nvme_io *io, status_t st)
 /* `count` blocks from `lba` into the buffer's start, waited for. */
 static status_t read_wait(void *ctx, uint64_t lba, uint32_t count, void *buf)
 {
-    struct nvme *c = ctx;
-    (void)buf;   /* dg.buf: the device writes it */
+    const struct reader *rd = ctx;
+    struct nvme *c = rd->c;
+    (void)buf;   /* the reader's buffer: the device writes it */
     static struct nvme_io io;   /* static: its done may come after a failed wait */
     if (rw.stuck)
         return rw.fail;   /* io may be out still: never reused */
-    io = (struct nvme_io){ .lba = lba, .blocks = count, .pages = dg.pages,
-                           .npages = PT_BUF / NVME_PAGE, .done = read_waited };
+    io = (struct nvme_io){ .lba = lba, .blocks = count, .pages = rd->pages,
+                           .npages = rd->npages, .done = read_waited };
     rw.done = false;
-    status_t st = nvme_read(c, &io);
+    status_t st = nvme_submit(c, &io);
     uint64_t deadline = drv_clock_ns() + START_WAIT;
     while (st == OK && !rw.done) {
         if ((st = ctrl_poll(c)) != OK) {
@@ -236,30 +259,43 @@ static status_t buffer(struct nvme *c)
     return st;
 }
 
-status_t serve_start(struct nvme *c)
+/* The table read through rd's buffer (buf, `size` bytes, mapped), logged,
+ * and the drive's mode set from it (cmd_arm: from nothing, MODE_OTHER,
+ * if it can't be read). OK, or the read's failure that ends the driver. */
+static status_t table_read(struct nvme *c, struct reader *rd, void *buf, uint32_t size)
 {
-    for (unsigned i = 0; i <= MAX_CONNS; i++)
-        conns[i].ch = HANDLE_INVALID;
-    status_t st = buffer(c);
-    if (st != OK)
-        return st;
     struct pt_disk d = { .block_size = c->ns.block_size, .blocks = c->ns.blocks,
-                         .read = read_wait, .ctx = c, .buf = dg.buf, .buf_size = PT_BUF };
+                         .read = read_wait, .ctx = rd, .buf = buf, .buf_size = size };
     tbl.st = pt_read(&d, &tbl.t);
-    if (c->gone)
-        return ERR_PEER_CLOSED;
-    if (rw.stuck)
-        return rw.fail;   /* the buffer may still be the device's: no serving */
+    if (c->gone || rw.stuck) {
+        cmd_arm(c, NULL);
+        return c->gone ? ERR_PEER_CLOSED : rw.fail;   /* the buffer may still be the device's */
+    }
     if (tbl.st != OK) {
         /* Served with no partitions: nothing on it can be opened. */
         drv_log("%s: the partition table can't be read (%s): no partitions served", c->name,
                 status_str(tbl.st));
         tbl.t.nparts = 0;
         tbl.t.scheme = PT_SCHEME_NONE;
-        return OK;
+    } else {
+        log_table(c, &tbl.t);
     }
-    log_table(c, &tbl.t);
+    cmd_arm(c, tbl.st == OK ? &tbl.t : NULL);
+    drv_log("%s: the drive is %s%s", c->name, cmd_mode_str(), c->ro ? " (the ro word)" : "");
     return OK;
+}
+
+status_t serve_start(struct nvme *c)
+{
+    for (unsigned i = 0; i <= MAX_CONNS; i++)
+        conns[i].ch = HANDLE_INVALID;
+    cmd_arm(c, NULL);   /* nothing writable until the table says otherwise */
+    status_t st = buffer(c);
+    if (st != OK)
+        return st;
+    static struct reader rd;
+    rd = (struct reader){ .c = c, .pages = dg.pages, .npages = PT_BUF / NVME_PAGE };
+    return table_read(c, &rd, dg.buf, PT_BUF);
 }
 
 /* ---- digest ------------------------------------------------------------------------------ */
@@ -278,7 +314,7 @@ static void dg_issue(struct nvme *c, unsigned k)
                                  .done = dg_done, .ctx = (void *)(uintptr_t)k };
     dg.out[k] = true;
     dg.ready[k] = false;
-    status_t st = nvme_read(c, &dg.io[k]);
+    status_t st = nvme_submit(c, &dg.io[k]);
     if (st != OK) {
         dg.out[k] = false;
         dg.st = st;
@@ -375,6 +411,145 @@ static void health_done(struct nvme *c, struct nvme_slot *s, uint16_t status, ui
     hl.n = 0;
 }
 
+/* ---- create_table ------------------------------------------------------------------------ */
+
+/* Its writes, in the plan's order (see the header). */
+enum ct_step {
+    CT_BACKUP_ARRAY,
+    CT_BACKUP_HEADER,
+    CT_PRIMARY_ARRAY,
+    CT_PRIMARY_HEADER,
+    CT_FLUSH,
+    CT_MBR,
+    CT_STEPS
+};
+
+static struct {
+    handle_t vmo;
+    uint8_t *buf;              /* mapped: pt_jamos_make's blocks, then the read-back */
+    uint64_t pages[CT_PAGES];
+    uint64_t pin;
+    bool     pinned;
+    bool     running;          /* one at a time */
+    bool     reread;           /* its writes are over: the loop reads the table back */
+    struct kept k;
+    struct pt_jamos_plan plan;
+    uint32_t step;             /* enum ct_step: the write out */
+    status_t st;               /* the first failure */
+    struct nvme_io io;
+} ct = { .vmo = HANDLE_INVALID };
+
+/* Its buffer, made once: pinned writable (the device reads the table
+ * from it, and writes the read-back into it), mapped. */
+static status_t ct_buffer(struct nvme *c)
+{
+    void *p = NULL;
+    status_t st = drv_vmo_create(CT_BYTES, 0, &ct.vmo);
+    if (st == OK && (st = drv_vmo_map(ct.vmo, 0, CT_BYTES, VMAR_READ | VMAR_WRITE, &p)) == OK)
+        ct.buf = p;
+    if (st == OK && (st = drv_vmo_pin(ct.vmo, c->dma, 0, CT_BYTES, ct.pages, &ct.pin)) == OK)
+        ct.pinned = true;
+    if (st != OK)
+        drv_log("%s: create_table: no buffer (%s)", c->name, status_str(st));
+    return st;
+}
+
+static void ct_done(struct nvme *c, struct nvme_io *io, status_t st);
+
+/* The write (or flush) of step ct.step: its blocks on the disk, and
+ * where they are in the buffer (pt_jamos_make's layout, in blocks). */
+static void ct_issue(struct nvme *c)
+{
+    const struct pt_jamos_plan *p = &ct.plan;
+    if (ct.step == CT_FLUSH && !c->vwc)
+        ct.step = CT_MBR;   /* no volatile cache: nothing to flush */
+    uint64_t lba = 0;
+    uint32_t from = 0, n = 1;
+    switch (ct.step) {
+    case CT_BACKUP_ARRAY:
+        lba = p->tail_start;
+        from = PT_JAMOS_AT_ARRAY;
+        n = p->array_blocks;
+        break;
+    case CT_BACKUP_HEADER:
+        lba = c->ns.blocks - 1;
+        from = pt_jamos_at_backup(p);
+        break;
+    case CT_PRIMARY_ARRAY:
+        lba = from = PT_JAMOS_AT_ARRAY;
+        n = p->array_blocks;
+        break;
+    case CT_PRIMARY_HEADER:
+        lba = from = PT_JAMOS_AT_PRIMARY;
+        break;
+    case CT_MBR:
+        lba = from = PT_JAMOS_AT_MBR;
+        break;
+    default:   /* CT_FLUSH */
+        n = 0;
+        break;
+    }
+    ct.io = (struct nvme_io){ .kind = n ? IO_WRITE : IO_FLUSH, .part = PART_TABLE, .lba = lba,
+                              .blocks = n, .done = ct_done };
+    if (n) {
+        ct.io.pages = ct.pages;
+        ct.io.npages = CT_PAGES;
+        ct.io.offset = from * c->ns.block_size;
+    }
+    status_t st = c->stopping ? ERR_PEER_CLOSED : nvme_submit(c, &ct.io);
+    if (st != OK) {
+        ct.st = st;
+        ct.reread = true;
+    }
+}
+
+/* A write's answer (from a completion: nothing waits here). */
+static void ct_done(struct nvme *c, struct nvme_io *io, status_t st)
+{
+    (void)io;
+    if (st != OK) {
+        drv_log("%s: create_table: step %u failed (%s): nothing more written", c->name, ct.step,
+                status_str(st));
+        ct.st = st;
+        ct.reread = true;
+        return;
+    }
+    if (++ct.step == CT_STEPS) {
+        ct.reread = true;
+        return;
+    }
+    ct_issue(c);
+}
+
+/* From the loop: the writes are over (or one failed). The table read back,
+ * the mode set from it, and the answer: OK once the drive reads as Jam
+ * OS's. */
+static void ct_finish(struct nvme *c)
+{
+    ct.reread = false;
+    ct.running = false;
+    status_t st = ct.st;
+    if (!c->stopping) {
+        static struct reader rd;
+        rd = (struct reader){ .c = c, .pages = ct.pages, .npages = CT_PAGES };
+        status_t rst = table_read(c, &rd, ct.buf, CT_BYTES);
+        if (rst != OK)
+            c->failed = rst;   /* the loop ends: the next start reads it again */
+        if (st == OK && cmd_mode() != MODE_JAMOS)
+            st = ERR_IO;
+    }
+    char table[80];
+    serve_describe(table, sizeof(table));
+    if (st == OK)
+        drv_report("%s: create_table: Jam OS's table written and read back: %s, %s", c->name,
+                   table, cmd_mode_str());
+    else
+        drv_report("%s: create_table: FAILED (%s): %s, %s", c->name, status_str(st), table,
+                   cmd_mode_str());
+    if (kept_live(&ct.k))
+        (void)storage_reply_create_table(ct.k.txn, st);
+}
+
 /* ---- the storage protocol ------------------------------------------------------------------ */
 
 static struct nvme *nv;   /* the controller (serve_watch's) */
@@ -435,12 +610,12 @@ static status_t s_open_partition(void *ctx, uint32_t index, uint8_t read_only, h
     (void)ctx;
     if (read_only > 1)
         return ERR_INVALID_ARGS;
-    if (!read_only)
-        return ERR_ACCESS_DENIED;   /* no write path: every disk is read-only */
+    if (!read_only && cmd_mode() != MODE_JAMOS)
+        return ERR_ACCESS_DENIED;   /* not a Jam OS drive: whatever the index */
     if (index >= tbl.t.nparts)
         return ERR_OUT_OF_RANGE;
     const struct pt_part *p = &tbl.t.parts[index];
-    return blk_open(nv, (uint8_t)index, p->start, p->blocks, block);
+    return blk_open(nv, (uint8_t)index, p->start, p->blocks, !read_only, block);
 }
 
 static status_t s_ident(void *ctx, char *model, uint32_t *model_len, char *serial,
@@ -499,6 +674,33 @@ static status_t s_health(void *ctx, struct idl_txn txn, uint64_t *units_read,
     return IDL_LATER;
 }
 
+static status_t s_create_table(void *ctx, struct idl_txn txn, const uint8_t disk_guid[16],
+                               const uint8_t esp_guid[16], const uint8_t data_guid[16])
+{
+    if (cmd_mode() != MODE_BLANK)
+        return ERR_ACCESS_DENIED;   /* not a blank drive: before anything else */
+    if (ct.running)
+        return ERR_BAD_STATE;
+    uint32_t bs = nv->ns.block_size;
+    status_t st = pt_jamos_plan(bs, nv->ns.blocks, &ct.plan);
+    if (st == OK && !ct.buf)
+        st = ct_buffer(nv);
+    if (st == OK)
+        st = pt_jamos_make(bs, nv->ns.blocks, disk_guid, esp_guid, data_guid, ct.buf, CT_BYTES);
+    if (st != OK)
+        return st;
+    drv_log("%s: create_table: Jam OS's table onto the blank drive: ESP lba %lu + %lu, data lba "
+            "%lu + %lu", nv->name, (unsigned long)ct.plan.esp_start,
+            (unsigned long)ct.plan.esp_blocks, (unsigned long)ct.plan.data_start,
+            (unsigned long)ct.plan.data_blocks);
+    ct.running = true;
+    ct.k = keep(ctx, txn);
+    ct.step = CT_BACKUP_ARRAY;
+    ct.st = OK;
+    ct_issue(nv);
+    return IDL_LATER;
+}
+
 static const struct storage_ops storage_ops = {
     .info = s_info,
     .partition = s_partition,
@@ -506,6 +708,7 @@ static const struct storage_ops storage_ops = {
     .ident = s_ident,
     .digest = s_digest,
     .health = s_health,
+    .create_table = s_create_table,
 };
 
 /* ---- svc.connect: a `storage` channel of the caller's own ------------------------------ */
@@ -628,6 +831,8 @@ void serve_packet(uint64_t key)
 
 bool serve_ready(void)
 {
+    if (ct.reread)
+        return true;
     for (unsigned i = 0; i <= MAX_CONNS; i++)
         if (conns[i].ch != HANDLE_INVALID && conns[i].pending)
             return true;
@@ -636,6 +841,8 @@ bool serve_ready(void)
 
 bool serve_work(struct nvme *c)
 {
+    if (ct.reread)
+        ct_finish(c);
     for (unsigned i = 0; i <= MAX_CONNS && !serve_closed; i++) {
         struct conn *k = &conns[i];
         if (k->ch == HANDLE_INVALID || !k->pending)
@@ -670,4 +877,12 @@ void serve_stop(struct nvme *c)
         drv_handle_close(dg.vmo);
     dg.buf = NULL;
     dg.vmo = HANDLE_INVALID;
+    if (ct.pinned && drv_vmo_unpin(ct.vmo, c->dma, ct.pin) == OK)
+        ct.pinned = false;
+    if (ct.buf)
+        (void)drv_vmo_unmap(ct.buf, CT_BYTES);
+    if (ct.vmo != HANDLE_INVALID)
+        drv_handle_close(ct.vmo);
+    ct.buf = NULL;
+    ct.vmo = HANDLE_INVALID;
 }
