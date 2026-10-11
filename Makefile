@@ -886,8 +886,6 @@ clean:
 
 # POSIX on musl: musl, the call layer, the sysroot, posixtest (its own file).
 include user/posix/posix.mk
-# tinyssh, the SSH server, bin/sshd (its own file).
-include user/ports/tinyssh/tinyssh.mk
 
 # The ports in the boot image (ports/, docs/M13.7-PLAN.md): every recipe
 # with `place boot` (sbase, Lua, libc-test) is built by tools/ports.py with
@@ -923,7 +921,8 @@ LICENCES := musl/COPYRIGHT=third_party/musl/COPYRIGHT \
             limine/LICENSE=third_party/limine/LICENSE \
             limine-protocol/LICENSE=third_party/limine-protocol/LICENSE \
             wayland/COPYING=third_party/wayland-protocols/COPYING-wayland \
-            wayland-protocols/COPYING=third_party/wayland-protocols/COPYING-wayland-protocols
+            wayland-protocols/COPYING=third_party/wayland-protocols/COPYING-wayland-protocols \
+            tinyssh/LICENSE.md=third_party/tinyssh/LICENSE.md
 BOOTFS_FILES += $(foreach l,$(LICENCES),share/licences/$(firstword $(subst =, ,$(l)))=$(lastword $(subst =, ,$(l))))
 $(BOOTFS): $(foreach l,$(LICENCES),$(lastword $(subst =, ,$(l))))
 THIRD_PARTY_NOTICED := $(sort $(foreach l,$(LICENCES),$(word 2,$(subst /, ,$(lastword $(subst =, ,$(l)))))) \

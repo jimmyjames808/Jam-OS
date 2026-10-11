@@ -207,6 +207,9 @@ static int idle(bool ignore)
     put(1, ignore ? "pxio: ignoring\n" : "pxio: idle\n");
     for (;;)
         pause();
+    return 0;
+}
+
 static int show_size(void)
 {
     struct winsize w;
@@ -273,11 +276,9 @@ int main(int argc, char **argv)
         put(1, "pxio: raise returned\n");
         return 4;
     }
-    put(2, "usage: pxio env|cwd|fds|stack|out T|err T|both O E|seq N|cat|count|exit N|sigint|"
-           "yes|head N|gen N|idle|ignore|raise N\n");
     if (!strcmp(m, "size"))
         return show_size();
     put(2, "usage: pxio env|cwd|fds|stack|out T|err T|both O E|seq N|cat|count|exit N|sigint|"
-           "size\n");
+           "yes|head N|gen N|idle|ignore|raise N|size\n");
     return 2;
 }
