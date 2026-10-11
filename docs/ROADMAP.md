@@ -43,7 +43,7 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 | M10 | ACPI power, tickless idle | deferred: porting first (the owner, 2026-10-11) |
 | M10.5 | S3 sleep | deferred: porting first (the owner, 2026-10-11) |
 | M14 | Stable syscall ABI | stretch |
-| M14.5 | Maybe: dynamic linking | probably on Chromium's path (CR0 decides) |
+| M14.5 | Maybe: dynamic linking | off Chromium's path (CR-RESEARCH: software compositing needs no `dlopen`) |
 | M15 | Self-hosting | stretch |
 | CR | Chromium: the main goal (the owner, 2026-10-11) | CR0, the plan, first; then the layers in [Now](#now) |
 | G2-G4 | Toolkit and fonts, mode setting, 3D | G2 is porting work (libwayland, fonts, toolkits) and comes with it; G3 and G4 deferred: porting first (the owner, 2026-10-11) |
@@ -78,31 +78,51 @@ On Chromium's path (in roughly this order, much of it in parallel):
   the clipboard, cursors), FreeType, fontconfig, HarfBuzz and the C++
   runtime. A small Wayland test client proves each layer; foot, SDL2,
   Doom, swayimg and the GTK spike are not on the path.
-- **New layers G2 doesn't cover**: executable memory for a JIT under a
-  capability (V8; its jitless mode first), the clang/libc++ toolchain and
-  Chromium's GN build taught a Jam OS target, audio for web pages through
-  the mixer, a CA certificate store for TLS, and probably M14.5 (dynamic
-  linking: SwiftShader and ANGLE load as shared libraries; CR0 confirms).
-- **The route (the owner, 2026-10-11)**: since Jam OS has Wayland and a
-  POSIX layer, the expected route is Chromium's **Linux** code over M13's
-  POSIX layer, not its Fuchsia port (Fuchsia had neither, so Chromium
-  wrote a Scenic display backend and Fuchsia-only process, IPC and file
-  code there, and never had the full browser UI). Chromium's Ozone/Wayland
-  backend, its Views UI and fontconfig then come as they are; the gaps
-  Linux Chromium hits become general layers every Linux port uses:
-  `AF_UNIX` sockets with descriptor passing (`SCM_RIGHTS`; Mojo, and
-  Wayland clients without G2's special shim), process launch by fork then
-  exec (M13.5's emulated `vfork` comes back onto the path; mksh doesn't),
-  a small `/proc` or reads of it that fail cleanly, and an audio backend.
-  The sandbox is Jam OS's own on either route (each renderer a job with
-  only the handles it needs; `--no-sandbox` for the first builds). CR0
-  compares the Linux and Fuchsia routes concretely and recommends one.
+- **The route (the owner, 2026-10-11; [CR-RESEARCH](CR-RESEARCH.md))**:
+  Chromium's **Linux** code built as `target_os=linux` against a musl
+  sysroot, the way Alpine ships it (about 10 small musl patches), over
+  M13's POSIX layer and Jam OS's Wayland compositor, not its Fuchsia port
+  (that would need a Zircon call library, fdio and a dozen FIDL services,
+  and Fuchsia only ever shipped WebEngine). Its Ozone/Wayland backend,
+  Views UI, fontconfig, FreeType, HarfBuzz, ICU, BoringSSL (with its
+  compiled-in root store: no CA store needed) and libc++ come with it,
+  statically linked.
+- **The new layers that route needs**, each general (in order; sizes are
+  the research's guesses in new lines):
+  - the toolchain: clang, lld, libc++, compiler-rt and Rust's std for
+    musl, a sysroot with Linux's UAPI headers, built on the PC's WSL
+    (100 GB, hours a clean build) (1-2k);
+  - the address space: sparse reservations from GiBs up to 1 TB
+    (`PROT_NONE`, `MAP_NORESERVE`), `MAP_FIXED` inside them, decommit (V8's
+    cage, PartitionAlloc's pools; mostly kernel) (1-3k);
+  - libc additions: `/proc/self/exe` and `/proc/self/fd` (the rest of
+    `/proc` failing cleanly), memfd seals, read-only file maps, raw call
+    entries (1-2k);
+  - `AF_UNIX` socketpairs with descriptor passing (`SCM_RIGHTS`: Mojo;
+    Wayland clients too) (1.5-3k);
+  - launching other programs: a `posix_spawn` path in Chromium's launcher
+    (as its macOS one) or an emulated `vfork` that records everything
+    between fork and exec (0.5-1.5k);
+  - G2 for Chromium: the libc shim, `wl_subcompositor` and the protocols
+    Ozone needs (2-4k);
+  - programs run from `/data` with shared, demand-paged text (M12.5's PX:
+    every Chromium process execs the same 150-250 MB binary);
+  - netstack's socket limit per opener raised; an audio backend for the
+    mixer (0.5-1k);
+  - the JIT: V8 wants writable-and-executable code pages, against Jam OS's
+    W^X everywhere: a capability-granted exception (a design question;
+    `--jitless` first, which also drops WebAssembly);
+  - Jam OS's own sandbox (each renderer a job with only its handles; the
+    first builds `--no-sandbox`) (1-2k).
+  Off the path for the first browser: M14.5 (dynamic linking: with
+  software compositing nothing needs `dlopen`), a CA store, D-Bus, NSS,
+  SwiftShader (no WebGL until G3/G4), and a real `fork` (no zygote).
 - **CR, Chromium itself**: software rendering first (Skia on the CPU or
   SwiftShader); GPU drivers (G3/G4, likely Linux's DRM drivers under the
   2026-10-11 licence rule) make it fast afterwards.
 
 Not on the path, so after Chromium (unless the owner makes one a goal):
-M13.5's mksh and its full `fork` (its emulated `vfork` is on the path if CR0 picks the Linux route), M14
+M13.5's mksh and its full `fork` (Chromium launches by fork-then-exec: a `posix_spawn` path or an emulated `vfork`, above), M14
 (the ABI freeze), M15 (self-hosting), M10 and M10.5 (ACPI power, sleep),
 M12.7's stage 3 (the installer), M12.1's follow-ups, ports nobody needs
 yet, and new Jam OS apps beyond the system's own.
