@@ -241,8 +241,9 @@ log="$out/$name.log"
 # What the trace said, for the report.
 tr -d '\r' < "$log" | grep -aE "jamjar: (spectrum|frames|library|cover)" | head -20 || true
 if [ "${JAMJAR_CPU:-}" = 1 ]; then   # the report: top's last frame, jamjar's own counts
-    tr -d '\r' < "$log" | grep -aE "top - up|^ *[0-9]+  (jamjar|compositor) |jamjar: [0-9]+ frames" |
-        tail -6 || true
+    tr -d '\r' < "$log" | grep -aE "top - up|^ *[0-9]+  (jamjar|compositor) " | tail -6 || true
+    tr -d '\r' < "$log" | grep -aE "compositor: paint" | tail -4 || true
+    tr -d '\r' < "$log" | grep -aE "jamjar: [0-9]+ frames" || true
 fi
 # The calibration shot: the bars' place from the trace (in jamjar's own
 # pixels: moved by its window's place, which jamjar.txt's right click in

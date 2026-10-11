@@ -16,7 +16,7 @@ wait 120 Jam OS shell
 wait {prompt}
 seen 60 init: /data mounted
 seen 60 music: ready
-send jamjar trace & sleep 30; top -n 2 -d 10 | grep -E "top - up|jamjar|compositor"; echo cpu-""1 $?
+send jamjar trace & sleep 30; top -n 2 -d 10; echo cpu-""1 $?
 wait 30 jamjar: in the background
 wait 30 jamjar: library /data/music: 6 artists, 7 albums, 9 tracks
 monitor sendkey meta_l-f
