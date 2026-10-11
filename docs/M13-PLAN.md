@@ -587,7 +587,7 @@ and `getgrgid(1000)` from libc's `/etc`. Authority stays in handles.
   mapping filled by reading the file (correct, and costs the copy). After
   M12.5 (track F1): a read-only private mapping maps the file's pager VMO
   directly, and a writable one uses M12.5's copy-on-write child if M12.5
-  builds it (review K's finding 37), else keeps the copy.
+  builds it (review K's finding 37), else keeps the copy. (The owner, 2026-10-11: F1 builds the copy-on-write child in the kernel, before M14's freeze; M13.5's emulated `fork` and the loader's writable segments use it too.)
 - **Files, `MAP_SHARED`**: after M12.5 (F1), the pager VMO; writable only
   if M12.5's pager writes dirty pages back, else `ENODEV` for
   `PROT_WRITE`. `msync` asks the pager to write. Before M12.5: `ENODEV`.
