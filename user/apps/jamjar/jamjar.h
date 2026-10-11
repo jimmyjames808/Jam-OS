@@ -260,6 +260,10 @@ bool bars_busy(const struct bars *b);
  * bar, 0..1. */
 float bars_bass(const struct bars *b);
 float bars_energy(const struct bars *b);
+/* One row y of a bar: [l, r) in float pixels in colour c at coverage cov
+ * (0..256), the two end pixels by the area they cover. (The self-test
+ * compares it with the plain loop over every pixel.) */
+void bars_span(const struct surf *s, int y, float l, float r, uint32_t c, uint32_t cov);
 /* The self-test: where bar i of the strip in r is, [x0, x1) across, and
  * the y of the line between the channels. */
 void bars_where(const struct rect *r, int i, int *x0, int *x1, int *mid);

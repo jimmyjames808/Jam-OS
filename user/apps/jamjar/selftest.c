@@ -288,6 +288,60 @@ static bool strip_shows(struct bars *b, const struct surf *s, const struct rect 
     return mine > r->h / 4 && theirs == 0 && other == 0;
 }
 
+/* bars_span's plain form: every pixel from l to r by the area it covers. */
+static void span_plain(const struct surf *s, int y, float l, float r, uint32_t c, uint32_t cov)
+{
+    if (y < 0 || y >= s->h || r <= l)
+        return;
+    uint32_t *row = s->px + (uint64_t)y * s->stride;
+    for (int x = (int)l; x < (int)r + 1 && x < s->w; x++) {
+        if (x < 0)
+            continue;
+        float a = ((float)(x + 1) < r ? (float)(x + 1) : r) - ((float)x > l ? (float)x : l);
+        if (a <= 0)
+            continue;
+        uint32_t k = (uint32_t)(a * (float)cov);
+        row[x] = k >= 255 ? c : mixc(row[x], c, k > 256 ? 256 : k);
+    }
+}
+
+/* The bars' rows, with the whole pixels in the middle done in one run, are
+ * the same pixels as the loop over every one, for spans of every kind: on
+ * a pixel edge or not, none wide, off either edge, every coverage. */
+static void test_span(void)
+{
+    enum { W = 40 };
+    uint32_t a[W], b[W];
+    struct surf sa = { a, W, 1, W }, sb = { b, W, 1, W };
+    uint32_t seed = 12345;
+    unsigned bad = 0, n = 0;
+    for (int i = 0; i < 4000; i++) {
+        float l[3], r[3];
+        for (int k = 0; k < 3; k++) {
+            seed = seed * 1664525u + 1013904223u;
+            l[k] = (float)(int)(seed >> 8 & 63) / 2.0f - 6.0f;   /* -6 to 25.5, halves */
+            seed = seed * 1664525u + 1013904223u;
+            r[k] = l[k] + (float)(int)(seed >> 8 & 63) / 4.0f - 1.0f + (float)(i % 5) * 0.25f;
+        }
+        l[1] = (float)(int)l[1];                        /* on a pixel's edge */
+        r[2] = (float)(int)r[2];
+        seed = seed * 1664525u + 1013904223u;
+        uint32_t cov = i % 7 == 0 ? 256 : i % 11 == 0 ? 255 : i % 13 == 0 ? 0 : (seed >> 8) % 257;
+        for (int x = 0; x < W; x++)
+            a[x] = b[x] = 0x203040u + (uint32_t)x * 0x010203u;
+        for (int k = 0; k < 3; k++) {
+            bars_span(&sa, 0, l[k], r[k], 0xc8284fu, cov);
+            span_plain(&sb, 0, l[k], r[k], 0xc8284fu, cov);
+        }
+        n++;
+        bad += memcmp(a, b, sizeof(a)) != 0;
+    }
+    char what[96];
+    snprintf(what, sizeof(what), "bars: a bar's row, whole pixels in one run: %u spans, %u differ", n,
+             bad);
+    fun_check(bad == 0, what);
+}
+
 static void test_strip(void)
 {
     static uint32_t px[1280 * 200];
@@ -974,6 +1028,7 @@ int jamjar_selftest(void)
     test_art();
     test_covers();
     test_bars();
+    test_span();
     test_strip();
     test_roulette();
     test_stale();
