@@ -63,6 +63,8 @@ struct ttyc {
     unsigned ndec;
     struct tty_wait waits[TTY_WAITS];
     unsigned nwaits;
+    bool     closing;               /* its tty channel closed: output shown to the end, then
+                                     * hung up (tty_closing) */
 };
 
 static struct ttyc ttys[MAX_TTYS];
@@ -191,6 +193,8 @@ static void out_turn(struct ttyc *t)
         long n = out_take(t);
         if (n == -1) {
             answer_waits(t);
+            if (t->closing)
+                ttys_hang_up(slot_of(t));   /* all it wrote is shown */
             return;
         }
         if (n == -2) {
@@ -552,6 +556,20 @@ void ttys_hang_up(unsigned i)
 
 /* ---- the loop ----------------------------------------------------------------------------- */
 
+/* t's client closed its tty channel. What it wrote before is shown first
+ * (a program that writes and exits at once had its last lines thrown away
+ * when the terminal went from it at once: an SSH command's tail), then the
+ * terminal goes from it, once its output is read empty (out_turn) or
+ * can't be read (out_gone). */
+static void tty_closing(struct ttyc *t)
+{
+    if (!t->closing) {
+        t->closing = true;
+        jam_port_unbind(port, t->ch, KEY(K_TTY, slot_of(t)));   /* nothing more comes on it */
+    }
+    out_turn(t);
+}
+
 void tty_event(uint32_t kind, uint32_t i)
 {
     if (i >= MAX_TTYS || !ttys[i].used)
@@ -566,7 +584,7 @@ void tty_event(uint32_t kind, uint32_t i)
         if (st == ERR_SHOULD_WAIT)
             return;
         if (st != OK) {   /* the client let it go: the terminal goes from it */
-            ttys_hang_up(i);
+            tty_closing(t);
             return;
         }
     }
