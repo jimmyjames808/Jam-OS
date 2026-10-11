@@ -289,8 +289,27 @@ bool t_svc_shared_unread(void)
     }
     struct spawn_handle none = { 0, HANDLE_INVALID };
     for (unsigned round = 0; round < 2; round++) {
-        handle_t proc;
-        CHECK_ST(ns_child_start("ns-flood", NULL, grants, none, NULL, &proc), OK);
+        handle_t proc = HANDLE_INVALID;
+        /* The child's grants carry the shared client ends. A channel end
+         * whose queue holds a channel can't be sent in a message (the
+         * kernel refuses it, ERR_NOT_SUPPORTED, so that no cycle of
+         * channels can be made), and what the last flood made the services
+         * answer is exactly that until init has dropped it: the service
+         * resumes at each drop and answers the requests it had left, so
+         * for a moment (a loaded machine: the soak's) the next spawn
+         * finds channels queued. Try again for a while; a queue that
+         * stays full is the failure. */
+        status_t st = ns_child_start("ns-flood", NULL, grants, none, NULL, &proc);
+        unsigned tries = 1;
+        for (uint64_t until = now() + 5 * NS_PER_S; st == ERR_NOT_SUPPORTED && now() < until;
+             tries++) {
+            jam_sleep_until(now() + 20 * NS_PER_MS);
+            st = ns_child_start("ns-flood", NULL, grants, none, NULL, &proc);
+        }
+        if (tries > 1)
+            printf("utest: %s: round %u: the shared ends still held answers (%u tries to "
+                   "start the flood)\n", utest_cur, round, tries);
+        CHECK_ST(st, OK);
         CHECK(ns_child_exits(proc, 0));
         for (unsigned i = 0; i < 2; i++) {
             if (!have_svc(names[i]))
