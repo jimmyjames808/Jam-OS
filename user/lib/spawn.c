@@ -4,7 +4,13 @@
  * The program is a range of a VMO (struct image): a file of the bootfs
  * image (the SR_BOOTFS VMO, mapped once by bootfs_default), a range the
  * caller names, or a file read through the namespace into a VMO made for
- * it. The steps are all ordinary system calls: process_create gives the
+ * it. A caller's VMO is never mapped here: its header, program headers and
+ * writable segments are read with vmo_read, because it may be a pager VMO
+ * (a program from /data, its pages checked against the owner's approval
+ * as they arrive): a page that can't be fetched or doesn't match is then
+ * an error here (ERR_IO), where a load through a mapping of ours would
+ * kill the caller. Only the child maps it, and only the child dies of a
+ * page that fails later. The steps are all ordinary system calls: process_create gives the
  * new process and a vmar for its address space; each PT_LOAD segment is
  * mapped into that vmar (read-only and executable ones straight from the
  * program's VMO, writable ones copied into a fresh VMO), then a stack with
@@ -31,6 +37,7 @@
 
 #define STACK_TOP   0x00007ff000000000ull
 #define MAX_SEGS    8
+#define MAX_PHDRS   64   /* program headers at most (3.5 KiB of them, read onto the stack) */
 #define MSG_MAX     2048
 #define FILE_MAX    (64ull << 20)   /* the biggest program read from a file */
 /* What the child's SR_NS end can do: take the messages we write. */
@@ -40,7 +47,8 @@
 struct image {
     handle_t       vmo;      /* the VMO holding them */
     uint64_t       off;      /* where they start in it, page-aligned */
-    const uint8_t *data;     /* the same bytes, mapped here read-only */
+    const uint8_t *data;     /* the same bytes, mapped here read-only; NULL: read with
+                              * vmo_read (a caller's VMO, never mapped here) */
     uint64_t       size;     /* how many */
     uint64_t       mapped;   /* bytes at data to unmap afterwards (0: bootfs's, kept) */
     bool           own_vmo;  /* vmo was made here (a file's copy): closed afterwards */
@@ -81,6 +89,36 @@ static uint64_t name_len(const char *name)
     return n < PROCESS_NAME_MAX ? n : PROCESS_NAME_MAX;
 }
 
+/* len bytes of the program from off (inside it: the caller checked) into
+ * dst: from our mapping, or with vmo_read when there is none. */
+static status_t img_read(const struct image *img, uint64_t off, void *dst, uint64_t len)
+{
+    if (img->data) {
+        memcpy(dst, img->data + off, len);
+        return OK;
+    }
+    return jam_vmo_read(img->vmo, img->off + off, dst, len);
+}
+
+/* len bytes of the program from off into v at `at` (v is ours, fresh and
+ * writable): straight from our mapping, or for an unmapped image read with
+ * vmo_read into a mapping of v made for it, so the bytes are copied once
+ * and nothing of the program is ever touched through memory here. */
+static status_t img_copy(const struct image *img, uint64_t off, handle_t v, uint64_t at,
+                         uint64_t len)
+{
+    if (img->data)
+        return jam_vmo_write(v, at, img->data + off, len);
+    handle_t self = startup_handle(SR_SELF_VMAR);
+    uint64_t addr = 0, span = up(at + len);
+    status_t st = jam_vmar_map(self, v, 0, span, VMAR_READ | VMAR_WRITE, &addr);
+    if (st != OK)
+        return st;
+    st = jam_vmo_read(img->vmo, img->off + off, (void *)(uintptr_t)(addr + at), len);
+    jam_vmar_unmap(self, addr, span);
+    return st;
+}
+
 /* Map one PT_LOAD segment of the program into vmar. */
 static status_t load_segment(handle_t vmar, const struct image *img, const struct phdr *ph)
 {
@@ -101,7 +139,7 @@ static status_t load_segment(handle_t vmar, const struct image *img, const struc
     if (st != OK)
         return st;
     if (ph->filesz)
-        st = jam_vmo_write(v, ph->vaddr - lo, img->data + ph->offset, ph->filesz);
+        st = img_copy(img, ph->offset, v, ph->vaddr - lo, ph->filesz);
     if (st == OK)
         st = jam_vmar_map(vmar, v, 0, hi - lo, perms | VMAR_FIXED, &addr);
     jam_handle_close(v);   /* the mapping keeps it */
@@ -110,25 +148,30 @@ static status_t load_segment(handle_t vmar, const struct image *img, const struc
 
 static status_t load_elf(handle_t vmar, const struct image *img, uint64_t *entry)
 {
-    const uint8_t *file = img->data;
     uint64_t size = img->size;
     struct ehdr eh;
     if (size < sizeof(eh))
         return ERR_INVALID_ARGS;
-    memcpy(&eh, file, sizeof(eh));
+    status_t st = img_read(img, 0, &eh, sizeof(eh));
+    if (st != OK)
+        return st;
     if (memcmp(eh.ident, "\x7f" "ELF", 4) || eh.ident[4] != 2 || eh.type != 2 ||
         eh.machine != 62 || eh.phentsize != sizeof(struct phdr) || eh.phnum == 0 ||
-        eh.phnum > 64 || eh.phoff > size || eh.phnum * sizeof(struct phdr) > size - eh.phoff)
+        eh.phnum > MAX_PHDRS || eh.phoff > size ||
+        eh.phnum * sizeof(struct phdr) > size - eh.phoff)
         return ERR_INVALID_ARGS;
+    struct phdr phs[MAX_PHDRS];   /* read once: the checks and the loads see the same */
+    st = img_read(img, eh.phoff, phs, eh.phnum * sizeof(struct phdr));
+    if (st != OK)
+        return st;
     unsigned loads = 0;
     for (unsigned i = 0; i < eh.phnum; i++) {
-        struct phdr ph;
-        memcpy(&ph, file + eh.phoff + i * sizeof(ph), sizeof(ph));
+        const struct phdr ph = phs[i];
         if (ph.type != PT_LOAD)
             continue;
         if (++loads > MAX_SEGS)
             return ERR_INVALID_ARGS;
-        status_t st = load_segment(vmar, img, &ph);
+        st = load_segment(vmar, img, &ph);
         if (st != OK)
             return st;
     }
@@ -244,10 +287,13 @@ static status_t find_image(const struct spawn_args *a, struct image *img)
 {
     memset(img, 0, sizeof(*img));
     if (a->vmo) {
+        /* Read with vmo_read, never mapped here (the top of the file). */
         img->vmo = a->vmo;
         img->off = a->offset;
         img->size = a->size;
-        return map_image(img);
+        if (!img->size || img->size > FILE_MAX || (img->off & (PAGE_SIZE - 1)))
+            return ERR_INVALID_ARGS;
+        return OK;
     }
     if (a->path[0] == '/') {
         status_t st = file_read_vmo(a->path, FILE_MAX, &img->vmo, &img->size);
