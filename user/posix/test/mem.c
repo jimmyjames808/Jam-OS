@@ -3,7 +3,8 @@
  *   - mmap, a munmap in the middle of a mapping, a MAP_FIXED into the
  *     hole and over a live mapping, MAP_FIXED_NOREPLACE refused, mprotect
  *     (execute refused), madvise(MADV_DONTNEED) reading zero after, and
- *     the arguments Linux refuses refused the same way;
+ *     the arguments Linux refuses refused the same way; MADV_DONTNEED on
+ *     a MAP_SHARED mapping (a memfd's, an anonymous one) keeps its data;
  *   - MAP_FIXED in one step: a thread reads four pages without pause
  *     while they are mapped over again and again (a moment with nothing
  *     there would kill the program), and a MAP_FIXED whose range holds a
@@ -58,6 +59,32 @@ static void check_mmap(void)
     CHECK(madvise(p + 8 * PG, 2 * PG, MADV_DONTNEED) == 0 && p[8 * PG] == 0 && p[9 * PG] == 0);
     CHECK(p[10 * PG] == 10);
     CHECK(munmap(p, 16 * PG) == 0);
+}
+
+/* MADV_DONTNEED over shared memory: the data stays (Linux drops only the
+ * caller's view of it). */
+static void check_dontneed_shared(void)
+{
+    int fd = memfd_create("dontneed", 0);
+    CHECK(fd >= 0 && ftruncate(fd, 2 * PG) == 0);
+    char *m = mmap(NULL, 2 * PG, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    CHECK(m != MAP_FAILED);
+    if (m != MAP_FAILED) {
+        m[0] = 5;
+        m[PG] = 6;
+        CHECK(madvise(m, 2 * PG, MADV_DONTNEED) == 0 && m[0] == 5 && m[PG] == 6);
+        char b = 0;
+        CHECK(pread(fd, &b, 1, PG) == 1 && b == 6);
+        CHECK(munmap(m, 2 * PG) == 0);
+    }
+    CHECK(close(fd) == 0);
+    char *a = mmap(NULL, PG, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    CHECK(a != MAP_FAILED);
+    if (a == MAP_FAILED)
+        return;
+    a[0] = 7;
+    CHECK(madvise(a, PG, MADV_FREE) == 0 && a[0] == 7);
+    CHECK(munmap(a, PG) == 0);
 }
 
 static void check_refusals(void)
@@ -216,6 +243,7 @@ static void check_mlock(void)
 void pt_mem(char **argv __attribute__((unused)))
 {
     check_mmap();
+    check_dontneed_shared();
     check_refusals();
     check_fixed_one_step();
     check_brk();

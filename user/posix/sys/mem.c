@@ -7,7 +7,10 @@
  * the VMO goes when nothing maps it any more. A part of private
  * anonymous memory unmapped or mapped over gives its pages back at once
  * (decommitted: nobody else could ever see them). madvise(MADV_DONTNEED)
- * and MADV_FREE decommit its pages (they read as zero after, as Linux's do).
+ * and MADV_FREE decommit private memory's pages (they read as zero
+ * after, as Linux's do); a MAP_SHARED mapping's pages are the memfd's
+ * (or the other holders'), so they stay, as Linux keeps the data and
+ * drops only its own view of it.
  * Pages are committed as they are touched and charged to the process's
  * job then.
  *
@@ -440,7 +443,7 @@ long lx_madvise(long addr, long len, long advice, long d, long e, long f)
     case MADV_DONTNEED:
     case MADV_FREE:
         lock_take(&mem_lock);
-        parts_locked((uint64_t)addr, (uint64_t)addr + size, 0, jam_vmo_decommit);
+        parts_locked((uint64_t)addr, (uint64_t)addr + size, MT_SHARED, jam_vmo_decommit);
         lock_give(&mem_lock);
         return 0;
     case MADV_NORMAL: case MADV_RANDOM: case MADV_SEQUENTIAL: case MADV_WILLNEED:
