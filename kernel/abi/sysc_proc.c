@@ -146,7 +146,13 @@ int64_t sysc_process_get_info(handle_t proc, uint64_t out)
     if (st != OK)
         return st;
     struct process_info info;
-    process_get_info(process_from_kobject(po), &info);
+    struct process *p = process_from_kobject(po);
+    process_get_info(p, &info);
+    struct aspace *as = process_aspace(p);
+    if (as) {
+        info.mappings = aspace_mapping_count(as);   /* the region lock: not under any spinlock */
+        aspace_unref(as);
+    }
     kobject_unref(po);
     return copy_to_user(out, &info, sizeof(info));
 }

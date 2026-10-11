@@ -303,6 +303,9 @@ struct process_info {
     uint32_t pid;         /* its small id: unique among live processes (below) */
     uint64_t koid;        /* the process's kernel object id */
     uint64_t cpu_ns;      /* CPU time of all its threads so far */
+    uint32_t mappings;    /* its address space's mappings now (VMAR_MAX_MAPPINGS at
+                             most; 0 once it is torn down) */
+    uint32_t reserved;    /* 0 */
 };
 
 /* Small ids, for POSIX's pid and tid: a process's pid and a thread's tid

@@ -150,6 +150,9 @@ const char *process_name(struct process *p);
  * ut's process's. */
 uint64_t process_job_koid(struct process *p);
 uint64_t uthread_process_koid(struct uthread *ut);
+/* Everything but `mappings`, left 0 (sysc_process_get_info fills it: it
+ * takes the address space's lock, which this never does). Takes only
+ * spinlocks. */
 void process_get_info(struct process *p, struct process_info *out);
 /* CPU time of all p's threads so far, in TSC cycles (the shell's ps, top). */
 uint64_t process_cpu_tsc(struct process *p);
