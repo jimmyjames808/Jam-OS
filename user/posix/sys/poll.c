@@ -295,12 +295,12 @@ static long wait_ready(struct pollset *ps, struct pollfd *fds, uint32_t n, uint6
     }
 }
 
-/* Let go of the call's descriptions; age the places. */
+/* Age the places, then let go of the call's descriptions: a socket's
+ * place goes while its description is still held, since a last fd_put
+ * (another thread closed it meanwhile) unmaps the rings its removal
+ * writes to. */
 static void release(struct pollset *ps)
 {
-    for (uint16_t k = 0; k < ps->nitems; k++)
-        fd_put(ps->items[k].d);
-    ps->nitems = 0;
     for (uint32_t i = 0; i < NETWAIT_MAX; i++) {
         struct place *pl = &ps->places[i];
         pl->item = NO_ITEM;
@@ -310,6 +310,9 @@ static void release(struct pollset *ps)
         if (pl->serial && (ps->calls - pl->last >= CACHE_AGE || pl->wait.kind == FD_WAIT_SOCK))
             place_drop(ps, pl);
     }
+    for (uint16_t k = 0; k < ps->nitems; k++)
+        fd_put(ps->items[k].d);
+    ps->nitems = 0;
 }
 
 long poll_run(struct pollfd *fds, unsigned long n, uint64_t deadline)
