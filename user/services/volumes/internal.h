@@ -396,7 +396,7 @@ void     mounts_list_new(void);
 void     mounts_close_all(void);
 
 /* spare.c: a filesystem service that outlives its process
- * (docs/M11.6-PLAN.md): per service a keeper and a state VMO, and one
+ * (docs/HISTORY.md, M11.6): per service a keeper and a state VMO, and one
  * warm spare fat for every mount. */
 /* `on`: keep a warm spare (no boot word `nospare`). */
 void     spare_init(bool on);

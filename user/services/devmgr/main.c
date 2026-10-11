@@ -108,7 +108,7 @@ static const struct {
      * channel and gives it to the mixer (abi/idl/devmgr.idl). */
     { 0x8086, 0xffff, 0x040300, "drv/hda", NULL },
     /* The board's Realtek RTL8125: on a `netprobe` boot the listen-only
-     * probe (docs/M9-PLAN.md stage 0), on a `netsend` one the ARP send
+     * probe (docs/HISTORY.md, M9), on a `netsend` one the ARP send
      * test, and on every other boot the netdev service for netstack (the
      * owner's call, 2026-10-02: the everyday boot is on the network; the
      * entry "Jam OS (no network)" boots with vlan=off, which keeps the
