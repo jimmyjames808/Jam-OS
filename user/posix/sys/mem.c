@@ -100,7 +100,7 @@ static bool table_overlaps(uint64_t addr, uint64_t len)
 
 /* op (jam_vmo_commit or jam_vmo_decommit) on the VMO range behind each
  * table entry's part of [addr, end), skipping entries of the kinds in
- * skip. Advice: a part op fails is left as it was. */
+ * skip. Advice: a part the op fails on is left as it was. */
 static void parts_locked(uint64_t addr, uint64_t end, uint32_t skip,
                          status_t (*op)(handle_t vmo, uint64_t off, uint64_t len))
 {
@@ -190,7 +190,7 @@ void mem_forget(uint64_t addr, uint64_t len)
     lock_give(&mem_lock);
 }
 
-/* -errno for a VMO made for a mapping that failed: a length past what a
+/* -errno for a mapping whose VMO couldn't be made: a length past what a
  * VMO may hold (VMO_MAX_SIZE, 64 GiB) is ENOMEM, Linux's answer for more
  * than the address space can give, which V8 and PartitionAlloc take as
  * the cue to reserve less. */
