@@ -42,6 +42,7 @@ static lx_call *const calls[] = {
 /* Linux's futex operations, for kind_of. */
 #define FUTEX_OP(op) ((op) & 127)
 #define FUTEX_WAIT_OP 0
+#define FUTEX_WAIT_BITSET_OP 9
 
 /* What the boundary does around call n (sig.h's SIG_CALL_*). */
 static unsigned kind_of(long n, long b, long c, long d)
@@ -51,6 +52,8 @@ static unsigned kind_of(long n, long b, long c, long d)
     case SYS_brk: case SYS_exit: case SYS_exit_group:
         return SIG_CALL_QUIET;
     case SYS_futex:
+        if (FUTEX_OP(b) == FUTEX_WAIT_BITSET_OP)
+            return 0;   /* its timeout is absolute: a restart waits to the same time */
         if (FUTEX_OP(b) != FUTEX_WAIT_OP)
             return SIG_CALL_QUIET;   /* wakes and requeues: musl's unlocks */
         return d ? SIG_CALL_NORESTART : 0;   /* a timed wait: musl recomputes its time */

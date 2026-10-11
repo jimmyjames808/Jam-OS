@@ -20,12 +20,12 @@
  * pty.c (pseudo-terminals, and init's sessions from a POSIX program),
  * clock.c (the clocks from the time page), socket.c (sockets without the
  * network), sockets.c (against the network peer: asked for by name) and
- * rawcalls.c and rawlog.c (the raw Linux calls Chromium makes, and the
+ * rawcalls.c, rawfutex.c and rawlog.c (the raw Linux calls Chromium makes, and the
  * ENOSYS log: the log's hooks are the layer's calls.h, a second look inside).
  * start.c, mem.c, clock.c, fds.c, poll.c, proc.c, tty.c and fileskid.c are
  * the ones that include libjam (<jamos/libjam.h>: children started with a hand-over, a mapping libc
  * didn't make, the calls the clocks are checked against; fileskid.c
- * through the layer's fd.h); mem.c, rawcalls.c and rawlog.c include Linux's call
+ * through the layer's fd.h); mem.c, rawcalls.c, rawfutex.c and rawlog.c include Linux's call
  * numbers. */
 #pragma once
 
@@ -65,6 +65,8 @@ void pt_session(char **argv);      /* only when asked for: a shell-mode init's s
 void pt_raw(char **argv);          /* raw calls and the ENOSYS log */
 /* The raw section's second file (rawlog.c): the ENOSYS log. */
 void pt_raw_log(void);
+/* And the futex checks (rawfutex.c). */
+void pt_raw_futex(void);
 /* The signal section's second half (sigproc.c): between processes. */
 void pt_sigproc(void);
 

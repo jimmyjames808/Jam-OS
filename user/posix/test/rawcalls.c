@@ -401,6 +401,7 @@ void pt_raw(char **argv)
 {
     (void)argv;
     pt_raw_log();
+    pt_raw_futex();
     check_tid();
     check_random();
     check_affinity();
