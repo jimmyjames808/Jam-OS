@@ -1,5 +1,5 @@
-# Hostile programs against the live desktop (docs/G1-PLAN.md, X1; the PC's
-# part is docs/G1-SIGNOFF.md): Jamjar and a second terminal open on the
+# Hostile programs against the live desktop (docs/HISTORY.md, G1, X1 and the
+# PC sign-off): Jamjar and a second terminal open on the
 # default (compositor) boot, then utest's comp_live tests connect to the
 # desktop's own compositor and send it every bad request, every
 # per-client cap, a client that floods and never reads, clients that

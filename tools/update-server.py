@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""Serve the Mac's build to the PC's `update` (docs/M9-PLAN.md, "update: a
-new build from the Mac"): build/jamos.elf, build/bootfs.img, the boot menu
+"""Serve the Mac's build to the PC's `update` (docs/HISTORY.md, M9): build/jamos.elf, build/bootfs.img, the boot menu
 boot/limine.conf and their manifest, over UDP.
 
     update-server.py [--build DIR] [--menu FILE | --no-menu] [--port 5022] [--bind ADDR]

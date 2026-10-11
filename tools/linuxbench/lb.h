@@ -1,5 +1,5 @@
 /* linuxbench: docs/BENCH.md's lines measured on Linux, on the same PC,
- * for BENCH.md's Linux column (docs/M11.5-PLAN.md, "The Linux column";
+ * for BENCH.md's Linux column (docs/HISTORY.md, M11.5;
  * how to build and run it: README.md here).
  *
  * The method is Jam OS's (kernel/test/bench.c's header), so the columns

@@ -1,6 +1,6 @@
 # The compositor killed with windows on two screens: they come back where
-# they were (docs/G1-PLAN.md, "As built: the compositor remembers the
-# arrangement"; the owner's G1 sign-off found them coming back in the
+# they were (docs/HISTORY.md, G1: the compositor remembers the
+# arrangement; the owner's G1 sign-off found them coming back in the
 # order their clients reconnected). Three terminals: 1 and 2 side by
 # side on the first screen with the gap between them pushed left twice
 # (2 the wider), 3 moved to a second screen; the first screen shown, the

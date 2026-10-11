@@ -167,7 +167,7 @@ $(IDL_OK): $(IDL_SRCS) abi/idl/ids.txt tools/genidl.py $(wildcard $(IDL_GEN))
 idl:
 	python3 tools/genidl.py gen
 
-# Wayland (docs/G1-PLAN.md). tools/genwl.py turns upstream's interface files,
+# Wayland (docs/HISTORY.md, G1). tools/genwl.py turns upstream's interface files,
 # third_party/wayland-protocols/<name>.xml (and Jam OS's own, abi/wayland/<name>.xml),
 # into user/include/jwl/<protocol>.h
 # (versions, opcodes, enums, typed stubs) and user/lib/jwl_<protocol>.c (the

@@ -1,6 +1,6 @@
 #!/bin/sh
 # The network driver in QEMU (drivers/e1000e on QEMU's 82574L) against
-# user/tests/nettest, a hostile netstack (docs/M9-PLAN.md stage 2). Each
+# user/tests/nettest, a hostile netstack (docs/HISTORY.md, M9). Each
 # scenario is one `init` boot whose init.cfg runs `nettest <mode>` (a
 # copy of the stick with its bootfs changed: init's regression mode runs
 # no netstack, which in shell mode holds the card's one session), with

@@ -1,5 +1,5 @@
 #!/bin/sh
-# The desktop's plumbing (track D2b, docs/G1-PLAN.md "As built: D2b") end
+# The desktop's plumbing (track D2b, docs/HISTORY.md, G1) end
 # to end: one plain boot ("shell") with a usb-kbd on xhci port 2, a
 # usb-mouse on port 3 and QEMU's e1000e with the network peer
 # (QEMU_NET=1, untagged), running tools/shell-tests/desk.txt: netstack's

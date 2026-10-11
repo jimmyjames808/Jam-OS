@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The network test peer: a small network on VLAN 21 (or, with --vlan
-none, an untagged one) for Jam OS in QEMU (docs/M9-PLAN.md "Testing
-without the real NIC"; docs/TESTING.md "The network peer").
+none, an untagged one) for Jam OS in QEMU (docs/HISTORY.md, M9;
+docs/TESTING.md "The network peer").
 
 QEMU's `-netdev dgram` carries each Ethernet frame the guest's NIC sends as
 one UDP datagram (the frame's bytes, no FCS) to this peer on 127.0.0.1,

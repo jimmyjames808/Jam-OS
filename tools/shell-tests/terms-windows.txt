@@ -1,4 +1,4 @@
-# Terminals as windows (docs/G1-PLAN.md, track T1) on a plain boot, the
+# Terminals as windows (docs/HISTORY.md, G1, track T1) on a plain boot, the
 # compositor's (serialin and the keyboards are its input sources, not the
 # console's): the first terminal opens as a window; `term` opens terminal 2,
 # whose window takes the keys (a client's first window does), so `exit`

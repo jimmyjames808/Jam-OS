@@ -2,7 +2,7 @@
  * fontdraw.c) on the Mac, built from the same files as Jam OS's.
  *
  *     fontpreview <out.png>    a picture of the floating windows' title
- *                              bars (style B1, docs/G1-PLAN.md "The look")
+ *                              bars (style B1, docs/HISTORY.md, G1)
  *                              at 1x and 2x, focused and not, and sample
  *                              text at several sizes in both weights
  *     fontpreview --check      the drawing code against hostile input

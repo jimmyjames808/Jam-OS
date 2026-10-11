@@ -1,6 +1,6 @@
 #!/bin/sh
 # The mixer's warm spare and restart rule (user/services/init/spare.c,
-# docs/M11.6-PLAN.md "The warm spare", "Supervision") in QEMU, with an
+# docs/HISTORY.md, M11.6) in QEMU, with an
 # intel-hda sound card so the mixer holds its device channel as on the PC.
 # Two boots:
 #   1. tools/shell-tests/mixer-spare.txt: a spare waits from the boot;

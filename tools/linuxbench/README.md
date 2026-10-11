@@ -5,7 +5,7 @@
 (the TSC, 4000 samples, median and p99, 20 ms of warm-up, the same
 CPUs P, P2, HT and E, every thread pinned at SCHED_FIFO). Each line it
 prints is named like the Jam OS line it stands beside, followed by `=`
-and what Linux does for it. Why and how: [M11.5-PLAN.md](../../docs/M11.5-PLAN.md#the-linux-column);
+and what Linux does for it. Why and how: [HISTORY: M11.5](../../docs/HISTORY.md#m115-the-performance-pass);
 the method in detail: [lb.h](lb.h)'s header.
 
 It runs twice on the PC, from an Ubuntu 24.04 live USB stick (nothing is

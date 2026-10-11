@@ -1,6 +1,6 @@
 #!/bin/sh
 # The mixer killed while it plays is not seen by its clients
-# (docs/M11.6-PLAN.md, "The demonstration and its tests";
+# (docs/HISTORY.md, M11.6;
 # user/services/mixer/adopt.c). Two boots of tools/shell-tests/mixer-restart.txt,
 # each with intel-hda and an hda-output codec (mixer=off) whose samples
 # QEMU writes to a WAV file: one with the warm spare, one with `nospare`.
