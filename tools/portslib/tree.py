@@ -11,6 +11,9 @@ directory holds only what the format names:
     override/     ...and the files they name
     wants/        each program's list, when it isn't the default `posix`
     build.sh      style custom only: build() and install()
+    files/        our own files a custom build uses (a Makefile, a program
+                  of ours linked in, a generator: sbase's box, libc-test's
+                  runner); not part of upstream, so no OVERRIDES line
     test          what to run on Jam OS to test it (tools/ports-test.sh)
     LICENSE       a note on the licence of our patches (a GPL port's)
 
@@ -31,8 +34,8 @@ import checkwants  # noqa: E402
 
 SHARED = {"config.site", "jamos.cmake", "jamos.meson"}
 RESERVED_DIRS = {"keys"}
-PORT_ENTRIES = {"recipe", "patches", "OVERRIDES", "override", "wants", "build.sh", "test",
-                "LICENSE"}
+PORT_ENTRIES = {"recipe", "patches", "OVERRIDES", "override", "wants", "build.sh", "files",
+                "test", "LICENSE"}
 # What `allow` refuses a program on /data (user/services/shell/sh_allow.c),
 # on top of what tools/checkwants.py refuses any program outside
 # user/services/ and user/tests/: a package can't ask for them.
