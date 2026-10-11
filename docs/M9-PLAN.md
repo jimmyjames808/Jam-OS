@@ -1,7 +1,7 @@
 # M9 plan: networking
 
 Status (2026-10-02): every stage up to 8 is built and merged; next the
-review (stage 9), then the PC sign-off ([ROADMAP](ROADMAP.md#now-m9-networking)
+review (stage 9), then the PC sign-off ([ROADMAP](ROADMAP.md#status)
 has what it needs). Built: stage 0 (the listen-only probe; it ran on the
 PC: [results](#stage-0-on-the-pc-2026-10-02-boot-0065-the-results)),
 stage 1 (the netdev contract, `vlan=`, the QEMU harness), stage 2
