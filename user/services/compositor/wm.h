@@ -30,11 +30,10 @@
 #define WM_ST_FULLSCREEN (1u << 1)
 #define WM_ST_RESIZING   (1u << 2)
 #define WM_ST_ACTIVATED  (1u << 3)
-/* Not an xdg state: the client draws its own decorations (xdg-decoration's
- * client_side mode, or a toplevel with no decoration object). Part of the
- * configure because the mode changes, as the size does, only once the
- * client acks it and commits: the frame follows the states of the buffer
- * shown (deco_set). */
+/* Not an xdg state: the client draws its own decorations (it never bound
+ * xdg-decoration's manager, xdgdeco.c). Part of the configure because the
+ * mode changes, as the size does, only once the client acks it and
+ * commits: the frame follows the states of the buffer shown (deco_set). */
 #define WM_ST_CSD        (1u << 4)
 
 /* Resize edges: xdg_toplevel.resize_edge's bits (xdgtop.c checks they match). */
@@ -112,9 +111,10 @@ struct wm_window {
      * mapped into yet. */
     uint64_t key;
     bool restoring;
-    /* Decorations (xdg-decoration, xdgdeco.c): the client draws its own,
-     * so its configures carry WM_ST_CSD. False for a toplevel made by no
-     * client (the tests'): the compositor's title bar. */
+    /* Decorations (xdg-decoration, xdgdeco.c): the client draws its own (it
+     * never bound the manager), so its configures carry WM_ST_CSD. False
+     * for a toplevel made by no client (the tests'): the compositor's
+     * title bar. */
     bool csd;
 };
 

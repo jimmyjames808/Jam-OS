@@ -373,7 +373,8 @@ static status_t on_get_toplevel(void *data, uint32_t self, uint32_t id)
     x->ww = wm_create(s, &ops, x);
     if (!x->ww)
         return comp_no_memory(s->client, self, "no memory for a toplevel");
-    x->ww->csd = true;   /* its own decorations until a decoration object says (xdgdeco.c) */
+    x->ww->csd = !x->xc->deco_bound;   /* its own unless its client bound the decoration
+                                        * manager (xdgdeco.c) */
     x->constructed = true;
     x->role = XDG_ROLE_TOPLEVEL;
     x->role_id = id;

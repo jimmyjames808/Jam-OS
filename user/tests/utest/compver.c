@@ -37,7 +37,7 @@
 
 /* A client: the core globals, xdg_wm_base at wm_v (0: not bound), a seat
  * 5 with a keyboard (its windows take the focus), a pool, and the
- * decoration manager bound. */
+ * decoration manager bound (decos 0: not, by vc_open_bare). */
 struct vc {
     struct ct_client k;
     uint32_t wm, seat, kb, pool, decos;
@@ -49,7 +49,18 @@ struct vt {
     uint32_t s, xs, top, deco;
 };
 
-static bool vc_open(struct ct_comp *p, struct vc *x, uint32_t wm_v)
+/* x binds the decoration manager (global 9) now. */
+static bool vc_bind_decos(struct vc *x)
+{
+    CHECK((x->decos = ct_new(&x->k, &jwl_zxdg_decoration_manager_v1_interface, 1)) != 0);
+    CHECK_ST(jwl_wl_registry_bind(x->k.c, x->k.registry, 9, "zxdg_decoration_manager_v1", 1,
+                                  x->decos), OK);
+    return true;
+}
+
+/* vc_open without the decoration manager: a client that never heard of it
+ * (it draws its own decorations). */
+static bool vc_open_bare(struct ct_comp *p, struct vc *x, uint32_t wm_v)
 {
     *x = (struct vc){ .vmo = HANDLE_INVALID };
     CHECK(ct_open(p, &x->k));
@@ -62,10 +73,15 @@ static bool vc_open(struct ct_comp *p, struct vc *x, uint32_t wm_v)
     CHECK_ST(jwl_wl_registry_bind(x->k.c, x->k.registry, 4, "wl_seat", 5, x->seat), OK);
     CHECK((x->kb = ct_new(&x->k, &jwl_wl_keyboard_interface, 5)) != 0);
     CHECK_ST(jwl_wl_seat_get_keyboard(x->k.c, x->seat, x->kb), OK);
-    CHECK((x->decos = ct_new(&x->k, &jwl_zxdg_decoration_manager_v1_interface, 1)) != 0);
-    CHECK_ST(jwl_wl_registry_bind(x->k.c, x->k.registry, 9, "zxdg_decoration_manager_v1", 1,
-                                  x->decos), OK);
     CHECK((x->pool = ct_pool(&x->k, POOL, &x->vmo)) != 0);
+    CHECK_ST(ct_roundtrip(&x->k), OK);
+    return true;
+}
+
+static bool vc_open(struct ct_comp *p, struct vc *x, uint32_t wm_v)
+{
+    CHECK(vc_open_bare(p, x, wm_v));
+    CHECK(vc_bind_decos(x));
     CHECK_ST(ct_roundtrip(&x->k), OK);
     return true;
 }
@@ -390,13 +406,17 @@ bool t_comp_seat_v9(void)
 /* ---- xdg_wm_base 6 ---------------------------------------------------------------------- */
 
 /* wm_capabilities and configure_bounds before the first configure, by
- * version: 5 and 4 have them, 1 neither. */
-static bool first_configure(struct vc *x, uint32_t v, bool ssd)
+ * version: 5 and 4 have them, 1 neither. With a decoration object asking
+ * server_side (deco) or without; the bounds leave room for the
+ * compositor's frame when x bound the manager, either way (the owner's
+ * rule, xdgdeco.c), and none when it never did. */
+static bool first_configure(struct vc *x, uint32_t v, bool deco)
 {
     struct vt t;
     const struct ct_event *top;
+    bool ssd = x->decos != 0;
     CHECK(toplevel(x, &t));
-    if (ssd)
+    if (deco)
         CHECK(decoration(x, &t, SERVER_SIDE));
     ct_clear(&x->k);
     CHECK(ack_commit(x, &t, 0, 0));
@@ -494,14 +514,16 @@ static bool reposition(struct vc *x)
 
 bool t_xdg_versions(void)
 {
-    static struct vc x6, x5, x4, x1, x3;
+    static struct vc x6, x5, x4, x1, x3, bare;
     struct ct_comp p;
     CHECK(ct_start(&p, W, H));
     CHECK(vc_open(&p, &x6, 6) && vc_open(&p, &x5, 5) && vc_open(&p, &x4, 4));
-    CHECK(vc_open(&p, &x1, 1) && vc_open(&p, &x3, 3));
+    CHECK(vc_open(&p, &x1, 1) && vc_open(&p, &x3, 3) && vc_open_bare(&p, &bare, 6));
     bool ok = first_configure(&x6, 6, true) && first_configure(&x6, 6, false) &&
-              first_configure(&x4, 4, true) && first_configure(&x1, 1, true);
+              first_configure(&bare, 6, false) && first_configure(&x4, 4, true) &&
+              first_configure(&x1, 1, true);
     ok = ok && minimised(&p, &x6, 6) && minimised(&p, &x5, 5) && reposition(&x3);
+    vc_close(&bare);
     vc_close(&x6);
     vc_close(&x5);
     vc_close(&x4);
@@ -556,7 +578,9 @@ static uint32_t told(const struct vc *x, const struct vt *t)
 
 /* t's decoration mode moved by req (set_mode, or unset_mode for 0, or the
  * object destroyed for ~0u): the configure it brings acked with a redrawn
- * buffer. want: the mode the decoration's configure says (0: none comes). */
+ * buffer. want: the mode the decoration's configure says (0: none comes).
+ * A destroyed object brings nothing (its client bound the manager, so the
+ * window stays the compositor's): a buffer committed all the same. */
 static bool switch_mode(struct vc *x, struct vt *t, uint32_t req, uint32_t want)
 {
     struct jwl_conn *c = x->k.c;
@@ -565,7 +589,11 @@ static bool switch_mode(struct vc *x, struct vt *t, uint32_t req, uint32_t want)
     if (req == ~0u) {
         CHECK_ST(jwl_zxdg_toplevel_decoration_v1_destroy(c, t->deco), OK);
         t->deco = 0;
-    } else if (req) {
+        CHECK_ST(ct_roundtrip(&x->k), OK);
+        CHECK(!ct_find(&x->k, &jwl_xdg_surface_interface, JWL_XDG_SURFACE_EV_CONFIGURE, t->xs));
+        return ack_commit(x, t, 0, buffer(x, SIDE, RED));
+    }
+    if (req) {
         CHECK_ST(jwl_zxdg_toplevel_decoration_v1_set_mode(c, t->deco, req), OK);
     } else {
         CHECK_ST(jwl_zxdg_toplevel_decoration_v1_unset_mode(c, t->deco), OK);
@@ -590,44 +618,94 @@ static bool looks(struct ct_comp *p, bool ssd, uint32_t bar)
     return true;
 }
 
-static bool modes(struct ct_comp *p, struct vc *x)
+/* t (its decoration object gone first, if any) and its surface destroyed,
+ * and its pixels gone from the output: the next window's checks see the
+ * next window, never t's last picture. */
+static bool gone(struct ct_comp *p, struct vc *x, struct vt *t)
+{
+    if (t->deco)
+        CHECK_ST(jwl_zxdg_toplevel_decoration_v1_destroy(x->k.c, t->deco), OK);
+    CHECK_ST(jwl_xdg_toplevel_destroy(x->k.c, t->top), OK);
+    CHECK_ST(jwl_xdg_surface_destroy(x->k.c, t->xs), OK);
+    CHECK_ST(jwl_wl_surface_destroy(x->k.c, t->s), OK);
+    CHECK_ST(ct_roundtrip(&x->k), OK);
+    CHECK(!x->k.errored);
+    CHECK(pixel_is(p, SX + SIDE / 2, SY + SIDE / 2, RED, false));
+    return true;
+}
+
+/* x, bound to the manager, opened on p: a fresh client each time, so its
+ * first window takes the focus and its title bar is the focused colour. */
+static bool fresh(struct ct_comp *p, struct vc *x)
+{
+    vc_close(x);
+    return vc_open(p, x, 1);
+}
+
+/* The owner's rule (xdgdeco.c), on x (bound the manager) and bare (never
+ * did): every window of x's has the compositor's title bar whatever it
+ * asks, and is told server_side; bare's draw their own, until bare binds
+ * the manager, when its window already mapped gets ours too. Each window
+ * is its client's first (fresh): the focused title bar's colour. */
+static bool modes(struct ct_comp *p, struct vc *x, struct vc *bare)
 {
     struct vt t;
     CHECK(toplevel(x, &t));
-    CHECK(decoration(x, &t, 0));   /* no mode asked: the compositor's choice, server-side */
+    CHECK(decoration(x, &t, 0));   /* no mode asked: server-side */
     CHECK(map_red(p, x, &t));
     CHECK_EQ(told(x, &t), SERVER_SIDE);
     uint32_t bar = p->image[TITLE_Y * W + SX + SIDE / 2];   /* drawn by the paint that showed it */
     CHECK(bar != RED && bar != ref_wallpaper_of(SX + SIDE / 2, TITLE_Y, W, H));
     CHECK(looks(p, true, bar));
-    /* toggled: client-side, back, unset, set twice the same, destroyed */
-    CHECK(switch_mode(x, &t, CLIENT_SIDE, CLIENT_SIDE) && looks(p, false, bar));
+    /* client_side asked: answered server_side, the title bar kept; then
+     * server_side, client_side again, unset, server_side twice, destroyed:
+     * always ours */
+    CHECK(switch_mode(x, &t, CLIENT_SIDE, SERVER_SIDE) && looks(p, true, bar));
     CHECK(switch_mode(x, &t, SERVER_SIDE, SERVER_SIDE) && looks(p, true, bar));
-    CHECK(switch_mode(x, &t, CLIENT_SIDE, CLIENT_SIDE) && looks(p, false, bar));
+    CHECK(switch_mode(x, &t, CLIENT_SIDE, SERVER_SIDE) && looks(p, true, bar));
     CHECK(switch_mode(x, &t, 0, SERVER_SIDE) && looks(p, true, bar));
     CHECK(switch_mode(x, &t, SERVER_SIDE, SERVER_SIDE) && looks(p, true, bar));
-    CHECK(switch_mode(x, &t, ~0u, 0) && looks(p, false, bar));
+    CHECK(switch_mode(x, &t, ~0u, 0) && looks(p, true, bar));
     CHECK(!x->k.errored);
-    CHECK_ST(jwl_xdg_toplevel_destroy(x->k.c, t.top), OK);
-    CHECK_ST(jwl_xdg_surface_destroy(x->k.c, t.xs), OK);
-    CHECK_ST(jwl_wl_surface_destroy(x->k.c, t.s), OK);
-    CHECK_ST(ct_roundtrip(&x->k), OK);
-    CHECK(!x->k.errored);
-    /* no decoration object at all: the client's own decorations */
-    CHECK(toplevel(x, &t));
+    CHECK(gone(p, x, &t));
+    /* a client_side window from the start: ours all the same */
+    CHECK(fresh(p, x) && toplevel(x, &t));
+    CHECK(decoration(x, &t, CLIENT_SIDE));
     CHECK(map_red(p, x, &t));
+    CHECK_EQ(told(x, &t), SERVER_SIDE);
+    CHECK(looks(p, true, bar));
+    CHECK(gone(p, x, &t));
+    /* no decoration object at all, its client bound the manager: ours */
+    CHECK(fresh(p, x) && toplevel(x, &t));
+    CHECK(map_red(p, x, &t));
+    CHECK(looks(p, true, bar));
+    CHECK(gone(p, x, &t));
+    /* a client that never bound it: its own decorations */
+    CHECK(toplevel(bare, &t));
+    CHECK(map_red(p, bare, &t));
     CHECK(looks(p, false, bar));
+    /* ... until it binds it: its mapped window is told (a configure, no
+     * decoration object to say a mode) and gets ours with its next buffer */
+    ct_clear(&bare->k);
+    CHECK(vc_bind_decos(bare));
+    const struct ct_event *top;
+    uint32_t serial = configured(bare, &t, &top);
+    CHECK(serial);
+    CHECK(ack_commit(bare, &t, serial, buffer(bare, SIDE, RED)));
+    CHECK(looks(p, true, bar));
+    CHECK(!bare->k.errored);
     return true;
 }
 
 bool t_xdg_decoration(void)
 {
-    static struct vc x;
+    static struct vc x, bare;
     struct ct_comp p;
     CHECK(ct_start(&p, W, H));
-    CHECK(vc_open(&p, &x, 1));
-    bool ok = modes(&p, &x);
+    CHECK(vc_open(&p, &x, 1) && vc_open_bare(&p, &bare, 1));
+    bool ok = modes(&p, &x, &bare);
     vc_close(&x);
+    vc_close(&bare);
     CHECK(ct_stop(&p));
     return ok;
 }
@@ -704,7 +782,7 @@ bool t_xdg_decoration_bad(void)
     CHECK(ct_handles_back(&p, base));   /* every bad client's objects gone */
     CHECK(toplevel(&good, &t) && decoration(&good, &t, CLIENT_SIDE));
     CHECK(map_red(&p, &good, &t));      /* and the compositor still serves */
-    CHECK_EQ(told(&good, &t), CLIENT_SIDE);
+    CHECK_EQ(told(&good, &t), SERVER_SIDE);   /* (client_side asked: the owner's rule) */
     CHECK(!good.k.errored);
     vc_close(&good);
     CHECK(ct_stop(&p));
