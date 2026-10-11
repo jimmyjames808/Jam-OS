@@ -1,5 +1,5 @@
 /* play: a sound file in the headphones, as its own program (bin/play,
- * docs/history/M8.6-SVC.md "The splits"): the shell's `play` opens the
+ * docs/HISTORY.md, M8.6): the shell's `play` opens the
  * file and starts this with nothing but that file and its list (the
  * mixer, /svc/audio), so a crafted file decoded here (WAV, or MP3 through
  * dr_mp3) can reach the sound output and nothing else: no namespace, no

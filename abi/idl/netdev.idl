@@ -14,8 +14,8 @@
 # VMOs and two events; their layout, the wake bits, the trust rules and
 # the rights are in <jam/netdev.h>, with the ring code both sides use.
 # The driver owns the network mode: with a VLAN it tags every frame
-# netstack sends and passes on only frames of its VLAN (docs/M9-PLAN.md
-# "Where the VLAN tag is enforced"); untagged, it sends no tagged frame
+# netstack sends and passes on only frames of its VLAN (docs/HISTORY.md, M9);
+# untagged, it sends no tagged frame
 # and passes on only untagged ones. `info` says which, and nobody else
 # tells netstack.
 #

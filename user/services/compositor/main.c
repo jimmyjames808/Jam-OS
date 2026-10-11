@@ -1,4 +1,4 @@
-/* compositor: the Wayland compositor (docs/G1-PLAN.md). Programs that ask
+/* compositor: the Wayland compositor (docs/HISTORY.md, G1). Programs that ask
  * for `svc wayland` open /svc/wayland and speak Wayland (<jwl.h>) to it,
  * each on a channel of its own; it keeps their surfaces, places their
  * windows and composes them onto the output.

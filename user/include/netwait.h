@@ -1,6 +1,6 @@
 /* <netwait.h>: one thread waiting on many sockets at once, and on any
  * other handle it can wait on: a wait set (user/lib/netwait.c). It is what
- * poll, select and epoll will be built on (docs/M9.5-PLAN.md, track D, has
+ * poll, select and epoll will be built on (docs/HISTORY.md, M9.5, track D, has
  * the mapping).
  *
  * ---- The model --------------------------------------------------------------

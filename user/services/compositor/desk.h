@@ -1,5 +1,5 @@
-/* desk.h: the owner's desktop around the windows (docs/G1-PLAN.md "The
- * look"), what its files share. comp.h has what the rest of the compositor
+/* desk.h: the owner's desktop around the windows (docs/HISTORY.md, G1), what its
+ * files share. comp.h has what the rest of the compositor
  * calls; look.h every colour and size.
  *
  *   screens.c   virtual screens: made as needed, each with its own

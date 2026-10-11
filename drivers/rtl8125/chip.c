@@ -4,7 +4,7 @@
  * rge_init, rge_stop, rge_reset, rge_exit_oob, rge_set_phy_power,
  * rge_wol, rge_ifmedia_upd), without the firmware tables (the MAC's
  * break points, the PCIe PHY table, the PHY's tuning and its patch: the
- * owner's call, M9-PLAN question 5; the PC's stage-0 run linked without
+ * owner's call, docs/HISTORY.md, M9; the PC's stage-0 run linked without
  * them): the chip runs on whatever the board's firmware loaded, and
  * chip_log_after_reset says what that was. Nothing here writes a
  * transmit register: in full mode chip_start asks tx.c to (notx.h).
@@ -253,8 +253,8 @@ uint32_t chip_log_after_reset(struct rtl *t, uint16_t *rcode)
  * (their meaning is not documented anywhere public; rge's values). The
  * transmit descriptor fetch number (TDFNR) is tx.c's to write. Left out:
  * 0xf1 bit 7, 0x382, the EEE idle timer, the PCIe settings through CSI
- * (0x70c, 0x98) and the ASPM/CLKREQ changes (docs/M9-PLAN.md has the
- * step-by-step comparison with rge_init). */
+ * (0x70c, 0x98) and the ASPM/CLKREQ changes (docs/HISTORY.md, M9, has
+ * the step-by-step comparison with rge_init). */
 static void mac_setup(struct rtl *t)
 {
     wr8(t, RTL_RSS_CTRL, 0);   /* one queue: no RSS */

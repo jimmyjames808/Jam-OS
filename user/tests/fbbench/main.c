@@ -1,5 +1,5 @@
 /* fbbench: what the compositor and libfun's programs depend on, measured
- * (docs/G1-PLAN.md, track P0): libfun's present into a full-screen window
+ * (docs/HISTORY.md, G1, track P0): libfun's present into a full-screen window
  * (through the compositor, frame by frame), RAM to RAM, the premultiplied
  * blend per megapixel (scalar, SSE2, AVX2) and vmo_read's rate (Q2's
  * fallback). The framebuffer's own lines went with the screen the console

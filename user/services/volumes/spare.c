@@ -1,5 +1,5 @@
 /* volumes: a filesystem service that outlives its process
- * (docs/M11.6-PLAN.md): for each filesystem service (/data, /esp, each
+ * (docs/HISTORY.md, M11.6): for each filesystem service (/data, /esp, each
  * /usbN) a keeper and a state VMO, and one warm spare fat for every mount.
  * init does the same for the mixer (user/services/init/spare.c); how a
  * spare, a keeper and a measured restart work is the supervision module's

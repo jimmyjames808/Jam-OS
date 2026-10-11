@@ -9,7 +9,7 @@
  * address from the settings file) and gives a duplicate to the DHCP
  * client. Never published in the namespace: programs reach the network
  * through /svc/net (net.idl), which can't change the address.
- * docs/M9-PLAN.md "Programs and sockets" has the design.
+ * docs/HISTORY.md, M9 has the design.
  *
  * The read-only channel: a second channel of the same protocol, made and
  * kept by init in the same way (its server end is each netstack's

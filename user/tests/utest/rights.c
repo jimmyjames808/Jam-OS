@@ -1,6 +1,6 @@
 /* utest: the root resource's powers (<jam/abi.h> RIGHT_ROOT_*) from user
  * space, and vmo_make_exec, the one way a VMO a process made gets
- * RIGHT_EXEC (a program from /data, docs/history/M8.6-SVC.md), with its
+ * RIGHT_EXEC (a program from /data, docs/HISTORY.md, M8.6), with its
  * twin for a pager VMO, vmo_make_exec_verified (the refusals only).
  *
  * Every call that takes the root is refused, ERR_ACCESS_DENIED, by a root

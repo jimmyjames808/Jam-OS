@@ -1,5 +1,5 @@
 /* utest: fat carries on from a dead instance's state (user/services/fat/
- * adopt.c; docs/M11.6-PLAN.md, "The demonstration and its tests",
+ * adopt.c; docs/HISTORY.md, M11.6;
  * deterministic deaths). The test plays devmgr: it makes the state VMO and
  * keeps it, is the keeper (<keep.h>), keeps the `fs` channel's server end
  * and hands each instance a duplicate, and restarts fat over a new `block`

@@ -1,5 +1,5 @@
 /* SHA-256 (FIPS 180-4), for libos (user/lib/sha256.c): the hash the shell
- * keeps of every program the owner allowed (docs/history/M8.6-SVC.md),
+ * keeps of every program the owner allowed (docs/HISTORY.md, M8.6),
  * so a file that changed is not run. Not built for speed: a few MB/s is
  * plenty for a program file. */
 #pragma once

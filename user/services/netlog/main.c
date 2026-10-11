@@ -1,5 +1,5 @@
-/* netlog: the kernel log over UDP to the Mac (docs/M9-PLAN.md, "netlog:
- * the log over UDP to the Mac"). init starts it in shell mode (its net.c)
+/* netlog: the kernel log over UDP to the Mac (docs/HISTORY.md, M9).
+ * init starts it in shell mode (its net.c)
  * once /data is mounted, when /data/etc/settings has `net.host` and not
  * `netlog = off`, with
  *   argv          bin/netlog <net.host> <the boot id, hex>: the Mac's

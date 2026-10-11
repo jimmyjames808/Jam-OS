@@ -318,7 +318,7 @@ bool t_netsock_ping(void)
     CHECK_ST(net_echo_until(o2, now() + NETDRV_WAIT, 0, 1, 0, 100, NULL, NULL, NULL),
              ERR_INVALID_ARGS);
     CHECK_ST(net_echo_until(o2, now() + NETDRV_WAIT, OUR_IP | 0xff, 1, 0, 100, NULL, NULL, NULL),
-             ERR_INVALID_ARGS);   /* the subnet's broadcast (M9-REVIEW item 4) */
+             ERR_INVALID_ARGS);   /* the subnet's broadcast (M9 review item 4) */
     CHECK_ST(net_echo_until(o2, now() + NETDRV_WAIT, PEER_IP, 1, 0, 0, NULL, NULL, NULL),
              ERR_INVALID_ARGS);
     CHECK_ST(net_echo_until(o2, now() + NETDRV_WAIT, PEER_IP, 1, 0, NET_TIMEOUT_MAX + 1, NULL,

@@ -1,5 +1,5 @@
-/* fat: its side of the keep channel (<keep.h>; docs/M11.6-PLAN.md, "The
- * keep channel"). Every handle a client holds the other end of (an open
+/* fat: its side of the keep channel (<keep.h>; docs/HISTORY.md, M11.6).
+ * Every handle a client holds the other end of (an open
  * file's channel and buffer, a view's channel) is put with devmgr, the
  * keeper, so that it outlives fat and a successor is handed it back
  * (adopt.c). A slot of files[] is keep slot FAT_KEEP_FILE(i), a view's

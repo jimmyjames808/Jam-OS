@@ -1,6 +1,6 @@
 /* The IOMMU as the rest of the kernel sees it: DMA remapping (Intel VT-d,
  * kernel/dev/vtd_*.c) without its formats. The design is
- * docs/M11-PLAN.md; the hardware's model is in kernel/dev/vtd_domain.h.
+ * docs/HISTORY.md, M11; the hardware's model is in kernel/dev/vtd_domain.h.
  *
  * On by default (since 2026-10-07); the boot word `iommu=off` turns it off.
  * With that word, or on a machine with no VT-d unit, no function changes
@@ -23,7 +23,7 @@
  * all of RAM.
  *
  * IOVA = physical address: iommu_map maps each page at its own address
- * (docs/M11-PLAN.md, question 1), so a driver's numbers don't change.
+ * (docs/HISTORY.md, M11, question 1), so a driver's numbers don't change.
  *
  * Context: every call but iommu_reserve_early and iommu_jump_off is
  * thread context, interrupts on, no spinlock held (they wait for the

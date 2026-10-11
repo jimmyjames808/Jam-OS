@@ -1,5 +1,5 @@
-# keepch: the keep channel (<keep.h>, user/lib/keep.c; docs/M11.6-PLAN.md,
-# "The keep channel"): how a service that must outlive its process hands the
+# keepch: the keep channel (<keep.h>, user/lib/keep.c; docs/HISTORY.md, M11.6):
+# how a service that must outlive its process hands the
 # kernel objects its clients hold the other end of to its supervisor, the
 # keeper, and gets them back in its next instance. Named keepch so its
 # stubs (keepch_put) don't take the names of libos's keep_put and

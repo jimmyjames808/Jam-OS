@@ -329,7 +329,7 @@ bool t_netsock_slow_reader(void)
     return true;
 }
 
-/* ---- a busy client (M9-REVIEW item 1) ------------------------------------------------ */
+/* ---- a busy client (M9 review item 1) ------------------------------------------------ */
 
 struct flooder {
     handle_t ch;            /* its opener channel */

@@ -1,5 +1,5 @@
 /* look.h: the compositor's look, every colour and size of it in one place
- * (the owner's "style B1", docs/G1-PLAN.md "The look"): the windows'
+ * (the owner's "style B1", docs/HISTORY.md, G1): the windows'
  * decorations, their rounded corners and shadows, and the wallpaper.
  * title.c draws the title bars, shape.c the corners and shadows, mask.c
  * makes the anti-aliased shapes they use, wallpaper.c the background.

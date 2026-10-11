@@ -1,5 +1,5 @@
-/* init's half of `update` (<update.h>, docs/M9-PLAN.md "update: a new
- * build from the Mac"): a fetched build checked against its manifest and
+/* init's half of `update` (<update.h>, docs/HISTORY.md, M9):
+ * a fetched build checked against its manifest and
  * made the kernel's stored copy, the one `reboot` and a panic start.
  *
  * The fetcher parses what the network sent and holds no power; init holds

@@ -1,4 +1,4 @@
-/* comp.h: the compositor's shared model (docs/G1-PLAN.md), what every file
+/* comp.h: the compositor's shared model (docs/HISTORY.md, G1), what every file
  * of user/services/compositor/ builds on: the clients and their Wayland
  * objects, the surfaces with their double-buffered state, the windows in
  * stacking order, the output and its damage.
@@ -68,7 +68,7 @@
 #include <openkeys.h>
 #include <os.h>
 
-/* ---- limits (G1-PLAN, "Limits and the security model") ---------------------------- */
+/* ---- limits (docs/HISTORY.md, G1) ------------------------------------------------- */
 
 #define COMP_CLIENTS_MAX        64u            /* connections at once, for the whole compositor */
 #define COMP_SURFACES_MAX       64u            /* per client */
@@ -899,8 +899,8 @@ void        ctl_layout_changed(enum comp_layout layout);
 /* ---- the desktop (desk.h has its inside) --------------------------------------------------
  *
  * The top bar, virtual screens, minimising, Alt+Tab's list, the search
- * box, the popovers, notifications and the animations (docs/G1-PLAN.md
- * "The look"). The seat offers it every key press and button press first,
+ * box, the popovers, notifications and the animations (docs/HISTORY.md, G1).
+ * The seat offers it every key press and button press first,
  * the loop its clock, and painting draws it over the windows. */
 
 /* At start: on (the strip and the cards) or not (the window manager

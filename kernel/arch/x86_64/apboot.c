@@ -2,7 +2,7 @@
  * needs no boot loader to wake them (after a kexec there is none). It is
  * the default on every boot; `smp=loader` has Limine release its parked
  * CPUs instead (smp.c). The design, with its reasons, is in
- * docs/history/M8.5-AP-STARTUP.md.
+ * docs/HISTORY.md, M8.5.
  *
  * The protocol is the Intel SDM's (vol. 3A, 9.4.4.1 "Typical BSP
  * Initialization Sequence"): INIT, 10 ms, SIPI, 200 us, SIPI, 200 us. It

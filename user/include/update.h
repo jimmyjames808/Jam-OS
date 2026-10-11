@@ -1,5 +1,5 @@
 /* `update`: a new build from the Mac, run without moving the stick
- * (docs/M9-PLAN.md, "update: a new build from the Mac"). This header has
+ * (docs/HISTORY.md, M9). This header has
  * what the PC's two sides share: the manifest that names the build, and
  * the hand-off of a fetched build to init.
  *

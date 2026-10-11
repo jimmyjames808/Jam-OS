@@ -1,5 +1,5 @@
 /* The keep channel: kernel objects a service made outlive its process
- * (user/lib/keep.c; docs/M11.6-PLAN.md, "The keep channel").
+ * (user/lib/keep.c; docs/HISTORY.md, M11.6).
  *
  * When a process dies the kernel closes every handle it held, and a
  * channel end with no handle left closes: its clients would see

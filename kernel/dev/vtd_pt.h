@@ -6,7 +6,7 @@
  *   - IOVA = physical address: a page is mapped at its own address, so
  *     the numbers a driver writes into its device are the ones vmo_pin
  *     gave it, and what isn't pinned for the domain isn't in its table
- *     (docs/M11-PLAN.md, question 1). Only 4 KiB leaves, read and write
+ *     (docs/HISTORY.md, M11, question 1). Only 4 KiB leaves, read and write
  *     or (a read-only pin: the device only reads the page) read only,
  *     with the snoop bit where the unit has snoop control.
  *   - Pin counts: two pins of one page in one domain share the mapping,

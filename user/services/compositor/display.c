@@ -18,7 +18,7 @@
 #include <jwl/xdg_shell.h>
 #include "comp.h"
 
-#define OUTPUT_MILLIHZ 60000   /* the mode we say: there is no vsync to tell (G1-PLAN) */
+#define OUTPUT_MILLIHZ 60000   /* the mode we say: there is no vsync to tell (docs/HISTORY.md, G1) */
 #define OUTPUT_NAME          "FB-1"         /* wl_output.name: the firmware's framebuffer */
 #define OUTPUT_NAME_HEADLESS "HEADLESS-1"   /* ... or an image in memory */
 

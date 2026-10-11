@@ -3,7 +3,7 @@
  * can't emulate the PC's RTL8125, so this small driver speaks the same
  * netdev protocol (abi/idl/netdev.idl, <jam/netdev.h>) and the same frame
  * rules (<jam/netframe.h>), and everything above the driver is tested in
- * QEMU (docs/M9-PLAN.md "Testing without the real NIC").
+ * QEMU (docs/HISTORY.md, M9).
  *
  * Files: main.c (start, the list of every register written, stop),
  * chip.c (reset, the address, the PHY, flow control and VLAN offloads

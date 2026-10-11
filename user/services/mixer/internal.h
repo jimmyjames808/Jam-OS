@@ -7,7 +7,7 @@
  * output stream, the periods, the mixing); device.c a second thread for
  * audioctl.device, which calls devmgr and the drivers and so must not
  * hold up the loop; state.c the state VMO; adopt.c a restart.
- * docs/history/A2-PLAN.md has the design; <mixer.h> the ring.
+ * ARCHITECTURE.md (the mixer) has the design; <mixer.h> the ring.
  *
  * Time is the driver's: at the end of each period it played (2048 frames,
  * 42.7 ms) the mixer mixes until OUT_LEAD periods are written ahead of
@@ -32,7 +32,7 @@
  * protocol's generated <proto>_take_slot), run with <proto>_run_slot and
  * answered from the slot's reply area.
  *
- * **A restart is not seen by clients** (adopt.c; docs/M11.6-PLAN.md): init
+ * **A restart is not seen by clients** (adopt.c; docs/HISTORY.md, M11.6): init
  * keeps the state VMO (SR_STATE) and, through the keep channel (SR_KEEP,
  * <keep.h>), a duplicate of every handle a client holds the other end of
  * (each stream's channel, ring and event, each opener's channel) and of

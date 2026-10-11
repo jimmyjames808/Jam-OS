@@ -1,6 +1,6 @@
 /* <jam/netframe.h>: what a network driver may know about a frame, as pure
  * functions over its raw bytes (ARCHITECTURE.md "Networking";
- * docs/M9-PLAN.md "Where the VLAN tag is enforced").
+ * docs/HISTORY.md, M9).
  *
  * A NIC driver holds a dma_cap, so it parses as little as it can: a
  * frame's length and the bytes after the two addresses, never the

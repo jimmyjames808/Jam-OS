@@ -18,7 +18,7 @@
  * (headless, testwin, so roleless surfaces with buffers become windows):
  * afterwards it holds exactly the handles and message bytes it held
  * before. t_comp_live_fuzz: fewer rounds against the desktop's own
- * (/svc/wayland), which must keep serving (G1-PLAN's X1; g1-hostile.txt
+ * (/svc/wayland), which must keep serving (docs/HISTORY.md, G1's X1; g1-hostile.txt
  * runs `utest only comp_live`). The rounds are seeded: a failure prints
  * the round, and FUZZ_SEED + round makes it again.
  *

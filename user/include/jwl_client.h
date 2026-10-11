@@ -2,7 +2,7 @@
  * jwl_window.c, jwl_seat.c, jwl_data.c), on top of <jwl.h>'s codec and
  * transport.
  * What a Jam OS program uses to open windows on the compositor
- * (docs/G1-PLAN.md, "libjwl: the codec and the client library").
+ * (docs/HISTORY.md, G1).
  *
  * The model:
  *   - a struct jwl_client is one program's link to the compositor: the

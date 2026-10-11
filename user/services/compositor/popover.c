@@ -1,5 +1,5 @@
-/* The status popovers (desk.h; the owner's picks in docs/G1-PLAN.md "The
- * look"): the strip's volume and network icons and its clock each open a
+/* The status popovers (desk.h; the owner's picks in docs/HISTORY.md, G1):
+ * the strip's volume and network icons and its clock each open a
  * frosted card LOOK_POP_GAP pixels under the strip, its right edge on the
  * right edge of what opened it (kept LOOK_POP_EDGE from the output's
  * side); a click on the same item, on anything else, Esc or a screen

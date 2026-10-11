@@ -1,5 +1,5 @@
-/* fat: a restart its clients don't see (docs/M11.6-PLAN.md, "Where each
- * service's state lives", "The request in progress"). A fat started with
+/* fat: a restart its clients don't see (docs/HISTORY.md, M11.6).
+ * A fat started with
  * a dead instance's state (devmgr's SR_STATE, accepted by svcstate)
  * carries on where it stopped:
  *

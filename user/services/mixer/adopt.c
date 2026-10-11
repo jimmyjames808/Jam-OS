@@ -1,5 +1,5 @@
-/* mixer: a restart its clients don't see (docs/M11.6-PLAN.md, "The
- * mixer"). A mixer started with a used state (init's SR_STATE, checked by
+/* mixer: a restart its clients don't see (docs/HISTORY.md, M11.6).
+ * A mixer started with a used state (init's SR_STATE, checked by
  * state.c) carries on where the dead instance stopped:
  *
  *   1. the keeper's handles (<keep.h>, on SR_KEEP) are taken back, each

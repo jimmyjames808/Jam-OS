@@ -1,4 +1,4 @@
-/* init's shell mode: the compositor (docs/G1-PLAN.md), which draws the
+/* init's shell mode: the compositor (docs/HISTORY.md, G1), which draws the
  * screen on every plain boot: the desktop is the only way Jam OS draws
  * (M12's Q14: the boot word `nocomp` and the full-screen console are
  * gone).
