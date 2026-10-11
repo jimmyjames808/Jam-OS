@@ -1,0 +1,21 @@
+# posixtest's socket and sockets sections against the network peer
+# (tools/posix-net-test.sh runs this): a static address (net.address in the
+# stick's settings), QEMU's e1000e, the peer's TCP servers on 10.2.21.174
+# (5040-5043, 5046, 5047), its two connections to the guest's listener on
+# 5045 and its DNS server. Names through /svc/dns, 1 MiB each way, a
+# nonblocking connect, EINTR, EPIPE, 32 connections in one poll, a
+# connection handed to a child, UDP both ways, a listener; the script checks
+# the peer's counts afterwards.
+wait 120 Jam OS shell
+seen 60 init: net.address is set: the static address, no DHCP client
+seen 60 netstack: address 10.2.21.5/24
+seen 30 dns: serving /svc/dns
+seen 30 dns: 1 DNS server(s) from netstack
+wait {prompt}
+send run posixtest socket sockets
+wait 60 posixtest: socket: ok
+wait 300 posixtest: sockets: ok
+wait 20 posixtest: PASS
+wait {prompt}
+send reboot -f
+wait reboot: resetting

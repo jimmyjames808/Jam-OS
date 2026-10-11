@@ -222,6 +222,7 @@ long lx_exit(long code, long b, long c, long d, long e, long f)
 
 long lx_exit_group(long code, long b, long c, long d, long e, long f)
 {
+    sock_exit_drain();   /* netstack drops what it hasn't taken when the process ends */
     jam_process_exit(code);
 }
 

@@ -90,3 +90,13 @@ struct jam_spawn_req {
  * in *pid (if pid isn't NULL), or an errno value (positive, posix_spawn's
  * own convention). */
 int __jam_posix_spawn(int *pid, const struct jam_spawn_req *r);
+
+/* ---- names: lookup_name's override (resolve.c) ------------------------------------- */
+
+/* The IPv4 addresses of name from the system's resolver (/svc/dns): up
+ * to max of them into addrs, each four bytes in network order. The count
+ * (>= 1), or a negative EAI_* code (<netdb.h>): EAI_NONAME (no such name,
+ * or none with an IPv4 address), EAI_AGAIN (no answer yet: no server
+ * answered, none is known, too many asked at once), EAI_FAIL (the
+ * servers failed, or the program's list didn't ask for `svc dns`). */
+int __jam_resolve(const char *name, unsigned char (*addrs)[4], int max);
