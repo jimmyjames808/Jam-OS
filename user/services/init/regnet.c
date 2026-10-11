@@ -363,10 +363,31 @@ void regnet_start(handle_t port, const handle_t *cards, unsigned ncards)
     jam_handle_close(sys);
 }
 
+/* logd's namespace follows init's, but not at every `settled`: the update
+ * makes a view of /data (a call that can wait for the filesystem service),
+ * and utest's mock disks and usbtest's sticks make hundreds of changes in
+ * seconds, which init must read at once (volumes drops a watcher that falls
+ * behind). So each change only postpones the update to MOUNTS_QUIET after
+ * the last one; main.c's wait calls regnet_tick at that time. */
+#define MOUNTS_QUIET (300 * NS_PER_MS)
+static uint64_t mounts_due;   /* uptime ns of the pending update (0: none) */
+
 void regnet_mounts(void)
 {
-    if (!rn.logd_ns)
+    if (rn.logd_ns)
+        mounts_due = now() + MOUNTS_QUIET;
+}
+
+uint64_t regnet_due(void)
+{
+    return mounts_due ? mounts_due : DEADLINE_NEVER;
+}
+
+void regnet_tick(void)
+{
+    if (!mounts_due || now() < mounts_due || !rn.logd_ns)
         return;
+    mounts_due = 0;
     status_t st = ns_update(rn.logd_ns, rn.logd_back, logd_grants);
     /* It is gone, or out of memory: the next change sends the whole namespace again. */
     if (st != OK && st != ERR_PEER_CLOSED)
@@ -377,6 +398,8 @@ void regnet_stop_logd(void)
 {
     if (!rn.logd.proc)
         return;
+    mounts_due = 1;   /* the latest mounts first */
+    regnet_tick();
     status_t st = rn.logd_ctl ? logctl_flush_until(rn.logd_ctl, now() + FLUSH_WAIT)
                               : ERR_NOT_FOUND;
     if (st != OK && st != ERR_NOT_FOUND && st != ERR_PEER_CLOSED)

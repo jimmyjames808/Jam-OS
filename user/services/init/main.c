@@ -129,7 +129,12 @@ static status_t wait_program(handle_t proc, uint64_t timeout_ns, struct process_
     status_t st;
     for (;;) {
         struct port_packet pkt;
-        st = jam_port_wait(port, deadline, &pkt);
+        uint64_t t = regnet_due();   /* logd's mounts (regnet.c): a wake-up of ours */
+        st = jam_port_wait(port, t < deadline ? t : deadline, &pkt);
+        if (st == ERR_TIMED_OUT && t < deadline) {
+            regnet_tick();
+            continue;
+        }
         if (st != OK || pkt.key == KEY_PROGRAM)
             break;
         if (pkt.key == KEY_MOUNTS)

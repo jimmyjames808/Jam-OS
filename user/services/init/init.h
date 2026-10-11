@@ -124,8 +124,13 @@ void     mounts_settle(void);
  * says nothing when there is no network or no card. The network never
  * changes a result. */
 void     regnet_start(handle_t port, const handle_t *cards, unsigned ncards);
-/* volumes' mounts changed (mounts_event said so): logd's namespace follows. */
+/* volumes' mounts changed (mounts_event said so): logd's namespace follows,
+ * not at once but once the changes have been quiet for a moment: regnet_due
+ * says when (uptime ns, DEADLINE_NEVER: nothing pending), and regnet_tick, called
+ * then, makes the update. */
 void     regnet_mounts(void);
+uint64_t regnet_due(void);
+void     regnet_tick(void);
 /* Before volumes stop: logd flushes, and is stopped. */
 void     regnet_stop_logd(void);
 /* After volumes stopped, before devmgr: netlog sends what the log holds
