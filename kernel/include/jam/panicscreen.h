@@ -1,4 +1,4 @@
-/* The calm panic screen (the owner's design "B1", docs/G1-PLAN.md's
+/* The calm panic screen (the owner's design "B1", docs/HISTORY.md, G1's
  * polish paragraph): the kernel draws it alone after a panic, with the
  * other CPUs halted and interrupts off. A dark background, the busy ring
  * of docs/design/cursors.svg turning in the middle once a second, one

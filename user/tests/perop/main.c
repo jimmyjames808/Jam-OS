@@ -1,5 +1,5 @@
-/* perop: the per-operation lines (docs/M11.5-PLAN.md, "Per-operation
- * lines"): what one file operation costs a program, beside `bench`'s
+/* perop: the per-operation lines (docs/HISTORY.md, M11.5):
+ * what one file operation costs a program, beside `bench`'s
  * per-call lines, timed in ring 3 with bench's method (the header of
  * kernel/test/bench.c): the TSC fenced with lfence on both sides, the
  * timestamp's own cost measured first and subtracted, untimed warm-up,

@@ -1,6 +1,6 @@
 /* The update protocol on the wire: UDP to the Mac's port UPDWIRE_PORT
- * (tools/update-server.py serves it; docs/M9-PLAN.md "update: a new
- * build from the Mac"). The encoder and the strict decoder are
+ * (tools/update-server.py serves it; docs/HISTORY.md, M9). The
+ * encoder and the strict decoder are
  * user/lib/updwire.c; the fetcher's window over them is <updfetch.h>.
  *
  * Stateless: every request names a snapshot, a file, an offset and a

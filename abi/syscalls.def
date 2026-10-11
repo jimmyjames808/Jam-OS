@@ -202,9 +202,9 @@
 # vmo_set_size are ERR_BAD_STATE for every handle, a growing vmo_set_size
 # commits the new pages before it returns (ERR_NO_MEMORY with the size
 # unchanged if it can't). Any other bit is ERR_INVALID_ARGS: contiguous and
-# below-4-GiB memory is dma_vmo_create's. No VMO has a clone or
-# copy-on-write child. (Number 50 was vmo_create with a dma_cap argument
-# until M12: retired.)
+# below-4-GiB memory is dma_vmo_create's. A copy-on-write child is
+# vmo_create_child's (63). (Number 50 was vmo_create with a dma_cap
+# argument until M12: retired.)
 58  vmo_create        status    uint64_t size, uint32_t flags, handle_t *out
 51  vmo_read          status    handle_t h, uint64_t offset, void *buf, uint64_t len
 52  vmo_write         status    handle_t h, uint64_t offset, const void *buf, uint64_t len
@@ -216,7 +216,7 @@
 # RIGHT_WRITE, so its code can be mapped executable; vmo's handle is gone
 # whatever the status (closed on any error, as a send's handles). Needs
 # RIGHT_ROOT_VMEX on root (only init and the shell: a program from /data,
-# docs/history/M8.6-SVC.md), RIGHT_READ and RIGHT_MAP on vmo, and vmo
+# docs/HISTORY.md, M8.6), RIGHT_READ and RIGHT_MAP on vmo, and vmo
 # must be a paged VMO with that one handle, no mapping or pin anywhere
 # and no write running (ERR_BAD_STATE otherwise). The VMO is sealed: every later write,
 # resize, commit, decommit, writable mapping or pin is ERR_BAD_STATE, even
@@ -239,6 +239,31 @@
 # handle, a mapping, is detached from its pager or verified already. The
 # table's pages are charged to the caller's job (ERR_NO_MEMORY).
 59  vmo_make_exec_verified status handle_t vmo, handle_t root, handle_t table, uint32_t flags, handle_t *out
+# vmo_create_child (numbered after the address spaces: the VMO group's
+# numbers are taken): *out gets a new VMO holding pages [offset, offset +
+# size) of vmo, sharing them copy-on-write: a write by either side copies
+# that page for the writer alone, and the other never sees it. flags:
+# exactly one of VMO_CHILD_SNAPSHOT (the bytes as at the call, both ways)
+# and VMO_CHILD_SNAPSHOT_AT_LEAST_ON_WRITE (the same, but a page of a pager
+# VMO, or of a child of one, that the child hasn't touched shows the file
+# as it is when the child first touches it: a fault there, a write, a
+# commit; MAP_PRIVATE). Anything else, or an offset that isn't
+# page-aligned, is ERR_INVALID_ARGS. size is rounded up and may reach past
+# vmo's end (those pages are zero); offset or size past VMO_MAX_SIZE is
+# ERR_OUT_OF_RANGE. Needs RIGHT_READ and RIGHT_DUPLICATE on vmo; *out has
+# a new VMO's rights (vmo_create's), never RIGHT_EXEC, and vmo_make_exec
+# refuses a child of a pager VMO (ERR_BAD_STATE). The child is charged to
+# the caller's job at the call for every page it may come to own on its
+# own (each page it shares; for a pager VMO's child, every page) and its
+# page tables: ERR_NO_MEMORY, no child, if the job can't pay, and no write
+# to a shared page ever fails for the job's limit afterwards.
+# ERR_NOT_SUPPORTED: vmo is contiguous or physical, or SNAPSHOT of a pager
+# VMO or a child of one. ERR_BAD_STATE: a pin or a kernel mapping covers a
+# page to share. A kept VMO (VMO_KEEP_PAGES) is never shared: the child
+# gets copies of its pages. Pins and kernel mappings of a child of a pager
+# VMO are ERR_NOT_SUPPORTED, as for the pager VMO; any other pin first
+# copies a shared page for the pinned VMO.
+63  vmo_create_child  status    handle_t vmo, uint32_t flags, uint64_t offset, uint64_t size, handle_t *out
 
 # address spaces (flags: VMAR_READ/WRITE/EXEC/FIXED) --------------------------
 # vmar_map also takes VMAR_KEPT_ONLY (bit 4): only a VMO_KEEP_PAGES VMO
@@ -326,8 +351,9 @@
 # End the thread's current interruptible wait (object_wait_one, port_wait,
 # futex_wait, sleep_until) with ERR_INTERRUPTED; one not in such a wait
 # ends its next one at once. Latched, not counted: any number before a
-# wait takes it end that one wait. A wait whose condition is met returns
-# its result and leaves the interrupt for the next. No other call is ever
+# wait takes it end that one wait. A wait whose condition is met, or
+# whose deadline has passed, returns its result (ERR_TIMED_OUT; OK for
+# sleep_until) and leaves the interrupt for the next. No other call is ever
 # ended by it (channel_call, channel_reply_wait, ...). Needs RIGHT_SIGNAL
 # on the thread; ERR_BAD_STATE if it hasn't started or has left.
 88  thread_interrupt  status    handle_t thread

@@ -16,8 +16,9 @@
  * open of the same path with the description's access, made by the
  * parent: two processes sharing one buffer would overwrite each other's
  * transfers. It starts at the parent's offset and moves its own (M13 Q5).
- * A file the parent holds open for writing can't be opened again while
- * it does (fat's rule): fd_give says EBUSY. */
+ * fat allows a file one writable open, so for a description that may
+ * write the parent lends its own open to the child and takes it back at
+ * its next use of the file (fobj.c). */
 #include <stdlib.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -111,6 +112,17 @@ static long transfer(const struct file *f, const struct iovec *iov, int n, size_
     return (long)done;
 }
 
+/* A description at the end of a file it lent to a child (offset was_end)
+ * moves to the end the child left (end): where a shared offset, Linux's,
+ * would be after a child that wrote on from it, as output to `> f` does
+ * (`xargs cmd > f`, `find -exec`). Offsets stay per process otherwise
+ * (M13 Q5's A). d->lock and the object's held. */
+static void follow_end_locked(struct fd_desc *d, uint64_t was_end, uint64_t end)
+{
+    if ((uint64_t)d->offset == was_end && end > was_end)
+        d->offset = (int64_t)end;
+}
+
 /* A read or write at pos (FD_AT_OFFSET: the description's offset); a
  * write with O_APPEND at the end unless noappend. */
 static long xfer(struct fd_desc *d, const struct iovec *iov, int n, int64_t pos, bool write,
@@ -123,9 +135,14 @@ static long xfer(struct fd_desc *d, const struct iovec *iov, int n, int64_t pos,
     uint32_t s = fd_status(d);
     lock_take(&d->lock);
     lock_take(&f->o->lock);
+    bool was_lent = f->o->lent;
+    uint64_t was_end = f->o->lent_end;
+    status_t back = fobj_back_locked(f->o, f->path);   /* lent to a child: ours again */
+    if (back == OK && was_lent)
+        follow_end_locked(d, was_end, f->o->size);
     bool append = write && (s & O_APPEND) && !noappend;
     uint64_t off = append ? f->o->size : pos == FD_AT_OFFSET ? (uint64_t)d->offset : (uint64_t)pos;
-    long r = transfer(f, iov, n, (size_t)total, off, write);
+    long r = back != OK ? file_err(f, back) : transfer(f, iov, n, (size_t)total, off, write);
     if (r > 0 && write && (s & (O_SYNC | O_DSYNC))) {
         status_t st = file_sync_within(f->o->jf.ch, FILE_TIMEOUT);
         if (st != OK)
@@ -166,10 +183,10 @@ static long size_now(const struct file *f, uint64_t *size)
         return r;
     }
     lock_take(&f->o->lock);
-    status_t st = OK;
-    if (f->o->jf.flags & FS_WRITE)
+    status_t st = fobj_back_locked(f->o, f->path);
+    if (st == OK && (f->o->jf.flags & FS_WRITE))
         *size = f->o->size;
-    else
+    else if (st == OK)
         st = f->o->jf.ch ? file_stat_within(f->o->jf.ch, FILE_TIMEOUT, size, NULL, NULL, NULL)
                          : ERR_IO;
     lock_give(&f->o->lock);
@@ -223,9 +240,11 @@ static long kind_stat(struct fd_desc *d, struct stat *st)
         r = path_info(&p, &i);
     if (!r && f->o) {
         lock_take(&f->o->lock);
-        status_t s = f->o->jf.ch ? file_stat_within(f->o->jf.ch, FILE_TIMEOUT, &i.size, NULL,
-                                                     &i.mtime, &i.id)
-                                 : ERR_IO;
+        status_t s = fobj_back_locked(f->o, f->path);
+        if (s == OK)
+            s = f->o->jf.ch ? file_stat_within(f->o->jf.ch, FILE_TIMEOUT, &i.size, NULL, &i.mtime,
+                                               &i.id)
+                            : ERR_IO;
         lock_give(&f->o->lock);
         r = s == OK ? 0 : file_err(f, s);
     }
@@ -244,9 +263,11 @@ static long sync_or_cut(struct fd_desc *d, int64_t len)
     if (!f->o)
         return -EBADF;
     lock_take(&f->o->lock);
-    status_t st = !f->o->jf.ch ? ERR_IO
-                  : len < 0    ? file_sync_within(f->o->jf.ch, FILE_TIMEOUT)
-                               : file_truncate_within(f->o->jf.ch, FILE_TIMEOUT, (uint64_t)len);
+    status_t st = fobj_back_locked(f->o, f->path);
+    if (st == OK)
+        st = !f->o->jf.ch ? ERR_IO
+             : len < 0    ? file_sync_within(f->o->jf.ch, FILE_TIMEOUT)
+                          : file_truncate_within(f->o->jf.ch, FILE_TIMEOUT, (uint64_t)len);
     if (st == OK && len >= 0)
         f->o->size = (uint64_t)len;
     lock_give(&f->o->lock);
@@ -287,18 +308,29 @@ static const char *kind_path(struct fd_desc *d)
 static long reopen(const struct file *f, uint32_t s, handle_t *ch, handle_t *buf)
 {
     struct path p;
-    handle_t fs;
-    uint64_t size;
     long r = path_set(f->path, &p);
-    if (!r)
-        r = path_fs(&p, &fs);
     if (r)
         return r;
-    uint32_t len;
-    const char *rel = path_rel(&p, &len);
-    status_t st = fs_open_within(fs, FILE_TIMEOUT, rel, len, fs_access(s), ch, buf, &size);
-    jam_handle_close(fs);
-    return st == OK ? 0 : path_err(&p, st);   /* ERR_BUSY: we hold it writable (fobj.c) */
+    status_t st = fobj_open_settled(&p, fs_access(s), ch, buf);
+    return st == OK ? 0 : path_err(&p, st);   /* ERR_BUSY: another child holds it to write */
+}
+
+/* A child's open to write f needs ours closed: lent, or, lent already
+ * (another child had it), the description at the end the last child left
+ * follows it (follow_end_locked), so this child writes after it. d->lock. */
+static void lend_locked(struct fd_desc *d, const struct file *f)
+{
+    struct fobj *o = f->o;
+    lock_take(&o->lock);
+    struct path p;
+    struct path_info i;
+    if (!o->lent) {
+        fobj_lend_locked(o);
+    } else if (!path_set(f->path, &p) && !path_info(&p, &i)) {
+        follow_end_locked(d, o->lent_end, i.size);
+        o->lent_end = i.size;
+    }
+    lock_give(&o->lock);
 }
 
 static long kind_give(struct fd_desc *d, struct fd_given *out)
@@ -311,6 +343,8 @@ static long kind_give(struct fd_desc *d, struct fd_given *out)
     if (!data)
         return -ENOMEM;
     lock_take(&d->lock);
+    if (fs_access(s) & FS_WRITE)
+        lend_locked(d, f);
     int64_t off = d->offset;
     lock_give(&d->lock);
     *out = (struct fd_given){
@@ -581,7 +615,8 @@ static long map_copy(struct fd_desc *d, int64_t off, uint64_t len, handle_t *out
         r = lx_err(jam_vmo_create(len, 0, &vmo));
     if (!r && file) {
         lock_take(&f->o->lock);
-        r = fill_from_file(f, (uint64_t)off, len, vmo);
+        status_t back = fobj_back_locked(f->o, f->path);
+        r = back != OK ? file_err(f, back) : fill_from_file(f, (uint64_t)off, len, vmo);
         lock_give(&f->o->lock);
     } else if (!r) {
         r = fill_from_vmo(from, size, (uint64_t)off, len, vmo);

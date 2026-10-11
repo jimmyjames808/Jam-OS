@@ -1,4 +1,4 @@
-/* The animations (desk.h), the owner's picks (docs/G1-PLAN.md "The look";
+/* The animations (desk.h), the owner's picks (docs/HISTORY.md, G1;
  * timings in look.h, every one eased out as the prototype's
  * cubic-bezier(.2, .8, .2, 1)):
  *   - a window opens growing from 92% of its size while it fades in

@@ -20,7 +20,10 @@
  *     across a writer's pieces, MSG_PEEK's EOPNOTSUPP, the names (AF_UNIX)
  *     and options;
  *   - names without the resolver: getaddrinfo of a numeric address and of
- *     "localhost" (libc's /etc/hosts), inet_pton and inet_ntop. */
+ *     "localhost" (libc's /etc/hosts), inet_pton and inet_ntop;
+ *   - the raw DNS calls (res_query, and getnameinfo's reverse lookup)
+ *     answer at once: the system's resolver takes names only, and musl's
+ *     own client would wait out its timeout asking 127.0.0.1. */
 #include <stdio.h>
 #include <arpa/inet.h>
 #include <errno.h>
@@ -30,12 +33,22 @@
 #include <netinet/tcp.h>
 #include <poll.h>
 #include <pthread.h>
+#include <resolv.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 #include "pt.h"
+
+/* Milliseconds of the monotonic clock. */
+static long now_ms(void)
+{
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return t.tv_sec * 1000L + t.tv_nsec / 1000000L;
+}
 
 static int int_opt(int fd, int level, int name)
 {
@@ -224,6 +237,20 @@ static void names(void)
     CHECK(inet_ntop(AF_INET, &in, text, sizeof(text)) && !strcmp(text, "192.168.1.2"));
 }
 
+static void raw_dns(void)
+{
+    struct sockaddr_in a = { .sin_family = AF_INET, .sin_port = htons(5040),
+                             .sin_addr = { htonl(0xc0000201u) } };   /* 192.0.2.1 */
+    char host[64], serv[16];
+    long t0 = now_ms();
+    CHECK(getnameinfo((const struct sockaddr *)&a, sizeof(a), host, sizeof(host), serv,
+                      sizeof(serv), NI_NUMERICSERV) == 0);
+    CHECK(!strcmp(host, "192.0.2.1") && !strcmp(serv, "5040"));   /* no name: the number */
+    unsigned char answer[512];
+    CHECK(res_query("example.invalid", 1, 1, answer, sizeof(answer)) == -1);   /* C_IN, T_A */
+    CHECK(now_ms() - t0 < 2000);   /* at once, not musl's 10 s */
+}
+
 void pt_socket(char **argv)
 {
     (void)argv;
@@ -237,4 +264,5 @@ void pt_socket(char **argv)
     }
     pair();
     names();
+    raw_dns();
 }

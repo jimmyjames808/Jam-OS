@@ -12,6 +12,9 @@
  *                                           through file_read; len 0: to the
  *                                           end; each pass is timed
  *   pagertest hash <path> [passes]          read <path> 0 0 [passes]
+ *   pagertest xhash <path>                  the same once through a VMO of
+ *                                           our own (FILE_MAP_EXEC), read with
+ *                                           vmo_read instead of a mapping
  *   pagertest touch <path> <offset> load|copy [cue]
  *                                           map the file, then (after the file
  *                                           <cue> appears, if one is named)
@@ -30,6 +33,7 @@
  *
  * Its list gives it every mount read-only, so a file on /data or a stick
  * can be mapped, and a cue is a file somewhere in them. */
+#include <fs_idl.h>
 #include <os.h>
 #include <sha256.h>
 #include <wants.h>
@@ -58,7 +62,7 @@ static bool number(const char *s, uint64_t *out)
 static int usage(void)
 {
     printf("usage: pagertest self | map <path> | read <path> [offset [len [passes]]] | "
-           "hash <path> [passes] | touch <path> <offset> load|copy [cue]\n");
+           "hash <path> [passes] | xhash <path> | touch <path> <offset> load|copy [cue]\n");
     return 64;
 }
 
@@ -144,9 +148,51 @@ static int cmd_read(const char *path, uint64_t off, uint64_t len, uint64_t passe
     sha256_hex(read, hr);
     mapped_file_close(&mf);
     bool same = st == OK && !memcmp(mapped, read, SHA256_BYTES);
-    printf("pagertest: %s: %lu bytes: mapped sha256 %s, read %s (%s): %s\n", path,
-           (unsigned long)len, hm, st == OK ? hr : "-", status_str(st),
-           same ? "match" : "MISMATCH");
+    /* One short line when they match (a long one is cut in two in the log). */
+    if (same)
+        printf("pagertest: %s: %lu bytes: mapped sha256 %s: read the same\n", path,
+               (unsigned long)len, hm);
+    else
+        printf("pagertest: %s: %lu bytes: mapped sha256 %s, read %s (%s): MISMATCH\n", path,
+               (unsigned long)len, hm, st == OK ? hr : "-", status_str(st));
+    return same ? 0 : 1;
+}
+
+/* The file through a FILE_MAP_EXEC VMO (the shell's kind, made for us
+ * alone), read with vmo_read, which waits for the pages as a fault does
+ * (a page the service can't supply is ERR_IO), against file_read. */
+static int cmd_xhash(const char *path)
+{
+    handle_t vmo = HANDLE_INVALID;
+    uint64_t size = 0;
+    status_t st = file_map_path(path, FILE_MAP_EXEC, &vmo, &size);
+    if (st != OK) {
+        printf("pagertest: map %s: %s\n", path, status_str(st));
+        return 2;
+    }
+    uint8_t *step = malloc(STEP), got[SHA256_BYTES], read[SHA256_BYTES];
+    struct sha256 s;
+    sha256_init(&s);
+    st = step ? OK : ERR_NO_MEMORY;
+    for (uint64_t at = 0; st == OK && at < size; at += STEP) {
+        uint64_t n = size - at < STEP ? size - at : STEP;
+        st = jam_vmo_read(vmo, at, step, n);
+        sha256_add(&s, step, st == OK ? n : 0);
+    }
+    sha256_done(&s, got);
+    free(step);
+    jam_handle_close(vmo);
+    status_t rs = hash_read(path, 0, size, read);
+    char hg[2 * SHA256_BYTES + 1], hr[2 * SHA256_BYTES + 1];
+    sha256_hex(got, hg);
+    sha256_hex(read, hr);
+    bool same = st == OK && rs == OK && !memcmp(got, read, SHA256_BYTES);
+    if (same)
+        printf("pagertest: %s: %lu bytes: own VMO sha256 %s: read the same\n", path,
+               (unsigned long)size, hg);
+    else
+        printf("pagertest: %s: %lu bytes: own VMO sha256 %s (%s), read %s (%s): MISMATCH\n",
+               path, (unsigned long)size, hg, status_str(st), hr, status_str(rs));
     return same ? 0 : 1;
 }
 
@@ -217,6 +263,8 @@ int main(int argc, char **argv)
     if (!strcmp(cmd, "hash") && argc >= 3 && argc <= 4 &&
         (argc == 3 || (number(argv[3], &passes) && passes >= 1 && passes <= 64)))
         return cmd_read(argv[2], 0, 0, passes);
+    if (!strcmp(cmd, "xhash") && argc == 3)
+        return cmd_xhash(argv[2]);
     if (!strcmp(cmd, "read") && argc >= 3 && argc <= 6 &&
         (argc < 4 || number(argv[3], &off)) && (argc < 5 || number(argv[4], &len)) &&
         (argc < 6 || (number(argv[5], &passes) && passes >= 1 && passes <= 64)))

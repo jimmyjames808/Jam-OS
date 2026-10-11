@@ -1,5 +1,5 @@
-# libc-test's functional and regression sets (user/ports/libc-test/):
-# bin/libc-test starts each test as a child of its own and compares the
+# libc-test's functional and regression sets (ports/libc-test/):
+# usr/bin/libc-test starts each test as a child of its own and compares the
 # results with its expected-failures list. tools/libc-test.sh runs this and
 # reads the log; "libc-test: DONE ok" is the pass. The next line is
 # replaced by tools/libc-test.sh when it is given tests to run.

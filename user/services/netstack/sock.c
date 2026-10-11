@@ -448,6 +448,8 @@ void sock_serve(unsigned i)
             sock_close(i);
         else if (st != ERR_SHOULD_WAIT)
             printf("netstack: reading socket %u's channel: %s\n", s->port, status_str(st));
+        if (st == ERR_NO_MEMORY)   /* still queued: looked at again later (serve_opener) */
+            (void)progs_behind(true, &s->held);
         return;
     }
     s->pending = true;   /* its budget is spent: more may be queued */

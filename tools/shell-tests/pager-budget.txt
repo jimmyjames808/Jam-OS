@@ -1,0 +1,22 @@
+# A mapped file bigger than its mount's page budget (tools/pager-test.sh,
+# case budget: QEMU_MEM 512M, so each mount's pager holds 32 MiB at most;
+# the script's stick has big.bin, 48 MiB): hashed through the mapping
+# twice, both right (the script compares them with the host's sha256sum),
+# the second pass fetching every page again. fat's "gone" line counts
+# the requests.
+# QEMU_INPUT=this file, command line "shell", the drive aimg. The text
+# waited for is built from $T, so it never appears in the typed line.
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send T=p
+wait {prompt}
+monitor device_add usb-storage,id=sa,bus=xhci.0,port=2,drive=aimg
+wait 60 init: /usb0 mounted
+send pagertest hash /usb0/big.bin 2; echo h-$T=$?
+wait 240 pagertest: /usb0/big.bin: 50331648 bytes: mapped sha256
+wait h-p=0
+wait {prompt}
+seen 10 fat /usb0: mapped file
+send reboot -f
+wait reboot: resetting

@@ -4,7 +4,9 @@
  * 256-511) is shared with every other address space, plus a set of
  * mappings of VMOs in the user half. Page-table entries are filled on
  * demand by aspace_fault. Lock order: the region lock (a sleeping mutex,
- * class "aspace") -> "vmo" -> "aspace page tables" (spinlock). */
+ * class "aspace") -> "vmo" -> "aspace page tables" (spinlock); a fault may
+ * also wait on a VMO's "vmo resize" mutex under the region lock (a
+ * copy-on-write child being made: vmo.c). */
 #pragma once
 
 #include <stdint.h>

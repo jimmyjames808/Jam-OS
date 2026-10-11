@@ -14,7 +14,7 @@
  * default), vtd_units_start then runs each unit's invalidation queue and
  * its fault reporting and turns interrupt remapping on
  * (kernel/dev/vtd_irq.c), and iommu_boot (<jam/iommu.h>) turns DMA
- * translation on. With `iommu=off` no VT-d register is ever written. The design for the IOMMU itself is docs/M11-PLAN.md. */
+ * translation on. With `iommu=off` no VT-d register is ever written. The design for the IOMMU itself is docs/HISTORY.md, M11. */
 #pragma once
 
 #include <stdbool.h>

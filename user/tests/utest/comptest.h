@@ -62,6 +62,7 @@ struct ct_event {
 struct ct_client {
     struct jwl_conn *c;
     uint32_t registry, compositor, shm, output;   /* 0 until bound */
+    uint32_t decorations;                         /* zxdg_decoration_manager_v1, once bound */
     struct ct_event ev[CT_EVENTS];                /* since the last ct_clear; the newest kept */
     unsigned nev;
     bool     errored;                             /* wl_display.error came */
@@ -82,6 +83,10 @@ void     ct_close(struct ct_client *k);
  * their names (1, 2, 3), and a round trip. */
 bool     ct_bind_all(struct ct_client *k);
 void     ct_clear(struct ct_client *k);
+/* Toplevel top (before its initial commit) asks for the compositor's title
+ * bar and frame, as libjwl's windows do: a decoration object (the manager
+ * bound the first time, global 9) set to server_side; its id, 0 on failure. */
+uint32_t ct_server_side(struct ct_client *k, uint32_t top);
 /* wl_display.sync and the events up to its done: OK; ERR_INVALID_ARGS if
  * an error came instead; else the wait's status. */
 status_t ct_roundtrip(struct ct_client *k);

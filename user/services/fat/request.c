@@ -1,5 +1,4 @@
-/* fat: every request run as one operation (docs/M11.6-PLAN.md, "The
- * request in progress" and "Held writes become the write-ahead buffer").
+/* fat: every request run as one operation (docs/HISTORY.md, M11.6).
  *
  * Every request fat serves (fs on the mount's channel or a view, file,
  * fsctl) is read into a slot of the state VMO (svcstate_prepare, then the
@@ -344,6 +343,7 @@ static uint32_t rerun(const struct fat_chan *c, const void *req, uint32_t rn, ha
     }
     files_drop_unknown();
     views_drop_unknown();
+    maps_drop_unknown();
     begin(kind_of(c), op.seq, c->file, op.slot);
     uint32_t rn2 = dispatch(c, op.slot, rhs, rhn);
     if (rn2 != rn || memcmp(first, rep, rn) || held != kept->hold.held ||

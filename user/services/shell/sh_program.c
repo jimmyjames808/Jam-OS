@@ -237,12 +237,14 @@ static int ended(status_t st, const struct process_info *info, const char *path,
     }
     int sig = sh_exit_signal(info->exit_code);
     if (sig) {
-        sh_tty("run: %s killed by %s after %lu ms\n", path, sh_signal_name(sig),
-               (unsigned long)ms);
+        if (sh_run_lines || (sig != 2 && sig != 13))   /* SIGINT (Ctrl+C), SIGPIPE */
+            sh_tty("run: %s killed by %s after %lu ms\n", path, sh_signal_name(sig),
+                   (unsigned long)ms);
         return 128 + sig;
     }
-    sh_tty("run: %s exited with code %ld after %lu ms\n", path, (long)info->exit_code,
-           (unsigned long)ms);
+    if (sh_run_lines)
+        sh_tty("run: %s exited with code %ld after %lu ms\n", path, (long)info->exit_code,
+               (unsigned long)ms);
     return info->exit_code < 0 ? 1 : info->exit_code > 255 ? 255 : (int)info->exit_code;
 }
 
@@ -630,7 +632,8 @@ static int run_program(int argc, char **argv)
      * The name filter is for a program alone; a pipeline's have several. */
     const char *base = strrchr(s.path, '/');
     sh_show_log(true, defer ? NULL : base ? base + 1 : s.path);
-    sh_tty("run: %s started (Ctrl+C kills it)\n", s.path);
+    if (sh_run_lines)
+        sh_tty("run: %s started (Ctrl+C kills it)\n", s.path);
     sh_flush();
     add_running(&s);
     if (defer)

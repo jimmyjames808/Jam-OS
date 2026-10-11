@@ -1,6 +1,6 @@
 /* Names to addresses for programs (user/lib/dns.c): the resolver's
- * /svc/dns (abi/idl/dns.idl; the design is docs/M9-PLAN.md "DHCP and
- * DNS: processes of their own"). A program's list asks for it with
+ * /svc/dns (abi/idl/dns.idl; the design is docs/HISTORY.md, M9).
+ * A program's list asks for it with
  * `svc dns`.
  *
  * dns_lookup blocks, for programs and threads that serve nobody. A loop

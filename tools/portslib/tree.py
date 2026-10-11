@@ -2,7 +2,9 @@
 recipes, and the order to build in (docs/M13.7-PLAN.md sections 2 and 5).
 
 ports/ holds one directory per port and the files every port shares
-(config.site, jamos.cmake, jamos.meson; keys/ for later). A port's
+(config.site, jamos.cmake, jamos.meson; keys/ for later; vectors/, the
+package formats' test vectors, and vulns, the repository's vulnerability
+lines: tools/portslib/vectors.py and repo.py). A port's
 directory holds only what the format names:
 
     recipe        the recipe (recipe.py)
@@ -11,6 +13,9 @@ directory holds only what the format names:
     override/     ...and the files they name
     wants/        each program's list, when it isn't the default `posix`
     build.sh      style custom only: build() and install()
+    files/        our own files a custom build uses (a Makefile, a program
+                  of ours linked in, a generator: sbase's box, libc-test's
+                  runner); not part of upstream, so no OVERRIDES line
     test          what to run on Jam OS to test it (tools/ports-test.sh)
     LICENSE       a note on the licence of our patches (a GPL port's)
 
@@ -31,9 +36,9 @@ import checkoverrides  # noqa: E402
 import checkwants  # noqa: E402
 
 SHARED = {"config.site", "jamos.cmake", "jamos.meson"}
-RESERVED_DIRS = {"keys"}
-PORT_ENTRIES = {"recipe", "patches", "OVERRIDES", "override", "wants", "build.sh", "test",
-                "LICENSE"}
+RESERVED_DIRS = {"keys", "vectors", "vulns"}   # names in ports/ that are no port
+PORT_ENTRIES = {"recipe", "patches", "OVERRIDES", "override", "wants", "build.sh", "files",
+                "test", "LICENSE"}
 # What `allow` refuses a program on /data (user/services/shell/sh_allow.c),
 # on top of what tools/checkwants.py refuses any program outside
 # user/services/ and user/tests/: a package can't ask for them.

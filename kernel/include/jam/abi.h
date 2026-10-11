@@ -183,9 +183,23 @@ struct port_packet {
  * it returns (ERR_NO_MEMORY with the size unchanged if they can't all be
  * had). For memory a process reads that a less trusted one gave it (a
  * Wayland client's pool, read by the compositor through VMAR_KEPT_ONLY).
- * Not together with the drivers' bits (ERR_INVALID_ARGS). There is no
- * clone or copy-on-write child of a VMO, of this kind or any other. */
+ * Not together with the drivers' bits (ERR_INVALID_ARGS). A
+ * copy-on-write child of it (vmo_create_child) never shares its pages
+ * (a write would swap a page under the kept readers): it gets copies. */
 #define VMO_KEEP_PAGES (1u << 2)
+
+/* vmo_create_child's kinds: exactly one (abi/syscalls.def 63). Both share
+ * the parent's pages until either side writes one, which is copied for
+ * the writer alone; the child is charged at the call for every page it
+ * may come to own, so no later write ever fails for its job's limit.
+ * SNAPSHOT: the child holds the parent's bytes as at the call and neither
+ * side sees the other's later writes; refused for a pager VMO and a child
+ * of one (their untouched pages follow the file). AT_LEAST_ON_WRITE: the
+ * same, except that for a pager VMO (or a child of one) a page the child
+ * hasn't touched shows the file as it is when the child first touches it
+ * (MAP_PRIVATE's promise). */
+#define VMO_CHILD_SNAPSHOT                   (1u << 0)
+#define VMO_CHILD_SNAPSHOT_AT_LEAST_ON_WRITE (1u << 1)
 
 /* The limits. A VMO's size: 64 GiB of address space (pages are committed
  * as they are touched; ERR_OUT_OF_RANGE past it). A contiguous VMO's: 4

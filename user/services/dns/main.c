@@ -1,5 +1,5 @@
-/* dns: the resolver process (docs/M9-PLAN.md, "DHCP and DNS: processes
- * of their own"; dnsd.h says how its files split the work). init starts
+/* dns: the resolver process (docs/HISTORY.md, M9;
+ * dnsd.h says how its files split the work). init starts
  * it in shell mode once netstack runs, with
  *   DNS_SR_DNS   the server end of /svc/dns's shared channel
  *                 (abi/idl/dns.idl); init keeps both ends, so a restarted

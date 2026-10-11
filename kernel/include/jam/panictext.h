@@ -1,5 +1,5 @@
 /* The panic screen's words and the glyphs baked for them (the screen is
- * kernel/debug/panicscreen.c; the owner's design "B1", docs/G1-PLAN.md).
+ * kernel/debug/panicscreen.c; the owner's design "B1", docs/HISTORY.md, G1).
  *
  * A crashed kernel runs no font code: the few glyphs the screen needs are
  * baked on the Mac at build time by tools/panicglyphs.c (part of

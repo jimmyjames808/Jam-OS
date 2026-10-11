@@ -52,6 +52,7 @@ const struct corner_mask *shape_corners(const struct comp_window *w)
     enum look_kind k = look_of(w);
     const struct corner_mask *m = k == LOOK_FLOATING ? &mask_float
                                   : k == LOOK_TILED  ? &mask_tile
+                                  : k == LOOK_CSD    ? &mask_csd
                                                      : NULL;
     struct comp_box f = window_frame(w);
     if (!m || f.x2 - f.x1 < 2 * m->r || f.y2 - f.y1 < 2 * m->r)
@@ -223,7 +224,7 @@ static void shadow_of(const struct shadow *sh, struct comp_box f, int32_t r, uin
 
 void shadow_draw(const struct comp_window *w, const struct tile_buf *t)
 {
-    if (look_of(w) != LOOK_FLOATING)
+    if (!look_shadowed(look_of(w)))
         return;
     const struct corner_mask *cm = shape_corners(w);
     shadow_of(&shadows[(w->flags & COMP_WIN_FOCUSED) != 0], window_frame(w), cm ? cm->r : 0, 255,

@@ -335,6 +335,15 @@ jam_vmar_protect:
     ret
     .size jam_vmar_protect, . - jam_vmar_protect
 
+    .globl jam_vmo_create_child
+    .type jam_vmo_create_child, @function
+jam_vmo_create_child:
+    mov %rcx, %r10
+    mov $SYS_vmo_create_child, %eax
+    syscall
+    ret
+    .size jam_vmo_create_child, . - jam_vmo_create_child
+
     .globl jam_process_create
     .type jam_process_create, @function
 jam_process_create:

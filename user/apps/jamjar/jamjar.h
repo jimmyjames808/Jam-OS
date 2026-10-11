@@ -6,7 +6,7 @@
  * helper that decodes the pictures, bin/jamcover), the roulette
  * (roulette.c), the picture (draw.c, panels.c, nowplaying.c), keys and the mouse
  * (input.c), the loop (main.c) and the self-test (selftest.c).
- * docs/history/MUSIC-GUI.md is the design. */
+ * ARCHITECTURE.md (jamjar) is the design. */
 #pragma once
 
 #include <fun.h>

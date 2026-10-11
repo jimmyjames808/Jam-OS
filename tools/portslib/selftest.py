@@ -14,6 +14,8 @@ link, a program's list in its note, what is dropped, a symlink made a
 copy, isolation (a header of a port not declared is not found), a no-op
 build that builds nothing, a needed port's change rebuilding its users,
 and two builds giving the same bytes.
+
+Then the packages, the repository and their formats (pkgtest.py).
 """
 import io
 import os
@@ -23,11 +25,13 @@ import subprocess
 import tarfile
 import tempfile
 
+from . import boot as bootmod
 from . import build as buildmod
 from . import fetch as fetchmod
 from . import fixtures
 from . import licence
 from . import patch as patchmod
+from . import pkgtest
 from . import recipe as recipemod
 from . import selftest_hostdata
 from . import source as sourcemod
@@ -117,6 +121,14 @@ def test_lint(tmp, real_ports):
     problems = lint_of(root, "liba", session, {"wants/a": "mount /data r\n"})
     expect(any("no 'posix'" in p for p in problems), "a list without posix taken")
     os.remove(os.path.join(root, "liba", "wants", "a"))
+    for text, what in ((session + "multicall bin/a x x\n", "a multicall name twice"),
+                       (session + "multicall bin/a a\n", "a multicall name that is the program")):
+        problems = lint_of(root, "liba", text)
+        expect(any("given twice" in p for p in problems), "%s taken" % what)
+    problems = lint_of(root, "liba", session + "multicall bin/a x y\n",
+                       {"files/Makefile": "all:\n"})
+    expect(not problems, "a port with files/ and multicall refused: %s" % problems)
+    shutil.rmtree(os.path.join(root, "liba", "files"))
     problems = lint_of(root, "liba", good, {"patches/0002-x.patch": "--- a/a\n+++ b/a\n"})
     expect(any("Description" in p for p in problems), "a patch with no header taken")
     os.remove(os.path.join(root, "liba", "patches", "0002-x.patch"))
@@ -245,11 +257,11 @@ def test_builds(tmp, real_ports):
     expect(treemod.order(t, ["app"]) == ["liba", "libb", "app"], "the order app needs")
     b, _ = builder(t, tmp)
     try:
-        done = b.build(["app", "libx"])
+        done = b.build(["app", "libx", "bootapp"])
     except buildmod.BuildError as e:
         FAILS.append("the fixture build failed: %s" % e)
         return
-    expect([n for n, s in done if s == "built"] == ["liba", "libb", "app", "libx"],
+    expect([n for n, s in done if s == "built"] == ["liba", "libb", "app", "libx", "bootapp"],
            "built in order: %s" % done)
     lines = stagemod.read_list(os.path.join(tmp, "out", "app", "stage", "stage.txt"))
     kinds = {(w[0], w[1]) for w in lines}
@@ -257,6 +269,10 @@ def test_builds(tmp, real_ports):
     expect(not any(w[1] == "bin/helper" for w in lines), "an unnamed executable kept")
     expect(["copy", "share/app/alias.txt", "share/app/data.txt"] in lines, "a symlink as a copy")
     expect(["sub", "app-extra", "share/app/alias.txt"] in lines, "a subpackage's file")
+    expect(["multicall", "bin/app", "app-a"] in lines and ["multicall", "bin/app", "app-b"] in lines,
+           "multicall lines in the stage list")
+    expect(not os.path.exists(os.path.join(tmp, "out", "app", "stage", "bin", "app-a")),
+           "a multicall name made a file in the stage (the packager makes it)")
     expect(["built-with", "liba", "1.0", "1"] in lines and ["built-with", "libb", "1.0", "1"]
            in lines, "app's built-with lines")
     app = os.path.join(tmp, "out", "app", "stage", "bin", "app")
@@ -273,6 +289,14 @@ def test_builds(tmp, real_ports):
     sysroot = os.path.join(tmp, "out", "app", "sysroot", "include")
     expect(os.path.isfile(os.path.join(sysroot, "a.h")) and
            not os.path.exists(os.path.join(sysroot, "x.h")), "app's sysroot: a.h, no x.h")
+    entries = {n: (f, h) for n, f, h in bootmod.bootlist(os.path.join(tmp, "out"), ["bootapp"])}
+    expect(sorted(entries) == ["share/licences/bootapp/LICENSE", "usr/bin/boxy", "usr/bin/tool1",
+                               "usr/bin/tool2"], "the boot list's names: %s" % sorted(entries))
+    expect(len({entries[n] for n in ("usr/bin/boxy", "usr/bin/tool1", "usr/bin/tool2")}) == 1,
+           "a multicall name is the program's own file and hash")
+    expect(bootmod.boot_ports(t) == ["bootapp"], "boot_ports: %s" % bootmod.boot_ports(t))
+    refused(lambda: bootmod.bootlist(os.path.join(tmp, "out"), ["bootapp", "bootapp"]),
+            ["usr/bin/boxy", "also"], "one port twice in the boot list")
     refused(lambda: b.build(["sneaky"]), ["x.h"], "a header of a port not declared")
     before = stage_bytes(tmp, "app")
     b, _ = builder(t, tmp)
@@ -376,6 +400,7 @@ def main(top):
             test_fat()
             test_lint(tmp, real_ports)
             test_builds(tmp, real_ports)
+            FAILS.extend(pkgtest.run(tmp, real_ports, top))
             test_fetch(tmp, os.path.join(tmp, "up"))
             test_bad_builds(tmp, real_ports)
             test_git(tmp)

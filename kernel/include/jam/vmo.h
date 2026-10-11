@@ -13,10 +13,16 @@
  * from its creation to its destruction: decommit and shrink are refused for
  * every holder, and growing commits the new pages before it returns. So an
  * address space that maps it can't be made to fault by another holder
- * (ASPACE_KEPT_ONLY fills such a mapping's entries at map time). There is
- * no clone or copy-on-write child of any VMO; one added later must not
- * share a kept VMO's pages copy-on-write (a write would replace a page
- * under a reader), so it would copy them into a VMO of its own.
+ * (ASPACE_KEPT_ONLY fills such a mapping's entries at map time).
+ *
+ * A copy-on-write child (vmo_create_child) shares its parent's pages until
+ * either side writes one, which then copies it into the writer's VMO only.
+ * Sharing is flat (each VMO's table is complete; a page counts the tables
+ * holding it), so a child of a child is the same thing again and any
+ * destruction order is fine. A kept VMO's pages are never shared (a write
+ * would replace a page under a kept reader): its child gets copies. A
+ * child of a pager VMO takes the pager's pages while they are absent, as
+ * copies of its own. vmo.c's header has the rules.
  *
  * Offsets and lengths are in bytes. Operations that act on pages (commit,
  * decommit, kernel mappings) cover every page the byte range touches.
@@ -108,8 +114,23 @@ status_t vmo_seal(struct vmo *v);
 status_t vmo_seal_verified(struct vmo *v, struct vmo_verify *vf);
 /* v's table (vmo_seal_verified), or NULL. Lock-free. */
 struct vmo_verify *vmo_verifier(struct vmo *v);
-/* Bytes of memory the VMO owns right now (committed pages). */
+/* Bytes of memory the VMO owns right now (committed pages; a page shared
+ * copy-on-write counts in every VMO that holds it, as each pays for it). */
 uint64_t vmo_committed(struct vmo *v);
+
+/* A copy-on-write child of p (abi/syscalls.def's vmo_create_child: the
+ * flags VMO_CHILD_*, the semantics and the errors): pages [offset, offset +
+ * size) of p, size rounded up, shared until either side writes one;
+ * charged to job (NULL: nobody) for every page it may come to own on its
+ * own, now: ERR_NO_MEMORY and no child if job can't pay. The caller gets
+ * the only reference. May sleep (a shootdown, a mutex): thread context, no
+ * spinlock held. */
+status_t vmo_create_child(struct job *job, struct vmo *p, uint32_t flags, uint64_t offset,
+                          uint64_t size, struct vmo **out);
+/* Pages copied so far because a write separated them from a relative,
+ * and separations that waited for a creation's shootdown (relaxed; tests
+ * and the benchmark). */
+extern uint64_t vmo_cow_copies, vmo_cow_waits;
 /* Grow or shrink (rounded up to pages). Shrinking frees the pages past the
  * new end, unmapping them from address spaces first; ERR_BAD_STATE if any
  * of them is pinned or kernel-mapped, or v is kept (VMO_KEEP_PAGES). Paged

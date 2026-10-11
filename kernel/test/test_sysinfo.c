@@ -3,6 +3,7 @@
  * process_cpu_tsc). The QEMU shell test (tools/shell-tests/cmds.txt) runs
  * the calls for real from the shell. */
 #include <jam/abi.h>
+#include <jam/dbghook.h>
 #include <jam/event.h>
 #include <jam/handle.h>
 #include <jam/iommu.h>
@@ -208,6 +209,73 @@ KTEST(sysinfo_thread_cpu_time)
     KT_ASSERT(sleep_ns < 20 * NS_PER_MS);
     if (cpu_count >= 3)
         KT_IDLE_ASSERT(idle_ns >= 50 * NS_PER_MS);
+}
+
+/* sysinfo_cpu_time_never_backwards: a thread that spins on a CPU of its
+ * own, napping for 200 us when asked (and counting its naps). */
+struct ct {
+    struct thread *spinner, *reader;
+    bool           stop;     /* the test is over (RELEASE) */
+    bool           nap;      /* nap once (taken with an exchange) */
+    uint32_t       naps;     /* naps done, the spinner running again (RELEASE) */
+    bool           armed;    /* the hook acts once (taken with an exchange) */
+    bool           waited;   /* the hook saw the nap through */
+};
+static struct ct *ct_now;
+
+static void ct_spinner(void *arg)
+{
+    struct ct *c = arg;
+    while (!__atomic_load_n(&c->stop, __ATOMIC_ACQUIRE)) {
+        if (__atomic_exchange_n(&c->nap, false, __ATOMIC_ACQ_REL)) {
+            thread_sleep_ns(200 * 1000);
+            __atomic_add_fetch(&c->naps, 1, __ATOMIC_RELEASE);
+        }
+        __asm__ volatile("pause");
+    }
+}
+
+/* In the reader's thread_cpu_tsc of the spinner, once: the spinner is
+ * switched out and in again (its nap) before the read goes on. */
+static void ct_hook(void *arg)
+{
+    struct ct *c = __atomic_load_n(&ct_now, __ATOMIC_ACQUIRE);
+    if (!c || arg != c->spinner || current_thread() != c->reader ||
+        !__atomic_exchange_n(&c->armed, false, __ATOMIC_ACQ_REL))
+        return;
+    uint32_t n = __atomic_load_n(&c->naps, __ATOMIC_ACQUIRE);
+    __atomic_store_n(&c->nap, true, __ATOMIC_RELEASE);
+    uint64_t end = uptime_ns() + kt_patience_ms(2000) * NS_PER_MS;
+    while (__atomic_load_n(&c->naps, __ATOMIC_ACQUIRE) == n && uptime_ns() < end)
+        __asm__ volatile("pause");
+    c->waited = __atomic_load_n(&c->naps, __ATOMIC_ACQUIRE) != n;
+}
+
+/* A thread's CPU time never goes back, however its switches fall against
+ * a read: a read that a switch-out and switch-in of the thread interrupt
+ * (the hook) still counts the run that just ended. */
+KTEST(sysinfo_cpu_time_never_backwards)
+{
+    if (cpu_count < 2)
+        return;   /* the spinner needs a CPU of its own */
+    struct ct c = { .reader = current_thread() };
+    cpumask_t m;
+    cpumask_one(&m, kt_cur_cpu() == 0 ? 1 : 0);
+    c.spinner = thread_create_on("kt-cputime", ct_spinner, &c, PRIO_DEFAULT, &m);
+    thread_sleep_ms(20);   /* it has run a while since it was switched in */
+    uint64_t before = thread_cpu_tsc(c.spinner);
+    __atomic_store_n(&c.armed, true, __ATOMIC_RELEASE);
+    __atomic_store_n(&ct_now, &c, __ATOMIC_RELEASE);
+    __atomic_store_n(&dbg_hooks[DBG_CPU_TIME], ct_hook, __ATOMIC_RELEASE);
+    uint64_t after = thread_cpu_tsc(c.spinner);
+    __atomic_store_n(&dbg_hooks[DBG_CPU_TIME], NULL, __ATOMIC_RELEASE);
+    __atomic_store_n(&ct_now, NULL, __ATOMIC_RELEASE);
+    __atomic_store_n(&c.stop, true, __ATOMIC_RELEASE);
+    thread_join(c.spinner);
+    kprintf("sysinfo_cpu_time_never_backwards: %lu us, then %lu us across a switch\n",
+            tsc_to_ns(before) / 1000, tsc_to_ns(after) / 1000);
+    KT_ASSERT(c.waited);
+    KT_ASSERT(after >= before);
 }
 
 /* A process's CPU time: live (its spinning thread) and after it died

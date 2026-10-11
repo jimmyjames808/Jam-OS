@@ -1300,9 +1300,10 @@ need to know.
   entry is `-ENOSYS`. Every handler has one signature (`lx_call` in
   `user/posix/sys/calls.h`): six `long`s in, a value or `-errno` out.
   To add a call: write `lx_<name>` in your area's file, declare it in
-  your area's block of calls.h, and add `[SYS_<name>] = lx_<name>` to
-  your area's block of the table. A number given twice fails the build
-  (`-Woverride-init`). Only calls.c may include `<sys/syscall.h>`: its
+  your area's block of calls.h, and add its line to your area's block of
+  `user/posix/sys/calls.def` (`LX`, or `LX_CP` for a cancellation point:
+  that file says how a program links only the handlers it can call). A
+  number given twice fails the build (`-Woverride-init`). Only calls.c may include `<sys/syscall.h>`: its
   `SYS_*` names clash with Jam OS's own (`<jam/syscall_nums.h>`).
 - Area files include `layer.h` (libjam through `<jamos/libjam.h>`,
   which settles `PAGE_SIZE` with musl's `<limits.h>`): `lx_err(st)` is a
@@ -2717,6 +2718,11 @@ plan left open (the safest each time).
 
 ## P1 notes
 
+(M13.7's PO2 later moved sbase, Lua and libc-test from user/ports/ to
+recipes in ports/, built by tools/ports.py: the files named below are now
+ports/sbase/, ports/lua/ and ports/libc-test/, the programs byte for byte
+the same; [PO2 notes](M13.7-PLAN.md#po2-notes).)
+
 Track P1 (the first ports: sbase and Lua) as built, with the choices the
 plan left open. Files: third_party/sbase, third_party/lua (unmodified),
 user/ports/ (ports.mk, sbase/, lua/), tools/shell-tests/ports.txt; small
@@ -2743,7 +2749,7 @@ allowed), tools/sortincludes.py (skips user/ports/*/override/).
   tools made the boot image 31.8 MB, right at `update`'s 32 MiB file limit
   (UPDATE_FILE_MAX). So sbase is built the way upstream's own `sbase-box`
   is: each tool's `main` renamed `<tool>_main` (`-Dmain=`), a generated table
-  (`user/ports/sbase/mkbox.sh`) that picks one by the basename of argv[0], and
+  (`ports/sbase/files/mkbox.sh`) that picks one by the basename of argv[0], and
   one program for each of the three lists below (sbase-plain 393 KB, sbase-ro
   469 KB, sbase-rw 498 KB). The shell starts a program under its bootfs name
   (`usr/bin/sort`), so argv[0] names the tool and `usage:` lines say
@@ -2812,3 +2818,518 @@ allowed), tools/sortincludes.py (skips user/ports/*/override/).
   Lua, each output compared to a file by sbase's `cmp`; hash and status
   checks. Run on the PC with `QEMU_INPUT=tools/shell-tests/ports.txt
   QEMU_TIMEOUT=240`, command line `shell`.
+
+## Jam commands as programs notes
+
+The owner's decision (2026-10-11): Jam OS's own system commands, builtins of
+the native shell, also exist as programs in the boot image, so a POSIX shell
+(`/bin/sh` today, mksh in M13.5), a script or an ssh session can run them.
+The native shell keeps running the same code in-process (fast, and it works
+for recovery). Files: `user/sysbox/` (`sysbox.mk`, `box_io.c`, `box.h`,
+`mkbox.sh`, `wants-*`), one `include` in the Makefile after `ports.mk`, a
+`#ifndef SH_BOX` around one line of `cmd/mem.c`, `tools/shell-tests/sysbox.txt`
+and `sysbox-net.txt`, `tools/ping-test.sh`.
+
+- **One copy of every command.** The program's objects are the shell's own
+  command files (`user/services/shell/cmd/<name>.c`) compiled with `jamos-cc`
+  as they are (`-DSH_BOX`, `-include jamos/libjam.h` first, the shell's
+  directory on the quote path so `"sh.h"` is the real one), and the shell
+  library files those commands call (`sh_kernel.c`, `sh_sysinfo.c`, `sh_num.c`,
+  `sh_time.c`, `sh_lookup.c`, `sh_vfs.c`, `sh_text.c`). What the shell
+  answers itself (`sh_put`, `sh_say`, `sh_tty`, `sh_input`, `sh_interrupted`,
+  `sh_sleep`, `sh_root`, `sh_devmgr`, `sh_getvar`, `sh_show_log`; sh_io.c,
+  main.c and sh_handles.c) `box_io.c` answers for a program: standard output
+  and error, standard input when it is no terminal, SIGINT noted (so `ping`
+  ends with its summary, `hexdump` stops), `startup_handle(SR_RESOURCE)`,
+  `/svc/devmgr`, `getenv`. A kernel debug command's output (`sh_kcmd`, which
+  the shell shows on the console while it runs) is the log lines made while it
+  ran, printed after it ends, so `mem | grep x` and `memmap > file` work. The
+  only change in a command file is `mem.c`: the program leaves out its "shell's
+  job" line (its job is its own).
+- **Boxes, one program per privilege.** A static POSIX program is about 320
+  KB, so, as for sbase (P1), one multi-call program per list, started under a
+  command's name (`bin/dmesg`; `mkbox.sh` writes the table; `bin/sys-info
+  free` works too, and a box with no command name lists its commands). The
+  boot image stores each box once (`tools/mkbootfs.py` shares identical
+  files). Each list is the least its commands need; checkwants.py checks them:
+
+  | box | commands (names in `bin/`) | list | size |
+  |---|---|---|---|
+  | `sys-info` | free uptime version lscpu ps dmesg log | `right sysinfo`, `right klog` | 326 KB |
+  | `sys-debug` | mem memmap pci iommu bench | `right debug`, `right klog` | 316 KB |
+  | `sys-net` | net ping host | `svc net`, `svc dns` | 329 KB |
+  | `sys-usb` | usb | `svc devmgr` (the query channel) | 320 KB |
+  | `sys-ro` | df hexdump hd crashlog | `mount * r` (every mount, read-only) | 325 KB |
+
+  The boot image went from 16,936 KiB to 18,528 KiB (+1,592 KiB, 25
+  entries: 168 files of the 256 bootfs allows). Each box is `posix` (descriptors 0 to 2 as the shell or a pipe
+  gives them) and nothing else: no `/esp` write, no `svc init`, no
+  `devmgr-ctl`.
+- **What a program is given depends on who starts it.** Started by the native
+  shell (`run dmesg`, `run /boot/bin/dmesg`, a name in `PATH`), it gets its
+  list: the root resource with only `right sysinfo`/`klog`/`debug` as named,
+  the services and mounts. Started by a POSIX program (`posix_spawn`, `execve`,
+  `env`, `/bin/sh -c`, a script), it gets **the parent's namespace** (`NS_ALL`:
+  the services and mounts the parent has) and **no root resource**:
+  `user/posix/sys/spawn.c` does not read the child's list, and the root
+  resource is not in the namespace. So, from a POSIX parent today:
+  `sys-net`, `sys-usb` and `sys-ro` work if the parent holds the services and
+  mounts (`env` has `/boot`, `/data`, `/usb*` read-write, so `env hexdump` and
+  `env df` work; `/bin/sh` has only `posix`, so it has none); `sys-info` and
+  `sys-debug` say "not given the kernel's information" and end with 126 (the
+  box checks `startup_handle(SR_RESOURCE)` before it runs a command that needs
+  it), instead of failing in a call. **For M13.5 (the decision this track
+  leaves):** for these commands to work from mksh and ssh sessions, (1) the
+  POSIX shell's own list holds their union (`svc net`, `svc dns`, `svc
+  devmgr`, `mount * r`, `right sysinfo`, `right klog`, and `right debug` only
+  if `mem`, `pci`, `bench` are wanted there: it is the power to panic the
+  machine), and (2) the spawn layer reads the child's list from the boot
+  image (`wants_read` on the program it starts, as the native shell's
+  `program_wants` does) and hands the child a duplicate of its `SR_RESOURCE`
+  narrowed to the child's `right` words and to what the parent holds (a
+  duplicate with fewer rights, never more; `RIGHT_TRANSFER` stripped). That is a
+  change to `user/posix/sys/spawn.c` (R1's files, left alone) of about 25 lines
+  and it widens no grant by itself: a parent holds only what its own list
+  asked for.
+- **Classification of the shell's 95 commands** (sh_table.c; the task said
+  93):
+  - **(a) program now (19 commands + the name `hd`):** version uptime lscpu
+    free ps dmesg crashlog usb net ping host pci memmap iommu log mem bench df
+    hexdump. (`ps -k`, the kernel's own listing, needs `right debug`, which
+    `sys-info` lacks: the kernel refuses it, as it refuses a shell without the
+    right.)
+  - **(a) a system command, shell-only for now (33), with the reason:**
+    `devices` (RES_PCI, `pci_enum`: no list can ask for the PCI resource);
+    `disk`, `disks` (the volumes service and devmgr's control channel, `svc
+    volumes` and `svc devmgr-ctl`: tests only; W2 is changing both);
+    `update`, `reboot`, `kill`, `kernel`, `sync`, `mount` (init's control
+    channel, `svc init`: tests only; `update` and `kill %n` also use the shell's
+    jobs and helper start with a stop channel); `serve` (`svc serve`: tests
+    only); `fetch`, `speed`, `play` (already programs, bin/fetch, bin/speed,
+    bin/play; the command is the shell's helper protocol: an output channel and
+    a Ctrl+C stop channel, `play` hands over the open file); `vol`, `music`
+    (they keep the master volume, the music folder and volume in
+    `/data/etc/settings`, which no program may write: a writable mount leaves
+    the top-level `etc` alone); `hda` (the codec driver, which only the mixer
+    hands out: `sh_hda`); `beep` (feasible: it needs `svc audio` alone; left
+    for a `sys-audio` box with `vol` without its master setting); `top` (reads
+    keys from the console: a program has none; it would need a raw terminal);
+    `date` (sets the zone in `/data/etc/settings`, reads the RTC with `right
+    clock`; sbase has a `date` for the plain case); `launch`, `jamjar`, `term`
+    (init's launcher and terminals), `notify` (`svc notify`: services only);
+    the tests `ktest soak stress storm crash panic` (they need `right debug`
+    for stress and panics: not for a program that any script may run) and
+    `utest usbtest hdatest mixtest` (already programs, bin/utest ...).
+  - **(b) must stay in the shell (18), it changes or reads the shell itself:**
+    help history jobs exit cd clear alias unalias set unset export env type
+    time repeat watch run allow.
+  - **(c) a generic Unix tool sbase provides (25):** uname whoami hostname
+    pwd ls find mkdir touch cp mv rm cat sha256sum wc head tail grep sort
+    uniq seq echo sleep true false write (`write`'s counterpart is `tee` or a
+    redirection). The shell's builtin wins by name; sbase's is `run
+    /boot/usr/bin/<name>`. A later decision (not this track's) is whether
+    these builtins go; `uname`, `whoami` and `hostname` print Jam-specific text
+    in the shell (`uname -a` has the CPU, `hostname` reads `$HOSTNAME`), sbase's
+    print what the POSIX layer reports.
+  - 19 + 33 + 18 + 25 = 95.
+- **Differences from the builtin, by design.** `net`'s fourth line (the
+  openers, sockets and queued datagrams of netstack) counts the program's own
+  channel, so it differs by one from the shell's; `df` lists the mounts the
+  program was given (all of them, from a shell start); `mem` has no "shell's
+  job" line; a debug command's lines come after it ends, not as it runs
+  (`bench` shows nothing for its few seconds); `Ctrl+C` is SIGINT, not the
+  shell's key polling: loops end at their next call (`ping`, `hexdump`,
+  `dmesg`), `sh_poll_key` has no keyboard.
+- **Found, not fixed (not this track's files).** (1) A POSIX parent cannot
+  pass the root resource (above). (2) `run <program> > file` for a program that
+  starts children is `EBUSY` (P1's finding 1), so the tests send the
+  parent's output through a pipe. (3) The box programs are about 315 KB each
+  because the POSIX layer's call table pulls the whole layer in (R1's item).
+  (4) The shell's drain of a POSIX program's pipe (`sh_program.c`, `drain` and
+  `sh_copy_output`: a 4096-byte buffer) drops any pipe message over 4096 bytes,
+  and a POSIX pipe's messages are up to 64 KiB, so `cat bigfile | wc` loses
+  data today (found by `dmesg | grep`: empty). The boxes write in pieces of 2 KiB
+  at most (`box_io.c`) and do not depend on the fix; S2's pipelines may
+  change it. (5) The console frees a terminal at the program's end with its
+  last output unread (X1's finding): `net stats` lost its last 30 lines. The
+  boxes `tcdrain` their terminals at exit; every other POSIX program
+  (sbase's `ls -l`, `cat`) has the same loss on long output until R2 fixes the
+  console.
+- **Tests.** `tools/shell-tests/sysbox.txt` (a plain shell boot, `QEMU_TIMEOUT`
+  500): each deterministic command's builtin and program output compared with
+  `cmp` (version, lscpu, hexdump and hd with offsets, from a file and a pipe,
+  df, crashlog, usb, net and host with no network), the rest by what it
+  must print (free, uptime, ps, dmesg, log, memmap, pci, mem, iommu, bench,
+  ping's usage and refusal), the box's own name, an alias and an unknown
+  command (127), the refusals above (`ps -k`, `env dmesg`, `/bin/sh -c free`,
+  `env mem`, `/bin/sh -c hexdump`), `env hexdump`, `env df` (no `/esp`), the
+  builtins still builtins. `tools/shell-tests/sysbox-net.txt`, run by
+  `tools/ping-test.sh` after `net.txt` (QEMU_NET, the network peer): `net`
+  against the builtin, `net stats`, `ping` through the gateway, Ctrl+C ending
+  `ping` with its summary, `host` of an address.
+
+## F1a design
+
+The kernel half of F1 (the owner, 2026-10-11): a copy-on-write child VMO,
+before M14 freezes the system calls. Three users: F1b's writable
+`MAP_PRIVATE` file mappings (after M12.5's PF1), M13.5's emulated `fork`,
+and the program loader's writable segments.
+
+**The call.** `vmo_create_child(handle_t vmo, uint32_t flags, uint64_t
+offset, uint64_t size, handle_t *out)`, number 63 (the VMO group's numbers
+are all taken; 63 is the free one after the address spaces). Needs
+`RIGHT_READ | RIGHT_DUPLICATE` on vmo (Zircon's rule: a child is a new
+way to reach the bytes, so a handle that may not be duplicated may not
+make one either; M13.5 passes only handles that may be shared). `*out`
+gets a new VMO with a fresh VMO's rights (`READ WRITE MAP RESIZE` and the
+basic ones), never `RIGHT_EXEC`, charged to the caller's job. `offset` is
+page-aligned (`ERR_INVALID_ARGS`); `offset` and `size` at most
+`VMO_MAX_SIZE` (`ERR_OUT_OF_RANGE`); `size` is rounded up and may reach
+past the parent's end (those pages are zero, as a fresh VMO's).
+
+**Flags: exactly one of** (anything else is `ERR_INVALID_ARGS`; later
+kinds are new bits):
+- `VMO_CHILD_SNAPSHOT`: the child holds the parent's bytes as they were
+  at the call, and neither side ever sees the other's later writes. For a
+  paged VMO of one's own (sealed ones too). A pager VMO, or a child of
+  one, is `ERR_NOT_SUPPORTED`: its untouched pages follow the file, so a
+  true snapshot would mean reading the whole file now.
+- `VMO_CHILD_SNAPSHOT_AT_LEAST_ON_WRITE`: the same for a VMO of one's own;
+  for a pager VMO (or a child of one), a page the child hasn't touched
+  shows the file as it is when the child first touches it (a fault on it,
+  a write, a commit), and is the child's own copy from then on. That is
+  what `MAP_PRIVATE` promises (POSIX leaves later changes to the file
+  unspecified for a private mapping) and what `fork` of such a mapping
+  needs; M13.5 uses this flag for every writable VMO.
+
+Contiguous and physical VMOs are `ERR_NOT_SUPPORTED`. A kept VMO
+(`VMO_KEEP_PAGES`) is never shared copy-on-write (a write would swap a page
+under its kept readers): its child gets copies of every page at the call,
+an ordinary VMO. A VMO with a pin or a kernel mapping over the range is
+`ERR_BAD_STATE` (unpin first: a device may write those pages behind the
+sharing's back).
+
+**A child of a child: flat, not a chain.** Each VMO's page table is
+complete: a child's table points at the same physical pages as its
+parent's, and a page counts the tables that hold it (`struct page`'s
+`private` word, which an anonymous page doesn't use). A write to a page
+held by more than one table copies it into the writer's table only; a page
+held by one table is written in place, so after a relative dies its pages
+are the survivor's at no cost. A child of a child shares the same pages
+again. Nothing points from a child to its parent, so any destruction order
+just drops counts, and a parent's death never moves a page. The cost is
+at creation: O(pages the parent has in the range) (a reference and an
+entry each, the parent's writable entries made read-only, one shootdown),
+where Zircon's hidden nodes make creation O(1) and pay instead with a tree
+to walk on every fault and to collapse as relatives die. A child of a
+pager VMO (or of such a child) keeps one link, flat too: to the pager VMO
+itself and its offset there, never to the child between.
+
+Against Zircon: `ZX_VMO_CHILD_SNAPSHOT` is our SNAPSHOT (both sides
+isolated, refused for pager-backed VMOs, as Zircon refuses it).
+`ZX_VMO_CHILD_SNAPSHOT_AT_LEAST_ON_WRITE` lets an untouched page follow
+the parent until the child *writes* it; ours freezes it at the child's
+first *touch* (a read fault copies too), which the name allows ("at
+least"). Reading through to the pager's page instead of copying it is an
+optimisation that changes no call (it needs the pager's evictions to zap
+the child's mappings too); not built.
+
+**How pages are shared and separated.**
+- Creation, under the parent's "vmo resize" mutex (no size change
+  meanwhile), one leaf (2 MiB) at a time under the parent's VMO lock and
+  the child's (nested): each present page gets a reference and its share
+  count raised, the child's slot points at it, and every writable user
+  mapping of the parent has those entries made read-only; one shootdown at
+  the end, before the call returns.
+- A write fault on a shared page (a write through a mapping, `vmo_write`,
+  a commit for a pin) copies it into a fresh page with no lock held,
+  then under the VMO lock, if the slot still holds that page, puts the
+  copy there, clears that page's entry in every mapping of this VMO, and
+  shoots it down before the access is retried. The old page's reference
+  (and its share count) is dropped only after the shootdown.
+- A read fault on a shared page installs it read-only even in a writable
+  mapping; `vmar_protect` that adds write never sets the write bit on an
+  existing entry (the next write faults and decides).
+- While a creation's shootdown is pending, a write that would copy a page
+  of the parent waits for the creation to end (the parent's "vmo resize"
+  mutex): otherwise a thread still writing through a stale writable entry
+  could change the page after the copy was taken, and its write would be
+  lost.
+
+**Accounting: the whole commit at creation.** The child's job pays at
+the call, for every page a write could separate: each page shared from the
+parent counts in the child's committed pages and is charged as one (the
+parent's own charge is unchanged), and for a child of a pager VMO the
+whole range is charged up front (every page may become the child's copy)
+with its page tables made now. A job that can't pay gets
+`ERR_NO_MEMORY` and no child. Afterwards no separation ever charges
+anything: the copy replaces a page already charged to the writer's VMO,
+whichever side writes. Each VMO pays for every page in its own table;
+physical pages in use never exceed the charges. (What stays as for any
+memory: a page never committed before, outside a pager child's range, is
+charged when first touched; the mapper's own page tables are the
+address space's; and the job tree's limits, not a reservation of RAM, are
+what keep the machine within its memory.)
+
+**With pager VMOs (a child of one).** The child's untouched pages come
+from the pager VMO while absent; a touched page is a copy that no pager
+operation reaches. Afterwards: an eviction changes nothing the child sees
+(the next touch fetches the same bytes again); `PAGER_OP_INVALIDATE`: a
+touched page keeps the old bytes, an untouched one shows the new; a
+shrinking `PAGER_OP_SET_SIZE`: an untouched page past the new end reads
+zero (the child is its own VMO; it never dies of its parent's size), and
+it follows the file again if it grows back; a detach: an untouched page's
+fault fails as for the pager VMO ("the file's pager is gone"). A fault
+that must wait for the pager waits exactly as for the pager VMO (the
+request is the pager VMO's). The child holds a reference on the pager
+VMO, so the file stays open (`PAGER_REQ_GONE`) until the child goes.
+
+**With PK4's verified pages.** A child of a verified VMO is never
+executable: its handle has no `RIGHT_EXEC`, and `vmo_make_exec` refuses
+it (`ERR_BAD_STATE`, as a pager VMO: its untouched pages come later).
+Its pages are copies of verified pages, but it is writable, and the hash
+proves bytes, not a VMO anyone may change: a writable copy can differ
+from the approved program the moment after the check. The loader's
+writable segments are exactly that (data, never code). A child of a
+child of a VMO the shell sealed (`vmo_make_exec`) is an ordinary VMO: its
+own `vmo_make_exec` is the shell's root power's decision, as for any VMO.
+
+**With pins and DMA.** A pin (read-only or not) or a kernel mapping of a
+shared page separates it first (a copy in that VMO), and while the pin
+lives no child shares that range (`ERR_BAD_STATE`), so the address a
+device holds is always the VMO's page. A pager child is refused pins and
+kernel mappings (`ERR_NOT_SUPPORTED`, as its pager VMO: the kernel never
+waits for a pager there).
+
+**With `VMAR_REPLACE` and faults on other CPUs.** A separation clears the
+old page's entries in every address space that maps the VMO and shoots
+them down before the faulting access is retried, so threads on other CPUs
+never write the shared page and never read it after the writer's store.
+A fault holds its address space's region lock, so a `VMAR_REPLACE` of the
+range waits for it (and a fault after the replace finds the new
+mapping); creation never takes a region lock.
+
+**With the M14 freeze.** The call fixes semantics, not the
+representation: hidden nodes (O(1) creation), reading through a pager's
+pages instead of copying them, or a reservation of RAM behind the charge
+change no argument and no result. New kinds of child are new flag bits
+(unknown bits are refused today). That the child's handle never carries
+`RIGHT_EXEC`, that a pager VMO's child is never sealed (so never
+executable), and the charge at creation are part of the frozen contract.
+
+**What F1b and M13.5 build on it.** F1b: a writable `MAP_PRIVATE` mapping
+is `vmo_create_child(file_vmo, AT_LEAST_ON_WRITE, offset, len)` mapped
+read-write (a read-only one maps the pager VMO itself); `MADV_DONTNEED`'s
+`vmo_decommit` of a child page brings the file's bytes back, as on Linux.
+M13.5: `fork` makes an `AT_LEAST_ON_WRITE` child of each writable VMO libc
+knows (its table of mappings, the stacks, the program's data) and maps it
+at the same address in the new process; the fork's charge is the parent's
+committed pages in those VMOs, refused up front.
+
+## F1a notes
+
+Track F1a as built (the design above held; what it left open, and what
+F1b and M13.5 need).
+
+- **The share count** is `struct page`'s `private` word: the number of
+  other tables holding the page (0: this table's alone). An anonymous VMO
+  page never used the word (pmm_alloc zeroes it); a pager VMO's page uses it
+  for its cache record and is never shared (`page_shared` says no for a
+  pager VMO). It rises only under the lock of a table holding the page, and
+  a table lets go of a shared page only after its shootdown
+  (`page_share_drop`, called by `tlb_gather_finish` for the gather's new
+  array of shared pages, 32 a gather: a shared page's list node may be
+  another gather's). The decrement stops at 0. So a relative sees 0 only
+  once no stale entry of another holder can read the page.
+- **The window a creation leaves open** (the parent's writable entries made
+  read-only, not yet shot down) is closed by the parent's `protecting`
+  count: a separation in the parent waits for the creation on "vmo resize"
+  (`cow_wait`), which the creation holds throughout. Lock order: a fault
+  may wait on "vmo resize" under its region lock (written in vmo.c's and
+  aspace.h's headers); creation takes no region lock. The ktest
+  `vmo_child_separation_waits_for_shootdown` holds that window open
+  (`DBG_VMO_CHILD_SHOOT`): with the wait taken out it loses the writer's
+  writes at once (checked: 252,742 errors on the first loop); with it, none.
+- **`vmar_protect` never adds the write bit** to an existing entry (a page
+  may be read-only because it is shared); the next write faults and the
+  fault decides. A program that `mprotect`s up to write pays one fault a
+  page it had mapped.
+- **A child of a pager VMO copies at the first touch, also for a read
+  fault** (the design's choice; reading through to the pager's page would
+  need the pager's evictions to zap the child's mappings). `vmo_read` of
+  an untouched page reads the pager VMO's bytes without copying (not a
+  touch). Past the pager VMO's end an untouched page is zero (Linux gives
+  SIGBUS there; POSIX leaves a file that shrank under a private mapping
+  unspecified). Its window is fixed at creation and only shrinks with the
+  child; growing the child adds ordinary zero pages.
+- **Refusals the design didn't list**: a child of a pager child with
+  SNAPSHOT is `ERR_NOT_SUPPORTED` as for the pager VMO; `vmo_make_exec` of
+  a pager child is `ERR_BAD_STATE` (vmo_seal refuses it); pins and kernel
+  mappings of a pager child `ERR_NOT_SUPPORTED`. A handle without
+  `RIGHT_READ` or `RIGHT_DUPLICATE`: `ERR_ACCESS_DENIED`.
+- **Outside the VMO/fault code** (small): `<jam/aspace_vmo.h>` (the gather's
+  array, `aspace_wrprotect_locked`, `vmo_fault_map`'s `write`,
+  `vmo_page_ready`), `kernel/mm/aspace.c` (the gather's array, the
+  write-protect walk, `leaves_protect`, `fault_wait` asking
+  `vmo_page_ready`), `<jam/dbghook.h>` (`DBG_VMO_CHILD_SHOOT`),
+  `<jam/pager.h>` (`vmo_page_request`'s comment), `<jam/aspace.h>` (the lock
+  order), the sys layer (`vmo_sys.c`, `sysc_vm.c`, `<jam/sys.h>`),
+  ARCHITECTURE.md's VMO kinds, `kernel/test/bench.c` and utest's bench.
+  For R3 (K2's `VMAR_REPLACE` in aspace.c): my aspace.c hunks are the
+  gather, `leaves_protect`/`leaves_wrprotect`, the two `vmo_fault_map`
+  calls and `fault_wait`'s check; none touches `map_replace_locked` or
+  `cut_locked`.
+- **Costs** (`bench` in QEMU with KVM on the PC, 4 CPUs, 2026-10-11): a
+  child of a 64 MiB VMO with every page committed, 140 us median (p99
+  170 us), about 8.5 ns a page; dropping it 129 us; the plain copy a fork
+  would make without it (`vmo_create` + `vmo_write` of the 64 MiB) 7.9 ms
+  (p99 9.7 ms), 57 times as long. In ring 3, the first write to a shared
+  page (the separation fault: the copy, the swap, the local shootdown) 1.09
+  us median, against 0.76 us for a fresh zero page.
+- **Known limits.** Creation is O(pages the parent has committed in the
+  range), not Zircon's O(1); the file `vmo.c` is past 2,000 lines (it was
+  1,778: splitting it needs an internal header for `struct vmo`, a
+  refactor of its own); `get_page` and `vmo_fault_map` are about 80 lines
+  each. No RAM is reserved behind the charge: the job tree's limits are
+  what keep the machine within its memory, as for every page. A separation
+  shoots the old page down on the CPUs of every address space mapping the
+  VMO, even when none had an entry for it (the decommit rule: an unmap may
+  have cleared an entry without having flushed yet).
+
+**Tests.** ktests (kernel/test/test_vmo_child.c, `ktest=vmo_child`):
+`vmo_child_shares_until_write`, `_snapshot_isolation`, `_faults` (the
+entries a creation, a read and a write fault leave; `vmar_protect`),
+`_chains_and_orders` (parent, child, grandchild, all six death orders, the
+pages counted), `_charges` (refused up front with nothing charged; exactly
+the shared pages and tables; every page then written on both sides with no
+charge; a pager child's whole range), `_pager` (eviction, invalidation, a
+shrink and a growth, faults waiting for the pager VMO's request, a child
+of the child, the file kept open, a detach), `_pins` (both kinds of pin and
+a kernel mapping separate first; a pinned range is never shared),
+`_refusals` (and the kept and sealed parents, the handle layer),
+`_many_writers` (8 writers on 8 CPUs on both sides while children of both
+are made and dropped), `_creation_races_writers` (writers on every other
+CPU while children are made over and over: each child holds values written
+during its call and keeps them; no write lost), and
+`_separation_waits_for_shootdown` (above). utest `vmo_child_shares` and
+`vmo_child_refusals` (with child mode `cow-big`). Bench lines: `vmo child of
+a 64 MiB VMO`, `dropping that child`, `against: a copy of it`, and `user:
+page fault, copy-on-write separation`.
+
+**What F1b needs.** A writable `MAP_PRIVATE` mapping of a file:
+`jam_vmo_create_child(file_vmo, VMO_CHILD_SNAPSHOT_AT_LEAST_ON_WRITE,
+offset, len, &c)` then `vmar_map` read-write (the file's handle needs
+`RIGHT_READ | RIGHT_DUPLICATE`: `PAGER_VMO_RIGHTS` has both); `ENOMEM` if
+the job can't pay for `len` (the whole mapping is charged at `mmap`). A
+read-only private mapping maps the pager VMO itself; an `mprotect` that adds
+write to one must first put a child in its place (`VMAR_REPLACE`), since
+the pager VMO is never writable. `MADV_DONTNEED` (`vmo_decommit` of the
+child) brings the file's current bytes back. A page past the file's end is
+zero, not SIGBUS. A program's writable segments: a child of the image (a
+sealed VMO or a verified pager VMO) at the segment's offset, mapped
+read-write, never executable.
+
+**What M13.5 needs.** `fork`: an `AT_LEAST_ON_WRITE` child of every
+writable VMO libc maps (its mapping table, the thread stacks, the
+program's data, brk), each mapped at the same address in the new process.
+The children are charged to the forking process's job (their job is the
+caller's, fixed at creation) for the parent's committed pages in them, all
+up front: `ENOMEM` from `fork` if it can't pay. A kept VMO (a memfd) is
+copied by a child, not shared: a `MAP_SHARED` memfd must be passed as the
+same VMO (a duplicate handle), and only a `MAP_PRIVATE` one as a child. A
+VMO with a pin or a kernel mapping is refused (`ERR_BAD_STATE`): drivers
+don't fork. Each fork costs about 140 us per 64 MiB the parent has
+committed, and each page either side then writes one separation fault
+(about 1.1 us).
+
+## X2 notes
+
+Track X2 (tinyssh) as built, with the choices the plan left open.
+
+- **One program, bin/sshd.** tinyssh 20261001 (third_party/tinyssh,
+  vendored unmodified; `third_party/VERSIONS.md`) built by
+  user/ports/tinyssh/tinyssh.mk with tools/jamos-cc, its configure probes
+  replaced by a fixed feature header (tinyssh-features.h: only `<limits.h>`
+  found). The listener (sshd.c, ours), tinysshd and its two helpers are
+  one program whose mode is argv[0]'s last part (the override of
+  tinysshd.c): each POSIX program carries musl and the layer (pxio alone
+  is about 300 KB), and the boot image is near its limit. bin/sshd is
+  434 KB stripped (about 130 KB of it tinyssh's). Left out: the files that
+  fork, set uids or write utmp (channel_fork.c, channel_forkpty.c,
+  channel_drop.c, loginshell.c, dropuidgid.c, logsys.c), makekey and
+  printkey, the outside libraries' crypto variants.
+- **The overrides** (user/ports/tinyssh/OVERRIDES, checked as musl's by
+  tools/checkoverrides.py, in the build and `make check`; each file says
+  what changed and why): channel.c (a session of init's,
+  `jamos_session_open`, for both a shell and an exec request; the pty-req
+  only records TERM and the size), subprocess_sign.c and subprocess_auth.c
+  (their helpers are bin/sshd started again with posix_spawn as
+  "tinysshd-sign" and "tinysshd-auth", namespace `/data:r` alone; the hash
+  goes on a pipe, the key's name in argv; the key list is
+  `/data/etc/authorized_keys`; no privileges dropped, but the account must
+  exist: only `jam`), tinysshd.c (the modes).
+- **A helper's descriptors 0 and 1 are always replaced** (pipes, or
+  /dev/null): tinysshd's own 0 and 1 are its connection, and a socket
+  given to a child moves to it (B6's notes).
+- **The listener** (sshd.c): port 22 with SO_REUSEADDR, at most 8
+  connections (a 9th is closed at once), TCP_NODELAY and SO_KEEPALIVE set
+  before the spawn, tinysshd `-v` (info lines: each login's key, each
+  session) with the connection as 0 and 1 and a namespace of `/data:r` and
+  `/svc/session`. Its children's log: descriptor 2 is the write end of one
+  pipe they share, whose other end the listener copies to its own 2 (the
+  kernel log): the layer's log descriptor can't be given to a child. SIGCHLD
+  ends its poll; each turn reaps. It never exits by itself but for a
+  listener that fails (netstack gone): init starts it again.
+- **Sessions.** Every SSH session is a terminal (there is no other way into
+  a shell): fd0 and fd1 are the master, fd2 none, so stderr comes on the
+  channel's data, every LF as CR LF, and what is typed is echoed (an exec
+  request's input too). A remote EOF isn't passed on (a terminal's end of
+  input is a typed Ctrl+D); a command longer than the shell's 240 bytes, or
+  a 9th session, fails the request and tinysshd ends the connection (said in
+  the log). The client's environment requests stay refused (upstream's
+  rule); `TERM` goes as the pty-req's when it is one a session takes
+  (`[A-Za-z0-9._+-]`, under 64 bytes), else the shell's own. exit-status is
+  the shell's code (`exit [n]`, the command's status, 2 for a hang-up).
+- **init** (user/services/init/ssh.c, and its lines in init.h, shell.c's
+  table, grants and start order, services.c's dispatch and init, the
+  settings template): service SSHD after netstack, once `/data` is
+  mounted, after a look at /data on a thread of its own (KEY_SSHD: the
+  stick can be slow and the loop never waits): `ssh = off` in the
+  settings, or no `ssh-ed25519` line in authorized_keys (<sshkey.h>'s count:
+  a line starting `ssh-ed25519 <key>`, as tinyssh takes it), and sshd is
+  given up for the boot (said once); a key added later counts from the next
+  boot. The host key is made by init if missing or broken (Monocypher's
+  Ed25519 from os_random; `/data/etc/ssh/ed25519.pk` and `.ed25519.sk`,
+  tinyssh's files; never replaced after an I/O error) and its fingerprint
+  logged as OpenSSH prints it. sshd's grants: `/svc/net`, `/svc/net-low`,
+  `/svc/session`, `/data:r`. tools/checkwants.py lets this one port ask for
+  `svc net listen low` (LOW_PORTS).
+- **The shell's `ssh`** (cmd/ssh.c): the fingerprint, the keys that may log
+  in, the server's state and its connections (its tinysshd processes:
+  every mode is named `sshd`, the listener being the first).
+- **Tests.** tools/ssh-test.sh (TESTING.md): OpenSSH's client on the test
+  host through the peer's `--tcp-forward`, two boots of one stick; utest's
+  `ssh_fingerprint` (against ssh-keygen's) and `ssh_count_keys`. pxio
+  gained `size` (TIOCGWINSZ) for the window-change check.
+- **Fixed on the way**: the console threw away what a POSIX program wrote
+  just before it closed its terminal (X1's "found, not changed"): a
+  closing tty's output is now shown to its end before it hangs up
+  (console tty.c's `tty_closing`). ssh-test's 4 sessions of 3000 lines lost
+  their last 300 lines without it.
+- **Found, not changed.**
+  - Killing sshd ends every open session: netstack ends a process's sockets
+    when it exits, the connections its tinysshds were given among them
+    (B6's notes). The sign-off's "`kill sshd`, the open sessions go on"
+    needs sockets that move to the child in netstack too (an opener per
+    connection), a netstack change. init does start sshd again at once,
+    and a new login works.
+  - Once, sshd exiting by itself (a since-fixed bug: poll's EINTR read after
+    waitpid's ECHILD) right after a connection ended, the restarted
+    listener on 22 answered every SYN with a reset for about 60 s (the old
+    connection's TIME_WAIT), then worked. `kill sshd`, with or without a
+    session open, never showed it. Not chased further (netstack's
+    listener reuse, N1's).
+  - The host's secret key is readable by any program given `/data` (a
+    list's `mount /data r`): FAT has no permissions and a read-only view
+    shows `etc`. Hiding `/data/etc/ssh` from every view but sshd's is a
+    namespace change (R2's question).

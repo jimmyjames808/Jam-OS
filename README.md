@@ -42,10 +42,12 @@ on each title bar close, minimise and go full screen.
   nothing is ever written to them yet).
 - **Network**: DHCP, DNS, UDP and TCP, files over HTTP, and updates
   straight from the Mac.
-- **POSIX, partly** (M13, under way): programs built on the Mac against
+- **POSIX, partly** (M13, nearly done): programs built on the Mac against
   musl 1.2.6 run from the shell with files, pipes, `poll` and `epoll`,
-  threads, signals, `posix_spawn`, redirections and a terminal. Sockets,
-  `ssh` and ported utilities are next; no `fork`, no Linux binaries.
+  threads, signals, `posix_spawn`, redirections, terminals and sessions,
+  and TCP and UDP sockets. `ssh` into Jam OS works (tinyssh), and ported
+  sbase utilities and Lua run. `fork` is emulated with copy-on-write; no
+  Linux binaries.
 - **Testing**: kernel and user-space test suites, stress and soak tests,
   benchmarks.
 
@@ -64,10 +66,11 @@ whole disk), then boot it in UEFI mode with Secure Boot off. More in
 
 ## What's next
 
-Finishing POSIX (sockets, SSH into Jam OS, ported utilities and a real
-POSIX shell), user-space pagers for mapped files, and writing to NVMe
-drives, then installing Jam OS on one. The plan:
-[docs/ROADMAP.md](docs/ROADMAP.md).
+The goal is to run Chromium, reached layer by layer: each layer a
+general piece of the system (a Unix filesystem, the ports system, Wayland
+clients, a C++ and Rust toolchain, big sparse address spaces) that later
+ports use too. Writing to NVMe drives, so Jam OS can be installed
+on one, is on that path. The plan: [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Documentation
 
@@ -89,6 +92,7 @@ None is in the tree yet. The code in `third_party/` keeps its own licences
 own one-clause BSD-style licence; dr_mp3: public domain or MIT-0;
 pl_mpeg: MIT; stb_image and stb_truetype: MIT or public domain; Inter and
 JetBrains Mono: SIL Open Font License 1.1; Wayland's protocol files: MIT;
-lwIP: BSD-3-Clause; Monocypher: BSD-2-Clause, or CC0). The music in the
+lwIP: BSD-3-Clause; Monocypher: BSD-2-Clause, or CC0; tinyssh: public
+domain, as CC0-1.0, 0BSD, MIT-0 or MIT). The music in the
 pictures is public-domain recordings from the Internet Archive (Musopen
 and others); none of it is in this repository.

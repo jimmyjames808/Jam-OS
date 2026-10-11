@@ -230,7 +230,7 @@ status_t jwlc_handle(struct jwl_client *c, struct jwl_msg *m)
     if (i == &jwl_wl_buffer_interface || i == &jwl_wl_shm_pool_interface)
         return jwlc_shm_event(c, m);
     if (i == &jwl_wl_surface_interface || i == &jwl_xdg_surface_interface ||
-        i == &jwl_xdg_toplevel_interface)
+        i == &jwl_xdg_toplevel_interface || i == &jwl_zxdg_toplevel_decoration_v1_interface)
         return jwlc_window_event(c, m);
     if (i == &jwl_wl_keyboard_interface || i == &jwl_wl_pointer_interface)
         return jwlc_seat_event(c, m);

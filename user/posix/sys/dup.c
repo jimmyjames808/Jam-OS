@@ -4,7 +4,8 @@
  * slot's own.
  *
  * fcntl:
- *   F_DUPFD, F_DUPFD_CLOEXEC   the lowest free descriptor >= arg
+ *   F_DUPFD, F_DUPFD_CLOEXEC   the lowest free descriptor >= arg (EINVAL at or
+ *                              past RLIMIT_NOFILE, as POSIX says)
  *   F_GETFD, F_SETFD           FD_CLOEXEC
  *   F_GETFL, F_SETFL           the status flags; F_SETFL changes only
  *                              O_APPEND and O_NONBLOCK (the access mode
@@ -22,9 +23,11 @@
  *   F_GETPIPE_SZ, F_SETPIPE_SZ a pipe holds 64 KiB a message; the size
  *                              never changes
  *   F_ADD_SEALS, F_GET_SEALS   a memfd's (memfd.c)
- * Anything else is EINVAL. */
+ * Anything else is EINVAL. flock's locks are as fcntl's: checked and granted. */
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/file.h>
+#include <sys/resource.h>
 #include "kinds.h"
 
 #define PIPE_SZ CHANNEL_MAX_BYTES   /* F_GETPIPE_SZ: the most one message holds */
@@ -96,6 +99,17 @@ static long flock_cmd(struct fd_desc *d, long cmd, struct flock *l)
     return 0;
 }
 
+/* flock: as fcntl's locks, checked and granted, never kept. */
+long lx_flock(long fd, long op, long c, long d, long e, long f)
+{
+    struct fd_desc *desc = fd_get(fd);
+    if (!desc)
+        return -EBADF;
+    fd_put(desc);
+    long how = op & ~(long)LOCK_NB;
+    return how == LOCK_SH || how == LOCK_EX || how == LOCK_UN ? 0 : -EINVAL;
+}
+
 static long setfl(struct fd_desc *d, long arg)
 {
     if (arg & O_ASYNC)
@@ -146,7 +160,7 @@ long lx_fcntl(long fd, long cmd, long arg, long d, long e, long f)
     switch (cmd) {
     case F_DUPFD:
     case F_DUPFD_CLOEXEC:
-        if (arg < 0 || arg >= FD_MAX) {
+        if (arg < 0 || arg >= FD_MAX || (uint64_t)arg >= rlimit_cur(RLIMIT_NOFILE)) {
             r = -EINVAL;
             break;
         }

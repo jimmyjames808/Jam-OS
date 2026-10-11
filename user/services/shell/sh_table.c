@@ -189,6 +189,13 @@ static const struct sh_cmd cmds[] = {
       "  counted). -l: wait for the Mac's `speed.py client <address>` (needs the listen\n"
       "  permission: bin/speed's list has it). Ctrl+C stops it (status 130). QEMU's\n"
       "  numbers are QEMU's"),
+    C(ssh, C_NET, "ssh",
+      "the SSH server (bin/sshd): the host key's fingerprint (check it against what\n"
+      "  the Mac's ssh says at the first connection), the keys that may log in and\n"
+      "  the connections. From the Mac: ssh jam@<address>, a key of yours in\n"
+      "  /data/etc/authorized_keys (an ssh-ed25519 line; no passwords, ever). It runs\n"
+      "  on port 22 whenever that file has a key; ssh = off in /data/etc/settings\n"
+      "  stops it. Both count from the next boot"),
     C(pci, C_HARDWARE, "pci", "the kernel's PCI report: BARs, MSI/MSI-X (the old Devices entry)"),
     C(memmap, C_HARDWARE, "memmap", "the loader's memory map"),
     C(iommu, C_HARDWARE, "iommu",

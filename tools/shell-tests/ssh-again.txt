@@ -1,0 +1,12 @@
+# The SSH server's second boot of the same stick (tools/ssh-test.sh runs
+# this after ssh.txt): the host key is the one the first boot made
+# (tools/sshcheck.py --again logs in with the first boot's known_hosts,
+# strictly, and compares the fingerprints in both logs). Its last login, as
+# sshcheck-done, is refused on purpose: that line.
+wait 120 Jam OS shell
+seen 120 init: SSH host key SHA256:
+seen 120 sshd: listening on port 22 (at most 8 connections)
+wait {prompt}
+wait 300 account sshcheck-done: not exist
+send reboot -f
+wait reboot: resetting

@@ -169,6 +169,10 @@ status_t sys_vmo_make_exec_verified(struct handle_table *t, handle_t h, handle_t
                                     handle_t table, uint32_t flags, handle_t *out);
 /* RIGHT_WRITE | RIGHT_RESIZE. */
 status_t sys_vmo_decommit(struct handle_table *t, handle_t h, uint64_t offset, uint64_t len);
+/* vmo_create_child (abi/syscalls.def): RIGHT_READ | RIGHT_DUPLICATE on h;
+ * the child gets sys_vmo_create's rights and is charged to t's job. */
+status_t sys_vmo_create_child(struct handle_table *t, handle_t h, uint32_t flags, uint64_t offset,
+                              uint64_t size, handle_t *out);
 /* end VMOs */
 
 /* VMARs (address spaces) -------------------------------------------------------

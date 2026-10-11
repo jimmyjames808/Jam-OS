@@ -1,6 +1,6 @@
 /* fat: the hold. Every sector a request writes is held back here until
- * the request is committed (docs/M11.6-PLAN.md, "Held writes become the
- * write-ahead buffer"), and an FS_GATHER file's (<os.h>) stay held across
+ * the request is committed (docs/HISTORY.md, M11.6),
+ * and an FS_GATHER file's (<os.h>) stay held across
  * requests until its sync or close.
  *
  * Why, twice. Exactness: nothing of a request reaches the stick before its

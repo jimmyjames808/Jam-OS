@@ -9,7 +9,7 @@
  * walk there (`malformed`); what came before it is kept.
  *
  * Who uses it: the boot-time VT-d probe (kernel/dev/vtd_probe.c), which
- * logs it, and later the IOMMU itself (docs/M11-PLAN.md). */
+ * logs it, and later the IOMMU itself (docs/HISTORY.md, M11). */
 #pragma once
 
 #include <stddef.h>

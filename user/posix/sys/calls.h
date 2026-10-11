@@ -14,9 +14,10 @@
  * this.
  *
  * Adding a call: write `long lx_<name>(long a, ...)` in the area's file,
- * declare it below in the area's block, and add `[SYS_<name>] = lx_<name>`
- * to the area's block of calls.c's table (a number given twice fails the
- * build: -Woverride-init). An area that isn't built yet has no block. */
+ * declare it below in the area's block, and add its line to the area's
+ * block of calls.def (LX or LX_CP: that file says which), which makes
+ * calls.c's table (a number given twice fails the build:
+ * -Woverride-init). An area that isn't built yet has no block. */
 #pragma once
 
 typedef long lx_call(long a, long b, long c, long d, long e, long f);
@@ -47,15 +48,16 @@ struct sig_frame {
 long sig_call(const struct sig_frame *f);
 
 /* Memory (mem.c): anonymous mappings and the break. */
-lx_call lx_mmap, lx_munmap, lx_mprotect, lx_madvise, lx_mremap, lx_brk;
+lx_call lx_mmap, lx_munmap, lx_mprotect, lx_madvise, lx_mremap, lx_brk, lx_mlock, lx_munlock,
+        lx_mlock2, lx_mlockall, lx_munlockall;
 
 /* Threads (thread.c). */
 lx_call lx_set_tid_address, lx_gettid, lx_arch_prctl, lx_exit, lx_exit_group, lx_futex,
         lx_sched_yield;
 
-/* Clocks and sleeps (time.c). */
+/* Clocks and sleeps, and CPU time (time.c). */
 lx_call lx_clock_gettime, lx_clock_getres, lx_clock_settime, lx_clock_nanosleep,
-        lx_nanosleep;
+        lx_nanosleep, lx_times, lx_getrusage;
 
 /* The machine and randomness (misc.c), and the resource limits (rlimit.c). */
 lx_call lx_uname, lx_getrandom, lx_sysinfo, lx_sched_getaffinity;
@@ -79,8 +81,8 @@ lx_call lx_stat, lx_lstat, lx_newfstatat, lx_statfs, lx_fstatfs, lx_access, lx_f
 /* Pipes, dup and fcntl, memfd and eventfd (pipe.c, dup.c, memfd.c,
  * eventfd.c; /dev and /etc are dev.c's and etc.c's, reached through the
  * path calls). */
-lx_call lx_pipe, lx_pipe2, lx_socketpair, lx_dup, lx_dup2, lx_dup3, lx_fcntl, lx_memfd_create,
-        lx_eventfd, lx_eventfd2;
+lx_call lx_pipe, lx_pipe2, lx_socketpair, lx_dup, lx_dup2, lx_dup3, lx_fcntl, lx_flock,
+        lx_memfd_create, lx_eventfd, lx_eventfd2;
 
 /* The one user (user.c). */
 lx_call lx_getuid, lx_geteuid, lx_getgid, lx_getegid, lx_getresuid, lx_getresgid, lx_setuid,

@@ -49,11 +49,12 @@
 #include "init.h"
 
 #define MAX_WORDS     16
-/* The root's powers an init.cfg program gets (<jam/abi.h> RIGHT_ROOT_*).
+/* The root's powers an init.cfg program gets (<jam/abi.h> RIGHT_ROOT_*;
+ * the pager power for utest's own fat, which it supervises as volumes does).
  * RIGHT_WRITE is none of them: utest checks that it gives no power over
  * the root (the screen and the serial port have powers of their own). */
 #define TEST_ROOT (RIGHT_ROOT_KLOG | RIGHT_ROOT_SYSINFO | RIGHT_ROOT_CLOCK | RIGHT_ROOT_VMEX | \
-                   RIGHT_WRITE)
+                   RIGHT_ROOT_PAGER | RIGHT_WRITE)
 #define RUN_TIMEOUT_S 240   /* per program */
 
 /* devmgr_ch: its control channel, devmgr_q: its query channel (<devmgr.h>
@@ -79,6 +80,7 @@ const char *init_bootdisk;
 const char *init_vlan;
 bool init_splashhang;
 bool init_verbose;
+bool init_runlines;
 bool init_nospare;
 bool init_vtdtest;
 const char *init_nvmetest;
@@ -595,6 +597,7 @@ int main(int argc, char **argv)
         if (!strncmp(argv[i], "nvmetest=", 9))
             init_nvmetest = argv[i];
         init_verbose |= !strcmp(argv[i], "verbose");
+        init_runlines |= !strcmp(argv[i], "runlines");
     }
     /* The modes the kernel asks for (argv[1]) instead of init.cfg. A plain
      * boot: the console, devmgr (connected to it), serial input and the

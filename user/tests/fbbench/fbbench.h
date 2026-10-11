@@ -1,5 +1,5 @@
 /* fbbench: what the compositor and libfun depend on, measured
- * (docs/G1-PLAN.md, track P0). Its files: main.c (the window, the
+ * (docs/HISTORY.md, G1, track P0). Its files: main.c (the window, the
  * buffers, the order of the lines), timing.c (the TSC, the samples and the
  * output lines), crew.c (a set of worker threads of a chosen size),
  * kernels.c (the store, copy and blend loops being compared), lines.c

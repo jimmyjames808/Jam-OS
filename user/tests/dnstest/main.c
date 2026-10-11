@@ -1,6 +1,6 @@
 /* dnstest: the resolver (/svc/dns) and the slow-peer rule from user
- * space (docs/M9-PLAN.md: "a service waiting on a slow peer delays only
- * that peer's requests"). Run from the shell (`run dnstest`) on a boot
+ * space (docs/HISTORY.md, M9: a service waiting on a slow peer delays only
+ * that peer's requests). Run from the shell (`run dnstest`) on a boot
  * with QEMU's network card and tools/netpeer.py, whose DNS server never
  * answers slow.jam and answers fastN.jam with 10.9.0.N
  * (tools/dns-test.sh):
@@ -17,7 +17,7 @@
  *   busy        a thread on a /svc/dns channel of its own keeps it full of
  *               requests (written without waiting) while 5 names not yet
  *               asked are each answered in under BUSY_MS: one busy asker
- *               holds up nobody else (docs/history/M9-REVIEW.md item 2)
+ *               holds up nobody else (docs/HISTORY.md, M9 item 2)
  * One line per check that fails and a summary line; exit 0 if none did. */
 #define CHECK_PROG "dnstest"
 #define CHECK_CUR  cur

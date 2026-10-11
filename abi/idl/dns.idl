@@ -6,7 +6,7 @@
 # (abi/idl/svc.idl): an answer that comes later goes to that caller's
 # channel only. The shared channel answers connect and nothing else.
 # <dns.h> has the client side (dns_lookup) and the limits;
-# docs/M9-PLAN.md "DHCP and DNS: processes of their own" the design.
+# docs/HISTORY.md, M9 has the design.
 #
 # Each name in flight is a query of its own (its own socket, id and
 # deadline), so a name whose server never answers delays only the

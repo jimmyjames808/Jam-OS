@@ -73,6 +73,7 @@ static bool toplevel(struct sc *a, struct top *t)
     CHECK_ST(jwl_wl_compositor_create_surface(k->c, k->compositor, t->s), OK);
     CHECK_ST(jwl_xdg_wm_base_get_xdg_surface(k->c, t->wm, t->xs, t->s), OK);
     CHECK_ST(jwl_xdg_surface_get_toplevel(k->c, t->xs, t->top), OK);
+    CHECK(ct_server_side(k, t->top));   /* the compositor's title bar, as Jam OS's windows */
     CHECK_ST(jwl_xdg_toplevel_set_title(k->c, t->top, "seat test"), OK);
     ct_clear(k);
     CHECK_ST(jwl_wl_surface_commit(k->c, t->s), OK);

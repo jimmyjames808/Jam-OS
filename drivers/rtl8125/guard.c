@@ -1,5 +1,5 @@
 /* rtl8125: failing closed (drv/rtl8125; guard.h has the rule and its
- * pure functions). docs/history/M9-REVIEW.md, design question A.
+ * pure functions). docs/HISTORY.md, M9, design question A.
  *
  * At every step of the loop (loop.c), in every mode:
  *   1. a tally dump that has landed since the last look is compared with

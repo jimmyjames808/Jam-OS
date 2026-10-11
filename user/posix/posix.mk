@@ -82,6 +82,35 @@ POSIX_CFLAGS := -std=gnu17 -O2 -g -Wall -Wextra -Werror -Wvla -Wno-unused-parame
 POSIX_SRCS := $(wildcard $(POSIX)/sys/*.c) $(filter-out %/crt1.c,$(wildcard $(POSIX)/crt/*.c))
 POSIX_OBJS := $(POSIX_SRCS:%=$(POSIX_OUT)/%.o)
 
+# The layer's objects as libc.a holds them: every global name that isn't
+# the implementation's own (__*) or a public extension (jamos_*) renamed
+# __jl_<name> (tools/posixnames.py says why), so a program's own names
+# never meet the layer's. JL_NAMES_H gives the renames as #defines, for
+# posixtest's one look inside the layer.
+POSIX_JL_OBJS := $(POSIX_OBJS:$(POSIX_OUT)/%=$(POSIX_OUT)/jl/%)
+JL_NAMES_MAP  := $(POSIX_OUT)/jl-names.map
+JL_NAMES_H    := $(POSIX_OUT)/jl-names.h
+$(JL_NAMES_MAP): $(POSIX_OBJS) tools/posixnames.py   # and JL_NAMES_H
+	python3 tools/posixnames.py $(CROSS)nm $(JL_NAMES_MAP) $(JL_NAMES_H) $(POSIX_OBJS)
+$(POSIX_OUT)/jl/%: $(POSIX_OUT)/% $(JL_NAMES_MAP)
+	@mkdir -p $(dir $@)
+	$(CROSS)objcopy --redefine-syms=$(JL_NAMES_MAP) $< $@
+
+# libjam as libc.a holds it: libos's own files (user/lib/*.c) built again
+# with a section per function and per datum, so the link's --gc-sections
+# (tools/jamos-cc) drops what a program doesn't call, where libjam.a's
+# objects come in whole. The few with flags of their own (dr_mp3's and
+# Monocypher's) and the assembly stay as libjam.a has them.
+LIBJAM_GC_SKIP := $(UOBJ)/user/lib/mp3.c.o $(UOBJ)/user/lib/updsig.c.o
+LIBJAM_GC_FROM := $(filter-out $(LIBJAM_GC_SKIP),$(filter \
+                      $(patsubst %,$(UOBJ)/%.o,$(wildcard user/lib/*.c)),$(LIBJAM_OBJS)))
+LIBJAM_GC_OBJS := $(patsubst $(UOBJ)/%,$(POSIX_OUT)/libjam/%,$(LIBJAM_GC_FROM))
+LIBJAM_IN_LIBC := $(filter-out $(LIBJAM_GC_FROM),$(LIBJAM_OBJS)) $(LIBJAM_GC_OBJS)
+$(POSIX_OUT)/libjam/%.c.o: %.c | $(UINC) $(SYSCALLS_OK) $(IDL_OK) $(WL_OK)
+	@mkdir -p $(dir $@)
+	$(CC) $(USER_CFLAGS) -ffunction-sections -fdata-sections -c $< -o $@
+-include $(LIBJAM_GC_OBJS:.o=.d)
+
 SYSROOT_HDRS := $(SYSROOT)/include/.made
 SYSROOT_EMPTY := $(addprefix $(SYSROOT)/lib/lib,$(addsuffix .a,m rt pthread crypt util xnet resolv dl))
 SYSROOT_LIBS := $(SYSROOT)/lib/libc.a $(SYSROOT)/lib/crt1.o $(SYSROOT)/lib/crti.o \
@@ -173,7 +202,7 @@ define POSIX_ARCHIVE
 endef
 $(MUSL_LIB): $(MUSL_OBJS) $(MUSL_OVR_OBJS)
 	$(POSIX_ARCHIVE)
-$(SYSROOT)/lib/libc.a: $(MUSL_OBJS) $(MUSL_OVR_OBJS) $(POSIX_OBJS) $(LIBJAM_OBJS)
+$(SYSROOT)/lib/libc.a: $(MUSL_OBJS) $(MUSL_OVR_OBJS) $(POSIX_JL_OBJS) $(LIBJAM_IN_LIBC)
 	@mkdir -p $(dir $@)
 	$(POSIX_ARCHIVE)
 
@@ -182,11 +211,12 @@ $(SYSROOT)/lib/libc.a: $(MUSL_OBJS) $(MUSL_OVR_OBJS) $(POSIX_OBJS) $(LIBJAM_OBJS
 POSIXTEST      := $(BUILD)/user/posixtest
 POSIXTEST_SRCS := $(wildcard $(POSIX)/test/*.c)
 $(POSIXTEST): $(POSIXTEST_SRCS) $(wildcard $(POSIX)/test/*.h) $(POSIX)/test/wants \
-              $(SYSROOT_LIBS) tools/jamos-cc | $(UINC) $(SYSCALLS_OK) $(IDL_OK)
+              $(SYSROOT_LIBS) $(JL_NAMES_MAP) tools/jamos-cc | $(UINC) $(SYSCALLS_OK) $(IDL_OK)
 	@mkdir -p $(dir $@)
 	JAMOS_SYSROOT=$(SYSROOT) CROSS=$(CROSS) tools/jamos-cc -std=gnu17 -O2 -g -Wall -Wextra \
 	    -Werror -Wvla -D_GNU_SOURCE -I$(POSIX)/include -Iuser/include -I$(BUILD)/uinc \
-	    -Idrivers/include --jamos-wants=$(POSIX)/test/wants $(POSIXTEST_SRCS) -o $@
+	    -Idrivers/include -include $(JL_NAMES_H) --jamos-wants=$(POSIX)/test/wants \
+	    $(POSIXTEST_SRCS) -o $@
 $(POSIXTEST).bootfs: $(POSIXTEST) tools/checkwants.py
 	$(STRIP) --strip-debug $< -o $@
 	python3 tools/checkwants.py $(POSIX)/test=$@
@@ -219,12 +249,19 @@ BOOTFS_FILES += usr/bin/pxio-usr=$(BUILD)/user/posix-pxio.bootfs
 
 # `make check`: the overrides still match upstream, and the check refuses
 # a changed, a missing and a malformed one; no name libjam defines is one
-# musl's libc defines.
+# musl's libc defines; a program that defines names the layer uses inside
+# libc.a (tools/posix-link-test.c) links, and links none of the handlers
+# for calls it can't make (calls.def: here, starting programs, socket
+# options, timers).
 .PHONY: posix-check
-posix-check: $(MUSL_LIB)
+posix-check: $(MUSL_LIB) $(SYSROOT_LIBS)
 	python3 tools/checkoverrides.py $(MUSL_OVR) $(MUSL)
 	python3 tools/checkoverrides.py --selftest $(MUSL_OVR) $(MUSL)
 	python3 tools/checklibjam.py $(CROSS)nm $(UOBJ)/libjam.a $(MUSL_LIB)
+	JAMOS_SYSROOT=$(SYSROOT) CROSS=$(CROSS) tools/jamos-cc -O2 tools/posix-link-test.c \
+	    -o $(BUILD)/posix-link-test
+	@! $(CROSS)nm $(BUILD)/posix-link-test | grep -E ' __jl_lx_(execve|setsockopt|timer_create)$$' || \
+	    { echo "posix-check: a program that calls write links handlers it never calls"; exit 1; }
 check: posix-check
 
 -include $(MUSL_OBJS:.o=.d) $(MUSL_OVR_OBJS:.o=.d) $(POSIX_OBJS:.o=.d) \

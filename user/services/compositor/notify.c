@@ -1,5 +1,5 @@
-/* Notifications (desk.h; the owner's picks in docs/G1-PLAN.md "The
- * look"): frosted cards stacked down the top right of the screen under the
+/* Notifications (desk.h; the owner's picks in docs/HISTORY.md, G1):
+ * frosted cards stacked down the top right of the screen under the
  * strip, the newest on top: a letter tile, a title and one line, cut short
  * to fit. A card without buttons fades away after LOOK_NOTE_SHOW_MS (a
  * click on it sends it sooner); one with buttons ("Reboot", "Later") stays

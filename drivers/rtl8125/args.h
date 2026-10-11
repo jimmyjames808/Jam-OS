@@ -23,7 +23,7 @@
 #include <jam/netdev.h>
 #include "notx.h"
 
-#define RTL_ARP_TARGET_DEFAULT 0x0a021501u   /* 10.2.21.1: VLAN 21's router (docs/M9-PLAN.md) */
+#define RTL_ARP_TARGET_DEFAULT 0x0a021501u   /* 10.2.21.1: VLAN 21's router (docs/HISTORY.md, M9) */
 
 struct rtl_args {
     enum rtl_mode mode;   /* RTL_MODE_PROBE or RTL_MODE_FULL */

@@ -12,6 +12,9 @@
  *   bench-clock  clock_get
  *   bench-fault  a write to a fresh page of a mapped VMO: the page fault,
  *                committing a zeroed page, installing it, returning
+ *   bench-cowfault  the first write to a page a copy-on-write child shares
+ *                with its parent (vmo_create_child): the fault, the copy
+ *                of the page, the entry swapped and shot down
  *   bench-call   channel_call to a bench-echo server on SR_USER + 1
  *   bench-echo   the server: read, write the same bytes back
  *   bench-rwecho the same server on channel_reply_wait: one system call
@@ -108,6 +111,25 @@ static int b_fault(void)
     for (unsigned i = 0; i < SAMPLES; i++) {
         uint64_t t0 = cpu_tsc();
         p[(uint64_t)i * 4096] = 1;
+        res.cycles[i] = cpu_tsc() - t0;
+    }
+    return send(1);
+}
+
+static int b_cowfault(void)
+{
+    handle_t p, c, vmar = startup_handle(SR_SELF_VMAR);
+    uint64_t pages = SAMPLES + 256, addr = 0;
+    if (jam_vmo_create(pages * 4096, 0, &p) != OK || jam_vmo_commit(p, 0, pages * 4096) != OK ||
+        jam_vmo_create_child(p, VMO_CHILD_SNAPSHOT, 0, pages * 4096, &c) != OK ||
+        jam_vmar_map(vmar, c, 0, pages * 4096, VMAR_READ | VMAR_WRITE, &addr) != OK)
+        return 3;
+    volatile uint8_t *q = (volatile uint8_t *)(uintptr_t)addr;
+    for (unsigned i = 0; i < 256; i++)   /* warm-up: the last 256 pages */
+        q[(uint64_t)(SAMPLES + i) * 4096] = 1;
+    for (unsigned i = 0; i < SAMPLES; i++) {
+        uint64_t t0 = cpu_tsc();
+        q[(uint64_t)i * 4096] = 1;
         res.cycles[i] = cpu_tsc() - t0;
     }
     return send(1);
@@ -268,6 +290,7 @@ int bench_child(int argc, char **argv)
     if (!strcmp(w, "null"))  return b_null();
     if (!strcmp(w, "clock")) return b_clock();
     if (!strcmp(w, "fault")) return b_fault();
+    if (!strcmp(w, "cowfault")) return b_cowfault();
     if (!strcmp(w, "call"))  return b_call(call_once);
     if (!strcmp(w, "dcall")) {
         call_deadline = true;

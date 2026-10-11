@@ -7,8 +7,7 @@
  * the unit's interrupt remapping table. The entry (IRTE, 16 bytes) says
  * which vector goes to which CPU, and which requester may use it: source
  * validation compares the message's requester id with the entry's, so a
- * device can raise only the interrupts it was given (docs/M11-PLAN.md,
- * "Interrupt remapping").
+ * device can raise only the interrupts it was given (docs/HISTORY.md, M11).
  *
  * What is here, all without hardware:
  *   - pure encoders: an IRTE (x2APIC 32-bit or xAPIC 8-bit destinations,

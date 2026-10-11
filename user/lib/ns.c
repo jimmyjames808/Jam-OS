@@ -263,9 +263,11 @@ static void take_locked(void)
     }
     uint64_t deadline = now() + NS_FIRST_WAIT;
     signals_t seen;
-    while (!take_some_locked(ch) && !starter_gone &&
-           jam_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, deadline, &seen) == OK)
-        ;
+    while (!take_some_locked(ch) && !starter_gone) {
+        status_t st = jam_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, deadline, &seen);
+        if (st != OK && st != ERR_INTERRUPTED)   /* a POSIX program's signal ends no wait here */
+            break;
+    }
     started = true;
 }
 

@@ -16,6 +16,7 @@
 #include <check.h>
 #include <jwl.h>
 #include <jwl/wayland.h>
+#include <jwl/xdg_decoration_unstable_v1.h>
 #include <jwl/xdg_shell.h>
 #include <os.h>
 #include "comptest.h"
@@ -39,9 +40,9 @@ struct xc {
     handle_t vmo;
 };
 
-/* A toplevel's three objects. */
+/* A toplevel's three objects, and its decoration object. */
 struct tl {
-    uint32_t s, xs, top;
+    uint32_t s, xs, top, deco;
 };
 
 /* The newest configure pair a toplevel got. */
@@ -88,12 +89,21 @@ static bool xdg_surface(struct xc *x, uint32_t s, uint32_t *xs)
     return true;
 }
 
+/* A toplevel asking for the compositor's decorations, as Jam OS's windows do. */
 static bool toplevel(struct xc *x, struct tl *t)
 {
     CHECK(surface(x, &t->s) && xdg_surface(x, t->s, &t->xs));
     CHECK((t->top = ct_new(&x->k, &jwl_xdg_toplevel_interface, 1)) != 0);
     CHECK_ST(jwl_xdg_surface_get_toplevel(x->k.c, t->xs, t->top), OK);
+    CHECK((t->deco = ct_server_side(&x->k, t->top)) != 0);
     return true;
+}
+
+/* t's role object, its decoration object first (the protocol's order). */
+static status_t top_destroy(struct xc *x, const struct tl *t)
+{
+    status_t st = jwl_zxdg_toplevel_decoration_v1_destroy(x->k.c, t->deco);
+    return st == OK ? jwl_xdg_toplevel_destroy(x->k.c, t->top) : st;
 }
 
 static const struct ct_event *last(const struct ct_client *k, const struct jwl_interface *iface,
@@ -258,7 +268,7 @@ static bool unmap_remap(struct ct_comp *p, struct xc *x, struct tl *t)
     CHECK(ack_commit(x, t, &c, buffer(x, 0, 64, 64, RED)));
     CHECK(pixel(p, (W - 64) / 2 + 32, (H - 64) / 2 + 32, RED));
     /* the role object, then the xdg_surface, then the surface: no error */
-    CHECK_ST(jwl_xdg_toplevel_destroy(x->k.c, t->top), OK);
+    CHECK_ST(top_destroy(x, t), OK);
     CHECK_ST(jwl_xdg_surface_destroy(x->k.c, t->xs), OK);
     CHECK_ST(jwl_wl_surface_destroy(x->k.c, t->s), OK);
     CHECK_ST(ct_roundtrip(&x->k), OK);
@@ -351,7 +361,7 @@ static bool tile_resize_steps(struct ct_comp *p, struct xc *x)
         CHECK(pixel(p, 80, 120, col));
         /* b goes: a's tile is the whole room again, and a hasn't drawn it:
          * its half-wide picture at the tile's left, the rest in its colour */
-        CHECK_ST(jwl_xdg_toplevel_destroy(x->k.c, b.top), OK);
+        CHECK_ST(top_destroy(x, &b), OK);
         CHECK_ST(jwl_xdg_surface_destroy(x->k.c, b.xs), OK);
         CHECK_ST(jwl_wl_surface_destroy(x->k.c, b.s), OK);
         CHECK_ST(ct_roundtrip(&x->k), OK);

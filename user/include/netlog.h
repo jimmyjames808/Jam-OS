@@ -1,6 +1,6 @@
 /* netlog's core (user/lib/netlog.c): the kernel log, from its first
- * byte, over UDP to the Mac's tools/netlog-recv.py (docs/M9-PLAN.md,
- * "netlog: the log over UDP to the Mac"). A state machine with no clock
+ * byte, over UDP to the Mac's tools/netlog-recv.py (docs/HISTORY.md, M9).
+ * A state machine with no clock
  * and no socket of its own: the caller hands it the time and every
  * datagram that arrives, it reads the log through a source and sends
  * through the caller's io, so bin/netlog runs it over a UDP socket and

@@ -453,6 +453,11 @@ extern unsigned sh_term_no;
 /* init's argument "session": this shell is a session's (/svc/session,
  * user/services/init/sessions.c), on a connection console; `exit` ends it,
  * and with it the session. */
+/* init's "runlines" (a test boot's): say each program's start and end, the
+ * "run: ..." lines the test scripts wait for. Off on the owner's boots: a
+ * program's output alone, and only a kill by a signal other than Ctrl+C's
+ * SIGINT or a pipe's SIGPIPE, or a job kill, is said. */
+extern bool sh_run_lines;
 extern bool sh_session;
 
 /* ---- the commands (cmd/<name>.c) --------------------------------------------------- */
@@ -476,7 +481,7 @@ SH_CMD(sleep); SH_CMD(repeat); SH_CMD(watch); SH_CMD(true); SH_CMD(false);
 /* system */
 SH_CMD(devices); SH_CMD(usb); SH_CMD(hda); SH_CMD(beep); SH_CMD(play); SH_CMD(vol);
 SH_CMD(music); SH_CMD(net); SH_CMD(ping);
-SH_CMD(host); SH_CMD(fetch); SH_CMD(serve); SH_CMD(speed);
+SH_CMD(host); SH_CMD(fetch); SH_CMD(serve); SH_CMD(speed); SH_CMD(ssh);
 SH_CMD(pci); SH_CMD(memmap); SH_CMD(mem); SH_CMD(kill); SH_CMD(iommu);
 SH_CMD(reboot); SH_CMD(kernel); SH_CMD(update); SH_CMD(run); SH_CMD(allow);
 /* tests */

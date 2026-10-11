@@ -1,5 +1,5 @@
-/* lwIP's options for netstack (docs/M9-PLAN.md "netstack: lwIP,
- * single-threaded"): what is compiled in, and every pool's size. lwIP's
+/* lwIP's options for netstack (docs/HISTORY.md, M9):
+ * what is compiled in, and every pool's size. lwIP's
  * own defaults are in third_party/lwip/src/include/lwip/opt.h; only what
  * differs from them, or what matters enough to say out loud, is here.
  *

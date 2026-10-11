@@ -11,8 +11,14 @@ recipes in ports/, on the Mac or the test host's Linux
                                                 (and fill the mirror)
     ports.py graph [<port>...]                  the build order, with what
                                                 each needs and runs
+    ports.py boot [-o FILE]                     build every `place boot` port
+                                                and write the list of
+                                                bootfs entries (make's)
     ports.py selftest                           the builder's own tests
                                                 (make check runs them)
+    ports.py package|repo|verify|vectors|abi    packages, the signed
+                                                repository and its formats
+                                                (tools/portslib/pkgcmd.py)
 
 Options before the command: --ports DIR (default ports/), --out DIR
 (default build/ports), --offline (no network: the cache and the mirror
@@ -23,15 +29,15 @@ build/sysroot first); its result is build/ports/<name>/stage/ and the
 stage list stage.txt there. Sources are fetched by size and SHA-256 into
 ~/.cache/jamos/distfiles, through the mirror (tools/portslib/fetch.py).
 
-Not built yet: `package` and `repo` (packages, the signed index) and
-`audit` (CVEs); the stage list is what they will read.
+Not built yet: `audit` (CVEs).
 
 The code is in tools/portslib/, a module per job: recipe (the format),
 licence, tree (the ports tree and the order), fetch, source (unpack,
 overrides), patch, toolchain (the sysroot and tools a build sees),
-build, stage (keep, check), selftest.
+build, stage (keep, check), boot (the boot image's side), selftest.
 """
 import argparse
+import io
 import os
 import sys
 
@@ -39,8 +45,10 @@ TOP = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(TOP, "tools"))
 sys.dont_write_bytecode = True   # no __pycache__ left in tools/
 
+from portslib import boot as bootmod  # noqa: E402
 from portslib import build as buildmod  # noqa: E402
 from portslib import fetch as fetchmod  # noqa: E402
+from portslib import pkgcmd  # noqa: E402
 from portslib import tree as treemod  # noqa: E402
 
 
@@ -100,6 +108,35 @@ def cmd_build(args):
     return 0
 
 
+def cmd_boot(args):
+    """Build the boot ports and write the list mkbootfs packs (`@FILE`),
+    only when it changed, so an unchanged boot image is packed anew by
+    nobody."""
+    t = load(args)
+    args.port, args.force, args.verbose, args.jobs = bootmod.boot_ports(t), False, False, None
+    if cmd_build(args):
+        return 1
+    try:
+        entries = [(n, os.path.relpath(f, TOP), h) for n, f, h in
+                   bootmod.bootlist(args.out, args.port)]
+    except (ValueError, OSError) as e:
+        print("ports: " + str(e))
+        return 1
+    if args.output:
+        text = io.StringIO()
+        bootmod.write_list(entries, text)
+        try:
+            with open(args.output) as f:
+                same = f.read() == text.getvalue()
+        except OSError:
+            same = False
+        if not same:
+            with open(args.output + ".new", "w") as f:
+                f.write(text.getvalue())
+            os.replace(args.output + ".new", args.output)
+    return 0
+
+
 def cmd_fetch(args):
     t = load(args)
     try:
@@ -138,8 +175,7 @@ def cmd_selftest(args):
 
 
 def cmd_later(args):
-    print("ports: '%s' is not built yet (docs/M13.7-PLAN.md: PO3 for package and repo, "
-          "PO12 for audit)" % args.command)
+    print("ports: '%s' is not built yet (docs/M13.7-PLAN.md: PO12 for audit)" % args.command)
     return 2
 
 
@@ -157,9 +193,10 @@ def main(argv):
     for name in ("lint", "graph"):
         sub.add_parser(name).add_argument("port", nargs="*")
     sub.add_parser("fetch").add_argument("port", nargs="+")
+    sub.add_parser("boot").add_argument("-o", "--output", metavar="FILE")
     sub.add_parser("selftest")
-    for name in ("package", "repo", "audit"):
-        sub.add_parser(name).add_argument("port", nargs="*")
+    sub.add_parser("audit").add_argument("port", nargs="*")
+    pkgcmd.add_parsers(sub)
     args = ap.parse_args(argv)
     if not args.command:
         ap.print_help()
@@ -170,7 +207,7 @@ def main(argv):
     local_tools()
     os.chdir(TOP)   # third_party/ and user/include/os.h are read from here
     run = {"lint": cmd_lint, "build": cmd_build, "fetch": cmd_fetch, "graph": cmd_graph,
-           "selftest": cmd_selftest}.get(args.command, cmd_later)
+           "selftest": cmd_selftest, "boot": cmd_boot, **pkgcmd.commands(TOP)}.get(args.command, cmd_later)
     return run(args)
 
 

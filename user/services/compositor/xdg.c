@@ -6,7 +6,11 @@
  * protocol allows: "The compositor may dismiss a popup at any time"): no
  * program of ours has menus yet. Their positioner is still checked as the
  * protocol says, so a client that would break on a real compositor breaks
- * here too.
+ * here too: at get_popup, and at xdg_popup.reposition (version 3), which
+ * is otherwise ignored (a dismissed popup is never placed). The
+ * positioner's version 3 requests (set_reactive, set_parent_size,
+ * set_parent_configure) only say how to place it again, so they are
+ * accepted and kept nowhere.
  *
  * Pings. A close request (the close circle, Super+Q) pings the client's xdg_wm_base;
  * a client that hasn't answered within XDG_PING_NS has its windows marked
@@ -276,6 +280,24 @@ static status_t on_set_offset(void *data, uint32_t self, int32_t x, int32_t y)
     return OK;
 }
 
+static status_t on_set_reactive(void *data, uint32_t self)
+{
+    (void)data, (void)self;
+    return OK;
+}
+
+static status_t on_set_parent_size(void *data, uint32_t self, int32_t w, int32_t h)
+{
+    (void)data, (void)self, (void)w, (void)h;
+    return OK;   /* a hint for placing it against a parent not drawn yet */
+}
+
+static status_t on_set_parent_configure(void *data, uint32_t self, uint32_t serial)
+{
+    (void)data, (void)self, (void)serial;
+    return OK;
+}
+
 static const struct jwl_xdg_positioner_requests pos_ops = {
     .destroy = on_pos_destroy,
     .set_size = on_set_size,
@@ -284,6 +306,9 @@ static const struct jwl_xdg_positioner_requests pos_ops = {
     .set_gravity = on_set_gravity,
     .set_constraint_adjustment = on_set_constraint_adjustment,
     .set_offset = on_set_offset,
+    .set_reactive = on_set_reactive,
+    .set_parent_size = on_set_parent_size,
+    .set_parent_configure = on_set_parent_configure,
 };
 
 status_t xdg_positioner_request(struct comp_client *cl, struct jwl_msg *m)
@@ -313,13 +338,22 @@ static void popup_gone(struct comp_surface *s, bool dead)
 
 const struct comp_role_ops xdg_popup_ops = { "xdg_popup", popup_commit, popup_gone };
 
+/* positioner is complete (xdg_wm_base's invalid_positioner otherwise). */
+static status_t positioner_ok(struct xdg_surf *x, uint32_t positioner)
+{
+    struct xdg_pos *p = comp_object(x->cl, positioner, &jwl_xdg_positioner_interface);
+    if (!p || !p->size_set || !p->rect_set)
+        return comp_error(x->cl, x->base->id, JWL_XDG_WM_BASE_ERROR_INVALID_POSITIONER,
+                          "xdg_positioner %u has no size or anchor rect", positioner);
+    return OK;
+}
+
 status_t xdg_popup_create(struct xdg_surf *x, uint32_t id, uint32_t parent, uint32_t positioner)
 {
     struct comp_client *cl = x->cl;
-    struct xdg_pos *p = comp_object(cl, positioner, &jwl_xdg_positioner_interface);
-    if (!p || !p->size_set || !p->rect_set)
-        return comp_error(cl, x->base->id, JWL_XDG_WM_BASE_ERROR_INVALID_POSITIONER,
-                          "xdg_positioner %u has no size or anchor rect", positioner);
+    status_t st = positioner_ok(x, positioner);
+    if (st != OK)
+        return st;
     struct xdg_surf *px = parent ? comp_object(cl, parent, &jwl_xdg_surface_interface) : NULL;
     if (parent && (!px || px == x))
         return comp_error(cl, x->base->id, JWL_XDG_WM_BASE_ERROR_INVALID_POPUP_PARENT,
@@ -329,7 +363,7 @@ status_t xdg_popup_create(struct xdg_surf *x, uint32_t id, uint32_t parent, uint
     x->role_id = id;
     x->surface->role = COMP_ROLE_XDG_POPUP;
     x->surface->role_ops = &xdg_popup_ops;
-    status_t st = jwl_map_set_data(&cl->conn->map, id, x);
+    st = jwl_map_set_data(&cl->conn->map, id, x);
     return st == OK ? jwl_xdg_popup_send_popup_done(cl->conn, id) : st;
 }
 
@@ -349,9 +383,20 @@ static status_t on_popup_grab(void *data, uint32_t self, uint32_t seat, uint32_t
     return OK;   /* already dismissed: nothing to grab for */
 }
 
+/* Dismissed already, so not placed again (no repositioned or configure
+ * follows); the positioner is still checked. */
+static status_t on_popup_reposition(void *data, uint32_t self, uint32_t positioner,
+                                    uint32_t token)
+{
+    struct xdg_surf *x = data;
+    (void)self, (void)token;
+    return x->surface ? positioner_ok(x, positioner) : OK;
+}
+
 static const struct jwl_xdg_popup_requests popup_ops = {
     .destroy = on_popup_destroy,
     .grab = on_popup_grab,
+    .reposition = on_popup_reposition,
 };
 
 status_t xdg_popup_request(struct comp_client *cl, struct jwl_msg *m)

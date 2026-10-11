@@ -154,8 +154,8 @@ wait ok-x-rm
 wait {prompt}
 
 # ---- find -exec and xargs: the commands they start (the overrides: posix_spawnp) -----------------
-# Their own output goes through a pipe: a program whose descriptor is a redirected writable file
-# can't start children yet (posix_spawn: EBUSY, the S1 notes' limit, question 5's (B)).
+# Their output through a pipe, and into a redirected file: a program's writable file is lent to
+# the child it starts (posix_spawn, and env's execve).
 send run $S/mkdir /data/pt-x; run $S/touch /data/pt-x/one /data/pt-x/two; echo st-$T=$?
 wait st-x=0
 wait {prompt}
@@ -166,6 +166,12 @@ wait ok-x-findexec
 wait {prompt}
 send printf '1\n2\n3\n4\n5\n' | xargs -n 2 $S/echo | run $S/cat > /data/pt-o; printf '1 2\n3 4\n5\n' > /data/pt-e; cmp /data/pt-o /data/pt-e && echo ok-$T-xargs
 wait ok-x-xargs
+wait {prompt}
+send printf '1\n2\n' | xargs -n 1 $S/echo xa > /data/pt-o; printf 'xa 1\nxa 2\n' > /data/pt-e; cmp /data/pt-o /data/pt-e && echo ok-$T-xargsfile
+wait ok-x-xargsfile
+wait {prompt}
+send run $S/env FOO=baz $S/printenv FOO > /data/pt-o; printf 'baz\n' > /data/pt-e; cmp /data/pt-o /data/pt-e && echo ok-$T-envfile
+wait ok-x-envfile
 wait {prompt}
 send run $S/find /data/pt-x -type f | xargs $S/rm; test -e /data/pt-x/one || echo ok-$T-xargsrm
 wait ok-x-xargsrm

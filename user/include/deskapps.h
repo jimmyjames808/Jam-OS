@@ -1,6 +1,6 @@
 /* The desktop's apps: the one list of what the search box offers and what
  * init will start for the compositor (initctl.launch,
- * docs/G1-PLAN.md "As built: D2b"). init reads it to decide (the
+ * docs/HISTORY.md, G1). init reads it to decide (the
  * compositor names an app, never a path: nothing else can be started that
  * way), the compositor to show the rows (user/services/compositor/menus.c).
  *
@@ -30,8 +30,7 @@
  * more (initctl.terminal's ERR_NO_RESOURCES, user/services/init/terms.c),
  * and the compositor's notice ("No more terminals"), the shell's `term`
  * and the console say this number. Each terminal is two small processes,
- * a console and a shell (their memory: docs/G1-PLAN.md, "Every terminal
- * is equal"). */
+ * a console and a shell (their memory: docs/HISTORY.md, G1). */
 #define TERMINALS_MAX 16
 
 /* s a terminal's number, "1" to TERMINALS_MAX without leading zeros (init's

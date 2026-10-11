@@ -1,5 +1,5 @@
-/* utest: FatFs's structs as fat's state relies on them (docs/M11.6-PLAN.md,
- * "FatFs without re-mounting"; user/services/fat/fat.h, struct fat_state).
+/* utest: FatFs's structs as fat's state relies on them (docs/HISTORY.md, M11.6;
+ * user/services/fat/fat.h, struct fat_state).
  *
  * fat keeps FatFs's volume (FATFS) and every open file's FIL in its state
  * VMO, at a fixed address, so that a successor can take them over without

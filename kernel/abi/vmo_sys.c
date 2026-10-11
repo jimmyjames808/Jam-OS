@@ -235,3 +235,25 @@ status_t sys_vmo_decommit(struct handle_table *t, handle_t h, uint64_t offset, u
     vmo_put(v);
     return st;
 }
+
+/* A child is a new way to reach the parent's bytes, and one that can be
+ * passed on: so it needs RIGHT_DUPLICATE as well as RIGHT_READ (Zircon's
+ * rule), and a handle given without the right to share it can't make one.
+ * Its handle is a fresh VMO's (never RIGHT_EXEC, whatever h has). */
+status_t sys_vmo_create_child(struct handle_table *t, handle_t h, uint32_t flags, uint64_t offset,
+                              uint64_t size, handle_t *out)
+{
+    struct vmo *v, *c;
+    status_t st = vmo_get(t, h, RIGHT_READ | RIGHT_DUPLICATE, &v);
+    if (st != OK)
+        return st;
+    st = vmo_create_child(t->job, v, flags, offset, size, &c);
+    vmo_put(v);
+    if (st != OK)
+        return st;
+    struct khandle kh = khandle_from_new(vmo_kobject(c), VMO_RIGHTS);
+    st = handle_insert(t, &kh, out);
+    if (st != OK)
+        khandle_release(&kh);   /* destroys the child */
+    return st;
+}

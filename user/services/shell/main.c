@@ -54,6 +54,7 @@ JAM_WANTS("mount * rw\n"
 
 static handle_t con, keys;
 unsigned sh_term_no;   /* init's "term=<n>": this shell's terminal closes with `exit` */
+bool sh_run_lines;     /* init's "runlines": say each program's start and end (sh.h) */
 bool sh_session;       /* init's "session": a session's shell (sh.h) */
 
 /* ---- output ------------------------------------------------------------------- */
@@ -624,6 +625,8 @@ static void take_args(int argc, char **argv)
             take_note(a + 5);
         else if (!strcmp(a, "restarted"))
             restarted = true;
+        else if (!strcmp(a, "runlines"))
+            sh_run_lines = true;
         else if (!strcmp(a, "session"))
             sh_session = true;
         else if (!strncmp(a, "cmd=", 4) && a[4])

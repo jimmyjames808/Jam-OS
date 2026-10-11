@@ -1,0 +1,77 @@
+# xz's test (tools/ports-test.sh): the xz program from the package on
+# /data/pkg: its version, files compressed and back (-k keeps the input),
+# standard input to standard output, an integrity check (-t) that passes
+# on a good file and fails on a damaged one, other presets and checks, and
+# a binary file. `seq 1 20000` is 108894 bytes of text; the SHA-256 below
+# was made on the Mac with Python's hashlib, and the .xz's size (preset 6,
+# CRC64, one block) is what xz 5.8.4 makes of it (Python's lzma, also
+# liblzma, makes 8 bytes fewer: it doesn't write the sizes xz does).
+send run $P/xz --version; echo st-$T=$?
+wait xz (XZ Utils) 5.8.4
+wait liblzma 5.8.4
+wait st-x=0
+wait {prompt}
+send run $S/seq 1 20000 > /data/xt-in; sha256sum /data/xt-in
+wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  /data/xt-in
+wait {prompt}
+
+# ---- keep the input; test the result; decompress it over a copy ----------------------------
+send run $P/xz -k /data/xt-in; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send ls /data | grep ^xt-in.xz$ && ls /data | grep ^xt-in$ && echo ok-$T-kept
+wait ok-x-kept
+wait {prompt}
+send run $S/wc -c /data/xt-in.xz | run $S/sed s/^/size-/
+wait size-4956 /data/xt-in.xz
+wait {prompt}
+send run $P/xz -t /data/xt-in.xz; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send mv /data/xt-in /data/xt-orig; run $P/xz -d /data/xt-in.xz; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send sha256sum /data/xt-in
+wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  /data/xt-in
+wait {prompt}
+send ls /data | grep -c ^xt-in.xz$ | grep ^0$ && echo ok-$T-removed
+wait ok-x-removed
+wait {prompt}
+
+# ---- standard input to standard output; the same input gives the same bytes -------------
+send run $P/xz -c /data/xt-in > /data/xt-1.xz; cat /data/xt-in | run $P/xz > /data/xt-2.xz; cmp /data/xt-1.xz /data/xt-2.xz && echo ok-$T-same
+wait ok-x-same
+wait {prompt}
+send cat /data/xt-in | run $P/xz | run $P/xz -d | sha256sum
+wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  -
+wait {prompt}
+
+# ---- presets and checks -------------------------------------------------------------------
+send run $P/xz -0 -c /data/xt-in > /data/xt-0.xz; run $P/xz -9 -c /data/xt-in > /data/xt-9.xz; run $P/xz -e -C sha256 -c /data/xt-in > /data/xt-s.xz; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send run $P/xz -d -c /data/xt-0.xz | sha256sum
+wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  -
+wait {prompt}
+send run $P/xz -d -c /data/xt-9.xz | sha256sum
+wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  -
+wait {prompt}
+send run $P/xz -d -c /data/xt-s.xz | sha256sum
+wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  -
+wait {prompt}
+send run $P/xz -T2 -c /data/xt-in | run $P/xz -d | sha256sum
+wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  -
+
+# ---- damage: -t fails on a file that isn't xz, and on an xz whose data was changed -------
+wait {prompt}
+send printf 'this is not xz data\n' > /data/xt-bad.xz; run $P/xz -t /data/xt-bad.xz; echo st-$T=$?
+wait st-x=1
+wait {prompt}
+send cp /data/xt-1.xz /data/xt-dam.xz; printf 'Z' | run /boot/usr/bin/dd of=/data/xt-dam.xz bs=1 seek=100 conv=notrunc; run $P/xz -t /data/xt-dam.xz; echo st-$T=$?
+wait st-x=1
+wait {prompt}
+
+# ---- binary data: a program of the boot image, megabytes of it ---------------------------
+send cp /boot/bin/utest /data/xt-bin; run $P/xz -k /data/xt-bin; run $P/xz -t /data/xt-bin.xz; mv /data/xt-bin /data/xt-bin.orig; run $P/xz -d /data/xt-bin.xz; cmp /data/xt-bin /data/xt-bin.orig && echo ok-$T-bin
+wait ok-x-bin
+wait {prompt}

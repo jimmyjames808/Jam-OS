@@ -12,7 +12,10 @@
  * given up: an asynchronous cancel acts at the thread's next
  * cancellation point, not in the middle of its user code.
  *
- * __cancel, __syscall_cp_c and __testcancel are upstream's, unchanged. */
+ * __cancel, __syscall_cp_c and __testcancel are upstream's, but that
+ * __syscall_cp_c makes a call with cancellation off through the layer
+ * directly (__syscall with a number known only when it runs would link
+ * every handler: the override of syscall_arch.h). */
 #define _GNU_SOURCE
 #include <string.h>
 #include "pthread_impl.h"
@@ -43,7 +46,7 @@ long __syscall_cp_c(syscall_arg_t nr,
 
 	if ((st=(self=__pthread_self())->canceldisable)
 	    && (st==PTHREAD_CANCEL_DISABLE || nr==SYS_close))
-		return __syscall(nr, u, v, w, x, y, z);
+		return __jam_syscall(nr, u, v, w, x, y, z);   /* a cancellation point: always linked */
 
 	r = __syscall_cp_asm(&self->cancel, nr, u, v, w, x, y, z);
 	if (r==-EINTR && nr!=SYS_close && self->cancel &&

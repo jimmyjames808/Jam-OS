@@ -58,12 +58,17 @@ BOOTFS  := $(BUILD)/bootfs.img
 SIGN_TOOL := build/host/jamos-sign
 # The PC's check of a boot menu, on the Mac (tools/menucheck.c, below).
 MENU_TOOL := build/host/menucheck
+# The page-hash table with libos's and the kernel's SHA-256, on the Mac
+# (tools/pagetable.c, below).
+PAGETABLE_TOOLS := build/host/pagetable-libos build/host/pagetable-kernel
 # libfun's smooth text on the Mac: the preview and its sanitised check
 # (tools/fontpreview.c, below).
 FONT_TOOL  := build/host/fontpreview
 FONT_CHECK := build/host/fontcheck
 # The partition table library on the Mac, sanitised (tools/gptcheck.c, below).
 GPT_CHECK  := build/host/gptcheck
+# The ext library on the Mac, sanitised (tools/extcheck.c, below).
+EXT_CHECK  := build/host/extcheck
 ROOTPORT_CHECK := build/host/rootportcheck
 # The files a stick has once `update -w` has written a build: its own and
 # the previous one (what boot/limine.conf may name; `make check`).
@@ -120,7 +125,8 @@ ifneq ($(words $(DRIVERS)),$(words $(DRIVER_DIRS)))
 $(error two driver directories share a name: $(DRIVER_DIRS))
 endif
 
-.PHONY: all image run debug clean font usb flash syscalls idl wl keymap check compdb includes FORCE
+.PHONY: all image run debug clean font usb flash syscalls idl wl keymap check compdb includes \
+        ports FORCE
 
 all: $(KERNEL) $(BOOTFS) $(SIGN_TOOL) $(MENU_TOOL) $(BUILD)/fontpreview.png
 
@@ -259,8 +265,9 @@ LIBOS_OBJS  += $(DRMP3_OBJ)
 $(DRMP3_OBJ): PROG_CFLAGS := -Iuser/lib/mp3port -Ithird_party/dr_mp3
 $(UOBJ)/user/lib/mp3.c.o: PROG_CFLAGS := -Ithird_party/dr_mp3
 # Monocypher (third_party/monocypher, vendored unmodified): Ed25519 as RFC
-# 8032 has it, for signed updates (<update.h>, user/lib/updsig.c). Into
-# libos; only a program that checks a signature (init, utest) links it in.
+# 8032 has it, for signed updates (<update.h>, user/lib/updsig.c) and the
+# SSH server's host key (init's ssh.c). Into libos; only a program that
+# checks a signature or makes a key (init, utest) links it in.
 # tools/jamos-sign, the Mac's side, is built from the same files.
 MONO_DIR    := third_party/monocypher/src
 MONO_SRCS   := $(MONO_DIR)/monocypher.c $(MONO_DIR)/optional/monocypher-ed25519.c
@@ -431,6 +438,8 @@ EXTRA_CFLAGS_splash := -Ithird_party/pl_mpeg -Iuser/apps/splash/port
 # <stdlib.h>/<string.h> it includes, which are libos's
 # (user/apps/jamcover/port).
 EXTRA_CFLAGS_jamcover := -Ithird_party/stb_image -Iuser/apps/jamcover/port
+# init makes the SSH server's host key with Monocypher (init/ssh.c).
+EXTRA_CFLAGS_init := -I$(MONO_DIR) -I$(MONO_DIR)/optional
 # utest tests the music player's folder walk and spectrum (utest/music.c):
 # the player's own objects, linked in, and its header; and the RTL8125
 # probe's transmit-register guard (utest/netframe.c: drivers/rtl8125/notx.h);
@@ -592,7 +601,9 @@ $(PT_LIB_OBJ): $(patsubst %,$(BUILD)/udrv/drivers/lib/%.o,$(PT_LIB)) tools/check
 # partition table library keeps to the driver rules and passes
 # tools/gptcheck.c (its cases, mutations and a short fuzz pass), and the
 # ports' recipes pass their lint and the ports builder its self-test
-# (tools/ports.py: offline, fake ports built with the real sysroot).
+# (tools/ports.py: offline, fake ports built with the real sysroot), and the
+# ext library builds for Jam OS and passes tools/extcheck.c (Linux's
+# fixtures, broken checksums, the feature table, a fuzz pass).
 check: all
 	python3 tools/gensyscalls.py check
 	python3 tools/genidl.py check
@@ -610,8 +621,16 @@ check: all
 	python3 tools/netpeer.py --selftest
 	python3 tools/pcap-vlan-check.py --selftest
 	python3 tools/checkwants.py --selftest
+	python3 tools/mkbootfs.py --selftest
 	python3 tools/ports.py lint
+	$(MAKE) -s $(PAGETABLE_TOOLS)
 	python3 tools/ports.py selftest
+	python3 tools/ports.py vectors
+	python3 tools/ports-server.py --self-test
+	@for d in $$(cd third_party && ls -d */ | tr -d /); do \
+	    case " $(THIRD_PARTY_NOTICED) " in *" $$d "*) ;; \
+	    *) echo "licences: third_party/$$d has no notice in the boot image (LICENCES in the Makefile, or a port's recipe)"; exit 1;; esac; \
+	done
 	python3 tools/fatcheck.py --selftest
 	$(SIGN_TOOL) self-test
 	$(MENU_TOOL) boot/limine.conf $(STICK_FILES)
@@ -622,6 +641,8 @@ check: all
 	$(GPT_CHECK) $(BUILD)/gptcheck
 	$(MAKE) -s $(ROOTPORT_CHECK)
 	$(ROOTPORT_CHECK)
+	$(MAKE) -s $(EXT_CHECK) $(EXT_FIXTURES) $(EXT_CROSS)
+	$(EXT_CHECK) tools/extfix $(BUILD)/extfix
 
 # The boot splash's video: boot/splash.mpg, committed. It is made from the
 # owner's animation (tools/mksplash.sh), which lives outside the repository
@@ -663,20 +684,36 @@ $(UPDATE_PUB): FORCE
 	@if [ -f "$(UPDATE_KEY)" ]; then cp "$(UPDATE_KEY)" $@.new; else : > $@.new; fi; \
 	 if cmp -s $@.new $@; then rm $@.new; else mv $@.new $@; fi
 
+# ports.pub in bootfs: the public half of the owner's ports key, which
+# signs every package, index and vulnerability list `make ports` makes
+# (docs/M13.7-PLAN.md section 7). `build/host/jamos-sign keygen --ports`
+# makes the pair, once, in ~/.config/jamos (the secret, ports.key, stays
+# there: never in the tree); PORTS_KEY names another public file, and
+# `PORTS_KEY=` builds without one. A build without it (a public build, or
+# a machine without the key) takes no package: pkg refuses every
+# repository. Copied again only when it changes, comes or goes.
+PORTS_KEY ?= $(HOME)/.config/jamos/ports.pub
+PORTS_PUB := $(BUILD)/ports.pub
+$(PORTS_PUB): FORCE
+	@mkdir -p $(BUILD)
+	@if [ -f "$(PORTS_KEY)" ]; then cp "$(PORTS_KEY)" $@.new; else : > $@.new; fi; \
+	 if cmp -s $@.new $@; then rm $@.new; else mv $@.new $@; fi
+
 # bootfs: the files init and the tests need before USB and FAT32 work,
 # loaded by Limine as a module (boot/limine.conf: module_path).
 BOOTFS_FILES := $(foreach p,$(USER_PROGS),bin/$(p)=$(BUILD)/user/$(p).bootfs) \
                 $(foreach d,$(DRIVERS),drv/$(d)=$(BUILD)/drv/$(d).bootfs) init.cfg=boot/init.cfg \
                 splash.mpg=boot/splash.mpg build.txt=$(BUILD_INFO) \
-                $(if $(wildcard $(UPDATE_KEY)),update.pub=$(UPDATE_PUB))
+                $(if $(wildcard $(UPDATE_KEY)),update.pub=$(UPDATE_PUB)) \
+                $(if $(wildcard $(PORTS_KEY)),ports.pub=$(PORTS_PUB))
 
 # Every program's list (<wants.h>) is checked first: what the build
 # approves for each boot-image program (tools/checkwants.py).
 $(BOOTFS): $(USER_PROGS:%=$(BUILD)/user/%.bootfs) $(DRIVERS:%=$(BUILD)/drv/%.bootfs) boot/init.cfg \
-           boot/splash.mpg $(BUILD_INFO) $(UPDATE_PUB) tools/mkbootfs.py tools/checkwants.py \
-           user/include/os.h
+           boot/splash.mpg $(BUILD_INFO) $(UPDATE_PUB) $(PORTS_PUB) tools/mkbootfs.py \
+           tools/checkwants.py user/include/os.h
 	python3 tools/checkwants.py $(foreach p,$(USER_PROGS),$(call prog_dir,$(p))=$(BUILD)/user/$(p).bootfs)
-	python3 tools/mkbootfs.py $@ $(BOOTFS_FILES)
+	python3 tools/mkbootfs.py $@ $(BOOTFS_FILES) @$(PORTS_LIST)
 
 image: $(IMAGE)
 
@@ -726,6 +763,29 @@ $(SIGN_TOOL): tools/jamos-sign.c $(MONO_SRCS) $(MONO_HDRS) \
 	$(HOSTCC) -std=gnu11 -O2 -Wall -Wextra -Werror -I$(MONO_DIR) -I$(MONO_DIR)/optional \
 	    -o $@ tools/jamos-sign.c $(MONO_SRCS)
 
+# pagetable (tools/pagetable.c): a program's page-hash table as the PC
+# computes it, with libos's SHA-256 and with the kernel's, each built as it
+# is against a stand-in for the one header of Jam OS's it includes (its
+# memcpy): `make check` compares their tables with the packager's.
+build/host/shim/os.h build/host/shim/jam/string.h:
+	@mkdir -p $(dir $@)
+	@printf '#include <stddef.h>\n#include <stdint.h>\n#include <string.h>\n' > $@
+build/host/pagetable-libos: tools/pagetable.c user/lib/sha256.c user/include/sha256.h \
+                            build/host/shim/os.h
+	$(HOSTCC) -std=gnu11 -O2 -Wall -Wextra -Werror -Ibuild/host/shim -Iuser/include \
+	    -o $@ tools/pagetable.c user/lib/sha256.c
+build/host/pagetable-kernel: tools/pagetable.c kernel/lib/sha256.c kernel/include/jam/sha256.h \
+                             build/host/shim/jam/string.h
+	$(HOSTCC) -std=gnu11 -O2 -Wall -Wextra -Werror -DPAGETABLE_KERNEL -Ibuild/host/shim \
+	    -Ikernel/include -o $@ tools/pagetable.c kernel/lib/sha256.c
+
+# The package repository (docs/M13.7-PLAN.md section 7): every package
+# port built, packaged and signed with the ports key (~/.config/jamos/
+# ports.key, or JAMOS_PORTS_KEY), with the index, VULNS and the sources,
+# in build/repo for tools/ports-server.py. Fetches what isn't cached.
+ports: all
+	python3 tools/ports.py repo
+
 # menucheck (tools/menucheck.c): init's boot menu check (user/lib/bootmenu.c,
 # the same file), on the Mac.
 $(MENU_TOOL): tools/menucheck.c user/lib/bootmenu.c user/include/bootmenu.h
@@ -771,6 +831,33 @@ $(ROOTPORT_CHECK): tools/rootportcheck.c drivers/usb-bus/rootport.c drivers/usb-
 	    -fno-sanitize-recover=all -Ikernel/include -Idrivers/include -o $@ \
 	    tools/rootportcheck.c drivers/usb-bus/rootport.c
 
+# extcheck (tools/extcheck.c, extbreak.c, extmutate.c): the ext library (the
+# extfs service's format code, user/services/extfs/ext, the same files)
+# with ASan and UBSan, against the images Linux's mke2fs made
+# (tools/extfix/make.sh made them; committed gzipped, unpacked here) and
+# thousands of mutated ones; `make check` runs it. The library is also
+# compiled as Jam OS compiles a program's files ($(EXT_CROSS)), since no
+# program links it yet.
+EXT_DIR      := user/services/extfs/ext
+EXT_SRCS     := $(wildcard $(EXT_DIR)/*.c)
+EXT_HDRS     := $(wildcard $(EXT_DIR)/*.h)
+EXT_FIXTURES := $(patsubst tools/extfix/%.img.gz,$(BUILD)/extfix/%.img,\
+                           $(wildcard tools/extfix/*.img.gz))
+EXT_CROSS    := $(patsubst $(EXT_DIR)/%.c,$(BUILD)/extcross/%.o,$(EXT_SRCS))
+EXT_TOOL     := tools/extcheck.c tools/extbreak.c tools/extmutate.c
+$(EXT_CHECK): $(EXT_TOOL) tools/extcheck.h $(EXT_SRCS) $(EXT_HDRS) drivers/lib/sha256.c \
+              drivers/include/jam/sha256.h kernel/include/jam/status.h
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -std=gnu17 -O1 -g -Wall -Wextra -Werror -Wvla -fsanitize=address,undefined \
+	    -fno-sanitize-recover=all -Idrivers/include -Ikernel/include -I$(EXT_DIR) -o $@ \
+	    $(EXT_TOOL) $(EXT_SRCS) drivers/lib/sha256.c
+$(EXT_FIXTURES): $(BUILD)/extfix/%.img: tools/extfix/%.img.gz
+	@mkdir -p $(dir $@)
+	gzip -dc $< > $@
+$(EXT_CROSS): $(BUILD)/extcross/%.o: $(EXT_DIR)/%.c $(EXT_HDRS) | $(UINC)
+	@mkdir -p $(dir $@)
+	$(CC) $(USER_CFLAGS) -c $< -o $@
+
 $(BUILD)/fontpreview.png: $(FONT_TOOL)
 	$(FONT_TOOL) $@
 
@@ -800,10 +887,52 @@ clean:
 # POSIX on musl: musl, the call layer, the sysroot, posixtest (its own file).
 include user/posix/posix.mk
 
-# libc-test, musl's test suite, as one program (user/ports/libc-test/).
-include user/ports/libc-test/libc-test.mk
-# Ported programs (sbase, Lua): third_party built with jamos-cc into usr/bin.
+# The ports in the boot image (ports/, docs/M13.7-PLAN.md): every recipe
+# with `place boot` (sbase, Lua, libc-test) is built by tools/ports.py with
+# jamos-cc against the sysroot, from its vendored source in third_party/.
+# The builder decides what is out of date (its stamp: the recipe, the
+# port's files, the source, the sysroot), so this rule always asks it, and
+# writes $(PORTS_LIST), the `name=file` lines mkbootfs packs, only when
+# they changed: an unchanged boot image is packed anew by nobody. A new
+# `place boot` recipe needs no edit here.
+PORTS_OUT  := $(BUILD)/ports
+PORTS_LIST := $(PORTS_OUT)/bootfs.list
+$(PORTS_LIST): $(SYSROOT_LIBS) $(SYSROOT_HDRS) tools/jamos-cc FORCE
+	@mkdir -p $(PORTS_OUT)
+	JAMOS_BASE_SYSROOT=$(SYSROOT) CROSS=$(CROSS) python3 tools/ports.py --out $(PORTS_OUT) \
+	    boot -o $@
+$(BOOTFS): $(PORTS_LIST)
+
+# The notices of the other third_party/ code in the image (their licences
+# ask for them to travel with it; the ports' come from their stages):
+# /boot/share/licences/<name>/, as <bootfs name>=<file>. `make check` stops
+# on a third_party/ directory that is neither here nor a port's source.
+LICENCES := musl/COPYRIGHT=third_party/musl/COPYRIGHT \
+            fatfs/LICENSE.txt=third_party/fatfs/LICENSE.txt \
+            lwip/COPYING=third_party/lwip/COPYING \
+            monocypher/LICENCE.md=third_party/monocypher/LICENCE.md \
+            dr_mp3/LICENSE=third_party/dr_mp3/LICENSE \
+            pl_mpeg/LICENSE=third_party/pl_mpeg/LICENSE \
+            stb_image/LICENSE=third_party/stb_image/LICENSE \
+            stb_truetype/LICENSE=third_party/stb_truetype/LICENSE \
+            spleen/LICENSE=third_party/spleen/LICENSE \
+            inter/LICENSE.txt=third_party/inter/LICENSE.txt \
+            jetbrains-mono/OFL.txt=third_party/jetbrains-mono/OFL.txt \
+            limine/LICENSE=third_party/limine/LICENSE \
+            limine-protocol/LICENSE=third_party/limine-protocol/LICENSE \
+            wayland/COPYING=third_party/wayland-protocols/COPYING-wayland \
+            wayland-protocols/COPYING=third_party/wayland-protocols/COPYING-wayland-protocols \
+            tinyssh/LICENSE.md=third_party/tinyssh/LICENSE.md
+BOOTFS_FILES += $(foreach l,$(LICENCES),share/licences/$(firstword $(subst =, ,$(l)))=$(lastword $(subst =, ,$(l))))
+$(BOOTFS): $(foreach l,$(LICENCES),$(lastword $(subst =, ,$(l))))
+THIRD_PARTY_NOTICED := $(sort $(foreach l,$(LICENCES),$(word 2,$(subst /, ,$(lastword $(subst =, ,$(l)))))) \
+                       $(shell awk '$$1 == "vendored" { print $$2 }' ports/*/recipe))
+
+# Transitional: tinyssh (X2) is still a make fragment in user/ports/, until
+# it is a recipe; nothing else is.
 include user/ports/ports.mk
+# Jam OS's own commands as programs (the shell's, built again for POSIX shells).
+include user/sysbox/sysbox.mk
 
 # compile_commands.json for editors (VS Code IntelliSense, clangd): the real
 # build's flags for every file, from a dry run (tools/compdb.py).

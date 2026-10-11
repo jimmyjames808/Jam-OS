@@ -1,5 +1,5 @@
 /* netstack's core: lwIP over one network interface, behind a narrow edge
- * (docs/M9-PLAN.md "netstack: lwIP, single-threaded"). stack.c is the only
+ * (docs/HISTORY.md, M9). stack.c is the only
  * file that sees lwIP; everything here is plain bytes and numbers, so the
  * loop (main.c), the control channel (ctl.c) and the tests
  * (user/tests/utest/netstack.c, which links these objects and drives

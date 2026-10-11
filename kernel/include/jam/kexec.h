@@ -1,6 +1,5 @@
 /* kexec: starting a fresh copy of Jam OS without the firmware, after a
- * reboot or a panic (kernel/kexec/; the plan is docs/history/M8.5-PLAN.md,
- * "Revision 2").
+ * reboot or a panic (kernel/kexec/; the plan is docs/HISTORY.md, M8.5).
  *
  * At boot the kernel reserves a physically contiguous region of RAM
  * (crashkernel=<MiB>, default 48, below 4 GiB) and unmaps it: the HHDM

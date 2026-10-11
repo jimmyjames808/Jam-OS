@@ -1,5 +1,5 @@
-/* bin/update: the fetcher of `update` (docs/M9-PLAN.md "update: a new
- * build from the Mac"). It asks tools/update-server.py on the Mac for the
+/* bin/update: the fetcher of `update` (docs/HISTORY.md, M9).
+ * It asks tools/update-server.py on the Mac for the
  * build it serves, over a UDP socket of its own to the server's port
  * UPDWIRE_PORT, with the fetcher's window (<updfetch.h>); stores the
  * kernel and the boot image in two VMOs (and the boot menu in a third,

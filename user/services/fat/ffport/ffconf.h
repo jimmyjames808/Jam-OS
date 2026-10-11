@@ -22,7 +22,7 @@
  *   first statfs after a mount counts the FAT instead;
  * - FatFs's file lock off (FF_FS_LOCK 0): its table of open objects is
  *   state FatFs keeps on its own, outside the structs fat keeps in its
- *   state VMO (docs/M11.6-PLAN.md, "FatFs without re-mounting"). fat
+ *   state VMO (docs/HISTORY.md, M11.6). fat
  *   applies the same rule itself, by directory entry (fileops.c): a file
  *   open for writing can't be opened again, and an open file can't be
  *   removed or renamed;

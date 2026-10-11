@@ -2,7 +2,7 @@
  * change the .idl and run `make idl`.
  *
  * compctl: the compositor's control channel (user/services/compositor,
- * docs/G1-PLAN.md). System powers, not app features: Wayland clients
+ * docs/HISTORY.md, G1). System powers, not app features: Wayland clients
  * never see it. init holds the ADMIN channel the compositor is started
  * with, and makes narrower ones with new_client for devmgr (its HID
  * drivers' input sources) and for serialin. Format: see tools/genidl.py.

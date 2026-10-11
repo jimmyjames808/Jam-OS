@@ -132,7 +132,12 @@ void focus_window_gone(struct comp_window *w)
     w->flags &= ~COMP_WIN_FOCUSED;
     keyboard_leave(w);
     focused = NULL;
-    seat_focus(successor(w));
+    struct comp_window *next = successor(w);
+    if (next)
+        seat_focus(next);
+    else
+        wm_focus_changed(NULL);   /* seat_focus(NULL) would see no change: the window
+                                   * manager must still hear w lost it (not activated) */
 }
 
 /* ---- the keys no client sees -------------------------------------------------------- */

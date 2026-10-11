@@ -52,6 +52,12 @@
  * the last unsynced file is flushed the volume is settled (marked clean,
  * disk.c).
  *
+ * A mapped file (file.map, pager.c) holds its file open too: its slot of
+ * maps[] names the file's entry in opens[] as a slot of files[] does, so
+ * the lock below holds while it is mapped, and the FIL stays until its
+ * last mapping goes. A file open for writing is not mapped (ERR_BUSY), so
+ * a mapped file never changes under its pages.
+ *
  * FS_GATHER (<os.h>): a write to a file opened with it stays held
  * (hold.c) after its request, instead of going out with it, and goes out
  * in big sorted writes by the file's sync or close at the latest. Its sync
@@ -83,9 +89,14 @@ static struct fat_open *open_of(const struct fat_file *f)
     return &kept->opens[f->open];
 }
 
+bool files_open_used(uint32_t o)
+{
+    return kept->opens[o].refs || maps_use_open(o);
+}
+
 bool files_unsynced(void)
 {
-    for (unsigned i = 0; i < FAT_MAX_FILES; i++)
+    for (unsigned i = 0; i < FAT_OPENS; i++)
         if (kept->opens[i].refs && kept->opens[i].unsynced)
             return true;
     return false;
@@ -106,7 +117,7 @@ static status_t sync_open(struct fat_open *o)
 status_t files_sync_all(void)
 {
     status_t st = OK;
-    for (unsigned i = 0; i < FAT_MAX_FILES; i++) {
+    for (unsigned i = 0; i < FAT_OPENS; i++) {
         struct fat_open *o = &kept->opens[i];
         if (!o->refs || !o->unsynced)
             continue;
@@ -129,11 +140,11 @@ static uint64_t place_of(const FIL *fil)
     return ffx_place(fil->dir_sect, (UINT)(fil->dir_ptr - kept->fs.win));
 }
 
-/* The open file (refs > 0) whose entry is at `place`, or NULL. */
+/* The open file (in use) whose entry is at `place`, or NULL. */
 static struct fat_open *open_at(uint64_t place)
 {
-    for (unsigned i = 0; i < FAT_MAX_FILES; i++)
-        if (kept->opens[i].refs && kept->opens[i].place == place)
+    for (unsigned i = 0; i < FAT_OPENS; i++)
+        if (files_open_used(i) && kept->opens[i].place == place)
             return &kept->opens[i];
     return NULL;
 }
@@ -143,8 +154,8 @@ bool files_is_open(const char *path)
     FILINFO fi;
     uint64_t place = 0;
     bool any = false;
-    for (unsigned i = 0; i < FAT_MAX_FILES && !any; i++)
-        any = kept->opens[i].refs != 0;
+    for (unsigned i = 0; i < FAT_OPENS && !any; i++)
+        any = files_open_used(i);
     return any && ffx_stat(path, &fi, &place) == FR_OK && open_at(place);
 }
 
@@ -323,9 +334,33 @@ static status_t op_sync(void *ctx)
     return sync_open(open_of(h));
 }
 
+/* Is a slot of files[] that may write using opens[o]? */
+static bool written(uint32_t o)
+{
+    for (unsigned i = 0; i < FAT_MAX_FILES; i++)
+        if (kept->files[i].used && kept->files[i].open == o && (kept->files[i].flags & FS_WRITE))
+            return true;
+    return false;
+}
+
+/* file.map: the pages come from pager.c. A file open for writing isn't
+ * mapped (its pages would go stale: nothing tells the pager of a write
+ * yet), so a mapped file is one nobody writes. */
+static status_t op_map(void *ctx, uint32_t flags, handle_t *out_vmo, uint64_t *out_size)
+{
+    struct fat_file *h = ctx;
+    if (flags != FILE_MAP_READ && flags != FILE_MAP_EXEC)
+        return ERR_INVALID_ARGS;
+    if (!(h->flags & FS_READ))
+        return ERR_ACCESS_DENIED;
+    if (written(h->open))
+        return ERR_BUSY;
+    return maps_make(h->open, flags, out_vmo, out_size);
+}
+
 const struct file_ops fat_file_ops = {
     .read = op_read, .write = op_write, .truncate = op_truncate, .stat = op_stat,
-    .sync = op_sync,
+    .sync = op_sync, .map = op_map,
 };
 
 /* ---- open and close ------------------------------------------------------------------- */
@@ -368,13 +403,17 @@ void files_drop_unknown(void)
             release_handles(i);
 }
 
-/* The slot goes; its file is closed with its last slot. A writer that
- * leaves readers behind has its changes flushed as a close would. */
+/* The slot goes; its file is closed with its last slot, unless it is
+ * mapped. A writer that leaves readers or mappings behind has its changes
+ * flushed as a close would. */
 static void close_file(struct fat_file *f)
 {
     struct fat_open *o = open_of(f);
     undo_open(o);
     bool was = o->unsynced, last = --o->refs == 0;
+    if (last)
+        maps_let_go(f->open);   /* its shared VMOs live on in their mappers alone */
+    last = last && !maps_use_open(f->open);
     FRESULT fr = last ? f_close(&o->fil) : was ? f_sync(&o->fil) : FR_OK;
     if (fr != FR_OK && !vol.disk_gone)
         printf("fat %s: closing the file at entry %lx: FatFs error %d\n", vol.name,
@@ -472,12 +511,12 @@ static status_t open_fil(struct fat_open *f, const char *path, uint32_t flags, b
 /* A free slot of files[] into *f, and a free entry of opens[] into *spare. */
 static void find_slots(struct fat_file **f, struct fat_open **spare)
 {
-    for (unsigned i = 0; i < FAT_MAX_FILES; i++) {
-        if (!kept->files[i].used && !*f)
+    for (unsigned i = 0; i < FAT_MAX_FILES && !*f; i++)
+        if (!kept->files[i].used)
             *f = &kept->files[i];
-        if (!kept->opens[i].refs && !*spare)
+    for (unsigned i = 0; i < FAT_OPENS && !*spare; i++)
+        if (!files_open_used(i))
             *spare = &kept->opens[i];
-    }
 }
 
 status_t files_open(const char *path, uint32_t flags, handle_t *out_ch, handle_t *out_vmo,
@@ -544,6 +583,7 @@ static struct fat_chan chan_of(struct fat_file *f)
 
 void files_reap(void)
 {
+    pager_reap();
     for (unsigned i = 0; i < FAT_MAX_FILES; i++) {
         struct fat_file *f = &kept->files[i];
         if (!f->used || jam_object_wait_one(fh[i].ch, SIG_PEER_CLOSED, 0, NULL) != OK)
@@ -664,7 +704,10 @@ void files_forget(uint32_t i)
     if (i >= FAT_MAX_FILES || !kept->files[i].used)
         return;
     struct fat_open *o = open_of(&kept->files[i]);
+    uint32_t oi = kept->files[i].open;
     if (o->refs && --o->refs == 0)
+        maps_let_go(oi);
+    if (!files_open_used(oi))
         memset(o, 0, sizeof(*o));   /* its FIL with it, never closed through FatFs */
     release(&kept->files[i]);
 }

@@ -145,8 +145,8 @@ static inline status_t notify_notify_call(handle_t ch, bool idl_within, uint64_t
     (void)idl_o;
     return idl_st;
 }
-/* A notice on the desktop: a frosted card in the top right (docs/G1-PLAN.md
- * "The look"). `title` (not empty) and `body` (one line, "" for none) are
+/* A notice on the desktop: a frosted card in the top right (docs/HISTORY.md, G1).
+ * `title` (not empty) and `body` (one line, "" for none) are
  * cut short on the card to fit. Up to three buttons: `button1` .. `button3`
  * (the first empty one ends the list): a card without buttons fades away
  * after about 5 s (or a click), one with buttons stays until one is

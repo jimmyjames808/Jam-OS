@@ -1,6 +1,7 @@
 /* xdg.h: xdg-shell's objects, shared by xdg.c (xdg_wm_base, xdg_positioner,
- * xdg_popup, each client's state, the ping clock) and xdgtop.c
- * (xdg_surface and xdg_toplevel: roles, configures, commits).
+ * xdg_popup, each client's state, the ping clock), xdgtop.c (xdg_surface
+ * and xdg_toplevel: roles, configures, commits) and xdgdeco.c
+ * (xdg-decoration: a toplevel's decoration object and its mode).
  *
  * Ownership. Each client's xdg-shell objects hang off its struct
  * xdg_client (comp_client.xdg) and go with it (xdg_teardown). An
@@ -45,6 +46,16 @@ enum xdg_role {
     XDG_ROLE_POPUP,
 };
 
+/* What a toplevel is told besides the window manager's configure, by its
+ * version (xdgtop.c): the tiled and suspended states, and its bounds. A
+ * change sends a configure as a change of the configure would. */
+#define XDG_EX_TILED     1u        /* the four tiled_* states (version 2) */
+#define XDG_EX_SUSPENDED 2u        /* suspended (version 6) */
+struct xdg_extra {
+    uint32_t bits;                 /* XDG_EX_* */
+    int32_t bound_w, bound_h;      /* configure_bounds (version 4); 0: not sent */
+};
+
 /* A configure sent and not acked yet. */
 struct xdg_sent {
     uint32_t serial;
@@ -70,7 +81,9 @@ struct xdg_surf {
     struct xdg_sent sent[XDG_CONFIGS_MAX];
     uint32_t nsent;                /* oldest first */
     struct wm_config last;         /* the last one sent (has_last) */
+    struct xdg_extra last_ex;      /* ... and what went with it */
     bool has_last;
+    bool caps_sent;                /* wm_capabilities (version 5): once, before the first */
     struct wm_config wanted;       /* the window manager's latest */
     bool dirty;                    /* wanted waits for room in sent[] */
     struct wm_config acked;        /* the newest acked, for the next commit (acked_new) */
@@ -80,6 +93,11 @@ struct xdg_surf {
     bool geom_set, limits_set;
     struct comp_box geom_pending, geom;   /* set_window_geometry (geom: x, y, w, h as a box) */
     int32_t min_w, min_h, max_w, max_h;   /* set_min_size, set_max_size */
+    /* the toplevel's zxdg_toplevel_decoration_v1 (xdgdeco.c) */
+    uint32_t deco_id;              /* 0: none (the client draws its own decorations) */
+    uint32_t deco_asked;           /* the mode its client set; 0: none, or unset_mode */
+    uint32_t deco_told;            /* the mode its last configure event said; 0: one is owed
+                                    * (it was made, or a mode asked for, since) */
 };
 
 struct xdg_client {
@@ -100,6 +118,14 @@ void xdg_surf_free(struct xdg_surf *x);
 void xdg_ping(struct xdg_surf *x);
 /* get_popup's role, xdg.c's: the popup made and dismissed at once. */
 status_t xdg_popup_create(struct xdg_surf *x, uint32_t id, uint32_t parent, uint32_t positioner);
+
+/* xdgdeco.c */
+/* A configure's decoration part is owed (sent with the next configure,
+ * even one that changes nothing else). */
+bool     xdg_deco_owed(const struct xdg_surf *x);
+/* The decoration's configure event, when one is owed (before the
+ * toplevel's configure). OK, or the connection's error. */
+status_t xdg_deco_send(struct xdg_surf *x);
 
 /* xdgtop.c */
 /* get_xdg_surface: an xdg_surface for wl_surface surface. OK, or a protocol error posted. */

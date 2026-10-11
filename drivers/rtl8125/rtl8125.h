@@ -375,8 +375,8 @@ enum rtl_dump_step tally_look(struct rtl *t, uint64_t now);
  * the last dump that landed into *out, without waiting, and the next one
  * asked for (1 ms after the last ask at the soonest), so a later request
  * gets fresher counts. False (nothing written) while no dump has landed or
- * the start's count is unknown: the chip's counts are then unknown. M9-REVIEW
- * finding 13: a request never waits for the chip's DMA. */
+ * the start's count is unknown: the chip's counts are then unknown. M9 review
+ * finding 13 (docs/HISTORY.md, M9): a request never waits for the chip's DMA. */
 bool     tally_recent(struct rtl *t, uint64_t now, struct tally *out);
 status_t tally_dump(struct rtl *t, struct tally *out);
 void     tally_log(const char *when, const struct tally *x);
@@ -393,7 +393,7 @@ void     chip_snapshot(struct rtl *t);
 /* Two `txq <when>:` lines, reads only (a MAC OCP read sets the window's
  * read index, as every mac_rd): the registers a guard of the 8125's other
  * transmit queues must cover (notx.h), so a PC run confirms their offsets
- * (docs/M9.5-PLAN.md, track F): the high-priority and queue 1 ring
+ * (docs/HISTORY.md, M9.5, track F): the high-priority and queue 1 ring
  * addresses, the tail and close pointers of queues 0 and 1, TXCFG's
  * no-close bit, the doorbell, MAC OCP 0xeb58, 0xe63e and 0xe614. */
 void     chip_txq_log(struct rtl *t, const char *when);

@@ -1,5 +1,5 @@
-/* The cursor set (paint.h; the owner's "style C", docs/G1-PLAN.md "The
- * look", whose exact source is docs/design/cursors.svg): the arrow, the
+/* The cursor set (paint.h; the owner's "style C", docs/HISTORY.md, G1,
+ * whose exact source is docs/design/cursors.svg): the arrow, the
  * four resize arrows, move, the text bar, the hand, and busy turning in
  * CURSOR_BUSY_FRAMES frames a second.
  *

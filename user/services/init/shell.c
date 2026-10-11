@@ -1,10 +1,11 @@
 /* init's shell mode: a plain boot ("Jam OS", or "shell" on
  * the command line) ends at a shell prompt on the screen.
  *
- * init starts and then supervises sixteen services, each in a job of its
+ * init starts and then supervises seventeen services, each in a job of its
  * own under init's: the bootfs server, the console, the boot splash,
  * serialin, devmgr, volumes, the mixer, the music player, netstack, the DHCP
- * client, the resolver, logd, netlog, sntp, the file server and the shell;
+ * client, the resolver, logd, netlog, sntp, the file server, the SSH server
+ * (ssh.c: only with a key in /data/etc/authorized_keys) and the shell;
  * the compositor first, unless none is in bootfs (comp.c),
  * and then each terminal opened later, a console and a shell (terms.c). How each
  * one is started and what it is given is in services.c (the network's in
@@ -17,7 +18,8 @@
  * (followers[], <os.h> "grants"): the shell all of it as it is, the music
  * player every mount read-only and the mixer, logd /data (its top-level
  * etc left alone), netlog /svc/net-sys, sntp /svc/net-sys and /svc/dns-sys, the
- * splash the mixer and /svc/wayland, the file server /svc/net and /svc/net-low. init
+ * splash the mixer and /svc/wayland, the file server /svc/net and /svc/net-low, the SSH
+ * server those two, /svc/session and /data read-only. init
  * keeps its end of each one's
  * SR_NS channel and sends it every later change, with ns_update: each
  * change takes back the one it hasn't read yet (logd never looks up a
@@ -69,7 +71,7 @@ struct svc svcs[NSVC] = {
     [MUSIC] = { "bin/music" },
     [NETSTACK] = { "bin/netstack" }, [DHCP] = { "bin/dhcp" }, [DNS] = { "bin/dns" },
     [LOGD] = { "bin/logd" }, [NETLOG] = { "bin/netlog" }, [SNTP] = { "bin/sntp" },
-    [SERVE] = { "bin/serve" }, [SHELL] = { "bin/shell" },
+    [SERVE] = { "bin/serve" }, [SSHD] = { "bin/sshd" }, [SHELL] = { "bin/shell" },
 };
 
 /* A service that has a namespace, kept in step with init's. */
@@ -93,11 +95,17 @@ static const char *const sntp_grants[] = { "/svc/" SVC_NET_SYS, "/svc/" SVC_DNS_
 /* The file server: what its list says (`svc net listen low`: it may serve
  * on port 80; it is given its files by the shell, no mount). */
 static const char *const serve_grants[] = { "/svc/" SVC_NET, "/svc/" SVC_NET_LISTEN_LOW, NULL };
+/* The SSH server: what its list says (`svc net listen low`: port 22; `svc
+ * session`: each login's shell; `mount /data r`: the host key and the
+ * authorized keys, for its tinysshds). */
+static const char *const sshd_grants[] = { "/svc/" SVC_NET, "/svc/" SVC_NET_LISTEN_LOW,
+                                           "/svc/" SVC_SESSION, DATA_MOUNT ":r", NULL };
 static struct follower followers[NSVC] = {
     [SPLASH] = { .only = splash_grants }, [MUSIC] = { .only = music_grants },
     [LOGD] = { .only = logd_grants }, [NETLOG] = { .only = netlog_grants },
     [SHELL] = { .only = NS_ALL }, [DNS] = { .only = dns_grants },
     [SNTP] = { .only = sntp_grants }, [SERVE] = { .only = serve_grants },
+    [SSHD] = { .only = sshd_grants },
 };
 static handle_t port;
 
@@ -277,6 +285,7 @@ static bool plain_name(unsigned i, char *buf, size_t n)
         [MIXER] = "Sound", [MUSIC] = "Music player", [NETSTACK] = "Network",
         [DHCP] = "Network address (DHCP)", [DNS] = "Name lookup (DNS)", [LOGD] = "Log saving",
         [NETLOG] = "Network log", [SNTP] = "Clock sync", [SERVE] = "File server",
+        [SSHD] = "SSH server",
     };
     int k = term_of(i);
     if (k >= 0) {
@@ -434,9 +443,9 @@ static uint64_t start_due(uint64_t t)
             continue;   /* a terminal's shell waits for its console */
         if (i == SERIALIN && comp_on() && !comp_up())
             continue;   /* its source is the compositor's: it waits for one */
-        if ((i == LOGD || i == NETLOG || i == SNTP) && !mounted(DATA_MOUNT))
-            continue;   /* waits for /data (netlog, sntp: their settings): a mount's packet
-                         * wakes the loop */
+        if ((i == LOGD || i == NETLOG || i == SNTP || i == SSHD) && !mounted(DATA_MOUNT))
+            continue;   /* waits for /data (netlog, sntp, sshd: their settings): a mount's
+                         * packet wakes the loop */
         if ((i == VOLUMES || i == MIXER || i == NETSTACK) && !services_devmgr_up() &&
             !svcs[DEVMGR].given_up)
             continue;   /* waits for devmgr's first binding pass (dm.c's answer wakes the loop) */
@@ -458,8 +467,11 @@ static uint64_t start_due(uint64_t t)
         }
         if (i == MUSIC && !svcs[MIXER].running && !svcs[MIXER].given_up)
             continue;   /* after the mixer (it opens its stream only on `music start`) */
-        if ((i == DHCP || i == DNS || i == SNTP || i == SERVE) && !svcs[NETSTACK].running)
+        if ((i == DHCP || i == DNS || i == SNTP || i == SERVE || i == SSHD) &&
+            !svcs[NETSTACK].running)
             continue;   /* after netstack (started just before them) */
+        if (i == SSHD && !ssh_ready())
+            continue;   /* its look at /data (ssh.c's thread: its packet wakes the loop) */
         uint64_t dhcp_at = i == DHCP ? net_dhcp_wait(t, mounted(DATA_MOUNT)) : 0;
         if (dhcp_at) {   /* /data's settings may say the address is static */
             deadline = dhcp_at < deadline ? dhcp_at : deadline;
@@ -504,7 +516,7 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
     lastboot_init(port, KEY_LASTBOOT);
     printf("init: shell mode%s: starting the bootfs server,%s the console,%s the serial input, "
            "devmgr, volumes, the mixer, the music player, netstack, dhcp, dns, logd, netlog, sntp, "
-           "the file server and the shell\n",
+           "the file server, the SSH server and the shell\n",
            no_usb ? " (safe mode: nousb)" : "", comp_on() ? " the compositor," : "",
            splash ? " the boot splash," : "");
     for (;;) {
@@ -557,6 +569,8 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
             shared_event((unsigned)(pkt.key - KEY_SHARED));
         } else if (pkt.key >= KEY_SESSION && pkt.key < KEY_SESSION_END) {
             sessions_event((unsigned)(pkt.key - KEY_SESSION));
+        } else if (pkt.key == KEY_SSHD) {
+            ssh_event();
         }
     }
 }

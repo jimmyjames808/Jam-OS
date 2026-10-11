@@ -1,5 +1,5 @@
 /* <sockring.h>: a socket's data path between a program and netstack:
- * two byte rings in one shared VMO, and two events (docs/M9.5-PLAN.md has
+ * two byte rings in one shared VMO, and two events (docs/HISTORY.md, M9.5 has
  * the plan; the control calls stay IDL, abi/idl/net.idl). Programs (libos's
  * <net.h>) and netstack both use the ring code here (user/lib/sockring.c),
  * so the index logic is written and tested once (utest's sockring_*). The

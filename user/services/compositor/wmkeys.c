@@ -1,5 +1,5 @@
-/* The window keys (comp.h's wm_key), the owner's whole set (docs/G1-PLAN.md
- * "The look": "Keys"). Super is the logo key, apart from Ctrl, so apps
+/* The window keys (comp.h's wm_key), the owner's whole set (docs/HISTORY.md, G1).
+ * Super is the logo key, apart from Ctrl, so apps
  * keep Ctrl+C, Ctrl+L and the rest. Every "direction" is both H/J/K/L and
  * the arrow keys (left, down, up, right):
  *
