@@ -1,0 +1,69 @@
+# Autoconf's answers for a port cross-built for Jam OS (tools/ports.py
+# points CONFIG_SITE here for every build; docs/M13.7-PLAN.md section 5).
+#
+# configure can't run a test program built for Jam OS on the Mac, so the
+# answers to its run-time checks are given here, once for every port.
+# Each says why it is right for Jam OS's POSIX layer (user/posix/sys/,
+# docs/M13-PLAN.md): a wrong answer builds a program that fails only on
+# Jam OS, so an answer goes in only with its reason. Link and compile
+# checks (does a function exist, how big is a type) need no answer:
+# configure finds those itself against the sysroot.
+#
+# A port's own answer (a recipe's `configure ac_cv_x=y`) wins over these.
+
+# No fork, ever (ARCHITECTURE.md): musl's fork and vfork link, but the
+# layer refuses both (ENOSYS). A port that forks is patched to use
+# posix_spawn, or not ported.
+ac_cv_func_fork=${ac_cv_func_fork=no}
+ac_cv_func_fork_works=${ac_cv_func_fork_works=no}
+ac_cv_func_vfork=${ac_cv_func_vfork=no}
+ac_cv_func_vfork_works=${ac_cv_func_vfork_works=no}
+
+# mmap: MAP_FIXED over a mapping the layer made replaces it in one step,
+# and a private mapping of a file is a copy of the file
+# (user/posix/sys/mem.c): what autoconf's mmap check does.
+ac_cv_func_mmap_fixed_mapped=${ac_cv_func_mmap_fixed_mapped=yes}
+
+# /dev/null, /dev/zero, /dev/random and /dev/urandom are the layer's own
+# (user/posix/sys/dev.c).
+ac_cv_file__dev_zero=${ac_cv_file__dev_zero=yes}
+ac_cv_file__dev_urandom=${ac_cv_file__dev_urandom=yes}
+ac_cv_file__dev_random=${ac_cv_file__dev_random=yes}
+
+# musl's malloc(0) and realloc(p, 0) return a pointer, never NULL.
+ac_cv_func_malloc_0_nonnull=${ac_cv_func_malloc_0_nonnull=yes}
+ac_cv_func_realloc_0_nonnull=${ac_cv_func_realloc_0_nonnull=yes}
+
+# musl's own behaviour, the same on any kernel: getpgrp and setpgrp take
+# no arguments, strerror_r is the XSI one (it returns an int), memcmp
+# compares as unsigned char, mktime works, closedir returns a value,
+# setvbuf takes its arguments in the standard order.
+ac_cv_func_getpgrp_void=${ac_cv_func_getpgrp_void=yes}
+ac_cv_func_setpgrp_void=${ac_cv_func_setpgrp_void=yes}
+ac_cv_func_strerror_r_char_p=${ac_cv_func_strerror_r_char_p=no}
+ac_cv_func_memcmp_working=${ac_cv_func_memcmp_working=yes}
+ac_cv_func_working_mktime=${ac_cv_func_working_mktime=yes}
+ac_cv_func_closedir_void=${ac_cv_func_closedir_void=no}
+ac_cv_func_setvbuf_reversed=${ac_cv_func_setvbuf_reversed=no}
+
+# stat and lstat of "" fail with ENOENT (user/posix/sys/path.c), and
+# lstat of "link/" follows the link, as POSIX says (no filesystem of Jam
+# OS has symlinks yet, so nothing can see otherwise).
+ac_cv_func_stat_empty_string_bug=${ac_cv_func_stat_empty_string_bug=no}
+ac_cv_func_lstat_empty_string_bug=${ac_cv_func_lstat_empty_string_bug=no}
+ac_cv_func_lstat_dereferences_slashed_symlink=${ac_cv_func_lstat_dereferences_slashed_symlink=yes}
+
+# inotify, signalfd and timerfd: musl declares them, the layer has none
+# (ENOSYS). Said here so a port that would use them when found takes its
+# portable path instead of failing at run time.
+ac_cv_header_sys_inotify_h=${ac_cv_header_sys_inotify_h=no}
+ac_cv_func_inotify_init=${ac_cv_func_inotify_init=no}
+ac_cv_func_inotify_init1=${ac_cv_func_inotify_init1=no}
+ac_cv_header_sys_signalfd_h=${ac_cv_header_sys_signalfd_h=no}
+ac_cv_func_signalfd=${ac_cv_func_signalfd=no}
+ac_cv_header_sys_timerfd_h=${ac_cv_header_sys_timerfd_h=no}
+ac_cv_func_timerfd_create=${ac_cv_func_timerfd_create=no}
+
+# No translations: gettext and libiconv are LGPL, which a static link
+# can't take (docs/M13.7-PLAN.md section 12); musl has iconv itself.
+enable_nls=${enable_nls=no}

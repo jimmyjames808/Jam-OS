@@ -1,0 +1,30 @@
+# Meson's cross file for a port cross-built for Jam OS (tools/ports.py
+# gives it to every `style meson` build; docs/M13.7-PLAN.md section 5).
+#
+# The tools are the port's own (build/ports/<name>/bin, first on PATH:
+# tools/jamos-cc with the port's sysroot); pkg-config looks only in that
+# sysroot. The system is "linux" because musl's headers are Linux's;
+# jamos-cc defines __jamos__ and not __linux__. Everything is static, and
+# nothing built can run on the Mac (needs_exe_wrapper), so a run check is
+# answered in the port's recipe (`meson -D...`) or not made.
+
+[binaries]
+c = 'x86_64-linux-musl-gcc'
+cpp = 'x86_64-linux-musl-g++'
+ar = 'x86_64-linux-musl-ar'
+strip = 'x86_64-linux-musl-strip'
+pkg-config = 'x86_64-linux-musl-pkg-config'
+
+[host_machine]
+system = 'linux'
+cpu_family = 'x86_64'
+cpu = 'x86_64'
+endian = 'little'
+
+[properties]
+needs_exe_wrapper = true
+
+[built-in options]
+default_library = 'static'
+b_staticpic = false
+b_pie = false
