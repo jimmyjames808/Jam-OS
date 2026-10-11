@@ -123,6 +123,14 @@ On Chromium's path (in roughly this order, much of it in parallel):
     security review. `--jitless` until it lands (no WebAssembly then);
   - Jam OS's own sandbox (each renderer a job with only its handles; the
     first builds `--no-sandbox`) (1-2k).
+- **The owner's choices for Chromium (2026-10-11)**: early builds without
+  the sandbox may be used for ordinary sites (not banking or logins that
+  matter) until Jam OS's sandbox lands and is reviewed; Chromium is built
+  on the PC's WSL (100-150 GB, multi-hour clean builds; check its free
+  space and WSL's memory cap first); the version tracked is Alpine's
+  stable (155 now, already patched for musl), moving when Alpine does; a
+  plain open build: no H.264/AAC, no Widevine, no Google API keys (no sync,
+  no Safe Browsing).
   Off the path for the first browser: M14.5 (dynamic linking: with
   software compositing nothing needs `dlopen`), a CA store, D-Bus, NSS,
   SwiftShader (no WebGL until G3/G4), and a real `fork` (no zygote).
