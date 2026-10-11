@@ -88,11 +88,18 @@
 #define COMP_HIDDEN_FRAME_NS    NS_PER_S       /* a surface nobody sees: its callbacks this often */
 
 /* The globals, as advertised (the plan's table; a client binds the lower
- * of these and its own). */
-#define COMP_COMPOSITOR_VERSION 4u
-#define COMP_SHM_VERSION        1u
-#define COMP_OUTPUT_VERSION     3u
-#define COMP_SEAT_VERSION       5u
+ * of these and its own). What each version adds, and how it is answered:
+ *   wl_compositor 5  wl_surface.offset (attach's x and y must be 0 from 5)
+ *                 6  wl_surface.preferred_buffer_scale and _transform,
+ *                    sent once a surface is made: 1 and normal, for good;
+ *   wl_shm        2  wl_shm.release;
+ *   wl_output     4  name and description, before done;
+ *   wl_seat       8  wl_pointer.axis_value120 in place of axis_discrete,
+ *                 9  wl_pointer.axis_relative_direction (always identical). */
+#define COMP_COMPOSITOR_VERSION 6u
+#define COMP_SHM_VERSION        2u
+#define COMP_OUTPUT_VERSION     4u
+#define COMP_SEAT_VERSION       9u
 #define COMP_XDG_WM_VERSION     1u
 
 /* ---- boxes, regions, damage (region.c) --------------------------------------------- */
@@ -260,7 +267,8 @@ struct comp_role_ops {
 struct comp_state {
     bool attached;                 /* attach came: buffer replaces the current one */
     struct comp_buffer *buffer;    /* a reference, or NULL (a detach) */
-    int32_t dx, dy;                /* attach's x and y: the new buffer's offset */
+    bool offset_set;               /* attach (before version 5) or offset came: dx, dy */
+    int32_t dx, dy;                /* the new buffer's offset */
     struct comp_damage damage;     /* surface coordinates; boxes in damage_boxes */
     struct comp_box damage_boxes[COMP_SURFACE_DAMAGE_MAX];
     bool opaque_set, input_set;    /* set_*_region came */
@@ -276,7 +284,7 @@ struct comp_surface {
     /* current: what the last commit made */
     struct comp_buffer *buffer;    /* shown (busy), a reference; NULL: nothing to show */
     int32_t width, height;         /* the surface's size: its buffer's (scale 1); 0 without */
-    int32_t dx, dy;                /* the last commit's attach offset, for the role to use */
+    int32_t dx, dy;                /* the last offset committed, for the role to use */
     struct comp_region opaque;     /* surface coordinates */
     struct comp_region input;      /* surface coordinates, when not input_all */
     bool input_all;                /* the whole surface takes input (the default) */

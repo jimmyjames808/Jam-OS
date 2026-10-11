@@ -18,6 +18,8 @@
 #include "comp.h"
 
 #define OUTPUT_MILLIHZ 60000   /* the mode we say: there is no vsync to tell (G1-PLAN) */
+#define OUTPUT_NAME          "FB-1"         /* wl_output.name: the firmware's framebuffer */
+#define OUTPUT_NAME_HEADLESS "HEADLESS-1"   /* ... or an image in memory */
 
 static status_t bind_compositor(struct comp_client *cl, uint32_t id, uint32_t version);
 static status_t bind_output(struct comp_client *cl, uint32_t id, uint32_t version);
@@ -196,7 +198,9 @@ status_t region_request(struct comp_client *cl, struct jwl_msg *m)
 
 /* ---- wl_output ---------------------------------------------------------------------- */
 
-/* What a new wl_output is told: the one screen, its one mode. */
+/* What a new wl_output is told: the one screen, its one mode, and from
+ * version 4 its name (the same for every client and every bind, as the
+ * protocol asks, the screen being the only one) and a description. */
 static status_t output_describe(struct comp_client *cl, uint32_t id, uint32_t version)
 {
     struct jwl_conn *c = cl->conn;
@@ -207,9 +211,14 @@ static status_t output_describe(struct comp_client *cl, uint32_t id, uint32_t ve
         st = jwl_wl_output_send_mode(c, id,
                                      JWL_WL_OUTPUT_MODE_CURRENT | JWL_WL_OUTPUT_MODE_PREFERRED,
                                      scene.width, scene.height, OUTPUT_MILLIHZ);
-    if (st == OK && version >= 2)
+    if (st == OK && version >= JWL_WL_OUTPUT_EV_SCALE_SINCE)
         st = jwl_wl_output_send_scale(c, id, 1);
-    if (st == OK && version >= 2)
+    if (st == OK && version >= JWL_WL_OUTPUT_EV_NAME_SINCE)
+        st = jwl_wl_output_send_name(c, id, comp.headless ? OUTPUT_NAME_HEADLESS : OUTPUT_NAME);
+    if (st == OK && version >= JWL_WL_OUTPUT_EV_DESCRIPTION_SINCE)
+        st = jwl_wl_output_send_description(c, id, comp.headless ? "Jam OS headless output"
+                                                                  : "Jam OS screen");
+    if (st == OK && version >= JWL_WL_OUTPUT_EV_DONE_SINCE)
         st = jwl_wl_output_send_done(c, id);
     return st;
 }

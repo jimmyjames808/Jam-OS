@@ -17,7 +17,14 @@
  * error (wl_surface's invalid_scale or invalid_transform for values the
  * protocol forbids, `implementation` for the rest), never a wrong picture.
  * At scale 1 and the normal transform buffer and surface coordinates are
- * the same, so damage and damage_buffer share one list. */
+ * the same, so damage and damage_buffer share one list. A surface of
+ * version 6 is told so once, when it is made (preferred_buffer_scale 1,
+ * preferred_buffer_transform normal): the preference never changes.
+ *
+ * The offset (attach's x and y, or from version 5 wl_surface.offset, when
+ * attach's must be 0) is double-buffered like the rest; only roles that
+ * place by it read it (testwin's windows: a toplevel is placed by the
+ * window manager). */
 #include <jwl/wayland.h>
 #include "comp.h"
 
@@ -43,7 +50,14 @@ status_t surface_create(struct comp_client *cl, uint32_t compositor, uint32_t id
     s->next = cl->surfaces;
     cl->surfaces = s;
     cl->nsurfaces++;
-    return jwl_map_set_data(&cl->conn->map, id, s);
+    status_t st = jwl_map_set_data(&cl->conn->map, id, s);
+    const struct jwl_object *o = jwl_conn_object(cl->conn, id);
+    if (st == OK && o && o->version >= JWL_WL_SURFACE_EV_PREFERRED_BUFFER_SCALE_SINCE)
+        st = jwl_wl_surface_send_preferred_buffer_scale(cl->conn, id, 1);
+    if (st == OK && o && o->version >= JWL_WL_SURFACE_EV_PREFERRED_BUFFER_TRANSFORM_SINCE)
+        st = jwl_wl_surface_send_preferred_buffer_transform(cl->conn, id,
+                                                            JWL_WL_OUTPUT_TRANSFORM_NORMAL);
+    return st;
 }
 
 /* s goes. dead: its client went, so nothing is sent. */
@@ -102,9 +116,20 @@ static status_t on_destroy(void *data, uint32_t self)
     return OK;
 }
 
+/* The version s's object was made at (its wl_compositor's). */
+static uint32_t version_of(const struct comp_surface *s)
+{
+    const struct jwl_object *o = jwl_conn_object(s->client->conn, s->id);
+    return o ? o->version : 1;
+}
+
 static status_t on_attach(void *data, uint32_t self, uint32_t buffer, int32_t x, int32_t y)
 {
     struct comp_surface *s = data;
+    if ((x || y) && version_of(s) >= JWL_WL_SURFACE_REQ_OFFSET_SINCE)
+        return comp_error(s->client, self, JWL_WL_SURFACE_ERROR_INVALID_OFFSET,
+                          "attach at %d,%d: from version 5 the offset is wl_surface.offset's", x,
+                          y);
     struct comp_buffer *b = NULL;
     if (buffer) {
         b = comp_object(s->client, buffer, &jwl_wl_buffer_interface);
@@ -116,8 +141,21 @@ static status_t on_attach(void *data, uint32_t self, uint32_t buffer, int32_t x,
         buffer_unref(s->pending.buffer);
     s->pending.buffer = b;
     s->pending.attached = true;
+    if (version_of(s) < JWL_WL_SURFACE_REQ_OFFSET_SINCE) {
+        s->pending.dx = x;
+        s->pending.dy = y;
+        s->pending.offset_set = true;
+    }
+    return OK;
+}
+
+static status_t on_offset(void *data, uint32_t self, int32_t x, int32_t y)
+{
+    struct comp_surface *s = data;
+    (void)self;
     s->pending.dx = x;
     s->pending.dy = y;
+    s->pending.offset_set = true;
     return OK;
 }
 
@@ -215,8 +253,6 @@ static void apply_buffer(struct comp_surface *s)
     }
     s->width = w;
     s->height = h;
-    s->dx = p->dx;
-    s->dy = p->dy;
     if (s->window && resized)
         window_damage(s->window);   /* the frame it has now */
 }
@@ -247,7 +283,11 @@ static status_t on_commit(void *data, uint32_t self)
         return st;
     if (p->attached)
         apply_buffer(s);
-    p->attached = false;
+    if (p->offset_set) {
+        s->dx = p->dx;
+        s->dy = p->dy;
+    }
+    p->attached = p->offset_set = false;
     p->dx = p->dy = 0;
     if (s->window)
         for (uint32_t i = 0; i < p->damage.n; i++)
@@ -272,6 +312,7 @@ static const struct jwl_wl_surface_requests surface_ops = {
     .set_buffer_transform = on_set_buffer_transform,
     .set_buffer_scale = on_set_buffer_scale,
     .damage_buffer = on_damage,   /* the same coordinates at scale 1 (above) */
+    .offset = on_offset,
 };
 
 status_t surface_request(struct comp_client *cl, struct jwl_msg *m)
