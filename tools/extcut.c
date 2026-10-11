@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ext_alloc.h>
 #include "extjnl.h"
 
 /* ---- the cut device ---------------------------------------------------------------------- */
@@ -286,13 +287,27 @@ static void pick_objects(struct storm *s, struct ext_fs *fs)
     s->o_many = s->nobj;
     for (uint32_t i = 4; i < 28; i++)
         add_obj(s, (struct obj){ .kind = OBJ_INODE, .ino = inos[i] });
-    uint64_t blks[12];
-    if (free_blocks(fs, blks, 12, 7) != 12)
-        fail("storm: not 12 free blocks");
+    /* The block objects are blocks of /holes (one-block extents): owned by
+     * a file, so no allocation takes them and the checkers see owners. */
+    struct ext_inode holes;
+    lookup(fs, "holes", &holes);
+    s->holes_ino = holes.ino;
     s->o_block = s->nobj;
-    for (uint32_t i = 0; i < 12; i++)
-        add_obj(s, (struct obj){ .kind = OBJ_BLOCK, .blk = blks[i] });
+    for (uint32_t i = 0; i < 12; i++) {
+        struct ext_run r;
+        if (ext_map(fs, &holes, 2 * i, &r) != OK || r.kind != EXT_RUN_DATA)
+            fail("storm: /holes's block %u", 2 * i);
+        add_obj(s, (struct obj){ .kind = OBJ_BLOCK, .blk = r.pblk });
+    }
     s->o_wtime = add_obj(s, (struct obj){ .kind = OBJ_WTIME });
+    static const char *const files[] = { "pattern", "block", "block1", "Makefile" };
+    s->o_file = s->nobj;
+    s->n_file = 4;
+    for (uint32_t i = 0; i < 4; i++) {
+        struct ext_inode in;
+        lookup(fs, files[i], &in);
+        add_obj(s, (struct obj){ .kind = OBJ_FILE, .ino = in.ino });
+    }
 }
 
 /* ---- the storm's requests ----------------------------------------------------------------- */
@@ -304,11 +319,35 @@ static void add_op(struct request *q, uint8_t kind, uint32_t obj, uint64_t value
     q->ops[q->nops++] = (struct op){ .kind = kind, .obj = (uint16_t)obj, .value = value };
 }
 
-/* A random change: an inode's times or mode, an exchange, a metadata block. */
+/* Does the request already have an op of this kind? */
+static bool has_op(const struct request *q, uint8_t kind)
+{
+    for (uint32_t i = 0; i < q->nops; i++)
+        if (q->ops[i].kind == kind)
+            return true;
+    return false;
+}
+
+/* A random change: an inode's times or mode, an exchange, a metadata
+ * block, a file's end written or cut. A request frees blocks (a cut) or
+ * writes new data, never both: blocks freed in a transaction are free in
+ * the cache's bitmaps at once, so data written into them before the
+ * commit would land in blocks the committed volume still gives the cut
+ * file (ext_alloc.h; the service keeps to this). */
 static void random_op(struct storm *s, struct request *q)
 {
     static const uint16_t modes[] = { 0600, 0644, 0755, 0700, 0640, 04755 };
-    switch (below(4)) {
+    uint32_t pick = (uint32_t)below(6);
+    if ((pick == 4 && has_op(q, OP_CUT)) || (pick == 5 && has_op(q, OP_APPEND)))
+        pick = 0;
+    switch (pick) {
+    case 4:
+        add_op(q, OP_APPEND, s->o_file + (uint32_t)below(s->n_file),
+               rnd() << 16 | (1 + below(3 * s->cd.block_size)));
+        break;
+    case 5:
+        add_op(q, OP_CUT, s->o_file + (uint32_t)below(s->n_file), 0);
+        break;
     case 0:
         add_op(q, OP_TOUCH, s->o_root + (uint32_t)below(s->n_root), 1600000000 + below(1u << 28));
         break;
@@ -335,19 +374,23 @@ static void special_ops(struct storm *s, struct request *q, uint32_t at)
         add_op(q, OP_META, a, 0x1111);
         break;
     case 5:
-        add_op(q, OP_REVOKE, a, 0);
+        add_op(q, OP_FREE, a, 0);
         break;
     case 6:
         add_op(q, OP_DATA, a, 0x2222);
         break;
-    case 8:   /* freed and written as metadata again in one transaction */
+    case 7:   /* journaled, for 8 */
         add_op(q, OP_META, b, 0x3333);
-        add_op(q, OP_REVOKE, b, 0);
+        break;
+    case 8:   /* freed and written as metadata again in one transaction */
+        add_op(q, OP_FREE, b, 0);
         add_op(q, OP_META, b, 0x4444);
         break;
-    case 10:  /* made, freed and written as data in one transaction */
-        add_op(q, OP_META, c, 0x5555);
-        add_op(q, OP_REVOKE, c, 0);
+    case 10:  /* made, freed and written as data in one transaction (never
+               * committed as metadata: data into a block whose free is not
+               * committed is the writers' rule above) */
+        add_op(q, OP_META, c, 0x5556);
+        add_op(q, OP_FREE, c, 0);
         add_op(q, OP_DATA, c, 0x6666);
         break;
     case 12:  /* a big operation in steps */
@@ -360,7 +403,7 @@ static void special_ops(struct storm *s, struct request *q, uint32_t at)
         add_op(q, OP_META, d, 0x7777 | PATTERN_MAGIC);
         break;
     case 16:
-        add_op(q, OP_REVOKE, d, 0);
+        add_op(q, OP_FREE, d, 0);
         break;
     case 18:
         add_op(q, OP_META, d, 0x8888);
@@ -409,7 +452,7 @@ static void on_commit(void *ctx, uint32_t tid)
 status_t run_mount(struct storm *s, struct run *r)
 {
     memset(r, 0, sizeof(*r));
-    size_t jsize = ext_jnl_mem_size(4096, 4096);
+    size_t jsize = ext_jnl_mem_size(4096, 1024, 4096);
     r->cache = malloc(CACHE_BYTES);
     r->jmem = malloc(jsize);
     if (!r->cache || !r->jmem)
@@ -538,6 +581,30 @@ static status_t write_block(struct storm *s, struct run *r, uint32_t obj, uint8_
     return OK;
 }
 
+/* U2a's writers on a file: value's low 16 bits of bytes appended (its
+ * high bits the pattern), or the file cut to half its size in whole blocks
+ * (all of the cut in this transaction: no step between leaves blocks past
+ * the size, and no byte inside the old size changes before the commit). */
+static status_t change_file(struct ext_fs *fs, uint32_t ino, uint8_t kind, uint64_t value)
+{
+    struct ext_inode in;
+    status_t st = ext_iget(fs, ino, 0, &in);
+    if (st != OK)
+        return st;
+    uint64_t size = ext_isize(&in);
+    if (kind == OP_APPEND) {
+        static uint8_t buf[3 * 4096];
+        size_t len = (size_t)(value & 0xFFFF), n;
+        storm_pattern(buf, (uint32_t)((len + 7) & ~(size_t)7), value >> 16);
+        return ext_write(fs, &in, size, buf, len, &n);
+    }
+    uint64_t to = (size / 2) & ~(uint64_t)(fs->block_size - 1);
+    bool done = false;
+    while (st == OK && !done)
+        st = ext_truncate(fs, &in, to, &done);
+    return st;
+}
+
 /* Record the state after every commit made since the last record. */
 static void take_snaps(struct storm *s, struct run *r)
 {
@@ -560,8 +627,11 @@ static status_t do_op(struct storm *s, struct run *r, const struct op *o, bool s
     case OP_META:
     case OP_DATA:
         return write_block(s, r, o->obj, o->kind, o->value);
-    case OP_REVOKE:
-        return ext_jnl_revoke(&r->fs, s->objs[o->obj].blk);
+    case OP_FREE:
+        return ext_jnl_freed(&r->fs, s->objs[o->obj].blk, 1);
+    case OP_APPEND:
+    case OP_CUT:
+        return change_file(&r->fs, s->objs[o->obj].ino, o->kind, o->value);
     case OP_STEP:
         st = ext_jnl_step(&r->fs, (uint32_t)o->value);
         if (st == OK && snap)
@@ -621,6 +691,15 @@ void storm_state(struct storm *s, struct run *r, uint64_t *out)
         case OBJ_BLOCK:
             out[i] = block_hash(s->cd.bytes + (o->blk << fs->block_log), fs->block_size);
             break;
+        case OBJ_FILE: {
+            char hex[65];
+            if (ext_iget(fs, o->ino, 0, &in) != OK)
+                fail("%s: file %u: %s", s->cfg->name, o->ino, fs->why ? fs->why : "");
+            sparse_hash(fs, &in, hex);
+            out[i] = strtoull(hex + 48, NULL, 16) ^ ext_isize(&in) * 0x9E3779B97F4A7C15ull ^
+                     (uint64_t)in.d.blocks_lo << 40;
+            break;
+        }
         default:
             out[i] = fs->sb.wtime;
             break;

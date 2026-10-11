@@ -57,8 +57,9 @@ struct ext_dev cut_dev(struct cutdev *cd);
 enum obj_kind {
     OBJ_INODE,           /* a file's inode: its mtime and mode */
     OBJ_SWAP,            /* two names in one directory: which inode the first names */
-    OBJ_BLOCK,           /* a free block written as metadata (journaled) or as data (around) */
+    OBJ_BLOCK,           /* a block of /holes written as metadata (journaled) or as data */
     OBJ_WTIME,           /* the superblock's s_wtime: the request's number */
+    OBJ_FILE,            /* a file's size, blocks and bytes (U2a's writers change it) */
 };
 
 struct obj {
@@ -73,9 +74,11 @@ enum op_kind {
     OP_CHMOD,            /* its permission bits := value */
     OP_SWAP,             /* the two names exchange their inodes */
     OP_META,             /* a block written whole through the cache with value's pattern */
-    OP_REVOKE,           /* the block freed: ext_jnl_revoke */
+    OP_FREE,             /* the block freed: ext_jnl_freed */
     OP_DATA,             /* the block written around the cache (file data) with value's pattern */
     OP_STEP,             /* ext_jnl_step(value) */
+    OP_APPEND,           /* value's bytes (1 to 3 blocks' worth) written at the file's end */
+    OP_CUT,              /* the file truncated to half its size, in whole blocks */
 };
 
 struct op {
@@ -120,7 +123,8 @@ struct storm {
     struct obj objs[STORM_OBJS];
     uint32_t nobj;
     uint32_t o_root, n_root;  /* where each kind of object starts in objs, and how many */
-    uint32_t o_swap, o_many, o_block, o_wtime;
+    uint32_t o_swap, o_many, o_block, o_wtime, o_file, n_file;
+    uint32_t holes_ino;       /* the file whose blocks the block objects are */
     struct request req[STORM_REQS];
     uint32_t nreq;
     /* The run without a cut: the state after each commit (0: after the

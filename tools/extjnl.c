@@ -44,6 +44,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "extjnl.h"
+#include "extwrite.h"
 #include "jnl_int.h"
 
 #define LIST_EVERY 4   /* cuts between two full listings */
@@ -144,9 +145,11 @@ static bool touched(const struct storm *s, const char *line)
     const char *tab = strchr(line, '\t');
     unsigned long ino = tab && tab[1] && tab[2] == '\t' ? strtoul(tab + 3, NULL, 10) : 0;
     size_t plen = tab ? (size_t)(tab - line) : strlen(line);
+    if (ino == s->holes_ino)
+        return true;
     for (uint32_t i = 0; i < s->nobj; i++) {
         const struct obj *o = &s->objs[i];
-        if (o->kind == OBJ_INODE && o->ino == ino)
+        if ((o->kind == OBJ_INODE || o->kind == OBJ_FILE) && o->ino == ino)
             return true;
         if (o->kind != OBJ_SWAP || plen < 6 || strncmp(line, "/many/", 6))
             continue;
@@ -175,6 +178,7 @@ static void check_untouched(struct storm *s, struct run *q, const struct lines *
     compare_lines(&a, &b);
     free_lines(&got);
     check_bitmaps(&q->fs);
+    verify_volume(&q->fs);
 }
 
 /* Two more commits, a clean close, a mount that replays nothing. */
@@ -513,7 +517,7 @@ static void check_mount_close(struct storm *s)
         fail("a journal region of 1 KiB isn't refused");
     if (ext_jnl_init(&j, cache, 0, 0x80) != ERR_INVALID_ARGS)
         fail("an unknown flag isn't refused");
-    size_t jsize = ext_jnl_mem_size(4096, 64);
+    size_t jsize = ext_jnl_mem_size(4096, 1024, 64);
     uint8_t *jmem = malloc(jsize);
     if (ext_jnl_init(&j, jmem, jsize, 0) != OK ||
         ext_jnl_mount(&r.fs, &j, &dev, cache, CACHE_BYTES, EXT_MOUNT_READ_ONLY) != OK ||
@@ -607,6 +611,56 @@ static void check_linux_commit(struct storm *s)
     cut_reset(&s->cd);
 }
 
+/* Cut /holes (its extent tree one level below the inode) to `size`, in
+ * one transaction. */
+static void cut_holes(struct run *r, uint64_t size, bool commit)
+{
+    struct ext_inode in;
+    bool done = false;
+    lookup(&r->fs, "holes", &in);
+    status_t st = ext_jnl_begin(&r->fs, NULL);
+    while (st == OK && !done)
+        st = ext_truncate(&r->fs, &in, size, &done);
+    if (st != OK || (commit && ext_jnl_commit(&r->fs) != OK))
+        fail("cutting /holes to %llu: %d (%s)", (unsigned long long)size, st,
+             r->fs.why ? r->fs.why : "");
+}
+
+/* U2a's frees reach the journal (ext_bfree calls ext_jnl_freed): a file
+ * cut to nothing frees its extent node, which has a copy in the log (the
+ * cut before changed it), and its data blocks, which never had one: one
+ * revoke record. Once the tail has moved past that copy, none. */
+static void check_freed(struct storm *s)
+{
+    for (int tail_moved = 0; tail_moved < 2; tail_moved++) {
+        struct run r;
+        cut_reset(&s->cd);
+        if (run_mount(s, &r) != OK || r.fs.ro)
+            fail("the mount");
+        struct ext_inode in;
+        struct ext_path p;
+        lookup(&r.fs, "holes", &in);
+        uint64_t size = ext_isize(&in);
+        if (ext_extent_find(&r.fs, &in, 0, &p) != OK || p.depth != 1)
+            fail("/holes: no extent node");
+        uint64_t node = p.lv[1].buf->blk;
+        ext_path_release(&r.fs, &p);
+        cut_holes(&r, (size / 2) & ~(uint64_t)(r.fs.block_size - 1), true);
+        if (tail_moved && ext_jnl_checkpoint(&r.fs) != OK)
+            fail("the checkpoint");
+        cut_holes(&r, 0, false);
+        uint32_t want = tail_moved ? 0 : 1;
+        if (r.j.nrevokes != want || (want && r.j.revokes[0].blk != node))
+            fail("%u blocks revoked, not %u (the node at %llu)%s", r.j.nrevokes, want,
+                 (unsigned long long)node, tail_moved ? " after the tail moved" : "");
+        if (ext_jnl_commit(&r.fs) != OK)
+            fail("the commit");
+        verify_volume(&r.fs);
+        run_free(&r);
+    }
+    cut_reset(&s->cd);
+}
+
 /* ---- limits -------------------------------------------------------------------------------- */
 
 /* A transaction larger than the journal takes is refused before anything
@@ -653,38 +707,48 @@ static void check_too_big(struct storm *s)
     cut_reset(&s->cd);
 }
 
+/* Mount the device with a journal region of `size` bytes; the region's
+ * revoke records. */
+static uint32_t small_mount(struct storm *s, struct run *r, size_t size)
+{
+    struct ext_dev dev = cut_dev(&s->cd);
+    memset(r, 0, sizeof(*r));
+    r->cache = malloc(CACHE_BYTES);
+    r->jmem = malloc(size);
+    if (!r->cache || !r->jmem || ext_jnl_init(&r->j, r->jmem, size, 0) != OK ||
+        ext_jnl_mount(&r->fs, &r->j, &dev, r->cache, CACHE_BYTES, 0) != OK)
+        fail("a mount with a region of %zu bytes", size);
+    return r->j.cap_revokes;
+}
+
 /* A replay whose revoke records don't fit its region leaves the volume
  * read-only and still needing recovery; with room, it replays. */
 static void check_revoke_overflow(struct storm *s)
 {
     struct run r;
     cut_reset(&s->cd);
+    size_t small = 8 * (size_t)s->cd.block_size + 40000;
+    uint32_t cap = small_mount(s, &r, small) + 64;   /* more than the small region holds */
+    run_free(&r);
+    cut_reset(&s->cd);
     if (run_mount(s, &r) != OK || r.fs.ro)
         fail("the mount");
-    uint32_t bs = r.fs.block_size;
-    uint32_t cap = bs / 4 + 64;   /* more than the smallest region holds */
-    uint64_t blks[2048];
-    if (free_blocks(&r.fs, blks, cap, 1) != cap || ext_jnl_begin(&r.fs, NULL) != OK)
-        fail("free blocks");
+    static uint64_t blks[4096];
+    if (cap > 4096 || free_blocks(&r.fs, blks, cap, 1) != cap || ext_jnl_begin(&r.fs, NULL) != OK)
+        fail("%u free blocks", cap);
     for (uint32_t i = 0; i < cap; i++)
         if (ext_jnl_revoke(&r.fs, blks[i]) != OK)
             fail("revoke %u", i);
     if (ext_jnl_commit(&r.fs) != OK)
         fail("a commit of %u revokes", cap);
     run_free(&r);
-    /* The volume as the service left it when it was killed: mount it with
-     * a region of 4 staging blocks and the fewest records. */
-    struct ext_dev dev = cut_dev(&s->cd);
-    uint8_t *cache = malloc(CACHE_BYTES), *small = malloc(8 * bs + 200);
-    struct ext_jnl j;
-    if (ext_jnl_init(&j, small, 8 * bs + 200, 0) != OK ||
-        ext_jnl_mount(&r.fs, &j, &dev, cache, CACHE_BYTES, 0) != OK ||
-        !(r.fs.ro & EXT_RO_RECOVER) || r.fs.jnl || j.cap_revokes >= cap ||
+    /* The volume as the service left it when it was killed. */
+    small_mount(s, &r, small);
+    if (!(r.fs.ro & EXT_RO_RECOVER) || r.fs.jnl || !r.fs.why ||
         strcmp(r.fs.why, "journal: more revoke records than its memory holds"))
-        fail("a replay with room for %u of %u revokes: ro %#x (%s)", j.cap_revokes, cap,
+        fail("a replay with room for %u of %u revokes: ro %#x (%s)", r.j.cap_revokes, cap,
              r.fs.ro, r.fs.why ? r.fs.why : "");
-    free(cache);
-    free(small);
+    run_free(&r);
     if (run_mount(s, &r) != OK || r.fs.ro || r.j.replayed != 1)
         fail("the replay with room: ro %#x, replayed %u", r.fs.ro, r.j.replayed);
     run_free(&r);
@@ -711,6 +775,7 @@ void check_journal(struct img *fixtures, const char *listdir, const char *images
         check_bad_jsb(&s);
         check_revoke_overflow(&s);
         check_linux_commit(&s);
+        check_freed(&s);
         cut_free(&s.cd);
         where = small[f].name;
         storm_make(&s, &small[f], &fixtures[f]);
