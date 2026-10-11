@@ -670,6 +670,8 @@ long lx_ioctl(long fd, long req_l, long arg, long d, long e, long f)
         break;
     default:
         r = desc->ops->ioctl ? desc->ops->ioctl(desc, req, arg) : -ENOTTY;
+        if (r == -ENOTTY)
+            lx_enosys_ioctl(req);   /* nothing understood the request: for the log */
     }
     fd_put(desc);
     return r;

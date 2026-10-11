@@ -20,6 +20,8 @@
  * -Woverride-init). An area that isn't built yet has no block. */
 #pragma once
 
+#include <stddef.h>
+
 typedef long lx_call(long a, long b, long c, long d, long e, long f);
 
 /* ---- the call boundary (signal.c, from calls.c) ------------------------------------- */
@@ -54,6 +56,29 @@ lx_call lx_mmap, lx_munmap, lx_mprotect, lx_madvise, lx_mremap, lx_brk, lx_mlock
 /* Threads (thread.c). */
 lx_call lx_set_tid_address, lx_gettid, lx_arch_prctl, lx_exit, lx_exit_group, lx_futex,
         lx_sched_yield;
+
+/* ---- the ENOSYS log (enosys.c, enosysnames.c) ------------------------------------------ */
+
+/* What the layer does not answer, logged once each when the program asked
+ * for it (JAMOS_ENOSYS_LOG=1 in its environment; otherwise these return at
+ * once). enosys.c says what a gap is and how the lines look. */
+/* A call number no handler answers. */
+void   lx_enosys_call(long n);
+/* An option of an answered call that is refused: "<what> <value>" (what:
+ * "prctl option", "futex operation"). */
+void   lx_enosys_option(const char *what, long value);
+/* An ioctl request nothing understood (terminal probes are not gaps). */
+void   lx_enosys_ioctl(unsigned long req);
+/* A /proc path that is not there. */
+void   lx_enosys_path(const char *path);
+/* Linux's name for call number n ("clone3"), or NULL. */
+const char *lx_sysname(long n);
+/* For posixtest: turn the log on or off whatever the environment says, and
+ * forget what was logged; the lines written since the process began; the
+ * last line written, into buf (cap bytes, NUL-ended; returns its length). */
+void   lx_enosys_set(int on);
+unsigned lx_enosys_lines(void);
+size_t lx_enosys_last(char *buf, size_t cap);
 
 /* Clocks and sleeps, and CPU time (time.c). */
 lx_call lx_clock_gettime, lx_clock_getres, lx_clock_settime, lx_clock_nanosleep,

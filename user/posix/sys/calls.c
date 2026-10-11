@@ -4,8 +4,9 @@
  * number gives the handler (calls.h: one per call, in its area's file;
  * calls.def lists them); a number with none is -ENOSYS, as an old Linux
  * kernel answers a call it doesn't have, so musl falls back where it can
- * and fails cleanly where it can't. A program links only the handlers it
- * can call: calls.def says how.
+ * and fails cleanly where it can't, and the ENOSYS log (enosys.c) names it
+ * once if the program asked. A program links only the handlers it can
+ * call: calls.def says how.
  *
  * Every call is a call boundary for signals (signal.c's sig_call: the
  * handlers due run before and after it, and an EINTR is restarted or
@@ -70,8 +71,10 @@ static unsigned kind_of(long n, long b, long c, long d)
 /* The call through the boundary; cancel: a cancellation point's flag. */
 static long dispatch(long n, const long *args, volatile int *cancel)
 {
-    if (n < 0 || (unsigned long)n >= sizeof(calls) / sizeof(calls[0]) || !calls[n])
+    if (n < 0 || (unsigned long)n >= sizeof(calls) / sizeof(calls[0]) || !calls[n]) {
+        lx_enosys_call(n);   /* the log, when the program turned it on */
         return -ENOSYS;
+    }
     struct sig_frame f = { calls[n], kind_of(n, args[1], args[2], args[3]), cancel,
                            { args[0], args[1], args[2], args[3], args[4], args[5] } };
     return sig_call(&f);
