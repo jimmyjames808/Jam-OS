@@ -54,6 +54,7 @@ JAM_WANTS("mount * rw\n"
 
 static handle_t con, keys;
 unsigned sh_term_no;   /* init's "term=<n>": this shell's terminal closes with `exit` */
+bool sh_session;       /* init's "session": a session's shell (sh.h) */
 
 /* ---- output ------------------------------------------------------------------- */
 
@@ -582,10 +583,14 @@ static void run_first(const char *line)
 /* init's arguments, in any order: "term=<n>" (with a compositor: terminal
  * n's shell, which `exit` closes), "soak=<minutes>" (the boot word's soak
  * test), "run=<line>" (initctl.terminal's command), "note=<line>" (the
- * boot before this one panicked: the line to print under the banner) and
+ * boot before this one panicked: the line to print under the banner),
  * "restarted" (the shell before this one crashed or was killed: said, so a
- * restart isn't a mystery). */
-static const char *soak_arg, *run_arg;
+ * restart isn't a mystery); and a session's (init's sessions.c):
+ * "session" (`exit` ends this shell, with its code), "TERM=<name>" (TERM,
+ * exported, for the programs it runs: the remote terminal's) and
+ * "cmd=<line>" (run that one line, with no banner and no prompt, and end
+ * with its status: `ssh pc 'ls /data'`). */
+static const char *soak_arg, *run_arg, *cmd_arg, *term_arg;
 static char note_arg[BOOT_NOTE_MAX + 1];
 static bool restarted;
 
@@ -619,7 +624,23 @@ static void take_args(int argc, char **argv)
             take_note(a + 5);
         else if (!strcmp(a, "restarted"))
             restarted = true;
+        else if (!strcmp(a, "session"))
+            sh_session = true;
+        else if (!strncmp(a, "cmd=", 4) && a[4])
+            cmd_arg = a + 4;
+        else if (!strncmp(a, "TERM=", 5) && a[5])
+            term_arg = a + 5;
     }
+}
+
+/* "cmd=<line>": the line alone, then the end, with its status. */
+_Noreturn static void run_command(const char *line)
+{
+    char copy[LINE_MAX + 1];
+    snprintf(copy, sizeof(copy), "%s", line);
+    sh_line(copy);
+    sh_flush();
+    jam_process_exit(sh_status());
 }
 
 int main(int argc, char **argv)
@@ -632,13 +653,18 @@ int main(int argc, char **argv)
     }
     status_t st = console_open_keys(con, &keys);
     if (st != OK) {
-        printf("shell: console.open_keys: %s\n", status_str(st));
+        if (st != ERR_PEER_CLOSED)   /* its terminal is gone already: nothing to say */
+            printf("shell: console.open_keys: %s\n", status_str(st));
         return st == ERR_PEER_CLOSED ? 2 : 1;
     }
     uint16_t rows = 0;
     if (console_size(con, &cols, &rows) != OK)
         cols = 0;
     sh_init();
+    if (term_arg)
+        sh_setvar("TERM", term_arg, 1);
+    if (cmd_arg)
+        run_command(cmd_arg);
     echo("\033[1mJam OS shell.\033[0m Type \033[1mhelp\033[0m for the commands.\n");
     const char *note = sh_boot_note();   /* after a panic: what happened to that boot */
     if (note[0])
@@ -648,7 +674,7 @@ int main(int argc, char **argv)
     sh_flush();
     /* Up: the boot splash, if one holds the screen, gives it back now.
      * Without init's channel (a shell run from a shell) there is none. */
-    if (sh_initctl())
+    if (sh_initctl() && !sh_session)
         (void)initctl_shell_ready_until(sh_initctl(), now() + 2 * NS_PER_S);
     if (soak_arg)
         boot_soak(soak_arg);
