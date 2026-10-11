@@ -346,12 +346,14 @@ static status_t start_shell(struct session *s, struct start *a, const char *term
     char targ[5 + SESSION_TERM_MAX + 1], carg[4 + SESSION_COMMAND_RUN_MAX + 1];
     snprintf(targ, sizeof(targ), "TERM=%.*s", (int)tn, term);
     snprintf(carg, sizeof(carg), "cmd=%.*s", (int)cn, cmd);
-    const char *argv[4] = { "bin/shell", "session" };
+    const char *argv[5] = { "bin/shell", "session" };
     int argc = 2;
     if (tn)
         argv[argc++] = targ;
     if (cn)
         argv[argc++] = carg;
+    if (init_runlines)
+        argv[argc++] = "runlines";
     struct spawn_args sa = { .path = "bin/shell", .name = "session-shell", .argc = argc,
                              .argv = argv, .job = s->sjob, .extra = x, .nextra = nx,
                              .ns = NS_ALL, .ns_out = &s->ns, .ns_back_out = &s->back };

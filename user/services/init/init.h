@@ -2,7 +2,8 @@
  * keytest); shell.c is the shell mode, where init starts and supervises
  * the bootfs server, the compositor (comp.c), the console, serialin,
  * devmgr, volumes, the mixer, the music
- * player, netstack, logd, netlog, sntp and the shell, each started as services.c says; splash.c
+ * player, netstack, logd, netlog, sntp, the SSH server (ssh.c) and the shell, each started as
+ * services.c says; splash.c
  * the boot splash that plays first in shell mode; lastboot.c the boot
  * before this one, if it panicked (its log saved by logd, one line for the
  * shell); reboot.c a reboot by kexec; mounts.c keeps init's namespace in
@@ -90,6 +91,11 @@ extern bool init_diskro;
  * the log as it comes. Every other boot keeps it off every terminal's
  * screen (terms.c: the consoles' "nolog"). */
 extern bool init_verbose;
+/* The option word "runlines" (main.c; tools/qemu-test.sh gives it to every
+ * test boot): every shell init starts gets "runlines", so it says when each
+ * program starts and how it ended ("run: ... exited with code 0"), which the
+ * test scripts wait for. Without it those lines stay off the screen. */
+extern bool init_runlines;
 
 
 /* ---- mounts.c -------------------------------------------------------------------- */
@@ -202,7 +208,8 @@ void     splash_shell_ready(void);
  * consoles and shells (terms.c), a pair each, started only when one is
  * opened. */
 enum { BOOTFS, COMPOSITOR, CONSOLE, SPLASH, SERIALIN, DEVMGR, VOLUMES, MIXER, MUSIC, NETSTACK,
-       DHCP, DNS, LOGD, NETLOG, SNTP, SERVE, SHELL, TERMS, NSVC = TERMS + 2 * (TERM_MAX - 1) };
+       DHCP, DNS, LOGD, NETLOG, SNTP, SERVE, SSHD, SHELL, TERMS,
+       NSVC = TERMS + 2 * (TERM_MAX - 1) };
 /* Terminal k's (0: the first, the system's) console and shell. */
 #define TERM_CONSOLE(k) ((k) ? TERMS + 2 * ((k) - 1) : CONSOLE)
 #define TERM_SHELL(k)   ((k) ? TERMS + 2 * ((k) - 1) + 1 : SHELL)
@@ -225,6 +232,7 @@ enum { BOOTFS, COMPOSITOR, CONSOLE, SPLASH, SERIALIN, DEVMGR, VOLUMES, MIXER, MU
 #define KEY_SESSION  0xd00u   /* + sessions.c's own: /svc/session, its openers, a session's
                                * processes and channels (sessions_event) */
 #define KEY_SESSION_END 0xe00u
+#define KEY_SSHD     0xf00u   /* the SSH server's look at /data is done (ssh.c) */
 
 struct svc {
     const char *path;          /* in bootfs */
@@ -353,6 +361,23 @@ uint64_t sessions_due(uint64_t t);
 /* init's namespace changed: every session's shell gets it, as the
  * terminals' shells do (tell_mounts). */
 void     sessions_tell(void);
+
+/* ---- ssh.c: the SSH server (bin/sshd, the tinyssh port) --------------------------- */
+
+/* Set up once before the loop (the loop's port: KEY_SSHD). */
+void     ssh_init(handle_t port);
+/* bin/sshd may start: init has looked at /data (the setting `ssh`, the
+ * authorized keys, the host key, made if missing) on a thread of its own,
+ * asked here the first time; its KEY_SSHD packet wakes the loop. Once a
+ * boot. */
+bool     ssh_ready(void);
+/* KEY_SSHD: what the look found, said in the log (the host key's
+ * fingerprint), once. */
+void     ssh_event(void);
+/* Start bin/sshd (services_start's, for SSHD), or give it up for this boot
+ * if the look said no (no key, `ssh = off`, a host key that can't be
+ * made). */
+status_t ssh_start(void);
 
 /* ---- apps.c: the desktop's apps (initctl.launch, <deskapps.h>) ------------------------- */
 

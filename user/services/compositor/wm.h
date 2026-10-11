@@ -30,6 +30,12 @@
 #define WM_ST_FULLSCREEN (1u << 1)
 #define WM_ST_RESIZING   (1u << 2)
 #define WM_ST_ACTIVATED  (1u << 3)
+/* Not an xdg state: the client draws its own decorations (xdg-decoration's
+ * client_side mode, or a toplevel with no decoration object). Part of the
+ * configure because the mode changes, as the size does, only once the
+ * client acks it and commits: the frame follows the states of the buffer
+ * shown (deco_set). */
+#define WM_ST_CSD        (1u << 4)
 
 /* Resize edges: xdg_toplevel.resize_edge's bits (xdgtop.c checks they match). */
 #define WM_EDGE_TOP    1u
@@ -52,6 +58,11 @@ struct wm_ops {
     void (*configure)(void *ctx, const struct wm_config *cfg);
     /* The user asked the window to close (its close circle, Super+Q). */
     void (*close)(void *ctx);
+    /* The window was shown or hidden without its configure changing (its
+     * screen left or come back to, minimised or restored): what the role
+     * tells the client of that (xdg_toplevel's suspended state) may have
+     * changed. May be NULL. */
+    void (*shown)(void *ctx);
 };
 
 /* What the window asks to be (the client's or the user's request). */
@@ -101,6 +112,10 @@ struct wm_window {
      * mapped into yet. */
     uint64_t key;
     bool restoring;
+    /* Decorations (xdg-decoration, xdgdeco.c): the client draws its own,
+     * so its configures carry WM_ST_CSD. False for a toplevel made by no
+     * client (the tests'): the compositor's title bar. */
+    bool csd;
 };
 
 /* ---- wm.c --------------------------------------------------------------------------- */
@@ -159,6 +174,20 @@ void wm_reflow(void);
 int32_t wm_floor(const struct wm_window *ww);
 /* Can ww be moved and resized by the user: floating, in its normal state. */
 bool wm_floating_normal(const struct wm_window *ww);
+
+/* What xdg-shell tells a client beyond a configure's size and states
+ * (xdgtop.c, by the toplevel's version). */
+/* Is ww placed in a tile (tiling, neither maximised nor full screen): the
+ * tiled states, each edge against the grid or the screen's side. */
+bool wm_tiled(const struct wm_window *ww);
+/* Is ww mapped but not shown (on a screen not shown, or minimised): the
+ * suspended state. */
+bool wm_suspended(const struct wm_window *ww);
+/* The largest surface a floating ww could have on its screen (the room
+ * under the floor less its decorations): configure_bounds. */
+void wm_bounds(const struct wm_window *ww, int32_t *width, int32_t *height);
+/* screens.c: ww was shown or hidden (ww->ops->shown, if any). */
+void wm_shown_changed(struct wm_window *ww);
 
 /* ---- wmtile.c: dwindle -------------------------------------------------------------- */
 
@@ -369,14 +398,17 @@ void wm_marks_update(void);
 /* ---- deco.c ------------------------------------------------------------------------- */
 
 /* Decorations for a buffer drawn for states, in layout (tiling: no title
- * bar, a border all round): sizes around the surface. */
+ * bar, a border all round; WM_ST_CSD floating or maximised: none, the
+ * client's own being inside its surface): sizes around the surface. */
 struct deco_sizes {
     int32_t top, left, right, bottom;
 };
 struct deco_sizes deco_sizes(uint32_t states, enum comp_layout layout);
 /* The surface's box inside a frame box for states in layout. */
 struct comp_box deco_inner(struct comp_box frame, uint32_t states, enum comp_layout layout);
-/* w's decorations set for states (its frame damaged if they change). */
+/* w's decorations set for states (its frame damaged if they change), and
+ * COMP_WIN_CSD for a floating window in its normal state whose client
+ * draws its own (WM_ST_CSD). */
 void deco_set(struct comp_window *w, uint32_t states);
 
 enum deco_part {

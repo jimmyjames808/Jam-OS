@@ -53,7 +53,7 @@ static void ignore_close(void *ctx)
     (void)ctx;
 }
 
-static const struct wm_ops top_ops = { ignore_configure, ignore_close };
+static const struct wm_ops top_ops = { ignore_configure, ignore_close, NULL };
 
 /* Up to n comma-separated fields of s into f (each cut at its comma, in
  * buf); how many. */

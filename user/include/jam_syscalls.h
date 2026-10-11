@@ -59,6 +59,7 @@ status_t jam_vmo_make_exec_verified(handle_t vmo, handle_t root, handle_t table,
 status_t jam_vmar_map(handle_t vmar, handle_t vmo, uint64_t vmo_off, uint64_t len, uint32_t flags, uint64_t *addr);
 status_t jam_vmar_unmap(handle_t vmar, uint64_t addr, uint64_t len);
 status_t jam_vmar_protect(handle_t vmar, uint64_t addr, uint64_t len, uint32_t flags);
+status_t jam_vmo_create_child(handle_t vmo, uint32_t flags, uint64_t offset, uint64_t size, handle_t *out);
 status_t jam_process_create(handle_t job, const char *name, uint64_t name_len, uint32_t flags, handle_t *proc_out, handle_t *vmar_out);
 status_t jam_process_start(handle_t proc, handle_t thread, uint64_t entry, uint64_t stack, handle_t arg0, uint64_t arg1);
 status_t jam_process_kill(handle_t proc);

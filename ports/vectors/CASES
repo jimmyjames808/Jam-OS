@@ -1,0 +1,58 @@
+# The ports formats' test vectors: tools/portslib/vectors.py says what each
+# line means. Every file here is made by `tools/ports.py vectors --write`.
+package good.jpk ok abi=0123456789abcdef
+package good.jpk refused abi=fedcba9876543210
+package p-data.jpk refused
+package p-manifest.jpk refused
+package p-otherkey.jpk refused
+package p-unsigned.jpk refused
+package p-domain.jpk refused
+package p-table.jpk refused
+package p-table-signed.jpk refused
+package p-extra.jpk refused
+package p-missing.jpk refused
+package p-order.jpk refused
+package p-mode.jpk refused
+package p-header.jpk refused
+package p-trailing.jpk refused
+package p-noend.jpk refused
+package p-cut.jpk refused
+package p-dotdot.jpk refused
+package p-runs-self.jpk refused
+package p-must.jpk refused
+package p-lines-order.jpk refused
+package p-size.jpk refused
+package p-mode-line.jpk refused
+package p-two-spaces.jpk refused
+package p-cr.jpk refused
+package p-backslash.jpk refused
+package p-ext.jpk ok
+package p-case.jpk refused
+package p-list.jpk refused
+package p-session.jpk refused
+package data.jpk ok
+index INDEX-good ok
+index INDEX-good ok last=4
+index INDEX-good ok last=5:f4099485c71e26fec04a4c8692c8e7fc4413ddf0c155f266f18cff0daef8f8ef
+index INDEX-good refused last=5
+index INDEX-good refused last=6
+inindex INDEX-good ok pkg=good.jpk name=vec
+inindex INDEX-good refused pkg=p-ext.jpk name=vec
+inindex INDEX-good refused pkg=good.jpk name=vec-data
+index INDEX-tampered refused
+index INDEX-otherkey refused
+index INDEX-domain refused
+vulns INDEX-domain refused
+index good.jpk refused
+index INDEX-runs-missing refused
+index INDEX-runs-version refused
+index INDEX-nosrc refused
+index INDEX-order refused
+vulns VULNS-good ok
+vulns VULNS-good refused last=6
+audit VULNS-good ok pkg=good.jpk ids=CVE-2026-0001,JAMOS-2026-1
+vulns VULNS-tampered refused
+vulns VULNS-domain refused
+index VULNS-domain refused
+vulns VULNS-order refused
+vulns VULNS-fixrev refused

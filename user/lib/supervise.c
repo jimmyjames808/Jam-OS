@@ -1,8 +1,7 @@
 /* What init, devmgr and (after the storage split) volumes share to supervise
  * a service: the restart window, the warm spare, the keeper and state VMO
  * that outlive an instance, and the measured restart. The contract is in
- * <supervise.h>; the design is docs/M11.6-PLAN.md ("The warm spare",
- * "Supervision").
+ * <supervise.h>; the design is docs/HISTORY.md, M11.6.
  *
  * **The warm spare** is a second process of the program started with
  * nothing but SR_STANDBY, which waits in libos before main, having opened

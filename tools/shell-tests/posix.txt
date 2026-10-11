@@ -248,22 +248,139 @@ type \x04
 wait pxio: 2 lines, 8 bytes
 wait {prompt}
 # Ctrl+C is SIGINT on the program's signal channel: its default action
-# ends it (the layer's exit code for "ended by SIGINT", 0x10000 + 2); a
-# program with a handler goes on and exits as it likes
+# ends it (the layer's exit code for "ended by SIGINT", 0x10000 + 2, which
+# the shell shows as 130); a program with a handler goes on and exits as it
+# likes, and the rest of the line runs. The ^C is written once (by the
+# terminal's line discipline: check the log for "^C^C" after the run).
 send pxio cat
 wait run: bin/pxio started
 sleep 1
 type \x03
-wait run: bin/pxio exited with code 65538
+wait run: bin/pxio killed by SIGINT
 wait {prompt}
-send pxio sigint
+send echo st-$T=$?
+wait st-x=130
+wait {prompt}
+send pxio sigint; echo after-$T-int
 wait pxio: waiting
 type \x03
 wait pxio: got SIGINT
 wait run: bin/pxio exited with code 3
+wait after-x-int
 wait {prompt}
 send pxio out bg-$T &
 wait bg-x
+wait {prompt}
+
+# ---- $? after a signal is 128 + N ------------------------------------------------------------------------------
+send pxio raise 15; echo st-$T=$?
+wait run: bin/pxio killed by SIGTERM
+wait st-x=143
+wait {prompt}
+send pxio raise 10; echo st-$T=$?
+wait run: bin/pxio killed by SIGUSR1
+wait st-x=138
+wait {prompt}
+send pxio raise 3; echo st-$T=$?
+wait run: bin/pxio killed by SIGQUIT
+wait st-x=131
+wait {prompt}
+
+# ---- Ctrl+\ is SIGQUIT -------------------------------------------------------------------------------------------
+send pxio cat
+wait run: bin/pxio started
+sleep 1
+type \x1c
+wait run: bin/pxio killed by SIGQUIT
+wait {prompt}
+send echo st-$T=$?
+wait st-x=131
+wait {prompt}
+
+# ---- a pipeline of programs runs at once ----------------------------------------------------------------------
+# yes never ends by itself: head ends, and yes gets SIGPIPE (a reader gone)
+send pxio yes | pxio head 3 | pxio count
+wait 30 pxio: 3 lines, 6 bytes
+wait {prompt}
+# the status is the last stage's
+send pxio out x | pxio exit 5; echo st-$T=$?
+wait st-x=5
+wait {prompt}
+# a builtin after an endless program: its input is full at 4 MiB, the
+# program is sent SIGPIPE, and head takes its three lines
+send pxio yes | head -3 | grep -c y | grep ^3$ && echo ok-$T-yesbuiltin
+wait 60 ok-x-yesbuiltin
+wait {prompt}
+# builtins and programs mixed in both orders
+send echo hello-$T | pxio cat | pxio cat | pxio count
+wait pxio: 1 lines, 8 bytes
+wait {prompt}
+send pxio seq 100 | pxio cat | wc -l | grep ^100$ && echo ok-$T-mix
+wait ok-x-mix
+wait {prompt}
+send seq 50 | pxio cat | grep -c 5 | pxio cat | grep ^6$ && echo ok-$T-mix2
+wait ok-x-mix2
+wait {prompt}
+# 100 MiB through three programs: the pipes hold 1 MiB, so they run together
+send pxio gen 100 | pxio cat | pxio count
+wait 180 pxio: 1638400 lines, 104857600 bytes
+wait {prompt}
+send pxio gen 20 | pxio cat | pxio cat | pxio cat | pxio count
+wait 120 pxio: 327680 lines, 20971520 bytes
+wait {prompt}
+
+# ---- Ctrl+C on a pipeline: SIGINT to every program in it ---------------------------------------------------
+send pxio yes | pxio cat | pxio count
+wait 10 run: bin/pxio started
+sleep 2
+type \x03
+wait 15 run: bin/pxio killed by SIGINT
+wait {prompt}
+send echo st-$T=$?
+wait st-x=130
+wait {prompt}
+send echo alive-$T
+wait alive-x
+wait {prompt}
+
+# ---- a program that ignores SIGINT: its job is killed 2 s later ------------------------------------------------
+send pxio ignore
+wait pxio: ignoring
+type \x03
+wait 10 sh: bin/pxio is still there 2 s after the signal: killing it
+wait run: bin/pxio was killed
+wait {prompt}
+send echo st-$T=$?
+wait st-x=130
+wait {prompt}
+# and one in a pipeline, with a program that obeys beside it
+send pxio ignore | pxio cat
+wait pxio: ignoring
+type \x03
+wait 10 sh: bin/pxio is still there 2 s after the signal: killing it
+wait 10 run: bin/pxio was killed
+wait {prompt}
+
+# ---- jobs and kill %n for POSIX programs: SIGTERM, then the job ---------------------------------------------
+send pxio idle &
+wait 10 [1]
+wait in the background
+wait {prompt}
+send jobs | grep "running *pxio idle$" && echo ok-$T-jobs
+wait ok-x-jobs
+wait {prompt}
+send kill %1
+wait 10 [1] killed: pxio (SIGTERM)
+wait {prompt}
+send pxio ignore &
+wait 10 [1]
+wait in the background
+wait {prompt}
+send kill %1
+wait 10 [1] pxio did not end 2 s after SIGTERM: killing it
+wait 10 [1] killed: pxio
+wait {prompt}
+send jobs
 wait {prompt}
 
 # ---- clean up --------------------------------------------------------------------------------------------------

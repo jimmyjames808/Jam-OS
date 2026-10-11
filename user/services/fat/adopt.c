@@ -1,5 +1,5 @@
-/* fat: a restart its clients don't see (docs/M11.6-PLAN.md, "Where each
- * service's state lives", "The request in progress"). A fat started with
+/* fat: a restart its clients don't see (docs/HISTORY.md, M11.6).
+ * A fat started with
  * a dead instance's state (devmgr's SR_STATE, accepted by svcstate)
  * carries on where it stopped:
  *
@@ -19,9 +19,11 @@
  *      (a state given up on is set up empty first);
  *   3. a committed close whose send hadn't finished: its send done again;
  *   4. the keeper's handles are taken back (keep_restore), each only if
- *      the state knows its slot: a slot an undone open or view made is
- *      refused, and so closed and dropped; a slot the state knows and the
- *      keeper didn't return is closed (files_adopt, views_adopt);
+ *      the state knows its slot: a slot an undone open, view or map made
+ *      is refused, and so closed and dropped; a slot the state knows and
+ *      the keeper didn't return is closed (files_adopt, views_adopt); a
+ *      mapped file's shared VMO is fat's again while its file is open
+ *      (maps_adopt);
  *   5. the request in progress is finished exactly once (svcstate's
  *      cases): uncommitted, it runs again from its slot (a write's bytes
  *      from the slot too: request.c's bounce); committed, its send is done
@@ -30,11 +32,14 @@
  *      in the system call that sends it: then there is nothing to do). A
  *      reply that carries handles (fs.open's file, fs.view's view) and
  *      never went out took them with the process: the slot gets a new
- *      channel and the reply goes again.
+ *      channel (file.map's: its shared VMO again, or a new VMO of the
+ *      caller's own) and the reply goes again.
  *      A request in progress at two crashes (not deliberate kills: how
  *      the last instance ended is in argv) is answered ERR_IO and dropped,
  *      so one bad request can't crash every successor in turn;
- *   6. every kept channel is waited on again, and the restart logged.
+ *   6. every kept channel is waited on again, and the restart logged;
+ *      then (main.c) the page requests the dead instance took are taken
+ *      again (pager.c).
  *
  * When the state can't be carried on from (it fails a check, a held write
  * had failed, the operation in progress went out in steps and can't be
@@ -109,23 +114,23 @@ static bool fil_ok(const FIL *fp)
 
 static const char *check_files(void)
 {
-    uint32_t refs[FAT_MAX_FILES] = { 0 };
+    uint32_t refs[FAT_OPENS] = { 0 };
     for (unsigned i = 0; i < FAT_MAX_FILES; i++) {
         const struct fat_file *f = &kept->files[i];
         if (!f->used)
             continue;
-        if (f->open >= FAT_MAX_FILES || (f->flags & ~FS_FLAGS) ||
+        if (f->open >= FAT_OPENS || (f->flags & ~FS_FLAGS) ||
             ((f->flags & FS_WRITE) && vol.read_only))
             return "an open file out of range";
         refs[f->open]++;
     }
-    for (unsigned i = 0; i < FAT_MAX_FILES; i++) {
+    for (unsigned i = 0; i < FAT_OPENS; i++) {
         const struct fat_open *o = &kept->opens[i];
         if (o->refs != refs[i])
             return "open files that don't add up";
-        if (o->refs && !fil_ok(&o->fil))
+        if (files_open_used(i) && !fil_ok(&o->fil))
             return "an open file of another volume";
-        if (o->refs && !files_place_ok(o))
+        if (files_open_used(i) && !files_place_ok(o))
             return "an open file whose entry is elsewhere";
     }
     return NULL;
@@ -159,6 +164,8 @@ static const char *check_volume(void)
     if (kept->disk.nfats > 2 || kept->made.index >= FAT_MAX_FILES + FAT_VIEWS)
         return "the disk's facts out of range";
     const char *why = check_fatfs();
+    if (!why)
+        why = maps_check();   /* before check_files, which asks which opens it uses */
     if (!why)
         why = check_files();
     return why ? why : check_hold();
@@ -217,7 +224,7 @@ static void find_request(struct found *f)
 /* ---- 4. the kept handles --------------------------------------------------------------- */
 
 struct taking {
-    bool files;   /* the state's open files are carried on */
+    bool files;   /* the state's open and mapped files are carried on */
     bool views;   /* ... its views */
 };
 
@@ -226,6 +233,8 @@ static bool take(void *ctx, uint32_t slot, const handle_t *hs, unsigned n)
     const struct taking *t = ctx;
     if (slot < FAT_KEEP_VIEW(0))
         return t->files && files_take(slot, hs, n);
+    if (slot >= FAT_KEEP_MAP(0))
+        return t->files && maps_take(slot - FAT_KEEP_MAP(0), hs, n);
     return t->views && slot - FAT_KEEP_VIEW(0) < FAT_VIEWS &&
            views_take(slot - FAT_KEEP_VIEW(0), hs, n);
 }
@@ -283,14 +292,15 @@ static const char *reply_again(const struct fat_chan *c, unsigned slot)
         answer(c, slot, sl->reply_len, NULL, 0);
         return "answered";
     }
-    bool file = m->kind == FAT_MADE_FILE;
     handle_t hs[2];
-    status_t st = file ? files_remake(m->index, &hs[0], &hs[1]) : views_remake(m->index, &hs[0]);
+    status_t st = m->kind == FAT_MADE_FILE ? files_remake(m->index, &hs[0], &hs[1])
+                  : m->kind == FAT_MADE_MAP ? maps_remake(m->index, &hs[0])
+                                            : views_remake(m->index, &hs[0]);
     if (st != OK) {
         answer_status(c, slot, st);
         return "its handles couldn't be made again: answered with the error";
     }
-    answer(c, slot, sl->reply_len, hs, file ? 2 : 1);
+    answer(c, slot, sl->reply_len, hs, m->kind == FAT_MADE_FILE ? 2 : 1);
     return "answered, with its handles made again";
 }
 
@@ -378,6 +388,7 @@ static status_t start_fresh(struct found *f, bool *no_volume)
     }
     files_drop_unknown();   /* and the keeper told: those clients see ERR_PEER_CLOSED */
     views_drop_unknown();
+    maps_drop_unknown();   /* their VMOs' pages: the requests of keys it doesn't know */
     status_t st = mount(no_volume);
     if (st != OK)
         return st;
@@ -431,6 +442,7 @@ status_t adopt(bool adopted, bool *no_volume)
     reply_flush();   /* its answer now, not after the closes files_adopt makes */
     f.files = files_adopt();
     f.views = views_adopt();
+    maps_adopt();   /* after files_adopt, whose closes let go of shared VMOs */
     say(&f);
     return OK;
 }

@@ -25,7 +25,14 @@
  * the new size (a window being resized never shows a half-drawn frame).
  * The pool is then at most a few slots of the largest size.
  *
- * After a reconnect the window is made again (title, sizes, states, and
+ * Decorations: when the compositor offers xdg-decoration, each window has
+ * a decoration object made before its first commit, asking server_side:
+ * the compositor's title bar and frame, the look every Jam OS window has.
+ * Without it the compositor takes the window to draw its own (none: the
+ * program's pixels alone).
+ *
+ * After a reconnect the window is made again (title, sizes, states, its
+ * decoration object, and
  * the key the compositor gave it, jam_window_memory_v1, so a restarted
  * compositor puts it back where it was) and
  * its first configure shows its last buffer again with all of it damaged,
@@ -79,6 +86,27 @@ static status_t tell_state(struct jwl_window *w)
     return st;
 }
 
+/* The window's decoration object, asking for the compositor's title bar
+ * (nothing when no decoration manager is offered). */
+static status_t make_decoration(struct jwl_window *w)
+{
+    struct jwl_client *c = w->c;
+    uint32_t id = 0;
+    if (!c->global[JWLC_DECORATION])
+        return OK;
+    status_t st = jwlc_make(c, &jwl_zxdg_toplevel_decoration_v1_interface,
+                            c->info.decoration_version, w, &id);
+    if (st == OK)
+        st = jwlc_made(c, jwl_zxdg_decoration_manager_v1_get_toplevel_decoration(
+                              c->conn, c->global[JWLC_DECORATION], id, w->toplevel), id);
+    if (st == OK)
+        w->decoration = id;
+    if (st == OK)
+        st = jwl_zxdg_toplevel_decoration_v1_set_mode(
+            c->conn, id, JWL_ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+    return st;
+}
+
 status_t jwlc_window_make(struct jwl_window *w)
 {
     struct jwl_client *c = w->c;
@@ -109,6 +137,8 @@ status_t jwlc_window_make(struct jwl_window *w)
         w->toplevel = tid;
     if (st == OK)
         st = tell_state(w);
+    if (st == OK)
+        st = make_decoration(w);
     if (st == OK && c->global[JWLC_MEMORY])   /* its key from before: back in its place */
         st = jwl_jam_window_memory_v1_identify(k, c->global[JWLC_MEMORY], tid,
                                                (uint32_t)(w->key >> 32), (uint32_t)w->key);
@@ -130,6 +160,11 @@ status_t jwlc_memory_event(struct jwl_client *c, struct jwl_msg *m)
 uint64_t jwl_window_key(const struct jwl_window *w)
 {
     return w->key;
+}
+
+uint32_t jwl_window_decoration(const struct jwl_window *w)
+{
+    return w->deco_mode;
 }
 
 status_t jwl_window_create(struct jwl_client *c, const struct jwl_window_config *cfg,
@@ -170,7 +205,8 @@ status_t jwl_window_create(struct jwl_client *c, const struct jwl_window_config 
 /* Forget the window's ids (destroyed, or gone with the connection). */
 static void drop_ids(struct jwl_window *w)
 {
-    w->surface = w->xdg_surface = w->toplevel = 0;
+    w->surface = w->xdg_surface = w->toplevel = w->decoration = 0;
+    w->deco_mode = 0;
     w->configured = w->ack_due = false;
     w->press_serial = 0;
 }
@@ -183,6 +219,8 @@ void jwl_window_destroy(struct jwl_window *w)
     struct jwl_conn *k = c->conn;
     if (k && w->frame.id)
         (void)jwl_map_set_data(&k->map, w->frame.id, NULL);   /* its done finds no window */
+    if (k && w->decoration)
+        (void)jwl_zxdg_toplevel_decoration_v1_destroy(k, w->decoration);   /* before its toplevel */
     if (k && w->toplevel)
         (void)jwl_xdg_toplevel_destroy(k, w->toplevel);   /* role object before the surface */
     if (k && w->xdg_surface)
@@ -491,6 +529,10 @@ status_t jwlc_window_event(struct jwl_client *c, struct jwl_msg *m)
         return OK;
     if (m->iface == &jwl_xdg_surface_interface && m->opcode == JWL_XDG_SURFACE_EV_CONFIGURE)
         return surface_configure(w, m->args[0].u);
+    if (m->iface == &jwl_zxdg_toplevel_decoration_v1_interface) {
+        w->deco_mode = m->args[0].u;   /* applies with the configure that follows: we draw none */
+        return OK;
+    }
     if (m->iface != &jwl_xdg_toplevel_interface)
         return OK;   /* wl_surface.enter and leave: one output, nothing to do */
     if (m->opcode == JWL_XDG_TOPLEVEL_EV_CONFIGURE) {

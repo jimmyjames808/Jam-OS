@@ -31,7 +31,11 @@
  * foreground its descriptors 0 to 2 as the POSIX hand-over (sh_posix.c):
  * its terminal, the pipe it is in, or what a redirection names, and its
  * signal channel (SR_SIGNALS, the `signal` protocol): Ctrl+C is SIGINT to
- * it, not its job killed. Only such a program takes `<` and `>`. */
+ * it and Ctrl+\ SIGQUIT, and its job is killed if it has not ended 2 s
+ * later. Only such a program takes `<` and `>`. The POSIX programs of a
+ * pipeline run at once (sh_exec.c starts them with sh_stdio.defer and
+ * waits in sh_pipe_settle); a native program, or a builtin, runs in turn.
+ * The status of a program that a signal ended is 128 plus the signal. */
 #include <idl/console.h>
 #include <idl/signal.h>
 #include <posixfds.h>
@@ -73,9 +77,8 @@ static void tty_put(const char *s, size_t n)
 /* A message printf wouldn't send (over 4096 bytes, or carrying handles)
  * is dropped, its handles closed: left at the head of the queue it would
  * fail every later read. */
-bool sh_copy_output(handle_t out, bool past_ctrl_c, sh_put_fn put)
+static bool copy_round(handle_t out, bool past_ctrl_c, sh_put_fn put, char *buf, size_t cap)
 {
-    char buf[4096];
     uint64_t t0 = now();
     for (unsigned i = 0; i < DRAIN_BUDGET && now() - t0 < DRAIN_BUDGET_NS; i++) {
         if (!past_ctrl_c && sh_interrupted())
@@ -83,7 +86,7 @@ bool sh_copy_output(handle_t out, bool past_ctrl_c, sh_put_fn put)
         handle_t hs[DRAIN_HANDLES];
         uint32_t n = 0, nh = 0;
         struct channel_read_args a = {
-            .h = out, .rd_cap = sizeof(buf), .rd_bytes = (uint64_t)(uintptr_t)buf,
+            .h = out, .rd_cap = (uint32_t)cap, .rd_bytes = (uint64_t)(uintptr_t)buf,
             .rd_actual = (uint64_t)(uintptr_t)&n, .rd_handles = (uint64_t)(uintptr_t)hs,
             .rd_hcap = DRAIN_HANDLES, .rd_hactual = (uint64_t)(uintptr_t)&nh,
         };
@@ -102,9 +105,18 @@ bool sh_copy_output(handle_t out, bool past_ctrl_c, sh_put_fn put)
     return true;
 }
 
-static bool drain(handle_t out, bool past_ctrl_c)
+bool sh_copy_output(handle_t out, bool past_ctrl_c, sh_put_fn put)
 {
-    return sh_copy_output(out, past_ctrl_c, sh_put);
+    char buf[4096];
+    return copy_round(out, past_ctrl_c, put, buf, sizeof(buf));
+}
+
+/* The same for a POSIX program's pipe, whose writes are messages of up to
+ * 64 KiB (the layer's pipe): none is too big. */
+static bool copy_pipe(handle_t out, sh_put_fn put)
+{
+    static char buf[CHANNEL_MAX_BYTES];
+    return copy_round(out, true, put, buf, sizeof(buf));
 }
 
 /* What spawn should be given for argv0, into path: "utest" -> bin/utest;
@@ -140,7 +152,6 @@ static bool find_program(const char *argv0, char *path, size_t cap)
 }
 
 #define RUN_HANDLES 4    /* the most program_handles gives, and a POSIX program's signal channel */
-#define LINUX_SIGINT 2   /* Linux's number, the `signal` protocol's */
 
 /* The root resource's rights for a list's WANT_RIGHT_*: what the
  * program's copy gets. Never RIGHT_TRANSFER: it can narrow its copy
@@ -212,48 +223,6 @@ struct started {
     handle_t sig;                 /* a POSIX program's signal channel (our end), or 0 */
 };
 
-/* Ctrl+C reached the shell while program s runs: the console sends the
- * key to the shell even while the program holds the terminal
- * (sh_interrupted noticed it). A POSIX program gets SIGINT on its signal
- * channel, and nothing is printed: its terminal's line discipline has
- * echoed "^C" already (ECHOCTL); what it does with the signal is its own
- * (its default action ends it; killing its job if it hasn't ended a while
- * later is not built yet). Any other program's job is killed. */
-static void interrupt_program(const struct started *s)
-{
-    if (s->posix && s->sig &&
-        signal_send(s->sig, LINUX_SIGINT, SIGNAL_CODE_USER, 0) != ERR_SHOULD_WAIT)
-        return;   /* sent, or it has ended (ERR_PEER_CLOSED) */
-    sh_tty("^C: killing %s\n", s->path);
-    sh_flush();
-    jam_job_kill(s->job);
-}
-
-/* Wait for it to end, copying its output and ending its job on Ctrl+C. */
-static status_t wait_program(const struct started *s, struct process_info *info)
-{
-    status_t st;
-    bool interrupted = false;
-    while ((st = spawn_wait(s->proc, 50 * NS_PER_MS, info)) == ERR_TIMED_OUT) {
-        if (s->out_r)
-            drain(s->out_r, false);
-        sh_jobs_poll(false);
-        if (sh_interrupted() && !interrupted) {
-            interrupt_program(s);
-            interrupted = true;
-        }
-    }
-    if (s->out_r) {
-        /* What is left: the queue is capped (1024 messages), so this ends
-         * unless something the program left running keeps writing, which
-         * the guard (and Ctrl+C) cut short. */
-        for (unsigned guard = 0; guard < 64 && drain(s->out_r, false); guard++)
-            ;
-        jam_handle_close(s->out_r);
-    }
-    return st;
-}
-
 /* How it ended, as a status ($?). */
 static int ended(status_t st, const struct process_info *info, const char *path, uint64_t t0)
 {
@@ -266,13 +235,44 @@ static int ended(status_t st, const struct process_info *info, const char *path,
         sh_tty("run: %s was killed after %lu ms\n", path, (unsigned long)ms);
         return 137;
     }
-    sh_tty("run: %s exited with code %ld after %lu ms\n", path, (long)info->exit_code,
-           (unsigned long)ms);
+    int sig = sh_exit_signal(info->exit_code);
+    if (sig) {
+        if (sh_run_lines || (sig != 2 && sig != 13))   /* SIGINT (Ctrl+C), SIGPIPE */
+            sh_tty("run: %s killed by %s after %lu ms\n", path, sh_signal_name(sig),
+                   (unsigned long)ms);
+        return 128 + sig;
+    }
+    if (sh_run_lines)
+        sh_tty("run: %s exited with code %ld after %lu ms\n", path, (long)info->exit_code,
+               (unsigned long)ms);
     return info->exit_code < 0 ? 1 : info->exit_code > 255 ? 255 : (int)info->exit_code;
 }
 
-/* Kill what it left running, and say if its job still holds anything. */
-static void clean_job(handle_t job, const char *path)
+int sh_exit_signal(int64_t code)
+{
+    return code > EXIT_SIGNAL_BASE && code <= EXIT_SIGNAL_BASE + 64
+               ? (int)(code - EXIT_SIGNAL_BASE) : 0;
+}
+
+const char *sh_signal_name(int signo)
+{
+    static const struct { int n; const char *name; } names[] = {
+        { 1, "SIGHUP" }, { 2, "SIGINT" }, { 3, "SIGQUIT" }, { 6, "SIGABRT" },
+        { 9, "SIGKILL" }, { 10, "SIGUSR1" }, { 12, "SIGUSR2" }, { 13, "SIGPIPE" },
+        { 14, "SIGALRM" }, { 15, "SIGTERM" },
+    };
+    static char other[16];
+    for (unsigned i = 0; i < sizeof(names) / sizeof(names[0]); i++)
+        if (names[i].n == signo)
+            return names[i].name;
+    snprintf(other, sizeof(other), "signal %d", signo);
+    return other;
+}
+
+/* Kill what it left running, and say if its job still holds anything.
+ * unread_ok: bytes it wrote that nobody has read yet are no leak (a POSIX
+ * program's pipe to a program still reading). */
+static void clean_job(handle_t job, const char *path, bool unread_ok)
 {
     struct job_info ji;
     if (jam_job_get_info(job, &ji) != OK || ji.used[JOB_LIMIT_THREADS]) {
@@ -282,13 +282,225 @@ static void clean_job(handle_t job, const char *path)
     if (jam_job_get_info(job, &ji) == OK) {
         bool clean = true;
         for (unsigned k = 1; k < JOB_LIMIT_COUNT; k++)
-            clean &= ji.used[k] == 0;
+            clean &= ji.used[k] == 0 || (unread_ok && k == JOB_LIMIT_MSG_BYTES);
         if (!clean)
             sh_tty("run: its job still holds %lu pages, %lu handles, %lu threads\n",
                    (unsigned long)ji.used[JOB_LIMIT_PAGES],
                    (unsigned long)ji.used[JOB_LIMIT_HANDLES],
                    (unsigned long)ji.used[JOB_LIMIT_THREADS]);
     }
+}
+
+/* ---- the programs of a line, and waiting for them --------------------------------------- */
+
+/* One program the line started and has not finished with. A pipeline's
+ * POSIX programs are all here at once (sh_stdio.defer); a program run on
+ * its own is here for the length of its wait. */
+struct running {
+    struct started s;
+    struct sh_buf *dest;   /* where its output goes (sh_put's target while it is copied) */
+    bool     done;
+    int      code;         /* once done: its status ($?) */
+    bool     cancels;      /* once done: its end cancels the rest of the line */
+    bool     int_sent;     /* it was sent SIGINT */
+    bool     cut;          /* it was sent SIGPIPE: its pipe to a builtin is full */
+    unsigned c_seen, q_seen;   /* the presses of Ctrl+C and Ctrl+\ it has been given */
+    uint64_t kill_at;      /* its job is killed then if it is still there; never: not asked */
+};
+
+static struct running prog[SH_MAX_SEGS];
+static unsigned nprog;
+
+#define WAIT_SLICE_NS (20 * NS_PER_MS)   /* the longest settle sleeps before it looks again */
+
+/* Signal signo to the POSIX program r, and start the clock that ends its
+ * job if it takes longer than SH_SIGNAL_GRACE_NS. false if it can't be
+ * sent one (not a POSIX program, or its channel is full). */
+static bool signal_program(struct running *r, int signo)
+{
+    if (!r->s.posix || !r->s.sig ||
+        signal_send(r->s.sig, (uint8_t)signo, SIGNAL_CODE_USER, 0) == ERR_SHOULD_WAIT)
+        return false;
+    if (r->kill_at == DEADLINE_NEVER)
+        r->kill_at = now() + SH_SIGNAL_GRACE_NS;
+    return true;
+}
+
+static void kill_now(struct running *r, const char *why)
+{
+    if (r->kill_at == DEADLINE_NEVER - 1)
+        return;   /* its job is dead already */
+    sh_tty("%s: killing %s\n", why, r->s.path);
+    sh_flush();
+    jam_job_kill(r->s.job);
+    r->kill_at = DEADLINE_NEVER - 1;   /* once */
+}
+
+/* What the keys pressed since r last looked, and the clock, ask of it.
+ * Ctrl+C is SIGINT to a POSIX program (every press: it may take the first
+ * and go on) and its job killed at once for any other; Ctrl+\ is SIGQUIT,
+ * for POSIX programs only. Either signal starts a clock: the job is killed
+ * if the program has not ended SH_SIGNAL_GRACE_NS later. */
+static void give_keys(struct running *r)
+{
+    if (r->c_seen != sh_ctrl_c_hits()) {
+        r->c_seen = sh_ctrl_c_hits();
+        if (signal_program(r, LINUX_SIGINT))
+            r->int_sent = true;
+        else
+            kill_now(r, "^C");
+    }
+    if (r->q_seen != sh_quit_hits()) {
+        r->q_seen = sh_quit_hits();
+        (void)signal_program(r, LINUX_SIGQUIT);
+    }
+    if (now() >= r->kill_at) {
+        sh_tty("sh: %s is still there %u s after the signal: killing it\n", r->s.path,
+               (unsigned)(SH_SIGNAL_GRACE_NS / NS_PER_S));
+        sh_flush();
+        jam_job_kill(r->s.job);
+        r->kill_at = DEADLINE_NEVER - 1;
+    }
+}
+
+/* Copy what r wrote to where its output goes. true if more may be queued.
+ * A builtin that takes its whole input can't be fed more than SH_PIPE_MAX:
+ * when the buffer is full the program is sent SIGPIPE, as a reader that
+ * went away would (`yes | head -3`). */
+static bool drain_prog(struct running *r)
+{
+    if (!r->s.out_r)
+        return false;
+    struct sh_stdio saved = sh_stdio_get(), io = saved;
+    io.out = r->dest;
+    sh_stdio_set(io);
+    bool more = r->s.posix ? copy_pipe(r->s.out_r, sh_put)
+                           : sh_copy_output(r->s.out_r, true, sh_put);
+    sh_stdio_set(saved);
+    if (r->dest && r->dest->full && !r->cut) {
+        r->cut = true;
+        (void)signal_program(r, LINUX_SIGPIPE);
+    }
+    return more;
+}
+
+/* r ended (*info; st not OK: its process can't be asked): the rest of its
+ * output, how it ended, and its handles. */
+static void reap(struct running *r, status_t st, const struct process_info *info)
+{
+    if (r->s.out_r) {
+        /* What is left: the queue is capped (1024 messages), so this ends
+         * unless something the program left running keeps writing, which
+         * the guard cuts short. */
+        for (unsigned guard = 0; guard < 64 && drain_prog(r); guard++)
+            ;
+        jam_handle_close(r->s.out_r);
+        r->s.out_r = HANDLE_INVALID;
+    }
+    r->code = ended(st, info, r->s.path, r->s.t0);
+    r->cancels = !r->s.posix || st != OK || info->killed ||
+                 sh_exit_signal(info->exit_code) == LINUX_SIGINT;
+    clean_job(r->s.job, r->s.path, r->s.posix);
+    sh_show_log(false, NULL);
+    if (r->s.posix)
+        sh_io_posix_tty(-1);
+    jam_handle_close(r->s.proc);
+    if (r->s.sig)
+        jam_handle_close(r->s.sig);
+    jam_handle_close(r->s.job);
+    r->done = true;
+}
+
+unsigned sh_pipe_running(void)
+{
+    return nprog;
+}
+
+int sh_pipe_settle(void)
+{
+    bool int_sent = false, cancels = false;
+    for (;;) {
+        sh_poll_keys();
+        bool busy = false;
+        struct running *wait_on = NULL;
+        for (unsigned i = 0; i < nprog; i++) {
+            struct running *r = &prog[i];
+            if (r->done)
+                continue;
+            give_keys(r);
+            busy |= drain_prog(r);
+            struct process_info info = { 0 };
+            status_t st = spawn_wait(r->s.proc, 0, &info);
+            if (st != ERR_TIMED_OUT) {
+                reap(r, st, &info);
+                continue;
+            }
+            if (!wait_on || (!wait_on->s.out_r && r->s.out_r))
+                wait_on = r;
+        }
+        if (!wait_on)
+            break;
+        sh_jobs_poll(false);
+        if (busy)
+            continue;
+        /* Nothing to copy right now: sleep until its output comes or it
+         * ends (one that is read from wakes us as its data arrives). */
+        signals_t seen = 0;
+        if (wait_on->s.out_r &&
+            jam_object_wait_one(wait_on->s.out_r, SIG_READABLE | SIG_PEER_CLOSED,
+                                now() + WAIT_SLICE_NS, &seen) == OK &&
+            (seen & SIG_READABLE))
+            continue;
+        (void)spawn_wait(wait_on->s.proc, WAIT_SLICE_NS, NULL);
+    }
+    int status = nprog ? prog[nprog - 1].code : -1;
+    for (unsigned i = 0; i < nprog; i++) {
+        int_sent |= prog[i].int_sent;
+        cancels |= prog[i].cancels;
+    }
+    nprog = 0;
+    /* A POSIX program that took SIGINT and went on (or ended its own way)
+     * has dealt with the key: the rest of the line runs, as in any shell. */
+    if (int_sent && !cancels)
+        sh_cancel_clear();
+    return status;
+}
+
+/* s was started: it is waited for in sh_pipe_settle. Its stdout's read end
+ * goes on to the next stage's program when the stage says so. */
+static void add_running(const struct started *s)
+{
+    if (nprog == SH_MAX_SEGS)
+        (void)sh_pipe_settle();   /* more than a line can hold: only nested lines get here */
+    struct sh_stdio io = sh_stdio_get();
+    struct running *r = &prog[nprog++];
+    *r = (struct running){
+        .s = *s, .dest = io.out, .kill_at = DEADLINE_NEVER, .q_seen = sh_quit_hits(),
+        /* a Ctrl+C pressed while it started is its too */
+        .c_seen = sh_ctrl_c_hits() - (sh_cancelled() ? 1 : 0),
+    };
+    if (s->posix) {
+        sh_io_posix_tty(+1);
+        if (io.direct_out && s->out_r) {
+            io.direct_next = s->out_r;
+            sh_stdio_set(io);
+            r->s.out_r = HANDLE_INVALID;
+        }
+    }
+}
+
+bool sh_program_is_posix(const char *name)
+{
+    char path[SH_PATH_MAX];
+    static struct wants w;
+    handle_t vmo;
+    uint64_t size;
+    sh_quiet(true);
+    bool ok = find_program(name, path, sizeof(path)) && program_wants(path, &w, &vmo, &size);
+    sh_quiet(false);
+    if (ok && vmo)
+        jam_handle_close(vmo);
+    return ok && w.posix;
 }
 
 /* This command's redirections, if the program can take them: only a POSIX
@@ -415,20 +627,18 @@ static int run_program(int argc, char **argv)
     int code = start_program(argc, argv, false, &s);
     if (code)
         return code;
-    /* What it prints goes to the log (unless piped): shown while it runs. */
+    bool defer = s.posix && sh_stdio_get().defer;
+    /* What it prints goes to the log (unless piped): shown while it runs.
+     * The name filter is for a program alone; a pipeline's have several. */
     const char *base = strrchr(s.path, '/');
-    sh_show_log(true, base ? base + 1 : s.path);
-    sh_tty("run: %s started (Ctrl+C kills it)\n", s.path);
+    sh_show_log(true, defer ? NULL : base ? base + 1 : s.path);
+    if (sh_run_lines)
+        sh_tty("run: %s started (Ctrl+C kills it)\n", s.path);
     sh_flush();
-    struct process_info info;
-    status_t st = wait_program(&s, &info);
-    code = ended(st, &info, s.path, s.t0);
-    clean_job(s.job, s.path);
-    sh_show_log(false, NULL);
-    jam_handle_close(s.proc);
-    jam_handle_close(s.sig);
-    jam_handle_close(s.job);
-    return code;
+    add_running(&s);
+    if (defer)
+        return 0;   /* the pipeline waits for it: sh_pipe_settle */
+    return sh_pipe_settle();
 }
 
 int sh_run_program(int argc, char **argv)
@@ -453,8 +663,8 @@ int sh_start_background(int argc, char **argv)
     int code = start_program(argc, argv, true, &s);
     if (code)
         return code;
-    jam_handle_close(s.sig);   /* not kept for the background: kill %n ends its job */
-    unsigned n = sh_jobs_add(s.path, argc, argv, s.proc, s.job, s.out_r);
+    /* A POSIX program's signal channel is kept: kill %n sends SIGTERM. */
+    unsigned n = sh_jobs_add(s.path, argc, argv, s.proc, s.job, s.out_r, s.sig);
     const struct sh_job *j = sh_job_at(n - 1);
     sh_tty("[%u] %lu %s: in the background (jobs lists it, kill %%%u ends it)\n", n,
            (unsigned long)(j ? j->pid : 0), sh_basename(s.path), n);

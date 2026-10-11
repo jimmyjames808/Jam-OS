@@ -1,4 +1,4 @@
-/* comp.h: the compositor's shared model (docs/G1-PLAN.md), what every file
+/* comp.h: the compositor's shared model (docs/HISTORY.md, G1), what every file
  * of user/services/compositor/ builds on: the clients and their Wayland
  * objects, the surfaces with their double-buffered state, the windows in
  * stacking order, the output and its damage.
@@ -29,9 +29,9 @@
  *   clock.c     the paint clock (display.hz) and the frame callbacks' turn;
  *   testscene.c windows of known pixels with no client (a test power);
  *   paint.h     what those share.
- * Later tracks: xdg-shell and window management (xdg.c, wm.c, deco.c), the
- * seat and compctl (seat.c, keyboard.c, pointer.c, focus.c, sources.c,
- * shapes.c), the clipboard (data.c), the cursor set (cursors.c, drawn by
+ * Later tracks: xdg-shell and window management (xdg.c, xdgtop.c, xdgdeco.c,
+ * wm.c, deco.c), the seat and compctl (seat.c, keyboard.c, pointer.c,
+ * focus.c, sources.c, shapes.c), the clipboard (data.c), the cursor set (cursors.c, drawn by
  * tools/cursorgen.c), and the desktop around the windows: virtual screens,
  * the top bar, the menus, popovers, notifications, animations and frosting
  * (desk.h has its files).
@@ -68,7 +68,7 @@
 #include <openkeys.h>
 #include <os.h>
 
-/* ---- limits (G1-PLAN, "Limits and the security model") ---------------------------- */
+/* ---- limits (docs/HISTORY.md, G1) ------------------------------------------------- */
 
 #define COMP_CLIENTS_MAX        64u            /* connections at once, for the whole compositor */
 #define COMP_SURFACES_MAX       64u            /* per client */
@@ -88,12 +88,23 @@
 #define COMP_HIDDEN_FRAME_NS    NS_PER_S       /* a surface nobody sees: its callbacks this often */
 
 /* The globals, as advertised (the plan's table; a client binds the lower
- * of these and its own). */
-#define COMP_COMPOSITOR_VERSION 4u
-#define COMP_SHM_VERSION        1u
-#define COMP_OUTPUT_VERSION     3u
-#define COMP_SEAT_VERSION       5u
-#define COMP_XDG_WM_VERSION     1u
+ * of these and its own). What each version adds, and how it is answered:
+ *   wl_compositor 5  wl_surface.offset (attach's x and y must be 0 from 5)
+ *                 6  wl_surface.preferred_buffer_scale and _transform,
+ *                    sent once a surface is made: 1 and normal, for good;
+ *   wl_shm        2  wl_shm.release;
+ *   wl_output     4  name and description, before done;
+ *   wl_seat       8  wl_pointer.axis_value120 in place of axis_discrete,
+ *                 9  wl_pointer.axis_relative_direction (always identical);
+ *   xdg_wm_base   2  the tiled states, 3 the positioner's set_reactive,
+ *                    set_parent_size, set_parent_configure and
+ *                    xdg_popup.reposition, 4 configure_bounds, 5
+ *                    wm_capabilities, 6 the suspended state (xdgtop.c). */
+#define COMP_COMPOSITOR_VERSION 6u
+#define COMP_SHM_VERSION        2u
+#define COMP_OUTPUT_VERSION     4u
+#define COMP_SEAT_VERSION       9u
+#define COMP_XDG_WM_VERSION     6u
 
 /* ---- boxes, regions, damage (region.c) --------------------------------------------- */
 
@@ -260,7 +271,8 @@ struct comp_role_ops {
 struct comp_state {
     bool attached;                 /* attach came: buffer replaces the current one */
     struct comp_buffer *buffer;    /* a reference, or NULL (a detach) */
-    int32_t dx, dy;                /* attach's x and y: the new buffer's offset */
+    bool offset_set;               /* attach (before version 5) or offset came: dx, dy */
+    int32_t dx, dy;                /* the new buffer's offset */
     struct comp_damage damage;     /* surface coordinates; boxes in damage_boxes */
     struct comp_box damage_boxes[COMP_SURFACE_DAMAGE_MAX];
     bool opaque_set, input_set;    /* set_*_region came */
@@ -276,7 +288,7 @@ struct comp_surface {
     /* current: what the last commit made */
     struct comp_buffer *buffer;    /* shown (busy), a reference; NULL: nothing to show */
     int32_t width, height;         /* the surface's size: its buffer's (scale 1); 0 without */
-    int32_t dx, dy;                /* the last commit's attach offset, for the role to use */
+    int32_t dx, dy;                /* the last offset committed, for the role to use */
     struct comp_region opaque;     /* surface coordinates */
     struct comp_region input;      /* surface coordinates, when not input_all */
     bool input_all;                /* the whole surface takes input (the default) */
@@ -311,6 +323,9 @@ enum comp_layout {
 #define COMP_WIN_OVERLAY    (1u << 6)   /* a boot overlay (screens.c: a full-screen window whose
                                          * client takes no keys, the splash's): over every other
                                          * window, whatever is raised or made after it */
+#define COMP_WIN_CSD        (1u << 7)   /* floating, its client drawing its own decorations
+                                         * (deco.c): no title bar or outline, only the rounded
+                                         * corners and the shadow (look.h's LOOK_CSD) */
 
 /* A floating window's title bar: deco_top, in pixels (title.c draws it,
  * the window manager sets it; look.h has the rest of its look). */
@@ -884,8 +899,8 @@ void        ctl_layout_changed(enum comp_layout layout);
 /* ---- the desktop (desk.h has its inside) --------------------------------------------------
  *
  * The top bar, virtual screens, minimising, Alt+Tab's list, the search
- * box, the popovers, notifications and the animations (docs/G1-PLAN.md
- * "The look"). The seat offers it every key press and button press first,
+ * box, the popovers, notifications and the animations (docs/HISTORY.md, G1).
+ * The seat offers it every key press and button press first,
  * the loop its clock, and painting draws it over the windows. */
 
 /* At start: on (the strip and the cards) or not (the window manager
@@ -927,7 +942,7 @@ bool     ctl_now_playing(char *buf, size_t n);
 struct desk_net;
 bool     ctl_network(struct desk_net *out);
 
-/* ---- xdg-shell (xdg.c, xdgtop.c) -------------------------------------------------- */
+/* ---- xdg-shell (xdg.c, xdgtop.c, xdgdeco.c) ------------------------------------------- */
 
 /* wl_registry.bind of xdg_wm_base. */
 status_t xdg_bind(struct comp_client *cl, uint32_t id, uint32_t version);
@@ -936,6 +951,11 @@ status_t xdg_positioner_request(struct comp_client *cl, struct jwl_msg *m);
 status_t xdg_surface_request(struct comp_client *cl, struct jwl_msg *m);
 status_t xdg_toplevel_request(struct comp_client *cl, struct jwl_msg *m);
 status_t xdg_popup_request(struct comp_client *cl, struct jwl_msg *m);
+/* xdg-decoration (xdgdeco.c): its global, and its two objects' requests. */
+#define COMP_DECORATION_VERSION 1u
+status_t xdg_deco_bind(struct comp_client *cl, uint32_t id, uint32_t version);
+status_t xdg_deco_manager_request(struct comp_client *cl, struct jwl_msg *m);
+status_t xdg_deco_request(struct comp_client *cl, struct jwl_msg *m);
 /* Everything of cl's xdg-shell objects, nothing sent (before surfaces_teardown). */
 void     xdg_teardown(struct comp_client *cl);
 /* The ping clock: pings unanswered for XDG_PING_NS mark their client's

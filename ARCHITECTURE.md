@@ -293,9 +293,22 @@ Every driver and service is a userspace process from the start.
     the new pages, charged, before the new size shows (or fails and
     changes nothing). For memory a process reads that a less trusted one
     made: a Wayland client's pixel pool, read by the compositor.
-  There is no clone or copy-on-write child of a VMO; one added later must
-  not share a kept VMO's pages copy-on-write (a write would swap a page
-  under its readers), so it would copy them into a VMO of its own.
+  - *copy-on-write children* (`vmo_create_child`): a child shares its
+    parent's pages until either side writes one, which is then copied for
+    the writer alone. Sharing is flat, not a chain: every VMO's page table
+    is complete, a page counts the tables that hold it (a share count in
+    its `struct page`), a page held by one table is written in place, and
+    a child of a child shares the same pages again, so any destruction
+    order just drops counts. Creation costs a reference per shared page
+    and one shootdown of the parent's writable entries (made read-only);
+    the child is charged then for every page it may come to own, so no
+    later write fails for its job. A kept VMO's pages are copied, never
+    shared (a write would swap a page under its kept readers); a pin or a
+    kernel mapping separates its shared pages first, and no child shares
+    a pinned range. A child of a pager VMO copies the pager's pages as it
+    first touches them (MAP_PRIVATE), its whole range charged up front;
+    it is never executable. The design and its reasons: the M13 plan's
+    "F1a design".
 - **VMAR**: one flat address space per process, no nested VMARs. Maps
   VMOs with R/W/X; W^X always, and an executable mapping needs `RIGHT_EXEC`
   on the VMO handle. User mappings are tracked in a per-VMO reverse map, so

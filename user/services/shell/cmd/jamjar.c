@@ -1,4 +1,4 @@
-/* jamjar: bin/jamjar, the music player's window (docs/history/MUSIC-GUI.md):
+/* jamjar: bin/jamjar, the music player's window (docs/HISTORY.md, audio):
  * the library, now playing, the controls and the jam, with the keys and
  * the mouse; q quits it and the music plays on. It is `run jamjar`: its
  * list asks for the player (a channel of its own) and the music, read-only. */

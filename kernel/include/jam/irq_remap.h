@@ -1,6 +1,5 @@
 /* Interrupt remapping, as the rest of the kernel sees it (the VT-d side is
- * kernel/dev/vtd_irq.c; the design is docs/M11-PLAN.md, "Interrupt
- * remapping").
+ * kernel/dev/vtd_irq.c; the design is docs/HISTORY.md, M11).
  *
  * With remapping on, a device's MSI or an I/O APIC's message carries no
  * vector and no CPU: only the index of an entry in the kernel's interrupt

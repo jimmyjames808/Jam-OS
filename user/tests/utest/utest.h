@@ -260,6 +260,10 @@ int  replywait_child(int argc, char **argv);
 bool t_kept_vmo_refusals(void);
 bool t_kept_vmo_client_and_compositor(void);
 int  kept_child(int argc, char **argv);
+/* vmochild.c: copy-on-write child VMOs, and the child mode "utest cow-big". */
+bool t_vmo_child_shares(void);
+bool t_vmo_child_refusals(void);
+int  vmochild_child(int argc, char **argv);
 bool t_many_threads(void);
 bool t_lock_take(void);
 bool t_thread_fs_base(void);
@@ -270,6 +274,7 @@ bool t_posix_ids(void);
 bool t_thread_interrupt_calls(void);
 bool t_cpu_ns(void);
 bool t_sys_public_info(void);
+bool t_vmar_replace_calls(void);
 int  tidword_child(void);
 bool t_kill_spinning_and_unstarted(void);
 bool t_job_kill_reaps_orphans(void);
@@ -398,6 +403,8 @@ bool t_fat_ctl_queued(void);
 bool t_fat_restart_steps(void);
 bool t_fat_restart_handles(void);
 bool t_fat_restart_bad_request(void);
+/* ... and a mapped file's pages through it all (fat with a pager). */
+bool t_fat_restart_pager(void);
 /* fatlayout.c: FatFs's structs, as fat's state relies on them. */
 bool t_fat_layout(void);
 
@@ -784,6 +791,15 @@ bool t_xdg_tile_resize(void);
 bool t_xdg_popup(void);
 bool t_xdg_unacked(void);
 bool t_xdg_errors(void);
+/* compver.c: the versions above G1's (wl_compositor 6, wl_shm 2, wl_output
+ * 4, wl_seat 9, xdg_wm_base 6), each new event at its version and not
+ * below, and xdg-decoration's modes, toggled and refused. */
+bool t_comp_versions(void);
+bool t_comp_seat_v9(void);
+bool t_xdg_versions(void);
+bool t_xdg_tiled(void);
+bool t_xdg_decoration(void);
+bool t_xdg_decoration_bad(void);
 
 /* netdev.c: the netdev rings' code (<jam/netdev.h>): counts, a hostile
  * peer, the wake flags, the VLAN word, a fake driver thread's exchange. */

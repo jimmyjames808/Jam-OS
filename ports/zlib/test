@@ -1,0 +1,80 @@
+# zlib's test (tools/ports-test.sh): minigzip, zlib's own gzip, from the
+# package on /data/pkg: files compressed in place and back, standard input
+# to standard output, a hash check on every round trip, the same bytes out
+# of two runs, a binary file, an empty one, and a file that isn't gzip.
+# `seq 1 20000` is 108894 bytes of text; its SHA-256 below was made on the
+# Mac with Python's hashlib, and so was the .gz's size, 43771: the 10-byte
+# header minigzip writes, Python's deflate at level 6 and the 8-byte trailer.
+send run $S/seq 1 20000 > /data/zt-in; sha256sum /data/zt-in
+wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  /data/zt-in
+wait {prompt}
+
+# ---- in place: minigzip FILE makes FILE.gz and removes FILE; -d does the reverse ----------
+send cp /data/zt-in /data/zt-w; run $P/minigzip /data/zt-w; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send ls /data | grep ^zt-w.gz$ && ls /data | grep -c ^zt-w$ | grep ^0$ && echo ok-$T-gz
+wait ok-x-gz
+wait {prompt}
+send run $S/wc -c /data/zt-w.gz | run $S/sed s/^/size-/
+wait size-43771 /data/zt-w.gz
+wait {prompt}
+send run $P/minigzip -d /data/zt-w.gz; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send sha256sum /data/zt-w
+wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  /data/zt-w
+wait {prompt}
+
+# ---- standard input to standard output; the same input gives the same bytes -------------
+send run $P/minigzip -c /data/zt-in > /data/zt-c1.gz; run $P/minigzip -c /data/zt-in > /data/zt-c2.gz; cmp /data/zt-c1.gz /data/zt-c2.gz && echo ok-$T-same
+wait ok-x-same
+wait {prompt}
+send run $P/minigzip -d -c /data/zt-c1.gz > /data/zt-c.out; sha256sum /data/zt-c.out
+wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  /data/zt-c.out
+wait {prompt}
+send cat /data/zt-in | run $P/minigzip | run $P/minigzip -d | sha256sum
+wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  -
+wait {prompt}
+
+# ---- levels: -1 and -9 both round-trip, and -1 is not -9's size ---------------------------
+send run $P/minigzip -1 -c /data/zt-in > /data/zt-l1.gz; run $P/minigzip -9 -c /data/zt-in > /data/zt-l9.gz; cmp -s /data/zt-l1.gz /data/zt-l9.gz; echo st-$T=$?
+wait st-x=1
+wait {prompt}
+send run $P/minigzip -d -c /data/zt-l1.gz | sha256sum
+wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  -
+wait {prompt}
+send run $P/minigzip -d -c /data/zt-l9.gz | sha256sum
+wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  -
+wait {prompt}
+
+# ---- binary data: a program of the boot image, megabytes of it ---------------------------
+send cp /boot/bin/utest /data/zt-bin; run $P/minigzip /data/zt-bin; run $P/minigzip -d /data/zt-bin.gz; cmp /data/zt-bin /boot/bin/utest && echo ok-$T-bin
+wait ok-x-bin
+wait {prompt}
+
+# ---- an empty file; a file that isn't gzip (zlib copies it out as it is: gzread's -------
+# transparent mode); a gzip file cut short (an error) -------------------------------------
+send printf '' > /data/zt-empty; run $P/minigzip /data/zt-empty; run $P/minigzip -d /data/zt-empty.gz; run $S/wc -c /data/zt-empty | run $S/sed s/^/size-/
+wait size-0 /data/zt-empty
+wait {prompt}
+send printf 'this is not gzip data\n' > /data/zt-plain.gz; printf 'this is not gzip data\n' > /data/zt-plain.want; run $P/minigzip -d /data/zt-plain.gz; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send cmp /data/zt-plain /data/zt-plain.want && echo ok-$T-plain
+wait ok-x-plain
+wait {prompt}
+# damage inside the stream ("invalid distance too far back") and in the trailer
+# ("incorrect data check") each fail with status 1; a file cut short is what
+# upstream's minigzip takes quietly (status 0, the 85 bytes the 100 that are
+# there hold: the Mac's build of the same source does the same)
+send cp /data/zt-c1.gz /data/zt-dam1.gz; printf 'Z' | run $S/dd of=/data/zt-dam1.gz bs=1 seek=100 conv=notrunc; run $P/minigzip -d /data/zt-dam1.gz; echo st-$T=$?
+wait st-x=1
+wait {prompt}
+send cp /data/zt-c1.gz /data/zt-dam2.gz; printf 'Z' | run $S/dd of=/data/zt-dam2.gz bs=1 seek=43765 conv=notrunc; run $P/minigzip -d /data/zt-dam2.gz; echo st-$T=$?
+wait st-x=1
+wait {prompt}
+send run $S/dd if=/data/zt-c1.gz of=/data/zt-cut.gz bs=100 count=1; run $P/minigzip -d /data/zt-cut.gz; echo st-$T=$?; run $S/wc -c /data/zt-cut | run $S/sed s/^/size-/
+wait st-x=0
+wait size-85 /data/zt-cut
+wait {prompt}

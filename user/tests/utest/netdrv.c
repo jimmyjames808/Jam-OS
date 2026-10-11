@@ -394,7 +394,7 @@ static unsigned klog_count(handle_t klog, uint64_t *pos, const char *what)
 }
 
 /* A flapping link: netstack logs the first changes and then one in 64, as
- * the drivers do, not a line per change (M9-REVIEW item 9). */
+ * the drivers do, not a line per change (M9 review item 9). */
 bool t_netdrv_link_flap(void)
 {
     handle_t root = startup_handle(SR_RESOURCE), rd, klog;

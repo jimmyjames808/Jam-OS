@@ -1,6 +1,6 @@
 /* The clipboard (comp.h): wl_data_device_manager, wl_data_device,
  * wl_data_source and wl_data_offer, for the selection only (copy and paste
- * of text; docs/G1-PLAN.md, "As built: copy and paste").
+ * of text; docs/HISTORY.md, G1).
  *
  * The model. The seat has one selection: a wl_data_source of some client's,
  * or none. A source offers MIME types; only the text ones in text_types[]

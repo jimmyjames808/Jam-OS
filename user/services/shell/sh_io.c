@@ -1,22 +1,32 @@
 /* Output, pipes, input and Ctrl+C for the commands.
  *
- * Pipes: every stage runs in turn in this process (sh_exec.c). While a
- * stage runs, everything it prints through sh_put / sh_say is appended to
- * a memory buffer instead of the screen; the next stage gets that buffer
- * as its input (sh_stdin), and the last stage prints to wherever the whole
- * pipeline prints. So `dmesg | grep usb | tail -3` works with any builtin,
- * at the cost of each stage finishing before the next starts (fine for
- * text this size; a pipe holds at most 4 MiB). A program started with
- * `run` inside a pipe gets an SR_STDOUT channel, which libos's printf
- * writes to; the shell copies what arrives into the pipe (sh_program.c).
- * Kernel commands (ktest, bench, stress, kill) print into the kernel log,
- * so their text can't be piped. */
+ * Pipes: the shell's own commands run in turn in this process
+ * (sh_exec.c). While one runs, everything it prints through sh_put /
+ * sh_say is appended to a memory buffer instead of the screen; the next
+ * stage gets that buffer as its input (sh_stdin), and the last stage
+ * prints to wherever the whole pipeline prints. So `dmesg | grep usb |
+ * tail -3` works with any builtin, at the cost of each stage finishing
+ * before the next starts (fine for text this size; a pipe holds at most
+ * 4 MiB). POSIX programs in a pipeline run at once instead, joined by
+ * real pipes (sh_exec.c, sh_posix.c); the shell copies the output of one
+ * that a builtin follows into the buffer, and waits for it before the
+ * builtin runs. A native program started with `run` inside a pipe gets an
+ * SR_STDOUT channel, which libos's printf writes to; the shell copies
+ * what arrives into the pipe (sh_program.c). Kernel commands (ktest,
+ * bench, stress, kill) print into the kernel log, so their text can't be
+ * piped.
+ *
+ * Ctrl+C and Ctrl+\ (the key with code point 0x1c) reach the shell as keys
+ * while a program runs; sh_program.c turns them into signals. */
 #include "sh_core.h"
 
 #define TYPEAHEAD 128   /* keys kept for the next line; more are dropped */
 
 static struct sh_stdio io;   /* out NULL: the screen */
 static bool interrupted;
+static unsigned ctrl_c_hits, quit_hits;   /* Ctrl+C and Ctrl+\ presses, ever */
+static unsigned posix_tty;   /* POSIX programs running: their terminal echoes ^C itself */
+static bool quiet;           /* sh_tty says nothing (sh_quiet) */
 /* Keys typed while a command ran, oldest first: a ring. */
 static struct input_key_event ahead[TYPEAHEAD];
 static unsigned ahead_first, ahead_n;
@@ -101,8 +111,15 @@ void sh_say(const char *fmt, ...)
     va_end(ap);
 }
 
+void sh_quiet(bool on)
+{
+    quiet = on;
+}
+
 void sh_tty(const char *fmt, ...)
 {
+    if (quiet)
+        return;
     struct sh_buf *saved = io.out;
     io.out = NULL;
     va_list ap;
@@ -168,12 +185,43 @@ bool sh_cancelled(void)
     return interrupted;
 }
 
-/* Ctrl+C was pressed: the line stops, and what was typed before it goes. */
+void sh_cancel_clear(void)
+{
+    interrupted = false;
+}
+
+void sh_io_posix_tty(int delta)
+{
+    posix_tty = (unsigned)((int)posix_tty + delta);
+}
+
+unsigned sh_ctrl_c_hits(void)
+{
+    return ctrl_c_hits;
+}
+
+unsigned sh_quit_hits(void)
+{
+    return quit_hits;
+}
+
+/* Ctrl+\: the control character from a terminal, or a keyboard's
+ * backslash key with Ctrl. */
+static bool is_quit(const struct input_key_event *ev)
+{
+    return ev->codepoint == 0x1c || ((ev->mods & INPUT_MOD_CTRL) && ev->codepoint == '\\');
+}
+
+/* Ctrl+C was pressed: the line stops, and what was typed before it goes.
+ * "^C" is written once: by us, or, while a POSIX program holds the
+ * terminal, by its line discipline (ECHOCTL) before the key reached us,
+ * so then only the end of the line is ours. */
 static void interrupt(void)
 {
     if (!interrupted)
-        sh_tty("^C\n");
+        sh_tty(posix_tty ? "\n" : "^C\n");
     interrupted = true;
+    ctrl_c_hits++;
     ahead_n = 0;
 }
 
@@ -202,9 +250,18 @@ static bool take_key(uint64_t deadline)
         return false;
     if (sh_is_ctrl(&ev, 'c'))
         interrupt();
+    else if (is_quit(&ev))
+        quit_hits++;
     else if (ahead_n < TYPEAHEAD)
         ahead[(ahead_first + ahead_n++) % TYPEAHEAD] = ev;
     return true;
+}
+
+void sh_poll_keys(void)
+{
+    sh_flush();
+    while (take_key(0))
+        ;
 }
 
 bool sh_interrupted(void)

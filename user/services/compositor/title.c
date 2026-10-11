@@ -212,8 +212,8 @@ static void draw_bar(const struct comp_window *w, const struct tile_buf *t, cons
 
 void title_draw(const struct comp_window *w, const struct tile_buf *t)
 {
-    if (look_of(w) == LOOK_PLAIN)
-        return;
+    if (look_of(w) == LOOK_PLAIN || look_of(w) == LOOK_CSD)
+        return;   /* nothing drawn around the surface */
     struct comp_box f = window_frame(w), sb = window_surface_box(w);
     int32_t tw = t->b.x2 - t->b.x1;
     struct surf s = { t->px, tw, t->b.y2 - t->b.y1, tw };

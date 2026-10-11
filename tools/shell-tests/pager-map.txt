@@ -1,0 +1,63 @@
+# Mapped files served by fat (tools/pager-test.sh, case map): a file on the
+# second stick (/usb0, made by the script: pager.bin, 2 MiB) and the same
+# file copied to /data, hashed through a mapping twice (the second pass
+# makes no request: fat's "gone" line counts them when the mapping goes),
+# and once through a FILE_MAP_EXEC VMO read with vmo_read. A mapped file
+# can't be removed; once its mapping has gone (the program ended) it can,
+# at once. The script compares every hash with the host's sha256sum and
+# counts fat's lines.
+# QEMU_INPUT=this file, command line "shell", the drive aimg. The text
+# waited for is built from $T, so it never appears in the typed line.
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send T=p
+wait {prompt}
+monitor device_add usb-storage,id=sa,bus=xhci.0,port=2,drive=aimg
+wait 60 init: /usb0 mounted
+
+# ---- the stick's file, mapped ---------------------------------------------------------------
+send pagertest hash /usb0/pager.bin 2; echo h1-$T=$?
+wait 120 pagertest: /usb0/pager.bin: 2097152 bytes: mapped sha256
+wait h1-p=0
+wait {prompt}
+seen 10 fat /usb0: mapped file
+send pagertest xhash /usb0/pager.bin; echo x1-$T=$?
+wait 120 pagertest: /usb0/pager.bin: 2097152 bytes: own VMO sha256
+wait x1-p=0
+wait {prompt}
+send sha256sum /usb0/pager.bin; echo s1-$T=$?
+wait s1-p=0
+wait {prompt}
+
+# ---- the same bytes on /data -----------------------------------------------------------------
+send cp /usb0/pager.bin /data/pager.bin; echo c-$T=$?
+wait 120 c-p=0
+wait {prompt}
+send pagertest hash /data/pager.bin 2; echo h2-$T=$?
+wait 120 pagertest: /data/pager.bin: 2097152 bytes: mapped sha256
+wait h2-p=0
+wait {prompt}
+send pagertest xhash /data/pager.bin; echo x2-$T=$?
+wait 120 pagertest: /data/pager.bin: 2097152 bytes: own VMO sha256
+wait x2-p=0
+wait {prompt}
+
+# ---- a mapped file can't be removed; once its mapping is gone, it can ---------------------------
+send pagertest touch /data/pager.bin 4096 load /data/cue.txt &
+wait pagertest: waiting for /data/cue.txt
+send rm /data/pager.bin; echo r1-$T=$?
+wait r1-p=1
+wait {prompt}
+send write /data/cue.txt go; echo q-$T=$?
+wait q-p=0
+seen 30 pagertest: touched /data/pager.bin at 4096
+wait {prompt}
+send sleep 1; rm /data/pager.bin && echo r2-$T=$?
+wait r2-p=0
+wait {prompt}
+send rm /data/cue.txt; ls /data/pager.bin; echo l-$T=$?
+wait l-p=1
+wait {prompt}
+send reboot -f
+wait reboot: resetting

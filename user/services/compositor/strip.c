@@ -1,5 +1,5 @@
 /* The top bar (desk.h): a frosted strip along the top of a normal screen
- * with three islands on it (docs/G1-PLAN.md "The look", the owner's "3 on
+ * with three islands on it (docs/HISTORY.md, G1, the owner's "3 on
  * a strip"; sizes in look.h):
  *   left    "Jam OS" (the search box), a dot for each screen (the current
  *           one a wider apricot pill, a full-screen one a small square),

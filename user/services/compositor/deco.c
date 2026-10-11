@@ -24,7 +24,14 @@
  * all four sides, whose colour shows the focus (title.c draws a top strip
  * thinner than a title bar as border); Super+Q closes the focused window,
  * there being no close circle. A press on a tiled window's border focuses
- * it and does nothing more. */
+ * it and does nothing more.
+ *
+ * A client that draws its own decorations (WM_ST_CSD: xdg-decoration's
+ * client_side, or no decoration object at all) gets none of these but
+ * tiling's border: floating, only the rounded corners and the shadow
+ * (COMP_WIN_CSD, look.h's LOOK_CSD), so its frame is its surface, and it
+ * moves and resizes itself (xdg_toplevel.move and resize; Super+drag
+ * still works). */
 #include "wm.h"
 
 #define DECO_CORNER 16   /* this close to a corner, an edge is a corner */
@@ -35,6 +42,8 @@ struct deco_sizes deco_sizes(uint32_t states, enum comp_layout layout)
         return (struct deco_sizes){ 0, 0, 0, 0 };
     if (layout == COMP_TILING)   /* no title bar: a border all round */
         return (struct deco_sizes){ DECO_BORDER, DECO_BORDER, DECO_BORDER, DECO_BORDER };
+    if (states & WM_ST_CSD)   /* the client's own, inside its surface */
+        return (struct deco_sizes){ 0, 0, 0, 0 };
     if (states & WM_ST_MAXIMIZED)
         return (struct deco_sizes){ COMP_TITLE_H, 0, 0, 0 };
     return (struct deco_sizes){ COMP_TITLE_H, DECO_OUTLINE, DECO_OUTLINE, DECO_OUTLINE };
@@ -49,15 +58,19 @@ struct comp_box deco_inner(struct comp_box frame, uint32_t states, enum comp_lay
 
 void deco_set(struct comp_window *w, uint32_t states)
 {
-    struct deco_sizes d = deco_sizes(states, wm_layout_of(w->wm));
+    enum comp_layout layout = wm_layout_of(w->wm);
+    struct deco_sizes d = deco_sizes(states, layout);
+    bool csd = (states & WM_ST_CSD) && layout == COMP_FLOATING &&
+               !(states & (WM_ST_MAXIMIZED | WM_ST_FULLSCREEN));
     if (w->deco_top == d.top && w->deco_left == d.left && w->deco_right == d.right &&
-        w->deco_bottom == d.bottom)
+        w->deco_bottom == d.bottom && csd == !!(w->flags & COMP_WIN_CSD))
         return;
     window_damage(w);
     w->deco_top = d.top;
     w->deco_left = d.left;
     w->deco_right = d.right;
     w->deco_bottom = d.bottom;
+    w->flags = csd ? w->flags | COMP_WIN_CSD : w->flags & ~COMP_WIN_CSD;
     window_damage(w);
 }
 

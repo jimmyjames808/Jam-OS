@@ -1,4 +1,4 @@
-/* init's shell mode: the network services (docs/M9-PLAN.md): netstack,
+/* init's shell mode: the network services (docs/HISTORY.md, M9): netstack,
  * the DHCP client, the resolver, netlog and the clock from the network.
  *
  *   netstack  bin/netstack, once devmgr runs: the server end of its
@@ -17,7 +17,7 @@
  *             client end (a channel per opener). The same for
  *             /svc/net-listen's (NETSTACK_SR_NET_LISTEN): the same protocol, but its
  *             openers may also take the ports other programs can't (the
- *             listen permission, docs/M9.5-PLAN.md); init publishes it, and
+ *             listen permission, docs/HISTORY.md, M9.5); init publishes it, and
  *             the shell gives it only to a program whose list says `svc net
  *             listen`; and /svc/net-low's (NETSTACK_SR_NET_LOW), whose
  *             openers may also listen on ports below 1024, which the shell

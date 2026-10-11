@@ -65,6 +65,7 @@ static unsigned     nkids;             /* lock */
 static uint64_t     next_key = 1;      /* lock; below SIG_KEY_OURS */
 static uint32_t     gen;               /* bumped (under lock) on news; a futex */
 static int32_t      exec_child;        /* execve's child, or 0; lock */
+static uint64_t     reaped_cpu_ns;     /* CPU time of the children a wait reaped; lock */
 
 /* ---- our own ids ------------------------------------------------------------------ */
 
@@ -318,8 +319,10 @@ static long take_locked(const struct want *w, struct found *out)
         out->pid = c->pid;
         if (jam_process_get_info(c->proc, &out->info) != OK)
             out->info = (struct process_info){ .killed = 1, .exit_code = PROCESS_KILLED_CODE };
-        if (!w->keep)
+        if (!w->keep) {
+            reaped_cpu_ns += out->info.cpu_ns;   /* getrusage(RUSAGE_CHILDREN), times */
             reap_locked(i);
+        }
         return 1;
     }
     return any ? 0 : -ECHILD;
@@ -461,6 +464,14 @@ long lx_child_wait(int32_t pid, int64_t *code)
         *code = WIFEXITED(s) ? WEXITSTATUS(s) : LX_EXIT_SIGNAL + WTERMSIG(s);
     }
     return r > 0 ? 0 : r;
+}
+
+uint64_t lx_children_cpu_ns(void)
+{
+    lock_take(&lock);
+    uint64_t ns = reaped_cpu_ns;
+    lock_give(&lock);
+    return ns;
 }
 
 int32_t lx_exec_child(void)

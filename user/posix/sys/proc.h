@@ -48,6 +48,9 @@ bool    lx_group_exists(int32_t pgid);
  * LX_EXIT_SIGNAL plus the signal that ended it). 0, or -errno. execve's
  * wait. */
 long    lx_child_wait(int32_t pid, int64_t *code);
+/* The CPU time (ns) of the children a wait has reaped (Linux's
+ * RUSAGE_CHILDREN: not those reaped unwaited, with SIGCHLD ignored). */
+uint64_t lx_children_cpu_ns(void);
 /* The child execve is waiting for (the signal thread forwards every
  * signal to it), or 0. */
 int32_t lx_exec_child(void);

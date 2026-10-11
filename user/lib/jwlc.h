@@ -18,6 +18,7 @@
 #include <jwl/cursor_shape_v1.h>
 #include <jwl/jam_window_memory_v1.h>
 #include <jwl/wayland.h>
+#include <jwl/xdg_decoration_unstable_v1.h>
 #include <jwl/xdg_shell.h>
 #include <jwl_client.h>
 
@@ -36,7 +37,7 @@ struct jwlc_offer {
 };
 
 enum { JWLC_COMPOSITOR, JWLC_SHM, JWLC_WM_BASE, JWLC_SEAT, JWLC_OUTPUT, JWLC_CURSOR_SHAPE,
-       JWLC_DATA, JWLC_MEMORY, JWLC_GLOBALS };
+       JWLC_DATA, JWLC_MEMORY, JWLC_DECORATION, JWLC_GLOBALS };
 
 /* A global the library binds (jwl_client.c's jwlc_wanted, by the enum). */
 struct jwlc_want {
@@ -77,6 +78,8 @@ struct jwl_window {
     bool     resizable, alpha;
     bool     fullscreen, maximized;   /* what the program asked last */
     uint32_t surface, xdg_surface, toplevel;   /* ids on this connection; 0: none */
+    uint32_t decoration;              /* its zxdg_toplevel_decoration_v1 here; 0: none */
+    uint32_t deco_mode;               /* the mode the compositor last said; 0: none yet */
     /* configure: the toplevel's part waits for xdg_surface.configure */
     int32_t  pend_w, pend_h;
     uint32_t pend_states;

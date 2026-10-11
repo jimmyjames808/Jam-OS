@@ -50,7 +50,7 @@ static void dev_info(void *ctx, struct srv_info *out)
  * the last tally dump that landed (at most about a second old: the guard
  * asks for one every second) less the one at the start. Nothing here waits
  * for the chip (tally_recent asks for the next dump and returns), so a
- * netstack that floods `stats` can't hold up the loop (M9-REVIEW 13). */
+ * netstack that floods `stats` can't hold up the loop (M9 review 13, docs/HISTORY.md). */
 static void dev_stats(void *ctx, struct netdev_stats *s)
 {
     struct full *f = ctx;

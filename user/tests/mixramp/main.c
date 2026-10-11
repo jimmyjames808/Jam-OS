@@ -1,6 +1,6 @@
 /* mixramp: a ramp played through the mixer while the mixer is killed
- * again and again (docs/M11.6-PLAN.md, "The demonstration and its
- * tests"); tools/mixer-restart-test.sh runs it in QEMU and checks the WAV
+ * again and again (docs/HISTORY.md, M11.6);
+ * tools/mixer-restart-test.sh runs it in QEMU and checks the WAV
  * QEMU captured.
  *
  *     mixramp [kills [interval_ms]]     (20 kills, 300 ms apart by default)

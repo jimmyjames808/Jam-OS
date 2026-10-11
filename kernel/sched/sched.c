@@ -458,17 +458,35 @@ static inline void account_switch(struct cpu *c, struct thread *prev, const stru
     __atomic_store_n(&c->idle_now, next->is_idle, __ATOMIC_RELAXED);
 }
 
+/* Under the run queue lock of t's CPU: schedule() holds it from
+ * account_switch to the change of `current`, and t's CPU changes only
+ * under the lock of the CPU it goes to, while t isn't running, so no
+ * switch of t falls between the reads. Without it, a switch-out (and in
+ * again) between the read of run_tsc and the look at the CPU lost the run
+ * that had just ended, or counted it twice: the clock went back.
+ * (test: sysinfo_cpu_time_never_backwards) */
 uint64_t thread_cpu_tsc(struct thread *t)
 {
-    uint64_t v = __atomic_load_n(&t->run_tsc, __ATOMIC_RELAXED);
-    uint32_t i = thread_cpu(t);
-    if (__atomic_load_n(&t->on_cpu, __ATOMIC_ACQUIRE) && i < cpu_count && cpus[i] &&
-        cpus[i]->current == t) {
-        uint64_t last = __atomic_load_n(&cpus[i]->switch_tsc, __ATOMIC_RELAXED), now = rdtsc();
-        if (last && now > last)
-            v += now - last;
+    for (;;) {
+        uint32_t i = thread_cpu(t);
+        DBG_HOOK(DBG_CPU_TIME, t);
+        if (i >= cpu_count || !cpus[i])
+            return __atomic_load_n(&t->run_tsc, __ATOMIC_RELAXED);   /* never ran anywhere */
+        struct runqueue *rq = &rqs[i];
+        uint64_t f = spin_lock_irqsave(&rq->lock);
+        if (thread_cpu(t) != i) {
+            spin_unlock_irqrestore(&rq->lock, f);
+            continue;   /* moved meanwhile: lock where it is now */
+        }
+        uint64_t v = __atomic_load_n(&t->run_tsc, __ATOMIC_RELAXED);
+        if (cpus[i]->current == t) {
+            uint64_t last = __atomic_load_n(&cpus[i]->switch_tsc, __ATOMIC_RELAXED), now = rdtsc();
+            if (last && now > last)
+                v += now - last;
+        }
+        spin_unlock_irqrestore(&rq->lock, f);
+        return v;
     }
-    return v;
 }
 
 uint64_t sched_cpu_idle_tsc(uint32_t i)

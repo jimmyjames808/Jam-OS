@@ -100,6 +100,7 @@ struct corner_mask {
     uint8_t ring[MASK_CORNER_MAX * MASK_CORNER_MAX];
 };
 extern struct corner_mask mask_float, mask_tile;     /* LOOK_RADIUS, LOOK_TILE_RADIUS */
+extern struct corner_mask mask_csd;                  /* LOOK_RADIUS, no edge band */
 extern uint8_t mask_disc[LOOK_BTN_D * LOOK_BTN_D];   /* a title bar circle */
 extern uint8_t mask_symbol[TITLE_BUTTONS][LOOK_BTN_D * LOOK_BTN_D];   /* x, -, full screen */
 /* All of them made (once, before the workers paint). */

@@ -1,0 +1,18 @@
+# The files of sbase (third_party/sbase, vendored unmodified) that the build
+# replaces with ours: the same format and check as musl's
+# (user/posix/musl/OVERRIDES, tools/checkoverrides.py). The upstream file
+# (relative to third_party/sbase), the SHA-256 of the upstream file ours was
+# written against, and our file (relative to this directory). A new
+# sbase that changed one of these stops the build until someone has read
+# upstream's change, brought ours up to date and recorded the new hash.
+#
+# Each of these three starts a program with fork + execvp, and Jam OS has no
+# fork (docs/M13-PLAN.md question 4): ours is upstream's file with that one
+# place made posix_spawnp, failing as the forked child did.
+
+# find -exec / -ok: the command is started by spawn().
+find.c c9403764e5dbe67231aca35d61f1240275d2d984f7406a95779951af13dad101 override/find.c
+# time: the timed command.
+time.c 9e724070b53ff0e3dcf50972057891b93700860ff1985ec2f4b428e400f8c6b9 override/time.c
+# xargs: the command, once per batch.
+xargs.c cfc0205fc8a87e142bccd73853592680697e1551c8d9e69e2fafc835d62a7ed9 override/xargs.c

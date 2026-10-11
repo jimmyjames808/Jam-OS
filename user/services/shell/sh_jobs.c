@@ -16,10 +16,17 @@
  * program waits.
  *
  * At most SH_MAX_JOBS at once. Each costs the shell three handles (its
- * process, its job, its output channel) and nothing from init, whose spawn
- * of the shell already hands over the most extras a spawn takes. A program
- * that ended keeps its number until its notice ("[2] done: jamjar (exit
- * 0)") is printed: at the next prompt, or by `jobs`. */
+ * process, its job, its output channel; a POSIX program's signal channel
+ * is a fourth) and nothing from init, whose spawn of the shell already
+ * hands over the most extras a spawn takes. A program that ended keeps its
+ * number until its notice ("[2] done: jamjar (exit 0)", or "[2] killed:
+ * pxio (SIGTERM)" for a POSIX program a signal ended) is printed: at the
+ * next prompt, or by `jobs`.
+ *
+ * `kill %n` on a POSIX program sends SIGTERM, then kills its job if it has
+ * not ended 2 s later (SH_SIGNAL_GRACE_NS); any other program's job is
+ * killed at once. */
+#include <idl/signal.h>
 #include "sh_core.h"
 
 static struct sh_job jobs[SH_MAX_JOBS];   /* jobs[i] is number i + 1 */
@@ -49,7 +56,7 @@ const struct sh_job *sh_job_at(unsigned i)
 }
 
 unsigned sh_jobs_add(const char *path, int argc, char **argv, handle_t proc, handle_t job,
-                     handle_t out_r)
+                     handle_t out_r, handle_t sig)
 {
     unsigned i;
     for (i = 0; i < SH_MAX_JOBS && jobs[i].n; i++)
@@ -57,7 +64,7 @@ unsigned sh_jobs_add(const char *path, int argc, char **argv, handle_t proc, han
     if (i == SH_MAX_JOBS)
         return 0;   /* the caller checked sh_jobs_full first */
     struct sh_job *j = &jobs[i];
-    *j = (struct sh_job){ .n = i + 1, .proc = proc, .job = job, .out_r = out_r };
+    *j = (struct sh_job){ .n = i + 1, .proc = proc, .job = job, .out_r = out_r, .sig = sig };
     snprintf(j->name, sizeof(j->name), "%s", sh_basename(path));
     struct process_info info;
     if (jam_process_get_info(proc, &info) == OK)
@@ -97,9 +104,12 @@ static void finish(struct sh_job *j, const struct process_info *info)
     jam_handle_close(j->out_r);
     jam_handle_close(j->proc);
     jam_handle_close(j->job);
-    j->out_r = j->proc = j->job = HANDLE_INVALID;
+    if (j->sig)
+        jam_handle_close(j->sig);
+    j->out_r = j->proc = j->job = j->sig = HANDLE_INVALID;
     j->ended = true;
-    j->killed = info->killed != 0;
+    j->signo = sh_exit_signal(info->exit_code);
+    j->killed = info->killed != 0 || j->signo;
     j->code = info->exit_code;
 }
 
@@ -125,7 +135,9 @@ bool sh_jobs_poll(bool prompt)
 
 void sh_job_say_end(const struct sh_job *j)
 {
-    if (j->killed)
+    if (j->signo)
+        sh_tty("[%u] killed: %s (%s)\n", j->n, j->name, sh_signal_name(j->signo));
+    else if (j->killed)
         sh_tty("[%u] killed: %s\n", j->n, j->name);
     else
         sh_tty("[%u] done: %s (exit %ld)\n", j->n, j->name, (long)j->code);
@@ -162,6 +174,23 @@ status_t sh_job_kill(unsigned n)
     struct sh_job *j = &jobs[n - 1];
     if (j->ended)
         return ERR_BAD_STATE;
+    /* A POSIX program is asked first (SIGTERM, which its default action
+     * obeys and a handler may take); its job goes if it is still there
+     * SH_SIGNAL_GRACE_NS later. */
+    if (j->sig && signal_send(j->sig, LINUX_SIGTERM, SIGNAL_CODE_USER, 0) == OK) {
+        uint64_t until = now() + SH_SIGNAL_GRACE_NS;
+        while (!j->ended && now() < until) {
+            struct process_info info;
+            if (spawn_wait(j->proc, SH_JOBS_POLL_NS, &info) == OK)
+                break;
+            sh_jobs_poll(false);   /* its output meanwhile, and the others' ends */
+            sh_flush();
+        }
+        sh_jobs_poll(false);   /* this one's end, if it came */
+        if (j->ended)
+            return OK;
+        sh_tty("[%u] %s did not end 2 s after SIGTERM: killing it\n", j->n, j->name);
+    }
     status_t st = jam_job_kill(j->job);   /* returns once all of it is dead */
     struct process_info info;
     if (st == OK)

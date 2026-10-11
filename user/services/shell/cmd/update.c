@@ -1,5 +1,5 @@
 /* update: take the build the Mac serves (tools/update-server.py), without
- * moving the stick (docs/M9-PLAN.md "update: a new build from the Mac").
+ * moving the stick (docs/HISTORY.md, M9).
  *   update [-n | -m | -w] [-r] [-f] [server address]
  * The server is net.host in /data/etc/settings unless given. The shell
  * takes an offer channel from init (initctl.update_offer) and starts

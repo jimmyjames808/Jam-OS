@@ -270,6 +270,7 @@ static long futex_wait(uint32_t *word, uint32_t val, const struct timespec *ts)
     case ERR_BAD_STATE:      return -EAGAIN;   /* the word wasn't val */
     case ERR_TIMED_OUT:      return -ETIMEDOUT;
     case ERR_CANCELED:       return -EINTR;
+    case ERR_IO:             return -EFAULT;   /* the word's page couldn't be read in */
     }
     return lx_err(st);
 }

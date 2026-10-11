@@ -224,13 +224,26 @@ static uint32_t hex32(const char *s)
     return v;
 }
 
+/* A decimal number; it stops at the first character that isn't a digit
+ * (and at a value past 2^40 pages: far beyond any memory). */
+static uint64_t dec64(const char *s)
+{
+    uint64_t v = 0;
+    for (; *s >= '0' && *s <= '9' && v < (1ull << 40); s++)
+        v = v * 10 + (uint64_t)(*s - '0');
+    return v;
+}
+
 int main(int argc, char **argv)
 {
     sup_log("volumes", sup_sink);   /* first: everything after may say something */
     volumes_started = now();
     bool nospare = false;
+    uint64_t pager_pages = 0;
     for (int i = 1; i < argc; i++) {
         nospare |= !strcmp(argv[i], "nospare");
+        if (!strncmp(argv[i], "pagerpages=", 11))
+            pager_pages = dec64(argv[i] + 11);
         if (!strncmp(argv[i], "bootdisk=", 9))
             boot_mbr_id = hex32(argv[i] + 9);
     }
@@ -249,6 +262,7 @@ int main(int argc, char **argv)
     }
     notice_init(&notices, startup_handle(VOLUMES_SR_NOTIFY));
     spare_init(!nospare);
+    pager_init(pager_pages);
     handle_t disks_end = startup_handle(VOLUMES_SR_DISKS);
     say(false, "volumes: serving%s", disks_end ? "" : " (no disks channel)");
     disks_set(disks_end);

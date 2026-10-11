@@ -30,6 +30,15 @@
  *   SR_KEEP        optional: its end of the keep channel (<keep.h>); devmgr
  *                  is the keeper, fat puts every open file's and view's
  *                  handles with it, and a successor is handed them back.
+ *   FAT_SR_PAGER   optional: the mount's pager (abi/syscalls.def 160-164),
+ *                  made by volumes with READ WRITE WAIT only (fat cannot
+ *                  pass it on, as it cannot the state VMO). The pages of
+ *                  the files it maps come from fat through it. Every
+ *                  instance of the mount is handed the same pager (the
+ *                  warm spare too, when it is promoted); volumes keeps it
+ *                  across restarts and closes it with the mount, which
+ *                  detaches every VMO it made. Without one, file.map is
+ *                  ERR_NOT_SUPPORTED.
  *
  * devmgr also starts one fat with nothing but SR_STANDBY, the warm spare
  * (<svcstate.h>), and promotes it with the handles above when a mount's
@@ -39,7 +48,7 @@
  * words after it may be, in any order: FAT_ARG_FORMAT (below), and for an
  * instance that replaces one that ended, FAT_ARG_KILLED (a deliberate
  * kill) or FAT_ARG_CRASHED (any other end): only a crash counts against
- * the request in progress (docs/M11.6-PLAN.md, Q1: a request in progress
+ * the request in progress (docs/HISTORY.md, M11.6, Q1: a request in progress
  * at two crashes is answered ERR_IO and dropped). A test that starts fat
  * itself may add test powers (user/services/fat/test.c).
  *
@@ -63,6 +72,7 @@
 #define FAT_SR_SERVE (SR_USER + 2)   /* SR_DRIVER(DR_SERVE) */
 #define FAT_SR_CTL   (SR_USER + 3)
 #define FAT_SR_OWN   (SR_USER + 4)
+#define FAT_SR_PAGER (SR_USER + 5)
 
 /* SR_STATE's size: room for fat's layout (svcstate_size of it, about
  * 1.3 MiB) and its growth. Pages are committed only as fat uses them, so

@@ -6,7 +6,9 @@ wait 120 Jam OS shell
 wait {prompt}
 send run wltest --spawn --script
 wait 10 wltest: connected:
+wait 30 wltest: decoration: server-side
 wait 30 wltest: connected again (connection 2)
+wait 30 wltest: decoration: server-side
 wait 30 wltest: PASS
 wait {prompt}
 

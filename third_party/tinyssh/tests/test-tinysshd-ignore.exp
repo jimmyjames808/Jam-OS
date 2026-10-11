@@ -1,0 +1,26 @@
+--- tinysshd handles nonstrict-before-ignore
+0
+
+--- tinysshd handles nonstrict-before-debug
+0
+
+--- tinysshd handles nonstrict-before-multiple
+0
+
+--- tinysshd handles nonstrict-during-ignore
+0
+
+--- tinysshd handles nonstrict-during-debug
+0
+
+--- tinysshd handles strict-before-ignore
+0
+
+--- tinysshd handles strict-before-debug
+0
+
+--- tinysshd handles strict-during-ignore
+0
+
+--- tinysshd handles strict-during-debug
+0

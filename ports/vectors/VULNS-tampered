@@ -1,0 +1,7 @@
+jamos-vulns 1
+serial 5
+made 2026-10-11T00:00:00Z
+vuln vec - - - JAMOS-2026-1 every Vec so far
+vuln zlib - 1.2.13 - CVE-2022-37434 inflateGetHeader's extra field overflow
+vuln zlib 1.2.0 1.3.1 2 CVE-2026-0001 fixed in 1.3.1's second revision
+signature dae6f4bedeee25c1a0b26afb3fdf822c680f392f36185b23f7f9ff14eb0b4549dd9751b4f77e4ed41311b9ba8f0221b0a8b4f4a8d158289a7f5e0301d5548f08

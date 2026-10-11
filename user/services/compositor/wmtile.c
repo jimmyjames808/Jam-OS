@@ -1,5 +1,5 @@
-/* Tiling's layout (wm.h): dwindle, the owner's pick (docs/G1-PLAN.md "The
- * look", after trying six layouts in the prototype).
+/* Tiling's layout (wm.h): dwindle, the owner's pick (docs/HISTORY.md, G1,
+ * after trying six layouts in the prototype).
  *
  * Each tiling screen (screens.c) has a binary tree. A leaf is a window's
  * tile; a split cuts its room in two, side by side (across) or one over

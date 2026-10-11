@@ -22,7 +22,7 @@
  * pin's output off, and serves one output stream on that path's DAC. The
  * path is unmuted (at the gain below) only while the stream runs: start
  * opens it, stop, the stream's close and the driver's exit mute it again,
- * so the jack is silent whenever nothing plays (docs/history/A1-PLAN.md). Where an
+ * so the jack is silent whenever nothing plays (docs/HISTORY.md, audio). Where an
  * amp on the path can mute it (the PC's ALC897, QEMU's codecs with their
  * mixer) the amps are the mute, and the output stage (the pin's output and
  * EAPD) is on from the driver's start to its exit, so its power-up thump
@@ -343,7 +343,7 @@ static inline status_t hda_open_output_call(handle_t ch, bool idl_within, uint64
         *out_period = idl_r.period;
     return idl_st;
 }
-/* ---- the output stream (docs/history/A1-PLAN.md) ----
+/* ---- the output stream (docs/HISTORY.md, audio) ----
  * One output stream, 48 kHz, 2 channels: rate 48000, channels 2, bits 16,
  * 20, 24 or 32, as the DAC takes them (info's `pcm`, bits 17-20; anything
  * else: ERR_NOT_SUPPORTED); a second open while one is open:
@@ -401,7 +401,7 @@ static inline status_t hda_set_gain_call(handle_t ch, bool idl_within, uint64_t 
         *out_max = idl_r.max;
     return idl_st;
 }
-/* ---- the gain (docs/history/A1-PLAN.md, stage 3) ----
+/* ---- the gain (docs/HISTORY.md, audio, stage 3) ----
  * The path's volume: the output amp of the first node on the path that
  * has gain steps (the DAC's on the PC's ALC897 and QEMU's codecs), in
  * centibels (tenths of a dB; 0 is 0 dB, the amp's own unity step). The
@@ -559,7 +559,7 @@ static inline status_t hda_jacks_call(handle_t ch, bool idl_within, uint64_t idl
         *out_text_len = idl_l2;
     return idl_st;
 }
-/* ---- the jacks (docs/history/A1-PLAN.md, stage 4) ----
+/* ---- the jacks (docs/HISTORY.md, audio, stage 4) ----
  * Every pin the codecs describe as a jack with presence detection, as the
  * driver tracks it (debounced; not read anew for this call). pins and
  * states: each one's node and state, in the driver's order (its

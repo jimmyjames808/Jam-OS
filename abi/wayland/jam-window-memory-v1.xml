@@ -2,9 +2,8 @@
 <protocol name="jam_window_memory_v1">
   <interface name="jam_window_memory_v1" version="1">
     <description summary="windows that come back to their places">
-      Jam OS's own protocol (docs/G1-PLAN.md, "As built: the compositor
-      remembers the arrangement"). When the compositor is restarted its
-      clients connect again and make their windows again, in whatever
+      Jam OS's own protocol (docs/HISTORY.md, G1). When the compositor is
+      restarted its clients connect again and make their windows again, in whatever
       order they happen to; this lets each window go back where it was
       (its screen, its place in the tiles, its floating box, minimised or
       not).

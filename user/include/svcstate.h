@@ -1,6 +1,5 @@
 /* A service's state VMO, and warm spares (user/lib/svcstate.c, the
- * standby half of user/lib/start.c; docs/M11.6-PLAN.md, "The state VMO",
- * "The request in progress" and "The warm spare").
+ * standby half of user/lib/start.c; docs/HISTORY.md, M11.6).
  *
  * **The state VMO** holds what a service knows (open files, positions,
  * what it holds for the disk), so that a successor carries on where a

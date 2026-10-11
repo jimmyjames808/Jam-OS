@@ -4,7 +4,7 @@
 # player serves the same channel (startup role MUSIC_SR_CTL); init
 # publishes the client end as /svc/music, a channel per opener, for the
 # shell's `music` command. The plan is
-# docs/history/A2-PLAN.md, "Music player".
+# docs/HISTORY.md, audio.
 # Format: see tools/genidl.py.
 #
 # Reconnect: init holds the channel across the player's restarts, so a

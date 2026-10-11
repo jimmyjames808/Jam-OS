@@ -17,7 +17,7 @@
  * A write that touches any of those bytes is refused, except a write of
  * the command register with TE clear (switching the transmitter off is
  * always allowed). Refused as well, though nothing in the driver writes
- * them, tx.c included (M9-REVIEW item 6 (d); offsets from Realtek's own
+ * them, tx.c included (M9 review item 6 (d), docs/HISTORY.md; offsets from Realtek's own
  * r8125 driver, GPL, used here as facts only, and Linux's r8169; the
  * PC's probe logs them, chip_txq_log, until a run confirms them):
  *

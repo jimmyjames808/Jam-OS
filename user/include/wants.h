@@ -1,6 +1,6 @@
 /* A program's list: what it wants to be given when it runs (the services
  * and mounts of its namespace, and powers on the root resource), carried
- * in its own ELF file (docs/history/M8.6-SVC.md, "The program's list").
+ * in its own ELF file (docs/HISTORY.md, M8.6).
  *
  * A program declares it once, in any one of its source files:
  *

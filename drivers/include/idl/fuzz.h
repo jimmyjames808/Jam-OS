@@ -1258,12 +1258,26 @@ static status_t idl_fz_file_sync(void *ctx)
         return ERR_IO;
     return OK;
 }
+static status_t idl_fz_file_map(void *ctx, uint32_t flags, handle_t *out_vmo, uint64_t *out_size)
+{
+    (void)ctx;
+    (void)flags;
+    (void)out_vmo;
+    (void)out_size;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    if (drv_event_create(out_vmo) != OK)
+        return ERR_NO_MEMORY;
+    *out_size = (uint64_t)0x5a5a5a5a5a5a5a5aull;
+    return OK;
+}
 static const struct file_ops idl_fz_file_ops = {
     .read = idl_fz_file_read,
     .write = idl_fz_file_write,
     .truncate = idl_fz_file_truncate,
     .stat = idl_fz_file_stat,
     .sync = idl_fz_file_sync,
+    .map = idl_fz_file_map,
 };
 static uint32_t idl_fz_file_serve(const void *q, uint32_t n, const handle_t *hs,
                                 uint32_t nh, void *r, handle_t *rhs, uint32_t *rhn)
@@ -1277,6 +1291,7 @@ static const struct idl_fuzz_msg idl_fz_file_msgs[] = {
     { 0x00110003u, 16u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x00110004u, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x00110005u, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x00110006u, 12u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
 };
 
 /* ---- fs ---- */
@@ -4818,7 +4833,7 @@ static const struct idl_fuzz_proto idl_fuzz_protos[] __attribute__((unused)) = {
     { "devmgrctl", 91, DEVMGRCTL_REQ_MAX, DEVMGRCTL_REP_MAX, DEVMGRCTL_REP_HANDLES, idl_fz_devmgrctl_serve, NULL, idl_fz_devmgrctl_msgs, 13 },
     { "dns", 30, DNS_REQ_MAX, DNS_REP_MAX, DNS_REP_HANDLES, idl_fz_dns_serve, NULL, idl_fz_dns_msgs, 1 },
     { "edu", 2, EDU_REQ_MAX, EDU_REP_MAX, EDU_REP_HANDLES, idl_fz_edu_serve, NULL, idl_fz_edu_msgs, 4 },
-    { "file", 17, FILE_REQ_MAX, FILE_REP_MAX, FILE_REP_HANDLES, idl_fz_file_serve, NULL, idl_fz_file_msgs, 5 },
+    { "file", 17, FILE_REQ_MAX, FILE_REP_MAX, FILE_REP_HANDLES, idl_fz_file_serve, NULL, idl_fz_file_msgs, 6 },
     { "fs", 16, FS_REQ_MAX, FS_REP_MAX, FS_REP_HANDLES, idl_fz_fs_serve, NULL, idl_fz_fs_msgs, 9 },
     { "fsctl", 20, FSCTL_REQ_MAX, FSCTL_REP_MAX, FSCTL_REP_HANDLES, idl_fz_fsctl_serve, NULL, idl_fz_fsctl_msgs, 2 },
     { "hda", 21, HDA_REQ_MAX, HDA_REP_MAX, HDA_REP_HANDLES, idl_fz_hda_serve, NULL, idl_fz_hda_msgs, 9 },

@@ -1,4 +1,7 @@
-Vendored third-party code:
+Vendored third-party code. Each component's licence text is in the boot
+image, /boot/share/licences/<name>/ (the Makefile's LICENCES, and the
+recipe of each port in ports/: `make check` stops on a directory here that
+has neither):
 
 - limine/: Limine v11.x-binary @ 5be26a7 (BSD-2-Clause)
 - limine-protocol/: limine.h @ 3a0526b (0BSD)
@@ -159,8 +162,10 @@ Vendored third-party code:
   wayland-protocols 1.49 (tag 1.49, commit
   ee78491a237eaff9389a0ccf8680521d074407d3, stable/xdg-shell/xdg-shell.xml,
   sha256 7ba7f9c8473deee6...) and cursor-shape-v1.xml from the same release
-  (staging/cursor-shape/cursor-shape-v1.xml, sha256 bb57d91e53a79dad...),
-  all from https://gitlab.freedesktop.org/wayland/.
+  (staging/cursor-shape/cursor-shape-v1.xml, sha256 bb57d91e53a79dad...)
+  and xdg-decoration-unstable-v1.xml from the same release
+  (unstable/xdg-decoration/xdg-decoration-unstable-v1.xml, sha256
+  68753c4a85a28659...), all from https://gitlab.freedesktop.org/wayland/.
   MIT: each project's COPYING is kept beside them (COPYING-wayland,
   COPYING-wayland-protocols); README.md there has every file's source and
   sha256. The generated user/include/jwl/*.h and user/lib/jwl_*.c carry the
@@ -196,20 +201,20 @@ Vendored third-party code:
   and src/math/: the math tests' data includes crlibm's (LGPL, see its
   COPYING there), which this tree does not take (CODING-GUIDE: no GPL or
   LGPL code), and the math set is not run. Built as the one program
-  bin/libc-test by user/ports/libc-test/ (libc-test.mk): the functional
+  usr/bin/libc-test by the recipe ports/libc-test/: the functional
   and regression sets, each test as upstream writes it but for its
-  tmpfile (user/ports/libc-test/shim.h), run by that directory's runner
+  tmpfile (ports/libc-test/files/shim.h), run by that directory's runner
   against expected-failures.txt; api/ (compile-time header tests) and
   musl/ are vendored and not built.
 - sbase/: sbase (suckless.org's POSIX utilities) at commit
   c546c3a5724c81cee9a11d816a38ccdf17472129 (2026-05-22, master then), from
   https://git.suckless.org/sbase (the commit's tree as `git archive` gives it,
   nothing changed; sbase has no releases). MIT/X (LICENSE, sha256
-  eb0b719b3327af6c...). Built by user/ports/ports.mk and sbase/sbase.mk into
+  eb0b719b3327af6c...). Built by the recipe ports/sbase/ into
   three multi-call programs (usr/bin/<tool> in the boot image), less bc (needs
   yacc), getconf (a generated header), make/ and the tools Jam OS has no use
   for (chown, mknod, cron, tftp, ...); find, time and xargs are ours
-  (user/ports/sbase/OVERRIDES: fork + exec is posix_spawnp), and the build
+  (ports/sbase/OVERRIDES: fork + exec is posix_spawnp), and the build
   checks upstream's file is still the one ours was written against. A bug
   upstream at this commit: rev(1) does not reverse (UTF8_POINT is the opposite
   test of what rev.c wants, since commit 3de61ef), so rev is not built.
@@ -218,5 +223,31 @@ Vendored third-party code:
   2335b6c582a52654f94612bf10d2f4672805d05329aa6568b1d8cd9e5c6fb8e6, which is
   what lua.org lists beside it). MIT: LICENSE here is not in the tarball (it
   has no licence file) but the licence text its doc/readme.html carries. Built
-  by user/ports/lua/lua.mk into usr/bin/lua (the interpreter, no luac;
+  by the recipe ports/lua/ into usr/bin/lua (the interpreter, no luac;
   LUA_USE_POSIX, no dlopen, no readline).
+- tinyssh/: tinyssh 20261001 by Jan Mojzis, the SSH server (bin/sshd;
+  docs/M13-PLAN.md section 15), from the release's tag at
+  https://github.com/janmojzis/tinyssh (tag 20261001, commit
+  dc05d1401c9f8e3f8202469a3f03956e886f7b62, 2026-10-01): GitHub's archive
+  of the tag, https://github.com/janmojzis/tinyssh/archive/refs/tags/20261001.tar.gz
+  (sha256 f79b1b4b8db16d3b1ecc339828d48c3754e354634ac28d2fbf82c85da56e503e
+  when fetched on 2026-10-11; the project publishes no tarball of its own),
+  the whole of it, unmodified. LICENSE.md: "TinySSH is hereby placed into
+  the public domain", SPDX CC0-1.0 OR 0BSD OR MIT-0 OR MIT, the user's
+  choice (its cryptoint/ and the tests' _crypto-test_*.inc, from D. J.
+  Bernstein's work, add LicenseRef-PD-hp to the same list): Jam OS takes
+  it under 0BSD. Built by user/ports/tinyssh/tinyssh.mk (not its Makefile
+  or configure probes: a fixed feature header,
+  user/ports/tinyssh/tinyssh-features.h), with its own crypto (Ed25519,
+  X25519, sntrup761, ChaCha20-Poly1305; none of the outside libraries),
+  less the files that fork, set uids or write login records, and with four
+  files replaced by ours (user/ports/tinyssh/OVERRIDES, each listed with
+  its upstream sha256, which tools/checkoverrides.py checks before every
+  build and in `make check`; each of ours says what changed and why):
+  channel.c (a session of init's in place of a pty, fork and exec),
+  subprocess_sign.c and subprocess_auth.c (their helpers started with
+  posix_spawn, the keys in /data/etc/authorized_keys) and tinysshd.c (the
+  multi-call wrapper: tinysshd, its helpers and the listener, sshd.c, in
+  one program). No subsystems (no sftp, no scp: tinyssh has one only when
+  its start names it, and sshd names none), and no agent or port
+  forwarding (tinyssh opens a "session" channel only).

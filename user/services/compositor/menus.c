@@ -1,5 +1,5 @@
 /* The search box and Alt+Tab's list (desk.h; the owner's picks in
- * docs/G1-PLAN.md "The look"). Both are frosted cards (frost.c) drawn by
+ * docs/HISTORY.md, G1). Both are frosted cards (frost.c) drawn by
  * menudraw.c from the boxes here; at most one of them is open.
  *
  * The search box (the app menu): opened by tapping Super alone or clicking

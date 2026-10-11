@@ -1,0 +1,25 @@
+# The SSH server end to end (tools/ssh-test.sh runs this): a static address
+# (net.address), QEMU's e1000e, a throwaway key in /data/etc/authorized_keys
+# (and an ssh-rsa line, which doesn't count), and tools/sshcheck.py on the
+# test host logging in through the peer's --tcp-forward to the guest's port
+# 22. This side checks init's start of bin/sshd and the host key it makes
+# on this first boot, the shell's `ssh`, and that the server is still there
+# with nothing open once the client's side is done (its last login, as
+# sshcheck-done, is refused on purpose: that line).
+wait 120 Jam OS shell
+seen 60 init: net.address is set: the static address, no DHCP client
+seen 120 init: SSH host key made in /data/etc/ssh
+seen 120 init: SSH host key SHA256:
+seen 120 sshd: listening on port 22 (at most 8 connections)
+wait {prompt}
+send ssh
+wait 10 keys that may log in: 1 (/data/etc/authorized_keys
+wait 10 server: running on port 22
+wait {prompt}
+wait 900 account sshcheck-done: not exist
+sleep 3
+send ssh
+wait 10 ), 0 connections
+wait {prompt}
+send reboot -f
+wait reboot: resetting

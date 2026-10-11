@@ -1,4 +1,4 @@
-/* The desktop's plumbing (track D2b, docs/G1-PLAN.md "As built: D2b"):
+/* The desktop's plumbing (track D2b, docs/HISTORY.md, G1):
  * what desk.c's hooks (comp.h) reach through the channels init gives the
  * compositor, each as narrow as its feature:
  *

@@ -1,4 +1,4 @@
-/* What a supervisor shares (user/lib/supervise.c; docs/M11.6-PLAN.md,
+/* What a supervisor shares (user/lib/supervise.c; docs/HISTORY.md, M11.6;
  * docs/history/M12-REVIEW-STORAGE.md "The shared supervision module"). A
  * supervisor is a process that starts other processes and starts them
  * again when they end: init (the mixer and the other services), devmgr

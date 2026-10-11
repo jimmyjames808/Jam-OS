@@ -10,8 +10,9 @@
  *
  * Process fields marked (L) are guarded by the process's object lock
  * ("process"). Under it: kill cancels threads (thread_cancel takes run
- * queue locks) and job charges are taken (atomics). Nothing under it
- * sleeps or allocates.
+ * queue locks), CPU time is read (thread_cpu_tsc: run queue locks too)
+ * and job charges are taken (atomics). Nothing under it sleeps or
+ * allocates.
  *
  * Races that matter:
  *   - Start vs kill: uthread_start counts the thread (nthreads++) and marks

@@ -1,4 +1,4 @@
-/* init's side of a service that outlives its process (docs/M11.6-PLAN.md):
+/* init's side of a service that outlives its process (docs/HISTORY.md, M11.6):
  * for the mixer, a keeper, a state VMO and a warm spare, on the supervision
  * module (<supervise.h>, user/lib/supervise.c), which holds how they work.
  * What is init's: which service it is (the mixer), its port keys
@@ -88,7 +88,7 @@ void spare_event(void)
 /* The instance's arguments into argv (2 entries): its path, and after an
  * end how the last instance ended, "killed" (a deliberate kill) or
  * "crashed": a service that adopts its state counts only crashes against
- * the request in progress (docs/M11.6-PLAN.md, Q1's bad-request rule).
+ * the request in progress (docs/HISTORY.md, M11.6, Q1's bad-request rule).
  * Returns argc. */
 static int start_argv(const struct svc *s, const char *argv[2])
 {

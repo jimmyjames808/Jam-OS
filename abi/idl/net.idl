@@ -16,8 +16,8 @@
 # shell gives it only to a program whose list says `svc net listen low`:
 # bin/serve; never a program from /data).
 # <net.h> has the client side (blocking helpers for programs, forms that
-# don't wait for services' loops) and the limits; docs/M9-PLAN.md
-# "Programs and sockets" and docs/M9.5-PLAN.md the design.
+# don't wait for services' loops) and the limits; docs/HISTORY.md, M9
+# and M9.5 have the design.
 #
 # Addresses are IPv4 addresses as numbers, the first byte highest
 # (10.2.21.5 is 0x0a021505); ports are numbers. A datagram is at most

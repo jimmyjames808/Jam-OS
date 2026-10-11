@@ -157,6 +157,8 @@ def main():
         fence = False
         with open(os.path.join(ROOT, md), encoding="utf-8") as f:
             for n, line in enumerate(f, 1):
+                if line.startswith(("<<<<<<< ", ">>>>>>> ")):
+                    problems.append(f"{md}:{n}: a merge conflict's marker")
                 if line.lstrip().startswith("```"):
                     fence = not fence
                     continue

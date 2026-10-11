@@ -1,5 +1,5 @@
 /* allow: the owner marks a program on /data runnable and grants it what it
- * asks for (sh_allow.c; docs/history/M8.6-SVC.md):
+ * asks for (sh_allow.c; docs/HISTORY.md, M8.6):
  *   allow <file>      show the file's list and ask y/n; y writes the approval
  *   allow -l          the approvals
  *   allow -r <name>   take away those whose path or file name is <name>

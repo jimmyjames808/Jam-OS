@@ -1,5 +1,4 @@
-/* Virtual screens (desk.h), the owner's rules (docs/G1-PLAN.md "The
- * look"):
+/* Virtual screens (desk.h), the owner's rules (docs/HISTORY.md, G1):
  *   - the desktop starts with one screen; a new one is made past the last
  *     (Super+Ctrl+Right or L, the strip's "+") or by moving a window there
  *     (Super+Ctrl+Shift+Right or L, Super+Shift+1..9 past the last); a
@@ -202,8 +201,10 @@ void screens_sync(void)
         if (!ww->win)
             continue;
         bool want = screens_shown(ww);
-        if (want != !!(ww->win->flags & COMP_WIN_MAPPED))
-            window_map(ww->win, want);
+        if (want == !!(ww->win->flags & COMP_WIN_MAPPED))
+            continue;
+        window_map(ww->win, want);
+        wm_shown_changed(ww);
     }
 }
 
