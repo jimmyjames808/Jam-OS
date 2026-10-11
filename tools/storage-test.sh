@@ -12,11 +12,15 @@
 #                 READ of 24 KiB outlasts usb-storage's 5 s
 #   xhci port 3   a usb-mouse (usbtest's stall_recovered wants a QEMU device)
 # usbtest starts a drv/usb-storage of its own on each disk. On the boot
-# stick: bulk transfers by hand, a bad CBW's STALL and reset recovery, the
-# driver taking over a disk left mid-READ, the ESP's FAT32 boot sector
+# stick: bulk transfers by hand (after reset recovery, as a new owner of the
+# pair needs it), a pair opened again on a disk left mid-READ (the next CBW is
+# refused without recovery, taken after it), a bad CBW's STALL and reset
+# recovery, the driver taking over a disk left mid-READ (its reset recovery
+# comes before its first command), the ESP's FAT32 boot sector
 # through a read-only `block` channel, out-of-range requests, a write to
 # the data partition. On the second disk: the same reads and writes at full
-# speed through the hub, a read while a READ waits on the slow disk (it
+# speed through the hub, a usb-storage killed with a READ in flight and a new one
+# started on it, a read while a READ waits on the slow disk (it
 # must not wait for that one), then the monitor script unplugs it while it
 # is being read ("unplug the second disk now" -> device_del). On the slow disk:
 # a READ times out (it doesn't hang), and then a later one works or the
@@ -56,10 +60,10 @@ QEMU_USB="-device usb-hub,id=hub1,bus=xhci.0,port=2 \
     tools/qemu-test.sh "$out" "$name" init || true
 log="$out/$name.log"
 ok=1
-grep -q "usbtest: 20 passed, 6 skipped" "$log" || ok=0
+grep -q "usbtest: 22 passed, 6 skipped" "$log" || ok=0
 grep -q "usbtest: block_in_flight ok" "$log" || { echo "$name: block_in_flight did not pass"; ok=0; }
 grep -q "run complete: no problems" "$log" || ok=0
-for t in bulk stall bind esp range write fence stop disk2 apart unplug timeout; do
+for t in bulk handover stall bind esp range write fence stop disk2 kill apart unplug timeout; do
     grep -q "usbtest: storage_$t ok" "$log" || { echo "$name: storage_$t did not pass"; ok=0; }
 done
 # usb-storage's own lines: the takeover's reset recovery, the fence
@@ -68,7 +72,18 @@ done
 want() {
     grep -qE "$1" "$log" || { echo "$name: no line matching '$1'"; ok=0; }
 }
-want "\[usb-storage-test\] usb-storage 46f4:0001: the CBW was not taken: reset recovery 1 "
+want "\[usb-storage-test\] usb-storage 46f4:0001: taking the device over: reset recovery 1 "
+# ... and so the first command was not lost to the mid-READ it was taken over from
+if grep -qE "\[usb-storage-test\] usb-storage 46f4:0001: the CBW was not taken" "$log"; then
+    echo "$name: usb-storage lost a command to the device it took over"
+    ok=0
+fi
+# usb-bus clears the device's side of a pair it opens (the toggles/sequence numbers a
+# real stick keeps); the first open on the boot stick (root port 1, if0, bulk 81 and 02)
+want "usb 1: if0: bulk endpoints 81 and 02 opened, the device's toggles put back to 0"
+want "usbtest: the first command after the hand-over worked after 1 reset recovery"
+want "usbtest: a pair opened again on a device left mid-READ: the first command without recovery"
+want "usbtest: a usb-storage killed with a READ in flight: the next one took over in"
 want "\[usb-storage-test\] usb-storage 46f4:0001: partition 2: its client left with 4 request\(s\) queued: dropped"
 want "usb-storage-test: usb-storage 46f4:0001: QEMU QEMU HARDDISK, 128 MiB, 2 partition\(s\) \(ef 63 MiB, 0c 64 MiB\)"
 want "usb-storage-disk2: usb-storage 46f4:0001: QEMU QEMU HARDDISK, 128 MiB, 2 partition\(s\) \(ef 63 MiB, 0c 64 MiB\)"

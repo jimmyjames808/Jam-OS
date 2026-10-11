@@ -550,7 +550,12 @@ static inline status_t usb_open_bulk_call(handle_t ch, bool idl_within, uint64_t
  * of this buffer, never through messages. One pair per interface: a second
  * call on the SAME channel replaces the pair (a restarted class driver gets
  * a duplicate of the old channel, which never closes); on another channel
- * it is ERR_BAD_STATE. */
+ * it is ERR_BAD_STATE. The controller's side of both endpoints starts
+ * afresh (data toggle / sequence number 0, an empty ring), and usb-bus puts
+ * the DEVICE's side to 0 too, with CLEAR_FEATURE(ENDPOINT_HALT) on both: the
+ * last owner may have left them anywhere. What the class protocol was left
+ * in the middle of is the new driver's to recover (mass storage: Bulk-Only
+ * reset recovery before the first command). */
 static inline status_t usb_open_bulk_until(handle_t ch, uint64_t deadline_ns, uint8_t ep_in, uint8_t ep_out, handle_t *out_buffer, uint32_t *out_size)
 {
     return usb_open_bulk_call(ch, false, deadline_ns, ep_in, ep_out, out_buffer, out_size);

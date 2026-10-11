@@ -37,6 +37,18 @@
  * running endpoint's toggle is reset (a Reset Endpoint command only works
  * on a halted one; Linux's xhci_endpoint_reset does the same).
  *
+ * Opening a pair starts the controller's side afresh (toggle / sequence
+ * number 0, an empty ring) but knows nothing of the device's: a stick the
+ * last owner stopped using keeps the toggle (USB 2.0) or sequence number
+ * (USB 3.x) it ended on, and the new owner's first packet is then a repeat
+ * the device drops, or one it never acknowledges (a Transaction Error on a
+ * real stick; QEMU models neither). So open_bulk also sends
+ * CLEAR_FEATURE(ENDPOINT_HALT) for both endpoints, first (as Linux's
+ * usb_clear_halt does, the device then the controller): that puts the
+ * device's side back to 0 whether or not it was halted (USB 2.0 9.4.5,
+ * USB 3.2 9.4.5). What the class does on the pipes (a command left half
+ * done) is the class driver's to recover, as usb-storage's reset recovery.
+ *
  * The pair belongs to the interface channel that opened it. It is
  * released (endpoints dropped, buffer unpinned) when that channel closes,
  * on set_interface, and when the device goes. A buffer is unpinned only
@@ -129,6 +141,34 @@ static status_t buffer_make(struct bulk *b)
     return OK;
 }
 
+/* CLEAR_FEATURE(ENDPOINT_HALT), recipient endpoint (USB 2.0 9.4.1): the
+ * device's side of an endpoint to toggle / sequence number 0, halted or not. */
+static uint32_t device_clear_halt(struct usbdev *d, uint8_t endpoint)
+{
+    uint32_t n = 0;
+    return usb_control(d, 0x02, 1, 0, endpoint, 0, NULL, &n, 1000);
+}
+
+/* The device's side of a pair about to be started: see the file header. A
+ * device that refuses is logged and the pair opened anyway (the class
+ * driver's reset recovery, or its first command's failure, is the next
+ * try); a device that left ends the open. */
+static status_t bulk_sync_device(struct usbdev *d, const struct iface *f, uint8_t ep_in,
+                                 uint8_t ep_out)
+{
+    uint32_t in = device_clear_halt(d, ep_in);
+    uint32_t out = device_clear_halt(d, ep_out);
+    if (d->gone)
+        return ERR_PEER_CLOSED;
+    if (in != CC_SUCCESS || out != CC_SUCCESS)
+        drv_log("usb %s: if%u: clearing the device's halt on %02x: %s, on %02x: %s", d->path,
+                f->number, ep_in, cc_str(in), ep_out, cc_str(out));
+    else
+        drv_log("usb %s: if%u: bulk endpoints %02x and %02x opened, the device's toggles put back "
+                "to 0 to match", d->path, f->number, ep_in, ep_out);
+    return OK;
+}
+
 void bulk_release(struct usbdev *d, struct iface *f, bool slot_off)
 {
     struct bulk *b = f->bulk;
@@ -203,9 +243,11 @@ status_t bulk_open(struct usbdev *d, struct iface *f, int chan, uint8_t ep_in, u
     b->out = ep_out;
     b->chan = chan;
     f->bulk = b;
-    uint32_t cc = eps_start(d, in, out);
+    st = bulk_sync_device(d, f, ep_in, ep_out);
+    uint32_t cc = st == OK ? eps_start(d, in, out) : CC_SUCCESS;
     handle_t h = HANDLE_INVALID;
-    st = cc == CC_SUCCESS ? OK : cc_status(cc);
+    if (st == OK)
+        st = cc == CC_SUCCESS ? OK : cc_status(cc);
     /* The driver's handle: to map, read and write, and no more. */
     if (st == OK)
         st = drv_handle_duplicate(b->vmo, RIGHT_READ | RIGHT_WRITE | RIGHT_MAP | RIGHT_TRANSFER,
@@ -386,9 +428,7 @@ status_t bulk_clear_halt(struct usbdev *d, struct iface *f, int chan, uint8_t en
         return ERR_BAD_STATE;
     if (endpoint != b->in && endpoint != b->out)
         return ERR_INVALID_ARGS;
-    uint32_t n = 0;
-    /* CLEAR_FEATURE(ENDPOINT_HALT), recipient endpoint (USB 2.0 9.4.1). */
-    uint32_t cc = usb_control(d, 0x02, 1, 0, endpoint, 0, NULL, &n, 1000);
+    uint32_t cc = device_clear_halt(d, endpoint);
     uint32_t host = ep_restart(d, &d->eps[ep_dci(endpoint)]);
     return cc_status(cc != CC_SUCCESS ? cc : host);
 }
