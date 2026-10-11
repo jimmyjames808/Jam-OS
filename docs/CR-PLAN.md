@@ -885,6 +885,8 @@ WSL's default cap (half of the PC's 32 GB), and hours of all 28 threads.
 *Recommendation: (A).* Low priority keeps Windows usable; a clean build
 is needed only when the version moves or the toolchain changes.
 
+**Answered (the owner, 2026-10-12): (A).** The owner raises WSL's cap in `.wslconfig` on the Windows side; CT1 checks the disk and memory before the first build.
+
 ### Q2. Chromium's prebuilt toolchains
 
 Chromium's build fetches its own clang and Rust, binaries built by
@@ -904,6 +906,8 @@ Google, the exact ones each Chromium version is tested with.
 costs hours at every bump for the same compiler; (C) risks a version
 mismatch every release.
 
+**Decided (2026-10-12): (A)**, as recommended (a build-host choice, under the standing rule).
+
 ### Q3. How you start Chromium
 
 - **(A)** From the shell (`chrome`, or `chrome <url>`).
@@ -913,6 +917,8 @@ mismatch every release.
 
 *Recommendation: (B).* The shell first (it needs nothing new), the
 search box once the package exists; GD is a small track.
+
+**Answered (the owner, 2026-10-12): (B).** The shell first, then the search box: G2's GD is on the path.
 
 ### Q4. `chrome`'s window frame
 

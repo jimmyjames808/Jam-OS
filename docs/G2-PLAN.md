@@ -906,8 +906,9 @@ starts from a terminal is half a port. The compositor still can't start
 anything but what init's list holds; the list just grows by what you
 approved.
 
-**Status:** open, and now tied to how the owner starts Chromium: GD runs
-only if the answer is the search box ([CR-PLAN's Q3](CR-PLAN.md#q3-how-you-start-chromium)).
+**Status:** answered (the owner, 2026-10-12): Chromium starts from the
+shell first, then the search box, so GD is on the path
+([CR-PLAN's Q3](CR-PLAN.md#q3-how-you-start-chromium)).
 
 ### Q10. A runtime directory and `/tmp`
 
