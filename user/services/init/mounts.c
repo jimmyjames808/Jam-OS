@@ -24,6 +24,7 @@
 #define MAX_HAVE  16                  /* mounts init keeps from volumes */
 #define CALL_WAIT (5 * NS_PER_S)      /* volumes.watch */
 #define SYNC_WAIT (2 * NS_PER_S)
+#define MAX_READS 256                 /* events read at a time (the loop has other work) */
 
 static handle_t ctl;      /* a duplicate of volumes' control channel (0: none) */
 static handle_t watch;    /* our end of the watch (0: none) */
@@ -172,22 +173,42 @@ status_t mounts_watch(handle_t volumes_ctl, handle_t to_port, uint64_t key)
     return st;
 }
 
+/* The watch is lost (volumes dropped us because we fell behind, or it is
+ * gone, or the watch can't be bound): unmount what it gave, and watch again
+ * if volumes still answers. */
+static void watch_lost(bool *settled)
+{
+    close_watch();
+    unmount_all();
+    *settled = true;
+    status_t st = ctl ? open_watch() : ERR_PEER_CLOSED;
+    printf("init: volumes' watch closed: %s\n",
+           st == OK ? "watching again" : "only " BOOT_MOUNT " until volumes is back");
+}
+
 bool mounts_event(void)
 {
     bool settled = false;
     status_t st = OK;
-    for (int guard = 0; watch && guard < 256 && st != ERR_SHOULD_WAIT; guard++) {
+    for (int reads = 0; watch && reads < MAX_READS && st != ERR_SHOULD_WAIT; reads++) {
         st = mounts_read_event(watch, &events, &settled);
-        if (st != ERR_PEER_CLOSED)
-            continue;
-        /* volumes dropped us (we fell behind), or it is gone: unmount what
-         * it gave, and watch again if it still answers. */
-        close_watch();
-        unmount_all();
-        settled = true;
-        st = ctl ? open_watch() : ERR_PEER_CLOSED;
-        printf("init: volumes' watch closed: %s\n",
-               st == OK ? "watching again" : "only " BOOT_MOUNT " until volumes is back");
+        if (st == ERR_PEER_CLOSED) {
+            watch_lost(&settled);
+            st = OK;   /* (a new watch, if there is one, lists every mount again) */
+        }
+    }
+    if (watch && port && st != ERR_SHOULD_WAIT) {
+        /* The loop stopped before the channel was empty: a burst of remounts
+         * is more than MAX_READS events. The binding fires when the channel
+         * turns readable, not while it stays so, so no packet would ever
+         * come again and init would not see another mount change (a /data
+         * that came back after a devmgr restart would be missing from every
+         * program's namespace). Binding again queues a packet at once if
+         * events wait; the loop gets to the rest after its other work. */
+        (void)jam_port_unbind(port, watch, port_key);
+        if (jam_port_bind(port, watch, port_key, SIG_READABLE | SIG_PEER_CLOSED,
+                          PORT_BIND_PERSISTENT) != OK)
+            watch_lost(&settled);
     }
     return settled;
 }
