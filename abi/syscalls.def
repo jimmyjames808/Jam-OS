@@ -222,6 +222,23 @@
 # resize, commit, decommit, writable mapping or pin is ERR_BAD_STATE, even
 # one from a call that started before this one.
 57  vmo_make_exec     status    handle_t vmo, handle_t root, handle_t *out
+# vmo_make_exec_verified: vmo_make_exec for a pager VMO (a program from
+# /data, its pages fetched as it runs): *out gets vmo's handle again with
+# RIGHT_EXEC, and from then on a page is published only if its SHA-256
+# matches table's entry for it (<jam/abi.h> VMO_VERIFIED_HASH_BYTES each,
+# page 0's first; the kernel copies them in now, so table may change or
+# go after the call). Every page present before the call is dropped. A
+# page that doesn't match is never published: pager_supply answers ERR_IO,
+# a fault on it kills the thread ("a page doesn't match the approved
+# program"), a copy or vmo_read through it is ERR_IO. vmo's handle is gone
+# whatever the status (table's stays). Needs RIGHT_ROOT_VMEX on root,
+# RIGHT_READ and RIGHT_MAP on vmo, RIGHT_READ on table; flags 0
+# (ERR_INVALID_ARGS). ERR_NOT_SUPPORTED: vmo isn't a pager VMO;
+# ERR_OUT_OF_RANGE: vmo is bigger than VMO_VERIFIED_MAX; ERR_INVALID_ARGS:
+# table is shorter than 32 bytes a page; ERR_BAD_STATE: vmo has another
+# handle, a mapping, is detached from its pager or verified already. The
+# table's pages are charged to the caller's job (ERR_NO_MEMORY).
+59  vmo_make_exec_verified status handle_t vmo, handle_t root, handle_t table, uint32_t flags, handle_t *out
 
 # address spaces (flags: VMAR_READ/WRITE/EXEC/FIXED) --------------------------
 # vmar_map also takes VMAR_KEPT_ONLY (bit 4): only a VMO_KEEP_PAGES VMO
@@ -542,7 +559,8 @@
 # the pager until answered, so a successor of a dead pager process takes
 # them again (PAGER_NEXT_AGAIN). A request not answered within the pager's
 # answer time fails ERR_TIMED_OUT. A pager VMO refuses vmo_write,
-# vmo_commit, vmo_decommit, vmo_set_size, vmo_make_exec, vmo_pin, writable
+# vmo_commit, vmo_decommit, vmo_set_size, vmo_make_exec (its code runs only
+# through vmo_make_exec_verified, 59), vmo_pin, writable
 # mappings and VMAR_KEPT_ONLY; vmo_read of an absent page waits for it
 # (ERR_IO if the pager fails it, is detached or doesn't answer in time;
 # ERR_CANCELED if the thread is killed). handle_info's related_koid of a

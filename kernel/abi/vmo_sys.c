@@ -7,10 +7,13 @@
  * to it, its creator's included. */
 #include <jam/dbghook.h>
 #include <jam/handle.h>
+#include <jam/mm.h>
+#include <jam/pager.h>
 #include <jam/resource.h>
 #include <jam/sys.h>
 #include <jam/sysinfo.h>
 #include <jam/vmo.h>
+#include <jam/vmo_verify.h>
 
 #define VMO_RIGHTS  (RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE | RIGHT_MAP | RIGHT_RESIZE)
 #define RESIZE_NEED (RIGHT_WRITE | RIGHT_RESIZE)
@@ -162,6 +165,62 @@ status_t sys_vmo_make_exec(struct handle_table *t, handle_t h, handle_t root, ha
         st = handle_insert(t, &kh, out);
     }
     khandle_release(&kh);   /* a no-op once inserted; else h is closed */
+    vmo_put(v);
+    return st;
+}
+
+/* The table for v from the VMO behind handle `table` (RIGHT_READ), its
+ * pages charged to t's job. */
+static status_t copy_table(struct handle_table *t, handle_t table, struct vmo *v,
+                           struct vmo_verify **out)
+{
+    struct vmo *tv;
+    status_t st = vmo_get(t, table, RIGHT_READ, &tv);
+    if (st != OK)
+        return st;
+    st = vmo_verify_new(t->job, tv, vmo_size(v) >> PAGE_SHIFT, out);
+    vmo_put(tv);
+    return st;
+}
+
+/* sys_vmo_make_exec for a pager VMO, sealed with a table of its pages'
+ * hashes (<jam/vmo_verify.h>) instead of as it is. The table is copied in
+ * first, with the handle still in the table and no lock held (a table
+ * that is a pager VMO itself waits for its pages); then the handle comes
+ * out, the VMO is checked and sealed, and the handle goes back with
+ * RIGHT_EXEC, in sys_vmo_make_exec's order and for its reasons. */
+status_t sys_vmo_make_exec_verified(struct handle_table *t, handle_t h, handle_t root,
+                                    handle_t table, uint32_t flags, handle_t *out)
+{
+    /* h is gone whatever the status, as for vmo_make_exec. */
+    struct vmo *v = NULL;
+    struct vmo_verify *vf = NULL;
+    status_t st = flags ? ERR_INVALID_ARGS : sysinfo_check_root(t, root, RIGHT_ROOT_VMEX);
+    if (st == OK)
+        st = vmo_get(t, h, RIGHT_READ | RIGHT_MAP, &v);
+    if (st == OK && !vmo_is_pager(v))
+        st = ERR_NOT_SUPPORTED;   /* a VMO of its own: vmo_make_exec */
+    if (st == OK)
+        st = copy_table(t, table, v, &vf);
+    if (st != OK) {
+        if (v)
+            vmo_put(v);
+        handle_close(t, h);   /* a bad value names nothing */
+        return st;
+    }
+    struct khandle kh = { NULL, 0 };
+    st = handle_remove(t, h, &kh);
+    DBG_HOOK(DBG_VMO_EXEC_CHECK, v);
+    if (st == OK && kobject_handles(vmo_kobject(v)) != 1)
+        st = ERR_BAD_STATE;
+    if (st == OK && (st = vmo_seal_verified(v, vf)) == OK) {
+        vf = NULL;   /* v's now */
+        kh.rights = (kh.rights & ~(RIGHT_WRITE | RIGHT_RESIZE)) | RIGHT_EXEC;
+        st = handle_insert(t, &kh, out);
+    }
+    khandle_release(&kh);   /* a no-op once inserted; else h is closed */
+    if (vf)
+        vmo_verify_free(vf);
     vmo_put(v);
     return st;
 }

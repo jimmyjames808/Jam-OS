@@ -38,6 +38,7 @@
 #define SYS_vmo_decommit         56
 #define SYS_vmo_make_exec        57
 #define SYS_vmo_create           58
+#define SYS_vmo_make_exec_verified 59
 #define SYS_vmar_map             60
 #define SYS_vmar_unmap           61
 #define SYS_vmar_protect         62

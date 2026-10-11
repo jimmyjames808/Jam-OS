@@ -47,6 +47,8 @@ int64_t sysc_vmo_commit(handle_t h, uint64_t offset, uint64_t len);
 int64_t sysc_vmo_decommit(handle_t h, uint64_t offset, uint64_t len);
 int64_t sysc_vmo_make_exec(handle_t vmo, handle_t root, uint64_t out);
 int64_t sysc_vmo_create(uint64_t size, uint32_t flags, uint64_t out);
+int64_t sysc_vmo_make_exec_verified(handle_t vmo, handle_t root, handle_t table, uint32_t flags,
+                                    uint64_t out);
 int64_t sysc_vmar_map(handle_t vmar, handle_t vmo, uint64_t vmo_off, uint64_t len, uint32_t flags,
                       uint64_t addr);
 int64_t sysc_vmar_unmap(handle_t vmar, uint64_t addr, uint64_t len);

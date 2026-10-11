@@ -125,7 +125,8 @@ bool pager_cache_evict_oldest(struct pager_cache *c)
     return any;
 }
 
-status_t pager_cache_publish(struct pager_cache *c, struct vmo *v, uint64_t idx, struct page *p)
+status_t pager_cache_publish(struct pager_cache *c, struct vmo *v, uint64_t idx, struct page *p,
+                             bool checked)
 {
     if (vmo_page_phys(v, idx << PAGE_SHIFT)) {
         page_unref(p);   /* present already: a second answer evicts nothing */
@@ -146,7 +147,7 @@ status_t pager_cache_publish(struct pager_cache *c, struct vmo *v, uint64_t idx,
     rec->idx = idx;
     reserve(c);
     status_t st;
-    while ((st = vmo_pager_publish(v, idx, p, rec)) == ERR_NO_MEMORY &&
+    while ((st = vmo_pager_publish(v, idx, p, checked, rec)) == ERR_NO_MEMORY &&
            presses++ < c->max_pages && pager_cache_evict_oldest(c))
         ;
     if (st == OK)

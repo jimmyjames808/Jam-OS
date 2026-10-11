@@ -62,14 +62,16 @@ struct pager_cache {
 void pager_cache_init(struct pager_cache *c, struct job *job, uint64_t max_pages);
 
 /* Publish p (a fresh page holding its bytes, the caller's reference,
- * consumed whatever happens) as page idx of pager VMO v, inside c's
- * budget: a reserved slot, the oldest page evicted for it if the budget
+ * consumed whatever happens; `checked` as for vmo_pager_publish) as page
+ * idx of pager VMO v, inside c's budget: a reserved slot, the oldest page evicted for it if the budget
  * is full, and more of the oldest evicted while the job or memory can't
  * pay for p. OK if published or present already (a second answer: p
  * dropped, nothing evicted); ERR_PEER_CLOSED if v is detached;
- * ERR_OUT_OF_RANGE past its size; ERR_NO_MEMORY if it can't be paid for
+ * ERR_OUT_OF_RANGE past its size; ERR_IO if v is verified and p doesn't
+ * match; ERR_NO_MEMORY if it can't be paid for
  * with the cache empty. Interrupts on, no spinlock held. */
-status_t pager_cache_publish(struct pager_cache *c, struct vmo *v, uint64_t idx, struct page *p);
+status_t pager_cache_publish(struct pager_cache *c, struct vmo *v, uint64_t idx, struct page *p,
+                             bool checked);
 
 /* Evict c's oldest page (memory pressure). false if c holds none. A page
  * of a VMO being destroyed leaves the list without being reached (its

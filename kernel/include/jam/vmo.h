@@ -45,6 +45,7 @@
 
 /* Embeds struct kobject first (type OBJ_VMO), so the casts below are safe. */
 struct vmo;
+struct vmo_verify;   /* <jam/vmo_verify.h> */
 
 static inline struct kobject *vmo_kobject(struct vmo *v) { return (struct kobject *)v; }
 /* NULL unless obj is a VMO. */
@@ -98,6 +99,15 @@ uint64_t vmo_size(struct vmo *v);
  * nothing maps or pins and no write path is running on. Sealing a sealed
  * VMO again is OK under the same conditions. */
 status_t vmo_seal(struct vmo *v);
+/* Seal a pager VMO with its table of page hashes (vmo_make_exec_verified,
+ * <jam/vmo_verify.h>): every page present is dropped, and from then on a
+ * page is published only if it matches vf, which v owns from then on
+ * (freed with it). ERR_BAD_STATE (vf still the caller's) unless v is a
+ * pager VMO, not detached, not verified already, and nothing maps or pins
+ * it. */
+status_t vmo_seal_verified(struct vmo *v, struct vmo_verify *vf);
+/* v's table (vmo_seal_verified), or NULL. Lock-free. */
+struct vmo_verify *vmo_verifier(struct vmo *v);
 /* Bytes of memory the VMO owns right now (committed pages). */
 uint64_t vmo_committed(struct vmo *v);
 /* Grow or shrink (rounded up to pages). Shrinking frees the pages past the

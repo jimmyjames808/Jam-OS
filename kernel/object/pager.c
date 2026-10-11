@@ -53,6 +53,7 @@
 #include <jam/time.h>
 #include <jam/usercopy.h>
 #include <jam/vmo.h>
+#include <jam/vmo_verify.h>
 #include "pager_cache.h"
 
 #define KEY_BUCKETS 64u
@@ -604,7 +605,9 @@ static void answer_arrived(struct pager *pg, uint64_t key)
 }
 
 /* Page idx of v from src at byte `at`: copied into a fresh page with no
- * lock held, then published inside the cache's budget. */
+ * lock held, checked if v is verified, then published inside the cache's
+ * budget. ERR_IO: the bytes aren't the approved ones (<jam/vmo_verify.h>),
+ * and nothing changed. */
 static status_t supply_page(struct pager *pg, struct vmo *v, uint64_t idx,
                             const struct pager_src *src, uint64_t at)
 {
@@ -619,13 +622,31 @@ static status_t supply_page(struct pager *pg, struct vmo *v, uint64_t idx,
         st = copy_from_user(dst, src->addr + at, PAGE_SIZE) == OK ? OK : ERR_INVALID_ARGS;
     else
         memcpy(dst, (const char *)(uintptr_t)src->addr + at, PAGE_SIZE);
+    bool checked = false;
+    if (st == OK && !vmo_verify_supply(v, idx, dst, &checked))
+        st = ERR_IO;
     if (st != OK) {
         page_unref(p);
         return st;
     }
-    st = pager_cache_publish(&pg->cache, v, idx, p);
+    st = pager_publish_page(pg, v, idx, p, checked);
     return st == ERR_PEER_CLOSED ? ERR_NOT_FOUND : st;   /* detached meanwhile */
 }
+
+status_t pager_publish_page(struct pager *pg, struct vmo *v, uint64_t idx, struct page *p,
+                            bool checked)
+{
+    return pager_cache_publish(&pg->cache, v, idx, p, checked);
+}
+
+/* The pages of one pager_supply call that didn't match (bit i: its i-th). */
+struct unapproved {
+    uint64_t bits[PAGER_SUPPLY_MAX / PAGE_SIZE / 64];
+    bool     any;
+};
+
+static void fail_unapproved(struct pager *pg, uint64_t key, uint64_t first,
+                            const struct unapproved *u);
 
 status_t pager_supply(struct pager *pg, uint64_t key, uint64_t offset, const struct pager_src *src,
                       uint64_t len)
@@ -637,12 +658,27 @@ status_t pager_supply(struct pager *pg, uint64_t key, uint64_t offset, const str
     struct vmo *v = lookup_vmo(pg, key);
     if (!v)
         return ERR_NOT_FOUND;
-    uint64_t size = vmo_size(v);
+    uint64_t size = vmo_size(v), first = offset >> PAGE_SHIFT;
     status_t st = offset <= size && len <= size - offset ? OK : ERR_OUT_OF_RANGE;
-    for (uint64_t at = 0; at < len && st == OK; at += PAGE_SIZE)
-        st = supply_page(pg, v, (offset + at) >> PAGE_SHIFT, src, at);
+    struct unapproved bad = { { 0 }, false };
+    for (uint64_t i = 0; i < len >> PAGE_SHIFT && st == OK; i++) {
+        status_t one = supply_page(pg, v, first + i, src, i << PAGE_SHIFT);
+        if (one == ERR_IO) {   /* a page that doesn't match: the rest still come */
+            bad.bits[i / 64] |= 1ull << (i % 64);
+            bad.any = true;
+        } else {
+            st = one;
+        }
+    }
     kobject_unref(vmo_kobject(v));
     answer_arrived(pg, key);   /* (also after a failure: the pages before it stay) */
+    /* Only now, with the good pages of the range published: a waiter on
+     * one of them sees it there and goes on. */
+    if (bad.any) {
+        fail_unapproved(pg, key, first, &bad);
+        if (st == OK)
+            st = ERR_IO;
+    }
     return st;
 }
 
@@ -673,6 +709,17 @@ static status_t fail_range(struct pager *pg, uint64_t key, uint64_t first, uint6
     punlock(pg, f);
     reap(&dead);
     return OK;
+}
+
+/* The requests waiting on pages of a verified VMO that didn't match fail
+ * ERR_BAD_STATE (the faulters die with "a page doesn't match the approved
+ * program"); pages from first, bit by bit. */
+static void fail_unapproved(struct pager *pg, uint64_t key, uint64_t first,
+                            const struct unapproved *u)
+{
+    for (uint64_t i = 0; i < PAGER_SUPPLY_MAX / PAGE_SIZE; i++)
+        if (u->bits[i / 64] & (1ull << (i % 64)))
+            (void)fail_range(pg, key, first + i, first + i + 1, ERR_BAD_STATE);   /* (gone: none) */
 }
 
 /* PAGER_OP_INVALIDATE: drop key's present pages in [offset, offset + len). */

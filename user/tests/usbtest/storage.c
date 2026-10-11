@@ -6,9 +6,10 @@
  * starts a usb-storage of its own on the SAME channel, holding the
  * driver's DR_SERVE. devmgr's own usb-storage has the disk first: usbtest
  * asks devmgr to let go of it for the checks (take_disk below) and to take
- * the boot stick back afterwards. (If a usb-storage still has the
- * interface's bulk pair, usb.open_bulk says ERR_BAD_STATE and the checks
- * are skipped.)
+ * the boot stick back afterwards, and waits (give_back) until volumes has
+ * its mounts back, so nothing started after usbtest misses /data. (If a
+ * usb-storage still has the interface's bulk pair, usb.open_bulk says
+ * ERR_BAD_STATE and the checks are skipped.)
  *
  * On the first mass-storage interface that isn't the second disk (in QEMU
  * and on the PC: the boot stick):
@@ -155,8 +156,150 @@ static status_t take_disk(const struct raw *r, handle_t *out)
     return usbbus_open_interface_until(bus, soon(), r->dev_id, r->ifnum, out);
 }
 
+/* The mounts volumes has (a watch on it, volumes.watch): usbtest notes them
+ * before it takes the stick and waits for them to come back when it gives
+ * the stick back. The remount happens after devmgr's rebind has answered,
+ * some milliseconds later, and a program started in that gap (init's next
+ * one, the shell's) gets a namespace without /data for good: so usbtest
+ * does not end before its stick's mounts are back. The events reach init's
+ * watch before they reach this one (init's was made first, and volumes
+ * tells the watches in the order they were made), so when usbtest has seen
+ * them, init has them waiting. */
+#define MOUNT_MAX  8
+#define BACK_WAIT  (10 * NS_PER_S)
+
+struct mountset {
+    handle_t watch;                    /* 0: none (no volumes) */
+    bool     settled;                  /* `settled` came since it was cleared */
+    unsigned n;
+    char     path[MOUNT_MAX][16];      /* the mounts there are, test disks' not counted */
+};
+
+static struct mountset before;         /* the mounts before the stick was let go of */
+static struct mountset now_have;       /* the mounts as the watch last said */
+
+static int ms_find(const struct mountset *s, const char *path, uint32_t len)
+{
+    for (unsigned i = 0; i < s->n; i++)
+        if (strlen(s->path[i]) == len && !memcmp(s->path[i], path, len))
+            return (int)i;
+    return -1;
+}
+
+static void ms_mounted(void *ctx, const char *p, uint32_t len, uint32_t generation, uint8_t flags,
+                       handle_t fs)
+{
+    struct mountset *s = ctx;
+    (void)generation;
+    jam_handle_close(fs);
+    if ((flags & MOUNTS_TEST) || len >= sizeof(s->path[0]) || s->n >= MOUNT_MAX ||
+        ms_find(s, p, len) >= 0)
+        return;
+    memcpy(s->path[s->n], p, len);
+    s->path[s->n++][len] = '\0';
+}
+
+static void ms_unmounted(void *ctx, const char *p, uint32_t len, uint32_t generation)
+{
+    struct mountset *s = ctx;
+    (void)generation;
+    int i = ms_find(s, p, len);
+    if (i < 0)
+        return;
+    memmove(s->path[i], s->path[i + 1], (size_t)(s->n - (unsigned)i - 1) * sizeof(s->path[0]));
+    s->n--;
+}
+
+static void ms_settled(void *ctx, uint32_t generation)
+{
+    struct mountset *s = ctx;
+    (void)generation;
+    s->settled = true;
+}
+
+static const struct mounts_events ms_events = {
+    .mounted = ms_mounted, .unmounted = ms_unmounted, .settled = ms_settled,
+};
+
+static void ms_close(struct mountset *s)
+{
+    if (s->watch)
+        jam_handle_close(s->watch);
+    *s = (struct mountset){ 0 };
+}
+
+/* Note the mounts there are now (a new watch lists them all, then `settled`). */
+static void mounts_note(void)
+{
+    handle_t vm = svc_get(SVC_VOLUMES);
+    ms_close(&before);
+    ms_close(&now_have);
+    if (!vm || volumes_watch_until(vm, in(10 * NS_PER_S), &now_have.watch) != OK) {
+        now_have.watch = HANDLE_INVALID;
+        return;
+    }
+    uint64_t deadline = in(10 * NS_PER_S);
+    status_t st = OK;
+    while (st == OK && !now_have.settled) {
+        st = mounts_read_event(now_have.watch, &ms_events, &now_have);
+        if (st == ERR_SHOULD_WAIT) {
+            signals_t seen = 0;
+            st = jam_object_wait_one(now_have.watch, SIG_READABLE | SIG_PEER_CLOSED, deadline,
+                                     &seen);
+        }
+        if (st == ERR_INTERNAL)
+            st = OK;
+    }
+    if (st != OK) {
+        ms_close(&now_have);
+        return;
+    }
+    before = now_have;
+    before.watch = HANDLE_INVALID;   /* the watch is now_have's */
+}
+
+/* Are all the mounts noted there? */
+static bool mounts_all_back(void)
+{
+    for (unsigned i = 0; i < before.n; i++)
+        if (ms_find(&now_have, before.path[i], (uint32_t)strlen(before.path[i])) < 0)
+            return false;
+    return true;
+}
+
+/* Wait until every mount noted is there again (BACK_WAIT at most). What the
+ * watch has queued since is read first: the stick's release is in it (its
+ * mounts left), so the set read before it is not the one to compare. */
+static void mounts_wait_back(void)
+{
+    if (!now_have.watch)
+        return;
+    uint64_t t0 = now(), deadline = t0 + BACK_WAIT;
+    bool back = false;
+    for (;;) {
+        status_t st = OK;
+        while (st == OK || st == ERR_INTERNAL)
+            st = mounts_read_event(now_have.watch, &ms_events, &now_have);
+        back = mounts_all_back();
+        if (back || st != ERR_SHOULD_WAIT)
+            break;
+        signals_t seen = 0;
+        if (jam_object_wait_one(now_have.watch, SIG_READABLE | SIG_PEER_CLOSED, deadline,
+                                &seen) != OK)
+            break;
+    }
+    if (back)
+        printf("usbtest: storage: the stick's mounts are back after %lu ms\n",
+               (unsigned long)((now() - t0) / NS_PER_MS));
+    else
+        printf("usbtest: storage: the stick's mounts did not come back in %lu s\n",
+               (unsigned long)(BACK_WAIT / NS_PER_S));
+    ms_close(&now_have);
+    ms_close(&before);
+}
+
 /* devmgr takes disk r back: a new driver of its own, and for the boot
- * stick its mounts again. */
+ * stick its mounts again, which are waited for. */
 static void give_back(const struct raw *r)
 {
     status_t st = dm ? devmgrctl_rebind_until(dm, in(60 * NS_PER_S), DEVMGR_KIND_USB_IFACE,
@@ -164,6 +307,10 @@ static void give_back(const struct raw *r)
                      : ERR_NOT_FOUND;
     if (st != OK && st != ERR_NOT_FOUND)
         printf("usbtest: storage: devmgr did not take the disk back (%s)\n", status_str(st));
+    if (st == OK)
+        mounts_wait_back();
+    else
+        ms_close(&now_have);
 }
 
 /* ---- finding the disks ------------------------------------------------------------ */
@@ -1211,6 +1358,7 @@ void storage_tests(void)
         printf("usbtest: storage: no mass-storage device: skipped\n");
         skipped += 10;
     } else {
+        mounts_note();   /* give_back waits for these to be back */
         run("storage_bulk", t_storage_bulk);
         if (!boot_raw.buf) {
             skipped += 9;   /* it said why */

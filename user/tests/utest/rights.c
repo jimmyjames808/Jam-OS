@@ -1,6 +1,7 @@
 /* utest: the root resource's powers (<jam/abi.h> RIGHT_ROOT_*) from user
  * space, and vmo_make_exec, the one way a VMO a process made gets
- * RIGHT_EXEC (a program from /data, docs/history/M8.6-SVC.md).
+ * RIGHT_EXEC (a program from /data, docs/history/M8.6-SVC.md), with its
+ * twin for a pager VMO, vmo_make_exec_verified (the refusals only).
  *
  * Every call that takes the root is refused, ERR_ACCESS_DENIED, by a root
  * handle that has every right but its own power; the calls that would
@@ -191,6 +192,38 @@ bool t_vmo_make_exec(void)
     CHECK_ST(jam_handle_replace(v, RIGHT_MAP, &v), OK);
     CHECK_ST(jam_vmo_make_exec(v, vmex, &x), ERR_ACCESS_DENIED);
     CHECK_ST(jam_handle_close(v), ERR_BAD_HANDLE);
+    CHECK_ST(jam_handle_close(vmex), OK);
+    return true;
+}
+
+/* vmo_make_exec_verified from user space: the refusals a process without
+ * a pager can reach (a pager VMO's run is the ktests'). Each takes the
+ * VMO's handle whatever the status. */
+bool t_vmo_make_exec_verified(void)
+{
+    handle_t vmex = HANDLE_INVALID, none, v, table, ev, x;
+    handle_t root = startup_handle(SR_RESOURCE);
+    if (!root || jam_handle_duplicate(root, RIGHT_ROOT_VMEX, &vmex) != OK) {
+        printf("utest: %s: no RIGHT_ROOT_VMEX on our root: skipped\n", utest_cur);
+        return true;
+    }
+    CHECK_ST(jam_vmo_create(PAGE_SIZE, 0, &table), OK);
+    CHECK((none = root_without(RIGHT_ROOT_VMEX)) != HANDLE_INVALID);
+    CHECK_ST(jam_vmo_create(PAGE_SIZE, 0, &v), OK);
+    CHECK_ST(jam_vmo_make_exec_verified(v, none, table, 0, &x), ERR_ACCESS_DENIED);
+    CHECK_ST(jam_handle_close(v), ERR_BAD_HANDLE);
+    CHECK_ST(jam_vmo_create(PAGE_SIZE, 0, &v), OK);
+    CHECK_ST(jam_vmo_make_exec_verified(v, vmex, table, 1, &x), ERR_INVALID_ARGS);
+    CHECK_ST(jam_handle_close(v), ERR_BAD_HANDLE);
+    /* A VMO of our own is no pager VMO: vmo_make_exec is its call. */
+    CHECK_ST(jam_vmo_create(PAGE_SIZE, 0, &v), OK);
+    CHECK_ST(jam_vmo_make_exec_verified(v, vmex, table, 0, &x), ERR_NOT_SUPPORTED);
+    CHECK_ST(jam_handle_close(v), ERR_BAD_HANDLE);
+    CHECK_ST(jam_event_create(&ev), OK);
+    CHECK_ST(jam_vmo_make_exec_verified(ev, vmex, table, 0, &x), ERR_WRONG_TYPE);
+    CHECK_ST(jam_handle_close(ev), ERR_BAD_HANDLE);
+    CHECK_ST(jam_handle_close(none), OK);
+    CHECK_ST(jam_handle_close(table), OK);
     CHECK_ST(jam_handle_close(vmex), OK);
     return true;
 }

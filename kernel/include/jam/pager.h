@@ -17,7 +17,8 @@
  * (vmo_write, vmo_commit, writable mappings), take one away (vmo_decommit,
  * vmo_set_size), make a device or the kernel wait for it (vmo_pin,
  * vmo_map_kernel), keep it (VMAR_KEPT_ONLY) or run it unchecked
- * (vmo_seal).
+ * (vmo_seal: its code runs only through vmo_make_exec_verified, which
+ * checks each page as it arrives, <jam/vmo_verify.h>).
  *
  * The page cache: a pager's VMOs hold at most its budget of pages
  * (max_pages) at once. Every page is clean, so the kernel drops the oldest
@@ -109,7 +110,11 @@ status_t pager_next(struct pager *pg, uint32_t flags, struct pager_request *out)
  * not page aligned, len 0, src unreadable; ERR_OUT_OF_RANGE: len past
  * PAGER_SUPPLY_MAX or the range past the VMO's size; ERR_NOT_FOUND: no
  * live VMO has key; ERR_NO_MEMORY: no page even with the pager's cache
- * evicted, or the job refused one (the pages before it stay). Interrupts
+ * evicted, or the job refused one (the pages before it stay). A verified
+ * VMO's page that doesn't match its hash is never published: the rest of
+ * the range is supplied, then the requests waiting on such a page fail
+ * with ERR_BAD_STATE and the call returns ERR_IO (unless it stopped for one
+ * of the errors above). Interrupts
  * on, no spinlock held. */
 status_t pager_supply(struct pager *pg, uint64_t key, uint64_t offset, const struct pager_src *src,
                       uint64_t len);
@@ -133,6 +138,14 @@ status_t pager_supply(struct pager *pg, uint64_t key, uint64_t offset, const str
 status_t pager_op(struct pager *pg, uint64_t key, uint32_t op, uint64_t offset, uint64_t len,
                   int64_t arg);
 
+/* Publish p (a fresh page holding page idx's bytes, the caller's
+ * reference, consumed whatever happens) in pg's VMO v as pager_supply
+ * does for each page, inside the budget; `checked` as for
+ * vmo_pager_publish. OK if published or present already, else as
+ * vmo_pager_publish says. pager_supply's step, and the tests' way to
+ * publish a page copied before a seal. Interrupts on, no spinlock held. */
+status_t pager_publish_page(struct pager *pg, struct vmo *v, uint64_t idx, struct page *p,
+                            bool checked);
 /* Pages its VMOs hold right now, counted against its budget (tests). */
 uint64_t pager_resident(struct pager *pg);
 
@@ -144,7 +157,9 @@ uint64_t pager_resident(struct pager *pg);
  * how r failed: ERR_IO or ERR_OUT_OF_RANGE (PAGER_OP_FAIL),
  * ERR_PEER_CLOSED (detached, the pager's last handle closed, the VMO
  * gone), ERR_TIMED_OUT (not answered in time: this waiter fails it for
- * everyone). No spinlock held, nor any lock the pager's progress needs. */
+ * everyone), ERR_BAD_STATE (a verified VMO's page that the pager
+ * supplied didn't match its hash: <jam/vmo_verify.h>). No spinlock held,
+ * nor any lock the pager's progress needs. */
 status_t pager_req_wait(struct pager_req *r);
 /* Drop the caller's reference to r (pager_req_wait's, or one from
  * vmo_page_request). */
@@ -170,11 +185,15 @@ status_t vmo_page_request(struct vmo *v, uint64_t idx, struct pager_req **out);
 /* Publish p as page idx of a pager VMO if that slot is absent, charged
  * to the VMO's job, with rec its record in its pager's cache (a slot of
  * the budget reserved for it); the requests covering idx note its
- * arrival. OK: published, p (the caller's reference) and rec taken.
- * Nothing is taken otherwise: ERR_ALREADY_EXISTS if the page is present,
- * ERR_OUT_OF_RANGE past the size, ERR_PEER_CLOSED if detached,
- * ERR_NO_MEMORY if the job refused it (or a table for it). */
-status_t vmo_pager_publish(struct vmo *v, uint64_t idx, struct page *p, struct pager_rec *rec);
+ * arrival. `checked`: p's bytes were matched against v's table already
+ * (vmo_verify_supply); a verified VMO's page that wasn't is matched here.
+ * OK: published, p (the caller's reference) and rec taken. Nothing is
+ * taken otherwise: ERR_ALREADY_EXISTS if the page is present,
+ * ERR_OUT_OF_RANGE past the size, ERR_PEER_CLOSED if detached, ERR_IO if
+ * v is verified and p doesn't match, ERR_NO_MEMORY if the job refused it
+ * (or a table for it). */
+status_t vmo_pager_publish(struct vmo *v, uint64_t idx, struct page *p, bool checked,
+                           struct pager_rec *rec);
 /* Evict page idx of a pager VMO if it is still p (the cache popped it):
  * out of the table, zapped from every mapping, freed after the
  * shootdown. Interrupts on, no spinlock held. */

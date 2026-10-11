@@ -286,6 +286,8 @@ static const char *fault_reason(status_t s)
         return "page fault: the file's pager is gone";
     case ERR_TIMED_OUT:
         return "page fault: the file's pager didn't answer";
+    case ERR_BAD_STATE:
+        return "page fault: a page doesn't match the approved program";
     default:
         return "page fault";   /* nothing mapped there, or not with that access */
     }
@@ -301,6 +303,7 @@ static status_t copy_status(status_t s)
     case ERR_IO:
     case ERR_PEER_CLOSED:
     case ERR_TIMED_OUT:
+    case ERR_BAD_STATE:   /* a verified page that didn't match */
         return ERR_IO;
     case ERR_CANCELED:
         return ERR_CANCELED;
