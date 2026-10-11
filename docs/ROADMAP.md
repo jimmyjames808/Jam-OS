@@ -37,47 +37,63 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 | M12.5 | User-space pagers: mapped files, programs loaded on demand | under way, kernel half built: the pager object, its VMOs and the request queue with system calls 160-164 (PK1), and the fault path that waits for a pager (PK2, 12 ktests). Not yet: eviction (PK3), verified pages and `vmo_make_exec_verified` (PK4), the plumbing (PU), fat as a pager and coherence (PF1, PF2), programs from `/data` (PX), the review and the join. Nothing uses a pager yet ([M12.5-PLAN.md](M12.5-PLAN.md)) |
 | M12.7 | NVMe: read-only first, then writes to a Jam OS disk, then installing Jam OS to it | under way, in wave 5 with M12.5 and M13 (the owner, 2026-10-07). Stage 1, read-only, is built and tested in QEMU (N1-N5): drv/nvme (no write command in it, checked by `make check`), the partition-table library, `volumes` mounting FAT partitions read-only as `/nvmeN`, and the shell's `disks`, `disk digest` and `disk smart`; it binds on every boot. Its check on Windows' drive on the PC (the drive's write counter unmoved) is not recorded yet. Stage 2 (writes, only to the blank second drive fitted on 2026-10-11) and stage 3 (the installer) are to come, with one review at the end ([M12.7-PLAN.md](M12.7-PLAN.md)) |
 | M13 | POSIX on musl | under way ([M13-PLAN.md](M13-PLAN.md)). Merged: the kernel's part (K1: small ids, `thread_interrupt`; K2: the time page), musl 1.2.6 with the sysroot, `jamos-cc` and `posixtest` (A1), libjam and the hand-over (A2), netstack options (N1), the console's connection back end and `tty` (T1, T2), files and directories (B1), pipes, `dup`, `/dev`, `/etc`, memfd and eventfd (B2), `posix_spawn` and waits (B3), signals (B4), `poll`, `select` and `epoll` (B5), and the shell's descriptors and redirections (S1). Not yet: sockets (B6), sessions and ptys (X1), sbase and Lua (P1), libc-test (P2), tinyssh (X2), pipelines (S2), mapped files (F1), the reviews and the join |
-| M13.5 | A real POSIX shell, made the default | after M13, alongside M14 (the owner, 2026-10-11) |
+| M13.5 | A real POSIX shell, made the default | after Chromium: not on its path (the owner, 2026-10-11) |
 | M13.6 | A Unix filesystem: symlinks, permissions, large files, case-sensitive names | porting first (the owner, 2026-10-11); plan being written |
 | M13.7 | The ports system: recipes, dependency order, packages | porting first (the owner, 2026-10-11); plan being written |
 | M10 | ACPI power, tickless idle | deferred: porting first (the owner, 2026-10-11) |
 | M10.5 | S3 sleep | deferred: porting first (the owner, 2026-10-11) |
 | M14 | Stable syscall ABI | stretch |
-| M14.5 | Maybe: dynamic linking | stretch, only if porting needs it |
+| M14.5 | Maybe: dynamic linking | probably on Chromium's path (CR0 decides) |
 | M15 | Self-hosting | stretch |
+| CR | Chromium: the main goal (the owner, 2026-10-11) | CR0, the plan, first; then the layers in [Now](#now) |
 | G2-G4 | Toolkit and fonts, mode setting, 3D | G2 is porting work (libwayland, fonts, toolkits) and comes with it; G3 and G4 deferred: porting first (the owner, 2026-10-11) |
 | Maybe | Own UEFI loader in place of Limine | not planned |
 
 ## Now
 
-**Porting first (the owner, 2026-10-11).** Until porting is routine, work
-goes only to what directly helps it: the rest of M13 (POSIX, sockets,
-sessions, mapped files), M12.5's programs from disk (PF1, PX), M12.7's
-stage 2 (writes: the new filesystem's disk), M13.5 (the shell and
-`fork`), M13.6 (the filesystem), M13.7 (the ports system), G2 (libwayland,
-fonts, toolkits) and M14.5 (dynamic linking) when a port needs it.
-Deferred until then: M10 and M10.5 (ACPI power, sleep), M12.7's stage 3
-(the installer), G3 and G4 (mode setting, 3D), M12.1's follow-ups, and
-new Jam OS apps beyond the system's own (settings).
+**The goal: Chromium (the owner, 2026-10-11).** Jam OS's main goal is
+to run Chromium. It is reached layer by layer, each layer a general piece
+of the system that any later port uses too (no Chromium-only shortcuts,
+nothing that can't generalise), and only the layers Chromium needs to run
+are built now. Everything else waits until after it, unless the owner
+sets it as a goal of its own. The first step is the Chromium plan (CR0
+below), which turns "what Chromium needs" into an exact list; until it
+lands, the list below is the expected one.
 
+On Chromium's path (in roughly this order, much of it in parallel):
 
-Three milestones run side by side (wave 5, the owner's order of
-2026-10-07):
+- **Finish what is under way**: M13 (POSIX: the reviews, mapped files
+  F1b, the join), M12.5 (pagers: PF2 coherence, PX programs from `/data`,
+  the review), M12.7's stage 2 (writes to a Jam OS disk: Chromium's
+  profile, cache and its own ~0.5 GB of files need real storage).
+- **M13.6, the Unix filesystem**: Chromium's profile is SQLite databases
+  and many small files written by atomic rename-over (which FAT32 can't
+  do), with file locks.
+- **M13.7, the ports system**: how Chromium's dependencies and Chromium
+  itself are built, packaged and installed. Its port ladder is trimmed to
+  what Chromium's chain needs (the make/vim/libarchive rungs wait).
+- **G2, Wayland clients, scoped to Chromium**: libwayland and the libc
+  shim, xkbcommon, the compositor's protocols Chromium's Ozone/Wayland
+  backend uses (xdg-shell, decorations, subsurfaces, popups for menus,
+  the clipboard, cursors), FreeType, fontconfig, HarfBuzz and the C++
+  runtime. A small Wayland test client proves each layer; foot, SDL2,
+  Doom, swayimg and the GTK spike are not on the path.
+- **New layers G2 doesn't cover**: executable memory for a JIT under a
+  capability (V8; its jitless mode first), the clang/libc++ toolchain and
+  Chromium's GN build taught a Jam OS target (from its Fuchsia port:
+  spawn, channels, jobs, no zygote, no `fork`), audio for web pages
+  through the mixer, a CA certificate store for TLS, and probably M14.5
+  (dynamic linking: SwiftShader and ANGLE load as shared libraries; CR0
+  confirms).
+- **CR, Chromium itself**: software rendering first (Skia on the CPU or
+  SwiftShader); GPU drivers (G3/G4, likely Linux's DRM drivers under the
+  2026-10-11 licence rule) make it fast afterwards.
 
-- **M13, POSIX on musl**: the sockets (B6), sessions and pseudo-terminals
-  (X1), the ported utilities and Lua (P1), then libc-test, tinyssh (X2),
-  the shell's pipelines (S2) and mapped files (F1); then the reviews and
-  the join. Plan: [M13-PLAN.md](M13-PLAN.md).
-- **M12.5, user-space pagers**: eviction (PK3) and verified pages (PK4),
-  the plumbing (PU), then fat as the first pager (PF1) and programs run
-  from `/data` through it (PX). Plan: [M12.5-PLAN.md](M12.5-PLAN.md).
-- **M12.7, NVMe**: stage 1 (read-only) waits for its check on the PC;
-  stage 2, writes to the blank second drive only (W1-W3), is next. Plan:
-  [M12.7-PLAN.md](M12.7-PLAN.md).
-
-Beside them: the plans for M13.6 (the filesystem) and M13.7 (the ports
-system), and the small items under [Smaller follow-ups](#smaller-follow-ups)
-that help porting. M12.1's follow-up waits (porting first).
+Not on the path, so after Chromium (unless the owner makes one a goal):
+M13.5 (mksh and emulated `fork`: Chromium's Fuchsia code spawns), M14
+(the ABI freeze), M15 (self-hosting), M10 and M10.5 (ACPI power, sleep),
+M12.7's stage 3 (the installer), M12.1's follow-ups, ports nobody needs
+yet, and new Jam OS apps beyond the system's own.
 
 M8.6 (cleanup and polish) is done: [what it delivered](HISTORY.md#m86-cleanup-and-polish).
 
@@ -114,6 +130,7 @@ M11 to M12.1 ran in three waves (what they delivered is in [HISTORY.md](HISTORY.
 | M14 | Stable syscall ABI: frozen only after POSIX has put its weight on it; versioned and documented. It starts with a short review of every interface added since M12's review (M10's power calls, M10.5's driver suspend and resume, and whatever M12.5 and M13 add), since M10 and M10.5 now come after M13; G1's protocol is M12's, as G1 comes before it | old binaries keep running on new kernels |
 | M14.5 | Maybe: dynamic linking. A loader for shared libraries and `dlopen`, for porting big software built around them (LibreOffice, Python's C extensions, GTK or Qt apps, plugins). Static linking stays the default for Jam OS's own programs. `allow` must then cover the libraries a program loads as well as the program file (each approved by its hash), and a program's list names the libraries it may load. Only worth doing when such a port is a goal | a ported program loads a shared library and a plugin with `dlopen`, and a changed library is refused until approved |
 | M15 | Self-hosting: make, binutils and GCC ported onto M13's POSIX layer, and CPython ported so the build tools (about 19,000 lines of Python in tools/, ports.py among them) run on Jam OS unchanged instead of being rewritten in C (the owner, 2026-10-11); a small compiler (TCC/cproc) may come first. Python's port needs M13.5 (`subprocess`), M13.6 (its library's layout) and its C modules built in until M14.5 | Jam OS rebuilds itself on the PC and boots the result, with no Mac involved |
+| CR | Chromium, the main goal (the owner, 2026-10-11), reached layer by layer (see [Now](#now)): every layer general, only the layers Chromium needs built before it. CR0 is its plan: from Chromium's own source and its Fuchsia port, the exact list of what it needs from Jam OS (system calls, POSIX, IPC, processes and sandbox, memory and JIT, files, sockets, Wayland/Ozone, fonts, audio, TLS, the toolchain and GN), what exists, what each missing layer is and which milestone builds it, in order; then the port itself (CR1...) | Chromium opens a window on the PC and browses real sites over HTTPS, software-rendered; then GPU-accelerated after G3/G4 |
 | G1 | A compositor of our own on the firmware framebuffer that speaks the Wayland protocol: Wayland's model (surfaces, buffers, `xdg_toplevel`, a seat for input) with its wire format carried over channels, handles where Linux passes file descriptors, `wl_shm` pools as VMOs, the code generated from Wayland's XML protocol files as the IDL is. Apps draw into their own surfaces, input goes only to the focused client, a crashed app takes only its own window down, software rendering. The console becomes a client (a terminal window). Not a port: Weston and wlroots need Linux's DRM/KMS, Mesa, libinput and udev | windows from several programs on the PC's screen, the shell in one of them |
 | G2 | Toolkit, TrueType fonts, GUI apps: ported leaf libraries (stb_truetype or FreeType, microui/Nuklear or LVGL, stb_image). After M13, libwayland ported with a shim from sockets and file descriptors to channels and handles, so Wayland programs that draw in software (foot, SDL) run unchanged; GTK and Qt are a later porting project of their own | |
 | G3 | Mode setting and vsync, only through the Intel iGPU (needs the monitor on the board's output and the iGPU enabled). Since the owner's licence decision of 2026-10-11 (GPL allowed in separate programs), the likely road is Linux's own GPU drivers (i915, amdgpu: mostly MIT) run as Jam OS driver programs over a translation layer from Linux's kernel interfaces to Jam OS's driver library (as FreeBSD's LinuxKPI and drm-kmod do); that layer is a milestone of its own | |
