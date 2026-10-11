@@ -883,6 +883,8 @@ include user/posix/posix.mk
 include user/ports/libc-test/libc-test.mk
 # Ported programs (sbase, Lua): third_party built with jamos-cc into usr/bin.
 include user/ports/ports.mk
+# Jam OS's own commands as programs (the shell's, built again for POSIX shells).
+include user/sysbox/sysbox.mk
 
 # compile_commands.json for editors (VS Code IntelliSense, clangd): the real
 # build's flags for every file, from a dry run (tools/compdb.py).
