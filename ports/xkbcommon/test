@@ -1,0 +1,38 @@
+# xkbcommon: its tools compile and query the compositor's keymap, the US
+# layout's XKB text that tools/genkeymap.py makes (share/xkbcommon-test/
+# us.xkb, a copy `genkeymap.py check` keeps current). The expected lines are
+# what the same xkbcommon 1.13.2 printed built for Linux. In the
+# xkbcommon-test package. NOT YET RUN on Jam OS (tools/ports-test.sh,
+# M13.7's PO8); built and staged by GP1.
+wait 120 Jam OS shell
+wait {prompt}
+send K=/data/pkg/share/xkbcommon-test/us.xkb; X=/data/pkg/libexec/xkbcommon
+wait {prompt}
+# the keymap compiles and prints back as 720 lines
+send $X/xkbcli-compile-keymap --from-xkb $K | wc -l
+wait 720
+wait {prompt}
+# a keymap that is not one is refused
+send echo 'garbage {' > /data/xkb-bad.xkb; $X/xkbcli-compile-keymap --from-xkb /data/xkb-bad.xkb; echo bad-status-$?
+wait Failed to parse input xkb file
+wait bad-status-1
+wait {prompt}
+send rm /data/xkb-bad.xkb
+wait {prompt}
+# 'a' is the key AC01 (code 38) alone; 'A' needs Shift (or Lock); '!' is Shift+1
+send $X/xkbcli-how-to-type --disable-compose --keymap=$K a
+wait keysym: a (0x0061)
+wait 38       AC01      1        English (US)         1       [ ]
+wait {prompt}
+send $X/xkbcli-how-to-type --disable-compose --keymap=$K A
+wait keysym: A (0x0041)
+wait 38       AC01      1        English (US)         2       [ Shift ]
+wait {prompt}
+send $X/xkbcli-how-to-type --disable-compose --keymap=$K '!'
+wait keysym: exclam (0x0021)
+wait 10       AE01      1        English (US)         2       [ Shift ]
+wait {prompt}
+send $X/xkbcli-how-to-type --disable-compose --keymap=$K --keysym Return
+wait keysym: Return (0xff0d)
+wait 36       RTRN      1        English (US)         1       [ ]
+wait {prompt}

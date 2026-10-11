@@ -1,0 +1,47 @@
+# xkbcommon: the keyboard keymap library (G2's GP1, docs/G2-PLAN.md
+# section 5). Every Wayland client turns wl_keyboard's key codes into
+# characters with it: the compositor sends a whole XKB text keymap
+# (tools/genkeymap.py makes it from abi/keymap), the client compiles it with
+# xkb_keymap_new_from_string, and so no xkeyboard-config data is needed on
+# the disk. Built without the registry, X11, Wayland tools or docs.
+name        xkbcommon
+version     1.13.2
+revision    1
+summary     the xkbcommon keymap library, and two of its tools
+homepage    https://xkbcommon.org/
+category    libs
+# LICENSE lists every wording in the tree (read 2026-10-11, every SPDX tag
+# in src/, include/ and tools/): MIT for most; HPND, HPND-sell-variant and
+# MIT-open-group (the X.org and SGI notices) in the keymap compiler and
+# keysym tables; ISC in src/utils-checked-arithmetic.h; and Digital
+# Equipment Corporation's 1987-88 permission notice in src/atom.c (upstream's
+# LicenseRef-digital-equipment-corporation). All are permissive with the
+# notice kept, which share/licences carries. The generated parser (bison's
+# skeleton, GPL with the Bison exception) may carry any licence.
+licence     MIT AND MIT-open-group AND HPND AND HPND-sell-variant AND ISC AND LicenseRef-digital-equipment-corporation
+licence-file LICENSE
+# The project publishes its releases as tags: this is the tag's archive,
+# whose bytes the size and hash pin.
+source      https://github.com/xkbcommon/libxkbcommon/archive/refs/tags/xkbcommon-$version.tar.gz 1243485 acc4d5f7c3cbba5f9f8d08d8bdbeede84ecede46792f47929aa9321873385528 libxkbcommon-$version.tar.gz
+place       package
+style       meson
+# bison builds the keymap parser (src/xkbcomp/parser.y) and runs on the
+# build machine.
+host        bison
+meson       -Denable-tools=true -Denable-x11=false -Denable-wayland=false
+meson       -Denable-xkbregistry=false -Denable-docs=false -Denable-bash-completion=false
+# xkeyboard-config (the layout database) is not on Jam OS and nothing here
+# reads it: these name where it would go, because xkbcli-info does not
+# compile when the build found none and the paths are left to it.
+meson       -Dxkb-config-root=$prefix/share/xkeyboard-config-2
+meson       -Dxkb-config-versioned-extensions-path=$prefix/share/xkeyboard-config-2.d
+meson       -Dxkb-config-unversioned-extensions-path=$prefix/share/xkeyboard-config.d
+# Two of the tools, as the port's test: xkbcli-compile-keymap compiles the
+# compositor's keymap (share/xkbcommon-test/us.xkb) and prints it back, and
+# xkbcli-how-to-type finds the keys that type a character with it. Both
+# read a file, so they may read /data.
+program     libexec/xkbcommon/xkbcli-compile-keymap
+program     libexec/xkbcommon/xkbcli-how-to-type
+subpackage  xkbcommon-test libexec/xkbcommon/xkbcli-compile-keymap libexec/xkbcommon/xkbcli-how-to-type share/xkbcommon-test
+library     lib/libxkbcommon.a include/xkbcommon lib/pkgconfig/xkbcommon.pc
+cpe         cpe:2.3:a:xkbcommon:libxkbcommon

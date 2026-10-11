@@ -1,0 +1,32 @@
+# wayland-protocols: the XML descriptions of the Wayland protocols beyond
+# the core (xdg-shell, the staging and unstable ones), a data port (G2's
+# GP1, docs/G2-PLAN.md): a port with no program, only the files other
+# ports build against. Programs that need a protocol (foot, SDL2) find the
+# XML through its pkg-config file and run wayland-scanner on it; the
+# package itself carries nothing to Jam OS.
+#
+# With wayland-scanner among its tools, upstream's build also runs the
+# scanner over every installed protocol (enum-header) and installs those
+# headers: a check that the scanner takes all of them.
+name        wayland-protocols
+version     1.49
+revision    1
+summary     the Wayland protocol XML files beyond the core
+homepage    https://wayland.freedesktop.org/
+category    data
+# COPYING is the MIT licence ("Expat"), the project's. Six of the 65 XML
+# files carry another wording in their own copyright block, the X.org
+# "permission to use, copy, modify, distribute, and sell" notice
+# (HPND-sell-variant; text-input-unstable-v3, pointer-gestures-unstable-v1,
+# ext-workspace-v1, ext-data-control-v1, ext-foreign-toplevel-list-v1 and the
+# experimental xx-text-input, which is not installed): each file keeps it.
+licence     MIT AND HPND-sell-variant
+licence-file COPYING
+source      https://gitlab.freedesktop.org/wayland/wayland-protocols/-/releases/$version/downloads/wayland-protocols-$version.tar.xz 150612 ec4c8f74942d6dff7ace8b4ce4764f0ef9ff618a935d974ea77edee2ad240b14
+place       package
+style       meson
+tool        wayland-scanner
+meson       -Dtests=false
+# Build-time data: the XML and the headers, for the ports that need them.
+library     share/wayland-protocols share/pkgconfig/wayland-protocols.pc include/wayland-protocols
+cpe         cpe:2.3:a:wayland:wayland-protocols

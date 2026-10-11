@@ -1,0 +1,14 @@
+# wayland: wl-connect-test connects to the compositor through libwayland
+# (libwayland-client, libffi's ffi_call in its dispatcher, and GS1's Wayland
+# socket under /svc/wayland), lists the registry's globals and checks for
+# wl_compositor, wl_shm and xdg_wm_base. Installed in the wayland-test
+# package. Needs the desktop's compositor running and `svc wayland` (its
+# list); NOT YET RUN on Jam OS: waits for GS1's socket and PO8's
+# tools/ports-test.sh. Built and staged by GP1.
+wait 120 Jam OS shell
+wait {prompt}
+send wl-connect-test
+wait connected
+wait global
+wait wl-connect-test: ok
+wait {prompt}
