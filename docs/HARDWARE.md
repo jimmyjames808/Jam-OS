@@ -96,7 +96,7 @@ macOS runs gets their files (`System Volume Information`, `.Spotlight-V100`,
 | Function | Device | Notes |
 |---|---|---|
 | 05:00.0 | Realtek RTL8125B 2.5 GbE, 10ec:8125 rev 05 | drv/rtl8125: [The network](#the-network) |
-| 00:1f.3 | Intel Raptor Lake PCH HD Audio, 8086:7a50 rev 11, class 04 03 00 (HDA mode, not the audio DSP's). MSI (1, 64-bit), no MSI-X. BAR0 mem64 16 KiB (the HDA registers), BAR4 mem64 1 MiB (the DSP's, unused) | drv/hda. Codec 0 is a Realtek ALC897 (10ec:0897, subsystem 1043:8841); the front-panel headphone jack is its pin 1b, fed by DAC 02 through mixer 0c. Codec address 2 is reported but never answers (likely the disabled iGPU's HDMI codec). The whole graph: `hda` in the shell, `[hda]` lines in the boot log, and [A1-PLAN.md](history/A1-PLAN.md#the-hardware) |
+| 00:1f.3 | Intel Raptor Lake PCH HD Audio, 8086:7a50 rev 11, class 04 03 00 (HDA mode, not the audio DSP's). MSI (1, 64-bit), no MSI-X. BAR0 mem64 16 KiB (the HDA registers), BAR4 mem64 1 MiB (the DSP's, unused) | drv/hda. Codec 0 is a Realtek ALC897 (10ec:0897, subsystem 1043:8841); the front-panel headphone jack is its pin 1b, fed by DAC 02 through mixer 0c. Codec address 2 is reported but never answers (likely the disabled iGPU's HDMI codec). The whole graph: `hda` in the shell, `[hda]` lines in the boot log, and [HISTORY: audio](HISTORY.md#audio-a1-a2-as-and-m85-kexec) |
 | 01:00.1 | NVIDIA HD Audio, 10de:22bb | HDMI/DP audio on the RTX: no driver, not planned |
 | 00:14.3 | Intel Wi-Fi (the board lists an AX201), 8086:7a70 (MSI-X 16) | not planned |
 | 00:0e.0 | Intel VMD/RAID, 8086:a77f | its 64-bit BAR has a hard-wired-zero upper half (see [HISTORY.md](HISTORY.md#m6-pci-msi-devmgr-drivers-through-handles)) |

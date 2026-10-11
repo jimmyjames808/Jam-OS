@@ -28,7 +28,7 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 | M8.6 | Cleanup and polish | done (PC 2026-10-02: `soak 10` passed (663 s on 28 CPUs, 4525 kernel tests and 17 utest runs, 0 FAILED) with the SanDisk mounted read-write; live `ktest` 248 passed and utest 117; `bench` in [BENCH.md](BENCH.md#m86-pc-2026-10-02)) |
 | M9 | Networking | done: built, reviewed (no High) and used on the PC from 2026-10-02 (the RTL8125 sending and receiving on the network's VLAN after two driver fixes, `ping`, DHCP, DNS, netlog, signed `update` and `update -w` from the Mac); no sign-off of its own was recorded, and the network has been up in every later PC sign-off's `soak 10` ([HISTORY: M9](HISTORY.md#m9-networking)) |
 | M9.5 | Network streams: TCP and sockets on shared rings | done, with M9's status: TCP, sockets on rings, wait sets, the listen permission, `fetch`, `serve`, `speed` and SNTP; reviewed (nothing High or Medium); `speed` on the PC reaches 34.7 MB/s out and 11.6 in over Wi-Fi after window scaling and SACK ([HISTORY: M9.5](HISTORY.md#m95-network-streams)) |
-| M11 | IOMMU | done: signed off on the PC on 2026-10-07 (the IOMMU checks, every device, All tests and `soak 10` with it on) and on by default since; `iommu=off` turns it off ([HISTORY: M11](HISTORY.md#m11-the-iommu)); reviewed ([history/M11-REVIEW.md](history/M11-REVIEW.md)) |
+| M11 | IOMMU | done: signed off on the PC on 2026-10-07 (the IOMMU checks, every device, All tests and `soak 10` with it on) and on by default since; `iommu=off` turns it off ([HISTORY: M11](HISTORY.md#m11-the-iommu)); reviewed (the review's findings are in [HISTORY: M11](HISTORY.md#m11-the-iommu)) |
 | M11.5 | Performance pass: the IPC fast path, a Linux column in BENCH.md | done: reviewed, and measured on the PC on 2026-10-07 ([BENCH.md](BENCH.md#m115-with-every-follow-up-pc-2026-10-07)): the switch 30.1 ns (92 at M8.6), a process-to-process call 1089 ns (1533), a call to a reply-and-wait server 765 ns against the 600 ns target, read on that line with the lock checker on (the owner, 2026-10-07); the last 165 ns are a follow-up below, and the Linux column is not measured yet ([HISTORY: M11.5](HISTORY.md#m115-the-performance-pass)) |
 | M11.6 | Services that outlive their process | done: fat and the mixer ([HISTORY: M11.6](HISTORY.md#m116-services-that-outlive-their-process); QEMU's numbers in [BENCH.md](BENCH.md#m116-qemu-2026-10-05)), reviewed (no High); on the PC with M12's sign-off (2026-10-11) `storm` at 10 and 100 kills a second copied a file with a matching checksum at a median of about 60 ms from kill to first answer. Not run on the PC: `storm` at 0 and 1 kills a second and `storm mixer` by ear |
 | G1 | A compositor that speaks Wayland | **done** 2026-10-07 ([HISTORY: G1](HISTORY.md#g1-the-desktop)): X1's hostile clients against the live desktop, the Mac regression, pushed; signed off on the PC (the checklist, All tests, soak 10, and a soak 2 after the last fixes). Its docs pass and review were M12.1's (the owner, 2026-10-07) |
@@ -159,7 +159,7 @@ several that were here (its plan has them): running programs from
 the root resource's `RIGHT_READ` split, a safe `make flash`, a bigger
 kernel log ring and the block cache for the slow `/esp` read. The first
 ones below are the design questions M8 left open
-([its review](history/M8-REVIEW.md) has the details):
+([HISTORY: M8](HISTORY.md#m8-storage) has the details):
 
 - **The call's last 165 ns**: M11.5's 600 ns target, read on the
   reply-and-wait line with the checker on (the owner, 2026-10-07), is at
@@ -203,9 +203,8 @@ ones below are the design questions M8 left open
 - The audio reviews' findings that were not fixed: an hda driver that
   dies mid-stream leaves the codec path open until its restart resets
   the link, and the Lows
-  ([AUDIO-REVIEW.md](history/AUDIO-REVIEW.md)); jamjar shares the shell's
-  end of the player's channel, and its own Lows
-  ([JAMJAR-REVIEW.md](history/JAMJAR-REVIEW.md)).
+  ([HISTORY: audio](HISTORY.md#audio-a1-a2-as-and-m85-kexec)); jamjar shares the shell's
+  end of the player's channel, and its own Lows (same section).
 
 The rest:
 

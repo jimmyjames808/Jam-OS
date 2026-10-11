@@ -5,7 +5,7 @@ docs are joined. The regression on the PC and the sign-off (All tests and
 `soak 10`) are still to come. Written (2026-10-07) against main e323fefd,
 with G1 built and merged and its PC sign-off still to come, and the owner's
 answers recorded below before any agent started. M12 is wave 3 of
-[PLAN-M11-M12.5.md](PLAN-M11-M12.5.md#wave-3-m12-alone): it ran alone,
+the third wave of M11 to M12.5 (see [HISTORY.md](HISTORY.md#m12-the-interface-review)): it ran alone,
 after waves 1 and 2 changed the interfaces.
 
 Goal ([roadmap](ROADMAP.md#later)): **the system calls and the service
@@ -52,7 +52,7 @@ frozen yet", made concrete):
   ([ROADMAP.md](ROADMAP.md#smaller-follow-ups)); M12 only must not make the
   call slower.
 - **No drivers that outlive their process**: their milestone comes after
-  M12 ([M11.6-PLAN.md](M11.6-PLAN.md#x-drivers-the-design-note)); M12
+  M12 (the M11.6 plan's "X: drivers" design note; [HISTORY: M11.6](HISTORY.md#m116-services-that-outlive-their-process)); M12
   reviews fat's and the mixer's interfaces they will copy.
 - **No new Wayland interfaces or versions**: those are additions G2's first
   ports ask for; upstream's protocols are not ours to freeze anyway.
@@ -75,29 +75,31 @@ are what an older build on the PC must still read during an `update`
 | IDL protocols | 26: null 1, edu 2, idltest 3, usb 10, input 11, console 12, usbbus 13, storage 14, block 15, fs 16, file 17, initctl 18, logctl 19, fsctl 20, hda 21, audio 22, audioctl 23, music 24, svc 25, jamcover 26, netdev 27, netctl 28, net 29, dns 30, serve 31, compctl 32 | `abi/idl/*.idl`, `tools/genidl.py`, generated into `drivers/include/idl/` |
 | Hand-written protocols | devmgr's (16 methods), the keep protocol, the namespace's messages (`NS_MOUNT`, `NS_UNMOUNT`, `NS_SET`), the startup and promotion messages, `console.open_keys`'s plain messages, the update offer and answer, init's note to the first shell | `user/include/devmgr.h`, `user/include/keep.h`, `user/include/os.h`, `kernel/include/jam/startup.h`, `kernel/include/jam/abi.h` ("input"), `user/include/update.h` |
 | Shared-memory layouts | the mixer's ring, the socket rings, the netdev rings, a service's state VMO, the bootfs image, the crash log | `user/include/mixer.h`, `user/include/sockring.h`, `drivers/include/jam/netdev.h`, `user/include/svcstate.h`, `kernel/include/jam/bootfs.h`, `kernel/include/jam/startup.h` |
-| Wayland | `wayland.xml`, `xdg-shell.xml` and `cursor-shape-v1` from upstream, over Jam OS's "JWL1" transport (a 16-byte header per batch, handles for fds, an ack window) | `user/include/jwl.h`, `tools/genwl.py`, `user/services/compositor/`, [G1-PLAN.md](G1-PLAN.md#the-protocol) |
+| Wayland | `wayland.xml`, `xdg-shell.xml` and `cursor-shape-v1` from upstream, over Jam OS's "JWL1" transport (a 16-byte header per batch, handles for fds, an ack window) | `user/include/jwl.h`, `tools/genwl.py`, `user/services/compositor/`, G1 plan, "The protocol" ([HISTORY: G1](HISTORY.md#g1-the-desktop)) |
 
 ## What is queued for M12 already
 
 Gathered from the plans, reviews and follow-ups. Each lands in a question
-below or in a review track's list.
+below or in a review track's list. The plans and reviews named here are
+deleted (they stay in git history; what they delivered is in
+[HISTORY.md](HISTORY.md)).
 
 | From | What | Goes to |
 |---|---|---|
-| [G1-PLAN.md](G1-PLAN.md#interface-changes-for-m12-to-review) | the Wayland transport (header, flow control, handles for fds, size limits); the interfaces and versions offered and the simplifications; compctl and its levels; `console.connect_input` and `console.lend_screen` unused in window mode; `console.blank` replaced by `compctl.blank` for init; K1's flags (`VMO_KEEP_PAGES`, `VMAR_KEPT_ONLY`, and its error: `ERR_WRONG_TYPE` as built); the keymap format; the `wayland` service name; what `input` carries once the compositor applies layouts | review W; questions 14, 15 |
+| G1 plan, "Interface changes for M12 to review" | the Wayland transport (header, flow control, handles for fds, size limits); the interfaces and versions offered and the simplifications; compctl and its levels; `console.connect_input` and `console.lend_screen` unused in window mode; `console.blank` replaced by `compctl.blank` for init; K1's flags (`VMO_KEEP_PAGES`, `VMAR_KEPT_ONLY`, and its error: `ERR_WRONG_TYPE` as built); the keymap format; the `wayland` service name; what `input` carries once the compositor applies layouts | review W; questions 14, 15 |
 | G1 "As built: copy and paste" | the clipboard's transfer over a channel end, written into by the owner without waiting and queued on the reader's side | questions 2, 17 |
 | G1 C1's note (AGENTS) | libos's heap is a fixed 16 MiB, the compositor's worst case about 23 MiB | question 16 |
 | G1 W2's note | a disconnected client's unread messages stay charged to the compositor's job (`user/services/compositor/conn.c`, "lingering" slots) | question 2 |
-| [M11.6-PLAN.md](M11.6-PLAN.md#interface-changes-for-m12-to-review) | startup roles `SR_STATE`, `SR_KEEP`, `SR_STANDBY` and the promotion message; the keep protocol (hand-written: genidl can't carry handles in one-way messages); the state VMO's header; genidl's `<proto>_take_slot`, `<proto>_run_slot`, `REQ_MAX`, `REP_MAX`, `idempotent`, the restart-rule paragraph; the restart rules in the IDL headers; `fsctl`'s restart counters; `DEVMGR_SUPERVISION` and `DEVMGR_KILL`; supervision policy and `nospare`; M11.5's reply addressing | reviews P and S; questions 4, 18 |
+| M11.6 plan, "Interface changes for M12 to review" | startup roles `SR_STATE`, `SR_KEEP`, `SR_STANDBY` and the promotion message; the keep protocol (hand-written: genidl can't carry handles in one-way messages); the state VMO's header; genidl's `<proto>_take_slot`, `<proto>_run_slot`, `REQ_MAX`, `REP_MAX`, `idempotent`, the restart-rule paragraph; the restart rules in the IDL headers; `fsctl`'s restart counters; `DEVMGR_SUPERVISION` and `DEVMGR_KILL`; supervision policy and `nospare`; M11.5's reply addressing | reviews P and S; questions 4, 18 |
 | M11.6 plan, "Limits" | kept objects the dead instance made stay charged to its dead job | question 18 |
 | M11.6 plan, Q2 | the kernel handing a dead process's handle table to its successor: "for M12's kernel track if the keep messages show up in a profile" | not taken: no profile shows them; question 11 makes the keeper's checks one call each |
-| [M11.6-REVIEW.md](history/M11.6-REVIEW.md) | A: a kept server end blocked by a queued channel end (the "receives no handles" flag); B: re-arming a port binding inside `channel_reply_wait`; finding 5: fat's stale path after a directory rename (the 8.3 alias); finding 10: a call that names a handle's type | decided D2; questions 12, 8, 11 |
-| [M11.5-PLAN.md](M11.5-PLAN.md#interface-changes-for-m12-to-review) | `channel_reply_wait` and its struct; `CHANNEL_CALL_TIMEOUT`; the register rule (vector registers may be clobbered); genidl's `_serve` and `_within`; a message in registers "for M12 to weigh"; a read-only time page "for M12 to place" | review K; question 19 |
-| [M11.5-REVIEW.md](history/M11.5-REVIEW.md) | A: one txid counter per endpoint pair | decided D1 |
-| [M11-PLAN.md](M11-PLAN.md) question 8, ARCHITECTURE "The IOMMU" | read-only pins (`vmo_pin` flag) | question 13 |
-| [M11-REVIEW.md](history/M11-REVIEW.md) B | IOMMU page-table pages charged to the driver's job, not devmgr's | decided D3 |
-| [ARCH-CHECK.md](history/ARCH-CHECK.md#1-devmgr-does-too-much) claims 1, 0 and 7 | the devmgr split (disks, filesystem services and mounts into a service; both protocols in IDL; `MOUNTS` as a deferred reply); devmgr's and init's waits converted with the split; variable-length arrays | decided D4; tracks S1, S2, D; question 3 |
-| [M8.6-CANDIDATES.md](history/M8.6-CANDIDATES.md) | 1 asynchronous storage calls in devmgr; 2 a user-space lock that sleeps; 6 devmgr's protocol and `console.write`'s 2048 bytes; 10 init's 25 s `mount` and 15 s `kill` waits (3, 4 and 7 are not interface work: M12.1 or later) | tracks S2, D; questions 3, 10 |
+| M11.6 review | A: a kept server end blocked by a queued channel end (the "receives no handles" flag); B: re-arming a port binding inside `channel_reply_wait`; finding 5: fat's stale path after a directory rename (the 8.3 alias); finding 10: a call that names a handle's type | decided D2; questions 12, 8, 11 |
+| M11.5 plan, "Interface changes for M12 to review" | `channel_reply_wait` and its struct; `CHANNEL_CALL_TIMEOUT`; the register rule (vector registers may be clobbered); genidl's `_serve` and `_within`; a message in registers "for M12 to weigh"; a read-only time page "for M12 to place" | review K; question 19 |
+| M11.5 review | A: one txid counter per endpoint pair | decided D1 |
+| M11 plan question 8, ARCHITECTURE "The IOMMU" | read-only pins (`vmo_pin` flag) | question 13 |
+| M11 review B | IOMMU page-table pages charged to the driver's job, not devmgr's | decided D3 |
+| ARCH-CHECK (the pre-M9 architecture check) claims 1, 0 and 7 | the devmgr split (disks, filesystem services and mounts into a service; both protocols in IDL; `MOUNTS` as a deferred reply); devmgr's and init's waits converted with the split; variable-length arrays | decided D4; tracks S1, S2, D; question 3 |
+| M8.6-CANDIDATES (the cleanup's candidate list) | 1 asynchronous storage calls in devmgr; 2 a user-space lock that sleeps; 6 devmgr's protocol and `console.write`'s 2048 bytes; 10 init's 25 s `mount` and 15 s `kill` waits (3, 4 and 7 are not interface work: M12.1 or later) | tracks S2, D; questions 3, 10 |
 | [ROADMAP.md](ROADMAP.md#smaller-follow-ups) | "devmgr and init ... waits converted ... the storage ones go with devmgr's split at M12"; devmgr's protocol into IDL; `console.write`'s 2048 bytes; the compositor's 64 connections | tracks S2, D, P1; decided D6 |
 | `user/include/devmgr.h` | "The protocol moves to IDL with the interface review (M12)" | track D |
 
@@ -680,7 +682,7 @@ interfaces in full, with every caller, and writes a findings file:
 |---|---|---|
 | **K. System calls** | `abi/syscalls.def`, the user-visible kernel headers, `kernel/abi/` (each call's rights checks, errors, flags), `<jam/driver.h>`; and **the POSIX table**: every system call musl's x86-64 port makes and every need in M13's row (threads and TLS, futexes, clocks, `mmap` and `mprotect`, pipes, `poll`, `posix_spawn`, signals and interrupting a blocked call, `uname`, `getpid`, errno), each marked "have it", "M12 adds", or "M12.5 / M13 adds, with this shape" | docs/M12-REVIEW-KERNEL.md |
 | **P. Protocols** | `abi/idl/*.idl`, `tools/genidl.py` and its output, the hand-written protocols (devmgr's, keep, the namespace's, startup and promotion, `open_keys`, the update offer) and the shared-memory layouts; for each: names, ordinals, arrays, timeouts, restart rules, errors, which channel kind it runs on, every caller | docs/M12-REVIEW-PROTOCOLS.md |
-| **W. The compositor's protocol** | G1's list (above), the JWL1 transport and libjwl, the versions offered, compctl, the console's and input's methods in window mode, the keymap format, the clipboard's transfer | docs/M12-REVIEW-WAYLAND.md |
+| **W. The compositor's protocol** | G1's list (above), the JWL1 transport and libjwl, the versions offered, compctl, the console's and input's methods in window mode, the keymap format, the clipboard's transfer | docs/history/M12-REVIEW-WAYLAND.md |
 | **S. The storage split** | devmgr whole, fat's control and state, init's and the shell's mounts and ESP write, the storage tests; writes the design: what moves where, the new service's protocol drafted as IDL text, devmgr's protocol drafted as IDL text, the supervision module, the start order, which waits go | docs/M12-REVIEW-STORAGE.md |
 
 Each finding is one row: a number, its kind (a bug, an inconsistency, a

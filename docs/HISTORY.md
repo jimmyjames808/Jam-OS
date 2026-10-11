@@ -2,8 +2,9 @@
 
 What each milestone delivered, the bugs worth remembering, and the lessons.
 Newest first. Status and what comes next are in [ROADMAP.md](ROADMAP.md);
-the finished plans are kept as written in [history/](history/). Versions
-are the kernel's version string; hashes are commits on main.
+the finished plans and reviews were deleted once this file covered them
+(they stay in git history). Versions are the kernel's version string;
+hashes are commits on main.
 
 ## Lessons that keep coming back
 
@@ -444,8 +445,8 @@ switch is slower than at M5.5, to find before M11.5). Before that, a full
 QEMU regression of the merged tree: ktest 260 at 4 and 8 CPUs, utest 117,
 every area test and shell script.
 
-[The plan](history/M8.6-PLAN.md), in its order:
-- **The independent review of M8.5** ([M8.5-REVIEW.md](history/M8.5-REVIEW.md)):
+In order:
+- **The independent review of M8.5:**
   the stored kernel's region down to 32 MiB, the crash loop at three
   panics in a row.
 - **Track A:** the keyboard and mouse ready 0.29 s after the kernel's
@@ -464,9 +465,8 @@ every area test and shell script.
   short list of notices instead; UTF-8 in the log; `kernel load`; the
   real date and time from the RTC with time zones; `/data/etc/settings`.
 - **The code check:** five fresh agents over the whole tree, reviewing
-  and fixing ([findings](history/M8.6-CHECK-KCORE.md), and KREST,
-  DRIVERS, SERVICES, LIBS beside it).
-- **The pre-M9 batch** ([ARCH-CHECK.md](history/ARCH-CHECK.md)): the
+  and fixing (kcore, krest, drivers, services, libs).
+- **The pre-M9 batch:** the
   service-loop rule (a loop serving several clients never blocks inside a
   request) with its tools (genidl's deferred replies and asynchronous
   calls, libos's tasks); devmgr channels scoped to one device in place of
@@ -500,20 +500,19 @@ Audio, all in user processes, on the PC's Realtek ALC897:
   verbs, one output stream with MSI and clear-behind, jack detection
   (unsolicited responses with a polling fallback), `beep`, `hda`. The
   output stage goes on once at the driver's start with every amp muted
-  and settles 400 ms, so no stream starts with a thump
-  ([the review](history/AUDIO-REVIEW.md)).
+  and settles 400 ms, so no stream starts with a thump.
 - **A2:** the mixer service (client rings in shared VMOs, Q15 gains,
   24-bit output, dither, a limiter), `<audio.h>` with a Kaiser-sinc
   resampler, `play` (WAV and MP3 through dr_mp3), `vol`, the background
   `music` player owned by init, and jamjar, its full-screen remote: the
   library from the stick, real album covers from ID3 tags (stb_image),
-  stereo spectrum bars and a sunburst ([the review](history/JAMJAR-REVIEW.md)).
+  stereo spectrum bars and a sunburst.
 - **AS:** the boot splash: the owner's 2560x1440 animation as MPEG-1
   with MP2 sound (pl_mpeg), picture and sound starting together, the
   kernel quiet behind it.
 
-M8.5, after a first version as Linux's kdump and the owner's Revision 2
-([the plan](history/M8.5-PLAN.md)): one kernel with two ways in. A fresh copy of
+M8.5, after a first version as Linux's kdump and the owner's Revision 2:
+one kernel with two ways in. A fresh copy of
 the system waits in reserved RAM (unmapped, checksummed). `reboot` and a
 panic both jump into it: the screen goes to the splash background, the
 next boot is a normal one, and after a panic logd saves the dead boot's
@@ -537,8 +536,7 @@ What the PC taught:
 
 *2026-09-30 to 2026-10-01, 0.0.25-m8.*
 
-Plan: [M8-PLAN.md](history/M8-PLAN.md); review:
-[M8-REVIEW.md](history/M8-REVIEW.md). USB mass storage and FAT32, all in
+USB mass storage and FAT32, all in
 user processes:
 - `drivers/usb-storage` (Bulk-Only Transport over new bulk transfers in
   usb-bus) serves a `block` channel per partition; read-only channels are
@@ -589,7 +587,7 @@ runs and 1889 file cycles, 0 failed; the SanDisk pulled twice).
 
 *2026-09-30.*
 
-Plan: [CLEANUP-PLAN.md](history/CLEANUP-PLAN.md). Readability and
+Readability and
 structure with no behaviour change: same commands, output, boot menu,
 ktest names, syscall numbers and IDL; the version string stayed 0.0.24-m7.
 Five parallel tracks, then one pass for the moves that would collide:
@@ -651,7 +649,7 @@ the shared COM1 ring to empty while the console kept it full from the shell
 
 *2026-09-29, 0.0.18-m7a to 0.0.24-m7.*
 
-Plan: [M7-PLAN.md](history/M7-PLAN.md). Four tracks, then the join:
+Four tracks, then the join:
 
 - **usb-bus**: xHCI, hubs (inside usb-bus, as Linux's usbcore does),
   Transaction Translator routing, hot-plug. On the PC it enumerated all 8
@@ -689,7 +687,7 @@ steal waiting threads first).
 
 *2026-09-29, 0.0.10-m6a to 0.0.17-m6.*
 
-Plan: [M6-PLAN.md](history/M6-PLAN.md). The kernel's PCI core (ECAM, BAR
+The kernel's PCI core (ECAM, BAR
 sizing, MSI/MSI-X, Bus Master Enable), per-CPU vectors and interrupt
 objects, resources, physical VMOs, `dma_cap` bound to one function, the
 config-write filter, `<jam/driver.h>`, the IDL generator, the driver build
@@ -728,7 +726,7 @@ hand off to the longest waiter after 1 ms.
 
 *2026-09-29, 0.0.7-m5-phase1 to 0.0.8-m5.*
 
-Plan: [M5-PLAN.md](history/M5-PLAN.md). Phase 1 in three tracks: the entry
+Phase 1 in three tracks: the entry
 path (`syscall`/`sysret`, `swapgs`, SMEP/SMAP, user copies with a fixup
 table, eager XSAVE), address spaces and VMARs, and the userland build (the
 syscall table generator, bootfs, the ELF loader). Phase 2: processes,
@@ -794,8 +792,7 @@ Dated decisions, newest first. The design they produced is in
   became `jam:<cwd>>`.
 
 - 2026-10-01, after the PC sign-off of the audio track and M8.5: M8.6's
-  decisions, listed in [its plan](history/M8.6-PLAN.md#the-owners-decisions-2026-10-01).
-  Programs on `/data` run only once the owner marks them with `allow`,
+  decisions: programs on `/data` run only once the owner marks them with `allow`,
   which also approves what each declares it wants (services under
   `/svc`, mounts); the splash always plays to its end; `play` and
   jamjar's cover decoding move into small programs of their own; the

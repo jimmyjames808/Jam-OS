@@ -6,7 +6,7 @@
 # 21 and off it) while it pings the guest every 0.2 s. Thousands of
 # frames wrap the driver's 256 descriptors and the 256-slot netdev rx ring
 # many times over (the PC's receive stopped after ~75 s on its trunk:
-# docs/M9-PLAN.md "R1: receive on the PC"). The run must pass the script
+# docs/HISTORY.md, M9). The run must pass the script
 # (the guest's own pings answered at the end), the peer's and the pcap's
 # VLAN checks, and the peer's pings sent LATE seconds or more after the
 # first must still be answered (at least 90% of them).

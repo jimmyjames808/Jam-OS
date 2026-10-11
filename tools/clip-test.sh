@@ -1,6 +1,6 @@
 #!/bin/sh
-# Copy and paste between terminal windows end to end (docs/G1-PLAN.md, "As
-# built: copy and paste"): one plain boot ("shell") with a usb-kbd on xhci
+# Copy and paste between terminal windows end to end (docs/HISTORY.md,
+# G1: copy and paste): one plain boot ("shell") with a usb-kbd on xhci
 # port 2 and a usb-mouse on port 3, running tools/shell-tests/clip.txt:
 # a triple click selects a line of terminal 1, Super+C copies it, Super+V
 # pastes it bracketed into terminal 2's shell, which runs it only at Enter;

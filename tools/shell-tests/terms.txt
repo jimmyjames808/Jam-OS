@@ -1,4 +1,4 @@
-# More terminals (docs/G1-PLAN.md, track T1): on a plain boot init starts
+# More terminals (docs/HISTORY.md, G1, track T1): on a plain boot init starts
 # the compositor before the console, and each console
 # runs in window mode (a window of the compositor's once it offers
 # xdg_wm_base; without one, its text goes to COM1 only). `term` opens

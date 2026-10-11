@@ -1,4 +1,4 @@
-# allow: programs on /data (docs/history/M8.6-SVC.md): a copy of
+# allow: programs on /data (docs/HISTORY.md, M8.6): a copy of
 # bin/soakload on /data is refused until allowed; `allow` shows its list
 # and asks, n keeps it refused, y lets it run; `allow -l` lists it; a
 # program can't change /data/etc (even with /data writable); a changed file

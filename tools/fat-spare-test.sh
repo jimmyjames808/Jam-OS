@@ -1,7 +1,7 @@
 #!/bin/sh
 # volumes' warm spare fat and the restart rule of a filesystem service
-# (user/services/volumes/spare.c, docs/M11.6-PLAN.md "The warm spare",
-# "Supervision") in QEMU, on the boot stick's /data and /esp. Two boots:
+# (user/services/volumes/spare.c, docs/HISTORY.md, M11.6: the warm spare,
+# supervision) in QEMU, on the boot stick's /data and /esp. Two boots:
 #   1. tools/shell-tests/fat-spare.txt: a spare waits from the boot; fat-data
 #      is killed again and again while files are written and read through
 #      /data (logd writes there all the while); each kill promotes the spare

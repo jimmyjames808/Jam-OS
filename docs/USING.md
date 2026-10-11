@@ -228,7 +228,7 @@ yet: [ARCHITECTURE.md](../ARCHITECTURE.md#services-that-outlive-their-process).)
   own covers (read from the MP3s' tags), stereo spectrum bars across the
   bottom of the window (left up, right down) and a sunburst in the
   full-screen view. The music goes on after Jamjar quits
-  ([history/MUSIC-GUI.md](history/MUSIC-GUI.md)).
+  ([HISTORY.md, audio](HISTORY.md#audio-a1-a2-as-and-m85-kexec)).
 
 ## The clock and the settings
 
