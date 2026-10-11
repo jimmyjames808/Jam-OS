@@ -88,8 +88,9 @@ static long put_int(long addr, int v)
     return 0;
 }
 
-long lx_prctl(long option, long a2, long a3, long a4, long a5, long f)
+long lx_prctl(long option_l, long a2, long a3, long a4, long a5, long f)
 {
+    int option = (int)option_l;   /* Linux's int; the rest of the register is not defined */
     switch (option) {
     case PR_SET_NAME:
         return set_name(a2);

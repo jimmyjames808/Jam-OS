@@ -74,7 +74,7 @@ long lx_sched_getaffinity(long pid, long size, long mask, long d, long e, long f
 {
     if (size <= 0 || size % (long)sizeof(long))
         return -EINVAL;
-    long r = thread_apply(pid, thread_exists, NULL);
+    long r = thread_apply((int)pid, thread_exists, NULL);
     if (r)
         return r;
     unsigned cpus = cpus_online();
@@ -92,7 +92,7 @@ long lx_sched_setaffinity(long pid, long size, long mask, long d, long e, long f
 {
     if (size < 0 || !mask)
         return -EFAULT;   /* Linux reads the mask first; a missing one is a bad address */
-    long r = thread_apply(pid, thread_exists, NULL);
+    long r = thread_apply((int)pid, thread_exists, NULL);
     if (r)
         return r;
     /* Linux's mask is zero-extended past size, and only the CPUs that exist count. */

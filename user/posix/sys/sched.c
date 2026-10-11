@@ -16,22 +16,26 @@
  * non-real-time policies are accepted and change nothing, the real-time
  * ones are EPERM (a program without the power to set them, as on Linux for
  * an ordinary user), and the calls say so with the errnos Linux gives.
- * getcpu gives CPU 0: a thread's CPU is not told to it. */
+ * getcpu gives CPU 0: a thread's CPU is not told to it.
+ *
+ * The ints of Linux's calls arrive as the low 32 bits of a long (a raw
+ * syscall() of a C program leaves the rest undefined), so each handler
+ * takes the int it means. */
 #include <errno.h>
 #include <sched.h>
 #include <sys/resource.h>
 #include "layer.h"
 #include "threads.h"
 
-#define NICE_MIN   (-20)
-#define NICE_MAX   19
+#define NICE_MIN    (-20)
+#define NICE_MAX    19
 #define RT_PRIO_MIN 1    /* Linux's real-time priorities */
 #define RT_PRIO_MAX 99
 
 /* The kernel priority for a nice value (clamped to Linux's range). */
-static int nice_to_prio(long nice)
+static int nice_to_prio(int nice)
 {
-    int n = nice < NICE_MIN ? NICE_MIN : nice > NICE_MAX ? NICE_MAX : (int)nice;
+    int n = nice < NICE_MIN ? NICE_MIN : nice > NICE_MAX ? NICE_MAX : nice;
     if (n >= 0)   /* nice 0..19 onto the default down to 0, rounded to nearest */
         return THREAD_PRIO_DEFAULT - (n * THREAD_PRIO_DEFAULT + NICE_MAX / 2) / NICE_MAX;
     int up = THREAD_PRIO_USER_MAX - THREAD_PRIO_DEFAULT;
@@ -69,7 +73,7 @@ static status_t exists(handle_t t, void *arg)
 }
 
 /* Only a thread of ours can be named by a priority call. */
-static long prio_target_ok(long which)
+static long prio_target_ok(int which)
 {
     if (which < PRIO_PROCESS || which > PRIO_USER)
         return -EINVAL;
@@ -82,10 +86,10 @@ static long prio_target_ok(long which)
 
 long lx_setpriority(long which, long who, long nice, long d, long e, long f)
 {
-    long r = prio_target_ok(which);
+    long r = prio_target_ok((int)which);
     if (r)
         return r;
-    int prio = nice_to_prio(nice);
+    int prio = nice_to_prio((int)nice);
     return thread_apply((uint32_t)who, set_prio, &prio);
 }
 
@@ -93,7 +97,7 @@ long lx_setpriority(long which, long who, long nice, long d, long e, long f)
  * turns it back. */
 long lx_getpriority(long which, long who, long c, long d, long e, long f)
 {
-    long r = prio_target_ok(which);
+    long r = prio_target_ok((int)which);
     if (r)
         return r;
     int prio = 0;
@@ -112,16 +116,18 @@ long lx_getcpu(long cpu, long node, long cache, long d, long e, long f)
 
 /* ---- policies --------------------------------------------------------------------- */
 
-long lx_sched_getscheduler(long pid, long b, long c, long d, long e, long f)
+long lx_sched_getscheduler(long pid_l, long b, long c, long d, long e, long f)
 {
+    int pid = (int)pid_l;
     if (pid < 0)
         return -EINVAL;
     long r = thread_apply(pid, exists, NULL);
     return r ? r : SCHED_OTHER;
 }
 
-long lx_sched_getparam(long pid, long param, long c, long d, long e, long f)
+long lx_sched_getparam(long pid_l, long param, long c, long d, long e, long f)
 {
+    int pid = (int)pid_l;
     if (pid < 0 || !param)
         return -EINVAL;
     long r = thread_apply(pid, exists, NULL);
@@ -130,8 +136,9 @@ long lx_sched_getparam(long pid, long param, long c, long d, long e, long f)
     return r;
 }
 
-long lx_sched_setparam(long pid, long param, long c, long d, long e, long f)
+long lx_sched_setparam(long pid_l, long param, long c, long d, long e, long f)
 {
+    int pid = (int)pid_l;
     if (pid < 0 || !param)
         return -EINVAL;
     if (*(const int *)(uintptr_t)param != 0)
@@ -139,11 +146,12 @@ long lx_sched_setparam(long pid, long param, long c, long d, long e, long f)
     return thread_apply(pid, exists, NULL);
 }
 
-long lx_sched_setscheduler(long pid, long policy, long param, long d, long e, long f)
+long lx_sched_setscheduler(long pid_l, long policy, long param, long d, long e, long f)
 {
-    if (pid < 0 || policy < 0 || !param)
+    int pid = (int)pid_l, pol = (int)policy;
+    if (pid < 0 || pol < 0 || !param)
         return -EINVAL;
-    int pol = (int)(policy & ~(long)SCHED_RESET_ON_FORK);
+    pol &= ~SCHED_RESET_ON_FORK;
     int prio = *(const int *)(uintptr_t)param;
     bool rt = pol == SCHED_FIFO || pol == SCHED_RR;
     if (!rt && pol != SCHED_OTHER && pol != SCHED_BATCH && pol != SCHED_IDLE)
@@ -159,7 +167,7 @@ long lx_sched_setscheduler(long pid, long policy, long param, long d, long e, lo
 
 long lx_sched_get_priority_max(long policy, long b, long c, long d, long e, long f)
 {
-    switch (policy) {
+    switch ((int)policy) {
     case SCHED_FIFO:
     case SCHED_RR:
         return RT_PRIO_MAX;
@@ -173,7 +181,7 @@ long lx_sched_get_priority_max(long policy, long b, long c, long d, long e, long
 
 long lx_sched_get_priority_min(long policy, long b, long c, long d, long e, long f)
 {
-    switch (policy) {
+    switch ((int)policy) {
     case SCHED_FIFO:
     case SCHED_RR:
         return RT_PRIO_MIN;
