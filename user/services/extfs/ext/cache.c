@@ -215,6 +215,21 @@ void ext_binval(struct ext_fs *fs, uint64_t blk, uint64_t count)
     }
 }
 
+void ext_bforget(struct ext_fs *fs, uint64_t blk, uint64_t count)
+{
+    struct ext_cache *c = &fs->cache;
+    for (uint32_t i = 0; i < c->nbufs; i++) {
+        struct ext_buf *b = &c->bufs[i];
+        if (b->blk == EXT_NO_BLOCK || b->blk < blk || b->blk - blk >= count || b->pins)
+            continue;
+        if (b->dirty) {
+            b->dirty = false;
+            c->ndirty--;
+        }
+        unhash(c, b);
+    }
+}
+
 /* The dirty buffer with the lowest block above `after` (or any, when
  * `first`); NULL if none. */
 static struct ext_buf *next_dirty(struct ext_cache *c, uint64_t after, bool first)
