@@ -735,3 +735,22 @@ ktest run on the same PC) differ by up to 1.7x, so the figures are a
 range, not a baseline to compare to the percent. Not measured yet: the same between
 two processes (that needs `posix_spawn`'s descriptors), and Linux's
 pipe on the same PC beside it.
+
+## Clocks from the time page (M13 track K2), QEMU on the PC 2026-10-11
+
+What `clock_gettime` costs a POSIX program now that it reads the kernel's
+time page (docs/M13-PLAN.md section 10, "K2 notes") against the system
+calls libc made before; posixtest's clock section (`posixtest clock`, in
+the `init` run), the mean of 200,000 calls after 20,000 untimed, timed
+with `clock_get`; QEMU with KVM on the PC (4 CPUs), build 0.1.0 + K2:
+
+| Line | with the page | as the calls |
+|---|---|---|
+| `clock_gettime(CLOCK_MONOTONIC)` | 17.4 ns | 55.2 ns (`clock_get` alone) |
+| `clock_gettime(CLOCK_REALTIME)` | 17.6 ns | 129.7 ns (`wallclock_get` and `clock_get`) |
+
+The page's cost is `lfence; rdtsc` and a few multiplies, plus musl's
+`clock_gettime` and the call layer's dispatch, which "as the calls" leaves
+out (it calls libjam directly), so the saving through libc before K2 was
+a little more than the table shows. Not measured yet on the PC itself
+(its `user: clock_get` line, 44.9 ns in M11.5, is the calls' side).

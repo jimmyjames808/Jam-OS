@@ -228,6 +228,10 @@
 # nothing mapped), so no access through the mapping ever faults, whatever
 # the VMO's other holders do. vmar_protect refuses to change such a mapping
 # (ERR_ACCESS_DENIED); a VMO grown later is mapped again for its new pages.
+# vmar_map also takes VMAR_REPLACE (bit 5), with VMAR_FIXED and without
+# VMAR_KEPT_ONLY: what the range overlaps is unmapped and the new mapping
+# made in one step, so another thread never finds the range unmapped
+# (MAP_FIXED); on any error nothing changed.
 60  vmar_map          status    handle_t vmar, handle_t vmo, uint64_t vmo_off, uint64_t len, uint32_t flags, uint64_t *addr
 61  vmar_unmap        status    handle_t vmar, uint64_t addr, uint64_t len
 62  vmar_protect      status    handle_t vmar, uint64_t addr, uint64_t len, uint32_t flags
@@ -489,6 +493,11 @@
 # one set before); flags and reserved 0. RIGHT_ROOT_CLOCK on a RES_ROOT
 # handle.
 135 wallclock_set         status    handle_t root, const struct wall_clock *in
+# The time page (struct time_page, <jam/abi.h>): *out gets a handle to it,
+# a read-only VMO of one page (TIME_PAGE_RIGHTS) every process may map, to
+# read clock_get's uptime and wallclock_get's UTC without a call. No
+# handle or right needed. ERR_NOT_SUPPORTED if the boot couldn't make it.
+137 clock_page            status    handle_t *out
 
 # kexec: a fresh kernel started without the firmware (<jam/kexec.h>) -------
 # On a RES_ROOT handle: kexec_load needs RIGHT_ROOT_KEXEC, kexec_reboot

@@ -18,6 +18,9 @@
  * map time and kept for the mapping's life (see VMAR_KEPT_ONLY in
  * <jam/abi.h>). */
 #define ASPACE_KEPT_ONLY (1u << 4)
+/* aspace_map only, with ASPACE_FIXED and without ASPACE_KEPT_ONLY: unmap
+ * whatever is in the range and map, in one step (VMAR_REPLACE). */
+#define ASPACE_REPLACE   (1u << 5)
 /* aspace_map only: permissions a later aspace_protect may grant (on top of
  * the ones mapped now). sys_vmar_map sets them from the VMO handle's
  * rights, so a mapping can be made RW, filled, then flipped to RX, but
@@ -58,7 +61,12 @@ void     aspace_unref(struct aspace *as);
  * ERR_NOT_SUPPORTED unless vmo is kept (vmo_is_kept), and every entry is
  * installed before this returns (ERR_NO_MEMORY if the job refuses a page
  * table: nothing is left mapped); the CAN bits are ignored, and
- * aspace_protect refuses any change to it (ERR_ACCESS_DENIED). */
+ * aspace_protect refuses any change to it (ERR_ACCESS_DENIED). With
+ * ASPACE_REPLACE (and ASPACE_FIXED; ERR_INVALID_ARGS otherwise, or with
+ * ASPACE_KEPT_ONLY): what the range overlaps is unmapped and the new
+ * mapping made under one hold of the region lock, so a fault sees the old
+ * mapping or the new one; every error comes before anything changed
+ * (ERR_NO_RESOURCES past MAX_MAPPINGS, counted after the replace). */
 status_t aspace_map(struct aspace *as, struct vmo *vmo, uint64_t vmo_off, uint64_t len,
                     unsigned flags, uint64_t *addr);
 /* Remove every mapping page in [addr, addr+len) (splitting mappings as

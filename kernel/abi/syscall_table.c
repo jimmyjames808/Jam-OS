@@ -497,6 +497,11 @@ static int64_t call_sys_public_info(const struct syscall_frame *f)
     return sysc_sys_public_info(f->args[0]);
 }
 
+static int64_t call_clock_page(const struct syscall_frame *f)
+{
+    return sysc_clock_page(f->args[0]);
+}
+
 static int64_t call_kexec_load(const struct syscall_frame *f)
 {
     return sysc_kexec_load((handle_t)f->args[0], (handle_t)f->args[1], (handle_t)f->args[2],
@@ -633,6 +638,7 @@ static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_wallclock_get] = call_wallclock_get,
     [SYS_wallclock_set] = call_wallclock_set,
     [SYS_sys_public_info] = call_sys_public_info,
+    [SYS_clock_page] = call_clock_page,
     [SYS_kexec_load] = call_kexec_load,
     [SYS_kexec_reboot] = call_kexec_reboot,
     [SYS_random_get] = call_random_get,

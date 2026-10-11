@@ -13,8 +13,13 @@
 
 _Static_assert(VMAR_READ == ASPACE_READ && VMAR_WRITE == ASPACE_WRITE &&
                VMAR_EXEC == ASPACE_EXEC && VMAR_FIXED == ASPACE_FIXED &&
-               VMAR_KEPT_ONLY == ASPACE_KEPT_ONLY,
+               VMAR_KEPT_ONLY == ASPACE_KEPT_ONLY && VMAR_REPLACE == ASPACE_REPLACE,
                "vmar_map flags are passed straight to aspace_map");
+
+_Static_assert(sizeof(struct time_page) == 48 && offsetof(struct time_page, tsc_hz) == 8 &&
+                   offsetof(struct time_page, shift) == 32 &&
+                   offsetof(struct time_page, wall_offset) == 40,
+               "time_page layout");
 
 _Static_assert(sizeof(struct port_packet) == 48, "port_packet layout");
 _Static_assert(offsetof(struct port_packet, signal.count) == 24, "port_packet layout");

@@ -94,6 +94,16 @@
  *     then frees the page tables, so decommit never walks freed tables. No
  *     CPU can be using it (see aspace_unref), so it needs no shootdown.
  *
+ * Replacing (ASPACE_REPLACE, MAP_FIXED's call) is an unmap and a map under
+ * one hold of the region lock: every check that can fail (the cap, the
+ * charge, the spare struct, the new mapping's reverse-map entry, which
+ * checks the VMO's size) comes first, then the range is cut exactly as an
+ * unmap cuts it and the new mapping goes in. A fault on the range waits
+ * on the region lock throughout, so it finds the old mapping or the new
+ * one. The new entry is on the new VMO's reverse map a moment before the
+ * old entries go: a decommit of the new VMO then clears entries of the
+ * old mapping too, which only costs a fault.
+ *
  * Faults past a shrunk VMO's end fail with ERR_OUT_OF_RANGE; the mapping
  * stays and works again if the VMO grows back.
  *
@@ -158,8 +168,8 @@
 
 #define PERMS     (ASPACE_READ | ASPACE_WRITE | ASPACE_EXEC)
 #define CAN_SHIFT 8   /* ASPACE_CAN_x == ASPACE_x << CAN_SHIFT */
-#define MAP_FLAGS (PERMS | ASPACE_FIXED | ASPACE_KEPT_ONLY | ASPACE_CAN_READ | ASPACE_CAN_WRITE | \
-                   ASPACE_CAN_EXEC)
+#define MAP_FLAGS (PERMS | ASPACE_FIXED | ASPACE_KEPT_ONLY | ASPACE_REPLACE | ASPACE_CAN_READ | \
+                   ASPACE_CAN_WRITE | ASPACE_CAN_EXEC)
 #define MAX_MAPPINGS VMAR_MAX_MAPPINGS   /* <jam/abi.h>: 16384 */
 
 #define SIZE_2M   (1ull << 21)
@@ -712,35 +722,85 @@ static struct mapping *mapping_new(struct vmo *vmo, uint64_t vmo_off, uint64_t l
     return m;
 }
 
-status_t aspace_map(struct aspace *as, struct vmo *vmo, uint64_t vmo_off, uint64_t len,
-                    unsigned flags, uint64_t *addr)
+/* Region lock held: the first mapping that overlaps [addr, end), or NULL. */
+static struct mapping *first_in(const struct aspace *as, uint64_t addr, uint64_t end)
 {
-    if (!as || !vmo || !addr || (flags & ~MAP_FLAGS))
-        return ERR_INVALID_ARGS;
-    unsigned perms = flags & PERMS;
-    if (!perms_ok(perms) || len == 0 || ((vmo_off | len) & (PAGE_SIZE - 1)))
-        return ERR_INVALID_ARGS;
-    if ((flags & ASPACE_FIXED) && !range_ok(*addr, len))
-        return ERR_INVALID_ARGS;
-    if (len > USER_TOP - USER_BASE)
+    for (struct list_node *n = as->maps.next; n != &as->maps; n = n->next) {
+        struct mapping *m = container_of(n, struct mapping, node);
+        if (mend(m) > addr)
+            return m->base < end ? m : NULL;
+    }
+    return NULL;
+}
+
+/* Region lock held: the charge for the mapping structs made to cover
+ * `want` of them (and the ones there now, until the caller settles it
+ * with maps_account), and a spare struct in *spare for a split if
+ * `split`. ERR_NO_RESOURCES past MAX_MAPPINGS, ERR_NO_MEMORY; nothing
+ * changed on an error. */
+static status_t maps_reserve(struct aspace *as, uint32_t want, bool split, struct mapping **spare)
+{
+    if (want > MAX_MAPPINGS)
         return ERR_NO_RESOURCES;
-    if (vmo_off > VMO_MAX_SIZE || len > VMO_MAX_SIZE)
-        return ERR_OUT_OF_RANGE;   /* (so vmo_off + len can't overflow) */
-    status_t st = kept_check(vmo, flags);
-    if (st != OK)
-        return st;
+    status_t st = maps_account(as, want > as->nmaps ? want : as->nmaps);
+    if (st == OK && split && !(*spare = kzalloc(sizeof(**spare)))) {
+        (void)maps_account(as, as->nmaps);   /* shrinking: can't fail */
+        st = ERR_NO_MEMORY;
+    }
+    return st;
+}
 
-    struct mapping *m = mapping_new(vmo, vmo_off, len, flags);
-    if (!m)
-        return ERR_NO_MEMORY;
+/* Region lock held: take [addr, end) out of every mapping from first (the
+ * first that overlaps it) on. Entries first, shot down and their empty
+ * tables freed, while the reverse map still covers them (see the file
+ * header); then the mappings are trimmed, freed, or split with spare
+ * (needed when first reaches past both ends). The caller settles the
+ * charge. Can't fail. */
+static void cut_locked(struct aspace *as, struct mapping *first, uint64_t addr, uint64_t end,
+                       struct mapping *spare)
+{
+    struct tlb_gather g;
+    tlb_gather_init(&g);
+    for (struct mapping *m = first; m && m->base < end; m = next_of(as, m)) {
+        uint64_t s = m->base > addr ? m->base : addr;
+        uint64_t e = mend(m) < end ? mend(m) : end;
+        zap(as, s, e, true, &g);
+    }
+    tlb_gather_finish(&g);
 
-    mutex_lock(&as->lock);
+    for (struct mapping *m = first, *next; m && m->base < end; m = next) {
+        if (m->base < addr && mend(m) > end)
+            split(as, m, end, spare);   /* m becomes [base, end): a tail cut below */
+        next = next_of(as, m);
+        if (m->base >= addr && mend(m) <= end) {
+            list_del(&m->node);
+            as->nmaps--;
+            vmo_umap_remove(m->vmo, &m->umap);
+            kfree(m);
+        } else if (m->base < addr) {
+            m->len = addr - m->base;
+            umap_sync(m);
+        } else {
+            uint64_t cut = end - m->base;
+            m->base = end;
+            m->vmo_off += cut;
+            m->len -= cut;
+            umap_sync(m);
+        }
+    }
+}
+
+/* Region lock held: put m (not on any list yet) at *want (ASPACE_FIXED) or
+ * the first gap that fits, and fill it if it is kept. */
+static status_t map_place_locked(struct aspace *as, struct mapping *m, unsigned flags,
+                                 uint64_t want)
+{
     struct list_node *pos = &as->maps;   /* insert after this */
-    uint64_t base;
+    uint64_t base = want, len = m->len;
+    status_t st = OK;
     if (as->nmaps >= MAX_MAPPINGS) {
         st = ERR_NO_RESOURCES;
     } else if (flags & ASPACE_FIXED) {
-        base = *addr;
         for (struct list_node *n = as->maps.next; n != &as->maps; n = n->next) {
             struct mapping *o = container_of(n, struct mapping, node);
             if (mend(o) <= base) {
@@ -768,7 +828,7 @@ status_t aspace_map(struct aspace *as, struct vmo *vmo, uint64_t vmo_off, uint64
     if (st == OK) {
         m->base = base;
         umap_fill(as, m);
-        st = vmo_umap_add(vmo, &m->umap, true);   /* bounds against the VMO size */
+        st = vmo_umap_add(m->vmo, &m->umap, true);   /* bounds against the VMO size */
         if (st != OK)
             (void)maps_account(as, as->nmaps);   /* give the charge back: shrinking can't fail */
     }
@@ -778,12 +838,78 @@ status_t aspace_map(struct aspace *as, struct vmo *vmo, uint64_t vmo_off, uint64
         if (m->kept && (st = fill_kept(as, m)) != OK)
             map_undo(as, m);
     }
+    return st;
+}
+
+/* Region lock held: m (not on any list yet) at base, in place of whatever
+ * [base, base + m->len) holds (ASPACE_REPLACE; see the file header). */
+static status_t map_replace_locked(struct aspace *as, struct mapping *m, uint64_t base)
+{
+    uint64_t end = base + m->len;
+    struct mapping *first = first_in(as, base, end), *spare = NULL;
+    uint32_t inside = 0;   /* mappings the range holds whole: they go */
+    for (struct mapping *o = first; o && o->base < end; o = next_of(as, o))
+        inside += o->base >= base && mend(o) <= end;
+    bool split = first && first->base < base && mend(first) > end;
+    status_t st = maps_reserve(as, as->nmaps - inside + split + 1, split, &spare);
+    if (st != OK)
+        return st;
+    m->base = base;
+    umap_fill(as, m);
+    st = vmo_umap_add(m->vmo, &m->umap, true);   /* bounds against the VMO size */
+    if (st != OK) {
+        kfree(spare);
+        (void)maps_account(as, as->nmaps);   /* back to what we have: can't fail */
+        return st;
+    }
+    if (first)
+        cut_locked(as, first, base, end, spare);
+    struct list_node *pos = &as->maps;   /* after the last mapping below base */
+    for (struct list_node *n = as->maps.next; n != &as->maps; n = n->next) {
+        if (container_of(n, struct mapping, node)->base > base)
+            break;
+        pos = n;
+    }
+    list_add(pos, &m->node);
+    as->nmaps++;
+    (void)maps_account(as, as->nmaps);   /* at most the reservation: can't fail */
+    return OK;
+}
+
+status_t aspace_map(struct aspace *as, struct vmo *vmo, uint64_t vmo_off, uint64_t len,
+                    unsigned flags, uint64_t *addr)
+{
+    if (!as || !vmo || !addr || (flags & ~MAP_FLAGS))
+        return ERR_INVALID_ARGS;
+    unsigned perms = flags & PERMS;
+    if (!perms_ok(perms) || len == 0 || ((vmo_off | len) & (PAGE_SIZE - 1)))
+        return ERR_INVALID_ARGS;
+    if ((flags & ASPACE_FIXED) && !range_ok(*addr, len))
+        return ERR_INVALID_ARGS;
+    if ((flags & ASPACE_REPLACE) && (!(flags & ASPACE_FIXED) || (flags & ASPACE_KEPT_ONLY)))
+        return ERR_INVALID_ARGS;   /* a kept fill that failed couldn't put back what it replaced */
+    if (len > USER_TOP - USER_BASE)
+        return ERR_NO_RESOURCES;
+    if (vmo_off > VMO_MAX_SIZE || len > VMO_MAX_SIZE)
+        return ERR_OUT_OF_RANGE;   /* (so vmo_off + len can't overflow) */
+    status_t st = kept_check(vmo, flags);
+    if (st != OK)
+        return st;
+
+    struct mapping *m = mapping_new(vmo, vmo_off, len, flags);
+    if (!m)
+        return ERR_NO_MEMORY;
+    mutex_lock(&as->lock);
+    if (flags & ASPACE_REPLACE)
+        st = map_replace_locked(as, m, *addr);
+    else
+        st = map_place_locked(as, m, flags, *addr);
     mutex_unlock(&as->lock);
     if (st != OK) {
         kfree(m);
         return st;
     }
-    *addr = base;
+    *addr = m->base;
     return OK;
 }
 
@@ -793,68 +919,16 @@ status_t aspace_unmap(struct aspace *as, uint64_t addr, uint64_t len)
         return ERR_INVALID_ARGS;
     uint64_t end = addr + len;
     mutex_lock(&as->lock);
-    struct mapping *first = NULL;
-    for (struct list_node *n = as->maps.next; n != &as->maps; n = n->next) {
-        struct mapping *m = container_of(n, struct mapping, node);
-        if (mend(m) > addr) {
-            if (m->base < end)
-                first = m;
-            break;
-        }
+    struct mapping *first = first_in(as, addr, end), *spare = NULL;
+    status_t st = first ? OK : ERR_NOT_FOUND;
+    if (st == OK && first->base < addr && mend(first) > end)   /* a hole in the middle */
+        st = maps_reserve(as, as->nmaps + 1, true, &spare);
+    if (st == OK) {
+        cut_locked(as, first, addr, end, spare);
+        (void)maps_account(as, as->nmaps);   /* only ever down here: can't fail */
     }
-    if (!first) {
-        mutex_unlock(&as->lock);
-        return ERR_NOT_FOUND;
-    }
-    struct mapping *spare = NULL;
-    if (first->base < addr && mend(first) > end) {   /* a hole in the middle */
-        status_t st = as->nmaps >= MAX_MAPPINGS ? ERR_NO_RESOURCES
-                                                : maps_account(as, as->nmaps + 1);
-        if (st == OK && !(spare = kzalloc(sizeof(*spare)))) {
-            (void)maps_account(as, as->nmaps);   /* shrinking: can't fail */
-            st = ERR_NO_MEMORY;
-        }
-        if (st != OK) {
-            mutex_unlock(&as->lock);
-            return st;
-        }
-    }
-
-    /* Entries first, shot down and their empty tables freed, while the
-     * reverse map still covers them (see the file header). */
-    struct tlb_gather g;
-    tlb_gather_init(&g);
-    for (struct mapping *m = first; m && m->base < end; m = next_of(as, m)) {
-        uint64_t s = m->base > addr ? m->base : addr;
-        uint64_t e = mend(m) < end ? mend(m) : end;
-        zap(as, s, e, true, &g);
-    }
-    tlb_gather_finish(&g);
-
-    /* Then the mappings themselves. */
-    for (struct mapping *m = first, *next; m && m->base < end; m = next) {
-        if (m->base < addr && mend(m) > end)
-            split(as, m, end, spare);   /* m becomes [base, end): a tail cut below */
-        next = next_of(as, m);
-        if (m->base >= addr && mend(m) <= end) {
-            list_del(&m->node);
-            as->nmaps--;
-            vmo_umap_remove(m->vmo, &m->umap);
-            kfree(m);
-        } else if (m->base < addr) {
-            m->len = addr - m->base;
-            umap_sync(m);
-        } else {
-            uint64_t cut = end - m->base;
-            m->base = end;
-            m->vmo_off += cut;
-            m->len -= cut;
-            umap_sync(m);
-        }
-    }
-    (void)maps_account(as, as->nmaps);   /* only ever down here: can't fail */
     mutex_unlock(&as->lock);
-    return OK;
+    return st;
 }
 
 status_t aspace_protect(struct aspace *as, uint64_t addr, uint64_t len, unsigned flags)

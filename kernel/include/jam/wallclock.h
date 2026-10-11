@@ -27,6 +27,18 @@ status_t wallclock_set(const struct wall_clock *in);
  * from 1970 to 2200, an uptime not after `uptime_now`.
  * ERR_INVALID_ARGS otherwise. */
 status_t wallclock_check(const struct wall_clock *in, uint64_t uptime_now);
+struct vmo;
+/* The time page (struct time_page, <jam/abi.h>): *out gets a new reference
+ * to its VMO (kobject_unref it). ERR_NOT_SUPPORTED if the boot couldn't
+ * make it. */
+status_t wallclock_page(struct vmo **out);
+/* The page as the kernel sees it (for tests), or NULL. */
+const struct time_page *wallclock_page_kernel(void);
+/* Write the wall clock's offset (UTC ns minus uptime ns) and flags onto p
+ * under its sequence word. Writers of one page must be serialised (the
+ * clock's lock for the real one); readers never wait for them but to
+ * read again. */
+void     time_page_publish(struct time_page *p, int64_t offset, uint32_t wall_flags);
 /* Seconds since 1970-01-01 of a date and time (proleptic Gregorian,
  * years 1970..9999). */
 int64_t  wallclock_civil_secs(unsigned year, unsigned month, unsigned day, unsigned hour,

@@ -111,6 +111,7 @@ int64_t sysc_rtc_read(handle_t root, uint64_t out);
 int64_t sysc_wallclock_get(uint64_t out);
 int64_t sysc_wallclock_set(handle_t root, uint64_t in);
 int64_t sysc_sys_public_info(uint64_t out);
+int64_t sysc_clock_page(uint64_t out);
 int64_t sysc_kexec_load(handle_t root, handle_t kernel, handle_t bootfs, uint64_t cmdline,
                         uint64_t len, uint32_t flags);
 int64_t sysc_kexec_reboot(handle_t root);

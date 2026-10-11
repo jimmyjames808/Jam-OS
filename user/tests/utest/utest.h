@@ -125,6 +125,7 @@ bool t_time_calendar(void);
 bool t_time_zones_switch(void);
 bool t_time_zones_local(void);
 bool t_time_wallclock_calls(void);
+bool t_time_clock_page(void);
 bool t_settings_parse(void);
 bool t_settings_edit(void);
 bool t_settings_file(void);

@@ -759,6 +759,14 @@ jam_sys_public_info:
     ret
     .size jam_sys_public_info, . - jam_sys_public_info
 
+    .globl jam_clock_page
+    .type jam_clock_page, @function
+jam_clock_page:
+    mov $SYS_clock_page, %eax
+    syscall
+    ret
+    .size jam_clock_page, . - jam_clock_page
+
     .globl jam_kexec_load
     .type jam_kexec_load, @function
 jam_kexec_load:

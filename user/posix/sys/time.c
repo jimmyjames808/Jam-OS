@@ -1,11 +1,19 @@
-/* Clocks and sleeps (docs/M13-PLAN.md section 10), with the kernel's
- * calls: CLOCK_MONOTONIC and CLOCK_BOOTTIME (and their raw and coarse
- * kinds) are the uptime, clock_get; CLOCK_REALTIME is the wall clock,
- * wallclock_get's UTC moved on by the uptime since it was read (with no
- * wall clock, the uptime counted from 1970); the CPU-time clocks are the
+/* Clocks and sleeps (docs/M13-PLAN.md section 10): CLOCK_MONOTONIC and
+ * CLOCK_BOOTTIME (and their raw and coarse kinds) are the uptime, clock_get's;
+ * CLOCK_REALTIME is the wall clock, wallclock_get's UTC (with no wall
+ * clock, the uptime counted from 1970); the CPU-time clocks are the
  * kernel's per-process and per-thread counts (kposix.c). Resolution 1 ns.
- * The clocks without a system call (the kernel's time page) replace these
- * reads when the page exists.
+ *
+ * The uptime and the wall clock are read without a system call, from the
+ * kernel's time page (struct time_page, <jam/abi.h>): mapped read-only
+ * at the first read (clock_page, then vmar_map with VMAR_KEPT_ONLY, so
+ * no read of it ever faults) and kept for the process's life. The TSC,
+ * read with lfence first, gives exactly clock_get's uptime
+ * (time_page_uptime); the wall clock's offset is read under the page's
+ * sequence word. A process the page can't be mapped into (the call fails,
+ * its job can't pay for the page table, or the page says its TSC fields
+ * are not the kernel's clock) reads both with the calls, for good: the
+ * same values, a system call each.
  *
  * nanosleep and clock_nanosleep sleep with sleep_until on the uptime: an
  * absolute CLOCK_REALTIME time is turned into an uptime deadline at the
@@ -18,9 +26,76 @@
 
 #define CLOCK_MAX 11   /* CLOCK_TAI, the highest clock id Linux has */
 
+/* The page once mapped; PAGE_NONE once it couldn't be (both for good). */
+#define PAGE_NONE ((const struct time_page *)1)
+static const struct time_page *page;
+
+/* Map the page, or say why not (PAGE_NONE). */
+static const struct time_page *page_map(void)
+{
+    handle_t h;
+    uint64_t addr = 0;
+    if (jam_clock_page(&h) != OK)
+        return PAGE_NONE;
+    status_t st = jam_vmar_map(lx_self_vmar(), h, 0, PAGE_SIZE, VMAR_READ | VMAR_KEPT_ONLY, &addr);
+    jam_handle_close(h);   /* the mapping keeps the page */
+    if (st != OK)
+        return PAGE_NONE;
+    const struct time_page *p = (const struct time_page *)(uintptr_t)addr;
+    if (p->flags & TIME_PAGE_TSC)
+        return p;
+    (void)jam_vmar_unmap(lx_self_vmar(), addr, PAGE_SIZE);   /* ours, just made */
+    return PAGE_NONE;
+}
+
+/* The time page, mapped at the first call; NULL: use the calls. Two
+ * threads that map it at once keep the first one's mapping. */
+static const struct time_page *time_page(void)
+{
+    const struct time_page *p = __atomic_load_n(&page, __ATOMIC_ACQUIRE);
+    if (p)
+        return p == PAGE_NONE ? NULL : p;
+    const struct time_page *mine = page_map(), *was = NULL;
+    if (!__atomic_compare_exchange_n(&page, &was, mine, false, __ATOMIC_ACQ_REL,
+                                     __ATOMIC_ACQUIRE)) {
+        if (mine != PAGE_NONE)
+            (void)jam_vmar_unmap(lx_self_vmar(), (uint64_t)(uintptr_t)mine, PAGE_SIZE);
+        mine = was;
+    }
+    return mine == PAGE_NONE ? NULL : mine;
+}
+
+/* The TSC, read after every instruction before it has finished (lfence),
+ * so a clock read never comes out earlier than a read before it. */
+static inline uint64_t tsc_ordered(void)
+{
+    uint32_t lo, hi;
+    __asm__ volatile("lfence; rdtsc" : "=a"(lo), "=d"(hi) : : "memory");
+    return (uint64_t)hi << 32 | lo;
+}
+
+/* The uptime now, in ns: clock_get's. */
+static uint64_t up_ns(void)
+{
+    const struct time_page *p = time_page();
+    return p ? time_page_uptime(p, tsc_ordered()) : now();
+}
+
 /* The wall clock now, in ns since 1970 UTC. */
 static int64_t wall_ns(void)
 {
+    const struct time_page *p = time_page();
+    if (p) {
+        uint32_t s, flags;
+        int64_t off;
+        do {
+            s = time_page_begin(p);
+            off = __atomic_load_n(&p->wall_offset, __ATOMIC_RELAXED);
+            flags = __atomic_load_n(&p->wall_flags, __ATOMIC_RELAXED);
+        } while (time_page_retry(p, s));
+        int64_t up = (int64_t)time_page_uptime(p, tsc_ordered());
+        return flags ? up + off : up;
+    }
     struct wall_clock wc;
     uint64_t t = now();
     if (jam_wallclock_get(&wc) != OK)
@@ -43,7 +118,7 @@ static long clock_ns(long clk, int64_t *ns)
     case CLOCK_MONOTONIC_RAW:
     case CLOCK_MONOTONIC_COARSE:
     case CLOCK_BOOTTIME:
-        *ns = (int64_t)now();
+        *ns = (int64_t)up_ns();
         return 0;
     case CLOCK_PROCESS_CPUTIME_ID:
         st = kp_cpu_ns(lx_self_process(), HANDLE_INVALID, &v);
@@ -111,7 +186,7 @@ static long timespec_ns(const struct timespec *ts, int64_t *ns)
 static uint64_t uptime_deadline(long clk, int64_t t)
 {
     if (clk == CLOCK_REALTIME) {
-        int64_t up = (int64_t)now(), wall = wall_ns();
+        int64_t up = (int64_t)up_ns(), wall = wall_ns();
         if (t - wall > INT64_MAX - up)
             return DEADLINE_NEVER;
         t = up + (t - wall);
@@ -133,13 +208,13 @@ long lx_clock_nanosleep(long clk, long flags, long req, long rem, long e, long f
     uint64_t deadline;
     if (flags & TIMER_ABSTIME)
         deadline = uptime_deadline(clk == CLOCK_REALTIME ? clk : CLOCK_MONOTONIC, ns);
-    else if (__builtin_add_overflow(now(), (uint64_t)ns, &deadline))
+    else if (__builtin_add_overflow(up_ns(), (uint64_t)ns, &deadline))
         deadline = DEADLINE_NEVER;
     status_t st = jam_sleep_until(deadline);
     if (st == OK)
         return 0;
     if (st == ERR_INTERRUPTED && rem && !(flags & TIMER_ABSTIME)) {
-        uint64_t t = now();
+        uint64_t t = up_ns();
         to_timespec(deadline > t ? (int64_t)(deadline - t) : 0, (struct timespec *)(uintptr_t)rem);
     }
     return lx_err(st);

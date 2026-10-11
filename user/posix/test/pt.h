@@ -7,7 +7,8 @@
  *
  * Files: main.c (sections, the child modes), start.c (argv, the
  * environment, the auxiliary vector, the hand-over: children started
- * with libjam's spawn), mem.c (mmap and friends, brk, malloc), thread.c
+ * with libjam's spawn), mem.c (mmap and friends, brk, malloc), clock.c
+ * (the clocks from the time page against the calls, and their bench), thread.c
  * (pthreads, TLS, errno), pipe.c (pipes and socketpair, and the pipe
  * bench), fds.c (dup and fcntl, memfd, eventfd, the one user, /dev and
  * /etc), poll.c (poll, select, epoll on pipes; a child started with
@@ -15,11 +16,12 @@
  * execve, system and popen, the hand-over cut short), tty.c (a program on
  * a terminal: a connection console it drives itself), files.c, files2.c
  * and fileskid.c (files and directories on /data and /boot: ptfiles.h),
- * signal.c and sigproc.c (signals in a process, and between processes).
- * start.c, fds.c, poll.c, proc.c, tty.c and fileskid.c are the ones that
- * include libjam (<jamos/libjam.h>: children started with a hand-over;
- * fileskid.c through the layer's fd.h); mem.c the only one with Linux's
- * call numbers. */
+ * signal.c and sigproc.c (signals in a process, and between processes),
+ * clock.c (the clocks from the time page). start.c, mem.c, clock.c, fds.c,
+ * poll.c, proc.c, tty.c and fileskid.c are the ones that include libjam
+ * (<jamos/libjam.h>: children started with a hand-over, a mapping libc
+ * didn't make, the calls the clocks are checked against; fileskid.c
+ * through the layer's fd.h); mem.c the only one with Linux's call numbers. */
 #pragma once
 
 #include <stdbool.h>
@@ -41,6 +43,7 @@ int  pt_failures(void);
  * counted). */
 void pt_start(char **argv);
 void pt_mem(char **argv);
+void pt_clock(char **argv);
 void pt_thread(char **argv);
 void pt_pipe(char **argv);
 void pt_fds(char **argv);

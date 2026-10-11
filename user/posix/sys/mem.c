@@ -15,10 +15,15 @@
  * memfd) in a VMO of its own, MAP_SHARED a memfd's own VMO (of a file:
  * ENODEV until M12.5's pager); either is then mapped and kept in the
  * table as an anonymous one is. mremap is ENOSYS
- * (musl's realloc copies). MAP_FIXED over one of the table's mappings
- * unmaps that part first, then maps; over anything else (the program, its
- * stack, libjam's mappings) it fails with ENOMEM rather than replace what
- * libc doesn't own, and MAP_FIXED_NOREPLACE over anything is EEXIST.
+ * (musl's realloc copies). MAP_FIXED over the table's mappings replaces
+ * them in one step (vmar_map's VMAR_REPLACE): another thread reading the
+ * range sees the old pages or the new ones, never a hole. The holes
+ * between them are filled with the new mapping's pages first, as plain
+ * fixed maps, so one that holds anything else (the program, its stack,
+ * libjam's mappings) fails the call with ENOMEM before anything changed:
+ * the replace never takes away what libc doesn't own. MAP_FIXED where
+ * the table has nothing is a plain fixed map (ENOMEM over anything else),
+ * and MAP_FIXED_NOREPLACE over anything is EEXIST.
  *
  * brk: a 1 GiB reservation (one VMO, mapped on the first call, in the
  * table like any mapping), the break moving inside it; pages above a
@@ -158,6 +163,86 @@ static long map_new(uint64_t *addr, uint64_t len, uint32_t perms, bool fixed, bo
     return 0;
 }
 
+/* The next hole the table leaves in [*at, end), moving *at to its start:
+ * true and the hole [*at, *hole_end), or false if there is none. */
+static bool next_hole(uint64_t *at, uint64_t end, uint64_t *hole_end)
+{
+    const struct mt_entry *t = mt_entries();
+    for (unsigned i = mt_first_after(*at); *at < end; i++) {
+        if (i >= mt_count() || t[i].base >= end) {
+            *hole_end = end;
+            return true;
+        }
+        if (t[i].base > *at) {
+            *hole_end = t[i].base;
+            return true;
+        }
+        *at = t[i].base + t[i].len;   /* inside entry i: on past it */
+    }
+    return false;
+}
+
+/* fill_holes' mappings in [addr, stop) unmapped again. */
+static void unfill_holes(uint64_t addr, uint64_t stop)
+{
+    uint64_t hole_end;
+    for (uint64_t a = addr; next_hole(&a, stop, &hole_end); a = hole_end)
+        (void)jam_vmar_unmap(lx_self_vmar(), a, hole_end - a);   /* ours, just made */
+}
+
+/* MAP_FIXED's first step: vmo (from vmo_off at addr) mapped into every
+ * hole the table leaves in [addr, end). A hole holding a mapping libc
+ * didn't make fails it (ENOMEM), with the holes filled so far emptied. */
+static long fill_holes(uint64_t addr, uint64_t end, handle_t vmo, uint64_t vmo_off,
+                       uint32_t perms)
+{
+    uint64_t hole_end;
+    for (uint64_t a = addr; next_hole(&a, end, &hole_end); a = hole_end) {
+        uint64_t at = a;
+        status_t st = jam_vmar_map(lx_self_vmar(), vmo, vmo_off + (a - addr), hole_end - a,
+                                   perms | VMAR_FIXED, &at);
+        if (st != OK) {
+            unfill_holes(addr, a);
+            return st == ERR_ALREADY_BOUND || st == ERR_NO_RESOURCES ? -ENOMEM : lx_err(st);
+        }
+    }
+    return 0;
+}
+
+/* MAP_FIXED over the table's mappings: src's VMO (or a new one) in place
+ * of [addr, addr + len) in one step, then the table forgets what was
+ * replaced. src->vmo is consumed. */
+static long replace_locked(uint64_t addr, uint64_t len, uint32_t perms, bool populate,
+                           const struct map_src *src)
+{
+    handle_t vmo = src->vmo;
+    if (!mt_room(2)) {   /* the new entry, and the tail of one that reaches past both ends */
+        if (vmo)
+            jam_handle_close(vmo);
+        return -ENOMEM;
+    }
+    status_t st = vmo ? OK : jam_vmo_create(len, 0, &vmo);
+    if (st != OK)
+        return lx_err(st);
+    long r = fill_holes(addr, addr + len, vmo, src->vmo_off, perms);
+    uint64_t at = addr;
+    if (!r && (st = jam_vmar_map(lx_self_vmar(), vmo, src->vmo_off, len,
+                                 perms | VMAR_FIXED | VMAR_REPLACE, &at)) != OK) {
+        unfill_holes(addr, addr + len);
+        r = st == ERR_NO_RESOURCES ? -ENOMEM : lx_err(st);
+    }
+    if (r) {
+        jam_handle_close(vmo);
+        return r;
+    }
+    (void)drop_locked(addr, addr + len, false);   /* the kernel unmapped them; room checked */
+    if (populate)
+        (void)jam_vmo_commit(vmo, src->vmo_off, len);   /* a hint: pages still come on touch */
+    struct mt_entry e = { addr, len, src->vmo_off, vmo, 0 };
+    mt_insert(&e);
+    return 0;
+}
+
 /* mmap's checks; 0 or -errno. */
 static long mmap_check(long addr, long len, long prot, long flags, long off)
 {
@@ -188,12 +273,15 @@ long lx_mmap(long addr, long len, long prot, long flags, long fd, long off)
             return r;
     }
     lock_take(&mem_lock);
-    if (fixed && table_overlaps(at, size))
-        r = flags & MAP_FIXED ? unmap_locked(at, at + size) : -EEXIST;
-    if (!r)
+    if (!fixed || !table_overlaps(at, size)) {
         r = map_new(&at, size, perms, fixed, flags & MAP_POPULATE, &src);
-    else if (src.vmo)
-        jam_handle_close(src.vmo);
+    } else if (flags & MAP_FIXED) {
+        r = replace_locked(at, size, perms, flags & MAP_POPULATE, &src);
+    } else {
+        r = -EEXIST;
+        if (src.vmo)
+            jam_handle_close(src.vmo);
+    }
     src.vmo = HANDLE_INVALID;
     if (r == -ENOMEM && (flags & MAP_FIXED_NOREPLACE))
         r = -EEXIST;
