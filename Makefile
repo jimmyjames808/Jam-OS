@@ -58,6 +58,9 @@ BOOTFS  := $(BUILD)/bootfs.img
 SIGN_TOOL := build/host/jamos-sign
 # The PC's check of a boot menu, on the Mac (tools/menucheck.c, below).
 MENU_TOOL := build/host/menucheck
+# The page-hash table with libos's and the kernel's SHA-256, on the Mac
+# (tools/pagetable.c, below).
+PAGETABLE_TOOLS := build/host/pagetable-libos build/host/pagetable-kernel
 # libfun's smooth text on the Mac: the preview and its sanitised check
 # (tools/fontpreview.c, below).
 FONT_TOOL  := build/host/fontpreview
@@ -120,7 +123,8 @@ ifneq ($(words $(DRIVERS)),$(words $(DRIVER_DIRS)))
 $(error two driver directories share a name: $(DRIVER_DIRS))
 endif
 
-.PHONY: all image run debug clean font usb flash syscalls idl wl keymap check compdb includes FORCE
+.PHONY: all image run debug clean font usb flash syscalls idl wl keymap check compdb includes \
+        ports FORCE
 
 all: $(KERNEL) $(BOOTFS) $(SIGN_TOOL) $(MENU_TOOL) $(BUILD)/fontpreview.png
 
@@ -611,7 +615,10 @@ check: all
 	python3 tools/pcap-vlan-check.py --selftest
 	python3 tools/checkwants.py --selftest
 	python3 tools/ports.py lint
+	$(MAKE) -s $(PAGETABLE_TOOLS)
 	python3 tools/ports.py selftest
+	python3 tools/ports.py vectors
+	python3 tools/ports-server.py --self-test
 	python3 tools/fatcheck.py --selftest
 	$(SIGN_TOOL) self-test
 	$(MENU_TOOL) boot/limine.conf $(STICK_FILES)
@@ -663,18 +670,34 @@ $(UPDATE_PUB): FORCE
 	@if [ -f "$(UPDATE_KEY)" ]; then cp "$(UPDATE_KEY)" $@.new; else : > $@.new; fi; \
 	 if cmp -s $@.new $@; then rm $@.new; else mv $@.new $@; fi
 
+# ports.pub in bootfs: the public half of the owner's ports key, which
+# signs every package, index and vulnerability list `make ports` makes
+# (docs/M13.7-PLAN.md section 7). `build/host/jamos-sign keygen --ports`
+# makes the pair, once, in ~/.config/jamos (the secret, ports.key, stays
+# there: never in the tree); PORTS_KEY names another public file, and
+# `PORTS_KEY=` builds without one. A build without it (a public build, or
+# a machine without the key) takes no package: pkg refuses every
+# repository. Copied again only when it changes, comes or goes.
+PORTS_KEY ?= $(HOME)/.config/jamos/ports.pub
+PORTS_PUB := $(BUILD)/ports.pub
+$(PORTS_PUB): FORCE
+	@mkdir -p $(BUILD)
+	@if [ -f "$(PORTS_KEY)" ]; then cp "$(PORTS_KEY)" $@.new; else : > $@.new; fi; \
+	 if cmp -s $@.new $@; then rm $@.new; else mv $@.new $@; fi
+
 # bootfs: the files init and the tests need before USB and FAT32 work,
 # loaded by Limine as a module (boot/limine.conf: module_path).
 BOOTFS_FILES := $(foreach p,$(USER_PROGS),bin/$(p)=$(BUILD)/user/$(p).bootfs) \
                 $(foreach d,$(DRIVERS),drv/$(d)=$(BUILD)/drv/$(d).bootfs) init.cfg=boot/init.cfg \
                 splash.mpg=boot/splash.mpg build.txt=$(BUILD_INFO) \
-                $(if $(wildcard $(UPDATE_KEY)),update.pub=$(UPDATE_PUB))
+                $(if $(wildcard $(UPDATE_KEY)),update.pub=$(UPDATE_PUB)) \
+                $(if $(wildcard $(PORTS_KEY)),ports.pub=$(PORTS_PUB))
 
 # Every program's list (<wants.h>) is checked first: what the build
 # approves for each boot-image program (tools/checkwants.py).
 $(BOOTFS): $(USER_PROGS:%=$(BUILD)/user/%.bootfs) $(DRIVERS:%=$(BUILD)/drv/%.bootfs) boot/init.cfg \
-           boot/splash.mpg $(BUILD_INFO) $(UPDATE_PUB) tools/mkbootfs.py tools/checkwants.py \
-           user/include/os.h
+           boot/splash.mpg $(BUILD_INFO) $(UPDATE_PUB) $(PORTS_PUB) tools/mkbootfs.py \
+           tools/checkwants.py user/include/os.h
 	python3 tools/checkwants.py $(foreach p,$(USER_PROGS),$(call prog_dir,$(p))=$(BUILD)/user/$(p).bootfs)
 	python3 tools/mkbootfs.py $@ $(BOOTFS_FILES)
 
@@ -725,6 +748,29 @@ $(SIGN_TOOL): tools/jamos-sign.c $(MONO_SRCS) $(MONO_HDRS) \
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=gnu11 -O2 -Wall -Wextra -Werror -I$(MONO_DIR) -I$(MONO_DIR)/optional \
 	    -o $@ tools/jamos-sign.c $(MONO_SRCS)
+
+# pagetable (tools/pagetable.c): a program's page-hash table as the PC
+# computes it, with libos's SHA-256 and with the kernel's, each built as it
+# is against a stand-in for the one header of Jam OS's it includes (its
+# memcpy): `make check` compares their tables with the packager's.
+build/host/shim/os.h build/host/shim/jam/string.h:
+	@mkdir -p $(dir $@)
+	@printf '#include <stddef.h>\n#include <stdint.h>\n#include <string.h>\n' > $@
+build/host/pagetable-libos: tools/pagetable.c user/lib/sha256.c user/include/sha256.h \
+                            build/host/shim/os.h
+	$(HOSTCC) -std=gnu11 -O2 -Wall -Wextra -Werror -Ibuild/host/shim -Iuser/include \
+	    -o $@ tools/pagetable.c user/lib/sha256.c
+build/host/pagetable-kernel: tools/pagetable.c kernel/lib/sha256.c kernel/include/jam/sha256.h \
+                             build/host/shim/jam/string.h
+	$(HOSTCC) -std=gnu11 -O2 -Wall -Wextra -Werror -DPAGETABLE_KERNEL -Ibuild/host/shim \
+	    -Ikernel/include -o $@ tools/pagetable.c kernel/lib/sha256.c
+
+# The package repository (docs/M13.7-PLAN.md section 7): every package
+# port built, packaged and signed with the ports key (~/.config/jamos/
+# ports.key, or JAMOS_PORTS_KEY), with the index, VULNS and the sources,
+# in build/repo for tools/ports-server.py. Fetches what isn't cached.
+ports: all
+	python3 tools/ports.py repo
 
 # menucheck (tools/menucheck.c): init's boot menu check (user/lib/bootmenu.c,
 # the same file), on the Mac.

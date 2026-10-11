@@ -72,7 +72,12 @@ that a bug fix comes with a test is in
   `svc net-listen`, a listen on another service and a list over its 24
   wants; the FAT32 checker finds each kind of damage it knows in volumes
   it makes and damages (`tools/fatcheck.py --selftest`); the update signing tool passes Monocypher's Ed25519 vectors
-  (`build/host/jamos-sign self-test`); libfun's smooth text holds up
+  and keeps the ports formats' signatures apart by their first lines
+  (`build/host/jamos-sign self-test`); the package formats' test vectors
+  are what the packager makes and each gets its answer from the
+  reference verifier (`tools/ports.py vectors`), and the repository
+  server answers only files of the repository, each a whole snapshot
+  (`tools/ports-server.py --self-test`); libfun's smooth text holds up
   against hostile input under ASan and UBSan (`build/host/fontcheck
   --check`, [below](#smooth-text)); and the partition table library
   (`drivers/lib/parttable.c`, `drivers/lib/parttable_gpt.c`) keeps to the
@@ -1810,7 +1815,7 @@ of them. Each file's header says more.
 | `tools/mkbootfs.py`, `tools/mkimage.py` | the boot image and the two-partition disk image |
 | `tools/bootfs-edit.py <in> <out> name=file...` | a boot image with files added, replaced or (`name=`) left out (the update tests' build B, and their builds with or without a test key) |
 | `tools/update-test-key.sh <outdir> <in.img> <out.img> [nokey]` | for the update tests: two throwaway keys in `<outdir>/testkey` (made once by `build/host/jamos-sign keygen`) and a copy of the image whose build has the first one's public half (or none) |
-| `build/host/jamos-sign self-test` | the Mac's signing tool (`tools/jamos-sign.c`, built by `make`) against Monocypher's Ed25519 vectors and a round trip; part of `make check` |
+| `build/host/jamos-sign self-test` | the Mac's signing tool (`tools/jamos-sign.c`, built by `make`) against Monocypher's Ed25519 vectors, a round trip, and the ports formats' domains (a signed package manifest, index or VULNS checks as its own format only); part of `make check` |
 | `tools/write-usb.sh`, `tools/mbr-grow.py` | `make usb`: the image onto a stick, the data partition grown to its end and left blank |
 | `tools/flash-usb.sh` | `make flash`: a new kernel, boot image and boot menu onto a stick's ESP, the stick's kernel and boot image kept as the previous build |
 | `tools/flash-test.sh <outdir>` | `tools/flash-usb.sh` on a copy of the image attached with `hdiutil` (never a real disk; macOS): the new files are there, the stick's old kernel and boot image are the previous build (an older one placed first replaced), no `.new` file is left (stale ones placed first included), the data partition is unchanged |

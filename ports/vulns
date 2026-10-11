@@ -1,0 +1,13 @@
+# The repository's vulnerability list: `tools/ports.py repo` signs these
+# lines into VULNS, which `pkg audit` checks every installed package
+# against (docs/M13.7-PLAN.md, "PO3 notes", VULNS). One confirmed item a
+# line, in VULNS's own grammar:
+#
+#   vuln <component> <first> <fixed> <fixrev> <id> <summary>
+#
+# <component>: a port or package name, or musl; <first>: the first
+# version affected, or - (all before the fix); <fixed>: the version that
+# fixed it, or - (none yet); <fixrev>: the revision of <fixed> that fixed
+# it (our own patch), or -; <id>: CVE-2026-1234 or our own JAMOS-2026-1;
+# <summary>: the rest of the line. Lines starting with # and blank lines
+# are dropped; the order doesn't matter (repo sorts them).
