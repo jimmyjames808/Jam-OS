@@ -1,0 +1,29 @@
+# xz: the xz compressor and liblzma (rung 2 of the first ports,
+# docs/M13.7-PLAN.md section 16): the first autotools port, built with
+# --host and ports/config.site's answers; threads on (musl's pthreads).
+# Only xz and the library: xzdec, lzmadec and lzmainfo are LZMA Utils'
+# leftovers, and the xzgrep family are shell scripts (GPL-2.0) that need
+# a POSIX shell Jam OS doesn't have yet.
+name        xz
+version     5.8.4
+revision    1
+summary     the xz compressor and liblzma
+homepage    https://tukaani.org/xz/
+category    archivers
+# liblzma and xz are 0BSD; the LGPL getopt in lib/ is built only where
+# libc has no getopt_long (musl has it), and the GPL scripts are not built.
+licence     0BSD
+licence-file COPYING COPYING.0BSD
+source      https://github.com/tukaani-project/xz/releases/download/v$version/xz-$version.tar.xz 1567192 4ce24038fd4221e0d13bc1a2de7a4db56e90b92b3bf75321f6c14be73f65de4b
+place       package
+style       configure
+configure   --disable-xzdec --disable-lzmadec --disable-lzmainfo --disable-lzma-links
+configure   --disable-scripts --disable-doc --disable-nls --enable-sandbox=no
+# xz compresses the files it is named, in place (wants/xz: /data writable).
+program     bin/xz
+multicall   bin/xz unxz xzcat         # upstream's symlinks: names of the one program
+library     lib/liblzma.a include/lzma.h include/lzma lib/pkgconfig/liblzma.pc
+cpe         cpe:2.3:a:tukaani:xz
+fixed       CVE-2024-3094 5.6.2       # the backdoor in 5.6.0 and 5.6.1's release tarballs
+fixed       CVE-2025-31115 5.8.1      # the threaded decoder's use after free
+not-affected CVE-2022-1271 xzgrep is not built (--disable-scripts)
