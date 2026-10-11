@@ -4,7 +4,8 @@
  * (tools/extfix/: how, in make.sh; the images gzipped, unpacked by make
  * into build/extfix).
  *
- *     extcheck <fixtures dir> <images dir> [--fuzz N] [--seed S] [--cut-images DIR]
+ *     extcheck <fixtures dir> <images dir> [--fuzz N] [--seed S] [--save DIR]
+ *              [--cut-images DIR]
  *
  * Six parts, each failing the run (exit 1, a line saying what) at the
  * first mistake:
@@ -27,6 +28,10 @@
  *   - every feature bit set alone on Jam OS's own fixture: refused,
  *     read-only or written, as docs/M13.6-PLAN.md's table says (the table
  *     here is a copy written from the plan, not the library's);
+ *   - the writers (U2a's: tools/extwrite.c, extfile.c, extverify.c):
+ *     blocks, inodes, extent trees, file writes and truncation on copies
+ *     of the writable fixtures, the whole volume checked as they go;
+ *     --save DIR keeps the images Linux's e2fsck -fn should pass;
  *   - the fuzz pass (extmutate.c): N runs (default 3000) of mutated
  *     images, from --seed. A run neither crashes (ASan, UBSan), reads
  *     outside the image, reads without end, nor returns with a buffer
@@ -42,6 +47,7 @@
 #include <jam/sha256.h>
 #include "extcheck.h"
 #include "extjnl.h"
+#include "extwrite.h"
 
 #define FUZZ_DEFAULT 3000
 #define PATH_MAX_    4096
@@ -420,7 +426,7 @@ void read_list(const char *dir, const char *name, struct lines *l)
     qsort(l->v, l->n, sizeof(l->v[0]), cmp_line);
 }
 
-void compare(const struct lines *want, const struct lines *got)
+void compare_lines(const struct lines *want, const struct lines *got)
 {
     unsigned n = want->n < got->n ? want->n : got->n;
     for (unsigned i = 0; i < n; i++)
@@ -544,7 +550,7 @@ static void check_fixture(struct img *m, const struct fixture *fx, const char *l
                  fx->ro);
         got.xattr_blocks = 0;
         list_volume(&fs, &got);
-        compare(&want, &got);
+        compare_lines(&want, &got);
         if (got.xattr_blocks != fx->xattr_blocks)
             fail("%u attribute blocks, not %u", got.xattr_blocks, fx->xattr_blocks);
         free_lines(&got);
@@ -578,13 +584,15 @@ int main(int argc, char **argv)
     unsigned nfuzz = FUZZ_DEFAULT;
     const char *cut_images = NULL;
     if (argc < 3)
-        fail("usage: extcheck <fixtures dir> <images dir> [--fuzz N] [--seed S] "
+        fail("usage: extcheck <fixtures dir> <images dir> [--fuzz N] [--seed S] [--save DIR] "
              "[--cut-images DIR]");
     for (int i = 3; i + 1 < argc; i += 2) {
         if (!strcmp(argv[i], "--fuzz"))
             nfuzz = (unsigned)strtoul(argv[i + 1], NULL, 0);
         else if (!strcmp(argv[i], "--seed"))
             rng = strtoull(argv[i + 1], NULL, 0) | 1;
+        else if (!strcmp(argv[i], "--save"))
+            save_dir = argv[i + 1];
         else if (!strcmp(argv[i], "--cut-images"))
             cut_images = argv[i + 1];
         else
@@ -602,9 +610,12 @@ int main(int argc, char **argv)
     }
     check_features(&imgs[0]);
     for (unsigned i = 0; i < N; i++)
+        check_writes(&imgs[i], fixtures[i].ro == 0);
+    for (unsigned i = 0; i < N; i++)
         fuzz(&imgs[i], nfuzz / N + (i < nfuzz % N));
     check_journal(imgs, argv[1], cut_images);
-    printf("extcheck: %u fixtures, broken checksums, the feature table, %u fuzzed images, "
-           "the journal: ok\n", (unsigned)N, nfuzz);
+    printf("extcheck: %u fixtures, broken checksums, the feature table, the writers, "
+           "%u fuzzed images, the journal: ok\n",
+           (unsigned)N, nfuzz);
     return 0;
 }

@@ -221,6 +221,11 @@ void ext_bdirty(struct ext_fs *fs, struct ext_buf *b);
 /* Drop the cached copies of blocks [blk, blk + count) (none may be pinned
  * or dirty): a writer that wrote them around the cache calls it. */
 void ext_binval(struct ext_fs *fs, uint64_t blk, uint64_t count);
+/* Drop the cached copies of blocks [blk, blk + count), dirty ones too
+ * (none may be pinned): they were freed, so what the cache holds of them
+ * must neither be written home nor read again (a freed extent node
+ * reused for file data). */
+void ext_bforget(struct ext_fs *fs, uint64_t blk, uint64_t count);
 /* Write every dirty block home, in block order. ERR_ACCESS_DENIED if the
  * volume may not be written (nothing written); ERR_IO (the rest stay dirty). */
 status_t ext_sync(struct ext_fs *fs);

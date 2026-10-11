@@ -59,7 +59,7 @@ struct lines {
 void list_volume(struct ext_fs *fs, struct lines *l);
 /* <dir>/<name>.list, sorted; and two listings that must be the same. */
 void read_list(const char *dir, const char *name, struct lines *l);
-void compare(const struct lines *want, const struct lines *got);
+void compare_lines(const struct lines *want, const struct lines *got);
 void free_lines(struct lines *l);
 /* Every group's bitmaps read and checked. */
 void check_bitmaps(struct ext_fs *fs);

@@ -169,7 +169,7 @@ struct ext_dev cut_dev(struct cutdev *cd)
 
 /* ---- blocks' contents --------------------------------------------------------------------- */
 
-void pattern(uint8_t *block, uint32_t size, uint64_t value)
+void storm_pattern(uint8_t *block, uint32_t size, uint64_t value)
 {
     for (uint32_t i = 0; i < size; i += 8) {
         uint64_t w = value ^ (i * 0x9E3779B97F4A7C15ull);
@@ -522,13 +522,13 @@ static status_t write_block(struct storm *s, struct run *r, uint32_t obj, uint8_
         status_t st = ext_bnew(fs, blk, &b);
         if (st != OK)
             return st;
-        pattern(b->data, fs->block_size, value);
+        storm_pattern(b->data, fs->block_size, value);
         ext_bdirty(fs, b);
         ext_brelse(fs, b);
         return OK;
     }
     uint8_t buf[4096];
-    pattern(buf, fs->block_size, value);
+    storm_pattern(buf, fs->block_size, value);
     status_t st = fs->dev.write(fs->dev.ctx, blk << fs->block_log, fs->block_size, buf);
     if (st != OK)
         return st;

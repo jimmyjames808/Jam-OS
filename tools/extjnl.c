@@ -172,7 +172,7 @@ static void check_untouched(struct storm *s, struct run *q, const struct lines *
     list_volume(&q->fs, &got);
     filtered(s, want, &a);
     filtered(s, &got, &b);
-    compare(&a, &b);
+    compare_lines(&a, &b);
     free_lines(&got);
     check_bitmaps(&q->fs);
 }
@@ -191,7 +191,7 @@ static void check_goes_on(struct storm *s, struct run *q)
     if (st == OK)
         st = ext_bnew(fs, s->objs[blk_obj].blk, &b);
     if (st == OK) {
-        pattern(b->data, fs->block_size, 0xABCD);
+        storm_pattern(b->data, fs->block_size, 0xABCD);
         ext_bdirty(fs, b);
         ext_brelse(fs, b);
         st = ext_jnl_commit(fs);
@@ -216,7 +216,7 @@ static void check_goes_on(struct storm *s, struct run *q)
     if (run_mount(s, q) != OK || q->fs.ro || q->j.replayed || q->fs.sb.wtime != 0xC0FFEE)
         fail("the mount after a clean close: ro %#x, replayed %u", q->fs.ro, q->j.replayed);
     uint8_t want[4096];
-    pattern(want, fs->block_size, 0xABCD);
+    storm_pattern(want, fs->block_size, 0xABCD);
     struct ext_time t;
     if (memcmp(s->cd.bytes + (s->objs[blk_obj].blk << q->fs.block_log), want,
                q->fs.block_size) || ext_iget(&q->fs, ino, 0, &in) != OK ||

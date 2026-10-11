@@ -143,7 +143,7 @@ void storm_state(struct storm *s, struct run *r, uint64_t *out);
 /* Up to max free blocks (every step-th of each group's), from the bitmaps. */
 uint32_t free_blocks(struct ext_fs *fs, uint64_t *out, uint32_t max, uint32_t step);
 /* A block's pattern for value, and its hash. */
-void pattern(uint8_t *block, uint32_t size, uint64_t value);
+void storm_pattern(uint8_t *block, uint32_t size, uint64_t value);
 uint64_t block_hash(const uint8_t *block, uint32_t size);
 
 #define PATTERN_MAGIC (1ull << 62)   /* a value whose pattern starts like a jbd2 commit block */
