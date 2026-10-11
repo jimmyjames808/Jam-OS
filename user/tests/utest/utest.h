@@ -397,6 +397,9 @@ bool t_fat_restart_handles(void);
 bool t_fat_restart_bad_request(void);
 /* ... and a mapped file's pages through it all (fat with a pager). */
 bool t_fat_restart_pager(void);
+/* fat_coherent.c: a mapped file's pages follow every write, truncate,
+ * rename and removal of its file; a file mapped to run is never changed. */
+bool t_fat_map_coherent(void);
 /* fatlayout.c: FatFs's structs, as fat's state relies on them. */
 bool t_fat_layout(void);
 

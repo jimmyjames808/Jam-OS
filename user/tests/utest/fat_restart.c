@@ -431,8 +431,9 @@ static bool unmapped(handle_t pager, const char *path)
  * goes) and between reading a page request and supplying it (supply:1:
  * the successor takes the request again). Then: a second map shares the
  * first's VMO (the keeper gave fat its handle back), an EXEC map is a VMO
- * of its own, a file open for writing isn't mapped, and a mapped file
- * can't be removed until its mappings go. */
+ * of its own, a file open and mapped to run can't be removed or written
+ * until both go, and a file open for writing is mapped to read, not to
+ * run. */
 static bool map_deaths(handle_t pager)
 {
     static const char *const dies[] = { "die=map:1", "die=supply:1" };
@@ -461,9 +462,12 @@ static bool map_deaths(handle_t pager)
     t_close(&f);
     if (!unmapped(pager, "/m.bin"))
         return false;
-    /* Open for writing: not mapped. */
+    /* Open for writing: mapped to read (its writes reach the pages:
+     * fat_coherent.c), never to run. */
     CHECK_ST(t_open(&sv.r, "/w.bin", FS_READ | FS_WRITE | FS_CREATE, &w), OK);
-    CHECK_ST(file_map_until(w.ch, now() + FAT_CALL_NS, FILE_MAP_READ, &vmo, &size), ERR_BUSY);
+    CHECK_ST(file_map_until(w.ch, now() + FAT_CALL_NS, FILE_MAP_EXEC, &own, &size), ERR_BUSY);
+    CHECK_ST(file_map_until(w.ch, now() + FAT_CALL_NS, FILE_MAP_READ, &vmo, &size), OK);
+    CHECK_ST(jam_handle_close(vmo), OK);
     t_close(&w);
     return sup_stop();
 }

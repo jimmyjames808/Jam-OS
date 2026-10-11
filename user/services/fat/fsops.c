@@ -8,7 +8,10 @@
  * has unwritten changes. Each method runs as an operation (request.c): its
  * writes are held (hold.c) and go out together after its commit, before
  * it is answered, and so do the flush and the clean mark. An open file
- * can't be removed or renamed (ERR_BUSY: fat's lock, fileops.c). */
+ * can't be removed or renamed (ERR_BUSY: fat's lock, fileops.c), nor can
+ * a file mapped to run. A file mapped to read can: removed (or renamed
+ * over), its mappings are cut off, inside the same operation (pager.c's
+ * maps_cut_open); renamed, its open entry follows it (files_moved). */
 #include "fat.h"
 
 /* A changing method on a read-only volume. */
@@ -180,7 +183,13 @@ static status_t op_unlink(void *ctx, const char *path, uint32_t path_len, uint32
      * copy, a write each otherwise (on the ESP's one-sector clusters, 200
      * for a boot image). The directory entry still goes out first, as
      * FatFs wrote it. A send that fails is the answer (request.c). */
-    FRESULT fr = files_is_open(p) ? FR_LOCKED : f_unlink(p);   /* fat's lock (fileops.c) */
+    int mapped = -1;
+    st = files_may_change(p, &mapped);   /* fat's lock (fileops.c) */
+    FRESULT fr = st != OK ? FR_LOCKED : f_unlink(p);
+    /* Its clusters are free: its mappings end with it, before its answer
+     * and before any later request can give the clusters to another file. */
+    if (fr == FR_OK && mapped >= 0)
+        maps_cut_open((uint32_t)mapped);
     /* FR_DENIED: a directory that is not empty, or a read-only file. */
     if (fr == FR_DENIED && dir)
         return ERR_NOT_EMPTY;
@@ -209,9 +218,13 @@ static status_t make_way(const char *pf, const char *pt)
     bool from_dir = ff.fattrib & AM_DIR, to_dir = ft.fattrib & AM_DIR;
     if (from_dir != to_dir)
         return to_dir ? ERR_IS_DIR : ERR_NOT_DIR;
-    if (files_is_open(pt))
-        return ERR_BUSY;
+    int mapped = -1;
+    status_t st = files_may_change(pt, &mapped);
+    if (st != OK)
+        return st;
     fr = f_unlink(pt);
+    if (fr == FR_OK && mapped >= 0)
+        maps_cut_open((uint32_t)mapped);   /* as an unlink's (op_unlink) */
     /* FR_DENIED: a directory with entries, or a read-only file. */
     if (fr == FR_DENIED)
         return to_dir ? ERR_NOT_EMPTY : ERR_ACCESS_DENIED;
@@ -265,8 +278,10 @@ static status_t op_rename(void *ctx, const char *from, uint32_t from_len, const 
         if (kind_of(pf, &from_dir) == FR_OK && from_dir)
             return ERR_INVALID_ARGS;   /* (a file "into itself": FatFs finds no path) */
     }
-    if (files_is_open(pf))
-        return ERR_BUSY;   /* fat's lock (fileops.c) */
+    int mapped = -1;
+    st = files_may_change(pf, &mapped);   /* fat's lock (fileops.c) */
+    if (st != OK)
+        return st;
     dirs_forget();
     if (flags & FS_RENAME_REPLACE) {
         st = make_way(pf, pt);
@@ -279,6 +294,8 @@ static status_t op_rename(void *ctx, const char *from, uint32_t from_len, const 
         status_t sf = fr_path_status(fr, pf);
         return sf == ERR_NOT_DIR ? sf : fr_path_status(fr, pt);
     }
+    if (fr == FR_OK && mapped >= 0)
+        files_moved((uint32_t)mapped, pt);   /* its entry moved: its open entry follows */
     return settled(fr == FR_DENIED ? ERR_NO_SPACE : fr_status(fr));
 }
 

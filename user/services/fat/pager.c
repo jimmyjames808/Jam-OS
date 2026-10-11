@@ -36,14 +36,76 @@
  * copy of the volume with its window never written back), so a death in
  * the middle of one leaves the state's FIL and window as they were, and a
  * read never writes the sector an FS_GATHER file's write left in the
- * window. A mapped file is never open for writing (fileops.c), so its
- * chain of clusters doesn't change under a cursor.
+ * window.
  *
  * Requests are served one per turn of main.c's loop (the pager's binding
  * is ONCE, made again after each), and before each fs request
  * (pager_reap): a mapping let go and then the file removed are seen in
  * that order. A pager VMO is never mapped or read by fat: its own fault
- * would wait on itself. */
+ * would wait on itself.
+ *
+ * A mapped file that changes (fileops.c, fsops.c). A file mapped to read
+ * may be written, truncated, renamed, removed or renamed over; its
+ * mappings see each change as a read would (MAP_SHARED's rule). A file
+ * mapped to run (FILE_MAP_EXEC: a program, docs/M12.5-PLAN.md's Q7) is
+ * ERR_BUSY to all of these while that VMO lives.
+ *   - A write or truncate (maps_changed): the file's VMOs take its new size
+ *     (PAGER_OP_SET_SIZE: past it, a load is a bus error and a copy fails),
+ *     the pages it changed are dropped (PAGER_OP_INVALIDATE: the next
+ *     touch fetches them again), and the slots' cursors start again (their
+ *     sector buffers hold old bytes, their clusters may be freed).
+ *   - A rename: the file's open entry follows its directory entry
+ *     (fileops.c's files_moved); its pages are still right.
+ *   - A removal, or a rename over it (maps_cut_open): its VMOs are cut off
+ *     (PAGER_OP_DETACH, then the slot forgotten), as a pulled stick's:
+ *     FAT frees the clusters at once, so nothing may read them through an
+ *     old mapping. (Keeping an unlinked file's clusters until its last
+ *     mapping goes, as POSIX would, is not done.)
+ *
+ * The ordering, against the write-through hold (hold.c). A change runs
+ * as an operation (request.c): its sectors are held, not on the medium,
+ * until its commit, and go out (or, an FS_GATHER file's, stay held)
+ * after it; its answer goes after that. Within the operation, after
+ * FatFs has changed the file:
+ *   1. fileops.c writes the file's sector buffer and FatFs's window
+ *      (ffx_flush), so they are held too. From here every sector a read of
+ *      the file needs, its bytes and its chain's FAT entries, reads as the
+ *      change left it: disk_read goes through the cache, which every held
+ *      sector is copied into, and hold_overlay lays the held sectors over
+ *      anything read from the medium.
+ *   2. maps_changed or maps_cut_open: the kernel drops the old pages, or
+ *      the VMO.
+ *   3. The commit, the send, the answer.
+ * Why that is enough. (a) fat is one thread, and serves page requests only
+ * between operations (pager_event, pager_reap), each one read and supplied
+ * in one turn: so no page is supplied between step 2 and the answer, and
+ * no supply that read the old bytes can land after step 2. A page
+ * present after the answer was supplied after it, read through step 1's
+ * sectors: a client that saw the answer and then reads the mapping sees
+ * the change. (b) Step 2 doesn't wait for the medium: an FS_GATHER file's
+ * writes may stay held for many requests, and fat's reads see them all
+ * the while, so its pages may too. Putting it after the send would leave
+ * pages read before the change in place for a gathered write. (c) A death
+ * before the commit undoes the operation (undo.c: the state, and what it
+ * held); the pages step 2 dropped are fetched again from the file as it
+ * then is, and a successor runs the request again, steps 1 and 2 with it
+ * (dropping pages, setting a size: doing them twice is doing them once).
+ * A death after the commit leaves the change and step 2 both done. One
+ * case is left: an operation undone and then not run again (a request at
+ * two crashes is answered with an error) leaves a VMO the size the undone
+ * change gave it, so each start sets every VMO's size to its slot's
+ * (sizes_again), and a cut-off VMO's slot stays until fat starts fresh.
+ * (d) A send that fails drops what it held from the cache (hold.c), and
+ * no page was supplied from it (a): reads, and pages, then come from the
+ * medium. A gathered write lost later, when its sync sends it, can leave
+ * pages supplied from the hold meanwhile: fat writes nothing more after a
+ * lost hold, and its own reads then disagree with the answers it gave
+ * too.
+ *
+ * The stick pulled: volumes closes the pager (its disk-gone path, with
+ * the mount), which cuts off every VMO it made; a request fat is reading
+ * when its disk goes is cut off here too (read_request), so a mapper sees
+ * one reason: the file's pager is gone. */
 #include "fat.h"
 
 #define REQ_BUF  (PAGER_REQ_PAGES * PAGE_SIZE)   /* bytes read and supplied at a time */
@@ -280,13 +342,98 @@ static void fail(uint64_t key, uint64_t off, uint64_t len, status_t status)
                status_str(st));
 }
 
+/* ---- a mapped file that changes (the header's last part) ----------------------------- */
+
+/* Slot i's VMO cut off for good: its mappers fail as for a pulled stick.
+ * Then the slot is forgotten (saved for an undo, inside an operation). */
+static void cut(unsigned i)
+{
+    struct fat_map *m = &kept->maps[i];
+    detach(m->key);
+    undo_map(m);
+    m->used = false;
+    drop_handle(i);
+    memset(&mh[i], 0, sizeof(mh[i]));
+}
+
+/* A pager op slot i's mappers need to see the file as it is now
+ * (PAGER_OP_SET_SIZE, PAGER_OP_INVALIDATE). The kernel refusing it (but
+ * for a VMO gone already) cuts the VMO off instead: its mappers fail
+ * rather than read bytes the file no longer has. False if it was cut. */
+static bool must(unsigned i, uint32_t op, uint64_t off, uint64_t len)
+{
+    uint64_t key = kept->maps[i].key;
+    status_t st = jam_pager_op(vol.pager, key, op, off, len, 0);
+    if (st == OK || st == ERR_NOT_FOUND)
+        return true;
+    printf("fat %s: mapped file %lx: can't %s (%s): cut off\n", vol.name, (unsigned long)key,
+           op == PAGER_OP_SET_SIZE ? "follow its size" : "drop its old pages", status_str(st));
+    cut(i);
+    return false;
+}
+
+bool maps_exec(uint32_t o)
+{
+    for (unsigned i = 0; i < FAT_MAX_MAPS; i++)
+        if (kept->maps[i].used && kept->maps[i].open == o &&
+            kept->maps[i].kind == FILE_MAP_EXEC)
+            return true;
+    return false;
+}
+
+void maps_changed(uint32_t o, uint64_t lo, uint64_t hi)
+{
+    uint64_t size = page_up(f_size(&kept->opens[o].fil));
+    uint64_t first = lo & ~(uint64_t)(PAGE_SIZE - 1);
+    uint64_t end = page_up(hi) < size ? page_up(hi) : size;
+    for (unsigned i = 0; i < FAT_MAX_MAPS; i++) {
+        struct fat_map *m = &kept->maps[i];
+        if (!m->used || m->open != o)
+            continue;
+        mh[i].cur_ok = false;   /* its sector buffer may be old, its cluster freed */
+        if (m->kind != FILE_MAP_READ)
+            continue;   /* never written while it lives (fileops.c: ERR_BUSY) */
+        if (m->size != size) {
+            undo_map(m);
+            m->size = size;
+            if (!must(i, PAGER_OP_SET_SIZE, size, 0))
+                continue;
+        }
+        if (first < end)
+            (void)must(i, PAGER_OP_INVALIDATE, first, end - first);   /* (cut if not) */
+    }
+}
+
+void maps_cut_open(uint32_t o)
+{
+    for (unsigned i = 0; i < FAT_MAX_MAPS; i++) {
+        if (!kept->maps[i].used || kept->maps[i].open != o)
+            continue;
+        printf("fat %s: mapped file %lx cut off: its file was removed\n", vol.name,
+               (unsigned long)kept->maps[i].key);
+        cut(i);
+    }
+}
+
+/* Every VMO the size its slot says (the header's (c): an undone change
+ * may have left one otherwise). A VMO gone or cut off says ERR_NOT_FOUND:
+ * nothing to do. */
+static void sizes_again(void)
+{
+    for (unsigned i = 0; i < FAT_MAX_MAPS; i++) {
+        const struct fat_map *m = &kept->maps[i];
+        if (m->used && m->kind == FILE_MAP_READ)
+            (void)jam_pager_op(vol.pager, m->key, PAGER_OP_SET_SIZE, m->size, 0, 0);
+    }
+}
+
 /* n bytes (whole pages) of slot i's file at `at` into buf, read from the
  * file (fsz bytes long) and zero past its end. */
 static status_t read_pages(unsigned i, uint64_t at, uint32_t n, uint64_t fsz)
 {
     const struct fat_open *o = &kept->opens[kept->maps[i].open];
     if (o->fil.flag & FIL_DIRTY)
-        return ERR_BAD_STATE;   /* written: fileops.c never maps such a file */
+        return ERR_BAD_STATE;   /* fileops.c flushes a mapped file's every change (ffx_flush) */
     scratch = kept->fs;
     scratch.wflag = 0;   /* its window's changes are the volume's to write, not ours */
     FIL *c = &mh[i].cur;
@@ -357,6 +504,10 @@ static void read_request(const struct pager_request *r)
     for (uint64_t at = off, n = 0; at < data_end; at += n) {
         n = data_end - at < REQ_BUF ? data_end - at : REQ_BUF;
         status_t st = read_pages(i, at, (uint32_t)n, fsz);
+        if (st != OK && vol.disk_gone) {
+            detach(r->key);   /* the stick went: as volumes' close of the pager will */
+            return;
+        }
         if (st != OK) {
             printf("fat %s: mapped file %lx: can't read %lu bytes at %lu: %s\n", vol.name,
                    (unsigned long)r->key, (unsigned long)n, (unsigned long)at, status_str(st));
@@ -426,6 +577,7 @@ void pager_start(void)
 {
     if (!vol.pager)
         return;
+    sizes_again();
     arm();
     /* What the instance before took and never answered, queued again
      * (and the first of the queue served). */
