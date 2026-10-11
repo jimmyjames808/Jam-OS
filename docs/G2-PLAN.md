@@ -1,24 +1,30 @@
-# G2 plan: ported Wayland programs
+# G2 plan: Wayland clients, for Chromium
 
-Status (2026-10-11): a plan; GC1 built ([GC1 notes](#gc1-notes)), the
-rest not. Written against main e30d7fec
-(M13's B1-B6, S1, T1, T2, X1, K1, K2 merged; X2, S2, P1 and P2 running;
-M13.6 and M13.7 planned and answered as recommended, their first tracks U1
-and PO1 running). **Waiting for the owner's answers to the questions
-below.** The shim (GS1) and the compositor's first track (GC1) touch no
-other milestone's files and can start as soon as Q1 and Q4 are answered;
-the ports wait for M13.7's builder.
+Status (2026-10-11): a plan, **rescoped to what Chromium needs** (the
+owner, 2026-10-11: [the rescope](#the-chromium-rescope-2026-10-11)); GC1
+built ([GC1 notes](#gc1-notes)), the rest not. First written against main
+e30d7fec; rescoped against main d28b8b52 (M13's sockets, sessions, ptys,
+tinyssh and pipelines merged; M12.5's PF1 and M13.6's U1 merged; M13.7's
+PO1, PO2, PO3 and PO8 merged; GP1 running). Q1 and Q4 are answered (each
+question's status line says how); the questions the rescope made moot say
+so. The shim (GS1) and the compositor's tracks touch no other
+milestone's files; the ports use M13.7's builder (merged).
 
-Goal ([roadmap](ROADMAP.md#now), "porting first", the owner, 2026-10-11;
-the G2 row of [Later](ROADMAP.md#later)): **graphical Linux programs
-that draw in software are ported unchanged.** libwayland is ported with a
-shim from Unix sockets and file descriptors to Jam OS channels and
-handles; the compositor ([HISTORY: G1](HISTORY.md#g1-the-desktop))
-offers the protocols those programs need; fonts, keyboards and the
-first toolkits arrive as M13.7 ports; and a ladder of real programs
-proves it. Jam OS writes no general apps of its own
-([Not planned](ROADMAP.md#not-planned)), so this is how every
-graphical app reaches it, up to Chromium's Fuchsia port one day.
+Goal ([roadmap](ROADMAP.md#now), the owner, 2026-10-11): **the Wayland
+floor Chromium's Ozone/Wayland backend stands on, and nothing Chromium
+doesn't need yet.** libwayland reaches the compositor through a shim in
+libc from Unix sockets and file descriptors to Jam OS channels and
+handles (Chromium builds its own libwayland and calls `sendmsg` like any
+client, so a shim below libwayland serves it unchanged); the compositor
+([HISTORY: G1](HISTORY.md#g1-the-desktop)) offers the protocols Chromium
+requires and the ones its browser UI uses (subsurfaces for its bubbles,
+popups for its menus, decorations, the clipboard, cursors); fonts arrive
+as a data package; and a small test client on the real libwayland
+(wlprobe) proves each layer before Chromium does. Every piece is general:
+any later Wayland port uses it unchanged. Jam OS writes no general apps
+of its own ([Not planned](ROADMAP.md#not-planned)); the apps this plan
+first chose as proofs (foot, SDL2, Chocolate Doom, swayimg, a GTK spike)
+come after Chromium, by need ([Later](#later)).
 
 **Done when:**
 1. **libwayland-client is a port with nothing patched in its transport**:
@@ -28,48 +34,53 @@ graphical app reaches it, up to Chromium's Fuchsia port one day.
    memfd, the keymap mapped and compiled by xkbcommon, a paste both ways
    through a pipe, 28 descriptors in one flush, libwayland's own
    one-byte-with-descriptors flush, a slow reader, 1,000 connections
-   opened and closed.
-2. **foot runs on the PC**: in a window with the compositor's own title
-   bar (server-side decorations), tiled and floating, resized; JetBrains
-   Mono through fontconfig and FreeType; the keyboard with its modifiers
-   and repeat; mouse selection; copy from foot and paste into a Jam OS
-   terminal and back; `foot -e vim` (a POSIX program on foot's
-   pseudo-terminal) edits a file; foot killed takes only its window.
-   With M13.5's mksh merged, a shell in foot as well.
-3. **An SDL2 program runs**: SDL's own test programs (a sprite test, the
-   keyboard and mouse tests) and then **Chocolate Doom with Freedoom**,
-   playable on the PC at its 35 frames a second in a window and full
-   screen, with sound through the mixer.
-4. **An image viewer runs**: swayimg shows PNG and JPEG files from `/data`,
-   zooms, and moves through a directory.
-5. **A ported client can hurt only itself**: the compositor's hostile
+   opened and closed, and a pool made from a memfd that another process
+   handed over (Chromium's GPU process hands its buffers to the browser
+   this way).
+2. **The compositor offers what Chromium's Ozone/Wayland uses**
+   ([the table](#what-chromiums-wayland-backend-needs)): its required
+   globals at the versions it binds, the decoration rule the owner chose
+   (section 3), subsurfaces (GC2) and real popups with grabs (GC3), each
+   with its protocol tests in utest and a wlprobe case.
+3. **Chromium's first window is G2's end-to-end proof**: the Chromium
+   plan's `content_shell` on Wayland (its milestone CR-c) draws a page in
+   a Jam OS window in QEMU and on the PC, with keys, the mouse, the wheel,
+   a `<select>` list (a popup) and copy and paste both ways with a Jam OS
+   terminal; then `chrome`'s omnibox list (a subsurface) and its menus.
+4. **A ported client can hurt only itself**: the compositor's hostile
    tests run again with libwayland-based clients (X1's style, G1), the
-   shim gets a fuzz loop, and each of the three apps killed, hung or fed
-   garbage leaves the desktop and the other windows as they were.
-6. Every library is a package built from a recipe (M13.7), static, with
-   its licence; `pkg install foot` on the PC brings its whole closure.
-7. As every milestone: an independent review-and-fix, then All tests and
-   `soak 10` on the PC with a ported app open, and the desktop's
-   checklist by hand with foot, Doom and swayimg among the windows.
+   shim gets a fuzz loop, and Chromium killed, hung or fed garbage leaves
+   the desktop and the other windows as they were.
+5. Every library is a package built from a recipe (M13.7), static, with
+   its licence; the fonts are a data package.
+6. As every milestone: an independent review-and-fix, then All tests and
+   `soak 10` on the PC with a libwayland client open (wlprobe's hold
+   mode, then Chromium once CR-c has landed).
 
 ## What G2 is not
 
 - **No GPU.** Software rendering only. G3 (mode setting) and G4 (3D) are
   deferred (porting first). No OpenGL or Vulkan in G2: what that rules
   out, and the options for later, are in section 6 and Q3.
+- **No apps of its own choosing.** foot, SDL2, Chocolate Doom with
+  Freedoom, swayimg and the GTK3 spike were this plan's proofs before the
+  rescope; they come after Chromium, by need ([Later](#later)). Their
+  findings below (sections 2, 4, 7 and 11) stay as the record for then.
 - **No GTK and no Qt.** The roadmap makes them a porting project of their
-  own. This plan says what each pulls in (section 7) and offers a GTK3
-  spike as a stretch track that does not gate the sign-off (Q7).
+  own. This plan says what each pulls in (section 7); the GTK3 spike is
+  after Chromium.
 - **No X11.** No Xwayland, no X server: X11 programs are not ported.
   (Redox and FreeBSD carry X; Jam OS has no use for it while every
   toolkit worth porting speaks Wayland.)
 - **No new compositor.** Weston and wlroots stay unported (they need DRM,
   KMS, libinput and udev: [the G1 row](ROADMAP.md#later)); Jam OS's own
   compositor gains the protocols the apps need (section 2).
-- **No Unix-domain sockets in general.** The shim answers `connect` to
-  `/svc/wayland` only; `SCM_RIGHTS` is carried for that socket kind only
-  (section 1). General `AF_UNIX` with descriptor passing (D-Bus, X11) is
-  not built.
+- **No named Unix-domain sockets.** The shim answers `connect` to
+  `/svc/wayland` only (section 1). Descriptor passing (`SCM_RIGHTS`) on
+  socketpairs, which Chromium's Mojo needs, is the Chromium plan's general
+  layer (CR0); GS1's two translation tables (descriptors to handles and
+  back) are written once, in a file of their own, so that layer extends
+  them to every descriptor kind instead of writing a second copy.
 - **No dynamic linking** (M14.5): every port is static (section 9).
 - **No input methods, no drag and drop, no fractional scaling, no second
   keyboard layout** (section 8): each is named, with what it would take.
@@ -86,10 +97,10 @@ graphical app reaches it, up to Chromium's Fuchsia port one day.
 | What | Today | Where |
 |---|---|---|
 | The compositor | Jam OS's own, speaking Wayland's wire format over channels; one output, scale 1, no vsync (frame callbacks after each paint) | `user/services/compositor/` ([ARCHITECTURE: Graphics](../ARCHITECTURE.md#graphics)) |
-| Globals offered | `wl_compositor` 4, `wl_shm` 1 (ARGB8888 and XRGB8888), `wl_output` 3, `wl_seat` 5 (keyboard and pointer, never touch), `xdg_wm_base` **1**, `wp_cursor_shape_manager_v1` 2, `wl_data_device_manager` 3, `jam_window_memory_v1` 1 | `user/services/compositor/display.c`, the versions in `user/services/compositor/comp.h` |
-| Not offered | `wl_subcompositor`, `zxdg_decoration_manager_v1`, `wp_viewporter`, relative pointer, pointer constraints, primary selection, text input, `xdg_activation_v1`, presentation time, fractional scale | |
+| Globals offered | since GC1: `wl_compositor` 6, `wl_shm` 2 (ARGB8888 and XRGB8888), `wl_output` 4, `wl_seat` 9 (keyboard and pointer, never touch), `xdg_wm_base` 6, `wp_cursor_shape_manager_v1` 2, `wl_data_device_manager` 3, `jam_window_memory_v1` 1, `zxdg_decoration_manager_v1` 1 (before GC1: 4, 1, 3, 5, **1**, and no decorations) | `user/services/compositor/display.c`, the versions in `user/services/compositor/comp.h` |
+| Not offered | `wl_subcompositor`, `wp_viewporter`, relative pointer, pointer constraints, primary selection, text input, `xdg_activation_v1`, presentation time, fractional scale, `zxdg_output_manager_v1`, linux-dmabuf | |
 | Popups | `xdg_popup` is accepted and dismissed at once (`popup_done`), its positioner checked | `user/services/compositor/xdg.c` |
-| Decorations | the compositor draws a title bar on every toplevel (Jam OS's clients draw none) | `user/services/compositor/deco.c` |
+| Decorations | since GC1: a toplevel with a decoration object gets the compositor's title bar, one without draws its own; a `client_side` request is honoured (section 3 says what changes) | `user/services/compositor/deco.c`, `user/services/compositor/xdgdeco.c` |
 | The transport, JWL2 | a batch per channel message: a 16-byte header, whole Wayland messages, at most 16 KiB and 28 handles; handles a queue per direction as fds on a socket; the compositor keeps at most 32 batches unread at a client, then holds 64 KiB, then disconnects it ("too slow"). `<jwl.h>` already describes how a libwayland shim must cut a flush into batches | `user/include/jwl.h`, `user/lib/jwl_transport.c` |
 | Limits that match libwayland's | a message at most 4,096 bytes (libwayland's own maximum), 28 handles a batch (libwayland's `MAX_FDS_OUT`) | the same |
 | The keymap | the US layout as a whole XKB text keymap, generated (nothing from xkeyboard-config), in a kept VMO handed to each `wl_keyboard` read-only; `tools/genkeymap.py check` compiles it with xkbcommon's `xkbcli` when installed | `tools/genkeymap.py`, `abi/keymap`, `user/services/compositor/keyboard.c` |
@@ -99,11 +110,13 @@ graphical app reaches it, up to Chromium's Fuchsia port one day.
 | Not in the POSIX layer | `timerfd`, `signalfd`, `inotify`, `fallocate`'s hole punching, `fork` (M13.5), a RAM `/tmp`, execute on anonymous memory (no JIT, by design: `user/posix/sys/mem.c`) | |
 | Fonts | stb_truetype in libfun, reading only its two built-in faces (Inter, JetBrains Mono, SIL OFL), no shaping | `third_party/stb_truetype`, `third_party/inter`, `third_party/jetbrains-mono` ([Smooth text](../ARCHITECTURE.md#smooth-text)) |
 | The Wayland XML | `wayland.xml` 1.26.0, `xdg-shell.xml` and `cursor-shape-v1.xml` from wayland-protocols 1.49, vendored for `tools/genwl.py` | `third_party/wayland-protocols` |
-| Ports | M13.7's recipes, builder (meson, cmake and configure styles, a sysroot per port, pkg-config pointed into it), packages and `pkg`: planned and answered, PO1 running | [M13.7-PLAN.md](M13.7-PLAN.md) |
-| The compiler | `tools/jamos-cc` over x86_64-elf-gcc 15.2: C only in practice. `x86_64-elf-g++` exists, but **there is no C++ runtime** (no libstdc++ or libsupc++ for the target) | `tools/jamos-cc` |
+| Ports | M13.7's recipes, builder (meson, cmake and configure styles, a sysroot per port, pkg-config pointed into it), packages and signing: merged (PO1, PO2, PO3, PO8); `pkg` on Jam OS to come (PO4 to PO7). GP1's recipes (libffi, expat, wayland, wayland-protocols, xkbcommon) and host builds running | [M13.7-PLAN.md](M13.7-PLAN.md) |
+| The compiler | `tools/jamos-cc` over x86_64-elf-gcc 15.2: C only in practice. `x86_64-elf-g++` exists, but **there is no C++ runtime** (no libstdc++ or libsupc++ for the target). The Chromium plan's toolchain (clang, lld, LLVM's libc++) brings one | `tools/jamos-cc` |
 | Launching an app | the shell runs a program with what its list asks (`svc wayland` gives `/svc/wayland`); the search box only starts the apps in `<deskapps.h>` (Jamjar) | `user/include/wants.h`, `user/include/deskapps.h` |
 
-Five facts found while reading, each of which shapes this plan:
+Five facts found while reading, which shaped this plan before the
+rescope. The first three and the last are about apps now after Chromium;
+the fourth (libffi) still holds for GP1's libwayland port:
 
 - **SDL has no software path on Wayland.** Neither SDL2 (2.32's branch)
   nor SDL3 (main, fetched 2026-10-11) gives its Wayland driver a window
@@ -145,6 +158,86 @@ Five facts found while reading, each of which shapes this plan:
 and SDL_video.c, not from running them; it matches SDL's design (its
 Wayland driver always assumed EGL).
 
+## The Chromium rescope (2026-10-11)
+
+The owner made Chromium Jam OS's main goal ([roadmap](ROADMAP.md#now)),
+reached layer by layer, each layer general, and only the layers
+Chromium needs built first. Chromium runs as its **Linux** build
+(`target_os="linux"` against a musl sysroot, the way Alpine ships it)
+with its **Ozone/Wayland** backend over Jam OS's compositor
+([CR-RESEARCH](CR-RESEARCH.md)). What that changes here:
+
+- **Kept on the path**: the shim (GS1), the compositor's versions and
+  decorations (GC1, built), subsurfaces (GC2), popups (GC3), the base ports
+  (GP1: libffi, expat, wayland, wayland-protocols, xkbcommon, for wlprobe
+  and every later port), wlprobe and its script (GT: the shim proven on
+  the real libwayland before Chromium), the review (GR) and the join (GJ).
+- **New**: GC1b, a small compositor track for the decoration rule the owner
+  chose (section 3) and window geometry; the table of what Chromium's
+  backend needs, below.
+- **Rescoped**: GP2 is the fonts package and its configuration only
+  (Chromium builds its own fontconfig, FreeType and HarfBuzz: section 4);
+  GD stays only if the owner starts Chromium from the search box (Q9).
+- **Off the path, after Chromium by need**: GS2 (timerfd and the rest:
+  nothing in Chromium's needs list calls them; a first run's ENOSYS log
+  decides, and the Chromium plan adds what it shows), GC4 (pointer lock:
+  only the web's Pointer Lock API uses it), GA1 foot, GA2 SDL2, GA3
+  Chocolate Doom and Freedoom, GA4 swayimg, GX2 the GTK3 spike.
+- **Replaced**: GX1's C++ runtime. Chromium links its own libc++ and
+  libc++abi (`use_custom_libcxx`); the Chromium plan's toolchain builds
+  LLVM's libc++ for other C++ ports too, so Q6's answer is (C).
+  HarfBuzz, FreeType, fontconfig, ICU, libwayland and xkbcommon all come
+  bundled in Chromium's tree, built static.
+
+## What Chromium's Wayland backend needs
+
+From `ui/ozone/platform/wayland/host/wayland_connection.cc` and the
+window classes beside it (Chromium's main branch, about version 155, read
+2026-10-11; links in [CR-RESEARCH](CR-RESEARCH.md)). Chromium binds each
+global at the lower of its own maximum and what is offered, so offering
+newer versions is harmless.
+
+| Global | Chromium | Offered | G2 |
+|---|---|---|---|
+| `wl_compositor` | **required** ("No wl_compositor object"); binds at most 4 | 6 | nothing |
+| `wl_shm` | **required** ("No wl_shm object"); its software output draws into `wl_shm` buffers made from memfds | 2 | nothing; the shim takes memfds that came from another process (section 1) |
+| `xdg_wm_base` | **required** ("No Wayland shell found"); at most 6 | 6 | nothing |
+| `wl_seat` | without it a warning and no input | 9 | nothing; its own xkbcommon compiles our keymap |
+| `wl_output` | screen size and scale | 4 | nothing |
+| `wl_subcompositor` | windows of type popup and bubble with a parent are `WaylandBubble`s, drawn as a desynchronised **subsurface** of their parent (chrome's omnibox list, its bubbles); also every window's primary subsurface when overlay delegation is on (only with `wp_viewporter`) | none | **GC2**: needed by `chrome`; `content_shell` may never make one (*unsure*) |
+| `xdg_popup` with grabs | windows of type menu and tooltip are `WaylandPopup`s: menus, tooltips, `<select>` lists | dismissed at once | **GC3** |
+| `zxdg_decoration_manager_v1` | at most 1; asks per toplevel | 1 | **GC1b**: the owner's rule (section 3) |
+| `wl_data_device_manager` | clipboard (and drag and drop) | 3, text | nothing; drag and drop later |
+| `wp_cursor_shape_manager_v1` | cursors by name, no theme needed | 2 | nothing |
+| `wp_viewporter` | at most 1; turns on overlay delegation (a primary subsurface per window, buffers scaled by the compositor) | none | **not offered** while rendering is software: one surface a window is Chromium's simplest path. Offered with G3/G4 |
+| `wp_presentation` | at most 2; frame timing | none | not offered: frame callbacks after each paint, as today |
+| `zwp_linux_dmabuf_v1`, `wl_drm`, `wp_linux_drm_syncobj_manager_v1` | GPU buffers | none | not offered (software: `wl_shm`) |
+| `zxdg_output_manager_v1` | at most 3; output names and logical sizes | none | not offered (`wl_output` 4 has the name) |
+| `xdg_activation_v1` | focus requests between windows | none | later, small |
+| `zwp_text_input_manager_v1` and `_v3` | input methods | none | later (section 8) |
+| primary selection (`zwp_` and `gtk_`) | middle-click paste | none | later |
+| relative pointer, pointer constraints | the web's Pointer Lock API | none | later (GC4) |
+| the rest: pointer gestures, idle inhibit and notify, fractional scale, single-pixel buffer, toplevel icon, xdg-foreign, tablet, colour management, content type, keyboard shortcuts inhibit, toplevel drag, session manager, alpha compositing, `zcr_*`, `org_kde_*` | each checked for, done without | none | not offered |
+
+What else Chromium does that the compositor and the shim must take:
+- **`xdg_toplevel`**: titles, app ids, minimum and maximum sizes, maximise,
+  full screen, minimise, interactive move and resize (a client-side
+  frame), `set_window_geometry`; no window menu (GC1's
+  `wm_capabilities` already says so).
+- **Buffers from another process.** Multi-process Chromium draws in its
+  GPU process (software compositing still runs there) and hands each
+  buffer's memfd to the browser over Mojo; the browser makes the
+  `wl_shm` pool. So the memfd the shim translates arrived by
+  `SCM_RIGHTS` from a sibling: its description holds the same kept VMO,
+  and the compositor's check (kept) passes. A window at 2560x1440 is
+  14.7 MB a buffer; two or three a window fit the compositor's 256 MiB
+  of pools a client.
+- **Its own libwayland and xkbcommon.** `use_system_libwayland` is false
+  by default: Chromium links the copy in its tree, which is why the shim
+  lives in libc (Q1's (A)) and not in a patched libwayland.
+- **Several connections per process**: none expected (one per browser
+  process); the shim allows any number anyway.
+
 ## How others do it
 
 How other systems run Wayland (or X) clients, read for what Jam OS can
@@ -159,7 +252,7 @@ FreeBSD, which runs libwayland unchanged on its own sockets.
 | **Haiku** | a Wayland **server inside each client**: an add-on (by X512) loaded into every Wayland program, translating the protocol into native BWindows and bitmaps; no separate compositor | in-process: no socket at all | GTK3 and GTK4 apps through it; Qt has a native Haiku back end | that a compositor need not be a port of anyone's | the in-process server: our compositor already speaks the protocol, and a per-process server would hand every client the screen's policy |
 | **Genode** | its own GUI server (nitpicker) and a `Gui` session; no Wayland | none: sessions and capabilities | **toolkit back ends of its own**: Qt5/Qt6 through a QPA plugin for its GUI session (Falkon with QtWebEngine runs), SDL through a Genode video driver, Mesa (softpipe; GPU drivers for Intel) | a microkernel's road to big apps (a browser) through one toolkit back end; Mesa's softpipe as the first GL | a back end per toolkit: each is maintained against that toolkit forever. *Unsure* whether Genode has llvmpipe |
 | **SerenityOS** | its own window server and LibGUI; no Wayland, no X11 | its own IPC | SDL2 with a Serenity video driver, and ports written against LibGUI | a per-port test list | the per-toolkit back ends, as Genode's |
-| **Fuchsia** | Scenic/Flatland; a **Wayland bridge** (`wayland_bridge`) translates Linux guests' Wayland (over virtio-wl) into Flatland | channels and handles, as ours: the bridge turns fds into VMOs and channels | Linux apps in a VM; Chromium natively (its Fuchsia port, Jam OS's model for a browser) | **the translation itself**: Wayland's fds as VMOs and channels is exactly G1's choice, and what the shim does on the client's side | a VM |
+| **Fuchsia** | Scenic/Flatland; a **Wayland bridge** (`wayland_bridge`) translates Linux guests' Wayland (over virtio-wl) into Flatland | channels and handles, as ours: the bridge turns fds into VMOs and channels | Linux apps in a VM; Chromium natively (its Fuchsia port; Jam OS takes Chromium's Linux route instead: [CR-RESEARCH](CR-RESEARCH.md)) | **the translation itself**: Wayland's fds as VMOs and channels is exactly G1's choice, and what the shim does on the client's side | a VM |
 
 **What we take**: libwayland unmodified, with the platform's differences
 in a small library under it (FreeBSD's epoll-shim pattern, in our libc);
@@ -277,11 +370,29 @@ the calls, the library stays upstream's. The design of (A):
 `recvmsg` that receives descriptors with too little room; libwayland
 doesn't (its room is the maximum).
 
+**Since the rescope**, two more rules for GS1:
+- **The translation tables live in a file of their own** (the
+  descriptor-to-handle and handle-to-descriptor tables above, with the
+  kind checks), named for what they do, not for Wayland: the Chromium
+  plan's `SCM_RIGHTS` on socketpairs (Mojo) uses the same tables,
+  widened there to every descriptor kind the POSIX hand-over can pass
+  (files, sockets, eventfds). The Wayland socket keeps its narrow list
+  (memfds and channel ends) on top of the shared code.
+- **A memfd that came from another process** (by `SCM_RIGHTS` or the
+  hand-over) is a memfd like one made here: its description holds the
+  kept VMO, so the first row of the table applies. wlprobe tests it with
+  a child that makes the pool's memfd and sends it to its parent.
+
 ### 2. What the compositor must add
 
-The protocols the first apps use, what the compositor does today, and
-what G2 adds. "Needs" lists who fails without it; "uses" who is better
-with it.
+The protocols the first apps used, what the compositor did before GC1,
+and what G2 planned to add. "Needs" lists who fails without it; "uses"
+who is better with it. **Since the rescope** the columns for foot, SDL2,
+swayimg and GTK3 are the record for after Chromium; what Chromium needs
+is [its own table](#what-chromiums-wayland-backend-needs), and the G2
+column below is cut to it: `wl_subcompositor` (GC2), real popups (GC3)
+and the decoration rule (GC1b, section 3) stay; relative pointer and
+pointer constraints (GC4) wait; `wp_viewporter` stays unoffered.
 
 | Protocol | Today | foot | SDL2 2.32 | swayimg | GTK3 (stretch) | G2 | Cost |
 |---|---|---|---|---|---|---|---|
@@ -341,7 +452,69 @@ asks for client-side while bound is answered `server_side` (the protocol
 lets the compositor decide), so a client that can do both shows one
 title bar, ours.
 
+**The owner's answer (Q4, 2026-10-11): "clients that bind it get the
+compositor's title bar."** GC1 built a different rule (its
+[notes](#gc1-notes): a `client_side` request is honoured, and a toplevel
+without a decoration object draws its own even when its client bound the
+manager). **GC1b switches to the owner's rule**, which is this:
+
+- A client that has **bound** `zxdg_decoration_manager_v1` gets
+  server-side decorations on **every** toplevel: the compositor's title
+  bar, frame, circles and corners. A decoration object's `configure`
+  always says `server_side`; `set_mode(client_side)` is answered with a
+  `configure` saying `server_side`, as the protocol allows ("the
+  compositor may decide to use a different mode"), and `unset_mode` the
+  same. A toplevel of such a client made without a decoration object is
+  server-side too.
+- A client that **never bound** the manager draws its own (GC1's
+  client-side look: no title bar, corners and shadow only when floating).
+- `mode_for` in `user/services/compositor/xdgdeco.c` and the default in
+  `user/services/compositor/xdgtop.c` (a client's bound flag, not the
+  toplevel's object) are the whole change, with utest's cases turned
+  round: a client that binds and asks `client_side` gets `server_side`
+  and a title bar; a client that never binds gets none.
+
+**How Chromium's choice meets it.** Chromium binds the manager when it is
+offered and asks a mode per toplevel: `chrome` asks for client-side
+unless its "use system title bar and borders" setting is on, because its
+tab strip is its title bar. Under the owner's rule it is told
+`server_side`; Chromium reads the decoration's `configure` and should then
+draw the frame it draws with the system title bar on (the tab strip
+under our title bar, no shadows of its own), which is a look Chromium
+already supports. *Unsure*: that Chromium follows the `configure` rather
+than its own wish; if it doesn't, a `chrome` window shows two title bars
+(ours above its tab strip), and the fix is the setting (system title bar
+on) or the one line of `mode_for`, the owner's call then. `content_shell`
+draws no frame of its own at all, so server-side is right for it either
+way. GC1b also uses `set_window_geometry` for placement and the frame
+(GC1's "not done" item): a client-side client that draws its own shadow
+(any client that never binds the manager, and Chromium if it ever runs
+client-side) is placed by its geometry, and gets neither our corners nor
+our shadow when its geometry is smaller than its surface.
+
 ### 4. Fonts
+
+**For Chromium (the rescope):** Chromium builds its own fontconfig
+(`use_bundled_fontconfig`), FreeType (`use_system_freetype` false) and
+HarfBuzz into its binary, so G2 ports none of them for it. What it still
+needs from the system is **font files and a fontconfig configuration**:
+track GP2 is now only the `fonts-jamos` data package below, its
+fonts.conf (the font directory, the aliases, the cache directory under
+`XDG_CACHE_HOME`) and `FONTCONFIG_FILE` pointing at it, which the shell
+sets for every program (section 10) so Chromium runs unwrapped. The font
+set grows for the web: **Liberation Sans, Serif and Mono** (SIL OFL 1.1,
+metric-compatible with Arial, Times New Roman and Courier New, so pages
+laid out for those don't reflow), **Noto Sans, Serif and Sans Mono**
+(Latin, Greek, Cyrillic; OFL) for coverage, Inter and JetBrains Mono
+whole, and **Noto Color Emoji** (OFL; Chromium's FreeType draws its
+colour bitmaps); CJK later (Noto Sans CJK is large: a package of its own
+when a page needs it). Aliases: `sans-serif` Noto Sans (Liberation Sans
+for Arial and Helvetica), `serif` Noto Serif (Liberation Serif for Times),
+`monospace` JetBrains Mono (Liberation Mono for Courier). *Unsure*: the
+configuration path Chromium's bundled fontconfig reads when
+`FONTCONFIG_FILE` is unset (its build's sysconfdir); setting the variable
+avoids depending on it. The rest of this section is for ports after
+Chromium.
 
 Ported programs find fonts through **fontconfig** and render them through
 **FreeType**, which is what foot (through fcft), SDL2_ttf, swayimg,
@@ -431,7 +604,13 @@ libraries' own; "needs" says what has to exist first.
 | 7 | **GTK4** | rung 6's minus ATK, plus graphene and its renderers: Vulkan and GL by default, cairo as the fallback | as rung 6 | *unsure*: that GTK4's cairo renderer is enough without any GL library to load; its accessibility needs D-Bus |
 | 8 | **Qt 6** (qtbase and qtwayland) | its own copies of HarfBuzz, PCRE2 and more; FreeType, fontconfig, xkbcommon | LGPL-3.0 or GPL; third-party parts permissive | rung 5 with exceptions and threads; Qt's static build (`Q_IMPORT_PLUGIN` for the Wayland platform plugin); C++17; tens of MB per program. Its own project |
 
-**Why foot first**: it is the smallest real Wayland program that needs
+**Since the rescope** only rung 0 is on the path (libwayland and its
+cursor library for wlprobe, with xkbcommon from rung 1 for the keymap
+case), plus the fonts package. Rung 5's C++ runtime is the Chromium
+plan's toolchain (LLVM's libc++); the other rungs come after Chromium, by
+need.
+
+**Why foot first** (before the rescope): it is the smallest real Wayland program that needs
 everything a toolkit needs underneath (the registry, `wl_shm`, the seat,
 xkbcommon, fonts, subsurfaces, the clipboard), and nothing a toolkit adds
 on top; a terminal is easy to test by script (bytes in, pixels out); and
@@ -506,7 +685,8 @@ and it is stable (no new releases to chase).
   refuses an LGPL `needs` unless the recipe says how it is met: the
   recipe's line is "source served beside the package".
 - **A C++ runtime** is a prerequisite of HarfBuzz (headers at least),
-  Qt, and many apps later (any game in C++). Q6.
+  Qt, and many apps later (any game in C++). Q6: since the rescope, LLVM's
+  libc++ from the Chromium plan's toolchain.
 - **Sizes.** A static POSIX program starts at about 250 KB (M13.7's
   note). Estimates, *unsure* until built: libwayland-client and libffi
   about 150 KB; xkbcommon 400 KB; FreeType 800 KB; fontconfig and expat
@@ -522,7 +702,8 @@ and it is stable (no new releases to chase).
   to connect), `XDG_CONFIG_HOME=/data/.config`, `XDG_CACHE_HOME=/data/.cache`,
   `XDG_DATA_DIRS` the package prefix's share directory; and
   `XDG_RUNTIME_DIR` (Q10) once there is somewhere private and in memory
-  to point it. Programs that warn without `XDG_RUNTIME_DIR` (GTK, foot's
+  to point it; and `FONTCONFIG_FILE`, the fonts package's configuration
+  (section 4), for Chromium's bundled fontconfig and every later port's. Programs that warn without `XDG_RUNTIME_DIR` (GTK, foot's
   server mode) say so; libwayland itself doesn't need it.
 - **Configuration files** (foot's foot.ini, fontconfig's local file) live
   in `/data/.config`, the owner's to edit; packages never ship a file the
@@ -535,6 +716,10 @@ and it is stable (no new releases to chase).
   The compositor still names an app by name, never a path.
 
 ### 11. The first apps
+
+**Since the rescope** the ladder is wlprobe, then Chromium (the Chromium
+plan's `content_shell`, then `chrome`); the apps from foot down are after
+Chromium, by need, and the table stays as their record.
 
 | Rung | App | Licence | Why this one | Proves |
 |---|---|---|---|---|
@@ -554,20 +739,20 @@ for swayimg (it renders with OpenGL).
 
 | Where | What |
 |---|---|
-| libc (`user/posix/sys/`) | `connect` on `AF_UNIX` `SOCK_STREAM` to a path in the service-socket table (today `/svc/wayland`); the Wayland socket descriptor kind: `sendmsg`/`recvmsg` with `SCM_RIGHTS` on it (and only on it), `MSG_CTRUNC`, `MSG_CMSG_CLOEXEC`; the descriptor-to-handle and handle-to-descriptor tables of section 1; `getsockopt(SO_PEERCRED)` answered with the one user and an unknown pid (*unsure* whether any client asks); `timerfd_create`, `timerfd_settime`, `timerfd_gettime` (a kernel timer as a descriptor: reads give the expirations count); `fallocate` (`FALLOC_FL_PUNCH_HOLE` is EOPNOTSUPP, plain allocation on a memfd grows it) |
-| the hand-over (`user/include/posixfds.h`) | timerfd as a kind a child may be given (or not: close-on-exec is how every user opens it; the plan says not, and a child gets nothing) |
-| the compositor's globals and versions | `wl_compositor` 6, `wl_subcompositor` 1, `wl_shm` 2, `wl_output` 4, `wl_seat` 9, `xdg_wm_base` 6, real `xdg_popup` (3), `zxdg_decoration_manager_v1` 1, `zwp_relative_pointer_manager_v1` 1, `zwp_pointer_constraints_v1` 1: the set a client may count on is part of what M14 freezes (G1's protocol is M12's) |
-| new caps | subsurface tree depth (8) and children per surface (32); popups per client; pointer constraints per client |
-| libjwl | windows bind the decoration manager and ask server-side (`user/lib/jwl_window.c`) |
-| the shell's environment | `WAYLAND_DISPLAY`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_DATA_DIRS`, and `XDG_RUNTIME_DIR` (Q10) |
-| M13.7's recipes | host builds; `desktop <program> <name> <summary>` (Q9) |
-| `abi/idl/initctl.idl` | `launch` of an approved package program with a `desktop` line (Q9): the same method, a wider check in init |
-| `third_party/wayland-protocols` | xdg-decoration, relative-pointer and pointer-constraints XML (the README's table, `third_party/VERSIONS.md`) |
+| libc (`user/posix/sys/`) | `connect` on `AF_UNIX` `SOCK_STREAM` to a path in the service-socket table (today `/svc/wayland`); the Wayland socket descriptor kind: `sendmsg`/`recvmsg` with `SCM_RIGHTS` on it, `MSG_CTRUNC`, `MSG_CMSG_CLOEXEC`; the descriptor-to-handle and handle-to-descriptor tables of section 1, in a file of their own that the Chromium plan's socketpair `SCM_RIGHTS` shares. After Chromium, by need (GS2): `getsockopt(SO_PEERCRED)`, `timerfd_*`, `fallocate` |
+| the compositor's globals and versions | `wl_compositor` 6, `wl_subcompositor` 1, `wl_shm` 2, `wl_output` 4, `wl_seat` 9, `xdg_wm_base` 6, real `xdg_popup` (3), `zxdg_decoration_manager_v1` 1 under the owner's rule (section 3): the set a client may count on is part of what M14 freezes (G1's protocol is M12's). Relative pointer and pointer constraints after Chromium |
+| new caps | subsurface tree depth (8) and children per surface (32); popups per client |
+| libjwl | windows bind the decoration manager and ask server-side (`user/lib/jwl_window.c`; GC1, built) |
+| the shell's environment | `WAYLAND_DISPLAY`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_DATA_DIRS`, `FONTCONFIG_FILE`, and `XDG_RUNTIME_DIR` (Q10) |
+| M13.7's recipes | host builds and data ports (GP1); `desktop <program> <name> <summary>` (Q9, if GD runs) |
+| `abi/idl/initctl.idl` | `launch` of an approved package program with a `desktop` line (Q9, if GD runs): the same method, a wider check in init |
+| `third_party/wayland-protocols` | xdg-decoration XML (GC1, built); nothing new for subsurfaces (core `wayland.xml`) or popups (xdg-shell) |
 
 ## Questions for the owner
 
 Each stands alone and ends with a recommendation; the plan assumes the
-recommendation until you say otherwise.
+recommendation until you say otherwise. **Since the rescope** each ends
+with its status too: answered, open, or moot (off Chromium's path).
 
 ### Q1. Where the shim lives
 
@@ -584,6 +769,9 @@ are a version bump), works for any Wayland library that calls `sendmsg`
 itself, and allows several connections; the translation lives once, in
 BSD code next to the pipes and memfds it maps to.
 
+**Status:** (A), as recommended (2026-10-11). The rescope makes it the
+only one that serves Chromium, which links its own libwayland.
+
 ### Q2. SDL2 or SDL3
 
 - **(A)** SDL2 2.32 (the last SDL2 branch, fixes only), static.
@@ -598,6 +786,9 @@ SDL3 with `dlopen` (*unsure* whether it can be linked statically), so
 (B) waits for M14.5 in practice. The framebuffer patch is the same idea
 in both and is offered upstream for SDL3 first.
 
+**Status:** moot: off the path (Chromium rescope, 2026-10-11). SDL comes
+after Chromium, by need; the recommendation stands for then.
+
 ### Q3. Drawing for SDL, and GL
 
 - **(A)** No GL in G2: SDL's Wayland driver gains a `wl_shm` framebuffer
@@ -609,6 +800,9 @@ in both and is offered upstream for SDL3 first.
 probably needs dynamic linking (B) or a new rule on executable memory
 (C). softpipe becomes G4's or M14.5's first step; the JIT question is
 yours separately, when a program worth it asks.
+
+**Status:** moot: off the path (Chromium rescope, 2026-10-11). Chromium
+draws in software with Skia and needs no GL; GL is G3's and G4's.
 
 ### Q4. Window decorations
 
@@ -624,6 +818,11 @@ yours separately, when a program worth it asks.
 OS windows; GTK keeps its own header bar without a second one above it;
 and the decision is per window, made by what the client says.
 
+**Status:** answered by the owner (2026-10-11): "clients that bind it
+get the compositor's title bar". (A), with the rule keyed on the client
+binding the manager; GC1 built a variant, GC1b switches to the owner's
+rule (section 3).
+
 ### Q5. Fonts
 
 - **(A)** FreeType (under the FTL) and fontconfig as ports, a fonts
@@ -636,6 +835,10 @@ and the decision is per window, made by what the client says.
 alone uses dozens of its calls); FreeType is what reads a font from disk
 safely. libfun never opens an outside font, so moving it would add size
 and risk for nothing visible.
+
+**Status:** (A) stands for the ports after Chromium. For Chromium itself
+only the fonts package and its configuration (section 4): Chromium
+builds its own FreeType and fontconfig.
 
 ### Q6. Text shaping and a C++ runtime
 
@@ -652,6 +855,10 @@ runtime (its unwinder against static musl, `.eh_frame_hdr` kept by
 libstdc++ over libc++ when it comes: the same GCC we already use, and
 its runtime exception lets any program link it.
 
+**Status:** changed by the rescope (2026-10-11): (C). Chromium links its
+own libc++ and libc++abi, and the Chromium plan's toolchain builds
+LLVM's libc++ for every other C++ port; GX1 is replaced by it.
+
 ### Q7. GTK in G2
 
 - **(A)** None: GTK and Qt are the later project the roadmap says.
@@ -663,6 +870,9 @@ its runtime exception lets any program link it.
 into a list of its real gaps (popups, D-Bus, `fork` in GLib, sizes), so
 that project can be planned on facts; it starts only after G2's
 done-when is met.
+
+**Status:** moot: off the path (Chromium rescope, 2026-10-11). The GTK3
+spike comes after Chromium.
 
 ### Q8. LGPL libraries linked statically
 
@@ -679,6 +889,10 @@ public recipe, so the user can always rebuild with a changed library;
 the plan's reading of LGPL-2.1 section 6 and LGPL-3.0 section 4, not
 legal advice; (C) is the cautious fallback.
 
+**Status:** (A), as recommended (2026-10-11), within CONTRIBUTING's
+licence rule (GPL and LGPL only in separate programs, source shipped
+beside them). It covers Chromium's own LGPL parts too.
+
 ### Q9. Ported apps in the search box
 
 - **(A)** Not in G2: ported apps start from a terminal.
@@ -690,6 +904,9 @@ legal advice; (C) is the cautious fallback.
 starts from a terminal is half a port. The compositor still can't start
 anything but what init's list holds; the list just grows by what you
 approved.
+
+**Status:** open, and now tied to how the owner starts Chromium: GD runs
+only if the answer is the search box (the Chromium plan asks it).
 
 ### Q10. A runtime directory and `/tmp`
 
@@ -703,6 +920,9 @@ approved.
 don't belong on the stick, and a RAM `/tmp` is wanted by ports anyway
 (M13's list); G2 doesn't wait for it.
 
+**Status:** (A) with (C) until it lands, as recommended. Chromium warns
+without `XDG_RUNTIME_DIR` and runs.
+
 ### Q11. The first apps
 
 - **(A)** foot, SDL2's tests then Chocolate Doom with Freedoom, swayimg
@@ -714,6 +934,9 @@ don't belong on the stick, and a RAM `/tmp` is wanted by ports anyway
 *Recommendation: (A)*, with wlprobe before all of them taking (B)'s
 role: wlprobe separates the shim's problems from the apps', and foot
 then tests the floor every toolkit stands on.
+
+**Status:** moot: off the path (Chromium rescope, 2026-10-11). The first
+apps are wlprobe and Chromium.
 
 ### Q12. Big, sparse memory pools
 
@@ -731,6 +954,10 @@ is the right shape but a kernel and accounting design (who pays when the
 compositor's read commits a page, and what happens when that charge
 fails), not a porting task; (C) changes nothing for a pool sized before
 it is sent, which is foot's case.
+
+**Status:** (A), as recommended. Chromium sizes its memfds to its
+buffers; the Chromium plan's kernel work on sparse memory is for
+anonymous reservations, not memfds.
 
 ## Tracks
 
@@ -751,63 +978,57 @@ the docs.
 
 | Track | What | Files it owns | Waits for | Tests | Model |
 |---|---|---|---|---|---|
-| **GS1. The Wayland socket** | section 1: the service-socket table, the Wayland descriptor kind (out buffer, batches, the handle queue, partial writes, `MSG_CTRUNC`), the two translation tables, poll/epoll readiness, the shell's `WAYLAND_DISPLAY`; a utest client of the kind against a fake compositor end (a channel the test reads as the compositor would) | new files in user/posix/sys/ (the table and the kind), the routing lines in `user/posix/sys/socket.c`, `user/posix/sys/sockio.c`, `user/posix/sys/kinds.h`; the variable in `user/services/shell/sh_vars.c`; new utest files | Q1 | utest: whole messages into batches, a message split over three `sendmsg`s, one byte with 28 descriptors then the rest, 29 descriptors refused, every descriptor kind of the table (and EINVAL for the rest), a batch with handles read with too little room (`MSG_CTRUNC`, handles closed), a bad magic (ECONNRESET), `EAGAIN` on a full channel and `POLLOUT` after; posixtest: `connect` to a path not in the table (ENOENT), without `svc wayland` (ENOENT); a fuzz loop of 10,000 mutated byte streams and batches (no crash, no handle leaked: `handle_info` counts) | **Opus** |
-| **GS2. Small POSIX additions** | `timerfd_create`/`settime`/`gettime` (a kernel timer as a descriptor: `CLOCK_MONOTONIC` and `CLOCK_REALTIME`, absolute and relative, the expirations count, `TFD_NONBLOCK`, poll and epoll); `fallocate` on a memfd (grow) and EOPNOTSUPP for holes; `inotify_init1` ENOSYS (a port that needs it learns at once); `SO_PEERCRED` | new user/posix/sys/ files for timerfd, the lines in `user/posix/sys/calls.c` and `user/posix/sys/kinds.h` | M13's R1 review merged if it is moving `user/posix/sys/calls.c` (the call table's size question) | posixtest: a periodic timer counted over a second, an absolute timer after a clock change, epoll on three timers, `read` of 7 bytes EINVAL; fallocate's cases | Sonnet 5.5 |
-| **GC1. Versions and decorations** | the version bumps of section 2's table (`wl_compositor` 6, `wl_shm` 2, `wl_output` 4, `wl_seat` 9 with `axis_value120`, `xdg_wm_base` 6 with the tiled states, `configure_bounds`, `wm_capabilities`, `suspended`); xdg-decoration by Q4's policy, the frame and title bar following it; libjwl's windows asking for server-side; the XML vendored and generated | `user/services/compositor/display.c`, `user/services/compositor/xdg.c`, `user/services/compositor/xdgtop.c`, `user/services/compositor/seat.c`, `user/services/compositor/pointer.c`, `user/services/compositor/deco.c`, `user/services/compositor/comp.h`, a new decoration file in the compositor, `user/lib/jwl_window.c`, `third_party/wayland-protocols` (one file and the README), the generated stubs | Q4 | utest's compositor tests: a window asking server-side and one asking nothing (title bar and none), each new event at each version, a client bound at version 1 seeing nothing newer; `tools/comp-test.sh`, `tools/desk-test.sh`, `tools/apps-test.sh` unchanged (Jam OS's windows look the same) | **Opus** |
-| **GC2. Subsurfaces** | `wl_subcompositor` and `wl_subsurface` (section 2): trees, sync and desync, order, position, the tree drawn as one window, input through it, clipping to the window, the new caps; the hostile cases (a cycle, a parent destroyed first, a tree deeper than the cap) | `user/services/compositor/surface.c`, a new subsurface file, the painting and input lines it needs (`user/services/compositor/paint.c`, `user/services/compositor/scene.c`, `user/services/compositor/pointer.c`), `user/services/compositor/comp.h` | GC1 merged (the same files) | utest: a parent with three children, commits in sync and desync, place_above/below, a child outside the parent clipped, input to the topmost; the hostile cases refused with the protocol's errors; a screenshot test of a window with subsurfaces (`tools/comp-test.sh`'s way) | **Opus** |
-| **GC3. Popups** | real `xdg_popup`: placement by the positioner on the output (flip, slide, resize), `grab` with a live serial, dismissal by a click outside or Escape, nested popups, `reposition`; the window manager's rules for popups (never tiled, above their parent) | `user/services/compositor/xdg.c`, a new popup file, the window manager's lines it needs (`user/services/compositor/wm.c`) | GC2 merged | utest: each positioner case placed exactly, a grab without a serial refused, a click outside dismissing the chain; screenshot of a popup at a screen edge | **Opus** |
-| **GC4. Relative pointer and pointer constraints** | `zwp_relative_pointer_manager_v1` (relative motion from the mice's counts, unaccelerated too) and `zwp_pointer_constraints_v1` (lock and confine, only while the surface has the pointer focus, released by focus loss or Super) | `user/services/compositor/pointer.c`, a new constraints file, `third_party/wayland-protocols` (two files) | GC2 merged | utest: a lock follows focus, motion while locked is relative only, Super releases it; `tools/mouse-test.sh` unchanged | **Opus** |
-| **GP1. The base ports** | recipes for libffi, expat, wayland (client, cursor, and wayland-scanner as a host build), wayland-protocols (data), xkbcommon; the host-build and data-port pieces in tools/ports.py with their self-tests; meson's cross file's options (static, no `dlopen`) | ports/ recipes (new), tools/ports.py's host-build part, ports/jamos.meson's lines | M13.7's PO1 merged (PO3 for packages) | each recipe's `test`: libffi's own `ffi_call` tests as a program; xkbcommon compiling the compositor's keymap from `tools/genkeymap.py`'s text; libwayland's `wl_display_connect` from a tiny program; the builder's self-test | Sonnet 5.5 |
-| **GP2. The font stack** | recipes for libpng (zlib from M13.7's PO9), FreeType (FTL; a module list), fontconfig (configuration in the prefix, cache under `XDG_CACHE_HOME`), pixman, utf8proc, tllist, fcft; the `fonts-jamos` package (Inter, JetBrains Mono, Noto's Latin, Greek and Cyrillic) and its configuration | ports/ recipes (new) | GP1's builder pieces; M13.7's PO9 (zlib) | `fc-list` and `fc-match monospace` on Jam OS; FreeType rendering a string to a PGM compared with the Mac's output (the same library, the same bytes); pixman's own test programs | Sonnet 5.5 |
-| **GT. wlprobe and the scripts** | wlprobe (section 11), a test program on the real libwayland, in the ports tree; tools/wl-port-test.sh (new): a plain boot with packages preinstalled (M13.7's PO8 image), wlprobe's cases by name, then each app's script as it lands (a screenshot checked against expected pixels, as `tools/clip-test.sh` does) | ports/wlprobe (new), tools/wl-port-test.sh (new) | GS1; GP1; M13.7's PO8 | itself; it is the end-to-end test of GS1 | Sonnet 5.5 |
-| **GA1. foot** | foot's recipe: its spawn override (`posix_spawn`, the slave as 0, 1 and 2, `POSIX_SPAWN_SETSID`), the pool maximum 0, no utmp, no systemd, fcft without HarfBuzz (Q6); its terminfo (foot's own `foot` entry, in ncurses' terminfo package from M13.7's PO11, or `TERM=xterm-256color`) | ports/foot (new) | GS1, GS2, GC1, GC2, GP1, GP2, GT; M13.5's mksh for the interactive shell (`foot -e` programs until then) | GT's foot script: `foot -e` a program that prints a known screen (colours, box drawing, wide characters), the screenshot checked; a selection copied and pasted into a Jam OS terminal (the clipboard script's way); a resize and its SIGWINCH; foot killed and the desktop unchanged | Sonnet 5.5 |
-| **GA2. SDL2** | SDL2 2.32's recipe with only the Wayland video driver; the `wl_shm` framebuffer patch (`CreateWindowFramebuffer`, `UpdateWindowFramebuffer` with damage, double buffering on `wl_buffer.release`); the Jam OS audio driver (an `audio` stream to the mixer); SDL's test programs as a `-test` subpackage | ports/sdl2 (new; the two additions as files of ours, BSD-2) | GS1, GC1, GP1, GT | GT's SDL script: testdraw2's screenshot, testkeys's lines for typed keys, testaudioinfo naming the output and a tone's samples reaching the mixer (`tools/mixer-test.sh`'s way) | Sonnet 5.5 |
-| **GA3. Chocolate Doom and Freedoom** | recipes for SDL2_mixer (and SDL2_net if Chocolate Doom insists), Chocolate Doom (GPL-2.0: its source served beside it), the Freedoom data package | ports/ recipes (new) | GA2; GC4 for mouse look (keyboard play before it) | GT's Doom script: the demo played by `-timedemo` to its end with its frame count printed (a number for BENCH.md), a screenshot of the title screen; by hand on the PC: a level played with sound | Sonnet 5.5 |
-| **GA4. swayimg** | recipes for libjpeg-turbo and swayimg (Lua's library from M13.7's Lua port; `inotify` off) | ports/ recipes (new) | GP2, GC1, GT | GT's swayimg script: a known PNG and JPEG shown, the screenshot's pixels checked; keys to the next file | Sonnet 5.5 |
-| **GD. The search box** (Q9) | the recipe's `desktop` line in tools/ports.py and the package's manifest; `pkg`'s approval recording it; init's `launch` accepting an approved package program; the search box's rows | tools/ports.py's line, init's `launch` check (`user/services/init/apps.c`), the compositor's search rows | M13.7's PO5 and PO6 merged; GA1 | utest for init's check (an unapproved program refused, a program without the line refused); `tools/desk-test.sh` with a preinstalled package | Sonnet 5.5 |
-| **GR. Independent review and fix** | GS1, GS2, GC1 to GC4: findings first, then High and Medium fixed with a test each; hostile libwayland clients against the live compositor (X1's style): a subsurface storm, a popup chain at the cap, a decoration object on a destroyed toplevel, 28 handles of the wrong kinds, a client that never reads | the files its fixes need, named in its report | GS1, GC1, GC2 merged (GC3 and GC4 if merged by then) | its own; utest; GT's scripts | **Opus** |
-| **GJ. The join** | ARCHITECTURE (Graphics: ported clients, the protocols offered, decorations; Userland: the Wayland socket), the porter's guide (GUI ports: the shim, the environment, the font and keyboard pieces, what is offered), USING (foot, Doom, swayimg), TESTING (the new scripts), `third_party/wayland-protocols`'s README, ROADMAP and HISTORY | the docs | GR merged | `make check` | Sonnet 5.5 |
-| **GX1. Stretch: C++ runtime and HarfBuzz** (Q6) | libstdc++ and its unwinder built from GCC 15.2's sources against the sysroot; `tools/jamos-cc` as a C++ driver too; `.eh_frame_hdr` kept by the linker script; a C++ test program (exceptions across a throw, static constructors, threads); then HarfBuzz into fcft | the toolchain's new build files, `tools/jamos-cc`, `user/posix/posix.ld` (one line), ports/harfbuzz (new) | GA1 | posixtest's C++ program; foot shaping a ligature (its screenshot) | **Opus** (a toolchain decision) |
-| **GX2. Stretch: GTK3 spike** (Q7) | recipes for GLib, cairo, pango, fribidi, gdk-pixbuf, ATK, libepoxy, GTK3; gtk3-demo; a written list of what broke and what each fix would cost | ports/ recipes (new), a findings section added to this plan | GX1, GC3, G2's done-when met | gtk3-demo opens and its widgets draw (screenshots); the findings list | Sonnet 5.5 (Opus if GLib's spawn or D-Bus need design) |
+| **GS1. The Wayland socket** | section 1: the service-socket table, the Wayland descriptor kind (out buffer, batches, the handle queue, partial writes, `MSG_CTRUNC`), the two translation tables **in a file of their own** (the Chromium plan's socketpair `SCM_RIGHTS` widens them), poll/epoll readiness, the shell's `WAYLAND_DISPLAY` and `FONTCONFIG_FILE`; a utest client of the kind against a fake compositor end (a channel the test reads as the compositor would) | new files in user/posix/sys/ (the table, the kind, the translation), the routing lines in `user/posix/sys/socket.c`, `user/posix/sys/sockio.c`, `user/posix/sys/kinds.h`; the variables in `user/services/shell/sh_vars.c`; new utest files | Q1 (answered) | utest: whole messages into batches, a message split over three `sendmsg`s, one byte with 28 descriptors then the rest, 29 descriptors refused, every descriptor kind of the table (and EINVAL for the rest), a memfd received from a child used as a descriptor to send, a batch with handles read with too little room (`MSG_CTRUNC`, handles closed), a bad magic (ECONNRESET), `EAGAIN` on a full channel and `POLLOUT` after; posixtest: `connect` to a path not in the table (ENOENT), without `svc wayland` (ENOENT); a fuzz loop of 10,000 mutated byte streams and batches (no crash, no handle leaked: `handle_info` counts) | **Opus** |
+| **GC1. Versions and decorations** | built 2026-10-11 ([notes](#gc1-notes)) | | | | |
+| **GC1b. The owner's decoration rule, and window geometry** | section 3: a client that bound the manager gets server-side on every toplevel (`client_side` answered `server_side`, a toplevel without a decoration object server-side too), a client that never bound it draws its own; `set_window_geometry` used for placement, the frame and the hit areas, and no corners or shadow of ours on a client-side window whose geometry is smaller than its surface | `user/services/compositor/xdgdeco.c`, `user/services/compositor/xdgtop.c`, the geometry's lines in `user/services/compositor/wm.c`, `user/services/compositor/scene.c` (`window_frame`, `window_surface_box`) and `user/services/compositor/deco.c`; utest's compositor decoration tests | GC1 merged (it is) | utest: a bound client asking `client_side` gets `server_side` and a title bar; a bound client's toplevel with no decoration object gets one; an unbound client gets none; a client-side window with geometry inset by a shadow placed by its geometry, no shadow of ours; `tools/comp-test.sh`, `tools/desk-test.sh`, `tools/apps-test.sh` unchanged | **Opus** (small: about an hour) |
+| **GC2. Subsurfaces** | `wl_subcompositor` and `wl_subsurface` (section 2): trees, sync and desync (Chromium's bubbles are desync), order, position, the tree drawn as one window, input through it, clipping to the window, the new caps; the hostile cases (a cycle, a parent destroyed first, a tree deeper than the cap); GC1's [list of what GC2 needs](#gc1-notes) | `user/services/compositor/surface.c`, a new subsurface file, the painting and input lines it needs (`user/services/compositor/paint.c`, `user/services/compositor/scene.c`, `user/services/compositor/pointer.c`), `user/services/compositor/comp.h` | GC1b merged (the same files) | utest: a parent with three children, commits in sync and desync, place_above/below, a child outside the parent clipped, input to the topmost; a desync child updated while its parent is idle (a bubble's case); the hostile cases refused with the protocol's errors; a screenshot test of a window with subsurfaces (`tools/comp-test.sh`'s way) | **Opus** |
+| **GC3. Popups** | real `xdg_popup`: placement by the positioner on the output (flip, slide, resize), `grab` with a live serial, dismissal by a click outside or Escape, nested popups (a menu's submenu), `reposition`; the window manager's rules for popups (never tiled, above their parent); tooltips (popups without a grab) | `user/services/compositor/xdg.c`, a new popup file, the window manager's lines it needs (`user/services/compositor/wm.c`) | GC2 merged | utest: each positioner case placed exactly, a grab without a serial refused, a click outside dismissing the chain, a tooltip that takes no keys; screenshot of a popup at a screen edge | **Opus** |
+| **GP1. The base ports** | recipes for libffi, expat, wayland (client, cursor, and wayland-scanner as a host build), wayland-protocols (data), xkbcommon; the host-build and data-port pieces in tools/ports.py with their self-tests; meson's cross file's options (static, no `dlopen`) | ports/ recipes (new), tools/ports.py's host-build part, ports/jamos.meson's lines | M13.7's PO1 merged (it is); running, paused with work in its worktree | each recipe's `test`: libffi's own `ffi_call` tests as a program; xkbcommon compiling the compositor's keymap from `tools/genkeymap.py`'s text; libwayland's `wl_display_connect` from a tiny program; the builder's self-test | Sonnet 5.5 |
+| **GP2. The fonts** (rescoped) | the `fonts-jamos` data package (section 4's set: Liberation, Noto Sans, Serif and Sans Mono, Inter, JetBrains Mono, Noto Color Emoji) and its fonts.conf (the directory, the aliases, the cache under `XDG_CACHE_HOME`); every font's licence text in the package | ports/fonts-jamos (new) | GP1's data-port piece | the package's `test`: the files present with their hashes; `fc-match` is not on Jam OS (no fontconfig port), so the configuration is checked on the build host with its own `fc-match` against the staged directory (`sans-serif`, `serif`, `monospace`, `Arial` each resolve as section 4 says) | Sonnet 5.5 |
+| **GT. wlprobe and its script** | wlprobe (section 11), a test program on the real libwayland, in the ports tree, with a hold mode (a window that stays, for the soak); tools/wl-port-test.sh (new): a plain boot with packages preinstalled (M13.7's PO8 image), wlprobe's cases by name; the Chromium plan adds its own cases to it later | ports/wlprobe (new), tools/wl-port-test.sh (new) | GS1; GP1; M13.7's PO8 (merged) | itself; it is the end-to-end test of GS1 | Sonnet 5.5 |
+| **GD. The search box** (Q9, only if the owner starts Chromium from it) | the recipe's `desktop` line in tools/ports.py and the package's manifest; `pkg`'s approval recording it; init's `launch` accepting an approved package program; the search box's rows | tools/ports.py's line, init's `launch` check (`user/services/init/apps.c`), the compositor's search rows | Q9; M13.7's PO5 and PO6 merged; Chromium's package (the Chromium plan) | utest for init's check (an unapproved program refused, a program without the line refused); `tools/desk-test.sh` with a preinstalled package | Sonnet 5.5 |
+| **GR. Independent review and fix** | GS1, GC1, GC1b, GC2, GC3: findings first, then High and Medium fixed with a test each; hostile libwayland clients against the live compositor (X1's style): a subsurface storm, a desync bubble flood, a popup chain at the cap, a decoration object on a destroyed toplevel, 28 handles of the wrong kinds, a client that never reads | the files its fixes need, named in its report | GS1, GC1b, GC2 merged (GC3 if merged by then) | its own; utest; GT's script | **Opus** |
+| **GJ. The join** | ARCHITECTURE (Graphics: ported clients, the protocols offered, decorations; Userland: the Wayland socket), the porter's guide (GUI ports: the shim, the environment, the fonts and keyboard pieces, what is offered), TESTING (the new script), `third_party/wayland-protocols`'s README, ROADMAP and HISTORY | the docs | GR merged | `make check` | Sonnet 5.5 |
+
+**Off the path since the rescope** (after Chromium, by need; their rows
+are in this file's history, before the rescope): **GS2** (timerfd,
+`fallocate`, `inotify_init1`, `SO_PEERCRED`: no Chromium need found; the
+Chromium plan's raw-call track adds whatever a first run's ENOSYS log
+shows),
+**GC4** (relative pointer and pointer constraints), **GA1** foot, **GA2**
+SDL2, **GA3** Chocolate Doom and Freedoom, **GA4** swayimg, **GX2** the
+GTK3 spike. **GX1** (a C++ runtime) is replaced by the Chromium plan's
+toolchain.
 
 ## Order
 
-1. **Now**: the owner's answers. Q1 gates GS1; Q4 gates GC1; Q2, Q3 and
-   Q6 shape GA2 and the stretch; Q9 gates GD.
-2. **At once, in parallel**: GS1 (libc), GS2 (libc, other files), GC1
-   (the compositor). None touches another milestone's files; GS2 checks
-   with M13's R1 first if it is moving `user/posix/sys/calls.c`.
-3. **After M13.7's PO1 merges**: GP1, then GP2 beside it once GP1's
-   builder pieces are in.
-4. **After GC1**: GC2, then GC3 and GC4 (one compositor track at a time:
-   the same files).
-5. **After GS1 and GP1**: GT (wlprobe first: the shim proven on the real
-   libwayland before any app).
-6. **The apps**: GA2 after GT and GC1 (SDL needs no subsurfaces); GA1
-   after GC2, GS2 and GP2; GA4 after GP2; GA3 after GA2 (and GC4 for the
-   mouse).
-7. **GR** once GS1, GC1 and GC2 are merged (GC3 and GC4 join it if
-   merged; else their own small review), then **GD** (after M13.7's `pkg`),
-   then **GJ**, the main session's regression on the PC, and the PC
-   session.
-8. **The stretch** (GX1, then GX2) only after the done-when is met.
+1. **Now, at once**: GS1 (libc), GC1b (the compositor, small), GP1
+   (resumed). None touches another's files.
+2. **After GC1b**: GC2, then GC3 (one compositor track at a time: the
+   same files).
+3. **After GP1**: GP2.
+4. **After GS1 and GP1**: GT (wlprobe: the shim proven on the real
+   libwayland before Chromium).
+5. **GR** once GS1, GC1b and GC2 are merged (GC3 joins it if merged; else
+   its own small review), then **GJ**, the main session's regression on
+   the PC, and the PC check.
+6. **GD** only if Q9's answer is the search box, after Chromium's
+   package exists.
 
 **Beside the other milestones**:
-- **M13**: GS1 and GS2 add files to user/posix/sys/ and route a few
-  calls; they take R1's findings on the call table into account and
-  rebase on R1's changes. X2 (tinyssh) and S2 don't touch these files.
-- **M13.5**: foot's shell. Until mksh merges, foot is tested with
-  `foot -e` POSIX programs.
-- **M13.6**: nothing needed. Fonts and packages live on FAT32 under
-  M13.7's rules; fontconfig's links fall back.
+- **The Chromium plan**: its socketpair `SCM_RIGHTS` track starts from
+  GS1's translation file; its `content_shell` on Wayland waits for GS1,
+  GT and the compositor tracks it uses (GC1b first; GC3 for menus;
+  GC2 for `chrome`).
+- **M13**: GS1 adds files to user/posix/sys/ and routes a few calls;
+  it takes R1's findings on the call table into account.
+- **M13.6**: nothing needed. The fonts package lives where M13.7's prefix
+  is.
 - **M13.7**: every G2 port is a recipe; GP1 adds host builds and data
-  ports to the builder (named in its report for PO1's owner); GA1 wants
-  PO11's terminfo or uses xterm's entry; GD needs PO5 and PO6.
-- **M12.5**: F1's mapped files make fontconfig's cache cheaper and the
-  keymap's `MAP_PRIVATE` a copy-on-write instead of a copy; nothing waits
-  for it.
-- **The PC's QEMU slots**: GT's scripts run one QEMU per app; they
-  stagger with the others.
+  ports to the builder; GD needs PO5 and PO6.
+- **M12.5**: nothing waits for it.
+- **The PC's QEMU slots**: GT's script runs one QEMU; it staggers with
+  the others.
 
 ## GC1 notes
 
@@ -905,115 +1126,109 @@ mapped toplevel is refused (`unconfigured_buffer`) until a client needs it.
 | What | Where |
 |---|---|
 | The shim | utest (GS1's cases), posixtest's socket section, the fuzz loop; wlprobe on the real libwayland (GT) |
-| timerfd and the rest | posixtest (GS2) |
-| The compositor's additions | utest's compositor tests per protocol (GC1 to GC4); screenshot tests in `tools/comp-test.sh`'s style; every existing desktop script unchanged (`tools/desk-test.sh`, `tools/apps-test.sh`, `tools/clip-test.sh`, `tools/mouse-test.sh`) |
-| The ports | each recipe's `test` through M13.7's ports-test script |
-| The apps end to end | tools/wl-port-test.sh's scripts: foot, SDL's tests, Doom's timedemo, swayimg |
+| The compositor's additions | utest's compositor tests per protocol (GC1b to GC3); screenshot tests in `tools/comp-test.sh`'s style; every existing desktop script unchanged (`tools/desk-test.sh`, `tools/apps-test.sh`, `tools/clip-test.sh`, `tools/mouse-test.sh`) |
+| The ports | each recipe's `test` through M13.7's ports-test script (GP1, GP2, wlprobe) |
+| End to end | tools/wl-port-test.sh: wlprobe's cases; then the Chromium plan's `content_shell` and `chrome` cases added to the same script |
 | Hostile clients | GR's libwayland-based clients against the live compositor; X1's hostile clients unchanged |
-| The bench | BENCH.md gains: Doom's timedemo frames a second (QEMU and the PC), foot's time to scroll 10 MB of text (`cat` of a file; the same on Linux on the PC for comparison), the compositor's paint cost with a foot window full screen |
-| The regression | once, after GJ, on the PC: ktest at 4, the init run twice, every area script, the desktop scripts, the new scripts, the soak at 4 |
+| The bench | BENCH.md gains: wlprobe's round trip and a 28-descriptor flush through the shim against libjwl's; the compositor's paint cost with a full-screen Chromium window (with the Chromium plan) |
+| The regression | once, after GJ, on the PC: ktest at 4, the init run twice, every area script, the desktop scripts, the new script, the soak at 4 |
 
 ## The PC check
 
 After a flash or an `update`, with the Mac's ports server running:
 
-1. `pkg install foot`; foot from the shell: JetBrains Mono, the
-   compositor's title bar; type, select with the mouse, Super+C, paste
-   into a Jam OS terminal with Super+V, and back; `foot -e vim
-   /data/notes.txt`, edit and save; resize by dragging, tile with
-   Super+T; Super+Q closes it. A photo of foot next to a Jam OS terminal.
-2. `pkg install chocolate-doom freedoom`; play the first level: frames
-   a second (its `-timedemo` result into BENCH.md), sound effects and
-   music through the headphones, the mouse turning (after GC4), full
-   screen and back.
-3. `pkg install swayimg`; open a folder of the owner's photos on `/data`;
-   zoom, next, previous.
-4. With all three open: kill each from the shell in turn; the others and
-   the desktop unchanged. Kill the compositor (`kill compositor`): the
-   ported clients die with their connection (libwayland does not
-   reconnect, unlike libjwl's clients; section "Risks"), the Jam OS
-   windows come back.
-5. If GD merged: foot from the search box.
-6. **All tests and `soak 10`** with foot open and the second stick
-   mounted read-write, pulled and replugged (the sign-off tier).
+1. `pkg install wlprobe` (or the test image's preinstalled copy);
+   `wlprobe` from the shell: its cases print their lines; its hold mode
+   opens a window with the compositor's title bar (it binds the
+   decoration manager), tiles with Super+T, closes with Super+Q.
+2. A paste from wlprobe's window into a Jam OS terminal and back.
+3. Kill wlprobe from the shell: the desktop unchanged. Kill the
+   compositor (`kill compositor`): wlprobe dies with its connection
+   (libwayland does not reconnect, unlike libjwl's clients; "Risks"), the
+   Jam OS windows come back.
+4. **Chromium's window** is the Chromium plan's PC check (its CR-c and
+   CR-d): the keys, the mouse, the wheel, a `<select>` list, copy and
+   paste both ways, `chrome`'s omnibox list and menus.
+5. If GD merged: Chromium from the search box.
+6. **All tests and `soak 10`** with wlprobe's window open (Chromium's
+   once CR-c has landed) and the second stick mounted read-write, pulled
+   and replugged (the sign-off tier).
 
 ## Size
 
-- **Agents**: 13 tracks (GS1, GS2, GC1 to GC4, GP1, GP2, GT, GA1 to GA4)
-  plus GD, the review and the join: **17**, about **30 agent-hours**
-  (GS1 3, GS2 1, GC1 2, GC2 3, GC3 2, GC4 1.5, GP1 2, GP2 2.5, GT 1.5,
-  GA1 2, GA2 2.5, GA3 1.5, GA4 1.5, GD 1, GR 3, GJ 1). The stretch adds
-  about 8 (GX1 2.5, GX2 5 or more). Seven Opus (GS1, GC1 to GC4, GR,
-  GX1), the rest Sonnet 5.5.
-- **The uncertain part** is the ports: a library that fights its cross
-  build (fontconfig's build-time tools, xkbcommon's parser generator,
-  libffi's assembly) can take twice its hour, and an app that finds a gap
-  in the POSIX layer stops at a question, not a fix (M13.7's rule).
-- **Time**: GS1, GS2 and GC1 in parallel, about 3 hours; GC2 and GP1,
-  GP2 about 3 more; then the apps two or three at a time, about 4; the
-  review and the join about 4; the regression and one PC session. About
-  two to three working days of agents, after M13.7's PO1 and PO8 land.
-- **Lines**: about 1,200 of C in libc (the shim 900, timerfd and the rest
-  300); about 2,800 in the compositor (versions and decorations 400,
-  subsurfaces 1,000, popups 700, constraints 400, tests 300); about 600
-  of SDL patches (the framebuffer 250, audio 350); recipes and small
-  patches for about 20 ports.
+- **Agents** (since the rescope): GS1, GC1b, GC2, GC3, GP1 (running),
+  GP2, GT, GR and GJ, and GD if Q9 says so: **9 or 10**, about **18
+  agent-hours** (GS1 3, GC1b 1, GC2 3, GC3 2, GP1 2, GP2 1, GT 1.5, GR 3,
+  GJ 1, GD 1). Five Opus (GS1, GC1b, GC2, GC3, GR), the rest Sonnet 5.5.
+  GC1 is built (2 hours spent).
+- **Dropped from the path**: GS2 1, GC4 1.5, GA1 to GA4 7.5, GX1 2.5, GX2
+  5 or more: about 17 agent-hours that wait for need.
+- **The uncertain part** is GP1's cross builds (xkbcommon's parser
+  generator, libffi's assembly) and GC2 (every place that treats a window
+  as one surface).
+- **Time**: GS1, GC1b and GP1 at once, about 3 hours; GC2, GP2 and GT
+  about 3 more; GC3 about 2; the review and the join about 4; the
+  regression and one PC session. About two working days of agents.
+- **Lines**: about 900 of C in libc (the shim); about 2,000 in the
+  compositor (the rule and geometry 200, subsurfaces 1,000, popups 700,
+  tests); recipes for six ports and a data package.
 
 ## Risks
 
 - **libwayland clients don't reconnect.** libjwl's clients come back after
   the compositor restarts or calls them too slow; a libwayland client
   gets `wl_display.error` or a closed socket and, in almost every app,
-  exits. A compositor crash now closes the owner's foot windows and
-  their shells. The compositor's restart memory (`jam_window_memory_v1`)
+  exits. A compositor crash now closes the owner's Chromium windows and
+  their tabs. The compositor's restart memory (`jam_window_memory_v1`)
   can't help them. Mitigation: the compositor's crash rate, which the
   sign-offs measure; the "too slow" limit (32 batches, then 64 KiB) is
-  generous for an app that keeps its loop turning, but a game loading a
-  level for seconds while the mouse moves (motion is coalesced, so this
-  is bytes, not a flood) should be watched in GA3's test.
-- **Kept memfds commit as they grow** (Q12). foot's pool is capped by its
-  recipe; the next app that sizes a pool large and sparse (browsers do)
-  costs its whole size in RAM or is refused at 256 MiB. Each such port
-  needs its own cap until M14's review decides Q12's (B).
-- **The SDL patch is ours to carry** until upstream takes it (SDL's
-  developers have assumed GL on Wayland). It is about 250 lines in one
-  driver file; written as SDL3 code first and offered there, it has the
-  best chance. Until then it is an override checked against upstream's
-  hash on every version bump.
+  generous for a client that keeps its loop turning, but a browser busy
+  for seconds while the mouse moves (motion is coalesced, so this is
+  bytes, not a flood) is watched in the Chromium plan's tests.
+- **Chromium and the decoration rule.** If Chromium draws its own frame
+  even when told `server_side`, a `chrome` window shows two title bars
+  (section 3). The setting "use system title bar" or one line of
+  `mode_for` fixes it; which is the owner's call when seen.
+- **Bubbles need subsurfaces.** Without GC2 a `chrome` window's omnibox
+  list or a bubble can't be made (Chromium makes a desynchronised
+  subsurface for each, and has no fallback); `content_shell` may never
+  ask. GC2 lands before the Chromium plan's `chrome` milestone.
+- **Kept memfds commit as they grow** (Q12). Chromium sizes its memfds to
+  its buffers, so this costs what it uses; a later port that sizes a pool
+  large and sparse costs its whole size in RAM or is refused at 256 MiB,
+  until M14's review decides Q12's (B).
 - **Subsurfaces in a tiling compositor.** A window is a tree now; every
   place that treats a window as one surface (tiling's minimum sizes,
   animations, the restart memory, screenshots, the frame's shadow) must
   use the tree's box. GC2 lists every caller; GR reads them.
-- **Ports find gaps in the layer** (M13.7's risk, sharper here): foot,
-  SDL and swayimg use calls nobody has tried on Jam OS yet (`timerfd`,
-  `inotify`, `ppoll`, `MSG_CMSG_CLOEXEC`, `sigabbrev_np`, `execvpe`). Each
-  is reported as a finding for the layer, never patched around in a
-  port.
-- **foot's spawn**: its override hands the slave as descriptors with
-  `POSIX_SPAWN_SETSID`; *unsure* whether the child then has the slave as
-  its controlling terminal on Jam OS (M13's `user/posix/sys/tty.c` makes
-  a first terminal description the process's terminal unless
-  `O_NOCTTY`), which decides whether Ctrl+C in foot reaches the program.
-  GA1 tests it first.
-- **Fonts on FAT32**: fontconfig's cache and lock files work by
-  fallbacks (no links); a stale cache after a `pkg upgrade` of the fonts
-  is fontconfig's usual problem, solved by its timestamps (FAT's 2-second
-  times are enough).
-- **Performance in QEMU**: TCG renders fonts and SDL frames slowly; every
-  timing is read on the PC (KVM or real hardware), never from a TCG run.
-- **Licences**: FreeType's FTL credit line must reach every package's
-  licence list; Chocolate Doom is GPL-2.0 (source beside it, M13.7's
-  rule); the LGPL reading of Q8 is the owner's to confirm.
-- **Static sizes**: about 3 MB per GUI program and every program its own
-  copy of FreeType, xkbcommon and libwayland. Fine on `/data`; a FreeType
-  security fix rebuilds every GUI package (M13.7's audit sees it).
-- **Upstream moves**: foot, SDL and wayland-protocols release often; the
-  recipes pin versions and hashes, and `third_party/wayland-protocols`
-  stays the compositor's own pinned copy, so a client newer than the
-  compositor simply sees older versions offered.
+- **Ports find gaps in the layer** (M13.7's risk): wlprobe and Chromium
+  use calls nobody has tried on Jam OS yet (`ppoll`,
+  `MSG_CMSG_CLOEXEC`). Each is reported as a finding for the layer, never
+  patched around in a port.
+- **Fonts on FAT32 or the Unix filesystem**: fontconfig's cache and lock
+  files work by fallbacks on FAT (no links); a stale cache after a
+  `pkg upgrade` of the fonts is fontconfig's usual problem, solved by its
+  timestamps.
+- **Performance in QEMU**: TCG renders slowly; every timing is read on
+  the PC (KVM or real hardware), never from a TCG run.
+- **Licences**: the fonts are OFL (each licence text in the package);
+  Chromium's own licences are the Chromium plan's.
+- **Upstream moves**: Chromium's Ozone backend binds new protocols
+  often; `third_party/wayland-protocols` stays the compositor's own pinned
+  copy, so a client newer than the compositor simply sees older versions
+  offered, and Chromium checks for each optional global before using it.
 
 ## Later
 
+- **After Chromium, by need** (the rescope, 2026-10-11; their designs
+  stay above as the record, their track rows in this file's history):
+  foot (GA1, with GS2's timerfd and its spawn override), SDL2 with its `wl_shm` framebuffer patch and audio
+  driver (GA2), Chocolate Doom with Freedoom (GA3, with GC4's relative
+  pointer and pointer constraints), swayimg (GA4), the GTK3 spike (GX2),
+  and the font stack as ports (FreeType, fontconfig, pixman, fcft) for
+  them. Each starts when a goal or a dependency asks for it. The last
+  bullet of this list (Chromium from its Fuchsia code) is from before the
+  rescope and is replaced by the top of this plan and the Chromium plan.
 - **GTK** (rung 6 and 7) and **Qt** (rung 8) as their own project, from
   GX2's findings.
 - **GL**: Mesa with softpipe (G4 or M14.5), llvmpipe with a JIT rule

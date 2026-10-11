@@ -46,7 +46,7 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 | M14.5 | Maybe: dynamic linking | off Chromium's path (CR-RESEARCH: software compositing needs no `dlopen`) |
 | M15 | Self-hosting | stretch |
 | CR | Chromium: the main goal (the owner, 2026-10-11) | CR0, the plan, first; then the layers in [Now](#now) |
-| G2-G4 | Toolkit and fonts, mode setting, 3D | G2 is porting work (libwayland, fonts, toolkits) and comes with it; G3 and G4 deferred: porting first (the owner, 2026-10-11) |
+| G2-G4 | Wayland clients, mode setting, 3D | G2 rescoped to what Chromium's Ozone/Wayland needs ([G2-PLAN.md](G2-PLAN.md), 2026-10-11): GC1 (versions, decorations) built, the shim, subsurfaces, popups, wlprobe and a fonts package to come; G3 and G4 deferred: porting first (the owner, 2026-10-11) |
 | Maybe | Own UEFI loader in place of Limine | not planned |
 
 ## Now
@@ -72,12 +72,16 @@ On Chromium's path (in roughly this order, much of it in parallel):
 - **M13.7, the ports system**: how Chromium's dependencies and Chromium
   itself are built, packaged and installed. Its port ladder is trimmed to
   what Chromium's chain needs (the make/vim/libarchive rungs wait).
-- **G2, Wayland clients, scoped to Chromium**: libwayland and the libc
-  shim, xkbcommon, the compositor's protocols Chromium's Ozone/Wayland
-  backend uses (xdg-shell, decorations, subsurfaces, popups for menus,
-  the clipboard, cursors), FreeType, fontconfig, HarfBuzz and the C++
-  runtime. A small Wayland test client proves each layer; foot, SDL2,
-  Doom, swayimg and the GTK spike are not on the path.
+- **G2, Wayland clients, scoped to Chromium** ([G2-PLAN.md](G2-PLAN.md)):
+  the libc shim that lets any libwayland reach the compositor, and the
+  compositor's protocols Chromium's Ozone/Wayland backend uses
+  (xdg-shell, the owner's decoration rule, subsurfaces for its bubbles,
+  popups for its menus, the clipboard, cursors; no viewporter or dmabuf
+  while rendering is software), and a fonts package. Chromium brings its
+  own libwayland, xkbcommon, FreeType, fontconfig, HarfBuzz and libc++.
+  wlprobe, a test client on the real libwayland, proves each layer;
+  foot, SDL2, Doom, swayimg, timerfd, pointer lock and the GTK spike come
+  after Chromium.
 - **The route (the owner, 2026-10-11; [CR-RESEARCH](CR-RESEARCH.md))**:
   Chromium's **Linux** code built as `target_os=linux` against a musl
   sysroot, the way Alpine ships it (about 10 small musl patches), over
@@ -181,7 +185,7 @@ M11 to M12.1 ran in three waves (what they delivered is in [HISTORY.md](HISTORY.
 | M15 | Self-hosting: make, binutils and GCC ported onto M13's POSIX layer, and CPython ported so the build tools (about 19,000 lines of Python in tools/, ports.py among them) run on Jam OS unchanged instead of being rewritten in C (the owner, 2026-10-11); a small compiler (TCC/cproc) may come first. Python's port needs M13.5 (`subprocess`), M13.6 (its library's layout) and its C modules built in until M14.5 | Jam OS rebuilds itself on the PC and boots the result, with no Mac involved |
 | CR | Chromium, the main goal (the owner, 2026-10-11), reached layer by layer (see [Now](#now)): every layer general, only the layers Chromium needs built before it. CR0 is its plan: from Chromium's own source and its Fuchsia port, the exact list of what it needs from Jam OS (system calls, POSIX, IPC, processes and sandbox, memory and JIT, files, sockets, Wayland/Ozone, fonts, audio, TLS, the toolchain and GN), what exists, what each missing layer is and which milestone builds it, in order; then the port itself (CR1...) | Chromium opens a window on the PC and browses real sites over HTTPS, software-rendered; then GPU-accelerated after G3/G4 |
 | G1 | A compositor of our own on the firmware framebuffer that speaks the Wayland protocol: Wayland's model (surfaces, buffers, `xdg_toplevel`, a seat for input) with its wire format carried over channels, handles where Linux passes file descriptors, `wl_shm` pools as VMOs, the code generated from Wayland's XML protocol files as the IDL is. Apps draw into their own surfaces, input goes only to the focused client, a crashed app takes only its own window down, software rendering. The console becomes a client (a terminal window). Not a port: Weston and wlroots need Linux's DRM/KMS, Mesa, libinput and udev | windows from several programs on the PC's screen, the shell in one of them |
-| G2 | Toolkit, TrueType fonts, GUI apps: ported leaf libraries (stb_truetype or FreeType, microui/Nuklear or LVGL, stb_image). After M13, libwayland ported with a shim from sockets and file descriptors to channels and handles, so Wayland programs that draw in software (foot, SDL) run unchanged; GTK and Qt are a later porting project of their own | |
+| G2 | Wayland clients, rescoped to Chromium (the owner, 2026-10-11; [G2-PLAN.md](G2-PLAN.md)): libwayland reaching the compositor through a shim in libc from sockets and file descriptors to channels and handles, the compositor's protocols Chromium's Ozone/Wayland uses (subsurfaces, popups, the owner's decoration rule), a fonts package, wlprobe. foot, SDL2, Doom, swayimg and the GTK3 spike after Chromium, by need; GTK and Qt are a later porting project of their own | wlprobe passes on the real libwayland in QEMU; Chromium's `content_shell` draws a page in a Jam OS window, with popups and the clipboard; `chrome`'s bubbles and menus work |
 | G3 | Mode setting and vsync, only through the Intel iGPU (needs the monitor on the board's output and the iGPU enabled). Since the owner's licence decision of 2026-10-11 (GPL allowed in separate programs), the likely road is Linux's own GPU drivers (i915, amdgpu: mostly MIT) run as Jam OS driver programs over a translation layer from Linux's kernel interfaces to Jam OS's driver library (as FreeBSD's LinuxKPI and drm-kmod do); that layer is a milestone of its own | |
 | G4 | 3D as a stretch: a multi-core software rasterizer, or virtio-gpu under QEMU | |
 | Maybe | Own UEFI loader in place of Limine: a third filler of `struct boot_info` (after Limine's and M8.5's kexec). Limine does the job, and after M8.5 the kernel needs it only to load three files and jump; our own would cost its boot menu (the test entries) and new firmware quirks for little gain. Revisit if self-hosting (M15) or Secure Boot ever needs it | (not planned in detail) |
