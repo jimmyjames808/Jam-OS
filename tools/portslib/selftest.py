@@ -29,6 +29,7 @@ from . import fixtures
 from . import licence
 from . import patch as patchmod
 from . import recipe as recipemod
+from . import selftest_hostdata
 from . import source as sourcemod
 from . import stage as stagemod
 from . import tree as treemod
@@ -378,6 +379,8 @@ def main(top):
             test_fetch(tmp, os.path.join(tmp, "up"))
             test_bad_builds(tmp, real_ports)
             test_git(tmp)
+            selftest_hostdata.run(tmp, real_ports, expect, refused,
+                                  lambda t, d: builder(t, d))
     finally:
         for k, v in saved.items():
             if v is None:

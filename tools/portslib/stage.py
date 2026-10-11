@@ -28,7 +28,9 @@ this one (the format is the builder's own, `jamos-stage 1`):
     library <path> <size> <sha256>
     file <path> <size> <sha256>
     licence <path> <size> <sha256>
-    sub <subpackage> <path>       (the path is also a `file` line)
+    sub <subpackage> <path>       (the path is also a `file` line, or a
+                                  `program` line: a program may be in a
+                                  subpackage, its list still its own)
     copy <path> <its target>      (a symlink made a copy)
 """
 import glob
@@ -164,6 +166,7 @@ def _wanted(r, root):
         if not os.path.lexists(os.path.join(root, path)):
             raise StageError("program %s: the install made no such file" % path)
         want.append(("program", path, wants))
+    programs = {path for path, _ in r.programs()}
     # A subpackage's files before `files`: a file both name is the
     # subpackage's (the narrower claim).
     groups = [("library", "library", None, w) for w in r.lines("library")]
@@ -174,7 +177,9 @@ def _wanted(r, root):
             found = _matches(root, g)
             if not found:
                 raise StageError("%s %s: the install made nothing that matches" % (key, g))
-            want += [(kind, p, sub) for p in found]
+            # A program a subpackage names stays a program (its list is
+            # chosen and checked) and goes into that package: a `sub` line.
+            want += [("sub" if (p in programs and sub) else kind, p, sub) for p in found]
     return want
 
 
@@ -196,9 +201,12 @@ def keep(r, destdir, srcdir, stage, epoch, say=print):
     if os.path.exists(stage):
         shutil.rmtree(stage)
     os.makedirs(stage)
-    lines, kept, programs = [], set(), []
+    lines, kept, programs, subs = [], set(), [], []
     strip = shutil.which(toolchain.cross() + "strip")
     for kind, rel, extra in _wanted(r, root):
+        if kind == "sub":
+            subs.append("sub %s %s" % (extra, rel))
+            continue
         if rel in kept:
             continue
         kept.add(rel)
@@ -216,6 +224,7 @@ def keep(r, destdir, srcdir, stage, epoch, say=print):
         lines.append(_line(kind, rel, dst, extra if kind == "program" else None))
         if kind == "file" and extra:
             lines.append("sub %s %s" % (extra, rel))
+    lines += subs
     lines += _licences(r, srcdir, stage)
     _times(stage, epoch)
     _dropped(r, destdir, root, kept, os.path.dirname(stage), say)

@@ -17,12 +17,15 @@ conditionals, no continuation lines.
 import os
 import re
 
+from . import hostdata
 from . import licence
 
 # Where a port's files go once installed; a port is built for it, since
 # programs find their data by the prefix compiled in.
-PREFIX = {"package": "/data/pkg", "boot": "/boot/usr"}
-STYLES = ("configure", "configure-plain", "make", "cmake", "meson", "custom")
+# (A host port, hostdata.py, is installed where it is built: /host is only
+# what it is called until then.)
+PREFIX = {"package": "/data/pkg", "boot": "/boot/usr", "host": "/host"}
+STYLES = ("configure", "configure-plain", "make", "cmake", "meson", "custom", "data")
 # Which styles take which extra-argument key.
 ARG_STYLES = {
     "configure": ("configure", "configure-plain"),
@@ -43,6 +46,7 @@ KEYS = {
     "needs": ("many", 1, 3), "runs": ("many", 1, 3), "host": ("many", 1, None),
     "program": ("many", 1, 2), "library": ("many", 1, None), "files": ("many", 1, None),
     "subpackage": ("many", 2, None), "multicall": ("many", 2, None),
+    "tool": ("many", 1, 1), "host-of": ("one", 1, 1), "data": ("many", 2, 2),
     "cpe": ("one", 1, 1), "fixed": ("many", 2, 2), "not-affected": ("many", 2, None),
 }
 REQUIRED = ("name", "version", "revision", "summary", "licence", "licence-file",
@@ -83,6 +87,7 @@ class Recipe:
         self.one = {}                     # single-line keys: key -> words
         self.many = {}                    # repeated keys: key -> [(line number, words)]
         self.sources = []                 # [Source]
+        self.prefix_override = None       # a host port's real prefix (hostdata.py)
 
     def get(self, key, default=None):
         """A single-line key's value as one string (words joined)."""
@@ -117,7 +122,7 @@ class Recipe:
 
     @property
     def prefix(self):
-        return PREFIX.get(self.place, "/")
+        return self.prefix_override or PREFIX.get(self.place, "/")
 
     def deps(self, key):
         """`needs` or `runs` as [(port, minimum version or None)]."""
@@ -247,7 +252,7 @@ def lint(r):
     if "revision" in r.one and (not r.get("revision").isdigit() or r.revision < 1):
         p.append("%s: the revision must be a number from 1" % where)
     if r.place and r.place not in PREFIX:
-        p.append("%s: place must be 'boot' or 'package'" % where)
+        p.append("%s: place must be 'boot', 'package' or 'host'" % where)
     if r.style and r.style not in STYLES:
         p.append("%s: style must be one of %s" % (where, ", ".join(STYLES)))
     if "homepage" in r.one and not URL.match(r.get("homepage")):
@@ -258,6 +263,7 @@ def lint(r):
     p += _lint_style(r)
     p += _lint_lists(r)
     p += _lint_security(r)
+    p += hostdata.lint(r)
     return p
 
 
@@ -335,6 +341,9 @@ def _lint_style(r):
         for fn in ("build", "install"):
             if not re.search(r"^%s\s*\(\)" % fn, sh, re.M):
                 p.append("%s: build.sh has no %s() function" % (r.path, fn))
+    for w in r.lines("tool") + ([r.one["host-of"]] if "host-of" in r.one else []):
+        if not NAME.match(w[0]):
+            p.append("%s: want a port name, not '%s'" % (r.path, w[0]))
     for w in r.lines("needs") + r.lines("runs"):
         if not NAME.match(w[0]) or (len(w) > 1 and (len(w) != 3 or w[1] != ">=")):
             p.append("%s: want 'needs|runs <port> [>= <version>]', not '%s'" %

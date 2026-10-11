@@ -21,6 +21,7 @@ import os
 import re
 import sys
 
+from . import hostdata
 from . import licence
 from . import patch as patchmod
 from . import recipe as recipemod
@@ -87,6 +88,7 @@ def lint(t, names=None):
         problems += recipemod.lint(r)
         problems += _entries(r)
         problems += _deps(t, r)
+        problems += hostdata.lint_tree(t, r)
         problems += _patches(r)
         problems += _overrides(r)
         problems += _lists(r)
@@ -123,7 +125,10 @@ def _deps(t, r):
             elif least and vkey(other.version) < vkey(least):
                 p.append("%s: %s %s >= %s, but its recipe is %s" %
                          (r.path, key, dep, least, other.version))
-            if key == "needs" and other is not None:
+            if key == "needs" and other is not None and other.place == "host":
+                p.append("%s: needs %s, a host port: its tools are used with 'tool %s'" %
+                         (r.path, dep, dep))
+            elif key == "needs" and other is not None:
                 p += _lgpl(r, other)
     return p
 
@@ -217,7 +222,7 @@ def _lists(r):
     return p
 
 
-def find_cycle(t, kinds=("needs", "runs")):
+def find_cycle(t, kinds=("needs", "runs", "tool")):
     """CycleError naming the cycle, if the graph has one."""
     provided = _provided(t)
     state = {}
@@ -242,7 +247,7 @@ def find_cycle(t, kinds=("needs", "runs")):
             visit(name, [name])
 
 
-def order(t, names, kinds=("needs",)):
+def order(t, names, kinds=("needs", "tool")):
     """names and everything they need (or run), each after what it needs,
     ties broken by name; CycleError on a cycle, KeyError on an unknown
     port."""
