@@ -1,0 +1,16 @@
+# posixtest's loopback section (user/posix/test/loopback.c) and its socket
+# section, from the shell: netstack runs in shell mode even with no card and
+# no address, and 127.0.0.0/8 needs neither. TCP echo over 127.0.0.1 (by
+# address, by name, by 127.0.0.7), a connect to a closed port refused, UDP
+# both ways. The socket section runs too: its connect to 127.0.0.1 is
+# ECONNREFUSED here, where the init run (no netstack) says EACCES.
+#   QEMU_INPUT=tools/shell-tests/posix-loop.txt tools/qemu-test.sh <dir> posix-loop shell
+wait 120 Jam OS shell
+wait {prompt}
+send run posixtest socket loopback
+wait 60 posixtest: socket: ok
+wait 120 posixtest: loopback: ok
+wait 20 posixtest: PASS
+wait {prompt}
+send reboot -f
+wait reboot: resetting

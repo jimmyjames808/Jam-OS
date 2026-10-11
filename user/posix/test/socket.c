@@ -13,7 +13,8 @@
  *   - a socket that isn't connected: getpeername, shutdown and recv are
  *     ENOTCONN, send is EPIPE (with MSG_NOSIGNAL: no SIGPIPE), accept is
  *     EINVAL, listen on a datagram socket EOPNOTSUPP, connect to
- *     127.0.0.1 ECONNREFUSED (no loopback), bind's address checks; poll
+ *     127.0.0.1 ECONNREFUSED (netstack's loopback: nothing listens) or
+ *     EACCES (no network at all), bind's address checks; poll
  *     says it is writable at once;
  *   - socketpair ends through the socket calls: send and recv (and
  *     sendmsg/recvmsg with two pieces), MSG_DONTWAIT's EAGAIN, MSG_WAITALL
@@ -133,8 +134,18 @@ static void unconnected(int fd)
     CHECK(poll(&p, 1, 0) == 1 && (p.revents & POLLOUT));
     struct sockaddr_in lo = { .sin_family = AF_INET, .sin_port = htons(80),
                               .sin_addr = { htonl(INADDR_LOOPBACK) } };
+    /* 127.0.0.1 is netstack's own loopback: with nothing listening there
+     * it is a reset (ECONNREFUSED) when netstack runs, and EACCES when this
+     * program has no network (the init run starts none). A datagram bind
+     * to any address says which: it needs the same channel. */
+    int probe = socket(AF_INET, SOCK_DGRAM, 0);
+    struct sockaddr_in any = { .sin_family = AF_INET };
+    bool have_net = probe >= 0 && bind(probe, (struct sockaddr *)&any, sizeof(any)) == 0;
+    if (probe >= 0)
+        close(probe);
     errno = 0;
-    CHECK(connect(fd, (struct sockaddr *)&lo, sizeof(lo)) == -1 && errno == ECONNREFUSED);
+    CHECK(connect(fd, (struct sockaddr *)&lo, sizeof(lo)) == -1 &&
+          errno == (have_net ? ECONNREFUSED : EACCES));
     errno = 0;
     CHECK(connect(fd, (struct sockaddr *)&lo, 4) == -1 && errno == EINVAL);
     struct sockaddr_in6 six = { .sin6_family = AF_INET6 };

@@ -56,6 +56,13 @@
 #include <net.h>
 
 #define SOCK_LINGER_NS (10ull * NS_PER_S)   /* close's and exit's wait for unsent bytes */
+#define CALL_WAIT      (5 * NS_PER_S)       /* a call netstack answers at once */
+
+/* Is host-order ip in 127.0.0.0/8 (netstack's loopback interface)? */
+static inline bool sock_is_loopback(uint32_t ip)
+{
+    return (ip >> 24) == 127;
+}
 
 /* What a socket is now (struct sock's state). */
 enum sock_state {

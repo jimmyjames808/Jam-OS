@@ -36,10 +36,11 @@ static const struct {
     { "session", pt_session },
     { "files-many", pt_files_many },
     { "sockets", pt_sockets },
+    { "loopback", pt_loopback },
 };
 
 /* The sections run only when named (long ones). */
-static const char *const asked_only[] = { "files-many", "sockets", "session" };
+static const char *const asked_only[] = { "files-many", "sockets", "session", "loopback" };
 
 static bool by_default(const char *name)
 {
