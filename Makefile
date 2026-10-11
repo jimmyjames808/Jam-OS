@@ -588,9 +588,11 @@ $(PT_LIB_OBJ): $(patsubst %,$(BUILD)/udrv/drivers/lib/%.o,$(PT_LIB)) tools/check
 # kmalloc call, a call into another driver, ...) and accepts a clean one,
 # the Markdown docs still match the tree (tools/checkdocs.py), the
 # RTL8125 listen-only probe has no way to transmit (tools/checknotx.sh),
-# the NVMe driver has no way to write (tools/checknvme.py), and the
+# the NVMe driver has no way to write (tools/checknvme.py), the
 # partition table library keeps to the driver rules and passes
-# tools/gptcheck.c (its cases, mutations and a short fuzz pass).
+# tools/gptcheck.c (its cases, mutations and a short fuzz pass), and the
+# ports' recipes pass their lint and the ports builder its self-test
+# (tools/ports.py: offline, fake ports built with the real sysroot).
 check: all
 	python3 tools/gensyscalls.py check
 	python3 tools/genidl.py check
@@ -608,6 +610,8 @@ check: all
 	python3 tools/netpeer.py --selftest
 	python3 tools/pcap-vlan-check.py --selftest
 	python3 tools/checkwants.py --selftest
+	python3 tools/ports.py lint
+	python3 tools/ports.py selftest
 	python3 tools/fatcheck.py --selftest
 	$(SIGN_TOOL) self-test
 	$(MENU_TOOL) boot/limine.conf $(STICK_FILES)
