@@ -631,6 +631,8 @@ uint32_t dev_set_interface(struct usbdev *d, struct iface *f, uint8_t alt);
  * slots, context size, MSI or MSI-X, the BIOS handoff. */
 void report_controller(const struct hc *h);
 
+/* problems: devices with one, and ports still failing (not attempts that failed once and
+ * then worked). */
 void usb_counts(uint32_t *devices, uint32_t *hubs, uint32_t *ifaces, uint32_t *hid,
                 uint32_t *problems);
 /* A RESULTS line per device not listed yet, and the summary. */
@@ -678,6 +680,9 @@ void root_ports_reset(void);
  * before attempt n + 1 after n failed (0: no more). */
 #define PORT_TRIES 6
 uint64_t port_retry_ms(unsigned fails);
+/* Root ports whose last attach attempt failed and that no device has attached
+ * to since (a port is cleared by an attach, or by a connect of its own). */
+unsigned root_ports_failing(void);
 /* Wait (up to 2 s) until the entry of a device that left the port is
  * freed; false if one is still there. */
 bool wait_port_free(int parent, uint8_t port);

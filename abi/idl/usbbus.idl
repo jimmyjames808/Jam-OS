@@ -21,7 +21,10 @@ protocol usbbus 13
 
 # Counts over the configured devices (hubs included). settled 1: no port
 # or hub work pending and nothing attached or detached for 500 ms.
-# problems: devices that failed to enumerate or configure.
+# problems: devices that enumerated or configured with a problem, and ports
+# whose last attach attempt failed and that nothing has attached to since (an
+# attempt that failed and then worked on a retry is not one; the summary line
+# of the RESULTS box counts those as "failed").
 1  status        () -> (u32 devices, u32 hubs, u32 interfaces, u32 hid_interfaces, u32 problems, u32 generation, u8 settled)
 # The same, answered once the bus has settled or after timeout_ms
 # (settled 0 then). The only method whose reply can come later.

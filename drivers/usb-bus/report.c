@@ -233,10 +233,14 @@ void dev_log_detail(struct usbdev *d)
 void usb_counts(uint32_t *devices, uint32_t *hubs, uint32_t *ifaces, uint32_t *hid,
                 uint32_t *problems)
 {
-    uint32_t n = 0, nh = 0, ni = 0, nhid = 0, np = 0;
+    uint32_t n = 0, nh = 0, ni = 0, nhid = 0, np = 0, failing = root_ports_failing();
     for (int i = 0; g_devs && i < MAX_DEVS; i++) {
         struct usbdev *d = &g_devs[i];
-        if (!d->used || d->gone || !d->vid)
+        if (!d->used || d->gone)
+            continue;
+        for (unsigned p = 1; d->is_hub && p <= d->hub_ports && p < 16; p++)
+            failing += d->port_fail[p] != 0;
+        if (!d->vid)
             continue;   /* a gone one may wait a moment for a task to let go of it */
         n++;
         nh += d->is_hub;
@@ -254,7 +258,7 @@ void usb_counts(uint32_t *devices, uint32_t *hubs, uint32_t *ifaces, uint32_t *h
     if (hid)
         *hid = nhid;
     if (problems)
-        *problems = np + g_failed;
+        *problems = np + failing;
 }
 
 static void usb_report_summary(const char *when)
