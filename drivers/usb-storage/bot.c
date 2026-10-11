@@ -17,6 +17,17 @@
  *     the IN pipe, then on the OUT pipe. The command is lost; the caller
  *     may run it again (scsi.c does, once, unless the command itself ran
  *     out of time).
+ *
+ * The same recovery runs once before the first command (bot_take_over): the
+ * driver before us (one that crashed, or that usbtest or a restart stopped)
+ * may have left the device in the middle of a command, and on a real stick
+ * its first command then fails (a SanDisk 3.2 on the PC answered the first
+ * CBW of a new owner with a USB Transaction Error; QEMU's stick STALLs a CBW
+ * sent mid-READ). Reset recovery is what the specification gives for it
+ * (5.3.4: the reset, then both halts cleared), and it is the same three
+ * requests the failed first command would have led to, without losing that
+ * command and its retry. usb-bus has already put the endpoints' toggles
+ * back to 0 on both sides when it opened the pair (bulk.c).
  * Every step is one bounded usb-bus transfer, and the recovery is three
  * bounded requests, so a command always ends.
  *
@@ -93,6 +104,11 @@ static void reset_recovery(struct disk *k, const char *why)
         drv_log("usb-storage %04x:%04x: %s: reset recovery %u (reset %s, clear halt in %s, "
                 "out %s)", k->vid, k->pid, why, k->resets, status_str(r), status_str(in),
                 status_str(out));
+}
+
+void bot_take_over(struct disk *k)
+{
+    reset_recovery(k, "taking the device over");
 }
 
 /* A step failed with st: the device is gone, or the transport is reset.

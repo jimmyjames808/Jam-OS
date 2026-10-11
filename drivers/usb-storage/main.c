@@ -22,7 +22,8 @@
  * ready, READ CAPACITY and the partition table (scsi.c, block.c). A
  * device left in the middle of a command by whoever drove it before
  * (a driver that crashed) answers the first command with a STALL or not
- * at all; the transport's reset recovery (bot.c) gets it back.
+ * at all, so the transport's reset recovery (bot.c) runs before the first
+ * command, and again whenever a command breaks.
  *
  * Then it serves: `storage` on DR_SERVE and on each connect's channel
  * (the disk, its partitions, and open_partition, which makes a `block`
@@ -472,6 +473,7 @@ static int bring_up(struct disk *k)
         r = open_pipes(k);
     if (r != 0)
         return r;
+    bot_take_over(k);
     unsigned luns = bot_luns(k);
     status_t st = scsi_bring_up(k);
     if (st == OK)

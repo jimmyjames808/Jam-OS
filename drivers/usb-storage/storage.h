@@ -87,6 +87,10 @@ struct bot_cmd {
  * out. ERR_PEER_CLOSED: the device is gone (k->gone). Never waits longer
  * than the command's timeouts plus the recovery's. */
 status_t bot_run(struct disk *k, const struct bot_cmd *c, uint32_t *moved, bool *failed);
+/* Reset recovery before the first command: whoever drove the device before
+ * may have left it mid-command or out of sequence (see bot.c). Failures are
+ * logged, not returned: the first command finds out whether it worked. */
+void bot_take_over(struct disk *k);
 /* GET MAX LUN: the number of logical units (1 if the device doesn't say). */
 unsigned bot_luns(struct disk *k);
 

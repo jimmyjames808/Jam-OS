@@ -171,7 +171,10 @@ static inline status_t usbbus_status_call(handle_t ch, bool idl_within, uint64_t
 }
 /* Counts over the configured devices (hubs included). settled 1: no port
  * or hub work pending and nothing attached or detached for 500 ms.
- * problems: devices that failed to enumerate or configure. */
+ * problems: devices that enumerated or configured with a problem, and ports
+ * whose last attach attempt failed and that nothing has attached to since (an
+ * attempt that failed and then worked on a retry is not one; the summary line
+ * of the RESULTS box counts those as "failed"). */
 static inline status_t usbbus_status_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_devices, uint32_t *out_hubs, uint32_t *out_interfaces, uint32_t *out_hid_interfaces, uint32_t *out_problems, uint32_t *out_generation, uint8_t *out_settled)
 {
     return usbbus_status_call(ch, false, deadline_ns, out_devices, out_hubs, out_interfaces, out_hid_interfaces, out_problems, out_generation, out_settled);

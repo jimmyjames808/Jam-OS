@@ -13,8 +13,14 @@
  * On the first mass-storage interface that isn't the second disk (in QEMU
  * and on the PC: the boot stick):
  *   storage_bulk   usb.open_bulk gives a 64 KiB buffer, a second channel
- *                  is refused, bad transfers are refused, and an INQUIRY
- *                  by hand (CBW out, data in, CSW in) works
+ *                  is refused, bad transfers are refused, and after reset
+ *                  recovery (what the driver before may have left the
+ *                  device needing: a real stick failed its new owner's first
+ *                  CBW) an INQUIRY by hand (CBW out, data in, CSW in) works
+ *   storage_handover  the device is left in the middle of a READ, the pair
+ *                  is opened again on the same channel (a restarted
+ *                  driver's): QEMU's stick refuses the next CBW, and after
+ *                  reset recovery the first command works
  *   storage_stall  an unknown SCSI command ends "failed" (QEMU: with
  *                  sense ILLEGAL REQUEST), whether the device STALLs its
  *                  data phase (real sticks) or pads it (QEMU); a CBW with a bad
@@ -48,6 +54,9 @@
  *   storage_apart  while a READ waits on the slow disk below, the second
  *                  disk reads 64 KiB at its own pace: usb-bus runs each
  *                  device's bulk transfers apart from the others'
+ *   storage_kill  a usb-storage killed with a READ in flight (the disk's
+ *                  throttle keeps it going for a moment), a new one started
+ *                  on the same disk: it takes the device over and works
  *   storage_unplug device_del in the middle of reads: the read fails
  *                  (it doesn't hang), the block channel closes, the
  *                  driver exits 0
@@ -191,14 +200,38 @@ static bool find_disk(const char *serial, struct raw *r)
     return false;
 }
 
-static void raw_close(struct raw *r)
+static void raw_unmap(struct raw *r)
 {
     if (r->buf)
         jam_vmar_unmap(startup_handle(SR_SELF_VMAR), (uint64_t)(uintptr_t)r->buf, BULK_BUF);
     r->buf = NULL;
+}
+
+static void raw_close(struct raw *r)
+{
+    raw_unmap(r);
     if (r->ch)
         jam_handle_close(r->ch);
     r->ch = HANDLE_INVALID;
+}
+
+/* usb.open_bulk on r's channel, and the buffer it gives mapped at r->buf.
+ * ERR_BAD_STATE: another driver has the pair. */
+static status_t raw_open_bulk(struct raw *r)
+{
+    handle_t vmo = HANDLE_INVALID;
+    uint32_t size = 0;
+    status_t st = usb_open_bulk_until(r->ch, soon(), r->ep_in, r->ep_out, &vmo, &size);
+    if (st != OK)
+        return st;
+    uint64_t va = 0;
+    st = size == BULK_BUF ? jam_vmar_map(startup_handle(SR_SELF_VMAR), vmo, 0, size,
+                                         VMAR_READ | VMAR_WRITE, &va)
+                          : ERR_INTERNAL;
+    jam_handle_close(vmo);
+    if (st == OK)
+        r->buf = (uint8_t *)(uintptr_t)va;
+    return st;
 }
 
 /* ---- Bulk-Only Transport by hand ---------------------------------------------------- */
@@ -274,6 +307,22 @@ static status_t raw_cmd(struct raw *r, const uint8_t *cdb, uint8_t n, uint32_t l
     return raw_csw(r, status);
 }
 
+/* Reset recovery (Bulk-Only Transport 5.3.4), as drv/usb-storage does it: the class request
+ * Bulk-Only Mass Storage Reset, then CLEAR_FEATURE(ENDPOINT_HALT) on bulk IN and bulk OUT
+ * (usb-bus also puts its own side of each endpoint back). The device is ready for a CBW
+ * after it, whatever the driver before it left (a command half done, a halt, a toggle out
+ * of step). The first step that failed, or OK. */
+static status_t raw_recover(struct raw *r)
+{
+    status_t reset = usb_control_out_until(r->ch, soon(), 0x21, 0xff, 0, r->ifnum, NULL, 0);
+    status_t in_ep = usb_clear_halt_until(r->ch, usb_wait(), r->ep_in);
+    status_t out_ep = usb_clear_halt_until(r->ch, usb_wait(), r->ep_out);
+    if (reset != OK || in_ep != OK || out_ep != OK)
+        printf("usbtest: reset recovery: reset %s, clear halt in %s, out %s\n", status_str(reset),
+               status_str(in_ep), status_str(out_ep));
+    return reset != OK ? reset : in_ep != OK ? in_ep : out_ep;
+}
+
 /* ---- storage_bulk, storage_stall ----------------------------------------------------- */
 
 static bool t_storage_bulk(void)
@@ -282,7 +331,7 @@ static bool t_storage_bulk(void)
     CHECK_ST(take_disk(r, &r->ch), OK);
     handle_t vmo = HANDLE_INVALID;
     uint32_t size = 0;
-    status_t st = usb_open_bulk_until(r->ch, soon(), r->ep_in, r->ep_out, &vmo, &size);
+    status_t st = raw_open_bulk(r);
     if (st == ERR_BAD_STATE) {
         printf("usbtest: storage: another driver has the disk's bulk endpoints: skipped\n");
         skipped++;
@@ -290,12 +339,6 @@ static bool t_storage_bulk(void)
         return true;
     }
     CHECK_ST(st, OK);
-    CHECK(size == BULK_BUF);
-    uint64_t va = 0;
-    st = jam_vmar_map(startup_handle(SR_SELF_VMAR), vmo, 0, size, VMAR_READ | VMAR_WRITE, &va);
-    jam_handle_close(vmo);
-    CHECK_ST(st, OK);
-    r->buf = (uint8_t *)(uintptr_t)va;
     /* the pair belongs to this channel: another one can't open or use it */
     handle_t other;
     CHECK_ST(usbbus_open_interface_until(bus, soon(), r->dev_id, r->ifnum, &other), OK);
@@ -320,13 +363,29 @@ static bool t_storage_bulk(void)
     CHECK_ST(usb_clear_halt_until(r->ch, soon(), 0x0f), ERR_INVALID_ARGS);
     CHECK_ST(usb_open_bulk_until(r->ch, soon(), r->ep_out, r->ep_in, &vmo, &size),
              ERR_INVALID_ARGS);
-    /* INQUIRY */
+    /* INQUIRY, the first command of a new owner: the driver before may have left the device
+     * in the middle of a command or out of sequence (the PC's SanDisk answered its new
+     * owner's first CBW with a USB Transaction Error, and every one after it), so reset
+     * recovery comes first, as in usb-storage. A first command that still fails gets one more
+     * recovery and one more try, as scsi.c's does, and the line says so. */
     const uint8_t inquiry[6] = { 0x12, 0, 0, 0, 36 };
     uint32_t moved = 0;
     uint8_t status = 0xff;
     bool stalled = false;
-    CHECK_ST(raw_cmd(r, inquiry, 6, 36, &moved, &status, &stalled), OK);
+    unsigned recoveries = 1;
+    CHECK_ST(raw_recover(r), OK);
+    st = raw_cmd(r, inquiry, 6, 36, &moved, &status, &stalled);
+    if (st != OK) {
+        printf("usbtest: the first command after reset recovery failed (%s): once more\n",
+               status_str(st));
+        recoveries++;
+        CHECK_ST(raw_recover(r), OK);
+        st = raw_cmd(r, inquiry, 6, 36, &moved, &status, &stalled);
+    }
+    CHECK_ST(st, OK);
     CHECK(moved == 36 && status == 0 && !stalled);
+    printf("usbtest: the first command after the hand-over worked after %u reset recover%s\n",
+           recoveries, recoveries == 1 ? "y" : "ies");
     r->qemu = !memcmp(r->buf + 8, "QEMU    ", 8);
     printf("usbtest: INQUIRY by hand: \"%.8s\" \"%.16s\"\n", (const char *)r->buf + 8,
            (const char *)r->buf + 16);
@@ -356,14 +415,47 @@ static bool t_storage_stall(void)
     /* a CBW that isn't one: the device refuses it and wants reset recovery */
     status_t bad = raw_cbw(r, 0x12345678, sense, 6, true, 18);
     CHECK(bad == ERR_IO || bad == OK);
-    CHECK_ST(usb_control_out_until(r->ch, soon(), 0x21, 0xff, 0, r->ifnum, NULL, 0), OK);
-    CHECK_ST(usb_clear_halt_until(r->ch, usb_wait(), r->ep_in), OK);
-    CHECK_ST(usb_clear_halt_until(r->ch, usb_wait(), r->ep_out), OK);
+    CHECK_ST(raw_recover(r), OK);
     const uint8_t inquiry[6] = { 0x12, 0, 0, 0, 36 };
     CHECK_ST(raw_cmd(r, inquiry, 6, 36, &moved, &status, &stalled), OK);
     CHECK(moved == 36 && status == 0);
     printf("usbtest: bad CBW: %s; reset recovery, then INQUIRY works\n",
            bad == ERR_IO ? "STALL" : "taken");
+    return true;
+}
+
+/* A new owner on a pair the last one left in the middle of a command. A READ(10) is sent
+ * and half of its data left unread (as a driver that crashed leaves it), then usb.open_bulk is
+ * asked again on the same channel: what devmgr's restart of a class driver does, and usb-bus
+ * gives the new owner a fresh pair (the controller's side started afresh, the device's
+ * halts and toggles cleared). The device's command state is not usb-bus's to touch. QEMU's
+ * stick, still in its data phase, refuses the next CBW with a STALL, the failure the PC's
+ * SanDisk showed (there as a USB Transaction Error, from its out-of-step sequence numbers,
+ * which QEMU does not model); a real stick may take it or not. Whichever, reset recovery
+ * before the first command gets the device back. */
+static bool t_storage_handover(void)
+{
+    struct raw *r = &boot_raw;
+    CHECK(r->buf != NULL);
+    const uint8_t read16[10] = { 0x28, 0, 0, 0, 0, 0, 0, 0, 16, 0 };
+    uint32_t moved = 0;
+    CHECK_ST(raw_cbw(r, CBW_SIG, read16, 10, true, 16 * 512), OK);
+    CHECK_ST(usb_bulk_in_until(r->ch, usb_wait(), 0, 4096, step_end(), &moved), OK);
+    CHECK(moved == 4096);
+    raw_unmap(r);
+    CHECK_ST(raw_open_bulk(r), OK);
+    const uint8_t inquiry[6] = { 0x12, 0, 0, 0, 36 };
+    uint8_t status = 0xff;
+    bool stalled = false;
+    status_t first = raw_cmd(r, inquiry, 6, 36, &moved, &status, &stalled);
+    if (r->qemu)
+        CHECK(first != OK);   /* the device wants reset recovery: no recovery, no command */
+    CHECK_ST(raw_recover(r), OK);
+    CHECK_ST(raw_cmd(r, inquiry, 6, 36, &moved, &status, &stalled), OK);
+    CHECK(moved == 36 && status == 0 && !stalled);
+    printf("usbtest: a pair opened again on a device left mid-READ: the first command without "
+           "recovery %s; after reset recovery INQUIRY works\n",
+           first == OK ? "was taken" : status_str(first));
     return true;
 }
 
@@ -981,6 +1073,41 @@ static status_t read_answer(const struct pch *p, uint64_t deadline)
     return st == OK ? idl_rep_status(&r, n, sizeof(r)) : st;
 }
 
+/* usb-storage killed with a READ in flight (the disk is read at 256 KiB/s, so the 64 KiB
+ * READ is still going a few tens of ms in: the CBW is taken, the data phase half done), and a
+ * new one started on the same disk, the way devmgr restarts a driver that crashed. The new
+ * one must take the device over and serve (drive_start reads its partitions through the
+ * `storage` protocol), and read. */
+static bool t_storage_kill(void)
+{
+    struct drive *v = &disk2;
+    struct pch p = { 0 };
+    int e = part_of_type(v, 0x0c, 0x0b);
+    CHECK(e >= 0 && v->proc != HANDLE_INVALID);
+    CHECK(part_open(v, (uint8_t)e, true, &p));
+    CHECK_ST(read_send(&p, 0, BUF_SIZE / v->bs), OK);
+    jam_sleep_until(in(60 * NS_PER_MS));
+    CHECK_ST(jam_process_kill(v->proc), OK);
+    part_close(&p);
+    drive_stop(v);   /* waits for it to be gone */
+    jam_sleep_until(in(200 * NS_PER_MS));   /* usb-bus sees the channel close */
+    struct raw r;
+    CHECK(find_disk(DISK2, &r));
+    handle_t usb;
+    CHECK_ST(take_disk(&r, &usb), OK);
+    uint64_t t0 = now();
+    if (!drive_start(v, usb, "usb-storage-disk2"))
+        return false;
+    printf("usbtest: a usb-storage killed with a READ in flight: the next one took over in %lu "
+           "ms\n", (unsigned long)((now() - t0) / NS_PER_MS));
+    CHECK(v->qemu && v->nparts == 2);
+    bool ok = part_open(v, (uint8_t)e, true, &p);
+    ok = ok && rd(&p, 0, BUF_SIZE / v->bs, 0) == OK;
+    part_close(&p);
+    CHECK(ok);
+    return true;
+}
+
 /* While a READ waits on the slow disk (its data phase can take the whole
  * 5 s), the second disk reads 64 KiB: about a quarter of a second at its
  * 256 KiB/s, since usb-bus runs each device's bulk transfers apart (one
@@ -1082,12 +1209,13 @@ void storage_tests(void)
 {
     if (load() != OK || !find_disk(NULL, &boot_raw)) {
         printf("usbtest: storage: no mass-storage device: skipped\n");
-        skipped += 9;
+        skipped += 10;
     } else {
         run("storage_bulk", t_storage_bulk);
         if (!boot_raw.buf) {
-            skipped += 8;   /* it said why */
+            skipped += 9;   /* it said why */
         } else {
+            run("storage_handover", t_storage_handover);
             run("storage_stall", t_storage_stall);
             run("storage_bind", t_storage_bind);
             run("storage_esp", t_storage_esp);
@@ -1105,13 +1233,14 @@ void storage_tests(void)
      * timing out. */
     struct raw r;
     if (!find_disk(DISK2, &r) || !find_disk(SLOW, &r)) {
-        printf("usbtest: storage_disk2, storage_apart, storage_unplug, storage_timeout: no disks "
-               "with serials " DISK2 " and " SLOW " (the tools/storage-test.sh scenario): "
-               "skipped\n");
-        skipped += 4;
+        printf("usbtest: storage_disk2, storage_kill, storage_apart, storage_unplug, "
+               "storage_timeout: no disks with serials " DISK2 " and " SLOW " (the "
+               "tools/storage-test.sh scenario): skipped\n");
+        skipped += 5;
         return;
     }
     run("storage_disk2", t_storage_disk2);
+    run("storage_kill", t_storage_kill);
     run("storage_apart", t_storage_apart);
     run("storage_unplug", t_storage_unplug);
     drive_stop(&disk2);

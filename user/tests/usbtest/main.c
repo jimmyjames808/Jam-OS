@@ -134,6 +134,10 @@ static bool t_settled(void)
     struct bus_status b;
     CHECK_ST(wait_settled(15000, &b), OK);
     CHECK(b.settled);
+    /* problems: devices usb-bus set up with a problem, and ports whose last attach attempt
+     * failed with nothing attached since (an attempt that failed and then worked on a retry
+     * is not one). The lines that say which are "PROBLEM:" and "FAILED at" in the RESULTS
+     * box and the log. */
     printf("usbtest: %u devices (%u hubs), %u interfaces (%u HID), %u problems\n", b.devices,
            b.hubs, b.ifaces, b.hid, b.problems);
     return true;

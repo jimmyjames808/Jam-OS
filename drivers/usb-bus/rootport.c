@@ -144,6 +144,14 @@ static void root_over_current(struct hc *h, uint32_t p)
                OC_RESTORES, hc_portsc(h, p));
 }
 
+unsigned root_ports_failing(void)
+{
+    unsigned n = 0;
+    for (unsigned p = 1; p < sizeof(root_fail); p++)
+        n += root_fail[p] != 0;
+    return n;
+}
+
 uint64_t port_retry_ms(unsigned fails)
 {
     return fails && fails < PORT_TRIES ? 100ull << (fails - 1) : 0;
