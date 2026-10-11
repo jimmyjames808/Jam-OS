@@ -35,6 +35,13 @@
 #define FILE_TRUNCATE         0x00110003u
 #define FILE_STAT             0x00110004u
 #define FILE_SYNC             0x00110005u
+#define FILE_MAP              0x00110006u
+
+/* Constants (the .idl's `const` lines). */
+/* file.map's flags: the file's one shared VMO (read and map only), or a
+ * VMO of the caller's own for vmo_make_exec_verified. */
+#define FILE_MAP_READ 1u
+#define FILE_MAP_EXEC 2u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct file_read_req {
@@ -87,6 +94,16 @@ struct file_sync_req {
 struct file_sync_rep {
     uint32_t txid;
     int32_t  status;
+} __attribute__((packed));
+struct file_map_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t flags;
+} __attribute__((packed));
+struct file_map_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint64_t size;
 } __attribute__((packed));
 
 #define FILE_REQ_MAX 20u   /* bytes: the biggest request */
@@ -263,6 +280,65 @@ static inline status_t file_sync(handle_t ch)
     return file_sync_call(ch, false, DEADLINE_NEVER);
 }
 
+/* file_map_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t file_map_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t flags, handle_t *out_vmo, uint64_t *out_size)
+{
+    _Alignas(8) uint8_t idl_b0[12];
+    _Alignas(8) uint8_t idl_b1[16];
+    struct file_map_req *idl_q = (struct file_map_req *)idl_b0;
+    const struct file_map_rep *idl_r = (const struct file_map_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = FILE_MAP;
+    idl_q->flags = flags;
+    handle_t idl_rh[1];
+    if (idl_st == OK)
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 16, &idl_got[0], idl_rh, 1, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st != OK)
+        idl_got[1] = 0;   /* handles arrive only with OK */
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
+    if (idl_st == OK && idl_got[1] != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(idl_handle_is(idl_rh[0], IDL_OBJ_VMO)))
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK)
+        idl_close_all(idl_rh, idl_got[1]);
+    if (idl_st == OK) {
+        if (out_vmo)
+            *out_vmo = idl_rh[0];
+        else
+            drv_handle_close(idl_rh[0]);
+    }
+    if (idl_st == OK && out_size)
+        *out_size = idl_r->size;
+    (void)idl_o;
+    return idl_st;
+}
+/* Map the file: a VMO whose pages are the file's, fetched as they are
+ * touched; `size` is the file's now (the VMO follows a truncate or growth).
+ * FILE_MAP_READ: the file's one shared VMO, read and map only.
+ * FILE_MAP_EXEC: a VMO of its own, for vmo_make_exec_verified (the shell).
+ * A view without the file's read right: ERR_ACCESS_DENIED. A directory:
+ * ERR_IS_DIR. A service with no pager: ERR_NOT_SUPPORTED (fat answers that
+ * until it serves pages). Restart: a successor answers its keys' requests. */
+static inline status_t file_map_until(handle_t ch, uint64_t deadline_ns, uint32_t flags, handle_t *out_vmo, uint64_t *out_size)
+{
+    return file_map_call(ch, false, deadline_ns, flags, out_vmo, out_size);
+}
+static inline status_t file_map_within(handle_t ch, uint64_t timeout_ns, uint32_t flags, handle_t *out_vmo, uint64_t *out_size)
+{
+    return file_map_call(ch, true, timeout_ns, flags, out_vmo, out_size);
+}
+static inline status_t file_map(handle_t ch, uint32_t flags, handle_t *out_vmo, uint64_t *out_size)
+{
+    return file_map_call(ch, false, DEADLINE_NEVER, flags, out_vmo, out_size);
+}
+
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
 
 /* file_read without waiting: the request, with the caller's txid (not 0).
@@ -429,6 +505,49 @@ static inline status_t file_sync_result(const void *idl_rep, struct idl_msg *idl
     return OK;
 }
 
+/* file_map without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then file_map_result. */
+static inline status_t file_map_send(handle_t ch, uint32_t idl_txid, uint32_t flags)
+{
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    _Alignas(8) uint8_t idl_b0[12];
+    struct file_map_req *idl_q = (struct file_map_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = FILE_MAP;
+    idl_q->flags = flags;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
+}
+
+/* The status and results of a reply to file_map_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t file_map_result(const void *idl_rep, struct idl_msg *idl_m, handle_t *out_vmo, uint64_t *out_size)
+{
+    const struct file_map_rep *idl_r = (const struct file_map_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(idl_handle_is(idl_m->hs[0], IDL_OBJ_VMO)))
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    if (out_vmo)
+        *out_vmo = idl_m->hs[0];
+    else
+        drv_handle_close(idl_m->hs[0]);
+    idl_m->nh = 0;
+    if (out_size)
+        *out_size = idl_r->size;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -441,6 +560,7 @@ struct file_ops {
     status_t (*truncate)(void *ctx, uint64_t size);
     status_t (*stat)(void *ctx, uint64_t *out_size, uint8_t *out_is_dir, uint64_t *out_mtime, uint64_t *out_id);
     status_t (*sync)(void *ctx);
+    status_t (*map)(void *ctx, uint32_t flags, handle_t *out_vmo, uint64_t *out_size);
 };
 
 /* Answer the file.read request kept in txn: idl_st and, if it is OK, the
@@ -522,6 +642,31 @@ static inline status_t file_reply_sync(struct idl_txn idl_txn, status_t idl_st)
     if (idl_st != OK)
         return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
     return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the file.map request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t file_reply_map(struct idl_txn idl_txn, status_t idl_st, handle_t vmo, uint64_t size)
+{
+    handle_t idl_hs[1] = { vmo };
+    _Alignas(8) uint8_t idl_b0[16];
+    struct file_map_rep *idl_r = (struct file_map_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(vmo != HANDLE_INVALID))
+        idl_st = ERR_INTERNAL;
+    idl_r->size = size;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        if (idl_hs[0] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[0]);
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, idl_st == OK ? idl_hs : NULL, idl_st == OK ? 1 : 0);
+    return idl_ws;
 }
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
@@ -632,6 +777,31 @@ static inline uint32_t file_dispatch_on(handle_t ch, const struct file_ops *ops,
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
+        return sizeof(*idl_r);
+    }
+    case FILE_MAP: {
+        const struct file_map_req *idl_q = (const struct file_map_req *)req;
+        struct file_map_rep *idl_r = (struct file_map_rep *)rep;
+        handle_t out_vmo = HANDLE_INVALID;
+        uint64_t out_size = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->map) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->map(ctx, idl_q->flags, &out_vmo, &out_size);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && !(out_vmo != HANDLE_INVALID))
+            idl_h->status = ERR_INTERNAL;   /* a handle result left unset */
+        if (idl_h->status != OK) {
+            if (out_vmo != HANDLE_INVALID)
+                drv_handle_close(out_vmo);
+            return sizeof(*idl_h);
+        }
+        rhs[0] = out_vmo;
+        *rhn = 1;
+        idl_r->size = out_size;
         return sizeof(*idl_r);
     }
     }
