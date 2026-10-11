@@ -894,16 +894,23 @@ device channel init holds (the PC's RTL8125; QEMU's e1000e with
    two netctl calls, as in a plain boot), else **bin/dhcp**.
 3. **logd**, once `/data` is mounted, with `/data:w`: `/data/logs/boot-NNNN.txt`
    as in a plain boot. When usbtest takes the stick away from volumes and
-   gives it back, init sends logd the new namespace
-   (`mounts_event`, as in shell mode) and logd retries by itself, as it
-   does there.
+   gives it back, init sends logd the new namespace as in shell mode, but
+   only once the mount changes have been quiet for 300 ms (the update makes
+   a view of `/data`, a call that can wait, and utest's mock disks make
+   hundreds of changes that init must read at once), and logd retries by
+   itself, as it does there.
 4. **netlog**, with the root (kernel log only), a namespace of
    `/svc/net-sys` alone (published in init's namespace for the length of
    the spawn only) and the panicked boot's log if there was one. It reads
    the kernel log from its first byte, so the whole boot goes, the lines
    from before it started too.
 
-init waits for `/data` (15 s at most) before the first program, but only
+init waits for `/data` (15 s at most) before the first program, and a
+program that follows one that had `/data` waits up to 2 s for it to come
+back (usbtest ends a few ms before volumes' remount reaches init, and a
+program started in that gap gets a namespace without `/data` for good:
+posixtest's `files` section failed that way in 2 of 6 runs with the network
+on the loaded PC; a plain run has the same gap, with more margin), but only
 on a boot that has a card and a network: a QEMU run without `QEMU_NET`, a
 `vlan=off` boot and a boot image without bin/netstack or bin/netlog are
 untouched, to the line. A boot with a card whose settings have no

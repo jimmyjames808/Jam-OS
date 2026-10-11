@@ -30,8 +30,10 @@
  *                  /data/logs/boot-NNNN.txt as in a plain boot (the root
  *                  with RIGHT_ROOT_KLOG, a namespace of /data:w that
  *                  follows init's: regnet_mounts, when usbtest takes the
- *                  stick from volumes and gives it back, and its control
- *                  channel for the flush).
+ *                  stick from volumes and gives it back, debounced (see
+ *                  there); and its control channel for the flush).
+ *   regnet_before_program   before each program: one that follows a program
+ *                  that had /data waits (2 s at most) for it to be back.
  *       netlog     bin/netlog <net.host> <boot id>, as net.c starts it: the
  *                  root with RIGHT_ROOT_KLOG, a namespace of /svc/net-sys
  *                  alone (published in init's namespace for the length of
