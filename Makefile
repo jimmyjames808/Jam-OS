@@ -796,6 +796,9 @@ clean:
 # POSIX on musl: musl, the call layer, the sysroot, posixtest (its own file).
 include user/posix/posix.mk
 
+# libc-test, musl's test suite, as one program (user/ports/libc-test/).
+include user/ports/libc-test/libc-test.mk
+
 # compile_commands.json for editors (VS Code IntelliSense, clangd): the real
 # build's flags for every file, from a dry run (tools/compdb.py).
 compdb:

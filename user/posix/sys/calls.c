@@ -50,6 +50,9 @@ static lx_call *const calls[] = {
     [SYS_getrandom] = lx_getrandom,
     [SYS_sysinfo] = lx_sysinfo,
     [SYS_sched_getaffinity] = lx_sched_getaffinity,
+    [SYS_getrlimit] = lx_getrlimit,
+    [SYS_setrlimit] = lx_setrlimit,
+    [SYS_prlimit64] = lx_prlimit64,
 
     /* the descriptor table: fd.c */
     [SYS_read] = lx_read,

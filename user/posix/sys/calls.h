@@ -57,8 +57,9 @@ lx_call lx_set_tid_address, lx_gettid, lx_arch_prctl, lx_exit, lx_exit_group, lx
 lx_call lx_clock_gettime, lx_clock_getres, lx_clock_settime, lx_clock_nanosleep,
         lx_nanosleep;
 
-/* The machine and randomness (misc.c). */
+/* The machine and randomness (misc.c), and the resource limits (rlimit.c). */
 lx_call lx_uname, lx_getrandom, lx_sysinfo, lx_sched_getaffinity;
+lx_call lx_getrlimit, lx_setrlimit, lx_prlimit64;
 
 /* The descriptor table: the calls that route to a descriptor's kind (fd.c). */
 lx_call lx_read, lx_write, lx_readv, lx_writev, lx_pread64, lx_pwrite64, lx_preadv,

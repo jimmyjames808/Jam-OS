@@ -8,10 +8,13 @@
  *   - pthread_join of 1,000 threads, each joined as soon as it returns, so
  *     its stack is unmapped at once (the kernel clears the tid word only
  *     after the thread has left it), and 100 detached threads, which unmap
- *     their own stacks; the job's pages come back. */
+ *     their own stacks; the job's pages come back;
+ *   - a thread signalled and cancelled the moment pthread_create returns
+ *     (it must already be there, as on Linux), 300 times. */
 #include <stdio.h>
 #include <errno.h>
 #include <pthread.h>
+#include <signal.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -23,6 +26,7 @@
 #define COUNT_EACH    20000
 #define JOINS         1000
 #define DETACHED      100
+#define KILLS         300
 #define SLACK_PAGES   2048   /* 8 MiB: malloc's and the thread table's own */
 
 static __thread int tls_int = 1234;               /* .tdata */
@@ -172,10 +176,33 @@ static void check_joins(void)
     }
 }
 
+static void *napper(void *arg)
+{
+    for (;;)
+        usleep(1000);   /* a cancellation point */
+    return arg;
+}
+
+static void check_kill_new(void)
+{
+    unsigned canceled = 0;
+    for (int i = 0; i < KILLS; i++) {
+        pthread_t t;
+        void *r = NULL;
+        if (pthread_create(&t, NULL, napper, NULL) != 0)
+            continue;
+        CHECK(pthread_kill(t, 0) == 0);   /* exists: the creator may signal it at once */
+        CHECK(pthread_cancel(t) == 0);
+        canceled += pthread_join(t, &r) == 0 && r == PTHREAD_CANCELED;
+    }
+    CHECK(canceled == KILLS);
+}
+
 void pt_thread(char **argv __attribute__((unused)))
 {
     check_tls();
     check_errno();
     check_mutex();
     check_joins();
+    check_kill_new();
 }
