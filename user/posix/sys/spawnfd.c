@@ -53,11 +53,6 @@ long spawn_absolute(const char *path, const char *dir, char *out)
     return st == OK ? 0 : -EINVAL;
 }
 
-uint32_t spawnfd_umask(uint32_t fallback)
-{
-    return fallback;
-}
-
 /* Our current directory into cwd: getcwd's, else the hand-over's, else
  * "/". */
 static void our_cwd(char *cwd)

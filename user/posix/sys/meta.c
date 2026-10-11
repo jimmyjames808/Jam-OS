@@ -12,7 +12,8 @@
  *     owner (EPERM: only the one user exists, and it isn't root);
  *   - link, symlink and mknod are EPERM (Linux's vfat answer), readlink
  *     EINVAL (nothing is a link);
- *   - umask is kept (the hand-over's, else 022) and ignored;
+ *   - umask is kept (the hand-over's, else 022) and handed to children,
+ *     and otherwise ignored;
  *   - sync and syncfs ask each mount to sync; fadvise is advice, taken
  *     and ignored; fallocate is EOPNOTSUPP.
  * Paths under /dev and /etc are kinds.h's: their stat is dev_stat and
@@ -34,8 +35,9 @@
 #define FS_BSIZE     4096u
 #define ONE_USER     1000u
 
-static uint32_t umask_now = 022;   /* atomic */
-static bool     umask_ready;       /* the hand-over's looked at; atomic */
+static lock_t   umask_lock;
+static uint32_t umask_now = 022;   /* umask_lock */
+static bool     umask_ready;       /* umask_lock: the hand-over's looked at */
 
 /* ---- stat ---------------------------------------------------------------------- */
 
@@ -323,20 +325,36 @@ long lx_readlink(long pathname, long buf, long size, long d, long e, long f)
 
 /* ---- umask, sync, advice ------------------------------------------------------- */
 
+/* The first look at the umask takes the hand-over's, if the program had
+ * one. umask_lock. */
+static void umask_start_locked(void)
+{
+    if (umask_ready)
+        return;
+    umask_ready = true;
+    const char *cwd;
+    const struct posixfds_state *s = lx_handover(&cwd);
+    if (s)
+        umask_now = s->umask & 0777;
+}
+
+uint32_t lx_umask_now(void)
+{
+    lock_take(&umask_lock);
+    umask_start_locked();
+    uint32_t m = umask_now;
+    lock_give(&umask_lock);
+    return m;
+}
+
 long lx_umask(long mask, long b, long c, long d, long e, long f)
 {
-    if (!__atomic_load_n(&umask_ready, __ATOMIC_ACQUIRE)) {
-        const char *cwd;
-        const struct posixfds_state *s = lx_handover(&cwd);
-        uint32_t want = 022;   /* the hand-over's, if the program had one */
-        if (s)
-            want = s->umask & 0777;
-        bool no = false;
-        if (__atomic_compare_exchange_n(&umask_ready, &no, true, false, __ATOMIC_ACQ_REL,
-                                        __ATOMIC_ACQUIRE))
-            __atomic_store_n(&umask_now, want, __ATOMIC_RELEASE);
-    }
-    return __atomic_exchange_n(&umask_now, (uint32_t)mask & 0777, __ATOMIC_ACQ_REL);
+    lock_take(&umask_lock);
+    umask_start_locked();
+    uint32_t old = umask_now;
+    umask_now = (uint32_t)mask & 0777;
+    lock_give(&umask_lock);
+    return old;
 }
 
 long lx_sync(long a, long b, long c, long d, long e, long f)

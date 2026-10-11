@@ -48,7 +48,6 @@
 
 #define CHILD_STACK  (8ull << 20)   /* a POSIX child's stack: Linux's usual 8 MiB */
 #define SIG_NEVER    ((1ull << (SIGKILL - 1)) | (1ull << (SIGSTOP - 1)))
-#define UMASK_DEFAULT 022
 
 /* ---- the program --------------------------------------------------------------------- */
 
@@ -151,10 +150,8 @@ static long child_state(const struct jam_spawn_req *r, bool exec, struct posixfd
         mask = r->sigmask;
     if (r->flags & POSIX_SPAWN_SETSIGDEF)
         ignored &= ~(uint64_t)r->sigdef;
-    const char *cwd;
-    const struct posixfds_state *ho = lx_handover(&cwd);
     *s = (struct posixfds_state){
-        .umask = spawnfd_umask(ho ? ho->umask : UMASK_DEFAULT),
+        .umask = lx_umask_now(),
         .sigmask = mask & ~SIG_NEVER, .sigignore = ignored & ~SIG_NEVER,
     };
     if (exec) {

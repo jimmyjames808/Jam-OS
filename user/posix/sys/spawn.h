@@ -40,8 +40,6 @@ long     spawnfd_export(struct spawnfd *t, struct posixfds_out *ho);
 /* Free t (its references dropped) and what spawnfd_export made for ho
  * (not its handles: they were consumed). t may be NULL. */
 void     spawnfd_end(struct spawnfd *t, struct posixfds_out *ho);
-/* Our umask (fallback until the descriptor table keeps one). */
-uint32_t spawnfd_umask(uint32_t fallback);
 
 /* The absolute, cleaned path for path (a relative one from dir: "." and
  * ".." walked, no doubled '/') into out (PATH_MAX bytes). 0 or -errno. */

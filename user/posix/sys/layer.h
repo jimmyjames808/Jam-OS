@@ -31,6 +31,8 @@ void mem_forget(uint64_t addr, uint64_t len);
 /* The soft limit of a resource (rlimit.c): RLIMIT_NOFILE and RLIMIT_DATA are
  * the ones acted on (fd_alloc, brk); UINT64_MAX is unlimited. */
 uint64_t rlimit_cur(int resource);
+/* The umask now (meta.c): what a child is handed. */
+uint32_t lx_umask_now(void);
 /* The calling thread's handle (thread.c). */
 handle_t lx_self_thread(void);
 /* The POSIX hand-over's state and current directory (<posixfds.h>; read

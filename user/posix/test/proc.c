@@ -22,6 +22,7 @@
  *     hanging (every process in its job ends);
  *   - a spawn that fails (no such program) takes nothing of ours with it:
  *     a pipe's bytes read but not taken are still ours to read;
+ *   - the umask we set is the child's;
  *   - times and getrusage: our CPU time, and our reaped children's. */
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,6 +33,7 @@
 #include <spawn.h>
 #include <string.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <sys/times.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -127,6 +129,8 @@ int pt_child_proc(int argc, char **argv)
         return child_spawner();
     if (!strcmp(what, "write") && argc > 3)   /* its text on descriptor 1 */
         return write(1, argv[3], strlen(argv[3])) == (ssize_t)strlen(argv[3]) ? 0 : 1;
+    if (!strcmp(what, "umask"))
+        return (int)umask(0);
     if (!strcmp(what, "spin") && argc > 3) {
         spin_cpu_ms(atol(argv[3]));
         return 0;
@@ -506,6 +510,15 @@ static void check_failed_spawn_keeps(void)
     close(p[1]);
 }
 
+static void check_umask(void)
+{
+    mode_t was = umask(077);
+    const char *args[] = { "umask", NULL };
+    int s = reap(spawn_self(NULL, NULL, args));
+    CHECK(WIFEXITED(s) && WEXITSTATUS(s) == 077);
+    umask(was);
+}
+
 /* times and getrusage: ours grows with what we spin; a reaped child's
  * spin counts as our children's. */
 static void check_times(void)
@@ -545,5 +558,6 @@ void pt_proc(char **argv)
     check_cut_reader();
     check_cut_kill();
     check_failed_spawn_keeps();
+    check_umask();
     check_times();
 }
