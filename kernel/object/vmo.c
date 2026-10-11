@@ -34,11 +34,12 @@
  * lowers the size first, so nothing new can appear past the new end while
  * it works, and holds "vmo resize" so no grow can reopen that range.
  *
- * Page lifetime: a committed page's struct page refcount is 1 for the
- * table's reference. vmo_read/vmo_write take an extra reference under the
- * lock and copy with it dropped, so a racing decommit or shrink can't free
- * a page mid-copy: whoever drops the last reference frees it. Contiguous
- * and physical VMOs never give pages up before destroy, so they skip this.
+ * Page lifetime: a committed page's struct page refcount is 1 for each
+ * table holding it (one, unless it is shared copy-on-write, below).
+ * vmo_read/vmo_write take an extra reference under the lock and copy with
+ * it dropped, so a racing decommit or shrink can't free a page mid-copy:
+ * whoever drops the last reference frees it. Contiguous and physical VMOs
+ * never give pages up before destroy, so they skip this.
  *
  * Job charges: a VMO made for a process (vmo_set_job) charges one
  * JOB_LIMIT_PAGES unit to that job for every page it owns, from the moment
@@ -122,7 +123,63 @@
  * no entry needs zapping) and sets `verify` in one hold of the lock, and
  * vmo_pager_publish, under that lock, publishes only a page its supplier
  * matched against `verify` or that matches now: so every page present
- * after the seal matched, whatever supply was under way across it. */
+ * after the seal matched, whatever supply was under way across it.
+ *
+ * Copy-on-write children (vmo_create_child; the design is docs/M13-PLAN.md's
+ * "F1a design"). Flat, never a chain: a child's table points at the same
+ * physical pages as its parent's, and each table is complete, so nothing
+ * links a child to its parent and any destruction order just drops
+ * references. A page held by n tables has refcount n (plus readers' brief
+ * references) and `private` n - 1, its share count (an anonymous VMO page
+ * doesn't otherwise use the word; pager pages never are shared: a child of
+ * a pager VMO copies them). The rules:
+ *   - A page is shared when its share count isn't 0, read under the lock of
+ *     the table looking. A shared page is never written in place and never
+ *     mapped writable; a table that wants to write it copies it into a page
+ *     of its own (separates it: cow_replace_locked) and drops its reference
+ *     on the old one. A page with a share count of 0 is that table's alone
+ *     and is written in place, so the survivor of a relative's death pays
+ *     nothing.
+ *   - The count only rises under the lock of a table that holds the page
+ *     (creation shares from the parent's table, under the parent's lock), so
+ *     a table that saw 0 under its own lock knows nobody can share the page
+ *     while it holds that lock. A table that lets go of a shared page lowers
+ *     the count only after its TLB shootdown (page_share_drop, from the
+ *     gather), so a relative never sees 0 while stale entries of the old
+ *     holder may still read the page. The decrement stops at 0: the last
+ *     tables to drop a page may find 0 already, which is what it ends at.
+ *   - A gather lists pages through their `node`, which only one gather may
+ *     use; a page that may be shared goes in the gather's array instead
+ *     (tlb_gather_shared). take_batch_locked stops early when the array is
+ *     full, and its callers flush and go on.
+ *   - Creation (vmo_create_child) holds the parent's "vmo resize" mutex: no size
+ *     change meanwhile. One leaf at a time under the parent's lock and the
+ *     child's (nested; the child is new, nobody else can reach it), every
+ *     present page is shared and the parent's writable user entries for the
+ *     leaf lose their write bit; one shootdown at the end. Until it is done
+ *     the parent's `protecting` is raised, and a write that would separate
+ *     one of the parent's shared pages waits for the creation (cow_wait):
+ *     otherwise a thread still writing through a stale writable entry could
+ *     change the page after the copy was taken, and its write would be lost.
+ *   - A separation under the lock: the copy (made with the lock dropped,
+ *     from a page held by a reference) goes in if the slot still holds the
+ *     page it copied, the old page's entries are cleared in every user
+ *     mapping of this VMO, and the old reference waits for the shootdown.
+ *     The copy is charged as the page it replaces: nothing more.
+ *   - Pins and kernel mappings separate every shared page of their range
+ *     first (commit_pages, GET_PRIVATE), and a child is refused a range one
+ *     covers, so a device or the kernel always reaches the VMO's own page.
+ *   - A kept VMO is never shared: its child gets copies at creation.
+ *   - Accounting: each table pays for every page in it, shared or not, so
+ *     a child is charged at creation for every page it shares and no
+ *     separation ever charges anything.
+ * A child of a pager VMO (or of such a child) has `src`, the pager VMO
+ * (a reference, fixed at creation), and a window [0, win) of its pages
+ * that come from src while absent: a touch of an absent page there copies
+ * src's page (fetching it first like a pager VMO's reader) into a page of
+ * the child's own; past src's end it is zero. The window is charged whole
+ * at creation (its pages are never charged one by one: charged_alone) and
+ * its tables are made then, so no touch of it charges anything. */
 #include <jam/aspace.h>
 #include <jam/aspace_vmo.h>
 #include <jam/dbghook.h>
@@ -193,6 +250,16 @@ struct vmo {
     struct mutex     resize;              /* serialises vmo_set_size */
     struct pager_vmo *pv;                 /* a pager VMO: its link (fixed at creation), else NULL */
     bool             pdetached;           /* a pager VMO cut off: nothing published any more; lock */
+    /* A child of a pager VMO (or of such a child): the pager VMO its absent
+     * pages [0, win) come from (a reference, fixed at creation), and its
+     * page index of this VMO's page 0; else NULL. win is charged whole to
+     * the job from creation on (lock; it only shrinks, with the size). */
+    struct vmo      *src;
+    uint64_t         src_first;
+    uint64_t         win;
+    /* Child creations sharing this VMO's pages whose shootdown of its
+     * writable entries hasn't finished (lock): a separation waits. */
+    uint32_t         protecting;
     /* A verified pager VMO's table (<jam/vmo_verify.h>), owned: set once,
      * under the lock, by vmo_seal_verified (a release store; lockless
      * readers load it with acquire), never changed after. */
@@ -251,6 +318,51 @@ static void page_put(struct page *p)
     page_unref(p);
 }
 
+/* With v's lock held, p in v's table: do other tables hold it too? Never
+ * for a pager VMO (its `private` is its cache's record). */
+static bool page_shared(const struct vmo *v, struct page *p)
+{
+    return !v->pv && __atomic_load_n(&p->private, __ATOMIC_ACQUIRE) != 0;
+}
+
+/* One more table holds p (the lock of a table that holds it is held). */
+static void page_share(struct page *p)
+{
+    page_get(p);
+    __atomic_add_fetch(&p->private, 1, __ATOMIC_RELAXED);
+}
+
+void page_share_drop(struct page *p)
+{
+    /* Release: a relative that then sees the count at 0 writes the page in
+     * place, after everything this table did with it. */
+    uint64_t n = __atomic_load_n(&p->private, __ATOMIC_RELAXED);
+    while (n && !__atomic_compare_exchange_n(&p->private, &n, n - 1, true, __ATOMIC_RELEASE,
+                                             __ATOMIC_RELAXED))
+        ;
+    page_unref(p);
+}
+
+/* Pages copied because a write separated them from a relative, and
+ * separations that waited for a creation's shootdown (for tests and the
+ * benchmark; relaxed). */
+uint64_t vmo_cow_copies, vmo_cow_waits;
+
+/* A creation that shares v's pages is still shooting down v's writable
+ * entries: wait for it to end (it holds "vmo resize" throughout). */
+static void cow_wait(struct vmo *v)
+{
+    __atomic_add_fetch(&vmo_cow_waits, 1, __ATOMIC_RELAXED);
+    mutex_lock(&v->resize);
+    mutex_unlock(&v->resize);
+}
+
+/* With the lock held: does absent page idx come from v's pager VMO? */
+static bool in_window_locked(const struct vmo *v, uint64_t idx)
+{
+    return v->src && idx < v->win;
+}
+
 /* With the lock held: a zeroed table page, charged to v's job. NULL if the
  * job refuses it or there is no memory. */
 static void *table_alloc_locked(struct vmo *v)
@@ -290,16 +402,25 @@ static uint64_t *slot_locked(struct vmo *v, uint64_t idx, bool create)
     return &(*leaf)[idx % LEAF_PAGES];
 }
 
+/* With the lock held: is page idx charged to the job on its own while
+ * committed? Every page but those of a pager child's window, which were
+ * paid for at creation. */
+static bool charged_alone(const struct vmo *v, uint64_t idx)
+{
+    return idx >= v->win;
+}
+
 /* With the lock held and page idx not committed (*s is its slot if its
  * tables exist, else NULL): charge the page to v's job, then make its
  * tables if needed. Returns the slot to publish the page in, or NULL with
  * nothing charged for the page (ERR_NO_MEMORY). */
 static uint64_t *charge_slot_locked(struct vmo *v, uint64_t idx, uint64_t *s)
 {
-    if (job_charge(v->job, JOB_LIMIT_PAGES, 1) != OK)
+    uint64_t n = charged_alone(v, idx) ? 1 : 0;
+    if (job_charge(v->job, JOB_LIMIT_PAGES, n) != OK)
         return NULL;   /* refused: no table gets built for it */
     if (!s && !(s = slot_locked(v, idx, true))) {
-        job_uncharge(v->job, JOB_LIMIT_PAGES, 1);
+        job_uncharge(v->job, JOB_LIMIT_PAGES, n);
         return NULL;
     }
     return s;
@@ -320,12 +441,16 @@ static void drop_leaf_from_locked(struct vmo *v, uint64_t *leaf, uint64_t base, 
 {
     for (uint64_t l = 0; l < LEAF_PAGES; l++) {
         if (leaf[l] && base + l >= first) {
-            if (v->pv)
+            if (v->pv) {
                 pager_page_gone_vlocked(v->pv, pa_page(leaf[l]));
-            page_put(pa_page(leaf[l]));
+                page_put(pa_page(leaf[l]));
+            } else {
+                page_share_drop(pa_page(leaf[l]));   /* no mapping: nothing to shoot down */
+            }
             leaf[l] = 0;
             v->committed--;
-            job_uncharge(v->job, JOB_LIMIT_PAGES, 1);
+            if (charged_alone(v, base + l))
+                job_uncharge(v->job, JOB_LIMIT_PAGES, 1);
         }
     }
 }
@@ -359,60 +484,180 @@ static void drop_from_locked(struct vmo *v, uint64_t first)
     }
 }
 
-/* Paged VMOs: page idx with an extra reference (page_put it), committing
- * it first if `commit`. *out = NULL if it isn't committed and commit is
- * false. ERR_OUT_OF_RANGE if idx is past the end (a racing shrink). */
-static status_t get_page(struct vmo *v, uint64_t idx, bool commit, struct page **out)
+static void zap_umaps_locked(const struct vmo *v, uint64_t first, uint64_t end,
+                             struct tlb_gather *g);
+
+/* What get_page makes sure of. */
+enum get_mode {
+    GET_PEEK,      /* nothing: an absent page is *out = NULL */
+    GET_COMMIT,    /* committed (a shared page will do) */
+    GET_PRIVATE,   /* committed and this table's alone: a shared page is separated */
+};
+
+/* A page made with no lock held for one slot, and what it holds: a copy of
+ * `from` (a reference: the shared page it separates), the pager VMO's
+ * bytes (`filled`: a pager child's window), or zeros. */
+struct fresh {
+    struct page *page;
+    struct page *from;
+    bool         filled;
+};
+
+static void fresh_drop(struct fresh *fr)
 {
-    struct page *fresh = NULL;
+    if (fr->page)
+        page_put(fr->page);
+    if (fr->from)
+        page_put(fr->from);
+    *fr = (struct fresh){ 0 };
+}
+
+/* With the lock held (f its saved flags) and p shared in v's table: drop
+ * the lock and copy p into fr (whatever fr held goes). OK: look again;
+ * ERR_NO_MEMORY: no page for the copy (fr is empty). */
+static status_t copy_unlocked(struct vmo *v, uint64_t f, struct page *p, struct fresh *fr)
+{
+    page_get(p);
+    vunlock(v, f);
+    fresh_drop(fr);
+    fr->from = p;
+    fr->page = pmm_alloc_pages(0, (v->flags & VMO_DMA32) ? PMM_DMA32 : 0);
+    if (!fr->page) {
+        fresh_drop(fr);
+        return ERR_NO_MEMORY;
+    }
+    memcpy(page_to_virt(fr->page), page_to_virt(p), PAGE_SIZE);
+    return OK;
+}
+
+/* With the lock held, slot s of page idx holding fr->from: separate it.
+ * fr->page goes in (charged as the page it replaces) and is the table's
+ * from now on, the old page's entries are cleared in every user mapping of
+ * v, and the table's reference on the old page goes to g, released after
+ * g's shootdown (the caller's, with the lock dropped); fr->from keeps its
+ * own reference for fresh_drop. g is empty. */
+static void cow_replace_locked(struct vmo *v, uint64_t idx, uint64_t *s, struct fresh *fr,
+                               struct tlb_gather *g)
+{
+    *s = page_to_phys(fr->page);
+    fr->page = NULL;
+    zap_umaps_locked(v, idx, idx + 1, g);
+    tlb_gather_shared(g, fr->from);
+    __atomic_add_fetch(&vmo_cow_copies, 1, __ATOMIC_RELAXED);
+}
+
+/* Fill fr with v's pager VMO's page for idx (in v's window), with no lock
+ * held: it waits as a pager VMO's reader does (vmo_read's errors). Past
+ * the pager VMO's end: zeros. */
+static status_t source_fill(struct vmo *v, uint64_t idx, struct fresh *fr)
+{
+    fresh_drop(fr);
+    struct page *p = pmm_alloc_pages(0, 0);
+    if (!p)
+        return ERR_NO_MEMORY;
+    status_t st = vmo_read(v->src, (v->src_first + idx) << PAGE_SHIFT, page_to_virt(p), PAGE_SIZE);
+    if (st == ERR_OUT_OF_RANGE) {
+        memset(page_to_virt(p), 0, PAGE_SIZE);
+        st = OK;
+    }
+    if (st != OK) {
+        page_put(p);
+        return st;
+    }
+    fr->page = p;
+    fr->filled = true;
+    return OK;
+}
+
+/* Paged VMOs: page idx with an extra reference (page_put it), made sure
+ * of as `mode` says. *out = NULL for an absent page with GET_PEEK (a pager
+ * child's window page too: vmo_read reads its pager VMO's).
+ * ERR_OUT_OF_RANGE if idx is past the end (a racing shrink); a pager VMO's
+ * absent page is ERR_NOT_SUPPORTED (its pager's to commit); a pager
+ * child's window page may wait for the pager (vmo_read's errors). */
+static status_t get_page(struct vmo *v, uint64_t idx, enum get_mode mode, struct page **out)
+{
+    struct fresh fr = { 0 };
     for (;;) {
         uint64_t f = vlock(v);
         if (idx >= v->size >> PAGE_SHIFT) {
             vunlock(v, f);
-            if (fresh)
-                page_put(fresh);
+            fresh_drop(&fr);
             return ERR_OUT_OF_RANGE;
         }
         uint64_t *s = slot_locked(v, idx, false);
-        if (s && *s) {
-            struct page *p = pa_page(*s);
+        struct page *p = s && *s ? pa_page(*s) : NULL;
+        if (p && (mode != GET_PRIVATE || !page_shared(v, p))) {
             page_get(p);
             vunlock(v, f);
-            if (fresh)
-                page_put(fresh);   /* another CPU committed it first */
+            fresh_drop(&fr);   /* another CPU committed or separated it first */
             *out = p;
             return OK;
         }
-        if (fresh) {
+        if (p && v->protecting) {   /* shared, and maybe still writable somewhere */
+            vunlock(v, f);
+            fresh_drop(&fr);
+            cow_wait(v);
+            continue;
+        }
+        if (p && fr.page && fr.from == p) {
+            struct tlb_gather g;
+            tlb_gather_init(&g);
+            struct page *mine = fr.page;
+            cow_replace_locked(v, idx, s, &fr, &g);
+            page_get(mine);   /* the table's reference plus the caller's */
+            vunlock(v, f);
+            tlb_gather_finish(&g);
+            fresh_drop(&fr);
+            *out = mine;
+            return OK;
+        }
+        if (p) {
+            status_t st = copy_unlocked(v, f, p, &fr);
+            if (st != OK)
+                return st;
+            continue;
+        }
+        if (mode == GET_PEEK || v->pv) {   /* a pager VMO's page is its pager's to commit */
+            vunlock(v, f);
+            fresh_drop(&fr);
+            *out = NULL;
+            return mode == GET_PEEK ? OK : ERR_NOT_SUPPORTED;
+        }
+        bool src = in_window_locked(v, idx);
+        if (fr.page && !fr.from && fr.filled == src) {
             if (!(s = charge_slot_locked(v, idx, s))) {
                 vunlock(v, f);
-                page_put(fresh);
+                fresh_drop(&fr);
                 return ERR_NO_MEMORY;
             }
-            *s = page_to_phys(fresh);
+            *s = page_to_phys(fr.page);
             v->committed++;
-            page_get(fresh);   /* the table's reference plus the caller's */
+            page_get(fr.page);   /* the table's reference plus the caller's */
             vunlock(v, f);
-            *out = fresh;
+            *out = fr.page;
             return OK;
         }
         vunlock(v, f);
-        if (!commit || v->pv) {   /* a pager VMO's page is its pager's to commit */
-            *out = NULL;
-            return commit ? ERR_NOT_SUPPORTED : OK;
+        status_t st = OK;
+        if (src) {
+            st = source_fill(v, idx, &fr);
+        } else {
+            fresh_drop(&fr);
+            fr.page = pmm_alloc_pages(0, PMM_ZERO | ((v->flags & VMO_DMA32) ? PMM_DMA32 : 0));
+            st = fr.page ? OK : ERR_NO_MEMORY;
         }
-        fresh = pmm_alloc_pages(0, PMM_ZERO | ((v->flags & VMO_DMA32) ? PMM_DMA32 : 0));
-        if (!fresh)
-            return ERR_NO_MEMORY;
+        if (st != OK)
+            return st;
     }
 }
 
-/* Commit pages [first, end) of a paged VMO. */
-static status_t commit_pages(struct vmo *v, uint64_t first, uint64_t end)
+/* Make sure of pages [first, end) of a paged VMO, as `mode` says. */
+static status_t commit_pages(struct vmo *v, uint64_t first, uint64_t end, enum get_mode mode)
 {
     for (uint64_t idx = first; idx < end; idx++) {
         struct page *p;
-        status_t st = get_page(v, idx, true, &p);
+        status_t st = get_page(v, idx, mode, &p);
         if (st != OK)
             return st;
         page_put(p);
@@ -460,6 +705,10 @@ static void vmo_destroy(struct kobject *obj)
             pager_vmo_gone(v->pv);   /* PAGER_REQ_GONE, or the link goes */
         if (v->verify)
             vmo_verify_free(v->verify);
+        if (v->src) {
+            job_uncharge(v->job, JOB_LIMIT_PAGES, v->win);   /* the window, paid at creation */
+            kobject_unref(&v->src->base);
+        }
     } else if (v->kind == VMO_CONTIG) {
         contig_free_head(v->phys >> PAGE_SHIFT, v->size >> PAGE_SHIFT);
         if (v->job)
@@ -540,7 +789,7 @@ status_t vmo_create_for(struct job *job, uint64_t size, uint32_t flags, struct v
     if (job)
         st = vmo_set_job(v, job);
     if (st == OK && (flags & VMO_KEEP_PAGES))
-        st = commit_pages(v, 0, v->size >> PAGE_SHIFT);
+        st = commit_pages(v, 0, v->size >> PAGE_SHIFT, GET_COMMIT);
     if (st != OK) {
         kobject_unref(&v->base);   /* destroy gives back every page and its charge */
         return st;
@@ -638,6 +887,27 @@ static status_t pager_fetch(struct vmo *v, uint64_t idx)
     return st == OK || st == ERR_CANCELED ? st : ERR_IO;
 }
 
+/* An absent page of a pager child, n bytes at offset (within one page):
+ * its pager VMO's bytes if the page is in the window (read through it,
+ * waiting as its reader does; zeros past its end), else zeros. A page the
+ * child commits meanwhile is read as it was before: a read racing a
+ * write. */
+static status_t source_read(struct vmo *v, uint64_t offset, void *dst, uint64_t n)
+{
+    uint64_t idx = offset >> PAGE_SHIFT;
+    uint64_t f = vlock(v);
+    bool src = in_window_locked(v, idx);
+    vunlock(v, f);
+    status_t st = src ? vmo_read(v->src, ((v->src_first + idx) << PAGE_SHIFT) |
+                                             (offset & (PAGE_SIZE - 1)), dst, n)
+                      : ERR_OUT_OF_RANGE;
+    if (st == ERR_OUT_OF_RANGE) {
+        memset(dst, 0, n);
+        st = OK;
+    }
+    return st;
+}
+
 /* A pager VMO's page is fetched again at most this many times for one
  * read before the read gives up (ERR_NO_MEMORY): a page dropped again
  * between its supply and the read's next look, each time. */
@@ -659,9 +929,11 @@ status_t vmo_read(struct vmo *v, uint64_t offset, void *buf, uint64_t len)
         uint64_t in = offset & (PAGE_SIZE - 1);
         uint64_t n = PAGE_SIZE - in < len ? PAGE_SIZE - in : len;
         struct page *p;
-        status_t st = get_page(v, offset >> PAGE_SHIFT, false, &p);
+        status_t st = get_page(v, offset >> PAGE_SHIFT, GET_PEEK, &p);
         if (st == OK && !p && v->pv)
             st = ++rounds > FETCH_ROUNDS ? ERR_NO_MEMORY : pager_fetch(v, offset >> PAGE_SHIFT);
+        if (st == OK && !p && v->src)
+            st = source_read(v, offset, dst, n);
         if (st != OK)
             return st;
         if (!p && v->pv)
@@ -669,7 +941,7 @@ status_t vmo_read(struct vmo *v, uint64_t offset, void *buf, uint64_t len)
         if (p) {
             memcpy(dst, (char *)page_to_virt(p) + in, n);
             page_put(p);
-        } else {
+        } else if (!v->src) {
             memset(dst, 0, n);
         }
         rounds = 0;
@@ -692,7 +964,7 @@ static status_t write_bytes(struct vmo *v, uint64_t offset, const void *buf, uin
         uint64_t in = offset & (PAGE_SIZE - 1);
         uint64_t n = PAGE_SIZE - in < len ? PAGE_SIZE - in : len;
         struct page *p;
-        status_t st = get_page(v, offset >> PAGE_SHIFT, true, &p);
+        status_t st = get_page(v, offset >> PAGE_SHIFT, GET_PRIVATE, &p);
         if (st != OK)
             return st;
         DBG_HOOK(DBG_VMO_WRITE_COPY, v);
@@ -748,7 +1020,8 @@ static void zap_umaps_locked(const struct vmo *v, uint64_t first, uint64_t end,
 
 /* With the lock held: take the committed pages in [idx, end), at most up to
  * the end of idx's leaf, out of the table onto g and out of every user
- * mapping. Returns where to continue (past a missing leaf or mid table). */
+ * mapping. Returns where to continue (past a missing leaf or mid table, or
+ * at a shared page when g's array is full: finish g first). */
 static uint64_t take_batch_locked(struct vmo *v, uint64_t idx, uint64_t end, struct tlb_gather *g)
 {
     uint64_t **mid = v->root[idx / MID_PAGES];
@@ -762,19 +1035,31 @@ static uint64_t take_batch_locked(struct vmo *v, uint64_t idx, uint64_t end, str
     uint64_t *leaf = mid[(idx / LEAF_PAGES) % TBL_ENTRIES];
     if (!leaf)
         return stop;
-    uint64_t taken = 0;
+    uint64_t taken = 0, charged = 0;
     for (uint64_t i = idx; i < stop; i++) {
         uint64_t *s = &leaf[i % LEAF_PAGES];
-        if (*s) {
+        if (!*s)
+            continue;
+        struct page *p = pa_page(*s);
+        /* The table's reference, released after the flush. A page other
+         * tables may hold can't use its list node (another gather's). */
+        if (page_shared(v, p)) {
+            if (tlb_gather_full(g)) {
+                stop = i;
+                break;
+            }
+            tlb_gather_shared(g, p);
+        } else {
             if (v->pv)   /* off its pager's cache first: the gather takes its list node */
-                pager_page_gone_vlocked(v->pv, pa_page(*s));
-            tlb_gather_page(g, pa_page(*s));   /* the table's reference, released after the flush */
-            *s = 0;
-            v->committed--;
-            taken++;
+                pager_page_gone_vlocked(v->pv, p);
+            tlb_gather_page(g, p);
         }
+        *s = 0;
+        v->committed--;
+        taken++;
+        charged += charged_alone(v, i);
     }
-    job_uncharge(v->job, JOB_LIMIT_PAGES, taken);
+    job_uncharge(v->job, JOB_LIMIT_PAGES, charged);
     bool any = taken != 0;
     /* Entries exist only for committed pages (a fault installs under this
      * lock what the table holds), so nothing taken means nothing to zap. */
@@ -783,10 +1068,11 @@ static uint64_t take_batch_locked(struct vmo *v, uint64_t idx, uint64_t end, str
     return stop;
 }
 
-/* Flush and free once a batch's worth of pages is waiting. */
+/* Flush and free once a batch's worth of pages is waiting (or as many
+ * shared pages as g holds). */
 static void gather_maybe_finish(struct tlb_gather *g)
 {
-    if (g->npages >= LEAF_PAGES)
+    if (g->npages >= LEAF_PAGES || tlb_gather_full(g))
         tlb_gather_finish(g);
 }
 
@@ -799,10 +1085,12 @@ static void shrink_pages(struct vmo *v, uint64_t first, uint64_t old_end)
     for (uint64_t idx = first; idx < old_end;) {
         uint64_t f = vlock(v);
         uint64_t next = take_batch_locked(v, idx, old_end, &g);
-        /* A leaf wholly past the new end goes too (its pages just did). */
+        /* A leaf wholly past the new end goes too, once its last pages
+         * just went (not if the batch stopped early). */
         uint64_t lbase = ALIGN_DOWN(idx, LEAF_PAGES);
+        uint64_t lend = lbase + LEAF_PAGES < old_end ? lbase + LEAF_PAGES : old_end;
         uint64_t **mid = v->root[idx / MID_PAGES];
-        if (lbase >= first && mid && mid[(idx / LEAF_PAGES) % TBL_ENTRIES]) {
+        if (lbase >= first && next >= lend && mid && mid[(idx / LEAF_PAGES) % TBL_ENTRIES]) {
             table_free_locked(v, mid[(idx / LEAF_PAGES) % TBL_ENTRIES]);
             mid[(idx / LEAF_PAGES) % TBL_ENTRIES] = NULL;
         }
@@ -896,8 +1184,18 @@ status_t vmo_set_size(struct vmo *v, uint64_t size)
         __atomic_store_n(&v->size, size, __ATOMIC_RELAXED);
     }
     vunlock(v, f);
-    if (st == OK && first < end)
+    if (st == OK && first < end) {
         shrink_pages(v, first, end);
+        /* A pager child's window shrinks with it, after the pages: until
+         * then they were the window's (paid at creation), so the window's
+         * charge for them goes now, once. Growing never reopens it. */
+        f = vlock(v);
+        if (v->win > first) {
+            job_uncharge(v->job, JOB_LIMIT_PAGES, v->win - first);
+            v->win = first;
+        }
+        vunlock(v, f);
+    }
     mutex_unlock(&v->resize);
     writer_exit(v);
     return st;
@@ -914,7 +1212,8 @@ status_t vmo_commit(struct vmo *v, uint64_t offset, uint64_t len)
     status_t st = writer_enter(v);
     if (st != OK)
         return st;
-    st = commit_pages(v, offset >> PAGE_SHIFT, ALIGN_UP(offset + len, PAGE_SIZE) >> PAGE_SHIFT);
+    st = commit_pages(v, offset >> PAGE_SHIFT, ALIGN_UP(offset + len, PAGE_SIZE) >> PAGE_SHIFT,
+                      GET_COMMIT);
     writer_exit(v);
     return st;
 }
@@ -980,8 +1279,9 @@ status_t vmo_decommit(struct vmo *v, uint64_t offset, uint64_t len)
 status_t vmo_seal(struct vmo *v)
 {
     uint64_t f = vlock(v);
-    /* A pager VMO's pages arrive after the seal: never sealed unchecked. */
-    bool ok = v->kind == VMO_PAGED && !v->pv && list_empty(&v->umaps) &&
+    /* A pager VMO's pages arrive after the seal: never sealed unchecked;
+     * nor a pager child, whose untouched pages may still change. */
+    bool ok = v->kind == VMO_PAGED && !v->pv && !v->src && list_empty(&v->umaps) &&
               list_empty(&v->ranges) && v->writers == 0;
     if (ok)
         v->sealed = true;
@@ -1050,74 +1350,318 @@ void vmo_umap_remove(struct vmo *v, struct vmo_umap *u)
     kobject_unref(&v->base);
 }
 
-/* VMO lock held, a paged VMO: *pa gets page idx's physical address. If the
- * page isn't committed, *fresh (if any) is committed there and taken
- * (*fresh = NULL); with no fresh page *pa is 0. ERR_NO_MEMORY if the page's
- * table can't be charged (*fresh is still the caller's). */
-static status_t paged_pa_locked(struct vmo *v, uint64_t idx, struct page **fresh, uint64_t *pa)
+/* A reference on the pager VMO's page for page idx of v (a pager child,
+ * idx in its window), with no lock held: *out = NULL if it is absent there
+ * (the fault waits for the pager), ERR_OUT_OF_RANGE past the pager VMO's
+ * end (the page reads as zeros). */
+static status_t source_peek(struct vmo *v, uint64_t idx, struct page **out)
 {
-    uint64_t *s = slot_locked(v, idx, false);
-    if (s && *s) {
-        *pa = *s;   /* committed already (maybe by a racing fault: drop ours) */
-        return OK;
-    }
-    if (!*fresh) {
-        *pa = 0;
-        return OK;
-    }
-    if (!(s = charge_slot_locked(v, idx, s)))
-        return ERR_NO_MEMORY;
-    *pa = *s = page_to_phys(*fresh);   /* the table takes our reference */
-    v->committed++;
-    *fresh = NULL;
-    return OK;
+    struct vmo *pv = v->src;
+    uint64_t sidx = v->src_first + idx;
+    uint64_t f = vlock(pv);
+    status_t st = sidx >= pv->size >> PAGE_SHIFT ? ERR_OUT_OF_RANGE : OK;
+    uint64_t *s = st == OK ? slot_locked(pv, sidx, false) : NULL;
+    *out = s && *s ? pa_page(*s) : NULL;
+    if (*out)
+        page_get(*out);
+    vunlock(pv, f);
+    return st;
+}
+
+/* vmo_fault_map's absent page idx (not a pager VMO's), with no lock held:
+ * fr gets the page it should hold, zeros or (src: a pager child's window)
+ * the pager VMO's bytes. ERR_SHOULD_WAIT: that page is absent there too;
+ * ERR_NO_MEMORY: no page. fr is empty on an error. */
+static status_t fault_fill(struct vmo *v, uint64_t idx, bool src, struct fresh *fr)
+{
+    fresh_drop(fr);
+    struct page *sp = NULL;
+    status_t st = src ? source_peek(v, idx, &sp) : OK;
+    if (src && st == OK && !sp)
+        return ERR_SHOULD_WAIT;
+    bool zero = !src || st == ERR_OUT_OF_RANGE;
+    fr->page = pmm_alloc_pages(0, (zero ? PMM_ZERO : 0) | ((v->flags & VMO_DMA32) ? PMM_DMA32 : 0));
+    if (fr->page && sp)
+        memcpy(page_to_virt(fr->page), page_to_virt(sp), PAGE_SIZE);
+    if (sp)
+        page_put(sp);
+    fr->filled = src;
+    return fr->page ? OK : ERR_NO_MEMORY;
 }
 
 status_t vmo_fault_map(struct vmo *v, uint64_t idx, struct aspace *as, uint64_t va,
-                       unsigned perms)
+                       unsigned perms, bool write)
 {
-    struct page *fresh = NULL;
+    struct fresh fr = { 0 };
     for (;;) {
         uint64_t f = vlock(v);
         if (idx >= v->size >> PAGE_SHIFT) {
             vunlock(v, f);
-            if (fresh)
-                page_put(fresh);
+            fresh_drop(&fr);
             return ERR_OUT_OF_RANGE;
         }
-        uint64_t pa;
         if (v->kind != VMO_PAGED) {
-            pa = v->phys + (idx << PAGE_SHIFT);
-        } else {
-            status_t st = paged_pa_locked(v, idx, &fresh, &pa);
-            if (st != OK) {
-                vunlock(v, f);
-                page_put(fresh);
-                return st;
-            }
+            aspace_set_pte_locked(as, va, v->phys + (idx << PAGE_SHIFT), perms, v->cache);
+            vunlock(v, f);
+            return OK;
         }
-        if (v->kind == VMO_PAGED && !pa && v->pv) {
+        uint64_t *s = slot_locked(v, idx, false);
+        struct page *p = s && *s ? pa_page(*s) : NULL;
+        bool shared = p && (perms & ASPACE_WRITE) && page_shared(v, p);
+        if (p && (!shared || !write)) {
+            /* Installed under the VMO lock: a decommit or a separation that
+             * takes this page later zaps this entry too (see the file
+             * header). A shared page is never mapped writable. */
+            aspace_set_pte_locked(as, va, *s, shared ? perms & ~ASPACE_WRITE : perms, v->cache);
+            vunlock(v, f);
+            fresh_drop(&fr);
+            return OK;
+        }
+        if (p && v->protecting) {   /* a creation may not have shot its entries down yet */
+            vunlock(v, f);
+            fresh_drop(&fr);
+            cow_wait(v);
+            continue;
+        }
+        if (p && fr.page && fr.from == p) {   /* separate it: our copy goes in */
+            struct tlb_gather g;
+            tlb_gather_init(&g);
+            uint64_t pa = page_to_phys(fr.page);
+            cow_replace_locked(v, idx, s, &fr, &g);
+            aspace_set_pte_locked(as, va, pa, perms, v->cache);
+            vunlock(v, f);
+            tlb_gather_finish(&g);   /* the old page's entries, before the access is retried */
+            fresh_drop(&fr);
+            return OK;
+        }
+        if (p) {
+            status_t st = copy_unlocked(v, f, p, &fr);
+            if (st != OK)
+                return st;
+            continue;
+        }
+        if (v->pv) {
             /* A pager VMO's absent page: the caller asks the pager for it
              * (vmo_page_request) and waits, with no lock held. */
             vunlock(v, f);
+            fresh_drop(&fr);
             return ERR_SHOULD_WAIT;
         }
-        if (v->kind == VMO_PAGED && !pa) {
-            /* Not committed and no page of ours yet: get one, then retry. */
-            vunlock(v, f);
-            fresh = pmm_alloc_pages(0, PMM_ZERO | ((v->flags & VMO_DMA32) ? PMM_DMA32 : 0));
-            if (!fresh)
+        bool src = in_window_locked(v, idx);
+        if (fr.page && !fr.from && fr.filled == src) {
+            if (!(s = charge_slot_locked(v, idx, s))) {
+                vunlock(v, f);
+                fresh_drop(&fr);
                 return ERR_NO_MEMORY;
-            continue;
+            }
+            *s = page_to_phys(fr.page);   /* the table takes our reference */
+            fr.page = NULL;
+            v->committed++;
+            aspace_set_pte_locked(as, va, *s, perms, v->cache);
+            vunlock(v, f);
+            return OK;
         }
-        /* Installed under the VMO lock: a decommit that takes this page
-         * later zaps this entry too (see the file header). */
-        aspace_set_pte_locked(as, va, pa, perms, v->cache);
+        /* Not committed and no page of ours yet: get one, then retry. */
         vunlock(v, f);
-        if (fresh)
-            page_put(fresh);
-        return OK;
+        status_t st = fault_fill(v, idx, src, &fr);
+        if (st != OK)
+            return st;
     }
+}
+
+/* ---- copy-on-write children (see the file header) ------------------------- */
+
+/* With the lock held: take the write bit off pages [first, end) in every
+ * user mapping of v that may be writable (the others never have it). */
+static void wrprotect_umaps_locked(const struct vmo *v, uint64_t first, uint64_t end,
+                                   struct tlb_gather *g)
+{
+    for (struct list_node *n = v->umaps.next; n != &v->umaps; n = n->next) {
+        struct vmo_umap *u = container_of(n, struct vmo_umap, node);
+        uint64_t lo = u->first > first ? u->first : first;
+        uint64_t hi = u->end < end ? u->end : end;
+        if (u->writable && lo < hi)
+            aspace_wrprotect_locked(u->as, u->base + ((lo - u->first) << PAGE_SHIFT),
+                                    (hi - lo) << PAGE_SHIFT, g);
+    }
+}
+
+/* p's lock held and c's (nested): share p's present pages [idx, stop) (in
+ * one leaf) into c, p's page i as c's page i - offp. The pages c pays for
+ * alone (outside its window) are charged first, in one charge; a table c
+ * can't have gives back what is left of it (ERR_NO_MEMORY: the pages
+ * shared so far stay, for c's destroy to give back). *n: pages shared. */
+static status_t share_leaf_locked(struct vmo *p, struct vmo *c, uint64_t idx, uint64_t stop,
+                                  uint64_t offp, uint64_t *n)
+{
+    uint64_t **mid = p->root[idx / MID_PAGES];
+    uint64_t *leaf = mid ? mid[(idx / LEAF_PAGES) % TBL_ENTRIES] : NULL;
+    *n = 0;
+    if (!leaf)
+        return OK;
+    uint64_t pay = 0;
+    for (uint64_t i = idx; i < stop; i++)
+        pay += leaf[i % LEAF_PAGES] && charged_alone(c, i - offp);
+    status_t st = job_charge(c->job, JOB_LIMIT_PAGES, pay);
+    for (uint64_t i = idx; i < stop && st == OK; i++) {
+        uint64_t pa = leaf[i % LEAF_PAGES];
+        if (!pa)
+            continue;
+        uint64_t *s = slot_locked(c, i - offp, true);
+        if (!s) {
+            job_uncharge(c->job, JOB_LIMIT_PAGES, pay);
+            st = ERR_NO_MEMORY;
+            break;
+        }
+        page_share(pa_page(pa));
+        *s = pa;
+        c->committed++;
+        pay -= charged_alone(c, i - offp);
+        (*n)++;
+    }
+    return st;
+}
+
+/* p's "vmo resize" held (its size can't change): share its pages [offp,
+ * offp + c's size) into c, a leaf at a time, and take the write bit off
+ * p's entries for them; one shootdown at the end. Meanwhile p's
+ * `protecting` makes a separation in p wait. ERR_BAD_STATE if a pin or
+ * a kernel mapping covers a page there. */
+static status_t share_pages(struct vmo *p, struct vmo *c, uint64_t offp)
+{
+    uint64_t f = vlock(p);
+    uint64_t end = offp + (c->size >> PAGE_SHIFT);   /* (no overflow: both under 2^25) */
+    if (end > p->size >> PAGE_SHIFT)
+        end = p->size >> PAGE_SHIFT;   /* past it the child's pages are zero */
+    p->protecting++;
+    vunlock(p, f);
+    struct tlb_gather g;
+    tlb_gather_init(&g);
+    status_t st = OK;
+    for (uint64_t idx = offp; idx < end && st == OK;) {
+        uint64_t stop = ALIGN_UP(idx + 1, LEAF_PAGES) < end ? ALIGN_UP(idx + 1, LEAF_PAGES) : end;
+        uint64_t n = 0;
+        f = vlock(p);
+        spin_lock_nested(&c->base.lock, 1);   /* parent, then the new child: nobody else has it */
+        if (!p->root[idx / MID_PAGES])
+            stop = ALIGN_UP(idx + 1, MID_PAGES) < end ? ALIGN_UP(idx + 1, MID_PAGES) : end;
+        else if (ranges_overlap_locked(p, idx, stop))
+            st = ERR_BAD_STATE;   /* a device or the kernel may write these behind the sharing */
+        else
+            st = share_leaf_locked(p, c, idx, stop, offp, &n);
+        if (n)
+            wrprotect_umaps_locked(p, idx, stop, &g);
+        spin_unlock(&c->base.lock);
+        vunlock(p, f);
+        idx = stop;
+    }
+    DBG_HOOK(DBG_VMO_CHILD_SHOOT, p);
+    tlb_gather_finish(&g);
+    f = vlock(p);
+    p->protecting--;
+    vunlock(p, f);
+    return st;
+}
+
+/* c, new, takes its absent pages [0, win) from pager VMO src's pages from
+ * `first` on: the window is charged whole now and its tables made, a leaf
+ * per lock hold, so no touch of it ever charges anything. On an error what
+ * was set up stays, for c's destroy to give back. */
+static status_t window_set(struct vmo *c, struct vmo *src, uint64_t first, uint64_t win)
+{
+    status_t st = job_charge(c->job, JOB_LIMIT_PAGES, win);
+    if (st != OK)
+        return st;
+    kobject_ref(&src->base);
+    uint64_t f = vlock(c);
+    c->src = src;   /* from here on c's destroy gives the window and the reference back */
+    c->src_first = first;
+    c->win = win;
+    vunlock(c, f);
+    for (uint64_t i = 0; i < win && st == OK; i += LEAF_PAGES) {
+        f = vlock(c);
+        st = slot_locked(c, i, true) ? OK : ERR_NO_MEMORY;
+        vunlock(c, f);
+    }
+    return st;
+}
+
+/* A kept p's pages from offp on copied into c, one at a time (a kept VMO
+ * is never shared: a separation would swap a page under its kept
+ * readers). Each is charged to c as it goes in. */
+static status_t copy_pages(struct vmo *p, struct vmo *c, uint64_t offp)
+{
+    uint64_t n = c->size >> PAGE_SHIFT;
+    for (uint64_t i = 0; i < n; i++) {
+        struct page *from, *pg;
+        status_t st = get_page(p, offp + i, GET_PEEK, &from);
+        if (st == ERR_OUT_OF_RANGE)
+            return OK;   /* past p's end: zeros */
+        if (st != OK)
+            return st;
+        if (!from)
+            continue;
+        pg = pmm_alloc_pages(0, 0);
+        if (pg)
+            memcpy(page_to_virt(pg), page_to_virt(from), PAGE_SIZE);
+        page_put(from);
+        uint64_t f = vlock(c);
+        uint64_t *s = pg ? charge_slot_locked(c, i, slot_locked(c, i, false)) : NULL;
+        if (s) {
+            *s = page_to_phys(pg);   /* the table takes our reference */
+            c->committed++;
+        }
+        vunlock(c, f);
+        if (!s) {
+            if (pg)
+                page_put(pg);
+            return ERR_NO_MEMORY;
+        }
+    }
+    return OK;
+}
+
+status_t vmo_create_child(struct job *job, struct vmo *p, uint32_t flags, uint64_t offset,
+                          uint64_t size, struct vmo **out)
+{
+    if (flags != VMO_CHILD_SNAPSHOT && flags != VMO_CHILD_SNAPSHOT_AT_LEAST_ON_WRITE)
+        return ERR_INVALID_ARGS;
+    if (offset & (PAGE_SIZE - 1))
+        return ERR_INVALID_ARGS;
+    if (offset > VMO_MAX_SIZE || size > VMO_MAX_SIZE)
+        return ERR_OUT_OF_RANGE;
+    if (p->kind != VMO_PAGED)
+        return ERR_NOT_SUPPORTED;
+    /* A pager VMO's untouched pages follow the file: no true snapshot. */
+    if ((p->pv || p->src) && flags == VMO_CHILD_SNAPSHOT)
+        return ERR_NOT_SUPPORTED;
+    struct vmo *c;
+    status_t st = vmo_create_for(job, size, 0, &c);
+    if (st != OK)
+        return st;
+    uint64_t offp = offset >> PAGE_SHIFT, pages = c->size >> PAGE_SHIFT;
+    if (p->pv) {
+        st = window_set(c, p, offp, pages);
+    } else if (vmo_is_kept(p)) {
+        st = copy_pages(p, c, offp);
+    } else {
+        mutex_lock(&p->resize);
+        if (p->src) {   /* a pager child's child: the same pager VMO, the window's rest */
+            uint64_t f = vlock(p);
+            uint64_t win = p->win > offp ? p->win - offp : 0;
+            vunlock(p, f);
+            st = window_set(c, p->src, p->src_first + offp, win < pages ? win : pages);
+        }
+        if (st == OK)
+            st = share_pages(p, c, offp);
+        mutex_unlock(&p->resize);
+    }
+    if (st != OK) {
+        kobject_unref(&c->base);   /* destroy gives back every page, reference and charge */
+        return st;
+    }
+    *out = c;
+    return OK;
 }
 
 /* ---- pager VMOs (<jam/pager.h>) ------------------------------------------- */
@@ -1164,8 +1708,30 @@ static uint64_t absent_end_locked(struct vmo *v, uint64_t idx)
     return end;
 }
 
+/* vmo_page_request for a pager child v: the request is its pager VMO's,
+ * for the page idx's window page is there. r = NULL (look again) if idx is
+ * present in v, past the window, or past the pager VMO's end (it reads as
+ * zeros). */
+static status_t child_page_request(struct vmo *v, uint64_t idx, struct pager_req **out)
+{
+    uint64_t f = vlock(v);
+    status_t st = idx >= v->size >> PAGE_SHIFT ? ERR_OUT_OF_RANGE : OK;
+    bool ask = st == OK && !vmo_page_present_locked(v, idx) && in_window_locked(v, idx);
+    vunlock(v, f);
+    *out = NULL;
+    if (ask)
+        st = vmo_page_request(v->src, v->src_first + idx, out);
+    if (st == ERR_OUT_OF_RANGE && ask) {
+        *out = NULL;   /* (past the pager VMO's end, not ours) */
+        st = OK;
+    }
+    return st;
+}
+
 status_t vmo_page_request(struct vmo *v, uint64_t idx, struct pager_req **out)
 {
+    if (!v->pv && v->src)
+        return child_page_request(v, idx, out);
     if (!v->pv)
         return ERR_NOT_SUPPORTED;
     struct pager_req *spare, *r = NULL;
@@ -1272,6 +1838,23 @@ void vmo_pager_detach(struct vmo *v)
     (void)decommit_pages(v, 0, size);
 }
 
+bool vmo_page_ready(struct vmo *v, uint64_t idx)
+{
+    uint64_t f = vlock(v);
+    bool in = idx < v->size >> PAGE_SHIFT;
+    bool ready = in && vmo_page_present_locked(v, idx);
+    bool src = in && !ready && in_window_locked(v, idx);
+    vunlock(v, f);
+    if (src) {
+        struct vmo *pv = v->src;
+        uint64_t sidx = v->src_first + idx;
+        f = vlock(pv);
+        ready = sidx >= pv->size >> PAGE_SHIFT || vmo_page_present_locked(pv, sidx);
+        vunlock(pv, f);
+    }
+    return ready;
+}
+
 uint64_t vmo_page_phys(struct vmo *v, uint64_t offset)
 {
     uint64_t f = vlock(v);
@@ -1340,7 +1923,7 @@ static struct vmo_range *range_find_locked(const struct vmo *v, enum range_kind 
 status_t vmo_map_kernel(struct vmo *v, uint64_t offset, uint64_t len, unsigned vm_flags,
                         void **va)
 {
-    if (v->pv)
+    if (v->pv || v->src)
         return ERR_NOT_SUPPORTED;   /* the kernel never waits for a pager */
     if (len == 0 || (vm_flags & ~VM_WRITE))
         return ERR_INVALID_ARGS;
@@ -1358,7 +1941,9 @@ status_t vmo_map_kernel(struct vmo *v, uint64_t offset, uint64_t len, unsigned v
         kfree(r);
         return st;
     }
-    if (v->kind == VMO_PAGED && (st = commit_pages(v, r->first, r->end)) != OK) {
+    /* Its own pages: a shared page is separated first, so a write through
+     * the VMO never moves a page from under the mapping. */
+    if (v->kind == VMO_PAGED && (st = commit_pages(v, r->first, r->end, GET_PRIVATE)) != OK) {
         range_remove(v, r);
         return st;
     }
@@ -1598,7 +2183,7 @@ static status_t pin_committed(struct vmo *v, uint64_t first, uint64_t end)
 status_t vmo_pin_flags(struct vmo *v, struct kobject *dma_cap, uint64_t offset, uint64_t len,
                        uint32_t flags, uint64_t *phys_out, uint64_t phys_cap, uint64_t *pin_id)
 {
-    if (v->pv)
+    if (v->pv || v->src)
         return ERR_NOT_SUPPORTED;   /* a device can't wait for a pager */
     if (!dma_cap || !pin_id || (flags & ~VMO_PIN_READ_ONLY))
         return ERR_INVALID_ARGS;
@@ -1629,8 +2214,13 @@ status_t vmo_pin_flags(struct vmo *v, struct kobject *dma_cap, uint64_t offset, 
     if (st != OK)
         return st;
     st = pin_link_cap(r, dma_cap);
+    /* Either kind separates every shared page of the range (a read-only
+     * pin commits none: they are all there): the device must reach the
+     * VMO's own page, which a later write would otherwise move. */
+    if (st == OK && v->kind == VMO_PAGED && ro)
+        st = pin_committed(v, first, end);
     if (st == OK && v->kind == VMO_PAGED)
-        st = ro ? pin_committed(v, first, end) : commit_pages(v, first, end);
+        st = commit_pages(v, first, end, GET_PRIVATE);
     if (st != OK) {
         range_remove(v, r);
         return st;

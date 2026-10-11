@@ -104,6 +104,18 @@
  * old entries go: a decommit of the new VMO then clears entries of the
  * old mapping too, which only costs a fault.
  *
+ * Copy-on-write (vmo_create_child, vmo.c's header): a page that more than
+ * one VMO's table holds is never mapped writable. A child's creation takes
+ * the write bit off the parent's entries (aspace_wrprotect_locked, under
+ * the VMO lock) and shoots them down before it returns; a read fault
+ * installs such a page read-only; a write fault copies it, and under the
+ * VMO lock puts the copy in the table, clears the old page's entries in
+ * every mapping of that VMO (the reverse map) and installs the copy for
+ * the faulting address, then shoots the old entries down before the
+ * access is retried, all while the faulting address space's region lock
+ * is held. aspace_protect never adds the write bit to an entry: the next
+ * write faults instead, and the fault decides.
+ *
  * Faults past a shrunk VMO's end fail with ERR_OUT_OF_RANGE; the mapping
  * stays and works again if the VMO grows back.
  *
@@ -251,6 +263,12 @@ void tlb_gather_page(struct tlb_gather *g, struct page *p)
     g->npages++;
 }
 
+void tlb_gather_shared(struct tlb_gather *g, struct page *p)
+{
+    ASSERT(g->nshared < TLB_GATHER_SHARED);
+    g->shared[g->nshared++] = p;
+}
+
 /* Add as's active CPUs and [lo, hi) to g. Called after the entry stores. */
 static void gather_note(struct tlb_gather *g, struct aspace *as, uint64_t lo, uint64_t hi)
 {
@@ -285,6 +303,8 @@ void tlb_gather_finish(struct tlb_gather *g)
         list_del(&p->node);
         page_unref(p);
     }
+    for (uint32_t i = 0; i < g->nshared; i++)
+        page_share_drop(g->shared[i]);
     tlb_gather_init(g);
 }
 
@@ -431,14 +451,24 @@ static void leaves_clear(uint64_t *pt, uint64_t va, uint64_t stop, unsigned perm
         pt[ix(va, 1)] = 0;
 }
 
+/* The write bit is only ever kept, never added: an entry may be read-only
+ * because its page is shared copy-on-write (vmo.c), and only a fault
+ * (vmo_fault_map, under the VMO lock) may decide it can be written. */
 static void leaves_protect(uint64_t *pt, uint64_t va, uint64_t stop, unsigned perms)
 {
     uint64_t bits = leaf_bits(perms, 0);
     for (; va < stop; va += PAGE_SIZE) {
         uint64_t *e = &pt[ix(va, 1)];
         if (*e & PTE_P)
-            *e = (*e & (PTE_ADDR | PTE_CACHE)) | bits;
+            *e = (*e & (PTE_ADDR | PTE_CACHE)) | (bits & ~PTE_W) | (bits & *e & PTE_W);
     }
+}
+
+static void leaves_wrprotect(uint64_t *pt, uint64_t va, uint64_t stop, unsigned perms)
+{
+    (void)perms;
+    for (; va < stop; va += PAGE_SIZE)
+        pt[ix(va, 1)] &= ~PTE_W;
 }
 
 static void zap(struct aspace *as, uint64_t va, uint64_t end, bool detach, struct tlb_gather *g)
@@ -450,6 +480,12 @@ static void zap(struct aspace *as, uint64_t va, uint64_t end, bool detach, struc
 void aspace_zap_locked(struct aspace *as, uint64_t va, uint64_t len, struct tlb_gather *g)
 {
     zap(as, va, va + len, false, g);
+}
+
+void aspace_wrprotect_locked(struct aspace *as, uint64_t va, uint64_t len, struct tlb_gather *g)
+{
+    const struct leaf_walk w = { leaves_wrprotect, 0, false, g };
+    walk_leaves(as, va, va + len, &w);
 }
 
 void aspace_set_pte_locked(struct aspace *as, uint64_t va, uint64_t pa, unsigned perms,
@@ -682,7 +718,8 @@ static status_t fill_kept(struct aspace *as, const struct mapping *m)
         uint64_t va = m->base + off;
         status_t st = pt_prepare(as, va);
         if (st == OK)
-            st = vmo_fault_map(m->vmo, (m->vmo_off + off) >> PAGE_SHIFT, as, va, m->flags);
+            st = vmo_fault_map(m->vmo, (m->vmo_off + off) >> PAGE_SHIFT, as, va, m->flags,
+                               false);
         if (st != OK)
             return st;
     }
@@ -1046,7 +1083,7 @@ static status_t fault_wait(struct aspace *as, struct vmo *v, uint64_t idx)
             st = ERR_IO;   /* PAGER_OP_FAIL's "past the file's end": it couldn't read it */
         /* A request is answered whole: one failed for its other pages may
          * still have brought ours. */
-        if (st != OK && st != ERR_CANCELED && vmo_page_phys(v, idx << PAGE_SHIFT))
+        if (st != OK && st != ERR_CANCELED && vmo_page_ready(v, idx))
             st = OK;
     }
     kobject_unref(vmo_kobject(v));
@@ -1075,7 +1112,7 @@ status_t aspace_fault(struct aspace *as, uint64_t addr, unsigned access)
             idx = (m->vmo_off + (va - m->base)) >> PAGE_SHIFT;
             st = pt_prepare(as, va);
             if (st == OK)
-                st = vmo_fault_map(m->vmo, idx, as, va, m->flags);
+                st = vmo_fault_map(m->vmo, idx, as, va, m->flags, (need & ASPACE_WRITE) != 0);
         }
         if (st != ERR_SHOULD_WAIT) {
             mutex_unlock(&as->lock);

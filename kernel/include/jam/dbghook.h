@@ -37,6 +37,9 @@ enum {
     DBG_VMO_EXEC_CHECK,    /* vmo_sys.c sys_vmo_make_exec and _verified, the handle taken out
                               of the table, before the one-handle check and the seal (arg:
                               the VMO) */
+    DBG_VMO_CHILD_SHOOT,   /* vmo.c share_pages, every page shared and the parent's entries
+                              made read-only, before their shootdown; the parent's "vmo
+                              resize" held, no spinlock (arg: the parent) */
     DBG_N
 };
 
