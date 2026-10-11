@@ -1,21 +1,19 @@
-# expat: xmlwf, the well-formedness checker, on a good file, a bad one and
-# a file that is not there. NOT YET RUN on Jam OS (PO8's ports-test script,
-# M13.7's PO8); built and staged by GP1.
-wait 120 Jam OS shell
+# expat's test (tools/ports-test.sh): xmlwf, the well-formedness checker, on
+# a good file (status 0), a bad one (status 2, the message), and a file
+# that is not there. xmlwf's exit codes: 0 well-formed, 2 not.
+send run $S/printf '<?xml version="1.0"?>\n<a><b x="1">text</b><c/></a>\n' > /data/xw-good.xml
 wait {prompt}
-send printf '<?xml version="1.0"?>\n<a><b x="1">text</b><c/></a>\n' > /data/xw-good.xml
+send run $S/printf '<a><b></a>\n' > /data/xw-bad.xml
 wait {prompt}
-send printf '<a><b></a>\n' > /data/xw-bad.xml
+send run $P/xmlwf /data/xw-good.xml; echo st-$T=$?
+wait st-x=0
 wait {prompt}
-send xmlwf /data/xw-good.xml; echo good-status-$?
-wait good-status-0
-wait {prompt}
-send xmlwf /data/xw-bad.xml; echo bad-status-$?
+send run $P/xmlwf /data/xw-bad.xml; echo st-$T=$?
 wait mismatched tag
-wait bad-status-0
+wait st-x=2
 wait {prompt}
-send xmlwf /data/xw-nothere.xml; echo missing-status-$?
-wait missing-status-
+send run $P/xmlwf /data/xw-nothere.xml; echo st-$T=$?
+wait No such file
 wait {prompt}
 send rm /data/xw-good.xml /data/xw-bad.xml
 wait {prompt}

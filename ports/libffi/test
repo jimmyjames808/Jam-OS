@@ -1,22 +1,23 @@
-# libffi: its own ffi_call tests, as the one program ffi-tests
-# (override/ffi-tests.c; build.sh makes it from testsuite/libffi.call and
-# the ffi_call tests of libffi.complex). Installed in the libffi-test
-# package. NOT YET RUN on Jam OS: PO8's ports-test script (M13.7's PO8) runs it
-# once it exists; built and staged by GP1 (docs/G2-PLAN.md, "GP1 notes").
-# The count is libffi 3.8.0's (98 tests); a new release may change it.
-wait 120 Jam OS shell
-wait {prompt}
-send ffi-tests
+# libffi's test (tools/ports-test.sh): ffi-tests, libffi's own ffi_call
+# tests (testsuite/libffi.call and the ffi_call tests of libffi.complex, 98
+# of them in libffi 3.8.0) as the one program override/ffi-tests.c drives,
+# from the libffi-test subpackage. The count is libffi 3.8.0's: a new
+# release may change it. Run natively on x86-64 Linux with the same driver:
+# 98 passed. The first run on Jam OS is the first anywhere of this build.
+send run $P/ffi-tests; echo st-$T=$?
 wait ffi-tests: 98 passed, 0 failed
+wait st-x=0
 wait {prompt}
-send ffi-tests -l | wc -l
-wait 98
+send run $P/ffi-tests -l | run $S/wc -l | run $S/sed s/^/count-/
+wait count-98
 wait {prompt}
-# one test by name, with its own output: the 'strlen' test prints nothing
-send ffi-tests strlen
+# one test by name, with its own output (strlen prints nothing)
+send run $P/ffi-tests strlen; echo st-$T=$?
 wait ffi-tests: 1 passed, 0 failed
+wait st-x=0
 wait {prompt}
 # a name that is no test
-send ffi-tests nosuchtest; echo status-$?
-wait status-2
+send run $P/ffi-tests nosuchtest; echo st-$T=$?
+wait are not tests
+wait st-x=2
 wait {prompt}

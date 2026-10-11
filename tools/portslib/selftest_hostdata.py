@@ -22,6 +22,7 @@ from . import build as buildmod
 from . import fixtures
 from . import hostdata
 from . import licence
+from . import package as packagemod
 from . import recipe as recipemod
 from . import source as sourcemod
 from . import stage as stagemod
@@ -264,6 +265,14 @@ def test_host(out, expect):
         expect(not stagemod.elf_problems(f.read()), "usetool is a static Jam OS program")
     expect(not os.path.exists(os.path.join(out, "usetool", "sysroot", "bin", "hosttool")),
            "the tool is not in the port's sysroot")
+    # ...and packaged there, with its list
+    r, _ = recipemod.parse(os.path.join(os.path.dirname(os.path.dirname(out)), "hd-ports",
+                                        "usetool", "recipe"))
+    pkgs = {p.name: p for p in packagemod.plan(r, use)}
+    expect("usetool" not in pkgs, "the program in a subpackage is not in the main package")
+    sub = pkgs.get("usetool-extra")
+    expect(sub is not None and "bin/usetool" in sub.files and "bin/usetool" in sub.lists,
+           "the subpackage holds the program and its list: %s" % sorted(pkgs))
 
 
 def test_data(out, expect):

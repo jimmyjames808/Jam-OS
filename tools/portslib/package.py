@@ -101,14 +101,18 @@ def plan(r, stage):
     licences = [w[1] for w in lines if w[0] == "licence"]
     for w in lines:
         if w[0] == "program":
-            main.add(w[1], 0o755, data[w[1]])
-            main.lists[w[1]] = _list_of(w[1], data[w[1]])
+            # a `sub` line on a program puts it in that subpackage (a test
+            # program, say), its list still its own
+            target = subs[sub_of[w[1]]] if w[1] in sub_of else main
+            target.add(w[1], 0o755, data[w[1]])
+            target.lists[w[1]] = _list_of(w[1], data[w[1]])
         elif w[0] == "file":
             (subs[sub_of[w[1]]] if w[1] in sub_of else main).add(w[1], 0o644, data[w[1]])
     _multicall(r, main)
     main.runs = sorted(r.deps("runs"), key=lambda d: d[0].encode())
-    if main.lists:
-        main.built_with = sorted(w[1:] for w in lines if w[0] == "built-with")
+    for p in [main] + list(subs.values()):
+        if p.lists:
+            p.built_with = sorted(w[1:] for w in lines if w[0] == "built-with")
     out = [main] if main.files else []
     for name in sorted(subs):
         p = subs[name]

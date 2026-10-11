@@ -1247,7 +1247,7 @@ After a flash or an `update`, with the Mac's ports server running:
 What track GP1 (the base ports) built, the choices it made, and what GP2,
 GS1 and GT need. Built and staged on the Mac and the PC's WSL; **nothing has
 run on Jam OS yet** (that waits for GS1's socket and M13.7's PO8
-ports-test script).
+`tools/ports-test.sh`, written since).
 
 **The recipes** (`ports/`, all `place package`, static):
 
@@ -1361,6 +1361,54 @@ is the first program to try, then wlprobe on `libwayland-client.a` +
 `libffi.a` (a port that `needs wayland` gets libffi too). The
 client's `.pc` has `Requires: libffi` and `Libs: ... -lm -pthread -lrt`; the
 port cc drops `-pthread`, and the sysroot has an empty `librt.a`.
-**For PO3**: library-only ports (wayland-protocols, and wayland, libffi,
-expat, xkbcommon without their programs) have nothing to package; their
-stage lists hold `library` lines and the licence only.
+**For PO3** (done in this track, on its merged `package.py`): a `program` that a
+`subpackage` names goes into that package with its list and page table
+(`plan()` routes on the `sub` line); `ports.py package` made
+`libffi-test`, `wayland-test`, `xkbcommon-test` and `expat` packages on the
+Mac (`--test-key`), and nothing for the library-only mains
+(`libffi`, `wayland`, `wayland-protocols`, `xkbcommon`).
+
+### Test plan (for whoever runs it next, with the PC back in WSL)
+
+Nothing below has been run on Jam OS or in QEMU; everything above the line
+was run on the Mac (`make check`, Mac builds, a forced rebuild giving the
+same stage lists) and, before the PC went to Jam OS, on the PC's WSL
+(`make check`, Meson builds of all five).
+
+1. **The builds and the lint on the PC** (WSL needs the Meson/Ninja venv of
+   TESTING.md's machine setup, `~/.cache/jamos/tools`, already made;
+   `libexpat1-dev` and `bison` are apt-installed):
+   `JAMOS_REMOTE=jamos-pc JAMOS_REMOTE_ONLY=1 tools/remote-test.sh make check`
+   PASS = exit 0 with `ports lint: 11 recipes, ok`, `ports selftest: PASS`
+   and `genkeymap: us's XKB text compiles (xkbcli)`;
+   `JAMOS_REMOTE=jamos-pc JAMOS_REMOTE_ONLY=1 tools/remote-test.sh python3 tools/ports.py --out build/ports-pc build -f libffi expat wayland wayland-protocols xkbcommon`
+   PASS = `built in` for each, no `ports:` line. (A forced rebuild here was
+   queued when the PC went away: compare `build/ports-pc/<p>/stage/stage.txt`
+   before and after, and with the Mac's `build/ports/<p>/stage/stage.txt`;
+   the Mac's forced rebuilds gave the same bytes.)
+2. **The ports' tests in QEMU** (one remote-test call per port takes a slot;
+   `tools/ports-test.sh <outdir> <port>...` prints `ports-test: <port>:
+   PASS` or `FAIL`):
+   `JAMOS_REMOTE=jamos-pc JAMOS_REMOTE_ONLY=1 tools/remote-test.sh tools/ports-test.sh build/test/ports libffi expat xkbcommon`
+   - `libffi` PASS: `ffi-tests: 98 passed, 0 failed`, `count-98`,
+     `ffi-tests: 1 passed, 0 failed`, status 2 for a bad name. A FAIL names
+     the test (`FAIL <name> (status N)`); rerun with `run $P/ffi-tests -v <name>`
+     to see its own output. This is the first run of libffi's tests on Jam
+     OS: a failure is more likely a POSIX-layer gap (mmap, signals) than
+     libffi's.
+   - `expat` PASS: xmlwf status 0 on the good file, `mismatched tag` and
+     status 2 on the bad one.
+   - `xkbcommon` PASS: `count-720`, the parse error and status 1, and the
+     four `how-to-type` answers (keycode 38 AC01 for a/A, 10 AE01 for `!`,
+     36 RTRN for Return).
+   - `wayland` (`... ports-test.sh build/test/ports wayland`) **cannot pass
+     until GS1 (the Wayland socket) is merged and the test boot has the
+     compositor**: it needs `/svc/wayland`. Until then it fails at
+     `connected` with `wl-connect-test: can't connect to /svc/wayland: ...`
+     (or "not allowed" if the list's `svc wayland` is refused), which is the
+     expected state, not a bug in the port. PASS (later) = `connected`, one
+     `global` line per global, `wl-connect-test: ok (N globals)`, status 0.
+3. **Not tested on Jam OS by design**: `wayland-scanner` (a host tool) and
+   `wayland-protocols` (data); the scanner's check is the wayland-protocols
+   build itself (it runs the scanner over every protocol file and fails if
+   one is refused: 64 `*-enum.h` in the stage).
