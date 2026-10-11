@@ -96,7 +96,7 @@ NVW_BLANK_DISK=${NVW_BLANK_DISK:-nothing found on it}    # what `disks` says of 
 NVW_PREPARED=${NVW_PREPARED:-is a Jam OS disk now}       # and its answer when done
 NVW_RW=${NVW_RW:-read-write}                             # mount -w: "is now read-write", "read-write already"
 NVW_POINTS=${NVW_POINTS:-1 2 3 5 8 13 21 34 55 89}
-NVW_PREP_POINTS=${NVW_PREP_POINTS:-1 3 4 5 6 8 20 60 100 200}
+NVW_PREP_POINTS=${NVW_PREP_POINTS:-1 3 4 5 6 8 12 20 35 50}   # a whole prepare is about 53 Writes
 NVW_DRV_POINTS=${NVW_DRV_POINTS:-1 3 4 5 6}
 
 sha256() { if command -v sha256sum > /dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
