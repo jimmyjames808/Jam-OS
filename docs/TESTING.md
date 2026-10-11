@@ -431,8 +431,10 @@ Other boot words (for `tools/qemu-test.sh`, not in the menu):
   `ro`: the driver treats every drive as someone else's (read-only, no
   writable partition, no `create_table`), whatever its table says. The way
   out if a build's write path misbehaves. In shell mode and in the `init`
-  run; a reboot doesn't keep it. `tools/nvme-test.sh`'s `diskro` case uses
-  it.
+  run; a reboot (kexec) keeps it, so `update` and `reboot` do not lift it.
+  `tools/nvme-test.sh`'s `diskro` case uses it, and
+  `tools/kexec-reboot-test.sh`'s `kexec` run boots with it and checks the
+  kexec'd kernel's command line still has it.
 - `nospare`: init keeps no warm spare of the mixer
   (`user/services/init/spare.c`), and volumes none of fat
   (`user/services/volumes/spare.c`), so a restart starts a process, as
