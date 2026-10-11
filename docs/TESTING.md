@@ -84,7 +84,14 @@ that a bug fix comes with a test is in
   unseen under the controller's event rule (xHCI 4.19.2: an event only
   when a port's change bits go from none to some), which QEMU doesn't
   model: a stick pushed back in, or a connector bouncing, at every point
-  of a port's handling (`build/host/rootportcheck`).
+  of a port's handling (`build/host/rootportcheck`); the ext library
+  (`user/services/extfs/ext/`, the format code of M13.6's Unix
+  filesystem) builds as Jam OS builds a program and, under ASan and
+  UBSan, reads the volumes Linux's mke2fs made (`tools/extfix/`) exactly
+  as Linux's debugfs listed them, refuses each structure's checksum
+  broken alone, sorts every feature bit as the plan's table says, and
+  neither crashes nor reads outside the image on thousands of mutated
+  volumes (`build/host/extcheck`).
 
 ## Running QEMU: tools/qemu-test.sh
 
@@ -1800,6 +1807,8 @@ of them. Each file's header says more.
 | `tools/fatcheck.py <image>[@@offset] [-p N] [--require-clean]` | a read-only FAT32 checker for an image or a stick's raw device (the kill storm's, on the Mac): the FATs agree, every chain is valid (in range, no loop, no cross-link, never into a free, reserved or bad cluster), directory entries are sane (short names, `.` and `..`, long names' order and checksums), each file's size matches its chain, and lost clusters are counted and listed; FSInfo and the dirty bit are notes (`--require-clean`: dirty is damage). Exit 0 clean, 1 damage, 2 lost clusters only, 3 not FAT32. `--selftest` damages small volumes it makes in each of those ways (part of `make check`) |
 | `tools/mkgpt.py` | disk images with a GPT (the PC's Windows-like layout, Jam OS's, damaged and hostile ones) or an MBR, sparse; `--cases <dir>` makes every case `build/host/gptcheck` checks, each with the partitions it must list |
 | `build/host/gptcheck <dir> [--mutations N] [--fuzz N] [--seed S]` | the partition table library on the Mac (`tools/gptcheck.c`, `tools/gptmutate.c`) against `tools/mkgpt.py --cases`'s images, mutated tables and a fuzz pass; part of `make check` (a long pass: `--fuzz 1000000`) |
+| `tools/extfix/make.sh <outdir>` | extcheck's fixture volumes, made by Linux's e2fsprogs (mke2fs, debugfs, e2fsck) and listed as debugfs reads them (`tools/extfix/listing.py`); run on the PC through `tools/remote-test.sh` (the Mac has no e2fsprogs), the results gzipped into `tools/extfix/` by hand |
+| `build/host/extcheck <fixtures dir> <images dir> [--fuzz N] [--seed S]` | the ext library on the Mac (`tools/extcheck.c`, `tools/extbreak.c`, `tools/extmutate.c`) against the fixtures, broken checksums, the feature table and a fuzz pass; part of `make check` (a long pass: `--fuzz 300000`) |
 | `tools/fat-label.py` | checks, or with `--fix` repairs, a FAT volume's label in an image the way other systems read it (the Makefile runs it on every image; `tools/data-test.sh` checks with it) |
 | `tools/checkdocs.py` | the docs check of `make check` |
 | `tools/checkwants.py` | every boot-image program's list ([`<wants.h>`](../user/include/wants.h)) checked by the rules libos applies to a program on `/data`, before the Makefile packs the boot image: the build's approval |
