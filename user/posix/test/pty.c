@@ -67,6 +67,15 @@ static void say(const char *s)
     (void)write(1, s, strlen(s));
 }
 
+/* Wait for SIGHUP, blocked by the caller (old: the mask before): a
+ * pause() after a look at got_hup would sleep for good if the signal came
+ * between the two. */
+static void wait_hup(const sigset_t *old)
+{
+    while (!got_hup)
+        sigsuspend(old);
+}
+
 /* On the slave: it is our terminal; Ctrl+C is SIGINT; the master's close
  * SIGHUP (exit 42). */
 int pt_child_pty(void)
@@ -84,11 +93,14 @@ int pt_child_pty(void)
     char b[16];
     errno = 0;
     CHECK(read(0, b, sizeof(b)) == -1 && errno == EINTR && got_int == 1);
+    sigset_t hup, old;
+    sigemptyset(&hup);
+    sigaddset(&hup, SIGHUP);
+    sigprocmask(SIG_BLOCK, &hup, &old);
     say("pty-int\n");
-    while (!got_hup && read(0, b, sizeof(b)) > 0)
+    while (read(0, b, sizeof(b)) > 0)   /* until the end: the master closed */
         ;
-    while (!got_hup)   /* a read that saw the end before the signal came */
-        pause();
+    wait_hup(&old);
     return pt_failures() ? 1 : 42;
 }
 
@@ -106,9 +118,12 @@ int pt_child_hup(void)
     struct sigaction sa = { .sa_handler = on_sig };
     sigemptyset(&sa.sa_mask);
     CHECK(sigaction(SIGHUP, &sa, NULL) == 0);
+    sigset_t hup, old;
+    sigemptyset(&hup);
+    sigaddset(&hup, SIGHUP);
+    sigprocmask(SIG_BLOCK, &hup, &old);
     say("hup-ready\n");
-    while (!got_hup)
-        pause();
+    wait_hup(&old);
     int fd = open(HUP_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0600);
     if (fd >= 0) {
         (void)write(fd, "hup\n", 4);
