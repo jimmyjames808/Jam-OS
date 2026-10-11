@@ -113,7 +113,8 @@ static status_t wait_ended(const struct thread *t, enum wait_kind kind)
  * wake it (stress saw it as "sleeper made no progress"). Arm the deadline,
  * drop `lock`, re-enable preemption, switch out, and on return re-take
  * `lock` (unless !relock). Returns ERR_CANCELED or ERR_INTERRUPTED if the
- * wait's kind lets one end it (before or during the wait), else OK. An
+ * wait's kind lets one end it (before or during the wait; an interrupt
+ * not once the deadline has passed), else OK. An
  * interrupt is reported, not taken: the waiter takes it
  * (thread_interrupt_consume) only if it returns ERR_INTERRUPTED itself,
  * so a wait whose condition came true meanwhile leaves it for the next. */
@@ -184,7 +185,13 @@ static status_t block_prepared(spinlock_t *lock, uint64_t *irqflags, uint64_t de
     }
     if (lock && relock)
         *irqflags = spin_lock_irqsave(lock);
-    return wait_ended(t, kind);
+    status_t st = wait_ended(t, kind);
+    /* A deadline that passed is the wait's own end, as a met condition is:
+     * the caller's loop finds it and times out, the interrupt left for
+     * the next wait. (test: intr_deadline_comes_first) */
+    if (st == ERR_INTERRUPTED && deadline_ns != DEADLINE_NEVER && uptime_ns() >= deadline_ns)
+        st = OK;
+    return st;
 }
 
 static status_t block_kind(spinlock_t *lock, uint64_t *irqflags, uint64_t deadline_ns,
