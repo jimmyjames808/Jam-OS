@@ -36,7 +36,17 @@ struct vctx {
     unsigned nxattr;
     uint32_t *dirs;               /* per group: directories in use */
     uint32_t ino;                 /* the inode being walked */
+    uint32_t orphans[64];         /* the orphan list: a truncation may be part done */
+    uint32_t norphans;
 };
+
+static bool orphan(const struct vctx *v, uint32_t ino)
+{
+    for (uint32_t i = 0; i < v->norphans; i++)
+        if (v->orphans[i] == ino)
+            return true;
+    return false;
+}
 
 static void mark(struct vctx *v, uint64_t blk, uint64_t n, uint8_t who, bool shared_ok)
 {
@@ -170,7 +180,7 @@ static void walk_inode(struct vctx *v, struct ext_inode *in)
         fail("verify: inode %u: i_blocks %llu, owns %llu blocks", in->ino,
              (unsigned long long)ext_iblocks512(fs, in), (unsigned long long)count);
     uint64_t last = (ext_isize(in) + fs->block_size - 1) >> fs->block_log;
-    if (ext_itype(in) == EXT_FT_REG && wend > last)
+    if (ext_itype(in) == EXT_FT_REG && wend > last && !orphan(v, in->ino))
         fail("verify: inode %u: written blocks to %llu past its size %llu", in->ino,
              (unsigned long long)wend, (unsigned long long)ext_isize(in));
 }
@@ -276,6 +286,8 @@ void verify_volume(struct ext_fs *fs)
     v.own = calloc(fs->blocks, 1);
     if (!v.own)
         fail("out of memory");
+    if (ext_orphans(fs, v.orphans, 64, &v.norphans) != OK)
+        fail("verify: the orphan list");
     mark_meta(&v);
     uint64_t free_i = 0, free_b = 0;
     for (uint32_t g = 0; g < fs->groups; g++) {
