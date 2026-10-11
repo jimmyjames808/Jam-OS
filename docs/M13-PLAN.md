@@ -3,7 +3,7 @@
 Status (2026-10-09): a plan, nothing built. Written against main ae859bee,
 with M12's waves C1 and C2 merged, S2a merged and P6a running. **Waiting
 for the owner's answers to the questions below before any agent starts.**
-M13 is part of wave 5 of [PLAN-M11-M12.5.md](PLAN-M11-M12.5.md#wave-5-m125-m127-and-m13-together),
+M13 is part of wave 5 ([ROADMAP.md](ROADMAP.md#now)),
 beside M12.5 (pagers) and M12.7 (NVMe). It becomes **release 0.2.0**
 (AGENTS: "0.2.0 at POSIX").
 

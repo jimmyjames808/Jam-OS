@@ -174,7 +174,7 @@ Every driver and service is a userspace process from the start.
   "main"), IPIs, IOAPIC, serial interrupts, LAPIC timer, AP startup,
   interrupts on, the PCI core and resources; then either the boot-time
   tests (ktest, bench, stress) or userboot → init.
-- **The boot splash** ([docs/history/AS-PLAN.md](docs/history/AS-PLAN.md)): on a plain
+- **The boot splash** ([docs/HISTORY.md, audio and AS](docs/HISTORY.md#audio-a1-a2-as-and-m85-kexec)): on a plain
   boot (without `verbose`, `nosplash`, `nousb` or `soak`) fbcon's first
   act fills the screen with the splash's background and it draws no text
   from then on (quiet: the log still goes to the ring and serial; a panic
@@ -416,7 +416,7 @@ Every driver and service is a userspace process from the start.
   if they differ); the boot log says if anything differs. The boot word
   `smp=loader` has Limine start them instead (it parks them; `boot_start_cpu`
   releases each), kept for troubleshooting. After a kexec there is no loader: the kernel's
-  startup is the only way. Design and reasons: [M8.5-AP-STARTUP.md](docs/history/M8.5-AP-STARTUP.md).
+  startup is the only way. Design and reasons: [docs/HISTORY.md, M8.5](docs/HISTORY.md#audio-a1-a2-as-and-m85-kexec).
   Loader-reclaimable memory is freed only once every AP is online.
 - Topology per CPU: P-core/E-core from CPUID 1Ah, core/thread ids from
   CPUID 1Fh/0Bh; the report says whether Hyper-Threading is on.
@@ -815,7 +815,7 @@ port, so while it handles one request every other client waits behind it.
   consoles and the mixer, while it starts them and while it stops
   everything for a reboot; what waits on volumes or devmgr is sent
   without waiting and answered later). The older list is
-  [ARCH-CHECK](docs/history/ARCH-CHECK.md#0-and-8-service-loops-that-wait-on-one-thing-at-a-time);
+  [the pre-M9 batch in docs/HISTORY.md, M8.6](docs/HISTORY.md#m86-cleanup-and-polish);
   the rest move to these tools one at a time. The network's services and
   drivers follow the rule from the start
   ([Networking](#networking), "the service-loop rule, as applied").
@@ -2057,7 +2057,7 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
   top of the namespace in the POSIX layer's file calls (`user/posix/sys/`,
   M13, under way: [docs/M13-PLAN.md](docs/M13-PLAN.md)), one writable open
   of a file per process.
-- **The program's list** (`<wants.h>`, [M8.6-SVC.md](docs/history/M8.6-SVC.md)):
+- **The program's list** (`<wants.h>`, [docs/HISTORY.md, M8.6](docs/HISTORY.md#m86-cleanup-and-polish)):
   a program declares in its source what it wants (`JAM_WANTS("svc
   music\n" "mount /data r\n")`: services, mounts read-only or writable,
   the root resource's powers it needs, and `svc net listen` for the
@@ -2531,7 +2531,7 @@ without one, so detection works either way. A change only logs: an unplug
 while playing stops nothing. `hda jacks` (`hda.jacks`) shows each jack's
 state and how it is watched.
 
-**The mixer** (`user/services/mixer`, [docs/history/A2-PLAN.md](docs/history/A2-PLAN.md))
+**The mixer** (`user/services/mixer`, [docs/HISTORY.md, A2](docs/HISTORY.md#audio-a1-a2-as-and-m85-kexec))
 is the driver's only client but for the tests (`hdatest` holds devmgr's
 control channel): init asks devmgr for each sound card's device channel
 before anyone else can ask, and gives them to the mixer, so devmgr hands
@@ -2609,7 +2609,7 @@ while the mixer is killed 20 times (`tools/mixer-restart-test.sh`); 20
 kills in 10 s while the music player played left at least 126 ms of
 lead, and no period was late ([BENCH.md](docs/BENCH.md#m116-qemu-2026-10-05)).
 
-**MP3** ([docs/history/A2-PLAN.md](docs/history/A2-PLAN.md#mp3)): `play` picks a file's
+**MP3** ([docs/HISTORY.md, A2](docs/HISTORY.md#audio-a1-a2-as-and-m85-kexec)): `play` picks a file's
 format by its first bytes, not its name (`RIFF`: WAV; MPEG audio frames,
 after any ID3v2 tag: MP3; anything else is refused), through a small
 source interface in libos (`<play_src.h>`, `user/lib/play_src.c`: open, read
@@ -2634,7 +2634,7 @@ state and a 64 KiB buffer while a file plays). Decoding costs about
 4 % of a core under QEMU's emulation (`play -n`), far less on the PC.
 
 **The music player** (`user/services/music`,
-[docs/history/A2-PLAN.md](docs/history/A2-PLAN.md#music-player)) is a service init starts
+[docs/HISTORY.md, A2](docs/HISTORY.md#audio-a1-a2-as-and-m85-kexec)) is a service init starts
 after the mixer, in a job of its own, so it plays on while the shell runs
 other commands, through Ctrl+C and a restart of the shell. init makes its
 `music` channel (`abi/idl/music.idl`: start (a folder, the file to play first,
@@ -2663,7 +2663,7 @@ each ~11 ms of what it writes, kept
 by stream frame because it writes up to 1.37 s ahead
 (`user/services/music/spectrum.c`).
 
-**jamjar** (`user/apps/jamjar`, [the design note](docs/history/MUSIC-GUI.md))
+**jamjar** (`user/apps/jamjar`, [docs/HISTORY.md, audio](docs/HISTORY.md#audio-a1-a2-as-and-m85-kexec))
 is the player's window, an app whose list asks for the player (it opens
 `/svc/music`, a channel of its own), `/data` and the other sticks
 read-only; it plays nothing itself. It reads the library through those
@@ -3020,7 +3020,7 @@ shows nothing but the splash background from the moment `reboot` starts
 splash. After a panic the next boot saves the panicked boot's log first
 and says so: a line in the shell, a notice on the desktop. Code in
 `kernel/kexec/`; the plan, with the layout and the
-decisions, is [docs/history/M8.5-PLAN.md](docs/history/M8.5-PLAN.md) ("Revision 2").
+decisions, is in [docs/HISTORY.md, M8.5](docs/HISTORY.md#audio-a1-a2-as-and-m85-kexec) ("Revision 2").
 
 - **The region** (48 MiB below 4 GiB, 2 MiB aligned: `crashkernel=<MiB>`,
   0 turns it all off) is unmapped from the running kernel, so a wild write

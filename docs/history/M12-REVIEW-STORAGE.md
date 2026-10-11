@@ -21,8 +21,8 @@ storage tests (`tools/storage-test.sh`, `tools/sticks-test.sh`,
 `tools/fat-storm-test.sh`, `tools/data-test.sh`, `tools/bootdisk-test.sh`,
 `tools/update-write-test.sh`, `tools/kexec-reboot-test.sh`, their shell
 scripts, `user/tests/utest/disks.c`, `user/tests/usbtest/storage.c`), and
-[ARCH-CHECK.md](ARCH-CHECK.md#1-devmgr-does-too-much),
-[M11.6-PLAN.md](../M11.6-PLAN.md) and [M11.6-REVIEW.md](M11.6-REVIEW.md).
+ARCH-CHECK (claim 1, devmgr does too much), the M11.6 plan and the M11.6
+review (all deleted since; [HISTORY: M11.6](../HISTORY.md#m116-services-that-outlive-their-process) covers them).
 
 ## The design in ten lines
 
