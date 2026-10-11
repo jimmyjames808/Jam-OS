@@ -212,6 +212,35 @@ static void check_eintr(void)
     CHECK(rd.r == -1 && rd.err == EINTR);
 }
 
+static struct timespec sleep_left;
+static int             sleep_err;
+
+static void *sleep_long(void *arg)
+{
+    (void)arg;
+    struct timespec t = { .tv_sec = (time_t)1 << 62 };   /* longer than any uptime */
+    errno = 0;
+    sleep_err = nanosleep(&t, &sleep_left) ? errno : 0;
+    return NULL;
+}
+
+/* A nanosleep far longer than the clock can count, ended by a signal:
+ * EINTR, and the time left is what was asked less what was slept, never
+ * negative (the deadline it slept to saturates). */
+static void check_sleep_left(void)
+{
+    pthread_t t;
+    handle(SIGUSR1, 0);
+    CHECK(pthread_create(&t, NULL, sleep_long, NULL) == 0);
+    nap_ms(30);
+    CHECK(pthread_kill(t, SIGUSR1) == 0);
+    CHECK(pthread_join(t, NULL) == 0);
+    deflt(SIGUSR1);
+    CHECK(sleep_err == EINTR);
+    CHECK(sleep_left.tv_sec > ((time_t)1 << 30) && sleep_left.tv_nsec >= 0 &&
+          sleep_left.tv_nsec < 1000000000L);
+}
+
 /* Two signals at a thread blocked in one wait: both handlers run. */
 static void check_two_in_one_wait(void)
 {
@@ -365,6 +394,7 @@ void pt_signal(char **argv)
     check_routing();
     check_masks();
     check_eintr();
+    check_sleep_left();
     check_two_in_one_wait();
     check_waits();
     check_sigpipe();

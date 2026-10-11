@@ -211,17 +211,20 @@ long lx_clock_nanosleep(long clk, long flags, long req, long rem, long e, long f
     long r = timespec_ns((const struct timespec *)(uintptr_t)req, &ns);
     if (r)
         return r;
-    uint64_t deadline;
+    uint64_t deadline, start = up_ns();
     if (flags & TIMER_ABSTIME)
         deadline = uptime_deadline(clk == CLOCK_REALTIME ? clk : CLOCK_MONOTONIC, ns);
-    else if (__builtin_add_overflow(up_ns(), (uint64_t)ns, &deadline))
+    else if (__builtin_add_overflow(start, (uint64_t)ns, &deadline))
         deadline = DEADLINE_NEVER;
     status_t st = jam_sleep_until(deadline);
     if (st == OK)
         return 0;
     if (st == ERR_INTERRUPTED && rem && !(flags & TIMER_ABSTIME)) {
-        uint64_t t = up_ns();
-        to_timespec(deadline > t ? (int64_t)(deadline - t) : 0, (struct timespec *)(uintptr_t)rem);
+        /* What is left of the request, not of the deadline: a deadline
+         * that saturated to DEADLINE_NEVER would give a negative time. */
+        uint64_t slept = up_ns() - start;
+        to_timespec(slept < (uint64_t)ns ? ns - (int64_t)slept : 0,
+                    (struct timespec *)(uintptr_t)rem);
     }
     return lx_err(st);
 }
