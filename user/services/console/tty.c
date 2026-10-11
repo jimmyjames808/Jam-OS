@@ -524,6 +524,14 @@ status_t op_open_tty(void *ctx, handle_t *out_tty, handle_t *out_data)
     return OK;
 }
 
+unsigned ttys_count(void)
+{
+    unsigned n = 0;
+    for (unsigned i = 0; i < MAX_TTYS; i++)
+        n += ttys[i].used;
+    return n;
+}
+
 void ttys_release(unsigned i)
 {
     if (i >= MAX_TTYS || !ttys[i].used)

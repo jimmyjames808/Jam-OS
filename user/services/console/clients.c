@@ -134,6 +134,14 @@ unsigned client_count(void)
     return n;
 }
 
+bool clients_users(void)
+{
+    for (unsigned i = 0; i < MAX_CLIENTS; i++)
+        if (clients[i] && client_info[i].level != L_ADMIN)
+            return true;
+    return false;
+}
+
 /* Clients whose last round ended on the budget, with requests maybe left:
  * bit i is clients[i]. Their channels stay readable, so the PERSISTENT
  * binding (it fires on an edge) won't fire again: the main loop comes back
