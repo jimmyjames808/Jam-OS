@@ -89,6 +89,7 @@ None is in the tree yet. The code in `third_party/` keeps its own licences
 own one-clause BSD-style licence; dr_mp3: public domain or MIT-0;
 pl_mpeg: MIT; stb_image and stb_truetype: MIT or public domain; Inter and
 JetBrains Mono: SIL Open Font License 1.1; Wayland's protocol files: MIT;
-lwIP: BSD-3-Clause; Monocypher: BSD-2-Clause, or CC0). The music in the
+lwIP: BSD-3-Clause; Monocypher: BSD-2-Clause, or CC0; tinyssh: public
+domain, as CC0-1.0, 0BSD, MIT-0 or MIT). The music in the
 pictures is public-domain recordings from the Internet Archive (Musopen
 and others); none of it is in this repository.

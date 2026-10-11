@@ -187,3 +187,29 @@ Vendored third-party code:
   and a new src/locale/gb18030utf.h) is not applied: no Jam OS program
   uses iconv yet. Apply it as an override before one does, or take the
   next release.
+- tinyssh/: tinyssh 20261001 by Jan Mojzis, the SSH server (bin/sshd;
+  docs/M13-PLAN.md section 15), from the release's tag at
+  https://github.com/janmojzis/tinyssh (tag 20261001, commit
+  dc05d1401c9f8e3f8202469a3f03956e886f7b62, 2026-10-01): GitHub's archive
+  of the tag, https://github.com/janmojzis/tinyssh/archive/refs/tags/20261001.tar.gz
+  (sha256 f79b1b4b8db16d3b1ecc339828d48c3754e354634ac28d2fbf82c85da56e503e
+  when fetched on 2026-10-11; the project publishes no tarball of its own),
+  the whole of it, unmodified. LICENSE.md: "TinySSH is hereby placed into
+  the public domain", SPDX CC0-1.0 OR 0BSD OR MIT-0 OR MIT, the user's
+  choice (its cryptoint/ and the tests' _crypto-test_*.inc, from D. J.
+  Bernstein's work, add LicenseRef-PD-hp to the same list): Jam OS takes
+  it under 0BSD. Built by user/ports/tinyssh/tinyssh.mk (not its Makefile
+  or configure probes: a fixed feature header,
+  user/ports/tinyssh/tinyssh-features.h), with its own crypto (Ed25519,
+  X25519, sntrup761, ChaCha20-Poly1305; none of the outside libraries),
+  less the files that fork, set uids or write login records, and with four
+  files replaced by ours (user/ports/tinyssh/OVERRIDES, each listed with
+  its upstream sha256, which tools/checkoverrides.py checks before every
+  build and in `make check`; each of ours says what changed and why):
+  channel.c (a session of init's in place of a pty, fork and exec),
+  subprocess_sign.c and subprocess_auth.c (their helpers started with
+  posix_spawn, the keys in /data/etc/authorized_keys) and tinysshd.c (the
+  multi-call wrapper: tinysshd, its helpers and the listener, sshd.c, in
+  one program). No subsystems (no sftp, no scp: tinyssh has one only when
+  its start names it, and sshd names none), and no agent or port
+  forwarding (tinyssh opens a "session" channel only).

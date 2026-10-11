@@ -1,0 +1,12 @@
+--- tinysshd subsystem option validation
+attached valid registration: 111
+separate valid registration: 111
+command containing equals sign: 111
+missing separator: 100
+missing separator in separate argument: 100
+missing name: 100
+missing command: 100
+empty separate registration: 100
+missing separate registration: 100
+maximum registrations: 111
+too many registrations: 100
