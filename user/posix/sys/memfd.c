@@ -358,6 +358,20 @@ long memfd_adopt(const struct posixfds_fd *rec, const void *data, const handle_t
     return 0;
 }
 
+long memfd_from_vmo(handle_t vmo, uint32_t status, struct fd_desc **out)
+{
+    struct memfd_wire w = { .seals = F_SEAL_SEAL };   /* no sealing: its maker's are unknown */
+    if (jam_vmo_get_size(vmo, &w.size) != OK) {
+        jam_handle_close(vmo);
+        return -EINVAL;
+    }
+    struct memobj *m = obj_from_wire(vmo, &w);   /* consumes vmo */
+    *out = m ? fd_new(&memfd_ops, status, m) : NULL;
+    if (m && !*out)
+        memobj_unref(m);
+    return *out ? 0 : -ENOMEM;
+}
+
 long memfd_add_seals(struct fd_desc *d, unsigned seals)
 {
     if (d->ops != &memfd_ops || (seals & ~SEALS_KNOWN))

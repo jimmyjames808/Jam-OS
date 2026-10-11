@@ -2,8 +2,9 @@
  * (docs/M13-PLAN.md section 8), so it runs in every posixtest run; the
  * sockets section (sockets.c) talks to the network peer.
  *
- *   - socket's refusals: AF_INET6 and AF_UNIX (EAFNOSUPPORT), a raw socket
- *     (ESOCKTNOSUPPORT), a protocol that isn't the type's
+ *   - socket's refusals: AF_INET6 (EAFNOSUPPORT), an AF_UNIX datagram
+ *     socket and a raw socket (ESOCKTNOSUPPORT; AF_UNIX stream sockets are
+ *     wayland.c's), a protocol that isn't the type's
  *     (EPROTONOSUPPORT);
  *   - a new stream socket: fstat says a socket; the read-only options
  *     (SO_TYPE, SO_DOMAIN, SO_PROTOCOL, SO_ACCEPTCONN, SO_ERROR); POSIX's
@@ -64,7 +65,7 @@ static void refusals(void)
     errno = 0;
     CHECK(socket(AF_INET6, SOCK_STREAM, 0) == -1 && errno == EAFNOSUPPORT);
     errno = 0;
-    CHECK(socket(AF_UNIX, SOCK_STREAM, 0) == -1 && errno == EAFNOSUPPORT);
+    CHECK(socket(AF_UNIX, SOCK_DGRAM, 0) == -1 && errno == ESOCKTNOSUPPORT);   /* stream only */
     errno = 0;
     CHECK(socket(AF_INET, SOCK_RAW, IPPROTO_ICMP) == -1 && errno == ESOCKTNOSUPPORT);
     errno = 0;

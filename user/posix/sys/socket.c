@@ -3,8 +3,8 @@
  * accept, shutdown and the names are sockconn.c's, the bytes sockio.c's,
  * a socket handed to a child sockgive.c's.
  *
- * **Addresses.** AF_INET only (AF_INET6 and AF_UNIX sockets:
- * EAFNOSUPPORT; socketpair is pipe.c's). netstack serves one interface and
+ * **Addresses.** AF_INET here (AF_INET6: EAFNOSUPPORT; AF_UNIX stream
+ * sockets are svcsock.c's, socketpair pipe.c's). netstack serves one interface and
  * has no loopback: a bind to an address that isn't the interface's (or
  * INADDR_ANY) is EADDRNOTAVAIL.
  *
@@ -28,6 +28,7 @@
 #include <sys/stat.h>
 #include "kinds.h"
 #include "sock.h"
+#include "svcsock.h"
 
 #define IDLE_SIGNAL  (1u << 24)        /* the idle event's bit: never raised */
 
@@ -127,7 +128,8 @@ long sock_dgram_open_locked(struct sock *s)
 
 /* Descriptor fd's description (held: the caller puts it) and its socket.
  * 0; -EBADF; -ENOTSOCK for another kind (*d is still set and held for a
- * socketpair end, whose calls go to pipe.c). */
+ * socketpair end, whose calls go to pipe.c, and for an AF_UNIX stream
+ * socket, svcsock.c's). */
 long sock_get(long fd, struct fd_desc **d, struct sock **s)
 {
     *d = fd_get(fd);
@@ -136,7 +138,7 @@ long sock_get(long fd, struct fd_desc **d, struct sock **s)
     *s = sock_of(*d);
     if (*s)
         return 0;
-    if ((*d)->ops == &sockp_ops)
+    if ((*d)->ops == &sockp_ops || (*d)->ops == &usock_ops)
         return -ENOTSOCK;
     fd_put(*d);
     *d = NULL;
@@ -357,8 +359,10 @@ void sock_exit_drain(void)
 
 long lx_socket(long domain, long type, long proto, long d, long e, long f)
 {
+    if (domain == AF_UNIX)
+        return usock_new(type, proto);   /* connects only to a service socket: svcsock.c */
     if (domain != AF_INET)
-        return -EAFNOSUPPORT;   /* AF_INET6, AF_UNIX (socketpair only), the rest */
+        return -EAFNOSUPPORT;   /* AF_INET6, the rest */
     long kind = type & ~(long)(SOCK_NONBLOCK | SOCK_CLOEXEC);
     if (kind == SOCK_STREAM && proto && proto != IPPROTO_TCP)
         return -EPROTONOSUPPORT;
@@ -412,8 +416,10 @@ long lx_bind(long fd, long addr, long len, long d4, long e, long f)
     struct sock *s;
     long r = sock_get(fd, &d, &s);
     if (r == -ENOTSOCK && d) {
+        /* no named AF_UNIX sockets; a socketpair end is already "bound" to its peer */
+        r = d->ops == &usock_ops ? -EAFNOSUPPORT : -EINVAL;
         fd_put(d);
-        return -EINVAL;   /* a socketpair end: already "bound" to its peer */
+        return r;
     }
     if (r)
         return r;
@@ -455,8 +461,9 @@ long lx_listen(long fd, long backlog, long c, long d4, long e, long f)
     struct sock *s;
     long r = sock_get(fd, &d, &s);
     if (r == -ENOTSOCK && d) {
+        r = d->ops == &usock_ops ? -EAFNOSUPPORT : -EOPNOTSUPP;   /* no named AF_UNIX sockets */
         fd_put(d);
-        return -EOPNOTSUPP;
+        return r;
     }
     if (r)
         return r;
