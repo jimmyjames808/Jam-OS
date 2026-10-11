@@ -81,7 +81,10 @@ drives, then installing Jam OS on one. The plan:
 
 ## Licence
 
-[BSD 2-Clause](LICENSE). The code in `third_party/` keeps its own licences
+[BSD 2-Clause](LICENSE). A separate program (a driver, a service or a
+package) may be under the GPL or LGPL, with its source shipped beside it;
+the kernel, the libraries and the rest stay BSD ([CONTRIBUTING](CONTRIBUTING.md)).
+None is in the tree yet. The code in `third_party/` keeps its own licences
 (Limine: BSD-2-Clause; `limine.h`: 0BSD; Spleen: BSD-2-Clause; FatFs: its
 own one-clause BSD-style licence; dr_mp3: public domain or MIT-0;
 pl_mpeg: MIT; stb_image and stb_truetype: MIT or public domain; Inter and
