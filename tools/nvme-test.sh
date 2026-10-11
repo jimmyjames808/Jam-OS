@@ -50,6 +50,8 @@
 #            partitions (tools/nvme-written.py); QEMU's trace holds stage 2's
 #            opcodes, and every Write lies inside the Jam OS drive's table or
 #            partitions (`-trace pci_nvme_write`, --write-ranges)
+#   wiommu   the write case behind QEMU's VT-d (QEMU_IOMMU=1, iommu=on): the
+#            device reads what it writes through the pins, and no fault
 #   diskro   the Windows-like drive, a Jam OS one (tools/mkgpt.py's layout)
 #            and a blank one, booted with `diskro`: every drive refuses a
 #            writable open and create_table (`utest only nvmero_`), the
@@ -85,7 +87,7 @@ set -eu
 out=$1
 shift
 cases=${*:-windows}
-[ "$cases" = all ] && cases="checker windows plain twons 4k damaged kill iommu block write diskro"
+[ "$cases" = all ] && cases="checker windows plain twons 4k damaged kill iommu block write wiommu diskro"
 mkdir -p "$out"
 
 sha256() { if command -v sha256sum > /dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
@@ -169,7 +171,7 @@ s2_boot() {
     } > "$d/$bn.in"
     QEMU_TIMEOUT=${QEMU_TIMEOUT:-240} QEMU_NVME="$5" QEMU_INPUT="$d/$bn.in" \
         QEMU_EXTRA="-trace pci_nvme_pci_reset -trace pci_nvme_admin_cmd -trace pci_nvme_io_cmd -trace pci_nvme_write -D $d/$bn.trace" \
-        QEMU_WORDS="$4" tools/qemu-test.sh "$d" "$bn" shell > "$d/$bn.out" 2>&1 ||
+        QEMU_WORDS="$4" QEMU_IOMMU=${s2_iommu:-} tools/qemu-test.sh "$d" "$bn" shell > "$d/$bn.out" 2>&1 ||
         { echo "$bn: FAIL: the run failed (see $d/$bn.out)"; grep -a "serial-feed: .*no '" "$d/$bn.out" || true; return 1; }
 }
 
@@ -195,15 +197,16 @@ s2_trace() {
 }
 
 s2_write() {
-    dir=$1 ok=1
+    dir=$1 ok=1 words="nvmetest=on${s2_iommu:+ iommu=on}"
     win="$dir/windows.img" jam="$dir/jamos.img"
     python3 tools/nvme-img.py "$win" windows
     python3 tools/mkgpt.py "$jam" --layout blank --size 640M > /dev/null
     before=$(sha256 "$win" | cut -d' ' -f1)
     for run in 1 2; do
         bn=nvme-write-$run log="$dir/nvme-write-$run.log"
-        s2_boot "$dir" $bn nvmew_ "nvmetest=on" "$win $jam" || ok=0
-        [ "$(sha256 "$win" | cut -d' ' -f1)" = "$before" ] || { echo "nvme-write: FAIL: run $run: the Windows-like image changed"; ok=0; }
+        s2_boot "$dir" $bn nvmew_ "$words" "$win $jam" || ok=0
+        if [ -n "${s2_iommu:-}" ] && grep -aq "vtd: fault" "$log"; then echo "nvme-$c: FAIL: a VT-d fault"; ok=0; fi
+        [ "$(sha256 "$win" | cut -d' ' -f1)" = "$before" ] || { echo "nvme-$c: FAIL: run $run: the Windows-like image changed"; ok=0; }
         s2_want "$log" "nvme-utest-0" "utest: 4 passed" \
             "nvmew_refuse: drive [0-9]+ \(someone else's, 4 partitions\): every write refused" \
             "nvmew_write: drive [0-9]+: 288 blocks written in both partitions and read back" \
@@ -218,11 +221,11 @@ s2_write() {
                 "nvmew_check: drive [0-9]+: the blocks written by an earlier boot are there" || ok=0
         fi
         python3 tools/nvme-written.py "$jam" --pattern all --ranges > "$dir/written-$run.txt" ||
-            { echo "nvme-write: FAIL: run $run: $(tail -1 "$dir/written-$run.txt")"; ok=0; continue; }
-        head -1 "$dir/written-$run.txt" | sed "s/^/nvme-write: run $run: /"
+            { echo "nvme-$c: FAIL: run $run: $(tail -1 "$dir/written-$run.txt")"; ok=0; continue; }
+        head -1 "$dir/written-$run.txt" | sed "s/^/nvme-$c: run $run: /"
         s2_trace "$dir/$bn.trace" 2 --write-ranges "$(tail -1 "$dir/written-$run.txt")" || ok=0
     done
-    if [ $ok = 1 ]; then rm -f "$win" "$jam"; echo "nvme-write: PASS"; else echo "nvme-write: FAIL (see $dir)"; fails=$((fails + 1)); fi
+    if [ $ok = 1 ]; then rm -f "$win" "$jam"; echo "nvme-$c: PASS"; else echo "nvme-$c: FAIL (see $dir)"; fails=$((fails + 1)); fi
 }
 
 s2_diskro() {
@@ -245,10 +248,12 @@ s2_diskro() {
 
 for c in $cases; do
     if [ $c = checker ]; then checker; continue; fi
-    if [ $c = write ] || [ $c = diskro ]; then
+    if [ $c = write ] || [ $c = wiommu ] || [ $c = diskro ]; then
         rm -rf "$out/nvme-$c"
         mkdir -p "$out/nvme-$c"
-        "s2_$c" "$out/nvme-$c"
+        s2_iommu=
+        [ $c = wiommu ] && s2_iommu=1
+        case $c in diskro) s2_diskro "$out/nvme-$c" ;; *) s2_write "$out/nvme-$c" ;; esac
         continue
     fi
     name=nvme-$c
