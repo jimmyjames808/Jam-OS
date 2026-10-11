@@ -865,4 +865,5 @@ void services_init(handle_t loop_port, bool no_usb, bool splash, const char *she
     services_publish(SVC_NET_LISTEN, net_listen_channel(), true);   /* the shell's to give */
     services_publish(SVC_NET_LISTEN_LOW, net_listen_low_channel(), true);   /* ... to bin/serve */
     services_publish(SVC_NET_SYS, net_sys_channel(), true);   /* the network's services' */
+    sessions_init(port);   /* /svc/session: init's own (sessions.c) */
 }
