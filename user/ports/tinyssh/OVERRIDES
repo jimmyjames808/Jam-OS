@@ -1,0 +1,27 @@
+# The files of tinyssh (third_party/tinyssh, vendored unmodified) that the
+# build replaces with ours: upstream's file is left out and ours, in
+# user/ports/tinyssh, compiled in its place. Each of ours starts with
+# upstream's notice and says what changed and why. tinyssh.mk's
+# tinyssh-check (in `make check`) and every build check the hashes with
+# tools/checkoverrides.py, as for musl: a new release that changed one of
+# these files stops the build until someone has read upstream's change,
+# brought ours up to date and recorded the new hash here.
+#
+# One override per line: the upstream file (relative to third_party/tinyssh),
+# the SHA-256 of the upstream file ours was written against, and ours.
+#
+# Left out of the build entirely (tinyssh.mk says why): channel_fork.c,
+# channel_forkpty.c, channel_drop.c, loginshell.c, dropuidgid.c, logsys.c,
+# main_tinysshd_makekey.c, main_tinysshd_printkey.c, the lib25519,
+# libntruprime and lib1305 variants, the feature probes and _tinysshd-speed.c.
+
+# The session's child: one of init's sessions (jamos_session_open) instead
+# of openpty, fork, login_tty and execve of a shell.
+channel.c de5ce435762220def586a46a37a3d0b7cf6703151af1c08d63c36fc53db9fedf user/ports/tinyssh/channel.c
+# The host key's signature in a helper started with posix_spawn, not fork.
+subprocess_sign.c af49532652441979531b2e55d1fbb3d2ad9f4f9c74a758d5192fb1a8c39573a3 user/ports/tinyssh/subprocess_sign.c
+# The key check in a helper started with posix_spawn, not fork; the keys
+# in /data/etc/authorized_keys; no privileges to drop.
+subprocess_auth.c c32e7426846d27770014a45b46bbde2bfd510f15411846e35f7ae474d390fb85 user/ports/tinyssh/subprocess_auth.c
+# The multi-call wrapper: tinysshd, its two helpers and the listener (sshd.c).
+tinysshd.c 3d2126e604e944c453a5f372661583df3634fae7d5626bb84765234bcc84cdb5 user/ports/tinyssh/tinysshd.c

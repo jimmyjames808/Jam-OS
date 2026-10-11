@@ -795,6 +795,8 @@ clean:
 
 # POSIX on musl: musl, the call layer, the sysroot, posixtest (its own file).
 include user/posix/posix.mk
+# tinyssh, the SSH server, bin/sshd (its own file).
+include user/ports/tinyssh/tinyssh.mk
 
 # compile_commands.json for editors (VS Code IntelliSense, clangd): the real
 # build's flags for every file, from a dry run (tools/compdb.py).

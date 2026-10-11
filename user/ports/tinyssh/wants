@@ -1,0 +1,4 @@
+posix
+svc net listen low
+svc session
+mount /data r
