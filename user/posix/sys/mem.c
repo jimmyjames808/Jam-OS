@@ -1,5 +1,5 @@
-/* Memory (docs/M13-PLAN.md section 12): anonymous mmap, munmap, mprotect,
- * madvise and brk, over VMOs and the address space's vmar calls.
+/* Memory (docs/M13-PLAN.md section 12): mmap, munmap, mprotect, madvise,
+ * msync and brk, over VMOs and the address space's vmar calls.
  *
  * Each mmap is a VMO of its own, mapped with vmar_map and kept in libc's
  * table (maptable.h) with its handle: munmap of part of it unmaps that
@@ -11,10 +11,15 @@
  *
  * What the address space allows: never write with execute, and no
  * execute on anonymous memory at all (EACCES: no JIT). A descriptor's
- * mapping is file.c's file_map: MAP_PRIVATE a copy of the file (or
- * memfd) in a VMO of its own, MAP_SHARED a memfd's own VMO (of a file:
- * ENODEV until M12.5's pager); either is then mapped and kept in the
- * table as an anonymous one is. mremap is ENOSYS
+ * mapping is file.c's file_map (files.h): a file on a pager's mount
+ * (fat) on its own pages, the file's VMO itself for MAP_SHARED (read
+ * only) and for a read-only MAP_PRIVATE, a copy-on-write child of it for
+ * a writable MAP_PRIVATE; a file elsewhere, or a memfd, as a copy or the
+ * memfd's own VMO. Each is then mapped and kept in the table as an
+ * anonymous one is; a read-only private mapping on a file's own pages is
+ * marked (MT_PAGER_PRIVATE), and an mprotect that adds write to it puts
+ * a child in its place first (the file's VMO is never writable).
+ * msync has nothing to write (lx_msync says why). mremap is ENOSYS
  * (musl's realloc copies); mlock and its kin succeed (nothing is paged
  * out). MAP_FIXED over the table's mappings replaces
  * them in one step (vmar_map's VMAR_REPLACE): another thread reading the
@@ -108,7 +113,8 @@ static long drop_locked(uint64_t addr, uint64_t end, bool kernel)
         } else {                    /* the tail went, or the middle */
             t[i].len = s - e.base;
             if (f < e.base + e.len) {
-                struct mt_entry tail = { f, e.base + e.len - f, e.vmo_off + (f - e.base), e.vmo, 0 };
+                struct mt_entry tail = { f, e.base + e.len - f, e.vmo_off + (f - e.base), e.vmo,
+                                         e.flags };
                 mt_insert(&tail);
             }
         }
@@ -136,6 +142,7 @@ void mem_forget(uint64_t addr, uint64_t len)
 struct map_src {
     handle_t vmo;
     uint64_t vmo_off;
+    uint32_t flags;   /* its table entry's MT_* */
 };
 
 /* src's VMO (or a new one) mapped for len bytes with perms (at *addr
@@ -160,7 +167,7 @@ static long map_new(uint64_t *addr, uint64_t len, uint32_t perms, bool fixed, bo
     }
     if (populate)
         (void)jam_vmo_commit(vmo, src->vmo_off, len);   /* a hint: pages still come on touch */
-    struct mt_entry e = { *addr, len, src->vmo_off, vmo, 0 };
+    struct mt_entry e = { *addr, len, src->vmo_off, vmo, src->flags };
     mt_insert(&e);
     return 0;
 }
@@ -240,7 +247,7 @@ static long replace_locked(uint64_t addr, uint64_t len, uint32_t perms, bool pop
     (void)drop_locked(addr, addr + len, false);   /* the kernel unmapped them; room checked */
     if (populate)
         (void)jam_vmo_commit(vmo, src->vmo_off, len);   /* a hint: pages still come on touch */
-    struct mt_entry e = { addr, len, src->vmo_off, vmo, 0 };
+    struct mt_entry e = { addr, len, src->vmo_off, vmo, src->flags };
     mt_insert(&e);
     return 0;
 }
@@ -258,6 +265,86 @@ static long mmap_check(long addr, long len, long prot, long flags, long off)
     return vmar_perms(prot, &perms);
 }
 
+/* ---- files: a descriptor's mapping, write added over a file's pages, msync ------------ */
+
+/* mmap of descriptor fd (file.c's file_map) as a mapping's source. */
+static long file_source(long fd, long off, uint64_t size, long prot, long flags,
+                        struct map_src *out)
+{
+    struct file_mapping m;
+    uint32_t how = ((flags & MAP_TYPE) != MAP_PRIVATE ? FMAP_SHARED : 0) |
+                   (prot & PROT_WRITE ? FMAP_WRITE : 0);
+    long r = file_map(fd, off, size, how, &m);
+    if (!r)
+        *out = (struct map_src){ m.vmo, m.vmo_off, m.pager_ro ? MT_PAGER_PRIVATE : 0 };
+    return r;
+}
+
+/* The first entry in [addr, end) mapped straight on a file's pages
+ * privately (MT_PAGER_PRIVATE), or mt_count(). */
+static unsigned next_pager_private(uint64_t addr, uint64_t end)
+{
+    const struct mt_entry *t = mt_entries();
+    unsigned i = mt_first_after(addr);
+    while (i < mt_count() && t[i].base < end && !(t[i].flags & MT_PAGER_PRIVATE))
+        i++;
+    return i < mt_count() && t[i].base < end ? i : mt_count();
+}
+
+/* mprotect adding write over [addr, end): each part of a private mapping
+ * straight on a file's pages becomes a copy-on-write child of the file's
+ * VMO (its untouched pages still the file's, as before), mapped in its
+ * place with perms in one step (VMAR_REPLACE): the file's VMO is never
+ * writable. Charged in full now, as a writable private mapping is at
+ * mmap: ENOMEM if the job can't pay. A part already replaced stays so if
+ * a later one fails (as Linux may leave part of a range changed). */
+static long unshare_locked(uint64_t addr, uint64_t end, uint32_t perms)
+{
+    for (unsigned i; (i = next_pager_private(addr, end)) < mt_count();) {
+        const struct mt_entry *e = &mt_entries()[i];
+        uint64_t s = e->base > addr ? e->base : addr;
+        uint64_t f = e->base + e->len < end ? e->base + e->len : end;
+        struct map_src child = { HANDLE_INVALID, 0, 0 };
+        status_t st = jam_vmo_create_child(e->vmo, VMO_CHILD_SNAPSHOT_AT_LEAST_ON_WRITE,
+                                           e->vmo_off + (s - e->base), f - s, &child.vmo);
+        if (st != OK)
+            return st == ERR_NO_MEMORY ? -ENOMEM : lx_err(st);
+        long r = replace_locked(s, f - s, perms, false, &child);   /* takes child.vmo */
+        if (r)
+            return r;
+        addr = f;
+    }
+    return 0;
+}
+
+/* Is all of [addr, end) libc's mappings? */
+static bool covered_locked(uint64_t addr, uint64_t end)
+{
+    uint64_t hole_end;
+    return !next_hole(&addr, end, &hole_end);
+}
+
+/* msync: nothing to write. A shared mapping of a file is read-only (the
+ * pager never writes pages back: mmap refuses PROT_WRITE with it), a
+ * memfd's pages are its file, and a private mapping's writes are never
+ * the file's; what a program wrote with write() is on its medium already
+ * (fat writes through). So only Linux's checks: the flags, the address,
+ * and the range mapped (ENOMEM: here, libc's own mappings). */
+long lx_msync(long addr, long len, long flags, long d, long e, long f)
+{
+    uint64_t size = page_round((uint64_t)len);
+    if (!page_aligned((uint64_t)addr) || len < 0 || (len && !size) ||
+        (uint64_t)addr > UINT64_MAX - size)
+        return -EINVAL;
+    if ((flags & ~(long)(MS_ASYNC | MS_SYNC | MS_INVALIDATE)) ||
+        ((flags & MS_ASYNC) && (flags & MS_SYNC)))
+        return -EINVAL;
+    lock_take(&mem_lock);
+    bool whole = covered_locked((uint64_t)addr, (uint64_t)addr + size);
+    lock_give(&mem_lock);
+    return whole ? 0 : -ENOMEM;
+}
+
 long lx_mmap(long addr, long len, long prot, long flags, long fd, long off)
 {
     long r = mmap_check(addr, len, prot, flags, off);
@@ -267,10 +354,9 @@ long lx_mmap(long addr, long len, long prot, long flags, long fd, long off)
     (void)vmar_perms(prot, &perms);   /* checked above */
     uint64_t size = page_round((uint64_t)len), at = (uint64_t)addr;
     bool fixed = flags & (MAP_FIXED | MAP_FIXED_NOREPLACE);
-    struct map_src src = { HANDLE_INVALID, 0 };
+    struct map_src src = { HANDLE_INVALID, 0, 0 };
     if (!(flags & MAP_ANONYMOUS)) {   /* outside mem_lock: reading a file may malloc */
-        bool shared = (flags & MAP_TYPE) != MAP_PRIVATE;
-        r = file_map(fd, off, size, shared, &src.vmo, &src.vmo_off);
+        r = file_source(fd, off, size, prot, flags, &src);
         if (r)
             return r;
     }
@@ -311,6 +397,13 @@ long lx_mprotect(long addr, long len, long prot, long d, long e, long f)
     long r = vmar_perms(prot, &perms);
     if (r || !size)
         return r;
+    if (perms & VMAR_WRITE) {   /* a private mapping on a file's pages gets its own first */
+        lock_take(&mem_lock);
+        r = mt_count() ? unshare_locked((uint64_t)addr, (uint64_t)addr + size, perms) : 0;
+        lock_give(&mem_lock);
+        if (r)
+            return r;
+    }
     status_t st = jam_vmar_protect(lx_self_vmar(), (uint64_t)addr, size, perms);
     if (st == ERR_NOT_FOUND)
         return -ENOMEM;   /* part of the range isn't mapped */
@@ -400,7 +493,7 @@ long lx_mremap(long a, long b, long c, long d, long e, long f)
 static bool brk_reserve(void)
 {
     uint64_t addr = 0;
-    const struct map_src fresh = { HANDLE_INVALID, 0 };
+    const struct map_src fresh = { HANDLE_INVALID, 0, 0 };
     if (map_new(&addr, BRK_SIZE, VMAR_READ | VMAR_WRITE, false, false, &fresh))
         return false;
     handle_t vmo = mt_entries()[mt_first_after(addr)].vmo;

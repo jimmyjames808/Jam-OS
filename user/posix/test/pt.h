@@ -19,7 +19,8 @@
  * signal.c and sigproc.c (signals in a process, and between processes),
  * pty.c (pseudo-terminals, and init's sessions from a POSIX program),
  * clock.c (the clocks from the time page), socket.c (sockets without the
- * network) and sockets.c (against the network peer: asked for by name).
+ * network) and sockets.c (against the network peer: asked for by name),
+ * mmap.c (files mapped on their pages, msync, posix_spawn from /data).
  * start.c, mem.c, clock.c, fds.c, poll.c, proc.c, tty.c and fileskid.c are
  * the ones that include libjam (<jamos/libjam.h>: children started with a hand-over, a mapping libc
  * didn't make, the calls the clocks are checked against; fileskid.c
@@ -59,6 +60,11 @@ void pt_socket(char **argv);
 void pt_sockets(char **argv);    /* only when asked for by name: the network peer */
 void pt_pty(char **argv);
 void pt_session(char **argv);      /* only when asked for: a shell-mode init's sessions */
+void pt_mmap(char **argv);
+/* Only when asked for (mmap.c): tools/posix-mmap-test.sh's cases. */
+void pt_mmap_big(char **argv);
+void pt_mmap_coherent(char **argv);
+void pt_spawn_data(char **argv);
 /* The signal section's second half (sigproc.c): between processes. */
 void pt_sigproc(void);
 
@@ -81,6 +87,7 @@ int  pt_child_sock(void);
 int  pt_child_pty(void);
 int  pt_child_winsize(void);
 int  pt_child_hup(void);
+int  pt_child_mmap_pull(int argc, char **argv);
 
 /* Pages charged to our job now (job_get_info; start.c). */
 uint64_t pt_job_pages(void);

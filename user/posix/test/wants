@@ -1,5 +1,6 @@
 posix
 mount /data rw
 mount /boot r
+mount /usb* r
 svc net listen
 svc dns
