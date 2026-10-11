@@ -96,6 +96,21 @@ $(POSIX_OUT)/jl/%: $(POSIX_OUT)/% $(JL_NAMES_MAP)
 	@mkdir -p $(dir $@)
 	$(CROSS)objcopy --redefine-syms=$(JL_NAMES_MAP) $< $@
 
+# libjam as libc.a holds it: libos's own files (user/lib/*.c) built again
+# with a section per function and per datum, so the link's --gc-sections
+# (tools/jamos-cc) drops what a program doesn't call, where libjam.a's
+# objects come in whole. The few with flags of their own (dr_mp3's and
+# Monocypher's) and the assembly stay as libjam.a has them.
+LIBJAM_GC_SKIP := $(UOBJ)/user/lib/mp3.c.o $(UOBJ)/user/lib/updsig.c.o
+LIBJAM_GC_FROM := $(filter-out $(LIBJAM_GC_SKIP),$(filter \
+                      $(patsubst %,$(UOBJ)/%.o,$(wildcard user/lib/*.c)),$(LIBJAM_OBJS)))
+LIBJAM_GC_OBJS := $(patsubst $(UOBJ)/%,$(POSIX_OUT)/libjam/%,$(LIBJAM_GC_FROM))
+LIBJAM_IN_LIBC := $(filter-out $(LIBJAM_GC_FROM),$(LIBJAM_OBJS)) $(LIBJAM_GC_OBJS)
+$(POSIX_OUT)/libjam/%.c.o: %.c | $(UINC) $(SYSCALLS_OK) $(IDL_OK) $(WL_OK)
+	@mkdir -p $(dir $@)
+	$(CC) $(USER_CFLAGS) -ffunction-sections -fdata-sections -c $< -o $@
+-include $(LIBJAM_GC_OBJS:.o=.d)
+
 SYSROOT_HDRS := $(SYSROOT)/include/.made
 SYSROOT_EMPTY := $(addprefix $(SYSROOT)/lib/lib,$(addsuffix .a,m rt pthread crypt util xnet resolv dl))
 SYSROOT_LIBS := $(SYSROOT)/lib/libc.a $(SYSROOT)/lib/crt1.o $(SYSROOT)/lib/crti.o \
@@ -187,7 +202,7 @@ define POSIX_ARCHIVE
 endef
 $(MUSL_LIB): $(MUSL_OBJS) $(MUSL_OVR_OBJS)
 	$(POSIX_ARCHIVE)
-$(SYSROOT)/lib/libc.a: $(MUSL_OBJS) $(MUSL_OVR_OBJS) $(POSIX_JL_OBJS) $(LIBJAM_OBJS)
+$(SYSROOT)/lib/libc.a: $(MUSL_OBJS) $(MUSL_OVR_OBJS) $(POSIX_JL_OBJS) $(LIBJAM_IN_LIBC)
 	@mkdir -p $(dir $@)
 	$(POSIX_ARCHIVE)
 
@@ -235,7 +250,9 @@ BOOTFS_FILES += usr/bin/pxio-usr=$(BUILD)/user/posix-pxio.bootfs
 # `make check`: the overrides still match upstream, and the check refuses
 # a changed, a missing and a malformed one; no name libjam defines is one
 # musl's libc defines; a program that defines names the layer uses inside
-# libc.a (tools/posix-link-test.c) links.
+# libc.a (tools/posix-link-test.c) links, and links none of the handlers
+# for calls it can't make (calls.def: here, starting programs, socket
+# options, timers).
 .PHONY: posix-check
 posix-check: $(MUSL_LIB) $(SYSROOT_LIBS)
 	python3 tools/checkoverrides.py $(MUSL_OVR) $(MUSL)
@@ -243,6 +260,8 @@ posix-check: $(MUSL_LIB) $(SYSROOT_LIBS)
 	python3 tools/checklibjam.py $(CROSS)nm $(UOBJ)/libjam.a $(MUSL_LIB)
 	JAMOS_SYSROOT=$(SYSROOT) CROSS=$(CROSS) tools/jamos-cc -O2 tools/posix-link-test.c \
 	    -o $(BUILD)/posix-link-test
+	@! $(CROSS)nm $(BUILD)/posix-link-test | grep -E ' __jl_lx_(execve|setsockopt|timer_create)$$' || \
+	    { echo "posix-check: a program that calls write links handlers it never calls"; exit 1; }
 check: posix-check
 
 -include $(MUSL_OBJS:.o=.d) $(MUSL_OVR_OBJS:.o=.d) $(POSIX_OBJS:.o=.d) \

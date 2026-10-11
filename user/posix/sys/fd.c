@@ -63,11 +63,16 @@ void fd_ref(struct fd_desc *d)
     __atomic_add_fetch(&d->refs, 1, __ATOMIC_RELAXED);
 }
 
+/* epoll.c's: weak, since a program that never calls epoll_create (the one
+ * way to a set) links no epoll, and then no set can hold d. */
+extern __typeof__(epoll_forget) epoll_forget __attribute__((weak));
+
 void fd_put(struct fd_desc *d)
 {
     if (__atomic_sub_fetch(&d->refs, 1, __ATOMIC_ACQ_REL))
         return;
-    epoll_forget(d);
+    if (epoll_forget)
+        epoll_forget(d);
     if (d->ops->close)
         d->ops->close(d);
     free(d);

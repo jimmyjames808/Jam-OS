@@ -185,6 +185,10 @@ status_t sig_timer_bind(handle_t h, unsigned index)
 
 /* ---- the thread -------------------------------------------------------------------- */
 
+/* sigtimer.c's: weak, since a program that never sets a timer links none,
+ * and then no timer's packet comes. */
+extern __typeof__(sig_timer_fired) sig_timer_fired __attribute__((weak));
+
 static void on_packet(const struct port_packet *p)
 {
     if (!(p->key & SIG_KEY_OURS))
@@ -197,7 +201,7 @@ static void on_packet(const struct port_packet *p)
         hung_up();
     else if (p->key == KEY_WAKE)
         bind_tty();
-    else if ((p->key & KEY_TIMER) == KEY_TIMER)
+    else if ((p->key & KEY_TIMER) == KEY_TIMER && sig_timer_fired)
         sig_timer_fired((unsigned)(p->key & 0xffffffffu));
 }
 

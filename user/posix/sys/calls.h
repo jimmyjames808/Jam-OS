@@ -14,9 +14,10 @@
  * this.
  *
  * Adding a call: write `long lx_<name>(long a, ...)` in the area's file,
- * declare it below in the area's block, and add `[SYS_<name>] = lx_<name>`
- * to the area's block of calls.c's table (a number given twice fails the
- * build: -Woverride-init). An area that isn't built yet has no block. */
+ * declare it below in the area's block, and add its line to the area's
+ * block of calls.def (LX or LX_CP: that file says which), which makes
+ * calls.c's table (a number given twice fails the build:
+ * -Woverride-init). An area that isn't built yet has no block. */
 #pragma once
 
 typedef long lx_call(long a, long b, long c, long d, long e, long f);

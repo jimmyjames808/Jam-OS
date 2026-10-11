@@ -1,10 +1,11 @@
 /* __jam_syscall: every system call musl makes ends here (the override of
  * arch/x86_64/syscall_arch.h, and syscall_cp's for cancellation points),
  * with Linux's call number and six arguments. A table indexed by the
- * number gives the handler (calls.h: one per call, in its area's file);
- * a number with none is -ENOSYS, as an old Linux kernel answers a call it
- * doesn't have, so musl falls back where it can and fails cleanly where
- * it can't.
+ * number gives the handler (calls.h: one per call, in its area's file;
+ * calls.def lists them); a number with none is -ENOSYS, as an old Linux
+ * kernel answers a call it doesn't have, so musl falls back where it can
+ * and fails cleanly where it can't. A program links only the handlers it
+ * can call: calls.def says how.
  *
  * Every call is a call boundary for signals (signal.c's sig_call: the
  * handlers due run before and after it, and an EINTR is restarted or
@@ -20,207 +21,22 @@
 #include "calls.h"
 #include "glue.h"
 
+/* The handlers a call site names (calls.def's LX lines) are weak here, so
+ * naming one in the table doesn't link it: a program that never makes the
+ * call has no handler for it (NULL: -ENOSYS, but nothing can make it). */
+#define LX(name)    extern lx_call lx_##name __attribute__((weak));
+#define LX_CP(name)
+#include "calls.def"
+#undef LX
+#undef LX_CP
+
+#define LX(name)    [SYS_##name] = lx_##name,
+#define LX_CP(name) [SYS_##name] = lx_##name,
 static lx_call *const calls[] = {
-    /* memory: mem.c */
-    [SYS_mmap] = lx_mmap,
-    [SYS_munmap] = lx_munmap,
-    [SYS_mprotect] = lx_mprotect,
-    [SYS_madvise] = lx_madvise,
-    [SYS_mremap] = lx_mremap,
-    [SYS_brk] = lx_brk,
-    [SYS_mlock] = lx_mlock,
-    [SYS_munlock] = lx_munlock,
-    [SYS_mlock2] = lx_mlock2,
-    [SYS_mlockall] = lx_mlockall,
-    [SYS_munlockall] = lx_munlockall,
-
-    /* threads: thread.c */
-    [SYS_set_tid_address] = lx_set_tid_address,
-    [SYS_gettid] = lx_gettid,
-    [SYS_arch_prctl] = lx_arch_prctl,
-    [SYS_exit] = lx_exit,
-    [SYS_exit_group] = lx_exit_group,
-    [SYS_futex] = lx_futex,
-    [SYS_sched_yield] = lx_sched_yield,
-
-    /* clocks and sleeps, CPU time: time.c */
-    [SYS_clock_gettime] = lx_clock_gettime,
-    [SYS_clock_getres] = lx_clock_getres,
-    [SYS_clock_settime] = lx_clock_settime,
-    [SYS_clock_nanosleep] = lx_clock_nanosleep,
-    [SYS_nanosleep] = lx_nanosleep,
-    [SYS_times] = lx_times,
-    [SYS_getrusage] = lx_getrusage,
-
-    /* the machine and randomness: misc.c */
-    [SYS_uname] = lx_uname,
-    [SYS_getrandom] = lx_getrandom,
-    [SYS_sysinfo] = lx_sysinfo,
-    [SYS_sched_getaffinity] = lx_sched_getaffinity,
-    [SYS_getrlimit] = lx_getrlimit,
-    [SYS_setrlimit] = lx_setrlimit,
-    [SYS_prlimit64] = lx_prlimit64,
-
-    /* the descriptor table: fd.c */
-    [SYS_read] = lx_read,
-    [SYS_write] = lx_write,
-    [SYS_readv] = lx_readv,
-    [SYS_writev] = lx_writev,
-    [SYS_pread64] = lx_pread64,
-    [SYS_pwrite64] = lx_pwrite64,
-    [SYS_preadv] = lx_preadv,
-    [SYS_pwritev] = lx_pwritev,
-    [SYS_preadv2] = lx_preadv2,
-    [SYS_pwritev2] = lx_pwritev2,
-    [SYS_lseek] = lx_lseek,
-    [SYS_close] = lx_close,
-    [SYS_fstat] = lx_fstat,
-    [SYS_ioctl] = lx_ioctl,
-    [SYS_fsync] = lx_fsync,
-    [SYS_fdatasync] = lx_fdatasync,
-    [SYS_ftruncate] = lx_ftruncate,
-    [SYS_getdents64] = lx_getdents64,
-
-    /* files, directories and what they are: file.c, dir.c, meta.c */
-    [SYS_open] = lx_open,
-    [SYS_openat] = lx_openat,
-    [SYS_creat] = lx_creat,
-    [SYS_truncate] = lx_truncate,
-    [SYS_mkdir] = lx_mkdir,
-    [SYS_mkdirat] = lx_mkdirat,
-    [SYS_unlink] = lx_unlink,
-    [SYS_unlinkat] = lx_unlinkat,
-    [SYS_rmdir] = lx_rmdir,
-    [SYS_rename] = lx_rename,
-    [SYS_renameat] = lx_renameat,
-    [SYS_renameat2] = lx_renameat2,
-    [SYS_chdir] = lx_chdir,
-    [SYS_fchdir] = lx_fchdir,
-    [SYS_getcwd] = lx_getcwd,
-    [SYS_stat] = lx_stat,
-    [SYS_lstat] = lx_lstat,
-    [SYS_newfstatat] = lx_newfstatat,
-    [SYS_statfs] = lx_statfs,
-    [SYS_fstatfs] = lx_fstatfs,
-    [SYS_access] = lx_access,
-    [SYS_faccessat] = lx_faccessat,
-    [SYS_faccessat2] = lx_faccessat2,
-    [SYS_chmod] = lx_chmod,
-    [SYS_fchmod] = lx_fchmod,
-    [SYS_fchmodat] = lx_fchmodat,
-    [SYS_chown] = lx_chown,
-    [SYS_lchown] = lx_lchown,
-    [SYS_fchown] = lx_fchown,
-    [SYS_fchownat] = lx_fchownat,
-    [SYS_utimensat] = lx_utimensat,
-    [SYS_link] = lx_link,
-    [SYS_linkat] = lx_linkat,
-    [SYS_symlink] = lx_symlink,
-    [SYS_symlinkat] = lx_symlinkat,
-    [SYS_readlink] = lx_readlink,
-    [SYS_readlinkat] = lx_readlinkat,
-    [SYS_mknod] = lx_mknod,
-    [SYS_mknodat] = lx_mknodat,
-    [SYS_umask] = lx_umask,
-    [SYS_sync] = lx_sync,
-    [SYS_syncfs] = lx_syncfs,
-    [SYS_fadvise64] = lx_fadvise64,
-    [SYS_fallocate] = lx_fallocate,
-
-    /* pipes, dup, fcntl and flock, memfd, eventfd: pipe.c, dup.c, memfd.c, eventfd.c */
-    [SYS_pipe] = lx_pipe,
-    [SYS_pipe2] = lx_pipe2,
-    [SYS_socketpair] = lx_socketpair,
-    [SYS_dup] = lx_dup,
-    [SYS_dup2] = lx_dup2,
-    [SYS_dup3] = lx_dup3,
-    [SYS_fcntl] = lx_fcntl,
-    [SYS_flock] = lx_flock,
-    [SYS_memfd_create] = lx_memfd_create,
-    [SYS_eventfd] = lx_eventfd,
-    [SYS_eventfd2] = lx_eventfd2,
-
-    /* the one user: user.c */
-    [SYS_getuid] = lx_getuid,
-    [SYS_geteuid] = lx_geteuid,
-    [SYS_getgid] = lx_getgid,
-    [SYS_getegid] = lx_getegid,
-    [SYS_getresuid] = lx_getresuid,
-    [SYS_getresgid] = lx_getresgid,
-    [SYS_setuid] = lx_setuid,
-    [SYS_setgid] = lx_setgid,
-    [SYS_setreuid] = lx_setreuid,
-    [SYS_setregid] = lx_setregid,
-    [SYS_setresuid] = lx_setresuid,
-    [SYS_setresgid] = lx_setresgid,
-    [SYS_setfsuid] = lx_setfsuid,
-    [SYS_setfsgid] = lx_setfsgid,
-    [SYS_getgroups] = lx_getgroups,
-    [SYS_setgroups] = lx_setgroups,
-
-    /* poll, select and epoll: poll.c, epoll.c */
-    [SYS_poll] = lx_poll,
-    [SYS_ppoll] = lx_ppoll,
-    [SYS_select] = lx_select,
-    [SYS_pselect6] = lx_pselect6,
-    [SYS_epoll_create] = lx_epoll_create,
-    [SYS_epoll_create1] = lx_epoll_create1,
-    [SYS_epoll_ctl] = lx_epoll_ctl,
-    [SYS_epoll_wait] = lx_epoll_wait,
-    [SYS_epoll_pwait] = lx_epoll_pwait,
-
-    /* processes: proc.c, spawn.c (fork, vfork and clone without CLONE_VM
-     * have no entry: -ENOSYS) */
-    [SYS_getpid] = lx_getpid,
-    [SYS_getppid] = lx_getppid,
-    [SYS_getpgid] = lx_getpgid,
-    [SYS_setpgid] = lx_setpgid,
-    [SYS_getsid] = lx_getsid,
-    [SYS_setsid] = lx_setsid,
-    [SYS_wait4] = lx_wait4,
-    [SYS_waitid] = lx_waitid,
-    [SYS_execve] = lx_execve,
-
-    /* signals: sigcalls.c; their timers: sigtimer.c */
-    [SYS_rt_sigaction] = lx_rt_sigaction,
-    [SYS_rt_sigprocmask] = lx_rt_sigprocmask,
-    [SYS_rt_sigpending] = lx_rt_sigpending,
-    [SYS_rt_sigsuspend] = lx_rt_sigsuspend,
-    [SYS_pause] = lx_pause,
-    [SYS_rt_sigtimedwait] = lx_rt_sigtimedwait,
-    [SYS_sigaltstack] = lx_sigaltstack,
-    [SYS_kill] = lx_kill,
-    [SYS_tkill] = lx_tkill,
-    [SYS_tgkill] = lx_tgkill,
-    [SYS_rt_sigqueueinfo] = lx_rt_sigqueueinfo,
-    [SYS_rt_tgsigqueueinfo] = lx_rt_tgsigqueueinfo,
-    [SYS_getitimer] = lx_getitimer,
-    [SYS_setitimer] = lx_setitimer,
-    [SYS_timer_create] = lx_timer_create,
-    [SYS_timer_settime] = lx_timer_settime,
-    [SYS_timer_gettime] = lx_timer_gettime,
-    [SYS_timer_getoverrun] = lx_timer_getoverrun,
-    [SYS_timer_delete] = lx_timer_delete,
-
-    /* sockets: socket.c, sockio.c, sockopt.c */
-    [SYS_socket] = lx_socket,
-    [SYS_bind] = lx_bind,
-    [SYS_connect] = lx_connect,
-    [SYS_listen] = lx_listen,
-    [SYS_accept] = lx_accept,
-    [SYS_accept4] = lx_accept4,
-    [SYS_shutdown] = lx_shutdown,
-    [SYS_getsockname] = lx_getsockname,
-    [SYS_getpeername] = lx_getpeername,
-    [SYS_sendto] = lx_sendto,
-    [SYS_recvfrom] = lx_recvfrom,
-    [SYS_sendmsg] = lx_sendmsg,
-    [SYS_recvmsg] = lx_recvmsg,
-    [SYS_sendmmsg] = lx_sendmmsg,
-    [SYS_recvmmsg] = lx_recvmmsg,
-    [SYS_setsockopt] = lx_setsockopt,
-    [SYS_getsockopt] = lx_getsockopt,
+#include "calls.def"
 };
+#undef LX
+#undef LX_CP
 
 /* Linux's futex operations, for kind_of. */
 #define FUTEX_OP(op) ((op) & 127)

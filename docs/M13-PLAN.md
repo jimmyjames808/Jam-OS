@@ -1300,9 +1300,10 @@ need to know.
   entry is `-ENOSYS`. Every handler has one signature (`lx_call` in
   `user/posix/sys/calls.h`): six `long`s in, a value or `-errno` out.
   To add a call: write `lx_<name>` in your area's file, declare it in
-  your area's block of calls.h, and add `[SYS_<name>] = lx_<name>` to
-  your area's block of the table. A number given twice fails the build
-  (`-Woverride-init`). Only calls.c may include `<sys/syscall.h>`: its
+  your area's block of calls.h, and add its line to your area's block of
+  `user/posix/sys/calls.def` (`LX`, or `LX_CP` for a cancellation point:
+  that file says how a program links only the handlers it can call). A
+  number given twice fails the build (`-Woverride-init`). Only calls.c may include `<sys/syscall.h>`: its
   `SYS_*` names clash with Jam OS's own (`<jam/syscall_nums.h>`).
 - Area files include `layer.h` (libjam through `<jamos/libjam.h>`,
   which settles `PAGE_SIZE` with musl's `<limits.h>`): `lx_err(st)` is a
