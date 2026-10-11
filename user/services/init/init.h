@@ -80,6 +80,10 @@ extern bool init_vtdtest;
  * devmgr is started with it and passes it on to every drv/nvme (its test
  * reads: drivers/nvme/selftest.c). */
 extern const char *init_nvmetest;
+/* The option word "diskro" (main.c; the "internal disks read-only"
+ * entry): devmgr is started with it and starts every drv/nvme with `ro`,
+ * so no internal drive is written, whatever its table says. */
+extern bool init_diskro;
 /* The option word "verbose" (main.c; the kernel's, from the boot entry
  * Developer > "Jam OS (text log, no splash)"): the first terminal shows
  * the log as it comes. Every other boot keeps it off every terminal's

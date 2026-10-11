@@ -369,6 +369,8 @@ static status_t start_devmgr(void)
         argv[argc++] = init_vlan;
     if (init_nvmetest)
         argv[argc++] = init_nvmetest;   /* drv/nvme's test reads */
+    if (init_diskro)
+        argv[argc++] = "diskro";        /* every drv/nvme read-only */
     struct spawn_handle x[5] = { { SR_RESOURCE, pci }, { SR_DEVMGR_CTL, b }, { SR_DEVMGR, qb } };
     unsigned nx = 3;
     if (c)

@@ -428,6 +428,12 @@ Other boot words (for `tools/qemu-test.sh`, not in the menu):
   (devmgr's match row has no word since M12.7's N4), so the word is only
   for these test reads; `nvmetest=on` means "no test words" and the scripts
   still give it.
+- `diskro`: init passes it to devmgr, and devmgr starts every drv/nvme with
+  `ro`: the driver treats every drive as someone else's (read-only, no
+  writable partition, no `create_table`), whatever its table says. The way
+  out if a build's write path misbehaves. In shell mode and in the `init`
+  run; a reboot doesn't keep it. `tools/nvme-test.sh`'s `diskro` case uses
+  it.
 - `nospare`: init keeps no warm spare of the mixer
   (`user/services/init/spare.c`), and volumes none of fat
   (`user/services/volumes/spare.c`), so a restart starts a process, as
