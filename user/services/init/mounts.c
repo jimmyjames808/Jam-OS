@@ -197,19 +197,16 @@ bool mounts_event(void)
             st = OK;   /* (a new watch, if there is one, lists every mount again) */
         }
     }
-    if (watch && port && st != ERR_SHOULD_WAIT) {
-        /* The loop stopped before the channel was empty: a burst of remounts
-         * is more than MAX_READS events. The binding fires when the channel
-         * turns readable, not while it stays so, so no packet would ever
-         * come again and init would not see another mount change (a /data
-         * that came back after a devmgr restart would be missing from every
-         * program's namespace). Binding again queues a packet at once if
-         * events wait; the loop gets to the rest after its other work. */
-        (void)jam_port_unbind(port, watch, port_key);
-        if (jam_port_bind(port, watch, port_key, SIG_READABLE | SIG_PEER_CLOSED,
-                          PORT_BIND_PERSISTENT) != OK)
-            watch_lost(&settled);
-    }
+    /* The loop stopped before the channel was empty: a burst of remounts is
+     * more than MAX_READS events. The binding fires when the channel turns
+     * readable, not while it stays so, so no packet would ever come again
+     * and init would not see another mount change (a /data that came back
+     * after a devmgr restart would be missing from every program's
+     * namespace). port_again brings the next turn, after the loop's other
+     * work. */
+    if (watch && port && st != ERR_SHOULD_WAIT &&
+        port_again(port, watch, port_key, SIG_READABLE | SIG_PEER_CLOSED) != OK)
+        watch_lost(&settled);
     return settled;
 }
 
