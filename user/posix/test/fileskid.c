@@ -18,8 +18,8 @@
 #include <stdio.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <string.h>
 #include <spawn.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/wait.h>
