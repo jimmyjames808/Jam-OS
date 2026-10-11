@@ -4,7 +4,8 @@
  * slot's own.
  *
  * fcntl:
- *   F_DUPFD, F_DUPFD_CLOEXEC   the lowest free descriptor >= arg
+ *   F_DUPFD, F_DUPFD_CLOEXEC   the lowest free descriptor >= arg (EINVAL at or
+ *                              past RLIMIT_NOFILE, as POSIX says)
  *   F_GETFD, F_SETFD           FD_CLOEXEC
  *   F_GETFL, F_SETFL           the status flags; F_SETFL changes only
  *                              O_APPEND and O_NONBLOCK (the access mode
@@ -25,6 +26,7 @@
  * Anything else is EINVAL. */
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/resource.h>
 #include "kinds.h"
 
 #define PIPE_SZ CHANNEL_MAX_BYTES   /* F_GETPIPE_SZ: the most one message holds */
@@ -146,7 +148,7 @@ long lx_fcntl(long fd, long cmd, long arg, long d, long e, long f)
     switch (cmd) {
     case F_DUPFD:
     case F_DUPFD_CLOEXEC:
-        if (arg < 0 || arg >= FD_MAX) {
+        if (arg < 0 || arg >= FD_MAX || (uint64_t)arg >= rlimit_cur(RLIMIT_NOFILE)) {
             r = -EINVAL;
             break;
         }

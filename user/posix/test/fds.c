@@ -9,7 +9,8 @@
  *   - eventfd: the counter, the semaphore mode, EAGAIN, a read woken by
  *     another thread's write;
  *   - the resource limits: kept and answered back, the checks Linux
- *     makes, and RLIMIT_NOFILE holding descriptor numbers back;
+ *     makes, and RLIMIT_NOFILE holding descriptor numbers back (F_DUPFD
+ *     past it EINVAL, as POSIX says);
  *   - the one user's ids;
  *   - the hand-over's kinds: a child given /dev/zero, /dev/full,
  *     /dev/urandom, /etc/passwd, a pipe with a leftover, an eventfd and a
@@ -328,6 +329,8 @@ static void check_rlimit(void)
     while (n < 40 && (d = dup(1)) >= 0)
         fds[n++] = d;
     CHECK(n == past + 10 - open_n && errno == EMFILE);
+    errno = 0;
+    CHECK(fcntl(1, F_DUPFD, past + 10) == -1 && errno == EINVAL);   /* at the limit */
     for (int i = 0; i < n; i++)
         close(fds[i]);
     rl.rlim_cur = nofile.rlim_cur;
