@@ -33,7 +33,15 @@
  * volumes and its filesystem services, then of devmgr's, which stops
  * devmgr and its drivers, waits for each, and stops the bootfs server the
  * same way. init exits 0 if every program (and devmgr, volumes and the
- * bootfs server) exited 0. */
+ * bootfs server) exited 0.
+ *
+ * With a network (the `vlan=` word), a network card and `net.host` in the
+ * stick's settings (and not `netlog = off`) the run also starts netstack,
+ * the DHCP client (or net.address), logd and netlog beside the programs
+ * (regnet.c), so its log reaches the Mac and /data/logs as a plain boot's
+ * does; they are stopped after volumes, before devmgr. A run without a
+ * card or without `net.host` (every QEMU run but the network tests') is
+ * exactly what it was. */
 #include <devmgr.h>
 #include <idl/devmgr.h>
 #include <os.h>
@@ -103,6 +111,14 @@ void init_say(const char *fmt, ...)
     jam_debug_report(buf, (uint64_t)(n < (int)sizeof(buf) ? n : (int)sizeof(buf) - 1));
 }
 
+/* volumes' watch has something: into our namespace; logd (the network
+ * option's, regnet.c) follows when a change is whole. */
+static void follow_mounts(void)
+{
+    if (mounts_event())
+        regnet_mounts();
+}
+
 /* Wait for proc to end, for timeout_ns at most, following volumes'
  * mounts meanwhile (spawn_wait's results). */
 static status_t wait_program(handle_t proc, uint64_t timeout_ns, struct process_info *info)
@@ -117,7 +133,7 @@ static status_t wait_program(handle_t proc, uint64_t timeout_ns, struct process_
         if (st != OK || pkt.key == KEY_PROGRAM)
             break;
         if (pkt.key == KEY_MOUNTS)
-            (void)mounts_event();
+            follow_mounts();
     }
     if (st != OK) {
         (void)jam_port_unbind(port, proc, KEY_PROGRAM);
@@ -129,7 +145,7 @@ static status_t wait_program(handle_t proc, uint64_t timeout_ns, struct process_
 /* Run one program to completion. Returns true if it exited 0. */
 static bool run(int argc, char **argv)
 {
-    (void)mounts_event();   /* what volumes mounted so far: the program's namespace has it */
+    follow_mounts();   /* what volumes mounted so far: the program's namespace has it */
     handle_t job, proc;
     status_t st = jam_job_create(startup_handle(SR_JOB), 0, &job);
     if (st != OK) {
@@ -615,8 +631,11 @@ int main(int argc, char **argv)
     bool ok = start_bootfs();
     ok &= start_devmgr(HANDLE_INVALID);
     ok &= start_volumes();
+    regnet_start(port, devmgr_net, INIT_MAX_CLAIMED);   /* with net.host: the log to the Mac */
     ok &= run_config(cfg, len);
+    regnet_stop_logd();
     ok &= stop_volumes();
+    regnet_stop(ok);
     ok &= stop_devmgr();
     ok &= stop_bootfs();
     return ok ? 0 : 1;
