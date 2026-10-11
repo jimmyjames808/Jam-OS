@@ -16,7 +16,9 @@
  *   - SIGPIPE: ignored, a write to a pipe with no reader is EPIPE; with a
  *     handler, the handler runs on the writing thread and EPIPE;
  *   - timers: setitimer every 10 ms (five SIGALRMs), alarm's time left, a
- *     POSIX timer with SIGEV_SIGNAL and a value, one with SIGEV_THREAD;
+ *     POSIX timer with SIGEV_SIGNAL and a value, one with SIGEV_THREAD
+ *     (its notifications all on one thread that knows its own id, though
+ *     musl resets the thread's TLS after each);
  *   - pthread_cancel of a thread blocked in read. */
 #include <errno.h>
 #include <poll.h>
@@ -212,6 +214,35 @@ static void check_eintr(void)
     CHECK(rd.r == -1 && rd.err == EINTR);
 }
 
+static struct timespec sleep_left;
+static int             sleep_err;
+
+static void *sleep_long(void *arg)
+{
+    (void)arg;
+    struct timespec t = { .tv_sec = (time_t)1 << 62 };   /* longer than any uptime */
+    errno = 0;
+    sleep_err = nanosleep(&t, &sleep_left) ? errno : 0;
+    return NULL;
+}
+
+/* A nanosleep far longer than the clock can count, ended by a signal:
+ * EINTR, and the time left is what was asked less what was slept, never
+ * negative (the deadline it slept to saturates). */
+static void check_sleep_left(void)
+{
+    pthread_t t;
+    handle(SIGUSR1, 0);
+    CHECK(pthread_create(&t, NULL, sleep_long, NULL) == 0);
+    nap_ms(30);
+    CHECK(pthread_kill(t, SIGUSR1) == 0);
+    CHECK(pthread_join(t, NULL) == 0);
+    deflt(SIGUSR1);
+    CHECK(sleep_err == EINTR);
+    CHECK(sleep_left.tv_sec > ((time_t)1 << 30) && sleep_left.tv_nsec >= 0 &&
+          sleep_left.tv_nsec < 1000000000L);
+}
+
 /* Two signals at a thread blocked in one wait: both handlers run. */
 static void check_two_in_one_wait(void)
 {
@@ -296,11 +327,15 @@ static void check_sigpipe(void)
 /* ---- timers ------------------------------------------------------------------------- */
 
 static volatile sig_atomic_t thread_notes;
+static volatile pid_t        note_tid[3];   /* gettid in the first notifications */
 
 static void note(union sigval v)
 {
-    if (v.sival_int == 7)
-        thread_notes++;
+    if (v.sival_int != 7)
+        return;
+    if (thread_notes < 3)
+        note_tid[thread_notes] = gettid();
+    thread_notes++;
 }
 
 static void check_timers(void)
@@ -334,6 +369,8 @@ static void check_timers(void)
     CHECK(timer_settime(t, 0, &at, NULL) == 0);
     CHECK(reaches(&thread_notes, 3));
     CHECK(timer_delete(t) == 0);
+    CHECK(note_tid[0] > 0 && note_tid[0] != gettid());
+    CHECK(note_tid[1] == note_tid[0] && note_tid[2] == note_tid[0]);
 }
 
 /* ---- cancellation ------------------------------------------------------------------- */
@@ -365,6 +402,7 @@ void pt_signal(char **argv)
     check_routing();
     check_masks();
     check_eintr();
+    check_sleep_left();
     check_two_in_one_wait();
     check_waits();
     check_sigpipe();

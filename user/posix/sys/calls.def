@@ -1,0 +1,220 @@
+/* The Linux calls the layer answers: one line per call, its handler
+ * lx_<name> in its area's file (calls.h), by area. Read by calls.c (the
+ * table, by Linux's number) and by the override of syscall_arch.h (the
+ * reference each of musl's call sites makes to its call's handler), so a
+ * program links the handlers it can call and no others.
+ *
+ *   LX(name)     a call musl makes with __syscallN, inline: the call site
+ *                names the handler, which is linked only if some site does
+ *   LX_CP(name)  a call that can be a cancellation point too (musl's
+ *                syscall_cp, a function called with the number): always
+ *                linked, since such a site names nothing
+ *
+ * A call made where the number is known only when it runs (musl's public
+ * syscall()) names every handler (__jam_calls_all, callsall.c).
+ *
+ * Adding a call: write lx_<name> in the area's file, declare it in
+ * calls.h, and add its line here, LX_CP if any of musl's wrappers reach it
+ * through syscall_cp (`grep -rn 'syscall_cp\|socketcall_cp' src` in
+ * third_party/musl). No include guard: each reader defines LX and LX_CP
+ * first. */
+
+/* memory: mem.c */
+LX(mmap)
+LX(munmap)
+LX(mprotect)
+LX(madvise)
+LX(mremap)
+LX(brk)
+LX(mlock)
+LX(munlock)
+LX(mlock2)
+LX(mlockall)
+LX(munlockall)
+
+/* threads: thread.c */
+LX(set_tid_address)
+LX(gettid)
+LX(arch_prctl)
+LX(exit)
+LX(exit_group)
+LX_CP(futex)
+LX(sched_yield)
+
+/* clocks and sleeps, CPU time: time.c */
+LX(clock_gettime)
+LX(clock_getres)
+LX(clock_settime)
+LX_CP(clock_nanosleep)
+LX_CP(nanosleep)
+LX(times)
+LX(getrusage)
+
+/* the machine and randomness: misc.c */
+LX(uname)
+LX_CP(getrandom)
+LX(sysinfo)
+LX(sched_getaffinity)
+LX(getrlimit)
+LX(setrlimit)
+LX(prlimit64)
+
+/* the descriptor table: fd.c */
+LX_CP(read)
+LX_CP(write)
+LX_CP(readv)
+LX_CP(writev)
+LX_CP(pread64)
+LX_CP(pwrite64)
+LX_CP(preadv)
+LX_CP(pwritev)
+LX_CP(preadv2)
+LX_CP(pwritev2)
+LX(lseek)
+LX_CP(close)
+LX(fstat)
+LX_CP(ioctl)
+LX_CP(fsync)
+LX_CP(fdatasync)
+LX(ftruncate)
+LX(getdents64)
+
+/* files, directories and what they are: file.c, dir.c, meta.c */
+LX_CP(open)
+LX_CP(openat)
+LX(creat)
+LX(truncate)
+LX(mkdir)
+LX(mkdirat)
+LX(unlink)
+LX(unlinkat)
+LX(rmdir)
+LX(rename)
+LX(renameat)
+LX(renameat2)
+LX(chdir)
+LX(fchdir)
+LX(getcwd)
+LX(stat)
+LX(lstat)
+LX(newfstatat)
+LX(statfs)
+LX(fstatfs)
+LX(access)
+LX(faccessat)
+LX(faccessat2)
+LX(chmod)
+LX(fchmod)
+LX(fchmodat)
+LX(chown)
+LX(lchown)
+LX(fchown)
+LX(fchownat)
+LX(utimensat)
+LX(link)
+LX(linkat)
+LX(symlink)
+LX(symlinkat)
+LX(readlink)
+LX(readlinkat)
+LX(mknod)
+LX(mknodat)
+LX(umask)
+LX(sync)
+LX(syncfs)
+LX(fadvise64)
+LX(fallocate)
+
+/* pipes, dup, fcntl and flock, memfd, eventfd: pipe.c, dup.c, memfd.c, eventfd.c */
+LX(pipe)
+LX(pipe2)
+LX(socketpair)
+LX(dup)
+LX(dup2)
+LX(dup3)
+LX_CP(fcntl)
+LX(flock)
+LX(memfd_create)
+LX(eventfd)
+LX(eventfd2)
+
+/* the one user: user.c */
+LX(getuid)
+LX(geteuid)
+LX(getgid)
+LX(getegid)
+LX(getresuid)
+LX(getresgid)
+LX(setuid)
+LX(setgid)
+LX(setreuid)
+LX(setregid)
+LX(setresuid)
+LX(setresgid)
+LX(setfsuid)
+LX(setfsgid)
+LX(getgroups)
+LX(setgroups)
+
+/* poll, select and epoll: poll.c, epoll.c */
+LX_CP(poll)
+LX_CP(ppoll)
+LX_CP(select)
+LX_CP(pselect6)
+LX(epoll_create)
+LX(epoll_create1)
+LX(epoll_ctl)
+LX_CP(epoll_wait)
+LX_CP(epoll_pwait)
+
+/* processes: proc.c, spawn.c (fork, vfork and clone without CLONE_VM
+ * have no entry: -ENOSYS) */
+LX(getpid)
+LX(getppid)
+LX(getpgid)
+LX(setpgid)
+LX(getsid)
+LX(setsid)
+LX_CP(wait4)
+LX_CP(waitid)
+LX(execve)
+
+/* signals: sigcalls.c; their timers: sigtimer.c */
+LX(rt_sigaction)
+LX(rt_sigprocmask)
+LX(rt_sigpending)
+LX_CP(rt_sigsuspend)
+LX_CP(pause)
+LX_CP(rt_sigtimedwait)
+LX(sigaltstack)
+LX(kill)
+LX(tkill)
+LX(tgkill)
+LX(rt_sigqueueinfo)
+LX(rt_tgsigqueueinfo)
+LX(getitimer)
+LX(setitimer)
+LX(timer_create)
+LX(timer_settime)
+LX(timer_gettime)
+LX(timer_getoverrun)
+LX(timer_delete)
+
+/* sockets: socket.c, sockio.c, sockopt.c */
+LX(socket)
+LX(bind)
+LX_CP(connect)
+LX(listen)
+LX_CP(accept)
+LX_CP(accept4)
+LX(shutdown)
+LX(getsockname)
+LX(getpeername)
+LX_CP(sendto)
+LX_CP(recvfrom)
+LX_CP(sendmsg)
+LX_CP(recvmsg)
+LX_CP(sendmmsg)
+LX_CP(recvmmsg)
+LX(setsockopt)
+LX(getsockopt)

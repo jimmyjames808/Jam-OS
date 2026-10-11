@@ -67,10 +67,14 @@ static void rings_drop(struct net_sock *ns)
 
 static void given_fill(const struct sock *s, struct sock_given *g)
 {
-    *g = (struct sock_given){ .magic = GIVEN_MAGIC, .type = (uint32_t)s->type,
-                              .bind_addr = s->bind_addr, .bind_port = s->bind_port,
-                              .peer_addr = s->peer_addr, .peer_port = s->peer_port,
-                              .opts = s->opts };
+    memset(g, 0, sizeof(*g));   /* its padding too: struct sock_opts has holes */
+    g->magic = GIVEN_MAGIC;
+    g->type = (uint32_t)s->type;
+    g->bind_addr = s->bind_addr;
+    g->bind_port = s->bind_port;
+    g->peer_addr = s->peer_addr;
+    g->peer_port = s->peer_port;
+    memcpy(&g->opts, &s->opts, sizeof(g->opts));
     g->flags = (s->rd_shut ? GIVEN_RD_SHUT : 0) | (s->wr_shut ? GIVEN_WR_SHUT : 0) |
                (s->connected ? GIVEN_CONNECTED : 0) | (s->err_said ? GIVEN_ERR_SAID : 0);
     if (sock_state(s) == SK_LISTENING) {

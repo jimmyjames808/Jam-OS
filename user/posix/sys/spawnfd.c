@@ -53,11 +53,6 @@ long spawn_absolute(const char *path, const char *dir, char *out)
     return st == OK ? 0 : -EINVAL;
 }
 
-uint32_t spawnfd_umask(uint32_t fallback)
-{
-    return fallback;
-}
-
 /* Our current directory into cwd: getcwd's, else the hand-over's, else
  * "/". */
 static void our_cwd(char *cwd)
@@ -80,6 +75,7 @@ long spawnfd_begin(struct spawnfd **out)
     t->nslots = t->nexported = 0;
     t->desc = NULL;
     t->given = NULL;
+    t->from = NULL;
     our_cwd(t->cwd);
     struct fd_desc *d;
     bool cloexec;
@@ -204,14 +200,14 @@ long spawnfd_apply(struct spawnfd *t, const struct jam_spawn_op *ops, unsigned n
     return 0;
 }
 
-/* The descriptor an earlier record of this hand-over gave d as, or -1. */
+/* The descriptor an earlier record of this hand-over gave d as, or -1
+ * (each record's description is in `from`: a walk of the records, not of
+ * the slots for each). */
 static int32_t exported_as(struct spawnfd *t, const struct fd_desc *d)
 {
-    for (unsigned i = 0; i < t->nexported; i++) {
-        const struct spawnfd_slot *s = find(t, t->desc[i].fd);
-        if (s && s->desc == d && t->desc[i].kind != POSIXFDS_DUP)
+    for (unsigned i = 0; i < t->nexported; i++)
+        if (t->from[i] == d && t->desc[i].kind != POSIXFDS_DUP)
             return t->desc[i].fd;
-    }
     return -1;
 }
 
@@ -251,6 +247,7 @@ static long export_one(struct spawnfd *t, const struct spawnfd_slot *s)
         .fd = s->fd, .kind = g->kind, .status = g->status, .offset = g->offset,
         .data = g->data, .data_len = g->data_len, .handles = g->handles,
     };
+    t->from[i] = s->desc;
     t->nexported++;
     return 0;
 }
@@ -260,7 +257,8 @@ long spawnfd_export(struct spawnfd *t, struct posixfds_out *ho)
     unsigned n = t->nslots ? t->nslots : 1;
     t->desc = calloc(n, sizeof(*t->desc));
     t->given = calloc(n, sizeof(*t->given));
-    long e = t->desc && t->given ? 0 : -ENOMEM;
+    t->from = calloc(n, sizeof(*t->from));
+    long e = t->desc && t->given && t->from ? 0 : -ENOMEM;
     for (unsigned i = 0; !e && i < t->nslots; i++) {
         if (t->slot[i].cloexec)
             continue;
@@ -287,6 +285,7 @@ void spawnfd_end(struct spawnfd *t, struct posixfds_out *ho)
         free(t->given[i].data);   /* the handles went with the hand-over */
     free(t->desc);
     free(t->given);
+    free(t->from);
     for (unsigned i = 0; i < t->nslots; i++)
         fd_put(t->slot[i].desc);
     free(t);

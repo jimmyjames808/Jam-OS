@@ -19,7 +19,11 @@
  *     listing read whole and compared with fs_readdir's;
  *   - a hand-over cut short: the reader gives up at once and closes what
  *     it was given; a parent killed while it spawns leaves no child
- *     hanging (every process in its job ends). */
+ *     hanging (every process in its job ends);
+ *   - a spawn that fails (no such program) takes nothing of ours with it:
+ *     a pipe's bytes read but not taken are still ours to read;
+ *   - the umask we set is the child's;
+ *   - times and getrusage: our CPU time, and our reaped children's. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -28,6 +32,9 @@
 #include <posixfds.h>
 #include <spawn.h>
 #include <string.h>
+#include <sys/resource.h>
+#include <sys/stat.h>
+#include <sys/times.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -72,6 +79,14 @@ static int child_fds(char **argv)
     return pt_failures() ? 1 : 0;
 }
 
+/* Spin until this process has used ms of CPU time. */
+static void spin_cpu_ms(long ms)
+{
+    clock_t end = clock() + (clock_t)(ms * (CLOCKS_PER_SEC / 1000));
+    while (clock() < end)
+        continue;
+}
+
 /* The spawner a test kills mid-spawn: children forever, each reaped. */
 static _Noreturn int child_spawner(void)
 {
@@ -112,6 +127,14 @@ int pt_child_proc(int argc, char **argv)
     }
     if (!strcmp(what, "spawner"))
         return child_spawner();
+    if (!strcmp(what, "write") && argc > 3)   /* its text on descriptor 1 */
+        return write(1, argv[3], strlen(argv[3])) == (ssize_t)strlen(argv[3]) ? 0 : 1;
+    if (!strcmp(what, "umask"))
+        return (int)umask(0);
+    if (!strcmp(what, "spin") && argc > 3) {
+        spin_cpu_ms(atol(argv[3]));
+        return 0;
+    }
     return 100;
 }
 
@@ -466,6 +489,61 @@ static void check_cut_kill(void)
     }
 }
 
+/* ---- what a spawn hands on, or keeps ------------------------------------------------ */
+
+/* A spawn that can't find its program has given the child nothing: a
+ * pipe's leftover (the bytes of a message a read didn't take) is still
+ * ours. musl's execvp is one execve per PATH directory, so every
+ * directory before the right one is such a spawn. */
+static void check_failed_spawn_keeps(void)
+{
+    int p[2];
+    CHECK(pipe2(p, O_NONBLOCK) == 0);
+    char buf[8] = { 0 };
+    CHECK(write(p[1], "abcd", 4) == 4 && read(p[0], buf, 1) == 1);   /* "bcd" left over */
+    pid_t pid;
+    char *const argv[] = { "nothing", NULL };
+    CHECK(posix_spawn(&pid, "/boot/bin/no-such-program", NULL, NULL, argv, environ) == ENOENT);
+    memset(buf, 0, sizeof(buf));
+    CHECK(read(p[0], buf, sizeof(buf)) == 3 && !strcmp(buf, "bcd"));
+    close(p[0]);
+    close(p[1]);
+}
+
+static void check_umask(void)
+{
+    mode_t was = umask(077);
+    const char *args[] = { "umask", NULL };
+    int s = reap(spawn_self(NULL, NULL, args));
+    CHECK(WIFEXITED(s) && WEXITSTATUS(s) == 077);
+    umask(was);
+}
+
+/* times and getrusage: ours grows with what we spin; a reaped child's
+ * spin counts as our children's. */
+static void check_times(void)
+{
+    struct tms t0, t1;
+    struct rusage ru;
+    clock_t r0 = times(&t0);
+    CHECK(r0 != (clock_t)-1 && r0 >= 0);
+    spin_cpu_ms(100);
+    clock_t r1 = times(&t1);
+    long hz = sysconf(_SC_CLK_TCK);
+    CHECK(r1 >= r0 && hz > 0);
+    CHECK((t1.tms_utime + t1.tms_stime) - (t0.tms_utime + t0.tms_stime) >= hz / 20);
+    CHECK(getrusage(RUSAGE_SELF, &ru) == 0 &&
+          ru.ru_utime.tv_sec * 1000000L + ru.ru_utime.tv_usec >= 100000);
+    CHECK(getrusage(RUSAGE_THREAD, &ru) == 0);
+    const char *args[] = { "spin", "100", NULL };
+    CHECK(reap(spawn_self(NULL, NULL, args)) == 0);
+    CHECK(getrusage(RUSAGE_CHILDREN, &ru) == 0 &&
+          ru.ru_utime.tv_sec * 1000000L + ru.ru_utime.tv_usec >= 100000);
+    CHECK(times(&t1) != (clock_t)-1 && t1.tms_cutime + t1.tms_cstime >= hz / 10);
+    errno = 0;
+    CHECK(getrusage(42, &ru) == -1 && errno == EINVAL);
+}
+
 void pt_proc(char **argv)
 {
     (void)argv;
@@ -479,4 +557,7 @@ void pt_proc(char **argv)
     check_shell();
     check_cut_reader();
     check_cut_kill();
+    check_failed_spawn_keeps();
+    check_umask();
+    check_times();
 }
