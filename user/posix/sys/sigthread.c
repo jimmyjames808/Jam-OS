@@ -36,6 +36,8 @@ static handle_t port;                    /* made at the start, never closed */
 static handle_t channel;                 /* SR_SIGNALS, or 0 */
 static struct fd_desc *tty;              /* the terminal listened to (a reference kept) */
 
+_Noreturn static void fail(const char *what, status_t st);
+
 bool sig_on_signal_thread(void)
 {
     uintptr_t sp = (uintptr_t)__builtin_frame_address(0);
@@ -95,7 +97,13 @@ static void take_channel(void)
     static const struct signal_ops ops = { .send = on_send };
     for (unsigned guard = 0; guard < CHANNEL_MAX_QUEUED; guard++)
         if (signal_serve_one(channel, &ops, NULL) != OK)
-            break;   /* ERR_SHOULD_WAIT (drained), or the starter has gone */
+            return;   /* ERR_SHOULD_WAIT (drained), or the starter has gone */
+    /* A starter that sends as fast as we read: the binding fires when the
+     * channel turns readable, not while it stays so, so the rest (and
+     * every signal after) come by another turn, not never. */
+    status_t st = port_again(port, channel, KEY_CHANNEL, SIG_READABLE);
+    if (st != OK)
+        fail("the signal channel can't be bound", st);
 }
 
 /* The terminal's queued events, as signals. */
