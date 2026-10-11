@@ -114,6 +114,8 @@ int pt_child_proc(int argc, char **argv)
     }
     if (!strcmp(what, "spawner"))
         return child_spawner();
+    if (!strcmp(what, "write") && argc > 3)   /* its text on descriptor 1 */
+        return write(1, argv[3], strlen(argv[3])) == (ssize_t)strlen(argv[3]) ? 0 : 1;
     return 100;
 }
 

@@ -109,6 +109,9 @@ struct fobj {
     struct jfile jf;                 /* the open: FS_READ, or FS_READ | FS_WRITE; jf.ch 0
                                       * if it was lost (EIO) */
     uint64_t     size;               /* the file's size, kept by our writes when jf may write */
+    bool         lent;               /* our writable open was closed for a child's: jf is
+                                      * empty until fobj_back_locked opens it again; lock */
+    uint32_t     lent_flags;         /* ... with these FS_* flags */
 };
 
 /* The object for an open of p with ff (FS_READ, FS_WRITE, FS_CREATE,
@@ -121,6 +124,19 @@ long fobj_open(const struct path *p, uint32_t ff, struct fobj **out);
 long fobj_adopt(handle_t ch, handle_t buf, uint32_t ff, const char *path, struct fobj **out);
 /* Drop a reference; the last closes the open. */
 void fobj_put(struct fobj *o);
+/* A child is about to open o's file for writing (a description given to
+ * it): our writable open, the file's one, is closed so the child's can
+ * be made (o->lock held). Nothing for an open that only reads. */
+void fobj_lend_locked(struct fobj *o);
+/* o's open, made again if it was lent, from the file's absolute path
+ * (o->lock held): OK, or the service's answer (ERR_BUSY: a child still
+ * holds the file after the wait for its close). Every use of o->jf
+ * calls it first. */
+status_t fobj_back_locked(struct fobj *o, const char *path);
+/* fs.open of p with ff, tried again for a while if the service answers
+ * ERR_BUSY (our own close, or an ended child's, may not have reached it
+ * yet): OK and *ch, *buf, or the last answer. */
+status_t fobj_open_settled(const struct path *p, uint32_t ff, handle_t *ch, handle_t *buf);
 
 /* ---- file.c ----------------------------------------------------------------------- */
 

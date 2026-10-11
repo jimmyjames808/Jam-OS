@@ -3,8 +3,11 @@
  *   - a child given a file read up to offset 4 and a directory by a
  *     hand-over, and a current directory: it gets its own open of the
  *     file at the parent's offset (M13 Q5), and the offsets move apart
- *     after. A file the parent holds open for writing can't be given
- *     (fat lets a file have one writable open: fd_give is EBUSY);
+ *     after;
+ *   - a file open for writing given to a child (posix_spawn, as `cmd > f`
+ *     starting children): fat lets a file have one writable open, so the
+ *     parent lends its own while the child holds it and takes it back
+ *     after; and a posix_spawn_file_actions_addopen for writing;
  *   - a child given /data as a read-only view: every change is EROFS,
  *     mkdir of what is there EEXIST, reading works.
  *
@@ -16,14 +19,19 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <string.h>
+#include <spawn.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include "../sys/fd.h"
 #include "ptfiles.h"
 
 #define CHILD_WAIT_NS (60 * NS_PER_S)
 #define GIVE_MAX      8
+#define SELF          "/boot/bin/posixtest"
+
+extern char **environ;
 
 /* Print what the child wrote to the pipe out (its 1 and 2), now it is
  * gone. */
@@ -109,8 +117,6 @@ static void handed_files(void)
     char buf[16];
     CHECK(f >= 0 && app >= 0 && dir >= 0 && read(f, buf, 4) == 4);
     CHECK(write(app, "P1", 2) == 2);
-    struct fd_given g;
-    CHECK(fd_give(app, &g) == -EBUSY);   /* our writable open is the file's one */
     const int want[] = { f, dir }, at[] = { 3, 5 };
     const char *const ns[] = { "*", NULL };
     CHECK(run_child("--child-files", want, at, 2, PT_DIR "/d", ns) == 0);
@@ -124,6 +130,54 @@ static void handed_files(void)
     memset(buf, 0, sizeof(buf));
     CHECK(r >= 0 && read(r, buf, sizeof(buf)) == 4 && !strcmp(buf, "P1P2"));
     close(r);
+}
+
+/* The whole of the file at path (at most cap - 1 bytes) into buf, a string. */
+static void file_text(const char *path, char *buf, size_t cap)
+{
+    memset(buf, 0, cap);
+    int fd = open(path, O_RDONLY);
+    CHECK(fd >= 0 && read(fd, buf, cap - 1) >= 0);
+    close(fd);
+}
+
+/* `posixtest --child-proc write <text>` with its descriptor 1 our fd, or
+ * (fd < 0) opened by the spawn's own action at path for writing; its
+ * exit status, or -1. */
+static int spawn_writer(int fd, const char *path, const char *text)
+{
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    if (fd >= 0)
+        posix_spawn_file_actions_adddup2(&fa, fd, 1);
+    else
+        posix_spawn_file_actions_addopen(&fa, 1, path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    char *const argv[] = { "posixtest", "--child-proc", "write", (char *)text, NULL };
+    pid_t pid = -1;
+    int e = posix_spawn(&pid, SELF, &fa, NULL, argv, environ);
+    posix_spawn_file_actions_destroy(&fa);
+    CHECK(e == 0);
+    int s;
+    if (e || waitpid(pid, &s, 0) != pid)
+        return -1;
+    return WIFEXITED(s) ? WEXITSTATUS(s) : -1;
+}
+
+static void writable_to_child(void)
+{
+    char buf[16];
+    int f = open(PT_DIR "/kidw", O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0644);
+    CHECK(f >= 0 && write(f, "A", 1) == 1);
+    CHECK(spawn_writer(f, NULL, "B") == 0);   /* our writable open lent to it */
+    CHECK(write(f, "C", 1) == 1);             /* and ours again: appended after its B */
+    CHECK(spawn_writer(f, NULL, "D") == 0);   /* and lent again */
+    close(f);
+    file_text(PT_DIR "/kidw", buf, sizeof(buf));
+    CHECK(!strcmp(buf, "ABCD"));
+    CHECK(spawn_writer(-1, PT_DIR "/kidw2", "X") == 0);   /* the spawn's own open */
+    file_text(PT_DIR "/kidw2", buf, sizeof(buf));
+    CHECK(!strcmp(buf, "X"));
+    CHECK(unlink(PT_DIR "/kidw") == 0 && unlink(PT_DIR "/kidw2") == 0);
 }
 
 int pt_child_files(void)
@@ -180,4 +234,5 @@ void pt_files_children(void)
 {
     handed_files();
     read_only_view();
+    writable_to_child();
 }

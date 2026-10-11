@@ -14,9 +14,18 @@
  * file's size is known here once it writes (`size`), so O_APPEND is the
  * layer's: a write at that size, under the object's lock, which every
  * description's transfers take. Another process can still read it (fat
- * shares its reads) but can't write it: that open is ERR_BUSY, EBUSY. A
- * child given a writable file (fd_give) asks for its own open, and is
- * refused the same way while we hold ours.
+ * shares its reads) but can't write it: that open is ERR_BUSY, EBUSY.
+ *
+ * A child given a writable file (fd_give: posix_spawn, execve, a shell's
+ * `cmd > f` starting children) needs its own open, so we lend it ours:
+ * the open is closed (lent) before the child's is made, and made again at
+ * our next use of the file (fobj_back_locked), once the child has closed
+ * its own. The service may see a close a moment after the call that
+ * follows it (a child's end reaches it after the parent's wait does), so
+ * an open made then is tried again on ERR_BUSY for up to SETTLE_NS. While
+ * the child holds the file, our own use of it is EBUSY: a parent and a
+ * child writing one file at once needs the file protocol's shared cursor
+ * (M13 Q5's (B)), and so does a shared offset (each moves its own here).
  *
  * Lock order: a description's lock, then its object's lock, then
  * objs_lock (never held across a call to the service). */
@@ -26,7 +35,9 @@
 #include <string.h>
 #include "files.h"
 
-#define BUF_MAX (1u << 20)   /* a bigger transfer buffer is a broken service (libos's limit) */
+#define BUF_MAX   (1u << 20)          /* a bigger transfer buffer is a broken service (libos's) */
+#define SETTLE_NS NS_PER_S            /* how long an open waits out ERR_BUSY from a close */
+#define SETTLE_NAP (10 * NS_PER_MS)   /* ... between tries */
 
 static struct fobj *objs;    /* every object; objs_lock */
 static lock_t       objs_lock;
@@ -71,7 +82,8 @@ static void settle(struct fobj *fresh, struct fobj **out)
 {
     lock_take(&objs_lock);
     struct fobj *o = find_locked(fresh->mount, fresh->id);
-    bool share = o && ((o->jf.flags & FS_WRITE) || !(fresh->jf.flags & FS_WRITE));
+    bool share = o && ((o->jf.flags & FS_WRITE) || (o->lent && (o->lent_flags & FS_WRITE)) ||
+                       !(fresh->jf.flags & FS_WRITE));
     if (share) {
         o->refs++;
     } else {
@@ -121,6 +133,17 @@ static status_t open_raw(const struct path *p, uint32_t ff, handle_t *ch, handle
     return st;
 }
 
+status_t fobj_open_settled(const struct path *p, uint32_t ff, handle_t *ch, handle_t *buf)
+{
+    uint64_t end = now() + SETTLE_NS;
+    for (;;) {
+        status_t st = open_raw(p, ff, ch, buf);
+        if (st != ERR_BUSY || !(ff & FS_WRITE) || now() >= end)
+            return st;
+        (void)jam_sleep_until(now() + SETTLE_NAP);   /* a signal's interrupt: one try sooner */
+    }
+}
+
 static void mount_of(const struct path *p, char m[NS_NAME_MAX])
 {
     size_t n = p->mount_len < NS_NAME_MAX ? p->mount_len : 0;
@@ -151,7 +174,7 @@ static status_t upgrade_locked(struct fobj *o, const struct path *p, uint32_t ff
     handle_t ch, buf;
     uint64_t size, id;
     file_close(&o->jf);   /* ours was the open in fat's way */
-    status_t st = open_raw(p, FS_READ | FS_WRITE | (ff & FS_TRUNCATE), &ch, &buf);
+    status_t st = fobj_open_settled(p, FS_READ | FS_WRITE | (ff & FS_TRUNCATE), &ch, &buf);
     if (st == OK)
         st = jf_map(ch, buf, FS_READ | FS_WRITE, &o->jf, &size, &id);
     if (st == OK) {
@@ -170,10 +193,10 @@ static long busy(const struct path *p, uint32_t ff, struct fobj **out)
     if (!o)
         return -EBUSY;   /* another process writes it, or reads it while we want to write */
     lock_take(&o->lock);
-    status_t st = OK;
-    if (!(o->jf.flags & FS_WRITE))
+    status_t st = fobj_back_locked(o, p->abs);   /* lent to a child: ours again first */
+    if (st == OK && !(o->jf.flags & FS_WRITE))
         st = upgrade_locked(o, p, ff);
-    else if (ff & FS_TRUNCATE)
+    else if (st == OK && (ff & FS_TRUNCATE))
         st = file_truncate_within(o->jf.ch, FILE_TIMEOUT, 0);
     if (st == OK && (ff & FS_TRUNCATE))
         o->size = 0;
@@ -206,6 +229,34 @@ long fobj_adopt(handle_t ch, handle_t buf, uint32_t ff, const char *path, struct
     if (path && !path_set(path, &p) && p.where == PATH_MOUNT)
         mount_of(&p, m);
     return fresh_obj(ch, buf, ff, m, out);
+}
+
+void fobj_lend_locked(struct fobj *o)
+{
+    if (o->lent || !o->jf.ch || !(o->jf.flags & FS_WRITE))
+        return;
+    o->lent_flags = o->jf.flags;
+    file_close(&o->jf);
+    o->lent = true;
+}
+
+status_t fobj_back_locked(struct fobj *o, const char *path)
+{
+    if (!o->lent)
+        return OK;
+    struct path p;
+    handle_t ch, buf;
+    uint64_t size, id;
+    if (!path || path_set(path, &p) || p.where != PATH_MOUNT)
+        return ERR_IO;   /* never: only a file with its path is given, so lent */
+    status_t st = fobj_open_settled(&p, o->lent_flags, &ch, &buf);
+    if (st == OK)
+        st = jf_map(ch, buf, o->lent_flags, &o->jf, &size, &id);
+    if (st != OK)
+        return st;
+    o->size = size;   /* what the child wrote counts: an append goes after it */
+    o->lent = false;
+    return OK;
 }
 
 void fobj_put(struct fobj *o)
