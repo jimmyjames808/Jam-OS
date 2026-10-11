@@ -326,9 +326,10 @@ bool t_view_etc_names(void);
 bool t_fat_views(void);
 bool t_fat_view_limits(void);
 
-/* rights.c: the root's powers, vmo_make_exec. */
+/* rights.c: the root's powers, vmo_make_exec and _verified. */
 bool t_root_powers(void);
 bool t_vmo_make_exec(void);
+bool t_vmo_make_exec_verified(void);
 #define NS_HELLO "hello from utest\n"   /* what the children expect in <mount>/hello */
 /* text into a new file at path. */
 status_t ns_put(const char *path, const char *text);

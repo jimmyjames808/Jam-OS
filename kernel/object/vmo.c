@@ -110,7 +110,15 @@
  * a writable user mapping. A reader of an absent page (vmo_read here; a
  * fault through vmo_page_request) joins or queues a request under this
  * lock and then the pager's ("vmo" -> "pager"), and waits for it with no
- * lock held. `pv` is fixed at creation, so the refusals need no lock. */
+ * lock held. `pv` is fixed at creation, so the refusals need no lock.
+ *
+ * Verified pager VMOs (vmo_seal_verified, <jam/vmo_verify.h>): a pager
+ * VMO sealed with a table of page hashes, for a program from /data. The
+ * seal drops every page present (none, normally: nothing maps the VMO, so
+ * no entry needs zapping) and sets `verify` in one hold of the lock, and
+ * vmo_pager_publish, under that lock, publishes only a page its supplier
+ * matched against `verify` or that matches now: so every page present
+ * after the seal matched, whatever supply was under way across it. */
 #include <jam/aspace.h>
 #include <jam/aspace_vmo.h>
 #include <jam/dbghook.h>
@@ -125,6 +133,7 @@
 #include <jam/spinlock.h>
 #include <jam/string.h>
 #include <jam/vmo.h>
+#include <jam/vmo_verify.h>
 
 #define VMO_MAX_PAGES (VMO_MAX_SIZE >> PAGE_SHIFT)
 #define TBL_ENTRIES   512u
@@ -180,6 +189,10 @@ struct vmo {
     struct mutex     resize;              /* serialises vmo_set_size */
     struct pager_vmo *pv;                 /* a pager VMO: its link (fixed at creation), else NULL */
     bool             pdetached;           /* a pager VMO cut off: nothing published any more; lock */
+    /* A verified pager VMO's table (<jam/vmo_verify.h>), owned: set once,
+     * under the lock, by vmo_seal_verified (a release store; lockless
+     * readers load it with acquire), never changed after. */
+    struct vmo_verify *verify;
     uint64_t       **root[ROOT_ENTRIES];  /* paged: root[r][m][l] = phys */
 };
 
@@ -313,9 +326,9 @@ static void drop_leaf_from_locked(struct vmo *v, uint64_t *leaf, uint64_t base, 
 
 /* Drop every page at index >= first, and free the table pages that lie
  * wholly past it, with no TLB care: for vmo_destroy (no references, so no
- * mappings and no lock needed) and the tail of a shrink (which has already
+ * mappings and no lock needed), the tail of a shrink (which has already
  * taken every page past `first` out through a gather, so only tables are
- * left to free). */
+ * left to free) and vmo_seal_verified (the lock held and no mapping). */
 static void drop_from_locked(struct vmo *v, uint64_t first)
 {
     for (uint64_t r = first / MID_PAGES; r < ROOT_ENTRIES; r++) {
@@ -439,6 +452,8 @@ static void vmo_destroy(struct kobject *obj)
         ASSERT(v->committed == 0 && v->tables == 0);
         if (v->pv)
             pager_vmo_gone(v->pv);   /* PAGER_REQ_GONE, or the link goes */
+        if (v->verify)
+            vmo_verify_free(v->verify);
     } else if (v->kind == VMO_CONTIG) {
         contig_free_head(v->phys >> PAGE_SHIFT, v->size >> PAGE_SHIFT);
         if (v->job)
@@ -966,6 +981,28 @@ status_t vmo_seal(struct vmo *v)
     return ok ? OK : ERR_BAD_STATE;
 }
 
+status_t vmo_seal_verified(struct vmo *v, struct vmo_verify *vf)
+{
+    uint64_t f = vlock(v);
+    bool ok = v->pv && !v->pdetached && !v->verify && list_empty(&v->umaps) &&
+              list_empty(&v->ranges) && v->writers == 0;
+    if (ok) {
+        /* Pages that came before the table were never checked. Nothing
+         * maps them (no umap) and the table holds the only reference
+         * besides a reader's own, so they go here, with no shootdown. */
+        drop_from_locked(v, 0);
+        v->sealed = true;
+        __atomic_store_n(&v->verify, vf, __ATOMIC_RELEASE);   /* vmo_verifier's acquire */
+    }
+    vunlock(v, f);
+    return ok ? OK : ERR_BAD_STATE;
+}
+
+struct vmo_verify *vmo_verifier(struct vmo *v)
+{
+    return __atomic_load_n(&v->verify, __ATOMIC_ACQUIRE);
+}
+
 /* ---- user mappings (reverse map, see aspace_vmo.h) ------------------------ */
 
 status_t vmo_umap_add(struct vmo *v, struct vmo_umap *u, bool check)
@@ -1142,12 +1179,23 @@ status_t vmo_page_request(struct vmo *v, uint64_t idx, struct pager_req **out)
     return st;
 }
 
-status_t vmo_pager_publish(struct vmo *v, uint64_t idx, struct page *p, struct list_node *dead)
+/* With the lock held: may p be page idx of v? Always unless v is
+ * verified; then if its supplier matched it already (`checked`: v was
+ * verified when it looked, and `verify` never changes), else if it
+ * matches now: a supply that copied it before the seal (rare). */
+static bool approved_locked(struct vmo *v, uint64_t idx, struct page *p, bool checked)
+{
+    return !v->verify || checked || vmo_verify_match(v->verify, idx, page_to_virt(p));
+}
+
+status_t vmo_pager_publish(struct vmo *v, uint64_t idx, struct page *p, bool checked,
+                           struct list_node *dead)
 {
     uint64_t f = vlock(v);
     status_t st = v->pdetached ? ERR_PEER_CLOSED
                   : idx >= v->size >> PAGE_SHIFT ? ERR_OUT_OF_RANGE
-                                                 : OK;
+                  : !approved_locked(v, idx, p, checked) ? ERR_IO
+                                                         : OK;
     uint64_t *s = st == OK ? slot_locked(v, idx, false) : NULL;
     if (st == OK && !(s && *s)) {
         s = charge_slot_locked(v, idx, s);

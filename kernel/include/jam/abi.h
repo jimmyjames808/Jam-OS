@@ -575,6 +575,13 @@ struct pager_request {
     uint32_t reserved;   /* 0 */
 };
 
+/* vmo_make_exec_verified (abi/syscalls.def 59): the largest pager VMO it
+ * takes (a program's limit, spawn's from a file), and its table's entry
+ * for each page: the SHA-256 of the page's 4096 bytes (the last page's
+ * zero past the file's end), page 0's at byte 0 of the table. */
+#define VMO_VERIFIED_MAX        (64ull << 20)
+#define VMO_VERIFIED_HASH_BYTES 32u
+
 /* console services (abi/syscalls.def 110-119) --------------------------------- */
 
 /* The longest argument each takes, in bytes: debug_write's and

@@ -115,6 +115,15 @@ int64_t sysc_vmo_make_exec(handle_t h, handle_t root, uint64_t out)
     return st == OK ? sysc_put_handle(t, out, nh) : st;
 }
 
+int64_t sysc_vmo_make_exec_verified(handle_t h, handle_t root, handle_t table, uint32_t flags,
+                                    uint64_t out)
+{
+    SYSC_TABLE(t);
+    handle_t nh;
+    status_t st = sys_vmo_make_exec_verified(t, h, root, table, flags, &nh);
+    return st == OK ? sysc_put_handle(t, out, nh) : st;
+}
+
 int64_t sysc_vmo_decommit(handle_t h, uint64_t offset, uint64_t len)
 {
     SYSC_TABLE(t);
