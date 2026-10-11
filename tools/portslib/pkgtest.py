@@ -179,9 +179,10 @@ def test_packages(tmp, real_ports, key, pub):
             blobs[name] = f.read()
     m = pkgverify.verify_package(blobs["app"], pub, abi)
     files = [p for p, _, _, _ in m.files]
-    expect(files == ["bin/app", "bin/app2", "share/app/data.txt", "share/licences/app/LICENSE"],
+    expect(files == ["bin/app", "bin/app-a", "bin/app-b", "bin/app2", "share/app/data.txt",
+                    "share/licences/app/LICENSE"],
            "packages: app's files: %s" % files)
-    expect([p for p, _ in m.programs] == ["bin/app", "bin/app2"] and
+    expect([p for p, _ in m.programs] == ["bin/app", "bin/app-a", "bin/app-b", "bin/app2"] and
            all(listed == b"posix\nmount /data r\n" for _, listed in m.programs),
            "packages: app's programs and lists: %s" % m.programs)
     expect(m.runs == [("tool", None)], "packages: app's runs: %s" % m.runs)
