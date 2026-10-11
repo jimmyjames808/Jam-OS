@@ -938,6 +938,10 @@ shows two title bars.
 *Recommendation: (A).* It keeps your rule, matches every other window,
 and the setting stays yours to change in `chrome`'s own settings.
 
+**Answered (the owner, 2026-10-12): (A)**, and later a Mac-style frame
+(see [Later](#later)). Never (B): the rule stays, every window keeps the
+jam circles.
+
 ## Tracks
 
 Each track is about one to three agent-hours, starts from main, owns the
@@ -1148,6 +1152,14 @@ After `pkg install chromium` (CR-d), with the Mac's ports server running:
 ## Later
 
 - **CR-f, the sandbox** (section 13): its own plan once CR-d works.
+- **A Mac-style frame** (the owner, 2026-10-12, after Q4's (A)): tabs in
+  the title bar row with the real jam circles, as on macOS. A Jam OS
+  Wayland protocol any client may use: the client keeps a corner clear and
+  names the parts of its top strip that move the window; the compositor
+  draws the jam circles over that corner and handles their clicks (close,
+  minimise, full screen as for every window). Chrome's side is a patch to
+  its frame view (no buttons of its own, the corner kept clear, the
+  protocol spoken), as its macOS frame does with AppKit. After CR-d.
 - **Stricter JIT modes**: PKU per thread or dual mapping (section 12).
 - **The GPU**: G3 (mode setting through the iGPU, likely Linux's DRM
   drivers as programs) and G4 (3D), then ANGLE over Vulkan or GL, WebGL,
