@@ -75,7 +75,7 @@
 enum ut_state { UT_NEW, UT_STARTING, UT_RUNNING, UT_DEAD };
 
 #define OUT_LINE        200   /* debug_write lines longer than this are split */
-#define USER_REPORT_MAX 24    /* debug_report lines kept, all processes together */
+#define USER_REPORT_MAX 160   /* debug_report lines kept, all processes together */
 #define OUT_BURST       100   /* debug_write lines a process may print at once... */
 #define OUT_PER_S       50    /* ...and then per second (the rest are dropped, counted) */
 
@@ -416,8 +416,10 @@ static void out_print(const struct process *p, const char *line, enum out_kind k
 size_t process_debug_write(struct process *p, const char *buf, size_t n, bool report_it)
 {
     static uint32_t reports;
-    if (report_it && __atomic_fetch_add(&reports, 1, __ATOMIC_RELAXED) >= USER_REPORT_MAX)
-        report_it = false;   /* the RESULTS box is for a few lines */
+    if (report_it && __atomic_fetch_add(&reports, 1, __ATOMIC_RELAXED) >= USER_REPORT_MAX) {
+        report_it = false;   /* the RESULTS box is for a few lines: the log has the rest */
+        report_refused();
+    }
     enum out_kind mine = report_it ? OUT_REPORT : OUT_PRINT;
     char line[OUT_LINE];
     size_t i = 0, printed = 0;
