@@ -38,15 +38,28 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 | M12.7 | NVMe: read-only first, then writes to a Jam OS disk, then installing Jam OS to it | under way, in wave 5 with M12.5 and M13 (the owner, 2026-10-07). Stage 1, read-only, is built and tested in QEMU (N1-N5): drv/nvme (no write command in it, checked by `make check`), the partition-table library, `volumes` mounting FAT partitions read-only as `/nvmeN`, and the shell's `disks`, `disk digest` and `disk smart`; it binds on every boot. Its check on Windows' drive on the PC (the drive's write counter unmoved) is not recorded yet. Stage 2 (writes, only to the blank second drive fitted on 2026-10-11) and stage 3 (the installer) are to come, with one review at the end ([M12.7-PLAN.md](M12.7-PLAN.md)) |
 | M13 | POSIX on musl | under way ([M13-PLAN.md](M13-PLAN.md)). Merged: the kernel's part (K1: small ids, `thread_interrupt`; K2: the time page), musl 1.2.6 with the sysroot, `jamos-cc` and `posixtest` (A1), libjam and the hand-over (A2), netstack options (N1), the console's connection back end and `tty` (T1, T2), files and directories (B1), pipes, `dup`, `/dev`, `/etc`, memfd and eventfd (B2), `posix_spawn` and waits (B3), signals (B4), `poll`, `select` and `epoll` (B5), and the shell's descriptors and redirections (S1). Not yet: sockets (B6), sessions and ptys (X1), sbase and Lua (P1), libc-test (P2), tinyssh (X2), pipelines (S2), mapped files (F1), the reviews and the join |
 | M13.5 | A real POSIX shell, made the default | after M13, alongside M14 (the owner, 2026-10-11) |
-| M10 | ACPI power, tickless idle | after M13 (moved there by the owner, 2026-10-02) |
-| M10.5 | S3 sleep | after M13 (moved there by the owner, 2026-10-02) |
+| M13.6 | A Unix filesystem: symlinks, permissions, large files, case-sensitive names | porting first (the owner, 2026-10-11); plan being written |
+| M13.7 | The ports system: recipes, dependency order, packages | porting first (the owner, 2026-10-11); plan being written |
+| M10 | ACPI power, tickless idle | deferred: porting first (the owner, 2026-10-11) |
+| M10.5 | S3 sleep | deferred: porting first (the owner, 2026-10-11) |
 | M14 | Stable syscall ABI | stretch |
 | M14.5 | Maybe: dynamic linking | stretch, only if porting needs it |
 | M15 | Self-hosting | stretch |
-| G2-G4 | Toolkit and fonts, mode setting, 3D | after G1 |
+| G2-G4 | Toolkit and fonts, mode setting, 3D | G2 is porting work (libwayland, fonts, toolkits) and comes with it; G3 and G4 deferred: porting first (the owner, 2026-10-11) |
 | Maybe | Own UEFI loader in place of Limine | not planned |
 
 ## Now
+
+**Porting first (the owner, 2026-10-11).** Until porting is routine, work
+goes only to what directly helps it: the rest of M13 (POSIX, sockets,
+sessions, mapped files), M12.5's programs from disk (PF1, PX), M12.7's
+stage 2 (writes: the new filesystem's disk), M13.5 (the shell and
+`fork`), M13.6 (the filesystem), M13.7 (the ports system), G2 (libwayland,
+fonts, toolkits) and M14.5 (dynamic linking) when a port needs it.
+Deferred until then: M10 and M10.5 (ACPI power, sleep), M12.7's stage 3
+(the installer), G3 and G4 (mode setting, 3D), M12.1's follow-ups, and
+new Jam OS apps beyond the system's own (settings).
+
 
 Three milestones run side by side (wave 5, the owner's order of
 2026-10-07):
@@ -62,8 +75,9 @@ Three milestones run side by side (wave 5, the owner's order of
   stage 2, writes to the blank second drive only (W1-W3), is next. Plan:
   [M12.7-PLAN.md](M12.7-PLAN.md).
 
-Beside them: M12.1's follow-up (see its row above) and the small items
-under [Smaller follow-ups](#smaller-follow-ups).
+Beside them: the plans for M13.6 (the filesystem) and M13.7 (the ports
+system), and the small items under [Smaller follow-ups](#smaller-follow-ups)
+that help porting. M12.1's follow-up waits (porting first).
 
 M8.6 (cleanup and polish) is done: [what it delivered](HISTORY.md#m86-cleanup-and-polish).
 
@@ -222,7 +236,9 @@ The rest:
   copy-on-write child VMOs.
 - Wi-Fi.
 - HDMI/DisplayPort audio through the RTX.
-- Filesystems other than FAT32 (NVMe itself is M12.7, on FAT32 and GPT).
+- Filesystems other than FAT32 and M13.6's Unix filesystem (the owner,
+  2026-10-11, reopened the 2026-10 decision for porting: symlinks,
+  permissions, large files).
 - User accounts: single user; handles are the only authority.
 - Running Linux binaries unchanged (a Linux system-call personality, as
   WSL1 or FreeBSD's Linux layer): the owner, 2026-10-09. Programs are
