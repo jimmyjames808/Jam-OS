@@ -61,6 +61,7 @@
 #define SVC_BUDGET 16u                /* connects per turn */
 
 struct comp comp;
+static bool svc_more;   /* the last turn spent SVC_BUDGET: connects may be left queued */
 
 uint32_t comp_serial(void)
 {
@@ -183,6 +184,7 @@ static uint32_t no_protocol(void *ctx, const void *req, uint32_t n, void *rep, h
 /* New connections: OK, or the shared channel's end (init is gone). */
 static status_t serve_svc(void)
 {
+    svc_more = false;
     for (unsigned n = 0; n < SVC_BUDGET; n++) {
         status_t st = svc_serve_request(comp.svc, no_protocol, conn_connect, NULL);
         if (st == ERR_SHOULD_WAIT)
@@ -190,13 +192,17 @@ static status_t serve_svc(void)
         if (st != OK)
             return st;
     }
+    /* More may be queued (a burst of programs starting): the binding fires
+     * when the channel turns readable, not while it stays so, so the next
+     * turn looks without a packet; else no program could connect again. */
+    svc_more = true;
     return OK;
 }
 
 /* How long the loop may sleep. */
 static uint64_t next_deadline(void)
 {
-    if (conn_more())
+    if (conn_more() || svc_more)
         return 0;
     uint64_t d = seat_deadline(), c = clock_deadline();
     d = c < d ? c : d;
@@ -230,7 +236,7 @@ static status_t take_packets(uint64_t deadline)
     }
     if (st != ERR_TIMED_OUT && st != ERR_SHOULD_WAIT)
         return st;
-    return svc ? serve_svc() : OK;
+    return svc || svc_more ? serve_svc() : OK;
 }
 
 int main(int argc, char **argv)

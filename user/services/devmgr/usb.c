@@ -406,6 +406,11 @@ void usb_bus_events(uint64_t key)
         if (st != OK)
             return;
     }
+    /* One that wrote as fast as we read: what is left comes by another
+     * turn, after what else waits (port_again), not never. */
+    if (e->ch && port_again(port, e->ch, KEY_BUSEV_OF(e - bev, e->gen),
+                            SIG_READABLE | SIG_PEER_CLOSED) != OK)
+        say(true, "devmgr: a usb-bus events channel can't be watched any more");
 }
 
 /* Interface u is gone: its binding (if any) is freed now, or -- while its

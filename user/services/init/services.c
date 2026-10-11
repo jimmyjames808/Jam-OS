@@ -631,9 +631,12 @@ void shared_event(unsigned i)
     if (!before && shared[i].dropped)
         printf("init: /svc/%s: answers nobody reads are dropped (a holder sent requests of "
                "its own and didn't read them)\n", shared[i].name);
-    if (n == SHARED_ROUND) {   /* more may be queued: the binding fires on a new message only */
-        struct port_packet pkt = { .key = KEY_SHARED + i, .type = PORT_PACKET_USER };
-        (void)jam_port_queue(port, &pkt);   /* a full port: the next answer brings it back */
+    /* More may be queued: the binding fires when the channel turns
+     * readable, not while it stays so (port_again: not lost to a full
+     * port either). */
+    if (n == SHARED_ROUND && port_again(port, h, KEY_SHARED + i, SIG_READABLE) != OK) {
+        printf("init: /svc/%s's answers nobody reads aren't dropped any more\n", shared[i].name);
+        shared[i].h = HANDLE_INVALID;   /* not ours to close: the service's published end */
     }
 }
 

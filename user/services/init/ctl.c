@@ -552,9 +552,11 @@ void ctl_serve(unsigned who)
     for (unsigned n = 0; st == OK && c->ch && n < ROUND; n++)
         st = initctl_serve_one(c->ch, &ops, c);
     if (st == OK && c->ch) {
-        /* More may be queued, and the binding fires only on a new edge. */
-        struct port_packet pkt = { .key = c->key, .type = PORT_PACKET_USER };
-        (void)jam_port_queue(ctl_port, &pkt);   /* a full port: served with the next request */
+        /* More may be queued, and the binding fires only on a new edge
+         * (and none comes while the channel stays readable). Unwatched,
+         * the channel goes: its holder sees it end, not a deaf init. */
+        if (port_again(ctl_port, c->ch, c->key, SIG_READABLE | SIG_PEER_CLOSED) != OK)
+            ctl_close(c);
     } else if (st != ERR_SHOULD_WAIT) {
         ctl_close(c);   /* its holder is gone */
     }

@@ -618,16 +618,23 @@ static const struct update_ops ops = { .offer = op_offer };
 void update_event(void)
 {
     if (busy) {
-        if (__atomic_load_n(&busy->done, __ATOMIC_ACQUIRE))
-            worker_done();
-        return;   /* else: the sender's end closed or wrote again meanwhile; seen at the end */
+        if (!__atomic_load_n(&busy->done, __ATOMIC_ACQUIRE))
+            return;   /* the sender's end closed or wrote again meanwhile: read once it's done */
+        worker_done();
+        if (worker_stuck) {
+            drop_offer();   /* no more updates this boot: its stack can't run another check */
+            return;
+        }
+        /* Then what came meanwhile: its packet was this one, or one taken
+         * while busy, and the binding fires when the channel turns
+         * readable, not while it stays so. Unread now, it never would be. */
     }
     status_t st = OK;
     for (unsigned n = 0; offer && !busy && st == OK && n < ROUND; n++)
         st = update_serve_one(offer, &ops, NULL);
     if (offer && !busy && st == OK) {   /* more may be queued: the binding fires on a new edge */
-        struct port_packet pkt = { .key = offer_key, .type = PORT_PACKET_USER };
-        (void)jam_port_queue(offer_port, &pkt);
+        if (port_again(offer_port, offer, offer_key, SIG_READABLE | SIG_PEER_CLOSED) != OK)
+            drop_offer();   /* it can't be watched: the sender sees it end */
     } else if (offer && !busy && st != ERR_SHOULD_WAIT) {
         drop_offer();   /* the sender is gone (or we can't read): the channel ends here */
     }

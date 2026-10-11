@@ -228,7 +228,11 @@ static bool make_esp(handle_t storage, enum esp_kind kind)
     return fat_wait(&r, 0);
 }
 
-bool attach(handle_t vm, uint8_t type2, enum esp_kind kind, uint32_t *id, bool *skip)
+/* attach, with `junk` messages on the `storage` channel ahead of
+ * everything the mock answers (none is an answer to anything volumes
+ * asks). */
+static bool attach_junk(handle_t vm, uint8_t type2, enum esp_kind kind, unsigned junk, uint32_t *id,
+                        bool *skip)
 {
     const struct bootfs_view *b;
     const void *data;
@@ -241,9 +245,18 @@ bool attach(handle_t vm, uint8_t type2, enum esp_kind kind, uint32_t *id, bool *
     }
     if (!dm_start(&mock, DM_TYPE_ESP, type2, &client) || !make_esp(client, kind))
         return false;
+    for (unsigned i = 0; i < junk; i++) {
+        struct idl_rep_hdr r = { .txid = 0x7f000000u | i, .status = OK };
+        CHECK_ST(jam_channel_write(mock.storage, &r, sizeof(r), NULL, 0), OK);
+    }
     /* client goes with the request either way */
     CHECK_ST(volumes_test_disk_until(vm, now() + 10 * NS_PER_S, client, id), OK);
     return true;
+}
+
+bool attach(handle_t vm, uint8_t type2, enum esp_kind kind, uint32_t *id, bool *skip)
+{
+    return attach_junk(vm, type2, kind, 0, id, skip);
 }
 
 bool detach(handle_t vm, struct view *v)
@@ -646,6 +659,28 @@ bool t_disk_vanishes(void)
     CHECK(id2 != id);
     if (!wait_mounts(vm, &v, true, true))
         return false;
+    return detach(vm, &v);
+}
+
+/* A driver that writes more than volumes reads off its channel a turn
+ * (64 messages) before it answers volumes' first call: volumes reads the
+ * rest at its next turns, and the disk mounts. Its `storage` channel is
+ * bound PERSISTENT, which fires when the channel turns readable, not while
+ * it stays so: volumes used to read 64, wait for a packet that never came,
+ * and never see the disk's answers, nor its end. */
+bool t_disk_answer_storm(void)
+{
+    handle_t vm = volumes();
+    struct view v = { 0 };
+    uint32_t id = 0;
+    bool skip;
+    if (!vm)
+        return true;
+    if (!attach_junk(vm, DM_TYPE_FAT32, ESP_BOOT, 3 * 64 + 7, &id, &skip))
+        return skip;
+    if (!wait_mounts(vm, &v, true, true))
+        return false;
+    CHECK_EQ(dm_count(&mock.infos), 1);
     return detach(vm, &v);
 }
 

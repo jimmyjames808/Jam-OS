@@ -87,6 +87,7 @@ bool t_disk_other(void);
 bool t_disk_fs_restart(void);
 bool t_disk_own_channel(void);
 bool t_disk_vanishes(void);
+bool t_disk_answer_storm(void);
 bool t_disk_list_channel(void);   /* volumes.list_channel: voldisks alone */
 
 /* logd.c: bin/logd with the fat service over a RAM disk as its /data. */
@@ -240,6 +241,8 @@ bool t_reply_wait_gone_caller(void);
 bool t_reply_wait_second_process(void);
 bool t_reply_wait_port(void);
 bool t_reply_wait_refusals(void);
+/* portagain.c: port_again, the next turn of a reader that keeps to a budget. */
+bool t_port_again(void);
 bool t_handles_always_moved(void);
 bool t_channel_no_handles(void);
 bool t_unread_charged_to_writer(void);
@@ -598,6 +601,7 @@ bool t_comp_surface(void);
 bool t_comp_bad_requests(void);
 bool t_comp_caps(void);
 bool t_comp_connections(void);
+bool t_comp_connect_storm(void);
 bool t_comp_client_crash(void);
 bool t_comp_never_reads(void);
 /* Clients lost every way, round after round: nothing stays charged to the compositor. */
@@ -888,6 +892,7 @@ bool t_replace_consumes(void);
 
 /* M12 P1b: input as events (hid.c, compseat.c). */
 bool t_hid_leds(void);
+bool t_hid_leds_storm(void);
 bool t_hid_queue_full(void);
 bool t_comp_seat_leds(void);
 /* fat.c: an open file is known by its directory entry (P5). */

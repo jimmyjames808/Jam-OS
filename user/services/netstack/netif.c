@@ -301,6 +301,13 @@ static void session_event(struct dev *d)
             set_link(d, link, speed);
         }
     }
+    /* 8 read and maybe more queued (a driver that writes what nobody
+     * asked): the binding fires when the channel turns readable, not while
+     * it stays so, so without another turn no answer, nor the session's
+     * end, would be read again. */
+    signals_t mask = SIG_READABLE | SIG_PEER_CLOSED;
+    if (d->session && port_again(d->port, d->session, key_of(d, KEY_SESSION), mask) != OK)
+        detach(d, "its channel can't be watched");
 }
 
 /* The to_stack event fired with `seen` up: clear those bits, then act on
