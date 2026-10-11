@@ -1014,6 +1014,7 @@ static const struct {
     { "jwlc_fuzz_events", t_jwlc_fuzz_events },
     { "jwlc_fuzz_batches", t_jwlc_fuzz_batches },
     { "fun_window_present", t_fun_window_present },
+    { "fun_window_present_rects", t_fun_window_present_rects },
     { "fun_window_input", t_fun_window_input },
     { "fun_window_reconnect", t_fun_window_reconnect },
     { "fun_no_window", t_fun_no_window },

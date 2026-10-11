@@ -72,6 +72,8 @@ void     wl_frame_asked(void);
 
 /* wlpaint.c: present into the window: what changed, or all of it. */
 void wl_present(bool all);
+/* wlpaint.c: the same for what changed within n rectangles of scr.s only. */
+void wl_present_rects(const struct rect *r, unsigned n);
 /* wlpaint.c: forget what the window's buffers hold (a new size, a new
  * connection): the next present writes all of each and damages it all. */
 void wl_paint_reset(void);

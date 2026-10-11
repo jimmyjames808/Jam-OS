@@ -8,6 +8,12 @@
  *                       a present of nothing commits nothing; full screen
  *                       by the compositor: the picture centred on bg in
  *                       the bigger window, shown by libfun itself;
+ *   fun_window_present_rects  gfx_present_rects: only the rectangles are
+ *                       compared and sent, damaged by their pieces (and
+ *                       whatever the other buffer was owed with them); a
+ *                       change outside them is not looked at; rectangles
+ *                       off the picture, empty or partly out of it are
+ *                       clipped, never a crash;
  *   fun_window_input    keys as the apps decode them ('a', Ctrl+C as
  *                       KEY_QUIT, a release as nothing), the mouse at the
  *                       window's pixels, a button, the wheel (down the
@@ -154,6 +160,88 @@ bool t_fun_window_present(void)
 static int key_soon(void)
 {
     return gfx_key(now() + NS_PER_S);
+}
+
+bool t_fun_window_present_rects(void)
+{
+    uint64_t h0, b0;
+    start(&h0, &b0);
+    struct fake f;
+    fake_init(&f);
+    struct fake_surface *s;
+    if (!open_on(&f, 320, 200, &s))
+        return false;
+
+    /* a change inside a rectangle: damaged by the pieces it touches, as
+     * gfx_present does it, and written into the free buffer */
+    fill(&scr.s, 10, 10, 50, 20, RED);
+    uint32_t first = s->current;
+    const struct rect red = { 10, 10, 50, 20 };
+    gfx_present_rects(&red, 1);
+    fake_serve(&f);
+    CHECK(s->current && s->current != first);
+    CHECK(s->last_damage.x == 0 && s->last_damage.y == 0);
+    CHECK(s->last_damage.w == 64 && s->last_damage.h == 32);
+    CHECK_EQ(shown_px(&f, s, 20, 15), RED);
+    CHECK_EQ(shown_px(&f, s, 100, 100), BG);
+
+    /* a change the rectangles don't name is not looked at (the caller said
+     * nothing else changed): no commit, nothing shown of it ... */
+    fill(&scr.s, 200, 100, 10, 10, GREEN);
+    unsigned commits = s->commits;
+    gfx_present_rects(&red, 1);
+    fake_serve(&f);
+    CHECK_EQ(s->commits, commits);
+    CHECK_EQ(shown_px(&f, s, 205, 105), BG);
+    /* ... and a present of everything finds it, in the first buffer, which
+     * has both changes now */
+    gfx_present();
+    fake_serve(&f);
+    CHECK_EQ(s->current, first);
+    CHECK(s->last_damage.x == 192 && s->last_damage.y == 96);
+    CHECK_EQ(shown_px(&f, s, 20, 15), RED);
+    CHECK_EQ(shown_px(&f, s, 205, 105), GREEN);
+
+    /* two rectangles, in different bands and columns: both shown, and what
+     * the other buffer was owed from before comes with them */
+    fill(&scr.s, 5, 150, 20, 10, RED);
+    fill(&scr.s, 300, 5, 10, 10, GREEN);
+    const struct rect two[2] = { { 5, 150, 20, 10 }, { 300, 5, 10, 10 } };
+    unsigned damages = s->damages;
+    gfx_present_rects(two, 2);
+    fake_serve(&f);
+    CHECK(s->damages >= damages + 2);   /* one damage each (the pieces) */
+    CHECK_EQ(shown_px(&f, s, 10, 155), RED);
+    CHECK_EQ(shown_px(&f, s, 305, 10), GREEN);
+    CHECK_EQ(shown_px(&f, s, 20, 15), RED);
+    CHECK_EQ(shown_px(&f, s, 205, 105), GREEN);
+
+    /* the bottom row and the right edge, past the last whole piece */
+    fill(&scr.s, 310, 195, 10, 5, RED);
+    const struct rect corner = { 310, 195, 10, 5 };
+    gfx_present_rects(&corner, 1);
+    fake_serve(&f);
+    CHECK_EQ(shown_px(&f, s, 319, 199), RED);
+    CHECK(s->last_damage.x + s->last_damage.w <= 320 && s->last_damage.y + s->last_damage.h <= 200);
+    CHECK_EQ(shown_px(&f, s, 10, 155), RED);
+
+    /* rectangles off the picture, empty or partly outside change nothing
+     * and crash nothing; n = 0 is a no-op */
+    commits = s->commits;
+    const struct rect odd[4] = { { -50, -50, 60, 60 }, { 400, 300, 10, 10 }, { 0, 0, 0, 0 },
+                                 { 100, 100, -5, 20 } };
+    gfx_present_rects(odd, 4);
+    gfx_present_rects(NULL, 0);
+    fake_serve(&f);
+    CHECK_EQ(s->commits, commits);
+
+    /* a rectangle that reaches over the edge: the part inside is sent */
+    fill(&scr.s, 0, 0, 5, 5, GREEN);
+    const struct rect over = { -10, -10, 20, 20 };
+    gfx_present_rects(&over, 1);
+    fake_serve(&f);
+    CHECK_EQ(shown_px(&f, s, 2, 2), GREEN);
+    return close_all(&f, h0, b0);
 }
 
 bool t_fun_window_input(void)
