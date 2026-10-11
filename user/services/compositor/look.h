@@ -23,6 +23,9 @@
  *   - tiled: a DECO_BORDER border all round in the focus's colour, its
  *     corners LOOK_TILE_RADIUS round with the border following the curve,
  *     no shadow;
+ *   - floating, its client drawing its own decorations (COMP_WIN_CSD,
+ *     xdg-decoration's client_side): no title bar or outline, the corners
+ *     LOOK_RADIUS round with no edge colour, and the floating shadow;
  *   - plain (full screen, and windows with no decorations): the surface
  *     only, square. */
 #pragma once
@@ -276,13 +279,22 @@ enum look_kind {
     LOOK_FLOATING,                 /* title bar and outline */
     LOOK_BAR_ONLY,                 /* maximised: the title bar alone */
     LOOK_TILED,                    /* a border all round, no title bar */
+    LOOK_CSD,                      /* floating, the client's own decorations: corners, shadow */
 };
 
 static inline enum look_kind look_of(const struct comp_window *w)
 {
+    if (w->flags & COMP_WIN_CSD)
+        return LOOK_CSD;
     if (w->deco_top >= COMP_TITLE_H)
         return w->deco_left > 0 ? LOOK_FLOATING : LOOK_BAR_ONLY;
     if (w->deco_top > 0 || w->deco_left > 0 || w->deco_right > 0 || w->deco_bottom > 0)
         return LOOK_TILED;
     return LOOK_PLAIN;
+}
+
+/* Does a window of look k cast the floating shadow? */
+static inline bool look_shadowed(enum look_kind k)
+{
+    return k == LOOK_FLOATING || k == LOOK_CSD;
 }

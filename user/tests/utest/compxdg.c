@@ -88,11 +88,13 @@ static bool xdg_surface(struct xc *x, uint32_t s, uint32_t *xs)
     return true;
 }
 
+/* A toplevel asking for the compositor's decorations, as Jam OS's windows do. */
 static bool toplevel(struct xc *x, struct tl *t)
 {
     CHECK(surface(x, &t->s) && xdg_surface(x, t->s, &t->xs));
     CHECK((t->top = ct_new(&x->k, &jwl_xdg_toplevel_interface, 1)) != 0);
     CHECK_ST(jwl_xdg_surface_get_toplevel(x->k.c, t->xs, t->top), OK);
+    CHECK(ct_server_side(&x->k, t->top));
     return true;
 }
 

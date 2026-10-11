@@ -19,6 +19,7 @@
 #include <idl/svc.h>
 #include <jwl.h>
 #include <jwl/wayland.h>
+#include <jwl/xdg_decoration_unstable_v1.h>
 #include <os.h>
 #include <svcstate.h>
 #include "comptest.h"
@@ -315,6 +316,25 @@ bool ct_bind_all(struct ct_client *k)
     return true;
 }
 
+uint32_t ct_server_side(struct ct_client *k, uint32_t top)
+{
+    if (!k->decorations) {
+        k->decorations = ct_new(k, &jwl_zxdg_decoration_manager_v1_interface, 1);
+        if (!k->decorations || jwl_wl_registry_bind(k->c, k->registry, 9,
+                                                    "zxdg_decoration_manager_v1", 1,
+                                                    k->decorations) != OK)
+            return 0;
+    }
+    uint32_t d = ct_new(k, &jwl_zxdg_toplevel_decoration_v1_interface, 1);
+    if (!d ||
+        jwl_zxdg_decoration_manager_v1_get_toplevel_decoration(k->c, k->decorations, d, top) !=
+            OK ||
+        jwl_zxdg_toplevel_decoration_v1_set_mode(
+            k->c, d, JWL_ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE) != OK)
+        return 0;
+    return d;
+}
+
 handle_t ct_kept_vmo(uint64_t size)
 {
     handle_t h = HANDLE_INVALID;
@@ -376,7 +396,8 @@ static bool globals_and_binds(struct ct_client *k)
     CHECK(has_global(k, 6, "wp_cursor_shape_manager_v1", 2));
     CHECK(has_global(k, 7, "wl_data_device_manager", 3));
     CHECK(has_global(k, 8, "jam_window_memory_v1", 1));
-    CHECK_EQ(count(k, &jwl_wl_registry_interface, JWL_WL_REGISTRY_EV_GLOBAL), 8);
+    CHECK(has_global(k, 9, "zxdg_decoration_manager_v1", 1));
+    CHECK_EQ(count(k, &jwl_wl_registry_interface, JWL_WL_REGISTRY_EV_GLOBAL), 9);
     CHECK_EQ(count(k, &jwl_wl_shm_interface, JWL_WL_SHM_EV_FORMAT), 2);
     CHECK(ct_find(k, &jwl_wl_shm_interface, JWL_WL_SHM_EV_FORMAT, k->shm)->u[0] ==
           JWL_WL_SHM_FORMAT_ARGB8888);
@@ -408,7 +429,7 @@ bool t_comp_globals(void)
     uint32_t reg2 = ct_new(&k, &jwl_wl_registry_interface, 1);
     CHECK_ST(jwl_wl_display_get_registry(k.c, JWL_DISPLAY_ID, reg2), OK);
     CHECK_ST(ct_roundtrip(&k), OK);
-    CHECK_EQ(count(&k, &jwl_wl_registry_interface, JWL_WL_REGISTRY_EV_GLOBAL), 8);
+    CHECK_EQ(count(&k, &jwl_wl_registry_interface, JWL_WL_REGISTRY_EV_GLOBAL), 9);
     ct_close(&k);
     CHECK(ct_stop(&p));
     return true;

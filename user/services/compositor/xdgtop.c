@@ -19,6 +19,7 @@
  * Min and max size and the window geometry are double-buffered: checked
  * and applied at commit. Title and app id apply at once. */
 #include <jwl/wayland.h>
+#include <jwl/xdg_decoration_unstable_v1.h>
 #include <jwl/xdg_shell.h>
 #include "xdg.h"
 
@@ -111,7 +112,8 @@ static status_t send_capabilities(struct xdg_surf *x)
 }
 
 /* A configure: wm_capabilities the first time, configure_bounds when they
- * changed, the toplevel's configure, then xdg_surface's with a serial. */
+ * changed, the decoration's mode when it is owed (xdgdeco.c), the
+ * toplevel's configure, then xdg_surface's with a serial. */
 static void send(struct xdg_surf *x, const struct wm_config *cfg)
 {
     struct xdg_extra e = extra_now(x);
@@ -123,6 +125,8 @@ static void send(struct xdg_surf *x, const struct wm_config *cfg)
         (!x->has_last || e.bound_w != x->last_ex.bound_w || e.bound_h != x->last_ex.bound_h))
         st = jwl_xdg_toplevel_send_configure_bounds(conn_of(x), x->role_id, e.bound_w,
                                                     e.bound_h);
+    if (st == OK)
+        st = xdg_deco_send(x);
     uint32_t serial = comp_serial();
     if (st == OK)
         st = jwl_xdg_toplevel_send_configure(conn_of(x), x->role_id, cfg->width, cfg->height,
@@ -147,7 +151,7 @@ static void op_configure(void *ctx, const struct wm_config *cfg)
     if (!x->initial || !x->surface || !x->role_id)
         return;   /* the initial commit sends it */
     struct xdg_extra e = extra_now(x);
-    if (x->has_last && same(cfg, &x->last) && same_extra(&e, &x->last_ex)) {
+    if (x->has_last && same(cfg, &x->last) && same_extra(&e, &x->last_ex) && !xdg_deco_owed(x)) {
         x->dirty = false;
         return;
     }
@@ -369,6 +373,7 @@ static status_t on_get_toplevel(void *data, uint32_t self, uint32_t id)
     x->ww = wm_create(s, &ops, x);
     if (!x->ww)
         return comp_no_memory(s->client, self, "no memory for a toplevel");
+    x->ww->csd = true;   /* its own decorations until a decoration object says (xdgdeco.c) */
     x->constructed = true;
     x->role = XDG_ROLE_TOPLEVEL;
     x->role_id = id;
@@ -456,6 +461,9 @@ static status_t on_top_destroy(void *data, uint32_t self)
 {
     struct xdg_surf *x = data;
     (void)self;
+    if (x->deco_id)
+        return comp_error(x->cl, x->deco_id, JWL_ZXDG_TOPLEVEL_DECORATION_V1_ERROR_ORPHANED,
+                          "xdg_toplevel %u destroyed before its decoration object", self);
     if (x->ww)
         wm_destroy(x->ww);
     x->ww = NULL;

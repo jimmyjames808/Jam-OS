@@ -30,6 +30,12 @@
 #define WM_ST_FULLSCREEN (1u << 1)
 #define WM_ST_RESIZING   (1u << 2)
 #define WM_ST_ACTIVATED  (1u << 3)
+/* Not an xdg state: the client draws its own decorations (xdg-decoration's
+ * client_side mode, or a toplevel with no decoration object). Part of the
+ * configure because the mode changes, as the size does, only once the
+ * client acks it and commits: the frame follows the states of the buffer
+ * shown (deco_set). */
+#define WM_ST_CSD        (1u << 4)
 
 /* Resize edges: xdg_toplevel.resize_edge's bits (xdgtop.c checks they match). */
 #define WM_EDGE_TOP    1u
@@ -106,6 +112,10 @@ struct wm_window {
      * mapped into yet. */
     uint64_t key;
     bool restoring;
+    /* Decorations (xdg-decoration, xdgdeco.c): the client draws its own,
+     * so its configures carry WM_ST_CSD. False for a toplevel made by no
+     * client (the tests'): the compositor's title bar. */
+    bool csd;
 };
 
 /* ---- wm.c --------------------------------------------------------------------------- */
@@ -388,14 +398,17 @@ void wm_marks_update(void);
 /* ---- deco.c ------------------------------------------------------------------------- */
 
 /* Decorations for a buffer drawn for states, in layout (tiling: no title
- * bar, a border all round): sizes around the surface. */
+ * bar, a border all round; WM_ST_CSD floating or maximised: none, the
+ * client's own being inside its surface): sizes around the surface. */
 struct deco_sizes {
     int32_t top, left, right, bottom;
 };
 struct deco_sizes deco_sizes(uint32_t states, enum comp_layout layout);
 /* The surface's box inside a frame box for states in layout. */
 struct comp_box deco_inner(struct comp_box frame, uint32_t states, enum comp_layout layout);
-/* w's decorations set for states (its frame damaged if they change). */
+/* w's decorations set for states (its frame damaged if they change), and
+ * COMP_WIN_CSD for a floating window in its normal state whose client
+ * draws its own (WM_ST_CSD). */
 void deco_set(struct comp_window *w, uint32_t states);
 
 enum deco_part {

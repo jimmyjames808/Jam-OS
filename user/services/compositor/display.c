@@ -14,6 +14,7 @@
 #include <jwl/cursor_shape_v1.h>
 #include <jwl/jam_window_memory_v1.h>
 #include <jwl/wayland.h>
+#include <jwl/xdg_decoration_unstable_v1.h>
 #include <jwl/xdg_shell.h>
 #include "comp.h"
 
@@ -38,6 +39,7 @@ static const struct global {
     { 6, &jwl_wp_cursor_shape_manager_v1_interface, COMP_CURSOR_SHAPE_VERSION, shapes_bind },
     { 7, &jwl_wl_data_device_manager_interface, COMP_DATA_VERSION, data_bind },
     { 8, &jwl_jam_window_memory_v1_interface, COMP_MEMORY_VERSION, memory_bind },
+    { 9, &jwl_zxdg_decoration_manager_v1_interface, COMP_DECORATION_VERSION, xdg_deco_bind },
 };
 #define NGLOBALS (sizeof(globals) / sizeof(globals[0]))
 
