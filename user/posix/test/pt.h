@@ -74,3 +74,5 @@ int  pt_child_rofs(void);
 
 /* Pages charged to our job now (job_get_info; start.c). */
 uint64_t pt_job_pages(void);
+/* Message bytes charged to our job now (JOB_LIMIT_MSG_BYTES; start.c). */
+uint64_t pt_job_msg_bytes(void);

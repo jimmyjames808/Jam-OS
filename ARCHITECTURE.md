@@ -616,7 +616,12 @@ Every driver and service is a userspace process from the start.
   endpoint whose own queue already holds an endpoint. An end marked with
   `channel_set_flags(CHANNEL_NO_HANDLES)` (init's and devmgr's kept server
   ends; only its sole holder may mark it) receives no handles, so its
-  queue never holds an endpoint and it can always be sent on.
+  queue never holds an endpoint and it can always be sent on. One marked
+  `CHANNEL_BYTE_BOUND` (a POSIX pipe's ends) is full at 1 MiB of queued
+  bytes as well as at 1024 messages (`ERR_SHOULD_WAIT`, its writer not
+  `SIG_WRITABLE`): 1024 messages of 64 KiB would be 64 MiB, the root
+  job's whole message budget, so a writer far ahead of a slow reader would
+  get `ERR_NO_MEMORY`, and so would every other writer in the system.
 - **`channel_call`**: write + wait for the reply whose first 4 bytes (the
   txid) match. The kernel stamps the txid (bit 31 set and the rest a counter of the
   channel pair's, so it is never one a writer picked for a request it sent

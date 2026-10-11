@@ -8,10 +8,16 @@
  *
  * A write sends a message per PIPE_SIZE (64 KiB), so any write up to 64
  * KiB is atomic (PIPE_BUF, 4096, is far inside it) and a bigger one is
- * split. A full queue (CHANNEL_MAX_QUEUED messages) is EAGAIN with
- * O_NONBLOCK, else a wait for SIG_WRITABLE. The reader gone is EPIPE (and
+ * split. A full pipe is EAGAIN with O_NONBLOCK, else a wait for
+ * SIG_WRITABLE. Full is CHANNEL_MAX_QUEUED messages, or CHANNEL_BOUND_BYTES
+ * (1 MiB) of bytes unread: both ends are marked CHANNEL_BYTE_BOUND when
+ * the pipe is made. Without the bound a pipe held up to 1024 messages of
+ * 64 KiB, 64 MiB: the root job's whole message budget, so a writer far
+ * ahead of a slow reader got ENOMEM (and so did every other writer in the
+ * system) before the queue was full. The reader gone is EPIPE (and
  * SIGPIPE, once signals exist: not built yet). Who pays for the queue:
- * the writer's job until it closes, then the reader's (the kernel's rule).
+ * the writer's job, until the bytes are read or the reader closes (the
+ * kernel's rule).
  *
  * A read takes the next message. One that fits the caller's buffer goes
  * straight into it; a bigger one is read into the description's leftover
@@ -384,6 +390,16 @@ static long make_pair(const struct fd_ops *ops, const rights_t rights[2],
     status_t st = jam_channel_create(&h[0], &h[1]);
     if (st != OK)
         return lx_err(st);
+    /* Both ends bounded (see the header), while each is still its only
+     * handle: a pipe's write end never has anything queued, so marking it
+     * changes nothing. */
+    for (int i = 0; i < 2 && st == OK; i++)
+        st = jam_channel_set_flags(h[i], CHANNEL_BYTE_BOUND);
+    if (st != OK) {
+        jam_handle_close(h[0]);
+        jam_handle_close(h[1]);
+        return lx_err(st);
+    }
     for (int i = 0; i < 2 && st == OK; i++)
         if (rights[i] != RIGHT_SAME && (st = jam_handle_replace(h[i], rights[i], &h[i])) != OK)
             jam_handle_close(h[!i]);   /* the replace closed h[i] already */
