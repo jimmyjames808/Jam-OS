@@ -240,6 +240,8 @@ bool t_reply_wait_gone_caller(void);
 bool t_reply_wait_second_process(void);
 bool t_reply_wait_port(void);
 bool t_reply_wait_refusals(void);
+/* portagain.c: port_again, the next turn of a reader that keeps to a budget. */
+bool t_port_again(void);
 bool t_handles_always_moved(void);
 bool t_channel_no_handles(void);
 bool t_unread_charged_to_writer(void);

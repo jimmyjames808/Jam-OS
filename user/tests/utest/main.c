@@ -614,6 +614,7 @@ static const struct {
     { "reply_wait_second_process", t_reply_wait_second_process },
     { "reply_wait_port", t_reply_wait_port },
     { "reply_wait_refusals", t_reply_wait_refusals },
+    { "port_again", t_port_again },
     { "handles_always_moved", t_handles_always_moved },
     { "channel_no_handles", t_channel_no_handles },
     { "unread_charged_to_writer", t_unread_charged_to_writer },
