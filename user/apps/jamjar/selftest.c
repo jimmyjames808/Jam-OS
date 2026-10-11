@@ -372,15 +372,14 @@ static bool inside(const struct rect *in, const struct rect *out)
 static struct app app;
 static uint32_t *frame_px;   /* the back buffer for the frames: the biggest screen tested */
 
-/* A whole frame on a w x h screen, as the app draws it, playing a fixture
- * track with loud bands: the bars at the bottom are drawn, the mark
- * at the top left is drawn, and how long it took. */
-static void test_frame(int w, int h)
+/* The app on a w x h screen (its back buffer frame_px, made on the first
+ * call), playing a fixture track with loud bands. */
+static struct app *frame_app(int w, int h)
 {
     if (!frame_px) {
         if (!(frame_px = big_alloc(2560ull * 1440 * 4))) {
             fun_check(false, "frame: no memory to draw into");
-            return;
+            return NULL;
         }
         /* Its pages committed now, so the times below are the frames' own,
          * as the app's are after its first frame (a page's first touch is
@@ -392,6 +391,7 @@ static void test_frame(int w, int h)
     scr.h = h;
     scr.ui = h > 1100 ? 2 : 1;
     struct app *a = &app;
+    memset(a, 0, sizeof(*a));
     a->lib = lib;
     a->view = view;
     a->view_ok = true;
@@ -403,12 +403,24 @@ static void test_frame(int w, int h)
     names_of_path(a->snap.path, &a->now);
     a->now_track = lib_find(&lib, a->snap.path);
     a->mx = a->my = -1;
+    a->hover_col = a->hover_row = -1;
     bars_init(&a->bars);
     uint8_t bands[BARS];
     for (int i = 0; i < BARS; i++)
         bands[i] = (uint8_t)(230 - 2 * i);
     for (int i = 0; i < 40; i++)
         bars_step(&a->bars, bands, bands, true, 1.0f / 30);
+    return a;
+}
+
+/* A whole frame on a w x h screen, as the app draws it, playing a fixture
+ * track with loud bands: the bars at the bottom are drawn, the mark
+ * at the top left is drawn, and how long it took. */
+static void test_frame(int w, int h)
+{
+    struct app *a = frame_app(w, h);
+    if (!a)
+        return;
     uint64_t t0 = now();
     draw_frame(a, t0);
     uint64_t us = (now() - t0) / 1000;
@@ -435,6 +447,404 @@ static void test_frame(int w, int h)
     fun_check(art != frame_px[(uint64_t)(ar->y + ar->h / 2) * w + 2], what);
     a->full = false;
     a->full_t = 0.0f;
+}
+
+/* ---- redrawing only what moved ------------------------------------------------------ */
+
+/* A frame drawn the new way (draw_frame, which keeps the last picture and
+ * redraws the moving parts over it) must equal one drawn whole, pixel for
+ * pixel, whatever happened since the last; and everything that differs
+ * from the last frame must be in the rectangles it says it changed. Each
+ * step draws a frame, then draws it again whole into another buffer to
+ * compare; `want` says which way the frame must have been drawn (1: only
+ * the moving parts, 0: whole, -1: either). */
+static uint32_t *prev_px, *ref_px;
+static const char *rd_bad;      /* the first step that failed, and why */
+static const char *rd_why;
+static unsigned rd_steps, rd_partial;
+
+static void rd_step(struct app *a, const char *what, int want, bool fresh)
+{
+    int w = scr.w, h = scr.h;
+    size_t n = (size_t)w * (size_t)h;
+    if (fresh)
+        a->snap.at = now();   /* the player has just answered: not stale */
+    uint64_t t = now(), phase = t / (500 * NS_PER_MS);
+    memcpy(prev_px, frame_px, n * 4);
+    draw_frame(a, t);
+    bool dmg_all = a->dmg_all;
+    unsigned ndmg = a->ndmg;
+    struct rect dmg[DYN_MAX];
+    memcpy(dmg, a->dmg, sizeof(dmg));
+    /* the same frame whole, in the other buffer */
+    struct redraw keep = a->rd;
+    struct surf cur = scr.s;
+    a->rd = (struct redraw){ .off = true };
+    scr.s = (struct surf){ ref_px, w, h, w };
+    draw_frame(a, t);
+    scr.s = cur;
+    a->rd = keep;
+    rd_steps++;
+    rd_partial += !dmg_all;
+    if (now() / (500 * NS_PER_MS) != phase)
+        return;   /* a caret blinked between the two draws: not comparable */
+    const char *why = NULL;
+    if (want >= 0 && (want == 1) == dmg_all)
+        why = want ? "drawn whole, not only what moved" : "only what moved, not whole";
+    size_t bad = 0, outside = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (frame_px[i] != ref_px[i])
+            bad++;
+        if (!dmg_all && frame_px[i] != prev_px[i]) {
+            int x = (int)(i % (size_t)w), y = (int)(i / (size_t)w);
+            bool in = false;
+            for (unsigned k = 0; k < ndmg; k++)
+                in |= rect_has(&dmg[k], x, y);
+            outside += !in;
+        }
+    }
+    if (bad && !why)
+        why = "differs from the whole redraw";
+    if (outside && !why)
+        why = "changed outside the rectangles it said";
+    if (why && !rd_bad) {
+        rd_bad = what;
+        rd_why = why;
+        say("jamjar: selftest: redraw: step '%s': %s (%lu pixels differ, %lu outside)\n", what,
+            why, (unsigned long)bad, (unsigned long)outside);
+    }
+}
+
+/* The bars and the clock move on by n frames of 1/60 s, each a step. */
+static void rd_moving(struct app *a, const char *what, int n, uint8_t level, int want)
+{
+    uint8_t bands[BARS];
+    for (int f = 0; f < n; f++) {
+        for (int i = 0; i < BARS; i++)
+            bands[i] = (uint8_t)(level ? level - (uint8_t)((i * 3 + f * 7) % 90) : 0);
+        bars_step(&a->bars, bands, bands, level != 0, 1.0f / 60);
+        a->snap.elapsed_ms += 17;
+        rd_step(a, what, want, true);
+    }
+}
+
+/* One screen's sequence: the first frame, the bars loud and falling to
+ * silence, the clock at its odd values, then every kind of change since
+ * (each drawn whole, and the frames after it again only what moved). */
+static void redraw_screen(int w, int h)
+{
+    if (!prev_px)
+        prev_px = big_alloc(2560ull * 1440 * 4);
+    if (!ref_px)
+        ref_px = big_alloc(2560ull * 1440 * 4);
+    struct app *a = frame_app(w, h);
+    if (!a || !prev_px || !ref_px) {
+        fun_check(false, "redraw: no memory");
+        return;
+    }
+    rd_bad = rd_why = NULL;
+    rd_steps = rd_partial = 0;
+    a->snap.at = now();
+    rd_step(a, "the first frame", 0, true);
+    rd_moving(a, "bars loud", 24, 250, 1);
+    rd_moving(a, "bars falling to silence", 90, 0, 1);
+    rd_moving(a, "bars quiet again", 6, 0, 1);
+    rd_moving(a, "bars up again", 10, 120, 1);
+    static const struct { uint64_t el, len; } clock[] = {
+        { 0, 245000 }, { 999, 245000 }, { 59999, 245000 }, { 600000, 245000 },
+        { 3599000, 3600000 }, { 5999000, 6000000 }, { 100000, 0 }, { 7000, 8000 },
+        { 244000, 245000 },
+    };
+    for (unsigned i = 0; i < sizeof(clock) / sizeof(clock[0]); i++) {
+        a->snap.elapsed_ms = clock[i].el;
+        a->snap.length_ms = clock[i].len;
+        rd_step(a, "the clock", 1, true);
+    }
+    a->snap.elapsed_ms = 83000;
+    a->snap.length_ms = 245000;
+    rd_step(a, "the clock back", 1, true);
+    /* the pointer: onto a button (whole), a pixel on (the same button: no change) */
+    const struct rect *nb = &a->lo.btn[BTN_NEXT];
+    a->mx = nb->x + nb->w / 2;
+    a->my = nb->y + nb->h / 2;
+    rd_step(a, "the pointer on the next button", 0, true);
+    a->mx++;
+    rd_step(a, "the pointer a pixel on", 1, true);
+    a->mx = a->lo.vol.x + 3;
+    a->my = a->lo.vol.y + a->lo.vol.h / 2;
+    rd_step(a, "the pointer on the volume", 0, true);
+    a->mx = a->lo.mode.x + 3;
+    a->my = a->lo.mode.y + 3;
+    rd_step(a, "the pointer on the play order", 0, true);
+    a->mx = a->my = 1;
+    rd_step(a, "the pointer off them", 0, true);
+    a->hover_col = COL_TRACK;
+    a->hover_row = 1;
+    rd_step(a, "a row under the pointer", 0, true);
+    rd_moving(a, "bars after that", 3, 150, 1);
+    a->hover_row = 2;
+    rd_step(a, "the next row under it", 0, true);
+    a->hover_col = COL_ALBUM;
+    rd_step(a, "the same row of another column", 0, true);
+    a->hover_col = a->hover_row = -1;
+    rd_step(a, "the pointer off the rows", 0, true);
+    /* the lists */
+    view_select(&a->view, &a->lib, COL_ARTIST, 5);
+    view_scroll(&a->view, a->lo.rows);
+    rd_step(a, "an artist selected", 0, true);
+    a->view.col = COL_TRACK;
+    rd_step(a, "the column moved", 0, true);
+    view_select(&a->view, &a->lib, COL_TRACK, (int)a->view.nrows[COL_TRACK] - 1);
+    view_scroll(&a->view, 1);
+    rd_step(a, "a track selected and scrolled to", 0, true);
+    view_scroll(&a->view, a->lo.rows);
+    rd_step(a, "scrolled back", 0, true);
+    view_query(&a->view, &a->lib, "jay");
+    rd_step(a, "a search typed", 0, true);
+    rd_moving(a, "bars with a search", 2, 200, 1);
+    view_query(&a->view, &a->lib, "");
+    rd_step(a, "the search cleared", 0, true);
+    a->searching = true;   /* the caret may blink: then the step is not compared */
+    rd_step(a, "typing into the search box", 0, true);
+    a->searching = false;
+    rd_step(a, "typing done", 0, true);
+    /* a toast on the bar, then gone */
+    app_toast(a, "play %s (%s)", "4-44", "shuffle");
+    rd_step(a, "a toast", 0, true);
+    rd_moving(a, "bars under a toast", 2, 200, 1);
+    a->toast_at = 0;
+    rd_step(a, "the toast gone", 0, true);
+    rd_moving(a, "bars after it", 2, 200, 1);
+    app_toast(a, "one thing");
+    rd_step(a, "another toast", 0, true);
+    app_toast(a, "another thing");
+    rd_step(a, "... and its text changed", 0, true);
+    a->toast_at = 0;
+    rd_step(a, "... gone", 0, true);
+    /* each input of the lists and the bar on its own */
+    struct view *v = &a->view;
+    snprintf(v->query, sizeof(v->query), "q");
+    rd_step(a, "the query's text alone", 0, true);
+    snprintf(v->query, sizeof(v->query), "%s", "");
+    rd_step(a, "... and gone", 0, true);
+    v->sel[COL_TRACK]++;
+    rd_step(a, "a selected row alone", 0, true);
+    v->sel[COL_TRACK]--;
+    rd_step(a, "... and back", 0, true);
+    v->col = (v->col + 1) % NCOLS;
+    rd_step(a, "the column in use alone", 0, true);
+    v->col = (v->col + NCOLS - 1) % NCOLS;
+    rd_step(a, "... and back", 0, true);
+    v->nrows[COL_ALBUM]--;
+    rd_step(a, "a column's count alone", 0, true);
+    v->nrows[COL_ALBUM]++;
+    rd_step(a, "... and back", 0, true);
+    if (v->nrows[COL_ALBUM] > 1) {
+        uint32_t keep = v->row[COL_ALBUM][v->top[COL_ALBUM]];
+        v->row[COL_ALBUM][v->top[COL_ALBUM]] = v->row[COL_ALBUM][v->top[COL_ALBUM] + 1];
+        rd_step(a, "a row's item alone", 0, true);
+        v->row[COL_ALBUM][v->top[COL_ALBUM]] = keep;
+        rd_step(a, "... and back", 0, true);
+    }
+    if (v->nrows[COL_TRACK] > 1) {
+        int top = v->top[COL_TRACK];
+        v->top[COL_TRACK] = top ? 0 : 1;
+        rd_step(a, "a column's first row alone", 0, true);
+        v->top[COL_TRACK] = top;
+        rd_step(a, "... and back", 0, true);
+    }
+    a->lib.nartists++;
+    rd_step(a, "an artist more", 0, true);
+    a->lib.nartists--;
+    rd_step(a, "... and back", 0, true);
+    a->lib.nalbums++;
+    rd_step(a, "an album more", 0, true);
+    a->lib.nalbums--;
+    rd_step(a, "... and back", 0, true);
+    a->lib.ntracks++;
+    rd_step(a, "a track more", 0, true);
+    a->lib.ntracks--;
+    rd_step(a, "... and back", 0, true);
+    a->lib.err = ERR_NOT_FOUND;
+    a->view_ok = false;
+    rd_step(a, "the library unreadable", 0, true);
+    a->lib.err = ERR_NO_MEMORY;
+    rd_step(a, "... another way", 0, true);
+    a->lib.err = OK;
+    a->view_ok = true;
+    rd_step(a, "... readable again", 0, true);
+    /* the player's news */
+    a->snap.volume = -300;
+    rd_step(a, "the volume", 0, true);
+    a->drag_vol = true;
+    a->vol_shown = -480;
+    rd_step(a, "the volume dragged", 0, true);
+    a->vol_shown = -470;
+    rd_step(a, "dragged on", 0, true);
+    a->drag_vol = false;
+    a->ordered = true;
+    rd_step(a, "in order", 0, true);
+    a->snap.playing = 3;
+    rd_step(a, "paused", 0, true);
+    a->snap.playing = 1;
+    a->snap.sleep_s = 900;
+    rd_step(a, "a sleep timer", 0, true);
+    a->snap.sleep_s = 899;
+    rd_step(a, "a second less", 0, true);
+    a->snap.sleep_s = 0;
+    rd_step(a, "the sleep timer off", 0, true);
+    snprintf(a->snap.folder, sizeof(a->snap.folder), "%s", R "/JAŸ-Z/2017_4-44");
+    rd_step(a, "the folder playing", 0, true);
+    a->snap.tracks = 2;
+    rd_step(a, "its tracks counted", 0, true);
+    a->snap.tracks = 3;
+    rd_step(a, "... and one more", 0, true);
+    a->now_track++;
+    rd_step(a, "another track marked as playing", 0, true);
+    a->now_track--;
+    rd_step(a, "... and back", 0, true);
+    snprintf(a->snap.note, sizeof(a->snap.note), "stopped by itself");
+    rd_step(a, "a note", 0, true);
+    snprintf(a->snap.path, sizeof(a->snap.path), "%s", fixture[5]);
+    snprintf(a->heard_path, sizeof(a->heard_path), "%s", fixture[5]);
+    names_of_path(a->snap.path, &a->now);
+    a->now_track = lib_find(&lib, a->snap.path);
+    a->snap.serial++;
+    rd_step(a, "a new track", 0, true);
+    rd_moving(a, "bars on the new track", 4, 220, 1);
+    a->snap.path[0] = 0;
+    a->heard_path[0] = 0;
+    names_of_path("", &a->now);
+    a->now_track = -1;
+    rd_step(a, "nothing playing", 0, true);
+    rd_moving(a, "bars with nothing playing", 2, 0, 1);
+    snprintf(a->snap.path, sizeof(a->snap.path), "%s", fixture[1]);
+    names_of_path(a->snap.path, &a->now);
+    a->now_track = lib_find(&lib, a->snap.path);
+    rd_step(a, "playing again", 0, true);
+    a->now.title[0]++;
+    rd_step(a, "a title alone", 0, true);
+    a->now.title[0]--;
+    rd_step(a, "... and back", 0, true);
+    a->now.artist[0]++;
+    rd_step(a, "an artist's name alone", 0, true);
+    a->now.artist[0]--;
+    rd_step(a, "... and back", 0, true);
+    a->now.album[0]++;
+    rd_step(a, "an album's name alone", 0, true);
+    a->now.album[0]--;
+    rd_step(a, "... and back", 0, true);
+    a->now.year[0] = a->now.year[0] ? 0 : '1';
+    rd_step(a, "a year alone", 0, true);
+    names_of_path(a->snap.path, &a->now);
+    rd_step(a, "... and back", 0, true);
+    a->snap.path[strlen(a->snap.path) - 1]++;   /* the same names, another file */
+    rd_step(a, "the path alone", 0, true);
+    a->snap.path[strlen(a->snap.path) - 1]--;
+    rd_step(a, "... and back", 0, true);
+    a->snap.at = 0;   /* the player stops answering */
+    rd_step(a, "the player gone quiet", 0, false);
+    rd_step(a, "... and still", 1, false);
+    a->snap.link = false;
+    rd_step(a, "no player", 0, true);
+    a->snap.link = true;
+    rd_step(a, "a player again", 0, true);
+    /* the library still being read: the count of files on the bar */
+    a->lib.ready = false;
+    a->lib.nfiles = 10;
+    rd_step(a, "reading the library", 0, true);
+    a->lib.nfiles = 11;
+    rd_step(a, "one more file", 0, true);
+    a->lib.ready = true;
+    rd_step(a, "the library read", 0, true);
+    /* the covers arriving */
+    uint32_t g0 = cover_gen();
+    unsigned jobs = 0;
+    while (jobs < 200 && cover_test_work())
+        jobs++;
+    rd_step(a, "covers read", cover_gen() != g0 ? 0 : -1, true);
+    rd_moving(a, "bars after the covers", 2, 200, 1);
+    /* the overlays: always whole, and whole again when they are gone */
+    a->help = true;
+    rd_moving(a, "the help", 2, 200, 0);
+    a->help = false;
+    rd_step(a, "the help closed", 0, true);
+    rd_moving(a, "bars after the help", 3, 200, 1);
+    (void)roulette_start(&a->roul, &a->lib, 7, -1, now());
+    for (int i = 0; i < 4; i++) {
+        (void)roulette_step(&a->roul, now());
+        rd_step(a, "the roulette", 0, true);
+    }
+    a->roul.on = false;
+    rd_step(a, "the roulette over", 0, true);
+    rd_moving(a, "bars after the roulette", 3, 200, 1);
+    /* the big view coming, settled, going */
+    a->full = true;
+    for (int i = 1; i < 6; i++) {
+        a->full_t = (float)i / 6;
+        rd_step(a, "the big view coming", 0, true);
+    }
+    a->full_t = 1.0f;
+    rd_step(a, "the big view", 0, true);
+    rd_moving(a, "the sunburst turning", 12, 230, 1);
+    rd_moving(a, "the sunburst quiet", 20, 0, 1);
+    rd_moving(a, "the sunburst again", 4, 90, 1);
+    snprintf(a->snap.path, sizeof(a->snap.path), "%s", fixture[6]);
+    names_of_path(a->snap.path, &a->now);
+    rd_step(a, "a new track in the big view", 0, true);
+    rd_moving(a, "the sunburst on it", 3, 200, 1);
+    a->help = true;
+    rd_step(a, "help over the big view", 0, true);
+    a->help = false;
+    rd_step(a, "... closed", 0, true);
+    rd_moving(a, "the sunburst after it", 3, 200, 1);
+    a->full = false;
+    for (int i = 5; i >= 1; i--) {
+        a->full_t = (float)i / 6;
+        rd_step(a, "the big view going", 0, true);
+    }
+    a->full_t = 0.0f;
+    rd_step(a, "back to the panels", 0, true);
+    rd_moving(a, "bars back", 6, 200, 1);
+    /* a new size: the buffer is blank, the layout new (draw_forget) */
+    int w2 = w * 3 / 4, h2 = h * 3 / 4;
+    scr.s = (struct surf){ frame_px, w2, h2, w2 };
+    scr.w = w2;
+    scr.h = h2;
+    scr.ui = h2 > 1100 ? 2 : 1;
+    memset(frame_px, 0, (size_t)w2 * (size_t)h2 * 4);
+    layout_make(&a->lo, w2, h2, scr.ui);
+    draw_forget(a);
+    view_scroll(&a->view, a->lo.rows);
+    rd_step(a, "a new size", 0, true);
+    rd_moving(a, "bars at the new size", 6, 200, 1);
+    /* ... and one the layout alone gives away */
+    w2 = w / 2 + 100;
+    h2 = h / 2 + 60;
+    scr.s = (struct surf){ frame_px, w2, h2, w2 };
+    scr.w = w2;
+    scr.h = h2;
+    scr.ui = 1;
+    memset(frame_px, 0, (size_t)w2 * (size_t)h2 * 4);
+    layout_make(&a->lo, w2, h2, scr.ui);
+    view_scroll(&a->view, a->lo.rows);
+    rd_step(a, "a new size, not told", 0, true);
+    rd_moving(a, "bars at that size", 3, 200, 1);
+    char what[112];
+    snprintf(what, sizeof(what), "redraw %dx%d: %u frames, %u only what moved, each as a whole one",
+             w, h, rd_steps, rd_partial);
+    fun_check(!rd_bad && rd_partial * 2 > rd_steps, what);
+    if (rd_bad) {
+        snprintf(what, sizeof(what), "  ... failed at '%s': %s", rd_bad, rd_why);
+        fun_check(false, what);
+    }
+}
+
+static void test_redraw(void)
+{
+    redraw_screen(1024, 600);
+    redraw_screen(1280, 800);
+    redraw_screen(2560, 1440);
 }
 
 /* The sunburst drawn alone on black with these bars, turned to angle 0:
@@ -573,6 +983,7 @@ int jamjar_selftest(void)
     test_screen(1920, 1080);
     test_screen(2560, 1440);
     test_screen(3840, 2160);
+    test_redraw();
     test_min_size();
     return fun_selftest_end();
 }

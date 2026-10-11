@@ -228,7 +228,8 @@ static void bar_job(uint32_t item, uint32_t worker, void *arg)
     }
 }
 
-void bars_draw(const struct bars *b, const struct surf *dst, const struct rect *r)
+static void strip(const struct bars *b, const struct surf *dst, const struct rect *r,
+                  bool parallel)
 {
     static struct geom g;
     int u = scr.ui > 0 ? scr.ui : 1;
@@ -239,10 +240,20 @@ void bars_draw(const struct bars *b, const struct surf *dst, const struct rect *
     fill(dst, r->x + 16 * u, g.mid, r->w - 32 * u, g.line, C_LINE);   /* the line */
     text(dst, r->x + 4 * u, g.mid - g.gap - TEXT_H(u), u, C_FAINT, "L");
     text(dst, r->x + 4 * u, g.mid + g.line + g.gap, u, C_FAINT, "R");
-    if (pool_threads() > 1) {
+    if (parallel && pool_threads() > 1) {
         pool_run(bar_job, &g, (BARS + 3) / 4);
         return;
     }
     for (uint32_t i = 0; i < (BARS + 3) / 4; i++)
         bar_job(i, 0, &g);
+}
+
+void bars_draw(const struct bars *b, const struct surf *dst, const struct rect *r)
+{
+    strip(b, dst, r, true);
+}
+
+void bars_draw_serial(const struct bars *b, const struct surf *dst, const struct rect *r)
+{
+    strip(b, dst, r, false);
 }

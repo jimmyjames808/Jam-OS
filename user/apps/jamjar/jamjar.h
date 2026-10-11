@@ -251,6 +251,9 @@ void bars_step(struct bars *b, const uint8_t left[BARS], const uint8_t right[BAR
 /* Into r of the screen: the left channel's bars up from the middle, the
  * right's down. */
 void bars_draw(const struct bars *b, const struct surf *dst, const struct rect *r);
+/* The same on the calling thread alone, never waking the pool (a frame
+ * that redraws only the strip: its work is less than waking the CPUs). */
+void bars_draw_serial(const struct bars *b, const struct surf *dst, const struct rect *r);
 /* Still moving (frames needed even with nothing heard). */
 bool bars_busy(const struct bars *b);
 /* The bass (the mean of bands 2-5, both channels) and the mean of every
@@ -327,6 +330,10 @@ unsigned decoder_test_starts(void);
 
 /* cover.c: covers read and decoded by a thread of its own, kept scaled
  * per album. */
+/* A number that changes whenever what cover_ready says for some album may
+ * have (a cover is ready, dropped, or given up on): a picture drawn at one
+ * value is stale at another. */
+uint32_t cover_gen(void);
 #define COVER_SMALL JAMCOVER_SMALL   /* every album's cover is kept this big ... */
 #define COVER_LARGE JAMCOVER_LARGE   /* ... and the few drawn bigger at this size too */
 enum { COVER_NONE, COVER_SMALL_KIND, COVER_LARGE_KIND };
@@ -383,6 +390,26 @@ void    roulette_draw(const struct roulette *r, const struct library *l, const s
 
 #define TOAST_NS  (2500 * NS_PER_MS)
 
+/* What draw.c keeps to redraw only what moved: the parts of the frame that
+ * move by themselves (the stereo bars and the progress bar with its times;
+ * in the big view the sunburst) are the dynamic rectangles dyn[], and
+ * under[i] is the picture below dyn[i] (the rest of the frame drawn
+ * without them). A frame whose rest is the same as the last one's (`key`
+ * says what it is drawn from) copies under[] back, draws the dynamic
+ * parts and damages those rectangles alone. */
+#define DYN_MAX 2
+struct redraw {
+    bool        off;            /* `whole` on the command line: always the whole window */
+    bool        valid;          /* under[] holds the picture below dyn[] for `key` and `mode` */
+    int         mode;
+    uint64_t    key;
+    unsigned    n;              /* rectangles in dyn[] */
+    struct rect dyn[DYN_MAX];
+    struct surf under[DYN_MAX]; /* dyn[i].w x dyn[i].h */
+    size_t      cap[DYN_MAX];   /* pixels allocated at under[i].px */
+    unsigned long part, whole;  /* frames that redrew only the rectangles, and those that drew it all */
+};
+
 struct app {
     struct library  lib;
     struct view     view;
@@ -415,6 +442,12 @@ struct app {
     int64_t         now_track;      /* the library's track playing, or -1 */
     struct track_names now;         /* its names, from the path */
     uint64_t        trace_at;       /* the last levels line */
+    struct redraw   rd;
+    /* What draw_frame changed in scr.s: all of it (dmg_all: gfx_present),
+     * or only dmg[0..ndmg) (gfx_present_rects). */
+    bool            dmg_all;
+    struct rect     dmg[DYN_MAX];
+    unsigned        ndmg;
 };
 
 /* input.c */
@@ -429,13 +462,22 @@ int32_t vol_at(const struct layout *lo, int x);
 /* A volume in centibels as "-12.5 dB" (the sign kept above -1 dB too). */
 void    vol_text(int32_t cb, char *out, size_t cap);
 
-/* draw.c: the frame for time t into scr.s. */
+/* draw.c: the frame for time t into scr.s, whole or only what moved since
+ * the last (a->dmg_all, a->dmg: what to present). */
 void draw_frame(struct app *a, uint64_t t);
+/* Forget what the last frame left (a new size): the next one is whole. */
+void draw_forget(struct app *a);
 /* panels.c and nowplaying.c: the parts of the frame. */
 void draw_top(struct app *a);
 void draw_library(struct app *a);
 void draw_help(const struct app *a);
-void draw_now(struct app *a, uint64_t t);
+/* The card without the progress bar, which moves by itself: draw_progress
+ * draws it (in progress_area()) for time t. */
+void draw_now(struct app *a);
+void draw_progress(const struct app *a, uint64_t t);
+struct rect progress_area(const struct layout *lo);
+/* A toast is on the bar now. */
+bool toast_shown(const struct app *a);
 /* The elapsed time now, from the snapshot and the time since it. */
 uint64_t now_elapsed(const struct app *a, uint64_t t);
 

@@ -55,6 +55,7 @@ static struct {
     uint32_t     *large;             /* LARGE_SLOTS images, COVER_LARGE squared each */
     int16_t       small_of[SMALL_SLOTS], large_of[LARGE_SLOTS];   /* lock: the entry, -1 */
     uint32_t      seq;               /* lock */
+    uint32_t      gen;               /* lock (read without): counts what cover_ready may say differently */
     uint64_t      draws;             /* lock */
     handle_t      wake;
     bool          trace;
@@ -130,6 +131,11 @@ int cover_ready(uint64_t hash, const char *path, int size, bool low)
     if (wake && C.wake)
         (void)jam_event_signal(C.wake, 0, SIG_SIGNALED);
     return kind;
+}
+
+uint32_t cover_gen(void)
+{
+    return __atomic_load_n(&C.gen, __ATOMIC_ACQUIRE);
 }
 
 /* ---- drawing a kept image ----------------------------------------------------------- */
@@ -340,6 +346,7 @@ static void store(int i, bool large, int done)
     bool ok = done == DONE_OK;
     uint8_t failed = done == DONE_LATER ? ST_WANTED : ST_NONE;
     lock();
+    __atomic_add_fetch(&C.gen, 1, __ATOMIC_RELEASE);   /* what is ready changes (or an image is dropped) */
     struct entry *e = &C.tab[i];
     e->retried = done == DONE_LATER;
     if (done == DONE_LATER) {   /* behind what is asked for meanwhile, and not before then */

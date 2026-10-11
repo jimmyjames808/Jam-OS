@@ -30,6 +30,11 @@ static void search_box(const struct app *a)
         fill(&scr.s, end + u, ty, 2 * u, TEXT_H(u), C_GOLD);   /* the caret */
 }
 
+bool toast_shown(const struct app *a)
+{
+    return a->toast[0] && now() - a->toast_at < TOAST_NS;
+}
+
 /* The right of the bar: a toast, or the library's and the timer's state. */
 static void status_line(const struct app *a)
 {
@@ -37,7 +42,7 @@ static void status_line(const struct app *a)
     int u = lo->u, y = lo->status.y + (lo->status.h - TEXT_H(u)) / 2;
     int right = lo->status.x + lo->status.w;
     char buf[160];
-    if (a->toast[0] && now() - a->toast_at < TOAST_NS) {
+    if (toast_shown(a)) {
         int w = text_width(u, a->toast);
         text(&scr.s, right - w, y, u, C_GOLD, a->toast);
         return;

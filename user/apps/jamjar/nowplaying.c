@@ -67,9 +67,21 @@ static void buttons(const struct app *a)
     }
 }
 
-/* ---- the bars ------------------------------------------------------------------------ */
+/* ---- the progress bar ---------------------------------------------------------------- */
 
-static void progress(const struct app *a, uint64_t t)
+/* The bar and the two times under it move by themselves (draw.c draws them
+ * apart from the rest of the card and again as the clock moves): the box
+ * round them, with the knob (7 u across, round the bar's end) and the
+ * text's height. */
+struct rect progress_area(const struct layout *lo)
+{
+    const struct rect *r = &lo->progress;
+    int u = lo->u, pad = 8 * u;
+    int y1 = r->y + r->h + 8 * u + TEXT_H(u) + u;
+    return (struct rect){ r->x - pad, r->y - pad, r->w + 2 * pad, y1 - (r->y - pad) };
+}
+
+void draw_progress(const struct app *a, uint64_t t)
 {
     const struct layout *lo = &a->lo;
     const struct rect *r = &lo->progress;
@@ -248,7 +260,7 @@ static void info(const struct app *a)
                 "space pause   n next   p back   / search   r roulette   ? keys");
 }
 
-void draw_now(struct app *a, uint64_t t)
+void draw_now(struct app *a)
 {
     const struct layout *lo = &a->lo;
     int u = lo->u;
@@ -263,7 +275,6 @@ void draw_now(struct app *a, uint64_t t)
         art_mark(&scr.s, ar->x + ar->w / 5, ar->y + ar->h / 5, ar->w * 3 / 5);
     }
     names(a);
-    progress(a, t);
     buttons(a);
     volume(a);
     order_pill(a);
