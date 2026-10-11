@@ -4,9 +4,9 @@
  * (tools/extfix/: how, in make.sh; the images gzipped, unpacked by make
  * into build/extfix).
  *
- *     extcheck <fixtures dir> <images dir> [--fuzz N] [--seed S]
+ *     extcheck <fixtures dir> <images dir> [--fuzz N] [--seed S] [--cut-images DIR]
  *
- * Five parts, each failing the run (exit 1, a line saying what) at the
+ * Six parts, each failing the run (exit 1, a line saying what) at the
  * first mistake:
  *   - the CRCs against their standard check values;
  *   - each fixture against its listing (<name>.list, made by
@@ -30,7 +30,10 @@
  *   - the fuzz pass (extmutate.c): N runs (default 3000) of mutated
  *     images, from --seed. A run neither crashes (ASan, UBSan), reads
  *     outside the image, reads without end, nor returns with a buffer
- *     pinned. */
+ *     pinned;
+ *   - the journal (tools/extjnl.c, on tools/extcut.c's cut device): storms
+ *     of transactions cut after every block they write, each recovered
+ *     whole; the journal's rules one at a time. */
 #include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -38,6 +41,7 @@
 #include <string.h>
 #include <jam/sha256.h>
 #include "extcheck.h"
+#include "extjnl.h"
 
 #define FUZZ_DEFAULT 3000
 #define PATH_MAX_    4096
@@ -572,13 +576,17 @@ static void check_crcs(void)
 int main(int argc, char **argv)
 {
     unsigned nfuzz = FUZZ_DEFAULT;
+    const char *cut_images = NULL;
     if (argc < 3)
-        fail("usage: extcheck <fixtures dir> <images dir> [--fuzz N] [--seed S]");
+        fail("usage: extcheck <fixtures dir> <images dir> [--fuzz N] [--seed S] "
+             "[--cut-images DIR]");
     for (int i = 3; i + 1 < argc; i += 2) {
         if (!strcmp(argv[i], "--fuzz"))
             nfuzz = (unsigned)strtoul(argv[i + 1], NULL, 0);
         else if (!strcmp(argv[i], "--seed"))
             rng = strtoull(argv[i + 1], NULL, 0) | 1;
+        else if (!strcmp(argv[i], "--cut-images"))
+            cut_images = argv[i + 1];
         else
             fail("unknown option %s", argv[i]);
     }
@@ -595,7 +603,8 @@ int main(int argc, char **argv)
     check_features(&imgs[0]);
     for (unsigned i = 0; i < N; i++)
         fuzz(&imgs[i], nfuzz / N + (i < nfuzz % N));
-    printf("extcheck: %u fixtures, broken checksums, the feature table, %u fuzzed images: ok\n",
-           (unsigned)N, nfuzz);
+    check_journal(imgs, argv[1], cut_images);
+    printf("extcheck: %u fixtures, broken checksums, the feature table, %u fuzzed images, "
+           "the journal: ok\n", (unsigned)N, nfuzz);
     return 0;
 }
