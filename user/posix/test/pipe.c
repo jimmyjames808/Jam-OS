@@ -12,6 +12,11 @@
  *     O_NONBLOCK, pipe2's flags, a leftover read in pieces, writev as one
  *     message, FIONREAD, the errors (EBADF, ESPIPE, EINVAL);
  *   - socketpair: both ends both ways, a socket to fstat;
+ *   - a writer far ahead of its reader: 72 MiB in 64 KiB writes into a
+ *     pipe nobody reads yet (more than a queue of 1024 such messages, and
+ *     more than the root job's whole message budget) waits, never fails
+ *     or comes back short, and holds no more than the pipe's bound queued
+ *     while it waits;
  *   - the bench: bytes a second through a pipe between two threads, 4 KiB
  *     and 64 KiB writes (BENCH.md's line). */
 #include <stdio.h>
@@ -35,6 +40,9 @@
 #define WRITERS     4
 #define RECORDS     2000               /* each writer's PIPE_BUF records */
 #define BENCH_BYTES (256ull << 20)     /* each bench run */
+#define AHEAD_BYTES (72ull << 20)      /* the writer ahead: past a queue of 1024 64 KiB messages */
+#define AHEAD_HELD  (2ull << 20)       /* what it may hold queued: the pipe's 1 MiB bound, a
+                                        * message past it and the headers, with room */
 
 static uint8_t *pattern;               /* 2 * PAT_PERIOD bytes: byte i is pattern[i % PAT_PERIOD] */
 
@@ -129,6 +137,44 @@ static void bench(void)
         printf("posixtest: bench: pipe %zu KiB writes: %llu MB/s\n", sizes[i] / 1024,
                (unsigned long long)(BENCH_BYTES * 1000 / (ns ? ns : 1)));
     }
+}
+
+/* ---- a writer far ahead of its reader ------------------------------------ */
+
+/* Message bytes our job holds beyond `base`, once the writer stopped
+ * adding to them (it waits, or it failed): sampled every 50 ms until two
+ * looks agree, 10 s at most. */
+static uint64_t held_when_still(uint64_t base)
+{
+    uint64_t last = ~0ull, now = 0;
+    for (int i = 0; i < 200; i++) {
+        struct timespec nap = { 0, 50 * 1000 * 1000 };
+        nanosleep(&nap, NULL);
+        uint64_t used = pt_job_msg_bytes();
+        now = used > base ? used - base : 0;
+        if (now == last && now)
+            break;
+        last = now;
+    }
+    return now;
+}
+
+static void check_writer_ahead(void)
+{
+    int p[2];
+    CHECK(pipe(p) == 0);
+    struct big_run r = { .fd = p[1], .bytes = AHEAD_BYTES, .fixed = 65536 };
+    uint64_t base = pt_job_msg_bytes();
+    pthread_t t;
+    CHECK(pthread_create(&t, NULL, big_writer, &r) == 0);
+    uint64_t held = held_when_still(base);
+    CHECK(read_all(p[0], true) == AHEAD_BYTES);
+    CHECK(pthread_join(t, NULL) == 0);
+    CHECK(r.ok);   /* every write whole: it waited for the reader */
+    CHECK(held <= AHEAD_HELD);
+    printf("posixtest: pipe: a writer ahead held %llu KiB queued\n",
+           (unsigned long long)(held >> 10));
+    close(p[0]);
 }
 
 /* ---- PIPE_BUF atomicity -------------------------------------------------- */
@@ -336,6 +382,7 @@ void pt_pipe(char **argv __attribute__((unused)))
     check_eof();
     check_atomic();
     check_socketpair();
+    check_writer_ahead();
     check_gib();
     bench();
     free(pattern);

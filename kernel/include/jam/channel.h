@@ -9,8 +9,10 @@
  * Signals on an endpoint:
  *   SIG_READABLE     its queue is not empty
  *   SIG_WRITABLE     the peer still exists and its queue has room (below
- *                    CHANNEL_MAX_QUEUED): after ERR_SHOULD_WAIT from a
- *                    write, wait for this (or SIG_PEER_CLOSED)
+ *                    CHANNEL_MAX_QUEUED, and on a peer marked
+ *                    CHANNEL_BYTE_BOUND below CHANNEL_BOUND_BYTES of
+ *                    bytes): after ERR_SHOULD_WAIT from a write, wait for
+ *                    this (or SIG_PEER_CLOSED)
  *   SIG_PEER_CLOSED  the peer's last handle went away, or it was destroyed
  *
  * An endpoint "closes" when its handle count drops to 0 or its last
@@ -82,7 +84,8 @@ status_t channel_create(struct channel **a, struct channel **b);
  * Sending this channel's own endpoint or its peer, or any endpoint whose own
  * queue already holds an endpoint, is ERR_NOT_SUPPORTED: each could close a
  * reference cycle nobody can reach. Peer gone: ERR_PEER_CLOSED. Peer's
- * queue at CHANNEL_MAX_QUEUED: ERR_SHOULD_WAIT. A message whose txid matches
+ * queue full (CHANNEL_MAX_QUEUED messages, or a bounded peer's
+ * CHANNEL_BOUND_BYTES): ERR_SHOULD_WAIT. A message whose txid matches
  * a channel_call waiting on the peer goes to that caller instead of the
  * queue (and does not count against the limit). */
 status_t channel_write(struct channel *ch, const void *bytes, uint32_t nbytes,
@@ -173,13 +176,16 @@ struct chan_read {
  * (as channel_read_into). */
 status_t channel_read_wait(struct channel *ch, struct chan_read *r, uint64_t deadline_ns);
 
-/* Set flags on ch (CHANNEL_NO_HANDLES, <jam/abi.h>; one-way: a flag never
- * comes off): from then on a message carrying handles to ch is refused
- * with ERR_NOT_SUPPORTED, as the cycle rule refuses one (the khandles
- * untouched). ERR_BAD_STATE if one is queued on ch already, or if ch has
- * more than one handle (only its sole holder may mark it: a shared end's
- * mark would stop the replies of every other holder); ERR_INVALID_ARGS
- * for an unknown bit. */
+/* Set flags on ch (<jam/abi.h>; one-way: a flag never comes off).
+ * CHANNEL_NO_HANDLES: from then on a message carrying handles to ch is
+ * refused with ERR_NOT_SUPPORTED, as the cycle rule refuses one (the
+ * khandles untouched); ERR_BAD_STATE if one is queued on ch already.
+ * CHANNEL_BYTE_BOUND: ch's queue is full at CHANNEL_BOUND_BYTES of bytes
+ * too (chan_full_locked), and the writer stops being writable at once if
+ * it is past that already. ERR_BAD_STATE if ch has more than one handle
+ * (only its sole holder may mark it: a shared end's mark would stop or
+ * slow the replies of every other holder); ERR_INVALID_ARGS for an
+ * unknown bit. Both bits at once: both or, on an error, neither. */
 status_t channel_set_flags(struct channel *ch, uint32_t flags);
 
 /* Drop every message ch wrote that waits unread at its peer (the peer's

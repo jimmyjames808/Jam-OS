@@ -327,6 +327,7 @@ static void channel_close(struct channel *ch)
         list_init(&ch->queue);
     }
     __atomic_store_n(&ch->nqueued, 0, __ATOMIC_RELAXED);
+    ch->qbytes = 0;
     wake_callers_locked(ch);
     kobject_signal_locked(&ch->base, SIG_READABLE | SIG_WRITABLE, 0);
     spin_unlock_irqrestore(&ch->base.lock, f);
@@ -399,7 +400,7 @@ static void refresh_writable(struct channel *ch)
     struct channel *writer = pair->ep[!ch->side];
     if (writer && pair->ep[ch->side] == ch) {
         spin_lock(&ch->base.lock);
-        bool full = chan_nqueued(ch) >= CHANNEL_MAX_QUEUED;
+        bool full = chan_full_locked(ch);
         spin_unlock(&ch->base.lock);
         spin_lock(&writer->base.lock);
         kobject_signal_locked(&writer->base, full ? SIG_WRITABLE : 0, full ? 0 : SIG_WRITABLE);
@@ -422,9 +423,10 @@ static status_t take_first_locked(struct channel *ch, uint32_t bytes_cap, uint32
     *nh = m->nhandles;
     if (m->nbytes > bytes_cap || m->nhandles > handles_cap)
         return ERR_BUFFER_TOO_SMALL;
+    *was_full = chan_full_locked(ch);
     list_del(&m->node);
-    *was_full = chan_nqueued(ch) == CHANNEL_MAX_QUEUED;
     COUNTER_SUB(&ch->nqueued, 1);
+    ch->qbytes -= m->nbytes;
     if (chan_nqueued(ch) == 0)
         kobject_signal_locked(&ch->base, SIG_READABLE, 0);
     *out = m;
@@ -549,14 +551,15 @@ status_t channel_read_wait(struct channel *ch, struct chan_read *r, uint64_t dea
 
 status_t channel_set_flags(struct channel *ch, uint32_t flags)
 {
-    if (flags & ~CHANNEL_NO_HANDLES)
+    if (flags & ~(CHANNEL_NO_HANDLES | CHANNEL_BYTE_BOUND))
         return ERR_INVALID_ARGS;
     if (!flags)
         return OK;
     /* Only the end's sole holder marks it: an end is shared (every
      * program's duplicate of a /svc end), the mark is the end's, not the
      * handle's, and never comes off, so a holder of one copy could
-     * otherwise stop every handle-carrying reply to all the others. A
+     * otherwise stop every handle-carrying reply to all the others (or,
+     * with the bound, make every writer to them wait at 1 MiB). A
      * second handle can only come from the holder's own (a duplicate or a
      * send), so a check without a lock is enough. */
     if (kobject_handles(&ch->base) > 1)
@@ -565,12 +568,17 @@ status_t channel_set_flags(struct channel *ch, uint32_t flags)
     /* Under our lock, as the writer's check (hand_over_locked): a message
      * with handles is either queued before this looks, or refused after. */
     uint64_t f = spin_lock_irqsave(&ch->base.lock);
-    for (struct list_node *n = ch->queue.next; n != &ch->queue && st == OK; n = n->next)
+    for (struct list_node *n = ch->queue.next;
+         (flags & CHANNEL_NO_HANDLES) && n != &ch->queue && st == OK; n = n->next)
         if (container_of(n, struct chan_msg, node)->nhandles)
             st = ERR_BAD_STATE;
-    if (st == OK)
+    if (st == OK && (flags & CHANNEL_NO_HANDLES))
         ch->no_handles = true;
+    if (st == OK && (flags & CHANNEL_BYTE_BOUND))
+        ch->bounded = true;
     spin_unlock_irqrestore(&ch->base.lock, f);
+    if (st == OK && (flags & CHANNEL_BYTE_BOUND))
+        refresh_writable(ch);   /* already past the bound: the writer waits */
     return st;
 }
 
@@ -595,6 +603,7 @@ int64_t channel_withdraw(struct channel *ch)
         }
         n = chan_nqueued(peer);
         __atomic_store_n(&peer->nqueued, 0, __ATOMIC_RELAXED);
+        peer->qbytes = 0;
         kobject_signal_locked(&peer->base, SIG_READABLE, 0);
         spin_unlock(&peer->base.lock);
         spin_lock(&ch->base.lock);   /* one endpoint lock at a time */

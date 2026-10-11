@@ -322,7 +322,9 @@ struct sys_public_info {
 /* channels --------------------------------------------------------------------
  * A message carries at most CHANNEL_MAX_BYTES bytes and CHANNEL_MAX_HANDLES
  * handles (more: ERR_OUT_OF_RANGE). At most CHANNEL_MAX_QUEUED messages wait
- * on one end; a write beyond that fails with ERR_SHOULD_WAIT. A queued
+ * on one end (and on one marked CHANNEL_BYTE_BOUND, about
+ * CHANNEL_BOUND_BYTES of bytes); a write beyond that fails with
+ * ERR_SHOULD_WAIT. A queued
  * message is charged to its writer's job's JOB_LIMIT_MSG_BYTES: its size,
  * plus JOB_OBJECT_BYTES for each handle it carries (the object it may be
  * all that keeps alive), until it is read or dropped with the reading end,
@@ -339,8 +341,16 @@ struct sys_public_info {
  * keeps this bit clear, so no reply to them is ever taken for a call's. */
 #define CHANNEL_TXID_KERNEL 0x80000000u
 
-/* channel_set_flags: the end receives no handles (abi/syscalls.def). */
+/* channel_set_flags (abi/syscalls.def): the end receives no handles; the
+ * end queues at most about CHANNEL_BOUND_BYTES of message bytes (a write
+ * that finds that much queued is ERR_SHOULD_WAIT, so the queue holds less
+ * than CHANNEL_BOUND_BYTES + CHANNEL_MAX_BYTES). A pipe's read end is
+ * bounded: 1024 messages of 64 KiB would be 64 MiB, the root job's whole
+ * message budget, so a pipe whose reader lags would fail its writer (and
+ * every other writer in the system) instead of making it wait. */
 #define CHANNEL_NO_HANDLES  (1u << 0)
+#define CHANNEL_BYTE_BOUND  (1u << 1)
+#define CHANNEL_BOUND_BYTES (1u << 20)
 
 /* argument structs -----------------------------------------------------------
  * Calls with more than six arguments take a pointer to one of these. The

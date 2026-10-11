@@ -83,10 +83,12 @@ struct channel {
                                       * peer reads it without (hand_over_locked's
                                       * guess): every access is atomic (chan_nqueued,
                                       * COUNTER_ADD / COUNTER_SUB) */
+    uint64_t          qbytes;        /* the queued messages' bytes; the lock */
     struct list_node  callers;       /* chan_waiter */
     bool              closed;        /* we left the pair */
     bool              peer_closed;   /* the peer left the pair */
     bool              no_handles;    /* CHANNEL_NO_HANDLES: refuses messages with handles */
+    bool              bounded;       /* CHANNEL_BYTE_BOUND: full at CHANNEL_BOUND_BYTES queued */
     /* The txids of the last CHAN_GAVE_UP channel_calls on this end that
      * ended without their reply (a deadline, a cancel): a reply that comes
      * for one later is dropped, not queued (M12's D5). A ring, oldest
@@ -108,6 +110,17 @@ static inline struct chan_msg *chan_handed(const struct chan_waiter *w)
 static inline uint32_t chan_nqueued(const struct channel *ch)
 {
     return __atomic_load_n(&ch->nqueued, __ATOMIC_RELAXED);
+}
+
+/* ch's lock held: its queue takes no more messages: CHANNEL_MAX_QUEUED of
+ * them, or on a bounded end CHANNEL_BOUND_BYTES of bytes. A message is
+ * taken whenever the queue is below both, so any message can get in once
+ * the reader has made room, and the bytes stay under CHANNEL_BOUND_BYTES
+ * + CHANNEL_MAX_BYTES. */
+static inline bool chan_full_locked(const struct channel *ch)
+{
+    return chan_nqueued(ch) >= CHANNEL_MAX_QUEUED ||
+           (ch->bounded && ch->qbytes >= CHANNEL_BOUND_BYTES);
 }
 
 /* channel.c: messages. */

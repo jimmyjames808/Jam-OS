@@ -218,11 +218,12 @@ static status_t hand_over_locked(struct channel *ch, struct channel *peer, struc
         *must_queue = true;
         return OK;
     }
-    if (chan_nqueued(peer) >= CHANNEL_MAX_QUEUED)
+    if (chan_full_locked(peer))
         return ERR_SHOULD_WAIT;
     list_add_tail(&peer->queue, &m->node);
     COUNTER_ADD(&peer->nqueued, 1);
-    *filled = chan_nqueued(peer) == CHANNEL_MAX_QUEUED;
+    peer->qbytes += m->nbytes;
+    *filled = chan_full_locked(peer);
     if (w)
         wake_readers_locked(peer);   /* it didn't fit the reader: it reads it from the queue */
     kobject_signal_locked(&peer->base, 0, SIG_READABLE);

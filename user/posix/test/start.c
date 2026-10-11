@@ -41,6 +41,12 @@ uint64_t pt_job_pages(void)
     return jam_job_get_info(startup_handle(SR_JOB), &ji) == OK ? ji.used[JOB_LIMIT_PAGES] : 0;
 }
 
+uint64_t pt_job_msg_bytes(void)
+{
+    struct job_info ji;
+    return jam_job_get_info(startup_handle(SR_JOB), &ji) == OK ? ji.used[JOB_LIMIT_MSG_BYTES] : 0;
+}
+
 int pt_child_start(int argc, char **argv)
 {
     char big[LONG_ARG + 1];
