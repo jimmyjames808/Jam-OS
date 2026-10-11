@@ -23,6 +23,7 @@ struct spawnfd {
     /* What spawnfd_export made (one each per descriptor sent). */
     struct posixfds_desc *desc;
     struct fd_given     *given;
+    const struct fd_desc **from;                 /* the description each was made from */
     unsigned            nexported;
 };
 
