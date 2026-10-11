@@ -24,7 +24,7 @@ struct mt_entry {
 /* A private read-only mapping straight on a file's own pages (mem.c's
  * file part): an mprotect that adds write puts a copy-on-write child in
  * its place first, since the file's VMO is never writable. */
-#define MT_PAGER_PRIVATE (1u << 0)
+#define MT_PAGER_PRIVATE (1u << 2)
 
 /* The table: entries[0 .. count). */
 struct mt_entry *mt_entries(void);
