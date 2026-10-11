@@ -78,6 +78,11 @@ bool t_nvme_storage(void);
 bool t_nvme_block(void);
 bool t_nvme_inflight(void);
 bool t_nvme_fence(void);
+bool t_nvmew_refuse(void);
+bool t_nvmew_prepare(void);
+bool t_nvmew_check(void);
+bool t_nvmew_write(void);
+bool t_nvmero_refuse(void);
 
 /* disks.c: devmgr's disks and mounts against the mock usb-storage
  * (diskmock.c), with the fat service on its partitions. */
@@ -207,6 +212,9 @@ bool t_idl_txid_mixing(void);
 
 /* main.c: the test running, and helpers the test files share. */
 extern const char *utest_cur;
+/* "utest only <prefix>"'s prefix (NULL: every test runs): the tests that
+ * write drives run only when named (nvmewrite.c). */
+extern const char *utest_only;
 handle_t own_job(void);
 status_t info_of(handle_t job, struct job_info *ji);
 status_t new_job(handle_t *out);

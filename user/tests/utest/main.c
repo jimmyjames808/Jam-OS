@@ -44,6 +44,7 @@ JAM_WANTS("svc devmgr\n"
           "right sysinfo\n");
 
 const char *utest_cur;   /* the test running */
+const char *utest_only;  /* "utest only <prefix>": the prefix */
 
 /* ---- helpers ------------------------------------------------------------------ */
 
@@ -669,6 +670,11 @@ static const struct {
     { "nvme_block", t_nvme_block },
     { "nvme_inflight", t_nvme_inflight },
     { "nvme_fence", t_nvme_fence },
+    { "nvmew_refuse", t_nvmew_refuse },
+    { "nvmew_prepare", t_nvmew_prepare },
+    { "nvmew_check", t_nvmew_check },
+    { "nvmew_write", t_nvmew_write },
+    { "nvmero_refuse", t_nvmero_refuse },
     { "disk_mounts", t_disk_mounts },
     { "disk_not_boot", t_disk_not_boot },
     { "disk_other", t_disk_other },
@@ -1192,6 +1198,7 @@ int main(int argc, char **argv)
     /* "utest only <prefix>": the tests whose name starts with prefix (a
      * quick run while working on one area; the regression runs them all). */
     const char *only = argc == 3 && !strcmp(argv[1], "only") ? argv[2] : NULL;
+    utest_only = only;
     if (argc >= 2 && !only)
         return child_main(argc, argv);
     unsigned n = 0, passed = 0, nfailed = 0;
