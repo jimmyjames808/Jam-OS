@@ -122,6 +122,7 @@ struct fd_desc *fd_get(long fd)
 
 long fd_alloc(long min)
 {
+    start_once();   /* the program's first descriptor call must not take 0 to 2 */
     if (!in_range(min))
         return -EINVAL;
     long r = -EMFILE;
