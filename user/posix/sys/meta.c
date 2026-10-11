@@ -11,13 +11,15 @@
  *     modes or owners), but on a read-only mount (EROFS) or to another
  *     owner (EPERM: only the one user exists, and it isn't root);
  *   - link, symlink and mknod are EPERM (Linux's vfat answer), readlink
- *     EINVAL (nothing is a link);
+ *     EINVAL (nothing in a mount is a link);
  *   - umask is kept (the hand-over's, else 022) and handed to children,
  *     and otherwise ignored;
  *   - sync and syncfs ask each mount to sync; fadvise is advice, taken
  *     and ignored; fallocate is EOPNOTSUPP.
  * Paths under /dev and /etc are kinds.h's: their stat is dev_stat and
- * etc_stat, and a change there is refused (path_libc_refuse). */
+ * etc_stat, and a change there is refused (path_libc_refuse). /proc's are
+ * procfs.c's, whose links are the only ones: readlink and lstat (stat
+ * with AT_SYMLINK_NOFOLLOW) answer there, stat follows. */
 #include <errno.h>
 #include <fcntl.h>
 #include <fs_idl.h>
@@ -73,6 +75,8 @@ static long stat_at(long dirfd, const char *pathname, long flags, struct path *p
         return lx_fstat(dirfd, (long)(uintptr_t)st, 0, 0, 0, 0);
     }
     long r = path_get(dirfd, pathname, p);
+    if (!r && (flags & AT_SYMLINK_NOFOLLOW) && path_libc(p) == LIBC_PROC)
+        return proc_stat(p, false, st);   /* /proc's links are the only links */
     return r ? r : stat_path(p, st);
 }
 
@@ -314,7 +318,11 @@ long lx_readlinkat(long dirfd, long pathname, long buf, long size, long e, long 
         return -EINVAL;
     struct path p;
     struct stat st;
-    long r = stat_at(dirfd, (const char *)(uintptr_t)pathname, 0, &p, &st);
+    long r = path_get(dirfd, (const char *)(uintptr_t)pathname, &p);
+    if (!r && path_libc(&p) == LIBC_PROC)
+        return proc_readlink(&p, (char *)(uintptr_t)buf, (size_t)size);
+    if (!r)
+        r = stat_path(&p, &st);
     return r ? r : -EINVAL;   /* there, and not a link */
 }
 
