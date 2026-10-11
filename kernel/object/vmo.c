@@ -406,6 +406,25 @@ static uint64_t *slot_locked(struct vmo *v, uint64_t idx, bool create)
     return &(*leaf)[idx % LEAF_PAGES];
 }
 
+/* With the lock held: page idx's mid table, or NULL if it has none; then
+ * *next is the first page after idx that may have one. */
+static uint64_t **mid_find_locked(const struct vmo *v, uint64_t idx, uint64_t *next)
+{
+    uint64_t **mid = v->root[idx / MID_PAGES];
+    if (!mid)
+        *next = ALIGN_UP(idx + 1, MID_PAGES);
+    return mid;
+}
+
+/* With the lock held: where page idx's leaf table pointer lives, or NULL
+ * if its mid table doesn't exist. */
+static uint64_t **leaf_ref_locked(const struct vmo *v, uint64_t idx)
+{
+    uint64_t next;
+    uint64_t **mid = mid_find_locked(v, idx, &next);
+    return mid ? &mid[(idx / LEAF_PAGES) % TBL_ENTRIES] : NULL;
+}
+
 /* With the lock held: is page idx charged to the job on its own while
  * committed? Every page but those of a pager child's window, which were
  * paid for at creation. */
@@ -459,6 +478,31 @@ static void drop_leaf_from_locked(struct vmo *v, uint64_t *leaf, uint64_t base, 
     }
 }
 
+/* drop_from_locked's work on one mid table, *ref, whose first entry is page
+ * `base`: drop its pages at index >= first, and free its tables that lie
+ * wholly past first (itself too: *ref = NULL). */
+static void drop_mid_from_locked(struct vmo *v, uint64_t ***ref, uint64_t base, uint64_t first)
+{
+    uint64_t **mid = *ref;
+    if (!mid || base + MID_PAGES <= first)
+        return;
+    for (uint64_t m = 0; m < TBL_ENTRIES; m++) {
+        uint64_t *leaf = mid[m];
+        uint64_t lbase = base + m * LEAF_PAGES;
+        if (!leaf || lbase + LEAF_PAGES <= first)
+            continue;
+        drop_leaf_from_locked(v, leaf, lbase, first);
+        if (lbase >= first) {
+            table_free_locked(v, leaf);
+            mid[m] = NULL;
+        }
+    }
+    if (base >= first) {
+        table_free_locked(v, mid);
+        *ref = NULL;
+    }
+}
+
 /* Drop every page at index >= first, and free the table pages that lie
  * wholly past it, with no TLB care: for vmo_destroy (no references, so no
  * mappings and no lock needed), the tail of a shrink (which has already
@@ -466,26 +510,8 @@ static void drop_leaf_from_locked(struct vmo *v, uint64_t *leaf, uint64_t base, 
  * left to free) and vmo_seal_verified (the lock held and no mapping). */
 static void drop_from_locked(struct vmo *v, uint64_t first)
 {
-    for (uint64_t r = first / MID_PAGES; r < ROOT_ENTRIES; r++) {
-        uint64_t **mid = v->root[r];
-        if (!mid)
-            continue;
-        for (uint64_t m = 0; m < TBL_ENTRIES; m++) {
-            uint64_t *leaf = mid[m];
-            uint64_t base = r * MID_PAGES + m * LEAF_PAGES;
-            if (!leaf || base + LEAF_PAGES <= first)
-                continue;
-            drop_leaf_from_locked(v, leaf, base, first);
-            if (base >= first) {
-                table_free_locked(v, leaf);
-                mid[m] = NULL;
-            }
-        }
-        if (r * MID_PAGES >= first) {
-            table_free_locked(v, mid);
-            v->root[r] = NULL;
-        }
-    }
+    for (uint64_t r = 0; r < ROOT_ENTRIES; r++)
+        drop_mid_from_locked(v, &v->root[r], r * MID_PAGES, first);
 }
 
 static void zap_umaps_locked(const struct vmo *v, uint64_t first, uint64_t end,
@@ -1028,11 +1054,10 @@ static void zap_umaps_locked(const struct vmo *v, uint64_t first, uint64_t end,
  * at a shared page when g's array is full: finish g first). */
 static uint64_t take_batch_locked(struct vmo *v, uint64_t idx, uint64_t end, struct tlb_gather *g)
 {
-    uint64_t **mid = v->root[idx / MID_PAGES];
-    if (!mid) {
-        uint64_t next = ALIGN_UP(idx + 1, MID_PAGES);
+    uint64_t next;
+    uint64_t **mid = mid_find_locked(v, idx, &next);
+    if (!mid)
         return next < end ? next : end;
-    }
     uint64_t stop = ALIGN_UP(idx + 1, LEAF_PAGES);
     if (stop > end)
         stop = end;
@@ -1093,10 +1118,10 @@ static void shrink_pages(struct vmo *v, uint64_t first, uint64_t old_end)
          * just went (not if the batch stopped early). */
         uint64_t lbase = ALIGN_DOWN(idx, LEAF_PAGES);
         uint64_t lend = lbase + LEAF_PAGES < old_end ? lbase + LEAF_PAGES : old_end;
-        uint64_t **mid = v->root[idx / MID_PAGES];
-        if (lbase >= first && next >= lend && mid && mid[(idx / LEAF_PAGES) % TBL_ENTRIES]) {
-            table_free_locked(v, mid[(idx / LEAF_PAGES) % TBL_ENTRIES]);
-            mid[(idx / LEAF_PAGES) % TBL_ENTRIES] = NULL;
+        uint64_t **leaf = leaf_ref_locked(v, idx);
+        if (lbase >= first && next >= lend && leaf && *leaf) {
+            table_free_locked(v, *leaf);
+            *leaf = NULL;
         }
         vunlock(v, f);
         gather_maybe_finish(&g);
@@ -1498,8 +1523,8 @@ static void wrprotect_umaps_locked(const struct vmo *v, uint64_t first, uint64_t
 static status_t share_leaf_locked(struct vmo *p, struct vmo *c, uint64_t idx, uint64_t stop,
                                   uint64_t offp, uint64_t *n)
 {
-    uint64_t **mid = p->root[idx / MID_PAGES];
-    uint64_t *leaf = mid ? mid[(idx / LEAF_PAGES) % TBL_ENTRIES] : NULL;
+    uint64_t **ref = leaf_ref_locked(p, idx);
+    uint64_t *leaf = ref ? *ref : NULL;
     *n = 0;
     if (!leaf)
         return OK;
@@ -1544,11 +1569,11 @@ static status_t share_pages(struct vmo *p, struct vmo *c, uint64_t offp)
     status_t st = OK;
     for (uint64_t idx = offp; idx < end && st == OK;) {
         uint64_t stop = ALIGN_UP(idx + 1, LEAF_PAGES) < end ? ALIGN_UP(idx + 1, LEAF_PAGES) : end;
-        uint64_t n = 0;
+        uint64_t n = 0, next;
         f = vlock(p);
         spin_lock_nested(&c->base.lock, 1);   /* parent, then the new child: nobody else has it */
-        if (!p->root[idx / MID_PAGES])
-            stop = ALIGN_UP(idx + 1, MID_PAGES) < end ? ALIGN_UP(idx + 1, MID_PAGES) : end;
+        if (!mid_find_locked(p, idx, &next))
+            stop = next < end ? next : end;
         else if (ranges_overlap_locked(p, idx, stop))
             st = ERR_BAD_STATE;   /* a device or the kernel may write these behind the sharing */
         else
