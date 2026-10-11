@@ -7,6 +7,7 @@
  * extnames.c and extbig.c. */
 #pragma once
 
+#include <ext_alloc.h>
 #include <ext_mkfs.h>
 #include <ext_names.h>
 #include "extcheck.h"

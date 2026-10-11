@@ -413,7 +413,42 @@ static void orphans(void)
     vol_free(&v);
 }
 
-/* ---- an indexed directory ---------------------------------------------------------------- */
+/* An orphan holding more extents than one drop frees: dropped over several
+ * transactions, on the list until the last. */
+static void orphan_big(void)
+{
+    where = "a big orphan dropped over several transactions";
+    struct vol v;
+    small_vol(&v, 4096, 16u << 20);
+    struct ext_inode in;
+    expect(make(&v, "big", EXT_S_IFREG | 0644, &in), OK, "big");
+    static const uint8_t block[4096] = { 1 };
+    for (uint32_t i = 0; i < 1200; i++) {   /* every other block: an extent each */
+        size_t n;
+        expect(ext_write(&v.fs, &in, (uint64_t)i * 2 * 4096, block, 4096, &n), OK, "write");
+        if (i % 100 == 99)
+            vol_sync(&v);
+    }
+    uint32_t o;
+    expect(rm(&v, "big", 0, &o), OK, "unlink");
+    vol_remount(&v, NULL);
+    struct ext_time t = now();
+    unsigned calls = 1;
+    status_t st;
+    while ((st = ext_orphan_drop(&v.fs, o, &t)) == ERR_SHOULD_WAIT) {
+        if (list_len(&v) != 1)
+            fail("a part-dropped orphan left the list");
+        vol_remount(&v, NULL);   /* a commit between the steps, and a cut */
+        calls++;
+    }
+    expect(st, OK, "the last drop");
+    if (calls < 2)
+        fail("1200 extents dropped in one call");
+    vol_remount(&v, NULL);
+    vol_free(&v);
+}
+
+/* ---- an indexed directory---------------------------------------------------------------- */
 
 static void indexed(const struct img *fx)
 {
@@ -524,6 +559,7 @@ void check_names(struct img *fixtures, unsigned n, unsigned storms)
     symlinks();
     renames();
     orphans();
+    orphan_big();
     discard();
     room_hint();
     indexed(linux1k);
