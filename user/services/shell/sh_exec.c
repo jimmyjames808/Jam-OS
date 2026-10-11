@@ -78,6 +78,13 @@ static int exec_argv(int argc, char **argv, bool bg)
         sh_tty("sh: %s is a shell command: < and > work for POSIX programs only\n", argv[0]);
         return 2;
     }
+    if (c && argc > 1 && !strchr(c->usage, ' ')) {
+        /* `version uptime free` runs version alone: say so rather than
+         * ignore the rest. */
+        sh_tty("%s: takes no arguments (one command a line, or separate them with ;)\n",
+               argv[0]);
+        return 2;
+    }
     if (!bg)
         return c ? c->fn(argc, argv) : exec_unknown(argc, argv, false);
     if (!c)
@@ -225,13 +232,14 @@ static bool stage_is_posix(const char *text)
 }
 
 /* "sh: pipe full ..." once for each buffer that overflowed, after the
- * stage that wrote it has ended. */
+ * stage that wrote it has ended: in the log (dmesg), not on the screen
+ * (`yes | head -3` overflows by design, and that is no news). */
 static void say_if_full(struct sh_buf *b)
 {
     if (!b->full)
         return;
     b->full = false;
-    sh_tty("sh: pipe full: output past %u MiB dropped\n", SH_PIPE_MAX >> 20);
+    printf("sh: pipe full: output past %u MiB dropped\n", SH_PIPE_MAX >> 20);
 }
 
 /* Stages a | b | c. The shell's own commands run in turn: each one's

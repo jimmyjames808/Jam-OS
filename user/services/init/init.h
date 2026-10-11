@@ -86,6 +86,11 @@ extern const char *init_nvmetest;
  * the log as it comes. Every other boot keeps it off every terminal's
  * screen (terms.c: the consoles' "nolog"). */
 extern bool init_verbose;
+/* The option word "runlines" (main.c; tools/qemu-test.sh gives it to every
+ * test boot): every shell init starts gets "runlines", so it says when each
+ * program starts and how it ended ("run: ... exited with code 0"), which the
+ * test scripts wait for. Without it those lines stay off the screen. */
+extern bool init_runlines;
 
 
 /* ---- mounts.c -------------------------------------------------------------------- */

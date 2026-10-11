@@ -80,6 +80,7 @@ const char *init_bootdisk;
 const char *init_vlan;
 bool init_splashhang;
 bool init_verbose;
+bool init_runlines;
 bool init_nospare;
 bool init_vtdtest;
 const char *init_nvmetest;
@@ -596,6 +597,7 @@ int main(int argc, char **argv)
         if (!strncmp(argv[i], "nvmetest=", 9))
             init_nvmetest = argv[i];
         init_verbose |= !strcmp(argv[i], "verbose");
+        init_runlines |= !strcmp(argv[i], "runlines");
     }
     /* The modes the kernel asks for (argv[1]) instead of init.cfg. A plain
      * boot: the console, devmgr (connected to it), serial input and the

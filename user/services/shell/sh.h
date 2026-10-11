@@ -453,6 +453,11 @@ extern unsigned sh_term_no;
 /* init's argument "session": this shell is a session's (/svc/session,
  * user/services/init/sessions.c), on a connection console; `exit` ends it,
  * and with it the session. */
+/* init's "runlines" (a test boot's): say each program's start and end, the
+ * "run: ..." lines the test scripts wait for. Off on the owner's boots: a
+ * program's output alone, and only a kill by a signal other than Ctrl+C's
+ * SIGINT or a pipe's SIGPIPE, or a job kill, is said. */
+extern bool sh_run_lines;
 extern bool sh_session;
 
 /* ---- the commands (cmd/<name>.c) --------------------------------------------------- */

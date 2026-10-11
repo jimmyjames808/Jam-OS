@@ -267,7 +267,7 @@ static status_t start_shell(unsigned k)
     char term[8], run[4 + TERM_CMD_MAX], note[NOTE_ARG_MAX];
     snprintf(term, sizeof(term), "term=%u", k + 1);
     snprintf(run, sizeof(run), "run=%s", terms[k].cmd);
-    const char *argv[6] = { svcs[TERM_SHELL(k)].path };
+    const char *argv[7] = { svcs[TERM_SHELL(k)].path };
     int argc = 1;
     if (comp_on())
         argv[argc++] = term;
@@ -282,6 +282,8 @@ static status_t start_shell(unsigned k)
         argv[argc++] = run;
     if (terms[k].crashed)
         argv[argc++] = "restarted";   /* it says so: its history is kept (sh_history.c) */
+    if (init_runlines)
+        argv[argc++] = "runlines";
     st = svc_start(TERM_SHELL(k), argc, argv, y, n);
     if (st == OK)
         terms[k].crashed = false;

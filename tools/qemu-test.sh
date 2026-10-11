@@ -97,6 +97,10 @@ out=$1 name=$2
 shift 2
 cmdline="$*${QEMU_WORDS:+ $QEMU_WORDS}"
 [ "${QEMU_SPLASH:-0}" = 1 ] || cmdline="$cmdline nosplash"
+# runlines: every shell says "run: ... started" and "... exited with code N"
+# (init passes it on), the lines the test scripts wait for; the owner's boots
+# leave them off the screen.
+cmdline="$cmdline runlines"
 net_vlan=${QEMU_NET_VLAN:-21}
 if [ -n "${QEMU_NET:-}" ] && [ "${QEMU_NET_WORD:-1}" != 0 ]; then
     case " $cmdline" in
