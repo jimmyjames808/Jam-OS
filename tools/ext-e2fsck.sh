@@ -2,7 +2,8 @@
 # Linux's e2fsck -fn on every volume extcheck's writers leave
 # (tools/extwrite.c and extfile.c, `extcheck --save`), and debugfs's view
 # of the files they made: the independent check docs/M13.6-PLAN.md's U2a
-# asks for, on a machine with e2fsprogs (the test PC's WSL):
+# and U2b ask for (U2b's images, names-*, with debugfs's listing compared
+# with the library's), on a machine with e2fsprogs (the test PC's WSL):
 #
 #     JAMOS_REMOTE=jamos-pc JAMOS_REMOTE_ONLY=1 \
 #         tools/remote-test.sh tools/ext-e2fsck.sh build/ext-e2fsck
@@ -43,5 +44,17 @@ for img in "$imgs"/*.img; do
             debugfs -R "stat /emptydir/$f" "$img" 2> /dev/null | grep -v "^$"
         done
     } > "$out/$n.debugfs" 2>&1
+    # The names' images (tools/extvol.c's vol_save) carry the library's
+    # listing: debugfs's (tools/extfix/listing.py) must be the same.
+    if [ -f "${img%.img}.list" ]; then
+        python3 tools/extfix/listing.py "$img" "$out/$n.debugfs.list" > /dev/null 2>&1
+        if diff <(grep -v '^#' "${img%.img}.list" | sort) \
+                <(grep -v '^#' "$out/$n.debugfs.list" | sort) > "$out/$n.listdiff"; then
+            echo "$n: debugfs lists the same"
+        else
+            echo "$n: debugfs lists it differently (see $n.listdiff)"
+            bad=1
+        fi
+    fi
 done
 exit $bad

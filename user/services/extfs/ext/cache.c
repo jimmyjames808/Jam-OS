@@ -274,6 +274,7 @@ void ext_discard(struct ext_fs *fs)
         unhash(c, b);   /* a holder's pointer stays good until its ext_brelse */
     }
     c->ndirty = 0;
+    c->discards++;
 }
 
 uint32_t ext_cache_pins(const struct ext_fs *fs)
