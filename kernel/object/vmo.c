@@ -104,10 +104,13 @@
  * Pager VMOs (vmo_create_pager, <jam/pager.h>): a paged VMO whose absent
  * pages come from its pager, never zero-filled. Only the pager puts a page
  * in (vmo_pager_publish, under this lock, if the slot is still absent and
- * the VMO isn't detached) and only a detach takes them out (a decommit of
- * everything); every other call that would commit, write, decommit,
- * resize, seal, pin or kernel-map one is refused at its entry, and so is
- * a writable user mapping. A reader of an absent page (vmo_read here; a
+ * the VMO isn't detached) and only the pager's side takes pages out: its
+ * cache's eviction (vmo_pager_evict, one page) and a detach (a decommit
+ * of everything), each through the decommit code below, which
+ * tells the cache (pager_page_gone_vlocked) for every page it takes.
+ * Every other call that would commit, write, decommit, resize, seal, pin
+ * or kernel-map one is refused at its entry, and so is a writable user
+ * mapping. A reader of an absent page (vmo_read here; a
  * fault through vmo_page_request) joins or queues a request under this
  * lock and then the pager's ("vmo" -> "pager"), and waits for it with no
  * lock held. `pv` is fixed at creation, so the refusals need no lock. */
@@ -303,6 +306,8 @@ static void drop_leaf_from_locked(struct vmo *v, uint64_t *leaf, uint64_t base, 
 {
     for (uint64_t l = 0; l < LEAF_PAGES; l++) {
         if (leaf[l] && base + l >= first) {
+            if (v->pv)
+                pager_page_gone_vlocked(v->pv, pa_page(leaf[l]));
             page_put(pa_page(leaf[l]));
             leaf[l] = 0;
             v->committed--;
@@ -745,6 +750,8 @@ static uint64_t take_batch_locked(struct vmo *v, uint64_t idx, uint64_t end, str
     for (uint64_t i = idx; i < stop; i++) {
         uint64_t *s = &leaf[i % LEAF_PAGES];
         if (*s) {
+            if (v->pv)   /* off its pager's cache first: the gather takes its list node */
+                pager_page_gone_vlocked(v->pv, pa_page(*s));
             tlb_gather_page(g, pa_page(*s));   /* the table's reference, released after the flush */
             *s = 0;
             v->committed--;
@@ -1142,28 +1149,35 @@ status_t vmo_page_request(struct vmo *v, uint64_t idx, struct pager_req **out)
     return st;
 }
 
-status_t vmo_pager_publish(struct vmo *v, uint64_t idx, struct page *p, struct list_node *dead)
+status_t vmo_pager_publish(struct vmo *v, uint64_t idx, struct page *p, struct pager_rec *rec)
 {
     uint64_t f = vlock(v);
     status_t st = v->pdetached ? ERR_PEER_CLOSED
                   : idx >= v->size >> PAGE_SHIFT ? ERR_OUT_OF_RANGE
                                                  : OK;
     uint64_t *s = st == OK ? slot_locked(v, idx, false) : NULL;
-    if (st == OK && !(s && *s)) {
-        s = charge_slot_locked(v, idx, s);
-        if (s) {
-            *s = page_to_phys(p);   /* the table takes our reference */
-            v->committed++;
-            p = NULL;
-            pager_arrived_vlocked(v->pv, v, idx, dead);
-        } else {
-            st = ERR_NO_MEMORY;
-        }
+    if (st == OK && s && *s)
+        st = ERR_ALREADY_EXISTS;   /* a second answer */
+    if (st == OK && !(s = charge_slot_locked(v, idx, s)))
+        st = ERR_NO_MEMORY;
+    if (st == OK) {
+        *s = page_to_phys(p);   /* the table takes the caller's reference */
+        v->committed++;
+        pager_published_vlocked(v->pv, idx, p, rec);
     }
     vunlock(v, f);
-    if (p)
-        page_put(p);   /* refused, or present already (a second answer) */
     return st;
+}
+
+void vmo_pager_evict(struct vmo *v, uint64_t idx, const struct page *p)
+{
+    struct tlb_gather g;
+    tlb_gather_init(&g);
+    uint64_t f = vlock(v);
+    if (idx < v->size >> PAGE_SHIFT && phys_locked(v, idx) == page_to_phys(p))
+        (void)take_batch_locked(v, idx, idx + 1, &g);   /* (else it went already) */
+    vunlock(v, f);
+    tlb_gather_finish(&g);
 }
 
 void vmo_pager_detach(struct vmo *v)

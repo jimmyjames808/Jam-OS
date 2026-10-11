@@ -549,7 +549,9 @@
 # pager VMO is its pager's koid.
 # pager_create: a pager (RIGHT_ROOT_PAGER on root: volumes'), handle
 # PAGER_RIGHTS. max_pages: how many pages its VMOs may hold at once (> 0;
-# its budget); answer_ns: how long a request may wait for its answer
+# its budget: past it, and when the job or memory runs short, the oldest
+# supplied pages are dropped and asked for again when next touched);
+# answer_ns: how long a request may wait for its answer
 # (PAGER_ANSWER_MIN_NS .. _MAX_NS, else ERR_OUT_OF_RANGE); flags 0. The
 # pager and its VMOs (structs, tables and pages) are charged to the
 # caller's job. Closing its last handle detaches every VMO it made.

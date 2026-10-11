@@ -23,13 +23,17 @@
  * VMO's requests covers, so a page is in at most one request and the
  * readers of a page all wait on one. Its references: the queue's while it
  * is unanswered, and one per waiter (and per vmo_page_request caller not
- * yet waiting). It is answered (`done`, with a status) by a supply that
- * makes it whole, by a failure, by its VMO's detach or death, or at its
- * deadline by the first waiter to wake then (or by pager_next meeting it):
- * no kernel timer. Answering takes it off every list and wakes its
- * waiters; whoever drops the last reference frees it, always with no lock
- * held (doomed requests are collected on a private list, as port.c's
- * reap does, since freeing one drops a pager reference).
+ * yet waiting). It is answered (`done`, with a status) by the end of a
+ * supply that brought all its pages (`arrived`: each page counts once it
+ * was published, even if the cache evicted it again since, so a budget
+ * smaller than a request can't keep it from an answer; its waiters then
+ * look again and ask again), by a failure, by its VMO's detach or death,
+ * or at its deadline by the first waiter to wake then (or by pager_next
+ * meeting it): no kernel timer. Answering takes it off
+ * every list and wakes its waiters; whoever drops the last reference
+ * frees it, always with no lock held (doomed requests are collected on a
+ * private list, as port.c's reap does, since freeing one drops a pager
+ * reference).
  *
  * Why requests live in the object: the pager process may die between
  * pager_next and its answer; the pager object (held by volumes) keeps the
@@ -37,8 +41,8 @@
  * the queue. Supplying a present page is a no-op, so an answer given twice
  * is harmless.
  *
- * Budget: max_pages is stored for the cache's eviction (not built yet);
- * supplies are limited only by the job's page limit today. */
+ * Budget: the pages of a pager's VMOs are its page cache (`cache`,
+ * pager_cache.c): at most max_pages of them, the oldest evicted first. */
 #include <jam/aspace_vmo.h>
 #include <jam/mm.h>
 #include <jam/pager.h>
@@ -49,6 +53,7 @@
 #include <jam/time.h>
 #include <jam/usercopy.h>
 #include <jam/vmo.h>
+#include "pager_cache.h"
 
 #define KEY_BUCKETS 64u
 
@@ -64,6 +69,7 @@ struct pager_req {
     uint64_t         deadline;   /* uptime ns: failed ERR_TIMED_OUT from then on */
     uint32_t         kind;       /* PAGER_REQ_* */
     uint32_t         refs;       /* the queue's and each waiter's; pager lock */
+    uint32_t         arrived;    /* bit i: page first + i was published since; pager lock */
     bool             queued;     /* on the queue or delivered; pager lock */
     bool             delivered;  /* on delivered rather than the queue; pager lock */
     bool             done;       /* answered: status says how; pager lock */
@@ -85,8 +91,8 @@ struct pager_vmo {
 struct pager {
     struct kobject   base;       /* OBJ_PAGER; base.lock guards everything below */
     struct job      *job;        /* pays for it and its VMOs (a reference), or NULL */
-    uint64_t         max_pages;  /* the budget (not enforced yet) */
     uint64_t         answer_ns;  /* how long a request may wait */
+    struct pager_cache cache;    /* its VMOs' resident pages and the budget (own lock) */
     bool             closed;     /* the last handle is gone: no new VMOs */
     struct list_node queue;      /* struct pager_req, undelivered, oldest first */
     struct list_node delivered;  /* struct pager_req, delivered, not answered */
@@ -260,28 +266,33 @@ status_t pager_join_vlocked(struct pager_vmo *pv, uint64_t idx, uint64_t end,
     return OK;
 }
 
-/* VMO lock held: are all of r's pages present? */
-static bool whole_vlocked(const struct pager_req *r, struct vmo *v)
+_Static_assert(PAGER_REQ_PAGES <= 32, "a request's arrived pages are a 32-bit mask");
+
+/* Every page of r arrived. */
+static bool arrived_all(const struct pager_req *r)
 {
-    for (uint64_t i = r->first; i < r->end; i++)
-        if (!vmo_page_present_locked(v, i))
-            return false;
-    return true;
+    return r->arrived == (uint32_t)((1ull << (r->end - r->first)) - 1);
 }
 
-void pager_arrived_vlocked(struct pager_vmo *pv, struct vmo *v, uint64_t idx,
-                           struct list_node *dead)
+void pager_published_vlocked(struct pager_vmo *pv, uint64_t idx, struct page *p,
+                             struct pager_rec *rec)
 {
     struct pager *pg = pv->pg;
     uint64_t f = plock(pg);
-    for (struct list_node *n = pv->reqs.next; n != &pv->reqs;) {
+    for (struct list_node *n = pv->reqs.next; n != &pv->reqs; n = n->next) {
         struct pager_req *r = container_of(n, struct pager_req, vnode);
-        n = n->next;   /* finish_locked unlinks r */
-        if (r->first <= idx && idx < r->end && whole_vlocked(r, v))
-            finish_locked(r, OK, dead);
+        if (r->first <= idx && idx < r->end) {
+            r->arrived |= 1u << (idx - r->first);
+            break;   /* a page is in one request at most */
+        }
     }
-    sync_readable_locked(pg);
     punlock(pg, f);
+    pager_cache_add_vlocked(&pg->cache, p, rec);
+}
+
+void pager_page_gone_vlocked(struct pager_vmo *pv, struct page *p)
+{
+    pager_cache_remove_vlocked(&pv->pg->cache, p);
 }
 
 /* ---- keys -------------------------------------------------------------------- */
@@ -411,6 +422,7 @@ static void pager_destroy(struct kobject *obj)
     struct pager *pg = (struct pager *)obj;
     /* Every link and request holds a reference: none can be left. */
     ASSERT(list_empty(&pg->queue) && list_empty(&pg->delivered));
+    ASSERT(pager_cache_resident(&pg->cache) == 0);   /* a page's VMO's link holds the pager */
     job_uncharge(pg->job, JOB_LIMIT_HANDLES, 1);
     job_unref(pg->job);
     kfree(pg);
@@ -440,8 +452,8 @@ status_t pager_create(struct job *job, uint64_t max_pages, uint64_t answer_ns,
     kobject_init(&pg->base, OBJ_PAGER, &pager_ops, "pager", 0);
     job_ref(job);
     pg->job = job;
-    pg->max_pages = max_pages;
     pg->answer_ns = answer_ns;
+    pager_cache_init(&pg->cache, job, max_pages);
     list_init(&pg->queue);
     list_init(&pg->delivered);
     for (unsigned b = 0; b < KEY_BUCKETS; b++)
@@ -548,11 +560,37 @@ status_t pager_next(struct pager *pg, uint32_t flags, struct pager_request *out)
 
 /* ---- answers ------------------------------------------------------------------ */
 
+/* A supply ended: key's requests all of whose pages arrived are answered.
+ * At the end, not page by page, so that a request is answered once,
+ * after the eviction a supply bigger than the budget makes of its own
+ * pages (the ktests that evict on every supply rely on it). */
+static void answer_arrived(struct pager *pg, uint64_t key)
+{
+    struct list_node dead;
+    list_init(&dead);
+    uint64_t f = plock(pg);
+    struct pager_vmo *pv = find_locked(pg, key);
+    if (pv && pv->state == PV_LINKED) {
+        for (struct list_node *n = pv->reqs.next; n != &pv->reqs;) {
+            struct pager_req *r = container_of(n, struct pager_req, vnode);
+            n = n->next;   /* finish_locked unlinks r */
+            if (arrived_all(r))
+                finish_locked(r, OK, &dead);
+        }
+        sync_readable_locked(pg);
+    }
+    punlock(pg, f);
+    reap(&dead);
+}
+
 /* Page idx of v from src at byte `at`: copied into a fresh page with no
- * lock held, then published. */
-static status_t supply_page(struct vmo *v, uint64_t idx, const struct pager_src *src, uint64_t at)
+ * lock held, then published inside the cache's budget. */
+static status_t supply_page(struct pager *pg, struct vmo *v, uint64_t idx,
+                            const struct pager_src *src, uint64_t at)
 {
     struct page *p = pmm_alloc_pages(0, 0);   /* every byte is written below */
+    while (!p && pager_cache_evict_oldest(&pg->cache))   /* memory runs short: our own pages go */
+        p = pmm_alloc_pages(0, 0);
     if (!p)
         return ERR_NO_MEMORY;
     void *dst = page_to_virt(p);
@@ -565,10 +603,7 @@ static status_t supply_page(struct vmo *v, uint64_t idx, const struct pager_src 
         page_unref(p);
         return st;
     }
-    struct list_node dead;
-    list_init(&dead);
-    st = vmo_pager_publish(v, idx, p, &dead);
-    reap(&dead);
+    st = pager_cache_publish(&pg->cache, v, idx, p);
     return st == ERR_PEER_CLOSED ? ERR_NOT_FOUND : st;   /* detached meanwhile */
 }
 
@@ -585,9 +620,15 @@ status_t pager_supply(struct pager *pg, uint64_t key, uint64_t offset, const str
     uint64_t size = vmo_size(v);
     status_t st = offset <= size && len <= size - offset ? OK : ERR_OUT_OF_RANGE;
     for (uint64_t at = 0; at < len && st == OK; at += PAGE_SIZE)
-        st = supply_page(v, (offset + at) >> PAGE_SHIFT, src, at);
+        st = supply_page(pg, v, (offset + at) >> PAGE_SHIFT, src, at);
     kobject_unref(vmo_kobject(v));
+    answer_arrived(pg, key);   /* (also after a failure: the pages before it stay) */
     return st;
+}
+
+uint64_t pager_resident(struct pager *pg)
+{
+    return pager_cache_resident(&pg->cache);
 }
 
 /* PAGER_OP_FAIL: key's requests overlapping pages [first, end) fail st. */
@@ -656,7 +697,7 @@ status_t pager_op(struct pager *pg, uint64_t key, uint32_t op, uint64_t offset, 
         return detach_key(pg, key);
     case PAGER_OP_INVALIDATE:
     case PAGER_OP_SET_SIZE:
-        return ERR_NOT_SUPPORTED;   /* not built yet: the cache's */
+        return ERR_NOT_SUPPORTED;   /* not built yet */
     default:
         return ERR_INVALID_ARGS;
     }
