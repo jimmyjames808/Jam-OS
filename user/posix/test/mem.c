@@ -11,7 +11,9 @@
  *   - brk moved up, written and moved back, and held where RLIMIT_DATA
  *     says;
  *   - malloc of 1 GiB in 1 MiB pieces, every page written and read back,
- *     then freed, and the job's pages back near where they were. */
+ *     then freed, and the job's pages back near where they were;
+ *   - mlock and its kin: nothing is ever paged out, so they succeed (with
+ *     Linux's checks of their arguments). */
 #include <stdlib.h>
 #include <errno.h>
 #include <jamos/libjam.h>
@@ -197,6 +199,19 @@ static void check_malloc(void)
     free(r);
 }
 
+static void check_mlock(void)
+{
+    char *p = mmap(NULL, 2 * PG, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(p != MAP_FAILED);
+    CHECK(mlock(p, 2 * PG) == 0 && munlock(p, 2 * PG) == 0);
+    CHECK(mlock(p + 1, 10) == 0);   /* rounded to its pages, as Linux */
+    CHECK(mlockall(MCL_CURRENT | MCL_FUTURE) == 0 && munlockall() == 0);
+    errno = 0;
+    CHECK(mlockall(0) == -1 && errno == EINVAL);
+    CHECK(mlock((void *)-PG, 2 * PG) == -1 && errno == EINVAL);   /* wraps */
+    CHECK(munmap(p, 2 * PG) == 0);
+}
+
 void pt_mem(char **argv __attribute__((unused)))
 {
     check_mmap();
@@ -204,4 +219,5 @@ void pt_mem(char **argv __attribute__((unused)))
     check_fixed_one_step();
     check_brk();
     check_malloc();
+    check_mlock();
 }

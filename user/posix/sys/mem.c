@@ -15,7 +15,8 @@
  * memfd) in a VMO of its own, MAP_SHARED a memfd's own VMO (of a file:
  * ENODEV until M12.5's pager); either is then mapped and kept in the
  * table as an anonymous one is. mremap is ENOSYS
- * (musl's realloc copies). MAP_FIXED over the table's mappings replaces
+ * (musl's realloc copies); mlock and its kin succeed (nothing is paged
+ * out). MAP_FIXED over the table's mappings replaces
  * them in one step (vmar_map's VMAR_REPLACE): another thread reading the
  * range sees the old pages or the new ones, never a hole. The holes
  * between them are filled with the new mapping's pages first, as plain
@@ -348,6 +349,43 @@ long lx_madvise(long addr, long len, long advice, long d, long e, long f)
         return 0;   /* advice Jam OS has no use for */
     }
     return -EINVAL;
+}
+
+/* mlock and its kin: Jam OS never pages memory out, so every page is as
+ * locked as it can be; only the arguments are checked, as Linux does. */
+static long lock_range(long addr, long len)
+{
+    uint64_t a = (uint64_t)addr & ~(PAGE - 1);
+    uint64_t size = page_round((uint64_t)len + ((uint64_t)addr - a));   /* its whole pages */
+    if (len < 0 || (len && !size) || a > UINT64_MAX - size)
+        return -EINVAL;
+    return 0;
+}
+
+long lx_mlock(long addr, long len, long c, long d, long e, long f)
+{
+    return lock_range(addr, len);
+}
+
+long lx_munlock(long addr, long len, long c, long d, long e, long f)
+{
+    return lock_range(addr, len);
+}
+
+long lx_mlock2(long addr, long len, long flags, long d, long e, long f)
+{
+    return flags & ~(long)MLOCK_ONFAULT ? -EINVAL : lock_range(addr, len);
+}
+
+long lx_mlockall(long flags, long b, long c, long d, long e, long f)
+{
+    long known = MCL_CURRENT | MCL_FUTURE | MCL_ONFAULT;
+    return !flags || (flags & ~known) || flags == MCL_ONFAULT ? -EINVAL : 0;
+}
+
+long lx_munlockall(long a, long b, long c, long d, long e, long f)
+{
+    return 0;
 }
 
 long lx_mremap(long a, long b, long c, long d, long e, long f)

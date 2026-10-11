@@ -47,7 +47,8 @@ struct sig_frame {
 long sig_call(const struct sig_frame *f);
 
 /* Memory (mem.c): anonymous mappings and the break. */
-lx_call lx_mmap, lx_munmap, lx_mprotect, lx_madvise, lx_mremap, lx_brk;
+lx_call lx_mmap, lx_munmap, lx_mprotect, lx_madvise, lx_mremap, lx_brk, lx_mlock, lx_munlock,
+        lx_mlock2, lx_mlockall, lx_munlockall;
 
 /* Threads (thread.c). */
 lx_call lx_set_tid_address, lx_gettid, lx_arch_prctl, lx_exit, lx_exit_group, lx_futex,

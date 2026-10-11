@@ -28,6 +28,11 @@ static lx_call *const calls[] = {
     [SYS_madvise] = lx_madvise,
     [SYS_mremap] = lx_mremap,
     [SYS_brk] = lx_brk,
+    [SYS_mlock] = lx_mlock,
+    [SYS_munlock] = lx_munlock,
+    [SYS_mlock2] = lx_mlock2,
+    [SYS_mlockall] = lx_mlockall,
+    [SYS_munlockall] = lx_munlockall,
 
     /* threads: thread.c */
     [SYS_set_tid_address] = lx_set_tid_address,
