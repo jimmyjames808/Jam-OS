@@ -24,10 +24,12 @@
 #include <limits.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include "fd.h"
 #include "files.h"
 #include "kinds.h"
+#include "layer.h"
 #include "tty.h"
 
 /* The reserved mark: a slot fd_alloc gave out, not filled yet. */
@@ -126,8 +128,9 @@ long fd_alloc(long min)
     if (!in_range(min))
         return -EINVAL;
     long r = -EMFILE;
+    uint64_t limit = rlimit_cur(RLIMIT_NOFILE);   /* no descriptor at or past it */
     lock_take(&table_lock);
-    for (long fd = min; fd < FD_MAX; fd++)
+    for (long fd = min; fd < FD_MAX && (uint64_t)fd < limit; fd++)
         if (!slots[fd]) {
             slots[fd] = RESERVED;
             r = fd;

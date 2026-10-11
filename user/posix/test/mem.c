@@ -8,7 +8,8 @@
  *     while they are mapped over again and again (a moment with nothing
  *     there would kill the program), and a MAP_FIXED whose range holds a
  *     mapping libc didn't make is ENOMEM with nothing changed;
- *   - brk moved up, written and moved back;
+ *   - brk moved up, written and moved back, and held where RLIMIT_DATA
+ *     says;
  *   - malloc of 1 GiB in 1 MiB pieces, every page written and read back,
  *     then freed, and the job's pages back near where they were. */
 #include <stdlib.h>
@@ -17,6 +18,7 @@
 #include <pthread.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 #include "pt.h"
@@ -146,6 +148,16 @@ static void check_brk(void)
         CHECK(((volatile char *)base)[63 * PG] == 0x5a);
     }
     CHECK(syscall(SYS_brk, base + (2l << 30)) == top);   /* past the reservation: unmoved */
+    CHECK(syscall(SYS_brk, base) == base);
+    /* RLIMIT_DATA 0: the break does not grow (libc-test's memfill). */
+    struct rlimit rl, was;
+    CHECK(getrlimit(RLIMIT_DATA, &was) == 0);
+    rl = was;
+    rl.rlim_cur = 0;
+    CHECK(setrlimit(RLIMIT_DATA, &rl) == 0);
+    CHECK(syscall(SYS_brk, base + 64 * PG) == base);
+    CHECK(setrlimit(RLIMIT_DATA, &was) == 0);
+    CHECK(syscall(SYS_brk, base + 64 * PG) == base + 64 * (long)PG);
     CHECK(syscall(SYS_brk, base) == base);
 }
 

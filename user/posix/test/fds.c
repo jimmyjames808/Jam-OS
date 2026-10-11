@@ -8,6 +8,8 @@
  *     then up again (zeros, not the old bytes), the seals;
  *   - eventfd: the counter, the semaphore mode, EAGAIN, a read woken by
  *     another thread's write;
+ *   - the resource limits: kept and answered back, the checks Linux
+ *     makes, and RLIMIT_NOFILE holding descriptor numbers back;
  *   - the one user's ids;
  *   - the hand-over's kinds: a child given /dev/zero, /dev/full,
  *     /dev/urandom, /etc/passwd, a pipe with a leftover, an eventfd and a
@@ -25,6 +27,7 @@
 #include <string.h>
 #include <sys/eventfd.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -291,8 +294,45 @@ static void check_devetc_paths(void)
     close(fd);
 }
 
+static void check_rlimit(void)
+{
+    struct rlimit rl, nofile;
+    CHECK(getrlimit(RLIMIT_STACK, &rl) == 0 && rl.rlim_cur == 8ul << 20 &&
+          rl.rlim_max == RLIM_INFINITY);
+    CHECK(getrlimit(RLIMIT_NOFILE, &nofile) == 0 && nofile.rlim_cur == nofile.rlim_max);
+    CHECK(getrlimit(99, &rl) == -1 && errno == EINVAL);
+    rl = nofile;
+    rl.rlim_cur = rl.rlim_max + 1;
+    CHECK(setrlimit(RLIMIT_NOFILE, &rl) == -1 && errno == EINVAL);   /* cur past max */
+    rl.rlim_cur = 10;
+    rl.rlim_max = nofile.rlim_max + 1;
+    CHECK(setrlimit(RLIMIT_NOFILE, &rl) == -1 && errno == EPERM);    /* max raised */
+    CHECK(prlimit(getpid() + 1000, RLIMIT_NOFILE, NULL, &rl) == -1 && errno == ESRCH);
+    CHECK(prlimit(0, RLIMIT_CORE, NULL, &rl) == 0 && rl.rlim_cur == 0);
+    /* The soft limit holds descriptor numbers back; the hard one stays. */
+    int open_n = 0, past = 0;   /* descriptors open, and the number past the highest */
+    for (int fd = 0; fd < 64; fd++)
+        if (fcntl(fd, F_GETFD) != -1) {
+            open_n++;
+            past = fd + 1;
+        }
+    rl = nofile;
+    rl.rlim_cur = past + 10;
+    CHECK(prlimit(0, RLIMIT_NOFILE, &rl, NULL) == 0);
+    int fds[40], n = 0, d;
+    while (n < 40 && (d = dup(1)) >= 0)
+        fds[n++] = d;
+    CHECK(n == past + 10 - open_n && errno == EMFILE);
+    for (int i = 0; i < n; i++)
+        close(fds[i]);
+    rl.rlim_cur = nofile.rlim_cur;
+    CHECK(setrlimit(RLIMIT_NOFILE, &rl) == 0);
+    CHECK((d = dup(1)) >= 0 && close(d) == 0);
+}
+
 void pt_fds(char **argv __attribute__((unused)))
 {
+    check_rlimit();
     check_dup();
     check_memfd();
     check_eventfd();
