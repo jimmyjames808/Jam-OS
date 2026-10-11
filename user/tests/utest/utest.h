@@ -252,6 +252,10 @@ int  replywait_child(int argc, char **argv);
 bool t_kept_vmo_refusals(void);
 bool t_kept_vmo_client_and_compositor(void);
 int  kept_child(int argc, char **argv);
+/* vmochild.c: copy-on-write child VMOs, and the child mode "utest cow-big". */
+bool t_vmo_child_shares(void);
+bool t_vmo_child_refusals(void);
+int  vmochild_child(int argc, char **argv);
 bool t_many_threads(void);
 bool t_lock_take(void);
 bool t_thread_fs_base(void);

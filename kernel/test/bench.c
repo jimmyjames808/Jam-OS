@@ -72,6 +72,7 @@
 #include <jam/time.h>
 #include <jam/uentry.h>
 #include <jam/userboot.h>
+#include <jam/vmo.h>
 #include <jam/x86.h>
 
 #include "bench_internal.h"
@@ -1358,6 +1359,7 @@ static void user_benches(void)
     user_bench("null", cpu_p, -1, "user: syscall round trip (unused number, P)");
     user_bench("clock", cpu_p, -1, "user: clock_get syscall (P)");
     user_bench("fault", cpu_p, -1, "user: page fault, fresh zero page (P)");
+    user_bench("cowfault", cpu_p, -1, "user: page fault, copy-on-write separation (P)");
     /* The call against bench-echo, a server that reads, writes and waits
      * (5 system calls a round trip): the line every milestone since M5 has,
      * then the same with libos's deadline, then one switch at a time. */
@@ -1530,8 +1532,63 @@ static void iommu_bench(void)
     (void)iommu_domain_destroy(dom);
 }
 
+/* Copy-on-write children (vmo_create_child): making a child of a 64 MiB
+ * VMO whose pages are all committed (a reference and an entry a page, the
+ * child's tables; nothing maps the parent here, so nothing to make
+ * read-only or shoot down), and dropping it again, against the plain copy
+ * a fork would make without it (a new VMO written from a kernel mapping of
+ * the parent: every page allocated, zeroed and copied). The first write
+ * fault on a shared page is the ring-3 line "copy-on-write separation". */
+static void vmo_child_bench(void)
+{
+    enum { N = 16 };
+    const uint64_t size = 64ull << 20;
+    struct vmo *p, *c;
+    void *kva;
+    if (vmo_create(size, 0, &p) != OK) {
+        report("bench: vmo child: no memory for a 64 MiB VMO");
+        return;
+    }
+    if (vmo_commit(p, 0, size) != OK) {
+        report("bench: vmo child: no memory for a 64 MiB VMO");
+        kobject_unref(vmo_kobject(p));
+        return;
+    }
+    static uint64_t drop[N];
+    unsigned n = 0;
+    for (; n < N; n++) {
+        uint64_t t0 = stamp();
+        if (vmo_create_child(NULL, p, VMO_CHILD_SNAPSHOT, 0, size, &c) != OK)
+            break;
+        uint64_t t1 = stamp();
+        kobject_unref(vmo_kobject(c));
+        samples[n] = span_ps(t0, t1, 1);
+        drop[n] = span_ps(t1, stamp(), 1);
+    }
+    if (n) {
+        result("vmo child of a 64 MiB VMO (16384 pages)", samples, n);
+        result("  dropping that child", drop, n);
+    }
+    if (vmo_map_kernel(p, 0, size, 0, &kva) == OK) {
+        for (n = 0; n < N; n++) {
+            uint64_t t0 = stamp();
+            if (vmo_create(size, 0, &c) != OK)
+                break;
+            status_t st = vmo_write(c, 0, kva, size);
+            samples[n] = span_ps(t0, stamp(), 1);
+            kobject_unref(vmo_kobject(c));
+            if (st != OK)
+                break;
+        }
+        if (n)
+            result("  against: a copy of it (vmo_create + vmo_write)", samples, n);
+        (void)vmo_unmap_kernel(p, kva);
+    }
+    kobject_unref(vmo_kobject(p));
+}
+
 /* Serial output, sleep accuracy, TLB shootdown, address-space switches,
- * FPU state, the IOMMU and the ring-3 benchmarks. */
+ * FPU state, the IOMMU, copy-on-write children and the ring-3 benchmarks. */
 static void system_benches(void)
 {
     serial_output();
@@ -1550,6 +1607,7 @@ static void system_benches(void)
     as_switch();
     fpu_state();
     iommu_bench();
+    vmo_child_bench();
     user_benches();
 }
 

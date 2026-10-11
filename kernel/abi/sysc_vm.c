@@ -130,6 +130,15 @@ int64_t sysc_vmo_decommit(handle_t h, uint64_t offset, uint64_t len)
     return sys_vmo_decommit(t, h, offset, len);
 }
 
+int64_t sysc_vmo_create_child(handle_t h, uint32_t flags, uint64_t offset, uint64_t size,
+                              uint64_t out)
+{
+    SYSC_TABLE(t);
+    handle_t c;
+    status_t st = sys_vmo_create_child(t, h, flags, offset, size, &c);
+    return st == OK ? sysc_put_handle(t, out, c) : st;
+}
+
 /* ---- address spaces ---------------------------------------------------------- */
 
 int64_t sysc_vmar_map(handle_t vmar, handle_t vmo, uint64_t vmo_off, uint64_t len,

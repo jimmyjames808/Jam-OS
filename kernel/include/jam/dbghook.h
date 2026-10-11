@@ -39,6 +39,9 @@ enum {
                               the VMO) */
     DBG_CPU_TIME,          /* sched.c thread_cpu_tsc, before it looks at where the thread runs;
                               no lock held (arg: the thread) */
+    DBG_VMO_CHILD_SHOOT,   /* vmo.c share_pages, every page shared and the parent's entries
+                              made read-only, before their shootdown; the parent's "vmo
+                              resize" held, no spinlock (arg: the parent) */
     DBG_N
 };
 

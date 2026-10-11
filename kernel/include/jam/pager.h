@@ -180,7 +180,10 @@ uint64_t vmo_pager_koid(struct vmo *v);
  * ERR_OUT_OF_RANGE past the size; ERR_PEER_CLOSED if the VMO is detached
  * or gone from its pager; ERR_NO_MEMORY if the caller's job can't pay for
  * a new request. Thread context, no spinlock held (the region lock may be
- * held: only spinlocks are taken). */
+ * held: only spinlocks are taken). For a copy-on-write child of a pager
+ * VMO (vmo_create_child), the request is its pager VMO's for the page
+ * idx takes from it; NULL also if idx doesn't take one (present, past the
+ * window) or the pager VMO ends before it (it reads as zeros). */
 status_t vmo_page_request(struct vmo *v, uint64_t idx, struct pager_req **out);
 /* Publish p as page idx of a pager VMO if that slot is absent, charged
  * to the VMO's job, with rec its record in its pager's cache (a slot of

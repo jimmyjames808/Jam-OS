@@ -26,19 +26,33 @@ struct vmo;
 
 /* ---- deferred TLB flush ("gather") -------------------------------------- */
 
+#define TLB_GATHER_SHARED 32   /* shared pages one gather holds (tlb_gather_shared) */
+
 struct tlb_gather {
     cpumask_t        cpus;      /* CPUs that may hold a cleared entry */
     uint64_t         lo, hi;    /* user range covering every cleared entry */
     bool             need;      /* something was cleared: flush */
     struct list_node pages;     /* struct page (via page->node): release after the flush */
     uint64_t         npages;    /* pages on the list */
+    uint32_t         nshared;   /* entries in shared[] */
+    struct page     *shared[TLB_GATHER_SHARED];   /* tlb_gather_shared's pages */
 };
 
 void tlb_gather_init(struct tlb_gather *g);
 /* Drop one reference on p (freeing it at zero) only after the flush. Its
  * struct page `node` is used for the list, so p must be an allocated page
- * nobody else lists (VMO pages and page-table pages qualify). */
+ * nobody else lists (VMO pages and page-table pages qualify; a page other
+ * VMOs share copy-on-write does not: tlb_gather_shared). */
 void tlb_gather_page(struct tlb_gather *g, struct page *p);
+/* The same for a VMO table's reference on a page that other tables may
+ * hold too (a copy-on-write page, vmo.c): another gather may be listing
+ * it, so it goes in shared[] instead, and after the flush its share count
+ * is lowered (page_share_drop). The caller checks tlb_gather_full first. */
+void tlb_gather_shared(struct tlb_gather *g, struct page *p);
+static inline bool tlb_gather_full(const struct tlb_gather *g)
+{
+    return g->nshared == TLB_GATHER_SHARED;
+}
 /* Shoot the gathered range down on the gathered CPUs, then release the
  * pages. Interrupts on, no spinlock held (it waits for other CPUs). Leaves
  * g empty and ready for reuse. */
@@ -46,6 +60,10 @@ void tlb_gather_finish(struct tlb_gather *g);
 
 /* Drop one reference on a page, freeing it at zero (the VMO page rule). */
 void page_unref(struct page *p);
+/* A VMO table lets go of p: its share count (how many other tables hold
+ * it, vmo.c) goes down by one unless it is 0 already, then the table's
+ * reference is dropped (page_unref). */
+void page_share_drop(struct page *p);
 
 /* ---- the reverse map ---------------------------------------------------- */
 
@@ -73,15 +91,24 @@ void     vmo_umap_set(struct vmo *v, struct vmo_umap *u, uint64_t base, uint64_t
 void     vmo_umap_remove(struct vmo *v, struct vmo_umap *u);
 
 /* Fault: under the VMO lock, commit page idx if needed (paged VMOs) and
- * install it at va in as with `perms` (ASPACE_READ/WRITE/EXEC) and the
- * VMO's cache type, through aspace_set_pte_locked. The caller holds as's
- * region lock and has created the page tables for va. ERR_OUT_OF_RANGE if
- * idx is past the VMO's end, ERR_NO_MEMORY if it couldn't be committed,
- * ERR_SHOULD_WAIT if idx is an absent page of a pager VMO: nothing is
- * installed or asked for, and aspace_fault asks the pager
- * (vmo_page_request) and waits without the region lock. */
+ * install it at va in as with `perms` (the mapping's ASPACE_READ/WRITE/EXEC)
+ * and the VMO's cache type, through aspace_set_pte_locked. `write`: the
+ * access was a write. A page shared copy-on-write with another VMO is
+ * installed without ASPACE_WRITE for any other access, and copied first
+ * for a write (the copy goes in every mapping of v: their entries for the
+ * old page are cleared and shot down before this returns). The caller
+ * holds as's region lock and has created the page tables for va.
+ * ERR_OUT_OF_RANGE if idx is past the VMO's end, ERR_NO_MEMORY if it
+ * couldn't be committed or copied, ERR_SHOULD_WAIT if idx is an absent
+ * page of a pager VMO (or one that a child of a pager VMO takes from it,
+ * absent there): nothing is installed or asked for, and aspace_fault asks
+ * the pager (vmo_page_request) and waits without the region lock. */
 status_t vmo_fault_map(struct vmo *v, uint64_t idx, struct aspace *as, uint64_t va,
-                       unsigned perms);
+                       unsigned perms, bool write);
+/* After a pager's answer: is page idx of v there now (in v, or for a
+ * child of a pager VMO in the pager VMO, or past its end)? A request is
+ * answered whole, so one that failed may still have brought it. */
+bool     vmo_page_ready(struct vmo *v, uint64_t idx);
 
 /* ---- address-space side, called by vmo.c with the VMO lock held --------- */
 
@@ -91,6 +118,10 @@ void aspace_set_pte_locked(struct aspace *as, uint64_t va, uint64_t pa, unsigned
 /* Clear the leaf entries in [va, va+len) and add the range and as's active
  * CPUs to g. Never frees page tables. */
 void aspace_zap_locked(struct aspace *as, uint64_t va, uint64_t len, struct tlb_gather *g);
+/* Take the write bit off every leaf entry in [va, va+len) (they stay
+ * present) and add the range and as's active CPUs to g: pages a new
+ * copy-on-write child shares. */
+void aspace_wrprotect_locked(struct aspace *as, uint64_t va, uint64_t len, struct tlb_gather *g);
 
 /* ---- for tests ---------------------------------------------------------- */
 
