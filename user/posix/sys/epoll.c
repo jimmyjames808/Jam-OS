@@ -23,8 +23,8 @@
  * at it. EPOLLONESHOT: once delivered, the item's entry is removed until
  * EPOLL_CTL_MOD brings it back. EPOLLEXCLUSIVE and EPOLLWAKEUP are
  * accepted and change nothing (there is no herd of sets to keep from
- * waking, and no suspend). Edges on a socket are not built yet: EPOLLET
- * on one is EOPNOTSUPP.
+ * waking, and no suspend). A socket's edge is netstack's next signal
+ * (<netwait.h>): drain it to EAGAIN, as epoll(7) asks.
  *
  * **Threads.** Any thread may wait on or change a set while others do:
  * each set's lock guards its items and its netwait (a set belongs to one
