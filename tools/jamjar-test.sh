@@ -44,7 +44,7 @@ if [ "${JAMJAR_CPU:-}" = 1 ]; then   # jamjar's CPU while it plays, in a big win
     script=tools/shell-tests/jamjar-cpu.txt
     QEMU_EXTRA_VGA="-vga none -device VGA,xres=2560,yres=1440,vgamem_mb=64"
     mkdir -p "$out"
-    sed "s/^send jamjar trace &\$/send jamjar trace ${JAMJAR_ARGS:-} \&/" "$script" > "$out/$name.txt"
+    sed "s/^send jamjar trace &/send jamjar trace ${JAMJAR_ARGS:-} \&/" "$script" > "$out/$name.txt"
     script="$out/$name.txt"
 fi
 wav="$out/$name.wav"
