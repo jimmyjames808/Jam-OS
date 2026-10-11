@@ -188,6 +188,64 @@ enum pt_kind pt_kind(const struct pt_table *t);
 #define PT_JAMOS_ESP_NAME  "Jam OS ESP"
 #define PT_JAMOS_DATA_NAME "Jam OS data"
 
+/* ---- Jam OS's table, made (drivers/lib/parttable_make.c) ------------------------------
+ *
+ * The bytes storage.create_table writes onto a blank disk (the driver
+ * writes them; this only fills a buffer): a protective MBR, both GPT
+ * headers and one entry array of PT_JAMOS_ENTRIES entries, holding
+ * exactly the layout pt_is_jamos accepts. The ESP from PT_JAMOS_ALIGN,
+ * PT_JAMOS_ESP_BYTES long; the data partition from its end to the last
+ * usable block, at most PT_JAMOS_DATA_MAX, ending on a multiple of
+ * PT_JAMOS_ALIGN. Every block the table takes lies inside the blank
+ * rule's zeros (the first and last PT_BLANK_BYTES), so preparing a blank
+ * disk overwrites only blocks the blank rule saw to be zeros. */
+
+#define PT_JAMOS_ENTRIES     128                    /* entries of 128 bytes: a 16 KiB array */
+#define PT_JAMOS_ARRAY_BYTES (PT_JAMOS_ENTRIES * 128u)
+#define PT_JAMOS_ALIGN       (1ull << 20)           /* the ESP's start; the data partition's end */
+#define PT_JAMOS_ESP_BYTES   (512ull << 20)
+#define PT_JAMOS_DATA_MIN    (64ull << 20)          /* a smaller disk is refused */
+#define PT_JAMOS_DATA_MAX    (2ull << 40)           /* FAT32's 32-bit sector numbers */
+
+/* Where Jam OS's table and partitions go on a disk. */
+struct pt_jamos_plan {
+    uint32_t array_blocks;        /* an entry array's blocks */
+    uint64_t head_blocks;         /* blocks [0, head_blocks): MBR, primary header and array */
+    uint64_t tail_start;          /* blocks [tail_start, the end): backup array, backup header */
+    uint64_t esp_start, esp_blocks;
+    uint64_t data_start, data_blocks;
+};
+
+/* The plan for a disk of `blocks` blocks of `block_size` bytes. OK;
+ * ERR_INVALID_ARGS: a block size that isn't 512 to 4096 and a power of
+ * two; ERR_NO_SPACE: the data partition would be under PT_JAMOS_DATA_MIN. */
+status_t pt_jamos_plan(uint32_t block_size, uint64_t blocks, struct pt_jamos_plan *out);
+
+/* The buffer pt_jamos_make fills, in blocks: block PT_JAMOS_AT_MBR the
+ * protective MBR, PT_JAMOS_AT_PRIMARY the primary header,
+ * PT_JAMOS_AT_ARRAY on the entry array (array_blocks), then the backup
+ * header (pt_jamos_at_backup). */
+#define PT_JAMOS_AT_MBR     0u
+#define PT_JAMOS_AT_PRIMARY 1u
+#define PT_JAMOS_AT_ARRAY   2u
+static inline uint32_t pt_jamos_at_backup(const struct pt_jamos_plan *p)
+{
+    return PT_JAMOS_AT_ARRAY + p->array_blocks;
+}
+static inline uint32_t pt_jamos_buf_blocks(const struct pt_jamos_plan *p)
+{
+    return pt_jamos_at_backup(p) + 1;
+}
+
+/* Fill buf (buf_size bytes, pt_jamos_buf_blocks blocks at least) with
+ * Jam OS's table for the disk, its disk GUID and the two partitions'
+ * unique GUIDs as given (16 bytes each, as on disk). OK;
+ * ERR_INVALID_ARGS: a GUID all zeros, two the same, a buffer too small,
+ * or pt_jamos_plan's errors. Writes nothing but buf. */
+status_t pt_jamos_make(uint32_t block_size, uint64_t blocks, const uint8_t *disk_guid,
+                       const uint8_t *esp_guid, const uint8_t *data_guid, uint8_t *buf,
+                       size_t buf_size);
+
 /* Well-known type GUIDs, as their bytes on disk. */
 extern const uint8_t pt_type_esp[16];          /* C12A7328-F81F-11D2-BA4B-00A0C93EC93B */
 extern const uint8_t pt_type_msr[16];          /* E3C9E316-0B5C-4DB8-817D-F92DF00215AE */

@@ -534,7 +534,7 @@ DRV_CFLAGS  := $(filter-out -I%,$(USER_CFLAGS)) $(DRV_ISOLATE)
 # object (checked by checkdriver.py with the rest of it).
 DRV_LIB_rtl8125 := netserver
 DRV_LIB_e1000e  := netserver
-DRV_LIB_nvme    := sha256 parttable parttable_gpt
+DRV_LIB_nvme    := sha256 parttable parttable_gpt parttable_make
 DRV_OBJS     = $(patsubst %.c,$(BUILD)/udrv/%.o,$(wildcard $(filter %/$(1),$(DRIVER_DIRS))/*.c)) \
                $(patsubst %,$(BUILD)/udrv/drivers/lib/%.o,$(DRV_LIB_$(1)))
 
@@ -751,7 +751,8 @@ $(FONT_CHECK): $(FONT_TOOL_DEPS)
 # gptcheck (tools/gptcheck.c): the partition table library (the same
 # files a disk driver links) with ASan and UBSan, against tools/mkgpt.py's
 # images and thousands of mutated tables; `make check` runs it.
-GPT_SRCS := tools/gptcheck.c tools/gptmutate.c drivers/lib/parttable.c drivers/lib/parttable_gpt.c
+GPT_SRCS := tools/gptcheck.c tools/gptmutate.c tools/gptmake.c drivers/lib/parttable.c \
+            drivers/lib/parttable_gpt.c drivers/lib/parttable_make.c
 $(GPT_CHECK): $(GPT_SRCS) tools/gptcheck.h drivers/include/jam/parttable.h \
               drivers/lib/parttable_int.h kernel/include/jam/status.h
 	@mkdir -p $(dir $@)

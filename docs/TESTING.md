@@ -75,9 +75,12 @@ that a bug fix comes with a test is in
   (`build/host/jamos-sign self-test`); libfun's smooth text holds up
   against hostile input under ASan and UBSan (`build/host/fontcheck
   --check`, [below](#smooth-text)); and the partition table library
-  (`drivers/lib/parttable.c`, `drivers/lib/parttable_gpt.c`) keeps to the
+  (`drivers/lib/parttable.c`, `drivers/lib/parttable_gpt.c`,
+  `drivers/lib/parttable_make.c`) keeps to the
   driver rules and, under ASan and UBSan, gives what `tools/mkgpt.py
-  --cases` says on each of its images, refuses each GPT header rule
+  --cases` says on each of its images, reads the Jam OS table it makes
+  as Jam OS's (and as blank-in-progress after each of `create_table`'s
+  writes before the last), refuses each GPT header rule
   broken alone, and lists nothing outside the disk on thousands of
   mutated tables and a short fuzz pass (`build/host/gptcheck`); usb-bus's
   root port handling (`drivers/usb-bus/rootport.c`) leaves no port change
@@ -1777,7 +1780,7 @@ of them. Each file's header says more.
 | `tools/nvme-img.py`, `tools/nvme-trace-check.py` | the test drives of `tools/nvme-test.sh` (a Windows-like GPT disk, a second namespace, 4096-byte blocks, a damaged table; files only) and the checker of QEMU's NVMe command trace |
 | `tools/fatcheck.py <image>[@@offset] [-p N] [--require-clean]` | a read-only FAT32 checker for an image or a stick's raw device (the kill storm's, on the Mac): the FATs agree, every chain is valid (in range, no loop, no cross-link, never into a free, reserved or bad cluster), directory entries are sane (short names, `.` and `..`, long names' order and checksums), each file's size matches its chain, and lost clusters are counted and listed; FSInfo and the dirty bit are notes (`--require-clean`: dirty is damage). Exit 0 clean, 1 damage, 2 lost clusters only, 3 not FAT32. `--selftest` damages small volumes it makes in each of those ways (part of `make check`) |
 | `tools/mkgpt.py` | disk images with a GPT (the PC's Windows-like layout, Jam OS's, damaged and hostile ones) or an MBR, sparse; `--cases <dir>` makes every case `build/host/gptcheck` checks, each with the partitions it must list |
-| `build/host/gptcheck <dir> [--mutations N] [--fuzz N] [--seed S]` | the partition table library on the Mac (`tools/gptcheck.c`, `tools/gptmutate.c`) against `tools/mkgpt.py --cases`'s images, mutated tables and a fuzz pass; part of `make check` (a long pass: `--fuzz 1000000`) |
+| `build/host/gptcheck <dir> [--mutations N] [--fuzz N] [--seed S]` | the partition table library on the Mac (`tools/gptcheck.c`, `tools/gptmutate.c`, `tools/gptmake.c`) against `tools/mkgpt.py --cases`'s images, Jam OS's table as `create_table` writes it (read back after each of its writes), mutated tables and a fuzz pass; part of `make check` (a long pass: `--fuzz 1000000`) |
 | `tools/fat-label.py` | checks, or with `--fix` repairs, a FAT volume's label in an image the way other systems read it (the Makefile runs it on every image; `tools/data-test.sh` checks with it) |
 | `tools/checkdocs.py` | the docs check of `make check` |
 | `tools/checkwants.py` | every boot-image program's list ([`<wants.h>`](../user/include/wants.h)) checked by the rules libos applies to a program on `/data`, before the Makefile packs the boot image: the build's approval |

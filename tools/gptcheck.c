@@ -643,6 +643,8 @@ int main(int argc, char **argv)
         check_case(argv[1], &imgs[nimgs++], &wants[i]);
     }
     printf("gptcheck: %u cases ok\n", (unsigned)NWANTS);
+    check_make(imgs, nimgs);
+    printf("gptcheck: Jam OS's table as made, read back at each write of its order, ok\n");
     unsigned edits = check_edits(imgs, geos);   /* imgs[0] and [1] are the Windows-like ones */
     printf("gptcheck: %u header rules, each broken alone on both block sizes and headers, ok\n",
            edits);
