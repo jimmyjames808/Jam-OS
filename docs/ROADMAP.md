@@ -109,9 +109,18 @@ On Chromium's path (in roughly this order, much of it in parallel):
     every Chromium process execs the same 150-250 MB binary);
   - netstack's socket limit per opener raised; an audio backend for the
     mixer (0.5-1k);
-  - the JIT: V8 wants writable-and-executable code pages, against Jam OS's
-    W^X everywhere: a capability-granted exception (a design question;
-    `--jitless` first, which also drops WebAssembly);
+  - the JIT, by capability (the owner, 2026-10-11): Jam OS keeps "never
+    writable and executable" for every program except one that asks for
+    `right jit` in its list and is approved (`allow`, a package's approval;
+    Chromium's renderers, nothing else by default). Such a program may make
+    JIT memory: a VMO of its own with write and execute rights, private to
+    it, never file-backed and never counted as approved code (the verified
+    pages' checks skip it), marked in `ps`. Only its creator writes it
+    unless it hands on a handle (write-only, execute-only, or both).
+    Writable-and-executable pages first (V8's default on x64); stricter
+    modes (dual mapping, a per-thread write/execute switch) can be required
+    later through the same capability. Small in the kernel; its own
+    security review. `--jitless` until it lands (no WebAssembly then);
   - Jam OS's own sandbox (each renderer a job with only its handles; the
     first builds `--no-sandbox`) (1-2k).
   Off the path for the first browser: M14.5 (dynamic linking: with
