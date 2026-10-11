@@ -82,6 +82,21 @@ static bool table_overlaps(uint64_t addr, uint64_t len)
     return i < mt_count() && mt_entries()[i].base < addr + len;
 }
 
+/* op (jam_vmo_commit or jam_vmo_decommit) on the VMO range behind each
+ * table entry's part of [addr, end), skipping entries of the kinds in
+ * skip. Advice: a part op fails is left as it was. */
+static void parts_locked(uint64_t addr, uint64_t end, uint32_t skip,
+                         status_t (*op)(handle_t vmo, uint64_t off, uint64_t len))
+{
+    const struct mt_entry *t = mt_entries();
+    for (unsigned i = mt_first_after(addr); i < mt_count() && t[i].base < end; i++) {
+        uint64_t s = t[i].base > addr ? t[i].base : addr;
+        uint64_t f = t[i].base + t[i].len < end ? t[i].base + t[i].len : end;
+        if (!(t[i].kind & skip))
+            (void)op(t[i].vmo, t[i].vmo_off + (s - t[i].base), f - s);   /* advice */
+    }
+}
+
 /* What drop_locked does to the address space and the pages. */
 enum drop_how {
     DROP_UNMAP,      /* munmap: unmap each part, then give back its pages (drop_pages) */
@@ -355,17 +370,6 @@ long lx_mprotect(long addr, long len, long prot, long d, long e, long f)
     return lx_err(st);
 }
 
-/* Decommit the table's pages in [addr, end). */
-static void decommit_locked(uint64_t addr, uint64_t end)
-{
-    const struct mt_entry *t = mt_entries();
-    for (unsigned i = mt_first_after(addr); i < mt_count() && t[i].base < end; i++) {
-        uint64_t s = t[i].base > addr ? t[i].base : addr;
-        uint64_t f = t[i].base + t[i].len < end ? t[i].base + t[i].len : end;
-        (void)jam_vmo_decommit(t[i].vmo, t[i].vmo_off + (s - t[i].base), f - s);   /* advice */
-    }
-}
-
 long lx_madvise(long addr, long len, long advice, long d, long e, long f)
 {
     uint64_t size = page_round((uint64_t)len);
@@ -376,8 +380,7 @@ long lx_madvise(long addr, long len, long advice, long d, long e, long f)
     case MADV_DONTNEED:
     case MADV_FREE:
         lock_take(&mem_lock);
-        if (mt_count())
-            decommit_locked((uint64_t)addr, (uint64_t)addr + size);
+        parts_locked((uint64_t)addr, (uint64_t)addr + size, 0, jam_vmo_decommit);
         lock_give(&mem_lock);
         return 0;
     case MADV_NORMAL: case MADV_RANDOM: case MADV_SEQUENTIAL: case MADV_WILLNEED:
