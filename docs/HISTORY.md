@@ -29,20 +29,197 @@ are the kernel's version string; hashes are commits on main.
   2% of a process-to-process call; the cost was on the user side of the
   boundary.
 
+## M12.1: the code check
+
+*2026-10-09 to 2026-10-11.* A check of what M12 and G1 changed, by fresh
+agents that wrote none of it: findings listed first, then every High and
+Medium fixed one commit at a time with a test that fails without the fix
+(Lows when trivial; design questions reported and answered by the owner).
+Rescoped on 2026-10-07 from a sweep of everything since M8.6 (about
+166,000 lines) to where reading finds what tests don't: six parts, each
+with a findings document in `docs/` (`M12.1-REVIEW-*.md`): the kernel
+core, the kernel's devices, the compositor, the desktop's clients, M12's
+protocol and storage lines, and init, devmgr and the namespace. The fixes
+were all in the build that M12's PC sign-off ran.
+
+What it found, by part:
+- **Kernel core** (about 6,800 lines): one High. Any holder of a shared
+  channel end could set `CHANNEL_NO_HANDLES` on it for everyone (every
+  program's namespace holds a duplicate of init's published ends); the
+  mark is now refused unless the caller is the end's only holder. Its
+  design question, who pays for messages nobody reads, ended with the
+  owner reversing M12's answer: the writer keeps paying until the message
+  is read or dropped, also after the writer closes.
+- **Kernel devices** (VT-d, kexec, the panic screen): no High, two Medium
+  (an invalidation not confirmed after a failed map kept the pages;
+  `reset=none` was not kept across kexec). Two owner decisions came out
+  of it: a pin is charged to the driver that pins, and a read-only pin
+  works only over pages already committed; and PCIe ACS is turned on at
+  boot (root ports, switch ports, multi-function devices), and a device
+  that a peer could reach without the IOMMU gets no domain. On the PC
+  that refuses one function, the RTX card's HDMI audio (01:00.1), which
+  has no driver anyway.
+- **Compositor**: one High (Alt+Tab kept pointers to windows a client
+  could destroy: a use after free that a hostile client could repeat in a
+  loop), four Medium (animation snapshots up to 8192x8192, a late overlay
+  taking the keys, unbounded minimum sizes, log floods).
+- **Desktop clients** (libjwl, the console's window mode, libfun): one
+  High (a stream of empty batches froze the compositor's loop), two
+  Medium. A compositor that drops a slow client is now a lost connection
+  the client reconnects from (50 ms to 5 s back-off), not the end of the
+  program.
+- **M12's protocols and storage**: one High. A client that never read
+  fat's answers filled its job's message quota and took `/data` away from
+  everyone. The fix is general: every generated server stops reading a
+  client that has 8 answers or 8 KiB unread (`unread` in the IDL) until it
+  reads them.
+- **init, devmgr and the namespace**: one High, caused by that very fix:
+  the shared client ends init keeps (audio, music, the network, the
+  compositor) were held for good by the unread bound, so one flood
+  starved every later opener. init now reads and drops what lands there.
+
+The new hostile tests are worth more than the fixes: a seeded fuzzer of
+compositor batches, `idl_fuzz` (a hostile message for every generated
+dispatch), random system calls and channel races in the kernel, the
+desktop under clients doing everything careless ones do while a user
+types (`comp_chaos`), and live fuzzing of init, devmgr, fat and volumes.
+
+Open when M12 was signed off, for a follow-up: init's own private channel
+for its asynchronous calls (instead of publishing an end it does not
+read), a cap of 64 requests a turn in devmgr's and volumes' serve loops,
+the console's dead control channel and writers table, and three Lows (a
+request waiting on a volumes that ended, devmgr's 30 s first pass, init
+reading and writing `/data` settings itself).
+
+## M12: the interface review
+
+*2026-10-07 to 2026-10-11.* Signed off on the PC on 2026-10-11. The
+system calls and the service protocols were reviewed by four fresh agents
+(K: 38 findings on the system calls, 6 of them bugs; P: the protocols;
+W: the compositor's; S: the storage split), the owner answered their
+questions, and 14 fix tracks changed what was cheap to change while
+nothing depended on it: before POSIX (M13) builds on these interfaces and
+M14 freezes them. Nothing was frozen.
+
+What changed:
+- **Channels and handles.** Handles given to a send are always moved,
+  whatever the outcome; each pair of ends has its own transaction counter;
+  a channel end can be marked "receives no handles" (so a supervisor's
+  queue never holds a channel end); `handle_info` tells a program what a
+  handle is; five new error codes; one rule for time in arguments.
+- **Memory, threads and DMA.** The FS base per thread and a futex (thread
+  local storage, locks that sleep); read-only DMA pins; the table pages of
+  an IOMMU domain charged to the driver's job.
+- **genidl.** Variable-length arrays (`u8[<=N]`, `str[<=N]`), one-way
+  events that may carry handles, several protocols in a file, typed handle
+  arguments, one registry of protocol ids, and a fuzz table of every
+  protocol. `console.write` no longer copies 2048 bytes for each line.
+- **Protocols reshaped.** Input as events without the character (the
+  keymap is libos's); the compositor's transport JWL2 (flow control by the
+  kernel's count of unread messages); audio, network, USB and file
+  protocols (paths as strings, batched `readdir`, exclusive create);
+  initctl's strings; the keep channel and the namespace's messages as IDL.
+- **Storage split.** A new service, `volumes`, holds the disks,
+  filesystem services and mounts; devmgr keeps the drivers and nothing of
+  storage, and its protocol is IDL with ids of its own. The storage
+  protocols are shaped for GPT and NVMe. One supervision module serves
+  devmgr, init and volumes, and neither devmgr nor init waits inside a
+  request any more.
+- **`nocomp` removed**, against the recommendation, at the owner's
+  choice: the boot word, the "Jam OS (no compositor)" entry, the console's
+  full-screen mode and libfun's borrowed screen are gone. The desktop is
+  the only way Jam OS draws; the previous build is the way back from a bad
+  build.
+
+The PC sign-off: the build updated over the network, ACS isolation, `storm`
+at 10 and 100 kills a second (the copy matched), a stick pulled and put
+back, the network and sound, utest from the shell (594 passed), All tests
+with no problems, and `soak 10` passed (832 s on 28 CPUs, 3,176 kernel
+tests, 5 utest runs, 2,679 file cycles, 0 failed). `bench` was unchanged
+from 2026-10-07: reply-and-wait 765.5 ns, switch 30.2 ns, process to
+process 1089.3 ns ([BENCH.md](BENCH.md#m12-on-the-pc-2026-10-11)), so the
+review cost the call path nothing.
+
+What the last day taught:
+- **QEMU still hides what a real stick does.** A real SuperSpeed stick
+  answered the first command of a new owner of its bulk pipes with a
+  Transaction Error: the controller restarts its toggles at 0 and the
+  device keeps what the last owner left. usb-bus now clears both
+  endpoints' halt when it opens a pair, and usb-storage and `usbtest` run
+  Bulk-Only reset recovery before their first command.
+- **The RESULTS box was full.** The PC's many device lines used up the 24
+  lines every program shared, so utest's, usbtest's and posixtest's
+  summaries (and init's "exited with code" lines) never reached the box.
+  It holds 256 lines now (the first 192 and the newest 64) and says how
+  many fell in between.
+- **Tests that assumed an environment.** posixtest run from the shell
+  assumed descriptor 0 was `/dev/null` and that `/svc` existed; the soaks
+  timed out at 600 s under the PC's load though every loop reported 0
+  failures (the limit is 1500 s).
+- **A pipe 64 MiB ahead of its reader made a write fail.** A pipe is now
+  full at 1 MiB unread (`CHANNEL_BYTE_BOUND`), so the writer waits. And a
+  panic in `thread_reap` at the end of a test run (the boot thread's reap
+  put a NULL stack back into a full cache) was found by the init run at 2
+  CPUs and fixed before the push.
+
+## M11.6: services that outlive their process
+
+*2026-10-03 to 2026-10-05 built, 2026-10-11 on the PC.* A service's state
+lives outside its process, so a restarted service carries on where the
+dead one stopped and its clients see no error: first for `fat` (one per
+volume) and the mixer, the drivers being a later milestone.
+
+How it works: a keeper (devmgr for the filesystem services, init for the
+mixer) holds the service's channels and a state VMO. fat keeps every open
+file, view and the writes it holds back in 1.2 MiB of state at a fixed
+address; every request is an operation that can be rerun (an undo copy, the
+writes held, a commit, the send, the answer), and the state records
+whether the answer left. A warm spare (`fat-spare`, one at a time, about
+100 KiB) waits to be promoted. The mixer keeps its streams, its openers
+and its position in the sound ring, and mixes the periods since its last
+commit again. The kernel sets a mark when a reply goes out with the next
+`channel_reply_wait`, which closes the window where a duplicate reply could
+be sent. usb-storage got a fence so that a write cannot land after the
+service that asked for it was killed. `storm <from> <to> <kills/s>` copies
+a file while killing fat again and again and prints the throughput beside
+the kill rate; `tools/fatcheck.py` then checks the stick's FAT.
+
+In QEMU (with three or four other runs going): killing fat to its first
+answer took a median of 10 ms at 1, 10 and 100 kills a second; a 32 MiB
+copy matched at every rate and ran at about a third of its speed at 100
+kills a second (4.0 MB/s against 12-15 at 1 and 10); the mixer was back in
+4-6 ms with at least 123 ms of sound in hand, so no period was late. The
+independent review found no High and two Medium: a truncate to 0 that goes
+out in steps could leave a directory entry pointing at freed clusters, and
+a program allowed to play sound could make every later mixer restart fail
+until the next boot.
+
+On the PC (inside M12's sign-off, 2026-10-11): `storm` copied a 12.6 MiB
+file with the stick's fat killed at 10 and at 100 kills a second, and both
+copies matched. The restarts were slower than in QEMU: 123 and 205 kills
+landed (6.7 and 11.8 a second), a median of about 60 ms from the kill to
+the first answer (p99 0.6 s and 0.33 s), and the copy ran at 0.72 and 0.76
+MB/s. Not yet run on the PC: 0 and 1 kills a second and `storm mixer` by
+ear. In QEMU a promoted spare was no faster than starting a process;
+whether the spares earn their memory is still open.
+
 ## G1: the desktop
 
 *2026-10-05 to 2026-10-07.* A compositor of Jam OS's own that speaks the
-Wayland protocol over channels ([G1-PLAN.md](G1-PLAN.md) has the design
-and every "As built" note): dwindle tiling and floating windows, virtual
+Wayland protocol over channels (the design as built is in
+[ARCHITECTURE.md](../ARCHITECTURE.md#boot); the keys are in
+[USING.md](USING.md)): dwindle tiling and floating windows, virtual
 screens made as needed, the frosted top bar with its popovers, search,
 Alt+Tab, notices (held until the splash is over), up to 16 terminals
 with copy and paste, Jamjar as a window, the splash as a boot overlay, a
 calm panic screen, cursors of its own, and a layout that survives the
 compositor's own restart. Signed off on the PC (now in its new case):
-the checklist ([G1-SIGNOFF.md](G1-SIGNOFF.md)), All tests, `soak 10`
+the checklist (hostile programs against the live desktop, the desktop by hand, the tests), All tests, `soak 10`
 (3672 kernel tests, 8 utest runs, 2253 file cycles, 0 FAILED, the IOMMU
 on by default), and a `soak 2` after the last fixes (+6.9 KB of message
 bytes). 502 commits pushed after the full Mac regression.
+G1 kept a boot entry without the compositor (`nocomp`) until its sign-off;
+M12 removed it, with the full-screen console it booted.
 
 What the last day found:
 - **X1's hostile clients, run against the live compositor, found a
@@ -58,6 +235,203 @@ What the last day found:
 - **The desktop's paint threads share the CPUs** with tests that assumed
   an idle machine: the pathstat tests now measure again when their CPU was
   shared, and the staged scheduler races run above every user thread.
+
+## M11.5: the performance pass
+
+*2026-10-02 to 2026-10-07.* The IPC fast path, as M5.5 was the first pass,
+before M12 reviews the interfaces and M14 freezes them. The target was a
+process-to-process call at 600 ns on the PC (1533 ns at M8.6). Reviewed
+(no High or Medium finding), measured on the PC on 2026-10-04 and again
+with every follow-up on 2026-10-07 ([BENCH.md](BENCH.md#m115-with-every-follow-up-pc-2026-10-07)).
+
+What was built, by track:
+- **Stage 0, the probes**: per-call counts (system calls, copies, locks,
+  scheduler passes, FPU saves, CR3 loads) and timelines of one round trip,
+  `bench`'s `path:` lines, so each change could be checked against a count
+  before a stopwatch.
+- **The lock checker's fast path** (no interrupt toggles on every lock; the
+  held list a stack): the spinlock pair from 26.7 to 13.6 ns.
+- **One system call for a server's turn**: `channel_reply_wait` sends the
+  reply and waits for the next request (or a port's packet) in one call;
+  a reader waiting in it is handed the message directly (the hand-off), so
+  a round trip against such a server went from 5 system calls to 2.
+  genidl's generated servers use it, and `_within` calls carry a timeout
+  without a clock read.
+- **One copy in, one out** (the message built in the kernel stack buffer
+  is gone) and a per-thread message slot for a message to a waiting reader
+  (no allocation or charge).
+- **No FPU save on a voluntary switch**: a switch inside a system call
+  keeps only MXCSR and the x87 control word, as a C call does.
+- **Per-operation lines** (`perop`: a cached 4 KiB read, a block read) and
+  `tools/linuxbench` for a Linux column on the same PC (not yet run on a
+  real Linux).
+
+On the PC: the context switch regression is gone (92 ns at M8.6, 30.1-30.8
+ns now, M5.5's number), most likely through the lock checker's fast path
+which took the interrupt toggles off every lock. A call to a
+reply-and-wait server takes **765 ns**: 165 ns over the target. The owner
+settled on 2026-10-07 that the target is read on that line with the lock
+checker on (checker off it would be about 670 ns), and the last 165 ns
+is a later speed pass. bench-echo's old process-to-process call went from
+1533 to 1089 ns.
+
+What it taught:
+- **The hand-off gained nothing at first** (886.7 ns off, 884.8 on),
+  though the counts showed it firing: the handed wake still took the run
+  queue lock and the woken reader took its endpoint's lock again. Taking
+  those out (15 locks a round trip to 11) made it a win (765 against 786)
+  and the slots saved another 84 ns.
+- **Count first, time second.** The counts are exact in QEMU, where the
+  times are not, and every change was checked against its count before the
+  PC was asked.
+- **QEMU cannot measure page-related lines**: stores to some physical
+  pages cost 100-400 times a normal page there.
+
+## M11: the IOMMU
+
+*2026-10-04 to 2026-10-07.* A device can reach only the memory its driver
+pinned for it and can raise only the interrupts it was given: Intel VT-d,
+DMA remapping and interrupt remapping, behind `dma_cap`. Signed off on the
+PC on 2026-10-07 and on by default since (`iommu=off` turns it off);
+reviewed (no High, three Medium, eleven Low). With it, drivers count as
+contained, not only crash-isolated.
+
+What was built:
+- **Stage 0, a read-only probe** run on the PC first: one remapping unit
+  at 0xfed91000 covering every PCI function, no RMRR, 256 domains,
+  4-level tables, queued invalidation, interrupt remapping with x2APIC
+  ids, page walks not coherent with the CPU's caches (so every table line
+  the kernel writes is flushed), and at a cold boot everything off.
+- **One domain per `dma_cap`**, holding exactly what it pinned (IOVA =
+  physical address); a function with no driver sits in a blocking domain;
+  RMRR regions get boot domains; the table pages are charged to a job
+  (M12 moved the charge to the driver's). A closed cap's domain is
+  quarantined until the unit confirms it gone.
+- **The unit**: an invalidation queue with a status slot per waiter (100 ms
+  deadline, no lock held while waiting), the fault interrupt and a fault
+  ring, a driver muted after 8 faults. The takeover of a unit the firmware
+  left translating, and the jump off before a kexec or a panic so the next
+  kernel starts clean.
+- **Interrupt remapping**: one table of 1024 entries shared by all units;
+  MSI and the I/O APIC's pins validated against the requester.
+- **Checks and tests**: hda's `vtdtest` word reads a ring from a page the
+  driver unpinned and points the response ring at the interrupt window;
+  the boot entries "Jam OS (IOMMU)" and "IOMMU checks"; the `iommu`
+  command; every device's area test run with the IOMMU on in QEMU
+  (`QEMU_IOMMU`). Every encoder was checked bit by bit against Intel's VT-d
+  4.1 specification before the pieces were wired together.
+
+On the PC: the checks entry shows the blocked read and the blocked write
+to the interrupt window (fault reason 25h, "compatibility-format interrupt
+blocked"); every device worked with no fault; All tests with it on (382
+passed) and `soak=10 iommu=on` passed (4026 kernel tests, 9 utest runs,
+2186 file cycles). A pin and unpin of one page costs about 5 us (an
+invalidation wait each way), 64 pages 23 us, so 0.36 us a page batched.
+
+What it taught:
+- **QEMU's unit is not the PC's**: caching mode on, an explicit scope per
+  function instead of INCLUDE_PCI_ALL, and old-format writes to the
+  interrupt window pass through, so the window check is only the PC's.
+- **The review's Mediums** were all about a unit that does not snoop: the
+  root table's cleared page was never flushed, a storm of fault events
+  needed the interrupt masked and the log thread polling, and a domain
+  the unit does not confirm gone must keep its pages (tried again every
+  second).
+- **A function's fault count must start again at each attach**: a new driver
+  after one that had faulted 8 times was muted at its first fault.
+
+## M9.5: network streams
+
+*2026-10-02 to 2026-10-04.* TCP and sockets, built once properly on M9's
+stack. Reviewed (nothing High or Medium). Every frame is still in the
+configured network mode.
+
+What was built:
+- **Socket data on shared rings.** Each socket is a pair of shared-memory
+  rings to netstack (as netdev and the mixer), UDP too; setup stays IDL.
+  Fair shares of the rings, with a reserve for the network's own services.
+- **TCP** in lwIP with stream sockets (`connect`, `listen`, `accept`,
+  `send`, `recv`, `shutdown`, `close`), backpressure by ring room (netstack
+  never waits on a program), per-program limits.
+- **Waiting on many sockets** (`<netwait.h>`, on the kernel's ports), the
+  groundwork M13's `poll` and `select` stand on.
+- **Listening is a permission of its own**: `svc net listen` in a
+  program's list, approved with `allow`; nothing listens by default.
+  Ports below 1024 are another (`net-low`).
+- **Programs**: `fetch` (plain HTTP downloads), `serve <file> [port]` (one
+  file shared read-only from the background), `speed` with `tools/speed.py`
+  on the Mac, and SNTP, which sets the clock from the network.
+- **The RTL8125 driver fails closed** (found by the M9 review): it stops
+  the chip and exits when its tally shows a frame it did not queue.
+
+On the PC the first `speed` over 5 GHz Wi-Fi gave 8.9 MB/s out and 9.0
+in: 64,240 bytes (the unscaled window) every 6.4 ms round trip is about
+10 MB/s, so the window was the limit, not the link. **Window scaling** (shift 6, up to 2 MiB) with 2
+MiB rings for the bulk programs, and **SACK with out-of-order segments
+kept** (lwIP dropped everything past a hole), then gave 34.7 MB/s out and
+11.6 in; UDP ran at 47 MB/s, the Wi-Fi's limit. netstack's worst-case
+memory went from 17 to about 30 MiB.
+
+No separate PC sign-off was recorded for M9.5 or M9. M9's features and
+M9.5's `speed` and `sntp` ran on the PC, and every later PC sign-off (M11,
+G1, M12) ran `soak 10` on a plain boot, with the network up and netlog
+sending the log to the Mac. No PC result is recorded for `fetch` and
+`serve`.
+
+## M9: networking
+
+*2026-10-02.* Jam OS on the network, through its own driver for the
+board's Realtek RTL8125B and a network stack in a process of its own.
+Reviewed (no High; Mediums such as netstack's loop skipping its port wait
+while a channel had work, and kexec dropping the network word so the PC
+came back without its network).
+
+What was built, in stages:
+- **The RTL8125 driver** (`drivers/rtl8125`) and QEMU's e1000e for the
+  tests, behind one netdev contract of shared rings. **The VLAN rule**,
+  enforced in the drivers: every frame goes out in the configured mode only
+  (the owner's builds: tagged VLAN 21; a public build: plain untagged,
+  never a tagged frame) and other frames are dropped; `vlan=off` leaves the
+  card alone. The default is the build's: `local.mk` sets the owner's.
+- **netstack** (lwIP: IPv4, ARP, ICMP, UDP) with `/svc/net` sockets;
+  **dhcp** and **dns** as processes of their own (`host`, `ping <name>`),
+  a slow peer delaying only its own requests; **netlog**, the whole boot
+  log sent to the Mac as it is written.
+- **`update`**: the Mac's build fetched, its manifest's Ed25519 signature
+  checked against the key in the running build (90 us on the PC), then each
+  file's size and hash, and run by kexec in RAM; `update -w` also writes
+  it to the stick, keeping the previous build as a boot entry. The first
+  signed build went on by `make flash`; the manifest format is stable
+  since (new lines are skipped by builds that do not know them).
+- `tools/net-vlan-test.sh`: one QEMU boot with every path that transmits,
+  whose capture holds nothing but the configured mode (7,129 frames, all
+  tagged 21), and the same commands with `vlan=off` sending nothing.
+
+On the PC (2026-10-02): a listen-only probe first (the chip, the link at
+1000 full in 2.2 s, a trunk port carrying VLANs 10, 11, 20 and 21 and
+untagged traffic, wake-on-LAN left armed by the firmware), then sending,
+receiving, `ping 1.1.1.1`, `ping google.com`, a DHCP lease, netlog and
+`update` from the Mac, twice in a row.
+
+What the PC taught:
+- **A descriptor of 16 bytes, not 32.** With the chip's extended mode
+  bit set, it steps through the transmit ring 32 bytes at a time and read
+  only every other descriptor of the driver's. Half the frames went out,
+  the driver waited for descriptor 1 for good, and a doorbell storm sat on
+  top.
+- **The receive address is written again at every hand-back.** Receive
+  stopped about 75 s in, after the chip's first lap of 256 descriptors: it
+  shares the descriptor's address field with a timestamp, so a frame was
+  written wherever that pointed. 7,609 frames in 148 s, none missed,
+  after the fix.
+- **`update -w` did not finish in 400 s on the PC.** The ESP's clusters
+  are one 512-byte sector, so fat sent about 40,000 one-sector writes
+  (445 s in QEMU with a stick throttled to 100 writes a second). Writes of
+  a file opened for gathering are now held and sent in 64 KiB runs, unlinks
+  batched, and usb-bus's bulk buffer is 68 KiB: 5.9 s in the same QEMU
+  test, 31 s on the PC.
+- **The PC's port is a trunk**, so Jam OS drops what is not its mode; the
+  switch could enforce the same rule as well.
 
 ## M8.6: cleanup and polish
 
