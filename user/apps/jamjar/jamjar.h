@@ -485,6 +485,11 @@ bool toast_shown(const struct app *a);
 /* The elapsed time now, from the snapshot and the time since it. */
 uint64_t now_elapsed(const struct app *a, uint64_t t);
 
-/* selftest.c; covertest.c, its covers part */
+/* selftest.c; covertest.c, its covers part; redtest.c, its redraw part */
 int  jamjar_selftest(void);
 void test_covers(void);
+void test_redraw(void);
+/* selftest.c, for redtest.c: the app on a w x h screen playing a fixture
+ * track with loud bands (drawing into scr.s), and fixture path i. */
+struct app *test_frame_app(int w, int h);
+const char *test_fixture(int i);
