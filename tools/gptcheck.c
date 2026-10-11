@@ -454,6 +454,7 @@ struct want {
 };
 
 #define GPT_OK(n, u, k) { n, PT_SCHEME_GPT, PT_BAD_NONE, PT_BAD_NONE, 0, 0, 0, k, u, 0 }
+#define CUT_NOT(n)      { n, PT_SCHEME_NONE, PT_BAD_ZERO, PT_BAD_ZERO, 0, 0, 0, PT_KIND_OTHER, 0, 0 }
 enum { N_ = PT_SCHEME_NONE, M_ = PT_SCHEME_MBR, G_ = PT_SCHEME_GPT, OT = PT_KIND_OTHER,
        BL = PT_KIND_BLANK, JA = PT_KIND_JAMOS };
 
@@ -497,6 +498,26 @@ static const struct want wants[] = {
     { "jamos-cut-primary", N_, PT_BAD_ZERO, PT_BAD_NONE, 0, 0, 1, BL, 0, 0 },
     { "jamos-cut-bad", N_, PT_BAD_CRC, PT_BAD_NONE, 0, 0, 0, OT, 0, 0 },
     { "jamos-cut-backup-bad", N_, PT_BAD_NONE, PT_BAD_CRC, 0, 0, 0, OT, 0, 0 },
+    /* The cut after create_table's first write (the backup entry array alone): exactly
+     * pt_jamos_make's bytes and nothing else in the ends is blank-in-progress; any other byte,
+     * or an array that isn't the maker's, is someone else's disk. */
+    { "jamos-cut-array", N_, PT_BAD_ZERO, PT_BAD_ZERO, 0, 0, 1, BL, 0, 0 },
+    { "jamos-cut-array-4k", N_, PT_BAD_ZERO, PT_BAD_ZERO, 0, 0, 1, BL, 0, 0 },
+    CUT_NOT("jamos-cut-array-poke-entry"),
+    CUT_NOT("jamos-cut-array-poke-rest"),
+    CUT_NOT("jamos-cut-array-poke-late"),
+    { "jamos-cut-array-poke-header", N_, PT_BAD_ZERO, PT_BAD_SIGNATURE, 0, 0, 0, OT, 0, 0 },
+    CUT_NOT("jamos-cut-array-poke-before"),
+    CUT_NOT("jamos-cut-array-poke-head"),
+    { "jamos-cut-array-poke-primary", N_, PT_BAD_SIGNATURE, PT_BAD_ZERO, 0, 0, 0, OT, 0, 0 },
+    CUT_NOT("jamos-cut-array-shifted"),
+    CUT_NOT("jamos-cut-array-short"),
+    CUT_NOT("jamos-cut-array-name"),
+    CUT_NOT("jamos-cut-array-attrs"),
+    CUT_NOT("jamos-cut-array-zero-guid"),
+    CUT_NOT("jamos-cut-array-same-guid"),
+    CUT_NOT("jamos-cut-array-third"),
+    CUT_NOT("jamos-cut-array-windows"),
     GPT_OK("pmbr-status", 4, OT),
     { "mbr", M_, PT_BAD_ABSENT, PT_BAD_ABSENT, 0, 0, 0, OT, 2, 0 },
     { "mbr-bad", M_, PT_BAD_ABSENT, PT_BAD_ABSENT, 0, 0, 0, OT, 4, 3 },

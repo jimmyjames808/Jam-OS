@@ -34,6 +34,10 @@ One image's options:
                     is then no longer at the last block)
   --poke OFF        one nonzero byte at byte offset OFF (negative: from the
                     end), for "almost blank"
+  --cut WHAT        write only the first piece of Jam OS's create_table (the
+                    backup entry array: WHAT backup-array), the disk it
+                    leaves when cut right after it; backup-array-shifted: the
+                    array one block early, not where the maker puts it
 
 Images are sparse files (only the tables and --fill's data are written),
 and the same every time: GUIDs come from the image's options, not from a
@@ -173,12 +177,15 @@ class Gpt:
             a[i * self.size:(i + 1) * self.size] = gpt_entry(e, self.size)
         return a
 
-    def write(self, breaks=()):
+    def write(self, breaks=(), cut=None):
         d, bs = self.d, self.d.bs
         a = self.array()
         crc = zlib.crc32(a)
         end = d.blocks - 1
         backup_array = end - self.array_blocks
+        if cut:   # create_table cut after its first write: the backup array alone
+            d.put((backup_array - (cut == "backup-array-shifted")) * bs, a)
+            return
         p = gpt_header(bs, 1, end, self.first, self.last, self.guid, 2, self.count, self.size, crc)
         bguid = made_guid("other disk") if "disagree" in breaks else self.guid
         b = gpt_header(bs, end, 1, self.first, self.last, bguid, backup_array, self.count,
@@ -262,7 +269,7 @@ def layout_jamos(g):
 
 def make(out, layout="windows", size=None, bs=512, entries=128, entry_size=128, parts=(),
          fills=(), hybrid=False, mbr="pmbr", breaks=(), grow=0, poke=None, raw=None,
-         listed=True):
+         listed=True, cut=None):
     """Write one image; return the .expect lines. listed=False: the case's
     table is unreadable (both copies damaged, or the backup gone), so
     nothing is listed."""
@@ -285,11 +292,13 @@ def make(out, layout="windows", size=None, bs=512, entries=128, entry_size=128, 
         ents = [(0, 0xEE, 1, min(d.blocks - 1, 0xFFFFFFFF))]
         if hybrid:
             ents.append((0, 0x0C, mib_blocks(d, 1), mib_blocks(d, 100)))
+        if cut:
+            mbr, listed = "cut", False
         if mbr == "pmbr":
             d.put(0, mbr_block(ents))
         elif mbr == "pmbr-status":   # a protective MBR with a junk status byte
             d.put(0, mbr_block([(0x7F,) + ents[0][1:]]))
-        g.write(breaks)
+        g.write(breaks, cut)
         expect = g.expect() if listed and mbr.startswith("pmbr") else []
         if mbr == "fat32":
             ents = [(0, 0x0C, mib_blocks(d, 1), mib_blocks(d, 100))]
@@ -371,6 +380,37 @@ def jamos_name(g):
     g.entries[1] = (tg, ug, s, n, a, name_units("Jam OS Data"))
 
 
+# The cut after create_table's first write (--cut backup-array), and what
+# is not that: each of these has one thing wrong with the array or its
+# surroundings (the library's rule is exact, not "non-zero").
+def cut_short(g):
+    tg, ug, s, n, a, u = g.entries[0]
+    g.entries[0] = (tg, ug, s, n - 1, a, u)
+
+
+def cut_name(g):
+    tg, ug, s, n, a, _ = g.entries[0]
+    g.entries[0] = (tg, ug, s, n, a, name_units("Jam OS ESP "))
+
+
+def cut_attrs(g):
+    tg, ug, s, n, _, u = g.entries[1]
+    g.entries[1] = (tg, ug, s, n, 1, u)
+
+
+def cut_zero_guid(g):
+    tg, _, s, n, a, u = g.entries[0]
+    g.entries[0] = (tg, bytes(16), s, n, a, u)
+
+
+def cut_same_guid(g):
+    g.entries[1] = g.entries[1][:1] + (g.entries[0][1],) + g.entries[1][2:]
+
+
+def cut_third(g):
+    g.add(2, "basic", g.last - 100, 50, "extra")
+
+
 CASES = {
     "windows": dict(layout="windows"),
     "windows-4k": dict(layout="windows", bs=4096),
@@ -411,6 +451,23 @@ CASES = {
     "jamos-cut-primary": dict(layout="jamos", mbr="zero", breaks=("primary-zero",)),
     "jamos-cut-bad": dict(layout="jamos", mbr="zero", breaks=("primary-crc",)),
     "jamos-cut-backup-bad": dict(layout="jamos", mbr="zero", breaks=("backup-crc",)),
+    "jamos-cut-array": dict(layout="jamos", cut="backup-array"),
+    "jamos-cut-array-4k": dict(layout="jamos", bs=4096, cut="backup-array"),
+    "jamos-cut-array-poke-entry": dict(layout="jamos", cut="backup-array", poke=-33 * 512 + 100),
+    "jamos-cut-array-poke-rest": dict(layout="jamos", cut="backup-array", poke=-33 * 512 + 300),
+    "jamos-cut-array-poke-late": dict(layout="jamos", cut="backup-array", poke=-10 * 512),
+    "jamos-cut-array-poke-header": dict(layout="jamos", cut="backup-array", poke=-512 + 1),
+    "jamos-cut-array-poke-before": dict(layout="jamos", cut="backup-array", poke=-34 * 512),
+    "jamos-cut-array-poke-head": dict(layout="jamos", cut="backup-array", poke=20 * 512),
+    "jamos-cut-array-poke-primary": dict(layout="jamos", cut="backup-array", poke=512 + 7),
+    "jamos-cut-array-shifted": dict(layout="jamos", cut="backup-array-shifted"),
+    "jamos-cut-array-short": dict(layout="jamos", cut="backup-array", raw=cut_short),
+    "jamos-cut-array-name": dict(layout="jamos", cut="backup-array", raw=cut_name),
+    "jamos-cut-array-attrs": dict(layout="jamos", cut="backup-array", raw=cut_attrs),
+    "jamos-cut-array-zero-guid": dict(layout="jamos", cut="backup-array", raw=cut_zero_guid),
+    "jamos-cut-array-same-guid": dict(layout="jamos", cut="backup-array", raw=cut_same_guid),
+    "jamos-cut-array-third": dict(layout="jamos", cut="backup-array", raw=cut_third),
+    "jamos-cut-array-windows": dict(layout="windows", cut="backup-array"),
     "pmbr-status": dict(layout="windows", mbr="pmbr-status"),
     "mbr": dict(layout="mbr"),
     "mbr-bad": dict(layout="mbr", size=64 << 20, parts=[
@@ -490,6 +547,10 @@ def main():
             kw["grow"] = size_arg(v)
         elif a == "--poke":
             kw["poke"] = int(v, 0)
+        elif a == "--cut":
+            if v not in ("backup-array", "backup-array-shifted"):
+                sys.exit("mkgpt: --cut backup-array | backup-array-shifted")
+            kw["cut"] = v
         else:
             sys.exit("mkgpt: unknown option %s" % a)
     make(out, parts=parts, fills=fills, breaks=tuple(breaks), **kw)
