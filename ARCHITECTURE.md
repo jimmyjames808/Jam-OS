@@ -700,7 +700,9 @@ Every driver and service is a userspace process from the start.
     driver, for the supervision tests).
   - **volumes and the filesystems**: `volumes` (mounts, remount, kill,
     sync, test disks), `volesp` (the ESP made writable, init's alone),
-    `disks` (devmgr's disks, told to volumes) and `mounts` (what volumes
+    `voldisks` (the disk list, a drive's digest and health: the shell's,
+    through init), `volinstall` (a blank NVMe drive made a Jam OS disk,
+    init's alone), `disks` (devmgr's disks, told to volumes) and `mounts` (what volumes
     tells its watchers), `fs` and `file` (a filesystem to programs),
     `fsctl` (volumes stopping a filesystem service; its counters, for
     tests).
