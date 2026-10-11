@@ -287,10 +287,12 @@ bool t_hid_leds(void)
     return mock_finish(&m, 0);
 }
 
-/* More lights than hid reads a turn (64), queued while it waits for the
- * keyboard to take the first: the last one is lit. DR_INPUT is bound
- * PERSISTENT, which fires when the channel turns readable, not while it
- * stays so: hid read 64 and never the rest, nor any light after them. */
+/* More lights than hid reads in a few turns (64 each), queued while it
+ * waits for the keyboard to take the first: the last one is lit. DR_INPUT
+ * is bound PERSISTENT, which fires when the channel turns readable, not
+ * while it stays so: hid read one turn for the first light's packet and
+ * one for the second's (the channel was empty while it took the first),
+ * and never the rest, nor any light after them. */
 bool t_hid_leds_storm(void)
 {
     hcur = "hid_leds_storm";
@@ -301,7 +303,7 @@ bool t_hid_leds_storm(void)
     CHECK_EQ(leds(&m, l, 8), 1);   /* dark at start */
     /* Nobody serves DR_USB meanwhile: the first one's SET_REPORT waits,
      * and the rest (the same lights: no request) queue behind it. */
-    for (unsigned i = 0; i < 99; i++)
+    for (unsigned i = 0; i < 199; i++)
         CHECK_ST(input_leds(m.input, INPUT_LED_NUM), OK);
     CHECK_ST(input_leds(m.input, INPUT_LED_CAPS), OK);
     uint64_t until = now() + 10 * NS_PER_S;
