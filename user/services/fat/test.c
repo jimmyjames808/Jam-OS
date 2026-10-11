@@ -5,7 +5,8 @@
  * reach them.
  *
  *   die=<point>:<n>   the process ends the n-th time it reaches <point>
- *                     (FAT_DIE_*: held, commit, send, reply, answered),
+ *                     (FAT_DIE_*: held, commit, send, reply, answered,
+ *                     map, supply),
  *                     as a kill there would end it: what a successor then
  *                     finds is what a kill at that instruction leaves;
  *   crash-on=<name>   an fs.stat of a path whose last name is <name>
@@ -24,7 +25,8 @@
 
 static const char *const point_names[FAT_DIE_COUNT] = {
     [FAT_DIE_HELD] = "held", [FAT_DIE_COMMIT] = "commit", [FAT_DIE_SEND] = "send",
-    [FAT_DIE_REPLY] = "reply", [FAT_DIE_ANSWERED] = "answered",
+    [FAT_DIE_REPLY] = "reply", [FAT_DIE_ANSWERED] = "answered", [FAT_DIE_MAP] = "map",
+    [FAT_DIE_SUPPLY] = "supply",
 };
 
 static struct {

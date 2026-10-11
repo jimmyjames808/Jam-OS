@@ -18,8 +18,9 @@
  * cache.c the write-through block cache under them;
  * fsops.c the `fs` methods; dirs.c the cursors that make listing a
  * directory linear; fileops.c the open-file table and the `file`
- * methods; views.c the narrower `fs` channels (fs.view); path.c paths,
- * names, times and the FRESULT -> ERR_* mapping. */
+ * methods; views.c the narrower `fs` channels (fs.view); pager.c the
+ * mapped files (file.map) and the page requests of the mount's pager;
+ * path.c paths, names, times and the FRESULT -> ERR_* mapping. */
 #pragma once
 
 #include <stdbool.h>
@@ -33,6 +34,9 @@
 #include "ffx.h"
 
 #define FAT_MAX_FILES  32          /* open files at once */
+#define FAT_MAX_MAPS   32          /* mapped files at once (file.map's VMOs: pager.c) */
+/* FatFs files open at once: one per open slot, one per mapped file. */
+#define FAT_OPENS      (FAT_MAX_FILES + FAT_MAX_MAPS)
 #define FAT_DIR_CURSORS 8          /* directories being listed at once (dirs.c) */
 #define FAT_FILE_BUF   (64u << 10) /* each open file's transfer buffer, bytes */
 #define FAT_SECTOR     512u        /* the only sector size (FF_MAX_SS) */
@@ -51,6 +55,7 @@
 #define FAT_KEY_BLOCK       2ull
 #define FAT_KEY_CTL         3ull
 #define FAT_KEY_OWN         4ull
+#define FAT_KEY_PAGER       5ull
 #define FAT_KEY_FILE_BIT    (1ull << 62)
 #define FAT_KEY_FILE(s, g)  (FAT_KEY_FILE_BIT | (uint64_t)(g) << 16 | (uint64_t)(s))
 #define FAT_KEY_VIEW_BIT    (1ull << 61)
@@ -96,6 +101,7 @@ struct fat_vol {
     handle_t    serve;        /* the fs channel (FAT_SR_SERVE) */
     handle_t    own;          /* the spawner's own fs channel (FAT_SR_OWN), or HANDLE_INVALID */
     handle_t    ctl;          /* this instance's fsctl channel, or HANDLE_INVALID */
+    handle_t    pager;        /* FAT_SR_PAGER: the mount's pager, or HANDLE_INVALID */
     struct idl_held held;     /* channels held back by the unread bound (request.c's note) */
     /* How the last instance ended, from argv (FAT_ARG_KILLED, FAT_ARG_CRASHED):
      * NULL for a first start. Only a crash counts against the request in
@@ -130,7 +136,7 @@ extern struct fat_vol vol;
  * (a test's RAM disk) fat makes one of its own and always starts fresh. */
 
 #define FAT_STATE_KIND 0x20746166u   /* "fat ": svcstate's kind */
-#define FAT_STATE_LAYOUT 5u          /* bump on any change to struct fat_state, or to the
+#define FAT_STATE_LAYOUT 6u          /* bump on any change to struct fat_state, or to the
                                       * fs and file requests its slots replay */
 #define FAT_HOLD_MAX  2304u   /* sectors held at most: a MiB of a file, the FAT sectors
                                * that chain it (on one-sector clusters, 16 per copy) */
@@ -165,9 +171,11 @@ struct fat_disk {
     uint32_t nfats;           /* copies (1 or 2) */
 };
 
-/* A file that is open, once however many fs.open calls share it. */
+/* A file that is open, once however many fs.open calls and mapped files
+ * share it. It is in use while a slot of files[] or of maps[] names it. */
 struct fat_open {
-    uint32_t refs;            /* slots of files[] that use it; 0: free */
+    uint32_t refs;            /* slots of files[] that use it (maps[] aren't counted: pager.c's
+                               * maps_use_open asks the table) */
     bool     unsynced;        /* written since its last f_sync */
     uint64_t place;           /* its directory entry's place (ffx.h): what makes two opens
                                * one file, whatever path reached it (fileops.c) */
@@ -224,7 +232,7 @@ struct fat_undo {
     uint64_t seq;             /* its request's slot number; 0: a close, which has no slot */
     uint32_t closing;         /* a close's: the slot of files[] it closes */
     uint32_t used;            /* bytes of log in use (each record, then this, released) */
-    uint32_t opens;           /* bit i: opens[i] is in the log */
+    uint64_t opens;           /* bit i: opens[i] is in the log */
     uint32_t held;            /* the hold's sectors when it began ... */
     uint32_t runs;            /* ... and its runs */
     uint32_t nsect;           /* held sectors saved before being overwritten in place */
@@ -235,15 +243,32 @@ struct fat_undo {
     _Alignas(PAGE_SIZE) uint8_t sect[FAT_UNDO_SECTORS][FAT_SECTOR];
 };
 
+/* A mapped file (pager.c's header): a VMO of the mount's pager made by
+ * file.map, under a key that names this slot. Its VMO lives in its
+ * mappers, never in the state: the slot goes when the pager says the VMO
+ * is gone (PAGER_REQ_GONE). */
+struct fat_map {
+    bool     used;            /* the slot names a VMO the pager may ask pages of */
+    uint8_t  kind;            /* FILE_MAP_READ (the file's shared one) or FILE_MAP_EXEC */
+    uint32_t open;            /* the file: an index into opens[] */
+    uint64_t key;             /* the VMO's key: FAT_MAP_KEY(seq, this slot) */
+    uint64_t size;            /* the VMO's size in bytes (whole pages) */
+};
+/* A key: a number never used before for this pager (seq), and the slot. */
+#define FAT_MAP_KEY(seq, i) ((uint64_t)(seq) << 8 | (uint64_t)(i))
+#define FAT_MAP_SLOT(key)   ((unsigned)((key) & 0xff))
+
 /* What the request numbered `seq` made that its reply hands out (fs.open's
- * file, fs.view's view): a successor that finds the request committed
- * tells by that slot's channel whether the reply arrived (adopt.c). */
+ * file, fs.view's view, file.map's VMO): a successor that finds the
+ * request committed tells by that slot's channel whether the reply arrived
+ * (adopt.c). */
 #define FAT_MADE_FILE 1u
 #define FAT_MADE_VIEW 2u
+#define FAT_MADE_MAP  3u
 struct fat_made {
     uint64_t seq;             /* the request (a slot's seq); 0: none */
-    uint32_t kind;            /* FAT_MADE_FILE or FAT_MADE_VIEW */
-    uint32_t index;           /* its slot of files[] or views[] */
+    uint32_t kind;            /* FAT_MADE_FILE, FAT_MADE_VIEW or FAT_MADE_MAP */
+    uint32_t index;           /* its slot of files[], views[] or maps[] */
 };
 
 struct fat_state {
@@ -253,9 +278,12 @@ struct fat_state {
                                             * found (disk_watch): what a successor adopts */
     uint32_t        close_crashes;         /* crashes while operation ops_done + 1, a
                                             * close, was in progress (adopt.c) */
-    struct fat_open opens[FAT_MAX_FILES];  /* at most one per slot of files[] */
+    struct fat_open opens[FAT_OPENS];      /* at most one per slot of files[] and of maps[] */
     struct fat_file files[FAT_MAX_FILES];
     struct fat_view views[FAT_VIEWS];
+    struct fat_map  maps[FAT_MAX_MAPS];
+    uint64_t        map_seq;               /* the last key's number: keys are never used twice
+                                            * (pager.c: it starts from the clock) */
     uint64_t        ops_done;              /* operations committed: a close's commit word */
     struct fat_post post;                  /* the committed request's send */
     struct fat_made made;                  /* what the last request that made a slot made */
@@ -398,6 +426,8 @@ status_t mount(bool *no_volume);
 
 #define FAT_KEEP_FILE(i) ((uint32_t)(i))                  /* files[i]'s keep slot */
 #define FAT_KEEP_VIEW(i) ((uint32_t)(FAT_MAX_FILES + (i)))  /* views[i]'s */
+#define FAT_KEEP_MAP(i)  ((uint32_t)(FAT_MAX_FILES + FAT_VIEWS + (i)))   /* maps[i]'s */
+#define FAT_KEEP_SLOTS   (FAT_MAX_FILES + FAT_VIEWS + FAT_MAX_MAPS)
 
 /* Put duplicates of hs[0..n) with the keeper as slot `slot`: before the
  * request that made them commits. keep_put's errors. */
@@ -419,6 +449,8 @@ enum fat_die {
     FAT_DIE_SEND,             /* after a block write of what was held went out */
     FAT_DIE_REPLY,            /* sent, not answered */
     FAT_DIE_ANSWERED,         /* answered: its reply waits for the next take or port wait */
+    FAT_DIE_MAP,              /* file.map made its VMO (and kept it), not committed */
+    FAT_DIE_SUPPLY,           /* a page request read from the disk, not supplied */
     FAT_DIE_COUNT,
 };
 /* An argv word that is a test power: taken (true), or not one. */
@@ -437,6 +469,8 @@ bool     test_fixed_time(void);
 void     undo_begin(enum fat_op kind, uint64_t op, uint64_t seq, const struct fat_file *f);
 /* opens[] entry o is about to change: into the copy, once per operation. */
 void     undo_open(const struct fat_open *o);
+/* maps[] entry m is about to change: into the copy. */
+void     undo_map(const struct fat_map *m);
 /* Hold index i, held by an earlier (committed) operation, is about to be
  * overwritten: its bytes into the copy. false: no room (the caller holds
  * the sector anew instead). */
@@ -613,6 +647,44 @@ status_t views_remake(uint32_t i, handle_t *out);
  * generation gen16 (its low 16 bits) and its channel came back. */
 bool     views_chan(uint32_t i, uint32_t gen16, struct fat_chan *out);
 
+/* ---- pager.c ---------------------------------------------------------------------- */
+
+/* After the state is adopted or set up (main.c): the pager waited on, the
+ * requests a dead instance took and never answered taken again
+ * (PAGER_NEXT_AGAIN), and the first served. Nothing without a pager. */
+void     pager_start(void);
+/* The pager's binding fired: one request served, the binding made again. */
+void     pager_event(void);
+/* The requests queued now, served (a bounded number): before each fs
+ * request (files_reap), so that a mapping let go before it (its
+ * PAGER_REQ_GONE) is seen first, as a closed file is. */
+void     pager_reap(void);
+/* file.map of opens[o] (fileops.c checked the caller): a VMO of the
+ * file's pages into *out, the file's size into *size. FILE_MAP_READ: the
+ * file's shared VMO while fat holds it, else a new one; FILE_MAP_EXEC: a
+ * new one, the caller's alone. ERR_NOT_SUPPORTED: no pager;
+ * ERR_NO_RESOURCES: FAT_MAX_MAPS of them; pager_create_vmo's errors. */
+status_t maps_make(uint32_t o, uint32_t flags, handle_t *out, uint64_t *size);
+/* Does a slot of maps[] name opens[o]? */
+bool     maps_use_open(uint32_t o);
+/* opens[o]'s last fs.open went (fileops.c's close): fat lets go of its
+ * own handles of the file's shared VMOs; they live on in their mappers. */
+void     maps_let_go(uint32_t o);
+/* As files_drop_unknown, for the VMO handles of slots the state doesn't
+ * know (an undone file.map made them). */
+void     maps_drop_unknown(void);
+/* A successor's mapped files (adopt.c), as files_take and the rest:
+ * maps_take takes keep slot FAT_KEEP_MAP(i)'s handle back if the state
+ * has a shared VMO there; maps_adopt makes fat's handles agree with
+ * the rule (held while the file is open), and forgets every slot when
+ * there is no pager to serve them; maps_remake makes the VMO of a reply
+ * that never went out again (*out: the client's). */
+bool     maps_take(uint32_t i, const handle_t *hs, unsigned n);
+void     maps_adopt(void);
+status_t maps_remake(uint32_t i, handle_t *out);
+/* Is the state's maps[] table one fat made (adopt.c's check)? NULL, or why not. */
+const char *maps_check(void);
+
 /* ---- fileops.c ------------------------------------------------------------------- */
 
 extern const struct file_ops fat_file_ops;   /* ctx: the file's struct fat_file */
@@ -625,8 +697,9 @@ status_t files_open(const char *path, uint32_t flags, handle_t *out_ch, handle_t
 void     files_event(uint64_t key);
 /* As views_unheld, for open files. */
 void     files_unheld(void);
-/* Finish every file whose client has closed it (called before each fs
- * request, so a close followed by an fs call is seen in that order). */
+/* Finish every file whose client has closed it, and every mapped file
+ * whose mappings went (pager_reap) (called before each fs request, so a
+ * close followed by an fs call is seen in that order). */
 void     files_reap(void);
 /* f_sync every file written since its last sync. */
 status_t files_sync_all(void);
@@ -642,6 +715,8 @@ void     files_drop_unknown(void);
  * own lock is off: ffport/ffconf.h). An open file can't be removed or
  * renamed. */
 bool     files_is_open(const char *path);
+/* Is opens[o] in use (a slot of files[] or maps[] names it)? */
+bool     files_open_used(uint32_t o);
 /* An adopted opens[] entry's place is its FIL's entry, in the window
  * (adopt.c). */
 bool     files_place_ok(const struct fat_open *o);

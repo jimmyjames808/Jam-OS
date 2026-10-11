@@ -12,7 +12,8 @@
  *   - always: FatFs's volume (FATFS: its window, free count, last cluster
  *     hint), and the hold's counts (held, runs);
  *   - a file request: that file's open (struct fat_open: its FIL and
- *     flags); FatFs touches no other file;
+ *     flags); FatFs touches no other file; a file.map, the slot of maps[]
+ *     it fills (undo_map);
  *   - an fs or fsctl request: the tables of open slots and views (files[],
  *     views[]), and each open an operation changes, saved by the code
  *     that changes it (undo_open, fileops.c) the first time;
@@ -52,7 +53,8 @@ struct rec {
     uint32_t len;
 };
 
-#define REC_MAX 64u   /* records in a log at most: 5 + every open */
+#define REC_MAX 80u   /* records in a log at most: 5 + every open + a map */
+_Static_assert(FAT_OPENS <= 64, "the opens in the log are a word's bits");
 
 static size_t pad8(size_t n)
 {
@@ -111,11 +113,17 @@ void undo_begin(enum fat_op kind, uint64_t op, uint64_t seq, const struct fat_fi
 void undo_open(const struct fat_open *o)
 {
     struct fat_undo *u = &kept->undo;
-    uint32_t bit = 1u << (unsigned)(o - kept->opens);
+    uint64_t bit = 1ull << (unsigned)(o - kept->opens);
     if (!op_running() || (u->opens & bit))
         return;
     save(o, sizeof(*o));
     u->opens |= bit;
+}
+
+void undo_map(const struct fat_map *m)
+{
+    if (op_running())
+        save(m, sizeof(*m));   /* saved twice at worst: the first copy wins */
 }
 
 bool undo_sector(uint32_t i)
