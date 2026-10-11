@@ -167,6 +167,9 @@ numbers, `src/` less `ldso`), and what a program sees:
   break); (C) a ring VMO that can be duplicated, so both keep it (a
   kernel and netstack change: two processes on one ring). Recommendation:
   (B) once a port needs it; nothing in M13 does.
+  **Answered 2026-10-11: (B)** (the owner). A socket goes to a child only
+  when a file action names it; inherited sockets stay in the parent.
+  Queued as a small track after the owner's launch hold.
 
 ## Program size
 
