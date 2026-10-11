@@ -204,8 +204,10 @@ const struct comp_role_ops xdg_bare_ops = { "xdg_surface", bare_commit, bare_gon
 /* The double-buffered state, checked and applied. */
 static status_t apply_pending(struct xdg_surf *x)
 {
-    if (x->geom_set)
+    if (x->geom_set) {
         x->geom = x->geom_pending;
+        wm_set_geometry(x->ww, x->geom);   /* placed by it from this commit's buffer */
+    }
     x->geom_set = false;
     if (!x->limits_set)
         return OK;

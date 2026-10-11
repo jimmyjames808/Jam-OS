@@ -137,8 +137,9 @@ static void grow(struct wm_window *ww, int dx, int dy)
 {
     if (!wm_floating_normal(ww) || !wm_resizable(ww))
         return;
-    int32_t w = ww->float_w ? ww->float_w : ww->surface->width;
-    int32_t h = ww->float_h ? ww->float_h : ww->surface->height;
+    struct comp_box g = window_geom(ww->win);   /* (wm_floating_normal: mapped) */
+    int32_t w = ww->float_w ? ww->float_w : g.x2 - g.x1;
+    int32_t h = ww->float_h ? ww->float_h : g.y2 - g.y1;
     int32_t nw = w + dx * WM_PUSH, nh = h + dy * WM_PUSH;
     if (ww->max_w > 0 && nw > ww->max_w)
         nw = ww->max_w;

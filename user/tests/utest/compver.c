@@ -3,8 +3,10 @@
  * and xdg-decoration (xdgdeco.c), on the compositor run headless and
  * driven over real channels as comp.c and compxdg.c drive it: each new
  * event at the version that has it and not below, each new request
- * answered or refused as its protocol says, and the decoration modes by
- * their pixels (a title bar or none) and by a hostile client.
+ * answered or refused as its protocol says, the decoration modes by their
+ * pixels (a title bar or none: the owner's rule, a client that bound the
+ * manager gets ours) and by a hostile client, and a client-side window
+ * placed by its window geometry, its own shadow round it and none of ours.
  *
  * The output is 320x240 with the desktop off, floating unless a test says;
  * a 64x64 window lands centred, its surface at (128, 88), a title bar's
@@ -785,6 +787,74 @@ bool t_xdg_decoration_bad(void)
     CHECK_EQ(told(&good, &t), SERVER_SIDE);   /* (client_side asked: the owner's rule) */
     CHECK(!good.k.errored);
     vc_close(&good);
+    CHECK(ct_stop(&p));
+    return true;
+}
+
+/* ---- the window geometry ------------------------------------------------------------------ */
+
+#define BLUE  0x000000ffu
+#define SH_L  8    /* the client's own "shadow" round its SIDE x SIDE window */
+#define SH_T  4
+#define SH_R  24
+#define SH_B  28
+#define GW    (SH_L + SIDE + SH_R)   /* its surface */
+#define GH    (SH_T + SIDE + SH_B)
+
+/* A GW x GH buffer at the pool's start: blue, the window in it red. */
+static uint32_t shadowed(struct vc *x)
+{
+    static uint32_t row[GW];
+    for (int32_t y = 0; y < GH; y++) {
+        for (int32_t i = 0; i < GW; i++)
+            row[i] = y >= SH_T && y < SH_T + SIDE && i >= SH_L && i < SH_L + SIDE ? RED : BLUE;
+        if (jam_vmo_write(x->vmo, (uint64_t)y * GW * 4, row, GW * 4) != OK)
+            return 0;
+    }
+    uint32_t id = ct_new(&x->k, &jwl_wl_buffer_interface, 1);
+    if (!id || jwl_wl_shm_pool_create_buffer(x->k.c, x->pool, id, 0, GW, GH, GW * 4,
+                                             JWL_WL_SHM_FORMAT_XRGB8888) != OK)
+        return 0;
+    return id;
+}
+
+/* A client that draws its own decorations and its own shadow, with its
+ * window geometry set (xdg_surface.set_window_geometry): its window is
+ * placed centred by the geometry (the red at (SX, SY), the client's blue
+ * left of and above it), its surface's corner isn't cut round, and no
+ * shadow of ours darkens the wallpaper past its surface. */
+bool t_xdg_geometry(void)
+{
+    static struct vc bare;
+    struct ct_comp p;
+    struct vt t;
+    const struct ct_event *top;
+    CHECK(ct_start(&p, W, H));
+    CHECK(vc_open_bare(&p, &bare, 1));
+    struct jwl_conn *c = bare.k.c;
+    bool ok = toplevel(&bare, &t) && ack_commit(&bare, &t, 0, 0);
+    uint32_t serial = ok ? configured(&bare, &t, &top) : 0;
+    uint32_t b = serial ? shadowed(&bare) : 0;
+    CHECK(b);
+    CHECK_ST(jwl_xdg_surface_ack_configure(c, t.xs, serial), OK);
+    CHECK_ST(jwl_xdg_surface_set_window_geometry(c, t.xs, SH_L, SH_T, SIDE, SIDE), OK);
+    CHECK_ST(jwl_wl_surface_attach(c, t.s, b, 0, 0), OK);
+    CHECK_ST(jwl_wl_surface_damage_buffer(c, t.s, 0, 0, GW, GH), OK);
+    CHECK_ST(jwl_wl_surface_commit(c, t.s), OK);
+    CHECK_ST(ct_roundtrip(&bare.k), OK);
+    CHECK(!bare.k.errored);
+    /* placed by its geometry: the window centred, the client's blue round it */
+    CHECK(pixel_is(&p, SX - 1, SY + SIDE / 2, BLUE, true));
+    CHECK(pixel_is(&p, SX, SY, RED, true));             /* no corner of ours cut */
+    CHECK(pixel_is(&p, SX + SIDE - 1, SY + SIDE - 1, RED, true));
+    CHECK(pixel_is(&p, SX + SIDE, SY + SIDE / 2, BLUE, true));
+    CHECK(pixel_is(&p, SX - SH_L, SY - SH_T, BLUE, true));   /* the surface's corner: whole */
+    /* no shadow of ours: the wallpaper as it is, just past its surface */
+    int32_t bx = SX + SIDE / 2, by = SY + SIDE + SH_B + 2, lx = SX - SH_L - 2;
+    CHECK(pixel_is(&p, bx, by, ref_wallpaper_of(bx, by, W, H), true));
+    CHECK(pixel_is(&p, lx, SY + SIDE / 2, ref_wallpaper_of(lx, SY + SIDE / 2, W, H), true));
+    CHECK(!bare.k.errored);
+    vc_close(&bare);
     CHECK(ct_stop(&p));
     return true;
 }
