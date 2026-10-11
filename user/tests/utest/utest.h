@@ -600,6 +600,7 @@ bool t_comp_surface(void);
 bool t_comp_bad_requests(void);
 bool t_comp_caps(void);
 bool t_comp_connections(void);
+bool t_comp_connect_storm(void);
 bool t_comp_client_crash(void);
 bool t_comp_never_reads(void);
 /* Clients lost every way, round after round: nothing stays charged to the compositor. */

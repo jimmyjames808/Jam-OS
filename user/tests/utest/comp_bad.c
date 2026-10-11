@@ -583,6 +583,40 @@ bool t_comp_connections(void)
     return true;
 }
 
+/* A burst of connects on /svc/wayland, queued while the compositor starts:
+ * it takes SVC_BUDGET (16) a turn, and answers every one, in order, and
+ * the next program's after them. Its shared channel is bound PERSISTENT,
+ * which fires when the channel turns readable, not while it stays so: it
+ * took 16 at its start and 16 at the binding's packet, then never looked
+ * again, and no program could connect to it any more. */
+bool t_comp_connect_storm(void)
+{
+    enum { STORM = 48 };   /* 3 turns' worth: fewer than COMP_CLIENTS_MAX */
+    static handle_t ch[STORM];
+    struct ct_comp p;
+    CHECK(ct_start(&p, 320, 200));
+    for (unsigned i = 0; i < STORM; i++)
+        CHECK_ST(svc_connect_send(p.svc, 0x5100 + i), OK);
+    uint64_t until = now() + CT_WAIT;
+    for (unsigned got = 0; got < STORM; got++) {
+        _Alignas(8) uint8_t rep[SVC_REP_MAX];
+        struct idl_msg m;
+        signals_t seen = 0;
+        if (jam_object_wait_one(p.svc, SIG_READABLE, until, &seen) != OK)
+            FAIL("%u of %u connects answered", got, (unsigned)STORM);
+        CHECK_ST(idl_reply_read(p.svc, rep, sizeof(rep), &m), OK);
+        CHECK_EQ(m.txid, 0x5100 + got);
+        CHECK_ST(svc_connect_result(rep, &m, &ch[got]), OK);
+    }
+    handle_t one = HANDLE_INVALID;
+    CHECK_ST(svc_connect_within(p.svc, CT_WAIT, &one), OK);
+    CHECK_ST(jam_handle_close(one), OK);
+    for (unsigned i = 0; i < STORM; i++)
+        CHECK_ST(jam_handle_close(ch[i]), OK);
+    CHECK(ct_stop(&p));
+    return true;
+}
+
 /* ---- a client that crashes --------------------------------------------------------- */
 
 /* The child's client: a pool, a buffer, a surface showing it with a frame

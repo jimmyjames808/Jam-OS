@@ -166,6 +166,9 @@ void     ctl_terminal_run(const char *cmd, bool busy);
 #define CTL_ALL         (CTL_MAX + NOTIFY_CHANNELS)
 void     deskctl_init(void);
 void     deskctl_packet(uint64_t key);
+/* The answers a turn left on the mixer's or netstack's channel (a
+ * budget a turn; their bindings fire on an edge only): read now. */
+void     deskctl_serve(void);
 uint64_t deskctl_deadline(void);
 /* A notice as notify.idl's notify and post give it (ctl.c copies the
  * texts, NUL-terminated; the generated server checked their length and

@@ -1074,6 +1074,7 @@ static const struct {
     { "comp_bad_requests", t_comp_bad_requests },
     { "comp_caps", t_comp_caps },
     { "comp_connections", t_comp_connections },
+    { "comp_connect_storm", t_comp_connect_storm },
     { "comp_client_crash", t_comp_client_crash },
     { "comp_never_reads", t_comp_never_reads },
     { "comp_lost_clients", t_comp_lost_clients },
