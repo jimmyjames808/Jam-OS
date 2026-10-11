@@ -31,12 +31,33 @@ struct sh_stdio {
     const char    *in;        /* the previous stage's output */
     size_t         in_len;    /* its length */
     bool           have_in;   /* there is a previous stage */
+    /* POSIX programs of a pipeline run at once (sh_exec.c sets these for
+     * each stage; sh_program.c and sh_posix.c use them): */
+    bool           defer;        /* a POSIX program here is left running: sh_pipe_settle waits */
+    bool           direct_out;   /* its stdout is a real pipe to the next stage's program */
+    handle_t       direct_in;    /* the read end of the previous stage's such pipe, or 0 */
+    handle_t       direct_next;  /* set by the program: the read end of its direct_out pipe */
 };
 struct sh_stdio sh_stdio_get(void);
 void            sh_stdio_set(struct sh_stdio io);
 
 /* A new line starts: forget an earlier Ctrl+C. */
 void sh_io_new_line(void);
+/* Take in every key typed so far: Ctrl+C and Ctrl+\ are counted (below),
+ * the others kept for the next line. */
+void sh_poll_keys(void);
+/* How many times Ctrl+C and Ctrl+\ were pressed since the shell started
+ * (a running program compares with the count it has acted on). */
+unsigned sh_ctrl_c_hits(void);
+unsigned sh_quit_hits(void);
+/* Forget this line's Ctrl+C: a POSIX program took the signal and went on
+ * (or ended its own way), so the rest of the line runs. */
+void sh_cancel_clear(void);
+/* A POSIX program starts (+1) or ends (-1): while there is one its
+ * terminal echoes ^C itself, and the shell does not. */
+void sh_io_posix_tty(int delta);
+/* While on, sh_tty says nothing (looking at a command without running it). */
+void sh_quiet(bool on);
 /* The next key that was typed while a command ran (sh_interrupted kept
  * it); false if there is none. */
 bool sh_typeahead(struct input_key_event *ev);
@@ -99,6 +120,33 @@ void sh_line(char *line);
 /* Tab: complete the word before *pos (a command name, else a path). May
  * print the choices on new lines. true: redraw the line. */
 bool sh_complete(char *line, unsigned *len, unsigned *pos, unsigned cap);
+
+/* ---- sh_program.c: a pipeline's programs, running at once ---------------------------- */
+
+/* Whether the bare name (a program found as sh_exec.c finds one) is a
+ * POSIX program. Says nothing. */
+bool sh_program_is_posix(const char *name);
+/* Linux's signal numbers, the `signal` protocol's. */
+#define LINUX_SIGINT  2
+#define LINUX_SIGQUIT 3
+#define LINUX_SIGPIPE 13
+#define LINUX_SIGTERM 15
+/* A POSIX program that a signal's default action ended exits with this
+ * plus the signal's number (LX_EXIT_SIGNAL, user/posix/sys/proc.h). The
+ * number, or 0 if code is no such exit. */
+#define EXIT_SIGNAL_BASE 0x10000
+int         sh_exit_signal(int64_t code);
+/* "SIGINT" for 2, else "signal N" (in a static buffer). */
+const char *sh_signal_name(int signo);
+/* After this long without ending, a POSIX program sent SIGINT, SIGQUIT or
+ * SIGTERM has its job killed. */
+#define SH_SIGNAL_GRACE_NS (2 * NS_PER_S)
+/* POSIX programs started with sh_stdio.defer and not yet waited for. */
+unsigned sh_pipe_running(void);
+/* Wait for all of them (their output copied meanwhile, Ctrl+C and Ctrl+\
+ * sent to them, their jobs killed 2 s after): the status of the one
+ * started last, -1 if none was waiting. */
+int sh_pipe_settle(void);
 
 /* ---- sh_posix.c: descriptors for a POSIX program ------------------------------------- */
 
