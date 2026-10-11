@@ -273,6 +273,11 @@ KTEST(kexec_next_cmdline_words)
     KT_ASSERT(!strcmp(buf, "hidboot"));
     kexec_next_cmdline("nospare init", buf, sizeof(buf));
     KT_ASSERT(!strcmp(buf, "nospare"));
+    /* Every internal drive read-only stays so across a reboot. */
+    kexec_next_cmdline("shell diskro nvmetest=on", buf, sizeof(buf));
+    KT_ASSERT(!strcmp(buf, "shell diskro"));
+    kexec_next_cmdline("diskrox xdiskro disk", buf, sizeof(buf));
+    KT_ASSERT(!strcmp(buf, ""));
     kexec_next_cmdline("bench nolockdep", buf, sizeof(buf));
     KT_ASSERT(!strcmp(buf, "nolockdep"));
     kexec_next_cmdline("bench nohandoff", buf, sizeof(buf));

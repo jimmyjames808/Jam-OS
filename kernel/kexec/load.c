@@ -33,11 +33,14 @@
  * a reboot, a panic and `update` on the network boot come back with the
  * network, so netlog can send the panicked boot's log and the fetched
  * build can be reached; `netprobe` and `netsend` are one-shot tests,
- * not kept). */
+ * not kept), and `diskro` (every internal drive read-only: the way out of
+ * a misbehaving write path must not lapse at the first reboot or
+ * `update`, which would leave the next boot writing again). */
 static const char *const kept_words[] = {
     "shell", "verbose", "nosplash", "nousb", "smp=loader", "nopcid", "forcepcid",
     "nodeadline", "noserialirq", "nooneshot", "nofpuopt", "nofpucall", "nokmcache", "nospinidle",
     "noplaceorder", "noaffinepair", "hidboot", "net", "nospare", "nolockdep", "nohandoff",
+    "diskro",
 };
 /* ... and key=value words. */
 static const char *const kept_keys[] = { "crashkernel=", "idlespin=", "bootdisk=", "reset=",

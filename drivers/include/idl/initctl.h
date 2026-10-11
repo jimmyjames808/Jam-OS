@@ -39,6 +39,7 @@
 #define INITCTL_TERMINAL         0x00120009u
 #define INITCTL_LAUNCH           0x0012000au
 #define INITCTL_DISKS            0x0012000bu
+#define INITCTL_PREPARE_DISK     0x0012000cu
 
 /* Constants (the .idl's `const` lines). */
 /* The most bytes of kill's name, mount's path, terminal's command and
@@ -142,6 +143,15 @@ struct initctl_disks_req {
     uint32_t ordinal;
 } __attribute__((packed));
 struct initctl_disks_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
+struct initctl_prepare_disk_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t id;
+} __attribute__((packed));
+struct initctl_prepare_disk_rep {
     uint32_t txid;
     int32_t  status;
 } __attribute__((packed));
@@ -653,6 +663,44 @@ static inline status_t initctl_disks(handle_t ch, handle_t *out_list)
     return initctl_disks_call(ch, false, DEADLINE_NEVER, out_list);
 }
 
+/* initctl_prepare_disk_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t initctl_prepare_disk_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t id)
+{
+    struct initctl_prepare_disk_req idl_q;
+    struct initctl_prepare_disk_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = INITCTL_PREPARE_DISK;
+    idl_q.id = id;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    return idl_st;
+}
+/* Make disk `id` (voldisks' ids, `disks`' nvme1) a Jam OS disk (volinstall.prepare):
+ * a blank NVMe drive gets Jam OS's partition table and both partitions are
+ * formatted and mounted read-only; one a prepare was cut short on is finished.
+ * Nothing else is ever written: the drive must be blank or already Jam OS's
+ * (volumes and the driver each decide), and the shell has asked for the last
+ * four characters of its serial number before it calls this. Answered later,
+ * when volumes has answered (init serves its other channels meanwhile;
+ * ERR_TIMED_OUT after 11 minutes). The shell's channel only (ERR_ACCESS_DENIED
+ * on the consoles' and the compositor's). Errors are volinstall.prepare's. */
+static inline status_t initctl_prepare_disk_until(handle_t ch, uint64_t deadline_ns, uint32_t id)
+{
+    return initctl_prepare_disk_call(ch, false, deadline_ns, id);
+}
+static inline status_t initctl_prepare_disk_within(handle_t ch, uint64_t timeout_ns, uint32_t id)
+{
+    return initctl_prepare_disk_call(ch, true, timeout_ns, id);
+}
+static inline status_t initctl_prepare_disk(handle_t ch, uint32_t id)
+{
+    return initctl_prepare_disk_call(ch, false, DEADLINE_NEVER, id);
+}
+
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
 
 /* initctl_kill without waiting: the request, with the caller's txid (not 0).
@@ -1039,6 +1087,37 @@ static inline status_t initctl_disks_result(const void *idl_rep, struct idl_msg 
     return OK;
 }
 
+/* initctl_prepare_disk without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then initctl_prepare_disk_result. */
+static inline status_t initctl_prepare_disk_send(handle_t ch, uint32_t idl_txid, uint32_t id)
+{
+    struct initctl_prepare_disk_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = INITCTL_PREPARE_DISK;
+    idl_q.id = id;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to initctl_prepare_disk_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t initctl_prepare_disk_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct initctl_prepare_disk_rep *idl_r = (const struct initctl_prepare_disk_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -1057,6 +1136,7 @@ struct initctl_ops {
     status_t (*terminal)(void *ctx, const char *command, uint32_t command_len, uint8_t *out_number);
     status_t (*launch)(void *ctx, const char *app, uint32_t app_len, uint64_t *out_koid);
     status_t (*disks)(void *ctx, handle_t *out_list);
+    status_t (*prepare_disk)(void *ctx, struct idl_txn idl_txn, uint32_t id);
 };
 
 /* Answer the initctl.kill request kept in txn: idl_st and, if it is OK, the
@@ -1259,6 +1339,21 @@ static inline status_t initctl_reply_disks(struct idl_txn idl_txn, status_t idl_
     }
     status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, idl_st == OK ? idl_hs : NULL, idl_st == OK ? 1 : 0);
     return idl_ws;
+}
+
+/* Answer the initctl.prepare_disk request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t initctl_reply_prepare_disk(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct initctl_prepare_disk_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
 }
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
@@ -1529,6 +1624,26 @@ static inline uint32_t initctl_dispatch_on(handle_t ch, const struct initctl_ops
         }
         rhs[0] = out_list;
         *rhn = 1;
+        return sizeof(*idl_r);
+    }
+    case INITCTL_PREPARE_DISK: {
+        const struct initctl_prepare_disk_req *idl_q = (const struct initctl_prepare_disk_req *)req;
+        struct initctl_prepare_disk_rep *idl_r = (struct initctl_prepare_disk_rep *)rep;
+        (void)idl_r;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->prepare_disk) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        struct idl_txn idl_txn = { ch, idl_h->txid };
+        status_t idl_st = ops->prepare_disk(ctx, idl_txn, idl_q->id);
+        /* IDL_LATER: the handler answers with initctl_reply_prepare_disk. */
+        if (idl_st == IDL_LATER)
+            return 0;
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
         return sizeof(*idl_r);
     }
     }
