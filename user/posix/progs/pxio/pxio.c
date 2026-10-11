@@ -27,6 +27,8 @@
  *                        SIGTERM ignored, so only its job's kill ends it
  *   pxio raise N         raises signal N (default action: the program is ended
  *                        by it)
+ *   pxio size            "pxio: size COLSxROWS", its terminal's (TIOCGWINSZ
+ *                        on 1: an SSH session's window, tools/ssh-test.sh)
  *
  * Writing is write(2) alone, so nothing is buffered between two modes'
  * lines. */
@@ -35,6 +37,7 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -204,6 +207,16 @@ static int idle(bool ignore)
     put(1, ignore ? "pxio: ignoring\n" : "pxio: idle\n");
     for (;;)
         pause();
+static int show_size(void)
+{
+    struct winsize w;
+    if (ioctl(1, TIOCGWINSZ, &w) < 0) {
+        put(1, "pxio: size: no terminal\n");
+        return 1;
+    }
+    char line[64];
+    snprintf(line, sizeof(line), "pxio: size %ux%u\n", w.ws_col, w.ws_row);
+    put(1, line);
     return 0;
 }
 
@@ -262,5 +275,9 @@ int main(int argc, char **argv)
     }
     put(2, "usage: pxio env|cwd|fds|stack|out T|err T|both O E|seq N|cat|count|exit N|sigint|"
            "yes|head N|gen N|idle|ignore|raise N\n");
+    if (!strcmp(m, "size"))
+        return show_size();
+    put(2, "usage: pxio env|cwd|fds|stack|out T|err T|both O E|seq N|cat|count|exit N|sigint|"
+           "size\n");
     return 2;
 }

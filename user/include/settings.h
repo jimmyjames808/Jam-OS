@@ -29,6 +29,9 @@
  *                  RTC's (default on)
  *   ntp.server     where bin/sntp asks the time: an IPv4 address or a
  *                  name; without it the gateway, then pool.ntp.org
+ *   ssh            `off`: bin/sshd isn't started even with a key in
+ *                  /data/etc/authorized_keys (default on: it runs whenever
+ *                  that file has one; init's ssh.c)
  *   display.layout the compositor's arrangement of windows: floating
  *                  (the default) or tiling; init passes it on, and
  *                  writes it when the user switches (Super+T)

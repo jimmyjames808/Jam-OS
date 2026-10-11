@@ -83,6 +83,9 @@
  *             (a channel per opener), and a namespace of /svc/net and
  *             /svc/net-listen only (shell.c's grants: its list's `svc net
  *             listen`). It has no mount: the shell hands it each file
+ *   sshd      bin/sshd, the SSH server (the tinyssh port), after netstack and once
+ *             /data is mounted, when /data/etc/authorized_keys holds a key: ssh.c
+ *             (its namespace is shell.c's grants)
  *   logd      bin/logd, once /data is mounted: root with RIGHT_ROOT_KLOG
  *             (the kernel log), a namespace holding only /data (SR_NS) and the server
  *             end of a `logctl` channel (LOGD_SR_CTL; init keeps the client
@@ -773,6 +776,7 @@ status_t services_start(unsigned i)
            : i == LOGD       ? start_logd()
            : i == NETLOG     ? net_netlog_start()
            : i == SNTP       ? net_sntp_start()
+           : i == SSHD       ? ssh_start()
                              : start_serve();
 }
 
@@ -885,4 +889,5 @@ void services_init(handle_t loop_port, bool no_usb, bool splash, const char *she
     services_publish(SVC_NET_LISTEN_LOW, net_listen_low_channel(), true);   /* ... to bin/serve */
     services_publish(SVC_NET_SYS, net_sys_channel(), true);   /* the network's services' */
     sessions_init(port);   /* /svc/session: init's own (sessions.c) */
+    ssh_init(port);        /* the SSH server's look at /data (ssh.c) */
 }

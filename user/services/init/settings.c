@@ -49,7 +49,9 @@ static const char template_text[] =
     "#   switches it and saves it here); display.hz: how often the screen is redrawn\n"
     "#   at most, 1 to 1000 a second (default 60)\n"
     "# terminal.font: the terminal windows' text: smooth (JetBrains Mono, the\n"
-    "#   default) or bitmap (the 8x16 font of the screen without the desktop)\n";
+    "#   default) or bitmap (the 8x16 font of the screen without the desktop)\n"
+    "# ssh: off stops the SSH server, which otherwise runs on port 22 whenever\n"
+    "#   /data/etc/authorized_keys holds a key (an ssh-ed25519 line)\n";
 
 /* key's value from the settings file, or dflt if there is none (or no
  * /data). */

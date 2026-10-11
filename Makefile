@@ -265,8 +265,9 @@ LIBOS_OBJS  += $(DRMP3_OBJ)
 $(DRMP3_OBJ): PROG_CFLAGS := -Iuser/lib/mp3port -Ithird_party/dr_mp3
 $(UOBJ)/user/lib/mp3.c.o: PROG_CFLAGS := -Ithird_party/dr_mp3
 # Monocypher (third_party/monocypher, vendored unmodified): Ed25519 as RFC
-# 8032 has it, for signed updates (<update.h>, user/lib/updsig.c). Into
-# libos; only a program that checks a signature (init, utest) links it in.
+# 8032 has it, for signed updates (<update.h>, user/lib/updsig.c) and the
+# SSH server's host key (init's ssh.c). Into libos; only a program that
+# checks a signature or makes a key (init, utest) links it in.
 # tools/jamos-sign, the Mac's side, is built from the same files.
 MONO_DIR    := third_party/monocypher/src
 MONO_SRCS   := $(MONO_DIR)/monocypher.c $(MONO_DIR)/optional/monocypher-ed25519.c
@@ -437,6 +438,8 @@ EXTRA_CFLAGS_splash := -Ithird_party/pl_mpeg -Iuser/apps/splash/port
 # <stdlib.h>/<string.h> it includes, which are libos's
 # (user/apps/jamcover/port).
 EXTRA_CFLAGS_jamcover := -Ithird_party/stb_image -Iuser/apps/jamcover/port
+# init makes the SSH server's host key with Monocypher (init/ssh.c).
+EXTRA_CFLAGS_init := -I$(MONO_DIR) -I$(MONO_DIR)/optional
 # utest tests the music player's folder walk and spectrum (utest/music.c):
 # the player's own objects, linked in, and its header; and the RTL8125
 # probe's transmit-register guard (utest/netframe.c: drivers/rtl8125/notx.h);
@@ -883,6 +886,8 @@ clean:
 
 # POSIX on musl: musl, the call layer, the sysroot, posixtest (its own file).
 include user/posix/posix.mk
+# tinyssh, the SSH server, bin/sshd (its own file).
+include user/ports/tinyssh/tinyssh.mk
 
 # The ports in the boot image (ports/, docs/M13.7-PLAN.md): every recipe
 # with `place boot` (sbase, Lua, libc-test) is built by tools/ports.py with

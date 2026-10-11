@@ -26,9 +26,11 @@ only for a program whose source is under user/tests/,
 and netstack's and the resolver's reserves for the network's own services
 (net-sys, dns-sys), the desktop's notices (notify) and the low ports (`svc net listen low`: the system's
 ports, where a program could pose as a service) only for one under
-user/services/, and init's sessions (session: a whole shell) only for one
-under user/services/, ports/ (a recipe's directory: tinyssh's sshd),
-user/ports/ (the make fragments not yet recipes) or user/tests/.
+user/services/ (the low ports also for the SSH server, ports/tinyssh or
+user/ports/tinyssh: a port that init runs as a service, on port 22), and
+init's sessions (session: a whole shell) only for one under user/services/,
+ports/ (a recipe's directory: tinyssh's sshd), user/ports/ (the make
+fragments not yet recipes) or user/tests/.
 A program without a list is fine (it gets its terminal only). Prints how
 many lists it checked (-v: each one); exits 1, naming each problem, if any.
 
@@ -45,6 +47,7 @@ SERVICES_ONLY = {"net-sys", "dns-sys", "notify"}
 SESSION = "session"   # a whole shell: services, ports and tests only
 SESSION_DIRS = ("user/services/", "ports/", "user/ports/", "user/tests/")
 LISTEN = {"net-listen", "net-low"}   # given only as `svc net listen [low]` (<wants.h>)
+LOW_PORTS = {"user/ports/tinyssh"}   # ports init runs as services: may listen below 1024
 TEXT_MAX = 1024
 WANTS_MAX = 24
 PT_NOTE = 4
@@ -99,7 +102,7 @@ def check_text(text, in_tests, svcs, in_services=False, src=""):
         elif len(w) == 3 and w[:3] == ["svc", "net", "listen"]:
             n += 2   # /svc/net and /svc/net-listen
         elif len(w) == 4 and w == ["svc", "net", "listen", "low"]:
-            if not in_services:
+            if not in_services and src.rstrip("/") not in LOW_PORTS:
                 problems.append("'%s': only a service (user/services/) may ask for it" % line)
             n += 2   # /svc/net and /svc/net-low
         elif len(w) == 2 and w[0] == "svc":
@@ -157,6 +160,13 @@ def selftest():
         problems, _ = check_text(b"svc session\nposix\n", False, svcs, False, src)
         if problems:
             fails.append("refused svc session for a port (%s): %s" % (src, problems))
+    problems, _ = check_text(b"posix\nsvc net listen low\nsvc session\n", False, svcs, False,
+                             "user/ports/tinyssh")
+    if problems:
+        fails.append("refused the SSH server's list: %s" % problems)
+    problems, _ = check_text(b"svc net listen low\n", False, svcs, False, "user/ports/sbase")
+    if not problems:
+        fails.append("took svc net listen low for a port that isn't the SSH server")
     for t in refuse:
         problems, _ = check_text(t, False, svcs, False, "user/apps/x")
         if not problems:
