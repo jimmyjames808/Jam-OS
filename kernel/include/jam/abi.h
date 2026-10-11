@@ -240,8 +240,13 @@ struct port_packet {
 #define VMAR_REPLACE   (1u << 5)
 
 /* Mappings an address space holds at most (a vmar_map past it, or an
- * unmap or protect that would split one more off, is ERR_NO_RESOURCES). */
-#define VMAR_MAX_MAPPINGS 16384u
+ * unmap or protect that would split one more off, is ERR_NO_RESOURCES).
+ * Neighbouring mappings of one VMO at contiguous offsets, with the same
+ * permissions and the same maximum, are one mapping (they merge after
+ * every map, replace and protect; kept mappings never do), and a call is
+ * counted by what it leaves: a protect that splits a piece off and merges
+ * it into its neighbour fits even at the cap. */
+#define VMAR_MAX_MAPPINGS 65536u
 
 /* jobs ---------------------------------------------------------------------
  * Every process belongs to a job. A job has a limit on each resource below
