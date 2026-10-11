@@ -1,11 +1,13 @@
 # The pager's plumbing (tools/pager-test.sh, case plumb): what volumes and
-# libos do for mapped files before fat serves any page. Boot stick a (the
-# script makes it) comes in as /usb0 and goes again.
+# libos do for mapped files, and fat's answers to file.map. Boot stick a
+# (the script makes it) comes in as /usb0 and goes again.
 #   pagertest self    libos's mapped-file code over VMOs that are no pager's
-#   pagertest map     file.map to fat: ERR_NOT_SUPPORTED, from /data, /esp
-#                     and the stick, also after fat-data was killed (the
-#                     request goes through fat's kept-channel machinery, a
-#                     method it has no handler for)
+#   pagertest map     file.map to fat: a VMO, from /data, /esp and the
+#                     stick, also after fat-data and fat-usb0 were killed
+#                     (the request goes through fat's kept-channel
+#                     machinery); a directory and a missing file refused
+#   pagertest hash, touch   a small file's pages through the mapping, by
+#                     loads and by a system call's copy
 #   the pagertest commands' arguments are checked
 # volumes' pager lines (one pager a mount, kept across fat-data's restart,
 # closed with the stick) are checked by the script from the log.
@@ -24,17 +26,17 @@ wait pagertest: self: PASS
 wait self-p=0
 wait {prompt}
 
-# ---- fat has no pages to give yet ---------------------------------------------------------------
+# ---- fat's answers -------------------------------------------------------------------------------
 send write /data/pager.txt a file to map; echo w-$T=$?
 wait w-p=0
 wait {prompt}
 send pagertest map /data/pager.txt; echo m1-$T=$?
-wait pagertest: map /data/pager.txt: ERR_NOT_SUPPORTED
-wait m1-p=2
+wait pagertest: map /data/pager.txt: OK
+wait m1-p=0
 wait {prompt}
 send pagertest map /esp/boot/jamos.elf; echo m2-$T=$?
-wait pagertest: map /esp/boot/jamos.elf: ERR_NOT_SUPPORTED
-wait m2-p=2
+wait pagertest: map /esp/boot/jamos.elf: OK
+wait m2-p=0
 wait {prompt}
 send pagertest map /data; echo m3-$T=$?
 wait pagertest: map /data: ERR_IS_DIR
@@ -45,12 +47,16 @@ wait pagertest: map /data/none.txt: ERR_NOT_FOUND
 wait m4-p=2
 wait {prompt}
 send pagertest hash /data/pager.txt; echo h1-$T=$?
-wait pagertest: map /data/pager.txt: ERR_NOT_SUPPORTED
-wait h1-p=2
+wait /data/pager.txt: 14 bytes: mapped sha256
+wait h1-p=0
 wait {prompt}
-send pagertest touch /data/pager.txt 0 load /data/never; echo t1-$T=$?
-wait pagertest: map /data/pager.txt: ERR_NOT_SUPPORTED
-wait t1-p=2
+send pagertest touch /data/pager.txt 2 load; echo t1-$T=$?
+wait pagertest: touched /data/pager.txt at 2: byte 66
+wait t1-p=0
+wait {prompt}
+send pagertest touch /data/pager.txt 12 copy; echo t2-$T=$?
+wait pagertest: touch /data/pager.txt at 12 by a copy: OK
+wait t2-p=0
 wait {prompt}
 
 # ---- the commands' own arguments ------------------------------------------------------------------
@@ -69,8 +75,8 @@ wait {prompt}
 monitor device_add usb-storage,id=sa,bus=xhci.0,port=2,drive=aimg
 wait 60 init: /usb0 mounted
 send pagertest map /usb0/pager.bin; echo m5-$T=$?
-wait pagertest: map /usb0/pager.bin: ERR_NOT_SUPPORTED
-wait m5-p=2
+wait pagertest: map /usb0/pager.bin: OK (2097152 bytes)
+wait m5-p=0
 wait {prompt}
 send sleep 1; kill fat-data; echo k-$T=$?
 wait shell: killed process
@@ -78,15 +84,15 @@ wait k-p=0
 wait {prompt}
 seen 10 volumes: fat-data: spare promoted
 send pagertest map /data/pager.txt; echo m6-$T=$?
-wait pagertest: map /data/pager.txt: ERR_NOT_SUPPORTED
-wait m6-p=2
+wait pagertest: map /data/pager.txt: OK (14 bytes)
+wait m6-p=0
 wait {prompt}
 send kill fat-usb0; echo k2-$T=$?
 wait k2-p=0
 wait {prompt}
 send pagertest map /usb0/pager.bin; echo m7-$T=$?
-wait pagertest: map /usb0/pager.bin: ERR_NOT_SUPPORTED
-wait m7-p=2
+wait pagertest: map /usb0/pager.bin: OK (2097152 bytes)
+wait m7-p=0
 wait {prompt}
 
 # ---- the stick pulled: its mount and its pager go ----------------------------------------------

@@ -710,6 +710,7 @@ static const struct {
     { "fat_restart_steps", t_fat_restart_steps },
     { "fat_restart_handles", t_fat_restart_handles },
     { "fat_restart_bad_request", t_fat_restart_bad_request },
+    { "fat_restart_pager", t_fat_restart_pager },
     { "fat_layout", t_fat_layout },
     { "ns_boot_mount", t_ns_boot_mount },
     { "ns_boot_read_only", t_ns_boot_read_only },

@@ -1,0 +1,34 @@
+# Pages served while their fat dies (tools/pager-test.sh, case kill): the
+# script's stick has big.bin (48 MiB). pagertest hashes it in the
+# background, once through a mapping (faults) and once through a VMO of
+# its own (vmo_read), while fat-usb0 is killed every few tenths of a
+# second. Each successor takes the requests the dead one left
+# (PAGER_NEXT_AGAIN) and the mapper sees the host's bytes (the script
+# compares the hashes and counts the restarts).
+# QEMU_INPUT=this file, command line "shell", the drive aimg. The text
+# waited for is built from $T, so it never appears in the typed line.
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send T=p
+wait {prompt}
+monitor device_add usb-storage,id=sa,bus=xhci.0,port=2,drive=aimg
+wait 60 init: /usb0 mounted
+seen 60 volumes: a warm spare bin/fat waits
+send pagertest hash /usb0/big.bin &
+wait {prompt}
+send kill fat-usb0; sleep 0.2; kill fat-usb0; sleep 0.3; kill fat-usb0; sleep 0.3; kill fat-usb0; echo k1-$T=$?
+wait 120 k1-p=0
+seen 120 pagertest: /usb0/big.bin: 50331648 bytes: mapped sha256
+wait {prompt}
+send pagertest xhash /usb0/big.bin &
+wait {prompt}
+send kill fat-usb0; sleep 0.2; kill fat-usb0; sleep 0.3; kill fat-usb0; sleep 0.3; kill fat-usb0; echo k2-$T=$?
+wait 120 k2-p=0
+seen 120 pagertest: /usb0/big.bin: 50331648 bytes: own VMO sha256
+wait {prompt}
+send sleep 1; echo e-$T
+wait e-p
+wait {prompt}
+send reboot -f
+wait reboot: resetting

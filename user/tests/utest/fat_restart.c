@@ -16,7 +16,10 @@
  * fixed-time power: every timestamp is the same). Then: an fs.open's and an
  * fs.view's reply that died with the process are made again; a request in
  * progress at two crashes is answered ERR_IO with fat still serving, while
- * two deliberate kills of one request don't count. */
+ * two deliberate kills of one request don't count. And the pages of a
+ * mapped file (file.map, fat's pager.c) when fat dies making the VMO,
+ * reading a page request or before a map's reply: the client gets its VMO,
+ * every page right, and a key the state doesn't know detached. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -40,6 +43,7 @@ struct sup {
     struct fatrun   r;              /* r.fs: our client end; r.rd: the disk */
     handle_t        serve;          /* the `fs` server end, ours; each instance gets a dup */
     handle_t        state;          /* the state VMO, every right */
+    handle_t        pager;          /* the mount's pager, ours (each instance a copy), or 0 */
     struct keeper   keeper;
     const char     *dies[MAX_DEATHS];   /* instance i's test power, or NULL */
     const char     *crash;          /* every instance's crash-on word, or NULL */
@@ -78,11 +82,15 @@ static status_t start(struct sup *s, const char *ended)
         argv[argc++] = s->dies[s->instance];
     if (s->crash)
         argv[argc++] = s->crash;
-    struct spawn_handle x[4] = { { FAT_SR_BLOCK, block }, { FAT_SR_SERVE, serve },
+    struct spawn_handle x[5] = { { FAT_SR_BLOCK, block }, { FAT_SR_SERVE, serve },
                                  { SR_STATE, state }, { SR_KEEP, keep } };
-    rights_t xr[4] = { RIGHT_SAME, RIGHT_SAME, SVCSTATE_SERVICE_RIGHTS, RIGHT_SAME };
+    rights_t xr[5] = { RIGHT_SAME, RIGHT_SAME, SVCSTATE_SERVICE_RIGHTS, RIGHT_SAME,
+                       RIGHT_READ | RIGHT_WRITE | RIGHT_WAIT };   /* as volumes hands it */
+    unsigned nx = 4;
+    if (s->pager && jam_handle_duplicate(s->pager, RIGHT_SAME, &x[nx].h) == OK)
+        x[nx++].role = FAT_SR_PAGER;
     struct spawn_args a = { .path = "bin/fat", .argc = argc, .argv = argv, .job = s->r.job,
-                            .extra = x, .nextra = 4, .extra_rights = xr };
+                            .extra = x, .nextra = nx, .extra_rights = xr };
     st = spawn(&a, &s->r.proc);
     s->instance++;
     return st == OK ? keeper_restore(&s->keeper) : st;
@@ -131,11 +139,14 @@ static void supervise(void *arg)
     }
 }
 
-/* A supervised fat over rd, its instances ended by dies[] in turn. */
-static bool sup_start(struct ramdisk *rd, const char *const *dies, unsigned n, const char *crash)
+/* A supervised fat over rd, its instances ended by dies[] in turn, each
+ * handed a copy of pager (0: none). */
+static bool sup_start_pager(struct ramdisk *rd, const char *const *dies, unsigned n,
+                            const char *crash, handle_t pager)
 {
     memset(&sv, 0, offsetof(struct sup, stack));
     sv.r.rd = rd;
+    sv.pager = pager;
     for (unsigned i = 0; i < n && i < MAX_DEATHS; i++)
         sv.dies[i] = dies[i];
     sv.crash = crash;
@@ -146,6 +157,11 @@ static bool sup_start(struct ramdisk *rd, const char *const *dies, unsigned n, c
     CHECK_ST(thread_spawn("fat supervisor", supervise, &sv, sv.stack, sizeof(sv.stack),
                           &sv.thread), OK);
     return true;
+}
+
+static bool sup_start(struct ramdisk *rd, const char *const *dies, unsigned n, const char *crash)
+{
+    return sup_start_pager(rd, dies, n, crash, HANDLE_INVALID);
 }
 
 /* No more deaths: the supervisor goes, then fat is stopped as fat_stop
@@ -336,4 +352,155 @@ bool t_fat_restart_bad_request(void)
     CHECK_ST(t_stat(&sv.r, "/k", NULL, &is_dir, NULL), OK);
     CHECK(is_dir);
     return sup_stop() && ramdisk_destroy(&test_disk);
+}
+
+/* ---- mapped files ---------------------------------------------------------------------- */
+
+#define MAP_CHUNKS 4u                          /* a mapped file: four chunks ... */
+#define MAP_TAIL   1000u                       /* ... and this many bytes of a fifth */
+#define MAP_SIZE   (MAP_CHUNKS * CHUNK + MAP_TAIL)
+#define MAP_SEED   7u
+
+/* A pager for a supervised fat, or 0 with a line saying the test is
+ * skipped (no RIGHT_ROOT_PAGER: utest run from the shell). */
+static handle_t test_pager(void)
+{
+    handle_t root = startup_handle(SR_RESOURCE), p = HANDLE_INVALID;
+    if (!root || jam_pager_create(root, 4096, FAT_CALL_NS, 0, &p) != OK) {
+        printf("utest: fat_restart_pager: no pager power (RIGHT_ROOT_PAGER): skipped\n");
+        return HANDLE_INVALID;
+    }
+    return p;
+}
+
+/* `path` made MAP_SIZE bytes long, MAP_SEED's chunks. */
+static bool map_file(const char *path)
+{
+    struct tfile f;
+    uint32_t done = 0;
+    CHECK_ST(t_open(&sv.r, path, FS_READ | FS_WRITE | FS_CREATE, &f), OK);
+    if (!write_chunks(&f, MAP_CHUNKS, MAP_SEED))
+        return false;
+    fill(MAP_SEED + MAP_CHUNKS);
+    CHECK_ST(t_write(&f, (uint64_t)MAP_CHUNKS * CHUNK, buf, MAP_TAIL, &done), OK);
+    t_close(&f);
+    return true;
+}
+
+/* The VMO's pages, read with vmo_read (which waits for them as a fault
+ * does): the file's bytes, then zeros to the end of its last page. */
+static bool vmo_is_file(handle_t vmo)
+{
+    static uint8_t got[CHUNK];
+    for (uint32_t i = 0; i <= MAP_CHUNKS; i++) {
+        uint32_t n = i < MAP_CHUNKS ? CHUNK : MAP_TAIL;
+        fill(MAP_SEED + i);
+        CHECK_ST(jam_vmo_read(vmo, (uint64_t)i * CHUNK, got, n), OK);
+        if (memcmp(got, buf, n))
+            FAIL("chunk %u of a mapped file reads wrong", i);
+    }
+    uint32_t tail = PAGE_SIZE - MAP_SIZE % PAGE_SIZE;
+    CHECK_ST(jam_vmo_read(vmo, MAP_SIZE, got, tail), OK);
+    for (uint32_t j = 0; j < tail; j++)
+        if (got[j])
+            FAIL("byte %u past the end of a mapped file is %u, not 0", MAP_SIZE + j, got[j]);
+    return true;
+}
+
+static uint64_t koid_of(handle_t h)
+{
+    struct handle_info hi;
+    return jam_handle_info(h, &hi) == OK ? hi.koid : 0;
+}
+
+/* Every mapping of `path` gone and the file closed: once fat has let go
+ * (the keeper told, as volumes' loop would hear it) the file can be
+ * removed, and the pager has nothing queued: every GONE answered (fat
+ * serves what is queued before each fs request). */
+static bool unmapped(handle_t pager, const char *path)
+{
+    CHECK_ST(t_sync(&sv.r), OK);   /* the file's close, and the keeper told to let go */
+    keeper_drain(&sv.keeper);      /* no instance is left to die: the supervisor is idle */
+    CHECK_ST(t_unlink(&sv.r, path), OK);
+    CHECK_ST(jam_object_wait_one(pager, SIG_READABLE, 0, NULL), ERR_TIMED_OUT);
+    return true;
+}
+
+/* fat ended making the VMO (map:1: the successor runs file.map again, and
+ * the VMO of the undone run, a key it doesn't know, is detached when it
+ * goes) and between reading a page request and supplying it (supply:1:
+ * the successor takes the request again). Then: a second map shares the
+ * first's VMO (the keeper gave fat its handle back), an EXEC map is a VMO
+ * of its own, a file open for writing isn't mapped, and a mapped file
+ * can't be removed until its mappings go. */
+static bool map_deaths(handle_t pager)
+{
+    static const char *const dies[] = { "die=map:1", "die=supply:1" };
+    struct tfile f, w;
+    handle_t vmo = HANDLE_INVALID, again = HANDLE_INVALID, own = HANDLE_INVALID;
+    uint64_t size = 0;
+    if (!sup_start_pager(&test_disk, dies, 2, NULL, pager) || !map_file("/m.bin"))
+        return false;
+    CHECK_ST(t_open(&sv.r, "/m.bin", FS_READ, &f), OK);
+    CHECK_ST(file_map_until(f.ch, now() + FAT_CALL_NS, FILE_MAP_READ, &vmo, &size), OK);
+    CHECK_EQ(size, (uint64_t)MAP_SIZE);
+    if (!vmo_is_file(vmo))
+        return false;
+    CHECK_EQ(sv.tests, 2u);
+    CHECK_ST(file_map_until(f.ch, now() + FAT_CALL_NS, FILE_MAP_READ, &again, &size), OK);
+    CHECK_EQ(koid_of(again), koid_of(vmo));
+    CHECK_ST(file_map_until(f.ch, now() + FAT_CALL_NS, FILE_MAP_EXEC, &own, &size), OK);
+    CHECK(koid_of(own) != koid_of(vmo));
+    if (!vmo_is_file(own))
+        return false;
+    CHECK_ST(t_unlink(&sv.r, "/m.bin"), ERR_BUSY);
+    CHECK_ST(t_open(&sv.r, "/m.bin", FS_READ | FS_WRITE, &w), ERR_BUSY);
+    CHECK_ST(jam_handle_close(vmo), OK);
+    CHECK_ST(jam_handle_close(again), OK);
+    CHECK_ST(jam_handle_close(own), OK);
+    t_close(&f);
+    if (!unmapped(pager, "/m.bin"))
+        return false;
+    /* Open for writing: not mapped. */
+    CHECK_ST(t_open(&sv.r, "/w.bin", FS_READ | FS_WRITE | FS_CREATE, &w), OK);
+    CHECK_ST(file_map_until(w.ch, now() + FAT_CALL_NS, FILE_MAP_READ, &vmo, &size), ERR_BUSY);
+    t_close(&w);
+    return sup_stop();
+}
+
+/* file.map's reply lost with the process (reply:2 for the shared VMO, the
+ * open being the first request; reply:1 for an EXEC map): the successor
+ * sends the shared VMO again, and makes the EXEC one again under a new
+ * key (the old one's GONE then finds a key nobody knows). */
+static bool map_replies(handle_t pager)
+{
+    static const char *const dies[] = { "die=reply:2", "die=reply:1" };
+    struct tfile f;
+    handle_t vmo = HANDLE_INVALID, own = HANDLE_INVALID;
+    uint64_t size = 0;
+    if (!sup_start_pager(&test_disk, NULL, 0, NULL, pager) || !map_file("/r.bin") ||
+        !sup_stop() || !sup_start_pager(&test_disk, dies, 2, NULL, pager))
+        return false;
+    CHECK_ST(t_open(&sv.r, "/r.bin", FS_READ, &f), OK);
+    CHECK_ST(file_map_until(f.ch, now() + FAT_CALL_NS, FILE_MAP_READ, &vmo, &size), OK);
+    CHECK_ST(file_map_until(f.ch, now() + FAT_CALL_NS, FILE_MAP_EXEC, &own, &size), OK);
+    CHECK_EQ(sv.tests, 2u);
+    CHECK_EQ(size, (uint64_t)MAP_SIZE);
+    if (!vmo_is_file(vmo) || !vmo_is_file(own))
+        return false;
+    CHECK_ST(jam_handle_close(vmo), OK);
+    CHECK_ST(jam_handle_close(own), OK);
+    t_close(&f);
+    return unmapped(pager, "/r.bin") && sup_stop();
+}
+
+bool t_fat_restart_pager(void)
+{
+    handle_t pager = test_pager();
+    if (!pager)
+        return true;
+    bool ok = ramdisk_create(&test_disk, DISK_SECTORS) && map_deaths(pager) &&
+              map_replies(pager);
+    CHECK_ST(jam_handle_close(pager), OK);
+    return ramdisk_destroy(&test_disk) && ok;
 }
