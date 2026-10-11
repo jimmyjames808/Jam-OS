@@ -1,5 +1,8 @@
 /* mount: the mounts and whether each can be written; `mount -w /usb0`
  * makes another stick's mount writable, `mount -r /usb0` read-only again.
+ * An NVMe drive's /nvmeN can be made writable only on a Jam OS disk (one
+ * `disk prepare` made): volumes decides, with a check of its own, and the
+ * driver again.
  *
  * The change goes through init (abi/idl/initctl.idl) to devmgr, which
  * restarts the mount's filesystem service on a `block` channel opened the
@@ -10,8 +13,8 @@
  * /boot (the boot image, in memory) and /esp (the boot files) are never
  * writable, and /data always is: asking otherwise is refused here, by
  * init and by volumes. A stick is never formatted, in either mode. An NVMe
- * drive's /nvmeN is read-only for good in stage 1 (M12.7): refused here,
- * by init (only /usbN goes on) and by volumes. */
+ * drive's /nvmeN that is not on a Jam OS disk (Windows' ESP is /nvme0)
+ * stays read-only: volumes refuses (ACCESS_DENIED), and so does the driver. */
 #include <idl/initctl.h>
 #include "sh.h"
 
@@ -61,7 +64,7 @@ SH_CMD(mount)
         sh_tty("usage: mount            the mounts\n"
                "       mount -w /usbN   make another stick's mount writable\n"
                "       mount -r /usbN   read-only again\n"
-               "  (an NVMe drive's /nvmeN is always read-only)\n");
+               "  (an NVMe drive's /nvmeN can be made writable only on a Jam OS disk)\n");
         return 2;
     }
     const char *path = argv[2];
@@ -76,13 +79,6 @@ SH_CMD(mount)
     if (fixed(path)) {
         sh_tty("mount: %s %s\n", path, fixed(path));
         return 1;
-    }
-    if (!strncmp(path, "/nvme", 5)) {   /* an internal drive: stage 1 never writes one */
-        if (!writable)
-            sh_say("mount: %s is read-only already\n", path);
-        else
-            sh_tty("mount: %s is not on a Jam OS disk: an NVMe drive is read-only\n", path);
-        return writable ? 1 : 0;
     }
     /* init says "/usbN mounted" in the log before it has told us (its
      * main loop sends every follower the change after the mounts watcher
@@ -109,10 +105,13 @@ SH_CMD(mount)
     uint64_t t0 = now();
     st = initctl_mount_until(sh_initctl(), now() + MOUNT_WAIT, path, (uint32_t)strlen(path), writable);
     if (st != OK) {
-        sh_tty("mount: %s: %s\n", path,
-               st == ERR_ACCESS_DENIED ? "only another stick's mounts (/usbN) can be changed"
-               : st == ERR_NOT_FOUND   ? "not mounted"
-                                       : status_str(st));
+        if (st == ERR_ACCESS_DENIED && !strncmp(path, "/nvme", 5))
+            sh_tty("mount: %s is not on a Jam OS disk: it stays read-only\n", path);
+        else
+            sh_tty("mount: %s: %s\n", path,
+                   st == ERR_ACCESS_DENIED ? "only another stick's mounts (/usbN) can be changed"
+                   : st == ERR_NOT_FOUND   ? "not mounted"
+                                           : status_str(st));
         return 1;
     }
     /* The service was started again: the mount is back once its volume is

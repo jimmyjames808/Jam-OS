@@ -106,7 +106,7 @@ static const struct sh_cmd cmds[] = {
       "  (ssh) the code, 0 to 255 (0 if none), is the session's"),
     C(devices, C_HARDWARE, "devices", "PCI functions and the drivers devmgr bound (alias lspci)"),
     C(usb, C_HARDWARE, "usb", "USB devices from usb-bus (alias lsusb)"),
-    C(disk, C_HARDWARE, "disk digest <disk> [<lba> <count>] | disk smart <disk>",
+    C(disk, C_HARDWARE, "disk digest <disk> [<lba> <count>] | disk smart <disk> | disk prepare <disk>",
       "ask a whole disk, by the name `disks` shows (nvme0, usb0). digest: SHA-256s\n"
       "  computed in its driver (the data never leaves it): without a range the\n"
       "  regions tools/disk-regions.py makes on Linux from the partition table\n"
@@ -115,7 +115,12 @@ static const struct sh_cmd cmds[] = {
       "  line each, also in the boot log, then \"disk digest: done\"; with a range, one\n"
       "  line for those blocks. smart: the NVMe drive's health log: data read and\n"
       "  written, host read and write commands (the write count not moving is the\n"
-      "  drive's own witness that nothing was written), power cycles, wear"),
+      "  drive's own witness that nothing was written), power cycles, wear. prepare:\n"
+      "  make a blank NVMe drive a Jam OS disk: shows its model, serial and size,\n"
+      "  and asks for the last four characters of the serial; then writes Jam OS's\n"
+      "  partition table (an ESP of 512 MiB, a data partition of the rest), formats\n"
+      "  both and mounts them read-only (mount -w makes one writable). Never on a\n"
+      "  drive that has anything on it"),
     C(hda, C_HARDWARE, "hda [gain [dB] | bits [n] | jacks]",
       "the HD Audio codecs and their widget graphs, read now by drv/hda\n"
       "  (the lines it logged at boot; pipe it: hda | grep pin), then the path to the\n"
@@ -291,11 +296,12 @@ static const struct sh_cmd cmds[] = {
     C(mount, C_FILES, "mount [-w|-r /usbN]",
       "the mounts, and which can be written. Another USB stick shows up\n"
       "  read-only at /usb0, /usb1, ...: -w makes it writable, -r read-only again.\n"
-      "  An NVMe drive's partitions (/nvme0, ...) are read-only for good"),
+      "  An NVMe drive's partitions (/nvme0, ...) are read-only too, and -w works\n"
+      "  only on a Jam OS disk (one `disk prepare` made), never on Windows' drive"),
     C(disks, C_FILES, "disks",
       "the disks (USB sticks and NVMe drives): the drive, size and partition table,\n"
       "  then each partition: its type, size, name and where it is mounted. An NVMe\n"
-      "  drive is read-only (nvme0, mounted at /nvme0)"),
+      "  drive is read-only unless it is a Jam OS disk (nvme0, mounted at /nvme0)"),
     C(cat, C_TEXT, "cat [file...]", "print files (or the pipe)"),
     C(hexdump, C_TEXT, "hexdump [-s offset] [-n bytes] [file]",
       "hex and ASCII, 16 bytes a line (also hd)"),

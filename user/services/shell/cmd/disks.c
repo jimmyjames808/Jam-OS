@@ -9,12 +9,19 @@
  *                               list tools/disk-regions.py computes on Linux from the
  *                               partition table alone, one line each, in its order
  *   disk smart <disk>           the drive's health log
+ *   disk prepare <disk>         make a blank NVMe drive a Jam OS disk (stage 2): its
+ *                               partition table, both partitions formatted, mounted
+ *                               read-only. It shows the drive's model, serial number and
+ *                               size, and goes on only when the last four characters of the
+ *                               serial number are typed
  *
  * The shell asks init for a channel that speaks voldisks (initctl.disks,
  * abi/idl/volumes.idl): volumes answers the list from what its drivers said
  * and asks a driver for a digest or the health log each time. That channel
  * can't mount, remount or kill anything. A disk is named as `disks` names
- * it: nvme0, usb0, ... */
+ * it: nvme0, usb0, ... `disk prepare` goes through init (initctl.prepare_disk) to
+ * volumes, which checks the drive again, and the driver a third time: this
+ * file only decides what to show and whether the owner confirmed. */
 #include <idl/initctl.h>
 #include <idl/storage.h>
 #include <idl/volumes.h>
@@ -22,6 +29,9 @@
 
 #define LIST_WAIT   (5 * NS_PER_S)
 #define DIGEST_WAIT (90 * NS_PER_S)   /* volumes gives the driver 60 s for one */
+#define PREPARE_WAIT (700 * NS_PER_S) /* init gives volumes 11 minutes: the format */
+#define TYPE_WAIT   (120 * NS_PER_S)  /* the owner's answer */
+#define SERIAL_TAIL 4                 /* the characters of the serial that are typed */
 #define MAX_PARTS   16
 #define MiB         (1ull << 20)
 #define GiB         (1ull << 30)
@@ -376,13 +386,183 @@ static int smart_cmd(handle_t list, const struct disk_row *d)
     return 0;
 }
 
+/* ---- disk prepare ------------------------------------------------------------------ */
+
+/* Read what the owner types, up to cap - 1 printable characters and Enter,
+ * echoed. False: Ctrl+C or no answer in time. */
+static bool type_line(char *buf, size_t cap)
+{
+    size_t n = 0;
+    sh_drop_typeahead();
+    for (;;) {
+        int k = sh_poll_key(now() + TYPE_WAIT);
+        if (k == '\n' || k == '\r') {
+            sh_say("\n");
+            buf[n] = '\0';
+            return true;
+        }
+        if (k < 0 || k == 3 || sh_interrupted()) {
+            sh_say("\n");
+            return false;
+        }
+        if ((k == 8 || k == 127) && n) {
+            n--;
+            sh_say("\b \b");
+        } else if (k > ' ' && k < 127 && n + 1 < cap) {
+            buf[n++] = (char)k;
+            sh_say("%c", k);
+        }
+    }
+}
+
+/* Does `typed` equal the last SERIAL_TAIL characters of serial (all of it if
+ * shorter), in any case? */
+static bool serial_tail_is(const char *serial, const char *typed)
+{
+    size_t n = strlen(serial), want = n < SERIAL_TAIL ? n : SERIAL_TAIL;
+    if (!want || strlen(typed) != want)
+        return false;
+    for (size_t i = 0; i < want; i++) {
+        char a = serial[n - want + i], b = typed[i];
+        if ((a >= 'a' && a <= 'z' ? a - 32 : a) != (b >= 'a' && b <= 'z' ? b - 32 : b))
+            return false;
+    }
+    return true;
+}
+
+/* Partition i of d: its size in blocks and whether a volume is mounted from it. */
+static bool part_row(handle_t list, const struct disk_row *d, unsigned i, uint64_t *blocks,
+                     bool *mounted)
+{
+    uint8_t mbr, guid[16], fs;
+    uint64_t start;
+    char label[109], mount[16];
+    uint32_t ll, ml;
+    if (voldisks_partition_until(list, now() + LIST_WAIT, d->id, i, &mbr, guid, &start, blocks, &fs,
+                                 label, &ll, mount, &ml) != OK)
+        return false;
+    *mounted = fs == VOLDISKS_FS_MOUNTED;
+    return true;
+}
+
+/* How many of a Jam OS disk's two partitions have no mounted volume. */
+static unsigned not_mounted(handle_t list, const struct disk_row *d)
+{
+    unsigned n = 0;
+    for (unsigned i = 0; i < 2; i++) {
+        uint64_t blocks;
+        bool mounted;
+        n += !part_row(list, d, i, &blocks, &mounted) || !mounted;
+    }
+    return n;
+}
+
+/* What it is, and whether `disk prepare` may go on: 0 a blank drive (its
+ * table is to be made), 1 a Jam OS disk with a partition to format, -1 not
+ * to be prepared (said). */
+static int prepare_what(handle_t list, const struct disk_row *d)
+{
+    if (d->bus != DISKS_BUS_NVME) {
+        sh_tty("disk prepare: %s is not an NVMe drive: only one can be made a Jam OS disk\n",
+               d->name);
+        return -1;
+    }
+    if (d->kind == VOLDISKS_KIND_NO_TABLE)
+        return 0;
+    if (d->kind == VOLDISKS_KIND_JAMOS && d->scheme == STORAGE_SCHEME_GPT) {
+        if (not_mounted(list, d))
+            return 1;
+        sh_say("disk prepare: %s is a Jam OS disk already\n", d->name);
+        return -1;
+    }
+    sh_tty("disk prepare: %s is not blank (it has a partition table, or something else on it): "
+           "nothing is written\n", d->name);
+    return -1;
+}
+
+static const char *prepare_why(status_t st)
+{
+    switch (st) {
+    case ERR_ACCESS_DENIED: return "not blank, or not to be written: nothing was written";
+    case ERR_ALREADY_EXISTS: return "a Jam OS disk already";
+    case ERR_NO_SPACE: return "too small for Jam OS (under 600 MiB)";
+    case ERR_NOT_SUPPORTED: return "not a drive Jam OS can prepare (NVMe, 512-byte blocks)";
+    case ERR_BAD_STATE: return "busy: try again in a moment";
+    case ERR_TIMED_OUT: return "not mounted in time (see `log`)";
+    case ERR_IO: return "a write or a format failed (see `log`; `disk prepare` finishes it)";
+    default: return status_str(st);
+    }
+}
+
+/* "nvme1 is a Jam OS disk now: ESP 512.0 MiB, data 1.8 TiB". */
+static void prepared_line(handle_t list, const char *name)
+{
+    struct disk_row r;
+    char size[2][24] = { "?", "?" };
+    if (find_disk(list, name, &r)) {
+        for (unsigned i = 0; i < 2; i++) {
+            uint64_t blocks;
+            bool mounted;
+            if (part_row(list, &r, i, &blocks, &mounted))
+                sh_human(blocks * r.block_size, size[i], sizeof(size[i]));
+        }
+    }
+    sh_say("%s is a Jam OS disk now: ESP %s, data %s\n", name, size[0], size[1]);
+}
+
+static int prepare_cmd(handle_t list, const struct disk_row *d)
+{
+    int what = prepare_what(list, d);
+    if (what < 0)
+        return 1;
+    uint32_t id = d->id;
+    char name[sizeof(d->name)], size[24], typed[16];
+    snprintf(name, sizeof(name), "%s", d->name);
+    if (!d->serial[0]) {
+        sh_tty("disk prepare: %s reports no serial number: nothing to confirm with, nothing "
+               "is written\n", name);
+        return 1;
+    }
+    sh_say("disk prepare %s: %s, serial %s, %s\n", name, d->model, d->serial,
+           sh_human(d->blocks * d->block_size, size, sizeof(size)));
+    if (what == 0)
+        sh_say("  nothing is on it. This writes Jam OS's partition table to it (an ESP of 512 MiB,\n"
+               "  a data partition of the rest) and formats both partitions.\n");
+    else
+        sh_say("  a Jam OS disk, but a partition has no volume yet (a prepare was cut short): this\n"
+               "  formats it.\n");
+    sh_say("  Type the last %d characters of its serial number to go on, anything else stops: ",
+           SERIAL_TAIL);
+    sh_flush();
+    if (!type_line(typed, sizeof(typed)) || !serial_tail_is(d->serial, typed)) {
+        sh_tty("disk prepare: that is not the end of %s's serial number: nothing was written\n",
+               name);
+        return 1;
+    }
+    if (!sh_initctl()) {
+        sh_tty("disk prepare: no init to ask\n");
+        return 1;
+    }
+    sh_say("preparing %s (the table, then both partitions formatted): this takes a moment\n", name);
+    sh_flush();
+    status_t st = initctl_prepare_disk_until(sh_initctl(), now() + PREPARE_WAIT, id);
+    if (st != OK) {
+        sh_tty("disk prepare: %s: %s\n", name, prepare_why(st));
+        return 1;
+    }
+    prepared_line(list, name);
+    return 0;
+}
+
 SH_CMD(disk)
 {
     bool digest = argc >= 3 && !strcmp(argv[1], "digest") && (argc == 3 || argc == 5);
     bool smart = argc == 3 && !strcmp(argv[1], "smart");
-    if (!digest && !smart) {
+    bool prepare = argc == 3 && !strcmp(argv[1], "prepare");
+    if (!digest && !smart && !prepare) {
         sh_tty("usage: disk digest <disk> [<lba> <count>]   SHA-256s of the disk's regions\n"
                "       disk smart <disk>                    the drive's health log\n"
+               "       disk prepare <disk>                  make a blank NVMe drive a Jam OS disk\n"
                "  <disk> is a name `disks` shows (nvme0, usb0)\n");
         return 2;
     }
@@ -392,7 +572,8 @@ SH_CMD(disk)
     struct disk_row d;
     int rc = 1;
     if (find_disk(list, argv[2], &d))
-        rc = smart ? smart_cmd(list, &d) : digest_cmd(list, &d, argc, argv);
+        rc = prepare ? prepare_cmd(list, &d) : smart ? smart_cmd(list, &d)
+                                                     : digest_cmd(list, &d, argc, argv);
     jam_handle_close(list);
     return rc;
 }
