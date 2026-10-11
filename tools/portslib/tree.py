@@ -2,7 +2,9 @@
 recipes, and the order to build in (docs/M13.7-PLAN.md sections 2 and 5).
 
 ports/ holds one directory per port and the files every port shares
-(config.site, jamos.cmake, jamos.meson; keys/ for later). A port's
+(config.site, jamos.cmake, jamos.meson; keys/ for later; vectors/, the
+package formats' test vectors, and vulns, the repository's vulnerability
+lines: tools/portslib/vectors.py and repo.py). A port's
 directory holds only what the format names:
 
     recipe        the recipe (recipe.py)
@@ -30,7 +32,7 @@ import checkoverrides  # noqa: E402
 import checkwants  # noqa: E402
 
 SHARED = {"config.site", "jamos.cmake", "jamos.meson"}
-RESERVED_DIRS = {"keys"}
+RESERVED_DIRS = {"keys", "vectors", "vulns"}   # names in ports/ that are no port
 PORT_ENTRIES = {"recipe", "patches", "OVERRIDES", "override", "wants", "build.sh", "test",
                 "LICENSE"}
 # What `allow` refuses a program on /data (user/services/shell/sh_allow.c),

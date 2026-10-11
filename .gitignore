@@ -23,3 +23,7 @@ local.mk
 *.aiff
 *.wma
 music/
+
+# Signing keys never go in the repository: the update key and the ports key
+# live in ~/.config/jamos (build/host/jamos-sign keygen [--ports]).
+*.key

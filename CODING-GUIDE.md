@@ -226,7 +226,8 @@ be compatible with that.
 | `make debug` | the same, stopped for gdb on :1234 |
 | `make usb DEV=/dev/diskN` | write the image to a USB stick, erasing it ([docs/HARDWARE.md](docs/HARDWARE.md)) |
 | `make flash` | update a stick that already has Jam OS: kernel, boot image and boot menu only (the stick's kernel and boot image kept as "Jam OS (previous build)") |
-| `make check` | generated code current, the driver isolation check, the docs check, the include order, the signing tool's test vectors, the ports' recipes and the ports builder's self-test (`tools/ports.py`) |
+| `make check` | generated code current, the driver isolation check, the docs check, the include order, the signing tool's test vectors, the ports' recipes, the ports builder's and packager's self-test and the package formats' test vectors (`tools/ports.py`), the repository server's self-test |
+| `make ports` | the package repository in `build/repo/`: every package port built, packaged and signed with the ports key (`~/.config/jamos/ports.key`), its index, VULNS and sources, for `tools/ports-server.py` |
 | `make includes` | put `#include` lines in the order the check wants |
 | `make KTESTS=0` | a kernel without the in-kernel tests (into `build/noktests/`) |
 | `make syscalls` | regenerate the syscall glue after editing `abi/syscalls.def` |

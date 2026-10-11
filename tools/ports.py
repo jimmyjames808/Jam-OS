@@ -13,6 +13,9 @@ recipes in ports/, on the Mac or the test host's Linux
                                                 each needs and runs
     ports.py selftest                           the builder's own tests
                                                 (make check runs them)
+    ports.py package|repo|verify|vectors|abi    packages, the signed
+                                                repository and its formats
+                                                (tools/portslib/pkgcmd.py)
 
 Options before the command: --ports DIR (default ports/), --out DIR
 (default build/ports), --offline (no network: the cache and the mirror
@@ -22,8 +25,7 @@ build/sysroot first); its result is build/ports/<name>/stage/ and the
 stage list stage.txt there. Sources are fetched by size and SHA-256 into
 ~/.cache/jamos/distfiles, through the mirror (tools/portslib/fetch.py).
 
-Not built yet: `package` and `repo` (packages, the signed index) and
-`audit` (CVEs); the stage list is what they will read.
+Not built yet: `audit` (CVEs).
 
 The code is in tools/portslib/, a module per job: recipe (the format),
 licence, tree (the ports tree and the order), fetch, source (unpack,
@@ -40,6 +42,7 @@ sys.dont_write_bytecode = True   # no __pycache__ left in tools/
 
 from portslib import build as buildmod  # noqa: E402
 from portslib import fetch as fetchmod  # noqa: E402
+from portslib import pkgcmd  # noqa: E402
 from portslib import tree as treemod  # noqa: E402
 
 
@@ -126,8 +129,7 @@ def cmd_selftest(args):
 
 
 def cmd_later(args):
-    print("ports: '%s' is not built yet (docs/M13.7-PLAN.md: PO3 for package and repo, "
-          "PO12 for audit)" % args.command)
+    print("ports: '%s' is not built yet (docs/M13.7-PLAN.md: PO12 for audit)" % args.command)
     return 2
 
 
@@ -146,8 +148,8 @@ def main(argv):
         sub.add_parser(name).add_argument("port", nargs="*")
     sub.add_parser("fetch").add_argument("port", nargs="+")
     sub.add_parser("selftest")
-    for name in ("package", "repo", "audit"):
-        sub.add_parser(name).add_argument("port", nargs="*")
+    sub.add_parser("audit").add_argument("port", nargs="*")
+    pkgcmd.add_parsers(sub)
     args = ap.parse_args(argv)
     if not args.command:
         ap.print_help()
@@ -157,7 +159,7 @@ def main(argv):
         os.environ["JAMOS_OFFLINE"] = "1"
     os.chdir(TOP)   # third_party/ and user/include/os.h are read from here
     run = {"lint": cmd_lint, "build": cmd_build, "fetch": cmd_fetch, "graph": cmd_graph,
-           "selftest": cmd_selftest}.get(args.command, cmd_later)
+           "selftest": cmd_selftest, **pkgcmd.commands(TOP)}.get(args.command, cmd_later)
     return run(args)
 
 

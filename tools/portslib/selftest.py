@@ -14,6 +14,8 @@ link, a program's list in its note, what is dropped, a symlink made a
 copy, isolation (a header of a port not declared is not found), a no-op
 build that builds nothing, a needed port's change rebuilding its users,
 and two builds giving the same bytes.
+
+Then the packages, the repository and their formats (pkgtest.py).
 """
 import io
 import os
@@ -28,6 +30,7 @@ from . import fetch as fetchmod
 from . import fixtures
 from . import licence
 from . import patch as patchmod
+from . import pkgtest
 from . import recipe as recipemod
 from . import source as sourcemod
 from . import stage as stagemod
@@ -375,6 +378,7 @@ def main(top):
             test_fat()
             test_lint(tmp, real_ports)
             test_builds(tmp, real_ports)
+            FAILS.extend(pkgtest.run(tmp, real_ports, top))
             test_fetch(tmp, os.path.join(tmp, "up"))
             test_bad_builds(tmp, real_ports)
             test_git(tmp)

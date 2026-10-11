@@ -33,12 +33,13 @@ import time
 from . import fetch as fetchmod
 from . import source as sourcemod
 from . import stage as stagemod
+from . import sysrootid
 from . import toolchain
 from . import tree as treemod
 
 # Bump when a change to the builder changes what it makes, so every port
 # is built again.
-FORMAT = b"jamos-ports-build 1\n"
+FORMAT = b"jamos-ports-build 2\n"
 
 
 class BuildError(Exception):
@@ -199,15 +200,17 @@ class Builder:
 
     def built_with(self, r):
         """What is inside r's programs besides its own code: musl, the
-        sysroot (the call layer and libjam, by its stamp), every port it
-        needs (for an audit of a library's CVE in its users)."""
+        sysroot (the call layer and libjam, by an identity the same on
+        every build host: sysrootid.py), every port it needs (for an audit
+        of a library's CVE in its users)."""
         out = []
         try:
             with open(os.path.join(self.top, "third_party", "musl", "VERSION")) as f:
                 out.append("built-with musl %s" % f.read().strip())
         except OSError:
             pass
-        out.append("built-with sysroot %s" % self.sysroot_stamp()[:16])
+        out.append("built-with sysroot %s" %
+                   sysrootid.identity(self.sysroot, self.sysroot_stamp())[:16])
         for dep in treemod.needs_closure(self.tree, r.name):
             d = self.tree.recipes[dep]
             out.append("built-with %s %s %d" % (dep, d.version, d.revision))
