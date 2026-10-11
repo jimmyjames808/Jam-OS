@@ -25,6 +25,7 @@
 #define DATA_MOUNT "/data"
 #define USB_MOUNT  "/usb"    /* another stick's mounts: /usb0, /usb1, ... */
 #define USB_MOUNTS 8         /* ... the N that are tried */
+#define NVME_MOUNT "/nvme"   /* an NVMe drive's: /nvme0, ... (writable only on a Jam OS disk) */
 #define BOOTFS_PATH "bin/bootfs"   /* the bootfs server, in bootfs */
 
 /* A kept server end (made once, handed to every instance of its service)
@@ -160,6 +161,17 @@ enum { CTL_SHELL, CTL_COMPOSITOR, CTL_CONSOLE, CTL_COUNT = CTL_CONSOLE + TERM_MA
 status_t ctl_new(unsigned who, handle_t port, uint64_t key, handle_t *client);
 /* Answer what is queued on who's channel. */
 void     ctl_serve(unsigned who);
+
+/* ---- prepare.c: initctl.prepare_disk's call to volumes ----------------------------- */
+
+/* volinstall.prepare of disk `id`, sent on volumes' install channel without
+ * waiting, under transaction id txid; ERR_NOT_FOUND: no volumes runs. Its
+ * answer (read off the channel by the caller): prepare_result. */
+struct idl_msg;
+status_t prepare_send(uint32_t txid, uint32_t id);
+status_t prepare_result(const void *rep, struct idl_msg *m);
+/* The call's end, said in the log: disk id, how it ended, since t0. */
+void     prepare_say(uint32_t id, status_t st, uint64_t t0);
 
 /* ---- splash.c: the boot splash (<splash.h>) --------------------------------------- */
 
@@ -479,6 +491,9 @@ handle_t shell_volumes(void);
 /* volumes' ESP channel (volesp), init's alone: or 0 while no
  * volumes runs (or none started in shell mode). Only update.c uses it. */
 handle_t shell_volumes_esp(void);
+/* volumes' install channel (volinstall), init's alone: or 0 while no
+ * volumes runs (or none started in shell mode). Only prepare.c uses it. */
+handle_t shell_volumes_install(void);
 /* init's (ADMIN) console channel, or 0 while no console runs. */
 handle_t shell_console(void);
 /* logd writes out and syncs the log up to now (logctl.flush), waited for
