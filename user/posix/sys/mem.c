@@ -4,8 +4,10 @@
  * Each mmap is a VMO of its own, mapped with vmar_map and kept in libc's
  * table (maptable.h) with its handle: munmap of part of it unmaps that
  * part (the kernel splits the mapping, the table splits the entry), and
- * the VMO goes when nothing maps it any more; madvise(MADV_DONTNEED) and
- * MADV_FREE decommit its pages (they read as zero after, as Linux's do).
+ * the VMO goes when nothing maps it any more. A part of private
+ * anonymous memory unmapped or mapped over gives its pages back at once
+ * (decommitted: nobody else could ever see them). madvise(MADV_DONTNEED)
+ * and MADV_FREE decommit its pages (they read as zero after, as Linux's do).
  * Pages are committed as they are touched and charged to the process's
  * job then.
  *
@@ -80,11 +82,34 @@ static bool table_overlaps(uint64_t addr, uint64_t len)
     return i < mt_count() && mt_entries()[i].base < addr + len;
 }
 
-/* Unmap the table's mappings in [addr, end): each entry's part there,
- * trimming, splitting or dropping the entry. A split needs a free entry,
- * checked before anything changes. With kernel false the address space
- * is left alone (it is being unmapped by someone else: mem_forget). */
-static long drop_locked(uint64_t addr, uint64_t end, bool kernel)
+/* What drop_locked does to the address space and the pages. */
+enum drop_how {
+    DROP_UNMAP,      /* munmap: unmap each part, then give back its pages (drop_pages) */
+    DROP_REPLACED,   /* the kernel has mapped something else there: give back the pages */
+    DROP_FORGET,     /* someone else unmaps it (a thread's own stack, still running on it) */
+};
+
+/* Entry i's part [s, f), which nothing maps any more: its pages given
+ * back now if the entry is private anonymous memory whose VMO lives on
+ * (the rest of the entry, or another entry split from it, still maps it).
+ * Nobody else holds that VMO, so the pages could never be seen again, yet
+ * would stay committed and charged until the whole VMO goes: a
+ * reservation's pieces unmapped or mapped over one by one would never
+ * give anything back. A VMO no other part maps goes whole with its
+ * mapping and handle. */
+static void drop_pages(unsigned i, uint64_t s, uint64_t f)
+{
+    const struct mt_entry *e = &mt_entries()[i];
+    bool whole = s == e->base && f == e->base + e->len;
+    if ((e->kind & MT_ANON) && (!whole || mt_vmo_shared(i)))
+        (void)jam_vmo_decommit(e->vmo, e->vmo_off + (s - e->base), f - s);   /* ours: can't fail */
+}
+
+/* Take the table's mappings in [addr, end) out of it: each entry's part
+ * there, trimming, splitting or dropping the entry. A split needs a free
+ * entry, checked before anything changes. With DROP_UNMAP each part is
+ * unmapped first; a failure there stops it, with the parts before gone. */
+static long drop_locked(uint64_t addr, uint64_t end, enum drop_how how)
 {
     struct mt_entry *t = mt_entries();
     unsigned i = mt_first_after(addr);
@@ -94,9 +119,11 @@ static long drop_locked(uint64_t addr, uint64_t end, bool kernel)
         struct mt_entry e = t[i];
         uint64_t s = e.base > addr ? e.base : addr;
         uint64_t f = e.base + e.len < end ? e.base + e.len : end;
-        status_t st = kernel ? jam_vmar_unmap(lx_self_vmar(), s, f - s) : OK;
+        status_t st = how == DROP_UNMAP ? jam_vmar_unmap(lx_self_vmar(), s, f - s) : OK;
         if (st != OK)
             return lx_err(st);
+        if (how != DROP_FORGET)
+            drop_pages(i, s, f);
         if (s == e.base && f == e.base + e.len) {
             mt_remove(i);   /* i is now the next entry */
             continue;
@@ -120,7 +147,7 @@ static long drop_locked(uint64_t addr, uint64_t end, bool kernel)
 
 static long unmap_locked(uint64_t addr, uint64_t end)
 {
-    return drop_locked(addr, end, true);
+    return drop_locked(addr, end, DROP_UNMAP);
 }
 
 void mem_forget(uint64_t addr, uint64_t len)
@@ -128,7 +155,7 @@ void mem_forget(uint64_t addr, uint64_t len)
     if (!len || addr > UINT64_MAX - len)
         return;
     lock_take(&mem_lock);
-    (void)drop_locked(addr, addr + len, false);   /* a split's room: a stack is one entry */
+    (void)drop_locked(addr, addr + len, DROP_FORGET);   /* a split's room: a stack is one entry */
     lock_give(&mem_lock);
 }
 
@@ -240,7 +267,7 @@ static long replace_locked(uint64_t addr, uint64_t len, uint32_t perms, bool pop
         jam_handle_close(vmo);
         return r;
     }
-    (void)drop_locked(addr, addr + len, false);   /* the kernel unmapped them; room checked */
+    (void)drop_locked(addr, addr + len, DROP_REPLACED);   /* the kernel did; room checked */
     if (populate)
         (void)jam_vmo_commit(vmo, src->vmo_off, len);   /* a hint: pages still come on touch */
     struct mt_entry e = { addr, len, src->vmo_off, vmo, src->kind };

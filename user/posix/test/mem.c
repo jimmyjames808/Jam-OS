@@ -13,7 +13,8 @@
  *   - malloc of 1 GiB in 1 MiB pieces, every page written and read back,
  *     then freed, and the job's pages back near where they were;
  *   - mlock and its kin: nothing is ever paged out, so they succeed (with
- *     Linux's checks of their arguments). */
+ *     Linux's checks of their arguments);
+ *   - reservations (memres.c). */
 #include <stdlib.h>
 #include <errno.h>
 #include <jamos/libjam.h>
@@ -220,4 +221,5 @@ void pt_mem(char **argv __attribute__((unused)))
     check_brk();
     check_malloc();
     check_mlock();
+    pt_mem_reserve();
 }
