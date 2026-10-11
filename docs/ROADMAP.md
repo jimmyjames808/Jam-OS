@@ -37,7 +37,7 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 | M12.5 | User-space pagers: mapped files, programs loaded on demand | under way, kernel half built: the pager object, its VMOs and the request queue with system calls 160-164 (PK1), and the fault path that waits for a pager (PK2, 12 ktests). Not yet: eviction (PK3), verified pages and `vmo_make_exec_verified` (PK4), the plumbing (PU), fat as a pager and coherence (PF1, PF2), programs from `/data` (PX), the review and the join. Nothing uses a pager yet ([M12.5-PLAN.md](M12.5-PLAN.md)) |
 | M12.7 | NVMe: read-only first, then writes to a Jam OS disk, then installing Jam OS to it | under way, in wave 5 with M12.5 and M13 (the owner, 2026-10-07). Stage 1, read-only, is built and tested in QEMU (N1-N5): drv/nvme (no write command in it, checked by `make check`), the partition-table library, `volumes` mounting FAT partitions read-only as `/nvmeN`, and the shell's `disks`, `disk digest` and `disk smart`; it binds on every boot. Its check on Windows' drive on the PC (the drive's write counter unmoved) is not recorded yet. Stage 2 (writes, only to the blank second drive fitted on 2026-10-11) and stage 3 (the installer) are to come, with one review at the end ([M12.7-PLAN.md](M12.7-PLAN.md)) |
 | M13 | POSIX on musl | under way ([M13-PLAN.md](M13-PLAN.md)). Merged: the kernel's part (K1: small ids, `thread_interrupt`; K2: the time page), musl 1.2.6 with the sysroot, `jamos-cc` and `posixtest` (A1), libjam and the hand-over (A2), netstack options (N1), the console's connection back end and `tty` (T1, T2), files and directories (B1), pipes, `dup`, `/dev`, `/etc`, memfd and eventfd (B2), `posix_spawn` and waits (B3), signals (B4), `poll`, `select` and `epoll` (B5), and the shell's descriptors and redirections (S1). Not yet: sockets (B6), sessions and ptys (X1), sbase and Lua (P1), libc-test (P2), tinyssh (X2), pipelines (S2), mapped files (F1), the reviews and the join |
-| M13.5 | A real POSIX shell, made the default | after Chromium: not on its path (the owner, 2026-10-11) |
+| M13.5 | A real POSIX shell, made the default | the shell after Chromium; its emulated `vfork` likely on Chromium's path (CR0) |
 | M13.6 | A Unix filesystem: symlinks, permissions, large files, case-sensitive names | porting first (the owner, 2026-10-11); plan being written |
 | M13.7 | The ports system: recipes, dependency order, packages | porting first (the owner, 2026-10-11); plan being written |
 | M10 | ACPI power, tickless idle | deferred: porting first (the owner, 2026-10-11) |
@@ -80,17 +80,29 @@ On Chromium's path (in roughly this order, much of it in parallel):
   Doom, swayimg and the GTK spike are not on the path.
 - **New layers G2 doesn't cover**: executable memory for a JIT under a
   capability (V8; its jitless mode first), the clang/libc++ toolchain and
-  Chromium's GN build taught a Jam OS target (from its Fuchsia port:
-  spawn, channels, jobs, no zygote, no `fork`), audio for web pages
-  through the mixer, a CA certificate store for TLS, and probably M14.5
-  (dynamic linking: SwiftShader and ANGLE load as shared libraries; CR0
-  confirms).
+  Chromium's GN build taught a Jam OS target, audio for web pages through
+  the mixer, a CA certificate store for TLS, and probably M14.5 (dynamic
+  linking: SwiftShader and ANGLE load as shared libraries; CR0 confirms).
+- **The route (the owner, 2026-10-11)**: since Jam OS has Wayland and a
+  POSIX layer, the expected route is Chromium's **Linux** code over M13's
+  POSIX layer, not its Fuchsia port (Fuchsia had neither, so Chromium
+  wrote a Scenic display backend and Fuchsia-only process, IPC and file
+  code there, and never had the full browser UI). Chromium's Ozone/Wayland
+  backend, its Views UI and fontconfig then come as they are; the gaps
+  Linux Chromium hits become general layers every Linux port uses:
+  `AF_UNIX` sockets with descriptor passing (`SCM_RIGHTS`; Mojo, and
+  Wayland clients without G2's special shim), process launch by fork then
+  exec (M13.5's emulated `vfork` comes back onto the path; mksh doesn't),
+  a small `/proc` or reads of it that fail cleanly, and an audio backend.
+  The sandbox is Jam OS's own on either route (each renderer a job with
+  only the handles it needs; `--no-sandbox` for the first builds). CR0
+  compares the Linux and Fuchsia routes concretely and recommends one.
 - **CR, Chromium itself**: software rendering first (Skia on the CPU or
   SwiftShader); GPU drivers (G3/G4, likely Linux's DRM drivers under the
   2026-10-11 licence rule) make it fast afterwards.
 
 Not on the path, so after Chromium (unless the owner makes one a goal):
-M13.5 (mksh and emulated `fork`: Chromium's Fuchsia code spawns), M14
+M13.5's mksh and its full `fork` (its emulated `vfork` is on the path if CR0 picks the Linux route), M14
 (the ABI freeze), M15 (self-hosting), M10 and M10.5 (ACPI power, sleep),
 M12.7's stage 3 (the installer), M12.1's follow-ups, ports nobody needs
 yet, and new Jam OS apps beyond the system's own.
