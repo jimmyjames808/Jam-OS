@@ -65,6 +65,12 @@ static void present(bool all)
 }
 
 void gfx_present(void) { present(false); }
+
+void gfx_present_rects(const struct rect *r, unsigned n)
+{
+    if (scr.open && n)
+        wl_present_rects(r, n);
+}
 void gfx_present_all(void) { present(true); }
 
 /* ---- drawing ----------------------------------------------------------------------- */

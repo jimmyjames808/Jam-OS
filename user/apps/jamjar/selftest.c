@@ -3,8 +3,9 @@
  * names, '_' for spaces, years before albums, files at odd depths), the
  * jar labels, the ID3 tags and the cover decoder, the stereo bars, the
  * roulette, the layout and the sunburst for screens QEMU doesn't have,
- * and whole frames (the main screen and the big view) drawn at each. It needs no handle and no
- * screen: it draws into memory of its own. */
+ * and whole frames (the main screen and the big view) drawn at each, and
+ * the frames that redraw only what moved against whole ones (redtest.c).
+ * It needs no handle and no screen: it draws into memory of its own. */
 #include "jamjar.h"
 
 #define R "/m/OnTheSpot"
@@ -288,6 +289,60 @@ static bool strip_shows(struct bars *b, const struct surf *s, const struct rect 
     return mine > r->h / 4 && theirs == 0 && other == 0;
 }
 
+/* bars_span's plain form: every pixel from l to r by the area it covers. */
+static void span_plain(const struct surf *s, int y, float l, float r, uint32_t c, uint32_t cov)
+{
+    if (y < 0 || y >= s->h || r <= l)
+        return;
+    uint32_t *row = s->px + (uint64_t)y * s->stride;
+    for (int x = (int)l; x < (int)r + 1 && x < s->w; x++) {
+        if (x < 0)
+            continue;
+        float a = ((float)(x + 1) < r ? (float)(x + 1) : r) - ((float)x > l ? (float)x : l);
+        if (a <= 0)
+            continue;
+        uint32_t k = (uint32_t)(a * (float)cov);
+        row[x] = k >= 255 ? c : mixc(row[x], c, k > 256 ? 256 : k);
+    }
+}
+
+/* The bars' rows, with the whole pixels in the middle done in one run, are
+ * the same pixels as the loop over every one, for spans of every kind: on
+ * a pixel edge or not, none wide, off either edge, every coverage. */
+static void test_span(void)
+{
+    enum { W = 40 };
+    uint32_t a[W], b[W];
+    struct surf sa = { a, W, 1, W }, sb = { b, W, 1, W };
+    uint32_t seed = 12345;
+    unsigned bad = 0, n = 0;
+    for (int i = 0; i < 4000; i++) {
+        float l[3], r[3];
+        for (int k = 0; k < 3; k++) {
+            seed = seed * 1664525u + 1013904223u;
+            l[k] = (float)(int)(seed >> 8 & 63) / 2.0f - 6.0f;   /* -6 to 25.5, halves */
+            seed = seed * 1664525u + 1013904223u;
+            r[k] = l[k] + (float)(int)(seed >> 8 & 63) / 4.0f - 1.0f + (float)(i % 5) * 0.25f;
+        }
+        l[1] = (float)(int)l[1];                        /* on a pixel's edge */
+        r[2] = (float)(int)r[2];
+        seed = seed * 1664525u + 1013904223u;
+        uint32_t cov = i % 7 == 0 ? 256 : i % 11 == 0 ? 255 : i % 13 == 0 ? 0 : (seed >> 8) % 257;
+        for (int x = 0; x < W; x++)
+            a[x] = b[x] = 0x203040u + (uint32_t)x * 0x010203u;
+        for (int k = 0; k < 3; k++) {
+            bars_span(&sa, 0, l[k], r[k], 0xc8284fu, cov);
+            span_plain(&sb, 0, l[k], r[k], 0xc8284fu, cov);
+        }
+        n++;
+        bad += memcmp(a, b, sizeof(a)) != 0;
+    }
+    char what[96];
+    snprintf(what, sizeof(what), "bars: a bar's row, whole pixels in one run: %u spans, %u differ", n,
+             bad);
+    fun_check(bad == 0, what);
+}
+
 static void test_strip(void)
 {
     static uint32_t px[1280 * 200];
@@ -369,18 +424,22 @@ static bool inside(const struct rect *in, const struct rect *out)
            in->y + in->h <= out->y + out->h && in->w > 0 && in->h > 0;
 }
 
+const char *test_fixture(int i)
+{
+    return fixture[i];
+}
+
 static struct app app;
 static uint32_t *frame_px;   /* the back buffer for the frames: the biggest screen tested */
 
-/* A whole frame on a w x h screen, as the app draws it, playing a fixture
- * track with loud bands: the bars at the bottom are drawn, the mark
- * at the top left is drawn, and how long it took. */
-static void test_frame(int w, int h)
+/* The app on a w x h screen (scr.s is its back buffer, made on the first
+ * call), playing a fixture track with loud bands. */
+struct app *test_frame_app(int w, int h)
 {
     if (!frame_px) {
         if (!(frame_px = big_alloc(2560ull * 1440 * 4))) {
             fun_check(false, "frame: no memory to draw into");
-            return;
+            return NULL;
         }
         /* Its pages committed now, so the times below are the frames' own,
          * as the app's are after its first frame (a page's first touch is
@@ -392,6 +451,7 @@ static void test_frame(int w, int h)
     scr.h = h;
     scr.ui = h > 1100 ? 2 : 1;
     struct app *a = &app;
+    memset(a, 0, sizeof(*a));
     a->lib = lib;
     a->view = view;
     a->view_ok = true;
@@ -403,12 +463,24 @@ static void test_frame(int w, int h)
     names_of_path(a->snap.path, &a->now);
     a->now_track = lib_find(&lib, a->snap.path);
     a->mx = a->my = -1;
+    a->hover_col = a->hover_row = -1;
     bars_init(&a->bars);
     uint8_t bands[BARS];
     for (int i = 0; i < BARS; i++)
         bands[i] = (uint8_t)(230 - 2 * i);
     for (int i = 0; i < 40; i++)
         bars_step(&a->bars, bands, bands, true, 1.0f / 30);
+    return a;
+}
+
+/* A whole frame on a w x h screen, as the app draws it, playing a fixture
+ * track with loud bands: the bars at the bottom are drawn, the mark
+ * at the top left is drawn, and how long it took. */
+static void test_frame(int w, int h)
+{
+    struct app *a = test_frame_app(w, h);
+    if (!a)
+        return;
     uint64_t t0 = now();
     draw_frame(a, t0);
     uint64_t us = (now() - t0) / 1000;
@@ -564,6 +636,7 @@ int jamjar_selftest(void)
     test_art();
     test_covers();
     test_bars();
+    test_span();
     test_strip();
     test_roulette();
     test_stale();
@@ -573,6 +646,7 @@ int jamjar_selftest(void)
     test_screen(1920, 1080);
     test_screen(2560, 1440);
     test_screen(3840, 2160);
+    test_redraw();
     test_min_size();
     return fun_selftest_end();
 }

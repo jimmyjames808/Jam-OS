@@ -171,20 +171,38 @@ void bars_where(const struct rect *r, int i, int *x0, int *x1, int *mid)
     *mid = g.mid;
 }
 
-/* One row of a bar: [l, r) in float pixels, colour c, coverage cov (0..256). */
-static void span(const struct surf *s, int y, float l, float r, uint32_t c, uint32_t cov)
+/* One row of a bar: [l, r) in float pixels, colour c, coverage cov (0..256).
+ * The pixels the bar covers whole (x from the first whole one up to the
+ * last, where a is exactly 1) are all the same: one colour, or one blend;
+ * only the two ends need the area worked out. */
+void bars_span(const struct surf *s, int y, float l, float r, uint32_t c, uint32_t cov)
 {
     if (y < 0 || y >= s->h || r <= l)
         return;
     uint32_t *row = s->px + (uint64_t)y * s->stride;
-    for (int x = (int)l; x < (int)r + 1 && x < s->w; x++) {
-        if (x < 0)
+    int x1 = (int)r + 1 < s->w ? (int)r + 1 : s->w;
+    int whole0 = (float)(int)l == l ? (int)l : (int)l + 1;   /* x >= l: a pixel from its left edge */
+    int whole1 = (int)r;                                      /* x + 1 <= r: to its right edge */
+    for (int x = (int)l; x < x1;) {
+        if (x >= 0 && x >= whole0 && x < whole1) {
+            int e = whole1 < x1 ? whole1 : x1;
+            if (cov >= 255) {
+                for (; x < e; x++)
+                    row[x] = c;
+            } else {
+                for (; x < e; x++)
+                    row[x] = mixc(row[x], c, cov);
+            }
             continue;
-        float a = ((float)(x + 1) < r ? (float)(x + 1) : r) - ((float)x > l ? (float)x : l);
-        if (a <= 0)
-            continue;
-        uint32_t k = (uint32_t)(a * (float)cov);
-        row[x] = k >= 255 ? c : mixc(row[x], c, k > 256 ? 256 : k);
+        }
+        if (x >= 0) {
+            float a = ((float)(x + 1) < r ? (float)(x + 1) : r) - ((float)x > l ? (float)x : l);
+            if (a > 0) {
+                uint32_t k = (uint32_t)(a * (float)cov);
+                row[x] = k >= 255 ? c : mixc(row[x], c, k > 256 ? 256 : k);
+            }
+        }
+        x++;
     }
 }
 
@@ -214,7 +232,7 @@ static void bar(const struct geom *g, int c, int i)
         }
         int from = up ? (int)foot - 1 - y : y - (int)foot;
         uint32_t col = g->grad[c][from < 0 ? 0 : from >= g->full ? g->full - 1 : from];
-        span(g->dst, y, l + inset, rr - inset, col, (uint32_t)((bot - top) * 256.0f));
+        bars_span(g->dst, y, l + inset, rr - inset, col, (uint32_t)((bot - top) * 256.0f));
     }
 }
 
@@ -228,7 +246,8 @@ static void bar_job(uint32_t item, uint32_t worker, void *arg)
     }
 }
 
-void bars_draw(const struct bars *b, const struct surf *dst, const struct rect *r)
+static void strip(const struct bars *b, const struct surf *dst, const struct rect *r,
+                  bool parallel)
 {
     static struct geom g;
     int u = scr.ui > 0 ? scr.ui : 1;
@@ -239,10 +258,20 @@ void bars_draw(const struct bars *b, const struct surf *dst, const struct rect *
     fill(dst, r->x + 16 * u, g.mid, r->w - 32 * u, g.line, C_LINE);   /* the line */
     text(dst, r->x + 4 * u, g.mid - g.gap - TEXT_H(u), u, C_FAINT, "L");
     text(dst, r->x + 4 * u, g.mid + g.line + g.gap, u, C_FAINT, "R");
-    if (pool_threads() > 1) {
+    if (parallel && pool_threads() > 1) {
         pool_run(bar_job, &g, (BARS + 3) / 4);
         return;
     }
     for (uint32_t i = 0; i < (BARS + 3) / 4; i++)
         bar_job(i, 0, &g);
+}
+
+void bars_draw(const struct bars *b, const struct surf *dst, const struct rect *r)
+{
+    strip(b, dst, r, true);
+}
+
+void bars_draw_serial(const struct bars *b, const struct surf *dst, const struct rect *r)
+{
+    strip(b, dst, r, false);
 }

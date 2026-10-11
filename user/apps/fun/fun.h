@@ -136,6 +136,16 @@ static inline bool rect_has(const struct rect *r, int x, int y)
     return x >= r->x && y >= r->y && x < r->x + r->w && y < r->y + r->h;
 }
 
+/* The same for an app that knows where it drew: only the n rectangles
+ * r[0..n) of scr.s (clipped to it) are compared and sent, and nothing
+ * else is looked at. The app promises that nothing outside them differs
+ * from what the last present showed (after gfx_open, a new size, or any
+ * gfx_present_all, it presents the whole picture first). What they
+ * contain is sent like gfx_present does, damaged by the pieces that
+ * changed; a small present runs on the calling thread and doesn't wake
+ * the pool. */
+void     gfx_present_rects(const struct rect *r, unsigned n);
+
 /* Drawing (all clipped to the surface). */
 void fill(const struct surf *s, int x, int y, int w, int h, uint32_t c);
 static inline void fill_rect(const struct surf *s, const struct rect *r, uint32_t c)

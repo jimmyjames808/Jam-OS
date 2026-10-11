@@ -23,6 +23,11 @@
 # playing (`music status`). Screenshots: <outdir>/jamjar-*.png.
 # The boot is the default one, the compositor's (jamjar a window: the
 # script finds where and clicks in it).
+# JAMJAR_CPU=1: instead tools/shell-tests/jamjar-cpu.txt, jamjar's CPU use
+# (top) while it plays at 2560x1440, and its frame counts; JAMJAR_ARGS adds
+# words to its command (`whole`: redraw the whole window every frame, the
+# old way). Through tools/remote-test.sh: `... remote-test.sh env JAMJAR_CPU=1
+# tools/jamjar-test.sh <outdir>`.
 # QEMU_SMP passes through. Usage: tools/jamjar-test.sh <outdir>; exit 0 on PASS.
 set -eu
 out=$1
@@ -33,6 +38,14 @@ if [ "${JAMJAR_HD:-}" = 1 ]; then
     name=jamjar-hd
     script=tools/shell-tests/jamjar-hd.txt
     QEMU_EXTRA_VGA="-vga none -device VGA,xres=2560,yres=1440,vgamem_mb=64"
+fi
+if [ "${JAMJAR_CPU:-}" = 1 ]; then   # jamjar's CPU while it plays, in a big window
+    name=jamjar-cpu
+    script=tools/shell-tests/jamjar-cpu.txt
+    QEMU_EXTRA_VGA="-vga none -device VGA,xres=2560,yres=1440,vgamem_mb=64"
+    mkdir -p "$out"
+    sed "s/^send jamjar trace &/send jamjar trace ${JAMJAR_ARGS:-} \&/" "$script" > "$out/$name.txt"
+    script="$out/$name.txt"
 fi
 wav="$out/$name.wav"
 stick="$out/$name-stick.img"
@@ -227,6 +240,11 @@ rm -f "$stick"
 log="$out/$name.log"
 # What the trace said, for the report.
 tr -d '\r' < "$log" | grep -aE "jamjar: (spectrum|frames|library|cover)" | head -20 || true
+if [ "${JAMJAR_CPU:-}" = 1 ]; then   # the report: top's last frame, jamjar's own counts
+    tr -d '\r' < "$log" | grep -aE "top - up|^ *[0-9]+  (jamjar|compositor) " | tail -6 || true
+    tr -d '\r' < "$log" | grep -aE "compositor: paint" | tail -4 || true
+    tr -d '\r' < "$log" | grep -aE "jamjar: [0-9]+ frames" || true
+fi
 # The calibration shot: the bars' place from the trace (in jamjar's own
 # pixels: moved by its window's place, which jamjar.txt's right click in
 # the output's middle, 640,400, found); the left's 1 kHz bar (34) up

@@ -8,6 +8,8 @@
  *   ... trace                  say every command, every cover read, and once a
  *                              second each channel's loudest bar (the QEMU
  *                              test reads it)
+ *   ... whole                  redraw and present the whole window every frame
+ *                              (the old way: to compare its CPU with the new)
  *   ... noaccel                the mouse without acceleration (tests)
  *   ... nocovers               jar labels only: no covers read from the tags
  *   run jamjar --selftest      the library, names, search, art and layout
@@ -24,7 +26,9 @@
  * the player's latest snapshot (link.c's thread does the calls), move the
  * bars on, draw, present, and wait for a key, a mouse report or the next
  * frame: every 1/hz s while anything moves, four times a second when
- * nothing does (the clock of the progress bar). */
+ * nothing does (the clock of the progress bar). A frame redraws and
+ * presents only what moved (the bars, the progress bar; draw.c) unless
+ * something else changed. */
 #include <wants.h>
 #include "jamjar.h"
 
@@ -135,6 +139,7 @@ static void input(struct app *a, uint64_t deadline)
             app_mouse(a, &m);
         } else if (k == KEY_RESIZE) {   /* its window took a new size (gfx_resizable) */
             layout_make(&a->lo, scr.w, scr.h, scr.ui);
+            draw_forget(a);   /* the new back buffer is blank */
             if (a->trace)   /* the cover test's full screen (Super+F) */
                 say("jamjar: resized to %dx%d; now playing's cover at %d,%d, %d px\n", scr.w,
                     scr.h, a->lo.art.x, a->lo.art.y, a->lo.art.w);
@@ -151,6 +156,7 @@ static int run(int argc, char **argv)
 {
     struct app *a = &A;
     a->trace = has_arg(argc, argv, "trace");
+    a->rd.off = has_arg(argc, argv, "whole");
     a->now_track = -1;
     a->hover_col = a->hover_row = a->mx = a->my = -1;
     uint64_t hz = arg_num(argc, argv, "hz", 60);
@@ -195,7 +201,7 @@ static int run(int argc, char **argv)
             x1, BARS - 1, x2, x3);
     }
     say_targets(a);
-    uint64_t last = now(), frames = 0, t0 = last, draw_ns = 0;
+    uint64_t last = now(), frames = 0, t0 = last, draw_ns = 0, part_ns = 0;
     while (!a->quit) {
         uint64_t t = now();
         read_library(a);
@@ -203,8 +209,14 @@ static int run(int argc, char **argv)
         bool busy = animate(a, t, (float)(t - last) / 1e9f);
         last = t;
         draw_frame(a, t);
-        gfx_present();
-        draw_ns += now() - t;
+        if (a->dmg_all)
+            gfx_present();
+        else
+            gfx_present_rects(a->dmg, a->ndmg);
+        uint64_t took = now() - t;
+        draw_ns += took;
+        if (!a->dmg_all)
+            part_ns += took;
         frames++;
         input(a, t + (busy ? period : 250 * NS_PER_MS));
     }
@@ -213,6 +225,10 @@ static int run(int argc, char **argv)
     say("jamjar: %lu frames in %lu.%lu s, %lu us each to draw and present; the music plays on "
         "(`music status`)\n", (unsigned long)frames, (unsigned long)(ms / 1000),
         (unsigned long)(ms % 1000 / 100), (unsigned long)(frames ? draw_ns / frames / 1000 : 0));
+    unsigned long part = a->rd.part, whole = frames - part;
+    say("jamjar: %lu frames redrew only what moved (%lu us each), %lu the whole window "
+        "(%lu us each)\n", part, part ? (unsigned long)(part_ns / part / 1000) : 0, whole,
+        whole ? (unsigned long)((draw_ns - part_ns) / whole / 1000) : 0);
     return 0;
 }
 

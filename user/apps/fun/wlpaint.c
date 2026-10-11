@@ -23,7 +23,16 @@
  *
  * When no buffer is free (the compositor holds both, which it shouldn't
  * for long) the present ends after a short wait: what it changed stays
- * owed, and the next present writes it. */
+ * owed, and the next present writes it.
+ *
+ * A present of rectangles (gfx_present_rects: the app says where it drew)
+ * is the same present with step 1 limited to the bands and pieces the
+ * rectangles touch, and step 3 to the pieces owed (which are within
+ * them). A frame in which little changes then costs the little: no
+ * compare of the whole picture and no walk over all of it. Below
+ * INLINE_PX pixels a pass runs on the calling thread: waking every pool
+ * worker (each spins for a moment after, too) costs more CPU than a small
+ * rectangle's work. */
 #include <jwl_client.h>
 #include "internal.h"
 
@@ -31,6 +40,7 @@
 #define MASK_WORDS   (JWL_SIZE_MAX / PSEG / 64)
 #define DAMAGE_MAX   30                    /* rectangles a commit damages (the compositor keeps 32) */
 #define BUFFER_WAIT  (100 * NS_PER_MS)     /* both buffers held: how long a present waits */
+#define INLINE_PX    (2u << 20)            /* a pass over fewer pixels runs on the caller alone */
 
 static uint64_t pend[MAX_BANDS][MASK_WORDS];      /* pieces changed since the last commit */
 static uint64_t owed[2][MAX_BANDS][MASK_WORDS];   /* pieces buffer i doesn't hold yet */
@@ -52,6 +62,11 @@ static struct {
 } seen[2];
 
 static uint64_t write_bytes[FUN_MAX_THREADS];
+
+/* The bands a pass visits (pool item i is band act[i]) and, for the
+ * compare, the pieces [from[b], to[b]) of each. */
+static uint16_t act[MAX_BANDS];
+static uint16_t from[MAX_BANDS], to[MAX_BANDS];
 
 void wl_paint_reset(void)
 {
@@ -78,13 +93,14 @@ static void compare_band(uint32_t item, uint32_t me, void *arg)
 {
     bool all = *(const bool *)arg;
     (void)me;
-    int y0 = (int)item * PBAND, y1 = y0 + PBAND < scr.h ? y0 + PBAND : scr.h;
+    uint32_t band = act[item];
+    int y0 = (int)band * PBAND, y1 = y0 + PBAND < scr.h ? y0 + PBAND : scr.h;
     uint64_t m[MASK_WORDS] = { 0 };
     for (int y = y0; y < y1; y++) {
         const uint32_t *b = scr.s.px + (uint64_t)y * scr.w;
         uint32_t *s = scr.shown + (uint64_t)y * scr.w;
-        for (int x = 0, p = 0; x < scr.w; x += PSEG, p++) {
-            int n = scr.w - x < PSEG ? scr.w - x : PSEG;
+        for (int p = from[band]; p < to[band]; p++) {
+            int x = p * PSEG, n = scr.w - x < PSEG ? scr.w - x : PSEG;
             if (!all && px_same(b + x, s + x, n))
                 continue;
             px_copy(s + x, b + x, n);
@@ -92,10 +108,67 @@ static void compare_band(uint32_t item, uint32_t me, void *arg)
         }
     }
     for (int k = 0; k < MASK_WORDS; k++) {   /* this band's words are this item's alone */
-        pend[item][k] |= m[k];
-        owed[0][item][k] |= m[k];
-        owed[1][item][k] |= m[k];
+        pend[band][k] |= m[k];
+        owed[0][band][k] |= m[k];
+        owed[1][band][k] |= m[k];
     }
+}
+
+/* Run fn over the n bands in act[] (px pixels of work): on the pool, or,
+ * for a small pass, here alone. */
+static void run_bands(void (*fn)(uint32_t, uint32_t, void *), void *arg, unsigned n,
+                      uint64_t px, bool small_ok)
+{
+    if (!n)
+        return;
+    if (small_ok && px <= INLINE_PX) {
+        for (unsigned i = 0; i < n; i++)
+            fn(i, 0, arg);
+        return;
+    }
+    pool_run(fn, arg, n);
+}
+
+/* Every band, every piece. */
+static unsigned scope_all(void)
+{
+    int pieces = (scr.w + PSEG - 1) / PSEG;
+    for (int b = 0; b < bands(); b++) {
+        act[b] = (uint16_t)b;
+        from[b] = 0;
+        to[b] = (uint16_t)pieces;
+    }
+    return (unsigned)bands();
+}
+
+/* The bands and pieces rectangles r[0..n) (clipped to the picture) touch. */
+static unsigned scope_rects(const struct rect *r, unsigned n, uint64_t *px)
+{
+    int pieces = (scr.w + PSEG - 1) / PSEG;
+    for (int b = 0; b < bands(); b++) {
+        from[b] = (uint16_t)pieces;
+        to[b] = 0;
+    }
+    for (unsigned i = 0; i < n; i++) {
+        int x0 = r[i].x < 0 ? 0 : r[i].x, y0 = r[i].y < 0 ? 0 : r[i].y;
+        int x1 = r[i].x + r[i].w > scr.w ? scr.w : r[i].x + r[i].w;
+        int y1 = r[i].y + r[i].h > scr.h ? scr.h : r[i].y + r[i].h;
+        if (x0 >= x1 || y0 >= y1)
+            continue;
+        int p0 = x0 / PSEG, p1 = (x1 + PSEG - 1) / PSEG;
+        for (int b = y0 / PBAND; b <= (y1 - 1) / PBAND; b++) {
+            from[b] = p0 < from[b] ? (uint16_t)p0 : from[b];
+            to[b] = p1 > to[b] ? (uint16_t)p1 : to[b];
+        }
+    }
+    unsigned k = 0;
+    *px = 0;
+    for (int b = 0; b < bands(); b++)
+        if (to[b] > from[b]) {
+            act[k++] = (uint16_t)b;
+            *px += (uint64_t)(to[b] - from[b]) * PSEG * PBAND;
+        }
+    return k;
 }
 
 /* ---- 3. into a buffer ------------------------------------------------------------------- */
@@ -125,8 +198,9 @@ static uint64_t put_span(const struct write_job *j, int y, int x, int n)
 static void write_band(uint32_t item, uint32_t me, void *arg)
 {
     const struct write_job *j = arg;
-    uint64_t *m = owed[j->slot][item], bytes = 0;
-    int y0 = (int)item * PBAND, y1 = y0 + PBAND < scr.h ? y0 + PBAND : scr.h;
+    uint32_t band = act[item];
+    uint64_t *m = owed[j->slot][band], bytes = 0;
+    int y0 = (int)band * PBAND, y1 = y0 + PBAND < scr.h ? y0 + PBAND : scr.h;
     for (int y = y0; y < y1; y++) {
         if (j->whole) {
             bytes += put_span(j, y, 0, scr.w);
@@ -224,7 +298,22 @@ static void write_buffer(struct write_job *j)
         write_bytes[i] = 0;
     if (j->whole)
         pool_run(border_band, j, (uint32_t)((j->fr->height + PBAND - 1) / PBAND));
-    pool_run(write_band, j, (uint32_t)bands());
+    unsigned n = 0;
+    uint64_t px = 0;
+    if (j->whole) {
+        n = scope_all();
+    } else {   /* the bands with something owed */
+        for (int b = 0; b < bands(); b++) {
+            unsigned pieces = 0;
+            for (int k = 0; k < MASK_WORDS; k++)
+                pieces += (unsigned)__builtin_popcountll(owed[s][b][k]);
+            if (pieces) {
+                act[n++] = (uint16_t)b;
+                px += (uint64_t)pieces * PSEG * PBAND;
+            }
+        }
+    }
+    run_bands(write_band, j, n, px, !j->whole);
     for (uint32_t i = 0; i < FUN_MAX_THREADS; i++)
         scr.bytes += write_bytes[i];
     seen[s].px = j->fr->px;
@@ -246,11 +335,11 @@ static bool changed(void)
     return damage_all;
 }
 
-void wl_present(bool all)
+/* A present of the bands in act[0..n) (compared as from[] and to[] say,
+ * px pixels of it; all: every piece is taken as changed). */
+static void present(bool all, unsigned n, uint64_t px, bool small_ok)
 {
-    if (wl_dead())
-        return;
-    pool_run(compare_band, &all, (uint32_t)bands());
+    run_bands(compare_band, &all, n, px, small_ok);
     if (!changed())
         return;   /* nothing to write, nothing to wait for */
     wl_wait_frame();
@@ -262,7 +351,7 @@ void wl_present(bool all)
     wl_place(&w, &h, &j.ox, &j.oy);
     write_buffer(&j);
     struct jwl_rect r[DAMAGE_MAX];
-    unsigned n = damage_rects(r, &j);
+    unsigned nr = damage_rects(r, &j);
     bool whole = damage_all || committed.w != fr.width || committed.h != fr.height ||
                  committed.ox != j.ox || committed.oy != j.oy;
     damage_all = false;
@@ -270,7 +359,23 @@ void wl_present(bool all)
     committed.h = fr.height;
     committed.ox = j.ox;
     committed.oy = j.oy;
-    if (jwl_window_present(wl_window(), whole ? NULL : r, whole ? 0 : n, true) == OK)
+    if (jwl_window_present(wl_window(), whole ? NULL : r, whole ? 0 : nr, true) == OK)
         wl_frame_asked();   /* else the connection went: a reconnect shows it all again */
     scr.presents++;
+}
+
+void wl_present(bool all)
+{
+    if (wl_dead())
+        return;
+    present(all, scope_all(), 0, false);
+}
+
+void wl_present_rects(const struct rect *r, unsigned n)
+{
+    if (wl_dead())
+        return;
+    uint64_t px;
+    unsigned k = scope_rects(r, n, &px);
+    present(false, k, px, true);
 }

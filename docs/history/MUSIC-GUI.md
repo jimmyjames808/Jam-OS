@@ -335,3 +335,30 @@ row.
   above.
 - What only the PC can show: smoothness at 2560x1440 on 28 CPUs, and how
   the stereo picture looks with real music.
+
+## Redrawing only what moved (2026-10-11)
+
+On the owner's PC (2560x1440) jamjar used about 180 % of a CPU while music
+played, more in a bigger window: every frame (60 a second while anything
+moves, which the bars do all the time) drew the whole window from scratch
+on every CPU of the pool, compared all of it with what was shown, and woke
+the workers each time. Most of each frame is the last one's: the lists, the
+text, the covers, the panels.
+
+Now a frame is the rest of the picture (`draw_static`) plus the parts that
+move by themselves (`draw_dynamic`): the stereo bars, the progress bar with
+its two times, and in the big view the sunburst. The picture below those
+(`redraw.under`) is kept. A frame whose rest is the last one's puts it back,
+draws the moving parts again on the calling thread alone, and presents only
+their rectangles (`gfx_present_rects`, libfun: compares and copies only the
+pieces the rectangles touch, damages them with `wl_surface.damage_buffer`
+as before, and runs a small pass without waking the pool). "Is the rest the
+last one's" is a hash (`draw_key`) of everything the rest reads: the layout,
+hover, the lists (selection, scroll, the rows shown), the search, a toast,
+the player's state and names, the library's counts, and a counter for the
+covers (`cover_gen`) that moves when a cover becomes ready or is dropped.
+Anything else, and the help, the roulette and the big view coming or going,
+is drawn and presented whole as before (`jamjar ... whole` does it for
+every frame, to compare). The self-test (`redraw` lines) draws the same
+sequences both ways and compares every pixel, and that nothing outside the
+rectangles said changed.
