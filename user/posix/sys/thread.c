@@ -22,7 +22,9 @@
 #include <sched.h>
 #include <time.h>
 #include "layer.h"
+#include "proc.h"
 #include "sig.h"
+#include "threads.h"
 
 /* Linux's values (x86-64): arch_prctl's codes and futex's operations. */
 #define ARCH_SET_FS          0x1002
@@ -205,6 +207,54 @@ long lx_set_tid_address(long word, long b, long c, long d, long e, long f)
 long lx_gettid(long a, long b, long c, long d, long e, long f)
 {
     return self_tid;
+}
+
+/* The first thread's id (its handle is the startup message's, which is
+ * not in the table), once asked for; 0 if the kernel did not say. */
+static uint32_t first_tid(void)
+{
+    static uint32_t first;
+    uint32_t t = __atomic_load_n(&first, __ATOMIC_ACQUIRE);
+    if (!t && kp_thread_tid(startup_handle(SR_SELF_THREAD), &t) == OK)
+        __atomic_store_n(&first, t, __ATOMIC_RELEASE);
+    return t;
+}
+
+long thread_apply(long tid, thread_op *op, void *arg)
+{
+    if (tid < 0 || tid > UINT32_MAX)
+        return -ESRCH;
+    uint32_t first = first_tid(), pid = (uint32_t)lx_pid();
+    handle_t h = HANDLE_INVALID;
+    status_t st = OK;
+    lock_take(&threads_lock);
+    uint32_t want = tid ? (uint32_t)tid : self_tid;
+    for (unsigned i = 0; i < nthreads && h == HANDLE_INVALID; i++)
+        if (threads[i].tid == want)
+            h = threads[i].handle;
+    /* The first thread's handle is not in the table; nor, as in
+     * lx_self_thread, is the caller's if it is the first. */
+    if (h == HANDLE_INVALID && (!tid || want == first || want == pid))
+        h = startup_handle(SR_SELF_THREAD);
+    if (h != HANDLE_INVALID)
+        st = op(h, arg);
+    lock_give(&threads_lock);
+    if (h == HANDLE_INVALID)
+        return -ESRCH;
+    return st == OK ? 0 : lx_err(st);
+}
+
+/* musl asks the kernel to wake a dead owner's robust mutexes; the answer
+ * of a kernel without them is ENOSYS, and musl goes on (it walks the list
+ * itself when a thread exits). */
+long lx_set_robust_list(long head, long len, long c, long d, long e, long f)
+{
+    return -ENOSYS;
+}
+
+long lx_get_robust_list(long pid, long head, long len, long d, long e, long f)
+{
+    return -ENOSYS;
 }
 
 long lx_arch_prctl(long code, long addr, long c, long d, long e, long f)

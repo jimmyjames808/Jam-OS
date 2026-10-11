@@ -55,7 +55,13 @@ lx_call lx_mmap, lx_munmap, lx_mprotect, lx_madvise, lx_mremap, lx_brk, lx_mlock
 
 /* Threads (thread.c). */
 lx_call lx_set_tid_address, lx_gettid, lx_arch_prctl, lx_exit, lx_exit_group, lx_futex,
-        lx_sched_yield;
+        lx_sched_yield, lx_set_robust_list, lx_get_robust_list;
+
+/* Priorities and scheduling policies of a thread (sched.c), and the
+ * process's attributes and a thread's name (prctl.c). */
+lx_call lx_setpriority, lx_getpriority, lx_getcpu, lx_sched_getscheduler,
+        lx_sched_setscheduler, lx_sched_getparam, lx_sched_setparam,
+        lx_sched_get_priority_max, lx_sched_get_priority_min, lx_prctl;
 
 /* ---- the ENOSYS log (enosys.c, enosysnames.c) ------------------------------------------ */
 
@@ -85,7 +91,8 @@ lx_call lx_clock_gettime, lx_clock_getres, lx_clock_settime, lx_clock_nanosleep,
         lx_nanosleep, lx_times, lx_getrusage;
 
 /* The machine and randomness (misc.c), and the resource limits (rlimit.c). */
-lx_call lx_uname, lx_getrandom, lx_sysinfo, lx_sched_getaffinity;
+lx_call lx_uname, lx_getrandom, lx_sysinfo, lx_sched_getaffinity, lx_sched_setaffinity,
+        lx_membarrier;
 lx_call lx_getrlimit, lx_setrlimit, lx_prlimit64;
 
 /* The descriptor table: the calls that route to a descriptor's kind (fd.c). */
