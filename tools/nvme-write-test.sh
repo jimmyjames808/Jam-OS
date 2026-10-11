@@ -96,8 +96,8 @@ NVW_BLANK_DISK=${NVW_BLANK_DISK:-nothing found on it}    # what `disks` says of 
 NVW_PREPARED=${NVW_PREPARED:-is a Jam OS disk now}       # and its answer when done
 NVW_RW=${NVW_RW:-read-write}                             # mount -w: "is now read-write", "read-write already"
 NVW_POINTS=${NVW_POINTS:-1 2 3 5 8 13 21 34 55 89}
-NVW_PREP_POINTS=${NVW_PREP_POINTS:-1 2 3 4 5 6 8 20 60 200}
-NVW_DRV_POINTS=${NVW_DRV_POINTS:-1 2 3 4 5}
+NVW_PREP_POINTS=${NVW_PREP_POINTS:-1 3 4 5 6 8 20 60 100 200}
+NVW_DRV_POINTS=${NVW_DRV_POINTS:-1 3 4 5 6}
 
 sha256() { if command -v sha256sum > /dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
 
@@ -187,8 +187,9 @@ find_qemu() {
 # are throttled (QEMU's throttle: tools/qemu-test.sh's QEMU_NVME_THROTTLE):
 # without it five Writes take less time than the poll between two looks at
 # the trace. A throttle's bucket holds a tenth of a second's operations, so
-# at 4 a second it holds less than one and every Write waits for the one
-# before: the kill lands on the point's Write. That is for the first ten;
+# at 2 a second it holds a fifth of one and every Write waits its turn: the
+# kill lands on the point's Write (the first two pass at once, though: a cut
+# at the 1st lands at the 2nd, and the line says where). That is for ten;
 # further out the exact Write matters less than the time it takes to get
 # there, and the drives take 30 a second (a Write or three of slack).
 # Sets `cut` to the Writes traced when the kill was sent, or empty when the
@@ -196,7 +197,7 @@ find_qemu() {
 boot_cut() {
     d=$1 n=$2 marker=$5 delta=$6
     cut=
-    nvw_throttle="x-iops-write=$([ "$delta" -le 10 ] && echo 4 || echo 30)"
+    nvw_throttle="x-iops-write=$([ "$delta" -le 10 ] && echo 2 || echo 30)"
     boot "$d" "$n" "$3" "$4" > "$d/$n.status" 2>&1 &
     bpid=$!
     nvw_throttle=
@@ -335,6 +336,7 @@ refuse() {
         # told no, and nothing is written.
         echo "send disk prepare nvme{bd}"
         echo "wait $NVW_ASK"
+        echo "sleep 1"   # typed at once, the answer was once lost
         echo "send xxxx"
         echo "wait $NVW_WRONG"
         echo "wait {prompt}"
@@ -378,11 +380,11 @@ prepare() {
         printf '%s\n' "seen re:nvme[0-9]+ +QEMU NVMe Ctrl +serial jamos-nvme1 [^\r\n]*$NVW_BLANK_DISK"
         echo "send disk prepare nvme{bd}"
         echo "wait $NVW_ASK"
+        echo "sleep 1"   # typed at once, the answer was once lost
         echo "send $ser"
         echo "wait 360 $NVW_PREPARED"
         echo "wait {prompt}"
         names "" "" 1
-        echo "wait Jam OS ESP"
         echo "send mount"
         echo "wait /nvme{je}"
         echo "wait /nvme{jm}"
@@ -558,6 +560,7 @@ cutprep() {
             names "" 1 ""
             echo "send disk prepare nvme{bd}"
             echo "wait $NVW_ASK"
+            echo "sleep 1"   # typed at once, the answer was once lost
             echo "send $ser"
             echo "wait 360 $NVW_PREPARED"
             echo "send reboot -f"
@@ -577,6 +580,7 @@ cutprep() {
                 names "" 1 ""
                 echo "send disk prepare nvme{bd}"
                 echo "wait $NVW_ASK"
+                echo "sleep 1"   # typed at once, the answer was once lost
                 echo "send $ser"
                 echo "wait 360 $NVW_PREPARED"
                 echo "wait {prompt}"
@@ -680,12 +684,23 @@ restart() {
         echo "wait 60 $NVW_RW"
         echo "wait {prompt}"
         r=0
-        for victim in fat-nvme{jm} nvme fat-nvme{jm} nvme; do
+        # Rounds: the filesystem service killed under the storm (its spare takes
+        # over the open file, so the storm goes on through the successor's block
+        # channel, which must wait for the dead one's writes: the drain rule),
+        # then the driver killed under it (both NVMe drivers: `kill nvme` takes
+        # whichever of them it finds first).
+        for victim in "kill fat-nvme{jm}" "kill nvme; kill nvme" "kill fat-nvme{jm}" "kill nvme; kill nvme"; do
             r=$((r + 1))
             echo "send disktest /nvme{jm} write 100000 64 &"
+            printf '%s\n' "wait re:\[(?P<jn>[0-9]+)\] [0-9]+ disktest: in the background"
             echo "wait 60 disktest: writing /nvme{jm} from file"
-            echo "send sleep 2; kill $victim; echo rs-\"\"$r \$?"
-            echo "wait 60 rs-$r 0"
+            echo "send sleep 2; $victim; echo rs-\"\"$r \$?"
+            echo "wait 60 rs-$r"
+            echo "wait {prompt}"
+            # two seconds more of the storm (through the successor, if the service
+            # was the victim), then it is stopped, so the check sees a quiet disk
+            echo "send sleep 2; kill %{jn}; echo rk-\"\"$r"
+            echo "wait 60 rk-$r"
             echo "wait {prompt}"
             # the successor is up a moment later, and its mounts may be numbered
             # again and read-only again
@@ -718,7 +733,7 @@ restart() {
     # the right driver was killed (the Jam OS drive's), each time
     jd=$(grep -aoE "nvme[0-9]+  QEMU NVMe Ctrl  serial jamos-nvme0 " "$log" | head -1 | sed 's/^nvme\([0-9]*\) .*/\1/')
     [ "$(grep -ac "nvme$jd: its driver ended" "$log")" -ge 2 ] ||
-        { echo "nvme-write-$c: FAIL: nvme$jd's driver wasn't killed twice"; ok=0; }
+        { echo "nvme-write-$c: FAIL: nvme$jd's driver wasn't killed in both driver rounds"; ok=0; }
     # the drain rule engaged: a partition held for a client that died with
     # requests out, and let go
     s_want "$log" "partition [12]: its client left with [1-9][0-9]* request" "partition [12]: the gone client's requests are done" || ok=0
