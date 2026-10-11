@@ -135,6 +135,8 @@ enum ext_ro {
 /* Feature sets, by their word in the superblock (ext_feature_name). */
 enum ext_fset { EXT_FSET_COMPAT, EXT_FSET_INCOMPAT, EXT_FSET_RO_COMPAT };
 
+struct ext_jnl;   /* the journal (ext_jnl.h) */
+
 struct ext_fs {
     struct ext_dev dev;
     struct ext_super sb;             /* the primary superblock, as read (and writers change it) */
@@ -179,6 +181,7 @@ struct ext_fs {
     uint64_t why_blk;                /* the block it was found in (0: none) */
 
     struct ext_cache cache;
+    struct ext_jnl *jnl;             /* the open journal (ext_jnl_mount); NULL: none */
 };
 
 /* Mount the volume on dev: read and check the superblock and every group
