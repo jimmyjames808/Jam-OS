@@ -67,6 +67,13 @@ void fsctl_key(uint64_t key)
         if (!call_offer(b->ctl, buf, &m))
             idl_msg_drop(&m);
     }
+    /* 64 read and maybe more queued (a service that writes as fast as we
+     * read): the binding fires when the channel turns readable, not while
+     * it stays so, and without another turn fsctl.stop's answer, or the
+     * channel's end, would never be seen. Unwatched, the channel goes: the
+     * service can still be killed. */
+    if (b->ctl && port_again(port, b->ctl, key, SIG_READABLE | SIG_PEER_CLOSED) != OK)
+        fs_ctl_close(b);
 }
 
 void fs_retire(struct vol *b)

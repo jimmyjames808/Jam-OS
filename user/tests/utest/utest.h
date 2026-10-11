@@ -87,6 +87,7 @@ bool t_disk_other(void);
 bool t_disk_fs_restart(void);
 bool t_disk_own_channel(void);
 bool t_disk_vanishes(void);
+bool t_disk_answer_storm(void);
 bool t_disk_list_channel(void);   /* volumes.list_channel: voldisks alone */
 
 /* logd.c: bin/logd with the fat service over a RAM disk as its /data. */

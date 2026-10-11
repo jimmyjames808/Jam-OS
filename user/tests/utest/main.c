@@ -676,6 +676,7 @@ static const struct {
     { "disk_fs_restart", t_disk_fs_restart },
     { "disk_own_channel", t_disk_own_channel },
     { "disk_vanishes", t_disk_vanishes },
+    { "disk_answer_storm", t_disk_answer_storm },
     { "disk_list_channel", t_disk_list_channel },
     { "logd_writes_the_log", t_logd_writes_the_log },
     { "logd_without_data", t_logd_without_data },

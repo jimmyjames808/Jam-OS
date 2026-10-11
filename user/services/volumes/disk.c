@@ -325,18 +325,21 @@ static void ask_partition(struct disk *d)
 }
 
 /* Read what d's driver answered: storage.info's and storage.partition's
- * answers to the steps, and those a task waits for (a `block` channel). */
-static void disk_answers(struct disk *d)
+ * answers to the steps, and those a task waits for (a `block` channel).
+ * 64 a turn, as every other channel. False if more may be left. */
+static bool disk_answers(struct disk *d)
 {
     _Alignas(8) uint8_t buf[CALL_REP_MAX];
     _Static_assert(STORAGE_REP_MAX <= CALL_REP_MAX, "storage's answers fit");
     struct idl_msg m;
-    for (int guard = 0; guard < 64 && d->state != DISK_FREE && d->ch; guard++) {
+    for (int guard = 0; d->state != DISK_FREE && d->ch; guard++) {
+        if (guard == 64)
+            return false;
         status_t st = idl_reply_read(d->ch, buf, sizeof(buf), &m);
         if (st == ERR_INTERNAL)
             continue;   /* not storage's: dropped */
         if (st != OK)
-            return;
+            return true;
         if ((d->state != DISK_INFO && d->state != DISK_PARTS && d->state != DISK_IDENT) ||
             m.txid != d->txid) {
             if (!call_offer(d->ch, buf, &m))
@@ -373,6 +376,7 @@ static void disk_answers(struct disk *d)
         snprintf(why, sizeof(why), "storage.info failed (%s)", status_str(st));
         leave_alone(d, why);
     }
+    return true;
 }
 
 /* Read what b (a filesystem service) answered on ch: the fs.stat probes
@@ -572,6 +576,11 @@ void disks_event(uint64_t key)
         if (st != OK)
             return;
     }
+    /* 64 read and maybe more queued (a burst of attaches): the binding
+     * fires when the channel turns readable, not while it stays so, so
+     * without another turn no disk devmgr tells of would reach us again. */
+    if (port_again(port, disks_ch, KEY_DISKS | disks_gen, SIG_READABLE | SIG_PEER_CLOSED) != OK)
+        say(true, "volumes: can't watch the disks channel any more: no new disks");
 }
 
 /* The DISKS channel is gone too (devmgr ended, its drivers with it): a
@@ -630,10 +639,18 @@ void disk_key(uint64_t key)
         KEY_GEN(key) != disks[slot].gen)
         return;   /* stale */
     struct disk *d = &disks[slot];
-    disk_answers(d);
+    bool done = disk_answers(d);
     signals_t seen = 0;
-    if (!d->ch || jam_object_wait_one(d->ch, SIG_PEER_CLOSED, 0, &seen) != OK)
+    if (!d->ch || jam_object_wait_one(d->ch, SIG_PEER_CLOSED, 0, &seen) != OK) {
+        /* More may be queued (a driver that writes as fast as we read): the
+         * binding fires only when the channel turns readable, so the rest,
+         * and its end, come by another turn, after what else waits. */
+        if (!done && d->ch &&
+            port_again(port, d->ch, KEY_DISK_OF(d - disks, d->gen),
+                       SIG_READABLE | SIG_PEER_CLOSED) != OK)
+            leave_alone(d, "its channel can't be watched");
         return;
+    }
     if (d->test) {
         say(false, "volumes: %s gone", disk_name(d));
         drop_services(d, DISK_FREE);
