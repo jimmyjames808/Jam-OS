@@ -11,16 +11,17 @@
  *   2. The file actions applied to the copy, in order (spawnfd.c): close,
  *      dup2, open (opened here, into a descriptor of ours kept until the
  *      spawn ends), chdir, fchdir.
- *   3. The hand-over: every slot without FD_CLOEXEC exported (new handles
- *      of the child's own), the directory, the umask, the signal mask and
- *      the ignored signals, our pid as its parent's, its process group and
- *      session (0 meaning its own pid, which nobody knows before it is
- *      made).
- *   4. The program: a name looked up in PATH (posix_spawnp), then a path
+ *   3. The program: a name looked up in PATH (posix_spawnp), then a path
  *      (relative ones from the copy's directory): one under /boot runs
  *      from the boot image, as do /bin and /usr/bin, which are the boot
  *      image's bin and usr/bin (there is no other); anything else is
  *      EACCES until programs can be loaded from files, ENOENT if missing.
+ *      Before step 4, which takes things out of ours.
+ *   4. The hand-over: every slot without FD_CLOEXEC exported (new handles
+ *      of the child's own), the directory, the umask, the signal mask and
+ *      the ignored signals, our pid as its parent's, its process group and
+ *      session (0 meaning its own pid, which nobody knows before it is
+ *      made).
  *   5. spawn: our job, our namespace (or the grants list
  *      posix_spawnattr_setgrants_np gave), an 8 MiB stack, the hand-over
  *      written before the child runs. Then its pid, and a place in the
@@ -220,64 +221,74 @@ static status_t start(const struct jam_spawn_req *r, const char *name,
     return st;
 }
 
-/* Everything but the table: the program, the state, the start, the pid.
- * 0 with *pid, *proc and *sigch (start's), or an errno value. The table's
- * handles in ho are consumed either way. */
-static int launch(const struct jam_spawn_req *r, bool exec, struct spawnfd *t,
-                  struct posixfds_out *ho, int *pid, handle_t *proc, handle_t *sigch)
+/* A started child: its pid, its process and our end of its signal channel. */
+struct started {
+    int      pid;
+    handle_t proc;
+    handle_t sigch;
+};
+
+/* Everything after the table: the state, the start, the pid. 0 with *c,
+ * or an errno value. The table's handles in ho are consumed either way. */
+static int launch(const struct jam_spawn_req *r, bool exec, struct spawnfd *t, const char *name,
+                  struct posixfds_out *ho, struct started *c)
 {
-    char *name = malloc(PATH_MAX);
-    long e = !name ? -ENOMEM : r->path ? find_program(r, t->cwd, name) : -EFAULT;
-    if (!e)
-        e = child_state(r, exec, &ho->state);
+    long e = child_state(r, exec, &ho->state);
     if (e) {
         posixfds_discard(ho);
-        free(name);
         return (int)-e;
     }
     ho->cwd = t->cwd;
-    status_t st = start(r, name, ho, proc, sigch);
-    free(name);
+    status_t st = start(r, name, ho, &c->proc, &c->sigch);
     if (st != OK)
         return spawn_errno(st);
     struct process_info info;
-    st = jam_process_get_info(*proc, &info);
+    st = jam_process_get_info(c->proc, &info);
     if (st != OK) {
-        jam_process_kill(*proc);
-        jam_handle_close(*proc);
-        jam_handle_close(*sigch);
+        jam_process_kill(c->proc);
+        jam_handle_close(c->proc);
+        jam_handle_close(c->sigch);
         return (int)-lx_err(st);
     }
-    *pid = (int32_t)info.pid;
+    c->pid = (int32_t)info.pid;
     return 0;
 }
 
-/* The spawn itself: the table, then launch; the child into the table of
- * children unless exec (whose waits are its own too). */
+/* The spawn itself: the table, the program, then launch; the child into
+ * the table of children. The program is found before the table is
+ * exported: exporting moves things out of ours (a socket, a pipe's
+ * leftover bytes, a writable file's open), so a spawn that fails for want
+ * of its program (every PATH directory execvp tries before the right one)
+ * must fail before it. */
 static int spawn_child(const struct jam_spawn_req *r, bool exec, int *res)
 {
     if (r->flags & (POSIX_SPAWN_SETSCHEDPARAM | POSIX_SPAWN_SETSCHEDULER))
         return ENOSYS;   /* no scheduling policies to give */
     struct spawnfd *t = NULL;
     struct posixfds_out ho = { 0 };
-    long e = spawnfd_begin(&t);
+    char *name = malloc(PATH_MAX);
+    long e = name ? spawnfd_begin(&t) : -ENOMEM;
     if (!e)
         e = spawnfd_apply(t, r->ops, r->nops);
     if (!e)
-        e = spawnfd_export(t, &ho);
-    int ec = (int)-e, pid = 0;
-    handle_t proc = HANDLE_INVALID, sigch = HANDLE_INVALID;
+        e = r->path ? find_program(r, t->cwd, name) : -EFAULT;
     if (!e)
-        ec = launch(r, exec, t, &ho, &pid, &proc, &sigch);
+        e = spawnfd_export(t, &ho);
+    int ec = (int)-e;
+    struct started c = { 0, HANDLE_INVALID, HANDLE_INVALID };
+    if (!e)
+        ec = launch(r, exec, t, name, &ho, &c);
     struct posixfds_state s = ho.state;   /* the ids it was told */
     spawnfd_end(t, &ho);
+    free(name);
     if (ec)
         return ec;
-    e = lx_child_add(proc, sigch, pid, s.pgid ? (int32_t)s.pgid : pid, s.sid ? (int32_t)s.sid : pid);
+    e = lx_child_add(c.proc, c.sigch, c.pid, s.pgid ? (int32_t)s.pgid : c.pid,
+                     s.sid ? (int32_t)s.sid : c.pid);
     if (e)
         return (int)-e;
     if (res)
-        *res = pid;
+        *res = c.pid;
     return 0;
 }
 

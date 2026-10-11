@@ -19,7 +19,9 @@
  *     listing read whole and compared with fs_readdir's;
  *   - a hand-over cut short: the reader gives up at once and closes what
  *     it was given; a parent killed while it spawns leaves no child
- *     hanging (every process in its job ends). */
+ *     hanging (every process in its job ends);
+ *   - a spawn that fails (no such program) takes nothing of ours with it:
+ *     a pipe's bytes read but not taken are still ours to read. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -466,6 +468,27 @@ static void check_cut_kill(void)
     }
 }
 
+/* ---- what a spawn hands on, or keeps ------------------------------------------------ */
+
+/* A spawn that can't find its program has given the child nothing: a
+ * pipe's leftover (the bytes of a message a read didn't take) is still
+ * ours. musl's execvp is one execve per PATH directory, so every
+ * directory before the right one is such a spawn. */
+static void check_failed_spawn_keeps(void)
+{
+    int p[2];
+    CHECK(pipe2(p, O_NONBLOCK) == 0);
+    char buf[8] = { 0 };
+    CHECK(write(p[1], "abcd", 4) == 4 && read(p[0], buf, 1) == 1);   /* "bcd" left over */
+    pid_t pid;
+    char *const argv[] = { "nothing", NULL };
+    CHECK(posix_spawn(&pid, "/boot/bin/no-such-program", NULL, NULL, argv, environ) == ENOENT);
+    memset(buf, 0, sizeof(buf));
+    CHECK(read(p[0], buf, sizeof(buf)) == 3 && !strcmp(buf, "bcd"));
+    close(p[0]);
+    close(p[1]);
+}
+
 void pt_proc(char **argv)
 {
     (void)argv;
@@ -479,4 +502,5 @@ void pt_proc(char **argv)
     check_shell();
     check_cut_reader();
     check_cut_kill();
+    check_failed_spawn_keeps();
 }
