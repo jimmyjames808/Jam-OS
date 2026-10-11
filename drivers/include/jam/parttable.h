@@ -33,9 +33,12 @@
  *     entries in table order, each inside the disk, past block 0, and not
  *     overlapping an earlier one (left out otherwise).
  *   - if block 0 is all zeros: the first and last 64 KiB, for the blank
- *     rule, and if they aren't all zeros, the GPT too (only to see whether
- *     the disk is blank-in-progress: `blank_in_progress` below; a GPT
- *     without a protective MBR is never listed, as UEFI ignores it).
+ *     rule, and if they aren't all zeros, whether the only non-zero blocks
+ *     are the backup entry array create_table writes first (pt_jamos_plan's
+ *     place, pt_jamos_array_head_is's bytes: the cut after that write), and
+ *     if not, the GPT too (only to see whether the disk is
+ *     blank-in-progress: `blank_in_progress` below; a GPT without a
+ *     protective MBR is never listed, as UEFI ignores it).
  *   - GPT (UEFI 2.10, 5.3): the primary header (block 1), its entry array,
  *     the backup header (the last block), its entry array. Each header is
  *     checked alone (signature, revision 1.0, header size 92 up to the
@@ -130,9 +133,13 @@ struct pt_table {
     uint8_t  backup;              /* enum pt_bad: the backup GPT header */
     bool     hybrid;              /* GPT behind an MBR that lists more than its EEh entries */
     bool     blank;               /* block 0 and the first and last 64 KiB are all zeros */
-    bool     blank_in_progress;   /* block 0 zero, and each header block zero or a good
-                                   * header of Jam OS's layout (one at least): a
-                                   * create_table that was cut before its last write */
+    bool     blank_in_progress;   /* block 0 zero, and either each header block zero or a
+                                   * good header of Jam OS's layout (one at least), or
+                                   * (the cut after create_table's first write) both
+                                   * header blocks zero and the backup entry array
+                                   * exactly what pt_jamos_make writes there, nothing
+                                   * else in the blank rule's ends: a create_table that
+                                   * was cut before its last write */
     uint32_t mbr_id;              /* the MBR's disk id (block 0, 440), MBR scheme only; else 0 */
     uint8_t  disk_guid[16];       /* the GPT disk GUID (zeros: not GPT) */
     uint64_t first_usable;        /* the GPT usable range (0, 0: not GPT) */
@@ -245,6 +252,18 @@ static inline uint32_t pt_jamos_buf_blocks(const struct pt_jamos_plan *p)
 status_t pt_jamos_make(uint32_t block_size, uint64_t blocks, const uint8_t *disk_guid,
                        const uint8_t *esp_guid, const uint8_t *data_guid, uint8_t *buf,
                        size_t buf_size);
+
+/* The cut between create_table's first two writes leaves the backup entry
+ * array alone on the disk (the backup header is the second write). Does
+ * `head`, the first PT_JAMOS_HEAD_BYTES of an entry array read from the
+ * place pt_jamos_plan gives it on a disk of `blocks` blocks, hold exactly
+ * the two entries pt_jamos_make writes there? The two unique GUIDs are
+ * taken from the bytes themselves (they were random; the maker only needs
+ * them non-zero and different), everything else is made the way the maker
+ * makes it and compared byte for byte. The rest of an entry array is zeros
+ * (the maker writes no more than two entries): the caller checks that. */
+#define PT_JAMOS_HEAD_BYTES 256
+bool pt_jamos_array_head_is(uint32_t block_size, uint64_t blocks, const uint8_t *head);
 
 /* Well-known type GUIDs, as their bytes on disk. */
 extern const uint8_t pt_type_esp[16];          /* C12A7328-F81F-11D2-BA4B-00A0C93EC93B */

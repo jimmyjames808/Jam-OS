@@ -113,6 +113,23 @@ static void mbr(uint8_t *b, uint64_t blocks)
     b[511] = 0xaa;
 }
 
+bool pt_jamos_array_head_is(uint32_t block_size, uint64_t blocks, const uint8_t *head)
+{
+    struct pt_jamos_plan p;
+    const uint8_t *esp_guid = head + 16, *data_guid = head + 128 + 16;
+    uint8_t want[PT_JAMOS_HEAD_BYTES] = { 0 };
+    if (pt_jamos_plan(block_size, blocks, &p) != OK || pt_guid_zero(esp_guid) ||
+        pt_guid_zero(data_guid) || pt_guid_eq(esp_guid, data_guid))
+        return false;
+    entry(want, pt_type_esp, esp_guid, p.esp_start, p.esp_blocks, PT_JAMOS_ESP_NAME);
+    entry(want + 128, pt_type_jamos_data, data_guid, p.data_start, p.data_blocks,
+          PT_JAMOS_DATA_NAME);
+    uint8_t diff = 0;
+    for (unsigned i = 0; i < PT_JAMOS_HEAD_BYTES; i++)
+        diff |= want[i] ^ head[i];
+    return !diff;
+}
+
 status_t pt_jamos_make(uint32_t block_size, uint64_t blocks, const uint8_t *disk_guid,
                        const uint8_t *esp_guid, const uint8_t *data_guid, uint8_t *buf,
                        size_t buf_size)

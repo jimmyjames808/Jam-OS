@@ -47,8 +47,10 @@
  *             and publishes it as /svc/volumes, a channel per opener, for
  *             tests), the ESP channel (VOLUMES_SR_ESP: the ESP made
  *             writable, for `update -w`; init keeps the client end and
- *             hands it to nobody, update.c's stick write alone uses it)
- *             and a new DISKS channel (VOLUMES_SR_DISKS; its client end
+ *             hands it to nobody, update.c's stick write alone uses it),
+ *             the install channel (VOLUMES_SR_INSTALL: volinstall, making
+ *             a blank drive Jam OS's; the same, prepare.c's alone) and a
+ *             new DISKS channel (VOLUMES_SR_DISKS; its client end
  *             to devmgr), a duplicate of /svc/notify's channel (the
  *             sticks' notices), and the words "nospare" and
  *             "bootdisk=0x<id>". Its mounts (/data, /esp, /usbN) are
@@ -137,6 +139,7 @@ static handle_t devmgr_q;   /* its query channel, client end */
 static bool devmgr_ready;   /* it answered status: channels claimed, names published */
 static handle_t volumes;    /* volumes' control channel, client end (0: none running) */
 static handle_t volumes_esp; /* its ESP channel, client end: never handed on (update.c's) */
+static handle_t volumes_install; /* its install channel, client end: the same (prepare.c's) */
 /* Its device channels for the HD Audio controllers, the mixer's, and for
  * the network cards, held for netstack (0: none). */
 static handle_t devmgr_hda[INIT_MAX_CLAIMED], devmgr_net[INIT_MAX_CLAIMED];
@@ -169,6 +172,11 @@ handle_t shell_volumes(void)
 handle_t shell_volumes_esp(void)
 {
     return volumes_esp;
+}
+
+handle_t shell_volumes_install(void)
+{
+    return volumes_install;
 }
 
 void services_settings(unsigned i)
@@ -412,15 +420,17 @@ static status_t start_volumes(void)
         return OK;
     }
     handle_t a = HANDLE_INVALID, b = HANDLE_INVALID, ea = HANDLE_INVALID, eb = HANDLE_INVALID;
-    handle_t dc = HANDLE_INVALID, ds = HANDLE_INVALID;
+    handle_t dc = HANDLE_INVALID, ds = HANDLE_INVALID, ia = HANDLE_INVALID, ib = HANDLE_INVALID;
     status_t st = jam_channel_create(&a, &b);
     if (st == OK)
         st = jam_channel_create(&ea, &eb);
     if (st == OK)
         st = jam_channel_create(&dc, &ds);
+    if (st == OK)
+        st = jam_channel_create(&ia, &ib);
     if (st != OK) {
-        handle_t left[] = { a, b, ea, eb, dc, ds };
-        for (unsigned k = 0; k < 6; k++)
+        handle_t left[] = { a, b, ea, eb, dc, ds, ia, ib };
+        for (unsigned k = 0; k < 8; k++)
             if (left[k])
                 jam_handle_close(left[k]);
         return st;
@@ -431,9 +441,9 @@ static status_t start_volumes(void)
         argv[argc++] = "nospare";   /* no warm spare fat either */
     if (init_bootdisk)
         argv[argc++] = init_bootdisk;
-    struct spawn_handle x[4] = { { VOLUMES_SR_CTL, b }, { VOLUMES_SR_ESP, eb },
-                                 { VOLUMES_SR_DISKS, ds } };
-    unsigned nx = 3;
+    struct spawn_handle x[5] = { { VOLUMES_SR_CTL, b }, { VOLUMES_SR_ESP, eb },
+                                 { VOLUMES_SR_DISKS, ds }, { VOLUMES_SR_INSTALL, ib } };
+    unsigned nx = 4;
     /* Without it (no compositor) a stick's news is the console's notices alone. */
     x[nx] = (struct spawn_handle){ VOLUMES_SR_NOTIFY, comp_notify_client() };
     if (x[nx].h)
@@ -443,10 +453,12 @@ static status_t start_volumes(void)
         jam_handle_close(a);
         jam_handle_close(ea);
         jam_handle_close(dc);
+        jam_handle_close(ia);
         return st;
     }
     volumes = a;
     volumes_esp = ea;
+    volumes_install = ia;
     services_publish(SVC_VOLUMES, volumes, true);   /* a channel per opener (svc.connect) */
     tell_mounts();   /* a restart: the shell's /svc/volumes is the dead one's */
     handle_t watch;
@@ -790,7 +802,8 @@ void services_closed(unsigned i)
     if (i == VOLUMES && volumes) {
         jam_handle_close(volumes);   /* the shell's copies see PEER_CLOSED */
         jam_handle_close(volumes_esp);
-        volumes = volumes_esp = HANDLE_INVALID;
+        jam_handle_close(volumes_install);
+        volumes = volumes_esp = volumes_install = HANDLE_INVALID;
         services_publish(SVC_VOLUMES, HANDLE_INVALID, false);
         mounts_unwatch();       /* its fat services went with its job */
         tell_mounts();

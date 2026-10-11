@@ -106,8 +106,19 @@ static void one(uint32_t bs, uint64_t bytes, const struct img *mkgpt)
     if (kind_now(&m, &t) != PT_KIND_BLANK || !t.blank)
         fail("the empty image isn't blank");
     lay(&m, p.tail_start, PT_JAMOS_AT_ARRAY, p.array_blocks);   /* the backup array */
-    if (kind_now(&m, &t) == PT_KIND_JAMOS)
-        fail("Jam OS's after the backup array alone");
+    if (kind_now(&m, &t) != PT_KIND_BLANK || !t.blank_in_progress || t.blank || t.nparts)
+        fail("not blank-in-progress after the backup array alone (kind %d)", pt_kind(&t));
+    /* A second prepare (other GUIDs) writes the same blocks again: still one cut disk. */
+    static const uint8_t esp2[16] = { 0x21, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
+    static const uint8_t data2[16] = { 0x31, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
+    if (pt_jamos_make(bs, m.blocks, disk_g, esp2, data2, made, sizeof(made)) != OK)
+        fail("pt_jamos_make refused other GUIDs");
+    lay(&m, p.tail_start, PT_JAMOS_AT_ARRAY, p.array_blocks);   /* the same blocks, other GUIDs */
+    if (kind_now(&m, &t) != PT_KIND_BLANK || !t.blank_in_progress)
+        fail("not blank-in-progress after a second backup array");
+    if (pt_jamos_make(bs, m.blocks, disk_g, esp_g, data_g, made, sizeof(made)) != OK)
+        fail("pt_jamos_make refused a good disk");
+    lay(&m, p.tail_start, PT_JAMOS_AT_ARRAY, p.array_blocks);   /* the first prepare's again */
     lay(&m, m.blocks - 1, pt_jamos_at_backup(&p), 1);           /* the backup header */
     if (kind_now(&m, &t) != PT_KIND_BLANK || !t.blank_in_progress)
         fail("not blank-in-progress after the backup header");

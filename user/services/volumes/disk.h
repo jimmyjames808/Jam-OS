@@ -79,6 +79,10 @@ struct disk {
     uint16_t        want;       /* DISK_OTHER: bit n: partition n waits for its service */
     uint16_t        nofat;      /* bit n: partition n's service found no FAT volume */
     uint16_t        badsize;    /* bit n: partition n's blocks are not 512 bytes: no service */
+    uint16_t        fresh;      /* bit n: partition n may be formatted (prepare.c: a Jam OS
+                                 * disk, by volumes' own check, being prepared): its service is
+                                 * started writable with FAT_ARG_FORMAT until prepare is over */
+    bool            preparing;  /* a prepare is under way on it (prepare.c): one at a time */
     char            model[41], serial[21], firmware[9];   /* storage.ident (NVMe); else empty */
     bool            boot_down;  /* DISK_DOWN: it was the boot disk when its driver stopped */
     bool            releasing;  /* volumes.release_disk's task stops its services: none
@@ -123,8 +127,17 @@ status_t    list_part(uint32_t id, uint32_t index, struct list_part *o);
 status_t    disk_digest(uint32_t id, uint64_t lba, uint64_t count, uint8_t sha256[32]);
 status_t    disk_health(uint32_t id, struct list_health *o);
 
+/* mark.c: Jam OS's mark on a GPT disk, checked with volumes' own code (the
+ * driver has its own, in the partition library). */
+bool        disk_jamos_gpt(const struct disk *d);
+/* prepare.c: volinstall.prepare, in a task. */
+status_t    disk_prepare(uint32_t id);
+
 /* disk.c */
 const char *disk_name(const struct disk *d);      /* "disk 7", "test disk 2" (static buffer) */
+/* Step 1 again, for a disk whose partition table has just changed (prepare.c):
+ * its services go and its driver is asked what it holds. */
+void        disk_relearn(struct disk *d);
 struct disk *disk_of(const struct vol *b);    /* b's disk, or NULL */
 void        leave_alone(struct disk *d, const char *why);   /* its driver doesn't answer */
 void        not_boot(struct disk *d, const char *why);      /* step 4 */

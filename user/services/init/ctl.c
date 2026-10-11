@@ -35,14 +35,19 @@
  * in order. sync flushes the same way.
  *
  * mount (the shell's `mount -w /usb0`, `mount -r /usb0`) is passed on to
- * volumes (volumes.remount) for /usbN and refused for every other path:
- * /boot, /esp and /data are what they are.
+ * volumes (volumes.remount) for /usbN and /nvmeN (volumes decides: an
+ * NVMe drive's mount only if its disk is Jam OS's) and refused for every
+ * other path: /boot, /esp and /data are what they are.
  *
  * disks (the shell's `disks`, `disk`) asks volumes for a new channel that
  * speaks voldisks alone (volumes.list_channel): it lists and hashes and
  * changes nothing, so the shell needs no more of volumes than that.
  *
- * Answered later: mount, sync and the kill of a filesystem service wait
+ * prepare_disk (the shell's `disk prepare nvme1`, after the owner typed the
+ * last four characters of the drive's serial) asks volumes on the install
+ * channel, init's alone (prepare.c), to make a blank NVMe drive a Jam OS disk.
+ *
+ * Answered later: mount, sync, prepare_disk and the kill of a filesystem service wait
  * for volumes (a remount stops a service in order and starts it again,
  * seconds on a slow stick), so init doesn't wait inside the request: it
  * sends volumes the call (volumes_<method>_send) and answers the shell
@@ -72,6 +77,7 @@ _Static_assert(TERM_CMD_MAX == INITCTL_COMMAND_MAX + 1, "initctl.terminal's comm
 #define KILL_WAIT   (15 * NS_PER_S)   /* a KILL: devmgr or volumes waits for it to die */
 #define SYNC_WAIT   (6 * NS_PER_S)    /* volumes.sync: it gives each mount 5 s */
 #define LIST_WAIT   (2 * NS_PER_S)    /* volumes.list_channel: answered at once */
+#define PREPARE_WAIT (660 * NS_PER_S) /* volinstall.prepare: it gives the format 10 minutes */
 #define ROUND       16                /* requests answered before the main loop gets a turn */
 #define MAX_LATER   8                 /* requests waiting for volumes' answer at once */
 
@@ -109,7 +115,7 @@ static bool koid_named(const char *name, uint64_t *koid)
 
 /* ---- answered later: what waits for volumes -------------------------------------- */
 
-enum later_kind { LATER_KILL, LATER_SYNC, LATER_MOUNT, LATER_DEVMGR_KILL };
+enum later_kind { LATER_KILL, LATER_SYNC, LATER_MOUNT, LATER_DEVMGR_KILL, LATER_PREPARE };
 
 /* A request of ours (initctl's) waiting for volumes' answer to the call it
  * made (or devmgr's, for LATER_DEVMGR_KILL: dm.c reads that one). */
@@ -123,6 +129,7 @@ struct later {
     uint64_t        koid;             /* LATER_DEVMGR_KILL: the process asked to be killed */
     char            what[NAME_MAX];   /* the name or path, for the log */
     uint8_t         writable;         /* LATER_MOUNT's */
+    uint32_t        disk;             /* LATER_PREPARE's: the disk's id */
 };
 
 static struct later laters[MAX_LATER];
@@ -139,6 +146,9 @@ static void later_finish(struct later *l, status_t st, uint64_t koid)
     } else if (l->kind == LATER_SYNC) {
         mounts_synced(st, l->t0);
         (void)initctl_reply_sync(l->txn, st);
+    } else if (l->kind == LATER_PREPARE) {
+        prepare_say(l->disk, st, l->t0);
+        (void)initctl_reply_prepare_disk(l->txn, st);
     } else {
         printf("init: mount %s %s: %s\n", l->writable ? "-w" : "-r", l->what, status_str(st));
         (void)initctl_reply_mount(l->txn, st);
@@ -187,6 +197,8 @@ static void later_answer(struct later *l, const void *rep, struct idl_msg *m)
             return;   /* not volumes': devmgr's, maybe; its answer finishes l */
     } else if (l->kind == LATER_SYNC) {
         st = volumes_sync_result(rep, m);
+    } else if (l->kind == LATER_PREPARE) {
+        st = prepare_result(rep, m);
     } else {
         st = volumes_remount_result(rep, m);
     }
@@ -254,7 +266,8 @@ static void later_poll(void)
         struct later *l = &laters[i];
         if (l->used && t >= l->deadline)
             later_finish(l, ERR_TIMED_OUT, 0);
-        else if (l->used && l->kind != LATER_DEVMGR_KILL && l->vm != shell_volumes())
+        else if (l->used && l->kind != LATER_DEVMGR_KILL &&
+                 l->vm != (l->kind == LATER_PREPARE ? shell_volumes_install() : shell_volumes()))
             later_finish(l, ERR_PEER_CLOSED, 0);   /* volumes was started again meanwhile */
     }
     later_arm();
@@ -394,12 +407,14 @@ static status_t op_reboot_firmware(void *ctx)
     return init_reboot_firmware();
 }
 
-/* "/usbN" -> N; false for any other path. */
+/* "/usbN" or "/nvmeN" -> N; false for any other path. */
 static bool usb_mount(const char *p, size_t len, unsigned *n)
 {
-    static const char prefix[] = USB_MOUNT;
+    static const char prefix[] = USB_MOUNT, nvme[] = NVME_MOUNT;
     size_t at = sizeof(prefix) - 1;
-    if (len <= at || strncmp(p, prefix, at) != 0)
+    if (len > sizeof(nvme) - 1 && strncmp(p, nvme, sizeof(nvme) - 1) == 0)
+        at = sizeof(nvme) - 1;
+    else if (len <= at || strncmp(p, prefix, at) != 0)
         return false;
     *n = 0;
     for (; at < len; at++) {
@@ -483,6 +498,25 @@ static status_t op_terminal(void *ctx, const char *command, uint32_t command_len
     return st;
 }
 
+/* initctl.prepare_disk: volumes (volinstall.prepare) makes a blank NVMe drive
+ * a Jam OS disk, answered later. */
+static status_t op_prepare_disk(void *ctx, struct idl_txn txn, uint32_t id)
+{
+    const struct ctl *c = ctx;
+    if (!c->admin)
+        return ERR_ACCESS_DENIED;
+    if (!shell_volumes_install())
+        return ERR_NOT_FOUND;
+    char what[NAME_MAX];
+    snprintf(what, sizeof(what), "%08x", id);
+    struct later *l = later_new(LATER_PREPARE, txn, shell_volumes_install(), what, PREPARE_WAIT);
+    if (!l)
+        return ERR_NO_RESOURCES;
+    l->disk = id;
+    printf("init: prepare disk %s\n", what);
+    return later_sent(l, prepare_send(l->txid, id));
+}
+
 /* initctl.disks: a channel to volumes that lists the disks and asks for a
  * digest and the health log, and changes nothing (voldisks). */
 static status_t op_disks(void *ctx, handle_t *out_list)
@@ -511,7 +545,7 @@ static const struct initctl_ops ops = {
     .kill = op_kill, .sync = op_sync, .reboot = op_reboot, .mount = op_mount,
     .shell_ready = op_shell_ready, .reboot_firmware = op_reboot_firmware,
     .kernel_load = op_kernel_load, .update_offer = op_update_offer, .terminal = op_terminal,
-    .launch = op_launch, .disks = op_disks,
+    .launch = op_launch, .disks = op_disks, .prepare_disk = op_prepare_disk,
 };
 
 static void ctl_close(struct ctl *c)

@@ -1,5 +1,6 @@
 /* volumes: what the disk listing knows and asks (voldisks, abi/idl/volumes.idl;
- * request.c has the handlers).
+ * request.c has the handlers). `kind` and `read_only` come from volumes' own
+ * mark check (mark.c).
  *
  * The listing answers from what the steps of disk.c already asked each
  * driver (storage.info, storage.partition), plus one more question for an
@@ -87,6 +88,8 @@ static uint8_t disk_kind(const struct disk *d)
     if (d->scheme == STORAGE_SCHEME_MBR && d->partitions >= 2 && d->type[0] == TYPE_ESP &&
         d->type[1] == TYPE_FAT32_LBA)
         return VOLDISKS_KIND_JAMOS;
+    if (disk_jamos_gpt(d))
+        return VOLDISKS_KIND_JAMOS;   /* an NVMe drive prepared by Jam OS (mark.c) */
     if (d->scheme == STORAGE_SCHEME_NONE && d->partitions == 0)
         return VOLDISKS_KIND_NO_TABLE;
     return VOLDISKS_KIND_OTHER;
@@ -118,7 +121,8 @@ status_t list_disk(uint32_t index, struct list_disk *o)
         return OK;
     o->kind = disk_kind(d);
     o->scheme = d->scheme;
-    o->read_only = d->bus == DISKS_BUS_NVME;   /* stage 1: no writable channel is ever asked for */
+    /* No writable channel is ever asked for on an NVMe drive that isn't Jam OS's by our check. */
+    o->read_only = d->bus == DISKS_BUS_NVME && !disk_jamos_gpt(d);
     o->block_size = d->block_size;
     o->blocks = d->blocks;
     o->partitions = d->partitions;

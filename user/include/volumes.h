@@ -16,6 +16,9 @@
  *   the ESP channel (VOLUMES_SR_ESP; init made it, holds the client end
  *     and never hands it on): `volesp`, and nothing of it on any other
  *     channel;
+ *   the INSTALL channel (VOLUMES_SR_INSTALL; the same, init's alone):
+ *     `volinstall`, making a blank drive Jam OS's (initctl.prepare_disk),
+ *     and nothing of it on any other channel;
  *   the DISKS channel (VOLUMES_SR_DISKS, then `volumes.set_disks`): the
  *     `disks` events devmgr sends. */
 #pragma once
@@ -23,8 +26,8 @@
 #include <idl/volumes.h>
 #include <os.h>
 
-/* volumes' startup roles: the server ends of its control, ESP and DISKS
- * channels, and a duplicate of /svc/notify's shared channel (none without
+/* volumes' startup roles: the server ends of its control, ESP, DISKS and
+ * INSTALL channels, and a duplicate of /svc/notify's shared channel (none without
  * a compositor), for the desktop's notices of sticks: "USB stick added",
  * "USB stick removed", "Jam OS stick removed" and "... is back"
  * (<notice.h>). Its fats' jobs are children of its own (SR_JOB). Its
@@ -33,3 +36,4 @@
 #define VOLUMES_SR_ESP    (SR_USER + 1)
 #define VOLUMES_SR_DISKS  (SR_USER + 2)
 #define VOLUMES_SR_NOTIFY (SR_USER + 3)
+#define VOLUMES_SR_INSTALL (SR_USER + 4)

@@ -22,7 +22,10 @@ the test commands are in [TESTING.md](TESTING.md).
 - The boot menu: "Jam OS" (the desktop), "Jam OS (previous build)" (the
   stick's build before the last `update` or `make flash`: the way back
   from a bad build), and a "Developer" folder with the test and network-test
-  entries, the text log, safe mode and "Jam OS (no IOMMU)"
+  entries, the text log, safe mode, "Jam OS (no IOMMU)" and "Jam OS
+  (internal disks read-only)" (the boot word `diskro`: every NVMe drive is
+  treated as someone else's, so nothing writes one, and a reboot keeps it;
+  the way out if a build's write path misbehaves)
   ([TESTING.md](TESTING.md#the-boot-menu)).
 - The test entries and the Mac: "Developer > Jam OS (init + utest +
   usbtest, the regression run)" now sends its log to the Mac like a plain
@@ -165,15 +168,19 @@ boot's kernel log is saved to `/data/logs/` and can be read on another
 computer; after a panic the next boot saves the panicked boot's log too,
 and `crashlog` shows it ([ARCHITECTURE.md](../ARCHITECTURE.md#storage)).
 
-**Internal NVMe drives (read-only).** Jam OS binds an NVMe drive's driver on
-every boot (M12.7, stage 1) and never writes to it: the driver has no write
-command in it, which `make check` verifies. The drive's FAT partitions (a
-Windows drive's EFI system partition) appear read-only at `/nvme0`,
-`/nvme1`, ..., apart from the sticks' `/usbN`; the others (Windows' own
-NTFS, its reserved and recovery partitions) are listed and left alone.
-`mount -w /nvme0` is refused ("not on a Jam OS disk"). Drives whose blocks
-are not 512 bytes are listed and not mounted (the FAT service reads 512
-only).
+**Internal NVMe drives.** Jam OS binds an NVMe drive's driver on every
+boot (M12.7). The drive's FAT partitions (a Windows drive's EFI system
+partition) appear read-only at `/nvme0`, `/nvme1`, ..., apart from the
+sticks' `/usbN`; the others (Windows' own NTFS, its reserved and recovery
+partitions) are listed and left alone. A drive is written only if it is a
+**Jam OS disk**: GPT with exactly two partitions, "Jam OS ESP" (the ESP's
+type) and "Jam OS data" (Jam OS's own type), which `disk prepare` makes on
+a blank drive and nothing else does. Windows' drive is not one, and the
+driver (which checks the table itself, and has no write command it can
+send to any other drive), volumes (a second check of its own) and the shell
+all refuse: `mount -w /nvme0` says "not on a Jam OS disk". Drives whose
+blocks are not 512 bytes are listed and not mounted (the FAT service reads
+512 only).
 
 - `disks` lists every disk, a stick or a drive, by the name the other
   commands use (`nvme0`, `usb0`): its model, serial number, firmware and
@@ -192,6 +199,20 @@ only).
   are in the boot log too (`/data/logs`, in the form `disk digest: nvme0
   part1 2048+204800 <hash>`). `disk digest nvme0 <lba> <count>` hashes one
   range (at most 1 GiB).
+- `disk prepare nvme1` makes a blank NVMe drive a Jam OS disk. It shows the
+  drive's model, serial number and size, and goes on only when you type the
+  last four characters of the serial number (any case; anything else stops,
+  and so does Ctrl+C): then it writes the partition table (an ESP of 512
+  MiB at 1 MiB, a data partition of the rest, at most 2 TiB), formats both
+  partitions and mounts them read-only (`/nvme1`, `/nvme2`: the next free
+  numbers), and says `nvme1 is a Jam OS disk now: ESP 512.0 MiB, data ...`.
+  It refuses a drive that has anything on it ("not blank"), Windows' drive
+  first among them, and a drive already prepared ("a Jam OS disk
+  already"). A prepare that was cut short (the power) is finished by
+  running it again: whatever it left is a blank drive, a drive with only
+  half a table, or a Jam OS disk with a partition that has no volume yet.
+  `mount -w /nvme2` then makes the data partition writable, `mount -r`
+  read-only again.
 - `disk smart nvme0` prints the drive's own health log: data read and
   written, host read and write commands, power cycles, unsafe shutdowns,
   the percentage of its life used, the critical warning. "Host write
