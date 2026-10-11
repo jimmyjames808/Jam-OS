@@ -4,10 +4,10 @@
  * (tools/extfix/: how, in make.sh; the images gzipped, unpacked by make
  * into build/extfix).
  *
- *     extcheck <fixtures dir> <images dir> [--fuzz N] [--seed S] [--save DIR]
+ *     extcheck <fixtures dir> <images dir> [--fuzz N] [--storm N] [--seed S] [--save DIR]
  *              [--cut-images DIR]
  *
- * Six parts, each failing the run (exit 1, a line saying what) at the
+ * Seven parts, each failing the run (exit 1, a line saying what) at the
  * first mistake:
  *   - the CRCs against their standard check values;
  *   - each fixture against its listing (<name>.list, made by
@@ -28,10 +28,15 @@
  *   - every feature bit set alone on Jam OS's own fixture: refused,
  *     read-only or written, as docs/M13.6-PLAN.md's table says (the table
  *     here is a copy written from the plan, not the library's);
+ *   - the names' writes and mkfs (extnames.c, checked by extinv.c's
+ *     invariants): directories, links, rename, orphans, the directory
+ *     hash, volumes made and compared with Linux's, a storm of N random
+ *     steps against a model (default 3000);
  *   - the writers (U2a's: tools/extwrite.c, extfile.c, extverify.c):
  *     blocks, inodes, extent trees, file writes and truncation on copies
  *     of the writable fixtures, the whole volume checked as they go;
- *     --save DIR keeps the images Linux's e2fsck -fn should pass;
+ *     --save DIR keeps the images Linux's e2fsck -fn should pass (the
+ *     names' tests' images too);
  *   - the fuzz pass (extmutate.c): N runs (default 3000) of mutated
  *     images, from --seed. A run neither crashes (ASan, UBSan), reads
  *     outside the image, reads without end, nor returns with a buffer
@@ -50,6 +55,7 @@
 #include "extwrite.h"
 
 #define FUZZ_DEFAULT 3000
+#define STORM_DEFAULT 3000
 #define PATH_MAX_    4096
 
 uint64_t rng = 0x9e3779b97f4a7c15ull;
@@ -311,7 +317,7 @@ static void describe(struct ext_fs *fs, struct ext_inode *in, char *what, size_t
     if (t == EXT_FT_REG) {
         sparse_hash(fs, in, what);
     } else if (t == EXT_FT_SYMLINK) {
-        char target[EXT_NAME_MAX * 16 + 1];
+        char target[4096];   /* a link holds 4095 bytes at most */
         size_t n;
         status_t st = ext_readlink(fs, in, target, sizeof(target), &n);
         if (st != OK)
@@ -441,6 +447,21 @@ void free_lines(struct lines *l)
     for (unsigned i = 0; i < l->n; i++)
         free(l->v[i]);
     l->n = 0;
+}
+
+void write_listing(struct ext_fs *fs, const char *path)
+{
+    static struct lines l;
+    l.n = 0;
+    list_volume(fs, &l);
+    FILE *f = fopen(path, "w");
+    if (!f)
+        fail("%s: %s", path, strerror(errno));
+    fprintf(f, "# written by extcheck: the library's view; listing.py's must match\n");
+    for (unsigned i = 0; i < l.n; i++)
+        fprintf(f, "%s\n", l.v[i]);
+    fclose(f);
+    free_lines(&l);
 }
 
 /* ---- the fixtures ---------------------------------------------------------------------- */
@@ -581,14 +602,16 @@ static void check_crcs(void)
 
 int main(int argc, char **argv)
 {
-    unsigned nfuzz = FUZZ_DEFAULT;
+    unsigned nfuzz = FUZZ_DEFAULT, nstorm = STORM_DEFAULT;
     const char *cut_images = NULL;
     if (argc < 3)
-        fail("usage: extcheck <fixtures dir> <images dir> [--fuzz N] [--seed S] [--save DIR] "
-             "[--cut-images DIR]");
+        fail("usage: extcheck <fixtures dir> <images dir> [--fuzz N] [--storm N] [--seed S] "
+             "[--save DIR] [--cut-images DIR]");
     for (int i = 3; i + 1 < argc; i += 2) {
         if (!strcmp(argv[i], "--fuzz"))
             nfuzz = (unsigned)strtoul(argv[i + 1], NULL, 0);
+        else if (!strcmp(argv[i], "--storm"))
+            nstorm = (unsigned)strtoul(argv[i + 1], NULL, 0);
         else if (!strcmp(argv[i], "--seed"))
             rng = strtoull(argv[i + 1], NULL, 0) | 1;
         else if (!strcmp(argv[i], "--save"))
@@ -609,13 +632,14 @@ int main(int argc, char **argv)
         check_roundtrip(&imgs[i]);
     }
     check_features(&imgs[0]);
+    check_names(imgs, N, nstorm);
     for (unsigned i = 0; i < N; i++)
         check_writes(&imgs[i], fixtures[i].ro == 0);
     for (unsigned i = 0; i < N; i++)
         fuzz(&imgs[i], nfuzz / N + (i < nfuzz % N));
     check_journal(imgs, argv[1], cut_images);
-    printf("extcheck: %u fixtures, broken checksums, the feature table, the writers, "
-           "%u fuzzed images, the journal: ok\n",
+    printf("extcheck: %u fixtures, broken checksums, the feature table, names and mkfs, "
+           "the writers, %u fuzzed images, the journal: ok\n",
            (unsigned)N, nfuzz);
     return 0;
 }

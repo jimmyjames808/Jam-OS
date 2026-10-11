@@ -99,6 +99,7 @@ struct ext_cache {
     uint32_t ndirty;         /* buffers dirty */
     uint64_t clock;          /* bumped on every use */
     uint64_t reads, writes;  /* device calls made: for tests and the log */
+    uint64_t discards;       /* ext_discard calls: what was remembered of dirty blocks is stale */
 };
 
 /* ---- the volume ------------------------------------------------------------------------ */
@@ -182,6 +183,7 @@ struct ext_fs {
 
     struct ext_cache cache;
     struct ext_jnl *jnl;             /* the open journal (ext_jnl_mount); NULL: none */
+    struct ext_names *names;         /* the directory hash (ext_names.h); NULL: none */
 };
 
 /* Mount the volume on dev: read and check the superblock and every group

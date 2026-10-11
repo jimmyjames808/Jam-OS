@@ -1,7 +1,9 @@
-/* extcheck's three files: tools/extcheck.c (the device, the fixtures'
+/* extcheck's files: tools/extcheck.c (the device, the fixtures'
  * listings, the main program), tools/extbreak.c (broken checksums, the
- * feature table, writes of what was read) and tools/extmutate.c (the
- * mutations and the fuzz pass). The model is in extcheck.c's header. */
+ * feature table, writes of what was read), tools/extmutate.c (the
+ * mutations and the fuzz pass), tools/extinv.c (a volume's invariants)
+ * and the writing tests (tools/extvol.h). The model is in extcheck.c's
+ * header. */
 #pragma once
 
 #include <stdbool.h>
@@ -76,3 +78,21 @@ void check_roundtrip(struct img *m);
 
 /* The fuzz pass over one fixture: n runs (extmutate.c). */
 void fuzz(struct img *m, unsigned n);
+
+/* extinv.c: what a check of the whole volume found (it fails the run at
+ * the first broken invariant). */
+struct inv {
+    uint32_t dirs, names, inodes, orphans;
+    uint32_t free_inodes;
+    uint64_t free_blocks;
+    bool exact;              /* every block's owner was known */
+};
+void check_invariants(struct ext_fs *fs, struct inv *out);
+
+/* extnames.c: the names' writes (directories, links, rename, orphans, the
+ * directory hash) and mkfs, on images it makes and on the fixtures; a
+ * storm of `storms` random steps. */
+void check_names(struct img *fixtures, unsigned n, unsigned storms);
+/* extcheck.c: the volume listed as tools/extfix/listing.py lists it with
+ * Linux's debugfs (at most 4096 names), into path. */
+void write_listing(struct ext_fs *fs, const char *path);

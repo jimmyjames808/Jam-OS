@@ -831,11 +831,13 @@ $(ROOTPORT_CHECK): tools/rootportcheck.c drivers/usb-bus/rootport.c drivers/usb-
 	    -fno-sanitize-recover=all -Ikernel/include -Idrivers/include -o $@ \
 	    tools/rootportcheck.c drivers/usb-bus/rootport.c
 
-# extcheck (tools/extcheck.c, extbreak.c, extmutate.c): the ext library (the
+# extcheck (tools/extcheck.c and the other tools/ext*.c): the ext library (the
 # extfs service's format code, user/services/extfs/ext, the same files)
 # with ASan and UBSan, against the images Linux's mke2fs made
 # (tools/extfix/make.sh made them; committed gzipped, unpacked here) and
-# thousands of mutated ones; `make check` runs it. The library is also
+# thousands of mutated ones, and its writes (names, links, rename, orphans,
+# mkfs) on volumes held in memory, each checked against a volume's
+# invariants (tools/extinv.c); `make check` runs it. The library is also
 # compiled as Jam OS compiles a program's files ($(EXT_CROSS)), since no
 # program links it yet.
 EXT_DIR      := user/services/extfs/ext
@@ -844,11 +846,12 @@ EXT_HDRS     := $(wildcard $(EXT_DIR)/*.h)
 EXT_FIXTURES := $(patsubst tools/extfix/%.img.gz,$(BUILD)/extfix/%.img,\
                            $(wildcard tools/extfix/*.img.gz))
 EXT_CROSS    := $(patsubst $(EXT_DIR)/%.c,$(BUILD)/extcross/%.o,$(EXT_SRCS))
-EXT_TOOL     := tools/extcheck.c tools/extbreak.c tools/extmutate.c \
+EXT_TOOL     := tools/extcheck.c tools/extbreak.c tools/extmutate.c tools/extinv.c \
+                tools/extvol.c tools/extmkfs.c tools/extnames.c tools/extbig.c \
                 tools/extwrite.c tools/extfile.c tools/extverify.c tools/extcut.c tools/extjnl.c
-$(EXT_CHECK): $(EXT_TOOL) tools/extcheck.h tools/extwrite.h tools/extjnl.h $(EXT_SRCS) $(EXT_HDRS) \
-              drivers/lib/sha256.c \
-              drivers/include/jam/sha256.h kernel/include/jam/status.h
+$(EXT_CHECK): $(EXT_TOOL) tools/extcheck.h tools/extvol.h tools/extwrite.h tools/extjnl.h \
+              $(EXT_SRCS) $(EXT_HDRS) drivers/lib/sha256.c drivers/include/jam/sha256.h \
+              kernel/include/jam/status.h
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=gnu17 -O1 -g -Wall -Wextra -Werror -Wvla -fsanitize=address,undefined \
 	    -fno-sanitize-recover=all -Idrivers/include -Ikernel/include -I$(EXT_DIR) -o $@ \
