@@ -295,7 +295,9 @@ bool t_netlog_whole_log(void)
     nt.reorder = true;
     start();
     uint64_t len = nt.log_len;
+    CHECK(!netlog_flushed(&nl));   /* nothing is acked yet */
     run_until(600 * NS_PER_S);
+    CHECK(netlog_flushed(&nl));
     CHECK_EQ(nt.have[NETLOG_LIVE], len);
     CHECK(!memcmp(nt.got[NETLOG_LIVE], nt.log, len));
     CHECK_EQ(nt.lost[NETLOG_LIVE], 0);
@@ -307,7 +309,9 @@ bool t_netlog_whole_log(void)
     CHECK_EQ(nt.log_len, len);
     /* new lines go out too, and the sender rests when there is nothing */
     log_append("one more line");
+    CHECK(!netlog_flushed(&nl));   /* new text: not flushed until the Mac has it */
     run_until(nt.now + 10 * NS_PER_S);
+    CHECK(netlog_flushed(&nl));
     CHECK_EQ(nt.have[NETLOG_LIVE], nt.log_len);
     CHECK_EQ(netlog_poll(&nl, nt.now), UINT64_MAX);
     return true;
