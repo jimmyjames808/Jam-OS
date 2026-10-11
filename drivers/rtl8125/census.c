@@ -120,7 +120,7 @@ uint32_t census_kind(const struct census *c, enum netframe_kind k)
     return n;
 }
 
-/* docs/M9-PLAN.md "The first PC stage: listen only", reading the count. */
+/* docs/HISTORY.md, M9, reading the count. */
 const char *census_verdict(const struct census *c, uint16_t v)
 {
     uint32_t tagged = census_kind(c, NETFRAME_VLAN) + census_kind(c, NETFRAME_OUTER);

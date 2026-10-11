@@ -1,6 +1,6 @@
 /* <jam/netdev.h>: between a network card's driver and netstack, the
- * `netdev` protocol's data path (docs/M9-PLAN.md "netdev: rings, not
- * calls"; the control calls are abi/idl/netdev.idl). A driver and
+ * `netdev` protocol's data path (docs/HISTORY.md, M9;
+ * the control calls are abi/idl/netdev.idl). A driver and
  * netstack implement it from this header and the IDL alone, and both use
  * the ring code below, so the index logic is written (and tested: utest's
  * netdev_*) once.

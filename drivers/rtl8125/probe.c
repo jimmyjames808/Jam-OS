@@ -1,5 +1,5 @@
 /* rtl8125: the listen-only probe, `netprobe` (drv/rtl8125;
- * docs/M9-PLAN.md, stage 0).
+ * docs/HISTORY.md, M9, stage 0).
  *
  * It SENDS NOTHING: it runs in RTL_MODE_PROBE, so tx.c's gate refuses
  * everything (no transmit ring, no transmitter enable, no doorbell), and

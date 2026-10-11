@@ -1,7 +1,7 @@
 /* rtl8125: failing closed when the chip sends what the driver didn't
  * queue, and the tally dump that tells, as pure functions (drv/rtl8125:
  * guard.c and regs.c use them; utest tests them in
- * user/tests/utest/rtlguard.c). docs/history/M9-REVIEW.md, design
+ * user/tests/utest/rtlguard.c). docs/HISTORY.md, M9, design
  * question A (the owner's yes, 2026-10-02).
  *
  * The chip keeps its own count of the frames it has sent (its tally
@@ -92,7 +92,7 @@ static inline const char *rtl_guard_why(enum rtl_guard_verdict v)
 /* The chip writes its counters into memory when asked (DTCCR's dump bit),
  * and clears the bit when they are there. The driver's loop asks, goes on
  * with its work, and looks at the bit again later: nothing waits for the
- * DMA inside the loop (M9-REVIEW finding 13). A dump not there after
+ * DMA inside the loop (M9 review finding 13, docs/HISTORY.md). A dump not there after
  * RTL_DUMP_WAIT_NS is given up on (counted). */
 #define RTL_DUMP_WAIT_NS   10000000ull     /* 10 ms: rge's 1000 x 10 us */
 #define RTL_DUMP_EVERY_NS  1000000000ull   /* the guard's look: once a second at least */

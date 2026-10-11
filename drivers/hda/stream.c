@@ -274,7 +274,7 @@ status_t stream_open(struct hda *h, struct stream *s, uint32_t bits, handle_t *r
     }
     /* The client's handle: to map, read and write, and to duplicate (the
      * mixer's keeper holds a duplicate so the ring outlives a mixer that is
-     * restarted: docs/M11.6-PLAN.md); no resize, no more. */
+     * restarted: docs/HISTORY.md, M11.6); no resize, no more. */
     st = drv_handle_duplicate(s->ring.vmo,
                               RIGHT_READ | RIGHT_WRITE | RIGHT_MAP | RIGHT_DUPLICATE |
                                   RIGHT_TRANSFER,
