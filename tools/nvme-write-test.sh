@@ -125,6 +125,7 @@ tail4() { printf '%s' "jamos-nvme$1" | tail -c 4; }
 settle() {
     echo "wait 120 Jam OS shell"
     echo "wait {prompt}"
+    echo "seen 60 init: /data mounted"
     echo "send sleep 4"
     echo "wait {prompt}"
 }
