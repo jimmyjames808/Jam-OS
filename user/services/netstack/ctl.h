@@ -38,9 +38,12 @@ void ctl_dns(uint32_t out[2]);
 
 /* What netctl.set_ipv4 accepts (its comment in netctl.idl). */
 bool ctl_ipv4_valid(const struct stack_ipv4 *ip);
-/* A unicast address a host may use or talk to: not in 0.0.0.0/8,
- * 127.0.0.0/8, multicast (224.0.0.0/4) or 240.0.0.0/4 (with the
- * broadcast address). */
+/* A unicast address a host may use or talk to over the network: not in
+ * 0.0.0.0/8, 127.0.0.0/8 (ctl_loopback is the host itself), multicast
+ * (224.0.0.0/4) or 240.0.0.0/4 (with the broadcast address). */
 bool ctl_unicast(uint32_t a);
+/* A loopback address a program may talk to: 127.0.0.0/8, but for its
+ * broadcast address (127.255.255.255). */
+bool ctl_loopback(uint32_t a);
 /* "a.b.c.d" into buf (at least 16 bytes); returns buf. */
 const char *ctl_fmt_ip(char *buf, uint32_t a);

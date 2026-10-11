@@ -310,9 +310,10 @@ static status_t op_echo(void *ctx, struct idl_txn txn, uint32_t address, uint16_
     (void)out_ttl;
     (void)out_size;
     struct opener *o = ctx;
-    if (!ctl_unicast(address) || size > NET_DGRAM_MAX || !timeout_ms ||
+    if (!(ctl_unicast(address) || ctl_loopback(address)) || size > NET_DGRAM_MAX || !timeout_ms ||
         timeout_ms > NET_TIMEOUT_MAX)
         return ERR_INVALID_ARGS;
+    address = stack_canon(address);   /* the reply comes from 127.0.0.1 */
     for (unsigned i = 0; i < LATER_MAX; i++)
         if (pg.l[i].kind == LATER_ECHO && pg.l[i].opener == (unsigned)(o - pg.o) &&
             pg.l[i].addr == address && pg.l[i].seq == seq)

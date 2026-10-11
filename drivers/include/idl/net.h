@@ -43,6 +43,15 @@
  * with a tx and an rx ring, and two events), never in a call: udp_rings
  * makes a socket with its rings, net_socket.rings gives a socket its rings.
  *
+ * Loopback: 127.0.0.0/8 is this host. A datagram or a TCP connection to an
+ * address in it goes to a socket of this same netstack, never to the network
+ * card, whatever the card's address and link are (netstack's stack.h has
+ * the how). Every address of the block is the one loopback interface,
+ * 127.0.0.1: a program that sends to 127.0.0.5 is answered from 127.0.0.1.
+ * The listen permissions are the same as anywhere. A packet with a loopback
+ * address in it is never sent to the network, and one that arrives from it
+ * is dropped.
+ *
  * Limits, so one program can't use netstack up (<net.h>):
  * NET_SOCKETS_PER_OPENER (256) sockets an opener, NET_SOCKETS_MAX (512) in
  * all, NET_PROG_SOCKETS (384) of them ordinary openers'; NET_LATER_PER_OPENER
@@ -120,8 +129,13 @@
  * ERR_NO_RESOURCES: the opener's, all openers' or an ordinary opener's
  * share of listeners or of backlog.
  *
- * `flags` is 0 or LISTEN_REUSE (anything else: ERR_INVALID_ARGS): POSIX's
- * SO_REUSEADDR, as Linux does it. Without it the port must be free of every
+ * `flags` is 0, LISTEN_REUSE, LISTEN_LOOPBACK or both (any other bit:
+ * ERR_INVALID_ARGS). LISTEN_LOOPBACK listens on 127.0.0.1 only (POSIX's bind
+ * to a loopback address): a connection to a loopback address reaches the
+ * listener, one to the card's address doesn't. Without it the listener is on
+ * every address, loopback included.
+ *
+ * LISTEN_REUSE is POSIX's SO_REUSEADDR, as Linux does it. Without it the port must be free of every
  * connection too: one still in TIME_WAIT, or open, from an earlier listener
  * on the port is ERR_ALREADY_BOUND, so a server restarted at once can't
  * listen. With it a listener can be made on a port whose old connections
@@ -131,6 +145,7 @@
  * port). A listener's connections keep its flag: they are what a later
  * listener with the flag may stand beside. */
 #define NET_LISTEN_REUSE 1u
+#define NET_LISTEN_LOOPBACK 2u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct net_iface_req {
@@ -540,7 +555,7 @@ static inline status_t net_echo_call(handle_t ch, bool idl_within, uint64_t idl_
  * the reply's TTL and its data's size; ERR_TIMED_OUT after timeout_ms
  * (1..TIMEOUT_MAX); ERR_NOT_FOUND: a router or the host said it is unreachable
  * (ICMP destination unreachable). At once: ERR_INVALID_ARGS (not a unicast
- * address, a size out of range, a timeout_ms that isn't 1..TIMEOUT_MAX), ERR_BAD_STATE (no address, the
+ * or loopback address, a size out of range, a timeout_ms that isn't 1..TIMEOUT_MAX), ERR_BAD_STATE (no address, the
  * link down, no route; or an echo with this seq to this address is in
  * flight), ERR_NO_RESOURCES (NET_LATER_PER_OPENER in flight already). */
 static inline status_t net_echo_until(handle_t ch, uint64_t deadline_ns, uint32_t address, uint16_t seq, uint16_t size, uint32_t timeout_ms, uint32_t *out_rtt_us, uint8_t *out_ttl, uint16_t *out_size)
@@ -1816,6 +1831,7 @@ static inline status_t net_serve(handle_t ch, const struct net_ops *ops, void *c
 #define NET_SOCKET_CONNECT          0x003c0001u
 #define NET_SOCKET_STATE            0x003c0002u
 #define NET_SOCKET_RINGS            0x003c0003u
+#define NET_SOCKET_LOOPBACK_ONLY    0x003c0004u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct net_socket_connect_req {
@@ -1853,6 +1869,14 @@ struct net_socket_rings_rep {
     int32_t  status;
     uint32_t tx_bytes;
     uint32_t rx_bytes;
+} __attribute__((packed));
+struct net_socket_loopback_only_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct net_socket_loopback_only_rep {
+    uint32_t txid;
+    int32_t  status;
 } __attribute__((packed));
 
 #define NET_SOCKET_REQ_MAX 16u   /* bytes: the biggest request */
@@ -2014,6 +2038,41 @@ static inline status_t net_socket_rings(handle_t ch, uint32_t tx_bytes, uint32_t
     return net_socket_rings_call(ch, false, DEADLINE_NEVER, tx_bytes, rx_bytes, out_ring, out_to_stack, out_to_prog, out_tx_bytes, out_rx_bytes);
 }
 
+/* net_socket_loopback_only_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t net_socket_loopback_only_call(handle_t ch, bool idl_within, uint64_t idl_t)
+{
+    struct net_socket_loopback_only_req idl_q;
+    struct net_socket_loopback_only_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = NET_SOCKET_LOOPBACK_ONLY;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    return idl_st;
+}
+/* Bind the socket to 127.0.0.1 instead of every address (POSIX's bind to a
+ * loopback address). From now on only a datagram sent to a loopback address
+ * reaches it (one to the card's address, or a broadcast, doesn't), and it
+ * may send only to loopback addresses: a tx record to another is refused
+ * like any other (the status line's tx_refused, `error` ERR_INVALID_ARGS).
+ * Its port stays. ERR_ALREADY_BOUND: another socket has that port on
+ * 127.0.0.1 or on every address; ERR_NOT_SUPPORTED: the DHCP socket. */
+static inline status_t net_socket_loopback_only_until(handle_t ch, uint64_t deadline_ns)
+{
+    return net_socket_loopback_only_call(ch, false, deadline_ns);
+}
+static inline status_t net_socket_loopback_only_within(handle_t ch, uint64_t timeout_ns)
+{
+    return net_socket_loopback_only_call(ch, true, timeout_ns);
+}
+static inline status_t net_socket_loopback_only(handle_t ch)
+{
+    return net_socket_loopback_only_call(ch, false, DEADLINE_NEVER);
+}
+
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
 
 /* net_socket_connect without waiting: the request, with the caller's txid (not 0).
@@ -2136,6 +2195,36 @@ static inline status_t net_socket_rings_result(const void *idl_rep, struct idl_m
     return OK;
 }
 
+/* net_socket_loopback_only without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then net_socket_loopback_only_result. */
+static inline status_t net_socket_loopback_only_send(handle_t ch, uint32_t idl_txid)
+{
+    struct net_socket_loopback_only_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = NET_SOCKET_LOOPBACK_ONLY;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to net_socket_loopback_only_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t net_socket_loopback_only_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct net_socket_loopback_only_rep *idl_r = (const struct net_socket_loopback_only_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -2146,6 +2235,7 @@ struct net_socket_ops {
     status_t (*connect)(void *ctx, uint32_t address, uint16_t port);
     status_t (*state)(void *ctx, uint32_t *out_address, uint16_t *out_port, uint32_t *out_peer, uint16_t *out_peer_port, uint32_t *out_queued, uint32_t *out_dropped);
     status_t (*rings)(void *ctx, uint32_t tx_bytes, uint32_t rx_bytes, handle_t *out_ring, handle_t *out_to_stack, handle_t *out_to_prog, uint32_t *out_tx_bytes, uint32_t *out_rx_bytes);
+    status_t (*loopback_only)(void *ctx);
 };
 
 /* Answer the net_socket.connect request kept in txn: idl_st and, if it is OK, the
@@ -2209,6 +2299,21 @@ static inline status_t net_socket_reply_rings(struct idl_txn idl_txn, status_t i
     idl_r.tx_bytes = tx_bytes;
     idl_r.rx_bytes = rx_bytes;
     return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 3);
+}
+
+/* Answer the net_socket.loopback_only request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t net_socket_reply_loopback_only(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct net_socket_loopback_only_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
 }
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
@@ -2308,6 +2413,22 @@ static inline uint32_t net_socket_dispatch_on(handle_t ch, const struct net_sock
         *rhn = 3;
         idl_r->tx_bytes = out_tx_bytes;
         idl_r->rx_bytes = out_rx_bytes;
+        return sizeof(*idl_r);
+    }
+    case NET_SOCKET_LOOPBACK_ONLY: {
+        const struct net_socket_loopback_only_req *idl_q = (const struct net_socket_loopback_only_req *)req;
+        struct net_socket_loopback_only_rep *idl_r = (struct net_socket_loopback_only_rep *)rep;
+        (void)idl_r;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->loopback_only) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->loopback_only(ctx);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
         return sizeof(*idl_r);
     }
     }

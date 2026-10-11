@@ -1610,11 +1610,27 @@ restarts:
   flight an opener and 64 in all, 64 MiB of ring bytes an opener and 128 MiB
   in all (budgets: the rings' pages are charged as they are touched); of
   each, ordinary programs together get only their share (24 openers, 384
-  sockets, 48 requests, 96 MiB), and the rest is the
-  network's own services' (`/svc/net-sys`, below). A program can't send to
-  a broadcast, multicast or loopback address, can't bind a port below 1024
-  without the low-port permission (`/svc/net-low`, below) nor one
+  sockets, 48 requests, 96 MiB), and the rest is the network's own
+  services' (`/svc/net-sys`, below). A program can't send to a broadcast
+  or multicast address (loopback's broadcast too), can't bind a port below
+  1024 without the low-port permission (`/svc/net-low`, below) nor one
   below 49152 without the listen permission, and sends no raw packets. A wait set (`<netwait.h>`) waits on many sockets at once.
+- **Loopback.** 127.0.0.0/8 is the host itself: lwIP's loopback interface
+  (127.0.0.1/8, always up) takes a datagram or a connection to it to
+  another socket of the same netstack, and the card never sees it. It
+  needs neither an address nor a link, so `localhost` works with no
+  network at all. lwIP's interface answers for 127.0.0.1 only, so every
+  address of the block is that one (a program that sends to 127.0.0.5 is
+  answered from 127.0.0.1). A packet to the card's own address is looped
+  back the same way. The listen permissions are unchanged: taking
+  connections on a loopback address needs `svc net listen` like any other.
+  A socket bound to a loopback address is loopback-only (a datagram socket
+  by `net_socket.loopback_only`, a listener by `NET_LISTEN_LOOPBACK`): the
+  network cannot reach it, and it sends to loopback addresses only. A
+  frame with a loopback address in it, as source or destination, is
+  dropped on the way in (counted as refused) and never sent. The loop
+  delivers the interface's queued packets after what may have sent them
+  (`stack_loop`), so TCP's callbacks never run inside a program's call.
 - **TCP** on the same channels (`user/services/netstack/tcpsock.c` for the
   calls, `tcp.c` for the connections, `stack.c`'s TCP edge for lwIP;
   [HISTORY: M9.5](docs/HISTORY.md#m95-network-streams)):

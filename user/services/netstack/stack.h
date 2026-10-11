@@ -24,6 +24,17 @@
  * bytes (56 for a minimum-size frame whose tag the driver removed):
  * stack_input pads it.
  *
+ * Loopback: besides the card's interface lwIP has its loopback interface,
+ * 127.0.0.1/8, always up. A datagram or a connection to a loopback
+ * address goes through it to a socket of this same netstack, whatever the
+ * card or the address are doing, and never to the edge: lwIP puts such a
+ * packet on the interface's queue (not delivered inside the call that sent
+ * it), and stack_loop delivers them, from the loop, where the hooks may
+ * run as they do for a frame. lwIP's interface answers for 127.0.0.1 only,
+ * so every address of 127.0.0.0/8 is that one (stack_canon). A frame with
+ * a loopback address in it, source or destination, is neither taken from
+ * the edge nor given to it (the network must never carry one).
+ *
  * One thread: nothing here locks. Addresses are IPv4 addresses as
  * numbers, the first byte highest (10.2.21.5 is 0x0a021505). */
 #pragma once
@@ -64,10 +75,11 @@ struct stack_state {
 /* Counts since netstack started (never reset; netctl.stats). */
 struct stack_counts {
     uint64_t rx_frames;       /* frames given to stack_input */
-    uint64_t rx_refused;      /* of those, refused before lwIP: under 14 or over 1514 bytes, or
-                               * no receive buffer free */
+    uint64_t rx_refused;      /* of those, refused before lwIP: under 14 or over 1514 bytes, no
+                               * receive buffer free, or a loopback address in the packet */
     uint64_t tx_frames;       /* frames the edge took */
-    uint64_t tx_dropped;      /* frames the edge refused (no device, a full ring) or too long */
+    uint64_t tx_dropped;      /* frames the edge refused (no device, a full ring), too long, or
+                               * with a loopback address in them (never sent) */
     uint64_t rx_bytes;        /* bytes of the frames given to stack_input */
     uint64_t tx_bytes;        /* ... and of those the edge took */
     uint64_t echo_replies;    /* ICMP echo replies sent (pings answered) */
@@ -114,6 +126,27 @@ void     stack_input(const uint8_t *frame, size_t len);
 /* Run lwIP's timers that are due (ARP's ageing); the time (ns, absolute)
  * the next one is due, DEADLINE_NEVER if none is: the loop's deadline. */
 uint64_t stack_poll(void);
+/* Deliver the packets waiting on lwIP's loopback queues (the loopback
+ * interface's, and the card interface's for a packet to its own address),
+ * and those their delivery makes, until none is left: hooks run, as inside
+ * stack_input. Called by the loop after anything that may have sent. */
+void     stack_loop(void);
+/* Is a packet waiting on those queues (the loop shouldn't sleep)? */
+bool     stack_loop_pending(void);
+
+/* ---- loopback addresses ---- */
+#define STACK_LOOPBACK 0x7f000001u   /* 127.0.0.1: the loopback interface's address */
+/* Is a in 127.0.0.0/8? */
+static inline bool stack_is_loopback(uint32_t a)
+{
+    return (a >> 24) == 127;
+}
+/* The address lwIP answers for: STACK_LOOPBACK for any address of
+ * 127.0.0.0/8, else a. */
+static inline uint32_t stack_canon(uint32_t a)
+{
+    return stack_is_loopback(a) ? STACK_LOOPBACK : a;
+}
 
 /* Set the address. The caller checked it (ctl.c's ipv4_valid). */
 void     stack_set_ipv4(const struct stack_ipv4 *ip);
@@ -142,12 +175,22 @@ extern void (*stack_udp_input)(void *ctx, uint32_t from, uint16_t port, const ui
 status_t stack_udp_open(uint16_t port, bool bcast, void *ctx, struct stack_udp **out,
                         uint16_t *out_port);
 void     stack_udp_close(struct stack_udp *u);
+/* Bind u to 127.0.0.1 instead of every address (POSIX's bind to a
+ * loopback address): only a datagram sent to a loopback address reaches it
+ * (the interface's own address and the broadcast ones don't), and it may
+ * send only to loopback addresses (stack_udp_send). OK, or the port is
+ * taken on that address (ERR_ALREADY_BOUND). */
+status_t stack_udp_loopback_only(struct stack_udp *u);
 /* Send len bytes (at most STACK_UDP_MAX) to to:port. on_link: out of the
  * interface without a route, from its address or 0.0.0.0 while it has
- * none (the DHCP socket's broadcasts). The caller checked `to`.
+ * none (the DHCP socket's broadcasts). The caller checked `to`; a loopback
+ * address goes through the loopback interface, which needs no address,
+ * route or link.
  * ERR_BAD_STATE: no address, no route or the link down; ERR_NO_MEMORY:
  * lwIP's heap is full; ERR_NO_RESOURCES: the device refused the frame;
- * ERR_INVALID_ARGS: too long, or a broadcast from a socket without bcast. */
+ * ERR_INVALID_ARGS: too long, a broadcast from a socket without bcast, or
+ * a destination that is not a loopback address from a socket
+ * stack_udp_loopback_only made. */
 status_t stack_udp_send(struct stack_udp *u, uint32_t to, uint16_t port, const void *data,
                         size_t len, bool on_link);
 
@@ -159,7 +202,8 @@ status_t stack_udp_send(struct stack_udp *u, uint32_t to, uint16_t port, const v
  * lwIP, which drops it. */
 extern void (*stack_echo_input)(uint32_t peer, uint16_t id, uint16_t seq, uint8_t ttl,
                                 size_t len, bool unreachable);
-/* An echo request (8 bytes of header, `size` of data) to `to`.
+/* An echo request (8 bytes of header, `size` of data) to `to` (a loopback
+ * address needs no address or link).
  * ERR_BAD_STATE: no address, no route or the link down; ERR_NO_MEMORY:
  * lwIP's heap is full; ERR_NO_RESOURCES: the device refused the frame. */
 status_t stack_echo_send(uint32_t to, uint16_t id, uint16_t seq, size_t size);
@@ -279,7 +323,8 @@ void     stack_tcp_set_hooks(const struct stack_tcp_hooks *h);
 /* Open a connection to to:port from a port lwIP picks, announcing a window
  * of at most `window` (the largest the peer's answer allows, above): its
  * SYN goes now, hooks.connected or hooks.gone come later. The caller
- * checked `to`. ERR_BAD_STATE: no address, no route or the link down;
+ * checked `to`; a loopback address needs no address, route or link.
+ * ERR_BAD_STATE: no address, no route or the link down;
  * ERR_NO_RESOURCES: no pcb free or no local port; ERR_NO_MEMORY: lwIP's
  * heap is full. */
 status_t stack_tcp_connect(uint32_t to, uint16_t port, uint32_t window, void *ctx,
@@ -287,12 +332,17 @@ status_t stack_tcp_connect(uint32_t to, uint16_t port, uint32_t window, void *ct
 /* Listen on `port` (0: lwIP picks one) on any local address, backlog
  * half-open and not-yet-accepted connections at most (1..STACK_TCP_BACKLOG),
  * each announcing at most `window` (the largest its SYN allows, above).
- * `reuse` is SO_REUSEADDR: connections of the port in TIME_WAIT don't stop
- * it, nor do open ones that came from a listener made with it too.
+ * flags: STACK_LISTEN_REUSE is SO_REUSEADDR: connections of the port in
+ * TIME_WAIT don't stop it, nor do open ones that came from a listener made
+ * with it too; STACK_LISTEN_LOOPBACK listens on 127.0.0.1 only, so only a
+ * connection to a loopback address reaches it (the card's address doesn't).
  * ERR_ALREADY_BOUND: the port is taken (a listener on it, with or without
- * `reuse`); ERR_NO_RESOURCES: no listener free; ERR_INVALID_ARGS: a bad
- * backlog. */
-status_t stack_tcp_listen(uint16_t port, uint32_t backlog, uint32_t window, bool reuse,
+ * REUSE; one on every address takes the loopback one's port too);
+ * ERR_NO_RESOURCES: no listener free; ERR_INVALID_ARGS: a bad backlog or
+ * flag. */
+#define STACK_LISTEN_REUSE    1u
+#define STACK_LISTEN_LOOPBACK 2u
+status_t stack_tcp_listen(uint16_t port, uint32_t backlog, uint32_t window, uint32_t flags,
                           void *lctx, struct stack_tcp_listen **out, uint16_t *out_port);
 /* Stop listening. Half-open connections are dropped; those already given
  * to hooks.accepted are the caller's. */

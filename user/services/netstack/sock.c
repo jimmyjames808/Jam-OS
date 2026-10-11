@@ -50,6 +50,8 @@ static uint64_t key_of(unsigned i, unsigned kind)
 
 bool sock_sendable(uint32_t a)
 {
+    if (ctl_loopback(a))
+        return true;   /* the host itself: no subnet to be the broadcast of */
     if (!ctl_unicast(a))
         return false;
     struct stack_state st;
@@ -403,9 +405,19 @@ static status_t op_connect(void *ctx, uint32_t address, uint16_t port)
         return ERR_NOT_SUPPORTED;
     if ((address || port) && (!port || !sock_sendable(address)))
         return ERR_INVALID_ARGS;
-    s->peer = address;
+    s->peer = stack_canon(address);   /* a loopback peer answers from 127.0.0.1 */
     s->peer_port = address ? port : 0;
     return OK;
+}
+
+static status_t op_loopback_only(void *ctx)
+{
+    struct sock *s = ctx;
+    if (s->dhcp)
+        return ERR_NOT_SUPPORTED;
+    if (!s->u)
+        return ERR_BAD_STATE;   /* ended: its opener went */
+    return stack_udp_loopback_only(s->u);
 }
 
 static status_t op_state(void *ctx, uint32_t *out_address, uint16_t *out_port,
@@ -445,6 +457,7 @@ static const struct net_socket_ops sock_ops = {
     .connect = op_connect,
     .state = op_state,
     .rings = op_rings,
+    .loopback_only = op_loopback_only,
 };
 
 void sock_serve(unsigned i)

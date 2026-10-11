@@ -463,12 +463,13 @@ status_t tcpsock_op_listener(void *ctx, uint16_t port, uint32_t backlog, uint32_
     if (!listen_may_accept(o, port))
         return ERR_ACCESS_DENIED;
     if (!backlog || backlog > NET_BACKLOG_MAX || !sockring_size_ok(tx) || !sockring_size_ok(rx) ||
-        (flags & ~NET_LISTEN_REUSE))
+        (flags & ~(NET_LISTEN_REUSE | NET_LISTEN_LOOPBACK)))
         return ERR_INVALID_ARGS;
     if (!listener_ok(o, backlog))
         return ERR_NO_RESOURCES;
     struct ntcp_listen_req req = { .port = port, .backlog = backlog, .rx_size = rx,
-                                   .reuse = flags & NET_LISTEN_REUSE, .rings = l_rings,
+                                   .reuse = flags & NET_LISTEN_REUSE,
+                                   .loopback = flags & NET_LISTEN_LOOPBACK, .rings = l_rings,
                                    .drop = l_drop };
     struct tlisten *l;
     status_t st = l_new(o, &req, &l, out_listener);

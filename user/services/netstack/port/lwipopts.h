@@ -5,7 +5,7 @@
  *
  * The shape: NO_SYS (lwIP's raw API, no threads, no locks: netstack's one
  * loop is the only caller), IPv4 with ARP, ICMP (echo answered), UDP and
- * TCP; raw ICMP for `ping`. Left out: IPv6, IP fragmentation and
+ * TCP; raw ICMP for `ping`; the card's interface and a loopback one. Left out: IPv6, IP fragmentation and
  * reassembly (nothing sends a datagram over 1472 bytes or a segment over
  * one frame, and reassembly is a classic place for bugs: a fragment is
  * dropped), IGMP, lwIP's DHCP and DNS (each is a process of its own that
@@ -74,8 +74,18 @@
 #define ARP_TABLE_SIZE          16
 #define ARP_QUEUEING            0    /* one waiting packet per unresolved address, the newest */
 #define ETHARP_SUPPORT_STATIC_ENTRIES 0
-#define LWIP_SINGLE_NETIF       1    /* one NIC; no loopback interface either */
-#define LWIP_HAVE_LOOPIF        0
+/* Two interfaces: the card's, and lwIP's loopback interface (127.0.0.1/8,
+ * always up). A packet to a loopback address is queued by the loopback
+ * interface and delivered when netstack's loop polls it (stack.h's
+ * stack_loop), never inside the call that sent it, so TCP's callbacks do
+ * not run inside a send. The queue is not capped (LWIP_LOOPBACK_MAX_PBUFS
+ * 0): its pbufs come from the heap, which TCP's shares already count, and
+ * a full cap would cost a TCP segment its retransmission timer. A packet
+ * to the card's own address goes the same way (lwIP's loopback for an
+ * interface's own address), on the card interface's queue. lwIP answers
+ * for 127.0.0.1 only; stack.h's stack_canon maps the rest of 127.0.0.0/8. */
+#define LWIP_SINGLE_NETIF       0
+#define LWIP_HAVE_LOOPIF        1
 #define LWIP_NETIF_LOOPBACK     0
 #define LWIP_NETIF_HOSTNAME     0
 

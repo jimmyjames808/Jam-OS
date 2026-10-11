@@ -129,10 +129,10 @@ static bool connections(void)
     for (unsigned i = 0; i < 3; i++)
         CHECK(connect_on(netdrv_net(), &o[i]));
     CHECK(connect_on(netdrv_net_sys(), &sys));
-    /* Port 0, the subnet's broadcast, loopback, a ring size not allowed. */
+    /* Port 0, the subnet's broadcast, loopback's broadcast, a ring size not allowed. */
     CHECK_ST(net_tcp_open(o[0], PEER_IP, 0, 0, 0, &x), ERR_INVALID_ARGS);
     CHECK_ST(net_tcp_open(o[0], 0x0a0215ffu, 80, 0, 0, &x), ERR_INVALID_ARGS);
-    CHECK_ST(net_tcp_open(o[0], 0x7f000001u, 80, 0, 0, &x), ERR_INVALID_ARGS);
+    CHECK_ST(net_tcp_open(o[0], 0x7fffffffu, 80, 0, 0, &x), ERR_INVALID_ARGS);
     CHECK_ST(net_tcp_open(o[0], PEER_IP, 80, 3000, 0, &x), ERR_INVALID_ARGS);
     /* An opener's half of all of them; the ordinary openers' share; then
      * the reserve, a system opener's, to the total. */

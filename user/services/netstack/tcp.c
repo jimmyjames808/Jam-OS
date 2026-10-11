@@ -364,7 +364,9 @@ status_t ntcp_listen(const struct ntcp_listen_req *req, struct ntcp_listener **o
     if (!l)
         return ERR_NO_RESOURCES;
     *l = (struct ntcp_listener){ .used = true, .req = *req };
-    status_t st = stack_tcp_listen(req->port, req->backlog, req->rx_size, req->reuse, l, &l->l,
+    uint32_t flags = (req->reuse ? STACK_LISTEN_REUSE : 0) |
+                     (req->loopback ? STACK_LISTEN_LOOPBACK : 0);
+    status_t st = stack_tcp_listen(req->port, req->backlog, req->rx_size, flags, l, &l->l,
                                    &l->port);
     if (st != OK) {
         *l = (struct ntcp_listener){ 0 };

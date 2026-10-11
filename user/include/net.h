@@ -52,7 +52,14 @@
  * rings' bytes are budgeted in <sockring.h>: SOCKRING_OPENER_BYTES an
  * opener, SOCKRING_TOTAL_BYTES in all, NET_PROG_RING_BYTES of them ordinary
  * openers'), so a program that opens everything it may still takes no more
- * than its share. */
+ * than its share.
+ *
+ * Loopback: 127.0.0.0/8 is the host itself. A datagram or a connection to
+ * it goes to a socket of this same netstack and never to the card; every
+ * address in the block is the one interface 127.0.0.1 (a program that
+ * sends to 127.0.0.5 is answered from 127.0.0.1), and it needs neither an
+ * address nor a link. Taking connections on it needs the same permissions
+ * as anywhere (net_tcp_listen: `svc net listen`). */
 #pragma once
 
 #include <stdbool.h>
