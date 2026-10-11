@@ -280,6 +280,11 @@ static void check_devetc_paths(void)
     errno = 0;
     CHECK(open("/etc/passwd", O_WRONLY) == -1 && errno == EROFS);
     CHECK(open("/dev/nothing", O_RDONLY) == -1 && errno == ENOENT);
+    struct stat st;
+    CHECK(open("/dev/null/x", O_RDONLY) == -1 && errno == ENOTDIR);   /* under a node */
+    CHECK(stat("/dev/null/x", &st) == -1 && errno == ENOTDIR);
+    CHECK(stat("/dev/zero/x/y", &st) == -1 && errno == ENOTDIR);
+    CHECK(stat("/dev/nothing/x", &st) == -1 && errno == ENOENT);
     fd = shm_open("/ptshm", O_RDWR | O_CREAT | O_EXCL, 0600);
     CHECK(fd > 2 && ftruncate(fd, 4096) == 0 && write(fd, "shm", 3) == 3);
     int again = shm_open("/ptshm", O_RDONLY, 0);
