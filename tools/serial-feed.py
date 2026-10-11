@@ -21,7 +21,14 @@ the script, one command per line:
                               one not seen yet is captured from the match
                               (e.g. `seen jamjar: next at {nx},{ny}`), one
                               captured before stands for its value.
-    send <text>               <text> and Enter (CR), one byte at a time
+                              A <text> that begins "re:" is a regular
+                              expression (Python's, over bytes) whose
+                              named groups, which must be numbers, are
+                              captured the same way, e.g.
+                              `seen re:nvme(?P<d>[0-9]+) +QEMU`: a disk
+                              whose name isn't known beforehand.
+    send <text>               <text> and Enter (CR), one byte at a time; a {name}
+                              captured earlier stands for its number
     type <text>               <text> without Enter; \\e \\r \\n \\t \\xNN escapes
     sleep <seconds>
     shot <name>               a screenshot: <name>.png next to the log
@@ -107,6 +114,8 @@ def needle_of(text):
     """What a wait or seen looks for: the text's bytes, or a regular
     expression when it has a {field} in it: {prompt}, a number captured
     before (its value), or one to capture (a named group)."""
+    if text.startswith("re:"):
+        return re.compile(text[3:].encode())
     if not FIELD.search(text):
         return text.encode()
     out, at, named = b"", 0, set()
@@ -278,6 +287,11 @@ def pointer(x, y):
         x, y = x - dx, y - dy
 
 
+def known(text):
+    """text with the {name}s captured so far put in; any other left as it is."""
+    return FIELD.sub(lambda m: str(numbers.get(m.group(1), m.group(0))), text)
+
+
 def send(data):
     for b in data:
         s.sendall(bytes([b]))
@@ -319,7 +333,7 @@ for lineno, raw in enumerate(open(script), 1):
             break
         print(f"serial-feed: saw '{arg}'", file=sys.stderr)
     elif cmd == "send":
-        send(arg.encode() + b"\r")
+        send(known(arg).encode() + b"\r")
     elif cmd == "type":
         send(unescape(arg.replace("\\e", "\x1b")))
     elif cmd == "sleep":
