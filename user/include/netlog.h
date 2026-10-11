@@ -175,3 +175,9 @@ void     netlog_ack(struct netlog *n, const void *dgram, size_t len, uint64_t no
  * kernel log to grow (a klog reader stays readable while the log is past
  * its last read, which a full window leaves it). */
 bool     netlog_wants_text(const struct netlog *n, unsigned stream);
+/* Everything the sources hold now (the live log's current end, an ended
+ * stream's whole text) has been sent and acked by the Mac: a sender that
+ * is about to stop (init's regression run) waits for this, with a limit
+ * of its own, so the end of the log is not left behind. New text makes it
+ * false again. */
+bool     netlog_flushed(const struct netlog *n);

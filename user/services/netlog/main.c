@@ -10,6 +10,11 @@
  *   SR_NS         a namespace holding /svc/net and nothing else
  *   SR_CRASHLOG   on the boot after a panic: the panicked boot's log
  *                 (init's read-only duplicate)
+ *   NETLOG_SR_STOP  optional (the regression run, init's regnet.c): init's
+ *                 closing its end asks netlog to send what the log holds
+ *                 by then, wait until the Mac has acked all of it (at most
+ *                 STOP_WAIT) and exit 0. Without it netlog runs until it is
+ *                 killed, as in shell mode.
  * It can read the log and send UDP datagrams, nothing more; what it parses
  * of the network is the Mac's 24-byte acks, from net.host:5021 only (its
  * socket is connected there, and each one is checked again here).
@@ -42,6 +47,8 @@
 
 #define KEY_SOCK 1u
 #define KEY_LOG  2u
+#define KEY_STOP 3u
+#define STOP_WAIT (4 * NS_PER_S)   /* the flush after init asked: then it ends anyway */
 #define RETRY    NS_PER_S   /* no /svc/net, or no socket: the next try */
 #define ACKS_A_TURN 64u     /* acks taken a turn; more wait for the next */
 
@@ -49,7 +56,8 @@ static struct netlog         nl;
 static struct net_sock       sock;        /* .ch 0: none open */
 static struct net_dgram      dg;          /* the datagram being taken */
 static struct netlog_vmo_ctx crash_ctx;   /* the crash stream's source */
-static handle_t              port, klog;
+static handle_t              port, klog, stop_ch;   /* stop_ch: 0 in shell mode */
+static uint64_t              stop_at;     /* uptime ns when init asked it to end (0: not yet) */
 static uint32_t              host;        /* net.host */
 
 static status_t io_send(void *ctx, const uint8_t *d, size_t len)
@@ -160,12 +168,27 @@ static void run(void)
         uint64_t deadline = next == UINT64_MAX ? DEADLINE_NEVER : next;
         if (!sock_armed && deadline > t + RETRY)
             deadline = t + RETRY;   /* can't hear the socket: look at it now and then */
+        if (stop_at) {
+            /* Asked to end: everything the log holds now acked by the Mac, or STOP_WAIT
+             * over, and it ends. While it waits, look at the log and the socket often. */
+            if (netlog_flushed(&nl) || t >= stop_at + STOP_WAIT) {
+                printf("netlog: ending as init asked%s\n",
+                       netlog_flushed(&nl) ? "" : ": the Mac didn't take all of the log");
+                jam_process_exit(0);
+            }
+            if (deadline > stop_at + STOP_WAIT)
+                deadline = stop_at + STOP_WAIT;
+            if (deadline > t + 50 * NS_PER_MS)
+                deadline = t + 50 * NS_PER_MS;
+        }
         struct port_packet pkt;
         status_t st = jam_port_wait(port, deadline, &pkt);
         if (st == OK && pkt.key == KEY_LOG)
             log_armed = false;
         if (st == OK && pkt.key == KEY_SOCK)
             sock_armed = false;
+        if (st == OK && pkt.key == KEY_STOP && !stop_at)
+            stop_at = now();
         /* not fired: nothing to undo but the binding itself */
         if (log_armed)
             (void)jam_port_unbind(port, klog, KEY_LOG);
@@ -194,6 +217,9 @@ int main(int argc, char **argv)
                status_str(st));
         return 1;
     }
+    stop_ch = startup_handle(NETLOG_SR_STOP);
+    if (stop_ch && jam_port_bind(port, stop_ch, KEY_STOP, SIG_PEER_CLOSED, PORT_BIND_ONCE) != OK)
+        stop_ch = HANDLE_INVALID;   /* init kills it instead */
     struct netlog_source live;
     netlog_klog_source(klog, &live);
     static const struct netlog_io io = { .send = io_send, .say = io_say };

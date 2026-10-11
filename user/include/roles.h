@@ -117,6 +117,9 @@ enum {
     DHCP_SR_NETCTL = SR_USER + 0,       /* a client end of netstack's control channel */
     DNS_SR_DNS = SR_USER + 0,           /* /svc/dns's shared channel, server end */
     DNS_SR_DNS_SYS = SR_USER + 1,       /* /svc/dns-sys's */
+    /* bin/netlog */
+    NETLOG_SR_STOP = SR_USER + 0,       /* a channel init may close to ask it to flush and exit
+                                         * (the regression run; none in shell mode) */
     /* bin/compositor */
     COMP_SR_WAYLAND = SR_USER + 0,      /* /svc/wayland's shared channel, server end */
     COMP_SR_IMAGE = SR_USER + 1,        /* a headless image's VMO (the tests) */

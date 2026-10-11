@@ -186,6 +186,16 @@ bool netlog_wants_text(const struct netlog *n, unsigned stream)
     return s->on && !s->done && s->next - s->acked < window;
 }
 
+bool netlog_flushed(const struct netlog *n)
+{
+    for (unsigned i = 0; i < NETLOG_STREAMS; i++) {
+        const struct netlog_stream *s = &n->s[i];
+        if (s->on && !s->done && s->acked < source_now(s))
+            return false;
+    }
+    return true;
+}
+
 static bool unacked(const struct netlog *n)
 {
     for (unsigned i = 0; i < NETLOG_STREAMS; i++)

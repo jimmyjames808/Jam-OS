@@ -8,7 +8,8 @@
  * shell); reboot.c a reboot by kexec; mounts.c keeps init's namespace in
  * step with volumes' mounts; ctl.c serves init's control channels
  * (abi/idl/initctl.idl); settings.c the clock and the volumes from
- * /data/etc/settings; net.c the network services (netstack, dhcp, dns, netlog, sntp); update.c
+ * /data/etc/settings; net.c the network services (netstack, dhcp, dns, netlog, sntp); regnet.c
+ * the regression run's network (netstack, dhcp, logd, netlog); update.c
  * checks a fetched build and makes it the stored kernel (<update.h>).
  *
  * The namespace: init's own (libos's, <os.h> "files") is the one every
@@ -111,6 +112,35 @@ void     mounts_synced(status_t st, uint64_t t0);
 /* /data once more, without a word, for at most 1 s: after logd's last
  * write, so the volume is left marked clean. */
 void     mounts_settle(void);
+
+/* ---- regnet.c: the regression run's network (main.c's `init` mode) ------------------- */
+
+/* After volumes started: when this boot has a network (init_vlan), a network
+ * card's device channel is ours (cards: devmgr's claimed channels, 0 for none)
+ * and the stick's settings say `net.host` and not `netlog = off`, start netstack, the
+ * DHCP client (or net.address), logd and netlog alongside the programs of
+ * init.cfg, so the run's log reaches the Mac and /data/logs. Waits for /data
+ * (mounts arrive on `port` under KEY_MOUNTS). Otherwise does nothing, and
+ * says nothing when there is no network or no card. The network never
+ * changes a result. */
+void     regnet_start(handle_t port, const handle_t *cards, unsigned ncards);
+/* volumes' mounts changed (mounts_event said so): logd's namespace follows,
+ * not at once but once the changes have been quiet for a moment: regnet_due
+ * says when (uptime ns, DEADLINE_NEVER: nothing pending), and regnet_tick, called
+ * then, makes the update. */
+void     regnet_mounts(void);
+/* Before init starts program `name`: if /data was there for the one before
+ * and is not now (usbtest has just given the stick back), wait for it, 2 s
+ * at most. Does nothing without the network option. */
+void     regnet_before_program(const char *name);
+uint64_t regnet_due(void);
+void     regnet_tick(void);
+/* Before volumes stop: logd flushes, and is stopped. */
+void     regnet_stop_logd(void);
+/* After volumes stopped, before devmgr: netlog sends what the log holds
+ * and exits, then the DHCP client and netstack are stopped. ok: the run's
+ * result so far, said in the log. */
+void     regnet_stop(bool ok);
 
 /* ---- ctl.c ----------------------------------------------------------------------- */
 

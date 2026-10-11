@@ -339,14 +339,14 @@ holds them all side by side.
 | Developer / Jam OS (network: listen only) | `netprobe` | the everyday boot, plus the RTL8125's listen-only probe ([M9-PLAN.md](M9-PLAN.md#the-first-pc-stage-listen-only)): devmgr binds `drv/rtl8125`, which sends nothing, listens for 60 s after the link comes up, logs its `[rtl8125]` lines and one RESULTS line, and exits. A `reboot` doesn't keep the word (the next boot is the everyday one, on the network) |
 | Developer / Jam OS (network: send test) | `netsend` | the everyday boot, plus the RTL8125's ARP send test ([M9-PLAN.md](M9-PLAN.md#r1-progress-the-full-driver)): devmgr binds `drv/rtl8125` in full mode on the kernel's VLAN (none: "no VLAN: the network stays off", nothing touched), which waits for the link, sends twenty ARP probes for 10.2.21.1, 200 ms apart, tagged with the VLAN, logs for each when it was queued, when the chip handed its descriptor back and when the reply came, compares the chip's count of frames sent with its own, logs its `[rtl8125]` lines and one RESULTS line, and exits. Nothing else is ever sent; a `reboot` doesn't keep the word |
 | Developer / Jam OS (no network) | `vlan=off` | the everyday boot with the network off: every network driver starts without a VLAN, logs `no VLAN: the network stays off` and leaves its card alone; netstack has no session, so nothing is ever sent ([ARCHITECTURE.md](../ARCHITECTURE.md#networking)) |
-| Developer / All tests | `ktest` | every in-kernel test at boot, strict, on an idle machine |
-| Developer / Stress test (2 minutes) | `selftest stress=120` | the stress test alone, no user space: kernel work |
+| Developer / All tests | `ktest` | every in-kernel test at boot, strict, on an idle machine. Kernel only: no user space runs, so no log leaves the machine (the screen, the serial port and the RESULTS box only; [below](#the-regression-runs-network)) |
+| Developer / Stress test (2 minutes) | `selftest stress=120` | the stress test alone, no user space: kernel work (no log leaves the machine) |
 | Developer / Stress test (10 minutes) | `selftest stress=600` | the same for 10 minutes (it signed off the milestones up to M8; from A1 on the soak does) |
-| Developer / Soak test (3 minutes) | `soak=3` | a plain boot whose shell runs `soak 3 halt` by itself ([Soak](#soak)): the first failure panics, and the next boot's shell names it (the log is on the stick); a pass ends with the SOAK RESULTS box and a prompt |
-| Developer / Benchmark | `bench` | about 10 s; results go to [BENCH.md](BENCH.md) |
+| Developer / Soak test (3 minutes) | `soak=3` | a plain boot whose shell runs `soak 3 halt` by itself ([Soak](#soak)): the first failure panics, and the next boot's shell names it (the log is on the stick); a pass ends with the SOAK RESULTS box and a prompt. A plain boot, so netlog and logd run as usual: the whole soak reaches the Mac (`net.host`) and `/data/logs` |
+| Developer / Benchmark | `bench` | about 10 s; results go to [BENCH.md](BENCH.md) (kernel only: no log leaves the machine; `bench` in the shell of a plain boot does reach the Mac) |
 | Developer / IOMMU checks | `iommu=on vtdtest` | a plain boot with the IOMMU on in which drv/hda provokes its faults on purpose before it serves (`drivers/hda/vtdtest.c`): its command ring pointed at a page it doesn't hold pinned (a read the IOMMU blocks: a `vtd: fault:` line naming 00:1f.3), then its response ring at the interrupt window 0xfee00000 (a write blocked with fault 25h, no interrupt), then the rings back and sound as usual. `hda: vtdtest:` lines say what happened; if the controller could read the page anyway (no translation), it says so and provokes nothing. `iommu` in the shell shows the units, domains and fault counts |
 | Developer / Compositor test scene | `comptest` | the compositor alone on the screen with its test scene (below, `comptest`): windows in the desktop's look held about 4 s each, then the RESULTS box with its `compositor: bench:` paint times |
-| Developer / init + utest + usbtest | `init` | the user-space regression run: init runs `boot/init.cfg` (utest, usbtest, then posixtest) and the RESULTS box says whether init's root job ended with nothing charged; the box holds 256 lines (the first 192 and the last 64: a run that reports more says "N result lines didn't fit" and keeps the verdict, every test's summary and init's `exited with code` lines), and programs may report 160 lines in all |
+| Developer / init + utest + usbtest | `init` | the user-space regression run: init runs `boot/init.cfg` (utest, usbtest, then posixtest) and the RESULTS box says whether init's root job ended with nothing charged; the box holds 256 lines (the first 192 and the last 64: a run that reports more says "N result lines didn't fit" and keeps the verdict, every test's summary and init's `exited with code` lines), and programs may report 160 lines in all With `net.host` in the stick's settings (and `netlog` not `off`) it also starts netstack, the DHCP client or `net.address`, logd and netlog, so the run's log reaches the Mac and `/data/logs` ([below](#the-regression-runs-network)); without it, and in QEMU without `QEMU_NET`, it is what it always was |
 | Developer / Timer fallback | `nodeadline selftest` | the periodic LAPIC timer instead of TSC-deadline |
 
 Other boot words (for `tools/qemu-test.sh`, not in the menu):
@@ -874,6 +874,97 @@ on its own (`--quiet --bind 127.0.0.1 --port <free>`), fed every netlog
 datagram of the run from the pcap, acks each and writes the same files.
 It also needs the peer's and the pcap's VLAN checks to pass.
 
+## The regression run's network
+
+The boot menu's `init` entry (and `tools/qemu-test.sh ... init`) starts
+only bootfs, devmgr and volumes, then runs `boot/init.cfg`'s programs.
+Since the PC sign-off of 2026-10-11 that is not all it does when the
+stick asks for the network: with `net.host` set to an IPv4 address and
+`netlog` not `off` in `/data/etc/settings`, on a boot that has a network
+(a `vlan=` word: not the "no network" entry) and a network card whose
+device channel init holds (the PC's RTL8125; QEMU's e1000e with
+`QEMU_NET`), init also starts, beside the programs
+(`user/services/init/regnet.c`):
+
+1. **netstack**, with its control channel, the shared channel of
+   `/svc/net-sys` (the reserve of the network's own services) and a
+   duplicate of each card's device channel. There is no `/svc/net`,
+   `net-listen` or `net-low`: no program of the run may use the network
+   (netstack says so once), and nothing is added to init's namespace, so
+   the programs of the run get the namespace they always had.
+2. **The address**: `net.address`, if the settings have a good one (the
+   two netctl calls, as in a plain boot), else **bin/dhcp**.
+3. **logd**, once `/data` is mounted, with `/data:w`: `/data/logs/boot-NNNN.txt`
+   as in a plain boot. When usbtest takes the stick away from volumes and
+   gives it back, init sends logd the new namespace as in shell mode, but
+   only once the mount changes have been quiet for 300 ms (the update makes
+   a view of `/data`, a call that can wait, and utest's mock disks make
+   hundreds of changes that init must read at once), and logd retries by
+   itself, as it does there.
+4. **netlog**, with the root (kernel log only), a namespace of
+   `/svc/net-sys` alone (published in init's namespace for the length of
+   the spawn only) and the panicked boot's log if there was one. It reads
+   the kernel log from its first byte, so the whole boot goes, the lines
+   from before it started too.
+
+init waits for `/data` (15 s at most) before the first program, and a
+program that follows one that had `/data` waits up to 2 s for it to come
+back (usbtest ends a few ms before volumes' remount reaches init, and a
+program started in that gap gets a namespace without `/data` for good:
+posixtest's `files` section failed that way in 2 of 6 runs with the network
+on the loaded PC; a plain run has the same gap, with more margin), but only
+on a boot that has a card and a network: a QEMU run without `QEMU_NET`, a
+`vlan=off` boot and a boot image without bin/netstack or bin/netlog are
+untouched, to the line. A boot with a card whose settings have no
+`net.host` (or `netlog = off`) says so in one line, starts nothing, and
+runs as it did. The network never decides a result: a service that
+doesn't start or ends is a line in the log, and the run's exit code is
+the programs' alone. Nothing supervises the services (the run is short).
+
+**The end of the run.** When the programs are done, in this order: logd
+flushes and is stopped (before volumes, which need `/data` to be quiet);
+volumes stop (`init: volumes exited with code 0`); init says `init: the
+run is over (...)`; netlog is asked (its stop channel is closed) to send
+what the log holds by then, wait for the Mac's acks (4 s at most) and
+exit; the DHCP client and netstack are killed (their jobs); devmgr and
+bootfs stop. So the Mac has everything up to and including volumes' stop
+line and `the run is over`: every program's `init: bin/... exited with
+code N`, utest's, usbtest's and posixtest's lines and the root job's
+neighbours. It does **not** get what the kernel prints once init has
+exited: `init: exited with code`, `init: root job afterwards ... (clean)`,
+`run complete: ...` and the RESULTS box itself (the box repeats the
+`report()` lines the Mac already has, so only its frame and the counts
+are missing). The root job has to be empty before the kernel checks it and
+prints those lines, so no process can be left running to send them; to send
+them too the kernel would have to keep the network services (devmgr, the
+card's driver, netstack, netlog) alive past init's exit, print the box, wait
+for a flush, and only then kill the root job and check it, which moves the
+leak check after the kill: not done. The same lines are on the screen and on
+the serial port as always. After a run on the PC the Mac's file ends at `the
+run is over`; read the verdict from the `init: bin/... exited with code`
+lines above it (and `utest:` summaries), or the screen.
+
+**The other entries.** All tests (`ktest`), the stress tests and Benchmark
+run no user space at all (the kernel's own tests, then the RESULTS box):
+nothing can send a log, and there is no storage driver in the kernel to
+write one to the stick, so the screen, the serial port and the RESULTS box
+are all they have. Soak is a plain boot (`soak=3`: the shell runs the soak
+by itself), so netlog and logd are running and its whole log reaches the
+Mac and `/data/logs` like any plain boot's. For the kernel-only entries
+there are two ways: run the same thing from the shell of a plain boot
+(`ktest`, `stress <s>`, `bench` run on the live system and report into the
+log netlog sends; the All tests entry's "strict, idle machine" is the one
+thing that doesn't carry over), or give the kernel entries a user-space
+tail: after the tests the kernel would start init in a `ship` mode (bootfs,
+devmgr, volumes, then `regnet_start` / `regnet_stop` with no programs: the
+log, the box's lines and logd's file, then exit) before it prints the box.
+That is a small init change (regnet.c is most of it) and a kernel change
+in `run_user_space` that makes the kernel-only entries depend on user
+space, which is why they don't have it.
+
+The test: `tools/initnet-test.sh <outdir> [static|dhcp|nohost|off]`
+([Area scripts](#area-scripts)).
+
 ## Area scripts
 
 Each prints PASS or FAIL and exits 0 on PASS; `QEMU_SMP` (and where it
@@ -933,6 +1024,7 @@ matters `QEMU_XHCI`) pass through.
 | `tools/serve-test.sh <outdir>` | `serve` end to end (`serve.txt`): a 5 MiB file and a page copied onto `/data`, served on 8080 and 80 (below 1024: bin/serve's `svc net listen low`) in the background while the shell goes on; `tools/servecheck.py` on the Mac fetches through the peer's `--tcp-forward` (two Mac ports to the guest's two) with a silent connection held open all along: two curls at once (two paths, the same file; their SHA-256), `curl -I`, a range, the page (text/html), a request that isn't HTTP (400) and a head over 8 KiB (431), then nothing served after `serve stop`; the shell's side refuses a port served already, a folder and port 0, the request lines and `serve`'s list are checked, and `run nolisten` (a program whose list has `svc net` without `listen`) must be refused listeners on 8081 and 80 (ERR_ACCESS_DENIED, neither `/svc/net-listen` nor `/svc/net-low`); then a boot with no network card (`serve-nonet.txt`): `serve` says "no network address yet". About 2 minutes |
 | `tools/speed-test.sh <outdir>` | the throughput tester (`speed.txt`): `tools/speed.py server` on the Mac behind the peer's `--tcp-relay` and `--udp-relay 5201`, and a `--tcp-forward` to the guest's 5202: `speed 10.2.21.174 -t 3` (TCP out), `speed mac.jam -r -t 3` (TCP in), `speed 10.2.21.174 -u -t 2` (UDP out, the losses counted), a port nobody serves (refused: the relay resets a SYN to a port it doesn't relay, as a closed port does), then `speed -l 5202` with `speed.py client` sending and receiving, and sending again through a second forward that drops `SPEED_LOSS` percent (default 2) of its data segments to the guest: the relay must see SACK blocks and resend at most 3 times the bytes it dropped (the guest keeps what comes past a hole: about 1.0 times; without that, 38 times); stopped with Ctrl+C (exit 130), and a 30 s send stopped after 2 s the same way; both sides' lines printed, and the relay's counts for the lossy run. QEMU's numbers, through a relay in Python (2026-10-02, 2 CPUs: TCP out 58, in 70, UDP 109 MB/s; the Mac's client 69 out, 47 in; 2026-10-04, 2 % lost: 40.9 MB/s in, 11.8 before segments past a hole were kept), not the PC's. About 1 minute |
 | `tools/netlog-test.sh <outdir>` | netlog end to end (`netlog.txt`): the whole log of two boots and the panicked one's, from the first line, with the receiver late and paused, netlog and netstack killed ([netstack](#netstack)) |
+| `tools/initnet-test.sh <outdir> [static\|dhcp\|nohost\|off]` | the regression run's network ([above](#the-regression-runs-network)): the plain `init` boot (utest, usbtest, posixtest) with QEMU's e1000e, the peer answering netlog into a folder and `net.host = 10.2.21.174` in the stick's settings (`static`: with `net.address`; `dhcp`: the peer's lease). The run must end `run complete: no problems` with the root job clean (netlog, the DHCP client, netstack and logd stopped by init), every frame tagged VLAN 21, and the receiver's one file must start at the boot's first line and hold every serial line up to `init: the run is over` in order (so every program's result line, utest's summary and volumes' stop line), with no receiver note and none of the kernel's end-of-run lines; the stick's `/data/logs/boot-NNNN.txt` (logd, read back with mtools) must start at the first line and hold every line up to the last program's result. `nohost` and `off`: the same settings without `net.host`, or with `netlog = off`: one line says why, and no netstack, netlog or logd runs and nothing reaches the receiver. About 1 minute each |
 | `tools/netprobe-test.sh <outdir>` | the RTL8125 driver's boot words in QEMU, which has no RTL8125 (the probe and the send test themselves run on the PC only): a `shell netprobe` boot (`netprobe.txt`), a `shell netsend` boot (`netsend.txt`) and a `shell net` boot (`netserve.txt`) where devmgr says it has the word and binds and runs nothing for it, and again after a `reboot` (kexec keeps `net`), then a plain `shell` boot whose log mentions none of them. utest covers the rest: `netframe_classify` and `netframe_short_frames` (`drivers/include/jam/netframe.h` over hand-made frames: untagged, tagged 21, another VLAN, 4095, priority-tagged, QinQ 0x88a8 and 0x9100, every short length); `netframe_tag` (every length 0-1600: 14-1514 tagged, short ones padded with zeros over a dirty buffer, the rest refused; VLANs 1 and 4094 yes, 0, 4095 and wider no; a buffer one byte short), `netframe_tag_refuses_tagged` (EtherType 0x8100, 0x88a8 or 0x9100 at any length never leaves, and nothing sendable stays behind), `netframe_tx_check` (lengths 18 and 1518, every change to bytes 12-17: another TPID, a priority, DEI, another VLAN, a tag inside), `netframe_tag_copy_is_the_frame` (the caller rewriting its frame after the copy changes nothing; a change to the copy is refused), `netframe_rx` (VLAN 21 kept at any priority and untagged correctly; untagged, VLAN 0, other VLANs, outer tags, a tag inside ours, every short length and over 1518 dropped, each by its reason); `rtl8125_write_guard` (the transmit registers refused in every width and overlap, the command register's transmit bit, TDFNR, nothing else), `rtl8125_txq_guard` (the other queues' ring addresses and the tail and close pointers refused in every width and overlap; through the OCP windows, which take whole 32-bit writes only, a 16-byte descriptor format, a second transmit queue, pause advertised or a PHY test mode refused, every value the bring-up writes allowed), `rtl8125_tx_gate` (full mode with a VLAN only), `rtl8125_args` (the modes, `netprobe` winning over `netsend`, hostile `vlan=` and `arpto=` words), `rtl8125_arp` (the probe's exact bytes, tagged and checked like any frame; the reply and its near misses), `rtl8125_stays_off` (the driver without a VLAN, and the probe, the send test or the netdev service without hardware, ends at once with exit 0 and an empty job); `rtl8125_txdesc` (`drivers/rtl8125/txdesc.h`: the 32-byte descriptor, the transmitter refused unless the chip's format bit agrees, the end-of-ring bit on the last descriptor only, a chip walking the ring in 32-byte steps finds every descriptor in order), `rtl8125_kick` (a stuck descriptor gets a handful of extra doorbells in 4 s however often the driver looks, never one within 1 ms of its own), `rtl8125_tx_verdict` (the chip's tally against queued and handed back: fewer sent is progress, only more sent is foreign); `rtl8125_guard` (`drivers/rtl8125/guard.h`, failing closed: frames in flight carry on, one frame more than queued, PAUSE TX with the link up, a tally gone backwards or 10 looks without one stop the chip; a 100000-step healthy run never trips, and comparing at the ask instead of the look would), `rtl8125_dump` (the tally dump's bookkeeping: one out at a time, once a second or 1 ms after a reap or a request, given up on after 10 ms), `rtl8125_guard_fake` (`guard.c`, `regs.c`, `chip.c` and `tx.c` linked in over a fake chip whose registers and DMA memory are the test's: each stop turns the transmitter off and resets the chip, in full mode and in the probe), `rtl8125_stats_nowait` (`netdev.stats` and the "so far" lines answer from the last dump that landed: 1280 requests against a chip that never dumps take no wait, where each used to cost 10 ms); `netserver_session`, `netserver_tx`, `netserver_rx` (the network drivers' netdev server, `drivers/lib/netserver.c`, linked in, over a fake card with the test as netstack: info and stats, one session at a time, open refused on the session channel, a closed or orphaned session replaced, the rights open hands out; netstack's frames reach the card byte for byte, bad lengths, flags and tags counted and never sent, a card out of descriptors holds the ring until they come back, hostile counts bounded to a ring per turn; received frames into the rx ring with NETDEV_SIG_RX, a full ring and no session dropped and counted, NETDEV_SIG_LINK) |
 | `tools/update-test.sh <outdir>` | `update`'s check in init without a network (`bin/updtest` hands init the build from files on `/data/update/`, put there with mtools: this build's kernel, its boot image with one more file `update-marker.txt`, and their manifest from `tools/update-server.py --manifest`, signed with a throwaway key whose public half the stick's build has (`tools/update-test-key.sh`, keys in `<outdir>/testkey`, never `~/.config`), once more with a second key, once saying the other network default (`untagged` for a VLAN build, `vlan21` for an untagged one), and a signed manifest for two files that are no kernel), one run, three boots: `run updtest bad` (19 damaged offers, each refused for its own reason: a kernel or boot-image byte changed, the kernel 4 KiB longer or cut to half, a VMO shorter than its length, a garbage, cut or short-signature manifest, a format-3 one and a signed one with a must-understand line (`!future-must`: "needs a newer build"; the same changed after signing: its signature), an unsigned one, one changed after signing, one signed by the second key, one carrying another manifest's signature, one handle, an unknown flag, the build with the other network default, two files that match their signed manifest but are no kernel; the build's manifest with an extension line no build knows, signed, check only: taken; and the good build, and the other-network one forced (`update -f`), offered check-only: accepted, not loaded), then `run updtest wire` (the offer's wire built byte by byte: a message of another protocol or of the older form, a manifest past 1024 bytes, a count that is not the bytes there, a byte after or missing, four VMOs, a channel end for a file: each refused by the generated server before init looks at it; no VMOs at all is an answer; four malformed offers and then the good one, check-only, on one channel: accepted; init logs 20 refusals in all), then `reboot`: no marker (the stored kernel untouched); `run updtest good` (accepted and stored, init's "Update loaded" notice on the desktop), then a click on its Reboot button (a USB mouse) is init's `reboot`, which reads nothing from `/esp` and the marker is there (the fetched build runs); exactly one `kexec_load` succeeded. Then a second run on a build without a key: `update`, `update -w` and `update -m` fetch nothing and say why, `update -n -r` is a usage error, and `run updtest nokey` (the build offered plain, check-only and to be written to the stick) is refused for that alone. utest covers the parsers, the signature and the fetcher: `update_manifest*` (the format, each line wrong each way, the `net` line's values, the `menu` line's, every prefix, every byte changed, random bytes), `bootmenu_*` (the boot menu's check, `<bootmenu.h>`: a menu shaped like `boot/limine.conf` passes, each rule broken refused at its line, a missing file named, random damage), `update_build_net` (build.txt's `net` line), `update_signature` (RFC 8032's tests 1-3, a manifest `jamos-sign` signed, every byte it covers changed, another key, a bent signature, none; the key file's format), `updwire_*` (golden bytes from the Python tool, every truncation and field, random datagrams), `updfetch_*` (the window against a fake server on a scripted clock: clean, lossy with repeats, reordering and forged replies, the snapshot gone once and always, no answer, a bad or oversize manifest, a lying file size, a boot menu fetched as a third file and never asked for without its line) |
 | `tools/update-net-test.sh <outdir>` | `update` over the network (`updnet` run, QEMU_NET with the peer's `--update`; `make -s image` first): build B is this build's kernel with its version string's last character changed and its boot image with `build.txt` saying `git b0b0b0b` (and this build's `net` line) and one more file, `update-marker.txt`; `net.address` and `net.host = 10.2.21.174` in the stick's settings; A and B have a test key (`tools/update-test-key.sh`) and the server signs with it. Each `update` is a new client of `tools/update-server.py`'s `PlannedServer`, which serves the next plan: `damage` (a kernel byte changed after the manifest: init refuses the SHA-256), `wronghash` (the manifest's boot image SHA-256 wrong: refused), `truncated` (the boot image half the manifest's size: the fetch fails), `gone` (the server stops answering after 300 replies: the fetch fails), `badsig` (the manifest changed after it was signed: init refuses the signature), `othernet` twice (the signed manifest says the other network default: `update` refused by init, then `update -f -n` taken, checked and not loaded), `mustknow` (the signed manifest has a must-understand line, `!future-must`: init refuses it, "needs a newer build"), `extension` (an extension line no build knows, signed, with `update -n`: skipped, B checked), then `update -n` (B fetched and checked, `old -> new` said, nothing loaded), `update -m` (loaded into memory only: no reboot, `version` still A's, `sha256sum /esp/boot/jamos.elf` still A's kernel) and `update` (loaded and written to the stick, and no reboot: `version` still A's, the stick's kernel B's); then `reboot` (kexec, nothing read from `/esp`): `version` is B's and the marker is there; `reboot -f` ends the run. Exactly two `kexec_load`s, every frame tagged VLAN 21 (the peer's and the pcap's checks; the run boots with `vlan=21`). Then `updcold`, a cold boot of the stick it left (what `reboot -f` starts): B, with the marker. About 2 minutes |
