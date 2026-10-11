@@ -164,6 +164,13 @@ receiver goes on where it stopped). A receiver started late still gets
 the boot from its first line. `--quiet` doesn't print the lines;
 `--from <the PC's address>` takes datagrams only from it.
 
+A plain boot sends this way, and so does the boot menu's regression run
+(Developer > init + utest + usbtest) when the stick's settings have
+`net.host`: it starts netstack, netlog and logd beside its programs, and
+its file on the Mac ends at init's `the run is over` line, which comes
+after every program's result and volumes' stop
+([TESTING.md](TESTING.md#the-regression-runs-network)).
+
 ## A new build without moving the stick
 
 Updates are signed: the PC

@@ -24,6 +24,20 @@ the test commands are in [TESTING.md](TESTING.md).
   from a bad build), and a "Developer" folder with the test and network-test
   entries, the text log, safe mode and "Jam OS (no IOMMU)"
   ([TESTING.md](TESTING.md#the-boot-menu)).
+- The test entries and the Mac: "Developer > Jam OS (init + utest +
+  usbtest, the regression run)" now sends its log to the Mac like a plain
+  boot, and saves `/data/logs/boot-NNNN.txt`, when the stick's settings
+  have `net.host` (and not `netlog = off`) and the boot has the network:
+  leave `python3 tools/netlog-recv.py ~/jamos-logs` running on the Mac
+  ([NETWORK.md](NETWORK.md#the-log-on-the-mac)). The file ends at init's
+  line `init: the run is over`: every program's `init: bin/... exited with
+  code N` line and utest's, usbtest's and posixtest's results are above
+  it; the kernel's own last lines (`init: exited with code`, the RESULTS
+  box) are on the screen only ([TESTING.md](TESTING.md#the-regression-runs-network)).
+  The Soak entry is a plain boot, so its log reaches the Mac too. "All
+  tests", the stress tests and "Benchmark" are kernel only: no user space
+  runs, so their results are on the screen and the serial port only
+  (`ktest`, `stress` and `bench` in a plain boot's shell do reach the Mac).
 
 ## The desktop
 
