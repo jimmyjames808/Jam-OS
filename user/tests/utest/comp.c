@@ -372,7 +372,7 @@ static bool globals_and_binds(struct ct_client *k)
     CHECK(has_global(k, 2, "wl_shm", 2));
     CHECK(has_global(k, 3, "wl_output", 4));
     CHECK(has_global(k, 4, "wl_seat", 9));
-    CHECK(has_global(k, 5, "xdg_wm_base", 1));
+    CHECK(has_global(k, 5, "xdg_wm_base", 6));
     CHECK(has_global(k, 6, "wp_cursor_shape_manager_v1", 2));
     CHECK(has_global(k, 7, "wl_data_device_manager", 3));
     CHECK(has_global(k, 8, "jam_window_memory_v1", 1));

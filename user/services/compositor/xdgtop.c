@@ -42,12 +42,41 @@ static struct comp_client *client_of(const struct xdg_surf *x)
 
 /* ---- configures --------------------------------------------------------------------- */
 
+/* The toplevel's version: its xdg_wm_base's. */
+static uint32_t version_of(const struct xdg_surf *x)
+{
+    const struct jwl_object *o = jwl_conn_object(conn_of(x), x->role_id);
+    return o ? o->version : 1;
+}
+
+/* What goes with a configure now, as far as x's version has it. */
+static struct xdg_extra extra_now(const struct xdg_surf *x)
+{
+    struct xdg_extra e = { 0, 0, 0 };
+    uint32_t v = version_of(x);
+    if (v >= JWL_XDG_TOPLEVEL_STATE_TILED_LEFT_SINCE && wm_tiled(x->ww))
+        e.bits |= XDG_EX_TILED;
+    if (v >= JWL_XDG_TOPLEVEL_STATE_SUSPENDED_SINCE && wm_suspended(x->ww))
+        e.bits |= XDG_EX_SUSPENDED;
+    if (v >= JWL_XDG_TOPLEVEL_EV_CONFIGURE_BOUNDS_SINCE)
+        wm_bounds(x->ww, &e.bound_w, &e.bound_h);
+    return e;
+}
+
 static bool same(const struct wm_config *a, const struct wm_config *b)
 {
     return a->width == b->width && a->height == b->height && a->states == b->states;
 }
 
-static void send(struct xdg_surf *x, const struct wm_config *cfg)
+static bool same_extra(const struct xdg_extra *a, const struct xdg_extra *b)
+{
+    return a->bits == b->bits && a->bound_w == b->bound_w && a->bound_h == b->bound_h;
+}
+
+/* xdg_toplevel.state's values for cfg and e: at most XDG_STATES_MAX. */
+#define XDG_STATES_MAX 9u
+static uint32_t states_of(const struct wm_config *cfg, const struct xdg_extra *e,
+                          uint32_t *states)
 {
     static const struct { uint32_t bit, state; } map[] = {
         { WM_ST_MAXIMIZED, JWL_XDG_TOPLEVEL_STATE_MAXIMIZED },
@@ -55,31 +84,70 @@ static void send(struct xdg_surf *x, const struct wm_config *cfg)
         { WM_ST_RESIZING, JWL_XDG_TOPLEVEL_STATE_RESIZING },
         { WM_ST_ACTIVATED, JWL_XDG_TOPLEVEL_STATE_ACTIVATED },
     };
-    uint32_t states[4], n = 0;
-    for (unsigned i = 0; i < 4; i++)
+    uint32_t n = 0;
+    for (unsigned i = 0; i < sizeof(map) / sizeof(map[0]); i++)
         if (cfg->states & map[i].bit)
             states[n++] = map[i].state;
+    if (e->bits & XDG_EX_TILED) {
+        states[n++] = JWL_XDG_TOPLEVEL_STATE_TILED_LEFT;
+        states[n++] = JWL_XDG_TOPLEVEL_STATE_TILED_RIGHT;
+        states[n++] = JWL_XDG_TOPLEVEL_STATE_TILED_TOP;
+        states[n++] = JWL_XDG_TOPLEVEL_STATE_TILED_BOTTOM;
+    }
+    if (e->bits & XDG_EX_SUSPENDED)
+        states[n++] = JWL_XDG_TOPLEVEL_STATE_SUSPENDED;
+    return n;
+}
+
+/* What the window manager can do to a toplevel, as wm_capabilities says:
+ * no window menu (show_window_menu is ignored). */
+static status_t send_capabilities(struct xdg_surf *x)
+{
+    static const uint32_t caps[] = { JWL_XDG_TOPLEVEL_WM_CAPABILITIES_MAXIMIZE,
+                                     JWL_XDG_TOPLEVEL_WM_CAPABILITIES_FULLSCREEN,
+                                     JWL_XDG_TOPLEVEL_WM_CAPABILITIES_MINIMIZE };
+    x->caps_sent = true;
+    return jwl_xdg_toplevel_send_wm_capabilities(conn_of(x), x->role_id, caps, sizeof(caps));
+}
+
+/* A configure: wm_capabilities the first time, configure_bounds when they
+ * changed, the toplevel's configure, then xdg_surface's with a serial. */
+static void send(struct xdg_surf *x, const struct wm_config *cfg)
+{
+    struct xdg_extra e = extra_now(x);
+    uint32_t states[XDG_STATES_MAX], n = states_of(cfg, &e, states);
+    status_t st = OK;
+    if (!x->caps_sent && version_of(x) >= JWL_XDG_TOPLEVEL_EV_WM_CAPABILITIES_SINCE)
+        st = send_capabilities(x);
+    if (st == OK && e.bound_w &&
+        (!x->has_last || e.bound_w != x->last_ex.bound_w || e.bound_h != x->last_ex.bound_h))
+        st = jwl_xdg_toplevel_send_configure_bounds(conn_of(x), x->role_id, e.bound_w,
+                                                    e.bound_h);
     uint32_t serial = comp_serial();
-    status_t st = jwl_xdg_toplevel_send_configure(conn_of(x), x->role_id, cfg->width,
-                                                  cfg->height, n ? states : NULL, n * 4);
+    if (st == OK)
+        st = jwl_xdg_toplevel_send_configure(conn_of(x), x->role_id, cfg->width, cfg->height,
+                                             n ? states : NULL, n * 4);
     if (st == OK)
         st = jwl_xdg_surface_send_configure(conn_of(x), x->id, serial);
     if (st != OK)
         return;   /* a dead connection: torn down after this turn */
     x->sent[x->nsent++] = (struct xdg_sent){ serial, *cfg, false };
     x->last = *cfg;
+    x->last_ex = e;
     x->has_last = true;
     x->dirty = false;
 }
 
-/* The window manager's wish, sent now if the client may hear it. */
+/* The window manager's wish, sent now if the client may hear it (and it
+ * or what goes with it changed). */
 static void op_configure(void *ctx, const struct wm_config *cfg)
 {
     struct xdg_surf *x = ctx;
     x->wanted = *cfg;
     if (!x->initial || !x->surface || !x->role_id)
         return;   /* the initial commit sends it */
-    if (x->has_last && same(cfg, &x->last)) {
+    struct xdg_extra e = extra_now(x);
+    if (x->has_last && same(cfg, &x->last) && same_extra(&e, &x->last_ex)) {
         x->dirty = false;
         return;
     }
@@ -99,7 +167,17 @@ static void op_close(void *ctx)
     xdg_ping(x);
 }
 
-static const struct wm_ops ops = { .configure = op_configure, .close = op_close };
+/* Shown or hidden: only the suspended state can have changed, which only a
+ * toplevel of version 6 hears. */
+static void op_shown(void *ctx)
+{
+    struct xdg_surf *x = ctx;
+    if (x->ww && x->role_id && version_of(x) >= JWL_XDG_TOPLEVEL_STATE_SUSPENDED_SINCE)
+        wm_reconfigure(x->ww);
+}
+
+static const struct wm_ops ops = { .configure = op_configure, .close = op_close,
+                                   .shown = op_shown };
 
 /* ---- the roles' commits --------------------------------------------------------------- */
 
@@ -514,10 +592,16 @@ static status_t on_unset_fullscreen(void *data, uint32_t self)
     return OK;
 }
 
+/* A mapped window shrinks into its chip on the top bar, as its minimise
+ * circle does (wm_capabilities says minimize); an unmapped one has nowhere
+ * to go from, so the request is ignored, as the protocol allows. */
 static status_t on_set_minimized(void *data, uint32_t self)
 {
-    (void)data, (void)self;
-    return OK;   /* no minimising in G1: ignored, as the protocol allows */
+    struct xdg_surf *x = data;
+    (void)self;
+    if (x->ww && x->ww->win)
+        wm_minimise(x->ww->win);
+    return OK;
 }
 
 static const struct jwl_xdg_toplevel_requests top_ops = {

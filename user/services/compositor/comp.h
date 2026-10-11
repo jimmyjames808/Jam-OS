@@ -95,12 +95,16 @@
  *   wl_shm        2  wl_shm.release;
  *   wl_output     4  name and description, before done;
  *   wl_seat       8  wl_pointer.axis_value120 in place of axis_discrete,
- *                 9  wl_pointer.axis_relative_direction (always identical). */
+ *                 9  wl_pointer.axis_relative_direction (always identical);
+ *   xdg_wm_base   2  the tiled states, 3 the positioner's set_reactive,
+ *                    set_parent_size, set_parent_configure and
+ *                    xdg_popup.reposition, 4 configure_bounds, 5
+ *                    wm_capabilities, 6 the suspended state (xdgtop.c). */
 #define COMP_COMPOSITOR_VERSION 6u
 #define COMP_SHM_VERSION        2u
 #define COMP_OUTPUT_VERSION     4u
 #define COMP_SEAT_VERSION       9u
-#define COMP_XDG_WM_VERSION     1u
+#define COMP_XDG_WM_VERSION     6u
 
 /* ---- boxes, regions, damage (region.c) --------------------------------------------- */
 

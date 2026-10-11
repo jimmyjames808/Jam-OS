@@ -227,7 +227,7 @@ static void fk_close(void *ctx)
     ((struct fk *)ctx)->closes++;
 }
 
-static const struct wm_ops fk_ops = { fk_configure, fk_close };
+static const struct wm_ops fk_ops = { fk_configure, fk_close, NULL };
 
 void wm_test_start(enum comp_layout layout)
 {

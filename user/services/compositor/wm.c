@@ -164,6 +164,29 @@ static struct comp_box max_box(const struct wm_window *ww)
     return r;
 }
 
+bool wm_tiled(const struct wm_window *ww)
+{
+    return wm_layout_of(ww) == COMP_TILING && ww->want == WM_NORMAL;
+}
+
+bool wm_suspended(const struct wm_window *ww)
+{
+    return ww->win && !screens_shown(ww);
+}
+
+void wm_bounds(const struct wm_window *ww, int32_t *width, int32_t *height)
+{
+    struct comp_box in = deco_inner(max_box(ww), 0, COMP_FLOATING);
+    *width = in.x2 - in.x1 > 1 ? in.x2 - in.x1 : 1;
+    *height = in.y2 - in.y1 > 1 ? in.y2 - in.y1 : 1;
+}
+
+void wm_shown_changed(struct wm_window *ww)
+{
+    if (ww->ops && ww->ops->shown)
+        ww->ops->shown(ww->ctx);
+}
+
 void wm_wanted(const struct wm_window *ww, struct wm_config *out)
 {
     *out = (struct wm_config){ 0, 0, ww == wm.focused ? WM_ST_ACTIVATED : 0 };
@@ -423,6 +446,8 @@ status_t wm_commit(struct wm_window *ww, uint32_t states)
     }
     window_map(ww->win, screens_shown(ww));   /* the seat hears (a client's first window
                                                * takes the keys) */
+    if (!screens_shown(ww))
+        wm_shown_changed(ww);   /* mapped where it can't be seen: suspended */
     if (ww->want == WM_FULLSCREEN) {
         const struct desk_screen *shown = screens_cur();
         screens_fullscreen(ww, true);   /* asked before its first buffer */

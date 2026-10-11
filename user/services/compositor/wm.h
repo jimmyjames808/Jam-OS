@@ -52,6 +52,11 @@ struct wm_ops {
     void (*configure)(void *ctx, const struct wm_config *cfg);
     /* The user asked the window to close (its close circle, Super+Q). */
     void (*close)(void *ctx);
+    /* The window was shown or hidden without its configure changing (its
+     * screen left or come back to, minimised or restored): what the role
+     * tells the client of that (xdg_toplevel's suspended state) may have
+     * changed. May be NULL. */
+    void (*shown)(void *ctx);
 };
 
 /* What the window asks to be (the client's or the user's request). */
@@ -159,6 +164,20 @@ void wm_reflow(void);
 int32_t wm_floor(const struct wm_window *ww);
 /* Can ww be moved and resized by the user: floating, in its normal state. */
 bool wm_floating_normal(const struct wm_window *ww);
+
+/* What xdg-shell tells a client beyond a configure's size and states
+ * (xdgtop.c, by the toplevel's version). */
+/* Is ww placed in a tile (tiling, neither maximised nor full screen): the
+ * tiled states, each edge against the grid or the screen's side. */
+bool wm_tiled(const struct wm_window *ww);
+/* Is ww mapped but not shown (on a screen not shown, or minimised): the
+ * suspended state. */
+bool wm_suspended(const struct wm_window *ww);
+/* The largest surface a floating ww could have on its screen (the room
+ * under the floor less its decorations): configure_bounds. */
+void wm_bounds(const struct wm_window *ww, int32_t *width, int32_t *height);
+/* screens.c: ww was shown or hidden (ww->ops->shown, if any). */
+void wm_shown_changed(struct wm_window *ww);
 
 /* ---- wmtile.c: dwindle -------------------------------------------------------------- */
 

@@ -45,6 +45,16 @@ enum xdg_role {
     XDG_ROLE_POPUP,
 };
 
+/* What a toplevel is told besides the window manager's configure, by its
+ * version (xdgtop.c): the tiled and suspended states, and its bounds. A
+ * change sends a configure as a change of the configure would. */
+#define XDG_EX_TILED     1u        /* the four tiled_* states (version 2) */
+#define XDG_EX_SUSPENDED 2u        /* suspended (version 6) */
+struct xdg_extra {
+    uint32_t bits;                 /* XDG_EX_* */
+    int32_t bound_w, bound_h;      /* configure_bounds (version 4); 0: not sent */
+};
+
 /* A configure sent and not acked yet. */
 struct xdg_sent {
     uint32_t serial;
@@ -70,7 +80,9 @@ struct xdg_surf {
     struct xdg_sent sent[XDG_CONFIGS_MAX];
     uint32_t nsent;                /* oldest first */
     struct wm_config last;         /* the last one sent (has_last) */
+    struct xdg_extra last_ex;      /* ... and what went with it */
     bool has_last;
+    bool caps_sent;                /* wm_capabilities (version 5): once, before the first */
     struct wm_config wanted;       /* the window manager's latest */
     bool dirty;                    /* wanted waits for room in sent[] */
     struct wm_config acked;        /* the newest acked, for the next commit (acked_new) */
