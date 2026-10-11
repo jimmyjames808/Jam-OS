@@ -18,7 +18,18 @@
  * ENODEV until M12.5's pager); either is then mapped and kept in the
  * table as an anonymous one is. mremap is ENOSYS
  * (musl's realloc copies); mlock and its kin succeed (nothing is paged
- * out). MAP_FIXED over the table's mappings replaces
+ * out).
+ *
+ * Reservations (docs/CR-PLAN.md section 2): a big PROT_NONE mapping is
+ * one VMO and one mapping like any other, and costs nothing until
+ * touched; mprotect commits parts of it (the kernel splits the mapping;
+ * pages still come on touch), and MAP_FIXED anonymous inside libc's own
+ * private anonymous memory decommits in place (refresh_locked): the
+ * same VMO, its pages there taken back, the new protection set, so the
+ * table keeps one entry per reservation however it is cut. madvise
+ * decommits too, and munmap gives a part's pages back.
+ *
+ * Any other MAP_FIXED over the table's mappings replaces
  * them in one step (vmar_map's VMAR_REPLACE): another thread reading the
  * range sees the old pages or the new ones, never a hole. The holes
  * between them are filled with the new mapping's pages first, as plain
@@ -290,6 +301,42 @@ static long replace_locked(uint64_t addr, uint64_t len, uint32_t perms, bool pop
     return 0;
 }
 
+/* Is [addr, end) all private anonymous memory libc made: entries of
+ * kind MT_ANON one after another, no hole between them? */
+static bool all_anon(uint64_t addr, uint64_t end)
+{
+    const struct mt_entry *t = mt_entries();
+    if (end <= addr)
+        return false;   /* wrapped */
+    for (unsigned i = mt_first_after(addr); addr < end; i++) {
+        if (i >= mt_count() || t[i].base > addr || !(t[i].kind & MT_ANON))
+            return false;
+        addr = t[i].base + t[i].len;
+    }
+    return true;
+}
+
+/* MAP_FIXED anonymous over all_anon memory (V8's and PartitionAlloc's
+ * decommit and re-map inside a reservation): the same VMOs stay, with
+ * their pages in the range decommitted (they read as zero after, as a
+ * fresh mapping's do) and the range given perms. No VMO, table entry or
+ * handle is made, so a reservation committed and decommitted a thousand
+ * times costs no more than once. The protect goes first: it is the step
+ * that can fail (the address space's cap on mappings, the job's charge
+ * for them), and then nothing has changed; the decommit after it can't
+ * (the VMOs are ours). Another thread finds the range mapped throughout:
+ * its old pages until the decommit, zero pages after. */
+static long refresh_locked(uint64_t addr, uint64_t len, uint32_t perms, bool populate)
+{
+    status_t st = jam_vmar_protect(lx_self_vmar(), addr, len, perms);
+    if (st != OK)
+        return st == ERR_NO_RESOURCES || st == ERR_NOT_FOUND ? -ENOMEM : lx_err(st);
+    parts_locked(addr, addr + len, 0, jam_vmo_decommit);
+    if (populate)
+        parts_locked(addr, addr + len, 0, jam_vmo_commit);   /* a hint: pages still come on touch */
+    return 0;
+}
+
 /* mmap's checks; 0 or -errno. */
 static long mmap_check(long addr, long len, long prot, long flags, long off)
 {
@@ -330,6 +377,8 @@ long lx_mmap(long addr, long len, long prot, long flags, long fd, long off)
     lock_take(&mem_lock);
     if (!fixed || !table_overlaps(at, size)) {
         r = map_new(&at, size, perms, fixed, flags & MAP_POPULATE, &src);
+    } else if ((flags & MAP_FIXED) && src.kind == MT_ANON && all_anon(at, at + size)) {
+        r = refresh_locked(at, size, perms, flags & MAP_POPULATE);
     } else if (flags & MAP_FIXED) {
         r = replace_locked(at, size, perms, flags & MAP_POPULATE, &src);
     } else {
