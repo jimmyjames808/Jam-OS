@@ -27,7 +27,9 @@
  * private anonymous memory decommits in place (refresh_locked): the
  * same VMO, its pages there taken back, the new protection set, so the
  * table keeps one entry per reservation however it is cut. madvise
- * decommits too, and munmap gives a part's pages back.
+ * decommits too, and munmap gives a part's pages back. A mapping is at
+ * most a VMO's size, 64 GiB (ENOMEM past it), until the kernel's VMOs
+ * grow (docs/CR-PLAN.md's CK1).
  *
  * Any other MAP_FIXED over the table's mappings replaces
  * them in one step (vmar_map's VMAR_REPLACE): another thread reading the
@@ -185,6 +187,15 @@ void mem_forget(uint64_t addr, uint64_t len)
     lock_give(&mem_lock);
 }
 
+/* -errno for a VMO made for a mapping that failed: a length past what a
+ * VMO may hold (VMO_MAX_SIZE, 64 GiB) is ENOMEM, Linux's answer for more
+ * than the address space can give, which V8 and PartitionAlloc take as
+ * the cue to reserve less. */
+static long create_err(status_t st)
+{
+    return st == ERR_OUT_OF_RANGE ? -ENOMEM : lx_err(st);
+}
+
 /* What a mapping maps: a VMO made for it (vmo HANDLE_INVALID: a new
  * anonymous one) or a descriptor's (file_map), from vmo_off; and the kind
  * the table records for it (maptable.h's MT_*). */
@@ -207,7 +218,7 @@ static long map_new(uint64_t *addr, uint64_t len, uint32_t perms, bool fixed, bo
     }
     status_t st = vmo ? OK : jam_vmo_create(len, 0, &vmo);
     if (st != OK)
-        return lx_err(st);
+        return create_err(st);
     st = jam_vmar_map(lx_self_vmar(), vmo, src->vmo_off, len, perms | (fixed ? VMAR_FIXED : 0),
                       addr);
     if (st != OK) {
@@ -281,7 +292,7 @@ static long replace_locked(uint64_t addr, uint64_t len, uint32_t perms, bool pop
     }
     status_t st = vmo ? OK : jam_vmo_create(len, 0, &vmo);
     if (st != OK)
-        return lx_err(st);
+        return create_err(st);
     long r = fill_holes(addr, addr + len, vmo, src->vmo_off, perms);
     uint64_t at = addr;
     if (!r && (st = jam_vmar_map(lx_self_vmar(), vmo, src->vmo_off, len,

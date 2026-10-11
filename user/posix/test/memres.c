@@ -24,7 +24,9 @@
  *     again, then every super page freed by MAP_FIXED PROT_NONE;
  *   - the edges: MAP_FIXED_NOREPLACE inside a reservation, MAP_FIXED at
  *     its first and last pages, across two of libc's mappings, and
- *     reaching past its end; mprotect past its end.
+ *     reaching past its end; mprotect past its end;
+ *   - the limits: a 64 GiB reservation (a VMO's most today), ENOMEM past
+ *     it.
  *
  * Nothing between a count and the check of it may allocate (printf can):
  * the counts are the job's, so they see every page the program takes. */
@@ -386,8 +388,30 @@ static void check_reserve_edges(void)
     CHECK(munmap(r, 16 * PG) == 0);
 }
 
+/* The biggest reservation today's kernel allows (a VMO's most, 64 GiB),
+ * and anything bigger refused with ENOMEM, Linux's answer when the
+ * address space can't hold it (V8 and PartitionAlloc then reserve less).
+ * The kernel's bigger VMOs (docs/CR-PLAN.md's CK1, CL1's stage 2) change
+ * the 64 GiB + 4 KiB check to a success; the whole user half stays
+ * ENOMEM. */
+static void check_reserve_limits(void)
+{
+    uint64_t pages = pt_job_pages();
+    char *r = reserve(64 * GIB);
+    CHECK(r != MAP_FAILED && pt_job_pages() <= pages + SLACK);
+    CHECK(r == MAP_FAILED || munmap(r, 64 * GIB) == 0);
+    errno = 0;
+    CHECK(reserve(64 * GIB + PG) == MAP_FAILED && errno == ENOMEM);
+    errno = 0;
+    CHECK(mmap(NULL, 64 * GIB + PG, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0) ==
+              MAP_FAILED && errno == ENOMEM);
+    errno = 0;
+    CHECK(reserve(1ul << 47) == MAP_FAILED && errno == ENOMEM);
+}
+
 void pt_mem_reserve(void)
 {
+    check_reserve_limits();
     check_drop_gives_back();
     check_reserve_cheap();
     check_v8_pattern();
