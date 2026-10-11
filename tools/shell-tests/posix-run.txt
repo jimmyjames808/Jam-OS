@@ -7,6 +7,9 @@
 #   QEMU_INPUT=tools/shell-tests/posix-run.txt tools/qemu-test.sh <dir> posix-run shell
 wait 120 Jam OS shell
 wait {prompt}
+# The files section needs /data, and a program's namespace is the shell's
+# as it is when the program starts: on the PC the prompt can come first.
+seen 60 init: /data mounted
 send run posixtest
 wait 600 posixtest: files: the /svc row skipped: no /svc in this namespace
 wait 20 posixtest: files: stat of /svc skipped: no /svc in this namespace
