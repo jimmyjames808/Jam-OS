@@ -4,7 +4,7 @@
 # it as /svc/audioctl; the shell has it, and the programs whose lists ask
 # for it. Each opener gets a channel of its own (the svc protocol's
 # connect, as for `audio`).
-# Format: see tools/genidl.py. The plan is docs/history/A2-PLAN.md.
+# Format: see tools/genidl.py. The plan is docs/HISTORY.md, audio.
 #
 # The desktop's channel: a second shared channel of the same protocol,
 # made once by init and kept as the others are (its server end is each

@@ -1,5 +1,5 @@
-# update: one offer of a fetched build to init (<update.h>, docs/M9-PLAN.md
-# "update: a new build from the Mac"), on the offer channel init makes for
+# update: one offer of a fetched build to init (<update.h>, docs/HISTORY.md, M9),
+# on the offer channel init makes for
 # it (initctl.update_offer). Served by init (user/services/init/update.c),
 # called once by the fetcher (bin/update, user/services/update) or a test
 # program (user/tests/updtest); the manifest and the network protocol

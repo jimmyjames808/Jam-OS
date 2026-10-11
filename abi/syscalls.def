@@ -216,7 +216,7 @@
 # RIGHT_WRITE, so its code can be mapped executable; vmo's handle is gone
 # whatever the status (closed on any error, as a send's handles). Needs
 # RIGHT_ROOT_VMEX on root (only init and the shell: a program from /data,
-# docs/history/M8.6-SVC.md), RIGHT_READ and RIGHT_MAP on vmo, and vmo
+# docs/HISTORY.md, M8.6), RIGHT_READ and RIGHT_MAP on vmo, and vmo
 # must be a paged VMO with that one handle, no mapping or pin anywhere
 # and no write running (ERR_BAD_STATE otherwise). The VMO is sealed: every later write,
 # resize, commit, decommit, writable mapping or pin is ERR_BAD_STATE, even
