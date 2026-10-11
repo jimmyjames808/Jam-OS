@@ -137,9 +137,15 @@ static const struct { const char *name, *value; } posix_defaults[] = {
     { "USER", "jam" },
     { "LOGNAME", "jam" },
     { "SHELL", "/boot/bin/shell" },
+    /* The compositor's socket, absolute so libwayland needs no runtime
+     * directory (libc's service sockets); harmless without `svc wayland`,
+     * whose connect is ENOENT. */
+    { "WAYLAND_DISPLAY", "/svc/wayland" },
 };
+#define POSIX_DEFAULTS (sizeof(posix_defaults) / sizeof(posix_defaults[0]))
+#define POSIX_EXTRA    (POSIX_DEFAULTS + 2)   /* the defaults, TZ and PWD */
 
-/* NAME=value onto env[*n] (the slot is there: SH_MAX_VARS + 8). */
+/* NAME=value onto env[*n] (the slot is there: SH_MAX_VARS + POSIX_EXTRA). */
 static void env_add(char **env, int *n, const char *name, const char *value)
 {
     char *s = env_entry(name, value);
@@ -156,14 +162,14 @@ static bool is_exported(const char *name)
 
 char **sh_make_env_posix(void)
 {
-    char **env = calloc(SH_MAX_VARS + 1 + 8, sizeof(char *));
+    char **env = calloc(SH_MAX_VARS + 1 + POSIX_EXTRA, sizeof(char *));
     if (!env)
         return NULL;
     int n = 0;
     for (int i = 0; i < SH_MAX_VARS; i++)
         if (vars[i].value && vars[i].exported && strcmp(vars[i].name, "PWD"))   /* ours, below */
             env_add(env, &n, vars[i].name, vars[i].value);
-    for (unsigned k = 0; k < sizeof(posix_defaults) / sizeof(posix_defaults[0]); k++)
+    for (unsigned k = 0; k < POSIX_DEFAULTS; k++)
         if (!is_exported(posix_defaults[k].name))
             env_add(env, &n, posix_defaults[k].name, posix_defaults[k].value);
     if (!is_exported("TZ")) {
