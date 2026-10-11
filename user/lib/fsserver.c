@@ -3,9 +3,9 @@
  * Every channel is bound to the port for SIG_READABLE | SIG_PEER_CLOSED,
  * persistently: a packet arrives when its queue goes from empty to not
  * empty, so a round reads until the queue is empty again. A round that
- * stops early (FSSERVER_ROUND) queues a packet for itself, which puts the
- * rest of that channel behind whatever else is waiting. A packet for a slot
- * that has been closed (or reused) since finds nothing to read and is
+ * stops early (FSSERVER_ROUND) asks for another (port_again), which puts
+ * the rest of that channel behind whatever else is waiting. A packet for a
+ * slot that has been closed (or reused) since finds nothing to read and is
  * harmless. */
 #include <fsserver.h>
 #include <fsview.h>
@@ -21,21 +21,18 @@ status_t fsserver_init(struct fsserver *s)
     return jam_port_create(&s->port);
 }
 
-/* Ask for another round on the channel with this key. */
-static void again(struct fsserver *s, uint64_t key)
+/* Ask for another round on ch, the channel with this key. False: it can't
+ * be watched any more (no packet would ever come for it). */
+static bool again(struct fsserver *s, handle_t ch, uint64_t key)
 {
-    struct port_packet pkt = { .key = key, .type = PORT_PACKET_USER };
-    /* A full port: the channel waits for its next message instead. */
-    (void)jam_port_queue(s->port, &pkt);
+    return port_again(s->port, ch, key, SIG_READABLE | SIG_PEER_CLOSED) == OK;
 }
 
+/* ch watched from now on: a new binding fires at once if something is
+ * queued already. */
 static status_t watch(struct fsserver *s, handle_t ch, uint64_t key)
 {
-    status_t st = jam_port_bind(s->port, ch, key, SIG_READABLE | SIG_PEER_CLOSED,
-                                PORT_BIND_PERSISTENT);
-    if (st == OK)
-        again(s, key);   /* what was queued before the binding existed */
-    return st;
+    return jam_port_bind(s->port, ch, key, SIG_READABLE | SIG_PEER_CLOSED, PORT_BIND_PERSISTENT);
 }
 
 /* ch (consumed) in a free fs slot, with view flags; view: made by fs.view. */
@@ -124,8 +121,17 @@ static bool behind(struct fsserver *s, bool full, bool *flag)
     return true;
 }
 
+/* fs channel i dropped (idl_give_up: what its client left unread is taken
+ * back). */
+static void drop_fs(struct fsserver *s, unsigned i)
+{
+    jam_port_unbind(s->port, s->fs[i], i);
+    idl_give_up(s->fs[i]);
+    s->fs[i] = HANDLE_INVALID;
+}
+
 /* One round on an fs channel. A client that is gone, or a channel that
- * fails, is dropped (idl_give_up: what it left unread is taken back). */
+ * fails, is dropped. */
 static void serve_fs(struct fsserver *s, unsigned i)
 {
     status_t st = OK;
@@ -134,13 +140,10 @@ static void serve_fs(struct fsserver *s, unsigned i)
             return;
         st = fs_view_serve_one(s->fs[i], s->fs_flags[i], s->fs_ops, s, add_view, s);
     }
-    if (st == OK && s->fs[i]) {
-        again(s, i);
-    } else if (st != ERR_SHOULD_WAIT && s->fs[i]) {
-        jam_port_unbind(s->port, s->fs[i], i);
-        idl_give_up(s->fs[i]);
-        s->fs[i] = HANDLE_INVALID;
-    }
+    if (st == OK && s->fs[i] && again(s, s->fs[i], i))
+        return;
+    if (st != ERR_SHOULD_WAIT && s->fs[i])   /* gone, failed, or can't be watched */
+        drop_fs(s, i);
 }
 
 static void serve_file(struct fsserver *s, unsigned i)
@@ -152,9 +155,9 @@ static void serve_file(struct fsserver *s, unsigned i)
             return;
         st = file_serve_one(f->ch, s->file_ops, f);
     }
-    if (st == OK && f->ch)
-        again(s, FILE_KEY + i);
-    else if (st != ERR_SHOULD_WAIT && f->ch)
+    if (st == OK && f->ch && again(s, f->ch, FILE_KEY + i))
+        return;
+    if (st != ERR_SHOULD_WAIT && f->ch)   /* gone, failed, or can't be watched */
         close_file(s, f);
 }
 
@@ -173,13 +176,13 @@ static bool in_use(const struct fsserver *s)
 static void look_again(struct fsserver *s)
 {
     for (unsigned i = 0; i < FSSERVER_MAX_FS; i++) {
-        if (s->fs_held[i] && s->fs[i])
-            again(s, i);
+        if (s->fs_held[i] && s->fs[i] && !again(s, s->fs[i], i))
+            drop_fs(s, i);
         s->fs_held[i] = false;
     }
     for (unsigned i = 0; i < FSSERVER_MAX_FILES; i++) {
-        if (s->files[i].held && s->files[i].ch)
-            again(s, FILE_KEY + i);
+        if (s->files[i].held && s->files[i].ch && !again(s, s->files[i].ch, FILE_KEY + i))
+            close_file(s, &s->files[i]);
         s->files[i].held = false;
     }
 }

@@ -432,13 +432,15 @@ static bool answers_on(struct vol *b, handle_t ch)
  * waiting. */
 void fs_answers(struct vol *b)
 {
-    bool done = answers_on(b, fs_asker(b));
-    if (b->own && b->client && !answers_on(b, b->client))
+    handle_t ch = fs_asker(b);
+    bool done = answers_on(b, ch);
+    if (b->own && b->client && !answers_on(b, b->client)) {
         done = false;
-    if (!done) {
-        struct port_packet p = { .key = b->client_key, .type = PORT_PACKET_USER };
-        (void)jam_port_queue(port, &p);   /* lost: the next answer's edge brings us back */
+        ch = b->client;
     }
+    /* One packet brings both back (port_again: not lost to a full port). */
+    if (!done && b->client_key && port_again(port, ch, b->client_key, SIG_READABLE) != OK)
+        say(false, "volumes: %s: can't watch its channel for answers", b->name);
 }
 
 /* ---- disks coming and going ------------------------------------------------------- */
