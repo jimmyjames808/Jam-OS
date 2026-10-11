@@ -1,6 +1,6 @@
 /* VT-d DMA remapping at boot and at the jump (Intel VT-d specification
- * 4.1; the plan is docs/M11-PLAN.md, "The boot handover" and "kexec and
- * panic"; the model is vtd_domain.h). Not with the boot word `iommu=off`.
+ * 4.1; the plan is docs/HISTORY.md, M11;
+ * the model is vtd_domain.h). Not with the boot word `iommu=off`.
  *
  *   - Before the memory managers (iommu_reserve_early): RMRRs in RAM the
  *     memory map calls usable are made reserved (8.4 says firmware must
