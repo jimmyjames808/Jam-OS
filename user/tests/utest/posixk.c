@@ -1,7 +1,7 @@
 /* utest: what the kernel gives POSIX, from ring 3: small pids and tids,
  * the tid word, thread_interrupt on each interruptible wait, CPU time,
- * sys_public_info; each with its refusals (bad pointers, rights, handle
- * types). And the child mode "utest tidword" the kernel's
+ * sys_public_info, VMAR_REPLACE; each with its refusals (bad pointers,
+ * rights, handle types). And the child mode "utest tidword" the kernel's
  * proc_tid_word_join_unmap test runs: joiners that unmap a thread's stack
  * the moment its tid word reads 0. */
 #define CHECK_PROG "utest"
@@ -214,6 +214,41 @@ bool t_sys_public_info(void)
     CHECK_ST(jam_sys_public_info(UNMAPPED), ERR_INVALID_ARGS);
     CHECK_ST(jam_sys_public_info((struct sys_public_info *)0xffff800000000000ull),
              ERR_INVALID_ARGS);
+    return true;
+}
+
+/* VMAR_REPLACE (MAP_FIXED's call): refused without VMAR_FIXED and with
+ * VMAR_KEPT_ONLY, with the caller's address word as it was; over the
+ * second page of a mapping it replaces that page in one call and answers
+ * with the address it was given. */
+bool t_vmar_replace_calls(void)
+{
+    handle_t vmar = startup_handle(SR_SELF_VMAR), a, b;
+    CHECK_ST(jam_vmo_create(2 * PAGE_SIZE, 0, &a), OK);
+    CHECK_ST(jam_vmo_create(PAGE_SIZE, 0, &b), OK);
+    uint64_t addr = 0;
+    CHECK_ST(jam_vmar_map(vmar, a, 0, 2 * PAGE_SIZE, VMAR_READ | VMAR_WRITE, &addr), OK);
+    volatile uint32_t *p = (volatile uint32_t *)(uintptr_t)addr;
+    p[0] = 1;
+    p[PAGE_SIZE / 4] = 2;
+    uint64_t want = addr + PAGE_SIZE, at = want;
+    CHECK_ST(jam_vmar_map(vmar, b, 0, PAGE_SIZE, VMAR_READ | VMAR_REPLACE, &at),
+             ERR_INVALID_ARGS);
+    CHECK_EQ(at, want);
+    CHECK_ST(jam_vmar_map(vmar, b, 0, PAGE_SIZE,
+                          VMAR_READ | VMAR_FIXED | VMAR_REPLACE | VMAR_KEPT_ONLY, &at),
+             ERR_INVALID_ARGS);
+    CHECK_EQ(at, want);
+    CHECK_EQ(p[PAGE_SIZE / 4], 2);   /* nothing changed */
+    CHECK_ST(jam_vmar_map(vmar, b, 0, PAGE_SIZE,
+                          VMAR_READ | VMAR_WRITE | VMAR_FIXED | VMAR_REPLACE, &at),
+             OK);
+    CHECK_EQ(at, want);
+    CHECK_EQ(p[0], 1);
+    CHECK_EQ(p[PAGE_SIZE / 4], 0);   /* b's page now */
+    CHECK_ST(jam_vmar_unmap(vmar, addr, 2 * PAGE_SIZE), OK);
+    CHECK_ST(jam_handle_close(a), OK);
+    CHECK_ST(jam_handle_close(b), OK);
     return true;
 }
 
