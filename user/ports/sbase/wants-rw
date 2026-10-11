@@ -1,0 +1,4 @@
+posix
+mount /boot r
+mount /data rw
+mount /usb* rw

@@ -1,0 +1,281 @@
+# The ported programs (M13 P1): sbase's utilities and Lua, in the boot image's
+# usr/bin, run from the shell on real files in /data. The shell has its own
+# command for many of the names (cat sort uniq wc head tail grep ls cp mv rm
+# mkdir find seq date ...) and those win by name, so sbase's version of them
+# is run by its path: `run $S/<name>` (S=/boot/usr/bin); the others (sed tr cut
+# xargs od printf paste cmp ...) have no shell command and run by name.
+# Every check compares a program's output with a file made by printf (also
+# sbase's) using cmp (sbase's): `cmp got want && echo ok-$T-name`, so the
+# text waited for (built from $T) never appears in the typed line.
+#   QEMU_INPUT=tools/shell-tests/ports.txt tools/qemu-test.sh <dir> ports shell
+wait 120 Jam OS shell
+wait {prompt}
+send T=x
+wait {prompt}
+send S=/boot/usr/bin
+wait {prompt}
+send cd /data
+wait {prompt}
+
+# ---- by name: the programs the shell has no command for ------------------------------------------
+send printf 'pear\napple\nfig\napple\ncherry\nfig\nfig\n' > /data/pt-w; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send printf 'x %s\n' one two > /data/pt-e; cmp /data/pt-e /data/pt-e && echo ok-$T-printf
+wait ok-x-printf
+wait {prompt}
+send cat /data/pt-e
+wait x one
+wait x two
+wait {prompt}
+
+# ---- sbase's version is found by its path (the shell's own command wins by name) ----------------
+send run $S/echo via-path-$T
+wait via-path-x
+wait run: usr/bin/echo exited with code 0
+wait {prompt}
+
+# ---- sort, uniq, wc, head, tail, cat, grep (sbase's, by path) -------------------------------
+send run $S/sort /data/pt-w > /data/pt-o; printf 'apple\napple\ncherry\nfig\nfig\nfig\npear\n' > /data/pt-e; cmp /data/pt-o /data/pt-e && echo ok-$T-sort
+wait ok-x-sort
+wait {prompt}
+send run $S/sort -u /data/pt-w > /data/pt-o; printf 'apple\ncherry\nfig\npear\n' > /data/pt-e; cmp /data/pt-o /data/pt-e && echo ok-$T-sortu
+wait ok-x-sortu
+wait {prompt}
+send run $S/sbase-rw sort -u /data/pt-w | run $S/wc -l | run $S/grep ^4$ && echo ok-$T-box
+wait ok-x-box
+wait {prompt}
+send run $S/sort -r /data/pt-w > /data/pt-o; printf 'pear\nfig\nfig\nfig\ncherry\napple\napple\n' > /data/pt-e; cmp /data/pt-o /data/pt-e && echo ok-$T-sortr
+wait ok-x-sortr
+wait {prompt}
+send run $S/sort /data/pt-w | run $S/uniq -c > /data/pt-o; printf '      2 apple\n      1 cherry\n      3 fig\n      1 pear\n' > /data/pt-e; cmp /data/pt-o /data/pt-e && echo ok-$T-uniq
+wait ok-x-uniq
+wait {prompt}
+send run $S/wc -l /data/pt-w | grep -c 7 | grep ^1$ && echo ok-$T-wcl
+wait ok-x-wcl
+wait {prompt}
+send run $S/wc -c < /data/pt-w
+wait 7
+wait run: usr/bin/wc exited with code 0
+wait {prompt}
+send run $S/head -n 2 /data/pt-w > /data/pt-o; printf 'pear\napple\n' > /data/pt-e; cmp /data/pt-o /data/pt-e && echo ok-$T-head
+wait ok-x-head
+wait {prompt}
+send run $S/tail -n 2 /data/pt-w > /data/pt-o; printf 'fig\nfig\n' > /data/pt-e; cmp /data/pt-o /data/pt-e && echo ok-$T-tail
+wait ok-x-tail
+wait {prompt}
+send run $S/cat /data/pt-w /data/pt-w | run $S/wc -l > /data/pt-o; printf '14\n' > /data/pt-e; cmp /data/pt-o /data/pt-e && echo ok-$T-cat
+wait ok-x-cat
+wait {prompt}
+send run $S/grep -c fig /data/pt-w > /data/pt-o; printf '3\n' > /data/pt-e; cmp /data/pt-o /data/pt-e && echo ok-$T-grepc
+wait ok-x-grepc
+wait {prompt}
+send run $S/grep -n ^a /data/pt-w > /data/pt-o; printf '2:apple\n4:apple\n' > /data/pt-e; cmp /data/pt-o /data/pt-e && echo ok-$T-grepn
+wait ok-x-grepn
+wait {prompt}
+send run $S/grep -v -e a -e i /data/pt-w > /data/pt-o; printf 'cherry\n' > /data/pt-e; cmp /data/pt-o /data/pt-e && echo ok-$T-grepv
+wait ok-x-grepv
+wait {prompt}
+# grep's status: 0 a match, 1 none
+send run $S/grep -q fig /data/pt-w; echo st-$T=$?
+wait st-x=0
+send run $S/grep -q nothere /data/pt-w; echo st-$T=$?
+wait st-x=1
+wait {prompt}
+
+# ---- sed, tr, cut, paste, expr, od ---------------------------------------------------------------------
+send sed -e 's/fig/FIG/' -e '/pear/d' /data/pt-w > /data/pt-o; printf 'apple\nFIG\napple\ncherry\nFIG\nFIG\n' > /data/pt-e; cmp /data/pt-o /data/pt-e && echo ok-$T-sed
+wait ok-x-sed
+wait {prompt}
+send sed -n '2,3p' /data/pt-w > /data/pt-o; printf 'apple\nfig\n' > /data/pt-e; cmp /data/pt-o /data/pt-e && echo ok-$T-sedn
+wait ok-x-sedn
+wait {prompt}
+send tr a-z A-Z < /data/pt-w > /data/pt-o; printf 'PEAR\nAPPLE\nFIG\nAPPLE\nCHERRY\nFIG\nFIG\n' > /data/pt-e; cmp /data/pt-o /data/pt-e && echo ok-$T-tr
+wait ok-x-tr
+wait {prompt}
+send tr -d aeiou < /data/pt-w | head -n 1
+wait pr
+wait {prompt}
+send printf 'a:b:c\n1:2:3\n' > /data/pt-c; cut -d : -f 2,3 /data/pt-c > /data/pt-o; printf 'b:c\n2:3\n' > /data/pt-e; cmp /data/pt-o /data/pt-e && echo ok-$T-cut
+wait ok-x-cut
+wait {prompt}
+send cut -c 1 /data/pt-w | tr -d '\n' > /data/pt-o; printf 'pafacff' > /data/pt-e; cmp /data/pt-o /data/pt-e && echo ok-$T-cutc
+wait ok-x-cutc
+wait {prompt}
+send paste -d , /data/pt-c /data/pt-c > /data/pt-o; printf 'a:b:c,a:b:c\n1:2:3,1:2:3\n' > /data/pt-e; cmp /data/pt-o /data/pt-e && echo ok-$T-paste
+wait ok-x-paste
+wait {prompt}
+send expr 6 '*' 7 > /data/pt-o; printf '42\n' > /data/pt-e; cmp /data/pt-o /data/pt-e && echo ok-$T-expr
+wait ok-x-expr
+wait {prompt}
+send printf "AB\n" | od -A n -b | tr -d " \n" > /data/pt-o; printf 10110212 > /data/pt-e; cmp /data/pt-o /data/pt-e && echo ok-$T-od
+wait ok-x-od
+wait {prompt}
+send basename /a/b/c.txt .txt > /data/pt-o; dirname /a/b/c.txt >> /data/pt-o; printf 'c\n/a/b\n' > /data/pt-e; cmp /data/pt-o /data/pt-e && echo ok-$T-basename
+wait ok-x-basename
+wait {prompt}
+send printf hello | run $S/sha256sum
+wait 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+wait {prompt}
+send printf hello | md5sum
+wait 5d41402abc4b2a76b9719d911017c592
+wait {prompt}
+
+# ---- files: seq, cp, mv, rm, mkdir, ls, find, tee, test, touch ------------------------------------------
+send run $S/seq 1 5 > /data/pt-o; printf '1\n2\n3\n4\n5\n' > /data/pt-e; cmp /data/pt-o /data/pt-e && echo ok-$T-seq
+wait ok-x-seq
+wait {prompt}
+send run $S/mkdir /data/pt-d; run $S/mkdir -p /data/pt-d/a/b; run $S/cp /data/pt-w /data/pt-d/copy; cmp /data/pt-w /data/pt-d/copy && echo ok-$T-cp
+wait ok-x-cp
+wait {prompt}
+send run $S/mv /data/pt-d/copy /data/pt-d/a/moved; cmp /data/pt-w /data/pt-d/a/moved && echo ok-$T-mv
+wait ok-x-mv
+wait {prompt}
+send run $S/ls /data/pt-d/a | tr '\n' ' ' > /data/pt-o; printf 'b moved ' > /data/pt-e; cmp /data/pt-o /data/pt-e && echo ok-$T-ls
+wait ok-x-ls
+wait {prompt}
+send run $S/find /data/pt-d | run $S/sort > /data/pt-o; printf '/data/pt-d\n/data/pt-d/a\n/data/pt-d/a/b\n/data/pt-d/a/moved\n' > /data/pt-e; cmp /data/pt-o /data/pt-e && echo ok-$T-find
+wait ok-x-find
+wait {prompt}
+send run $S/find /data/pt-d -type f -name 'mo*' > /data/pt-o; printf '/data/pt-d/a/moved\n' > /data/pt-e; cmp /data/pt-o /data/pt-e && echo ok-$T-findname
+wait ok-x-findname
+wait {prompt}
+send test -d /data/pt-d && test -f /data/pt-w && echo ok-$T-test
+wait ok-x-test
+wait {prompt}
+send test -e /data/pt-nothere || echo ok-$T-test2
+wait ok-x-test2
+wait {prompt}
+send printf 'to tee\n' | tee /data/pt-t1 /data/pt-t2 > /data/pt-o; cmp /data/pt-t1 /data/pt-t2 && cmp /data/pt-o /data/pt-t1 && echo ok-$T-tee
+wait ok-x-tee
+wait {prompt}
+send run $S/rm /data/pt-d/a/moved; run $S/rmdir /data/pt-d/a/b /data/pt-d/a /data/pt-d; test -e /data/pt-d || echo ok-$T-rm
+wait ok-x-rm
+wait {prompt}
+
+# ---- find -exec and xargs: the commands they start (the overrides: posix_spawnp) -----------------
+# Their own output goes through a pipe: a program whose descriptor is a redirected writable file
+# can't start children yet (posix_spawn: EBUSY, the S1 notes' limit, question 5's (B)).
+send run $S/mkdir /data/pt-x; run $S/touch /data/pt-x/one /data/pt-x/two; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send run $S/find /data/pt-x -type f -exec $S/echo f: {} ';' | run $S/sort > /data/pt-o
+wait {prompt}
+send printf 'f: /data/pt-x/one\nf: /data/pt-x/two\n' > /data/pt-e; cmp /data/pt-o /data/pt-e && echo ok-$T-findexec
+wait ok-x-findexec
+wait {prompt}
+send printf '1\n2\n3\n4\n5\n' | xargs -n 2 $S/echo | run $S/cat > /data/pt-o; printf '1 2\n3 4\n5\n' > /data/pt-e; cmp /data/pt-o /data/pt-e && echo ok-$T-xargs
+wait ok-x-xargs
+wait {prompt}
+send run $S/find /data/pt-x -type f | xargs $S/rm; test -e /data/pt-x/one || echo ok-$T-xargsrm
+wait ok-x-xargsrm
+wait {prompt}
+send printf 'x\n' | xargs /nowhere/nocmd; echo st-$T=$?
+wait st-x=127
+wait {prompt}
+send run $S/rmdir /data/pt-x; run $S/time $S/true; echo st-$T=$?
+wait real
+wait st-x=0
+wait {prompt}
+send run $S/env FOO=bar $S/printenv FOO | run $S/cat > /data/pt-o; printf 'bar\n' > /data/pt-e; cmp /data/pt-o /data/pt-e && echo ok-$T-env
+wait ok-x-env
+wait {prompt}
+
+# ---- trees, archives, editing: cp -r, tar, dd, ed, nl, comm, fold, which -----------------------
+send run $S/mkdir -p /data/pt-r/s/t; printf 'one\n' > /data/pt-r/s/t/f; run $S/cp -r /data/pt-r/s /data/pt-r/s2; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send cmp /data/pt-r/s/t/f /data/pt-r/s2/t/f && echo ok-$T-cpr
+wait ok-x-cpr
+wait {prompt}
+send tar -c -C /data/pt-r -f /data/pt-r.tar s; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send run $S/mkdir /data/pt-r3; tar -x -C /data/pt-r3 -f /data/pt-r.tar; cmp /data/pt-r/s/t/f /data/pt-r3/s/t/f && echo ok-$T-tar
+wait ok-x-tar
+wait {prompt}
+send tar -t -f /data/pt-r.tar | run $S/wc -l | run $S/grep -c 3 | run $S/grep ^1$ && echo ok-$T-tart
+wait ok-x-tart
+wait {prompt}
+send run $S/rm -rf /data/pt-r /data/pt-r3 /data/pt-r.tar; test -e /data/pt-r || echo ok-$T-rmrf
+wait ok-x-rmrf
+wait {prompt}
+send dd if=/data/pt-w of=/data/pt-dd bs=1 count=4; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send printf 'pear' > /data/pt-e; cmp /data/pt-dd /data/pt-e && echo ok-$T-dd
+wait ok-x-dd
+wait {prompt}
+# ed and sponge keep a scratch file in $TMPDIR, /tmp without it, and the namespace has no /tmp
+send export TMPDIR=/data
+wait {prompt}
+send printf 'a\nhello ed\n.\nw /data/pt-ed\nq\n' | ed; cat /data/pt-ed
+wait hello ed
+wait {prompt}
+send nl -b a /data/pt-c > /data/pt-o; printf '     1\ta:b:c\n     2\t1:2:3\n' > /data/pt-e; cmp /data/pt-o /data/pt-e && echo ok-$T-nl
+wait ok-x-nl
+wait {prompt}
+send printf 'a\nb\nc\n' > /data/pt-a; printf 'b\nc\nd\n' > /data/pt-b; comm -12 /data/pt-a /data/pt-b > /data/pt-o; printf 'b\nc\n' > /data/pt-e; cmp /data/pt-o /data/pt-e && echo ok-$T-comm
+wait ok-x-comm
+wait {prompt}
+send printf 'abcdefghij\n' | fold -w 4 | run $S/wc -l | run $S/grep ^3$ && echo ok-$T-fold
+wait ok-x-fold
+wait {prompt}
+send run $S/cksum /data/pt-c | run $S/grep -c 'pt-c$' | run $S/grep ^1$ && echo ok-$T-cksum
+wait ok-x-cksum
+wait {prompt}
+send run $S/which sort
+wait /boot/usr/bin/sort
+wait {prompt}
+send run $S/rm /data/pt-dd /data/pt-ed /data/pt-a /data/pt-b
+wait {prompt}
+
+# ---- date, uname, and the rest of the plain ones --------------------------------------------------------
+send run $S/date -u -d 86400 +%Y-%m-%d > /data/pt-o; printf '1970-01-02\n' > /data/pt-e; cmp /data/pt-o /data/pt-e && echo ok-$T-date
+wait ok-x-date
+wait {prompt}
+send run $S/uname -s
+wait {prompt}
+send run $S/date +%Y | grep -c ^20 | grep ^1$ && echo ok-$T-year
+wait ok-x-year
+wait {prompt}
+send cd /
+
+# ---- Lua --------------------------------------------------------------------------------------------------------
+send lua -e 'print(6*7)'
+wait 42
+wait {prompt}
+send lua -e 'print(string.format("%s-%d", "lua", 3 + 4))'
+wait lua-7
+wait {prompt}
+send printf 'local t = {}\nfor i = 1, 10 do t[#t + 1] = i * i end\nprint(table.concat(t, ","))\n' > /data/pt.lua
+wait {prompt}
+send printf 'local f = assert(io.open("/data/pt-lua-out", "w"))\nf:write("written by lua\\n")\nf:close()\n' >> /data/pt.lua
+wait {prompt}
+send printf 'for l in io.lines("/data/pt-lua-out") do print(l) end\nos.remove("/data/pt-lua-out")\n' >> /data/pt.lua
+wait {prompt}
+send printf 'print(#arg, arg[1])\nos.exit(3)\n' >> /data/pt.lua
+wait {prompt}
+send lua /data/pt.lua first; echo st-$T=$?
+wait 1,4,9,16,25,36,49,64,81,100
+wait written by lua
+wait 1	first
+wait st-x=3
+wait {prompt}
+send lua -e 'error("boom")'; echo st-$T=$?
+wait boom
+wait st-x=1
+wait {prompt}
+send lua -e 'print(os.time() > 1700000000, os.date("%Y") + 0 >= 2026)'
+wait true	true
+wait {prompt}
+send printf 'print(io.read("n") + io.read("n"))\n' > /data/pt2.lua; printf '40 2\n' | lua /data/pt2.lua
+wait 42
+wait {prompt}
+send lua -e 'local n = 0; for i = 1, 3000000 do n = n + i % 7 end; print(n)'
+wait 8999997
+wait {prompt}
+send rm /data/pt-w /data/pt-o /data/pt-e /data/pt-c /data/pt-t1 /data/pt-t2 /data/pt.lua /data/pt2.lua
+wait {prompt}
+send reboot -f
+wait reboot: resetting
