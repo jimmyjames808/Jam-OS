@@ -293,6 +293,8 @@ static void ts_serve(struct tsock *t)
             ts_close(t, true);
         else if (st != ERR_SHOULD_WAIT)
             printf("netstack: reading TCP socket %u's channel: %s\n", t->port, status_str(st));
+        if (st == ERR_NO_MEMORY)   /* still queued: looked at again later (serve_opener) */
+            (void)progs_behind(true, &t->held);
         return;
     }
     t->pending = true;   /* its budget is spent: more may be queued */
@@ -490,6 +492,8 @@ static void l_serve(struct tlisten *l)
         else if (st != ERR_SHOULD_WAIT)
             printf("netstack: reading TCP listener %u's channel: %s\n", l->l->port,
                    status_str(st));
+        if (st == ERR_NO_MEMORY)   /* still queued: looked at again later (serve_opener) */
+            (void)progs_behind(true, &l->held);
         return;
     }
     l->pending = true;

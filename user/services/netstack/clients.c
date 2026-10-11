@@ -469,6 +469,12 @@ static void serve_opener(unsigned i)
             opener_close(i);
         else if (st != ERR_SHOULD_WAIT)
             printf("netstack: reading an opener's channel: %s\n", status_str(st));
+        /* No memory to drop an oversized message: it is still queued, and
+         * the binding fires only when the channel turns readable, so the
+         * channel is held and looked at again with those past the unread
+         * bound (a turn now would only spin while memory is short). */
+        if (st == ERR_NO_MEMORY)
+            (void)progs_behind(true, &o->held);
         return;
     }
     o->pending = true;   /* its budget is spent: more may be queued */
