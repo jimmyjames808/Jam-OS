@@ -19,10 +19,16 @@
  * absolute CLOCK_REALTIME time is turned into an uptime deadline at the
  * call (a wall-clock change during the sleep doesn't move it). A sleep
  * ended by thread_interrupt is EINTR, with the time left. Setting a
- * clock is EPERM: the clock's power is init's and sntp's. */
+ * clock is EPERM: the clock's power is init's and sntp's.
+ *
+ * times and getrusage give the same CPU time as the CPU-time clocks:
+ * ours, a thread's, and that of the children a wait has reaped (proc.c). */
 #include <errno.h>
+#include <string.h>
+#include <sys/resource.h>
 #include <time.h>
 #include "layer.h"
+#include "proc.h"
 
 #define CLOCK_MAX 11   /* CLOCK_TAI, the highest clock id Linux has */
 
@@ -223,4 +229,52 @@ long lx_clock_nanosleep(long clk, long flags, long req, long rem, long e, long f
 long lx_nanosleep(long req, long rem, long c, long d, long e, long f)
 {
     return lx_clock_nanosleep(CLOCK_MONOTONIC, 0, req, rem, 0, 0);
+}
+
+/* ---- CPU time: times and getrusage ---------------------------------------------------- */
+
+#define CLK_TCK 100   /* times' clock ticks a second: musl's sysconf(_SC_CLK_TCK) */
+
+/* Linux's struct tms, clock_t each. */
+struct lx_tms {
+    long utime, stime, cutime, cstime;
+};
+
+static long ns_to_ticks(uint64_t ns)
+{
+    return (long)(ns / (NS_PER_S / CLK_TCK));
+}
+
+/* The kernel counts a thread's time in its own calls with its user time
+ * (K1's cpu_ns), so the system times are 0 and the user times the whole. */
+long lx_times(long out, long b, long c, long d, long e, long f)
+{
+    uint64_t self = 0;
+    (void)kp_cpu_ns(lx_self_process(), HANDLE_INVALID, &self);   /* our own process: can't fail */
+    if (out)
+        *(struct lx_tms *)(uintptr_t)out = (struct lx_tms){
+            .utime = ns_to_ticks(self), .cutime = ns_to_ticks(lx_children_cpu_ns()),
+        };
+    return ns_to_ticks(up_ns());   /* ticks since boot: only differences mean anything */
+}
+
+long lx_getrusage(long who, long out, long c, long d, long e, long f)
+{
+    uint64_t ns = 0;
+    status_t st = OK;
+    if (who == RUSAGE_SELF)
+        st = kp_cpu_ns(lx_self_process(), HANDLE_INVALID, &ns);
+    else if (who == RUSAGE_THREAD)
+        st = kp_cpu_ns(HANDLE_INVALID, lx_self_thread(), &ns);
+    else if (who == RUSAGE_CHILDREN)
+        ns = lx_children_cpu_ns();
+    else
+        return -EINVAL;
+    if (st != OK)
+        return lx_err(st);
+    struct rusage *ru = (struct rusage *)(uintptr_t)out;
+    memset(ru, 0, sizeof(*ru));
+    ru->ru_utime.tv_sec = (time_t)(ns / NS_PER_S);
+    ru->ru_utime.tv_usec = (suseconds_t)(ns % NS_PER_S / 1000);
+    return 0;
 }

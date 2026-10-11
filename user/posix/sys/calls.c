@@ -38,12 +38,14 @@ static lx_call *const calls[] = {
     [SYS_futex] = lx_futex,
     [SYS_sched_yield] = lx_sched_yield,
 
-    /* clocks and sleeps: time.c */
+    /* clocks and sleeps, CPU time: time.c */
     [SYS_clock_gettime] = lx_clock_gettime,
     [SYS_clock_getres] = lx_clock_getres,
     [SYS_clock_settime] = lx_clock_settime,
     [SYS_clock_nanosleep] = lx_clock_nanosleep,
     [SYS_nanosleep] = lx_nanosleep,
+    [SYS_times] = lx_times,
+    [SYS_getrusage] = lx_getrusage,
 
     /* the machine and randomness: misc.c */
     [SYS_uname] = lx_uname,

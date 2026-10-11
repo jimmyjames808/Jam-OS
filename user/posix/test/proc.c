@@ -21,7 +21,8 @@
  *     it was given; a parent killed while it spawns leaves no child
  *     hanging (every process in its job ends);
  *   - a spawn that fails (no such program) takes nothing of ours with it:
- *     a pipe's bytes read but not taken are still ours to read. */
+ *     a pipe's bytes read but not taken are still ours to read;
+ *   - times and getrusage: our CPU time, and our reaped children's. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -30,6 +31,8 @@
 #include <posixfds.h>
 #include <spawn.h>
 #include <string.h>
+#include <sys/resource.h>
+#include <sys/times.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -74,6 +77,14 @@ static int child_fds(char **argv)
     return pt_failures() ? 1 : 0;
 }
 
+/* Spin until this process has used ms of CPU time. */
+static void spin_cpu_ms(long ms)
+{
+    clock_t end = clock() + (clock_t)(ms * (CLOCKS_PER_SEC / 1000));
+    while (clock() < end)
+        continue;
+}
+
 /* The spawner a test kills mid-spawn: children forever, each reaped. */
 static _Noreturn int child_spawner(void)
 {
@@ -116,6 +127,10 @@ int pt_child_proc(int argc, char **argv)
         return child_spawner();
     if (!strcmp(what, "write") && argc > 3)   /* its text on descriptor 1 */
         return write(1, argv[3], strlen(argv[3])) == (ssize_t)strlen(argv[3]) ? 0 : 1;
+    if (!strcmp(what, "spin") && argc > 3) {
+        spin_cpu_ms(atol(argv[3]));
+        return 0;
+    }
     return 100;
 }
 
@@ -491,6 +506,31 @@ static void check_failed_spawn_keeps(void)
     close(p[1]);
 }
 
+/* times and getrusage: ours grows with what we spin; a reaped child's
+ * spin counts as our children's. */
+static void check_times(void)
+{
+    struct tms t0, t1;
+    struct rusage ru;
+    clock_t r0 = times(&t0);
+    CHECK(r0 != (clock_t)-1 && r0 >= 0);
+    spin_cpu_ms(100);
+    clock_t r1 = times(&t1);
+    long hz = sysconf(_SC_CLK_TCK);
+    CHECK(r1 >= r0 && hz > 0);
+    CHECK((t1.tms_utime + t1.tms_stime) - (t0.tms_utime + t0.tms_stime) >= hz / 20);
+    CHECK(getrusage(RUSAGE_SELF, &ru) == 0 &&
+          ru.ru_utime.tv_sec * 1000000L + ru.ru_utime.tv_usec >= 100000);
+    CHECK(getrusage(RUSAGE_THREAD, &ru) == 0);
+    const char *args[] = { "spin", "100", NULL };
+    CHECK(reap(spawn_self(NULL, NULL, args)) == 0);
+    CHECK(getrusage(RUSAGE_CHILDREN, &ru) == 0 &&
+          ru.ru_utime.tv_sec * 1000000L + ru.ru_utime.tv_usec >= 100000);
+    CHECK(times(&t1) != (clock_t)-1 && t1.tms_cutime + t1.tms_cstime >= hz / 10);
+    errno = 0;
+    CHECK(getrusage(42, &ru) == -1 && errno == EINVAL);
+}
+
 void pt_proc(char **argv)
 {
     (void)argv;
@@ -505,4 +545,5 @@ void pt_proc(char **argv)
     check_cut_reader();
     check_cut_kill();
     check_failed_spawn_keeps();
+    check_times();
 }
