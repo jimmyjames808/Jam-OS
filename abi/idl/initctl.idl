@@ -140,3 +140,14 @@ const APP_MAX      15
 # ERR_NO_RESOURCES: volumes keeps as many channels as it can. The shell's
 # channel only (ERR_ACCESS_DENIED on the consoles' and the compositor's).
 11 disks  () -> (handle<channel> list)
+
+# Make disk `id` (voldisks' ids, `disks`' nvme1) a Jam OS disk (volinstall.prepare):
+# a blank NVMe drive gets Jam OS's partition table and both partitions are
+# formatted and mounted read-only; one a prepare was cut short on is finished.
+# Nothing else is ever written: the drive must be blank or already Jam OS's
+# (volumes and the driver each decide), and the shell has asked for the last
+# four characters of its serial number before it calls this. Answered later,
+# when volumes has answered (init serves its other channels meanwhile;
+# ERR_TIMED_OUT after 11 minutes). The shell's channel only (ERR_ACCESS_DENIED
+# on the consoles' and the compositor's). Errors are volinstall.prepare's.
+12 prepare_disk  (u32 id) -> () later

@@ -27,7 +27,7 @@
  * Open /svc/volumes again (init has the next one's control channel); the
  * next volumes mounts what devmgr hands it, and a new watch lists it.
  *
- * Protocols `volumes` (id 70), `volesp` (id 71), `disks` (id 72), `mounts` (id 73) and `voldisks` (id 74): one for each
+ * Protocols `volumes` (id 70), `volesp` (id 71), `disks` (id 72), `mounts` (id 73), `voldisks` (id 74) and `volinstall` (id 75): one for each
  * kind of channel, so a message of one protocol sent on a channel of
  * another is refused (ERR_NOT_SUPPORTED). For each <proto>:
  * Client: <proto>_<method>(ch, args..., &results...)
@@ -2825,10 +2825,12 @@ static inline status_t mounts_serve(handle_t ch, const struct mounts_ops *ops, v
 
 /* Constants (the .idl's `const` lines). */
 /* A disk's `kind`: the Jam OS layout (an ESP then a FAT32 data partition on
- * an MBR disk; stage 2 adds the GPT mark), a disk in which no partition
- * table was found (blank, or in a form volumes does not read: the driver's
- * blank rule, stage 2's, is stricter), or anything else. Only a Jam OS disk
- * may ever be written. */
+ * an MBR disk, or on a drive the GPT mark: GPT with exactly two partitions,
+ * the ESP's type named "Jam OS ESP" and Jam OS's data type named "Jam OS
+ * data", checked by volumes' own code, not the driver's), a disk in which no
+ * partition table was found (blank, or in a form volumes does not read: the
+ * driver's blank rule is stricter, and decides), or anything else. Only a
+ * Jam OS disk may ever be written. */
 #define VOLDISKS_KIND_OTHER 0u
 #define VOLDISKS_KIND_NO_TABLE 1u
 #define VOLDISKS_KIND_JAMOS 2u
@@ -3021,7 +3023,8 @@ static inline status_t voldisks_disk_call(handle_t ch, bool idl_within, uint64_t
  * zero. `kind` KIND_*, `scheme` storage.idl's SCHEME_*, `partitions` how
  * many the driver lists (more than are given by `partition` when it is
  * past MAX_PARTS), `read_only` 1: volumes opens none of its partitions
- * writable (every NVMe drive, in stage 1). `model`, `serial` and `firmware`
+ * writable (every NVMe drive that is not a Jam OS disk by volumes' own
+ * check). `model`, `serial` and `firmware`
  * are the drive's own (storage.ident; a stick has the INQUIRY's vendor and
  * product in `model` and the others empty). Past the last:
  * ERR_OUT_OF_RANGE. */
@@ -3880,5 +3883,310 @@ static inline status_t voldisks_serve(handle_t ch, const struct voldisks_ops *op
         if (idl_st != OK)
             return idl_st;
         idl_s.rn = voldisks_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
+    }
+}
+
+
+/* ==== protocol `volinstall` (id 75) =========================================
+ *
+ * volinstall: making a disk Jam OS's (M12.7 stage 2; stage 3's installer
+ * adds its methods). Like `volesp`, init's alone: init made this channel when
+ * it started volumes (the startup role VOLUMES_SR_INSTALL), holds the client
+ * end and gives it to nobody; volumes serves nothing else on it, and
+ * nothing of this on any other channel. The shell reaches it through
+ * initctl.prepare_disk, after the owner has typed the last four characters
+ * of the drive's serial number.
+ *
+ * Reconnect: ERR_PEER_CLOSED: volumes ended; init has a new channel for the
+ * next one, and the request is asked again by its caller. */
+
+#define VOLINSTALL_PROTOCOL_ID 75u
+#define VOLINSTALL_PREPARE          0x004b0001u
+
+/* Messages (packed: no padding bytes ever cross the channel). */
+struct volinstall_prepare_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t id;
+} __attribute__((packed));
+struct volinstall_prepare_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
+
+#define VOLINSTALL_REQ_MAX 12u   /* bytes: the biggest request */
+#define VOLINSTALL_REP_MAX 8u   /* bytes: the biggest reply */
+#define VOLINSTALL_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
+#define VOLINSTALL_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
+#define VOLINSTALL_UNREAD_MSGS IDL_UNREAD_MSGS   /* the unread bound: messages ... */
+#define VOLINSTALL_UNREAD_BYTES IDL_UNREAD_BYTES   /* ... or bytes a client may leave unread */
+
+/* ---- client ---------------------------------------------------------- */
+
+/* volinstall_prepare_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t volinstall_prepare_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t id)
+{
+    struct volinstall_prepare_req idl_q;
+    struct volinstall_prepare_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = VOLINSTALL_PREPARE;
+    idl_q.id = id;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    return idl_st;
+}
+/* Disk `id` (voldisks' ids) made a Jam OS disk, then its two partitions
+ * formatted and mounted read-only (/nvmeN, /nvmeM: `mount -w` makes them
+ * writable). A blank drive (volumes found no partition table on it, and
+ * the driver, which decides, finds it blank or a create_table cut short on
+ * it) gets Jam OS's partition table: volumes makes three random GUIDs and
+ * asks the driver's storage.create_table, then reads the disk again and
+ * starts a filesystem service on each partition with the one right to
+ * format (fat formats a partition whose first sector holds no boot signature,
+ * and no other). A Jam OS disk (volumes' own mark check) whose partitions
+ * are not both mounted gets the same for the ones that are not: the next run
+ * of a prepare that was cut short. The formatted partitions are then opened
+ * read-only again (their services stopped in order, started again). Answered
+ * once both partitions are mounted. ERR_NOT_FOUND: no such disk;
+ * ERR_NOT_SUPPORTED: not an NVMe drive; ERR_BAD_STATE: its driver is not
+ * there, or it is being prepared, released or still starting a mount;
+ * ERR_ACCESS_DENIED: the drive is someone else's (not blank, not Jam OS's;
+ * the driver says so too), or read-only (the `diskro` word);
+ * ERR_ALREADY_EXISTS: a Jam OS disk with both partitions mounted already;
+ * ERR_NO_SPACE: too small (under about 580 MiB); ERR_IO: a write or a
+ * format failed (the table or a partition may be half done: ask again);
+ * ERR_TIMED_OUT: not mounted within the time given (10 minutes). */
+static inline status_t volinstall_prepare_until(handle_t ch, uint64_t deadline_ns, uint32_t id)
+{
+    return volinstall_prepare_call(ch, false, deadline_ns, id);
+}
+static inline status_t volinstall_prepare_within(handle_t ch, uint64_t timeout_ns, uint32_t id)
+{
+    return volinstall_prepare_call(ch, true, timeout_ns, id);
+}
+static inline status_t volinstall_prepare(handle_t ch, uint32_t id)
+{
+    return volinstall_prepare_call(ch, false, DEADLINE_NEVER, id);
+}
+
+/* ---- client, asynchronous (tools/genidl.py) --------------------------- */
+
+/* volinstall_prepare without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then volinstall_prepare_result. */
+static inline status_t volinstall_prepare_send(handle_t ch, uint32_t idl_txid, uint32_t id)
+{
+    struct volinstall_prepare_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = VOLINSTALL_PREPARE;
+    idl_q.id = id;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to volinstall_prepare_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t volinstall_prepare_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct volinstall_prepare_rep *idl_r = (const struct volinstall_prepare_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
+/* ---- server ---------------------------------------------------------- */
+
+/* Handlers: return OK and fill the results, or an ERR_* for the client.
+ * A NULL handler answers ERR_NOT_SUPPORTED. A `later` method's handler
+ * also gets the request's txn, and may return IDL_LATER and answer it
+ * with volinstall_reply_<method> (now, or later from anywhere). */
+struct volinstall_ops {
+    status_t (*prepare)(void *ctx, struct idl_txn idl_txn, uint32_t id);
+};
+
+/* Answer the volinstall.prepare request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t volinstall_reply_prepare(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct volinstall_prepare_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Decode the request of n bytes at req, which came on ch, call its handler,
+ * encode the reply into rep (VOLINSTALL_REP_MAX bytes) and the handles it carries
+ * into rhs (VOLINSTALL_REP_HANDLES slots; *rhn of them). Returns the reply's
+ * length: 0 means no reply (the request has no txid, or a `later`
+ * handler answers it itself). No I/O; the caller sends the reply with the
+ * handles, or closes them if it never sends it. */
+static inline uint32_t volinstall_dispatch_on(handle_t ch, const struct volinstall_ops *ops, void *ctx,
+                                              const void *req, uint32_t n, void *rep, handle_t *rhs,
+                                              uint32_t *rhn)
+{
+    struct idl_rep_hdr *idl_h = (struct idl_rep_hdr *)rep;
+    *rhn = 0;
+    (void)rhs;
+    if (n < sizeof(uint32_t))
+        return 0;
+    idl_h->txid = ((const struct idl_req_hdr *)req)->txid;
+    idl_h->status = ERR_INVALID_ARGS;
+    if (n < sizeof(struct idl_req_hdr))
+        return sizeof(*idl_h);
+    switch (((const struct idl_req_hdr *)req)->ordinal) {
+    case VOLINSTALL_PREPARE: {
+        const struct volinstall_prepare_req *idl_q = (const struct volinstall_prepare_req *)req;
+        struct volinstall_prepare_rep *idl_r = (struct volinstall_prepare_rep *)rep;
+        (void)idl_r;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->prepare) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        struct idl_txn idl_txn = { ch, idl_h->txid };
+        status_t idl_st = ops->prepare(ctx, idl_txn, idl_q->id);
+        /* IDL_LATER: the handler answers with volinstall_reply_prepare. */
+        if (idl_st == IDL_LATER)
+            return 0;
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        return sizeof(*idl_r);
+    }
+    }
+    idl_h->status = ERR_NOT_SUPPORTED;
+    return sizeof(*idl_h);
+}
+
+/* volinstall_dispatch_on without the channel (a `later` handler's txn then has none: use volinstall_dispatch_on). */
+static inline uint32_t volinstall_dispatch(const struct volinstall_ops *ops, void *ctx, const void *req, uint32_t n,
+                                           void *rep, handle_t *rhs, uint32_t *rhn)
+{
+    return volinstall_dispatch_on(HANDLE_INVALID, ops, ctx, req, n, rep, rhs, rhn);
+}
+
+/* The unread bound (tools/genidl.py): has ch's client left VOLINSTALL_UNREAD_MSGS
+ * messages or VOLINSTALL_UNREAD_BYTES bytes of ours unread? Then a loop of the
+ * server's own reads nothing more from ch for now: it leaves ch unserved
+ * and looks again later (struct idl_held). */
+static inline bool volinstall_unread_full(handle_t ch)
+{
+    return idl_unread_full(ch, VOLINSTALL_UNREAD_MSGS, VOLINSTALL_UNREAD_BYTES);
+}
+
+/* Take the next message on ch into slot (idl_take), a slot with room for
+ * the protocol's biggest request (ERR_INVALID_ARGS if it has less). The
+ * reply waiting in *rep (NULL or empty: none) goes out first in the same
+ * system call (idl_take_after). It never waits: ERR_SHOULD_WAIT when
+ * nothing is queued. */
+static inline status_t volinstall_take_slot(handle_t ch, const struct idl_slot *slot,
+                                            struct idl_reply *rep)
+{
+    if (slot->qcap < VOLINSTALL_REQ_MAX)
+        return ERR_INVALID_ARGS;
+    if (rep && rep->ch != HANDLE_INVALID)
+        return idl_take_after(ch, slot, rep);
+    return idl_take(ch, slot);
+}
+
+/* Run the request in slot (taken by volinstall_take_slot, or found there by a
+ * successor), which came on ch: as volinstall_dispatch_on, its reply built
+ * in slot->r and the handles that reply carries put into rhs
+ * (VOLINSTALL_REP_HANDLES slots; *rhn of them). A request that carried handles is
+ * answered ERR_INVALID_ARGS without its handler seeing it. Returns the
+ * reply's length: 0 means no reply (no txid, or a `later` handler
+ * answers it itself). No I/O; the caller sends the reply with the handles,
+ * or closes them if it never sends it. */
+static inline uint32_t volinstall_run_slot(handle_t ch, const struct idl_slot *slot,
+                                           const struct volinstall_ops *ops, void *ctx, handle_t *rhs, uint32_t *rhn)
+{
+    *rhn = 0;
+    if (*slot->n >= sizeof(uint32_t) && *slot->nh)
+        return idl_refuse(slot);
+    return volinstall_dispatch_on(ch, ops, ctx, slot->q, *slot->n, slot->r, rhs, rhn);
+}
+
+/* Is the method with this wire ordinal idempotent (its keyword in the
+ * .idl): run again on the state its first run left, it gives the same
+ * result and the same answer? A server that keeps nothing across a
+ * restart may run such a request again; any other it answers with an
+ * error. (No server reads it yet: it is for the drivers that outlive
+ * their process, after M12.) */
+static inline bool volinstall_idempotent(uint32_t ordinal)
+{
+    (void)ordinal;
+    return false;   /* no method is marked */
+}
+
+/* Take one message off ch and answer it (the unread bound is the caller's:
+ * volinstall_unread_full first). OK once a message was handled
+ * (its reply may still have been dropped: the client is gone, or never
+ * called); otherwise drv_channel_read's status: ERR_SHOULD_WAIT when
+ * nothing is queued, ERR_PEER_CLOSED when the client is gone for good. */
+static inline status_t volinstall_serve_one(handle_t ch, const struct volinstall_ops *ops, void *ctx)
+{
+    _Alignas(8) uint8_t idl_q[VOLINSTALL_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[VOLINSTALL_REP_MAX];
+    handle_t idl_hs[IDL_READ_HANDLES];
+    uint32_t idl_n = 0, idl_nh = 0;
+    status_t idl_st = drv_channel_read(ch, idl_q, sizeof(idl_q), &idl_n, idl_hs, IDL_READ_HANDLES,
+                                       &idl_nh);
+    if (idl_st == ERR_BUFFER_TOO_SMALL)
+        return idl_drain(ch, idl_n, idl_nh);
+    if (idl_st != OK)
+        return idl_st;
+    if (idl_nh) {
+        idl_close_all(idl_hs, idl_nh);
+        idl_reply_status(ch, idl_q, idl_n, ERR_INVALID_ARGS);
+        return OK;
+    }
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    uint32_t idl_rhn = 0;
+    uint32_t idl_rn = volinstall_dispatch_on(ch, ops, ctx, idl_q, idl_n, idl_r, idl_rhs, &idl_rhn);
+    if (!idl_rn)
+        idl_close_all(idl_rhs, idl_rhn);   /* no reply: never sent */
+    else   /* the reply's handles are gone whatever the write's status */
+        (void)drv_channel_write(ch, idl_r, idl_rn, idl_rhs, idl_rhn);
+    return OK;
+}
+
+/* Serve ch until the client closes it (OK), or a wait or read fails
+ * (that status: ERR_CANCELED when the driver is being killed). Each reply
+ * goes out in the system call that takes the next request, and a client
+ * with VOLINSTALL_UNREAD_MSGS answers unread waits until it reads (idl_serve_next). */
+static inline status_t volinstall_serve(handle_t ch, const struct volinstall_ops *ops, void *ctx)
+{
+    _Alignas(8) uint8_t idl_q[VOLINSTALL_REQ_MAX];
+    _Alignas(8) uint8_t idl_r[VOLINSTALL_REP_MAX];
+    handle_t idl_rhs[IDL_REP_HANDLES];
+    struct idl_serve idl_s = {
+        .ch = ch, .q = idl_q, .qcap = sizeof(idl_q), .r = idl_r, .rhs = idl_rhs,
+        .umsgs = VOLINSTALL_UNREAD_MSGS, .ubytes = VOLINSTALL_UNREAD_BYTES,
+    };
+    for (;;) {
+        status_t idl_st = idl_serve_next(&idl_s);
+        if (idl_st == ERR_PEER_CLOSED)
+            return OK;
+        if (idl_st != OK)
+            return idl_st;
+        idl_s.rn = volinstall_dispatch_on(ch, ops, ctx, idl_q, idl_s.n, idl_r, idl_rhs, &idl_s.rhn);
     }
 }

@@ -572,9 +572,10 @@ endef
 $(foreach d,$(DRIVERS),$(eval $(call DRIVER,$(d))))
 
 # The partition table library (<jam/parttable.h>), as a disk driver links
-# it (DRV_LIB_<name> := parttable parttable_gpt), checked on its own by
+# it (DRV_LIB_<name> := parttable parttable_gpt parttable_make: the cut-short
+# prepare rule in parttable.c uses the maker's bytes), checked on its own by
 # `make check` so it keeps to the driver rules before any driver uses it.
-PT_LIB     := parttable parttable_gpt
+PT_LIB     := parttable parttable_gpt parttable_make
 PT_LIB_OBJ := $(BUILD)/udrv/parttable-lib.o
 $(PT_LIB_OBJ): $(patsubst %,$(BUILD)/udrv/drivers/lib/%.o,$(PT_LIB)) tools/checkdriver.py \
                $(DRV_SURFACE)

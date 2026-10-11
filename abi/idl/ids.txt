@@ -65,6 +65,7 @@
 72      disks           abi/idl/volumes.idl
 73      mounts          abi/idl/volumes.idl
 74      voldisks        abi/idl/volumes.idl
+75      volinstall      abi/idl/volumes.idl
 # 80 to 89: libos's (M12 track P6a) and init's and logd's (P6b)
 80      keepch          abi/idl/keepch.idl
 81      nschan          abi/idl/nschan.idl
