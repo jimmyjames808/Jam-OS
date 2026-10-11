@@ -1,6 +1,6 @@
 #!/bin/sh
 # The RTL8125 driver's boot words in QEMU (which has no RTL8125; the probe
-# and the send test themselves run on the PC only: docs/M9-PLAN.md). Four
+# and the send test themselves run on the PC only: docs/HISTORY.md, M9). Four
 # boots, one after the other:
 #   1. `shell netprobe` (tools/shell-tests/netprobe.txt): devmgr gets the
 #      word and says so, nothing is bound for it, no [rtl8125] line, the

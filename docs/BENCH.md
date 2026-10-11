@@ -431,7 +431,7 @@ Reading:
   pass. A user call takes 20 spinlocks, each through the lock checker
   (`spin_lock + spin_unlock` is 26.7 ns with it on the PC).
 - A deadline costs a system call (the clock), two spinlocks (the sleeper
-  queue) and a timer re-arm on every call ([M11.5-PLAN.md](M11.5-PLAN.md#q4-how-should-deadlines-get-cheaper)).
+  queue) and a timer re-arm on every call ([HISTORY: M11.5](HISTORY.md#m115-the-performance-pass)).
 
 ## Path counts after M11.5's tracks, QEMU 2026-10-05
 
@@ -485,7 +485,7 @@ Reading:
 **Measured before the last follow-ups.** Build b7713bd (M11.5's stage 0
 and tracks F, D, O, L, P, C and H merged), a normal boot with `bench`
 from the shell (step 0's second boot:
-[M11.5-PLAN.md](M11.5-PLAN.md#the-switch-regression-first)), read from
+[HISTORY: M11.5](HISTORY.md#m115-the-performance-pass)), read from
 the log netlog brought to the Mac. Not in that build: track G (the
 generated server on reply-and-wait and `_within`: no generated line
 yet), the hand-off recorded without the run queue lock, no relock after
@@ -619,7 +619,7 @@ Reading:
 
 Services that outlive their process
 ([ARCHITECTURE.md](../ARCHITECTURE.md#services-that-outlive-their-process),
-[M11.6-PLAN.md](M11.6-PLAN.md#kill-to-first-answer)), measured by the
+[HISTORY: M11.6](HISTORY.md#m116-services-that-outlive-their-process)), measured by the
 area scripts at M11.6's join (local main 0e7f888 plus the join's docs and
 genidl check), `QEMU_SMP=2`, on the Mac with three or four other agents'
 QEMU runs going (load average ~10). These are QEMU's numbers: they say
@@ -757,3 +757,38 @@ The page's cost is `lfence; rdtsc` and a few multiplies, plus musl's
 out (it calls libjam directly), so the saving through libc before K2 was
 a little more than the table shows. Not measured yet on the PC itself
 (its `user: clock_get` line, 44.9 ns in M11.5, is the calls' side).
+
+## M12 on the PC, 2026-10-11
+
+`bench` from the shell on an everyday boot of the M12 sign-off build
+(0.1.0; the desktop up, the IOMMU on, the lock checker on), median / p99
+of 4000 samples, beside M11.5's run with every follow-up (2026-10-07).
+M12 changed the system calls, the channels' accounting, the protocols
+and the storage services; its plan asked that the reply-and-wait line be
+no worse than 765 ns, and it is the same to the tenth of a nanosecond.
+
+| Line | 2026-10-07 | 2026-10-11 (median / p99) |
+|---|---|---|
+| context switch (yield, 2 threads, P) | 30.1-30.4 ns | 30.2 / 30.3 ns |
+| block+wake round trip, same CPU | 310 ns | 311.9 / 338.0 ns |
+| kernel channel_call, same CPU (checker on) | 389 ns | 380.6 / 398.6 ns |
+| user process->process call, same CPU | 1089 ns | **1089.3** / 1111.5 ns |
+| user call to a reply-and-wait server, same CPU | **765 ns** | **765.5** / 784.4 ns (hand-off off: 785.3) |
+| the same with per-thread message slots off | 848 ns | 852.1 / 873.9 ns |
+| generated client and server (null.ping) | 826 ns | 839.8 / 975.7 ns |
+| the same call with a 60 s deadline | 1179 ns | 1173.1 / 1191.5 ns |
+| user thread->thread call, one process | - | 958.1 / 982.3 ns |
+| user: syscall round trip / clock_get / page fault | 30.7 / 45.2 / 669.8 ns (10-04) | 30.7 / 45.2 / 720.0 ns |
+| TLB shootdown, 1 page, 27 other CPUs | 4096 ns | 4226.6 / 4780.9 ns |
+| iommu map + unmap + invalidate, 1 page; 64 pages | 5170 ns; 23 us | 5083.9 / 9236.2 ns; 23 / 70 us |
+
+Reading:
+- **M12 caused no slowdown.** The two lines the call path is judged on,
+  the reply-and-wait call and the process-to-process call, are the same
+  as on 2026-10-07 (765.5 against 765, 1089.3 against 1089), and so is the
+  switch (30.2 ns); the spread of the others (the TLB shootdown 3 % up, the
+  generated call 1.7 % up, the kernel call 2 % down) is the run-to-run
+  noise of a PC with the desktop painting beside the bench (the log's
+  compositor lines show 188 frames in the first ten seconds).
+- The reply-and-wait line is still 165 ns over M11.5's 600 ns target (the
+  last 165 ns are in the roadmap's follow-ups).

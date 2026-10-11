@@ -2,8 +2,8 @@
 # make check: in the RTL8125 driver (drivers/rtl8125) only tx.c can make
 # the chip transmit, only in full mode with a network mode (a VLAN, or
 # untagged), and the listen-only
-# probe has no path to it (docs/M9-PLAN.md, "Where the VLAN tag is
-# enforced"). Grep-level rules over the driver's sources; notx.h's guard
+# probe has no path to it (docs/HISTORY.md, M9: where the VLAN tag is
+# enforced). Grep-level rules over the driver's sources; notx.h's guard
 # and gate enforce the same at run time (utest checks them).
 #
 #   1. Registers are written (drv_write*) in two files only: regs.c, where
@@ -27,11 +27,11 @@
 #   7. Nothing goes round rules 1-3 by name: the registers' mapping (->r)
 #      is named only in regs.c, tx.c and main.c (which maps it), and the
 #      transmit ring (TX_RING_OFF) and buffers (txbufs) only in tx.c, ring.c
-#      (which makes and frees them) and rtl8125.h (M9-REVIEW item 6).
+#      (which makes and frees them) and rtl8125.h (M9 review item 6, docs/HISTORY.md).
 #   8. The MAC OCP registers that change how the transmitter reads its
 #      ring (0xeb58, the descriptor format: RTL_MAC_TXD_FORMAT) or how many
 #      rings it has (0xe63e: RTL_MAC_TXQ_CTRL) are written (mac_wr,
-#      mac_mod) in chip.c's bring-up only (M9-REVIEW item 6 (c)); notx.h's
+#      mac_mod) in chip.c's bring-up only (M9 review item 6 (c)); notx.h's
 #      guard checks the values written there at run time.
 #
 # Then it checks itself: tools/checknotx-tests/ breaks every part of every

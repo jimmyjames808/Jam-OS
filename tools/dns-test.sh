@@ -1,5 +1,5 @@
 #!/bin/sh
-# DHCP, DNS and the slow-peer rule in QEMU (docs/M9-PLAN.md stage 5): two
+# DHCP, DNS and the slow-peer rule in QEMU (docs/HISTORY.md, M9): two
 # plain boots with QEMU's e1000e and tools/netpeer.py (its DHCP and DNS
 # servers), each passing the peer's and the pcap's VLAN checks
 # (tools/qemu-test.sh):

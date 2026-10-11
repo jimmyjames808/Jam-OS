@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Generate Jam OS's Wayland tables and stubs from upstream's XML
-(docs/G1-PLAN.md, "The generator: tools/genwl.py").
+(docs/HISTORY.md, G1).
 
     genwl.py gen        write the generated files
     genwl.py check      exit 1 (and name them) if any is missing, stale or

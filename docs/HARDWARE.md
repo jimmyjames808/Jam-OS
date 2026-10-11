@@ -15,7 +15,7 @@ the stick on 2026-10-01, and the network runs of 2026-10-02).
 | Topology | cpus 0-15: the P-cores, two threads each (cpu 0 and 1 are core 0, 2 and 3 are core 4, ... 14 and 15 are core 28); cpus 16-27: the E-cores, one thread each (cores 32-43) |
 | Memory | 32 GB (Jam OS manages 32049 MiB) |
 | Display | NVIDIA RTX 4080 SUPER (01:00.0, 10de:2702), monitor on it. UEFI GOP framebuffer 2560x1440, 32 bpp, at physical 0x4000000000 (256 GiB: Resizable BAR on). No iGPU PCI function: the UHD 770 is disabled in firmware |
-| PCI | 24 functions on 6 buses |
+| PCI | 25 functions on 6 buses (24 before the second NVMe drive was fitted, 2026-10-11) |
 | Serial | a working COM1 UART, but no cable; logs come off the PC as files on the stick (each boot's log in `/data/logs/`), over the network to the Mac (netlog, on the "Jam OS (network)" boot: [The network](#the-network)) and as photos of the screen |
 
 **PCIDs.** Alder Lake and Raptor Lake have an erratum (Intel ADL063,
@@ -96,18 +96,19 @@ macOS runs gets their files (`System Volume Information`, `.Spotlight-V100`,
 | Function | Device | Notes |
 |---|---|---|
 | 05:00.0 | Realtek RTL8125B 2.5 GbE, 10ec:8125 rev 05 | drv/rtl8125: [The network](#the-network) |
-| 00:1f.3 | Intel Raptor Lake PCH HD Audio, 8086:7a50 rev 11, class 04 03 00 (HDA mode, not the audio DSP's). MSI (1, 64-bit), no MSI-X. BAR0 mem64 16 KiB (the HDA registers), BAR4 mem64 1 MiB (the DSP's, unused) | drv/hda. Codec 0 is a Realtek ALC897 (10ec:0897, subsystem 1043:8841); the front-panel headphone jack is its pin 1b, fed by DAC 02 through mixer 0c. Codec address 2 is reported but never answers (likely the disabled iGPU's HDMI codec). The whole graph: `hda` in the shell, `[hda]` lines in the boot log, and [A1-PLAN.md](history/A1-PLAN.md#the-hardware) |
+| 00:1f.3 | Intel Raptor Lake PCH HD Audio, 8086:7a50 rev 11, class 04 03 00 (HDA mode, not the audio DSP's). MSI (1, 64-bit), no MSI-X. BAR0 mem64 16 KiB (the HDA registers), BAR4 mem64 1 MiB (the DSP's, unused) | drv/hda. Codec 0 is a Realtek ALC897 (10ec:0897, subsystem 1043:8841); the front-panel headphone jack is its pin 1b, fed by DAC 02 through mixer 0c. Codec address 2 is reported but never answers (likely the disabled iGPU's HDMI codec). The whole graph: `hda` in the shell, `[hda]` lines in the boot log, and [HISTORY: audio](HISTORY.md#audio-a1-a2-as-and-m85-kexec) |
 | 01:00.1 | NVIDIA HD Audio, 10de:22bb | HDMI/DP audio on the RTX: no driver, not planned |
 | 00:14.3 | Intel Wi-Fi (the board lists an AX201), 8086:7a70 (MSI-X 16) | not planned |
 | 00:0e.0 | Intel VMD/RAID, 8086:a77f | its 64-bit BAR has a hard-wired-zero upper half (see [HISTORY.md](HISTORY.md#m6-pci-msi-devmgr-drivers-through-handles)) |
 | 02:00.0 | Crucial NVMe, c0a9:5421 (MSI 8, MSI-X 9) | drv/nvme, **read-only** (M12.7, [plan](M12.7-PLAN.md)): bound on every boot since stage 1's N4; its FAT partitions are `/nvme0`, ..., `disks` lists it, `disk digest` and `disk smart` read it. Windows' drive on the owner's PC: never written ([USING](USING.md#files-and-sticks)). Writing and an installer are stages 2 and 3 |
+| 03:00.0 | MAXIO NVMe, 1e4b:1202 (MSI 32, MSI-X 9) | The owner's second NVMe drive, **fitted 2026-10-11 and blank**: never initialised, no partition table (Windows' prompt to initialise it was cancelled and the drive stays that way). It is Jam OS's own: the target of M12.7's stage 2 (writes, only to a drive marked for Jam OS) and stage 3 (the installer) ([plan](M12.7-PLAN.md)). Until stage 2 is built nothing writes to it: drv/nvme binds it on every boot exactly as the Crucial drive, with no write command in the driver, `disks` lists it as `blank`, and it has no partitions to mount |
 | | SATA, SMBus, I2C/SPI functions, 6 bridges | |
 
 ## The IOMMU (VT-d)
 
 From the read-only probe at a cold boot (2026-10-04, build b7713bd,
 boot-2026-10-04_21-\*; `dmesg | grep -E 'vtd:|acpi:'`), the facts M11
-([docs/M11-PLAN.md](M11-PLAN.md)) is built against:
+([HISTORY: M11](HISTORY.md#m11-the-iommu)) is built against:
 
 - **One remapping unit**, registers at **0xfed91000** (one page), segment
   0, with INCLUDE_PCI_ALL: it covers every PCI function (the iGPU is
@@ -131,7 +132,7 @@ boot-2026-10-04_21-\*; `dmesg | grep -E 'vtd:|acpi:'`), the facts M11
 
 QEMU's emulated unit differs (registers at 0xfed90000, caching mode on, an
 explicit endpoint scope per function instead of INCLUDE_PCI_ALL, no RMRR):
-what only the PC proves is in [M11-PLAN.md](M11-PLAN.md#what-only-the-pc-can-show).
+what only the PC proves is in [HISTORY: M11](HISTORY.md#m11-the-iommu).
 The PC signed the IOMMU off on 2026-10-07: everyday boots with it on (no
 fault), the "Developer > IOMMU checks" entry (the blocked read and the
 blocked interrupt-window write, fault 25h), All tests with `iommu=on` (382
@@ -147,7 +148,7 @@ and MSI-X (32 vectors; table at BAR4+0x0, PBA at BAR4+0x800). BAR0 is I/O
 0x3000, BAR2 mem64 64 KiB (the registers), BAR4 mem64 16 KiB (MSI-X only),
 so the registers never share a page with the MSI-X table. From the
 listen-only probe on 2026-10-02 (boot-0065, build f6c57bf;
-[the results](M9-PLAN.md#stage-0-on-the-pc-2026-10-02-boot-0065-the-results)):
+[HISTORY: M9](HISTORY.md#m9-networking)):
 PCIe gen 2 x1 with ASPM off; the PHY's id 001cc840 with no firmware patch
 loaded (the board's firmware loads none), the MAC's ROM code with no break
 points; with no firmware tables at all it resets in 1 ms and links at
@@ -168,7 +169,7 @@ wrote 16-byte ones, so the chip read every other descriptor and transmit
 stalled; since 41ccd54 the descriptors are 32 bytes and the driver leaves
 the transmitter off unless the chip's bit agrees (the log's `transmit
 descriptors: 32 bytes; ... they agree`). The receive descriptor is 32
-bytes too. ([The result and the fix](M9-PLAN.md#r1-the-pc-result-and-the-transmit-fix).)
+bytes too. ([HISTORY: M9](HISTORY.md#m9-networking).)
 On 41ccd54 (boot-0073, the send test): 20 of 20 ARP probes to 10.2.21.1
 answered, each descriptor back from the chip 0.04 ms after its doorbell,
 and the chip's count of frames sent equal to the driver's.
@@ -197,7 +198,7 @@ on this port it would land on the home network, so `update` refuses one
 ([ARCHITECTURE.md](../ARCHITECTURE.md#networking)). The PC's
 cable goes to a one-port bridge, so the Mac can't watch the PC's port; a
 capture needs a cable from the PC straight to the Mac's USB Ethernet
-adapter ([M9-PLAN.md](M9-PLAN.md#r1-the-pc-result-and-the-transmit-fix)).
+adapter ([HISTORY: M9](HISTORY.md#m9-networking)).
 
 **The Mac** is on VLAN 21 too, by Wi-Fi at **10.2.21.174** (kept by a
 router reservation and a fixed "Private Wi-Fi address"): the PC's
@@ -246,7 +247,7 @@ doesn't say, asks before it goes on; then it finds the one external disk
 with Jam OS's two partitions, mounts its ESP, keeps the stick's kernel and bootfs as the
 previous build (copied to `prev-jamos.elf` and `prev-bootfs.img`, the
 boot menu's "Jam OS (previous build)", replacing an older one; the PC's
-`update -w` renames instead, [M9-PLAN](M9-PLAN.md#update--w-built)), copies the kernel, the bootfs and `limine.conf`
+`update -w` renames instead, [HISTORY: M9](HISTORY.md#m9-networking)), copies the kernel, the bootfs and `limine.conf`
 under new names (`jamos.elf.new`, ...), compares all three, renames them
 over the old ones, compares again, and ejects the stick. It asks for your
 password: macOS does not mount an MBR partition of type 0xEF by itself,
