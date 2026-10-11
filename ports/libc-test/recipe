@@ -1,0 +1,26 @@
+# libc-test: musl's test suite, built as one program (docs/M13-PLAN.md,
+# track P2) that runs the functional and regression sets on Jam OS. It is
+# a system port (a test entry's program, no use on /data), in the boot
+# image as usr/bin/libc-test; tools/libc-test.sh runs it. third_party/
+# libc-test is the tree as upstream has it, less src/math/ (its data
+# includes crlibm's LGPL tables, which this tree does not take). Each test
+# is compiled as upstream writes it but for its tmpfile (files/shim.h) and
+# linked into the one program with the runner (files/runner.c), which
+# starts each as a child and compares the results with
+# files/expected-failures.txt; api/ (compile-time header tests) and musl/
+# are not built. The tests that need dynamic linking are not built.
+name        libc-test
+version     20260825
+revision    1
+summary     musl's libc-test suite as one program, run by tools/libc-test.sh
+homepage    https://repo.or.cz/libc-test.git
+category    tests
+# "libc-test is developed as part of the musl project": MIT, in COPYRIGHT.
+licence     MIT
+licence-file COPYRIGHT
+vendored    libc-test
+place       boot
+style       custom
+host        python3
+# Commit 7b95dfa5f5d5ca4d949221e0228ccc290bacc14e (2026-08-25).
+program     bin/libc-test

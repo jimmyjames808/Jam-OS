@@ -610,8 +610,13 @@ check: all
 	python3 tools/netpeer.py --selftest
 	python3 tools/pcap-vlan-check.py --selftest
 	python3 tools/checkwants.py --selftest
+	python3 tools/mkbootfs.py --selftest
 	python3 tools/ports.py lint
 	python3 tools/ports.py selftest
+	@for d in $$(cd third_party && ls -d */ | tr -d /); do \
+	    case " $(THIRD_PARTY_NOTICED) " in *" $$d "*) ;; \
+	    *) echo "licences: third_party/$$d has no notice in the boot image (LICENCES in the Makefile, or a port's recipe)"; exit 1;; esac; \
+	done
 	python3 tools/fatcheck.py --selftest
 	$(SIGN_TOOL) self-test
 	$(MENU_TOOL) boot/limine.conf $(STICK_FILES)
@@ -676,7 +681,7 @@ $(BOOTFS): $(USER_PROGS:%=$(BUILD)/user/%.bootfs) $(DRIVERS:%=$(BUILD)/drv/%.boo
            boot/splash.mpg $(BUILD_INFO) $(UPDATE_PUB) tools/mkbootfs.py tools/checkwants.py \
            user/include/os.h
 	python3 tools/checkwants.py $(foreach p,$(USER_PROGS),$(call prog_dir,$(p))=$(BUILD)/user/$(p).bootfs)
-	python3 tools/mkbootfs.py $@ $(BOOTFS_FILES)
+	python3 tools/mkbootfs.py $@ $(BOOTFS_FILES) @$(PORTS_LIST)
 
 image: $(IMAGE)
 
@@ -800,9 +805,48 @@ clean:
 # POSIX on musl: musl, the call layer, the sysroot, posixtest (its own file).
 include user/posix/posix.mk
 
-# libc-test, musl's test suite, as one program (user/ports/libc-test/).
-include user/ports/libc-test/libc-test.mk
-# Ported programs (sbase, Lua): third_party built with jamos-cc into usr/bin.
+# The ports in the boot image (ports/, docs/M13.7-PLAN.md): every recipe
+# with `place boot` (sbase, Lua, libc-test) is built by tools/ports.py with
+# jamos-cc against the sysroot, from its vendored source in third_party/.
+# The builder decides what is out of date (its stamp: the recipe, the
+# port's files, the source, the sysroot), so this rule always asks it, and
+# writes $(PORTS_LIST), the `name=file` lines mkbootfs packs, only when
+# they changed: an unchanged boot image is packed anew by nobody. A new
+# `place boot` recipe needs no edit here.
+PORTS_OUT  := $(BUILD)/ports
+PORTS_LIST := $(PORTS_OUT)/bootfs.list
+$(PORTS_LIST): $(SYSROOT_LIBS) $(SYSROOT_HDRS) tools/jamos-cc FORCE
+	@mkdir -p $(PORTS_OUT)
+	JAMOS_BASE_SYSROOT=$(SYSROOT) CROSS=$(CROSS) python3 tools/ports.py --out $(PORTS_OUT) \
+	    boot -o $@
+$(BOOTFS): $(PORTS_LIST)
+
+# The notices of the other third_party/ code in the image (their licences
+# ask for them to travel with it; the ports' come from their stages):
+# /boot/share/licences/<name>/, as <bootfs name>=<file>. `make check` stops
+# on a third_party/ directory that is neither here nor a port's source.
+LICENCES := musl/COPYRIGHT=third_party/musl/COPYRIGHT \
+            fatfs/LICENSE.txt=third_party/fatfs/LICENSE.txt \
+            lwip/COPYING=third_party/lwip/COPYING \
+            monocypher/LICENCE.md=third_party/monocypher/LICENCE.md \
+            dr_mp3/LICENSE=third_party/dr_mp3/LICENSE \
+            pl_mpeg/LICENSE=third_party/pl_mpeg/LICENSE \
+            stb_image/LICENSE=third_party/stb_image/LICENSE \
+            stb_truetype/LICENSE=third_party/stb_truetype/LICENSE \
+            spleen/LICENSE=third_party/spleen/LICENSE \
+            inter/LICENSE.txt=third_party/inter/LICENSE.txt \
+            jetbrains-mono/OFL.txt=third_party/jetbrains-mono/OFL.txt \
+            limine/LICENSE=third_party/limine/LICENSE \
+            limine-protocol/LICENSE=third_party/limine-protocol/LICENSE \
+            wayland/COPYING=third_party/wayland-protocols/COPYING-wayland \
+            wayland-protocols/COPYING=third_party/wayland-protocols/COPYING-wayland-protocols
+BOOTFS_FILES += $(foreach l,$(LICENCES),share/licences/$(firstword $(subst =, ,$(l)))=$(lastword $(subst =, ,$(l))))
+$(BOOTFS): $(foreach l,$(LICENCES),$(lastword $(subst =, ,$(l))))
+THIRD_PARTY_NOTICED := $(sort $(foreach l,$(LICENCES),$(word 2,$(subst /, ,$(lastword $(subst =, ,$(l)))))) \
+                       $(shell awk '$$1 == "vendored" { print $$2 }' ports/*/recipe))
+
+# Transitional: tinyssh (X2) is still a make fragment in user/ports/, until
+# it is a recipe; nothing else is.
 include user/ports/ports.mk
 
 # compile_commands.json for editors (VS Code IntelliSense, clangd): the real

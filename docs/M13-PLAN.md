@@ -2717,6 +2717,11 @@ plan left open (the safest each time).
 
 ## P1 notes
 
+(M13.7's PO2 later moved sbase, Lua and libc-test from user/ports/ to
+recipes in ports/, built by tools/ports.py: the files named below are now
+ports/sbase/, ports/lua/ and ports/libc-test/, the programs byte for byte
+the same; [PO2 notes](M13.7-PLAN.md#po2-notes).)
+
 Track P1 (the first ports: sbase and Lua) as built, with the choices the
 plan left open. Files: third_party/sbase, third_party/lua (unmodified),
 user/ports/ (ports.mk, sbase/, lua/), tools/shell-tests/ports.txt; small
@@ -2743,7 +2748,7 @@ allowed), tools/sortincludes.py (skips user/ports/*/override/).
   tools made the boot image 31.8 MB, right at `update`'s 32 MiB file limit
   (UPDATE_FILE_MAX). So sbase is built the way upstream's own `sbase-box`
   is: each tool's `main` renamed `<tool>_main` (`-Dmain=`), a generated table
-  (`user/ports/sbase/mkbox.sh`) that picks one by the basename of argv[0], and
+  (`ports/sbase/files/mkbox.sh`) that picks one by the basename of argv[0], and
   one program for each of the three lists below (sbase-plain 393 KB, sbase-ro
   469 KB, sbase-rw 498 KB). The shell starts a program under its bootfs name
   (`usr/bin/sort`), so argv[0] names the tool and `usage:` lines say

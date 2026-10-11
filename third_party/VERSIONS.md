@@ -1,4 +1,7 @@
-Vendored third-party code:
+Vendored third-party code. Each component's licence text is in the boot
+image, /boot/share/licences/<name>/ (the Makefile's LICENCES, and the
+recipe of each port in ports/: `make check` stops on a directory here that
+has neither):
 
 - limine/: Limine v11.x-binary @ 5be26a7 (BSD-2-Clause)
 - limine-protocol/: limine.h @ 3a0526b (0BSD)
@@ -196,20 +199,20 @@ Vendored third-party code:
   and src/math/: the math tests' data includes crlibm's (LGPL, see its
   COPYING there), which this tree does not take (CODING-GUIDE: no GPL or
   LGPL code), and the math set is not run. Built as the one program
-  bin/libc-test by user/ports/libc-test/ (libc-test.mk): the functional
+  usr/bin/libc-test by the recipe ports/libc-test/: the functional
   and regression sets, each test as upstream writes it but for its
-  tmpfile (user/ports/libc-test/shim.h), run by that directory's runner
+  tmpfile (ports/libc-test/files/shim.h), run by that directory's runner
   against expected-failures.txt; api/ (compile-time header tests) and
   musl/ are vendored and not built.
 - sbase/: sbase (suckless.org's POSIX utilities) at commit
   c546c3a5724c81cee9a11d816a38ccdf17472129 (2026-05-22, master then), from
   https://git.suckless.org/sbase (the commit's tree as `git archive` gives it,
   nothing changed; sbase has no releases). MIT/X (LICENSE, sha256
-  eb0b719b3327af6c...). Built by user/ports/ports.mk and sbase/sbase.mk into
+  eb0b719b3327af6c...). Built by the recipe ports/sbase/ into
   three multi-call programs (usr/bin/<tool> in the boot image), less bc (needs
   yacc), getconf (a generated header), make/ and the tools Jam OS has no use
   for (chown, mknod, cron, tftp, ...); find, time and xargs are ours
-  (user/ports/sbase/OVERRIDES: fork + exec is posix_spawnp), and the build
+  (ports/sbase/OVERRIDES: fork + exec is posix_spawnp), and the build
   checks upstream's file is still the one ours was written against. A bug
   upstream at this commit: rev(1) does not reverse (UTF8_POINT is the opposite
   test of what rev.c wants, since commit 3de61ef), so rev is not built.
@@ -218,5 +221,5 @@ Vendored third-party code:
   2335b6c582a52654f94612bf10d2f4672805d05329aa6568b1d8cd9e5c6fb8e6, which is
   what lua.org lists beside it). MIT: LICENSE here is not in the tarball (it
   has no licence file) but the licence text its doc/readme.html carries. Built
-  by user/ports/lua/lua.mk into usr/bin/lua (the interpreter, no luac;
+  by the recipe ports/lua/ into usr/bin/lua (the interpreter, no luac;
   LUA_USE_POSIX, no dlopen, no readline).

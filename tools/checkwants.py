@@ -27,7 +27,8 @@ and netstack's and the resolver's reserves for the network's own services
 (net-sys, dns-sys), the desktop's notices (notify) and the low ports (`svc net listen low`: the system's
 ports, where a program could pose as a service) only for one under
 user/services/, and init's sessions (session: a whole shell) only for one
-under user/services/, user/ports/ or user/tests/.
+under user/services/, ports/ (a recipe's directory: tinyssh's sshd),
+user/ports/ (the make fragments not yet recipes) or user/tests/.
 A program without a list is fine (it gets its terminal only). Prints how
 many lists it checked (-v: each one); exits 1, naming each problem, if any.
 
@@ -42,7 +43,7 @@ RIGHTS = {"klog", "sysinfo", "clock", "debug"}
 TESTS_ONLY = {"devmgr-ctl", "init", "serve", "volumes"}
 SERVICES_ONLY = {"net-sys", "dns-sys", "notify"}
 SESSION = "session"   # a whole shell: services, ports and tests only
-SESSION_DIRS = ("user/services/", "user/ports/", "user/tests/")
+SESSION_DIRS = ("user/services/", "ports/", "user/ports/", "user/tests/")
 LISTEN = {"net-listen", "net-low"}   # given only as `svc net listen [low]` (<wants.h>)
 TEXT_MAX = 1024
 WANTS_MAX = 24
@@ -152,9 +153,10 @@ def selftest():
         problems, _ = check_text(t, False, svcs, True)
         if problems:
             fails.append("refused %r for a service: %s" % (t, problems))
-    problems, _ = check_text(b"svc session\nposix\n", False, svcs, False, "user/ports/sshd")
-    if problems:
-        fails.append("refused svc session for a port: %s" % problems)
+    for src in ("ports/tinyssh", "user/ports/sshd"):
+        problems, _ = check_text(b"svc session\nposix\n", False, svcs, False, src)
+        if problems:
+            fails.append("refused svc session for a port (%s): %s" % (src, problems))
     for t in refuse:
         problems, _ = check_text(t, False, svcs, False, "user/apps/x")
         if not problems:
