@@ -2712,3 +2712,142 @@ allowed), tools/sortincludes.py (skips user/ports/*/override/).
   Lua, each output compared to a file by sbase's `cmp`; hash and status
   checks. Run on the PC with `QEMU_INPUT=tools/shell-tests/ports.txt
   QEMU_TIMEOUT=240`, command line `shell`.
+
+## Jam commands as programs notes
+
+The owner's decision (2026-10-11): Jam OS's own system commands, builtins of
+the native shell, also exist as programs in the boot image, so a POSIX shell
+(`/bin/sh` today, mksh in M13.5), a script or an ssh session can run them.
+The native shell keeps running the same code in-process (fast, and it works
+for recovery). Files: `user/sysbox/` (`sysbox.mk`, `box_io.c`, `box.h`,
+`mkbox.sh`, `wants-*`), one `include` in the Makefile after `ports.mk`, a
+`#ifndef SH_BOX` around one line of `cmd/mem.c`, `tools/shell-tests/sysbox.txt`
+and `sysbox-net.txt`, `tools/ping-test.sh`.
+
+- **One copy of every command.** The program's objects are the shell's own
+  command files (`user/services/shell/cmd/<name>.c`) compiled with `jamos-cc`
+  as they are (`-DSH_BOX`, `-include jamos/libjam.h` first, the shell's
+  directory on the quote path so `"sh.h"` is the real one), and the shell
+  library files those commands call (`sh_kernel.c`, `sh_sysinfo.c`, `sh_num.c`,
+  `sh_time.c`, `sh_lookup.c`, `sh_vfs.c`, `sh_text.c`). What the shell
+  answers itself (`sh_put`, `sh_say`, `sh_tty`, `sh_input`, `sh_interrupted`,
+  `sh_sleep`, `sh_root`, `sh_devmgr`, `sh_getvar`, `sh_show_log`; sh_io.c,
+  main.c and sh_handles.c) `box_io.c` answers for a program: standard output
+  and error, standard input when it is no terminal, SIGINT noted (so `ping`
+  ends with its summary, `hexdump` stops), `startup_handle(SR_RESOURCE)`,
+  `/svc/devmgr`, `getenv`. A kernel debug command's output (`sh_kcmd`, which
+  the shell shows on the console while it runs) is the log lines made while it
+  ran, printed after it ends, so `mem | grep x` and `memmap > file` work. The
+  only change in a command file is `mem.c`: the program leaves out its "shell's
+  job" line (its job is its own).
+- **Boxes, one program per privilege.** A static POSIX program is about 315
+  KB, so, as for sbase (P1), one multi-call program per list, started under a
+  command's name (`bin/dmesg`; `mkbox.sh` writes the table; `bin/sys-info
+  free` works too, and a box with no command name lists its commands). The
+  boot image stores each box once (`tools/mkbootfs.py` shares identical
+  files). Each list is the least its commands need; checkwants.py checks them:
+
+  | box | commands (names in `bin/`) | list | size |
+  |---|---|---|---|
+  | `sys-info` | free uptime version lscpu ps dmesg log | `right sysinfo`, `right klog` | 325 KB |
+  | `sys-debug` | mem memmap pci iommu bench | `right debug`, `right klog` | 312 KB |
+  | `sys-net` | net ping host | `svc net`, `svc dns` | 329 KB |
+  | `sys-usb` | usb | `svc devmgr` (the query channel) | 315 KB |
+  | `sys-ro` | df hexdump hd crashlog | `mount * r` (every mount, read-only) | 325 KB |
+
+  The boot image went from 16,936 KiB to 18,520 KiB (+1,584 KiB, 25
+  entries). Each box is `posix` (descriptors 0 to 2 as the shell or a pipe
+  gives them) and nothing else: no `/esp` write, no `svc init`, no
+  `devmgr-ctl`.
+- **What a program is given depends on who starts it.** Started by the native
+  shell (`run dmesg`, `run /boot/bin/dmesg`, a name in `PATH`), it gets its
+  list: the root resource with only `right sysinfo`/`klog`/`debug` as named,
+  the services and mounts. Started by a POSIX program (`posix_spawn`, `execve`,
+  `env`, `/bin/sh -c`, a script), it gets **the parent's namespace** (`NS_ALL`:
+  the services and mounts the parent has) and **no root resource**:
+  `user/posix/sys/spawn.c` does not read the child's list, and the root
+  resource is not in the namespace. So, from a POSIX parent today:
+  `sys-net`, `sys-usb` and `sys-ro` work if the parent holds the services and
+  mounts (`env` has `/boot`, `/data`, `/usb*` read-write, so `env hexdump` and
+  `env df` work; `/bin/sh` has only `posix`, so it has none); `sys-info` and
+  `sys-debug` say "not given the kernel's information" and end with 126 (the
+  box checks `startup_handle(SR_RESOURCE)` before it runs a command that needs
+  it), instead of failing in a call. **For M13.5 (the decision this track
+  leaves):** for these commands to work from mksh and ssh sessions, (1) the
+  POSIX shell's own list holds their union (`svc net`, `svc dns`, `svc
+  devmgr`, `mount * r`, `right sysinfo`, `right klog`, and `right debug` only
+  if `mem`, `pci`, `bench` are wanted there: it is the power to panic the
+  machine), and (2) the spawn layer reads the child's list from the boot
+  image (`wants_read` on the program it starts, as the native shell's
+  `program_wants` does) and hands the child a duplicate of its `SR_RESOURCE`
+  narrowed to the child's `right` words and to what the parent holds (a
+  duplicate with fewer rights, never more; `RIGHT_TRANSFER` stripped). That is a
+  change to `user/posix/sys/spawn.c` (R1's files, left alone) of about 25 lines
+  and it widens no grant by itself: a parent holds only what its own list
+  asked for.
+- **Classification of the shell's 95 commands** (sh_table.c; the task said
+  93):
+  - **(a) program now (19 commands + the name `hd`):** version uptime lscpu
+    free ps dmesg crashlog usb net ping host pci memmap iommu log mem bench df
+    hexdump. (`ps -k`, the kernel's own listing, needs `right debug`, which
+    `sys-info` lacks: the kernel refuses it, as it refuses a shell without the
+    right.)
+  - **(a) a system command, shell-only for now (33), with the reason:**
+    `devices` (RES_PCI, `pci_enum`: no list can ask for the PCI resource);
+    `disk`, `disks` (the volumes service and devmgr's control channel, `svc
+    volumes` and `svc devmgr-ctl`: tests only; W2 is changing both);
+    `update`, `reboot`, `kill`, `kernel`, `sync`, `mount` (init's control
+    channel, `svc init`: tests only; `update` and `kill %n` also use the shell's
+    jobs and helper start with a stop channel); `serve` (`svc serve`: tests
+    only); `fetch`, `speed`, `play` (already programs, bin/fetch, bin/speed,
+    bin/play; the command is the shell's helper protocol: an output channel and
+    a Ctrl+C stop channel, `play` hands over the open file); `vol`, `music`
+    (they keep the master volume, the music folder and volume in
+    `/data/etc/settings`, which no program may write: a writable mount leaves
+    the top-level `etc` alone); `hda` (the codec driver, which only the mixer
+    hands out: `sh_hda`); `beep` (feasible: it needs `svc audio` alone; left
+    for a `sys-audio` box with `vol` without its master setting); `top` (reads
+    keys from the console: a program has none; it would need a raw terminal);
+    `date` (sets the zone in `/data/etc/settings`, reads the RTC with `right
+    clock`; sbase has a `date` for the plain case); `launch`, `jamjar`, `term`
+    (init's launcher and terminals), `notify` (`svc notify`: services only);
+    the tests `ktest soak stress storm crash panic` (they need `right debug`
+    for stress and panics: not for a program that any script may run) and
+    `utest usbtest hdatest mixtest` (already programs, bin/utest ...).
+  - **(b) must stay in the shell (18), it changes or reads the shell itself:**
+    help history jobs exit cd clear alias unalias set unset export env type
+    time repeat watch run allow.
+  - **(c) a generic Unix tool sbase provides (25):** uname whoami hostname
+    pwd ls find mkdir touch cp mv rm cat sha256sum wc head tail grep sort
+    uniq seq echo sleep true false write (`write`'s counterpart is `tee` or a
+    redirection). The shell's builtin wins by name; sbase's is `run
+    /boot/usr/bin/<name>`. A later decision (not this track's) is whether
+    these builtins go; `uname`, `whoami` and `hostname` print Jam-specific text
+    in the shell (`uname -a` has the CPU, `hostname` reads `$HOSTNAME`), sbase's
+    print what the POSIX layer reports.
+  - 19 + 33 + 18 + 25 = 95.
+- **Differences from the builtin, by design.** `net`'s fourth line (the
+  openers, sockets and queued datagrams of netstack) counts the program's own
+  channel, so it differs by one from the shell's; `df` lists the mounts the
+  program was given (all of them, from a shell start); `mem` has no "shell's
+  job" line; a debug command's lines come after it ends, not as it runs
+  (`bench` shows nothing for its few seconds); `Ctrl+C` is SIGINT, not the
+  shell's key polling: loops end at their next call (`ping`, `hexdump`,
+  `dmesg`), `sh_poll_key` has no keyboard.
+- **Found, not fixed (not this track's files).** (1) A POSIX parent cannot
+  pass the root resource (above). (2) `run <program> > file` for a program that
+  starts children is `EBUSY` (P1's finding 1), so the tests send the
+  parent's output through a pipe. (3) The box programs are about 315 KB each
+  because the POSIX layer's call table pulls the whole layer in (R1's item).
+- **Tests.** `tools/shell-tests/sysbox.txt` (a plain shell boot, `QEMU_TIMEOUT`
+  500): each deterministic command's builtin and program output compared with
+  `cmp` (version, lscpu, hexdump and hd with offsets, from a file and a pipe,
+  df, crashlog, usb, net and host with no network), the rest by what it
+  must print (free, uptime, ps, dmesg, log, memmap, pci, mem, iommu, bench,
+  ping's usage and refusal), the box's own name, an alias and an unknown
+  command (127), the refusals above (`ps -k`, `env dmesg`, `/bin/sh -c free`,
+  `env mem`, `/bin/sh -c hexdump`), `env hexdump`, `env df` (no `/esp`), the
+  builtins still builtins. `tools/shell-tests/sysbox-net.txt`, run by
+  `tools/ping-test.sh` after `net.txt` (QEMU_NET, the network peer): `net`
+  against the builtin, `net stats`, `ping` through the gateway, Ctrl+C ending
+  `ping` with its summary, `host` of an address.

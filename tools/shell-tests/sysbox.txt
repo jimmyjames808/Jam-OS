@@ -1,0 +1,167 @@
+# Jam OS's own commands as programs (user/sysbox): each runs once as the
+# shell's builtin (in-process) and once as the program (`run <name>`, bin/<name>
+# in the boot image), and what is deterministic is compared byte for byte
+# (the builtin's output into /data through `write`, the program's through a
+# redirection, then sbase's cmp); the rest is checked by what it must say.
+# Then the POSIX parents (their own output goes through a pipe: a redirected file
+# cannot be passed on to a child yet): sbase's `env` starts a command (it gets env's
+# mounts, so the commands that read files work), sh -c has none (its
+# list is `posix` alone), and neither passes the root resource on, so the
+# commands that use it refuse; and the power a box doesn't have (`ps -k` needs
+# right debug, which sys-info lacks) is refused by the kernel.
+#   QEMU_INPUT=tools/shell-tests/sysbox.txt QEMU_TIMEOUT=300 tools/qemu-test.sh <dir> sysbox shell
+# The marker texts are built from $T so they never appear in the typed line.
+wait 120 Jam OS shell
+wait {prompt}
+send T=x
+wait {prompt}
+send S=/boot/usr/bin
+wait {prompt}
+
+# ---- the same output as the builtin ---------------------------------------------------------------
+send version | write /data/sb-a; run version > /data/sb-b; cmp /data/sb-a /data/sb-b && echo ok-$T-version
+wait ok-x-version
+wait {prompt}
+send lscpu | write /data/sb-a; run lscpu > /data/sb-b; cmp /data/sb-a /data/sb-b && echo ok-$T-lscpu
+wait ok-x-lscpu
+wait {prompt}
+send hexdump -n 100 /boot/build.txt | write /data/sb-a; run hexdump -n 100 /boot/build.txt > /data/sb-b; cmp /data/sb-a /data/sb-b && echo ok-$T-hexdump
+wait ok-x-hexdump
+wait {prompt}
+send hd -s 3 -n 40 /boot/build.txt | write /data/sb-a; run hd -s 3 -n 40 /boot/build.txt > /data/sb-b; cmp /data/sb-a /data/sb-b && echo ok-$T-hd
+wait ok-x-hd
+wait {prompt}
+send write /data/sb-in one two three; run hexdump /data/sb-in | write /data/sb-b; hexdump /data/sb-in | write /data/sb-a; cmp /data/sb-a /data/sb-b && echo ok-$T-hdpipe
+wait ok-x-hdpipe
+wait {prompt}
+send run hd < /data/sb-in | grep -c "one two three" | write /data/sb-b; write /data/sb-a 1; cmp /data/sb-a /data/sb-b && echo ok-$T-hdstdin
+wait ok-x-hdstdin
+wait {prompt}
+send df | grep /boot | write /data/sb-a; run df | grep /boot | write /data/sb-b; cmp /data/sb-a /data/sb-b && echo ok-$T-df
+wait ok-x-df
+wait {prompt}
+send run df | grep -c /data
+wait 1
+wait {prompt}
+send crashlog | write /data/sb-a; run crashlog > /data/sb-b; cmp /data/sb-a /data/sb-b && echo ok-$T-crashlog
+wait ok-x-crashlog
+wait {prompt}
+send usb | write /data/sb-a; run usb > /data/sb-b; cmp /data/sb-a /data/sb-b && echo ok-$T-usb
+wait ok-x-usb
+wait {prompt}
+send net | head -n 3 | write /data/sb-a; run net | head -n 3 | write /data/sb-b; cmp /data/sb-a /data/sb-b && echo ok-$T-net-off
+wait ok-x-net-off
+wait {prompt}
+send host one.one.one.one | write /data/sb-a; run host one.one.one.one > /data/sb-b; cmp /data/sb-a /data/sb-b && echo ok-$T-host-off
+wait ok-x-host-off
+wait {prompt}
+send run ping 1.1.1.1 -c 1 | grep -c "ping: no netstack"
+wait 1
+wait {prompt}
+send run ping; echo st-$T=$?
+wait usage: ping <address|name>
+wait st-x=2
+wait {prompt}
+
+# ---- what changes each time: by what it says -------------------------------------------------------
+send run free | grep -c "^Mem:"
+wait 1
+wait {prompt}
+send run uptime | grep -c "1 user"
+wait 1
+wait {prompt}
+send run ps | grep serialin && echo ok-$T-ps
+wait ok-x-ps
+wait {prompt}
+send run ps | grep -c "processes"
+wait 1
+wait {prompt}
+send run dmesg | run $S/grep -q devmgr && echo ok-$T-dmesg
+wait ok-x-dmesg
+wait {prompt}
+send run dmesg | run $S/wc -l | run $S/grep -q '^[1-9][0-9][0-9]' && echo ok-$T-dmesgn
+wait ok-x-dmesgn
+wait {prompt}
+send run log 3 | grep -c .
+wait 3
+wait {prompt}
+send run memmap | run $S/grep -q usable && echo ok-$T-memmap
+wait ok-x-memmap
+wait {prompt}
+send run pci | run $S/grep -q "pci list:" && echo ok-$T-pci
+wait ok-x-pci
+wait {prompt}
+send run mem | run $S/grep -q "MiB free" && echo ok-$T-mem
+wait ok-x-mem
+wait {prompt}
+send run iommu; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send run bench | run $S/grep -q "bench: path" && echo ok-$T-bench
+wait 300 ok-x-bench
+wait {prompt}
+
+# ---- the box's own name, aliases, a command it doesn't have ----------------------------------------------
+send run sys-info free | grep -c "^Mem:"
+wait 1
+wait {prompt}
+send run sys-ro | grep -c "df hexdump hd crashlog"
+wait 1
+wait {prompt}
+send run sys-net nosuchcmd; echo st-$T=$?
+wait st-x=127
+wait {prompt}
+
+# ---- refusals ---------------------------------------------------------------------------------------------
+# a box without the power: ps -k asks for the kernel's own listing (debug), sys-info has no right debug
+send run ps -k
+wait ps: ERR_ACCESS_DENIED
+wait {prompt}
+# started by a POSIX parent: no root resource, so the commands that need it say so (status 126) ...
+send run $S/env dmesg; echo st-$T=$?
+wait dmesg: not given the kernel's information
+wait st-x=126
+wait {prompt}
+send run sh -c 'free'; echo st-$T=$?
+wait free: not given the kernel's information
+wait st-x=126
+wait {prompt}
+send run $S/env mem; echo st-$T=$?
+wait mem: not given the kernel's information
+wait st-x=126
+wait {prompt}
+# ... and the ones that don't need it get what the parent's namespace has: env has /boot, /data, /usb*
+send hexdump -n 64 /boot/build.txt | write /data/sb-a; run $S/env hexdump -n 64 /boot/build.txt | write /data/sb-b; cmp /data/sb-a /data/sb-b && echo ok-$T-envhd
+wait ok-x-envhd
+wait {prompt}
+send run $S/env df | grep /boot | write /data/sb-b; df | grep /boot | write /data/sb-a; cmp /data/sb-a /data/sb-b && echo ok-$T-envdf
+wait ok-x-envdf
+wait {prompt}
+# no /esp: env has no mount of it, so df (a read-only view of every mount the parent has) lacks it
+send run $S/env df | grep -c /esp
+wait 0
+wait {prompt}
+# sh -c has no mounts at all: the file isn't there for the command
+send run sh -c 'hexdump /boot/build.txt'; echo st-$T=$?
+wait hexdump: /boot/build.txt: no such file
+wait st-x=1
+wait {prompt}
+# a name with no program
+send run nosuchcmd-sb; echo st-$T=$?
+wait run: no bin/nosuchcmd-sb in bootfs
+wait {prompt}
+
+# ---- the builtins are untouched --------------------------------------------------------------------------
+send type df
+wait df is a shell builtin
+send type hd
+wait hd is a shell builtin
+send type sys-net
+wait sys-net is /boot/bin/sys-net
+send free | grep -c "^Mem:"
+wait 1
+wait {prompt}
+send rm /data/sb-a /data/sb-b /data/sb-in
+wait {prompt}
+send reboot -f
+wait reboot: resetting

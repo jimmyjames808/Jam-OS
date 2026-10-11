@@ -32,6 +32,7 @@
 #include <errno.h>
 #include <signal.h>
 #include <string.h>
+#include <termios.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -39,6 +40,8 @@
 #include "sh.h"
 
 #define STDIN_MAX (4u << 20)   /* the most a command reads from a pipe, as the shell's pipe holds */
+#define OUT_PIECE 2048         /* standard output's buffer, and the most sh_put writes at once: no
+                                  write is bigger than the shell's pipe reader takes (4096) */
 
 static volatile sig_atomic_t interrupted;
 
@@ -46,7 +49,12 @@ static volatile sig_atomic_t interrupted;
 
 void sh_put(const char *s, size_t n)
 {
-    fwrite(s, 1, n, stdout);
+    while (n) {
+        size_t k = n < OUT_PIECE ? n : OUT_PIECE;
+        fwrite(s, 1, k, stdout);
+        s += k;
+        n -= k;
+    }
 }
 
 void sh_say(const char *fmt, ...)
@@ -211,8 +219,23 @@ void sh_show_log(bool on, const char *only)
 
 /* ---- the start ------------------------------------------------------------------ */
 
+/* At exit: what is buffered is written, and a terminal is waited for until
+ * it has shown it all: the console frees a terminal at the program's end
+ * with what it hasn't read yet, so the last lines of a long output are lost
+ * otherwise (M13's X1 notes). */
+static void finish(void)
+{
+    fflush(stdout);
+    for (int fd = STDOUT_FILENO; fd <= STDERR_FILENO; fd++)
+        if (isatty(fd))
+            tcdrain(fd);
+}
+
 int box_init(const char *cmd, int needs_root)
 {
+    static char obuf[OUT_PIECE];
+    setvbuf(stdout, obuf, isatty(STDOUT_FILENO) ? _IOLBF : _IOFBF, sizeof(obuf));
+    atexit(finish);
     if (needs_root && !sh_root()) {
         sh_tty("%s: not given the kernel's information: the Jam shell passes it to a program it\n"
                "  starts (run %s); a program started by another program (a POSIX shell, env) "

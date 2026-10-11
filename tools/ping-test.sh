@@ -1,5 +1,6 @@
 #!/bin/sh
-# The shell's `net` and `ping` in QEMU (tools/shell-tests/net.txt): the
+# The shell's `net` and `ping` in QEMU (tools/shell-tests/net.txt), and the
+# same commands as programs (tools/shell-tests/sysbox-net.txt, user/sysbox): the
 # e1000e driver, netstack with net.address from the stick's settings, a
 # program's pings through /svc/net, answered by tools/netpeer.py (ICMP echo
 # for any address, 1.1.1.1 through the gateway). The run must pass the
@@ -18,6 +19,8 @@ mcopy -o -i "$img@@64M" "$out/ping.settings" ::/etc/settings
 ok=1
 QEMU_IMAGE="$img" QEMU_NET=1 QEMU_INPUT=tools/shell-tests/net.txt \
     tools/qemu-test.sh "$out" ping shell || ok=0
+QEMU_IMAGE="$img" QEMU_NET=1 QEMU_INPUT=tools/shell-tests/sysbox-net.txt \
+    tools/qemu-test.sh "$out" sysbox-net shell || ok=0
 answered=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['echo_replies'])" \
                "$out/ping.peer.json" 2>/dev/null || echo 0)
 echo "ping-test: the peer answered $answered echo requests"
