@@ -1,0 +1,22 @@
+# libffi: its own ffi_call tests, as the one program ffi-tests
+# (override/ffi-tests.c; build.sh makes it from testsuite/libffi.call and
+# the ffi_call tests of libffi.complex). Installed in the libffi-test
+# package. NOT YET RUN on Jam OS: tools/ports-test.sh (M13.7's PO8) runs it
+# once it exists; built and staged by GP1 (docs/G2-PLAN.md, "GP1 notes").
+# The count is libffi 3.8.0's (98 tests); a new release may change it.
+wait 120 Jam OS shell
+wait {prompt}
+send ffi-tests
+wait ffi-tests: 98 passed, 0 failed
+wait {prompt}
+send ffi-tests -l | wc -l
+wait 98
+wait {prompt}
+# one test by name, with its own output: the 'strlen' test prints nothing
+send ffi-tests strlen
+wait ffi-tests: 1 passed, 0 failed
+wait {prompt}
+# a name that is no test
+send ffi-tests nosuchtest; echo status-$?
+wait status-2
+wait {prompt}

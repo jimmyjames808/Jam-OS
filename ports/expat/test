@@ -1,0 +1,21 @@
+# expat: xmlwf, the well-formedness checker, on a good file, a bad one and
+# a file that is not there. NOT YET RUN on Jam OS (tools/ports-test.sh,
+# M13.7's PO8); built and staged by GP1.
+wait 120 Jam OS shell
+wait {prompt}
+send printf '<?xml version="1.0"?>\n<a><b x="1">text</b><c/></a>\n' > /data/xw-good.xml
+wait {prompt}
+send printf '<a><b></a>\n' > /data/xw-bad.xml
+wait {prompt}
+send xmlwf /data/xw-good.xml; echo good-status-$?
+wait good-status-0
+wait {prompt}
+send xmlwf /data/xw-bad.xml; echo bad-status-$?
+wait mismatched tag
+wait bad-status-0
+wait {prompt}
+send xmlwf /data/xw-nothere.xml; echo missing-status-$?
+wait missing-status-
+wait {prompt}
+send rm /data/xw-good.xml /data/xw-bad.xml
+wait {prompt}

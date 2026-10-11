@@ -1,0 +1,26 @@
+# expat: the XML parser library (G2's GP1, docs/G2-PLAN.md section 9):
+# fontconfig reads its configuration with it, and xmlwf (its
+# well-formedness checker) is the program that shows it works on Jam OS.
+# Autotools; no tests, examples or man pages built. (wayland-scanner's
+# host build uses the build machine's own expat, not this port.)
+name        expat
+version     2.9.0
+revision    1
+summary     the expat XML parser library, and xmlwf
+homepage    https://libexpat.github.io/
+category    libs
+# COPYING is the MIT licence (the "Expat" text X.org uses), confirmed
+# against the 2.9.0 tarball's files (SPDX tags: 50 MIT); the one other file
+# built in is lib/siphash.h, a CC0-1.0 public domain dedication.
+licence     MIT AND CC0-1.0
+licence-file COPYING
+# The release's tag spells the version with underscores: a new version
+# changes both the tag and the file name.
+source      https://github.com/libexpat/libexpat/releases/download/R_2_9_0/expat-$version.tar.xz 534052 1e6371862cc31999b368c3b89b49994f0677e1bab5f1b2b85ae3741f5d803051
+place       package
+style       configure
+configure   --without-examples --without-tests --without-docbook
+# xmlwf reads the files it is named, so it needs /data (wants/xmlwf).
+program     bin/xmlwf
+library     lib/libexpat.a include/expat.h include/expat_external.h lib/pkgconfig/expat.pc
+cpe         cpe:2.3:a:libexpat_project:libexpat
