@@ -1113,6 +1113,8 @@ static const struct {
     { "consel_keys", t_consel_keys },
     { "consel_tint", t_consel_tint },
     { "sh_paste", t_sh_paste },
+    { "sh_ptable", t_sh_ptable },
+    { "sh_image_wants", t_sh_image_wants },
     { "conwin_keys", t_conwin_keys },
     { "conwin_pointer", t_conwin_pointer },
     { "conwin_pointer_shape", t_conwin_pointer_shape },
