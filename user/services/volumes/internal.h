@@ -62,12 +62,13 @@ struct disk;
 #define KEY_GEN(k)         ((uint32_t)(k) & 0xffffu)
 
 /* What a channel of volumes' speaks (chans.c): the control channels
- * `volumes` (and svc.connect); init's ESP channel `volesp` alone
- * (<volumes.h> "Trust"). */
+ * `volumes` (and svc.connect); init's ESP channel `volesp` alone and its
+ * install channel `volinstall` alone (<volumes.h> "Trust"). */
 enum level {
     LEVEL_CONTROL,
     LEVEL_ESP,
-    LEVEL_LIST,   /* `voldisks` alone (volumes.list_channel) */
+    LEVEL_LIST,      /* `voldisks` alone (volumes.list_channel) */
+    LEVEL_INSTALL,
 };
 
 /* A filesystem service on one partition of a disk: bin/fat, supervised by
@@ -188,6 +189,7 @@ status_t chans_add_list(handle_t *out);
 extern const struct volumes_ops volumes_ops;
 extern const struct volesp_ops  volesp_ops;
 extern const struct voldisks_ops voldisks_ops;
+extern const struct volinstall_ops volinstall_ops;
 /* The stop (volumes.stop's, or with nobody to answer once every client
  * has gone): a task that syncs every writable mount, then stop_all. False
  * if it couldn't start (stop_all has run). */

@@ -1,10 +1,11 @@
 /* volumes: the answers to its protocols' requests (abi/idl/volumes.idl):
- * `volumes` on the control channels, `volesp` on init's ESP channel.
+ * `volumes` on the control channels, `volesp` on init's ESP channel,
+ * `voldisks` on the list channels, `volinstall` on init's install channel.
  * chans.c reads the requests and decides which protocol a channel speaks.
  * A mount is named by its path ("/data", "/usb0-test"): fs_find_mount.
  *
- * The `later` methods (remount, release_disk, sync, stop, and volesp's
- * two) wait for filesystem services and disks: each is checked here and
+ * The `later` methods (remount, release_disk, sync, stop, volesp's two,
+ * digest, health and volinstall's prepare) wait for filesystem services and disks: each is checked here and
  * answered at once when there is nothing to wait for (an error, or the
  * mount is that way already); otherwise its handler starts a task (an op,
  * calls.c) and returns IDL_LATER, and the task answers when it is done.
@@ -77,7 +78,8 @@ static void remount_main(void *arg)
     op_done(o);
 }
 
-/* /usbN or /usbN-test: the mounts remount may change. */
+/* /usbN, /usbN-test, or an NVMe drive's /nvmeN if its disk is Jam OS's: the
+ * mounts remount may change. */
 static status_t v_remount(void *ctx, struct idl_txn txn, const char *mount, uint32_t len,
                           uint8_t writable)
 {
@@ -87,8 +89,8 @@ static status_t v_remount(void *ctx, struct idl_txn txn, const char *mount, uint
     struct vol *b = fs_find_mount(mount, len);
     if (!b || !b->other)
         return ERR_NOT_FOUND;   /* /esp and /data are what they are */
-    if (b->nvme && writable)
-        return ERR_ACCESS_DENIED;   /* stage 1: no NVMe partition is ever opened writable */
+    if (b->nvme && writable && (!disk_of(b) || !disk_jamos_gpt(disk_of(b))))
+        return ERR_ACCESS_DENIED;   /* only on a Jam OS disk, by our own check (mark.c) */
     status_t st = disk_can_restart(b, writable);
     if (st != IDL_LATER)
         return st;
@@ -375,6 +377,30 @@ static status_t l_health(void *ctx, struct idl_txn txn, uint32_t id, uint64_t *o
 
 const struct voldisks_ops voldisks_ops = {
     .disk = l_disk, .partition = l_partition, .digest = l_digest, .health = l_health,
+};
+
+/* ---- volinstall ------------------------------------------------------------------------- */
+
+/* A prepare's task (prepare.c does the work, waiting where it must). */
+static void prepare_main(void *arg)
+{
+    struct op *o = arg;
+    status_t st = disk_prepare(o->id);
+    if (o->txn.ch)
+        (void)volinstall_reply_prepare(o->txn, st);
+    op_done(o);
+}
+
+static status_t i_prepare(void *ctx, struct idl_txn txn, uint32_t id)
+{
+    (void)ctx;
+    if (!disk_named(id))
+        return ERR_NOT_FOUND;
+    return later(txn, &(struct op){ .id = id }, prepare_main);
+}
+
+const struct volinstall_ops volinstall_ops = {
+    .prepare = i_prepare,
 };
 
 /* ---- volesp ------------------------------------------------------------------------------ */

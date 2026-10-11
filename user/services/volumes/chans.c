@@ -1,7 +1,8 @@
 /* volumes: its channels. init gives it the server ends of a control
  * channel (VOLUMES_SR_CTL: the `volumes` protocol) and, in shell mode, the
  * ESP channel (VOLUMES_SR_ESP: `volesp` alone, which no other channel
- * speaks). A control channel also answers the svc protocol's connect
+ * speaks) and the install channel (VOLUMES_SR_INSTALL: `volinstall`
+ * alone, the same: init's, for making a blank drive Jam OS's). A control channel also answers the svc protocol's connect
  * (abi/idl/svc.idl) with a new control channel of the caller's own, so
  * each opener of /svc/volumes has one, and a reply that comes after its
  * caller gave up waits on that caller's channel, not a shared one. Every
@@ -19,13 +20,16 @@
 
 /* The biggest request and reply of the protocols the channels speak. */
 #define MAX2(a, b) ((a) > (b) ? (a) : (b))
-#define REQ_MAX MAX2(MAX2(VOLUMES_REQ_MAX, VOLESP_REQ_MAX), VOLDISKS_REQ_MAX)
-#define REP_MAX MAX2(MAX2(VOLUMES_REP_MAX, VOLESP_REP_MAX), VOLDISKS_REP_MAX)
+#define REQ_MAX MAX2(MAX2(MAX2(VOLUMES_REQ_MAX, VOLESP_REQ_MAX), VOLDISKS_REQ_MAX), \
+                     VOLINSTALL_REQ_MAX)
+#define REP_MAX MAX2(MAX2(MAX2(VOLUMES_REP_MAX, VOLESP_REP_MAX), VOLDISKS_REP_MAX), \
+                     VOLINSTALL_REP_MAX)
 _Static_assert(SVC_REQ_MAX <= REQ_MAX && SVC_REP_MAX <= REP_MAX, "a connect fits");
 
-#define MAX_CHANS 16   /* init's control and ESP channels, the openers' */
-#define SLOT_LIFE 0    /* the channel volumes lives by */
-#define SLOT_ESP  1
+#define MAX_CHANS 16   /* init's control, ESP and install channels, the openers' */
+#define SLOT_LIFE    0 /* the channel volumes lives by */
+#define SLOT_ESP     1
+#define SLOT_INSTALL 2
 
 struct chan {
     handle_t   h;       /* our end (0: a free slot) */
@@ -55,12 +59,14 @@ static uint32_t dispatch(const struct chan *c, const void *q, uint32_t n, const 
 {
     const struct idl_req_hdr *h = (const struct idl_req_hdr *)q;
     *rhn = 0;
-    if (c->lv == LEVEL_ESP) {   /* volesp alone; it carries no handles */
+    if (c->lv == LEVEL_ESP || c->lv == LEVEL_INSTALL) {   /* one protocol alone; no handles */
         if (nh) {
             idl_close_all(hs, nh);
             idl_reply_status(c->h, q, n, ERR_INVALID_ARGS);
             return 0;
         }
+        if (c->lv == LEVEL_INSTALL)
+            return volinstall_dispatch_on(c->h, &volinstall_ops, NULL, q, n, r, rhs, rhn);
         return volesp_dispatch_on(c->h, &volesp_ops, NULL, q, n, r, rhs, rhn);
     }
     bool list = n >= sizeof(*h) && h->ordinal >> 16 == VOLDISKS_PROTOCOL_ID;
@@ -148,10 +154,14 @@ bool chans_init(void)
 {
     chans[SLOT_LIFE] = (struct chan){ .h = startup_handle(VOLUMES_SR_CTL), .lv = LEVEL_CONTROL };
     chans[SLOT_ESP] = (struct chan){ .h = startup_handle(VOLUMES_SR_ESP), .lv = LEVEL_ESP };
-    /* The ESP channel's end receives no handles (volesp carries none):
-     * no queue of ours can hold a channel end there (M12's D2). */
-    if (chans[SLOT_ESP].h && jam_channel_set_flags(chans[SLOT_ESP].h, CHANNEL_NO_HANDLES) != OK)
-        say(false, "volumes: the ESP channel can't be marked: it takes handles");
+    chans[SLOT_INSTALL] = (struct chan){ .h = startup_handle(VOLUMES_SR_INSTALL),
+                                         .lv = LEVEL_INSTALL };
+    /* The ESP and install channels' ends receive no handles (volesp and
+     * volinstall carry none): no queue of ours can hold a channel end
+     * there (M12's D2). */
+    for (unsigned i = SLOT_ESP; i <= SLOT_INSTALL; i++)
+        if (chans[i].h && jam_channel_set_flags(chans[i].h, CHANNEL_NO_HANDLES) != OK)
+            say(false, "volumes: slot %u's channel can't be marked: it takes handles", i);
     return chans[SLOT_LIFE].h != HANDLE_INVALID;
 }
 
@@ -206,7 +216,7 @@ status_t chans_add_list(handle_t *out)
  * client end. */
 static status_t add_chan(enum level lv, handle_t *out)
 {
-    for (unsigned i = SLOT_ESP + 1; i < MAX_CHANS; i++) {
+    for (unsigned i = SLOT_INSTALL + 1; i < MAX_CHANS; i++) {
         struct chan *c = &chans[i];
         if (c->h)
             continue;
