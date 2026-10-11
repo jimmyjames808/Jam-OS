@@ -247,6 +247,16 @@ static handle_t idle(void)
     return h;
 }
 
+long sock_arm_idle(struct fd_wait *out)
+{
+    handle_t h = idle();
+    if (!h)
+        return -ENOMEM;
+    out->kind = FD_WAIT_HANDLE;
+    out->h = (struct netwait_handle){ .h = h, .read = IDLE_SIGNAL, .hup = IDLE_SIGNAL };
+    return 0;
+}
+
 static long sock_arm(struct fd_desc *d, uint32_t interest, struct fd_wait *out)
 {
     struct sock *s = d->priv;
@@ -262,12 +272,7 @@ static long sock_arm(struct fd_desc *d, uint32_t interest, struct fd_wait *out)
                                                   * asked: lx_listen, lx_accept4) */
         return 0;
     }
-    handle_t h = idle();
-    if (!h)
-        return -ENOMEM;
-    out->kind = FD_WAIT_HANDLE;
-    out->h = (struct netwait_handle){ .h = h, .read = IDLE_SIGNAL, .hup = IDLE_SIGNAL };
-    return 0;
+    return sock_arm_idle(out);
 }
 
 /* A drain's look: has netstack taken every byte written (or is there
