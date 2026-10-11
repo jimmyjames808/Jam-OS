@@ -257,7 +257,9 @@ The rest:
 
 ## Not planned
 
-- `fork` (a POSIX layer gets `posix_spawn`).
+- `fork` in the kernel (a system call that clones a process): the POSIX
+  layer gets `posix_spawn`, and M13.5 emulates `fork` in libc on
+  copy-on-write child VMOs.
 - Wi-Fi.
 - HDMI/DisplayPort audio through the RTX.
 - Filesystems other than FAT32 (NVMe itself is M12.7, on FAT32 and GPT).
@@ -265,3 +267,9 @@ The rest:
 - Running Linux binaries unchanged (a Linux system-call personality, as
   WSL1 or FreeBSD's Linux layer): the owner, 2026-10-09. Programs are
   ported from source onto the POSIX layer instead.
+- Own versions of general apps (a YouTube app, a browser, editors,
+  players): the owner, 2026-10-11. Jam OS writes its own programs only
+  where they are part of the system (settings, the shell and its
+  commands, the compositor, system tools); every other app is ported. A
+  browser, when it comes, is a port of Chromium starting from its Fuchsia
+  code (spawn and channels, no zygote, no `fork`), not its Linux code.
