@@ -28,8 +28,8 @@
  * was published, even if the cache evicted it again since, so a budget
  * smaller than a request can't keep it from an answer; its waiters then
  * look again and ask again), by a failure, by its VMO's detach or death,
- * or at its deadline by the first waiter to wake then (or by pager_next
- * meeting it): no kernel timer. Answering takes it off
+ * by a shrink past it, or at its deadline by the first waiter to wake then
+ * (or by pager_next meeting it): no kernel timer. Answering takes it off
  * every list and wakes its waiters; whoever drops the last reference
  * frees it, always with no lock held (doomed requests are collected on a
  * private list, as port.c's reap does, since freeing one drops a pager
@@ -293,6 +293,26 @@ void pager_published_vlocked(struct pager_vmo *pv, uint64_t idx, struct page *p,
 void pager_page_gone_vlocked(struct pager_vmo *pv, struct page *p)
 {
     pager_cache_remove_vlocked(&pv->pg->cache, p);
+}
+
+void pager_cut_vlocked(struct pager_vmo *pv, uint64_t end, struct list_node *dead)
+{
+    struct pager *pg = pv->pg;
+    uint64_t f = plock(pg);
+    for (struct list_node *n = pv->reqs.next; n != &pv->reqs;) {
+        struct pager_req *r = container_of(n, struct pager_req, vnode);
+        n = n->next;   /* finish_locked unlinks r */
+        if (r->end <= end)
+            continue;
+        if (r->first < end) {
+            r->end = end;
+            r->arrived &= (uint32_t)((1ull << (end - r->first)) - 1);
+        }
+        if (r->first >= end || arrived_all(r))
+            finish_locked(r, OK, dead);   /* the waiters look again */
+    }
+    sync_readable_locked(pg);
+    punlock(pg, f);
 }
 
 /* ---- keys -------------------------------------------------------------------- */
@@ -655,6 +675,31 @@ static status_t fail_range(struct pager *pg, uint64_t key, uint64_t first, uint6
     return OK;
 }
 
+/* PAGER_OP_INVALIDATE: drop key's present pages in [offset, offset + len). */
+static status_t invalidate(struct pager *pg, uint64_t key, uint64_t offset, uint64_t len)
+{
+    struct vmo *v = lookup_vmo(pg, key);
+    if (!v)
+        return ERR_NOT_FOUND;
+    status_t st = vmo_pager_invalidate(v, offset, len);
+    kobject_unref(vmo_kobject(v));
+    return st;
+}
+
+/* PAGER_OP_SET_SIZE: key's VMO grows or shrinks to size (page-aligned). */
+static status_t set_size(struct pager *pg, uint64_t key, uint64_t size)
+{
+    struct vmo *v = lookup_vmo(pg, key);
+    if (!v)
+        return ERR_NOT_FOUND;
+    struct list_node dead;
+    list_init(&dead);
+    status_t st = vmo_pager_set_size(v, size, &dead);
+    reap(&dead);
+    kobject_unref(vmo_kobject(v));
+    return st == ERR_PEER_CLOSED ? ERR_NOT_FOUND : st;   /* detached meanwhile */
+}
+
 /* PAGER_OP_DETACH: cut key's VMO off, or answer its PAGER_REQ_GONE. */
 static status_t detach_key(struct pager *pg, uint64_t key)
 {
@@ -696,8 +741,15 @@ status_t pager_op(struct pager *pg, uint64_t key, uint32_t op, uint64_t offset, 
             return ERR_INVALID_ARGS;
         return detach_key(pg, key);
     case PAGER_OP_INVALIDATE:
+        if (arg || ((offset | len) & (PAGE_SIZE - 1)) || len == 0 || len > UINT64_MAX - offset)
+            return ERR_INVALID_ARGS;
+        return invalidate(pg, key, offset, len);
     case PAGER_OP_SET_SIZE:
-        return ERR_NOT_SUPPORTED;   /* not built yet */
+        if (len || arg)
+            return ERR_INVALID_ARGS;
+        if (offset > VMO_MAX_SIZE)
+            return ERR_OUT_OF_RANGE;
+        return set_size(pg, key, ALIGN_UP(offset, PAGE_SIZE));
     default:
         return ERR_INVALID_ARGS;
     }

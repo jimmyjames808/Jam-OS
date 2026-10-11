@@ -583,8 +583,13 @@
 # ERR_OUT_OF_RANGE. PAGER_OP_DETACH (offset, len, arg 0): cut key's VMO
 # off for good: its requests, waiting and later, fail ERR_PEER_CLOSED, its
 # present pages are dropped (unmapped from every mapping), and the key is
-# free; or take a PAGER_REQ_GONE for key (the key is free). INVALIDATE and
-# SET_SIZE: ERR_NOT_SUPPORTED (not built yet). ERR_NOT_FOUND for an
-# unknown key; ERR_INVALID_ARGS for any other op or argument. RIGHT_WRITE
-# on the pager.
+# free; or take a PAGER_REQ_GONE for key (the key is free).
+# PAGER_OP_INVALIDATE (page-aligned, len > 0, arg 0): drop the present
+# pages of the range from the VMO and every mapping (the file changed: the
+# next access asks again); ERR_OUT_OF_RANGE past the size.
+# PAGER_OP_SET_SIZE (offset: the new size, len and arg 0; past
+# VMO_MAX_SIZE: ERR_OUT_OF_RANGE): grow, or shrink: the pages past the end
+# go, and readers waiting past it find the end (a fault there is a bus
+# error, a read ERR_OUT_OF_RANGE). ERR_NOT_FOUND for an unknown key;
+# ERR_INVALID_ARGS for any other op or argument. RIGHT_WRITE on the pager.
 164 pager_op          status    handle_t pager, uint64_t key, uint32_t op, uint64_t offset, uint64_t len, int64_t arg

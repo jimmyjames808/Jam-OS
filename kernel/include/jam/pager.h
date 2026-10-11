@@ -23,7 +23,8 @@
  * (max_pages) at once. Every page is clean, so the kernel drops the oldest
  * supplied page whenever a supply needs room, or memory or the job runs
  * short, and the next access asks the pager again (kernel/object/
- * pager_cache.h).
+ * pager_cache.h). The pager drops pages itself with PAGER_OP_INVALIDATE
+ * (the file changed) and PAGER_OP_SET_SIZE (it shrank).
  *
  * Objects and lifetimes: the pager holds no reference to its VMOs: each
  * has a struct pager_vmo (pager.c) holding a reference to the pager, and
@@ -114,13 +115,21 @@ status_t pager_supply(struct pager *pg, uint64_t key, uint64_t offset, const str
                       uint64_t len);
 /* PAGER_OP_FAIL: fail key's requests overlapping [offset, offset + len)
  * (page-aligned, len > 0) with arg, ERR_IO or ERR_OUT_OF_RANGE.
- * PAGER_OP_DETACH (offset, len and arg 0): key's VMO is cut off for good
- * (its requests fail ERR_PEER_CLOSED now and later, its pages are dropped
- * from the table and every mapping, the key is free), or key's
- * PAGER_REQ_GONE is answered (the key is free). INVALIDATE, SET_SIZE:
- * ERR_NOT_SUPPORTED (not built yet). ERR_NOT_FOUND: no such key;
- * ERR_INVALID_ARGS: any other op or argument. Interrupts on, no spinlock
- * held (DETACH shoots down TLBs). */
+ * PAGER_OP_INVALIDATE (page-aligned, len > 0, arg 0): drop the present
+ * pages of [offset, offset + len) from the table and every mapping; the
+ * next access asks again (ERR_OUT_OF_RANGE past the size). Requests are
+ * left as they are. PAGER_OP_SET_SIZE (offset: the size, rounded up to
+ * pages, VMO_MAX_SIZE at most, else ERR_OUT_OF_RANGE; len and arg 0):
+ * grow (the new pages absent) or shrink: the pages past the end are
+ * dropped as for INVALIDATE, and requests past it are answered so their
+ * waiters look again and meet the end (a bus error for a fault); one that
+ * crosses it is cut there. PAGER_OP_DETACH (offset, len and arg 0): key's
+ * VMO is cut off for good (its requests fail ERR_PEER_CLOSED now and
+ * later, its pages are dropped from the table and every mapping, the key
+ * is free), or key's PAGER_REQ_GONE is answered (the key is free).
+ * ERR_NOT_FOUND: no live VMO has key (GONE: DETACH only); ERR_INVALID_ARGS:
+ * any other op or argument. Interrupts on, no spinlock held (all but FAIL
+ * may shoot down TLBs). */
 status_t pager_op(struct pager *pg, uint64_t key, uint32_t op, uint64_t offset, uint64_t len,
                   int64_t arg);
 
@@ -170,6 +179,16 @@ status_t vmo_pager_publish(struct vmo *v, uint64_t idx, struct page *p, struct p
  * out of the table, zapped from every mapping, freed after the
  * shootdown. Interrupts on, no spinlock held. */
 void vmo_pager_evict(struct vmo *v, uint64_t idx, const struct page *p);
+/* PAGER_OP_INVALIDATE's work on a pager VMO: its present pages in
+ * [offset, offset + len) dropped as vmo_pager_evict drops one.
+ * ERR_OUT_OF_RANGE past the size. Interrupts on, no spinlock held. */
+status_t vmo_pager_invalidate(struct vmo *v, uint64_t offset, uint64_t len);
+/* PAGER_OP_SET_SIZE's work (size page-aligned, VMO_MAX_SIZE at most): the
+ * size changed; shrinking cuts the pager's requests at the new end
+ * (pager_cut_vlocked: any freed go on `dead`) and drops the pages past it.
+ * ERR_PEER_CLOSED if detached, ERR_BAD_STATE if sealed. Interrupts on, no
+ * spinlock held. */
+status_t vmo_pager_set_size(struct vmo *v, uint64_t size, struct list_node *dead);
 /* Cut a pager VMO off its pager for good: no page is published any more,
  * and every present one is dropped (from every mapping first, freed after
  * the shootdown). Interrupts on, no spinlock held. */
@@ -195,6 +214,10 @@ void pager_published_vlocked(struct pager_vmo *pv, uint64_t idx, struct page *p,
 /* Page p of pv's VMO leaves its table (taken out, or the VMO destroyed:
  * then no lock is needed): it leaves the pager's cache. */
 void pager_page_gone_vlocked(struct pager_vmo *pv, struct page *p);
+/* pv's VMO shrank to `end` pages: its requests from there on are answered
+ * (OK: the waiters look again and find the end), one crossing it is cut
+ * there (and answered if all its pages below arrived). */
+void pager_cut_vlocked(struct pager_vmo *pv, uint64_t end, struct list_node *dead);
 /* A spare request for pv's next join, charged to the current thread's job
  * (ERR_NO_MEMORY if it refuses, or no memory); pager_req_free gives back
  * one that wasn't used. */

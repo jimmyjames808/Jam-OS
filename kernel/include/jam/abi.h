@@ -559,8 +559,8 @@ struct vmo_pin_args {
 
 /* pager_op's ops. */
 #define PAGER_OP_FAIL       1   /* fail the range's requests with arg (ERR_IO or ERR_OUT_OF_RANGE) */
-#define PAGER_OP_INVALIDATE 2   /* drop the range's present pages (not built yet) */
-#define PAGER_OP_SET_SIZE   3   /* offset is the new size (not built yet) */
+#define PAGER_OP_INVALIDATE 2   /* drop the range's present pages: the next access asks again */
+#define PAGER_OP_SET_SIZE   3   /* offset is the new size: grow, or shrink (past the end: bus error) */
 #define PAGER_OP_DETACH     4   /* cut the key's VMO off for good, or take its PAGER_REQ_GONE */
 
 /* struct pager_request's kinds. */

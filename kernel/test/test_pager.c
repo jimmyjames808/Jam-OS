@@ -621,8 +621,26 @@ KTEST(pager_handles)
     KT_EQ(sys_pager_op(&t, ro, 1, PAGER_OP_DETACH, 0, 0, 0), ERR_ACCESS_DENIED);
     KT_EQ(sys_pager_op(&t, pgh, 1, 0, 0, 0, 0), ERR_INVALID_ARGS);
     KT_EQ(sys_pager_op(&t, pgh, 1, 99, 0, 0, 0), ERR_INVALID_ARGS);
-    KT_EQ(sys_pager_op(&t, pgh, 1, PAGER_OP_INVALIDATE, 0, PG, 0), ERR_NOT_SUPPORTED);
-    KT_EQ(sys_pager_op(&t, pgh, 1, PAGER_OP_SET_SIZE, PG, 0, 0), ERR_NOT_SUPPORTED);
+    KT_EQ(sys_pager_op(&t, ro, 1, PAGER_OP_INVALIDATE, 0, PG, 0), ERR_ACCESS_DENIED);
+    KT_EQ(sys_pager_op(&t, pgh, 1, PAGER_OP_INVALIDATE, 0, PG, 1), ERR_INVALID_ARGS);
+    KT_EQ(sys_pager_op(&t, pgh, 1, PAGER_OP_INVALIDATE, 1, PG, 0), ERR_INVALID_ARGS);
+    KT_EQ(sys_pager_op(&t, pgh, 1, PAGER_OP_INVALIDATE, 0, 0, 0), ERR_INVALID_ARGS);
+    KT_EQ(sys_pager_op(&t, pgh, 1, PAGER_OP_INVALIDATE, PG, UINT64_MAX & ~(PG - 1), 0),
+          ERR_INVALID_ARGS);
+    KT_EQ(sys_pager_op(&t, pgh, 1, PAGER_OP_INVALIDATE, 2 * PG, 2 * PG, 0), ERR_OUT_OF_RANGE);
+    KT_EQ(sys_pager_op(&t, pgh, 2, PAGER_OP_INVALIDATE, 0, PG, 0), ERR_NOT_FOUND);
+    KT_EQ(sys_pager_op(&t, pgh, 1, PAGER_OP_INVALIDATE, 0, 3 * PG, 0), OK);
+    KT_EQ(sys_pager_op(&t, ro, 1, PAGER_OP_SET_SIZE, PG, 0, 0), ERR_ACCESS_DENIED);
+    KT_EQ(sys_pager_op(&t, pgh, 1, PAGER_OP_SET_SIZE, PG, PG, 0), ERR_INVALID_ARGS);
+    KT_EQ(sys_pager_op(&t, pgh, 1, PAGER_OP_SET_SIZE, PG, 0, 1), ERR_INVALID_ARGS);
+    KT_EQ(sys_pager_op(&t, pgh, 1, PAGER_OP_SET_SIZE, VMO_MAX_SIZE + 1, 0, 0), ERR_OUT_OF_RANGE);
+    KT_EQ(sys_pager_op(&t, pgh, 2, PAGER_OP_SET_SIZE, PG, 0, 0), ERR_NOT_FOUND);
+    KT_EQ(sys_pager_op(&t, pgh, 1, PAGER_OP_SET_SIZE, PG + 1, 0, 0), OK);   /* rounded up */
+    KT_EQ(sys_vmo_get_size(&t, vh, &size), OK);
+    KT_EQ(size, 2 * PG);
+    KT_EQ(sys_pager_op(&t, pgh, 1, PAGER_OP_SET_SIZE, VMO_MAX_SIZE, 0, 0), OK);
+    KT_EQ(sys_vmo_get_size(&t, vh, &size), OK);
+    KT_EQ(size, VMO_MAX_SIZE);
 
     /* vmo_make_exec takes no pager VMO, even with the power and the only
      * handle: its pages would arrive unchecked. The handle is gone. */
@@ -1397,7 +1415,7 @@ KTEST(pager_fault_hostile)
     job_unref(j);
 }
 
-/* ---- the page cache: budget and eviction ------------------------------------- */
+/* ---- the page cache: budget, eviction, invalidate, set-size ------------------- */
 
 /* A pager with a budget of its own. */
 static struct pager *pg_budget(struct job *j, uint64_t max_pages, uint64_t answer_ns)
@@ -1645,6 +1663,181 @@ KTEST(pager_cache_evict_every_supply)
     pg_close(g.pg);
     kt_job_is_empty(j);
     job_unref(j);
+}
+
+/* A reader looping over a pager VMO until told to stop, by vmo_read or
+ * (with an address space) through a mapping: every word must be its
+ * page's, of a version no newer than the pager's newest. */
+struct looper {
+    struct vmo    *v;
+    struct aspace *as;       /* NULL: vmo_read */
+    struct gpager *g;
+    uint64_t       key, pages, reads;
+    bool           stop;     /* atomic */
+    status_t       st;       /* ERR_INTERNAL until it ends; ERR_BAD_STATE: a wrong word */
+    struct thread *t;
+};
+
+static void looper_main(void *arg)
+{
+    struct looper *l = arg;
+    if (l->as)
+        enter_aspace(l->as, NULL);
+    uint64_t rng = l->key * 77 + (l->as ? 1 : 2);
+    status_t st = OK;
+    while (st == OK && !__atomic_load_n(&l->stop, __ATOMIC_ACQUIRE)) {
+        uint64_t p = kt_rng(&rng) % l->pages, off = p * PG + 8 * (kt_rng(&rng) % 512), w = 0;
+        st = l->as ? copy_from_user(&w, U_FILE + off, 8) : vmo_read(l->v, off, &w, 8);
+        uint64_t newest = __atomic_load_n(&l->g->gen, __ATOMIC_ACQUIRE);
+        if (st == OK && ((w & ~(0xffull << 48)) != word(l->key, p) || (w >> 48 & 0xff) > newest))
+            st = ERR_BAD_STATE;
+        l->reads++;
+    }
+    if (l->as)
+        enter_aspace(NULL, l->as);
+    __atomic_store_n(&l->st, st, __ATOMIC_RELEASE);
+}
+
+/* PAGER_OP_INVALIDATE drops the range's pages from the VMO and its
+ * mappings (and their charges); the next access asks again and sees the
+ * new version. Under two readers (one through a mapping) and a pager
+ * thread, fifty invalidations: no reader sees an error or a wrong word. */
+KTEST(pager_cache_invalidate)
+{
+    struct job *j = kt_fresh_job();
+    struct pager *pg = pg_budget(j, 64, ANSWER);
+    struct vmo *v;
+    KT_EQ(pager_create_vmo(pg, 44, 4 * PG, &v), OK);
+    struct uas us;
+    uas_new(&us, v, 4 * PG);
+    KT_EQ(supply(pg, 44, 0, 4), OK);
+    KT_EQ(aspace_fault(us.as, U_FILE + PG, ASPACE_READ), OK);
+    KT_ASSERT(aspace_pte(us.as, U_FILE + PG) != 0);
+    KT_EQ(pager_op(pg, 44, PAGER_OP_INVALIDATE, PG, 2 * PG, 0), OK);
+    KT_EQ(aspace_pte(us.as, U_FILE + PG), 0);
+    KT_EQ(vmo_committed(v), 2 * PG);
+    KT_EQ(pager_resident(pg), 2);
+    KT_EQ(job_used(j, JOB_LIMIT_PAGES), 2 + 2);
+    KT_EQ(job_used(j, JOB_LIMIT_MSG_BYTES), 2 * 16);
+    struct rd r;
+    rd_start(&r, v, PG, 2 * PG);
+    struct pager_request q;
+    next(pg, 0, &q);
+    is_read(&q, 44, 1, 2);   /* asked again (page 3 is still there) */
+    KT_EQ(supply_gen(pg, 44, 1, 2, 1), OK);
+    KT_EQ(rd_end(&r, 0), OK);
+    uint64_t w;
+    KT_EQ(vmo_read(v, 2 * PG + 16, &w, 8), OK);
+    KT_EQ(w, gword(44, 2, 1));
+    KT_EQ(vmo_read(v, 0, &w, 8), OK);
+    KT_EQ(w, word(44, 0));
+
+    struct gpager g;
+    gp_start(&g, pg, 0);
+    __atomic_store_n(&g.gen, 1, __ATOMIC_RELEASE);
+    static struct looper l[2];
+    for (unsigned i = 0; i < 2; i++) {
+        l[i] = (struct looper){ .v = v, .as = i ? us.as : NULL, .g = &g, .key = 44, .pages = 4,
+                                .st = ERR_INTERNAL };
+        l[i].t = thread_create("pager-looper", looper_main, &l[i], PRIO_DEFAULT);
+    }
+    for (uint64_t gen = 2; gen < 52; gen++) {
+        __atomic_store_n(&g.gen, gen, __ATOMIC_RELEASE);
+        KT_EQ(pager_op(pg, 44, PAGER_OP_INVALIDATE, 0, 4 * PG, 0), OK);
+        thread_sleep_ms(1);
+    }
+    for (unsigned i = 0; i < 2; i++) {
+        __atomic_store_n(&l[i].stop, true, __ATOMIC_RELEASE);
+        thread_join(l[i].t);
+        KT_EQ(l[i].st, OK);
+        KT_ASSERT(l[i].reads > 0);
+    }
+    KT_EQ(gp_stop(&g), OK);
+
+    /* The last version is what the next access sees. */
+    KT_EQ(pager_op(pg, 44, PAGER_OP_INVALIDATE, 0, 4 * PG, 0), OK);
+    KT_EQ(supply_gen(pg, 44, 0, 4, 99), OK);
+    for (uint64_t p = 0; p < 4; p++) {
+        KT_EQ(vmo_read(v, p * PG + 8, &w, 8), OK);
+        KT_EQ(w, gword(44, p, 99));
+    }
+    KT_EQ(pager_resident(pg), 4);
+    uas_free(&us);
+    put(v);
+    pg_close(pg);
+    kt_job_is_empty(j);
+    job_unref(j);
+}
+
+/* PAGER_OP_SET_SIZE: a shrink drops the pages past the end (from the
+ * mappings too) and a fault, read or supply there meets the end; growing
+ * adds absent pages; a reader waiting past the new end is answered and
+ * meets it, one whose request crosses it waits on for the pages below; a
+ * ring-3 thread waiting past it dies of a bus error. */
+KTEST(pager_cache_shrink)
+{
+    struct job *j = kt_fresh_job();
+    struct pager *pg = pg_budget(j, 64, ANSWER);
+    struct vmo *v;
+    KT_EQ(pager_create_vmo(pg, 45, 4 * PG, &v), OK);
+    struct aspace *as;
+    KT_EQ(aspace_create(&as), OK);
+    uint64_t a = 0, w;
+    KT_EQ(aspace_map(as, v, 0, 4 * PG, ASPACE_READ, &a), OK);
+    KT_EQ(supply(pg, 45, 0, 4), OK);
+    KT_EQ(aspace_fault(as, a + 3 * PG, ASPACE_READ), OK);
+    KT_EQ(pager_op(pg, 45, PAGER_OP_SET_SIZE, 2 * PG, 0, 0), OK);
+    KT_EQ(vmo_size(v), 2 * PG);
+    KT_EQ(aspace_pte(as, a + 3 * PG), 0);
+    KT_EQ(vmo_committed(v), 2 * PG);
+    KT_EQ(pager_resident(pg), 2);
+    KT_EQ(job_used(j, JOB_LIMIT_MSG_BYTES), 2 * 16);
+    KT_EQ(aspace_fault(as, a + 3 * PG, ASPACE_READ), ERR_OUT_OF_RANGE);
+    KT_EQ(vmo_read(v, 3 * PG, &w, 8), ERR_OUT_OF_RANGE);
+    KT_EQ(supply(pg, 45, 3, 1), ERR_OUT_OF_RANGE);
+    KT_EQ(vmo_read(v, PG, &w, 8), OK);
+    KT_EQ(w, word(45, 1));
+
+    /* Growing: the new pages are absent, asked for when read; a shrink
+     * then answers the reader, who meets the end. */
+    KT_EQ(pager_op(pg, 45, PAGER_OP_SET_SIZE, 4 * PG, 0, 0), OK);
+    struct rd r;
+    struct pager_request q;
+    rd_start(&r, v, 3 * PG, 8);
+    next(pg, 0, &q);
+    is_read(&q, 45, 3, 1);
+    KT_EQ(pager_op(pg, 45, PAGER_OP_SET_SIZE, 2 * PG, 0, 0), OK);
+    KT_EQ(rd_end(&r, 0), ERR_OUT_OF_RANGE);
+    none_queued(pg);
+
+    /* A request crossing the new end is cut there and waits for the rest. */
+    KT_EQ(pager_op(pg, 45, PAGER_OP_SET_SIZE, 4 * PG, 0, 0), OK);
+    KT_EQ(pager_op(pg, 45, PAGER_OP_INVALIDATE, PG, PG, 0), OK);
+    rd_start(&r, v, PG, 8);
+    uint64_t deadline = uptime_ns() + kt_patience_ms(5000) * NS_PER_MS;
+    KT_EQ(object_wait_one(pager_kobject(pg), SIG_READABLE, deadline, NULL), OK);
+    KT_EQ(pager_op(pg, 45, PAGER_OP_SET_SIZE, 2 * PG, 0, 0), OK);
+    next(pg, 0, &q);
+    is_read(&q, 45, 1, 1);
+    thread_sleep_ms(5);
+    KT_ASSERT(rd_waiting(&r));
+    KT_EQ(supply(pg, 45, 1, 1), OK);
+    KT_EQ(rd_end(&r, 45), OK);
+    none_queued(pg);
+    KT_EQ(aspace_unmap(as, a, 4 * PG), OK);
+    aspace_unref(as);
+    put(v);
+    pg_close(pg);
+    kt_job_is_empty(j);
+    job_unref(j);
+
+    struct ufix f;
+    ufix_start(&f, ANSWER, 46, "cache-shrunk", 3);
+    next(f.pg, 0, &q);
+    is_read(&q, 46, 3, 1);
+    KT_EQ(pager_op(f.pg, 46, PAGER_OP_SET_SIZE, 2 * PG, 0, 0), OK);
+    ufix_killed(&f, "bus error: page past the end of a shrunk VMO");
+    ufix_end(&f);
 }
 
 /* Memory pressure: a job that can't pay for another page, or another

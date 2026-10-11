@@ -105,8 +105,9 @@
  * pages come from its pager, never zero-filled. Only the pager puts a page
  * in (vmo_pager_publish, under this lock, if the slot is still absent and
  * the VMO isn't detached) and only the pager's side takes pages out: its
- * cache's eviction (vmo_pager_evict, one page) and a detach (a decommit
- * of everything), each through the decommit code below, which
+ * cache's eviction (vmo_pager_evict, one page), PAGER_OP_INVALIDATE (a
+ * decommit), PAGER_OP_SET_SIZE (a shrink) and a detach (a decommit of
+ * everything), each through the decommit and shrink code below, which
  * tells the cache (pager_page_gone_vlocked) for every page it takes.
  * Every other call that would commit, write, decommit, resize, seal, pin
  * or kernel-map one is refused at its entry, and so is a writable user
@@ -1178,6 +1179,38 @@ void vmo_pager_evict(struct vmo *v, uint64_t idx, const struct page *p)
         (void)take_batch_locked(v, idx, idx + 1, &g);   /* (else it went already) */
     vunlock(v, f);
     tlb_gather_finish(&g);
+}
+
+status_t vmo_pager_invalidate(struct vmo *v, uint64_t offset, uint64_t len)
+{
+    /* Not a writer: invalidating changes no byte (the pager supplies the
+     * same file's bytes again), so a sealed VMO takes it as it takes an
+     * eviction. No range can exist (pins and kernel mappings are refused). */
+    return decommit_pages(v, offset, len);
+}
+
+status_t vmo_pager_set_size(struct vmo *v, uint64_t size, struct list_node *dead)
+{
+    status_t st = writer_enter(v);   /* a sealed VMO's size is fixed */
+    if (st != OK)
+        return st;
+    mutex_lock(&v->resize);
+    uint64_t f = vlock(v);
+    uint64_t first = size >> PAGE_SHIFT, end = v->size >> PAGE_SHIFT;
+    st = v->pdetached ? ERR_PEER_CLOSED : OK;
+    if (st == OK) {
+        __atomic_store_n(&v->size, size, __ATOMIC_RELAXED);
+        /* Under the lock with the size: a request is made only below the
+         * size, so none can cross the new end after this. */
+        if (first < end)
+            pager_cut_vlocked(v->pv, first, dead);
+    }
+    vunlock(v, f);
+    if (st == OK && first < end)
+        shrink_pages(v, first, end);   /* nothing reappears past the end: resize is held */
+    mutex_unlock(&v->resize);
+    writer_exit(v);
+    return st;
 }
 
 void vmo_pager_detach(struct vmo *v)
