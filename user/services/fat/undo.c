@@ -1,4 +1,4 @@
-/* fat: the undo copy (docs/M11.6-PLAN.md, "The undo copy").
+/* fat: the undo copy (docs/HISTORY.md, M11.6).
  *
  * Before an operation (a request, or the close of a file whose client has
  * gone: request.c) changes anything in the state, fat copies what it may
@@ -43,7 +43,7 @@
  *
  * Built with -DFAT_UNDO_OFF (make EXTRA_CFLAGS_fat="-Ibuild/fatfs
  * -Iuser/services/fat/ffport -DFAT_UNDO_OFF") fat makes no copy: only for
- * measuring what the copy costs (docs/M11.6-PLAN.md, "Kill-to-first-answer"). */
+ * measuring what the copy costs (docs/HISTORY.md, M11.6). */
 #include "fat.h"
 
 /* A record in the log: len bytes of the state at offset `off` from kept,

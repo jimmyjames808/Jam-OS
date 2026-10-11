@@ -115,7 +115,7 @@ extern struct fat_vol vol;
 /* ---- the state (state.c) --------------------------------------------------------- */
 
 /* What fat knows of the volume and its clients that a successor must find
- * again (docs/M11.6-PLAN.md, "Where each service's state lives"): FatFs's
+ * again (docs/HISTORY.md, M11.6): FatFs's
  * volume and every open file's FIL, fat's tables of open files and views,
  * the dirty flag, and the held writes. It is one struct, the service's
  * own area of a state VMO (<svcstate.h>), mapped at a fixed address so

@@ -17,7 +17,7 @@
  *     ending before it answered the boot-disk check: not the boot disk.
  *   - anything else -- a crash, a kill by anyone (volumes.kill included),
  *     an exit with an error: restarted, by the rule of a service that
- *     outlives its process (spare.c, docs/M11.6-PLAN.md Q5; the restart
+ *     outlives its process (spare.c, docs/HISTORY.md, M11.6 Q5; the restart
  *     window is the supervision module's, <supervise.h>): its `fs` channel
  *     stays volumes', so its mount never goes away while it restarts and
  *     calls on it wait for the next instance; a deliberate kill

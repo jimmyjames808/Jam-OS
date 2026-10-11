@@ -7,7 +7,7 @@
  * netstack's one loop is lwIP's only caller.
  *
  * The log is rate-limited here, so nothing lwIP prints can flood it
- * (netstack never logs per packet: docs/M9-PLAN.md "netlog"): a burst of
+ * (netstack never logs per packet: docs/HISTORY.md, M9): a burst of
  * DIAG_BURST lines, then DIAG_PER_S a second; the lines dropped meanwhile
  * are counted and said on the next line that gets through. */
 #include <stdarg.h>

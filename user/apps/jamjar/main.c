@@ -20,7 +20,7 @@
  * (/svc/music hands each opener its own), and for the music read-only:
  * /data and the other sticks. Without the player (none runs, or it isn't
  * in its namespace) it shows the library only, and says so.
- * docs/history/MUSIC-GUI.md is the design.
+ * ARCHITECTURE.md (jamjar) is the design.
  *
  * The loop: read a little more of the library while it is being read, take
  * the player's latest snapshot (link.c's thread does the calls), move the

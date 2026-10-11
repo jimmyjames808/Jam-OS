@@ -48,7 +48,7 @@
  * words after it may be, in any order: FAT_ARG_FORMAT (below), and for an
  * instance that replaces one that ended, FAT_ARG_KILLED (a deliberate
  * kill) or FAT_ARG_CRASHED (any other end): only a crash counts against
- * the request in progress (docs/M11.6-PLAN.md, Q1: a request in progress
+ * the request in progress (docs/HISTORY.md, M11.6, Q1: a request in progress
  * at two crashes is answered ERR_IO and dropped). A test that starts fat
  * itself may add test powers (user/services/fat/test.c).
  *

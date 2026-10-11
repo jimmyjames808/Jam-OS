@@ -1,7 +1,7 @@
 /* utest: the music player's folder walk (user/services/music/tracks.c,
  * linked in by the Makefile), on a tree in bin/ramfs. The walk is read a few
  * entries at a time so that the player answers its channel while a big
- * folder is read (docs/history/AUDIO-REVIEW.md, item 2): read one entry
+ * folder is read (docs/HISTORY.md, audio, item 2): read one entry
  * per step it must take many steps and find exactly what one big step
  * finds, in the same order: the .mp3 and .wav files (any case), not
  * names starting with '.', nothing more than MAX_DEPTH folders down. */

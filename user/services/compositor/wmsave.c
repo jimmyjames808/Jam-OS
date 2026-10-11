@@ -1,8 +1,7 @@
 /* The compositor's memory across its own restarts (wm.h; the owner's G1
  * sign-off, 2026-10-07: after `kill compositor` the windows came back
  * in whatever order their clients reconnected, so the arrangement
- * changed). docs/G1-PLAN.md "As built: the compositor remembers the
- * arrangement" has the design and why.
+ * changed). docs/HISTORY.md, G1 has the design and why.
  *
  * Where it lives: the state VMO init keeps for the compositor (M11.6's
  * <svcstate.h>, SR_STATE), mapped at SVCSTATE_ADDR. The memory outlives

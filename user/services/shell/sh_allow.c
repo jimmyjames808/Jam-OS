@@ -1,5 +1,5 @@
 /* Programs from /data: the owner's approvals (`allow`) and running one
- * (docs/history/M8.6-SVC.md, "allow" and "Running a program from /data").
+ * (docs/HISTORY.md, M8.6).
  *
  * The approvals are lines of /data/etc/allow, each "<sha-256>\t<path>\t
  * <what its list asks for>", written only here. Every program's /data is a

@@ -1,5 +1,5 @@
-/* netstack: the network stack, lwIP in one process (docs/M9-PLAN.md
- * "netstack: lwIP, single-threaded"). init starts it (its net.c) with
+/* netstack: the network stack, lwIP in one process (docs/HISTORY.md, M9).
+ * init starts it (its net.c) with
  *   NETSTACK_SR_CTL       the server end of its control channel
  *                     (abi/idl/netctl.idl); init keeps a duplicate, so a
  *                     restarted netstack serves the same channel

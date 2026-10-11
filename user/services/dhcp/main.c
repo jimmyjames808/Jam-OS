@@ -1,5 +1,5 @@
-/* dhcp: the DHCP client process (docs/M9-PLAN.md, "DHCP and DNS:
- * processes of their own"). init starts it in shell mode once netstack
+/* dhcp: the DHCP client process (docs/HISTORY.md, M9).
+ * init starts it in shell mode once netstack
  * runs, unless /data/etc/settings has a static `net.address` (that wins:
  * init says so in the log), with
  *   DHCP_SR_NETCTL   a client end of netstack's control channel

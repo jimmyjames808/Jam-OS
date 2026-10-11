@@ -326,7 +326,7 @@ static uint32_t ocp_write(uint16_t reg, uint16_t v)
     return RTL_OCP_BUSY | (uint32_t)(reg >> 1) << RTL_OCP_ADDR_SHIFT | v;
 }
 
-/* M9-REVIEW item 6 (c) and (d): the 8125's other transmit queues and its
+/* M9 review item 6 (c) and (d): the 8125's other transmit queues and its
  * tail pointers refused in any width; through the OCP windows, a 16-byte
  * descriptor format, a second transmit queue, pause advertised, a PHY
  * test mode; every value the bring-up writes there still allowed. */

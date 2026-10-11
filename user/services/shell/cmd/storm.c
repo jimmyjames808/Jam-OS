@@ -1,6 +1,5 @@
 /* storm: copy a file while services are killed again and again, then say
- * whether the copy is whole (docs/M11.6-PLAN.md, "The demonstration and
- * its tests"):
+ * whether the copy is whole (docs/HISTORY.md, M11.6):
  *
  *   storm <from> <to> <kills/s> [service...]
  *   storm mixer <kills/s> <seconds>

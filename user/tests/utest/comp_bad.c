@@ -25,7 +25,7 @@
  *
  * t_comp_live_*: the same hostile clients (all but the connections) against
  * the desktop's own compositor, /svc/wayland, with everyone's windows on
- * it (G1-PLAN's X1: `utest only comp_live` on the PC, and
+ * it (docs/HISTORY.md, G1's X1: `utest only comp_live` on the PC, and
  * tools/shell-tests/g1-hostile.txt). Its job isn't ours to read, so the
  * handle counts are left out; the check is that it serves a healthy client
  * after each one and the desktop's windows stay. On a boot without a

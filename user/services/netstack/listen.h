@@ -1,5 +1,5 @@
 /* netstack: the listen permissions (listen.c; the design is
- * docs/M9.5-PLAN.md "Track B, built" and "Ports below 1024").
+ * docs/HISTORY.md, M9.5).
  *
  * Accepting what nobody asked for (a datagram to a port a program chose,
  * a TCP connection) is a permission of its own, and doing it on a port

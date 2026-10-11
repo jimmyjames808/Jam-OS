@@ -9,7 +9,7 @@
 #include "rtl8125.h"
 #include "utest.h"
 
-#define BASE 112ull   /* the chip's count at the start: it survives reboots (M9-PLAN) */
+#define BASE 112ull   /* the chip's count at the start: it survives reboots (docs/HISTORY.md, M9) */
 #define MS   1000000ull
 
 /* A small generator for the runs below (any sequence will do). */
@@ -284,7 +284,7 @@ bool t_rtl8125_guard_fake(void)
     return stopped(t, RTL_GUARD_UNREAD, now);
 }
 
-/* netdev.stats and the "so far" lines inside the loop (M9-REVIEW 13): a
+/* netdev.stats and the "so far" lines inside the loop (M9 review 13): a
  * dump the chip never does used to cost every request 10 ms of the loop
  * (tally_dump, still the start's and the end's); tally_recent answers from
  * the last dump that landed, asks for the next one and never waits. */

@@ -1,5 +1,4 @@
-/* fat: every request run as one operation (docs/M11.6-PLAN.md, "The
- * request in progress" and "Held writes become the write-ahead buffer").
+/* fat: every request run as one operation (docs/HISTORY.md, M11.6).
  *
  * Every request fat serves (fs on the mount's channel or a view, file,
  * fsctl) is read into a slot of the state VMO (svcstate_prepare, then the
