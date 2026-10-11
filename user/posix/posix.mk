@@ -82,6 +82,20 @@ POSIX_CFLAGS := -std=gnu17 -O2 -g -Wall -Wextra -Werror -Wvla -Wno-unused-parame
 POSIX_SRCS := $(wildcard $(POSIX)/sys/*.c) $(filter-out %/crt1.c,$(wildcard $(POSIX)/crt/*.c))
 POSIX_OBJS := $(POSIX_SRCS:%=$(POSIX_OUT)/%.o)
 
+# The layer's objects as libc.a holds them: every global name that isn't
+# the implementation's own (__*) or a public extension (jamos_*) renamed
+# __jl_<name> (tools/posixnames.py says why), so a program's own names
+# never meet the layer's. JL_NAMES_H gives the renames as #defines, for
+# posixtest's one look inside the layer.
+POSIX_JL_OBJS := $(POSIX_OBJS:$(POSIX_OUT)/%=$(POSIX_OUT)/jl/%)
+JL_NAMES_MAP  := $(POSIX_OUT)/jl-names.map
+JL_NAMES_H    := $(POSIX_OUT)/jl-names.h
+$(JL_NAMES_MAP): $(POSIX_OBJS) tools/posixnames.py   # and JL_NAMES_H
+	python3 tools/posixnames.py $(CROSS)nm $(JL_NAMES_MAP) $(JL_NAMES_H) $(POSIX_OBJS)
+$(POSIX_OUT)/jl/%: $(POSIX_OUT)/% $(JL_NAMES_MAP)
+	@mkdir -p $(dir $@)
+	$(CROSS)objcopy --redefine-syms=$(JL_NAMES_MAP) $< $@
+
 SYSROOT_HDRS := $(SYSROOT)/include/.made
 SYSROOT_EMPTY := $(addprefix $(SYSROOT)/lib/lib,$(addsuffix .a,m rt pthread crypt util xnet resolv dl))
 SYSROOT_LIBS := $(SYSROOT)/lib/libc.a $(SYSROOT)/lib/crt1.o $(SYSROOT)/lib/crti.o \
@@ -173,7 +187,7 @@ define POSIX_ARCHIVE
 endef
 $(MUSL_LIB): $(MUSL_OBJS) $(MUSL_OVR_OBJS)
 	$(POSIX_ARCHIVE)
-$(SYSROOT)/lib/libc.a: $(MUSL_OBJS) $(MUSL_OVR_OBJS) $(POSIX_OBJS) $(LIBJAM_OBJS)
+$(SYSROOT)/lib/libc.a: $(MUSL_OBJS) $(MUSL_OVR_OBJS) $(POSIX_JL_OBJS) $(LIBJAM_OBJS)
 	@mkdir -p $(dir $@)
 	$(POSIX_ARCHIVE)
 
@@ -182,11 +196,12 @@ $(SYSROOT)/lib/libc.a: $(MUSL_OBJS) $(MUSL_OVR_OBJS) $(POSIX_OBJS) $(LIBJAM_OBJS
 POSIXTEST      := $(BUILD)/user/posixtest
 POSIXTEST_SRCS := $(wildcard $(POSIX)/test/*.c)
 $(POSIXTEST): $(POSIXTEST_SRCS) $(wildcard $(POSIX)/test/*.h) $(POSIX)/test/wants \
-              $(SYSROOT_LIBS) tools/jamos-cc | $(UINC) $(SYSCALLS_OK) $(IDL_OK)
+              $(SYSROOT_LIBS) $(JL_NAMES_MAP) tools/jamos-cc | $(UINC) $(SYSCALLS_OK) $(IDL_OK)
 	@mkdir -p $(dir $@)
 	JAMOS_SYSROOT=$(SYSROOT) CROSS=$(CROSS) tools/jamos-cc -std=gnu17 -O2 -g -Wall -Wextra \
 	    -Werror -Wvla -D_GNU_SOURCE -I$(POSIX)/include -Iuser/include -I$(BUILD)/uinc \
-	    -Idrivers/include --jamos-wants=$(POSIX)/test/wants $(POSIXTEST_SRCS) -o $@
+	    -Idrivers/include -include $(JL_NAMES_H) --jamos-wants=$(POSIX)/test/wants \
+	    $(POSIXTEST_SRCS) -o $@
 $(POSIXTEST).bootfs: $(POSIXTEST) tools/checkwants.py
 	$(STRIP) --strip-debug $< -o $@
 	python3 tools/checkwants.py $(POSIX)/test=$@
@@ -219,12 +234,15 @@ BOOTFS_FILES += usr/bin/pxio-usr=$(BUILD)/user/posix-pxio.bootfs
 
 # `make check`: the overrides still match upstream, and the check refuses
 # a changed, a missing and a malformed one; no name libjam defines is one
-# musl's libc defines.
+# musl's libc defines; a program that defines names the layer uses inside
+# libc.a (tools/posix-link-test.c) links.
 .PHONY: posix-check
-posix-check: $(MUSL_LIB)
+posix-check: $(MUSL_LIB) $(SYSROOT_LIBS)
 	python3 tools/checkoverrides.py $(MUSL_OVR) $(MUSL)
 	python3 tools/checkoverrides.py --selftest $(MUSL_OVR) $(MUSL)
 	python3 tools/checklibjam.py $(CROSS)nm $(UOBJ)/libjam.a $(MUSL_LIB)
+	JAMOS_SYSROOT=$(SYSROOT) CROSS=$(CROSS) tools/jamos-cc -O2 tools/posix-link-test.c \
+	    -o $(BUILD)/posix-link-test
 check: posix-check
 
 -include $(MUSL_OBJS:.o=.d) $(MUSL_OVR_OBJS:.o=.d) $(POSIX_OBJS:.o=.d) \
