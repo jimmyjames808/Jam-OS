@@ -17,6 +17,7 @@
  * a terminal: a connection console it drives itself), files.c, files2.c
  * and fileskid.c (files and directories on /data and /boot: ptfiles.h),
  * signal.c and sigproc.c (signals in a process, and between processes),
+ * pty.c (pseudo-terminals, and init's sessions from a POSIX program),
  * clock.c (the clocks from the time page), socket.c (sockets without the
  * network) and sockets.c (against the network peer: asked for by name).
  * start.c, mem.c, clock.c, fds.c, poll.c, proc.c, tty.c and fileskid.c are
@@ -56,6 +57,8 @@ void pt_files_many(char **argv);   /* only when asked for by name */
 void pt_signal(char **argv);
 void pt_socket(char **argv);
 void pt_sockets(char **argv);    /* only when asked for by name: the network peer */
+void pt_pty(char **argv);
+void pt_session(char **argv);      /* only when asked for: a shell-mode init's sessions */
 /* The signal section's second half (sigproc.c): between processes. */
 void pt_sigproc(void);
 
@@ -75,6 +78,9 @@ int  pt_child_sig(int argc, char **argv);
 int  pt_child_files(void);
 int  pt_child_rofs(void);
 int  pt_child_sock(void);
+int  pt_child_pty(void);
+int  pt_child_winsize(void);
+int  pt_child_hup(void);
 
 /* Pages charged to our job now (job_get_info; start.c). */
 uint64_t pt_job_pages(void);

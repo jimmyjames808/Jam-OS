@@ -213,6 +213,7 @@ void tell_mounts(void)
     for (unsigned i = 0; i < NSVC; i++)
         if (i != SHELL)
             tell_follower(i);
+    sessions_tell();   /* the sessions' shells (sessions.c) */
 }
 
 /* Service i is called name: its program's ("console": the first that
@@ -509,9 +510,11 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
     for (;;) {
         uint64_t t = now(), deadline = start_due(t), net = net_due(t);
         uint64_t spare = spare_due(t);   /* after the starts: a promoted spare runs first */
-        uint64_t dm = dm_due(t);
+        uint64_t dm = dm_due(t), sess = sessions_due(t);
         if (dm < deadline)
             deadline = dm;
+        if (sess < deadline)
+            deadline = sess;
         if (net < deadline)
             deadline = net;
         if (spare < deadline)
@@ -552,6 +555,8 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
             apps_event((unsigned)(pkt.key - KEY_APPS));
         } else if (pkt.key >= KEY_SHARED && pkt.key < KEY_SHARED + SHARED_MAX) {
             shared_event((unsigned)(pkt.key - KEY_SHARED));
+        } else if (pkt.key >= KEY_SESSION && pkt.key < KEY_SESSION_END) {
+            sessions_event((unsigned)(pkt.key - KEY_SESSION));
         }
     }
 }

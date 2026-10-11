@@ -20,7 +20,15 @@
  *
  * The owner closing the master hangs the terminal up (closing: main ends
  * with 0, the clients' channels close); so does a write finding it closed.
- * The control channel closing only ends the size changes. */
+ * The control channel closing only ends the size changes. With the
+ * argument "endidle" (init's sessions, libc's pseudo-terminals) the
+ * console also ends by itself once a shell or a program (a client below
+ * ADMIN, or a tty) has been on it and none is left, after the output
+ * queued so far has gone out: the owner then reads the master to its
+ * end, as a pseudo-terminal's master reads to its end when the last
+ * program on it has gone. The ADMIN channels its owner keeps don't hold it
+ * up. Such a console says nothing of its start and its end in the log:
+ * sessions and pseudo-terminals come and go by the thousand. */
 #include <idl/conn_ctl.h>
 #include <termconn.h>
 #include <utf8.h>
@@ -48,6 +56,8 @@ static uint64_t out_retry_at;      /* the master was full: the next try (0: none
 static uint32_t out_dropped;       /* bytes dropped since the last notice */
 static bool out_cr;                /* the last byte queued as text was CR: no CR before an LF */
 static bool ctl_more;              /* the control channel had more than a turn's requests */
+static bool end_idle;              /* "endidle": end once the last shell or program has gone */
+static bool had_user;              /* a client below ADMIN or a tty has been on it */
 
 /* ---- the queue ----------------------------------------------------------------- */
 
@@ -163,7 +173,7 @@ static void conn_size(uint16_t *c, uint16_t *r)
 /* The terminal is gone: the console ends (main), its clients see it. */
 static void hangup(const char *why)
 {
-    if (!closing)
+    if (!closing && !end_idle)   /* "endidle": its owner's routine, not news */
         printf("console: connection: hung up (%s)\n", why);
     closing = true;
 }
@@ -247,6 +257,10 @@ static void ctl_take(void)
 void conn_arg(const char *arg)
 {
     unsigned long v = 0;
+    if (!strcmp(arg, "endidle")) {
+        end_idle = true;
+        return;
+    }
     if (strncmp(arg, "cols=", 5) && strncmp(arg, "rows=", 5))
         return;
     const char *p = arg + 5;
@@ -293,6 +307,8 @@ static bool conn_init(void)
 static void conn_banner(unsigned clients, bool log_off)
 {
     (void)log_off;   /* a connection console shows the log only when a client asks */
+    if (end_idle)
+        return;   /* a session's or a pseudo-terminal's: they come and go by the thousand */
     printf("console: connection: %ux%u cells, %u client channel(s)%s\n", term_cols, term_rows,
            clients, ctl ? "" : " (no control channel)");
 }
@@ -319,6 +335,17 @@ static uint64_t conn_deadline(void)
     return d;
 }
 
+/* "endidle": the last shell or program has gone and its output is out. */
+static void idle_check(void)
+{
+    if (!end_idle || closing)
+        return;
+    if (clients_users() || ttys_count())
+        had_user = true;
+    else if (had_user && !out_len)
+        hangup("its last program has gone");
+}
+
 static void conn_flush(void)
 {
     status_t st = conn_in_idle();
@@ -327,6 +354,7 @@ static void conn_flush(void)
     if (ctl_more)
         ctl_take();
     out_flush();
+    idle_check();
     if (!conn_congested())
         clients_resume();   /* requests that waited for room */
 }

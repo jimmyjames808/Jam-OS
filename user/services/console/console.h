@@ -131,7 +131,8 @@ struct backend {
 };
 extern const struct backend win_backend, conn_backend;
 extern const struct backend *back;   /* the one this console runs */
-/* conn.c: a "cols=<n>" or "rows=<n>" argument (anything else is ignored). */
+/* conn.c: a "cols=<n>", "rows=<n>" or "endidle" argument (anything else is
+ * ignored). */
 void conn_arg(const char *arg);
 
 /* main.c */
@@ -269,6 +270,8 @@ bool focus_to_shell(const struct input_key_event *ev, unsigned below);
 /* ---- tty.c: POSIX clients (console.open_tty, the `tty` protocol) ---------------- */
 
 void ttys_init(void);
+/* tty clients connected now. */
+unsigned ttys_count(void);
 status_t op_open_tty(void *ctx, handle_t *out_tty, handle_t *out_data);
 /* A tty's packet: K_TTY (its requests, or its channel closed) or
  * K_TTY_OUT (its output). */
@@ -500,6 +503,8 @@ status_t conn_in_idle(void);
 /* Startup's client channels (SR_USER + 0..7): ADMIN, on the port. */
 void clients_init(void);
 unsigned client_count(void);
+/* A client of a lower level than ADMIN is connected (a shell, a program). */
+bool clients_users(void);
 /* Some client asks for the kernel log on the screen (console.show_log)
  * and a line from process `name` (n bytes; n 0: the kernel's own line) is
  * one it wants. */

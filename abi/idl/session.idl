@@ -1,0 +1,90 @@
+# session: init's sessions, /svc/session (docs/M13-PLAN.md, "The terminal
+# layer", and "X1 notes"). A session is a Jam OS shell on a connection
+# console (bin/console "conn", <termconn.h>): the terminal's screen and
+# keyboard are a channel of byte messages, the master, which the opener
+# reads and writes for a remote terminal (sshd's connection). Only init
+# can start a shell with a shell's authority (init's namespace, its control
+# channel, the root powers), so init serves this.
+#
+# Who serves it: init (user/services/init/sessions.c), a channel per opener
+# (svc.connect on the shared channel /svc/session names). Who calls it: a
+# program whose list asks for `svc session`, which only a boot-image
+# service, a port or a test may (tools/checkwants.py) and `allow` refuses
+# for a program on /data: tinyssh's sessions (libc's jamos_session_open),
+# and the tests.
+#
+# Reconnect: init never restarts, so an opener's channel closes only when
+# the opener breaks the protocol (an answer bound left unread). The
+# sessions it opened carry on: they are the master's and the control
+# channel's, not the opener channel's.
+
+protocol session 45
+
+# The most sessions at once (open's ERR_NO_RESOURCES past them), and the
+# most opener channels at once (svc.connect's).
+const SESSIONS_MAX 8
+const OPENERS_MAX 32
+# `term`'s most bytes; the bytes it may hold are [A-Za-z0-9._+-].
+const TERM_MAX 63
+# `command`'s most bytes as the protocol carries it. The shell runs a line
+# of at most COMMAND_RUN_MAX bytes: a longer one is ERR_OUT_OF_RANGE.
+const COMMAND_MAX 4095
+const COMMAND_RUN_MAX 240
+
+# A new session: a connection console of cols x rows cells (cut to the
+# console's 480 x 180) and a shell on it, with TERM set to `term` in its
+# environment ("": the shell's own, vt100) for the programs it runs.
+# `command` "": an interactive shell, which ends with `exit [code]`;
+# else the shell runs that one line and ends with its status (`ssh pc
+# 'ls /data'`), printing no banner and no prompt.
+#   master  the terminal: what it shows comes as byte messages (at most
+#           4096 bytes each; a bare LF as CR LF); what the remote terminal
+#           types is written as bytes (any size up to a channel message's).
+#           Closing it hangs the session up: the console ends, the shell
+#           (its console gone) ends with code 2, the POSIX programs on the
+#           terminal get SIGHUP (their terminal hung up), and what is left
+#           of the session's processes is killed 2 s later. Once the shell
+#           has ended and every program it ran has let go of the terminal,
+#           the console sends what it still holds and ends: the master's
+#           peer closes after the last byte (the opener reads to the end).
+#   ctl     the session's `session_ctl` channel (below).
+#   proc    the shell's process, RIGHT_WAIT, RIGHT_INSPECT and
+#           RIGHT_TRANSFER only: its end (SIG_TERMINATED) and its exit
+#           code (process_get_info) are the session's (libc reports the
+#           session to waitpid as a child with it). It can't be killed
+#           through this handle: hang up instead.
+# cols or rows 0, a `term` byte outside the set, a `command` byte below
+# 0x20 or 0x7f: ERR_INVALID_ARGS. A `command` longer than COMMAND_RUN_MAX:
+# ERR_OUT_OF_RANGE. SESSIONS_MAX sessions running: ERR_NO_RESOURCES.
+1  open  (u16 cols, u16 rows, str[<=63] term, str[<=4095] command) -> (handle master, handle ctl, handle proc)
+
+# session_ctl: one session's control channel, init's end served by init.
+# The size of the remote terminal's window comes here, and init passes it
+# on to the session's console (conn_ctl.resize), whose POSIX programs get
+# SIGWINCH; the session's end goes back on it.
+#
+# Reconnect: there is none. The channel is the session's: init closes it
+# when the session is over and gone (after `ended`). The opener closing it
+# changes nothing but that the size stays and `ended` is not sent: the
+# session lives as long as its master.
+
+protocol session_ctl 46
+
+# The remote terminal is now cols x rows cells. Answered at once; init
+# passes it on to the console without waiting (sizes sent faster than the
+# console takes them: the newest wins). 0 for either: ERR_INVALID_ARGS.
+1  resize  (u16 cols, u16 rows) -> ()
+# Hang the session up, as closing the master does. Answered at once;
+# `ended` follows when the shell has gone.
+2  hangup  () -> ()
+# A signal to the session, as kill(2) of the session's pid sends it
+# (libc's): SIGHUP (1), SIGTERM (15) and SIGKILL (9) hang it up; 0 only
+# checks it is still there (ERR_BAD_STATE once it has ended). Any other
+# number: ERR_NOT_SUPPORTED (the shell takes no signals; the programs it
+# runs take theirs from the terminal and from the shell).
+3  signal  (u8 signo) -> ()
+# To the opener: the shell has ended with this code (`exit [code]`, the
+# command's status, 2 when its console went away; -1 when it was killed).
+# Sent once; then init closes the channel once the rest
+# of the session has gone.
+4  ended   -> (i32 code) event

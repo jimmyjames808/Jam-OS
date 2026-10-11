@@ -2491,3 +2491,126 @@ docs/TESTING.md.
 - SIGPIPE: a write to a closed connection raises it (tinysshd's own
   handling decides); `MSG_NOSIGNAL` and `SIG_IGN` work.
 - No `AF_UNIX` sockets: agent forwarding stays off.
+
+## X1 notes
+
+Track X1 (sessions and pseudo-terminals) as built, with the choices the
+plan left open (the safest each time).
+
+- **Ids.** `session` is **45** and `session_ctl` **46** (`abi/idl/session.idl`):
+  the plan's 91 and 92 are devmgr's.
+- **The protocol.** `session.open (u16 cols, u16 rows, str[<=63] term,
+  str[<=4095] command) -> (handle master, handle ctl, handle proc)`: the
+  plan's, plus `proc`, the shell's process with `RIGHT_WAIT`,
+  `RIGHT_INSPECT` and `RIGHT_TRANSFER` only (never `RIGHT_WRITE`, which
+  would let the opener into a process with the shell's authority): its end
+  and exit code are the session's, which is how libc reports a session to
+  `waitpid`. `term` may hold only `[A-Za-z0-9._+-]`, `command` no byte below
+  0x20 nor 0x7f (`ERR_INVALID_ARGS`); a command longer than the shell's
+  240-byte line is `ERR_OUT_OF_RANGE` (nothing cut). `session_ctl`:
+  `resize`, `hangup`, `signal (u8 signo)` (kill(2)'s way: SIGHUP, SIGTERM,
+  SIGKILL hang up; 0 checks; any other `ERR_NOT_SUPPORTED`), and the event
+  `ended (i32 code)` (-1 when the shell was killed).
+- **init** (`user/services/init/sessions.c`, and small hooks: `sessions_init`
+  in services.c's `services_init`, `sessions_event`/`sessions_due` in
+  shell.c's loop, `sessions_tell` from `tell_mounts`, `terms_shell_powers`
+  split out of terms.c's `start_shell`, a refactor commit). A session is
+  bin/console "conn" "endidle" (process name `session-console`, in a job of
+  its own, the root with `RIGHT_ROOT_KLOG` alone) and bin/shell "session"
+  [`TERM=`] [`cmd=`] (`session-shell`, a job of its own, a SHELL client of
+  that console, every terminal shell's powers and init's whole namespace,
+  kept in step as the terminals' shells' is). init closes its ADMIN channel
+  once the shell has its client. Not supervised: a session that ends is
+  over. Openers: a channel each through `svc.connect`, at most 32; at most
+  8 sessions whose shell runs and nobody has hung up, and as many more
+  ending (a 17th slot takes the oldest ending one's place, killing what is
+  left of it). An opener or a control channel that leaves more answers
+  unread than the protocol's bound is cut off (its channel closed; the
+  session goes on): init's loop never waits for a client. A resize is
+  answered at once and passed on with `conn_ctl.resize_send`, one in
+  flight, the newest size winning.
+- **The end.** Closing the master (or `hangup`, or `signal` 1/9/15, which
+  kill the console) hangs up: the console ends, the shell (its console
+  gone) ends with 2. The shell's end sends `ended` with its code; 2 s later
+  (`HUP_GRACE`) init kills the shell's job (what it left in the background;
+  the POSIX programs on the terminal have had the time to act on SIGHUP).
+  The console is not killed after a normal end: with **"endidle"** (a new
+  argument of the connection back end, conn.c) it ends by itself once a
+  shell or a program (a client below ADMIN, or a tty) has been on it and
+  none is left and its output has gone out, so `ssh pc 'cat big'` loses
+  nothing to a slow reader: the master gives every byte, then its peer
+  closes. Without "endidle" a connection console behaves as before.
+- **The shell** (edits outside X1's files, small): "session" (`exit [code]`
+  ends it with that code: `exit` takes an optional code now, 0 to 255; no
+  `initctl.shell_ready`), "TERM=<name>" (exported), "cmd=<line>" (that line
+  alone, no banner or prompt, then the end with `$?`).
+- **SIGHUP on hang-up** is the process's own terminal hanging up, not a
+  `send` by init: the signal thread binds its terminal's `tty` channel for
+  `SIG_PEER_CLOSED` (ONCE) beside its events and raises SIGHUP (`SI_KERNEL`)
+  when the console lets go of it (a session's or a pseudo-terminal's master
+  closed, the terminal window closed, the console gone). init can't reach
+  the programs a session's shell runs (the shell holds their signal
+  channels), and this way every terminal's programs get it, a
+  pseudo-terminal's child too, with no channel to keep. A program whose
+  default it is ends as Linux's would (exit as by SIGHUP).
+- **Pseudo-terminals** (`user/posix/sys/pty.c`, `pty.h`; dev.c's /dev
+  routes there): `/dev/ptmx` starts bin/console "conn" "endidle" in a job
+  under the program's (`pty-console`) and gives a master descriptor (a kind
+  wrapping pipe.c's socketpair end over the master channel: read, write,
+  poll, O_NONBLOCK; a read at the end, and a write after it, is EIO as
+  Linux's master's); `/dev/pts/N` (N the slot, 0 to 7, `PTY_MAX`; the 9th
+  ptmx is ENOSPC, posix_openpt's EAGAIN) is `console.open_tty` on the ADMIN
+  channel libc keeps, so only this process can open it (a child gets the
+  slave as a descriptor). The master's TIOCSWINSZ and the slave's are
+  `conn_ctl.resize` (SIGWINCH on the slave), TIOCGPTN the slot, TIOCSPTLCK
+  accepted (nothing to unlock), grantpt and musl's unmodified openpty
+  work. Closing the master kills its console (its programs: SIGHUP). The
+  slave is named `/dev/pts/N` (tty.c's description has a name: ttyname,
+  stat's major 136); a slave opened with O_NOCTTY never becomes the
+  process's terminal (it did before: every first terminal description).
+- **The terminal's process-group calls** (tty.c): TIOCSCTTY makes a
+  terminal the process's when it has none and leads its session (0 if it
+  already is; EPERM else); TIOCGPGRP, TIOCSPGRP (a group of our session:
+  EPERM else) and TIOCGSID on the process's terminal only (ENOTTY else).
+  The foreground group is libc's bookkeeping on the description, our own
+  group until set: the console knows no groups (its focus is the
+  foreground). TIOCNOTTY stays ENOTTY.
+- **jamos_session_open** (`<jamos/session.h>`): `svc_open(SVC_SESSION)`,
+  `session.open`, the master as a descriptor of the master kind (opened
+  FD_CLOEXEC: its close is the hang-up), TIOCSWINSZ on it is
+  `session_ctl.resize`, and the session a child (proc.c's `lx_session_add`):
+  `waitpid` gives the shell's code, SIGCHLD comes, `kill` sends
+  `session_ctl.signal` (SIGHUP, SIGTERM, SIGKILL hang up; others accepted
+  and nothing done). ENOENT without `/svc/session`, EAGAIN at 8, E2BIG for a
+  long command.
+- **Who may.** `svc session` was already the build's (services, ports,
+  tests: tools/checkwants.py); `allow` now refuses it for a program on
+  /data (sh_allow.c). bin/wantsession (user/tests/) asks for it alone, for
+  the shell test. posixtest's list doesn't ask for it (it would put `/svc`
+  in its namespace from the shell and change posix-run.txt's checks):
+  utest's session_posix starts posixtest's session section with it.
+- **Tests.** utest (session.c, sessbad.c, sessrig.h; skipped where init
+  has no /svc/session, as in the regression run): an interactive session
+  (prompt, echo, TERM and a resize as a POSIX program on it sees them,
+  `exit 7`), commands (output, no banner, the status), hang-ups three ways
+  and SIGHUP reaching a POSIX program's handler, the limit of 8, posixtest's
+  session section, bad arguments, junk on the master, the control channel
+  and an opener's channel, the control channel closed first, answers left
+  unread, 1,000 connects and 1,000 opens closed at once, a namespace
+  without /svc/session. posixtest's pty section (in the regression run
+  too). tools/shell-tests/sessions.txt runs them from the shell, with
+  `allow` refusing wantsession on /data.
+- **For X2.** Use `jamos_session_open` for both channel_forkpty and
+  channel_fork (no pty without a request: `command` is the exec request's
+  line, TERM from the pty request or ""); the master is the channel's
+  descriptor (poll it; EIO is the end), `TIOCSWINSZ` on it for
+  window-change, `waitpid` on the pid for exit-status (SIGCHLD comes; 2
+  means the terminal hung up), `close(master)` or `kill(pid, SIGHUP)` to
+  end it. The shell's own line is at most 240 bytes. sshd's list needs
+  `svc session` (a port: allowed by the build). The output's LF arrives as
+  CR LF whatever the request (the console's rule, as a pty's ONLCR).
+- **Found, not changed.** The console frees a tty whose channel closed
+  without first reading what is left on its data channel (console tty.c's
+  `tty_event` → `ttys_hang_up`): a program that writes and exits at once
+  can lose its last output if the console sees the close first. The pty
+  test waits for the output before closing the slave for that reason.

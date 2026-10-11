@@ -16,8 +16,9 @@
  *       was given; shm_unlink drops the name, and the object lives while
  *       a descriptor or a mapping holds it.
  *   /dev/tty  the process's terminal (tty.c's tty_controlling: its
- *       description shared, as a dup), ENXIO if it has none. /dev/ptmx:
- *       not built yet (ENOENT).
+ *       description shared, as a dup), ENXIO if it has none.
+ *   /dev/ptmx, /dev/pts, /dev/pts/N
+ *       pseudo-terminals: pty.c's.
  *
  * /dev, /dev/fd and /dev/shm stat as directories; listing them is not
  * built. The nodes are static: a description's priv is the node's entry
@@ -29,6 +30,7 @@
 #include <sys/sysmacros.h>
 #include "kinds.h"
 #include "memfd.h"
+#include "pty.h"
 #include "tty.h"
 
 #define SHM_DIR     "/dev/shm/"
@@ -352,6 +354,8 @@ long dev_open(const char *abs, int flags, mode_t mode)
         return err ? err : shm_open_path(name, flags);
     if (is_dir(abs))
         return (flags & O_ACCMODE) != O_RDONLY ? -EISDIR : -ENOTSUP;   /* no listing */
+    if (pty_path(abs))
+        return pty_open(abs, flags);
     if (!strcmp(abs, "/dev/tty")) {
         struct fd_desc *t = tty_controlling();
         return t ? fd_install(t, 0, flags & O_CLOEXEC) : -ENXIO;
@@ -413,6 +417,8 @@ long dev_stat(const char *abs, struct stat *st)
     const char *name = shm_name_of(abs, &err);
     if (name)
         return err ? err : shm_stat(name, st);
+    if (pty_path(abs))
+        return pty_stat(abs, st);
     if (fd_node(abs) >= 0)
         return fd_stat(fd_node(abs), st);
     const struct node *n = node_named(abs + 5);

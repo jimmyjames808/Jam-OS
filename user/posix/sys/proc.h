@@ -33,6 +33,12 @@ int32_t lx_sid(void);
  * reaped), its pid, process group and session. 0, or -errno (-EAGAIN: the
  * table is full; the child is then killed and both handles closed). */
 long    lx_child_add(handle_t proc, handle_t sigch, int32_t pid, int32_t pgid, int32_t sid);
+/* One of init's sessions as a child (pty.c's jamos_session_open): proc,
+ * its shell's process (wait and inspect rights only), and ctl, its
+ * session_ctl channel (kill's signals go there: SIGHUP, SIGTERM and
+ * SIGKILL hang it up), both moved; its pid, which leads a group and a
+ * session of its own. 0, or -errno (the session hung up, both closed). */
+long    lx_session_add(handle_t proc, handle_t ctl, int32_t pid);
 /* pgid names a process group a child may be put in: ours, or one of our
  * children's in our session. */
 bool    lx_group_exists(int32_t pgid);
