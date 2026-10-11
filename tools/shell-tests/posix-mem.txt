@@ -1,0 +1,15 @@
+# posixtest's mem section alone from the shell: mmap and its kin, brk,
+# malloc, and the big sparse reservations (memres.c: a 64 GiB and a
+# 16 GiB reservation, V8's and PartitionAlloc's patterns, the edges), with
+# the V8 pattern's per-piece times printed. The init run runs it too,
+# among every section; this is the quick way to run it on its own.
+# QEMU_INPUT=this file, command line "shell".
+wait 120 Jam OS shell
+wait {prompt}
+send posixtest mem
+wait 120 posixtest: mem: V8's pattern
+wait 120 posixtest: mem: ok
+wait 10 posixtest: PASS
+wait {prompt}
+send reboot -f
+wait reboot: resetting
