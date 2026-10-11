@@ -11,10 +11,13 @@ ones our overrides were written against.
 An OVERRIDES file (user/posix/musl/OVERRIDES is musl's) has one override
 per line: the upstream file (relative to the upstream root), the SHA-256
 it had when our file was written, and our file (relative to the top of
-the tree). '#' starts a comment line. The check fails, naming each line,
+the tree; for a port, to the port's directory: tools/ports.py). A '-' in
+place of the hash adds a file upstream doesn't have (a fix that brings a
+new header). '#' starts a comment line. The check fails, naming each line,
 when an upstream file is missing or its hash differs (someone dropped in
 a new release: read upstream's change, bring our file up to date, record
-the new hash), when our file is missing, or when a line is malformed or
+the new hash), when upstream now has a file we add (read it: it may be
+the fix itself), when our file is missing, or when a line is malformed or
 names one upstream file twice. Exit 0 when every line holds, 1 otherwise.
 """
 import hashlib
@@ -25,6 +28,7 @@ import sys
 import tempfile
 
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
+NEW = "-"   # the hash field of a file upstream doesn't have
 
 
 def sha256(path):
@@ -52,15 +56,20 @@ def check(list_path, root, top="."):
     seen = set()
     for n, words in read_list(list_path):
         where = "%s:%d" % (list_path, n)
-        if len(words) != 3 or not HEX64.match(words[1]):
-            problems.append("%s: want '<upstream file> <sha256> <our file>'" % where)
+        if len(words) != 3 or not (HEX64.match(words[1]) or words[1] == NEW):
+            problems.append("%s: want '<upstream file> <sha256 or -> <our file>'" % where)
             continue
         up, want, ours = words
         if up in seen:
             problems.append("%s: %s is overridden twice" % (where, up))
         seen.add(up)
         upath = os.path.join(root, up)
-        if not os.path.isfile(upath):
+        if want == NEW:
+            if os.path.lexists(upath):
+                problems.append("%s: upstream now has %s, which we add: read it (it may be "
+                                "the fix itself), then override it by its hash or drop ours"
+                                % (where, up))
+        elif not os.path.isfile(upath):
             problems.append("%s: upstream %s is gone" % (where, up))
         elif sha256(upath) != want:
             problems.append("%s: upstream %s changed (sha256 %s, the override was "
@@ -72,11 +81,12 @@ def check(list_path, root, top="."):
 
 
 def selftest(list_path, root):
-    """The check passes on the real tree, and refuses three broken copies."""
+    """The check passes on the real tree, refuses broken copies of it, and
+    takes a new file only while upstream has none of that name."""
     fails = []
     if check(list_path, root):
         fails.append("the real list doesn't pass")
-    entries = [w for _, w in read_list(list_path) if len(w) == 3]
+    entries = [w for _, w in read_list(list_path) if len(w) == 3 and w[1] != NEW]
     if not entries:
         return ["the list has no entries to test with"]
     up = entries[0][0]
@@ -85,7 +95,7 @@ def selftest(list_path, root):
         # the check, which reads nothing else.
         copy = os.path.join(tmp, "up")
         for _, w in read_list(list_path):
-            if len(w) == 3:
+            if len(w) == 3 and w[1] != NEW:
                 dst = os.path.join(copy, w[0])
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
                 shutil.copyfile(os.path.join(root, w[0]), dst)
@@ -107,6 +117,14 @@ def selftest(list_path, root):
             f.write("%s %s %s\n" % tuple(entries[0]) * 2)
         if not any("twice" in p for p in check(bad, root)):
             fails.append("a file overridden twice was not refused")
+        with open(bad, "w", encoding="utf-8") as f:
+            f.write("%s - %s\n" % (up + ".new-in-ours", entries[0][2]))
+        if check(bad, root):
+            fails.append("a new file upstream doesn't have was refused")
+        with open(bad, "w", encoding="utf-8") as f:
+            f.write("%s - %s\n" % (entries[0][0], entries[0][2]))
+        if not any("now has" in p for p in check(bad, root)):
+            fails.append("a new file upstream now has was not refused")
     return fails
 
 

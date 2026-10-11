@@ -37,6 +37,8 @@ enum {
     DBG_VMO_EXEC_CHECK,    /* vmo_sys.c sys_vmo_make_exec and _verified, the handle taken out
                               of the table, before the one-handle check and the seal (arg:
                               the VMO) */
+    DBG_CPU_TIME,          /* sched.c thread_cpu_tsc, before it looks at where the thread runs;
+                              no lock held (arg: the thread) */
     DBG_N
 };
 

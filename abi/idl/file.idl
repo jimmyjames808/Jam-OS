@@ -16,6 +16,11 @@
 
 protocol file 17 kept
 
+# file.map's flags: the file's one shared VMO (read and map only), or a
+# VMO of the caller's own for vmo_make_exec_verified.
+const MAP_READ  1
+const MAP_EXEC  2
+
 # Read up to `length` bytes (<= the buffer's size) at `offset` into the
 # buffer; `actual` < length only at the end of the file.
 1  read  (u64 offset, u32 length) -> (u32 actual)
@@ -29,3 +34,11 @@ protocol file 17 kept
 # write) and its id (fs.stat's).
 4  stat  () -> (u64 size, u8 is_dir, u64 mtime, u64 id)
 5  sync  () -> ()
+# Map the file: a VMO whose pages are the file's, fetched as they are
+# touched; `size` is the file's now (the VMO follows a truncate or growth).
+# FILE_MAP_READ: the file's one shared VMO, read and map only.
+# FILE_MAP_EXEC: a VMO of its own, for vmo_make_exec_verified (the shell).
+# A view without the file's read right: ERR_ACCESS_DENIED. A directory:
+# ERR_IS_DIR. A service with no pager: ERR_NOT_SUPPORTED (fat answers that
+# until it serves pages). Restart: a successor answers its keys' requests.
+6  map  (u32 flags) -> (handle<vmo> vmo, u64 size)

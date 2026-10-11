@@ -1,0 +1,22 @@
+# zlib: the deflate compression library, and minigzip (rung 1 of the
+# first ports, docs/M13.7-PLAN.md section 16): the first library a port
+# `needs`, built with zlib's own hand-written configure.
+name        zlib
+version     1.3.2
+revision    1
+summary     the deflate compression library, and minigzip
+homepage    https://zlib.net/
+category    libs
+licence     Zlib
+licence-file LICENSE
+source      https://github.com/madler/zlib/releases/download/v$version/zlib-$version.tar.xz 1320064 d7a0654783a4da529d1bb793b7ad9c3318020af77667bcae35f95d0e42a792f3
+place       package
+style       configure-plain       # zlib's own configure (CHOST, not autoconf's --host)
+configure   --static
+# minigzip compresses the files it is named, so it may write in /data
+# (wants/minigzip); the library and its headers are for ports that need it.
+program     bin/minigzip
+library     lib/libz.a include/zlib.h include/zconf.h lib/pkgconfig/zlib.pc
+cpe         cpe:2.3:a:zlib:zlib
+fixed       CVE-2022-37434 1.2.13     # inflateGetHeader's extra field overflow
+fixed       CVE-2023-45853 1.3.1      # minizip's zip header fields (contrib: not built here)

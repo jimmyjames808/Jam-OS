@@ -2235,6 +2235,106 @@ sigproc.c. nosig.c is gone.
   the calls' own steps (its last part) can't reach from another file
   without a header of the state's internals.
 
+## S2 notes
+
+Track S2 (pipelines and Ctrl+C in the shell) as built, with the choices the
+plan left open. Files: `user/services/shell/sh_exec.c` (the pipeline),
+`sh_program.c` (the programs of a line and their wait), `sh_io.c` (the
+keys), `sh_jobs.c` (`kill %n`), `sh_posix.c` (a pipe from one program to
+the next), `sh_core.h` and `sh.h` (declarations), `pxio` (new modes for the
+tests) and `tools/shell-tests/posix.txt`.
+
+- **Which stages run at once.** A stage that is a POSIX program (a bare
+  name that is no builtin and no alias, found in `$PATH`, whose list has
+  `posix`, and with no `NAME=value` before it) is started and left running
+  (`sh_stdio.defer`); the shell's own commands, native programs and
+  aliases run in turn as before, each after the programs before it have
+  ended (`sh_pipe_settle`). A pipeline is decided stage by stage with one
+  look ahead: when the next stage is such a program, the stage's stdout is
+  a real pipe whose read end goes to the next program as its descriptor 0
+  (`direct_out`, `direct_in`; the shell has no part in the bytes). `a | b |
+  c` of three programs therefore holds the shell only for starting them and
+  waiting. `$?` is the last stage's status.
+- **Pipes between programs hold 1 MiB** (`CHANNEL_BYTE_BOUND` on both
+  ends, as `pipe2` makes them, so a writer waits for a reader that lags
+  instead of filling its job's message budget). The pipe a program writes
+  for a builtin, which the shell drains into the stage's buffer, is
+  bounded the same way. The pipe the shell fills for a program after a
+  builtin is not (it holds all of the buffer, at most 4 MiB, before the
+  program starts).
+- **A builtin that takes all its input** can't be fed an endless program:
+  when the buffer that a program's output is copied into reaches 4 MiB the
+  program is sent SIGPIPE (what a reader that had gone away would do) and
+  the shell says `sh: pipe full: output past 4 MiB dropped`. So `yes |
+  head -3` ends, with the builtin `head` too.
+- **Ctrl+C** is counted in sh_io.c (`sh_ctrl_c_hits`) and acted on by the
+  wait (`give_keys`): every press sends SIGINT to each running POSIX
+  program of the line (the first starts a 2 s clock; if a program is still
+  there when it runs out, its job is killed: `sh: bin/x is still there 2 s
+  after the signal: killing it`, then `was killed`, status 137, the line
+  cancelled, `$?` 130); a native program's job is killed at once, as
+  before. A POSIX program that takes SIGINT and goes on, or ends its own
+  way (not by SIGINT), no longer cancels the rest of the line (the key is
+  forgotten, `sh_cancel_clear`): `pxio sigint; echo after` prints `after`
+  and `$?` is the program's.
+- **The double `^C`** (S1's note): while a POSIX program runs its line
+  discipline has echoed `^C` (ECHOCTL) before the key reaches the shell,
+  so `interrupt()` in sh_io.c writes only the line's end then
+  (`sh_io_posix_tty`). A native program or a builtin still gets the
+  shell's own `^C`.
+- **Ctrl+\\** (the key with code point 0x1c, or Ctrl and the backslash key)
+  is SIGQUIT to the POSIX programs of the line, with the same 2 s clock;
+  it does nothing for any other program. It does not cancel the line.
+- **`$?` for a signal**: a POSIX program ended by a default action exits
+  with `LX_EXIT_SIGNAL` + N (0x10000 + N); the shell says `run: bin/x
+  killed by SIGINT after N ms` (`signal N` for an unnamed one) and the
+  status is 128 + N. A program's own `exit(300)` stays 255, and a process
+  killed with its job stays `was killed`, 137.
+- **`jobs` and `kill %n`**: a POSIX program started with `&` keeps its
+  signal channel in the job table (it was closed at once before).
+  `kill %n` and `kill <pid>` send SIGTERM and wait up to 2 s (the
+  program's output and the other jobs shown meanwhile); a program still
+  there has its job killed (`[n] name did not end 2 s after SIGTERM:
+  killing it`). The notice for a program that a signal ended is `[n]
+  killed: name (SIGTERM)`; `jobs` shows `killed`.
+- **Output of the stages' own lines.** Each program of a pipeline still
+  prints `run: bin/x started` and its end line, as before; the kernel log
+  is shown unfiltered while a pipeline runs (a single program filters it
+  by its name).
+- **Known limits.** Only the last program started in a pipeline of
+  programs has the newest `open_tty`, so it holds the keyboard focus:
+  typing into the first stage of `cat | wc` does not reach it (give each
+  stage duplicates of one `open_tty`, as T2's note for S1 suggests, to
+  fix). A pipe a program writes for a builtin is copied while the shell
+  waits, at up to 64 messages or 20 ms a round, which caps that
+  direction near 50 MB/s; programs joined to programs don't pass through
+  the shell. A builtin after programs waits for all of them to end: `pxio
+  yes | head -3` with builtin `head` reads 4 MiB first.
+- **A POSIX program's output is read with a 64 KiB buffer** (its pipe's
+  writes are messages of up to 64 KiB). S1's 4 KiB one, kept for native
+  programs' printf, dropped any bigger message as junk; S1's tests never
+  wrote one.
+- **Found and fixed**: the compositor's terminal-text path
+  (`user/services/compositor/keyboard.c`, `typing`) typed the control
+  characters 1 to 26 as Ctrl and a letter and dropped 28 to 31, so a
+  serial terminal (and the shell tests' `type \x1c`) could not send
+  Ctrl+\ at all. It now types Ctrl and the key `\`, `]`, `^` or `_`, which
+  the console turns into the byte again as for a keyboard.
+- **Edits outside S2's four files**: `sh_posix.c` (the direct pipe),
+  `sh_core.h`, `sh.h` (the job's signal channel and number, declarations),
+  `user/posix/progs/pxio/pxio.c` (modes `yes`, `head`, `gen`, `idle`,
+  `ignore`, `raise`; its copy buffer is 64 KiB), the compositor fix above,
+  the stage comments, TESTING.md's row for posix.txt.
+- **Tests** (tools/shell-tests/posix.txt): the SIGINT line now `killed by
+  SIGINT`; `$?` 143, 138 and 131 for `raise 15`, `10` and `3`; Ctrl+\\ ends
+  `pxio cat` with SIGQUIT (131); `yes | head 3 | count` (programs only) and
+  `yes | head -3` (builtin); the status of the last stage; builtins and
+  programs mixed; 100 MiB through `gen | cat | count`, 20 MiB through five
+  programs; Ctrl+C on `yes | cat | count` (130, and the next line runs);
+  `pxio ignore` killed 2 s after Ctrl+C, alone and in a pipeline with a
+  program that obeys; `idle &` with `jobs` and `kill %1` (SIGTERM), `ignore
+  &` with `kill %1` (SIGTERM, then the job).
+
 ## K2 notes
 
 Track K2 (the time page and `VMAR_REPLACE`) as built, with the choices

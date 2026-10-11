@@ -215,7 +215,8 @@ status_t thread_sleep_cancellable(uint64_t ns);
  * caller that then returns ERR_INTERRUPTED itself passes that status
  * through thread_interrupt_consume; one whose condition came true
  * meanwhile returns its result and leaves the interrupt for the next
- * interruptible wait. */
+ * interruptible wait. Once the deadline has passed they report no
+ * interrupt: the caller's loop times out. */
 status_t thread_block_interruptible(spinlock_t *lock, uint64_t *irqflags, uint64_t deadline_ns);
 status_t thread_block_interruptible_unlocked(spinlock_t *lock, uint64_t irqflags,
                                              uint64_t deadline_ns);
@@ -340,8 +341,10 @@ uint32_t sched_pick_cpu_fake(const cpumask_t *cand, const int16_t *sibling,
 void sched_print_stats(void);
 
 /* CPU time (the shell's top, ps). Counted in TSC cycles at every switch
- * (one rdtsc); reads are lock-free and may be a few cycles stale. */
-/* t's time on a CPU so far, its current run included (t must be held). */
+ * (one rdtsc); a read takes the run queue lock of t's CPU for a moment,
+ * so it never goes back. */
+/* t's time on a CPU so far, its current run included (t must be held).
+ * Not with a run queue lock held. */
 uint64_t thread_cpu_tsc(struct thread *t);
 /* How long CPU i's idle thread has run so far, the current run included. */
 uint64_t sched_cpu_idle_tsc(uint32_t i);

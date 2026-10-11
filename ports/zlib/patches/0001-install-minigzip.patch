@@ -1,0 +1,19 @@
+Description: install minigzip, zlib's small gzip, with the library
+ zlib's `make install` puts in only the library, its headers, its man page
+ and zlib.pc. Jam OS's package carries minigzip too: a program that shows
+ the library works on Jam OS, and what the port's test runs.
+Forwarded: not-needed (upstream builds minigzip as a test, not a program to install)
+---
+--- a/Makefile.in
++++ b/Makefile.in
+@@ -345,6 +345,10 @@ install: install-libs
+ 	rm -f $(DESTDIR)$(includedir)/zlib.h $(DESTDIR)$(includedir)/zconf.h
+ 	cp $(SRCDIR)zlib.h zconf.h $(DESTDIR)$(includedir)
+ 	chmod 644 $(DESTDIR)$(includedir)/zlib.h $(DESTDIR)$(includedir)/zconf.h
++	-@if [ ! -d $(DESTDIR)$(exec_prefix)/bin ]; then mkdir -p $(DESTDIR)$(exec_prefix)/bin; fi
++	rm -f $(DESTDIR)$(exec_prefix)/bin/minigzip$(EXE)
++	cp minigzip$(EXE) $(DESTDIR)$(exec_prefix)/bin
++	chmod 755 $(DESTDIR)$(exec_prefix)/bin/minigzip$(EXE)
+
+ uninstall:
+ 	cd $(DESTDIR)$(includedir) && rm -f zlib.h zconf.h

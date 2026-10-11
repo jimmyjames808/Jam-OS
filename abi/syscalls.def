@@ -326,8 +326,9 @@
 # End the thread's current interruptible wait (object_wait_one, port_wait,
 # futex_wait, sleep_until) with ERR_INTERRUPTED; one not in such a wait
 # ends its next one at once. Latched, not counted: any number before a
-# wait takes it end that one wait. A wait whose condition is met returns
-# its result and leaves the interrupt for the next. No other call is ever
+# wait takes it end that one wait. A wait whose condition is met, or
+# whose deadline has passed, returns its result (ERR_TIMED_OUT; OK for
+# sleep_until) and leaves the interrupt for the next. No other call is ever
 # ended by it (channel_call, channel_reply_wait, ...). Needs RIGHT_SIGNAL
 # on the thread; ERR_BAD_STATE if it hasn't started or has left.
 88  thread_interrupt  status    handle_t thread

@@ -1170,6 +1170,7 @@ static const struct {
     { "thread_interrupt_calls", t_thread_interrupt_calls },
     { "cpu_ns", t_cpu_ns },
     { "sys_public_info", t_sys_public_info },
+    { "vmar_replace_calls", t_vmar_replace_calls },
     { "handle_info", t_handle_info },
     { "length_limits", t_length_limits },
     { "replace_consumes", t_replace_consumes },

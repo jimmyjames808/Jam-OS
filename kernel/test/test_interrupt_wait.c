@@ -156,6 +156,64 @@ KTEST(intr_after_wait_not_lost)
     iw_drop(&w);
 }
 
+/* ---- the deadline first ---------------------------------------------------------- */
+
+struct iw_late {
+    struct iw     *w;
+    unsigned       k;
+    uint64_t       deadline;
+    bool           stop;      /* the hog may go (RELEASE) */
+    status_t       first, second;
+    bool           latched;   /* the interrupt was still there after the first wait */
+};
+
+static void late_waiter(void *arg)
+{
+    struct iw_late *x = arg;
+    x->first = wait_kind(x->w, x->k, x->deadline);
+    x->latched = thread_interrupt_pending(current_thread());
+    x->second = wait_kind(x->w, x->k, uptime_ns() + 5 * NS_PER_S);
+}
+
+static void late_hog(void *arg)
+{
+    struct iw_late *x = arg;
+    while (!__atomic_load_n(&x->stop, __ATOMIC_ACQUIRE))
+        __asm__ volatile("pause");
+}
+
+/* A wait whose deadline passed while it slept, interrupted before it got
+ * its CPU back (a hog of a higher priority holds it), ends with its
+ * timeout, and the interrupt waits, latched, for the next wait: the
+ * deadline is the wait's own end, as a met condition is. */
+KTEST(intr_deadline_comes_first)
+{
+    if (cpu_count < 2)
+        return;   /* the waiter and its hog need a CPU of their own */
+    struct iw w;
+    iw_make(&w);
+    cpumask_t m;
+    cpumask_one(&m, kt_cur_cpu() == 0 ? 1 : 0);
+    for (unsigned k = 0; k < W_KINDS; k++) {
+        struct iw_late x = { .w = &w, .k = k, .deadline = uptime_ns() + 20 * NS_PER_MS };
+        struct thread *t = thread_create_on("kt-intr-late", late_waiter, &x, PRIO_DEFAULT, &m);
+        while (thread_state(t) != T_BLOCKED && uptime_ns() < x.deadline)
+            thread_sleep_ms(1);   /* in its wait */
+        struct thread *hog = thread_create_on("kt-intr-hog", late_hog, &x, PRIO_DEFAULT + 4, &m);
+        while (uptime_ns() < x.deadline + 2 * NS_PER_MS)
+            thread_sleep_ms(1);
+        KT_IDLE_EQ(thread_state(t), T_READY);   /* woken at its deadline, not run */
+        thread_interrupt(t);
+        __atomic_store_n(&x.stop, true, __ATOMIC_RELEASE);
+        thread_join(hog);
+        thread_join(t);
+        KT_EQ(x.first, timed_out(k));
+        KT_ASSERT(x.latched);
+        KT_EQ(x.second, ERR_INTERRUPTED);
+    }
+    iw_drop(&w);
+}
+
 /* ---- the storm ------------------------------------------------------------------ */
 
 #define STORM_ROUNDS 3000
