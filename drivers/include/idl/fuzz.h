@@ -3776,6 +3776,17 @@ static status_t idl_fz_storage_health(void *ctx, struct idl_txn idl_txn, uint64_
     *out_critical = (uint8_t)0x5a5a5a5a5a5a5a5aull;
     return OK;
 }
+static status_t idl_fz_storage_create_table(void *ctx, struct idl_txn idl_txn, const uint8_t disk_guid[16], const uint8_t esp_guid[16], const uint8_t data_guid[16])
+{
+    (void)ctx;
+    (void)idl_txn;
+    (void)disk_guid;
+    (void)esp_guid;
+    (void)data_guid;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    return OK;
+}
 static const struct storage_ops idl_fz_storage_ops = {
     .info = idl_fz_storage_info,
     .partition = idl_fz_storage_partition,
@@ -3783,6 +3794,7 @@ static const struct storage_ops idl_fz_storage_ops = {
     .ident = idl_fz_storage_ident,
     .digest = idl_fz_storage_digest,
     .health = idl_fz_storage_health,
+    .create_table = idl_fz_storage_create_table,
 };
 static uint32_t idl_fz_storage_serve(const void *q, uint32_t n, const handle_t *hs,
                                 uint32_t nh, void *r, handle_t *rhs, uint32_t *rhn)
@@ -3797,6 +3809,7 @@ static const struct idl_fuzz_msg idl_fz_storage_msgs[] = {
     { 0x000e0004u, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x000e0005u, 24u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x000e0006u, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x000e0007u, 56u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
 };
 
 /* ---- svc ---- */
@@ -4708,7 +4721,7 @@ static const struct idl_fuzz_proto idl_fuzz_protos[] __attribute__((unused)) = {
     { "serve", 31, SERVE_REQ_MAX, SERVE_REP_MAX, SERVE_REP_HANDLES, idl_fz_serve_serve, NULL, idl_fz_serve_msgs, 3 },
     { "signal", 44, SIGNAL_REQ_MAX, SIGNAL_REP_MAX, SIGNAL_REP_HANDLES, idl_fz_signal_serve, NULL, idl_fz_signal_msgs, 1 },
     { "splashch", 83, SPLASHCH_REQ_MAX, SPLASHCH_REP_MAX, SPLASHCH_REP_HANDLES, idl_fz_splashch_serve, idl_fz_splashch_event, idl_fz_splashch_msgs, 2 },
-    { "storage", 14, STORAGE_REQ_MAX, STORAGE_REP_MAX, STORAGE_REP_HANDLES, idl_fz_storage_serve, NULL, idl_fz_storage_msgs, 6 },
+    { "storage", 14, STORAGE_REQ_MAX, STORAGE_REP_MAX, STORAGE_REP_HANDLES, idl_fz_storage_serve, NULL, idl_fz_storage_msgs, 7 },
     { "svc", 25, SVC_REQ_MAX, SVC_REP_MAX, SVC_REP_HANDLES, idl_fz_svc_serve, NULL, idl_fz_svc_msgs, 1 },
     { "update", 82, UPDATE_REQ_MAX, UPDATE_REP_MAX, UPDATE_REP_HANDLES, idl_fz_update_serve, NULL, idl_fz_update_msgs, 1 },
     { "usb", 10, USB_REQ_MAX, USB_REP_MAX, USB_REP_HANDLES, idl_fz_usb_serve, NULL, idl_fz_usb_msgs, 11 },
