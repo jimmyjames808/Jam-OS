@@ -110,8 +110,10 @@ static void check_drop_gives_back(void)
     CHECK(r != MAP_FAILED);
     if (r == MAP_FAILED)
         return;
-    CHECK(mprotect(r, 64 * MIB, PROT_READ | PROT_WRITE) == 0);
-    touch(r + 16 * MIB, 4 * MIB, 1);
+    bool rw = mprotect(r, 64 * MIB, PROT_READ | PROT_WRITE) == 0;
+    CHECK(rw);
+    if (rw)
+        touch(r + 16 * MIB, 4 * MIB, 1);
     uint64_t before = pt_job_pages();
     CHECK(munmap(r + 16 * MIB, 2 * MIB) == 0);
     CHECK(pt_job_pages() + 2 * MIB / PG <= before + SLACK);
@@ -348,6 +350,40 @@ static void check_pa_pattern(void)
     CHECK(job_handles() <= handles);
 }
 
+/* check_reserve_edges' steps on r (16 pages, a hole after it): false at
+ * a step that failed, since what follows would touch memory that isn't
+ * there. */
+static bool reserve_edges(char *r)
+{
+    errno = 0;
+    CHECK(mmap(r + 4 * PG, PG, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1,
+               0) == MAP_FAILED && errno == EEXIST);
+    if (!fixed_anon(r, PG, PROT_READ | PROT_WRITE) ||
+        !fixed_anon(r + 15 * PG, PG, PROT_READ | PROT_WRITE))
+        return false;
+    CHECK(r[0] == 0 && r[15 * PG] == 0);
+    r[0] = 1;
+    r[15 * PG] = 2;
+    errno = 0;
+    CHECK(mprotect(r + 15 * PG, 2 * PG, PROT_READ) == -1 && errno == ENOMEM);   /* past its end */
+    CHECK(r[0] == 1 && r[15 * PG] == 2);
+    if (munmap(r + 12 * PG, 4 * PG) || !fixed_anon(r + 8 * PG, 4 * PG, PROT_READ | PROT_WRITE))
+        return false;
+    touch(r + 8 * PG, 4 * PG, 9);
+    /* Over its end into the hole just made: a replace, with a VMO of its own. */
+    if (!fixed_anon(r + 10 * PG, 4 * PG, PROT_READ | PROT_WRITE))
+        return false;
+    CHECK(r[9 * PG] == 9 && zero(r + 10 * PG, 4 * PG));
+    touch(r + 10 * PG, 4 * PG, 3);
+    /* Across two of libc's mappings (two VMOs): in place in both. */
+    uint64_t handles = job_handles();
+    if (!fixed_anon(r + 9 * PG, 2 * PG, PROT_READ))
+        return false;
+    CHECK(job_handles() <= handles);
+    CHECK(r[8 * PG] == 9 && zero(r + 9 * PG, 2 * PG) && r[11 * PG] == 3);
+    return true;
+}
+
 /* MAP_FIXED and mprotect at a reservation's edges. The reservation is 16
  * pages with a hole of 4 after it (made from 20: whatever first fit puts
  * after a reservation must not be what mprotect reaches). */
@@ -363,28 +399,7 @@ static void check_reserve_edges(void)
         (void)munmap(r, 20 * PG);
         return;
     }
-    errno = 0;
-    CHECK(mmap(r + 4 * PG, PG, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1,
-               0) == MAP_FAILED && errno == EEXIST);
-    CHECK(fixed_anon(r, PG, PROT_READ | PROT_WRITE) && r[0] == 0);
-    r[0] = 1;
-    CHECK(fixed_anon(r + 15 * PG, PG, PROT_READ | PROT_WRITE) && r[15 * PG] == 0);
-    r[15 * PG] = 2;
-    CHECK(r[0] == 1);
-    errno = 0;
-    CHECK(mprotect(r + 15 * PG, 2 * PG, PROT_READ) == -1 && errno == ENOMEM);   /* past its end */
-    CHECK(munmap(r + 12 * PG, 4 * PG) == 0);
-    CHECK(fixed_anon(r + 8 * PG, 4 * PG, PROT_READ | PROT_WRITE));
-    touch(r + 8 * PG, 4 * PG, 9);
-    /* Over its end into the hole just made: a replace, with a VMO of its own. */
-    CHECK(fixed_anon(r + 10 * PG, 4 * PG, PROT_READ | PROT_WRITE));
-    CHECK(r[9 * PG] == 9 && zero(r + 10 * PG, 4 * PG));
-    touch(r + 10 * PG, 4 * PG, 3);
-    /* Across two of libc's mappings (two VMOs): in place in both. */
-    uint64_t handles = job_handles();
-    CHECK(fixed_anon(r + 9 * PG, 2 * PG, PROT_READ));
-    CHECK(job_handles() == handles);
-    CHECK(r[8 * PG] == 9 && zero(r + 9 * PG, 2 * PG) && r[11 * PG] == 3);
+    CHECK(reserve_edges(r));
     CHECK(munmap(r, 16 * PG) == 0);
 }
 
