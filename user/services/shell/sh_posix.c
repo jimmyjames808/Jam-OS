@@ -7,8 +7,12 @@
  * program's own console channel: libc's terminal descriptor); the pipe
  * that carries the previous stage's output in (the shell fills it before
  * the program starts, then closes its end: end of file after the last
- * byte); the pipe the next stage reads (the shell keeps the read end and
- * copies what comes, sh_program.c); or a file a redirection names. The
+ * byte); the previous program's own pipe, its read end passed on as it is
+ * (sh_stdio.direct_in: a pipeline of programs runs at once); the pipe the
+ * next stage reads (the shell keeps the read end and copies what comes,
+ * sh_program.c, or passes it to the next program: sh_stdio.direct_out);
+ * or a file a redirection names. A pipe between programs holds 1 MiB (a
+ * writer waits for the reader). The
  * redirections, left to right as a Unix shell applies them, change which:
  * `< f`, `> f` (made empty), `>> f` (appended), and `2>&1` (the second
  * descriptor becomes another of the first's).
@@ -42,7 +46,7 @@
 #define TTY_WAIT_NS (5 * NS_PER_S)
 
 /* What a descriptor is, before anything is opened. */
-enum spec_kind { SPEC_TERM, SPEC_PIPE_IN, SPEC_PIPE_OUT, SPEC_FILE };
+enum spec_kind { SPEC_TERM, SPEC_PIPE_IN, SPEC_PIPE_DIRECT_IN, SPEC_PIPE_OUT, SPEC_FILE };
 struct spec {
     uint8_t kind;      /* enum spec_kind */
     bool    write;     /* SPEC_FILE: opened for writing (else for reading) */
@@ -88,14 +92,39 @@ int sh_redir_count(void)
 
 /* ---- opening the sources --------------------------------------------------------------- */
 
-/* A channel pair: *keep as made, *give narrowed to give_rights. */
-static status_t pipe_pair(handle_t *keep, handle_t *give, rights_t give_rights)
+/* A channel pair: *keep narrowed to keep_rights, *give to give_rights
+ * (RIGHT_SAME: as made). bound: a writer that finds 1 MiB queued waits
+ * (the POSIX layer's own pipes are made so, user/posix/sys/pipe.c: a
+ * reader that lags would else fill the writer's job's message budget). */
+static status_t pipe_pair(handle_t *keep, handle_t *give, rights_t keep_rights,
+                          rights_t give_rights, bool bound)
 {
-    handle_t g;
-    status_t s = jam_channel_create(keep, &g);
-    if (s == OK && (s = jam_handle_replace(g, give_rights, give)) != OK)
-        jam_handle_close(*keep);   /* the replace closed g */
-    return s;
+    handle_t h[2];
+    const rights_t rights[2] = { keep_rights, give_rights };
+    status_t s = jam_channel_create(&h[0], &h[1]);
+    if (s != OK)
+        return s;
+    /* The flag first, while each end is whole and its only handle. */
+    for (int i = 0; i < 2 && bound && s == OK; i++)
+        s = jam_channel_set_flags(h[i], CHANNEL_BYTE_BOUND);
+    for (int i = 0; i < 2 && s == OK; i++) {
+        handle_t n;
+        if (rights[i] == RIGHT_SAME)
+            continue;
+        if ((s = jam_handle_replace(h[i], rights[i], &n)) == OK)
+            h[i] = n;
+        else
+            h[i] = HANDLE_INVALID;   /* the replace closed it */
+    }
+    if (s != OK) {
+        for (int i = 0; i < 2; i++)
+            if (h[i] != HANDLE_INVALID)
+                jam_handle_close(h[i]);
+        return s;
+    }
+    *keep = h[0];
+    *give = h[1];
+    return OK;
 }
 
 /* The previous stage's output as a pipe for the program's input: all of
@@ -103,7 +132,7 @@ static status_t pipe_pair(handle_t *keep, handle_t *give, rights_t give_rights)
 static status_t open_pipe_in(struct source *sc)
 {
     handle_t ours;
-    status_t s = pipe_pair(&ours, &sc->h[0], PIPE_READ_RIGHTS);
+    status_t s = pipe_pair(&ours, &sc->h[0], RIGHT_SAME, PIPE_READ_RIGHTS, false);
     if (s != OK)
         return s;
     struct sh_stdio io = sh_stdio_get();
@@ -146,9 +175,17 @@ static status_t open_source(struct source *sc, handle_t console, handle_t *out_r
         sc->nh = s == OK ? 2 : 0;
         return s;
     case SPEC_PIPE_OUT:
-        s = pipe_pair(out_r, &sc->h[0], PIPE_WRITE_RIGHTS);
+        s = pipe_pair(out_r, &sc->h[0], PIPE_READ_RIGHTS, PIPE_WRITE_RIGHTS, true);
         sc->nh = s == OK ? 1 : 0;
         return s;
+    case SPEC_PIPE_DIRECT_IN: {
+        struct sh_stdio io = sh_stdio_get();
+        sc->h[0] = io.direct_in;   /* the program's now */
+        sc->nh = 1;
+        io.direct_in = HANDLE_INVALID;
+        sh_stdio_set(io);
+        return OK;
+    }
     case SPEC_PIPE_IN:
         return open_pipe_in(sc);
     default:
@@ -174,9 +211,10 @@ static bool same_spec(const struct spec *a, const struct spec *b)
 
 /* The specs of descriptors 0 to 2 after the redirections; false (said) if
  * a path is too long to make sense of. */
-static bool apply_redirections(struct spec spec[3], bool have_in, bool piped)
+static bool apply_redirections(struct spec spec[3], bool have_in, bool direct_in, bool piped)
 {
-    spec[0] = (struct spec){ .kind = have_in ? SPEC_PIPE_IN : SPEC_TERM };
+    spec[0] = (struct spec){ .kind = direct_in ? SPEC_PIPE_DIRECT_IN
+                                   : have_in   ? SPEC_PIPE_IN : SPEC_TERM };
     spec[1] = (struct spec){ .kind = piped ? SPEC_PIPE_OUT : SPEC_TERM };
     spec[2] = (struct spec){ .kind = SPEC_TERM };
     unsigned used = 0;   /* st.file[] slots taken */
@@ -235,6 +273,7 @@ static void describe(unsigned fd, struct source *sc)
         d->status = STATUS_RDWR;
         break;
     case SPEC_PIPE_IN:
+    case SPEC_PIPE_DIRECT_IN:
         d->kind = POSIXFDS_PIPE;
         d->status = STATUS_RDONLY;
         break;
@@ -256,7 +295,7 @@ bool sh_posix_prepare(struct posixfds_out *out, handle_t console, handle_t *out_
     struct spec spec[3];
     unsigned of[3];
     struct sh_stdio io = sh_stdio_get();
-    if (!apply_redirections(spec, io.have_in, sh_piped()))
+    if (!apply_redirections(spec, io.have_in, io.direct_in != HANDLE_INVALID, sh_piped()))
         return false;
     gather_sources(spec, of);
     for (unsigned k = 0; k < st.nsrc; k++) {

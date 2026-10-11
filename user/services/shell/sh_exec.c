@@ -2,7 +2,9 @@
  * stage's NAME=value words and alias, and then the command: one in the
  * table, else a program in a directory of $PATH (/boot/bin and
  * /boot/usr/bin to begin with); a POSIX program takes the stage's
- * redirections (< > >> 2>&1: sh_posix.c). A command before a single & is a
+ * redirections (< > >> 2>&1: sh_posix.c). The POSIX programs of a pipeline
+ * run at once, joined by pipes; the shell's commands run in turn (see
+ * exec_pipeline). A command before a single & is a
  * program started in the background (sh_jobs.c): a program's name, `run`
  * or `jamjar` (a command that is only its program); another shell
  * command, an alias or a pipeline before & is refused. */
@@ -197,12 +199,56 @@ static int exec_simple(const char *text, bool bg)
     return st;
 }
 
-/* Stages a | b | c in turn: each one's output is captured for the next,
- * the last prints where the pipeline prints. */
+/* Whether the stage's text is a POSIX program, by its first word as
+ * exec_argv and exec_unknown would find it (a builtin, an alias, a name
+ * with a '/' or a NAME=value before it: no). Looked at without a word
+ * said; it runs nothing. */
+static bool stage_is_posix(const char *text)
+{
+    struct sh_words w;
+    sh_quiet(true);
+    bool ok = sh_split_words(text, &w);
+    sh_quiet(false);
+    if (!ok)
+        return false;
+    bool posix = false;
+    if (w.argc && !sh_assignment(w.argv[0]) && !strchr(w.argv[0], '/') &&
+        !sh_find_cmd(w.argv[0]) && (w.quoted[0] || !sh_alias_of(w.argv[0]))) {
+        char path[SH_PATH_MAX], std[SH_PATH_MAX];
+        if (path_find(w.argv[0], path, sizeof(path))) {
+            snprintf(std, sizeof(std), "/boot/bin/%s", w.argv[0]);
+            posix = sh_program_is_posix(strcmp(path, std) ? path : w.argv[0]);
+        }
+    }
+    sh_words_free(&w);
+    return posix;
+}
+
+/* "sh: pipe full ..." once for each buffer that overflowed, after the
+ * stage that wrote it has ended. */
+static void say_if_full(struct sh_buf *b)
+{
+    if (!b->full)
+        return;
+    b->full = false;
+    sh_tty("sh: pipe full: output past %u MiB dropped\n", SH_PIPE_MAX >> 20);
+}
+
+/* Stages a | b | c. The shell's own commands run in turn: each one's
+ * output is captured for the next, the last prints where the pipeline
+ * prints. A POSIX program starts and is left running: when the next stage
+ * is one too, its stdout is a pipe the next program reads (the shell takes
+ * no part in the bytes), so a chain of them runs at once, like any shell's.
+ * Before a stage that reads a captured buffer (a builtin, or a program
+ * after one) the programs before it are waited for (sh_pipe_settle: it
+ * copies what a program wrote for a builtin, and sends Ctrl+C), and again
+ * at the end; the status is the last stage's. */
 static int exec_pipeline(struct sh_seg *s, int n)
 {
     struct sh_stdio outer = sh_stdio_get();
     struct sh_buf bufs[2] = { { 0 }, { 0 } };
+    handle_t carry = HANDLE_INVALID;   /* the read end of the last program's pipe */
+    bool last_deferred = false;
     int st = 0;
     for (int k = 0; k < n && !sh_cancelled(); k++) {
         struct sh_buf *mine = k < n - 1 ? &bufs[k % 2] : NULL;
@@ -210,19 +256,41 @@ static int exec_pipeline(struct sh_seg *s, int n)
             mine->n = 0;
             mine->full = false;
         }
-        struct sh_stdio io = sh_stdio_get();
+        if (k && carry == HANDLE_INVALID) {
+            (void)sh_pipe_settle();   /* the buffer it reads is whole now */
+            say_if_full(&bufs[(k - 1) % 2]);
+        }
+        struct sh_stdio io = outer;
         io.out = mine ? mine : outer.out;
+        io.defer = n > 1;
+        io.direct_out = mine && stage_is_posix(s[k + 1].text);
+        io.direct_in = carry;
+        io.direct_next = HANDLE_INVALID;
         if (k) {
             struct sh_buf *prev = &bufs[(k - 1) % 2];
             io.in = prev->p;
             io.in_len = prev->n;
             io.have_in = true;
         }
+        carry = HANDLE_INVALID;
         sh_stdio_set(io);
+        unsigned before = sh_pipe_running();
         st = exec_simple(s[k].text, false);
-        if (mine && mine->full)
-            sh_tty("sh: pipe full: output past %u MiB dropped\n", SH_PIPE_MAX >> 20);
+        last_deferred = sh_pipe_running() > before;
+        io = sh_stdio_get();
+        if (io.direct_in != HANDLE_INVALID)
+            jam_handle_close(io.direct_in);   /* not taken: the stage was no program */
+        carry = io.direct_next;
+        if (mine && !last_deferred)
+            say_if_full(mine);
     }
+    int ps = sh_pipe_settle();
+    if (last_deferred && ps >= 0)
+        st = ps;
+    say_if_full(&bufs[0]);
+    say_if_full(&bufs[1]);
+    if (carry != HANDLE_INVALID)
+        jam_handle_close(carry);
     free(bufs[0].p);
     free(bufs[1].p);
     sh_stdio_set(outer);

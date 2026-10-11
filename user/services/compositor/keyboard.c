@@ -374,6 +374,9 @@ static bool typing(const struct termkey *k, uint16_t *usage, uint8_t *mods)
     if (cp >= 1 && cp <= 26) {   /* a control character: Ctrl and its letter */
         cp = 'a' + cp - 1;
         *mods = INPUT_MOD_LCTRL;
+    } else if (cp >= 28 && cp <= 31) {   /* Ctrl+\ ] ^ _ (Ctrl+\ is SIGQUIT) */
+        cp = '@' + cp;
+        *mods = INPUT_MOD_LCTRL;
     }
     if (!keymap_typing(&keymap_us, cp, &code, &kmods))
         return false;

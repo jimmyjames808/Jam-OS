@@ -241,9 +241,11 @@ struct sh_job {
     char     args[64];             /* its arguments as typed (cut short) */
     uint64_t pid;                  /* its process's id (ps's PID) */
     handle_t proc, job, out_r;     /* its process, job and output; 0 once it ended */
+    handle_t sig;                  /* a POSIX program's signal channel (our end), else 0 */
     bool     ended;                /* it ended, and its notice isn't printed yet */
-    bool     killed;               /* once ended: it was killed */
+    bool     killed;               /* once ended: it was killed (or ended by a signal) */
     int64_t  code;                 /* once ended: its exit code */
+    int      signo;                /* once ended by a signal: its number, else 0 */
 };
 
 /* No number is free: every one runs, or ended without its notice yet. */
@@ -255,7 +257,7 @@ const struct sh_job *sh_job_at(unsigned i);
 /* A program sh_start_background started: its handles become the table's.
  * Its number, or 0 if full (check sh_jobs_full first). */
 unsigned sh_jobs_add(const char *path, int argc, char **argv, handle_t proc, handle_t job,
-                     handle_t out_r);
+                     handle_t out_r, handle_t sig);
 /* One round of each program's output to the screen, and the end of those
  * that ended. prompt: the shell waits at its prompt, so output goes over
  * the prompt's line (true: something was written; redraw the line). */
@@ -268,8 +270,9 @@ void     sh_job_say_end(const struct sh_job *j);
 void     sh_job_forget(unsigned n);
 /* The number of the running program with this pid, or 0. */
 unsigned sh_job_by_pid(uint64_t pid);
-/* End background program n (its job killed, waited for, its output
- * copied). ERR_NOT_FOUND: no such number; ERR_BAD_STATE: it had already
+/* End background program n (a POSIX program gets SIGTERM and 2 s to end
+ * before its job is killed, any other has its job killed at once;
+ * waited for, its output copied). ERR_NOT_FOUND: no such number; ERR_BAD_STATE: it had already
  * ended; else the kill's or the wait's error. */
 status_t sh_job_kill(unsigned n);
 

@@ -17,6 +17,16 @@
  *   pxio exit N          exits with code N
  *   pxio sigint          "pxio: waiting", then waits for SIGINT (the shell's
  *                        Ctrl+C), says "pxio: got SIGINT" and exits with 3
+ *   pxio yes             "y" lines for ever
+ *   pxio head N          the first N lines of descriptor 0, then exits at once
+ *                        (the rest unread: the writer gets SIGPIPE)
+ *   pxio gen N           N MiB of 64-byte lines ("xxx...x" and a newline)
+ *   pxio idle            "pxio: idle", then waits for ever (SIGTERM and Ctrl+C
+ *                        end it by their default action)
+ *   pxio ignore          "pxio: ignoring": the same with SIGINT, SIGQUIT and
+ *                        SIGTERM ignored, so only its job's kill ends it
+ *   pxio raise N         raises signal N (default action: the program is ended
+ *                        by it)
  *
  * Writing is write(2) alone, so nothing is buffered between two modes'
  * lines. */
@@ -106,7 +116,7 @@ static int seq(int n)
 
 static int copy_stdin(bool count)
 {
-    char buf[4096];
+    static char buf[65536];
     long bytes = 0, lines = 0;
     for (ssize_t n; (n = read(0, buf, sizeof(buf))) > 0;) {
         bytes += n;
@@ -140,6 +150,61 @@ static int wait_sigint(void)
         pause();
     put(1, "pxio: got SIGINT\n");
     return 3;
+}
+
+static int yes(void)
+{
+    static char block[65536];
+    for (size_t i = 0; i < sizeof(block); i += 2) {
+        block[i] = 'y';
+        block[i + 1] = '\n';
+    }
+    for (;;)
+        for (size_t at = 0, w; at < sizeof(block); at += w)
+            if ((w = (size_t)write(1, block + at, sizeof(block) - at)) == (size_t)-1)
+                exit(3);
+}
+
+static int head(int lines)
+{
+    char buf[4096];
+    for (ssize_t n; lines > 0 && (n = read(0, buf, sizeof(buf))) > 0;) {
+        ssize_t keep = 0;
+        while (keep < n && lines > 0)
+            if (buf[keep++] == '\n')
+                lines--;
+        for (ssize_t at = 0, w; at < keep; at += w)
+            if ((w = write(1, buf + at, (size_t)(keep - at))) <= 0)
+                exit(3);
+    }
+    return 0;
+}
+
+static int gen(int mib)
+{
+    static char block[65536];
+    for (size_t i = 0; i < sizeof(block); i += 64) {
+        memset(block + i, 'x', 63);
+        block[i + 63] = '\n';
+    }
+    for (int i = 0; i < mib * 16; i++)
+        for (size_t at = 0, w; at < sizeof(block); at += w)
+            if ((w = (size_t)write(1, block + at, sizeof(block) - at)) == (size_t)-1)
+                exit(3);
+    return 0;
+}
+
+static int idle(bool ignore)
+{
+    if (ignore) {
+        signal(SIGINT, SIG_IGN);
+        signal(SIGQUIT, SIG_IGN);
+        signal(SIGTERM, SIG_IGN);
+    }
+    put(1, ignore ? "pxio: ignoring\n" : "pxio: idle\n");
+    for (;;)
+        pause();
+    return 0;
 }
 
 int main(int argc, char **argv)
@@ -180,6 +245,22 @@ int main(int argc, char **argv)
         return atoi(argv[2]);
     if (!strcmp(m, "sigint"))
         return wait_sigint();
-    put(2, "usage: pxio env|cwd|fds|stack|out T|err T|both O E|seq N|cat|count|exit N|sigint\n");
+    if (!strcmp(m, "yes"))
+        return yes();
+    if (!strcmp(m, "head") && argc == 3)
+        return head(atoi(argv[2]));
+    if (!strcmp(m, "gen") && argc == 3)
+        return gen(atoi(argv[2]));
+    if (!strcmp(m, "idle"))
+        return idle(false);
+    if (!strcmp(m, "ignore"))
+        return idle(true);
+    if (!strcmp(m, "raise") && argc == 3) {
+        raise(atoi(argv[2]));
+        put(1, "pxio: raise returned\n");
+        return 4;
+    }
+    put(2, "usage: pxio env|cwd|fds|stack|out T|err T|both O E|seq N|cat|count|exit N|sigint|"
+           "yes|head N|gen N|idle|ignore|raise N\n");
     return 2;
 }
