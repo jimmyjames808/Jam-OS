@@ -165,7 +165,8 @@ reached layer by layer, each layer general, and only the layers
 Chromium needs built first. Chromium runs as its **Linux** build
 (`target_os="linux"` against a musl sysroot, the way Alpine ships it)
 with its **Ozone/Wayland** backend over Jam OS's compositor
-([CR-RESEARCH](CR-RESEARCH.md)). What that changes here:
+([CR-RESEARCH](CR-RESEARCH.md); the plan: [CR-PLAN](CR-PLAN.md)). What
+that changes here:
 
 - **Kept on the path**: the shim (GS1), the compositor's versions and
   decorations (GC1, built), subsurfaces (GC2), popups (GC3), the base ports
@@ -906,7 +907,7 @@ anything but what init's list holds; the list just grows by what you
 approved.
 
 **Status:** open, and now tied to how the owner starts Chromium: GD runs
-only if the answer is the search box (the Chromium plan asks it).
+only if the answer is the search box ([CR-PLAN's Q3](CR-PLAN.md#q3-how-you-start-chromium)).
 
 ### Q10. A runtime directory and `/tmp`
 
