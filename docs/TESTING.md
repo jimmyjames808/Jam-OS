@@ -177,6 +177,23 @@ Ubuntu 24.04 behind `wsl` with:
 - OVMF, ffmpeg, python3 with numpy and PIL, xkbcli
   (libxkbcommon-tools), the `en_US.UTF-8` locale;
 - `/bin/sh` as bash, as the Mac's: the scripts are written for it.
+- for the ports builder (`tools/ports.py`, [M13.7](M13.7-PLAN.md)):
+  `pkgconf`, `bison` 3.8 and `libexpat1-dev` from apt, and Meson and
+  Ninja in a Python venv in the user's home, **`~/.cache/jamos/tools`**
+  (`python3 -m venv ~/.cache/jamos/tools && ~/.cache/jamos/tools/bin/pip
+  install meson ninja`; 2026-10-11: Meson 1.12.1): Ubuntu 24.04's own
+  Meson is 1.3.2, and xkbcommon 1.13 asks for 1.4. Nothing is installed
+  system-wide for it; `tools/ports.py` puts that directory's `bin/` (or
+  `$JAMOS_TOOLS/bin`) first on PATH. The `host` lines of a recipe and the
+  builder's own message name what a machine lacks.
+
+On the Mac the same builder runs with what Homebrew has (`cmake`, `ninja`,
+`pkgconf`) plus the same venv (or `$JAMOS_TOOLS`) for Meson, and a GNU
+`bison` 3.6 or newer for xkbcommon (the system's is 2.3: build one into
+`$JAMOS_TOOLS/bin` rather than installing it); the Xcode SDK has the expat
+that wayland-scanner's host build links. A Homebrew `binutils` early on
+PATH is fine for the cross builds, and the host builds put Apple's `/usr/bin`
+first (GNU `ar` writes archives Apple's linker can't read).
 
 `tools/qemu-host.sh` holds what differs between the hosts (the firmware,
 KVM or TCG, the split irqchip KVM's interrupt remapping needs). A test

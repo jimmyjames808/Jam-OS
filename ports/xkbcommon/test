@@ -2,7 +2,7 @@
 # layout's XKB text that tools/genkeymap.py makes (share/xkbcommon-test/
 # us.xkb, a copy `genkeymap.py check` keeps current). The expected lines are
 # what the same xkbcommon 1.13.2 printed built for Linux. In the
-# xkbcommon-test package. NOT YET RUN on Jam OS (tools/ports-test.sh,
+# xkbcommon-test package. NOT YET RUN on Jam OS (PO8's ports-test script,
 # M13.7's PO8); built and staged by GP1.
 wait 120 Jam OS shell
 wait {prompt}

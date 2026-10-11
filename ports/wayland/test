@@ -4,7 +4,7 @@
 # wl_compositor, wl_shm and xdg_wm_base. Installed in the wayland-test
 # package. Needs the desktop's compositor running and `svc wayland` (its
 # list); NOT YET RUN on Jam OS: waits for GS1's socket and PO8's
-# tools/ports-test.sh. Built and staged by GP1.
+# PO8's ports-test script. Built and staged by GP1.
 wait 120 Jam OS shell
 wait {prompt}
 send wl-connect-test

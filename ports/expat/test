@@ -1,5 +1,5 @@
 # expat: xmlwf, the well-formedness checker, on a good file, a bad one and
-# a file that is not there. NOT YET RUN on Jam OS (tools/ports-test.sh,
+# a file that is not there. NOT YET RUN on Jam OS (PO8's ports-test script,
 # M13.7's PO8); built and staged by GP1.
 wait 120 Jam OS shell
 wait {prompt}
