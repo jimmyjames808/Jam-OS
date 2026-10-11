@@ -417,6 +417,10 @@ void storm_make(struct storm *s, const struct storm_cfg *cfg, const struct img *
 {
     memset(s, 0, sizeof(*s));
     s->cfg = cfg;
+    if (cfg->mkfs_bs) {
+        names_make(s, cfg);
+        return;
+    }
     cut_init(&s->cd, m);
     struct ext_fs fs;
     struct ext_dev dev = cut_dev(&s->cd);
@@ -605,8 +609,7 @@ static status_t change_file(struct ext_fs *fs, uint32_t ino, uint8_t kind, uint6
     return st;
 }
 
-/* Record the state after every commit made since the last record. */
-static void take_snaps(struct storm *s, struct run *r)
+void take_snaps(struct storm *s, struct run *r)
 {
     while (s->nsnap <= r->j.tid - r->tid0) {
         if (s->nsnap == STORM_SNAPS)
@@ -646,6 +649,10 @@ void storm_run(struct storm *s, struct run *r, bool snap)
 {
     if (snap)
         take_snaps(s, r);
+    if (s->cfg->mkfs_bs) {
+        names_run(s, r, snap);
+        return;
+    }
     for (uint32_t at = 0; at < s->nreq; at++) {
         const struct request *q = &s->req[at];
         status_t st = ext_jnl_begin(&r->fs, NULL);
@@ -690,6 +697,9 @@ void storm_state(struct storm *s, struct run *r, uint64_t *out)
             break;
         case OBJ_BLOCK:
             out[i] = block_hash(s->cd.bytes + (o->blk << fs->block_log), fs->block_size);
+            break;
+        case OBJ_LISTING:
+            out[i] = listing_hash(fs);
             break;
         case OBJ_FILE: {
             char hex[65];

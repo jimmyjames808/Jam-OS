@@ -50,11 +50,13 @@
 #define LIST_EVERY 4   /* cuts between two full listings */
 
 static const struct storm_cfg storms[] = {
-    { "jam4k", 0, 0, true, 0, 0, 24, 0x5101 },
-    { "jam4k-onewrite", 0, EXT_JNL_ONE_WRITE, true, 0, 0, 24, 0x5102 },
-    { "jam4k-wrap", 0, 0, true, 48, 4, 40, 0x5103 },
-    { "linux1k", 1, 0, true, 0, 0, 24, 0x5104 },
-    { "linux1k-wrap-onewrite", 1, EXT_JNL_ONE_WRITE, true, 64, 0, 30, 0x5105 },
+    { "jam4k", 0, 0, true, 0, 0, 24, 0x5101, 0 },
+    { "jam4k-onewrite", 0, EXT_JNL_ONE_WRITE, true, 0, 0, 24, 0x5102, 0 },
+    { "jam4k-wrap", 0, 0, true, 48, 4, 40, 0x5103, 0 },
+    { "linux1k", 1, 0, true, 0, 0, 24, 0x5104, 0 },
+    { "linux1k-wrap-onewrite", 1, EXT_JNL_ONE_WRITE, true, 64, 0, 30, 0x5105, 0 },
+    { "names4k", 0, 0, true, 0, 0, 100, 0x5106, 4096 },
+    { "names1k-onewrite", 0, EXT_JNL_ONE_WRITE, true, 0, 4, 100, 0x5107, 1024 },
 };
 
 /* What one cut run left. */
@@ -185,16 +187,17 @@ static void check_untouched(struct storm *s, struct run *q, const struct lines *
 static void check_goes_on(struct storm *s, struct run *q)
 {
     struct ext_fs *fs = &q->fs;
-    uint32_t blk_obj = s->o_block, ino = s->objs[s->o_root].ino;
+    bool names = s->cfg->mkfs_bs;
+    uint32_t blk_obj = names ? 0 : s->o_block, ino = names ? EXT_ROOT_INO : s->objs[s->o_root].ino;
     struct ext_inode in;
     struct ext_buf *b;
     status_t st = ext_jnl_begin(fs, NULL);
     fs->sb.wtime = 0xC0FFEE;
     if (st == OK)
         st = ext_super_write(fs);
-    if (st == OK)
+    if (st == OK && !names)
         st = ext_bnew(fs, s->objs[blk_obj].blk, &b);
-    if (st == OK) {
+    if (st == OK && !names) {
         storm_pattern(b->data, fs->block_size, 0xABCD);
         ext_bdirty(fs, b);
         ext_brelse(fs, b);
@@ -222,6 +225,8 @@ static void check_goes_on(struct storm *s, struct run *q)
     uint8_t want[4096];
     storm_pattern(want, fs->block_size, 0xABCD);
     struct ext_time t;
+    if (names)
+        return;
     if (memcmp(s->cd.bytes + (s->objs[blk_obj].blk << q->fs.block_log), want,
                q->fs.block_size) || ext_iget(&q->fs, ino, 0, &in) != OK ||
         (ext_itime(&in, EXT_MTIME, &t), t.sec != 1234567890))
@@ -241,8 +246,13 @@ static void check_recovered(struct storm *s, uint64_t n, const struct cut *c,
     uint32_t every = s->cfg->tail_every ? s->cfg->tail_every : EXT_JNL_TAIL_EVERY;
     if (q.j.replayed > every)
         fail("%u transactions replayed: the tail moves every %u", q.j.replayed, every);
-    if (n % LIST_EVERY == 0)
+    if (n % LIST_EVERY == 0 && want) {
         check_untouched(s, &q, want);
+    } else if (n % LIST_EVERY == 0) {
+        struct inv inv;
+        check_invariants(&q.fs, &inv);
+        verify_volume(&q.fs);
+    }
     check_goes_on(s, &q);
     run_free(&q);
 }
@@ -400,12 +410,13 @@ static void check_storm(struct img *fixtures, const struct storm_cfg *cfg, const
         fail("%u commits: %llu written alone, %llu with other blocks", s.nsnap - 1,
              (unsigned long long)s.cd.commits_alone, (unsigned long long)s.cd.commits_with);
     uint32_t escaped = check_hygiene(&r);
-    if (!cfg->maxlen && !escaped)
+    if (!cfg->maxlen && !cfg->mkfs_bs && !escaped)
         fail("no escaped copy in the log");
     run_free(&r);
     struct lines want = { .n = 0 };
-    read_list(listdir, m->name, &want);
-    check_cuts(&s, &want, tid0, images);
+    if (!cfg->mkfs_bs)
+        read_list(listdir, m->name, &want);
+    check_cuts(&s, cfg->mkfs_bs ? NULL : &want, tid0, images);
     free_lines(&want);
     cut_free(&s.cd);
 }
@@ -762,12 +773,12 @@ void check_journal(struct img *fixtures, const char *listdir, const char *images
     for (unsigned f = 0; f < 2; f++) {
         static struct storm s;
         static const struct storm_cfg plain[2] = {
-            { "jam4k-plain", 0, 0, false, 0, 0, 1, 1 },
-            { "linux1k-plain", 1, 0, false, 0, 0, 1, 1 },
+            { "jam4k-plain", 0, 0, false, 0, 0, 1, 1, 0 },
+            { "linux1k-plain", 1, 0, false, 0, 0, 1, 1, 0 },
         };
         static const struct storm_cfg small[2] = {
-            { "jam4k-small", 0, 0, false, 48, 0, 1, 1 },
-            { "linux1k-small", 1, 0, false, 64, 0, 1, 1 },
+            { "jam4k-small", 0, 0, false, 48, 0, 1, 1, 0 },
+            { "linux1k-small", 1, 0, false, 64, 0, 1, 1, 0 },
         };
         where = plain[f].name;
         storm_make(&s, &plain[f], &fixtures[f]);

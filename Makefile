@@ -848,7 +848,8 @@ EXT_FIXTURES := $(patsubst tools/extfix/%.img.gz,$(BUILD)/extfix/%.img,\
 EXT_CROSS    := $(patsubst $(EXT_DIR)/%.c,$(BUILD)/extcross/%.o,$(EXT_SRCS))
 EXT_TOOL     := tools/extcheck.c tools/extbreak.c tools/extmutate.c tools/extinv.c \
                 tools/extvol.c tools/extmkfs.c tools/extnames.c tools/extbig.c \
-                tools/extwrite.c tools/extfile.c tools/extverify.c tools/extcut.c tools/extjnl.c
+                tools/extwrite.c tools/extfile.c tools/extverify.c tools/extcut.c tools/extjnl.c \
+                tools/extnstorm.c
 $(EXT_CHECK): $(EXT_TOOL) tools/extcheck.h tools/extvol.h tools/extwrite.h tools/extjnl.h \
               $(EXT_SRCS) $(EXT_HDRS) drivers/lib/sha256.c drivers/include/jam/sha256.h \
               kernel/include/jam/status.h

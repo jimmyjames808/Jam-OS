@@ -49,9 +49,9 @@ struct ext_dev cut_dev(struct cutdev *cd);
 /* ---- the storm ------------------------------------------------------------------------- */
 
 #define STORM_OBJS   64
-#define STORM_REQS   64
+#define STORM_REQS   128
 #define STORM_OPS    64
-#define STORM_SNAPS  256
+#define STORM_SNAPS  512
 
 /* Something the storm changes and the checks read back. */
 enum obj_kind {
@@ -60,6 +60,7 @@ enum obj_kind {
     OBJ_BLOCK,           /* a block of /holes written as metadata (journaled) or as data */
     OBJ_WTIME,           /* the superblock's s_wtime: the request's number */
     OBJ_FILE,            /* a file's size, blocks and bytes (U2a's writers change it) */
+    OBJ_LISTING,         /* the whole volume's listing (the names storm) */
 };
 
 struct obj {
@@ -102,6 +103,8 @@ struct storm_cfg {
     uint32_t tail_every;      /* 0: the default */
     uint32_t nreq;            /* requests */
     uint64_t seed;
+    uint32_t mkfs_bs;         /* 0: a fixture storm; else the names storm (extnstorm.c) on a
+                               * volume mkfs made with blocks of this size */
 };
 
 /* One mount's state while a storm runs on it. */
@@ -123,7 +126,7 @@ struct storm {
     struct obj objs[STORM_OBJS];
     uint32_t nobj;
     uint32_t o_root, n_root;  /* where each kind of object starts in objs, and how many */
-    uint32_t o_swap, o_many, o_block, o_wtime, o_file, n_file;
+    uint32_t o_swap, o_many, o_block, o_wtime, o_file, n_file, o_listing;
     uint32_t holes_ino;       /* the file whose blocks the block objects are */
     struct request req[STORM_REQS];
     uint32_t nreq;
@@ -142,6 +145,8 @@ void run_free(struct run *r);
 /* Run the storm on a mounted r until it ends or a call fails (the cut);
  * `snap`: record the state after each commit into s->snap. */
 void storm_run(struct storm *s, struct run *r, bool snap);
+/* Record the state after every commit made since the last record. */
+void take_snaps(struct storm *s, struct run *r);
 /* The objects' values now (blocks from the device's bytes). */
 void storm_state(struct storm *s, struct run *r, uint64_t *out);
 /* Up to max free blocks (every step-th of each group's), from the bitmaps. */
@@ -151,6 +156,13 @@ void storm_pattern(uint8_t *block, uint32_t size, uint64_t value);
 uint64_t block_hash(const uint8_t *block, uint32_t size);
 
 #define PATTERN_MAGIC (1ull << 62)   /* a value whose pattern starts like a jbd2 commit block */
+
+/* ---- extnstorm.c: the names storm ---------------------------------------------------------- */
+
+void names_make(struct storm *s, const struct storm_cfg *cfg);
+void names_run(struct storm *s, struct run *r, bool snap);
+/* A hash of the volume's whole listing. */
+uint64_t listing_hash(struct ext_fs *fs);
 
 /* ---- extjnl.c ------------------------------------------------------------------------------ */
 
