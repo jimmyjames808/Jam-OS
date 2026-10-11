@@ -16,7 +16,9 @@
  *   - SIGPIPE: ignored, a write to a pipe with no reader is EPIPE; with a
  *     handler, the handler runs on the writing thread and EPIPE;
  *   - timers: setitimer every 10 ms (five SIGALRMs), alarm's time left, a
- *     POSIX timer with SIGEV_SIGNAL and a value, one with SIGEV_THREAD;
+ *     POSIX timer with SIGEV_SIGNAL and a value, one with SIGEV_THREAD
+ *     (its notifications all on one thread that knows its own id, though
+ *     musl resets the thread's TLS after each);
  *   - pthread_cancel of a thread blocked in read. */
 #include <errno.h>
 #include <poll.h>
@@ -325,11 +327,15 @@ static void check_sigpipe(void)
 /* ---- timers ------------------------------------------------------------------------- */
 
 static volatile sig_atomic_t thread_notes;
+static volatile pid_t        note_tid[3];   /* gettid in the first notifications */
 
 static void note(union sigval v)
 {
-    if (v.sival_int == 7)
-        thread_notes++;
+    if (v.sival_int != 7)
+        return;
+    if (thread_notes < 3)
+        note_tid[thread_notes] = gettid();
+    thread_notes++;
 }
 
 static void check_timers(void)
@@ -363,6 +369,8 @@ static void check_timers(void)
     CHECK(timer_settime(t, 0, &at, NULL) == 0);
     CHECK(reaches(&thread_notes, 3));
     CHECK(timer_delete(t) == 0);
+    CHECK(note_tid[0] > 0 && note_tid[0] != gettid());
+    CHECK(note_tid[1] == note_tid[0] && note_tid[2] == note_tid[0]);
 }
 
 /* ---- cancellation ------------------------------------------------------------------- */
