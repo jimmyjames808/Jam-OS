@@ -40,7 +40,6 @@
 #include "extcheck.h"
 
 #define FUZZ_DEFAULT 3000
-#define MAX_LINES    4096
 #define PATH_MAX_    4096
 
 uint64_t rng = 0x9e3779b97f4a7c15ull;
@@ -265,14 +264,6 @@ static void check_runs(struct ext_fs *fs, struct ext_inode *in)
 
 /* ---- the listing ----------------------------------------------------------------------- */
 
-struct lines {
-    char *v[MAX_LINES];
-    unsigned n;
-    uint32_t orphans[16];
-    unsigned norphans;
-    unsigned xattr_blocks;        /* attribute blocks read (listing) */
-};
-
 static void add_line(struct lines *l, const char *s)
 {
     if (l->n == MAX_LINES)
@@ -343,7 +334,7 @@ static void line_of(struct ext_fs *fs, const char *path, struct ext_inode *in, s
 }
 
 /* Every name under the root, as listing.py lists them. */
-static void list_volume(struct ext_fs *fs, struct lines *l)
+void list_volume(struct ext_fs *fs, struct lines *l)
 {
     static char paths[MAX_LINES][PATH_MAX_];
     uint32_t inos[MAX_LINES], seen[MAX_LINES];
@@ -400,7 +391,7 @@ static void list_volume(struct ext_fs *fs, struct lines *l)
     qsort(l->v, l->n, sizeof(l->v[0]), cmp_line);
 }
 
-static void read_list(const char *dir, const char *name, struct lines *l)
+void read_list(const char *dir, const char *name, struct lines *l)
 {
     char path[1024], buf[PATH_MAX_ * 4];
     snprintf(path, sizeof(path), "%s/%s.list", dir, name);
@@ -425,7 +416,7 @@ static void read_list(const char *dir, const char *name, struct lines *l)
     qsort(l->v, l->n, sizeof(l->v[0]), cmp_line);
 }
 
-static void compare(const struct lines *want, const struct lines *got)
+void compare(const struct lines *want, const struct lines *got)
 {
     unsigned n = want->n < got->n ? want->n : got->n;
     for (unsigned i = 0; i < n; i++)
@@ -435,7 +426,7 @@ static void compare(const struct lines *want, const struct lines *got)
         fail("debugfs listed %u names, ext %u", want->n, got->n);
 }
 
-static void free_lines(struct lines *l)
+void free_lines(struct lines *l)
 {
     for (unsigned i = 0; i < l->n; i++)
         free(l->v[i]);
@@ -509,7 +500,7 @@ static void check_shapes(struct ext_fs *fs, const struct fixture *fx)
     check_pins(fs);
 }
 
-static void check_bitmaps(struct ext_fs *fs)
+void check_bitmaps(struct ext_fs *fs)
 {
     for (uint32_t g = 0; g < fs->groups; g++)
         for (int w = 0; w < 2; w++) {
