@@ -2858,8 +2858,9 @@ mapping); creation never takes a region lock.
 representation: hidden nodes (O(1) creation), reading through a pager's
 pages instead of copying them, or a reservation of RAM behind the charge
 change no argument and no result. New kinds of child are new flag bits
-(unknown bits are refused today). The rule that a child is never
-executable, and the charge at creation, are part of the frozen contract.
+(unknown bits are refused today). That the child's handle never carries
+`RIGHT_EXEC`, that a pager VMO's child is never sealed (so never
+executable), and the charge at creation are part of the frozen contract.
 
 **What F1b and M13.5 build on it.** F1b: a writable `MAP_PRIVATE` mapping
 is `vmo_create_child(file_vmo, AT_LEAST_ON_WRITE, offset, len)` mapped
@@ -2869,3 +2870,119 @@ M13.5: `fork` makes an `AT_LEAST_ON_WRITE` child of each writable VMO libc
 knows (its table of mappings, the stacks, the program's data) and maps it
 at the same address in the new process; the fork's charge is the parent's
 committed pages in those VMOs, refused up front.
+
+## F1a notes
+
+Track F1a as built (the design above held; what it left open, and what
+F1b and M13.5 need).
+
+- **The share count** is `struct page`'s `private` word: the number of
+  other tables holding the page (0: this table's alone). An anonymous VMO
+  page never used the word (pmm_alloc zeroes it); a pager VMO's page uses it
+  for its cache record and is never shared (`page_shared` says no for a
+  pager VMO). It rises only under the lock of a table holding the page, and
+  a table lets go of a shared page only after its shootdown
+  (`page_share_drop`, called by `tlb_gather_finish` for the gather's new
+  array of shared pages, 32 a gather: a shared page's list node may be
+  another gather's). The decrement stops at 0. So a relative sees 0 only
+  once no stale entry of another holder can read the page.
+- **The window a creation leaves open** (the parent's writable entries made
+  read-only, not yet shot down) is closed by the parent's `protecting`
+  count: a separation in the parent waits for the creation on "vmo resize"
+  (`cow_wait`), which the creation holds throughout. Lock order: a fault
+  may wait on "vmo resize" under its region lock (written in vmo.c's and
+  aspace.h's headers); creation takes no region lock. The ktest
+  `vmo_child_separation_waits_for_shootdown` holds that window open
+  (`DBG_VMO_CHILD_SHOOT`): with the wait taken out it loses the writer's
+  writes at once (checked: 252,742 errors on the first loop); with it, none.
+- **`vmar_protect` never adds the write bit** to an existing entry (a page
+  may be read-only because it is shared); the next write faults and the
+  fault decides. A program that `mprotect`s up to write pays one fault a
+  page it had mapped.
+- **A child of a pager VMO copies at the first touch, also for a read
+  fault** (the design's choice; reading through to the pager's page would
+  need the pager's evictions to zap the child's mappings). `vmo_read` of
+  an untouched page reads the pager VMO's bytes without copying (not a
+  touch). Past the pager VMO's end an untouched page is zero (Linux gives
+  SIGBUS there; POSIX leaves a file that shrank under a private mapping
+  unspecified). Its window is fixed at creation and only shrinks with the
+  child; growing the child adds ordinary zero pages.
+- **Refusals the design didn't list**: a child of a pager child with
+  SNAPSHOT is `ERR_NOT_SUPPORTED` as for the pager VMO; `vmo_make_exec` of
+  a pager child is `ERR_BAD_STATE` (vmo_seal refuses it); pins and kernel
+  mappings of a pager child `ERR_NOT_SUPPORTED`. A handle without
+  `RIGHT_READ` or `RIGHT_DUPLICATE`: `ERR_ACCESS_DENIED`.
+- **Outside the VMO/fault code** (small): `<jam/aspace_vmo.h>` (the gather's
+  array, `aspace_wrprotect_locked`, `vmo_fault_map`'s `write`,
+  `vmo_page_ready`), `kernel/mm/aspace.c` (the gather's array, the
+  write-protect walk, `leaves_protect`, `fault_wait` asking
+  `vmo_page_ready`), `<jam/dbghook.h>` (`DBG_VMO_CHILD_SHOOT`),
+  `<jam/pager.h>` (`vmo_page_request`'s comment), `<jam/aspace.h>` (the lock
+  order), the sys layer (`vmo_sys.c`, `sysc_vm.c`, `<jam/sys.h>`),
+  ARCHITECTURE.md's VMO kinds, `kernel/test/bench.c` and utest's bench.
+  For R3 (K2's `VMAR_REPLACE` in aspace.c): my aspace.c hunks are the
+  gather, `leaves_protect`/`leaves_wrprotect`, the two `vmo_fault_map`
+  calls and `fault_wait`'s check; none touches `map_replace_locked` or
+  `cut_locked`.
+- **Costs** (`bench` in QEMU with KVM on the PC, 4 CPUs, 2026-10-11): a
+  child of a 64 MiB VMO with every page committed, 140 us median (p99
+  170 us), about 8.5 ns a page; dropping it 129 us; the plain copy a fork
+  would make without it (`vmo_create` + `vmo_write` of the 64 MiB) 7.9 ms
+  (p99 9.7 ms), 57 times as long. In ring 3, the first write to a shared
+  page (the separation fault: the copy, the swap, the local shootdown) 1.09
+  us median, against 0.76 us for a fresh zero page.
+- **Known limits.** Creation is O(pages the parent has committed in the
+  range), not Zircon's O(1); the file `vmo.c` is past 2,000 lines (it was
+  1,778: splitting it needs an internal header for `struct vmo`, a
+  refactor of its own); `get_page` and `vmo_fault_map` are about 80 lines
+  each. No RAM is reserved behind the charge: the job tree's limits are
+  what keep the machine within its memory, as for every page. A separation
+  shoots the old page down on the CPUs of every address space mapping the
+  VMO, even when none had an entry for it (the decommit rule: an unmap may
+  have cleared an entry without having flushed yet).
+
+**Tests.** ktests (kernel/test/test_vmo_child.c, `ktest=vmo_child`):
+`vmo_child_shares_until_write`, `_snapshot_isolation`, `_faults` (the
+entries a creation, a read and a write fault leave; `vmar_protect`),
+`_chains_and_orders` (parent, child, grandchild, all six death orders, the
+pages counted), `_charges` (refused up front with nothing charged; exactly
+the shared pages and tables; every page then written on both sides with no
+charge; a pager child's whole range), `_pager` (eviction, invalidation, a
+shrink and a growth, faults waiting for the pager VMO's request, a child
+of the child, the file kept open, a detach), `_pins` (both kinds of pin and
+a kernel mapping separate first; a pinned range is never shared),
+`_refusals` (and the kept and sealed parents, the handle layer),
+`_many_writers` (8 writers on 8 CPUs on both sides while children of both
+are made and dropped), `_creation_races_writers` (writers on every other
+CPU while children are made over and over: each child holds values written
+during its call and keeps them; no write lost), and
+`_separation_waits_for_shootdown` (above). utest `vmo_child_shares` and
+`vmo_child_refusals` (with child mode `cow-big`). Bench lines: `vmo child of
+a 64 MiB VMO`, `dropping that child`, `against: a copy of it`, and `user:
+page fault, copy-on-write separation`.
+
+**What F1b needs.** A writable `MAP_PRIVATE` mapping of a file:
+`jam_vmo_create_child(file_vmo, VMO_CHILD_SNAPSHOT_AT_LEAST_ON_WRITE,
+offset, len, &c)` then `vmar_map` read-write (the file's handle needs
+`RIGHT_READ | RIGHT_DUPLICATE`: `PAGER_VMO_RIGHTS` has both); `ENOMEM` if
+the job can't pay for `len` (the whole mapping is charged at `mmap`). A
+read-only private mapping maps the pager VMO itself; an `mprotect` that adds
+write to one must first put a child in its place (`VMAR_REPLACE`), since
+the pager VMO is never writable. `MADV_DONTNEED` (`vmo_decommit` of the
+child) brings the file's current bytes back. A page past the file's end is
+zero, not SIGBUS. A program's writable segments: a child of the image (a
+sealed VMO or a verified pager VMO) at the segment's offset, mapped
+read-write, never executable.
+
+**What M13.5 needs.** `fork`: an `AT_LEAST_ON_WRITE` child of every
+writable VMO libc maps (its mapping table, the thread stacks, the
+program's data, brk), each mapped at the same address in the new process.
+The children are charged to the forking process's job (their job is the
+caller's, fixed at creation) for the parent's committed pages in them, all
+up front: `ENOMEM` from `fork` if it can't pay. A kept VMO (a memfd) is
+copied by a child, not shared: a `MAP_SHARED` memfd must be passed as the
+same VMO (a duplicate handle), and only a `MAP_PRIVATE` one as a child. A
+VMO with a pin or a kernel mapping is refused (`ERR_BAD_STATE`): drivers
+don't fork. Each fork costs about 140 us per 64 MiB the parent has
+committed, and each page either side then writes one separation fault
+(about 1.1 us).
