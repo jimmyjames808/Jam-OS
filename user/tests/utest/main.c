@@ -595,6 +595,8 @@ static const struct {
     { "vmo_make_exec_verified", t_vmo_make_exec_verified },
     { "kept_vmo_refusals", t_kept_vmo_refusals },
     { "kept_vmo_client_and_compositor", t_kept_vmo_client_and_compositor },
+    { "vmo_child_shares", t_vmo_child_shares },
+    { "vmo_child_refusals", t_vmo_child_refusals },
     { "bad_pointers", t_bad_pointers },
     { "startup_message", t_startup_message },
     { "posixfds_round_trip", t_posixfds_round_trip },
