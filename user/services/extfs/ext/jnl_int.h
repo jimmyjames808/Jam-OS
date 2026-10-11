@@ -102,6 +102,14 @@ static inline uint32_t jnl_recs_per_revoke(const struct ext_fs *fs, const struct
  * don't fit j's region. */
 status_t jnl_replay(struct ext_fs *fs, struct ext_jnl *j);
 
+/* ---- jnl.c: the live set ---------------------------------------------------------------- */
+
+/* The blocks with a copy in the log since the tail (cleared when the tail
+ * reaches the head: nothing older is left to replay). */
+void jnl_live_clear(struct ext_jnl *j);
+void jnl_live_add(struct ext_jnl *j, uint64_t blk);
+bool jnl_live_has(const struct ext_jnl *j, uint64_t blk);
+
 /* ---- jnl.c: the log, for jnl_commit.c ------------------------------------------------- */
 
 /* Room in the log for a transaction of `blocks` log blocks: the tail moved

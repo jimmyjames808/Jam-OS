@@ -18,11 +18,21 @@
  *     the journal may hold anything (from the mount to the clean close). */
 #include "jnl_int.h"
 
-size_t ext_jnl_mem_size(uint32_t block_size, uint32_t revokes)
+/* The live set's slots for a log of `blocks`: a power of two, twice it. */
+static uint32_t live_slots(uint32_t blocks)
+{
+    uint32_t n = 16;
+    while (n < 2 * blocks && n < (1u << 30))
+        n <<= 1;
+    return n;
+}
+
+size_t ext_jnl_mem_size(uint32_t block_size, uint32_t journal_blocks, uint32_t revokes)
 {
     size_t stage = (size_t)EXT_JNL_STAGE_MAX * block_size;
-    size_t recs = (size_t)revokes * sizeof(struct ext_jnl_revoke);
-    return 64 + 8 + (recs > stage ? stage + recs : 2 * stage);
+    size_t rest = (size_t)live_slots(journal_blocks) * sizeof(uint64_t) +
+                  (size_t)revokes * sizeof(struct ext_jnl_revoke);
+    return 64 + 8 + (rest > stage ? stage + rest : 2 * stage);
 }
 
 status_t ext_jnl_init(struct ext_jnl *j, void *mem, size_t mem_size, uint32_t flags)
@@ -39,7 +49,7 @@ status_t ext_jnl_init(struct ext_jnl *j, void *mem, size_t mem_size, uint32_t fl
 
 /* Carve j's region for the volume's block size: up to half of it (and at
  * most EXT_JNL_STAGE_MAX blocks) stages log blocks, the rest holds revoke
- * records. */
+ * records (until carve_live takes the live set from it). */
 static status_t carve(struct ext_fs *fs, struct ext_jnl *j)
 {
     uintptr_t p = ((uintptr_t)j->mem + 63) & ~(uintptr_t)63;
@@ -60,6 +70,56 @@ static status_t carve(struct ext_fs *fs, struct ext_jnl *j)
     return OK;
 }
 
+/* The live set, from the front of the revoke area, for the log j has now. */
+static status_t carve_live(struct ext_jnl *j)
+{
+    uint32_t slots = live_slots(j->maxlen);
+    uint32_t take = (uint32_t)(((size_t)slots * sizeof(uint64_t) + sizeof(j->revokes[0]) - 1) /
+                               sizeof(j->revokes[0]));
+    if (j->cap_revokes < take + 16)
+        return ERR_NO_MEMORY;
+    j->live = (uint64_t *)(void *)j->revokes;
+    j->cap_live = slots;
+    j->revokes += take;
+    j->cap_revokes -= take;
+    jnl_live_clear(j);
+    return OK;
+}
+
+void jnl_live_clear(struct ext_jnl *j)
+{
+    __builtin_memset(j->live, 0xFF, (size_t)j->cap_live * sizeof(uint64_t));
+    j->nlive = 0;
+}
+
+static uint32_t live_slot(const struct ext_jnl *j, uint64_t blk)
+{
+    return (uint32_t)((blk * 0x9E3779B97F4A7C15ull) >> 32) & (j->cap_live - 1);
+}
+
+void jnl_live_add(struct ext_jnl *j, uint64_t blk)
+{
+    for (uint32_t s = live_slot(j, blk);; s = (s + 1) & (j->cap_live - 1)) {
+        if (j->live[s] == blk)
+            return;
+        if (j->live[s] == EXT_NO_BLOCK) {
+            j->live[s] = blk;
+            j->nlive++;   /* at most the log's length: the set is twice that */
+            return;
+        }
+    }
+}
+
+bool jnl_live_has(const struct ext_jnl *j, uint64_t blk)
+{
+    for (uint32_t s = live_slot(j, blk);; s = (s + 1) & (j->cap_live - 1)) {
+        if (j->live[s] == blk)
+            return true;
+        if (j->live[s] == EXT_NO_BLOCK)
+            return false;
+    }
+}
+
 /* The journal can't be used: the volume is mounted read-only, saying why. */
 static status_t refuse(struct ext_fs *fs, status_t st)
 {
@@ -78,6 +138,8 @@ static status_t mark_empty(struct ext_fs *fs, struct ext_jnl *j, uint32_t next)
     j->sb.sequence = jbd2_be32(next);
     status_t st = jnl_sb_write(fs, j);
     j->tail = 0;
+    if (j->live)
+        jnl_live_clear(j);
     return st;
 }
 
@@ -167,6 +229,8 @@ status_t ext_jnl_mount(struct ext_fs *fs, struct ext_jnl *j, const struct ext_de
     st = carve(fs, j);
     if (st == OK)
         st = jnl_load(fs, j);
+    if (st == OK)
+        st = carve_live(j);
     if (st == ERR_NO_MEMORY)
         return st;
     if (st != OK)
@@ -214,6 +278,8 @@ static status_t set_tail(struct ext_fs *fs, struct ext_jnl *j, uint32_t pos, uin
     j->tail = pos;
     j->tail_tid = tid;
     j->since_tail = 0;
+    if (pos == j->head)
+        jnl_live_clear(j);   /* the log holds nothing before the head now */
     return OK;
 }
 

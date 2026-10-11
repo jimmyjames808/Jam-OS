@@ -23,6 +23,7 @@
  * free block is skipped on its descriptor's count, without reading its
  * bitmap. */
 #include "ext_alloc_int.h"
+#include "ext_jnl.h"
 
 /* ---- bits ------------------------------------------------------------------------------ */
 
@@ -371,6 +372,8 @@ static status_t give(struct ext_fs *fs, uint32_t g, uint64_t blk, uint32_t n)
         st = sb_free_add(fs, n);
     if (st == OK)
         ext_bforget(fs, blk, n);
+    if (st == OK)
+        st = ext_jnl_freed(fs, blk, n);   /* a block with a copy in the journal: revoked */
     return st;
 }
 

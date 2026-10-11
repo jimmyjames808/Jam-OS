@@ -137,6 +137,22 @@ status_t ext_jnl_revoke(struct ext_fs *fs, uint64_t blk)
     return OK;
 }
 
+status_t ext_jnl_freed(struct ext_fs *fs, uint64_t blk, uint64_t count)
+{
+    struct ext_jnl *j = fs->jnl;
+    if (!j)
+        return OK;
+    ext_bforget(fs, blk, count);
+    for (uint64_t i = 0; i < count && j->nlive; i++) {
+        if (!jnl_live_has(j, blk + i))
+            continue;
+        status_t st = ext_jnl_revoke(fs, blk + i);
+        if (st != OK)
+            return st;
+    }
+    return OK;
+}
+
 /* Sort the revoke list (a heap sort: no recursion, no allocation). */
 static void sift(struct ext_jnl_revoke *r, uint32_t at, uint32_t n)
 {
@@ -303,6 +319,7 @@ static status_t write_group(struct ext_fs *fs, struct ext_jnl *j, struct out *o,
         __builtin_memcpy(c, b->data, fs->block_size);
         if (jnl_magic_at(c))
             __builtin_memset(c, 0, 4);
+        jnl_live_add(j, b->blk);
     }
     *from = i;
     return OK;

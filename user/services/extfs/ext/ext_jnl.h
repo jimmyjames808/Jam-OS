@@ -43,14 +43,20 @@
  *     (Linux's convention: Linux replays a volume that has it, and a cut
  *     can leave the log holding anything). A restart and a power cut are
  *     the same path.
+ *   - File data goes around the journal (ordered mode): the writers
+ *     (ext_write) put it straight on the device, to blocks the committed
+ *     bitmaps still call free or over the file's own blocks, before the
+ *     commit that points at it, so a replay never needs it.
  *   - The freed-block hazard: a metadata block freed and then reused for
- *     file data (written around the journal) must not be overwritten by a
- *     replay of an older transaction's copy of it. Writers call
- *     ext_jnl_revoke for every metadata block they free (extent nodes,
- *     directory blocks, a symbolic link's block, attribute blocks); the
- *     revoke record goes in the transaction, and the replay skips copies
- *     of that block from it and every earlier one. A revoked block written
- *     again as metadata in the same transaction cancels its revoke.
+ *     file data must not be overwritten by a replay of an older
+ *     transaction's copy of it. The journal remembers every block with a
+ *     copy in the log (since the tail), and every free goes through
+ *     ext_jnl_freed (ext_bfree calls it): a freed block with a copy gets a
+ *     revoke record in the transaction, and the replay skips copies of it
+ *     from that and every earlier transaction. Freed data blocks never
+ *     had a copy, so a truncate of a huge file writes no revokes. A
+ *     revoked block written again as metadata in the same transaction
+ *     cancels its revoke (its new copy replays last).
  *   - Big operations go in steps: no transaction may carry more than a
  *     quarter of the log (nor more than the cache holds dirty), so a
  *     writer that changes many blocks asks ext_jnl_room and calls
@@ -67,9 +73,9 @@
  *     ext_jnl_checkpoint when idle, ext_jnl_close at a clean unmount; sets
  *     on_commit and the commit time.
  *   - The writers (U2a, U2b): ext_bdirty as they change blocks (U1's
- *     cache), ext_jnl_revoke for each metadata block they free,
- *     ext_jnl_room and ext_jnl_step inside an operation that may outgrow
- *     a transaction.
+ *     cache), ext_jnl_freed for every block they free (ext_bfree does
+ *     it), ext_jnl_room and ext_jnl_step inside an operation that may
+ *     outgrow a transaction.
  *   - With a journal open, nothing else writes metadata: ext_sync is the
  *     checkpoint inside ext_jnl_commit, never called on its own.
  *
@@ -123,6 +129,10 @@ struct ext_jnl {
     size_t   mem_size;
     uint8_t *stage;                  /* nstage blocks: log blocks on their way to the device */
     uint32_t nstage;
+    uint64_t *live;                  /* blocks with a copy in the log since the tail: a hash
+                                      * set (EXT_NO_BLOCK: empty), twice the log's length */
+    uint32_t cap_live;               /* a power of two */
+    uint32_t nlive;
     struct ext_jnl_revoke *revokes;  /* the rest of the region */
     uint32_t cap_revokes;
 
@@ -155,10 +165,11 @@ struct ext_jnl {
     uint32_t revoked_blocks;         /* copies skipped for a revoke */
 };
 
-/* Bytes of region a journal needs for a volume of block_size: the staging
- * blocks and room for `revokes` revoke records (a replay holds every
+/* Bytes of region a journal of up to `journal_blocks` blocks needs on a
+ * volume of block_size: the staging blocks, the set of blocks with a copy
+ * in the log, and room for `revokes` revoke records (a replay holds every
  * record in the log; a transaction its own). */
-size_t ext_jnl_mem_size(uint32_t block_size, uint32_t revokes);
+size_t ext_jnl_mem_size(uint32_t block_size, uint32_t journal_blocks, uint32_t revokes);
 
 /* Set j up with its region (kept until it is no longer used) and flags;
  * the defaults for the rest. ERR_INVALID_ARGS for an unknown flag. */
@@ -188,12 +199,19 @@ status_t ext_jnl_begin(struct ext_fs *fs, uint32_t *out_tid);
  * commit blocks, and no more than the cache keeps clean for reading. */
 uint32_t ext_jnl_room(const struct ext_fs *fs);
 
-/* A metadata block the running transaction frees: its replay from this
- * and earlier transactions is revoked, and its dirty buffer, if any,
- * forgotten (a freed block's bytes must never reach its home: it may hold
- * file data before this commits). Call it after the last change to the
- * block and before anything writes it as data. ERR_NO_RESOURCES: the
+/* Blocks [blk, blk + count) the running transaction frees (data or
+ * metadata): each with a copy in the log is revoked (ext_jnl_revoke), and
+ * every one's dirty buffer forgotten. Call it after the last change to
+ * them and before anything writes them as data. No journal open: OK,
+ * nothing done (a volume mounted without one). ERR_NO_RESOURCES: the
  * region holds no more revoke records (commit with ext_jnl_step first). */
+status_t ext_jnl_freed(struct ext_fs *fs, uint64_t blk, uint64_t count);
+
+/* Revoke block blk in the running transaction, whether or not it has a
+ * copy in the log: its replay from this and earlier transactions is
+ * skipped, and its dirty buffer, if any, forgotten (a freed block's bytes
+ * must never reach its home: it may hold file data before this commits).
+ * ERR_NO_RESOURCES as ext_jnl_freed. */
 status_t ext_jnl_revoke(struct ext_fs *fs, uint64_t blk);
 
 /* Inside an operation in steps: if fewer than `need` blocks of room are
