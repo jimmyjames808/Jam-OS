@@ -1,11 +1,11 @@
 /* nvme: what the driver's files share (drv/nvme). main.c: start, the
  * loop and ending; ctrl.c: the controller's registers, enable, disable,
  * identify, the queues' creation, reset and shutdown; queue.c: completion
- * queues, command slots and ids, timeouts and abort, PRPs and reads;
- * cmd.c: submission queues, the ONE place a submission entry is written;
- * serve.c: the partition table and the `storage` protocol (digest,
- * health, create_table); block.c: the `block` channels; selftest.c: the
- * test words' reads.
+ * queues, command slots and ids, timeouts and abort, PRPs and requests;
+ * cmd.c: submission queues, the ONE place a submission entry is written,
+ * and the write gate; table.c: the partition table, read and made
+ * (create_table); serve.c: the `storage` protocol (digest, health);
+ * block.c: the `block` channels; selftest.c: the test words' reads.
  *
  * One thread; nothing is locked. Every command is a slot of its queue
  * (struct nvme_slot): its id is the slot's index and the slot's
@@ -294,8 +294,8 @@ uint64_t sq_addr(const struct nvme_queue *q);   /* for ASQ */
  * they never return an error for it. sqe_write refuses so a write while
  * the mode isn't MODE_JAMOS (a partition) or MODE_BLANK (PART_TABLE), and
  * then one outside its target's blocks; sqe_flush, a flush on a
- * MODE_OTHER drive. The callers check first (block.c, serve.c): these
- * are the last line. */
+ * MODE_OTHER drive. The callers check first (block.c, serve.c,
+ * table.c): these are the last line. */
 void     sqe_admin(struct nvme *c, struct nvme_slot *s, enum admin_op op,
                    const struct admin_args *a);
 void     sqe_read(struct nvme *c, struct nvme_slot *s, uint64_t lba, uint32_t blocks,
@@ -384,7 +384,7 @@ status_t ctrl_health(struct nvme *c, struct nvme_health *h);
 void     health_args(const struct nvme *c, struct admin_args *a);
 void     health_parse(const uint8_t *page, struct nvme_health *h);
 
-/* ---- serve.c: the disk's table and `storage` ------------------------------------------ */
+/* ---- serve.c: `storage` ------------------------------------------------------------------ */
 
 /* Port keys (main.c's loop hands every packet but KEY_IRQ to serve_packet). */
 #define KEY_IRQ   1ull
@@ -398,8 +398,6 @@ void     health_parse(const uint8_t *page, struct nvme_health *h);
  * controller's failure (ctrl_poll's). A table that can't be read is no
  * failure: the disk is served with no partitions. */
 status_t serve_start(struct nvme *c);
-/* The table in a few words for the RESULTS line: "GPT, 4 partitions". */
-void     serve_describe(char *out, size_t n);
 /* Watch DR_SERVE on c->port; then serve_work answers what is queued on it,
  * on the connects' channels and on the block channels. false: DR_SERVE
  * closed (devmgr is stopping us). */
@@ -411,6 +409,31 @@ void     serve_packet(uint64_t key);
 /* The end, after ctrl_stop (every read ended, bus mastering off): every
  * channel closed, every buffer unpinned. */
 void     serve_stop(struct nvme *c);
+/* create_table is over (table.c): its answer, st, to its request. */
+void     serve_created(status_t st);
+
+/* ---- table.c: the partition table ---------------------------------------------------------- */
+
+/* The table read through buf (`size` bytes, mapped; the device reaches it
+ * at pages), logged, and the drive's mode set from it. A table that can't
+ * be read is no failure: the disk is served with no partitions, and
+ * MODE_OTHER. OK, or the controller's failure (the read stuck). */
+status_t table_start(struct nvme *c, void *buf, const uint64_t *pages, uint32_t size);
+/* The table as read (no partitions if it couldn't be). */
+const struct pt_table *table_get(void);
+/* The table in a few words for the RESULTS line: "GPT, 4 partitions". */
+void     table_describe(char *out, size_t n);
+/* Start create_table on a MODE_BLANK drive (ERR_ACCESS_DENIED otherwise;
+ * ERR_BAD_STATE: one is under way; pt_jamos_make's errors): OK, and
+ * serve_created later, from the loop. */
+status_t table_create(struct nvme *c, const uint8_t *disk_guid, const uint8_t *esp_guid,
+                      const uint8_t *data_guid);
+/* create_table's writes are over: table_work reads the table back (the
+ * loop calls it; table_ready: it has something to do). */
+bool     table_ready(void);
+void     table_work(struct nvme *c);
+/* Its buffer unpinned (after ctrl_stop: bus mastering is off). */
+void     table_stop(struct nvme *c);
 
 /* ---- block.c: `block` channels ----------------------------------------------------------- */
 

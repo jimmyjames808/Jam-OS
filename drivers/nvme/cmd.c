@@ -214,7 +214,8 @@ uint16_t slot_cid(const struct nvme_queue *q, const struct nvme_slot *s)
 static bool allowed(uint16_t qid, uint8_t opc)
 {
     if (qid == NVME_IO_QID)
-        return opc == OPC_READ || (gate.mode != MODE_OTHER && (opc == OPC_WRITE || opc == OPC_FLUSH));
+        return opc == OPC_READ ||
+               (gate.mode != MODE_OTHER && (opc == OPC_WRITE || opc == OPC_FLUSH));
     if (qid != 0)
         return false;
     switch (opc) {

@@ -10,7 +10,7 @@
  * Authority: a channel reaches its partition's blocks and nothing else.
  * Every request's range is checked against the partition here
  * (check_range) before the partition's start is added; the table the
- * bounds come from is the one this driver read itself (serve.c,
+ * bounds come from is the one this driver read itself (table.c,
  * <jam/parttable.h>). cmd.c checks a write's blocks once more against the
  * drive's mode and partitions of its own (sqe_write).
  *

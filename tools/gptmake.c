@@ -143,7 +143,8 @@ static void refusals(void)
     uint64_t gib = (1ull << 30) / 512;
     where = "made-refusals";
     if (pt_jamos_plan(512, (513ull << 20) / 512 + 34, &p) != ERR_NO_SPACE ||
-        pt_jamos_plan(4096, 1, &p) != ERR_NO_SPACE || pt_jamos_plan(0, gib, &p) != ERR_INVALID_ARGS ||
+        pt_jamos_plan(4096, 1, &p) != ERR_NO_SPACE ||
+        pt_jamos_plan(0, gib, &p) != ERR_INVALID_ARGS ||
         pt_jamos_plan(1024 + 512, gib, &p) != ERR_INVALID_ARGS ||
         pt_jamos_plan(8192, gib, &p) != ERR_INVALID_ARGS)
         fail("a disk the plan should refuse");

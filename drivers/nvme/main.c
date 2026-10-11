@@ -24,7 +24,7 @@
  *
  * Start (ctrl.c): the controller disabled before bus mastering, the admin
  * queue, enabled, identify (the controller; the first usable namespace),
- * one I/O queue pair on vector 0. Then the partition table (serve.c),
+ * one I/O queue pair on vector 0. Then the partition table (table.c),
  * its health log once (the drive's own count of write commands: the
  * witness that nothing was written), a RESULTS line, and the loop. One
  * thread, one port: the interrupt, DR_SERVE and every channel it serves
@@ -108,7 +108,7 @@ static void report(struct nvme *c)
             c->ns.nsid, (unsigned long)c->ns.blocks, c->ns.block_size);
     /* The RESULTS box cuts long lines: the model, the size, the table. */
     char table[80];
-    serve_describe(table, sizeof(table));
+    table_describe(table, sizeof(table));
     unsigned shift = 20 - (unsigned)__builtin_ctz(c->ns.block_size);
     drv_report("%s: %s, %lu MiB, %s, %s", c->name, c->model,
                (unsigned long)(c->ns.blocks >> shift), table, cmd_mode_str());
