@@ -131,8 +131,6 @@ uint64_t aspace_pte(struct aspace *as, uint64_t va);
 uint64_t aspace_pt_pages(struct aspace *as);
 /* aspace_fault calls on as so far (every one, resolved or not). */
 uint64_t aspace_fault_count(struct aspace *as);
-/* Number of mappings. */
-uint32_t aspace_mapping_count(struct aspace *as);
 /* Faults that waited for a pager while their thread held a mutex (atomic;
  * each one is also reported on the console). Must stay 0: see PK2's audit
  * in docs/M12.5-PLAN.md. */

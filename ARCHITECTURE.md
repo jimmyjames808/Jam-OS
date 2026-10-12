@@ -313,7 +313,15 @@ Every driver and service is a userspace process from the start.
     "F1a design".
 - **VMAR**: one flat address space per process, no nested VMARs. Maps
   VMOs with R/W/X; W^X always, and an executable mapping needs `RIGHT_EXEC`
-  on the VMO handle. User mappings are tracked in a per-VMO reverse map, so
+  on the VMO handle. An address space's mappings are a balanced tree by
+  address that also keeps the largest free gap of each subtree, so a
+  fault's lookup and a first-fit placement are O(log n), up to
+  `VMAR_MAX_MAPPINGS` (65,536). Neighbouring mappings of one VMO at
+  contiguous offsets with the same permissions and maximum merge after
+  every map, replace and protect (kept mappings never do), so committing
+  and decommitting pieces of a big reservation leaves its mapping count
+  flat; the cap counts what a call leaves.
+  User mappings are tracked in a per-VMO reverse map, so
   decommit and shrink unmap the pages from every address space (pins, which
   are DMA, still block them). Lock order: address-space region lock (a
   sleeping mutex) above `vmo`, page-table lock (a spinlock) below it.

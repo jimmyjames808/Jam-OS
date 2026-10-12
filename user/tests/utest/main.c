@@ -610,6 +610,7 @@ static const struct {
     { "wants_posix", t_wants_posix },
     { "crash_kills_only_the_child", t_crash_kills_only_the_child },
     { "wx", t_wx },
+    { "vmar_mappings", t_vmar_mappings },
     { "ping_pong", t_ping_pong },
     { "kill_in_channel_call", t_kill_in_channel_call },
     { "call_timeout_relative", t_call_timeout_relative },

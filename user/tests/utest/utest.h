@@ -244,6 +244,8 @@ bool t_reply_wait_refusals(void);
 /* portagain.c: port_again, the next turn of a reader that keeps to a budget. */
 bool t_port_again(void);
 bool t_handles_always_moved(void);
+/* vmarcount.c: process_get_info's mapping count, and merging as seen from user space. */
+bool t_vmar_mappings(void);
 bool t_channel_no_handles(void);
 bool t_unread_charged_to_writer(void);
 int  replywait_child(int argc, char **argv);
