@@ -153,16 +153,42 @@ fd_adopt_fn file_adopt_fd;
  * kind), -ENOMEM, -EIO. */
 long file_map(long fd, int64_t off, uint64_t len, bool shared, handle_t *vmo, uint64_t *vmo_off);
 
-/* ---- libc's own trees: /dev and /etc ----------------------------------------------
- * A clean absolute path under them is kinds.h's (dev_path, etc_path):
- * open, stat and unlink go there, and any other change there is refused
- * here (EACCES under /dev, EROFS under /etc). */
-enum path_libc { LIBC_NONE, LIBC_DEV, LIBC_ETC };
-/* Is p under /dev or /etc as libc serves them? */
+/* ---- libc's own trees: /dev, /etc and /proc ------------------------------------
+ * A clean absolute path under them is kinds.h's (dev_path, etc_path) or
+ * procfs.c's (proc_path): open, stat and unlink go there (readlink and
+ * lstat too for /proc), and any other change there is refused here
+ * (EACCES under /dev and /proc, EROFS under /etc). */
+enum path_libc { LIBC_NONE, LIBC_DEV, LIBC_ETC, LIBC_PROC };
+/* Is p under /dev, /etc or /proc as libc serves them? */
 enum path_libc path_libc(const struct path *p);
-/* stat of such a path; and the errno for a change other than B2's. */
+/* stat of such a path (a /proc link followed); and the errno for a
+ * change other than B2's. */
 long path_libc_stat(const struct path *p, enum path_libc which, struct stat *st);
 long path_libc_refuse(enum path_libc which);
+/* Is m ("/etc") a mount of the namespace? Then the tree is the mount's. */
+bool path_is_mount(const char *m);
+
+/* ---- procfs.c: libc's /proc --------------------------------------------------------
+ * What a Linux program reads about itself there (docs/CR-PLAN.md section
+ * 3): /proc/self (a link to /proc/<our pid>, the one pid served), its exe
+ * (a link to the program's file) and its fd (a directory of links, one
+ * per open descriptor); every other path under /proc is ENOENT. */
+/* Is abs (clean, absolute) /proc or under it, and libc's? */
+bool proc_path(const char *abs);
+/* open of such a path with open's flags: the new descriptor or -errno.
+ * The links are followed: exe opens the program's file, fd/N opens N's
+ * file again (a new description: its own offset and access mode). */
+long proc_open(const struct path *p, long flags);
+/* stat (follow: the link's target, as stat) or lstat (a link is a link)
+ * of such a path into *st (zeroed here): 0 or -errno. */
+long proc_stat(const struct path *p, bool follow, struct stat *st);
+/* readlink of such a path: the link's bytes copied (at most size, no
+ * NUL), -EINVAL for a directory, -ENOENT for anything not there. */
+long proc_readlink(const struct path *p, char *buf, size_t size);
+/* The program's own file, absolute ("/boot/bin/x" for a boot program),
+ * as /proc/self/exe names it; NULL if it can't be named. The first call
+ * finds it (procfs.c says how), the answer is kept for the process. */
+const char *proc_exe(void);
 
 /* ---- dir.c ------------------------------------------------------------------------ */
 
@@ -171,3 +197,8 @@ bool dir_is(const struct fd_desc *d);
 long dir_new(const struct path *p, uint32_t status, struct fd_desc **out);
 /* The kind's adopter (fd_adopters' POSIXFDS_DIR line). */
 fd_adopt_fn dir_adopt_fd;
+/* One getdents64 record (Linux's linux_dirent64, padded to 8 bytes) for
+ * name at buf, d_off next: its length, or 0 if it doesn't fit in room
+ * bytes (nothing written then). */
+size_t dir_put(void *buf, size_t room, const char *name, uint64_t ino, uint8_t type,
+               int64_t next);

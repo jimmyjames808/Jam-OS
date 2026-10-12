@@ -384,11 +384,15 @@ enum path_libc path_libc(const struct path *p)
 {
     if (dev_path(p->abs))
         return LIBC_DEV;
+    if (proc_path(p->abs))
+        return LIBC_PROC;
     return etc_path(p->abs) ? LIBC_ETC : LIBC_NONE;
 }
 
 long path_libc_stat(const struct path *p, enum path_libc which, struct stat *st)
 {
+    if (which == LIBC_PROC)
+        return proc_stat(p, true, st);   /* its own trailing-slash rule, after the link */
     long r = which == LIBC_DEV ? dev_stat(p->abs, st) : etc_stat(p->abs, st);
     if (!r && p->must_dir && !S_ISDIR(st->st_mode))
         r = -ENOTDIR;
@@ -397,5 +401,14 @@ long path_libc_stat(const struct path *p, enum path_libc which, struct stat *st)
 
 long path_libc_refuse(enum path_libc which)
 {
-    return which == LIBC_DEV ? -EACCES : -EROFS;
+    return which == LIBC_ETC ? -EROFS : -EACCES;
+}
+
+bool path_is_mount(const char *m)
+{
+    char name[NS_NAME_MAX];
+    for (unsigned i = 0; ns_mount_at(i, name); i++)
+        if (!strcmp(name, m))
+            return true;
+    return false;
 }

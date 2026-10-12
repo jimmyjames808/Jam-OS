@@ -12,7 +12,8 @@
  *
  * A memory object (struct memobj) is shared by every description on it
  * (a description's priv is the object, with a reference; dev.c's
- * /dev/shm name holds one too). Its size and seals are under its lock,
+ * /dev/shm name holds one too; an open of /proc/self/fd/N, procfs.c's,
+ * is one more description on it, read-only if asked so). Its size and seals are under its lock,
  * taken after the description's (fd.h's lock, for the offset). The size
  * is this process's: a child handed the descriptor starts with the size
  * and the seals as they were, then each process keeps its own (they
@@ -382,6 +383,27 @@ long memfd_get_seals(struct fd_desc *d)
     long seals = m->seals;
     lock_give(&m->lock);
     return seals;
+}
+
+const char *memfd_name(struct fd_desc *d)
+{
+    return obj_of(d)->name;   /* set when the object is made, never changed */
+}
+
+long memfd_reopen(struct fd_desc *d, int flags)
+{
+    struct memobj *m = obj_of(d);
+    bool write = (flags & O_ACCMODE) != O_RDONLY;
+    struct handle_info hi;
+    if (write && (jam_handle_info(m->vmo, &hi) != OK || !(hi.rights & RIGHT_WRITE)))
+        return -EACCES;   /* no right to add: the twin we were given stays read-only */
+    if (write && (flags & O_TRUNC)) {
+        long r = memobj_truncate(m, 0);
+        if (r)
+            return r;
+    }
+    return kind_install(&memfd_ops, memfd_priv_new(m), (uint32_t)flags & OPEN_STATUS,
+                        flags & O_CLOEXEC);
 }
 
 long lx_memfd_create(long name, long flags, long c, long d, long e, long f)

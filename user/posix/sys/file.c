@@ -514,6 +514,8 @@ long lx_openat(long dirfd, long pathname, long flags, long mode, long e, long f)
         return dev_open(p.abs, (int)flags, (mode_t)mode);
     if (which == LIBC_ETC)
         return etc_open(p.abs, (int)flags);
+    if (which == LIBC_PROC)
+        return proc_open(&p, flags);
     long fd = fd_alloc(0);   /* EMFILE before anything is made, as Linux */
     if (fd < 0)
         return fd;

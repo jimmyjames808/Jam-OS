@@ -19,7 +19,8 @@
  * signal.c and sigproc.c (signals in a process, and between processes),
  * pty.c (pseudo-terminals, and init's sessions from a POSIX program),
  * clock.c (the clocks from the time page), socket.c (sockets without the
- * network), sockets.c (against the network peer: asked for by name) and
+ * network), sockets.c (against the network peer: asked for by name),
+ * procfs.c (libc's /proc: the program's file and the descriptors) and
  * rawcalls.c, rawfutex.c and rawlog.c (the raw Linux calls Chromium makes, and the
  * ENOSYS log: the log's hooks are the layer's calls.h, a second look inside).
  * start.c, mem.c, clock.c, fds.c, poll.c, proc.c, tty.c and fileskid.c are
@@ -67,6 +68,7 @@ void pt_raw(char **argv);          /* raw calls and the ENOSYS log */
 void pt_raw_log(void);
 /* And the futex checks (rawfutex.c). */
 void pt_raw_futex(void);
+void pt_procfs(char **argv);
 /* The signal section's second half (sigproc.c): between processes. */
 void pt_sigproc(void);
 
@@ -90,6 +92,7 @@ int  pt_child_pty(void);
 int  pt_child_winsize(void);
 int  pt_child_hup(void);
 int  pt_child_raw(int argc, char **argv);
+int  pt_child_procfs(int argc, char **argv);
 
 /* Pages charged to our job now (job_get_info; start.c). */
 uint64_t pt_job_pages(void);

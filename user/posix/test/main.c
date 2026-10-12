@@ -33,6 +33,7 @@ static const struct {
     { "signal", pt_signal },
     { "socket", pt_socket },
     { "pty", pt_pty },
+    { "procfs", pt_procfs },
     { "session", pt_session },
     { "files-many", pt_files_many },
     { "sockets", pt_sockets },
@@ -93,6 +94,8 @@ int main(int argc, char **argv)
         return pt_child_hup();
     if (argc >= 2 && !strcmp(argv[1], "--child-raw"))
         return pt_child_raw(argc, argv);
+    if (argc >= 2 && !strcmp(argv[1], "--child-procfs"))
+        return pt_child_procfs(argc, argv);
     setvbuf(stdout, NULL, _IOLBF, 0);   /* each line out as it is made */
     unsigned n = sizeof(sections) / sizeof(sections[0]);
     for (unsigned i = 0; i < n; i++) {
