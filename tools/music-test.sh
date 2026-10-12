@@ -25,6 +25,7 @@
 #   - between the end of the music and the marker: silence.
 # QEMU_SMP passes through. Usage: tools/music-test.sh <outdir>; exit 0 on PASS.
 set -eu
+DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
 out=$1
 mkdir -p "$out"
 wav="$out/music.wav"
@@ -75,7 +76,7 @@ $ff -i "$tmp/src4.wav" -c:a libmp3lame -b:a 64k "$tmp/four.mp3"
 $ff -i "$tmp/src6.wav" -c:a libmp3lame -b:a 128k "$tmp/six.mp3"
 
 cp build/jamos.img "$stick"
-img="$stick@@64M"
+img="$stick@@$DATA_AT"
 for d in "music" "music/A" "music/A/Album" "music/B'Side" "music/B'Side/2001 Disc (Deluxe)" \
          "music/JAŸ-Z" "music/JAŸ-Z/2025 \$ome \$ongs 4 U" "music/Spaced Name" \
          "music/Spaced Name/Some Album" "music/Bad" "music/Bad/x" "music/Empty" "music/Empty/Nested"; do

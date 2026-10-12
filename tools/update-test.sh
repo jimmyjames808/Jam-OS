@@ -35,6 +35,7 @@
 # key), all put on the stick's /data (update/) with mtools before the boot.
 # Usage: tools/update-test.sh <outdir>; exit 0 on PASS.
 set -u
+DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
 out=$1
 mkdir -p "$out"
 fails=0
@@ -73,12 +74,12 @@ open(sys.argv[2], "wb").write(b"\xaa" * 4096)' "$out/nak.elf" "$out/nak.img" &&
     python3 tools/update-server.py --manifest "$out/nak.elf" "$out/nak.img" \
         --version not-a-kernel --git 0000000 --net "$net" --key "$key1" > "$out/nak.manifest" ||
     { echo "update-test: no manifest for the files that are no kernel"; exit 1; }
-mmd -i "$stick@@64M" ::/update &&
-    mcopy -i "$stick@@64M" "$out/manifest" "$out/manifest-otherkey" \
+mmd -i "$stick@@$DATA_AT" ::/update &&
+    mcopy -i "$stick@@$DATA_AT" "$out/manifest" "$out/manifest-otherkey" \
         "$out/manifest-othernet" "$out/manifest-ext" "$out/manifest-must" \
         "$out/nak.manifest" ::/update/ &&
-    mcopy -i "$stick@@64M" build/jamos.elf ::/update/jamos.elf &&
-    mcopy -i "$stick@@64M" "$out/bootfs-marked.img" ::/update/bootfs.img ||
+    mcopy -i "$stick@@$DATA_AT" build/jamos.elf ::/update/jamos.elf &&
+    mcopy -i "$stick@@$DATA_AT" "$out/bootfs-marked.img" ::/update/bootfs.img ||
     { echo "update-test: can't write the stick's /data"; exit 1; }
 
 cat > "$out/update.txt" <<EOF
@@ -169,9 +170,9 @@ rm -f "$stick"
 #    `update -n -r` is a usage error (nothing to reboot into).
 nokey="$out/update-nokey.img"
 tools/update-test-key.sh "$out" build/jamos.img "$nokey" nokey &&
-    mmd -i "$nokey@@64M" ::/update &&
-    mcopy -i "$nokey@@64M" "$out/manifest" build/jamos.elf ::/update/ &&
-    mcopy -i "$nokey@@64M" "$out/bootfs-marked.img" ::/update/bootfs.img ||
+    mmd -i "$nokey@@$DATA_AT" ::/update &&
+    mcopy -i "$nokey@@$DATA_AT" "$out/manifest" build/jamos.elf ::/update/ &&
+    mcopy -i "$nokey@@$DATA_AT" "$out/bootfs-marked.img" ::/update/bootfs.img ||
     { echo "update-test: can't make the keyless stick"; exit 1; }
 cat > "$out/nokey.txt" <<EOF
 wait 120 Jam OS shell

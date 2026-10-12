@@ -8,14 +8,15 @@
 # the peer must have answered at least ECHO_MIN of the guest's echoes.
 # Usage: tools/ping-test.sh <outdir>
 set -eu
+DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
 out=$1
 mkdir -p "$out"
 ECHO_MIN=5   # ping 1.1.1.1 -c 3, then at least 2 to the Mac before Ctrl+C
 img="$out/ping.base.img"
 cp "${QEMU_IMAGE:-build/jamos.img}" "$img"
 printf 'net.address = 10.2.21.5/24 10.2.21.1 10.2.21.1\n' > "$out/ping.settings"
-mmd -i "$img@@64M" ::/etc 2>/dev/null || true
-mcopy -o -i "$img@@64M" "$out/ping.settings" ::/etc/settings
+mmd -i "$img@@$DATA_AT" ::/etc 2>/dev/null || true
+mcopy -o -i "$img@@$DATA_AT" "$out/ping.settings" ::/etc/settings
 ok=1
 QEMU_IMAGE="$img" QEMU_NET=1 QEMU_INPUT=tools/shell-tests/net.txt \
     tools/qemu-test.sh "$out" ping shell || ok=0

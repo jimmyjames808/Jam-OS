@@ -9,13 +9,14 @@
 # the pcap's VLAN checks (tools/qemu-test.sh).
 # Usage: tools/fetch-test.sh <outdir>
 set -eu
+DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
 out=$1
 mkdir -p "$out"
 img="$out/fetch.base.img"
 cp "${QEMU_IMAGE:-build/jamos.img}" "$img"
 printf 'net.address = 10.2.21.5/24 10.2.21.1 10.2.21.1\n' > "$out/fetch.settings"
-mmd -i "$img@@64M" ::/etc 2>/dev/null || true
-mcopy -o -i "$img@@64M" "$out/fetch.settings" ::/etc/settings
+mmd -i "$img@@$DATA_AT" ::/etc 2>/dev/null || true
+mcopy -o -i "$img@@$DATA_AT" "$out/fetch.settings" ::/etc/settings
 set -- $(python3 tools/netpeer.py --free-ports 1)
 hport=$1
 python3 tools/httptest.py --port "$hport" > "$out/fetch.http.log" 2>&1 &
@@ -33,7 +34,7 @@ for f in big.bin:big.bin chunked.bin:chunked.bin close.bin:close.bin name.txt:sm
          redir.txt:small.txt; do
     file=${f%%:*} served=${f#*:}
     rm -f "$out/got-$file"
-    mcopy -o -i "$out/fetch.after.img@@64M" "::/$file" "$out/got-$file" 2>/dev/null || true
+    mcopy -o -i "$out/fetch.after.img@@$DATA_AT" "::/$file" "$out/got-$file" 2>/dev/null || true
     want=$(python3 tools/httptest.py --sha "$served")
     got=$(shasum -a 256 "$out/got-$file" 2>/dev/null | cut -d' ' -f1 || true)
     if [ "$got" = "$want" ]; then
@@ -44,7 +45,7 @@ for f in big.bin:big.bin chunked.bin:chunked.bin close.bin:close.bin name.txt:sm
     fi
 done
 for f in x x.part y y.part; do
-    if mdir -i "$out/fetch.after.img@@64M" "::/$f" >/dev/null 2>&1; then
+    if mdir -i "$out/fetch.after.img@@$DATA_AT" "::/$f" >/dev/null 2>&1; then
         echo "fetch-test: /data/$f was left behind"
         ok=0
     fi

@@ -28,6 +28,7 @@
 # no logd, and says why in one line).
 # Usage: tools/initnet-test.sh <outdir> [static|dhcp|nohost|off]   (static)
 set -eu
+DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
 out=$1
 mode=${2:-static}
 mkdir -p "$out"
@@ -42,15 +43,15 @@ nohost) printf 'net.address = 10.2.21.5/24 10.2.21.1 10.2.21.1\n' ;;
 off) printf 'net.address = 10.2.21.5/24 10.2.21.1 10.2.21.1\nnet.host = 10.2.21.174\nnetlog = off\n' ;;
 *) echo "initnet-test: want static, dhcp, nohost or off"; exit 2 ;;
 esac > "$out/$name.settings"
-mmd -i "$img@@64M" ::/etc 2>/dev/null || true
-mcopy -o -i "$img@@64M" "$out/$name.settings" ::/etc/settings
+mmd -i "$img@@$DATA_AT" ::/etc 2>/dev/null || true
+mcopy -o -i "$img@@$DATA_AT" "$out/$name.settings" ::/etc/settings
 ok=1
 QEMU_IMAGE="$img" QEMU_NET=1 QEMU_SAVE="$out/$name.stick.img" \
     QEMU_NET_PEER="--netlog $out/$name.recv" QEMU_TIMEOUT=${QEMU_TIMEOUT:-400} \
     tools/qemu-test.sh "$out" "$name" init > "$out/$name.out" 2>&1 || ok=0
 cat "$out/$name.out"
 rm -f "$img"
-python3 - "$out" "$name" "$mode" <<'EOF' || ok=0
+DATA_AT=$DATA_AT python3 - "$out" "$name" "$mode" <<'EOF' || ok=0
 import json, os, re, subprocess, sys
 out, name, mode = sys.argv[1:4]
 fails = []
@@ -124,12 +125,12 @@ if len(files) == 1 and len(done) == 1:
           peer.get("netlog_in", 0), 0 < peer.get("netlog_in", 0) < 5000)
     # logd's file on the stick
     stick = os.path.join(out, name + ".stick.img")
-    ls = subprocess.run(["mdir", "-b", "-i", stick + "@@64M", "::/logs"], capture_output=True,
+    ls = subprocess.run(["mdir", "-b", "-i", stick + "@@" + os.environ["DATA_AT"], "::/logs"], capture_output=True,
                         text=True).stdout.split()
     logs = [p for p in ls if re.search(r"boot-\d+\.txt$", p)]
     check("logd saved one /data/logs/boot-NNNN.txt (%s)" % ", ".join(logs), len(logs) == 1)
     if len(logs) == 1:
-        raw = subprocess.run(["mtype", "-i", stick + "@@64M", logs[0]], capture_output=True).stdout
+        raw = subprocess.run(["mtype", "-i", stick + "@@" + os.environ["DATA_AT"], logs[0]], capture_output=True).stdout
         lg = raw.decode("utf-8", "replace").replace("\r", "").split("\n")
         lg = [l for l in lg if ts.match(l)]
         check("logd's file starts at the boot's first line", bool(lg) and lg[0] == serial[0])

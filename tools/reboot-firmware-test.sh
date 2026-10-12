@@ -17,6 +17,7 @@
 #   triple  reset=triple: the triple fault does it
 # Usage: tools/reboot-firmware-test.sh <outdir> [run ...]; exit 0 on PASS.
 set -u
+DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
 out=$1
 shift
 runs=${*:-data cf9 8042 triple}
@@ -56,7 +57,7 @@ run_data() {
         fail data "the ACPI reset register didn't reset the machine"
     grep -aq "driver(s) stopped; exiting" "$log" || fail data "devmgr's drivers weren't stopped"
     grep -aq "devmgr didn't stop in order" "$log" && fail data "devmgr had to be killed"
-    mtype -i "$stick@@64M" ::/logs/boot-0001.txt 2>/dev/null | grep -q "init: /data synced" || fail data "boot-0001.txt doesn't have the reset's sync"
+    mtype -i "$stick@@$DATA_AT" ::/logs/boot-0001.txt 2>/dev/null | grep -q "init: /data synced" || fail data "boot-0001.txt doesn't have the reset's sync"
     QEMU_IMAGE="$stick" run data2 shell "wait 120 Jam OS shell" "wait {prompt}" \
         "seen 60 init: /data mounted" "seen 60 logd: writing /data/logs/boot-0002.txt" \
         "send T=k && cat /data/rbf.txt && echo ok-\$T" "wait written before the reset" \

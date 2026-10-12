@@ -14,13 +14,14 @@
 # the peer's and the pcap's VLAN checks (tools/qemu-test.sh).
 # Usage: tools/speed-test.sh <outdir>
 set -eu
+DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
 out=$1
 mkdir -p "$out"
 img="$out/speed.base.img"
 cp "${QEMU_IMAGE:-build/jamos.img}" "$img"
 printf 'net.address = 10.2.21.5/24 10.2.21.1 10.2.21.1\n' > "$out/speed.settings"
-mmd -i "$img@@64M" ::/etc 2>/dev/null || true
-mcopy -o -i "$img@@64M" "$out/speed.settings" ::/etc/settings
+mmd -i "$img@@$DATA_AT" ::/etc 2>/dev/null || true
+mcopy -o -i "$img@@$DATA_AT" "$out/speed.settings" ::/etc/settings
 loss=${SPEED_LOSS:-2}
 set -- $(python3 tools/netpeer.py --free-ports 3)
 hport=$1 fport=$2 lport=$3
