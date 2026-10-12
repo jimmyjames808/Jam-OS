@@ -38,6 +38,7 @@
 # there is no loader to park them); QEMU_SMP and QEMU_XHCI pass through.
 # Usage: tools/kexec-reboot-test.sh <outdir> [run ...]; exit 0 on PASS.
 set -u
+DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
 out=$1
 shift
 runs=${*:-kexec changed load broken firmware fallback}
@@ -100,7 +101,7 @@ run_kexec() {
         fail kexec "devmgr didn't say how long its drivers took to stop"
     [ "$(grep -ac "smp: $cpus of $cpus CPUs online" "$log")" -ge 2 ] ||
         fail kexec "the kexec'd kernel didn't bring up all $cpus CPUs"
-    mtype -i "$out/kexec-kexec-stick.img@@64M" ::/logs/boot-0001.txt 2>/dev/null |
+    mtype -i "$out/kexec-kexec-stick.img@@$DATA_AT" ::/logs/boot-0001.txt 2>/dev/null |
         grep -q "init: /data synced" || fail kexec "boot-0001.txt doesn't end with the reboot's sync"
     python3 tools/splash-check.py quiet "$out/kexec-between.png" ||
         fail kexec "the screen between the kernels isn't all the splash background"

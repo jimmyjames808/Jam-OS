@@ -238,8 +238,9 @@ static const struct sh_cmd cmds[] = {
       "  run prog &: in the background (see jobs)"),
     C(allow, C_PROGRAMS, "allow <file> | -l | -r <name>",
       "let a program on /data run: shows what it asks for (services, mounts) and\n"
-      "  asks y/n; y keeps its hash and list in /data/etc/allow. A changed file is\n"
-      "  refused until allowed again. -l: the allowed ones. -r: take one back"),
+      "  asks y/n; y keeps its hash and list in /data/etc/allow, each page's hash in\n"
+      "  /data/etc/allow.d. A changed file is refused until allowed again, a changed\n"
+      "  page when it is read. -l: the allowed ones. -r: take one back"),
     C(ktest, C_TESTS, "ktest [prefix] [options]",
       "kernel tests (as the boot menu's All tests).\n"
       "  loops=N: the set N times. seed=S: in the order shuffled from S (loop k uses\n"
@@ -268,12 +269,14 @@ static const struct sh_cmd cmds[] = {
       "  mixer twice a second for a minute while music plays, then the kills and the\n"
       "  mixer's own restart lines (the least audio left written ahead, late periods).\n"
       "  The result line goes to the log too. Ctrl+C stops it"),
-    C(utest, C_TESTS, "utest", "the user-space test suite (bin/utest) and its result line"),
-    C(usbtest, C_TESTS, "usbtest", "the USB checks (bin/usbtest) and their result line"),
-    C(hdatest, C_TESTS, "hdatest",
+    C(utest, C_TESTS, "utest [only <prefix>]",
+      "the user-space test suite (bin/utest) and its result line"),
+    C(usbtest, C_TESTS, "usbtest [<its arguments>]",
+      "the USB checks (bin/usbtest) and their result line"),
+    C(hdatest, C_TESTS, "hdatest [<its arguments>]",
       "the HD Audio output stream checks (bin/hdatest) and their result line; it kills\n"
       "  and restarts the hda driver once"),
-    C(mixtest, C_TESTS, "mixtest",
+    C(mixtest, C_TESTS, "mixtest [<its arguments>]",
       "the mixer checks (bin/mixtest) and their result line: tone programs played at\n"
       "  once, one killed; it kills and restarts the mixer and the hda driver once"),
     C(crash, C_KERNEL, "crash [name [yes]]",

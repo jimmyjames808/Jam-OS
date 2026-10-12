@@ -38,8 +38,8 @@ status_t userboot_spawn(const char *path, const char *const *argv, unsigned argc
 status_t userboot_root_job(struct job **out);
 
 /* Option words init can be given: every word kernel/main.c's init_words
- * can pass at once (nine), so the words a boot names all reach init. */
-#define USERBOOT_MAX_WORDS 9
+ * can pass at once (ten), so the words a boot names all reach init. */
+#define USERBOOT_MAX_WORDS 10
 
 /* Boot: run bin/init under a new root job, wait up to timeout_s seconds
  * for it to exit, and report how it went. Returns true if it exited 0 and

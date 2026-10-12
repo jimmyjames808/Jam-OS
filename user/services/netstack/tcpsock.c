@@ -65,6 +65,7 @@ struct taken {
 };
 
 static struct tsock   ts[NET_TCP_MAX];
+static unsigned       ts_top;   /* one past the highest slot of ts in use (loops end there) */
 static struct tlisten tl[NET_LISTENERS_MAX];
 static uint32_t       refused_gone;   /* connections refused by listeners closed since */
 
@@ -153,6 +154,8 @@ static void ts_close(struct tsock *t, bool conn_too)
     if (t->theirs)
         jam_handle_close(t->theirs);
     *t = (struct tsock){ .gen = t->gen };
+    while (ts_top && !ts[ts_top - 1].ch)
+        ts_top--;
 }
 
 /* Its channel, rings, bindings and connection (c: tcp.c's, accepted;
@@ -168,6 +171,8 @@ static status_t ts_new(struct opener *o, uint8_t cls, uint32_t tx, uint32_t rx,
     struct tsock *t = &ts[i];
     *t = (struct tsock){ .gen = t->gen + 1, .cls = cls, .opener = o ? (unsigned)(o - pg.o) : 0,
                          .opener_gen = o ? o->gen : 0, .c = c };
+    if (i >= ts_top)
+        ts_top = i + 1;
     struct sockring r;
     status_t st = jam_channel_create(&t->ch, &t->theirs);
     if (st == OK)
@@ -458,12 +463,13 @@ status_t tcpsock_op_listener(void *ctx, uint16_t port, uint32_t backlog, uint32_
     if (!listen_may_accept(o, port))
         return ERR_ACCESS_DENIED;
     if (!backlog || backlog > NET_BACKLOG_MAX || !sockring_size_ok(tx) || !sockring_size_ok(rx) ||
-        (flags & ~NET_LISTEN_REUSE))
+        (flags & ~(NET_LISTEN_REUSE | NET_LISTEN_LOOPBACK)))
         return ERR_INVALID_ARGS;
     if (!listener_ok(o, backlog))
         return ERR_NO_RESOURCES;
     struct ntcp_listen_req req = { .port = port, .backlog = backlog, .rx_size = rx,
-                                   .reuse = flags & NET_LISTEN_REUSE, .rings = l_rings,
+                                   .reuse = flags & NET_LISTEN_REUSE,
+                                   .loopback = flags & NET_LISTEN_LOOPBACK, .rings = l_rings,
                                    .drop = l_drop };
     struct tlisten *l;
     status_t st = l_new(o, &req, &l, out_listener);
@@ -539,7 +545,7 @@ void tcpsock_unheld(void)
         tl[i].pending |= tl[i].held;
         tl[i].held = false;
     }
-    for (unsigned i = 0; i < NET_TCP_MAX; i++) {
+    for (unsigned i = 0; i < ts_top; i++) {
         ts[i].pending |= ts[i].held;
         ts[i].held = false;
     }
@@ -553,7 +559,7 @@ void tcpsock_serve(void)
         if (tl[i].ch && tl[i].waiting && tl[i].l->n)
             l_answer(&tl[i], OK);
     }
-    for (unsigned i = 0; i < NET_TCP_MAX; i++)
+    for (unsigned i = 0; i < ts_top; i++)
         if (ts[i].ch && ts[i].pending)
             ts_serve(&ts[i]);
 }
@@ -578,7 +584,7 @@ bool tcpsock_pending(void)
     for (unsigned i = 0; i < NET_LISTENERS_MAX; i++)
         if (tl[i].ch && (tl[i].pending || (tl[i].waiting && tl[i].l->n)))
             return true;
-    for (unsigned i = 0; i < NET_TCP_MAX; i++)
+    for (unsigned i = 0; i < ts_top; i++)
         if (ts[i].ch && ts[i].pending)
             return true;
     return false;
@@ -590,7 +596,7 @@ void tcpsock_close_opener(unsigned slot)
     for (unsigned i = 0; i < NET_LISTENERS_MAX; i++)
         if (tl[i].ch && tl[i].opener == slot && tl[i].opener_gen == gen)
             l_close(&tl[i]);
-    for (unsigned i = 0; i < NET_TCP_MAX; i++) {
+    for (unsigned i = 0; i < ts_top; i++) {
         struct tsock *t = &ts[i];
         if (!t->ch || t->opener != slot || t->opener_gen != gen)
             continue;

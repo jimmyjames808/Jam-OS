@@ -117,6 +117,27 @@ fi
 $SUDO rm -f "$mnt/boot/jamos.elf.new" "$mnt/boot/bootfs.img.new" \
     "$mnt/boot/limine/limine.conf.new" "$mnt/boot/prev-jamos.elf.new" \
     "$mnt/boot/prev-bootfs.img.new"
+# Room for three builds at once, before anything is changed: the stick's,
+# its copy as the previous one and the new one (the older previous build
+# goes first, so its room counts), with 1 MiB spare a file, as `update`
+# reckons it (user/services/init/espwrite.c; tools/mkbootfs.py's budget).
+# A stick made before 2026-10-12 has a 63 MiB ESP, too small for three of
+# today's builds: refused here, nothing on it changed.
+bytes() { wc -c < "$1" | tr -d ' '; }
+free_kb=$(df -k "$mnt" | awk 'NR == 2 { print $4 }')
+esp_mb=$(df -m "$mnt" | awk 'NR == 2 { print $2 }')
+for f in prev-jamos.elf prev-bootfs.img; do
+    [ ! -f "$mnt/boot/$f" ] || free_kb=$((free_kb + $(bytes "$mnt/boot/$f") / 1024))
+done
+need_kb=$(( ($(bytes "$mnt/boot/jamos.elf") + $(bytes "$mnt/boot/bootfs.img") + $(bytes "$elf") +
+             $(bytes "$bootfs") + $(bytes "$conf")) / 1024 + 5 * 1024 ))
+if [ "$free_kb" -lt "$need_kb" ]; then
+    echo "refusing: the stick's ESP ($esp_mb MB) has $free_kb KiB for this flash, and the" \
+         "stick's build, its copy as the previous build and the new one need $need_kb KiB:" \
+         "nothing on the stick was changed. A stick made before 2026-10-12 has a 63 MiB ESP," \
+         "too small for three builds: make usb DEV=$dev remakes it (and erases it)" >&2
+    exit 1
+fi
 # The stick's build is kept as the previous one (the boot menu's "Jam OS
 # (previous build)"), as the PC's `update -w` does: the older previous
 # build removed first (room), the stick's two files copied (not moved: the

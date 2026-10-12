@@ -1123,6 +1123,58 @@ mapped toplevel is refused (`unconfigured_buffer`) until a client needs it.
 7. **Version 6 surfaces** get `preferred_buffer_scale` when made: a
    subsurface's wl_surface too, nothing to add.
 
+## GC1b notes
+
+*Written 2026-10-12, not yet run in QEMU (the PC was in Jam OS): its
+test plan is in the track's report.* What GC1b changed, for GC2 and GR.
+
+**The owner's rule** (section 3) is in `xdgdeco.c`: `struct xdg_client`
+has `deco_bound`, set when the client binds the manager (and its
+toplevels made before the bind are told at once: a configure without
+`WM_ST_CSD`, the frame changing with the buffer that acks it).
+`mode_for` always says `server_side`; a toplevel's `csd` is
+`!deco_bound`, at `get_toplevel` and at every decoration request.
+Bound stays bound for the client's life (destroying the manager changes
+nothing). One deviation from the protocol's text, by the rule: a
+decoration object's destroy ("back to client-side at the next commit")
+keeps the compositor's decorations, and sends no configure.
+
+**The window geometry** (`xdg_surface.set_window_geometry`), applied by
+the commit that brings it (`wm_set_geometry` before `wm_commit`, which
+copies it to `comp_window.geom` with the buffer):
+- `window_geom(w)` (comp.h, scene.c): the geometry in surface
+  coordinates, clamped to the surface, the whole surface without one;
+  `window_geometry(w)` the same on the output (a tile's view box while
+  one is set). The frame (`window_frame`), the title bar and outline
+  (title.c), the edges (`edges_at`) and the grabs (wmgrab.c's
+  `grab.start`) go round `window_geometry`.
+- Placement places the geometry: `float_x`/`float_y` are where the
+  geometry's (0, 0) goes, `float_w`/`float_h` and the configure's size
+  are the geometry's (as xdg-shell means), the anchors its edges, the
+  cascade compares geometries' corners (`move_geom` in wm.c).
+- `window_extent` is the frame and our shadow **and the surface's box**,
+  and painting (paint.c's `draw_window`) draws a window wherever its
+  frame or its surface meets a tile: a client's own shadow reaches past
+  its frame.
+- A client-side window whose geometry is smaller than its surface
+  (`window_inset`) gets no `COMP_WIN_CSD`: `LOOK_PLAIN`, no corners or
+  shadow of ours.
+- Hits (`wm_window_at`, `deco_hit`): inside the geometry, the client's;
+  in the frame outside the geometry, ours; on the surface outside the
+  frame (the client's shadow, its resize margins), the client's by its
+  input region.
+- Tiling: the tile's view (clip or pad) is used only for a geometry
+  starting at the surface's (0, 0); one inset at the top or left is
+  centred by its geometry instead (it may overlap its neighbours: a
+  tiled client normally draws no shadow, being told it is tiled).
+- **Not done**: a server-side window whose geometry is smaller than its
+  surface has its surface painted whole, over our title bar where they
+  meet (no clip to the geometry); no known client does that.
+
+**For GC2**: the tree's box replaces `window_geom`'s surface box (its
+users are listed above, plus GC1 notes' item 1); `window_extent`
+already takes the surface's box, so a tree's bounding box goes there.
+
 ## Tests and the sign-off
 
 | What | Where |
@@ -1228,9 +1280,8 @@ After a flash or an `update`, with the Mac's ports server running:
   driver (GA2), Chocolate Doom with Freedoom (GA3, with GC4's relative
   pointer and pointer constraints), swayimg (GA4), the GTK3 spike (GX2),
   and the font stack as ports (FreeType, fontconfig, pixman, fcft) for
-  them. Each starts when a goal or a dependency asks for it. The last
-  bullet of this list (Chromium from its Fuchsia code) is from before the
-  rescope and is replaced by the top of this plan and the Chromium plan.
+  them. Each starts when a goal or a dependency asks for it. (Chromium is
+  not in this list: it is the Chromium plan's, and comes through this shim.)
 - **GTK** (rung 6 and 7) and **Qt** (rung 8) as their own project, from
   GX2's findings.
 - **GL**: Mesa with softpipe (G4 or M14.5), llvmpipe with a JIT rule
@@ -1242,6 +1293,174 @@ After a flash or an `update`, with the Mac's ports server running:
 - **D-Bus** (portals, accessibility, notifications from ported apps into
   the compositor's notices): a service socket of its own (section 1's
   table) and a broker port.
-- **Chromium** ([Not planned](ROADMAP.md#not-planned)'s browser line):
-  from its Fuchsia code, not through this shim; it will want GL (or
-  SwiftShader, a JIT) and a sandbox story of its own.
+
+## GP1 notes
+
+What track GP1 (the base ports) built, the choices it made, and what GP2,
+GS1 and GT need. Built and staged on the Mac and the PC's WSL; **nothing has
+run on Jam OS yet** (that waits for GS1's socket and M13.7's PO8
+`tools/ports-test.sh`, written since).
+
+**The recipes** (`ports/`, all `place package`, static):
+
+| Port | Version | Style | Licence (read in the tarball) | Stage |
+|---|---|---|---|---|
+| `libffi` | 3.8.0 | custom (`build.sh`: configure and make, then the tests) | MIT AND CC0-1.0 (src/closures.c builds in Doug Lea's dlmalloc, a CC0 dedication) | libffi.a 44 KB; `bin/ffi-tests` 390 KB |
+| `expat` | 2.9.0 | configure | MIT AND CC0-1.0 (lib/siphash.h) | libexpat.a 302 KB; `bin/xmlwf` 498 KB |
+| `wayland-scanner` | 1.26.0 | meson, **place host** | MIT | `bin/wayland-scanner` (for the build machine, 70 KB on the Mac) |
+| `wayland` | 1.26.0 | meson | MIT (34 source files read; xcursor.c too) | libwayland-client.a 101 KB, libwayland-cursor.a 32 KB, headers, .pc; `bin/wl-connect-test` 369 KB |
+| `wayland-protocols` | 1.49 | meson | MIT AND HPND-sell-variant | 58 XML files, 64 `*-enum.h`, wayland-protocols.pc (all `library`: no package contents) |
+| `xkbcommon` | 1.13.2 | meson | see below | libxkbcommon.a 555 KB, headers, .pc; `xkbcli-compile-keymap` and `xkbcli-how-to-type` 666 and 670 KB, `us.xkb` |
+
+The licences are not all "MIT" as the track brief expected, and the
+recipes say what was found: **xkbcommon** carries MIT, MIT-open-group, HPND,
+HPND-sell-variant, ISC (one header) and Digital Equipment Corporation's 1987
+permission notice (src/atom.c; upstream names it
+`LicenseRef-digital-equipment-corporation`), all permissive with the notice
+kept; **wayland-protocols**' COPYING is MIT but five installed XML files
+(text-input-unstable-v3, pointer-gestures-unstable-v1, ext-workspace-v1,
+ext-data-control-v1, ext-foreign-toplevel-list-v1) carry the X.org
+"permission to use, copy, modify, distribute, and sell" wording
+(HPND-sell-variant) in their own copyright blocks, so a package that ships
+the XML ships them as they are. `tools/portslib/licence.py` gained
+`MIT-open-group`, `HPND-sell-variant` and that one `LicenseRef-` name (a
+reviewed exception; every other `LicenseRef-` is still refused).
+
+**What was added to the builder**, each in its own module with a line or two
+of hook in the PO1 files:
+- `tools/portslib/hostdata.py`: **host builds** and **data ports**, and
+  `selftest_hostdata.py` (36 checks, run by `ports.py selftest`).
+  - `place host`: built natively (the machine's `cc`, no sysroot, no cross
+    tools), into `build/ports/<name>/stage/`, which **is** its prefix (the
+    real absolute path, so a `.pc` file or script it installs works in
+    place); nothing of it is packaged, checked as a Jam OS program or put in
+    a sysroot; its stage list says `place host`. The plan's
+    `build/ports/host/` became one stage per tool, like every port.
+  - `tool <port>` (recipe key): the build of the port that names it runs the
+    host port first, gets its `bin/` on PATH, and, for a Meson build, its
+    `lib/pkgconfig` and `share/pkgconfig` in a generated `--native-file`
+    (`pkg_config_path` for the build machine only; the cross lookups stay
+    the sysroot's). The tool's stamp is in the user's, so a tool change
+    rebuilds only what names it. A host port may `tool` another; it may not
+    `needs` (no sysroot) or have `library`/`files`/`subpackage` lines.
+  - `host-of <port>` (a host port's key): the lint refuses a host port
+    whose version or `source` lines differ from the port it is built for
+    (wayland's `dependency('wayland-scanner', version: ...)` wants the same
+    release). The host recipe is a second recipe directory with the same
+    source line, not a second build of one recipe.
+  - `style data` with `data <path in the source> <path in the prefix>`
+    lines: a port that is files and no build (GP2's fonts, a theme); the
+    `files`/`library` lines must keep each destination (lint), a symlink in
+    a copied directory is refused. No port uses it yet: wayland-protocols
+    is Meson's own build, which also gives its `.pc` and runs the scanner
+    over every protocol (the `-enum.h` headers are that check, so the
+    scanner is tested on all 64 files by building it).
+- `ports.py`: `tool` in `graph` and the build order; `~/.cache/jamos/tools/bin`
+  (or `$JAMOS_TOOLS/bin`) put first on PATH.
+- `stage.py`: a `program` may be in a `subpackage` (it stays a program, with
+  its list checked, and gets a `sub` line too). PO3: a `sub` line can name a
+  `program` path.
+- `toolchain.py`: the port's cc drops `-pthread` (Meson's threads
+  dependency adds it; musl has the threads in libc and the cross gcc has no
+  such option).
+- `ports/jamos.meson`: `prefer_static = true` (`dependency()` asks
+  pkg-config for the static link line), `wrap_mode = 'nodownload'`. "No
+  dlopen" is not a Meson setting: it is each port's own option, as section 9
+  says. The Meson style also passes `--libdir=lib`.
+- `tools/genkeymap.py check` also fails if `ports/xkbcommon/override/us.xkb`
+  (the copy the xkbcommon test installs) is stale.
+
+**The tests** (`ports/<port>/test`, the shell-test format; **unrun**):
+- `libffi`: `bin/ffi-tests`, libffi's own `libffi.call` and the `ffi_call`
+  tests of `libffi.complex` (98 tests) linked into one program with each
+  `main` renamed and `exit`/`abort` caught (override/ffi-tests.c is the
+  driver, BSD-2); closure tests are left out (they need executable memory).
+  Run natively on the PC with the same driver and build.sh: 98 passed. On Jam
+  OS: `ffi-tests` prints `ffi-tests: 98 passed, 0 failed`; `ffi-tests <name>`
+  runs one with its output; `-l` lists.
+- `expat`: `xmlwf` on a good file, a bad one, a missing one.
+- `wayland`: `bin/wl-connect-test` (override/wl-connect-test.c, BSD-2): connects,
+  lists the registry's globals (the events reach the listener through
+  libwayland's `ffi_call` dispatcher), checks for `wl_compositor`, `wl_shm`
+  and `xdg_wm_base`. Needs `svc wayland` (its list) and the desktop running:
+  GS1 first.
+- `xkbcommon`: upstream's `xkbcli-compile-keymap --from-xkb` on the
+  compositor's `us.xkb` (720 lines back; garbage refused) and
+  `xkbcli-how-to-type` (a, A, !, Return find AC01, Shift+AC01, Shift+AE01,
+  RTRN). The expected lines are what the same xkbcommon printed built for
+  Linux on the PC.
+- `wayland-scanner` and `wayland-protocols` have no Jam OS test: the scanner
+  runs at build time (above).
+All four test programs are in `-test` subpackages (`libffi-test`,
+`wayland-test`, `xkbcommon-test`); `xmlwf` is `expat`'s own program.
+
+**Building** Meson ports needs Meson 1.4 or newer (xkbcommon 1.13) and
+Ninja: the PC's apt Meson is 1.3.2, so both are in a venv at
+`~/.cache/jamos/tools` there (recorded in TESTING.md's machine setup). On the
+Mac the same: a venv (or `$JAMOS_TOOLS`), and `bison` 3.6 or newer for
+xkbcommon (the system's is 2.3). wayland-scanner links the build machine's own
+expat (the Xcode SDK's, Ubuntu's `libexpat1-dev`) and has DTD validation off
+(it would need libxml2).
+
+**For GP2**: fontconfig needs expat (`needs expat`) and `gperf` on the host
+(not on the Mac: `host gperf` will say so; it is in `/usr/bin` on this Mac
+but the PC lacks it, `apt install gperf`); fonts-jamos is the first `style
+data` user, or `files` from a `vendored` source. **For GS1/GT**: libwayland
+is built with epoll, `SFD_CLOEXEC`/`TFD_CLOEXEC` found, `memfd_create`,
+`mremap`, `prctl` and `accept4` found by Meson's link checks (they link in
+musl; whether the layer implements them is GS1's to know); `wl-connect-test`
+is the first program to try, then wlprobe on `libwayland-client.a` +
+`libffi.a` (a port that `needs wayland` gets libffi too). The
+client's `.pc` has `Requires: libffi` and `Libs: ... -lm -pthread -lrt`; the
+port cc drops `-pthread`, and the sysroot has an empty `librt.a`.
+**For PO3** (done in this track, on its merged `package.py`): a `program` that a
+`subpackage` names goes into that package with its list and page table
+(`plan()` routes on the `sub` line); `ports.py package` made
+`libffi-test`, `wayland-test`, `xkbcommon-test` and `expat` packages on the
+Mac (`--test-key`), and nothing for the library-only mains
+(`libffi`, `wayland`, `wayland-protocols`, `xkbcommon`).
+
+### Test plan (for whoever runs it next, with the PC back in WSL)
+
+Nothing below has been run on Jam OS or in QEMU; everything above the line
+was run on the Mac (`make check`, Mac builds, a forced rebuild giving the
+same stage lists) and, before the PC went to Jam OS, on the PC's WSL
+(`make check`, Meson builds of all five).
+
+1. **The builds and the lint on the PC** (WSL needs the Meson/Ninja venv of
+   TESTING.md's machine setup, `~/.cache/jamos/tools`, already made;
+   `libexpat1-dev` and `bison` are apt-installed):
+   `JAMOS_REMOTE=jamos-pc JAMOS_REMOTE_ONLY=1 tools/remote-test.sh make check`
+   PASS = exit 0 with `ports lint: 11 recipes, ok`, `ports selftest: PASS`
+   and `genkeymap: us's XKB text compiles (xkbcli)`;
+   `JAMOS_REMOTE=jamos-pc JAMOS_REMOTE_ONLY=1 tools/remote-test.sh python3 tools/ports.py --out build/ports-pc build -f libffi expat wayland wayland-protocols xkbcommon`
+   PASS = `built in` for each, no `ports:` line. (A forced rebuild here was
+   queued when the PC went away: compare `build/ports-pc/<p>/stage/stage.txt`
+   before and after, and with the Mac's `build/ports/<p>/stage/stage.txt`;
+   the Mac's forced rebuilds gave the same bytes.)
+2. **The ports' tests in QEMU** (one remote-test call per port takes a slot;
+   `tools/ports-test.sh <outdir> <port>...` prints `ports-test: <port>:
+   PASS` or `FAIL`):
+   `JAMOS_REMOTE=jamos-pc JAMOS_REMOTE_ONLY=1 tools/remote-test.sh tools/ports-test.sh build/test/ports libffi expat xkbcommon`
+   - `libffi` PASS: `ffi-tests: 98 passed, 0 failed`, `count-98`,
+     `ffi-tests: 1 passed, 0 failed`, status 2 for a bad name. A FAIL names
+     the test (`FAIL <name> (status N)`); rerun with `run $P/ffi-tests -v <name>`
+     to see its own output. This is the first run of libffi's tests on Jam
+     OS: a failure is more likely a POSIX-layer gap (mmap, signals) than
+     libffi's.
+   - `expat` PASS: xmlwf status 0 on the good file, `mismatched tag` and
+     status 2 on the bad one.
+   - `xkbcommon` PASS: `count-720`, the parse error and status 1, and the
+     four `how-to-type` answers (keycode 38 AC01 for a/A, 10 AE01 for `!`,
+     36 RTRN for Return).
+   - `wayland` (`... ports-test.sh build/test/ports wayland`) **cannot pass
+     until GS1 (the Wayland socket) is merged and the test boot has the
+     compositor**: it needs `/svc/wayland`. Until then it fails at
+     `connected` with `wl-connect-test: can't connect to /svc/wayland: ...`
+     (or "not allowed" if the list's `svc wayland` is refused), which is the
+     expected state, not a bug in the port. PASS (later) = `connected`, one
+     `global` line per global, `wl-connect-test: ok (N globals)`, status 0.
+3. **Not tested on Jam OS by design**: `wayland-scanner` (a host tool) and
+   `wayland-protocols` (data); the scanner's check is the wayland-protocols
+   build itself (it runs the scanner over every protocol file and fails if
+   one is refused: 64 `*-enum.h` in the stage).

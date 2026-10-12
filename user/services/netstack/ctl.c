@@ -33,6 +33,11 @@ bool ctl_unicast(uint32_t a)
     return top != 0 && top != 127 && top < 224;
 }
 
+bool ctl_loopback(uint32_t a)
+{
+    return stack_is_loopback(a) && a != 0x7fffffffu;
+}
+
 bool ctl_ipv4_valid(const struct stack_ipv4 *ip)
 {
     uint32_t m = ip->mask, host = ~m;

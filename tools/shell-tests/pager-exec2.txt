@@ -1,0 +1,85 @@
+# Programs on /data run from their pages (tools/pager-test.sh, case exec,
+# boot 2 of 2): the stick pager-exec.txt left, with three of its four
+# allowed copies of bin/pxtest changed on this side of the image since (a
+# byte each, the size kept, so nothing is refused before the pages are
+# read): /data/px in a page of its table (it starts, and dies when it
+# touches that page: "a page doesn't match the approved program"), /data/py
+# in its data segment (spawn reads that with vmo_read: refused, ERR_IO, and
+# the shell carries on), /data/pz in its ELF header's page (refused at the
+# start, when its list is read). /data/pq is as allowed: it runs, asleep in
+# the background while the stick is pulled; it dies at its next fetch
+# ("the file's pager is gone"), the shell and /boot carry on, and after the
+# replug it runs again from the stick that is there now, while the shell
+# still holds the first instance's VMO. `allow -r` keeps the one table
+# while a line still names its hash, and removes it with the last.
+# QEMU_INPUT=this file, command line "shell", QEMU_IMAGE the stick. The
+# text waited for is built from $T, so it never appears in the typed line.
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send T=f
+wait {prompt}
+
+# ---- a changed page of its table: it starts, and dies at that page -------------------------------
+send run /data/px touch; echo st-$T=$?
+wait 60 user: process "px" killed: page fault: a page doesn't match the approved program
+wait run: /data/px was killed after
+wait st-f=137
+wait {prompt}
+
+# ---- a changed page of its data segment: spawn refuses it, the shell lives ----------------------
+send run /data/py touch; echo st-$T=$?
+wait run: can't start /data/py (ERR_IO)
+wait run: a page of /data/py doesn't match its approval
+wait st-f=126
+wait {prompt}
+
+# ---- a changed ELF header page: refused at the start --------------------------------------------
+send run /data/pz lazy; echo st-$T=$?
+wait run: /data/pz changed since it was allowed
+wait st-f=126
+wait {prompt}
+send echo alive-$T-1
+wait alive-f-1
+wait {prompt}
+
+# ---- the stick pulled under a running program ----------------------------------------------------
+send run /data/pq sleep 40000 &
+wait 30 pxtest: half the table touched
+wait {prompt}
+monitor device_del stick
+wait 30 init: /data is gone
+send echo alive-$T-2
+wait alive-f-2
+wait {prompt}
+monitor device_add usb-storage,id=stick,bus=xhci.0,port=1,drive=usbstick
+wait 60 init: /data mounted
+send run /data/pq lazy; echo st-$T=$?
+wait pxtest: lazy: none of the table touched
+wait st-f=0
+wait {prompt}
+wait 60 user: process "pq" killed: page fault: the file's pager is gone
+send echo alive-$T-3
+wait alive-f-3
+wait {prompt}
+send echo alive-$T-4
+wait alive-f-4
+seen 10 [1] killed: pq
+wait {prompt}
+
+# ---- allow -r: the table goes with the last line naming its hash ---------------------------------
+send allow -r px && allow -r py && allow -r pz; echo st-$T=$?
+wait st-f=0
+wait {prompt}
+send rm /data/etc/allow.d; echo st-$T=$?
+wait st-f=1
+wait {prompt}
+send allow -r pq; echo st-$T=$?
+wait allow: pq may no longer run
+wait st-f=0
+wait {prompt}
+send rm /data/etc/allow.d && echo tables-$T-gone
+wait tables-f-gone
+wait {prompt}
+send reboot -f
+wait reboot: resetting

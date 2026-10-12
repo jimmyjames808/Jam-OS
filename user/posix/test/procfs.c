@@ -1,0 +1,454 @@
+/* posixtest's procfs section (docs/CR-PLAN.md section 3): libc's /proc.
+ *
+ *   - /proc/self/exe: readlink gives the boot image's path (and the
+ *     buffer's edges: cut short, no NUL, never past size), open reads the
+ *     file (ETXTBSY to write it), stat follows it, lstat doesn't;
+ *   - /proc, /proc/self and /proc/<pid>; another pid and Linux's other
+ *     files are ENOENT for every call, and nothing can be made there;
+ *   - /proc/self/fd: its listing against the table, descriptors opened
+ *     and closed between two getdents calls, a seek back; readlink of each
+ *     kind of descriptor;
+ *   - reopening /proc/self/fd/N: a file (a description of its own), a
+ *     memfd read-only (no write, no writable shared map, no seal: and in
+ *     a child, neither a map nor a reopen gets write back), a pipe end, a
+ *     socket's and an eventfd's ENXIO;
+ *   - children started with other argv[0]s (a name that isn't a program,
+ *     another program's path, /bin's): their exe is still this program's
+ *     file, found by its bytes, never taken from the name. */
+#include <stdio.h>
+#include <stdlib.h>
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <spawn.h>
+#include <string.h>
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
+#include <sys/mman.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include "pt.h"
+
+#define EXE    "/boot/bin/posixtest"   /* this program's file, as /proc/self/exe names it */
+#define FD_TOP 64                      /* descriptors looked at by fcntl */
+#define SMALL  48                      /* getdents bytes: two records of a short name */
+
+extern char **environ;
+/* Our own ELF header, mapped (user/posix/posix.ld): the file's first bytes. */
+extern const char __ehdr_start[] __attribute__((visibility("hidden")));
+
+/* /proc/self/fd/<fd> into path (32 bytes). */
+static void fd_path(char *path, int fd)
+{
+    snprintf(path, 32, "/proc/self/fd/%d", fd);
+}
+
+/* Is fd's link want (or does it start with want)? */
+static bool link_is(int fd, const char *want, bool prefix)
+{
+    char path[32], buf[256];
+    fd_path(path, fd);
+    ssize_t n = readlink(path, buf, sizeof(buf) - 1);
+    if (n < 0)
+        return false;
+    buf[n] = '\0';
+    return prefix ? !strncmp(buf, want, strlen(want)) : !strcmp(buf, want);
+}
+
+/* ---- /proc/self/exe ------------------------------------------------------------------- */
+
+static void check_exe_link(void)
+{
+    char buf[256];
+    ssize_t len = (ssize_t)strlen(EXE);
+    memset(buf, '#', sizeof(buf));
+    CHECK(readlink("/proc/self/exe", buf, sizeof(buf)) == len && !memcmp(buf, EXE, (size_t)len) &&
+          buf[len] == '#');
+    /* the buffer's edges: cut short, no NUL written, never an error */
+    memset(buf, '#', sizeof(buf));
+    CHECK(readlink("/proc/self/exe", buf, 1) == 1 && buf[0] == '/' && buf[1] == '#');
+    memset(buf, '#', sizeof(buf));
+    CHECK(readlink("/proc/self/exe", buf, (size_t)len - 1) == len - 1 &&
+          !memcmp(buf, EXE, (size_t)len - 1) && buf[len - 1] == '#');
+    memset(buf, '#', sizeof(buf));
+    CHECK(readlink("/proc/self/exe", buf, (size_t)len) == len && !memcmp(buf, EXE, (size_t)len) &&
+          buf[len] == '#');
+    /* musl's readlink turns a size of 0 into a 1-byte read and answers 0;
+     * the call itself (Linux: EINVAL) is the raw one. */
+    errno = 0;
+    CHECK(readlink("/proc/self/exe", buf, 0) == 0);
+    errno = 0;
+    CHECK(syscall(SYS_readlink, "/proc/self/exe", buf, 0) == -1 && errno == EINVAL);
+    errno = 0;
+    CHECK(readlink("/proc/self/exe/", buf, sizeof(buf)) == -1 && errno == ENOTDIR);
+    char path[48];
+    snprintf(path, sizeof(path), "/proc/%d/exe", (int)getpid());
+    CHECK(readlink(path, buf, sizeof(buf)) == len && !memcmp(buf, EXE, (size_t)len));
+    /* relative to the current directory there */
+    char cwd[256];
+    CHECK(getcwd(cwd, sizeof(cwd)) != NULL && chdir("/proc/self") == 0);
+    CHECK(readlink("exe", buf, sizeof(buf)) == len && !memcmp(buf, EXE, (size_t)len));
+    CHECK(chdir(cwd) == 0);
+}
+
+static void check_exe_file(void)
+{
+    struct stat st, boot, fst;
+    CHECK(lstat("/proc/self/exe", &st) == 0 && S_ISLNK(st.st_mode));
+    CHECK(stat("/proc/self/exe", &st) == 0 && S_ISREG(st.st_mode));
+    CHECK(stat(EXE, &boot) == 0 && boot.st_ino == st.st_ino && boot.st_size == st.st_size);
+    CHECK(access("/proc/self/exe", X_OK) == 0);
+    int fd = open("/proc/self/exe", O_RDONLY | O_CLOEXEC);
+    char head[64];
+    CHECK(fd >= 0 && read(fd, head, sizeof(head)) == (ssize_t)sizeof(head) &&
+          !memcmp(head, __ehdr_start, sizeof(head)));
+    CHECK(fd >= 0 && fstat(fd, &fst) == 0 && fst.st_size == boot.st_size);
+    CHECK(fd >= 0 && link_is(fd, EXE, false));   /* what was opened is the file itself */
+    if (fd >= 0)
+        close(fd);
+    errno = 0;
+    CHECK(open("/proc/self/exe", O_WRONLY) == -1 && errno == ETXTBSY);
+    errno = 0;
+    CHECK(open("/proc/self/exe", O_RDWR) == -1 && errno == ETXTBSY);
+    errno = 0;
+    CHECK(open("/proc/self/exe", O_RDONLY | O_DIRECTORY) == -1 && errno == ENOTDIR);
+    errno = 0;
+    CHECK(open("/proc/self/exe", O_RDONLY | O_NOFOLLOW) == -1 && errno == ELOOP);
+}
+
+/* ---- /proc and /proc/self -------------------------------------------------------------- */
+
+/* Is name in dir's listing (readdir)? */
+static bool listed(const char *dir, const char *name)
+{
+    DIR *d = opendir(dir);
+    bool seen = false;
+    struct dirent *e;
+    while (d && (e = readdir(d)))
+        seen |= !strcmp(e->d_name, name);
+    if (d)
+        closedir(d);
+    return seen;
+}
+
+/* Linux's files we don't have: ENOENT whatever is asked. */
+static void check_missing(void)
+{
+    static const char *const gone[] = {
+        "/proc/cpuinfo", "/proc/meminfo", "/proc/stat", "/proc/self/stat",
+        "/proc/self/maps", "/proc/self/status", "/proc/self/task", "/proc/self/cwd",
+        "/proc/sys/kernel/osrelease", "/proc/self/fd/01", "/proc/self/fd/x", "/proc/self/exe2",
+    };
+    char buf[64];
+    struct stat st;
+    for (unsigned i = 0; i < sizeof(gone) / sizeof(gone[0]); i++) {
+        errno = 0;
+        CHECK(open(gone[i], O_RDONLY) == -1 && errno == ENOENT);
+        errno = 0;
+        CHECK(stat(gone[i], &st) == -1 && errno == ENOENT);
+        errno = 0;
+        CHECK(readlink(gone[i], buf, sizeof(buf)) == -1 && errno == ENOENT);
+        errno = 0;
+        CHECK(access(gone[i], F_OK) == -1 && errno == ENOENT);
+    }
+    errno = 0;
+    CHECK(fopen("/proc/self/maps", "r") == NULL && errno == ENOENT);
+    char other[32];
+    snprintf(other, sizeof(other), "/proc/%d", (int)getpid() + 1);   /* only we are here */
+    errno = 0;
+    CHECK(stat(other, &st) == -1 && errno == ENOENT);
+    errno = 0;
+    CHECK(open("/proc/self/new", O_CREAT | O_WRONLY, 0600) == -1 && errno == ENOENT);
+    errno = 0;
+    CHECK(mkdir("/proc/x", 0700) == -1 && errno == EACCES);
+    errno = 0;
+    CHECK(unlink("/proc/self/exe") == -1 && errno == EACCES);
+}
+
+static void check_self(void)
+{
+    char want[16], buf[32], path[48];
+    snprintf(want, sizeof(want), "%d", (int)getpid());
+    ssize_t n = readlink("/proc/self", buf, sizeof(buf));
+    CHECK(n == (ssize_t)strlen(want) && !memcmp(buf, want, strlen(want)));
+    struct stat st;
+    CHECK(lstat("/proc/self", &st) == 0 && S_ISLNK(st.st_mode));
+    CHECK(stat("/proc/self", &st) == 0 && S_ISDIR(st.st_mode));
+    CHECK(stat("/proc", &st) == 0 && S_ISDIR(st.st_mode));
+    snprintf(path, sizeof(path), "/proc/%d/fd", (int)getpid());
+    CHECK(stat(path, &st) == 0 && S_ISDIR(st.st_mode));
+    errno = 0;
+    CHECK(readlink("/proc/self/fd", buf, sizeof(buf)) == -1 && errno == EINVAL);   /* a directory */
+    errno = 0;
+    CHECK(readlink("/proc", buf, sizeof(buf)) == -1 && errno == EINVAL);
+    CHECK(listed("/proc", "self") && listed("/proc", want) && listed("/proc", ".."));
+    CHECK(listed("/proc/self", "exe") && listed("/proc/self", "fd") && !listed("/proc/self", "x"));
+    errno = 0;
+    CHECK(open("/proc/self", O_WRONLY) == -1 && errno == EISDIR);
+}
+
+/* ---- /proc/self/fd ---------------------------------------------------------------------- */
+
+/* The listing (readdir) is exactly the open descriptors, its own too. */
+static void check_fd_listing(void)
+{
+    DIR *d = opendir("/proc/self/fd");
+    CHECK(d != NULL);
+    if (!d)
+        return;
+    bool seen[FD_TOP] = { false };
+    int other = 0;
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, ".."))
+            continue;
+        int n = atoi(e->d_name);
+        CHECK(e->d_type == DT_LNK);
+        if (n >= 0 && n < FD_TOP)
+            seen[n] = true;
+        else
+            other++;
+    }
+    bool agree = true;   /* the listing and the table */
+    for (int fd = 0; fd < FD_TOP; fd++)
+        agree &= seen[fd] == (fcntl(fd, F_GETFD) != -1);
+    CHECK(agree && seen[dirfd(d)] && other == 0);
+    closedir(d);
+}
+
+/* getdents into a small buffer, the names gathered: true for each fd
+ * below FD_TOP listed; the d_off after the entry named at, into *at_off. */
+static void gather(int dfd, bool seen[FD_TOP], int at, long *at_off)
+{
+    struct dirent store[1];   /* asked for SMALL bytes of it at a time */
+    const char *buf = (const char *)store;
+    int n;
+    while ((n = getdents(dfd, store, SMALL)) > 0)
+        for (int k = 0; k < n;) {
+            const struct dirent *e = (const struct dirent *)(buf + k);
+            int fd = e->d_name[0] == '.' ? -1 : atoi(e->d_name);
+            if (fd >= 0 && fd < FD_TOP)
+                seen[fd] = true;
+            if (fd == at)
+                *at_off = (long)e->d_off;
+            k += e->d_reclen;
+        }
+    CHECK(n == 0);
+}
+
+/* Descriptors opened and closed between two getdents calls show as the
+ * table is at each call; a seek back lists again. */
+static void check_fd_between(void)
+{
+    int dfd = open("/proc/self/fd", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    int a = dup(1), b = dup(1), c = dup(1);
+    struct dirent e[1];
+    CHECK(dfd >= 0 && a > 0 && b > a && c > b && c < 60);
+    CHECK(getdents(dfd, e, SMALL) == SMALL && !strcmp(e->d_name, "."));   /* "." and ".." */
+    close(b);
+    CHECK(dup2(1, 60) == 60);
+    bool seen[FD_TOP] = { false };
+    long off_a = -1;
+    gather(dfd, seen, a, &off_a);
+    CHECK(seen[a] && !seen[b] && seen[c] && seen[60] && seen[dfd] && off_a > 0);
+    errno = 0;
+    CHECK(getdents(dfd, e, SMALL) == 0);   /* at the end */
+    /* b's number again, behind the position: seen only from the start */
+    CHECK(dup2(1, b) == b && lseek(dfd, 0, SEEK_SET) == 0);
+    errno = 0;
+    CHECK(getdents(dfd, e, 10) == -1 && errno == EINVAL);   /* not even one record fits */
+    memset(seen, 0, sizeof(seen));
+    gather(dfd, seen, -2, &off_a);
+    CHECK(seen[a] && seen[b] && seen[c] && seen[60]);
+    /* back to just after a: a isn't listed again, what follows is */
+    memset(seen, 0, sizeof(seen));
+    CHECK(lseek(dfd, off_a, SEEK_SET) == off_a);
+    gather(dfd, seen, -2, &off_a);
+    CHECK(!seen[a] && seen[b] && seen[c] && seen[60]);
+    close(a);
+    close(b);
+    close(c);
+    close(60);
+    close(dfd);
+}
+
+/* readlink of each kind of descriptor. */
+static void check_fd_links(void)
+{
+    int f = open(EXE, O_RDONLY | O_CLOEXEC), dir = open("/boot", O_RDONLY | O_DIRECTORY);
+    int p[2] = { -1, -1 }, s[2] = { -1, -1 };
+    CHECK(pipe(p) == 0 && socketpair(AF_UNIX, SOCK_STREAM, 0, s) == 0);
+    int ev = eventfd(0, 0), ep = epoll_create1(0), m = memfd_create("ptproc", 0);
+    int null = open("/dev/null", O_RDONLY), pw = open("/etc/passwd", O_RDONLY);
+    CHECK(link_is(f, EXE, false) && link_is(dir, "/boot", false));
+    CHECK(link_is(p[0], "pipe:[", true) && link_is(p[1], "pipe:[", true));
+    CHECK(link_is(s[0], "socket:[", true) && link_is(s[1], "socket:[", true));
+    CHECK(link_is(ev, "anon_inode:[eventfd]", false));
+    CHECK(link_is(ep, "anon_inode:[eventpoll]", false));
+    CHECK(link_is(m, "/memfd:ptproc (deleted)", false));
+    CHECK(link_is(null, "/dev/null", false) && link_is(pw, "/etc/passwd", false));
+    char path[32], buf[8];
+    struct stat ls, st, fst;
+    fd_path(path, f);
+    CHECK(lstat(path, &ls) == 0 && S_ISLNK(ls.st_mode));
+    CHECK(stat(path, &st) == 0 && fstat(f, &fst) == 0 && st.st_ino == fst.st_ino);
+    close(pw);
+    fd_path(path, pw);
+    errno = 0;
+    CHECK(readlink(path, buf, sizeof(buf)) == -1 && errno == ENOENT);   /* closed: gone */
+    int fds[] = { f, dir, p[0], p[1], s[0], s[1], ev, ep, m, null };
+    for (unsigned i = 0; i < sizeof(fds) / sizeof(fds[0]); i++)
+        if (fds[i] >= 0)
+            close(fds[i]);
+}
+
+/* ---- reopening -------------------------------------------------------------------------- */
+
+/* posixtest --child-procfs <what>: run with argv[0] as given. */
+static int spawn_child(const char *argv0, const char *what, int give)
+{
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    if (give >= 0)
+        posix_spawn_file_actions_adddup2(&fa, give, 3);
+    char *argv[] = { (char *)argv0, "--child-procfs", (char *)what, NULL };
+    pid_t pid = -1;
+    int status = -1;
+    int e = posix_spawn(&pid, "/bin/posixtest", &fa, NULL, argv, environ);
+    posix_spawn_file_actions_destroy(&fa);
+    CHECK(e == 0 && waitpid(pid, &status, 0) == pid);
+    return status;
+}
+
+/* A memfd reopened read-only: Chromium's twin of a shared memory region. */
+static void check_twin(void)
+{
+    char path[32], buf[4];
+    int m = memfd_create("pttwin", MFD_ALLOW_SEALING);
+    CHECK(m >= 0 && ftruncate(m, 4096) == 0 && write(m, "twin", 4) == 4);
+    fd_path(path, m);
+    int r = open(path, O_RDONLY | O_CLOEXEC);
+    CHECK(r >= 0 && r != m && read(r, buf, 4) == 4 && !memcmp(buf, "twin", 4));
+    errno = 0;
+    CHECK(write(r, "x", 1) == -1 && errno == EBADF);
+    errno = 0;
+    CHECK(mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, r, 0) == MAP_FAILED &&
+          errno == EACCES);
+    errno = 0;
+    CHECK(fcntl(r, F_ADD_SEALS, F_SEAL_GROW) == -1 && errno == EPERM);
+    char *ro = mmap(NULL, 4096, PROT_READ, MAP_SHARED, r, 0);
+    CHECK(ro != MAP_FAILED && !memcmp(ro, "twin", 4));
+    CHECK(pwrite(m, "TWIN", 4, 0) == 4 && ro != MAP_FAILED && !memcmp(ro, "TWIN", 4));
+    struct stat sm, sr;
+    CHECK(fstat(m, &sm) == 0 && fstat(r, &sr) == 0 && sm.st_ino == sr.st_ino);
+    int w = open(path, O_RDWR | O_CLOEXEC);   /* the writable one opens writable */
+    CHECK(w >= 0 && pwrite(w, "T", 1, 0) == 1);
+    CHECK(spawn_child("posixtest", "twin", r) == 0);   /* nothing gets write back in a child */
+    if (ro != MAP_FAILED)
+        munmap(ro, 4096);
+    close(w);
+    close(r);
+    close(m);
+}
+
+static void check_reopen(void)
+{
+    char path[32], buf[4];
+    int f = open(EXE, O_RDONLY | O_CLOEXEC);
+    CHECK(f >= 0 && lseek(f, 100, SEEK_SET) == 100);
+    fd_path(path, f);
+    int g = open(path, O_RDONLY | O_CLOEXEC);   /* a description of its own */
+    CHECK(g >= 0 && g != f && lseek(g, 0, SEEK_CUR) == 0 && lseek(f, 0, SEEK_CUR) == 100);
+    CHECK(g >= 0 && read(g, buf, 4) == 4 && !memcmp(buf, "\177ELF", 4));
+    close(g);
+    close(f);
+    check_twin();
+    int p[2] = { -1, -1 }, s[2] = { -1, -1 };
+    CHECK(pipe(p) == 0 && socketpair(AF_UNIX, SOCK_STREAM, 0, s) == 0);
+    fd_path(path, p[0]);
+    int pr = open(path, O_RDONLY | O_CLOEXEC);
+    CHECK(pr >= 0 && write(p[1], "p", 1) == 1 && read(pr, buf, 1) == 1 && buf[0] == 'p');
+    errno = 0;
+    CHECK(open(path, O_WRONLY) == -1 && errno == EACCES);   /* not a read end's access */
+    fd_path(path, s[0]);
+    errno = 0;
+    CHECK(open(path, O_RDWR) == -1 && errno == ENXIO);
+    int ev = eventfd(0, 0);
+    fd_path(path, ev);
+    errno = 0;
+    CHECK(open(path, O_RDWR) == -1 && errno == ENXIO);
+    int null = open("/dev/null", O_WRONLY);
+    fd_path(path, null);
+    int n2 = open(path, O_RDWR | O_CLOEXEC);
+    CHECK(n2 >= 0 && write(n2, "x", 1) == 1 && read(n2, buf, 1) == 0);
+    int fds[] = { pr, p[0], p[1], s[0], s[1], ev, null, n2 };
+    for (unsigned i = 0; i < sizeof(fds) / sizeof(fds[0]); i++)
+        if (fds[i] >= 0)
+            close(fds[i]);
+}
+
+/* ---- children ----------------------------------------------------------------------- */
+
+static int child_twin(void)
+{
+    char buf[4];
+    int bad = 0;
+    errno = 0;
+    bad += !(mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, 3, 0) == MAP_FAILED &&
+             errno == EACCES);
+    errno = 0;
+    bad += !(open("/proc/self/fd/3", O_RDWR) == -1 && errno == EACCES);
+    errno = 0;
+    bad += !(write(3, "x", 1) == -1 && errno == EBADF);
+    int r = open("/proc/self/fd/3", O_RDONLY);
+    bad += !(r >= 0 && read(r, buf, 4) == 4 && !memcmp(buf, "TWIN", 4));
+    return bad ? 1 : 0;
+}
+
+static int child_exe(void)
+{
+    char buf[64];
+    ssize_t len = (ssize_t)strlen(EXE);
+    return readlink("/proc/self/exe", buf, sizeof(buf)) == len && !memcmp(buf, EXE, (size_t)len)
+               ? 0 : 1;
+}
+
+int pt_child_procfs(int argc, char **argv)
+{
+    if (argc >= 3 && !strcmp(argv[2], "twin"))
+        return child_twin();
+    if (argc >= 3 && !strcmp(argv[2], "exe"))
+        return child_exe();
+    return 2;
+}
+
+/* argv[0] never names the file: a lie, a missing name, /bin's path. */
+static void check_children(void)
+{
+    static const char *const argv0s[] = {
+        "zz-not-a-program", "/boot/bin/sh", "bin/sh", "/bin/posixtest", "/data/no-such-program",
+        "/proc/self/exe",
+    };
+    for (unsigned i = 0; i < sizeof(argv0s) / sizeof(argv0s[0]); i++) {
+        bool right = spawn_child(argv0s[i], "exe", -1) == 0;
+        if (!right)
+            printf("posixtest: procfs: a child with argv[0] %s: wrong exe\n", argv0s[i]);
+        CHECK(right);
+    }
+}
+
+void pt_procfs(char **argv __attribute__((unused)))
+{
+    check_exe_link();
+    check_exe_file();
+    check_self();
+    check_missing();
+    check_fd_listing();
+    check_fd_between();
+    check_fd_links();
+    check_reopen();
+    check_children();
+}

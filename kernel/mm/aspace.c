@@ -4,20 +4,37 @@
  * (entries 256-511) is copied from the kernel PML4 at creation: vmm_init
  * creates every kernel-half PDPT up front, so kernel mappings made later
  * show up here too. The user half holds page tables this file allocates
- * (intermediate entries P|W|U, so the leaf alone decides access) and a list
- * of mappings sorted by address. A list, not a tree: lookups, first-fit
- * placement and splitting are O(mappings), which is fine for the handful of
- * mappings a process has; MAX_MAPPINGS bounds the worst case until a tree
- * replaces it.
+ * (intermediate entries P|W|U, so the leaf alone decides access) and the
+ * mappings, in a balanced tree ordered by address (<jam/avl.h>), so the
+ * fault path's lookup is O(log n) however many there are (MAX_MAPPINGS at
+ * most). Each mapping also keeps its `gap`, the free bytes just below it
+ * (down to the mapping before, or to USER_BASE), and the tree keeps the
+ * largest gap of each subtree, so first-fit placement goes straight down
+ * to the lowest gap that fits: O(log n) too. A change keeps the gaps
+ * right: every mapping whose base or predecessor's end moved has its gap
+ * fixed (gap_fix), which updates the summaries above it.
  *
  * Each mapping maps [vmo_off, vmo_off+len) of one VMO at [base, base+len),
  * holds a VMO reference (through its reverse-map entry, struct vmo_umap),
  * and has its current permissions plus the most aspace_protect may grant
  * (`max`, from ASPACE_CAN_*). Page-table entries are filled lazily by
- * aspace_fault. Mappings are never merged.
+ * aspace_fault.
+ *
+ * Merging. Two neighbouring mappings of one VMO at contiguous offsets,
+ * with the same permissions and the same maximum, neither kept, are one
+ * mapping (can_merge): map, replace and protect merge what they leave
+ * that way, so no two neighbours ever could be (the invariant), and a
+ * program that commits pieces of a big reservation (protect to read-write)
+ * and decommits them again (back to no access) leaves one mapping, not
+ * thousands. A merge changes no entry and no gap: the two mapped the same
+ * pages with the same permissions. Protect doesn't split a mapping that
+ * has the permissions already. The cap counts what a call leaves, merges
+ * done (maps_reserve; merges_for and protect_merges say how many there
+ * will be before anything changes); the job is charged for the most
+ * structs a call holds on the way.
  *
  * Locking, in order:
- *   - region lock (`lock`, a mutex, class "aspace"): the mapping list, and
+ *   - region lock (`lock`, a mutex, class "aspace"): the mapping tree, and
  *     creating or freeing page-table pages. map, unmap, protect and fault
  *     hold it throughout, so a fault never races an unmap in the same
  *     address space. The one exception is a fault on a pager VMO's absent
@@ -88,7 +105,9 @@
  *     having flushed yet.)
  *   - Splits add the new piece's reverse-map entry before shrinking the old
  *     one, so every mapped page stays covered at every moment; double
- *     coverage only means a page is zapped twice.
+ *     coverage only means a page is zapped twice. A merge the other way
+ *     round: the survivor's entry grows over the other's pages before the
+ *     other's goes.
  *   - An address space whose last reference is gone may still be on VMO
  *     reverse maps until destroy unlinks it (under each VMO lock) and only
  *     then frees the page tables, so decommit never walks freed tables. No
@@ -152,6 +171,7 @@
  * the copy's fault would take it again. */
 #include <jam/aspace.h>
 #include <jam/aspace_vmo.h>
+#include <jam/avl.h>
 #include <jam/cpu.h>
 #include <jam/dbghook.h>
 #include <jam/ipi.h>
@@ -182,7 +202,7 @@
 #define CAN_SHIFT 8   /* ASPACE_CAN_x == ASPACE_x << CAN_SHIFT */
 #define MAP_FLAGS (PERMS | ASPACE_FIXED | ASPACE_KEPT_ONLY | ASPACE_REPLACE | ASPACE_CAN_READ | \
                    ASPACE_CAN_WRITE | ASPACE_CAN_EXEC)
-#define MAX_MAPPINGS VMAR_MAX_MAPPINGS   /* <jam/abi.h>: 16384 */
+#define MAX_MAPPINGS VMAR_MAX_MAPPINGS   /* <jam/abi.h>: 65536 */
 
 #define SIZE_2M   (1ull << 21)
 #define SIZE_1G   (1ull << 30)
@@ -193,7 +213,10 @@ _Static_assert(ASPACE_CAN_READ == ASPACE_READ << CAN_SHIFT &&
                ASPACE_CAN_EXEC == ASPACE_EXEC << CAN_SHIFT, "CAN bits mirror the permissions");
 
 struct mapping {
-    struct list_node node;       /* as->maps, sorted by base (region lock) */
+    struct avl_node  node;       /* in as->maps, ordered by base (region lock) */
+    uint64_t         gap;        /* free bytes right below base: from the end of the
+                                    mapping before, or from USER_BASE (region lock) */
+    uint64_t         max_gap;    /* the largest gap in node's subtree (region lock) */
     struct vmo_umap  umap;       /* on the VMO's reverse map (VMO lock) */
     struct vmo      *vmo;        /* the VMO mapped (a reference) */
     uint64_t         base, len;  /* bytes, page-aligned */
@@ -208,8 +231,8 @@ struct aspace {
     spinlock_t        pt_lock;    /* page-table entries */
     uint64_t          pml4;       /* physical */
     uint64_t         *pml4v;      /* pml4 through the HHDM */
-    struct list_node  maps;       /* struct mapping */
-    uint32_t          nmaps;      /* entries on maps */
+    struct avl_tree   maps;       /* struct mapping, by base (region lock) */
+    uint32_t          nmaps;      /* mappings in maps */
     uint64_t          map_pages;  /* pages charged for the mapping structs (region lock) */
     uint64_t          pt_pages;   /* table pages below the PML4 (pt_lock), each charged */
     struct job       *job;        /* charged for all of it (a reference), or NULL */
@@ -538,6 +561,130 @@ static uint64_t free_tables(struct aspace *as)
     return freed;
 }
 
+/* ---- the mapping tree --------------------------------------------------- */
+
+static struct mapping *map_of(const struct avl_node *n)
+{
+    return n ? container_of(n, struct mapping, node) : NULL;
+}
+
+static uint64_t max_gap_of(const struct avl_node *n)
+{
+    return n ? map_of(n)->max_gap : 0;
+}
+
+/* The tree's summary (<jam/avl.h>): the largest gap in n's subtree. */
+static void gap_update(struct avl_node *n)
+{
+    struct mapping *m = map_of(n);
+    uint64_t l = max_gap_of(n->left), r = max_gap_of(n->right);
+    uint64_t g = l > r ? l : r;
+    m->max_gap = m->gap > g ? m->gap : g;
+}
+
+static struct mapping *first_map(const struct aspace *as)
+{
+    return map_of(avl_first(&as->maps));
+}
+
+static struct mapping *next_of(const struct mapping *m)
+{
+    return map_of(avl_next(&m->node));
+}
+
+static struct mapping *prev_of(const struct mapping *m)
+{
+    return map_of(avl_prev(&m->node));
+}
+
+/* Region lock held: the last mapping with base <= addr, or NULL. */
+static struct mapping *floor_of(const struct aspace *as, uint64_t addr)
+{
+    struct mapping *best = NULL;
+    for (const struct avl_node *n = as->maps.root; n;) {
+        struct mapping *m = map_of(n);
+        if (m->base <= addr) {
+            best = m;
+            n = n->right;
+        } else {
+            n = n->left;
+        }
+    }
+    return best;
+}
+
+/* Region lock held: the first mapping with base >= addr, or NULL. */
+static struct mapping *ceil_of(const struct aspace *as, uint64_t addr)
+{
+    struct mapping *best = NULL;
+    for (const struct avl_node *n = as->maps.root; n;) {
+        struct mapping *m = map_of(n);
+        if (m->base >= addr) {
+            best = m;
+            n = n->left;
+        } else {
+            n = n->right;
+        }
+    }
+    return best;
+}
+
+/* Region lock held: m's gap from the mapping before it, and the summaries
+ * above it (nothing for NULL). */
+static void gap_fix(struct aspace *as, struct mapping *m)
+{
+    if (!m)
+        return;
+    struct mapping *p = prev_of(m);
+    m->gap = m->base - (p ? mend(p) : USER_BASE);
+    avl_propagate(&as->maps, &m->node);
+}
+
+/* Region lock held: put m (its range set, not in the tree) right after
+ * prev (NULL: first); the gap after it shrinks. */
+static void map_link(struct aspace *as, struct mapping *m, struct mapping *prev)
+{
+    m->gap = m->base - (prev ? mend(prev) : USER_BASE);
+    avl_insert_after(&as->maps, &m->node, prev ? &prev->node : NULL);
+    as->nmaps++;
+    gap_fix(as, next_of(m));
+}
+
+/* Region lock held: take m out of the tree; the gap after it grows. */
+static void map_unlink(struct aspace *as, struct mapping *m)
+{
+    struct mapping *n = next_of(m);
+    avl_erase(&as->maps, &m->node);
+    as->nmaps--;
+    gap_fix(as, n);
+}
+
+/* Region lock held: the lowest address from USER_BASE up with len free
+ * bytes (*base), and the mapping that will be right before it (*prev, NULL
+ * for none). ERR_NO_RESOURCES if no gap is that big. The gaps the tree
+ * keeps lead the way down: a subtree whose largest gap is too small is
+ * never entered, so this is O(log n). */
+static status_t first_fit(const struct aspace *as, uint64_t len, uint64_t *base,
+                          struct mapping **prev)
+{
+    struct mapping *at = NULL;   /* the lowest mapping with a gap of len below it */
+    for (const struct avl_node *n = as->maps.root; n && !at;) {
+        if (max_gap_of(n->left) >= len)
+            n = n->left;
+        else if (map_of(n)->gap >= len)
+            at = map_of(n);
+        else
+            n = max_gap_of(n->right) >= len ? n->right : NULL;
+    }
+    struct mapping *p = at ? prev_of(at) : map_of(avl_last(&as->maps));
+    uint64_t b = p ? mend(p) : USER_BASE;
+    if (!at && USER_TOP - b < len)
+        return ERR_NO_RESOURCES;   /* not after the last one either */
+    *base = b;
+    *prev = p;
+    return OK;
+}
+
 /* ---- lifetime ----------------------------------------------------------- */
 
 static uint64_t map_pages_for(uint32_t nmaps)
@@ -588,7 +735,7 @@ status_t aspace_create_charged(struct job *job, struct aspace **out)
         as->pml4v[i] = k[i];
     mutex_init(&as->lock, "aspace");
     spin_init(&as->pt_lock, "aspace page tables");
-    list_init(&as->maps);
+    avl_init(&as->maps, gap_update);
     as->refs = 1;
     as->pcid_id = pcid_new_id();
     *out = as;
@@ -612,9 +759,8 @@ static void aspace_destroy(struct aspace *as)
         if (__atomic_load_n(&as->active.bits[w], __ATOMIC_ACQUIRE))
             panic("aspace: last reference dropped while a CPU still uses it "
                   "(mask word %u = %lx)", w, as->active.bits[w]);
-    while (!list_empty(&as->maps)) {
-        struct mapping *m = list_first(&as->maps, struct mapping, node);
-        list_del(&m->node);
+    for (struct mapping *m; (m = first_map(as));) {
+        avl_erase(&as->maps, &m->node);
         vmo_umap_remove(m->vmo, &m->umap);   /* drops the mapping's VMO reference */
         kfree(m);
     }
@@ -642,19 +788,17 @@ void aspace_unref(struct aspace *as)
 /* Region lock held: the mapping containing addr, or NULL. */
 static struct mapping *find(const struct aspace *as, uint64_t addr)
 {
-    for (struct list_node *n = as->maps.next; n != &as->maps; n = n->next) {
-        struct mapping *m = container_of(n, struct mapping, node);
-        if (addr < m->base)
-            return NULL;
-        if (addr < mend(m))
-            return m;
-    }
-    return NULL;
+    struct mapping *m = floor_of(as, addr);
+    return m && addr < mend(m) ? m : NULL;
 }
 
-static struct mapping *next_of(const struct aspace *as, const struct mapping *m)
+/* Region lock held: the first mapping that overlaps [addr, end), or NULL. */
+static struct mapping *first_in(const struct aspace *as, uint64_t addr, uint64_t end)
 {
-    return m->node.next == &as->maps ? NULL : container_of(m->node.next, struct mapping, node);
+    struct mapping *m = floor_of(as, addr);
+    if (!m || mend(m) <= addr)
+        m = m ? next_of(m) : first_map(as);
+    return m && m->base < end ? m : NULL;
 }
 
 /* Publish m's current range to its reverse-map entry. */
@@ -689,10 +833,9 @@ static struct mapping *split(struct aspace *as, struct mapping *m, uint64_t addr
     r->kept = m->kept;
     umap_fill(as, r);
     vmo_umap_add(m->vmo, &r->umap, false);   /* can't fail unchecked */
-    list_add(&m->node, &r->node);
-    as->nmaps++;
     m->len = addr - m->base;
     umap_sync(m);
+    map_link(as, r, m);
     return r;
 }
 
@@ -727,7 +870,7 @@ static status_t fill_kept(struct aspace *as, const struct mapping *m)
 }
 
 /* Region lock held: take back m, just added, whose fill failed: its
- * entries and the tables left empty (shot down), then m from the list and
+ * entries and the tables left empty (shot down), then m from the tree and
  * the reverse map. The caller frees m. */
 static void map_undo(struct aspace *as, struct mapping *m)
 {
@@ -735,8 +878,7 @@ static void map_undo(struct aspace *as, struct mapping *m)
     tlb_gather_init(&g);
     zap(as, m->base, mend(m), true, &g);
     tlb_gather_finish(&g);
-    list_del(&m->node);
-    as->nmaps--;
+    map_unlink(as, m);
     vmo_umap_remove(m->vmo, &m->umap);
     (void)maps_account(as, as->nmaps);   /* shrinking: can't fail */
 }
@@ -759,32 +901,126 @@ static struct mapping *mapping_new(struct vmo *vmo, uint64_t vmo_off, uint64_t l
     return m;
 }
 
-/* Region lock held: the first mapping that overlaps [addr, end), or NULL. */
-static struct mapping *first_in(const struct aspace *as, uint64_t addr, uint64_t end)
+/* ---- merging -------------------------------------------------------------- */
+
+/* Whether a (with permissions fa) and b right after it (with fb) can be one
+ * mapping: the same VMO at contiguous addresses and offsets, the same
+ * permissions and maximum, and neither kept (a kept mapping stays as it was
+ * made). The cache mode is the VMO's, so it matches too. */
+static bool joinable(const struct mapping *a, unsigned fa, const struct mapping *b, unsigned fb)
 {
-    for (struct list_node *n = as->maps.next; n != &as->maps; n = n->next) {
-        struct mapping *m = container_of(n, struct mapping, node);
-        if (mend(m) > addr)
-            return m->base < end ? m : NULL;
-    }
-    return NULL;
+    return mend(a) == b->base && a->vmo == b->vmo && a->vmo_off + a->len == b->vmo_off &&
+           fa == fb && a->max == b->max && !a->kept && !b->kept;
 }
 
-/* Region lock held: the charge for the mapping structs made to cover
- * `want` of them (and the ones there now, until the caller settles it
- * with maps_account), and a spare struct in *spare for a split if
- * `split`. ERR_NO_RESOURCES past MAX_MAPPINGS, ERR_NO_MEMORY; nothing
- * changed on an error. */
-static status_t maps_reserve(struct aspace *as, uint32_t want, bool split, struct mapping **spare)
+static bool can_merge(const struct mapping *a, const struct mapping *b)
 {
-    if (want > MAX_MAPPINGS)
-        return ERR_NO_RESOURCES;
-    status_t st = maps_account(as, want > as->nmaps ? want : as->nmaps);
-    if (st == OK && split && !(*spare = kzalloc(sizeof(**spare)))) {
-        (void)maps_account(as, as->nmaps);   /* shrinking: can't fail */
-        st = ERR_NO_MEMORY;
+    return joinable(a, a->flags, b, b->flags);
+}
+
+/* Region lock held: if m and the mapping after it can be one, make them
+ * one: m grows over it and it goes. m's reverse-map entry grows before the
+ * other's goes, so its pages never drop out of the reverse map. No entry
+ * changes (both mapped those pages with the same permissions), and no gap:
+ * the one below the mapping that goes was 0, the one after it stays. True
+ * if they merged. */
+static bool merge_next(struct aspace *as, struct mapping *m)
+{
+    struct mapping *n = next_of(m);
+    if (!n || !can_merge(m, n))
+        return false;
+    m->len += n->len;
+    umap_sync(m);
+    avl_erase(&as->maps, &n->node);
+    as->nmaps--;
+    vmo_umap_remove(n->vmo, &n->umap);   /* never the last reference: m holds one */
+    kfree(n);
+    return true;
+}
+
+/* Region lock held: merge m, just placed, with the mappings on either side
+ * where they can be one. m may be freed. */
+static void merge_around(struct aspace *as, struct mapping *m)
+{
+    struct mapping *p = prev_of(m);
+    if (p && can_merge(p, m)) {
+        merge_next(as, p);
+        m = p;
     }
-    return st;
+    merge_next(as, m);
+}
+
+/* Region lock held: merge every pair of neighbours that can be one, from m
+ * on, up to the pair whose second mapping starts at or past end. */
+static void merge_range(struct aspace *as, struct mapping *m, uint64_t end)
+{
+    while (m) {
+        struct mapping *n = next_of(m);
+        if (!n)
+            return;
+        if (merge_next(as, m))
+            continue;   /* m grew over n: look at its new neighbour */
+        if (n->base >= end)
+            return;
+        m = n;
+    }
+}
+
+/* Region lock held: how many neighbours m (its range set, not in the tree)
+ * merges with once [m->base, mend(m)) is cleared for it, 0 to 2: on each
+ * side, the piece a mapping it cuts keeps, or the mapping right beside the
+ * range. */
+static uint32_t merges_for(const struct aspace *as, const struct mapping *m)
+{
+    uint32_t n = 0;
+    struct mapping *lo = floor_of(as, m->base - 1);   /* m->base >= USER_BASE: no wrap */
+    if (lo) {
+        struct mapping l = *lo;   /* a copy to measure, never linked */
+        if (mend(lo) > m->base)
+            l.len = m->base - lo->base;   /* the piece kept below the range */
+        n += can_merge(&l, m);
+    }
+    struct mapping *hi = find(as, mend(m));
+    if (hi) {
+        struct mapping r = *hi;
+        uint64_t cut = mend(m) - hi->base;   /* > 0: the piece kept above the range */
+        r.base += cut;
+        r.vmo_off += cut;
+        r.len -= cut;
+        n += can_merge(m, &r);
+    }
+    return n;
+}
+
+/* ---- map, unmap, protect -------------------------------------------------- */
+
+/* Region lock held: room for a change that leaves `final` mappings and has
+ * at most `peak` on the way (its splits come before its merges): the cap,
+ * on final (ERR_NO_RESOURCES past MAX_MAPPINGS; so a change that merges
+ * back what it splits fits even at the cap), the charge for the structs
+ * at the peak (ERR_NO_MEMORY; the caller settles it with maps_account when
+ * done), and nspare spare structs in spare[] for the splits
+ * (ERR_NO_MEMORY). Nothing changed on an error. */
+static status_t maps_reserve(struct aspace *as, uint32_t final, uint32_t peak, unsigned nspare,
+                             struct mapping **spare)
+{
+    if (final > MAX_MAPPINGS)
+        return ERR_NO_RESOURCES;
+    status_t st = maps_account(as, peak > as->nmaps ? peak : as->nmaps);
+    if (st != OK)
+        return st;
+    for (unsigned i = 0; i < nspare; i++) {
+        spare[i] = kzalloc(sizeof(struct mapping));
+        if (spare[i])
+            continue;
+        for (unsigned j = 0; j < i; j++) {
+            kfree(spare[j]);
+            spare[j] = NULL;
+        }
+        (void)maps_account(as, as->nmaps);   /* shrinking: can't fail */
+        return ERR_NO_MEMORY;
+    }
+    return OK;
 }
 
 /* Region lock held: take [addr, end) out of every mapping from first (the
@@ -792,13 +1028,14 @@ static status_t maps_reserve(struct aspace *as, uint32_t want, bool split, struc
  * tables freed, while the reverse map still covers them (see the file
  * header); then the mappings are trimmed, freed, or split with spare
  * (needed when first reaches past both ends). The caller settles the
- * charge. Can't fail. */
+ * charge. Can't fail. Only one gap changes in the end, the one below the
+ * first mapping from end on: it is fixed last, once. */
 static void cut_locked(struct aspace *as, struct mapping *first, uint64_t addr, uint64_t end,
                        struct mapping *spare)
 {
     struct tlb_gather g;
     tlb_gather_init(&g);
-    for (struct mapping *m = first; m && m->base < end; m = next_of(as, m)) {
+    for (struct mapping *m = first; m && m->base < end; m = next_of(m)) {
         uint64_t s = m->base > addr ? m->base : addr;
         uint64_t e = mend(m) < end ? mend(m) : end;
         zap(as, s, e, true, &g);
@@ -808,9 +1045,9 @@ static void cut_locked(struct aspace *as, struct mapping *first, uint64_t addr, 
     for (struct mapping *m = first, *next; m && m->base < end; m = next) {
         if (m->base < addr && mend(m) > end)
             split(as, m, end, spare);   /* m becomes [base, end): a tail cut below */
-        next = next_of(as, m);
+        next = next_of(m);
         if (m->base >= addr && mend(m) <= end) {
-            list_del(&m->node);
+            avl_erase(&as->maps, &m->node);
             as->nmaps--;
             vmo_umap_remove(m->vmo, &m->umap);
             kfree(m);
@@ -825,73 +1062,63 @@ static void cut_locked(struct aspace *as, struct mapping *first, uint64_t addr, 
             umap_sync(m);
         }
     }
+    gap_fix(as, ceil_of(as, end));
 }
 
-/* Region lock held: put m (not on any list yet) at *want (ASPACE_FIXED) or
- * the first gap that fits, and fill it if it is kept. */
+/* Region lock held: put m (not in the tree yet) at *addr (ASPACE_FIXED) or
+ * the first gap that fits, fill it if it is kept, and merge it with its
+ * neighbours. *addr: where it went. m may be freed by then (merged). */
 static status_t map_place_locked(struct aspace *as, struct mapping *m, unsigned flags,
-                                 uint64_t want)
+                                 uint64_t *addr)
 {
-    struct list_node *pos = &as->maps;   /* insert after this */
-    uint64_t base = want, len = m->len;
+    struct mapping *prev = NULL;   /* the mapping m goes after */
     status_t st = OK;
-    if (as->nmaps >= MAX_MAPPINGS) {
-        st = ERR_NO_RESOURCES;
-    } else if (flags & ASPACE_FIXED) {
-        for (struct list_node *n = as->maps.next; n != &as->maps; n = n->next) {
-            struct mapping *o = container_of(n, struct mapping, node);
-            if (mend(o) <= base) {
-                pos = n;
-                continue;
-            }
-            if (o->base < base + len)
-                st = ERR_ALREADY_BOUND;
-            break;
-        }
+    m->base = *addr;
+    if (flags & ASPACE_FIXED) {
+        if (first_in(as, m->base, mend(m)))
+            st = ERR_ALREADY_BOUND;
+        else
+            prev = floor_of(as, m->base);
     } else {
-        base = USER_BASE;   /* first fit */
-        for (struct list_node *n = as->maps.next; n != &as->maps; n = n->next) {
-            struct mapping *o = container_of(n, struct mapping, node);
-            if (o->base >= base && o->base - base >= len)
-                break;
-            base = mend(o);
-            pos = n;
-        }
-        if (USER_TOP - base < len)
-            st = ERR_NO_RESOURCES;
+        st = first_fit(as, m->len, &m->base, &prev);
     }
     if (st == OK)
-        st = maps_account(as, as->nmaps + 1);
+        st = maps_reserve(as, as->nmaps + 1 - merges_for(as, m), as->nmaps + 1, 0, NULL);
     if (st == OK) {
-        m->base = base;
         umap_fill(as, m);
         st = vmo_umap_add(m->vmo, &m->umap, true);   /* bounds against the VMO size */
         if (st != OK)
             (void)maps_account(as, as->nmaps);   /* give the charge back: shrinking can't fail */
     }
-    if (st == OK) {
-        list_add(pos, &m->node);
-        as->nmaps++;
-        if (m->kept && (st = fill_kept(as, m)) != OK)
-            map_undo(as, m);
-    }
-    return st;
-}
-
-/* Region lock held: m (not on any list yet) at base, in place of whatever
- * [base, base + m->len) holds (ASPACE_REPLACE; see the file header). */
-static status_t map_replace_locked(struct aspace *as, struct mapping *m, uint64_t base)
-{
-    uint64_t end = base + m->len;
-    struct mapping *first = first_in(as, base, end), *spare = NULL;
-    uint32_t inside = 0;   /* mappings the range holds whole: they go */
-    for (struct mapping *o = first; o && o->base < end; o = next_of(as, o))
-        inside += o->base >= base && mend(o) <= end;
-    bool split = first && first->base < base && mend(first) > end;
-    status_t st = maps_reserve(as, as->nmaps - inside + split + 1, split, &spare);
     if (st != OK)
         return st;
-    m->base = base;
+    map_link(as, m, prev);
+    if (m->kept && (st = fill_kept(as, m)) != OK) {
+        map_undo(as, m);
+        return st;
+    }
+    *addr = m->base;
+    merge_around(as, m);
+    (void)maps_account(as, as->nmaps);   /* down to what is left: can't fail */
+    return OK;
+}
+
+/* Region lock held: m (not in the tree yet) at *addr, in place of whatever
+ * [*addr, *addr + m->len) holds (ASPACE_REPLACE; see the file header),
+ * then merged with its neighbours (m may be freed). */
+static status_t map_replace_locked(struct aspace *as, struct mapping *m, const uint64_t *addr)
+{
+    m->base = *addr;
+    uint64_t base = m->base, end = mend(m);
+    struct mapping *first = first_in(as, base, end), *spare = NULL;
+    uint32_t inside = 0;   /* mappings the range holds whole: they go */
+    for (struct mapping *o = first; o && o->base < end; o = next_of(o))
+        inside += o->base >= base && mend(o) <= end;
+    bool split = first && first->base < base && mend(first) > end;
+    uint32_t peak = as->nmaps - inside + split + 1;
+    status_t st = maps_reserve(as, peak - merges_for(as, m), peak, split, &spare);
+    if (st != OK)
+        return st;
     umap_fill(as, m);
     st = vmo_umap_add(m->vmo, &m->umap, true);   /* bounds against the VMO size */
     if (st != OK) {
@@ -901,14 +1128,8 @@ static status_t map_replace_locked(struct aspace *as, struct mapping *m, uint64_
     }
     if (first)
         cut_locked(as, first, base, end, spare);
-    struct list_node *pos = &as->maps;   /* after the last mapping below base */
-    for (struct list_node *n = as->maps.next; n != &as->maps; n = n->next) {
-        if (container_of(n, struct mapping, node)->base > base)
-            break;
-        pos = n;
-    }
-    list_add(pos, &m->node);
-    as->nmaps++;
+    map_link(as, m, floor_of(as, base));   /* nothing overlaps the range now */
+    merge_around(as, m);
     (void)maps_account(as, as->nmaps);   /* at most the reservation: can't fail */
     return OK;
 }
@@ -936,17 +1157,18 @@ status_t aspace_map(struct aspace *as, struct vmo *vmo, uint64_t vmo_off, uint64
     struct mapping *m = mapping_new(vmo, vmo_off, len, flags);
     if (!m)
         return ERR_NO_MEMORY;
+    uint64_t at = *addr;
     mutex_lock(&as->lock);
     if (flags & ASPACE_REPLACE)
-        st = map_replace_locked(as, m, *addr);
+        st = map_replace_locked(as, m, &at);
     else
-        st = map_place_locked(as, m, flags, *addr);
+        st = map_place_locked(as, m, flags, &at);
     mutex_unlock(&as->lock);
     if (st != OK) {
-        kfree(m);
+        kfree(m);   /* never placed (or taken back): still ours */
         return st;
     }
-    *addr = m->base;
+    *addr = at;   /* m itself may have merged into a neighbour by now */
     return OK;
 }
 
@@ -959,7 +1181,7 @@ status_t aspace_unmap(struct aspace *as, uint64_t addr, uint64_t len)
     struct mapping *first = first_in(as, addr, end), *spare = NULL;
     status_t st = first ? OK : ERR_NOT_FOUND;
     if (st == OK && first->base < addr && mend(first) > end)   /* a hole in the middle */
-        st = maps_reserve(as, as->nmaps + 1, true, &spare);
+        st = maps_reserve(as, as->nmaps + 1, as->nmaps + 1, 1, &spare);
     if (st == OK) {
         cut_locked(as, first, addr, end, spare);
         (void)maps_account(as, as->nmaps);   /* only ever down here: can't fail */
@@ -968,72 +1190,109 @@ status_t aspace_unmap(struct aspace *as, uint64_t addr, uint64_t len)
     return st;
 }
 
+/* Region lock held: the mappings covering [addr, end), *first to *last,
+ * for aspace_protect. ERR_NOT_FOUND if any of the range isn't mapped, else
+ * ERR_ACCESS_DENIED if a mapping may not have flags (past its maximum, or
+ * a kept one changed: its entries stay as they were filled). */
+static status_t protect_span(const struct aspace *as, uint64_t addr, uint64_t end,
+                             unsigned flags, struct mapping **first, struct mapping **last)
+{
+    struct mapping *f = find(as, addr), *l = NULL;
+    if (!f)
+        return ERR_NOT_FOUND;
+    bool denied = false;
+    for (struct mapping *m = f;; m = next_of(m)) {
+        if (!m || (l && m->base != mend(l)))
+            return ERR_NOT_FOUND;   /* ran out, or a gap */
+        denied |= (flags & ~m->max) != 0;
+        denied |= m->kept && flags != m->flags;
+        l = m;
+        if (mend(m) >= end)
+            break;
+    }
+    if (denied)
+        return ERR_ACCESS_DENIED;
+    *first = f;
+    *last = l;
+    return OK;
+}
+
+/* How many merges protecting first..last (all of [addr, end), see
+ * protect_span) to flags makes (merge_range does them): between each
+ * neighbouring pair inside, and with the mapping on either side unless
+ * that end is split (lsplit, rsplit), whose piece outside keeps its other
+ * permissions and so merges with nothing new. */
+static uint32_t protect_merges(const struct mapping *first, const struct mapping *last,
+                               unsigned flags, bool lsplit, bool rsplit)
+{
+    uint32_t n = 0;
+    const struct mapping *p = prev_of(first), *q = next_of(last);
+    if (!lsplit && p)
+        n += joinable(p, p->flags, first, flags);
+    for (const struct mapping *m = first; m != last; m = next_of(m))
+        n += joinable(m, flags, next_of(m), flags);
+    if (!rsplit && q)
+        n += joinable(last, flags, q, q->flags);
+    return n;
+}
+
+/* Region lock held: flags for every mapping from first up to end (each
+ * inside the range, or one that has flags already), and their entries
+ * rewritten (or cleared, for no access: x86 can't say "present, no
+ * access"), shot down before this returns. */
+static void protect_entries(struct aspace *as, struct mapping *first, uint64_t end,
+                            unsigned flags)
+{
+    struct tlb_gather g;
+    tlb_gather_init(&g);
+    for (struct mapping *m = first; m && m->base < end; m = next_of(m)) {
+        if (m->flags == flags)
+            continue;   /* its entries are what they would be rewritten to */
+        m->flags = flags;
+        if (flags & ASPACE_READ) {
+            const struct leaf_walk w = { leaves_protect, flags, false, &g };
+            walk_leaves(as, m->base, mend(m), &w);
+        } else {
+            zap(as, m->base, mend(m), true, &g);
+        }
+    }
+    tlb_gather_finish(&g);
+}
+
 status_t aspace_protect(struct aspace *as, uint64_t addr, uint64_t len, unsigned flags)
 {
     if ((flags & ~PERMS) || !perms_ok(flags) || !range_ok(addr, len))
         return ERR_INVALID_ARGS;
     uint64_t end = addr + len;
     mutex_lock(&as->lock);
-
-    /* The whole range must be mapped, and every mapping must allow flags. */
-    struct mapping *first = find(as, addr), *last = NULL;
-    status_t st = first ? OK : ERR_NOT_FOUND;
-    bool denied = false;
-    for (struct mapping *m = first; st == OK; m = next_of(as, m)) {
-        if (!m || m->base != (last ? mend(last) : m->base)) {
-            st = ERR_NOT_FOUND;   /* ran out, or a gap */
-            break;
-        }
-        denied |= (flags & ~m->max) != 0;
-        denied |= m->kept && flags != m->flags;   /* its entries stay as they were filled */
-        last = m;
-        if (mend(m) >= end)
-            break;
-    }
-    if (st == OK && denied)
-        st = ERR_ACCESS_DENIED;
-    struct mapping *spare[2] = { NULL, NULL };
+    struct mapping *first = NULL, *last = NULL, *spare[2] = { NULL, NULL };
+    status_t st = protect_span(as, addr, end, flags, &first, &last);
+    /* An end mapping that has flags already isn't split: its two pieces
+     * would only merge again. */
+    bool lsplit = st == OK && first->base < addr && first->flags != flags;
+    bool rsplit = st == OK && mend(last) > end && last->flags != flags;
     if (st == OK) {
-        unsigned need = (first->base < addr) + (mend(last) > end);
-        if (as->nmaps + need > MAX_MAPPINGS)
-            st = ERR_NO_RESOURCES;
-        else
-            st = maps_account(as, as->nmaps + need);
-        for (unsigned i = 0; i < need && st == OK; i++)
-            if (!(spare[i] = kzalloc(sizeof(struct mapping))))
-                st = ERR_NO_MEMORY;
-        if (st == ERR_NO_MEMORY)
-            (void)maps_account(as, as->nmaps);   /* back to what we have: can't fail */
+        uint32_t peak = as->nmaps + lsplit + rsplit;
+        st = maps_reserve(as, peak - protect_merges(first, last, flags, lsplit, rsplit), peak,
+                          lsplit + rsplit, spare);
     }
     if (st != OK) {
         mutex_unlock(&as->lock);
-        kfree(spare[0]);
-        kfree(spare[1]);
         return st;
     }
-
     unsigned used = 0;
-    if (first->base < addr) {
+    if (lsplit) {
         bool same = first == last;
         first = split(as, first, addr, spare[used++]);
         if (same)
             last = first;
     }
-    if (mend(last) > end)
+    if (rsplit)
         split(as, last, end, spare[used++]);
-
-    struct tlb_gather g;
-    tlb_gather_init(&g);
-    for (struct mapping *m = first; m && m->base < end; m = next_of(as, m)) {
-        m->flags = flags;
-        if (flags & ASPACE_READ) {
-            const struct leaf_walk w = { leaves_protect, flags, false, &g };
-            walk_leaves(as, m->base, mend(m), &w);
-        } else {
-            zap(as, m->base, mend(m), true, &g);   /* no access: x86 can't say "present" */
-        }
-    }
-    tlb_gather_finish(&g);
+    protect_entries(as, first, end, flags);
+    struct mapping *before = prev_of(first);
+    merge_range(as, before ? before : first, end);
+    (void)maps_account(as, as->nmaps);   /* at most the reservation: can't fail */
     mutex_unlock(&as->lock);
     return OK;
 }

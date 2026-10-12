@@ -244,6 +244,8 @@ bool t_reply_wait_refusals(void);
 /* portagain.c: port_again, the next turn of a reader that keeps to a budget. */
 bool t_port_again(void);
 bool t_handles_always_moved(void);
+/* vmarcount.c: process_get_info's mapping count, and merging as seen from user space. */
+bool t_vmar_mappings(void);
 bool t_channel_no_handles(void);
 bool t_unread_charged_to_writer(void);
 int  replywait_child(int argc, char **argv);
@@ -256,6 +258,10 @@ int  kept_child(int argc, char **argv);
 bool t_vmo_child_shares(void);
 bool t_vmo_child_refusals(void);
 int  vmochild_child(int argc, char **argv);
+/* spawnverified.c: libos's spawn of a verified program, with utest as its pager, and a
+ * copy from a mapping whose pager is gone. */
+bool t_spawn_verified(void);
+bool t_copy_from_lost_page(void);
 bool t_many_threads(void);
 bool t_lock_take(void);
 bool t_thread_fs_base(void);
@@ -397,6 +403,9 @@ bool t_fat_restart_handles(void);
 bool t_fat_restart_bad_request(void);
 /* ... and a mapped file's pages through it all (fat with a pager). */
 bool t_fat_restart_pager(void);
+/* fat_coherent.c: a mapped file's pages follow every write, truncate,
+ * rename and removal of its file; a file mapped to run is never changed. */
+bool t_fat_map_coherent(void);
 /* fatlayout.c: FatFs's structs, as fat's state relies on them. */
 bool t_fat_layout(void);
 
@@ -498,6 +507,13 @@ bool t_netsock_udp(void);
 bool t_netsock_ping(void);
 bool t_netsock_iface(void);
 bool t_netsock_limits(void);
+bool t_netsock_caps(void);
+/* netloop.c: loopback (127.0.0.0/8) through netstack over the fake driver:
+ * UDP, ping, TCP, and frames from the network with a loopback address. */
+bool t_netloop_udp(void);
+bool t_netloop_ping(void);
+bool t_netloop_tcp(void);
+bool t_netloop_martian(void);
 bool t_netsock_hostile(void);
 bool t_netsock_slow_reader(void);
 bool t_netsock_busy_client(void);
@@ -673,6 +689,10 @@ bool t_consel_keys(void);
 bool t_consel_tint(void);
 /* shpaste.c: the shell's bracketed paste (sh_paste.c). */
 bool t_sh_paste(void);
+/* shimage.c: a /data program's page table and its list read in pieces
+ * (sh_image.c). */
+bool t_sh_ptable(void);
+bool t_sh_image_wants(void);
 /* "utest wl-crash": a Wayland client on the channel at SR_USER that makes
  * a pool, a buffer and a surface, then crashes; "wl-crash-attach" crashes
  * between the attach and the commit. */
@@ -742,6 +762,9 @@ bool t_wm_tile_gaps(void);
 bool t_wm_tile_push(void);
 bool t_wm_tile_float(void);
 bool t_wm_tile_mins(void);
+/* compgeom.c: the window geometry (set_window_geometry) placing a window,
+ * its frame and its hits, on the same harness. */
+bool t_wm_geometry(void);
 bool t_wm_save_restore(void);
 bool t_wm_save_late(void);
 bool t_wm_save_full(void);
@@ -785,13 +808,15 @@ bool t_xdg_unacked(void);
 bool t_xdg_errors(void);
 /* compver.c: the versions above G1's (wl_compositor 6, wl_shm 2, wl_output
  * 4, wl_seat 9, xdg_wm_base 6), each new event at its version and not
- * below, and xdg-decoration's modes, toggled and refused. */
+ * below, xdg-decoration's modes (the owner's rule), toggled and refused,
+ * and a client-side window placed by its window geometry. */
 bool t_comp_versions(void);
 bool t_comp_seat_v9(void);
 bool t_xdg_versions(void);
 bool t_xdg_tiled(void);
 bool t_xdg_decoration(void);
 bool t_xdg_decoration_bad(void);
+bool t_xdg_geometry(void);
 
 /* netdev.c: the netdev rings' code (<jam/netdev.h>): counts, a hostile
  * peer, the wake flags, the VLAN word, a fake driver thread's exchange. */

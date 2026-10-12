@@ -20,7 +20,9 @@ static uint32_t len_of(const char *s)
     return (uint32_t)strlen(s);
 }
 
-static bool start(struct fatrun *r, struct ramdisk *rd, bool read_only, bool format)
+/* pager: a copy handed to fat (FAT_SR_PAGER, as volumes hands it), or 0. */
+static bool start(struct fatrun *r, struct ramdisk *rd, bool read_only, bool format,
+                  handle_t pager)
 {
     handle_t block, serve, ctl;
     *r = (struct fatrun){ .rd = rd };
@@ -30,11 +32,17 @@ static bool start(struct fatrun *r, struct ramdisk *rd, bool read_only, bool for
     CHECK_ST(jam_channel_create(&r->ctl, &ctl), OK);
     CHECK_ST(new_job(&r->job), OK);
     const char *argv[] = { "fat", "utest", FAT_ARG_FORMAT };
-    struct spawn_handle x[3] = { { FAT_SR_BLOCK, block }, { FAT_SR_SERVE, serve },
+    struct spawn_handle x[4] = { { FAT_SR_BLOCK, block }, { FAT_SR_SERVE, serve },
                                  { FAT_SR_CTL, ctl } };
+    rights_t xr[4] = { RIGHT_SAME, RIGHT_SAME, RIGHT_SAME, RIGHT_READ | RIGHT_WRITE | RIGHT_WAIT };
+    unsigned nx = 3;
+    if (pager) {
+        CHECK_ST(jam_handle_duplicate(pager, RIGHT_SAME, &x[nx].h), OK);
+        x[nx++].role = FAT_SR_PAGER;
+    }
     struct spawn_args a = {
         .path = "bin/fat", .argc = format ? 3 : 2, .argv = argv, .job = r->job, .extra = x,
-        .nextra = 3,
+        .nextra = nx, .extra_rights = xr,
     };
     CHECK_ST(spawn(&a, &r->proc), OK);
     return true;
@@ -42,12 +50,17 @@ static bool start(struct fatrun *r, struct ramdisk *rd, bool read_only, bool for
 
 bool fat_start(struct fatrun *r, struct ramdisk *rd, bool read_only)
 {
-    return start(r, rd, read_only, true);
+    return start(r, rd, read_only, true, HANDLE_INVALID);
 }
 
 bool fat_start_plain(struct fatrun *r, struct ramdisk *rd, bool read_only)
 {
-    return start(r, rd, read_only, false);
+    return start(r, rd, read_only, false, HANDLE_INVALID);
+}
+
+bool fat_start_pager(struct fatrun *r, struct ramdisk *rd, handle_t pager)
+{
+    return start(r, rd, false, true, pager);
 }
 
 bool fat_wait(struct fatrun *r, int code)

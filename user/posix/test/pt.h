@@ -7,7 +7,8 @@
  *
  * Files: main.c (sections, the child modes), start.c (argv, the
  * environment, the auxiliary vector, the hand-over: children started
- * with libjam's spawn), mem.c (mmap and friends, brk, malloc), clock.c
+ * with libjam's spawn), mem.c (mmap and friends, brk, malloc) and
+ * memres.c (reservations: V8's and PartitionAlloc's patterns), clock.c
  * (the clocks from the time page against the calls, and their bench), thread.c
  * (pthreads, TLS, errno), pipe.c (pipes and socketpair, and the pipe
  * bench), fds.c (dup and fcntl, memfd, eventfd, the one user, /dev and
@@ -19,11 +20,19 @@
  * signal.c and sigproc.c (signals in a process, and between processes),
  * pty.c (pseudo-terminals, and init's sessions from a POSIX program),
  * clock.c (the clocks from the time page), socket.c (sockets without the
- * network) and sockets.c (against the network peer: asked for by name).
- * start.c, mem.c, clock.c, fds.c, poll.c, proc.c, tty.c and fileskid.c are
+ * network), sockets.c (against the network peer: asked for by name),
+ * loopback.c (127.0.0.0/8 through netstack alone: asked for by name),
+ * procfs.c (libc's /proc: the program's file and the descriptors),
+ * mmap.c (files mapped on their pages, msync, posix_spawn from /data),
+ * wayland.c (the Wayland socket against a fake compositor of its own) and
+ * rawcalls.c, rawfutex.c and rawlog.c (the raw Linux calls Chromium makes, and the
+ * ENOSYS log: the log's hooks are the layer's calls.h, a second look inside).
+ * start.c, mem.c, memres.c (the job's counts), clock.c, fds.c, poll.c,
+ * proc.c, tty.c, fileskid.c and wayland.c are
  * the ones that include libjam (<jamos/libjam.h>: children started with a hand-over, a mapping libc
  * didn't make, the calls the clocks are checked against; fileskid.c
- * through the layer's fd.h); mem.c the only one with Linux's call numbers. */
+ * through the layer's fd.h); mem.c, rawcalls.c, rawfutex.c and rawlog.c include Linux's call
+ * numbers. */
 #pragma once
 
 #include <stdbool.h>
@@ -57,10 +66,25 @@ void pt_files_many(char **argv);   /* only when asked for by name */
 void pt_signal(char **argv);
 void pt_socket(char **argv);
 void pt_sockets(char **argv);    /* only when asked for by name: the network peer */
+void pt_loopback(char **argv);   /* only when asked for by name: needs netstack, no peer */
 void pt_pty(char **argv);
 void pt_session(char **argv);      /* only when asked for: a shell-mode init's sessions */
+void pt_raw(char **argv);          /* raw calls and the ENOSYS log */
+/* The raw section's second file (rawlog.c): the ENOSYS log. */
+void pt_raw_log(void);
+/* And the futex checks (rawfutex.c). */
+void pt_raw_futex(void);
+void pt_procfs(char **argv);
+void pt_mmap(char **argv);
+/* Only when asked for (mmap.c): tools/posix-mmap-test.sh's cases. */
+void pt_mmap_big(char **argv);
+void pt_mmap_coherent(char **argv);
+void pt_spawn_data(char **argv);
+void pt_wayland(char **argv);
 /* The signal section's second half (sigproc.c): between processes. */
 void pt_sigproc(void);
+/* The mem section's second half (memres.c): big sparse reservations. */
+void pt_mem_reserve(void);
 
 /* The child modes start.c's checks start this program in (main.c runs
  * them instead of the sections): each checks what it was given and exits
@@ -81,6 +105,10 @@ int  pt_child_sock(void);
 int  pt_child_pty(void);
 int  pt_child_winsize(void);
 int  pt_child_hup(void);
+int  pt_child_raw(int argc, char **argv);
+int  pt_child_procfs(int argc, char **argv);
+int  pt_child_mmap_pull(int argc, char **argv);
+int  pt_child_wl(int argc, char **argv);
 
 /* Pages charged to our job now (job_get_info; start.c). */
 uint64_t pt_job_pages(void);

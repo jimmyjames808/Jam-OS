@@ -335,8 +335,14 @@ struct comp_window {
     struct comp_surface *surface;
     struct comp_window  *below, *above;   /* stacking order: scene.bottom .. scene.top */
     int32_t x, y;                  /* where the surface's (0, 0) is on the output */
-    /* Decorations around the surface (deco.c sets them): the frame is the
-     * surface's box grown by these. */
+    /* The client's window geometry (xdg_surface.set_window_geometry) for
+     * the buffer shown, in the surface's coordinates; empty: none, the
+     * whole surface is the window. A client that draws its own shadow
+     * says where its window is inside its surface: placement, the frame
+     * and the hit areas go by it (window_geom; wm.c sets it at a commit). */
+    struct comp_box geom;
+    /* Decorations around the window geometry (deco.c sets them): the frame
+     * is window_geometry's box grown by these. */
     int32_t deco_top, deco_left, deco_right, deco_bottom;
     uint32_t flags;                /* COMP_WIN_* */
     struct comp_box tile;          /* tiling: the tile it was given (wm.c) */
@@ -393,14 +399,31 @@ void scene_damage(struct comp_box b);
 /* The same for something drawn over everything (the cursor, the desktop's
  * cards): it isn't `under` damage. */
 void scene_damage_over(struct comp_box b);
-/* The window's frame on the output: the surface's box and its decorations. */
+/* The window's frame on the output: its window geometry's box and its
+ * decorations. */
 struct comp_box window_frame(const struct comp_window *w);
 /* All a window paints: its frame and its shadow (look.h), the larger
  * shadow's whether it is focused or not, so a focus change repaints every
- * pixel either shadow touches. What window_damage damages. */
+ * pixel either shadow touches, and its surface's box (which reaches past
+ * the frame where the client draws its own shadow outside its window
+ * geometry). What window_damage damages. */
 struct comp_box window_extent(const struct comp_window *w);
 /* The surface's box on the output. */
 struct comp_box window_surface_box(const struct comp_window *w);
+/* The window geometry in the surface's coordinates, the view aside: the
+ * client's (w->geom) within the surface, or the whole surface without one
+ * (or with one that misses it). What the window manager places. */
+struct comp_box window_geom(const struct comp_window *w);
+/* ... and on the output, as shown: window_geom where the surface is, or
+ * the view's box while a tile's view is set (the frame is the tile's).
+ * What the frame, the title bar and the edges go round. */
+struct comp_box window_geometry(const struct comp_window *w);
+/* Is w's window geometry smaller than its surface (the client draws
+ * something of its own, a shadow, outside its window)? */
+bool window_inset(const struct comp_window *w);
+/* w's window geometry set (surface coordinates, empty: none); damages old
+ * and new. */
+void window_set_geom(struct comp_window *w, struct comp_box geom);
 /* A window for s (which must have none), at (x, y), on top, not mapped
  * yet: ERR_NO_MEMORY. */
 status_t window_create(struct comp_surface *s, int32_t x, int32_t y, struct comp_window **out);

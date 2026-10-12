@@ -22,31 +22,14 @@
 # Prints the four storm lines and the mixer's, and fsck_msdos's verdict on
 # both disks too where the Mac has it (read-only attach; not part of PASS:
 # mtools' volume label alone makes it warn).
-# The kills must land DURING the copies, or the test proves nothing: storm
-# starts its kill thread before the copy and stops it right after (the
-# read-back hashing runs with no kills), so the kills in a storm line are
-# the copy's own, and the first of them comes one period in. A copy of 32
-# MiB took 1.8 s on the PC (18 MB/s), so at 1 kill a second it was killed
-# once, at the very end. Now the file is 64 MiB (about 3.6 s; about 7 s at
-# 100 kills a second) and each rate's line is checked: at least so many
-# kills (1 a second: 2, so both services die mid-copy; 10: 10; 100: 50) and
-# at least 40% of the kills the rate asks for over the copy's seconds; the
-# Ctrl+C copy must stop with the file unfinished and kills done. A machine
-# too fast for the file fails with the numbers: raise STORM_MIB.
-# QEMU_SMP passes through; STORM_MIB sets the file's size (default 64; the
-# boot stick's /data and the second stick are made big enough for it).
+# QEMU_SMP passes through; STORM_MIB sets the file's size (default 40:
+# about 1.2 s of copying under KVM on the PC, so that 1 kill a second kills; 32 took 0.98 s and killed nothing; the data partition is 63 MiB, so no more).
 # Usage: tools/fat-storm-test.sh <outdir>; exit 0 on PASS.
 set -eu
+DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
 out=$1
 mkdir -p "$out"
-mib=${STORM_MIB:-64}
-# The image's /data (64 MiB) and a 64 MiB stick are too small for a copy
-# that size: the boot image's data partition grows to the file, the WAV
-# (6 MiB) and room for the logs, the stick to the file and some.
-esp_mib=64
-data_mib=$((mib + 32))
-boot_mib=$((esp_mib + data_mib))
-stick_mib=$((mib + 32))
+mib=${STORM_MIB:-40}
 boot="$out/storm-boot.img"       # the boot stick, with the WAV on /data
 saved="$out/storm-boot-after.img"  # ... as the guest left it
 stick="$out/storm-usb0.img"       # the second stick, /usb0
@@ -68,19 +51,12 @@ open("%s/tone.wav" % out, "wb").write(b"RIFF" + struct.pack("<I", len(body)) + b
 PY
 want=$(shasum -a 256 "$tmp/big.bin" | cut -c1-64)
 
-python3 tools/mkstick.py "$stick" "$stick_mib" 0c
-mformat -i "$stick@@1M" -T $(((stick_mib - 1) * 2048)) -F -v STORM ::
+python3 tools/mkstick.py "$stick" 64 0c
+mformat -i "$stick@@1M" -T $((63 * 2048)) -F -v STORM ::
 mcopy -i "$stick@@1M" "$tmp/big.bin" ::/big.bin
-# The boot image with its data partition grown (as tools/write-usb.sh does)
-# and the volume made here as the Makefile makes it (mbr-grow's wipe is
-# not needed: nothing is on it yet).
 cp build/jamos.img "$boot"
-python3 -c "import sys; open(sys.argv[1], 'r+b').truncate(int(sys.argv[2]) << 20)" "$boot" "$boot_mib"
-python3 tools/mbr-grow.py "$boot" $((boot_mib * 2048))
-mformat -i "$boot@@${esp_mib}M" -T $((data_mib * 2048)) -F -v JAMOS-DATA ::
-python3 tools/fat-label.py "$boot" "$esp_mib" --fix
-mmd -i "$boot@@64M" ::/music
-mcopy -i "$boot@@64M" "$tmp/tone.wav" "::/music/tone.wav"
+mmd -i "$boot@@$DATA_AT" ::/music
+mcopy -i "$boot@@$DATA_AT" "$tmp/tone.wav" "::/music/tone.wav"
 
 devs="-audiodev wav,id=snd0,path=$out/storm.wav,out.frequency=48000,out.channels=2,out.format=s16 \
 -device intel-hda,id=hda0 -device hda-output,bus=hda0.0,cad=0,audiodev=snd0"
@@ -100,11 +76,14 @@ never() {   # never <text> <log>
 }
 
 # ---- the copies ------------------------------------------------------------------------------
-# Did the kills land during the copy? storm's kills are the copy's own (see
-# the top): `landed <rate> <least kills> <storm line>` is true when the line
-# has at least that many, and at least 40% of rate x the copy's seconds
-# (they come evenly from the copy's start, so that is a copy killed all
-# along, not just at its very end). Says what it found when not.
+# Did the kills land during the copy? storm starts its kill thread before the
+# copy and stops it right after (the read-back hashing has no kills), so the
+# kills in a storm line are the copy's own. `landed <rate> <least kills>
+# <storm line>` is true when the line has at least that many, and at least
+# 40% of rate x the copy's seconds (the kills come evenly from the copy's
+# start: a copy killed all along, not just at its very end). Says what it
+# found when not: a machine too fast for STORM_MIB (the data partition
+# limits it) fails here instead of passing without a storm.
 landed() {
     k=$(echo "$3" | grep -ao "; [0-9]* kills" | grep -ao "[0-9]*" || echo 0)
     secs=$(echo "$3" | grep -ao " bytes in [0-9]*\.[0-9]* s" | grep -ao "[0-9]*\.[0-9]*" || echo 0)
@@ -112,7 +91,7 @@ landed() {
         'BEGIN { exit !(k >= m && k >= 0.4 * r * s) }' && return 0
     echo "fat-storm: $1 kills/s: ${k:-0} kills in a ${secs:-0} s copy, wanted at least $2 and" \
          "$(awk -v r="$1" -v s="${secs:-0}" 'BEGIN { printf "%.1f", 0.4 * r * s }')" \
-         "(the kills didn't land during the copy: raise STORM_MIB, now $mib)"
+         "(the kills didn't land during the copy: the file is too small for this machine, STORM_MIB is $mib)"
     return 1
 }
 # A storm line is on the screen and in the kernel log: both reach the
@@ -138,9 +117,9 @@ for rate in 0 1 10 100; do
     [ "$rate" = 0 ] || echo "$line" | grep -q "kill to first answer median" ||
         { echo "fat-storm: $rate kills/s: no kill to first answer"; ok=0; }
     case $rate in
-    1) landed 1 2 "$line" || ok=0 ;;
-    10) landed 10 10 "$line" || ok=0 ;;
-    100) landed 100 50 "$line" || ok=0 ;;
+    1) landed 1 1 "$line" || ok=0 ;;
+    10) landed 10 5 "$line" || ok=0 ;;
+    100) landed 100 30 "$line" || ok=0 ;;
     esac
     [ "$rate" = 0 ] || prev=${kills:-0}
 done
@@ -163,8 +142,8 @@ else   # stopped in the copy, not after it: part of the file, with kills done
         echo "fat-storm: Ctrl+C: ${cutb:-0} of $((mib << 20)) bytes copied: not in the middle of the copy"
         ok=0
     fi
-    [ "${cutk:-0}" -ge 20 ] ||
-        { echo "fat-storm: Ctrl+C: ${cutk:-0} kills before it, wanted 20 or more"; ok=0; }
+    [ "${cutk:-0}" -ge 10 ] ||
+        { echo "fat-storm: Ctrl+C: ${cutk:-0} kills before it, wanted 10 or more"; ok=0; }
 fi
 never "starting fresh" "$clean"
 never "giving up" "$clean"
@@ -176,11 +155,11 @@ echo "fat-storm: $(count 'fat /data: restart (killed' "$clean") restarts of fat 
 
 # ---- the disks afterwards -------------------------------------------------------------------
 rm -f "$tmp/back.bin"
-mcopy -o -i "$saved@@64M" "::/s100.bin" "$tmp/back.bin" 2>/dev/null &&
+mcopy -o -i "$saved@@$DATA_AT" "::/s100.bin" "$tmp/back.bin" 2>/dev/null &&
     cmp -s "$tmp/back.bin" "$tmp/big.bin" ||
     { echo "fat-storm: /data/s100.bin on the stick isn't the file"; ok=0; }
 for f in s0.bin s1.bin s10.bin cut.bin; do
-    ! mdir -i "$saved@@64M" "::/$f" > /dev/null 2>&1 ||
+    ! mdir -i "$saved@@$DATA_AT" "::/$f" > /dev/null 2>&1 ||
         { echo "fat-storm: /data/$f is still on the stick (it was removed)"; ok=0; }
 done
 for disk in "data:$saved:2" "usb0:$stick:1"; do

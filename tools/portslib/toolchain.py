@@ -120,6 +120,13 @@ def cc_wrapper(r, top, sysroot, work):
 # link the program's list chosen by the output's name.
 JAMOS_SYSROOT=%(sysroot)s; export JAMOS_SYSROOT
 CROSS=%(cross)s; export CROSS
+# -pthread (Meson's threads dependency adds it): the threads are in musl's
+# libc, and the cross gcc has no such option.
+n=$#
+while [ $n -gt 0 ]; do
+    a=$1; shift; n=$((n - 1))
+    case $a in -pthread) ;; *) set -- "$@" "$a" ;; esac
+done
 out=a.out
 prev=
 link=1
@@ -224,7 +231,8 @@ def environment(r, bindir, sysroot, paths):
     pre = os.path.join(bindir, HOST + "-")
     make, _ = gnu_make()
     env.update({
-        "PATH": bindir + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin"),
+        "PATH": os.pathsep.join([bindir] + list(paths.get("tool_bins", ())) +
+                                [os.environ.get("PATH", "/usr/bin:/bin")]),
         "LANG": "C", "LC_ALL": "C", "TZ": "UTC",
         "TMPDIR": paths["tmp"],
         "SOURCE_DATE_EPOCH": str(paths["epoch"]),

@@ -37,6 +37,9 @@ bool fat_start(struct fatrun *r, struct ramdisk *rd, bool read_only);
 /* The same without the flag, as fat is started on anyone else's stick:
  * nothing is ever formatted. */
 bool fat_start_plain(struct fatrun *r, struct ramdisk *rd, bool read_only);
+/* fat_start's, writable, handed a copy of pager (FAT_SR_PAGER, with the
+ * rights volumes gives): it serves file.map. */
+bool fat_start_pager(struct fatrun *r, struct ramdisk *rd, handle_t pager);
 /* fat must end by itself with exit code `code` within FAT_CALL_NS and
  * leave its job empty. */
 bool fat_wait(struct fatrun *r, int code);

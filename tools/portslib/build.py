@@ -31,6 +31,7 @@ import sys
 import time
 
 from . import fetch as fetchmod
+from . import hostdata
 from . import source as sourcemod
 from . import stage as stagemod
 from . import sysrootid
@@ -99,9 +100,12 @@ class Builder:
             if os.path.isfile(self.tree.shared(f)):
                 h.update(f.encode() + b"\0")
                 tree_hash(self.tree.shared(f), h)
-        tree_hash(os.path.join(self.top, "tools", "jamos-cc"), h)
-        h.update(self.sysroot_stamp().encode())
-        h.update(toolchain.cross().encode())
+        if r.place == "host":   # built natively: the sysroot is not an input
+            h.update(hostdata.host_id())
+        else:
+            tree_hash(os.path.join(self.top, "tools", "jamos-cc"), h)
+            h.update(self.sysroot_stamp().encode())
+            h.update(toolchain.cross().encode())
         h.update(b"epoch %d\n" % self.epoch(r))
         if r.get("vendored"):
             tree_hash(os.path.join("third_party", r.get("vendored")), h)
@@ -147,7 +151,7 @@ class Builder:
         return done
 
     def build_one(self, r):
-        missing = toolchain.missing_tools(r)
+        missing = hostdata.missing_tools(r) if r.place == "host" else toolchain.missing_tools(r)
         if missing:
             raise BuildError("%s: this machine lacks %s" % (r.name, ", ".join(missing)))
         self.say("%s: building %s-%s r%d (%s, %s)" % (r.name, r.name, r.version, r.revision,
@@ -177,11 +181,15 @@ class Builder:
         self.say("%s: built in %.1f s" % (r.name, time.time() - start))
 
     def _steps(self, r, base, distfiles):
+        if r.place == "host":
+            return hostdata.build_host(self, r, base, distfiles, self.say)
         sysroot, work = os.path.join(base, "sysroot"), os.path.join(base, "work")
         toolchain.make_sysroot(sysroot, self.sysroot, self._libs(r))
         bindir = toolchain.make_bin(r, self.top, base, sysroot, work)
         srcdir = sourcemod.prepare(r, distfiles, work, self._log_say)
+        tool_bins, tool_pcs = hostdata.tool_dirs(self, r)
         paths = {"tmp": os.path.join(base, "tmp"), "epoch": self.epoch(r),
+                 "tool_bins": tool_bins, "tool_pcs": tool_pcs,
                  "destdir": os.path.join(base, "destdir"), "srcdir": srcdir,
                  "jobs": self.jobs, "config_site": os.path.abspath(self.tree.shared("config.site"))}
         os.makedirs(paths["destdir"])
@@ -221,6 +229,8 @@ class Builder:
         out = []
         for dep in treemod.needs_closure(self.tree, r.name):
             d = self.tree.recipes[dep]
+            if d.place == "host":   # a tool, not a library: nothing for the sysroot
+                continue
             stage = os.path.join(self.base(dep), "stage")
             lines = stagemod.read_list(os.path.join(stage, "stage.txt"))
             out.append((dep, stage, d.prefix, [w[1] for w in lines if w[0] == "library"]))
@@ -275,6 +285,8 @@ class Builder:
         jobs = "-j%d" % self.jobs
         destdir = paths["destdir"]
         margs = r.args("make")
+        if r.style == "data":
+            return hostdata.install_data(r, srcdir, destdir)
         if r.style in ("configure", "configure-plain"):
             if r.style == "configure":
                 args = ["--host=" + toolchain.HOST, "--build=" + toolchain.build_triplet(),
@@ -301,10 +313,14 @@ class Builder:
             self.run(["cmake", "--install", bdir], srcdir, env, {"DESTDIR": destdir})
         elif r.style == "meson":
             bdir = os.path.join(work, ".build")
+            native = []
+            if paths["tool_pcs"]:   # the host tools' pkg-config files, for the build machine
+                native = ["--native-file", hostdata.write_native_file(
+                    os.path.join(work, "native.ini"), paths["tool_pcs"])]
             self.run(["meson", "setup", bdir, srcdir, "--cross-file",
                       os.path.abspath(self.tree.shared("jamos.meson")), "--prefix=" + r.prefix,
-                      "--default-library=static", "--buildtype=release"] + r.args("meson"),
-                     srcdir, env)
+                      "--libdir=lib", "--default-library=static", "--buildtype=release"] +
+                     native + r.args("meson"), srcdir, env)
             self.run(["meson", "compile", "-C", bdir, "-j", str(self.jobs)], srcdir, env)
             self.run(["meson", "install", "-C", bdir, "--destdir", destdir], srcdir, env)
         else:

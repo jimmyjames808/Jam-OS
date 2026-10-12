@@ -15,10 +15,11 @@
 # QEMU_SMP passes through.
 # Usage: tools/clock-test.sh <outdir> [name]; exit 0 on PASS.
 set -eu
+DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
 out=$1 name=${2:-clock}
 mkdir -p "$out"
 stick="$out/$name-stick.img"
-data="$stick@@64M"
+data="$stick@@$DATA_AT"
 rtc="-rtc base=2026-01-15T01:02:03"
 ok=1
 if ! QEMU_TIMEOUT=${QEMU_TIMEOUT:-400} QEMU_EXTRA="$rtc" QEMU_SAVE="$stick" \

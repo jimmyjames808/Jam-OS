@@ -45,18 +45,23 @@
  * is state FatFs keeps outside the structs in kept (ffconf.h); fat keeps
  * its rule instead, by entry: a file open at all can't be opened for
  * writing (opening it to read shares the FIL above, a writer's too), and
- * an open file can't be removed or renamed (files_is_open, fsops.c). Each
- * is refused with ERR_BUSY.
+ * an open file can't be removed or renamed (files_may_change, fsops.c).
+ * Each is refused with ERR_BUSY.
  *
  * A file is `unsynced` from its first change until its next f_sync; when
  * the last unsynced file is flushed the volume is settled (marked clean,
  * disk.c).
  *
- * A mapped file (file.map, pager.c) holds its file open too: its slot of
- * maps[] names the file's entry in opens[] as a slot of files[] does, so
- * the lock below holds while it is mapped, and the FIL stays until its
- * last mapping goes. A file open for writing is not mapped (ERR_BUSY), so
- * a mapped file never changes under its pages.
+ * A mapped file (file.map, pager.c) keeps its entry in opens[] too: its
+ * slot of maps[] names it as a slot of files[] does, and the FIL stays
+ * until its last mapping goes. The lock counts a mapping as no open: a
+ * file mapped to read may be opened for writing (its FIL, open to read
+ * since its first open, is made to write: open_to_write), written,
+ * truncated, renamed or removed, and a file open for writing may be
+ * mapped to read; every change reaches its mappings (changed, and
+ * pager.c's header for the order against the hold). A file mapped to run
+ * (FILE_MAP_EXEC, a program) is the exception: none of these while that
+ * VMO lives (ERR_BUSY), and a file open for writing isn't mapped to run.
  *
  * FS_GATHER (<os.h>): a write to a file opened with it stays held
  * (hold.c) after its request, instead of going out with it, and goes out
@@ -149,14 +154,39 @@ static struct fat_open *open_at(uint64_t place)
     return NULL;
 }
 
-bool files_is_open(const char *path)
+status_t files_may_change(const char *path, int *mapped)
 {
     FILINFO fi;
     uint64_t place = 0;
     bool any = false;
+    *mapped = -1;
     for (unsigned i = 0; i < FAT_OPENS && !any; i++)
         any = files_open_used(i);
-    return any && ffx_stat(path, &fi, &place) == FR_OK && open_at(place);
+    struct fat_open *o = any && ffx_stat(path, &fi, &place) == FR_OK ? open_at(place) : NULL;
+    if (!o)
+        return OK;   /* not in use (or not there: the caller's own call says) */
+    uint32_t oi = (uint32_t)(o - kept->opens);
+    if (o->refs || maps_exec(oi))
+        return ERR_BUSY;
+    *mapped = (int)oi;
+    return OK;
+}
+
+void files_moved(uint32_t o, const char *to)
+{
+    FILINFO fi;
+    uint64_t place = 0;
+    struct fat_open *f = &kept->opens[o];
+    if (ffx_stat(to, &fi, &place) != FR_OK) {
+        /* Its entry can't be found again: a later open of the file would
+         * be a second FIL, not this one. Its mappings go instead. */
+        maps_cut_open(o);
+        return;
+    }
+    undo_open(f);
+    f->place = place;
+    f->fil.dir_sect = (LBA_t)(place >> 4);   /* as f_open sets them (ffx.h's place) */
+    f->fil.dir_ptr = kept->fs.win + (place & 15u) * 32u;
 }
 
 bool files_place_ok(const struct fat_open *o)
@@ -214,6 +244,23 @@ static status_t grow_to(struct fat_open *f, uint64_t size)
     return fr_status(fr);
 }
 
+/* f's bytes [lo, hi) changed (hi: the end before or after, whichever is
+ * further): its mappings see it. First what FatFs left in memory goes into
+ * the hold (ffx_flush), where the pages are read from; then pager.c drops
+ * the pages and follows the size. Both inside the change's operation:
+ * pager.c's header says why that order, there. A flush that fails is the
+ * change's failure (the pages are dropped anyway: a mapper that fetches
+ * them again fails, as read_pages refuses a FIL left dirty). */
+static status_t changed(struct fat_open *f, uint64_t lo, uint64_t hi)
+{
+    uint32_t o = (uint32_t)(f - kept->opens);
+    if (!maps_use_open(o))
+        return OK;
+    status_t st = fr_status(ffx_flush(&f->fil));
+    maps_changed(o, lo, hi);
+    return st;
+}
+
 static status_t op_read(void *ctx, uint64_t offset, uint32_t length, uint32_t *out_actual)
 {
     struct fat_file *h = ctx;
@@ -265,22 +312,26 @@ static status_t op_write(void *ctx, uint64_t offset, uint32_t length, uint32_t *
         if (st == OK)
             op_data_copied();
     }
-    if (st == OK)
-        st = grow_to(f, offset);
     if (st != OK)
         return st;
+    uint64_t old = f_size(&f->fil);
+    st = grow_to(f, offset);
     UINT put = 0;
-    FRESULT fr = f_lseek(&f->fil, (FSIZE_t)offset);
-    if (fr == FR_OK && length) {
+    FRESULT fr = st == OK ? f_lseek(&f->fil, (FSIZE_t)offset) : FR_OK;
+    if (st == OK && fr == FR_OK && length) {
         if (h->flags & FS_GATHER)
             op_gather();   /* its writes stay held after this request */
         fr = f_write(&f->fil, bounce, length, &put);
         f->unsynced = true;
     }
-    if (fr != FR_OK)
-        return fr_status(fr);
+    /* What a failure changed too: grow_to's zeros, what f_write put. */
+    status_t sc = changed(f, old < offset ? old : offset, offset + put);
+    if (st != OK || fr != FR_OK)
+        return st != OK ? st : fr_status(fr);
     if (length && put == 0)
         return ERR_NO_SPACE;   /* FatFs writes what fits: nothing did */
+    if (sc != OK)
+        return sc;
     *out_actual = put;
     return OK;
 }
@@ -293,13 +344,19 @@ static status_t op_truncate(void *ctx, uint64_t size)
         return ERR_ACCESS_DENIED;
     if (size > FAT_FILE_MAX)
         return ERR_OUT_OF_RANGE;
-    if (size >= f_size(&f->fil))
-        return grow_to(f, size);
-    FRESULT fr = f_lseek(&f->fil, (FSIZE_t)size);
-    if (fr == FR_OK)
-        fr = truncate_fil(&f->fil);
-    f->unsynced = true;
-    return fr_status(fr);
+    uint64_t old = f_size(&f->fil);
+    status_t st = OK;
+    if (size >= old) {
+        st = grow_to(f, size);
+    } else {
+        FRESULT fr = f_lseek(&f->fil, (FSIZE_t)size);
+        if (fr == FR_OK)
+            fr = truncate_fil(&f->fil);
+        f->unsynced = true;
+        st = fr_status(fr);
+    }
+    status_t sc = changed(f, size < old ? size : old, size < old ? old : size);
+    return st != OK ? st : sc;
 }
 
 static status_t op_stat(void *ctx, uint64_t *out_size, uint8_t *out_is_dir, uint64_t *out_mtime,
@@ -343,9 +400,10 @@ static bool written(uint32_t o)
     return false;
 }
 
-/* file.map: the pages come from pager.c. A file open for writing isn't
- * mapped (its pages would go stale: nothing tells the pager of a write
- * yet), so a mapped file is one nobody writes. */
+/* file.map: the pages come from pager.c. A file open for writing is
+ * mapped to read (its writes reach the pages: changed), never to run (a
+ * program's bytes don't change under it); what its writer left in
+ * FatFs's memory goes into the hold first, where the pages are read. */
 static status_t op_map(void *ctx, uint32_t flags, handle_t *out_vmo, uint64_t *out_size)
 {
     struct fat_file *h = ctx;
@@ -353,8 +411,15 @@ static status_t op_map(void *ctx, uint32_t flags, handle_t *out_vmo, uint64_t *o
         return ERR_INVALID_ARGS;
     if (!(h->flags & FS_READ))
         return ERR_ACCESS_DENIED;
-    if (written(h->open))
+    if (written(h->open) && flags == FILE_MAP_EXEC)
         return ERR_BUSY;
+    if (written(h->open)) {
+        if (hold_pending())
+            op_gather();   /* as a read's: an FS_GATHER file's writes stay held */
+        status_t st = fr_status(ffx_flush(&open_of(h)->fil));   /* (its open: in the undo) */
+        if (st != OK)
+            return st;
+    }
     return maps_make(h->open, flags, out_vmo, out_size);
 }
 
@@ -508,6 +573,26 @@ static status_t open_fil(struct fat_open *f, const char *path, uint32_t flags, b
     return fr_status(fr);
 }
 
+/* o, a file nobody has open but mapped to read (pager.c), opened for
+ * writing (flags, fi its entry): its FIL, open to read since its first
+ * open, may write from now on, as f_open would have made it (FatFs refuses
+ * a read-only file), and FS_TRUNCATE empties it; its mappings see that. */
+static status_t open_to_write(struct fat_open *o, const FILINFO *fi, uint32_t flags)
+{
+    if (fi->fattrib & AM_RDO)
+        return ERR_ACCESS_DENIED;
+    o->fil.flag |= FA_WRITE;
+    uint64_t old = f_size(&o->fil);
+    if (!(flags & FS_TRUNCATE) || old == 0)
+        return OK;
+    FRESULT fr = f_lseek(&o->fil, 0);
+    if (fr == FR_OK)
+        fr = truncate_fil(&o->fil);
+    o->unsynced = true;
+    status_t sc = changed(o, 0, old);
+    return fr != FR_OK ? fr_status(fr) : sc;
+}
+
 /* A free slot of files[] into *f, and a free entry of opens[] into *spare. */
 static void find_slots(struct fat_file **f, struct fat_open **spare)
 {
@@ -537,8 +622,11 @@ status_t files_open(const char *path, uint32_t flags, handle_t *out_ch, handle_t
     struct fat_file *f = NULL;
     struct fat_open *o = exists ? open_at(place) : NULL, *spare = NULL;
     find_slots(&f, &spare);
-    if (o && (flags & FS_WRITE))
-        return ERR_BUSY;   /* open already: a writer has its file to itself */
+    /* Open already: a writer has its file to itself. Mapped to run: never
+     * written while it runs. Only mapped to read: written under its
+     * mappings. */
+    if (o && (flags & FS_WRITE) && (o->refs || maps_exec((uint32_t)(o - kept->opens))))
+        return ERR_BUSY;
     if (!f || (!o && !spare))
         return ERR_NO_RESOURCES;
     undo_open(o ? o : spare);
@@ -546,6 +634,10 @@ status_t files_open(const char *path, uint32_t flags, handle_t *out_ch, handle_t
         o = spare;
         memset(o, 0, sizeof(*o));
         status_t st = open_fil(o, path, flags, exists);
+        if (st != OK)
+            return st;
+    } else if (flags & FS_WRITE) {
+        status_t st = open_to_write(o, &fi, flags);
         if (st != OK)
             return st;
     }

@@ -20,13 +20,17 @@
  *
  * **socketpair ends** are pipe.c's: send and recv go to its read and
  * write, MSG_DONTWAIT by a look at the channel first (another thread can
- * still take what the look saw), MSG_PEEK and MSG_TRUNC are EOPNOTSUPP. */
+ * still take what the look saw), MSG_PEEK and MSG_TRUNC are EOPNOTSUPP.
+ *
+ * **AF_UNIX stream sockets** are svcsock.c's, ancillary data (SCM_RIGHTS)
+ * and all: every call here hands them over once the flags are checked. */
 #include <stdlib.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <string.h>
 #include "kinds.h"
 #include "sock.h"
+#include "svcsock.h"
 
 #define RECV_FLAGS (MSG_PEEK | MSG_DONTWAIT | MSG_WAITALL | MSG_TRUNC | MSG_NOSIGNAL |     \
                     MSG_CMSG_CLOEXEC)
@@ -438,6 +442,9 @@ static long recv_on(long fd, struct xfer *x)
         r = sock_recv(d, d->priv, x);
     else if (d->ops == &sockp_ops)
         r = sockp_recv(d, x);
+    else if (d->ops == &usock_ops)
+        r = usock_recvmsg(d, &(struct msghdr){ .msg_iov = (struct iovec *)x->iov,
+                                               .msg_iovlen = x->iovcnt }, x->flags);
     else
         r = -ENOTSOCK;
     fd_put(d);
@@ -454,6 +461,9 @@ static long send_on(long fd, struct xfer *x)
         r = sock_send(d, d->priv, x);
     else if (d->ops == &sockp_ops)
         r = sockp_send(d, x);   /* an address given is ignored: Linux's EISCONN not worth it */
+    else if (d->ops == &usock_ops)
+        r = usock_sendmsg(d, &(struct msghdr){ .msg_iov = (struct iovec *)x->iov,
+                                               .msg_iovlen = x->iovcnt }, x->flags);
     else
         r = -ENOTSOCK;
     fd_put(d);
@@ -494,6 +504,13 @@ long lx_sendto(long fd, long buf, long len, long flags, long addr, long alen)
 
 static long recvmsg_one(long fd, struct msghdr *m, long flags)
 {
+    struct fd_desc *u = usock_get(fd);
+    if (u) {   /* an AF_UNIX stream socket: svcsock.c's, SCM_RIGHTS and all */
+        long r = recv_flags_check(flags);
+        r = r ? r : usock_recvmsg(u, m, (int)flags);
+        fd_put(u);
+        return r;
+    }
     long n = fd_iov_total(m->msg_iov, (int)(m->msg_iovlen > INT_MAX ? -1 : m->msg_iovlen));
     if (n < 0)
         return n;
@@ -514,8 +531,15 @@ static long recvmsg_one(long fd, struct msghdr *m, long flags)
 
 static long sendmsg_one(long fd, const struct msghdr *m, long flags)
 {
+    struct fd_desc *u = usock_get(fd);
+    if (u) {   /* an AF_UNIX stream socket: svcsock.c's, SCM_RIGHTS and all */
+        long r = send_flags_check(flags);
+        r = r ? r : usock_sendmsg(u, m, (int)flags);
+        fd_put(u);
+        return r;
+    }
     if (m->msg_controllen)
-        return -EINVAL;   /* no ancillary data (SCM_RIGHTS and the rest): not built */
+        return -EINVAL;   /* no ancillary data here (SCM_RIGHTS on socketpairs): not built */
     long n = fd_iov_total(m->msg_iov, (int)(m->msg_iovlen > INT_MAX ? -1 : m->msg_iovlen));
     if (n < 0)
         return n;

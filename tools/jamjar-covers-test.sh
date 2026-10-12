@@ -15,6 +15,7 @@
 # QEMU_SMP passes through. Usage: tools/jamjar-covers-test.sh <outdir>;
 # exit 0 on PASS.
 set -eu
+DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
 out=$1
 mkdir -p "$out"
 name=jamjar-covers
@@ -51,7 +52,7 @@ for a in range(albums):
 PY
 
 cp build/jamos.img "$stick"
-img="$stick@@64M"
+img="$stick@@$DATA_AT"
 mmd -i "$img" ::/many || { echo "$name: can't make /many on the stick image"; exit 1; }
 a=0
 while [ $a -lt $ALBUMS ]; do

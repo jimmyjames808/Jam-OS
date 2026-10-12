@@ -30,11 +30,10 @@
 #define WM_ST_FULLSCREEN (1u << 1)
 #define WM_ST_RESIZING   (1u << 2)
 #define WM_ST_ACTIVATED  (1u << 3)
-/* Not an xdg state: the client draws its own decorations (xdg-decoration's
- * client_side mode, or a toplevel with no decoration object). Part of the
- * configure because the mode changes, as the size does, only once the
- * client acks it and commits: the frame follows the states of the buffer
- * shown (deco_set). */
+/* Not an xdg state: the client draws its own decorations (it never bound
+ * xdg-decoration's manager, xdgdeco.c). Part of the configure because the
+ * mode changes, as the size does, only once the client acks it and
+ * commits: the frame follows the states of the buffer shown (deco_set). */
 #define WM_ST_CSD        (1u << 4)
 
 /* Resize edges: xdg_toplevel.resize_edge's bits (xdgtop.c checks they match). */
@@ -84,11 +83,16 @@ struct wm_window {
     enum wm_mode before_fs;        /* what full screen returns to */
     uint32_t shown;                /* WM_ST_* the shown buffer was drawn for */
     bool float_placed;             /* float_x, float_y are set */
-    int32_t float_x, float_y;      /* floating: where the surface's (0, 0) goes */
-    int32_t float_w, float_h;      /* floating: its size to ask for; 0: the client's own
+    int32_t float_x, float_y;      /* floating: where the window geometry's (0, 0) goes
+                                    * (the surface's, without one: comp.h's window_geom) */
+    int32_t float_w, float_h;      /* floating: its size to ask for (the window geometry's,
+                                    * as xdg-shell's configure means); 0: the client's own
                                     * (a mapped window with none: wm.c's float_default) */
     uint32_t anchor;               /* WM_EDGE_LEFT/TOP: a resize keeps the opposite side still */
-    int32_t anchor_x2, anchor_y2;  /* ... that side: the surface's right or bottom edge */
+    int32_t anchor_x2, anchor_y2;  /* ... that side: the window geometry's right or bottom edge */
+    /* The client's window geometry (surface coordinates; empty: none), for
+     * its next buffer: the comp_window takes it at the commit (wm_commit). */
+    struct comp_box geom;
     bool resizing;                 /* a resize grab is on it */
     bool not_responding;           /* asked to close, no pong since: the title bar says so */
     /* The desktop's (screens.c): the virtual screen it is on while mapped,
@@ -112,9 +116,10 @@ struct wm_window {
      * mapped into yet. */
     uint64_t key;
     bool restoring;
-    /* Decorations (xdg-decoration, xdgdeco.c): the client draws its own,
-     * so its configures carry WM_ST_CSD. False for a toplevel made by no
-     * client (the tests'): the compositor's title bar. */
+    /* Decorations (xdg-decoration, xdgdeco.c): the client draws its own (it
+     * never bound the manager), so its configures carry WM_ST_CSD. False
+     * for a toplevel made by no client (the tests'): the compositor's
+     * title bar. */
     bool csd;
 };
 
@@ -137,6 +142,10 @@ status_t wm_commit(struct wm_window *ww, uint32_t states);
 /* A commit without a buffer: ww is unmapped and back where get_toplevel
  * left it (its requested states and floating place forgotten). */
 void wm_unmap(struct wm_window *ww);
+/* The client's window geometry (xdg_surface.set_window_geometry, applied
+ * by its commit before wm_commit: surface coordinates, empty: none):
+ * shown with the buffer that commit maps, and from then placed by. */
+void wm_set_geometry(struct wm_window *ww, struct comp_box geom);
 void wm_set_title(struct wm_window *ww, const char *title);   /* cut to WM_TEXT_MAX */
 void wm_set_app_id(struct wm_window *ww, const char *app_id);
 /* The client's limits (checked by the caller: 0 or more, max >= min where both are set),
@@ -399,16 +408,18 @@ void wm_marks_update(void);
 
 /* Decorations for a buffer drawn for states, in layout (tiling: no title
  * bar, a border all round; WM_ST_CSD floating or maximised: none, the
- * client's own being inside its surface): sizes around the surface. */
+ * client's own being inside its surface): sizes around the window
+ * geometry (comp.h's window_geometry). */
 struct deco_sizes {
     int32_t top, left, right, bottom;
 };
 struct deco_sizes deco_sizes(uint32_t states, enum comp_layout layout);
-/* The surface's box inside a frame box for states in layout. */
+/* The window geometry's box inside a frame box for states in layout. */
 struct comp_box deco_inner(struct comp_box frame, uint32_t states, enum comp_layout layout);
 /* w's decorations set for states (its frame damaged if they change), and
  * COMP_WIN_CSD for a floating window in its normal state whose client
- * draws its own (WM_ST_CSD). */
+ * draws its own (WM_ST_CSD) and whose window geometry is its whole
+ * surface (else no corners or shadow of ours: window_inset). */
 void deco_set(struct comp_window *w, uint32_t states);
 
 enum deco_part {

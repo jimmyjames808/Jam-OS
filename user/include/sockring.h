@@ -178,11 +178,14 @@
 #define SOCKRING_UDP_TX     (16u * 1024)
 #define SOCKRING_UDP_RX     (32u * 1024)
 /* Ring bytes (sockring_bytes, the header included) one opener's sockets
- * may hold together (a TCP connection with both rings at SOCKRING_MAX and
- * room to spare), and all sockets together (<net.h>'s NET_PROG_RING_BYTES
- * of it ordinary programs'). */
-#define SOCKRING_OPENER_BYTES (8u << 20)
-#define SOCKRING_TOTAL_BYTES  (24u << 20)
+ * may hold together, and all sockets together (<net.h>'s NET_PROG_RING_BYTES
+ * of it ordinary programs'). An opener's budget holds its
+ * NET_TCP_PER_OPENER connections with the default rings (NET_TCP_TX and
+ * NET_TCP_RX: 84 KiB each, 42 MiB) and its NET_SOCKETS_PER_OPENER datagram
+ * sockets (13 MiB) with room to spare. These are budgets, not memory in
+ * use: the VMOs' pages are charged to netstack as they are touched. */
+#define SOCKRING_OPENER_BYTES (64u << 20)
+#define SOCKRING_TOTAL_BYTES  (128u << 20)
 #define SOCKRING_MAGIC      0x474e5253u      /* "SRNG" */
 
 /* Framings (sockring_info.framing). */

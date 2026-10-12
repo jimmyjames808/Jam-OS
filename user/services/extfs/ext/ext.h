@@ -99,6 +99,7 @@ struct ext_cache {
     uint32_t ndirty;         /* buffers dirty */
     uint64_t clock;          /* bumped on every use */
     uint64_t reads, writes;  /* device calls made: for tests and the log */
+    uint64_t discards;       /* ext_discard calls: what was remembered of dirty blocks is stale */
 };
 
 /* ---- the volume ------------------------------------------------------------------------ */
@@ -134,6 +135,8 @@ enum ext_ro {
 
 /* Feature sets, by their word in the superblock (ext_feature_name). */
 enum ext_fset { EXT_FSET_COMPAT, EXT_FSET_INCOMPAT, EXT_FSET_RO_COMPAT };
+
+struct ext_jnl;   /* the journal (ext_jnl.h) */
 
 struct ext_fs {
     struct ext_dev dev;
@@ -179,6 +182,8 @@ struct ext_fs {
     uint64_t why_blk;                /* the block it was found in (0: none) */
 
     struct ext_cache cache;
+    struct ext_jnl *jnl;             /* the open journal (ext_jnl_mount); NULL: none */
+    struct ext_names *names;         /* the directory hash (ext_names.h); NULL: none */
 };
 
 /* Mount the volume on dev: read and check the superblock and every group
@@ -218,6 +223,11 @@ void ext_bdirty(struct ext_fs *fs, struct ext_buf *b);
 /* Drop the cached copies of blocks [blk, blk + count) (none may be pinned
  * or dirty): a writer that wrote them around the cache calls it. */
 void ext_binval(struct ext_fs *fs, uint64_t blk, uint64_t count);
+/* Drop the cached copies of blocks [blk, blk + count), dirty ones too
+ * (none may be pinned): they were freed, so what the cache holds of them
+ * must neither be written home nor read again (a freed extent node
+ * reused for file data). */
+void ext_bforget(struct ext_fs *fs, uint64_t blk, uint64_t count);
 /* Write every dirty block home, in block order. ERR_ACCESS_DENIED if the
  * volume may not be written (nothing written); ERR_IO (the rest stay dirty). */
 status_t ext_sync(struct ext_fs *fs);

@@ -2970,10 +2970,18 @@ static status_t idl_fz_net_socket_rings(void *ctx, uint32_t tx_bytes, uint32_t r
     *out_rx_bytes = (uint32_t)0x5a5a5a5a5a5a5a5aull;
     return OK;
 }
+static status_t idl_fz_net_socket_loopback_only(void *ctx)
+{
+    (void)ctx;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    return OK;
+}
 static const struct net_socket_ops idl_fz_net_socket_ops = {
     .connect = idl_fz_net_socket_connect,
     .state = idl_fz_net_socket_state,
     .rings = idl_fz_net_socket_rings,
+    .loopback_only = idl_fz_net_socket_loopback_only,
 };
 static uint32_t idl_fz_net_socket_serve(const void *q, uint32_t n, const handle_t *hs,
                                 uint32_t nh, void *r, handle_t *rhs, uint32_t *rhn)
@@ -2985,6 +2993,7 @@ static const struct idl_fuzz_msg idl_fz_net_socket_msgs[] = {
     { 0x003c0001u, 14u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x003c0002u, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x003c0003u, 16u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x003c0004u, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
 };
 
 /* ---- net_stream ---- */
@@ -4803,7 +4812,7 @@ static const struct idl_fuzz_proto idl_fuzz_protos[] __attribute__((unused)) = {
     { "crashres", 84, CRASHRES_REQ_MAX, CRASHRES_REP_MAX, CRASHRES_REP_HANDLES, idl_fz_crashres_serve, NULL, idl_fz_crashres_msgs, 1 },
     { "music", 24, MUSIC_REQ_MAX, MUSIC_REP_MAX, MUSIC_REP_HANDLES, idl_fz_music_serve, NULL, idl_fz_music_msgs, 11 },
     { "net", 29, NET_REQ_MAX, NET_REP_MAX, NET_REP_HANDLES, idl_fz_net_serve, NULL, idl_fz_net_msgs, 9 },
-    { "net_socket", 60, NET_SOCKET_REQ_MAX, NET_SOCKET_REP_MAX, NET_SOCKET_REP_HANDLES, idl_fz_net_socket_serve, NULL, idl_fz_net_socket_msgs, 3 },
+    { "net_socket", 60, NET_SOCKET_REQ_MAX, NET_SOCKET_REP_MAX, NET_SOCKET_REP_HANDLES, idl_fz_net_socket_serve, NULL, idl_fz_net_socket_msgs, 4 },
     { "net_stream", 61, NET_STREAM_REQ_MAX, NET_STREAM_REP_MAX, NET_STREAM_REP_HANDLES, idl_fz_net_stream_serve, NULL, idl_fz_net_stream_msgs, 2 },
     { "net_listener", 62, NET_LISTENER_REQ_MAX, NET_LISTENER_REP_MAX, NET_LISTENER_REP_HANDLES, idl_fz_net_listener_serve, NULL, idl_fz_net_listener_msgs, 1 },
     { "netctl", 28, NETCTL_REQ_MAX, NETCTL_REP_MAX, NETCTL_REP_HANDLES, idl_fz_netctl_serve, NULL, idl_fz_netctl_msgs, 8 },

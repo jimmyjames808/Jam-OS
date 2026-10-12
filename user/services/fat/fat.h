@@ -667,6 +667,19 @@ void     pager_reap(void);
 status_t maps_make(uint32_t o, uint32_t flags, handle_t *out, uint64_t *size);
 /* Does a slot of maps[] name opens[o]? */
 bool     maps_use_open(uint32_t o);
+/* ... one of FILE_MAP_EXEC (a program's: opens[o] is never changed while
+ * it lives, docs/M12.5-PLAN.md Q7)? */
+bool     maps_exec(uint32_t o);
+/* A write or truncate (inside its operation) changed opens[o]'s bytes in
+ * [lo, hi) and maybe its size, and its FIL's buffer and FatFs's window are
+ * held already (fileops.c: ffx_flush): every FILE_MAP_READ VMO of it
+ * takes the size and drops those pages, and every slot's cursor starts
+ * again. The order against the hold: pager.c's header. */
+void     maps_changed(uint32_t o, uint64_t lo, uint64_t hi);
+/* opens[o]'s file was removed (inside the operation that removed it):
+ * every VMO of it is cut off (PAGER_OP_DETACH: its mappers fail as for a
+ * pulled stick) and its slot forgotten, one line each in the log. */
+void     maps_cut_open(uint32_t o);
 /* opens[o]'s last fs.open went (fileops.c's close): fat lets go of its
  * own handles of the file's shared VMOs; they live on in their mappers. */
 void     maps_let_go(uint32_t o);
@@ -710,11 +723,18 @@ void     files_close_all(void);
 /* Close the handles of every slot the state doesn't know (after an undo:
  * files an undone fs.open made). */
 void     files_drop_unknown(void);
-/* Is the file at `path` (resolved) open? Told by its directory entry's
- * place, so that an 8.3 alias of an open file's path is that file (FatFs's
- * own lock is off: ffport/ffconf.h). An open file can't be removed or
- * renamed. */
-bool     files_is_open(const char *path);
+/* May the file at `path` (resolved) be removed, renamed or renamed over
+ * (fat's lock: fileops.c)? Told by its directory entry's place, so that an
+ * 8.3 alias of an open file's path is that file (FatFs's own lock is off:
+ * ffport/ffconf.h). ERR_BUSY: it is open, or mapped to run
+ * (FILE_MAP_EXEC). OK otherwise, with *mapped its index in opens[] if it
+ * is mapped to read (its mappings are the caller's to see to:
+ * maps_cut_open, files_moved), else -1. */
+status_t files_may_change(const char *path, int *mapped);
+/* opens[o], a file mapped to read, was renamed to `to` (resolved): its
+ * entry's place, and its FIL's, follow the new entry (or, if that can't
+ * be found, its mappings are cut off). Inside the rename's operation. */
+void     files_moved(uint32_t o, const char *to);
 /* Is opens[o] in use (a slot of files[] or maps[] names it)? */
 bool     files_open_used(uint32_t o);
 /* An adopted opens[] entry's place is its FIL's entry, in the window

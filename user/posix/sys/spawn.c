@@ -14,9 +14,10 @@
  *   3. The program: a name looked up in PATH (posix_spawnp), then a path
  *      (relative ones from the copy's directory): one under /boot runs
  *      from the boot image, as do /bin and /usr/bin, which are the boot
- *      image's bin and usr/bin (there is no other); anything else is
- *      EACCES until programs can be loaded from files, ENOENT if missing.
- *      Before step 4, which takes things out of ours.
+ *      image's bin and usr/bin (there is no other); a file anywhere else
+ *      runs only from a VMO sealed against the owner's approval
+ *      (file_program: EACCES until something offers to seal one for us),
+ *      ENOENT if missing. Before step 4, which takes things out of ours.
  *   4. The hand-over: every slot without FD_CLOEXEC exported (new handles
  *      of the child's own), the directory, the umask, the signal mask and
  *      the ignored signals, our pid as its parent's, its process group and
@@ -58,11 +59,44 @@ static const struct { const char *path; const char *name; } boot_dirs[] = {
     { "/boot/", "" }, { "/bin/", "bin/" }, { "/usr/bin/", "usr/bin/" },
 };
 
-/* The program at abs (absolute, cleaned) as spawn_args.path: a bootfs
- * name into name (PATH_MAX). 0, or -ENOENT (missing), -EACCES (a file
- * spawn can't run yet: only the boot image's programs can be). */
-static long program(const char *abs, char *name)
+/* The program to start. */
+struct program {
+    char    *name;   /* PATH_MAX bytes: a bootfs name, or a file's absolute path */
+    handle_t vmo;    /* a file's program, sealed to run (ours); 0 for the boot image's */
+    uint64_t size;   /* its bytes in vmo */
+};
+
+/* A program on a file system (abs) as a VMO the kernel lets run: *vmo
+ * (ours) with RIGHT_EXEC, each page checked against the owner's approval
+ * as it is fetched, and *size its bytes. That is the shell's way for a
+ * program on /data (docs/M12.5-PLAN.md, "Programs from /data"): `allow`'s
+ * line for exactly this path and hash, its page table in /data/etc/allow.d,
+ * the file's own VMO (file.map, FILE_MAP_EXEC) sealed with that table by
+ * vmo_make_exec_verified. Only a holder of RIGHT_ROOT_VMEX may seal one,
+ * and only with a table it can trust: init and the shell hold the power,
+ * and every program's /data leaves etc out. Not built yet: nothing offers
+ * to seal a program for a POSIX program (who should is an open question:
+ * docs/M13-PLAN.md, "F1b notes"), so it is EACCES, posix_spawn's answer
+ * for a program it may not run. A sealer's answer, once there is one,
+ * becomes: not allowed, or changed since it was: EACCES; no program spawn
+ * can load: ENOEXEC (spawn's ERR_INVALID_ARGS, from spawn_errno); the
+ * file unreadable: EIO. spawn then reads its headers with vmo_read and
+ * never maps it here (libos's spawn.c), so a page that doesn't match ends
+ * the spawn, not us. */
+static long file_program(const char *abs, handle_t *vmo, uint64_t *size)
 {
+    (void)abs;
+    (void)vmo;
+    (void)size;
+    return -EACCES;
+}
+
+/* The program at abs (absolute, cleaned) into *p: a bootfs name, or a
+ * file's sealed VMO (file_program). 0, or -ENOENT (missing), -ENOTDIR,
+ * -EACCES (a directory, or a file we may not run). */
+static long program(const char *abs, struct program *p)
+{
+    char *name = p->name;
     for (unsigned i = 0; i < sizeof(boot_dirs) / sizeof(boot_dirs[0]); i++) {
         size_t l = strlen(boot_dirs[i].path);
         if (strncmp(abs, boot_dirs[i].path, l))
@@ -80,19 +114,24 @@ static long program(const char *abs, char *name)
     status_t st = fs_stat(abs, NULL, &dir, NULL);
     if (st == ERR_NOT_FOUND || st == ERR_NOT_DIR)
         return st == ERR_NOT_FOUND ? -ENOENT : -ENOTDIR;
-    return -EACCES;   /* a program on a file system: not until M12.5's loader */
+    if (st != OK || dir)
+        return -EACCES;
+    long e = file_program(abs, &p->vmo, &p->size);
+    if (!e)
+        strcpy(name, abs);   /* fits: both are PATH_MAX */
+    return e;
 }
 
-/* The program for r into name: its path, or its name looked up in
+/* The program for r into *prog: its path, or its name looked up in
  * r->search (a PATH: ':'-separated; an empty part is the directory dir). */
-static long find_program(const struct jam_spawn_req *r, const char *dir, char *name)
+static long find_program(const struct jam_spawn_req *r, const char *dir, struct program *prog)
 {
     char *abs = malloc(PATH_MAX), *part = malloc(PATH_MAX);
     long e = abs && part ? 0 : -ENOMEM;
     if (!e && (!r->search || strchr(r->path, '/'))) {
         e = spawn_absolute(r->path, dir, abs);
         if (!e)
-            e = program(abs, name);
+            e = program(abs, prog);
     } else if (!e) {
         bool denied = false;
         size_t ln = strnlen(r->path, PATH_MAX);
@@ -106,7 +145,7 @@ static long find_program(const struct jam_spawn_req *r, const char *dir, char *n
                 e = spawn_absolute(part, dir, abs);
             }
             if (!e)
-                e = program(abs, name);
+                e = program(abs, prog);
             denied |= e == -EACCES;
             if (!e || (e != -ENOENT && e != -ENOTDIR && e != -EACCES && e != -ENAMETOOLONG))
                 break;
@@ -186,10 +225,10 @@ static int count(char *const *v)
     return n;
 }
 
-/* Start the program name (a bootfs name) with ho and a signal channel
- * (its end as SR_SIGNALS); *proc and our end of the channel (*sigch) on
- * success. ho's handles are consumed whatever happens. */
-static status_t start(const struct jam_spawn_req *r, const char *name,
+/* Start the program p with ho and a signal channel (its end as
+ * SR_SIGNALS); *proc and our end of the channel (*sigch) on success. ho's
+ * handles are consumed whatever happens; p's VMO stays ours. */
+static status_t start(const struct jam_spawn_req *r, const struct program *p,
                       const struct posixfds_out *ho, handle_t *proc, handle_t *sigch)
 {
     static const char *const no_env[] = { NULL };
@@ -201,7 +240,9 @@ static status_t start(const struct jam_spawn_req *r, const char *name,
     }
     struct spawn_handle x = { SR_SIGNALS, theirs };
     struct spawn_args a = {
-        .path = name,
+        .path = p->name,
+        .vmo = p->vmo,
+        .size = p->size,
         .argc = count(r->argv),
         .argv = (const char *const *)r->argv,
         .job = startup_handle(SR_JOB),
@@ -227,8 +268,8 @@ struct started {
 
 /* Everything after the table: the state, the start, the pid. 0 with *c,
  * or an errno value. The table's handles in ho are consumed either way. */
-static int launch(const struct jam_spawn_req *r, bool exec, struct spawnfd *t, const char *name,
-                  struct posixfds_out *ho, struct started *c)
+static int launch(const struct jam_spawn_req *r, bool exec, struct spawnfd *t,
+                  const struct program *p, struct posixfds_out *ho, struct started *c)
 {
     long e = child_state(r, exec, &ho->state);
     if (e) {
@@ -236,7 +277,7 @@ static int launch(const struct jam_spawn_req *r, bool exec, struct spawnfd *t, c
         return (int)-e;
     }
     ho->cwd = t->cwd;
-    status_t st = start(r, name, ho, &c->proc, &c->sigch);
+    status_t st = start(r, p, ho, &c->proc, &c->sigch);
     if (st != OK)
         return spawn_errno(st);
     struct process_info info;
@@ -263,21 +304,23 @@ static int spawn_child(const struct jam_spawn_req *r, bool exec, int *res)
         return ENOSYS;   /* no scheduling policies to give */
     struct spawnfd *t = NULL;
     struct posixfds_out ho = { 0 };
-    char *name = malloc(PATH_MAX);
-    long e = name ? spawnfd_begin(&t) : -ENOMEM;
+    struct program prog = { malloc(PATH_MAX), HANDLE_INVALID, 0 };
+    long e = prog.name ? spawnfd_begin(&t) : -ENOMEM;
     if (!e)
         e = spawnfd_apply(t, r->ops, r->nops);
     if (!e)
-        e = r->path ? find_program(r, t->cwd, name) : -EFAULT;
+        e = r->path ? find_program(r, t->cwd, &prog) : -EFAULT;
     if (!e)
         e = spawnfd_export(t, &ho);
     int ec = (int)-e;
     struct started c = { 0, HANDLE_INVALID, HANDLE_INVALID };
     if (!e)
-        ec = launch(r, exec, t, name, &ho, &c);
+        ec = launch(r, exec, t, &prog, &ho, &c);
     struct posixfds_state s = ho.state;   /* the ids it was told */
     spawnfd_end(t, &ho);
-    free(name);
+    if (prog.vmo)
+        jam_handle_close(prog.vmo);   /* the child maps what it needs of it */
+    free(prog.name);
     if (ec)
         return ec;
     e = lx_child_add(c.proc, c.sigch, c.pid, s.pgid ? (int32_t)s.pgid : c.pid,

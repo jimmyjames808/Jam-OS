@@ -1,0 +1,30 @@
+# The stick pulled under a POSIX program's mapping (tools/posix-mmap-test.sh,
+# case pull, which makes stick a with /pull.bin, 2 MiB): posixtest
+# --child-mmap-pull maps it and touches every page, says it is ready and
+# waits for a line; the stick goes; the line comes; its copy from the
+# mapping through a pipe is EIO and it goes on; its touch of the mapping
+# ends it (the kernel's line names the pager). The shell and /data are
+# fine after.
+# QEMU_INPUT=this file, command line "shell", the drive aimg.
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send T=p
+wait {prompt}
+monitor device_add usb-storage,id=sa,bus=xhci.0,port=2,drive=aimg
+wait 60 init: /usb0 mounted
+send posixtest --child-mmap-pull /usb0/pull.bin; echo pull-$T=$?
+wait 60 posixtest: mmap-pull: mapped
+wait 60 , ready
+monitor device_del sa
+wait 30 init: /usb0 is gone
+send go
+wait 30 posixtest: mmap-pull: a copy from the mapping:
+seen 30 killed: page fault: the file's pager
+wait 30 pull-p=
+wait {prompt}
+send ls /data; echo ls-$T=$?
+wait 30 ls-p=0
+wait {prompt}
+send reboot -f
+wait reboot: resetting
