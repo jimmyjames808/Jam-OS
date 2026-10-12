@@ -55,6 +55,16 @@ img="$out/wtest.img"
 tools/update-test-key.sh "$out" build/jamos.img "$img" ||
     { echo "update-write-test: can't make the test key's stick"; exit 1; }
 key="$out/testkey/key1/update.key"
+# /data/update holds three builds (A, B and C, about 22 MB each): more than
+# the image's 64 MiB data partition, so this stick's is made 192 MiB (the
+# MBR grown as tools/write-usb.sh grows a stick's, then formatted here).
+data_mib=192
+python3 -c "import sys; open(sys.argv[1], 'r+b').truncate(int(sys.argv[2]) << 20)" "$img" \
+    $((${DATA_AT%M} + data_mib)) &&
+    python3 tools/mbr-grow.py "$img" $(((${DATA_AT%M} + data_mib) * 2048)) > /dev/null &&
+    mformat -i "$img@@$DATA_AT" -T $((data_mib * 2048)) -F -v JAMOS-DATA :: &&
+    python3 tools/fat-label.py "$img" ${DATA_AT%M} --fix > /dev/null ||
+    { echo "update-write-test: can't grow the stick's /data"; exit 1; }
 printf 'net.address = 10.2.21.5/24 10.2.21.1 10.2.21.1\nnet.host = 10.2.21.174\n' \
     > "$out/wtest.settings"
 mmd -i "$img@@$DATA_AT" ::/etc 2>/dev/null || true
