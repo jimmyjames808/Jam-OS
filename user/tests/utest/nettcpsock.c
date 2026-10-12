@@ -222,7 +222,8 @@ static bool peer_connects(struct net_listener *l, uint16_t from, struct net_sock
 
 bool t_nettcp_bulk_rings(void)
 {
-    enum { N = 5 };
+    /* Connections past what an opener's ring bytes hold of bulk tx rings. */
+    enum { N = SOCKRING_OPENER_BYTES / (NET_TCP_BULK + RING + SOCKRING_HDR) + 2 };
     handle_t lo;
     struct net_listener l;
     static struct net_sock s[N];
@@ -437,7 +438,8 @@ bool t_nettcp_reuse_api(void)
     CHECK(netdrv_start());
     CHECK(netdrv_ping(1, true));   /* netstack knows the peer's MAC */
     CHECK(connect_on(netdrv_net_listen(), &lo));
-    CHECK_ST(net_tcp_listen_flags(lo, 5300, 4, 0, 0, 2, &x), ERR_INVALID_ARGS);   /* no such flag */
+    CHECK_ST(net_tcp_listen_flags(lo, 5300, 4, 0, 0, 4, &x), ERR_INVALID_ARGS);   /* no such flag */
+    CHECK_ST(net_tcp_listen_flags(lo, 5300, 4, 0, 0, NET_LISTEN_REUSE | 4, &x), ERR_INVALID_ARGS);
     CHECK_ST(net_tcp_listen_flags(lo, 5300, 4, 0, 0, ~0u, &x), ERR_INVALID_ARGS);
     CHECK(peer_accepted(&p, 5300, 40300, NET_LISTEN_REUSE, &s, lo, &l));
     CHECK_ST(net_tcp_listen_flags(lo, 5300, 4, 0, 0, NET_LISTEN_REUSE, &x), ERR_ALREADY_BOUND);

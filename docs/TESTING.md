@@ -168,7 +168,7 @@ JAMOS_REMOTE=jamos-pc tools/remote-test.sh tools/mixer-test.sh build/test/mixer
 
 It copies the checkout (no `.git`, no `build/`) to `~/work/<checkout's
 name>` there, runs `make image` (so the image is never stale), runs the
-command with the `QEMU_*`, `KTESTS` and `JAMOS_*` variables, and copies
+command with the `QEMU_*`, `KTESTS`, `JAMOS_*`, `PC_RUNS`, `*_CASES` (`PAGER_CASES`, `MMAP_CASES`), `SOAK_*` and `PORTS_TEST_*` variables, and copies
 back the output directories its arguments name under `build/` (but stick
 images); its exit status is the command's. Commands from every checkout
 share `JAMOS_REMOTE_SLOTS` (6) slots on the machine and wait for a free
