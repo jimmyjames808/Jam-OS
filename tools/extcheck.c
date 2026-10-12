@@ -399,7 +399,7 @@ void list_volume(struct ext_fs *fs, struct lines *l)
                 fail("too many names");
             char name[EXT_NAME_MAX * 2 + 8];
             text(d.name, d.name_len, name, sizeof(name));
-            snprintf(paths[top], PATH_MAX_, "%s/%s", strcmp(path, "/") ? path : "", name);
+            snprintf(paths[top], PATH_MAX_, "%.3000s/%s", strcmp(path, "/") ? path : "", name);
             types[top] = d.type;
             inos[top++] = d.ino;
         }

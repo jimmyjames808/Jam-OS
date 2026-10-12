@@ -223,7 +223,7 @@ static uint32_t files_in(struct ext_fs *fs, uint32_t dir, uint32_t *inos, char (
         if (d.type != EXT_FT_REG || seen || d.name_len >= 64)
             continue;
         inos[n] = d.ino;
-        snprintf(names[n++], 64, "%s", d.name);
+        snprintf(names[n++], 64, "%.63s", d.name);
     }
     return n;
 }
