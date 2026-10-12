@@ -503,7 +503,7 @@ Other boot words (for `tools/qemu-test.sh`, not in the menu):
   from, which a kernel started by kexec gets from the one before (Limine
   tells the first one itself); volumes takes the Jam OS disk with that id
   as the boot disk.
-- `crashkernel=<MiB>`: the stored kernel's region (default 48, 32..1024); `crashkernel=0`: no
+- `crashkernel=<MiB>`: the stored kernel's region (default 64, 32..1024); `crashkernel=0`: no
   stored kernel, so a panic halts on its screen and `reboot` falls back to the firmware.
 - `crashtest=<name>`: the stored kernel's command line gets `test<name>`, so the next boot (after
   a reboot or a panic) runs that crash test: a crash loop for `tools/kdump-test.sh`.
