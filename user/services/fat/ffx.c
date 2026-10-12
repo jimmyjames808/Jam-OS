@@ -1,6 +1,6 @@
 /* fat: FatFs itself (third_party/fatfs, vendored unmodified), compiled
- * here with three functions of fat's own beside its code, which need what
- * FatFs keeps static: where a directory entry is. An entry's place (the
+ * here with fat's own functions beside its code, which need what FatFs
+ * keeps static: where a directory entry is, and its window. An entry's place (the
  * sector that holds it and its slot there) is what fat knows a file by:
  * the key of its open files and their lock (fileops.c), and the id fs.stat,
  * fs.readdir and file.stat answer. The Makefile compiles this file instead
@@ -83,4 +83,17 @@ FRESULT ffx_entry_time(FATFS *fs, uint64_t place, WORD *date, WORD *time)
         *date = ld_16(dir + DIR_ModTime + 2);
     }
     return res;
+}
+
+/* f_sync's write of fp's sector buffer, then sync_window: the directory
+ * entry is left for the sync. */
+FRESULT ffx_flush(FIL *fp)
+{
+    FATFS *fs = fp->obj.fs;
+    if (fp->flag & FA_DIRTY) {
+        if (disk_write(fs->pdrv, fp->buf, fp->sect, 1) != RES_OK)
+            return FR_DISK_ERR;
+        fp->flag &= (BYTE)~FA_DIRTY;
+    }
+    return sync_window(fs);
 }

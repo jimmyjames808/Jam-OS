@@ -1,5 +1,5 @@
 /* fat's additions to FatFs (ffx.c): what fat knows a file by, the place of
- * its directory entry. */
+ * its directory entry, and a file's changes made readable from the disk. */
 #pragma once
 
 #include <stdint.h>
@@ -16,3 +16,8 @@ FRESULT  ffx_stat(const TCHAR *path, FILINFO *fno, uint64_t *place);
 FRESULT  ffx_readdir(DIR *dp, FILINFO *fno, uint64_t *place);
 /* The modification date and time in the entry at `place`. */
 FRESULT  ffx_entry_time(FATFS *fs, uint64_t place, WORD *date, WORD *time);
+/* What a write left in memory, written (held, during an operation): fp's
+ * sector buffer if changed, and the volume's window if changed, as f_sync
+ * writes them but without the directory entry. Then a copy of fp reads,
+ * through disk_read alone, what fp would (pager.c's cursors do). */
+FRESULT  ffx_flush(FIL *fp);

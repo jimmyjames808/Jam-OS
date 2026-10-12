@@ -1,0 +1,90 @@
+# Mapped files whose files change under them (tools/pager-test.sh, case
+# write; fat's coherence: user/services/fat/pager.c's header). The
+# script's stick has pager.bin (2 MiB).
+#   pagertest write   every kind of write and truncate, through an open of
+#                     its own, seen through its mapping (on /data and the
+#                     stick)
+#   the shell's `write` empties a mapped file (FS_TRUNCATE): past the new
+#                     end a copy from the mapping is refused, a load is a
+#                     bus error
+#   `rm` of a mapped file: its mapping is cut off (a copy ERR_IO, a load
+#                     killed "the file's pager is gone")
+# QEMU_INPUT=this file, command line "shell", the drive aimg. The text
+# waited for is built from $T, so it never appears in the typed line.
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send T=p
+wait {prompt}
+monitor device_add usb-storage,id=sa,bus=xhci.0,port=2,drive=aimg
+wait 60 init: /usb0 mounted
+
+# ---- every kind of write and truncate under a mapping ------------------------------------------
+send pagertest write /data/w.bin; echo w1-$T=$?
+wait 120 pagertest: write /data/w.bin: PASS
+wait w1-p=0
+wait {prompt}
+send pagertest write /usb0/w.bin; echo w2-$T=$?
+wait 120 pagertest: write /usb0/w.bin: PASS
+wait w2-p=0
+wait {prompt}
+
+# ---- the shell empties a mapped file: past its new end a copy is refused ----------------------
+send cp /usb0/pager.bin /data/t.bin; echo c1-$T=$?
+wait 120 c1-p=0
+wait {prompt}
+send pagertest touch /data/t.bin 1048576 copy /data/cue1 &
+wait pagertest: waiting for /data/cue1
+send write /data/t.bin short; echo s1-$T=$?
+wait s1-p=0
+wait {prompt}
+send write /data/cue1 go; echo q1-$T=$?
+wait q1-p=0
+seen 30 pagertest: touch /data/t.bin at 1048576 by a copy: ERR_INVALID_ARGS
+wait {prompt}
+
+# ---- ... and a load there is a bus error ------------------------------------------------------
+send sleep 1; cp /usb0/pager.bin /data/t.bin; echo c2-$T=$?
+wait 120 c2-p=0
+wait {prompt}
+send pagertest touch /data/t.bin 1048576 load /data/cue2 &
+wait pagertest: waiting for /data/cue2
+send write /data/t.bin short; echo s2-$T=$?
+wait s2-p=0
+wait {prompt}
+send write /data/cue2 go; echo q2-$T=$?
+wait q2-p=0
+seen 30 killed: bus error: page past the end of a shrunk VMO
+wait {prompt}
+
+# ---- a mapped file removed: its mapping cut off -----------------------------------------------
+send sleep 1; cp /usb0/pager.bin /data/u.bin; echo c3-$T=$?
+wait 120 c3-p=0
+wait {prompt}
+send pagertest touch /data/u.bin 4096 copy /data/cue3 &
+wait pagertest: waiting for /data/cue3
+send rm /data/u.bin; echo r1-$T=$?
+wait r1-p=0
+wait {prompt}
+seen 10 cut off: its file was removed
+send write /data/cue3 go; echo q3-$T=$?
+wait q3-p=0
+seen 30 pagertest: touch /data/u.bin at 4096 by a copy: ERR_IO
+wait {prompt}
+send sleep 1; cp /usb0/pager.bin /data/u.bin; echo c4-$T=$?
+wait 120 c4-p=0
+wait {prompt}
+send pagertest touch /data/u.bin 4096 load /data/cue4 &
+wait pagertest: waiting for /data/cue4
+send rm /data/u.bin; echo r2-$T=$?
+wait r2-p=0
+wait {prompt}
+send write /data/cue4 go; echo q4-$T=$?
+wait q4-p=0
+seen 30 killed: page fault: the file's pager is gone
+wait {prompt}
+send sleep 1; rm /data/t.bin /data/w.bin /data/cue1 /data/cue2 /data/cue3 /data/cue4; echo e-$T=$?
+wait e-p=0
+wait {prompt}
+send reboot -f
+wait reboot: resetting

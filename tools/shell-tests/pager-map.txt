@@ -2,10 +2,11 @@
 # second stick (/usb0, made by the script: pager.bin, 2 MiB) and the same
 # file copied to /data, hashed through a mapping twice (the second pass
 # makes no request: fat's "gone" line counts them when the mapping goes),
-# and once through a FILE_MAP_EXEC VMO read with vmo_read. A mapped file
-# can't be removed; once its mapping has gone (the program ended) it can,
-# at once. The script compares every hash with the host's sha256sum and
-# counts fat's lines.
+# and once through a FILE_MAP_EXEC VMO read with vmo_read. A page touched
+# on a cue is fetched alone (one request), and the file is removed once
+# its mapping has gone (a file removed under a mapping: case write). The
+# script compares every hash with the host's sha256sum and counts fat's
+# lines.
 # QEMU_INPUT=this file, command line "shell", the drive aimg. The text
 # waited for is built from $T, so it never appears in the typed line.
 wait 120 Jam OS shell
@@ -43,12 +44,9 @@ wait 120 pagertest: /data/pager.bin: 2097152 bytes: own VMO sha256
 wait x2-p=0
 wait {prompt}
 
-# ---- a mapped file can't be removed; once its mapping is gone, it can ---------------------------
+# ---- one page touched on a cue; the file removed once its mapping is gone -----------------------
 send pagertest touch /data/pager.bin 4096 load /data/cue.txt &
 wait pagertest: waiting for /data/cue.txt
-send rm /data/pager.bin; echo r1-$T=$?
-wait r1-p=1
-wait {prompt}
 send write /data/cue.txt go; echo q-$T=$?
 wait q-p=0
 seen 30 pagertest: touched /data/pager.bin at 4096

@@ -13,8 +13,7 @@
 #          through a mapping twice (the second pass asks fat for nothing:
 #          its "gone" line counts the requests) and through a VMO of our
 #          own (FILE_MAP_EXEC, read with vmo_read): every hash the host's
-#          sha256sum; a mapped file can't be removed, and can once its
-#          mapping went.
+#          sha256sum; a touch on a cue asks for its 64 KiB alone.
 #   budget a file half again as big as the mount's budget (QEMU_MEM 512M:
 #          a budget of 32 MiB, a 48 MiB file), hashed through a mapping
 #          twice: right both times, and the second pass asks for every
@@ -35,12 +34,22 @@
 #          header page) and boot 2 runs them: px dies at the changed page,
 #          py and pz are refused, the shell lives; pq dies when the stick is
 #          pulled under it, and runs again from the replugged one.
-# Later cases (named here by the tracks that add them): write, pull.
+#   write  files that change under their mappings: pagertest's own
+#          writes and truncates of every kind, on /data and the stick,
+#          each seen through the mapping; the shell's `write` emptying a
+#          mapped file (a copy past the new end refused, a load there a
+#          bus error); `rm` of a mapped file (cut off: a copy ERR_IO, a
+#          load killed "the file's pager is gone").
+#   pull   the stick pulled under a mapping (QEMU's device_del): a copy
+#          from a page read before and one never read both fail ERR_IO in
+#          under a second, a load is killed "the file's pager is gone";
+#          /data and the shell still answer; plugged back, the file maps
+#          and hashes right again.
 # QEMU_SMP and QEMU_MEM pass through (budget sets its own QEMU_MEM).
 # Usage: tools/pager-test.sh <outdir> [name]; exit 0 on PASS.
 set -eu
 out=$1 name=${2:-pager}
-cases=${PAGER_CASES:-plumb map budget kill exec}
+cases=${PAGER_CASES:-plumb map budget kill exec write pull}
 mkdir -p "$out"
 ok=1
 
@@ -156,7 +165,6 @@ case_map() {
     want map 2 "fat /data: mapped file [0-9a-f]+ gone: 32 page requests, 512 pages supplied" "$run"
     # The touch at 4096 asked for the 64 KiB from there.
     want map 1 "fat /data: mapped file [0-9a-f]+ gone: 1 page requests, 16 pages supplied" "$run"
-    want map 1 "rm: .*pager.bin.*in use" "$run"
     no_page_errors map
     rm -f "$stick" "$stick".*
 }
@@ -304,6 +312,50 @@ case_exec() {
     rm -f "$stick"
 }
 
+case_write() {
+    stick="$out/$name-write-a.img"
+    make_stick "$stick"
+    run_case write "$stick"
+    want write 1 "pagertest: write /data/w.bin: PASS" "$run"
+    want write 1 "pagertest: write /usb0/w.bin: PASS" "$run"
+    want write 1 "pagertest: touch /data/t.bin at 1048576 by a copy: ERR_INVALID_ARGS" "$run"
+    want write 1 "pagertest\" killed: bus error: page past the end of a shrunk VMO" "$run"
+    want write 1 "pagertest: touch /data/u.bin at 4096 by a copy: ERR_IO" "$run"
+    want write 1 "pagertest\" killed: page fault: the file's pager is gone" "$run"
+    want write 2 "fat /data: mapped file [0-9a-f]+ cut off: its file was removed" "$run"
+    never write "MISMATCH|doesn't know|can't detach|can't read|can't fail" "$run"
+    never write "can't follow its size|can't drop its old pages|couldn't read it" "$run"
+    never write "pages not supplied|can't wait on the pager|don't match the approved" "$run"
+    never write "did not end cleanly|left [0-9]+ units of job kind" "$run"
+    rm -f "$stick" "$stick".*
+}
+
+case_pull() {
+    stick="$out/$name-pull-a.img"
+    make_stick "$stick" 16
+    run_case pull "$stick"
+    sha=$(cat "$stick.big.bin.sha")
+    # Both runs read the first half (8 MiB) before the pull, right.
+    want pull 2 "pagertest: pull /usb0/big.bin: read 8388608 bytes: sha256 " "$run"
+    for at in 0 8388608; do
+        line=$(grep -a "pagertest: pull /usb0/big.bin: a copy at $at: " "$run" | head -1 || true)
+        case $line in
+        *": ERR_IO in "*" ms"*)
+            ms=${line##*ERR_IO in }
+            ms=${ms%% ms*}
+            [ "$ms" -lt 1000 ] ||
+                { echo "$name: pull: the copy at $at failed after $ms ms, wanted under 1000"; ok=0; } ;;
+        *) echo "$name: pull: the copy at $at: \"${line:-no line}\", wanted ERR_IO"; ok=0 ;;
+        esac
+    done
+    want pull 1 "pagertest\" killed: page fault: the file's pager is gone" "$run"
+    never pull "still readable|couldn't read it|didn't answer" "$run"
+    want pull 2 "volumes: fat-usb0: pager closed" "$run"
+    hashed pull /usb0/big.bin "$sha" 1
+    never pull "MISMATCH|can't detach|can't fail|pages not supplied|can't wait on the pager" "$run"
+    rm -f "$stick" "$stick".*
+}
+
 for c in $cases; do
     case $c in
     plumb) case_plumb ;;
@@ -311,6 +363,8 @@ for c in $cases; do
     budget) case_budget ;;
     kill) case_kill ;;
     exec) case_exec ;;
+    write) case_write ;;
+    pull) case_pull ;;
     *) echo "$name: no case called $c"; ok=0 ;;
     esac
 done

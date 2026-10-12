@@ -24,6 +24,17 @@
  *                                           mapping). The test script pulls the
  *                                           stick or writes the file between
  *                                           the map and the cue.
+ *   pagertest write <path>                  make the file, map it, change it
+ *                                           every way through an open of its
+ *                                           own and check the mapping after
+ *                                           each change (write.c)
+ *   pagertest pull <path> <cue> load|copy   map the file, read its first half
+ *                                           through the mapping, wait for the
+ *                                           cue (the script pulls the stick
+ *                                           first), then copy a byte from the
+ *                                           mapping at 0 (read before) and at
+ *                                           the half (never read), each timed,
+ *                                           or load the byte at the half
  *
  * Exit codes: 0 done and, where there is something to compare, equal; 1 a
  * mismatch or a failed check; 2 the file could not be mapped; 3 the cue
@@ -31,15 +42,16 @@
  * load the pager can't satisfy ends the process in the kernel with a line
  * of its own, before any report.
  *
- * Its list gives it every mount read-only, so a file on /data or a stick
- * can be mapped, and a cue is a file somewhere in them. */
+ * Its list gives it every mount read-write, so a file on /data or a stick
+ * can be mapped (and, for `write`, made and changed), and a cue is a file
+ * somewhere in them. */
 #include <fs_idl.h>
 #include <os.h>
 #include <sha256.h>
 #include <wants.h>
 #include "pagertest.h"
 
-JAM_WANTS("mount * r\n");
+JAM_WANTS("mount * rw\n");
 
 #define STEP      (64u << 10)   /* hashed at a time */
 #define CUE_WAIT  (120 * NS_PER_S)
@@ -62,7 +74,8 @@ static bool number(const char *s, uint64_t *out)
 static int usage(void)
 {
     printf("usage: pagertest self | map <path> | read <path> [offset [len [passes]]] | "
-           "hash <path> [passes] | xhash <path> | touch <path> <offset> load|copy [cue]\n");
+           "hash <path> [passes] | xhash <path> | touch <path> <offset> load|copy [cue] | "
+           "write <path> | pull <path> <cue> load|copy\n");
     return 64;
 }
 
@@ -252,6 +265,56 @@ static int cmd_touch(const char *path, uint64_t off, bool copy, const char *cue)
     return rc;
 }
 
+/* A system call's copy of the mapping's byte at off: its status, and how
+ * long it took, said. */
+static status_t timed_copy(const char *path, const struct mapped_file *mf, uint64_t off)
+{
+    handle_t sink = HANDLE_INVALID;
+    status_t st = jam_vmo_create(PAGE_SIZE, 0, &sink);
+    uint64_t t0 = now();
+    if (st == OK)
+        st = jam_vmo_write(sink, 0, mf->data + off, 1);
+    uint64_t ms = (now() - t0) / NS_PER_MS;
+    if (sink)
+        jam_handle_close(sink);
+    printf("pagertest: pull %s: a copy at %lu: %s in %lu ms\n", path, (unsigned long)off,
+           status_str(st), (unsigned long)ms);
+    return st;
+}
+
+static int cmd_pull(const char *path, const char *cue, bool copy)
+{
+    struct mapped_file mf;
+    status_t st = mapped_file_open(path, &mf);
+    if (st != OK) {
+        printf("pagertest: map %s: %s\n", path, status_str(st));
+        return 2;
+    }
+    uint64_t half = (mf.size / 2) & ~(uint64_t)(PAGE_SIZE - 1);
+    uint8_t digest[SHA256_BYTES];
+    char hex[2 * SHA256_BYTES + 1];
+    hash_mapped(&mf, 0, half, digest);
+    sha256_hex(digest, hex);
+    printf("pagertest: pull %s: read %lu bytes: sha256 %s\n", path, (unsigned long)half, hex);
+    if (!half || !wait_cue(cue)) {
+        mapped_file_close(&mf);
+        return 3;
+    }
+    int rc = 0;
+    if (copy) {
+        /* The stick is gone: both fail (ERR_IO), the page read before too. */
+        rc = timed_copy(path, &mf, 0) == ERR_IO && timed_copy(path, &mf, half) == ERR_IO ? 0 : 4;
+    } else {
+        printf("pagertest: pull %s: loading at %lu\n", path, (unsigned long)half);
+        volatile const uint8_t *p = mf.data + half;
+        uint8_t b = *p;   /* the stick is gone: this ends the process */
+        printf("pagertest: pull %s: loaded byte %02x: still readable\n", path, b);
+        rc = 1;
+    }
+    mapped_file_close(&mf);
+    return rc;
+}
+
 int main(int argc, char **argv)
 {
     uint64_t off = 0, len = 0, passes = 1;
@@ -272,5 +335,10 @@ int main(int argc, char **argv)
     if (!strcmp(cmd, "touch") && (argc == 5 || argc == 6) && number(argv[3], &off) &&
         (!strcmp(argv[4], "load") || !strcmp(argv[4], "copy")))
         return cmd_touch(argv[2], off, !strcmp(argv[4], "copy"), argc == 6 ? argv[5] : NULL);
+    if (!strcmp(cmd, "write") && argc == 3)
+        return pagertest_write(argv[2]);
+    if (!strcmp(cmd, "pull") && argc == 5 &&
+        (!strcmp(argv[4], "load") || !strcmp(argv[4], "copy")))
+        return cmd_pull(argv[2], argv[3], !strcmp(argv[4], "copy"));
     return usage();
 }
