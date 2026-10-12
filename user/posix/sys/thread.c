@@ -7,7 +7,11 @@
  * joiner may unmap the stack at once. exit ends the thread, exit_group
  * the process. The futex calls are Jam OS's, which are private to the
  * process (a POSIX process shares no memory with another), so Linux's
- * shared and private futexes are the same here.
+ * shared and private futexes are the same here. The operations answered
+ * are wait (relative timeout), wake, requeue, and the bitset wait (an
+ * absolute timeout on the monotonic or, flagged, the wall clock) and
+ * wake, both with a mask of every bit; PartitionAlloc and Mojo call
+ * them by raw syscall().
  *
  * Each thread's handle is kept in a table by its id (threads, under
  * threads_lock) for the calls that act on another thread (signals); the
@@ -22,7 +26,9 @@
 #include <sched.h>
 #include <time.h>
 #include "layer.h"
+#include "proc.h"
 #include "sig.h"
+#include "threads.h"
 
 /* Linux's values (x86-64): arch_prctl's codes and futex's operations. */
 #define ARCH_SET_FS          0x1002
@@ -30,8 +36,11 @@
 #define FUTEX_WAIT           0
 #define FUTEX_WAKE           1
 #define FUTEX_REQUEUE        3
+#define FUTEX_WAIT_BITSET    9
+#define FUTEX_WAKE_BITSET    10
 #define FUTEX_PRIVATE_FLAG   128
 #define FUTEX_CLOCK_REALTIME 256
+#define FUTEX_BITSET_MATCH_ANY 0xffffffffu
 
 #define THREADS_MAX 8192   /* threads made by clone, alive at once */
 
@@ -207,6 +216,54 @@ long lx_gettid(long a, long b, long c, long d, long e, long f)
     return self_tid;
 }
 
+/* The first thread's id (its handle is the startup message's, which is
+ * not in the table), once asked for; 0 if the kernel did not say. */
+static uint32_t first_tid(void)
+{
+    static uint32_t first;
+    uint32_t t = __atomic_load_n(&first, __ATOMIC_ACQUIRE);
+    if (!t && kp_thread_tid(startup_handle(SR_SELF_THREAD), &t) == OK)
+        __atomic_store_n(&first, t, __ATOMIC_RELEASE);
+    return t;
+}
+
+long thread_apply(long tid, thread_op *op, void *arg)
+{
+    if (tid < 0 || tid > UINT32_MAX)
+        return -ESRCH;
+    uint32_t first = first_tid(), pid = (uint32_t)lx_pid();
+    handle_t h = HANDLE_INVALID;
+    status_t st = OK;
+    lock_take(&threads_lock);
+    uint32_t want = tid ? (uint32_t)tid : self_tid;
+    for (unsigned i = 0; i < nthreads && h == HANDLE_INVALID; i++)
+        if (threads[i].tid == want)
+            h = threads[i].handle;
+    /* The first thread's handle is not in the table; nor, as in
+     * lx_self_thread, is the caller's if it is the first. */
+    if (h == HANDLE_INVALID && (!tid || want == first || want == pid))
+        h = startup_handle(SR_SELF_THREAD);
+    if (h != HANDLE_INVALID)
+        st = op(h, arg);
+    lock_give(&threads_lock);
+    if (h == HANDLE_INVALID)
+        return -ESRCH;
+    return st == OK ? 0 : lx_err(st);
+}
+
+/* musl asks the kernel to wake a dead owner's robust mutexes; the answer
+ * of a kernel without them is ENOSYS, and musl goes on (it walks the list
+ * itself when a thread exits). */
+long lx_set_robust_list(long head, long len, long c, long d, long e, long f)
+{
+    return -ENOSYS;
+}
+
+long lx_get_robust_list(long pid, long head, long len, long d, long e, long f)
+{
+    return -ENOSYS;
+}
+
 long lx_arch_prctl(long code, long addr, long c, long d, long e, long f)
 {
     if (code == ARCH_SET_FS)
@@ -258,12 +315,35 @@ static long deadline_after(const struct timespec *ts, uint64_t *deadline)
     return 0;
 }
 
-static long futex_wait(uint32_t *word, uint32_t val, const struct timespec *ts)
+/* An absolute time ts on clock clk (CLOCK_REALTIME or CLOCK_MONOTONIC) as a
+ * deadline on the uptime clock: how far it is from the clock's now, counted
+ * from ours, so a wall-clock change during the wait does not move it. A
+ * time that has passed is a deadline that has too. */
+static long deadline_at(long clk, const struct timespec *ts, uint64_t *deadline)
 {
-    uint64_t deadline;
-    long r = deadline_after(ts, &deadline);
+    if (ts->tv_sec < 0 || ts->tv_nsec < 0 || ts->tv_nsec >= 1000000000L)
+        return -EINVAL;
+    struct timespec cur;
+    long r = lx_clock_gettime(clk, (long)(uintptr_t)&cur, 0, 0, 0, 0);
     if (r)
         return r;
+    uint64_t at, d;
+    if (__builtin_mul_overflow((uint64_t)ts->tv_sec, NS_PER_S, &at) ||
+        __builtin_add_overflow(at, (uint64_t)ts->tv_nsec, &at))
+        at = UINT64_MAX;
+    uint64_t cur_ns = (uint64_t)cur.tv_sec * NS_PER_S + (uint64_t)cur.tv_nsec;
+    if (at <= cur_ns) {
+        *deadline = now();
+        return 0;
+    }
+    if (__builtin_add_overflow(now(), at - cur_ns, &d))
+        d = DEADLINE_NEVER;
+    *deadline = d;
+    return 0;
+}
+
+static long futex_wait(uint32_t *word, uint32_t val, uint64_t deadline)
+{
     status_t st = jam_futex_wait(word, val, deadline, 0);
     switch (st) {
     case OK:                 return 0;
@@ -281,23 +361,74 @@ static uint32_t futex_count(long n)
     return n < 0 ? 0 : n > INT_MAX ? INT_MAX : (uint32_t)n;
 }
 
+static long futex_wake(uint32_t *word, long count)
+{
+    int64_t n = jam_futex_wake(word, futex_count(count), 0);
+    return n < 0 ? lx_err((status_t)n) : (long)n;
+}
+
+/* Linux's bitset waits and wakes pair a waiter's mask with a waker's.
+ * Jam OS's futex has no masks, so a wait is only honest with a mask of
+ * every bit (what Chromium and glibc pass); a wake needs some bit, since
+ * every waiter here has them all. 0 if val3 is a wait mask we take, else
+ * the errno. */
+static long wait_mask_ok(long val3)
+{
+    uint32_t bits = (uint32_t)val3;
+    if (!bits)
+        return -EINVAL;
+    if (bits != FUTEX_BITSET_MATCH_ANY) {
+        lx_enosys_option("futex wait bitset", bits);
+        return -ENOSYS;
+    }
+    return 0;
+}
+
+/* FUTEX_WAIT_BITSET: the timeout is an absolute time, on CLOCK_MONOTONIC or,
+ * with FUTEX_CLOCK_REALTIME, on the wall clock; none: wait for ever. */
+static long futex_wait_bitset(uint32_t *word, long op, long val, const struct timespec *ts,
+                              long val3)
+{
+    long r = wait_mask_ok(val3);
+    if (r)
+        return r;
+    uint64_t deadline = DEADLINE_NEVER;
+    if (ts) {
+        r = deadline_at(op & FUTEX_CLOCK_REALTIME ? CLOCK_REALTIME : CLOCK_MONOTONIC, ts,
+                        &deadline);
+        if (r)
+            return r;
+    }
+    return futex_wait(word, (uint32_t)val, deadline);
+}
+
 long lx_futex(long addr, long op, long val, long timeout, long addr2, long val3)
 {
     uint32_t *word = (uint32_t *)(uintptr_t)addr;
-    if (op & FUTEX_CLOCK_REALTIME)
-        return -ENOSYS;   /* only the bitset waits take it; musl uses neither */
+    const struct timespec *ts = (const struct timespec *)(uintptr_t)timeout;
+    op = (int)op;   /* Linux's int */
+    long cmd = op & ~(long)(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
+    if ((op & FUTEX_CLOCK_REALTIME) && cmd != FUTEX_WAIT_BITSET)
+        return -ENOSYS;   /* Linux takes the clock flag on the bitset wait only */
+    uint64_t deadline;
+    long r;
     int64_t n;
-    switch (op & ~FUTEX_PRIVATE_FLAG) {
-    case FUTEX_WAIT:
-        return futex_wait(word, (uint32_t)val, (const struct timespec *)(uintptr_t)timeout);
+    switch (cmd) {
+    case FUTEX_WAIT:   /* the timeout is relative */
+        r = deadline_after(ts, &deadline);
+        return r ? r : futex_wait(word, (uint32_t)val, deadline);
+    case FUTEX_WAIT_BITSET:
+        return futex_wait_bitset(word, op, val, ts, val3);
     case FUTEX_WAKE:
-        n = jam_futex_wake(word, futex_count(val), 0);
-        return n < 0 ? lx_err((status_t)n) : (long)n;
+        return futex_wake(word, val);
+    case FUTEX_WAKE_BITSET:
+        return (uint32_t)val3 ? futex_wake(word, val) : -EINVAL;
     case FUTEX_REQUEUE:
         /* Linux passes the requeue count in the timeout's place. */
         n = jam_futex_requeue(word, futex_count(val), (uint32_t *)(uintptr_t)addr2,
                               futex_count(timeout), 0);
         return n < 0 ? lx_err((status_t)n) : (long)n;
     }
-    return -ENOSYS;   /* CMP_REQUEUE, WAKE_OP, the PI and bitset calls */
+    lx_enosys_option("futex operation", cmd);   /* CMP_REQUEUE, WAKE_OP, the PI calls */
+    return -ENOSYS;
 }

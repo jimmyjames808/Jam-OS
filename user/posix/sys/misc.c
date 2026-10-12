@@ -2,13 +2,20 @@
  * musl's sysconf reads for the CPUs and the memory) from the figures any
  * process may read (sys_public_info, kposix.c; without it: one CPU, no
  * memory figure, an "unknown" release), and getrandom from the kernel's
- * generator (random_get, through libjam's os_random). */
+ * generator (random_get, through libjam's os_random).
+ *
+ * sched_setaffinity is accepted and changes nothing: every thread runs
+ * wherever the scheduler puts it, which is every CPU (a mask with none of
+ * the CPUs in it is EINVAL, as on Linux). membarrier is ENOSYS, as an old
+ * kernel answers: musl then does the barrier itself with signals, and a
+ * program that asks which commands exist is told none. */
 #include <errno.h>
 #include <string.h>
 #include <sys/random.h>
 #include <sys/sysinfo.h>
 #include <sys/utsname.h>
 #include "layer.h"
+#include "threads.h"
 
 #define SYSNAME       "JamOS"   /* one word: scripts match `uname -s` */
 #define NODENAME      "jamos"   /* the host's name until the setting is read */
@@ -51,12 +58,26 @@ long lx_sysinfo(long out, long b, long c, long d, long e, long f)
     return 0;
 }
 
+static status_t thread_exists(handle_t t, void *arg)
+{
+    return OK;
+}
+
+/* CPUs online. */
+static unsigned cpus_online(void)
+{
+    struct kp_public pub;
+    return kp_public_info(&pub) == OK && pub.cpus ? pub.cpus : 1;
+}
+
 long lx_sched_getaffinity(long pid, long size, long mask, long d, long e, long f)
 {
     if (size <= 0 || size % (long)sizeof(long))
         return -EINVAL;
-    struct kp_public pub;
-    unsigned cpus = kp_public_info(&pub) == OK && pub.cpus ? pub.cpus : 1;
+    long r = thread_apply((int)pid, thread_exists, NULL);
+    if (r)
+        return r;
+    unsigned cpus = cpus_online();
     size_t n = size < AFFINITY_MAX ? (size_t)size : AFFINITY_MAX;
     if (cpus > n * 8)
         cpus = (unsigned)(n * 8);
@@ -65,6 +86,28 @@ long lx_sched_getaffinity(long pid, long size, long mask, long d, long e, long f
     for (unsigned i = 0; i < cpus; i++)
         m[i / 8] |= (uint8_t)(1u << (i % 8));
     return (long)n;
+}
+
+long lx_sched_setaffinity(long pid, long size, long mask, long d, long e, long f)
+{
+    if (size < 0 || !mask)
+        return -EFAULT;   /* Linux reads the mask first; a missing one is a bad address */
+    long r = thread_apply((int)pid, thread_exists, NULL);
+    if (r)
+        return r;
+    /* Linux's mask is zero-extended past size, and only the CPUs that exist count. */
+    const uint8_t *m = (const uint8_t *)(uintptr_t)mask;
+    size_t n = size < AFFINITY_MAX ? (size_t)size : AFFINITY_MAX;
+    unsigned cpus = cpus_online();
+    for (unsigned i = 0; i < cpus && i / 8 < n; i++)
+        if (m[i / 8] & (1u << (i % 8)))
+            return 0;
+    return -EINVAL;
+}
+
+long lx_membarrier(long cmd, long flags, long c, long d, long e, long f)
+{
+    return -ENOSYS;
 }
 
 long lx_getrandom(long buf, long len, long flags, long d, long e, long f)

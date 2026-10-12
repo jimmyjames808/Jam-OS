@@ -1,0 +1,20 @@
+# posixtest's raw section from the shell: the raw Linux calls Chromium makes
+# (prctl, priorities, affinity, futex operations) and the ENOSYS log
+# (user/posix/sys/enosys.c). The environment variable that turns the log on
+# is exported first, so the program meets it as a Chromium run would; the
+# section turns the log on and off itself to count its lines, and its
+# children are started with environments of their own to check the variable.
+#   QEMU_INPUT=tools/shell-tests/posix-raw.txt tools/qemu-test.sh <dir> posix-raw shell
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send export JAMOS_ENOSYS_LOG=1
+wait {prompt}
+send run posixtest raw
+wait 180 posixtest: raw: ok
+wait 20 posixtest: PASS
+wait 20 run: bin/posixtest exited with code 0
+seen 5 enosys: posixtest: syscall 163 (acct)
+wait {prompt}
+send reboot -f
+wait reboot: resetting
