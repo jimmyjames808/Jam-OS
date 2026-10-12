@@ -1,5 +1,6 @@
-/* Programs from /data: the owner's approvals (`allow`) and running one
- * (docs/HISTORY.md, M8.6).
+/* Programs from /data: the owner's approvals (`allow`), their page
+ * tables, and the whole-read way of checking a program file
+ * (docs/HISTORY.md, M8.6; running one from its pages is sh_dataprog.c).
  *
  * The approvals are lines of /data/etc/allow, each "<sha-256>\t<path>\t
  * <what its list asks for>", written only here. Every program's /data is a
@@ -8,21 +9,36 @@
  * approve another, or itself. Whoever holds the stick can edit it on
  * another computer, as they could replace the kernel (decision 11).
  *
- * Running: the file is read into a VMO only we hold, made executable
- * (vmo_make_exec, which needs RIGHT_ROOT_VMEX: this shell's root, no
- * program's) and from then on can't change; its hash and its list are
- * read from those very bytes, and it runs only if a line holds exactly
- * that path and that hash. So a program changed after it was allowed is
- * refused, and nothing can change it between the check and the start. */
+ * Beside each approval, its page table: /data/etc/allow.d/<sha-256>, the
+ * SHA-256 of each page of the approved bytes (sh_image.h), which the
+ * kernel checks every page of a running program against. `allow` writes
+ * the table before the line (a line is never there without its table,
+ * except one written before tables were), and a table goes when no line
+ * names its hash any more (`allow -r`, or a new approval of the path).
+ * Files with the same bytes share one table.
+ *
+ * The whole read (sh_program_file): the file is read into a VMO only we
+ * hold, made executable (vmo_make_exec, which needs RIGHT_ROOT_VMEX: this
+ * shell's root, no program's) and from then on can't change; its hash, its
+ * list and its page table are read from those very bytes. `allow` uses it,
+ * and so does running a program whose mount has no pages to give, or whose
+ * approval has no table yet, or which is refused (the refusal is explained
+ * from those bytes): it runs only if a line holds exactly that path and
+ * that hash, so a program changed after it was allowed is refused, and
+ * nothing can change it between the check and the start. */
 #include <sha256.h>
 #include <wants.h>
 #include "sh.h"
+#include "sh_image.h"
 
 #define ALLOW_FILE "/data/etc/allow"
 #define ALLOW_DIR  "/data/etc"
+#define TABLE_DIR  "/data/etc/allow.d"
+#define TABLE_CHUNK (64u << 10)   /* a table's hashes read at a time */
 #define ALLOW_HEAD "# Programs on /data the owner allowed to run (the shell's `allow`):\n" \
                    "# <sha-256>\\t<path>\\t<what it asked for>\n"
-#define PROGRAM_MAX (64ull << 20)   /* spawn's own limit for a program read from a file */
+#define PROGRAM_MAX (64ull << 20)   /* spawn's own limit, and VMO_VERIFIED_MAX */
+#define HEX_LEN     (2 * SHA256_BYTES)
 
 bool sh_on_data(const char *abs)
 {
@@ -90,8 +106,41 @@ int sh_allow_each(void (*fn)(const char *hash, const char *path, const char *tex
     return st == OK || st == ERR_NOT_FOUND ? n : st;
 }
 
+/* Does a line of text (the approvals as written back) name this hash? */
+static bool hash_named(const char *text, const char *hex)
+{
+    for (const char *line = text; line && *line;) {
+        if (!strncmp(line, hex, HEX_LEN) && line[HEX_LEN] == '\t')
+            return true;
+        line = strchr(line, '\n');
+        line = line ? line + 1 : NULL;
+    }
+    return false;
+}
+
+static void table_path(const char *hex, char path[SH_PATH_MAX])
+{
+    snprintf(path, SH_PATH_MAX, TABLE_DIR "/%.*s", HEX_LEN, hex);
+}
+
+/* The tables of the dropped lines' hashes (gone: n of them, HEX_LEN
+ * bytes each) that no line in kept names any more. One that won't go
+ * stays behind, unused: nothing reads a table without its line. */
+static void drop_tables(const char *gone, unsigned n, const char *kept)
+{
+    for (unsigned i = 0; i < n; i++) {
+        char hex[HEX_LEN + 1], path[SH_PATH_MAX];
+        memcpy(hex, gone + (size_t)i * HEX_LEN, HEX_LEN);
+        hex[HEX_LEN] = '\0';
+        table_path(hex, path);
+        if (!hash_named(kept, hex))
+            (void)fs_unlink(path);   /* none (an approval from before tables): fine */
+    }
+}
+
 /* The approvals as they are, without those `drop` says to drop, plus one
- * new line (NULL: none), written back whole. *dropped: how many went. */
+ * new line (NULL: none), written back whole; then the tables no line
+ * needs any more go. *dropped: how many lines went. */
 static status_t rewrite(bool (*drop)(const char *path, void *ctx), void *ctx, const char *add,
                         unsigned *dropped)
 {
@@ -99,9 +148,12 @@ static status_t rewrite(bool (*drop)(const char *path, void *ctx), void *ctx, co
     char *all = read_allow(&st);
     if (st != OK && st != ERR_NOT_FOUND)
         return st;
-    size_t cap = (all ? strlen(all) : 0) + (add ? strlen(add) : 0) + sizeof(ALLOW_HEAD) + 2;
-    char *out = malloc(cap);
-    if (!out) {
+    size_t had = all ? strlen(all) : 0;
+    size_t cap = had + (add ? strlen(add) : 0) + sizeof(ALLOW_HEAD) + 2;
+    char *out = malloc(cap), *gone = malloc(had + 1);   /* a dropped line is longer than its hash */
+    if (!out || !gone) {
+        free(out);
+        free(gone);
         free(all);
         return ERR_NO_MEMORY;
     }
@@ -113,7 +165,7 @@ static status_t rewrite(bool (*drop)(const char *path, void *ctx), void *ctx, co
             *nl = '\0';
         char path[SH_PATH_MAX];
         if (line_path(line, path) && drop(path, ctx))
-            ++*dropped;
+            memcpy(gone + (size_t)(*dropped)++ * HEX_LEN, line, HEX_LEN);
         else if (line[0] != '#' && line[0])
             n += (size_t)snprintf(out + n, cap - n, "%s\n", line);
         line = nl ? nl + 1 : NULL;
@@ -128,6 +180,9 @@ static status_t rewrite(bool (*drop)(const char *path, void *ctx), void *ctx, co
         st = sh_write(ALLOW_FILE, out, n, FS_TRUNCATE);
     if (st == OK)
         st = fs_sync(ALLOW_FILE);
+    if (st == OK)
+        drop_tables(gone, *dropped, out);
+    free(gone);
     free(out);
     return st;
 }
@@ -143,10 +198,14 @@ static bool named(const char *path, void *ctx)
     return !strcmp(path, ctx) || !strcmp(sh_basename(path), ctx);
 }
 
-status_t sh_allow_add(const char *path, const char *hash_hex, const char *text)
+status_t sh_allow_add(const char *path, handle_t vmo, uint64_t size, const char *hash_hex,
+                      const char *text)
 {
-    char line[SH_PATH_MAX + 2 * SHA256_BYTES + WANTS_TEXT_MAX + 4];
+    char line[SH_PATH_MAX + HEX_LEN + WANTS_TEXT_MAX + 4];
     unsigned dropped;
+    status_t st = sh_allow_table_write(hash_hex, vmo, size);   /* the table before its line */
+    if (st != OK)
+        return st;
     snprintf(line, sizeof(line), "%s\t%s\t%s", hash_hex, path, text[0] ? text : "nothing");
     return rewrite(same_path, (void *)path, line, &dropped);   /* the old line for it goes */
 }
@@ -154,6 +213,110 @@ status_t sh_allow_add(const char *path, const char *hash_hex, const char *text)
 status_t sh_allow_remove(const char *name, unsigned *removed)
 {
     return rewrite(named, (void *)name, NULL, removed);
+}
+
+/* ---- page tables --------------------------------------------------------------------- */
+
+static status_t mkdir_ok(const char *path)
+{
+    status_t st = fs_mkdir(path);
+    return st == ERR_ALREADY_EXISTS ? OK : st;
+}
+
+status_t sh_allow_table_write(const char *hash_hex, handle_t vmo, uint64_t size)
+{
+    uint8_t sha[SHA256_BYTES];
+    struct handle_info hi;
+    if (!sh_hex_bytes(hash_hex, sha) || !size || size > PROGRAM_MAX)
+        return ERR_INVALID_ARGS;
+    /* Mapped and read here: never a pager VMO (a page that failed would
+     * kill the shell), only sh_program_file's, whose pages are ours. */
+    status_t st = jam_handle_info(vmo, &hi);
+    if (st == OK && (hi.type != OBJ_VMO || hi.related_koid))
+        st = ERR_NOT_SUPPORTED;
+    uint64_t pages = sh_ptable_pages(size), len = pages * PAGE_SIZE, addr = 0;
+    size_t bytes = sizeof(struct sh_ptable_head) + pages * SHA256_BYTES;
+    uint8_t *buf = st == OK ? malloc(bytes) : NULL;
+    if (st == OK && !buf)
+        st = ERR_NO_MEMORY;
+    if (st == OK)
+        st = jam_vmar_map(startup_handle(SR_SELF_VMAR), vmo, 0, len, VMAR_READ, &addr);
+    if (st == OK) {
+        sh_ptable_hash((const uint8_t *)(uintptr_t)addr, size,
+                       buf + sizeof(struct sh_ptable_head));
+        jam_vmar_unmap(startup_handle(SR_SELF_VMAR), addr, len);
+        sh_ptable_head(size, sha, (struct sh_ptable_head *)buf);
+    }
+    char path[SH_PATH_MAX];
+    table_path(hash_hex, path);
+    if (st == OK)
+        st = mkdir_ok(ALLOW_DIR);
+    if (st == OK)
+        st = mkdir_ok(TABLE_DIR);
+    if (st == OK)
+        st = sh_write(path, buf, bytes, FS_TRUNCATE);
+    if (st == OK)
+        st = fs_sync(path);
+    free(buf);
+    return st;
+}
+
+/* The hashes of the open table f (pages of them, after its header) into
+ * a new VMO, from its offset 0, as the kernel takes them. */
+static status_t table_hashes(struct jfile *f, uint64_t pages, handle_t *out)
+{
+    uint64_t bytes = pages * SHA256_BYTES;
+    handle_t t;
+    uint8_t *chunk = malloc(TABLE_CHUNK);
+    status_t st = chunk ? jam_vmo_create(bytes, 0, &t) : ERR_NO_MEMORY;
+    if (st != OK) {
+        free(chunk);
+        return st;
+    }
+    for (uint64_t at = 0; at < bytes && st == OK; at += TABLE_CHUNK) {
+        size_t len = bytes - at < TABLE_CHUNK ? (size_t)(bytes - at) : TABLE_CHUNK, got = 0;
+        st = file_read(f, sizeof(struct sh_ptable_head) + at, chunk, len, &got);
+        if (st == OK && got != len)
+            st = ERR_INVALID_ARGS;   /* shorter than its stat said: broken */
+        if (st == OK)
+            st = jam_vmo_write(t, at, chunk, len);
+    }
+    free(chunk);
+    if (st != OK) {
+        jam_handle_close(t);
+        return st;
+    }
+    *out = t;
+    return OK;
+}
+
+status_t sh_allow_table_read(const char *hash_hex, uint64_t size, handle_t *table)
+{
+    uint8_t sha[SHA256_BYTES];
+    if (!sh_hex_bytes(hash_hex, sha))
+        return ERR_INVALID_ARGS;
+    if (!size || size > PROGRAM_MAX)
+        return ERR_OUT_OF_RANGE;   /* no approval was ever for such a file */
+    char path[SH_PATH_MAX];
+    table_path(hash_hex, path);
+    struct jfile f;
+    status_t st = file_open(path, FS_READ, &f);
+    if (st != OK)
+        return st;   /* ERR_NOT_FOUND: an approval from before tables */
+    struct sh_ptable_head h;
+    uint64_t bytes = 0;
+    size_t got = 0;
+    st = file_stat(&f, &bytes, NULL);
+    if (st == OK)
+        st = file_read(&f, 0, &h, sizeof(h), &got);
+    if (st == OK && got != sizeof(h))
+        st = ERR_INVALID_ARGS;
+    if (st == OK)
+        st = sh_ptable_check(&h, bytes, size, sha);
+    if (st == OK)
+        st = table_hashes(&f, h.pages, table);
+    file_close(&f);
+    return st;
 }
 
 /* ---- the file itself ----------------------------------------------------------------- */
@@ -194,6 +357,21 @@ const char *sh_wants_refused(const struct wants *w)
     return NULL;
 }
 
+/* sh_image_wants' reader over bytes in memory (a mapping of our own VMO). */
+struct mem_image {
+    const uint8_t *bytes;   /* the file */
+    uint64_t       size;    /* its bytes */
+};
+
+static status_t mem_read(void *ctx, uint64_t off, void *dst, uint64_t len)
+{
+    const struct mem_image *m = ctx;
+    if (off > m->size || len > m->size - off)
+        return ERR_INVALID_ARGS;
+    memcpy(dst, m->bytes + off, len);
+    return OK;
+}
+
 status_t sh_program_file(const char *path, handle_t *vmo, uint64_t *size, char *hex,
                          struct wants *w)
 {
@@ -214,11 +392,13 @@ status_t sh_program_file(const char *path, handle_t *vmo, uint64_t *size, char *
     st = jam_vmar_map(startup_handle(SR_SELF_VMAR), x, 0, len ? len : PAGE_SIZE, VMAR_READ,
                       &addr);
     if (st == OK) {
-        const uint8_t *bytes = (const uint8_t *)(uintptr_t)addr;
+        struct mem_image m = { (const uint8_t *)(uintptr_t)addr, n };
         uint8_t digest[SHA256_BYTES];
-        sha256(bytes, n, digest);
+        sha256(m.bytes, n, digest);
         sha256_hex(digest, hex);
-        st = wants_read(bytes, n, w);
+        /* Read as a run from the pages reads it: the same rules, the same
+         * answer. */
+        st = sh_image_wants(mem_read, &m, n, w);
         jam_vmar_unmap(startup_handle(SR_SELF_VMAR), addr, len ? len : PAGE_SIZE);
     }
     if (st != OK) {
@@ -247,9 +427,9 @@ static void find_line(const char *hash, const char *path, const char *text, void
     f->match |= !strcmp(hash, f->hex);
 }
 
-bool sh_allowed_program(const char *path, handle_t *vmo, uint64_t *size, struct wants *w)
+bool sh_allowed_whole(const char *path, handle_t *vmo, uint64_t *size, struct wants *w)
 {
-    char hex[2 * SHA256_BYTES + 1];
+    char hex[HEX_LEN + 1];
     if (!sh_on_data(path)) {
         sh_tty("run: %s: only programs in /boot and on /data can run (copy it to /data first)\n",
                path);

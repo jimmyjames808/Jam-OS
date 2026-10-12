@@ -465,7 +465,8 @@ EXTRA_CFLAGS_init := -I$(MONO_DIR) -I$(MONO_DIR)/optional
 # notifications, desk.c; none of their drawing), and the console's window
 # mode's pure parts (utest/conwin.c, conpaint.c, consel.c:
 # wlinput.c, cellpaint.c, view.c, select.c and their console.h), and the
-# shell's bracketed paste (utest/shpaste.c: sh_paste.c and sh_paste.h).
+# shell's bracketed paste (utest/shpaste.c: sh_paste.c and sh_paste.h), and
+# how it checks a /data program (utest/shimage.c: sh_image.c and sh_image.h).
 NETSTACK_CORE      := $(patsubst %,$(UOBJ)/user/services/netstack/%.o,stack.c ctl.c tcp.c \
                         port/sys_arch.c)
 EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/services/music/tracks.c.o \
@@ -481,7 +482,7 @@ EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/serv
                         cursors) \
                       $(CURSOR_OBJ) $(patsubst %,$(UOBJ)/user/services/console/%.c.o,wlinput \
                         cellpaint view select) $(UOBJ)/user/services/shell/sh_paste.c.o \
-                      $(UOBJ)/libfun.a
+                      $(UOBJ)/user/services/shell/sh_image.c.o $(UOBJ)/libfun.a
 EXTRA_CFLAGS_utest := -iquote user/services/music -iquote drivers/rtl8125 \
                       -iquote user/services/compositor -iquote user/services/console \
                       -iquote user/services/shell \

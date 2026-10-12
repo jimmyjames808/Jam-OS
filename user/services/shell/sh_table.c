@@ -238,8 +238,9 @@ static const struct sh_cmd cmds[] = {
       "  run prog &: in the background (see jobs)"),
     C(allow, C_PROGRAMS, "allow <file> | -l | -r <name>",
       "let a program on /data run: shows what it asks for (services, mounts) and\n"
-      "  asks y/n; y keeps its hash and list in /data/etc/allow. A changed file is\n"
-      "  refused until allowed again. -l: the allowed ones. -r: take one back"),
+      "  asks y/n; y keeps its hash and list in /data/etc/allow, each page's hash in\n"
+      "  /data/etc/allow.d. A changed file is refused until allowed again, a changed\n"
+      "  page when it is read. -l: the allowed ones. -r: take one back"),
     C(ktest, C_TESTS, "ktest [prefix] [options]",
       "kernel tests (as the boot menu's All tests).\n"
       "  loops=N: the set N times. seed=S: in the order shuffled from S (loop k uses\n"

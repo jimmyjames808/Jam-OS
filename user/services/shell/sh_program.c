@@ -5,7 +5,9 @@
  * is a bootfs name ("bin/x") or a path on any mount. A program on /boot is
  * started from the boot image itself (libos's spawn maps its code from the
  * image); one on /data runs only if the owner allowed exactly that file
- * (sh_allow.c), from a VMO the kernel made executable for us; one on any
+ * (sh_allow.c), from its pages as /data's service supplies them, each
+ * checked by the kernel against the approval (sh_dataprog.c), and two
+ * instances of it share them; one on any
  * other mount is read through the namespace and the kernel refuses its
  * code (<os.h>, spawn_args.path).
  *
@@ -195,9 +197,10 @@ static unsigned program_handles(const struct wants *w, bool bg, bool stdout_pipe
 
 /* The program at path (a bootfs name, or a path on a mount) and its list
  * (*w). A program in the boot image has the list the build checked; one
- * on /data runs only as the owner allowed it (sh_allow.c: *vmo then holds
- * its bytes, made executable, *size of them); one anywhere else is given
- * nothing, and the kernel refuses its code. false: it can't run (said). */
+ * on /data runs only as the owner allowed it (sh_allowed_program: *vmo
+ * then holds its executable VMO, *size its bytes, given back with
+ * sh_data_release); one anywhere else is given nothing, and the kernel
+ * refuses its code. false: it can't run (said). */
 static bool program_wants(const char *path, struct wants *w, handle_t *vmo, uint64_t *size)
 {
     const struct bootfs_view *fs;
@@ -401,6 +404,7 @@ static void reap(struct running *r, status_t st, const struct process_info *info
     r->cancels = !r->s.posix || st != OK || info->killed ||
                  sh_exit_signal(info->exit_code) == LINUX_SIGINT;
     clean_job(r->s.job, r->s.path, r->s.posix);
+    sh_data_prune();   /* its job is empty: the shell's hold on its code may go */
     sh_show_log(false, NULL);
     if (r->s.posix)
         sh_io_posix_tty(-1);
@@ -498,8 +502,8 @@ bool sh_program_is_posix(const char *name)
     sh_quiet(true);
     bool ok = find_program(name, path, sizeof(path)) && program_wants(path, &w, &vmo, &size);
     sh_quiet(false);
-    if (ok && vmo)
-        jam_handle_close(vmo);
+    if (ok)
+        sh_data_release(vmo, HANDLE_INVALID);   /* not started: only its list was wanted */
     return ok && w.posix;
 }
 
@@ -552,6 +556,9 @@ static int start_failed(struct started *s, status_t st, bool said)
     if (!said && st == ERR_ACCESS_DENIED && s->path[0] == '/')
         sh_tty("run: only programs in /boot can run, and those on /data the owner "
                "allowed (`allow`)\n");
+    if (!said && st == ERR_IO && sh_on_data(s->path))
+        sh_tty("run: a page of %s doesn't match its approval, or /data can't read it: "
+               "`allow %s` again if it changed\n", s->path, s->path);
     if (s->out_r)
         jam_handle_close(s->out_r);
     jam_handle_close(s->sig);
@@ -580,8 +587,7 @@ static int start_program(int argc, char **argv, bool bg, struct started *s)
     else if ((st = jam_job_create(startup_handle(SR_JOB), 0, &s->job)) != OK)
         sh_tty("run: no job (%s)\n", status_str(st));
     if (st != OK) {
-        if (vmo)
-            jam_handle_close(vmo);
+        sh_data_release(vmo, HANDLE_INVALID);
         return st == ERR_INVALID_ARGS ? 2 : 126;
     }
     const char *grants[WANTS_MAX + 1];
@@ -615,8 +621,9 @@ static int start_program(int argc, char **argv, bool bg, struct started *s)
     if (!said)
         st = spawn(&a, &s->proc);
     sh_free_env(env);
-    if (vmo)
-        jam_handle_close(vmo);   /* the program maps what it runs: it keeps it */
+    /* The program maps what it runs: it keeps it. A /data program's VMO
+     * stays with the shell too while its job runs, for the next instance. */
+    sh_data_release(vmo, said || st != OK ? HANDLE_INVALID : s->job);
     return said || st != OK ? start_failed(s, st, said) : 0;
 }
 
