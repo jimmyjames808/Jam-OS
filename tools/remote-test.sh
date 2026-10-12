@@ -116,7 +116,7 @@ ${lock[@]+"${lock[@]}"} rsync -az --delete --exclude .git --exclude /build --exc
     # The build takes its share of the budget too (make -j as many as it costs);
     # a checkout's builds still take turns, and one with nothing to do is quick.
     bj=${JAMOS_REMOTE_BUILD_CPUS:-8}
-    echo 'flock ~/work/.build-$(basename "$PWD").lock env JAMOS_REMOTE_QUIET=1 python3 tools/remote-slots.py '"$bj"' 2048 \
+    echo 'flock ~/work/.build-$(basename "$PWD").lock env JAMOS_REMOTE_QUIET=1 JAMOS_REMOTE_LABEL=build python3 tools/remote-slots.py '"$bj"' 2048 \
         sh -c "{ make -s -j'"$bj"' && make -s -j'"$bj"' image; } > build-remote.log 2>&1" ||
         { tail -20 build-remote.log; echo "remote-test: the build failed"; exit 2; }'
     printf 'set -- '; printf '%q ' "$@"; echo

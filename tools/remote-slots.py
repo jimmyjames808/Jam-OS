@@ -180,6 +180,7 @@ def main():
     cpus, mem, cmd = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3:]
     ticket = "%019d.%d" % (time.time_ns(), os.getpid())
     text = "%d %d %d %s" % (cpus, mem, os.getpid(), " ".join(cmd)[:200])
+    label = os.environ.get("JAMOS_REMOTE_LABEL") or "run"
     wfd, started, said, rfd = None, time.time(), 0.0, None
     while rfd is None:
         mfd = os.open(os.path.join(d, "mutex"), os.O_RDWR | os.O_CREAT, 0o666)
@@ -191,14 +192,14 @@ def main():
         if rfd is not None:
             break
         if time.time() - said >= SAY_EVERY:
-            print("remote-test: waiting: %s (this run needs %d CPUs, %.1f GB)"
-                  % (why, cpus, mem / 1024), file=sys.stderr, flush=True)
+            print("remote-test: waiting: %s (this %s needs %d CPUs, %.1f GB)"
+                  % (why, label, cpus, mem / 1024), file=sys.stderr, flush=True)
             said = time.time()
         time.sleep(POLL)
     waited = time.time() - started
     if not os.environ.get("JAMOS_REMOTE_QUIET") or waited >= 1:
-        print("remote-test: running with %d of %d CPUs in use%s" % (
-            used, budget, " (after %d s)" % waited if waited >= 1 else ""), file=sys.stderr, flush=True)
+        print("remote-test: %s with %d of %d CPUs in use%s" % (
+            "building" if label == "build" else "running", used, budget, " (after %d s)" % waited if waited >= 1 else ""), file=sys.stderr, flush=True)
     try:
         child = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, pass_fds=[rfd])
     except OSError as e:
