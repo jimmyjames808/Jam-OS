@@ -94,7 +94,7 @@ struct xdg_surf {
     struct comp_box geom_pending, geom;   /* set_window_geometry (geom: x, y, w, h as a box) */
     int32_t min_w, min_h, max_w, max_h;   /* set_min_size, set_max_size */
     /* the toplevel's zxdg_toplevel_decoration_v1 (xdgdeco.c) */
-    uint32_t deco_id;              /* 0: none (the client draws its own decorations) */
+    uint32_t deco_id;              /* 0: none (its client's xdg_client.deco_bound decides) */
     uint32_t deco_asked;           /* the mode its client set; 0: none, or unset_mode */
     uint32_t deco_told;            /* the mode its last configure event said; 0: one is owed
                                     * (it was made, or a mode asked for, since) */
@@ -102,6 +102,8 @@ struct xdg_surf {
 
 struct xdg_client {
     struct comp_client *cl;
+    bool deco_bound;               /* it bound zxdg_decoration_manager_v1: every toplevel of
+                                    * its gets the compositor's decorations (xdgdeco.c) */
     uint32_t nbases, npositioners, nsurfs;
     struct xdg_base *bases;
     struct xdg_pos *positioners;

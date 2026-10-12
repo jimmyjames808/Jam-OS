@@ -8,8 +8,10 @@
  * floating or tiling, is its own; the room a screen has for windows is the
  * output less the strip along the top while the desktop is on, and no
  * window goes into the strip or the LOOK_STRIP_GAP below it, whatever the
- * arrangement (its floor). Placement, for the states the shown buffer was
- * drawn for:
+ * arrangement (its floor). Placement places a window's window geometry
+ * (comp.h's window_geom: the client's set_window_geometry, else its whole
+ * surface; a client's own shadow outside it is not counted) and its
+ * frame, for the states the shown buffer was drawn for:
  *   - full screen: centred on the output (a smaller buffer shows the
  *     background around it, never stretched), on a screen of its own (a
  *     boot overlay's on none: over every screen, screens.c);
@@ -273,9 +275,9 @@ void wm_reflow(void)
 
 /* ---- placing ------------------------------------------------------------------------ */
 
-/* One axis: the surface's start for a side of `side` pixels centred in
- * [lo, hi), then kept on [min, max) with its decorations (before, after)
- * where the frame fits, else at min. */
+/* One axis: the window geometry's start for a side of `side` pixels
+ * centred in [lo, hi), then kept on [min, max) with its decorations
+ * (before, after) where the frame fits, else at min. */
 static int32_t centre(int32_t lo, int32_t hi, int32_t side, int32_t before, int32_t after,
                       int32_t min, int32_t max)
 {
@@ -289,20 +291,32 @@ static int32_t centre(int32_t lo, int32_t hi, int32_t side, int32_t before, int3
     return v;
 }
 
+/* w's window geometry's (0, 0) put at (x, y): its surface moved there,
+ * less where the geometry starts in it (a client's own shadow). */
+static void move_geom(struct comp_window *w, int32_t x, int32_t y)
+{
+    struct comp_box g = window_geom(w);
+    window_move(w, x - g.x1, y - g.y1);
+}
+
 /* w centred in b, its frame kept on the output below floor. */
 static void centre_in(struct comp_window *w, struct comp_box b, int32_t floor)
 {
-    const struct comp_surface *s = w->surface;
-    window_move(w, centre(b.x1, b.x2, s->width, w->deco_left, w->deco_right, 0, scene.width),
-                centre(b.y1, b.y2, s->height, w->deco_top, w->deco_bottom, floor, scene.height));
+    struct comp_box g = window_geom(w);
+    move_geom(w, centre(b.x1, b.x2, g.x2 - g.x1, w->deco_left, w->deco_right, 0, scene.width),
+              centre(b.y1, b.y2, g.y2 - g.y1, w->deco_top, w->deco_bottom, floor, scene.height));
 }
 
-/* Is another mapped window's surface at (x, y) already? */
+/* Is another mapped window's window geometry at (x, y) already? */
 static bool corner_taken(const struct wm_window *self, int32_t x, int32_t y)
 {
-    for (const struct wm_window *ww = wm.first; ww; ww = ww->next)
-        if (ww != self && ww->win && ww->win->x == x && ww->win->y == y)
+    for (const struct wm_window *ww = wm.first; ww; ww = ww->next) {
+        if (ww == self || !ww->win)
+            continue;
+        struct comp_box g = window_geom(ww->win);
+        if (ww->win->x + g.x1 == x && ww->win->y + g.y1 == y)
             return true;
+    }
     return false;
 }
 
@@ -311,9 +325,9 @@ static bool corner_taken(const struct wm_window *self, int32_t x, int32_t y)
 static void first_place(struct wm_window *ww)
 {
     struct comp_window *w = ww->win;
-    const struct comp_surface *s = ww->surface;
-    int32_t sw = ww->float_w ? ww->float_w : s->width;
-    int32_t sh = ww->float_h ? ww->float_h : s->height;
+    struct comp_box g = window_geom(w);
+    int32_t sw = ww->float_w ? ww->float_w : g.x2 - g.x1;
+    int32_t sh = ww->float_h ? ww->float_h : g.y2 - g.y1;
     int32_t fl = wm_floor(ww);
     int32_t x0 = centre(0, scene.width, sw, w->deco_left, w->deco_right, 0, scene.width);
     int32_t y0 = centre(fl, scene.height, sh, w->deco_top, w->deco_bottom, fl, scene.height);
@@ -332,11 +346,13 @@ static void first_place(struct wm_window *ww)
     ww->float_placed = true;
 }
 
-/* A floating place the user can always get back to: the title bar's top
- * on the output below the floor and at least REACH_MIN of it across. */
+/* A floating place (the window geometry's) the user can always get back
+ * to: the title bar's top on the output below the floor and at least
+ * REACH_MIN of it across. */
 static void keep_reachable(const struct comp_window *w, int32_t floor, int32_t *x, int32_t *y)
 {
-    int32_t width = w->surface->width;
+    struct comp_box g = window_geom(w);
+    int32_t width = g.x2 - g.x1;
     if (*y - w->deco_top < floor)
         *y = floor + w->deco_top;
     if (*y > scene.height - 1)
@@ -350,15 +366,15 @@ static void keep_reachable(const struct comp_window *w, int32_t floor, int32_t *
 static void place_floating(struct wm_window *ww)
 {
     struct comp_window *w = ww->win;
-    const struct comp_surface *s = ww->surface;
+    struct comp_box g = window_geom(w);
     if (!ww->float_placed)
         first_place(ww);
     if (ww->anchor & WM_EDGE_LEFT)
-        ww->float_x = ww->anchor_x2 - s->width;
+        ww->float_x = ww->anchor_x2 - (g.x2 - g.x1);
     if (ww->anchor & WM_EDGE_TOP)
-        ww->float_y = ww->anchor_y2 - s->height;
+        ww->float_y = ww->anchor_y2 - (g.y2 - g.y1);
     keep_reachable(w, wm_floor(ww), &ww->float_x, &ww->float_y);
-    window_move(w, ww->float_x, ww->float_y);
+    move_geom(w, ww->float_x, ww->float_y);
 }
 
 void wm_place(struct wm_window *ww)
@@ -376,18 +392,22 @@ void wm_place(struct wm_window *ww)
         centre_in(w, deco_inner(b, ww->shown, layout), b.y1);
     } else if (layout == COMP_TILING) {
         w->tile = wm_tile(ww);
-        struct comp_box in = deco_inner(w->tile, 0, layout);
+        struct comp_box in = deco_inner(w->tile, 0, layout), g = window_geom(w);
         int32_t iw = in.x2 - in.x1, ih = in.y2 - in.y1;
+        /* a view clips the buffer from its (0, 0): only for a window
+         * geometry that starts there (a tiled client draws no shadow of
+         * its own; one that does is centred by its geometry instead) */
+        bool viewable = g.x1 == 0 && g.y1 == 0;
         struct wm_config c;
         wm_wanted(ww, &c);
-        if (c.width == iw && c.height == ih) {
+        if (viewable && c.width == iw && c.height == ih) {
             window_view(w, c.width, c.height);   /* it fills its tile: shown as the tile, */
             window_move(w, in.x1, in.y1);        /* its last buffer clipped or padded */
             return;
         }
-        int32_t sw = c.width ? c.width : ww->surface->width;   /* what it draws */
-        int32_t sh = c.height ? c.height : ww->surface->height;
-        if (iw > 0 && ih > 0 && (sw > iw || sh > ih)) {
+        int32_t sw = c.width ? c.width : g.x2 - g.x1;   /* what it draws */
+        int32_t sh = c.height ? c.height : g.y2 - g.y1;
+        if (viewable && iw > 0 && ih > 0 && (sw > iw || sh > ih)) {
             /* bigger than its tile (its minimum, where the room is short of
              * what the tiles need): from the tile's top left, clipped to
              * it, never over its neighbours; centred the way it fits */
@@ -405,20 +425,21 @@ void wm_place(struct wm_window *ww)
 
 /* ---- commits ------------------------------------------------------------------------ */
 
-/* The size the client drew while floating normally becomes the size to ask
- * for again (after a maximise, a full screen, tiling), except while a
- * resize drives it; and a resize's anchor is done once the client has
- * caught up with it. */
+/* The size the client drew while floating normally (its window geometry's)
+ * becomes the size to ask for again (after a maximise, a full screen,
+ * tiling), except while a resize drives it; and a resize's anchor is done
+ * once the client has caught up with it. */
 static void note_floating_size(struct wm_window *ww)
 {
-    const struct comp_surface *s = ww->surface;
+    struct comp_box g = window_geom(ww->win);
+    int32_t gw = g.x2 - g.x1, gh = g.y2 - g.y1;
     if (wm_layout_of(ww) != COMP_FLOATING || ww->want != WM_NORMAL ||
         (ww->shown & (WM_ST_MAXIMIZED | WM_ST_FULLSCREEN)) || ww->resizing)
         return;
-    if (ww->anchor && (s->width != ww->float_w || s->height != ww->float_h))
+    if (ww->anchor && (gw != ww->float_w || gh != ww->float_h))
         return;   /* the resize's last size isn't drawn yet */
-    ww->float_w = s->width;
-    ww->float_h = s->height;
+    ww->float_w = gw;
+    ww->float_h = gh;
     if (ww->anchor) {
         wm_place(ww);   /* at the anchor, for the last time */
         ww->anchor = 0;
@@ -434,11 +455,13 @@ status_t wm_commit(struct wm_window *ww, uint32_t states)
             return st;
         ww->win->wm = ww;
         ww->win->title = ww->title;   /* ours: it outlives the window */
+        ww->win->geom = ww->geom;     /* (not mapped yet: nothing to damage) */
         restored = wm_save_place(ww);   /* back in its remembered place (a restart) */
         if (!restored)
             screens_window_new(ww);
     }
     ww->shown = states;
+    window_set_geom(ww->win, ww->geom);   /* the geometry this buffer was drawn with */
     wm_place(ww);
     note_floating_size(ww);
     if (!first)
@@ -507,6 +530,11 @@ void wm_unmap(struct wm_window *ww)
 static void copy_text(char *to, const char *from)
 {
     snprintf(to, WM_TEXT_MAX, "%s", from ? from : "");
+}
+
+void wm_set_geometry(struct wm_window *ww, struct comp_box geom)
+{
+    ww->geom = geom;   /* shown and placed by from the commit (wm_commit) */
 }
 
 void wm_set_title(struct wm_window *ww, const char *title)

@@ -760,6 +760,9 @@ bool t_wm_tile_gaps(void);
 bool t_wm_tile_push(void);
 bool t_wm_tile_float(void);
 bool t_wm_tile_mins(void);
+/* compgeom.c: the window geometry (set_window_geometry) placing a window,
+ * its frame and its hits, on the same harness. */
+bool t_wm_geometry(void);
 bool t_wm_save_restore(void);
 bool t_wm_save_late(void);
 bool t_wm_save_full(void);
@@ -803,13 +806,15 @@ bool t_xdg_unacked(void);
 bool t_xdg_errors(void);
 /* compver.c: the versions above G1's (wl_compositor 6, wl_shm 2, wl_output
  * 4, wl_seat 9, xdg_wm_base 6), each new event at its version and not
- * below, and xdg-decoration's modes, toggled and refused. */
+ * below, xdg-decoration's modes (the owner's rule), toggled and refused,
+ * and a client-side window placed by its window geometry. */
 bool t_comp_versions(void);
 bool t_comp_seat_v9(void);
 bool t_xdg_versions(void);
 bool t_xdg_tiled(void);
 bool t_xdg_decoration(void);
 bool t_xdg_decoration_bad(void);
+bool t_xdg_geometry(void);
 
 /* netdev.c: the netdev rings' code (<jam/netdev.h>): counts, a hostile
  * peer, the wake flags, the VLAN word, a fake driver thread's exchange. */

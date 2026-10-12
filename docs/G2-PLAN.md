@@ -1123,6 +1123,58 @@ mapped toplevel is refused (`unconfigured_buffer`) until a client needs it.
 7. **Version 6 surfaces** get `preferred_buffer_scale` when made: a
    subsurface's wl_surface too, nothing to add.
 
+## GC1b notes
+
+*Written 2026-10-12, not yet run in QEMU (the PC was in Jam OS): its
+test plan is in the track's report.* What GC1b changed, for GC2 and GR.
+
+**The owner's rule** (section 3) is in `xdgdeco.c`: `struct xdg_client`
+has `deco_bound`, set when the client binds the manager (and its
+toplevels made before the bind are told at once: a configure without
+`WM_ST_CSD`, the frame changing with the buffer that acks it).
+`mode_for` always says `server_side`; a toplevel's `csd` is
+`!deco_bound`, at `get_toplevel` and at every decoration request.
+Bound stays bound for the client's life (destroying the manager changes
+nothing). One deviation from the protocol's text, by the rule: a
+decoration object's destroy ("back to client-side at the next commit")
+keeps the compositor's decorations, and sends no configure.
+
+**The window geometry** (`xdg_surface.set_window_geometry`), applied by
+the commit that brings it (`wm_set_geometry` before `wm_commit`, which
+copies it to `comp_window.geom` with the buffer):
+- `window_geom(w)` (comp.h, scene.c): the geometry in surface
+  coordinates, clamped to the surface, the whole surface without one;
+  `window_geometry(w)` the same on the output (a tile's view box while
+  one is set). The frame (`window_frame`), the title bar and outline
+  (title.c), the edges (`edges_at`) and the grabs (wmgrab.c's
+  `grab.start`) go round `window_geometry`.
+- Placement places the geometry: `float_x`/`float_y` are where the
+  geometry's (0, 0) goes, `float_w`/`float_h` and the configure's size
+  are the geometry's (as xdg-shell means), the anchors its edges, the
+  cascade compares geometries' corners (`move_geom` in wm.c).
+- `window_extent` is the frame and our shadow **and the surface's box**,
+  and painting (paint.c's `draw_window`) draws a window wherever its
+  frame or its surface meets a tile: a client's own shadow reaches past
+  its frame.
+- A client-side window whose geometry is smaller than its surface
+  (`window_inset`) gets no `COMP_WIN_CSD`: `LOOK_PLAIN`, no corners or
+  shadow of ours.
+- Hits (`wm_window_at`, `deco_hit`): inside the geometry, the client's;
+  in the frame outside the geometry, ours; on the surface outside the
+  frame (the client's shadow, its resize margins), the client's by its
+  input region.
+- Tiling: the tile's view (clip or pad) is used only for a geometry
+  starting at the surface's (0, 0); one inset at the top or left is
+  centred by its geometry instead (it may overlap its neighbours: a
+  tiled client normally draws no shadow, being told it is tiled).
+- **Not done**: a server-side window whose geometry is smaller than its
+  surface has its surface painted whole, over our title bar where they
+  meet (no clip to the geometry); no known client does that.
+
+**For GC2**: the tree's box replaces `window_geom`'s surface box (its
+users are listed above, plus GC1 notes' item 1); `window_extent`
+already takes the surface's box, so a tree's bounding box goes there.
+
 ## Tests and the sign-off
 
 | What | Where |
