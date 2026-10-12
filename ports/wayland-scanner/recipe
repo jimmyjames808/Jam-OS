@@ -1,0 +1,27 @@
+# wayland-scanner, for the build machine (G2's GP1, docs/G2-PLAN.md
+# section 9): the tool that turns a protocol's XML into the C header and
+# code a Wayland client or compositor compiles. A host build, from the same
+# release tarball as the wayland port (host-of: the lint refuses another
+# version or source), built natively with the machine's own compiler and
+# installed into its stage, which is its prefix; wayland and
+# wayland-protocols name it with `tool`.
+#
+# The build machine needs expat's headers and library (the scanner parses
+# the XML with it): macOS has them in the SDK, and Ubuntu's libexpat1-dev.
+# DTD validation is off (it wants libxml2): the scanner does not check the
+# XML against wayland.dtd, and the protocols it runs on are upstream's.
+name        wayland-scanner
+version     1.26.0
+revision    1
+summary     wayland-scanner, built for the build machine
+homepage    https://wayland.freedesktop.org/
+category    tools
+licence     MIT
+licence-file COPYING
+source      https://gitlab.freedesktop.org/wayland/wayland/-/releases/$version/downloads/wayland-$version.tar.xz 612384 64176eaa46e4969903e286f8e5ef8331affc17fdf03ac9b58381d2b23162b7a3
+place       host
+host-of     wayland
+style       meson
+meson       -Dlibraries=false -Dscanner=true -Dtests=false -Ddocumentation=false -Ddtd_validation=false
+program     bin/wayland-scanner
+cpe         cpe:2.3:a:wayland:wayland

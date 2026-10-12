@@ -1,0 +1,23 @@
+Description: build the connection test (wl-connect-test) with libwayland
+ Adds one executable to the top-level meson.build, after the client and
+ cursor libraries: jamos/wl-connect-test.c (our file, override/ in this
+ port, BSD-2-Clause) linked with libwayland-client. It is installed so the
+ port's test can run it on Jam OS; ports/wayland/recipe puts it in the
+ wayland-test package.
+Forwarded: not-needed (a Jam OS test program, not libwayland's)
+---
+--- a/meson.build
++++ b/meson.build
+@@ -121,6 +121,12 @@
+ if get_option('libraries')
+ 	subdir('cursor')
+ 	subdir('egl')
++	executable(
++		'wl-connect-test',
++		'jamos/wl-connect-test.c',
++		dependencies: wayland_client_dep,
++		install: true,
++	)
+ endif
+ if get_option('tests')
+ 	subdir('tests')

@@ -25,6 +25,16 @@ endian = 'little'
 needs_exe_wrapper = true
 
 [built-in options]
+# Static only. prefer_static makes `dependency()` ask pkg-config for the
+# static link line (Libs.private and Requires.private too), so a library's
+# own libraries (wayland-client's libffi) are linked into the program.
+# There is no dynamic loading to ask for: a port's own switch turns off
+# what would dlopen (docs/G2-PLAN.md section 9: SDL's dynamic loading,
+# libdecor, GStreamer's plugins), and musl's static dlopen only fails.
 default_library = 'static'
+prefer_static = true
 b_staticpic = false
 b_pie = false
+# A build never downloads: a missing dependency is the recipe's to declare
+# (`needs`), not a subproject fetched from the network.
+wrap_mode = 'nodownload'

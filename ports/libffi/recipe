@@ -1,0 +1,27 @@
+# libffi: the foreign function interface library (G2's GP1,
+# docs/G2-PLAN.md): libwayland's dispatcher calls every listener through
+# ffi_call, so it is the first thing libwayland needs. Only ffi_call is
+# used, never a closure, so no executable memory is needed.
+name        libffi
+version     3.8.0
+revision    1
+summary     the libffi foreign function interface library, and its tests
+homepage    https://sourceware.org/libffi/
+category    libs
+# LICENSE is the MIT licence ("Expat" wording with ``Software'' quotes),
+# confirmed against the 3.8.0 tarball. src/closures.c includes Doug Lea's
+# dlmalloc.c, which is built in: a CC0-1.0 public domain dedication.
+# LICENSE-BUILDTOOLS covers only the autotools files the release was made
+# with (GPL, with the exception that lets their output carry any licence);
+# nothing from it is built in.
+licence     MIT AND CC0-1.0
+licence-file LICENSE
+source      https://github.com/libffi/libffi/releases/download/v$version/libffi-$version.tar.gz 1581626 7da3e2d9a171eb0a038f592ecad3ff2bb2550f3496d87b3b29ad0cf4430c0db4
+place       package
+style       custom                    # configure and make, then the tests (build.sh)
+# ffi-tests is libffi's own ffi_call tests as one program, in a package
+# of its own: the library is only for ports that need it (override/ffi-tests.c).
+program     bin/ffi-tests
+subpackage  libffi-test bin/ffi-tests
+library     lib/libffi.a include/ffi.h include/ffitarget.h lib/pkgconfig/libffi.pc
+cpe         cpe:2.3:a:libffi_project:libffi

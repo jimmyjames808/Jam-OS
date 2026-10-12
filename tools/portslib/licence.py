@@ -7,8 +7,8 @@ identifiers below are taken. The list is short on purpose: a port under a
 licence that isn't here is a licence someone has to read first
 (CONTRIBUTING.md: permissive licences anywhere, GPL and LGPL only in a
 separate program with its source beside it), and adding it is a one-line
-change a review sees. `LicenseRef-` names and the deprecated `+` suffix
-are refused for the same reason.
+change a review sees. `LicenseRef-` names (but for the one reviewed below) and
+the deprecated `+` suffix are refused for the same reason.
 """
 import re
 
@@ -18,6 +18,16 @@ PERMISSIVE = {
     "CC0-1.0", "curl", "HPND", "ISC", "Libpng", "libpng-2.0", "MirOS", "MIT", "MIT-0",
     "NCSA", "OFL-1.1", "PostgreSQL", "PSF-2.0", "Python-2.0", "Unlicense", "Vim", "X11",
     "X11-distribute-modifications-variant", "Zlib", "bzip2-1.0.6", "blessing",
+    # The X.org family's own wordings, which xkbcommon and wayland-protocols
+    # carry beside MIT (GP1, 2026-10-11: read against their LICENSE and XML
+    # files): attribution licences, each with a no-endorsement clause.
+    "HPND-sell-variant", "MIT-open-group",
+    # Not an SPDX identifier: xkbcommon's own name for the notice in its
+    # src/atom.c (Digital Equipment Corporation, 1987-88: permission to use,
+    # copy, modify and distribute without fee, the notice kept, Digital's
+    # name not used to promote). The one LicenseRef- the builder accepts;
+    # another is a licence someone has to read first.
+    "LicenseRef-digital-equipment-corporation",
 }
 # Copyleft: only in a separate program (CONTRIBUTING.md), its complete
 # source shipped beside it.
@@ -88,7 +98,7 @@ class _Parser:
             return inner
         if tok in ("AND", "OR", "WITH", ")"):
             raise ValueError("'%s' where a licence was expected" % tok)
-        if tok.startswith("LicenseRef-") or tok.endswith("+"):
+        if (tok.startswith("LicenseRef-") and tok not in KNOWN) or tok.endswith("+"):
             raise ValueError("'%s': name a licence on the list (tools/portslib/licence.py)"
                              % tok)
         if tok not in KNOWN:

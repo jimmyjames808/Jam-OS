@@ -1,0 +1,19 @@
+Description: install the compositor's keymap beside the tools
+ Adds one install_data to the tools block of meson.build: jamos/us.xkb (the
+ keymap tools/genkeymap.py makes for the US layout, override/us.xkb in this
+ port) goes to share/xkbcommon-test/, so the port's test can have
+ xkbcli-compile-keymap and xkbcli-how-to-type read it on Jam OS.
+Forwarded: not-needed (Jam OS's own test data, not xkbcommon's)
+---
+--- a/meson.build
++++ b/meson.build
+@@ -701,6 +701,9 @@
+     install_man('tools/xkbcli-how-to-type.1')
+     configh_data.set10('HAVE_XKBCLI_HOW_TO_TYPE', true)
+ 
++    # Jam OS: the compositor's keymap, for the tools above to read on Jam OS.
++    install_data('jamos/us.xkb', install_dir: get_option('datadir') / 'xkbcommon-test')
++
+     # Tool: interactive-evdev
+     if cc.has_header('linux/input.h')
+         executable('xkbcli-interactive-evdev',
