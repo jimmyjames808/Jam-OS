@@ -14,9 +14,8 @@
  *     1 TiB one is refused), a byte written in each, half decommitted by
  *     MAP_FIXED PROT_NONE and half by MADV_DONTNEED, then committed
  *     again: the pages follow, no VMO is made, and the time a piece takes
- *     is printed for the first quarter and the last (it grows with the
- *     kernel's mapping count until its mappings merge: docs/CR-PLAN.md's
- *     CK2; 2,048 pieces stay well inside today's 16,384 mappings);
+ *     is printed for the first quarter and the last (the kernel's
+ *     mapping tree keeps them close);
  *   - PartitionAlloc's: a 16 GiB pool aligned to its size (twice that
  *     reserved, head and tail given back), 64 super pages of 2 MiB each
  *     with a metadata page and eight 64 KiB slot spans committed, the odd
@@ -25,8 +24,9 @@
  *   - the edges: MAP_FIXED_NOREPLACE inside a reservation, MAP_FIXED at
  *     its first and last pages, across two of libc's mappings, and
  *     reaching past its end; mprotect past its end;
- *   - the limits: a 64 GiB reservation (a VMO's most today), ENOMEM past
- *     it.
+ *   - past 64 GiB: V8's 1 TiB sandbox and its guards, a 64 GiB shared
+ *     anonymous mapping, ENOMEM past what a VMO or the address space
+ *     holds.
  *
  * Nothing between a count and the check of it may allocate (printf can):
  * the counts are the job's, so they see every page the program takes. */
@@ -332,7 +332,11 @@ static void check_pa_pattern(void)
     for (unsigned s = 0; s < PA_SUPERS && ok; s++)
         ok = pa_odd_spans(pool, s, false);
     CHECK(ok);
-    CHECK(pt_job_pages() + spans <= p1 + SLACK);
+    /* The kernel merged each super page's spans into one read-write
+     * mapping; taking access from the odd ones splits it again, two more
+     * mappings a span, charged a page per 16. */
+    uint64_t splits = (2 * PA_SUPERS * (PA_SPANS / 2) + 15) / 16;
+    CHECK(pt_job_pages() + spans <= p1 + splits + SLACK);
     for (unsigned s = 0; s < PA_SUPERS && ok; s++)
         ok = pa_odd_spans(pool, s, true) && pool[s * PA_SUPER + PG] == (char)s &&
              pool[s * PA_SUPER + PA_FIRST + 2 * PA_SPAN] == 3;
@@ -403,23 +407,39 @@ static void check_reserve_edges(void)
     CHECK(munmap(r, 16 * PG) == 0);
 }
 
-/* The biggest reservation today's kernel allows (a VMO's most, 64 GiB),
- * and anything bigger refused with ENOMEM, Linux's answer when the
- * address space can't hold it (V8 and PartitionAlloc then reserve less).
- * The kernel's bigger VMOs (docs/CR-PLAN.md's CK1, CL1's stage 2) change
- * the 64 GiB + 4 KiB check to a success; the whole user half stays
- * ENOMEM. */
+/* Reservations past 64 GiB (the kernel's sparse big VMOs): V8's sandbox,
+ * 1 TiB with 32 GiB of guards, costs no page, a piece committed deep
+ * inside it works and is given back; a shared anonymous mapping that
+ * big is made too. Refused with ENOMEM, Linux's answer when the address
+ * space can't hold it (V8 and PartitionAlloc then reserve less): past a
+ * VMO's most (VMO_MAX_SIZE, 128 TiB), and the whole user half (which
+ * the address space can't hold: its first page and last pages aren't
+ * the user's). */
 static void check_reserve_limits(void)
 {
-    uint64_t pages = pt_job_pages();
-    char *r = reserve(64 * GIB);
+    uint64_t pages = pt_job_pages(), sandbox = 1024 * GIB + 32 * GIB;
+    char *r = reserve(sandbox);
     CHECK(r != MAP_FAILED && pt_job_pages() <= pages + SLACK);
-    CHECK(r == MAP_FAILED || munmap(r, 64 * GIB) == 0);
+    if (r != MAP_FAILED) {
+        char *p = r + 900 * GIB;
+        bool rw = fixed_anon(p, 2 * MIB, PROT_READ | PROT_WRITE);
+        CHECK(rw);
+        if (rw) {
+            touch(p, 2 * MIB, 4);
+            CHECK(p[2 * MIB - PG] == 4 && pt_job_pages() >= pages + 2 * MIB / PG);
+        }
+        CHECK(munmap(r, sandbox) == 0);
+        CHECK(pt_job_pages() <= pages + SLACK);
+    }
+    char *s = mmap(NULL, 64 * GIB + PG, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1,
+                   0);
+    CHECK(s != MAP_FAILED);
+    if (s != MAP_FAILED) {
+        s[64 * GIB] = 5;
+        CHECK(s[64 * GIB] == 5 && munmap(s, 64 * GIB + PG) == 0);
+    }
     errno = 0;
-    CHECK(reserve(64 * GIB + PG) == MAP_FAILED && errno == ENOMEM);
-    errno = 0;
-    CHECK(mmap(NULL, 64 * GIB + PG, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0) ==
-              MAP_FAILED && errno == ENOMEM);
+    CHECK(reserve((1ul << 47) + PG) == MAP_FAILED && errno == ENOMEM);
     errno = 0;
     CHECK(reserve(1ul << 47) == MAP_FAILED && errno == ENOMEM);
 }

@@ -36,8 +36,8 @@
  * same VMO, its pages there taken back, the new protection set, so the
  * table keeps one entry per reservation however it is cut. madvise
  * decommits too, and munmap gives a part's pages back. A mapping is at
- * most a VMO's size, 64 GiB (ENOMEM past it), until the kernel's VMOs
- * grow (docs/CR-PLAN.md's CK1).
+ * most a VMO's size (VMO_MAX_SIZE, 128 TiB) and what the address space
+ * can hold: ENOMEM past either.
  *
  * Any other MAP_FIXED over the table's mappings replaces
  * them in one step (vmar_map's VMAR_REPLACE): another thread reading the
@@ -196,7 +196,7 @@ void mem_forget(uint64_t addr, uint64_t len)
 }
 
 /* -errno for a mapping whose VMO couldn't be made: a length past what a
- * VMO may hold (VMO_MAX_SIZE, 64 GiB) is ENOMEM, Linux's answer for more
+ * VMO may hold (VMO_MAX_SIZE, 128 TiB) is ENOMEM, Linux's answer for more
  * than the address space can give, which V8 and PartitionAlloc take as
  * the cue to reserve less. */
 static long create_err(status_t st)
