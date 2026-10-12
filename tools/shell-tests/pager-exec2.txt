@@ -54,7 +54,6 @@ wait alive-f-2
 wait {prompt}
 monitor device_add usb-storage,id=stick,bus=xhci.0,port=1,drive=usbstick
 wait 60 init: /data mounted
-wait {prompt}
 send run /data/pq lazy; echo st-$T=$?
 wait pxtest: lazy: none of the table touched
 wait st-f=0

@@ -4,15 +4,16 @@
  * The program is a range of a VMO (struct image): a file of the bootfs
  * image (the SR_BOOTFS VMO, mapped once by bootfs_default), a range the
  * caller names, or a file read through the namespace into a VMO made for
- * it. A VMO other than the boot image's is never mapped here: its ELF
+ * it. A VMO other than the boot image's (or another physical one, which
+ * vmo_read refuses and no pager backs) is never mapped here: its ELF
  * headers and writable segments are read from it with vmo_read. A
  * verified VMO (vmo_make_exec_verified) fetches each page from its pager
  * and checks it when first touched, and a page that doesn't match kills
  * whoever touched it through a mapping; through vmo_read it is ERR_IO for
  * the spawn instead, so a changed program fails to start rather than
  * taking its starter down. The steps are all ordinary system calls:
- * process_create gives the
- * new process and a vmar for its address space; each PT_LOAD segment is
+ * process_create gives the new process and a vmar for its address space;
+ * each PT_LOAD segment is
  * mapped into that vmar (read-only and executable ones straight from the
  * program's VMO, writable ones copied into a fresh VMO), then a stack with
  * a guard page below it, a thread, and a startup message on a new channel
@@ -47,9 +48,11 @@
 struct image {
     handle_t       vmo;      /* the VMO holding them */
     uint64_t       off;      /* where they start in it, page-aligned */
-    const uint8_t *data;     /* the same bytes in the boot image's mapping; NULL for any
-                              * other VMO (read with vmo_read, never mapped here) */
+    const uint8_t *data;     /* the same bytes mapped here (the boot image, or a physical
+                              * VMO); NULL for any other VMO (read with vmo_read, never
+                              * mapped here) */
     uint64_t       size;     /* how many */
+    uint64_t       mapped;   /* bytes at data to unmap afterwards (0: bootfs's mapping, kept) */
     bool           own_vmo;  /* vmo was made here (a file's copy): closed afterwards */
 };
 
@@ -271,6 +274,27 @@ static status_t check_image(const struct image *img)
     return OK;
 }
 
+/* A caller's VMO range: read with vmo_read where the VMO allows it. A
+ * physical VMO (the boot image's own, SR_BOOTFS, named by range) refuses
+ * vmo_read (ERR_NOT_SUPPORTED); it has no pager and no page that can fail
+ * a check, so it is mapped here read-only, as the boot image always is. */
+static status_t caller_image(struct image *img)
+{
+    status_t st = check_image(img);
+    uint8_t probe;
+    if (st == OK)
+        st = jam_vmo_read(img->vmo, img->off, &probe, 1);
+    if (st != ERR_NOT_SUPPORTED)
+        return st;
+    uint64_t addr = 0, len = up(img->size);
+    st = jam_vmar_map(startup_handle(SR_SELF_VMAR), img->vmo, img->off, len, VMAR_READ, &addr);
+    if (st != OK)
+        return st;
+    img->data = (const uint8_t *)(uintptr_t)addr;
+    img->mapped = len;
+    return OK;
+}
+
 /* The program a names: the caller's VMO range, a file in the namespace
  * (an absolute path) or a bootfs file. release_image after any outcome. */
 static status_t find_image(const struct spawn_args *a, struct image *img)
@@ -280,7 +304,7 @@ static status_t find_image(const struct spawn_args *a, struct image *img)
         img->vmo = a->vmo;
         img->off = a->offset;
         img->size = a->size;
-        return check_image(img);
+        return caller_image(img);
     }
     if (a->path[0] == '/') {
         status_t st = file_read_vmo(a->path, FILE_MAX, &img->vmo, &img->size);
@@ -302,9 +326,12 @@ static status_t find_image(const struct spawn_args *a, struct image *img)
     return OK;
 }
 
-/* The child keeps what it mapped of the VMO; a copy made here goes. */
+/* The child keeps what it mapped of the VMO; our view of a physical
+ * one and a copy made here go. */
 static void release_image(struct image *img)
 {
+    if (img->mapped)
+        jam_vmar_unmap(startup_handle(SR_SELF_VMAR), (uint64_t)(uintptr_t)img->data, img->mapped);
     if (img->own_vmo && img->vmo)
         jam_handle_close(img->vmo);
 }
