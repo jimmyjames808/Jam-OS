@@ -90,7 +90,9 @@ status_t ext_inode_new(struct ext_fs *fs, const struct ext_inode_spec *spec,
 /* Free inode `in`, which holds no blocks any more (ext_truncate to 0
  * first: ERR_BAD_STATE otherwise; a block-mapped file's blocks:
  * ERR_NOT_SUPPORTED) and is on no orphan list (its dtime is set to
- * `dtime`, which a list would read as a link): its attribute block
+ * `dtime`, which a list would read as a link; a dtime no larger than the
+ * volume's inode count, which a checker would read as one too, is raised
+ * past it): its attribute block
  * released (freed when no other inode shares it), its bitmap bit cleared,
  * the counts raised; links_count 0. */
 status_t ext_inode_free(struct ext_fs *fs, struct ext_inode *in, uint32_t dtime);
