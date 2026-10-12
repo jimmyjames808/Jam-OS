@@ -20,7 +20,7 @@ monitor device_del sa
 wait 30 init: /usb0 is gone
 send go
 wait 30 posixtest: mmap-pull: a copy from the mapping:
-wait 30 killed: page fault: the file's pager
+seen 30 killed: page fault: the file's pager
 wait 30 pull-p=
 wait {prompt}
 send ls /data; echo ls-$T=$?
