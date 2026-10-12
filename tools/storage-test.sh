@@ -85,7 +85,10 @@ want "usbtest: the first command after the hand-over worked after 1 reset recove
 want "usbtest: a pair opened again on a device left mid-READ: the first command without recovery"
 want "usbtest: a usb-storage killed with a READ in flight: the next one took over in"
 want "\[usb-storage-test\] usb-storage 46f4:0001: partition 2: its client left with 4 request\(s\) queued: dropped"
-want "usb-storage-test: usb-storage 46f4:0001: QEMU QEMU HARDDISK, 128 MiB, 2 partition\(s\) \(ef 63 MiB, 0c 64 MiB\)"
+# the boot stick: build/jamos.img's layout (the Makefile's ESP_END_MIB, IMAGE_MIB)
+esp_end=$(python3 tools/mkimage.py --data-at build/jamos.img) && esp_end=${esp_end%M}
+img_mib=$(( $(wc -c < build/jamos.img) >> 20 ))
+want "usb-storage-test: usb-storage 46f4:0001: QEMU QEMU HARDDISK, $img_mib MiB, 2 partition\(s\) \(ef $((esp_end - 1)) MiB, 0c $((img_mib - esp_end)) MiB\)"
 want "usb-storage-disk2: usb-storage 46f4:0001: QEMU QEMU HARDDISK, 128 MiB, 2 partition\(s\) \(ef 63 MiB, 0c 64 MiB\)"
 want "\[usb-storage-disk2\] usb-storage 46f4:0001: the device is gone"
 if [ $ok = 1 ]; then

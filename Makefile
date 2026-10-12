@@ -76,11 +76,19 @@ AVL_CHECK  := build/host/avlcheck
 # The files a stick has once `update -w` has written a build: its own and
 # the previous one (what boot/limine.conf may name; `make check`).
 STICK_FILES := /boot/jamos.elf /boot/bootfs.img /boot/prev-jamos.elf /boot/prev-bootfs.img
-IMAGE_MIB := 128
-# The ESP ends at 64 MiB (it starts at 1 MiB); the data partition (/data,
-# FAT32 "JAMOS-DATA") fills the rest of the image: 64 MiB in QEMU, the
-# rest of the stick once tools/write-usb.sh has grown it.
-ESP_END_MIB := 64
+# The ESP ends at 256 MiB (it starts at 1 MiB: 255 MiB, FAT32 with 2 KiB
+# clusters); the data partition (/data, FAT32 "JAMOS-DATA") fills the rest
+# of the image: 64 MiB in QEMU, the rest of the stick once
+# tools/write-usb.sh has grown it. `update` keeps three builds on the ESP
+# while it writes one (the stick's, the previous one and the new one:
+# user/services/init/espwrite.c), so a build may take a third of it
+# (mkbootfs.py's budget, from ESP_END_MIB; the image's own check after its
+# files are in: mkbootfs.py --esp-check). Sticks made before 2026-10-12
+# have a 63 MiB ESP, too small for three of today's builds: `update`
+# refuses to write such a stick (nothing on it changes) and says so;
+# `make usb` remakes it.
+ESP_END_MIB := 256
+IMAGE_MIB := $(shell echo $$(( $(ESP_END_MIB) + 64 )))
 
 LIMINE  := third_party/limine
 OVMF_DIR ?= $(shell brew --prefix qemu 2>/dev/null)/share/qemu
@@ -722,16 +730,22 @@ BOOTFS_FILES := $(foreach p,$(USER_PROGS),bin/$(p)=$(BUILD)/user/$(p).bootfs) \
                 $(if $(wildcard $(PORTS_KEY)),ports.pub=$(PORTS_PUB))
 
 # Every program's list (<wants.h>) is checked first: what the build
-# approves for each boot-image program (tools/checkwants.py).
+# approves for each boot-image program (tools/checkwants.py). The boot
+# image may take what `update` takes (UPDATE_FILE_MAX) and a third of the
+# ESP beside the kernel, whichever is less (tools/mkbootfs.py: `update`
+# keeps three builds on the ESP), so it is packed again when the kernel
+# changes.
 $(BOOTFS): $(USER_PROGS:%=$(BUILD)/user/%.bootfs) $(DRIVERS:%=$(BUILD)/drv/%.bootfs) boot/init.cfg \
            boot/splash.mpg $(BUILD_INFO) $(UPDATE_PUB) $(PORTS_PUB) tools/mkbootfs.py \
-           tools/checkwants.py user/include/os.h
+           tools/checkwants.py user/include/os.h $(KERNEL) $(LIMINE)/BOOTX64.EFI boot/limine.conf \
+           user/include/update.h user/services/init/espwrite.c
 	python3 tools/checkwants.py $(foreach p,$(USER_PROGS),$(call prog_dir,$(p))=$(BUILD)/user/$(p).bootfs)
-	python3 tools/mkbootfs.py $@ $(BOOTFS_FILES) @$(PORTS_LIST)
+	python3 tools/mkbootfs.py --esp-mib $$(( $(ESP_END_MIB) - 1 )) --kernel $(KERNEL) \
+	    --esp-file $(LIMINE)/BOOTX64.EFI --esp-file boot/limine.conf $@ $(BOOTFS_FILES) @$(PORTS_LIST)
 
 image: $(IMAGE)
 
-$(IMAGE): $(KERNEL) $(BOOTFS) boot/limine.conf tools/mkimage.py tools/fat-label.py
+$(IMAGE): $(KERNEL) $(BOOTFS) boot/limine.conf tools/mkimage.py tools/fat-label.py tools/mkbootfs.py
 	python3 tools/mkimage.py $@ $(ESP_END_MIB) $(IMAGE_MIB)
 	mformat -i $@@@1M -T $$(( ($(ESP_END_MIB) - 1) * 2048 )) -F -v JAMOS ::
 	mformat -i $@@@$(ESP_END_MIB)M -T $$(( ($(IMAGE_MIB) - $(ESP_END_MIB)) * 2048 )) -F \
@@ -743,6 +757,7 @@ $(IMAGE): $(KERNEL) $(BOOTFS) boot/limine.conf tools/mkimage.py tools/fat-label.
 	mcopy -i $@@@1M boot/limine.conf ::/boot/limine/
 	mcopy -i $@@@1M $(KERNEL) ::/boot/
 	mcopy -i $@@@1M $(BOOTFS) ::/boot/bootfs.img
+	python3 tools/mkbootfs.py --esp-check $@ $(KERNEL) $(BOOTFS) || { rm -f $@; exit 1; }
 
 # Writable copy of the UEFI variable store (the firmware code image is read-only).
 $(BUILD)/ovmf-vars.fd:
