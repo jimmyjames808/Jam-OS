@@ -20,6 +20,19 @@ names, a DHCP lease, the log to the Mac, `update` and `update -w`,
 `speed` and `sntp`), and the network has been up in every PC sign-off's
 `soak 10` since, but M9 and M9.5 never had a sign-off of their own.
 
+## Loopback
+
+`127.0.0.1` (and the rest of `127.0.0.0/8`) and `localhost` are the host
+itself: a program's datagram or connection to it goes to another socket of
+the same netstack and never to the network card, so it works with no card,
+no address and no link, and no frame for it is ever sent
+([ARCHITECTURE.md](../ARCHITECTURE.md#networking) has the design). Every
+address of the block is the one interface, `127.0.0.1`. Taking connections
+needs the same permission as anywhere (`svc net listen`), and a socket bound
+to a loopback address can be reached from the host only. A packet from the
+network with a loopback address in it is dropped and counted as refused
+(`net stats`). `ping 127.0.0.1` answers.
+
 ## The network's mode
 
 Jam OS sends in one network mode only, and nothing else ever leaves

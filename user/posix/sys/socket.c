@@ -4,9 +4,12 @@
  * a socket handed to a child sockgive.c's.
  *
  * **Addresses.** AF_INET only (AF_INET6 and AF_UNIX sockets:
- * EAFNOSUPPORT; socketpair is pipe.c's). netstack serves one interface and
- * has no loopback: a bind to an address that isn't the interface's (or
- * INADDR_ANY) is EADDRNOTAVAIL.
+ * EAFNOSUPPORT; socketpair is pipe.c's). netstack serves one card
+ * interface and the loopback one (127.0.0.0/8): a bind to an address that
+ * isn't one of those (or INADDR_ANY) is EADDRNOTAVAIL. A socket bound to a
+ * loopback address is reachable from this host only (a datagram socket
+ * is made loopback-only, a listener too: net.idl's loopback_only and
+ * LISTEN_LOOPBACK), so a service bound to 127.0.0.1 is not on the network.
  *
  * **Binding.** A port below NET_PORT_EPHEMERAL needs the listen
  * permission (below NET_PORT_LOW the low one): EACCES without it, at bind.
@@ -118,6 +121,13 @@ long sock_dgram_open_locked(struct sock *s)
     status_t st = net_udp_open_rings(net, s->bind_port, s->opts.sndbuf, s->opts.rcvbuf, &s->ns);
     if (st != OK)
         return sock_net_errno(st);
+    if (sock_is_loopback(s->bind_addr)) {   /* only this host's own datagrams */
+        st = net_socket_loopback_only_until(s->ns.ch, now() + CALL_WAIT);
+        if (st != OK) {
+            net_close(&s->ns);
+            return sock_net_errno(st);
+        }
+    }
     struct sockring_status ss;
     sockring_status_get(&s->ns.r, &ss);
     s->refused = ss.tx_refused;
@@ -369,10 +379,10 @@ long lx_socket(long domain, long type, long proto, long d, long e, long f)
                         type & SOCK_CLOEXEC);
 }
 
-/* Is ip one this host may bind (any, or the interface's own)? */
+/* Is ip one this host may bind (any, a loopback one, or the interface's own)? */
 static long addr_ours(uint32_t ip)
 {
-    if (!ip)
+    if (!ip || sock_is_loopback(ip))
         return 0;
     struct net_info i;
     handle_t net = net_svc();
@@ -381,7 +391,7 @@ static long addr_ours(uint32_t ip)
     status_t st = net_info(net, &i);
     if (st != OK)
         return sock_net_errno(st);
-    return i.address == ip ? 0 : -EADDRNOTAVAIL;   /* no loopback, one interface */
+    return i.address == ip ? 0 : -EADDRNOTAVAIL;   /* one card interface */
 }
 
 static long bind_locked(struct sock *s, uint32_t ip, uint16_t port)
@@ -435,8 +445,10 @@ static long listen_locked(struct sock *s, long backlog)
     if (!net)
         return -EACCES;   /* the program's list didn't ask for `svc net listen` */
     uint32_t b = backlog < 1 ? 1 : backlog > NET_BACKLOG_MAX ? NET_BACKLOG_MAX : (uint32_t)backlog;
-    status_t st = net_tcp_listen_flags(net, port, b, s->opts.sndbuf, s->opts.rcvbuf,
-                                       s->opts.reuseaddr ? NET_LISTEN_REUSE : 0, &s->l);
+    uint32_t flags = (s->opts.reuseaddr ? NET_LISTEN_REUSE : 0) |
+                     (sock_is_loopback(s->bind_addr) ? NET_LISTEN_LOOPBACK : 0);
+    status_t st = net_tcp_listen_flags(net, port, b, s->opts.sndbuf, s->opts.rcvbuf, flags,
+                                       &s->l);
     if (st != OK)
         return sock_net_errno(st);
     (void)net_tcp_accept_send(&s->l);   /* failed: accept asks again */

@@ -215,11 +215,14 @@ bool t_netsock_udp(void)
     /* What a program can't send to. */
     CHECK_ST(net_sendto(&s, 0xffffffffu, 67, "x", 1), ERR_INVALID_ARGS);
     CHECK_ST(net_sendto(&s, OUR_IP | 0xff, 9, "x", 1), ERR_INVALID_ARGS);   /* the subnet's */
-    CHECK_ST(net_sendto(&s, 0x7f000001u, 9, "x", 1), ERR_INVALID_ARGS);
+    CHECK_ST(net_sendto(&s, 0x7fffffffu, 9, "x", 1), ERR_INVALID_ARGS);   /* loopback's broadcast */
     CHECK_ST(net_sendto(&s, 0xe0000001u, 9, "x", 1), ERR_INVALID_ARGS);
     CHECK_ST(net_sendto(&s, PEER_IP, 0, "x", 1), ERR_INVALID_ARGS);
     CHECK_ST(net_sendto(&s, PEER_IP, 9, big, NET_DGRAM_MAX + 1), ERR_INVALID_ARGS);
     CHECK_EQ(s.send_errors, 0);   /* the blocking form reported each refusal itself */
+    /* The host itself is not refused, and not sent: loopback never reaches the card
+     * (the quiet check below sees no frame for it). netloop.c has loopback's tests. */
+    CHECK_ST(net_sendto(&s, 0x7f000001u, 9, "x", 1), OK);
     CHECK_ST(netdrv_recv(f, &(uint32_t){ 0 }, NETDRV_QUIET), ERR_TIMED_OUT);   /* none left */
     uint16_t port, peer_port;
     uint32_t addr, peer, queued, dropped;

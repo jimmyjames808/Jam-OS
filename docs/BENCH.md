@@ -383,6 +383,29 @@ Reading:
 - `update`'s fetch in `tools/update-net-test.sh` (QEMU, 2 CPUs, after):
   10.2 MB in 0.8 s.
 
+## netstack's memory at the CN1 caps, computed 2026-10-12
+
+**Computed from the build's section sizes (`size build/user/netstack`), not
+measured at the caps**: nothing was run (the PC was in Jam OS). The caps
+([`<net.h>`](../user/include/net.h)): sockets an opener 16 to 256, in all 48
+to 512; TCP connections an opener 64 to 512, in all 256 to 1,024.
+
+| Static memory of bin/netstack (`.bss`) | before | after |
+|---|---|---|
+| total | 8,626,656 bytes | 9,286,624 bytes (+660,000) |
+| of it: socket slots (`pg`, 513 slots), TCP sockets (`ts`), TCP connections (`conns`) | | 152,488, 90,112, 278,528 |
+| of it: lwIP's TCP pcbs (1,152), UDP pcbs (513) | | 340,999, 24,631 |
+| unchanged: lwIP's heap, receive buffers (1,152), segments | 6 MiB, 1.7 MiB, 0.35 MiB | the same |
+
+The rings are VMOs netstack maps and a program touches: budgets, not
+memory in use. A datagram socket with the default rings is 52 KiB, a TCP
+connection 84 KiB, so 512 sockets are 26 MiB and 1,024 connections 84 MiB
+at most, inside `SOCKRING_TOTAL_BYTES` (128 MiB; an opener 64 MiB, ordinary
+programs together 96 MiB). lwIP's heap stays 6 MiB: connections beyond what
+it holds wait in their tx rings. To measure on the PC: the `netsock_caps`
+and `nettcp_limits` utests at the caps, then `net stats` (heap used) and
+netstack's pages from the job's info.
+
 ## Path breakdown (M11.5 stage 0), QEMU 2026-10-02
 
 What one call costs, counted: `bench` ends with `path:` lines

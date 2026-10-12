@@ -21,6 +21,7 @@
  * pty.c (pseudo-terminals, and init's sessions from a POSIX program),
  * clock.c (the clocks from the time page), socket.c (sockets without the
  * network), sockets.c (against the network peer: asked for by name),
+ * loopback.c (127.0.0.0/8 through netstack alone: asked for by name),
  * procfs.c (libc's /proc: the program's file and the descriptors),
  * mmap.c (files mapped on their pages, msync, posix_spawn from /data) and
  * rawcalls.c, rawfutex.c and rawlog.c (the raw Linux calls Chromium makes, and the
@@ -64,6 +65,7 @@ void pt_files_many(char **argv);   /* only when asked for by name */
 void pt_signal(char **argv);
 void pt_socket(char **argv);
 void pt_sockets(char **argv);    /* only when asked for by name: the network peer */
+void pt_loopback(char **argv);   /* only when asked for by name: needs netstack, no peer */
 void pt_pty(char **argv);
 void pt_session(char **argv);      /* only when asked for: a shell-mode init's sessions */
 void pt_raw(char **argv);          /* raw calls and the ENOSYS log */

@@ -42,11 +42,12 @@ static const struct {
     { "mmap-big", pt_mmap_big },
     { "mmap-coherent", pt_mmap_coherent },
     { "spawn-data", pt_spawn_data },
+    { "loopback", pt_loopback },
 };
 
 /* The sections run only when named (long ones). */
 static const char *const asked_only[] = { "files-many", "sockets", "session", "mmap-big",
-                                          "mmap-coherent", "spawn-data" };
+                                          "mmap-coherent", "spawn-data", "loopback" };
 
 static bool by_default(const char *name)
 {

@@ -1615,14 +1615,32 @@ restarts:
   netstack's (its pages charged to netstack's job), so it is shrunk to
   nothing once the program's end of the channel closes; a socket whose
   opener went is ended (its status says CLOSED) but kept until then.
-  Limits: 32 openers, 16 sockets an opener and 48 in all, 8 requests in
-  flight an opener and 64 in all, 8 MiB of ring bytes an opener and 24 MiB
-  in all; of each, ordinary programs together get only their share
-  (24 openers, 24 sockets, 48 requests, 16 MiB), and the rest is the
-  network's own services' (`/svc/net-sys`, below). A program can't send to
-  a broadcast, multicast or loopback address, can't bind a port below 1024
-  without the low-port permission (`/svc/net-low`, below) nor one
+  Limits: 32 openers, 256 sockets an opener and 512 in all (an opener may
+  hold half of all, enough for a browser's network process), 8 requests in
+  flight an opener and 64 in all, 64 MiB of ring bytes an opener and 128 MiB
+  in all (budgets: the rings' pages are charged as they are touched); of
+  each, ordinary programs together get only their share (24 openers, 384
+  sockets, 48 requests, 96 MiB), and the rest is the network's own
+  services' (`/svc/net-sys`, below). A program can't send to a broadcast
+  or multicast address (loopback's broadcast too), can't bind a port below
+  1024 without the low-port permission (`/svc/net-low`, below) nor one
   below 49152 without the listen permission, and sends no raw packets. A wait set (`<netwait.h>`) waits on many sockets at once.
+- **Loopback.** 127.0.0.0/8 is the host itself: lwIP's loopback interface
+  (127.0.0.1/8, always up) takes a datagram or a connection to it to
+  another socket of the same netstack, and the card never sees it. It
+  needs neither an address nor a link, so `localhost` works with no
+  network at all. lwIP's interface answers for 127.0.0.1 only, so every
+  address of the block is that one (a program that sends to 127.0.0.5 is
+  answered from 127.0.0.1). A packet to the card's own address is looped
+  back the same way. The listen permissions are unchanged: taking
+  connections on a loopback address needs `svc net listen` like any other.
+  A socket bound to a loopback address is loopback-only (a datagram socket
+  by `net_socket.loopback_only`, a listener by `NET_LISTEN_LOOPBACK`): the
+  network cannot reach it, and it sends to loopback addresses only. A
+  frame with a loopback address in it, as source or destination, is
+  dropped on the way in (counted as refused) and never sent. The loop
+  delivers the interface's queued packets after what may have sent them
+  (`stack_loop`), so TCP's callbacks never run inside a program's call.
 - **TCP** on the same channels (`user/services/netstack/tcpsock.c` for the
   calls, `tcp.c` for the connections, `stack.c`'s TCP edge for lwIP;
   [HISTORY: M9.5](docs/HISTORY.md#m95-network-streams)):
@@ -1665,8 +1683,8 @@ restarts:
   lwIP and goes when the driver says it has room (`NETDEV_SIG_TX_ROOM`,
   the connections in turn), not on lwIP's next timer. A listener's connections get their rings when their
   handshake finishes (the bytes that come first wait there), counted
-  against the listener's opener. Limits: 64 connections an opener, 256 in
-  all (192 for ordinary programs), 4 listeners an opener, 16 in all, a
+  against the listener's opener. Limits: 512 connections an opener, 1,024 in
+  all (768 for ordinary programs), 4 listeners an opener, 16 in all, a
   backlog of 16 a listener and 128 together (96 for programs); half-open
   connections and the ones netstack let go of have lwIP's lowest priority,
   so a SYN flood fills only its listener's backlog and never takes a
