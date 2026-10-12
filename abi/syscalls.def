@@ -101,7 +101,8 @@
 # bytes); ERR_PEER_CLOSED: the peer is gone; ERR_OUT_OF_RANGE: past a
 # limit; ERR_NOT_SUPPORTED: a handle the cycle rule refuses (the channel's
 # own end, its peer, an end whose queue holds a channel end) or a peer
-# marked CHANNEL_NO_HANDLES.
+# marked CHANNEL_NO_HANDLES; ERR_IO: bytes in a mapped file's page its
+# pager couldn't give (a bad pointer is ERR_INVALID_ARGS).
 21  channel_write     status    handle_t h, const void *bytes, uint32_t nbytes, const handle_t *handles, uint32_t nhandles
 # channel_read (struct channel_read_args, <jam/abi.h>): the oldest message
 # into rd_bytes and rd_handles, its sizes into rd_actual and rd_hactual.
