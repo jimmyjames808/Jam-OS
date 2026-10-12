@@ -7,6 +7,7 @@
 #pragma once
 
 #include <ext_alloc.h>
+#include <ext_names.h>
 #include "extcheck.h"
 
 /* A volume mounted read-write over a private copy of a fixture. */

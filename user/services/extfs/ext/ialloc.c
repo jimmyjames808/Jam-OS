@@ -302,6 +302,11 @@ status_t ext_inode_free(struct ext_fs *fs, struct ext_inode *in, uint32_t dtime)
     if (st != OK)
         return st;
     in->d.links_count = 0;
-    in->d.dtime = dtime ? dtime : 1;   /* 0 would say "in use" to a checker */
+    /* A deletion time no larger than the inode count reads to a checker
+     * (Linux's e2fsck) as the next link of an orphan list, and 0 as an
+     * inode still in use: either is damage on a volume Linux checks. */
+    if (dtime <= fs->inodes)
+        dtime = fs->inodes < UINT32_MAX ? fs->inodes + 1 : UINT32_MAX;
+    in->d.dtime = dtime;
     return ext_iput(fs, in);
 }
