@@ -32,6 +32,7 @@
 #include <sys/stat.h>
 #include "kinds.h"
 #include "sock.h"
+#include "svcsock.h"
 
 /* A socketpair end's name: AF_UNIX with no path. */
 static long unix_out(long addr, long lenp)
@@ -130,9 +131,10 @@ long lx_connect(long fd, long addr, long len, long d4, long e, long f)
     struct fd_desc *d;
     struct sock *s;
     long r = sock_get(fd, &d, &s);
-    if (r == -ENOTSOCK && d) {
+    if (r == -ENOTSOCK && d) {   /* a socketpair end is connected already */
+        r = d->ops == &usock_ops ? usock_connect(d, addr, len) : -EISCONN;
         fd_put(d);
-        return -EISCONN;   /* a socketpair end is connected already */
+        return r;
     }
     if (r)
         return r;

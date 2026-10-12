@@ -25,6 +25,7 @@ wait pxio: TZ=
 wait pxio: USER=jam
 wait pxio: LOGNAME=jam
 wait pxio: SHELL=/boot/bin/shell
+wait pxio: WAYLAND_DISPLAY=/svc/wayland
 wait {prompt}
 send cd /data; pxio cwd; pxio env | grep -c ^pxio:.PWD=/data$ | grep ^1$ && echo ok-$T-cwd
 wait pxio: cwd=/data

@@ -175,6 +175,10 @@ void sock_streams_add(struct sock *s);
 void sock_streams_remove(struct sock *s);
 /* netstack's answer to a call that makes or binds a socket, as -errno. */
 long sock_net_errno(status_t st);
+/* poll's arm for a socket with nothing to wait on yet (one never
+ * connected): an event of the process's that is never signalled, so the
+ * kind's ready alone says what is ready. 0, or -ENOMEM. */
+long sock_arm_idle(struct fd_wait *out);
 /* Descriptor fd's description (held: the caller puts it) and its socket:
  * 0; -EBADF; -ENOTSOCK for another kind, with *d still set and held for a
  * socketpair end (the caller answers for it and puts it), else NULL. */
