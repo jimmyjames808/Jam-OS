@@ -280,8 +280,8 @@ static void pick_objects(struct storm *s, struct ext_fs *fs)
     s->o_swap = s->nobj;
     for (uint32_t i = 0; i < 4; i++) {
         struct obj o = { .kind = OBJ_SWAP, .ino = many.ino };
-        snprintf(o.na, sizeof(o.na), "%s", names[i]);
-        snprintf(o.nb, sizeof(o.nb), "%s", names[n - 1 - i]);
+        snprintf(o.na, sizeof(o.na), "%.63s", names[i]);
+        snprintf(o.nb, sizeof(o.nb), "%.63s", names[n - 1 - i]);
         add_obj(s, o);
     }
     s->o_many = s->nobj;
