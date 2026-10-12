@@ -22,14 +22,14 @@
 # Prints the four storm lines and the mixer's, and fsck_msdos's verdict on
 # both disks too where the Mac has it (read-only attach; not part of PASS:
 # mtools' volume label alone makes it warn).
-# QEMU_SMP passes through; STORM_MIB sets the file's size (default 32:
-# about 2 s of copying in QEMU, so that 1 kill a second kills).
+# QEMU_SMP passes through; STORM_MIB sets the file's size (default 40:
+# about 1.2 s of copying under KVM on the PC, so that 1 kill a second kills; 32 took 0.98 s and killed nothing; the data partition is 63 MiB, so no more).
 # Usage: tools/fat-storm-test.sh <outdir>; exit 0 on PASS.
 set -eu
 DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
 out=$1
 mkdir -p "$out"
-mib=${STORM_MIB:-32}
+mib=${STORM_MIB:-40}
 boot="$out/storm-boot.img"       # the boot stick, with the WAV on /data
 saved="$out/storm-boot-after.img"  # ... as the guest left it
 stick="$out/storm-usb0.img"       # the second stick, /usb0
