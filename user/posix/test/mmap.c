@@ -453,6 +453,8 @@ int pt_child_mmap_pull(int argc, char **argv)
     int e = errno;
     printf("posixtest: mmap-pull: a copy from the mapping: %s\n",
            n == -1 && e == EIO ? "EIO" : "not refused (wrong)");
+    if (!(n == -1 && e == EIO))
+        printf("posixtest: mmap-pull: the copy returned %ld, errno %d (%s)\n", (long)n, e, strerror(e));
     printf("posixtest: mmap-pull: touching\n");
     unsigned b = m[0];   /* the stick is gone: the kernel ends us here */
     printf("posixtest: mmap-pull: touched: byte %u (wrong: the stick is gone)\n", b);

@@ -89,7 +89,7 @@ make_stick() {
 # closes everything) into $run.
 run_case() {
     if ! QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_INPUT="tools/shell-tests/pager-$1.txt" \
-         QEMU_USB="-drive if=none,id=aimg,format=raw,file=$2" \
+         QEMU_USB="-blockdev driver=file,node-name=aimgf,filename=$2 -blockdev driver=raw,node-name=aimg,file=aimgf" \
          tools/qemu-test.sh "$out" "$name-$1" shell > "$out/$name-$1.out" 2>&1; then
         echo "$name: $1: the shell script FAILED (see $out/$name-$1.log)"
         grep "serial-feed: .*no '" "$out/$name-$1.out" || true

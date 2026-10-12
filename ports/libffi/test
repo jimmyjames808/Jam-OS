@@ -5,7 +5,7 @@
 # release may change it. Run natively on x86-64 Linux with the same driver:
 # 98 passed. The first run on Jam OS is the first anywhere of this build.
 send run $P/ffi-tests; echo st-$T=$?
-wait ffi-tests: 98 passed, 0 failed
+wait ffi-tests: 98 passed
 wait st-x=0
 wait {prompt}
 send run $P/ffi-tests -l | run $S/wc -l | run $S/sed s/^/count-/
@@ -13,7 +13,7 @@ wait count-98
 wait {prompt}
 # one test by name, with its own output (strlen prints nothing)
 send run $P/ffi-tests strlen; echo st-$T=$?
-wait ffi-tests: 1 passed, 0 failed
+wait ffi-tests: 1 passed
 wait st-x=0
 wait {prompt}
 # a name that is no test

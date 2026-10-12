@@ -18,6 +18,10 @@ send T=p
 wait {prompt}
 monitor device_add usb-storage,id=sa,bus=xhci.0,port=2,drive=aimg
 wait 60 init: /usb0 mounted
+send mount -w /usb0; echo mw-$T=$?
+wait mount: /usb0 is now read-write
+wait mw-p=0
+wait {prompt}
 
 # ---- every kind of write and truncate under a mapping ------------------------------------------
 send pagertest write /data/w.bin; echo w1-$T=$?

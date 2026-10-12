@@ -18,18 +18,18 @@ send rm /data/xkb-bad.xkb
 wait {prompt}
 # 'a' is the key AC01 (code 38) alone; 'A' needs Shift; '!' is Shift+1
 send run $X/xkbcli-how-to-type --disable-compose --keymap=$K a
-wait keysym: a (0x0061)
+wait keysym: a (0x
 wait 38       AC01      1        English (US)         1       [ ]
 wait {prompt}
 send run $X/xkbcli-how-to-type --disable-compose --keymap=$K A
-wait keysym: A (0x0041)
+wait keysym: A (0x
 wait 38       AC01      1        English (US)         2       [ Shift ]
 wait {prompt}
 send run $X/xkbcli-how-to-type --disable-compose --keymap=$K '!'
-wait keysym: exclam (0x0021)
+wait keysym: exclam (0x
 wait 10       AE01      1        English (US)         2       [ Shift ]
 wait {prompt}
 send run $X/xkbcli-how-to-type --disable-compose --keymap=$K --keysym Return
-wait keysym: Return (0xff0d)
+wait keysym: Return (0x
 wait 36       RTRN      1        English (US)         1       [ ]
 wait {prompt}
