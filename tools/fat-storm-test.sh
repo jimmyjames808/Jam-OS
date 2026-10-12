@@ -76,6 +76,24 @@ never() {   # never <text> <log>
 }
 
 # ---- the copies ------------------------------------------------------------------------------
+# Did the kills land during the copy? storm starts its kill thread before the
+# copy and stops it right after (the read-back hashing has no kills), so the
+# kills in a storm line are the copy's own. `landed <rate> <least kills>
+# <storm line>` is true when the line has at least that many, and at least
+# 40% of rate x the copy's seconds (the kills come evenly from the copy's
+# start: a copy killed all along, not just at its very end). Says what it
+# found when not: a machine too fast for STORM_MIB (the data partition
+# limits it) fails here instead of passing without a storm.
+landed() {
+    k=$(echo "$3" | grep -ao "; [0-9]* kills" | grep -ao "[0-9]*" || echo 0)
+    secs=$(echo "$3" | grep -ao " bytes in [0-9]*\.[0-9]* s" | grep -ao "[0-9]*\.[0-9]*" || echo 0)
+    awk -v k="${k:-0}" -v r="$1" -v m="$2" -v s="${secs:-0}" \
+        'BEGIN { exit !(k >= m && k >= 0.4 * r * s) }' && return 0
+    echo "fat-storm: $1 kills/s: ${k:-0} kills in a ${secs:-0} s copy, wanted at least $2 and" \
+         "$(awk -v r="$1" -v s="${secs:-0}" 'BEGIN { printf "%.1f", 0.4 * r * s }')" \
+         "(the kills didn't land during the copy: the file is too small for this machine, STORM_MIB is $mib)"
+    return 1
+}
 # A storm line is on the screen and in the kernel log: both reach the
 # serial port, so each is there twice; the first is taken.
 prev=-1
@@ -98,6 +116,11 @@ for rate in 0 1 10 100; do
     fi
     [ "$rate" = 0 ] || echo "$line" | grep -q "kill to first answer median" ||
         { echo "fat-storm: $rate kills/s: no kill to first answer"; ok=0; }
+    case $rate in
+    1) landed 1 1 "$line" || ok=0 ;;
+    10) landed 10 5 "$line" || ok=0 ;;
+    100) landed 100 30 "$line" || ok=0 ;;
+    esac
     [ "$rate" = 0 ] || prev=${kills:-0}
 done
 srcs=$(grep -ac "^[0-9a-f]\{64\}  /usb0/big.bin\$" "$clean" || true)
@@ -108,8 +131,20 @@ never "storm: .* refused" "$clean"
 never "not answered after" "$clean"
 never "DIFFERENT" "$clean"
 never "can't read it back" "$clean"
-grep -aq "^storm: 100 kills/s: the copy: stopped by Ctrl+C" "$clean" ||
-    { echo "fat-storm: the Ctrl+C line is missing"; ok=0; }
+cutline=$(grep -a "^storm: 100 kills/s: the copy: stopped by Ctrl+C" "$clean" | head -1)
+if [ -z "$cutline" ]; then
+    echo "fat-storm: the Ctrl+C line is missing"
+    ok=0
+else   # stopped in the copy, not after it: part of the file, with kills done
+    cutb=$(echo "$cutline" | grep -ao "after [0-9]* bytes" | grep -ao "[0-9]*" || echo 0)
+    cutk=$(echo "$cutline" | grep -ao "; [0-9]* kills" | grep -ao "[0-9]*" || echo 0)
+    if [ "${cutb:-0}" -le 0 ] || [ "${cutb:-0}" -ge $((mib << 20)) ]; then
+        echo "fat-storm: Ctrl+C: ${cutb:-0} of $((mib << 20)) bytes copied: not in the middle of the copy"
+        ok=0
+    fi
+    [ "${cutk:-0}" -ge 10 ] ||
+        { echo "fat-storm: Ctrl+C: ${cutk:-0} kills before it, wanted 10 or more"; ok=0; }
+fi
 never "starting fresh" "$clean"
 never "giving up" "$clean"
 # From /usb0 made writable (its remount takes it away once) to the reboot.
