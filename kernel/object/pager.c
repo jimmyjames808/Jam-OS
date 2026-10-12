@@ -506,7 +506,7 @@ static status_t pv_new(struct pager *pg, uint64_t key, struct pager_vmo **out)
 
 status_t pager_create_vmo(struct pager *pg, uint64_t key, uint64_t size, struct vmo **out)
 {
-    if (size > VMO_MAX_SIZE)
+    if (size > VMO_SMALL_MAX_SIZE)
         return ERR_OUT_OF_RANGE;
     struct pager_vmo *pv;
     status_t st = pv_new(pg, key, &pv);
@@ -794,7 +794,7 @@ status_t pager_op(struct pager *pg, uint64_t key, uint32_t op, uint64_t offset, 
     case PAGER_OP_SET_SIZE:
         if (len || arg)
             return ERR_INVALID_ARGS;
-        if (offset > VMO_MAX_SIZE)
+        if (offset > VMO_SMALL_MAX_SIZE)
             return ERR_OUT_OF_RANGE;
         return set_size(pg, key, ALIGN_UP(offset, PAGE_SIZE));
     default:

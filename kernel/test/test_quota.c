@@ -103,17 +103,17 @@ KTEST(quota_vmo_tables_charged)
     struct job *j = kt_fresh_job();
     KT_EQ(job_set_limit(j, JOB_LIMIT_PAGES, 0), OK);
     struct vmo *v;
-    KT_EQ(vmo_create(VMO_MAX_SIZE, 0, &v), OK);
+    KT_EQ(vmo_create(VMO_SMALL_MAX_SIZE, 0, &v), OK);
     KT_EQ(vmo_set_job(v, j), OK);
     uint64_t before = kt_free_pages();
     unsigned refused = 0;
-    for (uint64_t off = 0; off < VMO_MAX_SIZE; off += 2ull << 20)
+    for (uint64_t off = 0; off < VMO_SMALL_MAX_SIZE; off += 2ull << 20)
         if (vmo_commit(v, off, PAGE_SIZE) == ERR_NO_MEMORY)
             refused++;
     uint64_t used = before - kt_free_pages();
     kprintf("quota: %u commits refused, job charged %lu pages, kernel spent %lu pages\n",
             refused, job_used(j, JOB_LIMIT_PAGES), used);
-    KT_EQ(refused, VMO_MAX_SIZE / (2ull << 20));   /* the job refused every page... */
+    KT_EQ(refused, VMO_SMALL_MAX_SIZE / (2ull << 20));   /* the job refused every page... */
     KT_EQ(job_used(j, JOB_LIMIT_PAGES), 0);
     kobject_unref(vmo_kobject(v));
     KT_GLOBAL_ASSERT(used <= 16);          /* ...so the kernel didn't spend them either */

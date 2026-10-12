@@ -201,12 +201,16 @@ struct port_packet {
 #define VMO_CHILD_SNAPSHOT                   (1u << 0)
 #define VMO_CHILD_SNAPSHOT_AT_LEAST_ON_WRITE (1u << 1)
 
-/* The limits. A VMO's size: 64 GiB of address space (pages are committed
- * as they are touched; ERR_OUT_OF_RANGE past it). A contiguous VMO's: 4
- * MiB, the largest block the page allocator has. One vmo_pin: 4096 pages
- * (16 MiB; ERR_OUT_OF_RANGE past it): the kernel builds the address list
- * in a buffer of its own. */
-#define VMO_MAX_SIZE       (1ull << 36)
+/* The limits. A plain paged VMO's size: 128 TiB of address space, the
+ * user half of an address space (pages are committed as they are touched,
+ * so an untouched range costs nothing; ERR_OUT_OF_RANGE past it). Every
+ * other VMO's: 64 GiB (VMO_SMALL_MAX_SIZE) for a kept one, a pager VMO, a
+ * child of a pager VMO (or of such a child) and a physical one; 4 MiB for
+ * a contiguous one, the largest block the page allocator has. One
+ * vmo_pin: 4096 pages (16 MiB; ERR_OUT_OF_RANGE past it): the kernel
+ * builds the address list in a buffer of its own. */
+#define VMO_MAX_SIZE       (1ull << 47)
+#define VMO_SMALL_MAX_SIZE (1ull << 36)
 #define VMO_CONTIGUOUS_MAX (4ull << 20)
 #define VMO_PIN_MAX_PAGES  4096u
 
