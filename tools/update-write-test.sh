@@ -115,8 +115,8 @@ mmd -i "$img@@$DATA_AT" ::/update &&
     mcopy -i "$img@@$DATA_AT" "$out/jamos-C.elf" ::/update/c/jamos.elf &&
     mcopy -i "$img@@$DATA_AT" "$out/bootfs-C.img" ::/update/c/bootfs.img &&
     mmd -i "$img@@$DATA_AT" ::/update/a &&
-    mcopy -i "$img@@1M" ::/boot/jamos.elf "$out/jamos-A.elf" &&
-    mcopy -i "$img@@1M" ::/boot/bootfs.img "$out/bootfs-A0.img" &&
+    mcopy -o -i "$img@@1M" ::/boot/jamos.elf "$out/jamos-A.elf" &&
+    mcopy -o -i "$img@@1M" ::/boot/bootfs.img "$out/bootfs-A0.img" &&
     mcopy -i "$img@@$DATA_AT" "$out/jamos-A.elf" ::/update/a/jamos.elf &&
     mcopy -i "$img@@$DATA_AT" "$out/bootfs-A0.img" ::/update/a/bootfs.img &&
     cp "$out/manifest" "$out/manifest-A0" && mcopy -i "$img@@$DATA_AT" "$out/manifest-A0" ::/update/a/manifest ||
@@ -137,7 +137,7 @@ esp() {
 no_new() {
     ! mdir -i "$1@@1M" ::/boot 2>/dev/null | grep -qiE "\.(new|old)"
 }
-mcopy -i "$img@@1M" ::/boot/bootfs.img "$out/bootfs-A.img"
+mcopy -o -i "$img@@1M" ::/boot/bootfs.img "$out/bootfs-A.img"
 
 # Run 1: the failures, then a power cycle.
 cat > "$out/wfail.txt" <<EOF
@@ -296,7 +296,7 @@ python3 tools/mkimage.py "$small" 64 128 &&
     python3 tools/fat-label.py "$small" 1 --fix > /dev/null &&
     python3 tools/fat-label.py "$small" 64 --fix > /dev/null &&
     mmd -i "$small@@1M" ::/EFI ::/EFI/BOOT ::/boot ::/boot/limine &&
-    mcopy -i "$img@@1M" ::/EFI/BOOT/BOOTX64.EFI "$out/wfull-limine.efi" &&
+    mcopy -o -i "$img@@1M" ::/EFI/BOOT/BOOTX64.EFI "$out/wfull-limine.efi" &&
     mcopy -i "$small@@1M" "$out/wfull-limine.efi" ::/EFI/BOOT/BOOTX64.EFI &&
     mcopy -i "$small@@1M" boot/limine.conf ::/boot/limine/limine.conf &&
     mcopy -i "$small@@1M" build/jamos.elf ::/boot/jamos.elf &&
