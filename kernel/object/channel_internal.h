@@ -128,7 +128,9 @@ static inline bool chan_full_locked(const struct channel *ch)
 /* A new message of b's bytes (copied straight in; no lock may be held)
  * and the handles, charged to the current job. txid, unless 0, replaces
  * the first 4 bytes. The handles are copied, not taken: the caller clears
- * its own array once the message is delivered. */
+ * its own array once the message is delivered. A failed copy of the bytes
+ * is its status: ERR_INVALID_ARGS (a bad pointer), ERR_IO (a mapped file's
+ * page its pager couldn't give) or ERR_CANCELED. */
 status_t chan_msg_new(const struct chan_bytes *b, uint32_t txid, const struct khandle *handles,
                       uint32_t nhandles, struct chan_msg **out);
 /* As chan_msg_new, for a reader that waits for it: a message that fits is

@@ -10,7 +10,12 @@
  * is a failed read, not a fault that would end this process (the kernel
  * kills whoever touches a page that doesn't match). Needs RIGHT_ROOT_VMEX
  * and RIGHT_ROOT_PAGER on our root (init's run: TEST_ROOT); without them
- * it is skipped. */
+ * it is skipped.
+ *
+ * t_copy_from_lost_page: a system call copying from a mapping of a pager
+ * VMO whose pager is gone (detached: a pulled stick) fails ERR_IO, not
+ * ERR_INVALID_ARGS (a bad pointer), and we live: channel_write (a POSIX
+ * pipe's write) and vmo_write. Needs RIGHT_ROOT_PAGER. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -168,5 +173,32 @@ bool t_spawn_verified(void)
     jam_handle_close(thread);
     jam_handle_close(s.pager);
     jam_handle_close(vmex);
+    return true;
+}
+
+bool t_copy_from_lost_page(void)
+{
+    handle_t root = startup_handle(SR_RESOURCE), pager, vmo, a, b, sink;
+    uint64_t addr = 0;
+    if (!root || jam_pager_create(root, 64, SV_ANSWER_NS, 0, &pager) != OK) {
+        printf("utest: %s: no RIGHT_ROOT_PAGER on our root: skipped\n", utest_cur);
+        return true;
+    }
+    CHECK_ST(jam_pager_create_vmo(pager, 1, 4 * PAGE_SIZE, 0, &vmo), OK);
+    CHECK_ST(jam_vmar_map(startup_handle(SR_SELF_VMAR), vmo, 0, 4 * PAGE_SIZE, VMAR_READ,
+                          &addr), OK);
+    CHECK_ST(jam_pager_op(pager, 1, PAGER_OP_DETACH, 0, 0, 0), OK);   /* the stick pulled */
+    const void *lost = (const void *)(uintptr_t)(addr + PAGE_SIZE);
+    CHECK_ST(jam_channel_create(&a, &b), OK);
+    CHECK_ST(jam_channel_write(a, lost, 64, NULL, 0), ERR_IO);
+    CHECK_ST(jam_channel_write(a, (const void *)8, 64, NULL, 0), ERR_INVALID_ARGS);
+    CHECK_ST(jam_vmo_create(PAGE_SIZE, 0, &sink), OK);
+    CHECK_ST(jam_vmo_write(sink, 0, lost, 64), ERR_IO);
+    CHECK_ST(jam_vmar_unmap(startup_handle(SR_SELF_VMAR), addr, 4 * PAGE_SIZE), OK);
+    jam_handle_close(sink);
+    jam_handle_close(a);
+    jam_handle_close(b);
+    jam_handle_close(vmo);
+    jam_handle_close(pager);
     return true;
 }

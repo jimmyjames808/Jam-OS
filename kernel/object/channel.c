@@ -179,10 +179,14 @@ static status_t msg_make(const struct chan_bytes *b, uint32_t txid, const struct
     }
     m->nbytes = nbytes;
     m->nhandles = nhandles;
-    /* No lock is held: a copy from user memory may fault and sleep. */
-    if (bytes_in(msg_bytes(m), b, 0, nbytes) != OK) {
+    /* No lock is held: a copy from user memory may fault and sleep. Its
+     * status is the caller's answer: ERR_INVALID_ARGS for a bad pointer,
+     * ERR_IO for a mapped file's page its pager couldn't give (the copy's
+     * fault, uentry.c), ERR_CANCELED if we were killed meanwhile. */
+    status_t st = bytes_in(msg_bytes(m), b, 0, nbytes);
+    if (st != OK) {
         chan_msg_free(m);
-        return ERR_INVALID_ARGS;
+        return st;
     }
     /* Over whatever the writer had there, which is never looked at. */
     if (txid)

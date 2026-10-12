@@ -258,8 +258,10 @@ int  kept_child(int argc, char **argv);
 bool t_vmo_child_shares(void);
 bool t_vmo_child_refusals(void);
 int  vmochild_child(int argc, char **argv);
-/* spawnverified.c: libos's spawn of a verified program, with utest as its pager. */
+/* spawnverified.c: libos's spawn of a verified program, with utest as its pager, and a
+ * copy from a mapping whose pager is gone. */
 bool t_spawn_verified(void);
+bool t_copy_from_lost_page(void);
 bool t_many_threads(void);
 bool t_lock_take(void);
 bool t_thread_fs_base(void);
