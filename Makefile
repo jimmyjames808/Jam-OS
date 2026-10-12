@@ -52,6 +52,7 @@ NET_TEXT    := net vlan$(NET_ID)
 NET_SAY     := VLAN $(NET_ID)
 endif
 KERNEL  := $(BUILD)/jamos.elf
+KERNEL_DEBUG := $(BUILD)/jamos.debug.elf
 IMAGE   := $(BUILD)/jamos.img
 BOOTFS  := $(BUILD)/bootfs.img
 # The Mac's signing tool (tools/jamos-sign.c, below): one for both builds.
@@ -219,10 +220,18 @@ $(BUILD)/ksyms.c: $(BUILD)/jamos.stage1.elf tools/gensyms.py
 	$(CROSS)nm -n --defined-only $< > $(BUILD)/stage1.nm
 	python3 tools/gensyms.py gen $(BUILD)/stage1.nm $@
 
-$(KERNEL): $(OBJS) $(BUILD)/ksyms.o kernel/linker.ld
+# The linked kernel keeps its debug info in $(KERNEL_DEBUG) (for gdb);
+# $(KERNEL), what the ESP, `update` and the stored kernel get, is it
+# without (--strip-debug: about 5 of its 7 MB, which nothing reads at run
+# time). Its .symtab stays (update-server.py reads jamos_version there);
+# the panic screen's names are .ksyms, a loaded section, untouched.
+$(KERNEL_DEBUG): $(OBJS) $(BUILD)/ksyms.o kernel/linker.ld
 	$(LD) $(LDFLAGS) $(OBJS) $(BUILD)/ksyms.o -o $@
 	$(CROSS)nm -n --defined-only $@ > $(BUILD)/final.nm
 	python3 tools/gensyms.py verify $(BUILD)/stage1.nm $(BUILD)/final.nm
+
+$(KERNEL): $(KERNEL_DEBUG)
+	$(STRIP) --strip-debug $< -o $@
 
 $(BUILD)/ksyms_empty.o $(BUILD)/ksyms.o: $(BUILD)/%.o: $(BUILD)/%.c
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -755,7 +764,7 @@ run: $(IMAGE) $(BUILD)/ovmf-vars.fd
 	qemu-system-x86_64 $(QEMU_FLAGS)
 
 # Same, but wait for gdb on :1234 (attach with
-# `x86_64-elf-gdb build/jamos.elf -ex "target remote :1234"`).
+# `x86_64-elf-gdb build/jamos.debug.elf -ex "target remote :1234"`).
 debug: $(IMAGE) $(BUILD)/ovmf-vars.fd
 	qemu-system-x86_64 $(QEMU_FLAGS) -s -S -d int,cpu_reset -D $(BUILD)/qemu.log
 
