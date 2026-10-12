@@ -79,7 +79,8 @@ Seen in the boot logs, all harmless so far:
   and after a warm reboot devmgr can log that its hid "did not end
   cleanly" (a follow-up in [ROADMAP.md](ROADMAP.md#smaller-follow-ups)).
 
-On the boot stick Jam OS mounts partition 1 (the ESP, 63 MiB) read-only at
+On the boot stick Jam OS mounts partition 1 (the ESP, 255 MiB; 63 MiB on a stick
+made before 2026-10-12) read-only at
 `/esp` and partition 2 (FAT32, the rest of the stick) at `/data`. A second
 USB stick, plugged in at any time, is mounted read-only at `/usb0` if it
 holds a FAT volume (in an MBR partition, or over the whole stick with no
@@ -226,8 +227,8 @@ make usb DEV=/dev/diskN
 `tools/write-usb.sh` refuses internal and non-removable disks, shows the
 disk, and asks you to type YES before it erases it; writing needs your
 password (`sudo dd`). Check the disk number twice anyway. The stick gets
-two MBR partitions: the ESP (type 0xEF, volume `JAMOS`: Limine, the
-kernel, bootfs), which Jam OS never writes, and the data partition (type
+two MBR partitions: the ESP (type 0xEF, volume `JAMOS`, 255 MiB: Limine,
+the kernel, bootfs), which only `update` writes, and the data partition (type
 0x0C, `JAMOS-DATA`, mounted at `/data`), which `tools/mbr-grow.py` grows to
 the end of the stick and leaves blank; Jam OS formats it on the first boot
 that finds it blank. Everything on `/data` is lost with the rest of the
@@ -265,7 +266,20 @@ older than that (the stick's, the first time) skips the menu and updates
 the build alone; the shell then reboots into the new build, and a second
 `update -w` (the build is there already: a second or so) writes the menu.
 `make flash` stays the way for a new update key, a new Limine, or a stick
-whose build has no key. (A stick made before M8 has one partition that macOS mounts as
+whose build has no key.
+
+**Sticks made before 2026-10-12** have a 63 MiB ESP (the Makefile's
+`ESP_END_MIB` was 64; it is 256 now). Both `update` and `make flash` keep
+three builds on the ESP while they write one (the stick's, the previous
+one, the new one), and three of today's builds (the kernel 1.7 MB, the
+boot image about 20 MB) don't fit in 63 MiB. On such a stick `update`
+loads the new build and refuses to write it ("can't hold three builds":
+nothing on the stick changes, `reboot` runs the new build from memory,
+the stick keeps booting its own), and `make flash` refuses before it
+changes anything. `make usb` remakes the stick with the 256 MiB ESP (it
+erases the stick: copy `/data` off first). The build itself checks the
+same rule for its own ESP: `make` stops with an error when the boot image
+is past a third of the ESP beside the kernel (`tools/mkbootfs.py`). (A stick made before M8 has one partition that macOS mounts as
 `NO NAME`: copy the three files there by hand, or remake it with
 `make usb`.)
 

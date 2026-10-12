@@ -28,7 +28,8 @@ mcopy -o -i "$img@@1M" "$out/$name-stale" ::/boot/prev-bootfs.img.new
 mcopy -o -i "$img@@1M" "$out/$name-stale" ::/boot/limine.conf   # a spare an update -w left
 mcopy -o -i "$img@@1M" ::/boot/jamos.elf "$out/$name-old.elf"
 mcopy -o -i "$img@@1M" ::/boot/bootfs.img "$out/$name-old.img"
-data_before=$(dd if="$img" bs=1048576 skip=64 2>/dev/null | shasum | cut -d' ' -f1)
+data_at=$(python3 tools/mkimage.py --data-at "$img")   # /data's offset, "256M"
+data_before=$(dd if="$img" bs=1048576 skip=${data_at%M} 2>/dev/null | shasum | cut -d' ' -f1)
 dev=$(hdiutil attach -nomount -imagekey diskimage-class=CRawDiskImage "$img" |
       awk 'NR == 1 { print $1 }')
 ok=1
@@ -50,7 +51,7 @@ if mcopy -o -i "$img@@1M" ::/boot/limine.conf "$out/$name-got" 2>/dev/null; then
     echo "$name: the spare boot/limine.conf is left on the ESP"
     ok=0
 fi
-data_after=$(dd if="$img" bs=1048576 skip=64 2>/dev/null | shasum | cut -d' ' -f1)
+data_after=$(dd if="$img" bs=1048576 skip=${data_at%M} 2>/dev/null | shasum | cut -d' ' -f1)
 [ "$data_before" = "$data_after" ] || { echo "$name: the data partition changed"; ok=0; }
 rm -f "$img" "$out/$name-got" "$out/$name-stale" "$out/$name-old.elf" "$out/$name-old.img"
 if [ $ok = 1 ]; then
