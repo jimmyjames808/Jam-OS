@@ -25,6 +25,7 @@
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/mman.h>
+#include <sys/syscall.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -75,8 +76,12 @@ static void check_exe_link(void)
     memset(buf, '#', sizeof(buf));
     CHECK(readlink("/proc/self/exe", buf, (size_t)len) == len && !memcmp(buf, EXE, (size_t)len) &&
           buf[len] == '#');
+    /* musl's readlink turns a size of 0 into a 1-byte read and answers 0;
+     * the call itself (Linux: EINVAL) is the raw one. */
     errno = 0;
-    CHECK(readlink("/proc/self/exe", buf, 0) == -1 && errno == EINVAL);
+    CHECK(readlink("/proc/self/exe", buf, 0) == 0);
+    errno = 0;
+    CHECK(syscall(SYS_readlink, "/proc/self/exe", buf, 0) == -1 && errno == EINVAL);
     errno = 0;
     CHECK(readlink("/proc/self/exe/", buf, sizeof(buf)) == -1 && errno == ENOTDIR);
     char path[48];

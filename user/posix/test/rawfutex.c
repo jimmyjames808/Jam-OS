@@ -90,8 +90,9 @@ static void check_plain(void)
 static void check_bitset_waits(void)
 {
     uint32_t w = 1;
-    struct timespec mono = at(CLOCK_MONOTONIC, TIMEOUT_MS), real = at(CLOCK_REALTIME, TIMEOUT_MS);
+    struct timespec mono = at(CLOCK_MONOTONIC, TIMEOUT_MS);
     expect_timeout(&w, F_WAIT_BITSET | F_PRIVATE, &mono);                 /* absolute, monotonic */
+    struct timespec real = at(CLOCK_REALTIME, TIMEOUT_MS);   /* made now: the first wait used its 20 ms */
     expect_timeout(&w, F_WAIT_BITSET | F_PRIVATE | F_CLOCK_RT, &real);    /* absolute, wall clock */
 
     /* A time already past is not a wait. */
