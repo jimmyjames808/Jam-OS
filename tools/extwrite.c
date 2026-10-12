@@ -16,7 +16,10 @@
  *     inode otherwise), directories counted, a directory put in the flex
  *     group with room, the fields written as asked and read back after a
  *     remount, an inode with blocks refused, a reserved one refused;
- *   - a volume that may not be written refuses every writer. */
+ *   - a volume that may not be written refuses every writer;
+ *   - a freed inode's deletion time is never one e2fsck reads as an
+ *     orphan list's link (a dtime of 1 asked for is raised past the
+ *     inode count; extverify.c checks every freed inode). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -251,6 +254,20 @@ static void link_into(struct ext_fs *fs, struct ext_inode *dir, const char *name
     ext_brelse(fs, b);
 }
 
+/* The volume's orphan list finished, as a mount does (linux1k's fixture
+ * keeps two orphans for the read side's tests; e2fsck -fn, which doesn't
+ * process the list, would call them damage). */
+static void finish_orphans(struct wfs *w)
+{
+    struct ext_time now = { .sec = 1760000100, .nsec = 0 };
+    for (uint32_t done = 64; done == 64;) {
+        status_t st = ext_orphans_recover(&w->fs, NULL, NULL, &now, 64, &done);
+        if (st != OK && st != ERR_SHOULD_WAIT)
+            fail("%s: the orphans: %d (%s)", w->name, st, w->fs.why ? w->fs.why : "");
+        wsync(w);
+    }
+}
+
 void save_linked(struct wfs *w, const char *what, const uint32_t *files, const char *const *names,
                  unsigned n)
 {
@@ -264,12 +281,15 @@ void save_linked(struct wfs *w, const char *what, const uint32_t *files, const c
         fail("out of memory");
     memcpy(c.bytes, w->bytes, w->size);
     mount_bytes(&c);
+    finish_orphans(&c);
     struct ext_inode dir;
     lookup(&c.fs, "emptydir", &dir);
     for (unsigned i = 0; i < n; i++)
         link_into(&c.fs, &dir, names[i], files[i]);
     wsync(&c);
     verify_volume(&c.fs);
+    if (c.fs.sb.last_orphan)   /* e2fsck -fn doesn't process a list: it would call it damage */
+        fail("%s: an image for e2fsck saved with orphans", w->name);
     char path[1024];
     snprintf(path, sizeof(path), "%s/%s-%s.img", save_dir, w->name, what);
     FILE *f = fopen(path, "wb");
