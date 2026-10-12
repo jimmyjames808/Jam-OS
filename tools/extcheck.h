@@ -47,6 +47,25 @@ status_t mount_img(struct img *m, struct ext_fs *fs, size_t bytes, uint32_t flag
 /* No buffer may be pinned between calls. */
 void check_pins(const struct ext_fs *fs);
 
+/* A volume's listing: one line per name, as tools/extfix/listing.py
+ * writes them (extcheck.c has the format). */
+#define MAX_LINES 4096
+struct lines {
+    char *v[MAX_LINES];
+    unsigned n;
+    uint32_t orphans[16];
+    unsigned norphans;
+    unsigned xattr_blocks;        /* attribute blocks read (listing) */
+};
+/* Every name under the root, sorted (the library's walk, every file read). */
+void list_volume(struct ext_fs *fs, struct lines *l);
+/* <dir>/<name>.list, sorted; and two listings that must be the same. */
+void read_list(const char *dir, const char *name, struct lines *l);
+void compare_lines(const struct lines *want, const struct lines *got);
+void free_lines(struct lines *l);
+/* Every group's bitmaps read and checked. */
+void check_bitmaps(struct ext_fs *fs);
+
 /* The sparse hash of a regular file (tools/extfix/listing.py's), as hex. */
 void sparse_hash(struct ext_fs *fs, struct ext_inode *in, char out[65]);
 /* The inode of /name (failing the run if there is none). */
