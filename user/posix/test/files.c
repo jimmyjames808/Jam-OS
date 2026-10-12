@@ -208,7 +208,8 @@ static void descriptor_errors(void)
     CHECK(fsync(4000) == -1 && errno == EBADF);
     CHECK(mmap(NULL, 4096, PROT_READ, MAP_PRIVATE, wo, 0) == MAP_FAILED && errno == EACCES);
     CHECK(mmap(NULL, 4096, PROT_READ, MAP_PRIVATE, dir, 0) == MAP_FAILED && errno == ENODEV);
-    CHECK(mmap(NULL, 4096, PROT_READ, MAP_SHARED, ro, 0) == MAP_FAILED && errno == ENODEV);
+    CHECK(mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, ro, 0) == MAP_FAILED &&
+          errno == EACCES);   /* mmap(2) EACCES: MAP_SHARED, PROT_WRITE, not open to write */
     close(ro);
     close(wo);
     close(dir);

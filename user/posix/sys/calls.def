@@ -31,6 +31,7 @@ LX(munlock)
 LX(mlock2)
 LX(mlockall)
 LX(munlockall)
+LX_CP(msync)
 
 /* threads: thread.c */
 LX(set_tid_address)

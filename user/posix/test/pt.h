@@ -21,7 +21,8 @@
  * pty.c (pseudo-terminals, and init's sessions from a POSIX program),
  * clock.c (the clocks from the time page), socket.c (sockets without the
  * network), sockets.c (against the network peer: asked for by name),
- * procfs.c (libc's /proc: the program's file and the descriptors) and
+ * procfs.c (libc's /proc: the program's file and the descriptors),
+ * mmap.c (files mapped on their pages, msync, posix_spawn from /data) and
  * rawcalls.c, rawfutex.c and rawlog.c (the raw Linux calls Chromium makes, and the
  * ENOSYS log: the log's hooks are the layer's calls.h, a second look inside).
  * start.c, mem.c, memres.c (the job's counts), clock.c, fds.c, poll.c,
@@ -71,6 +72,11 @@ void pt_raw_log(void);
 /* And the futex checks (rawfutex.c). */
 void pt_raw_futex(void);
 void pt_procfs(char **argv);
+void pt_mmap(char **argv);
+/* Only when asked for (mmap.c): tools/posix-mmap-test.sh's cases. */
+void pt_mmap_big(char **argv);
+void pt_mmap_coherent(char **argv);
+void pt_spawn_data(char **argv);
 /* The signal section's second half (sigproc.c): between processes. */
 void pt_sigproc(void);
 /* The mem section's second half (memres.c): big sparse reservations. */
@@ -97,6 +103,7 @@ int  pt_child_winsize(void);
 int  pt_child_hup(void);
 int  pt_child_raw(int argc, char **argv);
 int  pt_child_procfs(int argc, char **argv);
+int  pt_child_mmap_pull(int argc, char **argv);
 
 /* Pages charged to our job now (job_get_info; start.c). */
 uint64_t pt_job_pages(void);

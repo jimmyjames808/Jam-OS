@@ -1,0 +1,16 @@
+# posixtest mmap-coherent (tools/posix-mmap-test.sh, case coherent): a
+# file on /data written while it is mapped: the shared mapping and read see
+# the write, a private mapping's touched page doesn't, its untouched one
+# does. Needs fat to keep mappings coherent with writes (M12.5's PF2).
+# QEMU_INPUT=this file, command line "shell".
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send T=c
+wait {prompt}
+send posixtest mmap-coherent; echo coh-$T=$?
+wait 120 posixtest: mmap-coherent:
+wait 30 coh-c=
+wait {prompt}
+send reboot -f
+wait reboot: resetting

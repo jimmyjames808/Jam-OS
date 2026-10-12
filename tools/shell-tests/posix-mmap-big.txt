@@ -1,0 +1,19 @@
+# posixtest mmap-big (tools/posix-mmap-test.sh, case big, which puts the
+# host's sum in place of @SUM@ and makes stick a with /big.bin, 100 MiB):
+# the stick comes in as /usb0 before posixtest starts (a program's
+# namespace is the shell's as it is then), and the file is mapped shared,
+# then private, and summed through the mapping.
+# QEMU_INPUT=the script's copy of this file, command line "shell", the drive aimg.
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send T=b
+wait {prompt}
+monitor device_add usb-storage,id=sa,bus=xhci.0,port=2,drive=aimg
+wait 60 init: /usb0 mounted
+send posixtest mmap-big /usb0/big.bin @SUM@; echo big-$T=$?
+wait 500 posixtest: mmap-big: ok
+wait 30 big-b=0
+wait {prompt}
+send reboot -f
+wait reboot: resetting

@@ -632,24 +632,75 @@ static long map_copy(struct fd_desc *d, int64_t off, uint64_t len, handle_t *out
     return r;
 }
 
-long file_map(long fd, int64_t off, uint64_t len, bool shared, handle_t *vmo, uint64_t *vmo_off)
+/* The file's own pages: its one shared VMO from the service (file.map,
+ * FILE_MAP_READ: read and map only) into *out. ERR_NOT_SUPPORTED: the
+ * mount's service has no pager; ERR_BUSY: fat maps no file open for
+ * writing (ours may be) until it keeps mappings coherent with writes. */
+static status_t file_pages(const struct file *f, handle_t *out)
+{
+    uint64_t size = 0;
+    lock_take(&f->o->lock);
+    status_t st = fobj_back_locked(f->o, f->path);
+    if (st == OK && !f->o->jf.ch)
+        st = ERR_IO;   /* the open was lost */
+    if (st == OK)
+        st = fs_map_file(&f->o->jf, FILE_MAP_READ, out, &size);
+    lock_give(&f->o->lock);
+    return st;
+}
+
+/* A file's mapping (see files.h): on the file's pages where its service
+ * has them, else MAP_PRIVATE's copy. A shared mapping is the file's VMO
+ * itself; a private read-only one too (out->pager_ro: mem.c puts a child
+ * in its place if mprotect adds write); a private writable one a
+ * copy-on-write child of it, charged in full now. */
+static long map_file(struct fd_desc *d, int64_t off, uint64_t len, uint32_t how,
+                     struct file_mapping *out)
+{
+    const struct file *f = d->priv;
+    bool shared = how & FMAP_SHARED, write = how & FMAP_WRITE;
+    if (shared && write)   /* the pager never writes pages back: no writable shared mapping */
+        return fd_can_write(d) ? -ENODEV : -EACCES;
+    handle_t pages = HANDLE_INVALID;
+    status_t st = file_pages(f, &pages);
+    if (st == ERR_NOT_SUPPORTED || st == ERR_BUSY)
+        return shared ? -ENODEV : map_copy(d, off, len, &out->vmo);
+    if (st != OK)
+        return file_err(f, st);
+    if (shared || !write) {
+        *out = (struct file_mapping){ pages, (uint64_t)off, !shared };
+        return 0;
+    }
+    st = jam_vmo_create_child(pages, VMO_CHILD_SNAPSHOT_AT_LEAST_ON_WRITE, (uint64_t)off, len,
+                              &out->vmo);
+    jam_handle_close(pages);   /* the child holds the file's VMO */
+    return st == OK ? 0 : st == ERR_NO_MEMORY ? -ENOMEM : lx_err(st);
+}
+
+long file_map(long fd, int64_t off, uint64_t len, uint32_t how, struct file_mapping *out)
 {
     struct fd_desc *d = fd_get(fd);
     if (!d)
         return -EBADF;
     const struct file *f = d->priv;
+    bool file = d->ops == &file_ops;
+    struct file_mapping m = { HANDLE_INVALID, 0, false };
     long r;
     uint64_t size;
     if (off < 0)
         r = -EINVAL;
-    else if (!fd_can_read(d) || (d->ops == &file_ops && !f->o))
+    else if (!fd_can_read(d) || (file && !f->o))
         r = -EACCES;   /* Linux checks the read access first */
-    else if (shared)
-        r = memfd_vmo(d, vmo, &size);   /* a file: ENODEV until M12.5's pager */
+    else if (file)
+        r = map_file(d, off, len, how, &m);
+    else if (how & FMAP_SHARED)
+        r = memfd_vmo(d, &m.vmo, &size);
     else
-        r = map_copy(d, off, len, vmo);
+        r = map_copy(d, off, len, &m.vmo);
     fd_put(d);
+    if (!r && !file && (how & FMAP_SHARED))
+        m.vmo_off = (uint64_t)off;   /* the memfd's own VMO, at off */
     if (!r)
-        *vmo_off = shared ? (uint64_t)off : 0;
+        *out = m;
     return r;
 }

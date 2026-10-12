@@ -144,14 +144,32 @@ status_t fobj_open_settled(const struct path *p, uint32_t ff, handle_t *ch, hand
 
 /* The kind's adopter (fd_adopters' POSIXFDS_FILE line). */
 fd_adopt_fn file_adopt_fd;
-/* mmap of descriptor fd (mem.c): the VMO to map (the caller's, closed by
- * it) and where in it the mapping starts. MAP_PRIVATE is a copy: a new
- * VMO of len bytes (whole pages) holding the file from off, zero past its
- * end (a file, or a memfd). MAP_SHARED is a memfd's own VMO (B2's
- * memfd_vmo) at off; of a file it is ENODEV until M12.5's pager. 0, or
- * -EBADF, -EACCES (not open for reading), -ENODEV (no mapping for its
- * kind), -ENOMEM, -EIO. */
-long file_map(long fd, int64_t off, uint64_t len, bool shared, handle_t *vmo, uint64_t *vmo_off);
+/* mmap of a descriptor (mem.c): what to map. */
+#define FMAP_SHARED (1u << 0)   /* MAP_SHARED (else MAP_PRIVATE) */
+#define FMAP_WRITE  (1u << 1)   /* PROT_WRITE asked for */
+struct file_mapping {
+    handle_t vmo;       /* the VMO to map: the caller's, closed by it */
+    uint64_t vmo_off;   /* where in it the mapping starts */
+    bool     pager_ro;  /* a private read-only mapping straight on the file's own pages
+                         * (its service's VMO, never writable): mprotect adding write
+                         * must put a copy-on-write child in its place */
+};
+/* mmap of descriptor fd from off, len bytes (whole pages), how FMAP_*.
+ * A file whose mount's service is a pager (file.map: fat) is mapped on its
+ * own pages, fetched as they are touched: MAP_SHARED, and MAP_PRIVATE
+ * read-only, map the file's one shared VMO itself, so they see what the
+ * file holds (a write through the file is seen once the service keeps
+ * mappings coherent); MAP_PRIVATE writable maps a copy-on-write child of
+ * it (vmo_create_child, AT_LEAST_ON_WRITE: a page is the file's until
+ * first touched, then the mapping's own), charged in full now. MAP_SHARED
+ * with PROT_WRITE is ENODEV (EACCES if fd can't write): the pager never
+ * writes pages back. A file with no pager (its service has none, or fat
+ * refuses one open for writing) is mapped MAP_PRIVATE as a copy read now
+ * (a new VMO of len bytes holding the file from off, zero past its end),
+ * MAP_SHARED ENODEV. A memfd: MAP_PRIVATE a copy, MAP_SHARED its own VMO
+ * (B2's memfd_vmo) at off. 0, or -EBADF, -EACCES (not open for reading),
+ * -ENODEV (no mapping for its kind), -ENOMEM, -EIO. */
+long file_map(long fd, int64_t off, uint64_t len, uint32_t how, struct file_mapping *out);
 
 /* ---- libc's own trees: /dev, /etc and /proc ------------------------------------
  * A clean absolute path under them is kinds.h's (dev_path, etc_path) or

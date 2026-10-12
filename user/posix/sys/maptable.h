@@ -25,8 +25,13 @@ struct mt_entry {
     uint64_t len;       /* bytes, page-aligned, > 0 */
     uint64_t vmo_off;   /* the VMO's offset at base */
     handle_t vmo;       /* the VMO mapped (shared with entries split from this one) */
-    uint32_t kind;      /* MT_* */
+    uint32_t kind;      /* MT_* bits; kept by the entries split from this one */
 };
+
+/* A private read-only mapping straight on a file's own pages (mem.c's
+ * file part): an mprotect that adds write puts a copy-on-write child in
+ * its place first, since the file's VMO is never writable. */
+#define MT_PAGER_PRIVATE (1u << 2)
 
 /* The table: entries[0 .. count). */
 struct mt_entry *mt_entries(void);

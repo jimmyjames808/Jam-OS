@@ -3242,6 +3242,79 @@ don't fork. Each fork costs about 140 us per 64 MiB the parent has
 committed, and each page either side then writes one separation fault
 (about 1.1 us).
 
+## F1b notes
+
+Track F1b as written on 2026-10-12, untested (the PC was in Jam OS that
+night: its test plan is in the report). The code is file.c's mmap part
+(`file_map`, `map_file`, `file_pages`), mem.c's file part (`file_source`,
+`unshare_locked`, `lx_msync`) and spawn.c's `file_program`.
+
+- **Which mapping gets what.** A file whose mount's service answers
+  `file.map` (fat, after PF1): `MAP_SHARED` and a read-only `MAP_PRIVATE`
+  map the file's one shared `FILE_MAP_READ` VMO itself: no copy, its pages
+  charged to the pager's job, the mapper paying only its page tables. A
+  writable `MAP_PRIVATE` maps a copy-on-write child of it
+  (`AT_LEAST_ON_WRITE`), charged in full at `mmap` (ENOMEM up front). A
+  read-only private mapping on the file's VMO is marked in libc's table
+  (`MT_PAGER_PRIVATE`, the entry's old `reserved` word, now `flags`);
+  `mprotect` adding write puts a child in its place first
+  (`VMAR_REPLACE`), since the file's VMO is never writable. A file
+  without a pager (the boot image, a mount whose service answers
+  `ERR_NOT_SUPPORTED`) and a file fat won't map (`ERR_BUSY`: open for
+  writing, until PF2) are mapped as before: `MAP_PRIVATE` a copy,
+  `MAP_SHARED` ENODEV. memfds are unchanged.
+- **No writable shared file mappings.** M12.5 answered Q1 with (A): the
+  pager never writes pages back, so `MAP_SHARED` with `PROT_WRITE` is
+  ENODEV (EACCES on a descriptor that can't write, Linux's check first),
+  and so stays for a database that would otherwise trust a pretend
+  `MAP_SHARED` (CR-PLAN section 7: SQLite falls back to `read`).
+  `mprotect` adding write to a shared file mapping is EACCES (the kernel's
+  answer for the VMO's rights).
+- **msync** has nothing to write (shared file mappings are read-only, a
+  memfd's pages are its file, fat writes `write()` through), so it is
+  Linux's checks only: the flags, the alignment, and ENOMEM over any part
+  of the range that isn't one of libc's mappings.
+- **Sharing pages between mappers** lasts as long as fat holds the file
+  open (PF1 notes): `mmap` keeps no `fs.open` of its own after the call,
+  so two processes mapping a file one after the other may get two VMOs.
+  Both follow the file once PF2 invalidates every READ slot of it.
+- **Until PF2:** fat refuses to map a file open for writing (our own
+  writable open too: a description that can write makes the process's
+  one open writable), and refuses an open for writing, a rename or an
+  unlink while a mapping holds the file (EBUSY). posixtest's mmap section
+  closes every writable descriptor before it maps, and waits out EBUSY on
+  its unlink. `mmap-coherent` fails until PF2 merges.
+- **posix_spawn of a program on /data: not working yet; the seam is
+  `file_program` (spawn.c).** Running a file needs a VMO sealed by a holder
+  of `RIGHT_ROOT_VMEX` (init and the shell only) against a page table in
+  `/data/etc/allow.d`, which every program's view leaves out. Nothing
+  offers that to a POSIX program today, and who should is open (M13.6's
+  "the executable bit and approvals" leaves it to PX and M13.7). One
+  shape, for the owner's or the main session's choice: a sealing service
+  in init (`/svc/exec`, given to POSIX programs by their starter) that
+  takes the caller's own open file (so its namespace and views decide
+  what it may name), checks `allow`'s line and page table for that path
+  and the file's id, and answers a verified VMO with read, map and
+  execute only. `file_program` then asks it; everything after (the
+  program as a VMO in `spawn_args`, closed after the spawn) is in place,
+  and libos's `spawn` reads such a VMO with `vmo_read` only (below).
+  Until then a file is EACCES, as before.
+- **libos's spawn never maps a program's VMO in the starter** (outside
+  the track's files, for PK4's rule): the ELF header, the program headers
+  and the writable segments' bytes of any VMO but the boot image's are read
+  with `vmo_read` (a writable segment straight into the fresh VMO, mapped
+  in the starter for the copy). A verified page that doesn't match is then
+  ERR_IO for the spawn, not a fault that kills the shell (utest
+  `spawn_verified`, with utest as the pager). PX's shell path and CL2's
+  self-image both go through it.
+
+**Tests** (none run yet): posixtest's `mmap` section (default: the init
+run, posix-run.txt), utest `spawn_verified`, and `tools/posix-mmap-test.sh`
+(cases `mmap`, `big`, `pull`, `coherent`, `spawn`; TESTING.md has the
+row). files.c's descriptor check `MAP_SHARED` on a read-only descriptor
+is now `PROT_WRITE` (EACCES): read-only it maps once PF2 lets fat map a
+file another description writes.
+
 ## X2 notes
 
 Track X2 (tinyssh) as built, with the choices the plan left open.

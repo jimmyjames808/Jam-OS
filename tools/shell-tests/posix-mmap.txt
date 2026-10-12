@@ -1,0 +1,17 @@
+# posixtest's mmap section from the shell (tools/posix-mmap-test.sh, case
+# mmap): /data's files mapped on their own pages (fat is their pager),
+# shared and private, mprotect adding write, msync, 4 MiB read without a
+# copy. As in cmds.txt, the text waited for is built from $T, so it never
+# appears in the typed line.
+# QEMU_INPUT=this file, command line "shell".
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send T=m
+wait {prompt}
+send posixtest mmap; echo mm-$T=$?
+wait 300 posixtest: mmap: ok
+wait 30 mm-m=0
+wait {prompt}
+send reboot -f
+wait reboot: resetting
