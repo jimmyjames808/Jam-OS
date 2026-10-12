@@ -102,10 +102,10 @@ static void mkfs_shapes(void)
         vol_remount(&v, &inv);
         if (inv.dirs != 3 || inv.names != 3)
             fail("after writing: %u directories, %u names", inv.dirs, inv.names);
-            char name[32];
+        char name[32];
         snprintf(name, sizeof(name), "mkfs-%u", i);
         vol_save(&v, name, true);
-    vol_free(&v);
+        vol_free(&v);
     }
 }
 
