@@ -1,0 +1,21 @@
+# hello-wayland: emersion's smallest Wayland client (a 128x128 window
+# showing a cat, drawn once into a wl_shm buffer; a left click starts an
+# interactive move). The first ported Wayland program that opens a window
+# on Jam OS, through libwayland and libc's Wayland socket. It never binds
+# the decoration manager, so by the owner's rule it draws its own frame:
+# none (a bare picture).
+name        hello-wayland
+version     0.0.0+git14231ae
+revision    1
+summary     the smallest Wayland client: a window with a cat in it
+homepage    https://github.com/emersion/hello-wayland
+category    demos
+licence     MIT
+licence-file LICENSE
+source      https://github.com/emersion/hello-wayland/archive/14231ae0a7f12e0041e81f749ae509d07e88fbe5.tar.gz 40059 31b066abd806ca395abf56d3e96145ed7ed8ac123059a2a6f166f2664c13ab46
+place       package
+style       custom
+needs       wayland
+needs       wayland-protocols
+tool        wayland-scanner
+program     bin/hello-wayland

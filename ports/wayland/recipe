@@ -28,8 +28,10 @@ tool        wayland-scanner
 meson       -Dlibraries=true -Dscanner=false -Dtests=false -Ddocumentation=false
 # wl-connect-test is ours (override/wl-connect-test.c, patches/0001): it
 # connects to the compositor, lists its globals, and so runs libffi's
-# ffi_call through libwayland's dispatcher.
+# ffi_call through libwayland's dispatcher. wl-window-test is ours too
+# (override/, patches/0002): a window drawn through libwayland.
 program     bin/wl-connect-test
-subpackage  wayland-test bin/wl-connect-test
+program     bin/wl-window-test
+subpackage  wayland-test bin/wl-connect-test bin/wl-window-test
 library     lib/libwayland-client.a lib/libwayland-cursor.a include/wayland-client.h include/wayland-client-core.h include/wayland-client-protocol.h include/wayland-cursor.h include/wayland-util.h include/wayland-version.h lib/pkgconfig/wayland-client.pc lib/pkgconfig/wayland-cursor.pc
 cpe         cpe:2.3:a:wayland:wayland
