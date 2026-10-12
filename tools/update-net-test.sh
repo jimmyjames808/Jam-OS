@@ -44,6 +44,7 @@
 # build's default).
 # Usage: tools/update-net-test.sh <outdir> (after `make -s image`); exit 0 on PASS.
 set -u
+DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
 out=$1
 mkdir -p "$out"
 fails=0
@@ -58,8 +59,8 @@ tools/update-test-key.sh "$out" "${QEMU_IMAGE:-build/jamos.img}" "$img" ||
     { echo "update-net-test: can't make the test key's stick"; exit 1; }
 printf 'net.address = 10.2.21.5/24 10.2.21.1 10.2.21.1\nnet.host = 10.2.21.174\n' \
     > "$out/updnet.settings"
-mmd -i "$img@@64M" ::/etc 2>/dev/null || true
-mcopy -o -i "$img@@64M" "$out/updnet.settings" ::/etc/settings ||
+mmd -i "$img@@$DATA_AT" ::/etc 2>/dev/null || true
+mcopy -o -i "$img@@$DATA_AT" "$out/updnet.settings" ::/etc/settings ||
     { echo "update-net-test: can't write the stick's settings"; exit 1; }
 
 # Build B.

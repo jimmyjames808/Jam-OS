@@ -20,6 +20,7 @@
 # VLAN checks (tools/qemu-test.sh). Needs ssh and ssh-keygen on the host.
 # Usage: tools/ssh-test.sh <outdir>
 set -eu
+DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
 out=$1
 mkdir -p "$out"
 img="$out/ssh.base.img"
@@ -36,10 +37,10 @@ ssh-keygen -q -t ed25519 -N '' -C jamos-ssh-test-wrong -f "$out/wrong"
 } > "$out/authorized_keys"
 python3 -c "import sys; sys.stdout.write(''.join('%07d the same line of text, again\n' % i for i in range(120000)))" \
     > "$out/big.txt"   # about 4 MiB, for the session killed mid-output
-mmd -i "$img@@64M" ::/etc 2>/dev/null || true
-mcopy -o -i "$img@@64M" "$out/ssh.settings" ::/etc/settings
-mcopy -o -i "$img@@64M" "$out/authorized_keys" ::/etc/authorized_keys
-mcopy -o -i "$img@@64M" "$out/big.txt" ::/big.txt
+mmd -i "$img@@$DATA_AT" ::/etc 2>/dev/null || true
+mcopy -o -i "$img@@$DATA_AT" "$out/ssh.settings" ::/etc/settings
+mcopy -o -i "$img@@$DATA_AT" "$out/authorized_keys" ::/etc/authorized_keys
+mcopy -o -i "$img@@$DATA_AT" "$out/big.txt" ::/big.txt
 ok=1
 check() {   # <name> <script> <image> [sshcheck flags]
     name=$1 script=$2 image=$3

@@ -14,10 +14,26 @@ The MBR gets a random, non-zero disk id (bytes 440-443): the loader tells
 the kernel the id of the disk it booted from, and devmgr takes the Jam OS
 disk with that id as the boot disk, so two sticks made with `make usb`
 are told apart.
-Usage: mkimage.py <out.img> <esp_end_mib> <size_mib>"""
+Usage: mkimage.py <out.img> <esp_end_mib> <size_mib>
+       mkimage.py --data-at <img>   print where an image's data partition
+                                    starts, as mtools' offset ("256M"): the
+                                    tests write /data's files with it
+                                    (mcopy -i img@@256M), so they follow
+                                    the Makefile's ESP_END_MIB"""
 import secrets
 import struct
 import sys
+
+if sys.argv[1:2] == ["--data-at"] and len(sys.argv) == 3:
+    with open(sys.argv[2], "rb") as f:
+        mbr = f.read(512)
+    if len(mbr) < 512 or mbr[510:512] != b"\x55\xaa" or mbr[462 + 4] != 0x0C:
+        sys.exit(f"mkimage: {sys.argv[2]} has no Jam OS data partition (MBR entry 2, type 0x0C)")
+    start, = struct.unpack_from("<I", mbr, 462 + 8)
+    if start % 2048:
+        sys.exit(f"mkimage: {sys.argv[2]}'s data partition doesn't start on a MiB")
+    print(f"{start // 2048}M")
+    sys.exit(0)
 
 out, esp_end_mib, size_mib = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
 sectors = size_mib * 2048

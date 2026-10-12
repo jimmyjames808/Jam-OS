@@ -14,6 +14,7 @@
 # `serve` says there is no network address yet (serve-nonet.txt).
 # Usage: tools/serve-test.sh <outdir>
 set -eu
+DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
 out=$1
 mkdir -p "$out"
 img="$out/serve.base.img"
@@ -22,10 +23,10 @@ printf 'net.address = 10.2.21.5/24 10.2.21.1 10.2.21.1\n' > "$out/serve.settings
 python3 -c "import random,sys; sys.stdout.buffer.write(random.Random(5).randbytes(5 << 20))" \
     > "$out/serve.bin"
 printf '<html><body>served by jam os</body></html>\n' > "$out/page.html"   # 43 bytes
-mmd -i "$img@@64M" ::/etc 2>/dev/null || true
-mcopy -o -i "$img@@64M" "$out/serve.settings" ::/etc/settings
-mcopy -o -i "$img@@64M" "$out/serve.bin" ::/serve.bin
-mcopy -o -i "$img@@64M" "$out/page.html" ::/page.html
+mmd -i "$img@@$DATA_AT" ::/etc 2>/dev/null || true
+mcopy -o -i "$img@@$DATA_AT" "$out/serve.settings" ::/etc/settings
+mcopy -o -i "$img@@$DATA_AT" "$out/serve.bin" ::/serve.bin
+mcopy -o -i "$img@@$DATA_AT" "$out/page.html" ::/page.html
 set -- $(python3 tools/netpeer.py --free-ports 2)
 p1=$1 p2=$2
 rm -f "$out/serve.log"

@@ -15,6 +15,7 @@
 # QEMU_SMP and QEMU_XHCI pass through.
 # Usage: tools/data-test.sh <outdir> [name]; exit 0 on PASS.
 set -eu
+DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
 out=$1 name=${2:-data}
 mkdir -p "$out"
 stick="$out/$name-stick.img"
@@ -29,17 +30,17 @@ for n in 1 2 3; do
     fi
     image=$stick
 done
-# The data partition starts at 64 MiB (the Makefile's ESP_END_MIB).
-data="$stick@@64M"
+# The data partition starts at the Makefile's ESP_END_MIB (DATA_AT, from the image).
+data="$stick@@$DATA_AT"
 want() {
     "$@" > /dev/null 2>&1 || { echo "$name: on the stick: '$*' failed"; ok=0; }
 }
 # The labels, as macOS and Windows read them: a plain label entry in the
 # root directory and the same text in the boot sector.
 want python3 tools/fat-label.py build/jamos.img 1
-want python3 tools/fat-label.py build/jamos.img 64
+want python3 tools/fat-label.py build/jamos.img ${DATA_AT%M}
 if [ $ok = 1 ]; then
-    want python3 tools/fat-label.py "$stick" 64
+    want python3 tools/fat-label.py "$stick" ${DATA_AT%M}
     want mdir -i "$data" ::/logs/boot-0001.txt ::/logs/boot-0002.txt ::/logs/boot-0003.txt
     want mdir -i "$data" ::/after.txt
     mtype -i "$data" ::/logs/boot-0001.txt 2>/dev/null | grep -q "init: /data mounted" ||
