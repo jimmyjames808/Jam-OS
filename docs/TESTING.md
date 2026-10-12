@@ -14,12 +14,21 @@ that a bug fix comes with a test is in
 | User regression | `tools/qemu-test.sh build/test init init` (utest, usbtest, then posixtest, the POSIX layer's test: ~30 s) | every change to syscalls, libos, services, drivers |
 | Shell scripts | [below](#shell-scripts) | shell, console, input |
 | Area scripts | [below](#area-scripts) | the area you touched |
-| Soak | `tools/soak-test.sh build/test`, again with `QEMU_SMP=8` (about 3 minutes each) | every change to a kernel test, a service or a driver, and anything that keeps state from one run to the next |
-| 2-minute soak | `soak 2` in the shell ([below](#soak)) | after each fix round, on the PC |
+| Soak | `tools/soak-test.sh build/test`, again with `QEMU_SMP=8` (about 3 minutes each) | **before a push or a milestone sign-off only** (not in an agent's or a fix round's tests): after a change to a kernel test, a service or a driver, and anything that keeps state from one run to the next |
+| libc-test (all) | `tools/libc-test.sh` ([below](#shell-scripts)) | before a push or a sign-off only; an agent runs it only for the libc or POSIX layer it changed, and then only the tests of that part |
+| 2-minute soak | `soak 2` in the shell ([below](#soak)) | on the PC, before a push, when the full soak is more than the change needs |
 | Sign-off | the boot menu's All tests, then `soak 10` in the shell with a second stick mounted read-write and pulled and replugged during the run | milestone sign-off only, on the PC |
 | Stress | `QEMU_SMP=8 QEMU_TIMEOUT=200 tools/qemu-test.sh build/test st selftest stress=120` in QEMU; `stress <seconds>` in the shell | kernel work (scheduler, memory, locks), and when user space is broken: it needs none of it |
 | The PC | flash the stick and run it ([HARDWARE.md](HARDWARE.md#flash-and-boot-the-stick)) | the final judge |
 
+- **What an agent or a fix round runs (owner, 2026-10-12)**: the quick
+  tier (build, `make check`, the `init` run) plus the area scripts for what
+  it changed plus the kernel tests (kernel tracks at 4 and 8 CPUs; others
+  once at 4). **Not** the soak and not the full libc-test: they run before a
+  push or a milestone sign-off, once, on main, by the session that merges.
+  A change that only a soak can show (a kernel test that keeps state, a new
+  service that must survive load) says so in its report and the soak runs
+  then.
 - QEMU passing is necessary, not sufficient: TCG has no PCIDs and no
   TSC-deadline timer, and USB timing differs. Say what still needs the PC.
 - On a busy machine (several QEMU runs at once) a timing failure may be
@@ -171,10 +180,48 @@ name>` there, runs `make image` (so the image is never stale), runs the
 command with the `QEMU_*`, `KTESTS`, `JAMOS_*`, `PC_RUNS`, `*_CASES` (`PAGER_CASES`, `MMAP_CASES`), `SOAK_*` and `PORTS_TEST_*` variables, and copies
 back the output directories its arguments name under `build/` (but stick
 images); its exit status is the command's. Commands from every checkout
-share `JAMOS_REMOTE_SLOTS` (6) slots on the machine and wait for a free
-one ("all 6 slots busy: waiting"): more runs at once made timing tests
-fail. Without `JAMOS_REMOTE`, or
-when the machine doesn't answer in 5 s, the command runs here.
+share a budget of CPUs on the machine (below) and wait until theirs fit:
+more runs at once made timing tests fail. Without `JAMOS_REMOTE`, or
+when the machine doesn't answer in 5 s, the command runs here (with
+`JAMOS_REMOTE_ONLY=1`: not run, exit 3).
+
+**The CPU budget** (`tools/remote-slots.py`, run by `remote-test.sh` on the
+machine). The PC has 28 CPUs; the old six equal slots left most of them
+idle while a queue of one-CPU runs waited. Now a command costs what it can
+use and starts when that fits beside what is running:
+
+| Command | Costs |
+|---|---|
+| a QEMU run | `QEMU_SMP` CPUs (4 if unset, as `qemu-test.sh`) and `QEMU_MEM` of memory (2 GB if unset); `QEMU_SMP=8 ... kt8` is 8 |
+| a script that boots several at once | the total: `nvme-driver-test.sh` one boot for each case (6 by default, so 24 CPUs), `ports-test.sh` `PORTS_TEST_JOBS` (3) at a time or the ports given if fewer; `update-menu-test.sh` boots `-smp 2` |
+| the build before the command | `JAMOS_REMOTE_BUILD_CPUS` (8) CPUs and `make -j` that many: a build is a short burst, but a burst of 16 jobs beside 26 CPUs of QEMU failed timing tests, and waiting for a whole test to end before building would stall everything, so it queues like a small test (a checkout's builds still take turns, and one with nothing to do is quick) |
+| anything else (`make check`, a checker, a port build) | `JAMOS_REMOTE_LIGHT_CPUS` (2) CPUs and `JAMOS_REMOTE_LIGHT_MEM_MB` (1024): say more for a heavy one, `JAMOS_REMOTE_LIGHT_CPUS=12 tools/remote-test.sh ...` |
+
+The budget is `JAMOS_REMOTE_CPUS` (26) CPUs, `JAMOS_REMOTE_MEM_GB` (20) of
+memory and `JAMOS_REMOTE_SLOTS` (16) commands. A command that costs more
+than the whole budget runs alone, when nothing else runs. A command that
+does not fit prints `waiting: 24 of 26 CPUs in use by 6 run(s) (this run
+needs 4 CPUs, 2.0 GB)` (again every 2 minutes) and `running with 24 of 26
+CPUs in use (after 41 s)` when it starts. A small command may start ahead
+of an older one that doesn't fit yet, but once the older has waited 60 s
+(`JAMOS_REMOTE_AGE`) nothing starts ahead of it, so a big run is not
+starved by a stream of small ones.
+
+**Fewer QEMUs for a while** (the owner is training on the PC, say): one
+variable, `JAMOS_REMOTE_CPUS=12` in the environment of whoever launches the
+tests; or, for everyone at once, including commands already waiting, write
+the number into `~/work/.cpu-budget` on the PC (`12`, or `12 10 6` for CPUs,
+GB and commands; delete the file to go back). Running commands are never
+stopped.
+
+**A crashed client leaks nothing.** Each running command holds an `flock` on
+a file of its own in `~/work/.cpu/run/`, which the kernel drops when the
+holder (and any process it left behind) is gone; the next caller finds
+an unlocked file and removes it. `python3 tools/remote-slots.py --status`
+(on the PC, in a checkout's directory) lists what runs and waits. The host
+test `tools/remote-slots-test.sh` (a fake lock directory, about 25 s, no PC)
+checks the accounting, the oversized run, the crashed holders, the
+fairness and the costs.
 
 The machine: Windows with its OpenSSH server (a key login), and WSL2's
 Ubuntu 24.04 behind `wsl` with:
@@ -1061,6 +1108,7 @@ matters `QEMU_XHCI`) pass through.
 | `tools/net-vlan-test.sh <outdir> [21\|none]` | the network rule over every path that transmits ([ARCHITECTURE](../ARCHITECTURE.md#networking)); with `none`, one boot in the untagged mode (`net-untagged`: the same script with `net` saying untagged, the peer and the pcap with `--vlan none`: every frame untagged, any tag fails); otherwise two boots with QEMU's e1000e and the peer (`--netlog`, `--update` serving this build, `--ntp` with the Mac's time, `--ping 10.2.21.100`, `--noise 5`, and its TCP relay: `--tcp-relay` 8000 to `tools/httptest.py` and 5201 to `tools/speed.py server`, `--tcp-forward` a Mac port to the guest's 8080), only `net.host = 10.2.21.174` and a 64 KiB `served.bin` on the stick: `net-vlan` (`net-vlan.txt`: the DHCP lease, netlog, `host one.one.one.one`, `ping mac.jam`, `ping 1.1.1.1`, `update -n` (checked by init, not loaded), `fetch` of `small.txt` into a pipe, `serve /data/served.bin` fetched by curl on the Mac (its bytes must be the file's), a 1 s `speed` sending, sntp setting the clock from the gateway, netstack answering ARP and the peer's pings; the peer's and the pcap's checks, then the pcap's frames counted per path: ARP, DHCP, DNS, echo requests, echo replies, netlog, update, SNTP, fetch, serve and speed must each have sent at least one, none may be from another path, and the peer must have seen exactly the pcap's frames) and `net-vlan-off` (`net-vlan-off.txt`: a `vlan=off` boot with the same commands: not one frame (the peer's `--expect-none` and the pcap's), the driver's "no VLAN" line and nothing touched, `net` with no card, `host` and `ping` with no DNS server or route, `update` with no address, `fetch`, `serve` and `speed` giving up on an address that never comes, no lease, no netlog file). A mode that is the build's default (build/build.txt's `net` line) boots with no `vlan=` word and the kernel must say `(the build's default)`; the other gets the word: run both modes to cover both. About 1 minute each (QEMU, 2 CPUs, 2026-10-02: about 43000 frames in the VLAN run, 35000 of them `speed`'s) |
 | `tools/sntp-test.sh <outdir>` | bin/sntp end to end, three boots with QEMU's e1000e, the RTC at 2026-01-15 and the peer's SNTP server (`--ntp`: 2031-02-27 from its start): `sntp` (`sntp.txt`: the gateway asked, each answer after a forged one (`--ntp-forge`: the origin a bit off, a year later) that is said to be ignored, the five-year step confirmed by a second reply, `date -u` 2031, `date -r` "set from the network", `date -z` keeps it, sntp restarted moves it under a second, devmgr restarted and init keeps the network's time); checked afterwards: the kernel's set near the peer's time, never the forged year; `sntp-name` (`ntp.server = router.jam`, through `/svc/dns`); `sntp-off` (`ntp = off`: no sntp, not one SNTP request, the RTC's date). About 3 minutes |
 | `tools/ping-test.sh <outdir>` | the shell's `net` and `ping` (`net.txt`) with QEMU's e1000e and the network peer: `ping 1.1.1.1` answered through the gateway, Ctrl+C, `net stats` ([netstack](#netstack)); then the same commands as programs on the same stick (`sysbox-net.txt`) |
+| `tools/remote-slots-test.sh` | the CPU budget on the test machine ([above](#another-machine-for-the-tests)) against a fake lock directory, no PC, about 25 s: the costs of each kind of command; 6 commands of 3 CPUs on a budget of 8 never more than 2 at once; a command bigger than the budget alone; a holder killed (`kill -9`) with and without its command leaks nothing, a dead governor whose command lives still counts; an old waiter is not passed by a younger small one; `JAMOS_REMOTE_SLOTS`, the budget file, `--status`, the exit status; prints PASS |
 | `tools/rxsoak-test.sh <outdir>` | the receive path over a long run (`rxsoak.txt`, about 4 minutes): the peer floods ~10 000 frames (a trunk port's mix, on VLAN 21 and off it) while it pings every 0.2 s; the late pings must be answered and the guest's own `ping 10.2.21.1` too ([netstack](#netstack)) |
 | `tools/dns-test.sh <outdir>` | bin/dhcp and bin/dns end to end with QEMU's e1000e and the peer's DHCP and DNS servers, two boots ([DHCP and DNS](#dhcp-and-dns-end-to-end)) |
 | `tools/tcp-test.sh <outdir>` | TCP end to end (`tcp.txt`, [HISTORY: M9.5](HISTORY.md#m95-network-streams)): with `net.address` in the stick's settings and the peer's TCP side, `run tcptest send 10.2.21.174 5030 10485760` (10 MiB to the peer and 10 MiB back on one connection, every byte checked on both sides, the SHA-256 said, then CLOSED with no error; the speeds both ways) `run tcptest send 10.2.21.174 5032 8388608 2097152` (8 MiB each way with 2 MiB rings, to a server whose ACKs come 20 ms after their segments: window scaling), and `run tcptest serve 5031 20 262144` (the peer's 20 connections at once to a guest listener, served from one wait set holding the listener and every connection, 256 KiB each way each); then `run tcptest small ... 5033 8 10 0` and `... 5034 8 10 1` (eight 10-byte writes 20 ms apart to servers whose ACKs come 200 ms late, with Nagle's algorithm off and on: `net_tcp_set_options`) `run tcptest keepalive 10.2.21.174 5035 5` (idle 5 s with keep-alive on, the peer answering the probes) and `run tcptest relisten 5036 65536` (a listener with address reuse serves the peer's connection and closes it first, so the port is in TIME_WAIT on the guest; a listener without the flag is then refused, one with it made again at once); PASS needs the peer's 26 connections right and none wrong, 6 segments or more from the no-delay writes (8 seen) and 1 to 3 from the Nagle ones (2), at least 2 keep-alive probes (the peer's `tcp_5033_segs`, `tcp_5034_segs`, `tcp_5035_probes`), on the 2 MiB rings' connection a scaled window over 64 KiB and more than 64 KiB in flight both ways (the peer's `tcp_5032_*` counts), on the default rings' one no window and no flight over 64 KiB, and the run's VLAN checks. `QEMU_NET_VLAN=none` runs it untagged. About 2 minutes |

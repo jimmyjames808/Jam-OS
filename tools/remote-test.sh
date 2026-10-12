@@ -18,12 +18,73 @@
 # (others: `tools/remote-test.sh env VAR=value <command>`). Each
 # checkout has a directory of its own there (~/work/<its name>), so several
 # checkouts (agents' worktrees) test at once; one checkout's builds take
-# turns (flock). Commands run in one of JAMOS_REMOTE_SLOTS (6) slots on the
-# machine, and wait for a free one: more at once made timing tests fail.
+# turns (flock).
+#
+# The machine's CPUs are a budget (tools/remote-slots.py, docs/TESTING.md):
+# every command, whichever checkout it comes from, costs what it can use,
+# and starts when that fits in JAMOS_REMOTE_CPUS (26 virtual CPUs of the
+# PC's 28) and JAMOS_REMOTE_MEM_GB (20) with the commands already running;
+# otherwise it waits ("waiting: 24 of 26 CPUs in use"). More at once made
+# timing tests fail; fewer left the PC idle behind a queue of small runs.
+#   - a QEMU run: QEMU_SMP CPUs (4 by default, qemu-test.sh's) and QEMU_MEM
+#     (2G) of memory; a script that boots several at once (nvme-driver-test
+#     one for each case, ports-test PORTS_TEST_JOBS) the total of them all;
+#   - the build before it: JAMOS_REMOTE_BUILD_CPUS (8), and `make -j` that;
+#   - anything else (`make check`, a checker): JAMOS_REMOTE_LIGHT_CPUS (2) and
+#     JAMOS_REMOTE_LIGHT_MEM_MB (1024); say more for a heavy one (a big build).
+# A command that costs more than the whole budget runs alone. For fewer
+# QEMUs at once (the owner is using the PC), one variable: JAMOS_REMOTE_CPUS=12
+# (JAMOS_REMOTE_SLOTS=n caps the number of commands too). To change it for
+# everyone waiting at once, write the number into ~/work/.cpu-budget on the PC.
 set -u
 [ $# -gt 0 ] || { echo "usage: tools/remote-test.sh <command> [args...]"; exit 2; }
 top=$(git rev-parse --show-toplevel 2>/dev/null) || top=$(pwd)
 cd "$top" || exit 2
+
+# What the command takes of the machine: "<virtual CPUs> <MB of memory>".
+# JAMOS_REMOTE_COST_ONLY=1 prints it and stops (tools/remote-slots-test.sh).
+cost_of() {
+    local smp=${QEMU_SMP:-} mem=${QEMU_MEM:-} jobs=${PORTS_TEST_JOBS:-} i=0 a script qemus=1 after
+    local args=("$@")
+    if [ "${args[0]:-}" = env ]; then
+        i=1
+        while [[ ${args[i]:-} == [A-Za-z_]*=* ]]; do
+            a=${args[i]}
+            case $a in QEMU_SMP=*) smp=${a#*=} ;; QEMU_MEM=*) mem=${a#*=} ;; PORTS_TEST_JOBS=*) jobs=${a#*=} ;; esac
+            i=$((i + 1))
+        done
+    fi
+    case ${args[i]:-} in sh | bash | python3) i=$((i + 1)) ;; esac
+    script=${args[i]:-}
+    after=$(($# - i - 2))   # arguments after the script and its output directory
+    [ "$after" -ge 0 ] || after=0
+    smp=${smp%%[!0-9]*}
+    [ -n "$smp" ] && [ "$smp" -ge 1 ] || smp=4   # qemu-test.sh's default
+    case $mem in
+    *[Gg]) mem=$((${mem%?} * 1024)) ;;
+    *[Mm]) mem=${mem%?} ;;
+    esac
+    [[ $mem =~ ^[0-9]+$ ]] || mem=2048
+    case ${script##*/} in
+    qemu-test.sh) ;;
+    nvme-driver-test.sh) qemus=6; [ "$after" -eq 0 ] || qemus=$after ;;   # a boot for each case, all at once
+    ports-test.sh)
+        [[ ${jobs:-} =~ ^[0-9]+$ ]] || jobs=3
+        qemus=$jobs
+        [ "$after" -eq 0 ] || [ "$after" -ge "$jobs" ] || qemus=$after ;;
+    update-menu-test.sh) smp=2 ;;   # its QEMUs are -smp 2
+    *) if [ ! -f "$script" ] || ! grep -q qemu "$script"; then   # no QEMU: make check, a checker
+           echo "${JAMOS_REMOTE_LIGHT_CPUS:-2} ${JAMOS_REMOTE_LIGHT_MEM_MB:-1024}"
+           return
+       fi ;;
+    esac
+    echo "$((qemus * smp)) $((qemus * mem))"
+}
+if [ "${JAMOS_REMOTE_COST_ONLY:-0}" = 1 ]; then
+    cost_of "$@"
+    exit 0
+fi
+cost=$(cost_of "$@")
 host=${JAMOS_REMOTE:-}
 ssh_opts=(-o BatchMode=yes -o ConnectTimeout=5)
 if [ -z "$host" ] || ! ssh "${ssh_opts[@]}" "$host" "wsl -e true" < /dev/null > /dev/null 2>&1; then
@@ -52,20 +113,15 @@ ${lock[@]+"${lock[@]}"} rsync -az --delete --exclude .git --exclude /build --exc
     echo 'export PATH=$HOME/cross/bin:$HOME/qemu-10/bin:$HOME/mtools/bin:/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8'
     env | grep -E '^(QEMU_[A-Z0-9_]*|KTESTS|JAMOS_[A-Z0-9_]*|PC_RUNS|[A-Z]+_CASES|SOAK_[A-Z0-9_]*|PORTS_TEST_[A-Z0-9_]*)=' | grep -v '^JAMOS_REMOTE\(_ONLY\)\?=' |
         while IFS= read -r kv; do printf 'export %q\n' "$kv"; done
-    echo 'flock ~/work/.build-$(basename "$PWD").lock sh -c "make -s -j16 && make -s -j16 image" > build-remote.log 2>&1 ||
+    # The build takes its share of the budget too (make -j as many as it costs);
+    # a checkout's builds still take turns, and one with nothing to do is quick.
+    bj=${JAMOS_REMOTE_BUILD_CPUS:-8}
+    echo 'flock ~/work/.build-$(basename "$PWD").lock env JAMOS_REMOTE_QUIET=1 python3 tools/remote-slots.py '"$bj"' 2048 \
+        sh -c "{ make -s -j'"$bj"' && make -s -j'"$bj"' image; } > build-remote.log 2>&1" ||
         { tail -20 build-remote.log; echo "remote-test: the build failed"; exit 2; }'
     printf 'set -- '; printf '%q ' "$@"; echo
-    # One of JAMOS_REMOTE_SLOTS (6) slots at a time on the whole machine, so
-    # many checkouts' tests queue instead of loading it until timing tests fail.
-    echo 'n=${JAMOS_REMOTE_SLOTS:-6}; said=0
-while :; do
-    for i in $(seq 1 "$n"); do
-        flock -n -E 75 ~/work/.slot$i.lock "$@"; rc=$?
-        [ $rc = 75 ] || exit $rc
-    done
-    [ $said = 1 ] || { echo "remote-test: all $n slots busy: waiting" >&2; said=1; }
-    sleep 3
-done'
+    # The command, when its CPUs and memory fit in the machine's budget (above).
+    echo "exec python3 tools/remote-slots.py $cost \"\$@\" < /dev/null"
 } | ssh "${ssh_opts[@]}" "$host" "wsl -e bash -s"
 rc=$?
 for a in "$@"; do
