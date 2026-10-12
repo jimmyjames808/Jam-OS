@@ -12,7 +12,8 @@
  *     group still BLOCK_UNINIT owns nothing but its metadata. The free
  *     counts agree: bitmap, descriptor, superblock.
  *   - Each inode in an inode bitmap is readable and below itable_unused's
- *     line; each inode outside it is not in use (links 0); the free inode
+ *     line; each inode outside it is not in use (links 0), and a freed one
+ *     has a deletion time e2fsck can't take for an orphan link; the free inode
  *     and directory counts agree, padding bits set.
  *   - Each extent tree: nodes' magic, max (the block's room, or the test
  *     room), depth, entries in order inside their parent's range, every
@@ -215,6 +216,9 @@ static void check_inodes(struct vctx *v, uint32_t g, uint32_t *free_out)
             fail("verify: inode %u in use past itable_unused", ino);
         if (!used && st == OK && in.d.links_count)
             fail("verify: inode %u has links but its bit is clear", ino);
+        if (!used && st == OK && in.d.mode && in.d.dtime <= fs->inodes)
+            fail("verify: freed inode %u's dtime %u reads as %s", ino, in.d.dtime,
+                 in.d.dtime ? "an orphan list's link" : "in use");
         if (!used || (st == ERR_NOT_FOUND && ino < fs->first_ino))
             continue;
         if (st != OK)
