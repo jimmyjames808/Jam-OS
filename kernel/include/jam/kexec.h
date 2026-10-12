@@ -2,7 +2,7 @@
  * reboot or a panic (kernel/kexec/; the plan is docs/HISTORY.md, M8.5).
  *
  * At boot the kernel reserves a physically contiguous region of RAM
- * (crashkernel=<MiB>, default 48, below 4 GiB) and unmaps it: the HHDM
+ * (crashkernel=<MiB>, default 64, below 4 GiB) and unmaps it: the HHDM
  * skips it (BOOT_MEM_FOREIGN) and nothing else maps it, so no wild write
  * can reach it. Into it goes the stored kernel, a ready-to-run copy of
  * the kernel and bootfs this boot started from (the boot modules: Limine
@@ -32,11 +32,16 @@
 
 /* The region's size: the stored kernel needed about 12 MiB at first
  * (kernel 4 MiB with its bss, bootfs 4.3, the kernel file again 3.3,
- * tables and stack 0.6, measured in QEMU) and about 25 MiB at M12 (bootfs
- * 10.5, the kernel file 5.4), past kexec_region_has_room's three
- * quarters of 32: 48 leaves room for a bigger log ring and a bigger
- * bootfs. ktest kexec_region_has_room says when it gets tight. */
-#define KEXEC_DEFAULT_MIB 48
+ * tables and stack 0.6, measured in QEMU), about 25 MiB at M12 (bootfs
+ * 10.5, the kernel file 5.4) and 36.7 MiB on 2026-10-12 (the kernel 10.4
+ * with its 8.5 MiB of bss, bootfs 19.6, the kernel file 6.5 with its debug
+ * info), past kexec_region_has_room's three quarters of 48. The kernel
+ * file has had no debug info since (the Makefile: about 1.7 MiB), and 64
+ * MiB holds the biggest bootfs `update` takes (UPDATE_FILE_MAX, 32 MiB)
+ * with today's kernel inside those three quarters (48 MiB): the boot
+ * image's limit is `update`'s, not this region's. ktest
+ * kexec_region_has_room says when it gets tight. */
+#define KEXEC_DEFAULT_MIB 64
 #define KEXEC_KERNEL_MODULE "jamos.elf"   /* the pristine kernel: a module path's suffix */
 /* A crash loop halts on its panic screen instead of jumping again: a
  * panic this soon after a start that was itself a panic's, or the
