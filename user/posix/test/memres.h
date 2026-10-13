@@ -27,6 +27,9 @@ void     mr_touch(char *p, uint64_t len, char v);
 /* Does every page of [p, p + len) read zero at its start? (Reading
  * commits the pages.) */
 bool     mr_zero(const char *p, uint64_t len);
+/* Our address space's mappings now (process_info.mappings; 0 if it
+ * can't be read). */
+uint32_t mr_mappings(void);
 
 /* V8's and PartitionAlloc's patterns (mempat.c). */
 void     pt_mem_patterns(void);

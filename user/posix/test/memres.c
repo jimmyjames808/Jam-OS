@@ -13,9 +13,8 @@
  *   - the edges: MAP_FIXED_NOREPLACE inside a reservation, MAP_FIXED at
  *     its first and last pages, across two of libc's mappings, and
  *     reaching past its end; mprotect past its end;
- *   - past 64 GiB: V8's 1 TiB sandbox and its guards, a 64 GiB shared
- *     anonymous mapping, ENOMEM past what a VMO or the address space
- *     holds.
+ *   - the limits: a 64 TiB reservation, a shared anonymous mapping past
+ *     64 GiB, ENOMEM past what a VMO or the address space holds.
  *
  * Nothing between a count and the check of it may allocate (printf can):
  * the counts are the job's, so they see every page the program takes. */
@@ -34,6 +33,12 @@ uint64_t mr_job_handles(void)
 {
     struct job_info ji;
     return jam_job_get_info(startup_handle(SR_JOB), &ji) == OK ? ji.used[JOB_LIMIT_HANDLES] : 0;
+}
+
+uint32_t mr_mappings(void)
+{
+    struct process_info pi;
+    return jam_process_get_info(startup_handle(SR_SELF_PROCESS), &pi) == OK ? pi.mappings : 0;
 }
 
 uint64_t mr_now_ns(void)
@@ -202,28 +207,29 @@ static void check_reserve_edges(void)
     CHECK(munmap(r, 16 * PG) == 0);
 }
 
-/* Reservations past 64 GiB (the kernel's sparse big VMOs): V8's sandbox,
- * 1 TiB with 32 GiB of guards, costs no page, a piece committed deep
- * inside it works and is given back; a shared anonymous mapping that
- * big is made too. Refused with ENOMEM, Linux's answer when the address
+/* Reservations as big as the address space allows (the kernel's sparse
+ * big VMOs): 64 TiB, half the user half, costs no page and one mapping;
+ * a piece committed at its far end works, and is given back with it; a
+ * shared anonymous mapping past 64 GiB is made too. Refused with ENOMEM, Linux's answer when the address
  * space can't hold it (V8 and PartitionAlloc then reserve less): past a
  * VMO's most (VMO_MAX_SIZE, 128 TiB), and the whole user half (which
  * the address space can't hold: its first page and last pages aren't
  * the user's). */
 static void check_reserve_limits(void)
 {
-    uint64_t pages = pt_job_pages(), sandbox = 1024 * GIB + 32 * GIB;
-    char *r = mr_reserve(sandbox);
-    CHECK(r != MAP_FAILED && pt_job_pages() <= pages + SLACK);
+    uint64_t pages = pt_job_pages(), huge = 64ul << 40;
+    uint32_t maps = mr_mappings();
+    char *r = mr_reserve(huge);
+    CHECK(r != MAP_FAILED && pt_job_pages() <= pages + SLACK && mr_mappings() <= maps + 1);
     if (r != MAP_FAILED) {
-        char *p = r + 900 * GIB;
+        char *p = r + huge - 2 * MIB;
         bool rw = mr_fixed_anon(p, 2 * MIB, PROT_READ | PROT_WRITE);
         CHECK(rw);
         if (rw) {
             mr_touch(p, 2 * MIB, 4);
             CHECK(p[2 * MIB - PG] == 4 && pt_job_pages() >= pages + 2 * MIB / PG);
         }
-        CHECK(munmap(r, sandbox) == 0);
+        CHECK(munmap(r, huge) == 0);
         CHECK(pt_job_pages() <= pages + SLACK);
     }
     char *s = mmap(NULL, 64 * GIB + PG, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1,
