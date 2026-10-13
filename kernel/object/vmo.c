@@ -30,13 +30,19 @@
  * (spin_lock_nested), which nobody else can reach yet.
  *
  * User mappings: each address-space mapping of a VMO is a struct
- * vmo_umap on v->umaps and holds a VMO reference. Unlike kernel mappings
+ * vmo_umap in v->umaps and holds a VMO reference. Unlike kernel mappings
  * and pins, they don't block decommit or shrink: those take the pages out
  * of the table, clear their page-table entries in every user mapping (under
  * this lock, so a racing fault either installed the old page first and
  * sees it zapped, or finds the slot empty and commits a new one), and free
  * the pages only after the TLB shootdown (a tlb_gather). mm/aspace.c's
- * header has the full argument.
+ * header has the full argument. v->umaps is an interval tree by the VMO
+ * pages each mapping covers (<jam/itree.h>), so a batch finds the mappings
+ * over its pages, and only those, in O(log n) each: a reservation split
+ * into tens of thousands of mappings (V8's cage, PartitionAlloc's pools)
+ * costs a one-page decommit, a separation or a child's creation no more
+ * than one mapping does. Adding, moving and removing an entry is O(log n)
+ * too, under this lock.
  *
  * Latency: decommit and shrink work one leaf table (2 MiB, at most 512
  * pages, or one run of missing tables: above) per lock hold and
@@ -268,7 +274,8 @@ struct vmo {
     bool             sealed;              /* vmo_seal: bytes and size fixed for good; lock */
     uint32_t         writers;             /* write-path calls in progress (writer_enter); lock */
     struct list_node ranges;              /* struct vmo_range: kernel mappings and pins */
-    struct list_node umaps;               /* struct vmo_umap: user mappings (reverse map) */
+    struct itree     umaps;               /* struct vmo_umap by page range: user mappings
+                                             (the reverse map) */
     struct mutex     resize;              /* serialises vmo_set_size */
     struct pager_vmo *pv;                 /* a pager VMO: its link (fixed at creation), else NULL */
     bool             pdetached;           /* a pager VMO cut off: nothing published any more; lock */
@@ -847,7 +854,7 @@ static void vmo_destroy(struct kobject *obj)
 {
     struct vmo *v = (struct vmo *)obj;
     /* Every mapping and pin holds a reference, so none can be left. */
-    if (!list_empty(&v->ranges) || !list_empty(&v->umaps))
+    if (!list_empty(&v->ranges) || !itree_empty(&v->umaps))
         panic("vmo: koid %lu destroyed while mapped or pinned", obj->koid);
     if (v->kind == VMO_PAGED) {
         drop_from_locked(v, 0);
@@ -885,7 +892,7 @@ static struct vmo *vmo_alloc(enum vmo_kind kind, uint64_t size)
     v->size = size;
     v->next_pin_id = 1;
     list_init(&v->ranges);
-    list_init(&v->umaps);
+    itree_init(&v->umaps);
     mutex_init(&v->resize, "vmo resize");
     return v;
 }
@@ -1155,18 +1162,45 @@ static bool ranges_overlap_locked(const struct vmo *v, uint64_t first, uint64_t 
     return false;
 }
 
+/* With the lock held: the user mappings over pages [first, end), one by
+ * one (umap_first, then umap_next with the same range until NULL). Each
+ * u's pages [*lo, *hi) are the part of [first, end) it maps, at user
+ * address umap_va(u, *lo). */
+static struct vmo_umap *umap_of(struct itree_node *n, uint64_t first, uint64_t end, uint64_t *lo,
+                                uint64_t *hi)
+{
+    if (!n)
+        return NULL;
+    *lo = n->first > first ? n->first : first;
+    *hi = n->end < end ? n->end : end;
+    return container_of(n, struct vmo_umap, pages);
+}
+
+static struct vmo_umap *umap_first(const struct vmo *v, uint64_t first, uint64_t end,
+                                   uint64_t *lo, uint64_t *hi)
+{
+    return umap_of(itree_first(&v->umaps, first, end), first, end, lo, hi);
+}
+
+static struct vmo_umap *umap_next(const struct vmo_umap *u, uint64_t first, uint64_t end,
+                                  uint64_t *lo, uint64_t *hi)
+{
+    return umap_of(itree_next(&u->pages, first, end), first, end, lo, hi);
+}
+
+static uint64_t umap_va(const struct vmo_umap *u, uint64_t idx)
+{
+    return u->base + ((idx - u->pages.first) << PAGE_SHIFT);
+}
+
 /* With the lock held: zap pages [first, end) from every user mapping. */
 static void zap_umaps_locked(const struct vmo *v, uint64_t first, uint64_t end,
                              struct tlb_gather *g)
 {
-    for (struct list_node *n = v->umaps.next; n != &v->umaps; n = n->next) {
-        struct vmo_umap *u = container_of(n, struct vmo_umap, node);
-        uint64_t lo = u->first > first ? u->first : first;
-        uint64_t hi = u->end < end ? u->end : end;
-        if (lo < hi)
-            aspace_zap_locked(u->as, u->base + ((lo - u->first) << PAGE_SHIFT),
-                              (hi - lo) << PAGE_SHIFT, g);
-    }
+    uint64_t lo, hi;
+    for (struct vmo_umap *u = umap_first(v, first, end, &lo, &hi); u;
+         u = umap_next(u, first, end, &lo, &hi))
+        aspace_zap_locked(u->as, umap_va(u, lo), (hi - lo) << PAGE_SHIFT, g);
 }
 
 /* With the lock held: take the committed pages in [idx, end), at most up to
@@ -1464,7 +1498,7 @@ status_t vmo_seal(struct vmo *v)
     uint64_t f = vlock(v);
     /* A pager VMO's pages arrive after the seal: never sealed unchecked;
      * nor a pager child, whose untouched pages may still change. */
-    bool ok = v->kind == VMO_PAGED && !v->pv && !v->src && list_empty(&v->umaps) &&
+    bool ok = v->kind == VMO_PAGED && !v->pv && !v->src && itree_empty(&v->umaps) &&
               list_empty(&v->ranges) && v->writers == 0;
     if (ok)
         v->sealed = true;
@@ -1475,7 +1509,7 @@ status_t vmo_seal(struct vmo *v)
 status_t vmo_seal_verified(struct vmo *v, struct vmo_verify *vf)
 {
     uint64_t f = vlock(v);
-    bool ok = v->pv && !v->pdetached && !v->verify && list_empty(&v->umaps) &&
+    bool ok = v->pv && !v->pdetached && !v->verify && itree_empty(&v->umaps) &&
               list_empty(&v->ranges) && v->writers == 0;
     if (ok) {
         /* Pages that came before the table were never checked. Nothing
@@ -1501,16 +1535,16 @@ status_t vmo_umap_add(struct vmo *v, struct vmo_umap *u, bool check)
     uint64_t f = vlock(v);
     /* (A split, unchecked, copies a mapping that exists already: on a
      * sealed VMO that is never a writable one.) */
-    status_t st = !check                            ? OK
-                  : u->end > v->size >> PAGE_SHIFT  ? ERR_OUT_OF_RANGE
-                  : u->writable && v->sealed        ? ERR_BAD_STATE
-                  : u->writable && v->pv            ? ERR_ACCESS_DENIED   /* the pager's pages */
-                                                    : OK;
+    status_t st = !check                                 ? OK
+                  : u->pages.end > v->size >> PAGE_SHIFT ? ERR_OUT_OF_RANGE
+                  : u->writable && v->sealed             ? ERR_BAD_STATE
+                  : u->writable && v->pv                 ? ERR_ACCESS_DENIED   /* pager's pages */
+                                                         : OK;
     if (st != OK) {
         vunlock(v, f);
         return st;
     }
-    list_add_tail(&v->umaps, &u->node);
+    itree_insert(&v->umaps, &u->pages);
     vunlock(v, f);
     kobject_ref(&v->base);
     return OK;
@@ -1520,17 +1554,24 @@ void vmo_umap_set(struct vmo *v, struct vmo_umap *u, uint64_t base, uint64_t fir
 {
     uint64_t f = vlock(v);
     u->base = base;
-    u->first = first;
-    u->end = end;
+    itree_move(&v->umaps, &u->pages, first, end);
     vunlock(v, f);
 }
 
 void vmo_umap_remove(struct vmo *v, struct vmo_umap *u)
 {
     uint64_t f = vlock(v);
-    list_del(&u->node);
+    itree_erase(&v->umaps, &u->pages);
     vunlock(v, f);
     kobject_unref(&v->base);
+}
+
+int64_t vmo_rmap_check(struct vmo *v)
+{
+    uint64_t f = vlock(v);
+    int64_t n = itree_check(&v->umaps);
+    vunlock(v, f);
+    return n;
 }
 
 /* A reference on the pager VMO's page for page idx of v (a pager child,
@@ -1659,14 +1700,11 @@ status_t vmo_fault_map(struct vmo *v, uint64_t idx, struct aspace *as, uint64_t 
 static void wrprotect_umaps_locked(const struct vmo *v, uint64_t first, uint64_t end,
                                    struct tlb_gather *g)
 {
-    for (struct list_node *n = v->umaps.next; n != &v->umaps; n = n->next) {
-        struct vmo_umap *u = container_of(n, struct vmo_umap, node);
-        uint64_t lo = u->first > first ? u->first : first;
-        uint64_t hi = u->end < end ? u->end : end;
-        if (u->writable && lo < hi)
-            aspace_wrprotect_locked(u->as, u->base + ((lo - u->first) << PAGE_SHIFT),
-                                    (hi - lo) << PAGE_SHIFT, g);
-    }
+    uint64_t lo, hi;
+    for (struct vmo_umap *u = umap_first(v, first, end, &lo, &hi); u;
+         u = umap_next(u, first, end, &lo, &hi))
+        if (u->writable)
+            aspace_wrprotect_locked(u->as, umap_va(u, lo), (hi - lo) << PAGE_SHIFT, g);
 }
 
 /* p's lock held and c's (nested): share p's present pages [idx, stop) (in

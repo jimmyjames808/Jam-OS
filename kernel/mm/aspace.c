@@ -164,11 +164,13 @@
  *
  * Known limits: no lazy TLB (switching to a kernel thread reloads the
  * kernel CR3, with PCIDs a cheap load that keeps the user entries); one
- * decommit batch holds the VMO lock (with interrupts off) for up to 512
- * pages times the number of mappings of the
- * VMO that overlap them, so a VMO mapped thousands of times makes that
- * latency grow. The region lock must never be held across a user copy:
- * the copy's fault would take it again. */
+ * decommit batch holds the VMO lock (with interrupts off) while it clears
+ * up to 512 pages from every mapping that overlaps them (found through
+ * the VMO's interval tree, O(log n) each, so mappings elsewhere in the VMO
+ * cost nothing), so many mappings over the same pages (one VMO mapped in
+ * thousands of address spaces) make that latency grow. The region lock
+ * must never be held across a user copy: the copy's fault would take it
+ * again. */
 #include <jam/aspace.h>
 #include <jam/aspace_vmo.h>
 #include <jam/avl.h>
@@ -812,8 +814,8 @@ static void umap_fill(struct aspace *as, struct mapping *m)
 {
     m->umap.as = as;
     m->umap.base = m->base;
-    m->umap.first = m->vmo_off >> PAGE_SHIFT;
-    m->umap.end = (m->vmo_off + m->len) >> PAGE_SHIFT;
+    m->umap.pages.first = m->vmo_off >> PAGE_SHIFT;
+    m->umap.pages.end = (m->vmo_off + m->len) >> PAGE_SHIFT;
     m->umap.writable = (m->max & ASPACE_WRITE) != 0;   /* what vmar_protect may grant */
 }
 
