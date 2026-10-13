@@ -252,9 +252,11 @@ static bool painted(struct subc *x, uint32_t ticker)
     return true;
 }
 
-/* The output's pixel (px, py) becomes want within CT_WAIT. */
-static bool becomes(const struct cs *t, int32_t px, int32_t py, uint32_t want)
+/* x's requests so far served, then the output's pixel (px, py) becomes
+ * want within CT_WAIT. */
+static bool becomes(const struct cs *t, struct subc *x, int32_t px, int32_t py, uint32_t want)
 {
+    CHECK_ST(ct_roundtrip(&x->c.k), OK);
     uint64_t until = now() + CT_WAIT;
     while (t->p.image[py * OUT_W + px] != want && now() < until)
         jam_sleep_until(now() + NS_PER_MS);
@@ -286,32 +288,32 @@ static bool order_steps(struct cs *t, struct subc *x, uint32_t tick, uint32_t p,
     CHECK(painted(x, tick));
     CHECK(still(t, 125, 125, RED));   /* cached: not shown */
     CHECK(commit(x, p));
-    CHECK(becomes(t, 125, 125, BLUE));
+    CHECK(becomes(t, x, 125, 125, BLUE));
     CHECK_ST(jwl_wl_subsurface_set_position(c, k[0].sub, 60, 20), OK);
     CHECK(painted(x, tick));
     CHECK(still(t, 125, 125, BLUE));   /* the position is P's state */
     CHECK(commit(x, p));
-    CHECK(becomes(t, 165, 125, BLUE));
+    CHECK(becomes(t, x, 165, 125, BLUE));
     CHECK(still(t, 125, 125, RED));
     CHECK(kid_of(x, p, 75, 35, 40, 40, GREEN, &k[1]));
     CHECK(kid_of(x, p, 90, 50, 40, 40, YELLOW, &k[2]));
     CHECK(commit(x, p));
-    CHECK(becomes(t, 195, 155, YELLOW));   /* each new one on top */
+    CHECK(becomes(t, x, 195, 155, YELLOW));   /* each new one on top */
     CHECK_ST(jwl_wl_subsurface_place_below(c, k[2].sub, k[0].s), OK);   /* P C3 C1 C2 */
     CHECK(painted(x, tick));
     CHECK(still(t, 195, 155, YELLOW));   /* the order is P's state too */
     CHECK(commit(x, p));
-    CHECK(becomes(t, 195, 155, GREEN));
+    CHECK(becomes(t, x, 195, 155, GREEN));
     CHECK_ST(jwl_wl_subsurface_place_above(c, k[0].sub, k[1].s), OK);   /* P C3 C2 C1 */
     CHECK(commit(x, p));
-    CHECK(becomes(t, 195, 155, BLUE));
+    CHECK(becomes(t, x, 195, 155, BLUE));
     CHECK(still(t, 210, 140, GREEN));
     CHECK_ST(jwl_wl_subsurface_place_below(c, k[1].sub, p), OK);   /* C2 P C3 C1 */
     CHECK(commit(x, p));
-    CHECK(becomes(t, 210, 140, RED));   /* under its parent */
+    CHECK(becomes(t, x, 210, 140, RED));   /* under its parent */
     CHECK_ST(jwl_wl_subsurface_place_above(c, k[1].sub, p), OK);   /* P C2 C3 C1 */
     CHECK(commit(x, p));
-    CHECK(becomes(t, 210, 140, GREEN));
+    CHECK(becomes(t, x, 210, 140, GREEN));
     return true;
 }
 
@@ -328,27 +330,27 @@ static bool desync_steps(struct cs *t, struct subc *x, uint32_t tick, struct kid
     ct_clear(&x->c.k);
     CHECK_ST(jwl_wl_surface_frame(c, k[2].s, cb), OK);
     CHECK(redraw(x, k[2].s, 40, 40, CYAN));
-    CHECK(becomes(t, 225, 185, CYAN));
+    CHECK(becomes(t, x, 225, 185, CYAN));
     CHECK(ct_await(&x->c.k, &jwl_wl_callback_interface, JWL_WL_CALLBACK_EV_DONE, cb, CT_WAIT));
     CHECK(kid_of(x, k[2].s, 25, 25, 10, 10, MAGENTA, &g));   /* at (215, 175) */
     CHECK(painted(x, tick));
     CHECK(still(t, 220, 180, CYAN));
     CHECK(commit(x, k[2].s));   /* C3's own commit, P still idle */
-    CHECK(becomes(t, 220, 180, MAGENTA));
+    CHECK(becomes(t, x, 220, 180, MAGENTA));
     CHECK(redraw(x, g.s, 10, 10, WHITE));
     CHECK(painted(x, tick));
     CHECK(still(t, 220, 180, MAGENTA));
     CHECK(commit(x, k[2].s));
-    CHECK(becomes(t, 220, 180, WHITE));
+    CHECK(becomes(t, x, 220, 180, WHITE));
     CHECK_ST(jwl_wl_subsurface_set_sync(c, k[2].sub), OK);
     CHECK(redraw(x, k[2].s, 40, 40, BLUE));
     CHECK(painted(x, tick));
     CHECK(still(t, 225, 185, CYAN));
     CHECK_ST(jwl_wl_subsurface_set_desync(c, k[2].sub), OK);
-    CHECK(becomes(t, 225, 185, BLUE));
+    CHECK(becomes(t, x, 225, 185, BLUE));
     /* G's wl_subsurface, then its wl_surface: unmapped at once, no error */
     CHECK_ST(jwl_wl_subsurface_destroy(c, g.sub), OK);
-    CHECK(becomes(t, 220, 180, BLUE));
+    CHECK(becomes(t, x, 220, 180, BLUE));
     CHECK_ST(jwl_wl_surface_destroy(c, g.s), OK);
     return true;
 }
@@ -362,11 +364,11 @@ bool t_comp_sub_commits(void)
     bool ok = subc_open(&t, &x);
     uint32_t tick = ok ? main_at(&x, 600, 440, 8, 8, GREY) : 0;
     uint32_t p = tick ? main_at(&x, PX, PY, 200, 150, RED) : 0;
-    ok = p && becomes(&t, 120, 120, RED) && order_steps(&t, &x, tick, p, k) &&
+    ok = p && becomes(&t, &x, 120, 120, RED) && order_steps(&t, &x, tick, p, k) &&
          desync_steps(&t, &x, tick, k);
     if (ok) {   /* C1's wl_subsurface destroyed: gone at once, C3 under it shows */
         CHECK_ST(jwl_wl_subsurface_destroy(x.c.k.c, k[0].sub), OK);
-        ok = becomes(&t, 195, 155, BLUE) && becomes(&t, 165, 125, RED);
+        ok = becomes(&t, &x, 195, 155, BLUE) && becomes(&t, &x, 165, 125, RED);
         CHECK_ST(ct_roundtrip(&x.c.k), OK);
         CHECK(!x.c.k.errored);
     }
@@ -451,7 +453,7 @@ static bool enters(struct subc *x, uint32_t s, uint32_t ex, uint32_t ey)
 static bool input_steps(struct cs *t, struct subc *x, uint32_t p, struct kid *s1, struct kid *s2)
 {
     struct jwl_conn *c = x->c.k.c;
-    uint32_t none = ct_new(&x->c.k, &jwl_wl_region_interface, 1);
+    uint32_t none = ct_new(&x->c.k, &jwl_wl_region_interface, 4);   /* (its compositor's version) */
     CHECK(none);
     CHECK_ST(jwl_wl_compositor_create_region(c, x->c.k.compositor, none), OK);
     CHECK(kid_of(x, p, 20, 20, 60, 60, BLUE, s1));
@@ -459,7 +461,7 @@ static bool input_steps(struct cs *t, struct subc *x, uint32_t p, struct kid *s1
     CHECK_ST(jwl_wl_surface_set_input_region(c, s2->s, none), OK);
     CHECK(commit(x, s2->s));
     CHECK(commit(x, p));
-    CHECK(becomes(t, 125, 125, BLUE) && becomes(t, 205, 205, GREEN));
+    CHECK(becomes(t, x, 125, 125, BLUE) && becomes(t, x, 205, 205, GREEN));
     /* onto S1: entered there, in its coordinates */
     CHECK(point(t, x, 130, 130));
     CHECK(got_crossing(&x->c, true, s1->s, NULL, NULL));
@@ -507,7 +509,7 @@ bool t_comp_sub_input(void)
     CHECK(cs_start(&t));
     bool ok = subc_open(&t, &x);
     uint32_t p = ok ? main_at(&x, PX, PY, 200, 150, RED) : 0;
-    ok = p && becomes(&t, 110, 110, RED) && input_steps(&t, &x, p, &s1, &s2);
+    ok = p && becomes(&t, &x, 110, 110, RED) && input_steps(&t, &x, p, &s1, &s2);
     CHECK_ST(ct_roundtrip(&x.c.k), OK);
     ok = ok && !x.c.k.errored;
     subc_close(&x);
@@ -579,19 +581,21 @@ static bool hcase(struct cs *t, struct hc *h, enum hcase c, uint32_t *obj, uint3
         return hsub(h, &a, p) && hsub(h, &b, a) && hsub(h, &p, b);
     case H_TWICE:   /* a subsurface already */
         return hsub(h, &a, p) && (b = new_surface(&h->k)) && hsub(h, &a, b);
-    case H_XDG_ROLE: {   /* an xdg_surface's (the start of a role) */
-        uint32_t wm = ct_new(&h->k, &jwl_xdg_wm_base_interface, 1);
-        uint32_t xs = wm ? ct_new(&h->k, &jwl_xdg_surface_interface, 1) : 0;
-        CHECK(xs && (a = new_surface(&h->k)));
+    case H_XDG_ROLE: {   /* an xdg_surface's (the start of a role); ids sent in order */
+        uint32_t wm = ct_new(&h->k, &jwl_xdg_wm_base_interface, 1), xs;
+        CHECK(wm);
         CHECK_ST(jwl_wl_registry_bind(k, h->k.registry, 5, "xdg_wm_base", 1, wm), OK);
+        CHECK((a = new_surface(&h->k)) != 0);
+        CHECK((xs = ct_new(&h->k, &jwl_xdg_surface_interface, 1)) != 0);
         CHECK_ST(jwl_xdg_wm_base_get_xdg_surface(k, wm, xs, a), OK);
         return hsub(h, &a, p) != 0;
     }
     case H_TESTWIN_ROLE: {   /* a test window's (role test) */
-        uint32_t pool = ct_pool(&h->k, PAGE_SIZE, NULL), buf = ct_new(&h->k, &jwl_wl_buffer_interface, 1);
-        CHECK(pool && buf && (a = new_surface(&h->k)));
+        uint32_t pool = ct_pool(&h->k, PAGE_SIZE, NULL), buf;
+        CHECK(pool && (buf = ct_new(&h->k, &jwl_wl_buffer_interface, 1)) != 0);
         CHECK_ST(jwl_wl_shm_pool_create_buffer(k, pool, buf, 0, 8, 8, 32,
                                                JWL_WL_SHM_FORMAT_XRGB8888), OK);
+        CHECK((a = new_surface(&h->k)) != 0);
         CHECK_ST(jwl_wl_surface_attach(k, a, buf, 10, 10), OK);
         CHECK_ST(jwl_wl_surface_commit(k, a), OK);
         return hsub(h, &a, p) != 0;
@@ -608,7 +612,7 @@ static bool hcase(struct cs *t, struct hc *h, enum hcase c, uint32_t *obj, uint3
         return jwl_wl_subsurface_place_below(k, sub, s) == OK;
     case H_DEFUNCT:   /* the wl_surface destroyed before its wl_subsurface */
         CHECK(hsub(h, &a, p));
-        *obj = a;
+        *obj = JWL_DISPLAY_ID;   /* (the surface's id is gone: the error names the display) */
         *code = JWL_WL_SURFACE_ERROR_DEFUNCT_ROLE_OBJECT;
         return jwl_wl_surface_destroy(k, a) == OK;
     case H_DEEP:   /* 8 nested is the most: a 9th */
@@ -663,12 +667,12 @@ static bool parent_first(struct cs *t, struct subc *x)
     struct jwl_conn *c = x->c.k.c;
     struct kid k;
     uint32_t p = main_at(x, 400, 300, 60, 60, RED);
-    CHECK(p && becomes(t, 410, 310, RED));
+    CHECK(p && becomes(t, x, 410, 310, RED));
     CHECK(kid_of(x, p, 10, 10, 20, 20, GREEN, &k));
     CHECK(commit(x, p));
-    CHECK(becomes(t, 415, 315, GREEN));
+    CHECK(becomes(t, x, 415, 315, GREEN));
     CHECK_ST(jwl_wl_surface_destroy(c, p), OK);
-    CHECK(becomes(t, 415, 315, ref_wallpaper_of(415, 315, OUT_W, OUT_H)));
+    CHECK(becomes(t, x, 415, 315, ref_wallpaper_of(415, 315, OUT_W, OUT_H)));
     CHECK_ST(jwl_wl_subsurface_set_position(c, k.sub, 5, 5), OK);
     CHECK_ST(jwl_wl_subsurface_place_above(c, k.sub, k.s), OK);   /* inert: no error */
     CHECK_ST(jwl_wl_subsurface_set_desync(c, k.sub), OK);
@@ -682,7 +686,7 @@ static bool parent_first(struct cs *t, struct subc *x)
     CHECK_ST(jwl_wl_subcompositor_get_subsurface(c, x->subc, k.sub, k.s, q), OK);
     CHECK(commit(x, k.s));
     CHECK(commit(x, q));
-    CHECK(becomes(t, 405, 305, BLUE));   /* (the position forgotten: 0, 0) */
+    CHECK(becomes(t, x, 405, 305, BLUE));   /* (the position forgotten: 0, 0) */
     CHECK_ST(ct_roundtrip(&x->c.k), OK);
     CHECK(!x->c.k.errored);
     return true;

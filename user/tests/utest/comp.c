@@ -398,7 +398,7 @@ static bool globals_and_binds(struct ct_client *k)
     CHECK(has_global(k, 8, "jam_window_memory_v1", 1));
     CHECK(has_global(k, 9, "zxdg_decoration_manager_v1", 1));
     CHECK(has_global(k, 10, "wl_subcompositor", 1));
-    CHECK_EQ(count(k, &jwl_wl_registry_interface, JWL_WL_REGISTRY_EV_GLOBAL), 9);
+    CHECK_EQ(count(k, &jwl_wl_registry_interface, JWL_WL_REGISTRY_EV_GLOBAL), 10);
     CHECK_EQ(count(k, &jwl_wl_shm_interface, JWL_WL_SHM_EV_FORMAT), 2);
     CHECK(ct_find(k, &jwl_wl_shm_interface, JWL_WL_SHM_EV_FORMAT, k->shm)->u[0] ==
           JWL_WL_SHM_FORMAT_ARGB8888);
