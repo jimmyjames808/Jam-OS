@@ -693,6 +693,13 @@ bool t_sh_paste(void);
  * (libos's dataprog.c). */
 bool t_sh_ptable(void);
 bool t_sh_image_wants(void);
+/* execsvc.c: init's /svc/exec (exectest and execwide from /data). */
+bool t_exec_sealed_runs(void);
+bool t_exec_wider_than_parent(void);
+bool t_exec_refused(void);
+bool t_exec_changed(void);
+bool t_exec_no_leak(void);
+bool t_exec_cleanup(void);
 /* "utest wl-crash": a Wayland client on the channel at SR_USER that makes
  * a pool, a buffer and a surface, then crashes; "wl-crash-attach" crashes
  * between the attach and the commit. */

@@ -484,7 +484,8 @@ EXTRA_CFLAGS_init := -I$(MONO_DIR) -I$(MONO_DIR)/optional
 # wlinput.c, cellpaint.c, view.c, select.c and their console.h), and the
 # shell's bracketed paste (utest/shpaste.c: sh_paste.c and sh_paste.h), and
 # how a /data program is checked (utest/shimage.c: libos's dataprog.c, which
-# the shell and init's /svc/exec share).
+# the shell and init's /svc/exec share), and /svc/exec's client
+# (utest/execsvc.c: exectest's client.c).
 NETSTACK_CORE      := $(patsubst %,$(UOBJ)/user/services/netstack/%.o,stack.c ctl.c tcp.c \
                         port/sys_arch.c)
 EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/services/music/tracks.c.o \
@@ -500,14 +501,18 @@ EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/serv
                         cursors) \
                       $(CURSOR_OBJ) $(patsubst %,$(UOBJ)/user/services/console/%.c.o,wlinput \
                         cellpaint view select) $(UOBJ)/user/services/shell/sh_paste.c.o \
-                      $(UOBJ)/libfun.a
+                      $(UOBJ)/user/tests/exectest/client.c.o $(UOBJ)/libfun.a
 EXTRA_CFLAGS_utest := -iquote user/services/music -iquote drivers/rtl8125 \
                       -iquote user/services/compositor -iquote user/services/console \
-                      -iquote user/services/shell \
+                      -iquote user/services/shell -iquote user/tests/exectest \
                       -iquote user/services/netstack -iquote user/services/dhcp \
                       -iquote user/services/dns -iquote user/services/sntp \
                       -iquote $(FATFS_STAGE) -iquote $(FATFS_PORT) -Iuser/apps/fun
 EXTRA_DEPS_utest   := $(FATFS_HDRS)
+# execwide is exectest's body with a wider list (user/tests/exectest/exectest.h).
+EXTRA_OBJS_execwide   := $(UOBJ)/user/tests/exectest/probe.c.o \
+                         $(UOBJ)/user/tests/exectest/client.c.o
+EXTRA_CFLAGS_execwide := -iquote user/tests/exectest
 
 # $(BUILD)/user/<prog> keeps its debug info (for gdb); bootfs gets a copy
 # without it ($(BUILD)/user/<prog>.bootfs), symbols kept for backtraces.
