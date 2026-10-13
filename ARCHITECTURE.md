@@ -323,7 +323,10 @@ Every driver and service is a userspace process from the start.
   flat; the cap counts what a call leaves.
   User mappings are tracked in a per-VMO reverse map, so
   decommit and shrink unmap the pages from every address space (pins, which
-  are DMA, still block them). Lock order: address-space region lock (a
+  are DMA, still block them). The reverse map is an interval tree by the
+  VMO pages each mapping covers, so a decommit, a copy-on-write separation
+  or a child's creation finds the mappings over its pages in O(log n) each,
+  however many pieces the rest of a big reservation is split into. Lock order: address-space region lock (a
   sleeping mutex) above `vmo`, page-table lock (a spinlock) below it.
   A **kept mapping** (`VMAR_KEPT_ONLY`) maps only a kept VMO, read-only,
   with every page-table entry filled at map time (the tables charged to

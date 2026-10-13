@@ -98,7 +98,13 @@ that a bug fix comes with a test is in
   unseen under the controller's event rule (xHCI 4.19.2: an event only
   when a port's change bits go from none to some), which QEMU doesn't
   model: a stick pushed back in, or a connector bouncing, at every point
-  of a port's handling (`build/host/rootportcheck`); the ext library
+  of a port's handling (`build/host/rootportcheck`); the kernel's AVL
+  tree and the interval tree on it (`kernel/lib/avl.c`,
+  `kernel/lib/itree.c`: an address space's mappings, a VMO's reverse map)
+  keep their links, balance and summaries through thousands of random
+  inserts, erases and moves under ASan and UBSan, and every interval
+  search returns exactly the ranges a one-by-one search of an array does
+  (`build/host/avlcheck`, `build/host/itreecheck`); the ext library
   (`user/services/extfs/ext/`, the format code of M13.6's Unix
   filesystem) builds as Jam OS builds a program and, under ASan and
   UBSan, reads the volumes Linux's mke2fs made (`tools/extfix/`) exactly

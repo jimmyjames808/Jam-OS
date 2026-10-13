@@ -73,6 +73,8 @@ EXT_CHECK  := build/host/extcheck
 ROOTPORT_CHECK := build/host/rootportcheck
 # The kernel's AVL tree on the Mac, sanitised (tools/avlcheck.c, below).
 AVL_CHECK  := build/host/avlcheck
+# The kernel's interval tree on the Mac, sanitised (tools/itreecheck.c, below).
+ITREE_CHECK := build/host/itreecheck
 # The files a stick has once `update -w` has written a build: its own and
 # the previous one (what boot/limine.conf may name; `make check`).
 STICK_FILES := /boot/jamos.elf /boot/bootfs.img /boot/prev-jamos.elf /boot/prev-bootfs.img
@@ -663,6 +665,8 @@ check: all
 	$(ROOTPORT_CHECK)
 	$(MAKE) -s $(AVL_CHECK)
 	$(AVL_CHECK)
+	$(MAKE) -s $(ITREE_CHECK)
+	$(ITREE_CHECK)
 	$(MAKE) -s $(EXT_CHECK) $(EXT_FIXTURES) $(EXT_CROSS)
 	$(EXT_CHECK) tools/extfix $(BUILD)/extfix
 
@@ -867,6 +871,16 @@ $(AVL_CHECK): tools/avlcheck.c kernel/lib/avl.c kernel/include/jam/avl.h kernel/
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=gnu17 -O2 -g -Wall -Wextra -Werror -Wvla -fsanitize=address,undefined \
 	    -fno-sanitize-recover=all -Ikernel/include -o $@ tools/avlcheck.c kernel/lib/avl.c
+
+# itreecheck (tools/itreecheck.c): the kernel's interval tree
+# (kernel/lib/itree.c over kernel/lib/avl.c, the same files) against an array
+# of the same ranges searched one by one; `make check` runs it.
+$(ITREE_CHECK): tools/itreecheck.c kernel/lib/itree.c kernel/lib/avl.c kernel/include/jam/itree.h \
+                kernel/include/jam/avl.h kernel/include/jam/list.h
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -std=gnu17 -O2 -g -Wall -Wextra -Werror -Wvla -fsanitize=address,undefined \
+	    -fno-sanitize-recover=all -Ikernel/include -o $@ tools/itreecheck.c kernel/lib/itree.c \
+	    kernel/lib/avl.c
 
 # extcheck (tools/extcheck.c and the other tools/ext*.c): the ext library (the
 # extfs service's format code, user/services/extfs/ext, the same files)

@@ -2,11 +2,13 @@
  * Kernel-internal: nothing outside those two files (and their tests)
  * should need this header.
  *
- * Reverse map: every user mapping of a VMO is a struct vmo_umap on the
- * VMO's list, under the VMO lock. decommit and shrink walk that list with
- * the VMO lock held and clear the page-table entries of the pages they take
- * away (aspace_zap_locked), collecting the CPUs to shoot down and the pages
- * to free in a struct tlb_gather. The pages are freed only after the
+ * Reverse map: every user mapping of a VMO is a struct vmo_umap in the
+ * VMO's interval tree (<jam/itree.h>), by the range of VMO pages it maps,
+ * under the VMO lock. decommit and shrink look up the mappings over the
+ * pages they take away with the VMO lock held (O(log n) each, however many
+ * mappings the VMO has elsewhere), clear those mappings' page-table entries
+ * for the pages (aspace_zap_locked), and collect the CPUs to shoot down
+ * and the pages to free in a struct tlb_gather. The pages are freed only after the
  * shootdown (tlb_gather_finish), so a freed page is never still reachable
  * through any TLB.
  *
@@ -16,6 +18,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <jam/itree.h>
 #include <jam/list.h>
 #include <jam/sched.h>   /* cpumask_t */
 #include <jam/status.h>
@@ -71,23 +74,25 @@ void page_share_drop(struct page *p);
  * fields change only under the VMO lock (vmo_umap_set), so the VMO side can
  * trust them while it holds that lock. */
 struct vmo_umap {
-    struct list_node node;        /* on the VMO's list (VMO lock) */
-    struct aspace   *as;          /* the address space it is in */
-    uint64_t         base;        /* user address of VMO page `first` */
-    uint64_t         first, end;  /* VMO page indices [first, end) */
-    bool             writable;    /* may be (or become) writable: refused on a sealed VMO */
+    struct itree_node pages;      /* VMO page indices [pages.first, pages.end), in the
+                                     VMO's tree (VMO lock) */
+    struct aspace    *as;         /* the address space it is in */
+    uint64_t          base;       /* user address of VMO page pages.first */
+    bool              writable;   /* may be (or become) writable: refused on a sealed VMO */
 };
 
-/* Record u (fields filled in) on v and take a VMO reference for it. With
- * `check`, ERR_OUT_OF_RANGE if u reaches past the VMO's end (a new
- * mapping), ERR_BAD_STATE if u is writable and v sealed (vmo_seal); splitting an existing mapping passes false, since a shrink may
- * already have cut the VMO below it. */
+/* Record u (fields filled in, pages.first < pages.end) on v and take a VMO
+ * reference for it: O(log n). With `check`, ERR_OUT_OF_RANGE if u reaches
+ * past the VMO's end (a new mapping), ERR_BAD_STATE if u is writable and v
+ * sealed (vmo_seal), ERR_ACCESS_DENIED if u is writable and v a pager VMO;
+ * splitting an existing mapping passes false, since a shrink may already
+ * have cut the VMO below it. */
 status_t vmo_umap_add(struct vmo *v, struct vmo_umap *u, bool check);
-/* Change u's range under the VMO lock. */
+/* Change u's range under the VMO lock (first < end): O(log n). */
 void     vmo_umap_set(struct vmo *v, struct vmo_umap *u, uint64_t base, uint64_t first,
                       uint64_t end);
-/* Unlink u and drop its VMO reference (v may be destroyed). The caller has
- * already cleared and shot down u's page-table entries. */
+/* Unlink u and drop its VMO reference (v may be destroyed): O(log n). The
+ * caller has already cleared and shot down u's page-table entries. */
 void     vmo_umap_remove(struct vmo *v, struct vmo_umap *u);
 
 /* Fault: under the VMO lock, commit page idx if needed (paged VMOs) and
@@ -135,5 +140,8 @@ uint64_t aspace_fault_count(struct aspace *as);
  * each one is also reported on the console). Must stay 0: see PK2's audit
  * in docs/M12.5-PLAN.md. */
 extern uint64_t aspace_pager_waits_held;
+/* The number of user mappings on v's reverse map, or -1 if its tree is
+ * not sound (itree_check). Takes the VMO lock: O(n). */
+int64_t vmo_rmap_check(struct vmo *v);
 /* Physical address of the page holding `offset`, 0 if not committed. */
 uint64_t vmo_page_phys(struct vmo *v, uint64_t offset);
