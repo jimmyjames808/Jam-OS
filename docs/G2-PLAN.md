@@ -987,7 +987,7 @@ the docs.
 | **GC3. Popups** | real `xdg_popup`: placement by the positioner on the output (flip, slide, resize), `grab` with a live serial, dismissal by a click outside or Escape, nested popups (a menu's submenu), `reposition`; the window manager's rules for popups (never tiled, above their parent); tooltips (popups without a grab) | `user/services/compositor/xdg.c`, a new popup file, the window manager's lines it needs (`user/services/compositor/wm.c`) | GC2 merged | utest: each positioner case placed exactly, a grab without a serial refused, a click outside dismissing the chain, a tooltip that takes no keys; screenshot of a popup at a screen edge | **Opus** |
 | **GP1. The base ports** | recipes for libffi, expat, wayland (client, cursor, and wayland-scanner as a host build), wayland-protocols (data), xkbcommon; the host-build and data-port pieces in tools/ports.py with their self-tests; meson's cross file's options (static, no `dlopen`) | ports/ recipes (new), tools/ports.py's host-build part, ports/jamos.meson's lines | M13.7's PO1 merged (it is); running, paused with work in its worktree | each recipe's `test`: libffi's own `ffi_call` tests as a program; xkbcommon compiling the compositor's keymap from `tools/genkeymap.py`'s text; libwayland's `wl_display_connect` from a tiny program; the builder's self-test | Sonnet 5.5 |
 | **GP2. The fonts** (rescoped) | the `fonts-jamos` data package (section 4's set: Liberation, Noto Sans, Serif and Sans Mono, Inter, JetBrains Mono, Noto Color Emoji) and its fonts.conf (the directory, the aliases, the cache under `XDG_CACHE_HOME`); every font's licence text in the package | ports/fonts-jamos (new) | GP1's data-port piece | the package's `test`: the files present with their hashes; `fc-match` is not on Jam OS (no fontconfig port), so the configuration is checked on the build host with its own `fc-match` against the staged directory (`sans-serif`, `serif`, `monospace`, `Arial` each resolve as section 4 says) | Sonnet 5.5 |
-| **GT. wlprobe and its script** | wlprobe (section 11), a test program on the real libwayland, in the ports tree, with a hold mode (a window that stays, for the soak); tools/wl-port-test.sh (new): a plain boot with packages preinstalled (M13.7's PO8 image), wlprobe's cases by name; the Chromium plan adds its own cases to it later | ports/wlprobe (new), tools/wl-port-test.sh (new) | GS1; GP1; M13.7's PO8 (merged) | itself; it is the end-to-end test of GS1 | Sonnet 5.5 |
+| **GT. wlprobe and its script** (built: [GT notes](#gt-notes)) | wlprobe (section 11), a test program on the real libwayland, in the ports tree, with a hold mode (a window that stays, for the soak); tools/wl-port-test.sh (new): a plain boot with packages preinstalled (M13.7's PO8 image), wlprobe's cases by name; the Chromium plan adds its own cases to it later | ports/wayland/override/wlprobe.c and patches/0003 (not a port of its own: a recipe needs an upstream tree), tools/wl-port-test.sh and tools/wl-port-check.py (new) | GS1; GP1; M13.7's PO8 (merged) | itself; it is the end-to-end test of GS1 | Sonnet 5.5 |
 | **GD. The search box** (Q9, only if the owner starts Chromium from it) | the recipe's `desktop` line in tools/ports.py and the package's manifest; `pkg`'s approval recording it; init's `launch` accepting an approved package program; the search box's rows | tools/ports.py's line, init's `launch` check (`user/services/init/apps.c`), the compositor's search rows | Q9; M13.7's PO5 and PO6 merged; Chromium's package (the Chromium plan) | utest for init's check (an unapproved program refused, a program without the line refused); `tools/desk-test.sh` with a preinstalled package | Sonnet 5.5 |
 | **GR. Independent review and fix** | GS1, GC1, GC1b, GC2, GC3: findings first, then High and Medium fixed with a test each; hostile libwayland clients against the live compositor (X1's style): a subsurface storm, a desync bubble flood, a popup chain at the cap, a decoration object on a destroyed toplevel, 28 handles of the wrong kinds, a client that never reads | the files its fixes need, named in its report | GS1, GC1b, GC2 merged (GC3 if merged by then) | its own; utest; GT's script | **Opus** |
 | **GJ. The join** | ARCHITECTURE (Graphics: ported clients, the protocols offered, decorations; Userland: the Wayland socket), the porter's guide (GUI ports: the shim, the environment, the fonts and keyboard pieces, what is offered), TESTING (the new script), `third_party/wayland-protocols`'s README, ROADMAP and HISTORY | the docs | GR merged | `make check` | Sonnet 5.5 |
@@ -1175,6 +1175,111 @@ copies it to `comp_window.geom` with the buffer):
 users are listed above, plus GC1 notes' item 1); `window_extent`
 already takes the surface's box, so a tree's bounding box goes there.
 
+## GT notes
+
+*Built 2026-10-13 and run in QEMU on the PC: `tools/wl-port-test.sh` passes
+all nine groups, with two expected failures (below).* What GT built, what it
+found, and what its script's conventions are, for GC2, GC3, GR and the
+Chromium plan's own cases.
+
+**Where it is.** wlprobe is `ports/wayland/override/wlprobe.c` (ours,
+BSD-2-Clause), built by `patches/0003-wlprobe.patch` into the `wayland-test`
+package beside wl-connect-test and wl-window-test (`bin/wlprobe`; its `wants`
+file is `posix` and `svc wayland`). It is not a port of its own because a
+recipe needs an upstream source (or a `third_party/` tree), and the two
+earlier test programs set this precedent. The wayland recipe gained `needs
+xkbcommon` (the keymap cases compile the compositor's keymap with the library
+Chromium links) and two more protocol files in `override/`
+(`cursor-shape-v1.xml` and the `tablet-v2.xml` it imports, copies of
+wayland-protocols' files). `wl-window-test` gained `[seconds] still` (the
+bands do not move, so a screenshot's pixels are known).
+
+**The cases** (`wlprobe -l` lists them; each prints `PASS <case>: <what it
+saw>` or `FAIL <case>: <why>`; `all` runs every one that needs no help and
+no layout; `hold [seconds]` is the soak's window). *auto* needs nothing,
+*shot* prints `wlprobe: <case>: shot <name>` and holds the window still for
+`-s` seconds (4) while the script screenshots it, *input* prints `wlprobe:
+<case>: ready` and waits (`-t` seconds, 30) for the script's keys and mouse.
+
+| Case | Kind | What it checks |
+|---|---|---|
+| `globals` | auto | the nine globals and the versions the plan promises (compositor 6, shm 2, output 4, seat 9, xdg_wm_base 6, data device 3, cursor shape 2, decoration 1) |
+| `subcompositor` | auto | `wl_subcompositor` offered (GC2) |
+| `bind` | auto | every global bound at Chromium's version and at the newest, the objects Chromium makes from them (regions, pointer, keyboard, data device, a source, a cursor-shape device), no protocol error |
+| `shm` | auto | ARGB8888 and XRGB8888 announced; a pool that grows (`resize`) and a buffer from its second page |
+| `output` | auto | `wl_output` v4: geometry, the current mode, scale 1, name, description, done |
+| `keymap` | auto | the seat's capabilities and name, the keymap in a file the client maps and xkbcommon compiles (AC01 is keycode 38, `a`; with Shift `A`), `repeat_info` |
+| `toplevel` | auto | an xdg toplevel from the first commit: configure before any buffer, `wm_capabilities` (maximize, fullscreen, minimize), `configure_bounds`, activated within a moment, a frame callback |
+| `states-tiled`, `states-floating` | auto | the same, and the four tiled states in a tiling layout, none in a floating one |
+| `keyless` | auto | a window of a client with no `wl_keyboard` is not activated at map (the rule of 50088991) |
+| `deco-server` | auto | a client that bound the decoration manager is told `server_side` with no request, after `set_mode(client_side)` before and after the map, and after `unset_mode` (the owner's rule) |
+| `frames` | auto | 60 frame callbacks in order at 60 a second, all 60 buffers released |
+| `geometry` | auto | `set_window_geometry` and size limits accepted and reset |
+| `geometry-error`, `limits-error`, `serial-error` | auto | a 0x0 geometry is `xdg_surface` `invalid_size`, a maximum under the minimum is `xdg_toplevel` `invalid_size`, an ack of a serial never sent is `invalid_serial` |
+| `parent` | auto | `set_parent` set, unset, set again; a window as its own parent is `invalid_parent` |
+| `popup` | auto | an `xdg_popup` with a grab is configured where its positioner says (30,30 120x80) and stays up (GC3) |
+| `big-buffer` | auto | three 2560x1440 ARGB buffers (14.7 MB each, a new pool each) committed in turn |
+| `resize-storm` | auto | 40 maximize/unmaximize requests with no waiting, repainted at each configure, the window back at its size |
+| `reuse` | auto | a `wl_surface` mapped, its xdg objects destroyed, given new ones and mapped again |
+| `clipboard-serial` | auto | `set_selection` with a serial the seat never sent is cancelled; with the keyboard enter's it holds |
+| `maximize`, `fullscreen`, `minimize` | auto | the request, the configure with the state (full screen is the output's size, minimize is `suspended`), and the unset going back to the old size |
+| `title` | shot | `set_title` and `set_app_id`, changed while mapped, UTF-8, 999 bytes, empty; the title bar's pixels change and the surface's do not |
+| `shm-argb` | shot | alpha: opaque, 50%, 25%, 75% (premultiplied) and transparent blocks over the terminal's ground |
+| `damage` | shot | `damage_buffer` on two parts of a buffer, then `wl_surface.damage` on another: the screen shows the new parts and the old |
+| `csd-geometry` | shot | a client that never bound the manager, with a geometry smaller than its surface: the corner pixels are the client's (GC1b); without one the compositor rounds them |
+| `pointer` | input | enter inside the surface, motion, left press and release twice, the second 30 pixels right of the first (exactly 30: acceleration is 1:1), a right press, the wheel both ways (`axis` and `axis_value120`), frames, leave; the click's surface coordinates are checked against a screenshot |
+| `keyless-click` | input | a click on a keyless window activates it |
+| `keyboard` | input | `wl_keyboard.enter` at map, then `a b 1 Shift+c Return` arriving as evdev codes 30 48 2 .. 46 .. through the keymap as `ab1C`, with a Shift modifiers event and a release for every press |
+| `close` | input | Super+Q: `xdg_toplevel.close`, then `xdg_wm_base.ping` answered |
+| `cursor-shape` | input | `set_shape` default, text, pointer: three different cursors drawn; shape 9999 is `invalid_shape` |
+| `cursor-surface` | input | `set_cursor` with a surface of the client's own and a hotspot, then none |
+| `clipboard-out` | input | the window sets its selection and a second terminal pastes it: `wl_data_source.send` served through the pipe the compositor passed on |
+| `clipboard-in` | input | a terminal's selection (`clipboard-in=TEXT` names the text it copied) read by the window: the offer's types, and the text through `receive` |
+
+**The script** (`tools/wl-port-test.sh`; groups and conventions in its
+header and in [TESTING.md](TESTING.md)): one QEMU per group, each group a
+fragment in `tools/shell-tests/wl-port/`, and `tools/wl-port-check.py` for the
+verdicts: wlprobe's lines from the serial log (a result line can start
+anywhere on its line: kernel log lines and a terminal's echo share the
+serial port), then the screenshots at known pixels. Things the fragments
+learned the hard way, for the next one written:
+- **The serial port types into the window that has the keys.** With a second
+  terminal open and focused, `send` goes to it (the pasted text of
+  `clipboard-out` and `reboot -f` arrived in one line): close it with Super+Q
+  before the next `send`.
+- **`pointer X Y` takes tens of seconds** (a monitor step of at most 6
+  counts each, about 230 for the middle of the screen): longer than a case
+  holds a shot or waits for input. Put the mouse where the window will map
+  *before* starting wlprobe, and wiggle it (`mouse_move 2 0`, `-2 0`) once
+  `ready` shows, which is what tells the new window the pointer entered.
+- **A window of a client with no `wl_keyboard` is keyless**: it is not
+  activated at map and the keys stay in the terminal. Every probe window
+  makes its keyboard first (Chromium makes its seat devices as soon as the
+  seat says it has them); `WF_KEYLESS` is for the cases about the rule.
+- **The bands repeat along the anti-diagonal**, so no run of them says where
+  the window starts: the checker takes the bounding box of the pixels of the
+  bands' four colours. wlprobe's own windows start with a magenta marker
+  block instead.
+- Super+Q on a window closes the *focused* window: the `close` case waits
+  for its keyboard enter before it says `ready`, or it would close the
+  terminal.
+
+**An expected failure** is an `XFAIL` entry in `tools/wl-port-check.py` with
+its reason; the group still passes, the report says XFAIL, and a case that
+passes while on the list is an XPASS that fails the group. Two today:
+`subcompositor` (GC2: the compositor offers no `wl_subcompositor`) and
+`popup` (GC3: an `xdg_popup` is dismissed at once, `popup_done` before the
+client has drawn it). **No compositor bug was found**: the other 35 cases
+and every screenshot check pass.
+
+**What it does not cover**: `app_id` (the compositor keeps it and shows it
+nowhere: the case sets it and checks for no error), buffers made by another
+process and passed on (CU1's `SCM_RIGHTS` between sockets, the Chromium
+plan's), interactive move and resize, drag and drop (`start_drag` cancels its
+source), the window menu (ignored), popups beyond the one case, and
+subsurfaces (the `subcompositor` case is the placeholder: GC2 adds its own
+cases here, as Chromium's will).
+
 ## Tests and the sign-off
 
 | What | Where |
@@ -1191,7 +1296,8 @@ already takes the surface's box, so a tree's bounding box goes there.
 
 After a flash or an `update`, with the Mac's ports server running:
 
-1. `pkg install wlprobe` (or the test image's preinstalled copy);
+1. `pkg install wayland-test` (wlprobe is in it, with wl-connect-test and
+   wl-window-test; or the test image's preinstalled copy);
    `wlprobe` from the shell: its cases print their lines; its hold mode
    opens a window with the compositor's title bar (it binds the
    decoration manager), tiles with Super+T, closes with Super+Q.
