@@ -463,6 +463,7 @@ int sh_pipe_settle(void)
         cancels |= prog[i].cancels;
     }
     nprog = 0;
+    sh_posix_line_done();   /* the terminal they shared: the next line opens its own */
     /* A POSIX program that took SIGINT and went on (or ended its own way)
      * has dealt with the key: the rest of the line runs, as in any shell. */
     if (int_sent && !cancels)
@@ -563,6 +564,8 @@ static int start_failed(struct started *s, status_t st, bool said)
         jam_handle_close(s->out_r);
     jam_handle_close(s->sig);
     jam_handle_close(s->job);
+    if (!nprog)
+        sh_posix_line_done();   /* a terminal opened for it alone: nobody to share it */
     return said ? 1 : 126;
 }
 

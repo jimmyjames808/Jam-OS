@@ -163,3 +163,6 @@ int  sh_redir_count(void);
  * then. Else *out is for spawn_args.handover (spawn takes its handles);
  * it stays valid until the next call. */
 bool sh_posix_prepare(struct posixfds_out *out, handle_t console, handle_t *out_r);
+/* The line's programs have all ended (sh_pipe_settle): the terminal they
+ * shared is let go of (the next program opens its own). */
+void sh_posix_line_done(void);

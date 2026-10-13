@@ -309,6 +309,18 @@ wait {prompt}
 send pxio yes | pxio head 3 | pxio count
 wait 30 pxio: 3 lines, 6 bytes
 wait {prompt}
+# what is typed reaches the first stage: the line's programs share one
+# terminal (opened per program, the last one's had the keys, and count
+# waited on cat for ever)
+send pxio cat | pxio count; echo pipe-typed-$T=$?
+wait run: bin/pxio started
+sleep 1
+send one
+send two
+type \x04
+wait 30 pxio: 2 lines, 8 bytes
+wait pipe-typed-x=0
+wait {prompt}
 # the status is the last stage's
 send pxio out x | pxio exit 5; echo st-$T=$?
 wait st-x=5
