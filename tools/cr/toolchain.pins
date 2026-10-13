@@ -1,0 +1,18 @@
+# The build host's toolchains (docs/CR-PLAN.md section 1, track CT1),
+# fetched by tools/cr/toolchain.sh into ~/.cache/jamos/ on the build host
+# (the PC's WSL), each pinned by size and SHA-256. One line each:
+#
+#   <name> <version> <size in bytes> <sha256> <url>
+#
+# clang: Chromium's own prebuilt clang and lld for Linux x86_64, the
+# compiler Chromium 155.0.8059.39 is tested with: the package its
+# tools/clang/scripts/update.py fetches (CLANG_REVISION
+# llvmorg-24-init-7747-g62397f8b, CLANG_SUB_REVISION 27, RELEASE_VERSION
+# 24). Moves with Chromium's version (CR-PLAN section 14): read the new
+# version's update.py, fetch, hash, change this line.
+clang llvmorg-24-init-7747-g62397f8b-27 57243988 83f4a4ea3292bfc236d85575fa7af27d39180d88534bc3117b73ad1df34bb959 https://commondatastorage.googleapis.com/chromium-browser-clang/Linux_x64/clang-llvmorg-24-init-7747-g62397f8b-27.tar.xz
+# cmake: for ports/llvm-runtimes (LLVM's runtimes want 3.20 or newer;
+# Ubuntu 24.04's apt has 3.28 but nothing is installed system-wide for
+# Jam OS), Kitware's wheel from PyPI installed into the ports builder's
+# venv, ~/.cache/jamos/tools (docs/TESTING.md), beside Meson and Ninja.
+cmake 3.31.10 27808794 2f766bb46367e5e0559fa33184653754bce044583a06014dcaebf8e6dff8a1f1 https://files.pythonhosted.org/packages/f4/2e/cefc60143950ca1a8dda26d4c8484e6fc406db16e7ca098ebae549de35f9/cmake-3.31.10-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl

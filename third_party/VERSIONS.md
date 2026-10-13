@@ -251,3 +251,17 @@ has neither):
   one program). No subsystems (no sftp, no scp: tinyssh has one only when
   its start names it, and sshd names none), and no agent or port
   forwarding (tinyssh opens a "session" channel only).
+
+Not vendored, fetched (each pinned by size and SHA-256 in the repository):
+
+- Ports' sources: each port's recipe (ports/<name>/recipe's `source`
+  lines), into ~/.cache/jamos/distfiles. For the clang toolchain (track
+  CT1, docs/CR-PLAN.md section 1): ports/llvm-runtimes (LLVM 23.1.3's
+  llvm-project source release) and ports/linux-uapi (Linux 6.18.56's
+  release tarball, its headers_install).
+- The build host's toolchains: tools/cr/toolchain.pins, fetched by
+  tools/cr/toolchain.sh into ~/.cache/jamos/ on the PC's WSL: Chromium
+  155.0.8059.39's prebuilt clang and lld (clang-llvmorg-24-init-7747-g62397f8b-27,
+  the package its tools/clang/scripts/update.py names; Apache-2.0 WITH
+  LLVM-exception), and CMake 3.31.10 (Kitware's PyPI wheel, BSD-3-Clause)
+  for the runtimes' build. Neither runs on Jam OS.
