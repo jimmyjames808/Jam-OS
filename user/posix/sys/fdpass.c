@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <string.h>
 #include "fdpass.h"
+#include "files.h"
 #include "kinds.h"
 
 #define READS(r)  (((r) & RIGHT_READ) != 0)
@@ -215,6 +216,136 @@ void fdpass_fds_in(handle_t *hs, unsigned n, unsigned kinds, struct fdpass_sink 
         else
             s->fds[s->got++] = (int)fd;
     }
+}
+
+/* ---- with records --------------------------------------------------------------------- */
+
+/* The FDPASS_* bit of a description's kind (0: one that never crosses). */
+static unsigned desc_kind(struct fd_desc *d)
+{
+    if (d->ops == &pipe_ops || d->ops == &sockp_ops)
+        return FDPASS_CHANNEL;
+    if (d->ops == &memfd_ops)
+        return FDPASS_MEMFD;
+    if (d->ops == &dev_ops || d->ops == &etc_ops)
+        return FDPASS_NODE;
+    return file_desc_is(d) ? FDPASS_FILE : 0;
+}
+
+/* The FDPASS_* bit of a hand-over record's kind (0: one that never
+ * crosses). */
+static unsigned record_kind(uint32_t kind)
+{
+    switch (kind) {
+    case POSIXFDS_PIPE:
+    case POSIXFDS_SEQPACKET: return FDPASS_CHANNEL;
+    case POSIXFDS_MEMFD:     return FDPASS_MEMFD;
+    case POSIXFDS_FILE:      return FDPASS_FILE;
+    case POSIXFDS_DEV:
+    case POSIXFDS_ETC:       return FDPASS_NODE;
+    }
+    return 0;
+}
+
+/* d as a record under p: 0 and *out, or -errno (-EINVAL: a kind p doesn't
+ * pass). */
+static long give_one(struct fd_desc *d, const struct fdpass_policy *p, struct fd_given *out)
+{
+    unsigned k = desc_kind(d);
+    memset(out, 0, sizeof(*out));
+    if (!(k & p->kinds))
+        return -EINVAL;
+    long r = k == FDPASS_CHANNEL ? pipe_pass(d, out) : d->ops->give(d, out);
+    if (r || k != FDPASS_MEMFD || p->memfd_rights == RIGHT_SAME)
+        return r;
+    struct handle_info hi;
+    status_t st = jam_handle_info(out->handles[0], &hi);
+    if (st == OK)
+        st = jam_handle_replace(out->handles[0], hi.rights & p->memfd_rights, &out->handles[0]);
+    if (st != OK) {   /* a failed replace closed the handle already */
+        out->nhandles = 0;
+        fd_given_drop(out);
+    }
+    return lx_err(st);
+}
+
+long fdpass_gives_out(const int *fds, unsigned n, const struct fdpass_policy *p,
+                      struct fd_given *gs)
+{
+    long r = 0;
+    unsigned made = 0;
+    while (made < n && !r) {
+        struct fd_desc *d = fd_get(fds[made]);
+        r = d ? give_one(d, p, &gs[made]) : -EBADF;
+        if (r == -EINVAL)
+            say_refused(d);
+        if (d)
+            fd_put(d);
+        if (!r)
+            made++;
+    }
+    if (r)
+        fdpass_gives_drop(gs, made);
+    return r;
+}
+
+void fdpass_gives_drop(struct fd_given *gs, unsigned n)
+{
+    for (unsigned i = 0; i < n; i++)
+        fd_given_drop(&gs[i]);
+}
+
+/* The n handles hs are of the object types types. */
+static bool types_are(const handle_t *hs, const uint32_t *types, int n)
+{
+    for (int i = 0; i < n; i++) {
+        struct handle_info hi;
+        if (jam_handle_info(hs[i], &hi) != OK || hi.type != types[i])
+            return false;
+    }
+    return true;
+}
+
+/* A string of len bytes: its NUL last and none before, at least 2. */
+static bool string_ok(const char *s, uint32_t len)
+{
+    return len >= 2 && s[len - 1] == '\0' && strnlen(s, len) == len - 1;
+}
+
+/* A record's fields as another process may send them: the hand-over's
+ * rules (fdmsg.c's) for the kinds that cross, and no leftover bytes with a
+ * channel end (they would read as the end's own, before its first). */
+static bool record_ok(const struct posixfds_fd *rec, const void *data)
+{
+    if ((rec->status & ~POSIXFDS_STATUS) ||
+        (rec->status & POSIXFDS_O_ACCMODE) == POSIXFDS_O_ACCMODE ||
+        rec->data_len > POSIXFDS_DATA_MAX || (rec->offset && rec->kind != POSIXFDS_FILE))
+        return false;
+    switch (rec->kind) {
+    case POSIXFDS_PIPE:
+    case POSIXFDS_SEQPACKET: return rec->data_len == 0;
+    case POSIXFDS_DEV:
+    case POSIXFDS_ETC:       return string_ok(data, rec->data_len);
+    }
+    return true;   /* a memfd's data and a file's: their adopters check or ignore it */
+}
+
+long fdpass_adopt(const struct posixfds_fd *rec, const void *data, const handle_t *hs,
+                  unsigned kinds, struct fd_desc **out)
+{
+    uint32_t types[POSIXFDS_KIND_HANDLES];
+    int nh = record_kind(rec->kind) & kinds ? posixfds_kind_handles(rec->kind, types) : -1;
+    if (nh != (int)rec->nhandles || !types_are(hs, types, nh) || !record_ok(rec, data)) {
+        for (uint32_t i = 0; i < rec->nhandles && i < POSIXFDS_KIND_HANDLES; i++)
+            jam_handle_close(hs[i]);
+        return -EINVAL;
+    }
+    struct posixfds_fd r = *rec;
+    if (r.kind == POSIXFDS_FILE) {   /* its path is not believed: see fdpass.h */
+        r.data_len = 0;
+        data = NULL;
+    }
+    return fd_adopters[r.kind](&r, data, hs, out);
 }
 
 /* ---- SCM_RIGHTS ------------------------------------------------------------------------- */

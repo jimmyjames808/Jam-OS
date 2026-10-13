@@ -267,9 +267,10 @@ long lx_shutdown(long fd, long how, long c, long d4, long e, long f)
     struct fd_desc *d;
     struct sock *s;
     long r = sock_get(fd, &d, &s);
-    if (r == -ENOTSOCK && d) {
+    if (r == -ENOTSOCK && d) {   /* a socketpair end (sockpair.c's), or an AF_UNIX stream */
+        r = d->ops == &sockp_ops ? sockp_shutdown(d, (int)how) : -EOPNOTSUPP;
         fd_put(d);
-        return -EOPNOTSUPP;   /* a socketpair end: its channel has no half-close */
+        return r;
     }
     if (r)
         return r;

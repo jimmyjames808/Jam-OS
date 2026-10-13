@@ -394,6 +394,11 @@ static long file_new(struct fobj *o, const char *abs, uint32_t status, struct fd
     return 0;
 }
 
+bool file_desc_is(const struct fd_desc *d)
+{
+    return d->ops == &file_ops;
+}
+
 long file_adopt_fd(const struct posixfds_fd *rec, const void *data, const handle_t *hs,
                    struct fd_desc **out)
 {

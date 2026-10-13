@@ -29,10 +29,27 @@
  * Each socket kind gives a policy: the kinds it lets cross and the rights
  * a memfd's VMO goes with. The Wayland socket (wlsock.c) passes memfds,
  * as pools the compositor can read and map but not write, and channel
- * ends, and nothing else. Descriptor passing on socketpairs widens the
- * tables to every kind the POSIX hand-over can pass (<posixfds.h>: files,
- * eventfds, /dev nodes) by adding rows and FDPASS_* bits here, so there
- * is one translation and every socket kind uses it.
+ * ends, and nothing else, one bare handle each (JWL2 carries no more).
+ *
+ * **With records** (socketpairs, sockpair.c): a descriptor goes as the
+ * POSIX hand-over's record of it (<posixfds.h>: its kind, status flags,
+ * offset, data and handles), so every kind the hand-over passes can
+ * cross, as fd_give makes it for a child: a memfd with its size, seals,
+ * name and offset (memfd.c: its VMO without RIGHT_WRITE once write-
+ * sealed, or for a read-only description); a file as a fresh open of the
+ * same file at the description's offset (a writable one lends ours,
+ * fobj.c); a /dev node or one of libc's /etc files by its name; a pipe or
+ * socketpair end as above (its leftover stays here). What arrives is made
+ * by the hand-over's adopters (fd.c's fd_adopters), after this file's
+ * checks: the kind among the policy's, the handles of the kind's object
+ * types, the record's fields. A file's path is never believed: it came
+ * from another process, and a path is only a name in ours (a later give
+ * of the file would reopen that name with our rights), so the file
+ * arrives without one and can't be given on (fd_give: ENOTSUP). Kinds
+ * that never cross a socket: network sockets and listeners (their ring
+ * can't be shared: M13's answer B), directories (a path again),
+ * terminals, eventfds (the counter is each process's own: eventfd.c),
+ * epoll sets: EINVAL, logged once a process.
  *
  * The SCM_RIGHTS helpers at the end read and write the control data of a
  * struct msghdr as Linux lays it out (CMSG_*). Nothing here takes a lock
@@ -46,6 +63,8 @@
 
 #define FDPASS_MEMFD    (1u << 0)        /* memfds and shm_open's files: a VMO */
 #define FDPASS_CHANNEL  (1u << 1)        /* pipe ends and socketpair ends: a channel end */
+#define FDPASS_FILE     (1u << 2)        /* files: a fresh open (records only) */
+#define FDPASS_NODE     (1u << 3)        /* /dev nodes, libc's /etc files: a name (records only) */
 #define FDPASS_COPY_MAX (1u << 20)       /* bytes of a VMO without RIGHT_DUPLICATE copied in */
 #define FDPASS_MAX      253              /* descriptors in one sendmsg (Linux's SCM_MAX_FD) */
 
@@ -90,6 +109,22 @@ struct fdpass_sink {
 };
 /* The n handles hs (consumed) as descriptors, in order, into s. */
 void fdpass_fds_in(handle_t *hs, unsigned n, unsigned kinds, struct fdpass_sink *s);
+
+/* ---- with records --------------------------------------------------------------------- */
+
+/* The n descriptors fds as hand-over records into gs (fd_given: the
+ * caller's, fdpass_gives_drop): 0, all of them; or the first failure's
+ * -errno as fdpass_fds_out's, every record made before it dropped. */
+long fdpass_gives_out(const int *fds, unsigned n, const struct fdpass_policy *p,
+                      struct fd_given *gs);
+/* Close the n records' handles and free their data. */
+void fdpass_gives_drop(struct fd_given *gs, unsigned n);
+/* A record that came over a socket (its rec->nhandles handles hs consumed,
+ * whatever happens) as a new description with one reference: 0 and *out;
+ * -EINVAL for a kind not among kinds, handles of the wrong types, or a
+ * malformed record; else the adopter's -errno. */
+long fdpass_adopt(const struct posixfds_fd *rec, const void *data, const handle_t *hs,
+                  unsigned kinds, struct fd_desc **out);
 
 /* ---- SCM_RIGHTS --------------------------------------------------------------------------- */
 

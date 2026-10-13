@@ -19,7 +19,7 @@
  *     says it is writable at once;
  *   - socketpair ends through the socket calls: send and recv (and
  *     sendmsg/recvmsg with two pieces), MSG_DONTWAIT's EAGAIN, MSG_WAITALL
- *     across a writer's pieces, MSG_PEEK's EOPNOTSUPP, the names (AF_UNIX)
+ *     across a writer's pieces, MSG_PEEK, the names (AF_UNIX)
  *     and options;
  *   - names without the resolver: getaddrinfo of a numeric address and of
  *     "localhost" (libc's /etc/hosts), inet_pton and inet_ntop;
@@ -200,7 +200,9 @@ static void pair(void)
     errno = 0;
     CHECK(recv(sv[1], b, sizeof(b), MSG_DONTWAIT) == -1 && errno == EAGAIN);
     errno = 0;
-    CHECK(recv(sv[1], b, sizeof(b), MSG_PEEK) == -1 && errno == EOPNOTSUPP);
+    CHECK(recv(sv[1], b, sizeof(b), MSG_PEEK | MSG_DONTWAIT) == -1 && errno == EAGAIN);
+    CHECK(send(sv[0], "peek", 4, 0) == 4 && recv(sv[1], b, 2, MSG_PEEK) == 2 &&
+          recv(sv[1], b, sizeof(b), 0) == 4 && !memcmp(b, "peek", 4));
     struct iovec out[2] = { { "two ", 4 }, { "pieces", 6 } };
     struct msghdr m = { .msg_iov = out, .msg_iovlen = 2 };
     CHECK(sendmsg(sv[1], &m, 0) == 10);

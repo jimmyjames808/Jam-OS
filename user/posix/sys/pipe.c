@@ -4,7 +4,9 @@
  * pipe2 makes a channel pair and narrows one end to reading and the other
  * to writing (handle_replace), so a child handed the read end can never
  * write into it. socketpair is the same channel with both ends able to
- * read and write: two pipes' worth.
+ * read and write: two pipes' worth. A socketpair end's own calls (the
+ * descriptors it carries, SOCK_SEQPACKET, shutdown) are sockpair.c's; the
+ * description's state and the helpers both files use are pipe.h's.
  *
  * A write sends a message per PIPE_SIZE (64 KiB), so any write up to 64
  * KiB is atomic (PIPE_BUF, 4096, is far inside it) and a bigger one is
@@ -41,30 +43,19 @@
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
-#include "kinds.h"
+#include "pipe.h"
 
-#define PIPE_SIZE    CHANNEL_MAX_BYTES   /* the most one message (and one atomic write) holds */
-#define PIPE_ATOMIC  4096                /* PIPE_BUF, as musl's <limits.h> */
 #define READ_RIGHTS  (RIGHT_READ | RIGHT_WAIT | RIGHT_TRANSFER | RIGHT_DUPLICATE)
 #define WRITE_RIGHTS (RIGHT_WRITE | RIGHT_WAIT | RIGHT_TRANSFER | RIGHT_DUPLICATE)
 
 _Static_assert(PIPE_ATOMIC <= PIPE_SIZE, "an atomic write is one message");
-
-struct pipe_end {
-    handle_t ch;        /* the channel end */
-    uint8_t *buf;       /* PIPE_SIZE bytes once a message didn't fit a read, else NULL */
-    uint32_t at, have;  /* buf[at .. have): read from the channel, not by the program;
-                         * changed under the description's lock, stored atomically
-                         * (pipe_ready reads them without it) */
-};
 
 static struct pipe_end *end_of(struct fd_desc *d)
 {
     return d->priv;
 }
 
-/* A pipe end on ch (consumed, whatever happens) with len leftover bytes. */
-static struct pipe_end *end_new(handle_t ch, const void *leftover, size_t len)
+struct pipe_end *pipe_end_new(handle_t ch, const void *leftover, size_t len)
 {
     struct pipe_end *p = len <= PIPE_SIZE ? calloc(1, sizeof(*p)) : NULL;
     if (p && len && !(p->buf = malloc(PIPE_SIZE))) {
@@ -82,34 +73,53 @@ static struct pipe_end *end_new(handle_t ch, const void *leftover, size_t len)
     return p;
 }
 
-/* Wait for sig (or the peer's end) on the channel: 0, or -errno
- * (-EINTR when a signal cut the wait short). */
-static long wait_for(handle_t ch, signals_t sig)
+long pipe_wait(handle_t ch, signals_t sig)
 {
     signals_t seen;
     status_t st = jam_object_wait_one(ch, sig | SIG_PEER_CLOSED, DEADLINE_NEVER, &seen);
     return st == OK ? 0 : lx_err(st);
 }
 
-/* channel_read of the next message into buf (cap bytes): its size in *got.
- * Handles in it are closed. */
-static status_t read_msg(handle_t ch, void *buf, uint32_t cap, uint32_t *got)
+status_t pipe_read_msg(handle_t ch, void *buf, uint32_t cap, uint32_t *got, handle_t *hs,
+                       uint32_t *nh)
 {
-    handle_t hs[CHANNEL_MAX_HANDLES];
-    uint32_t nh = 0;
     *got = 0;
+    *nh = 0;
     struct channel_read_args a = {
         .h = ch, .rd_cap = cap, .rd_bytes = (uint64_t)(uintptr_t)buf,
         .rd_handles = (uint64_t)(uintptr_t)hs, .rd_hcap = CHANNEL_MAX_HANDLES,
-        .rd_actual = (uint64_t)(uintptr_t)got, .rd_hactual = (uint64_t)(uintptr_t)&nh,
+        .rd_actual = (uint64_t)(uintptr_t)got, .rd_hactual = (uint64_t)(uintptr_t)nh,
     };
     status_t st = jam_channel_read(&a);
-    for (uint32_t i = 0; st == OK && i < nh; i++)
+    if (st != OK)
+        *nh = 0;
+    return st;
+}
+
+/* pipe_read_msg for a pipe: handles in the message are closed (no pipe of
+ * ours sends any). */
+static status_t read_msg(handle_t ch, void *buf, uint32_t cap, uint32_t *got)
+{
+    handle_t hs[CHANNEL_MAX_HANDLES];
+    uint32_t nh;
+    status_t st = pipe_read_msg(ch, buf, cap, got, hs, &nh);
+    for (uint32_t i = 0; i < nh; i++)
         jam_handle_close(hs[i]);
     return st;
 }
 
-static long take_leftover(struct pipe_end *p, const struct iovec *iov, int iovcnt, size_t n)
+bool pipe_buf(struct pipe_end *p)
+{
+    return p->buf || (p->buf = malloc(PIPE_SIZE));
+}
+
+void pipe_set_leftover(struct pipe_end *p, uint32_t at, uint32_t have)
+{
+    __atomic_store_n(&p->at, at, __ATOMIC_RELAXED);
+    __atomic_store_n(&p->have, have, __ATOMIC_RELAXED);
+}
+
+long pipe_take_leftover(struct pipe_end *p, const struct iovec *iov, int iovcnt, size_t n)
 {
     size_t k = p->have - p->at < n ? p->have - p->at : n;
     fd_iov_scatter(iov, iovcnt, 0, p->buf + p->at, k);
@@ -129,13 +139,12 @@ static long next_message_locked(struct pipe_end *p, const struct iovec *iov, int
         if (iovcnt == 1)
             st = read_msg(p->ch, iov[0].iov_base, n < PIPE_SIZE ? (uint32_t)n : PIPE_SIZE, &got);
         if (st == ERR_BUFFER_TOO_SMALL) {
-            if (!p->buf && !(p->buf = malloc(PIPE_SIZE)))
+            if (!pipe_buf(p))
                 return -ENOMEM;
             st = read_msg(p->ch, p->buf, PIPE_SIZE, &got);
             if (st == OK && got) {
-                __atomic_store_n(&p->at, 0, __ATOMIC_RELAXED);
-                __atomic_store_n(&p->have, got, __ATOMIC_RELAXED);
-                return take_leftover(p, iov, iovcnt, n);
+                pipe_set_leftover(p, 0, got);
+                return pipe_take_leftover(p, iov, iovcnt, n);
             }
         }
         if (st == OK && got)
@@ -158,14 +167,14 @@ static long pipe_read(struct fd_desc *d, const struct iovec *iov, int iovcnt, in
     struct pipe_end *p = end_of(d);
     lock_take(&d->lock);
     for (;;) {
-        long r = p->at < p->have ? take_leftover(p, iov, iovcnt, (size_t)n)
+        long r = p->at < p->have ? pipe_take_leftover(p, iov, iovcnt, (size_t)n)
                                  : next_message_locked(p, iov, iovcnt, (size_t)n);
         if (r != -EAGAIN || (fd_status(d) & O_NONBLOCK)) {
             lock_give(&d->lock);
             return r;
         }
         lock_give(&d->lock);   /* never asleep with it: see the file's header */
-        r = wait_for(p->ch, SIG_READABLE);
+        r = pipe_wait(p->ch, SIG_READABLE);
         if (r)
             return r;
         lock_take(&d->lock);
@@ -185,7 +194,7 @@ static long send_one(struct fd_desc *d, const void *b, uint32_t len)
             return st == ERR_PEER_CLOSED ? -EPIPE : lx_err(st);
         if (fd_status(d) & O_NONBLOCK)
             return -EAGAIN;
-        long r = wait_for(p->ch, SIG_WRITABLE);   /* the reader is behind */
+        long r = pipe_wait(p->ch, SIG_WRITABLE);   /* the reader is behind */
         if (r)
             return r;
     }
@@ -231,24 +240,18 @@ static uint64_t pipe_ino(handle_t ch)
     return reader || !hi.related_koid ? hi.koid : hi.related_koid;
 }
 
-static void stat_common(struct fd_desc *d, struct stat *st, mode_t mode)
+void pipe_stat_as(struct fd_desc *d, struct stat *st, mode_t mode)
 {
     st->st_mode = mode;
     st->st_nlink = 1;
     st->st_uid = st->st_gid = 1000;   /* the one user */
     st->st_blksize = PIPE_ATOMIC;
-    st->st_ino = (ino_t)pipe_ino(end_of(d)->ch);
+    st->st_ino = (ino_t)pipe_ino(pipe_ch(end_of(d)));
 }
 
 static long pipe_stat(struct fd_desc *d, struct stat *st)
 {
-    stat_common(d, st, S_IFIFO | 0600);
-    return 0;
-}
-
-static long sockp_stat(struct fd_desc *d, struct stat *st)
-{
-    stat_common(d, st, S_IFSOCK | 0777);
+    pipe_stat_as(d, st, S_IFIFO | 0600);
     return 0;
 }
 
@@ -261,25 +264,63 @@ static long pipe_ioctl(struct fd_desc *d, unsigned long req, long arg)
     struct pipe_end *p = end_of(d);
     long r = 0;
     lock_take(&d->lock);
-    if (p->at == p->have && !p->buf && !(p->buf = malloc(PIPE_SIZE)))
+    if (p->at == p->have && !pipe_buf(p))
         r = -ENOMEM;
     uint32_t got;
-    if (!r && p->at == p->have && read_msg(p->ch, p->buf, PIPE_SIZE, &got) == OK) {
-        __atomic_store_n(&p->at, 0, __ATOMIC_RELAXED);
-        __atomic_store_n(&p->have, got, __ATOMIC_RELAXED);
-    }
+    if (!r && p->at == p->have && read_msg(p->ch, p->buf, PIPE_SIZE, &got) == OK)
+        pipe_set_leftover(p, 0, got);
     if (!r)
         *(int *)(uintptr_t)arg = (int)(p->have - p->at);
     lock_give(&d->lock);
     return r;
 }
 
-static void pipe_close(struct fd_desc *d)
+void pipe_end_free(struct pipe_end *p)
 {
-    struct pipe_end *p = end_of(d);
-    jam_handle_close(p->ch);
+    jam_handle_close(pipe_ch(p));
     free(p->buf);
     free(p);
+}
+
+static void pipe_close(struct fd_desc *d)
+{
+    pipe_end_free(end_of(d));
+}
+
+long pipe_give_end(struct fd_desc *d, uint16_t kind, struct fd_given *out)
+{
+    struct pipe_end *p = end_of(d);
+    uint32_t left = p->have - p->at;
+    long r = left > POSIXFDS_DATA_MAX ? -ENOBUFS : 0;
+    void *data = r ? NULL : kind_data(p->buf + p->at, left, &r);
+    status_t st = r ? OK : jam_handle_duplicate(pipe_ch(p), RIGHT_SAME, &out->handles[0]);
+    if (!r && st != OK) {
+        free(data);
+        r = lx_err(st);
+    }
+    if (!r) {
+        out->kind = kind;
+        out->status = fd_status(d);
+        out->offset = 0;
+        out->nhandles = 1;
+        out->data = data;
+        out->data_len = left;
+        pipe_set_leftover(p, 0, 0);
+    }
+    return r;
+}
+
+long pipe_pass(struct fd_desc *d, struct fd_given *out)
+{
+    const struct pipe_end *p = end_of(d);
+    bool seq = d->ops == &sockp_ops && p->seq;
+    status_t st = jam_handle_duplicate(pipe_ch(p), RIGHT_SAME, &out->handles[0]);
+    if (st != OK)
+        return lx_err(st);
+    out->kind = seq ? POSIXFDS_SEQPACKET : POSIXFDS_PIPE;
+    out->status = fd_status(d) & POSIXFDS_STATUS;
+    out->nhandles = 1;
+    return 0;
 }
 
 /* A child gets a duplicate of the end, and the leftover moves to it: the
@@ -289,26 +330,8 @@ static void pipe_close(struct fd_desc *d)
  * lose or reorder bytes. */
 static long pipe_give(struct fd_desc *d, struct fd_given *out)
 {
-    struct pipe_end *p = end_of(d);
     lock_take(&d->lock);
-    uint32_t left = p->have - p->at;
-    long r = left > POSIXFDS_DATA_MAX ? -ENOBUFS : 0;
-    void *data = r ? NULL : kind_data(p->buf + p->at, left, &r);
-    status_t st = r ? OK : jam_handle_duplicate(p->ch, RIGHT_SAME, &out->handles[0]);
-    if (!r && st != OK) {
-        free(data);
-        r = lx_err(st);
-    }
-    if (!r) {
-        out->kind = POSIXFDS_PIPE;
-        out->status = fd_status(d);
-        out->offset = 0;
-        out->nhandles = 1;
-        out->data = data;
-        out->data_len = left;
-        __atomic_store_n(&p->at, 0, __ATOMIC_RELAXED);
-        __atomic_store_n(&p->have, 0, __ATOMIC_RELAXED);
-    }
+    long r = pipe_give_end(d, POSIXFDS_PIPE, out);
     lock_give(&d->lock);
     return r;
 }
@@ -324,10 +347,10 @@ static uint32_t pipe_ready(struct fd_desc *d, uint32_t interest)
                                  __atomic_load_n(&p->have, __ATOMIC_RELAXED) ? NETWAIT_READ : 0;
 }
 
-static long pipe_arm(struct fd_desc *d, uint32_t interest, struct fd_wait *out)
+long pipe_arm(struct fd_desc *d, uint32_t interest, struct fd_wait *out)
 {
     out->kind = FD_WAIT_HANDLE;
-    out->h = (struct netwait_handle){ .h = end_of(d)->ch,
+    out->h = (struct netwait_handle){ .h = pipe_ch(end_of(d)),
                                       .read = fd_can_read(d) ? SIG_READABLE : 0,
                                       .write = fd_can_write(d) ? SIG_WRITABLE : 0,
                                       .hup = SIG_PEER_CLOSED };
@@ -346,29 +369,17 @@ const struct fd_ops pipe_ops = {
     .close = pipe_close,
 };
 
-const struct fd_ops sockp_ops = {
-    .name = "socketpair",
-    .read = pipe_read,
-    .write = pipe_write,
-    .stat = sockp_stat,
-    .ioctl = pipe_ioctl,
-    .ready = pipe_ready,
-    .arm = pipe_arm,
-    .give = pipe_give,
-    .close = pipe_close,
-};
-
 handle_t pipe_channel(struct fd_desc *d)
 {
-    return d->ops == &pipe_ops || d->ops == &sockp_ops ? end_of(d)->ch : HANDLE_INVALID;
+    return d->ops == &pipe_ops || d->ops == &sockp_ops ? pipe_ch(end_of(d)) : HANDLE_INVALID;
 }
 
 struct fd_desc *pipe_desc_new(handle_t ch, uint32_t status)
 {
-    struct pipe_end *p = end_new(ch, NULL, 0);
+    struct pipe_end *p = pipe_end_new(ch, NULL, 0);
     struct fd_desc *d = p ? fd_new(&pipe_ops, status, p) : NULL;
     if (p && !d)
-        pipe_close(&(struct fd_desc){ .priv = p });
+        pipe_end_free(p);
     return d;
 }
 
@@ -376,20 +387,46 @@ struct fd_desc *pipe_desc_new(handle_t ch, uint32_t status)
 long pipe_adopt(const struct posixfds_fd *rec, const void *data, const handle_t *hs,
                 struct fd_desc **out)
 {
-    struct pipe_end *p = end_new(hs[0], data, rec->data_len);
+    struct pipe_end *p = pipe_end_new(hs[0], data, rec->data_len);
     if (!p)
         return -ENOMEM;
     bool both = (rec->status & O_ACCMODE) == O_RDWR;
-    *out = fd_new(both ? &sockp_ops : &pipe_ops, rec->status, p);
-    if (!*out)
-        pipe_close(&(struct fd_desc){ .priv = p });
+    *out = both ? sockp_desc_new(p, rec->status, false) : fd_new(&pipe_ops, rec->status, p);
+    if (!*out && !both)
+        pipe_end_free(p);
     return *out ? 0 : -ENOMEM;
 }
 
+/* A SOCK_SEQPACKET socketpair end (POSIXFDS_SEQPACKET): its data is the
+ * message a peek kept, if any. */
+long seqp_adopt(const struct posixfds_fd *rec, const void *data, const handle_t *hs,
+                struct fd_desc **out)
+{
+    struct pipe_end *p = pipe_end_new(hs[0], data, rec->data_len);
+    if (!p)
+        return -ENOMEM;
+    __atomic_store_n(&p->kept, rec->data_len > 0, __ATOMIC_RELAXED);
+    *out = sockp_desc_new(p, rec->status, true);
+    return *out ? 0 : -ENOMEM;
+}
+
+/* A description of the right kind on the end p (consumed): a socketpair's
+ * (seq: SOCK_SEQPACKET) or a pipe's. */
+static struct fd_desc *desc_on(struct pipe_end *p, bool sock, bool seq, uint32_t status)
+{
+    if (sock)
+        return sockp_desc_new(p, status, seq);
+    struct fd_desc *d = fd_new(&pipe_ops, status, p);
+    if (!d)
+        pipe_end_free(p);
+    return d;
+}
+
 /* Two descriptors on a new channel pair, end i narrowed to rights[i]
- * (RIGHT_SAME: as made) with status[i], into fds. 0 or -errno. */
-static long make_pair(const struct fd_ops *ops, const rights_t rights[2],
-                      const uint32_t status[2], bool cloexec, int *fds)
+ * (RIGHT_SAME: as made) with status[i], into fds: socketpair ends (seq:
+ * SOCK_SEQPACKET) when sock, else pipe ends. 0 or -errno. */
+static long make_pair(bool sock, bool seq, const rights_t rights[2], const uint32_t status[2],
+                      bool cloexec, int *fds)
 {
     handle_t h[2];
     status_t st = jam_channel_create(&h[0], &h[1]);
@@ -412,9 +449,9 @@ static long make_pair(const struct fd_ops *ops, const rights_t rights[2],
         return lx_err(st);
     long fd[2] = { fd_alloc(0), -1 };
     fd[1] = fd[0] < 0 ? fd[0] : fd_alloc(0);
-    struct pipe_end *p[2] = { end_new(h[0], NULL, 0), end_new(h[1], NULL, 0) };
-    struct fd_desc *d[2] = { p[0] ? fd_new(ops, status[0], p[0]) : NULL,
-                             p[1] ? fd_new(ops, status[1], p[1]) : NULL };
+    struct pipe_end *p[2] = { pipe_end_new(h[0], NULL, 0), pipe_end_new(h[1], NULL, 0) };
+    struct fd_desc *d[2] = { p[0] ? desc_on(p[0], sock, seq, status[0]) : NULL,
+                             p[1] ? desc_on(p[1], sock, seq, status[1]) : NULL };
     long r = fd[1] < 0 ? fd[1] : d[0] && d[1] ? 0 : -ENOMEM;
     for (int i = 0; i < 2; i++) {
         if (!r) {
@@ -425,9 +462,7 @@ static long make_pair(const struct fd_ops *ops, const rights_t rights[2],
         if (fd[i] >= 0)
             fd_free(fd[i]);
         if (d[i])
-            fd_put(d[i]);
-        else if (p[i])
-            pipe_close(&(struct fd_desc){ .priv = p[i] });
+            fd_put(d[i]);   /* desc_on freed p[i] if it made none */
     }
     return r;
 }
@@ -439,7 +474,7 @@ long lx_pipe2(long fds, long flags, long c, long d, long e, long f)
     const rights_t rights[2] = { READ_RIGHTS, WRITE_RIGHTS };
     uint32_t nb = flags & O_NONBLOCK ? O_NONBLOCK : 0;
     const uint32_t status[2] = { O_RDONLY | nb, O_WRONLY | nb };
-    return make_pair(&pipe_ops, rights, status, flags & O_CLOEXEC, (int *)(uintptr_t)fds);
+    return make_pair(false, false, rights, status, flags & O_CLOEXEC, (int *)(uintptr_t)fds);
 }
 
 long lx_pipe(long fds, long b, long c, long d, long e, long f)
@@ -451,12 +486,14 @@ long lx_socketpair(long domain, long type, long proto, long fds, long e, long f)
 {
     if (domain != AF_UNIX)
         return -EAFNOSUPPORT;
-    if ((type & ~(long)(SOCK_CLOEXEC | SOCK_NONBLOCK)) != SOCK_STREAM)
-        return -EOPNOTSUPP;   /* datagrams and SOCK_SEQPACKET: not built */
+    long kind = type & ~(long)(SOCK_CLOEXEC | SOCK_NONBLOCK);
+    if (kind != SOCK_STREAM && kind != SOCK_SEQPACKET)
+        return -EOPNOTSUPP;   /* datagrams: not built */
     if (proto != 0)
         return -EPROTONOSUPPORT;
     const rights_t rights[2] = { RIGHT_SAME, RIGHT_SAME };
     uint32_t nb = type & SOCK_NONBLOCK ? O_NONBLOCK : 0;
     const uint32_t status[2] = { O_RDWR | nb, O_RDWR | nb };
-    return make_pair(&sockp_ops, rights, status, type & SOCK_CLOEXEC, (int *)(uintptr_t)fds);
+    return make_pair(true, kind == SOCK_SEQPACKET, rights, status, type & SOCK_CLOEXEC,
+                     (int *)(uintptr_t)fds);
 }

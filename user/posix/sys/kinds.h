@@ -2,7 +2,9 @@
  * sections 3 and 4), each a struct fd_ops (fd.h) in its own file:
  *
  *   pipe.c     pipe ends and socketpair ends: a channel end, and the bytes
- *              read from it that no read has taken yet
+ *              read from it that no read has taken yet (pipe.h)
+ *   sockpair.c a socketpair end's own calls: the descriptors it carries
+ *              (SCM_RIGHTS), SOCK_SEQPACKET, shutdown
  *   dev.c      the /dev nodes and /dev/shm's names
  *   memfd.c    memfd_create's and shm_open's memory files (kept VMOs)
  *   eventfd.c  eventfd's counter and its event
@@ -35,16 +37,36 @@ extern const struct fd_ops etc_ops;       /* a file of libc's /etc */
 extern const struct fd_ops usock_ops;     /* an AF_UNIX stream socket (svcsock.c) */
 
 /* The hand-over's kinds (fd.c's fd_adopters): a child's descriptors of
- * kind POSIXFDS_PIPE, _DEV, _ETC, _MEMFD and _EVENTFD as descriptions. */
-fd_adopt_fn pipe_adopt, dev_adopt, etc_adopt, memfd_adopt, eventfd_adopt;
+ * kind POSIXFDS_PIPE, _SEQPACKET, _DEV, _ETC, _MEMFD and _EVENTFD as
+ * descriptions. */
+fd_adopt_fn pipe_adopt, seqp_adopt, dev_adopt, etc_adopt, memfd_adopt, eventfd_adopt;
 
+/* A pipe or socketpair end as fdpass.c sends it: a duplicate of its
+ * channel end (POSIXFDS_PIPE, or _SEQPACKET), its status, no data (the
+ * leftover stays with this description). */
+long pipe_pass(struct fd_desc *d, struct fd_given *out);
 /* A pipe end's description on the channel end ch (consumed, whatever
  * happens), one reference held; NULL if out of memory. */
 struct fd_desc *pipe_desc_new(handle_t ch, uint32_t status);
 /* The channel end of a pipe end or a socketpair end: the description's
- * own (valid while the caller's reference is), not a duplicate.
- * HANDLE_INVALID for another kind. */
+ * own (valid while the caller's reference is, until a shutdown), not a
+ * duplicate. HANDLE_INVALID for another kind. */
 handle_t pipe_channel(struct fd_desc *d);
+
+/* ---- socketpair ends (sockpair.c) ------------------------------------------ */
+
+struct msghdr;
+
+/* sendmsg and recvmsg on a socketpair end (sockio.c's calls, after their
+ * flags are checked): Linux's answers, SCM_RIGHTS and all. send, write,
+ * recv and read are these without control data. */
+long sockp_sendmsg(struct fd_desc *d, const struct msghdr *m, int flags);
+long sockp_recvmsg(struct fd_desc *d, struct msghdr *m, int flags);
+/* shutdown (sockconn.c's): SHUT_RDWR closes the end for every descriptor
+ * of the description; SHUT_RD and SHUT_WR alone are EOPNOTSUPP. */
+long sockp_shutdown(struct fd_desc *d, int how);
+/* SOCK_STREAM or SOCK_SEQPACKET (getsockopt's SO_TYPE). */
+int  sockp_type(struct fd_desc *d);
 
 /* No hand-over (docs/M13-PLAN.md section 5; dev.c): 0 is /dev/null; 1 and
  * 2 share one description, a pipe end on the SR_STDOUT channel if the

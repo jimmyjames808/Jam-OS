@@ -1,0 +1,15 @@
+# posixtest's scm section from the shell: socketpairs carrying descriptors
+# (SCM_RIGHTS; user/posix/sys/sockpair.c): every kind passed and used,
+# the counts and the room, SOCK_SEQPACKET, shutdown, Mojo's pattern with a
+# child, and the 10,000-round fuzz loop (no handle kept). Also in the init
+# run's posixtest; this is the section alone.
+#   QEMU_INPUT=tools/shell-tests/posix-scm.txt tools/qemu-test.sh <dir> posix-scm shell
+wait 120 Jam OS shell
+wait {prompt}
+send run posixtest scm
+wait 240 posixtest: scm: ok
+wait 20 posixtest: PASS
+wait 20 run: bin/posixtest exited with code 0
+wait {prompt}
+send reboot -f
+wait reboot: resetting

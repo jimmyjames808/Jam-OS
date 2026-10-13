@@ -312,12 +312,12 @@ static long get_on_sock(struct fd_desc *d, struct sock *s, long level, long name
     return r;
 }
 
-static long get_on_pair(long level, long name, long val, long lenp)
+static long get_on_pair(struct fd_desc *d, long level, long name, long val, long lenp)
 {
     if (level != SOL_SOCKET)
         return -ENOPROTOOPT;
     switch (name) {
-    case SO_TYPE:     return int_out(val, lenp, SOCK_STREAM);
+    case SO_TYPE:     return int_out(val, lenp, sockp_type(d));
     case SO_DOMAIN:   return int_out(val, lenp, AF_UNIX);
     case SO_PROTOCOL:
     case SO_ERROR:    return int_out(val, lenp, 0);
@@ -336,7 +336,7 @@ long lx_getsockopt(long fd, long level, long name, long val, long lenp, long f)
     if (sock_of(d))
         r = get_on_sock(d, d->priv, level, name, val, lenp);
     else if (d->ops == &sockp_ops)
-        r = get_on_pair(level, name, val, lenp);
+        r = get_on_pair(d, level, name, val, lenp);
     fd_put(d);
     return r;
 }

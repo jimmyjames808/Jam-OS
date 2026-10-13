@@ -1,6 +1,7 @@
 /* Sockets' bytes: read and write, the send and recv family (sendto,
- * recvfrom, sendmsg, recvmsg, sendmmsg, recvmmsg; no ancillary data). The
- * model and the locks are sock.h's; the waits are sockwait.c's.
+ * recvfrom, sendmsg, recvmsg, sendmmsg, recvmmsg; no ancillary data for a
+ * network socket). The model and the locks are sock.h's; the waits are
+ * sockwait.c's.
  *
  * **Streams.** A read takes what the rx ring holds (MSG_PEEK copies it
  * without taking it); none, and the peer's end is 0, a connection that
@@ -18,9 +19,8 @@
  * line counts it): the next send says so, as Linux reports an ICMP error
  * on a later call.
  *
- * **socketpair ends** are pipe.c's: send and recv go to its read and
- * write, MSG_DONTWAIT by a look at the channel first (another thread can
- * still take what the look saw), MSG_PEEK and MSG_TRUNC are EOPNOTSUPP.
+ * **socketpair ends** are sockpair.c's, ancillary data (SCM_RIGHTS) and
+ * all: every call here hands them over once the flags are checked.
  *
  * **AF_UNIX stream sockets** are svcsock.c's, ancillary data (SCM_RIGHTS)
  * and all: every call here hands them over once the flags are checked. */
@@ -369,50 +369,6 @@ long sock_write(struct fd_desc *d, const struct iovec *iov, int iovcnt, int64_t 
     return n < 0 ? n : sock_send(d, d->priv, &x);
 }
 
-/* ---- socketpair ends --------------------------------------------------------------------- */
-
-/* Would a read (or a write) of a socketpair end go on now? A look at its
- * channel, and at the bytes pipe.c keeps. */
-static bool sockp_ready_now(struct fd_desc *d, bool write)
-{
-    if (!write && d->ops->ready && d->ops->ready(d, NETWAIT_READ))
-        return true;
-    struct fd_wait w;
-    memset(&w, 0, sizeof(w));
-    if (d->ops->arm(d, write ? NETWAIT_WRITE : NETWAIT_READ, &w) || w.kind != FD_WAIT_HANDLE)
-        return true;   /* the call itself will say */
-    signals_t seen = 0;
-    signals_t want = (write ? w.h.write : w.h.read) | w.h.hup;
-    return jam_object_wait_one(w.h.h, want, 0, &seen) == OK;
-}
-
-static long sockp_recv(struct fd_desc *d, struct xfer *x)
-{
-    if (x->flags & (MSG_PEEK | MSG_TRUNC))
-        return -EOPNOTSUPP;   /* pipe.c's bytes can't be looked at without taking them */
-    bool nb = nonblocking(d, x->flags);
-    if (nb && !(fd_status(d) & O_NONBLOCK) && !sockp_ready_now(d, false))
-        return -EAGAIN;
-    if (!(x->flags & MSG_WAITALL) || nb || x->iovcnt != 1)
-        return d->ops->read(d, x->iov, x->iovcnt, FD_AT_OFFSET);
-    for (;;) {   /* MSG_WAITALL, one buffer: each turn reads, or ends */
-        struct iovec v = { (uint8_t *)x->iov[0].iov_base + x->done, x->total - x->done };
-        long r = d->ops->read(d, &v, 1, FD_AT_OFFSET);
-        if (r <= 0)
-            return x->done ? (long)x->done : r;
-        x->done += (size_t)r;
-        if (x->done == x->total)
-            return (long)x->done;
-    }
-}
-
-static long sockp_send(struct fd_desc *d, struct xfer *x)
-{
-    if (nonblocking(d, x->flags) && !(fd_status(d) & O_NONBLOCK) && !sockp_ready_now(d, true))
-        return -EAGAIN;
-    return d->ops->write(d, x->iov, x->iovcnt, FD_AT_OFFSET);
-}
-
 /* ---- the calls --------------------------------------------------------------------------- */
 
 static long recv_flags_check(long flags)
@@ -441,7 +397,8 @@ static long recv_on(long fd, struct xfer *x)
     if (sock_of(d))
         r = sock_recv(d, d->priv, x);
     else if (d->ops == &sockp_ops)
-        r = sockp_recv(d, x);
+        r = sockp_recvmsg(d, &(struct msghdr){ .msg_iov = (struct iovec *)x->iov,
+                                               .msg_iovlen = x->iovcnt }, x->flags);
     else if (d->ops == &usock_ops)
         r = usock_recvmsg(d, &(struct msghdr){ .msg_iov = (struct iovec *)x->iov,
                                                .msg_iovlen = x->iovcnt }, x->flags);
@@ -459,8 +416,9 @@ static long send_on(long fd, struct xfer *x)
         return r ? r : -EBADF;
     if (sock_of(d))
         r = sock_send(d, d->priv, x);
-    else if (d->ops == &sockp_ops)
-        r = sockp_send(d, x);   /* an address given is ignored: Linux's EISCONN not worth it */
+    else if (d->ops == &sockp_ops)   /* an address given is ignored: Linux's EISCONN not worth it */
+        r = sockp_sendmsg(d, &(struct msghdr){ .msg_iov = (struct iovec *)x->iov,
+                                               .msg_iovlen = x->iovcnt }, x->flags);
     else if (d->ops == &usock_ops)
         r = usock_sendmsg(d, &(struct msghdr){ .msg_iov = (struct iovec *)x->iov,
                                                .msg_iovlen = x->iovcnt }, x->flags);
@@ -502,12 +460,29 @@ long lx_sendto(long fd, long buf, long len, long flags, long addr, long alen)
     return send_on(fd, &x);
 }
 
+/* A socketpair end's description (a reference, the caller's), or NULL. */
+static struct fd_desc *sockp_get(long fd)
+{
+    struct fd_desc *d = fd_get(fd);
+    if (d && d->ops != &sockp_ops) {
+        fd_put(d);
+        d = NULL;
+    }
+    return d;
+}
+
 static long recvmsg_one(long fd, struct msghdr *m, long flags)
 {
     struct fd_desc *u = usock_get(fd);
     if (u) {   /* an AF_UNIX stream socket: svcsock.c's, SCM_RIGHTS and all */
         long r = recv_flags_check(flags);
         r = r ? r : usock_recvmsg(u, m, (int)flags);
+        fd_put(u);
+        return r;
+    }
+    if ((u = sockp_get(fd)) != NULL) {   /* a socketpair end: sockpair.c's, the same */
+        long r = recv_flags_check(flags);
+        r = r ? r : sockp_recvmsg(u, m, (int)flags);
         fd_put(u);
         return r;
     }
@@ -538,8 +513,14 @@ static long sendmsg_one(long fd, const struct msghdr *m, long flags)
         fd_put(u);
         return r;
     }
+    if ((u = sockp_get(fd)) != NULL) {   /* a socketpair end: sockpair.c's, the same */
+        long r = send_flags_check(flags);
+        r = r ? r : sockp_sendmsg(u, m, (int)flags);
+        fd_put(u);
+        return r;
+    }
     if (m->msg_controllen)
-        return -EINVAL;   /* no ancillary data here (SCM_RIGHTS on socketpairs): not built */
+        return -EINVAL;   /* no ancillary data on a network socket */
     long n = fd_iov_total(m->msg_iov, (int)(m->msg_iovlen > INT_MAX ? -1 : m->msg_iovlen));
     if (n < 0)
         return n;
