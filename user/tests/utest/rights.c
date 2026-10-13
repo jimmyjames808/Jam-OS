@@ -88,6 +88,11 @@ bool t_root_powers(void)
     CHECK((h = root_without(RIGHT_ROOT_PAGER)) != HANDLE_INVALID);
     CHECK_ST(jam_pager_create(h, 16, PAGER_ANSWER_MIN_NS, 0, &out), ERR_ACCESS_DENIED);
     CHECK_ST(jam_handle_close(h), OK);
+    CHECK((h = root_without(RIGHT_ROOT_JIT)) != HANDLE_INVALID);
+    CHECK_ST(jam_handle_duplicate(v, RIGHT_SAME, &v2), OK);
+    CHECK_ST(jam_vmo_make_jit(v2, h, &out), ERR_ACCESS_DENIED);
+    CHECK_ST(jam_handle_close(v2), ERR_BAD_HANDLE);   /* gone, whatever the status */
+    CHECK_ST(jam_handle_close(h), OK);
     /* The other pager calls on a VMO: the wrong type, before any pointer. */
     struct pager_request req;
     CHECK_ST(jam_pager_create_vmo(v, 1, PAGE_SIZE, 0, &out), ERR_WRONG_TYPE);
