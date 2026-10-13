@@ -8,7 +8,9 @@
  * Pure code: no I/O of its own, no allocation, no logging. The caller
  * passes a read function and a buffer it reads into; the library asks
  * only for blocks inside the disk, at most the buffer's size at a time,
- * and never writes. What it read and left out is in the table it fills
+ * and never writes. It fills the buffer with a non-zero pattern before
+ * every read, so a read that answers OK without its data landing (a DMA
+ * the IOMMU dropped) never passes for a blank disk's zeros. What it read and left out is in the table it fills
  * (the reasons a GPT header was not taken, notes on left-out entries), for
  * the driver to log.
  *

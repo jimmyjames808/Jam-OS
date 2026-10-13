@@ -21,6 +21,12 @@ static inline uint64_t pt_le64(const uint8_t *p)
     return (uint64_t)pt_le32(p + 4) << 32 | pt_le32(p);
 }
 
+/* Read `count` blocks from `lba` into d->buf (count * block_size bytes
+ * at most its size), filled with a non-zero pattern first, so a read that
+ * answers OK without its data never leaves zeros: every read goes through
+ * here. d->read's status. */
+status_t pt_get(const struct pt_disk *d, uint64_t lba, uint32_t count);
+
 /* Called with each piece of a run of blocks, in order (pt_stream). */
 typedef void (*pt_piece_fn)(void *st, const uint8_t *p, uint32_t bytes);
 

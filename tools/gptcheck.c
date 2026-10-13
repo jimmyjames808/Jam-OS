@@ -605,6 +605,42 @@ static void check_case(const char *dir, struct img *m, const struct want *w)
 
 /* ---- the pieces alone ----------------------------------------------------------------- */
 
+/* A drive whose reads answer OK and land nothing after the first `lands`
+ * (a DMA the IOMMU dropped, a PRP pointing elsewhere): the buffer keeps
+ * whatever was in it. The reads that land read zeros (block 0, the
+ * first 64 KiB); the lost ones would have shown the drive's data. */
+static uint32_t lost_lands, lost_reads;
+static status_t lost_read(void *ctx, uint64_t lba, uint32_t count, void *buf)
+{
+    (void)ctx;
+    if (lost_reads++ < lost_lands)
+        memset(buf, 0, (size_t)count * 512);   /* the first ones land (and read zeros) */
+    (void)lba;
+    return OK;
+}
+
+/* Reads that answer OK without their data must never make a drive
+ * blank: the library fills its buffer before every read, so a fresh
+ * buffer (a new VMO: zeros) or one left by an earlier read of zeros
+ * doesn't pass for an empty disk. */
+static void check_lost_reads(void)
+{
+    static uint8_t buf[64 * 1024];
+    static struct pt_table t;
+    where = "units: reads that land nothing";
+    for (uint32_t lands = 0; lands < 3; lands++) {
+        memset(buf, 0, sizeof(buf));
+        lost_lands = lands;
+        lost_reads = 0;
+        struct pt_disk d = { 512, 1u << 21, lost_read, NULL, buf, sizeof(buf) };
+        if (pt_read(&d, &t) != OK)
+            fail("pt_read failed");
+        if (pt_kind(&t) != PT_KIND_OTHER || t.blank || t.blank_in_progress)
+            fail("%u read(s) landed, the rest lost: kind %d (blank %d, in progress %d)", lands,
+                 pt_kind(&t), t.blank, t.blank_in_progress);
+    }
+}
+
 static void check_units(void)
 {
     where = "units";
@@ -640,6 +676,7 @@ static void check_units(void)
         pt_stream(&d, 1, UINT64_MAX, NULL, NULL) != ERR_OUT_OF_RANGE ||
         pt_stream(&d, UINT64_MAX, 2, NULL, NULL) != ERR_OUT_OF_RANGE || m.reads)
         fail("pt_stream read outside the disk");
+    check_lost_reads();
 }
 
 int main(int argc, char **argv)

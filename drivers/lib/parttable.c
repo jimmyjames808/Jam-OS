@@ -27,6 +27,21 @@ const uint8_t pt_type_jamos_data[16] = {
 
 /* ---- reading -------------------------------------------------------------------------- */
 
+#define PT_FILL 0xa5   /* the buffer before every read: not zeros, no table's bytes */
+
+status_t pt_get(const struct pt_disk *d, uint64_t lba, uint32_t count)
+{
+    /* A read that answers OK without its data landing (a DMA the IOMMU
+     * dropped, a device that wrote somewhere else) would leave what the
+     * buffer held, and a new buffer is zeros: the blank rule would take
+     * any drive for an empty one, and create_table could write it. Filled
+     * first, such a read looks like someone else's data. */
+    uint8_t *b = d->buf;
+    for (uint32_t i = 0; i < count * d->block_size; i++)
+        b[i] = PT_FILL;
+    return d->read(d->ctx, lba, count, d->buf);
+}
+
 status_t pt_stream(const struct pt_disk *d, uint64_t lba, uint64_t n, pt_piece_fn fn, void *st)
 {
     if (lba > d->blocks || n > d->blocks - lba)
@@ -34,7 +49,7 @@ status_t pt_stream(const struct pt_disk *d, uint64_t lba, uint64_t n, pt_piece_f
     uint32_t per = d->buf_size / d->block_size;   /* at least 1: pt_read checked */
     while (n) {
         uint32_t k = n < per ? (uint32_t)n : per;
-        status_t st2 = d->read(d->ctx, lba, k, d->buf);
+        status_t st2 = pt_get(d, lba, k);
         if (st2 != OK)
             return st2;
         fn(st, d->buf, k * d->block_size);
@@ -285,7 +300,7 @@ status_t pt_read(const struct pt_disk *d, struct pt_table *t)
                             .backup = PT_BAD_ABSENT };
     if (!disk_ok(d))
         return ERR_INVALID_ARGS;
-    status_t st = d->read(d->ctx, 0, 1, d->buf);
+    status_t st = pt_get(d, 0, 1);
     if (st != OK)
         return st;
     const uint8_t *s = d->buf;
