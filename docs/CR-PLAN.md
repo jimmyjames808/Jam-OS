@@ -1,6 +1,7 @@
 # CR plan: Chromium
 
-Status (2026-10-11): a plan (CR0), nothing built. Written against main
+Status (2026-10-11): a plan (CR0), nothing built. 2026-10-13: CT1, the clang
+toolchain and CR-a's C++ half, built ([CT1 as built](#ct1-as-built-2026-10-13)). Written against main
 d28b8b52 with [G2's rescope](G2-PLAN.md#the-chromium-rescope-2026-10-11)
 on top (M13's sockets, sessions, ptys, tinyssh and pipelines merged;
 M12.5's PK1 to PK4, PU and PF1 merged; M13.6's U1 merged; M13.7's PO1,
@@ -238,6 +239,77 @@ itself (linux_syscall_support.h in Chromium's sandbox and breakpad) would
 run a Jam OS call with Linux's numbers. A check, tools/cr/syscall-scan.py
 (new), disassembles a built program and fails on any `syscall` outside
 Jam OS's own call stubs; every Chromium build runs it.
+
+#### CT1 as built (2026-10-13)
+
+The C++ half of CR-a passes: `tools/cr-test.sh build/test/cr hello` on
+the PC builds `ports/cr-hello` with the chain below, the syscall scan
+passes on it, the build host's own `c++` build of the same source prints
+its `expected.txt`, and on Jam OS (QEMU, from `/data/pkg`) it prints the
+same bytes: exceptions across files and through destructors, `bad_alloc`,
+`exception_ptr` across threads, static constructors, eight threads with
+`thread_local` destructors, a guarded static, `std::atomic::wait` (a
+futex through musl's `syscall()`), `call_once`, iostreams and
+`std::filesystem` on `/data`. What it is, and where it differs from the
+design above:
+
+- **The host toolchain**: `tools/cr/toolchain.pins` pins Chromium 155's
+  clang package (`clang-llvmorg-24-init-7747-g62397f8b-27`, 57 MB, clang
+  24.0.0git with lld, llvm-ar, llvm-nm, llvm-objcopy; no llvm-objdump:
+  the scan uses the cross binutils' objdump) and CMake 3.31.10 (Kitware's
+  wheel). `tools/cr/toolchain.sh` fetches both by size and SHA-256
+  (`~/.cache/jamos/distfiles`, the mirror, then the URL), unpacks clang
+  into `~/.cache/jamos/toolchains/clang-<version>/` (326 MB) and puts
+  CMake into the ports builder's venv. Rust is CT2's line in the same file.
+- **The runtimes come from LLVM 23.1.3's source release**, not the
+  clang's own commit: Chromium's clang is a trunk build with no source
+  release, and the release tarball has a published hash. The ABIs the
+  runtimes carry (Itanium C++, DWARF unwinding, the builtins' names) are
+  the same across them. `ports/llvm-runtimes` builds compiler-rt's
+  builtins and crtbegin/crtend, libunwind, libc++abi and libc++ (musl,
+  static, no PIC) in two CMake passes that never link (about 40 s at 10
+  jobs; the stage is 20 MB: libc++.a 2.4 MB). libc++abi is told musl has
+  no `__cxa_thread_atexit_impl` (a link-less check would say yes).
+- **The UAPI headers** are `ports/linux-uapi`: Linux 6.18.56's
+  `headers_install`, all of `include/` less `drm/` and the netfilter
+  headers whose names differ from their twins only in case (FAT32), 8.7
+  MB. llvm-runtimes needs it (libc++'s futex wait), so every clang port
+  has it.
+- **`posix.ld` changed for every program**, not only clang's: `.eh_frame`
+  and `.eh_frame_hdr` (under a new `PT_GNU_EH_FRAME`) and
+  `.gcc_except_table` are kept in the read-only segment, where it
+  discarded `.eh_frame` before; `jamos-cc` links with `--eh-frame-hdr`.
+  The tree's own programs are built without unwind tables, so they barely
+  change (the boot image grew 0.5%); a `jamos-cc` port keeps its tables
+  (posixtest +1.8%). lld takes the script as it is otherwise.
+- **libc gained two of musl's `src/ldso` files** (`user/posix/posix.mk`):
+  the static `dl_iterate_phdr` (libunwind finds the tables by it) and
+  `dladdr`'s stub (always 0; libunwind's function names call it).
+- **The drivers**: `tools/jamos-clang` (C) and `tools/jamos-clang++` (a
+  link to it) compile with `--target=x86_64-unknown-linux-musl`
+  (`__linux__` defined), `-nostdinc` and the sysroot's headers before
+  clang's own (libc++'s `include/c++/v1` first for C++), `-D__jamos__=1`,
+  `-fno-pie`; link with lld (`-fuse-ld=lld -static -nostdlib`, posix.ld,
+  `--gc-sections`, `--eh-frame-hdr`, `--build-id=none`): crt1, crti,
+  crtbegin, the objects, the program's list note, `-lc++ -lc++abi` (C++),
+  `-lunwind -lc`, the builtins, crtend, crtn. `-shared`, `-pie` and
+  `-static-pie` are refused; `-fPIC` objects are taken (they link into
+  the non-PIE program). `JAMOS_SYSROOT` is the sysroot (it must hold the
+  runtimes to link), `JAMOS_CLANG` another clang's `bin/` (Homebrew's
+  LLVM and lld on the Mac: untested).
+- **A recipe selects it** with `toolchain clang` and `needs llvm-runtimes`
+  (the lint asks for both): the builder gives the port `jamos-clang` and
+  `jamos-clang++` under the usual names (`x86_64-linux-musl-gcc`, `-g++`,
+  also `-clang`, `-clang++`), so `ports/jamos.cmake` and
+  `ports/jamos.meson` need no change, and the clang's identity is in the
+  port's stamp. A port of Jam OS's own code (cr-hello, CT2's Rust hello)
+  says `local files`: its source is its `files/` directory ([M13.7's
+  keys](M13.7-PLAN.md#2-the-recipe)).
+- **The PC check** (`tools/cr/hostcheck.sh`, 2026-10-13): 776 GB free under
+  `~/cr`, 23 GB of memory, 8 GB of swap (the plan asks 16: a WARN below
+  8), 28 threads, WSL kernel 5.15. It FAILs on `gperf` (Chromium's build:
+  `apt install gperf`, the owner's, or a build into the venv by CB1) and
+  WARNs on Node.js (CB1 says whether the tarball brings its own).
 
 ### 2. The address space: huge sparse reservations (the top risk)
 
