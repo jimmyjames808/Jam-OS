@@ -400,14 +400,16 @@ int ns_view_child(const char *how)
         return 96;
     file_close(&f);
     /* etc/ssh (the host key) only through `:rk`: read, stat or listed,
-     * however it is named. */
-    static const char *const key[] = { RAM "/etc/ssh/key", RAM "/ETC/Ssh./key",
-                                       RAM "/x/../etc/ssh/key", RAM "/etc/ssh" };
+     * however it is named (the odd spellings are only for the refusal,
+     * which comes before the RAM filesystem walks them: its names have a
+     * case). */
+    static const char *const key[] = { RAM "/etc/ssh/key", RAM "/etc/ssh",
+                                       RAM "/x/../etc/ssh/key", RAM "/ETC/Ssh./key" };
     for (unsigned i = 0; i < sizeof(key) / sizeof(key[0]); i++) {
         uint64_t size;
         bool dir;
         status_t st = fs_stat(key[i], &size, &dir, NULL);
-        if (keys ? st != OK : st != ERR_ACCESS_DENIED)
+        if (keys ? i < 2 && st != OK : st != ERR_ACCESS_DENIED)
             return 97;
     }
     status_t st = file_open(RAM "/etc/ssh/key", FS_READ, &f);
