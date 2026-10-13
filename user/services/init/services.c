@@ -889,5 +889,10 @@ void services_init(handle_t loop_port, bool no_usb, bool splash, const char *she
     services_publish(SVC_NET_LISTEN_LOW, net_listen_low_channel(), true);   /* ... to bin/serve */
     services_publish(SVC_NET_SYS, net_sys_channel(), true);   /* the network's services' */
     sessions_init(port);   /* /svc/session: init's own (sessions.c) */
+    handle_t exec_cli;     /* /svc/exec: init's sealer, on a thread of its own (exec.c) */
+    if (exec_init(&exec_cli) == OK) {
+        services_publish(SVC_EXEC, exec_cli, true);   /* a channel per opener (svc.connect) */
+        shared_watch(SVC_EXEC, exec_cli);   /* answers a holder never reads: dropped */
+    }
     ssh_init(port);        /* the SSH server's look at /data (ssh.c) */
 }

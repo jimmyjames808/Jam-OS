@@ -20,6 +20,7 @@
 #include <idl/devmgr.h>
 #include <idl/dns.h>
 #include <idl/edu.h>
+#include <idl/exec.h>
 #include <idl/file.h>
 #include <idl/fs.h>
 #include <idl/fsctl.h>
@@ -1203,6 +1204,78 @@ static const struct idl_fuzz_msg idl_fz_edu_msgs[] = {
     { 0x00020002u, 12u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x00020003u, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x00020004u, 12u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+};
+
+/* ---- exec ---- */
+static status_t idl_fz_exec_open(void *ctx, const char *path, uint32_t path_len, handle_t file, handle_t handover, handle_t *out_program, uint8_t *out_posix, char *out_wants, uint32_t *out_wants_len)
+{
+    (void)ctx;
+    (void)path;
+    (void)path_len;
+    (void)file;
+    (void)handover;
+    (void)out_program;
+    (void)out_posix;
+    (void)out_wants;
+    (void)out_wants_len;
+    if (file != HANDLE_INVALID)
+        drv_handle_close(file);
+    if (handover != HANDLE_INVALID)
+        drv_handle_close(handover);
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    if (drv_event_create(out_program) != OK)
+        return ERR_NO_MEMORY;
+    *out_posix = (uint8_t)0x5a5a5a5a5a5a5a5aull;
+    __builtin_memset(out_wants, 'a', 1023u * sizeof(*out_wants));
+    *out_wants_len = 1023;
+    return OK;
+}
+static const struct exec_ops idl_fz_exec_ops = {
+    .open = idl_fz_exec_open,
+};
+static uint32_t idl_fz_exec_serve(const void *q, uint32_t n, const handle_t *hs,
+                                uint32_t nh, void *r, handle_t *rhs, uint32_t *rhn)
+{
+    return exec_dispatch_h(HANDLE_INVALID, &idl_fz_exec_ops, NULL, q, n, hs, nh, r, rhs, rhn);
+}
+static const struct idl_fuzz_msg idl_fz_exec_msgs[] = {
+    { 0x002f0001u, 8u, 0, 2, 0, 0, { 0, 0 }, 1, { { 1, 1, 4095 } } },
+};
+
+/* ---- exec_prog ---- */
+static status_t idl_fz_exec_prog_start(void *ctx, uint16_t argc, const uint8_t *strings, uint32_t strings_len, handle_t job, handle_t signals, handle_t *out_proc, handle_t *out_job)
+{
+    (void)ctx;
+    (void)argc;
+    (void)strings;
+    (void)strings_len;
+    (void)job;
+    (void)signals;
+    (void)out_proc;
+    (void)out_job;
+    if (job != HANDLE_INVALID)
+        drv_handle_close(job);
+    if (signals != HANDLE_INVALID)
+        drv_handle_close(signals);
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    if (drv_event_create(out_proc) != OK)
+        return ERR_NO_MEMORY;
+    if (drv_event_create(out_job) != OK)
+        return ERR_NO_MEMORY;
+    return OK;
+}
+static const struct exec_prog_ops idl_fz_exec_prog_ops = {
+    .start = idl_fz_exec_prog_start,
+};
+static uint32_t idl_fz_exec_prog_serve(const void *q, uint32_t n, const handle_t *hs,
+                                uint32_t nh, void *r, handle_t *rhs, uint32_t *rhn)
+{
+    return exec_prog_dispatch_h(HANDLE_INVALID, &idl_fz_exec_prog_ops, NULL, q, n, hs, nh, r, rhs, rhn);
+}
+static const struct idl_fuzz_msg idl_fz_exec_prog_msgs[] = {
+    { 0x00300001u, 10u, 0, 2, 0, 0, { 0, 0 }, 1, { { 1, 0, 12288 } } },
 };
 
 /* ---- file ---- */
@@ -4795,6 +4868,8 @@ static const struct idl_fuzz_proto idl_fuzz_protos[] __attribute__((unused)) = {
     { "devmgrctl", 91, DEVMGRCTL_REQ_MAX, DEVMGRCTL_REP_MAX, DEVMGRCTL_REP_HANDLES, idl_fz_devmgrctl_serve, NULL, idl_fz_devmgrctl_msgs, 13 },
     { "dns", 30, DNS_REQ_MAX, DNS_REP_MAX, DNS_REP_HANDLES, idl_fz_dns_serve, NULL, idl_fz_dns_msgs, 1 },
     { "edu", 2, EDU_REQ_MAX, EDU_REP_MAX, EDU_REP_HANDLES, idl_fz_edu_serve, NULL, idl_fz_edu_msgs, 4 },
+    { "exec", 47, EXEC_REQ_MAX, EXEC_REP_MAX, EXEC_REP_HANDLES, idl_fz_exec_serve, NULL, idl_fz_exec_msgs, 1 },
+    { "exec_prog", 48, EXEC_PROG_REQ_MAX, EXEC_PROG_REP_MAX, EXEC_PROG_REP_HANDLES, idl_fz_exec_prog_serve, NULL, idl_fz_exec_prog_msgs, 1 },
     { "file", 17, FILE_REQ_MAX, FILE_REP_MAX, FILE_REP_HANDLES, idl_fz_file_serve, NULL, idl_fz_file_msgs, 6 },
     { "fs", 16, FS_REQ_MAX, FS_REP_MAX, FS_REP_HANDLES, idl_fz_fs_serve, NULL, idl_fz_fs_msgs, 9 },
     { "fsctl", 20, FSCTL_REQ_MAX, FSCTL_REP_MAX, FSCTL_REP_HANDLES, idl_fz_fsctl_serve, NULL, idl_fz_fsctl_msgs, 2 },

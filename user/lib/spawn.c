@@ -400,12 +400,14 @@ static status_t gather_handles(const struct spawn_args *a, struct child *c,
 }
 
 /* The message (len bytes of msg, the handles in hs) on a new channel,
- * then the hand-over (consumed whatever happens), then the thread starts
- * with the other end. A write or a start takes the handles it was given
- * whatever its status (sent, or closed). */
-static status_t start_child(struct child *c, const uint8_t *msg, size_t len, struct handout *hs,
-                            const struct posixfds_out *handover)
+ * then the hand-over (consumed whatever happens) and what a's
+ * before_start writes, then the thread starts with the other end. A write
+ * or a start takes the handles it was given whatever its status (sent, or
+ * closed). */
+static status_t start_child(const struct spawn_args *a, struct child *c, const uint8_t *msg,
+                            size_t len, struct handout *hs)
 {
+    const struct posixfds_out *handover = a->handover;
     status_t st = jam_channel_create(&c->ch[0], &c->ch[1]);
     if (st == OK) {   /* the extras with the rights the caller chose */
         st = jam_channel_write_rights(c->ch[0], msg, (uint32_t)len, hs->h, hs->rights, hs->n);
@@ -415,6 +417,8 @@ static status_t start_child(struct child *c, const uint8_t *msg, size_t len, str
         st = posixfds_write(c->ch[0], handover);   /* all of it before the child runs */
     else if (handover)
         posixfds_discard(handover);
+    if (st == OK && a->before_start)
+        st = a->before_start(c->ch[0], a->before_start_ctx);
     if (st == OK) {
         st = jam_process_start(c->proc, c->thread, c->entry, c->stack, c->ch[1], 0);
         c->ch[1] = HANDLE_INVALID;   /* the child's now, or closed */
@@ -431,7 +435,7 @@ static status_t make_child(const struct spawn_args *a, const struct image *img, 
     struct handout hs = { .n = 0 };
     st = gather_handles(a, c, (struct startup_msg *)msg, &hs, st);
     if (st == OK)
-        st = start_child(c, msg, len, &hs, a->handover);
+        st = start_child(a, c, msg, len, &hs);
     else
         posixfds_discard(a->handover);
     /* A message that never reached the child dies with ch[1], handles and

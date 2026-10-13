@@ -640,6 +640,9 @@ int main(int argc, char **argv)
     bool ok = start_bootfs();
     ok &= start_devmgr(HANDLE_INVALID);
     ok &= start_volumes();
+    handle_t exec_cli;   /* /svc/exec, init's sealer (exec.c): the programs reach it too */
+    if (exec_init(&exec_cli) == OK && ns_svc_set(SVC_EXEC, exec_cli, true) != OK)
+        printf("init: no /svc/exec in the programs' namespace\n");
     regnet_start(port, devmgr_net, INIT_MAX_CLAIMED);   /* with net.host: the log to the Mac */
     ok &= run_config(cfg, len);
     regnet_stop_logd();
