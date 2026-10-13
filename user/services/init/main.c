@@ -332,12 +332,20 @@ static bool start_volumes(void)
             argv[argc++] = "nospare";   /* no warm spare fat */
         if (init_bootdisk)
             argv[argc++] = init_bootdisk;
-        struct spawn_handle x[] = { { VOLUMES_SR_CTL, b }, { VOLUMES_SR_DISKS, ds } };
+        /* The pager power alone, as shell mode gives it (services.c): the
+         * stick's /data supplies its files' pages, so a program on it can
+         * be sealed to run (/svc/exec, utest's exec_* tests). */
+        struct spawn_handle x[] = { { VOLUMES_SR_CTL, b }, { VOLUMES_SR_DISKS, ds },
+                                    { SR_RESOURCE, HANDLE_INVALID } };
+        unsigned nx = 2;
+        if (jam_handle_duplicate(startup_handle(SR_RESOURCE), RIGHTS_BASIC | RIGHT_ROOT_PAGER,
+                                 &x[2].h) == OK)
+            nx++;
         struct spawn_args sa = {
             .path = "bin/volumes", .argc = argc, .argv = argv, .job = volumes_job,
-            .extra = x, .nextra = 2,
+            .extra = x, .nextra = nx,
         };
-        st = spawn(&sa, &volumes_proc);   /* consumes b and ds */
+        st = spawn(&sa, &volumes_proc);   /* consumes b, ds and the root's slice */
         b = ds = HANDLE_INVALID;
     }
     if (st != OK) {
