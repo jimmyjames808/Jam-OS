@@ -13,7 +13,10 @@
  * region, so another window's title bar or frame over it hides it; the
  * desktop's strip and cards too) gets wl_pointer.enter, motion, buttons
  * and the wheel; leaving it
- * sends leave. While a button is held the window the press went to keeps
+ * sends leave. Enter, motion and leave name the topmost surface of the
+ * window's tree under the pointer (window_input_at: a subsurface's own
+ * input region), in its coordinates; going from one surface of a tree to
+ * another is a leave and an enter. While a button is held the window the press went to keeps
  * every pointer event, even outside it (the implicit grab), until the last
  * button is released; then the window under the pointer gets the focus
  * again. A press on no window (the background) or on one that goes holds
@@ -51,7 +54,9 @@
 struct comp_cursor cursor;
 static struct pointer pos;                      /* the position, 1/256 pixel */
 static struct comp_window *over;                /* the pointer's focus, or NULL */
-static bool implicit;                           /* over keeps it until the buttons are up */
+static struct comp_surface *over_s;             /* ... the surface of its tree under it */
+static int32_t over_x, over_y;                  /* over_s's (0, 0) on the output, as last drawn */
+static bool implicit;                          /* over keeps it until the buttons are up */
 static uint8_t buttons;                         /* held, input bits */
 static uint8_t wm_buttons;                      /* presses the window manager took */
 static uint32_t press_serial[BUTTONS];          /* each held button's press serial ... */
@@ -68,14 +73,26 @@ void pointer_init_position(void)
 
 /* ---- events to the focused client --------------------------------------------------- */
 
-static int32_t local_x(const struct comp_window *w)
+/* over_s's place on the output brought up to date; while it isn't drawn
+ * (a drag held on a subsurface that went), its last place stands. */
+static void place_over(void)
 {
-    return pos.x256 - (int32_t)((uint32_t)window_shown_x(w) << 8);
+    int32_t x, y;
+    if (over_s && surface_on_output(over_s, &x, &y)) {
+        over_x = x;
+        over_y = y;
+    }
 }
 
-static int32_t local_y(const struct comp_window *w)
+/* The pointer in over_s's coordinates (wl_fixed). */
+static int32_t local_x(void)
 {
-    return pos.y256 - (int32_t)((uint32_t)window_shown_y(w) << 8);
+    return pos.x256 - (int32_t)((uint32_t)over_x << 8);
+}
+
+static int32_t local_y(void)
+{
+    return pos.y256 - (int32_t)((uint32_t)over_y << 8);
 }
 
 static void send_frame(struct comp_client *cl)
@@ -85,32 +102,36 @@ static void send_frame(struct comp_client *cl)
             (void)jwl_wl_pointer_send_frame(cl->conn, r->id);   /* a dead conn: torn down */
 }
 
-static void send_enter(struct comp_window *w, const struct seat_res *only)
+/* enter on over_s, to every wl_pointer of its client's (or only one). */
+static void send_enter(const struct seat_res *only)
 {
-    struct comp_client *cl = w->surface->client;
+    struct comp_client *cl = over_s->client;
     struct seat_client *sc = seat_of(cl);
     sc->enter_serial = comp_serial();
+    place_over();
     for (struct seat_res *r = sc->res[SEAT_POINTER]; r; r = r->next) {
         if (only && r != only)
             continue;
-        (void)jwl_wl_pointer_send_enter(cl->conn, r->id, sc->enter_serial, w->surface->id,
-                                        local_x(w), local_y(w));
+        (void)jwl_wl_pointer_send_enter(cl->conn, r->id, sc->enter_serial, over_s->id, local_x(),
+                                        local_y());
         if (r->version >= JWL_WL_POINTER_EV_FRAME_SINCE)
             (void)jwl_wl_pointer_send_frame(cl->conn, r->id);
     }
 }
 
-static void send_motion(struct comp_window *w)
+/* motion on over_s, to its client. */
+static void send_motion(void)
 {
-    struct comp_client *cl = w->surface->client;
+    struct comp_client *cl = over_s->client;
     if (jwl_conn_backlogged(cl->conn)) {
         seat_of(cl)->motion_owed = true;   /* the newest position, once it has caught up */
         return;
     }
     seat_of(cl)->motion_owed = false;
+    place_over();
     uint32_t t = comp_ms(now());
     for (struct seat_res *r = seat_of(cl)->res[SEAT_POINTER]; r; r = r->next)
-        (void)jwl_wl_pointer_send_motion(cl->conn, r->id, t, local_x(w), local_y(w));
+        (void)jwl_wl_pointer_send_motion(cl->conn, r->id, t, local_x(), local_y());
     send_frame(cl);
 }
 
@@ -160,36 +181,52 @@ static void cursor_update(void)
     cursor_moved(cursor.x, cursor.y);
 }
 
-/* The pointer's focus to w (NULL: none): leave, then enter. */
-static void set_over(struct comp_window *w)
+/* The pointer's focus to surface s of window w's tree (both NULL: none):
+ * leave the old surface, then enter s. A move between the surfaces of one
+ * window is a leave and an enter too, as the protocol has it. */
+static void set_over(struct comp_window *w, struct comp_surface *s)
 {
-    if (w == over)
+    if (w == over && s == over_s)
         return;
-    struct comp_window *old = over;
+    struct comp_surface *old = over_s;
     over = w;
-    if (old && surface_live(old->surface)) {
-        struct comp_client *cl = old->surface->client;
+    over_s = s;
+    if (old && surface_live(old)) {
+        struct comp_client *cl = old->client;
         uint32_t serial = comp_serial();
         for (struct seat_res *r = seat_of(cl)->res[SEAT_POINTER]; r; r = r->next)
-            (void)jwl_wl_pointer_send_leave(cl->conn, r->id, serial, old->surface->id);
+            (void)jwl_wl_pointer_send_leave(cl->conn, r->id, serial, old->id);
         send_frame(cl);
     }
-    if (w && surface_live(w->surface))
-        send_enter(w, NULL);
+    if (s && surface_live(s))
+        send_enter(NULL);
     cursor_update();
 }
 
-/* The window whose surface is under the pointer, if its client is alive:
+/* The window whose surface (or a subsurface of its) is under the pointer,
+ * if its client is alive, and in *s the topmost surface of its tree there:
  * none over another window's decorations (wm_window_at sees title bars and
  * frames, which hide what is below them), nor over the desktop's strip or
  * cards, nor over a gap between tiles a press would drag. */
-static struct comp_window *under_pointer(void)
+static struct comp_window *under_pointer(struct comp_surface **s)
 {
     bool on_surface;
+    *s = NULL;
     if (desk_covers(cursor.x, cursor.y) || wm_gap_covers(cursor.x, cursor.y))
         return NULL;
     struct comp_window *w = wm_window_at(cursor.x, cursor.y, &on_surface);
-    return w && on_surface && client_alive(w->surface->client) ? w : NULL;
+    if (!w || !on_surface || !client_alive(w->surface->client))
+        return NULL;
+    *s = window_input_at(w, cursor.x, cursor.y, NULL, NULL);
+    return *s ? w : NULL;
+}
+
+/* The focus to what is under the pointer now. */
+static void over_what_is_under(void)
+{
+    struct comp_surface *s;
+    struct comp_window *w = under_pointer(&s);
+    set_over(w, s);
 }
 
 /* ---- what the mice send -------------------------------------------------------------- */
@@ -210,19 +247,19 @@ static void move(int16_t dx, int16_t dy)
         grab_ops->motion(grab_data, cursor.x, cursor.y);
         return;
     }
-    struct comp_window *before = over;
+    struct comp_surface *before = over_s;
     if (!implicit)
-        set_over(under_pointer());
+        over_what_is_under();
     cursor_update();   /* the compositor's cursor follows what is under it */
-    if (over && over == before && surface_live(over->surface))
-        send_motion(over);   /* a new focus had the position in its enter */
+    if (over_s && over_s == before && surface_live(over_s))
+        send_motion();   /* a new focus had the position in its enter */
 }
 
 static void press(unsigned b)
 {
     bool first = !(buttons & ~(1u << b));
     if (first && !grab_ops) {
-        set_over(under_pointer());
+        over_what_is_under();
         implicit = true;   /* whatever it lands on (a window, or none) keeps the pointer */
         if (wm_press(cursor.x, cursor.y, BTN_LEFT + b, keyboard_held_mods())) {
             wm_buttons |= (uint8_t)(1u << b);   /* its release goes nowhere too */
@@ -231,9 +268,9 @@ static void press(unsigned b)
         if (over)
             focus_click(over);
     }
-    if (grab_ops || !over || !surface_live(over->surface))
+    if (grab_ops || !over || !surface_live(over_s))
         return;
-    struct comp_client *cl = over->surface->client;
+    struct comp_client *cl = over_s->client;
     uint32_t serial = comp_serial(), t = comp_ms(now());
     seat_input_serial(cl, serial);
     for (struct seat_res *r = seat_of(cl)->res[SEAT_POINTER]; r; r = r->next)
@@ -251,8 +288,8 @@ static void release(unsigned b)
     press_serial[b] = 0;
     if (wm_buttons & (1u << b))
         wm_buttons &= (uint8_t)~(1u << b);
-    else if (!grab_ops && over && got == over->surface->client && surface_live(over->surface)) {
-        struct comp_client *cl = over->surface->client;
+    else if (!grab_ops && over && got == over_s->client && surface_live(over_s)) {
+        struct comp_client *cl = over_s->client;
         uint32_t serial = comp_serial(), t = comp_ms(now());
         for (struct seat_res *r = seat_of(cl)->res[SEAT_POINTER]; r; r = r->next)
             (void)jwl_wl_pointer_send_button(cl->conn, r->id, serial, t, BTN_LEFT + b,
@@ -267,14 +304,14 @@ static void release(unsigned b)
         grab_ops = NULL;
         ops->end(grab_data);
     }
-    set_over(under_pointer());   /* the grab is over: whatever is under it now */
+    over_what_is_under();   /* the grab is over: whatever is under it now */
 }
 
 static void wheel_turned(int8_t wheel)
 {
-    if (grab_ops || !over || !surface_live(over->surface))
+    if (grab_ops || !over || !surface_live(over_s))
         return;
-    struct comp_client *cl = over->surface->client;
+    struct comp_client *cl = over_s->client;
     uint32_t t = comp_ms(now()), axis = JWL_WL_POINTER_AXIS_VERTICAL_SCROLL;
     int32_t notches = -wheel;   /* a wheel pushed away scrolls up; the axis is positive down */
     for (struct seat_res *r = seat_of(cl)->res[SEAT_POINTER]; r; r = r->next) {
@@ -316,18 +353,24 @@ void pointer_report(int16_t dx, int16_t dy, int8_t wheel, uint8_t now_buttons)
 void pointer_turn(void)
 {
     if (!grab_ops && !implicit)
-        set_over(under_pointer());   /* a window appeared, moved or went under it */
-    if (over && surface_live(over->surface) && seat_of(over->surface->client)->motion_owed &&
-        !jwl_conn_backlogged(over->surface->client->conn))
-        send_motion(over);
+        over_what_is_under();   /* a window or subsurface appeared, moved or went under it */
+    if (over_s && surface_live(over_s) && seat_of(over_s->client)->motion_owed &&
+        !jwl_conn_backlogged(over_s->client->conn))
+        send_motion();
 }
 
 void pointer_window_gone(struct comp_window *w)
 {
     if (w != over)
         return;
-    set_over(NULL);   /* leave, while the client still knows the surface */
+    set_over(NULL, NULL);   /* leave, while the client still knows the surface */
     /* A drag that started in it goes on to nobody until the buttons are up. */
+}
+
+void seat_surface_gone(struct comp_surface *s)
+{
+    if (s == over_s)
+        set_over(NULL, NULL);   /* (its id is gone already: no leave) */
 }
 
 void pointer_client_gone(struct comp_client *cl)
@@ -355,7 +398,7 @@ status_t seat_grab_begin(const struct comp_grab_ops *ops, void *data)
 {
     if (!buttons || grab_ops)
         return ERR_BAD_STATE;
-    set_over(NULL);   /* no client sees the pointer during the grab */
+    set_over(NULL, NULL);   /* no client sees the pointer during the grab */
     implicit = false;
     grab_ops = ops;
     grab_data = data;
@@ -448,7 +491,7 @@ status_t pointer_create(struct comp_client *cl, uint32_t id, uint32_t version)
 {
     struct seat_res *r;
     status_t st = seat_res_add(cl, SEAT_POINTER, id, version, &r);
-    if (st == OK && over && over->surface->client == cl && surface_live(over->surface))
-        send_enter(over, r);
+    if (st == OK && over && over_s->client == cl && surface_live(over_s))
+        send_enter(r);
     return st;
 }

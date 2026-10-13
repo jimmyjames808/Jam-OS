@@ -64,11 +64,154 @@ void window_view(struct comp_window *w, int32_t view_w, int32_t view_h)
     window_damage(w);
 }
 
+/* ---- subsurface trees ------------------------------------------------------------------ */
+
+/* The walk under s, depth parents above it (a tree is never deeper than
+ * COMP_SUB_DEPTH_MAX: subsurface.c refuses one that would be; the bound
+ * here only keeps the stack bounded whatever happens). */
+static bool walk(const struct comp_surface *s, int32_t x, int32_t y, bool top_first,
+                 unsigned depth, surface_fn fn, void *arg)
+{
+    const struct comp_tree *t = s->tree;
+    uint32_t n = t ? t->ncur : 1;
+    for (uint32_t k = 0; k < n; k++) {
+        const struct comp_surface *e = t ? t->cur[top_first ? n - 1 - k : k] : s;
+        if (e == s) {
+            if (!fn(s, x, y, arg))
+                return false;
+        } else if (e->buffer && e->sub && depth < COMP_SUB_DEPTH_MAX &&
+                   !walk(e, x + e->sub->x, y + e->sub->y, top_first, depth + 1, fn, arg)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool surface_tree_walk(const struct comp_surface *s, int32_t x, int32_t y, bool top_first,
+                       surface_fn fn, void *arg)
+{
+    return walk(s, x, y, top_first, 0, fn, arg);
+}
+
+static bool grow(const struct comp_surface *s, int32_t x, int32_t y, void *arg)
+{
+    struct comp_box *b = arg;
+    *b = box_bounds(*b, box_make(x, y, s->width, s->height));
+    return true;
+}
+
+struct comp_box window_tree_box(const struct comp_window *w)
+{
+    const struct comp_surface *s = w->surface;
+    struct comp_box b = box_make(0, 0, s->width, s->height);
+    if (s->tree)
+        (void)surface_tree_walk(s, 0, 0, false, grow, &b);
+    return b;
+}
+
+bool window_has_subsurfaces(const struct comp_window *w)
+{
+    return w->surface->tree && w->surface->tree->ncur > 1;
+}
+
+struct comp_window *surface_tree_window(const struct comp_surface *s)
+{
+    for (unsigned d = 0; d <= COMP_SUB_DEPTH_MAX && s; d++) {
+        if (s->role != COMP_ROLE_SUBSURFACE)
+            return s->window;
+        s = s->sub ? s->sub->parent : NULL;
+    }
+    return NULL;
+}
+
+struct comp_window *surface_on_output(const struct comp_surface *s, int32_t *x, int32_t *y)
+{
+    int32_t dx = 0, dy = 0;
+    for (unsigned d = 0; d <= COMP_SUB_DEPTH_MAX; d++) {
+        if (s->role != COMP_ROLE_SUBSURFACE) {
+            struct comp_window *w = s->window;
+            if (!w || !(w->flags & COMP_WIN_MAPPED))
+                return NULL;
+            *x = window_shown_x(w) + dx;
+            *y = window_shown_y(w) + dy;
+            return w;
+        }
+        const struct comp_sub *sub = s->sub;
+        if (!s->buffer || !sub || !sub->parent || !sub->added)
+            return NULL;
+        dx += sub->x;
+        dy += sub->y;
+        s = sub->parent;   /* (a parent with no buffer hides its children: the next turn) */
+    }
+    return NULL;
+}
+
+/* Does s, its (0, 0) at output (sx, sy), take input at (x, y)? */
+static bool surface_takes(const struct comp_surface *s, int32_t sx, int32_t sy, int32_t x,
+                          int32_t y)
+{
+    return s->input_all || region_contains(&s->input, x - sx, y - sy);
+}
+
+/* What window_input_at looks for, and what it found. */
+struct hit {
+    const struct comp_window *w;
+    int32_t x, y;                  /* the point on the output */
+    struct comp_box clip;          /* where subsurfaces are drawn: the window geometry */
+    const struct comp_surface *found;
+    int32_t sx, sy;
+};
+
+static bool hit_one(const struct comp_surface *s, int32_t sx, int32_t sy, void *arg)
+{
+    struct hit *h = arg;
+    struct comp_box box = s == h->w->surface ? window_surface_box(h->w)
+                                             : box_intersect(box_make(sx, sy, s->width, s->height),
+                                                             h->clip);
+    if (!box_contains(box, h->x, h->y) || !surface_takes(s, sx, sy, h->x, h->y))
+        return true;   /* on to the next one down */
+    h->found = s;
+    h->sx = sx;
+    h->sy = sy;
+    return false;
+}
+
+struct comp_surface *window_input_at(const struct comp_window *w, int32_t x, int32_t y,
+                                     int32_t *sx, int32_t *sy)
+{
+    struct hit h = { w, x, y, { 0, 0, 0, 0 }, NULL, 0, 0 };
+    if (w->surface->tree)
+        h.clip = window_geometry(w);
+    (void)surface_tree_walk(w->surface, window_shown_x(w), window_shown_y(w), true, hit_one, &h);
+    if (h.found && sx)
+        *sx = h.sx;
+    if (h.found && sy)
+        *sy = h.sy;
+    return (struct comp_surface *)h.found;
+}
+
+void surface_damage(const struct comp_surface *s, struct comp_box b)
+{
+    if (s->role != COMP_ROLE_SUBSURFACE) {
+        if (s->window)
+            window_damage_surface(s->window, b);
+        return;
+    }
+    int32_t x, y;
+    struct comp_window *w = surface_on_output(s, &x, &y);
+    if (!w)
+        return;
+    struct comp_box in = box_intersect(b, box_make(0, 0, s->width, s->height));
+    scene_damage(box_intersect(box_translate(in, x, y), window_geometry(w)));
+}
+
+/* ---- the window's boxes ---------------------------------------------------------------- */
+
 struct comp_box window_geom(const struct comp_window *w)
 {
-    struct comp_box s = box_make(0, 0, w->surface->width, w->surface->height);
-    struct comp_box g = box_intersect(w->geom, s);   /* xdg-shell: clamped to the surface */
-    return box_empty(g) ? s : g;
+    struct comp_box t = window_tree_box(w);
+    struct comp_box g = box_intersect(w->geom, t);   /* xdg-shell: clamped to the tree */
+    return box_empty(g) ? t : g;
 }
 
 struct comp_box window_geometry(const struct comp_window *w)
@@ -220,28 +363,19 @@ void window_raise(struct comp_window *w)
     window_damage(w);
 }
 
-/* Does the surface of w take input at output (x, y)? */
-static bool takes_input(const struct comp_window *w, int32_t x, int32_t y)
-{
-    const struct comp_surface *s = w->surface;
-    if (!box_contains(window_surface_box(w), x, y))
-        return false;
-    return s->input_all ||
-           region_contains(&s->input, x - window_shown_x(w), y - window_shown_y(w));
-}
-
 struct comp_window *window_at(int32_t x, int32_t y)
 {
     for (struct comp_window *w = scene.top; w; w = w->below)
-        if ((w->flags & COMP_WIN_MAPPED) && takes_input(w, x, y))
+        if ((w->flags & COMP_WIN_MAPPED) && window_input_at(w, x, y, NULL, NULL))
             return w;
     return NULL;
 }
 
 bool surface_visible(const struct comp_surface *s)
 {
-    const struct comp_window *w = s->window;
-    if (!w || !(w->flags & COMP_WIN_MAPPED))
+    int32_t x, y;
+    const struct comp_window *w = surface_on_output(s, &x, &y);
+    if (!w)
         return false;
     return !box_empty(box_intersect(window_surface_box(w), output_box())) && !window_covered(w);
 }

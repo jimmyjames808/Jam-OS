@@ -171,14 +171,6 @@ enum cursor_shape wm_cursor_at(int32_t x, int32_t y)
     }
 }
 
-/* Does w's surface take input at output (x, y) (its input region)? */
-static bool takes_input(const struct comp_window *w, int32_t x, int32_t y)
-{
-    const struct comp_surface *s = w->surface;
-    return s->input_all ||
-           region_contains(&s->input, x - window_shown_x(w), y - window_shown_y(w));
-}
-
 struct comp_window *wm_window_at(int32_t x, int32_t y, bool *on_surface)
 {
     for (struct comp_window *w = scene.top; w; w = w->below) {
@@ -192,7 +184,7 @@ struct comp_window *wm_window_at(int32_t x, int32_t y, bool *on_surface)
             *on_surface = false;
             return w;   /* its decorations */
         }
-        if (box_contains(window_surface_box(w), x, y) && takes_input(w, x, y)) {
+        if (window_input_at(w, x, y, NULL, NULL)) {   /* its surface or a subsurface's */
             *on_surface = true;
             return w;
         }

@@ -11,7 +11,9 @@
  *   display.c   wl_display, wl_registry and the globals, wl_compositor,
  *               wl_region's requests, wl_output, wl_callback;
  *   surface.c   wl_surface: pending and current state, commit, frame
- *               callbacks, buffer release;
+ *               callbacks, buffer release, a subsurface's cached state;
+ *   subsurface.c wl_subcompositor and wl_subsurface: the trees, their
+ *               order and positions, sync and desync;
  *   shm.c       wl_shm, wl_shm_pool (VMO_KEEP_PAGES pools mapped
  *               VMAR_KEPT_ONLY), wl_buffer;
  *   region.c    boxes, regions (wl_region, input and opaque) and damage
@@ -44,6 +46,9 @@
  *     change and current state that commit makes of it, at once, as the
  *     protocol says; it shows nothing until a role (xdg_toplevel, cursor)
  *     gives it a window;
+ *   - a surface may have subsurfaces (struct comp_tree, struct comp_sub):
+ *     a tree under a main surface, drawn, hit and clipped as the main
+ *     surface's one window, never windows of their own;
  *   - a window (struct comp_window) is a surface placed on the output: a
  *     position, a stacking place, a frame (the surface plus decorations).
  *     Floating and tiling are policies over the same windows (the window
@@ -86,6 +91,11 @@
 #define COMP_BUDGET_MSGS        64u            /* messages of one client per turn */
 #define COMP_BUDGET_NS          (2 * NS_PER_MS)/* ... or this long, whichever ends first */
 #define COMP_HIDDEN_FRAME_NS    NS_PER_S       /* a surface nobody sees: its callbacks this often */
+#define COMP_SUBS_MAX           48u            /* per client: wl_subsurface objects at once */
+#define COMP_SUB_CHILDREN_MAX   32u            /* subsurfaces of one parent */
+#define COMP_SUB_DEPTH_MAX      8u             /* subsurfaces nested below a main surface */
+#define COMP_SUB_POS_MAX        (1 << 20)      /* set_position held to +- this (sums of 8 stay
+                                                * far inside COMP_COORD_MAX) */
 
 /* The globals, as advertised (the plan's table; a client binds the lower
  * of these and its own). What each version adds, and how it is answered:
@@ -105,6 +115,7 @@
 #define COMP_OUTPUT_VERSION     4u
 #define COMP_SEAT_VERSION       9u
 #define COMP_XDG_WM_VERSION     6u
+#define COMP_SUBCOMPOSITOR_VERSION 1u
 
 /* ---- boxes, regions, damage (region.c) --------------------------------------------- */
 
@@ -229,7 +240,7 @@ struct comp_client {
     struct jwl_conn *conn;         /* its connection; the port watches its channel end */
     bool ready;                    /* its channel may have messages (a port packet came) */
     bool more;                     /* its budget ran out with messages left */
-    uint32_t nsurfaces, npools, nbuffers, nregions, noutputs;
+    uint32_t nsurfaces, npools, nbuffers, nregions, noutputs, nsubs;
     uint64_t pool_bytes;           /* bytes of its pools mapped, in total */
     uint32_t rects;                /* boxes in all its regions (struct comp_region.charge) */
     struct comp_surface *surfaces;
@@ -237,7 +248,8 @@ struct comp_client {
     struct comp_buffer  *buffers;
     struct comp_regobj  *regions;
     struct comp_outres  *outputs;
-    void *xdg;                     /* xdg-shell's per-client state (xdg.c), or NULL */
+    struct comp_sub     *subs;     /* its wl_subsurface objects (subsurface.c) */
+    void *xdg;                    /* xdg-shell's per-client state (xdg.c), or NULL */
     void *seat;                    /* the seat's per-client state (seat.c), or NULL */
 };
 
@@ -251,6 +263,7 @@ enum comp_role {
     COMP_ROLE_XDG_POPUP,
     COMP_ROLE_CURSOR,
     COMP_ROLE_TEST,                /* the `testwin` test power's windows (testwin.c) */
+    COMP_ROLE_SUBSURFACE,          /* wl_subsurface (subsurface.c): drawn in its parent's tree */
 };
 
 struct comp_role_ops {
@@ -293,16 +306,56 @@ struct comp_surface {
     struct comp_region input;      /* surface coordinates, when not input_all */
     bool input_all;                /* the whole surface takes input (the default) */
     /* Frame callback ids, oldest first: nframes committed ones (answered
-     * after the next paint that shows the surface), then npending asked
-     * for since the last commit. */
+     * after the next paint that shows the surface), then ncached held with
+     * a synchronized subsurface's cached state (committed when it is
+     * applied), then npending asked for since the last commit. */
     uint32_t frames[COMP_FRAMES_MAX];
-    uint32_t nframes, npending;
+    uint32_t nframes, ncached, npending;
     uint64_t hidden_done_ns;       /* when callbacks were last answered while hidden */
     uint64_t commits;
     enum comp_role role;
     const struct comp_role_ops *role_ops;   /* NULL without a role */
     void *role_data;               /* the role's own (xdg_surface, cursor) */
     struct comp_window *window;    /* NULL unless the role placed it */
+    /* Subsurfaces (subsurface.c). A synchronized subsurface's commits are
+     * merged into cache (made the first time, freed with the surface) and
+     * applied with its parent's state; has_cache: something waits there. */
+    struct comp_state *cache;
+    bool has_cache;
+    struct comp_tree *tree;        /* its subsurfaces' order; NULL while it has none */
+    struct comp_sub  *sub;         /* its wl_subsurface's state while that object lives */
+};
+
+/* A parent's subsurfaces in stacking order, bottom to top, the parent
+ * itself among them (wl_subsurface.place_above and place_below may name
+ * it): `cur` is what is drawn, `pend` what the parent's next commit makes
+ * of it (a new child goes on top of pend: the order is the parent's
+ * double-buffered state). A child is in pend from get_subsurface until it
+ * leaves (its wl_subsurface or its wl_surface destroyed, or its parent's
+ * wl_surface), and in cur too once a commit of the parent has applied it;
+ * it leaves both at once. Every child is the parent's client's. */
+struct comp_tree {
+    uint32_t ncur, npend;          /* entries, the parent's own one included */
+    struct comp_surface *cur[COMP_SUB_CHILDREN_MAX + 1];
+    struct comp_surface *pend[COMP_SUB_CHILDREN_MAX + 1];
+    bool pend_changed;             /* pend may differ from cur */
+};
+
+/* A wl_subsurface: the data its object holds. It may outlive its parent
+ * (then parent is NULL: inert, its surface shown nowhere) and, only while
+ * its client is being disconnected, its wl_surface (surface NULL: the
+ * defunct_role_object error, or the client went). */
+struct comp_sub {
+    struct comp_client *client;
+    struct comp_sub *next;         /* the client's */
+    uint32_t id;                   /* its wl_subsurface */
+    struct comp_surface *surface;  /* the child, or NULL once its wl_surface went */
+    struct comp_surface *parent;   /* NULL once the parent's wl_surface went */
+    int32_t x, y;                  /* its (0, 0) in its parent's coordinates, as drawn */
+    int32_t pend_x, pend_y;        /* set_position's, for the parent's next commit */
+    bool pos_set;                  /* set_position came since that commit */
+    bool sync;                     /* synchronized (the default) or desynchronized, as set */
+    bool added;                    /* in the parent's tree's cur: drawn while it has a buffer */
 };
 
 /* ---- windows and the output (scene.c) ---------------------------------------------- */
@@ -411,8 +464,9 @@ struct comp_box window_extent(const struct comp_window *w);
 /* The surface's box on the output. */
 struct comp_box window_surface_box(const struct comp_window *w);
 /* The window geometry in the surface's coordinates, the view aside: the
- * client's (w->geom) within the surface, or the whole surface without one
- * (or with one that misses it). What the window manager places. */
+ * client's (w->geom) within the surface and its subsurfaces drawn
+ * (window_tree_box), or all of those without one (or with one that misses
+ * them), as xdg-shell says. What the window manager places. */
 struct comp_box window_geom(const struct comp_window *w);
 /* ... and on the output, as shown: window_geom where the surface is, or
  * the view's box while a tile's view is set (the frame is the tile's).
@@ -442,8 +496,45 @@ void window_damage_surface(struct comp_window *w, struct comp_box b);
 /* The topmost mapped window whose surface takes input at output (x, y)
  * (its input region), or NULL. Decorations are the window manager's. */
 struct comp_window *window_at(int32_t x, int32_t y);
-/* Can anything of s be seen: a mapped window inside the output. */
+/* Can anything of s be seen: a mapped window inside the output (for a
+ * subsurface: its window's, and it drawn there). */
 bool surface_visible(const struct comp_surface *s);
+
+/* Subsurface trees as drawn (scene.c). A tree is its main surface's
+ * window: each subsurface with a buffer whose parent is drawn, at its
+ * parent's place plus its position, in its tree's order; every subsurface
+ * clipped to the window's window_geometry (the main surface itself never
+ * is, so a client's own shadow in it shows as before). Without a window
+ * geometry set, the window is the whole tree (window_geom, xdg-shell's
+ * rule): the frame, the shadow and the title bar go round it. */
+typedef bool (*surface_fn)(const struct comp_surface *s, int32_t x, int32_t y, void *arg);
+/* fn for main surface s (buffer or not) and each subsurface drawn under
+ * it, its (0, 0) at (x, y) for s and at that plus the positions for the
+ * rest: bottom to top, or the top first. Stops (false) when fn says false. */
+bool surface_tree_walk(const struct comp_surface *s, int32_t x, int32_t y, bool top_first,
+                       surface_fn fn, void *arg);
+/* The bounds of w's main surface and every subsurface drawn under it, in
+ * the main surface's coordinates (the main surface's box without any). */
+struct comp_box window_tree_box(const struct comp_window *w);
+/* Has w's main surface subsurfaces in its drawn order (drawn or not)? */
+bool window_has_subsurfaces(const struct comp_window *w);
+/* The window of the main surface at the top of s's parents (s's own, for a
+ * main surface), drawn or not; NULL if there is none. */
+struct comp_window *surface_tree_window(const struct comp_surface *s);
+/* Where s is drawn: its window (mapped), its (0, 0) on the output in *x
+ * and *y. NULL if s isn't drawn: no window, unmapped, not in its parent's
+ * drawn order yet, or it or a parent between has no buffer. */
+struct comp_window *surface_on_output(const struct comp_surface *s, int32_t *x, int32_t *y);
+/* The topmost surface of w's tree that takes input at output (x, y): in
+ * its box and its input region, a subsurface within w's window geometry
+ * too. Its (0, 0) on the output in *sx, *sy (either may be NULL). NULL:
+ * none (w's decorations, or nothing of its there). */
+struct comp_surface *window_input_at(const struct comp_window *w, int32_t x, int32_t y,
+                                     int32_t *sx, int32_t *sy);
+/* Surface damage b (s's coordinates) where s is drawn, clipped as drawn:
+ * window_damage_surface for a main surface, the clipped box for a
+ * subsurface. Nothing if s isn't drawn. */
+void surface_damage(const struct comp_surface *s, struct comp_box b);
 
 /* ---- the compositor as a whole --------------------------------------------------- */
 
@@ -571,6 +662,45 @@ status_t surface_create(struct comp_client *cl, uint32_t compositor, uint32_t id
  * now, or had another role (the caller posts the role's error). */
 status_t surface_set_role(struct comp_surface *s, enum comp_role role,
                           const struct comp_role_ops *ops, void *data);
+
+/* surface.c, for subsurface.c. s's parent's state was applied: s's cached
+ * state applied as s's own commit's would be (no role commit: a
+ * subsurface has none). OK, or a protocol error posted. */
+status_t surface_apply_cached(struct comp_surface *s);
+/* s is no longer synchronized (wl_subsurface.set_desync): what it cached
+ * applied now, as a commit, with its damage. */
+status_t surface_flush_cache(struct comp_surface *s);
+/* s's cached state dropped (its subsurface left its tree): the buffer and
+ * regions it held let go, its frame callbacks committed. */
+void     surface_drop_cache(struct comp_surface *s);
+
+/* ---- subsurfaces (subsurface.c) ----------------------------------------------------- */
+
+/* wl_registry.bind of wl_subcompositor, and the two interfaces' requests. */
+status_t subcompositor_bind(struct comp_client *cl, uint32_t id, uint32_t version);
+status_t subcompositor_request(struct comp_client *cl, struct jwl_msg *m);
+status_t subsurface_request(struct comp_client *cl, struct jwl_msg *m);
+/* Does s behave as synchronized (a subsurface set so, or under one)? Its
+ * commits are then cached until its parent's state is applied. */
+bool     subsurface_synced(const struct comp_surface *s);
+/* s's state was just applied (surface.c): its children's order and
+ * positions from its pending state, then the cached state of each child
+ * that is synchronized (every child when parent_sync: s itself was applied
+ * as synchronized). *reshaped is set if the tree's order or a position
+ * changed. OK, or a protocol error posted. */
+status_t subsurface_applied(struct comp_surface *s, bool parent_sync, bool *reshaped);
+/* s's wl_surface goes: its children lose their parent (shown nowhere
+ * since), before its window goes. */
+void     subsurface_parent_gone(struct comp_surface *s);
+/* Every wl_subsurface state of cl's freed, after its surfaces (nothing sent). */
+void     subsurfaces_teardown(struct comp_client *cl);
+/* For the test scene (testscene.c, no client): child, a surface with no
+ * role, made a subsurface of parent at (x, y), on top of the order or at
+ * its bottom (below the parent too), drawn at once; and the same undone,
+ * as wl_subsurface.destroy. */
+status_t subsurface_add_now(struct comp_surface *child, struct comp_surface *parent, int32_t x,
+                            int32_t y, bool below);
+void     subsurface_remove_now(struct comp_surface *child);
 
 /* wl_registry.bind of wl_shm: the formats sent. */
 status_t shm_bind(struct comp_client *cl, uint32_t id, uint32_t version);
@@ -714,6 +844,9 @@ bool     seat_input_serial_ok(struct comp_client *cl, uint32_t serial);
  * moves on: the keyboard to the next window down). */
 void     seat_window_mapped(struct comp_window *w);
 void     seat_window_gone(struct comp_window *w);
+/* s goes (surface.c, before it is freed): the pointer's focus on it, a
+ * subsurface's, dropped. */
+void     seat_surface_gone(struct comp_surface *s);
 
 /* For the window manager (C3: wm.c, xdg.c). */
 /* The keyboard focus to w (NULL: none): leave and enter sent. */

@@ -19,7 +19,9 @@
  *     pixels below its corners kept, its decorations (title.c), then its
  *     buffer: copied (xrgb8888, or inside its opaque region), or blended
  *     over what is below (argb8888, premultiplied, with libfun's
- *     px_over_row: px_over's exact rounding), then its corners cut round;
+ *     px_over_row: px_over's exact rounding), and its subsurfaces' the
+ *     same way in their tree's order, each clipped to the window geometry
+ *     (scene.c's walk), then its corners cut round;
  *   - the tiler's marks (wmdraw.c: a lit gap, a Super+dragged tile);
  *   - the desktop over the windows (deskpaint.c): animations, the
  *     strip, then the cards;
@@ -126,7 +128,12 @@ static bool hides(const struct comp_window *w, struct comp_box b)
     if (!(w->flags & COMP_WIN_MAPPED) || (w->flags & COMP_WIN_ANIMATED) || !w->surface->buffer ||
         !inside(b, window_frame(w)) || shape_corner_meets(w, b))
         return false;
-    struct comp_box in = box_intersect(b, window_surface_box(w));
+    struct comp_box s = window_surface_box(w), in = box_intersect(b, s);
+    /* the window geometry off the main surface is its subsurfaces' (or
+     * nothing): nothing there is known to hide what is below */
+    struct comp_box g = box_intersect(b, window_geometry(w));
+    if (!box_empty(g) && !inside(g, s))
+        return false;
     return box_empty(in) || paint_opaque_over(w, in);
 }
 
@@ -168,7 +175,8 @@ static const struct comp_window *full_screen(void)
          * padded, paint.c's draw_pad; review C7) */
         struct comp_box buf = box_make(window_shown_x(w), window_shown_y(w), w->surface->width,
                                        w->surface->height);
-        bool all = inside(out, window_surface_box(w)) && inside(out, buf) &&
+        bool all = !window_has_subsurfaces(w) &&   /* they are drawn over it */
+                   inside(out, window_surface_box(w)) && inside(out, buf) &&
                    paint_opaque_over(w, out) && !shape_corner_meets(w, out);
         return all ? w : NULL;
     }
@@ -263,11 +271,46 @@ static void draw_buffer(const struct comp_window *w, const struct tile_buf *t, u
     draw_rows(w->surface, window_shown_x(w), window_shown_y(w), in, t, me);
 }
 
+/* What draw_one draws with: the window, the tile, the worker, and where
+ * the subsurfaces may draw in the tile (the window geometry). */
+struct tree_draw {
+    const struct comp_window *w;
+    const struct tile_buf *t;
+    uint32_t me;
+    struct comp_box clip;
+};
+
+static bool draw_one(const struct comp_surface *s, int32_t x, int32_t y, void *arg)
+{
+    const struct tree_draw *d = arg;
+    if (s == d->w->surface) {
+        draw_buffer(d->w, d->t, d->me);   /* the main surface: its view, never clipped */
+        return true;
+    }
+    struct comp_box in = box_intersect(box_make(x, y, s->width, s->height), d->clip);
+    if (!box_empty(in))
+        draw_rows(s, x, y, in, d->t, d->me);
+    return true;
+}
+
+/* Window w's surfaces where they meet t: its main surface and its
+ * subsurfaces in their tree's order, each subsurface clipped to the window
+ * geometry. */
+static void draw_tree(const struct comp_window *w, const struct tile_buf *t, uint32_t me)
+{
+    if (!w->surface->tree) {
+        draw_buffer(w, t, me);
+        return;
+    }
+    struct tree_draw d = { w, t, me, box_intersect(window_geometry(w), t->b) };
+    (void)surface_tree_walk(w->surface, window_shown_x(w), window_shown_y(w), false, draw_one, &d);
+}
+
 void paint_window(const struct comp_window *w, const struct tile_buf *t, uint32_t *save)
 {
     shape_save(w, t, save);
     title_draw(w, t);
-    draw_buffer(w, t, ~0u);
+    draw_tree(w, t, ~0u);
     shape_clip(w, t, save);
 }
 
@@ -284,7 +327,7 @@ static void draw_window(const struct comp_window *w, const struct tile_buf *t, u
     uint32_t *save = pt.buf[me] + TILE_W * TILE_H;
     shape_save(w, t, save);
     title_draw(w, t);
-    draw_buffer(w, t, me);
+    draw_tree(w, t, me);
     shape_clip(w, t, save);
 }
 

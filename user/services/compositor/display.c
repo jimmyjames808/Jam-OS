@@ -40,6 +40,7 @@ static const struct global {
     { 7, &jwl_wl_data_device_manager_interface, COMP_DATA_VERSION, data_bind },
     { 8, &jwl_jam_window_memory_v1_interface, COMP_MEMORY_VERSION, memory_bind },
     { 9, &jwl_zxdg_decoration_manager_v1_interface, COMP_DECORATION_VERSION, xdg_deco_bind },
+    { 10, &jwl_wl_subcompositor_interface, COMP_SUBCOMPOSITOR_VERSION, subcompositor_bind },
 };
 #define NGLOBALS (sizeof(globals) / sizeof(globals[0]))
 
