@@ -234,10 +234,9 @@ static status_t on_set_buffer_scale(void *data, uint32_t self, int32_t scale)
 
 /* ---- commit ----------------------------------------------------------------------- */
 
-/* The pending buffer becomes the current one. */
-static void apply_buffer(struct comp_surface *s)
+/* p's buffer (s's pending state's, or its cache's) becomes the current one. */
+static void apply_buffer(struct comp_surface *s, struct comp_state *p)
 {
-    struct comp_state *p = &s->pending;
     struct comp_buffer *old = s->buffer, *b = p->buffer;
     int32_t w = b ? b->width : 0, h = b ? b->height : 0;
     bool resized = w != s->width || h != s->height;
@@ -257,9 +256,8 @@ static void apply_buffer(struct comp_surface *s)
         window_damage(s->window);   /* the frame it has now */
 }
 
-static status_t apply_regions(struct comp_surface *s)
+static status_t apply_regions(struct comp_surface *s, struct comp_state *p)
 {
-    struct comp_state *p = &s->pending;
     status_t st = OK;
     if (p->opaque_set)
         st = region_copy(&s->opaque, &p->opaque);
@@ -273,16 +271,16 @@ static status_t apply_regions(struct comp_surface *s)
     return st == OK ? OK : comp_no_memory(s->client, s->id, "no memory for a region");
 }
 
-static status_t on_commit(void *data, uint32_t self)
+/* State p (s's pending state) made current, at once: the regions, the
+ * buffer, the offset, the damage, the frame callbacks; then the role sees
+ * it. */
+static status_t apply(struct comp_surface *s, struct comp_state *p)
 {
-    struct comp_surface *s = data;
-    struct comp_state *p = &s->pending;
-    (void)self;
-    status_t st = apply_regions(s);
+    status_t st = apply_regions(s, p);
     if (st != OK)
         return st;
     if (p->attached)
-        apply_buffer(s);
+        apply_buffer(s, p);
     if (p->offset_set) {
         s->dx = p->dx;
         s->dy = p->dy;
@@ -299,6 +297,13 @@ static status_t on_commit(void *data, uint32_t self)
     if (!s->role_ops)
         return testwin_commit(s);   /* nothing without the test power */
     return s->role_ops->commit ? s->role_ops->commit(s) : OK;
+}
+
+static status_t on_commit(void *data, uint32_t self)
+{
+    struct comp_surface *s = data;
+    (void)self;
+    return apply(s, &s->pending);
 }
 
 static const struct jwl_wl_surface_requests surface_ops = {
