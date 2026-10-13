@@ -26,9 +26,11 @@ summary     LLVM's runtimes: compiler-rt's builtins and crt, libunwind, libc++ab
 homepage    https://llvm.org/
 category    libs
 licence     Apache-2.0 WITH LLVM-exception
-# One text: each runtime's LICENSE.TXT is the same (Apache-2.0 with LLVM's
-# exception, and the legacy University of Illinois/NCSA and MIT notices).
-licence-file libcxx/LICENSE.TXT
+# Each runtime's own LICENSE.TXT (Apache-2.0 with LLVM's exception, then
+# its legacy notices, which differ): build.sh copies them to the top of the
+# source under names of their own, as the package keeps a licence by name.
+licence-file LICENSE-compiler-rt.TXT LICENSE-libunwind.TXT LICENSE-libcxxabi.TXT
+licence-file LICENSE-libcxx.TXT
 source      https://github.com/llvm/llvm-project/releases/download/llvmorg-$version/llvm-project-$version.src.tar.xz 179220548 c44186a7762ed28954be72e5ff6df9808e0779d4f1bf014ecc4e7e211d31ee34
 place       package
 style       custom                    # two CMake builds: compiler-rt, then the rest (build.sh)

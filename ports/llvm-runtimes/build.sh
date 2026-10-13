@@ -27,6 +27,9 @@ cmake_common() {
 }
 
 build() {
+    for d in compiler-rt libunwind libcxxabi libcxx; do
+        cp "$srcdir/$d/LICENSE.TXT" "$srcdir/LICENSE-$d.TXT"
+    done
     # compiler-rt: the builtins and crtbegin/crtend only (no sanitizers,
     # profiling or fuzzing: nothing on Jam OS runs them yet).
     cmake_common "$srcdir/_build-crt" -DLLVM_ENABLE_RUNTIMES=compiler-rt \
