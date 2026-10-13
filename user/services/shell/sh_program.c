@@ -165,6 +165,7 @@ static rights_t root_rights(uint32_t want)
     r |= want & WANT_RIGHT_SYSINFO ? RIGHT_ROOT_SYSINFO : 0;
     r |= want & WANT_RIGHT_CLOCK ? RIGHT_ROOT_CLOCK : 0;
     r |= want & WANT_RIGHT_DEBUG ? RIGHT_ROOT_DEBUG : 0;
+    r |= want & WANT_RIGHT_JIT ? RIGHT_ROOT_JIT : 0;
     return r;
 }
 

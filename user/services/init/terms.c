@@ -84,11 +84,12 @@
  * compositor: the screen is its), mirrors it to the serial port's output
  * and reboots on Ctrl+Alt+Del if init doesn't answer; the shell reads the
  * log, the system's figures, the clock, the kernel's debug commands, a
- * reboot when init doesn't answer, and programs from /data (VMEX). */
+ * reboot when init doesn't answer, programs from /data (VMEX) and JIT
+ * memory, only for a program whose list asks for it (`right jit`). */
 #define CONSOLE_ROOT (RIGHT_ROOT_KLOG | RIGHT_ROOT_SCREEN | RIGHT_ROOT_SERIAL_OUT | \
                       RIGHT_ROOT_REBOOT)
 #define SHELL_ROOT   (RIGHT_ROOT_KLOG | RIGHT_ROOT_SYSINFO | RIGHT_ROOT_CLOCK | RIGHT_ROOT_DEBUG | \
-                      RIGHT_ROOT_REBOOT | RIGHT_ROOT_VMEX)
+                      RIGHT_ROOT_REBOOT | RIGHT_ROOT_VMEX | RIGHT_ROOT_JIT)
 
 enum { TERM_CLOSED, TERM_OPEN, TERM_CLOSING };
 

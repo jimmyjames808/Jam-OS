@@ -23,8 +23,14 @@
  *                             leaves the top-level `etc` alone); <point>
  *                             is /boot, /esp, /data, /usb* (every other
  *                             stick) or * (every mount)
- *     right <name>            klog, sysinfo, clock or debug: that power on
- *                             the root resource (WANT_RIGHT_*)
+ *     right <name>            klog, sysinfo, clock, debug or jit: that
+ *                             power on the root resource (WANT_RIGHT_*);
+ *                             jit (RIGHT_ROOT_JIT, vmo_make_jit: memory it
+ *                             may write and run, a JIT compiler's) only
+ *                             for a package, a port or a test, never a
+ *                             boot-image system program (the build), and
+ *                             for a program on /data once the owner
+ *                             allowed it, as every list
  *     posix                   a POSIX program (on musl, docs/M13-PLAN.md):
  *                             its starter gives it file descriptors (the
  *                             hand-over, <posixfds.h>) and an 8 MiB stack;
@@ -66,6 +72,7 @@
 #define WANT_RIGHT_SYSINFO (1u << 1)   /* the process list, CPU and memory figures */
 #define WANT_RIGHT_CLOCK   (1u << 2)   /* the real-time clock */
 #define WANT_RIGHT_DEBUG   (1u << 3)   /* the kernel's debug commands (tests) */
+#define WANT_RIGHT_JIT     (1u << 4)   /* JIT memory: write and run its own code */
 
 struct wants {
     bool     found;                     /* the file has a list */

@@ -116,12 +116,16 @@ static bool want_right(struct wants *w, const char *name)
     static const struct { const char *name; uint32_t bit; } rights[] = {
         { "klog", WANT_RIGHT_KLOG }, { "sysinfo", WANT_RIGHT_SYSINFO },
         { "clock", WANT_RIGHT_CLOCK }, { "debug", WANT_RIGHT_DEBUG },
+        { "jit", WANT_RIGHT_JIT },
     };
     for (unsigned i = 0; i < sizeof(rights) / sizeof(rights[0]); i++)
         if (!strcmp(name, rights[i].name)) {
             w->rights |= rights[i].bit;
-            char shown[24];
-            snprintf(shown, sizeof(shown), "the kernel's %s", name);
+            char shown[48];
+            if (rights[i].bit == WANT_RIGHT_JIT)   /* what it means, for the owner's yes */
+                snprintf(shown, sizeof(shown), "may write and run its own code: JIT");
+            else
+                snprintf(shown, sizeof(shown), "the kernel's %s", name);
             add_text(w, shown);
             return true;
         }
