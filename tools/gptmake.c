@@ -146,6 +146,49 @@ static void one(uint32_t bs, uint64_t bytes, const struct img *mkgpt)
     mem_free(&m);
 }
 
+/* The made table's CRCs again, after an edit of its entries: the array's
+ * in both headers, then each header's own. */
+static void reseal(const struct pt_jamos_plan *p, uint32_t bs)
+{
+    uint32_t crc = pt_crc32(0, made + (size_t)PT_JAMOS_AT_ARRAY * bs, PT_JAMOS_ARRAY_BYTES);
+    uint8_t *hdrs[2] = { made + (size_t)PT_JAMOS_AT_PRIMARY * bs,
+                         made + (size_t)pt_jamos_at_backup(p) * bs };
+    for (int i = 0; i < 2; i++) {
+        put32(hdrs[i] + 88, crc);
+        put32(hdrs[i] + 16, 0);
+        put32(hdrs[i] + 16, pt_crc32(0, hdrs[i], 92));
+    }
+}
+
+/* Jam OS's two partitions by type and name, but not where the plan puts
+ * them on this disk (the ESP one block short), both headers good, block 0
+ * zero: a create_table cut short would have the plan's places, so this is
+ * someone's table, and the blocks create_table writes weren't seen to be
+ * its own or zeros. Not blank, with either header alone or both. */
+static void wrong_geometry(uint32_t bs, uint64_t bytes)
+{
+    static struct pt_table t;
+    struct img m;
+    struct pt_jamos_plan p;
+    mem_img(&m, bs, bytes);
+    where = "made-wrong-geometry";
+    if (pt_jamos_plan(bs, m.blocks, &p) != OK ||
+        pt_jamos_make(bs, m.blocks, disk_g, esp_g, data_g, made, sizeof(made)) != OK)
+        fail("no table");
+    uint8_t *esp = made + (size_t)PT_JAMOS_AT_ARRAY * bs;
+    put64(esp + 40, get64(esp + 40) - 1);   /* the ESP's EndingLBA */
+    reseal(&p, bs);
+    lay(&m, p.tail_start, PT_JAMOS_AT_ARRAY, p.array_blocks);
+    lay(&m, m.blocks - 1, pt_jamos_at_backup(&p), 1);
+    if (kind_now(&m, &t) != PT_KIND_OTHER || t.blank_in_progress)
+        fail("the backup alone, at other places: kind %d", pt_kind(&t));
+    lay(&m, PT_JAMOS_AT_ARRAY, PT_JAMOS_AT_ARRAY, p.array_blocks);
+    lay(&m, 1, PT_JAMOS_AT_PRIMARY, 1);
+    if (kind_now(&m, &t) != PT_KIND_OTHER || t.blank_in_progress)
+        fail("both headers, at other places: kind %d", pt_kind(&t));
+    mem_free(&m);
+}
+
 /* What the maker refuses. */
 static void refusals(void)
 {
@@ -191,5 +234,7 @@ void check_make(const struct img *imgs, int n)
     if (pt_jamos_plan(512, (3ull << 40) / 512, &p) != OK ||
         p.data_blocks != PT_JAMOS_DATA_MAX / 512)
         fail("the data partition of a 3 TiB disk isn't 2 TiB");
+    wrong_geometry(512, j512->bytes);
+    wrong_geometry(4096, j4k->bytes);
     refusals();
 }

@@ -260,12 +260,31 @@ static bool cut_after_array(const struct pt_disk *d)
     return c.zero && pt_jamos_array_head_is(d->block_size, d->blocks, c.head);
 }
 
+/* Does t (a GPT read with Jam OS's layout of entries) have the geometry
+ * pt_jamos_make gives this disk: its usable range, 128 entries of 128
+ * bytes, both partitions where the plan puts them? Then its entry arrays
+ * lie in the plan's table blocks (outside the usable range, clear of the
+ * headers), the only blocks create_table writes: a cut prepare's own. A
+ * table of Jam OS's types and names at other places is someone's, and
+ * the blocks create_table would write on it were never seen. */
+static bool jamos_geometry(const struct pt_disk *d, const struct pt_table *t)
+{
+    struct pt_jamos_plan p;
+    if (pt_jamos_plan(d->block_size, d->blocks, &p) != OK)
+        return false;
+    return t->first_usable == p.head_blocks && t->last_usable == p.tail_start - 1 &&
+           t->entry_count == PT_JAMOS_ENTRIES && t->entry_size == 128 &&
+           t->parts[0].start == p.esp_start && t->parts[0].blocks == p.esp_blocks &&
+           t->parts[1].start == p.data_start && t->parts[1].blocks == p.data_blocks;
+}
+
 /* Block 0 is all zeros: nothing is listed (UEFI ignores a GPT without a
  * protective MBR). The disk is blank if its ends are zeros too; if not,
  * it may be a create_table cut short: its protective MBR is written last,
  * so such a disk has block 0 zero and headers that are each zeros or a
- * good Jam OS one (its GPT is read to see), or, cut right after the first
- * write, nothing but the backup entry array (cut_after_array). */
+ * good Jam OS one at the plan's places (its GPT is read to see), or, cut
+ * right after the first write, nothing but the backup entry array
+ * (cut_after_array). */
 static void zero_disk(const struct pt_disk *d, struct pt_table *t)
 {
     t->blank = ends_zero(d);
@@ -280,7 +299,7 @@ static void zero_disk(const struct pt_disk *d, struct pt_table *t)
     uint8_t primary = t->primary, backup = t->backup;
     /* (One header at least is good: two zero ones list nothing.) */
     bool in_progress = header_zero_or_good(primary) && header_zero_or_good(backup) &&
-                       pt_jamos_layout(t);
+                       pt_jamos_layout(t) && jamos_geometry(d, t);
     *t = (struct pt_table){ .scheme = PT_SCHEME_NONE, .primary = primary, .backup = backup,
                             .blank_in_progress = in_progress };
 }

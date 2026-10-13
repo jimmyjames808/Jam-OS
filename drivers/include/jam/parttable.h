@@ -136,7 +136,8 @@ struct pt_table {
     bool     hybrid;              /* GPT behind an MBR that lists more than its EEh entries */
     bool     blank;               /* block 0 and the first and last 64 KiB are all zeros */
     bool     blank_in_progress;   /* block 0 zero, and either each header block zero or a
-                                   * good header of Jam OS's layout (one at least), or
+                                   * good header of Jam OS's layout at pt_jamos_plan's
+                                   * places on this disk (one at least), or
                                    * (the cut after create_table's first write) both
                                    * header blocks zero and the backup entry array
                                    * exactly what pt_jamos_make writes there, nothing
