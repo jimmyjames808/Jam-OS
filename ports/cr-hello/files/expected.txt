@@ -1,0 +1,29 @@
+cr-hello: start
+ctors: 3 ran: [ctors.cc first] [ctors.cc second] [main.cc global]
+ctors: dynamic initialisation 385
+exceptions: caught deep at depth 0, 6 frames unwound
+exceptions: caught range as logic_error
+exceptions: rethrown range
+exceptions: int 42
+exceptions: vector::at threw out_of_range
+exceptions: new of 4 EiB threw bad_alloc
+exceptions: exception_ptr rethrew kept
+threads: 8 joined, total 319999600000
+threads: thread_local destructors ran 8, main's thread_local 7
+threads: a guarded static made 1 time(s), value 1234
+threads: carried from a thread to main
+threads: atomic wait woke with 1
+threads: call_once ran 1 time(s)
+iostreams: [    42|ff|3.142|1.235e+04|true|ab***|]
+iostreams: read 14 5 word
+iostreams: to_string 1234567, stoi -89, stod 0.25
+iostreams: printf after cout, in order
+filesystem: a/ a/b/ a/b/two.txt a/uno.txt
+filesystem: uno.txt says one, two.txt is 5000 bytes, one.txt is not there
+filesystem: remove_all took 5, the directory is not there
+library: map apple=2 fig=1 pear=3
+library: sorted 9 7 5 3 1
+library: use_count 2, unique 4, function 42
+library: mt19937 3499211612 581869302
+library: slept at least 10 ms
+cr-hello: ok

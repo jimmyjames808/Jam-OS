@@ -1,0 +1,19 @@
+# cr-hello's test (tools/ports-test.sh; tools/cr-test.sh hello runs it): the
+# C++ program from /data/pkg, its output to a file and then shown, its exit
+# status 0, and the file byte for byte the expected.txt it was packaged
+# with (the build host's own build of the same source printed the same:
+# tools/cr-test.sh checks that side).
+send run $P/cr-hello /data/crh-$T > /data/crh-$T.txt; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send cat /data/crh-$T.txt
+wait threads: 8 joined, total 319999600000
+wait cr-hello: ok
+wait {prompt}
+send cmp /data/crh-$T.txt /data/pkg/share/cr-hello/expected.txt && echo same-$T
+wait same-x
+wait {prompt}
+# The scratch directory is gone (the program removed it).
+send ls /data | grep -c ^crh-$T$ | run $S/sed s/^/left-/
+wait left-0
+wait {prompt}
