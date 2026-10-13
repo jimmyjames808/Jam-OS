@@ -2154,7 +2154,13 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
   the stick can edit the file on another computer, as they could replace
   the kernel. User-space pagers (M12.5, [docs/M12.5-PLAN.md](docs/M12.5-PLAN.md);
   the kernel's half is built, fat is not yet a pager) will be the clean
-  way to map such code.
+  way to map such code. A program that starts another program on `/data`
+  (`posix_spawn`) asks init's `/svc/exec` (`svc exec` in its list;
+  [CR-PLAN's CE1](docs/CR-PLAN.md#ce1-notes)): init checks the approval
+  and its page table, seals the file's pages against them, and starts the
+  child itself with the namespace and powers of the child's own approval,
+  never its parent's; the parent gets its process (wait, no threads) and
+  its job (to kill it).
 
 ## Graphics
 

@@ -2,7 +2,7 @@
 # every service and the null device as descriptor 0; from the shell its
 # descriptor 0 is the terminal and its namespace has only what its list asks
 # for (the mounts, and /svc with net, net-listen and dns for the socket
-# sections). The checks that assumed init's run (epoll refuses the null
+# sections and exec for spawn-data). The checks that assumed init's run (epoll refuses the null
 # device: opened by the test itself now; /svc is a directory: skipped with a
 # printed reason when the namespace has none) failed here on the real PC.
 #   QEMU_INPUT=tools/shell-tests/posix-run.txt tools/qemu-test.sh <dir> posix-run shell
