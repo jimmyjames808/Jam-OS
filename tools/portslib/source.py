@@ -1,7 +1,7 @@
 """A port's source tree, made afresh for every build
 (docs/M13.7-PLAN.md section 5, step 3): the distfiles unpacked (or the
-vendored directory copied), the overrides checked and copied in, the
-patches applied in order.
+vendored directory or the port's own `local` one copied), the overrides
+checked and copied in, the patches applied in order.
 
 Unpacking trusts nothing in the archive: a member with an absolute path,
 a '..', a path through a symlink the archive made, a link whose target
@@ -187,6 +187,12 @@ def prepare(recipe, distfiles, work, say=print):
     os.makedirs(work)
     if recipe.get("vendored"):
         srcdir = copy_vendored(recipe.get("vendored"), work)
+    elif recipe.get("local"):   # the port's own code, in its directory
+        d = recipe.get("local")
+        if not os.path.isdir(recipe.port_file(d)):
+            raise SourceError("%s is not there" % recipe.port_file(d))
+        srcdir = os.path.join(work, d)
+        shutil.copytree(recipe.port_file(d), srcdir, symlinks=True)
     else:
         for path in distfiles:
             unpack(path, work)

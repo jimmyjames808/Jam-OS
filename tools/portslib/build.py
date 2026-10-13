@@ -16,7 +16,8 @@ Everything a port's build makes is under build/ports/<name>/ (the
 
 A port is out of date when its stamp changes: the SHA-256 of the
 builder's format, the recipe and every file in the port's directory, the
-shared files (config.site and the toolchain files), tools/jamos-cc, the
+shared files (config.site and the toolchain files), tools/jamos-cc (and
+for `toolchain clang` tools/jamos-clang and the clang's identity), the
 sysroot (build/sysroot changes with musl and the call layer), a vendored
 source's tree, SOURCE_DATE_EPOCH, and every needed port's own stamp, so a
 fix in a library rebuilds what links it. The distfiles' hashes are in the
@@ -106,6 +107,10 @@ class Builder:
             tree_hash(os.path.join(self.top, "tools", "jamos-cc"), h)
             h.update(self.sysroot_stamp().encode())
             h.update(toolchain.cross().encode())
+            if r.toolchain == "clang":   # the drivers and the clang itself
+                h.update(b"toolchain clang\0")
+                tree_hash(os.path.join(self.top, "tools", "jamos-clang"), h)
+                h.update(toolchain.clang_id(self.top).encode())
         h.update(b"epoch %d\n" % self.epoch(r))
         if r.get("vendored"):
             tree_hash(os.path.join("third_party", r.get("vendored")), h)
@@ -151,7 +156,8 @@ class Builder:
         return done
 
     def build_one(self, r):
-        missing = hostdata.missing_tools(r) if r.place == "host" else toolchain.missing_tools(r)
+        missing = (hostdata.missing_tools(r) if r.place == "host" else
+                   toolchain.missing_tools(r, self.top))
         if missing:
             raise BuildError("%s: this machine lacks %s" % (r.name, ", ".join(missing)))
         self.say("%s: building %s-%s r%d (%s, %s)" % (r.name, r.name, r.version, r.revision,

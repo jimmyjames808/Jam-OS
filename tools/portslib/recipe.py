@@ -39,7 +39,7 @@ KEYS = {
     "summary": ("one", 1, None), "homepage": ("one", 1, 1), "category": ("one", 1, 1),
     "licence": ("one", 1, None), "licence-file": ("many", 1, None),
     "lgpl-relink": ("one", 1, None),
-    "source": ("many", 3, 4), "vendored": ("one", 1, 1),
+    "source": ("many", 3, 4), "vendored": ("one", 1, 1), "local": ("one", 1, 1),
     "place": ("one", 1, 1), "style": ("one", 1, 1),
     "configure": ("many", 1, None), "make": ("many", 1, None),
     "cmake": ("many", 1, None), "meson": ("many", 1, None),
@@ -48,7 +48,15 @@ KEYS = {
     "subpackage": ("many", 2, None), "multicall": ("many", 2, None),
     "tool": ("many", 1, 1), "host-of": ("one", 1, 1), "data": ("many", 2, 2),
     "cpe": ("one", 1, 1), "fixed": ("many", 2, 2), "not-affected": ("many", 2, None),
+    "toolchain": ("one", 1, 1),
 }
+# `toolchain clang`: the port is compiled by tools/jamos-clang and
+# jamos-clang++ (clang and lld, LLVM's runtimes, C++) instead of jamos-cc
+# (docs/CR-PLAN.md section 1); without the line, jamos-cc and no C++.
+TOOLCHAINS = ("clang",)
+# The port that builds the runtimes every clang-built program links; every
+# other clang port needs it.
+RUNTIMES = "llvm-runtimes"
 REQUIRED = ("name", "version", "revision", "summary", "licence", "licence-file",
             "place", "style")
 
@@ -119,6 +127,11 @@ class Recipe:
     @property
     def style(self):
         return self.get("style", "")
+
+    @property
+    def toolchain(self):
+        """"clang", or None: jamos-cc."""
+        return self.get("toolchain")
 
     @property
     def prefix(self):
@@ -284,11 +297,21 @@ def _lint_licence(r):
 
 
 def _lint_source(r):
+    """Where the source is: `source` lines (fetched), `vendored`
+    (third_party/<dir>) or `local` (<dir> in the port's own directory:
+    Jam OS's own code, a test program such as ports/cr-hello's)."""
     p = []
     has_source = "source" in r.many
-    if has_source == ("vendored" in r.one):
-        p.append("%s: a recipe has 'source' lines or one 'vendored' line, not %s" %
-                 (r.path, "both" if has_source else "neither"))
+    given = int(has_source) + int("vendored" in r.one) + int("local" in r.one)
+    if given != 1:
+        p.append("%s: a recipe has 'source' lines, one 'vendored' line or one 'local' line: "
+                 "%s" % (r.path, "more than one" if given else "none"))
+    if "local" in r.one:
+        d = r.get("local")
+        if not FILE_NAME.match(d):
+            p.append("%s: local names a directory in the port's directory" % r.path)
+        elif not os.path.isdir(r.port_file(d)):
+            p.append("%s: local: %s is not there" % (r.path, r.port_file(d)))
     if "vendored" in r.one:
         d = r.get("vendored")
         if not FILE_NAME.match(d):
@@ -352,6 +375,16 @@ def _lint_style(r):
         for t in w:
             if not TOOL.match(t):
                 p.append("%s: host tool '%s'" % (r.path, t))
+    tc = r.toolchain
+    if tc is not None:
+        if tc not in TOOLCHAINS:
+            p.append("%s: toolchain must be one of %s (none: jamos-cc)" %
+                     (r.path, ", ".join(TOOLCHAINS)))
+        elif r.place == "host":
+            p.append("%s: a host port is built by the build machine's compiler, not a toolchain"
+                     % r.path)
+        elif r.name != RUNTIMES and RUNTIMES not in [d for d, _ in r.deps("needs")]:
+            p.append("%s: a clang port links LLVM's runtimes: 'needs %s'" % (r.path, RUNTIMES))
     return p
 
 
