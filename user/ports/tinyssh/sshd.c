@@ -12,8 +12,10 @@
  *     default is Nagle's algorithm) and SO_KEEPALIVE (a peer gone without
  *     a word is found), set here before the spawn: options move with the
  *     socket;
- *   - a namespace of /data read-only (the host key, authorized_keys) and
- *     /svc/session (init's sessions: what a login gets), nothing else;
+ *   - a namespace of /data read-only (authorized_keys, and the host key:
+ *     `:rk`, the view that shows /data/etc/ssh, which every program's view
+ *     hides) and /svc/session (init's sessions: what a login gets),
+ *     nothing else;
  *   - descriptor 2 the write end of one log pipe they all share, whose
  *     other end this loop reads and copies to its own 2, the kernel log (a
  *     child can't be given the log itself: the layer's log descriptor
@@ -106,7 +108,7 @@ static int listen_22(void)
  * its log on logw. 0 and *pid, or an errno value. */
 static int start_tinysshd(int c, int logw, pid_t *pid)
 {
-    static const char *const grants[] = { "/data:r", "/svc/session", NULL };
+    static const char *const grants[] = { "/data:rk", "/svc/session", NULL };
     char *argv[] = { "tinysshd", "-v", SSHD_KEYDIR, NULL };
     posix_spawn_file_actions_t fa;
     posix_spawnattr_t at;

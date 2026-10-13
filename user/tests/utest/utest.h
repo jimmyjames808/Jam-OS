@@ -338,6 +338,8 @@ int  ns_svc_child(const char *name);   /* "utest ns-svc <name>|-" */
 int  ns_view_child(const char *how);   /* "utest ns-view r|w" */
 bool t_view_etc_names(void);
 bool t_fat_views(void);
+bool t_view_keys_names(void);
+bool t_fat_view_keys(void);
 bool t_fat_view_limits(void);
 
 /* rights.c: the root's powers, vmo_make_exec and _verified. */
