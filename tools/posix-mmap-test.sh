@@ -23,9 +23,8 @@
 #             M12.5's PF2 (fat keeps mappings coherent with writes and maps
 #             a file open for writing): FAILS without it.
 #   spawn     a copy of posixtest on /data: posix_spawn of it is EACCES
-#             while it isn't allowed; then `allow`ed, the run's line is
-#             shown (it runs only once something seals a program for a
-#             POSIX program: until then EACCES, reported, not failed).
+#             while it isn't allowed; then `allow`ed, it runs (init's
+#             /svc/exec seals and starts it) and exits 7.
 # QEMU_SMP and QEMU_MEM pass through.
 # Usage: tools/posix-mmap-test.sh <outdir> [name]; exit 0 on PASS.
 set -eu
@@ -139,10 +138,11 @@ case_spawn() {
     [ "$n" -ge 1 ] || { echo "$name: spawn: no EACCES for the program not allowed"; ok=0; }
     want spawn 1 "^r-s=0" "$run"
     want spawn 1 "allow: /data/pt-prog may run" "$run"
-    # The allowed run: "started, exited 7" once a sealer exists; until then
-    # EACCES (and its section FAILED), shown here, not counted.
-    echo "$name: spawn: the allowed run said:"
-    grep -a "spawn-data: /data/pt-prog" "$run" | tail -1 || true
+    # The allowed run: sealed and started by init's /svc/exec, it exits 7.
+    want spawn 1 "posixtest: spawn-data: /data/pt-prog: started, exited 7" "$run"
+    want spawn 1 "^a-s=0" "$run"
+    never spawn "init: exec: .* didn't start" "$run"
+    no_errors spawn
 }
 
 for c in $cases; do
