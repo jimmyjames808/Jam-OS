@@ -455,8 +455,7 @@ KTEST(vmo_jit_sys_handles)
     struct khandle kv = khandle_from_new(vmex, RIGHTS_BASIC | RIGHT_ROOT_VMEX);
     handle_t vroot;
     KT_EQ(handle_insert(&t, &kv, &vroot), OK);
-    KT_EQ(sys_vmar_unmap(&t, vmar, a, PG), OK);
-    KT_EQ(handle_close(&t, xo), OK);
+    KT_EQ(sys_vmar_unmap(&t, vmar, a, PG), OK);   /* (xo and wo went with the message) */
     KT_EQ(sys_vmo_make_exec(&t, x, vroot, &s), ERR_BAD_STATE);   /* one handle, unmapped */
     KT_EQ(handle_close(&t, x), ERR_BAD_HANDLE);
     handle_table_destroy(&t);
