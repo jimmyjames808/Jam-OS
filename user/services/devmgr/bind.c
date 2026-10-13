@@ -144,8 +144,9 @@ static status_t spawn_driver(const struct binding *b, handle_t job, const struct
      * ("netprobe"), and a network card's (class 02) the network mode when
      * there is one ("vlan=21", "vlan=none": without it the driver keeps
      * the network off); drv/hda, "vtdtest" when devmgr was (the IOMMU
-     * checks entry); drv/nvme, its function ("pci=02:00.0", for its log),
-     * devmgr's "nvmetest=" word if any, and "ro" when devmgr has "diskro". */
+     * checks entry); drv/nvme, "ro" when devmgr has "diskro" (first), its
+     * function ("pci=02:00.0", for its log) and devmgr's "nvmetest=" word
+     * if any. */
     const char *name = b->kind == BIND_USB ? b->name : NULL;
     char vlan[NETDEV_MODE_TEXT] = "", pci[16];
     const char *argv[6] = { name ? name : b->path };
@@ -161,10 +162,12 @@ static status_t spawn_driver(const struct binding *b, handle_t job, const struct
         if (vtdtest && b->path && !strcmp(b->path, "drv/hda"))
             add_arg(argv, &argc, "vtdtest");   /* its deliberate DMA faults */
         if (b->path && !strcmp(b->path, "drv/nvme")) {
+            /* `ro` first: a driver keeps its first DRV_MAX_ARGS words, and
+             * this is the one that must never be cut. */
+            add_arg(argv, &argc, diskro ? "ro" : NULL);   /* every drive read-only */
             snprintf(pci, sizeof(pci), "pci=%02x:%02x.%x", b->info.bus, b->info.dev, b->info.fn);
             add_arg(argv, &argc, pci);
             add_arg(argv, &argc, nvmetest);   /* its test reads */
-            add_arg(argv, &argc, diskro ? "ro" : NULL);   /* every drive read-only */
         }
     }
     struct spawn_args a = {
