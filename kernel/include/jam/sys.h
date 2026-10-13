@@ -167,6 +167,9 @@ status_t sys_vmo_make_exec(struct handle_table *t, handle_t h, handle_t root, ha
  * RIGHT_READ on table, which stays. */
 status_t sys_vmo_make_exec_verified(struct handle_table *t, handle_t h, handle_t root,
                                     handle_t table, uint32_t flags, handle_t *out);
+/* vmo_make_jit (abi/syscalls.def): RIGHT_ROOT_JIT on root; RIGHT_READ,
+ * RIGHT_WRITE and RIGHT_MAP on h, which is gone whatever the status. */
+status_t sys_vmo_make_jit(struct handle_table *t, handle_t h, handle_t root, handle_t *out);
 /* RIGHT_WRITE | RIGHT_RESIZE. */
 status_t sys_vmo_decommit(struct handle_table *t, handle_t h, uint64_t offset, uint64_t len);
 /* vmo_create_child (abi/syscalls.def): RIGHT_READ | RIGHT_DUPLICATE on h;

@@ -116,6 +116,19 @@ status_t vmo_seal(struct vmo *v);
 status_t vmo_seal_verified(struct vmo *v, struct vmo_verify *vf);
 /* v's table (vmo_seal_verified), or NULL. Lock-free. */
 struct vmo_verify *vmo_verifier(struct vmo *v);
+/* Make v a JIT VMO for good (vmo_make_jit, docs/CR-PLAN.md section 12):
+ * from now on aspace_map and aspace_protect allow ASPACE_WRITE together
+ * with ASPACE_EXEC on its mappings (within each mapping's CAN bits); every
+ * other VMO keeps W^X. ERR_NOT_SUPPORTED unless v is a plain paged VMO
+ * (not contiguous, physical, kept, a pager VMO or a pager VMO's child);
+ * ERR_BAD_STATE (v unchanged) if it has a committed page, a mapping of any
+ * kind, a pin or a write path running, or is sealed or a JIT VMO already.
+ * A JIT VMO is never sealed (vmo_seal, vmo_seal_verified: ERR_BAD_STATE)
+ * and never gets a child (vmo_create_child: ERR_NOT_SUPPORTED). Takes v's
+ * "vmo resize" mutex: may sleep. */
+status_t vmo_make_jit(struct vmo *v);
+/* Whether v is a JIT VMO (vmo_make_jit). Lock-free; once true, for good. */
+bool vmo_is_jit(const struct vmo *v);
 /* Bytes of memory the VMO owns right now (committed pages; a page shared
  * copy-on-write counts in every VMO that holds it, as each pays for it). */
 uint64_t vmo_committed(struct vmo *v);

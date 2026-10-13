@@ -43,6 +43,7 @@
 #define SYS_vmar_unmap           61
 #define SYS_vmar_protect         62
 #define SYS_vmo_create_child     63
+#define SYS_vmo_make_jit         64
 #define SYS_process_create       70
 #define SYS_process_start        71
 #define SYS_process_kill         72

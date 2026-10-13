@@ -150,6 +150,43 @@
  * trusting the client. `faults` counts aspace_fault calls, for the tests
  * that check that.
  *
+ * W^X, and its one exception: JIT VMOs (docs/CR-PLAN.md section 12).
+ * No user page-table entry is ever writable and executable at once unless
+ * it maps a page of a JIT VMO (vmo_make_jit) through a mapping whose
+ * handle had both RIGHT_WRITE and RIGHT_EXEC. The argument:
+ *   1. Every user leaf entry gets its write and execute bits from
+ *      leaf_bits(perms) with perms a mapping's `flags` (a fault through
+ *      vmo_fault_map, a kept fill, leaves_protect, which may only take the
+ *      write bit away); nothing else in the kernel writes user leaves but
+ *      clearing (zap) and write-protecting (copy-on-write).
+ *   2. A mapping's `flags` are set in three places only: mapping_new
+ *      (aspace_map), protect_entries (aspace_protect) and split, which
+ *      copies them to a piece of the same mapping (same VMO). A merge
+ *      joins two mappings of one VMO with equal flags. So W+X flags exist
+ *      only where aspace_map or aspace_protect allowed them.
+ *   3. aspace_map allows them (perms_ok's `jit`) only when the VMO is a
+ *      JIT VMO, and aspace_protect (protect_span) only when every mapping
+ *      in the range maps one; each also needs ASPACE_CAN_WRITE and
+ *      ASPACE_CAN_EXEC in the mapping's `max`. sys_vmar_map sets those
+ *      from the handle's rights (userboot sets them itself and never maps
+ *      a JIT VMO: none exists then). A mapping's VMO never changes.
+ *   4. A VMO becomes a JIT VMO only through vmo_make_jit, once, for good,
+ *      while nothing maps it and it holds no page (vmo.c), and only
+ *      sys_vmo_make_jit calls that: with RIGHT_ROOT_JIT on the root and
+ *      the VMO's only handle in hand, which comes back with RIGHT_EXEC.
+ *      Every other handle that has RIGHT_EXEC (the boot image's, and
+ *      vmo_make_exec's and _verified's, of sealed VMOs) lacks RIGHT_WRITE,
+ *      and a JIT VMO is never sealed, so no sealed (approved) code is ever
+ *      writable and no JIT memory is ever approved code.
+ * So a program without RIGHT_ROOT_JIT gets W+X only through a JIT VMO
+ * handle that a holder of the power chose to give it, with both rights
+ * (the owner's rule: handles are delegable); a handle passed on without
+ * RIGHT_WRITE maps read and execute only, and without RIGHT_EXEC never
+ * executes. A JIT mapping's entries are otherwise ordinary: protect,
+ * faults, decommit and shrink treat them as any other's, and a JIT VMO has
+ * no copy-on-write child (its pages are never shared, so its writable
+ * entries are never write-protected by one).
+ *
  * Job charges. An address space made for a process
  * (aspace_create_charged) charges that job JOB_LIMIT_PAGES units for the
  * kernel memory it holds: 1 for the PML4 from creation to destroy, 1 for
@@ -247,6 +284,7 @@ struct aspace {
     uint64_t          pcid_id;
     uint64_t          tlb_gen;
     uint64_t          faults;     /* aspace_fault calls (atomic, relaxed; for tests) */
+    bool              jit;        /* has mapped a JIT VMO (atomic, set once; PROCESS_FLAG_JIT) */
 };
 
 static uint64_t mend(const struct mapping *m)
@@ -254,12 +292,18 @@ static uint64_t mend(const struct mapping *m)
     return m->base + m->len;
 }
 
-/* W^X, and no write or execute without read (x86 can't express either). */
-static bool perms_ok(unsigned p)
+/* W^X unless jit (a JIT VMO's mapping: the file header), and no write or
+ * execute without read (x86 can't express either). */
+static bool perms_ok(unsigned p, bool jit)
 {
-    if ((p & ASPACE_WRITE) && (p & ASPACE_EXEC))
+    if ((p & ASPACE_WRITE) && (p & ASPACE_EXEC) && !jit)
         return false;
     return !(p & (ASPACE_WRITE | ASPACE_EXEC)) || (p & ASPACE_READ);
+}
+
+static bool perms_wx(unsigned p)
+{
+    return (p & ASPACE_WRITE) && (p & ASPACE_EXEC);
 }
 
 static bool range_ok(uint64_t addr, uint64_t len)
@@ -1144,7 +1188,8 @@ status_t aspace_map(struct aspace *as, struct vmo *vmo, uint64_t vmo_off, uint64
     if (!as || !vmo || !addr || (flags & ~MAP_FLAGS))
         return ERR_INVALID_ARGS;
     unsigned perms = flags & PERMS;
-    if (!perms_ok(perms) || len == 0 || ((vmo_off | len) & (PAGE_SIZE - 1)))
+    bool jit = vmo_is_jit(vmo);   /* for good once true; never true for a kept VMO */
+    if (!perms_ok(perms, jit) || len == 0 || ((vmo_off | len) & (PAGE_SIZE - 1)))
         return ERR_INVALID_ARGS;
     if ((flags & ASPACE_FIXED) && !range_ok(*addr, len))
         return ERR_INVALID_ARGS;
@@ -1172,6 +1217,8 @@ status_t aspace_map(struct aspace *as, struct vmo *vmo, uint64_t vmo_off, uint64
         kfree(m);   /* never placed (or taken back): still ours */
         return st;
     }
+    if (jit)
+        __atomic_store_n(&as->jit, true, __ATOMIC_RELAXED);
     *addr = at;   /* m itself may have merged into a neighbour by now */
     return OK;
 }
@@ -1195,19 +1242,24 @@ status_t aspace_unmap(struct aspace *as, uint64_t addr, uint64_t len)
 }
 
 /* Region lock held: the mappings covering [addr, end), *first to *last,
- * for aspace_protect. ERR_NOT_FOUND if any of the range isn't mapped, else
- * ERR_ACCESS_DENIED if a mapping may not have flags (past its maximum, or
- * a kept one changed: its entries stay as they were filled). */
+ * for aspace_protect. ERR_INVALID_ARGS if flags are W+X and a mapping met
+ * isn't of a JIT VMO (W^X: the file header), else ERR_NOT_FOUND if any of
+ * the range isn't mapped, else ERR_ACCESS_DENIED if a mapping may not have
+ * flags (past its maximum, or a kept one changed: its entries stay as they
+ * were filled). */
 static status_t protect_span(const struct aspace *as, uint64_t addr, uint64_t end,
                              unsigned flags, struct mapping **first, struct mapping **last)
 {
     struct mapping *f = find(as, addr), *l = NULL;
+    bool wx = perms_wx(flags);
     if (!f)
-        return ERR_NOT_FOUND;
+        return wx ? ERR_INVALID_ARGS : ERR_NOT_FOUND;   /* W+X needs a JIT VMO there */
     bool denied = false;
     for (struct mapping *m = f;; m = next_of(m)) {
         if (!m || (l && m->base != mend(l)))
             return ERR_NOT_FOUND;   /* ran out, or a gap */
+        if (wx && !vmo_is_jit(m->vmo))
+            return ERR_INVALID_ARGS;
         denied |= (flags & ~m->max) != 0;
         denied |= m->kept && flags != m->flags;
         l = m;
@@ -1265,7 +1317,8 @@ static void protect_entries(struct aspace *as, struct mapping *first, uint64_t e
 
 status_t aspace_protect(struct aspace *as, uint64_t addr, uint64_t len, unsigned flags)
 {
-    if ((flags & ~PERMS) || !perms_ok(flags) || !range_ok(addr, len))
+    /* W+X passes here; protect_span allows it only over JIT VMOs. */
+    if ((flags & ~PERMS) || !perms_ok(flags, true) || !range_ok(addr, len))
         return ERR_INVALID_ARGS;
     uint64_t end = addr + len;
     mutex_lock(&as->lock);
@@ -1443,6 +1496,11 @@ uint64_t aspace_pt_pages(struct aspace *as)
 uint64_t aspace_fault_count(struct aspace *as)
 {
     return __atomic_load_n(&as->faults, __ATOMIC_RELAXED);
+}
+
+bool aspace_maps_jit(struct aspace *as)
+{
+    return __atomic_load_n(&as->jit, __ATOMIC_RELAXED);
 }
 
 uint32_t aspace_mapping_count(struct aspace *as)

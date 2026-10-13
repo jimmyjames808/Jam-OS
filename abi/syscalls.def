@@ -264,15 +264,37 @@
 # own (each page it shares; for a pager VMO's child, every page) and its
 # page tables: ERR_NO_MEMORY, no child, if the job can't pay, and no write
 # to a shared page ever fails for the job's limit afterwards.
-# ERR_NOT_SUPPORTED: vmo is contiguous or physical, or SNAPSHOT of a pager
-# VMO or a child of one. ERR_BAD_STATE: a pin or a kernel mapping covers a
+# ERR_NOT_SUPPORTED: vmo is contiguous, physical or a JIT VMO (64), or
+# SNAPSHOT of a pager VMO or a child of one. ERR_BAD_STATE: a pin or a kernel mapping covers a
 # page to share. A kept VMO (VMO_KEEP_PAGES) is never shared: the child
 # gets copies of its pages. Pins and kernel mappings of a child of a pager
 # VMO are ERR_NOT_SUPPORTED, as for the pager VMO; any other pin first
 # copies a shared page for the pinned VMO.
 63  vmo_create_child  status    handle_t vmo, uint32_t flags, uint64_t offset, uint64_t size, handle_t *out
+# vmo_make_jit: JIT memory (docs/CR-PLAN.md section 12): *out gets vmo's
+# handle again with RIGHT_EXEC added to its rights (a fresh VMO's: read,
+# write, map, resize, duplicate, transfer), and the VMO becomes a JIT VMO
+# for good: the one kind of memory a mapping may hold writable and
+# executable at once (VMAR_WRITE | VMAR_EXEC), through a handle with both
+# rights; every other VMO keeps W^X. Its creator may hand on a duplicate:
+# without RIGHT_WRITE it maps read and execute only, without RIGHT_EXEC it
+# never maps executable. vmo's handle is gone whatever the status (closed
+# on any error, as for vmo_make_exec). Needs RIGHT_ROOT_JIT on root (a
+# program whose list says `right jit`, approved), RIGHT_READ, RIGHT_WRITE
+# and RIGHT_MAP on vmo. ERR_NOT_SUPPORTED: vmo isn't a plain paged VMO (a
+# contiguous, physical, kept or pager VMO, a child of a pager VMO).
+# ERR_BAD_STATE: vmo has another handle, a mapping, a pin or a kernel
+# mapping, a committed page, a write running, or is sealed or a JIT VMO
+# already. A JIT VMO is never sealed (vmo_make_exec, _verified:
+# ERR_BAD_STATE), never given a child (vmo_create_child:
+# ERR_NOT_SUPPORTED), and its pages are charged as any VMO's.
+64  vmo_make_jit      status    handle_t vmo, handle_t root, handle_t *out
 
 # address spaces (flags: VMAR_READ/WRITE/EXEC/FIXED) --------------------------
+# W^X: VMAR_WRITE together with VMAR_EXEC, in vmar_map or vmar_protect, is
+# ERR_INVALID_ARGS for every mapping but one of a JIT VMO (vmo_make_jit,
+# 64), where it needs both rights on the handle it was mapped through, as
+# each permission does (ERR_ACCESS_DENIED).
 # vmar_map also takes VMAR_KEPT_ONLY (bit 4): only a VMO_KEEP_PAGES VMO
 # (ERR_NOT_SUPPORTED for another VMO), only VMAR_READ (ERR_INVALID_ARGS
 # for write or exec), and every page-table entry is filled before the call

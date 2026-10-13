@@ -313,7 +313,12 @@ Every driver and service is a userspace process from the start.
     "F1a design".
 - **VMAR**: one flat address space per process, no nested VMARs. Maps
   VMOs with R/W/X; W^X always, and an executable mapping needs `RIGHT_EXEC`
-  on the VMO handle. An address space's mappings are a balanced tree by
+  on the VMO handle. The one exception is a **JIT VMO** (`vmo_make_jit`,
+  which needs `RIGHT_ROOT_JIT`: a program whose list says `right jit`,
+  approved): made from a fresh VMO's only handle, never sealed and never
+  given a child, it may be mapped writable and executable at once through
+  a handle with both rights; a duplicate without write maps execute-only
+  (the argument is at the top of `kernel/mm/aspace.c`). An address space's mappings are a balanced tree by
   address that also keeps the largest free gap of each subtree, so a
   fault's lookup and a first-fit placement are O(log n), up to
   `VMAR_MAX_MAPPINGS` (65,536). Neighbouring mappings of one VMO at

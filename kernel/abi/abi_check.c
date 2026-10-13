@@ -91,7 +91,7 @@ _Static_assert(PROCESS_NAME_MAX + 1 == sizeof(((struct proc_stat *)0)->name),
                               RIGHT_TRANSFER | RIGHT_SIGNAL | RIGHT_WAIT | RIGHT_INSPECT |         \
                               RIGHT_MANAGE | RIGHT_SLICE | RIGHT_RESIZE)
 _Static_assert(RIGHTS_GENERIC_CHECK == 0xfffu && (RIGHTS_ROOT & 0x8000ffffu) == 0 &&
-                   RIGHTS_ROOT == 0x7ff0000u,
+                   RIGHTS_ROOT == 0xfff0000u,
                "rights: the generic ones in bits 0-11, the powers from bit 16 in order");
 
 _Static_assert(sizeof(struct handle_info) == 48 && offsetof(struct handle_info, queued) == 24 &&

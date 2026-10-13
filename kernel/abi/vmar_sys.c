@@ -1,6 +1,8 @@
 /* VMAR operations on handles (the system calls' sys_* layer). Mapping needs
  * RIGHT_WRITE on the vmar and, on the VMO handle, RIGHT_MAP plus the right
  * behind each permission asked for (RIGHT_READ, RIGHT_WRITE, RIGHT_EXEC).
+ * Write together with execute is an argument error (W^X) unless the VMO is
+ * a JIT VMO (vmo_make_jit); aspace_map checks that again.
  * The VMO handle's rights are also recorded as the most a later protect
  * may grant, so a mapping can never gain a permission the handle lacked.
  * ASPACE_KEPT_ONLY (VMAR_KEPT_ONLY) and ASPACE_REPLACE (VMAR_REPLACE) go
@@ -53,15 +55,23 @@ status_t sys_vmar_map(struct handle_table *t, handle_t vmar, handle_t vmo, uint6
 {
     if (flags & ~(USER_PERMS | ASPACE_FIXED | ASPACE_KEPT_ONLY | ASPACE_REPLACE))
         return ERR_INVALID_ARGS;   /* the CAN bits come from the handle, not the caller */
-    if ((flags & ASPACE_WRITE) && (flags & ASPACE_EXEC))
-        return ERR_INVALID_ARGS;   /* W^X is an argument error whatever the rights */
+    bool wx = (flags & ASPACE_WRITE) && (flags & ASPACE_EXEC);
     struct aspace *as;
     struct kobject *vref, *oref;
     status_t st = vmar_get(t, vmar, RIGHT_WRITE, &as, &vref);
     if (st != OK)
         return st;
     rights_t rights;
-    st = handle_get(t, vmo, OBJ_VMO, RIGHT_MAP | perm_rights(flags), &oref, &rights);
+    st = handle_get(t, vmo, OBJ_VMO, 0, &oref, &rights);
+    if (st == OK) {
+        /* W^X is an argument error whatever the rights, but on a JIT VMO. */
+        if (wx && !vmo_is_jit(vmo_from_kobject(oref)))
+            st = ERR_INVALID_ARGS;
+        else if ((RIGHT_MAP | perm_rights(flags)) & ~rights)
+            st = ERR_ACCESS_DENIED;
+        if (st != OK)
+            kobject_unref(oref);
+    }
     if (st == OK) {
         unsigned can = ((rights & RIGHT_READ) ? ASPACE_CAN_READ : 0) |
                        ((rights & RIGHT_WRITE) ? ASPACE_CAN_WRITE : 0) |

@@ -169,6 +169,45 @@ status_t sys_vmo_make_exec(struct handle_table *t, handle_t h, handle_t root, ha
     return st;
 }
 
+/* sys_vmo_make_exec's order for JIT memory (vmo_make_jit; the W^X
+ * argument is at the top of mm/aspace.c): the handle comes out of the
+ * table, the VMO must have no other handle (a duplicate a sibling made
+ * before the removal counts, and none can be made from h after it) and
+ * vmo_make_jit must find it bare (no page, mapping, pin or writer); only
+ * then does the handle go back, with RIGHT_EXEC added. So no handle that
+ * may both write and execute ever names a VMO that isn't a JIT VMO, and no
+ * mapping made before the call (there is none) can gain anything from it.
+ * A call that took its reference before the removal (a vmo_write, a
+ * vmar_map through h from another thread) is the caller's own: a write
+ * lands in its memory as any write would, and a mapping it makes keeps the
+ * rights h had (never RIGHT_EXEC). */
+status_t sys_vmo_make_jit(struct handle_table *t, handle_t h, handle_t root, handle_t *out)
+{
+    /* h is gone whatever the status, as for vmo_make_exec. */
+    struct vmo *v;
+    status_t st = sysinfo_check_root(t, root, RIGHT_ROOT_JIT);
+    if (st == OK)
+        st = vmo_get(t, h, RIGHT_READ | RIGHT_WRITE | RIGHT_MAP, &v);
+    if (st != OK) {
+        handle_close(t, h);   /* a bad value names nothing */
+        return st;
+    }
+    struct khandle kh = { NULL, 0 };
+    st = handle_remove(t, h, &kh);
+    DBG_HOOK(DBG_VMO_EXEC_CHECK, v);
+    if (st == OK && kobject_handles(vmo_kobject(v)) != 1)
+        st = ERR_BAD_STATE;
+    if (st == OK)
+        st = vmo_make_jit(v);
+    if (st == OK) {
+        kh.rights |= RIGHT_EXEC;
+        st = handle_insert(t, &kh, out);
+    }
+    khandle_release(&kh);   /* a no-op once inserted; else h is closed */
+    vmo_put(v);
+    return st;
+}
+
 /* The table for v from the VMO behind handle `table` (RIGHT_READ), its
  * pages charged to t's job. */
 static status_t copy_table(struct handle_table *t, handle_t table, struct vmo *v,

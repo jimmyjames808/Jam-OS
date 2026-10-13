@@ -109,6 +109,18 @@
  * that took its reference before the seal either finishes before it (and
  * the seal fails) or is refused after it: none lands afterwards.
  *
+ * JIT VMOs (vmo_make_jit, docs/CR-PLAN.md section 12): a plain paged VMO
+ * that may be mapped writable and executable at once (aspace.c's W^X
+ * rule). `jit` is set once, under the lock and the "vmo resize" mutex,
+ * while the VMO has no page, no mapping, pin or kernel mapping and no
+ * writer, and is never cleared; so every mapping of a JIT VMO was made
+ * after it became one, and nothing it held before (no page: nothing) is
+ * ever executed through it. The other kinds can never become one, and a
+ * JIT VMO can never be sealed (vmo_seal, vmo_seal_verified: no approved
+ * code is ever writable) or give a copy-on-write child (vmo_create_child,
+ * checked under "vmo resize", so a creation and the marking never
+ * overlap: a child holds nothing a JIT VMO ever held).
+ *
  * Kept VMOs (VMO_KEEP_PAGES, a paged VMO): every page below the size is
  * committed from vmo_create_for to destroy. Creation commits them all
  * (charged to the job one by one, so a refused page stops it); decommit and
@@ -272,6 +284,8 @@ struct vmo {
     unsigned         order;               /* contiguous: buddy order it came from */
     uint64_t         next_pin_id;         /* the next pin's id */
     bool             sealed;              /* vmo_seal: bytes and size fixed for good; lock */
+    bool             jit;                 /* vmo_make_jit: W+X mappings allowed; set once
+                                             (lock and resize), read lock-free */
     uint32_t         writers;             /* write-path calls in progress (writer_enter); lock */
     struct list_node ranges;              /* struct vmo_range: kernel mappings and pins */
     struct itree     umaps;               /* struct vmo_umap by page range: user mappings
@@ -1498,7 +1512,7 @@ status_t vmo_seal(struct vmo *v)
     uint64_t f = vlock(v);
     /* A pager VMO's pages arrive after the seal: never sealed unchecked;
      * nor a pager child, whose untouched pages may still change. */
-    bool ok = v->kind == VMO_PAGED && !v->pv && !v->src && itree_empty(&v->umaps) &&
+    bool ok = v->kind == VMO_PAGED && !v->pv && !v->src && !v->jit && itree_empty(&v->umaps) &&
               list_empty(&v->ranges) && v->writers == 0;
     if (ok)
         v->sealed = true;
@@ -1509,7 +1523,7 @@ status_t vmo_seal(struct vmo *v)
 status_t vmo_seal_verified(struct vmo *v, struct vmo_verify *vf)
 {
     uint64_t f = vlock(v);
-    bool ok = v->pv && !v->pdetached && !v->verify && itree_empty(&v->umaps) &&
+    bool ok = v->pv && !v->pdetached && !v->verify && !v->jit && itree_empty(&v->umaps) &&
               list_empty(&v->ranges) && v->writers == 0;
     if (ok) {
         /* Pages that came before the table were never checked. Nothing
@@ -1526,6 +1540,27 @@ status_t vmo_seal_verified(struct vmo *v, struct vmo_verify *vf)
 struct vmo_verify *vmo_verifier(struct vmo *v)
 {
     return __atomic_load_n(&v->verify, __ATOMIC_ACQUIRE);
+}
+
+status_t vmo_make_jit(struct vmo *v)
+{
+    /* Fixed at creation: no lock needed to refuse the other kinds. */
+    if (v->kind != VMO_PAGED || v->pv || v->src || vmo_is_kept(v))
+        return ERR_NOT_SUPPORTED;
+    mutex_lock(&v->resize);   /* no child creation is sharing its pages meanwhile */
+    uint64_t f = vlock(v);
+    bool ok = !v->jit && !v->sealed && v->committed == 0 && v->writers == 0 &&
+              itree_empty(&v->umaps) && list_empty(&v->ranges);
+    if (ok)
+        __atomic_store_n(&v->jit, true, __ATOMIC_RELEASE);   /* vmo_is_jit's acquire */
+    vunlock(v, f);
+    mutex_unlock(&v->resize);
+    return ok ? OK : ERR_BAD_STATE;
+}
+
+bool vmo_is_jit(const struct vmo *v)
+{
+    return __atomic_load_n(&v->jit, __ATOMIC_ACQUIRE);
 }
 
 /* ---- user mappings (reverse map, see aspace_vmo.h) ------------------------ */
@@ -1870,7 +1905,11 @@ status_t vmo_create_child(struct job *job, struct vmo *p, uint32_t flags, uint64
         st = copy_pages(p, c, offp);
     } else {
         mutex_lock(&p->resize);
-        if (p->src) {   /* a pager child's child: the same pager VMO, the window's rest */
+        /* A JIT VMO shares nothing (the file header): checked under "vmo
+         * resize", which vmo_make_jit holds while it marks one. */
+        if (vmo_is_jit(p))
+            st = ERR_NOT_SUPPORTED;
+        if (st == OK && p->src) {   /* a pager child's child: its pager VMO, the window's rest */
             uint64_t f = vlock(p);
             uint64_t win = p->win > offp ? p->win - offp : 0;
             vunlock(p, f);

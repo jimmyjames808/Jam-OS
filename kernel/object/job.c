@@ -454,6 +454,7 @@ void job_list_processes(struct job *j, uint32_t depth, struct proc_stat *out, ui
             s->state = info.state;
             s->threads = info.threads;
             s->depth = depth;
+            s->flags = info.flags;
             const char *name = process_name(p);
             size_t l = strlen(name);
             memcpy(s->name, name, l < sizeof(s->name) - 1 ? l : sizeof(s->name) - 1);

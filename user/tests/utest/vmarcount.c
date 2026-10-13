@@ -12,7 +12,8 @@
 static uint32_t mappings(void)
 {
     struct process_info pi;
-    if (jam_process_get_info(startup_handle(SR_SELF_PROCESS), &pi) != OK || pi.reserved)
+    if (jam_process_get_info(startup_handle(SR_SELF_PROCESS), &pi) != OK ||
+        (pi.flags & ~PROCESS_FLAG_JIT))
         return 0;
     return pi.mappings;
 }
