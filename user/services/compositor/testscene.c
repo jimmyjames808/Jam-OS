@@ -19,6 +19,16 @@
  *                 responding, s solid (no pattern)
  *   fullscreen=AARRGGBB
  *                 the same at (0, 0), as big as the output
+ *   sub=K,X,Y,W,H,AARRGGBB[,flags]
+ *                 a subsurface of surface K (a window's or a subsurface's;
+ *                 it takes the next number) at (X, Y) in K, W x H of the
+ *                 same pixels, on top of K's order, drawn at once. Flags:
+ *                 b at the bottom of K's order (below K itself), s solid,
+ *                 o its opaque region all of it
+ *   geom=K,X,Y,W,H
+ *                 window K's window geometry, in its surface's coordinates
+ *                 (xdg_surface.set_window_geometry's): its subsurfaces are
+ *                 clipped to it, its frame goes round it
  *   move=K,X,Y    raise=K    unmap=K    map=K
  *   damage=X,Y,W,H
  *   cursor=X,Y    the cursor (the arrow at first), there;  nocursor
@@ -46,7 +56,7 @@
 #include "paint.h"
 #include "testscene.h"
 
-#define WINS_MAX      8
+#define WINS_MAX      16
 #define BENCH_SAMPLES 31
 
 /* A window with no client: its surface, buffer and pool are ours. */
@@ -208,6 +218,50 @@ static bool cmd_win(const char *s)
         return false;
     apply_flags(t, flags);
     return true;
+}
+
+/* sub=K,X,Y,W,H,AARRGGBB[,flags]: a subsurface of surface K. */
+static bool cmd_sub(const char *s)
+{
+    int64_t v[6];
+    const char *flags;
+    if (numbers(s, v, 6, 5, &flags) != 6 || v[0] < 1 || v[0] > (int64_t)nwins || v[3] < 1 ||
+        v[4] < 1 || v[3] > 4096 || v[4] > 4096 || v[1] < -8192 || v[1] > 8192 || v[2] < -8192 ||
+        v[2] > 8192 || v[5] > 0xffffffffll)
+        return false;
+    struct comp_surface *parent = &wins[v[0] - 1].s;
+    int32_t w = (int32_t)v[3], h = (int32_t)v[4];
+    uint32_t *px = pixels_of(w, h, (uint32_t)v[5], flags && strchr(flags, 's'));
+    struct twin *t = px ? add_surface(w, h, px, (uint32_t)w, (uint32_t)v[5] >> 24 != 0xff) : NULL;
+    if (!t)
+        return false;
+    if (flags && strchr(flags, 'o'))
+        (void)region_add(&t->s.opaque, box_make(0, 0, w, h));
+    return subsurface_add_now(&t->s, parent, (int32_t)v[1], (int32_t)v[2],
+                              flags && strchr(flags, 'b')) == OK;
+}
+
+/* geom=K,X,Y,W,H: window K's window geometry. */
+static bool cmd_geom(const char *s)
+{
+    int64_t v[5];
+    const char *rest;
+    struct comp_window *w = numbers(s, v, 5, -1, &rest) == 5 && !rest &&
+                                    v[0] >= 1 && v[0] <= (int64_t)nwins
+                                ? wins[v[0] - 1].s.window
+                                : NULL;
+    if (!w || v[3] < 1 || v[4] < 1 || v[3] > 8192 || v[4] > 8192 || v[1] < -8192 ||
+        v[1] > 8192 || v[2] < -8192 || v[2] > 8192)
+        return false;
+    window_set_geom(w, box_make((int32_t)v[1], (int32_t)v[2], (int32_t)v[3], (int32_t)v[4]));
+    return true;
+}
+
+/* Every subsurface of ours out of its tree, as its wl_subsurface's destroy. */
+static void subs_gone(void)
+{
+    for (unsigned i = 0; i < nwins; i++)
+        subsurface_remove_now(&wins[i].s);
 }
 
 /* fullscreen=AARRGGBB: a window as big as the output, at (0, 0). */
@@ -381,6 +435,7 @@ static bool bench_run(void)
 {
     int32_t w = scene.width, h = scene.height;
     set_cursor_picture(NULL, 0, 0);
+    subs_gone();
     while (nwins)
         if (wins[--nwins].s.window)
             window_destroy(wins[nwins].s.window);
@@ -421,6 +476,7 @@ static bool bench_run(void)
 static void clear(void)
 {
     set_cursor_picture(NULL, 0, 0);
+    subs_gone();
     for (unsigned i = 0; i < nwins; i++)
         if (wins[i].s.window)
             window_destroy(wins[i].s.window);
@@ -442,6 +498,10 @@ static bool run_one(const char *c)
         return cmd_win(s);
     if ((s = after(c, "fullscreen")))
         return cmd_fullscreen(s);
+    if ((s = after(c, "sub")))
+        return cmd_sub(s);
+    if ((s = after(c, "geom")))
+        return cmd_geom(s);
     if ((s = after(c, "cursorsurf")))
         return cmd_cursor("cursorsurf", s);
     if ((s = after(c, "cursorsize")))

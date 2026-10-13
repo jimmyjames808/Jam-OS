@@ -817,6 +817,14 @@ bool t_xdg_tiled(void);
 bool t_xdg_decoration(void);
 bool t_xdg_decoration_bad(void);
 bool t_xdg_geometry(void);
+/* compsub.c: subsurfaces: trees painted and clipped, the frame round a
+ * tree, synchronized and desynchronized commits, the order, input to the
+ * topmost surface, the hostile cases and the caps. */
+bool t_comp_sub_paint(void);
+bool t_comp_sub_frame(void);
+bool t_comp_sub_commits(void);
+bool t_comp_sub_input(void);
+bool t_comp_sub_hostile(void);
 
 /* netdev.c: the netdev rings' code (<jam/netdev.h>): counts, a hostile
  * peer, the wake flags, the VLAN word, a fake driver thread's exchange. */

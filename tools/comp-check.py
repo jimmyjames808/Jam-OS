@@ -152,17 +152,81 @@ def edge(focused, d):
     return 0 if d < -reach else 65536 if d >= reach else EDGES[focused][d]
 
 
-class Win:
+class Sub:
+    """A subsurface (`sub=`): at (dx, dy) in its parent, its own children in
+    `order` with itself ("self"), bottom to top."""
+    def __init__(self, n, dx, dy, w, h, argb, flags):
+        self.n, self.dx, self.dy, self.w, self.h = n, dx, dy, w, h
+        self.argb, self.flags, self.order = argb, flags, ["self"]
+
+    def add(self, sub):
+        if "b" in sub.flags:
+            self.order.insert(0, sub)
+        else:
+            self.order.append(sub)
+
+
+def bounds(a, b):
+    return (min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]))
+
+
+class Win(Sub):
     def __init__(self, n, x, y, w, h, argb, flags):
-        self.n, self.x, self.y, self.w, self.h = n, x, y, w, h
-        self.argb, self.flags, self.mapped = argb, flags, True
+        Sub.__init__(self, n, 0, 0, w, h, argb, flags)
+        self.x, self.y, self.mapped, self.geom = x, y, True, None
         self.look = "t" if "t" in flags else "g" if "g" in flags else "m" if "m" in flags else ""
         self.focused = "f" in flags
+
+    def layers(self):
+        """Its surfaces as drawn, bottom to top: (x, y, w, h, argb, flags, main)."""
+        out = []
+
+        def walk(node, ox, oy):
+            for e in node.order:
+                if e == "self":
+                    out.append((ox, oy, node.w, node.h, node.argb, node.flags, node is self))
+                else:
+                    walk(e, ox + e.dx, oy + e.dy)
+        walk(self, self.x, self.y)
+        return out
+
+    def geometry(self):
+        """The window geometry on the output: the one set, within the tree, or
+        the whole tree (scene.c's window_geom)."""
+        tree = None
+        for x, y, w, h, _, _, _ in self.layers():
+            tree = (x, y, x + w, y + h) if tree is None else bounds(tree, (x, y, x + w, y + h))
+        if self.geom:
+            g = (self.x + self.geom[0], self.y + self.geom[1], self.x + self.geom[2],
+                 self.y + self.geom[3])
+            g = (max(g[0], tree[0]), max(g[1], tree[1]), min(g[2], tree[2]), min(g[3], tree[3]))
+            if g[0] < g[2] and g[1] < g[3]:
+                return g
+        return tree
 
     def frame(self):
         top = {"t": TITLE_H, "m": TITLE_H, "g": BORDER}.get(self.look, 0)
         side = {"t": OUTLINE, "g": BORDER}.get(self.look, 0)
-        return self.x - side, self.y - top, self.x + self.w + side, self.y + self.h + side
+        x1, y1, x2, y2 = self.geometry()
+        return x1 - side, y1 - top, x2 + side, y2 + side
+
+    def surfaces(self, px, py, below, g):
+        """Its surfaces' pixel at (px, py) over `below`: each subsurface clipped
+        to the window geometry g, the main surface not."""
+        v = below
+        for x, y, w, h, argb, flags, main in self.layers():
+            if not (x <= px < x + w and y <= py < y + h):
+                continue
+            if not main and not (g[0] <= px < g[2] and g[1] <= py < g[3]):
+                continue
+            a, rgb = argb >> 24, pattern(argb & 0xFFFFFF, px - x, py - y, "s" in flags)
+            if a == 0xFF:
+                v = rgb
+            elif "o" in flags:
+                v = pm(rgb, a) & 0xFFFFFF
+            else:
+                v = None if v is None else over(v, pm(rgb, a))
+        return v
 
     def radius(self):
         if self.look not in CORNERS:
@@ -205,14 +269,10 @@ class Win:
     def body(self, px, py, below):
         """The window's own pixel at (px, py) in its frame, over `below`."""
         x1, y1, x2, y2 = self.frame()
-        if self.x <= px < self.x + self.w and self.y <= py < self.y + self.h:
-            a, rgb = self.argb >> 24, pattern(self.argb & 0xFFFFFF, px - self.x, py - self.y,
-                                             "s" in self.flags)
-            if a == 0xFF:
-                return rgb
-            if "o" in self.flags:
-                return pm(rgb, a) & 0xFFFFFF
-            return None if below is None else over(below, pm(rgb, a))
+        g = self.geometry()
+        if g[0] <= px < g[2] and g[1] <= py < g[3] or \
+                self.x <= px < self.x + self.w and self.y <= py < self.y + self.h:
+            return self.surfaces(px, py, below, g)
         if self.look == "g":
             return self.edge_colour()
         if self.look == "t" and (px in (x1, x2 - 1) or py == y1 or py == y2 - 1):
@@ -245,6 +305,7 @@ class Win:
 def parse(log):
     """The output size, and each held step's windows (stacking order) and cursor."""
     size, wins, cursor, steps, paints = None, [], None, {}, {}
+    surfs = {}   # every surface by its number: windows' and subsurfaces'
     for line in open(log, errors="replace"):
         m = re.search(r"compositor: testscene: (.*)", line)
         if not m:
@@ -257,18 +318,31 @@ def parse(log):
             if c.startswith("fullscreen="):
                 c = "win=0,0,%d,%d,%s," % (size[0], size[1], c.split("=")[1])
             f = c[4:].split(",") + [""]
-            wins.append(Win(len(wins) + 1, int(f[0]), int(f[1]), int(f[2]), int(f[3]),
+            wins.append(Win(len(surfs) + 1, int(f[0]), int(f[1]), int(f[2]), int(f[3]),
                             int(f[4], 16), f[5]))
+            surfs[wins[-1].n] = wins[-1]
+        elif c.startswith("sub="):
+            f = c[4:].split(",") + [""]
+            sub = Sub(len(surfs) + 1, int(f[1]), int(f[2]), int(f[3]), int(f[4]), int(f[5], 16),
+                      f[6])
+            surfs[int(f[0])].add(sub)
+            surfs[sub.n] = sub
+        elif c.startswith("geom="):
+            k, x, y, w, h = map(int, c[5:].split(","))
+            surfs[k].geom = (x, y, x + w, y + h)
+        elif c == "clear":
+            for w in wins:
+                w.mapped = False
         elif c.startswith("move="):
             k, x, y = map(int, c[5:].split(","))
-            w = next(w for w in wins if w.n == k)
+            w = surfs[k]
             w.x, w.y = x, y
         elif c.startswith("raise="):
-            w = next(w for w in wins if w.n == int(c[6:]))
+            w = surfs[int(c[6:])]
             wins.remove(w)
             wins.append(w)
         elif c.startswith("map=") or c.startswith("unmap="):
-            next(w for w in wins if w.n == int(c.split("=")[1])).mapped = c[0] == "m"
+            surfs[int(c.split("=")[1])].mapped = c[0] == "m"
         elif c.startswith("cursor="):
             cursor = tuple(map(int, c[7:].split(",")))
         elif c == "nocursor":
@@ -686,11 +760,11 @@ def check_desk(step, prefix, size, desk, tops, strip):
 def main():
     log, prefix = sys.argv[1], sys.argv[2]
     size, wins, steps, paints = parse(log)
-    if not size or sorted(steps) != [1, 2, 3, 4, 5]:
-        print("comp-check: the log has no output size or not the five steps: %s" % sorted(steps))
+    if not size or sorted(steps) != [1, 2, 3, 4, 5, 6]:
+        print("comp-check: the log has no output size or not the six steps: %s" % sorted(steps))
         return 1
     wall = Wallpaper(*size)
-    ok = all([check_step(s, prefix, size, wins, steps[s], wall) for s in (1, 2, 3)])
+    ok = all([check_step(s, prefix, size, wins, steps[s], wall) for s in (1, 2, 3, 6)])
     desk, tops = parse_desk(log)
     strip = frost_strip(wall, *size)
     ok = all([check_desk(s, prefix, size, desk[s], tops, strip) for s in (4, 5)]) and ok
