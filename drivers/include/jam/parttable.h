@@ -8,7 +8,9 @@
  * Pure code: no I/O of its own, no allocation, no logging. The caller
  * passes a read function and a buffer it reads into; the library asks
  * only for blocks inside the disk, at most the buffer's size at a time,
- * and never writes. What it read and left out is in the table it fills
+ * and never writes. It fills the buffer with a non-zero pattern before
+ * every read, so a read that answers OK without its data landing (a DMA
+ * the IOMMU dropped) never passes for a blank disk's zeros. What it read and left out is in the table it fills
  * (the reasons a GPT header was not taken, notes on left-out entries), for
  * the driver to log.
  *
@@ -33,9 +35,12 @@
  *     entries in table order, each inside the disk, past block 0, and not
  *     overlapping an earlier one (left out otherwise).
  *   - if block 0 is all zeros: the first and last 64 KiB, for the blank
- *     rule, and if they aren't all zeros, the GPT too (only to see whether
- *     the disk is blank-in-progress: `blank_in_progress` below; a GPT
- *     without a protective MBR is never listed, as UEFI ignores it).
+ *     rule, and if they aren't all zeros, whether the only non-zero blocks
+ *     are the backup entry array create_table writes first (pt_jamos_plan's
+ *     place, pt_jamos_array_head_is's bytes: the cut after that write), and
+ *     if not, the GPT too (only to see whether the disk is
+ *     blank-in-progress: `blank_in_progress` below; a GPT without a
+ *     protective MBR is never listed, as UEFI ignores it).
  *   - GPT (UEFI 2.10, 5.3): the primary header (block 1), its entry array,
  *     the backup header (the last block), its entry array. Each header is
  *     checked alone (signature, revision 1.0, header size 92 up to the
@@ -130,9 +135,14 @@ struct pt_table {
     uint8_t  backup;              /* enum pt_bad: the backup GPT header */
     bool     hybrid;              /* GPT behind an MBR that lists more than its EEh entries */
     bool     blank;               /* block 0 and the first and last 64 KiB are all zeros */
-    bool     blank_in_progress;   /* block 0 zero, and each header block zero or a good
-                                   * header of Jam OS's layout (one at least): a
-                                   * create_table that was cut before its last write */
+    bool     blank_in_progress;   /* block 0 zero, and either each header block zero or a
+                                   * good header of Jam OS's layout at pt_jamos_plan's
+                                   * places on this disk (one at least), or
+                                   * (the cut after create_table's first write) both
+                                   * header blocks zero and the backup entry array
+                                   * exactly what pt_jamos_make writes there, nothing
+                                   * else in the blank rule's ends: a create_table that
+                                   * was cut before its last write */
     uint32_t mbr_id;              /* the MBR's disk id (block 0, 440), MBR scheme only; else 0 */
     uint8_t  disk_guid[16];       /* the GPT disk GUID (zeros: not GPT) */
     uint64_t first_usable;        /* the GPT usable range (0, 0: not GPT) */
@@ -187,6 +197,76 @@ enum pt_kind pt_kind(const struct pt_table *t);
 
 #define PT_JAMOS_ESP_NAME  "Jam OS ESP"
 #define PT_JAMOS_DATA_NAME "Jam OS data"
+
+/* ---- Jam OS's table, made (drivers/lib/parttable_make.c) ------------------------------
+ *
+ * The bytes storage.create_table writes onto a blank disk (the driver
+ * writes them; this only fills a buffer): a protective MBR, both GPT
+ * headers and one entry array of PT_JAMOS_ENTRIES entries, holding
+ * exactly the layout pt_is_jamos accepts. The ESP from PT_JAMOS_ALIGN,
+ * PT_JAMOS_ESP_BYTES long; the data partition from its end to the last
+ * usable block, at most PT_JAMOS_DATA_MAX, ending on a multiple of
+ * PT_JAMOS_ALIGN. Every block the table takes lies inside the blank
+ * rule's zeros (the first and last PT_BLANK_BYTES), so preparing a blank
+ * disk overwrites only blocks the blank rule saw to be zeros. */
+
+#define PT_JAMOS_ENTRIES     128                    /* entries of 128 bytes: a 16 KiB array */
+#define PT_JAMOS_ARRAY_BYTES (PT_JAMOS_ENTRIES * 128u)
+#define PT_JAMOS_ALIGN       (1ull << 20)           /* the ESP's start; the data partition's end */
+#define PT_JAMOS_ESP_BYTES   (512ull << 20)
+#define PT_JAMOS_DATA_MIN    (64ull << 20)          /* a smaller disk is refused */
+#define PT_JAMOS_DATA_MAX    (2ull << 40)           /* FAT32's 32-bit sector numbers */
+
+/* Where Jam OS's table and partitions go on a disk. */
+struct pt_jamos_plan {
+    uint32_t array_blocks;        /* an entry array's blocks */
+    uint64_t head_blocks;         /* blocks [0, head_blocks): MBR, primary header and array */
+    uint64_t tail_start;          /* blocks [tail_start, the end): backup array, backup header */
+    uint64_t esp_start, esp_blocks;
+    uint64_t data_start, data_blocks;
+};
+
+/* The plan for a disk of `blocks` blocks of `block_size` bytes. OK;
+ * ERR_INVALID_ARGS: a block size that isn't 512 to 4096 and a power of
+ * two; ERR_NO_SPACE: the data partition would be under PT_JAMOS_DATA_MIN. */
+status_t pt_jamos_plan(uint32_t block_size, uint64_t blocks, struct pt_jamos_plan *out);
+
+/* The buffer pt_jamos_make fills, in blocks: block PT_JAMOS_AT_MBR the
+ * protective MBR, PT_JAMOS_AT_PRIMARY the primary header,
+ * PT_JAMOS_AT_ARRAY on the entry array (array_blocks), then the backup
+ * header (pt_jamos_at_backup). */
+#define PT_JAMOS_AT_MBR     0u
+#define PT_JAMOS_AT_PRIMARY 1u
+#define PT_JAMOS_AT_ARRAY   2u
+static inline uint32_t pt_jamos_at_backup(const struct pt_jamos_plan *p)
+{
+    return PT_JAMOS_AT_ARRAY + p->array_blocks;
+}
+static inline uint32_t pt_jamos_buf_blocks(const struct pt_jamos_plan *p)
+{
+    return pt_jamos_at_backup(p) + 1;
+}
+
+/* Fill buf (buf_size bytes, pt_jamos_buf_blocks blocks at least) with
+ * Jam OS's table for the disk, its disk GUID and the two partitions'
+ * unique GUIDs as given (16 bytes each, as on disk). OK;
+ * ERR_INVALID_ARGS: a GUID all zeros, two the same, a buffer too small,
+ * or pt_jamos_plan's errors. Writes nothing but buf. */
+status_t pt_jamos_make(uint32_t block_size, uint64_t blocks, const uint8_t *disk_guid,
+                       const uint8_t *esp_guid, const uint8_t *data_guid, uint8_t *buf,
+                       size_t buf_size);
+
+/* The cut between create_table's first two writes leaves the backup entry
+ * array alone on the disk (the backup header is the second write). Does
+ * `head`, the first PT_JAMOS_HEAD_BYTES of an entry array read from the
+ * place pt_jamos_plan gives it on a disk of `blocks` blocks, hold exactly
+ * the two entries pt_jamos_make writes there? The two unique GUIDs are
+ * taken from the bytes themselves (they were random; the maker only needs
+ * them non-zero and different), everything else is made the way the maker
+ * makes it and compared byte for byte. The rest of an entry array is zeros
+ * (the maker writes no more than two entries): the caller checks that. */
+#define PT_JAMOS_HEAD_BYTES 256
+bool pt_jamos_array_head_is(uint32_t block_size, uint64_t blocks, const uint8_t *head);
 
 /* Well-known type GUIDs, as their bytes on disk. */
 extern const uint8_t pt_type_esp[16];          /* C12A7328-F81F-11D2-BA4B-00A0C93EC93B */

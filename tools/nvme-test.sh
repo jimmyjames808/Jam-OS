@@ -1,5 +1,10 @@
 #!/bin/sh
-# M12.7 stage 1's QEMU test: drv/nvme on emulated NVMe drives, read-only.
+# M12.7's QEMU test: drv/nvme on emulated NVMe drives: read-only on every
+# drive that isn't Jam OS's (stage 1's cases), and writes to a Jam OS
+# drive only (stage 2's `write` and `diskro`). Every case keeps a
+# Windows-like drive attached (the PC-like image; `4k` and `damaged` its
+# 4096-byte and broken-header forms) whose SHA-256 must be the same at the
+# end.
 # For each case it makes the drive image(s) (tools/nvme-img.py: a
 # Windows-like GPT disk like the PC's, a second namespace, 4096-byte
 # blocks, a damaged primary GPT), boots the shell with them attached
@@ -31,11 +36,53 @@
 #            nvme.c: storage, block, 32 reads in flight, a client that leaves
 #            with reads out), and their storage.digest region lines equal
 #            tools/disk-regions.py's on the image (from level 2 on)
+#   write    stage 2: the Windows-like drive and a blank one (640 MiB), with
+#            utest's write cases straight at the driver (`utest only
+#            nvmew_`, user/tests/utest/nvmewrite.c: volumes bypassed, so
+#            every refusal is the driver's): every writable open, write and
+#            create_table on the first refused; the second prepared
+#            (create_table), written and read back. Then a second boot of
+#            the same images: the driver finds the second drive Jam OS's
+#            from its own table, create_table refused, the first boot's
+#            blocks there, written again. After each boot: the Windows-like
+#            image's hash unchanged; the Jam OS image's table right, its
+#            written blocks in their places and nothing outside its table and
+#            partitions (tools/nvme-written.py); QEMU's trace holds stage 2's
+#            opcodes, and every Write lies inside the Jam OS drive's table or
+#            partitions (`-trace pci_nvme_write`, --write-ranges)
+#   wiommu   the write case behind QEMU's VT-d (QEMU_IOMMU=1, iommu=on): the
+#            device reads what it writes through the pins, and no fault
+#   diskro   the Windows-like drive, a Jam OS one (tools/mkgpt.py's layout)
+#            and a blank one, booted with `diskro`: every drive refuses a
+#            writable open and create_table (`utest only nvmero_`), the
+#            trace holds stage 1's list only (no Write, no Flush), and all
+#            three images are unchanged
+#   prepare  stage 2's volumes, init and shell (M12.7 W2): the Windows-like
+#            drive and a blank one (640 MiB); `disk prepare nvme1` with the
+#            serial's last four characters typed wrong (stopped: the shell
+#            says so and the drive is still blank), then right: the table,
+#            both partitions formatted and mounted read-only (/nvme1, /nvme2);
+#            `disks` shows a Jam OS disk; `disk prepare nvme0` and `mount -w
+#            /nvme0` refused; `disk prepare nvme1` again says it is one
+#            already; `mount -w /nvme2`, a file written, `mount -r`. Then the
+#            Windows-like image is unchanged, the blank one's table is Jam
+#            OS's (tools/nvme-written.py), its data partition is a FAT volume
+#            (mtools) holding the file, every traced Write lies inside the
+#            Jam OS drive's table or partitions
+#   piommu   the prepare case behind QEMU's VT-d
+#   cutprep  the blank drive cut after create_table's first write (tools/
+#            mkgpt.py --cut backup-array: only the backup entry array is
+#            there): the driver calls it blank (create_table may write), and
+#            `disk prepare nvme1` finishes it, with the checks of `prepare`
+#   cutbad   the same drive with one stray byte in the array's zeros: not
+#            blank, so `disk prepare nvme1` (typed right) is refused by the
+#            driver, and both images are unchanged
 #   checker  no QEMU: tools/nvme-trace-check.py on made-up traces (a clean
 #            one passes; a Write, a Flush, a Format NVM, a Dataset Management,
-#            an unparsable line and a silent trace each fail), and
-#            tools/disk-regions.py refusing a file without --image ("all"
-#            runs it first)
+#            an unparsable line and a silent trace each fail in stage 1; in
+#            stage 2 a Write outside the ranges, or one whose place isn't
+#            traced, fails), and tools/disk-regions.py refusing a file
+#            without --image ("all" runs it first)
 # LEVEL (JAMOS_NVME_LEVEL; by default what the tree has):
 #   0  no driver yet: the drive is on the PCI bus (class NVMe), nothing
 #      sent it a write, the trace is clean (the firmware's own reads and
@@ -60,7 +107,7 @@ set -eu
 out=$1
 shift
 cases=${*:-windows}
-[ "$cases" = all ] && cases="checker windows plain twons 4k damaged kill iommu block"
+[ "$cases" = all ] && cases="checker windows plain twons 4k damaged kill iommu block write wiommu diskro prepare piommu cutprep cutbad"
 mkdir -p "$out"
 
 sha256() { if command -v sha256sum > /dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
@@ -104,14 +151,272 @@ checker() {
     { adm 6; } > "$dir/bad.txt"
     ! python3 tools/nvme-trace-check.py --require-io 02 "$dir/bad.txt" > "$dir/bad.out" ||
         { echo "$name: FAIL: a trace without the Read the test requires passed"; ok=0; }
+    # Stage 2: Writes inside the ranges pass; one outside, or one whose
+    # place the trace doesn't say, fails.
+    wr() { echo "pci_nvme_write cid 7 opname 'NVME_NVM_CMD_WRITE' nsid 1 nlb $2 len 512 lba $1"; }
+    { adm 6; io 2; io 1; wr 0x0 1; io 1; wr 0x800 8; io 0; } > "$dir/w.txt"
+    python3 tools/nvme-trace-check.py --stage 2 --write-ranges 0-34,2048-4096 "$dir/w.txt" \
+        > "$dir/w.out" || { echo "$name: FAIL: Writes inside the ranges failed"; ok=0; }
+    { adm 6; io 1; wr 0x7fc 8; } > "$dir/bad.txt"
+    ! python3 tools/nvme-trace-check.py --stage 2 --write-ranges 0-34,2048-4096 "$dir/bad.txt" \
+        > "$dir/bad.out" || { echo "$name: FAIL: a Write across a range's edge passed"; ok=0; }
+    { adm 6; io 1; io 1; wr 0x0 1; } > "$dir/bad.txt"
+    ! python3 tools/nvme-trace-check.py --stage 2 --write-ranges 0-34 "$dir/bad.txt" \
+        > "$dir/bad.out" || { echo "$name: FAIL: a Write with no place traced passed"; ok=0; }
+    { adm 6; io 1; wr 0x0 1; } > "$dir/bad.txt"
+    ! python3 tools/nvme-trace-check.py "$dir/bad.txt" > "$dir/bad.out" ||
+        { echo "$name: FAIL: a Write passed stage 1"; ok=0; }
     python3 tools/nvme-img.py "$dir/f.img" small
     ! python3 tools/disk-regions.py "$dir/f.img" > "$dir/bad.out" 2>&1 ||
         { echo "$name: FAIL: disk-regions.py read a file without --image"; ok=0; }
     rm -f "$dir/f.img"
     if [ $ok = 1 ]; then echo "$name: PASS"; else fails=$((fails + 1)); fi
 }
+# ---- stage 2: write and diskro ------------------------------------------------------------
+
+# s2_boot <dir> <name> <utest prefix> <words> <images>: one shell boot that
+# runs `utest only <prefix>` with the drives attached and every command
+# traced, the Writes with their blocks.
+s2_boot() {
+    d=$1 bn=$2
+    {
+        echo "# generated by tools/nvme-test.sh: $bn"
+        echo "wait 120 Jam OS shell"
+        echo "wait {prompt}"
+        echo "send utest only $3; echo nvme-utest-\$?"
+        echo "wait 240 nvme-utest-"
+        echo "wait {prompt}"
+        echo "send reboot -f"
+        echo "wait reboot: resetting"
+    } > "$d/$bn.in"
+    QEMU_TIMEOUT=${QEMU_TIMEOUT:-240} QEMU_NVME="$5" QEMU_INPUT="$d/$bn.in" \
+        QEMU_EXTRA="-trace pci_nvme_pci_reset -trace pci_nvme_admin_cmd -trace pci_nvme_io_cmd -trace pci_nvme_write -D $d/$bn.trace" \
+        QEMU_WORDS="$4" QEMU_IOMMU=${s2_iommu:-} tools/qemu-test.sh "$d" "$bn" shell > "$d/$bn.out" 2>&1 ||
+        { echo "$bn: FAIL: the run failed (see $d/$bn.out)"; grep -a "serial-feed: .*no '" "$d/$bn.out" || true; return 1; }
+}
+
+# s2_want <log> <regex>...: each line there, or a FAIL line and 1.
+s2_want() {
+    f=$1
+    shift
+    r=0
+    for re in "$@"; do
+        grep -aqE -- "$re" "$f" || { echo "nvme-$c: FAIL: no line matching '$re' in $f"; r=1; }
+    done
+    return $r
+}
+
+# s2_trace <trace> <stage> [--write-ranges ...]: the trace's opcodes (and Writes).
+s2_trace() {
+    t=$1 stage=$2
+    shift 2
+    grep -aq "^pci_nvme_pci_reset" "$t" 2> /dev/null || { echo "nvme-$c: FAIL: the trace is dead: $t"; return 1; }
+    python3 tools/nvme-trace-check.py --stage "$stage" --require-admin 06 --require-io 02 "$@" "$t" \
+        > "$t.check" || { echo "nvme-$c: FAIL: the trace (see $t.check)"; return 1; }
+    grep "^nvme-trace: [0-9]" "$t.check" | sed "s/^/nvme-$c: /"
+}
+
+s2_write() {
+    dir=$1 ok=1 words="nvmetest=on${s2_iommu:+ iommu=on}"
+    win="$dir/windows.img" jam="$dir/jamos.img"
+    python3 tools/nvme-img.py "$win" windows
+    python3 tools/mkgpt.py "$jam" --layout blank --size 640M > /dev/null
+    before=$(sha256 "$win" | cut -d' ' -f1)
+    for run in 1 2; do
+        bn=nvme-write-$run log="$dir/nvme-write-$run.log"
+        s2_boot "$dir" $bn nvmew_ "$words" "$win $jam" || ok=0
+        if [ -n "${s2_iommu:-}" ] && grep -aq "vtd: fault" "$log"; then echo "nvme-$c: FAIL: a VT-d fault"; ok=0; fi
+        [ "$(sha256 "$win" | cut -d' ' -f1)" = "$before" ] || { echo "nvme-$c: FAIL: run $run: the Windows-like image changed"; ok=0; }
+        s2_want "$log" "nvme-utest-0" "utest: 4 passed" \
+            "nvmew_refuse: drive [0-9]+ \(someone else's, 4 partitions\): every write refused" \
+            "nvmew_write: drive [0-9]+: 288 blocks written in both partitions and read back" \
+            "GPT, 4 partitions, read-only" || ok=0
+        if [ $run = 1 ]; then
+            s2_want "$log" "blank, blank: create_table may write its table" \
+                "nvmew_prepare: drive [0-9]+ is Jam OS's now" "nvmew_check: drive [0-9]+: nothing written yet" \
+                "create_table: Jam OS's table written and read back: GPT, 2 partitions, a Jam OS disk" || ok=0
+        else
+            s2_want "$log" "GPT, 2 partitions, a Jam OS disk: its two partitions writable" \
+                "nvmew_prepare: drive [0-9]+ is Jam OS's already: create_table refused" \
+                "nvmew_check: drive [0-9]+: the blocks written by an earlier boot are there" || ok=0
+        fi
+        python3 tools/nvme-written.py "$jam" --pattern all --ranges > "$dir/written-$run.txt" ||
+            { echo "nvme-$c: FAIL: run $run: $(tail -1 "$dir/written-$run.txt")"; ok=0; continue; }
+        head -1 "$dir/written-$run.txt" | sed "s/^/nvme-$c: run $run: /"
+        s2_trace "$dir/$bn.trace" 2 --write-ranges "$(tail -1 "$dir/written-$run.txt")" || ok=0
+    done
+    if [ $ok = 1 ]; then rm -f "$win" "$jam"; echo "nvme-$c: PASS"; else echo "nvme-$c: FAIL (see $dir)"; fails=$((fails + 1)); fi
+}
+
+s2_diskro() {
+    dir=$1 ok=1
+    win="$dir/windows.img" jam="$dir/jamos.img" blank="$dir/blank.img"
+    python3 tools/nvme-img.py "$win" windows
+    python3 tools/mkgpt.py "$jam" --layout jamos --size 640M > /dev/null
+    python3 tools/mkgpt.py "$blank" --layout blank --size 640M > /dev/null
+    sums=$(sha256 "$win" "$jam" "$blank" | cut -d' ' -f1)
+    log="$dir/nvme-diskro.log"
+    s2_boot "$dir" nvme-diskro nvmero_ "nvmetest=on diskro" "$win $jam $blank" || ok=0
+    [ "$(sha256 "$win" "$jam" "$blank" | cut -d' ' -f1)" = "$sums" ] || { echo "nvme-diskro: FAIL: an image changed"; ok=0; }
+    s2_want "$log" "nvme-utest-0" "utest: 1 passed" "nvmero_refuse: drive [0-9]+ \(someone else's\): read-only" \
+        "nvmero_refuse: drive [0-9]+ \(blank\): read-only" "nvmero_refuse: drive [0-9]+ \(Jam OS's\): read-only" \
+        "the drive is read-only \(the ro word\)" || ok=0
+    [ "$(grep -ac 'the drive is read-only (the ro word)' "$log")" -ge 3 ] || { echo "nvme-diskro: FAIL: not every drive said ro"; ok=0; }
+    s2_trace "$dir/nvme-diskro.trace" 1 || ok=0
+    if [ $ok = 1 ]; then rm -f "$win" "$jam" "$blank"; echo "nvme-diskro: PASS"; else echo "nvme-diskro: FAIL (see $dir)"; fails=$((fails + 1)); fi
+}
+
+# ---- stage 2: disk prepare (volumes, init, the shell) ------------------------------------
+
+# s3_prepare <dir> <kind>: the Windows-like drive and a blank 640 MiB one,
+# booted with the shell. kind: prepare (the blank drive), cutprep (cut after
+# create_table's first write), cutbad (that, and a stray byte). Which of the
+# two is nvme0 and which nvme1 depends on which driver answered volumes
+# first, so every `disk prepare` is typed for both names; the one that is
+# blank asks for the serial's last four characters (the blank drive is
+# attached first, so its serial is QEMU's jamos-nvme0: vme0), the other says
+# it is not blank. The mounts are in order: Windows' ESP is /nvme0 from the
+# boot, the new disk's ESP and data partition /nvme1 and /nvme2. What each
+# step printed is counted in the log afterwards.
+s3_prepare() {
+    dir=$1 kind=$2 ok=1 words="nvmetest=on${s2_iommu:+ iommu=on}"
+    win="$dir/windows.img" jam="$dir/jamos.img" log="$dir/nvme-$c.log"
+    python3 tools/nvme-img.py "$win" windows
+    case $kind in
+    prepare) python3 tools/mkgpt.py "$jam" --layout blank --size 640M > /dev/null ;;
+    cutprep) python3 tools/mkgpt.py "$jam" --layout jamos --size 640M --cut backup-array > /dev/null ;;
+    cutbad) python3 tools/mkgpt.py "$jam" --layout jamos --size 640M --cut backup-array --poke -16596 > /dev/null ;;
+    esac
+    before=$(sha256 "$win" "$jam" | cut -d' ' -f1)
+    in="$dir/nvme-$c.in"
+    # `disk prepare` for both names: the Windows-like drive is refused each time (not
+    # blank), the blank one asks (the wrong serial first in `prepare`), then is a Jam OS disk.
+    kind_pairs=2 wrong=0
+    [ $kind = prepare ] && { kind_pairs=3; wrong=1; }
+    {
+        echo "# generated by tools/nvme-test.sh: $c"
+        echo "wait 120 Jam OS shell"
+        echo "wait {prompt}"
+        echo "seen 60 init: /data mounted"   # volumes is up, and has been told of the disks
+        echo "send disks"
+        echo "wait nothing found on it"
+        echo "wait {prompt}"
+        if [ $kind = prepare ]; then
+            echo "send disk prepare nvme0; disk prepare nvme1"
+            echo "wait Type the last 4 characters"
+            echo "send zzzz"
+            echo "wait is not the end of"
+            echo "wait {prompt}"
+            echo "send disks"
+            echo "wait nothing found on it"
+            echo "wait {prompt}"
+        fi
+        echo "send disk prepare nvme0; disk prepare nvme1"
+        echo "wait Type the last 4 characters"
+        echo "send vme0"
+        if [ $kind = cutbad ]; then
+            echo "wait 60 not blank, or not to be written"
+            echo "wait {prompt}"
+            echo "send disks"
+            echo "wait nothing found on it"
+            echo "wait {prompt}"
+        else
+            echo "wait 300 is a Jam OS disk now: ESP"
+            echo "wait {prompt}"
+            echo "send disks"
+            echo "wait Jam OS disk"
+            echo "wait Jam OS data"
+            echo "wait {prompt}"
+            echo "send mount"
+            echo "wait /nvme2"
+            echo "wait {prompt}"
+            echo "send disk prepare nvme0; disk prepare nvme1"
+            echo "wait {prompt}"
+            echo "send mount -w /nvme0"
+            echo "wait /nvme0 is not on a Jam OS disk: it stays read-only"
+            echo "wait {prompt}"
+            echo "send mount -w /nvme2"
+            echo "wait 60 /nvme2 is now read-write"
+            echo "wait {prompt}"
+            echo "send cp /boot/build.txt /nvme2/build.txt; sync; sha256sum /nvme2/build.txt"
+            echo "wait $(sha256 build/build.txt | cut -d' ' -f1)"
+            echo "wait {prompt}"
+            echo "send mount -r /nvme2"
+            echo "wait 60 /nvme2 is now read-only"
+            echo "wait {prompt}"
+            echo "send mount"
+            echo "wait /nvme2"
+            echo "wait {prompt}"
+        fi
+        echo "send reboot -f"
+        echo "wait reboot: resetting"
+    } > "$in"
+    QEMU_TIMEOUT=${QEMU_TIMEOUT:-420} QEMU_NVME="$jam $win" QEMU_INPUT="$in" \
+        QEMU_EXTRA="-trace pci_nvme_pci_reset -trace pci_nvme_admin_cmd -trace pci_nvme_io_cmd -trace pci_nvme_write -D $dir/$c.trace" \
+        QEMU_WORDS="$words" QEMU_IOMMU=${s2_iommu:-} tools/qemu-test.sh "$dir" "nvme-$c" shell > "$dir/nvme-$c.out" 2>&1 ||
+        { echo "nvme-$c: FAIL: the run failed (see $dir/nvme-$c.out)"; grep -a "serial-feed: .*no '" "$dir/nvme-$c.out" || true; ok=0; }
+    [ "$(sha256 "$win" | cut -d' ' -f1)" = "$(echo "$before" | sed -n 1p)" ] || { echo "nvme-$c: FAIL: the Windows-like image changed"; ok=0; }
+    if [ -n "${s2_iommu:-}" ] && grep -aq "vtd: fault" "$log"; then echo "nvme-$c: FAIL: a VT-d fault"; ok=0; fi
+    case $kind in
+    cutbad)
+        [ "$(sha256 "$jam" | cut -d' ' -f1)" = "$(echo "$before" | sed -n 2p)" ] || { echo "nvme-$c: FAIL: the refused drive's image changed"; ok=0; }
+        [ "$(grep -ac "the drive is read-only" "$log")" -ge 2 ] ||
+            { echo "nvme-$c: FAIL: the stray byte's drive wasn't called someone else's"; ok=0; }
+        grep -aq "the drive is blank" "$log" && { echo "nvme-$c: FAIL: a drive with a stray byte was called blank"; ok=0; }
+        grep -aq "is a Jam OS disk now" "$log" && { echo "nvme-$c: FAIL: a disk was made Jam OS's"; ok=0; }
+        s2_trace "$dir/$c.trace" 1 || ok=0
+        ;;
+    *)
+        if [ $kind = cutprep ]; then
+            s2_want "$log" "blank: create_table may write its table" || ok=0
+        fi
+        s2_want "$log" "create_table: Jam OS's table written and read back" \
+            "volumes: nvme[01] is a Jam OS disk now: /nvme1 and /nvme2, read-only" \
+            "nvme[01] is a Jam OS disk already" "nvme[01] is not blank" || ok=0
+        # three `disk prepare` pairs ran on a disk that was Windows-like and one that was blank, or
+        # Jam OS's: the Windows-like drive said "not blank" each time
+        want=$(( kind_pairs ))
+        [ "$(grep -ac "disk prepare: nvme[01] is not blank" "$log")" -eq $want ] ||
+            { echo "nvme-$c: FAIL: the Windows-like drive wasn't refused $want times"; ok=0; }
+        [ "$(grep -ac "that is not the end of" "$log")" -eq "$wrong" ] ||
+            { echo "nvme-$c: FAIL: the wrong serial was taken, or not stopped"; ok=0; }
+        if python3 tools/nvme-written.py "$jam" --pattern none --ranges > "$dir/written.txt"; then
+            head -1 "$dir/written.txt" | sed "s/^/nvme-$c: /"
+            s2_trace "$dir/$c.trace" 2 --write-ranges "$(tail -1 "$dir/written.txt")" || ok=0
+        else
+            echo "nvme-$c: FAIL: $(tail -1 "$dir/written.txt")"
+            ok=0
+        fi
+        # The partitions are FAT volumes: the ESP empty, the data partition with the file.
+        if command -v mdir > /dev/null 2>&1; then
+            mdir -i "$jam@@1M" :: > "$dir/esp.txt" 2>&1 || { echo "nvme-$c: FAIL: the ESP isn't a FAT volume"; ok=0; }
+            mtype -i "$jam@@513M" ::/build.txt > "$dir/build.txt" 2>&1 || true
+            cmp -s "$dir/build.txt" build/build.txt ||
+                { echo "nvme-$c: FAIL: the file written to /nvme2 isn't on the data partition"; ok=0; }
+        else
+            echo "nvme-$c: (no mtools: the FAT volumes not read on the host)"
+        fi
+        ;;
+    esac
+    if [ $ok = 1 ]; then rm -f "$win" "$jam"; echo "nvme-$c: PASS"; else echo "nvme-$c: FAIL (see $dir)"; fails=$((fails + 1)); fi
+}
+
 for c in $cases; do
     if [ $c = checker ]; then checker; continue; fi
+    if [ $c = write ] || [ $c = wiommu ] || [ $c = diskro ] || [ $c = prepare ] || [ $c = piommu ] ||
+       [ $c = cutprep ] || [ $c = cutbad ]; then
+        rm -rf "$out/nvme-$c"
+        mkdir -p "$out/nvme-$c"
+        s2_iommu=
+        [ $c = wiommu ] || [ $c = piommu ] && s2_iommu=1
+        case $c in
+        diskro) s2_diskro "$out/nvme-$c" ;;
+        prepare | piommu) s3_prepare "$out/nvme-$c" prepare ;;
+        cutprep | cutbad) s3_prepare "$out/nvme-$c" $c ;;
+        *) s2_write "$out/nvme-$c" ;;
+        esac
+        continue
+    fi
     name=nvme-$c
     dir="$out/$name"
     rm -rf "$dir"
@@ -267,8 +572,8 @@ for c in $cases; do
             grep -qxF "$line" "$dir/regions-host.txt" || bad "utest's '$line' isn't the host's"
         done < "$dir/regions-utest.txt"
         # the client that left with reads out: dropped, the partition drained
-        want "partition 1: its client left with [1-9][0-9]* read\(s\) out"
-        want "partition 1: the gone client's reads are done"
+        want "partition 1: its client left with [1-9][0-9]* request\(s\) out"
+        want "partition 1: the gone client's requests are done"
     }
     if [ $level -ge 1 ]; then L1; fi
     if [ $level -ge 2 ]; then L2; fi

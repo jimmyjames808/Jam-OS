@@ -204,10 +204,12 @@ const UNREAD_MAX 256
 protocol voldisks 74
 
 # A disk's `kind`: the Jam OS layout (an ESP then a FAT32 data partition on
-# an MBR disk; stage 2 adds the GPT mark), a disk in which no partition
-# table was found (blank, or in a form volumes does not read: the driver's
-# blank rule, stage 2's, is stricter), or anything else. Only a Jam OS disk
-# may ever be written.
+# an MBR disk, or on a drive the GPT mark: GPT with exactly two partitions,
+# the ESP's type named "Jam OS ESP" and Jam OS's data type named "Jam OS
+# data", checked by volumes' own code, not the driver's), a disk in which no
+# partition table was found (blank, or in a form volumes does not read: the
+# driver's blank rule is stricter, and decides), or anything else. Only a
+# Jam OS disk may ever be written.
 const KIND_OTHER    0
 const KIND_NO_TABLE 1
 const KIND_JAMOS    2
@@ -235,7 +237,8 @@ const FS_UNLISTED    5
 # zero. `kind` KIND_*, `scheme` storage.idl's SCHEME_*, `partitions` how
 # many the driver lists (more than are given by `partition` when it is
 # past MAX_PARTS), `read_only` 1: volumes opens none of its partitions
-# writable (every NVMe drive, in stage 1). `model`, `serial` and `firmware`
+# writable (every NVMe drive that is not a Jam OS disk by volumes' own
+# check). `model`, `serial` and `firmware`
 # are the drive's own (storage.ident; a stick has the INQUIRY's vendor and
 # product in `model` and the others empty). Past the last:
 # ERR_OUT_OF_RANGE.
@@ -252,3 +255,39 @@ const FS_UNLISTED    5
 # The drive's health log (storage.health, NVMe's SMART page): the counters,
 # percentage used and the critical warning. Errors as `digest`'s.
 4  health  (u32 id) -> (u64 units_read, u64 units_written, u64 host_reads, u64 host_writes, u64 power_cycles, u64 unsafe_shutdowns, u8 percent_used, u8 critical) later
+
+# volinstall: making a disk Jam OS's (M12.7 stage 2; stage 3's installer
+# adds its methods). Like `volesp`, init's alone: init made this channel when
+# it started volumes (the startup role VOLUMES_SR_INSTALL), holds the client
+# end and gives it to nobody; volumes serves nothing else on it, and
+# nothing of this on any other channel. The shell reaches it through
+# initctl.prepare_disk, after the owner has typed the last four characters
+# of the drive's serial number.
+#
+# Reconnect: ERR_PEER_CLOSED: volumes ended; init has a new channel for the
+# next one, and the request is asked again by its caller.
+
+protocol volinstall 75
+
+# Disk `id` (voldisks' ids) made a Jam OS disk, then its two partitions
+# formatted and mounted read-only (/nvmeN, /nvmeM: `mount -w` makes them
+# writable). A blank drive (volumes found no partition table on it, and
+# the driver, which decides, finds it blank or a create_table cut short on
+# it) gets Jam OS's partition table: volumes makes three random GUIDs and
+# asks the driver's storage.create_table, then reads the disk again and
+# starts a filesystem service on each partition with the one right to
+# format (fat formats a partition whose first sector holds no boot signature,
+# and no other). A Jam OS disk (volumes' own mark check) whose partitions
+# are not both mounted gets the same for the ones that are not: the next run
+# of a prepare that was cut short. The formatted partitions are then opened
+# read-only again (their services stopped in order, started again). Answered
+# once both partitions are mounted. ERR_NOT_FOUND: no such disk;
+# ERR_NOT_SUPPORTED: not an NVMe drive; ERR_BAD_STATE: its driver is not
+# there, or it is being prepared, released or still starting a mount;
+# ERR_ACCESS_DENIED: the drive is someone else's (not blank, not Jam OS's;
+# the driver says so too), or read-only (the `diskro` word);
+# ERR_ALREADY_EXISTS: a Jam OS disk with both partitions mounted already;
+# ERR_NO_SPACE: too small (under about 580 MiB); ERR_IO: a write or a
+# format failed (the table or a partition may be half done: ask again);
+# ERR_TIMED_OUT: not mounted within the time given (10 minutes).
+1  prepare  (u32 id) -> () later

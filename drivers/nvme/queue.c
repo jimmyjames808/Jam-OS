@@ -1,4 +1,4 @@
-/* nvme: completion queues, command slots, timeouts and reads (drv/nvme).
+/* nvme: completion queues, command slots, timeouts and requests (drv/nvme).
  *
  * Each queue pair has `depth` slots, at most depth - 1 in use, so its
  * submission queue can never overflow (an entry is free again before its
@@ -12,13 +12,17 @@
  * A completion queue is one page of 16-byte entries, pinned writable,
  * taken by its phase bit; its head doorbell is written once per scan.
  *
- * Reads (struct nvme_io) wait on a list, first come first served, and are
- * cut into commands of at most c->max_cmd bytes (MDTS, and NVME_CMD_MAX so
- * one PRP list page always reaches: 257 pages at most). PRP 1 is the first
- * page's address plus the offset into it, PRP 2 the second page or the
- * slot's own PRP list page (pinned read only: the device only reads it).
- * A read is answered once, when its last command completes, with the
- * first failure. Nothing here writes a submission entry: cmd.c does. */
+ * Requests (struct nvme_io: reads, writes, flushes) wait on a list, first
+ * come first served; a read or write is cut into commands of at most
+ * c->max_cmd bytes (MDTS, and NVME_CMD_MAX so one PRP list page always
+ * reaches: 257 pages at most). PRP 1 is the first page's address plus the
+ * offset into it, PRP 2 the second page or the slot's own PRP list page
+ * (pinned read only: the device only reads it). A request is answered
+ * once, when its last command completes, with the first failure. After a
+ * reset a read is sent again (once); a write or flush is failed, since
+ * the drive may or may not have done it. Nothing here writes a submission
+ * entry or decides what may be written: cmd.c does (sqe_write checks the
+ * drive's mode and the blocks itself). */
 #include "nvme.h"
 
 #define GEN_MOD 0x3ffu   /* generations 0..0x3fe */
@@ -134,21 +138,43 @@ static void wait_push(struct nvme *c, struct nvme_io *io, bool front)
 
 static void io_finish(struct nvme *c, struct nvme_io *io)
 {
-    c->reads++;
+    if (io->kind == IO_WRITE)
+        c->writes++;
+    else if (io->kind == IO_FLUSH)
+        c->flushes++;
+    else
+        c->reads++;
     io->done(c, io, io->st);
 }
 
-status_t nvme_read(struct nvme *c, struct nvme_io *io)
+/* A flush: no blocks, no buffer. */
+static status_t check_flush(const struct nvme_io *io)
+{
+    return io->blocks || io->pages || io->offset ? ERR_INVALID_ARGS : OK;
+}
+
+/* A read or write: blocks inside the namespace, and inside its buffer. */
+static status_t check_rw(const struct nvme *c, const struct nvme_io *io)
 {
     uint32_t bs = c->ns.block_size;
-    if (!c->ns.nsid)
-        return ERR_BAD_STATE;
-    if (!io->blocks || !io->done || (io->offset & 3) || !io->pages)
+    if (!io->blocks || (io->offset & 3) || !io->pages)
         return ERR_INVALID_ARGS;
     if (io->lba >= c->ns.blocks || io->blocks > c->ns.blocks - io->lba)
         return ERR_OUT_OF_RANGE;
     if ((uint64_t)io->offset + (uint64_t)io->blocks * bs > (uint64_t)io->npages * NVME_PAGE)
         return ERR_OUT_OF_RANGE;   /* past the buffer */
+    return OK;
+}
+
+status_t nvme_submit(struct nvme *c, struct nvme_io *io)
+{
+    if (!c->ns.nsid)
+        return ERR_BAD_STATE;
+    if (io->kind > IO_FLUSH || !io->done)
+        return ERR_INVALID_ARGS;
+    status_t st = io->kind == IO_FLUSH ? check_flush(io) : check_rw(c, io);
+    if (st != OK)
+        return st;
     io->sent = io->inflight = 0;
     io->st = OK;
     io->retried = false;
@@ -183,37 +209,54 @@ static void prps(struct nvme *c, const struct nvme_io *io, uint64_t boff, uint32
     }
 }
 
-void io_kick(struct nvme *c)
+/* io's next command (or its flush) into slot s. */
+static void io_cmd(struct nvme *c, struct nvme_io *io, struct nvme_slot *s)
 {
     uint32_t bs = c->ns.block_size, most = c->max_cmd / bs;
+    s->io = io;
+    io->inflight++;
+    if (io->kind == IO_FLUSH) {
+        sqe_flush(c, s);
+        wait_remove(c, io);
+        return;
+    }
+    uint32_t n = io->blocks - io->sent;
+    n = n < most ? n : most;
+    uint64_t prp1, prp2, lba = io->lba + io->sent;
+    prps(c, io, io->offset + (uint64_t)io->sent * bs, n * bs, (uint32_t)(s - c->io.slots),
+         &prp1, &prp2);
+    if (io->kind == IO_WRITE)
+        sqe_write(c, s, io->part, lba, n, prp1, prp2);
+    else
+        sqe_read(c, s, lba, n, prp1, prp2);
+    io->sent += n;
+    if (io->sent == io->blocks)
+        wait_remove(c, io);
+}
+
+void io_kick(struct nvme *c)
+{
     struct nvme_io *io;
     while ((io = c->wait_head)) {
         struct nvme_slot *s = slot_get(c, &c->io);
         if (!s)
             return;
-        uint32_t n = io->blocks - io->sent;
-        n = n < most ? n : most;
-        uint64_t prp1, prp2;
-        prps(c, io, io->offset + (uint64_t)io->sent * bs, n * bs, (uint32_t)(s - c->io.slots),
-             &prp1, &prp2);
-        s->io = io;
-        sqe_read(c, s, io->lba + io->sent, n, prp1, prp2);
-        io->sent += n;
-        io->inflight++;
-        if (io->sent == io->blocks)
-            wait_remove(c, io);
+        io_cmd(c, io, s);
     }
 }
 
 /* One of io's commands came back with `status`. */
 static void io_cmd_done(struct nvme *c, struct nvme_io *io, uint16_t status, bool aborted)
 {
+    static const char *const what[] = { "read", "write", "flush" };
     io->inflight--;
     if (status != NVME_SC_SUCCESS && io->st == OK) {
         io->st = aborted || status == NVME_SC_ABORTED ? ERR_TIMED_OUT : ERR_IO;
-        if (c->read_fail++ < 8)
-            drv_log("%s: read at lba %lu failed: status %#x%s", c->name, (unsigned long)io->lba,
-                    status, aborted ? " (aborted after its deadline)" : "");
+        uint64_t *fails = io->kind == IO_READ ? &c->read_fail : &c->write_fail;
+        if ((*fails)++ < 8)
+            drv_log("%s: %s at lba %lu failed: status %#x%s", c->name, what[io->kind % 3],
+                    (unsigned long)io->lba, status,
+                    aborted ? " (aborted after its deadline)" : "");
     }
     if (io->st != OK && io->waiting) {   /* the rest isn't sent */
         wait_remove(c, io);
@@ -386,7 +429,7 @@ void queue_fail_all(struct nvme *c)
         if (!io || !io->inflight)
             continue;   /* this read was seen to already */
         io->inflight = 0;
-        if (!io->retried && io->st == OK) {   /* reads are idempotent: once more */
+        if (io->kind == IO_READ && !io->retried && io->st == OK) {   /* idempotent: once more */
             io->retried = true;
             io->sent = 0;
             if (io->waiting)

@@ -63,7 +63,7 @@ static uint8_t header_layout(const struct hdr *h, uint32_t block_size, uint64_t 
  * *h and check it alone; its entry array isn't read yet. */
 static uint8_t header_read(const struct pt_disk *d, uint64_t lba, uint64_t other, struct hdr *h)
 {
-    if (d->read(d->ctx, lba, 1, d->buf) != OK)
+    if (pt_get(d, lba, 1) != OK)
         return PT_BAD_IO;
     const uint8_t *b = d->buf;
     static const uint8_t sig[8] = { 'E', 'F', 'I', ' ', 'P', 'A', 'R', 'T' };

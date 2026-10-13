@@ -84,6 +84,7 @@ bool init_runlines;
 bool init_nospare;
 bool init_vtdtest;
 const char *init_nvmetest;
+bool init_diskro;
 
 /* Split one init.cfg line into words (in place). Returns how many. */
 static int split(char *line, char **words)
@@ -257,7 +258,7 @@ static bool start_devmgr(handle_t console)
     if (st == OK)
         st = jam_channel_create(&qa, &qb);
     if (st == OK) {
-        const char *argv[5] = { "bin/devmgr" };
+        const char *argv[6] = { "bin/devmgr" };
         int argc = 1;
         if (init_hidboot)
             argv[argc++] = "hidboot";
@@ -265,6 +266,8 @@ static bool start_devmgr(handle_t console)
             argv[argc++] = init_vlan;
         if (init_nvmetest)
             argv[argc++] = init_nvmetest;
+        if (init_diskro)
+            argv[argc++] = "diskro";
         struct spawn_handle x[] = { { SR_RESOURCE, pci }, { SR_DEVMGR_CTL, b },
                                     { SR_DEVMGR, qb }, { SR_CONSOLE, console } };
         struct spawn_args sa = {
@@ -579,6 +582,7 @@ int main(int argc, char **argv)
      * spare mixer: spare.c; passed on to volumes: no warm spare fat),
      * "vtdtest" (passed on to devmgr: drv/hda's IOMMU fault checks),
      * "nvmetest=<words>" (passed on to devmgr: drv/nvme's test reads),
+     * "diskro" (passed on to devmgr: every internal drive read-only),
      * "verbose" (the log on the first terminal's screen: terms.c). */
     bool splash = false;
     for (int i = 2; i < argc; i++) {
@@ -596,6 +600,7 @@ int main(int argc, char **argv)
         init_vtdtest |= !strcmp(argv[i], "vtdtest");
         if (!strncmp(argv[i], "nvmetest=", 9))
             init_nvmetest = argv[i];
+        init_diskro |= !strcmp(argv[i], "diskro");
         init_verbose |= !strcmp(argv[i], "verbose");
         init_runlines |= !strcmp(argv[i], "runlines");
     }

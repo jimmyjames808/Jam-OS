@@ -61,6 +61,9 @@ status_t read_checked(struct img *m, struct pt_table *t);
 void find_geo(const struct img *m, struct geo *g);
 void mutated_run(struct img *m, const struct geo *g, int ops, struct tally *y);
 unsigned check_edits(struct img *m, const struct geo *g);
+/* gptmake.c: Jam OS's table as pt_jamos_make makes it, read back (the
+ * cases' "jamos" images among imgs[0..n) to compare with). */
+void check_make(const struct img *imgs, int n);
 
 static inline void put64(uint8_t *p, uint64_t v)
 {

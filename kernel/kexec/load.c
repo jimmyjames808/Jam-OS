@@ -33,12 +33,14 @@
  * a reboot, a panic and `update` on the network boot come back with the
  * network, so netlog can send the panicked boot's log and the fetched
  * build can be reached; `netprobe` and `netsend` are one-shot tests,
- * not kept). */
+ * not kept), and `diskro` (every internal drive read-only: the way out of
+ * a misbehaving write path must not lapse at the first reboot or
+ * `update`, which would leave the next boot writing again). */
 static const char *const kept_words[] = {
     "shell", "verbose", "nosplash", "nousb", "smp=loader", "nopcid", "forcepcid",
     "nodeadline", "noserialirq", "nooneshot", "nofpuopt", "nofpucall", "nokmcache", "nospinidle",
     "noplaceorder", "noaffinepair", "hidboot", "net", "nospare", "nolockdep", "nohandoff",
-    "runlines",
+    "runlines", "diskro",
 };
 /* ... and key=value words. */
 static const char *const kept_keys[] = { "crashkernel=", "idlespin=", "bootdisk=", "reset=",
@@ -60,6 +62,15 @@ static const char *const dropped_words[] = { "reset=none" };
 static bool vlan_word(const char *w, size_t n)
 {
     return n >= 4 && !memcmp(w, "vlan", 4) && (n == 4 || w[4] == '=');
+}
+
+/* The words kept first, before anything a full line could leave out: the
+ * network's mode (vlan_word) and `diskro`, each of which would fail open
+ * if it lapsed (a frame in the wrong mode; a drive written on the one boot
+ * meant to be safe). */
+static bool first_word(const char *w, size_t n)
+{
+    return vlan_word(w, n) || (n == 6 && !memcmp(w, "diskro", 6));
 }
 
 static bool kept(const char *w, size_t n)
@@ -115,14 +126,14 @@ void kexec_next_cmdline(const char *from, char *buf, size_t size)
         return;
     buf[0] = '\0';
     size_t at = 0;
-    for (int pass = 0; pass < 2; pass++) {   /* the vlan words, then the rest */
+    for (int pass = 0; pass < 2; pass++) {   /* the words that go first, then the rest */
         for (const char *p = from; *p;) {
             while (*p == ' ')
                 p++;
             size_t n = 0;
             while (p[n] && p[n] != ' ')
                 n++;
-            if (n && (pass == 0 ? vlan_word(p, n) : !vlan_word(p, n) && kept(p, n)))
+            if (n && (pass == 0 ? first_word(p, n) : !first_word(p, n) && kept(p, n)))
                 at = append_word(buf, size, at, p, n);
             p += n;
         }

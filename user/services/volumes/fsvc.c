@@ -242,7 +242,11 @@ const char *fs_format_arg(const struct vol *b)
 {
     const struct disk *d = disk_of(b);
     bool boot_data = d && d->state == DISK_BOOT && !b->other && b->part == PART_DATA;
-    return boot_data ? FAT_ARG_FORMAT : NULL;
+    /* A partition of a disk prepare.c is making Jam OS's (by our own check),
+     * while it is writable: fat formats it if its first sector holds no
+     * boot signature, and never otherwise. */
+    bool fresh = d && b->other && b->rw && (d->fresh >> b->part & 1) && disk_jamos_gpt(d);
+    return boot_data || fresh ? FAT_ARG_FORMAT : NULL;
 }
 
 const char *fs_end_arg(const struct vol *b)
@@ -290,7 +294,8 @@ static struct vol *fs_slot(struct disk *d, unsigned part, bool other)
     *b = (struct vol){ .path = FAT_PATH, .test = d->test, .gen = gen, .serial = serial + 1,
                        .ctl_gen = ctl_gen,
                        .disk = (uint32_t)(d - disks) + 1, .part = (uint8_t)part,
-                       .other = other, .nvme = other && nvme, .usbn = (uint8_t)usbn };
+                       .other = other, .nvme = other && nvme, .usbn = (uint8_t)usbn,
+                       .rw = other && (d->fresh >> part & 1) };   /* prepare.c: to be formatted */
     snprintf(b->name, sizeof(b->name), "fat-%s", fs_mount_path(b) + 1);
     d->fs[part] = (uint32_t)(b - vols) + 1;
     return b;
@@ -312,7 +317,8 @@ static void start_main(void *arg)
     task_kick(tasks);   /* a kill may wait for this start (request.c) */
     status_t st = b->last;
     say(false, "volumes: %s partition %u -> %s at %s%s (%s)", disk_name(d), part + 1, FAT_PATH,
-        fs_mount_path(b), other || part == PART_ESP ? ", read-only" : "", status_str(st));
+        fs_mount_path(b), (other || part == PART_ESP) && !b->rw ? ", read-only" : "",
+        status_str(st));
     if (st != OK)
         fs_retire(b);
     if (done)
@@ -430,17 +436,19 @@ static bool fat_type(uint8_t type)
 }
 
 /* May a GPT partition of this type GUID (its bytes on disk) hold a FAT
- * volume? The ESP's type, and Microsoft's basic data, which is also NTFS's
- * and exFAT's: fat looks at the boot sector and exits FAT_EXIT_NO_VOLUME
- * having read one block. The MSR, recovery and anything else are listed,
- * never started. */
+ * volume? The ESP's type, Microsoft's basic data, which is also NTFS's and
+ * exFAT's (fat looks at the boot sector and exits FAT_EXIT_NO_VOLUME having
+ * read one block), and Jam OS's own data type. The MSR, recovery and
+ * anything else are listed, never started. */
 static bool fat_guid(const uint8_t *g)
 {
     static const uint8_t esp[16] = { 0x28, 0x73, 0x2a, 0xc1, 0x1f, 0xf8, 0xd2, 0x11,
                                      0xba, 0x4b, 0x00, 0xa0, 0xc9, 0x3e, 0xc9, 0x3b };
     static const uint8_t basic[16] = { 0xa2, 0xa0, 0xd0, 0xeb, 0xe5, 0xb9, 0x33, 0x44,
                                        0x87, 0xc0, 0x68, 0xb6, 0xb7, 0x26, 0x99, 0xc7 };
-    return !memcmp(g, esp, 16) || !memcmp(g, basic, 16);
+    static const uint8_t jamos[16] = { 0x65, 0xe5, 0xba, 0x71, 0xa8, 0xd4, 0x15, 0x43,
+                                       0x8c, 0x81, 0x9b, 0x35, 0x46, 0x2c, 0xc1, 0x58 };
+    return !memcmp(g, esp, 16) || !memcmp(g, basic, 16) || !memcmp(g, jamos, 16);
 }
 
 /* A /usbN service's start went: one that failed lets the next one go. */

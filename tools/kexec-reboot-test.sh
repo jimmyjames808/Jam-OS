@@ -62,7 +62,7 @@ run() {
 
 run_kexec() {
     QEMU_EXTRA="${QEMU_EXTRA:--audiodev none,id=snd0 -device intel-hda,id=hda0 \
--device hda-output,bus=hda0.0,cad=0,audiodev=snd0}" QEMU_SPLASH=1 run kexec shell "wait 180 init: the shell is up" "wait {prompt}" \
+-device hda-output,bus=hda0.0,cad=0,audiodev=snd0}" QEMU_SPLASH=1 run kexec "shell diskro" "wait 180 init: the shell is up" "wait {prompt}" \
         "seen 30 init: bin/splash exited with code 0" \
         "seen 60 logd: writing /data/logs/boot-0001.txt" \
         "seen 60 init: kexec: noted /esp/boot/jamos.elf" \
@@ -82,6 +82,9 @@ run_kexec() {
     [ "$(grep -ac "reboot: resetting" "$log")" -eq 1 ] ||
         fail kexec "a firmware reset happened before the last one"
     grep -aq "kexec_load\|reading /esp" "$log" && fail kexec "a file was read"
+    # `diskro` (every internal drive read-only) goes on from kernel to kernel.
+    grep -aE 'loader: +Jam OS kexec, cmdline "([^"]* )?diskro[ "]' "$log" > /dev/null ||
+        fail kexec "the kexec'd kernel's command line lost diskro"
     grep -aq "the last boot panicked" "$log" && fail kexec "a reboot was taken for a panic"
     sed -n '/kexec: \/esp unchanged/,/kexec: starting the stored kernel/p' "$log" |
         grep -aq "screen: back to the kernel's log" &&

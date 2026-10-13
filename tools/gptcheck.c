@@ -454,6 +454,7 @@ struct want {
 };
 
 #define GPT_OK(n, u, k) { n, PT_SCHEME_GPT, PT_BAD_NONE, PT_BAD_NONE, 0, 0, 0, k, u, 0 }
+#define CUT_NOT(n)      { n, PT_SCHEME_NONE, PT_BAD_ZERO, PT_BAD_ZERO, 0, 0, 0, PT_KIND_OTHER, 0, 0 }
 enum { N_ = PT_SCHEME_NONE, M_ = PT_SCHEME_MBR, G_ = PT_SCHEME_GPT, OT = PT_KIND_OTHER,
        BL = PT_KIND_BLANK, JA = PT_KIND_JAMOS };
 
@@ -497,6 +498,26 @@ static const struct want wants[] = {
     { "jamos-cut-primary", N_, PT_BAD_ZERO, PT_BAD_NONE, 0, 0, 1, BL, 0, 0 },
     { "jamos-cut-bad", N_, PT_BAD_CRC, PT_BAD_NONE, 0, 0, 0, OT, 0, 0 },
     { "jamos-cut-backup-bad", N_, PT_BAD_NONE, PT_BAD_CRC, 0, 0, 0, OT, 0, 0 },
+    /* The cut after create_table's first write (the backup entry array alone): exactly
+     * pt_jamos_make's bytes and nothing else in the ends is blank-in-progress; any other byte,
+     * or an array that isn't the maker's, is someone else's disk. */
+    { "jamos-cut-array", N_, PT_BAD_ZERO, PT_BAD_ZERO, 0, 0, 1, BL, 0, 0 },
+    { "jamos-cut-array-4k", N_, PT_BAD_ZERO, PT_BAD_ZERO, 0, 0, 1, BL, 0, 0 },
+    CUT_NOT("jamos-cut-array-poke-entry"),
+    CUT_NOT("jamos-cut-array-poke-rest"),
+    CUT_NOT("jamos-cut-array-poke-late"),
+    { "jamos-cut-array-poke-header", N_, PT_BAD_ZERO, PT_BAD_SIGNATURE, 0, 0, 0, OT, 0, 0 },
+    CUT_NOT("jamos-cut-array-poke-before"),
+    CUT_NOT("jamos-cut-array-poke-head"),
+    { "jamos-cut-array-poke-primary", N_, PT_BAD_SIGNATURE, PT_BAD_ZERO, 0, 0, 0, OT, 0, 0 },
+    CUT_NOT("jamos-cut-array-shifted"),
+    CUT_NOT("jamos-cut-array-short"),
+    CUT_NOT("jamos-cut-array-name"),
+    CUT_NOT("jamos-cut-array-attrs"),
+    CUT_NOT("jamos-cut-array-zero-guid"),
+    CUT_NOT("jamos-cut-array-same-guid"),
+    CUT_NOT("jamos-cut-array-third"),
+    CUT_NOT("jamos-cut-array-windows"),
     GPT_OK("pmbr-status", 4, OT),
     { "mbr", M_, PT_BAD_ABSENT, PT_BAD_ABSENT, 0, 0, 0, OT, 2, 0 },
     { "mbr-bad", M_, PT_BAD_ABSENT, PT_BAD_ABSENT, 0, 0, 0, OT, 4, 3 },
@@ -584,6 +605,42 @@ static void check_case(const char *dir, struct img *m, const struct want *w)
 
 /* ---- the pieces alone ----------------------------------------------------------------- */
 
+/* A drive whose reads answer OK and land nothing after the first `lands`
+ * (a DMA the IOMMU dropped, a PRP pointing elsewhere): the buffer keeps
+ * whatever was in it. The reads that land read zeros (block 0, the
+ * first 64 KiB); the lost ones would have shown the drive's data. */
+static uint32_t lost_lands, lost_reads;
+static status_t lost_read(void *ctx, uint64_t lba, uint32_t count, void *buf)
+{
+    (void)ctx;
+    if (lost_reads++ < lost_lands)
+        memset(buf, 0, (size_t)count * 512);   /* the first ones land (and read zeros) */
+    (void)lba;
+    return OK;
+}
+
+/* Reads that answer OK without their data must never make a drive
+ * blank: the library fills its buffer before every read, so a fresh
+ * buffer (a new VMO: zeros) or one left by an earlier read of zeros
+ * doesn't pass for an empty disk. */
+static void check_lost_reads(void)
+{
+    static uint8_t buf[64 * 1024];
+    static struct pt_table t;
+    where = "units: reads that land nothing";
+    for (uint32_t lands = 0; lands < 3; lands++) {
+        memset(buf, 0, sizeof(buf));
+        lost_lands = lands;
+        lost_reads = 0;
+        struct pt_disk d = { 512, 1u << 21, lost_read, NULL, buf, sizeof(buf) };
+        if (pt_read(&d, &t) != OK)
+            fail("pt_read failed");
+        if (pt_kind(&t) != PT_KIND_OTHER || t.blank || t.blank_in_progress)
+            fail("%u read(s) landed, the rest lost: kind %d (blank %d, in progress %d)", lands,
+                 pt_kind(&t), t.blank, t.blank_in_progress);
+    }
+}
+
 static void check_units(void)
 {
     where = "units";
@@ -619,6 +676,7 @@ static void check_units(void)
         pt_stream(&d, 1, UINT64_MAX, NULL, NULL) != ERR_OUT_OF_RANGE ||
         pt_stream(&d, UINT64_MAX, 2, NULL, NULL) != ERR_OUT_OF_RANGE || m.reads)
         fail("pt_stream read outside the disk");
+    check_lost_reads();
 }
 
 int main(int argc, char **argv)
@@ -643,6 +701,8 @@ int main(int argc, char **argv)
         check_case(argv[1], &imgs[nimgs++], &wants[i]);
     }
     printf("gptcheck: %u cases ok\n", (unsigned)NWANTS);
+    check_make(imgs, nimgs);
+    printf("gptcheck: Jam OS's table as made, read back at each write of its order, ok\n");
     unsigned edits = check_edits(imgs, geos);   /* imgs[0] and [1] are the Windows-like ones */
     printf("gptcheck: %u header rules, each broken alone on both block sizes and headers, ok\n",
            edits);

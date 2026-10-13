@@ -1,6 +1,6 @@
 # storage: one disk, as its driver serves it: usb-storage
 # (drivers/usb-storage, a stick) and drv/nvme (drivers/nvme, an internal
-# drive, read-only), each on its DR_SERVE channel (devmgr's), and on a
+# drive: read-only unless it is Jam OS's), each on its DR_SERVE channel (devmgr's), and on a
 # channel of volumes' own it makes when devmgr asks it (svc.connect,
 # abi/idl/svc.idl: volumes is the disk's one real client; a test with
 # devmgr's control channel may get one too, devmgrctl.disk_storage). The
@@ -52,8 +52,10 @@ const SCHEME_GPT  2
 # (ERR_ACCESS_DENIED); volumes opens the ESP that way, and every
 # partition of a disk that isn't the boot disk until `mount -w` asks.
 # Past the last partition: ERR_OUT_OF_RANGE; read_only past 1:
-# ERR_INVALID_ARGS. drv/nvme (M12.7's stage 1) answers read_only 0
-# ERR_ACCESS_DENIED on every disk.
+# ERR_INVALID_ARGS. drv/nvme answers read_only 0 ERR_ACCESS_DENIED, before
+# it looks at the index, on every disk that isn't Jam OS's (its partition
+# table is Jam OS's mark, <jam/parttable.h>, and no `ro` word was given):
+# Windows' drive, a blank one, any other.
 3  open_partition  (u32 index, u8 read_only) -> (handle block)
 # The drive's identity (NVMe Identify Controller): model, serial number and
 # firmware revision (ASCII, trailing spaces trimmed, anything else '?').
@@ -76,3 +78,21 @@ const DIGEST_QUEUE 8
 # written. 128-bit counters are given as their low 64 bits. Asked of the
 # drive each time (ERR_IO if it fails).
 6  health  () -> (u64 units_read, u64 units_written, u64 host_reads, u64 host_writes, u64 power_cycles, u64 unsafe_shutdowns, u8 percent_used, u8 critical) later idempotent
+# Make a blank disk Jam OS's: its partition table, Jam OS's layout
+# (<jam/parttable.h>, pt_jamos_make: the ESP of 512 MiB at 1 MiB named
+# "Jam OS ESP", the data partition after it named "Jam OS data"), with this
+# disk GUID and these unique GUIDs for the two partitions (as on disk; all
+# zeros or two the same: ERR_INVALID_ARGS). drv/nvme only, and only on a
+# disk its own reading of the table found blank (or blank-in-progress: a
+# create_table cut short), with no `ro` word: anything else is
+# ERR_ACCESS_DENIED before anything is looked at. Written with FUA in
+# this order: the backup entry array, the backup header, the primary
+# entry array, the primary header, a Flush, then the protective MBR, so a
+# cut before the end leaves a disk that is still blank-in-progress (or,
+# cut right after the backup array, not blank any more: see the plan),
+# never one half Jam OS's. Then the driver reads the table back: OK once
+# it reads as Jam OS's (its two partitions may then be opened writable);
+# ERR_IO if a write failed or it doesn't read back; ERR_NO_SPACE: the
+# disk is too small (under about 580 MiB); ERR_BAD_STATE: one is under
+# way already. usb-storage: ERR_NOT_SUPPORTED.
+7  create_table  (u8[16] disk_guid, u8[16] esp_guid, u8[16] data_guid) -> () later

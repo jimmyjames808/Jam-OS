@@ -338,7 +338,10 @@ static const char *nvme_test_word(void)
  * `nvmetest=<words>` (a test's), which init passes on to devmgr and
  * devmgr to every drv/nvme: its test reads (nvme_test_word); `runlines`
  * (the test scripts': init passes it to every shell, which then prints its
- * "run: ... started / exited" lines). */
+ * "run: ... started / exited" lines); `diskro` (the "internal disks
+ * read-only" entry), which init passes on to devmgr and devmgr to every
+ * drv/nvme as `ro`: every internal drive read-only, whatever its table
+ * says. */
 static unsigned init_words(bool shell, const char *words[USERBOOT_MAX_WORDS])
 {
     unsigned n = 0;
@@ -372,6 +375,8 @@ static unsigned init_words(bool shell, const char *words[USERBOOT_MAX_WORDS])
         words[n++] = nvme;
     if (cmdline_has("runlines"))
         words[n++] = "runlines";
+    if (cmdline_has("diskro"))
+        words[n++] = "diskro";
     return n;
 }
 
@@ -399,14 +404,17 @@ static bool run_user_space(bool shell, bool nousb)
     unsigned nwords = init_words(shell, words);
     /* The regression run (init.cfg's programs, mode "init") gets the vlan=
      * word alone of the words, so its network drivers start as a plain boot's
-     * would (and a test's nvmetest=); the others describe a plain boot's
-     * devices and look. */
-    const char *run_words[2];
+     * would (and a test's nvmetest=, and diskro: the internal drives stay
+     * read-only in every mode); the others describe a plain boot's devices
+     * and look. */
+    const char *run_words[3];
     unsigned nrun = 0;
     if (boot_vlan)
         run_words[nrun++] = vlan_word;
     if (nvme_test_word())
         run_words[nrun++] = nvme_test_word();
+    if (cmdline_has("diskro"))
+        run_words[nrun++] = "diskro";
     bool ok = true;
     if (shell)
         ok &= userboot_run_init(0, mode, words, nwords);

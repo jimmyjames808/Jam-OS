@@ -2,21 +2,38 @@
  * that writes a submission queue entry, and so the one that decides what
  * the drive is asked to do.
  *
- * The read-only guarantee (docs/M12.7-PLAN.md): the commands are the
- * opcodes below and no others, each built by one of two functions,
- * sqe_admin (enum admin_op) and sqe_read, which check their arguments
- * against the list; sqe_put, the one store of an entry, checks the opcode
- * against its queue once more. Anything else ends the driver at once
+ * The commands (docs/M12.7-PLAN.md, "The read-only guarantee" and "Stage
+ * 2"): the opcodes below and no others, each built by one function that
+ * checks its arguments against the list: sqe_admin (enum admin_op),
+ * sqe_read, sqe_write and sqe_flush; sqe_put, the one store of an entry,
+ * checks the opcode against its queue (and a Write's or Flush's against
+ * the drive's mode) once more. Anything else ends the driver at once
  * (exit 1, a RESULTS line): it fails closed. There is no code for any
- * command that writes the medium or changes the drive (writes, flushes,
- * formats, sanitize, firmware, security, namespace management, any other
- * feature): nothing to call by mistake. tools/checknvme.py, run by `make
- * check`, keeps this file's opcode list the stage's and keeps every other
- * file away from submission entries (struct nvme_sq is defined here
- * alone, so no other file can reach one).
+ * other command that writes the medium or changes the drive (write
+ * zeroes, formats, sanitize, firmware, security, namespace management,
+ * any other feature): nothing to call by mistake.
+ *
+ * Writes: the gate. The drive's mode (enum nvme_mode) and the blocks a
+ * write may reach are set here alone, by cmd_arm, from the partition
+ * table the driver read itself (the library's pt_kind: Jam OS's mark,
+ * blank, or other) when it starts and after its own create_table; the
+ * `ro` word makes every drive MODE_OTHER. sqe_write looks at the mode
+ * FIRST: on a drive that isn't Jam OS's (a partition write) or blank (a
+ * write of its table) it refuses whatever the blocks are, so a write to
+ * Windows' drive can't be built at all; only then does it check that the
+ * blocks lie inside the target (one of the two Jam OS partitions, or the
+ * blocks Jam OS's table takes, inside the blank rule's zeros). Every Write
+ * carries FUA (its completion means it is on the medium). Flush only on a
+ * drive that isn't MODE_OTHER. tools/checknvme.py, run by `make check`,
+ * keeps this file's opcode lists the stage's, a Write built in sqe_write
+ * alone with the mode looked at before the range, the gate set in cmd_arm
+ * alone, and every other file away from submission entries (struct
+ * nvme_sq and the gate are defined here alone, so no other file can reach
+ * them).
  *
  * Each queue's submission side is one page (64 entries of 64 bytes) of a
  * contiguous VMO, pinned READ ONLY: the device only reads it. */
+#include <jam/parttable.h>
 #include "nvme.h"
 
 /* NVMe 1.4, Figure 139 (admin) and Figure 346 (NVM I/O): the stage's
@@ -32,6 +49,8 @@ enum {
     OPC_SET_FEATURES = 0x09,
 };
 enum {
+    OPC_FLUSH = 0x00,
+    OPC_WRITE = 0x01,
     OPC_READ = 0x02,
 };
 
@@ -43,6 +62,8 @@ enum {
 #define FID_QUEUES   0x07   /* number of queues */
 #define CQ_PC        (1u << 0)   /* physically contiguous */
 #define CQ_IEN       (1u << 1)   /* interrupts enabled */
+#define RW_FUA       (1u << 30)  /* Write's dword 12: Force Unit Access */
+#define RW_MAX       0x10000u    /* blocks one read or write names at most (NLB, 16 bits) */
 
 struct nvme_sq {
     uint16_t qid;              /* its queue */
@@ -58,11 +79,71 @@ struct nvme_sq {
 
 static struct nvme_sq sqs[2];   /* the admin queue's and the I/O queue's */
 
+/* The gate: what may be written, set by cmd_arm alone (see the header). */
+static struct gate {
+    enum nvme_mode mode;
+    uint64_t disk;             /* the namespace's blocks when armed */
+    uint64_t part_start[2];    /* MODE_JAMOS: the ESP's and the data partition's blocks */
+    uint64_t part_blocks[2];
+    uint64_t head;             /* MODE_BLANK: the table's blocks [0, head) ... */
+    uint64_t tail;             /* ... and [tail, disk) */
+} gate;
+
 _Noreturn static void refuse(const char *what, uint32_t a, uint32_t b)
 {
-    drv_report("nvme: FAILED: refused to send %s (%#x, %#x): not in the read-only command list; "
+    drv_report("nvme: FAILED: refused to send %s (%#x, %#x): not in the command list; "
                "the driver stops", what, a, b);
     drv_exit(1);
+}
+
+/* ---- the gate ------------------------------------------------------------------------ */
+
+void cmd_arm(struct nvme *c, const struct pt_table *t)
+{
+    enum pt_kind kind = t ? pt_kind(t) : PT_KIND_OTHER;
+    struct pt_jamos_plan p;
+    gate = (struct gate){ .mode = MODE_OTHER, .disk = c->ns.blocks };   /* nothing, first */
+    if (c->ro || !c->ns.nsid)
+        return;
+    if (kind == PT_KIND_JAMOS && t->nparts == 2) {
+        for (unsigned i = 0; i < 2; i++) {
+            gate.part_start[i] = t->parts[i].start;
+            gate.part_blocks[i] = t->parts[i].blocks;
+        }
+        gate.mode = MODE_JAMOS;
+    } else if (kind == PT_KIND_BLANK && pt_jamos_plan(c->ns.block_size, c->ns.blocks, &p) == OK) {
+        gate.head = p.head_blocks;
+        gate.tail = p.tail_start;
+        gate.mode = MODE_BLANK;
+    }
+}
+
+enum nvme_mode cmd_mode(void)
+{
+    return gate.mode;
+}
+
+const char *cmd_mode_str(void)
+{
+    switch (gate.mode) {
+    case MODE_JAMOS: return "a Jam OS disk: its two partitions writable";
+    case MODE_BLANK: return "blank: create_table may write its table";
+    default:         return "read-only";
+    }
+}
+
+/* Do `blocks` blocks at `lba` lie inside the gate's target `part`? Only
+ * asked once the mode is right for it. Written so nothing can wrap. */
+static bool in_gate(uint8_t part, uint64_t lba, uint32_t blocks)
+{
+    if (!blocks || blocks > RW_MAX || lba >= gate.disk || blocks > gate.disk - lba)
+        return false;
+    if (part == PART_TABLE)
+        return (lba < gate.head && blocks <= gate.head - lba) || lba >= gate.tail;
+    if (part >= 2)
+        return false;
+    uint64_t start = gate.part_start[part], n = gate.part_blocks[part];
+    return lba >= start && lba - start < n && blocks <= n - (lba - start);
 }
 
 /* ---- the queues' pages ---------------------------------------------------------- */
@@ -129,11 +210,12 @@ uint16_t slot_cid(const struct nvme_queue *q, const struct nvme_slot *s)
 /* ---- the one store of an entry ------------------------------------------------------ */
 
 /* May opcode opc go on queue qid? The admin queue: the admin list; the I/O
- * queue: Read alone. */
+ * queue: Read, and Write and Flush only on a drive that isn't MODE_OTHER. */
 static bool allowed(uint16_t qid, uint8_t opc)
 {
     if (qid == NVME_IO_QID)
-        return opc == OPC_READ;
+        return opc == OPC_READ ||
+               (gate.mode != MODE_OTHER && (opc == OPC_WRITE || opc == OPC_FLUSH));
     if (qid != 0)
         return false;
     switch (opc) {
@@ -232,7 +314,7 @@ void sqe_read(struct nvme *c, struct nvme_slot *s, uint64_t lba, uint32_t blocks
               uint64_t prp2)
 {
     const struct nvme_ns *ns = &c->ns;
-    if (!ns->nsid || !blocks || blocks > 0x10000 || lba >= ns->blocks ||
+    if (!ns->nsid || !blocks || blocks > RW_MAX || lba >= ns->blocks ||
         blocks > ns->blocks - lba || (prp1 & 3))
         refuse("a read", (uint32_t)lba, blocks);
     uint32_t dw[16] = { 0 };
@@ -245,4 +327,36 @@ void sqe_read(struct nvme *c, struct nvme_slot *s, uint64_t lba, uint32_t blocks
     dw[11] = (uint32_t)(lba >> 32);
     dw[12] = blocks - 1;   /* NLB, 0's based; no FUA, no limited retry, no protection */
     sqe_put(&c->io, s, OPC_READ, dw);
+}
+
+/* The one function that builds a Write: the mode first, then the blocks
+ * (see the header). FUA: answered means on the medium. */
+void sqe_write(struct nvme *c, struct nvme_slot *s, uint8_t part, uint64_t lba, uint32_t blocks,
+               uint64_t prp1, uint64_t prp2)
+{
+    bool mode_ok = part == PART_TABLE ? gate.mode == MODE_BLANK : gate.mode == MODE_JAMOS;
+    if (!mode_ok)
+        refuse("a write to a drive that isn't Jam OS's", gate.mode, part);
+    if (!in_gate(part, lba, blocks) || !c->ns.nsid || gate.disk != c->ns.blocks || (prp1 & 3))
+        refuse("a write outside its partition", (uint32_t)lba, part);
+    uint32_t dw[16] = { 0 };
+    dw[1] = c->ns.nsid;
+    dw[6] = (uint32_t)prp1;
+    dw[7] = (uint32_t)(prp1 >> 32);
+    dw[8] = (uint32_t)prp2;
+    dw[9] = (uint32_t)(prp2 >> 32);
+    dw[10] = (uint32_t)lba;
+    dw[11] = (uint32_t)(lba >> 32);
+    dw[12] = (blocks - 1) | RW_FUA;   /* NLB, 0's based; no limited retry, no protection */
+    sqe_put(&c->io, s, OPC_WRITE, dw);
+}
+
+/* A Flush of the namespace (the drive's volatile cache to the medium). */
+void sqe_flush(struct nvme *c, struct nvme_slot *s)
+{
+    if (gate.mode == MODE_OTHER || !c->ns.nsid)
+        refuse("a flush to a drive that isn't Jam OS's", gate.mode, 0);
+    uint32_t dw[16] = { 0 };
+    dw[1] = c->ns.nsid;
+    sqe_put(&c->io, s, OPC_FLUSH, dw);
 }

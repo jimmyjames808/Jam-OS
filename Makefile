@@ -565,7 +565,7 @@ DRV_CFLAGS  := $(filter-out -I%,$(USER_CFLAGS)) $(DRV_ISOLATE)
 # object (checked by checkdriver.py with the rest of it).
 DRV_LIB_rtl8125 := netserver
 DRV_LIB_e1000e  := netserver
-DRV_LIB_nvme    := sha256 parttable parttable_gpt
+DRV_LIB_nvme    := sha256 parttable parttable_gpt parttable_make
 DRV_OBJS     = $(patsubst %.c,$(BUILD)/udrv/%.o,$(wildcard $(filter %/$(1),$(DRIVER_DIRS))/*.c)) \
                $(patsubst %,$(BUILD)/udrv/drivers/lib/%.o,$(DRV_LIB_$(1)))
 
@@ -603,9 +603,10 @@ endef
 $(foreach d,$(DRIVERS),$(eval $(call DRIVER,$(d))))
 
 # The partition table library (<jam/parttable.h>), as a disk driver links
-# it (DRV_LIB_<name> := parttable parttable_gpt), checked on its own by
+# it (DRV_LIB_<name> := parttable parttable_gpt parttable_make: the cut-short
+# prepare rule in parttable.c uses the maker's bytes), checked on its own by
 # `make check` so it keeps to the driver rules before any driver uses it.
-PT_LIB     := parttable parttable_gpt
+PT_LIB     := parttable parttable_gpt parttable_make
 PT_LIB_OBJ := $(BUILD)/udrv/parttable-lib.o
 $(PT_LIB_OBJ): $(patsubst %,$(BUILD)/udrv/drivers/lib/%.o,$(PT_LIB)) tools/checkdriver.py \
                $(DRV_SURFACE)
@@ -619,7 +620,7 @@ $(PT_LIB_OBJ): $(patsubst %,$(BUILD)/udrv/drivers/lib/%.o,$(PT_LIB)) tools/check
 # kmalloc call, a call into another driver, ...) and accepts a clean one,
 # the Markdown docs still match the tree (tools/checkdocs.py), the
 # RTL8125 listen-only probe has no way to transmit (tools/checknotx.sh),
-# the NVMe driver has no way to write (tools/checknvme.py), the
+# the NVMe driver writes only a drive it found to be Jam OS's (tools/checknvme.py), and the
 # partition table library keeps to the driver rules and passes
 # tools/gptcheck.c (its cases, mutations and a short fuzz pass), and the
 # ports' recipes pass their lint and the ports builder its self-test
@@ -848,7 +849,8 @@ $(FONT_CHECK): $(FONT_TOOL_DEPS)
 # gptcheck (tools/gptcheck.c): the partition table library (the same
 # files a disk driver links) with ASan and UBSan, against tools/mkgpt.py's
 # images and thousands of mutated tables; `make check` runs it.
-GPT_SRCS := tools/gptcheck.c tools/gptmutate.c drivers/lib/parttable.c drivers/lib/parttable_gpt.c
+GPT_SRCS := tools/gptcheck.c tools/gptmutate.c tools/gptmake.c drivers/lib/parttable.c \
+            drivers/lib/parttable_gpt.c drivers/lib/parttable_make.c
 $(GPT_CHECK): $(GPT_SRCS) tools/gptcheck.h drivers/include/jam/parttable.h \
               drivers/lib/parttable_int.h kernel/include/jam/status.h
 	@mkdir -p $(dir $@)

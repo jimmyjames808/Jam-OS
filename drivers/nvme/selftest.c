@@ -151,7 +151,7 @@ static void round_start(void)
         t.io[k] = (struct nvme_io){ .lba = k ? c->ns.blocks - n : 0, .blocks = (uint32_t)n,
                                     .pages = t.addr + k * (BUF_PAGES / 2),
                                     .npages = BUF_PAGES / 2, .done = read_done };
-        status_t st = nvme_read(c, &t.io[k]);
+        status_t st = nvme_submit(c, &t.io[k]);
         if (st != OK) {
             drv_report("%s: selftest: FAILED: the read refused (%s)", c->name, status_str(st));
             t.st = st;

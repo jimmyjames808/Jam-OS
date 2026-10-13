@@ -61,7 +61,9 @@
  * "vtdtest" (with "iommu=on", the IOMMU checks test entry) is passed on to
  * drv/hda, which runs its deliberate DMA faults before serving. The
  * argument "nvmetest=<words>" (a test's) is passed on to every drv/nvme
- * (which is bound on every boot, with it or without).
+ * (which is bound on every boot, with it or without). The argument
+ * "diskro" (the "internal disks read-only" entry) starts every drv/nvme
+ * with `ro`: it writes nothing, whatever the drive's table says.
  *
  * devmgrctl.shutdown (a kexec reboot) stops everything the way the last
  * control client leaving does, without waiting for the shell's copies.
@@ -106,7 +108,7 @@ static const struct {
      * channel and gives it to the mixer (abi/idl/devmgr.idl). */
     { 0x8086, 0xffff, 0x040300, "drv/hda", NULL },
     /* The board's Realtek RTL8125: on a `netprobe` boot the listen-only
-     * probe (docs/M9-PLAN.md stage 0), on a `netsend` one the ARP send
+     * probe (docs/HISTORY.md, M9), on a `netsend` one the ARP send
      * test, and on every other boot the netdev service for netstack (the
      * owner's call, 2026-10-02: the everyday boot is on the network; the
      * entry "Jam OS (no network)" boots with vlan=off, which keeps the
@@ -134,6 +136,7 @@ static bool nousb;
 bool hidboot;
 bool vtdtest;
 const char *nvmetest;
+bool diskro;
 static bool netprobe, netsend, net;
 uint16_t net_vlan;
 uint64_t devmgr_started;
@@ -402,6 +405,7 @@ int main(int argc, char **argv)
         vtdtest |= !strcmp(argv[i], "vtdtest");
         if (!strncmp(argv[i], "nvmetest=", 9))
             nvmetest = argv[i];
+        diskro |= !strcmp(argv[i], "diskro");
         netprobe |= !strcmp(argv[i], "netprobe");
         netsend |= !strcmp(argv[i], "netsend");
         net |= !strcmp(argv[i], "net");

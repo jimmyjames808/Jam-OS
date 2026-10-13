@@ -48,8 +48,9 @@
  *
  * Never formatted: fat formats only when it is started with
  * FAT_ARG_FORMAT, and fs_format_arg gives that to the boot disk's data
- * partition alone. No other partition of any disk ever gets it, in either
- * mode.
+ * partition and, while prepare.c makes an NVMe drive Jam OS's, the two
+ * partitions of that drive (a disk our own mark check calls Jam OS's: mark.c).
+ * No other partition of any disk ever gets it, in either mode.
  *
  * Read-only below the filesystem: an other disk's partition is opened
  * read-only (storage.open_partition), so usb-storage refuses every write
@@ -156,6 +157,12 @@ static void ask_info(struct disk *d)
         snprintf(why, sizeof(why), "can't ask its driver (%s)", status_str(st));
         leave_alone(d, why);
     }
+}
+
+void disk_relearn(struct disk *d)
+{
+    drop_services(d, DISK_OTHER);   /* nothing runs on a blank disk; clears its waiting bits */
+    ask_info(d);
 }
 
 /* Is another disk of d's kind the boot disk already? */

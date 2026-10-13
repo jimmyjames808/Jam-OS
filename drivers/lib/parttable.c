@@ -27,6 +27,21 @@ const uint8_t pt_type_jamos_data[16] = {
 
 /* ---- reading -------------------------------------------------------------------------- */
 
+#define PT_FILL 0xa5   /* the buffer before every read: not zeros, no table's bytes */
+
+status_t pt_get(const struct pt_disk *d, uint64_t lba, uint32_t count)
+{
+    /* A read that answers OK without its data landing (a DMA the IOMMU
+     * dropped, a device that wrote somewhere else) would leave what the
+     * buffer held, and a new buffer is zeros: the blank rule would take
+     * any drive for an empty one, and create_table could write it. Filled
+     * first, such a read looks like someone else's data. */
+    uint8_t *b = d->buf;
+    for (uint32_t i = 0; i < count * d->block_size; i++)
+        b[i] = PT_FILL;
+    return d->read(d->ctx, lba, count, d->buf);
+}
+
 status_t pt_stream(const struct pt_disk *d, uint64_t lba, uint64_t n, pt_piece_fn fn, void *st)
 {
     if (lba > d->blocks || n > d->blocks - lba)
@@ -34,7 +49,7 @@ status_t pt_stream(const struct pt_disk *d, uint64_t lba, uint64_t n, pt_piece_f
     uint32_t per = d->buf_size / d->block_size;   /* at least 1: pt_read checked */
     while (n) {
         uint32_t k = n < per ? (uint32_t)n : per;
-        status_t st2 = d->read(d->ctx, lba, k, d->buf);
+        status_t st2 = pt_get(d, lba, k);
         if (st2 != OK)
             return st2;
         fn(st, d->buf, k * d->block_size);
@@ -194,21 +209,97 @@ static bool header_zero_or_good(uint8_t why)
     return why == PT_BAD_NONE || why == PT_BAD_ZERO;
 }
 
+/* What the first piece of create_table leaves: the blank rule's ends are
+ * zeros but for the backup entry array. Fed the ends' blocks in order; the
+ * array's first PT_JAMOS_HEAD_BYTES are kept, everything else must be zero. */
+struct cut {
+    bool     zero;                         /* nothing outside the array's head so far */
+    uint32_t seen;                         /* bytes of the array fed so far */
+    uint8_t  head[PT_JAMOS_HEAD_BYTES];
+};
+
+static void piece_array(void *st, const uint8_t *p, uint32_t bytes)
+{
+    struct cut *c = st;
+    for (uint32_t i = 0; i < bytes; i++, c->seen++) {
+        if (c->seen < PT_JAMOS_HEAD_BYTES)
+            c->head[c->seen] = p[i];
+        else
+            c->zero = c->zero && !p[i];
+    }
+}
+
+static void piece_cut_zero(void *st, const uint8_t *p, uint32_t bytes)
+{
+    struct cut *c = st;
+    c->zero = c->zero && pt_all_zero(p, bytes);
+}
+
+/* Is the disk a blank one whose create_table was cut after its first
+ * write, the backup entry array? Both header blocks zero (they lie in the
+ * ends, so the stream covers them), every other block of the ends zero,
+ * and the array's blocks, at pt_jamos_plan's place, exactly the two
+ * entries pt_jamos_make makes for this disk and zeros after them. Exact,
+ * not "non-zero": any other byte anywhere in the ends is someone else's
+ * data. (The array's non-zero bytes all lie in its first block, so a
+ * write torn between blocks leaves the same bytes or zeros.) */
+static bool cut_after_array(const struct pt_disk *d)
+{
+    struct pt_jamos_plan p;
+    uint64_t r = PT_BLANK_BYTES / d->block_size;
+    if (d->blocks <= 2 * r || pt_jamos_plan(d->block_size, d->blocks, &p) != OK ||
+        p.tail_start < d->blocks - r)
+        return false;
+    struct cut c = { .zero = true };
+    uint64_t after = p.tail_start + p.array_blocks;   /* the backup header's block, and on */
+    if (pt_stream(d, 0, r, piece_cut_zero, &c) != OK ||
+        pt_stream(d, d->blocks - r, p.tail_start - (d->blocks - r), piece_cut_zero, &c) != OK ||
+        pt_stream(d, p.tail_start, p.array_blocks, piece_array, &c) != OK ||
+        pt_stream(d, after, d->blocks - after, piece_cut_zero, &c) != OK)
+        return false;
+    return c.zero && pt_jamos_array_head_is(d->block_size, d->blocks, c.head);
+}
+
+/* Does t (a GPT read with Jam OS's layout of entries) have the geometry
+ * pt_jamos_make gives this disk: its usable range, 128 entries of 128
+ * bytes, both partitions where the plan puts them? Then its entry arrays
+ * lie in the plan's table blocks (outside the usable range, clear of the
+ * headers), the only blocks create_table writes: a cut prepare's own. A
+ * table of Jam OS's types and names at other places is someone's, and
+ * the blocks create_table would write on it were never seen. */
+static bool jamos_geometry(const struct pt_disk *d, const struct pt_table *t)
+{
+    struct pt_jamos_plan p;
+    if (pt_jamos_plan(d->block_size, d->blocks, &p) != OK)
+        return false;
+    return t->first_usable == p.head_blocks && t->last_usable == p.tail_start - 1 &&
+           t->entry_count == PT_JAMOS_ENTRIES && t->entry_size == 128 &&
+           t->parts[0].start == p.esp_start && t->parts[0].blocks == p.esp_blocks &&
+           t->parts[1].start == p.data_start && t->parts[1].blocks == p.data_blocks;
+}
+
 /* Block 0 is all zeros: nothing is listed (UEFI ignores a GPT without a
  * protective MBR). The disk is blank if its ends are zeros too; if not,
- * its GPT is read to see whether create_table was cut short on it: its
- * protective MBR is written last, so such a disk has block 0 zero and
- * headers that are each zeros or a good Jam OS one. */
+ * it may be a create_table cut short: its protective MBR is written last,
+ * so such a disk has block 0 zero and headers that are each zeros or a
+ * good Jam OS one at the plan's places (its GPT is read to see), or, cut
+ * right after the first write, nothing but the backup entry array
+ * (cut_after_array). */
 static void zero_disk(const struct pt_disk *d, struct pt_table *t)
 {
     t->blank = ends_zero(d);
     if (t->blank)
         return;
+    if (cut_after_array(d)) {
+        *t = (struct pt_table){ .scheme = PT_SCHEME_NONE, .primary = PT_BAD_ZERO,
+                                .backup = PT_BAD_ZERO, .blank_in_progress = true };
+        return;
+    }
     pt_gpt_read(d, t);
     uint8_t primary = t->primary, backup = t->backup;
     /* (One header at least is good: two zero ones list nothing.) */
     bool in_progress = header_zero_or_good(primary) && header_zero_or_good(backup) &&
-                       pt_jamos_layout(t);
+                       pt_jamos_layout(t) && jamos_geometry(d, t);
     *t = (struct pt_table){ .scheme = PT_SCHEME_NONE, .primary = primary, .backup = backup,
                             .blank_in_progress = in_progress };
 }
@@ -228,7 +319,7 @@ status_t pt_read(const struct pt_disk *d, struct pt_table *t)
                             .backup = PT_BAD_ABSENT };
     if (!disk_ok(d))
         return ERR_INVALID_ARGS;
-    status_t st = d->read(d->ctx, 0, 1, d->buf);
+    status_t st = pt_get(d, 0, 1);
     if (st != OK)
         return st;
     const uint8_t *s = d->buf;

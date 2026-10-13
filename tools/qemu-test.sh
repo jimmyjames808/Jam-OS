@@ -84,7 +84,12 @@
 #   QEMU_NVME="a.img b.img"                  two drives
 #   QEMU_NVME="a.img+b.img"                  one drive, two namespaces
 #   QEMU_NVME="a.img,logical_block_size=4096,physical_block_size=4096"
-# QEMU_NVME_CTRL: properties for every controller, e.g. "mdts=2". Paths
+# QEMU_NVME_CTRL: properties for every controller, e.g. "mdts=2".
+# QEMU_NVME_THROTTLE makes every namespace as slow as its limits say, with
+# QEMU's throttle-group, e.g. "x-iops-write=100": every write command waits
+# its turn (10 ms apart), so a test that kills QEMU at the Nth Write of the
+# trace (tools/nvme-write-test.sh) cuts within a write or two of it, not
+# several writes later. Paths
 # can't hold spaces, `+` or `,`. Unset: no NVMe drive, nothing else changes.
 # tools/nvme-test.sh is the stage-1 test that uses it, with QEMU's trace of
 # every command (QEMU_EXTRA="-trace pci_nvme_admin_cmd -trace pci_nvme_io_cmd -D <file>").
@@ -125,7 +130,13 @@ for spec in ${QEMU_NVME:-}; do
     for f in $(echo "$imgs" | tr + ' '); do
         [ -f "$f" ] || { echo "QEMU_NVME: $f is not a file"; exit 1; }
         nvme="$nvme -blockdev driver=file,node-name=nvf${k}_$m,filename=$f"
-        nvme="$nvme -blockdev driver=raw,node-name=nvb${k}_$m,file=nvf${k}_$m"
+        if [ -n "${QEMU_NVME_THROTTLE:-}" ]; then
+            nvme="$nvme -object throttle-group,id=nvg${k}_$m,$QEMU_NVME_THROTTLE"
+            nvme="$nvme -blockdev driver=raw,node-name=nvr${k}_$m,file=nvf${k}_$m"
+            nvme="$nvme -blockdev driver=throttle,node-name=nvb${k}_$m,throttle-group=nvg${k}_$m,file=nvr${k}_$m"
+        else
+            nvme="$nvme -blockdev driver=raw,node-name=nvb${k}_$m,file=nvf${k}_$m"
+        fi
         nvme="$nvme -device nvme-ns,drive=nvb${k}_$m,bus=nvme$k,nsid=$m$props"
         m=$((m + 1))
     done
