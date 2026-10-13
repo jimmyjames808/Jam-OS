@@ -15,9 +15,10 @@
  * whose kills are read back from the log. The page cache's section adds a
  * pager thread that answers with versions of a file (struct gpager),
  * budgets small enough to evict on every supply, and readers sampling the
- * budget as they go. The last section runs a verified program
- * (vmo_make_exec_verified) on them, its pages checked against their hashes
- * as they arrive. */
+ * budget as they go, and an invalidation of one page of a VMO mapped in
+ * 10,240 pieces, timed against 64 pieces. The last section runs a
+ * verified program (vmo_make_exec_verified) on them, its pages checked
+ * against their hashes as they arrive. */
 #include <jam/aspace.h>
 #include <jam/aspace_vmo.h>
 #include <jam/handle.h>
@@ -1880,6 +1881,77 @@ KTEST(pager_cache_pressure)
     KT_EQ(pager_resident(pg), 0);
     KT_EQ(vmo_committed(v), 0);
     KT_EQ(job_set_limit(j, JOB_LIMIT_PAGES, JOB_NO_LIMIT), OK);
+    put(v);
+    pg_close(pg);
+    kt_job_is_empty(j);
+    job_unref(j);
+}
+
+/* PAGER_OP_INVALIDATE at scale: a pager VMO of INV_PAGES pages mapped in
+ * `pieces` mappings, read-only and no-access runs alternating. */
+#define INV_PAGES  10240u
+#define INV_ROUNDS 1000u
+#define INV_PAGE   5120u                  /* read-only in both splits */
+#define INV_NEXT   (INV_PAGE + 2)         /* so is this neighbour */
+#define INV_BASE   0x100000000ull
+
+static struct aspace *inv_split(struct vmo *v, unsigned pieces)
+{
+    struct aspace *as;
+    KT_EQ(aspace_create(&as), OK);
+    uint64_t a = INV_BASE;
+    KT_EQ(aspace_map(as, v, 0, INV_PAGES * PG, ASPACE_READ | ASPACE_FIXED, &a), OK);
+    uint64_t run = INV_PAGES / pieces;
+    for (unsigned i = 1; i < pieces; i += 2)
+        KT_EQ(aspace_protect(as, INV_BASE + i * run * PG, run * PG, 0), OK);
+    KT_EQ(aspace_mapping_count(as), pieces);
+    return as;
+}
+
+/* Supply INV_PAGE, read-fault it in and invalidate it, INV_ROUNDS times:
+ * the invalidations' time. Its entry goes each time, its neighbour's
+ * stays. */
+static uint64_t inv_measure(struct pager *pg, uint64_t key, struct aspace *as)
+{
+    uint64_t va = INV_BASE + INV_PAGE * PG, next_va = INV_BASE + INV_NEXT * PG, ns = 0;
+    KT_EQ(supply(pg, key, INV_NEXT, 1), OK);
+    KT_EQ(aspace_fault(as, next_va, ASPACE_READ), OK);
+    uint64_t next_pte = aspace_pte(as, next_va);
+    KT_ASSERT(next_pte != 0);
+    for (unsigned i = 0; i < INV_ROUNDS; i++) {
+        KT_EQ(supply(pg, key, INV_PAGE, 1), OK);
+        KT_EQ(aspace_fault(as, va, ASPACE_READ), OK);
+        KT_ASSERT(aspace_pte(as, va) != 0);
+        uint64_t t0 = uptime_ns();
+        KT_EQ(pager_op(pg, key, PAGER_OP_INVALIDATE, INV_PAGE * PG, PG, 0), OK);
+        ns += uptime_ns() - t0;
+        KT_EQ(aspace_pte(as, va), 0);
+    }
+    KT_EQ(aspace_pte(as, next_va), next_pte);
+    return ns;
+}
+
+/* Invalidating one page of a pager VMO mapped in 10,240 pieces costs
+ * about what it costs with 64: the reverse map finds the one mapping over
+ * the page. Timed, with a generous bound, on an idle machine only (the
+ * numbers are printed either way). */
+KTEST(pager_invalidate_many_mappings)
+{
+    struct job *j = kt_fresh_job();
+    struct pager *pg = pg_budget(j, 1u << 20, ANSWER);
+    struct vmo *v;
+    KT_EQ(pager_create_vmo(pg, 49, INV_PAGES * PG, &v), OK);
+    struct aspace *few = inv_split(v, 64);
+    (void)inv_measure(pg, 49, few);   /* warm */
+    uint64_t small = inv_measure(pg, 49, few);
+    aspace_unref(few);
+    struct aspace *many = inv_split(v, INV_PAGES);
+    uint64_t big = inv_measure(pg, 49, many);
+    kprintf("ktest %s: %u one-page invalidations %lu us with 64 mappings, %lu us with %u\n",
+            ktest_current, INV_ROUNDS, (uint64_t)(small / NS_PER_US), (uint64_t)(big / NS_PER_US),
+            INV_PAGES);
+    KT_IDLE_ASSERT(big <= 3 * small + 3 * NS_PER_MS);
+    aspace_unref(many);
     put(v);
     pg_close(pg);
     kt_job_is_empty(j);
