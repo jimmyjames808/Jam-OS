@@ -192,17 +192,25 @@ static status_t own_file(const char *path, uint64_t *size, uint64_t *id)
 }
 
 /* Is `file` (the caller's) the file at path in init's /data, of *size
- * bytes? ERR_ACCESS_DENIED: another file, or not a file channel at all. */
-static status_t same_file(handle_t file, const char *path, uint64_t *size)
+ * bytes? ERR_ACCESS_DENIED: another file, or not a file channel at all
+ * (*why says which). */
+static status_t same_file(handle_t file, const char *path, uint64_t *size, const char **why)
 {
     uint64_t c_size, c_mtime, c_id, id;
     uint8_t c_dir = 0;
     status_t st = own_file(path, size, &id);
-    if (st != OK)
+    if (st != OK) {
+        *why = "nothing init can run at its path";
         return st == ERR_NOT_FOUND ? st : ERR_ACCESS_DENIED;
-    if (file_stat_until(file, now() + CALL_WAIT, &c_size, &c_dir, &c_mtime, &c_id) != OK ||
-        c_dir || c_id != id || c_size != *size)
+    }
+    if (file_stat_until(file, now() + CALL_WAIT, &c_size, &c_dir, &c_mtime, &c_id) != OK) {
+        *why = "the caller's file doesn't answer as a file";
         return ERR_ACCESS_DENIED;
+    }
+    if (c_dir || c_id != id || c_size != *size) {
+        *why = "the caller's file isn't the file at its path";
+        return ERR_ACCESS_DENIED;
+    }
     return OK;
 }
 
@@ -227,30 +235,40 @@ static status_t refusal(status_t st)
 }
 
 /* Seal the program at path for p: the checks of open (exec.idl). file is
- * the caller's (closed here). */
+ * the caller's (closed here). A refusal is said in the log, with why. */
 static status_t seal(struct prog *p, const char *path, handle_t file)
 {
     char hex[DP_HEX_LEN + 1];
     uint64_t size = 0, msize = 0;
     handle_t pv = HANDLE_INVALID, table = HANDLE_INVALID;
-    status_t st = same_file(file, path, &size);
-    if (st == OK && dp_allow_hash(path, hex) != OK)
+    const char *why = "not the file at its path";
+    status_t st = same_file(file, path, &size, &why), raw = st;
+    if (st == OK && (raw = dp_allow_hash(path, hex)) != OK) {
+        why = "no approval for it";
         st = ERR_ACCESS_DENIED;   /* no line for it (or no approvals to read) */
+    }
     if (st == OK) {
-        st = file_map_until(file, now() + CALL_WAIT, FILE_MAP_EXEC, &pv, &msize);
+        why = "its file can't be mapped to run";
+        st = raw = file_map_until(file, now() + CALL_WAIT, FILE_MAP_EXEC, &pv, &msize);
         if (st != OK && st != ERR_BUSY)
             st = refusal(st);
         else if (st == OK && (!kind_ok(pv, OBJ_VMO, 0) || msize != size))
             st = ERR_ACCESS_DENIED;   /* not a VMO of this file */
     }
     close_if(&file);
-    if (st == OK && (st = dp_table_read(hex, msize, &table)) != OK)
+    if (st == OK && (st = raw = dp_table_read(hex, msize, &table)) != OK) {
+        why = st == ERR_OUT_OF_RANGE ? "changed since it was allowed (another size)" :
+              st == ERR_NOT_FOUND ? "its approval has no page table (run it once from the shell)" :
+              "its approval's page table is broken";
         st = refusal(st);
+    }
     if (st == OK) {
         /* pv is ours alone and was never mapped or read: from here on the
          * kernel checks every page it publishes. pv is gone whatever
          * happens. */
-        st = jam_vmo_make_exec_verified(pv, startup_handle(SR_RESOURCE), table, 0, &p->vmo);
+        why = "can't be sealed";
+        st = raw = jam_vmo_make_exec_verified(pv, startup_handle(SR_RESOURCE), table, 0,
+                                              &p->vmo);
         pv = HANDLE_INVALID;
         if (st != OK)
             st = refusal(st);
@@ -258,7 +276,9 @@ static status_t seal(struct prog *p, const char *path, handle_t file)
     close_if(&pv);
     close_if(&table);
     if (st == OK) {
-        st = dp_wants_vmo(p->vmo, msize, &p->w);
+        st = raw = dp_wants_vmo(p->vmo, msize, &p->w);
+        why = st == ERR_IO ? "changed since it was allowed (or /data can't read it)" :
+              "not a program it can run";
         if (st == ERR_IO)
             st = ERR_ACCESS_DENIED;   /* a page isn't the approved one: it changed */
         else if (st == ERR_INVALID_ARGS)
@@ -268,9 +288,9 @@ static status_t seal(struct prog *p, const char *path, handle_t file)
     if (bad) {
         printf("init: exec: %s asks for %s, which no program from /data may have\n", path, bad);
         st = ERR_ACCESS_DENIED;
+    } else if (st != OK) {
+        printf("init: exec: %s refused: %s (%s)\n", path, why, status_str(raw));
     }
-    if (st == ERR_ACCESS_DENIED || st == ERR_WRONG_TYPE)
-        printf("init: exec: %s refused (%s)\n", path, status_str(st));
     p->size = msize;
     return st;
 }
