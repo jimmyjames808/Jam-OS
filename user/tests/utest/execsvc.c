@@ -44,6 +44,7 @@
 #include <idl/exec.h>
 #include <os.h>
 #include <sha256.h>
+#include "disks.h"
 #include "exectest.h"
 #include "utest.h"
 
@@ -58,7 +59,9 @@
 #define RELEASE  (3 * NS_PER_S)           /* fat hears a sealed VMO is gone */
 
 static bool    set_up, skipped;
-static char   *allow_before;              /* /data/etc/allow as it was (NULL: none) */
+static bool    data_ours;                 /* /data mounted here (from volumes' watch) */
+static struct view data_view;             /* ... that watch */
+static char   *allow_before;             /* /data/etc/allow as it was (NULL: none) */
 static size_t  allow_before_len;
 static char    allow_text[4096];          /* the lines added */
 static char    tables[8][DP_HEX_LEN + 1]; /* the tables written */
@@ -133,12 +136,31 @@ static bool setup(void)
     if (set_up)
         return true;
     handle_t ch;
-    if (svc_open(SVC_EXEC, &ch) != OK || fs_stat("/data", NULL, NULL, NULL) != OK) {
-        printf("utest: %s: no /svc/exec or no /data here: skipped\n", utest_cur);
+    status_t svc = svc_open(SVC_EXEC, &ch), data = fs_stat("/data", NULL, NULL, NULL);
+    if (svc == OK)
+        jam_handle_close(ch);
+    /* The init run starts us before volumes has mounted /data, and our
+     * namespace is init's as it was then: the stick's /data from volumes'
+     * watch instead (init's /svc/exec reads its own /data: the same one). */
+    handle_t vm = HANDLE_INVALID, fs;
+    if (svc == OK && data != OK && svc_open(SVC_VOLUMES, &vm) == OK) {
+        uint64_t end = now() + WAIT_MOUNT;
+        while (!mounted(&data_view, "/data") && view_next(vm, &data_view, end) == OK)
+            ;
+        if (mounted(&data_view, "/data") &&
+            jam_handle_duplicate(mount_of(&data_view, "/data").fs, RIGHT_SAME, &fs) == OK &&
+            ns_mount("/data", fs) == OK) {
+            data_ours = true;
+            data = fs_stat("/data", NULL, NULL, NULL);
+        }
+        jam_handle_close(vm);
+    }
+    if (svc != OK || data != OK) {
+        printf("utest: %s: /svc/exec %s, /data %s: skipped\n", utest_cur, status_str(svc),
+               status_str(data));
         set_up = skipped = true;
         return true;
     }
-    jam_handle_close(ch);
     if (fs_stat(DP_ALLOW_FILE, NULL, NULL, NULL) == OK) {
         handle_t v;
         uint64_t got;
@@ -441,10 +463,21 @@ bool t_exec_no_leak(void)
     return true;
 }
 
+/* /data as utest found it: ours unmounted, volumes' watch closed. */
+static void data_back(void)
+{
+    if (data_ours)
+        (void)ns_unmount("/data");
+    data_ours = false;
+    view_close(&data_view);
+}
+
 bool t_exec_cleanup(void)
 {
-    if (!set_up || skipped)
+    if (!set_up || skipped) {
+        data_back();
         return true;
+    }
     const char *files[] = { NARROW, WIDE, PX, SESS, UNALLOW, EXT_PROBE_FILE };
     for (unsigned i = 0; i < sizeof(files) / sizeof(files[0]); i++)
         (void)fs_unlink(files[i]);
@@ -459,6 +492,7 @@ bool t_exec_cleanup(void)
     free(allow_before);
     allow_before = NULL;
     set_up = false;
+    data_back();
     CHECK_ST(st, OK);
     return true;
 }
