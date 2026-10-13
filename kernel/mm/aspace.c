@@ -227,6 +227,8 @@ struct mapping {
     unsigned         max;        /* what aspace_protect may grant */
     bool             kept;       /* ASPACE_KEPT_ONLY: entries filled at map time, never changed */
 };
+_Static_assert(sizeof(struct mapping) <= PAGE_SIZE / ASPACE_MAPPINGS_PER_PAGE,
+               "the page charged per ASPACE_MAPPINGS_PER_PAGE mappings holds them");
 
 struct aspace {
     struct mutex      lock;       /* region lock (see the file header) */
