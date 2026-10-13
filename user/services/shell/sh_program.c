@@ -607,10 +607,12 @@ static int start_program(int argc, char **argv, bool bg, struct started *s)
         x[nx++] = (struct spawn_handle){ SR_SIGNALS, theirs };   /* kill's way to it */
     }
     char **env = s->posix ? sh_make_env_posix() : sh_make_env();
-    const char *args[20];
+    /* Every word the line gave it (a line has at most SH_MAX_WORDS); a
+     * start message too big for them all is spawn's to refuse, and said. */
+    const char *args[SH_MAX_WORDS + 1];
     int n = 0;
     args[n++] = s->path;
-    for (int i = 1; i < argc && n < 19; i++)
+    for (int i = 1; i < argc && n < SH_MAX_WORDS; i++)
         args[n++] = argv[i];
     args[n] = NULL;
     struct posixfds_out ho;

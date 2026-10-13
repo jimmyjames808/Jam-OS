@@ -230,6 +230,10 @@ wait {prompt}
 send pxio out after-$T
 wait after-x
 wait {prompt}
+# every word of the line reaches the program (it got 18 and lost the rest)
+send pxio args 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 last-$T
+wait pxio: 25 args, last last-x
+wait {prompt}
 # a program's last lines come before the shell's next ones: the console shows
 # what a terminal still has queued before it serves the shell's write
 send pxio seq 3000; echo seq-order-$T=$?

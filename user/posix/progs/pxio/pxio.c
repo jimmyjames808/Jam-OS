@@ -29,6 +29,8 @@
  *                        by it)
  *   pxio size            "pxio: size COLSxROWS", its terminal's (TIOCGWINSZ
  *                        on 1: an SSH session's window, tools/ssh-test.sh)
+ *   pxio args A...       "pxio: N args, last A": how many arguments came
+ *                        after `args`, and the last of them
  *
  * Writing is write(2) alone, so nothing is buffered between two modes'
  * lines. */
@@ -278,7 +280,14 @@ int main(int argc, char **argv)
     }
     if (!strcmp(m, "size"))
         return show_size();
+    if (!strcmp(m, "args")) {
+        char line[160];
+        snprintf(line, sizeof(line), "pxio: %d args, last %s\n", argc - 2,
+                 argc > 2 ? argv[argc - 1] : "(none)");
+        put(1, line);
+        return 0;
+    }
     put(2, "usage: pxio env|cwd|fds|stack|out T|err T|both O E|seq N|cat|count|exit N|sigint|"
-           "yes|head N|gen N|idle|ignore|raise N|size\n");
+           "yes|head N|gen N|idle|ignore|raise N|size|args A...\n");
     return 2;
 }
