@@ -8,7 +8,8 @@
  * Files: main.c (sections, the child modes), start.c (argv, the
  * environment, the auxiliary vector, the hand-over: children started
  * with libjam's spawn), mem.c (mmap and friends, brk, malloc) and
- * memres.c (reservations: V8's and PartitionAlloc's patterns), clock.c
+ * memres.c and mempat.c (reservations; V8's and PartitionAlloc's
+ * patterns), clock.c
  * (the clocks from the time page against the calls, and their bench), thread.c
  * (pthreads, TLS, errno), pipe.c (pipes and socketpair, and the pipe
  * bench), fds.c (dup and fcntl, memfd, eventfd, the one user, /dev and
