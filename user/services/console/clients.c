@@ -164,7 +164,9 @@ void client_event(unsigned i)
     uint64_t t0 = now();
     status_t st = OK;
     for (unsigned n = 0; n < CLIENT_BUDGET && now() - t0 < CLIENT_BUDGET_NS; n++) {
-        if (back->congested && back->congested()) {
+        /* What programs wrote to their terminals before this request came
+         * goes first: the shell's prompt after a program's last lines. */
+        if ((back->congested && back->congested()) || !ttys_show_queued()) {
             deferred |= 1u << i;   /* its requests wait, so its writers do: no output is dropped */
             return;
         }

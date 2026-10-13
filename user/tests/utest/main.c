@@ -1138,6 +1138,7 @@ static const struct {
     { "con_tty_canonical", t_con_tty_canonical },
     { "con_tty_raw", t_con_tty_raw },
     { "con_tty_focus", t_con_tty_focus },
+    { "con_tty_order", t_con_tty_order },
     { "jwlc_real_compositor", t_jwlc_real_compositor },
     { "jwlc_restore", t_jwlc_restore },
     { "jwlc_clip", t_jwlc_clip },

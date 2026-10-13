@@ -19,7 +19,11 @@
  * go to the tty, ISIG's Ctrl+C to the shell's keys and not the tty; a line
  * typed ahead and not read, and a line half typed, reach the shell's keys
  * when the tty closes; an output message past TTY_OUT_MAX hangs the tty
- * up; nine ttys are one too many. */
+ * up; nine ttys are one too many.
+ *
+ * t_con_tty_order: a client's write that comes while a tty's output is
+ * still queued (the shell's prompt after a program's last lines) is shown
+ * after that output, also when both waited for a full master. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -338,5 +342,66 @@ bool t_con_tty_focus(void)
 {
     const char *argv[] = { "console", "conn" };
     bool ok = rig_start(argv, 2, false) && focus_flow();
+    return rig_stop(ok) && ok;
+}
+
+/* ---- 4. a client's write after a tty's output ----------------------------------------- */
+
+#define ORDER_MSG   2000u    /* bytes of each tty output message (under TTY_OUT_MAX) */
+#define ORDER_MOST  8000u    /* messages written at most (16 MB): the console is stuck sooner */
+#define ORDER_STUCK 300u     /* ms the tty stays full once the console stopped reading it */
+
+/* Fill t's output until the console stops reading it (the master, which
+ * nobody reads, and then its ring are full): the number of the last
+ * message written, each "seq NNNNN xxx...\n"; 0 if it never stopped. */
+static unsigned fill_until_stuck(const struct tty_client *t)
+{
+    static char m[ORDER_MSG];
+    for (unsigned i = 1; i <= ORDER_MOST;) {
+        memset(m, 'x', sizeof(m));
+        int k = snprintf(m, sizeof(m), "seq %05u ", i);
+        m[k] = 'x';
+        m[sizeof(m) - 1] = '\n';
+        status_t st = jam_channel_write(t->data, m, sizeof(m), NULL, 0);
+        if (st == OK) {
+            i++;
+            continue;
+        }
+        signals_t seen;
+        if (st != ERR_SHOULD_WAIT ||
+            jam_object_wait_one(t->data, SIG_WRITABLE, now() + ORDER_STUCK * NS_PER_MS,
+                                &seen) != OK)
+            return st == ERR_SHOULD_WAIT ? i - 1 : 0;
+    }
+    return 0;
+}
+
+/* A program's output still queued when a client writes (the shell's prompt
+ * after the program ended) is shown first: the console's ring was full,
+ * so both waited, and when the master drains the tty's queue goes before
+ * the request. */
+static bool order_flow(void)
+{
+    handle_t program;
+    struct tty_client t;
+    CHECK_ST(console_new_client_within(rig.admin, CON_WAIT, PROGRAM_LEVEL, &program), OK);
+    CHECK_ST(open_tty(program, &t), OK);
+    unsigned last = fill_until_stuck(&t);
+    CHECK(last > 0);
+    static const char mark[] = "MARK-ORDER";
+    CHECK_ST(console_write_send(rig.admin, 1, (const uint8_t *)mark, sizeof(mark) - 1), OK);
+    char want[16];
+    snprintf(want, sizeof(want), "seq %05u ", last);
+    CHECK(rig_expect(want, STEP_MS));
+    CHECK(rig_expect(mark, 2000));   /* after the program's last line, not among its lines */
+    close_tty(&t);
+    jam_handle_close(program);
+    return true;
+}
+
+bool t_con_tty_order(void)
+{
+    const char *argv[] = { "console", "conn" };
+    bool ok = rig_start(argv, 2, false) && order_flow();
     return rig_stop(ok) && ok;
 }

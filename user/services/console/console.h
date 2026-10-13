@@ -302,6 +302,11 @@ void ttys_refocus(void);
 uint64_t ttys_deadline(void);
 void ttys_pump(void);
 void ttys_resume(void);
+/* The tty output queued so far, shown before a client's request is served
+ * (the shell's prompt after a program's last lines, not among them): false
+ * if the back end is congested first (the request waits, as for
+ * back->congested). */
+bool ttys_show_queued(void);
 /* The terminal's size changed: every tty client is told. */
 void ttys_resized(void);
 
