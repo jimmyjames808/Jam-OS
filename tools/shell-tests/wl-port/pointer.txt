@@ -1,0 +1,61 @@
+# group pointer (tools/wl-port-test.sh): wlprobe's pointer case with QEMU's
+# mouse (monitor mouse_move / mouse_button into usb-mouse -> the compositor
+# -> wl_pointer). The windows tile: wlprobe's opens beside terminal 1 in the
+# right half. `shot pointer-win` shows where its surface is (a magenta
+# block at its top left), so wl-port-check.py can compare the surface
+# coordinates of the click at screen (960, 420) with where that is.
+# The mouse is put at (960, 420) first (`pointer` walks there in ~230 monitor
+# steps, longer than the case waits), so the window maps under it; a wiggle
+# tells the window the pointer entered. Steps: click, 5 steps of 6 right (30),
+# click, the wheel one way and the other, a right click, then out into terminal 1.
+pointer 960 420
+send run $P/wlprobe pointer
+wait 40 wlprobe: pointer: ready
+wait 10 wlprobe: pointer: surface
+sleep 1
+shot pointer-win
+monitor mouse_move 6 0
+sleep 0.2
+monitor mouse_move -6 0
+sleep 0.5
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_button 0
+sleep 0.3
+monitor mouse_move 6 0
+sleep 0.1
+monitor mouse_move 6 0
+sleep 0.1
+monitor mouse_move 6 0
+sleep 0.1
+monitor mouse_move 6 0
+sleep 0.1
+monitor mouse_move 6 0
+sleep 0.3
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_button 0
+sleep 0.3
+monitor mouse_move 0 0 1
+sleep 0.3
+monitor mouse_move 0 0 -1
+sleep 0.3
+monitor mouse_button 2
+sleep 0.2
+monitor mouse_button 0
+sleep 0.3
+pointer 100 400
+wait 40 case(s),
+wait {prompt}
+# a click on a window of a client with no keyboard makes it the active window
+pointer 960 420
+send run $P/wlprobe keyless-click
+wait 40 wlprobe: keyless-click: ready
+sleep 1
+monitor mouse_move 2 0
+sleep 0.5
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_button 0
+wait 40 case(s),
+wait {prompt}

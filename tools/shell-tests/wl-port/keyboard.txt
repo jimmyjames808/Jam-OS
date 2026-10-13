@@ -1,0 +1,21 @@
+# group keyboard (tools/wl-port-test.sh): wlprobe's keyboard case. The probe's
+# window takes the keys when it maps (it made a wl_keyboard); the USB
+# keyboard (QEMU's sendkey: usb-kbd -> drv/hid -> the compositor) types
+# a b 1, Shift+c and Return, which arrive as evdev codes 30 48 2 46 28, the
+# keymap turning them into "ab1C".
+send run $P/wlprobe keyboard
+wait 40 wlprobe: keyboard: ready
+sleep 1
+usbkeys ab1
+monitor sendkey shift-c
+sleep 0.4
+monitor sendkey ret
+wait 40 case(s),
+wait {prompt}
+# Super+Q on the window that has the keys: the compositor asks it to close, and pings it
+send run $P/wlprobe close
+wait 40 wlprobe: close: ready
+sleep 1
+monitor sendkey meta_l-q
+wait 40 case(s),
+wait {prompt}
