@@ -74,6 +74,9 @@ static struct ldisc ld;
 static struct ttyc *echo_to;        /* whose input is being typed: the echo goes as its output */
 static uint32_t out_pending;        /* bit i: ttys[i]'s output had messages left after its turn */
 static uint32_t out_deferred;       /* ... or the back end was congested */
+static uint32_t held_ttys;          /* bit i: ttys[i]'s requests left unserved, its answers
+                                     * unread past the protocol's bound (held) */
+static struct idl_held held_reqs;
 static uint64_t push_retry_at;      /* a data channel was full (0: no retry due) */
 static bool refocus;                /* the focus changed: deliver at the next turn */
 static uint8_t msg[LD_REC_MAX];     /* one message, in or out */
@@ -506,6 +509,7 @@ static void slot_free(struct ttyc *t)
     jam_handle_close(t->peer);
     out_pending &= ~(1u << i);
     out_deferred &= ~(1u << i);
+    held_ttys &= ~(1u << i);
     memset(t, 0, sizeof(*t));
 }
 
@@ -599,7 +603,13 @@ void tty_event(uint32_t kind, uint32_t i)
         out_turn(t);
         return;
     }
+    held_ttys &= ~(1u << i);
     for (unsigned k = 0; k < REQ_BUDGET; k++) {
+        if (!t->closing && tty_unread_full(t->ch)) {   /* it reads its answers first */
+            held_ttys |= 1u << i;
+            idl_hold(&held_reqs);
+            return;
+        }
         status_t st = tty_serve_one(t->ch, &tty_ops, t);
         if (st == ERR_SHOULD_WAIT)
             return;
@@ -622,13 +632,18 @@ uint64_t ttys_deadline(void)
         return 0;
     /* What ld holds waits for a reader: the newest tty's channel to take
      * more (push_retry_at), or a focus to change. */
-    if (!ld_ready(&ld) || focus_top_tty() < 0)
-        return DEADLINE_NEVER;
-    return push_retry_at ? push_retry_at : 0;
+    uint64_t d = DEADLINE_NEVER;
+    if (ld_ready(&ld) && focus_top_tty() >= 0)
+        d = push_retry_at;   /* 0: now */
+    return idl_held_deadline(&held_reqs, d);
 }
 
 void ttys_pump(void)
 {
+    if (idl_held_due(&held_reqs)) {   /* the held ones again: served if they have read */
+        out_pending |= held_ttys;
+        held_ttys = 0;
+    }
     uint32_t p = out_pending;
     for (unsigned i = 0; i < MAX_TTYS; i++) {
         if (!(p & 1u << i))

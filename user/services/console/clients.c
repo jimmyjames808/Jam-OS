@@ -151,6 +151,11 @@ static uint32_t pending;
  * requests maybe waiting: bit i is clients[i]; clients_resume moves them
  * to pending. */
 static uint32_t deferred;
+/* Clients left unserved because they have left the protocol's bound of
+ * answers unread (CODING-GUIDE, "A loop that serves never blocks"): bit i
+ * is clients[i]; looked at again when idl_held_due says so. */
+static uint32_t held_set;
+static struct idl_held held;
 _Static_assert(MAX_CLIENTS <= 32, "pending is a 32-bit mask");
 
 void client_event(unsigned i)
@@ -159,6 +164,7 @@ void client_event(unsigned i)
         return;
     pending &= ~(1u << i);
     deferred &= ~(1u << i);
+    held_set &= ~(1u << i);
     if (!clients[i])
         return;
     uint64_t t0 = now();
@@ -168,6 +174,11 @@ void client_event(unsigned i)
          * goes first: the shell's prompt after a program's last lines. */
         if ((back->congested && back->congested()) || !ttys_show_queued()) {
             deferred |= 1u << i;   /* its requests wait, so its writers do: no output is dropped */
+            return;
+        }
+        if (console_unread_full(clients[i])) {   /* it reads its answers first */
+            held_set |= 1u << i;
+            idl_hold(&held);
             return;
         }
         if ((st = console_serve_one(clients[i], &console_ops, &client_info[i])) != OK)
@@ -206,9 +217,9 @@ bool clients_show_all(void)
     return false;
 }
 
-bool clients_pending(void)
+uint64_t clients_deadline(void)
 {
-    return pending != 0;
+    return pending ? 0 : idl_held_deadline(&held, DEADLINE_NEVER);
 }
 
 void clients_resume(void)
@@ -220,6 +231,10 @@ void clients_resume(void)
 
 void clients_serve_pending(void)
 {
+    if (idl_held_due(&held)) {   /* the held ones again: served if they have read */
+        pending |= held_set;
+        held_set = 0;
+    }
     uint32_t p = pending;   /* one round each, even for those that stay pending */
     for (unsigned i = 0; i < MAX_CLIENTS; i++)
         if (p & 1u << i)

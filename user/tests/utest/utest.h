@@ -675,6 +675,7 @@ bool t_con_tty_canonical(void);
 bool t_con_tty_raw(void);
 bool t_con_tty_focus(void);
 bool t_con_tty_order(void);
+bool t_con_tty_unread(void);
 /* conpaint.c: the console's cells drawn (cellpaint.c, linked in). */
 bool t_conpaint_metrics(void);
 bool t_conpaint_cells(void);
