@@ -435,11 +435,12 @@ KTEST(vmo_set_size)
     KT_EQ(vmo_committed(v), 0);
     KT_GLOBAL_EQ(kt_free_pages(), created);
 
-    /* Grow far and touch the end; shrinking frees its tables too. */
+    /* Grow far and touch the inline root's end (past it: test_vmo_big.c);
+     * shrinking frees its tables too. */
     KT_EQ(vmo_set_size(v, VMO_MAX_SIZE), OK);
     KT_EQ(vmo_set_size(v, VMO_MAX_SIZE + 1), ERR_OUT_OF_RANGE);
     b = 0x42;
-    KT_EQ(vmo_write(v, VMO_MAX_SIZE - 1, &b, 1), OK);
+    KT_EQ(vmo_write(v, VMO_SMALL_MAX_SIZE - 1, &b, 1), OK);
     KT_GLOBAL_EQ(created - kt_free_pages(), 3);
     KT_EQ(vmo_set_size(v, 1ull << 30), OK);
     KT_GLOBAL_EQ(kt_free_pages(), created);

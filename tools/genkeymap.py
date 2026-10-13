@@ -455,6 +455,26 @@ def selftest():
     return failed == 0
 
 
+PORT_COPY = "ports/xkbcommon/override/us.xkb"
+
+
+def port_copy_current():
+    """The xkbcommon port installs the US keymap's XKB text for its tests
+    (ports/xkbcommon/patches/0001): its copy must be what `xkb us` prints."""
+    keys = read_keys()[0]
+    want = xkb_text(read_layout(os.path.join(KEYMAP_DIR, "us.txt"), keys), keys)
+    try:
+        with open(PORT_COPY) as f:
+            have = f.read()
+    except OSError:
+        have = None
+    if have != want:
+        print(f"genkeymap: {PORT_COPY} is missing or stale: "
+              f"run `python3 tools/genkeymap.py xkb us > {PORT_COPY}`")
+        return False
+    return True
+
+
 def compile_xkb():
     """Each layout's XKB text through xkbcommon's or X's compiler, if there."""
     keys = read_keys()[0]
@@ -497,7 +517,8 @@ def main():
                      if not os.path.exists(p) or open(p).read() != t]
             for p in stale:
                 print(f"genkeymap: {p} is missing or stale: run `make keymap`")
-            return 0 if not stale and selftest() and compile_xkb() else 1
+            copy_ok = port_copy_current()
+            return 0 if not stale and copy_ok and selftest() and compile_xkb() else 1
         if len(args) == 2 and args[0] == "xkb":
             keys = read_keys()[0]
             sys.stdout.write(xkb_text(read_layout(os.path.join(KEYMAP_DIR, args[1] + ".txt"),

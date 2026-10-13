@@ -60,6 +60,13 @@
  *                  with check-only, a failure without a write and a
  *                  failure at no step refused. tools/update-write-test.sh
  *                  then boots the stick from cold.
+ *   updtest writefull
+ *                  on a stick whose ESP can't hold three builds (a 63 MiB
+ *                  one, as sticks were made before 2026-10-12): the build
+ *                  offered to be written is loaded and refused at ROOM
+ *                  with ERR_NO_SPACE, the stick booting its old build
+ *                  (tools/update-write-test.sh's wfull run checks that its
+ *                  ESP is as it was).
  *   updtest writestop <n> b|c
  *                  the build (b: DIR, c: a second one in DIR "c/") offered
  *                  to be written with a test's stop (UPDATE_OFFER_STOP)
@@ -464,6 +471,26 @@ static void write_failures(struct build *b)
     b->flags = 0;
 }
 
+/* writefull: a stick write to an ESP with no room for a third build:
+ * refused before anything is written (ROOM, ERR_NO_SPACE), the build loaded
+ * all the same, the stick's old build what it boots. */
+static void write_full(struct build *b)
+{
+    struct update_answer a;
+    memset(&a, 0, sizeof(a));
+    b->flags = UPDATE_OFFER_WRITE;
+    status_t st = offer(b, 2, &a);
+    b->flags = 0;
+    bool ok = st == OK && a.why == UPDATE_NOT_WRITTEN && a.status == ERR_NO_SPACE &&
+              a.write_step == UPDATE_WRITE_ROOM && a.stick == UPDATE_STICK_OLD &&
+              a.menu != UPDATE_MENU_WRITTEN;
+    failures += !ok;
+    printf("updtest: write to a full ESP: %s (%s), %s, %s: %s\n",
+           st == OK ? update_why_str(a.why) : "-", status_str(st == OK ? a.status : st),
+           update_write_step_str(a.write_step), update_stick_str(a.stick),
+           ok ? "as expected" : "FAILED");
+}
+
 /* ---- writestop: a stop at each change of the swap --------------------------------- */
 
 /* A build's two files, as their SHA-256s. */
@@ -624,9 +651,9 @@ static void bad(struct build *b)
 
 int main(int argc, char **argv)
 {
-    enum { GOOD, BAD, NOKEY, WRITEFAIL, WRITESTOP, ESPCHECK, WIRE, MODES };
-    static const char *const modes[MODES] = { "good",      "bad",       "nokey", "writefail",
-                                              "writestop", "espcheck", "wire" };
+    enum { GOOD, BAD, NOKEY, WRITEFAIL, WRITESTOP, ESPCHECK, WIRE, WRITEFULL, MODES };
+    static const char *const modes[MODES] = { "good",      "bad",      "nokey", "writefail",
+                                              "writestop", "espcheck", "wire",  "writefull" };
     if (argc >= 2 && !strncmp(argv[1], "menu", 4))
         return menu_main(argc, argv);   /* menu.c */
     unsigned mode = 0;
@@ -636,7 +663,8 @@ int main(int argc, char **argv)
                      (unsigned)(argv[2][0] - '0') <= UPDATE_SWAP_OPS &&
                      (!strcmp(argv[3], "b") || !strcmp(argv[3], "c"));
     if (mode == MODES || (mode == WRITESTOP ? !stop_args : argc != 2)) {
-        printf("usage: updtest good|bad|nokey|writefail|espcheck|wire | writestop <0-%u> b|c | "
+        printf("usage: updtest good|bad|nokey|writefail|writefull|espcheck|wire | "
+               "writestop <0-%u> b|c | "
                "menuwrite <dir> [<0-%u>] | menubad <dir> | menucheck <old> <new>\n",
                UPDATE_SWAP_OPS, UPDATE_STOP_MAX);
         return 2;
@@ -666,6 +694,8 @@ int main(int argc, char **argv)
             wire_cases(&b);   /* wire.c: malformed offers; one good one, check-only */
         } else if (mode == WRITEFAIL) {
             write_failures(&b);   /* each loads the build: the stored kernel is it afterwards */
+        } else if (mode == WRITEFULL) {
+            write_full(&b);
         } else {
             bad(&b);
         }

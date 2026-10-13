@@ -121,33 +121,36 @@ static bool listeners(void)
  * an opener's end; and what can't be connected to. */
 static bool connections(void)
 {
-    static struct net_sock s[NET_PROG_TCP + 2];
-    handle_t o[4], sys;
+    static struct net_sock s[NET_TCP_MAX];
+    handle_t o[3], sys;
     struct net_sock x;
     struct net_counters c;
     unsigned k = 0;
-    for (unsigned i = 0; i < 4; i++)
+    for (unsigned i = 0; i < 3; i++)
         CHECK(connect_on(netdrv_net(), &o[i]));
     CHECK(connect_on(netdrv_net_sys(), &sys));
-    /* Port 0, the subnet's broadcast, loopback, a ring size not allowed. */
+    /* Port 0, the subnet's broadcast, loopback's broadcast, a ring size not allowed. */
     CHECK_ST(net_tcp_open(o[0], PEER_IP, 0, 0, 0, &x), ERR_INVALID_ARGS);
     CHECK_ST(net_tcp_open(o[0], 0x0a0215ffu, 80, 0, 0, &x), ERR_INVALID_ARGS);
-    CHECK_ST(net_tcp_open(o[0], 0x7f000001u, 80, 0, 0, &x), ERR_INVALID_ARGS);
+    CHECK_ST(net_tcp_open(o[0], 0x7fffffffu, 80, 0, 0, &x), ERR_INVALID_ARGS);
     CHECK_ST(net_tcp_open(o[0], PEER_IP, 80, 3000, 0, &x), ERR_INVALID_ARGS);
-    for (unsigned i = 0; i < 3; i++)
-        CHECK(conns(o[i], s, &k, PER));
-    CHECK_ST(net_tcp_open(o[0], PEER_IP, 9000, RING, RING, &x), ERR_NO_RESOURCES);   /* its 64 */
-    CHECK_ST(net_tcp_open(o[3], PEER_IP, 9000, RING, RING, &x), ERR_NO_RESOURCES);   /* 192 */
-    CHECK(conns(sys, s, &k, 1));   /* the reserve */
+    /* An opener's half of all of them; the ordinary openers' share; then
+     * the reserve, a system opener's, to the total. */
+    CHECK(conns(o[0], s, &k, PER));
+    CHECK_ST(net_tcp_open(o[0], PEER_IP, 9000, RING, RING, &x), ERR_NO_RESOURCES);   /* its 512 */
+    CHECK(conns(o[1], s, &k, NET_PROG_TCP - PER));
+    CHECK_ST(net_tcp_open(o[2], PEER_IP, 9000, RING, RING, &x), ERR_NO_RESOURCES);   /* 768 */
+    CHECK(conns(sys, s, &k, NET_TCP_MAX - NET_PROG_TCP));   /* the reserve: 1,024 in all */
+    CHECK_ST(net_tcp_open(sys, PEER_IP, 9000, RING, RING, &x), ERR_NO_RESOURCES);   /* all */
     CHECK(counts(&c));
-    CHECK_EQ(c.tcp_conns, NET_PROG_TCP + 1);
+    CHECK_EQ(c.tcp_conns, NET_TCP_MAX);
     uint32_t state;
     status_t err;
     net_tcp_status(&s[0], &state, &err);
     CHECK_EQ(state, SOCKRING_STATE_CONNECTING);
     /* An opener's end resets its connections; they stay until closed. */
     jam_handle_close(o[1]);
-    for (unsigned i = PER; i < 2 * PER; i++) {
+    for (unsigned i = PER; i < NET_PROG_TCP; i++) {
         uint64_t until = now() + NETDRV_WAIT;
         do {
             net_tcp_status(&s[i], &state, &err);
@@ -157,8 +160,8 @@ static bool connections(void)
     }
     for (unsigned i = 0; i < k; i++)
         net_close(&s[i]);
-    handle_t os[] = { o[0], o[2], o[3], sys };
-    for (unsigned i = 0; i < 4; i++)
+    handle_t os[] = { o[0], o[2], sys };
+    for (unsigned i = 0; i < 3; i++)
         jam_handle_close(os[i]);
     return true;
 }
@@ -219,7 +222,8 @@ static bool peer_connects(struct net_listener *l, uint16_t from, struct net_sock
 
 bool t_nettcp_bulk_rings(void)
 {
-    enum { N = 5 };
+    /* Connections past what an opener's ring bytes hold of bulk tx rings. */
+    enum { N = SOCKRING_OPENER_BYTES / (NET_TCP_BULK + RING + SOCKRING_HDR) + 2 };
     handle_t lo;
     struct net_listener l;
     static struct net_sock s[N];
@@ -434,7 +438,8 @@ bool t_nettcp_reuse_api(void)
     CHECK(netdrv_start());
     CHECK(netdrv_ping(1, true));   /* netstack knows the peer's MAC */
     CHECK(connect_on(netdrv_net_listen(), &lo));
-    CHECK_ST(net_tcp_listen_flags(lo, 5300, 4, 0, 0, 2, &x), ERR_INVALID_ARGS);   /* no such flag */
+    CHECK_ST(net_tcp_listen_flags(lo, 5300, 4, 0, 0, 4, &x), ERR_INVALID_ARGS);   /* no such flag */
+    CHECK_ST(net_tcp_listen_flags(lo, 5300, 4, 0, 0, NET_LISTEN_REUSE | 4, &x), ERR_INVALID_ARGS);
     CHECK_ST(net_tcp_listen_flags(lo, 5300, 4, 0, 0, ~0u, &x), ERR_INVALID_ARGS);
     CHECK(peer_accepted(&p, 5300, 40300, NET_LISTEN_REUSE, &s, lo, &l));
     CHECK_ST(net_tcp_listen_flags(lo, 5300, 4, 0, 0, NET_LISTEN_REUSE, &x), ERR_ALREADY_BOUND);

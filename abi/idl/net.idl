@@ -40,9 +40,18 @@
 # with a tx and an rx ring, and two events), never in a call: udp_rings
 # makes a socket with its rings, net_socket.rings gives a socket its rings.
 #
+# Loopback: 127.0.0.0/8 is this host. A datagram or a TCP connection to an
+# address in it goes to a socket of this same netstack, never to the network
+# card, whatever the card's address and link are (netstack's stack.h has
+# the how). Every address of the block is the one loopback interface,
+# 127.0.0.1: a program that sends to 127.0.0.5 is answered from 127.0.0.1.
+# The listen permissions are the same as anywhere. A packet with a loopback
+# address in it is never sent to the network, and one that arrives from it
+# is dropped.
+#
 # Limits, so one program can't use netstack up (<net.h>):
-# NET_SOCKETS_PER_OPENER (16) sockets an opener, NET_SOCKETS_MAX (48) in
-# all, NET_PROG_SOCKETS (24) of them ordinary openers'; NET_LATER_PER_OPENER
+# NET_SOCKETS_PER_OPENER (256) sockets an opener, NET_SOCKETS_MAX (512) in
+# all, NET_PROG_SOCKETS (384) of them ordinary openers'; NET_LATER_PER_OPENER
 # (8) waits, echoes and chip_counts in flight an opener; ring bytes
 # (sockring_bytes) SOCKRING_OPENER_BYTES an opener, SOCKRING_TOTAL_BYTES in
 # all, NET_PROG_RING_BYTES of them ordinary openers'. A datagram that
@@ -128,7 +137,7 @@ const TIMEOUT_MAX   60000
 # the reply's TTL and its data's size; ERR_TIMED_OUT after timeout_ms
 # (1..TIMEOUT_MAX); ERR_NOT_FOUND: a router or the host said it is unreachable
 # (ICMP destination unreachable). At once: ERR_INVALID_ARGS (not a unicast
-# address, a size out of range, a timeout_ms that isn't 1..TIMEOUT_MAX), ERR_BAD_STATE (no address, the
+# or loopback address, a size out of range, a timeout_ms that isn't 1..TIMEOUT_MAX), ERR_BAD_STATE (no address, the
 # link down, no route; or an echo with this seq to this address is in
 # flight), ERR_NO_RESOURCES (NET_LATER_PER_OPENER in flight already).
 6  echo  (u32 address, u16 seq, u16 size, u32 timeout_ms)  -> (u32 rtt_us, u8 ttl, u16 size) later
@@ -178,8 +187,13 @@ const TIMEOUT_MAX   60000
 # ERR_NO_RESOURCES: the opener's, all openers' or an ordinary opener's
 # share of listeners or of backlog.
 #
-# `flags` is 0 or LISTEN_REUSE (anything else: ERR_INVALID_ARGS): POSIX's
-# SO_REUSEADDR, as Linux does it. Without it the port must be free of every
+# `flags` is 0, LISTEN_REUSE, LISTEN_LOOPBACK or both (any other bit:
+# ERR_INVALID_ARGS). LISTEN_LOOPBACK listens on 127.0.0.1 only (POSIX's bind
+# to a loopback address): a connection to a loopback address reaches the
+# listener, one to the card's address doesn't. Without it the listener is on
+# every address, loopback included.
+#
+# LISTEN_REUSE is POSIX's SO_REUSEADDR, as Linux does it. Without it the port must be free of every
 # connection too: one still in TIME_WAIT, or open, from an earlier listener
 # on the port is ERR_ALREADY_BOUND, so a server restarted at once can't
 # listen. With it a listener can be made on a port whose old connections
@@ -188,7 +202,8 @@ const TIMEOUT_MAX   60000
 # makes ERR_ALREADY_BOUND, with or without it (the flag doesn't share a
 # port). A listener's connections keep its flag: they are what a later
 # listener with the flag may stand beside.
-const LISTEN_REUSE 1
+const LISTEN_REUSE    1
+const LISTEN_LOOPBACK 2
 9  tcp_listener  (u16 port, u32 backlog, u32 tx_bytes, u32 rx_bytes, u32 flags)  -> (handle listener, u16 port)
 
 # net_socket: a UDP socket's channel, from net.udp or net.udp_rings (and
@@ -222,6 +237,15 @@ protocol net_socket 60
 # allowed; ERR_NO_RESOURCES: over the opener's or all sockets' ring bytes;
 # ERR_NO_MEMORY: no memory.
 3  rings  (u32 tx_bytes, u32 rx_bytes)  -> (handle ring, handle to_stack, handle to_prog, u32 tx_bytes, u32 rx_bytes)
+
+# Bind the socket to 127.0.0.1 instead of every address (POSIX's bind to a
+# loopback address). From now on only a datagram sent to a loopback address
+# reaches it (one to the card's address, or a broadcast, doesn't), and it
+# may send only to loopback addresses: a tx record to another is refused
+# like any other (the status line's tx_refused, `error` ERR_INVALID_ARGS).
+# Its port stays. ERR_ALREADY_BOUND: another socket has that port on
+# 127.0.0.1 or on every address; ERR_NOT_SUPPORTED: the DHCP socket.
+4  loopback_only  ()  -> ()
 
 # net_stream: a TCP connection's channel, from net.tcp or net_listener.accept.
 # Closing it closes the connection: with a FIN after what netstack took from

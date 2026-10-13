@@ -20,6 +20,19 @@ names, a DHCP lease, the log to the Mac, `update` and `update -w`,
 `speed` and `sntp`), and the network has been up in every PC sign-off's
 `soak 10` since, but M9 and M9.5 never had a sign-off of their own.
 
+## Loopback
+
+`127.0.0.1` (and the rest of `127.0.0.0/8`) and `localhost` are the host
+itself: a program's datagram or connection to it goes to another socket of
+the same netstack and never to the network card, so it works with no card,
+no address and no link, and no frame for it is ever sent
+([ARCHITECTURE.md](../ARCHITECTURE.md#networking) has the design). Every
+address of the block is the one interface, `127.0.0.1`. Taking connections
+needs the same permission as anywhere (`svc net listen`), and a socket bound
+to a loopback address can be reached from the host only. A packet from the
+network with a loopback address in it is dropped and counted as refused
+(`net stats`). `ping 127.0.0.1` answers.
+
 ## The network's mode
 
 Jam OS sends in one network mode only, and nothing else ever leaves
@@ -238,7 +251,12 @@ says how far it got and that the new build is still loaded: `reboot`
 runs it, while the stick (`reboot -f`, a power-off) still boots the old
 one. A stick that has the build already gets nothing written ("the stick
 has this build already"; "this is the build running now" if it is the
-running one too), and the build is loaded all the same. The update brings
+running one too), and the build is loaded all the same. The stick's ESP
+holds three builds while one is written (its own, the previous one and
+the new one): one with no room for the third (a stick made before
+2026-10-12, whose ESP is 63 MiB: [HARDWARE.md](HARDWARE.md#flash-and-boot-the-stick))
+gets nothing written ("can't hold three builds"), and the build is
+loaded all the same. The update brings
 the boot menu too: new entries in `boot/limine.conf` reach the stick
 without `make flash`. init writes the menu after the build, only if it
 passes init's check (its default entry boots the new build, "Jam OS

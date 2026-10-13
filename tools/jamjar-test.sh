@@ -30,6 +30,7 @@
 # tools/jamjar-test.sh <outdir>`.
 # QEMU_SMP passes through. Usage: tools/jamjar-test.sh <outdir>; exit 0 on PASS.
 set -eu
+DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
 out=$1
 mkdir -p "$out"
 name=jamjar
@@ -205,7 +206,7 @@ tagged("garbled.mp3", b"\xff\xd8\xff\xe0" + bytes(rnd.randrange(256) for _ in ra
 PY
 
 cp build/jamos.img "$stick"
-img="$stick@@64M"
+img="$stick@@$DATA_AT"
 L="music/OnTheSpot"
 for d in music "$L" "$L/JAŸ-Z" "$L/JAŸ-Z/2017_4-44" "$L/¥\$" "$L/¥\$/2024_Vultures_1" \
          "$L/Kanye_West" "$L/Kanye_West/2010_My_Beautiful_Dark_Twisted_Fantasy" \

@@ -101,7 +101,8 @@
 # bytes); ERR_PEER_CLOSED: the peer is gone; ERR_OUT_OF_RANGE: past a
 # limit; ERR_NOT_SUPPORTED: a handle the cycle rule refuses (the channel's
 # own end, its peer, an end whose queue holds a channel end) or a peer
-# marked CHANNEL_NO_HANDLES.
+# marked CHANNEL_NO_HANDLES; ERR_IO: bytes in a mapped file's page its
+# pager couldn't give (a bad pointer is ERR_INVALID_ARGS).
 21  channel_write     status    handle_t h, const void *bytes, uint32_t nbytes, const handle_t *handles, uint32_t nhandles
 # channel_read (struct channel_read_args, <jam/abi.h>): the oldest message
 # into rd_bytes and rd_handles, its sizes into rd_actual and rd_hactual.
@@ -194,9 +195,13 @@
 44  port_wait         status    handle_t port, uint64_t deadline_ns, struct port_packet *out
 
 # VMOs ----------------------------------------------------------------------
-# vmo_create: a VMO of size bytes (rounded up to pages; VMO_MAX_SIZE at
-# most, ERR_OUT_OF_RANGE past it), its pages charged to the creator's job.
-# flags: 0 or VMO_KEEP_PAGES (<jam/abi.h>): every page committed at
+# vmo_create: a VMO of size bytes (rounded up to pages; VMO_MAX_SIZE, 128
+# TiB, at most, ERR_OUT_OF_RANGE past it), its pages charged to the
+# creator's job as they are committed, and the table pages that track them
+# with them: an untouched range costs nothing, so a big VMO is a
+# reservation. vmo_set_size grows it up to the same limit.
+# flags: 0 or VMO_KEEP_PAGES (<jam/abi.h>; VMO_SMALL_MAX_SIZE, 64 GiB, at
+# most, for creation and growth alike): every page committed at
 # creation and charged then (ERR_NO_MEMORY, no VMO, if the job can't pay
 # for all of them), and none ever leaves: vmo_decommit and a shrinking
 # vmo_set_size are ERR_BAD_STATE for every handle, a growing vmo_set_size
@@ -250,7 +255,9 @@
 # commit; MAP_PRIVATE). Anything else, or an offset that isn't
 # page-aligned, is ERR_INVALID_ARGS. size is rounded up and may reach past
 # vmo's end (those pages are zero); offset or size past VMO_MAX_SIZE is
-# ERR_OUT_OF_RANGE. Needs RIGHT_READ and RIGHT_DUPLICATE on vmo; *out has
+# ERR_OUT_OF_RANGE, and so is a size past VMO_SMALL_MAX_SIZE for a child of
+# a pager VMO or of such a child (which can't grow past it either).
+# Needs RIGHT_READ and RIGHT_DUPLICATE on vmo; *out has
 # a new VMO's rights (vmo_create's), never RIGHT_EXEC, and vmo_make_exec
 # refuses a child of a pager VMO (ERR_BAD_STATE). The child is charged to
 # the caller's job at the call for every page it may come to own on its
@@ -600,7 +607,7 @@
 # pager and its VMOs (structs, tables and pages) are charged to the
 # caller's job. Closing its last handle detaches every VMO it made.
 160 pager_create      status    handle_t root, uint64_t max_pages, uint64_t answer_ns, uint32_t flags, handle_t *out
-# A pager VMO of size bytes (rounded up to pages; VMO_MAX_SIZE at most,
+# A pager VMO of size bytes (rounded up to pages; VMO_SMALL_MAX_SIZE at most,
 # ERR_OUT_OF_RANGE past it), every page absent, under key: handle
 # PAGER_VMO_RIGHTS. The pager holds no handle to it. RIGHT_WRITE on the
 # pager; ERR_ALREADY_EXISTS while key names a live VMO of the pager, or a
@@ -632,7 +639,7 @@
 # pages of the range from the VMO and every mapping (the file changed: the
 # next access asks again); ERR_OUT_OF_RANGE past the size.
 # PAGER_OP_SET_SIZE (offset: the new size, len and arg 0; past
-# VMO_MAX_SIZE: ERR_OUT_OF_RANGE): grow, or shrink: the pages past the end
+# VMO_SMALL_MAX_SIZE: ERR_OUT_OF_RANGE): grow, or shrink: the pages past the end
 # go, and readers waiting past it find the end (a fault there is a bus
 # error, a read ERR_OUT_OF_RANGE). ERR_NOT_FOUND for an unknown key;
 # ERR_INVALID_ARGS for any other op or argument. RIGHT_WRITE on the pager.

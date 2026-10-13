@@ -1,0 +1,13 @@
+# wayland's test (tools/ports-test.sh): wl-connect-test connects to the
+# compositor through libwayland-client (libffi's ffi_call is in its
+# dispatcher, GS1's Wayland socket under /svc/wayland is the transport),
+# lists the registry's globals and checks for wl_compositor, wl_shm and
+# xdg_wm_base. Its list has `svc wayland`. **It can pass only with GS1
+# merged and the desktop's compositor running in the test boot**; until
+# then it is expected to fail at "connected" (the message names the cause).
+send run $P/wl-connect-test; echo st-$T=$?
+wait connected
+wait global
+wait wl-connect-test: ok
+wait st-x=0
+wait {prompt}

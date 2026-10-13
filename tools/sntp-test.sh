@@ -19,6 +19,7 @@
 #   sntp-off    `ntp = off`: no sntp, and not one SNTP request at the peer.
 # QEMU_SMP passes through. Usage: tools/sntp-test.sh <outdir>; exit 0 on PASS.
 set -eu
+DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
 out=$1
 mkdir -p "$out"
 ok=1
@@ -35,8 +36,8 @@ settings_image() {
     img="$out/$1.base.img"
     cp "${QEMU_IMAGE:-build/jamos.img}" "$img"
     printf '%s\n' "$2" > "$out/$1.settings"
-    mmd -i "$img@@64M" ::/etc 2>/dev/null || true
-    mcopy -o -i "$img@@64M" "$out/$1.settings" ::/etc/settings
+    mmd -i "$img@@$DATA_AT" ::/etc 2>/dev/null || true
+    mcopy -o -i "$img@@$DATA_AT" "$out/$1.settings" ::/etc/settings
 }
 
 # --- the gateway, forged replies, the jump ---

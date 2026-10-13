@@ -2,7 +2,8 @@
  * and netctl's DHCP socket, through bin/netstack over the fake driver
  * (netdrv.h; netsock.c has the ordinary use, netrings.c the rings' abuse
  * and the fair shares). The limits (openers, sockets per opener, the
- * ordinary openers' shares and the totals, requests in flight), hostile
+ * ordinary openers' shares and the totals, requests in flight), the caps
+ * (an opener at half of all the sockets, two openers at all of them), hostile
  * messages on every kind of channel, closing in the middle of a receive or
  * an echo, a slow reader whose rx ring fills while everyone else is served
  * at once (the slow-peer rule), and the DHCP socket's broadcasts from
@@ -93,12 +94,11 @@ bool t_netsock_limits(void)
     /* Sockets: NET_SOCKETS_PER_OPENER an opener, NET_PROG_SOCKETS for the
      * ordinary ones together, NET_SOCKETS_MAX in all. */
     CHECK(socks(o[0], s, &k, NET_SOCKETS_PER_OPENER));
-    CHECK_ST(net_udp_open(o[0], 0, &x), ERR_NO_RESOURCES);   /* its 16 */
+    CHECK_ST(net_udp_open(o[0], 0, &x), ERR_NO_RESOURCES);   /* its 256 */
     CHECK(socks(o[1], s, &k, NET_PROG_SOCKETS - NET_SOCKETS_PER_OPENER));
     CHECK_ST(net_udp_open(o[2], 0, &x), ERR_NO_RESOURCES);   /* the programs' share */
-    CHECK(socks(o[np], s, &k, NET_SOCKETS_PER_OPENER));
-    CHECK(socks(o[np + 1], s, &k, NET_SOCKETS_MAX - k));
-    CHECK_ST(net_udp_open(o[np + 2], 0, &x), ERR_NO_RESOURCES);   /* all of them */
+    CHECK(socks(o[np], s, &k, NET_SOCKETS_MAX - k));   /* the reserve: all of them */
+    CHECK_ST(net_udp_open(o[np + 1], 0, &x), ERR_NO_RESOURCES);   /* no more */
     CHECK(counters(&c));
     CHECK(c.openers == NET_OPENERS && c.sockets == NET_SOCKETS_MAX);
     CHECK(c.refused_shares >= 3);
@@ -145,6 +145,60 @@ bool t_netsock_limits(void)
         CHECK(counters(&c));
     } while ((c.openers || c.sockets || c.later || c.ring_bytes) && now() < end);
     CHECK(!c.openers && !c.sockets && !c.later && !c.ring_bytes);
+    CHECK(netdrv_stop());
+    return true;
+}
+
+/* The caps: one opener may hold half of all the sockets, and two such
+ * openers (an ordinary one and a system one) all of them. The last socket
+ * of each still works (its slot is far past a byte: the port keys carry it
+ * whole), and every socket closes. */
+bool t_netsock_caps(void)
+{
+    static struct net_sock s[NET_SOCKETS_MAX];
+    handle_t a, b, extra;
+    struct net_sock x;
+    struct net_counters c;
+    unsigned k = 0;
+    CHECK(netdrv_start());
+    CHECK(netdrv_ping(1, true));   /* netstack knows the peer's MAC: a datagram goes out at once */
+    CHECK(opener(&a));
+    CHECK_ST(svc_connect_until(netdrv_net_sys(), now() + NETDRV_WAIT, &b), OK);
+    CHECK_ST(svc_connect_until(netdrv_net_sys(), now() + NETDRV_WAIT, &extra), OK);
+    CHECK(socks(a, s, &k, NET_SOCKETS_PER_OPENER));
+    CHECK_ST(net_udp_open(a, 0, &x), ERR_NO_RESOURCES);   /* one past its cap */
+    CHECK(counters(&c));
+    CHECK_EQ(c.sockets, NET_SOCKETS_PER_OPENER);
+    CHECK(socks(b, s, &k, NET_SOCKETS_PER_OPENER));
+    CHECK_ST(net_udp_open(b, 0, &x), ERR_NO_RESOURCES);   /* the other at its cap too */
+    CHECK_ST(net_udp_open(extra, 0, &x), ERR_NO_RESOURCES);   /* and all of them taken */
+    CHECK(counters(&c));
+    CHECK_EQ(c.sockets, NET_SOCKETS_MAX);
+    CHECK_EQ(c.ring_bytes, NET_SOCKETS_MAX * sockring_bytes(SOCKRING_UDP_TX, SOCKRING_UDP_RX));
+    /* The last socket out and in: its tx ring's event (a slot past 255) is
+     * heard, and a datagram for its port reaches its rx ring. */
+    struct net_sock *last = &s[NET_SOCKETS_MAX - 1];
+    uint32_t n;
+    const uint8_t *u;
+    size_t un;
+    CHECK_ST(net_sendto(last, PEER_IP, 9, "last", 4), OK);
+    CHECK_ST(netdrv_recv(f, &n, NETDRV_WAIT), OK);
+    CHECK(pkt_is_ipv4(f, n, PEER_IP, 17, &u, &un));
+    CHECK(pkt_get16(u) == last->port && un == 8 + 4 && !memcmp(u + 8, "last", 4));
+    CHECK(netdrv_send(f, pkt_udp_from(f, pkt_peer_mac, PEER_IP, 40000, OUR_IP, last->port,
+                                      "back", 4)));
+    CHECK_ST(net_recvfrom(last, &dg, now() + NETDRV_WAIT), OK);
+    CHECK(dg.len == 4 && !memcmp(dg.data, "back", 4));
+    for (k = 0; k < NET_SOCKETS_MAX; k++)
+        net_close(&s[k]);   /* each channel's end is heard, whatever its slot */
+    uint64_t end = now() + NETDRV_WAIT;
+    do {
+        CHECK(counters(&c));
+    } while ((c.sockets || c.ring_bytes) && now() < end);
+    CHECK(!c.sockets && !c.ring_bytes);
+    jam_handle_close(a);
+    jam_handle_close(b);
+    jam_handle_close(extra);
     CHECK(netdrv_stop());
     return true;
 }

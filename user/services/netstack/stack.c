@@ -18,7 +18,14 @@
  * turned into stack.h's calls and hooks at the bottom of the file; TCP's
  * model (the window is the socket's rx ring) is stack.h's.
  *
- * State is file-static: one interface per process, one thread. */
+ * Loopback is lwIP's loopback interface (lwipopts.h): 127.0.0.1/8, always
+ * up. lwIP puts a packet sent to it on a queue and nothing delivers it
+ * until stack_loop does, from the loop, so a hook never runs inside a
+ * stack_* call. A loopback address never goes to or comes from the edge
+ * (martian below).
+ *
+ * State is file-static: one card interface per process (and lwIP's
+ * loopback one), one thread. */
 #include "lwip/etharp.h"
 #include "lwip/inet_chksum.h"
 #include "lwip/init.h"
@@ -132,6 +139,16 @@ static int icmp_type(const uint8_t *f, size_t len)
     return ihl >= 20 && 14 + ihl < len ? f[14 + ihl] : -1;
 }
 
+/* Does the Ethernet frame f carry an IPv4 packet with a loopback address,
+ * its source or its destination? Such a packet exists only inside this
+ * host: one that arrives is forged, and one that would leave is a bug. */
+static bool martian(const uint8_t *f, size_t len)
+{
+    if (len < 14 + 20 || be16(f + 12) != ETHERTYPE_IPV4)
+        return false;
+    return f[14 + 12] == 127 || f[14 + 16] == 127;
+}
+
 /* May an ICMP error go out now? Takes a token if so. */
 static bool icmp_error_allowed(void)
 {
@@ -162,6 +179,10 @@ static err_t link_out(struct netif *n, struct pbuf *p)
     if (len < STACK_FRAME_MIN) {
         memset(txbuf + len, 0, STACK_FRAME_MIN - len);
         len = STACK_FRAME_MIN;
+    }
+    if (martian(txbuf, len)) {
+        counts.tx_dropped++;   /* the networking rule: nothing outside the mode ever leaves */
+        return ERR_IF;
     }
     int type = icmp_type(txbuf, len);
     if (type == ICMP_UNREACHABLE && !icmp_error_allowed()) {
@@ -307,6 +328,10 @@ void stack_input(const uint8_t *frame, size_t len)
         counts.rx_refused++;
         return;
     }
+    if (martian(frame, len)) {
+        counts.rx_refused++;
+        return;
+    }
     uint32_t *dropped = tcp_drop(frame, len);
     if (dropped) {
         (*dropped)++;
@@ -368,6 +393,20 @@ uint64_t stack_poll(void)
     if (ms == SYS_TIMEOUTS_SLEEPTIME_INFINITE)
         return DEADLINE_NEVER;
     return now() + (uint64_t)ms * NS_PER_MS;
+}
+
+void stack_loop(void)
+{
+    if (started)
+        netif_poll_all();   /* each queue until it is empty, what delivery sends included */
+}
+
+bool stack_loop_pending(void)
+{
+    for (const struct netif *n = netif_list; n; n = n->next)
+        if (n->loop_first)
+            return true;
+    return false;
 }
 
 void stack_set_ipv4(const struct stack_ipv4 *ip)
@@ -473,19 +512,31 @@ void stack_udp_close(struct stack_udp *u)
         udp_remove((struct udp_pcb *)u);
 }
 
+status_t stack_udp_loopback_only(struct stack_udp *u)
+{
+    ip4_addr_t lo = to_lwip(STACK_LOOPBACK);
+    err_t e = udp_bind((struct udp_pcb *)u, &lo, ((struct udp_pcb *)u)->local_port);
+    return e == ERR_OK ? OK : e == ERR_USE ? ERR_ALREADY_BOUND : ERR_NO_RESOURCES;
+}
+
 status_t stack_udp_send(struct stack_udp *u, uint32_t to, uint16_t port, const void *data,
                         size_t len, bool on_link)
 {
     struct udp_pcb *pcb = (struct udp_pcb *)u;
+    bool lo = stack_is_loopback(to);
     if (len > STACK_UDP_MAX)
         return ERR_INVALID_ARGS;
-    if (!started || !netif_is_link_up(&nif))
+    if (!started || (!lo && !netif_is_link_up(&nif)))
         return ERR_BAD_STATE;
+    /* A socket made loopback-only has 127.0.0.1 as its address: a packet
+     * from it to anywhere else would leave with that source. */
+    if (!lo && ip4_addr_isloopback(ip_2_ip4(&pcb->local_ip)))
+        return ERR_INVALID_ARGS;
     struct pbuf *p = pbuf_alloc(PBUF_TRANSPORT, (u16_t)len, PBUF_RAM);
     if (!p)
         return ERR_NO_MEMORY;
     memcpy(p->payload, data, len);
-    ip4_addr_t dst = to_lwip(to);
+    ip4_addr_t dst = to_lwip(stack_canon(to));
     uint64_t dropped = counts.tx_dropped;
     err_t e = on_link ? udp_sendto_if(pcb, p, &dst, port, &nif) : udp_sendto(pcb, p, &dst, port);
     pbuf_free(p);
@@ -539,6 +590,7 @@ status_t stack_echo_send(uint32_t to, uint16_t id, uint16_t seq, size_t size)
         return ERR_INVALID_ARGS;
     if (!started || !echo_pcb)
         return ERR_BAD_STATE;
+    to = stack_canon(to);
     struct pbuf *p = pbuf_alloc(PBUF_IP, (u16_t)(ICMP_HDR + size), PBUF_RAM);
     if (!p)
         return ERR_NO_MEMORY;
@@ -680,7 +732,8 @@ status_t stack_tcp_connect(uint32_t to, uint16_t port, uint32_t window, void *ct
 {
     if (!started || !tcp_hooks)
         return ERR_BAD_STATE;
-    if (!netif_is_link_up(&nif) || ip4_addr_isany_val(*netif_ip4_addr(&nif)))
+    if (!stack_is_loopback(to) &&
+        (!netif_is_link_up(&nif) || ip4_addr_isany_val(*netif_ip4_addr(&nif))))
         return ERR_BAD_STATE;
     struct tcp_pcb *pcb = tcp_new_ip_type(IPADDR_TYPE_V4);
     if (!pcb)
@@ -690,7 +743,7 @@ status_t stack_tcp_connect(uint32_t to, uint16_t port, uint32_t window, void *ct
     /* The SYN goes with lwIP's 65535 and the scaling option; the window
      * waits here until the SYN-ACK settles scaling (tcp_connected_cb). */
     tcp_ext_arg_set(pcb, tcp_ext, (void *)(uintptr_t)window);
-    ip4_addr_t dst = to_lwip(to);
+    ip4_addr_t dst = to_lwip(stack_canon(to));
     err_t e = tcp_connect(pcb, &dst, port, tcp_connected_cb);
     if (e != ERR_OK) {
         callbacks_set(pcb, NULL);
@@ -729,20 +782,22 @@ static err_t tcp_accept_cb(void *lctx, struct tcp_pcb *pcb, err_t err)
     return ERR_OK;
 }
 
-status_t stack_tcp_listen(uint16_t port, uint32_t backlog, uint32_t window, bool reuse,
+status_t stack_tcp_listen(uint16_t port, uint32_t backlog, uint32_t window, uint32_t flags,
                           void *lctx, struct stack_tcp_listen **out, uint16_t *out_port)
 {
     if (!started || !tcp_hooks)
         return ERR_BAD_STATE;
-    if (backlog < 1 || backlog > STACK_TCP_BACKLOG)
+    if (backlog < 1 || backlog > STACK_TCP_BACKLOG ||
+        (flags & ~(STACK_LISTEN_REUSE | STACK_LISTEN_LOOPBACK)))
         return ERR_INVALID_ARGS;
     struct tcp_pcb *pcb = tcp_new_ip_type(IPADDR_TYPE_V4);
     if (!pcb)
         return ERR_NO_RESOURCES;
     tcp_setprio(pcb, TCP_PRIO_MIN);   /* its half-open connections inherit it */
-    if (reuse)
+    if (flags & STACK_LISTEN_REUSE)
         ip_set_option(pcb, SOF_REUSEADDR);   /* before the bind; its connections inherit it */
-    err_t e = tcp_bind(pcb, IP4_ADDR_ANY, port);
+    ip4_addr_t lo = to_lwip(STACK_LOOPBACK);
+    err_t e = tcp_bind(pcb, (flags & STACK_LISTEN_LOOPBACK) ? &lo : IP4_ADDR_ANY, port);
     if (e != ERR_OK) {
         tcp_abort(pcb);
         return e == ERR_USE ? ERR_ALREADY_BOUND : ERR_NO_RESOURCES;

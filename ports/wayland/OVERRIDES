@@ -1,0 +1,10 @@
+# A file libwayland's source does not have: the connection test
+# (patches/0001-wl-connect-test.patch builds it). `-` is the hash of a file
+# upstream must not have, so a release that adds this name stops the build.
+jamos/wl-connect-test.c - override/wl-connect-test.c
+# The window test (patches/0002-wl-window-test.patch builds it) and the two
+# protocol files it generates its client code from (copies of
+# third_party/wayland-protocols').
+jamos/wl-window-test.c - override/wl-window-test.c
+jamos/xdg-shell.xml - override/xdg-shell.xml
+jamos/xdg-decoration-unstable-v1.xml - override/xdg-decoration-unstable-v1.xml

@@ -15,6 +15,7 @@
 # with and without the spare. QEMU_SMP passes through.
 # Usage: tools/fat-restart-test.sh <outdir>; exit 0 on PASS.
 set -eu
+DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
 out=$1
 mkdir -p "$out"
 ok=1
@@ -74,13 +75,13 @@ for run in spare nospare; do
     # The stick, on the host.
     img="$out/fr-$run-stick.img"
     for f in u1.txt u2.txt u3.txt burst.txt; do
-        mtype -i "$img@@64M" "::/fr/$f" > "$out/fr-$run-$f" 2>/dev/null ||
+        mtype -i "$img@@$DATA_AT" "::/fr/$f" > "$out/fr-$run-$f" 2>/dev/null ||
             { echo "fat-restart: $run: /fr/$f isn't on the stick"; ok=0; }
     done
     grep -q "unsynced-1" "$out/fr-$run-u1.txt" && grep -q "again-1" "$out/fr-$run-u1.txt" &&
         grep -q "unsynced-3" "$out/fr-$run-u3.txt" && grep -q "b-2" "$out/fr-$run-burst.txt" ||
         { echo "fat-restart: $run: the stick's files don't hold what was written"; ok=0; }
-    mcopy -o -i "$img@@64M" ::/fr/k1.bin "$out/fr-$run-k1.bin" 2>/dev/null &&
+    mcopy -o -i "$img@@$DATA_AT" ::/fr/k1.bin "$out/fr-$run-k1.bin" 2>/dev/null &&
         mcopy -o -i "$img@@1M" ::/boot/jamos.elf "$out/fr-$run-jamos.elf" 2>/dev/null &&
         cmp -s "$out/fr-$run-k1.bin" "$out/fr-$run-jamos.elf" ||
         { echo "fat-restart: $run: the stick's /fr/k1.bin isn't its kernel"; ok=0; }

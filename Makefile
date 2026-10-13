@@ -52,6 +52,7 @@ NET_TEXT    := net vlan$(NET_ID)
 NET_SAY     := VLAN $(NET_ID)
 endif
 KERNEL  := $(BUILD)/jamos.elf
+KERNEL_DEBUG := $(BUILD)/jamos.debug.elf
 IMAGE   := $(BUILD)/jamos.img
 BOOTFS  := $(BUILD)/bootfs.img
 # The Mac's signing tool (tools/jamos-sign.c, below): one for both builds.
@@ -70,14 +71,24 @@ GPT_CHECK  := build/host/gptcheck
 # The ext library on the Mac, sanitised (tools/extcheck.c, below).
 EXT_CHECK  := build/host/extcheck
 ROOTPORT_CHECK := build/host/rootportcheck
+# The kernel's AVL tree on the Mac, sanitised (tools/avlcheck.c, below).
+AVL_CHECK  := build/host/avlcheck
 # The files a stick has once `update -w` has written a build: its own and
 # the previous one (what boot/limine.conf may name; `make check`).
 STICK_FILES := /boot/jamos.elf /boot/bootfs.img /boot/prev-jamos.elf /boot/prev-bootfs.img
-IMAGE_MIB := 128
-# The ESP ends at 64 MiB (it starts at 1 MiB); the data partition (/data,
-# FAT32 "JAMOS-DATA") fills the rest of the image: 64 MiB in QEMU, the
-# rest of the stick once tools/write-usb.sh has grown it.
-ESP_END_MIB := 64
+# The ESP ends at 256 MiB (it starts at 1 MiB: 255 MiB, FAT32 with 2 KiB
+# clusters); the data partition (/data, FAT32 "JAMOS-DATA") fills the rest
+# of the image: 64 MiB in QEMU, the rest of the stick once
+# tools/write-usb.sh has grown it. `update` keeps three builds on the ESP
+# while it writes one (the stick's, the previous one and the new one:
+# user/services/init/espwrite.c), so a build may take a third of it
+# (mkbootfs.py's budget, from ESP_END_MIB; the image's own check after its
+# files are in: mkbootfs.py --esp-check). Sticks made before 2026-10-12
+# have a 63 MiB ESP, too small for three of today's builds: `update`
+# refuses to write such a stick (nothing on it changes) and says so;
+# `make usb` remakes it.
+ESP_END_MIB := 256
+IMAGE_MIB := $(shell echo $$(( $(ESP_END_MIB) + 64 )))
 
 LIMINE  := third_party/limine
 OVMF_DIR ?= $(shell brew --prefix qemu 2>/dev/null)/share/qemu
@@ -217,10 +228,18 @@ $(BUILD)/ksyms.c: $(BUILD)/jamos.stage1.elf tools/gensyms.py
 	$(CROSS)nm -n --defined-only $< > $(BUILD)/stage1.nm
 	python3 tools/gensyms.py gen $(BUILD)/stage1.nm $@
 
-$(KERNEL): $(OBJS) $(BUILD)/ksyms.o kernel/linker.ld
+# The linked kernel keeps its debug info in $(KERNEL_DEBUG) (for gdb);
+# $(KERNEL), what the ESP, `update` and the stored kernel get, is it
+# without (--strip-debug: about 5 of its 7 MB, which nothing reads at run
+# time). Its .symtab stays (update-server.py reads jamos_version there);
+# the panic screen's names are .ksyms, a loaded section, untouched.
+$(KERNEL_DEBUG): $(OBJS) $(BUILD)/ksyms.o kernel/linker.ld
 	$(LD) $(LDFLAGS) $(OBJS) $(BUILD)/ksyms.o -o $@
 	$(CROSS)nm -n --defined-only $@ > $(BUILD)/final.nm
 	python3 tools/gensyms.py verify $(BUILD)/stage1.nm $(BUILD)/final.nm
+
+$(KERNEL): $(KERNEL_DEBUG)
+	$(STRIP) --strip-debug $< -o $@
 
 $(BUILD)/ksyms_empty.o $(BUILD)/ksyms.o: $(BUILD)/%.o: $(BUILD)/%.c
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -463,7 +482,8 @@ EXTRA_CFLAGS_init := -I$(MONO_DIR) -I$(MONO_DIR)/optional
 # notifications, desk.c; none of their drawing), and the console's window
 # mode's pure parts (utest/conwin.c, conpaint.c, consel.c:
 # wlinput.c, cellpaint.c, view.c, select.c and their console.h), and the
-# shell's bracketed paste (utest/shpaste.c: sh_paste.c and sh_paste.h).
+# shell's bracketed paste (utest/shpaste.c: sh_paste.c and sh_paste.h), and
+# how it checks a /data program (utest/shimage.c: sh_image.c and sh_image.h).
 NETSTACK_CORE      := $(patsubst %,$(UOBJ)/user/services/netstack/%.o,stack.c ctl.c tcp.c \
                         port/sys_arch.c)
 EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/services/music/tracks.c.o \
@@ -479,7 +499,7 @@ EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/serv
                         cursors) \
                       $(CURSOR_OBJ) $(patsubst %,$(UOBJ)/user/services/console/%.c.o,wlinput \
                         cellpaint view select) $(UOBJ)/user/services/shell/sh_paste.c.o \
-                      $(UOBJ)/libfun.a
+                      $(UOBJ)/user/services/shell/sh_image.c.o $(UOBJ)/libfun.a
 EXTRA_CFLAGS_utest := -iquote user/services/music -iquote drivers/rtl8125 \
                       -iquote user/services/compositor -iquote user/services/console \
                       -iquote user/services/shell \
@@ -642,6 +662,8 @@ check: all
 	$(GPT_CHECK) $(BUILD)/gptcheck
 	$(MAKE) -s $(ROOTPORT_CHECK)
 	$(ROOTPORT_CHECK)
+	$(MAKE) -s $(AVL_CHECK)
+	$(AVL_CHECK)
 	$(MAKE) -s $(EXT_CHECK) $(EXT_FIXTURES) $(EXT_CROSS)
 	$(EXT_CHECK) tools/extfix $(BUILD)/extfix
 
@@ -709,16 +731,22 @@ BOOTFS_FILES := $(foreach p,$(USER_PROGS),bin/$(p)=$(BUILD)/user/$(p).bootfs) \
                 $(if $(wildcard $(PORTS_KEY)),ports.pub=$(PORTS_PUB))
 
 # Every program's list (<wants.h>) is checked first: what the build
-# approves for each boot-image program (tools/checkwants.py).
+# approves for each boot-image program (tools/checkwants.py). The boot
+# image may take what `update` takes (UPDATE_FILE_MAX) and a third of the
+# ESP beside the kernel, whichever is less (tools/mkbootfs.py: `update`
+# keeps three builds on the ESP), so it is packed again when the kernel
+# changes.
 $(BOOTFS): $(USER_PROGS:%=$(BUILD)/user/%.bootfs) $(DRIVERS:%=$(BUILD)/drv/%.bootfs) boot/init.cfg \
            boot/splash.mpg $(BUILD_INFO) $(UPDATE_PUB) $(PORTS_PUB) tools/mkbootfs.py \
-           tools/checkwants.py user/include/os.h
+           tools/checkwants.py user/include/os.h $(KERNEL) $(LIMINE)/BOOTX64.EFI boot/limine.conf \
+           user/include/update.h user/services/init/espwrite.c
 	python3 tools/checkwants.py $(foreach p,$(USER_PROGS),$(call prog_dir,$(p))=$(BUILD)/user/$(p).bootfs)
-	python3 tools/mkbootfs.py $@ $(BOOTFS_FILES) @$(PORTS_LIST)
+	python3 tools/mkbootfs.py --esp-mib $$(( $(ESP_END_MIB) - 1 )) --kernel $(KERNEL) \
+	    --esp-file $(LIMINE)/BOOTX64.EFI --esp-file boot/limine.conf $@ $(BOOTFS_FILES) @$(PORTS_LIST)
 
 image: $(IMAGE)
 
-$(IMAGE): $(KERNEL) $(BOOTFS) boot/limine.conf tools/mkimage.py tools/fat-label.py
+$(IMAGE): $(KERNEL) $(BOOTFS) boot/limine.conf tools/mkimage.py tools/fat-label.py tools/mkbootfs.py
 	python3 tools/mkimage.py $@ $(ESP_END_MIB) $(IMAGE_MIB)
 	mformat -i $@@@1M -T $$(( ($(ESP_END_MIB) - 1) * 2048 )) -F -v JAMOS ::
 	mformat -i $@@@$(ESP_END_MIB)M -T $$(( ($(IMAGE_MIB) - $(ESP_END_MIB)) * 2048 )) -F \
@@ -730,6 +758,7 @@ $(IMAGE): $(KERNEL) $(BOOTFS) boot/limine.conf tools/mkimage.py tools/fat-label.
 	mcopy -i $@@@1M boot/limine.conf ::/boot/limine/
 	mcopy -i $@@@1M $(KERNEL) ::/boot/
 	mcopy -i $@@@1M $(BOOTFS) ::/boot/bootfs.img
+	python3 tools/mkbootfs.py --esp-check $@ $(KERNEL) $(BOOTFS) || { rm -f $@; exit 1; }
 
 # Writable copy of the UEFI variable store (the firmware code image is read-only).
 $(BUILD)/ovmf-vars.fd:
@@ -751,7 +780,7 @@ run: $(IMAGE) $(BUILD)/ovmf-vars.fd
 	qemu-system-x86_64 $(QEMU_FLAGS)
 
 # Same, but wait for gdb on :1234 (attach with
-# `x86_64-elf-gdb build/jamos.elf -ex "target remote :1234"`).
+# `x86_64-elf-gdb build/jamos.debug.elf -ex "target remote :1234"`).
 debug: $(IMAGE) $(BUILD)/ovmf-vars.fd
 	qemu-system-x86_64 $(QEMU_FLAGS) -s -S -d int,cpu_reset -D $(BUILD)/qemu.log
 
@@ -833,11 +862,21 @@ $(ROOTPORT_CHECK): tools/rootportcheck.c drivers/usb-bus/rootport.c drivers/usb-
 	    -fno-sanitize-recover=all -Ikernel/include -Idrivers/include -o $@ \
 	    tools/rootportcheck.c drivers/usb-bus/rootport.c
 
-# extcheck (tools/extcheck.c, extbreak.c, extmutate.c): the ext library (the
+# avlcheck (tools/avlcheck.c): the kernel's AVL tree (kernel/lib/avl.c, the
+# same file) against a sorted array doing the same steps, with its
+# summaries checked from scratch after each; `make check` runs it.
+$(AVL_CHECK): tools/avlcheck.c kernel/lib/avl.c kernel/include/jam/avl.h kernel/include/jam/list.h
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -std=gnu17 -O2 -g -Wall -Wextra -Werror -Wvla -fsanitize=address,undefined \
+	    -fno-sanitize-recover=all -Ikernel/include -o $@ tools/avlcheck.c kernel/lib/avl.c
+
+# extcheck (tools/extcheck.c and the other tools/ext*.c): the ext library (the
 # extfs service's format code, user/services/extfs/ext, the same files)
 # with ASan and UBSan, against the images Linux's mke2fs made
 # (tools/extfix/make.sh made them; committed gzipped, unpacked here) and
-# thousands of mutated ones; `make check` runs it. The library is also
+# thousands of mutated ones, and its writes (names, links, rename, orphans,
+# mkfs) on volumes held in memory, each checked against a volume's
+# invariants (tools/extinv.c); `make check` runs it. The library is also
 # compiled as Jam OS compiles a program's files ($(EXT_CROSS)), since no
 # program links it yet.
 EXT_DIR      := user/services/extfs/ext
@@ -846,9 +885,13 @@ EXT_HDRS     := $(wildcard $(EXT_DIR)/*.h)
 EXT_FIXTURES := $(patsubst tools/extfix/%.img.gz,$(BUILD)/extfix/%.img,\
                            $(wildcard tools/extfix/*.img.gz))
 EXT_CROSS    := $(patsubst $(EXT_DIR)/%.c,$(BUILD)/extcross/%.o,$(EXT_SRCS))
-EXT_TOOL     := tools/extcheck.c tools/extbreak.c tools/extmutate.c
-$(EXT_CHECK): $(EXT_TOOL) tools/extcheck.h $(EXT_SRCS) $(EXT_HDRS) drivers/lib/sha256.c \
-              drivers/include/jam/sha256.h kernel/include/jam/status.h
+EXT_TOOL     := tools/extcheck.c tools/extbreak.c tools/extmutate.c tools/extinv.c \
+                tools/extvol.c tools/extmkfs.c tools/extnames.c tools/extbig.c \
+                tools/extwrite.c tools/extfile.c tools/extverify.c tools/extcut.c tools/extjnl.c \
+                tools/extnstorm.c
+$(EXT_CHECK): $(EXT_TOOL) tools/extcheck.h tools/extvol.h tools/extwrite.h tools/extjnl.h \
+              $(EXT_SRCS) $(EXT_HDRS) drivers/lib/sha256.c drivers/include/jam/sha256.h \
+              kernel/include/jam/status.h
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=gnu17 -O1 -g -Wall -Wextra -Werror -Wvla -fsanitize=address,undefined \
 	    -fno-sanitize-recover=all -Idrivers/include -Ikernel/include -I$(EXT_DIR) -o $@ \

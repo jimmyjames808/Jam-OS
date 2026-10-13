@@ -24,7 +24,9 @@
  *           finished if the new build had both its names, else undone,
  *           settle()); its leftovers (*.new) removed; if the stick's build
  *           is the new one already, nothing is written; room for the new
- *           build checked (else nothing changes);
+ *           build checked (else nothing changes: an ESP too small for
+ *           three builds, the stick's, the previous one and the new one,
+ *           is refused here, ERR_NO_SPACE);
  *   NEW     the new build written from init's own checked copies as
  *           boot/jamos.elf.new and bootfs.img.new, synced, read back, and
  *           their SHA-256s compared with the manifest's;
@@ -78,7 +80,8 @@
 #define CHUNK      ESP_CHUNK
 #define ESP_WAIT   (30 * NS_PER_S)    /* volesp: a stop in order, then a start */
 #define WRITE_LIMIT   (120 * NS_PER_S)   /* the steps, all of them */
-#define SLACK      (1u << 20)         /* room kept spare per file: clusters, directory */
+#define SLACK      (1u << 20)         /* room kept spare per file: clusters, directory
+                                       * (tools/mkbootfs.py reads it: the build's budget) */
 #define SAY_EVERY  (2 * NS_PER_S)     /* a long file's progress: a line at most this often */
 
 /* The ESP's files, by the paths fat takes (the mount's root is "/"), and
@@ -470,6 +473,16 @@ static status_t room(struct writer *w)
         st = ERR_NO_SPACE;
     esp_say("%lu KiB free, %lu KiB needed", (unsigned long)(free_bytes >> 10),
             (unsigned long)(need >> 10));
+    /* Too small for three builds (an ESP of 63 MiB, a stick made before
+     * 2026-10-12, with today's builds): refused here, before a byte of
+     * the new build is written, so the stick keeps both its builds. The
+     * build stays loaded (UPDATE_NOT_WRITTEN). The Makefile's budget
+     * (tools/mkbootfs.py) is this same sum for its own ESP's size. */
+    if (st == ERR_NO_SPACE)
+        printf("init: update: the stick's ESP (%lu MiB) can't hold three builds of this size "
+               "(the stick's, the previous one and the new one, %lu KiB more): nothing on it "
+               "changed. `make usb` remakes the stick with a bigger ESP\n",
+               (unsigned long)(total >> 20), (unsigned long)(need >> 10));
     return st;
 }
 

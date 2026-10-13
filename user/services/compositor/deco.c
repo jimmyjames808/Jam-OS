@@ -3,7 +3,9 @@
  * are the title bar's and its circles' boxes (title_bar_box,
  * title_button_hit): a click lands exactly where the drawing is.
  *
- * The frame of a normal floating window, around its surface S:
+ * The frame of a normal floating window, around its surface S (its window
+ * geometry, comp.h's window_geometry: the whole surface unless the client
+ * set one):
  *
  *     +--------------------------------------------+  <- top edge: the title
  *     | (x)(-)(f)          title                    |     bar's first DECO_BORDER rows
@@ -26,12 +28,16 @@
  * there being no close circle. A press on a tiled window's border focuses
  * it and does nothing more.
  *
- * A client that draws its own decorations (WM_ST_CSD: xdg-decoration's
- * client_side, or no decoration object at all) gets none of these but
+ * A client that draws its own decorations (WM_ST_CSD: one that never
+ * bound xdg-decoration's manager, xdgdeco.c) gets none of these but
  * tiling's border: floating, only the rounded corners and the shadow
- * (COMP_WIN_CSD, look.h's LOOK_CSD), so its frame is its surface, and it
- * moves and resizes itself (xdg_toplevel.move and resize; Super+drag
- * still works). */
+ * (COMP_WIN_CSD, look.h's LOOK_CSD), so its frame is its window geometry,
+ * and it moves and resizes itself (xdg_toplevel.move and resize;
+ * Super+drag still works). One whose window geometry is smaller than its
+ * surface (it draws its own shadow round its window: window_inset) gets
+ * neither our corners nor our shadow, only its own (LOOK_PLAIN). A press
+ * on its surface outside the frame (on its own shadow, where a client
+ * keeps its resize margins) is the client's, by its input region. */
 #include "wm.h"
 
 #define DECO_CORNER 16   /* this close to a corner, an edge is a corner */
@@ -61,7 +67,8 @@ void deco_set(struct comp_window *w, uint32_t states)
     enum comp_layout layout = wm_layout_of(w->wm);
     struct deco_sizes d = deco_sizes(states, layout);
     bool csd = (states & WM_ST_CSD) && layout == COMP_FLOATING &&
-               !(states & (WM_ST_MAXIMIZED | WM_ST_FULLSCREEN));
+               !(states & (WM_ST_MAXIMIZED | WM_ST_FULLSCREEN)) &&
+               !window_inset(w);   /* its own shadow round it: none of ours (LOOK_PLAIN) */
     if (w->deco_top == d.top && w->deco_left == d.left && w->deco_right == d.right &&
         w->deco_bottom == d.bottom && csd == !!(w->flags & COMP_WIN_CSD))
         return;
@@ -97,7 +104,7 @@ static struct comp_box press_box(const struct comp_window *w)
  * frame's ends. 0 when it is on none. */
 static uint32_t edges_at(const struct comp_window *w, int32_t x, int32_t y)
 {
-    struct comp_box f = window_frame(w), s = window_surface_box(w);
+    struct comp_box f = window_frame(w), s = window_geometry(w);
     if (!has_edges(w))
         return 0;
     uint32_t e = 0;
@@ -121,10 +128,10 @@ static uint32_t edges_at(const struct comp_window *w, int32_t x, int32_t y)
 enum deco_part deco_hit(const struct comp_window *w, int32_t x, int32_t y, uint32_t *edges)
 {
     *edges = 0;
-    if (!box_contains(press_box(w), x, y))
-        return DECO_NONE;
-    if (box_contains(window_surface_box(w), x, y))
+    if (box_contains(window_geometry(w), x, y))
         return DECO_SURFACE;
+    if (!box_contains(press_box(w), x, y))   /* past the frame: its own shadow, or nothing */
+        return box_contains(window_surface_box(w), x, y) ? DECO_SURFACE : DECO_NONE;
     if ((*edges = edges_at(w, x, y)))
         return DECO_EDGE;
     static const enum deco_part parts[TITLE_BUTTONS] = { DECO_CLOSE, DECO_MINIMISE,
@@ -175,13 +182,17 @@ static bool takes_input(const struct comp_window *w, int32_t x, int32_t y)
 struct comp_window *wm_window_at(int32_t x, int32_t y, bool *on_surface)
 {
     for (struct comp_window *w = scene.top; w; w = w->below) {
-        if (!(w->flags & COMP_WIN_MAPPED) || !box_contains(press_box(w), x, y))
+        if (!(w->flags & COMP_WIN_MAPPED))
             continue;
-        if (!box_contains(window_surface_box(w), x, y)) {
+        /* the frame round the window geometry is ours; the surface past
+         * the frame (a client's own shadow) is the client's, as inside */
+        bool on_deco = box_contains(press_box(w), x, y) &&
+                       !box_contains(window_geometry(w), x, y);
+        if (on_deco) {
             *on_surface = false;
             return w;   /* its decorations */
         }
-        if (takes_input(w, x, y)) {
+        if (box_contains(window_surface_box(w), x, y) && takes_input(w, x, y)) {
             *on_surface = true;
             return w;
         }

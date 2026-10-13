@@ -17,8 +17,9 @@
  * the desktop off and on: a click anywhere (where the strip is too) is
  * its, the keys stay the other window's, and still are once it has gone.
  * t_comp_no_keyboard: a window whose client has no wl_keyboard (the boot
- * splash's) never takes the keys: not when it maps over the focused
- * window, not when it is clicked.
+ * splash's, when it is no overlay) never takes the keys by itself: not when
+ * it maps over the focused window. A click on it makes it the active
+ * window (the user chose it: the keys go nowhere then).
  * t_comp_overlay_late: the same client, with no boot wait for the splash,
  * has an ordinary full-screen window, not an overlay (review DQ1): a window
  * mapped after it is above it. */
@@ -377,7 +378,8 @@ bool t_comp_no_keyboard(void)
     const uint32_t ka[] = { DOWN(KEY_A), UP(KEY_A) };
     CHECK(keys_are(&a.k, ka, 2));
     CHECK(!find_ev(&a, &jwl_wl_keyboard_interface, JWL_WL_KEYBOARD_EV_LEAVE));
-    /* a click on it: its pointer gets the press, the keys stay a's */
+    /* a click on it: its pointer gets the press, and it is the active
+     * window: a loses the keys, and what is typed goes to nobody */
     ct_clear(&a.k);
     ct_clear(&s.k);
     CHECK(cs_pointer_to(&t, 20, 20));
@@ -386,9 +388,8 @@ bool t_comp_no_keyboard(void)
     CHECK(cs_tap(&t, U_B, 0));
     CHECK(cs_sync(&a, &s));
     CHECK(find_ev(&s, &jwl_wl_pointer_interface, JWL_WL_POINTER_EV_BUTTON));
-    const uint32_t kb[] = { DOWN(KEY_B), UP(KEY_B) };
-    CHECK(keys_are(&a.k, kb, 2));
-    CHECK(!find_ev(&a, &jwl_wl_keyboard_interface, JWL_WL_KEYBOARD_EV_LEAVE));
+    CHECK(find_ev(&a, &jwl_wl_keyboard_interface, JWL_WL_KEYBOARD_EV_LEAVE));
+    CHECK(!find_ev(&a, &jwl_wl_keyboard_interface, JWL_WL_KEYBOARD_EV_KEY));
     ct_close(&s.k);
     ct_close(&a.k);
     CHECK(cs_stop(&t));

@@ -4,7 +4,8 @@
  *
  * Three kinds:
  *   - paged (the default): pages are committed on demand, zero-filled, and
- *     tracked in a sparse three-level table, so a mostly-empty 64 GiB VMO
+ *     tracked in a sparse table (three levels for the first 64 GiB, five
+ *     past it), so a mostly-empty VMO of up to 128 TiB (a reservation)
  *     costs only the pages it touches plus their table pages;
  *   - CONTIGUOUS: one buddy block, committed and zeroed at creation;
  *   - physical: existing memory the kernel doesn't own (MMIO, a framebuffer);
@@ -45,8 +46,8 @@
 #include <jam/status.h>
 
 /* The flags (VMO_CONTIGUOUS, VMO_DMA32, VMO_KEEP_PAGES) and the limits
- * (VMO_MAX_SIZE, VMO_CONTIGUOUS_MAX) are in <jam/abi.h>: user code asks for
- * them and meets them. */
+ * (VMO_MAX_SIZE, VMO_SMALL_MAX_SIZE, VMO_CONTIGUOUS_MAX) are in
+ * <jam/abi.h>: user code asks for them and meets them. */
 #define VMO_CREATE_FLAGS (VMO_CONTIGUOUS | VMO_DMA32 | VMO_KEEP_PAGES)
 
 /* Embeds struct kobject first (type OBJ_VMO), so the casts below are safe. */
@@ -61,7 +62,8 @@ static inline struct vmo *vmo_from_kobject(struct kobject *obj)
 }
 
 /* Size is rounded up to whole pages. 0 is allowed except for CONTIGUOUS.
- * ERR_OUT_OF_RANGE past VMO_MAX_SIZE (or 4 MiB for CONTIGUOUS);
+ * ERR_OUT_OF_RANGE past VMO_MAX_SIZE (VMO_SMALL_MAX_SIZE for
+ * VMO_KEEP_PAGES, 4 MiB for CONTIGUOUS);
  * ERR_INVALID_ARGS for VMO_KEEP_PAGES with CONTIGUOUS or DMA32. The caller
  * gets the only reference (kobject_unref to drop it). The same as
  * vmo_create_for with no job. */

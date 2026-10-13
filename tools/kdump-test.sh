@@ -39,6 +39,7 @@
 # QEMU_SMP and QEMU_XHCI pass through. Usage: tools/kdump-test.sh <outdir>
 # [case ...]; exit 0 on PASS.
 set -u
+DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
 out=$1
 shift
 cases=${*:-save notice loop bad nostick screen}
@@ -106,7 +107,7 @@ case_save() {
         "$log" ||
         fail save "the stored kernel's command line isn't the plain boot's"
     f="$out/kdump-save-crash.txt"
-    data="$out/kdump-save-stick.img@@64M"
+    data="$out/kdump-save-stick.img@@$DATA_AT"
     mtype -i "$data" ::/logs/boot-0001-crash.txt > "$f" 2>/dev/null ||
         { fail save "no logs/boot-0001-crash.txt on the stick"; return; }
     for n in boot-0001.txt boot-0002.txt; do
@@ -127,7 +128,7 @@ case_save() {
     mtype -i "$data" ::/logs/boot-0002.txt 2>/dev/null |
         grep -q "logd: the last boot's log is saved as /data/logs/boot-0001-crash.txt" ||
         fail save "boot-0002.txt doesn't say where the last boot's log went"
-    python3 tools/fat-label.py "$out/kdump-save-stick.img" 64 > /dev/null 2>&1 ||
+    python3 tools/fat-label.py "$out/kdump-save-stick.img" ${DATA_AT%M} > /dev/null 2>&1 ||
         fail save "the data volume's label is damaged"
 }
 
@@ -165,7 +166,7 @@ case_bad() {
     unset IFS
     boot bad "shell reset=none" "$@" || { fail bad "the script (see $out/kdump-bad.log)"; return; }
     [ "$(count "$out/kdump-bad.log" 'Jam OS kexec')" -eq 0 ] || fail bad "a second kernel started anyway"
-    mdir -i "$out/kdump-bad-stick.img@@64M" ::/logs/boot-0001-crash.txt > /dev/null 2>&1 &&
+    mdir -i "$out/kdump-bad-stick.img@@$DATA_AT" ::/logs/boot-0001-crash.txt > /dev/null 2>&1 &&
         fail bad "a crash log was saved"
     python3 tools/splash-check.py calm "$out/kdump-bad-0s.png" > /dev/null ||
         fail bad "the screen at 0 s isn't the calm panic screen without its details"

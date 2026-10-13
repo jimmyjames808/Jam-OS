@@ -79,6 +79,9 @@ status_t aspace_unmap(struct aspace *as, uint64_t addr, uint64_t len);
  * (ERR_NOT_FOUND otherwise). ERR_ACCESS_DENIED if a mapping in the range
  * may not have them (see ASPACE_CAN_*). */
 status_t aspace_protect(struct aspace *as, uint64_t addr, uint64_t len, unsigned flags);
+/* How many mappings it holds now (merged neighbours count once). Takes the
+ * region lock: may sleep. */
+uint32_t aspace_mapping_count(struct aspace *as);
 
 /* Resolve a fault at addr for `access` (ASPACE_READ/WRITE/EXEC): commit
  * the VMO page if needed and install the page-table entry. OK: retry the

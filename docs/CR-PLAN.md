@@ -103,7 +103,7 @@ GPU after G3 and G4.
 | Wayland | the compositor speaks Wayland over channels; G2's shim, subsurfaces and popups to come | [G2-PLAN](G2-PLAN.md) |
 | Storage | FAT32 `/data` on the stick (768 MiB on the owner's); M13.6's ext filesystem (`/jam`) and M12.7's writes to the Jam OS drive to come | [M13.6-PLAN](M13.6-PLAN.md), [M12.7-PLAN](M12.7-PLAN.md) |
 | Ports | M13.7's builder, packages and signing on the Mac; `pkg` on Jam OS to come; ports build on the Mac and on the PC's WSL | [M13.7-PLAN](M13.7-PLAN.md) |
-| The PC's WSL | Ubuntu, 28 threads, the cross compiler and QEMU; every test runs there through `tools/remote-test.sh` (6 slots) | [TESTING](TESTING.md) |
+| The PC's WSL | Ubuntu, 28 threads, the cross compiler and QEMU; every test runs there through `tools/remote-test.sh` (a budget of 26 vCPUs) | [TESTING](TESTING.md) |
 
 **What the code says that the research didn't** (each shapes this plan):
 

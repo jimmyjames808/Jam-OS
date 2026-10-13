@@ -1,0 +1,18 @@
+Description: no <linux/input-event-codes.h> on Jam OS
+ hello-wayland includes Linux's input header for one name, BTN_LEFT (the
+ left button's code in wl_pointer.button, 0x110). Jam OS's sysroot has no
+ Linux UAPI headers yet (the Chromium plan's toolchain adds them), so the
+ name is defined here instead.
+Forwarded: not-needed (Jam OS has no Linux UAPI headers yet; upstream builds on Linux)
+---
+--- a/main.c
++++ b/main.c
+@@ -6,7 +6,7 @@
+ #include <unistd.h>
+ #include <wayland-client.h>
+ #include <wayland-client-protocol.h>
+-#include <linux/input-event-codes.h>
++#define BTN_LEFT 0x110   /* <linux/input-event-codes.h>'s */
+ 
+ #include "cat.h"
+ #include "shm.h"

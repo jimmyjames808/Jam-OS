@@ -1,0 +1,5 @@
+# A file xkbcommon's source does not have: the compositor's US keymap, as
+# tools/genkeymap.py xkb us makes it (`genkeymap.py check` fails if this copy
+# is stale), installed by patches/0001. `-` is the hash of a file upstream
+# must not have.
+jamos/us.xkb - override/us.xkb

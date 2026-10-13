@@ -4,8 +4,16 @@
  * The program is a range of a VMO (struct image): a file of the bootfs
  * image (the SR_BOOTFS VMO, mapped once by bootfs_default), a range the
  * caller names, or a file read through the namespace into a VMO made for
- * it. The steps are all ordinary system calls: process_create gives the
- * new process and a vmar for its address space; each PT_LOAD segment is
+ * it. A VMO other than the boot image's (or another physical one, which
+ * vmo_read refuses and no pager backs) is never mapped here: its ELF
+ * headers and writable segments are read from it with vmo_read. A
+ * verified VMO (vmo_make_exec_verified) fetches each page from its pager
+ * and checks it when first touched, and a page that doesn't match kills
+ * whoever touched it through a mapping; through vmo_read it is ERR_IO for
+ * the spawn instead, so a changed program fails to start rather than
+ * taking its starter down. The steps are all ordinary system calls:
+ * process_create gives the new process and a vmar for its address space;
+ * each PT_LOAD segment is
  * mapped into that vmar (read-only and executable ones straight from the
  * program's VMO, writable ones copied into a fresh VMO), then a stack with
  * a guard page below it, a thread, and a startup message on a new channel
@@ -40,9 +48,11 @@
 struct image {
     handle_t       vmo;      /* the VMO holding them */
     uint64_t       off;      /* where they start in it, page-aligned */
-    const uint8_t *data;     /* the same bytes, mapped here read-only */
+    const uint8_t *data;     /* the same bytes mapped here (the boot image, or a physical
+                              * VMO); NULL for any other VMO (read with vmo_read, never
+                              * mapped here) */
     uint64_t       size;     /* how many */
-    uint64_t       mapped;   /* bytes at data to unmap afterwards (0: bootfs's, kept) */
+    uint64_t       mapped;   /* bytes at data to unmap afterwards (0: bootfs's mapping, kept) */
     bool           own_vmo;  /* vmo was made here (a file's copy): closed afterwards */
 };
 
@@ -81,6 +91,35 @@ static uint64_t name_len(const char *name)
     return n < PROCESS_NAME_MAX ? n : PROCESS_NAME_MAX;
 }
 
+/* n bytes of the program at off (inside it: the callers check) into buf. */
+static status_t image_read(const struct image *img, uint64_t off, void *buf, uint64_t n)
+{
+    if (img->data) {
+        memcpy(buf, img->data + off, n);
+        return OK;
+    }
+    return jam_vmo_read(img->vmo, img->off + off, buf, n);
+}
+
+/* n bytes of the program at off into v at at: written from the boot
+ * image's mapping, or read from the program's VMO straight into v, mapped
+ * here for the copy (v is ours alone; the program's VMO is never mapped
+ * here). */
+static status_t image_copy(const struct image *img, uint64_t off, handle_t v, uint64_t at,
+                           uint64_t n)
+{
+    if (img->data)
+        return jam_vmo_write(v, at, img->data + off, n);
+    handle_t self = startup_handle(SR_SELF_VMAR);
+    uint64_t lo = down(at), len = up(at + n) - lo, addr = 0;
+    status_t st = jam_vmar_map(self, v, lo, len, VMAR_READ | VMAR_WRITE, &addr);
+    if (st != OK)
+        return st;
+    st = jam_vmo_read(img->vmo, img->off + off, (uint8_t *)(uintptr_t)addr + (at - lo), n);
+    jam_vmar_unmap(self, addr, len);
+    return st;
+}
+
 /* Map one PT_LOAD segment of the program into vmar. */
 static status_t load_segment(handle_t vmar, const struct image *img, const struct phdr *ph)
 {
@@ -101,7 +140,7 @@ static status_t load_segment(handle_t vmar, const struct image *img, const struc
     if (st != OK)
         return st;
     if (ph->filesz)
-        st = jam_vmo_write(v, ph->vaddr - lo, img->data + ph->offset, ph->filesz);
+        st = image_copy(img, ph->offset, v, ph->vaddr - lo, ph->filesz);
     if (st == OK)
         st = jam_vmar_map(vmar, v, 0, hi - lo, perms | VMAR_FIXED, &addr);
     jam_handle_close(v);   /* the mapping keeps it */
@@ -110,12 +149,13 @@ static status_t load_segment(handle_t vmar, const struct image *img, const struc
 
 static status_t load_elf(handle_t vmar, const struct image *img, uint64_t *entry)
 {
-    const uint8_t *file = img->data;
     uint64_t size = img->size;
     struct ehdr eh;
     if (size < sizeof(eh))
         return ERR_INVALID_ARGS;
-    memcpy(&eh, file, sizeof(eh));
+    status_t st = image_read(img, 0, &eh, sizeof(eh));
+    if (st != OK)
+        return st;
     if (memcmp(eh.ident, "\x7f" "ELF", 4) || eh.ident[4] != 2 || eh.type != 2 ||
         eh.machine != 62 || eh.phentsize != sizeof(struct phdr) || eh.phnum == 0 ||
         eh.phnum > 64 || eh.phoff > size || eh.phnum * sizeof(struct phdr) > size - eh.phoff)
@@ -123,12 +163,14 @@ static status_t load_elf(handle_t vmar, const struct image *img, uint64_t *entry
     unsigned loads = 0;
     for (unsigned i = 0; i < eh.phnum; i++) {
         struct phdr ph;
-        memcpy(&ph, file + eh.phoff + i * sizeof(ph), sizeof(ph));
+        st = image_read(img, eh.phoff + i * sizeof(ph), &ph, sizeof(ph));
+        if (st != OK)
+            return st;
         if (ph.type != PT_LOAD)
             continue;
         if (++loads > MAX_SEGS)
             return ERR_INVALID_ARGS;
-        status_t st = load_segment(vmar, img, &ph);
+        st = load_segment(vmar, img, &ph);
         if (st != OK)
             return st;
     }
@@ -223,14 +265,29 @@ struct handout {
     unsigned n;                             /* entries */
 };
 
-/* img's bytes mapped here, read-only. */
-static status_t map_image(struct image *img)
+/* A VMO's range as a program: some bytes, at most FILE_MAX, from a page
+ * boundary. */
+static status_t check_image(const struct image *img)
 {
-    uint64_t addr = 0, len = up(img->size);
     if (!img->size || img->size > FILE_MAX || (img->off & (PAGE_SIZE - 1)))
         return ERR_INVALID_ARGS;
-    status_t st = jam_vmar_map(startup_handle(SR_SELF_VMAR), img->vmo, img->off, len, VMAR_READ,
-                               &addr);
+    return OK;
+}
+
+/* A caller's VMO range: read with vmo_read where the VMO allows it. A
+ * physical VMO (the boot image's own, SR_BOOTFS, named by range) refuses
+ * vmo_read (ERR_NOT_SUPPORTED); it has no pager and no page that can fail
+ * a check, so it is mapped here read-only, as the boot image always is. */
+static status_t caller_image(struct image *img)
+{
+    status_t st = check_image(img);
+    uint8_t probe;
+    if (st == OK)
+        st = jam_vmo_read(img->vmo, img->off, &probe, 1);
+    if (st != ERR_NOT_SUPPORTED)
+        return st;
+    uint64_t addr = 0, len = up(img->size);
+    st = jam_vmar_map(startup_handle(SR_SELF_VMAR), img->vmo, img->off, len, VMAR_READ, &addr);
     if (st != OK)
         return st;
     img->data = (const uint8_t *)(uintptr_t)addr;
@@ -247,14 +304,14 @@ static status_t find_image(const struct spawn_args *a, struct image *img)
         img->vmo = a->vmo;
         img->off = a->offset;
         img->size = a->size;
-        return map_image(img);
+        return caller_image(img);
     }
     if (a->path[0] == '/') {
         status_t st = file_read_vmo(a->path, FILE_MAX, &img->vmo, &img->size);
         if (st != OK)
             return st;
         img->own_vmo = true;
-        return map_image(img);
+        return check_image(img);
     }
     const struct bootfs_view *fs;
     const void *data;
@@ -269,8 +326,8 @@ static status_t find_image(const struct spawn_args *a, struct image *img)
     return OK;
 }
 
-/* The child keeps what it mapped of the VMO; our view and a copy made
- * here go. */
+/* The child keeps what it mapped of the VMO; our view of a physical
+ * one and a copy made here go. */
 static void release_image(struct image *img)
 {
     if (img->mapped)

@@ -12,6 +12,7 @@
 # test.sh's family. QEMU_SMP passes through.
 # Usage: tools/volumes-restart-test.sh <outdir>; exit 0 on PASS.
 set -eu
+DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
 out=$1
 mkdir -p "$out"
 ok=1
@@ -44,10 +45,10 @@ never "did not end cleanly"
 # The stick, on the host: the file, and the one boot log with every kill.
 img="$out/vr-stick.img"
 if [ -f "$img" ]; then
-    mtype -i "$img@@64M" ::/vr.txt > "$out/vr-file.txt" 2>/dev/null || true
+    mtype -i "$img@@$DATA_AT" ::/vr.txt > "$out/vr-file.txt" 2>/dev/null || true
     grep -q "before the kills-v" "$out/vr-file.txt" && grep -q "after the kills-v" "$out/vr-file.txt" ||
         { echo "volumes-restart: the stick's /vr.txt doesn't hold what was written"; ok=0; }
-    mtype -i "$img@@64M" ::/logs/boot-0001.txt > "$out/vr-boot.txt" 2>/dev/null || true
+    mtype -i "$img@@$DATA_AT" ::/logs/boot-0001.txt > "$out/vr-boot.txt" 2>/dev/null || true
     # (what the kernel logged while /data was away may be missing: logd
     # saves what it still has when /data is back. And a kill's own line,
     # "init: kill X: OK", is logged as X and its filesystem die: logd's
@@ -63,7 +64,7 @@ if [ -f "$img" ]; then
     n=$(grep -ac "init: /data is gone" "$out/vr-boot.txt" || true)
     [ "$n" -ge 3 ] ||
         { echo "volumes-restart: boot-0001.txt on the stick has \"init: /data is gone\" $n times, wanted 3 or more"; ok=0; }
-    ! mdir -i "$img@@64M" ::/logs/boot-0002.txt > /dev/null 2>&1 ||
+    ! mdir -i "$img@@$DATA_AT" ::/logs/boot-0002.txt > /dev/null 2>&1 ||
         { echo "volumes-restart: logd started a second boot log"; ok=0; }
     rm -f "$img"
 else

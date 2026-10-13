@@ -22,13 +22,14 @@
 # Prints the four storm lines and the mixer's, and fsck_msdos's verdict on
 # both disks too where the Mac has it (read-only attach; not part of PASS:
 # mtools' volume label alone makes it warn).
-# QEMU_SMP passes through; STORM_MIB sets the file's size (default 32:
-# about 2 s of copying in QEMU, so that 1 kill a second kills).
+# QEMU_SMP passes through; STORM_MIB sets the file's size (default 40:
+# about 1.2 s of copying under KVM on the PC, so that 1 kill a second kills; 32 took 0.98 s and killed nothing; the data partition is 63 MiB, so no more).
 # Usage: tools/fat-storm-test.sh <outdir>; exit 0 on PASS.
 set -eu
+DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
 out=$1
 mkdir -p "$out"
-mib=${STORM_MIB:-32}
+mib=${STORM_MIB:-40}
 boot="$out/storm-boot.img"       # the boot stick, with the WAV on /data
 saved="$out/storm-boot-after.img"  # ... as the guest left it
 stick="$out/storm-usb0.img"       # the second stick, /usb0
@@ -54,8 +55,8 @@ python3 tools/mkstick.py "$stick" 64 0c
 mformat -i "$stick@@1M" -T $((63 * 2048)) -F -v STORM ::
 mcopy -i "$stick@@1M" "$tmp/big.bin" ::/big.bin
 cp build/jamos.img "$boot"
-mmd -i "$boot@@64M" ::/music
-mcopy -i "$boot@@64M" "$tmp/tone.wav" "::/music/tone.wav"
+mmd -i "$boot@@$DATA_AT" ::/music
+mcopy -i "$boot@@$DATA_AT" "$tmp/tone.wav" "::/music/tone.wav"
 
 devs="-audiodev wav,id=snd0,path=$out/storm.wav,out.frequency=48000,out.channels=2,out.format=s16 \
 -device intel-hda,id=hda0 -device hda-output,bus=hda0.0,cad=0,audiodev=snd0"
@@ -75,6 +76,24 @@ never() {   # never <text> <log>
 }
 
 # ---- the copies ------------------------------------------------------------------------------
+# Did the kills land during the copy? storm starts its kill thread before the
+# copy and stops it right after (the read-back hashing has no kills), so the
+# kills in a storm line are the copy's own. `landed <rate> <least kills>
+# <storm line>` is true when the line has at least that many, and at least
+# 40% of rate x the copy's seconds (the kills come evenly from the copy's
+# start: a copy killed all along, not just at its very end). Says what it
+# found when not: a machine too fast for STORM_MIB (the data partition
+# limits it) fails here instead of passing without a storm.
+landed() {
+    k=$(echo "$3" | grep -ao "; [0-9]* kills" | grep -ao "[0-9]*" || echo 0)
+    secs=$(echo "$3" | grep -ao " bytes in [0-9]*\.[0-9]* s" | grep -ao "[0-9]*\.[0-9]*" || echo 0)
+    awk -v k="${k:-0}" -v r="$1" -v m="$2" -v s="${secs:-0}" \
+        'BEGIN { exit !(k >= m && k >= 0.4 * r * s) }' && return 0
+    echo "fat-storm: $1 kills/s: ${k:-0} kills in a ${secs:-0} s copy, wanted at least $2 and" \
+         "$(awk -v r="$1" -v s="${secs:-0}" 'BEGIN { printf "%.1f", 0.4 * r * s }')" \
+         "(the kills didn't land during the copy: the file is too small for this machine, STORM_MIB is $mib)"
+    return 1
+}
 # A storm line is on the screen and in the kernel log: both reach the
 # serial port, so each is there twice; the first is taken.
 prev=-1
@@ -97,6 +116,11 @@ for rate in 0 1 10 100; do
     fi
     [ "$rate" = 0 ] || echo "$line" | grep -q "kill to first answer median" ||
         { echo "fat-storm: $rate kills/s: no kill to first answer"; ok=0; }
+    case $rate in
+    1) landed 1 1 "$line" || ok=0 ;;
+    10) landed 10 5 "$line" || ok=0 ;;
+    100) landed 100 30 "$line" || ok=0 ;;
+    esac
     [ "$rate" = 0 ] || prev=${kills:-0}
 done
 srcs=$(grep -ac "^[0-9a-f]\{64\}  /usb0/big.bin\$" "$clean" || true)
@@ -107,8 +131,20 @@ never "storm: .* refused" "$clean"
 never "not answered after" "$clean"
 never "DIFFERENT" "$clean"
 never "can't read it back" "$clean"
-grep -aq "^storm: 100 kills/s: the copy: stopped by Ctrl+C" "$clean" ||
-    { echo "fat-storm: the Ctrl+C line is missing"; ok=0; }
+cutline=$(grep -a "^storm: 100 kills/s: the copy: stopped by Ctrl+C" "$clean" | head -1)
+if [ -z "$cutline" ]; then
+    echo "fat-storm: the Ctrl+C line is missing"
+    ok=0
+else   # stopped in the copy, not after it: part of the file, with kills done
+    cutb=$(echo "$cutline" | grep -ao "after [0-9]* bytes" | grep -ao "[0-9]*" || echo 0)
+    cutk=$(echo "$cutline" | grep -ao "; [0-9]* kills" | grep -ao "[0-9]*" || echo 0)
+    if [ "${cutb:-0}" -le 0 ] || [ "${cutb:-0}" -ge $((mib << 20)) ]; then
+        echo "fat-storm: Ctrl+C: ${cutb:-0} of $((mib << 20)) bytes copied: not in the middle of the copy"
+        ok=0
+    fi
+    [ "${cutk:-0}" -ge 10 ] ||
+        { echo "fat-storm: Ctrl+C: ${cutk:-0} kills before it, wanted 10 or more"; ok=0; }
+fi
 never "starting fresh" "$clean"
 never "giving up" "$clean"
 # From /usb0 made writable (its remount takes it away once) to the reboot.
@@ -119,11 +155,11 @@ echo "fat-storm: $(count 'fat /data: restart (killed' "$clean") restarts of fat 
 
 # ---- the disks afterwards -------------------------------------------------------------------
 rm -f "$tmp/back.bin"
-mcopy -o -i "$saved@@64M" "::/s100.bin" "$tmp/back.bin" 2>/dev/null &&
+mcopy -o -i "$saved@@$DATA_AT" "::/s100.bin" "$tmp/back.bin" 2>/dev/null &&
     cmp -s "$tmp/back.bin" "$tmp/big.bin" ||
     { echo "fat-storm: /data/s100.bin on the stick isn't the file"; ok=0; }
 for f in s0.bin s1.bin s10.bin cut.bin; do
-    ! mdir -i "$saved@@64M" "::/$f" > /dev/null 2>&1 ||
+    ! mdir -i "$saved@@$DATA_AT" "::/$f" > /dev/null 2>&1 ||
         { echo "fat-storm: /data/$f is still on the stick (it was removed)"; ok=0; }
 done
 for disk in "data:$saved:2" "usb0:$stick:1"; do

@@ -67,7 +67,7 @@ static struct {
     uint32_t edges;                /* GRAB_RESIZE: WM_EDGE_* */
     enum title_button button;      /* GRAB_BUTTON: which circle */
     int32_t px, py;                /* where the pointer was at the start */
-    struct comp_box start;         /* the surface's box at the start */
+    struct comp_box start;         /* the window geometry's box at the start */
     struct tile_node *split;       /* GRAB_GAP: its split, while the tree is generation gen */
     uint64_t gen;
     int32_t off;                   /* GRAB_GAP: the gap's middle less the pointer, along it */
@@ -173,7 +173,7 @@ static status_t start(enum grab_kind kind, struct wm_window *ww, int32_t x, int3
     grab.edges = 0;
     grab.px = x;
     grab.py = y;
-    grab.start = ww ? window_surface_box(ww->win) : (struct comp_box){ 0, 0, 0, 0 };
+    grab.start = ww ? window_geometry(ww->win) : (struct comp_box){ 0, 0, 0, 0 };
     grab.split = NULL;
     grab.target = NULL;
     return OK;

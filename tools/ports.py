@@ -22,7 +22,8 @@ recipes in ports/, on the Mac or the test host's Linux
 
 Options before the command: --ports DIR (default ports/), --out DIR
 (default build/ports), --offline (no network: the cache and the mirror
-only). Each port builds in a clean tree that sees only the libraries it
+only). Host tools (meson, ninja) a user keeps in ~/.cache/jamos/tools/bin
+(or $JAMOS_TOOLS/bin) are put first on PATH. Each port builds in a clean tree that sees only the libraries it
 declared, statically, with tools/jamos-cc and the sysroot (make builds
 build/sysroot first); its result is build/ports/<name>/stage/ and the
 stage list stage.txt there. Sources are fetched by size and SHA-256 into
@@ -49,6 +50,17 @@ from portslib import build as buildmod  # noqa: E402
 from portslib import fetch as fetchmod  # noqa: E402
 from portslib import pkgcmd  # noqa: E402
 from portslib import tree as treemod  # noqa: E402
+
+
+def local_tools():
+    """Host tools kept in the user's home instead of installed on the machine
+    (a newer Meson than the distribution's, say: pip into a venv at
+    ~/.cache/jamos/tools, or wherever JAMOS_TOOLS says): put first on PATH,
+    for the builds and for finding what a recipe's `host` line wants."""
+    d = os.environ.get("JAMOS_TOOLS") or os.path.expanduser("~/.cache/jamos/tools")
+    bin_dir = os.path.join(d, "bin")
+    if os.path.isdir(bin_dir):
+        os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin")
 
 
 def load(args):
@@ -146,13 +158,13 @@ def cmd_fetch(args):
 def cmd_graph(args):
     t = load(args)
     try:
-        names = treemod.order(t, args.port or sorted(t.recipes), ("needs", "runs"))
+        names = treemod.order(t, args.port or sorted(t.recipes), ("needs", "tool", "runs"))
     except (treemod.CycleError, KeyError) as e:
         print("ports: %s" % e)
         return 1
     for n in names:
         r = t.recipes[n]
-        deps = ["needs " + d for d, _ in r.deps("needs")] + ["runs " + d for d, _ in r.deps("runs")]
+        deps = [k + " " + d for k in ("needs", "tool", "runs") for d, _ in r.deps(k)]
         print("%-16s %-10s %-8s %s" % (n, r.version, r.place, ", ".join(deps)))
     return 0
 
@@ -192,6 +204,7 @@ def main(argv):
     args.ports, args.out = os.path.abspath(args.ports), os.path.abspath(args.out)
     if args.offline:
         os.environ["JAMOS_OFFLINE"] = "1"
+    local_tools()
     os.chdir(TOP)   # third_party/ and user/include/os.h are read from here
     run = {"lint": cmd_lint, "build": cmd_build, "fetch": cmd_fetch, "graph": cmd_graph,
            "selftest": cmd_selftest, "boot": cmd_boot, **pkgcmd.commands(TOP)}.get(args.command, cmd_later)

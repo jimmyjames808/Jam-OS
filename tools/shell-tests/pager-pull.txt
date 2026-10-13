@@ -1,0 +1,61 @@
+# The stick pulled under a mapping (tools/pager-test.sh, case pull; the
+# script's stick has big.bin, 16 MiB). pagertest maps it and reads its
+# first half, then waits for a cue on /data while QEMU's monitor pulls
+# the stick (device_del): volumes closes the mount's pager, which cuts
+# off the file's VMO. Run 1 copies a byte from the mapping at 0 (read
+# before) and at the half (never read): both ERR_IO, each timed. Run 2
+# loads the byte at the half: killed, "the file's pager is gone". /data
+# and the shell answer throughout; plugged back, the file maps and hashes
+# right again.
+# QEMU_INPUT=this file, command line "shell", the drive aimg. The text
+# waited for is built from $T, so it never appears in the typed line.
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send T=p
+wait {prompt}
+monitor device_add usb-storage,id=sa,bus=xhci.0,port=2,drive=aimg
+wait 60 init: /usb0 mounted
+
+# ---- run 1: copies from the mapping after the pull --------------------------------------------
+send pagertest pull /usb0/big.bin /data/cue1 copy &
+wait 120 pagertest: waiting for /data/cue1
+monitor device_del sa
+wait 30 init: /usb0 is gone
+send write /data/cue1 go; echo q1-$T=$?
+wait q1-p=0
+seen 30 pagertest: pull /usb0/big.bin: a copy at 8388608:
+wait {prompt}
+send ls /data; echo l1-$T=$?
+wait l1-p=0
+wait {prompt}
+
+# ---- run 2: a load after the pull -------------------------------------------------------------
+sleep 2
+monitor device_add usb-storage,id=sa,bus=xhci.0,port=2,drive=aimg
+wait 60 init: /usb0 mounted
+send pagertest pull /usb0/big.bin /data/cue2 load &
+wait 120 pagertest: waiting for /data/cue2
+monitor device_del sa
+wait 30 init: /usb0 is gone
+send write /data/cue2 go; echo q2-$T=$?
+wait q2-p=0
+seen 30 killed: page fault: the file's pager is gone
+wait {prompt}
+send ls /data; echo l2-$T=$?
+wait l2-p=0
+wait {prompt}
+
+# ---- plugged back: mapped and read right ------------------------------------------------------
+sleep 2
+monitor device_add usb-storage,id=sa,bus=xhci.0,port=2,drive=aimg
+wait 60 init: /usb0 mounted
+send pagertest hash /usb0/big.bin; echo h-$T=$?
+wait 120 pagertest: /usb0/big.bin: 16777216 bytes: mapped sha256
+wait h-p=0
+wait {prompt}
+send rm /data/cue1 /data/cue2; echo e-$T=$?
+wait e-p=0
+wait {prompt}
+send reboot -f
+wait reboot: resetting

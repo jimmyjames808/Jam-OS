@@ -28,6 +28,7 @@
 # known; each one traced excuses one click and 2048 frames of length.
 # Usage: tools/play-test.sh <outdir>; exit 0 on PASS.
 set -eu
+DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
 out=$1
 mkdir -p "$out"
 wav="$out/play.wav"
@@ -81,7 +82,7 @@ PY
 
 cp build/jamos.img "$stick"
 for f in s48 m44 u8 x24 garbage cut float long; do
-    mcopy -o -i "$stick@@64M" "$out/$f.wav" "::/$f.wav" ||
+    mcopy -o -i "$stick@@$DATA_AT" "$out/$f.wav" "::/$f.wav" ||
         { echo "play: can't copy $f.wav to the stick image"; exit 1; }
 done
 

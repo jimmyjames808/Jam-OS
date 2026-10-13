@@ -1,0 +1,9 @@
+# hello-wayland's test (tools/ports-test.sh): it connects and maps its
+# window; it has no exit of its own besides the window's close, so the test
+# starts it in the background and checks it is still running two seconds
+# later (it would have exited at once if it couldn't connect or bind).
+send run $P/hello-wayland &
+send sleep 2; ps | grep hello-way; echo st-$T=$?
+wait hello-wayland
+wait st-x=0
+wait {prompt}

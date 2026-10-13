@@ -7,7 +7,8 @@
         they `runs`, one name per line, each after what it runs
     ports-preinstall.py install [options] <image> <port>...
         write that set into <image>'s data partition (the Makefile's
-        layout: partition 2, from ESP_END_MIB); the ports must be built
+        layout: MBR partition 2, wherever the image's MBR says it starts,
+        or --offset-mib); the ports must be built
         (tools/ports.py build) into --stage (default build/ports).
         --feed FILE: also write the tools/serial-feed.py lines that check
         the shell's `allow -l` lists every approval
@@ -47,7 +48,17 @@ sys.dont_write_bytecode = True
 
 from portslib import tree as treemod  # noqa: E402
 
-ESP_END_MIB = 64   # the Makefile's: the data partition starts here
+
+
+def data_mib(image):
+    """Where the image's data partition starts, in MiB (its MBR's entry 2:
+    the Makefile's ESP_END_MIB; tools/mkimage.py --data-at)."""
+    r = subprocess.run([sys.executable, os.path.join(TOP, "tools", "mkimage.py"), "--data-at",
+                        image], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise Error(r.stderr.strip() or "%s: no data partition" % image)
+    return int(r.stdout.strip().rstrip("M"))
+
 ALLOW_HEAD = ("# Programs on /data the owner allowed to run (the shell's `allow`):\n"
               "# <sha-256>\\t<path>\\t<what it asked for>\n")
 
@@ -225,7 +236,7 @@ def main(argv):
     sub = ap.add_subparsers(dest="command")
     sub.add_parser("closure").add_argument("port", nargs="+")
     i = sub.add_parser("install")
-    i.add_argument("--offset-mib", type=int, default=ESP_END_MIB)
+    i.add_argument("--offset-mib", type=int, help="default: from the image's MBR")
     i.add_argument("--feed", metavar="FILE",
                    help="write the serial script lines that check `allow -l` shows the approvals")
     i.add_argument("image")
@@ -240,7 +251,8 @@ def main(argv):
         else:
             if not os.path.isfile(args.image):
                 raise Error("%s: no such image" % args.image)
-            install(args.image, args.port, args.ports, args.stage, args.offset_mib, args.feed)
+            offset = args.offset_mib if args.offset_mib is not None else data_mib(args.image)
+            install(args.image, args.port, args.ports, args.stage, offset, args.feed)
     except Error as e:
         print("ports-preinstall: %s" % e, file=sys.stderr)
         return 1

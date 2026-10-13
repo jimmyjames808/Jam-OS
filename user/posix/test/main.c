@@ -33,13 +33,22 @@ static const struct {
     { "signal", pt_signal },
     { "socket", pt_socket },
     { "pty", pt_pty },
+    { "procfs", pt_procfs },
     { "session", pt_session },
+    { "wayland", pt_wayland },
     { "files-many", pt_files_many },
     { "sockets", pt_sockets },
+    { "raw", pt_raw },
+    { "mmap", pt_mmap },
+    { "mmap-big", pt_mmap_big },
+    { "mmap-coherent", pt_mmap_coherent },
+    { "spawn-data", pt_spawn_data },
+    { "loopback", pt_loopback },
 };
 
 /* The sections run only when named (long ones). */
-static const char *const asked_only[] = { "files-many", "sockets", "session" };
+static const char *const asked_only[] = { "files-many", "sockets", "session", "mmap-big",
+                                          "mmap-coherent", "spawn-data", "loopback" };
 
 static bool by_default(const char *name)
 {
@@ -90,6 +99,14 @@ int main(int argc, char **argv)
         return pt_child_winsize();
     if (argc >= 2 && !strcmp(argv[1], "--child-hup"))
         return pt_child_hup();
+    if (argc >= 2 && !strcmp(argv[1], "--child-raw"))
+        return pt_child_raw(argc, argv);
+    if (argc >= 2 && !strcmp(argv[1], "--child-procfs"))
+        return pt_child_procfs(argc, argv);
+    if (argc >= 2 && !strcmp(argv[1], "--child-mmap-pull"))
+        return pt_child_mmap_pull(argc, argv);
+    if (argc >= 2 && !strcmp(argv[1], "--child-wl"))
+        return pt_child_wl(argc, argv);
     setvbuf(stdout, NULL, _IOLBF, 0);   /* each line out as it is made */
     unsigned n = sizeof(sections) / sizeof(sections[0]);
     for (unsigned i = 0; i < n; i++) {

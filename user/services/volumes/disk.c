@@ -660,6 +660,11 @@ void disk_key(uint64_t key)
             leave_alone(d, "its channel can't be watched");
         return;
     }
+    /* The disk is gone. Each way on drops its services: every mount's fat
+     * killed and retired, which closes its pager (spare.c's
+     * fs_kept_release) and so cuts off every VMO of its files: a touch
+     * of a mapping waiting for a page fails here ("the file's pager is
+     * gone"), not at the pager's answer time, and so does every later one. */
     if (d->test) {
         say(false, "volumes: %s gone", disk_name(d));
         drop_services(d, DISK_FREE);

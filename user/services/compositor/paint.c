@@ -257,8 +257,8 @@ static void draw_window(const struct comp_window *w, const struct tile_buf *t, u
         box_empty(box_intersect(window_extent(w), t->b)))
         return;
     shadow_draw(w, t);
-    if (box_empty(box_intersect(window_frame(w), t->b)))
-        return;
+    if (box_empty(box_intersect(box_bounds(window_frame(w), window_surface_box(w)), t->b)))
+        return;   /* (a surface reaches past its frame where it draws its own shadow) */
     uint32_t *save = pt.buf[me] + TILE_W * TILE_H;
     shape_save(w, t, save);
     title_draw(w, t);

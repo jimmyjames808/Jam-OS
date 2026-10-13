@@ -4,7 +4,9 @@
  * **A connection's local port** is netstack's to pick, so a stream
  * socket bound to a port of its own can listen but not connect
  * (EADDRNOTAVAIL); one bound to port 0 can do either. A connect to
- * 127.0.0.0/8 is ECONNREFUSED: no loopback, so nothing listens there.
+ * 127.0.0.0/8 is netstack's own loopback interface: it needs no address
+ * or link, and with nothing listening there the answer is ECONNREFUSED
+ * (a reset), as anywhere.
  *
  * **POSIX's defaults** on every connection, made or accepted: Nagle's
  * algorithm on (netstack's own connections start with it off) and no
@@ -30,8 +32,7 @@
 #include <sys/stat.h>
 #include "kinds.h"
 #include "sock.h"
-
-#define CALL_WAIT    (5 * NS_PER_S)    /* a call netstack answers at once */
+#include "svcsock.h"
 
 /* A socketpair end's name: AF_UNIX with no path. */
 static long unix_out(long addr, long lenp)
@@ -70,8 +71,6 @@ static long stream_open_locked(struct sock *s, uint32_t ip, uint16_t port)
         return -EINVAL;   /* a listener, or a socket handed away */
     if (s->bind_port)
         return -EADDRNOTAVAIL;   /* netstack picks a connection's port */
-    if ((ip >> 24) == 127)
-        return -ECONNREFUSED;    /* no loopback: nothing listens there */
     handle_t net = net_svc();
     if (!net)
         return -EACCES;
@@ -132,9 +131,10 @@ long lx_connect(long fd, long addr, long len, long d4, long e, long f)
     struct fd_desc *d;
     struct sock *s;
     long r = sock_get(fd, &d, &s);
-    if (r == -ENOTSOCK && d) {
+    if (r == -ENOTSOCK && d) {   /* a socketpair end is connected already */
+        r = d->ops == &usock_ops ? usock_connect(d, addr, len) : -EISCONN;
         fd_put(d);
-        return -EISCONN;   /* a socketpair end is connected already */
+        return r;
     }
     if (r)
         return r;

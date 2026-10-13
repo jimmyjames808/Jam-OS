@@ -4,9 +4,10 @@
  * (tools/extfix/: how, in make.sh; the images gzipped, unpacked by make
  * into build/extfix).
  *
- *     extcheck <fixtures dir> <images dir> [--fuzz N] [--seed S]
+ *     extcheck <fixtures dir> <images dir> [--fuzz N] [--storm N] [--seed S] [--save DIR]
+ *              [--cut-images DIR]
  *
- * Five parts, each failing the run (exit 1, a line saying what) at the
+ * Seven parts, each failing the run (exit 1, a line saying what) at the
  * first mistake:
  *   - the CRCs against their standard check values;
  *   - each fixture against its listing (<name>.list, made by
@@ -27,10 +28,22 @@
  *   - every feature bit set alone on Jam OS's own fixture: refused,
  *     read-only or written, as docs/M13.6-PLAN.md's table says (the table
  *     here is a copy written from the plan, not the library's);
+ *   - the names' writes and mkfs (extnames.c, checked by extinv.c's
+ *     invariants): directories, links, rename, orphans, the directory
+ *     hash, volumes made and compared with Linux's, a storm of N random
+ *     steps against a model (default 3000);
+ *   - the writers (U2a's: tools/extwrite.c, extfile.c, extverify.c):
+ *     blocks, inodes, extent trees, file writes and truncation on copies
+ *     of the writable fixtures, the whole volume checked as they go;
+ *     --save DIR keeps the images Linux's e2fsck -fn should pass (the
+ *     names' tests' images too);
  *   - the fuzz pass (extmutate.c): N runs (default 3000) of mutated
  *     images, from --seed. A run neither crashes (ASan, UBSan), reads
  *     outside the image, reads without end, nor returns with a buffer
- *     pinned. */
+ *     pinned;
+ *   - the journal (tools/extjnl.c, on tools/extcut.c's cut device): storms
+ *     of transactions cut after every block they write, each recovered
+ *     whole; the journal's rules one at a time. */
 #include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -38,9 +51,11 @@
 #include <string.h>
 #include <jam/sha256.h>
 #include "extcheck.h"
+#include "extjnl.h"
+#include "extwrite.h"
 
 #define FUZZ_DEFAULT 3000
-#define MAX_LINES    4096
+#define STORM_DEFAULT 3000
 #define PATH_MAX_    4096
 
 uint64_t rng = 0x9e3779b97f4a7c15ull;
@@ -265,14 +280,6 @@ static void check_runs(struct ext_fs *fs, struct ext_inode *in)
 
 /* ---- the listing ----------------------------------------------------------------------- */
 
-struct lines {
-    char *v[MAX_LINES];
-    unsigned n;
-    uint32_t orphans[16];
-    unsigned norphans;
-    unsigned xattr_blocks;        /* attribute blocks read (listing) */
-};
-
 static void add_line(struct lines *l, const char *s)
 {
     if (l->n == MAX_LINES)
@@ -310,7 +317,7 @@ static void describe(struct ext_fs *fs, struct ext_inode *in, char *what, size_t
     if (t == EXT_FT_REG) {
         sparse_hash(fs, in, what);
     } else if (t == EXT_FT_SYMLINK) {
-        char target[EXT_NAME_MAX * 16 + 1];
+        char target[4096];   /* a link holds 4095 bytes at most */
         size_t n;
         status_t st = ext_readlink(fs, in, target, sizeof(target), &n);
         if (st != OK)
@@ -343,7 +350,7 @@ static void line_of(struct ext_fs *fs, const char *path, struct ext_inode *in, s
 }
 
 /* Every name under the root, as listing.py lists them. */
-static void list_volume(struct ext_fs *fs, struct lines *l)
+void list_volume(struct ext_fs *fs, struct lines *l)
 {
     static char paths[MAX_LINES][PATH_MAX_];
     uint32_t inos[MAX_LINES], seen[MAX_LINES];
@@ -392,7 +399,7 @@ static void list_volume(struct ext_fs *fs, struct lines *l)
                 fail("too many names");
             char name[EXT_NAME_MAX * 2 + 8];
             text(d.name, d.name_len, name, sizeof(name));
-            snprintf(paths[top], PATH_MAX_, "%s/%s", strcmp(path, "/") ? path : "", name);
+            snprintf(paths[top], PATH_MAX_, "%.3000s/%s", strcmp(path, "/") ? path : "", name);
             types[top] = d.type;
             inos[top++] = d.ino;
         }
@@ -400,7 +407,7 @@ static void list_volume(struct ext_fs *fs, struct lines *l)
     qsort(l->v, l->n, sizeof(l->v[0]), cmp_line);
 }
 
-static void read_list(const char *dir, const char *name, struct lines *l)
+void read_list(const char *dir, const char *name, struct lines *l)
 {
     char path[1024], buf[PATH_MAX_ * 4];
     snprintf(path, sizeof(path), "%s/%s.list", dir, name);
@@ -425,7 +432,7 @@ static void read_list(const char *dir, const char *name, struct lines *l)
     qsort(l->v, l->n, sizeof(l->v[0]), cmp_line);
 }
 
-static void compare(const struct lines *want, const struct lines *got)
+void compare_lines(const struct lines *want, const struct lines *got)
 {
     unsigned n = want->n < got->n ? want->n : got->n;
     for (unsigned i = 0; i < n; i++)
@@ -435,11 +442,26 @@ static void compare(const struct lines *want, const struct lines *got)
         fail("debugfs listed %u names, ext %u", want->n, got->n);
 }
 
-static void free_lines(struct lines *l)
+void free_lines(struct lines *l)
 {
     for (unsigned i = 0; i < l->n; i++)
         free(l->v[i]);
     l->n = 0;
+}
+
+void write_listing(struct ext_fs *fs, const char *path)
+{
+    static struct lines l;
+    l.n = 0;
+    list_volume(fs, &l);
+    FILE *f = fopen(path, "w");
+    if (!f)
+        fail("%s: %s", path, strerror(errno));
+    fprintf(f, "# written by extcheck: the library's view; listing.py's must match\n");
+    for (unsigned i = 0; i < l.n; i++)
+        fprintf(f, "%s\n", l.v[i]);
+    fclose(f);
+    free_lines(&l);
 }
 
 /* ---- the fixtures ---------------------------------------------------------------------- */
@@ -509,7 +531,7 @@ static void check_shapes(struct ext_fs *fs, const struct fixture *fx)
     check_pins(fs);
 }
 
-static void check_bitmaps(struct ext_fs *fs)
+void check_bitmaps(struct ext_fs *fs)
 {
     for (uint32_t g = 0; g < fs->groups; g++)
         for (int w = 0; w < 2; w++) {
@@ -549,7 +571,7 @@ static void check_fixture(struct img *m, const struct fixture *fx, const char *l
                  fx->ro);
         got.xattr_blocks = 0;
         list_volume(&fs, &got);
-        compare(&want, &got);
+        compare_lines(&want, &got);
         if (got.xattr_blocks != fx->xattr_blocks)
             fail("%u attribute blocks, not %u", got.xattr_blocks, fx->xattr_blocks);
         free_lines(&got);
@@ -580,14 +602,22 @@ static void check_crcs(void)
 
 int main(int argc, char **argv)
 {
-    unsigned nfuzz = FUZZ_DEFAULT;
+    unsigned nfuzz = FUZZ_DEFAULT, nstorm = STORM_DEFAULT;
+    const char *cut_images = NULL;
     if (argc < 3)
-        fail("usage: extcheck <fixtures dir> <images dir> [--fuzz N] [--seed S]");
+        fail("usage: extcheck <fixtures dir> <images dir> [--fuzz N] [--storm N] [--seed S] "
+             "[--save DIR] [--cut-images DIR]");
     for (int i = 3; i + 1 < argc; i += 2) {
         if (!strcmp(argv[i], "--fuzz"))
             nfuzz = (unsigned)strtoul(argv[i + 1], NULL, 0);
+        else if (!strcmp(argv[i], "--storm"))
+            nstorm = (unsigned)strtoul(argv[i + 1], NULL, 0);
         else if (!strcmp(argv[i], "--seed"))
             rng = strtoull(argv[i + 1], NULL, 0) | 1;
+        else if (!strcmp(argv[i], "--save"))
+            save_dir = argv[i + 1];
+        else if (!strcmp(argv[i], "--cut-images"))
+            cut_images = argv[i + 1];
         else
             fail("unknown option %s", argv[i]);
     }
@@ -602,9 +632,14 @@ int main(int argc, char **argv)
         check_roundtrip(&imgs[i]);
     }
     check_features(&imgs[0]);
+    check_names(imgs, N, nstorm);
+    for (unsigned i = 0; i < N; i++)
+        check_writes(&imgs[i], fixtures[i].ro == 0);
     for (unsigned i = 0; i < N; i++)
         fuzz(&imgs[i], nfuzz / N + (i < nfuzz % N));
-    printf("extcheck: %u fixtures, broken checksums, the feature table, %u fuzzed images: ok\n",
+    check_journal(imgs, argv[1], cut_images);
+    printf("extcheck: %u fixtures, broken checksums, the feature table, names and mkfs, "
+           "the writers, %u fuzzed images, the journal: ok\n",
            (unsigned)N, nfuzz);
     return 0;
 }

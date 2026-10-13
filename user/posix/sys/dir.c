@@ -191,6 +191,23 @@ static long entry_at(struct fd_desc *d, int64_t pos, struct entry *e)
     return p.where == PATH_MOUNT ? mount_entry(d, pos, e) : top_entry(x, pos, e);
 }
 
+size_t dir_put(void *buf, size_t room, const char *name, uint64_t ino, uint8_t type,
+               int64_t next)
+{
+    size_t nlen = strlen(name);
+    size_t reclen = (DIRENT_HEAD + nlen + 1 + 7) & ~(size_t)7;
+    if (reclen > room)
+        return 0;
+    struct dirent *de = buf;
+    de->d_ino = ino;
+    de->d_off = next;
+    de->d_reclen = (unsigned short)reclen;
+    de->d_type = type;
+    memcpy(de->d_name, name, nlen);
+    memset(de->d_name + nlen, 0, reclen - DIRENT_HEAD - nlen);
+    return reclen;
+}
+
 static long dir_getdents(struct fd_desc *d, void *buf, size_t len)
 {
     struct entry *e = malloc(sizeof(*e));
@@ -204,20 +221,12 @@ static long dir_getdents(struct fd_desc *d, void *buf, size_t len)
     size_t used = 0;
     long r;
     while ((r = entry_at(d, d->offset, e)) > 0) {
-        size_t nlen = strlen(e->name);
-        size_t reclen = (DIRENT_HEAD + nlen + 1 + 7) & ~(size_t)7;
-        if (reclen > len - used) {
+        size_t k = dir_put((uint8_t *)buf + used, len - used, e->name, e->ino, e->type, e->next);
+        if (!k) {
             r = used ? 0 : -EINVAL;   /* the buffer can't hold the next one */
             break;
         }
-        struct dirent *de = (struct dirent *)((uint8_t *)buf + used);
-        de->d_ino = e->ino;
-        de->d_off = e->next;
-        de->d_reclen = (unsigned short)reclen;
-        de->d_type = e->type;
-        memcpy(de->d_name, e->name, nlen);
-        memset(de->d_name + nlen, 0, reclen - DIRENT_HEAD - nlen);
-        used += reclen;
+        used += k;
         d->offset = e->next;
     }
     lock_give(&d->lock);

@@ -42,7 +42,7 @@ static const uint32_t btn_ink[TITLE_BUTTONS] = { LOOK_CLOSE_INK, LOOK_MINIMISE_I
 
 struct comp_box title_bar_box(const struct comp_window *w)
 {
-    struct comp_box f = window_frame(w), s = window_surface_box(w);
+    struct comp_box f = window_frame(w), s = window_geometry(w);
     if (w->deco_top < COMP_TITLE_H || box_empty(s))
         return (struct comp_box){ 0, 0, 0, 0 };   /* none, or a top border (tiling's) */
     return (struct comp_box){ f.x1, f.y1, f.x2, s.y1 };
@@ -214,7 +214,7 @@ void title_draw(const struct comp_window *w, const struct tile_buf *t)
 {
     if (look_of(w) == LOOK_PLAIN || look_of(w) == LOOK_CSD)
         return;   /* nothing drawn around the surface */
-    struct comp_box f = window_frame(w), sb = window_surface_box(w);
+    struct comp_box f = window_frame(w), sb = window_geometry(w);
     int32_t tw = t->b.x2 - t->b.x1;
     struct surf s = { t->px, tw, t->b.y2 - t->b.y1, tw };
     uint32_t edge = title_edge_colour(w);

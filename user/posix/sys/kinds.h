@@ -7,7 +7,11 @@
  *   memfd.c    memfd_create's and shm_open's memory files (kept VMOs)
  *   eventfd.c  eventfd's counter and its event
  *   etc.c      libc's own /etc files
+ *   svcsock.c  AF_UNIX stream sockets: connected only to a service
+ *              socket (/svc/wayland), each with its framing (wlsock.c's
+ *              JWL2); svcsock.h
  *
+ * and fdpass.c, the descriptors such a socket carries (fdpass.h);
  * and dup.c, the calls on descriptors themselves (dup, dup2, dup3,
  * fcntl). A kind keeps its state behind the description's priv and its
  * per-call state under the description's lock (fd.h's rules: never
@@ -28,6 +32,7 @@ extern const struct fd_ops dev_ops;       /* /dev/null, /dev/zero, ... */
 extern const struct fd_ops memfd_ops;     /* memfd_create, shm_open */
 extern const struct fd_ops eventfd_ops;   /* eventfd */
 extern const struct fd_ops etc_ops;       /* a file of libc's /etc */
+extern const struct fd_ops usock_ops;     /* an AF_UNIX stream socket (svcsock.c) */
 
 /* The hand-over's kinds (fd.c's fd_adopters): a child's descriptors of
  * kind POSIXFDS_PIPE, _DEV, _ETC, _MEMFD and _EVENTFD as descriptions. */
@@ -36,6 +41,10 @@ fd_adopt_fn pipe_adopt, dev_adopt, etc_adopt, memfd_adopt, eventfd_adopt;
 /* A pipe end's description on the channel end ch (consumed, whatever
  * happens), one reference held; NULL if out of memory. */
 struct fd_desc *pipe_desc_new(handle_t ch, uint32_t status);
+/* The channel end of a pipe end or a socketpair end: the description's
+ * own (valid while the caller's reference is), not a duplicate.
+ * HANDLE_INVALID for another kind. */
+handle_t pipe_channel(struct fd_desc *d);
 
 /* No hand-over (docs/M13-PLAN.md section 5; dev.c): 0 is /dev/null; 1 and
  * 2 share one description, a pipe end on the SR_STDOUT channel if the
@@ -70,6 +79,11 @@ long etc_stat(const char *abs, struct stat *st);
  * rights only if the description may write) and the file's size, for a
  * MAP_SHARED mapping. -ENODEV if d is no memfd. */
 long memfd_vmo(struct fd_desc *d, handle_t *vmo, uint64_t *size);
+/* A memfd's description on vmo (consumed, whatever happens) with status
+ * flags status, one reference held: the file's size the VMO's, F_SEAL_SEAL
+ * set (who made it, and its seals, are unknown here). 0; -EINVAL: not a
+ * VMO; -ENOMEM. */
+long memfd_from_vmo(handle_t vmo, uint32_t status, struct fd_desc **out);
 /* F_ADD_SEALS and F_GET_SEALS (dup.c's fcntl): -EINVAL if d is no memfd. */
 long memfd_add_seals(struct fd_desc *d, unsigned seals);
 long memfd_get_seals(struct fd_desc *d);

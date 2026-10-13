@@ -31,7 +31,9 @@
  *
  * This file is the loop: one port, and lwIP's timers, the programs'
  * timeouts and the next reconnect as the port wait's deadline (and
- * connect.c's thread, which makes the calls that may wait). Nothing in the loop blocks
+ * connect.c's thread, which makes the calls that may wait). The packets
+ * programs send to loopback addresses are delivered here too (stack_loop,
+ * after what may have sent them). Nothing in the loop blocks
  * (ARCHITECTURE.md "How a service waits"): every request is answered at
  * once, frames are handled to the end as they arrive, and lwIP needs no
  * locks. The control channel is bound PERSISTENT and served a budget at a
@@ -241,6 +243,7 @@ int main(int argc, char **argv)
         listen_serve();
         tcpsock_serve();
         ntcp_work();   /* TCP's bytes, after the programs' kicks */
+        stack_loop();  /* what they and the datagrams sent to loopback addresses made */
         uint64_t deadline = stack_poll();
         uint64_t t = progs_tick();
         if (t < deadline)
@@ -249,6 +252,7 @@ int main(int argc, char **argv)
         if (t < deadline)
             deadline = t;
         uint64_t retry = dev_work(&l.dev);   /* it sends what the others queued */
+        stack_loop();                        /* the timers' and the frames' loopback packets */
         progs_flush();                       /* last: what the card's frames put in rx rings */
         rx_tick();
         tell_link();
@@ -263,7 +267,7 @@ int main(int argc, char **argv)
          * (the service-loop rule: a busy client delays only itself). */
         if (l.ctl_pending || l.info_pending || dev_pending(&l.dev) || progs_pending() ||
             listen_pending() ||
-            tcpsock_pending() || ntcp_pending())
+            tcpsock_pending() || ntcp_pending() || stack_loop_pending())
             deadline = 0;
         if (take_packets(deadline) != OK)
             break;

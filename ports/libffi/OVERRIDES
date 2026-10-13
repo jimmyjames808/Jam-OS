@@ -1,0 +1,4 @@
+# Files libffi's source does not have: the driver that runs its ffi_call
+# tests as one program (build.sh). `-` is the hash of a file upstream must
+# not have, so a release that adds one of these names stops the build.
+testsuite/ffi-tests.c - override/ffi-tests.c

@@ -1,23 +1,31 @@
 /* xdg-decoration (xdg.h): zxdg_decoration_manager_v1 and each toplevel's
  * zxdg_toplevel_decoration_v1, which decide who draws a window's title bar
- * and frame (docs/G2-PLAN.md, Q4).
+ * and frame (docs/G2-PLAN.md, section 3 and Q4).
  *
- * The policy, for each toplevel:
- *   - with no decoration object, its client draws its own (client_side):
- *     a client that never heard of the protocol (GTK) gets no second title
- *     bar over its own;
- *   - with one, the mode its client asked for (set_mode), or server_side
- *     when it asked for none (unset_mode, or nothing yet): the compositor's
- *     title bar, circles and frame, the look of every Jam OS window
- *     (libjwl asks server_side for each of its windows);
- *   - destroying the object goes back to client_side.
- * mode_for below is the whole policy. The mode is part of the toplevel's
- * configure (wm.h's WM_ST_CSD): a change goes out as a configure, and the
- * frame changes when the client acks it and commits, as a size does.
- * Every set_mode and unset_mode is answered by a configure event naming
- * the mode, then a configure, even when nothing changed, as the protocol
- * asks; a decoration object made before the toplevel's initial commit is
- * told with the first configure.
+ * The policy is the owner's (Q4: "clients that bind it get the
+ * compositor's title bar"), per client, not per toplevel:
+ *   - a client that has bound the manager gets server-side decorations on
+ *     every toplevel of its, made before the bind or after: the
+ *     compositor's title bar, circles, frame and corners, the look of
+ *     every Jam OS window (libjwl binds it and asks server_side). A
+ *     decoration object's configure always says server_side:
+ *     set_mode(client_side) is answered server_side (the protocol lets
+ *     the compositor decide), unset_mode the same, and a toplevel with no
+ *     decoration object, or whose object was destroyed, is server-side
+ *     too. No exception for client_side (the owner, 2026-10-12, CR-PLAN
+ *     Q4: chrome runs with its system title bar, so it asks server_side);
+ *   - a client that never bound it draws its own (client_side): a client
+ *     that never heard of the protocol (GTK) gets no second title bar
+ *     over its own.
+ * Bound stays bound for the client's life: destroying the manager keeps
+ * the objects it made (the protocol says so), and the rule with them.
+ * mode_for and decide below are the whole policy. The mode is part of the
+ * toplevel's configure (wm.h's WM_ST_CSD): a change goes out as a
+ * configure, and the frame changes when the client acks it and commits,
+ * as a size does. Every set_mode and unset_mode is answered by a
+ * configure event naming the mode, then a configure, even when nothing
+ * changed, as the protocol asks; a decoration object made before the
+ * toplevel's initial commit is told with the first configure.
  *
  * The protocol's errors: a second decoration object for a toplevel
  * (already_constructed), one made for a toplevel with a buffer attached
@@ -28,7 +36,8 @@
  * Objects' data: a manager holds the client (it keeps nothing; the map
  * bounds how many); a decoration object its toplevel's struct xdg_surf,
  * which keeps the object's state (deco_*), so nothing here is allocated
- * and a client's teardown has nothing of ours to free. */
+ * but the client's xdg-shell state (xdg_client_of: its deco_bound), and a
+ * client's teardown has nothing of ours to free. */
 #include <jwl/wayland.h>
 #include <jwl/xdg_decoration_unstable_v1.h>
 #include <jwl/xdg_shell.h>
@@ -37,11 +46,12 @@
 #define CLIENT_SIDE JWL_ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE
 #define SERVER_SIDE JWL_ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE
 
-/* The mode a toplevel with a decoration object gets for what its client
- * asked (0: nothing). */
+/* The mode a decoration object's configure says for what its client asked
+ * (0: nothing): the compositor's, whatever was asked. */
 static uint32_t mode_for(uint32_t asked)
 {
-    return asked == CLIENT_SIDE ? CLIENT_SIDE : SERVER_SIDE;
+    (void)asked;
+    return SERVER_SIDE;
 }
 
 bool xdg_deco_owed(const struct xdg_surf *x)
@@ -58,22 +68,36 @@ status_t xdg_deco_send(struct xdg_surf *x)
 }
 
 /* x's mode changed or was asked about: the window manager's next configure
- * carries it (wm_reconfigure; before the initial commit, the initial one). */
+ * carries it (wm_reconfigure; before the initial commit, the initial one).
+ * Its client draws its own only if it never bound the manager. */
 static void decide(struct xdg_surf *x)
 {
     x->deco_told = 0;
     if (!x->ww)
         return;   /* inert: its wl_surface went */
-    x->ww->csd = !x->deco_id || mode_for(x->deco_asked) == CLIENT_SIDE;
+    x->ww->csd = !x->xc->deco_bound;
     wm_reconfigure(x->ww);
 }
 
 /* ---- zxdg_decoration_manager_v1 --------------------------------------------------------- */
 
+/* The client binds the manager: every toplevel of its is the compositor's
+ * to decorate from now on, those it made already too (each told by a
+ * configure; its frame changes when it acks one and commits). */
 status_t xdg_deco_bind(struct comp_client *cl, uint32_t id, uint32_t version)
 {
     (void)version;
-    return jwl_map_set_data(&cl->conn->map, id, cl);
+    struct xdg_client *xc = xdg_client_of(cl);
+    if (!xc)
+        return comp_no_memory(cl, id, "no memory for a decoration manager");
+    status_t st = jwl_map_set_data(&cl->conn->map, id, cl);
+    if (st != OK || xc->deco_bound)
+        return st;
+    xc->deco_bound = true;
+    for (struct xdg_surf *x = xc->surfs; x; x = x->next)
+        if (x->role == XDG_ROLE_TOPLEVEL && x->role_id && x->ww)
+            decide(x);
+    return OK;
 }
 
 static status_t on_manager_destroy(void *data, uint32_t self)
@@ -125,7 +149,7 @@ static status_t on_deco_destroy(void *data, uint32_t self)
     (void)self;
     x->deco_id = 0;   /* libjwl freed the id */
     x->deco_asked = 0;
-    decide(x);        /* back to the client's own, from its next configure */
+    decide(x);        /* still the compositor's: its client bound the manager */
     return OK;
 }
 

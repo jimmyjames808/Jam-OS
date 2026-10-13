@@ -4,8 +4,8 @@
  * decisions (wm.c); this file keeps them and damages what each change
  * uncovers or covers, so the next paint composes exactly that.
  *
- * Every change damages the window's whole extent (its frame and its
- * shadow) before and after it (moving, mapping, raising, going): cheap,
+ * Every change damages the window's whole extent (its frame, its shadow
+ * and its surface) before and after it (moving, mapping, raising, going): cheap,
  * since it is one box, and never wrong. Damage from windows is also
  * `under` damage: what the desktop's frosted cards must blur again
  * (frost.c); the cursor's and the cards' own is not (scene_damage_over).
@@ -64,9 +64,39 @@ void window_view(struct comp_window *w, int32_t view_w, int32_t view_h)
     window_damage(w);
 }
 
+struct comp_box window_geom(const struct comp_window *w)
+{
+    struct comp_box s = box_make(0, 0, w->surface->width, w->surface->height);
+    struct comp_box g = box_intersect(w->geom, s);   /* xdg-shell: clamped to the surface */
+    return box_empty(g) ? s : g;
+}
+
+struct comp_box window_geometry(const struct comp_window *w)
+{
+    if (w->view_w > 0 && w->view_h > 0)
+        return window_surface_box(w);   /* a tile's view (wm.c sets one only at (0, 0)) */
+    return box_translate(window_geom(w), window_shown_x(w), window_shown_y(w));
+}
+
+bool window_inset(const struct comp_window *w)
+{
+    struct comp_box g = window_geom(w);
+    return g.x1 > 0 || g.y1 > 0 || g.x2 < w->surface->width || g.y2 < w->surface->height;
+}
+
+void window_set_geom(struct comp_window *w, struct comp_box geom)
+{
+    if (w->geom.x1 == geom.x1 && w->geom.y1 == geom.y1 && w->geom.x2 == geom.x2 &&
+        w->geom.y2 == geom.y2)
+        return;
+    window_damage(w);
+    w->geom = geom;
+    window_damage(w);
+}
+
 struct comp_box window_frame(const struct comp_window *w)
 {
-    struct comp_box s = window_surface_box(w);
+    struct comp_box s = window_geometry(w);
     if (box_empty(s))
         return s;
     struct comp_box f = { s.x1 - w->deco_left, s.y1 - w->deco_top, s.x2 + w->deco_right,
@@ -76,11 +106,12 @@ struct comp_box window_frame(const struct comp_window *w)
 
 struct comp_box window_extent(const struct comp_window *w)
 {
-    struct comp_box f = window_frame(w);
+    struct comp_box f = window_frame(w), s = window_surface_box(w);
     if (box_empty(f) || !look_shadowed(look_of(w)))
-        return f;
-    return (struct comp_box){ f.x1 - LOOK_SHADOW_SIDE, f.y1 - LOOK_SHADOW_ABOVE,
-                              f.x2 + LOOK_SHADOW_SIDE, f.y2 + LOOK_SHADOW_BELOW };
+        return box_bounds(f, s);
+    f = (struct comp_box){ f.x1 - LOOK_SHADOW_SIDE, f.y1 - LOOK_SHADOW_ABOVE,
+                           f.x2 + LOOK_SHADOW_SIDE, f.y2 + LOOK_SHADOW_BELOW };
+    return box_bounds(f, s);
 }
 
 void window_damage(struct comp_window *w)

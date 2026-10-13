@@ -56,7 +56,7 @@ static void put(int fd, const char *s)
 static int show_env(void)
 {
     static const char *const names[] = { "PWD", "HOME", "PATH", "TERM", "TZ", "USER", "LOGNAME",
-                                         "SHELL" };
+                                         "SHELL", "WAYLAND_DISPLAY" };
     for (unsigned i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
         const char *v = getenv(names[i]);
         char line[512];

@@ -305,6 +305,10 @@ static int say_verdict(const struct update_answer *a, uint32_t flags, const char
             printf("Jam OS %.*s checks out. Nothing was changed (-n).\n", vn, v);
         else if (!(flags & UPDATE_OFFER_WRITE))
             printf("Jam OS %.*s is loaded into memory.\n", vn, v);
+        else if (!taken && a->write_step == UPDATE_WRITE_ROOM && a->status == ERR_NO_SPACE)
+            printf("Jam OS %.*s is loaded, but the stick's boot partition has no room for it "
+                   "beside its two builds: nothing on the stick changed (a stick made before "
+                   "2026-10-12: `make usb` remakes it).\n", vn, v);
         else if (!taken)
             printf("Jam OS %.*s is loaded, but it couldn't be written to the stick.\n", vn, v);
         else if (a->already)

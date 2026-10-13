@@ -358,6 +358,11 @@ const struct fd_ops sockp_ops = {
     .close = pipe_close,
 };
 
+handle_t pipe_channel(struct fd_desc *d)
+{
+    return d->ops == &pipe_ops || d->ops == &sockp_ops ? end_of(d)->ch : HANDLE_INVALID;
+}
+
 struct fd_desc *pipe_desc_new(handle_t ch, uint32_t status)
 {
     struct pipe_end *p = end_new(ch, NULL, 0);

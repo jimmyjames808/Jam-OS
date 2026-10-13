@@ -3,10 +3,13 @@
  * accept, shutdown and the names are sockconn.c's, the bytes sockio.c's,
  * a socket handed to a child sockgive.c's.
  *
- * **Addresses.** AF_INET only (AF_INET6 and AF_UNIX sockets:
- * EAFNOSUPPORT; socketpair is pipe.c's). netstack serves one interface and
- * has no loopback: a bind to an address that isn't the interface's (or
- * INADDR_ANY) is EADDRNOTAVAIL.
+ * **Addresses.** AF_INET here (AF_INET6: EAFNOSUPPORT; AF_UNIX stream
+ * sockets are svcsock.c's, socketpair pipe.c's). netstack serves one card
+ * interface and the loopback one (127.0.0.0/8): a bind to an address that
+ * isn't one of those (or INADDR_ANY) is EADDRNOTAVAIL. A socket bound to a
+ * loopback address is reachable from this host only (a datagram socket
+ * is made loopback-only, a listener too: net.idl's loopback_only and
+ * LISTEN_LOOPBACK), so a service bound to 127.0.0.1 is not on the network.
  *
  * **Binding.** A port below NET_PORT_EPHEMERAL needs the listen
  * permission (below NET_PORT_LOW the low one): EACCES without it, at bind.
@@ -28,6 +31,7 @@
 #include <sys/stat.h>
 #include "kinds.h"
 #include "sock.h"
+#include "svcsock.h"
 
 #define IDLE_SIGNAL  (1u << 24)        /* the idle event's bit: never raised */
 
@@ -118,6 +122,13 @@ long sock_dgram_open_locked(struct sock *s)
     status_t st = net_udp_open_rings(net, s->bind_port, s->opts.sndbuf, s->opts.rcvbuf, &s->ns);
     if (st != OK)
         return sock_net_errno(st);
+    if (sock_is_loopback(s->bind_addr)) {   /* only this host's own datagrams */
+        st = net_socket_loopback_only_until(s->ns.ch, now() + CALL_WAIT);
+        if (st != OK) {
+            net_close(&s->ns);
+            return sock_net_errno(st);
+        }
+    }
     struct sockring_status ss;
     sockring_status_get(&s->ns.r, &ss);
     s->refused = ss.tx_refused;
@@ -127,7 +138,8 @@ long sock_dgram_open_locked(struct sock *s)
 
 /* Descriptor fd's description (held: the caller puts it) and its socket.
  * 0; -EBADF; -ENOTSOCK for another kind (*d is still set and held for a
- * socketpair end, whose calls go to pipe.c). */
+ * socketpair end, whose calls go to pipe.c, and for an AF_UNIX stream
+ * socket, svcsock.c's). */
 long sock_get(long fd, struct fd_desc **d, struct sock **s)
 {
     *d = fd_get(fd);
@@ -136,7 +148,7 @@ long sock_get(long fd, struct fd_desc **d, struct sock **s)
     *s = sock_of(*d);
     if (*s)
         return 0;
-    if ((*d)->ops == &sockp_ops)
+    if ((*d)->ops == &sockp_ops || (*d)->ops == &usock_ops)
         return -ENOTSOCK;
     fd_put(*d);
     *d = NULL;
@@ -247,6 +259,16 @@ static handle_t idle(void)
     return h;
 }
 
+long sock_arm_idle(struct fd_wait *out)
+{
+    handle_t h = idle();
+    if (!h)
+        return -ENOMEM;
+    out->kind = FD_WAIT_HANDLE;
+    out->h = (struct netwait_handle){ .h = h, .read = IDLE_SIGNAL, .hup = IDLE_SIGNAL };
+    return 0;
+}
+
 static long sock_arm(struct fd_desc *d, uint32_t interest, struct fd_wait *out)
 {
     struct sock *s = d->priv;
@@ -262,12 +284,7 @@ static long sock_arm(struct fd_desc *d, uint32_t interest, struct fd_wait *out)
                                                   * asked: lx_listen, lx_accept4) */
         return 0;
     }
-    handle_t h = idle();
-    if (!h)
-        return -ENOMEM;
-    out->kind = FD_WAIT_HANDLE;
-    out->h = (struct netwait_handle){ .h = h, .read = IDLE_SIGNAL, .hup = IDLE_SIGNAL };
-    return 0;
+    return sock_arm_idle(out);
 }
 
 /* A drain's look: has netstack taken every byte written (or is there
@@ -352,8 +369,10 @@ void sock_exit_drain(void)
 
 long lx_socket(long domain, long type, long proto, long d, long e, long f)
 {
+    if (domain == AF_UNIX)
+        return usock_new(type, proto);   /* connects only to a service socket: svcsock.c */
     if (domain != AF_INET)
-        return -EAFNOSUPPORT;   /* AF_INET6, AF_UNIX (socketpair only), the rest */
+        return -EAFNOSUPPORT;   /* AF_INET6, the rest */
     long kind = type & ~(long)(SOCK_NONBLOCK | SOCK_CLOEXEC);
     if (kind == SOCK_STREAM && proto && proto != IPPROTO_TCP)
         return -EPROTONOSUPPORT;
@@ -369,10 +388,10 @@ long lx_socket(long domain, long type, long proto, long d, long e, long f)
                         type & SOCK_CLOEXEC);
 }
 
-/* Is ip one this host may bind (any, or the interface's own)? */
+/* Is ip one this host may bind (any, a loopback one, or the interface's own)? */
 static long addr_ours(uint32_t ip)
 {
-    if (!ip)
+    if (!ip || sock_is_loopback(ip))
         return 0;
     struct net_info i;
     handle_t net = net_svc();
@@ -381,7 +400,7 @@ static long addr_ours(uint32_t ip)
     status_t st = net_info(net, &i);
     if (st != OK)
         return sock_net_errno(st);
-    return i.address == ip ? 0 : -EADDRNOTAVAIL;   /* no loopback, one interface */
+    return i.address == ip ? 0 : -EADDRNOTAVAIL;   /* one card interface */
 }
 
 static long bind_locked(struct sock *s, uint32_t ip, uint16_t port)
@@ -407,8 +426,10 @@ long lx_bind(long fd, long addr, long len, long d4, long e, long f)
     struct sock *s;
     long r = sock_get(fd, &d, &s);
     if (r == -ENOTSOCK && d) {
+        /* no named AF_UNIX sockets; a socketpair end is already "bound" to its peer */
+        r = d->ops == &usock_ops ? -EAFNOSUPPORT : -EINVAL;
         fd_put(d);
-        return -EINVAL;   /* a socketpair end: already "bound" to its peer */
+        return r;
     }
     if (r)
         return r;
@@ -435,8 +456,10 @@ static long listen_locked(struct sock *s, long backlog)
     if (!net)
         return -EACCES;   /* the program's list didn't ask for `svc net listen` */
     uint32_t b = backlog < 1 ? 1 : backlog > NET_BACKLOG_MAX ? NET_BACKLOG_MAX : (uint32_t)backlog;
-    status_t st = net_tcp_listen_flags(net, port, b, s->opts.sndbuf, s->opts.rcvbuf,
-                                       s->opts.reuseaddr ? NET_LISTEN_REUSE : 0, &s->l);
+    uint32_t flags = (s->opts.reuseaddr ? NET_LISTEN_REUSE : 0) |
+                     (sock_is_loopback(s->bind_addr) ? NET_LISTEN_LOOPBACK : 0);
+    status_t st = net_tcp_listen_flags(net, port, b, s->opts.sndbuf, s->opts.rcvbuf, flags,
+                                       &s->l);
     if (st != OK)
         return sock_net_errno(st);
     (void)net_tcp_accept_send(&s->l);   /* failed: accept asks again */
@@ -450,8 +473,9 @@ long lx_listen(long fd, long backlog, long c, long d4, long e, long f)
     struct sock *s;
     long r = sock_get(fd, &d, &s);
     if (r == -ENOTSOCK && d) {
+        r = d->ops == &usock_ops ? -EAFNOSUPPORT : -EOPNOTSUPP;   /* no named AF_UNIX sockets */
         fd_put(d);
-        return -EOPNOTSUPP;
+        return r;
     }
     if (r)
         return r;

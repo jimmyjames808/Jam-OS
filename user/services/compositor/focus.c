@@ -18,8 +18,9 @@
  * (data.c: wl_data_device.selection before wl_keyboard.enter); only the
  * focused client may set the selection or read it.
  * No client can grab the keyboard: there is no request that moves it. A
- * window whose client has no wl_keyboard never gets the focus at all
- * (focusable): it wants no keys, so it takes none from the window that has
+ * window whose client has no wl_keyboard never takes the focus by itself
+ * (takes_focus_itself: not when it maps, not as the next window when the
+ * focused one goes): it wants no keys, so it takes none from the window that has
  * them (the boot splash plays full screen over the first terminal, which
  * keeps the keys typed meanwhile). Full screen, such a window is a boot
  * overlay (screens.c), which the scene keeps over every other window
@@ -65,16 +66,26 @@ bool seat_takes_keys(struct comp_client *cl)
     return seat_of(cl)->nres[SEAT_KEYBOARD] > 0;
 }
 
-/* Can w take the focus: mapped, its client alive and taking keys (it has a
- * wl_keyboard: a client without one, the boot splash, never takes the keys
- * from the window that has them, by mapping or by a click), and no boot
- * overlay. An overlay's client had no wl_keyboard when it mapped, but may
- * bind one later: its window, over every other and the whole output, must
- * still never get the keys (review C3). */
+/* Can w have the focus: mapped, its client alive, and no boot overlay. An
+ * overlay's client had no wl_keyboard when it mapped, but may bind one
+ * later: its window, over every other and the whole output, must still
+ * never get the keys (review C3). A window whose client takes no keys may
+ * have it by the user's action (a click, Alt+Tab, the strip): it is then
+ * the active window, raised with its title bar lit, and the keys go
+ * nowhere until another window is chosen. */
 static bool focusable(const struct comp_window *w)
 {
     return w && (w->flags & COMP_WIN_MAPPED) && !(w->flags & COMP_WIN_OVERLAY) &&
-           client_alive(w->surface->client) && seat_takes_keys(w->surface->client);
+           client_alive(w->surface->client);
+}
+
+/* May w take the focus with no action of the user's (its first window
+ * mapping, or the next window down when the focused one goes): focusable,
+ * and its client takes keys (it has a wl_keyboard: a client without one,
+ * the boot splash, never takes the keys from the window that has them). */
+static bool takes_focus_itself(const struct comp_window *w)
+{
+    return focusable(w) && seat_takes_keys(w->surface->client);
 }
 
 void seat_focus(struct comp_window *w)
@@ -109,17 +120,18 @@ void focus_window_mapped(struct comp_window *w)
     if (sc->had_window)
         return;
     sc->had_window = true;
-    seat_focus(w);
+    if (takes_focus_itself(w))
+        seat_focus(w);
 }
 
 /* The window to take the focus from w: the next one down, else the top. */
 static struct comp_window *successor(const struct comp_window *w)
 {
     for (struct comp_window *b = w->below; b; b = b->below)
-        if (focusable(b))
+        if (takes_focus_itself(b))
             return b;
     for (struct comp_window *t = scene.top; t; t = t->below)
-        if (t != w && focusable(t))
+        if (t != w && takes_focus_itself(t))
             return t;
     return NULL;
 }

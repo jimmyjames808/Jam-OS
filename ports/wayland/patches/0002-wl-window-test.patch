@@ -1,0 +1,35 @@
+Description: build the window test (wl-window-test) with libwayland
+ Adds a second executable after wl-connect-test: jamos/wl-window-test.c
+ (our file, override/ in this port, BSD-2-Clause) with the client code
+ wayland-scanner generates from jamos/xdg-shell.xml and
+ jamos/xdg-decoration-unstable-v1.xml (copies of third_party/
+ wayland-protocols' files, MIT). It opens a window and draws into it.
+Forwarded: not-needed (a Jam OS test program, not libwayland's)
+---
+--- a/meson.build
++++ b/meson.build
+@@ -127,6 +127,24 @@
+ 		dependencies: wayland_client_dep,
+ 		install: true,
+ 	)
++	jamos_scanner = find_program('wayland-scanner', native: true)
++	jamos_wwt = []
++	foreach p : ['xdg-shell', 'xdg-decoration-unstable-v1']
++		jamos_wwt += custom_target(p + '-client-header',
++			input: 'jamos/' + p + '.xml',
++			output: p + '-client-protocol.h',
++			command: [jamos_scanner, 'client-header', '@INPUT@', '@OUTPUT@'])
++		jamos_wwt += custom_target(p + '-code',
++			input: 'jamos/' + p + '.xml',
++			output: p + '-protocol.c',
++			command: [jamos_scanner, 'private-code', '@INPUT@', '@OUTPUT@'])
++	endforeach
++	executable(
++		'wl-window-test',
++		['jamos/wl-window-test.c'] + jamos_wwt,
++		dependencies: wayland_client_dep,
++		install: true,
++	)
+ endif
+ if get_option('tests')
+ 	subdir('tests')

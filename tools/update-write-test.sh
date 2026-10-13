@@ -33,9 +33,15 @@
 #   3. wcold: a cold boot of that stick runs B (the marker is there).
 #   4. wprev: a cold boot of the boot menu's "Jam OS (previous build)"
 #      (QEMU_BOOT_PREV) runs A (no marker).
+#   5. wfull: an old stick, with the 63 MiB ESP of sticks made before
+#      2026-10-12 (the Makefile's ESP_END_MIB was 64), A on it as its build
+#      and as the previous one: `run updtest writefull`: B is loaded but
+#      refused at ROOM with ERR_NO_SPACE ("can't hold three builds"), and
+#      on the Mac every file of its ESP is as it was, no .new or .old.
 # Every frame of run 2 is tagged VLAN 21 (the peer's and the pcap's checks).
 # Usage: tools/update-write-test.sh <outdir> (after `make -s image`); exit 0 on PASS.
 set -u
+DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
 out=$1
 mkdir -p "$out"
 fails=0
@@ -49,10 +55,20 @@ img="$out/wtest.img"
 tools/update-test-key.sh "$out" build/jamos.img "$img" ||
     { echo "update-write-test: can't make the test key's stick"; exit 1; }
 key="$out/testkey/key1/update.key"
+# /data/update holds three builds (A, B and C, about 22 MB each): more than
+# the image's 64 MiB data partition, so this stick's is made 192 MiB (the
+# MBR grown as tools/write-usb.sh grows a stick's, then formatted here).
+data_mib=192
+python3 -c "import sys; open(sys.argv[1], 'r+b').truncate(int(sys.argv[2]) << 20)" "$img" \
+    $((${DATA_AT%M} + data_mib)) &&
+    python3 tools/mbr-grow.py "$img" $(((${DATA_AT%M} + data_mib) * 2048)) > /dev/null &&
+    mformat -i "$img@@$DATA_AT" -T $((data_mib * 2048)) -F -v JAMOS-DATA :: &&
+    python3 tools/fat-label.py "$img" ${DATA_AT%M} --fix > /dev/null ||
+    { echo "update-write-test: can't grow the stick's /data"; exit 1; }
 printf 'net.address = 10.2.21.5/24 10.2.21.1 10.2.21.1\nnet.host = 10.2.21.174\n' \
     > "$out/wtest.settings"
-mmd -i "$img@@64M" ::/etc 2>/dev/null || true
-mcopy -o -i "$img@@64M" "$out/wtest.settings" ::/etc/settings ||
+mmd -i "$img@@$DATA_AT" ::/etc 2>/dev/null || true
+mcopy -o -i "$img@@$DATA_AT" "$out/wtest.settings" ::/etc/settings ||
     { echo "update-write-test: can't write the stick's settings"; exit 1; }
 
 # Build B, and its signed manifest on /data/update for updtest.
@@ -90,20 +106,20 @@ python3 tools/bootfs-edit.py "$out/testkey/bootfs-key.img" "$out/bootfs-C.img" \
     { echo "update-write-test: can't make build C's boot image"; exit 1; }
 python3 tools/update-server.py --manifest "$out/jamos-C.elf" "$out/bootfs-C.img" --key "$key" \
     > "$out/manifest-C" || { echo "update-write-test: no manifest for C"; exit 1; }
-mmd -i "$img@@64M" ::/update &&
-    mcopy -i "$img@@64M" "$out/manifest" ::/update/manifest &&
-    mcopy -i "$img@@64M" "$out/jamos-B.elf" ::/update/jamos.elf &&
-    mcopy -i "$img@@64M" "$out/bootfs-B.img" ::/update/bootfs.img &&
-    mmd -i "$img@@64M" ::/update/c &&
-    mcopy -i "$img@@64M" "$out/manifest-C" ::/update/c/manifest &&
-    mcopy -i "$img@@64M" "$out/jamos-C.elf" ::/update/c/jamos.elf &&
-    mcopy -i "$img@@64M" "$out/bootfs-C.img" ::/update/c/bootfs.img &&
-    mmd -i "$img@@64M" ::/update/a &&
-    mcopy -i "$img@@1M" ::/boot/jamos.elf "$out/jamos-A.elf" &&
-    mcopy -i "$img@@1M" ::/boot/bootfs.img "$out/bootfs-A0.img" &&
-    mcopy -i "$img@@64M" "$out/jamos-A.elf" ::/update/a/jamos.elf &&
-    mcopy -i "$img@@64M" "$out/bootfs-A0.img" ::/update/a/bootfs.img &&
-    cp "$out/manifest" "$out/manifest-A0" && mcopy -i "$img@@64M" "$out/manifest-A0" ::/update/a/manifest ||
+mmd -i "$img@@$DATA_AT" ::/update &&
+    mcopy -i "$img@@$DATA_AT" "$out/manifest" ::/update/manifest &&
+    mcopy -i "$img@@$DATA_AT" "$out/jamos-B.elf" ::/update/jamos.elf &&
+    mcopy -i "$img@@$DATA_AT" "$out/bootfs-B.img" ::/update/bootfs.img &&
+    mmd -i "$img@@$DATA_AT" ::/update/c &&
+    mcopy -i "$img@@$DATA_AT" "$out/manifest-C" ::/update/c/manifest &&
+    mcopy -i "$img@@$DATA_AT" "$out/jamos-C.elf" ::/update/c/jamos.elf &&
+    mcopy -i "$img@@$DATA_AT" "$out/bootfs-C.img" ::/update/c/bootfs.img &&
+    mmd -i "$img@@$DATA_AT" ::/update/a &&
+    mcopy -o -i "$img@@1M" ::/boot/jamos.elf "$out/jamos-A.elf" &&
+    mcopy -o -i "$img@@1M" ::/boot/bootfs.img "$out/bootfs-A0.img" &&
+    mcopy -i "$img@@$DATA_AT" "$out/jamos-A.elf" ::/update/a/jamos.elf &&
+    mcopy -i "$img@@$DATA_AT" "$out/bootfs-A0.img" ::/update/a/bootfs.img &&
+    cp "$out/manifest" "$out/manifest-A0" && mcopy -i "$img@@$DATA_AT" "$out/manifest-A0" ::/update/a/manifest ||
     { echo "update-write-test: can't write the stick's /data"; exit 1; }
 cat > "$out/wtest.spec.json" <<EOF
 {"kernel": "$out/jamos-B.elf", "bootfs": "$out/bootfs-B.img", "key": "$key", "plan": []}
@@ -121,7 +137,7 @@ esp() {
 no_new() {
     ! mdir -i "$1@@1M" ::/boot 2>/dev/null | grep -qiE "\.(new|old)"
 }
-mcopy -i "$img@@1M" ::/boot/bootfs.img "$out/bootfs-A.img"
+mcopy -o -i "$img@@1M" ::/boot/bootfs.img "$out/bootfs-A.img"
 
 # Run 1: the failures, then a power cycle.
 cat > "$out/wfail.txt" <<EOF
@@ -271,7 +287,65 @@ EOF
         QEMU_INPUT="$out/$run.txt" tools/qemu-test.sh "$out" $run shell > "$out/$run.out" 2>&1 ||
         fail "$run: the stick didn't boot build $want from cold (see $out/$run.log)"
 done
-rm -f "$img" "$out/wtest-1.img" "$out/wtest-2.img" "$out/wtest-stop.img" "$out/wtest-got"
+# Run 5: an old stick's 63 MiB ESP, with A as its build and as the
+# previous one, its /data as this test's: no room for B beside them.
+small="$out/wtest-small.img"
+python3 tools/mkimage.py "$small" 64 128 &&
+    mformat -i "$small@@1M" -T $((63 * 2048)) -F -v JAMOS :: &&
+    mformat -i "$small@@64M" -T $((64 * 2048)) -F -v JAMOS-DATA :: &&
+    python3 tools/fat-label.py "$small" 1 --fix > /dev/null &&
+    python3 tools/fat-label.py "$small" 64 --fix > /dev/null &&
+    mmd -i "$small@@1M" ::/EFI ::/EFI/BOOT ::/boot ::/boot/limine &&
+    mcopy -o -i "$img@@1M" ::/EFI/BOOT/BOOTX64.EFI "$out/wfull-limine.efi" &&
+    mcopy -i "$small@@1M" "$out/wfull-limine.efi" ::/EFI/BOOT/BOOTX64.EFI &&
+    mcopy -i "$small@@1M" boot/limine.conf ::/boot/limine/limine.conf &&
+    mcopy -i "$small@@1M" build/jamos.elf ::/boot/jamos.elf &&
+    mcopy -i "$small@@1M" "$out/bootfs-A.img" ::/boot/bootfs.img &&
+    mcopy -i "$small@@1M" build/jamos.elf ::/boot/prev-jamos.elf &&
+    mcopy -i "$small@@1M" "$out/bootfs-A.img" ::/boot/prev-bootfs.img &&
+    mmd -i "$small@@64M" ::/etc ::/update &&
+    mcopy -i "$small@@64M" "$out/wtest.settings" ::/etc/settings &&
+    mcopy -i "$small@@64M" "$out/manifest" ::/update/manifest &&
+    mcopy -i "$small@@64M" "$out/jamos-B.elf" ::/update/jamos.elf &&
+    mcopy -i "$small@@64M" "$out/bootfs-B.img" ::/update/bootfs.img ||
+    fail "run 5: can't make the old stick"
+# Today's build may one day fit three to it: then a file takes the room.
+free=$(mdir -i "$small@@1M" ::/ 2>/dev/null | sed -n 's/^ *\([0-9 ]*\) bytes free.*/\1/p' | tr -d ' ')
+need=$(( 2 * ($(wc -c < "$out/jamos-B.elf") + $(wc -c < "$out/bootfs-B.img")) + (4 << 20) ))
+if [ -n "$free" ] && [ "$free" -ge "$need" ]; then
+    echo "update-write-test: wfull: three builds fit a 63 MiB ESP: filling it"
+    head -c $((free - need / 2)) /dev/zero > "$out/wfull-filler.bin"
+    mcopy -i "$small@@1M" "$out/wfull-filler.bin" ::/filler.bin
+fi
+mdir -i "$small@@1M" ::/boot > "$out/wfull-before.txt" 2>&1
+cat > "$out/wfull.txt" <<EOF
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send run updtest writefull
+wait 300 updtest: writefull:
+wait {prompt}
+send reboot -f
+wait reboot: resetting
+EOF
+QEMU_IMAGE="$small" QEMU_SAVE="$out/wtest-full.img" QEMU_MENU_AT=efi \
+    QEMU_TIMEOUT=${QEMU_TIMEOUT:-600} QEMU_INPUT="$out/wfull.txt" \
+    tools/qemu-test.sh "$out" wfull shell > "$out/wfull.out" 2>&1 ||
+    fail "run 5, the script (see $out/wfull.log)"
+grep -aq "updtest: writefull: PASS" "$out/wfull.log" ||
+    fail "run 5: the write to a full ESP wasn't refused at ROOM with ERR_NO_SPACE"
+grep -aq "init: update: the stick's ESP (.* MiB) can't hold three builds" "$out/wfull.log" ||
+    fail "run 5: init didn't say the ESP can't hold three builds"
+grep -a "updtest: write to a full ESP\|init: update: the stick's ESP" "$out/wfull.log" |
+    tr -d '\r' | sed 's/^/update-write-test: /'
+esp "$out/wtest-full.img" jamos.elf build/jamos.elf &&
+    esp "$out/wtest-full.img" bootfs.img "$out/bootfs-A.img" &&
+    esp "$out/wtest-full.img" prev-jamos.elf build/jamos.elf &&
+    esp "$out/wtest-full.img" prev-bootfs.img "$out/bootfs-A.img" ||
+    fail "run 5: the old stick's builds changed"
+no_new "$out/wtest-full.img" || fail "run 5: a .new or .old file is left on the old stick's ESP"
+rm -f "$img" "$out/wtest-1.img" "$out/wtest-2.img" "$out/wtest-stop.img" "$out/wtest-got" \
+    "$small" "$out/wtest-full.img" "$out/wfull-filler.bin"
 if [ $fails -eq 0 ]; then
     echo "update-write-test: PASS"
     exit 0

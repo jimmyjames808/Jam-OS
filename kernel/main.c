@@ -336,10 +336,12 @@ static const char *nvme_test_word(void)
  * (with `iommu=on`, the "IOMMU checks" test entry), which init passes on
  * to devmgr and devmgr to drv/hda: its deliberate DMA faults;
  * `nvmetest=<words>` (a test's), which init passes on to devmgr and
- * devmgr to every drv/nvme: its test reads (nvme_test_word); `diskro`
- * (the "internal disks read-only" entry), which init passes on to devmgr
- * and devmgr to every drv/nvme as `ro`: every internal drive read-only,
- * whatever its table says. */
+ * devmgr to every drv/nvme: its test reads (nvme_test_word); `runlines`
+ * (the test scripts': init passes it to every shell, which then prints its
+ * "run: ... started / exited" lines); `diskro` (the "internal disks
+ * read-only" entry), which init passes on to devmgr and devmgr to every
+ * drv/nvme as `ro`: every internal drive read-only, whatever its table
+ * says. */
 static unsigned init_words(bool shell, const char *words[USERBOOT_MAX_WORDS])
 {
     unsigned n = 0;
@@ -371,6 +373,8 @@ static unsigned init_words(bool shell, const char *words[USERBOOT_MAX_WORDS])
     const char *nvme = nvme_test_word();
     if (nvme)
         words[n++] = nvme;
+    if (cmdline_has("runlines"))
+        words[n++] = "runlines";
     if (cmdline_has("diskro"))
         words[n++] = "diskro";
     return n;

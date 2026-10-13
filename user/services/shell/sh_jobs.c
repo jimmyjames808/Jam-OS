@@ -107,6 +107,7 @@ static void finish(struct sh_job *j, const struct process_info *info)
     if (j->sig)
         jam_handle_close(j->sig);
     j->out_r = j->proc = j->job = j->sig = HANDLE_INVALID;
+    sh_data_prune();   /* a /data program's code, if none of its instances runs any more */
     j->ended = true;
     j->signo = sh_exit_signal(info->exit_code);
     j->killed = info->killed != 0 || j->signo;

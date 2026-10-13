@@ -1,0 +1,37 @@
+# wayland: libwayland-client and libwayland-cursor (G2's GP1,
+# docs/G2-PLAN.md): the library every ported graphical program talks to
+# the compositor with, unmodified. It connects to /svc/wayland through
+# libc's Wayland socket (GS1), so nothing in its transport is patched.
+# Built static, client and cursor only: the server library is built too
+# (upstream's build has no switch) and dropped, because the compositor is
+# Jam OS's own. wayland-scanner is a host build (ports/wayland-scanner, the
+# same release) that the build runs for the generated protocol code.
+name        wayland
+version     1.26.0
+revision    1
+summary     libwayland-client and libwayland-cursor, and a connection test
+homepage    https://wayland.freedesktop.org/
+category    libs
+# COPYING is the MIT licence (the "Expat" text X.org uses); every source
+# file of src/ and cursor/ carries an SPDX MIT tag (34 files read, 2026-10-11,
+# no other wording; cursor/xcursor.c included).
+licence     MIT
+licence-file COPYING
+source      https://gitlab.freedesktop.org/wayland/wayland/-/releases/$version/downloads/wayland-$version.tar.xz 612384 64176eaa46e4969903e286f8e5ef8331affc17fdf03ac9b58381d2b23162b7a3
+place       package
+style       meson
+needs       libffi
+tool        wayland-scanner
+# The libraries only (the scanner is the host build's); no documentation
+# (it wants doxygen and xmlto); no tests (they run a server and a compositor
+# on one machine, and need the scanner and DTD validation of the host build).
+meson       -Dlibraries=true -Dscanner=false -Dtests=false -Ddocumentation=false
+# wl-connect-test is ours (override/wl-connect-test.c, patches/0001): it
+# connects to the compositor, lists its globals, and so runs libffi's
+# ffi_call through libwayland's dispatcher. wl-window-test is ours too
+# (override/, patches/0002): a window drawn through libwayland.
+program     bin/wl-connect-test
+program     bin/wl-window-test
+subpackage  wayland-test bin/wl-connect-test bin/wl-window-test
+library     lib/libwayland-client.a lib/libwayland-cursor.a include/wayland-client.h include/wayland-client-core.h include/wayland-client-protocol.h include/wayland-cursor.h include/wayland-util.h include/wayland-version.h lib/pkgconfig/wayland-client.pc lib/pkgconfig/wayland-cursor.pc
+cpe         cpe:2.3:a:wayland:wayland

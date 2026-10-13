@@ -287,12 +287,12 @@ status_t    sh_lookup(const char *name, struct dns_answer *out);
 /* sh_lookup's error in words ("no such name ..."). */
 const char *sh_lookup_why(status_t st);
 
-/* ---- programs from /data (sh_allow.c) ---------------------------------------------- */
+/* ---- programs from /data (sh_allow.c, sh_dataprog.c) ------------------------------- */
 
 struct wants;
 /* abs is a file path on /data. */
 bool     sh_on_data(const char *abs);
-/* The program file at path read into a VMO only we hold and made
+/* The program file at path read whole into a VMO only we hold and made
  * executable (*vmo, *size), its SHA-256 as hex (65 bytes with the NUL) and
  * its list (<wants.h>), all from those bytes. ERR_ACCESS_DENIED: this
  * shell can't make code executable (not the shell init started);
@@ -306,17 +306,47 @@ status_t sh_program_file(const char *path, handle_t *vmo, uint64_t *size, char *
  * machine (panic, the crash tests, stress). */
 const char *sh_wants_refused(const struct wants *w);
 /* Ready to run if the owner allowed exactly this file (a line of
- * /data/etc/allow with its path and hash): sh_program_file's outputs.
- * false (said why on the screen) otherwise. */
+ * /data/etc/allow with its path and hash; sh_dataprog.c): *vmo a handle of
+ * its executable VMO, whose pages the kernel checks against the approval
+ * as they arrive (or, on a mount with no pages to give, sh_allowed_whole's
+ * sealed copy), *size its bytes, *w its list read from the approved bytes.
+ * The caller spawns from *vmo (libos's spawn only reads it with vmo_read)
+ * and then gives it back with sh_data_release. false (said why on the
+ * screen) otherwise. */
 bool     sh_allowed_program(const char *path, handle_t *vmo, uint64_t *size, struct wants *w);
+/* The same the whole-read way (sh_allow.c): sh_program_file's outputs, if
+ * a line holds exactly this path and the hash of what was read. */
+bool     sh_allowed_whole(const char *path, handle_t *vmo, uint64_t *size, struct wants *w);
+/* sh_allowed_program's *vmo after the spawn: job is the job the program
+ * runs in, or HANDLE_INVALID if it didn't start. vmo is closed; the shell
+ * keeps its own handle of a verified VMO while some instance's job still
+ * has a thread, so the next start of that program shares its pages. */
+void     sh_data_release(handle_t vmo, handle_t job);
+/* Let go of the VMOs of /data programs none of whose instances runs any
+ * more (after a foreground program is reaped, a background one finished):
+ * fat refuses to change a file while a VMO made for running it lives. */
+void     sh_data_prune(void);
 /* Call fn for every approval (its hash, path and list); how many, or a
  * negative ERR_* if the file can't be read (none at all is 0). */
 int      sh_allow_each(void (*fn)(const char *hash, const char *path, const char *text,
                                   void *ctx), void *ctx);
-/* Write an approval for path (replacing its old one), or remove those
- * whose path or file name is `name` (*removed: how many). */
-status_t sh_allow_add(const char *path, const char *hash_hex, const char *text);
+/* Write an approval for path: its page table from vmo, sh_program_file's
+ * VMO of size bytes whose SHA-256 is hash_hex, then its line (replacing
+ * its old one). Remove those whose path or file name is `name` (*removed:
+ * how many). Either way a table no line names any more goes. */
+status_t sh_allow_add(const char *path, handle_t vmo, uint64_t size, const char *hash_hex,
+                      const char *text);
 status_t sh_allow_remove(const char *name, unsigned *removed);
+/* The page table of approval hash_hex (/data/etc/allow.d/<hash_hex>,
+ * sh_image.h) written from vmo, sh_program_file's VMO of size bytes (a
+ * pager VMO is refused: it is read through a mapping here). */
+status_t sh_allow_table_write(const char *hash_hex, handle_t vmo, uint64_t size);
+/* That table's hashes for a program file of size bytes, into a new VMO
+ * as vmo_make_exec_verified takes them. ERR_NOT_FOUND: no table (an
+ * approval from before tables); ERR_OUT_OF_RANGE: a table of a file of
+ * another size (it changed), or a file bigger than any program;
+ * ERR_INVALID_ARGS: a broken table; a read's error. */
+status_t sh_allow_table_read(const char *hash_hex, uint64_t size, handle_t *table);
 
 /* ---- the kernel (sh_kernel.c) ------------------------------------------------------ */
 

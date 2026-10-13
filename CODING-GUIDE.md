@@ -865,7 +865,8 @@ the exact commands and each script's QEMU setup are in
       the image they boot).
 - [ ] The tests for my area pass in QEMU, at 4 and 8 CPUs for kernel code;
       a new or changed kernel test also passes repeated, shuffled and under
-      load (`tools/soak-test.sh`).
+      load (`tools/soak-test.sh`, run before the push and not in every round:
+      docs/TESTING.md, "The tiers").
 - [ ] A bug fix has a test that failed before the fix.
 - [ ] Every new user pointer goes through `copy_*_user`, copied once.
 - [ ] Every new handle check uses the narrowest right; new handles get

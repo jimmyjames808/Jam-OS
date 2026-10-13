@@ -642,9 +642,9 @@ KTEST(pager_handles)
     KT_EQ(sys_pager_op(&t, pgh, 1, PAGER_OP_SET_SIZE, PG + 1, 0, 0), OK);   /* rounded up */
     KT_EQ(sys_vmo_get_size(&t, vh, &size), OK);
     KT_EQ(size, 2 * PG);
-    KT_EQ(sys_pager_op(&t, pgh, 1, PAGER_OP_SET_SIZE, VMO_MAX_SIZE, 0, 0), OK);
+    KT_EQ(sys_pager_op(&t, pgh, 1, PAGER_OP_SET_SIZE, VMO_SMALL_MAX_SIZE, 0, 0), OK);
     KT_EQ(sys_vmo_get_size(&t, vh, &size), OK);
-    KT_EQ(size, VMO_MAX_SIZE);
+    KT_EQ(size, VMO_SMALL_MAX_SIZE);
 
     /* vmo_make_exec takes no pager VMO, even with the power and the only
      * handle: its pages would arrive unchecked. The handle is gone. */
