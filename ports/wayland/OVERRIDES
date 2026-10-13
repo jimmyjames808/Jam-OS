@@ -8,3 +8,9 @@ jamos/wl-connect-test.c - override/wl-connect-test.c
 jamos/wl-window-test.c - override/wl-window-test.c
 jamos/xdg-shell.xml - override/xdg-shell.xml
 jamos/xdg-decoration-unstable-v1.xml - override/xdg-decoration-unstable-v1.xml
+# wlprobe (patches/0003 builds it): the Wayland test client of G2's GT, and the
+# two more protocol files it generates its client code from (copies of
+# wayland-protocols' staging/cursor-shape and stable/tablet files).
+jamos/wlprobe.c - override/wlprobe.c
+jamos/cursor-shape-v1.xml - override/cursor-shape-v1.xml
+jamos/tablet-v2.xml - override/tablet-v2.xml

@@ -1,0 +1,34 @@
+Description: build wlprobe, the Wayland test client, with libwayland and xkbcommon
+ Adds a third executable after wl-window-test: jamos/wlprobe.c (our file,
+ override/ in this port, BSD-2-Clause) linked with libwayland-client and
+ libxkbcommon, with the client code wayland-scanner generates for the
+ protocols it uses beyond wl-window-test's (cursor-shape-v1 and the
+ tablet-v2 it imports, copies of wayland-protocols' files, MIT).
+Forwarded: not-needed (a Jam OS test program, not libwayland's)
+---
+--- a/meson.build
++++ b/meson.build
+@@ -145,6 +145,23 @@
+ 		dependencies: wayland_client_dep,
+ 		install: true,
+ 	)
++	jamos_wlp = []
++	foreach p : ['cursor-shape-v1', 'tablet-v2']
++		jamos_wlp += custom_target(p + '-client-header',
++			input: 'jamos/' + p + '.xml',
++			output: p + '-client-protocol.h',
++			command: [jamos_scanner, 'client-header', '@INPUT@', '@OUTPUT@'])
++		jamos_wlp += custom_target(p + '-code',
++			input: 'jamos/' + p + '.xml',
++			output: p + '-protocol.c',
++			command: [jamos_scanner, 'private-code', '@INPUT@', '@OUTPUT@'])
++	endforeach
++	executable(
++		'wlprobe',
++		['jamos/wlprobe.c'] + jamos_wwt + jamos_wlp,
++		dependencies: [wayland_client_dep, dependency('xkbcommon')],
++		install: true,
++	)
+ endif
+ if get_option('tests')
+ 	subdir('tests')

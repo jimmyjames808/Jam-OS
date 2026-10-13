@@ -5,7 +5,9 @@
  * its title bar), makes an xdg toplevel and draws into wl_shm buffers on
  * memfds: moving colour bands, redrawn on every frame callback.
  *
- *     wl-window-test [seconds]   draw until closed, or for that many seconds
+ *     wl-window-test [seconds] [still]   draw until closed, or for that many
+ *                                seconds; `still`: the bands do not move, so a
+ *                                screenshot's pixels are known (tools/wl-port-test.sh)
  *
  * Output: "connected", "configured <w>x<h>", "frames <n>" when it ends,
  * then "wl-window-test: ok". Exit 1 if a global is missing or it can't
@@ -34,7 +36,7 @@ struct app {
     struct xdg_surface *xsurface;
     struct xdg_toplevel *toplevel;
     int width, height;          /* the size asked for (0: ours) */
-    bool configured, closed;
+    bool configured, closed, still;
     unsigned frames;
     double until;               /* stop at this time (0: never) */
 };
@@ -149,7 +151,7 @@ static void draw(struct app *a)
         return;
     }
     /* Diagonal bands that slide one pixel a frame. */
-    unsigned shift = a->frames * 2;
+    unsigned shift = a->still ? 0 : a->frames * 2;
     for (int y = 0; y < h; y++)
         for (int x = 0; x < w; x++)
             px[y * w + x] = bands[((unsigned)(x + y) + shift) / 48 % 4];
@@ -179,8 +181,10 @@ static void on_frame(void *data, struct wl_callback *cb, uint32_t time)
 int main(int argc, char **argv)
 {
     struct app a = { 0 };
-    if (argc > 1)
+    if (argc > 1 && atof(argv[1]) > 0)
         a.until = now_s() + atof(argv[1]);
+    if (argc > 2 && !strcmp(argv[2], "still"))
+        a.still = true;
     struct wl_display *wl = wl_display_connect(NULL);
     if (!wl) {
         fprintf(stderr, "wl-window-test: can't connect: %s\n", strerror(errno));
