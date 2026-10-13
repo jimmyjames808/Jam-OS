@@ -38,6 +38,7 @@
  * pipeline run at once (sh_exec.c starts them with sh_stdio.defer and
  * waits in sh_pipe_settle); a native program, or a builtin, runs in turn.
  * The status of a program that a signal ended is 128 plus the signal. */
+#include <dataprog.h>
 #include <idl/console.h>
 #include <idl/signal.h>
 #include <posixfds.h>
@@ -155,19 +156,6 @@ static bool find_program(const char *argv0, char *path, size_t cap)
 
 #define RUN_HANDLES 4    /* the most program_handles gives, and a POSIX program's signal channel */
 
-/* The root resource's rights for a list's WANT_RIGHT_*: what the
- * program's copy gets. Never RIGHT_TRANSFER: it can narrow its copy
- * (RIGHT_DUPLICATE), never pass it on. */
-static rights_t root_rights(uint32_t want)
-{
-    rights_t r = RIGHT_DUPLICATE | RIGHT_WAIT | RIGHT_INSPECT;
-    r |= want & WANT_RIGHT_KLOG ? RIGHT_ROOT_KLOG : 0;
-    r |= want & WANT_RIGHT_SYSINFO ? RIGHT_ROOT_SYSINFO : 0;
-    r |= want & WANT_RIGHT_CLOCK ? RIGHT_ROOT_CLOCK : 0;
-    r |= want & WANT_RIGHT_DEBUG ? RIGHT_ROOT_DEBUG : 0;
-    return r;
-}
-
 /* The handles it starts with (see the top), each with the rights its copy
  * gets in xr; *out_r: its stdout's read end when stdout_pipe (we are in a
  * pipe, or it runs in the background: bg, no terminal then; a POSIX
@@ -179,7 +167,7 @@ static unsigned program_handles(const struct wants *w, bool bg, bool stdout_pipe
     unsigned nx = 0;
     handle_t h, out_w;
     if (w->rights && sh_root() && jam_handle_duplicate(sh_root(), RIGHT_SAME, &h) == OK) {
-        xr[nx] = root_rights(w->rights);
+        xr[nx] = dp_root_rights(w->rights);   /* never RIGHT_TRANSFER */
         x[nx++] = (struct spawn_handle){ SR_RESOURCE, h };
     }
     if (!bg && console_new_client_until(sh_console(), now() + 5 * NS_PER_S, 2, &h) == OK) {

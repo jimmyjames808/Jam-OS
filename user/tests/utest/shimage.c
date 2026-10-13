@@ -1,5 +1,5 @@
-/* utest: how the shell checks a program on /data
- * (user/services/shell/sh_image.c, linked in).
+/* utest: how a program on /data is checked, by the shell and init
+ * (/svc/exec) alike (libos's user/lib/dataprog.c, <dataprog.h>).
  *
  * t_sh_ptable: the page table `allow` writes beside an approval: each
  * page's SHA-256 (the last page zero-padded, as the kernel hashes it), the
@@ -18,17 +18,17 @@
 #include <os.h>
 #include <sha256.h>
 #include <wants.h>
-#include "sh_image.h"
+#include <dataprog.h>
 #include "utest.h"
 
 /* ---- the page table ------------------------------------------------------------------ */
 
 bool t_sh_ptable(void)
 {
-    CHECK_EQ(sh_ptable_pages(0), 0);
-    CHECK_EQ(sh_ptable_pages(1), 1);
-    CHECK_EQ(sh_ptable_pages(PAGE_SIZE), 1);
-    CHECK_EQ(sh_ptable_pages(PAGE_SIZE + 1), 2);
+    CHECK_EQ(dp_ptable_pages(0), 0);
+    CHECK_EQ(dp_ptable_pages(1), 1);
+    CHECK_EQ(dp_ptable_pages(PAGE_SIZE), 1);
+    CHECK_EQ(dp_ptable_pages(PAGE_SIZE + 1), 2);
     /* Three pages and a hundred bytes of a pattern: each whole page's hash
      * is its own, the last is of its bytes and zeros up to a page. */
     uint64_t size = 3 * PAGE_SIZE + 100;
@@ -36,7 +36,7 @@ bool t_sh_ptable(void)
     CHECK(bytes && hashes);
     for (uint64_t i = 0; i < 4 * PAGE_SIZE; i++)
         bytes[i] = (uint8_t)(i * 7 + i / PAGE_SIZE);
-    sh_ptable_hash(bytes, size, hashes);
+    dp_ptable_hash(bytes, size, hashes);
     uint8_t want[SHA256_BYTES];
     for (unsigned p = 0; p < 3; p++) {
         sha256(bytes + p * PAGE_SIZE, PAGE_SIZE, want);
@@ -50,41 +50,41 @@ bool t_sh_ptable(void)
     sha256(bytes, size, sha);
     memcpy(other, sha, sizeof(other));
     other[5] ^= 1;
-    struct sh_ptable_head h, bad;
-    sh_ptable_head(size, sha, &h);
+    struct dp_ptable_head h, bad;
+    dp_ptable_head(size, sha, &h);
     uint64_t file = sizeof(h) + 4 * SHA256_BYTES;
     CHECK_EQ(h.pages, 4);
-    CHECK_ST(sh_ptable_check(&h, file, size, sha), OK);
-    CHECK_ST(sh_ptable_check(&h, file, size + 1, sha), ERR_OUT_OF_RANGE);   /* it changed */
-    CHECK_ST(sh_ptable_check(&h, file, size, other), ERR_INVALID_ARGS);     /* another's */
-    CHECK_ST(sh_ptable_check(&h, file - 1, size, sha), ERR_INVALID_ARGS);
-    CHECK_ST(sh_ptable_check(&h, file + SHA256_BYTES, size, sha), ERR_INVALID_ARGS);
+    CHECK_ST(dp_ptable_check(&h, file, size, sha), OK);
+    CHECK_ST(dp_ptable_check(&h, file, size + 1, sha), ERR_OUT_OF_RANGE);   /* it changed */
+    CHECK_ST(dp_ptable_check(&h, file, size, other), ERR_INVALID_ARGS);     /* another's */
+    CHECK_ST(dp_ptable_check(&h, file - 1, size, sha), ERR_INVALID_ARGS);
+    CHECK_ST(dp_ptable_check(&h, file + SHA256_BYTES, size, sha), ERR_INVALID_ARGS);
     bad = h;
     bad.magic[0] = 'X';
-    CHECK_ST(sh_ptable_check(&bad, file, size, sha), ERR_INVALID_ARGS);
+    CHECK_ST(dp_ptable_check(&bad, file, size, sha), ERR_INVALID_ARGS);
     bad = h;
-    bad.version = SH_PTABLE_VERSION + 1;
-    CHECK_ST(sh_ptable_check(&bad, file, size, sha), ERR_INVALID_ARGS);
+    bad.version = DP_PTABLE_VERSION + 1;
+    CHECK_ST(dp_ptable_check(&bad, file, size, sha), ERR_INVALID_ARGS);
     bad = h;
     bad.page_size = 2 * PAGE_SIZE;
-    CHECK_ST(sh_ptable_check(&bad, file, size, sha), ERR_INVALID_ARGS);
+    CHECK_ST(dp_ptable_check(&bad, file, size, sha), ERR_INVALID_ARGS);
     bad = h;
     bad.pages = 5;   /* more hashes than its own size has pages */
-    CHECK_ST(sh_ptable_check(&bad, file + SHA256_BYTES, size, sha), ERR_INVALID_ARGS);
+    CHECK_ST(dp_ptable_check(&bad, file + SHA256_BYTES, size, sha), ERR_INVALID_ARGS);
     bad = h;
     bad.size = UINT64_MAX;   /* its numbers overflow: never a table */
-    bad.pages = sh_ptable_pages(UINT64_MAX);
-    CHECK_ST(sh_ptable_check(&bad, file, size, sha), ERR_INVALID_ARGS);
+    bad.pages = dp_ptable_pages(UINT64_MAX);
+    CHECK_ST(dp_ptable_check(&bad, file, size, sha), ERR_INVALID_ARGS);
     /* An allow line's hash, back to bytes. */
     char hex[2 * SHA256_BYTES + 1];
     uint8_t back[SHA256_BYTES];
     sha256_hex(sha, hex);
-    CHECK(sh_hex_bytes(hex, back) && !memcmp(back, sha, SHA256_BYTES));
+    CHECK(dp_hex_bytes(hex, back) && !memcmp(back, sha, SHA256_BYTES));
     hex[3] = 'A';   /* sha256_hex writes lower case only */
-    CHECK(!sh_hex_bytes(hex, back));
+    CHECK(!dp_hex_bytes(hex, back));
     sha256_hex(sha, hex);
     hex[63] = '\0';
-    CHECK(!sh_hex_bytes(hex, back));
+    CHECK(!dp_hex_bytes(hex, back));
     free(bytes);
     free(hashes);
     return true;
@@ -106,7 +106,7 @@ static status_t mem_read(void *ctx, uint64_t off, void *dst, uint64_t len)
 {
     struct mem *m = ctx;
     if (off > m->size || len > m->size - off)
-        return ERR_INTERNAL;   /* sh_image_wants asked outside the file */
+        return ERR_INTERNAL;   /* dp_image_wants asked outside the file */
     if (off + len > m->fail_at)
         return ERR_IO;
     memcpy(dst, m->bytes + off, len);
@@ -138,13 +138,13 @@ static bool one_program(const char *name)
     static struct wants whole, pieces;
     CHECK_ST(wants_read(data, size, &whole), OK);
     struct mem m = { data, size, 0, UINT64_MAX };
-    CHECK_ST(sh_image_wants(mem_read, &m, size, &pieces), OK);
+    CHECK_ST(dp_image_wants(mem_read, &m, size, &pieces), OK);
     if (!same_wants(&whole, &pieces))
         return false;
-    CHECK(m.read <= 64 + 64 * 56 + SH_IMAGE_NOTES_MAX && m.read < size);
+    CHECK(m.read <= 64 + 64 * 56 + DP_NOTES_MAX && m.read < size);
     /* A page failing in the middle of it: the reader's error, no list. */
     m = (struct mem){ data, size, 0, 64 };
-    CHECK_ST(sh_image_wants(mem_read, &m, size, &pieces), ERR_IO);
+    CHECK_ST(dp_image_wants(mem_read, &m, size, &pieces), ERR_IO);
     CHECK(!pieces.found && !pieces.n);
     return true;
 }
@@ -177,24 +177,24 @@ bool t_sh_image_wants(void)
         !one_program("bin/utest") || !one_program("bin/pxtest"))
         return false;
     /* A list's notes past the limit, a note past the end of the file. */
-    uint64_t size = SH_IMAGE_NOTES_MAX + 2 * PAGE_SIZE;
+    uint64_t size = DP_NOTES_MAX + 2 * PAGE_SIZE;
     uint8_t *f = malloc(size);
     CHECK(f);
     memset(f, 0, size);
     static struct wants w;
-    small_elf(f, PAGE_SIZE, SH_IMAGE_NOTES_MAX + 1);
+    small_elf(f, PAGE_SIZE, DP_NOTES_MAX + 1);
     struct mem m = { f, size, 0, UINT64_MAX };
-    CHECK_ST(sh_image_wants(mem_read, &m, size, &w), ERR_INVALID_ARGS);
+    CHECK_ST(dp_image_wants(mem_read, &m, size, &w), ERR_INVALID_ARGS);
     small_elf(f, PAGE_SIZE, size);
-    CHECK_ST(sh_image_wants(mem_read, &m, size, &w), ERR_INVALID_ARGS);
+    CHECK_ST(dp_image_wants(mem_read, &m, size, &w), ERR_INVALID_ARGS);
     /* An empty note at the limit's edge is no list: OK, none found. */
     small_elf(f, size, 0);
-    CHECK_ST(sh_image_wants(mem_read, &m, size, &w), OK);
+    CHECK_ST(dp_image_wants(mem_read, &m, size, &w), OK);
     CHECK(!w.found);
     /* Not an ELF file; shorter than its header. */
     f[1] = 'X';
-    CHECK_ST(sh_image_wants(mem_read, &m, size, &w), ERR_INVALID_ARGS);
-    CHECK_ST(sh_image_wants(mem_read, &m, 63, &w), ERR_INVALID_ARGS);
+    CHECK_ST(dp_image_wants(mem_read, &m, size, &w), ERR_INVALID_ARGS);
+    CHECK_ST(dp_image_wants(mem_read, &m, 63, &w), ERR_INVALID_ARGS);
     free(f);
     return true;
 }

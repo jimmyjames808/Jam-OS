@@ -690,7 +690,7 @@ bool t_consel_tint(void);
 /* shpaste.c: the shell's bracketed paste (sh_paste.c). */
 bool t_sh_paste(void);
 /* shimage.c: a /data program's page table and its list read in pieces
- * (sh_image.c). */
+ * (libos's dataprog.c). */
 bool t_sh_ptable(void);
 bool t_sh_image_wants(void);
 /* "utest wl-crash": a Wayland client on the channel at SR_USER that makes
