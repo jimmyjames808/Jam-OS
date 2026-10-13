@@ -15,10 +15,10 @@
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
+#include <dataprog.h>
 #include <os.h>
 #include <sha256.h>
 #include <wants.h>
-#include <dataprog.h>
 #include "utest.h"
 
 /* ---- the page table ------------------------------------------------------------------ */
