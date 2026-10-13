@@ -17,7 +17,10 @@ asked: the askpass helper must never run) and another user name, each
 refused; 8 sessions at once and a 9th connection refused; 4 sessions'
 output at once, each whole; a session killed mid-output; then, in a
 session of its own, the guest's processes: nothing left of the others
-(one session's shell and console, the listener and one tinysshd). The
+(one session's shell and console, the listener and one tinysshd);
+`kill sshd` run in a session ends that session (the listener's job holds
+every tinysshd), init starts sshd again, and nothing of the session is
+left (the owner's choice: killing the server ends its sessions). The
 last login, as user sshcheck-done, is refused on purpose: the guest's
 script waits for that line.
 
@@ -303,6 +306,27 @@ def leftovers(s):
           "the listener and this tinysshd)" % counts)
 
 
+def kill_sshd(s, a):
+    """`kill sshd` from a session: the listener's job goes, every tinysshd
+    with it, so this session ends; init starts sshd again; then nothing of
+    the session is left (leftovers)."""
+    t = Term(s, 80, 24)
+    if not check(t.expect(PROMPT, 60), "a session to kill sshd from: the shell's prompt"):
+        t.p.kill()
+        return
+    listening = "sshd: listening on port 22"
+    before = log_text(a.log).count(listening)
+    t.send("kill sshd\r")
+    rc = t.done(30)
+    check(rc is not None and rc != 0, "kill sshd ends the session it ran in (ssh exit %s)" % rc)
+    os.close(t.master)
+    end = time.monotonic() + 60
+    while log_text(a.log).count(listening) <= before and time.monotonic() < end:
+        time.sleep(0.5)
+    check(log_text(a.log).count(listening) > before, "init starts sshd again after the kill")
+    leftovers(s)
+
+
 def last(s, a, log):
     rc, out, _ = s.run("echo still-here")
     check(rc == 0 and "still-here" in out, "the server still serves (exit %d)" % rc)
@@ -341,6 +365,7 @@ def main():
         at_once(s, a)
         killed_mid_output(s, a)
         leftovers(s)
+        kill_sshd(s, a)
         last(s, a, a.log)
     say("PASS" if not problems else "FAIL")
     return 0 if not problems else 1
