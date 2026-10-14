@@ -110,6 +110,24 @@
 set -eu
 out=$1 name=$2
 shift 2
+# The tiers (docs/TESTING.md): the soak runs before a push or for a kernel
+# change only, and ktest at 8 CPUs is a kernel track's (JAMOS_TIER says which).
+case ${JAMOS_TIER:-} in
+push | kernel) ;;
+*)
+    case " $* ${QEMU_WORDS:-} " in *" soak="*) soak=1 ;; *) soak=0 ;; esac
+    input=${QEMU_INPUT:-}
+    [ "${input##*/}" = soak.txt ] && soak=1
+    if [ $soak = 1 ]; then
+        echo "$name: refused: the soak runs before a push or for a kernel change only: JAMOS_TIER=push or JAMOS_TIER=kernel (docs/TESTING.md, the tiers)" >&2
+        exit 2
+    fi
+    case " $* " in
+    *" ktest "* | *" ktest="*)
+        [ "${QEMU_SMP:-4}" -lt 8 ] 2> /dev/null ||
+            echo "$name: warning: ktest at 8 CPUs is for kernel changes and the pre-push pass (JAMOS_TIER=kernel or push); other changes run it once at 4 (docs/TESTING.md, the tiers)" >&2 ;;
+    esac ;;
+esac
 cmdline="$*${QEMU_WORDS:+ $QEMU_WORDS}"
 [ "${QEMU_SPLASH:-0}" = 1 ] || cmdline="$cmdline nosplash"
 # runlines: every shell says "run: ... started" and "... exited with code N"
