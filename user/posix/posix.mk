@@ -43,6 +43,11 @@ MUSL_ARCH := $(wildcard $(addsuffix /x86_64/*.c,$(MUSL_DIRS)) \
 MUSL_SRCS := $(filter-out $(addsuffix .c,$(subst /x86_64/,/,$(basename $(MUSL_ARCH)))),$(MUSL_BASE)) \
              $(MUSL_ARCH)
 MUSL_SRCS := $(sort $(filter-out $(addprefix $(MUSL)/,$(MUSL_OVR_UP)),$(MUSL_SRCS)))
+# Of src/ldso, only what a static program has: dl_iterate_phdr (its one
+# module, the program's headers from AT_PHDR), by which libunwind finds
+# the unwind tables (tools/jamos-clang++'s C++ exceptions), and dladdr's
+# stub (no symbols to name: 0), which libunwind's function names call.
+MUSL_SRCS += $(MUSL)/src/ldso/dl_iterate_phdr.c $(MUSL)/src/ldso/dladdr.c
 MUSL_OBJS := $(patsubst $(MUSL)/%,$(MUSL_OUT)/obj/%.o,$(MUSL_SRCS))
 
 MUSL_GENH := $(MUSL_OUT)/include/bits/alltypes.h $(MUSL_OUT)/include/bits/syscall.h \

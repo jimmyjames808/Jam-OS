@@ -15,6 +15,14 @@
  *     priority (a .ctors.N's priority is 65535 - N), as its own default
  *     script does.
  *
+ *   - the unwind tables, .eh_frame and its index .eh_frame_hdr, in the
+ *     read-only segment, the index under a PT_GNU_EH_FRAME: C++
+ *     exceptions (tools/jamos-clang++) unwind through them, libunwind
+ *     finding the index by dl_iterate_phdr; .gcc_except_table (the
+ *     catch sites) beside them. A C program built without unwind tables
+ *     (the tree's own) has none to keep; jamos-cc's ports have theirs
+ *     (about 2% of posixtest).
+ *
  * Each segment starts on its own page, so every page is read+execute,
  * read-only or read+write, never writable and executable (W^X). The
  * program's list (<wants.h>, .jamos.wants) sits in the read-only segment
@@ -31,6 +39,7 @@ PHDRS
     data   PT_LOAD FLAGS(6);                 /* R W */
     tls    PT_TLS FLAGS(4);                  /* the TLS image, inside data */
     wants  PT_NOTE FLAGS(4);                 /* the program's list */
+    eh     PT_GNU_EH_FRAME FLAGS(4);         /* .eh_frame_hdr, inside rodata */
 }
 
 SECTIONS
@@ -46,6 +55,9 @@ SECTIONS
     . = ALIGN(4096);
     .rodata : { *(.rodata .rodata.*) } :rodata
     .jamos.wants : { KEEP(*(.jamos.wants)) } :rodata :wants
+    .eh_frame_hdr : { *(.eh_frame_hdr) } :rodata :eh
+    .eh_frame : { KEEP(*(.eh_frame)) } :rodata
+    .gcc_except_table : { *(.gcc_except_table .gcc_except_table.*) } :rodata
 
     . = ALIGN(4096);
     .tdata : { *(.tdata .tdata.*) } :data :tls
@@ -69,5 +81,5 @@ SECTIONS
         *(COMMON)
     } :data
 
-    /DISCARD/ : { *(.eh_frame*) *(.note .note.*) *(.comment) *(.interp) *(.dynamic) }
+    /DISCARD/ : { *(.note .note.*) *(.comment) *(.interp) *(.dynamic) }
 }

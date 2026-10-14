@@ -59,7 +59,8 @@ def refused(fn, words, what):
 
 def test_licences():
     for good in ("MIT", "Zlib", "MIT OR Apache-2.0", "(MIT AND BSD-2-Clause) OR GPL-2.0-only",
-                 "GPL-3.0-or-later WITH GCC-exception-3.1"):
+                 "GPL-3.0-or-later WITH GCC-exception-3.1",
+                 "GPL-2.0-only WITH Linux-syscall-note"):
         try:
             licence.parse(good)
         except ValueError as e:
@@ -109,6 +110,13 @@ def test_lint(tmp, real_ports):
         (good + "program bin/a wants/nope\n", ["not in the port's directory"],
          "a list that isn't there"),
         (good + "configure-x 1\n", ["not a recipe key"], "a misspelt key"),
+        (good + "toolchain gcc\n", ["toolchain must be one of"], "an unknown toolchain"),
+        (good + "toolchain clang\n", ["needs llvm-runtimes"],
+         "a clang port without the runtimes"),
+        (good + "local files\n", ["'local' line", "more than one"], "a source and a local one"),
+        (re.sub(r"(?m)^source .*\n", "", good) + "local nothere\n", ["local:", "not there"],
+         "a local source that isn't there"),
+        (re.sub(r"(?m)^source .*\n", "", good), ["'source' lines", "none"], "no source at all"),
     ]
     for text, words, what in cases:
         problems = lint_of(root, "liba", text)
@@ -129,6 +137,22 @@ def test_lint(tmp, real_ports):
                        {"files/Makefile": "all:\n"})
     expect(not problems, "a port with files/ and multicall refused: %s" % problems)
     shutil.rmtree(os.path.join(root, "liba", "files"))
+    # A port of Jam OS's own code: its source is files/ (`local`), copied
+    # into the work tree as a vendored one is.
+    local = re.sub(r"(?m)^source .*\n", "", good) + "local files\n"
+    problems = lint_of(root, "liba", local, {"files/a.c": "int a;\n"})
+    expect(not problems, "a port with a local source refused: %s" % problems)
+    own = os.path.join(tmp, "local-port", "own")   # (no patches: liba's are upstream's)
+    os.makedirs(os.path.join(own, "files"))
+    with open(os.path.join(own, "recipe"), "w") as f:
+        f.write("name own\nlocal files\n")
+    with open(os.path.join(own, "files", "a.c"), "w") as f:
+        f.write("int a;\n")
+    r, _ = recipemod.parse(os.path.join(own, "recipe"))
+    srcdir = sourcemod.prepare(r, [], os.path.join(tmp, "local-work"), say=lambda s: None)
+    expect(os.path.isfile(os.path.join(srcdir, "a.c")), "a local source not copied: %s" % srcdir)
+    shutil.rmtree(os.path.join(root, "liba", "files"))
+    lint_of(root, "liba", good)
     problems = lint_of(root, "liba", good, {"patches/0002-x.patch": "--- a/a\n+++ b/a\n"})
     expect(any("Description" in p for p in problems), "a patch with no header taken")
     os.remove(os.path.join(root, "liba", "patches", "0002-x.patch"))

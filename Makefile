@@ -632,7 +632,9 @@ $(PT_LIB_OBJ): $(patsubst %,$(BUILD)/udrv/drivers/lib/%.o,$(PT_LIB)) tools/check
 # ports' recipes pass their lint and the ports builder its self-test
 # (tools/ports.py: offline, fake ports built with the real sysroot), and the
 # ext library builds for Jam OS and passes tools/extcheck.c (Linux's
-# fixtures, broken checksums, the feature table, a fuzz pass).
+# fixtures, broken checksums, the feature table, a fuzz pass), and the
+# syscall scan (tools/cr/syscall-scan.py) passes a clean program and
+# catches a `syscall` of a program's own.
 check: all
 	python3 tools/gensyscalls.py check
 	python3 tools/genidl.py check
@@ -656,6 +658,7 @@ check: all
 	python3 tools/ports.py selftest
 	python3 tools/ports.py vectors
 	python3 tools/ports-server.py --self-test
+	CROSS=$(CROSS) python3 tools/cr/syscall-scan.py --selftest
 	@for d in $$(cd third_party && ls -d */ | tr -d /); do \
 	    case " $(THIRD_PARTY_NOTICED) " in *" $$d "*) ;; \
 	    *) echo "licences: third_party/$$d has no notice in the boot image (LICENCES in the Makefile, or a port's recipe)"; exit 1;; esac; \

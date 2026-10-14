@@ -1,0 +1,145 @@
+#!/bin/sh
+# jamos-clang, jamos-clang++: compile and link C and C++ programs for Jam
+# OS's POSIX layer with clang and lld (docs/CR-PLAN.md section 1, track
+# CT1), as tools/jamos-cc does with the cross gcc. Use them like cc and c++:
+#
+#     tools/jamos-clang++ -O2 -o hello hello.cc
+#     CC=tools/jamos-clang CXX=tools/jamos-clang++ cmake ...
+#
+# A compile targets x86_64-unknown-linux-musl, so, unlike jamos-cc,
+# __linux__ stays defined (Chromium's code, Rust's libc crate and Linux's
+# headers need it); __jamos__ is defined too. It sees only the sysroot's
+# headers (for C++ libc++'s include/c++/v1 first, then musl's, Jam OS's
+# extensions, the Linux UAPI headers when the sysroot has them) and then
+# clang's own (stdarg.h's builtins, the intrinsics), musl's order. Code is
+# not position-independent: Jam OS runs ET_EXEC programs only.
+#
+# A link is static, non-PIE and whole-program, by lld through
+# user/posix/posix.ld (the sysroot's copy), with unused sections dropped:
+# crt1.o, crti.o, compiler-rt's crtbegin.o (__dso_handle), the objects, the
+# program's list as its ELF note (as jamos-cc: `posix` by default,
+# --jamos-wants=FILE for another), for C++ libc++ and libc++abi, then
+# libunwind, libc.a (musl, the call layer, libjam), compiler-rt's builtins,
+# crtend.o, crtn.o. .eh_frame and .eh_frame_hdr are kept (posix.ld's
+# PT_GNU_EH_FRAME), which is how libunwind finds a frame's unwind table.
+# The runtimes (libc++, libc++abi, libunwind, the builtins, crtbegin and
+# crtend) are ports/llvm-runtimes' library files, in a port's sysroot when
+# its recipe `needs llvm-runtimes`; the UAPI headers are ports/linux-uapi's.
+#
+# Environment:
+#   JAMOS_SYSROOT  the sysroot (default: build/sysroot beside this script;
+#                  a port's build gives its own, tools/portslib/toolchain.py)
+#   JAMOS_CLANG    the directory with clang and ld.lld (default: Chromium's
+#                  pinned clang, tools/cr/toolchain.pins, where
+#                  tools/cr/toolchain.sh unpacks it in ~/.cache/jamos/toolchains)
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+sysroot=${JAMOS_SYSROOT:-$here/../build/sysroot}
+case $0 in *++) cxx=1 ;; *) cxx=0 ;; esac
+
+if [ -n "${JAMOS_CLANG:-}" ]; then
+    bindir=$JAMOS_CLANG
+else
+    version=$(awk '$1 == "clang" && NF == 5 { print $2 }' "$here/cr/toolchain.pins")
+    bindir=${JAMOS_TOOLCHAINS:-$HOME/.cache/jamos/toolchains}/clang-$version/bin
+fi
+clang=$bindir/clang
+if [ ! -x "$clang" ]; then
+    echo "jamos-clang: no clang at $clang (tools/cr/toolchain.sh fetches Chromium's;" \
+         "JAMOS_CLANG names another's bin directory)" >&2
+    exit 1
+fi
+# clang's own headers: <bin>/../lib/clang/<major>/include (one major per install).
+res=
+for d in "$bindir"/../lib/clang/*/include; do
+    [ -d "$d" ] && res=$d
+done
+if [ -z "$res" ]; then
+    echo "jamos-clang: no lib/clang/<version>/include beside $clang" >&2
+    exit 1
+fi
+if [ ! -f "$sysroot/lib/libc.a" ]; then
+    echo "jamos-clang: no sysroot at $sysroot (run make first)" >&2
+    exit 1
+fi
+
+# Sort the arguments: our own option out, and whether this links.
+link=1
+wants=
+for a in "$@"; do
+    case $a in
+    -c|-S|-E|-M|-MM|-fsyntax-only) link=0 ;;
+    --version|-dumpversion|-dumpmachine|-print-*|--print-*) link=0 ;;
+    -shared|-pie|-static-pie)   # (-fPIC code still links into a non-PIE program)
+        echo "jamos-clang: $a: Jam OS runs static, position-dependent programs only" >&2
+        exit 1 ;;
+    esac
+done
+n=$#
+i=0
+while [ $i -lt $n ]; do
+    a=$1
+    shift
+    i=$((i + 1))
+    case $a in
+    --jamos-wants=*) wants=${a#--jamos-wants=} ;;
+    *) set -- "$@" "$a" ;;
+    esac
+done
+
+target="--target=x86_64-unknown-linux-musl"
+inc="-nostdinc -isystem $sysroot/include -isystem $res"
+if [ $cxx = 1 ]; then
+    inc="-nostdinc -isystem $sysroot/include/c++/v1 -isystem $sysroot/include -isystem $res"
+fi
+compile_flags="$target $inc -D__jamos__=1 -fno-pie -fno-pic"
+if [ $link = 0 ]; then
+    # shellcheck disable=SC2086 # the flags are words on purpose
+    exec "$clang" $compile_flags "$@"
+fi
+
+lib=$sysroot/lib
+for f in libunwind.a libclang_rt.builtins.a clang_rt.crtbegin.o clang_rt.crtend.o; do
+    if [ ! -f "$lib/$f" ]; then
+        echo "jamos-clang: no $f in $lib: the LLVM runtimes are ports/llvm-runtimes'" \
+             "(a recipe says 'needs llvm-runtimes')" >&2
+        exit 1
+    fi
+done
+cxxlibs=
+if [ $cxx = 1 ]; then
+    [ -f "$lib/libc++.a" ] || { echo "jamos-clang++: no libc++.a in $lib (ports/llvm-runtimes)" >&2; exit 1; }
+    cxxlibs="-lc++ -lc++abi"
+fi
+
+# The program's list as an ELF note, the way <wants.h>'s JAM_WANTS lays it
+# out: name "JamOS" padded to 8, type 1, the text with its NUL padded to 4.
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/jamos-clang.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+if [ -n "$wants" ]; then
+    cp "$wants" "$tmp/wants.txt"
+else
+    printf 'posix\n' > "$tmp/wants.txt"
+fi
+size=$(wc -c < "$tmp/wants.txt" | tr -d ' ')
+{
+    printf '\t.section .jamos.wants, "a"\n\t.balign 4\n'
+    printf '\t.long 6, %d, 1\n' $((size + 1))
+    printf '\t.ascii "JamOS\\0\\0\\0"\n'
+    od -An -v -tu1 "$tmp/wants.txt" |
+        awk 'NF { printf "\t.byte "; for (i = 1; i <= NF; i++) printf "%s%s", $i, (i < NF ? ", " : "\n") }'
+    printf '\t.byte 0\n\t.balign 4\n'
+    printf '\t.section .note.GNU-stack, "", @progbits\n'
+} > "$tmp/wants.s"
+"$clang" $target -c "$tmp/wants.s" -o "$tmp/wants.o"
+
+# Not exec: the trap removes the note's files once the link is done.
+# lld finds an archive's members whatever the order on the line.
+# shellcheck disable=SC2086
+"$clang" $compile_flags -fuse-ld=lld -static -nostdlib \
+    -Wl,-T,"$lib/posix.ld" -Wl,--gc-sections -Wl,-z,max-page-size=0x1000 \
+    -Wl,-z,noexecstack -Wl,--eh-frame-hdr -Wl,--build-id=none \
+    "$lib/crt1.o" "$lib/crti.o" "$lib/clang_rt.crtbegin.o" "$@" "$tmp/wants.o" \
+    -L"$lib" $cxxlibs -lunwind -lc "$lib/libclang_rt.builtins.a" \
+    "$lib/clang_rt.crtend.o" "$lib/crtn.o"

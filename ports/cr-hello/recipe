@@ -1,0 +1,24 @@
+# cr-hello: the C++ half of milestone CR-a (docs/CR-PLAN.md, track CT1):
+# a C++ program built by Jam OS's clang toolchain (tools/jamos-clang++,
+# LLVM's runtimes from ports/llvm-runtimes) that runs from /data:
+# exceptions thrown across files and through destructors, static
+# constructors, eight threads with thread_local, a guarded static,
+# std::atomic's wait (a futex), iostreams, std::filesystem on /data. Its
+# output is the same on any C++ system: files/expected.txt, which
+# tools/cr-test.sh checks against the build host's own build of it and
+# the test (`test`) against the Jam OS run. Jam OS's own code (`local`).
+name        cr-hello
+version     1
+revision    1
+summary     a C++ test program for Jam OS's clang toolchain (CR-a)
+category    tests
+licence     BSD-2-Clause
+licence-file LICENSE
+local       files
+place       package
+style       custom
+toolchain   clang
+needs       llvm-runtimes
+# It writes its scratch directory in /data (wants/cr-hello).
+program     bin/cr-hello
+files       share/cr-hello/expected.txt

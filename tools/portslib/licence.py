@@ -39,6 +39,9 @@ COPYLEFT = {
 EXCEPTIONS = {
     "Autoconf-exception-3.0", "Bison-exception-2.2", "Classpath-exception-2.0",
     "GCC-exception-3.1", "LLVM-exception",
+    # Linux's UAPI headers (ports/linux-uapi): a program that uses the
+    # kernel's interfaces through them is not a derived work.
+    "Linux-syscall-note",
 }
 KNOWN = PERMISSIVE | COPYLEFT
 

@@ -1,0 +1,45 @@
+# llvm-runtimes: the runtimes every clang-built Jam OS program links
+# (docs/CR-PLAN.md section 1, track CT1), built from LLVM's release source
+# for x86_64-unknown-linux-musl against Jam OS's sysroot, static, not
+# position-independent:
+#   - compiler-rt's builtins (libclang_rt.builtins.a: what clang calls for
+#     what the CPU lacks) and its crtbegin.o and crtend.o (__dso_handle,
+#     which C++'s static destructors register with);
+#   - libunwind (the unwinder C++ exceptions run; it finds a program's
+#     tables through dl_iterate_phdr and posix.ld's PT_GNU_EH_FRAME);
+#   - libc++abi and libc++ (the C++ standard library, on musl), for every
+#     C++ port but Chromium, which builds its own copy (use_custom_libcxx).
+# tools/jamos-clang and jamos-clang++ link them; a `toolchain clang` recipe
+# says `needs llvm-runtimes`, so they are in its sysroot.
+#
+# The version: the latest LLVM release when CT1 was built (2026-10-13).
+# Chromium 155's clang is a trunk build between 23 and 24
+# (llvmorg-24-init-7747, tools/cr/toolchain.pins), which has no source
+# release of its own; the runtimes' ABI (the Itanium C++ ABI, DWARF
+# unwinding, the builtins' names) is the same across them, and libc++
+# supports the newest clang. Chromium links its own libc++ and libc++abi
+# from its tree anyway.
+name        llvm-runtimes
+version     23.1.3
+revision    1
+summary     LLVM's runtimes: compiler-rt's builtins and crt, libunwind, libc++abi, libc++
+homepage    https://llvm.org/
+category    libs
+licence     Apache-2.0 WITH LLVM-exception
+# Each runtime's own LICENSE.TXT (Apache-2.0 with LLVM's exception, then
+# its legacy notices, which differ): build.sh copies them to the top of the
+# source under names of their own, as the package keeps a licence by name.
+licence-file LICENSE-compiler-rt.TXT LICENSE-libunwind.TXT LICENSE-libcxxabi.TXT
+licence-file LICENSE-libcxx.TXT
+source      https://github.com/llvm/llvm-project/releases/download/llvmorg-$version/llvm-project-$version.src.tar.xz 179220548 c44186a7762ed28954be72e5ff6df9808e0779d4f1bf014ecc4e7e211d31ee34
+place       package
+style       custom                    # two CMake builds: compiler-rt, then the rest (build.sh)
+toolchain   clang
+# libc++ waits on futexes (<linux/futex.h>).
+needs       linux-uapi
+host        cmake ninja
+library     lib/libclang_rt.builtins.a lib/clang_rt.crtbegin.o lib/clang_rt.crtend.o
+library     lib/libunwind.a lib/libc++abi.a lib/libc++.a lib/libc++experimental.a
+library     include/c++ include/libunwind.h include/__libunwind_config.h include/unwind.h
+library     include/unwind_itanium.h include/unwind_arm_ehabi.h
+cpe         cpe:2.3:a:llvm:llvm

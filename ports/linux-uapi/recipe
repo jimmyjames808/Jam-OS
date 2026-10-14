@@ -1,0 +1,37 @@
+# linux-uapi: Linux's user-space API headers (linux/futex.h, linux/memfd.h,
+# asm/unistd.h, linux/input-event-codes.h and the rest), for ports built
+# for Linux's interfaces on Jam OS's musl (docs/CR-PLAN.md section 1,
+# track CT1): Chromium, LLVM's runtimes (libc++'s futex wait), and any C
+# port that includes <linux/...>. Headers only, nothing to run: a port
+# that `needs linux-uapi` finds them in its sysroot's include/, beside
+# musl's, as Alpine's linux-headers sits beside its musl.
+#
+# The output of the kernel's own `make headers_install` (the only
+# supported way to get them: it strips the kernel-internal parts), from
+# the newest longterm release, less drm/ (libdrm's, as Alpine drops it)
+# and the netfilter target headers whose names differ from their match
+# twins only in case (xt_MARK.h beside xt_mark.h: FAT32 is case-blind),
+# which no port here uses (build.sh).
+#
+# The headers say what Linux's calls take; they don't make Jam OS answer
+# them: a call the layer lacks is still ENOSYS at run time.
+name        linux-uapi
+version     6.18.56
+revision    1
+summary     Linux's user-space API headers (headers_install)
+homepage    https://www.kernel.org/
+category    devel
+# The syscall note: using the kernel's interfaces through these headers
+# doesn't make a program a derived work (LICENSES/exceptions/Linux-syscall-note).
+licence     GPL-2.0-only WITH Linux-syscall-note
+licence-file COPYING LICENSES/preferred/GPL-2.0 LICENSES/exceptions/Linux-syscall-note
+source      https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$version.tar.xz 154807564 4633bbda2ab95eaf2a7af4041236451d6759c72e6946265531af4b3aacefbf89
+place       package
+style       custom
+# The kernel's build of the headers runs on the build machine: its own
+# make, a host C compiler (scripts/unifdef) and rsync (the install).
+host        gcc rsync
+# All of include/: every directory headers_install made (linux, asm,
+# asm-generic, misc, mtd, rdma, scsi, sound, video, xen, cxl, fwctl, ...).
+library     include
+cpe         cpe:2.3:o:linux:linux_kernel

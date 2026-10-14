@@ -17,8 +17,15 @@ that is tools/jamos-cc with this sysroot, its debug paths made relative
 and, on a link, the program's list chosen by the output's name (a
 `program` line's); an `ar` and a `ranlib` that write zero times and ids
 (the same bytes every build); a `g++` that refuses (no C++ for Jam OS
-yet: a port that wants it must fail, not find the Mac's); the cross
-binutils; a pkg-config with the sysroot.
+with jamos-cc: a port that wants it must fail, not find the Mac's); the
+cross binutils; a pkg-config with the sysroot.
+
+A recipe with `toolchain clang` (docs/CR-PLAN.md section 1) gets
+tools/jamos-clang as its `gcc` and `cc` (and `clang`) and
+tools/jamos-clang++ as its `g++` and `c++` (and `clang++`), the same names
+so the cross files and configure find them; the clang they run is
+resolved here (clang_dir) and written into the wrappers, as the build's
+environment is made from nothing.
 """
 import os
 import platform
@@ -37,6 +44,34 @@ class ToolError(Exception):
 
 def cross():
     return os.environ.get("CROSS", "x86_64-elf-")
+
+
+def clang_dir(top):
+    """The bin directory of the clang a `toolchain clang` port is built
+    with: JAMOS_CLANG, or Chromium's pinned clang where tools/cr/toolchain.sh
+    unpacks it (tools/jamos-clang's own rule)."""
+    if os.environ.get("JAMOS_CLANG"):
+        return os.path.abspath(os.environ["JAMOS_CLANG"])
+    version = None
+    with open(os.path.join(top, "tools", "cr", "toolchain.pins")) as f:
+        for line in f:
+            w = line.split()
+            if len(w) == 5 and w[0] == "clang":
+                version = w[1]
+    root = os.environ.get("JAMOS_TOOLCHAINS") or os.path.expanduser("~/.cache/jamos/toolchains")
+    return os.path.join(root, "clang-%s" % version, "bin")
+
+
+def clang_id(top):
+    """What identifies the clang (for a port's stamp): its directory and
+    its --version line; the directory alone when it isn't there."""
+    d = clang_dir(top)
+    try:
+        out = subprocess.run([os.path.join(d, "clang"), "--version"], stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL).stdout.decode(errors="replace")
+    except OSError:
+        return d
+    return d + "\n" + out.split("\n")[0]
 
 
 def build_triplet():
@@ -66,9 +101,12 @@ def pkgconf():
     return shutil.which("pkgconf") or shutil.which("pkg-config")
 
 
-def missing_tools(r):
+def missing_tools(r, top=None):
     """The host tools this recipe's build needs and this machine lacks."""
     want = []
+    if r.toolchain == "clang" and top is not None and \
+            not os.access(os.path.join(clang_dir(top), "clang"), os.X_OK):
+        want.append("__clang")
     if r.style in ("configure", "configure-plain", "make", "cmake", "custom"):
         want.append("make")
     if r.style == "cmake":
@@ -86,6 +124,9 @@ def missing_tools(r):
             out.append("GNU make 4 (gmake)")
         elif tool in ("pkgconf", "pkg-config") and not pkgconf():
             out.append("pkgconf")
+        elif tool == "__clang":
+            out.append("clang at %s (tools/cr/toolchain.sh clang; or JAMOS_CLANG)" %
+                       clang_dir(top))
         elif tool not in ("make", "gmake", "pkgconf", "pkg-config") and not shutil.which(tool):
             out.append(tool)
     for tool in ("gcc", "ar", "ranlib", "strip"):
@@ -105,22 +146,26 @@ def _q(s):
     return "'" + s.replace("'", "'\\''") + "'"
 
 
-def cc_wrapper(r, top, sysroot, work):
-    """The port's C compiler: jamos-cc with its sysroot and lists."""
+def cc_wrapper(r, top, sysroot, work, driver="jamos-cc"):
+    """The port's C (or C++) compiler: jamos-cc, or a jamos-clang driver,
+    with its sysroot and lists."""
     cases = []
     for path, wants in r.programs():
         if wants is not None:
             cases.append("    %s) wants=%s ;;" % (_q(os.path.basename(path)),
                                                   _q("--jamos-wants=" + os.path.abspath(
                                                       r.port_file(wants)))))
-    jamos_cc = os.path.join(top, "tools", "jamos-cc")
+    jamos_cc = os.path.join(top, "tools", driver)
+    clang = ""
+    if driver != "jamos-cc":
+        clang = "JAMOS_CLANG=%s; export JAMOS_CLANG\n" % _q(clang_dir(top))
     return """#!/bin/sh
-# The C compiler of port %(name)s (tools/portslib/toolchain.py): jamos-cc
+# The compiler of port %(name)s (tools/portslib/toolchain.py): %(driver)s
 # against the port's own sysroot, debug paths made relative, and on a
 # link the program's list chosen by the output's name.
 JAMOS_SYSROOT=%(sysroot)s; export JAMOS_SYSROOT
 CROSS=%(cross)s; export CROSS
-# -pthread (Meson's threads dependency adds it): the threads are in musl's
+%(clang)s# -pthread (Meson's threads dependency adds it): the threads are in musl's
 # libc, and the cross gcc has no such option.
 n=$#
 while [ $n -gt 0 ]; do
@@ -151,7 +196,7 @@ if [ -n "$wants" ]; then
 fi
 exec %(cc)s "$map" "$@"
 """ % {"name": r.name, "sysroot": _q(sysroot), "cross": _q(cross()), "cases": "\n".join(cases),
-       "work": _q(work), "cc": _q(jamos_cc)}
+       "work": _q(work), "cc": _q(jamos_cc), "driver": driver, "clang": clang}
 
 
 def make_bin(r, top, base, sysroot, work):
@@ -159,10 +204,17 @@ def make_bin(r, top, base, sysroot, work):
     b = os.path.join(base, "bin")
     os.makedirs(b)
     pre = os.path.join(b, HOST + "-")
-    _script(pre + "gcc", cc_wrapper(r, top, sysroot, work))
+    if r.toolchain == "clang":
+        _script(pre + "gcc", cc_wrapper(r, top, sysroot, work, "jamos-clang"))
+        _script(pre + "g++", cc_wrapper(r, top, sysroot, work, "jamos-clang++"))
+        os.symlink(HOST + "-gcc", pre + "clang")
+        os.symlink(HOST + "-g++", pre + "clang++")
+    else:
+        _script(pre + "gcc", cc_wrapper(r, top, sysroot, work))
+        refuse = ("#!/bin/sh\necho \"%s: no C++ compiler for Jam OS with jamos-cc"
+                  " (a recipe line: toolchain clang)\" >&2\nexit 1\n" % r.name)
+        _script(pre + "g++", refuse)
     os.symlink(HOST + "-gcc", pre + "cc")
-    refuse = ("#!/bin/sh\necho \"%s: no C++ compiler for Jam OS yet\" >&2\nexit 1\n" % r.name)
-    _script(pre + "g++", refuse)
     os.symlink(HOST + "-g++", pre + "c++")
     ar = shutil.which(cross() + "ar")
     _script(pre + "ar", """#!/bin/sh
