@@ -34,6 +34,7 @@ static const struct {
     { "socket", pt_socket },
     { "pty", pt_pty },
     { "procfs", pt_procfs },
+    { "self-image", pt_self_image },
     { "session", pt_session },
     { "wayland", pt_wayland },
     { "scm", pt_scm },
@@ -50,7 +51,8 @@ static const struct {
 
 /* The sections run only when named (long ones). */
 static const char *const asked_only[] = { "files-many", "sockets", "session", "mmap-big",
-                                          "mmap-coherent", "spawn-data", "loopback" };
+                                          "mmap-coherent", "spawn-data", "loopback",
+                                          "self-image" };
 
 static bool by_default(const char *name)
 {

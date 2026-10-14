@@ -9,13 +9,16 @@
  *     (a directory's path, a /dev node's name, ...);
  *   - the process's state that exec keeps: the current directory, the
  *     umask, the blocked and the ignored signals, the parent's pid, the
- *     process group and the session.
+ *     process group and the session;
+ *   - the program's path, when the starter names one: what libc's
+ *     /proc/self/exe reads (docs/CR-PLAN.md section 3). The starter's
+ *     word, as argv is: it chose the program.
  *
  * Descriptors with FD_CLOEXEC are not sent. A message carries at most
  * CHANNEL_MAX_HANDLES handles and CHANNEL_MAX_BYTES bytes, so a big table
  * takes several messages, numbered from 0; the last one is marked
- * POSIXFDS_LAST. The first carries the process state and the current
- * directory, the others only descriptors.
+ * POSIXFDS_LAST. The first carries the process state, the current
+ * directory and the program's path, the others only descriptors.
  *
  * The starter writes every message before process_start (spawn does, with
  * spawn_args.handover), so the child reads them without waiting: nothing
@@ -107,11 +110,11 @@ struct posixfds_state {
 };
 
 /* A message: this header, then (in the first message only) cwd_len bytes
- * of the current directory, then nfds records, each a struct posixfds_fd
- * and its data_len bytes; the directory and each record's data are padded
- * with zero bytes to a multiple of 8, and the message ends right after the
- * last one. The handles come in the records' order, each record's in its
- * kind's order. */
+ * of the current directory and exe_len bytes of the program's path, then
+ * nfds records, each a struct posixfds_fd and its data_len bytes; the
+ * directory, the path and each record's data are padded with zero bytes
+ * to a multiple of 8, and the message ends right after the last one. The
+ * handles come in the records' order, each record's in its kind's order. */
 struct posixfds_msg {
     uint32_t txid;          /* channel convention: first 4 bytes; 0 here */
     uint32_t magic;         /* POSIXFDS_MAGIC */
@@ -123,7 +126,10 @@ struct posixfds_msg {
     uint32_t cwd_len;       /* first message: the directory's bytes with its NUL
                              * (an absolute path, 2 .. POSIXFDS_PATH_MAX); else 0 */
     struct posixfds_state state;   /* first message: as above; else all 0 */
-    uint64_t reserved;      /* 0 */
+    uint32_t exe_len;       /* first message: the program's path's bytes with its NUL
+                             * (an absolute path, 2 .. POSIXFDS_PATH_MAX), or 0 (not
+                             * named); else 0 */
+    uint32_t reserved;      /* 0 */
 };
 
 /* One descriptor. */
@@ -155,6 +161,9 @@ struct posixfds_out {
     const char                 *cwd;    /* absolute, shorter than POSIXFDS_PATH_MAX */
     const struct posixfds_desc *fds;    /* nfds of them, in any order */
     unsigned                    nfds;
+    /* NULL, or the program's path, as cwd (spawn names it when this is
+     * NULL: spawn_args.path, a boot-image name as /boot/<name>) */
+    const char                 *exe;
 };
 
 /* Where posixfds_read puts the descriptors, one at a time, each only
@@ -170,6 +179,9 @@ struct posixfds_sink {
     /* The hand-over failed after fd() was called: close every handle it
      * was given and forget those descriptors. */
     void (*reset)(void *ctx);
+    /* NULL, or given the program's path (a string, absolute; gone after
+     * the call) once the whole hand-over was taken, if it names one. */
+    void (*exe)(void *ctx, const char *path);
 };
 
 /* How many handles a descriptor of kind has, and of which object types

@@ -447,7 +447,7 @@ static void check_cut_reader(void)
     jam_handle_close(w);
     struct posixfds_state st;
     static char cwd[POSIXFDS_PATH_MAX];
-    const struct posixfds_sink sink = { NULL, cut_fd, cut_reset };
+    const struct posixfds_sink sink = { NULL, cut_fd, cut_reset, NULL };
     uint64_t t0 = now();
     CHECK(posixfds_read(r, &sink, &st, cwd) == ERR_INVALID_ARGS);
     CHECK(now() - t0 < NS_PER_S);   /* at once: never a wait for the rest */

@@ -33,7 +33,8 @@
  *   spawn-data <path> allowed|refused
  *                             posix_spawn of a copy of posixtest on /data:
  *                             runs (and exits 7) once `allow`ed, else
- *                             EACCES
+ *                             EACCES; allowed, its self-image section
+ *                             passes too (procfs.c)
  * and the child mode --child-mmap-pull <path>: maps the file, says it is
  * ready, waits for a line on descriptor 0 (the stick is pulled meanwhile),
  * then copies from the mapping through a pipe (EIO, and it lives) and
@@ -416,9 +417,18 @@ void pt_spawn_data(char **argv)
     printf("\n");
     if (!strcmp(want, "refused")) {
         CHECK(r == EACCES);
-    } else {
-        CHECK(r == 0 && WIFEXITED(status) && WEXITSTATUS(status) == 7);
+        return;
     }
+    CHECK(r == 0 && WIFEXITED(status) && WEXITSTATUS(status) == 7);
+    /* Started by init, it has its own image and path: its self-image
+     * section passes (procfs.c). */
+    char *const self[] = { "pt-prog", "self-image", (char *)path, NULL };
+    r = posix_spawn(&pid, path, NULL, NULL, self, NULL);
+    status = -1;
+    CHECK(r == 0 && waitpid(pid, &status, 0) == pid && WIFEXITED(status) &&
+          WEXITSTATUS(status) == 0);
+    printf("posixtest: spawn-data: %s self-image: %s\n", path,
+           r ? strerror(r) : WIFEXITED(status) && !WEXITSTATUS(status) ? "PASS" : "FAIL");
 }
 
 int pt_child_mmap_pull(int argc, char **argv)

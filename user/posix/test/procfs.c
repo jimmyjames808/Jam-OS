@@ -14,12 +14,22 @@
  *     socket's and an eventfd's ENXIO;
  *   - children started with other argv[0]s (a name that isn't a program,
  *     another program's path, /bin's): their exe is still this program's
- *     file, found by its bytes, never taken from the name. */
+ *     file (the path spawn gives in the hand-over), never taken from the
+ *     name;
+ *   - the self-image (docs/CR-PLAN.md section 6): posix_spawn of
+ *     /proc/self/exe starts this program again, the child's exe our path,
+ *     its SR_SELF_IMAGE our very VMO (none for a boot-image program),
+ *     never writable, and every page of its code touched adds no page to
+ *     the job. Asked for by name, `self-image <path>` checks the same from
+ *     a copy on /data (the shell's run, and init's /svc/exec: posixtest
+ *     spawn-data), which must have its image. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <dirent.h>
+#include <elf.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <jamos/libjam.h>
 #include <spawn.h>
 #include <string.h>
 #include <sys/epoll.h>
@@ -35,6 +45,7 @@
 #define EXE    "/boot/bin/posixtest"   /* this program's file, as /proc/self/exe names it */
 #define FD_TOP 64                      /* descriptors looked at by fcntl */
 #define SMALL  48                      /* getdents bytes: two records of a short name */
+#define PG     4096ull
 
 extern char **environ;
 /* Our own ELF header, mapped (user/posix/posix.ld): the file's first bytes. */
@@ -390,7 +401,117 @@ static void check_reopen(void)
             close(fds[i]);
 }
 
+/* ---- the self-image ------------------------------------------------------------------ */
+
+/* Our SR_SELF_IMAGE's object id (0: none) and, if rights isn't NULL, its
+ * rights. */
+static uint64_t image_koid(rights_t *rights)
+{
+    handle_t h = startup_handle(SR_SELF_IMAGE);
+    struct handle_info info;
+    if (!h || jam_handle_info(h, &info) != OK)
+        return 0;
+    if (rights)
+        *rights = info.rights;
+    return info.koid;
+}
+
+/* A byte of each page of every segment that isn't writable (the code and
+ * the constants, mapped from the program's image) read, so each is
+ * there; how many pages. */
+static uint64_t touch_text(void)
+{
+    const Elf64_Ehdr *eh = (const Elf64_Ehdr *)(const void *)__ehdr_start;
+    const Elf64_Phdr *ph = (const Elf64_Phdr *)(const void *)(__ehdr_start + eh->e_phoff);
+    uint64_t pages = 0;
+    uint8_t sum = 0;
+    for (unsigned i = 0; i < eh->e_phnum; i++) {
+        if (ph[i].p_type != PT_LOAD || (ph[i].p_flags & PF_W))
+            continue;
+        uint64_t lo = ph[i].p_vaddr & ~(PG - 1), hi = (ph[i].p_vaddr + ph[i].p_memsz + PG - 1) &
+                                                      ~(PG - 1);
+        for (uint64_t a = lo; a < hi; a += PG, pages++)
+            sum += *(const volatile uint8_t *)(uintptr_t)a;
+    }
+    __asm__ volatile("" : : "r"(sum));
+    return pages;
+}
+
+/* posix_spawn of /proc/self/exe: this program again (want: our path),
+ * from our image, its code touched while we count the job's pages. */
+static void check_self_spawn(const char *want)
+{
+    uint64_t text = touch_text(), koid = image_koid(NULL);
+    int up[2] = { -1, -1 }, hold[2] = { -1, -1 };
+    CHECK(pipe2(up, O_CLOEXEC) == 0 && pipe2(hold, O_CLOEXEC) == 0);
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_adddup2(&fa, up[1], 3);     /* it says it is ready */
+    posix_spawn_file_actions_adddup2(&fa, hold[0], 4);   /* it waits for its end */
+    char k[24];
+    snprintf(k, sizeof(k), "%llu", (unsigned long long)koid);
+    char *argv[] = { "self", "--child-procfs", "image", (char *)want, k, NULL };
+    uint64_t before = pt_job_pages();
+    pid_t pid = -1;
+    int e = posix_spawn(&pid, "/proc/self/exe", &fa, NULL, argv, environ);
+    posix_spawn_file_actions_destroy(&fa);
+    close(up[1]);
+    close(hold[0]);
+    char c = 0;
+    CHECK(e == 0 && read(up[0], &c, 1) == 1 && c == 'r');
+    uint64_t grew = pt_job_pages() - before;
+    close(hold[1]);
+    int status = -1;
+    CHECK(e == 0 && waitpid(pid, &status, 0) == pid && WIFEXITED(status) &&
+          WEXITSTATUS(status) == 0);
+    close(up[0]);
+    printf("posixtest: procfs: /proc/self/exe started %s again from %s: its %llu pages of "
+           "code touched, the job grew %llu pages\n", want, koid ? "its image" : "the boot image",
+           (unsigned long long)text, (unsigned long long)grew);
+    CHECK(grew < text);   /* its own (data, stack, heap), none of the code's */
+}
+
+/* posixtest self-image <path>, run from path (a copy on /data). */
+void pt_self_image(char **argv)
+{
+    const char *want = NULL;
+    for (int i = 1; argv[i]; i++)
+        if (!strcmp(argv[i], "self-image") && argv[i + 1])
+            want = argv[i + 1];
+    CHECK(want != NULL);
+    if (!want)
+        return;
+    char buf[256];
+    ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    CHECK(n == (ssize_t)strlen(want) && !memcmp(buf, want, (size_t)n));
+    rights_t r = 0;
+    CHECK(image_koid(&r) && !(r & RIGHT_WRITE));   /* a program from a VMO holds it */
+    check_self_spawn(want);
+}
+
 /* ---- children ----------------------------------------------------------------------- */
+
+/* Started from /proc/self/exe (check_self_spawn): our path is want, our
+ * image the starter's (koid, decimal; 0: none), executable and never
+ * writable; then our code touched, 'r' on descriptor 3, and we hold on
+ * until descriptor 4 ends. */
+static int child_image(const char *want, const char *koid)
+{
+    char buf[256], c;
+    int bad = 0;
+    ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    bad += !(n == (ssize_t)strlen(want) && !memcmp(buf, want, (size_t)n));
+    rights_t r = 0;
+    uint64_t k = image_koid(&r);
+    bad += k != strtoull(koid, NULL, 10);
+    bad += k && ((r & RIGHT_WRITE) || !(r & RIGHT_EXEC));
+    touch_text();
+    c = bad ? 'b' : 'r';
+    bad += write(3, &c, 1) != 1;
+    while (read(4, &c, 1) > 0)
+        ;
+    return bad ? 1 : 0;
+}
 
 static int child_twin(void)
 {
@@ -422,6 +543,8 @@ int pt_child_procfs(int argc, char **argv)
         return child_twin();
     if (argc >= 3 && !strcmp(argv[2], "exe"))
         return child_exe();
+    if (argc >= 5 && !strcmp(argv[2], "image"))
+        return child_image(argv[3], argv[4]);
     return 2;
 }
 
@@ -451,4 +574,5 @@ void pt_procfs(char **argv __attribute__((unused)))
     check_fd_links();
     check_reopen();
     check_children();
+    check_self_spawn(EXE);
 }

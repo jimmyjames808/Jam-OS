@@ -138,6 +138,20 @@ static bool types_ok(uint32_t kind, const handle_t *hs)
     return true;
 }
 
+/* An absolute path of len bytes (its NUL included) at *at in buf (n
+ * bytes), zero-padded; *at moves past it. */
+static bool path_ok(uint32_t len, uint32_t n, uint32_t *at)
+{
+    if (len < 2 || len > POSIXFDS_PATH_MAX || len > n - *at)
+        return false;
+    const char *s = (const char *)buf + *at;
+    uint32_t padded = PAD8(len);
+    if (!string_ok(s, len) || s[0] != '/' || padded > n - *at || !zeros(buf + *at, len, padded))
+        return false;
+    *at += padded;
+    return true;
+}
+
 /* The header of message seq (n bytes in buf, nh handles); *at: where the
  * records start. */
 static bool header_ok(const struct posixfds_msg *m, uint32_t n, uint32_t nh, uint16_t seq,
@@ -149,16 +163,9 @@ static bool header_ok(const struct posixfds_msg *m, uint32_t n, uint32_t nh, uin
         return false;
     *at = sizeof(*m);
     if (seq)
-        return !m->cwd_len && state_zero(&m->state) && m->nfds;
-    if (m->cwd_len < 2 || m->cwd_len > POSIXFDS_PATH_MAX || m->cwd_len > n - *at)
-        return false;
-    const char *cwd = (const char *)buf + *at;
-    uint32_t padded = PAD8(m->cwd_len);
-    if (!string_ok(cwd, m->cwd_len) || cwd[0] != '/' || padded > n - *at ||
-        !zeros(buf + *at, m->cwd_len, padded) || !state_ok(&m->state))
-        return false;
-    *at += padded;
-    return true;
+        return !m->cwd_len && !m->exe_len && state_zero(&m->state) && m->nfds;
+    return path_ok(m->cwd_len, n, at) && (!m->exe_len || path_ok(m->exe_len, n, at)) &&
+           state_ok(&m->state);
 }
 
 /* The message in buf (n bytes) and hbuf (nh handles) is message seq of a
@@ -200,19 +207,28 @@ void posixfds_discard(const struct posixfds_out *out)
     }
 }
 
-/* Start message seq in buf: its header (the first message's state and
- * directory too); *n: its length so far. */
+/* A string s onto the message in buf (*n bytes), its NUL and padding too;
+ * its length with the NUL. */
+static uint32_t add_string(const char *s, uint32_t *n)
+{
+    uint32_t len = (uint32_t)strlen(s) + 1;
+    memcpy(buf + *n, s, len);
+    memset(buf + *n + len, 0, PAD8(len) - len);
+    *n += PAD8(len);
+    return len;
+}
+
+/* Start message seq in buf: its header (the first message's state,
+ * directory and program's path too); *n: its length so far. */
 static void begin_msg(const struct posixfds_out *out, uint16_t seq, uint32_t *n)
 {
     struct posixfds_msg m = { .magic = POSIXFDS_MAGIC, .version = POSIXFDS_VERSION, .seq = seq };
     *n = sizeof(m);
     if (!seq) {
-        uint32_t len = (uint32_t)strlen(out->cwd) + 1;
-        m.cwd_len = len;
         m.state = out->state;
-        memcpy(buf + *n, out->cwd, len);
-        memset(buf + *n + len, 0, PAD8(len) - len);
-        *n += PAD8(len);
+        m.cwd_len = add_string(out->cwd, n);
+        if (out->exe)
+            m.exe_len = add_string(out->exe, n);
     }
     memcpy(buf, &m, sizeof(m));
 }
@@ -244,7 +260,8 @@ static status_t descs_ok(const struct posixfds_out *out)
 {
     if (out->nfds > POSIXFDS_FD_MAX)
         return ERR_OUT_OF_RANGE;
-    if (!out->cwd || strnlen(out->cwd, POSIXFDS_PATH_MAX) == POSIXFDS_PATH_MAX)
+    if (!out->cwd || strnlen(out->cwd, POSIXFDS_PATH_MAX) == POSIXFDS_PATH_MAX ||
+        (out->exe && strnlen(out->exe, POSIXFDS_PATH_MAX) == POSIXFDS_PATH_MAX))
         return ERR_INVALID_ARGS;
     for (unsigned i = 0; i < out->nfds; i++) {
         const struct posixfds_desc *d = &out->fds[i];
@@ -366,7 +383,7 @@ static bool nothing_after(handle_t ch)
 static status_t deliver(const struct posixfds_sink *sink)
 {
     const struct posixfds_msg *m = (const struct posixfds_msg *)buf;
-    uint32_t at = sizeof(*m) + PAD8(m->cwd_len), h = 0;
+    uint32_t at = sizeof(*m) + PAD8(m->cwd_len) + PAD8(m->exe_len), h = 0;
     status_t st = OK;
     for (unsigned i = 0; i < m->nfds; i++) {
         struct posixfds_fd r;
@@ -384,9 +401,10 @@ static status_t deliver(const struct posixfds_sink *sink)
 }
 
 /* The messages from the first to the last, each checked then delivered;
- * the first's state and directory into *state and cwd. */
+ * the first's state, directory and program's path (empty: none) into
+ * *state, cwd and exe. */
 static status_t read_all(handle_t ch, const struct posixfds_sink *sink,
-                         struct posixfds_state *state, char *cwd, bool *given)
+                         struct posixfds_state *state, char *cwd, char *exe, bool *given)
 {
     for (uint16_t seq = 0;; seq++) {
         uint32_t n, nh;
@@ -405,6 +423,9 @@ static status_t read_all(handle_t ch, const struct posixfds_sink *sink,
         if (seq == 0) {
             *state = m->state;
             memcpy(cwd, buf + sizeof(*m), m->cwd_len);
+            exe[0] = '\0';
+            if (m->exe_len)
+                memcpy(exe, buf + sizeof(*m) + PAD8(m->cwd_len), m->exe_len);
         }
         *given |= m->nfds > 0;
         st = deliver(sink);
@@ -419,11 +440,11 @@ status_t posixfds_read(handle_t ch, const struct posixfds_sink *sink,
                        struct posixfds_state *state, char cwd[POSIXFDS_PATH_MAX])
 {
     struct posixfds_state s;
-    static char dir[POSIXFDS_PATH_MAX];   /* under buf_lock */
+    static char dir[POSIXFDS_PATH_MAX], exe[POSIXFDS_PATH_MAX];   /* under buf_lock */
     bool given = false;
     lock_take(&buf_lock);
     memset(seen, 0, sizeof(seen));
-    status_t st = read_all(ch, sink, &s, dir, &given);
+    status_t st = read_all(ch, sink, &s, dir, exe, &given);
     if (st != OK && st != ERR_NOT_FOUND) {
         if (given)
             sink->reset(sink->ctx);
@@ -432,6 +453,8 @@ status_t posixfds_read(handle_t ch, const struct posixfds_sink *sink,
     if (st == OK) {
         *state = s;
         memcpy(cwd, dir, strnlen(dir, POSIXFDS_PATH_MAX - 1) + 1);
+        if (exe[0] && sink->exe)
+            sink->exe(sink->ctx, exe);
     }
     lock_give(&buf_lock);
     return st;

@@ -209,6 +209,8 @@ long proc_readlink(const struct path *p, char *buf, size_t size);
  * as /proc/self/exe names it; NULL if it can't be named. The first call
  * finds it (procfs.c says how), the answer is kept for the process. */
 const char *proc_exe(void);
+/* Is abs (clean) /proc/self/exe, or /proc/<our pid>/exe? */
+bool proc_is_exe(const char *abs);
 
 /* ---- dir.c ------------------------------------------------------------------------ */
 

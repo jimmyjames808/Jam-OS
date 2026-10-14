@@ -59,6 +59,14 @@ enum {
                              * the starter keeps the client end and sends the
                              * `signal` protocol's events on it (docs/M13-PLAN.md
                              * section 6) */
+    SR_SELF_IMAGE = 20,     /* the program's own executable VMO, the one it runs
+                             * from (read, map, execute, duplicate and transfer;
+                             * never write): libjam's spawn gives it to every
+                             * program started from a VMO (a /data program, a
+                             * self-image child), so libc's /proc/self/exe starts
+                             * the same pages again (docs/CR-PLAN.md section 6).
+                             * A boot-image program has none: its file is
+                             * SR_BOOTFS's */
 };
 
 /* The promotion message: the one message on SR_STANDBY, from the

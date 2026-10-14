@@ -5,7 +5,8 @@
  *   1. The startup message (libjam's startup_read): argv, the
  *      environment, the handles by role.
  *   2. The POSIX hand-over that may follow it (<posixfds.h>,
- *      posixfds_read): the descriptors and the state exec keeps. Without
+ *      posixfds_read): the descriptors, the state exec keeps and the
+ *      program's path (libc's /proc/self/exe, user/posix/sys/procfs.c). Without
  *      one, descriptors 0 to 2 are the defaults; a malformed one leaves
  *      the program with no descriptors and a line in the log. Both are
  *      only recorded here (fd_stage, fd_stage_default): the descriptor
@@ -44,6 +45,7 @@ extern const Elf64_Ehdr __ehdr_start __attribute__((visibility("hidden")));
 static handle_t self_process, self_vmar;
 static struct posixfds_state ho_state;
 static char ho_cwd[POSIXFDS_PATH_MAX];
+static char ho_exe[POSIXFDS_PATH_MAX];   /* the program's path, if named; else empty */
 static bool ho_given;
 static uint8_t at_random[16];
 static char tz_env[80] = "TZ=";
@@ -64,6 +66,17 @@ const struct posixfds_state *lx_handover(const char **cwd)
         return NULL;
     *cwd = ho_cwd;
     return &ho_state;
+}
+
+const char *lx_handover_exe(void)
+{
+    return ho_given && ho_exe[0] ? ho_exe : NULL;
+}
+
+static void sink_exe(void *ctx, const char *path)
+{
+    (void)ctx;
+    memcpy(ho_exe, path, strlen(path) + 1);   /* shorter than POSIXFDS_PATH_MAX: checked */
 }
 
 static status_t sink_fd(void *ctx, const struct posixfds_fd *rec, const void *data,
@@ -90,7 +103,7 @@ static void say(const char *what, status_t st)
 /* Step 2: the hand-over, or the default descriptors. */
 static void take_handover(void)
 {
-    const struct posixfds_sink sink = { NULL, sink_fd, sink_reset };
+    const struct posixfds_sink sink = { NULL, sink_fd, sink_reset, sink_exe };
     status_t st = posixfds_read(startup_channel(), &sink, &ho_state, ho_cwd);
     if (st == ERR_NOT_FOUND) {
         fd_stage_default();

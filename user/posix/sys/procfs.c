@@ -8,7 +8,9 @@
  *                         ENOENT: a process sees only itself here)
  *   /proc/self/exe        a link to the program's file: readlink gives its
  *                         path, open opens that file for reading (ETXTBSY
- *                         for writing, as Linux), stat stats it
+ *                         for writing, as Linux), stat stats it;
+ *                         posix_spawn and execve of it start this program
+ *                         again from its own pages (spawn.c's self-image)
  *   /proc/self/fd         a directory of our open descriptors, listed by
  *                         number as the table is when each getdents runs
  *   /proc/self/fd/N       a link to what descriptor N is: a file's or a
@@ -23,7 +25,13 @@
  *                         when the access fits), ENXIO for a socket or an
  *                         anonymous kind
  *
- * Which file the program is. Every POSIX program maps its ELF and program
+ * Which file the program is. First the path the POSIX hand-over names
+ * (<posixfds.h>): libjam's spawn names it for every program it gives a
+ * hand-over (a boot-image one as /boot/<its name>), and posix_spawn for
+ * one init's /svc/exec starts. It is the starter's word, as argv is: the
+ * starter chose the program. A program started with no hand-over (the
+ * shell's background runs, a native starter's) is looked for instead.
+ * Every POSIX program maps its ELF and program
  * headers (user/posix/posix.ld), so the file can be checked against the
  * process itself: the headers and every segment that isn't writable, byte
  * for byte. The first look tries the file argv[0] names (the constructor's
@@ -227,6 +235,18 @@ static bool from_argv0(const struct bootfs_view *fs, bool boot)
     return ok;
 }
 
+/* The path the POSIX hand-over named (libjam's spawn names it for every
+ * program started with one): taken as the starter gave it, cleaned, if it
+ * is absolute and not under libc's own trees. exe_lock. */
+static bool from_handover(void)
+{
+    const char *given = lx_handover_exe();
+    struct path *p = given ? malloc(sizeof(*p)) : NULL;
+    bool ok = p && !path_set(given, p) && path_libc(p) == LIBC_NONE && found("", p->abs);
+    free(p);
+    return ok;
+}
+
 /* The first file of the boot image that is this program. exe_lock. */
 static bool from_scan(const struct bootfs_view *fs)
 {
@@ -249,7 +269,7 @@ const char *proc_exe(void)
     if (!exe_state) {
         const struct bootfs_view *fs;
         bool boot = bootfs_default(&fs) == OK;
-        exe_state = from_argv0(fs, boot) || (boot && from_scan(fs)) ? 1 : -1;
+        exe_state = from_handover() || from_argv0(fs, boot) || (boot && from_scan(fs)) ? 1 : -1;
     }
     const char *path = exe_state > 0 ? exe_path : NULL;
     lock_give(&exe_lock);
@@ -341,6 +361,12 @@ static long lookup(const char *abs, struct at *out)
     if (r == -ENOENT)
         lx_enosys_path(abs);
     return r;
+}
+
+bool proc_is_exe(const char *abs)
+{
+    struct at a;
+    return proc_path(abs) && !lookup_name(abs, &a) && a.node == N_EXE;
 }
 
 /* ---- what a descriptor is, as a link ---------------------------------------------- */

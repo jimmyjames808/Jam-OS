@@ -33,6 +33,7 @@
  * The kernel re-checks everything that matters (W^X, rights, ranges); the
  * checks here only keep this code from reading outside the file. Nothing
  * here uses malloc, so spawning doesn't grow the caller's heap. */
+#include <jam/bootfs.h>
 #include <os.h>
 #include <posixfds.h>
 #include "ns.h"
@@ -41,6 +42,10 @@
 #define MAX_SEGS    8
 #define MSG_MAX     2048
 #define FILE_MAX    (1ull << 30)    /* the biggest program read from a file: VMO_VERIFIED_MAX */
+/* What the child's SR_SELF_IMAGE can do (as far as our handle can): run
+ * the program again, never change it. */
+#define IMAGE_RIGHTS (RIGHT_READ | RIGHT_MAP | RIGHT_EXEC | RIGHT_DUPLICATE | RIGHT_TRANSFER)
+#define BOOT_PREFIX "/boot/"         /* a boot-image program's path: /boot/<its name> */
 /* What the child's SR_NS end can do: take the messages we write. */
 #define NS_RIGHTS   (RIGHT_READ | RIGHT_WAIT)
 
@@ -356,12 +361,26 @@ static status_t load_child(const struct spawn_args *a, const struct image *img, 
     return st;
 }
 
+/* The rights the child's SR_SELF_IMAGE gets: IMAGE_RIGHTS as far as our
+ * handle of the program's VMO has them; 0 for none. Only a caller's VMO
+ * holding the program from its start, and executable: the VMO the child
+ * runs from, never another (a boot-image program is SR_BOOTFS's, found
+ * by its name; a file read here can't run). */
+static rights_t image_rights(const struct spawn_args *a, const struct image *img)
+{
+    struct handle_info info;
+    if (!a->vmo || a->offset || img->data || jam_handle_info(a->vmo, &info) != OK ||
+        !(info.rights & RIGHT_EXEC))
+        return 0;
+    return info.rights & IMAGE_RIGHTS;
+}
+
 /* The handles, with their roles into m: duplicates of ours, the vmar
- * itself (we don't keep it), its end of the namespace channel, then the
- * extras. st: whether the steps so far worked; after a failure only the
- * extras are gathered (to be closed). Returns st, or the failure of a
- * duplicate. */
-static status_t gather_handles(const struct spawn_args *a, struct child *c,
+ * itself (we don't keep it), its end of the namespace channel, its own
+ * program (image: the rights, 0 for none), then the extras. st: whether
+ * the steps so far worked; after a failure only the extras are gathered
+ * (to be closed). Returns st, or the failure of a duplicate. */
+static status_t gather_handles(const struct spawn_args *a, struct child *c, rights_t image,
                                struct startup_msg *m, struct handout *out, status_t st)
 {
     /* The child's own job goes without RIGHT_MANAGE (JOB_RIGHTS_OWN): the
@@ -389,6 +408,13 @@ static status_t gather_handles(const struct spawn_args *a, struct child *c,
         m->roles[out->n++] = SR_NS;
         c->ns[1] = HANDLE_INVALID;
     }
+    if (st == OK && image) {
+        st = jam_handle_duplicate(a->vmo, image, &out->h[out->n]);
+        if (st == OK) {
+            out->rights[out->n] = RIGHT_SAME;
+            m->roles[out->n++] = SR_SELF_IMAGE;
+        }
+    }
     for (unsigned i = 0; i < a->nextra; i++) {
         out->h[out->n] = a->extra[i].h;
         out->rights[out->n] = a->extra_rights && a->extra_rights[i] ? a->extra_rights[i]
@@ -397,6 +423,23 @@ static status_t gather_handles(const struct spawn_args *a, struct child *c,
     }
     m->nhandles = out->n;
     return st;
+}
+
+/* The hand-over on ch, naming the program (its /proc/self/exe) if the
+ * caller didn't: a's absolute path, or a boot-image program's as
+ * /boot/<name>; none for a caller's VMO with a relative name. */
+static status_t write_handover(handle_t ch, const struct spawn_args *a)
+{
+    struct posixfds_out ho = *a->handover;
+    char boot[sizeof(BOOT_PREFIX) + BOOTFS_NAME_MAX];
+    if (!ho.exe && a->path[0] == '/') {
+        ho.exe = a->path;
+    } else if (!ho.exe && !a->vmo && strlen(a->path) < BOOTFS_NAME_MAX) {
+        memcpy(boot, BOOT_PREFIX, sizeof(BOOT_PREFIX) - 1);
+        memcpy(boot + sizeof(BOOT_PREFIX) - 1, a->path, strlen(a->path) + 1);
+        ho.exe = boot;
+    }
+    return posixfds_write(ch, &ho);   /* all of it before the child runs */
 }
 
 /* The message (len bytes of msg, the handles in hs) on a new channel,
@@ -414,7 +457,7 @@ static status_t start_child(const struct spawn_args *a, struct child *c, const u
         hs->n = 0;   /* in the message now, or closed */
     }
     if (handover && st == OK)
-        st = posixfds_write(c->ch[0], handover);   /* all of it before the child runs */
+        st = write_handover(c->ch[0], a);
     else if (handover)
         posixfds_discard(handover);
     if (st == OK && a->before_start)
@@ -433,7 +476,12 @@ static status_t make_child(const struct spawn_args *a, const struct image *img, 
 {
     status_t st = load_child(a, img, name, c);
     struct handout hs = { .n = 0 };
-    st = gather_handles(a, c, (struct startup_msg *)msg, &hs, st);
+    /* Its own program, where the message has room for it after ours (5,
+     * the namespace's) and the extras. */
+    rights_t image = image_rights(a, img);
+    if (a->nextra + 6u + (a->ns ? 1u : 0u) > STARTUP_MAX_HANDLES)
+        image = 0;
+    st = gather_handles(a, c, image, (struct startup_msg *)msg, &hs, st);
     if (st == OK)
         st = start_child(a, c, msg, len, &hs);
     else
