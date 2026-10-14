@@ -121,9 +121,15 @@ void limine_entry(void)
         bi.tsc_hz_loader = tsc_req.response->frequency;
 
     /* Which disk the kernel came from: its MBR's disk id (0 on a GPT disk,
-     * or an MBR whose id is 0). */
-    if (kfile_req.response && kfile_req.response->executable_file)
-        bi.boot_disk_id = kfile_req.response->executable_file->mbr_disk_id;
+     * or an MBR whose id is 0), and its GPT disk GUID (zeros on an MBR
+     * disk). Limine's limine_uuid holds the GUID's bytes as they are on the
+     * disk: three little-endian fields, then eight bytes. */
+    if (kfile_req.response && kfile_req.response->executable_file) {
+        struct limine_file *f = kfile_req.response->executable_file;
+        bi.boot_disk_id = f->mbr_disk_id;
+        _Static_assert(sizeof(f->gpt_disk_uuid) == sizeof(bi.boot_disk_guid), "a GUID");
+        __builtin_memcpy(bi.boot_disk_guid, &f->gpt_disk_uuid, sizeof(bi.boot_disk_guid));
+    }
 
     if (mp_req.response) {
         struct limine_mp_response *mp = mp_req.response;

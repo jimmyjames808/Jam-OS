@@ -93,6 +93,9 @@ struct boot_info {
                                                       * (physical; kexec), 0 if none */
     uint32_t boot_disk_id;                           /* the MBR disk id of the disk the
                                                       * kernel was read from, 0: unknown */
+    uint8_t  boot_disk_guid[16];                     /* its GPT disk GUID, the bytes on
+                                                      * disk; zeros: an MBR disk, or
+                                                      * unknown */
     uint32_t cpu_count;                              /* entries in cpus[] */
     uint32_t bsp_lapic_id;                           /* the CPU running the boot code */
     int      x2apic;                                 /* loader switched the APICs to x2APIC mode */
@@ -114,11 +117,27 @@ void boot_start_cpu(const struct boot_cpu *cpu, void (*entry)(void *), void *arg
 /* Kernel entry after the loader-specific glue has filled in boot_info. */
 _Noreturn void kmain(struct boot_info *bi);
 
-/* The MBR disk id of the disk this kernel was booted from (main.c): the
- * loader's, or after a kexec the boot word bootdisk=N the previous kernel
- * passed on; 0 if unknown. init and devmgr get it as the word
- * bootdisk=0x<hex> (devmgr's boot disk). */
-uint32_t boot_disk_id(void);
+/* The disk this kernel was booted from (main.c), named one of two ways:
+ * an MBR disk (a stick) by its MBR disk id, a GPT disk (an installed
+ * NVMe drive) by its disk GUID. Each is the loader's, or after a kexec the
+ * previous kernel's, passed on as the boot word bootdisk=N (the MBR id, in
+ * decimal) or bootdisk=gpt:<GUID>. init gets the word bootdisk=0x<hex> or
+ * bootdisk=gpt:<GUID> and passes it to volumes (its boot disk).
+ * boot_disk_id: the MBR disk id, 0 if the disk is GPT or unknown.
+ * boot_disk_gpt: the GPT disk GUID's printed form (36 characters,
+ * lowercase, 8-4-4-4-12 as UEFI prints it), NULL if the disk is MBR or
+ * unknown. At most one of the two is set. */
+uint32_t    boot_disk_id(void);
+const char *boot_disk_gpt(void);
+
+/* The printed form of a GUID held as its bytes on disk (the first three
+ * fields little-endian), into out (BOOT_GUID_TEXT bytes, terminated). */
+#define BOOT_GUID_TEXT 37
+void boot_guid_text(const uint8_t guid[16], char out[BOOT_GUID_TEXT]);
+/* The first n bytes of s as a GUID's printed form: exactly 36 characters,
+ * hex digits with a dash at 8, 13, 18 and 23, either case, and not all
+ * zeros. Lowercased into out; false (out empty) if they aren't one. */
+bool boot_guid_parse(const char *s, size_t n, char out[BOOT_GUID_TEXT]);
 
 /* The loader's memory map, as the "memmap" boot word prints it (main.c;
  * the shell's `memmap` through debug_command). */

@@ -4,6 +4,7 @@
  * changing nothing, the next kernel's command line and the crash-loop
  * rule. */
 #include <stddef.h>
+#include <jam/boot.h>
 #include <jam/kexec.h>
 #include <jam/kexec_handoff.h>
 #include <jam/kprintf.h>
@@ -289,9 +290,19 @@ KTEST(kexec_next_cmdline_words)
     /* The compositor's test scene is a test; `nocomp` is gone (M12's Q14). */
     kexec_next_cmdline("nocomp comptest comp", buf, sizeof(buf));
     KT_ASSERT(!strcmp(buf, ""));
-    /* The disk the machine booted from goes on from kernel to kernel. */
+    /* The disk the machine booted from goes on from kernel to kernel: a
+     * stick's MBR id, an installed drive's GPT disk GUID. */
     kexec_next_cmdline("shell bootdisk=3792991605 init", buf, sizeof(buf));
     KT_ASSERT(!strcmp(buf, "shell bootdisk=3792991605"));
+    kexec_next_cmdline("shell bootdisk=gpt:0f6e1c52-9a3b-4d07-8e21-5c4b3a291807 ktest=x", buf,
+                       sizeof(buf));
+    KT_ASSERT(!strcmp(buf, "shell bootdisk=gpt:0f6e1c52-9a3b-4d07-8e21-5c4b3a291807"));
+    /* ... whole or not at all: a line cut to fit leaves the GUID out, never
+     * half of it. */
+    char mid[48];
+    kexec_next_cmdline("shell bootdisk=gpt:0f6e1c52-9a3b-4d07-8e21-5c4b3a291807", mid,
+                       sizeof(mid));
+    KT_ASSERT(!strcmp(mid, "shell"));
     kexec_next_cmdline("", buf, sizeof(buf));
     KT_ASSERT(!strcmp(buf, ""));
     /* The firmware reset's starting method is the machine's; reset=none
@@ -307,6 +318,38 @@ KTEST(kexec_next_cmdline_words)
     /* A word that only starts like a kept one is not kept. */
     kexec_next_cmdline("verbosely crashkernel= nousbx", buf, sizeof(buf));
     KT_ASSERT(!strcmp(buf, ""));
+}
+
+/* The boot disk's GPT disk GUID: its printed form from the bytes on disk
+ * (the first three fields little-endian), the word's value read back
+ * strictly (36 characters, dashes in place, either case, lowercased),
+ * anything else refused. */
+KTEST(kexec_bootdisk_gpt_word)
+{
+    static const uint8_t g[16] = { 0x52, 0x1c, 0x6e, 0x0f, 0x3b, 0x9a, 0x07, 0x4d,
+                                   0x8e, 0x21, 0x5c, 0x4b, 0x3a, 0x29, 0x18, 0x07 };
+    char t[BOOT_GUID_TEXT];
+    boot_guid_text(g, t);
+    KT_ASSERT(!strcmp(t, "0f6e1c52-9a3b-4d07-8e21-5c4b3a291807"));
+    char out[BOOT_GUID_TEXT];
+    KT_ASSERT(boot_guid_parse(t, strlen(t), out));
+    KT_ASSERT(!strcmp(out, t));
+    const char *upper = "0F6E1C52-9A3B-4D07-8E21-5C4B3A291807";
+    KT_ASSERT(boot_guid_parse(upper, strlen(upper), out));
+    KT_ASSERT(!strcmp(out, t));
+    static const char *const bad[] = {
+        "",
+        "0f6e1c52-9a3b-4d07-8e21-5c4b3a29180",     /* one short */
+        "0f6e1c52-9a3b-4d07-8e21-5c4b3a2918070",   /* one long */
+        "0f6e1c52-9a3b-4d07-8e21_5c4b3a291807",    /* a dash missing */
+        "0f6e1c52-9a3b-4d07-8e21-5c4b3a29180g",    /* not hex */
+        "0f6e1c529-a3b-4d07-8e21-5c4b3a291807",    /* a dash out of place */
+        "00000000-0000-0000-0000-000000000000",    /* none */
+    };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        KT_ASSERT(!boot_guid_parse(bad[i], strlen(bad[i]), out));
+        KT_ASSERT(!out[0]);
+    }
 }
 
 /* Every vlan word is kept (a VLAN, untagged, off, or one that means

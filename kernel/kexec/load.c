@@ -12,8 +12,9 @@
  * words that describe the machine and how the boot looks: whichever way it
  * is started, after a reboot or after a panic in a test entry, it is a
  * plain boot to the shell. It also says which disk the machine booted
- * from (bootdisk=N, the MBR disk id: <jam/boot.h>), which only the
- * loader knew. */
+ * from (bootdisk=N, a stick's MBR disk id, or bootdisk=gpt:<GUID>, an
+ * installed drive's GPT disk GUID: <jam/boot.h>), which only the loader
+ * knew. */
 #include <jam/boot.h>
 #include <jam/bootfs.h>
 #include <jam/cmdline.h>
@@ -152,15 +153,30 @@ void kexec_next_cmdline(const char *from, char *buf, size_t size)
     }
 }
 
+/* Does the line have a bootdisk= word? */
+static bool has_bootdisk(const char *line)
+{
+    for (const char *p = line; *p; p++)
+        if ((p == line || p[-1] == ' ') && starts_with(p, "bootdisk="))
+            return true;
+    return false;
+}
+
 /* The stored kernel's command line: kexec_next_cmdline's, and the boot
- * disk if the loader named it (after a kexec the word is kept already). */
+ * disk if the loader named it (after a kexec the word is kept already):
+ * bootdisk=gpt:<GUID> for a GPT disk, bootdisk=N for an MBR one. */
 static void stored_cmdline(char *buf, size_t size)
 {
     kexec_next_cmdline(cmdline_get(), buf, size);
-    if (!boot_disk_id() || cmdline_get_u64("bootdisk", 0, 0))
+    if (has_bootdisk(buf))
         return;
-    char w[24];
-    ksnprintf(w, sizeof(w), "bootdisk=%u", boot_disk_id());
+    char w[16 + BOOT_GUID_TEXT];
+    if (boot_disk_gpt())
+        ksnprintf(w, sizeof(w), "bootdisk=gpt:%s", boot_disk_gpt());
+    else if (boot_disk_id())
+        ksnprintf(w, sizeof(w), "bootdisk=%u", boot_disk_id());
+    else
+        return;
     (void)append_word(buf, size, strlen(buf), w, strlen(w));   /* no room: left out */
 }
 
