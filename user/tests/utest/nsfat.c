@@ -137,10 +137,10 @@ int fat_shell(void)
         st = ns_mount("/data", fs);
     if (st == OK)
         st = new_job(&job);
-    const char *argv[] = { "bin/shell" };
+    const char *argv[] = { "bin/shell", "runlines" };   /* says the run: lines */
     struct spawn_handle x = { SR_CONSOLE, startup_handle(SR_CONSOLE) };
     struct spawn_args a = {
-        .path = "bin/shell", .argc = 1, .argv = argv, .job = job, .extra = &x,
+        .path = "bin/shell", .argc = 2, .argv = argv, .job = job, .extra = &x,
         .nextra = x.h ? 1 : 0, .ns = NS_ALL,
     };
     if (st == OK)

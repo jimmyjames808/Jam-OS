@@ -34,10 +34,10 @@ static status_t start_shell(handle_t *ns)
     status_t st = jam_job_create(startup_handle(SR_JOB), 0, &job);
     if (st != OK)
         return st;
-    const char *argv[] = { "bin/shell" };
+    const char *argv[] = { "bin/shell", "runlines" };   /* says the run: lines */
     struct spawn_handle x = { SR_CONSOLE, startup_handle(SR_CONSOLE) };
     struct spawn_args a = {
-        .path = "bin/shell", .argc = 1, .argv = argv, .job = job, .extra = &x,
+        .path = "bin/shell", .argc = 2, .argv = argv, .job = job, .extra = &x,
         .nextra = x.h ? 1 : 0, .ns = NS_ALL, .ns_out = ns,
     };
     st = spawn(&a, &proc);
