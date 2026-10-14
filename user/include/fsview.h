@@ -15,13 +15,21 @@
 
 #define FS_VIEW_READ_ONLY 1u   /* every change refused; statfs says read-only */
 #define FS_VIEW_GUARD_ETC 2u   /* every change at or under the top-level `etc` refused */
-#define FS_VIEW_FLAGS     3u   /* all of them: any other bit is ERR_INVALID_ARGS */
+#define FS_VIEW_HIDE_KEYS 4u   /* every request at or under `etc/ssh` refused, reads too:
+                                * the SSH server's host key (init's ssh.c) is only for the
+                                * views made for it (<os.h> "grants": `:rk`) */
+#define FS_VIEW_FLAGS     7u   /* all of them: any other bit is ERR_INVALID_ARGS */
 
 /* Is the cleaned path (fs_path_clean's form: names joined by '/', none
  * leading) at or under the top-level `etc` directory? The first name is
  * compared without ASCII case and without leading spaces or trailing dots
  * and spaces, which FAT ignores, so "ETC", "etc." and " Etc" are etc. */
 bool     fs_view_in_etc(const char *clean);
+/* Is the cleaned path at or under `etc/ssh` (both names compared as
+ * fs_view_in_etc compares `etc`)? A whole directory, not its files by
+ * name: FAT also opens a file by its short name (`ED2551~1.SK`), which a
+ * check of the file's own name would let past. */
+bool     fs_view_in_keys(const char *clean);
 /* Whether a view with `flags` may make the request of n bytes at req:
  * OK, or ERR_ACCESS_DENIED. A request this can't read (too short, not an
  * fs method, a path it can't take apart) is OK here: the protocol's own

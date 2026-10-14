@@ -22,6 +22,14 @@
  * terminal for all three, or `> f 2>&1`'s file with one offset for both
  * writers, as on Unix.
  *
+ * The programs of one line share one terminal, as a Unix pipeline's do:
+ * the first that needs it opens it and the shell keeps a duplicate of its
+ * two handles, which every later program of the line is given copies of
+ * (the console then has one tty client for them all: one focus, one line
+ * discipline). Opened per program, the newest would have the keys, and in
+ * `cat | wc` what is typed would go to wc's terminal, which wc never reads.
+ * The shell lets its copy go once the line's programs have all ended.
+ *
  * A file is opened here, once, and the open itself goes to the program
  * (file_give: its file channel and buffer), so the program holds the
  * file's only open and the shell none: fat lets one open write a file, and
@@ -74,6 +82,10 @@ static struct {
     struct source        src[3];
     unsigned             nsrc;
 } st;
+
+/* The line's terminal (the console's tty channel and data channel): our
+ * duplicates, while programs of the line may still be started (0: none). */
+static handle_t line_tty[2];
 
 /* The redirections of the command about to run (sh_exec.c). */
 static const struct sh_redir *pending;
@@ -163,6 +175,40 @@ static status_t open_file(struct source *sc)
     return OK;
 }
 
+/* The program's terminal into h[0] (its tty channel) and h[1] (its data
+ * channel): copies of the line's, or one opened on its console channel,
+ * which becomes the line's. */
+static status_t open_term(handle_t console, handle_t h[2])
+{
+    status_t s;
+    if (line_tty[0]) {
+        s = jam_handle_duplicate(line_tty[0], RIGHT_SAME, &h[0]);
+        if (s == OK && (s = jam_handle_duplicate(line_tty[1], RIGHT_SAME, &h[1])) != OK)
+            jam_handle_close(h[0]);
+        return s;
+    }
+    s = console_open_tty_until(console, now() + TTY_WAIT_NS, &h[0], &h[1]);
+    if (s != OK)
+        return s;
+    handle_t keep[2] = { HANDLE_INVALID, HANDLE_INVALID };
+    if (jam_handle_duplicate(h[0], RIGHT_SAME, &keep[0]) == OK &&
+        jam_handle_duplicate(h[1], RIGHT_SAME, &keep[1]) == OK) {
+        line_tty[0] = keep[0];
+        line_tty[1] = keep[1];
+    } else if (keep[0]) {
+        jam_handle_close(keep[0]);   /* not shared: the next program opens its own */
+    }
+    return OK;
+}
+
+void sh_posix_line_done(void)
+{
+    for (int i = 0; i < 2; i++)
+        if (line_tty[i])
+            jam_handle_close(line_tty[i]);
+    line_tty[0] = line_tty[1] = HANDLE_INVALID;
+}
+
 /* Open source sc (sc->nh is what it holds afterwards); *out_r gets the
  * shell's end of an output pipe. console: the program's console channel,
  * for its terminal. */
@@ -171,7 +217,7 @@ static status_t open_source(struct source *sc, handle_t console, handle_t *out_r
     status_t s;
     switch (sc->spec.kind) {
     case SPEC_TERM:
-        s = console_open_tty_until(console, now() + TTY_WAIT_NS, &sc->h[0], &sc->h[1]);
+        s = open_term(console, sc->h);
         sc->nh = s == OK ? 2 : 0;
         return s;
     case SPEC_PIPE_OUT:

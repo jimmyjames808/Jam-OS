@@ -15,17 +15,33 @@ static char lower(char c)
     return c >= 'A' && c <= 'Z' ? (char)(c - 'A' + 'a') : c;
 }
 
-bool fs_view_in_etc(const char *clean)
+/* Is the name at s (up to its '/' or end; *len: that length) `want` (3
+ * lower-case letters) as FAT compares it: without ASCII case, leading
+ * spaces, or trailing dots and spaces? */
+static bool name_is(const char *s, size_t *len, const char *want)
 {
     size_t start = 0, end = 0;
-    while (clean[end] && clean[end] != '/')
+    while (s[end] && s[end] != '/')
         end++;
-    while (start < end && clean[start] == ' ')
+    *len = end;
+    while (start < end && s[start] == ' ')
         start++;
-    while (end > start && (clean[end - 1] == '.' || clean[end - 1] == ' '))
+    while (end > start && (s[end - 1] == '.' || s[end - 1] == ' '))
         end--;
-    return end - start == 3 && lower(clean[start]) == 'e' && lower(clean[start + 1]) == 't' &&
-           lower(clean[start + 2]) == 'c';
+    return end - start == 3 && lower(s[start]) == want[0] && lower(s[start + 1]) == want[1] &&
+           lower(s[start + 2]) == want[2];
+}
+
+bool fs_view_in_etc(const char *clean)
+{
+    size_t n;
+    return name_is(clean, &n, "etc");
+}
+
+bool fs_view_in_keys(const char *clean)
+{
+    size_t n, m;
+    return name_is(clean, &n, "etc") && clean[n] == '/' && name_is(clean + n + 1, &m, "ssh");
 }
 
 /* A path (len bytes) at or under etc. One that can't be cleaned counts as
@@ -34,6 +50,14 @@ static bool path_in_etc(const char *path, uint32_t len)
 {
     char clean[FS_PATH_LEN + 1];
     return fs_path_clean(path, len, clean) != OK || fs_view_in_etc(clean);
+}
+
+/* A path (len bytes) at or under etc/ssh; one that can't be cleaned
+ * counts, as for path_in_etc. */
+static bool path_in_keys(const char *path, uint32_t len)
+{
+    char clean[FS_PATH_LEN + 1];
+    return fs_path_clean(path, len, clean) != OK || fs_view_in_keys(clean);
 }
 
 /* A change at path (two paths for a rename, else to is NULL). */
@@ -59,6 +83,34 @@ static bool path_at(const void *req, uint32_t n, uint32_t *o, const char **path,
     return true;
 }
 
+/* For FS_VIEW_HIDE_KEYS: is any path of the request (n bytes) at or
+ * under etc/ssh? Every method that takes a path, reads included. */
+static bool touches_keys(const void *req, uint32_t n)
+{
+    static const struct { uint32_t ordinal, fixed; bool two; } with_paths[] = {
+        { FS_OPEN, sizeof(struct fs_open_req), false },
+        { FS_STAT, sizeof(struct fs_stat_req), false },
+        { FS_READDIR, sizeof(struct fs_readdir_req), false },
+        { FS_MKDIR, sizeof(struct fs_mkdir_req), false },
+        { FS_UNLINK, sizeof(struct fs_unlink_req), false },
+        { FS_RENAME, sizeof(struct fs_rename_req), true },
+    };
+    const struct idl_req_hdr *h = req;
+    for (unsigned i = 0; i < sizeof(with_paths) / sizeof(with_paths[0]); i++) {
+        if (h->ordinal != with_paths[i].ordinal)
+            continue;
+        const char *path;
+        uint32_t len, o = with_paths[i].fixed;
+        if (n < o || !path_at(req, n, &o, &path, &len))
+            return false;   /* the dispatch refuses it */
+        if (path_in_keys(path, len))
+            return true;
+        return with_paths[i].two && path_at(req, n, &o, &path, &len) &&
+               path_in_keys(path, len);
+    }
+    return false;
+}
+
 status_t fs_view_check(uint32_t flags, const void *req, uint32_t n)
 {
     const struct idl_req_hdr *h = req;
@@ -66,6 +118,8 @@ status_t fs_view_check(uint32_t flags, const void *req, uint32_t n)
     uint32_t len = 0, to_len = 0, o = 0;
     if (!flags || n < sizeof(*h))
         return OK;
+    if ((flags & FS_VIEW_HIDE_KEYS) && touches_keys(req, n))
+        return ERR_ACCESS_DENIED;
     switch (h->ordinal) {
     case FS_OPEN: {
         const struct fs_open_req *q = req;

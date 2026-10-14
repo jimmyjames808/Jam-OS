@@ -2094,10 +2094,14 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
   service hands out narrower channels onto the same volume (`fs.view`,
   `<fsview.h>`): read-only (every change refused, `statfs` says so), or
   with the volume's top-level `etc` guarded (no change at or under it,
-  however the name is spelled); the service checks every request on a
-  view before its own code sees it (fat and libos's fsserver). **Grants**:
+  however the name is spelled), and without `etc/ssh` (no request there at
+  all, reads included: the SSH server's host key); the service checks
+  every request on a view before its own code sees it (fat and libos's
+  fsserver). **Grants**:
   a starter names what a child gets (`<os.h>` "grants"): everything as
-  it has it, one mount as it is or as a view (`/data:r`, `/data:w`), every
+  it has it, one mount as it is or as a view (`/data:r`, `/data:w`, both
+  without `etc/ssh`; `/data:rk`, read-only with it, which only C code
+  writes: init's grant to sshd and sshd's to its children), every
   other stick (`/usb*`), every mount as views (`*:r`, `*:w`), a service;
   the views are made before the child starts. A POSIX `open()` sits on
   top of the namespace in the POSIX layer's file calls (`user/posix/sys/`,

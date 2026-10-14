@@ -20,7 +20,8 @@
  *                             only for a service (bin/serve), and `allow`
  *                             never for a program on /data
  *     mount <point> r|rw      a mount, read-only or writable (writable
- *                             leaves the top-level `etc` alone); <point>
+ *                             leaves the top-level `etc` alone; neither
+ *                             shows `etc/ssh`, the host key); <point>
  *                             is /boot, /esp, /data, /usb* (every other
  *                             stick) or * (every mount)
  *     right <name>            klog, sysinfo, clock or debug: that power on

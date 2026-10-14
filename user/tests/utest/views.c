@@ -3,7 +3,9 @@
  * every change and says so in statfs; a guarded one refuses changes at or
  * under the top-level etc however the path is spelled; a view of a view
  * keeps both; a bad flag, and more views than fat serves, are refused;
- * the views go when fat does. And fs_view_in_etc's own rules. */
+ * the views go when fat does. And fs_view_in_etc's own rules; a view that
+ * hides etc/ssh (FS_VIEW_HIDE_KEYS) refuses every request there, by any
+ * name, and fs_view_in_keys's rules. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -23,6 +25,19 @@ bool t_view_etc_names(void)
         CHECK(fs_view_in_etc(in[i]));
     for (unsigned i = 0; i < sizeof(out) / sizeof(out[0]); i++)
         CHECK(!fs_view_in_etc(out[i]));
+    return true;
+}
+
+bool t_view_keys_names(void)
+{
+    static const char *const in[] = { "etc/ssh", "etc/ssh/.ed25519.sk", "ETC/SSH/x",
+                                      "etc./ssh./ED2551~1.SK", " etc/ ssh/x", "Etc/Ssh .." };
+    static const char *const out[] = { "", "etc", "etc/sshd", "etc/allow", "ssh/x",
+                                       "x/etc/ssh", "etc/s/ssh", "etcssh" };
+    for (unsigned i = 0; i < sizeof(in) / sizeof(in[0]); i++)
+        CHECK(fs_view_in_keys(in[i]));
+    for (unsigned i = 0; i < sizeof(out) / sizeof(out[0]); i++)
+        CHECK(!fs_view_in_keys(out[i]));
     return true;
 }
 
@@ -97,12 +112,66 @@ bool t_fat_views(void)
         return false;
     CHECK_ST(jam_handle_close(both.fs), OK);
     handle_t bad;
-    CHECK_ST(fs_view_until(r.fs, now() + FAT_CALL_NS, 4, &bad), ERR_INVALID_ARGS);
+    CHECK_ST(fs_view_until(r.fs, now() + FAT_CALL_NS, 8, &bad), ERR_INVALID_ARGS);
     /* The whole channel itself still changes etc. */
     CHECK(put_file(&r, "/etc/allow", "z"));
     CHECK(file_is(&g, "/etc/allow", "z"));
     CHECK_ST(jam_handle_close(ro.fs), OK);
     CHECK_ST(jam_handle_close(g.fs), OK);
+    return fat_stop(&r);
+}
+
+/* FS_VIEW_HIDE_KEYS: nothing at or under etc/ssh, however it is named,
+ * by FAT's short name too; the rest of etc and of the volume as the view's
+ * other flags say; a view of it can't show them again. */
+static bool hides_keys(const struct fatrun *v)
+{
+    struct tfile f;
+    static const char *const keys[] = { "/etc/ssh/.ed25519.sk", "/ETC/SSH/.ed25519.sk",
+                                        "/x/../etc/ssh/.ed25519.sk", "/etc./ssh /.ed25519.sk",
+                                        "/etc/ssh/ED2551~1.SK" };
+    for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++)
+        CHECK_ST(t_open(v, keys[i], FS_READ, &f), ERR_ACCESS_DENIED);
+    uint64_t size = 0;
+    uint8_t dir = 0;
+    CHECK_ST(fs_stat_until(v->fs, now() + FAT_CALL_NS, "/etc/ssh", 8, &size, &dir, NULL, NULL),
+             ERR_ACCESS_DENIED);
+    static struct tbatch b;
+    CHECK_ST(fs_readdir_until(v->fs, now() + FAT_CALL_NS, "/etc/ssh", 8, 0, &b.next, &b.count,
+                              b.entries, &b.len), ERR_ACCESS_DENIED);
+    CHECK_ST(t_rename(v, "/etc/ssh/.ed25519.sk", "/k"), ERR_ACCESS_DENIED);
+    CHECK(file_is(v, "/etc/allow", "x"));   /* the rest of etc reads */
+    CHECK(file_is(v, "/a.txt", "a"));
+    return true;
+}
+
+bool t_fat_view_keys(void)
+{
+    struct fatrun r, h, ro, again;
+    if (!ramdisk_create(&disk, 16 * MIB_SECTORS) || !fat_start(&r, &disk, false))
+        return false;
+    CHECK(put_file(&r, "/a.txt", "a"));
+    CHECK_ST(t_mkdir(&r, "/etc"), OK);
+    CHECK(put_file(&r, "/etc/allow", "x"));
+    CHECK_ST(t_mkdir(&r, "/etc/ssh"), OK);
+    CHECK(put_file(&r, "/etc/ssh/.ed25519.sk", "secret"));
+    /* The short name FAT made for it opens it on the whole channel. */
+    CHECK(file_is(&r, "/etc/ssh/ED2551~1.SK", "secret"));
+    if (!view_of(&r, FS_VIEW_HIDE_KEYS, &h) || !hides_keys(&h))
+        return false;
+    if (!view_of(&r, FS_VIEW_READ_ONLY | FS_VIEW_HIDE_KEYS, &ro) || !hides_keys(&ro) ||
+        !refuses_changes(&ro))
+        return false;
+    if (!view_of(&h, 0, &again) || !hides_keys(&again))   /* never wider */
+        return false;
+    CHECK_ST(jam_handle_close(again.fs), OK);
+    /* A read-only view without it (sshd's `:rk`) reads the key. */
+    if (!view_of(&r, FS_VIEW_READ_ONLY, &again) || !file_is(&again, "/etc/ssh/.ed25519.sk",
+                                                             "secret"))
+        return false;
+    CHECK_ST(jam_handle_close(again.fs), OK);
+    CHECK_ST(jam_handle_close(h.fs), OK);
+    CHECK_ST(jam_handle_close(ro.fs), OK);
     return fat_stop(&r);
 }
 

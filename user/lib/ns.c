@@ -600,9 +600,13 @@ static bool parse_grant(const char *s, struct grant *g)
         g->all = true;
         return true;
     }
-    size_t n = strnlen(s, NS_NAME_MAX + 3);
-    if (n >= 2 && s[n - 2] == ':' && (s[n - 1] == 'r' || s[n - 1] == 'w')) {
-        g->view = s[n - 1] == 'r' ? FS_VIEW_READ_ONLY : FS_VIEW_GUARD_ETC;
+    size_t n = strnlen(s, NS_NAME_MAX + 4);
+    if (n >= 3 && !strcmp(s + n - 3, ":rk")) {
+        g->view = FS_VIEW_READ_ONLY;   /* the host key's own (sshd's) */
+        n -= 3;
+    } else if (n >= 2 && s[n - 2] == ':' && (s[n - 1] == 'r' || s[n - 1] == 'w')) {
+        /* A program's view: the host key never in it. */
+        g->view = (s[n - 1] == 'r' ? FS_VIEW_READ_ONLY : FS_VIEW_GUARD_ETC) | FS_VIEW_HIDE_KEYS;
         n -= 2;
     }
     if (n == 1 && s[0] == '*' && g->view) {

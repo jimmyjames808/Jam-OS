@@ -25,8 +25,10 @@
  * Output. The client's messages (at most TTY_OUT_MAX bytes) go through
  * `ld`'s output processing (OPOST) to the back end, as a client's
  * console.write would, in turns with a budget, and not while the back end
- * is congested. drain, and set_attr after a drain, are answered later:
- * once its output has been read empty.
+ * is congested; and what is queued is shown before any client's request is
+ * served (ttys_show_queued), so the lines a program wrote before it ended
+ * come before the shell's that follow it. drain, and set_attr after a
+ * drain, are answered later: once its output has been read empty.
  *
  * Each tty has a struct client of its own (its level is its opener's), so
  * the modes its output asks for (bracketed paste, application cursor
@@ -72,6 +74,9 @@ static struct ldisc ld;
 static struct ttyc *echo_to;        /* whose input is being typed: the echo goes as its output */
 static uint32_t out_pending;        /* bit i: ttys[i]'s output had messages left after its turn */
 static uint32_t out_deferred;       /* ... or the back end was congested */
+static uint32_t held_ttys;          /* bit i: ttys[i]'s requests left unserved, its answers
+                                     * unread past the protocol's bound (held) */
+static struct idl_held held_reqs;
 static uint64_t push_retry_at;      /* a data channel was full (0: no retry due) */
 static bool refocus;                /* the focus changed: deliver at the next turn */
 static uint8_t msg[LD_REC_MAX];     /* one message, in or out */
@@ -173,38 +178,56 @@ static void out_gone(struct ttyc *t)
     ttys_hang_up(slot_of(t));
 }
 
-/* One turn of t's output: messages shown until none is left (the
- * waits are answered), the budget runs out (pending) or the back end is
- * congested (deferred). */
-static void out_turn(struct ttyc *t)
+/* t's output shown: messages until none is left (the waits are answered;
+ * true), max of them have been or ns has passed (pending), or the back end
+ * is congested (deferred; false). */
+static bool out_run(struct ttyc *t, unsigned max, uint64_t ns)
 {
     uint32_t bit = 1u << slot_of(t);
     out_pending &= ~bit;
     out_deferred &= ~bit;
     if (!t->used)
-        return;
+        return true;
     uint64_t t0 = now();
     klog_event();   /* kernel lines logged before this output go above it */
-    for (unsigned k = 0; k < OUT_BUDGET && now() - t0 < OUT_BUDGET_NS; k++) {
+    for (unsigned k = 0; k < max && now() - t0 < ns; k++) {
         if (back->congested && back->congested()) {
             out_deferred |= bit;
-            return;
+            return false;
         }
         long n = out_take(t);
         if (n == -1) {
             answer_waits(t);
             if (t->closing)
                 ttys_hang_up(slot_of(t));   /* all it wrote is shown */
-            return;
+            return true;
         }
         if (n == -2) {
             out_gone(t);
-            return;
+            return true;
         }
         size_t m = ld_output(&ld, msg, (size_t)n, shown);
         show(t, shown, m);
     }
     out_pending |= bit;
+    return true;
+}
+
+/* One turn of t's output, in the loop's budget. */
+static void out_turn(struct ttyc *t)
+{
+    (void)out_run(t, OUT_BUDGET, OUT_BUDGET_NS);
+}
+
+bool ttys_show_queued(void)
+{
+    /* At most a channel's queue each: every message written before the
+     * request came is among them, and a program writing flat out can't
+     * hold the request back for longer than that. */
+    for (unsigned i = 0; i < MAX_TTYS; i++)
+        if (ttys[i].used && !out_run(&ttys[i], CHANNEL_MAX_QUEUED, UINT64_MAX))
+            return false;
+    return true;
 }
 
 /* Throw away the output t wrote and we haven't shown. */
@@ -486,6 +509,7 @@ static void slot_free(struct ttyc *t)
     jam_handle_close(t->peer);
     out_pending &= ~(1u << i);
     out_deferred &= ~(1u << i);
+    held_ttys &= ~(1u << i);
     memset(t, 0, sizeof(*t));
 }
 
@@ -579,7 +603,13 @@ void tty_event(uint32_t kind, uint32_t i)
         out_turn(t);
         return;
     }
+    held_ttys &= ~(1u << i);
     for (unsigned k = 0; k < REQ_BUDGET; k++) {
+        if (!t->closing && tty_unread_full(t->ch)) {   /* it reads its answers first */
+            held_ttys |= 1u << i;
+            idl_hold(&held_reqs);
+            return;
+        }
         status_t st = tty_serve_one(t->ch, &tty_ops, t);
         if (st == ERR_SHOULD_WAIT)
             return;
@@ -602,13 +632,18 @@ uint64_t ttys_deadline(void)
         return 0;
     /* What ld holds waits for a reader: the newest tty's channel to take
      * more (push_retry_at), or a focus to change. */
-    if (!ld_ready(&ld) || focus_top_tty() < 0)
-        return DEADLINE_NEVER;
-    return push_retry_at ? push_retry_at : 0;
+    uint64_t d = DEADLINE_NEVER;
+    if (ld_ready(&ld) && focus_top_tty() >= 0)
+        d = push_retry_at;   /* 0: now */
+    return idl_held_deadline(&held_reqs, d);
 }
 
 void ttys_pump(void)
 {
+    if (idl_held_due(&held_reqs)) {   /* the held ones again: served if they have read */
+        out_pending |= held_ttys;
+        held_ttys = 0;
+    }
     uint32_t p = out_pending;
     for (unsigned i = 0; i < MAX_TTYS; i++) {
         if (!(p & 1u << i))

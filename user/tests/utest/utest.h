@@ -346,6 +346,8 @@ int  ns_svc_child(const char *name);   /* "utest ns-svc <name>|-" */
 int  ns_view_child(const char *how);   /* "utest ns-view r|w" */
 bool t_view_etc_names(void);
 bool t_fat_views(void);
+bool t_view_keys_names(void);
+bool t_fat_view_keys(void);
 bool t_fat_view_limits(void);
 
 /* rights.c: the root's powers, vmo_make_exec and _verified. */
@@ -682,6 +684,8 @@ bool t_con_conn_stop(void);
 bool t_con_tty_canonical(void);
 bool t_con_tty_raw(void);
 bool t_con_tty_focus(void);
+bool t_con_tty_order(void);
+bool t_con_tty_unread(void);
 /* conpaint.c: the console's cells drawn (cellpaint.c, linked in). */
 bool t_conpaint_metrics(void);
 bool t_conpaint_cells(void);

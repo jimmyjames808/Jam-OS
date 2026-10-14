@@ -584,8 +584,10 @@ static inline status_t fs_view_call(handle_t ch, bool idl_within, uint64_t idl_t
 /* A narrower channel onto this filesystem (a "view"), for a program that
  * should have less of it than the caller: flags FS_VIEW_READ_ONLY 1 (every
  * request that would change the volume is ERR_ACCESS_DENIED, and statfs
- * says read-only) and FS_VIEW_GUARD_ETC 2 (the same for anything at or
- * under the volume's top-level `etc` directory) (<fsview.h>). The new
+ * says read-only), FS_VIEW_GUARD_ETC 2 (the same for anything at or
+ * under the volume's top-level `etc` directory) and FS_VIEW_HIDE_KEYS 4
+ * (every request at or under `etc/ssh`, reads too, is ERR_ACCESS_DENIED:
+ * the SSH server's host key) (<fsview.h>). The new
  * channel keeps this channel's own flags too, so a view is never wider
  * than the channel it came from. ERR_INVALID_ARGS: an unknown flag;
  * ERR_NO_RESOURCES: the service serves as many channels as it can. */

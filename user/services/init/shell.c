@@ -97,9 +97,10 @@ static const char *const sntp_grants[] = { "/svc/" SVC_NET_SYS, "/svc/" SVC_DNS_
 static const char *const serve_grants[] = { "/svc/" SVC_NET, "/svc/" SVC_NET_LISTEN_LOW, NULL };
 /* The SSH server: what its list says (`svc net listen low`: port 22; `svc
  * session`: each login's shell; `mount /data r`: the host key and the
- * authorized keys, for its tinysshds). */
+ * authorized keys, for its tinysshds). Its view of /data shows the host
+ * key (`:rk`); every program's hides it (<fsview.h>'s FS_VIEW_HIDE_KEYS). */
 static const char *const sshd_grants[] = { "/svc/" SVC_NET, "/svc/" SVC_NET_LISTEN_LOW,
-                                           "/svc/" SVC_SESSION, DATA_MOUNT ":r", NULL };
+                                           "/svc/" SVC_SESSION, DATA_MOUNT ":rk", NULL };
 static struct follower followers[NSVC] = {
     [SPLASH] = { .only = splash_grants }, [MUSIC] = { .only = music_grants },
     [LOGD] = { .only = logd_grants }, [NETLOG] = { .only = netlog_grants },

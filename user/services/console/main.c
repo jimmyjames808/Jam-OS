@@ -217,7 +217,7 @@ static int serve(void)
     while (!closing) {
         /* A client with requests left over: take what else is queued (a
          * key, another client) without sleeping, then give it another round. */
-        uint64_t deadline = clients_pending() ? 0 : DEADLINE_NEVER;
+        uint64_t deadline = clients_deadline();
         uint64_t more[3] = { back->deadline(), paste_deadline(), ttys_deadline() };
         for (unsigned i = 0; i < 3; i++)
             deadline = more[i] < deadline ? more[i] : deadline;

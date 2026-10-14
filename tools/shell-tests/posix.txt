@@ -230,6 +230,16 @@ wait {prompt}
 send pxio out after-$T
 wait after-x
 wait {prompt}
+# every word of the line reaches the program (it got 18 and lost the rest)
+send pxio args 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 last-$T
+wait pxio: 25 args, last last-x
+wait {prompt}
+# a program's last lines come before the shell's next ones: the console shows
+# what a terminal still has queued before it serves the shell's write
+send pxio seq 3000; echo seq-order-$T=$?
+wait 60 line 3000
+wait 30 seq-order-x=0
+wait {prompt}
 
 # ---- the terminal: typing to a program, end of file, Ctrl+C, the background ------------------------
 send pxio cat
@@ -302,6 +312,18 @@ wait {prompt}
 # yes never ends by itself: head ends, and yes gets SIGPIPE (a reader gone)
 send pxio yes | pxio head 3 | pxio count
 wait 30 pxio: 3 lines, 6 bytes
+wait {prompt}
+# what is typed reaches the first stage: the line's programs share one
+# terminal (opened per program, the last one's had the keys, and count
+# waited on cat for ever)
+send pxio cat | pxio count; echo pipe-typed-$T=$?
+wait run: bin/pxio started
+sleep 1
+send one
+send two
+type \x04
+wait 30 pxio: 2 lines, 8 bytes
+wait pipe-typed-x=0
 wait {prompt}
 # the status is the last stage's
 send pxio out x | pxio exit 5; echo st-$T=$?

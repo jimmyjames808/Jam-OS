@@ -302,6 +302,11 @@ void ttys_refocus(void);
 uint64_t ttys_deadline(void);
 void ttys_pump(void);
 void ttys_resume(void);
+/* The tty output queued so far, shown before a client's request is served
+ * (the shell's prompt after a program's last lines, not among them): false
+ * if the back end is congested first (the request waits, as for
+ * back->congested). */
+bool ttys_show_queued(void);
 /* The terminal's size changed: every tty client is told. */
 void ttys_resized(void);
 
@@ -514,9 +519,11 @@ bool clients_show_all(void);
 /* Client i's channel is readable (or gone): serve one round of its
  * requests, at most CLIENT_BUDGET of them or CLIENT_BUDGET_NS. */
 void client_event(unsigned i);
-/* Some client still had requests queued when its round ended: the main
- * loop must not sleep, and calls clients_serve_pending for another round. */
-bool clients_pending(void);
+/* When the loop must come back for the clients: 0 when some client still
+ * had requests queued when its round ended (clients_serve_pending gives it
+ * another), else when the ones held for their unread answers are looked
+ * at again (DEADLINE_NEVER: none). */
+uint64_t clients_deadline(void);
 void clients_serve_pending(void);
 /* The back end was congested (back->congested) and no longer is: the
  * clients whose requests waited get a round. */

@@ -1052,7 +1052,8 @@ both. Where they meet:
    `allow`ed, run.
 5. Robustness: the Mac's Wi-Fi dropped mid-session (the session ends
    within tinyssh's timeout, nothing left running), `kill sshd` (init
-   starts it again; the open sessions go on), `reboot` with a session open.
+   starts it again; its open sessions end: the owner's choice, 2026-10-11),
+   `reboot` with a session open.
 6. `bench` (the new lines, the reply-and-wait line against M12's).
 7. **All tests and `soak 10`** with the second stick mounted read-write
    and pulled and replugged (the sign-off tier), and an SSH session open

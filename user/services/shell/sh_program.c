@@ -463,6 +463,7 @@ int sh_pipe_settle(void)
         cancels |= prog[i].cancels;
     }
     nprog = 0;
+    sh_posix_line_done();   /* the terminal they shared: the next line opens its own */
     /* A POSIX program that took SIGINT and went on (or ended its own way)
      * has dealt with the key: the rest of the line runs, as in any shell. */
     if (int_sent && !cancels)
@@ -563,6 +564,8 @@ static int start_failed(struct started *s, status_t st, bool said)
         jam_handle_close(s->out_r);
     jam_handle_close(s->sig);
     jam_handle_close(s->job);
+    if (!nprog)
+        sh_posix_line_done();   /* a terminal opened for it alone: nobody to share it */
     return said ? 1 : 126;
 }
 
@@ -604,10 +607,12 @@ static int start_program(int argc, char **argv, bool bg, struct started *s)
         x[nx++] = (struct spawn_handle){ SR_SIGNALS, theirs };   /* kill's way to it */
     }
     char **env = s->posix ? sh_make_env_posix() : sh_make_env();
-    const char *args[20];
+    /* Every word the line gave it (a line has at most SH_MAX_WORDS); a
+     * start message too big for them all is spawn's to refuse, and said. */
+    const char *args[SH_MAX_WORDS + 1];
     int n = 0;
     args[n++] = s->path;
-    for (int i = 1; i < argc && n < 19; i++)
+    for (int i = 1; i < argc && n < SH_MAX_WORDS; i++)
         args[n++] = argv[i];
     args[n] = NULL;
     struct posixfds_out ho;

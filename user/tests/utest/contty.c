@@ -19,7 +19,15 @@
  * go to the tty, ISIG's Ctrl+C to the shell's keys and not the tty; a line
  * typed ahead and not read, and a line half typed, reach the shell's keys
  * when the tty closes; an output message past TTY_OUT_MAX hangs the tty
- * up; nine ttys are one too many. */
+ * up; nine ttys are one too many.
+ *
+ * t_con_tty_order: a client's write that comes while a tty's output is
+ * still queued (the shell's prompt after a program's last lines) is shown
+ * after that output, also when both waited for a full master.
+ *
+ * t_con_tty_unread: a tty client, and a console client, that send
+ * requests and read none of the answers are answered up to the protocol's
+ * unread bound and held there; reading lets the rest through. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -338,5 +346,130 @@ bool t_con_tty_focus(void)
 {
     const char *argv[] = { "console", "conn" };
     bool ok = rig_start(argv, 2, false) && focus_flow();
+    return rig_stop(ok) && ok;
+}
+
+/* ---- 4. a client's write after a tty's output ----------------------------------------- */
+
+#define ORDER_MSG   2000u    /* bytes of each tty output message (under TTY_OUT_MAX) */
+#define ORDER_MOST  8000u    /* messages written at most (16 MB): the console is stuck sooner */
+#define ORDER_STUCK 300u     /* ms the tty stays full once the console stopped reading it */
+
+/* Fill t's output until the console stops reading it (the master, which
+ * nobody reads, and then its ring are full): the number of the last
+ * message written, each "seq NNNNN xxx...\n"; 0 if it never stopped. */
+static unsigned fill_until_stuck(const struct tty_client *t)
+{
+    static char m[ORDER_MSG];
+    for (unsigned i = 1; i <= ORDER_MOST;) {
+        memset(m, 'x', sizeof(m));
+        int k = snprintf(m, sizeof(m), "seq %05u ", i);
+        m[k] = 'x';
+        m[sizeof(m) - 1] = '\n';
+        status_t st = jam_channel_write(t->data, m, sizeof(m), NULL, 0);
+        if (st == OK) {
+            i++;
+            continue;
+        }
+        signals_t seen;
+        if (st != ERR_SHOULD_WAIT ||
+            jam_object_wait_one(t->data, SIG_WRITABLE, now() + ORDER_STUCK * NS_PER_MS,
+                                &seen) != OK)
+            return st == ERR_SHOULD_WAIT ? i - 1 : 0;
+    }
+    return 0;
+}
+
+/* A program's output still queued when a client writes (the shell's prompt
+ * after the program ended) is shown first: the console's ring was full,
+ * so both waited, and when the master drains the tty's queue goes before
+ * the request. */
+static bool order_flow(void)
+{
+    handle_t program;
+    struct tty_client t;
+    CHECK_ST(console_new_client_within(rig.admin, CON_WAIT, PROGRAM_LEVEL, &program), OK);
+    CHECK_ST(open_tty(program, &t), OK);
+    unsigned last = fill_until_stuck(&t);
+    CHECK(last > 0);
+    static const char mark[] = "MARK-ORDER";
+    CHECK_ST(console_write_send(rig.admin, 1, (const uint8_t *)mark, sizeof(mark) - 1), OK);
+    char want[16];
+    snprintf(want, sizeof(want), "seq %05u ", last);
+    CHECK(rig_expect(want, STEP_MS));
+    CHECK(rig_expect(mark, 2000));   /* after the program's last line, not among its lines */
+    close_tty(&t);
+    jam_handle_close(program);
+    return true;
+}
+
+/* ---- 5. answers left unread ----------------------------------------------------------- */
+
+#define UNREAD_FLOOD 40u   /* requests sent without reading an answer */
+
+/* The answers waiting on h, read and counted (waiting up to ms for each). */
+static unsigned read_answers(handle_t h, unsigned ms)
+{
+    unsigned n = 0;
+    for (;;) {
+        signals_t seen;
+        if (jam_object_wait_one(h, SIG_READABLE, now() + (uint64_t)ms * NS_PER_MS, &seen) != OK)
+            return n;
+        uint8_t b[256];
+        uint32_t got = 0, nh = 0;
+        if (drv_channel_read(h, b, sizeof(b), &got, NULL, 0, &nh) != OK)
+            return n;
+        n++;
+    }
+}
+
+/* h's client sent UNREAD_FLOOD requests (send(h, txid)) and read none: the
+ * console answers the protocol's bound of them and no more until they are
+ * read; then the rest. */
+static bool held_until_read(handle_t h, status_t (*send)(handle_t, uint32_t))
+{
+    for (uint32_t i = 0; i < UNREAD_FLOOD; i++)
+        CHECK_ST(send(h, 0x100 + i), OK);
+    jam_sleep_until(now() + 300 * NS_PER_MS);   /* the console does what it will of them */
+    struct handle_info hi;
+    CHECK_ST(jam_handle_info(h, &hi), OK);
+    CHECK_EQ(hi.queued, IDL_UNREAD_MSGS);
+    CHECK_EQ(read_answers(h, 500), UNREAD_FLOOD);   /* read: the rest come */
+    return true;
+}
+
+static status_t send_get_attr(handle_t h, uint32_t txid)
+{
+    return tty_get_attr_send(h, txid);
+}
+
+static status_t send_size(handle_t h, uint32_t txid)
+{
+    return console_size_send(h, txid);
+}
+
+static bool unread_flow(void)
+{
+    handle_t program;
+    struct tty_client t;
+    CHECK_ST(console_new_client_within(rig.admin, CON_WAIT, PROGRAM_LEVEL, &program), OK);
+    CHECK_ST(open_tty(program, &t), OK);
+    bool ok = held_until_read(t.ch, send_get_attr) && held_until_read(program, send_size);
+    close_tty(&t);
+    jam_handle_close(program);
+    return ok && rig_size_is(rig.admin, 80, 24);   /* still serving */
+}
+
+bool t_con_tty_unread(void)
+{
+    const char *argv[] = { "console", "conn" };
+    bool ok = rig_start(argv, 2, false) && unread_flow();
+    return rig_stop(ok) && ok;
+}
+
+bool t_con_tty_order(void)
+{
+    const char *argv[] = { "console", "conn" };
+    bool ok = rig_start(argv, 2, false) && order_flow();
     return rig_stop(ok) && ok;
 }

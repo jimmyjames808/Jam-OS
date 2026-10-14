@@ -9,7 +9,9 @@
  * caller's (the server's log), nothing else (everything else of
  * tinysshd's is FD_CLOEXEC; its connection is on 0 and 1, which the two
  * dup2s replace in the child, so the socket never moves to a helper). Its
- * namespace: /data read-only alone (the host key, authorized_keys). */
+ * namespace: /data read-only alone; the signing helper's view shows the
+ * host key (/data/etc/ssh, `:rk`), the key check's doesn't (<fsview.h>'s
+ * FS_VIEW_HIDE_KEYS). */
 #pragma once
 
 #include <sys/types.h>
