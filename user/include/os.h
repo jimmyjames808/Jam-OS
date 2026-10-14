@@ -437,13 +437,17 @@ status_t ns_svc_remove(const char *name);
  *   "/svc/<name>"    that service
  *   "/data"          that mount, as the starter has it
  *   "/data:r"        a read-only view of it (fs.view, <fsview.h>)
- *   "/data:w"        a view that may write, but not the top-level `etc`
- *                    (neither view shows `etc/ssh`: FS_VIEW_HIDE_KEYS)
+ *   "/data:w"        a view that may write
+ *                    (neither view has the top-level `etc` at all: not
+ *                    listed, opened, read, made or changed, FS_VIEW_NO_ETC;
+ *                    every program's mount, whatever its list says)
  *   "/data:rk"       a read-only view that shows `etc/ssh` (the SSH host
- *                    key): only C code writes it (init's grants for sshd,
- *                    sshd's for its children); no list can ask for it
- *   "/usb*"          (with or without :r, :w, :rk) every mount whose point
- *                    starts with "/usb"
+ *                    key) and `etc/authorized_keys`, nothing else of etc:
+ *                    only C code writes it (init's grants for sshd, sshd's
+ *                    for its children); no list can ask for it
+ *   "/data:ra"       the same without `etc/ssh`: sshd's key check's
+ *   "/usb*"          (with or without :r, :w, :rk, :ra) every mount whose
+ *                    point starts with "/usb"
  *   "*:r", "*:w"     every mount, as views (no services)
  * A view is made with a call to the mount's service at the time of the
  * send (each waits at most NS_VIEW_WAIT). */

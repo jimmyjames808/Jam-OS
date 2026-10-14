@@ -1,7 +1,9 @@
 # allow: programs on /data (docs/HISTORY.md, M8.6): a copy of
 # bin/soakload on /data is refused until allowed; `allow` shows its list
 # and asks, n keeps it refused, y lets it run; `allow -l` lists it; a
-# program can't change /data/etc (even with /data writable); a changed file
+# program can't change /data/etc (even with /data writable), nor read,
+# list or make anything there, by any spelling (utest and sbase's tools
+# from /boot, sbase's cat allowed from /data); a changed file
 # is refused until allowed again; each approval writes its page table
 # (/data/etc/allow.d, one a hash) and `allow -r` removes it; the listen
 # permission (`svc net listen`, bin/wantlisten) is given from /boot as its
@@ -122,6 +124,56 @@ wait fs-put: /data/ok.txt: OK
 wait {prompt}
 send cat /data/etc/allow | grep -c /data/s | grep ^1$ && echo ok-$T-unchanged
 wait ok-x-unchanged
+wait {prompt}
+# nor does it see etc at all (the owner's, 2026-10-14): not read, listed or
+# made, however it is spelled, whatever its list says; the shell (init's)
+# still reads and writes it
+send run utest fscat /data/etc/allow
+wait fscat: /data/etc/allow: ERR_ACCESS_DENIED
+wait {prompt}
+send run utest fscat /data/Etc/settings
+wait fscat: /data/Etc/settings: ERR_ACCESS_DENIED
+wait {prompt}
+send run utest fscat /data/x/../ETC./allow
+wait fscat: /data/x/../ETC./allow: ERR_ACCESS_DENIED
+wait {prompt}
+send run utest fs-put /data/Etc/new x
+wait fs-put: /data/Etc/new: ERR_ACCESS_DENIED
+wait {prompt}
+send run /boot/usr/bin/ls /data | grep -c ^s$ | grep ^1$ && echo ok-$T-listed
+wait ok-x-listed
+wait {prompt}
+send run /boot/usr/bin/ls /data | grep -ci ^etc$ | grep ^0$ && echo ok-$T-unlisted
+wait ok-x-unlisted
+wait {prompt}
+send run /boot/usr/bin/ls /data/ETC; echo st-$T=$?
+wait st-x=1
+wait {prompt}
+send cd /data; run /boot/usr/bin/cat etc/allow; echo st-$T=$?; cd /
+wait st-x=1
+wait {prompt}
+send run /boot/usr/bin/mkdir /data/etc/d; echo st-$T=$?
+wait st-x=1
+wait {prompt}
+send ls /data/etc/d; echo st-$T=$?
+wait st-x=1
+wait {prompt}
+# a program allowed from /data: the same (sbase's cat, `mount /data r`)
+send cp /boot/usr/bin/sbase-ro /data/cat && allow /data/cat; echo st-$T=$?
+wait /data (read)
+type y
+wait allow: /data/cat may run
+wait st-x=0
+wait {prompt}
+send write /data/seen.txt seen-$T; run /data/cat /data/seen.txt
+wait seen-x
+wait {prompt}
+send run /data/cat /data/etc/allow; echo st-$T=$?
+wait st-x=1
+wait {prompt}
+send allow -r cat; echo st-$T=$?
+wait allow: cat may no longer run
+wait st-x=0
 wait {prompt}
 # the file changes: refused until it is allowed again
 send write -a /data/s x; run /data/s 1; echo st-$T=$?
