@@ -17,6 +17,8 @@ struct pkgc_work {
 };
 /* NULL if the vectors' test.pub or memory is missing. */
 struct pkgc_work *pkgc_work(void);
+/* Give the work areas back (the next pkgc_work allocates them again). */
+void pkgc_work_free(void);
 /* A fixed-seed generator: the tests must repeat. */
 uint64_t pkgc_rand(uint64_t *state);
 

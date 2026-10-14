@@ -27,25 +27,33 @@
 bool t_pkgfmt_vectors(void)
 {
     CHECK(pkgv_nfiles > 40);
-    CHECK_EQ(pkgc_vectors(), 0);
+    unsigned bad = pkgc_vectors();
+    pkgc_work_free();
+    CHECK_EQ(bad, 0);
     return true;
 }
 
 bool t_pkgfmt_misc(void)
 {
-    CHECK_EQ(pkgc_misc(), 0);
+    unsigned bad = pkgc_misc();
+    pkgc_work_free();
+    CHECK_EQ(bad, 0);
     return true;
 }
 
 bool t_pkgfmt_journal(void)
 {
-    CHECK_EQ(pkgc_journal(0x6a6e6c, FUZZ_ITERATIONS / 5), 0);
+    unsigned bad = pkgc_journal(0x6a6e6c, FUZZ_ITERATIONS / 5);
+    pkgc_work_free();
+    CHECK_EQ(bad, 0);
     return true;
 }
 
 bool t_pkgfmt_fuzz(void)
 {
-    CHECK_EQ(pkgc_fuzz(0x66757a7a, FUZZ_ITERATIONS), 0);
+    unsigned bad = pkgc_fuzz(0x66757a7a, FUZZ_ITERATIONS);
+    pkgc_work_free();
+    CHECK_EQ(bad, 0);
     return true;
 }
 
@@ -122,5 +130,6 @@ bool t_pkgfmt_note_is_wants(void)
     struct wants again;
     CHECK_ST(wants_parse((const char *)list, n, &again), OK);
     CHECK(!strcmp(w.text, again.text) && w.n == again.n);
+    pkgc_work_free();
     return true;
 }

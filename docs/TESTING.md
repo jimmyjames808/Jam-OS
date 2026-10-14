@@ -84,7 +84,12 @@ that a bug fix comes with a test is in
   and keeps the ports formats' signatures apart by their first lines
   (`build/host/jamos-sign self-test`); the package formats' test vectors
   are what the packager makes and each gets its answer from the
-  reference verifier (`tools/ports.py vectors`), and the repository
+  reference verifier (`tools/ports.py vectors`), the C readers Jam OS
+  uses for those formats (`user/lib/pkg*.c`) give every vector, and
+  every text and archive the reference was asked about, the same answer,
+  with 10,000 mutations of each kind, under ASan and UBSan
+  (`build/host/pkgcheck`; utest's `pkgfmt_*` run the same checks on Jam
+  OS), and the repository
   server answers only files of the repository, each a whole snapshot
   (`tools/ports-server.py --self-test`); libfun's smooth text holds up
   against hostile input under ASan and UBSan (`build/host/fontcheck

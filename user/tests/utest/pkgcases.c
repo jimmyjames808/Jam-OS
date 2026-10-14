@@ -31,9 +31,18 @@ struct pkgc_work *pkgc_work(void)
         if (!w.m || !w.x || !w.v || !w.j || !pub || pub->len != 73 ||
             memcmp(pub->data, "ed25519 ", 8) ||
             !pkg_hex((struct pkg_str){ (const char *)pub->data + 8, 64 }, w.key, 32))
-            w.m = NULL;
+            pkgc_work_free();
     }
     return w.m ? &w : NULL;
+}
+
+void pkgc_work_free(void)
+{
+    free(w.m);
+    free(w.x);
+    free(w.v);
+    free(w.j);
+    memset(&w, 0, sizeof(w));
 }
 
 uint64_t pkgc_rand(uint64_t *state)
