@@ -143,9 +143,13 @@ extern struct notice_box notices;
  * or were given up on, and services that didn't end cleanly. */
 extern unsigned   problems;
 /* The argument "bootdisk=0x<id>": the MBR disk id of the disk the machine
- * booted from (the loader's, passed on by the kernel and init); 0: not
- * known. disk.c takes the Jam OS disk with that id as the boot disk. */
+ * booted from (a stick: the loader's, passed on by the kernel and init);
+ * 0: not known, or a GPT disk. Or "bootdisk=gpt:<GUID>": the GPT disk
+ * GUID of the disk the machine booted from (an installed drive), as its
+ * bytes on disk; zeros: not known, or an MBR disk. disk.c takes the Jam OS
+ * disk named either way as the boot disk. */
 extern uint32_t   boot_mbr_id;
+extern uint8_t    boot_gpt[16];
 extern uint64_t   volumes_started;   /* when volumes started (uptime, ns) */
 /* volumes.stop was asked, or the last control client left: the loop
  * stops, and nothing that happens from then on is news to the desktop. */

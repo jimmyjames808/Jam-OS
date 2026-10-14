@@ -19,9 +19,10 @@
  * promoted for a restart), and hands the mounts' channels to init and to
  * every other watch (volumes.watch, mounts.c).
  *
- * Its words: "bootdisk=0x<id>" (the MBR disk id of the disk the machine
- * booted from: disk.c's boot-disk check) and "nospare" (no warm spare fat:
- * a restart starts a process).
+ * Its words: "bootdisk=0x<id>" or "bootdisk=gpt:<GUID>" (the MBR disk id
+ * of the stick, or the GPT disk GUID of the drive, the machine booted
+ * from: disk.c's boot-disk check) and "nospare" (no warm spare fat: a
+ * restart starts a process).
  *
  * Its loop never waits inside a request: what waits for another process
  * runs as a cooperative task beside it (calls.c), and a request that
@@ -42,6 +43,7 @@ unsigned   nvols, problems;
 handle_t   port;
 struct notice_box notices;
 uint32_t   boot_mbr_id;
+uint8_t    boot_gpt[16];
 uint64_t   volumes_started;
 bool       stopping, quiet;
 
@@ -244,8 +246,12 @@ int main(int argc, char **argv)
         nospare |= !strcmp(argv[i], "nospare");
         if (!strncmp(argv[i], "pagerpages=", 11))
             pager_pages = dec64(argv[i] + 11);
-        if (!strncmp(argv[i], "bootdisk=", 9))
+        if (!strncmp(argv[i], "bootdisk=gpt:", 13)) {
+            if (!disk_guid_parse(argv[i] + 13, boot_gpt))
+                say(true, "volumes: %s names no GUID: no boot disk is known", argv[i]);
+        } else if (!strncmp(argv[i], "bootdisk=", 9)) {
             boot_mbr_id = hex32(argv[i] + 9);
+        }
     }
     if (!chans_init()) {
         say(true, "volumes: no control channel in the startup message");

@@ -68,6 +68,7 @@ struct disk {
     uint64_t        blocks;
     uint8_t         part_next;  /* DISK_PARTS: the partition asked for */
     uint32_t        mbr_id;     /* its MBR disk id (storage.info), 0: none or unknown */
+    uint8_t         disk_guid[16];   /* its GPT disk GUID (storage.info), zeros: none */
     uint8_t         scheme;     /* storage.idl's SCHEME_* */
     uint8_t         nparts;     /* partitions it lists (at most MAX_PARTS are looked at) */
     uint8_t         type[MAX_PARTS];   /* their MBR types */
@@ -141,6 +142,11 @@ void        disk_relearn(struct disk *d);
 struct disk *disk_of(const struct vol *b);    /* b's disk, or NULL */
 void        leave_alone(struct disk *d, const char *why);   /* its driver doesn't answer */
 void        not_boot(struct disk *d, const char *why);      /* step 4 */
+/* A GUID's printed form (36 characters, 8-4-4-4-12, either case, as the
+ * word bootdisk=gpt:<GUID> has it, and nothing after) as its bytes on disk
+ * (the first three fields little-endian). False if s isn't one, or is all
+ * zeros. */
+bool        disk_guid_parse(const char *s, uint8_t out[16]);
 
 /* fsvc.c */
 /* Start the filesystem service on partition `part` of d (other: d is not
