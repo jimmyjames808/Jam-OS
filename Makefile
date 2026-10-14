@@ -299,10 +299,13 @@ $(MONO_OBJS) $(UOBJ)/user/lib/updsig.c.o: PROG_CFLAGS := -I$(MONO_DIR) -I$(MONO_
 # The programs, by role: user/services/<name> (init, console, devmgr, ...),
 # user/apps/<name> (the apps, on libfun) and user/tests/<name>. Every
 # directory there with a .c file is the program bin/<name> in bootfs, except
-# user/apps/fun, which is the apps library. A program's sources are its
-# *.c and one level of subdirectories (user/services/shell/cmd/*.c).
+# user/apps/fun, which is the apps library, and the POSIX tests
+# (POSIX_TESTS: user/posix/posix.mk builds them with jamos-cc). A
+# program's sources are its *.c and one level of subdirectories
+# (user/services/shell/cmd/*.c).
 LIBFUN_DIR  := user/apps/fun
-USER_DIRS   := $(filter-out $(LIBFUN_DIR),$(patsubst %/,%,$(sort $(dir \
+POSIX_TESTS := user/tests/jittest
+USER_DIRS   := $(filter-out $(LIBFUN_DIR) $(POSIX_TESTS),$(patsubst %/,%,$(sort $(dir \
                    $(wildcard user/services/*/*.c user/apps/*/*.c user/tests/*/*.c)))))
 USER_PROGS  := $(notdir $(USER_DIRS))
 ifneq ($(words $(sort $(USER_PROGS))),$(words $(USER_DIRS)))

@@ -15,7 +15,7 @@
  * job then.
  *
  * What the address space allows: never write with execute, and no
- * execute on anonymous memory at all (EACCES: no JIT). A descriptor's
+ * execute on anonymous memory (EACCES), but in JIT memory (below). A descriptor's
  * mapping is file.c's file_map (files.h): a file on a pager's mount
  * (fat) on its own pages, the file's VMO itself for MAP_SHARED (read
  * only) and for a read-only MAP_PRIVATE, a copy-on-write child of it for
@@ -49,6 +49,19 @@
  * the table has nothing is a plain fixed map (ENOMEM over anything else),
  * and MAP_FIXED_NOREPLACE over anything is EEXIST.
  *
+ * JIT memory (docs/CR-PLAN.md section 12): mmap with MAP_JIT (private
+ * anonymous only, else EINVAL) in a program holding RIGHT_ROOT_JIT (its
+ * list's `right jit`, approved) maps a JIT VMO (vmo_make_jit), the one
+ * kind the kernel lets a mapping hold writable and executable; the table
+ * marks it MT_JIT, and mmap and mprotect allow PROT_EXEC, alone or with
+ * PROT_WRITE, there and nowhere else. A program may keep it writable and
+ * executable (V8's way on x86-64), or switch it between PROT_READ |
+ * PROT_WRITE and PROT_READ | PROT_EXEC with mprotect. Without the power
+ * MAP_JIT is EPERM. MAP_FIXED | MAP_JIT over JIT memory decommits in place
+ * as refresh_locked does; a MAP_FIXED without MAP_JIT over it (or with it
+ * over other memory) replaces it, so a range is JIT memory exactly when the
+ * last mmap there said MAP_JIT.
+ *
  * brk: a 1 GiB reservation (one VMO, mapped on the first call, in the
  * table like any mapping), the break moving inside it; pages above a
  * lowered break are decommitted.
@@ -66,7 +79,7 @@
 
 #define MAP_KNOWN (MAP_TYPE | MAP_FIXED | MAP_ANONYMOUS | MAP_NORESERVE | MAP_DENYWRITE | \
                    MAP_EXECUTABLE | MAP_LOCKED | MAP_POPULATE | MAP_NONBLOCK | MAP_STACK |  \
-                   MAP_FIXED_NOREPLACE)
+                   MAP_FIXED_NOREPLACE | MAP_JIT)
 #define PROT_KNOWN (PROT_READ | PROT_WRITE | PROT_EXEC)
 
 static lock_t   mem_lock;
@@ -84,15 +97,16 @@ static uint64_t page_round(uint64_t len)
     return len > UINT64_MAX - (PAGE - 1) ? 0 : (len + PAGE - 1) & ~(PAGE - 1);
 }
 
-/* PROT_* as vmar permissions; -EACCES for execute, -EINVAL for a bit we
- * don't know. Write needs read on x86. */
-static long vmar_perms(long prot, uint32_t *out)
+/* PROT_* as vmar permissions; -EACCES for execute but in JIT memory (jit),
+ * -EINVAL for a bit we don't know. Write and execute need read on x86. */
+static long vmar_perms(long prot, bool jit, uint32_t *out)
 {
     if (prot & ~(long)PROT_KNOWN)
         return -EINVAL;
-    if (prot & PROT_EXEC)
+    if ((prot & PROT_EXEC) && !jit)
         return -EACCES;
-    *out = (prot & (PROT_READ | PROT_WRITE) ? VMAR_READ : 0) | (prot & PROT_WRITE ? VMAR_WRITE : 0);
+    *out = (prot ? VMAR_READ : 0) | (prot & PROT_WRITE ? VMAR_WRITE : 0) |
+           (prot & PROT_EXEC ? VMAR_EXEC : 0);
     return 0;
 }
 
@@ -204,6 +218,24 @@ static long create_err(status_t st)
     return st == ERR_OUT_OF_RANGE ? -ENOMEM : lx_err(st);
 }
 
+/* A new VMO of len bytes for a mapping of kind (MT_*): JIT memory for
+ * MT_JIT (EPERM without RIGHT_ROOT_JIT on our root), else plain. */
+static long fresh_vmo(uint64_t len, uint32_t kind, handle_t *out)
+{
+    handle_t root = startup_handle(SR_RESOURCE), vmo;
+    if ((kind & MT_JIT) && !root)
+        return -EPERM;
+    status_t st = jam_vmo_create(len, 0, &vmo);
+    if (st != OK)
+        return create_err(st);
+    if (!(kind & MT_JIT)) {
+        *out = vmo;
+        return 0;
+    }
+    st = jam_vmo_make_jit(vmo, root, out);   /* vmo is gone, whatever the status */
+    return st == ERR_ACCESS_DENIED || st == ERR_WRONG_TYPE ? -EPERM : create_err(st);
+}
+
 /* What a mapping maps: a VMO made for it (vmo HANDLE_INVALID: a new
  * anonymous one) or a descriptor's (file_map), from vmo_off; and the kind
  * the table records for it (maptable.h's MT_*). */
@@ -224,11 +256,11 @@ static long map_new(uint64_t *addr, uint64_t len, uint32_t perms, bool fixed, bo
             jam_handle_close(vmo);
         return -ENOMEM;
     }
-    status_t st = vmo ? OK : jam_vmo_create(len, 0, &vmo);
-    if (st != OK)
-        return create_err(st);
-    st = jam_vmar_map(lx_self_vmar(), vmo, src->vmo_off, len, perms | (fixed ? VMAR_FIXED : 0),
-                      addr);
+    long r = vmo ? 0 : fresh_vmo(len, src->kind, &vmo);
+    if (r)
+        return r;
+    status_t st = jam_vmar_map(lx_self_vmar(), vmo, src->vmo_off, len,
+                               perms | (fixed ? VMAR_FIXED : 0), addr);
     if (st != OK) {
         jam_handle_close(vmo);
         return st == ERR_ALREADY_BOUND || st == ERR_NO_RESOURCES ? -ENOMEM : lx_err(st);
@@ -298,10 +330,11 @@ static long replace_locked(uint64_t addr, uint64_t len, uint32_t perms, bool pop
             jam_handle_close(vmo);
         return -ENOMEM;
     }
-    status_t st = vmo ? OK : jam_vmo_create(len, 0, &vmo);
-    if (st != OK)
-        return create_err(st);
-    long r = fill_holes(addr, addr + len, vmo, src->vmo_off, perms);
+    long r = vmo ? 0 : fresh_vmo(len, src->kind, &vmo);
+    if (r)
+        return r;
+    status_t st;
+    r = fill_holes(addr, addr + len, vmo, src->vmo_off, perms);
     uint64_t at = addr;
     if (!r && (st = jam_vmar_map(lx_self_vmar(), vmo, src->vmo_off, len,
                                  perms | VMAR_FIXED | VMAR_REPLACE, &at)) != OK) {
@@ -320,15 +353,16 @@ static long replace_locked(uint64_t addr, uint64_t len, uint32_t perms, bool pop
     return 0;
 }
 
-/* Is [addr, end) all private anonymous memory libc made: entries of
- * kind MT_ANON one after another, no hole between them? */
-static bool all_anon(uint64_t addr, uint64_t end)
+/* Is [addr, end) all private anonymous memory libc made, JIT memory or
+ * not as kind says (MT_ANON, alone or with MT_JIT): entries of that kind
+ * one after another, no hole between them? */
+static bool all_anon(uint64_t addr, uint64_t end, uint32_t kind)
 {
     const struct mt_entry *t = mt_entries();
     if (end <= addr)
         return false;   /* wrapped */
     for (unsigned i = mt_first_after(addr); addr < end; i++) {
-        if (i >= mt_count() || t[i].base > addr || !(t[i].kind & MT_ANON))
+        if (i >= mt_count() || t[i].base > addr || (t[i].kind & (MT_ANON | MT_JIT)) != kind)
             return false;
         addr = t[i].base + t[i].len;
     }
@@ -365,8 +399,10 @@ static long mmap_check(long addr, long len, long prot, long flags, long off)
         return -EINVAL;
     if ((flags & (MAP_FIXED | MAP_FIXED_NOREPLACE)) && !page_aligned((uint64_t)addr))
         return -EINVAL;
+    if ((flags & MAP_JIT) && ((flags & MAP_TYPE) != MAP_PRIVATE || !(flags & MAP_ANONYMOUS)))
+        return -EINVAL;   /* JIT memory is private anonymous memory */
     uint32_t perms;
-    return vmar_perms(prot, &perms);
+    return vmar_perms(prot, flags & MAP_JIT, &perms);
 }
 
 /* The table's kind for a mapping made with mmap's flags. */
@@ -374,6 +410,8 @@ static uint32_t mt_kind(long flags)
 {
     if ((flags & MAP_TYPE) != MAP_PRIVATE)
         return MT_SHARED;
+    if (flags & MAP_JIT)
+        return MT_ANON | MT_JIT;
     return flags & MAP_ANONYMOUS ? MT_ANON : 0;
 }
 
@@ -430,6 +468,12 @@ static long unshare_locked(uint64_t addr, uint64_t end, uint32_t perms)
     return 0;
 }
 
+/* Is all of [addr, end) JIT memory (MT_JIT entries, no hole)? */
+static bool all_jit_locked(uint64_t addr, uint64_t end)
+{
+    return all_anon(addr, end, MT_ANON | MT_JIT);
+}
+
 /* Is all of [addr, end) libc's mappings? */
 static bool covered_locked(uint64_t addr, uint64_t end)
 {
@@ -464,7 +508,7 @@ long lx_mmap(long addr, long len, long prot, long flags, long fd, long off)
     if (r)
         return r;
     uint32_t perms;
-    (void)vmar_perms(prot, &perms);   /* checked above */
+    (void)vmar_perms(prot, flags & MAP_JIT, &perms);   /* checked above */
     uint64_t size = page_round((uint64_t)len), at = (uint64_t)addr;
     bool fixed = flags & (MAP_FIXED | MAP_FIXED_NOREPLACE);
     struct map_src src = { HANDLE_INVALID, 0, mt_kind(flags) };
@@ -476,7 +520,7 @@ long lx_mmap(long addr, long len, long prot, long flags, long fd, long off)
     lock_take(&mem_lock);
     if (!fixed || !table_overlaps(at, size)) {
         r = map_new(&at, size, perms, fixed, flags & MAP_POPULATE, &src);
-    } else if ((flags & MAP_FIXED) && src.kind == MT_ANON && all_anon(at, at + size)) {
+    } else if ((flags & MAP_FIXED) && (src.kind & MT_ANON) && all_anon(at, at + size, src.kind)) {
         r = refresh_locked(at, size, perms, flags & MAP_POPULATE);
     } else if (flags & MAP_FIXED) {
         r = replace_locked(at, size, perms, flags & MAP_POPULATE, &src);
@@ -509,7 +553,13 @@ long lx_mprotect(long addr, long len, long prot, long d, long e, long f)
     if (!page_aligned((uint64_t)addr) || len < 0 || (len && !size))
         return -EINVAL;
     uint32_t perms;
-    long r = vmar_perms(prot, &perms);
+    bool jit = false;
+    if ((prot & PROT_EXEC) && size && (uint64_t)addr <= UINT64_MAX - size) {
+        lock_take(&mem_lock);   /* execute only in JIT memory */
+        jit = all_jit_locked((uint64_t)addr, (uint64_t)addr + size);
+        lock_give(&mem_lock);
+    }
+    long r = vmar_perms(prot, jit, &perms);
     if (r || !size)
         return r;
     if (perms & VMAR_WRITE) {   /* a private mapping on a file's pages gets its own first */

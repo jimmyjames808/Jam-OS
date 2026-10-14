@@ -177,7 +177,8 @@ def selftest():
         problems, _ = check_text(b"right jit\nposix\n", tests, svcs, False, src)
         if problems:
             fails.append("refused right jit for %s: %s" % (src, problems))
-    for src in ("user/services/x", "user/apps/x", "drivers/x"):
+    for src in ("user/services/x", "user/apps/x", "drivers/x", "user/posix/progs/sh",
+                "user/posix/test", "portsx/y", "user/portsx"):
         problems, _ = check_text(b"right jit\n", False, svcs, src.startswith("user/services/"),
                                  src)
         if not problems:

@@ -167,13 +167,15 @@ $(MUSL_OUT)/ovr/%.S.o: %.S | $(MUSL_GENH) $(MUSL_CHECKED) $(UINC) $(SYSCALLS_OK)
 	$(CC) $(MUSL_CFLAGS) -I$(BUILD)/uinc -c $< -o $@
 
 $(SYSROOT_HDRS): $(MUSL_GENH) $(shell find $(MUSL)/include $(MUSL)/arch/generic/bits \
-                                          $(MUSL)/arch/x86_64/bits $(POSIX)/include -name '*.h')
+                                          $(MUSL)/arch/x86_64/bits $(POSIX)/include \
+                                          $(POSIX)/musl/arch/x86_64/bits -name '*.h')
 	rm -rf $(SYSROOT)/include
 	mkdir -p $(SYSROOT)/include/bits
 	cp -R $(MUSL)/include/. $(SYSROOT)/include/
 	rm -f $(SYSROOT)/include/alltypes.h.in
 	cp $(MUSL)/arch/generic/bits/*.h $(SYSROOT)/include/bits/
 	cp $(MUSL)/arch/x86_64/bits/*.h $(SYSROOT)/include/bits/
+	cp $(POSIX)/musl/arch/x86_64/bits/*.h $(SYSROOT)/include/bits/   # the overrides' (OVERRIDES)
 	cp $(MUSL_OUT)/include/bits/alltypes.h $(MUSL_OUT)/include/bits/syscall.h \
 	    $(SYSROOT)/include/bits/
 	cp -R $(POSIX)/include/. $(SYSROOT)/include/
@@ -233,23 +235,26 @@ $(BOOTFS): $(POSIXTEST).bootfs
 # until a POSIX shell (`sh -c` of a simple command, for system and popen),
 # and ls, a tiny one at test/ls for posixtest's popen check until sbase's,
 # and pxio, the shell tests' (tools/shell-tests/posix.txt), also at
-# usr/bin/pxio-usr for the shell's PATH lookup past /boot/bin.
-POSIX_PROGS := sh=bin/sh ls=test/ls pxio=bin/pxio
+# usr/bin/pxio-usr for the shell's PATH lookup past /boot/bin. POSIX test
+# programs elsewhere the same way, from their own directory (the third
+# word): jittest, JIT memory through MAP_JIT (its list says `right jit`,
+# which checkwants allows only under user/tests/ and the ports).
+POSIX_PROGS := sh=bin/sh ls=test/ls pxio=bin/pxio jittest=bin/jittest=user/tests/jittest
 define POSIX_PROG_RULES
-$(BUILD)/user/posix-$(1): $(wildcard $(POSIX)/progs/$(1)/*.c) $(POSIX)/progs/$(1)/wants \
+$(BUILD)/user/posix-$(1): $(wildcard $(3)/*.c) $(3)/wants \
                           $(SYSROOT_LIBS) tools/jamos-cc | $(UINC) $(SYSCALLS_OK) $(IDL_OK)
 	@mkdir -p $$(dir $$@)
 	JAMOS_SYSROOT=$(SYSROOT) CROSS=$(CROSS) tools/jamos-cc -std=gnu17 -O2 -g -Wall -Wextra \
 	    -Werror -Wvla -D_GNU_SOURCE -I$(POSIX)/include -Iuser/include -I$(BUILD)/uinc \
-	    -Idrivers/include --jamos-wants=$(POSIX)/progs/$(1)/wants \
-	    $(wildcard $(POSIX)/progs/$(1)/*.c) -o $$@
+	    -Idrivers/include --jamos-wants=$(3)/wants \
+	    $(wildcard $(3)/*.c) -o $$@
 $(BUILD)/user/posix-$(1).bootfs: $(BUILD)/user/posix-$(1) tools/checkwants.py
 	$(STRIP) --strip-debug $$< -o $$@
-	python3 tools/checkwants.py $(POSIX)/progs/$(1)=$$@
+	python3 tools/checkwants.py $(3)=$$@
 $(BOOTFS): $(BUILD)/user/posix-$(1).bootfs
 BOOTFS_FILES += $(2)=$(BUILD)/user/posix-$(1).bootfs
 endef
-$(foreach p,$(POSIX_PROGS),$(eval $(call POSIX_PROG_RULES,$(word 1,$(subst =, ,$(p))),$(word 2,$(subst =, ,$(p))))))
+$(foreach p,$(POSIX_PROGS),$(eval $(call POSIX_PROG_RULES,$(word 1,$(subst =, ,$(p))),$(word 2,$(subst =, ,$(p))),$(or $(word 3,$(subst =, ,$(p))),$(POSIX)/progs/$(word 1,$(subst =, ,$(p)))))))
 BOOTFS_FILES += usr/bin/pxio-usr=$(BUILD)/user/posix-pxio.bootfs
 
 # `make check`: the overrides still match upstream, and the check refuses
