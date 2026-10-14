@@ -825,6 +825,13 @@ bool t_xdg_toplevel(void);
 bool t_xdg_tiling(void);
 bool t_xdg_tile_resize(void);
 bool t_xdg_popup(void);
+/* compplace.c: where a positioner puts a popup (xdgplace.c, linked in);
+ * comppopup.c: popups shown, followed, repositioned, at the screen's
+ * edges, the grab (keys, pointer, nested, dismissal), the errors. */
+bool t_popup_place(void);
+bool t_popup_show(void);
+bool t_popup_grab(void);
+bool t_popup_bad(void);
 bool t_xdg_unacked(void);
 bool t_xdg_errors(void);
 /* compver.c: the versions above G1's (wl_compositor 6, wl_shm 2, wl_output

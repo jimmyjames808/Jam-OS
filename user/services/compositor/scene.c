@@ -363,6 +363,21 @@ void window_raise(struct comp_window *w)
     window_damage(w);
 }
 
+void window_raise_above(struct comp_window *w, struct comp_window *under)
+{
+    if (w == under || under->above == w)
+        return;
+    unlink(w);
+    w->below = under;
+    w->above = under->above;
+    if (under->above)
+        under->above->below = w;
+    else
+        scene.top = w;
+    under->above = w;
+    window_damage(w);
+}
+
 struct comp_window *window_at(int32_t x, int32_t y)
 {
     for (struct comp_window *w = scene.top; w; w = w->below)

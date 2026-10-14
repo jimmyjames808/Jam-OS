@@ -1,7 +1,9 @@
 /* xdg.h: xdg-shell's objects, shared by xdg.c (xdg_wm_base, xdg_positioner,
- * xdg_popup, each client's state, the ping clock), xdgtop.c (xdg_surface
- * and xdg_toplevel: roles, configures, commits) and xdgdeco.c
- * (xdg-decoration: a toplevel's decoration object and its mode).
+ * each client's state, the ping clock), xdgtop.c (xdg_surface and
+ * xdg_toplevel: roles, configures, commits), xdgpopup.c (xdg_popup: its
+ * configures, its window, the grab), xdgplace.c (where a positioner puts a
+ * popup: arithmetic only) and xdgdeco.c (xdg-decoration: a toplevel's
+ * decoration object and its mode).
  *
  * Ownership. Each client's xdg-shell objects hang off its struct
  * xdg_client (comp_client.xdg) and go with it (xdg_teardown). An
@@ -10,7 +12,9 @@
  * role object do nothing. The wl_surface points back through role_ops and
  * role_data from get_xdg_surface on (an xdg_surface is the start of a
  * role: without one, a commit is the protocol's not_constructed error),
- * and its role (comp_surface.role) is fixed by get_toplevel or get_popup. */
+ * and its role (comp_surface.role) is fixed by get_toplevel or get_popup.
+ * A popup points at its parent's xdg_surface until that one's role object
+ * or wl_surface goes (xdgpopup.c then dismisses it and clears the pointer). */
 #pragma once
 
 #include "wm.h"
@@ -18,6 +22,11 @@
 #define XDG_BASES_MAX       16u   /* per client: xdg_wm_base objects bound */
 #define XDG_POSITIONERS_MAX 64u   /* per client */
 #define XDG_CONFIGS_MAX     8u    /* configures sent and not acked yet: more wait for an ack */
+#define XDG_POPUPS_MAX      32u   /* per client: xdg_popup objects at once */
+#define XDG_POPUP_DEPTH_MAX 8u    /* popups nested on a toplevel: a menu, its submenu, ... */
+#define XDG_PLACE_MAX       (1 << 20)   /* a positioner's sizes, places and offsets are held
+                                         * to +- this, so their sums stay far inside
+                                         * COMP_COORD_MAX */
 
 struct xdg_client;
 
@@ -32,12 +41,25 @@ struct xdg_base {
     bool late;                     /* past XDG_PING_NS: its client's windows are marked */
 };
 
-/* An xdg_positioner: only what get_popup checks. */
+/* A positioner's rules (xdg_positioner's requests): what xdgplace.c places
+ * a popup by. Each number is held to +-XDG_PLACE_MAX as it comes. */
+struct xdg_rules {
+    int32_t w, h;                  /* set_size: the popup's window geometry's size */
+    int32_t ax, ay, aw, ah;        /* set_anchor_rect, in the parent's window geometry's
+                                    * coordinates (a side may be 0: a line or a point) */
+    uint32_t anchor, gravity;      /* set_anchor, set_gravity: xdg_positioner's enums */
+    uint32_t adjust;               /* set_constraint_adjustment's bits */
+    int32_t dx, dy;                /* set_offset */
+    bool reactive;                 /* set_reactive: placed again when its parent moves */
+    bool size_set, rect_set;       /* set_size and set_anchor_rect came: it is complete */
+};
+
+/* An xdg_positioner. */
 struct xdg_pos {
     struct xdg_client *xc;
     struct xdg_pos *next;
     uint32_t id;
-    bool size_set, rect_set;       /* set_size and set_anchor_rect came */
+    struct xdg_rules rules;
 };
 
 enum xdg_role {
@@ -59,8 +81,27 @@ struct xdg_extra {
 /* A configure sent and not acked yet. */
 struct xdg_sent {
     uint32_t serial;
-    struct wm_config cfg;
+    struct wm_config cfg;          /* a toplevel's */
+    struct comp_box place;         /* a popup's: its box in its parent's window geometry */
     bool stale;                    /* sent before the toplevel was unmapped: acking it maps nothing */
+};
+
+struct xdg_surf;
+
+/* What a popup keeps (xdgpopup.c). */
+struct xdg_popup_state {
+    struct xdg_surf *parent;       /* the xdg_surface it is placed against (a toplevel's or a
+                                    * popup's); NULL once that role went (it is dismissed) */
+    struct xdg_surf *prev, *next;  /* every popup whose role object lives, oldest first */
+    struct xdg_rules rules;        /* its positioner's, copied at get_popup and reposition */
+    struct comp_box place;         /* the last configure's box, in the parent's window
+                                    * geometry's coordinates */
+    struct comp_box shown;         /* ... the one the buffer shown was drawn for (acked) */
+    uint32_t depth;                /* 1 on a toplevel, 2 on a popup on one, ... */
+    uint32_t token;                /* the last reposition's, for repositioned */
+    bool repositioned;             /* repositioned goes with the next configure */
+    bool grab;                     /* it took an explicit grab: it is in the grab's chain */
+    bool dismissed;                /* popup_done sent: shown nowhere, inert until destroyed */
 };
 
 /* An xdg_surface, and its role object (one, for its whole life). */
@@ -87,6 +128,7 @@ struct xdg_surf {
     struct wm_config wanted;       /* the window manager's latest */
     bool dirty;                    /* wanted waits for room in sent[] */
     struct wm_config acked;        /* the newest acked, for the next commit (acked_new) */
+    struct comp_box acked_place;   /* ... a popup's */
     bool acked_new;
     uint32_t shown;                /* the states the shown buffer was drawn for */
     /* double-buffered: applied at commit */
@@ -98,13 +140,14 @@ struct xdg_surf {
     uint32_t deco_asked;           /* the mode its client set; 0: none, or unset_mode */
     uint32_t deco_told;            /* the mode its last configure event said; 0: one is owed
                                     * (it was made, or a mode asked for, since) */
+    struct xdg_popup_state pop;    /* a popup's (role XDG_ROLE_POPUP) */
 };
 
 struct xdg_client {
     struct comp_client *cl;
     bool deco_bound;               /* it bound zxdg_decoration_manager_v1: every toplevel of
                                     * its gets the compositor's decorations (xdgdeco.c) */
-    uint32_t nbases, npositioners, nsurfs;
+    uint32_t nbases, npositioners, nsurfs, npopups;
     struct xdg_base *bases;
     struct xdg_pos *positioners;
     struct xdg_surf *surfs;
@@ -118,8 +161,30 @@ void xdg_surf_free(struct xdg_surf *x);
 /* Ask x's client whether it is alive (a close came): a ping on x's base,
  * unless one is out already. */
 void xdg_ping(struct xdg_surf *x);
-/* get_popup's role, xdg.c's: the popup made and dismissed at once. */
+/* The rules of positioner (an object of x's client's) if it is complete;
+ * else xdg_wm_base's invalid_positioner is posted and NULL returned. */
+const struct xdg_rules *xdg_rules_of(struct xdg_surf *x, uint32_t positioner);
+
+/* xdgplace.c */
+/* Where rules put a popup: its window geometry's box in its parent's
+ * window geometry's coordinates, kept inside bounds (the same coordinates:
+ * the room on the output) as far as the rules' constraint adjustments
+ * allow, in the protocol's order (flip, then slide, then resize), each
+ * axis on its own. */
+struct comp_box xdg_place(const struct xdg_rules *r, struct comp_box bounds);
+
+/* xdgpopup.c */
+/* get_popup: x's popup role, placed against parent's xdg_surface by
+ * positioner's rules. OK, or a protocol error posted. */
 status_t xdg_popup_create(struct xdg_surf *x, uint32_t id, uint32_t parent, uint32_t positioner);
+/* x's role object or wl_surface goes (or x is torn down with its client:
+ * nothing is sent to a client that is gone): every popup placed against x
+ * is dismissed and forgets it, and x, if a popup, leaves the grab, the
+ * list of popups and the screen. */
+void xdg_popup_detach(struct xdg_surf *x);
+/* Popup x's configure (its place by its rules now), sent if fewer than
+ * XDG_CONFIGS_MAX wait for an ack, else owed (x->dirty) until one comes. */
+void xdg_popup_configure(struct xdg_surf *x);
 
 /* xdgdeco.c */
 /* A configure's decoration part is owed (sent with the next configure,
@@ -135,5 +200,6 @@ status_t xdg_surf_create(struct comp_client *cl, struct xdg_base *b, uint32_t id
                          uint32_t surface);
 /* x's role and surface let go (teardown: dead, nothing sent). */
 void xdg_surf_detach(struct xdg_surf *x);
-/* The role ops of an xdg_surface before its role, and of a popup. */
-extern const struct comp_role_ops xdg_bare_ops, xdg_popup_ops;
+/* The role ops of an xdg_surface before its role (and after its role
+ * object went). */
+extern const struct comp_role_ops xdg_bare_ops;

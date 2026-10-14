@@ -484,7 +484,9 @@ static bool minimised(struct ct_comp *p, struct vc *x, uint32_t v)
 }
 
 /* The positioner's version 3 requests, and xdg_popup.reposition: a
- * complete positioner taken, an incomplete one refused. */
+ * complete positioner taken (before the popup's initial commit nothing is
+ * said: that commit's configure will be the first), an incomplete one
+ * refused. comppopup.c repositions a shown popup. */
 static bool reposition(struct vc *x)
 {
     struct vt parent;
@@ -502,11 +504,11 @@ static bool reposition(struct vc *x)
     CHECK_ST(jwl_xdg_wm_base_get_xdg_surface(x->k.c, x->wm, xs, s), OK);
     uint32_t pop = ct_new(&x->k, &jwl_xdg_popup_interface, 3);
     CHECK_ST(jwl_xdg_surface_get_popup(x->k.c, xs, pop, parent.xs, pos), OK);
-    CHECK(ct_await(&x->k, &jwl_xdg_popup_interface, JWL_XDG_POPUP_EV_POPUP_DONE, pop, CT_WAIT));
     CHECK_ST(jwl_xdg_popup_reposition(x->k.c, pop, pos, 1), OK);
     CHECK_ST(ct_roundtrip(&x->k), OK);
     CHECK(!x->k.errored);
     CHECK(!ct_find(&x->k, &jwl_xdg_popup_interface, JWL_XDG_POPUP_EV_REPOSITIONED, pop));
+    CHECK(!ct_find(&x->k, &jwl_xdg_popup_interface, JWL_XDG_POPUP_EV_POPUP_DONE, pop));
     uint32_t half = ct_new(&x->k, &jwl_xdg_positioner_interface, 3);
     CHECK_ST(jwl_xdg_wm_base_create_positioner(x->k.c, x->wm, half), OK);
     CHECK_ST(jwl_xdg_popup_reposition(x->k.c, pop, half, 2), OK);

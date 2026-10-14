@@ -26,6 +26,12 @@
  * overlay (screens.c), which the scene keeps over every other window
  * (scene.c: a window raised or mapped after it comes up under it).
  *
+ * A popup's window (COMP_WIN_POPUP) never has the focus: a click on it
+ * focuses its toplevel, and while a popup holds the grab the keys go to
+ * its surface with its toplevel still focused (keyboard.c asks
+ * xdg_key_surface which surface the enter names). The focus moving to
+ * another window dismisses the grab's popups (xdg_popups_focus).
+ *
  * Keys no client sees, taken on their press before any focus is looked at
  * (the press and its release both go nowhere):
  *   Ctrl+Alt+Del   init reboots the machine (ctl.c asks it, as the console
@@ -75,7 +81,7 @@ bool seat_takes_keys(struct comp_client *cl)
  * nowhere until another window is chosen. */
 static bool focusable(const struct comp_window *w)
 {
-    return w && (w->flags & COMP_WIN_MAPPED) && !(w->flags & COMP_WIN_OVERLAY) &&
+    return w && (w->flags & COMP_WIN_MAPPED) && !(w->flags & (COMP_WIN_OVERLAY | COMP_WIN_POPUP)) &&
            client_alive(w->surface->client);
 }
 
@@ -92,6 +98,8 @@ void seat_focus(struct comp_window *w)
 {
     if (w == focused || (w && !focusable(w)))
         return;
+    xdg_popups_focus(w);   /* a grab's popups on another window close (nothing sent to the
+                            * keyboard: the leave below names what had the keys) */
     struct comp_window *old = focused;
     focused = w;
     if (old) {
@@ -110,12 +118,17 @@ void seat_focus(struct comp_window *w)
 
 void focus_click(struct comp_window *w)
 {
+    w = xdg_popup_root(w);   /* a popup's: its toplevel's */
+    if (!w)
+        return;
     seat_focus(w);
     wm_clicked(w);
 }
 
 void focus_window_mapped(struct comp_window *w)
 {
+    if (w->flags & COMP_WIN_POPUP)
+        return;   /* shown over a window of its client's that took the focus or not */
     struct seat_client *sc = seat_of(w->surface->client);
     if (sc->had_window)
         return;

@@ -32,7 +32,7 @@
  *   testscene.c windows of known pixels with no client (a test power);
  *   paint.h     what those share.
  * Later tracks: xdg-shell and window management (xdg.c, xdgtop.c, xdgdeco.c,
- * wm.c, deco.c), the seat and compctl (seat.c, keyboard.c, pointer.c,
+ * xdgpopup.c, xdgplace.c, wm.c, deco.c), the seat and compctl (seat.c, keyboard.c, pointer.c,
  * focus.c, sources.c, shapes.c), the clipboard (data.c), the cursor set (cursors.c, drawn by
  * tools/cursorgen.c), and the desktop around the windows: virtual screens,
  * the top bar, the menus, popovers, notifications, animations and frosting
@@ -379,6 +379,9 @@ enum comp_layout {
 #define COMP_WIN_CSD        (1u << 7)   /* floating, its client drawing its own decorations
                                          * (deco.c): no title bar or outline, only the rounded
                                          * corners and the shadow (look.h's LOOK_CSD) */
+#define COMP_WIN_POPUP      (1u << 8)   /* an xdg_popup's (xdgpopup.c): placed against its
+                                         * parent and kept above it, no decorations; never
+                                         * focused (its toplevel is), tiled or cycled */
 
 /* A floating window's title bar: deco_top, in pixels (title.c draws it,
  * the window manager sets it; look.h has the rest of its look). */
@@ -490,6 +493,9 @@ void window_view(struct comp_window *w, int32_t view_w, int32_t view_h);
 /* To the top (under the boot overlays, COMP_WIN_OVERLAY, unless w is one);
  * damages its frame. window_create puts a new window there too. */
 void window_raise(struct comp_window *w);
+/* w (no overlay) put right above `under` in the stacking order: a popup
+ * over its parent's family; damages it. */
+void window_raise_above(struct comp_window *w, struct comp_window *under);
 void window_damage(struct comp_window *w);             /* all of its extent */
 /* Surface damage b (surface coordinates, clipped to the surface) on the output. */
 void window_damage_surface(struct comp_window *w, struct comp_box b);
@@ -851,6 +857,10 @@ void     seat_surface_gone(struct comp_surface *s);
 /* For the window manager (C3: wm.c, xdg.c). */
 /* The keyboard focus to w (NULL: none): leave and enter sent. */
 void     seat_focus(struct comp_window *w);
+/* The surface the keys go to may have changed (xdg_key_surface: a grabbing
+ * popup shown or gone): leave on the one that had them and enter on the
+ * new one, if they differ (keyboard.c). */
+void     seat_key_surface_changed(void);
 /* The window with the keyboard focus, or NULL. */
 struct comp_window *seat_focused(void);
 /* Does cl take keys: it has a wl_keyboard (libjwl's no_keyboard binds none:
@@ -1120,3 +1130,26 @@ void     xdg_teardown(struct comp_client *cl);
 #define XDG_PING_NS (5 * NS_PER_S)
 void     xdg_tick(uint64_t t);
 uint64_t xdg_deadline(void);
+
+/* Popups (xdgpopup.c), for the seat and the loop. */
+/* The client whose popups hold the grab (xdg_popup.grab), or NULL. While
+ * one does, the pointer goes only to that client's surfaces, and a press
+ * anywhere else dismisses the popups (xdg_grab_dismiss) and goes nowhere. */
+struct comp_client  *xdg_grab_client(void);
+void                 xdg_grab_dismiss(void);
+/* For a popup's window, the window of the toplevel it is placed on (through
+ * popups), or NULL if that isn't shown; any other window is its own. */
+struct comp_window  *xdg_popup_root(struct comp_window *w);
+/* The surface the keys go to while w has the keyboard focus: the topmost
+ * shown popup of the grab if it is placed on w, else w's own. */
+struct comp_surface *xdg_key_surface(struct comp_window *w);
+/* The keyboard focus is about to move to w (NULL: none): a grab on another
+ * window is dismissed. */
+void                 xdg_popups_focus(struct comp_window *w);
+/* w is being unmapped or goes (seat_window_gone): the popups on it are
+ * dismissed. */
+void                 xdg_popups_window_gone(struct comp_window *w);
+/* Each loop turn, before the paint: every shown popup follows its parent
+ * (moved with it, kept above it, a reactive one placed again) and the keys
+ * go where xdg_key_surface says. */
+void                 xdg_popups_turn(void);

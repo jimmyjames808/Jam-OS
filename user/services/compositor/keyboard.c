@@ -36,7 +36,14 @@
  * Terminal text (serialin, a QEMU test): each byte or escape sequence
  * (<termkeys.h>) becomes the presses that type it on the US layout: Shift
  * or Ctrl pressed around the key as needed, so a client sees exactly what
- * a keyboard would have sent. */
+ * a keyboard would have sent.
+ *
+ * Which surface: the focused window's, or while a popup of its holds the
+ * grab, the topmost such popup's (xdg_key_surface). The client is the same
+ * either way; wl_keyboard.enter and leave tell it which of its surfaces
+ * has the keys, and a grab coming or going moves them between its
+ * surfaces (seat_key_surface_changed: leave, then enter with the keys
+ * held and the modifiers). */
 #include <jwl/wayland.h>
 #include <keymap.h>
 #include "seat.h"
@@ -50,6 +57,9 @@
 #define U_LSHIFT      0xe1
 
 static handle_t keymap_vmo = HANDLE_INVALID;   /* the XKB text, kept pages */
+static struct comp_surface *entered;   /* the surface the focused client was last told has the
+                                        * keys (enter, no leave since); NULL: none, or it went */
+static bool keys_in;                   /* a window has the focus and its client was told */
 
 /* A key held down. */
 struct held {
@@ -163,9 +173,11 @@ static unsigned held_codes(uint32_t *out)
     return n;
 }
 
-static void send_enter(struct comp_window *w, const struct seat_res *only)
+/* enter on s (a surface of the focused client's), then the modifiers, to
+ * its keyboards (or only one). */
+static void send_enter(struct comp_surface *s, const struct seat_res *only)
 {
-    struct comp_client *cl = w->surface->client;
+    struct comp_client *cl = s->client;
     uint32_t codes[KEYS_HELD_MAX];
     unsigned n = held_codes(codes);
     uint32_t serial = comp_serial();
@@ -174,7 +186,7 @@ static void send_enter(struct comp_window *w, const struct seat_res *only)
     seat_input_serial(cl, serial);
     for (struct seat_res *r = seat_of(cl)->res[SEAT_KEYBOARD]; r; r = r->next)
         if (!only || r == only)
-            (void)jwl_wl_keyboard_send_enter(cl->conn, r->id, serial, w->surface->id, codes,
+            (void)jwl_wl_keyboard_send_enter(cl->conn, r->id, serial, s->id, codes,
                                              n * sizeof(codes[0]));
     serial = comp_serial();
     for (struct seat_res *r = seat_of(cl)->res[SEAT_KEYBOARD]; r; r = r->next)
@@ -220,20 +232,50 @@ static void send_early(struct comp_window *w)
 
 void keyboard_enter(struct comp_window *w)
 {
-    if (!surface_live(w->surface))
+    struct comp_surface *s = xdg_key_surface(w);
+    if (!surface_live(w->surface) || !surface_live(s))
         return;
-    send_enter(w, NULL);
+    keys_in = true;
+    entered = s;
+    send_enter(s, NULL);
     send_early(w);
+}
+
+/* leave on s, to its client's keyboards. */
+static void send_leave(struct comp_surface *s)
+{
+    struct comp_client *cl = s->client;
+    uint32_t serial = comp_serial();
+    for (struct seat_res *r = seat_of(cl)->res[SEAT_KEYBOARD]; r; r = r->next)
+        (void)jwl_wl_keyboard_send_leave(cl->conn, r->id, serial, s->id);
 }
 
 void keyboard_leave(struct comp_window *w)
 {
-    struct comp_client *cl = w->surface->client;
-    if (!surface_live(w->surface))
-        return;   /* gone with its surface: the client knows */
-    uint32_t serial = comp_serial();
-    for (struct seat_res *r = seat_of(cl)->res[SEAT_KEYBOARD]; r; r = r->next)
-        (void)jwl_wl_keyboard_send_leave(cl->conn, r->id, serial, w->surface->id);
+    struct comp_surface *s = entered;
+    (void)w;   /* entered is a surface of w's client's: the one that has the keys */
+    keys_in = false;
+    entered = NULL;
+    if (s && surface_live(s))
+        send_leave(s);   /* (gone with its surface: the client knows) */
+}
+
+void seat_key_surface_changed(void)
+{
+    struct comp_window *w = focus_target();
+    struct comp_surface *to = w && keys_in ? xdg_key_surface(w) : NULL;
+    if (!to || to == entered || !surface_live(to))
+        return;
+    if (entered && surface_live(entered))
+        send_leave(entered);
+    entered = to;
+    send_enter(to, NULL);
+}
+
+void keyboard_surface_gone(struct comp_surface *s)
+{
+    if (s == entered)
+        entered = NULL;   /* the next seat_key_surface_changed enters the one that has them */
 }
 
 status_t keyboard_create(struct comp_client *cl, uint32_t id, uint32_t version)
@@ -251,8 +293,12 @@ status_t keyboard_create(struct comp_client *cl, uint32_t id, uint32_t version)
     if (st == OK && version >= JWL_WL_KEYBOARD_EV_REPEAT_INFO_SINCE)
         st = jwl_wl_keyboard_send_repeat_info(cl->conn, id, REPEAT_RATE, REPEAT_DELAY);
     struct comp_window *w = focus_target();
-    if (st == OK && w && w->surface->client == cl)
-        send_enter(w, r);
+    if (st == OK && w && w->surface->client == cl && keys_in) {
+        if (!entered)
+            entered = xdg_key_surface(w);
+        if (surface_live(entered))
+            send_enter(entered, r);
+    }
     return st;
 }
 

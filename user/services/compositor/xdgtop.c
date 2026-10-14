@@ -135,7 +135,7 @@ static void send(struct xdg_surf *x, const struct wm_config *cfg)
         st = jwl_xdg_surface_send_configure(conn_of(x), x->id, serial);
     if (st != OK)
         return;   /* a dead connection: torn down after this turn */
-    x->sent[x->nsent++] = (struct xdg_sent){ serial, *cfg, false };
+    x->sent[x->nsent++] = (struct xdg_sent){ .serial = serial, .cfg = *cfg };
     x->last = *cfg;
     x->last_ex = e;
     x->has_last = true;
@@ -278,6 +278,7 @@ static status_t toplevel_commit(struct comp_surface *s)
 static void toplevel_gone(struct comp_surface *s, bool dead)
 {
     struct xdg_surf *x = s->role_data;
+    xdg_popup_detach(x);   /* its popups dismissed first, while its window is there */
     if (x->ww)
         wm_destroy(x->ww);
     x->ww = NULL;
@@ -326,6 +327,7 @@ status_t xdg_surf_create(struct comp_client *cl, struct xdg_base *b, uint32_t id
 
 void xdg_surf_detach(struct xdg_surf *x)
 {
+    xdg_popup_detach(x);   /* the popups on it, or it if it is one */
     if (x->ww)
         wm_destroy(x->ww);
     x->ww = NULL;
@@ -435,11 +437,14 @@ static status_t on_ack_configure(void *data, uint32_t self, uint32_t serial)
                           "no configure %u to ack", serial);
     if (!x->sent[i].stale) {
         x->acked = x->sent[i].cfg;
+        x->acked_place = x->sent[i].place;
         x->acked_new = x->configured = true;
     }
     x->nsent -= i + 1;   /* it and every older one */
     memmove(x->sent, x->sent + i + 1, x->nsent * sizeof(x->sent[0]));
-    if (x->dirty && x->initial)
+    if (x->dirty && x->initial && x->role == XDG_ROLE_POPUP)
+        xdg_popup_configure(x);
+    else if (x->dirty && x->initial)
         op_configure(x, &x->wanted);
     return OK;
 }
@@ -467,6 +472,7 @@ static status_t on_top_destroy(void *data, uint32_t self)
     if (x->deco_id)
         return comp_error(x->cl, x->deco_id, JWL_ZXDG_TOPLEVEL_DECORATION_V1_ERROR_ORPHANED,
                           "xdg_toplevel %u destroyed before its decoration object", self);
+    xdg_popup_detach(x);   /* its popups dismissed: their parent goes */
     if (x->ww)
         wm_destroy(x->ww);
     x->ww = NULL;
