@@ -411,7 +411,8 @@ and Rust, through the ports builder. BUILD-RESULT-PLACEHOLDER
   unpacked by `tools/cr/toolchain.sh` into `~/.cache/jamos/toolchains`.
   The tarball's own prebuilt tools that the build runs are kept: GN
   (`buildtools/linux64/gn`, Chromium's pinned build) and the Python GN
-  runs scripts with (`third_party/cpython3`); its prebuilt gperf (3.2) is
+  runs scripts with (Chromium's cpython3 in its third_party directory);
+  its prebuilt gperf (3.2) is
   replaced by the pinned 3.1 the owner asked for (CT2). Alpine deletes
   every prebuilt ELF file and uses its system's tools instead; Jam OS
   takes Chromium's pinned ones, as for clang.

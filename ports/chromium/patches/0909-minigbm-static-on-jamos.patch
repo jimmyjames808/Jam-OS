@@ -1,0 +1,30 @@
+Description: Chromium's minigbm a static library on Jam OS
+ Without the system's GBM, Linux builds Chromium's own minigbm as a shared
+ library that Wayland's code links. Jam OS runs static programs only (its
+ link driver refuses -shared): there it is a static library.
+Forwarded: not-needed (Jam OS's: static programs only)
+---
+--- a/third_party/minigbm/BUILD.gn
++++ b/third_party/minigbm/BUILD.gn
+@@ -4,6 +4,7 @@
+
+ import("//build/config/cast.gni")
+ import("//build/config/linux/pkg_config.gni")
++import("//build/toolchain/jamos/jamos.gni")
+
+ assert(is_linux || is_chromeos)
+
+@@ -57,7 +58,12 @@
+     }
+   }
+
+-  shared_library("minigbm") {
++  # Jam OS runs static programs only.
++  _minigbm_type = "shared_library"
++  if (is_jamos) {
++    _minigbm_type = "static_library"
++  }
++  target(_minigbm_type, "minigbm") {
+     sources = [
+       "src/amdgpu.c",
+       "src/backend_mock.c",
