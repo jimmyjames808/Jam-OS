@@ -9,19 +9,29 @@
  *                               list tools/disk-regions.py computes on Linux from the
  *                               partition table alone, one line each, in its order
  *   disk smart <disk>           the drive's health log
- *   disk prepare <disk>         make a blank NVMe drive a Jam OS disk (stage 2): its
+ *   disk prepare <disk>         make an NVMe drive a Jam OS disk (stage 2): its
  *                               partition table, both partitions formatted, mounted
  *                               read-only. It shows the drive's model, serial number and
  *                               size, and goes on only when the last four characters of the
- *                               serial number are typed
+ *                               serial number are typed. A drive that isn't empty (the
+ *                               driver's empty rules) is ERASED: it shows what is on it,
+ *                               says everything will be lost, and asks for the serial's
+ *                               end and then `erase`
  *
  * The shell asks init for a channel that speaks voldisks (initctl.disks,
  * abi/idl/volumes.idl): volumes answers the list from what its drivers said
  * and asks a driver for a digest or the health log each time. That channel
  * can't mount, remount or kill anything. A disk is named as `disks` names
- * it: nvme0, usb0, ... `disk prepare` goes through init (initctl.prepare_disk) to
- * volumes, which checks the drive again, and the driver a third time: this
- * file only decides what to show and whether the owner confirmed. */
+ * it: nvme0, usb0, ... `disk prepare` asks volumes what it would do first
+ * (voldisks.prepare_check: refused, an empty drive, a prepare to finish, or
+ * an erase), then goes through init (initctl.prepare_disk) to volumes, which
+ * checks the drive and the owner's answers again, and the driver a third
+ * time: this file only decides what to show and whether the owner
+ * confirmed. The answers are read from this shell's console's keys alone
+ * (the keyboard, or the terminal), never from stdin or a pipe; keys typed
+ * before a question was shown don't answer it; and a shell that runs one
+ * command line for SSH (`ssh pc 'disk prepare nvme1'`, whose keys may be a
+ * pipe's) erases nothing. */
 #include <idl/initctl.h>
 #include <idl/storage.h>
 #include <idl/volumes.h>
@@ -29,6 +39,7 @@
 
 #define LIST_WAIT   (5 * NS_PER_S)
 #define DIGEST_WAIT (90 * NS_PER_S)   /* volumes gives the driver 60 s for one */
+#define CHECK_WAIT  (10 * NS_PER_S)   /* prepare_check: volumes asks the driver its mode */
 #define PREPARE_WAIT (700 * NS_PER_S) /* init gives volumes 11 minutes: the format */
 #define TYPE_WAIT   (120 * NS_PER_S)  /* the owner's answer */
 #define SERIAL_TAIL 4                 /* the characters of the serial that are typed */
@@ -388,12 +399,34 @@ static int smart_cmd(handle_t list, const struct disk_row *d)
 
 /* ---- disk prepare ------------------------------------------------------------------ */
 
-/* Read what the owner types, up to cap - 1 printable characters and Enter,
- * echoed. False: Ctrl+C or no answer in time. */
-static bool type_line(char *buf, size_t cap)
+/* Keys already waiting when a question is about to be shown were typed
+ * before it (ahead, or pasted with the command): they don't answer it.
+ * False: a Ctrl+C among them. */
+static bool drop_waiting_keys(void)
 {
-    size_t n = 0;
     sh_drop_typeahead();
+    for (;;) {
+        int k = sh_poll_key(now());
+        if (k < 0)
+            return true;
+        if (k == 3)
+            return false;
+    }
+}
+
+/* Ask `question` and read what the owner types, up to cap - 1 printable
+ * characters and Enter, echoed: from the keys of this shell's console
+ * (the keyboard, or the terminal), typed after the question was shown.
+ * False: Ctrl+C or no answer in time. */
+static bool ask(const char *question, char *buf, size_t cap)
+{
+    if (!drop_waiting_keys()) {
+        sh_say("\n");
+        return false;
+    }
+    sh_say("%s", question);
+    sh_flush();
+    size_t n = 0;
     for (;;) {
         int k = sh_poll_key(now() + TYPE_WAIT);
         if (k == '\n' || k == '\r') {
@@ -445,47 +478,107 @@ static bool part_row(handle_t list, const struct disk_row *d, unsigned i, uint64
     return true;
 }
 
-/* How many of a Jam OS disk's two partitions have no mounted volume. */
-static unsigned not_mounted(handle_t list, const struct disk_row *d)
+/* What is on a drive that isn't empty, shown before its erase is asked
+ * for: its partition table and each partition (type, size, GPT name, and
+ * the FAT volume Jam OS found on it: its label and mount), or, with no
+ * table, that it holds data Jam OS doesn't recognise. */
+static void say_contents(handle_t list, const struct disk_row *d)
 {
-    unsigned n = 0;
-    for (unsigned i = 0; i < 2; i++) {
-        uint64_t blocks;
-        bool mounted;
-        n += !part_row(list, d, i, &blocks, &mounted) || !mounted;
+    static const char *const schemes[] = { "no partition table", "an MBR partition table",
+                                           "a GPT partition table" };
+    if (d->scheme == STORAGE_SCHEME_NONE && !d->partitions) {
+        sh_say("  On it: no partition table, but data Jam OS doesn't recognise (at its start\n"
+               "  or end, or where Jam OS's partitions would go).\n");
+        return;
     }
-    return n;
+    if (d->scheme == STORAGE_SCHEME_NONE)
+        sh_say("  On it: no partition table, one volume over the whole disk:\n");
+    else if (!d->partitions)
+        sh_say("  On it: %s that lists no partition Jam OS can read.\n",
+               d->scheme < 3 ? schemes[d->scheme] : "a partition table");
+    else
+        sh_say("  On it: %s with %u partition%s:\n", d->scheme < 3 ? schemes[d->scheme] : "a table",
+               d->partitions, d->partitions == 1 ? "" : "s");
+    for (unsigned n = 0; n < d->partitions && n < MAX_PARTS; n++) {
+        uint8_t mbr, guid[16], fs;
+        uint64_t start, blocks;
+        char label[109], mount[16], tbuf[40], size[24], vol[17] = "";
+        uint32_t ll, ml;
+        if (voldisks_partition_until(list, now() + LIST_WAIT, d->id, n, &mbr, guid, &start,
+                                     &blocks, &fs, label, &ll, mount, &ml) != OK) {
+            sh_say("    %2u  (not listed)\n", n + 1);
+            continue;
+        }
+        sh_say("    %2u  %-21s %9s  %s\n", n + 1, type_name(d->scheme, mbr, guid, tbuf, sizeof(tbuf)),
+               sh_human(blocks * d->block_size, size, sizeof(size)), label[0] ? label : "-");
+        if (fs == VOLDISKS_FS_MOUNTED) {
+            bool ro = true;
+            if (fs_statfs(mount, NULL, NULL, &ro, vol) != OK)
+                vol[0] = '\0';
+            sh_say("        FAT volume%s%s%s, mounted read-only at %s (unmounted first)\n",
+                   vol[0] ? " \"" : " (no label)", vol, vol[0] ? "\"" : "", mount);
+        } else if (fs == VOLDISKS_FS_NO_FAT) {
+            sh_say("        no FAT volume: data Jam OS doesn't read (NTFS, ext4, ...)\n");
+        }
+    }
+    if (d->partitions > MAX_PARTS)
+        sh_say("    (%u more not listed)\n", d->partitions - MAX_PARTS);
 }
 
-/* What it is, and whether `disk prepare` may go on: 0 a blank drive (its
- * table is to be made), 1 a Jam OS disk with a partition to format, -1 not
- * to be prepared (said). */
-static int prepare_what(handle_t list, const struct disk_row *d)
+/* Why voldisks.prepare_check says a disk can't be prepared, said; false
+ * if it can. */
+static bool refused(const struct disk_row *d, uint8_t why)
 {
-    if (d->bus != DISKS_BUS_NVME) {
+    switch (why) {
+    case VOLDISKS_REFUSED_NONE:
+        return false;
+    case VOLDISKS_REFUSED_BOOT_DISK:
+        sh_tty("disk prepare: %s is the disk Jam OS booted from: it can't be prepared\n",
+               d->name);
+        break;
+    case VOLDISKS_REFUSED_IN_USE:
+        sh_tty("disk prepare: %s has a volume mounted read-write: nothing is written (make it "
+               "read-only first: mount -r)\n", d->name);
+        break;
+    case VOLDISKS_REFUSED_READ_ONLY:
+        sh_tty("disk prepare: the internal drives are read-only on this boot (diskro): nothing "
+               "is written\n");
+        break;
+    case VOLDISKS_REFUSED_JAMOS:
+        sh_say("disk prepare: %s is a Jam OS disk already\n", d->name);
+        break;
+    case VOLDISKS_REFUSED_NOT_NVME:
         sh_tty("disk prepare: %s is not an NVMe drive: only one can be made a Jam OS disk\n",
                d->name);
-        return -1;
+        break;
+    case VOLDISKS_REFUSED_BLOCK_SIZE:
+        sh_tty("disk prepare: %s has %u-byte blocks: Jam OS's FAT needs 512: nothing is "
+               "written\n", d->name, d->block_size);
+        break;
+    case VOLDISKS_REFUSED_TOO_SMALL:
+        sh_tty("disk prepare: %s is too small for Jam OS (under about 580 MiB): nothing is "
+               "written\n", d->name);
+        break;
+    case VOLDISKS_REFUSED_UNREADABLE:
+        sh_tty("disk prepare: %s's partition table can't be read (a read failed): it is not "
+               "erased\n", d->name);
+        break;
+    default:
+        sh_tty("disk prepare: %s can't be prepared (%u)\n", d->name, why);
+        break;
     }
-    if (d->kind == VOLDISKS_KIND_NO_TABLE)
-        return 0;
-    if (d->kind == VOLDISKS_KIND_JAMOS && d->scheme == STORAGE_SCHEME_GPT) {
-        if (not_mounted(list, d))
-            return 1;
-        sh_say("disk prepare: %s is a Jam OS disk already\n", d->name);
-        return -1;
-    }
-    sh_tty("disk prepare: %s is not blank (it has a partition table, or something else on it): "
-           "nothing is written\n", d->name);
-    return -1;
+    return true;
 }
 
 static const char *prepare_why(status_t st)
 {
     switch (st) {
-    case ERR_ACCESS_DENIED: return "not blank, or not to be written: nothing was written";
+    case ERR_ACCESS_DENIED:
+        return "refused (the drive changed since it was shown, or isn't to be written): "
+               "nothing was written";
     case ERR_ALREADY_EXISTS: return "a Jam OS disk already";
-    case ERR_NO_SPACE: return "too small for Jam OS (under 600 MiB)";
+    case ERR_BUSY: return "a volume on it is mounted read-write: nothing was written";
+    case ERR_NO_SPACE: return "too small for Jam OS (under about 580 MiB)";
     case ERR_NOT_SUPPORTED: return "not a drive Jam OS can prepare (NVMe, 512-byte blocks)";
     case ERR_BAD_STATE: return "busy: try again in a moment";
     case ERR_TIMED_OUT: return "not mounted in time (see `log`)";
@@ -512,40 +605,70 @@ static void prepared_line(handle_t list, const char *name)
 
 static int prepare_cmd(handle_t list, const struct disk_row *d)
 {
-    int what = prepare_what(list, d);
-    if (what < 0)
+    uint8_t plan, why;
+    status_t st = voldisks_prepare_check_until(list, now() + CHECK_WAIT, d->id, &plan, &why);
+    if (st != OK) {
+        sh_tty("disk prepare: %s: %s\n", d->name, prepare_why(st));
+        return 1;
+    }
+    if (refused(d, why))
         return 1;
     uint32_t id = d->id;
-    char name[sizeof(d->name)], size[24], typed[16];
+    char name[sizeof(d->name)], size[24], typed[16], word[16] = "";
     snprintf(name, sizeof(name), "%s", d->name);
     if (!d->serial[0]) {
         sh_tty("disk prepare: %s reports no serial number: nothing to confirm with, nothing "
                "is written\n", name);
         return 1;
     }
+    bool erase = plan == VOLDISKS_PLAN_ERASE;
+    if (erase && sh_one_line()) {
+        sh_tty("disk prepare: %s isn't empty, and erasing it is confirmed at a prompt, not in a "
+               "command line run from elsewhere (ssh host 'disk prepare'): nothing is written\n",
+               name);
+        return 1;
+    }
     sh_say("disk prepare %s: %s, serial %s, %s\n", name, d->model, d->serial,
            sh_human(d->blocks * d->block_size, size, sizeof(size)));
-    if (what == 0)
+    if (plan == VOLDISKS_PLAN_TABLE)
         sh_say("  nothing is on it. This writes Jam OS's partition table to it (an ESP of 512 MiB,\n"
                "  a data partition of the rest) and formats both partitions.\n");
-    else
+    else if (plan == VOLDISKS_PLAN_FINISH)
         sh_say("  a Jam OS disk, but a partition has no volume yet (a prepare was cut short): this\n"
                "  formats it.\n");
-    sh_say("  Type the last %d characters of its serial number to go on, anything else stops: ",
-           SERIAL_TAIL);
-    sh_flush();
-    if (!type_line(typed, sizeof(typed)) || !serial_tail_is(d->serial, typed)) {
+    else {
+        sh_say("  It is NOT empty.\n");
+        say_contents(list, d);
+        sh_say("  EVERYTHING ON %s WILL BE LOST: every partition and every file on it. This\n"
+               "  erases it and writes Jam OS's partition table (an ESP of 512 MiB, a data\n"
+               "  partition of the rest) and formats both partitions. Check the model and the\n"
+               "  serial number: is this the drive you mean?\n", name);
+    }
+    char question[96];
+    snprintf(question, sizeof(question), "  Type the last %d characters of its serial number to "
+             "go on, anything else stops: ", SERIAL_TAIL);
+    if (!ask(question, typed, sizeof(typed)) || !serial_tail_is(d->serial, typed)) {
         sh_tty("disk prepare: that is not the end of %s's serial number: nothing was written\n",
                name);
         return 1;
+    }
+    if (erase) {
+        snprintf(question, sizeof(question), "  To erase %s, type erase (anything else stops): ",
+                 name);
+        if (!ask(question, word, sizeof(word)) || strcmp(word, "erase")) {
+            sh_tty("disk prepare: not erased: nothing was written\n");
+            return 1;
+        }
     }
     if (!sh_initctl()) {
         sh_tty("disk prepare: no init to ask\n");
         return 1;
     }
-    sh_say("preparing %s (the table, then both partitions formatted): this takes a moment\n", name);
+    sh_say("%s %s (the table, then both partitions formatted): this takes a moment\n",
+           erase ? "erasing and preparing" : "preparing", name);
     sh_flush();
-    status_t st = initctl_prepare_disk_until(sh_initctl(), now() + PREPARE_WAIT, id);
+    st = initctl_prepare_disk_until(sh_initctl(), now() + PREPARE_WAIT, id, typed,
+                                    (uint32_t)strlen(typed), word, (uint32_t)strlen(word));
     if (st != OK) {
         sh_tty("disk prepare: %s: %s\n", name, prepare_why(st));
         return 1;
@@ -562,7 +685,8 @@ SH_CMD(disk)
     if (!digest && !smart && !prepare) {
         sh_tty("usage: disk digest <disk> [<lba> <count>]   SHA-256s of the disk's regions\n"
                "       disk smart <disk>                    the drive's health log\n"
-               "       disk prepare <disk>                  make a blank NVMe drive a Jam OS disk\n"
+               "       disk prepare <disk>                  make an NVMe drive a Jam OS disk (one\n"
+               "                                            that isn't empty: erased, if you say so)\n"
                "  <disk> is a name `disks` shows (nvme0, usb0)\n");
         return 2;
     }

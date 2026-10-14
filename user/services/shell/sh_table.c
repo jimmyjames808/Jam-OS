@@ -116,11 +116,13 @@ static const struct sh_cmd cmds[] = {
       "  line for those blocks. smart: the NVMe drive's health log: data read and\n"
       "  written, host read and write commands (the write count not moving is the\n"
       "  drive's own witness that nothing was written), power cycles, wear. prepare:\n"
-      "  make a blank NVMe drive a Jam OS disk: shows its model, serial and size,\n"
+      "  make an NVMe drive a Jam OS disk: shows its model, serial and size,\n"
       "  and asks for the last four characters of the serial; then writes Jam OS's\n"
       "  partition table (an ESP of 512 MiB, a data partition of the rest), formats\n"
-      "  both and mounts them read-only (mount -w makes one writable). Never on a\n"
-      "  drive that has anything on it"),
+      "  both and mounts them read-only (mount -w makes one writable). A drive that\n"
+      "  isn't empty is shown first (its partitions and volumes), and ERASED only\n"
+      "  when you then also type erase: everything on it is lost. Never the disk\n"
+      "  Jam OS booted from, nor one with a volume mounted read-write"),
     C(hda, C_HARDWARE, "hda [gain [dB] | bits [n] | jacks]",
       "the HD Audio codecs and their widget graphs, read now by drv/hda\n"
       "  (the lines it logged at boot; pipe it: hda | grep pin), then the path to the\n"

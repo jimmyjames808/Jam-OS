@@ -13,7 +13,9 @@
  *                  open_partition writable refused for every index and one
  *                  past the last (the drive's kind before the index),
  *                  create_table refused (good GUIDs, and zeros: the drive
- *                  before the arguments), block.write on a read-only
+ *                  before the arguments; and an erase confirmed wrongly:
+ *                  the serial's end without "erase", a wrong end, "ERASE":
+ *                  the driver's own check), storage.mode "other", block.write on a read-only
  *                  channel refused, sync OK. The script checks the image's
  *                  hash: nothing reached it.
  *   nvmew_prepare  the blank drive: a writable open refused (not Jam OS's
@@ -31,7 +33,8 @@
  *                  the middle), synced, and read back through a read-only
  *                  channel of its own.
  *   nvmero_refuse  (the `diskro` boot) every QEMU drive, blank, Jam OS's or
- *                  other, refuses a writable open and create_table.
+ *                  other, refuses a writable open and create_table, an
+ *                  erase confirmed rightly too, and says `ro` (storage.mode).
  * The pattern (tools/nvme-written.py makes the same): block b of
  * partition p starts "JAMOSW1", a zero, p and b (32 bits each,
  * little-endian), then byte k is (b * 7 + k + p * 13) & 0xff. */
@@ -79,6 +82,36 @@ static bool asked(void)
     printf("utest: %s: writes drives: only when named (utest only %s): skipped\n", utest_cur,
            utest_cur);
     return false;
+}
+
+/* storage.create_table with no erase confirmation (a blank drive needs none). */
+static status_t create_table(handle_t s, uint64_t wait, const uint8_t *disk, const uint8_t *esp,
+                             const uint8_t *data)
+{
+    return storage_create_table_within(s, wait, disk, esp, data, "", 0, "", 0);
+}
+
+/* The same with an erase's confirmation: `tail` and `word` as given. */
+static status_t create_table_confirmed(handle_t s, const char *tail, const char *word)
+{
+    return storage_create_table_within(s, WAIT, guid_disk, guid_esp, guid_data, tail,
+                                       (uint32_t)strlen(tail), word, (uint32_t)strlen(word));
+}
+
+/* The end of the drive's serial number (its last 4 characters), as the
+ * owner would type it to confirm an erase; and the same with its last
+ * character changed. */
+static bool serial_tail(handle_t s, char tail[5], char wrong[5])
+{
+    char model[41], serial[21], fw[9];
+    uint32_t ml, sl, fl;
+    CHECK_ST(storage_ident_within(s, WAIT, model, &ml, serial, &sl, fw, &fl), OK);
+    CHECK(sl >= 4);
+    memcpy(tail, serial + sl - 4, 4);
+    tail[4] = '\0';
+    memcpy(wrong, tail, 5);
+    wrong[3] = wrong[3] == 'x' ? 'y' : 'x';
+    return true;
 }
 
 /* Is it QEMU's drive, by its serial (tools/qemu-test.sh's)? */
@@ -202,10 +235,25 @@ bool t_nvmew_refuse(void)
     for (uint32_t i = 0; i <= d.parts; i++)
         CHECK_ST(storage_open_partition_within(d.s, WAIT, i, 0, &blk), ERR_ACCESS_DENIED);
     /* No table made on it, whatever the GUIDs (zeros too: the kind first). */
-    CHECK_ST(storage_create_table_within(d.s, WAIT, guid_disk, guid_esp, guid_data),
+    CHECK_ST(create_table(d.s, WAIT, guid_disk, guid_esp, guid_data),
              ERR_ACCESS_DENIED);
-    CHECK_ST(storage_create_table_within(d.s, WAIT, guid_zero, guid_zero, guid_zero),
+    CHECK_ST(create_table(d.s, WAIT, guid_zero, guid_zero, guid_zero),
              ERR_ACCESS_DENIED);
+    /* Its erase only with the whole confirmation, checked by the driver
+     * itself: the serial's end without "erase", "erase" with a wrong end,
+     * and the word in another case are each refused (volumes is out of the
+     * way here). The right pair is the `erase` case's, through volumes. */
+    char tail[5], wrong[5];
+    if (!serial_tail(d.s, tail, wrong))
+        return false;
+    CHECK_ST(create_table_confirmed(d.s, tail, ""), ERR_ACCESS_DENIED);
+    CHECK_ST(create_table_confirmed(d.s, wrong, "erase"), ERR_ACCESS_DENIED);
+    CHECK_ST(create_table_confirmed(d.s, tail, "ERASE"), ERR_ACCESS_DENIED);
+    CHECK_ST(create_table_confirmed(d.s, tail, "erase "), ERR_ACCESS_DENIED);
+    CHECK_ST(create_table_confirmed(d.s, "", "erase"), ERR_ACCESS_DENIED);
+    uint8_t mode, word_ro, readable;
+    CHECK_ST(storage_mode_within(d.s, WAIT, &mode, &word_ro, &readable), OK);
+    CHECK(mode == STORAGE_MODE_OTHER && !word_ro && readable);
     /* A read-only channel: a write refused before anything, a sync OK. */
     uint8_t *map;
     if (!open_part(d.s, 0, 1, &blk, &map))
@@ -267,7 +315,7 @@ bool t_nvmew_prepare(void)
     if (!asked())
         return true;
     if (find(DRIVE_JAMOS, 0, &d)) {   /* a later boot: made already, never again */
-        CHECK_ST(storage_create_table_within(d.s, WAIT, guid_disk, guid_esp, guid_data),
+        CHECK_ST(create_table(d.s, WAIT, guid_disk, guid_esp, guid_data),
                  ERR_ACCESS_DENIED);
         printf("utest: %s: drive %u is Jam OS's already: create_table refused\n", utest_cur,
                d.n);
@@ -280,17 +328,17 @@ bool t_nvmew_prepare(void)
     }
     handle_t blk;
     CHECK_ST(storage_open_partition_within(d.s, WAIT, 0, 0, &blk), ERR_ACCESS_DENIED);
-    CHECK_ST(storage_create_table_within(d.s, WAIT, guid_zero, guid_esp, guid_data),
+    CHECK_ST(create_table(d.s, WAIT, guid_zero, guid_esp, guid_data),
              ERR_INVALID_ARGS);
-    CHECK_ST(storage_create_table_within(d.s, WAIT, guid_disk, guid_esp, guid_esp),
+    CHECK_ST(create_table(d.s, WAIT, guid_disk, guid_esp, guid_esp),
              ERR_INVALID_ARGS);
     uint64_t t0 = now();
-    CHECK_ST(storage_create_table_within(d.s, 6 * WAIT, guid_disk, guid_esp, guid_data), OK);
+    CHECK_ST(create_table(d.s, 6 * WAIT, guid_disk, guid_esp, guid_data), OK);
     printf("utest: %s: create_table answered in %lu ms\n", utest_cur,
            (unsigned long)((now() - t0) / NS_PER_MS));
     if (!jamos_listed(&d))
         return false;
-    CHECK_ST(storage_create_table_within(d.s, WAIT, guid_disk, guid_esp, guid_data),
+    CHECK_ST(create_table(d.s, WAIT, guid_disk, guid_esp, guid_data),
              ERR_ACCESS_DENIED);
     jam_handle_close(d.s);
     return true;
@@ -419,8 +467,16 @@ bool t_nvmero_refuse(void)
         handle_t blk;
         for (uint32_t i = 0; i <= d.parts; i++)
             CHECK_ST(storage_open_partition_within(d.s, WAIT, i, 0, &blk), ERR_ACCESS_DENIED);
-        CHECK_ST(storage_create_table_within(d.s, WAIT, guid_disk, guid_esp, guid_data),
+        CHECK_ST(create_table(d.s, WAIT, guid_disk, guid_esp, guid_data),
                  ERR_ACCESS_DENIED);
+        /* `ro` wins over the owner's confirmation of an erase too. */
+        char tail[5], wrong[5];
+        if (!serial_tail(d.s, tail, wrong))
+            return false;
+        CHECK_ST(create_table_confirmed(d.s, tail, "erase"), ERR_ACCESS_DENIED);
+        uint8_t mode, ro, readable;
+        CHECK_ST(storage_mode_within(d.s, WAIT, &mode, &ro, &readable), OK);
+        CHECK(mode == STORAGE_MODE_OTHER && ro);
         static const char *const kinds[] = { "?", "someone else's", "blank", "Jam OS's" };
         printf("utest: %s: drive %u (%s): read-only\n", utest_cur, d.n, kinds[d.kind]);
         jam_handle_close(d.s);

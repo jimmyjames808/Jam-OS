@@ -636,6 +636,11 @@ static void take_args(int argc, char **argv)
     }
 }
 
+bool sh_one_line(void)
+{
+    return cmd_arg != NULL;
+}
+
 /* "cmd=<line>": the line alone, then the end, with its status. */
 _Noreturn static void run_command(const char *line)
 {

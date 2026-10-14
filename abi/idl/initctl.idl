@@ -142,12 +142,14 @@ const APP_MAX      15
 11 disks  () -> (handle<channel> list)
 
 # Make disk `id` (voldisks' ids, `disks`' nvme1) a Jam OS disk (volinstall.prepare):
-# a blank NVMe drive gets Jam OS's partition table and both partitions are
+# an empty NVMe drive gets Jam OS's partition table and both partitions are
 # formatted and mounted read-only; one a prepare was cut short on is finished.
-# Nothing else is ever written: the drive must be blank or already Jam OS's
-# (volumes and the driver each decide), and the shell has asked for the last
-# four characters of its serial number before it calls this. Answered later,
-# when volumes has answered (init serves its other channels meanwhile;
-# ERR_TIMED_OUT after 11 minutes). The shell's channel only (ERR_ACCESS_DENIED
-# on the consoles' and the compositor's). Errors are volinstall.prepare's.
-12 prepare_disk  (u32 id) -> () later
+# A drive that isn't empty is ERASED the same way, and only when `tail` and
+# `word` are what the owner typed to confirm it: the end of its serial
+# number and "erase" (volumes and the driver each check them; they aren't
+# looked at for an empty drive). The shell has shown the drive and asked for
+# them before it calls this. Answered later, when volumes has answered
+# (init serves its other channels meanwhile; ERR_TIMED_OUT after 11
+# minutes). The shell's channel only (ERR_ACCESS_DENIED on the consoles' and
+# the compositor's). Errors are volinstall.prepare's.
+12 prepare_disk  (u32 id, str[<=20] tail, str[<=8] word) -> () later

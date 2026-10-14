@@ -22,7 +22,11 @@
  * own partitions (or a blank drive's table, for create_table) before it
  * looks at the blocks. tools/checknvme.py keeps it that way at build
  * time. Windows' drive, like every drive that isn't Jam OS's, is never
- * written: its mode is MODE_OTHER and no Write or Flush can be built. */
+ * written: its mode is MODE_OTHER and no Write or Flush can be built. The
+ * one way out of MODE_OTHER is the owner's: create_table given the end of
+ * the drive's serial number and "erase" (table.c checks them) arms the
+ * gate MODE_ERASE for that create_table alone, its table's blocks and the
+ * spots where its partitions will start. */
 #pragma once
 
 #include <jam/driver.h>
@@ -99,10 +103,14 @@ enum nvme_mode {
     MODE_OTHER = 0,   /* someone else's (Windows'), unreadable, or `ro`: never written */
     MODE_BLANK,       /* blank: create_table may write its table's blocks, nothing else */
     MODE_JAMOS,       /* Jam OS's: its two partitions may be written, nothing else */
+    MODE_ERASE,       /* someone else's, its erase confirmed by the owner: create_table may
+                       * write its table's blocks and zero the blank rule's spots, nothing
+                       * else, until it ends (then the table read back decides again) */
 };
 
 /* A write's target that is no partition: the table's blocks, for
- * create_table on a blank drive (an nvme_io's `part`). */
+ * create_table on a blank drive (an nvme_io's `part`), and on an erased
+ * one also the blank rule's spots. */
 #define PART_TABLE 0xffu
 
 /* One command in flight on a queue. */
@@ -276,8 +284,11 @@ struct admin_args {
 /* The drive's mode from the table the driver read itself (t; NULL: none
  * could be read), and where it may then be written: MODE_JAMOS, its two
  * partitions; MODE_BLANK, the blocks pt_jamos_plan gives Jam OS's table;
- * MODE_OTHER, nothing (also with c->ro). The one way the mode changes. */
-void     cmd_arm(struct nvme *c, const struct pt_table *t);
+ * MODE_OTHER, nothing (also with c->ro). `erase`: the owner confirmed
+ * this drive's erase (table.c, create_table, and nowhere else): a drive
+ * the table calls someone else's is MODE_ERASE, the table's blocks and
+ * the blank rule's spots. The one way the mode changes. */
+void     cmd_arm(struct nvme *c, const struct pt_table *t, bool erase);
 enum nvme_mode cmd_mode(void);
 const char *cmd_mode_str(void);   /* for the log and the RESULTS line */
 
@@ -292,8 +303,8 @@ uint64_t sq_addr(const struct nvme_queue *q);   /* for ASQ */
  * target `part`, see struct nvme_io) or a flush in slot s of c->io.
  * Anything outside the lists ends the driver (exit 1, a RESULTS line):
  * they never return an error for it. sqe_write refuses so a write while
- * the mode isn't MODE_JAMOS (a partition) or MODE_BLANK (PART_TABLE), and
- * then one outside its target's blocks; sqe_flush, a flush on a
+ * the mode isn't MODE_JAMOS (a partition) or MODE_BLANK or MODE_ERASE
+ * (PART_TABLE), and then one outside its target's blocks; sqe_flush, a flush on a
  * MODE_OTHER drive. The callers check first (block.c, serve.c,
  * table.c): these are the last line. */
 void     sqe_admin(struct nvme *c, struct nvme_slot *s, enum admin_op op,
@@ -423,11 +434,18 @@ status_t table_start(struct nvme *c, void *buf, const uint64_t *pages, uint32_t 
 const struct pt_table *table_get(void);
 /* The table in a few words for the RESULTS line: "GPT, 4 partitions". */
 void     table_describe(char *out, size_t n);
-/* Start create_table on a MODE_BLANK drive (ERR_ACCESS_DENIED otherwise;
- * ERR_BAD_STATE: one is under way; pt_jamos_make's errors): OK, and
- * serve_created later, from the loop. */
+/* Start create_table on a MODE_BLANK drive, or on a MODE_OTHER one whose
+ * table was read and whose erase the owner confirmed: `tail` (tail_len
+ * bytes) the end of its serial number, `word` "erase" (table_erase_ok;
+ * ERR_ACCESS_DENIED otherwise, and on a MODE_JAMOS drive; ERR_BAD_STATE:
+ * one is under way; pt_jamos_make's errors): OK, and serve_created later,
+ * from the loop. */
 status_t table_create(struct nvme *c, const uint8_t *disk_guid, const uint8_t *esp_guid,
-                      const uint8_t *data_guid);
+                      const uint8_t *data_guid, const char *tail, uint32_t tail_len,
+                      const char *word, uint32_t word_len);
+/* Was the drive's table read without an error (what storage.mode calls
+ * `readable`)? Only such a drive is ever erased. */
+bool     table_readable(void);
 /* create_table's writes are over: table_work reads the table back (the
  * loop calls it; table_ready: it has something to do). */
 bool     table_ready(void);

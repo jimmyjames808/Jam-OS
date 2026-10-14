@@ -482,6 +482,10 @@ extern unsigned sh_term_no;
  * SIGINT or a pipe's SIGPIPE, or a job kill, is said. */
 extern bool sh_run_lines;
 extern bool sh_session;
+/* A session's "cmd=<line>" (`ssh pc 'ls /data'`): this shell runs that one
+ * line and ends, and its keys may come from the remote side's pipe, not from
+ * a person at a terminal (disk prepare's erase asks for none there). */
+bool sh_one_line(void);
 
 /* ---- the commands (cmd/<name>.c) --------------------------------------------------- */
 

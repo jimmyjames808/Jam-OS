@@ -732,8 +732,8 @@ Every driver and service is a userspace process from the start.
   - **volumes and the filesystems**: `volumes` (mounts, remount, kill,
     sync, test disks), `volesp` (the ESP made writable, init's alone),
     `voldisks` (the disk list, a drive's digest and health: the shell's,
-    through init), `volinstall` (a blank NVMe drive made a Jam OS disk,
-    init's alone), `disks` (devmgr's disks, told to volumes) and `mounts` (what volumes
+    through init), `volinstall` (an NVMe drive made a Jam OS disk, erased
+    first if it isn't empty and the owner confirms, init's alone), `disks` (devmgr's disks, told to volumes) and `mounts` (what volumes
     tells its watchers), `fs` and `file` (a filesystem to programs),
     `fsctl` (volumes stopping a filesystem service; its counters, for
     tests).
@@ -977,7 +977,7 @@ port, so while it handles one request every other client waits behind it.
 | console | a window on `/svc/wayland` and COM1's output (the root's `RIGHT_ROOT_SERIAL_OUT`), the kernel log | `console`: a text terminal (UTF-8: ASCII and the Latin letters drawn), the kernel log ([Debugging](#debugging)), and its keys to the focused client (`keys`) | yes |
 | serialin | COM1 input | an `input` source (QEMU tests; a spare keyboard if USB breaks) | yes |
 | usb-storage | a `usb` mass-storage interface (Bulk-Only Transport; UAS later) | `storage` (devmgr asks it for a channel of volumes' own), a `block` channel per partition | yes |
-| nvme | its PCI function (an NVMe controller: MSI-X, DMA queues) | `storage` and `block` for an internal drive, up to 32 requests in flight; writes only a Jam OS drive's two partitions, and a blank drive's table on `create_table`, decided from the table it reads itself ([M12.7-PLAN](docs/M12.7-PLAN.md)) | every boot (every other drive read-only: `tools/checknvme.py`; `ro`, from `diskro`, makes every drive read-only; volumes mounts its FAT partitions read-only as `/nvmeN`); the word `nvmetest=` only adds the driver's test reads |
+| nvme | its PCI function (an NVMe controller: MSI-X, DMA queues) | `storage` and `block` for an internal drive, up to 32 requests in flight; writes only a Jam OS drive's two partitions, and a blank drive's table on `create_table` (or, with the owner's confirmation checked in the driver, an erased one's), decided from the table it reads itself ([M12.7-PLAN](docs/M12.7-PLAN.md)) | every boot (every other drive read-only: `tools/checknvme.py`; `ro`, from `diskro`, makes every drive read-only; volumes mounts its FAT partitions read-only as `/nvmeN`); the word `nvmetest=` only adds the driver's test reads |
 | fat | one partition's `block` channel, a state VMO and a keep channel from volumes | `fs` and `file` for one volume (FAT32 + long names, read/write, on FatFs); `fsctl` to volumes; outlives its process ([below](#services-that-outlive-their-process)) | yes |
 | bootfs | the bootfs image VMO | `fs` and `file` for `/boot`, read-only | yes |
 | logd | the kernel log, `/data` | each boot's log as a file on the stick | yes |

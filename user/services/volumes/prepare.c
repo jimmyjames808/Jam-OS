@@ -1,33 +1,44 @@
 /* volumes: making an NVMe drive a Jam OS disk (volinstall.prepare,
- * abi/idl/volumes.idl; M12.7 stage 2, docs/M12.7-PLAN.md "Preparing a blank
- * disk"). One task, disk_prepare, for the whole of it, so the loop serves
+ * abi/idl/volumes.idl; M12.7 stage 2, docs/M12.7-PLAN.md "Preparing a
+ * blank disk" and "NV-warn notes"). One task, disk_prepare, for the whole of it, so the loop serves
  * everything else meanwhile:
- *   1. the checks: an NVMe drive with 512-byte blocks that is settled
- *      (DISK_OTHER) and that nothing else is doing anything to; and what it
- *      is: no partition table found on it (a blank drive, or a prepare cut
- *      short before its table was whole: the driver decides which, and
- *      refuses a drive that is neither), or Jam OS's by our own check
- *      (mark.c) with a partition that has no service (a prepare cut short
- *      after the table). Anything else is ERR_ACCESS_DENIED: nothing is
- *      asked of the driver;
- *   2. a blank drive: three random GUIDs and storage.create_table, which
- *      writes the table, reads it back and answers once the drive reads as
- *      Jam OS's (drivers/nvme/table.c). The driver refuses anything but a
- *      blank drive with ERR_ACCESS_DENIED, whatever volumes thought;
- *   3. the disk is read again (disk_relearn: storage.info, .partition, a
+ *   1. the plan (plan_of, also voldisks.prepare_check's, which the shell
+ *      asks before the owner types anything): refused outright for the
+ *      boot disk, a drive that isn't NVMe or hasn't 512-byte blocks, the
+ *      `diskro` word, a Jam OS disk with both partitions mounted, one too
+ *      small, a volume mounted read-write, a table its driver couldn't
+ *      read; busy (ERR_BAD_STATE) while it isn't settled or something else
+ *      is under way on it. Otherwise one of three plans: PLAN_TABLE, an
+ *      empty drive (the driver decides with its empty rules: storage.mode
+ *      says MODE_BLANK); PLAN_FINISH, Jam OS's by our own check (mark.c)
+ *      with a partition that has no service (a prepare cut short after the
+ *      table); PLAN_ERASE, anything else: a drive that isn't empty, erased
+ *      only with the owner's confirmation, the end of its serial number and
+ *      "erase" (checked here against the serial its driver gave, then by
+ *      the driver again: nothing here decides what may be written);
+ *   2. an erase: the drive's read-only mounts go (drop_services: a drive
+ *      that isn't Jam OS's has no other), then as PLAN_TABLE;
+ *   3. PLAN_TABLE: three random GUIDs and storage.create_table, which
+ *      writes the table (an erase: zeros where the partitions start first),
+ *      reads it back and answers once the drive reads as Jam OS's
+ *      (drivers/nvme/table.c). The driver refuses anything but a blank
+ *      drive, or a confirmed erase, with ERR_ACCESS_DENIED, whatever volumes
+ *      thought;
+ *   4. the disk is read again (disk_relearn: storage.info, .partition, a
  *      Jam OS disk by our check now) and its two partitions are started
  *      like any other disk's (fsvc.c's mount_others), except that each is
  *      opened WRITABLE and given FAT_ARG_FORMAT (`fresh`, fs_format_arg):
  *      fat formats a partition whose first sector holds no boot signature,
  *      and only then, so a partition that already holds a volume is mounted
  *      as it is. `fresh` is set here and nowhere else;
- *   4. once both are mounted, each is stopped in order and started again
+ *   5. once both are mounted, each is stopped in order and started again
  *      read-only (fs_restart), as `mount -r` does: a prepare leaves the
  *      mounts read-only, like every other disk's, and `mount -w` makes one
  *      writable. The answer is OK when both are mounted again.
  * A cut at any point leaves the drive blank, blank-in-progress (the driver
  * says so: <jam/parttable.h>), or a Jam OS disk with a partition that has no
- * volume yet: the next prepare finishes it. */
+ * volume yet: the next prepare finishes it. An erase cut short leaves a
+ * drive that isn't empty: the next prepare shows it and asks again. */
 #include <idl/storage.h>
 #include "disk.h"
 
@@ -37,6 +48,19 @@
 #define STEP        (100 * NS_PER_MS)
 #define PARTS       2u                 /* a Jam OS disk's partitions */
 #define BOTH        ((1u << PARTS) - 1)
+/* The smallest disk Jam OS's layout fits (pt_jamos_plan: 1 MiB, the ESP's
+ * 512 MiB, 64 MiB of data, 1 MiB; the driver has the last word, a few KiB
+ * more for the backup table). */
+#define PREPARE_MIN (578ull << 20)
+#define ERASE_TAIL  4                  /* the serial's characters the owner types */
+#define ERASE_WORD  "erase"            /* and the word (storage.idl, create_table) */
+
+/* What a prepare of a disk would do: voldisks.prepare_check's answer. */
+struct plan {
+    uint8_t  what;       /* VOLDISKS_PLAN_* */
+    uint8_t  refused;    /* VOLDISKS_REFUSED_* (NONE: it may go on) */
+    unsigned todo;       /* the partitions to format */
+};
 
 /* A random (version 4) GUID, as its 16 bytes on disk: the version nibble
  * is the top of the seventh byte, the variant the top of the ninth. */
@@ -93,36 +117,141 @@ static unsigned unmounted(const struct disk *d)
     return todo;
 }
 
-/* The checks (step 1). OK with *todo the partitions to format (a blank
- * drive: BOTH, once its table is made); *table: its table is to be made. */
-static status_t check(const struct disk *d, unsigned *todo, bool *table)
+/* Is a volume of d mounted read-write? */
+static bool mounted_rw(const struct disk *d)
 {
-    if (!d)
-        return ERR_NOT_FOUND;
-    if (d->bus != DISKS_BUS_NVME)
-        return ERR_NOT_SUPPORTED;
-    if (!d->known || !d->ch || d->state != DISK_OTHER || d->preparing || d->releasing)
-        return ERR_BAD_STATE;
-    if (d->block_size != FAT_BLOCK)
-        return ERR_NOT_SUPPORTED;   /* fat reads 512-byte blocks only: nothing would mount */
-    *table = d->scheme == STORAGE_SCHEME_NONE && d->partitions == 0;
-    if (*table) {
-        *todo = BOTH;
-        return OK;
-    }
-    if (!disk_jamos_gpt(d))
-        return ERR_ACCESS_DENIED;   /* someone else's: not blank, not Jam OS's */
-    *todo = unmounted(d);
-    if (*todo)
-        return OK;
-    for (unsigned p = 0; p < PARTS; p++)
-        if (!vols[d->fs[p] - 1].ready)
-            return ERR_BAD_STATE;   /* still starting: ask again in a moment */
-    return ERR_ALREADY_EXISTS;
+    for (unsigned p = 0; p < MAX_PARTS; p++)
+        if (d->fs[p] && vols[d->fs[p] - 1].rw)
+            return true;
+    return false;
 }
 
-/* Step 2: Jam OS's table onto a blank drive. */
-static status_t make_table(struct disk *d)
+/* What d's driver found the drive to be (storage.mode), asked in the task. */
+static status_t driver_mode(struct disk *d, uint8_t *mode, uint8_t *ro, uint8_t *readable)
+{
+    struct call c;
+    call_begin(&c, d->ch);
+    status_t st = storage_mode_send(d->ch, c.txid);
+    if (st != OK) {
+        call_end(&c);
+        return st;
+    }
+    st = call_wait(&c, now() + CALL_WAIT);
+    return st == OK ? storage_mode_result(c.rep, &c.m, mode, ro, readable) : st;
+}
+
+/* Step 1, in a task (the driver is asked its mode). OK with *pl set (its
+ * `refused` may say no), or ERR_NOT_FOUND / ERR_BAD_STATE / the driver's
+ * error. */
+static status_t plan_of(struct disk *d, struct plan *pl)
+{
+    *pl = (struct plan){ .refused = VOLDISKS_REFUSED_NONE };
+    if (!d)
+        return ERR_NOT_FOUND;
+    if (d->state == DISK_BOOT || (d->state == DISK_DOWN && d->boot_down)) {
+        pl->refused = VOLDISKS_REFUSED_BOOT_DISK;   /* what Jam OS runs from */
+        return OK;
+    }
+    if (d->bus != DISKS_BUS_NVME) {
+        pl->refused = VOLDISKS_REFUSED_NOT_NVME;
+        return OK;
+    }
+    if (!d->known || !d->ch || d->state != DISK_OTHER || d->preparing || d->releasing)
+        return ERR_BAD_STATE;
+    if (d->block_size != FAT_BLOCK) {
+        pl->refused = VOLDISKS_REFUSED_BLOCK_SIZE;   /* fat reads 512-byte blocks only */
+        return OK;
+    }
+    uint16_t gen = d->gen;
+    uint8_t mode = STORAGE_MODE_OTHER, ro = 1, readable = 0;
+    status_t st = driver_mode(d, &mode, &ro, &readable);
+    if (!still(d, gen) || d->state != DISK_OTHER)
+        return ERR_BAD_STATE;   /* gone, or its driver restarted, meanwhile */
+    if (st != OK)
+        return st;
+    if (ro) {
+        pl->refused = VOLDISKS_REFUSED_READ_ONLY;
+        return OK;
+    }
+    if (disk_jamos_gpt(d)) {
+        pl->todo = unmounted(d);
+        if (pl->todo) {
+            pl->what = VOLDISKS_PLAN_FINISH;
+            return OK;
+        }
+        for (unsigned p = 0; p < PARTS; p++)
+            if (!vols[d->fs[p] - 1].ready)
+                return ERR_BAD_STATE;   /* still starting: ask again in a moment */
+        pl->refused = VOLDISKS_REFUSED_JAMOS;
+        return OK;
+    }
+    pl->todo = BOTH;
+    if (d->blocks < PREPARE_MIN / d->block_size) {
+        pl->refused = VOLDISKS_REFUSED_TOO_SMALL;
+        return OK;
+    }
+    if (mode == STORAGE_MODE_BLANK) {
+        pl->what = VOLDISKS_PLAN_TABLE;   /* empty, by the driver's rules */
+        return OK;
+    }
+    if (mounted_rw(d))
+        pl->refused = VOLDISKS_REFUSED_IN_USE;
+    else if (!readable)
+        pl->refused = VOLDISKS_REFUSED_UNREADABLE;
+    pl->what = VOLDISKS_PLAN_ERASE;
+    return OK;
+}
+
+status_t disk_prepare_check(uint32_t id, uint8_t *plan, uint8_t *refused)
+{
+    struct plan pl;
+    status_t st = plan_of(disk_named(id), &pl);
+    *plan = pl.what;
+    *refused = pl.refused;
+    return st;
+}
+
+/* A refusal as volinstall.prepare's answer. */
+static status_t refusal(uint8_t refused)
+{
+    switch (refused) {
+    case VOLDISKS_REFUSED_NONE: return OK;
+    case VOLDISKS_REFUSED_IN_USE: return ERR_BUSY;
+    case VOLDISKS_REFUSED_JAMOS: return ERR_ALREADY_EXISTS;
+    case VOLDISKS_REFUSED_NOT_NVME:
+    case VOLDISKS_REFUSED_BLOCK_SIZE: return ERR_NOT_SUPPORTED;
+    case VOLDISKS_REFUSED_TOO_SMALL: return ERR_NO_SPACE;
+    case VOLDISKS_REFUSED_UNREADABLE: return ERR_IO;
+    default: return ERR_ACCESS_DENIED;   /* the boot disk, `diskro` */
+    }
+}
+
+static char upper(char ch)
+{
+    return ch >= 'a' && ch <= 'z' ? (char)(ch - 'a' + 'A') : ch;
+}
+
+/* The owner's confirmation of an erase (volumes.idl, prepare): `tail` the
+ * last ERASE_TAIL characters of the serial number the drive gave (all of
+ * it if shorter), in any case, and `word` exactly ERASE_WORD. A drive with
+ * no serial can't be confirmed. The driver checks the same again. */
+static bool confirmed(const struct disk *d, const char *tail, uint32_t tail_len,
+                      const char *word, uint32_t word_len)
+{
+    size_t n = strlen(d->serial), want = n < ERASE_TAIL ? n : ERASE_TAIL;
+    if (!want || tail_len != want || word_len != strlen(ERASE_WORD) ||
+        memcmp(word, ERASE_WORD, word_len))
+        return false;
+    for (size_t i = 0; i < want; i++)
+        if (upper(d->serial[n - want + i]) != upper(tail[i]))
+            return false;
+    return true;
+}
+
+/* Step 3: Jam OS's table onto the drive (the owner's confirmation passed
+ * on for the driver's own check). */
+static status_t make_table(struct disk *d, const char *tail, uint32_t tail_len, const char *word,
+                           uint32_t word_len)
 {
     uint8_t disk_guid[16], esp_guid[16], data_guid[16];
     new_guid(disk_guid);
@@ -130,7 +259,8 @@ static status_t make_table(struct disk *d)
     new_guid(data_guid);
     struct call c;
     call_begin(&c, d->ch);
-    status_t st = storage_create_table_send(d->ch, c.txid, disk_guid, esp_guid, data_guid);
+    status_t st = storage_create_table_send(d->ch, c.txid, disk_guid, esp_guid, data_guid, tail,
+                                            tail_len, word, word_len);
     if (st != OK) {
         call_end(&c);
         return st;
@@ -139,7 +269,7 @@ static status_t make_table(struct disk *d)
     return st == OK ? storage_create_table_result(c.rep, &c.m) : st;
 }
 
-/* Step 4: the partitions in mask, read-write since their format, stopped in
+/* Step 5: the partitions in mask, read-write since their format, stopped in
  * order and started again read-only. */
 static status_t back_to_read_only(struct disk *d, uint16_t gen, unsigned mask)
 {
@@ -171,15 +301,24 @@ static status_t back_to_read_only(struct disk *d, uint16_t gen, unsigned mask)
     return OK;
 }
 
-/* Steps 2 to 4 on d, which the checks passed. */
-static status_t steps(struct disk *d, uint16_t gen, unsigned todo, bool table)
+/* Steps 2 to 5 on d, which the plan allows. */
+static status_t steps(struct disk *d, uint16_t gen, const struct plan *pl, const char *tail,
+                      uint32_t tail_len, const char *word, uint32_t word_len)
 {
     status_t st;
-    if (table) {
-        st = make_table(d);
+    unsigned todo = pl->todo;
+    if (pl->what == VOLDISKS_PLAN_ERASE) {
+        say(true, "volumes: %s is not empty: erasing it, as the owner confirmed; its read-only "
+            "mounts go first", disk_name(d));
+        drop_services(d, DISK_OTHER);   /* read-only: nothing to write back */
+    }
+    if (pl->what != VOLDISKS_PLAN_FINISH) {
+        st = make_table(d, tail, tail_len, word, word_len);
         if (st != OK) {
             say(true, "volumes: %s: prepare: the driver's create_table: %s", disk_name(d),
                 status_str(st));
+            if (pl->what == VOLDISKS_PLAN_ERASE && still(d, gen))
+                disk_relearn(d);   /* what is on it now, mounted again as any disk's */
             return st;
         }
         say(false, "volumes: %s: Jam OS's table is on the drive: reading it again", disk_name(d));
@@ -207,17 +346,30 @@ static status_t steps(struct disk *d, uint16_t gen, unsigned todo, bool table)
     return st;
 }
 
-status_t disk_prepare(uint32_t id)
+status_t disk_prepare(uint32_t id, const char *tail, uint32_t tail_len, const char *word,
+                      uint32_t word_len)
 {
     struct disk *d = disk_named(id);
-    unsigned todo = 0;
-    bool table = false;
-    status_t st = check(d, &todo, &table);
-    if (st != OK)
+    struct plan pl;
+    status_t st = plan_of(d, &pl);
+    if (st == OK)
+        st = refusal(pl.refused);
+    /* plan_of waited for the driver: nothing else may have begun on d since. */
+    if (st == OK && (d->preparing || d->releasing))
+        st = ERR_BAD_STATE;
+    if (st == OK && pl.what == VOLDISKS_PLAN_ERASE &&
+        !confirmed(d, tail, tail_len, word, word_len)) {
+        say(true, "volumes: %s is not empty and its erase wasn't confirmed (the end of its "
+            "serial number and \"%s\"): nothing done", disk_name(d), ERASE_WORD);
+        st = ERR_ACCESS_DENIED;
+    }
+    if (st != OK) {
+        say(true, "volumes: prepare of disk %08x: %s", id, status_str(st));
         return st;
+    }
     uint16_t gen = d->gen;
     d->preparing = true;
-    st = steps(d, gen, todo, table);
+    st = steps(d, gen, &pl, tail, tail_len, word, word_len);
     d = disk_named(id);   /* its slot may have been given up and used again meanwhile */
     if (d) {
         d->preparing = false;

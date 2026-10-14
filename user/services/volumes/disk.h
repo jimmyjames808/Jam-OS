@@ -131,8 +131,12 @@ status_t    disk_health(uint32_t id, struct list_health *o);
 /* mark.c: Jam OS's mark on a GPT disk, checked with volumes' own code (the
  * driver has its own, in the partition library). */
 bool        disk_jamos_gpt(const struct disk *d);
-/* prepare.c: volinstall.prepare, in a task. */
-status_t    disk_prepare(uint32_t id);
+/* prepare.c, in a task: voldisks.prepare_check (*plan VOLDISKS_PLAN_*, *refused
+ * VOLDISKS_REFUSED_*), and volinstall.prepare with the owner's confirmation of an
+ * erase (`tail`, `word`: looked at only when the drive isn't empty). */
+status_t    disk_prepare_check(uint32_t id, uint8_t *plan, uint8_t *refused);
+status_t    disk_prepare(uint32_t id, const char *tail, uint32_t tail_len, const char *word,
+                         uint32_t word_len);
 
 /* disk.c */
 const char *disk_name(const struct disk *d);      /* "disk 7", "test disk 2" (static buffer) */

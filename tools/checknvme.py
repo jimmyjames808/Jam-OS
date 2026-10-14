@@ -29,15 +29,21 @@ taken out first, so prose may name anything:
   5. (Stage 2) The write gate. A Write is built in exactly one function,
      sqe_write in cmd.c (OPC_WRITE named nowhere else but allowed(), and
      handed to sqe_put once), and only for a drive the driver has found to
-     be Jam OS's: its body checks the drive's mode (`gate.mode ==
-     MODE_JAMOS`, or MODE_BLANK for the table) and refuses, BEFORE it
-     checks the blocks (`in_gate(`) and refuses, before it builds the
-     entry; every Write carries FUA. A Flush is built in sqe_flush alone,
-     after it refuses a MODE_OTHER drive. The gate (the mode and the
-     blocks) is defined in cmd.c alone and set only in cmd_arm, which
-     starts from MODE_OTHER, honours `ro`, and takes the mode from the
-     library's pt_kind (Jam OS's mark, or blank) and nothing else. So a
-     write to any other drive, Windows' among them, cannot even be built.
+     be Jam OS's: its body checks the drive's mode (exactly `bool mode_ok
+     = part == PART_TABLE ? (gate.mode == MODE_BLANK || gate.mode ==
+     MODE_ERASE) : gate.mode == MODE_JAMOS;`: a partition only on a Jam
+     OS drive, the table's blocks only on a blank or an erased one) and
+     refuses, BEFORE it checks the blocks (`in_gate(`) and refuses, before
+     it builds the entry; every Write carries FUA. A Flush is built in
+     sqe_flush alone, after it refuses a MODE_OTHER drive. The gate (the
+     mode and the blocks) is defined in cmd.c alone and set only in
+     cmd_arm, which starts from MODE_OTHER, honours `ro`, and takes the
+     mode from the library's pt_kind (Jam OS's mark, or blank) and nothing
+     else, but for MODE_ERASE, which needs both the caller's `erase` (the
+     owner's confirmation, checked in table.c) and pt_kind's
+     PT_KIND_OTHER (`erase && kind == PT_KIND_OTHER`). So a write to any
+     other drive, Windows' among them, cannot even be built unless its
+     owner erases it.
 
 A later stage that adds a command must change this file's lists, which a
 review sees. Then it checks itself (--selftest, also run by `make
@@ -88,6 +94,8 @@ STAGE2 = {
                   "write_fail", "check_flush", "CT_FLUSH"},
     "io_allowed": "return opc == OPC_READ || (gate.mode != MODE_OTHER && "
                   "(opc == OPC_WRITE || opc == OPC_FLUSH));",
+    "write_mode": "bool mode_ok = part == PART_TABLE ? (gate.mode == MODE_BLANK || "
+                  "gate.mode == MODE_ERASE) : gate.mode == MODE_JAMOS;",
     "gate": True,
 }
 CURRENT = STAGE2
@@ -255,6 +263,8 @@ def gate_rules(code, fns, spans):
         found.append((5, "cmd.c: sqe_write doesn't check the drive's mode (gate.mode == "
                          "MODE_JAMOS) and refuse, THEN check the blocks (in_gate) and refuse, "
                          "then build"))
+    if " ".join(w.split()).find(STAGE2["write_mode"]) < 0:
+        found.append((5, "cmd.c: sqe_write's mode isn't exactly `%s`" % STAGE2["write_mode"]))
     if not re.search(r"\bdw\s*\[\s*12\s*\]\s*=[^;]*\bRW_FUA\b", w):
         found.append((5, "cmd.c: sqe_write's Write doesn't carry FUA"))
     f = fns.get("sqe_flush", "")
@@ -272,9 +282,10 @@ def gate_rules(code, fns, spans):
                          r"\bc->ro\b", r"\breturn\b"]) or not re.search(r"\bpt_kind\s*\(", a):
         found.append((5, "cmd.c: cmd_arm doesn't start from MODE_OTHER, stop there on `ro`, and "
                          "take the kind from pt_kind"))
-    for mode, kind in (("MODE_JAMOS", "PT_KIND_JAMOS"), ("MODE_BLANK", "PT_KIND_BLANK")):
-        if None in order(a, [r"\b%s\b" % kind, r"\bgate\.mode\s*=\s*%s\b" % mode]):
-            found.append((5, "cmd.c: cmd_arm sets %s without pt_kind's %s first" % (mode, kind)))
+    for mode, kind in (("MODE_JAMOS", r"\bPT_KIND_JAMOS\b"), ("MODE_BLANK", r"\bPT_KIND_BLANK\b"),
+                       ("MODE_ERASE", r"\berase\s*&&\s*kind\s*==\s*PT_KIND_OTHER\b")):
+        if None in order(a, [kind, r"\bgate\.mode\s*=\s*%s\b" % mode]):
+            found.append((5, "cmd.c: cmd_arm sets %s without `%s` first" % (mode, kind)))
     if len(re.findall(r"\bstruct\s+gate\s*\{", code)) != 1:
         found.append((5, "cmd.c: struct gate isn't defined here once"))
     return found
@@ -319,7 +330,7 @@ enum { OPC_FLUSH = 0x00, OPC_WRITE = 0x01, OPC_READ = 0x02 };
 struct nvme_sq { volatile uint32_t *sq_mem; };
 static struct nvme_sq sqs[2];
 static struct gate { enum nvme_mode mode; uint64_t start, blocks; } gate;
-void cmd_arm(struct nvme *c, const struct pt_table *t)
+void cmd_arm(struct nvme *c, const struct pt_table *t, bool erase)
 {
     enum pt_kind kind = pt_kind(t);
     gate = (struct gate){ .mode = MODE_OTHER };
@@ -329,6 +340,8 @@ void cmd_arm(struct nvme *c, const struct pt_table *t)
         gate.mode = MODE_JAMOS;
     else if (kind == PT_KIND_BLANK)
         gate.mode = MODE_BLANK;
+    else if (erase && kind == PT_KIND_OTHER)
+        gate.mode = MODE_ERASE;
 }
 static bool allowed(uint16_t qid, uint8_t opc)
 {
@@ -345,7 +358,8 @@ static void sqe_put(struct nvme_queue *q, struct nvme_slot *s, uint8_t opc, uint
 }
 void sqe_write(struct nvme *c, struct nvme_slot *s, uint8_t part, uint64_t lba, uint32_t n)
 {
-    bool mode_ok = part == PART_TABLE ? gate.mode == MODE_BLANK : gate.mode == MODE_JAMOS;
+    bool mode_ok = part == PART_TABLE ? (gate.mode == MODE_BLANK || gate.mode == MODE_ERASE)
+                                      : gate.mode == MODE_JAMOS;
     if (!mode_ok)
         refuse("a write", 0, 0);
     if (!in_gate(part, lba, n))
@@ -429,17 +443,27 @@ def selftest2():
     clean = {"cmd.c": CLEAN2, "queue.c": CLEAN2_QUEUE}
     if not expect("stage 2 clean", check(clean, STAGE2), {}):
         return False
-    mode = "    bool mode_ok = part == PART_TABLE ? gate.mode == MODE_BLANK : gate.mode == MODE_JAMOS;\n" \
+    mode = "    bool mode_ok = part == PART_TABLE ? (gate.mode == MODE_BLANK || gate.mode == MODE_ERASE)\n" \
+           "                                      : gate.mode == MODE_JAMOS;\n" \
            "    if (!mode_ok)\n        refuse(\"a write\", 0, 0);\n"
     blocks = "    if (!in_gate(part, lba, n))\n        refuse(\"a write outside\", 0, 0);\n"
     bads = [
         # the blocks checked before the mode
         ("range before mode", CLEAN2.replace(mode + blocks, blocks + mode), {5: 1}),
         # no mode check at all
-        ("no mode check", CLEAN2.replace(mode, ""), {5: 1}),
+        ("no mode check", CLEAN2.replace(mode, ""), {5: 2}),
         # the mode looked at but never refused
         ("mode not refused", CLEAN2.replace(mode, "    bool mode_ok = gate.mode == MODE_JAMOS;\n"),
+         {5: 2}),
+        # an erased drive's partitions writable (the table's blocks are all it may get)
+        ("erase opens partitions", CLEAN2.replace(": gate.mode == MODE_JAMOS;",
+                                                  ": (gate.mode == MODE_JAMOS || gate.mode == MODE_ERASE);"),
          {5: 1}),
+        # MODE_ERASE without the owner's confirmation
+        ("erase unconfirmed", CLEAN2.replace("erase && kind == PT_KIND_OTHER", "kind == PT_KIND_OTHER"),
+         {5: 1}),
+        # MODE_ERASE on a drive that isn't someone else's by pt_kind
+        ("erase by hand", CLEAN2.replace("erase && kind == PT_KIND_OTHER", "erase"), {5: 1}),
         # a second function building a Write, past the gate
         ("a second writer", CLEAN2 + "static void sneak(struct nvme *c, struct nvme_slot *s)\n{\n"
          "    uint32_t dw[16] = { 0 };\n    sqe_put(&c->io, s, OPC_WRITE, dw);\n}\n", {5: 2}),
@@ -488,8 +512,8 @@ def main():
     if not selftest1() or not selftest2():
         return 1
     print("checknvme: drivers/nvme sends only %s's commands, from cmd.c alone, and builds a "
-          "Write only for a drive it found to be Jam OS's, the mode checked before the blocks "
-          "(5 rules, each self-checked)" % CURRENT["name"])
+          "Write only for a drive it found to be Jam OS's (or a table on a blank or erased one), "
+          "the mode checked before the blocks (5 rules, each self-checked)" % CURRENT["name"])
     return 0
 
 

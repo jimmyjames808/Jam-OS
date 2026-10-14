@@ -44,8 +44,8 @@
 #include "gptcheck.h"
 #include "parttable_int.h"
 
-static struct img imgs[64];
-static struct geo geos[64];
+static struct img imgs[96];   /* at least NWANTS */
+static struct geo geos[96];
 static int nimgs;
 uint64_t rng = 0x9e3779b97f4a7c15ull;
 const char *where = "";   /* what is being checked, for failures */
@@ -88,7 +88,9 @@ void read_bytes(struct img *m, uint64_t off, uint64_t len, uint8_t *dst)
             memcpy(dst, m->tail + (off - m->toff), n);
         } else if (off < m->toff) {
             n = len < m->toff - off ? len : m->toff - off;
-            if (pread(m->fd, dst, n, (off_t)off) != (ssize_t)n)
+            if (m->fd < 0)
+                memset(dst, 0, n);   /* an image made in memory (gptmake.c): zeros */
+            else if (pread(m->fd, dst, n, (off_t)off) != (ssize_t)n)
                 fail("pread: %s", strerror(errno));
         } else {
             n = len;
@@ -347,7 +349,8 @@ static void oracle_mbr(const struct img *m, const uint8_t *b, const struct pt_ta
              t->notes_total, n, used, left);
 }
 
-/* The blank rule, read here: block 0 and both ends all zeros. */
+/* The blank rule, read here: block 0 and both ends all zeros, and the
+ * first MiB at 1 MiB and at 513 MiB (as much of each as is on the disk). */
 static bool oracle_blank(struct img *m)
 {
     uint64_t r = 65536 / m->bs, n = m->blocks <= 2 * r ? m->blocks : r;
@@ -356,6 +359,17 @@ static bool oracle_blank(struct img *m)
         read_blocks(m, k ? m->blocks - r : 0, n, obuf);
         for (uint64_t i = 0; i < n * m->bs; i++)
             zero = zero && !obuf[i];
+    }
+    for (uint64_t mib = 1; mib <= 513 && zero; mib += 512) {
+        uint64_t lba = (mib << 20) / m->bs, end = lba + (1u << 20) / m->bs;
+        if (end > m->blocks)
+            end = m->blocks;
+        for (; lba < end; lba += r) {
+            uint64_t k = end - lba < r ? end - lba : r;
+            read_blocks(m, lba, k, obuf);
+            for (uint64_t i = 0; i < k * m->bs; i++)
+                zero = zero && !obuf[i];
+        }
     }
     return zero;
 }
@@ -488,6 +502,13 @@ static const struct want wants[] = {
     { "almost-blank-head", N_, PT_BAD_ZERO, PT_BAD_ZERO, 0, 0, 0, OT, 0, 0 },
     { "almost-blank-tail", N_, PT_BAD_ZERO, PT_BAD_ZERO, 0, 0, 0, OT, 0, 0 },
     { "almost-blank-edge", N_, PT_BAD_ZERO, PT_BAD_ZERO, 0, 0, 0, OT, 0, 0 },
+    /* The spots: a byte in the first MiB at 1 MiB or at 513 MiB (a wiped table's old
+     * filesystem) is not blank; one just outside them, past the ends, is. */
+    { "almost-blank-esp", N_, PT_BAD_ZERO, PT_BAD_ZERO, 0, 0, 0, OT, 0, 0 },
+    { "almost-blank-esp-4k", N_, PT_BAD_ZERO, PT_BAD_ZERO, 0, 0, 0, OT, 0, 0 },
+    { "almost-blank-data", N_, PT_BAD_ZERO, PT_BAD_ZERO, 0, 0, 0, OT, 0, 0 },
+    { "blank-before-spot", N_, PT_BAD_ABSENT, PT_BAD_ABSENT, 0, 1, 0, BL, 0, 0 },
+    { "blank-past-spots", N_, PT_BAD_ABSENT, PT_BAD_ABSENT, 0, 1, 0, BL, 0, 0 },
     GPT_OK("jamos", 2, JA),
     GPT_OK("jamos-4k", 2, JA),
     { "jamos-backup-crc", G_, PT_BAD_NONE, PT_BAD_CRC, 0, 0, 0, OT, 2, 0 },
@@ -496,6 +517,8 @@ static const struct want wants[] = {
     GPT_OK("jamos-name", 2, OT),
     { "jamos-cut-mbr", N_, PT_BAD_NONE, PT_BAD_NONE, 0, 0, 1, BL, 0, 0 },
     { "jamos-cut-primary", N_, PT_BAD_ZERO, PT_BAD_NONE, 0, 0, 1, BL, 0, 0 },
+    /* create_table writes nothing at the spots: a cut one with a byte there isn't one */
+    { "jamos-cut-mbr-poke-data", N_, PT_BAD_NONE, PT_BAD_NONE, 0, 0, 0, OT, 0, 0 },
     { "jamos-cut-bad", N_, PT_BAD_CRC, PT_BAD_NONE, 0, 0, 0, OT, 0, 0 },
     { "jamos-cut-backup-bad", N_, PT_BAD_NONE, PT_BAD_CRC, 0, 0, 0, OT, 0, 0 },
     /* The cut after create_table's first write (the backup entry array alone): exactly
@@ -518,6 +541,7 @@ static const struct want wants[] = {
     CUT_NOT("jamos-cut-array-same-guid"),
     CUT_NOT("jamos-cut-array-third"),
     CUT_NOT("jamos-cut-array-windows"),
+    CUT_NOT("jamos-cut-array-poke-esp"),
     GPT_OK("pmbr-status", 4, OT),
     { "mbr", M_, PT_BAD_ABSENT, PT_BAD_ABSENT, 0, 0, 0, OT, 2, 0 },
     { "mbr-bad", M_, PT_BAD_ABSENT, PT_BAD_ABSENT, 0, 0, 0, OT, 4, 3 },
@@ -526,6 +550,7 @@ static const struct want wants[] = {
     { "superfloppy-junk", N_, PT_BAD_ABSENT, PT_BAD_ABSENT, 0, 0, 0, OT, 0, 0 },
 };
 #define NWANTS (sizeof(wants) / sizeof(wants[0]))
+_Static_assert(NWANTS <= sizeof(imgs) / sizeof(imgs[0]), "imgs[] holds every case");
 
 static void load(struct img *m, const char *dir, const char *name)
 {

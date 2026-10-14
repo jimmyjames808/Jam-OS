@@ -10,7 +10,8 @@
 
 #define HEAD_MAX  (1u << 20)       /* bytes of each end of an image kept in memory */
 #define BUF_MAX   (192u * 1024)    /* the largest buffer the library is given */
-#define READS_MAX 1000             /* reads one pt_read may make, at most */
+#define READS_MAX 6000             /* reads one pt_read may make, at most (a one-block buffer
+                                    * reads the blank rule's 2 MiB of spots a block at a time) */
 
 /* One image: its ends in memory (mutations change them), the middle read
  * from the file when asked; past the file's end, zeros. */

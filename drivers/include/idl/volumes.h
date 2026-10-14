@@ -2806,8 +2806,9 @@ static inline status_t mounts_serve(handle_t ch, const struct mounts_ops *ops, v
 /* ==== protocol `voldisks` (id 74) ===========================================
  *
  * voldisks: what the shell's `disks` and `disk` ask (M12.7 stage 1). The
- * channel is read-only by construction: it can list, hash and ask for a
- * drive's health, never mount, remount, kill or attach anything. volumes
+ * channel is read-only by construction: it can list, hash, ask for a
+ * drive's health and ask what `disk prepare` would do to it, never mount,
+ * remount, kill, attach or prepare anything. volumes
  * keeps what it asked each driver when the disk came (storage.info,
  * .partition, and for an NVMe drive .ident) and answers from that; the
  * digest and the health log are asked of the driver each time (a task
@@ -2822,6 +2823,7 @@ static inline status_t mounts_serve(handle_t ch, const struct mounts_ops *ops, v
 #define VOLDISKS_PARTITION        0x004a0002u
 #define VOLDISKS_DIGEST           0x004a0003u
 #define VOLDISKS_HEALTH           0x004a0004u
+#define VOLDISKS_PREPARE_CHECK    0x004a0005u
 
 /* Constants (the .idl's `const` lines). */
 /* A disk's `kind`: the Jam OS layout (an ESP then a FAT32 data partition on
@@ -2847,6 +2849,34 @@ static inline status_t mounts_serve(handle_t ch, const struct mounts_ops *ops, v
 #define VOLDISKS_FS_BLOCK_SIZE 4u
 /* not looked at: more partitions than volumes keeps (MAX_PARTS) */
 #define VOLDISKS_FS_UNLISTED 5u
+/* What `disk prepare` would do to a disk (prepare_check's `plan`), decided
+ * by volumes' checks and the driver's mode (storage.mode: the driver's
+ * empty rules decide whether a drive is empty).
+ * empty: Jam OS's table, then both partitions formatted */
+#define VOLDISKS_PLAN_TABLE 0u
+/* a Jam OS disk a prepare was cut short on: its partitions with no volume formatted */
+#define VOLDISKS_PLAN_FINISH 1u
+/* not empty: ERASED, everything on it lost (its read-only mounts go first);
+ * volinstall.prepare needs the owner's confirmation */
+#define VOLDISKS_PLAN_ERASE 2u
+/* Why a disk can't be prepared at all (prepare_check's `refused`). */
+#define VOLDISKS_REFUSED_NONE 0u
+/* the disk Jam OS booted from */
+#define VOLDISKS_REFUSED_BOOT_DISK 1u
+/* a volume on it is mounted read-write */
+#define VOLDISKS_REFUSED_IN_USE 2u
+/* the `diskro` word: every internal drive is read-only */
+#define VOLDISKS_REFUSED_READ_ONLY 3u
+/* a Jam OS disk with both partitions mounted: nothing to do */
+#define VOLDISKS_REFUSED_JAMOS 4u
+/* not an NVMe drive */
+#define VOLDISKS_REFUSED_NOT_NVME 5u
+/* blocks that aren't 512 bytes: fat reads no other */
+#define VOLDISKS_REFUSED_BLOCK_SIZE 6u
+/* under about 580 MiB */
+#define VOLDISKS_REFUSED_TOO_SMALL 7u
+/* its driver couldn't read its partition table: it is never erased */
+#define VOLDISKS_REFUSED_UNREADABLE 8u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct voldisks_disk_req {
@@ -2910,6 +2940,17 @@ struct voldisks_health_rep {
     uint64_t unsafe_shutdowns;
     uint8_t percent_used;
     uint8_t critical;
+} __attribute__((packed));
+struct voldisks_prepare_check_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t id;
+} __attribute__((packed));
+struct voldisks_prepare_check_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint8_t plan;
+    uint8_t refused;
 } __attribute__((packed));
 
 #define VOLDISKS_REQ_MAX 28u   /* bytes: the biggest request */
@@ -3201,6 +3242,46 @@ static inline status_t voldisks_health(handle_t ch, uint32_t id, uint64_t *out_u
     return voldisks_health_call(ch, false, DEADLINE_NEVER, id, out_units_read, out_units_written, out_host_reads, out_host_writes, out_power_cycles, out_unsafe_shutdowns, out_percent_used, out_critical);
 }
 
+/* voldisks_prepare_check_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t voldisks_prepare_check_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t id, uint8_t *out_plan, uint8_t *out_refused)
+{
+    struct voldisks_prepare_check_req idl_q;
+    struct voldisks_prepare_check_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = VOLDISKS_PREPARE_CHECK;
+    idl_q.id = id;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_plan)
+        *out_plan = idl_r.plan;
+    if (idl_st == OK && out_refused)
+        *out_refused = idl_r.refused;
+    return idl_st;
+}
+/* What `disk prepare` of disk `id` would do (PLAN_*), or why it can't be
+ * prepared (`refused`, REFUSED_*; REFUSED_NONE: it can), asked before the
+ * owner is asked anything. Nothing changes: volumes looks at the disk and
+ * its mounts and asks the driver its mode (storage.mode). ERR_NOT_FOUND: no
+ * such disk; ERR_BAD_STATE: its driver is not there, or it is being
+ * prepared, released or still starting a mount (ask again in a moment); the
+ * driver's errors as they come. */
+static inline status_t voldisks_prepare_check_until(handle_t ch, uint64_t deadline_ns, uint32_t id, uint8_t *out_plan, uint8_t *out_refused)
+{
+    return voldisks_prepare_check_call(ch, false, deadline_ns, id, out_plan, out_refused);
+}
+static inline status_t voldisks_prepare_check_within(handle_t ch, uint64_t timeout_ns, uint32_t id, uint8_t *out_plan, uint8_t *out_refused)
+{
+    return voldisks_prepare_check_call(ch, true, timeout_ns, id, out_plan, out_refused);
+}
+static inline status_t voldisks_prepare_check(handle_t ch, uint32_t id, uint8_t *out_plan, uint8_t *out_refused)
+{
+    return voldisks_prepare_check_call(ch, false, DEADLINE_NEVER, id, out_plan, out_refused);
+}
+
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
 
 /* voldisks_disk without waiting: the request, with the caller's txid (not 0).
@@ -3466,6 +3547,40 @@ static inline status_t voldisks_health_result(const void *idl_rep, struct idl_ms
     return OK;
 }
 
+/* voldisks_prepare_check without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then voldisks_prepare_check_result. */
+static inline status_t voldisks_prepare_check_send(handle_t ch, uint32_t idl_txid, uint32_t id)
+{
+    struct voldisks_prepare_check_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = VOLDISKS_PREPARE_CHECK;
+    idl_q.id = id;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to voldisks_prepare_check_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t voldisks_prepare_check_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t *out_plan, uint8_t *out_refused)
+{
+    const struct voldisks_prepare_check_rep *idl_r = (const struct voldisks_prepare_check_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_plan)
+        *out_plan = idl_r->plan;
+    if (out_refused)
+        *out_refused = idl_r->refused;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -3477,6 +3592,7 @@ struct voldisks_ops {
     status_t (*partition)(void *ctx, uint32_t id, uint32_t index, uint8_t *out_mbr_type, uint8_t out_type_guid[16], uint64_t *out_start, uint64_t *out_blocks, uint8_t *out_fs, char *out_label, uint32_t *out_label_len, char *out_mount, uint32_t *out_mount_len);
     status_t (*digest)(void *ctx, struct idl_txn idl_txn, uint32_t id, uint64_t lba, uint64_t count, uint8_t out_sha256[32]);
     status_t (*health)(void *ctx, struct idl_txn idl_txn, uint32_t id, uint64_t *out_units_read, uint64_t *out_units_written, uint64_t *out_host_reads, uint64_t *out_host_writes, uint64_t *out_power_cycles, uint64_t *out_unsafe_shutdowns, uint8_t *out_percent_used, uint8_t *out_critical);
+    status_t (*prepare_check)(void *ctx, struct idl_txn idl_txn, uint32_t id, uint8_t *out_plan, uint8_t *out_refused);
 };
 
 /* Answer the voldisks.disk request kept in txn: idl_st and, if it is OK, the
@@ -3589,6 +3705,23 @@ static inline status_t voldisks_reply_health(struct idl_txn idl_txn, status_t id
     idl_r.unsafe_shutdowns = unsafe_shutdowns;
     idl_r.percent_used = percent_used;
     idl_r.critical = critical;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the voldisks.prepare_check request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t voldisks_reply_prepare_check(struct idl_txn idl_txn, status_t idl_st, uint8_t plan, uint8_t refused)
+{
+    struct voldisks_prepare_check_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.plan = plan;
+    idl_r.refused = refused;
     return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
 }
 
@@ -3761,6 +3894,29 @@ static inline uint32_t voldisks_dispatch_on(handle_t ch, const struct voldisks_o
         idl_r->critical = out_critical;
         return sizeof(*idl_r);
     }
+    case VOLDISKS_PREPARE_CHECK: {
+        const struct voldisks_prepare_check_req *idl_q = (const struct voldisks_prepare_check_req *)req;
+        struct voldisks_prepare_check_rep *idl_r = (struct voldisks_prepare_check_rep *)rep;
+        uint8_t out_plan = 0;
+        uint8_t out_refused = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->prepare_check) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        struct idl_txn idl_txn = { ch, idl_h->txid };
+        status_t idl_st = ops->prepare_check(ctx, idl_txn, idl_q->id, &out_plan, &out_refused);
+        /* IDL_LATER: the handler answers with voldisks_reply_prepare_check. */
+        if (idl_st == IDL_LATER)
+            return 0;
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->plan = out_plan;
+        idl_r->refused = out_refused;
+        return sizeof(*idl_r);
+    }
     }
     idl_h->status = ERR_NOT_SUPPORTED;
     return sizeof(*idl_h);
@@ -3895,7 +4051,7 @@ static inline status_t voldisks_serve(handle_t ch, const struct voldisks_ops *op
  * end and gives it to nobody; volumes serves nothing else on it, and
  * nothing of this on any other channel. The shell reaches it through
  * initctl.prepare_disk, after the owner has typed the last four characters
- * of the drive's serial number.
+ * of the drive's serial number (and `erase`, for a drive that isn't empty).
  *
  * Reconnect: ERR_PEER_CLOSED: volumes ended; init has a new channel for the
  * next one, and the request is asked again by its caller. */
@@ -3914,7 +4070,7 @@ struct volinstall_prepare_rep {
     int32_t  status;
 } __attribute__((packed));
 
-#define VOLINSTALL_REQ_MAX 12u   /* bytes: the biggest request */
+#define VOLINSTALL_REQ_MAX 44u   /* bytes: the biggest request */
 #define VOLINSTALL_REP_MAX 8u   /* bytes: the biggest reply */
 #define VOLINSTALL_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
 #define VOLINSTALL_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
@@ -3925,67 +4081,101 @@ struct volinstall_prepare_rep {
 
 /* volinstall_prepare_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
-static inline status_t volinstall_prepare_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t id)
+static inline status_t volinstall_prepare_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t id, const char *tail, uint32_t tail_len, const char *word, uint32_t word_len)
 {
-    struct volinstall_prepare_req idl_q;
-    struct volinstall_prepare_rep idl_r;
-    uint32_t idl_n = 0;
-    idl_q.txid = 0;
-    idl_q.ordinal = VOLINSTALL_PREPARE;
-    idl_q.id = id;
-    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
-                               NULL, idl_within, idl_t);
+    _Alignas(8) uint8_t idl_b0[44];
+    _Alignas(8) uint8_t idl_b1[8];
+    struct volinstall_prepare_req *idl_q = (struct volinstall_prepare_req *)idl_b0;
+    const struct volinstall_prepare_rep *idl_r = (const struct volinstall_prepare_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = VOLINSTALL_PREPARE;
+    idl_q->id = id;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, tail, tail_len, 20, 1) ||
+                             !idl_str_ok(tail, tail_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, word, word_len, 8, 1) ||
+                             !idl_str_ok(word, word_len)))
+        idl_st = ERR_INVALID_ARGS;
     if (idl_st == OK)
-        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 8, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
+    (void)idl_o;
     return idl_st;
 }
 /* Disk `id` (voldisks' ids) made a Jam OS disk, then its two partitions
  * formatted and mounted read-only (/nvmeN, /nvmeM: `mount -w` makes them
- * writable). A blank drive (volumes found no partition table on it, and
- * the driver, which decides, finds it blank or a create_table cut short on
- * it) gets Jam OS's partition table: volumes makes three random GUIDs and
- * asks the driver's storage.create_table, then reads the disk again and
- * starts a filesystem service on each partition with the one right to
- * format (fat formats a partition whose first sector holds no boot signature,
- * and no other). A Jam OS disk (volumes' own mark check) whose partitions
- * are not both mounted gets the same for the ones that are not: the next run
- * of a prepare that was cut short. The formatted partitions are then opened
- * read-only again (their services stopped in order, started again). Answered
- * once both partitions are mounted. ERR_NOT_FOUND: no such disk;
- * ERR_NOT_SUPPORTED: not an NVMe drive; ERR_BAD_STATE: its driver is not
- * there, or it is being prepared, released or still starting a mount;
- * ERR_ACCESS_DENIED: the drive is someone else's (not blank, not Jam OS's;
- * the driver says so too), or read-only (the `diskro` word);
- * ERR_ALREADY_EXISTS: a Jam OS disk with both partitions mounted already;
- * ERR_NO_SPACE: too small (under about 580 MiB); ERR_IO: a write or a
- * format failed (the table or a partition may be half done: ask again);
+ * writable). What is done is voldisks.prepare_check's plan, checked again
+ * here:
+ * - PLAN_TABLE, an empty drive (the driver's empty rules): Jam OS's
+ * partition table: volumes makes three random GUIDs and asks the
+ * driver's storage.create_table, then reads the disk again and starts a
+ * filesystem service on each partition with the one right to format
+ * (fat formats a partition whose first sector holds no boot signature,
+ * and no other);
+ * - PLAN_ERASE, a drive that isn't empty: only when `tail` is the end of
+ * the drive's serial number as the owner typed it (its last 4
+ * characters, the whole serial if shorter, in any case) and `word` is
+ * "erase" (checked here, then by the driver again, which gets both);
+ * then its read-only mounts go, and the same as PLAN_TABLE, the driver
+ * zeroing where the two partitions start before it writes the table;
+ * - PLAN_FINISH, a Jam OS disk (volumes' own mark check) whose
+ * partitions are not both mounted: the format and mount of the ones
+ * that are not (the next run of a prepare that was cut short).
+ * `tail` and `word` aren't looked at for the other plans. The formatted
+ * partitions are then opened read-only again (their services stopped in
+ * order, started again). Answered once both partitions are mounted.
+ * ERR_NOT_FOUND: no such disk; ERR_NOT_SUPPORTED: not an NVMe drive, or not
+ * 512-byte blocks; ERR_BAD_STATE: its driver is not there, or it is being
+ * prepared, released or still starting a mount; ERR_ACCESS_DENIED: the boot
+ * disk, read-only (the `diskro` word), or not empty and not confirmed (no
+ * `tail` and `word`, or wrong ones: nothing is written, nothing unmounted);
+ * ERR_BUSY: a volume on it is mounted read-write; ERR_ALREADY_EXISTS: a Jam
+ * OS disk with both partitions mounted already; ERR_NO_SPACE: too small
+ * (under about 580 MiB); ERR_IO: its table couldn't be read, or a write or
+ * a format failed (the table or a partition may be half done: ask again);
  * ERR_TIMED_OUT: not mounted within the time given (10 minutes). */
-static inline status_t volinstall_prepare_until(handle_t ch, uint64_t deadline_ns, uint32_t id)
+static inline status_t volinstall_prepare_until(handle_t ch, uint64_t deadline_ns, uint32_t id, const char *tail, uint32_t tail_len, const char *word, uint32_t word_len)
 {
-    return volinstall_prepare_call(ch, false, deadline_ns, id);
+    return volinstall_prepare_call(ch, false, deadline_ns, id, tail, tail_len, word, word_len);
 }
-static inline status_t volinstall_prepare_within(handle_t ch, uint64_t timeout_ns, uint32_t id)
+static inline status_t volinstall_prepare_within(handle_t ch, uint64_t timeout_ns, uint32_t id, const char *tail, uint32_t tail_len, const char *word, uint32_t word_len)
 {
-    return volinstall_prepare_call(ch, true, timeout_ns, id);
+    return volinstall_prepare_call(ch, true, timeout_ns, id, tail, tail_len, word, word_len);
 }
-static inline status_t volinstall_prepare(handle_t ch, uint32_t id)
+static inline status_t volinstall_prepare(handle_t ch, uint32_t id, const char *tail, uint32_t tail_len, const char *word, uint32_t word_len)
 {
-    return volinstall_prepare_call(ch, false, DEADLINE_NEVER, id);
+    return volinstall_prepare_call(ch, false, DEADLINE_NEVER, id, tail, tail_len, word, word_len);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
 
 /* volinstall_prepare without waiting: the request, with the caller's txid (not 0).
  * The reply comes on ch: idl_reply_read, then volinstall_prepare_result. */
-static inline status_t volinstall_prepare_send(handle_t ch, uint32_t idl_txid, uint32_t id)
+static inline status_t volinstall_prepare_send(handle_t ch, uint32_t idl_txid, uint32_t id, const char *tail, uint32_t tail_len, const char *word, uint32_t word_len)
 {
-    struct volinstall_prepare_req idl_q;
     if (!idl_txid)
         return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = VOLINSTALL_PREPARE;
-    idl_q.id = id;
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+    _Alignas(8) uint8_t idl_b0[44];
+    struct volinstall_prepare_req *idl_q = (struct volinstall_prepare_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = VOLINSTALL_PREPARE;
+    idl_q->id = id;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, tail, tail_len, 20, 1) ||
+                             !idl_str_ok(tail, tail_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, word, word_len, 8, 1) ||
+                             !idl_str_ok(word, word_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
 }
 
 /* The status and results of a reply to volinstall_prepare_send (read with
@@ -4013,7 +4203,7 @@ static inline status_t volinstall_prepare_result(const void *idl_rep, struct idl
  * also gets the request's txn, and may return IDL_LATER and answer it
  * with volinstall_reply_<method> (now, or later from anywhere). */
 struct volinstall_ops {
-    status_t (*prepare)(void *ctx, struct idl_txn idl_txn, uint32_t id);
+    status_t (*prepare)(void *ctx, struct idl_txn idl_txn, uint32_t id, const char *tail, uint32_t tail_len, const char *word, uint32_t word_len);
 };
 
 /* Answer the volinstall.prepare request kept in txn: idl_st and, if it is OK, the
@@ -4022,13 +4212,17 @@ struct volinstall_ops {
  * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
 static inline status_t volinstall_reply_prepare(struct idl_txn idl_txn, status_t idl_st)
 {
-    struct volinstall_prepare_rep idl_r;
+    _Alignas(8) uint8_t idl_b0[8];
+    struct volinstall_prepare_rep *idl_r = (struct volinstall_prepare_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
     if (idl_st > 0)
         idl_st = ERR_INTERNAL;
-    idl_r.status = idl_st;
-    if (idl_st != OK)
-        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
-    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
 }
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
@@ -4055,14 +4249,30 @@ static inline uint32_t volinstall_dispatch_on(handle_t ch, const struct volinsta
         const struct volinstall_prepare_req *idl_q = (const struct volinstall_prepare_req *)req;
         struct volinstall_prepare_rep *idl_r = (struct volinstall_prepare_rep *)rep;
         (void)idl_r;
-        if (n != sizeof(*idl_q))
+        uint32_t idl_o = sizeof(*idl_q);
+        status_t idl_st = n < sizeof(*idl_q) ? ERR_INVALID_ARGS : OK;
+        const void *idl_p0 = NULL;
+        uint32_t idl_l0 = 0;
+        const void *idl_p1 = NULL;
+        uint32_t idl_l1 = 0;
+        if (idl_st == OK && !idl_get(req, n, &idl_o, 20, 1, &idl_p0, &idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_get(req, n, &idl_o, 8, 1, &idl_p1, &idl_l1))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_str_ok((const char *)idl_p1, idl_l1))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_o != n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st != OK)
             return sizeof(*idl_h);
         if (!ops->prepare) {
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
         struct idl_txn idl_txn = { ch, idl_h->txid };
-        status_t idl_st = ops->prepare(ctx, idl_txn, idl_q->id);
+        idl_st = ops->prepare(ctx, idl_txn, idl_q->id, (const char *)idl_p0, idl_l0, (const char *)idl_p1, idl_l1);
         /* IDL_LATER: the handler answers with volinstall_reply_prepare. */
         if (idl_st == IDL_LATER)
             return 0;

@@ -78,21 +78,45 @@ const DIGEST_QUEUE 8
 # written. 128-bit counters are given as their low 64 bits. Asked of the
 # drive each time (ERR_IO if it fails).
 6  health  () -> (u64 units_read, u64 units_written, u64 host_reads, u64 host_writes, u64 power_cycles, u64 unsafe_shutdowns, u8 percent_used, u8 critical) later idempotent
-# Make a blank disk Jam OS's: its partition table, Jam OS's layout
+# Make a disk Jam OS's: its partition table, Jam OS's layout
 # (<jam/parttable.h>, pt_jamos_make: the ESP of 512 MiB at 1 MiB named
 # "Jam OS ESP", the data partition after it named "Jam OS data"), with this
 # disk GUID and these unique GUIDs for the two partitions (as on disk; all
-# zeros or two the same: ERR_INVALID_ARGS). drv/nvme only, and only on a
-# disk its own reading of the table found blank (or blank-in-progress: a
-# create_table cut short), with no `ro` word: anything else is
-# ERR_ACCESS_DENIED before anything is looked at. Written with FUA in
-# this order: the backup entry array, the backup header, the primary
-# entry array, the primary header, a Flush, then the protective MBR, so a
-# cut before the end leaves a disk that is still blank-in-progress (or,
-# cut right after the backup array, not blank any more: see the plan),
-# never one half Jam OS's. Then the driver reads the table back: OK once
-# it reads as Jam OS's (its two partitions may then be opened writable);
-# ERR_IO if a write failed or it doesn't read back; ERR_NO_SPACE: the
-# disk is too small (under about 580 MiB); ERR_BAD_STATE: one is under
-# way already. usb-storage: ERR_NOT_SUPPORTED.
-7  create_table  (u8[16] disk_guid, u8[16] esp_guid, u8[16] data_guid) -> () later
+# zeros or two the same: ERR_INVALID_ARGS). drv/nvme only, with no `ro`
+# word, and only on a disk its own reading of the table found
+#   - blank (MODE_BLANK, the empty rules; or blank-in-progress: a
+#     create_table cut short): `tail` and `word` are not looked at;
+#   - someone else's (MODE_OTHER, its table read without an error), when
+#     `tail` is the end of the drive's serial number as the owner typed it
+#     (the last 4 characters, the whole serial if shorter, in any case; a
+#     drive with no serial can't be erased) and `word` is "erase": the
+#     drive is ERASED, everything on it lost. Before its table, the first
+#     MiB of each of the blank rule's spots (where the ESP and the data
+#     partition start) is written with zeros, so fat formats both.
+# Anything else (a Jam OS disk, the `ro` word, a missing or wrong `tail`
+# or `word`, a table that couldn't be read) is ERR_ACCESS_DENIED before
+# anything is looked at but the arguments' form. The table is written
+# with FUA in this order: the backup entry array, the backup header, the
+# primary entry array, the primary header, a Flush, then the protective
+# MBR, so a cut before the end leaves a blank disk still blank-in-progress
+# (or, cut right after the backup array, not blank any more: see the
+# plan), never one half Jam OS's; an erased disk cut short is someone
+# else's again, to be erased again. Then the driver reads the table back:
+# OK once it reads as Jam OS's (its two partitions may then be opened
+# writable); ERR_IO if a write failed or it doesn't read back;
+# ERR_NO_SPACE: the disk is too small (under about 580 MiB); ERR_BAD_STATE:
+# one is under way already. usb-storage: ERR_NOT_SUPPORTED.
+7  create_table  (u8[16] disk_guid, u8[16] esp_guid, u8[16] data_guid, str[<=20] tail, str[<=8] word) -> () later
+# What the driver found the drive to be, from the table it read itself
+# (and so what it will write): MODE_OTHER someone else's (create_table
+# erases it only with the owner's confirmation), MODE_BLANK blank by the
+# empty rules (<jam/parttable.h>: zeros at both ends and at 1 MiB and
+# 513 MiB) or a create_table cut short, MODE_JAMOS Jam OS's (its two
+# partitions writable). `ro` 1: the `ro` word (`diskro`): nothing is
+# written, whatever the mode says (MODE_OTHER then). `readable` 0: the
+# table couldn't be read (a read failed): never erased. usb-storage:
+# ERR_NOT_SUPPORTED.
+const MODE_OTHER 0
+const MODE_BLANK 1
+const MODE_JAMOS 2
+8  mode  () -> (u8 mode, u8 ro, u8 readable) idempotent

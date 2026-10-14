@@ -85,6 +85,27 @@ static bool ends_zero(const struct pt_disk *d)
            pt_stream(d, d->blocks - r, r, piece_zero, &zero) == OK && zero;
 }
 
+/* The blank rule's spots: the first PT_BLANK_SPOT_BYTES where Jam OS's ESP
+ * and data partition start (PT_BLANK_SPOT_ESP and PT_BLANK_SPOT_DATA: the
+ * places pt_jamos_plan gives them on every disk), as much of each as lies
+ * inside the disk, all zeros. A drive that held filesystems and had only
+ * its table wiped (Windows' `diskpart clean`) has its ends zero and a
+ * filesystem still there: it is not blank. A read error: not blank. */
+static bool spots_zero(const struct pt_disk *d)
+{
+    static const uint64_t at[2] = { PT_BLANK_SPOT_ESP, PT_BLANK_SPOT_DATA };
+    bool zero = true;
+    for (int i = 0; i < 2 && zero; i++) {
+        uint64_t lba = at[i] / d->block_size, n = PT_BLANK_SPOT_BYTES / d->block_size;
+        if (lba >= d->blocks)
+            continue;
+        if (n > d->blocks - lba)
+            n = d->blocks - lba;
+        zero = pt_stream(d, lba, n, piece_zero, &zero) == OK && zero;
+    }
+    return zero;
+}
+
 /* ---- the MBR -------------------------------------------------------------------------- */
 
 /* Is s (block 0) a FAT boot sector for a volume that fits on the disk? An
@@ -279,18 +300,20 @@ static bool jamos_geometry(const struct pt_disk *d, const struct pt_table *t)
 }
 
 /* Block 0 is all zeros: nothing is listed (UEFI ignores a GPT without a
- * protective MBR). The disk is blank if its ends are zeros too; if not,
- * it may be a create_table cut short: its protective MBR is written last,
- * so such a disk has block 0 zero and headers that are each zeros or a
- * good Jam OS one at the plan's places (its GPT is read to see), or, cut
- * right after the first write, nothing but the backup entry array
- * (cut_after_array). */
+ * protective MBR). The disk is blank if its ends and its spots are zeros
+ * too; if not, it may be a create_table cut short: its protective MBR is
+ * written last, so such a disk has block 0 zero and headers that are each
+ * zeros or a good Jam OS one at the plan's places (its GPT is read to
+ * see), or, cut right after the first write, nothing but the backup entry
+ * array (cut_after_array). create_table writes nothing at the spots, so a
+ * cut one has them zero, as the blank drive it began on had. */
 static void zero_disk(const struct pt_disk *d, struct pt_table *t)
 {
-    t->blank = ends_zero(d);
+    /* The spots last in each test: 2 MiB, read only when the rest says yes. */
+    t->blank = ends_zero(d) && spots_zero(d);
     if (t->blank)
         return;
-    if (cut_after_array(d)) {
+    if (cut_after_array(d) && spots_zero(d)) {
         *t = (struct pt_table){ .scheme = PT_SCHEME_NONE, .primary = PT_BAD_ZERO,
                                 .backup = PT_BAD_ZERO, .blank_in_progress = true };
         return;
@@ -299,7 +322,7 @@ static void zero_disk(const struct pt_disk *d, struct pt_table *t)
     uint8_t primary = t->primary, backup = t->backup;
     /* (One header at least is good: two zero ones list nothing.) */
     bool in_progress = header_zero_or_good(primary) && header_zero_or_good(backup) &&
-                       pt_jamos_layout(t) && jamos_geometry(d, t);
+                       pt_jamos_layout(t) && jamos_geometry(d, t) && spots_zero(d);
     *t = (struct pt_table){ .scheme = PT_SCHEME_NONE, .primary = primary, .backup = backup,
                             .blank_in_progress = in_progress };
 }
