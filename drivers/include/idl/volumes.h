@@ -2806,8 +2806,9 @@ static inline status_t mounts_serve(handle_t ch, const struct mounts_ops *ops, v
 /* ==== protocol `voldisks` (id 74) ===========================================
  *
  * voldisks: what the shell's `disks` and `disk` ask (M12.7 stage 1). The
- * channel is read-only by construction: it can list, hash and ask for a
- * drive's health, never mount, remount, kill or attach anything. volumes
+ * channel is read-only by construction: it can list, hash, ask for a
+ * drive's health and ask what `disk prepare` would do to it, never mount,
+ * remount, kill, attach or prepare anything. volumes
  * keeps what it asked each driver when the disk came (storage.info,
  * .partition, and for an NVMe drive .ident) and answers from that; the
  * digest and the health log are asked of the driver each time (a task
