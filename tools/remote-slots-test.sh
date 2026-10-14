@@ -25,7 +25,7 @@ mkdir -p "$JAMOS_REMOTE_LOCKDIR"
 slots="python3 tools/remote-slots.py"
 
 # ---- the costs --------------------------------------------------------------------------------
-c() { local want=$1; shift; local got; got=$(env -u QEMU_SMP -u QEMU_MEM -u PORTS_TEST_JOBS JAMOS_REMOTE_COST_ONLY=1 "$@" 2> /dev/null)
+c() { local want=$1; shift; local got; got=$(env -u QEMU_SMP -u QEMU_MEM -u PORTS_TEST_JOBS -u WL_PORT_JOBS JAMOS_REMOTE_COST_ONLY=1 "$@" 2> /dev/null)
       [ "$got" = "$want" ] || fail "cost of ${*:2}: \"$got\", wanted \"$want\""; }
 R=tools/remote-test.sh
 c "4 2048" $R tools/qemu-test.sh build/test init init
@@ -38,6 +38,9 @@ c "8 4096" $R tools/nvme-driver-test.sh build/test/nd init kill
 c "12 6144" $R tools/ports-test.sh build/test/p zlib xz lua musl
 c "8 4096" $R tools/ports-test.sh build/test/p zlib xz
 c "4 2048" env PORTS_TEST_JOBS=1 $R tools/ports-test.sh build/test/p zlib xz
+c "12 6144" $R tools/wl-port-test.sh build/test/wl
+c "8 4096" $R tools/wl-port-test.sh build/test/wl proto paint
+c "4 2048" env WL_PORT_JOBS=1 $R tools/wl-port-test.sh build/test/wl
 c "2 2048" $R tools/update-menu-test.sh build/test/um   # its QEMUs are -smp 2
 c "2 1024" $R make check
 c "2 1024" $R python3 tools/fatcheck.py --selftest

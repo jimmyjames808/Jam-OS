@@ -1,0 +1,9 @@
+# group hold (tools/wl-port-test.sh): wlprobe hold, a window redrawn on every
+# frame callback (what the soak holds a client open with), for 20 seconds;
+# the shot is for a person looking at the bands.
+send run $P/wlprobe hold 20
+wait 30 wlprobe: hold: holding
+sleep 5
+shot hold
+wait 60 PASS hold
+wait {prompt}

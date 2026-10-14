@@ -14,7 +14,7 @@
 #
 # JAMOS_REMOTE: an ssh host whose login runs Windows' OpenSSH, with WSL's
 # Ubuntu behind `wsl` (docs/TESTING.md, "Another machine for the tests").
-# The QEMU_*, KTESTS, JAMOS_*, PC_RUNS, *_CASES, SOAK_* and PORTS_TEST_* variables go with the command
+# The QEMU_*, KTESTS, JAMOS_*, PC_RUNS, *_CASES, SOAK_*, PORTS_TEST_* and WL_PORT_* variables go with the command
 # (others: `tools/remote-test.sh env VAR=value <command>`). Each
 # checkout has a directory of its own there (~/work/<its name>), so several
 # checkouts (agents' worktrees) test at once; one checkout's builds take
@@ -28,7 +28,7 @@
 # timing tests fail; fewer left the PC idle behind a queue of small runs.
 #   - a QEMU run: QEMU_SMP CPUs (4 by default, qemu-test.sh's) and QEMU_MEM
 #     (2G) of memory; a script that boots several at once (nvme-driver-test
-#     one for each case, ports-test PORTS_TEST_JOBS) the total of them all;
+#     one for each case, ports-test PORTS_TEST_JOBS, wl-port-test WL_PORT_JOBS) the total of them all;
 #   - the build before it: JAMOS_REMOTE_BUILD_CPUS (8), and `make -j` that;
 #   - anything else (`make check`, a checker): JAMOS_REMOTE_LIGHT_CPUS (2) and
 #     JAMOS_REMOTE_LIGHT_MEM_MB (1024); say more for a heavy one (a big build).
@@ -44,13 +44,13 @@ cd "$top" || exit 2
 # What the command takes of the machine: "<virtual CPUs> <MB of memory>".
 # JAMOS_REMOTE_COST_ONLY=1 prints it and stops (tools/remote-slots-test.sh).
 cost_of() {
-    local smp=${QEMU_SMP:-} mem=${QEMU_MEM:-} jobs=${PORTS_TEST_JOBS:-} i=0 a script qemus=1 after
+    local smp=${QEMU_SMP:-} mem=${QEMU_MEM:-} jobs=${PORTS_TEST_JOBS:-} wljobs=${WL_PORT_JOBS:-} i=0 a script qemus=1 after
     local args=("$@")
     if [ "${args[0]:-}" = env ]; then
         i=1
         while [[ ${args[i]:-} == [A-Za-z_]*=* ]]; do
             a=${args[i]}
-            case $a in QEMU_SMP=*) smp=${a#*=} ;; QEMU_MEM=*) mem=${a#*=} ;; PORTS_TEST_JOBS=*) jobs=${a#*=} ;; esac
+            case $a in QEMU_SMP=*) smp=${a#*=} ;; QEMU_MEM=*) mem=${a#*=} ;; PORTS_TEST_JOBS=*) jobs=${a#*=} ;; WL_PORT_JOBS=*) wljobs=${a#*=} ;; esac
             i=$((i + 1))
         done
     fi
@@ -72,6 +72,11 @@ cost_of() {
         [[ ${jobs:-} =~ ^[0-9]+$ ]] || jobs=3
         qemus=$jobs
         [ "$after" -eq 0 ] || [ "$after" -ge "$jobs" ] || qemus=$after ;;
+    wl-port-test.sh)   # WL_PORT_JOBS (3) groups at a time, one QEMU each
+        [[ ${wljobs:-} =~ ^[0-9]+$ ]] || wljobs=3
+        qemus=$wljobs
+        [ "$after" -ge 1 ] || after=9   # no group named: all nine
+        [ "$after" -ge "$wljobs" ] || qemus=$after ;;
     update-menu-test.sh) smp=2 ;;   # its QEMUs are -smp 2
     *) if [ ! -f "$script" ] || ! grep -q qemu "$script"; then   # no QEMU: make check, a checker
            echo "${JAMOS_REMOTE_LIGHT_CPUS:-2} ${JAMOS_REMOTE_LIGHT_MEM_MB:-1024}"
@@ -111,7 +116,7 @@ ${lock[@]+"${lock[@]}"} rsync -az --delete --exclude .git --exclude /build --exc
 {
     echo "set -u; cd ~/$dir || exit 2"
     echo 'export PATH=$HOME/cross/bin:$HOME/qemu-10/bin:$HOME/mtools/bin:/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8'
-    env | grep -E '^(QEMU_[A-Z0-9_]*|KTESTS|JAMOS_[A-Z0-9_]*|PC_RUNS|[A-Z]+_CASES|SOAK_[A-Z0-9_]*|PORTS_TEST_[A-Z0-9_]*)=' | grep -v '^JAMOS_REMOTE\(_ONLY\)\?=' |
+    env | grep -E '^(QEMU_[A-Z0-9_]*|KTESTS|JAMOS_[A-Z0-9_]*|PC_RUNS|[A-Z]+_CASES|SOAK_[A-Z0-9_]*|PORTS_TEST_[A-Z0-9_]*|WL_PORT_[A-Z0-9_]*)=' | grep -v '^JAMOS_REMOTE\(_ONLY\)\?=' |
         while IFS= read -r kv; do printf 'export %q\n' "$kv"; done
     # The build takes its share of the budget too (make -j as many as it costs);
     # a checkout's builds still take turns, and one with nothing to do is quick.

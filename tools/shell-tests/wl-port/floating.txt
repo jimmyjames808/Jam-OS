@@ -1,0 +1,24 @@
+# group floating (tools/wl-port-test.sh): Super+T makes the layout floating
+# (windows keep their places, the new ones are the client's size, centred).
+# wlprobe's states-floating, then the same two ported programs as `tiled`,
+# now with a title bar and outline (wl-window-test, server-side) and none
+# (hello-wayland: its own look, the compositor's rounded corners and
+# shadow), screenshot at known pixels (tools/wl-port-check.py check_floating).
+monitor sendkey meta_l-t
+sleep 1.5
+send run $P/wlprobe states-floating
+wait 60 case(s),
+wait {prompt}
+send run $P/wl-window-test 12 still
+wait 30 configured
+sleep 2
+shot wl-floating
+wait 40 wl-window-test: ok
+wait {prompt}
+send run $P/hello-wayland &
+wait 10 [1]
+wait {prompt}
+sleep 3
+shot cat-floating
+send kill %1
+wait {prompt}

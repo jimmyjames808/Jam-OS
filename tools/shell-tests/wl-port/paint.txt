@@ -1,0 +1,47 @@
+# group paint (tools/wl-port-test.sh): wlprobe's shot cases in a floating
+# layout (Super+T: a floating window has the title bar). Each case prints
+# "wlprobe: <case>: shot <name>" and holds still for 4 s while the script
+# takes the screenshot; tools/wl-port-check.py check_paint compares them.
+monitor sendkey meta_l-t
+sleep 1.5
+send run $P/wlprobe title
+wait 40 wlprobe: title: shot title-a
+sleep 0.5
+shot title-a
+wait 40 wlprobe: title: shot title-b
+sleep 0.5
+shot title-b
+wait 40 case(s),
+wait {prompt}
+sleep 1
+shot title-after
+# the terminal under the window cleared: a plain ground (#101018) behind the alpha
+send clear
+wait {prompt}
+send run $P/wlprobe shm-argb
+wait 40 wlprobe: shm-argb: shot shm-argb
+sleep 0.5
+shot shm-argb
+wait 40 case(s),
+wait {prompt}
+send run $P/wlprobe damage
+wait 40 wlprobe: damage: shot damage-0
+sleep 0.5
+shot damage-0
+wait 40 wlprobe: damage: shot damage-1
+sleep 0.5
+shot damage-1
+wait 40 wlprobe: damage: shot damage-2
+sleep 0.5
+shot damage-2
+wait 40 case(s),
+wait {prompt}
+send run $P/wlprobe csd-geometry
+wait 40 wlprobe: csd-geometry: shot csd-a
+sleep 0.5
+shot csd-a
+wait 40 wlprobe: csd-geometry: shot csd-b
+sleep 0.5
+shot csd-b
+wait 40 case(s),
+wait {prompt}

@@ -1,0 +1,40 @@
+# group cursor (tools/wl-port-test.sh): wlprobe's cursor-shape and
+# cursor-surface cases. The mouse is put at (960, 420) first (`pointer` walks
+# there in ~230 monitor steps, which takes longer than a case holds a shot),
+# so the probe's window (right half, tiling) maps under it; a wiggle of the
+# mouse then makes the compositor tell the window the pointer entered. The probe
+# sets the shape text and then pointer, holding still after each so the script
+# shoots the cursor drawn there (wl-port-check.py: the three differ), then a
+# cursor surface of its own (red, a green centre, hotspot 12,12) and none.
+pointer 960 420
+send run $P/wlprobe cursor-shape
+wait 40 wlprobe: cursor-shape: ready
+sleep 1
+monitor mouse_move 2 0
+sleep 0.2
+monitor mouse_move -2 0
+wait 20 wlprobe: cursor-shape: shot cursor-default
+sleep 0.5
+shot cursor-default
+wait 20 wlprobe: cursor-shape: shot cursor-text
+sleep 0.5
+shot cursor-text
+wait 20 wlprobe: cursor-shape: shot cursor-hand
+sleep 0.5
+shot cursor-hand
+wait 40 case(s),
+wait {prompt}
+send run $P/wlprobe cursor-surface
+wait 40 wlprobe: cursor-surface: ready
+sleep 1
+monitor mouse_move 2 0
+sleep 0.2
+monitor mouse_move -2 0
+wait 20 wlprobe: cursor-surface: shot cursor-surface
+sleep 0.5
+shot cursor-surface
+wait 20 wlprobe: cursor-surface: shot cursor-hidden
+sleep 0.5
+shot cursor-hidden
+wait 40 case(s),
+wait {prompt}

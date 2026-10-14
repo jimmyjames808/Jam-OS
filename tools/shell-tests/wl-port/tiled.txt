@@ -1,0 +1,19 @@
+# group tiled (tools/wl-port-test.sh): a decorated window from a ported
+# program and a ported picture, in the default tiling layout, screenshot at
+# known pixels (tools/wl-port-check.py check_tiled). wl-window-test binds the
+# decoration manager (server-side: the compositor's border), draws diagonal
+# bands that `still` keeps in place; hello-wayland never binds it and draws a
+# cat once. Neither makes a keyboard, so the keys stay with terminal 1.
+send run $P/wl-window-test 12 still
+wait 30 configured
+sleep 2
+shot wl-tiled
+wait 40 wl-window-test: ok
+wait {prompt}
+send run $P/hello-wayland &
+wait 10 [1]
+wait {prompt}
+sleep 3
+shot cat-tiled
+send kill %1
+wait {prompt}

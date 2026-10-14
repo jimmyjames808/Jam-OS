@@ -1,0 +1,13 @@
+# group proto (tools/wl-port-test.sh): wlprobe's cases that need no one's
+# help, in the default tiling layout, then the tiled states and the
+# subcompositor (GC2). The verdicts are the PASS/FAIL lines wlprobe prints;
+# tools/wl-port-check.py reads them from the serial log. wlprobe's last
+# line, "wlprobe: N case(s), M failed", is what the script waits for.
+send run $P/wlprobe -l
+wait {prompt}
+send run $P/wlprobe all
+wait 400 case(s),
+wait {prompt}
+send run $P/wlprobe states-tiled subcompositor
+wait 60 case(s),
+wait {prompt}

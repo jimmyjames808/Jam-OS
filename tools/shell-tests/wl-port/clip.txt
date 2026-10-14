@@ -1,0 +1,46 @@
+# group clip (tools/wl-port-test.sh): the clipboard both ways between a
+# libwayland client (wlprobe) and Jam OS's terminals (libjwl clients), the
+# keys and mouse of tools/shell-tests/clip.txt (OVMF's 1280x800, terminal 1
+# alone in its tile: the text starts at (18, 58), cells 9x21).
+# in:  terminal 1 prints a line, a triple click selects it, Super+C copies
+#      it; wlprobe's window maps (it gets the selection offer with the
+#      keyboard enter) and reads it back: clipboard-in.
+# out: wlprobe's window sets its own selection; Super+Enter opens terminal 2
+#      (which takes the keys), Super+V pastes it there: the source's send
+#      is served: clipboard-out.
+send clear
+wait {prompt}
+send echo clipsrc-$T-77
+wait clipsrc-x-77
+wait {prompt}
+sleep 1
+pointer 40 89
+monitor mouse_button 1
+monitor mouse_button 0
+monitor mouse_button 1
+monitor mouse_button 0
+monitor mouse_button 1
+monitor mouse_button 0
+sleep 1
+monitor sendkey meta_l-c
+wait 10 console: terminal 1: copied 12 bytes
+send run $P/wlprobe clipboard-in=clipsrc-x-77
+wait 40 case(s),
+wait {prompt}
+send run $P/wlprobe clipboard-out
+wait 40 wlprobe: clipboard-out: ready
+monitor sendkey meta_l-ret
+wait 10 init: terminal 2 opens
+wait 30 Jam OS shell
+sleep 1
+monitor sendkey meta_l-v
+wait 10 console: terminal 2: pasted 21 bytes
+wait 40 case(s),
+# terminal 2 has the keys (the serial port types into the window that has them):
+# Super+Q closes it, and the keys go back to terminal 1
+sleep 1
+monitor sendkey meta_l-q
+sleep 2
+send echo clip-done-$T
+wait clip-done-x
+wait {prompt}

@@ -1,0 +1,157 @@
+#!/bin/sh
+# Wayland clients on Jam OS, end to end (docs/G2-PLAN.md, track GT): ported
+# programs on the real libwayland talk to the compositor through libc's
+# Wayland socket. Each GROUP below is one plain boot ("shell": the desktop)
+# of a copy of the stick image with the wayland and hello-wayland ports
+# preinstalled the way tools/ports-test.sh does it (tools/ports-preinstall.py),
+# a usb-kbd on xhci port 2 and a usb-mouse on port 3 (the compositor's input,
+# driven through QEMU's monitor as tools/clip-test.sh does), running
+# tools/shell-tests/wl-port/<group>.txt in the shell. A group's cases are
+# wlprobe's (ports/wayland/override/wlprobe.c: `wlprobe -l`), run by name;
+# tools/wl-port-check.py then reads the serial log for each case's PASS or
+# FAIL line and checks the screenshots the group took at known spots.
+#
+#   tools/wl-port-test.sh <outdir> [group...]      (no group: all of them)
+#
+#   proto    wlprobe all + subcompositor, in the tiling layout: globals, bind, shm,
+#            output, keymap, toplevel + states-tiled, keyless, deco-server, frames,
+#            geometry and its errors, parent, popup, big-buffer, resize-storm,
+#            reuse, clipboard-serial, maximize, fullscreen, minimize (the shot
+#            cases too, without their holds)
+#   floating Super+T, then states-floating and wl-window-test (a decorated window:
+#            title bar, outline, bands at known pixels) and hello-wayland (a cat,
+#            no frame of the compositor's), screenshot-checked
+#   tiled    wl-window-test and hello-wayland tiled (the border), screenshot-checked
+#   paint    title (the title bar changes), shm-argb (alpha blended over the
+#            terminal's ground), damage (partial damage), csd-geometry (a
+#            client-side window with a smaller geometry has no corners of ours):
+#            wlprobe holds each window still for the shots
+#   pointer  pointer (enter, motion 1:1, buttons, wheel, leave, injected with
+#            QEMU's mouse; the surface coordinates checked against a screenshot),
+#            keyless-click
+#   keyboard keyboard (keys typed on the USB keyboard through the keymap), close
+#   cursor   cursor-shape (three shapes, the drawn cursor differs), cursor-surface
+#   clip     clipboard-in (a terminal's selection read by wlprobe) and
+#            clipboard-out (the window's selection pasted into a second terminal)
+#   hold     wlprobe hold: a window redrawn on every frame callback for 20 s
+#
+# Groups run WL_PORT_JOBS (default 3) at a time, each in
+# <outdir>/<group>/ (the serial log, the screenshots, the image of a failed
+# group). Prints "wl-port-test: <group>: PASS|FAIL" and one line per case:
+# "wl-port-test: <group>: <case>: PASS|FAIL|XFAIL <detail>". A case the
+# compositor is known to fail is an XFAIL in tools/wl-port-check.py with the
+# reason; one on that list that passes is reported XPASS (and fails the
+# group: take it off the list). Exit 0 if every group passed.
+#
+# Environment: WL_PORT_JOBS, WL_PORT_IMAGE (default build/jamos.img: `make
+# image` first, which tools/remote-test.sh does), QEMU_TIMEOUT (default 400),
+# QEMU_SMP, and the tools/qemu-test.sh variables. On the test host:
+#   JAMOS_REMOTE=jamos-pc JAMOS_REMOTE_ONLY=1 tools/remote-test.sh \
+#       tools/wl-port-test.sh build/test/wl proto paint
+# (one QEMU per group; remote-test.sh charges the CPUs of WL_PORT_JOBS of them).
+set -u
+if [ $# -lt 1 ]; then
+    echo "usage: tools/wl-port-test.sh <outdir> [group...]" >&2
+    exit 2
+fi
+out=$1
+shift
+all="proto floating tiled paint pointer keyboard cursor clip hold"
+groups="${*:-$all}"
+image=${WL_PORT_IMAGE:-build/jamos.img}
+jobs=${WL_PORT_JOBS:-3}
+export QEMU_TIMEOUT=${QEMU_TIMEOUT:-400}
+
+[ -f "$image" ] || { echo "wl-port-test: $image: no image (make image first)" >&2; exit 2; }
+for g in $groups; do
+    [ -f "tools/shell-tests/wl-port/$g.txt" ] || { echo "wl-port-test: $g: no such group" >&2; exit 2; }
+done
+mkdir -p "$out"
+
+# The ports a group needs installed, built.
+ports="wayland hello-wayland"
+all_ports=$(python3 tools/ports-preinstall.py closure $ports) || exit 2
+if ! python3 tools/ports.py --out build/ports build $all_ports > "$out/build.log" 2>&1; then
+    tail -20 "$out/build.log"
+    for g in $groups; do echo "wl-port-test: $g: FAIL (the ports build, see $out/build.log)"; done
+    exit 1
+fi
+grep -E "built in|up to date" "$out/build.log" | sed 's/^/wl-port-test: /'
+true
+
+# One group: its image, script and QEMU run, then the checks; leaves $dir/result.
+shard() {
+    g=$1
+    dir=$out/$g
+    rm -rf "$dir"
+    mkdir -p "$dir"
+    img=$dir/wl-$g-stick.img
+    fail() { echo "FAIL ($1)" > "$dir/result"; }
+    cp "$image" "$img"
+    # shellcheck disable=SC2086 # $ports is a list
+    if ! python3 tools/ports-preinstall.py install --feed "$dir/allow-check.txt" "$img" $ports \
+         > "$dir/preinstall.out" 2>&1; then
+        fail "the preinstall: $(tail -1 "$dir/preinstall.out")"
+        return
+    fi
+    {
+        echo "# generated by tools/wl-port-test.sh for $g: the header, wl-port/$g.txt, the end"
+        echo "wait 120 Jam OS shell"
+        echo "wait {prompt}"
+        echo "seen 60 init: /data mounted"
+        echo "seen 60 mouse ready"
+        echo "send T=x"
+        echo "wait {prompt}"
+        echo "send P=/data/pkg/bin"
+        echo "wait {prompt}"
+        echo "send S=/boot/usr/bin"
+        echo "wait {prompt}"
+        echo "send cd /data"
+        echo "wait {prompt}"
+        cat "$dir/allow-check.txt"
+        echo "# ---- tools/shell-tests/wl-port/$g.txt ----"
+        cat "tools/shell-tests/wl-port/$g.txt"
+        echo "# ---- the end ----"
+        echo "send reboot -f"
+        echo "wait reboot: resetting"
+    } > "$dir/script.txt"
+    usb="-device usb-kbd,bus=xhci.0,port=2 -device usb-mouse,bus=xhci.0,port=3"
+    qemu_ok=1
+    if ! QEMU_IMAGE="$img" QEMU_INPUT="$dir/script.txt" QEMU_USB="$usb" \
+         tools/qemu-test.sh "$dir" "wl-$g" shell > "$dir/qemu.out" 2>&1; then
+        qemu_ok=0
+        why=$(grep -E "serial-feed: .*(no '|within|timed out)" "$dir/qemu.out" | head -1)
+        [ -n "$why" ] || why=$(grep "serial-feed: " "$dir/qemu.out" | tail -1)
+        echo "the script: ${why:-QEMU, see $dir/qemu.out}" > "$dir/script-failed"
+    fi
+    # the cases and screenshots, even when the script stopped early
+    if python3 tools/wl-port-check.py "$g" "$dir" "$dir/wl-$g.log" > "$dir/check.out" 2>&1 &&
+       [ $qemu_ok = 1 ]; then
+        echo PASS > "$dir/result"
+        rm -f "$img" "$dir/wl-$g.img"   # kept only for a failure
+    else
+        fail "see $dir/check.out and $dir/wl-$g.log"
+        [ $qemu_ok = 1 ] || cat "$dir/script-failed" >> "$dir/check.out"
+    fi
+}
+
+n=0
+for g in $groups; do
+    shard "$g" &
+    n=$((n + 1))
+    if [ "$n" -ge "$jobs" ]; then
+        wait
+        n=0
+    fi
+done
+wait
+
+rc=0
+for g in $groups; do
+    sed "s/^/wl-port-test: $g: /" "$out/$g/check.out" 2> /dev/null
+    r=$(cat "$out/$g/result" 2> /dev/null || echo "FAIL (no result)")
+    echo "wl-port-test: $g: $r"
+    [ "$r" = PASS ] || rc=1
+done
+[ $rc = 0 ] && echo "wl-port-test: PASS" || echo "wl-port-test: FAIL"
+exit $rc
