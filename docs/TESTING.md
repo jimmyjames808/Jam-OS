@@ -14,7 +14,7 @@ that a bug fix comes with a test is in
 | User regression | `tools/qemu-test.sh build/test init init` (utest, usbtest, then posixtest, the POSIX layer's test: ~30 s) | every change to syscalls, libos, services, drivers |
 | Shell scripts | [below](#shell-scripts) | shell, console, input |
 | Area scripts | [below](#area-scripts) | the area you touched |
-| Soak | `tools/soak-test.sh build/test`, again with `QEMU_SMP=8` (about 3 minutes each) | **before a push or a milestone sign-off only** (not in an agent's or a fix round's tests): after a change to a kernel test, a service or a driver, and anything that keeps state from one run to the next |
+| Soak | `JAMOS_TIER=push tools/soak-test.sh build/test`, again with `QEMU_SMP=8` (about 3 minutes each) | **before a push or a milestone sign-off only** (not in an agent's or a fix round's tests): after a change to a kernel test, a service or a driver, and anything that keeps state from one run to the next |
 | libc-test (all) | `tools/libc-test.sh` ([below](#shell-scripts)) | before a push or a sign-off only; an agent runs it only for the libc or POSIX layer it changed, and then only the tests of that part |
 | 2-minute soak | `soak 2` in the shell ([below](#soak)) | on the PC, before a push, when the full soak is more than the change needs |
 | Sign-off | the boot menu's All tests, then `soak 10` in the shell with a second stick mounted read-write and pulled and replugged during the run | milestone sign-off only, on the PC |
@@ -42,6 +42,53 @@ that a bug fix comes with a test is in
   scheduler, locks and allocators hold under load? The soak: does every
   test still hold the tenth time, in any order, next to load and user
   space, with sticks coming and going?
+- **The tier is checked** (`JAMOS_TIER`, which `tools/remote-test.sh`
+  forwards): `tools/soak-test.sh`, and `tools/qemu-test.sh` with the soak
+  (`soak.txt`, the boot word `soak=`), refuse to run (exit 2) unless
+  `JAMOS_TIER=push` (the pre-push pass) or `JAMOS_TIER=kernel` (a kernel
+  change that needs it); `ktest` at `QEMU_SMP=8` prints a warning unless
+  one of them is set.
+
+## Running tests on the PC
+
+Every QEMU test runs on the PC ([below](#another-machine-for-the-tests)).
+More than one run: a batch, which copies the checkout and builds once,
+starts every run at once (they queue on the PC's CPU budget) and ends with
+one table.
+
+```sh
+cat > build/runs.txt <<'EOF'
+init   tools/qemu-test.sh build/t/init init init
+kt4    tools/qemu-test.sh build/t/kt4 kt4 ktest
+cmds   QEMU_INPUT=tools/shell-tests/cmds.txt QEMU_EXTRA="-rtc base=2026-01-15T01:02:03" tools/qemu-test.sh build/t/cmds cmds shell
+kd1    tools/kdump-test.sh build/t/kd-save save
+kd2    tools/kdump-test.sh build/t/kd-notice notice
+nvt1   env NVME_CASES="windows plain" tools/nvme-test.sh build/t/nvt1
+EOF
+tools/pc-batch.sh start build/runs.txt     # "batch 14203846: 6 runs started" at once
+tools/pc-batch.sh wait 14203846            # again until it ends: at most 270 s a call
+```
+
+`wait` returns after at most 270 s (`PC_BATCH_WAIT`) with one progress
+line (exit 124: not finished, call it again) or, at the end, the table
+(exit 0: all passed, 1: one failed): each run's PASS or FAIL, its seconds
+and the seconds it queued for the budget, and for a failure its first
+failure lines, its log (`build/batch/<id>/<name>.log`: remote-test's lines
+and the command's) and its output directory. `report [<id>]` prints the
+table again, `cancel [<id>]` stops a batch; `<id>` left out is the newest.
+`start --rerun-failed` runs a failure once more: "rerun-PASS" if it passes
+then (the known flaky tests, [Known noise](#known-noise)). A line is `<name>
+<command...>`, shell words; `VAR=value` words before the command (with or
+without `env`) are its environment. `tools/pc-batch.sh <runlist>` does it
+all in the foreground (a terminal). If the PC doesn't answer, the batch
+tries once more after a minute, then every run is NOT-RUN.
+
+One run: `JAMOS_REMOTE=jamos-pc JAMOS_REMOTE_ONLY=1 tools/remote-test.sh
+tools/qemu-test.sh build/t/init init init`. Several calls of your own from
+one checkout: the first copies and builds, the rest can skip the copy with
+`JAMOS_REMOTE_NOSYNC=1` (`tools/remote-test.sh --prepare` copies and builds
+and runs nothing). A build with nothing to do (the tree the PC built last
+for this checkout) is skipped and claims no CPUs.
 
 ## Build checks
 
@@ -186,7 +233,7 @@ JAMOS_REMOTE=jamos-pc tools/remote-test.sh tools/mixer-test.sh build/test/mixer
 ```
 
 It copies the checkout (no `.git`, no `build/`) to `~/work/<checkout's
-name>` there, runs `make image` (so the image is never stale), runs the
+name>` there, runs `make image` (so the image is never stale; skipped, with no CPUs claimed, when the PC built this very tree for the checkout last: a stamp of every file's name, size and time, `JAMOS_REMOTE_REBUILD=1` builds anyway), runs the
 command with the `QEMU_*`, `KTESTS`, `JAMOS_*`, `PC_RUNS`, `*_CASES` (`PAGER_CASES`, `MMAP_CASES`), `SOAK_*` and `PORTS_TEST_*` variables, and copies
 back the output directories its arguments name under `build/` (but stick
 images); its exit status is the command's. Commands from every checkout
@@ -204,7 +251,7 @@ use and starts when that fits beside what is running:
 |---|---|
 | a QEMU run | `QEMU_SMP` CPUs (4 if unset, as `qemu-test.sh`) and `QEMU_MEM` of memory (2 GB if unset); `QEMU_SMP=8 ... kt8` is 8 |
 | a script that boots several at once | the total: `nvme-driver-test.sh` one boot for each case (6 by default, so 24 CPUs), `ports-test.sh` `PORTS_TEST_JOBS` (3) at a time or the ports given if fewer; `wl-port-test.sh` `WL_PORT_JOBS` (3) groups at a time or the groups given if fewer; `update-menu-test.sh` boots `-smp 2` |
-| the build before the command | `JAMOS_REMOTE_BUILD_CPUS` (8) CPUs and `make -j` that many: a build is a short burst, but a burst of 16 jobs beside 26 CPUs of QEMU failed timing tests, and waiting for a whole test to end before building would stall everything, so it queues like a small test (a checkout's builds still take turns, and one with nothing to do is quick) |
+| the build before the command | `JAMOS_REMOTE_BUILD_CPUS` (8) CPUs and `make -j` that many: a build is a short burst, but a burst of 16 jobs beside 26 CPUs of QEMU failed timing tests, and waiting for a whole test to end before building would stall everything, so it queues like a small test (a checkout's builds still take turns; one with nothing to do, the tree built last, is skipped and claims nothing) |
 | anything else (`make check`, a checker, a port build) | `JAMOS_REMOTE_LIGHT_CPUS` (2) CPUs and `JAMOS_REMOTE_LIGHT_MEM_MB` (1024): say more for a heavy one, `JAMOS_REMOTE_LIGHT_CPUS=12 tools/remote-test.sh ...` |
 
 The budget is `JAMOS_REMOTE_CPUS` (26) CPUs, `JAMOS_REMOTE_MEM_GB` (20) of
@@ -1138,6 +1185,7 @@ matters `QEMU_XHCI`) pass through.
 | `tools/sntp-test.sh <outdir>` | bin/sntp end to end, three boots with QEMU's e1000e, the RTC at 2026-01-15 and the peer's SNTP server (`--ntp`: 2031-02-27 from its start): `sntp` (`sntp.txt`: the gateway asked, each answer after a forged one (`--ntp-forge`: the origin a bit off, a year later) that is said to be ignored, the five-year step confirmed by a second reply, `date -u` 2031, `date -r` "set from the network", `date -z` keeps it, sntp restarted moves it under a second, devmgr restarted and init keeps the network's time); checked afterwards: the kernel's set near the peer's time, never the forged year; `sntp-name` (`ntp.server = router.jam`, through `/svc/dns`); `sntp-off` (`ntp = off`: no sntp, not one SNTP request, the RTC's date). About 3 minutes |
 | `tools/ping-test.sh <outdir>` | the shell's `net` and `ping` (`net.txt`) with QEMU's e1000e and the network peer: `ping 1.1.1.1` answered through the gateway, Ctrl+C, `net stats` ([netstack](#netstack)); then the same commands as programs on the same stick (`sysbox-net.txt`) |
 | `tools/remote-slots-test.sh` | the CPU budget on the test machine ([above](#another-machine-for-the-tests)) against a fake lock directory, no PC, about 25 s: the costs of each kind of command; 6 commands of 3 CPUs on a budget of 8 never more than 2 at once; a command bigger than the budget alone; a holder killed (`kill -9`) with and without its command leaks nothing, a dead governor whose command lives still counts; an old waiter is not passed by a younger small one; `JAMOS_REMOTE_SLOTS`, the budget file, `--status`, the exit status; prints PASS |
+| `tools/pc-batch-test.sh` | `tools/pc-batch.sh` ([Running tests on the PC](#running-tests-on-the-pc)) with a stand-in for remote-test, no PC, about 25 s: start returns at once, a short wait says "not yet" (124), the table (PASS, FAIL with its failure line and log, rerun-PASS, the queue time), `VAR=value` words with and without `env`, one copy then every run without one, bad runlists refused, a PC that doesn't answer tried twice, a `KTESTS=0` run's own build, cancel; prints PASS |
 | `tools/rxsoak-test.sh <outdir>` | the receive path over a long run (`rxsoak.txt`, about 4 minutes): the peer floods ~10 000 frames (a trunk port's mix, on VLAN 21 and off it) while it pings every 0.2 s; the late pings must be answered and the guest's own `ping 10.2.21.1` too ([netstack](#netstack)) |
 | `tools/dns-test.sh <outdir>` | bin/dhcp and bin/dns end to end with QEMU's e1000e and the peer's DHCP and DNS servers, two boots ([DHCP and DNS](#dhcp-and-dns-end-to-end)) |
 | `tools/tcp-test.sh <outdir>` | TCP end to end (`tcp.txt`, [HISTORY: M9.5](HISTORY.md#m95-network-streams)): with `net.address` in the stick's settings and the peer's TCP side, `run tcptest send 10.2.21.174 5030 10485760` (10 MiB to the peer and 10 MiB back on one connection, every byte checked on both sides, the SHA-256 said, then CLOSED with no error; the speeds both ways) `run tcptest send 10.2.21.174 5032 8388608 2097152` (8 MiB each way with 2 MiB rings, to a server whose ACKs come 20 ms after their segments: window scaling), and `run tcptest serve 5031 20 262144` (the peer's 20 connections at once to a guest listener, served from one wait set holding the listener and every connection, 256 KiB each way each); then `run tcptest small ... 5033 8 10 0` and `... 5034 8 10 1` (eight 10-byte writes 20 ms apart to servers whose ACKs come 200 ms late, with Nagle's algorithm off and on: `net_tcp_set_options`) `run tcptest keepalive 10.2.21.174 5035 5` (idle 5 s with keep-alive on, the peer answering the probes) and `run tcptest relisten 5036 65536` (a listener with address reuse serves the peer's connection and closes it first, so the port is in TIME_WAIT on the guest; a listener without the flag is then refused, one with it made again at once); PASS needs the peer's 26 connections right and none wrong, 6 segments or more from the no-delay writes (8 seen) and 1 to 3 from the Nagle ones (2), at least 2 keep-alive probes (the peer's `tcp_5033_segs`, `tcp_5034_segs`, `tcp_5035_probes`), on the 2 MiB rings' connection a scaled window over 64 KiB and more than 64 KiB in flight both ways (the peer's `tcp_5032_*` counts), on the default rings' one no window and no flight over 64 KiB, and the run's VLAN checks. `QEMU_NET_VLAN=none` runs it untagged. About 2 minutes |
