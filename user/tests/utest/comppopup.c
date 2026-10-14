@@ -559,12 +559,13 @@ static bool tooltip_steps(struct cs *t, struct pc *a, struct sc *b, struct top *
     CHECK(popup(a, &tip, tl->xs, &tp, 0));
     CHECK(show(a, &tip, 51, 41, 40, 20, YELLOW));
     CHECK(!entered_on(a, tip.s));
-    CHECK(pixel(t, TOP_X + 60, TOP_Y + 50, YELLOW));
+    /* its far corner: the cursor's arrow is at its top left (the click) */
+    CHECK(pixel(t, TOP_X + 89, TOP_Y + 59, YELLOW));
     ct_clear(&b->k);
     CHECK(click(t, 70, 70, &a->c, b));
     CHECK(find_ev(b, &jwl_wl_pointer_interface, JWL_WL_POINTER_EV_BUTTON));
     CHECK(!ct_find(k, &jwl_xdg_popup_interface, JWL_XDG_POPUP_EV_POPUP_DONE, tip.popup));
-    CHECK(pixel(t, TOP_X + 60, TOP_Y + 50, YELLOW));
+    CHECK(pixel(t, TOP_X + 60, TOP_Y + 50, YELLOW));   /* the pointer gone from it */
     CHECK(destroy(a, &tip));
     ct_clear(k);
     CHECK(click(t, TOP_X + 50, TOP_Y + 40, &a->c, b));
