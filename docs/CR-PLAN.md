@@ -736,25 +736,55 @@ lands (no WebAssembly then).
   as far as the handle's rights allow (`ASPACE_CAN_*` from the rights:
   a handle without write maps execute-only). `vmar_protect` follows the
   same rule. Everything else stays W^X.
-- **Marked** (CJ1): `process_get_info` gains a flag (holds or maps a JIT
-  VMO); `ps` shows it.
-- **Approval** (CJ2): `tools/checkwants.py` allows `right jit` for
-  packages and `/data` programs, never for the boot image's system
-  programs; `allow` and `pkg` show it in their own words ("may write and
-  run its own code: JIT") and ask, as for every grant; init refuses it
-  for nothing else.
-- **libc** (CJ2): `mmap` with **`MAP_JIT`** (macOS's flag name; a Jam
-  OS value) in a process holding the power makes the mapping's VMO a
-  JIT VMO; then `PROT_READ | PROT_WRITE | PROT_EXEC` is allowed on it.
-  Without the power, `MAP_JIT` is EPERM and execute stays EACCES.
-- **V8** (CJ2): V8 already tells its page allocator when a reservation
-  will hold code (`kNoAccessWillJitLater`, made for macOS's `MAP_JIT`);
-  a few-line patch in its POSIX platform passes `MAP_JIT` on Jam OS too.
-- **Only renderers** (CJ2): the owner's default is Chromium's renderers,
-  nothing else. The browser holds the power (its list asks for it) and
-  hands it to renderer children only (the launcher branch's grants for
-  `--type=renderer`); every other Chromium process runs V8 with
-  `--jitless`.
+- **Marked** (CJ1, CJ2): `process_get_info` and `proc_list` give
+  `PROCESS_FLAG_JIT` (the address space has mapped a JIT VMO); `ps` puts
+  `[jit]` after such a process's name, with a footnote saying what it
+  means. A power held but never used isn't marked: only the root handle's
+  rights say it, and with no JIT VMO mapped the program can't run code of
+  its own.
+- **Approval** (CJ1, CJ2): `tools/checkwants.py` allows `right jit` for
+  packages and tests (ports/, user/ports/, user/tests/), never for the
+  boot image's system programs (its self-test checks both, and that
+  user/posix/'s programs and posixtest are refused); `allow` says it on a
+  line of its own before its question ("it asks to write and run its own
+  code (JIT memory): the system can't check that code, so allow it only if
+  you trust the program"), then shows the list's words ("may write and run
+  its own code: JIT") and asks, as for every grant. Every starter gives the
+  power from the list alone through `dp_root_rights` (the shell, `/svc/exec`,
+  init's apps), and init's test run gives it only to an init.cfg program
+  whose list asks (utest; posixtest and usbtest keep W^X whole). `pkg`
+  doesn't exist yet on Jam OS (M13.7's PO6): the package verifier already
+  allows `right jit` for a package (checkwants' rule for ports/), and
+  init's pkgctl (PO5) and `pkg` must show the same words and ask, as
+  `allow` does.
+- **libc** (CJ2, done): `mmap` with **`MAP_JIT`** (macOS's flag name; the
+  value is Jam OS's, `0x2000000`: macOS's `0x800` is Linux's
+  `MAP_DENYWRITE`, which programs pass and expect ignored, and bit 25 is
+  free on x86-64 Linux, the top one below the huge-page field
+  `MAP_HUGE_SHIFT`, farthest from where Linux's flags grow) with
+  `MAP_PRIVATE | MAP_ANONYMOUS` (else `EINVAL`) in a process holding the
+  power maps a JIT VMO made for it (`vmo_make_jit`); then `PROT_EXEC` is
+  allowed on it in `mmap` and `mprotect`, alone or with `PROT_WRITE`.
+  Without the power `MAP_JIT` is `EPERM`, and execute anywhere else stays
+  `EACCES`. The switching the plan asks for is `mprotect`: a program may
+  keep the pages writable and executable (V8's default on x64) or move
+  them between `PROT_READ | PROT_WRITE` and `PROT_READ | PROT_EXEC`
+  (macOS's per-thread `pthread_jit_write_protect_np` is for arm64 and has
+  no x86 use until the stricter modes below). `MAP_FIXED | MAP_JIT` over
+  JIT memory decommits in place (a reservation cut and committed again
+  keeps one VMO); a `MAP_FIXED` without it replaces JIT memory with plain
+  memory. `MAP_JIT` is in `<sys/mman.h>` through an override of musl's
+  `arch/x86_64/bits/mman.h` (user/posix/musl/OVERRIDES).
+- **V8** (still to do, with CB5): V8 already tells its page allocator
+  when a reservation will hold code (`kNoAccessWillJitLater`, made for
+  macOS's `MAP_JIT`); a few-line patch in its POSIX platform passes
+  `MAP_JIT` on Jam OS too (and its decommit of code pages, a `MAP_FIXED`
+  remap, must keep `MAP_JIT`, or the pages become plain memory).
+- **Only renderers** (still to do, with CB5): the owner's default is
+  Chromium's renderers, nothing else. The browser holds the power (its
+  list asks for it) and hands it to renderer children only (the launcher
+  branch's grants for `--type=renderer`); every other Chromium process
+  runs V8 with `--jitless`.
 - **Stricter modes later** through the same power: a per-thread switch
   with Intel's protection keys (the PC has PKU; the kernel would enable
   PKRU in XCR0 and give `pkey_alloc`/`pkey_mprotect`), or dual mapping
@@ -1105,7 +1135,7 @@ ports, recipes, tests, netstack's caps, the audio API and the docs.
 | **PO13. The package area on `/jam`** | M13.7's prefix on `/jam` (after M13.6), the guard on it, big packages (a 250 MB program: staged files on `/jam`, init's hashing in steps) | M13.7's files named in its plan's PO5 and PO6 notes (the prefix constant, the guard's line for extfs) | M13.7's PO5 and PO6; M13.6's U4 and U8 | tools/pkg-test.sh (PO8, to come) with a big package on an ext test disk | Sonnet 5.5 |
 | **CA1. Sound** | section 11: libjam's audio output API and Chromium's back end patch | a new user/lib/ audio file and `<os.h>`'s lines (or a header of its own), ports/chromium's audio patch | CB4 (a browser to test it with); the API part at once | utest: a stream's frames reach the mixer (`tools/mixer-test.sh`'s way); cr-test.sh `chrome` playing a WebM's sound into the mixer's capture | Sonnet 5.5 |
 | **CJ1. JIT memory in the kernel** | section 12's kernel part: `RIGHT_ROOT_JIT`, `vmo_make_jit`, W+X only on a JIT VMO's mapping within its handle's rights, the flag in `process_get_info` | `kernel/object/vmo.c` (the kind), `kernel/abi/vmo_sys.c` (the call), `kernel/mm/aspace.c` (`perms_ok` and protect), `abi/syscalls.def`, `kernel/include/jam/abi.h`, new ktests | CK2 merged (`aspace.c`); CK1 merged (`vmo.c`) | ktests: W+X refused on every other VMO; a JIT VMO without the power refused; an execute-only duplicate can't write; a write-only one can't run; a JIT VMO can't be sealed, verified or paged; full ktest 4 and 8; soak 2 | **Opus** |
-| **CJ2. JIT for programs** | section 12's rest: `right jit` (wants, checkwants, allow's and pkg's words, init's slice), `ps`'s mark, libc's `MAP_JIT`, V8's patch, the launcher giving the power to renderers only, `--jitless` for the rest | `user/include/wants.h`, the wants parser in libos, `tools/checkwants.py`, `user/services/shell/sh_allow.c`'s prompt, init's grant, `user/posix/sys/mem.c` (`MAP_JIT`), ports/chromium's V8 and launcher lines | CJ1; CB5 | posixtest: `MAP_JIT` with and without the power; a JIT program writes code and runs it; cr-test.sh `chrome` with a Wasm page (CR-e) | **Opus** |
+| **CJ2. JIT for programs** | section 12's rest: `right jit` (wants, checkwants, allow's and pkg's words, init's slice), `ps`'s mark, libc's `MAP_JIT` (this half done 2026-10-14, see "CJ2 notes"); **still to do, after CB5**: V8's patch, the launcher giving the power to renderers only, `--jitless` for the rest | `user/include/wants.h`, the wants parser in libos, `tools/checkwants.py`, `user/services/shell/sh_allow.c`'s prompt, init's grant, `user/posix/sys/mem.c` (`MAP_JIT`), ports/chromium's V8 and launcher lines | CJ1; CB5 | posixtest: `MAP_JIT` with and without the power; a JIT program writes code and runs it; cr-test.sh `chrome` with a Wasm page (CR-e) | **Opus** |
 | **CR1. Kernel review** | CK1, CK2, CK3, CP1's kernel line, CJ1 if merged: findings first (docs/CR-REVIEW-KERNEL.md, new), then High and Medium fixed with a test each; hostile tests (a TiB of reservations from a job with 16 MiB, 60,000 mappings in a storm of protects from 8 threads while another unmaps) | the files its fixes need | CK1 to CK3 merged | its own; full ktest 4 and 8; soak 4 | **Opus** |
 | **CR2. POSIX and IPC review** | CL1, CL2, CL3, CU1, CU2, CS1: the descriptor passing (what crosses, what leaks, what a hostile peer can make the receiver do), the self-image (can it run anything the owner didn't approve?), `/proc`'s reopen | the files its fixes need | CL1, CL2, CU1, CS1 merged | its own; posixtest; a fuzz loop between two processes | **Opus** |
 | **CJR. JIT review** | CJ1 and CJ2 against the owner's rule: can any program without the power get W+X, can a JIT VMO become approved code, can a handle hand-on widen rights; findings first, fixes with tests | the files its fixes need | CJ1, CJ2 merged | its own | **Opus** |
@@ -1140,7 +1170,7 @@ and M13.6; **CB6** (CR-d) after all its gates; **CRJ**; the main
 session's regression on the PC; the PC check.
 
 **Wave 5**: **CJ1** after CK1 and CK2 (it may start in wave 3 if a
-kernel slot is free), **CJ2** after CJ1 and CB5, **CJR**, then CR-e on
+kernel slot is free), **CJ2** after CJ1 (its program half, done) and CB5 (its Chromium half), **CJR**, then CR-e on
 the PC.
 
 **Merge order rules**: the kernel tracks one at a time into `vmo.c` and
@@ -1267,6 +1297,27 @@ After `pkg install chromium` (CR-d), with the Mac's ports server running:
     threads; the CPU-weighted slots and low priority keep tests' timing
     honest (a timing test that fails only during a build is rerun after
     it).
+
+## CJ2 notes
+
+Track CJ2's program half (2026-10-14); section 12 has the design as built.
+
+- **What it touches**: libc's `mmap` and `mprotect` (user/posix/sys/mem.c,
+  a table kind `MT_JIT`), musl's `bits/mman.h` (an override), `ps`,
+  `allow`'s question, init's test run (the power by the list only), and
+  checkwants' self-test. No kernel change: CJ1's `vmo_make_jit` and
+  `PROCESS_FLAG_JIT` are all it needs.
+- **Tests**: bin/jittest (user/tests/jittest, a POSIX program whose list
+  says `right jit`, built by user/posix/posix.mk; the Makefile's
+  `POSIX_TESTS` keeps it out of the native programs) writes code and runs
+  it with the power, and checks the refusals without it (`jittest
+  without`); posixtest's `jit` section runs without the power and starts
+  `jittest without` as its child; tools/shell-tests/jit.txt runs both from
+  the shell, `ps`'s mark, and a copy on `/data` through `allow`.
+- **Still to do** (with CB5, when Chromium runs multi-process): V8's
+  `MAP_JIT` patch, the launcher giving the power to renderers only,
+  `--jitless` for every other process type, and cr-test.sh `chrome` with a
+  Wasm page (CR-e). `pkg`'s words when PO5 and PO6 land (section 12).
 
 ## CE1 notes
 
