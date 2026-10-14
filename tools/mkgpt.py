@@ -441,6 +441,12 @@ CASES = {
     "almost-blank-head": dict(layout="blank", poke=20 * 512),
     "almost-blank-tail": dict(layout="blank", poke=-5 * 512),
     "almost-blank-edge": dict(layout="blank", poke=64 * 1024 - 1),
+    # the blank rule's spots: the first MiB at 1 MiB and at 513 MiB
+    "almost-blank-esp": dict(layout="blank", poke=MIB + 4096 + 3),
+    "almost-blank-esp-4k": dict(layout="blank", bs=4096, poke=2 * MIB - 1),
+    "almost-blank-data": dict(layout="blank", size=1 << 30, poke=514 * MIB - 1),
+    "blank-before-spot": dict(layout="blank", poke=MIB - 1),
+    "blank-past-spots": dict(layout="blank", size=1 << 30, poke=514 * MIB),
     "jamos": dict(layout="jamos"),
     "jamos-4k": dict(layout="jamos", bs=4096),
     "jamos-backup-crc": dict(layout="jamos", breaks=("backup-crc",)),
@@ -449,6 +455,7 @@ CASES = {
     "jamos-name": dict(layout="jamos", raw=jamos_name),
     "jamos-cut-mbr": dict(layout="jamos", mbr="zero"),
     "jamos-cut-primary": dict(layout="jamos", mbr="zero", breaks=("primary-zero",)),
+    "jamos-cut-mbr-poke-data": dict(layout="jamos", mbr="zero", poke=513 * MIB + 7),
     "jamos-cut-bad": dict(layout="jamos", mbr="zero", breaks=("primary-crc",)),
     "jamos-cut-backup-bad": dict(layout="jamos", mbr="zero", breaks=("backup-crc",)),
     "jamos-cut-array": dict(layout="jamos", cut="backup-array"),
@@ -468,6 +475,7 @@ CASES = {
     "jamos-cut-array-same-guid": dict(layout="jamos", cut="backup-array", raw=cut_same_guid),
     "jamos-cut-array-third": dict(layout="jamos", cut="backup-array", raw=cut_third),
     "jamos-cut-array-windows": dict(layout="windows", cut="backup-array"),
+    "jamos-cut-array-poke-esp": dict(layout="jamos", cut="backup-array", poke=MIB + 5),
     "pmbr-status": dict(layout="windows", mbr="pmbr-status"),
     "mbr": dict(layout="mbr"),
     "mbr-bad": dict(layout="mbr", size=64 << 20, parts=[

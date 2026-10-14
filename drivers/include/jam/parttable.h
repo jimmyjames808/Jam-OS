@@ -23,9 +23,9 @@
  * read with its bounds checked first, every loop is bounded by a limit
  * here, and nothing is computed that can wrap.
  *
- * What is read, in this order (at most block 0, 2 x 64 KiB for the blank
- * rule, two headers and 2 x PT_ARRAY_MAX of entry arrays; most disks far
- * less):
+ * What is read, in this order (at most block 0, 2 x 1 MiB and 2 x 64 KiB
+ * for the blank rule, two headers and 2 x PT_ARRAY_MAX of entry arrays;
+ * most disks far less):
  *   - block 0: the MBR. Signature 55 AA, and an entry of type EEh in use:
  *     a protective MBR, so GPT is read (an EEh entry beside others is a
  *     "hybrid" MBR: read as GPT, and flagged; the status bytes are
@@ -34,8 +34,11 @@
  *     usb-storage: a table is looked for before a FAT boot sector; the used
  *     entries in table order, each inside the disk, past block 0, and not
  *     overlapping an earlier one (left out otherwise).
- *   - if block 0 is all zeros: the first and last 64 KiB, for the blank
- *     rule, and if they aren't all zeros, whether the only non-zero blocks
+ *   - if block 0 is all zeros: for the blank rule, its two spots (1 MiB at
+ *     1 MiB and at 513 MiB, where Jam OS's ESP and data partition start:
+ *     a drive whose table was wiped and its filesystems left shows there)
+ *     and the first and last 64 KiB; if the spots are zeros and the ends
+ *     aren't, whether the only non-zero blocks
  *     are the backup entry array create_table writes first (pt_jamos_plan's
  *     place, pt_jamos_array_head_is's bytes: the cut after that write), and
  *     if not, the GPT too (only to see whether the disk is
@@ -74,6 +77,7 @@
 #define PT_ENTRIES_MIN  128                /* a GPT entry array's entry count, at least */
 #define PT_ENTRIES_MAX  1024               /* and at most */
 #define PT_BLANK_BYTES  (64u * 1024)       /* the blank rule's zeros at each end of the disk */
+#define PT_BLANK_SPOT_BYTES (1u << 20)     /* ... and at each of its spots (PT_BLANK_SPOT_*) */
 #define PT_WHOLE        0x00               /* the mbr_type of a disk with no table, served whole */
 
 /* The schemes, equal to storage.idl's SCHEME_* (info's `scheme`). */
@@ -134,8 +138,10 @@ struct pt_table {
     uint8_t  primary;             /* enum pt_bad: the primary GPT header, PT_BAD_NONE if good */
     uint8_t  backup;              /* enum pt_bad: the backup GPT header */
     bool     hybrid;              /* GPT behind an MBR that lists more than its EEh entries */
-    bool     blank;               /* block 0 and the first and last 64 KiB are all zeros */
-    bool     blank_in_progress;   /* block 0 zero, and either each header block zero or a
+    bool     blank;               /* block 0, the first and last 64 KiB and the two spots
+                                   * (PT_BLANK_SPOT_*) are all zeros */
+    bool     blank_in_progress;   /* block 0 and the spots zero, and either each header
+                                   * block zero or a
                                    * good header of Jam OS's layout at pt_jamos_plan's
                                    * places on this disk (one at least), or
                                    * (the cut after create_table's first write) both
@@ -216,6 +222,15 @@ enum pt_kind pt_kind(const struct pt_table *t);
 #define PT_JAMOS_ESP_BYTES   (512ull << 20)
 #define PT_JAMOS_DATA_MIN    (64ull << 20)          /* a smaller disk is refused */
 #define PT_JAMOS_DATA_MAX    (2ull << 40)           /* FAT32's 32-bit sector numbers */
+
+/* The blank rule's spots, in bytes from the disk's start: where the plan
+ * puts the ESP and the data partition on every disk big enough for it
+ * (PT_BLANK_SPOT_BYTES of zeros each, as much as lies inside the disk). A
+ * drive that isn't blank and is erased (storage.create_table with the
+ * owner's confirmation) has them zeroed before its table is written, so
+ * fat finds no old volume there and formats. */
+#define PT_BLANK_SPOT_ESP    PT_JAMOS_ALIGN
+#define PT_BLANK_SPOT_DATA   (PT_JAMOS_ALIGN + PT_JAMOS_ESP_BYTES)
 
 /* Where Jam OS's table and partitions go on a disk. */
 struct pt_jamos_plan {

@@ -27,7 +27,8 @@ static const uint8_t data_g[16] = { 0x30, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
 static uint8_t made[64 * 1024];   /* the maker's buffer: 35 blocks of 512, 7 of 4096 */
 
 /* An image of `bytes` bytes held as its two ends (the table lies there;
- * the middle is zeros, and nothing reads it). */
+ * the middle is zeros: no file, so read_bytes gives zeros, as the blank
+ * rule's spots read). */
 static void mem_img(struct img *m, uint32_t bs, uint64_t bytes)
 {
     memset(m, 0, sizeof(*m));
@@ -101,6 +102,11 @@ static void one(uint32_t bs, uint64_t bytes, const struct img *mkgpt)
         fail("no plan");
     if (p.head_blocks * bs > PT_BLANK_BYTES || (m.blocks - p.tail_start) * bs > PT_BLANK_BYTES)
         fail("the table reaches past the blank rule's ends");
+    /* The spots are where the partitions start (an erase zeros them for fat's format), and
+     * each spot lies inside its partition. */
+    if (p.esp_start * bs != PT_BLANK_SPOT_ESP || p.data_start * bs != PT_BLANK_SPOT_DATA ||
+        p.esp_blocks * bs < PT_BLANK_SPOT_BYTES || p.data_blocks * bs < PT_BLANK_SPOT_BYTES)
+        fail("the blank rule's spots aren't the partitions' starts");
     if (pt_jamos_make(bs, m.blocks, disk_g, esp_g, data_g, made, sizeof(made)) != OK)
         fail("pt_jamos_make refused a good disk");
     if (kind_now(&m, &t) != PT_KIND_BLANK || !t.blank)
