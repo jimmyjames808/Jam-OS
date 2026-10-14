@@ -146,8 +146,13 @@ On Chromium's path (in roughly this order, much of it in parallel):
 Not on the path, so after Chromium (unless the owner makes one a goal):
 M13.5's mksh, its full `fork` and its emulated `vfork` (Chromium launches through a `posix_spawn` branch, above), M14
 (the ABI freeze), M15 (self-hosting), M10 and M10.5 (ACPI power, sleep),
-M12.7's stage 3 (the installer), M12.1's follow-ups, ports nobody needs
-yet, and new Jam OS apps beyond the system's own.
+M12.1's follow-ups, ports nobody needs yet, and new Jam OS apps beyond the
+system's own. **M12.7 is finished whole** (the owner, 2026-10-14): after
+stage 2's P2 on the PC, stage 3, the installer and booting from the
+internal drive, follows, with its own review and the PC check P3; and
+`disk prepare` works on any drive the owner picks, a drive that isn't empty
+shown and confirmed (its serial's last four and `erase`) before anything is
+written.
 
 M8.6 (cleanup and polish) is done: [what it delivered](HISTORY.md#m86-cleanup-and-polish).
 
