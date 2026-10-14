@@ -1,0 +1,82 @@
+# JIT memory from programs (docs/CR-PLAN.md section 12, track CJ2): no
+# process is marked [jit] by `ps` at first; bin/jittest (user/tests/jittest,
+# a POSIX program whose list says `right jit`) is given the power by the
+# shell and writes machine code with MAP_JIT and runs it (patched, switched
+# between writable and executable, a reservation); `ps` marks it [jit]
+# while it holds JIT memory, and the mark goes with it; posixtest's jit
+# section (no `right jit`): MAP_JIT EPERM, and jittest as its child refused
+# too; a copy of jittest on /data: refused until allowed, `allow` says on a
+# line of its own that it writes and runs its own code, then it runs with
+# the power; `allow -r` takes it back.
+#   QEMU_INPUT=tools/shell-tests/jit.txt tools/qemu-test.sh <dir> jit shell
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send T=x
+wait {prompt}
+send ps | grep "jit]" || echo ok-$T-nomarks
+wait ok-x-nomarks
+wait {prompt}
+send jittest; echo st-$T=$?
+wait jittest: PASS
+wait run: bin/jittest exited with code 0
+wait st-x=0
+wait {prompt}
+# ps: the mark while it holds JIT memory, one process and the footnote
+send jittest hold &
+wait 10 [1]
+wait jittest: holding JIT memory
+wait {prompt}
+send ps | grep jittest
+wait jittest [jit]
+wait {prompt}
+send ps | grep -c "jit]" | grep ^2$ && echo ok-$T-marked
+wait ok-x-marked
+wait {prompt}
+send ps | grep "[jit]: writes and runs its own code"
+wait [jit]: writes and runs its own code (JIT memory)
+wait {prompt}
+send kill %1
+wait 10 [1] killed: jittest
+wait {prompt}
+send ps | grep "jit]" || echo ok-$T-gone
+wait ok-x-gone
+wait {prompt}
+# without the power: posixtest's list has no `right jit`, and its child gets
+# none of its powers
+send posixtest jit; echo st-$T=$?
+wait jittest: no JIT power: MAP_JIT refused (EPERM)
+wait posixtest: jit: ok
+wait st-x=0
+wait {prompt}
+# on /data: only once allowed, the owner told plainly what it asks for
+send cp /boot/bin/jittest /data/j && run /data/j; echo st-$T=$?
+wait run: /data/j is not allowed to run: `allow /data/j` first
+wait st-x=126
+wait {prompt}
+send allow /data/j; echo st-$T=$?
+wait allow j: it asks to write and run its own code (JIT memory): the system can't check that code, so allow it only if you trust the program
+wait allow j: may write and run its own code: JIT? y/n
+type n
+wait st-x=1
+wait {prompt}
+send allow /data/j; echo st-$T=$?
+wait allow j: may write and run its own code: JIT? y/n
+type y
+wait allow: /data/j may run
+wait st-x=0
+wait {prompt}
+send allow -l
+wait /data/j: may write and run its own code: JIT (sha-256
+wait {prompt}
+send run /data/j; echo st-$T=$?
+wait jittest: PASS
+wait run: /data/j exited with code 0
+wait st-x=0
+wait {prompt}
+send allow -r j; echo st-$T=$?
+wait allow: j may no longer run
+wait st-x=0
+wait {prompt}
+send reboot -f
+wait reboot: resetting

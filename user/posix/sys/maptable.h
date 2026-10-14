@@ -32,6 +32,10 @@ struct mt_entry {
  * file part): an mprotect that adds write puts a copy-on-write child in
  * its place first, since the file's VMO is never writable. */
 #define MT_PAGER_PRIVATE (1u << 2)
+/* MAP_JIT (with MT_ANON): a JIT VMO (vmo_make_jit), the one kind of
+ * memory mprotect may make executable, and writable and executable at
+ * once (docs/CR-PLAN.md section 12). */
+#define MT_JIT           (1u << 3)
 
 /* The table: entries[0 .. count). */
 struct mt_entry *mt_entries(void);

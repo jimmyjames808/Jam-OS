@@ -773,6 +773,7 @@ QEMU_INPUT=tools/shell-tests/<name>.txt tools/qemu-test.sh build/test <name> she
 | `net-vlan.txt`, `net-vlan-off.txt` | every path that transmits in one boot (the DHCP lease, netlog, `host`, `ping <name>`, `ping 1.1.1.1`, `update -n`, sntp's requests, the peer's pings answered, `fetch`, `serve` and `speed` over TCP); the same commands on a `vlan=off` boot, each saying why it can't | use `tools/net-vlan-test.sh` |
 | `sntp.txt`, `sntp-name.txt`, `sntp-off.txt` | the clock from the network: the jump to the peer's 2031 past forged replies, `date -r`, `date -z`, sntp restarted, devmgr restarted and the network's time kept; `ntp.server` by name; `ntp = off` ([netstack](#netstack)) | use `tools/sntp-test.sh` |
 | `allow.txt` | programs on `/data`: a copy of bin/soakload refused until `allow`ed (n refuses, y allows), `allow -l`, run, a program can't change `/data/etc`, nor read, list or make anything there by any spelling (`ETC`, `etc.`, `x/../etc`, relative to a `cd /data`): utest and sbase's tools from `/boot`, sbase's `cat` allowed from `/data`, a changed file refused, a list asking for devmgr or init (a copy of bin/utest) or for `right debug` (a copy of bin/wantdebug) or for the ports below 1024 (a copy of bin/serve, `svc net listen low`) refused, approval or not, `svc net listen` (bin/wantlisten: port 5000 refused on `/svc/net`, taken on `/svc/net-listen`, a TCP listener on port 80 refused there, from `/boot`, and from `/data` once `allow` showed "accepting connections from the network"), `allow -r`, a file off `/data` and a second shell refused | |
+| `jit.txt` | JIT memory from programs ([CR-PLAN](CR-PLAN.md#12-the-jit-by-capability)): no process marked `[jit]` by `ps` at first; bin/jittest (a POSIX program whose list says `right jit`) given the power by the shell: `MAP_JIT` code written and run (`jittest: PASS`); `jittest hold &` marked `[jit]` by `ps` with the footnote, the mark gone with it; `posixtest jit` (no power: `EPERM`, and jittest as its child refused); a copy on `/data` refused until allowed, `allow` saying on a line of its own that it writes and runs its own code (n, then y), `allow -l`, run with the power, `allow -r` | |
 | `sessions.txt` | init's sessions (`/svc/session`, what an SSH login runs in): `utest only session` (an interactive session: the prompt, `echo`, TERM and a resize as a POSIX program on it sees them, `exit 7` as its end; commands with their status and no banner; hang-ups by `hangup`, by signal 15 and by closing the master, and SIGHUP reaching a POSIX program on the terminal; the limit of 8; posixtest's session section; bad arguments, junk on every channel, the control channel closed first, answers left unread, 1,000 connects and 1,000 sessions opened and closed; a namespace without it), `posixtest pty` from the shell, bin/wantsession given `/svc/session` from `/boot` and refused by `allow` on `/data` | |
 | `ssh.txt`, `ssh-again.txt` | the SSH server (bin/sshd, the tinyssh port): init's host key made on the first boot and its fingerprint, sshd listening on 22, the shell's `ssh`, and nothing open once the test host's client is done (its last login, as `sshcheck-done`, refused on purpose); the second boot of the same stick: no new key. Run by `tools/ssh-test.sh`, which puts the keys on the stick and runs the client | `QEMU_NET=1` (the script) |
 | `parse-limits.txt` | the shell's 32-segment limit and unclosed quotes | |
@@ -1742,6 +1743,19 @@ file on `/boot` (no pager): `MAP_SHARED` `ENODEV`, `MAP_PRIVATE` a copy.
 Without a pager on `/data` it says so on a line and checks what a copy
 gives. The cases that need a second stick, a pulled stick or fat's
 coherence are `tools/posix-mmap-test.sh`'s.
+
+posixtest's jit section (the `init` run; `posixtest jit`): `MAP_JIT`
+([CR-PLAN](CR-PLAN.md#12-the-jit-by-capability)) from a program without
+the power (posixtest's list has no `right jit`, and init's run gives
+RIGHT_ROOT_JIT only to a list that asks): `EPERM` writable and executable,
+writable, and for a `PROT_NONE` reservation; `EINVAL` with `MAP_SHARED` or
+a descriptor; execute on plain memory `EACCES`; and bin/jittest started by
+`posix_spawn` (`jittest without`) finds the same refusals, since a child
+gets none of its parent's powers. With the power (`jittest`, from the
+shell: `jit.txt`) a `MAP_JIT` page is written and run, patched, switched
+between writable and executable with `mprotect`, and a reservation's pages
+made executable, decommitted in place by `MAP_FIXED | MAP_JIT`, and made
+plain memory again by a `MAP_FIXED` without it.
 
 posixtest's socket section (the `init` run; `posixtest socket`) needs no
 network: `socket`'s refusals (`AF_INET6`, `AF_UNIX`, a raw socket, a

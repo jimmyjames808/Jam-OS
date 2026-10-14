@@ -41,6 +41,7 @@ static const struct {
     { "sockets", pt_sockets },
     { "raw", pt_raw },
     { "mmap", pt_mmap },
+    { "jit", pt_jit },
     { "mmap-big", pt_mmap_big },
     { "mmap-coherent", pt_mmap_coherent },
     { "spawn-data", pt_spawn_data },

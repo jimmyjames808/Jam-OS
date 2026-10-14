@@ -15,6 +15,10 @@
 
 # Every __syscallN a call to __jam_syscall (user/posix/sys/calls.c); no vDSO.
 arch/x86_64/syscall_arch.h 11982f6196c27975d0ab0c55e0810eaf8ff7abcf4d4166fc06917b30d025f306 user/posix/musl/arch/x86_64/syscall_arch.h
+# <sys/mman.h>'s arch part: MAP_JIT added (JIT memory, docs/CR-PLAN.md section 12); the sysroot's copy too.
+arch/x86_64/bits/mman.h 48869831c0f6fdad38f1e91b8a19349ce9fa0380b196fcf384bb9bbff44b8d33 user/posix/musl/arch/x86_64/bits/mman.h
+# mmap: MAP_JIT's EPERM (no JIT power) kept, not turned into ENOMEM.
+src/mman/mmap.c f0acee38db856ed16a9dd647af69b8dce22cc950b38a1e65f16fa51c336ba37b user/posix/musl/src/mman/mmap.c
 # _start: the startup channel in rdi, not Linux's stack block.
 crt/crt1.c 012269a9166c76a4812d5b2437a43589ad1759999bd369d571527ef345615999 user/posix/crt/crt1.c
 # The thread pointer: thread_set_fs_base.
