@@ -289,7 +289,7 @@ KTEST(auditD_handle_generation_no_wrap)
  * interrupted wait's too. */
 KTEST(status_codes_named)
 {
-    for (status_t s = OK; s >= ERR_INTERRUPTED; s--)
+    for (status_t s = OK; s >= ERR_LINK_OUT; s--)
         KT_ASSERT(strcmp(status_str(s), "ERR_?") != 0);
     KT_ASSERT(!strcmp(status_str(ERR_NOT_DIR), "ERR_NOT_DIR"));
     KT_ASSERT(!strcmp(status_str(ERR_IS_DIR), "ERR_IS_DIR"));
@@ -297,7 +297,8 @@ KTEST(status_codes_named)
     KT_ASSERT(!strcmp(status_str(ERR_NAME_TOO_LONG), "ERR_NAME_TOO_LONG"));
     KT_ASSERT(!strcmp(status_str(ERR_BUSY), "ERR_BUSY"));
     KT_ASSERT(!strcmp(status_str(ERR_INTERRUPTED), "ERR_INTERRUPTED"));
-    KT_ASSERT(!strcmp(status_str(ERR_INTERRUPTED - 1), "ERR_?"));
+    KT_ASSERT(!strcmp(status_str(ERR_LINK_OUT), "ERR_LINK_OUT"));
+    KT_ASSERT(!strcmp(status_str(ERR_LINK_OUT - 1), "ERR_?"));
 }
 
 /* ---- handle_info --------------------------------------------------------------------- */

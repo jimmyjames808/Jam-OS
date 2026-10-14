@@ -44,3 +44,12 @@ const MAP_EXEC  2
 # writing or removed, ERR_BUSY too). Restart: a successor answers its
 # keys' requests.
 6  map  (u32 flags) -> (handle<vmo> vmo, u64 size)
+# The file's attributes, as fs.getattr describes them (the path's, but for
+# the file this channel is: a file unlinked while open still has them).
+# fat and the boot image make them up as fs.getattr does.
+7  getattr  () -> (u32 mode, u32 nlink, u32 uid, u32 gid, u64 size, u64 blocks, u64 id, i64 atime_ns, i64 mtime_ns, i64 ctime_ns)
+# Set some of the file's attributes (fchmod, fchown, futimens): `mask`,
+# and the fields it names, as fs.setattr has them (FS_ATTR_*), and its
+# errors. Allowed on a file opened for reading only. fat changes nothing;
+# the boot image is read-only: ERR_ACCESS_DENIED.
+8  setattr  (u32 mask, u32 mode, u32 uid, u32 gid, i64 atime_ns, i64 mtime_ns) -> ()

@@ -100,9 +100,11 @@ bool t_fat_views(void)
     if (!view_of(&r, FS_VIEW_READ_ONLY, &ro) || !refuses_changes(&ro))
         return false;
     uint8_t read_only = 0;
-    CHECK_ST(fs_statfs_until(ro.fs, now() + FAT_CALL_NS, NULL, NULL, &read_only, NULL), OK);
+    CHECK_ST(fs_statfs_until(ro.fs, now() + FAT_CALL_NS, NULL, NULL, &read_only, NULL, NULL, NULL,
+                             NULL), OK);
     CHECK_EQ(read_only, 1);
-    CHECK_ST(fs_statfs_until(r.fs, now() + FAT_CALL_NS, NULL, NULL, &read_only, NULL), OK);
+    CHECK_ST(fs_statfs_until(r.fs, now() + FAT_CALL_NS, NULL, NULL, &read_only, NULL, NULL, NULL,
+                             NULL), OK);
     CHECK_EQ(read_only, 0);
     /* Guarded: etc only. */
     if (!view_of(&r, FS_VIEW_GUARD_ETC, &g) || !guards_etc(&g))
@@ -364,7 +366,7 @@ bool t_fat_view_limits(void)
     CHECK_ST(st, OK);
     CHECK(fat_stop(&r));
     uint64_t total = 0;
-    CHECK_ST(fs_statfs_until(v[1], now() + FAT_CALL_NS, &total, NULL, NULL, NULL),
+    CHECK_ST(fs_statfs_until(v[1], now() + FAT_CALL_NS, &total, NULL, NULL, NULL, NULL, NULL, NULL),
              ERR_PEER_CLOSED);
     for (unsigned i = 0; i < MAX; i++)
         CHECK_ST(jam_handle_close(v[i]), OK);

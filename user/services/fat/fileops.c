@@ -377,6 +377,42 @@ static status_t op_stat(void *ctx, uint64_t *out_size, uint8_t *out_is_dir, uint
     return OK;
 }
 
+static status_t op_getattr(void *ctx, uint32_t *out_mode, uint32_t *out_nlink,
+                           uint32_t *out_uid, uint32_t *out_gid, uint64_t *out_size,
+                           uint64_t *out_blocks, uint64_t *out_id, int64_t *out_atime_ns,
+                           int64_t *out_mtime_ns, int64_t *out_ctime_ns)
+{
+    struct fat_open *f = open_of(ctx);
+    WORD date = 0, time = 0;
+    FRESULT fr = ffx_entry_time(&kept->fs, f->place, &date, &time);   /* as op_stat's */
+    if (fr != FR_OK)
+        return fr_status(fr);
+    struct fat_attr a;
+    fat_attr_made(&a, false, f_size(&f->fil), fat_unix_time(date, time), f->place);
+    *out_mode = a.mode;
+    *out_nlink = a.nlink;
+    *out_uid = a.uid;
+    *out_gid = a.gid;
+    *out_size = a.size;
+    *out_blocks = a.blocks;
+    *out_id = a.id;
+    *out_atime_ns = a.atime_ns;
+    *out_mtime_ns = a.mtime_ns;
+    *out_ctime_ns = a.ctime_ns;
+    return OK;
+}
+
+/* Nothing to keep (fat.h's fat_attr_check); allowed on a file opened to read. */
+static status_t op_setattr(void *ctx, uint32_t mask, uint32_t mode, uint32_t uid, uint32_t gid,
+                           int64_t atime_ns, int64_t mtime_ns)
+{
+    (void)ctx;
+    (void)mode;
+    (void)atime_ns;
+    (void)mtime_ns;
+    return fat_attr_check(mask, uid, gid);
+}
+
 /* An FS_GATHER file's sync: what is held goes out (with the request's
  * send), and a held write that failed (before, or in that send) is its
  * failure too. */
@@ -425,7 +461,7 @@ static status_t op_map(void *ctx, uint32_t flags, handle_t *out_vmo, uint64_t *o
 
 const struct file_ops fat_file_ops = {
     .read = op_read, .write = op_write, .truncate = op_truncate, .stat = op_stat,
-    .sync = op_sync, .map = op_map,
+    .sync = op_sync, .map = op_map, .getattr = op_getattr, .setattr = op_setattr,
 };
 
 /* ---- open and close ------------------------------------------------------------------- */

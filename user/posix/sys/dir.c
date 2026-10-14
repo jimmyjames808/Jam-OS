@@ -386,7 +386,7 @@ long lx_mkdirat(long dirfd, long pathname, long mode, long d, long e, long f)
         return r;
     uint32_t len;
     const char *rel = path_rel(&p, &len);
-    status_t st = fs_mkdir_within(fs, FILE_TIMEOUT, rel, len);
+    status_t st = fs_mkdir_within(fs, FILE_TIMEOUT, rel, len, (uint32_t)mode & 07777u);
     jam_handle_close(fs);
     if (st == ERR_ACCESS_DENIED && exists(&p))
         return -EEXIST;   /* Linux looks for it before it asks for write access */

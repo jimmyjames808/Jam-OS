@@ -36,6 +36,8 @@
 #define FILE_STAT             0x00110004u
 #define FILE_SYNC             0x00110005u
 #define FILE_MAP              0x00110006u
+#define FILE_GETATTR          0x00110007u
+#define FILE_SETATTR          0x00110008u
 
 /* Constants (the .idl's `const` lines). */
 /* file.map's flags: the file's one shared VMO (read and map only), or a
@@ -105,9 +107,41 @@ struct file_map_rep {
     int32_t  status;
     uint64_t size;
 } __attribute__((packed));
+struct file_getattr_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct file_getattr_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint32_t mode;
+    uint32_t nlink;
+    uint32_t uid;
+    uint32_t gid;
+    uint64_t size;
+    uint64_t blocks;
+    uint64_t id;
+    int64_t atime_ns;
+    int64_t mtime_ns;
+    int64_t ctime_ns;
+} __attribute__((packed));
+struct file_setattr_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t mask;
+    uint32_t mode;
+    uint32_t uid;
+    uint32_t gid;
+    int64_t atime_ns;
+    int64_t mtime_ns;
+} __attribute__((packed));
+struct file_setattr_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
 
-#define FILE_REQ_MAX 20u   /* bytes: the biggest request */
-#define FILE_REP_MAX 33u   /* bytes: the biggest reply */
+#define FILE_REQ_MAX 40u   /* bytes: the biggest request */
+#define FILE_REP_MAX 72u   /* bytes: the biggest reply */
 #define FILE_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
 #define FILE_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
 #define FILE_UNREAD_MSGS IDL_UNREAD_MSGS   /* the unread bound: messages ... */
@@ -341,6 +375,95 @@ static inline status_t file_map(handle_t ch, uint32_t flags, handle_t *out_vmo, 
     return file_map_call(ch, false, DEADLINE_NEVER, flags, out_vmo, out_size);
 }
 
+/* file_getattr_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t file_getattr_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t *out_mode, uint32_t *out_nlink, uint32_t *out_uid, uint32_t *out_gid, uint64_t *out_size, uint64_t *out_blocks, uint64_t *out_id, int64_t *out_atime_ns, int64_t *out_mtime_ns, int64_t *out_ctime_ns)
+{
+    struct file_getattr_req idl_q;
+    struct file_getattr_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = FILE_GETATTR;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_mode)
+        *out_mode = idl_r.mode;
+    if (idl_st == OK && out_nlink)
+        *out_nlink = idl_r.nlink;
+    if (idl_st == OK && out_uid)
+        *out_uid = idl_r.uid;
+    if (idl_st == OK && out_gid)
+        *out_gid = idl_r.gid;
+    if (idl_st == OK && out_size)
+        *out_size = idl_r.size;
+    if (idl_st == OK && out_blocks)
+        *out_blocks = idl_r.blocks;
+    if (idl_st == OK && out_id)
+        *out_id = idl_r.id;
+    if (idl_st == OK && out_atime_ns)
+        *out_atime_ns = idl_r.atime_ns;
+    if (idl_st == OK && out_mtime_ns)
+        *out_mtime_ns = idl_r.mtime_ns;
+    if (idl_st == OK && out_ctime_ns)
+        *out_ctime_ns = idl_r.ctime_ns;
+    return idl_st;
+}
+/* The file's attributes, as fs.getattr describes them (the path's, but for
+ * the file this channel is: a file unlinked while open still has them).
+ * fat and the boot image make them up as fs.getattr does. */
+static inline status_t file_getattr_until(handle_t ch, uint64_t deadline_ns, uint32_t *out_mode, uint32_t *out_nlink, uint32_t *out_uid, uint32_t *out_gid, uint64_t *out_size, uint64_t *out_blocks, uint64_t *out_id, int64_t *out_atime_ns, int64_t *out_mtime_ns, int64_t *out_ctime_ns)
+{
+    return file_getattr_call(ch, false, deadline_ns, out_mode, out_nlink, out_uid, out_gid, out_size, out_blocks, out_id, out_atime_ns, out_mtime_ns, out_ctime_ns);
+}
+static inline status_t file_getattr_within(handle_t ch, uint64_t timeout_ns, uint32_t *out_mode, uint32_t *out_nlink, uint32_t *out_uid, uint32_t *out_gid, uint64_t *out_size, uint64_t *out_blocks, uint64_t *out_id, int64_t *out_atime_ns, int64_t *out_mtime_ns, int64_t *out_ctime_ns)
+{
+    return file_getattr_call(ch, true, timeout_ns, out_mode, out_nlink, out_uid, out_gid, out_size, out_blocks, out_id, out_atime_ns, out_mtime_ns, out_ctime_ns);
+}
+static inline status_t file_getattr(handle_t ch, uint32_t *out_mode, uint32_t *out_nlink, uint32_t *out_uid, uint32_t *out_gid, uint64_t *out_size, uint64_t *out_blocks, uint64_t *out_id, int64_t *out_atime_ns, int64_t *out_mtime_ns, int64_t *out_ctime_ns)
+{
+    return file_getattr_call(ch, false, DEADLINE_NEVER, out_mode, out_nlink, out_uid, out_gid, out_size, out_blocks, out_id, out_atime_ns, out_mtime_ns, out_ctime_ns);
+}
+
+/* file_setattr_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t file_setattr_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t mask, uint32_t mode, uint32_t uid, uint32_t gid, int64_t atime_ns, int64_t mtime_ns)
+{
+    struct file_setattr_req idl_q;
+    struct file_setattr_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = FILE_SETATTR;
+    idl_q.mask = mask;
+    idl_q.mode = mode;
+    idl_q.uid = uid;
+    idl_q.gid = gid;
+    idl_q.atime_ns = atime_ns;
+    idl_q.mtime_ns = mtime_ns;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    return idl_st;
+}
+/* Set some of the file's attributes (fchmod, fchown, futimens): `mask`,
+ * and the fields it names, as fs.setattr has them (FS_ATTR_*), and its
+ * errors. Allowed on a file opened for reading only. fat changes nothing;
+ * the boot image is read-only: ERR_ACCESS_DENIED. */
+static inline status_t file_setattr_until(handle_t ch, uint64_t deadline_ns, uint32_t mask, uint32_t mode, uint32_t uid, uint32_t gid, int64_t atime_ns, int64_t mtime_ns)
+{
+    return file_setattr_call(ch, false, deadline_ns, mask, mode, uid, gid, atime_ns, mtime_ns);
+}
+static inline status_t file_setattr_within(handle_t ch, uint64_t timeout_ns, uint32_t mask, uint32_t mode, uint32_t uid, uint32_t gid, int64_t atime_ns, int64_t mtime_ns)
+{
+    return file_setattr_call(ch, true, timeout_ns, mask, mode, uid, gid, atime_ns, mtime_ns);
+}
+static inline status_t file_setattr(handle_t ch, uint32_t mask, uint32_t mode, uint32_t uid, uint32_t gid, int64_t atime_ns, int64_t mtime_ns)
+{
+    return file_setattr_call(ch, false, DEADLINE_NEVER, mask, mode, uid, gid, atime_ns, mtime_ns);
+}
+
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
 
 /* file_read without waiting: the request, with the caller's txid (not 0).
@@ -550,6 +673,91 @@ static inline status_t file_map_result(const void *idl_rep, struct idl_msg *idl_
     return OK;
 }
 
+/* file_getattr without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then file_getattr_result. */
+static inline status_t file_getattr_send(handle_t ch, uint32_t idl_txid)
+{
+    struct file_getattr_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = FILE_GETATTR;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to file_getattr_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t file_getattr_result(const void *idl_rep, struct idl_msg *idl_m, uint32_t *out_mode, uint32_t *out_nlink, uint32_t *out_uid, uint32_t *out_gid, uint64_t *out_size, uint64_t *out_blocks, uint64_t *out_id, int64_t *out_atime_ns, int64_t *out_mtime_ns, int64_t *out_ctime_ns)
+{
+    const struct file_getattr_rep *idl_r = (const struct file_getattr_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_mode)
+        *out_mode = idl_r->mode;
+    if (out_nlink)
+        *out_nlink = idl_r->nlink;
+    if (out_uid)
+        *out_uid = idl_r->uid;
+    if (out_gid)
+        *out_gid = idl_r->gid;
+    if (out_size)
+        *out_size = idl_r->size;
+    if (out_blocks)
+        *out_blocks = idl_r->blocks;
+    if (out_id)
+        *out_id = idl_r->id;
+    if (out_atime_ns)
+        *out_atime_ns = idl_r->atime_ns;
+    if (out_mtime_ns)
+        *out_mtime_ns = idl_r->mtime_ns;
+    if (out_ctime_ns)
+        *out_ctime_ns = idl_r->ctime_ns;
+    return OK;
+}
+
+/* file_setattr without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then file_setattr_result. */
+static inline status_t file_setattr_send(handle_t ch, uint32_t idl_txid, uint32_t mask, uint32_t mode, uint32_t uid, uint32_t gid, int64_t atime_ns, int64_t mtime_ns)
+{
+    struct file_setattr_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = FILE_SETATTR;
+    idl_q.mask = mask;
+    idl_q.mode = mode;
+    idl_q.uid = uid;
+    idl_q.gid = gid;
+    idl_q.atime_ns = atime_ns;
+    idl_q.mtime_ns = mtime_ns;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to file_setattr_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t file_setattr_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct file_setattr_rep *idl_r = (const struct file_setattr_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -563,6 +771,8 @@ struct file_ops {
     status_t (*stat)(void *ctx, uint64_t *out_size, uint8_t *out_is_dir, uint64_t *out_mtime, uint64_t *out_id);
     status_t (*sync)(void *ctx);
     status_t (*map)(void *ctx, uint32_t flags, handle_t *out_vmo, uint64_t *out_size);
+    status_t (*getattr)(void *ctx, uint32_t *out_mode, uint32_t *out_nlink, uint32_t *out_uid, uint32_t *out_gid, uint64_t *out_size, uint64_t *out_blocks, uint64_t *out_id, int64_t *out_atime_ns, int64_t *out_mtime_ns, int64_t *out_ctime_ns);
+    status_t (*setattr)(void *ctx, uint32_t mask, uint32_t mode, uint32_t uid, uint32_t gid, int64_t atime_ns, int64_t mtime_ns);
 };
 
 /* Answer the file.read request kept in txn: idl_st and, if it is OK, the
@@ -669,6 +879,46 @@ static inline status_t file_reply_map(struct idl_txn idl_txn, status_t idl_st, h
     }
     status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, idl_st == OK ? idl_hs : NULL, idl_st == OK ? 1 : 0);
     return idl_ws;
+}
+
+/* Answer the file.getattr request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t file_reply_getattr(struct idl_txn idl_txn, status_t idl_st, uint32_t mode, uint32_t nlink, uint32_t uid, uint32_t gid, uint64_t size, uint64_t blocks, uint64_t id, int64_t atime_ns, int64_t mtime_ns, int64_t ctime_ns)
+{
+    struct file_getattr_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.mode = mode;
+    idl_r.nlink = nlink;
+    idl_r.uid = uid;
+    idl_r.gid = gid;
+    idl_r.size = size;
+    idl_r.blocks = blocks;
+    idl_r.id = id;
+    idl_r.atime_ns = atime_ns;
+    idl_r.mtime_ns = mtime_ns;
+    idl_r.ctime_ns = ctime_ns;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the file.setattr request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t file_reply_setattr(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct file_setattr_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
 }
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
@@ -804,6 +1054,57 @@ static inline uint32_t file_dispatch_on(handle_t ch, const struct file_ops *ops,
         rhs[0] = out_vmo;
         *rhn = 1;
         idl_r->size = out_size;
+        return sizeof(*idl_r);
+    }
+    case FILE_GETATTR: {
+        const struct file_getattr_req *idl_q = (const struct file_getattr_req *)req;
+        struct file_getattr_rep *idl_r = (struct file_getattr_rep *)rep;
+        uint32_t out_mode = 0;
+        uint32_t out_nlink = 0;
+        uint32_t out_uid = 0;
+        uint32_t out_gid = 0;
+        uint64_t out_size = 0;
+        uint64_t out_blocks = 0;
+        uint64_t out_id = 0;
+        int64_t out_atime_ns = 0;
+        int64_t out_mtime_ns = 0;
+        int64_t out_ctime_ns = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->getattr) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->getattr(ctx, &out_mode, &out_nlink, &out_uid, &out_gid, &out_size, &out_blocks, &out_id, &out_atime_ns, &out_mtime_ns, &out_ctime_ns);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->mode = out_mode;
+        idl_r->nlink = out_nlink;
+        idl_r->uid = out_uid;
+        idl_r->gid = out_gid;
+        idl_r->size = out_size;
+        idl_r->blocks = out_blocks;
+        idl_r->id = out_id;
+        idl_r->atime_ns = out_atime_ns;
+        idl_r->mtime_ns = out_mtime_ns;
+        idl_r->ctime_ns = out_ctime_ns;
+        return sizeof(*idl_r);
+    }
+    case FILE_SETATTR: {
+        const struct file_setattr_req *idl_q = (const struct file_setattr_req *)req;
+        struct file_setattr_rep *idl_r = (struct file_setattr_rep *)rep;
+        (void)idl_r;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->setattr) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->setattr(ctx, idl_q->mask, idl_q->mode, idl_q->uid, idl_q->gid, idl_q->atime_ns, idl_q->mtime_ns);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
         return sizeof(*idl_r);
     }
     }

@@ -92,7 +92,7 @@ static status_t probe(const struct target *t, uint64_t deadline)
     if (t->probe == PROBE_FS) {
         uint64_t total = 0, free_bytes = 0;
         uint8_t ro = 0, label[16];
-        return fs_statfs_until(t->ch, deadline, &total, &free_bytes, &ro, label);
+        return fs_statfs_until(t->ch, deadline, &total, &free_bytes, &ro, label, NULL, NULL, NULL);
     }
     uint32_t len = 0;
     int32_t master = 0;

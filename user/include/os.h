@@ -303,7 +303,16 @@ status_t port_again(handle_t port, handle_t h, uint64_t key, signals_t mask);
  * ones. A stick pulled before the sync loses what waited. With FS_WRITE. */
 #define FS_GATHER   32u
 #define FS_EXCL     64u   /* with FS_CREATE: ERR_ALREADY_EXISTS if it is there */
-#define FS_FLAGS    127u  /* all of them: any other bit is ERR_INVALID_ARGS */
+/* A symbolic link as the last name is not followed (fs.open: opening one is
+ * ERR_INVALID_ARGS; fs.getattr, setattr, resolve: the link itself). */
+#define FS_NOFOLLOW  128u
+#define FS_DIRECTORY 256u /* fs.open: the path must be a directory (ERR_NOT_DIR) */
+#define FS_FLAGS    511u  /* all of them: any other bit is ERR_INVALID_ARGS */
+/* The mode file_open and fs_mkdir ask to create with: what FAT's made-up
+ * modes were. (file_open_mode and fs_mkdir_mode take one; a service that
+ * keeps no modes ignores it.) */
+#define FS_MODE_FILE_DEFAULT 0644u
+#define FS_MODE_DIR_DEFAULT  0755u
 #define FS_NAME_MAX 766   /* a name in a directory, with its NUL (fs.idl's NAME_LEN + 1) */
 #define FS_CALL_TIMEOUT (60 * NS_PER_S)
 
@@ -475,10 +484,39 @@ struct fs_entry {
     uint64_t size;                /* bytes; 0 for a directory */
     uint64_t mtime;               /* Unix seconds; 0 if unknown */
     uint64_t id;                  /* fs.stat's id (fs.idl) */
+    uint8_t  type;                /* FS_DT_* (fs_idl.h): the entry's kind, 0 if the service
+                                   * doesn't say */
 };
 
-/* Open a file (FS_* flags), not a directory. *out is ours until file_close. */
+/* A path's or an open file's attributes (fs.getattr, file.getattr): POSIX's
+ * stat, with times in nanoseconds since 1970 (fs.idl says what FAT and the
+ * boot image make up). */
+struct fs_attr {
+    uint32_t mode;                /* kind (FS_MODE_*) and permission bits */
+    uint32_t nlink, uid, gid;
+    uint64_t size;                /* bytes */
+    uint64_t blocks;              /* 512-byte units */
+    uint64_t id;                  /* fs.stat's id */
+    int64_t  atime_ns, mtime_ns, ctime_ns;
+};
+
+/* What fs.setattr and file.setattr set: the fields `mask` names (FS_ATTR_*,
+ * fs_idl.h), the rest ignored. */
+struct fs_attr_set {
+    uint32_t mask;
+    uint32_t mode;                /* the permission bits */
+    uint32_t uid, gid;
+    int64_t  atime_ns, mtime_ns;
+};
+
+/* Open a file (FS_* flags), not a directory. *out is ours until file_close.
+ * A file FS_CREATE makes gets FS_MODE_FILE_DEFAULT; file_open_mode gives
+ * its permission bits (07777, the umask applied by the caller). */
 status_t file_open(const char *path, uint32_t flags, struct jfile *out);
+status_t file_open_mode(const char *path, uint32_t flags, uint32_t mode, struct jfile *out);
+/* The open file's attributes (file.getattr), and set some (file.setattr). */
+status_t file_getattr(struct jfile *f, struct fs_attr *out);
+status_t file_setattr(struct jfile *f, const struct fs_attr_set *set);
 /* Read / write up to n bytes at offset; *done gets how many (a read short
  * of n only at the end of the file). Split into buffer-sized calls. A file
  * not opened FS_READ / FS_WRITE: ERR_ACCESS_DENIED; a closed one:
@@ -509,6 +547,30 @@ status_t fs_stat(const char *path, uint64_t *size, bool *is_dir, uint64_t *mtime
  * the last batch it was given); index 0 always asks afresh. */
 status_t fs_readdir(const char *path, uint32_t index, struct fs_entry *out);
 status_t fs_mkdir(const char *path);
+/* The same with the new directory's permission bits (FS_MODE_DIR_DEFAULT above). */
+status_t fs_mkdir_mode(const char *path, uint32_t mode);
+/* The calls of a filesystem with links and modes (fs.idl: getattr, setattr,
+ * symlink, readlink, link, resolve, subview), by path through the
+ * namespace. A service without them (fat, the boot image) answers
+ * ERR_NOT_SUPPORTED, except getattr, which it makes up, and setattr, which
+ * it accepts and ignores. They send the path as it is: ERR_LINK_OUT is the
+ * caller's to follow (libc does; fs_resolve says where). "/" and "/svc" are
+ * directories the namespace makes up (getattr: mode 0555, one user). */
+status_t fs_getattr(const char *path, uint32_t flags, struct fs_attr *out);
+status_t fs_setattr(const char *path, uint32_t flags, const struct fs_attr_set *set);
+status_t fs_symlink(const char *target, const char *path);
+/* The link's target, NUL-terminated, into buf of cap bytes (ERR_BUFFER_TOO_SMALL:
+ * 4096 holds any). */
+status_t fs_readlink(const char *path, char *buf, size_t cap);
+/* Both names on one mount, else ERR_NOT_SUPPORTED (as fs_rename). */
+status_t fs_link(const char *from, const char *to);
+/* fs.resolve: *kind (FS_RESOLVE_*), *used, and next (4096 bytes, NUL-terminated). */
+status_t fs_resolve(const char *path, uint32_t flags, uint8_t *kind, uint16_t *used,
+                    char next[4096]);
+/* A channel on the directory at path, as its mount's service serves it
+ * (fs.subview; flags are fs.view's): *out is ours, to serve as a mount
+ * (ns_send, a spawn's namespace) or to close. */
+status_t fs_subview(const char *path, uint32_t flags, handle_t *out);
 /* Remove a file, or an empty directory (C's remove()). */
 status_t fs_unlink(const char *path);
 /* Both on one mount, else ERR_NOT_SUPPORTED. Something at `to`:
@@ -522,6 +584,11 @@ status_t fs_sync_by(const char *path, uint64_t deadline_ns);
  * read-only, and its volume label (NUL-terminated). Outputs may be NULL. */
 status_t fs_statfs(const char *path, uint64_t *total, uint64_t *free_bytes, bool *read_only,
                    char label[17]);
+/* What kind of filesystem path's mount is (statfs's other results): its
+ * magic (Linux's f_type), the longest name it holds, and its FS_FEAT_*
+ * (fs_idl.h). Outputs may be NULL. */
+status_t fs_statfs_kind(const char *path, uint32_t *magic, uint32_t *name_max,
+                        uint32_t *features);
 /* The whole file at path in a new VMO (whole pages, the rest zero) and its
  * size in bytes. ERR_OUT_OF_RANGE: bigger than max_size. */
 status_t file_read_vmo(const char *path, uint64_t max_size, handle_t *vmo, uint64_t *size);

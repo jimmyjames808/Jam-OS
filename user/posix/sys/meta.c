@@ -116,7 +116,8 @@ static long statfs_path(const struct path *p, struct statfs *s)
         return r;
     uint64_t total = 0, free_bytes = 0;
     uint8_t ro = 0, label[16];
-    status_t st = fs_statfs_within(fs, FILE_TIMEOUT, &total, &free_bytes, &ro, label);
+    status_t st = fs_statfs_within(fs, FILE_TIMEOUT, &total, &free_bytes, &ro, label, NULL, NULL,
+                                   NULL);
     jam_handle_close(fs);
     if (st != OK)
         return path_err(p, st);

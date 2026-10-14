@@ -174,7 +174,8 @@ bool wait_usb(handle_t vm, struct view *v, int want)
         if (v->generation && want < 0 && !p)
             return true;
         if (p && want >= 0 &&
-            fs_statfs_until(mount_of(v, p).fs, now() + FAT_CALL_NS, NULL, NULL, &ro, NULL) == OK &&
+            fs_statfs_until(mount_of(v, p).fs, now() + FAT_CALL_NS, NULL, NULL, &ro, NULL, NULL,
+                            NULL, NULL) == OK &&
             ro == want)
             return true;
         status_t st = view_next(vm, v, until);
@@ -307,11 +308,13 @@ bool t_disk_mounts(void)
     CHECK_EQ(dm_count(&mock.opened[1]), 1);
     CHECK_ST(t_stat(&esp, "/boot/jamos.elf", &size, &is_dir, NULL), OK);
     CHECK(!is_dir && size > 0);
-    CHECK_ST(fs_statfs_until(esp.fs, now() + FAT_CALL_NS, NULL, NULL, &ro, NULL), OK);
+    CHECK_ST(fs_statfs_until(esp.fs, now() + FAT_CALL_NS, NULL, NULL, &ro, NULL, NULL, NULL, NULL),
+                             OK);
     CHECK(ro);
     CHECK_ST(t_mkdir(&esp, "/x"), ERR_ACCESS_DENIED);
     CHECK_EQ(dm_count(&mock.refused), 0);
-    CHECK_ST(fs_statfs_until(data.fs, now() + FAT_CALL_NS, NULL, NULL, &ro, NULL), OK);
+    CHECK_ST(fs_statfs_until(data.fs, now() + FAT_CALL_NS, NULL, NULL, &ro, NULL, NULL, NULL,
+                             NULL), OK);
     CHECK(!ro);
     CHECK_ST(t_mkdir(&data, "/logs"), OK);
     if (!put_file(&data, "/logs/boot-0001.txt", "hello") ||
@@ -393,7 +396,8 @@ bool t_disk_not_boot(void)
     CHECK_EQ(dm_count(&mock.opened[1]), 0);   /* type 83: not FAT, not looked at */
     CHECK_EQ(dm_count(&mock.opened_rw), 1);   /* make_esp's */
     struct fatrun usb = mount_of(&v, usb_path(&v));
-    CHECK_ST(fs_statfs_until(usb.fs, now() + FAT_CALL_NS, NULL, NULL, &ro, NULL), OK);
+    CHECK_ST(fs_statfs_until(usb.fs, now() + FAT_CALL_NS, NULL, NULL, &ro, NULL, NULL, NULL, NULL),
+                             OK);
     CHECK(ro);
     if (!detach(vm, &v))
         return false;

@@ -41,11 +41,39 @@ static FRESULT kind_of(const char *p, bool *is_dir)
     return fr;
 }
 
+void fat_attr_made(struct fat_attr *a, bool is_dir, uint64_t size, uint64_t mtime, uint64_t id)
+{
+    uint32_t mode = is_dir ? (FS_MODE_DIR | 0755u) : (FS_MODE_REG | 0644u);
+    if (vol.read_only)
+        mode &= ~0222u;
+    int64_t ns = (int64_t)mtime * 1000000000ll;
+    *a = (struct fat_attr){
+        .mode = mode, .nlink = 1, .uid = FS_ONE_USER, .gid = FS_ONE_USER, .size = size,
+        .blocks = (size + 511) / 512, .id = id, .atime_ns = ns, .mtime_ns = ns, .ctime_ns = ns,
+    };
+}
+
+status_t fat_attr_check(uint32_t mask, uint32_t uid, uint32_t gid)
+{
+    if (mask & ~FS_ATTR_MASK)
+        return ERR_INVALID_ARGS;
+    if (vol.read_only || ((mask & FS_ATTR_UID) && uid != FS_ONE_USER) ||
+        ((mask & FS_ATTR_GID) && gid != FS_ONE_USER))
+        return ERR_ACCESS_DENIED;
+    return OK;
+}
+
+/* `mode` is for filesystems that keep modes; FAT's files all have the
+ * made-up ones. FS_NOFOLLOW changes nothing here (nothing is a link). */
 static status_t op_open(void *ctx, const char *path, uint32_t path_len, uint32_t flags,
-                        handle_t *out_file, handle_t *out_buffer, uint64_t *out_size)
+                        uint32_t mode, handle_t *out_file, handle_t *out_buffer,
+                        uint64_t *out_size)
 {
     (void)ctx;
+    (void)mode;
     if ((flags & ~FS_FLAGS) || !(flags & (FS_READ | FS_WRITE)))
+        return ERR_INVALID_ARGS;
+    if ((flags & FS_DIRECTORY) && (flags & FS_CREATE))
         return ERR_INVALID_ARGS;
     if ((flags & (FS_CREATE | FS_TRUNCATE | FS_APPEND | FS_GATHER | FS_EXCL)) &&
         !(flags & FS_WRITE))
@@ -60,6 +88,11 @@ static status_t op_open(void *ctx, const char *path, uint32_t path_len, uint32_t
         return st;
     if (path_is_root(p))
         return ERR_IS_DIR;
+    if (flags & FS_DIRECTORY) {   /* no directory can be opened: only the kinds are told */
+        bool dir = false;
+        st = fr_path_status(kind_of(p, &dir), p);
+        return st != OK ? st : dir ? ERR_IS_DIR : ERR_NOT_DIR;
+    }
     return files_open(p, flags, out_file, out_buffer, out_size);
 }
 
@@ -89,6 +122,67 @@ static status_t op_stat(void *ctx, const char *path, uint32_t path_len, uint64_t
     *out_mtime = fat_unix_time(fi.fdate, fi.ftime);
     *out_id = place;
     return OK;
+}
+
+static status_t op_getattr(void *ctx, const char *path, uint32_t path_len, uint32_t flags,
+                           uint32_t *out_mode, uint32_t *out_nlink, uint32_t *out_uid,
+                           uint32_t *out_gid, uint64_t *out_size, uint64_t *out_blocks,
+                           uint64_t *out_id, int64_t *out_atime_ns, int64_t *out_mtime_ns,
+                           int64_t *out_ctime_ns)
+{
+    (void)ctx;
+    char p[FAT_PATH_MAX];
+    FILINFO fi;
+    uint64_t place = FAT_ROOT_ID;
+    struct fat_attr a;
+    if (flags & ~FS_NOFOLLOW)
+        return ERR_INVALID_ARGS;
+    status_t st = path_resolve(path, path_len, p);
+    if (st != OK)
+        return st;
+    if (path_is_root(p)) {   /* FatFs has no entry for the root */
+        fat_attr_made(&a, true, 0, 0, FAT_ROOT_ID);
+    } else {
+        st = fr_path_status(ffx_stat(p, &fi, &place), p);
+        if (st != OK)
+            return st;
+        bool dir = fi.fattrib & AM_DIR;
+        fat_attr_made(&a, dir, dir ? 0 : fi.fsize, fat_unix_time(fi.fdate, fi.ftime), place);
+    }
+    *out_mode = a.mode;
+    *out_nlink = a.nlink;
+    *out_uid = a.uid;
+    *out_gid = a.gid;
+    *out_size = a.size;
+    *out_blocks = a.blocks;
+    *out_id = a.id;
+    *out_atime_ns = a.atime_ns;
+    *out_mtime_ns = a.mtime_ns;
+    *out_ctime_ns = a.ctime_ns;
+    return OK;
+}
+
+/* FAT keeps no modes, owners or access times: what the volume can't hold is
+ * accepted and dropped, as libc did before the service answered. The path
+ * has to be there. */
+static status_t op_setattr(void *ctx, const char *path, uint32_t path_len, uint32_t flags,
+                           uint32_t mask, uint32_t mode, uint32_t uid, uint32_t gid,
+                           int64_t atime_ns, int64_t mtime_ns)
+{
+    (void)ctx;
+    (void)mode;
+    (void)atime_ns;
+    (void)mtime_ns;
+    char p[FAT_PATH_MAX];
+    bool dir = false;
+    if (flags & ~FS_NOFOLLOW)
+        return ERR_INVALID_ARGS;
+    status_t st = fat_attr_check(mask, uid, gid);
+    if (st == OK)
+        st = path_resolve(path, path_len, p);
+    if (st == OK)
+        st = fr_path_status(kind_of(p, &dir), p);
+    return st;
 }
 
 /* From a cursor (dirs.c): a listing costs one entry read per entry. The
@@ -130,6 +224,7 @@ static status_t op_readdir(void *ctx, const char *path, uint32_t path_len, uint3
         const struct fs_dirent e = {
             .id = place, .size = dir ? 0 : fi.fsize,
             .mtime = fat_unix_time(fi.fdate, fi.ftime), .is_dir = dir,
+            .type = dir ? FS_DT_DIR : FS_DT_REG,
             .name_len = (uint32_t)strnlen(fi.fname, sizeof(fi.fname)), .name = fi.fname,
         };
         if (!fs_dirent_put(out_entries, FS_READDIR_BYTES, &len, &e)) {
@@ -143,9 +238,10 @@ static status_t op_readdir(void *ctx, const char *path, uint32_t path_len, uint3
     return st;
 }
 
-static status_t op_mkdir(void *ctx, const char *path, uint32_t path_len)
+static status_t op_mkdir(void *ctx, const char *path, uint32_t path_len, uint32_t mode)
 {
     (void)ctx;
+    (void)mode;   /* FAT keeps no modes */
     char p[FAT_PATH_MAX];
     status_t st = writable();
     if (st == OK)
@@ -257,7 +353,10 @@ static status_t op_rename(void *ctx, const char *from, uint32_t from_len, const 
 {
     (void)ctx;
     char pf[FAT_PATH_MAX], pt[FAT_PATH_MAX];
-    status_t st = flags & ~FS_RENAME_REPLACE ? ERR_INVALID_ARGS : writable();
+    status_t st = flags & ~(FS_RENAME_REPLACE | FS_RENAME_EXCHANGE) ? ERR_INVALID_ARGS
+                                                                      : writable();
+    if (st == OK && (flags & FS_RENAME_EXCHANGE))   /* a swap is a Unix filesystem's */
+        st = (flags & FS_RENAME_REPLACE) ? ERR_INVALID_ARGS : ERR_NOT_SUPPORTED;
     if (st == OK)
         st = path_resolve(from, from_len, pf);
     if (st == OK)
@@ -310,7 +409,8 @@ static status_t op_sync(void *ctx)
 }
 
 static status_t op_statfs(void *ctx, uint64_t *out_total, uint64_t *out_free,
-                          uint8_t *out_read_only, uint8_t out_label[16])
+                          uint8_t *out_read_only, uint8_t out_label[16], uint32_t *out_magic,
+                          uint32_t *out_name_max, uint32_t *out_features)
 {
     (void)ctx;
     DWORD nfree = 0;
@@ -325,6 +425,9 @@ static status_t op_statfs(void *ctx, uint64_t *out_total, uint64_t *out_free,
     *out_total = (uint64_t)(fs->n_fatent - 2) * cluster;
     *out_free = (uint64_t)nfree * cluster;
     *out_read_only = vol.read_only ? 1 : 0;
+    *out_magic = FAT_MAGIC;
+    *out_name_max = FAT_NAME_MAX;
+    *out_features = 0;   /* no links, no modes, names that ignore case, under 4 GiB */
     name_shown(label);
     size_t n = strnlen(label, 15);
     while (n && ((unsigned char)label[n] & 0xc0) == 0x80)
@@ -336,4 +439,7 @@ static status_t op_statfs(void *ctx, uint64_t *out_total, uint64_t *out_free,
 const struct fs_ops fat_fs_ops = {
     .open = op_open, .stat = op_stat, .readdir = op_readdir, .mkdir = op_mkdir,
     .unlink = op_unlink, .rename = op_rename, .sync = op_sync, .statfs = op_statfs,
+    .getattr = op_getattr, .setattr = op_setattr,
+    /* symlink, readlink, link, resolve and subview are left out: the
+     * generated dispatch answers them ERR_NOT_SUPPORTED. */
 };

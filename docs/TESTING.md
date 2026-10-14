@@ -1436,6 +1436,20 @@ group runs against the live devmgr and edu, the second on a mock disk
 `tools/volumes-restart-test.sh` ([Area scripts](#area-scripts)) kills
 volumes, devmgr and the boot stick's driver in turn.
 
+## The fs and file protocols' Unix calls (M13.6's U5)
+
+fat and the boot image answer the calls M13.6 added to `fs` and `file`
+([the plan](M13.6-PLAN.md#u5-notes)); utest runs these in the `init` run
+(`user/tests/utest/fs_attr.c`):
+
+| Test | What it checks |
+|---|---|
+| `dirent_types` | readdir's `type` byte: put and get agree, and a record whose type is unknown to the protocol or says the opposite of `is_dir` is refused |
+| `fat_attrs` | fat's getattr (the root, a file, a directory, a name in another case, the open file's own, the modification time as all three times, blocks in 512-byte units, the errors), setattr (the checks, nothing changed), open's mode and mkdir's mode ignored, `FS_NOFOLLOW`, `FS_DIRECTORY` (`ERR_NOT_DIR`, `ERR_IS_DIR`), rename's exchange refused with nothing moved, `symlink`, `readlink`, `link`, `resolve` and `subview` `ERR_NOT_SUPPORTED`, readdir's types, statfs's magic, name length and features |
+| `fat_attrs_read_only` | a read-only volume: no write bits in getattr, setattr and file.setattr `ERR_ACCESS_DENIED`, statfs says read-only |
+| `fat_attr_views` | a read-only view (changes refused, no write bits in getattr), a guarded view (every new call that changes `etc` refused, by any spelling, a root at `etc` refused unless read-only) and a key-hiding view (every new call that names `etc/ssh`) |
+| `fs_attr_ns` | libos's wrappers through the namespace: on a fat mount and on `/boot` (modes of the boot image, `ERR_NOT_SUPPORTED`, `file_open_mode`, `file_getattr`/`file_setattr`, `fs_statfs_kind`, readdir's type) |
+
 ## The IOMMU
 
 The IOMMU ([ARCHITECTURE.md](../ARCHITECTURE.md#the-iommu),

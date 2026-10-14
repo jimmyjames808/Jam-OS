@@ -17,7 +17,7 @@ static uint64_t deadline(void)
 
 static status_t direct_mkdir(const char *path)
 {
-    return fs_mkdir_until(fs, deadline(), path, (uint32_t)strlen(path));
+    return fs_mkdir_until(fs, deadline(), path, (uint32_t)strlen(path), FS_MODE_DIR_DEFAULT);
 }
 
 static status_t direct_stat(const char *path)
@@ -27,8 +27,8 @@ static status_t direct_stat(const char *path)
 
 static status_t direct_open(const char *path, uint32_t flags, uint64_t *size)
 {
-    return fs_open_until(fs, deadline(), path, (uint32_t)strlen(path), flags, &file, &buffer,
-                         size);
+    return fs_open_until(fs, deadline(), path, (uint32_t)strlen(path), flags, FS_MODE_FILE_DEFAULT,
+                         &file, &buffer, size);
 }
 
 static status_t direct_write(uint64_t offset, const void *data, uint32_t n)

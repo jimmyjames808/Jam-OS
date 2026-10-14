@@ -91,7 +91,8 @@ status_t t_open(const struct fatrun *r, const char *path, uint32_t flags, struct
 {
     handle_t vmo = HANDLE_INVALID;
     uint64_t addr = 0;
-    status_t st = fs_open_until(r->fs, deadline(), path, len_of(path), flags, &f->ch, &vmo,
+    status_t st = fs_open_until(r->fs, deadline(), path, len_of(path), flags, FS_MODE_FILE_DEFAULT,
+                                &f->ch, &vmo,
                                 &f->size);
     if (st != OK)
         return st;
@@ -230,7 +231,7 @@ status_t t_readdir(const struct fatrun *r, const char *path, uint32_t index, cha
 
 status_t t_mkdir(const struct fatrun *r, const char *path)
 {
-    return fs_mkdir_until(r->fs, deadline(), path, len_of(path));
+    return fs_mkdir_until(r->fs, deadline(), path, len_of(path), FS_MODE_DIR_DEFAULT);
 }
 
 status_t t_unlink(const struct fatrun *r, const char *path)
@@ -265,7 +266,7 @@ status_t t_sync(const struct fatrun *r)
 
 status_t t_free(const struct fatrun *r, uint64_t *total, uint64_t *free_bytes)
 {
-    return fs_statfs_until(r->fs, deadline(), total, free_bytes, NULL, NULL);
+    return fs_statfs_until(r->fs, deadline(), total, free_bytes, NULL, NULL, NULL, NULL, NULL);
 }
 
 bool put_file(const struct fatrun *r, const char *path, const char *text)

@@ -110,13 +110,22 @@ static bool path_at(const void *req, uint32_t n, uint32_t *o, const char **path,
  * the request (n bytes)? Every method that takes a path, reads included. */
 static bool hidden_request(uint32_t flags, const void *req, uint32_t n)
 {
-    static const struct { uint32_t ordinal, fixed; bool two; } with_paths[] = {
-        { FS_OPEN, sizeof(struct fs_open_req), false },
-        { FS_STAT, sizeof(struct fs_stat_req), false },
-        { FS_READDIR, sizeof(struct fs_readdir_req), false },
-        { FS_MKDIR, sizeof(struct fs_mkdir_req), false },
-        { FS_UNLINK, sizeof(struct fs_unlink_req), false },
-        { FS_RENAME, sizeof(struct fs_rename_req), true },
+    /* skip: the first str is not a path (symlink's target: a string kept,
+     * not opened; what it leads to is judged when it is followed). */
+    static const struct { uint32_t ordinal, fixed; bool two, skip; } with_paths[] = {
+        { FS_OPEN, sizeof(struct fs_open_req), false, false },
+        { FS_STAT, sizeof(struct fs_stat_req), false, false },
+        { FS_READDIR, sizeof(struct fs_readdir_req), false, false },
+        { FS_MKDIR, sizeof(struct fs_mkdir_req), false, false },
+        { FS_UNLINK, sizeof(struct fs_unlink_req), false, false },
+        { FS_RENAME, sizeof(struct fs_rename_req), true, false },
+        { FS_GETATTR, sizeof(struct fs_getattr_req), false, false },
+        { FS_SETATTR, sizeof(struct fs_setattr_req), false, false },
+        { FS_SYMLINK, sizeof(struct fs_symlink_req), false, true },
+        { FS_READLINK, sizeof(struct fs_readlink_req), false, false },
+        { FS_LINK, sizeof(struct fs_link_req), true, false },
+        { FS_RESOLVE, sizeof(struct fs_resolve_req), false, false },
+        { FS_SUBVIEW, sizeof(struct fs_subview_req), false, false },
     };
     const struct idl_req_hdr *h = req;
     bool stat = h->ordinal == FS_STAT;
@@ -125,7 +134,8 @@ static bool hidden_request(uint32_t flags, const void *req, uint32_t n)
             continue;
         const char *path;
         uint32_t len, o = with_paths[i].fixed;
-        if (n < o || !path_at(req, n, &o, &path, &len))
+        if (n < o || (with_paths[i].skip && !path_at(req, n, &o, &path, &len)) ||
+            !path_at(req, n, &o, &path, &len))
             return false;   /* the dispatch refuses it */
         if (path_hidden(flags, path, len, stat))
             return true;
@@ -156,6 +166,32 @@ status_t fs_view_check(uint32_t flags, const void *req, uint32_t n)
     case FS_MKDIR:
         o = sizeof(struct fs_mkdir_req);
         break;
+    case FS_SETATTR:
+        o = sizeof(struct fs_setattr_req);
+        break;
+    case FS_SYMLINK:   /* the new link's name is the change; its target is only kept */
+        o = sizeof(struct fs_symlink_req);
+        if (n < o || !path_at(req, n, &o, &path, &len))
+            return OK;
+        break;
+    case FS_LINK:   /* both names: a link to a guarded file would write it from outside */
+        o = sizeof(struct fs_link_req);
+        if (n < o || !path_at(req, n, &o, &path, &len) || !path_at(req, n, &o, &to, &to_len))
+            return OK;
+        return change(flags, path, len, to, to_len);
+    case FS_SUBVIEW: {
+        /* A directory at or under etc as the root of a new channel: the names
+         * below it would no longer look like etc's. Not for a view that hides
+         * the keys; not for one that guards etc unless the new one is read-only. */
+        const struct fs_subview_req *q = req;
+        o = sizeof(*q);
+        if (n < sizeof(*q) || !path_at(req, n, &o, &path, &len) || !path_in_etc(path, len))
+            return OK;
+        if ((flags & FS_VIEW_HIDE_KEYS) ||
+            ((flags & FS_VIEW_GUARD_ETC) && !(q->flags & FS_VIEW_READ_ONLY)))
+            return ERR_ACCESS_DENIED;
+        return OK;
+    }
     case FS_UNLINK:
         o = sizeof(struct fs_unlink_req);
         break;
@@ -165,7 +201,7 @@ status_t fs_view_check(uint32_t flags, const void *req, uint32_t n)
             return OK;
         return change(flags, path, len, to, to_len);
     default:
-        return OK;   /* stat, readdir, sync, statfs: they change nothing */
+        return OK;   /* stat, readdir, sync, statfs, getattr, readlink, resolve: no change */
     }
     if (n < o || !path_at(req, n, &o, &path, &len))
         return OK;
@@ -269,6 +305,10 @@ uint32_t fs_view_dispatch(const struct fs_view_server *v, const void *req, uint3
     if (h->ordinal == FS_STATFS && rn == sizeof(struct fs_statfs_rep) &&
         (v->flags & FS_VIEW_READ_ONLY))
         ((struct fs_statfs_rep *)rep)->read_only = 1;
+    /* and no write bit in what it shows (libc's rule for a read-only mount) */
+    if (h->ordinal == FS_GETATTR && rn == sizeof(struct fs_getattr_rep) &&
+        (v->flags & FS_VIEW_READ_ONLY))
+        ((struct fs_getattr_rep *)rep)->mode &= ~0222u;
     return rn;
 }
 

@@ -90,9 +90,30 @@ static uint64_t dir_id(const char *rel)
     return ID_ROOT;
 }
 
-static status_t op_open(void *ctx, const char *path, uint32_t path_len, uint32_t flags,
-                        handle_t *out_file, handle_t *out_buffer, uint64_t *out_size)
+#define STATFS_MAGIC    0x858458f6u   /* statfs's magic: Linux's RAMFS_MAGIC */
+#define STATFS_NAME_MAX 255u          /* what statfs says a name holds (as libc did) */
+
+/* The mode made up for an entry (fs.idl's getattr): a directory 0555, a file
+ * 0444, 0555 for a program (a file directly in a directory named bin or
+ * sbin): libc's old rule, with the write bits off as the image is read-only. */
+static uint32_t made_mode(const struct bootfs_entry *e)
 {
+    if (!e)
+        return FS_MODE_DIR | 0555u;
+    const char *slash = strrchr(e->name, '/'), *dir = slash;
+    while (dir && dir > e->name && dir[-1] != '/')
+        dir--;
+    size_t l = slash ? (size_t)(slash - dir) : 0;
+    bool program = (l == 3 && !memcmp(dir, "bin", 3)) || (l == 4 && !memcmp(dir, "sbin", 4));
+    return FS_MODE_REG | (program ? 0555u : 0444u);
+}
+
+/* `mode` and FS_NOFOLLOW mean nothing to a read-only image without links. */
+static status_t op_open(void *ctx, const char *path, uint32_t path_len, uint32_t flags,
+                        uint32_t mode, handle_t *out_file, handle_t *out_buffer,
+                        uint64_t *out_size)
+{
+    (void)mode;
     char rel[FS_PATH_LEN + 1];
     const struct bootfs_entry *e;
     struct fsserver_file *f;
@@ -109,6 +130,8 @@ static status_t op_open(void *ctx, const char *path, uint32_t path_len, uint32_t
         return st;
     if (!e)
         return ERR_IS_DIR;
+    if (flags & FS_DIRECTORY)
+        return ERR_NOT_DIR;
     /* The entry is the file's state: nothing to release when it closes. */
     st = fsserver_open(ctx, (void *)(uintptr_t)e, false, out_file, out_buffer, &f);
     if (st == OK)
@@ -132,6 +155,54 @@ static status_t op_stat(void *ctx, const char *path, uint32_t path_len, uint64_t
     *out_mtime = 0;   /* the image keeps no times */
     *out_id = e ? (uint64_t)(e - entries) + 1 : dir_id(rel);
     return OK;
+}
+
+static status_t op_getattr(void *ctx, const char *path, uint32_t path_len, uint32_t flags,
+                           uint32_t *out_mode, uint32_t *out_nlink, uint32_t *out_uid,
+                           uint32_t *out_gid, uint64_t *out_size, uint64_t *out_blocks,
+                           uint64_t *out_id, int64_t *out_atime_ns, int64_t *out_mtime_ns,
+                           int64_t *out_ctime_ns)
+{
+    (void)ctx;
+    char rel[FS_PATH_LEN + 1];
+    const struct bootfs_entry *e;
+    if (flags & ~FS_NOFOLLOW)
+        return ERR_INVALID_ARGS;
+    status_t st = clean_path(path, path_len, rel);
+    if (st == OK)
+        st = look(rel, &e);
+    if (st != OK)
+        return st;
+    *out_mode = made_mode(e);
+    *out_nlink = 1;
+    *out_uid = FS_ONE_USER;
+    *out_gid = FS_ONE_USER;
+    *out_size = e ? e->size : 0;
+    *out_blocks = e ? (e->size + 511) / 512 : 0;
+    *out_id = e ? (uint64_t)(e - entries) + 1 : dir_id(rel);
+    *out_atime_ns = *out_mtime_ns = *out_ctime_ns = 0;   /* the image keeps no times */
+    return OK;
+}
+
+/* Read-only: nothing to set, for a path that is there. */
+static status_t op_setattr(void *ctx, const char *path, uint32_t path_len, uint32_t flags,
+                           uint32_t mask, uint32_t mode, uint32_t uid, uint32_t gid,
+                           int64_t atime_ns, int64_t mtime_ns)
+{
+    (void)ctx;
+    (void)mode;
+    (void)uid;
+    (void)gid;
+    (void)atime_ns;
+    (void)mtime_ns;
+    char rel[FS_PATH_LEN + 1];
+    const struct bootfs_entry *e;
+    if ((flags & ~FS_NOFOLLOW) || (mask & ~FS_ATTR_MASK))
+        return ERR_INVALID_ARGS;
+    status_t st = clean_path(path, path_len, rel);
+    if (st == OK)
+        st = look(rel, &e);
+    return st != OK ? st : ERR_ACCESS_DENIED;
 }
 
 /* Entry i is the first with this name of len bytes directly in dir. */
@@ -177,7 +248,8 @@ static status_t op_readdir(void *ctx, const char *path, uint32_t path_len, uint3
         sub[(rest - name) + n] = '\0';
         const struct fs_dirent d = {
             .id = slash ? dir_id(sub) : (uint64_t)i + 1, .size = slash ? 0 : entries[i].size,
-            .is_dir = slash != NULL, .name_len = (uint32_t)n, .name = rest,
+            .is_dir = slash != NULL, .type = slash ? FS_DT_DIR : FS_DT_REG,
+            .name_len = (uint32_t)n, .name = rest,
         };
         if (!fs_dirent_put(out_entries, FS_READDIR_BYTES, &len, &d)) {
             *out_next = seen - 1;   /* it goes first in the next batch */
@@ -197,9 +269,10 @@ static status_t refuse(const char *path, uint32_t path_len)
     return clean_path(path, path_len, rel) == OK ? ERR_ACCESS_DENIED : ERR_INVALID_ARGS;
 }
 
-static status_t op_mkdir(void *ctx, const char *path, uint32_t path_len)
+static status_t op_mkdir(void *ctx, const char *path, uint32_t path_len, uint32_t mode)
 {
     (void)ctx;
+    (void)mode;
     return refuse(path, path_len);
 }
 
@@ -213,8 +286,10 @@ static status_t op_rename(void *ctx, const char *from, uint32_t from_len, const 
                           uint32_t to_len, uint32_t flags)
 {
     (void)ctx;
-    if (flags & ~FS_RENAME_REPLACE)
+    if (flags & ~(FS_RENAME_REPLACE | FS_RENAME_EXCHANGE))
         return ERR_INVALID_ARGS;
+    if (flags & FS_RENAME_EXCHANGE)   /* as fat's: not a thing this filesystem does */
+        return (flags & FS_RENAME_REPLACE) ? ERR_INVALID_ARGS : ERR_NOT_SUPPORTED;
     status_t st = refuse(from, from_len);
     return st == ERR_ACCESS_DENIED ? refuse(to, to_len) : st;
 }
@@ -226,13 +301,17 @@ static status_t op_sync(void *ctx)
 }
 
 static status_t op_statfs(void *ctx, uint64_t *out_total, uint64_t *out_free,
-                          uint8_t *out_read_only, uint8_t out_label[16])
+                          uint8_t *out_read_only, uint8_t out_label[16], uint32_t *out_magic,
+                          uint32_t *out_name_max, uint32_t *out_features)
 {
     (void)ctx;
     *out_total = image->size;
     *out_free = 0;
     *out_read_only = 1;
     memcpy(out_label, "BOOTFS", 7);
+    *out_magic = STATFS_MAGIC;
+    *out_name_max = STATFS_NAME_MAX;
+    *out_features = 0;
     return OK;
 }
 
@@ -280,14 +359,50 @@ static status_t file_op_stat(void *ctx, uint64_t *out_size, uint8_t *out_is_dir,
     return OK;
 }
 
+/* The file's attributes: those of its path (a file's entry is its state). */
+static status_t file_op_getattr(void *ctx, uint32_t *out_mode, uint32_t *out_nlink,
+                                uint32_t *out_uid, uint32_t *out_gid, uint64_t *out_size,
+                                uint64_t *out_blocks, uint64_t *out_id, int64_t *out_atime_ns,
+                                int64_t *out_mtime_ns, int64_t *out_ctime_ns)
+{
+    struct fsserver_file *f = ctx;
+    const struct bootfs_entry *e = f->ctx;
+    *out_mode = made_mode(e);
+    *out_nlink = 1;
+    *out_uid = FS_ONE_USER;
+    *out_gid = FS_ONE_USER;
+    *out_size = e->size;
+    *out_blocks = (e->size + 511) / 512;
+    *out_id = (uint64_t)(e - entries) + 1;
+    *out_atime_ns = *out_mtime_ns = *out_ctime_ns = 0;
+    return OK;
+}
+
+static status_t file_op_setattr(void *ctx, uint32_t mask, uint32_t mode, uint32_t uid,
+                                uint32_t gid, int64_t atime_ns, int64_t mtime_ns)
+{
+    (void)ctx;
+    (void)mode;
+    (void)uid;
+    (void)gid;
+    (void)atime_ns;
+    (void)mtime_ns;
+    return mask & ~FS_ATTR_MASK ? ERR_INVALID_ARGS : ERR_ACCESS_DENIED;
+}
+
+/* symlink, readlink, link, resolve and subview are left out: the generated
+ * dispatch answers them ERR_NOT_SUPPORTED (there are no links here, and a
+ * directory of the image is not served as a root of its own). */
 static const struct fs_ops fs_ops = {
     .open = op_open, .stat = op_stat, .readdir = op_readdir, .mkdir = op_mkdir,
     .unlink = op_unlink, .rename = op_rename, .sync = op_sync, .statfs = op_statfs,
+    .getattr = op_getattr, .setattr = op_setattr,
 };
 
 static const struct file_ops file_ops = {
     .read = file_op_read, .write = file_op_write, .truncate = file_op_truncate,
-    .stat = file_op_stat, .sync = op_sync,
+    .stat = file_op_stat, .sync = op_sync, .getattr = file_op_getattr,
+    .setattr = file_op_setattr,
 };
 
 static struct fsserver server = { .fs_ops = &fs_ops, .file_ops = &file_ops };
