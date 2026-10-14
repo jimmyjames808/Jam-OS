@@ -2910,8 +2910,8 @@ and `sysbox-net.txt`, `tools/ping-test.sh`.
     bin/play; the command is the shell's helper protocol: an output channel and
     a Ctrl+C stop channel, `play` hands over the open file); `vol`, `music`
     (they keep the master volume, the music folder and volume in
-    `/data/etc/settings`, which no program may write: a writable mount leaves
-    the top-level `etc` alone); `hda` (the codec driver, which only the mixer
+    `/data/etc/settings`, which no program may write: no program's mount
+    has the top-level `etc`); `hda` (the codec driver, which only the mixer
     hands out: `sh_hda`); `beep` (feasible: it needs `svc audio` alone; left
     for a `sys-audio` box with `vol` without its master setting); `top` (reads
     keys from the console: a program has none; it would need a raw terminal);
@@ -3409,4 +3409,5 @@ Track X2 (tinyssh) as built, with the choices the plan left open.
   - The host's secret key is readable by any program given `/data` (a
     list's `mount /data r`): FAT has no permissions and a read-only view
     shows `etc`. Hiding `/data/etc/ssh` from every view but sshd's is a
-    namespace change (R2's question).
+    namespace change (R2's question). Done: R2 hid `etc/ssh`, and since
+    the owner's answer (2026-10-14) no program's view has `etc` at all.

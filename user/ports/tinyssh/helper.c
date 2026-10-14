@@ -13,9 +13,10 @@ extern char **environ;
 pid_t helper_spawn(char *const argv[], int in, int out)
 {
     /* The signer alone sees the host key (/data/etc/ssh: `:rk`); the key
-     * check reads authorized_keys, outside it. */
+     * check sees /data/etc/authorized_keys and nothing else of etc
+     * (`:ra`). */
     static const char *const sign_grants[] = { "/data:rk", NULL };
-    static const char *const other_grants[] = { "/data:r", NULL };
+    static const char *const other_grants[] = { "/data:ra", NULL };
     const char *const *grants = !strcmp(argv[0], "tinysshd-sign") ? sign_grants : other_grants;
     posix_spawn_file_actions_t fa;
     posix_spawnattr_t at;

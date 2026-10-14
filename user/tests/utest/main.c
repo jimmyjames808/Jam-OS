@@ -744,6 +744,8 @@ static const struct {
     { "fat_views", t_fat_views },
     { "view_keys_names", t_view_keys_names },
     { "fat_view_keys", t_fat_view_keys },
+    { "view_hides_names", t_view_hides_names },
+    { "fat_view_no_etc", t_fat_view_no_etc },
     { "fat_view_limits", t_fat_view_limits },
     { "ns_changes_stay_bounded", t_ns_changes_stay_bounded },
     { "heap_reuses_freed_space", t_heap_reuses_freed_space },

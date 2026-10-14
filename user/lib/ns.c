@@ -602,11 +602,18 @@ static bool parse_grant(const char *s, struct grant *g)
     }
     size_t n = strnlen(s, NS_NAME_MAX + 4);
     if (n >= 3 && !strcmp(s + n - 3, ":rk")) {
-        g->view = FS_VIEW_READ_ONLY;   /* the host key's own (sshd's) */
+        /* The SSH server's own (sshd's, its tinysshds' and their signer's):
+         * the host key and the authorized keys, nothing else of etc. */
+        g->view = FS_VIEW_READ_ONLY | FS_VIEW_HIDE_ETC;
+        n -= 3;
+    } else if (n >= 3 && !strcmp(s + n - 3, ":ra")) {
+        /* The key check's (tinysshd-auth): the authorized keys alone. */
+        g->view = FS_VIEW_READ_ONLY | FS_VIEW_HIDE_ETC | FS_VIEW_HIDE_KEYS;
         n -= 3;
     } else if (n >= 2 && s[n - 2] == ':' && (s[n - 1] == 'r' || s[n - 1] == 'w')) {
-        /* A program's view: the host key never in it. */
-        g->view = (s[n - 1] == 'r' ? FS_VIEW_READ_ONLY : FS_VIEW_GUARD_ETC) | FS_VIEW_HIDE_KEYS;
+        /* A program's view (every list's `mount`, <wants.h>): no etc in it
+         * at all, whoever starts the program. */
+        g->view = (s[n - 1] == 'r' ? FS_VIEW_READ_ONLY : FS_VIEW_GUARD_ETC) | FS_VIEW_NO_ETC;
         n -= 2;
     }
     if (n == 1 && s[0] == '*' && g->view) {

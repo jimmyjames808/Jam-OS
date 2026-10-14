@@ -1,6 +1,6 @@
 /* fat: views (fs.view, <fsview.h>): narrower `fs` channels onto the
  * volume, for programs that get less than the whole of it (read-only, or
- * with the top-level `etc` left alone). Each is served like the fs
+ * with the top-level `etc` guarded or hidden). Each is served like the fs
  * channel devmgr gave us, with its flags checked first (fs_view_dispatch),
  * one request per wakeup (main.c's loop). A view goes when its client closes it,
  * and every view goes when fat ends: a view never keeps the volume served

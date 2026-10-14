@@ -214,9 +214,9 @@ bool t_svc_child_gets_its_grants(void)
     return true;
 }
 
-/* A child given /t as a view: "r" read-only, "w" writable but its etc
- * kept, "rk" read-only with etc/ssh shown (ns-view checks each from the
- * inside; the first two hide etc/ssh). */
+/* A child given /t as a view: "r" read-only, "w" writable, both without
+ * etc; "rk" read-only with etc/ssh and etc/authorized_keys shown, "ra" with
+ * authorized_keys alone (ns-view checks each from the inside). */
 bool t_svc_child_gets_views(void)
 {
     struct ram r;
@@ -225,6 +225,7 @@ bool t_svc_child_gets_views(void)
     CHECK_ST(ns_put(RAM "/hello", NS_HELLO), OK);
     CHECK_ST(fs_mkdir(RAM "/etc"), OK);
     CHECK_ST(ns_put(RAM "/etc/allow", NS_HELLO), OK);
+    CHECK_ST(ns_put(RAM "/etc/authorized_keys", NS_HELLO), OK);
     CHECK_ST(fs_mkdir(RAM "/etc/ssh"), OK);
     CHECK_ST(ns_put(RAM "/etc/ssh/key", NS_HELLO), OK);
     handle_t proc;
@@ -239,15 +240,20 @@ bool t_svc_child_gets_views(void)
     static const char *const all_ro[] = { "*:r", NULL };
     CHECK_ST(ns_child_start("ns-view", "r", all_ro, none, NULL, &proc), OK);
     CHECK(ns_child_exits(proc, 0));
-    /* The SSH server's view: read-only, and etc/ssh shown. */
+    /* The SSH server's view: read-only, etc/ssh and authorized_keys shown;
+     * its key check's: authorized_keys alone. */
     static const char *const keys[] = { RAM ":rk", NULL };
     CHECK_ST(ns_child_start("ns-view", "rk", keys, none, NULL, &proc), OK);
     CHECK(ns_child_exits(proc, 0));
-    /* What the guarded child wrote is there; etc is as it was. */
+    static const char *const auth[] = { RAM ":ra", NULL };
+    CHECK_ST(ns_child_start("ns-view", "ra", auth, none, NULL, &proc), OK);
+    CHECK(ns_child_exits(proc, 0));
+    /* What the writable child wrote is there; etc is as it was. */
     CHECK(ns_holds(RAM "/new", NS_HELLO));
     CHECK(ns_holds(RAM "/etc/allow", NS_HELLO));
     CHECK_ST(fs_unlink(RAM "/new"), OK);
     CHECK_ST(fs_unlink(RAM "/etc/allow"), OK);
+    CHECK_ST(fs_unlink(RAM "/etc/authorized_keys"), OK);
     CHECK_ST(fs_unlink(RAM "/etc/ssh/key"), OK);
     CHECK_ST(fs_unlink(RAM "/etc/ssh"), OK);
     CHECK_ST(fs_unlink(RAM "/etc"), OK);
@@ -371,13 +377,26 @@ int ns_svc_child(const char *name)
     return 0;
 }
 
-/* "ns-view r|w": /t as a read-only view, or a writable one that keeps its etc. */
+/* Whether the listing of dir names `name`. */
+static bool lists(const char *dir, const char *name)
+{
+    struct fs_entry e;
+    for (uint32_t i = 0; fs_readdir(dir, i, &e) == OK; i++)
+        if (!strcmp(e.name, name))
+            return true;
+    return false;
+}
+
+/* "ns-view r|w|rk|ra": /t as a program's view, read-only or writable,
+ * where etc doesn't exist; or the SSH server's (`:rk`: etc/ssh and
+ * etc/authorized_keys) or its key check's (`:ra`: authorized_keys alone),
+ * read-only and nothing else of etc. */
 int ns_view_child(const char *how)
 {
-    bool ro = how[0] == 'r', keys = !strcmp(how, "rk");
+    bool ro = how[0] == 'r', keys = !strcmp(how, "rk"), sshd = keys || !strcmp(how, "ra");
     bool read_only = false;
     struct jfile f;
-    if (!ns_holds(RAM "/hello", NS_HELLO) || !ns_holds(RAM "/etc/allow", NS_HELLO))
+    if (!ns_holds(RAM "/hello", NS_HELLO))
         return 90;
     if (fs_statfs(RAM "/", NULL, NULL, &read_only, NULL) != OK || read_only != ro)
         return 91;
@@ -395,10 +414,31 @@ int ns_view_child(const char *how)
         return 94;
     if (!ro && fs_rename(RAM "/new", RAM "/etc/new") != ERR_ACCESS_DENIED)
         return 95;
-    /* It reads, as anyone may. */
-    if (file_open(RAM "/etc/allow", FS_READ, &f) != OK)
-        return 96;
-    file_close(&f);
+    /* The rest of etc: no view of a program or of the SSH server reads,
+     * stats or lists it, however it is named. */
+    static const char *const rest[] = { RAM "/etc/allow", RAM "/ETC/allow",
+                                        RAM "/x/../etc/allow", RAM "/Etc./allow" };
+    for (unsigned i = 0; i < sizeof(rest) / sizeof(rest[0]); i++)
+        if (file_open(rest[i], FS_READ, &f) != ERR_ACCESS_DENIED ||
+            fs_stat(rest[i], NULL, NULL, NULL) != ERR_ACCESS_DENIED)
+            return 96;
+    struct fs_entry e;
+    if (fs_readdir(RAM "/etc", 0, &e) != ERR_ACCESS_DENIED)
+        return 99;
+    /* etc itself: a program's view has none (no stat, not in the root's
+     * listing); the SSH server's stats it and lists it. */
+    bool dir = false;
+    status_t est = fs_stat(RAM "/etc", NULL, &dir, NULL);
+    if (sshd ? est != OK || !dir || !lists(RAM, "etc")
+             : est != ERR_ACCESS_DENIED || fs_stat(RAM "/ETC", NULL, NULL, NULL) !=
+                   ERR_ACCESS_DENIED || lists(RAM, "etc") || !lists(RAM, "hello"))
+        return 100;
+    /* authorized_keys only through the SSH server's two. */
+    status_t ast = file_open(RAM "/etc/authorized_keys", FS_READ, &f);
+    if (ast == OK)
+        file_close(&f);
+    if (sshd ? ast != OK : ast != ERR_ACCESS_DENIED)
+        return 101;
     /* etc/ssh (the host key) only through `:rk`: read, stat or listed,
      * however it is named (the odd spellings are only for the refusal,
      * which comes before the RAM filesystem walks them: its names have a
@@ -406,16 +446,13 @@ int ns_view_child(const char *how)
     static const char *const key[] = { RAM "/etc/ssh/key", RAM "/etc/ssh",
                                        RAM "/x/../etc/ssh/key", RAM "/ETC/Ssh./key" };
     for (unsigned i = 0; i < sizeof(key) / sizeof(key[0]); i++) {
-        uint64_t size;
-        bool dir;
-        status_t st = fs_stat(key[i], &size, &dir, NULL);
+        status_t st = fs_stat(key[i], NULL, NULL, NULL);
         if (keys ? i < 2 && st != OK : st != ERR_ACCESS_DENIED)
             return 97;
     }
     status_t st = file_open(RAM "/etc/ssh/key", FS_READ, &f);
     if (st == OK)
         file_close(&f);
-    struct fs_entry e;
     status_t lst = fs_readdir(RAM "/etc/ssh", 0, &e);
     if (keys ? (st != OK || lst != OK) : (st != ERR_ACCESS_DENIED || lst != ERR_ACCESS_DENIED))
         return 98;

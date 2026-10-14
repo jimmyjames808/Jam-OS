@@ -342,8 +342,8 @@ static const struct sh_cmd cmds[] = {
     C(watch, C_SHELL, "watch [-n seconds] <command...>",
       "run a command every n seconds (default 2) until Ctrl+C\n"
       "  (quote a pipe: watch -n 1 'ps | grep hid')"),
-    C(true, C_SHELL, "true", "status 0"),
-    C(false, C_SHELL, "false", "status 1"),
+    C(true, C_SHELL, "true [word...]", "status 0 (words after it are ignored, as POSIX's are)"),
+    C(false, C_SHELL, "false [word...]", "status 1 (words after it are ignored)"),
 };
 
 /* Extra names for commands (not user aliases: `type` says builtin). */

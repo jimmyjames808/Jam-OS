@@ -348,6 +348,8 @@ bool t_view_etc_names(void);
 bool t_fat_views(void);
 bool t_view_keys_names(void);
 bool t_fat_view_keys(void);
+bool t_view_hides_names(void);
+bool t_fat_view_no_etc(void);
 bool t_fat_view_limits(void);
 
 /* jit.c: JIT memory (vmo_make_jit): code written, run, patched, passed on. */

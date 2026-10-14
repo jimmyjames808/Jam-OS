@@ -15,10 +15,24 @@
 
 #define FS_VIEW_READ_ONLY 1u   /* every change refused; statfs says read-only */
 #define FS_VIEW_GUARD_ETC 2u   /* every change at or under the top-level `etc` refused */
-#define FS_VIEW_HIDE_KEYS 4u   /* every request at or under `etc/ssh` refused, reads too:
-                                * the SSH server's host key (init's ssh.c) is only for the
-                                * views made for it (<os.h> "grants": `:rk`) */
-#define FS_VIEW_FLAGS     7u   /* all of them: any other bit is ERR_INVALID_ARGS */
+/* The hiding flags: every request on a hidden path is refused, reads too
+ * (ERR_ACCESS_DENIED, as for a change a view refuses). Each hides one part
+ * of the top-level `etc`; all three hide the whole of it (FS_VIEW_NO_ETC). */
+#define FS_VIEW_HIDE_KEYS 4u   /* `etc/ssh` and everything in it: the SSH server's host
+                                * key (init's ssh.c), only for the views made for the
+                                * signer (<os.h> "grants": `:rk`) */
+#define FS_VIEW_HIDE_ETC  8u   /* the rest of `etc`: every other name in it (the
+                                * settings, `allow`, the history), its listing, and any
+                                * request on `etc` itself but a stat */
+#define FS_VIEW_HIDE_AUTH 16u  /* `etc/authorized_keys`: the keys that may log in, only
+                                * for the SSH server's views (`:rk`, `:ra`) */
+#define FS_VIEW_FLAGS     31u  /* all of them: any other bit is ERR_INVALID_ARGS */
+/* The three hiding flags: `etc` doesn't exist for the view. A stat of it is
+ * refused too, and a listing of the root leaves it out. Every program's
+ * view has them (<os.h> "grants": `:r`, `:w`); only init and the shell it
+ * starts hold a /data with `etc` in it, and the SSH server a view with its
+ * own two files. */
+#define FS_VIEW_NO_ETC (FS_VIEW_HIDE_KEYS | FS_VIEW_HIDE_ETC | FS_VIEW_HIDE_AUTH)
 
 /* Is the cleaned path (fs_path_clean's form: names joined by '/', none
  * leading) at or under the top-level `etc` directory? The first name is
@@ -30,6 +44,13 @@ bool     fs_view_in_etc(const char *clean);
  * name: FAT also opens a file by its short name (`ED2551~1.SK`), which a
  * check of the file's own name would let past. */
 bool     fs_view_in_keys(const char *clean);
+/* Does a view with `flags` hide the cleaned path from a request (stat: the
+ * request is fs.stat, which `etc` itself answers unless all of it is
+ * hidden)? `etc/authorized_keys` is the one file shown by its name: any
+ * other name of it (FAT's short name, `AUTHOR~1`) is the rest of etc's,
+ * hidden by FS_VIEW_HIDE_ETC; FS_VIEW_HIDE_AUTH without FS_VIEW_HIDE_ETC
+ * hides the rest of etc as well, so no other name can reach it. */
+bool     fs_view_hides(uint32_t flags, const char *clean, bool stat);
 /* Whether a view with `flags` may make the request of n bytes at req:
  * OK, or ERR_ACCESS_DENIED. A request this can't read (too short, not an
  * fs method, a path it can't take apart) is OK here: the protocol's own

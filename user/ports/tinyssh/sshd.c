@@ -13,9 +13,9 @@
  *     a word is found), set here before the spawn: options move with the
  *     socket;
  *   - a namespace of /data read-only (authorized_keys, and the host key:
- *     `:rk`, the view that shows /data/etc/ssh, which every program's view
- *     hides) and /svc/session (init's sessions: what a login gets),
- *     nothing else;
+ *     `:rk`, the view that shows /data/etc/ssh and authorized_keys and
+ *     nothing else of /data/etc, which every program's view hides whole)
+ *     and /svc/session (init's sessions: what a login gets), nothing else;
  *   - descriptor 2 the write end of one log pipe they all share, whose
  *     other end this loop reads and copies to its own 2, the kernel log (a
  *     child can't be given the log itself: the layer's log descriptor

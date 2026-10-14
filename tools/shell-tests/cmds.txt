@@ -195,6 +195,15 @@ send false || echo ok-$T-or
 wait ok-x-or
 send false && echo never || echo ok-$T-andor
 wait ok-x-andor
+# true and false ignore the words after them, as POSIX's do; env still
+# takes none
+send true x y; echo st-$T=$?
+wait st-x=0
+send false x; echo st-$T=$?
+wait st-x=1
+send env x; echo st-$T=$?
+wait env: takes no arguments
+wait st-x=2
 send echo c-$T; echo d-$T # e-$T
 wait c-x
 wait d-x

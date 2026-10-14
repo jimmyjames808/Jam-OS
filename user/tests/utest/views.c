@@ -5,7 +5,11 @@
  * keeps both; a bad flag, and more views than fat serves, are refused;
  * the views go when fat does. And fs_view_in_etc's own rules; a view that
  * hides etc/ssh (FS_VIEW_HIDE_KEYS) refuses every request there, by any
- * name, and fs_view_in_keys's rules. */
+ * name, and fs_view_in_keys's rules; a view where etc doesn't exist
+ * (FS_VIEW_NO_ETC, every program's) refuses every request at or under it,
+ * a stat of it too, and leaves it out of the root's listing; the SSH
+ * server's views (`:rk`, `:ra`) show its own files of etc and nothing else
+ * of it; and fs_view_hides's rules. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -112,7 +116,8 @@ bool t_fat_views(void)
         return false;
     CHECK_ST(jam_handle_close(both.fs), OK);
     handle_t bad;
-    CHECK_ST(fs_view_until(r.fs, now() + FAT_CALL_NS, 8, &bad), ERR_INVALID_ARGS);
+    CHECK_ST(fs_view_until(r.fs, now() + FAT_CALL_NS, FS_VIEW_FLAGS + 1, &bad),
+             ERR_INVALID_ARGS);
     /* The whole channel itself still changes etc. */
     CHECK(put_file(&r, "/etc/allow", "z"));
     CHECK(file_is(&g, "/etc/allow", "z"));
@@ -166,11 +171,169 @@ bool t_fat_view_keys(void)
         return false;
     CHECK_ST(jam_handle_close(again.fs), OK);
     /* A read-only view without it (sshd's `:rk`) reads the key. */
-    if (!view_of(&r, FS_VIEW_READ_ONLY, &again) || !file_is(&again, "/etc/ssh/.ed25519.sk",
-                                                             "secret"))
+    if (!view_of(&r, FS_VIEW_READ_ONLY | FS_VIEW_HIDE_ETC, &again) ||
+        !file_is(&again, "/etc/ssh/.ed25519.sk", "secret"))
         return false;
     CHECK_ST(jam_handle_close(again.fs), OK);
     CHECK_ST(jam_handle_close(h.fs), OK);
+    CHECK_ST(jam_handle_close(ro.fs), OK);
+    return fat_stop(&r);
+}
+
+bool t_view_hides_names(void)
+{
+    const uint32_t keys = FS_VIEW_HIDE_KEYS, etc = FS_VIEW_HIDE_ETC, auth = FS_VIEW_HIDE_AUTH;
+    const uint32_t all = FS_VIEW_NO_ETC, rk = etc, ra = etc | keys;
+    /* etc itself: a stat answers unless all of it is hidden. */
+    static const char *const top[] = { "etc", "ETC", "Etc", "etc.", " etc", "etc .." };
+    for (unsigned i = 0; i < sizeof(top) / sizeof(top[0]); i++) {
+        CHECK(fs_view_hides(all, top[i], true) && fs_view_hides(all, top[i], false));
+        CHECK(!fs_view_hides(rk, top[i], true) && fs_view_hides(rk, top[i], false));
+        CHECK(!fs_view_hides(ra, top[i], true) && fs_view_hides(ra, top[i], false));
+        CHECK(!fs_view_hides(keys, top[i], true) && !fs_view_hides(keys, top[i], false));
+    }
+    /* The rest of etc: every name but ssh and authorized_keys, the short
+     * name of authorized_keys among them. */
+    static const char *const rest[] = { "etc/allow", "ETC/settings", "Etc/history",
+                                        "etc/allow.d/x", "etc./x", "etc/AUTHOR~1",
+                                        "etc/authorized_keys/x", "etc/authorized_keysx",
+                                        "etc/sshd", "etc/x/../allow" };
+    for (unsigned i = 0; i < sizeof(rest) / sizeof(rest[0]); i++) {
+        CHECK(fs_view_hides(all, rest[i], true) && fs_view_hides(rk, rest[i], false));
+        CHECK(fs_view_hides(ra, rest[i], false) && fs_view_hides(auth, rest[i], false));
+        CHECK(!fs_view_hides(keys, rest[i], false));
+    }
+    static const char *const ssh[] = { "etc/ssh", "etc/ssh/.ed25519.sk", "ETC/SSH./x",
+                                       " etc/ ssh/ED2551~1.SK" };
+    for (unsigned i = 0; i < sizeof(ssh) / sizeof(ssh[0]); i++) {
+        CHECK(fs_view_hides(all, ssh[i], true) && fs_view_hides(ra, ssh[i], false));
+        CHECK(fs_view_hides(keys, ssh[i], false) && !fs_view_hides(rk, ssh[i], true));
+        CHECK(!fs_view_hides(rk, ssh[i], false));
+    }
+    static const char *const ak[] = { "etc/authorized_keys", "ETC/AUTHORIZED_KEYS",
+                                      "etc./authorized_keys. " };
+    for (unsigned i = 0; i < sizeof(ak) / sizeof(ak[0]); i++) {
+        CHECK(fs_view_hides(all, ak[i], true) && fs_view_hides(auth, ak[i], false));
+        CHECK(!fs_view_hides(rk, ak[i], false) && !fs_view_hides(ra, ak[i], true));
+        CHECK(!fs_view_hides(keys, ak[i], false));
+    }
+    static const char *const out[] = { "", "a.txt", "etcx", "x/etc", "x/etc/allow",
+                                       "etc2/allow", "e.tc" };
+    for (unsigned i = 0; i < sizeof(out) / sizeof(out[0]); i++)
+        CHECK(!fs_view_hides(all, out[i], true) && !fs_view_hides(all, out[i], false));
+    /* The other flags hide nothing. */
+    CHECK(!fs_view_hides(FS_VIEW_READ_ONLY | FS_VIEW_GUARD_ETC, "etc/allow", false));
+    CHECK(!fs_view_hides(0, "etc/ssh/x", false));
+    return true;
+}
+
+#define ROOT_FILES 300   /* the root's listing in two batches */
+
+/* A view where etc doesn't exist (FS_VIEW_NO_ETC): no request at or under
+ * it however it is spelled, a stat of it neither; the root's listing (its
+ * batches in turn) without it; the rest of the volume as v's other flags
+ * say (writes: it may write). */
+static bool no_etc(const struct fatrun *v, bool writes)
+{
+    struct tfile f;
+    static struct tbatch b;
+    static const char *const etc[] = { "/etc", "/ETC", "/Etc", "/etc.", "/x/../etc", "/./etc",
+                                       "/etc/allow", "/ETC/settings", "/Etc/history",
+                                       "/etc/authorized_keys", "/etc/AUTHOR~1", "/etc/ssh",
+                                       "/etc/ssh/.ed25519.sk", "/etc/x/../allow", "/Etc/new" };
+    for (unsigned i = 0; i < sizeof(etc) / sizeof(etc[0]); i++) {
+        CHECK_ST(t_stat(v, etc[i], NULL, NULL, NULL), ERR_ACCESS_DENIED);
+        CHECK_ST(t_open(v, etc[i], FS_READ, &f), ERR_ACCESS_DENIED);
+        CHECK_ST(t_open(v, etc[i], FS_WRITE | FS_CREATE, &f), ERR_ACCESS_DENIED);
+        CHECK_ST(t_batch(v, etc[i], 0, &b), ERR_ACCESS_DENIED);
+        CHECK_ST(t_mkdir(v, etc[i]), ERR_ACCESS_DENIED);
+        CHECK_ST(t_unlink_flags(v, etc[i], 0), ERR_ACCESS_DENIED);
+        CHECK_ST(t_unlink_flags(v, etc[i], FS_UNLINK_DIR), ERR_ACCESS_DENIED);
+    }
+    CHECK_ST(t_rename(v, "/etc", "/old"), ERR_ACCESS_DENIED);
+    CHECK_ST(t_rename(v, "/etc/allow", "/allow"), ERR_ACCESS_DENIED);
+    CHECK_ST(t_rename(v, "/a.txt", "/ETC/a.txt"), ERR_ACCESS_DENIED);
+    unsigned count = 0;
+    bool found = true;
+    CHECK(dir_count(v, "/", "etc", &count, &found));
+    CHECK(!found);
+    CHECK_EQ(count, ROOT_FILES + 1);   /* a.txt and the f files */
+    CHECK(file_is(v, "/a.txt", "a"));
+    if (writes) {   /* everywhere else it may write */
+        CHECK(put_file(v, "/etcetera.txt", "y"));
+        CHECK_ST(t_unlink(v, "/etcetera.txt"), OK);
+    }
+    return true;
+}
+
+bool t_fat_view_no_etc(void)
+{
+    struct fatrun r, ro, w, again, rk, ra;
+    if (!ramdisk_create(&disk, 16 * MIB_SECTORS) || !fat_start(&r, &disk, false))
+        return false;
+    CHECK(put_file(&r, "/a.txt", "a"));
+    CHECK_ST(t_mkdir(&r, "/etc"), OK);
+    CHECK(put_file(&r, "/etc/allow", "x"));
+    CHECK(put_file(&r, "/etc/settings", "s"));
+    CHECK(put_file(&r, "/etc/authorized_keys", "k"));
+    CHECK_ST(t_mkdir(&r, "/etc/ssh"), OK);
+    CHECK(put_file(&r, "/etc/ssh/.ed25519.sk", "secret"));
+    char name[64];
+    for (unsigned i = 0; i < ROOT_FILES; i++) {
+        snprintf(name, sizeof(name), "/F%03uABCD.TXT", i);   /* one entry each: FAT16's root */
+        CHECK(put_file(&r, name, "f"));
+    }
+    /* The short name FAT made for authorized_keys opens it on the whole
+     * channel, and the whole channel lists etc. */
+    CHECK(file_is(&r, "/etc/AUTHOR~1", "k"));
+    unsigned count = 0;
+    bool found = false;
+    CHECK(dir_count(&r, "/", "etc", &count, &found));
+    CHECK(found);
+    CHECK_EQ(count, ROOT_FILES + 2);
+    /* Every program's: `:r` and `:w`. */
+    if (!view_of(&r, FS_VIEW_READ_ONLY | FS_VIEW_NO_ETC, &ro) || !no_etc(&ro, false) ||
+        !refuses_changes(&ro))
+        return false;
+    if (!view_of(&r, FS_VIEW_GUARD_ETC | FS_VIEW_NO_ETC, &w) || !no_etc(&w, true))
+        return false;
+    if (!view_of(&w, 0, &again) || !no_etc(&again, true))   /* never wider */
+        return false;
+    CHECK_ST(jam_handle_close(again.fs), OK);
+    /* The SSH server's (`:rk`): its two files, by their own names only;
+     * etc stats and is listed in the root, but its own listing is refused. */
+    if (!view_of(&r, FS_VIEW_READ_ONLY | FS_VIEW_HIDE_ETC, &rk))
+        return false;
+    CHECK(file_is(&rk, "/etc/authorized_keys", "k"));
+    CHECK(file_is(&rk, "/ETC/Authorized_Keys", "k"));
+    CHECK(file_is(&rk, "/etc/ssh/.ed25519.sk", "secret"));
+    struct tfile f;
+    static struct tbatch b;
+    CHECK_ST(t_open(&rk, "/etc/AUTHOR~1", FS_READ, &f), ERR_ACCESS_DENIED);
+    CHECK_ST(t_open(&rk, "/etc/allow", FS_READ, &f), ERR_ACCESS_DENIED);
+    CHECK_ST(t_open(&rk, "/etc/settings", FS_READ, &f), ERR_ACCESS_DENIED);
+    bool dir = false;
+    CHECK_ST(t_stat(&rk, "/etc", NULL, &dir, NULL), OK);
+    CHECK(dir);
+    CHECK_ST(t_batch(&rk, "/etc", 0, &b), ERR_ACCESS_DENIED);
+    CHECK_ST(t_batch(&rk, "/etc/ssh", 0, &b), OK);
+    CHECK(dir_count(&rk, "/", "etc", &count, &found));
+    CHECK(found);
+    /* The key check's (`:ra`): authorized_keys alone; nor can a view of it
+     * show the host key again. */
+    if (!view_of(&rk, FS_VIEW_HIDE_KEYS, &ra))
+        return false;
+    CHECK(file_is(&ra, "/etc/authorized_keys", "k"));
+    CHECK_ST(t_open(&ra, "/etc/ssh/.ed25519.sk", FS_READ, &f), ERR_ACCESS_DENIED);
+    CHECK_ST(t_open(&ra, "/etc/allow", FS_READ, &f), ERR_ACCESS_DENIED);
+    CHECK_ST(t_stat(&ra, "/etc", NULL, NULL, NULL), OK);
+    if (!view_of(&ra, 0, &again))
+        return false;
+    CHECK_ST(t_open(&again, "/etc/ssh/.ed25519.sk", FS_READ, &f), ERR_ACCESS_DENIED);
+    CHECK_ST(jam_handle_close(again.fs), OK);
+    CHECK_ST(jam_handle_close(ra.fs), OK);
+    CHECK_ST(jam_handle_close(rk.fs), OK);
+    CHECK_ST(jam_handle_close(w.fs), OK);
     CHECK_ST(jam_handle_close(ro.fs), OK);
     return fat_stop(&r);
 }

@@ -16,12 +16,13 @@
  * mounts.c) and the services it publishes under /svc (services.c). The
  * services that have a namespace get the part of it their grants name
  * (followers[], <os.h> "grants"): the shell all of it as it is, the music
- * player every mount read-only and the mixer, logd /data (its top-level
- * etc left alone), netlog /svc/net-sys, sntp /svc/net-sys and /svc/dns-sys, the
- * splash the mixer and /svc/wayland, the file server /svc/net and /svc/net-low, the SSH
- * server those two, /svc/session and /data read-only. init
- * keeps its end of each one's
- * SR_NS channel and sends it every later change, with ns_update: each
+ * player every mount read-only and the mixer, logd /data (without its
+ * top-level etc, as every program's), netlog /svc/net-sys, sntp
+ * /svc/net-sys and /svc/dns-sys, the splash the mixer and /svc/wayland, the
+ * file server /svc/net and /svc/net-low, the SSH server those two,
+ * /svc/session and /data read-only (with its own two files of etc). init
+ * keeps its end of each one's SR_NS channel and sends it every later
+ * change, with ns_update: each
  * change takes back the one it hasn't read yet (logd never looks up a
  * path again after it opens its file), so however often the namespace
  * changes, each holds at most one message from init.
@@ -97,8 +98,9 @@ static const char *const sntp_grants[] = { "/svc/" SVC_NET_SYS, "/svc/" SVC_DNS_
 static const char *const serve_grants[] = { "/svc/" SVC_NET, "/svc/" SVC_NET_LISTEN_LOW, NULL };
 /* The SSH server: what its list says (`svc net listen low`: port 22; `svc
  * session`: each login's shell; `mount /data r`: the host key and the
- * authorized keys, for its tinysshds). Its view of /data shows the host
- * key (`:rk`); every program's hides it (<fsview.h>'s FS_VIEW_HIDE_KEYS). */
+ * authorized keys, for its tinysshds). Its view of /data shows those two
+ * of etc (`:rk`); every program's has no etc at all (<fsview.h>'s
+ * FS_VIEW_NO_ETC). */
 static const char *const sshd_grants[] = { "/svc/" SVC_NET, "/svc/" SVC_NET_LISTEN_LOW,
                                            "/svc/" SVC_SESSION, DATA_MOUNT ":rk", NULL };
 static struct follower followers[NSVC] = {
