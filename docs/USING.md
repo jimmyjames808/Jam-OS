@@ -174,10 +174,10 @@ partition) appear read-only at `/nvme0`, `/nvme1`, ..., apart from the
 sticks' `/usbN`; the others (Windows' own NTFS, its reserved and recovery
 partitions) are listed and left alone. A drive is written only if it is a
 **Jam OS disk**: GPT with exactly two partitions, "Jam OS ESP" (the ESP's
-type) and "Jam OS data" (Jam OS's own type), which `disk prepare` makes on
-a blank drive and nothing else does. Windows' drive is not one, and the
-driver (which checks the table itself, and has no write command it can
-send to any other drive), volumes (a second check of its own) and the shell
+type) and "Jam OS data" (Jam OS's own type), which `disk prepare` makes
+and nothing else does. Windows' drive is not one, and the driver (which
+checks the table itself, and writes no other drive unless you erase it
+with `disk prepare`), volumes (a second check of its own) and the shell
 all refuse: `mount -w /nvme0` says "not on a Jam OS disk". Drives whose
 blocks are not 512 bytes are listed and not mounted (the FAT service reads
 512 only).
@@ -199,18 +199,28 @@ blocks are not 512 bytes are listed and not mounted (the FAT service reads
   are in the boot log too (`/data/logs`, in the form `disk digest: nvme0
   part1 2048+204800 <hash>`). `disk digest nvme0 <lba> <count>` hashes one
   range (at most 1 GiB).
-- `disk prepare nvme1` makes a blank NVMe drive a Jam OS disk. It shows the
+- `disk prepare nvme1` makes an NVMe drive a Jam OS disk. It shows the
   drive's model, serial number and size, and goes on only when you type the
   last four characters of the serial number (any case; anything else stops,
   and so does Ctrl+C): then it writes the partition table (an ESP of 512
   MiB at 1 MiB, a data partition of the rest, at most 2 TiB), formats both
   partitions and mounts them read-only (`/nvme1`, `/nvme2`: the next free
   numbers), and says `nvme1 is a Jam OS disk now: ESP 512.0 MiB, data ...`.
-  It refuses a drive that has anything on it ("not blank"), Windows' drive
-  first among them, and a drive already prepared ("a Jam OS disk
-  already"). A prepare that was cut short (the power) is finished by
-  running it again: whatever it left is a blank drive, a drive with only
-  half a table, or a Jam OS disk with a partition that has no volume yet.
+  A drive that isn't empty (anything at its first or last 64 KiB, or in
+  the first MiB at 1 MiB or at 513 MiB) is **erased**, and only if you
+  say so twice: it says "It is NOT empty", lists what is on it (its
+  partition table, each partition, the FAT volumes mounted from it), says
+  everything on it will be lost, and asks for the serial's last four
+  characters and then for `erase`; anything else stops, and nothing is
+  written. Check the serial: Windows' drive is shown the same way, and
+  erasing it loses Windows. It refuses the disk Jam OS booted from, a
+  drive with a volume mounted read-write, every drive on a `diskro` boot,
+  and a drive already prepared ("a Jam OS disk already"); an erase is
+  never confirmed in a command run over SSH (`ssh pc 'disk prepare ...'`).
+  A prepare that was cut short (the power) is finished by running it
+  again: whatever it left is a blank drive, a drive with only half a
+  table, or a Jam OS disk with a partition that has no volume yet (an
+  erase cut short leaves a drive that isn't empty: it asks again).
   `mount -w /nvme2` then makes the data partition writable, `mount -r`
   read-only again.
 - `disk smart nvme0` prints the drive's own health log: data read and
