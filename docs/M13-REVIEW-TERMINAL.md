@@ -121,11 +121,13 @@ never counted what was typed.
 ## For other tracks
 
 - **M13.7** (docs/M13.7-PLAN.md, "The guard"): `FS_VIEW_GUARD_PKG` can't be
-  4 any more (`FS_VIEW_HIDE_KEYS`); the next free bit is 8.
+  4, 8 or 16 any more (`FS_VIEW_HIDE_KEYS`, and since the owner's answer to
+  question 1 `FS_VIEW_HIDE_ETC` and `FS_VIEW_HIDE_AUTH`); the next free bit
+  is 32.
 - **M13.6** (ext's views, "as fat's"): an ext service must run the same
-  `fs_view_check` (or `fs_view_dispatch`), so `etc/ssh` is hidden on ext
-  too; a symbolic link into `etc/ssh` must be judged where it resolves, as
-  that plan already says for `etc`.
+  `fs_view_check` and `fs_view_dispatch` (the root's listing without
+  `etc`), so `etc` is hidden on ext too; a symbolic link into `etc` must be
+  judged where it resolves, as that plan already says for `etc`.
 
 ## Questions for the owner
 
@@ -134,8 +136,22 @@ never counted what was typed.
    writes. Other secrets under `etc` (the shell's history, `allow`) stay
    readable by programs with `/data`: hide all of `etc` from views instead,
    with sshd's `:rk` and logd's needs checked? (`settings` is read by
-   programs today.)
+   programs today.) **Answered (2026-10-14): hide all of it**, for reading
+   and writing, from every program; only the services that own its files
+   keep them. Built (track views-etc): two more hiding flags,
+   `FS_VIEW_HIDE_ETC` (8: the rest of `etc`, its listing, any request on
+   `etc` itself but a stat) and `FS_VIEW_HIDE_AUTH` (16:
+   `etc/authorized_keys`); with `FS_VIEW_HIDE_KEYS` they are
+   `FS_VIEW_NO_ETC`, every program's (`:r`, `:w`): `etc` doesn't exist
+   there (a stat of it refused, the root's listing without it). sshd's
+   `:rk` shows `etc/ssh` and `authorized_keys` and nothing else of `etc`; a
+   new C-only grant, `:ra`, shows its key check `authorized_keys` alone.
+   init and the shells it starts keep the whole of `/data`; logd writes
+   `/data/logs`, outside `etc`; no other program read `settings` (init
+   hands each service its values).
 2. **tinysshd's reach (finding 9).** Worth splitting so the pre-login
-   process holds neither the session service nor the key view?
+   process holds neither the session service nor the key view? **Answered
+   (2026-10-14): never.**
 3. **`true` and `false` with arguments (finding 7)**: accept and ignore
-   them, as POSIX does?
+   them, as POSIX does? **Answered (2026-10-14): yes**, and `env` stays
+   refused. Built (track views-etc): their usage says `[word...]`.

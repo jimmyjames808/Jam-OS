@@ -2099,14 +2099,20 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
   service hands out narrower channels onto the same volume (`fs.view`,
   `<fsview.h>`): read-only (every change refused, `statfs` says so), or
   with the volume's top-level `etc` guarded (no change at or under it,
-  however the name is spelled), and without `etc/ssh` (no request there at
-  all, reads included: the SSH server's host key); the service checks
+  however the name is spelled), and with parts of `etc` hidden (no
+  request there at all, reads included: `etc/ssh`, the SSH server's host
+  key; `etc/authorized_keys`; the rest of it, the settings, the approvals
+  and the history); with all three hidden `etc` doesn't exist (a stat of
+  it is refused and the root's listing leaves it out); the service checks
   every request on a view before its own code sees it (fat and libos's
   fsserver). **Grants**:
   a starter names what a child gets (`<os.h>` "grants"): everything as
   it has it, one mount as it is or as a view (`/data:r`, `/data:w`, both
-  without `etc/ssh`; `/data:rk`, read-only with it, which only C code
-  writes: init's grant to sshd and sshd's to its children), every
+  without `etc` at all: every program's, whatever its list says;
+  `/data:rk`, read-only with `etc/ssh` and `etc/authorized_keys` and
+  nothing else of `etc`, and `/data:ra`, the same without `etc/ssh`,
+  which only C code writes: init's grant to sshd and sshd's to its
+  children and its key check), every
   other stick (`/usb*`), every mount as views (`*:r`, `*:w`), a service;
   the views are made before the child starts. A POSIX `open()` sits on
   top of the namespace in the POSIX layer's file calls (`user/posix/sys/`,
@@ -2121,11 +2127,13 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
   program's list when the boot image is built (that is the build's
   approval; the services that kill drivers and services are for tests
   only). The shell gives a program it runs exactly its list (every mount
-  as a view: read-only, or writable with `etc` guarded; the root with
+  as a view: read-only or writable, without `etc` at all; the root with
   only the powers named, which it can't pass on) and its terminal (a
   PROGRAM-level console channel, its output channel in a pipe); a
-  program with no list gets the terminal only. Only init and the shell
-  hold a `/data` whose `etc` they may change.
+  program with no list gets the terminal only. Only init and the shells
+  it starts hold a `/data` with `etc` in it: the settings, the approvals,
+  the history and the SSH keys are theirs (the SSH server sees its own
+  two files there and nothing else).
 - **Shell** (`user/services/shell/`): `main.c` is the console I/O, the line
   editor and history; `sh_parse.c` splits a line (`; && || |`, quotes),
   `sh_vars.c` holds variables ($NAME, export -> the environment of `run`)
@@ -2159,7 +2167,7 @@ the `vlan=` word (so a `reboot` of "Jam OS (no network)" stays off) and
   before), hashes those bytes, and starts it
   only if a line has that path and hash, with the list read from the
   same bytes. No program can mark one: every program's `/data` is a view
-  that leaves `etc` alone, and none holds `RIGHT_ROOT_VMEX`. A list that
+  without `etc`, and none holds `RIGHT_ROOT_VMEX`. A list that
   asks for devmgr's or init's channels (`svc devmgr`, `devmgr-ctl`,
   `init`) is refused, approval or not: they reach drivers, devices and
   the filesystems unguarded, past every view; so is one that asks for
