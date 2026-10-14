@@ -50,7 +50,7 @@ bool t_jit(void)
     CHECK_ST(jam_vmar_map(vmar, v, 0, PG, RW, &a), OK);
     CHECK_ST(jam_vmar_protect(vmar, a, PG, RWX), ERR_INVALID_ARGS);
     CHECK_ST(jam_vmar_unmap(vmar, a, PG), OK);
-    if (!root || jam_handle_duplicate(root, RIGHTS_BASIC | RIGHT_ROOT_JIT, &power) != OK) {
+    if (!root || jam_handle_duplicate(root, RIGHT_DUPLICATE | RIGHT_ROOT_JIT, &power) != OK) {
         if (root)   /* our root without the power: refused, and v is gone */
             CHECK_ST(jam_vmo_make_jit(v, root, &x), ERR_ACCESS_DENIED);
         else
