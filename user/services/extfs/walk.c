@@ -224,15 +224,19 @@ status_t walk(const struct xf_ctx *c, const char *path, uint32_t len, uint32_t f
                 return ERR_NOT_FOUND;
             if (target[0] == '/')
                 return link_out(w, FS_RESOLVE_ABSOLUTE, used, target, (uint32_t)tlen, r, rlen);
-            /* In the name's place: the target, '/', the rest. */
-            if (tlen + 1 + rlen > sizeof(rest_buf))
+            /* In the name's place: the target, then '/' and the rest if
+             * there is any (a '/' after the last name would ask for a
+             * directory). */
+            uint32_t sep = rlen ? 1 : 0;
+            if (tlen + sep + rlen > sizeof(rest_buf))
                 return ERR_NAME_TOO_LONG;
-            char *nr = rest_buf + sizeof(rest_buf) - (tlen + 1 + rlen);
-            memmove(nr + tlen + 1, r, rlen);
+            char *nr = rest_buf + sizeof(rest_buf) - (tlen + sep + rlen);
+            memmove(nr + tlen + sep, r, rlen);
             memcpy(nr, target, tlen);
-            nr[tlen] = '/';
+            if (sep)
+                nr[tlen] = '/';
             r = nr;
-            rlen += (uint32_t)tlen + 1;
+            rlen += (uint32_t)tlen + sep;
             w->has_name = false;
             continue;
         }

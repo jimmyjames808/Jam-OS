@@ -15,7 +15,8 @@ send mkdir /data/extfs-e2fsck; echo st-$T=$?
 wait st-x=0
 wait {prompt}
 send utest only extfs; echo st-$T=$?
-wait 1200 utest: 10 passed
+wait 1200 passed
+seen utest: 10 passed
 wait st-x=0
 wait {prompt}
 send sync; echo st-$T=$?

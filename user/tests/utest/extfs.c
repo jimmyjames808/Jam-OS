@@ -19,7 +19,8 @@
 
 #define SAVE_DIR "/data/extfs-e2fsck"
 
-static struct ramdisk xd;
+/* Each test has a disk of its own (a test that fails leaves its extfs and
+ * its disk's session behind, which the next test must not trip over). */
 static uint8_t big[64u << 10], back[64u << 10];
 
 static uint64_t dl(void)
@@ -160,6 +161,7 @@ static bool has_entry(handle_t fs, const char *dir, const char *name, uint8_t ty
 
 bool t_extfs_basic(void)
 {
+    static struct ramdisk xd;
     struct fatrun r;
     CHECK(ramdisk_create(&xd, EXT_DISK_SECTORS));
     CHECK(extfs_start(&r, &xd, false, NULL, 0));
@@ -259,6 +261,7 @@ bool t_extfs_basic(void)
 
 bool t_extfs_links(void)
 {
+    static struct ramdisk xd;
     struct fatrun r;
     char next[FS_PATH_LEN + 1], target[FS_PATH_LEN + 1];
     uint8_t kind = 9;
@@ -353,6 +356,7 @@ bool t_extfs_links(void)
 
 bool t_extfs_perms(void)
 {
+    static struct ramdisk xd;
     struct fatrun r;
     struct tfile f;
     uint32_t mode = 0;
@@ -422,6 +426,7 @@ bool t_extfs_perms(void)
 
 bool t_extfs_writers(void)
 {
+    static struct ramdisk xd;
     struct fatrun r;
     struct tfile a, b;
     uint32_t done = 0;
@@ -507,6 +512,7 @@ bool t_extfs_writers(void)
 
 bool t_extfs_views(void)
 {
+    static struct ramdisk xd;
     struct fatrun r, v, g, s, ro;
     struct tfile f;
     char next[FS_PATH_LEN + 1];
@@ -612,6 +618,7 @@ static unsigned spoil(struct ramdisk *rd, const char *name)
 
 bool t_extfs_error(void)
 {
+    static struct ramdisk xd;
     struct fatrun r;
     uint64_t total, fr;
     uint8_t ro = 0, label[16];

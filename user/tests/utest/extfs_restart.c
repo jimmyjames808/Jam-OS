@@ -334,6 +334,7 @@ bool t_extfs_restart_steps(void)
  * (answered:1): the client gets working handles once. */
 bool t_extfs_restart_handles(void)
 {
+    static struct ramdisk test_disk;   /* each test its own: a failed one leaves its own */
     static const char *const dies[] = {
         "die=answered:1", "die=journal:1", "die=answered:1", "die=commit:1",
     };
@@ -362,7 +363,8 @@ bool t_extfs_restart_handles(void)
 
 bool t_extfs_restart_bad(void)
 {
-    static const char *const kills[] = { "die=write:1", "die=write:1" };
+    static const char *const kills[] = { "die=write:3", "die=write:3" };
+    static struct ramdisk test_disk;
     bool is_dir = false;
     if (!ramdisk_create(&test_disk, DISK_SECTORS) ||
         !sup_start(&test_disk, NULL, 0, "crash-on=bad"))
@@ -376,7 +378,7 @@ bool t_extfs_restart_bad(void)
         return false;
     if (!sup_start(&test_disk, kills, 2, NULL))
         return false;
-    CHECK_ST(t_mkdir(&sv.r, "/k"), OK);   /* ended twice at its first write */
+    CHECK_ST(t_mkdir(&sv.r, "/k"), OK);   /* ended twice at its third write */
     CHECK_EQ(sv.tests, 2u);
     CHECK_ST(t_stat(&sv.r, "/k", NULL, &is_dir, NULL), OK);
     CHECK(is_dir);
@@ -421,6 +423,7 @@ static bool promote(handle_t sup, const char *ended)
 
 bool t_extfs_spare(void)
 {
+    static struct ramdisk test_disk;
     handle_t job, sup, proc, job2, sup2, proc2;
     struct tfile f;
     uint32_t done = 0;
