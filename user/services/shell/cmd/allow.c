@@ -1,7 +1,9 @@
 /* allow: the owner marks a program on /data runnable and grants it what it
  * asks for (sh_allow.c; docs/HISTORY.md, M8.6):
  *   allow <file>      show the file's list and ask y/n; y writes the approval
- *                     (its line, and its page table: each page's hash)
+ *                     (its line, and its page table: each page's hash); a
+ *                     list with `right jit` is said on a line of its own
+ *                     first: it may write and run code nobody checked
  *   allow -l          the approvals
  *   allow -r <name>   take away those whose path or file name is <name> (and
  *                     their tables)
@@ -103,6 +105,10 @@ static int allow_file(const char *arg)
     if (bad) {
         sh_tty("allow: %s: asks for %s, which no program from /data may have\n", arg, bad);
     } else if (drop_typed_ahead()) {
+        if (w.rights & WANT_RIGHT_JIT)   /* the one exception to W^X: on a line of its own */
+            sh_say("allow %s: it asks to write and run its own code (JIT memory): the system "
+                   "can't check that code, so allow it only if you trust the program\n",
+                   sh_basename(abs));
         sh_say("allow %s: %s? y/n ", sh_basename(abs),
                w.text[0] ? w.text : "nothing but its terminal");
         sh_flush();
