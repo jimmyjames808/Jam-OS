@@ -17,10 +17,10 @@ Everything a port's build makes is under build/ports/<name>/ (the
 A port is out of date when its stamp changes: the SHA-256 of the
 builder's format, the recipe and every file in the port's directory, the
 shared files (config.site and the toolchain files), tools/jamos-cc (and
-for `toolchain clang` tools/jamos-clang and the clang's identity), the
-sysroot (build/sysroot changes with musl and the call layer), a vendored
-source's tree, SOURCE_DATE_EPOCH, and every needed port's own stamp, so a
-fix in a library rebuilds what links it. The distfiles' hashes are in the
+for `toolchain clang` tools/jamos-clang and the clang's identity, and for
+`rust` the Rust's), the sysroot (build/sysroot changes with musl and the
+call layer), a vendored source's tree, SOURCE_DATE_EPOCH, and every needed
+port's own stamp, so a fix in a library rebuilds what links it. The distfiles' hashes are in the
 recipe.
 """
 import fcntl
@@ -111,6 +111,9 @@ class Builder:
                 h.update(b"toolchain clang\0")
                 tree_hash(os.path.join(self.top, "tools", "jamos-clang"), h)
                 h.update(toolchain.clang_id(self.top).encode())
+            if r.rust:   # and the Rust
+                h.update(b"toolchain rust\0")
+                h.update(toolchain.rust_id(self.top).encode())
         h.update(b"epoch %d\n" % self.epoch(r))
         if r.get("vendored"):
             tree_hash(os.path.join("third_party", r.get("vendored")), h)
@@ -197,7 +200,8 @@ class Builder:
         paths = {"tmp": os.path.join(base, "tmp"), "epoch": self.epoch(r),
                  "tool_bins": tool_bins, "tool_pcs": tool_pcs,
                  "destdir": os.path.join(base, "destdir"), "srcdir": srcdir,
-                 "jobs": self.jobs, "config_site": os.path.abspath(self.tree.shared("config.site"))}
+                 "jobs": self.jobs, "rust": toolchain.rust_dir(self.top) if r.rust else None,
+                 "config_site": os.path.abspath(self.tree.shared("config.site"))}
         os.makedirs(paths["destdir"])
         env = toolchain.environment(r, bindir, sysroot, paths)
         self.run_style(r, srcdir, work, env, paths)

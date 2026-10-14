@@ -9,16 +9,26 @@
 #   JAMOS_REMOTE=jamos-pc JAMOS_REMOTE_ONLY=1 tools/remote-test.sh \
 #       tools/cr-test.sh build/test/cr hello
 #
-# Cases (milestone CR-a now; CT2 adds `rust`, the CB tracks theirs):
+# Cases (milestone CR-a now; the CB tracks add theirs):
 #   hello   ports/cr-hello, the C++ program (track CT1): built by
 #           tools/jamos-clang++ with LLVM's runtimes (ports/llvm-runtimes,
 #           ports/linux-uapi); the syscall scan on it (tools/cr/syscall-scan.py);
 #           the same source built by the build host's own c++ prints
 #           ports/cr-hello/files/expected.txt; then on Jam OS from /data it
 #           prints the same, byte for byte (ports/cr-hello/test)
+#   rust    ports/cr-rust-hello, the Rust program (track CT2): Chromium's
+#           pinned Rust builds the standard library from rust-src for
+#           x86_64-unknown-linux-musl and the port's clang driver links it
+#           against Jam OS's musl; the syscall scan on it; the same source
+#           built for the build host by the same rustc prints
+#           ports/cr-rust-hello/files/expected.txt (and its `panic` mode
+#           aborts with expected-panic.txt); then on Jam OS from /data it
+#           prints the same, byte for byte, and aborts the same way
+#           (ports/cr-rust-hello/test)
 #
 # The toolchain is fetched first if it isn't there (tools/cr/toolchain.sh:
-# clang, cmake). The ports build at low priority with CR_JOBS jobs (8;
+# clang, cmake, and for `rust` Rust; gperf, which Chromium's build needs, is
+# built into ~/.cache/jamos/tools by the same script). The ports build at low priority with CR_JOBS jobs (8;
 # the first build of the runtimes is a few minutes: an agent with CPUs to
 # spare builds them first, `JAMOS_REMOTE_LIGHT_CPUS=16 tools/remote-test.sh
 # nice python3 tools/ports.py --out=build/ports build -j 16 cr-hello`).
@@ -96,10 +106,69 @@ case_hello() {
     fi
 }
 
+case_rust() {
+    dir=$out/rust
+    rm -rf "$dir"
+    mkdir -p "$dir"
+    tools/cr/toolchain.sh clang cmake rust gperf > "$dir/toolchain.log" 2>&1 ||
+        { tail -5 "$dir/toolchain.log"; echo "FAIL (the toolchain, see $dir/toolchain.log)" > "$dir/result"; return; }
+    if ! build_ports "$dir/build.log" cr-rust-hello; then
+        echo "FAIL (the build, see $dir/build.log)" > "$dir/result"
+        return
+    fi
+    prog=build/ports/cr-rust-hello/stage/bin/cr-rust-hello
+    cp "$prog" "$dir/cr-rust-hello"
+    size=$(wc -c < "$prog" | tr -d ' ')
+    say "rust: bin/cr-rust-hello is $((size / 1024)) KB"
+    if ! python3 tools/cr/syscall-scan.py "$prog" > "$dir/scan.txt" 2>&1; then
+        cat "$dir/scan.txt"
+        echo "FAIL (the syscall scan, see $dir/scan.txt)" > "$dir/result"
+        return
+    fi
+    sed 's/^/cr-test: /' "$dir/scan.txt"
+
+    # The build host's own build of the same source (the same rustc, its
+    # standard library for the host) must print expected.txt, and abort in
+    # panic mode (status 134, a signal 6) with expected-panic.txt.
+    src=ports/cr-rust-hello/files
+    rustc=$(tools/cr/toolchain.sh --dir rust)/bin/rustc
+    if ! "$rustc" --edition 2021 -O -C panic=abort -o "$dir/cr-rust-hello-host" "$src/src/main.rs" \
+         > "$dir/host-build.log" 2>&1; then
+        echo "FAIL (the build host's rustc, see $dir/host-build.log)" > "$dir/result"
+        return
+    fi
+    "$dir/cr-rust-hello-host" "$dir/host-scratch" > "$dir/host-output.txt" 2> "$dir/host-stderr.txt"
+    st=$?
+    if [ $st != 0 ] || ! cmp -s "$dir/host-output.txt" "$src/expected.txt"; then
+        diff "$src/expected.txt" "$dir/host-output.txt" | head -20
+        echo "FAIL (the build host's run differs from expected.txt: status $st)" > "$dir/result"
+        return
+    fi
+    # (in a subshell with no core file, so the shell's "Aborted" note is not shown)
+    ( ulimit -c 0; "$dir/cr-rust-hello-host" panic > "$dir/host-panic.txt" 2> "$dir/host-panic-stderr.txt" ) 2> /dev/null
+    st=$?
+    if [ $st != 134 ] || ! cmp -s "$dir/host-panic.txt" "$src/expected-panic.txt"; then
+        diff "$src/expected-panic.txt" "$dir/host-panic.txt" | head -20
+        echo "FAIL (the build host's panic run differs from expected-panic.txt: status $st)" > "$dir/result"
+        return
+    fi
+    rm -f "$dir/cr-rust-hello-host"
+    say "rust: the build host's build prints expected.txt and aborts in panic mode"
+
+    # On Jam OS: from /data, the same output and the same abort.
+    if tools/ports-test.sh "$dir/qemu" cr-rust-hello > "$dir/ports-test.out" 2>&1; then
+        echo PASS > "$dir/result"
+    else
+        grep "ports-test: cr-rust-hello:" "$dir/ports-test.out" | tail -1
+        echo "FAIL (on Jam OS: see $dir/qemu/cr-rust-hello/)" > "$dir/result"
+    fi
+}
+
 for c in "$@"; do
     case $c in
     hello) case_hello ;;
-    *) echo "cr-test: no case $c (hello)" >&2
+    rust) case_rust ;;
+    *) echo "cr-test: no case $c (hello, rust)" >&2
        mkdir -p "$out/$c"
        echo "FAIL (no such case)" > "$out/$c/result" ;;
     esac

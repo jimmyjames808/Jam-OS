@@ -1,0 +1,33 @@
+cr-rust-hello: start
+threads: 8 joined, total 31999996000000
+threads: thread_local destructors ran 8, main's count 1
+threads: mutex 8000, atomic 8000
+threads: condvar woken
+threads: scoped sum 36, OnceLock 99 made 1 time(s)
+threads: named Some("small")
+threads: returned a-b-c
+threads: slept at least 10 ms
+channels: 400 messages, sum 619800, each producer in order true
+channels: ping-pong [2, 4, 6, 8, 10]
+channels: empty, timeout, queued 9, then closed
+channels: pool squares [1, 4, 9, 16, 25, 36, 49, 64, 81, 100]
+files: uno.txt says "one", two.txt is 4500 bytes
+files: appended, 3 lines ["one", "two", "three"]
+files: at 2250 "line 250", end 4500
+files: a/ holds ["b/", "uno.txt"]
+files: copied 4500 bytes, renamed, same true
+files: rewritten first line "line XYZ"
+files: open of a missing file: NotFound, No such file or directory (os error 2)
+files: create_dir over a directory: AlreadyExists
+files: four writers made [9, 18, 27, 36] bytes
+files: remove_all done true, the directory is there false
+library: 97 keys, k0=20370, k96=20350, first ("k0", 20370)
+library: sorted [9, 7, 5, 3, 1]
+library: [    42|ab    | mid  |003.14|0xff|1.2345678e4]
+library: parsed -89 0.25 true
+library: STRASSE ÑANDÚ olléh
+library: u128 79228162532711081662958547000 / 1000000007 = 79228161978113947816 rem 160912288
+library: i128 min -170141183460469231731687303715884105728, sqrt2 1.4142135624, powi 57.6650390625
+library: areas [4.0, 3.0], Rc count 2
+library: arguments 2
+cr-rust-hello: ok

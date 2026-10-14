@@ -48,12 +48,15 @@ KEYS = {
     "subpackage": ("many", 2, None), "multicall": ("many", 2, None),
     "tool": ("many", 1, 1), "host-of": ("one", 1, 1), "data": ("many", 2, 2),
     "cpe": ("one", 1, 1), "fixed": ("many", 2, 2), "not-affected": ("many", 2, None),
-    "toolchain": ("one", 1, 1),
+    "toolchain": ("one", 1, 2),
 }
 # `toolchain clang`: the port is compiled by tools/jamos-clang and
 # jamos-clang++ (clang and lld, LLVM's runtimes, C++) instead of jamos-cc
 # (docs/CR-PLAN.md section 1); without the line, jamos-cc and no C++.
-TOOLCHAINS = ("clang",)
+# `toolchain clang rust` adds Chromium's pinned Rust (tools/cr/toolchain.sh
+# fetches it; CT2): the build gets $JAMOS_RUST, the directory with bin/cargo
+# and bin/rustc, and links by the clang drivers.
+TOOLCHAINS = ("clang", "rust")
 # The port that builds the runtimes every clang-built program links; every
 # other clang port needs it.
 RUNTIMES = "llvm-runtimes"
@@ -131,7 +134,13 @@ class Recipe:
     @property
     def toolchain(self):
         """"clang", or None: jamos-cc."""
-        return self.get("toolchain")
+        words = self.one.get("toolchain")
+        return words[0] if words else None
+
+    @property
+    def rust(self):
+        """True for `toolchain clang rust`: built with Chromium's Rust."""
+        return "rust" in (self.one.get("toolchain") or [])
 
     @property
     def prefix(self):
@@ -377,9 +386,13 @@ def _lint_style(r):
                 p.append("%s: host tool '%s'" % (r.path, t))
     tc = r.toolchain
     if tc is not None:
-        if tc not in TOOLCHAINS:
+        words = r.one["toolchain"]
+        if any(w not in TOOLCHAINS for w in words):
             p.append("%s: toolchain must be one of %s (none: jamos-cc)" %
                      (r.path, ", ".join(TOOLCHAINS)))
+        elif words[0] != "clang" or len(words) > 2:
+            p.append("%s: toolchain takes 'clang', or 'clang rust' (Rust links by the clang"
+                     " drivers)" % r.path)
         elif r.place == "host":
             p.append("%s: a host port is built by the build machine's compiler, not a toolchain"
                      % r.path)

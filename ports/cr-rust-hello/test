@@ -1,0 +1,27 @@
+# cr-rust-hello's test (tools/ports-test.sh; tools/cr-test.sh rust runs it):
+# the Rust program from /data/pkg, its output to a file and then shown, its
+# exit status 0, and the file byte for byte the expected.txt it was packaged
+# with (the build host's own build of the same source printed the same:
+# tools/cr-test.sh checks that side). Then the panic mode: the hook prints
+# and the process aborts (status 134, a signal 6), the output as
+# expected-panic.txt.
+send run $P/cr-rust-hello /data/crr-$T > /data/crr-$T.txt; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send cat /data/crr-$T.txt
+wait threads: 8 joined, total 31999996000000
+wait cr-rust-hello: ok
+wait {prompt}
+send cmp /data/crr-$T.txt /data/pkg/share/cr-rust-hello/expected.txt && echo same-$T
+wait same-x
+wait {prompt}
+# The scratch directory is gone (the program removed it).
+send ls /data | grep -c ^crr-$T$ | run $S/sed s/^/left-/
+wait left-0
+wait {prompt}
+send run $P/cr-rust-hello panic > /data/crr-$T-p.txt; echo pst-$T=$?
+wait pst-x=134
+wait {prompt}
+send cmp /data/crr-$T-p.txt /data/pkg/share/cr-rust-hello/expected-panic.txt && echo psame-$T
+wait psame-x
+wait {prompt}

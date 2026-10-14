@@ -1,7 +1,9 @@
 # CR plan: Chromium
 
 Status (2026-10-11): a plan (CR0), nothing built. 2026-10-13: CT1, the clang
-toolchain and CR-a's C++ half, built ([CT1 as built](#ct1-as-built-2026-10-13)). Written against main
+toolchain and CR-a's C++ half, built ([CT1 as built](#ct1-as-built-2026-10-13)).
+2026-10-14: CT2, CR-a's Rust half and the pinned gperf, built ([CT2 as
+built](#ct2-as-built-2026-10-14)). Written against main
 d28b8b52 with [G2's rescope](G2-PLAN.md#the-chromium-rescope-2026-10-11)
 on top (M13's sockets, sessions, ptys, tinyssh and pipelines merged;
 M12.5's PK1 to PK4, PU and PF1 merged; M13.6's U1 merged; M13.7's PO1,
@@ -307,9 +309,78 @@ design above:
   keys](M13.7-PLAN.md#2-the-recipe)).
 - **The PC check** (`tools/cr/hostcheck.sh`, 2026-10-13): 776 GB free under
   `~/cr`, 23 GB of memory, 8 GB of swap (the plan asks 16: a WARN below
-  8), 28 threads, WSL kernel 5.15. It FAILs on `gperf` (Chromium's build:
-  `apt install gperf`, the owner's, or a build into the venv by CB1) and
-  WARNs on Node.js (CB1 says whether the tarball brings its own).
+  8), 28 threads, WSL kernel 5.15. It FAILed on `gperf` (Chromium's build;
+  CT2 builds one, below) and WARNs on Node.js (CB1 says whether the tarball
+  brings its own).
+
+#### CT2 as built (2026-10-14)
+
+The Rust half of CR-a passes: `tools/cr-test.sh build/test/cr rust` on the
+PC builds `ports/cr-rust-hello`, the syscall scan passes on it (105 `syscall`
+instructions, all in Jam OS's call stubs), the same source built for the
+build host by the same rustc prints its `expected.txt` (and, with the
+argument `panic`, aborts with status 134 and `expected-panic.txt`), and on
+Jam OS from `/data/pkg` it prints the same bytes and aborts the same way
+(the shell says "killed by SIGABRT", status 134). The program uses eight
+threads with `thread_local` destructors, a mutex, a condition variable,
+scoped threads, `OnceLock`, park and unpark, four channel kinds (mpsc, a
+rendezvous `sync_channel`, `recv_timeout`, a worker pool over boxed jobs),
+files (create, append, seek, `fs::copy`, rename, `read_dir`, error kinds
+and their texts, four threads writing at once, `remove_dir_all`),
+`HashMap` (std seeds it from the system), `u128` arithmetic, float and
+Unicode formatting; the build is about 23 s, the program 1 MB. No change
+to the kernel, the libc or `posix.ld` was needed: Rust's std ran on the
+call layer as it stood.
+
+- **Which std: built from rust-src, with Chromium's Rust.** Chromium's
+  package (`rust-toolchain-<revision>-<clang revision>.tar.xz`, 276 MB, 1.4
+  GB unpacked: rustc 1.100.0-nightly of 2026-09-09, cargo, bindgen, and
+  `lib/rustlib/src/rust/library` with the crates it needs vendored beside
+  it) has the standard library for the host only. rustup's prebuilt
+  `x86_64-unknown-linux-musl` std was not tried: rustc takes only a
+  standard library built by the very same compiler (a different build's
+  rlibs are refused as "compiled by an incompatible version of rustc"),
+  Chromium's rustc is a dev commit with its own version suffix, and no
+  rustup std is built by it. The route that needs nothing more fetched is
+  also Chromium's own (its GN builds std from the same rust-src for
+  whatever target it is told): `cargo build -Zbuild-std=std,panic_abort
+  --target x86_64-unknown-linux-musl --offline`, the vendored crates named
+  by `--config` (`source.vendored-sources.directory`), `RUSTC_BOOTSTRAP=1`
+  for the unstable flag. So CB1 has already seen Chromium's Rust build
+  std for this target against Jam OS's musl and runtimes.
+- **The link**: the port's compiler wrapper (tools/jamos-clang) is cargo's
+  linker for the target. rustc's flags: `-C link-self-contained=no` (rustc's
+  own musl, crt files and libunwind stay out: `-lc` and `-lunwind` resolve
+  to Jam OS's musl and ports/llvm-runtimes' libunwind in the sysroot),
+  `-C relocation-model=static` (musl's default is static-pie, which
+  tools/jamos-clang refuses: Jam OS runs `ET_EXEC` only; std is built with
+  it too), and `-C link-arg=--jamos-wants=<file>` for the program's list
+  (the wrapper picks a list by the output's name, and cargo's output is
+  `deps/cr_rust_hello-<hash>`). Paths are remapped
+  (`--remap-path-prefix`) so the binary does not carry the build's.
+  `panic=abort`, as Chromium builds its Rust, and so the abort is the
+  panic test.
+- **The recipe line `toolchain clang rust`** (tools/portslib/recipe.py) adds
+  Chromium's pinned Rust to `toolchain clang`: the build gets `JAMOS_RUST`
+  (the unpacked directory: JAMOS_RUST in the host's environment names
+  another), its `build.sh` runs cargo, and the Rust's identity (its
+  `rustc --version` line) is in the port's stamp. `tools/cr/toolchain.sh
+  rust` unpacks the package (pinned by size and SHA-256 in
+  `tools/cr/toolchain.pins`, like clang) into
+  `~/.cache/jamos/toolchains/rust-<version>/`; it checks that rustc runs
+  and that rust-src has its vendored crates.
+- **gperf is built pinned into `~/.cache/jamos/tools`** (the owner,
+  2026-10-14: Chromium's build needs gperf, and none is to be taken from
+  the system): `tools/cr/toolchain.sh gperf` fetches GNU gperf 3.1 (the
+  version Debian and Ubuntu ship; 1215925 bytes, SHA-256 in
+  `toolchain.pins`), builds its `lib/` and `src/` with the host's C++
+  compiler and make (`configure --prefix=$JAMOS_TOOLS`; the documentation
+  is not built: its generated files look out of date and ask for makeinfo)
+  and puts `gperf` in `~/.cache/jamos/tools/bin`, which `tools/ports.py`
+  and `tools/cr/hostcheck.sh` put first on PATH, so the PC check passes
+  (`tool: gperf GNU gperf 3.1`) and CB1's build finds it there. Done once
+  per version; with no names the script fetches clang, cmake, Rust and
+  gperf.
 
 ### 2. The address space: huge sparse reservations (the top risk)
 
@@ -1083,7 +1154,7 @@ ports, recipes, tests, netstack's caps, the audio API and the docs.
 | Track | What | Files it owns | Waits for | Tests | Model |
 |---|---|---|---|---|---|
 | **CT1. The toolchain** | section 1: the PC check (tools/cr/hostcheck.sh, new: disk, memory, threads, host tools; stops on a shortfall); the host toolchain fetch (tools/cr/toolchain.sh, new: Chromium 155's pinned clang and Rust into `~/.cache/jamos/toolchains`); ports/linux-uapi and ports/llvm-runtimes (new: builtins, libunwind, libc++, libc++abi for the target, static); tools/jamos-clang and tools/jamos-clang++ (new); `posix.ld` under lld; the syscall scan (tools/cr/syscall-scan.py, new); tools/cr-test.sh (new) with its `hello` case; the C++ hello (ports/cr-hello, new) | the new files named; `user/posix/posix.ld` (a line if lld needs it); the recipe line `toolchain` in tools/ports.py (minimal) | nothing (the owner's Q1 and Q2 shape it: recommendations assumed) | cr-test.sh `hello` in QEMU; the scan on the hello; `make check` | **Opus** |
-| **CT2. Rust** | a Rust hello for `x86_64-unknown-linux-musl` linked by tools/jamos-clang against Jam OS's musl (`-C link-self-contained=no`; std built from rust-src with Chromium's Rust, or rustup's prebuilt std if that links cleanly: the track says which, and why); threads, channels, files, a panic | ports/cr-rust-hello (new), cr-test.sh's `rust` case | CT1's drivers | cr-test.sh `rust`; the scan | Sonnet 5.5 |
+| **CT2. Rust** (built 2026-10-14) | a Rust hello for `x86_64-unknown-linux-musl` linked by tools/jamos-clang against Jam OS's musl (`-C link-self-contained=no`; std built from rust-src with Chromium's Rust, or rustup's prebuilt std if that links cleanly: the track says which, and why); threads, channels, files, a panic | ports/cr-rust-hello (new), cr-test.sh's `rust` case | CT1's drivers | cr-test.sh `rust`; the scan | Sonnet 5.5 |
 | **CK1. Big sparse VMOs** | section 2: the fourth table level for VMOs past 64 GiB, `VMO_MAX_SIZE` 128 TiB for plain paged VMOs, decommit, shrink and destroy skipping missing levels, the charges | `kernel/object/vmo.c` (the table code), `kernel/include/jam/abi.h` (the constant), `abi/syscalls.def`'s comment, new ktests | nothing (no other kernel track in `vmo.c` now) | ktests: a 1 TiB VMO costs one record; 1,000 scattered touches charge pages and tables exactly; a full decommit gives the pages back; destroy leaves the job at zero; a job at its limit refused at a touch; a whole-TiB decommit in under a millisecond; full ktest 4 and 8; soak 2 | **Opus** |
 | **CK2. Mappings at scale** | section 2: the mapping tree with gap sizes, merging after map, protect and replace, `VMAR_MAX_MAPPINGS` 65,536 | `kernel/mm/aspace.c` (the list and its users), `kernel/include/jam/abi.h` (the constant, a different line from CK1's), new ktests | nothing (beside CK1: different files) | ktests: 50,000 alternating `vmar_protect`s over one mapping end as a few mappings; a fault's time flat with 60,000 mappings; replace inside a big mapping; the job's record charges exact after merges; full ktest 4 and 8; soak 2 | **Opus** |
 | **CK3. The reverse map at scale** | section 2: a VMO's user mappings indexed by page range | `kernel/object/vmo.c` (the reverse map), `kernel/include/jam/aspace_vmo.h` | CK1 and CK2 merged | ktests: a VMO split into 10,000 mappings, a one-page decommit touches one; interrupts-off time measured before and after; full ktest 4 and 8; soak 2 | **Opus** |

@@ -102,7 +102,7 @@ need "the runtimes' and Chromium's build" ninja
 need "the UAPI headers' install" make
 need "the UAPI headers' install" gcc
 need "the UAPI headers' install" rsync
-need "Chromium's build" gperf
+need "Chromium's build; tools/cr/toolchain.sh gperf builds it into $tools/bin" gperf
 need "Chromium's build" pkg-config
 need "Chromium's build" bison
 need "Chromium's build" flex
