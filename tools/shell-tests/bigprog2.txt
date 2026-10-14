@@ -1,0 +1,28 @@
+# Programs as big as Chromium's on /data (tools/bigprog-test.sh, boot 2 of
+# 2): the stick bigprog.txt left, with one byte of /data/big's table page
+# 38,400 changed on this side of the image since (the size kept, so
+# nothing is refused before the pages are read). `lazy` runs (that page is
+# never touched), `check` reads it and dies there ("a page doesn't match
+# the approved program"), and the shell lives.
+# QEMU_INPUT=this file, command line "shell", QEMU_IMAGE the stick. The
+# text waited for is built from $T, so it never appears in the typed line.
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send T=c
+wait {prompt}
+send run /data/big lazy; echo st-$T=$?
+wait 60 bigprog: lazy: a table of 76800 pages, none touched
+wait st-c=0
+wait {prompt}
+send run /data/big check; echo st-$T=$?
+wait 300 user: process "big" killed: page fault: a page doesn't match the approved program
+wait run: /data/big was killed after
+wait st-c=137
+wait {prompt}
+send echo alive-$T-1
+wait alive-c-1
+wait {prompt}
+send reboot -f
+wait init: /data synced
+wait reboot: resetting

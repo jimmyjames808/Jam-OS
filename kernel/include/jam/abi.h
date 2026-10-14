@@ -610,10 +610,12 @@ struct pager_request {
 };
 
 /* vmo_make_exec_verified (abi/syscalls.def 59): the largest pager VMO it
- * takes (a program's limit, spawn's from a file), and its table's entry
- * for each page: the SHA-256 of the page's 4096 bytes (the last page's
- * zero past the file's end), page 0's at byte 0 of the table. */
-#define VMO_VERIFIED_MAX        (64ull << 20)
+ * takes (a program's limit, spawn's from a file: Chromium's static binary
+ * is 150 to 250 MB, docs/CR-PLAN.md section 6; its table is then 8 MiB at
+ * most), and its table's entry for each page: the SHA-256 of the page's
+ * 4096 bytes (the last page's zero past the file's end), page 0's at byte
+ * 0 of the table. */
+#define VMO_VERIFIED_MAX        (1ull << 30)
 #define VMO_VERIFIED_HASH_BYTES 32u
 
 /* console services (abi/syscalls.def 110-119) --------------------------------- */

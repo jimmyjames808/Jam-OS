@@ -515,6 +515,8 @@ EXTRA_DEPS_utest   := $(FATFS_HDRS)
 EXTRA_OBJS_execwide   := $(UOBJ)/user/tests/exectest/probe.c.o \
                          $(UOBJ)/user/tests/exectest/client.c.o
 EXTRA_CFLAGS_execwide := -iquote user/tests/exectest
+# bigprog's table (user/tests/bigprog/table.S): 16 pages in bootfs's copy.
+EXTRA_OBJS_bigprog    := $(UOBJ)/user/tests/bigprog/table.S.o
 
 # $(BUILD)/user/<prog> keeps its debug info (for gdb); bootfs gets a copy
 # without it ($(BUILD)/user/<prog>.bootfs), symbols kept for backtraces.
@@ -538,6 +540,20 @@ $(BUILD)/user/$(1).bootfs: $(BUILD)/user/$(1)
 	$(STRIP) --strip-debug $$< -o $$@
 endef
 $(foreach p,$(USER_PROGS),$(eval $(call USER_PROG,$(p))))
+
+# The big program (tools/bigprog-test.sh; docs/CR-PLAN.md section 6, CP1):
+# bin/bigprog linked with a table of BIGPROG_PAGES pages (76,800: 300 MiB,
+# a program as big as Chromium's) instead of 16. Generated only when a
+# test asks for it (`make build/bigprog/bigprog`), stripped of its debug
+# information, never in bootfs or the tree.
+BIGPROG_PAGES ?= 76800
+$(BUILD)/bigprog/table.o: user/tests/bigprog/table.S | $(UINC) $(SYSCALLS_OK)
+	@mkdir -p $(dir $@)
+	$(CC) $(USER_CFLAGS) -DBIG_PAGES=$(BIGPROG_PAGES) -c $< -o $@
+$(BUILD)/bigprog/bigprog: $(UOBJ)/user/lib/crt0.S.o $(call prog_objs,bigprog) \
+                          $(BUILD)/bigprog/table.o $(UOBJ)/libos.a user/linker.ld
+	$(LD) $(USER_LDFLAGS) -s $(UOBJ)/user/lib/crt0.S.o $(call prog_objs,bigprog) \
+	    $(BUILD)/bigprog/table.o $(UOBJ)/libos.a $(LIBGCC) -o $@
 
 # ---- drivers (ARCHITECTURE.md "The migration rule") -------------------------
 # A driver sees nothing but <jam/driver.h> (+ <jam/abi.h>, <jam/status.h>,

@@ -36,7 +36,7 @@
 #define DP_ALLOW_DIR  "/data/etc"
 #define DP_TABLE_DIR  "/data/etc/allow.d"
 #define DP_HEX_LEN    (2 * SHA256_BYTES)   /* an approval's hash as hex, without its NUL */
-#define DP_PROGRAM_MAX (64ull << 20)       /* the biggest program: spawn's, VMO_VERIFIED_MAX */
+#define DP_PROGRAM_MAX VMO_VERIFIED_MAX    /* the biggest program (1 GiB): spawn's, the kernel's */
 #define DP_ALLOW_MAX  (1u << 20)           /* the most bytes of the approvals read */
 
 /* ---- the page table ------------------------------------------------------------------ */

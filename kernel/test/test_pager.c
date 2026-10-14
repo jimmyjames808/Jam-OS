@@ -2341,6 +2341,127 @@ KTEST(pager_verified_refusals)
     vfix_end(&f);   /* every table freed, every page uncharged */
 }
 
+/* The biggest program (docs/CR-PLAN.md section 6, CP1): a pager VMO of
+ * VMO_VERIFIED_MAX (1 GiB), whose table is 262,144 hashes in 2048 pages,
+ * every one charged to the caller's job and freed with the VMO. Most of
+ * its pages are zero (one hash, computed once); a few, on either side of
+ * a table page's edge, at the middle and at the very end, hold words of
+ * their own, so an entry read from the wrong table page or slot shows:
+ * each marked page matches its own entry and no other. Pages supplied at
+ * the far end are checked against their entries there: the approved
+ * bytes taken, a changed byte refused. */
+#define VMAX_PAGES (VMO_VERIFIED_MAX / PG)
+
+static const uint64_t vmax_marked[] = { 0, 127, 128, 129, VMAX_PAGES / 2 - 1, VMAX_PAGES / 2,
+                                        VMAX_PAGES - 129, VMAX_PAGES - 128, VMAX_PAGES - 1 };
+#define VMAX_MARKED (sizeof(vmax_marked) / sizeof(vmax_marked[0]))
+
+static bool vmax_is_marked(uint64_t i)
+{
+    for (unsigned k = 0; k < VMAX_MARKED; k++)
+        if (vmax_marked[k] == i)
+            return true;
+    return false;
+}
+
+/* Page i of the file: word(key, i) in every 8 bytes if it is marked, else
+ * zeros. */
+static void vmax_page(uint64_t key, uint64_t i, uint8_t *out)
+{
+    for (uint64_t w = 0; w < PG / 8; w++)
+        ((uint64_t *)out)[w] = vmax_is_marked(i) ? word(key, i) : 0;
+}
+
+/* The table of the whole file, a table page at a time. */
+static struct vmo *vmax_table(uint64_t key)
+{
+    struct vmo *tv;
+    uint8_t *page = kmalloc(PG), *hashes = kmalloc(PG), zero[SHA256_BYTES];
+    KT_ASSERT(page && hashes);
+    memset(page, 0, PG);
+    sha256(page, PG, zero);
+    KT_EQ(vmo_create(VMAX_PAGES * VMO_VERIFIED_HASH_BYTES, 0, &tv), OK);
+    for (uint64_t tp = 0; tp < VMAX_PAGES * VMO_VERIFIED_HASH_BYTES / PG; tp++) {
+        for (uint64_t k = 0; k < PG / VMO_VERIFIED_HASH_BYTES; k++) {
+            uint64_t i = tp * (PG / VMO_VERIFIED_HASH_BYTES) + k;
+            uint8_t *d = hashes + k * VMO_VERIFIED_HASH_BYTES;
+            if (vmax_is_marked(i)) {
+                vmax_page(key, i, page);
+                sha256(page, PG, d);
+            } else {
+                memcpy(d, zero, SHA256_BYTES);
+            }
+        }
+        KT_EQ(vmo_write(tv, tp * PG, hashes, PG), OK);
+    }
+    kfree(page);
+    kfree(hashes);
+    return tv;
+}
+
+KTEST(pager_verified_max)
+{
+    const uint64_t key = 60;
+    struct job *j = kt_fresh_job();
+    struct pager *pg = pg_new(j, ANSWER);
+    struct vmo *v;
+    KT_EQ(pager_create_vmo(pg, key, VMO_VERIFIED_MAX, &v), OK);
+    struct handle_table t;
+    handle_table_init(&t);
+    t.job = j;
+    kobject_ref(vmo_kobject(v));
+    handle_t h = insert(&t, vmo_kobject(v), PAGER_VMO_RIGHTS), x;
+    struct kobject *root = resource_root();
+    kobject_ref(root);
+    handle_t rh = insert(&t, root, RIGHTS_BASIC | RIGHT_ROOT_VMEX);
+    handle_t th = insert(&t, vmo_kobject(vmax_table(key)), RIGHTS_BASIC | RIGHT_READ);
+
+    uint64_t used0 = job_used(j, JOB_LIMIT_PAGES);
+    KT_EQ(sys_vmo_make_exec_verified(&t, h, rh, th, 0, &x), OK);
+    KT_EQ(job_used(j, JOB_LIMIT_PAGES), used0 + VMAX_PAGES * VMO_VERIFIED_HASH_BYTES / PG);
+    struct vmo_verify *vf = vmo_verifier(v);
+    KT_ASSERT(vf);
+
+    uint8_t *mine = kmalloc(PG), *zero = kzalloc(PG);
+    KT_ASSERT(mine && zero);
+    for (unsigned k = 0; k < VMAX_MARKED; k++) {
+        uint64_t i = vmax_marked[k];
+        vmax_page(key, i, mine);
+        KT_ASSERT(vmo_verify_match(vf, i, mine));
+        KT_ASSERT(!vmo_verify_match(vf, i, zero));
+        /* Its neighbours' entries are another page's. */
+        if (i + 1 < VMAX_PAGES)
+            KT_ASSERT(!vmo_verify_match(vf, i + 1, mine));
+        if (i > 0)
+            KT_ASSERT(!vmo_verify_match(vf, i - 1, mine));
+        if (i + 1 < VMAX_PAGES && !vmax_is_marked(i + 1))
+            KT_ASSERT(vmo_verify_match(vf, i + 1, zero));
+    }
+    KT_ASSERT(!vmo_verify_match(vf, VMAX_PAGES, zero));   /* past the table */
+
+    /* Through the pager, at the far end: the last page as approved is
+     * taken; the one before it, changed, is refused and stays absent. */
+    vmax_page(key, VMAX_PAGES - 1, mine);
+    struct pager_src src = { .addr = (uint64_t)(uintptr_t)mine, .user = false };
+    KT_EQ(pager_supply(pg, key, (VMAX_PAGES - 1) * PG, &src, PG), OK);
+    KT_ASSERT(vmo_page_phys(v, (VMAX_PAGES - 1) * PG));
+    zero[100] ^= 1;
+    src.addr = (uint64_t)(uintptr_t)zero;
+    KT_EQ(pager_supply(pg, key, (VMAX_PAGES - 2) * PG, &src, PG), ERR_IO);
+    KT_EQ(vmo_page_phys(v, (VMAX_PAGES - 2) * PG), 0);
+    uint64_t w;
+    KT_EQ(vmo_read(v, (VMAX_PAGES - 1) * PG + 8, &w, 8), OK);
+    KT_EQ(w, word(key, VMAX_PAGES - 1));
+    kfree(mine);
+    kfree(zero);
+
+    handle_table_destroy(&t);
+    put(v);
+    pg_close(pg);
+    kt_job_is_empty(j);   /* the 2048 table pages went with the VMO */
+    job_unref(j);
+}
+
 /* Read page `page` of the verified VMO with a reader thread, answering its
  * request with the file as it is now: the supply's status, and the
  * reader's. */
