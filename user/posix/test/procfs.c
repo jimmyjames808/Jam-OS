@@ -437,11 +437,11 @@ static uint64_t touch_text(void)
     return pages;
 }
 
-/* posix_spawn of /proc/self/exe: this program again (want: our path),
- * from our image, its code touched while we count the job's pages. */
-static void check_self_spawn(const char *want)
+/* posix_spawn of /proc/self/exe (koid: our image's, 0 for none), the
+ * child holding on once it is ready (touch: with every page of its code
+ * read): how many pages our job grew by meanwhile. */
+static uint64_t self_spawn(const char *want, uint64_t koid, bool touch)
 {
-    uint64_t text = touch_text(), koid = image_koid(NULL);
     int up[2] = { -1, -1 }, hold[2] = { -1, -1 };
     CHECK(pipe2(up, O_CLOEXEC) == 0 && pipe2(hold, O_CLOEXEC) == 0);
     posix_spawn_file_actions_t fa;
@@ -450,7 +450,8 @@ static void check_self_spawn(const char *want)
     posix_spawn_file_actions_adddup2(&fa, hold[0], 4);   /* it waits for its end */
     char k[24];
     snprintf(k, sizeof(k), "%llu", (unsigned long long)koid);
-    char *argv[] = { "self", "--child-procfs", "image", (char *)want, k, NULL };
+    char *argv[] = { "self", "--child-procfs", "image", (char *)want, k, touch ? "touch" : "still",
+                     NULL };
     uint64_t before = pt_job_pages();
     pid_t pid = -1;
     int e = posix_spawn(&pid, "/proc/self/exe", &fa, NULL, argv, environ);
@@ -465,10 +466,23 @@ static void check_self_spawn(const char *want)
     CHECK(e == 0 && waitpid(pid, &status, 0) == pid && WIFEXITED(status) &&
           WEXITSTATUS(status) == 0);
     close(up[0]);
-    printf("posixtest: procfs: /proc/self/exe started %s again from %s: its %llu pages of "
-           "code touched, the job grew %llu pages\n", want, koid ? "its image" : "the boot image",
-           (unsigned long long)text, (unsigned long long)grew);
-    CHECK(grew < text);   /* its own (data, stack, heap), none of the code's */
+    return grew;
+}
+
+/* posix_spawn of /proc/self/exe: this program again (want: our path),
+ * from our image. Twice: a child that reads every page of its code grows
+ * our job no more than one that doesn't (its own pages, data, stack and
+ * heap, are the same in both; the code's are the image's, ours already). */
+static void check_self_spawn(const char *want)
+{
+    uint64_t text = touch_text(), koid = image_koid(NULL);
+    uint64_t still = self_spawn(want, koid, false), touched = self_spawn(want, koid, true);
+    printf("posixtest: procfs: /proc/self/exe started %s again from %s: the job grew %llu "
+           "pages, %llu with its %llu pages of code touched\n", want,
+           koid ? "its image" : "the boot image", (unsigned long long)still,
+           (unsigned long long)touched, (unsigned long long)text);
+    CHECK(touched < text);               /* no copy of the code made for it */
+    CHECK(touched < still + text / 8);   /* none of the code's pages as it runs */
 }
 
 /* posixtest self-image <path>, run from path (a copy on /data). */
@@ -491,11 +505,11 @@ void pt_self_image(char **argv)
 
 /* ---- children ----------------------------------------------------------------------- */
 
-/* Started from /proc/self/exe (check_self_spawn): our path is want, our
- * image the starter's (koid, decimal; 0: none), executable and never
- * writable; then our code touched, 'r' on descriptor 3, and we hold on
+/* Started from /proc/self/exe (self_spawn): our path is want, our image
+ * the starter's (koid, decimal; 0: none), executable and never writable;
+ * then our code touched ("touch"), 'r' on descriptor 3, and we hold on
  * until descriptor 4 ends. */
-static int child_image(const char *want, const char *koid)
+static int child_image(const char *want, const char *koid, bool touch)
 {
     char buf[256], c;
     int bad = 0;
@@ -505,7 +519,8 @@ static int child_image(const char *want, const char *koid)
     uint64_t k = image_koid(&r);
     bad += k != strtoull(koid, NULL, 10);
     bad += k && ((r & RIGHT_WRITE) || !(r & RIGHT_EXEC));
-    touch_text();
+    if (touch)
+        touch_text();
     c = bad ? 'b' : 'r';
     bad += write(3, &c, 1) != 1;
     while (read(4, &c, 1) > 0)
@@ -543,8 +558,8 @@ int pt_child_procfs(int argc, char **argv)
         return child_twin();
     if (argc >= 3 && !strcmp(argv[2], "exe"))
         return child_exe();
-    if (argc >= 5 && !strcmp(argv[2], "image"))
-        return child_image(argv[3], argv[4]);
+    if (argc >= 6 && !strcmp(argv[2], "image"))
+        return child_image(argv[3], argv[4], !strcmp(argv[5], "touch"));
     return 2;
 }
 

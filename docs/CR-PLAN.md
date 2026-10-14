@@ -662,8 +662,8 @@ M13.5's, after Chromium.
   VMO and the message carries its handle; the child's start code reads
   them from there. Any program gains Linux-like command line lengths (a
   limit of 2 MiB, Linux's usual `ARG_MAX`).
-- `posix_spawn` of the literal path `/proc/self/exe`, or of the
-  program's own path: the self-image (section 6).
+- `posix_spawn` of the literal path `/proc/self/exe`: the self-image
+  (section 6; done by CL2).
 - `PR_SET_PDEATHSIG` (a child dies with its parent): accepted; on Jam OS
   the children are in the parent's job, and a browser that dies is
   usually killed with its job (the shell kills a program's job). A
@@ -692,10 +692,11 @@ a renderer per site). Three pieces, all general:
   line while it does.
 - **The self-image (CL2 and CS1).** A starter (the shell, init, libjam's
   spawn) hands each program **its own executable VMO** (a new startup
-  role, `SR_SELF_IMAGE`: a duplicate with read, map, execute and
-  duplicate rights, never write). libc's `posix_spawn` of
-  `/proc/self/exe` (or of its own path) starts the child **from that same
-  VMO**: no file read, no approval step (the file the owner approved, the
+  role, `SR_SELF_IMAGE`: a duplicate with read, map, execute, duplicate
+  and transfer rights, never write). libc's `posix_spawn` of
+  `/proc/self/exe` starts the child **from that same VMO** (its own path
+  spelled out runs the file there now, approved now: "CL2 notes"):
+  no file read, no approval step (the file the owner approved, the
   same list), and every process maps the same pages, so the text is
   shared and paged once for all of them. The child gets the role too.
   Spawning any other program from a file is M13's F1b (a gate).
@@ -1192,7 +1193,7 @@ ports, recipes, tests, netstack's caps, the audio API and the docs.
 | **CK2. Mappings at scale** | section 2: the mapping tree with gap sizes, merging after map, protect and replace, `VMAR_MAX_MAPPINGS` 65,536 | `kernel/mm/aspace.c` (the list and its users), `kernel/include/jam/abi.h` (the constant, a different line from CK1's), new ktests | nothing (beside CK1: different files) | ktests: 50,000 alternating `vmar_protect`s over one mapping end as a few mappings; a fault's time flat with 60,000 mappings; replace inside a big mapping; the job's record charges exact after merges; full ktest 4 and 8; soak 2 | **Opus** |
 | **CK3. The reverse map at scale** | section 2: a VMO's user mappings indexed by page range | `kernel/object/vmo.c` (the reverse map), `kernel/include/jam/aspace_vmo.h` | CK1 and CK2 merged | ktests: a VMO split into 10,000 mappings, a one-page decommit touches one; interrupts-off time measured before and after; full ktest 4 and 8; soak 2 | **Opus** |
 | **CL1. Reservations in libc** | section 2's libc part: any size, one VMO; `MAP_FIXED` anonymous inside libc's own private mapping decommits in place; the tests of V8's and PartitionAlloc's patterns | `user/posix/sys/mem.c`, `user/posix/sys/maptable.c` if needed, posixtest's `mem` section | stage 1 (up to 64 GiB) at once; stage 2 after CK1 and CK2 | posixtest `mem`: section 2's cases; libc-test unchanged | **Opus** |
-| **CL2. `/proc/self` and the self-image** | section 3's `/proc` and section 6's self-image: the program's path in the hand-over and libjam's spawn, `SR_SELF_IMAGE` from every starter, `/proc/self/exe` (readlink, and spawn from the image), `/proc/self/fd` (list, readlink, reopen with the read-only twin), ENOENT for the rest | a new user/posix/sys/procfs.c, the path lines in `user/posix/sys/path.c`, `user/posix/sys/spawn.c` (the self branch), `user/include/posixfds.h`, `user/include/roles.h`, `user/lib/spawn.c` (the path and the role), the shell's and init's start of programs (the role, a line each) | nothing for `/proc`; the self-image of a `/data` program after M12.5's PX | posixtest: readlink of `/proc/self/exe` from a boot-image program and a `/data` one; a spawn of `/proc/self/exe` (shared pages: the child adds no text pages to the job); a memfd reopened read-only can't be mapped writable; `/proc/cpuinfo` ENOENT | **Opus** |
+| **CL2. `/proc/self` and the self-image** | section 3's `/proc` and section 6's self-image: the program's path in the hand-over and libjam's spawn, `SR_SELF_IMAGE` from every starter, `/proc/self/exe` (readlink, and spawn from the image), `/proc/self/fd` (list, readlink, reopen with the read-only twin), ENOENT for the rest; built, see "CL2 notes" | a new user/posix/sys/procfs.c, the path lines in `user/posix/sys/path.c`, `user/posix/sys/spawn.c` (the self branch), `user/include/posixfds.h`, `user/include/roles.h`, `user/lib/spawn.c` (the path and the role), the shell's and init's start of programs (the role, a line each) | nothing for `/proc`; the self-image of a `/data` program after M12.5's PX | posixtest: readlink of `/proc/self/exe` from a boot-image program and a `/data` one; a spawn of `/proc/self/exe` (shared pages: the child adds no text pages to the job); a memfd reopened read-only can't be mapped writable; `/proc/cpuinfo` ENOENT | **Opus** |
 | **CL3. Raw calls and the ENOSYS log** | section 3's log and calls: `prctl` names, affinity, thread priorities, futex operations checked, `membarrier` | `user/posix/sys/calls.def` and the handlers' files it touches (`user/posix/sys/misc.c`, `user/posix/sys/thread.c`), a new log file in user/posix/sys/ | nothing | posixtest: each call's cases; the log names an unknown call once | Sonnet 5.5 |
 | **CU1. Descriptor passing on socketpairs** | section 4: the framing, every hand-over kind on GS1's tables, more than 64 descriptors, `MSG_CTRUNC`, `MSG_CMSG_CLOEXEC`, `shutdown(SHUT_RDWR)`, seals travelling and the write-seal rule | the translation file GS1 made (widened), `user/posix/sys/pipe.c` (the socketpair's send and receive), `user/posix/sys/sockio.c`, `user/posix/sys/sockconn.c` (shutdown), `user/posix/sys/memfd.c` (the seal rule), posixtest's socketpair section | G2's GS1 merged | posixtest: 1 byte with 64 descriptors, 128, 254 (EINVAL); every kind passed and used on the other side (a pipe written, a memfd mapped, a file read at its offset, an eventfd signalled); the read-only twin passed on stays read-only; too little room; a peer gone mid-send; Mojo's pattern (non-blocking, partial writes, descriptors with the first byte) between two processes; a fuzz loop of mutated headers (no crash, no handle leaked) | **Opus** |
 | **CU2. Named `AF_UNIX` sockets** | section 4's broker, `/svc/unix`: `bind`, `listen`, `accept`, `connect` on socket files and abstract names | the broker (new, user/services/), its IDL (new), `user/posix/sys/socket.c`'s `AF_UNIX` paths, init's start of it | CU1; M13.6's U4 (socket files on `/jam`) | posixtest: a listener and two connectors, a socket file removed, a connector without the file's view refused, abstract names; utest for the broker's limits | **Opus** |
@@ -1436,9 +1437,10 @@ of its own.
   do is start that approved program.
 - **Not done**: no whole-read fallback (an approval from before page
   tables is refused until the shell has run it once and written its
-  table; a `/data` without a pager is refused); no CL2 self-image role yet
-  (init should give `SR_SELF_IMAGE` once CL2's part lands); one start per
-  seal (Chromium's own children are `/proc/self/exe`, CL2/CS1's).
+  table; a `/data` without a pager is refused); one start per seal
+  (Chromium's own children are `/proc/self/exe`, CL2/CS1's). The child's
+  `SR_SELF_IMAGE` (its sealed VMO) is libjam spawn's, since CL2 ("CL2
+  notes").
 - **Limits**: 32 openers, 16 sealed programs waiting (4 per opener),
   dropped after 10 s unstarted; 12 KiB of argv and environment (spawn's
   2 KiB startup message refuses less, until CS1); 128 hand-over messages.
@@ -1515,6 +1517,87 @@ Track CP1, programs this big (2026-10-14): section 6's limits raised to
   the changed page killed `check`, the shell lived); `allow.txt`; every
   `pager-test.sh` case and every `posix-mmap-test.sh` case; cr-test.sh
   `hello`; the init run (clean); make check.
+
+## CL2 notes
+
+Track CL2, `/proc/self` and the self-image (2026-10-14; the `/proc` half,
+user/posix/sys/procfs.c, came first). Section 3's `/proc` and section 6's
+self-image.
+
+- **The program's path.** The POSIX hand-over's first message carries it
+  (`exe_len` after the directory, `<posixfds.h>`; the old `reserved`
+  word's first half, so the format's version stays 1). libjam's spawn
+  names it for every program it gives a hand-over to: `spawn_args.path`
+  when absolute, a boot-image program's as `/boot/<name>`; posix_spawn
+  names it for a program init's `/svc/exec` starts (init passes the
+  hand-over on as written). libc's `/proc/self/exe` takes it first; the
+  old look (argv[0]'s file, then the boot image, compared byte for byte
+  with the program in memory) stays for a program started without a
+  hand-over (the shell's background runs, a native starter's). The path is
+  the starter's word, as argv is: the starter chose the program, and
+  nothing is run by it (below).
+- **`SR_SELF_IMAGE`** (`<roles.h>`, 20): libjam's spawn gives it to every
+  program it starts from a caller's VMO at offset 0 that can run
+  (`RIGHT_EXEC`): a duplicate of that VMO with read, map, execute,
+  duplicate and transfer, never write. That covers every starter of a
+  program not in the boot image with no line of their own: the shell's
+  runs from `/data` (the verified VMO it keeps for the instances), init's
+  `/svc/exec` (the sealed VMO), libc's self-image children. A boot-image
+  program has none: its file is `SR_BOOTFS`'s, by name. It is left out
+  only when the extras fill the startup message (16 handles).
+- **posix_spawn and execve of `/proc/self/exe`** (or `/proc/<our pid>/exe`;
+  spawn.c's `self_program`): with an image, the child starts from a
+  duplicate of it: no file read, no approval step, the read-only segments
+  mapped from the same VMO, so its pages are fetched and checked once for
+  every instance; the child gets the image and our path. Without one, the
+  path as any other: a boot-image program's file, or a file on `/data`
+  through `/svc/exec`. Our own path spelled out (`/data/x` from `/data/x`)
+  is that file, not the image: what is there now under its approval now,
+  as Linux runs the file at a path and `/proc/self/exe` the running one.
+- **Can the self-image run something the owner didn't approve? No.**
+  - *Only approved bytes*: the image is the VMO the process already runs
+    from, a boot-image program's or one the kernel checks every page of
+    against the approval it was sealed with; a page that doesn't match
+    kills whoever touched it, and fat refuses to write a file while a VMO
+    made for running it lives. Spawn puts into a child only the VMO that
+    child runs, so no starter (shell, init, libc) hands a program another
+    program's image, whatever path the hand-over names: a hostile parent
+    that names another path only misleads its child's `readlink`, and its
+    child's `/proc/self/exe` still runs its own pages.
+  - *Never more authority*: a self-image child is ours, in our job, with
+    our namespace or less (spawn's grants) and no root powers (posix_spawn
+    passes none). Started by `/svc/exec`, we hold our own approval only,
+    so our children hold that or less: the owner's rule for `/svc/exec`
+    ("its own approval only") holds for them. Nothing in the image grants
+    anything: it is pages.
+  - *A revoked approval*: `allow -r` stops new starts by the shell and
+    `/svc/exec`; a program running already keeps running (as before CL2),
+    and its `/proc/self/exe` children with it, all in its job, so the
+    shell's kill of it (Ctrl+C, `kill`) ends them all. A self-image start
+    is the same program doing more of what it already does with its own
+    authority (as more threads would); its own path spelled out is
+    checked again and refused.
+  - *What is left*: the image carries `RIGHT_TRANSFER` (the child gets it
+    too, so a self-started program can start itself again). A program can
+    therefore hand its own image to another process on purpose, and a
+    receiver that chooses to run it runs that approved program's pages
+    with the receiver's own authority. That needs both programs to do it
+    deliberately, and is no wider than what a process can already do by
+    handing another its address space (`SR_SELF_VMAR`): no unapproved byte
+    runs, and nobody gains authority they didn't hold. Taking
+    `RIGHT_TRANSFER` away would stop it at the cost of the second level
+    (a self-started child's own `/proc/self/exe` would go through
+    `/svc/exec`): a question for CR2 and the owner.
+- **The tests**: posixtest's procfs section spawns `/proc/self/exe` from
+  the boot image twice (the child's exe our path, no image; a child that
+  reads every page of its code grows the job no more than one that
+  doesn't, and less than the code's pages: posixtest's 162 against about
+  95 of the child's own); its `self-image` section does the same from
+  `/data/pt-prog` started by the shell and by `/svc/exec`
+  (posix-mmap-test.sh `spawn`): the path, the image held and never
+  writable, the child's image our very VMO (the same object id). utest's
+  malformed hand-overs add a program's path that isn't there and one past
+  the first message.
 
 ## Later
 
