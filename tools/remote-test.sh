@@ -36,8 +36,24 @@
 # QEMUs at once (the owner is using the PC), one variable: JAMOS_REMOTE_CPUS=12
 # (JAMOS_REMOTE_SLOTS=n caps the number of commands too). To change it for
 # everyone waiting at once, write the number into ~/work/.cpu-budget on the PC.
+#
+# A build with nothing to do costs nothing: the machine keeps a stamp of the
+# tree it last built for this checkout (build/.remote-built-k<KTESTS>: every
+# file's name, size and time, and KTESTS and JAMOS_VLAN), and when the tree
+# and the stamp agree and the image is there, the build is skipped without
+# asking the budget for its CPUs. JAMOS_REMOTE_REBUILD=1 builds anyway.
+#
+# Several commands from one copy (tools/pc-batch.sh does this):
+#   tools/remote-test.sh --prepare     copy and build only, run nothing
+#   JAMOS_REMOTE_NOSYNC=1 tools/remote-test.sh <command>
+#                                      don't copy: use what the last copy left
 set -u
-[ $# -gt 0 ] || { echo "usage: tools/remote-test.sh <command> [args...]"; exit 2; }
+[ $# -gt 0 ] || { echo "usage: tools/remote-test.sh <command> [args...] | --prepare"; exit 2; }
+prepare=0
+if [ "$1" = --prepare ]; then
+    [ $# -eq 1 ] || { echo "usage: tools/remote-test.sh --prepare" >&2; exit 2; }
+    prepare=1
+fi
 top=$(git rev-parse --show-toplevel 2>/dev/null) || top=$(pwd)
 cd "$top" || exit 2
 
@@ -98,32 +114,62 @@ if [ -z "$host" ] || ! ssh "${ssh_opts[@]}" "$host" "wsl -e true" < /dev/null > 
         exit 3
     fi
     [ -n "$host" ] && echo "remote-test: $host doesn't answer: running here" >&2
+    [ $prepare = 1 ] && { make -s && make -s image; exit; }
     exec "$@"
 fi
 name=$(basename "$top")
 dir=work/$name
-echo "remote-test: on $host in ~/$dir: $*" >&2
-ssh "${ssh_opts[@]}" "$host" "wsl --cd ~ mkdir -p $dir" < /dev/null
-# Several runs from one checkout copy it one at a time (lockf, the Mac's
-# flock): two rsyncs into one directory at once failed.
+nosync=${JAMOS_REMOTE_NOSYNC:-0}
+how=
+[ "$nosync" = 1 ] && how=" (no copy)"
+if [ $prepare = 1 ]; then
+    echo "remote-test: on $host in ~/$dir$how: the build" >&2
+else
+    echo "remote-test: on $host in ~/$dir$how: $*" >&2
+fi
 mkdir -p build
-lock=()
-command -v lockf > /dev/null && lock=(lockf -k build/.remote-sync.lock)
-${lock[@]+"${lock[@]}"} rsync -az --delete --exclude .git --exclude /build --exclude /.claude --exclude test.bin \
-    --exclude compile_commands.json --rsync-path="wsl --cd ~ rsync" \
-    -e "ssh ${ssh_opts[*]}" ./ "$host:$dir/" ||
-    { echo "remote-test: copying to $host failed" >&2; exit 2; }
+if [ "$nosync" != 1 ]; then
+    ssh "${ssh_opts[@]}" "$host" "wsl --cd ~ mkdir -p $dir" < /dev/null
+    # Several runs from one checkout copy it one at a time (lockf, the Mac's
+    # flock): two rsyncs into one directory at once failed.
+    lock=()
+    command -v lockf > /dev/null && lock=(lockf -k build/.remote-sync.lock)
+    ${lock[@]+"${lock[@]}"} rsync -az --delete --exclude .git --exclude /build --exclude /.claude --exclude test.bin \
+        --exclude compile_commands.json --rsync-path="wsl --cd ~ rsync" \
+        -e "ssh ${ssh_opts[*]}" ./ "$host:$dir/" ||
+        { echo "remote-test: copying to $host failed" >&2; exit 2; }
+fi
 {
-    echo "set -u; cd ~/$dir || exit 2"
+    echo "set -u; cd ~/$dir 2> /dev/null && [ -f Makefile ] ||"
+    echo "    { echo 'remote-test: nothing copied to ~/$dir yet (JAMOS_REMOTE_NOSYNC=1 needs an earlier copy)' >&2; exit 2; }"
     echo 'export PATH=$HOME/cross/bin:$HOME/qemu-10/bin:$HOME/mtools/bin:/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8'
     env | grep -E '^(QEMU_[A-Z0-9_]*|KTESTS|JAMOS_[A-Z0-9_]*|PC_RUNS|[A-Z]+_CASES|SOAK_[A-Z0-9_]*|PORTS_TEST_[A-Z0-9_]*|WL_PORT_[A-Z0-9_]*)=' | grep -v '^JAMOS_REMOTE\(_ONLY\)\?=' |
         while IFS= read -r kv; do printf 'export %q\n' "$kv"; done
     # The build takes its share of the budget too (make -j as many as it costs);
-    # a checkout's builds still take turns, and one with nothing to do is quick.
+    # a checkout's builds take turns (flock). A tree this checkout has built
+    # already (the stamp: every file's name, size, time and link, and
+    # the variables the Makefile reads) with its image there isn't built
+    # again, and asks the budget for nothing.
     bj=${JAMOS_REMOTE_BUILD_CPUS:-8}
-    echo 'flock ~/work/.build-$(basename "$PWD").lock env JAMOS_REMOTE_QUIET=1 JAMOS_REMOTE_LABEL=build python3 tools/remote-slots.py '"$bj"' 2048 \
-        sh -c "{ make -s -j'"$bj"' && make -s -j'"$bj"' image; } > build-remote.log 2>&1" ||
-        { tail -20 build-remote.log; echo "remote-test: the build failed"; exit 2; }'
+    echo 'img=build/jamos.img; [ "${KTESTS:-1}" = 0 ] && img=build/noktests/jamos.img
+(
+    flock 9 || exit 1
+    stamp=build/.remote-built-k${KTESTS:-1}
+    fp=$({ echo "KTESTS=${KTESTS-} JAMOS_VLAN=${JAMOS_VLAN-}"
+           find . \( -path ./build -o -path ./build-remote.log -o -name __pycache__ \) -prune -o ! -type d -printf "%y %P %s %T@ %l\n" |
+               LC_ALL=C sort; } | md5sum)
+    fp=${fp%% *}
+    if [ "${JAMOS_REMOTE_REBUILD:-0}" != 1 ] && [ -s "$img" ] && [ "$(cat "$stamp" 2> /dev/null)" = "$fp" ]; then
+        echo "remote-test: built already (this tree): no build" >&2
+        exit 0
+    fi
+    mkdir -p build && rm -f "$stamp"
+    JAMOS_REMOTE_QUIET=1 JAMOS_REMOTE_LABEL=build python3 tools/remote-slots.py '"$bj"' 2048 \
+        sh -c "{ make -s -j'"$bj"' && make -s -j'"$bj"' image; } > build-remote.log 2>&1" || exit 1
+    echo "$fp" > "$stamp"
+) 9> ~/work/.build-$(basename "$PWD").lock ||
+    { tail -20 build-remote.log; echo "remote-test: the build failed"; exit 2; }'
+    [ $prepare = 1 ] && echo 'exit 0'
     printf 'set -- '; printf '%q ' "$@"; echo
     # The command, when its CPUs and memory fit in the machine's budget (above).
     echo "exec python3 tools/remote-slots.py $cost \"\$@\" < /dev/null"
