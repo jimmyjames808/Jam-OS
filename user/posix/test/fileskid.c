@@ -10,13 +10,15 @@
  *     after (a description at the end following the end the child left,
  *     as a shared offset would); and an addopen for writing;
  *   - a child given /data as a read-only view: every change is EROFS,
- *     mkdir of what is there EEXIST, reading works.
+ *     mkdir of what is there EEXIST, reading works, and a read of what
+ *     the view hides (/data/etc) is EACCES.
  *
  * Until posix_spawn (track B3) the hand-over is built here, from the
  * descriptor table's own fd_give (the layer's user/posix/sys/fd.h: this
  * file is the test's one user of the layer's insides) and sent by
  * libjam's spawn. */
 #include <stdio.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <spawn.h>
@@ -237,6 +239,22 @@ int pt_child_rofs(void)
     CHECK(access(PT_DIR "/f", R_OK) == 0);
     CHECK(stat(PT_DIR "/f", &st) == 0 && (st.st_mode & 0777) == 0444);
     CHECK(statvfs(PT_DIR, &v) == 0 && (v.f_flag & ST_RDONLY));
+    /* what the view hides (etc and all in it) is refused to a read as EACCES; EROFS is for changes only */
+    errno = 0;
+    CHECK(stat("/data/etc/ssh", &st) == -1 && errno == EACCES);
+    errno = 0;
+    CHECK(lstat("/data/etc/ssh/host_key", &st) == -1 && errno == EACCES);
+    errno = 0;
+    CHECK(open("/data/etc/ssh/host_key", O_RDONLY) == -1 && errno == EACCES);
+    errno = 0;
+    CHECK(opendir("/data/etc/ssh") == NULL && errno == EACCES);
+    errno = 0;
+    CHECK(open("/data/etc/ssh/host_key", O_WRONLY) == -1 && errno == EROFS);
+    /* ... and so is the rest of etc, in any case */
+    errno = 0;
+    CHECK(lstat("/data/ETC/settings", &st) == -1 && errno == EACCES);
+    errno = 0;
+    CHECK(open("/data/ETC/settings", O_RDONLY) == -1 && errno == EACCES);
     return pt_failures() ? 1 : 0;
 }
 

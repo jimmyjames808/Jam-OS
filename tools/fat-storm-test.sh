@@ -165,8 +165,9 @@ done
 for disk in "data:$saved:2" "usb0:$stick:1"; do
     name=${disk%%:*} rest=${disk#*:}
     img=${rest%:*} part=${rest##*:}
-    python3 tools/fatcheck.py "$img" -p "$part" --require-clean > "$out/storm-fatcheck-$name.txt" 2>&1
-    st=$?
+    st=0   # (set -e would end the script here, saying nothing, on a damaged disk)
+    python3 tools/fatcheck.py "$img" -p "$part" --require-clean > "$out/storm-fatcheck-$name.txt" 2>&1 ||
+        st=$?
     sed "s/^/fat-storm: \/$name: /" "$out/storm-fatcheck-$name.txt" | grep -v "chains walked" || true
     [ "$st" = 0 ] || { echo "fat-storm: fatcheck on /$name: exit $st"; ok=0; }
 done

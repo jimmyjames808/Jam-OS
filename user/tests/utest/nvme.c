@@ -1,7 +1,9 @@
 /* utest: drv/nvme's `storage` and `block` protocols, on the first NVMe
- * drive devmgr has bound (tools/nvme-test.sh's `block` case gives QEMU
- * one: the Windows-like image of tools/nvme-img.py). Without one the
- * tests skip themselves (the init run has no NVMe drive). The storage
+ * drive devmgr has bound that isn't Jam OS's (tools/nvme-test.sh's `block`
+ * case gives QEMU one: the Windows-like image of tools/nvme-img.py). Without
+ * one the tests skip themselves, saying so (the init run has no NVMe
+ * drive; a boot from an installed drive, QEMU_BOOT_NVME=1, has only its
+ * own, which allows the writable opens these cases expect refused). The storage
  * channel is the test's own (devmgrctl.disk_storage, on the control
  * channel); volumes keeps its own meanwhile.
  *   nvme_storage   info, the GPT partitions, open_partition read-only only,
@@ -25,6 +27,7 @@
 #include <idl/block.h>
 #include <idl/devmgr.h>
 #include <idl/storage.h>
+#include <jam/parttable.h>
 #include <sha256.h>
 #include "utest.h"
 
@@ -38,19 +41,52 @@ static const uint8_t esp_guid[16] = {   /* C12A7328-F81F-11D2-BA4B-00A0C93EC93B,
     0xba, 0x4b, 0x00, 0xa0, 0xc9, 0x3e, 0xc9, 0x3b,
 };
 
-/* A storage channel of our own to the first NVMe drive; false (and a
- * line) when there is none. */
+/* Is the drive Jam OS's (<jam/parttable.h>: its first two partitions named
+ * as Jam OS's)? Such a drive allows the writable opens these cases expect
+ * refused (a boot with QEMU_BOOT_NVME=1 is on one). */
+static bool jamos_drive(handle_t s)
+{
+    static const char *const want[2] = { PT_JAMOS_ESP_NAME, PT_JAMOS_DATA_NAME };
+    for (uint32_t i = 0; i < 2; i++) {
+        uint8_t mbr_type, type[16], uniq[16];
+        uint64_t start, blocks, attr;
+        char name[109];
+        uint32_t nl;
+        if (storage_partition_within(s, WAIT, i, &mbr_type, type, uniq, &start, &blocks, &attr,
+                                     name, &nl) != OK ||
+            nl != strlen(want[i]) || memcmp(name, want[i], nl))
+            return false;
+    }
+    return true;
+}
+
+/* A storage channel of our own to the first NVMe drive that isn't Jam OS's
+ * (a boot from an installed drive, QEMU_BOOT_NVME=1, is on one); false
+ * (and a line) when there is none. */
 static bool nvme_storage(handle_t *out)
 {
     handle_t dm = devmgr();
     *out = HANDLE_INVALID;
     if (!dm)
         return false;
-    status_t st = devmgrctl_disk_storage_within(dm, WAIT, DEVMGR_KIND_PCI_CLASS, NVME_CLASS, 0, 0,
-                                                out);
-    if (st != OK)
-        printf("utest: %s: no NVMe drive (%s): skipped\n", utest_cur, status_str(st));
-    return st == OK;
+    for (uint32_t n = 0; n < 8; n++) {
+        status_t st = devmgrctl_disk_storage_within(dm, WAIT, DEVMGR_KIND_PCI_CLASS, NVME_CLASS,
+                                                    0, n, out);
+        if (st != OK) {
+            if (n)
+                break;
+            printf("utest: %s: no NVMe drive (%s): skipped\n", utest_cur, status_str(st));
+            return false;
+        }
+        if (!jamos_drive(*out))
+            return true;
+        printf("utest: %s: NVMe drive %u is Jam OS's (it allows a writable open): not the "
+               "test's\n", utest_cur, (unsigned)n);
+        jam_handle_close(*out);
+        *out = HANDLE_INVALID;
+    }
+    printf("utest: %s: every NVMe drive is Jam OS's: skipped\n", utest_cur);
+    return false;
 }
 
 /* The drive's block size and size, and its partitions' count. */

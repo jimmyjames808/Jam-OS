@@ -227,7 +227,7 @@ long path_info(const struct path *p, struct path_info *out)
         if (!r)
             jam_handle_close(fs);
         if (!r && st != OK)
-            r = path_err(p, st);
+            r = path_err_read(p, st);
         out->is_dir = dir != 0;
     }
     if (!r && p->must_dir && !out->is_dir)
@@ -300,6 +300,14 @@ long path_err(const struct path *p, status_t st)
     case ERR_INVALID_ARGS:   return -EINVAL;   /* a name FAT can't hold, as Linux's vfat */
     default:                 return lx_err(st);
     }
+}
+
+/* path_err for a request that changes nothing (stat, readdir, statfs,
+ * an open to read): a refusal there is the view hiding the path, not
+ * the mount being read-only, so EACCES whatever the mount. */
+long path_err_read(const struct path *p, status_t st)
+{
+    return st == ERR_ACCESS_DENIED ? -EACCES : path_err(p, st);
 }
 
 /* A program under /boot: in a directory named bin or sbin there. */
