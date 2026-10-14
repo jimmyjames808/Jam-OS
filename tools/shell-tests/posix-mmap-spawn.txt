@@ -1,9 +1,7 @@
 # posix_spawn of a program on /data (tools/posix-mmap-test.sh, case spawn):
 # a copy of posixtest at /data/pt-prog is EACCES while it isn't allowed;
-# then `allow` (y to its question) and the same spawn again, whose line
-# the script shows (it runs only once something seals a program for a
-# POSIX program; until then it is EACCES and that run's section fails,
-# which the script doesn't count).
+# then `allow` (y to its question) and the same spawn again: init's
+# /svc/exec seals and starts it, and it exits 7.
 # QEMU_INPUT=this file, command line "shell".
 wait 120 Jam OS shell
 wait {prompt}

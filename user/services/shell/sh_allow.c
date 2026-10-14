@@ -10,7 +10,7 @@
  * another computer, as they could replace the kernel (decision 11).
  *
  * Beside each approval, its page table: /data/etc/allow.d/<sha-256>, the
- * SHA-256 of each page of the approved bytes (sh_image.h), which the
+ * SHA-256 of each page of the approved bytes (<dataprog.h>), which the
  * kernel checks every page of a running program against. `allow` writes
  * the table before the line (a line is never there without its table,
  * except one written before tables were), and a table goes when no line
@@ -26,36 +26,22 @@
  * from those bytes): it runs only if a line holds exactly that path and
  * that hash, so a program changed after it was allowed is refused, and
  * nothing can change it between the check and the start. */
+#include <dataprog.h>
 #include <sha256.h>
 #include <wants.h>
 #include "sh.h"
-#include "sh_image.h"
 
-#define ALLOW_FILE "/data/etc/allow"
-#define ALLOW_DIR  "/data/etc"
-#define TABLE_DIR  "/data/etc/allow.d"
-#define TABLE_CHUNK (64u << 10)   /* a table's hashes read at a time */
+#define ALLOW_FILE DP_ALLOW_FILE
+#define ALLOW_DIR  DP_ALLOW_DIR
+#define TABLE_DIR  DP_TABLE_DIR
 #define ALLOW_HEAD "# Programs on /data the owner allowed to run (the shell's `allow`):\n" \
                    "# <sha-256>\\t<path>\\t<what it asked for>\n"
-#define PROGRAM_MAX (64ull << 20)   /* spawn's own limit, and VMO_VERIFIED_MAX */
-#define HEX_LEN     (2 * SHA256_BYTES)
+#define PROGRAM_MAX DP_PROGRAM_MAX
+#define HEX_LEN     DP_HEX_LEN
 
 bool sh_on_data(const char *abs)
 {
-    return !strncmp(abs, "/data/", 6) && abs[6];
-}
-
-/* One line of the file: its fields, cut in place. false: not an approval. */
-static bool split_line(char *line, char **hash, char **path, char **text)
-{
-    char *t1 = strchr(line, '\t'), *t2 = t1 ? strchr(t1 + 1, '\t') : NULL;
-    if (line[0] == '#' || !t1 || !t2 || t1 - line != 2 * SHA256_BYTES)
-        return false;
-    *t1 = *t2 = '\0';
-    *hash = line;
-    *path = t1 + 1;
-    *text = t2 + 1;
-    return true;
+    return dp_on_data(abs);
 }
 
 /* An approval's path, copied out of a line left whole; false: not one. */
@@ -96,7 +82,7 @@ int sh_allow_each(void (*fn)(const char *hash, const char *path, const char *tex
         char *nl = strchr(line, '\n'), *hash, *path, *text;
         if (nl)
             *nl = '\0';
-        if (split_line(line, &hash, &path, &text)) {
+        if (dp_allow_split(line, &hash, &path, &text)) {
             fn(hash, path, text, ctx);
             n++;
         }
@@ -227,25 +213,25 @@ status_t sh_allow_table_write(const char *hash_hex, handle_t vmo, uint64_t size)
 {
     uint8_t sha[SHA256_BYTES];
     struct handle_info hi;
-    if (!sh_hex_bytes(hash_hex, sha) || !size || size > PROGRAM_MAX)
+    if (!dp_hex_bytes(hash_hex, sha) || !size || size > PROGRAM_MAX)
         return ERR_INVALID_ARGS;
     /* Mapped and read here: never a pager VMO (a page that failed would
      * kill the shell), only sh_program_file's, whose pages are ours. */
     status_t st = jam_handle_info(vmo, &hi);
     if (st == OK && (hi.type != OBJ_VMO || hi.related_koid))
         st = ERR_NOT_SUPPORTED;
-    uint64_t pages = sh_ptable_pages(size), len = pages * PAGE_SIZE, addr = 0;
-    size_t bytes = sizeof(struct sh_ptable_head) + pages * SHA256_BYTES;
+    uint64_t pages = dp_ptable_pages(size), len = pages * PAGE_SIZE, addr = 0;
+    size_t bytes = sizeof(struct dp_ptable_head) + pages * SHA256_BYTES;
     uint8_t *buf = st == OK ? malloc(bytes) : NULL;
     if (st == OK && !buf)
         st = ERR_NO_MEMORY;
     if (st == OK)
         st = jam_vmar_map(startup_handle(SR_SELF_VMAR), vmo, 0, len, VMAR_READ, &addr);
     if (st == OK) {
-        sh_ptable_hash((const uint8_t *)(uintptr_t)addr, size,
-                       buf + sizeof(struct sh_ptable_head));
+        dp_ptable_hash((const uint8_t *)(uintptr_t)addr, size,
+                       buf + sizeof(struct dp_ptable_head));
         jam_vmar_unmap(startup_handle(SR_SELF_VMAR), addr, len);
-        sh_ptable_head(size, sha, (struct sh_ptable_head *)buf);
+        dp_ptable_head(size, sha, (struct dp_ptable_head *)buf);
     }
     char path[SH_PATH_MAX];
     table_path(hash_hex, path);
@@ -261,103 +247,16 @@ status_t sh_allow_table_write(const char *hash_hex, handle_t vmo, uint64_t size)
     return st;
 }
 
-/* The hashes of the open table f (pages of them, after its header) into
- * a new VMO, from its offset 0, as the kernel takes them. */
-static status_t table_hashes(struct jfile *f, uint64_t pages, handle_t *out)
-{
-    uint64_t bytes = pages * SHA256_BYTES;
-    handle_t t;
-    uint8_t *chunk = malloc(TABLE_CHUNK);
-    status_t st = chunk ? jam_vmo_create(bytes, 0, &t) : ERR_NO_MEMORY;
-    if (st != OK) {
-        free(chunk);
-        return st;
-    }
-    for (uint64_t at = 0; at < bytes && st == OK; at += TABLE_CHUNK) {
-        size_t len = bytes - at < TABLE_CHUNK ? (size_t)(bytes - at) : TABLE_CHUNK, got = 0;
-        st = file_read(f, sizeof(struct sh_ptable_head) + at, chunk, len, &got);
-        if (st == OK && got != len)
-            st = ERR_INVALID_ARGS;   /* shorter than its stat said: broken */
-        if (st == OK)
-            st = jam_vmo_write(t, at, chunk, len);
-    }
-    free(chunk);
-    if (st != OK) {
-        jam_handle_close(t);
-        return st;
-    }
-    *out = t;
-    return OK;
-}
-
-status_t sh_allow_table_read(const char *hash_hex, uint64_t size, handle_t *table)
-{
-    uint8_t sha[SHA256_BYTES];
-    if (!sh_hex_bytes(hash_hex, sha))
-        return ERR_INVALID_ARGS;
-    if (!size || size > PROGRAM_MAX)
-        return ERR_OUT_OF_RANGE;   /* no approval was ever for such a file */
-    char path[SH_PATH_MAX];
-    table_path(hash_hex, path);
-    struct jfile f;
-    status_t st = file_open(path, FS_READ, &f);
-    if (st != OK)
-        return st;   /* ERR_NOT_FOUND: an approval from before tables */
-    struct sh_ptable_head h;
-    uint64_t bytes = 0;
-    size_t got = 0;
-    st = file_stat(&f, &bytes, NULL);
-    if (st == OK)
-        st = file_read(&f, 0, &h, sizeof(h), &got);
-    if (st == OK && got != sizeof(h))
-        st = ERR_INVALID_ARGS;
-    if (st == OK)
-        st = sh_ptable_check(&h, bytes, size, sha);
-    if (st == OK)
-        st = table_hashes(&f, h.pages, table);
-    file_close(&f);
-    return st;
-}
-
 /* ---- the file itself ----------------------------------------------------------------- */
 
-/* Services no program from /data may have, whatever the owner says: with
- * volumes' channel a program gets the filesystems' own channels
- * (volumes.watch: /data unguarded, so it could approve itself); with
- * devmgr's control channel any driver's hardware; with its query channel
- * usb-bus, and through it any USB device's interfaces; with init's, every
- * service and the reboot. The build allows volumes', devmgr's control
- * channel and init's only in user/tests/ (tools/checkwants.py), and
- * a file on /data is never one of the tree's tests. Nor netstack's and the
- * resolver's reserves for the network's own services (net-sys, dns-sys): a
- * program could use them up. Nor the ports below 1024 (net-low):
- * they are where the well-known services live, so a program on them could
- * pose as one of the system's to the network (a web or a time server, the
- * ssh Jam OS will have), or take its port before the service starts; only
- * a boot-image service may have them (tools/checkwants.py). Nor
- * the file server's channel: with it a program could put any file it can
- * read on the network without the listen permission. Nor the root's debug
- * power: `debug_command` panics the machine, crashes it on purpose and runs
- * the stress test. Nor init's sessions (session): each is a whole shell, with
- * init's namespace and the shell's root powers, past every view and grant;
- * the build allows it only for a service, a port or a test
- * (tools/checkwants.py). */
-static const char *const refused[] = { SVC_DEVMGR, SVC_DEVMGR_CTL, SVC_VOLUMES, SVC_INIT,
-                                       SVC_NET_SYS, SVC_DNS_SYS, SVC_SERVE, SVC_NET_LISTEN_LOW,
-                                       SVC_SESSION };
-
+/* The list of what no program from /data may have is libos's
+ * (<dataprog.h>), shared with init's /svc/exec. */
 const char *sh_wants_refused(const struct wants *w)
 {
-    if (w->rights & WANT_RIGHT_DEBUG)
-        return "right debug";
-    for (unsigned i = 0; i < w->n; i++)
-        for (unsigned k = 0; k < sizeof(refused) / sizeof(refused[0]); k++)
-            if (!strncmp(w->grant[i], "/svc/", 5) && !strcmp(w->grant[i] + 5, refused[k]))
-                return refused[k];
-    return NULL;
+    return dp_wants_refused(w);
 }
 
-/* sh_image_wants' reader over bytes in memory (a mapping of our own VMO). */
+/* dp_image_wants' reader over bytes in memory (a mapping of our own VMO). */
 struct mem_image {
     const uint8_t *bytes;   /* the file */
     uint64_t       size;    /* its bytes */
@@ -398,7 +297,7 @@ status_t sh_program_file(const char *path, handle_t *vmo, uint64_t *size, char *
         sha256_hex(digest, hex);
         /* Read as a run from the pages reads it: the same rules, the same
          * answer. */
-        st = sh_image_wants(mem_read, &m, n, w);
+        st = dp_image_wants(mem_read, &m, n, w);
         jam_vmar_unmap(startup_handle(SR_SELF_VMAR), addr, len ? len : PAGE_SIZE);
     }
     if (st != OK) {

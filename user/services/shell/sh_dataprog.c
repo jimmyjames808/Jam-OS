@@ -44,10 +44,10 @@
  * filesystem went (the stick pulled: its pages are dropped and every
  * fetch fails) fails the list's read at the next start: it is let go and
  * a fresh one made from the mount that is there now. */
+#include <dataprog.h>
 #include <fs_idl.h>
 #include <wants.h>
 #include "sh.h"
-#include "sh_image.h"
 
 #define IMAGES     8    /* verified VMOs kept while their instances run */
 #define IMAGE_JOBS 16   /* instances of one recorded (more run, unrecorded) */
@@ -150,34 +150,11 @@ static void image_keep(handle_t x, const char *path, const char *hex, uint64_t s
     }
 }
 
-/* sh_image_wants' reader: the verified VMO, with vmo_read. */
-static status_t vmo_reader(void *ctx, uint64_t off, void *dst, uint64_t len)
-{
-    return jam_vmo_read(*(const handle_t *)ctx, off, dst, len);
-}
-
-/* The approval's hash for path: its last line (allow writes one a path). */
-struct line_of {
-    const char *path;                 /* what is looked for */
-    char        hex[2 * SHA256_BYTES + 1];   /* its hash, once found */
-    bool        found;
-};
-
-static void last_line(const char *hash, const char *path, const char *text, void *ctx)
-{
-    struct line_of *l = ctx;
-    (void)text;
-    if (strcmp(path, l->path))
-        return;
-    snprintf(l->hex, sizeof(l->hex), "%s", hash);
-    l->found = true;
-}
-
 /* x's list into *w, checked: false (said) if it can't be read from the
  * approved pages or asks for what no program from /data may have. */
 static bool list_ok(const char *path, handle_t x, uint64_t size, struct wants *w)
 {
-    status_t st = sh_image_wants(vmo_reader, &x, size, w);
+    status_t st = dp_wants_vmo(x, size, w);
     if (st == ERR_IO) {
         sh_tty("run: %s changed since it was allowed (or /data can't read it): `allow %s` "
                "again\n", path, path);
@@ -214,7 +191,7 @@ static status_t first_table(const char *path, const char *hex, uint64_t size, ha
         st = sh_allow_table_write(hex, whole, n);
     jam_handle_close(whole);
     if (st == OK)
-        st = sh_allow_table_read(hex, size, table);
+        st = dp_table_read(hex, size, table);
     if (st == OK)
         sh_tty("run: %s: its approval had no page table: the whole file matched it, and its "
                "table is written\n", path);
@@ -230,7 +207,7 @@ static status_t first_table(const char *path, const char *hex, uint64_t size, ha
 static bool table_for(const char *path, const char *hex, uint64_t size, handle_t *table,
                       bool *whole)
 {
-    status_t st = sh_allow_table_read(hex, size, table);
+    status_t st = dp_table_read(hex, size, table);
     if (st == ERR_NOT_FOUND)
         st = first_table(path, hex, size, table);
     *whole = st != OK && st != ERR_INVALID_ARGS;
@@ -273,11 +250,11 @@ bool sh_allowed_program(const char *path, handle_t *vmo, uint64_t *size, struct 
     if (!sh_on_data(path) || !sh_root())
         return sh_allowed_whole(path, vmo, size, w);   /* it says why not */
     sh_data_prune();
-    struct line_of l = { .path = path };
-    if (sh_allow_each(last_line, &l) < 0 || !l.found)
+    char hex[DP_HEX_LEN + 1];
+    if (dp_allow_hash(path, hex) != OK)
         return sh_allowed_whole(path, vmo, size, w);   /* not allowed, or the file unreadable */
-    struct image *im = image_find(path, l.hex);
-    if (im && sh_image_wants(vmo_reader, &im->vmo, im->size, w) != OK) {
+    struct image *im = image_find(path, hex);
+    if (im && dp_wants_vmo(im->vmo, im->size, w) != OK) {
         image_drop(im);   /* its mount went, or a page of it failed: a fresh one */
         im = NULL;
     }
@@ -291,7 +268,7 @@ bool sh_allowed_program(const char *path, handle_t *vmo, uint64_t *size, struct 
             return false;
         }
         n = im->size;   /* shared with the instances running from it */
-    } else if (!fresh(path, l.hex, &x, &n, &whole)) {
+    } else if (!fresh(path, hex, &x, &n, &whole)) {
         return whole && sh_allowed_whole(path, vmo, size, w);
     }
     if (!list_ok(path, x, n, w)) {
@@ -299,7 +276,7 @@ bool sh_allowed_program(const char *path, handle_t *vmo, uint64_t *size, struct 
         return false;
     }
     if (!im)
-        image_keep(x, path, l.hex, n);
+        image_keep(x, path, hex, n);
     *vmo = x;
     *size = n;
     return true;

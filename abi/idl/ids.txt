@@ -52,6 +52,8 @@
 44      signal          abi/idl/signal.idl
 45      session         abi/idl/session.idl
 46      session_ctl     abi/idl/session.idl
+47      exec            abi/idl/exec.idl
+48      exec_prog       abi/idl/exec.idl
 50      audio_stream    abi/idl/audio.idl
 51      hda_stream      abi/idl/hda.idl
 # 60 to 69: the network's (M12 track P3)

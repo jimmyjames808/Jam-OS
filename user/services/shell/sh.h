@@ -300,10 +300,8 @@ bool     sh_on_data(const char *abs);
 status_t sh_program_file(const char *path, handle_t *vmo, uint64_t *size, char *hex,
                          struct wants *w);
 /* The first thing w asks for that no program from /data may have (a
- * service's name, "devmgr", or "right debug"), or NULL: devmgr's channels
- * and init's reach drivers, devices, the filesystems unguarded and every
- * service, past every view; the kernel's debug commands can stop the
- * machine (panic, the crash tests, stress). */
+ * service's name, "devmgr", or "right debug"), or NULL: libos's
+ * dp_wants_refused (<dataprog.h>), the rule init's /svc/exec keeps too. */
 const char *sh_wants_refused(const struct wants *w);
 /* Ready to run if the owner allowed exactly this file (a line of
  * /data/etc/allow with its path and hash; sh_dataprog.c): *vmo a handle of
@@ -338,15 +336,10 @@ status_t sh_allow_add(const char *path, handle_t vmo, uint64_t size, const char 
                       const char *text);
 status_t sh_allow_remove(const char *name, unsigned *removed);
 /* The page table of approval hash_hex (/data/etc/allow.d/<hash_hex>,
- * sh_image.h) written from vmo, sh_program_file's VMO of size bytes (a
- * pager VMO is refused: it is read through a mapping here). */
+ * <dataprog.h>) written from vmo, sh_program_file's VMO of size bytes (a
+ * pager VMO is refused: it is read through a mapping here). libos's
+ * dp_table_read reads it back. */
 status_t sh_allow_table_write(const char *hash_hex, handle_t vmo, uint64_t size);
-/* That table's hashes for a program file of size bytes, into a new VMO
- * as vmo_make_exec_verified takes them. ERR_NOT_FOUND: no table (an
- * approval from before tables); ERR_OUT_OF_RANGE: a table of a file of
- * another size (it changed), or a file bigger than any program;
- * ERR_INVALID_ARGS: a broken table; a read's error. */
-status_t sh_allow_table_read(const char *hash_hex, uint64_t size, handle_t *table);
 
 /* ---- the kernel (sh_kernel.c) ------------------------------------------------------ */
 

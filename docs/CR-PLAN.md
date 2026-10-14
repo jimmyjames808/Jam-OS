@@ -836,7 +836,8 @@ ladder past zlib and xz waits.
 | netstack | the new caps (`user/include/net.h`) |
 | libjam | the audio output API (CA1) |
 | M13.7 | recipe lines `toolchain clang` and the kept tree; `ports.py package --from`; the prefix on `/jam` |
-| new service | `/svc/unix`, the named-socket broker (CU2) |
+| new service | `/svc/unix`, the named-socket broker (CU2); `/svc/exec`, init's sealer (CE1: abi/idl/exec.idl, `svc exec` in a list) |
+| libos | `<dataprog.h>` (the approvals, page tables and list reader the shell and init share); `spawn_args.before_start` (CE1) |
 | tools | tools/jamos-clang, tools/jamos-clang++ (new) |
 
 ## Questions for the owner
@@ -974,6 +975,7 @@ ports, recipes, tests, netstack's caps, the audio API and the docs.
 | **CL3. Raw calls and the ENOSYS log** | section 3's log and calls: `prctl` names, affinity, thread priorities, futex operations checked, `membarrier` | `user/posix/sys/calls.def` and the handlers' files it touches (`user/posix/sys/misc.c`, `user/posix/sys/thread.c`), a new log file in user/posix/sys/ | nothing | posixtest: each call's cases; the log names an unknown call once | Sonnet 5.5 |
 | **CU1. Descriptor passing on socketpairs** | section 4: the framing, every hand-over kind on GS1's tables, more than 64 descriptors, `MSG_CTRUNC`, `MSG_CMSG_CLOEXEC`, `shutdown(SHUT_RDWR)`, seals travelling and the write-seal rule | the translation file GS1 made (widened), `user/posix/sys/pipe.c` (the socketpair's send and receive), `user/posix/sys/sockio.c`, `user/posix/sys/sockconn.c` (shutdown), `user/posix/sys/memfd.c` (the seal rule), posixtest's socketpair section | G2's GS1 merged | posixtest: 1 byte with 64 descriptors, 128, 254 (EINVAL); every kind passed and used on the other side (a pipe written, a memfd mapped, a file read at its offset, an eventfd signalled); the read-only twin passed on stays read-only; too little room; a peer gone mid-send; Mojo's pattern (non-blocking, partial writes, descriptors with the first byte) between two processes; a fuzz loop of mutated headers (no crash, no handle leaked) | **Opus** |
 | **CU2. Named `AF_UNIX` sockets** | section 4's broker, `/svc/unix`: `bind`, `listen`, `accept`, `connect` on socket files and abstract names | the broker (new, user/services/), its IDL (new), `user/posix/sys/socket.c`'s `AF_UNIX` paths, init's start of it | CU1; M13.6's U4 (socket files on `/jam`) | posixtest: a listener and two connectors, a socket file removed, a connector without the file's view refused, abstract names; utest for the broker's limits | **Opus** |
+| **CE1. The exec sealer** | `/svc/exec` in init: a program `posix_spawn`s an approved `/data` program (its own open of the file; init checks the allow line and page table, seals the file's pages with `vmo_make_exec_verified`) and the child gets its own approval only, never its parent's (the owner's decision, 2026-10-12); built, see "CE1 notes" | `abi/idl/exec.idl` (new), `user/services/init/exec.c` (new), `user/include/dataprog.h` + `user/lib/dataprog.c` (PX's helpers moved from the shell), `user/posix/sys/spawn.c` (`file_program`), `user/posix/sys/proc.c` (a child's job for SIGKILL), `user/lib/spawn.c` (`before_start`), utest `execsvc.c` with `user/tests/exectest` and `user/tests/execwide` | M12.5's PX, M13's F1b, R2 | utest `exec_*`; `tools/posix-mmap-test.sh` case `spawn` (the allowed run starts and exits 7); `allow.txt` and pager-test `exec` unchanged | **Opus** (a trust boundary) |
 | **CS1. Launching** | section 5: `addclosefrom_np`, argv and environments in a VMO, `/proc/self/exe` spawns through CL2's image, a child's argv of 64 KiB | `user/posix/sys/spawn.c`, `user/posix/sys/spawnfd.c`, `user/lib/spawn.c` (the VMO), the POSIX start code (`user/posix/crt/`) | CL2's self-image part (or beside it, merged after) | posixtest: a child with 500 arguments and 64 KiB of environment sees them all; `addclosefrom_np` leaves exactly the remapped descriptors (checked through `/proc/self/fd`) | **Opus** |
 | **CP1. Programs this big** | section 6's limits: `VMO_VERIFIED_MAX` 1 GiB, `PROGRAM_MAX`, `FILE_MAX`; `allow`'s progress line; a 300 MB generated test program | `kernel/include/jam/abi.h` (the constant), `kernel/object/vmo_verify.c` if a size is assumed there, `user/services/shell/sh_allow.c` (the constant and the line), `user/lib/spawn.c` (the constant), a generated test program (new) | M12.5's PX merged (it rewrites `sh_allow.c`) | ktest: a 1 GiB verified table; the shell's allow script with the 300 MB program (allowed, run, a changed page refused); cr-test.sh `hello` with the big program | **Opus** (small) |
 | **CN1. netstack's caps** | section 8: the new caps, netstack's memory measured at them | `user/include/net.h`, `user/services/netstack/stack.h` and lwIP's options file if pools must grow, BENCH.md's line | nothing | utest: 256 sockets from one opener, the 257th refused; 512 in all; 1,024 TCP connections to the test host; `tools/net-test.sh` unchanged | Sonnet 5.5 |
@@ -1148,6 +1150,73 @@ After `pkg install chromium` (CR-d), with the Mac's ports server running:
     threads; the CPU-weighted slots and low priority keep tests' timing
     honest (a timing test that fails only during a build is rerun after
     it).
+
+## CE1 notes
+
+Track CE1, `/svc/exec`, the exec sealer (2026-10-13). The owner decided
+(2026-10-12) that a child started through it gets **its own approval
+only**: the namespace and root powers its own allow line's list asks for,
+whatever its parent holds, so a low-access parent may start a
+higher-access approved child, and a high-access parent gives it nothing
+of its own.
+
+- **Why init starts the child, not the parent.** F1b's proposal had init
+  answer a sealed VMO and the parent spawn it. Under the owner's rule that
+  can't work: a parent can only grant what it holds (spawn's grants are
+  the starter's namespace), and anything init handed it for the child (the
+  namespace's channels, the root with the child's powers) the parent could
+  keep and use itself, a wider hole than starting the child. So init makes
+  the process: the parent never holds the child's authority, nor a
+  process handle with `RIGHT_WRITE` (a thread made in a non-PIE program
+  that holds more than its parent is the parent running code with the
+  child's authority).
+- **The protocol** (abi/idl/exec.idl): `exec.open(path, file, handover)`
+  then, on the answered `exec_prog` channel, one `start(argc, strings,
+  job, signals)`. Two steps so that a refusal (EACCES, ENOEXEC, ETXTBSY,
+  ENOENT) comes before posix_spawn's hand-over moves anything out of the
+  parent's table. `handover` is an empty channel end given with `open`
+  (a channel end whose queue holds channel ends can't be sent): the parent
+  writes the POSIX hand-over on its end, init moves it message for message
+  onto the child's startup channel (spawn's new `before_start`). The child
+  goes in a new job inside the parent's job (a kill of the parent's job
+  takes it); the parent gets the process (wait, inspect, duplicate,
+  transfer) and that job (`RIGHT_MANAGE`: libc's SIGKILL is `job_kill`).
+- **What open checks**: a cleaned absolute path on `/data`; the caller's
+  `file` is a channel whose `file.stat` id and size are those of the file
+  init's own `/data` has at the path (its views decided what it could
+  open); the path's approval (its last allow line) and its page table
+  for this size; `file.map(FILE_MAP_EXEC)` of the caller's file (a VMO only
+  init holds) sealed with that table; the list read from the sealed VMO
+  with `vmo_read`, and the shell's refusals (`dp_wants_refused`). A forged
+  file channel (a caller's own server) gains nothing: only a pager's VMO
+  can be sealed (no program from `/data` can be a pager), and every page is
+  checked against the approval of the path it names, so the worst it can
+  do is start that approved program.
+- **Not done**: no whole-read fallback (an approval from before page
+  tables is refused until the shell has run it once and written its
+  table; a `/data` without a pager is refused); no CL2 self-image role yet
+  (init should give `SR_SELF_IMAGE` once CL2's part lands); one start per
+  seal (Chromium's own children are `/proc/self/exe`, CL2/CS1's).
+- **Limits**: 32 openers, 16 sealed programs waiting (4 per opener),
+  dropped after 10 s unstarted; 12 KiB of argv and environment (spawn's
+  2 KiB startup message refuses less, until CS1); 128 hand-over messages.
+  A worker thread with its own port serves it, every call on a caller's
+  channel with a 5 s deadline: a hostile caller can delay other callers by
+  that much a request, never init's loop.
+- **Charges**: the child's own allocations go to its job (inside the
+  parent's); what spawn makes for it (the writable segments' copies, the
+  stack's pages as they are touched) and the sealed VMO's table are
+  charged to init's job, as a shell-started program's are to the shell's.
+- **The init run** now gives volumes the pager power as shell mode does
+  (main.c), so its `/data` supplies pages and can be sealed from; posixtest's
+  mmap section there maps the file's own pages now. utest's `exec_*` tests
+  (execsvc.c) copy exectest, execwide, pxtest and wantsession to `/data`,
+  approve them as `allow` does and put `/data` back after; utest, started
+  before `/data` is mounted, takes `/data` from volumes' watch for that.
+- **Tests run** (2026-10-13, the PC): the init run (643 utests, posixtest
+  PASS, the root job clean), `posix-mmap-test.sh` case `spawn` (the
+  allowed run started, exited 7), `allow.txt`, `pager-test.sh` case
+  `exec`, one ktest pass at 4.
 
 ## Later
 

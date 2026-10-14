@@ -189,6 +189,13 @@ struct spawn_args {
      * before it starts (posixfds_write). Its handles are consumed
      * whatever happens, as the extras are. */
     const struct posixfds_out *handover;
+    /* NULL, or called once the startup message (and the hand-over) is on
+     * the child's startup channel, before the child starts: it may write
+     * more there (`startup` is our end, not to be closed). A status other
+     * than OK fails the spawn with it. For a starter that passes on a
+     * hand-over another program wrote: init's /svc/exec (exec.c). */
+    status_t                 (*before_start)(handle_t startup, void *ctx);
+    void                      *before_start_ctx;
 };
 
 #define SPAWN_STACK_DEFAULT (128ull << 10)   /* a native program's */
@@ -385,6 +392,11 @@ status_t ns_update(handle_t to, handle_t back, const char *const *grants);
  * whole shell, so only a boot-image service, port or test may ask for it
  * (tools/checkwants.py), and `allow` refuses it for a program on /data. */
 #define SVC_SESSION    "session"
+/* init's sealer: starts a program on /data the owner allowed, with its own
+ * approval's namespace and powers, a channel per opener (exec.idl; init's
+ * exec.c). Any program may ask for it (`svc exec`): it starts approved
+ * programs only, each as approved. */
+#define SVC_EXEC       "exec"
 
 /* A channel to service `name` for the caller, who closes it. */
 status_t svc_open(const char *name, handle_t *out);

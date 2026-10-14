@@ -48,6 +48,8 @@
 #define IDL_ID_SIGNAL         0x002cu   /* abi/idl/signal.idl */
 #define IDL_ID_SESSION        0x002du   /* abi/idl/session.idl */
 #define IDL_ID_SESSION_CTL    0x002eu   /* abi/idl/session.idl */
+#define IDL_ID_EXEC           0x002fu   /* abi/idl/exec.idl */
+#define IDL_ID_EXEC_PROG      0x0030u   /* abi/idl/exec.idl */
 #define IDL_ID_AUDIO_STREAM   0x0032u   /* abi/idl/audio.idl */
 #define IDL_ID_HDA_STREAM     0x0033u   /* abi/idl/hda.idl */
 #define IDL_ID_NET_SOCKET     0x003cu   /* abi/idl/net.idl */

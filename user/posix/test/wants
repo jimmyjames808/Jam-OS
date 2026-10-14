@@ -4,3 +4,4 @@ mount /boot r
 mount /usb* r
 svc net listen
 svc dns
+svc exec

@@ -29,10 +29,14 @@ int32_t lx_pgid(void);
 int32_t lx_sid(void);
 
 /* A child posix_spawn started: proc and sigch (our end of its signal
- * channel, or 0; both moved into the table, closed when the child is
- * reaped), its pid, process group and session. 0, or -errno (-EAGAIN: the
- * table is full; the child is then killed and both handles closed). */
-long    lx_child_add(handle_t proc, handle_t sigch, int32_t pid, int32_t pgid, int32_t sid);
+ * channel, or 0), and job: 0 for a child we made ourselves, or the job of
+ * one init's /svc/exec started for us (its process then has no
+ * RIGHT_WRITE: SIGKILL kills its job instead); all three moved into the
+ * table, closed when the child is reaped. Its pid, process group and
+ * session. 0, or -errno (-EAGAIN: the table is full; the child is then
+ * killed and the handles closed). */
+long    lx_child_add(handle_t proc, handle_t sigch, handle_t job, int32_t pid, int32_t pgid,
+                     int32_t sid);
 /* One of init's sessions as a child (pty.c's jamos_session_open): proc,
  * its shell's process (wait and inspect rights only), and ctl, its
  * session_ctl channel (kill's signals go there: SIGHUP, SIGTERM and

@@ -362,6 +362,14 @@ uint64_t sessions_due(uint64_t t);
  * terminals' shells do (tell_mounts). */
 void     sessions_tell(void);
 
+/* ---- exec.c: /svc/exec, the sealer (abi/idl/exec.idl) ---------------------------- */
+
+/* Start the sealer on a thread of its own (with a port of its own: init's
+ * loop never waits for it, in either mode): *client is the shared
+ * channel's other end, to publish as /svc/exec (a channel per opener).
+ * Once, at the start. An error is said in the log: no /svc/exec. */
+status_t exec_init(handle_t *client);
+
 /* ---- ssh.c: the SSH server (bin/sshd, the tinyssh port) --------------------------- */
 
 /* Set up once before the loop (the loop's port: KEY_SSHD). */

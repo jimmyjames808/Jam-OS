@@ -3299,7 +3299,10 @@ night: its test plan is in the report). The code is file.c's mmap part
   execute only. `file_program` then asks it; everything after (the
   program as a VMO in `spawn_args`, closed after the spawn) is in place,
   and libos's `spawn` reads such a VMO with `vmo_read` only (below).
-  Until then a file is EACCES, as before.
+  Until then a file is EACCES, as before. **Built by CR-PLAN's CE1**
+  (`/svc/exec`, 2026-10-13), with one change the owner's rule forced: the
+  child gets its own approval only (not its parent's), so init starts it
+  itself rather than handing the parent a VMO (CR-PLAN, "CE1 notes").
 - **libos's spawn never maps a program's VMO in the starter** (outside
   the track's files, for PK4's rule): the ELF header, the program headers
   and the writable segments' bytes of any VMO but the boot image's are read
