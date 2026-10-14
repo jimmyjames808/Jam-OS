@@ -139,6 +139,14 @@ int64_t sysc_vmo_create_child(handle_t h, uint32_t flags, uint64_t offset, uint6
     return st == OK ? sysc_put_handle(t, out, c) : st;
 }
 
+int64_t sysc_vmo_make_jit(handle_t h, handle_t root, uint64_t out)
+{
+    SYSC_TABLE(t);
+    handle_t nh;
+    status_t st = sys_vmo_make_jit(t, h, root, &nh);
+    return st == OK ? sysc_put_handle(t, out, nh) : st;
+}
+
 /* ---- address spaces ---------------------------------------------------------- */
 
 int64_t sysc_vmar_map(handle_t vmar, handle_t vmo, uint64_t vmo_off, uint64_t len,

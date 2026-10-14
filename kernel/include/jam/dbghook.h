@@ -34,9 +34,9 @@ enum {
     DBG_VTD_FLUSH,         /* vtd_unit.c vtd_flush_lines, the lines flushed for a unit that
                               doesn't snoop its tables (arg: struct vtd_flush_range,
                               vtd_internal.h) */
-    DBG_VMO_EXEC_CHECK,    /* vmo_sys.c sys_vmo_make_exec and _verified, the handle taken out
-                              of the table, before the one-handle check and the seal (arg:
-                              the VMO) */
+    DBG_VMO_EXEC_CHECK,    /* vmo_sys.c sys_vmo_make_exec, _verified and _jit, the handle
+                              taken out of the table, before the one-handle check and the
+                              seal or the marking (arg: the VMO) */
     DBG_CPU_TIME,          /* sched.c thread_cpu_tsc, before it looks at where the thread runs;
                               no lock held (arg: the thread) */
     DBG_VMO_CHILD_SHOOT,   /* vmo.c share_pages, every page shared and the parent's entries

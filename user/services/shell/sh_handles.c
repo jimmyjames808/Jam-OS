@@ -4,7 +4,9 @@
  *                 RIGHT_ROOT_SYSINFO (ps, top), RIGHT_ROOT_CLOCK (date),
  *                 RIGHT_ROOT_DEBUG (ktest, bench, stress, mem through
  *                 debug_command), RIGHT_ROOT_REBOOT (reboot when init
- *                 doesn't answer) and RIGHT_ROOT_VMEX (programs from /data);
+ *                 doesn't answer), RIGHT_ROOT_VMEX (programs from /data)
+ *                 and RIGHT_ROOT_JIT (passed on to a program whose list
+ *                 says `right jit`);
  *                 no RIGHT_MAP / RIGHT_SLICE
  *   SHELL_SR_PCI   RES_PCI, RIGHTS_BASIC only (pci_enum for `devices`)
  *   SR_NS         init's whole namespace, as it is (every mount writable,

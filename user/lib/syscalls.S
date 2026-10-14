@@ -344,6 +344,14 @@ jam_vmo_create_child:
     ret
     .size jam_vmo_create_child, . - jam_vmo_create_child
 
+    .globl jam_vmo_make_jit
+    .type jam_vmo_make_jit, @function
+jam_vmo_make_jit:
+    mov $SYS_vmo_make_jit, %eax
+    syscall
+    ret
+    .size jam_vmo_make_jit, . - jam_vmo_make_jit
+
     .globl jam_process_create
     .type jam_process_create, @function
 jam_process_create:

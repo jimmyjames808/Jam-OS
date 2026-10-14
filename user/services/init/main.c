@@ -50,11 +50,12 @@
 
 #define MAX_WORDS     16
 /* The root's powers an init.cfg program gets (<jam/abi.h> RIGHT_ROOT_*;
- * the pager power for utest's own fat, which it supervises as volumes does).
+ * the pager power for utest's own fat, which it supervises as volumes does;
+ * JIT memory for utest's run of code it writes).
  * RIGHT_WRITE is none of them: utest checks that it gives no power over
  * the root (the screen and the serial port have powers of their own). */
 #define TEST_ROOT (RIGHT_ROOT_KLOG | RIGHT_ROOT_SYSINFO | RIGHT_ROOT_CLOCK | RIGHT_ROOT_VMEX | \
-                   RIGHT_ROOT_PAGER | RIGHT_WRITE)
+                   RIGHT_ROOT_PAGER | RIGHT_ROOT_JIT | RIGHT_WRITE)
 #define RUN_TIMEOUT_S 240   /* per program */
 
 /* devmgr_ch: its control channel, devmgr_q: its query channel (<devmgr.h>

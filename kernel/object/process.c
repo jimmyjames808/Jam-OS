@@ -296,6 +296,7 @@ void process_get_info(struct process *p, struct process_info *out)
     out->exit_code = p->exit_code;
     out->killed = p->killed;
     out->threads = p->nthreads;
+    out->flags = p->as && aspace_maps_jit(p->as) ? PROCESS_FLAG_JIT : 0;   /* lock-free read */
     punlock(p, f);
     out->koid = p->base.koid;
     out->pid = p->pid;

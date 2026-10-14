@@ -51,10 +51,11 @@ typedef uint32_t rights_t;
 #define RIGHT_ROOT_SCREEN  (1u << 24)  /* framebuffer_take: the screen */
 #define RIGHT_ROOT_SERIAL_OUT (1u << 25)  /* serial_write: the serial port's output */
 #define RIGHT_ROOT_PAGER   (1u << 26)  /* pager_create: supply other processes' pages */
+#define RIGHT_ROOT_JIT     (1u << 27)  /* vmo_make_jit: memory both writable and executable */
 #define RIGHTS_ROOT (RIGHT_ROOT_KLOG | RIGHT_ROOT_SERIAL | RIGHT_ROOT_SYSINFO | \
                      RIGHT_ROOT_CLOCK | RIGHT_ROOT_REBOOT | RIGHT_ROOT_KEXEC |   \
                      RIGHT_ROOT_DEBUG | RIGHT_ROOT_VMEX | RIGHT_ROOT_SCREEN |    \
-                     RIGHT_ROOT_SERIAL_OUT | RIGHT_ROOT_PAGER)
+                     RIGHT_ROOT_SERIAL_OUT | RIGHT_ROOT_PAGER | RIGHT_ROOT_JIT)
 #define RIGHT_SAME      0x80000000u /* in duplicate: keep the same rights */
 
 #define RIGHTS_BASIC (RIGHT_DUPLICATE | RIGHT_TRANSFER | RIGHT_WAIT | RIGHT_INSPECT)
@@ -220,7 +221,10 @@ struct port_packet {
 
 #define VMAR_READ  (1u << 0)
 #define VMAR_WRITE (1u << 1)
-#define VMAR_EXEC  (1u << 2)   /* never together with VMAR_WRITE */
+/* Never together with VMAR_WRITE, but on a JIT VMO (vmo_make_jit,
+ * abi/syscalls.def) through a handle with both RIGHT_WRITE and RIGHT_EXEC:
+ * W^X holds for every other mapping (ERR_INVALID_ARGS for W+X). */
+#define VMAR_EXEC  (1u << 2)
 #define VMAR_FIXED (1u << 3)   /* map at *addr exactly (else first fit) */
 /* vmar_map only: map a VMO_KEEP_PAGES VMO (ERR_NOT_SUPPORTED for any other
  * VMO) read-only (VMAR_READ, maybe VMAR_FIXED; ERR_INVALID_ARGS for any
@@ -309,8 +313,12 @@ struct process_info {
     uint64_t cpu_ns;      /* CPU time of all its threads so far */
     uint32_t mappings;    /* its address space's mappings now (VMAR_MAX_MAPPINGS at
                              most; 0 once it is torn down) */
-    uint32_t reserved;    /* 0 */
+    uint32_t flags;       /* PROCESS_FLAG_* */
 };
+/* process_info.flags and proc_stat.flags: its address space has mapped a
+ * JIT VMO (vmo_make_jit) since it was made, writable and executable
+ * memory (`ps` marks it). Kept until the address space is torn down. */
+#define PROCESS_FLAG_JIT (1u << 0)
 
 /* Small ids, for POSIX's pid and tid: a process's pid and a thread's tid
  * are taken when it is made (process_create, thread_create) and given
@@ -692,7 +700,7 @@ struct proc_stat {
     uint32_t state;       /* PROCESS_* */
     uint32_t threads;     /* live threads */
     uint32_t depth;       /* its job's depth below the root job */
-    uint32_t reserved;    /* 0 */
+    uint32_t flags;       /* PROCESS_FLAG_* (process_info's) */
     char     name[32];    /* the process's name, NUL-terminated */
 };
 

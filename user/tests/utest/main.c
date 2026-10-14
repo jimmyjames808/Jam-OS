@@ -42,6 +42,7 @@ JAM_WANTS("svc devmgr\n"
           "mount * rw\n"
           "right klog\n"
           "right sysinfo\n"
+          "right jit\n"
           "svc session\n");
 
 const char *utest_cur;   /* the test running */
@@ -594,6 +595,7 @@ static const struct {
     { "root_powers", t_root_powers },
     { "vmo_make_exec", t_vmo_make_exec },
     { "vmo_make_exec_verified", t_vmo_make_exec_verified },
+    { "jit", t_jit },
     { "kept_vmo_refusals", t_kept_vmo_refusals },
     { "kept_vmo_client_and_compositor", t_kept_vmo_client_and_compositor },
     { "vmo_child_shares", t_vmo_child_shares },

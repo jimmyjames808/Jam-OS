@@ -9,12 +9,15 @@
  * copy-on-write child being made: vmo.c). */
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <jam/status.h>
 
 #define ASPACE_READ  (1u << 0)
 #define ASPACE_WRITE (1u << 1)
-#define ASPACE_EXEC  (1u << 2)   /* never together with ASPACE_WRITE */
+/* Never together with ASPACE_WRITE, but on a JIT VMO's mapping (vmo_make_jit;
+ * aspace.c's header has the argument). */
+#define ASPACE_EXEC  (1u << 2)
 #define ASPACE_FIXED (1u << 3)   /* map at *addr exactly (else first fit) */
 /* aspace_map only: a VMO_KEEP_PAGES VMO, read-only, every entry filled at
  * map time and kept for the mapping's life (see VMAR_KEPT_ONLY in
@@ -54,8 +57,8 @@ void     aspace_unref(struct aspace *as);
 
 /* Map [vmo_off, vmo_off+len) of vmo (page-aligned, len > 0) with flags.
  * *addr: in, the address for ASPACE_FIXED; out, where it was mapped. The
- * mapping holds a VMO reference. ERR_INVALID_ARGS for W+X (or W or X
- * without R) or a bad range, ERR_OUT_OF_RANGE past the VMO's end,
+ * mapping holds a VMO reference. ERR_INVALID_ARGS for W+X on a VMO that
+ * isn't a JIT VMO (vmo_is_jit), W or X without R, or a bad range, ERR_OUT_OF_RANGE past the VMO's end,
  * ERR_NO_RESOURCES if it doesn't fit, ERR_ALREADY_BOUND if a FIXED range
  * overlaps an existing mapping. No permissions at all is allowed (a guard:
  * every access faults with ERR_ACCESS_DENIED). With ASPACE_KEPT_ONLY:
@@ -77,11 +80,15 @@ status_t aspace_map(struct aspace *as, struct vmo *vmo, uint64_t vmo_off, uint64
 status_t aspace_unmap(struct aspace *as, uint64_t addr, uint64_t len);
 /* Change permissions of [addr, addr+len), which must be fully mapped
  * (ERR_NOT_FOUND otherwise). ERR_ACCESS_DENIED if a mapping in the range
- * may not have them (see ASPACE_CAN_*). */
+ * may not have them (see ASPACE_CAN_*). W+X: ERR_INVALID_ARGS unless
+ * every mapping in the range is a JIT VMO's. */
 status_t aspace_protect(struct aspace *as, uint64_t addr, uint64_t len, unsigned flags);
 /* How many mappings it holds now (merged neighbours count once). Takes the
  * region lock: may sleep. */
 uint32_t aspace_mapping_count(struct aspace *as);
+/* Whether as has mapped a JIT VMO since it was made (PROCESS_FLAG_JIT).
+ * Lock-free. */
+bool     aspace_maps_jit(struct aspace *as);
 
 /* Resolve a fault at addr for `access` (ASPACE_READ/WRITE/EXEC): commit
  * the VMO page if needed and install the page-table entry. OK: retry the

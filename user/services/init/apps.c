@@ -14,6 +14,7 @@
  * process ends, the job is killed (anything it left running goes) and its
  * slot is free. init never starts one again: closing its window is the end
  * of it. At most DESKAPPS_RUNNING at once. */
+#include <dataprog.h>
 #include <deskapps.h>
 #include <wants.h>
 #include "init.h"
@@ -44,17 +45,6 @@ static const char *app_path(const char *cmd)
     return NULL;
 }
 
-/* The root's rights its list asks for, as the shell gives them. */
-static rights_t root_rights(uint32_t want)
-{
-    rights_t r = RIGHT_DUPLICATE | RIGHT_WAIT | RIGHT_INSPECT;
-    r |= want & WANT_RIGHT_KLOG ? RIGHT_ROOT_KLOG : 0;
-    r |= want & WANT_RIGHT_SYSINFO ? RIGHT_ROOT_SYSINFO : 0;
-    r |= want & WANT_RIGHT_CLOCK ? RIGHT_ROOT_CLOCK : 0;
-    r |= want & WANT_RIGHT_DEBUG ? RIGHT_ROOT_DEBUG : 0;
-    return r;
-}
-
 /* Start path as app `cmd` in slot a: OK with its process and job there. */
 static status_t start(struct app *a, const char *cmd, const char *path)
 {
@@ -79,7 +69,7 @@ static status_t start(struct app *a, const char *cmd, const char *path)
     struct spawn_handle x[1];
     unsigned nx = 0;
     if (w.rights) {
-        handle_t root = services_root_with(root_rights(w.rights));
+        handle_t root = services_root_with(dp_root_rights(w.rights));
         if (root)
             x[nx++] = (struct spawn_handle){ SR_RESOURCE, root };
     }

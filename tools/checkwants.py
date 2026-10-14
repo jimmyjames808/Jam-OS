@@ -16,7 +16,7 @@ same rules: printable ASCII lines, each one of
     svc net listen low    the same on ports below 1024 too
                           (/svc/net-low, never named on its own)
     mount <point> r|rw    <point>: /boot /esp /data /usb* *
-    right <name>          klog sysinfo clock debug
+    right <name>          klog sysinfo clock debug jit
     posix                 a POSIX program (once; it grants nothing)
 
 and, the build's own policy, the services that kill drivers and services
@@ -30,7 +30,10 @@ user/services/ (the low ports also for the SSH server, ports/tinyssh or
 user/ports/tinyssh: a port that init runs as a service, on port 22), and
 init's sessions (session: a whole shell) only for one under user/services/,
 ports/ (a recipe's directory: tinyssh's sshd), user/ports/ (the make
-fragments not yet recipes) or user/tests/.
+fragments not yet recipes) or user/tests/, and JIT memory (`right jit`:
+memory it may write and run, docs/CR-PLAN.md section 12) only for a
+package (ports/, user/ports/) or a test (user/tests/), never for the boot
+image's system programs.
 A program without a list is fine (it gets its terminal only). Prints how
 many lists it checked (-v: each one); exits 1, naming each problem, if any.
 
@@ -41,7 +44,8 @@ import sys
 
 OS_H = "user/include/os.h"
 POINTS = {"/boot", "/esp", "/data", "/usb*", "*"}
-RIGHTS = {"klog", "sysinfo", "clock", "debug"}
+RIGHTS = {"klog", "sysinfo", "clock", "debug", "jit"}
+JIT_DIRS = ("ports/", "user/ports/", "user/tests/")   # `right jit`: packages and tests only
 TESTS_ONLY = {"devmgr-ctl", "init", "serve", "volumes"}
 SERVICES_ONLY = {"net-sys", "dns-sys", "notify"}
 SESSION = "session"   # a whole shell: services, ports and tests only
@@ -121,7 +125,8 @@ def check_text(text, in_tests, svcs, in_services=False, src=""):
         elif len(w) == 3 and w[0] == "mount" and w[1] in POINTS and w[2] in ("r", "rw"):
             n += 1
         elif len(w) == 2 and w[0] == "right" and w[1] in RIGHTS:
-            pass
+            if w[1] == "jit" and not (in_tests or (src.rstrip("/") + "/").startswith(JIT_DIRS)):
+                problems.append("'%s': only a package or a test may ask for it" % line)
         else:
             problems.append("'%s': not a want (svc <name>, svc net listen [low], "
                             "mount <point> r|rw, right <name>, posix)" % line)
@@ -146,7 +151,7 @@ def selftest():
               b"svc net-low\n", b"svc net listen lower\n", b"svc net listen low now\n",
               b"mount /data rw\n" * 21 + b"svc net listen\nsvc net listen\n",   # 25 wants
               b"posix\nposix\n", b"posix now\n", b"Posix\n", b"svc posix\n",
-              b"svc session\n"]
+              b"svc session\n", b"right jit\n", b"right JIT\n"]
     fails = []
     for t in take:
         problems, _ = check_text(t, True, svcs)
@@ -167,6 +172,16 @@ def selftest():
     problems, _ = check_text(b"svc net listen low\n", False, svcs, False, "user/ports/sbase")
     if not problems:
         fails.append("took svc net listen low for a port that isn't the SSH server")
+    for src, tests in (("ports/chromium", False), ("ports", False), ("user/ports/x", False),
+                       ("user/tests/t", True)):
+        problems, _ = check_text(b"right jit\nposix\n", tests, svcs, False, src)
+        if problems:
+            fails.append("refused right jit for %s: %s" % (src, problems))
+    for src in ("user/services/x", "user/apps/x", "drivers/x"):
+        problems, _ = check_text(b"right jit\n", False, svcs, src.startswith("user/services/"),
+                                 src)
+        if not problems:
+            fails.append("took right jit for a system program (%s)" % src)
     for t in refuse:
         problems, _ = check_text(t, False, svcs, False, "user/apps/x")
         if not problems:
