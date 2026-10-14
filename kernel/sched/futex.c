@@ -127,7 +127,10 @@ status_t futex_wait(uint64_t uaddr, uint32_t expected, uint64_t deadline_ns, uin
     if (st != OK || now_val != expected) {
         if (waiter_leave(&w))
             return OK;   /* woken meanwhile: report the wake, not the value */
-        return st != OK ? ERR_INVALID_ARGS : ERR_BAD_STATE;
+        /* The copy's own status: ERR_INVALID_ARGS for a bad address, ERR_IO
+         * when the word's pager failed its page, ERR_CANCELED when the thread
+         * was killed while it waited for that page. */
+        return st != OK ? st : ERR_BAD_STATE;
     }
     for (;;) {
         b = waiter_lock(&w, &f);
