@@ -47,6 +47,7 @@
 #define STORAGE_DIGEST           0x000e0005u
 #define STORAGE_HEALTH           0x000e0006u
 #define STORAGE_CREATE_TABLE     0x000e0007u
+#define STORAGE_MODE             0x000e0008u
 
 /* Constants (the .idl's `const` lines). */
 /* Partition schemes (info's `scheme`). */
@@ -62,6 +63,18 @@
  * ERR_NO_RESOURCES; a read failed: ERR_IO (or ERR_TIMED_OUT). */
 #define STORAGE_DIGEST_MAX 0x40000000u
 #define STORAGE_DIGEST_QUEUE 8u
+/* What the driver found the drive to be, from the table it read itself
+ * (and so what it will write): MODE_OTHER someone else's (create_table
+ * erases it only with the owner's confirmation), MODE_BLANK blank by the
+ * empty rules (<jam/parttable.h>: zeros at both ends and at 1 MiB and
+ * 513 MiB) or a create_table cut short, MODE_JAMOS Jam OS's (its two
+ * partitions writable). `ro` 1: the `ro` word (`diskro`): nothing is
+ * written, whatever the mode says (MODE_OTHER then). `readable` 0: the
+ * table couldn't be read (a read failed): never erased. usb-storage:
+ * ERR_NOT_SUPPORTED. */
+#define STORAGE_MODE_OTHER 0u
+#define STORAGE_MODE_BLANK 1u
+#define STORAGE_MODE_JAMOS 2u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct storage_info_req {
@@ -149,8 +162,19 @@ struct storage_create_table_rep {
     uint32_t txid;
     int32_t  status;
 } __attribute__((packed));
+struct storage_mode_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct storage_mode_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint8_t mode;
+    uint8_t ro;
+    uint8_t readable;
+} __attribute__((packed));
 
-#define STORAGE_REQ_MAX 56u   /* bytes: the biggest request */
+#define STORAGE_REQ_MAX 88u   /* bytes: the biggest request */
 #define STORAGE_REP_MAX 175u   /* bytes: the biggest reply */
 #define STORAGE_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
 #define STORAGE_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
@@ -520,53 +544,110 @@ static inline status_t storage_health(handle_t ch, uint64_t *out_units_read, uin
 
 /* storage_create_table_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
-static inline status_t storage_create_table_call(handle_t ch, bool idl_within, uint64_t idl_t, const uint8_t disk_guid[16], const uint8_t esp_guid[16], const uint8_t data_guid[16])
+static inline status_t storage_create_table_call(handle_t ch, bool idl_within, uint64_t idl_t, const uint8_t disk_guid[16], const uint8_t esp_guid[16], const uint8_t data_guid[16], const char *tail, uint32_t tail_len, const char *word, uint32_t word_len)
 {
-    struct storage_create_table_req idl_q;
-    struct storage_create_table_rep idl_r;
+    _Alignas(8) uint8_t idl_b0[88];
+    _Alignas(8) uint8_t idl_b1[8];
+    struct storage_create_table_req *idl_q = (struct storage_create_table_req *)idl_b0;
+    const struct storage_create_table_rep *idl_r = (const struct storage_create_table_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = STORAGE_CREATE_TABLE;
+    for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
+        idl_q->disk_guid[idl_i] = disk_guid[idl_i];
+    for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
+        idl_q->esp_guid[idl_i] = esp_guid[idl_i];
+    for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
+        idl_q->data_guid[idl_i] = data_guid[idl_i];
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, tail, tail_len, 20, 1) ||
+                             !idl_str_ok(tail, tail_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, word, word_len, 8, 1) ||
+                             !idl_str_ok(word, word_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK)
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 8, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
+    (void)idl_o;
+    return idl_st;
+}
+/* Make a disk Jam OS's: its partition table, Jam OS's layout
+ * (<jam/parttable.h>, pt_jamos_make: the ESP of 512 MiB at 1 MiB named
+ * "Jam OS ESP", the data partition after it named "Jam OS data"), with this
+ * disk GUID and these unique GUIDs for the two partitions (as on disk; all
+ * zeros or two the same: ERR_INVALID_ARGS). drv/nvme only, with no `ro`
+ * word, and only on a disk its own reading of the table found
+ * - blank (MODE_BLANK, the empty rules; or blank-in-progress: a
+ * create_table cut short): `tail` and `word` are not looked at;
+ * - someone else's (MODE_OTHER, its table read without an error), when
+ * `tail` is the end of the drive's serial number as the owner typed it
+ * (the last 4 characters, the whole serial if shorter, in any case; a
+ * drive with no serial can't be erased) and `word` is "erase": the
+ * drive is ERASED, everything on it lost. Before its table, the first
+ * MiB of each of the blank rule's spots (where the ESP and the data
+ * partition start) is written with zeros, so fat formats both.
+ * Anything else (a Jam OS disk, the `ro` word, a missing or wrong `tail`
+ * or `word`, a table that couldn't be read) is ERR_ACCESS_DENIED before
+ * anything is looked at but the arguments' form. The table is written
+ * with FUA in this order: the backup entry array, the backup header, the
+ * primary entry array, the primary header, a Flush, then the protective
+ * MBR, so a cut before the end leaves a blank disk still blank-in-progress
+ * (or, cut right after the backup array, not blank any more: see the
+ * plan), never one half Jam OS's; an erased disk cut short is someone
+ * else's again, to be erased again. Then the driver reads the table back:
+ * OK once it reads as Jam OS's (its two partitions may then be opened
+ * writable); ERR_IO if a write failed or it doesn't read back;
+ * ERR_NO_SPACE: the disk is too small (under about 580 MiB); ERR_BAD_STATE:
+ * one is under way already. usb-storage: ERR_NOT_SUPPORTED. */
+static inline status_t storage_create_table_until(handle_t ch, uint64_t deadline_ns, const uint8_t disk_guid[16], const uint8_t esp_guid[16], const uint8_t data_guid[16], const char *tail, uint32_t tail_len, const char *word, uint32_t word_len)
+{
+    return storage_create_table_call(ch, false, deadline_ns, disk_guid, esp_guid, data_guid, tail, tail_len, word, word_len);
+}
+static inline status_t storage_create_table_within(handle_t ch, uint64_t timeout_ns, const uint8_t disk_guid[16], const uint8_t esp_guid[16], const uint8_t data_guid[16], const char *tail, uint32_t tail_len, const char *word, uint32_t word_len)
+{
+    return storage_create_table_call(ch, true, timeout_ns, disk_guid, esp_guid, data_guid, tail, tail_len, word, word_len);
+}
+static inline status_t storage_create_table(handle_t ch, const uint8_t disk_guid[16], const uint8_t esp_guid[16], const uint8_t data_guid[16], const char *tail, uint32_t tail_len, const char *word, uint32_t word_len)
+{
+    return storage_create_table_call(ch, false, DEADLINE_NEVER, disk_guid, esp_guid, data_guid, tail, tail_len, word, word_len);
+}
+
+/* storage_mode_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t storage_mode_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t *out_mode, uint8_t *out_ro, uint8_t *out_readable)
+{
+    struct storage_mode_req idl_q;
+    struct storage_mode_rep idl_r;
     uint32_t idl_n = 0;
     idl_q.txid = 0;
-    idl_q.ordinal = STORAGE_CREATE_TABLE;
-    for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
-        idl_q.disk_guid[idl_i] = disk_guid[idl_i];
-    for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
-        idl_q.esp_guid[idl_i] = esp_guid[idl_i];
-    for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
-        idl_q.data_guid[idl_i] = data_guid[idl_i];
+    idl_q.ordinal = STORAGE_MODE;
     status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
                                NULL, idl_within, idl_t);
     if (idl_st == OK)
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_mode)
+        *out_mode = idl_r.mode;
+    if (idl_st == OK && out_ro)
+        *out_ro = idl_r.ro;
+    if (idl_st == OK && out_readable)
+        *out_readable = idl_r.readable;
     return idl_st;
 }
-/* Make a blank disk Jam OS's: its partition table, Jam OS's layout
- * (<jam/parttable.h>, pt_jamos_make: the ESP of 512 MiB at 1 MiB named
- * "Jam OS ESP", the data partition after it named "Jam OS data"), with this
- * disk GUID and these unique GUIDs for the two partitions (as on disk; all
- * zeros or two the same: ERR_INVALID_ARGS). drv/nvme only, and only on a
- * disk its own reading of the table found blank (or blank-in-progress: a
- * create_table cut short), with no `ro` word: anything else is
- * ERR_ACCESS_DENIED before anything is looked at. Written with FUA in
- * this order: the backup entry array, the backup header, the primary
- * entry array, the primary header, a Flush, then the protective MBR, so a
- * cut before the end leaves a disk that is still blank-in-progress (or,
- * cut right after the backup array, not blank any more: see the plan),
- * never one half Jam OS's. Then the driver reads the table back: OK once
- * it reads as Jam OS's (its two partitions may then be opened writable);
- * ERR_IO if a write failed or it doesn't read back; ERR_NO_SPACE: the
- * disk is too small (under about 580 MiB); ERR_BAD_STATE: one is under
- * way already. usb-storage: ERR_NOT_SUPPORTED. */
-static inline status_t storage_create_table_until(handle_t ch, uint64_t deadline_ns, const uint8_t disk_guid[16], const uint8_t esp_guid[16], const uint8_t data_guid[16])
+static inline status_t storage_mode_until(handle_t ch, uint64_t deadline_ns, uint8_t *out_mode, uint8_t *out_ro, uint8_t *out_readable)
 {
-    return storage_create_table_call(ch, false, deadline_ns, disk_guid, esp_guid, data_guid);
+    return storage_mode_call(ch, false, deadline_ns, out_mode, out_ro, out_readable);
 }
-static inline status_t storage_create_table_within(handle_t ch, uint64_t timeout_ns, const uint8_t disk_guid[16], const uint8_t esp_guid[16], const uint8_t data_guid[16])
+static inline status_t storage_mode_within(handle_t ch, uint64_t timeout_ns, uint8_t *out_mode, uint8_t *out_ro, uint8_t *out_readable)
 {
-    return storage_create_table_call(ch, true, timeout_ns, disk_guid, esp_guid, data_guid);
+    return storage_mode_call(ch, true, timeout_ns, out_mode, out_ro, out_readable);
 }
-static inline status_t storage_create_table(handle_t ch, const uint8_t disk_guid[16], const uint8_t esp_guid[16], const uint8_t data_guid[16])
+static inline status_t storage_mode(handle_t ch, uint8_t *out_mode, uint8_t *out_ro, uint8_t *out_readable)
 {
-    return storage_create_table_call(ch, false, DEADLINE_NEVER, disk_guid, esp_guid, data_guid);
+    return storage_mode_call(ch, false, DEADLINE_NEVER, out_mode, out_ro, out_readable);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -900,20 +981,31 @@ static inline status_t storage_health_result(const void *idl_rep, struct idl_msg
 
 /* storage_create_table without waiting: the request, with the caller's txid (not 0).
  * The reply comes on ch: idl_reply_read, then storage_create_table_result. */
-static inline status_t storage_create_table_send(handle_t ch, uint32_t idl_txid, const uint8_t disk_guid[16], const uint8_t esp_guid[16], const uint8_t data_guid[16])
+static inline status_t storage_create_table_send(handle_t ch, uint32_t idl_txid, const uint8_t disk_guid[16], const uint8_t esp_guid[16], const uint8_t data_guid[16], const char *tail, uint32_t tail_len, const char *word, uint32_t word_len)
 {
-    struct storage_create_table_req idl_q;
     if (!idl_txid)
         return ERR_INVALID_ARGS;
-    idl_q.txid = idl_txid;
-    idl_q.ordinal = STORAGE_CREATE_TABLE;
+    _Alignas(8) uint8_t idl_b0[88];
+    struct storage_create_table_req *idl_q = (struct storage_create_table_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = STORAGE_CREATE_TABLE;
     for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
-        idl_q.disk_guid[idl_i] = disk_guid[idl_i];
+        idl_q->disk_guid[idl_i] = disk_guid[idl_i];
     for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
-        idl_q.esp_guid[idl_i] = esp_guid[idl_i];
+        idl_q->esp_guid[idl_i] = esp_guid[idl_i];
     for (uint32_t idl_i = 0; idl_i < 16; idl_i++)
-        idl_q.data_guid[idl_i] = data_guid[idl_i];
-    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+        idl_q->data_guid[idl_i] = data_guid[idl_i];
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, tail, tail_len, 20, 1) ||
+                             !idl_str_ok(tail, tail_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, word, word_len, 8, 1) ||
+                             !idl_str_ok(word, word_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
 }
 
 /* The status and results of a reply to storage_create_table_send (read with
@@ -934,6 +1026,41 @@ static inline status_t storage_create_table_result(const void *idl_rep, struct i
     return OK;
 }
 
+/* storage_mode without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then storage_mode_result. */
+static inline status_t storage_mode_send(handle_t ch, uint32_t idl_txid)
+{
+    struct storage_mode_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = STORAGE_MODE;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to storage_mode_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t storage_mode_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t *out_mode, uint8_t *out_ro, uint8_t *out_readable)
+{
+    const struct storage_mode_rep *idl_r = (const struct storage_mode_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_mode)
+        *out_mode = idl_r->mode;
+    if (out_ro)
+        *out_ro = idl_r->ro;
+    if (out_readable)
+        *out_readable = idl_r->readable;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -947,7 +1074,8 @@ struct storage_ops {
     status_t (*ident)(void *ctx, char *out_model, uint32_t *out_model_len, char *out_serial, uint32_t *out_serial_len, char *out_firmware, uint32_t *out_firmware_len);
     status_t (*digest)(void *ctx, struct idl_txn idl_txn, uint64_t lba, uint64_t count, uint8_t out_sha256[32]);
     status_t (*health)(void *ctx, struct idl_txn idl_txn, uint64_t *out_units_read, uint64_t *out_units_written, uint64_t *out_host_reads, uint64_t *out_host_writes, uint64_t *out_power_cycles, uint64_t *out_unsafe_shutdowns, uint8_t *out_percent_used, uint8_t *out_critical);
-    status_t (*create_table)(void *ctx, struct idl_txn idl_txn, const uint8_t disk_guid[16], const uint8_t esp_guid[16], const uint8_t data_guid[16]);
+    status_t (*create_table)(void *ctx, struct idl_txn idl_txn, const uint8_t disk_guid[16], const uint8_t esp_guid[16], const uint8_t data_guid[16], const char *tail, uint32_t tail_len, const char *word, uint32_t word_len);
+    status_t (*mode)(void *ctx, uint8_t *out_mode, uint8_t *out_ro, uint8_t *out_readable);
 };
 
 /* Answer the storage.info request kept in txn: idl_st and, if it is OK, the
@@ -1110,12 +1238,34 @@ static inline status_t storage_reply_health(struct idl_txn idl_txn, status_t idl
  * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
 static inline status_t storage_reply_create_table(struct idl_txn idl_txn, status_t idl_st)
 {
-    struct storage_create_table_rep idl_r;
+    _Alignas(8) uint8_t idl_b0[8];
+    struct storage_create_table_rep *idl_r = (struct storage_create_table_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
+}
+
+/* Answer the storage.mode request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t storage_reply_mode(struct idl_txn idl_txn, status_t idl_st, uint8_t mode, uint8_t ro, uint8_t readable)
+{
+    struct storage_mode_rep idl_r;
     if (idl_st > 0)
         idl_st = ERR_INTERNAL;
     idl_r.status = idl_st;
     if (idl_st != OK)
         return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.mode = mode;
+    idl_r.ro = ro;
+    idl_r.readable = readable;
     return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
 }
 
@@ -1327,20 +1477,57 @@ static inline uint32_t storage_dispatch_on(handle_t ch, const struct storage_ops
         const struct storage_create_table_req *idl_q = (const struct storage_create_table_req *)req;
         struct storage_create_table_rep *idl_r = (struct storage_create_table_rep *)rep;
         (void)idl_r;
-        if (n != sizeof(*idl_q))
+        uint32_t idl_o = sizeof(*idl_q);
+        status_t idl_st = n < sizeof(*idl_q) ? ERR_INVALID_ARGS : OK;
+        const void *idl_p0 = NULL;
+        uint32_t idl_l0 = 0;
+        const void *idl_p1 = NULL;
+        uint32_t idl_l1 = 0;
+        if (idl_st == OK && !idl_get(req, n, &idl_o, 20, 1, &idl_p0, &idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_get(req, n, &idl_o, 8, 1, &idl_p1, &idl_l1))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_str_ok((const char *)idl_p1, idl_l1))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_o != n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st != OK)
             return sizeof(*idl_h);
         if (!ops->create_table) {
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
         struct idl_txn idl_txn = { ch, idl_h->txid };
-        status_t idl_st = ops->create_table(ctx, idl_txn, idl_q->disk_guid, idl_q->esp_guid, idl_q->data_guid);
+        idl_st = ops->create_table(ctx, idl_txn, idl_q->disk_guid, idl_q->esp_guid, idl_q->data_guid, (const char *)idl_p0, idl_l0, (const char *)idl_p1, idl_l1);
         /* IDL_LATER: the handler answers with storage_reply_create_table. */
         if (idl_st == IDL_LATER)
             return 0;
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
+        return sizeof(*idl_r);
+    }
+    case STORAGE_MODE: {
+        const struct storage_mode_req *idl_q = (const struct storage_mode_req *)req;
+        struct storage_mode_rep *idl_r = (struct storage_mode_rep *)rep;
+        uint8_t out_mode = 0;
+        uint8_t out_ro = 0;
+        uint8_t out_readable = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->mode) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->mode(ctx, &out_mode, &out_ro, &out_readable);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->mode = out_mode;
+        idl_r->ro = out_ro;
+        idl_r->readable = out_readable;
         return sizeof(*idl_r);
     }
     }
@@ -1409,6 +1596,7 @@ static inline bool storage_idempotent(uint32_t ordinal)
     case STORAGE_PARTITION:
     case STORAGE_IDENT:
     case STORAGE_HEALTH:
+    case STORAGE_MODE:
         return true;
     default:
         return false;

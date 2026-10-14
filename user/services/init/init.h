@@ -170,11 +170,14 @@ void     ctl_serve(unsigned who);
 
 /* ---- prepare.c: initctl.prepare_disk's call to volumes ----------------------------- */
 
-/* volinstall.prepare of disk `id`, sent on volumes' install channel without
- * waiting, under transaction id txid; ERR_NOT_FOUND: no volumes runs. Its
- * answer (read off the channel by the caller): prepare_result. */
+/* volinstall.prepare of disk `id` (with the owner's confirmation of an erase,
+ * `tail` and `word`, as the shell sent them), sent on volumes' install
+ * channel without waiting, under transaction id txid; ERR_NOT_FOUND: no
+ * volumes runs. Its answer (read off the channel by the caller):
+ * prepare_result. */
 struct idl_msg;
-status_t prepare_send(uint32_t txid, uint32_t id);
+status_t prepare_send(uint32_t txid, uint32_t id, const char *tail, uint32_t tail_len,
+                      const char *word, uint32_t word_len);
 status_t prepare_result(const void *rep, struct idl_msg *m);
 /* The call's end, said in the log: disk id, how it ended, since t0. */
 void     prepare_say(uint32_t id, status_t st, uint64_t t0);

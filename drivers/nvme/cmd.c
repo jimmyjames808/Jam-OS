@@ -18,11 +18,17 @@
  * table the driver read itself (the library's pt_kind: Jam OS's mark,
  * blank, or other) when it starts and after its own create_table; the
  * `ro` word makes every drive MODE_OTHER. sqe_write looks at the mode
- * FIRST: on a drive that isn't Jam OS's (a partition write) or blank (a
- * write of its table) it refuses whatever the blocks are, so a write to
- * Windows' drive can't be built at all; only then does it check that the
- * blocks lie inside the target (one of the two Jam OS partitions, or the
- * blocks Jam OS's table takes, inside the blank rule's zeros). Every Write
+ * FIRST: on a drive that isn't Jam OS's (a partition write) or blank or
+ * being erased (a write of its table) it refuses whatever the blocks are,
+ * so a write to Windows' drive can't be built at all; only then does it
+ * check that the blocks lie inside the target (one of the two Jam OS
+ * partitions, or the blocks Jam OS's table takes, inside the blank rule's
+ * zeros). The one other mode, MODE_ERASE, is the owner's: cmd_arm sets it
+ * only when told the owner confirmed the erase (table.c's create_table
+ * checked the end of the serial number and "erase") of a drive the table
+ * calls someone else's, and only for that create_table: the table's
+ * blocks as for a blank drive, and the blank rule's spots (where the two
+ * partitions will start), nothing else; never a partition. Every Write
  * carries FUA (its completion means it is on the medium). Flush only on a
  * drive that isn't MODE_OTHER. tools/checknvme.py, run by `make check`,
  * keeps this file's opcode lists the stage's, a Write built in sqe_write
@@ -85,8 +91,10 @@ static struct gate {
     uint64_t disk;             /* the namespace's blocks when armed */
     uint64_t part_start[2];    /* MODE_JAMOS: the ESP's and the data partition's blocks */
     uint64_t part_blocks[2];
-    uint64_t head;             /* MODE_BLANK: the table's blocks [0, head) ... */
+    uint64_t head;             /* MODE_BLANK, MODE_ERASE: the table's blocks [0, head) ... */
     uint64_t tail;             /* ... and [tail, disk) */
+    uint64_t spot_start[2];    /* MODE_ERASE: the blank rule's spots, in blocks */
+    uint64_t spot_blocks;
 } gate;
 
 _Noreturn static void refuse(const char *what, uint32_t a, uint32_t b)
@@ -98,23 +106,31 @@ _Noreturn static void refuse(const char *what, uint32_t a, uint32_t b)
 
 /* ---- the gate ------------------------------------------------------------------------ */
 
-void cmd_arm(struct nvme *c, const struct pt_table *t)
+void cmd_arm(struct nvme *c, const struct pt_table *t, bool erase)
 {
     enum pt_kind kind = t ? pt_kind(t) : PT_KIND_OTHER;
     struct pt_jamos_plan p;
     gate = (struct gate){ .mode = MODE_OTHER, .disk = c->ns.blocks };   /* nothing, first */
     if (c->ro || !c->ns.nsid)
         return;
+    bool plan = pt_jamos_plan(c->ns.block_size, c->ns.blocks, &p) == OK;
     if (kind == PT_KIND_JAMOS && t->nparts == 2) {
         for (unsigned i = 0; i < 2; i++) {
             gate.part_start[i] = t->parts[i].start;
             gate.part_blocks[i] = t->parts[i].blocks;
         }
         gate.mode = MODE_JAMOS;
-    } else if (kind == PT_KIND_BLANK && pt_jamos_plan(c->ns.block_size, c->ns.blocks, &p) == OK) {
+    } else if (kind == PT_KIND_BLANK && plan) {
         gate.head = p.head_blocks;
         gate.tail = p.tail_start;
         gate.mode = MODE_BLANK;
+    } else if (erase && kind == PT_KIND_OTHER && t && plan) {
+        gate.head = p.head_blocks;
+        gate.tail = p.tail_start;
+        gate.spot_start[0] = p.esp_start;    /* PT_BLANK_SPOT_ESP (gptcheck checks) */
+        gate.spot_start[1] = p.data_start;   /* PT_BLANK_SPOT_DATA */
+        gate.spot_blocks = PT_BLANK_SPOT_BYTES / c->ns.block_size;
+        gate.mode = MODE_ERASE;
     }
 }
 
@@ -128,6 +144,7 @@ const char *cmd_mode_str(void)
     switch (gate.mode) {
     case MODE_JAMOS: return "a Jam OS disk: its two partitions writable";
     case MODE_BLANK: return "blank: create_table may write its table";
+    case MODE_ERASE: return "being erased (the owner confirmed it): create_table writes its table";
     default:         return "read-only";
     }
 }
@@ -138,8 +155,17 @@ static bool in_gate(uint8_t part, uint64_t lba, uint32_t blocks)
 {
     if (!blocks || blocks > RW_MAX || lba >= gate.disk || blocks > gate.disk - lba)
         return false;
-    if (part == PART_TABLE)
-        return (lba < gate.head && blocks <= gate.head - lba) || lba >= gate.tail;
+    if (part == PART_TABLE) {
+        if ((lba < gate.head && blocks <= gate.head - lba) || lba >= gate.tail)
+            return true;
+        for (unsigned i = 0; i < 2 && gate.mode == MODE_ERASE; i++) {
+            uint64_t start = gate.spot_start[i];
+            if (lba >= start && lba - start < gate.spot_blocks &&
+                blocks <= gate.spot_blocks - (lba - start))
+                return true;
+        }
+        return false;
+    }
     if (part >= 2)
         return false;
     uint64_t start = gate.part_start[part], n = gate.part_blocks[part];
@@ -334,7 +360,8 @@ void sqe_read(struct nvme *c, struct nvme_slot *s, uint64_t lba, uint32_t blocks
 void sqe_write(struct nvme *c, struct nvme_slot *s, uint8_t part, uint64_t lba, uint32_t blocks,
                uint64_t prp1, uint64_t prp2)
 {
-    bool mode_ok = part == PART_TABLE ? gate.mode == MODE_BLANK : gate.mode == MODE_JAMOS;
+    bool mode_ok = part == PART_TABLE ? (gate.mode == MODE_BLANK || gate.mode == MODE_ERASE)
+                                      : gate.mode == MODE_JAMOS;
     if (!mode_ok)
         refuse("a write to a drive that isn't Jam OS's", gate.mode, part);
     if (!in_gate(part, lba, blocks) || !c->ns.nsid || gate.disk != c->ns.blocks || (prp1 & 3))

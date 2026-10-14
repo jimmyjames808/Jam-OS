@@ -58,12 +58,15 @@
 #            trace holds stage 1's list only (no Write, no Flush), and all
 #            three images are unchanged
 #   prepare  stage 2's volumes, init and shell (M12.7 W2): the Windows-like
-#            drive and a blank one (640 MiB); `disk prepare nvme1` with the
-#            serial's last four characters typed wrong (stopped: the shell
-#            says so and the drive is still blank), then right: the table,
+#            drive and a blank one (640 MiB); `disk prepare` of the
+#            Windows-like one shows it isn't empty (its GPT, its partitions)
+#            and asks for its erase: the serial's end typed wrong, nothing
+#            written; of the blank one with the serial's last four
+#            characters typed wrong (stopped: the shell says so and the
+#            drive is still blank), then right: the table,
 #            both partitions formatted and mounted read-only (/nvme1, /nvme2);
-#            `disks` shows a Jam OS disk; `disk prepare nvme0` and `mount -w
-#            /nvme0` refused; `disk prepare nvme1` again says it is one
+#            `disks` shows a Jam OS disk; `mount -w
+#            /nvme0` refused; `disk prepare` again says it is one
 #            already; `mount -w /nvme2`, a file written, `mount -r`. Then the
 #            Windows-like image is unchanged, the blank one's table is Jam
 #            OS's (tools/nvme-written.py), its data partition is a FAT volume
@@ -75,8 +78,24 @@
 #            there): the driver calls it blank (create_table may write), and
 #            `disk prepare nvme1` finishes it, with the checks of `prepare`
 #   cutbad   the same drive with one stray byte in the array's zeros: not
-#            blank, so `disk prepare nvme1` (typed right) is refused by the
-#            driver, and both images are unchanged
+#            empty, so `disk prepare` shows it as data Jam OS doesn't
+#            recognise and asks for its erase: the serial's end typed right,
+#            then not `erase`: nothing written, both images unchanged, no
+#            Write in the trace
+#   erase    a drive that isn't empty erased (the owner's decision,
+#            2026-10-14): two Windows-like drives; the second's erase asked
+#            and answered wrong; the first shown (GPT, 4 partitions, the
+#            ESP's FAT volume), its serial's end and `erase` typed: erased
+#            and prepared, a file written to its data partition. Its image:
+#            Jam OS's table, every block that differs from the image as made
+#            inside the table or the partitions, the new ESP without the old
+#            one's files, the file there; the trace's Writes inside the table
+#            and partitions; the second image unchanged
+#   erasestop  the same drives, the first never erased: the serial's end
+#            wrong; right, then `yes`; right, then Ctrl+C. `disk digest` of
+#            its first 34 blocks the same before and after (and the host's),
+#            `disk prepare usb0` refused (the disk Jam OS booted from); both
+#            images unchanged, no Write in the trace
 #   checker  no QEMU: tools/nvme-trace-check.py on made-up traces (a clean
 #            one passes; a Write, a Flush, a Format NVM, a Dataset Management,
 #            an unparsable line and a silent trace each fail in stage 1; in
@@ -107,7 +126,7 @@ set -eu
 out=$1
 shift
 cases=${*:-windows}
-[ "$cases" = all ] && cases="checker windows plain twons 4k damaged kill iommu block write wiommu diskro prepare piommu cutprep cutbad"
+[ "$cases" = all ] && cases="checker windows plain twons 4k damaged kill iommu block write wiommu diskro prepare piommu cutprep cutbad erase erasestop"
 mkdir -p "$out"
 
 sha256() { if command -v sha256sum > /dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
@@ -268,16 +287,32 @@ s2_diskro() {
 
 # ---- stage 2: disk prepare (volumes, init, the shell) ------------------------------------
 
-# s3_prepare <dir> <kind>: the Windows-like drive and a blank 640 MiB one,
-# booted with the shell. kind: prepare (the blank drive), cutprep (cut after
-# create_table's first write), cutbad (that, and a stray byte). Which of the
-# two is nvme0 and which nvme1 depends on which driver answered volumes
-# first, so every `disk prepare` is typed for both names; the one that is
-# blank asks for the serial's last four characters (the blank drive is
-# attached first, so its serial is QEMU's jamos-nvme0: vme0), the other says
-# it is not blank. The mounts are in order: Windows' ESP is /nvme0 from the
-# boot, the new disk's ESP and data partition /nvme1 and /nvme2. What each
-# step printed is counted in the log afterwards.
+# s3_names <slot0 var> <slot1 var>: `disks`, and from its answer the disk
+# numbers of the drives in QEMU's slots 0 and 1 (QEMU_NVME's order: serial
+# jamos-nvme0 and jamos-nvme1) as {<var>}; which is nvme0 depends on which
+# driver answered volumes first. Waits a moment first: the prompt is up
+# before every driver has answered volumes.
+s3_names() {
+    echo "send sleep 4"
+    echo "wait {prompt}"
+    echo "send disks"
+    printf '%s\n' "seen re:nvme(?P<$1>[0-9]+) +QEMU NVMe Ctrl +serial jamos-nvme0 "
+    printf '%s\n' "seen re:nvme(?P<$2>[0-9]+) +QEMU NVMe Ctrl +serial jamos-nvme1 "
+    echo "wait {prompt}"
+}
+
+# s3_prepare <dir> <kind>: a blank 640 MiB drive (QEMU's slot 0: serial
+# jamos-nvme0, its end vme0) and the Windows-like one (slot 1: vme1),
+# booted with the shell. kind: prepare (the blank drive), cutprep (cut
+# after create_table's first write), cutbad (that, and a stray byte: not
+# empty). The Windows-like drive is shown as not empty and its erase asked
+# for each time, and answered wrong (nothing written); the blank one is
+# prepared (the wrong end of its serial first in `prepare`); the stray
+# byte's drive is shown as not empty too, its serial's end typed right and
+# then not `erase` (nothing written). The mounts are in order: Windows'
+# ESP is /nvme0 from the boot, the new disk's ESP and data partition
+# /nvme1 and /nvme2. What each step printed is counted in the log
+# afterwards.
 s3_prepare() {
     dir=$1 kind=$2 ok=1 words="nvmetest=on${s2_iommu:+ iommu=on}"
     win="$dir/windows.img" jam="$dir/jamos.img" log="$dir/nvme-$c.log"
@@ -289,20 +324,28 @@ s3_prepare() {
     esac
     before=$(sha256 "$win" "$jam" | cut -d' ' -f1)
     in="$dir/nvme-$c.in"
-    # `disk prepare` for both names: the Windows-like drive is refused each time (not
-    # blank), the blank one asks (the wrong serial first in `prepare`), then is a Jam OS disk.
-    kind_pairs=2 wrong=0
-    [ $kind = prepare ] && { kind_pairs=3; wrong=1; }
+    wrong=1   # the Windows-like drive's wrong answer, every kind
+    [ $kind = prepare ] && wrong=2
     {
         echo "# generated by tools/nvme-test.sh: $c"
         echo "wait 120 Jam OS shell"
         echo "wait {prompt}"
         echo "seen 60 init: /data mounted"   # volumes is up, and has been told of the disks
+        s3_names bd wd
         echo "send disks"
         echo "wait nothing found on it"
         echo "wait {prompt}"
+        # Windows' drive: shown, its erase asked for, the wrong end of its serial typed.
+        echo "send disk prepare nvme{wd}"
+        echo "wait It is NOT empty"
+        echo "wait a GPT partition table with 4 partitions"
+        echo "wait EVERYTHING ON nvme{wd} WILL BE LOST"
+        echo "wait Type the last 4 characters"
+        echo "send zzzz"
+        echo "wait is not the end of"
+        echo "wait {prompt}"
         if [ $kind = prepare ]; then
-            echo "send disk prepare nvme0; disk prepare nvme1"
+            echo "send disk prepare nvme{bd}"
             echo "wait Type the last 4 characters"
             echo "send zzzz"
             echo "wait is not the end of"
@@ -311,16 +354,23 @@ s3_prepare() {
             echo "wait nothing found on it"
             echo "wait {prompt}"
         fi
-        echo "send disk prepare nvme0; disk prepare nvme1"
-        echo "wait Type the last 4 characters"
-        echo "send vme0"
+        echo "send disk prepare nvme{bd}"
         if [ $kind = cutbad ]; then
-            echo "wait 60 not blank, or not to be written"
+            echo "wait It is NOT empty"
+            echo "wait data Jam OS doesn't recognise"
+            echo "wait Type the last 4 characters"
+            echo "send vme0"
+            echo "wait type erase"
+            echo "send no"
+            echo "wait not erased: nothing was written"
             echo "wait {prompt}"
             echo "send disks"
             echo "wait nothing found on it"
             echo "wait {prompt}"
         else
+            echo "wait nothing is on it"
+            echo "wait Type the last 4 characters"
+            echo "send vme0"
             echo "wait 300 is a Jam OS disk now: ESP"
             echo "wait {prompt}"
             echo "send disks"
@@ -330,7 +380,8 @@ s3_prepare() {
             echo "send mount"
             echo "wait /nvme2"
             echo "wait {prompt}"
-            echo "send disk prepare nvme0; disk prepare nvme1"
+            echo "send disk prepare nvme{bd}"
+            echo "wait is a Jam OS disk already"
             echo "wait {prompt}"
             echo "send mount -w /nvme0"
             echo "wait /nvme0 is not on a Jam OS disk: it stays read-only"
@@ -357,6 +408,9 @@ s3_prepare() {
         { echo "nvme-$c: FAIL: the run failed (see $dir/nvme-$c.out)"; grep -a "serial-feed: .*no '" "$dir/nvme-$c.out" || true; ok=0; }
     [ "$(sha256 "$win" | cut -d' ' -f1)" = "$(echo "$before" | sed -n 1p)" ] || { echo "nvme-$c: FAIL: the Windows-like image changed"; ok=0; }
     if [ -n "${s2_iommu:-}" ] && grep -aq "vtd: fault" "$log"; then echo "nvme-$c: FAIL: a VT-d fault"; ok=0; fi
+    [ "$(grep -ac "that is not the end of" "$log")" -eq "$wrong" ] ||
+        { echo "nvme-$c: FAIL: a wrong serial was taken, or not stopped ($wrong expected)"; ok=0; }
+    grep -aq "erasing it, as the owner confirmed" "$log" && { echo "nvme-$c: FAIL: a drive was erased"; ok=0; }
     case $kind in
     cutbad)
         [ "$(sha256 "$jam" | cut -d' ' -f1)" = "$(echo "$before" | sed -n 2p)" ] || { echo "nvme-$c: FAIL: the refused drive's image changed"; ok=0; }
@@ -364,22 +418,16 @@ s3_prepare() {
             { echo "nvme-$c: FAIL: the stray byte's drive wasn't called someone else's"; ok=0; }
         grep -aq "the drive is blank" "$log" && { echo "nvme-$c: FAIL: a drive with a stray byte was called blank"; ok=0; }
         grep -aq "is a Jam OS disk now" "$log" && { echo "nvme-$c: FAIL: a disk was made Jam OS's"; ok=0; }
+        s2_want "$log" "not erased: nothing was written" || ok=0
         s2_trace "$dir/$c.trace" 1 || ok=0
         ;;
     *)
         if [ $kind = cutprep ]; then
             s2_want "$log" "blank: create_table may write its table" || ok=0
         fi
-        s2_want "$log" "create_table: Jam OS's table written and read back" \
+        s2_want "$log" "create_table: Jam OS's table written and read back: " \
             "volumes: nvme[01] is a Jam OS disk now: /nvme1 and /nvme2, read-only" \
-            "nvme[01] is a Jam OS disk already" "nvme[01] is not blank" || ok=0
-        # three `disk prepare` pairs ran on a disk that was Windows-like and one that was blank, or
-        # Jam OS's: the Windows-like drive said "not blank" each time
-        want=$(( kind_pairs ))
-        [ "$(grep -ac "disk prepare: nvme[01] is not blank" "$log")" -eq $want ] ||
-            { echo "nvme-$c: FAIL: the Windows-like drive wasn't refused $want times"; ok=0; }
-        [ "$(grep -ac "that is not the end of" "$log")" -eq "$wrong" ] ||
-            { echo "nvme-$c: FAIL: the wrong serial was taken, or not stopped"; ok=0; }
+            "nvme[01] is a Jam OS disk already" || ok=0
         if python3 tools/nvme-written.py "$jam" --pattern none --ranges > "$dir/written.txt"; then
             head -1 "$dir/written.txt" | sed "s/^/nvme-$c: /"
             s2_trace "$dir/$c.trace" 2 --write-ranges "$(tail -1 "$dir/written.txt")" || ok=0
@@ -401,10 +449,174 @@ s3_prepare() {
     if [ $ok = 1 ]; then rm -f "$win" "$jam"; echo "nvme-$c: PASS"; else echo "nvme-$c: FAIL (see $dir)"; fails=$((fails + 1)); fi
 }
 
+# s4_erase <dir> <kind>: two Windows-like drives (tools/nvme-img.py's, the
+# same bytes): the one in QEMU's slot 0 (serial jamos-nvme0, its end vme0)
+# is the one `disk prepare` is asked to erase, the one in slot 1 (vme1)
+# must come out unchanged. kind:
+#   erase      the other drive asked first, the wrong end of its serial
+#              typed (it isn't erased); then the first shown (its GPT, 4
+#              partitions, the ESP's FAT volume), its serial's end and
+#              `erase` typed: erased, prepared, both partitions formatted
+#              and mounted, a file written. On the host: its table is Jam
+#              OS's, every block that differs from the image as made lies in
+#              the table or the partitions (tools/nvme-written.py --before),
+#              the new ESP holds none of the old one's files, every traced
+#              Write lies in the table or the partitions; the other image's
+#              hash unchanged
+#   erasestop  the first drive asked three times and never erased: the
+#              wrong end of its serial; the right end, then `yes`; the
+#              right end, then Ctrl+C. Its first 34 blocks hashed in the
+#              guest before and after (`disk digest`: the same), `disk
+#              prepare usb0` refused (the boot disk), `mount -w` of its ESP
+#              refused; on the host both images unchanged, and the trace
+#              holds no Write at all
+s4_erase() {
+    dir=$1 kind=$2 ok=1 words="nvmetest=on"
+    era="$dir/erase.img" keep="$dir/keep.img" log="$dir/nvme-$c.log"
+    python3 tools/nvme-img.py "$era" windows
+    python3 tools/nvme-img.py "$keep" windows
+    before=$(sha256 "$era" "$keep" | cut -d' ' -f1)
+    boot_hash=$(sha256 "$era.files/bootmgfw.efi" | cut -d' ' -f1)
+    in="$dir/nvme-$c.in"
+    {
+        echo "# generated by tools/nvme-test.sh: $c"
+        echo "wait 120 Jam OS shell"
+        echo "wait {prompt}"
+        echo "seen 60 init: /data mounted"
+        s3_names ad kd
+        # each drive's ESP mount ({ae}, {ke}), from the same `disks`
+        printf '%s\n' "seen re:serial jamos-nvme0 [^\r\n]*\r?\n +1 +EFI system [^\r\n]*?/nvme(?P<ae>[0-9]+)"
+        printf '%s\n' "seen re:serial jamos-nvme1 [^\r\n]*\r?\n +1 +EFI system [^\r\n]*?/nvme(?P<ke>[0-9]+)"
+        echo "send sha256sum /nvme{ae}/EFI/Microsoft/Boot/bootmgfw.efi"
+        echo "wait $boot_hash"
+        echo "wait {prompt}"
+        if [ $kind = erasestop ]; then
+            echo "send disk digest nvme{ad} 0 34"
+            echo "wait range lba 0 count 34 sha256"
+            echo "wait {prompt}"
+            echo "send disk prepare nvme{ad}"
+            echo "wait It is NOT empty"
+            echo "wait Type the last 4 characters"
+            echo "send zzzz"
+            echo "wait is not the end of"
+            echo "wait {prompt}"
+            echo "send disk prepare nvme{ad}"
+            echo "wait Type the last 4 characters"
+            echo "send vme0"
+            echo "wait type erase"
+            echo "send yes"
+            echo "wait not erased: nothing was written"
+            echo "wait {prompt}"
+            echo "send disk prepare nvme{ad}"
+            echo "wait Type the last 4 characters"
+            echo "send vme0"
+            echo "wait type erase"
+            echo "type er\\x03"
+            echo "wait not erased: nothing was written"
+            echo "wait {prompt}"
+            echo "send disk prepare usb0"
+            echo "wait is the disk Jam OS booted from"
+            echo "wait {prompt}"
+            echo "send mount -w /nvme{ae}"
+            echo "wait not on a Jam OS disk"
+            echo "wait {prompt}"
+            echo "send disk digest nvme{ad} 0 34"
+            echo "wait range lba 0 count 34 sha256"
+            echo "wait {prompt}"
+        else
+            echo "send disk prepare nvme{kd}"
+            echo "wait It is NOT empty"
+            echo "wait Type the last 4 characters"
+            echo "send vme0"
+            echo "wait is not the end of"
+            echo "wait {prompt}"
+            echo "send disk prepare nvme{ad}"
+            echo "wait It is NOT empty"
+            echo "wait a GPT partition table with 4 partitions"
+            echo "wait EFI system partition"
+            echo "wait FAT volume \"SYSTEM\""
+            echo "wait mounted read-only at /nvme{ae}"
+            echo "wait Microsoft reserved"
+            echo "wait Windows recovery"
+            echo "wait EVERYTHING ON nvme{ad} WILL BE LOST"
+            echo "wait Type the last 4 characters"
+            echo "send vme0"
+            echo "wait type erase"
+            echo "send erase"
+            echo "wait 300 is a Jam OS disk now: ESP"
+            echo "wait {prompt}"
+            echo "send disks"
+            printf '%s\n' "seen re:serial jamos-nvme0 [^\r\n]*\r?\n +1 +EFI system [^\r\n]*?/nvme(?P<je>[0-9]+)[^\r\n]*\r?\n +2 +Jam OS data [^\r\n]*?/nvme(?P<jm>[0-9]+)"
+            echo "wait {prompt}"
+            echo "send disk prepare nvme{ad}"
+            echo "wait is a Jam OS disk already"
+            echo "wait {prompt}"
+            echo "send ls /nvme{je}; echo esp-ls-\$?"
+            echo "wait esp-ls-0"
+            echo "wait {prompt}"
+            echo "send mount -w /nvme{jm}"
+            echo "wait 60 is now read-write"
+            echo "wait {prompt}"
+            echo "send cp /boot/build.txt /nvme{jm}/build.txt; sync; sha256sum /nvme{jm}/build.txt"
+            echo "wait $(sha256 build/build.txt | cut -d' ' -f1)"
+            echo "wait {prompt}"
+            echo "send mount -r /nvme{jm}"
+            echo "wait 60 is now read-only"
+            echo "wait {prompt}"
+        fi
+        # the other drive, still mounted and read as it was
+        echo "send sha256sum /nvme{ke}/EFI/Microsoft/Boot/bootmgfw.efi"
+        echo "wait $boot_hash"
+        echo "wait {prompt}"
+        echo "send reboot -f"
+        echo "wait reboot: resetting"
+    } > "$in"
+    QEMU_TIMEOUT=${QEMU_TIMEOUT:-420} QEMU_NVME="$era $keep" QEMU_INPUT="$in" \
+        QEMU_EXTRA="-trace pci_nvme_pci_reset -trace pci_nvme_admin_cmd -trace pci_nvme_io_cmd -trace pci_nvme_write -D $dir/$c.trace" \
+        QEMU_WORDS="$words" tools/qemu-test.sh "$dir" "nvme-$c" shell > "$dir/nvme-$c.out" 2>&1 ||
+        { echo "nvme-$c: FAIL: the run failed (see $dir/nvme-$c.out)"; grep -a "serial-feed: .*no '" "$dir/nvme-$c.out" || true; ok=0; }
+    [ "$(sha256 "$keep" | cut -d' ' -f1)" = "$(echo "$before" | sed -n 2p)" ] || { echo "nvme-$c: FAIL: the other Windows-like image changed"; ok=0; }
+    if [ $kind = erasestop ]; then
+        [ "$(sha256 "$era" | cut -d' ' -f1)" = "$(echo "$before" | sed -n 1p)" ] || { echo "nvme-$c: FAIL: the image not erased changed"; ok=0; }
+        [ "$(grep -ac "that is not the end of" "$log")" -eq 1 ] || { echo "nvme-$c: FAIL: the wrong serial wasn't stopped once"; ok=0; }
+        [ "$(grep -ac "not erased: nothing was written" "$log")" -eq 2 ] || { echo "nvme-$c: FAIL: \`yes\` and Ctrl+C weren't each stopped"; ok=0; }
+        grep -aq "create_table" "$log" && { echo "nvme-$c: FAIL: create_table was asked"; ok=0; }
+        # the guest's hash of the first 34 blocks, before and after: the same, and the host's
+        host=$(head -c $((34 * 512)) "$era" | sha256 | cut -d' ' -f1)
+        sums=$(grep -aoE "range lba 0 count 34 sha256 [0-9a-f]{64}" "$log" | awk '{print $NF}' | sort -u)
+        [ "$sums" = "$host" ] || { echo "nvme-$c: FAIL: the guest's digests of the first 34 blocks ($sums) aren't the host's ($host)"; ok=0; }
+        s2_trace "$dir/$c.trace" 1 || ok=0
+    else
+        s2_want "$log" "create_table: the drive is NOT blank and its erase was confirmed" \
+            "create_table: Jam OS's table written and read back: GPT, 2 partitions, a Jam OS disk" \
+            "volumes: nvme[0-9] is not empty: erasing it, as the owner confirmed" \
+            "volumes: nvme[0-9] is a Jam OS disk now" "is a Jam OS disk already" || ok=0
+        [ "$(grep -ac "that is not the end of" "$log")" -eq 1 ] || { echo "nvme-$c: FAIL: the other drive's wrong serial wasn't stopped once"; ok=0; }
+        python3 tools/nvme-img.py "$dir/made.img" windows   # the same bytes as the erased one was
+        if python3 tools/nvme-written.py "$era" --before "$dir/made.img" --pattern none --ranges > "$dir/written.txt"; then
+            head -1 "$dir/written.txt" | sed "s/^/nvme-$c: /"
+            s2_trace "$dir/$c.trace" 2 --write-ranges "$(tail -1 "$dir/written.txt")" || ok=0
+        else
+            echo "nvme-$c: FAIL: $(tail -1 "$dir/written.txt")"
+            ok=0
+        fi
+        if command -v mdir > /dev/null 2>&1; then
+            mdir -/ -i "$era@@1M" :: > "$dir/esp.txt" 2>&1 || { echo "nvme-$c: FAIL: the new ESP isn't a FAT volume"; ok=0; }
+            grep -aqi "bootmgfw\|Microsoft" "$dir/esp.txt" && { echo "nvme-$c: FAIL: the old ESP's files are on the new one"; ok=0; }
+            mtype -i "$era@@513M" ::/build.txt > "$dir/build.txt" 2>&1 || true
+            cmp -s "$dir/build.txt" build/build.txt ||
+                { echo "nvme-$c: FAIL: the file written isn't on the new data partition"; ok=0; }
+        else
+            echo "nvme-$c: (no mtools: the FAT volumes not read on the host)"
+        fi
+    fi
+    if [ $ok = 1 ]; then rm -rf "$era" "$keep" "$dir/made.img" "$era.files" "$keep.files"; echo "nvme-$c: PASS"; else echo "nvme-$c: FAIL (see $dir)"; fails=$((fails + 1)); fi
+}
+
 for c in $cases; do
     if [ $c = checker ]; then checker; continue; fi
     if [ $c = write ] || [ $c = wiommu ] || [ $c = diskro ] || [ $c = prepare ] || [ $c = piommu ] ||
-       [ $c = cutprep ] || [ $c = cutbad ]; then
+       [ $c = cutprep ] || [ $c = cutbad ] || [ $c = erase ] || [ $c = erasestop ]; then
         rm -rf "$out/nvme-$c"
         mkdir -p "$out/nvme-$c"
         s2_iommu=
@@ -413,6 +625,7 @@ for c in $cases; do
         diskro) s2_diskro "$out/nvme-$c" ;;
         prepare | piommu) s3_prepare "$out/nvme-$c" prepare ;;
         cutprep | cutbad) s3_prepare "$out/nvme-$c" $c ;;
+        erase | erasestop) s4_erase "$out/nvme-$c" $c ;;
         *) s2_write "$out/nvme-$c" ;;
         esac
         continue

@@ -2,7 +2,7 @@
 """Check a Jam OS drive's image after a stage-2 QEMU run (tools/nvme-test.sh's
 `write` case): what drv/nvme wrote there, and nothing else.
 
-    nvme-written.py <image> [--pattern none|some|all] [--ranges]
+    nvme-written.py <image> [--pattern none|some|all] [--ranges] [--before <image>]
 
   1. Its table is Jam OS's, as the plan has it (docs/M12.7-PLAN.md, "Stage
      2"): a protective MBR (one entry, type EEh), both GPT headers good
@@ -20,6 +20,10 @@
      every block nvmew_write writes (each partition's first and last 8
      blocks and 64 KiB in its middle) holds it; none: none does; some
      (the default): either.
+--before names the image as it was before the run (a drive that wasn't
+blank, erased by `disk prepare`: tools/nvme-test.sh's `erase`): rule 2 is
+then every block that differs from it, not every block that isn't zeros,
+so the old data outside the table and the partitions must be there still.
 --ranges prints the blocks a write may touch, "a-b,c-d,..." (b exclusive),
 for tools/nvme-trace-check.py's --write-ranges, after the checks pass.
 512-byte blocks only (QEMU's drives in the test). Reads only the file.
@@ -104,23 +108,28 @@ def runs(blocks):
     return [(0, RUN), (blocks // 2 // RUN * RUN, MID), (blocks - RUN, RUN)]
 
 
-def scan(img, size, allowed, parts):
-    """Rules 2 and 3: every non-zero block allowed, every pattern block
-    in its place. Returns the pattern blocks found, as (part, block)."""
+def scan(img, size, allowed, parts, before=None):
+    """Rules 2 and 3: every non-zero block (with `before`: every block
+    that differs from it) allowed, every pattern block in its place.
+    Returns the pattern blocks found, as (part, block)."""
     found = set()
     zero = bytes(MIB)
     img.seek(0)
+    if before:
+        before.seek(0)
     for off in range(0, size, MIB):
         chunk = img.read(MIB)
-        if chunk == zero[:len(chunk)]:
+        old = before.read(MIB) if before else zero[:len(chunk)]
+        if chunk == old:
             continue
         for k in range(0, len(chunk), BS):
             blk = chunk[k:k + BS]
-            if not any(blk):
+            if blk == old[k:k + BS]:
                 continue
             lba = (off + k) // BS
             if not any(a <= lba < b for a, b in allowed):
-                fail("block %d isn't zeros: outside the table and the partitions" % lba)
+                fail("block %d %s: outside the table and the partitions" %
+                     (lba, "changed" if before else "isn't zeros"))
             if blk[:8] != MAGIC:
                 continue
             part, block = struct.unpack_from("<II", blk, 8)
@@ -136,6 +145,7 @@ def main():
     ap.add_argument("image")
     ap.add_argument("--pattern", default="some", choices=["none", "some", "all"])
     ap.add_argument("--ranges", action="store_true")
+    ap.add_argument("--before")
     a = ap.parse_args()
     with open(a.image, "rb") as img:
         img.seek(0, 2)
@@ -143,7 +153,10 @@ def main():
         blocks = size // BS
         parts = table(img, blocks)
         allowed = [(0, 2 + ARRAY_BLOCKS), (blocks - 1 - ARRAY_BLOCKS, blocks)] + parts
-        found = scan(img, size, allowed, parts)
+        before = open(a.before, "rb") if a.before else None
+        if before and before.seek(0, 2) != size:
+            fail("--before %s isn't the image's size" % a.before)
+        found = scan(img, size, allowed, parts, before)
     want = {(p, s + i) for p, (a0, b0) in enumerate(parts) for s, n in runs(b0 - a0)
             for i in range(n)}
     if a.pattern == "all" and want - found:
@@ -152,9 +165,10 @@ def main():
         fail("%d of utest's blocks are there already" % len(found))
     if found - want:
         fail("pattern blocks utest doesn't write: %s" % sorted(found - want)[:4])
-    print("nvme-written: Jam OS's table; ESP %d+%d, data %d+%d; nothing outside them; %d "
+    print("nvme-written: Jam OS's table; ESP %d+%d, data %d+%d; nothing %s outside them; %d "
           "pattern blocks, each in its place" % (parts[0][0], parts[0][1] - parts[0][0],
                                                 parts[1][0], parts[1][1] - parts[1][0],
+                                                "changed" if a.before else "written",
                                                 len(found)))
     if a.ranges:
         print(",".join("%d-%d" % r for r in allowed))

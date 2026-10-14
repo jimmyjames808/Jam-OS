@@ -5,7 +5,8 @@
  * A mount is named by its path ("/data", "/usb0-test"): fs_find_mount.
  *
  * The `later` methods (remount, release_disk, sync, stop, volesp's two,
- * digest, health and volinstall's prepare) wait for filesystem services and disks: each is checked here and
+ * digest, health, prepare_check and volinstall's prepare) wait for
+ * filesystem services and disks: each is checked here and
  * answered at once when there is nothing to wait for (an error, or the
  * mount is that way already); otherwise its handler starts a task (an op,
  * calls.c) and returns IDL_LATER, and the task answers when it is done.
@@ -20,8 +21,10 @@ struct op {
     struct idl_txn txn;      /* where the answer goes: a duplicate of the channel (0: nowhere) */
     struct vol    *b;        /* remount, the ESP: its filesystem service */
     bool           writable; /* ... made writable (or read-only) */
-    uint32_t       id;       /* release_disk, digest, health: the disk */
+    uint32_t       id;       /* release_disk, digest, health, the prepares: the disk */
     uint64_t       lba, count;   /* digest: the blocks */
+    char           tail[20], word[8];   /* prepare: the owner's confirmation of an erase */
+    uint32_t       tail_len, word_len;
 };
 
 /* Start fn(o) for the request txn: IDL_LATER (fn answers), or why not
@@ -375,8 +378,29 @@ static status_t l_health(void *ctx, struct idl_txn txn, uint32_t id, uint64_t *o
     return later(txn, &(struct op){ .id = id }, health_main);
 }
 
+static void check_main(void *arg)
+{
+    struct op *o = arg;
+    uint8_t plan = 0, refused = 0;
+    status_t st = disk_prepare_check(o->id, &plan, &refused);
+    if (o->txn.ch)
+        (void)voldisks_reply_prepare_check(o->txn, st, plan, refused);
+    op_done(o);
+}
+
+static status_t l_prepare_check(void *ctx, struct idl_txn txn, uint32_t id, uint8_t *out_plan,
+                                uint8_t *out_refused)
+{
+    (void)ctx;
+    (void)out_plan, (void)out_refused;   /* answered later: the driver is asked */
+    if (!disk_named(id))
+        return ERR_NOT_FOUND;
+    return later(txn, &(struct op){ .id = id }, check_main);
+}
+
 const struct voldisks_ops voldisks_ops = {
     .disk = l_disk, .partition = l_partition, .digest = l_digest, .health = l_health,
+    .prepare_check = l_prepare_check,
 };
 
 /* ---- volinstall ------------------------------------------------------------------------- */
@@ -385,18 +409,24 @@ const struct voldisks_ops voldisks_ops = {
 static void prepare_main(void *arg)
 {
     struct op *o = arg;
-    status_t st = disk_prepare(o->id);
+    status_t st = disk_prepare(o->id, o->tail, o->tail_len, o->word, o->word_len);
     if (o->txn.ch)
         (void)volinstall_reply_prepare(o->txn, st);
     op_done(o);
 }
 
-static status_t i_prepare(void *ctx, struct idl_txn txn, uint32_t id)
+static status_t i_prepare(void *ctx, struct idl_txn txn, uint32_t id, const char *tail,
+                          uint32_t tail_len, const char *word, uint32_t word_len)
 {
     (void)ctx;
     if (!disk_named(id))
         return ERR_NOT_FOUND;
-    return later(txn, &(struct op){ .id = id }, prepare_main);
+    struct op o = { .id = id, .tail_len = tail_len, .word_len = word_len };
+    if (tail_len > sizeof(o.tail) || word_len > sizeof(o.word))
+        return ERR_INVALID_ARGS;   /* past the IDL's bounds: the dispatcher refuses first */
+    memcpy(o.tail, tail, tail_len);
+    memcpy(o.word, word, word_len);
+    return later(txn, &o, prepare_main);
 }
 
 const struct volinstall_ops volinstall_ops = {

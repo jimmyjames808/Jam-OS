@@ -44,8 +44,9 @@
  * changes nothing, so the shell needs no more of volumes than that.
  *
  * prepare_disk (the shell's `disk prepare nvme1`, after the owner typed the
- * last four characters of the drive's serial) asks volumes on the install
- * channel, init's alone (prepare.c), to make a blank NVMe drive a Jam OS disk.
+ * last four characters of the drive's serial, and `erase` for a drive that
+ * isn't empty) asks volumes on the install channel, init's alone
+ * (prepare.c), to make an NVMe drive a Jam OS disk.
  *
  * Answered later: mount, sync, prepare_disk and the kill of a filesystem service wait
  * for volumes (a remount stops a service in order and starts it again,
@@ -498,9 +499,11 @@ static status_t op_terminal(void *ctx, const char *command, uint32_t command_len
     return st;
 }
 
-/* initctl.prepare_disk: volumes (volinstall.prepare) makes a blank NVMe drive
- * a Jam OS disk, answered later. */
-static status_t op_prepare_disk(void *ctx, struct idl_txn txn, uint32_t id)
+/* initctl.prepare_disk: volumes (volinstall.prepare) makes an NVMe drive a
+ * Jam OS disk, answered later. The owner's confirmation of an erase goes on
+ * as it came: volumes and the driver check it. */
+static status_t op_prepare_disk(void *ctx, struct idl_txn txn, uint32_t id, const char *tail,
+                                uint32_t tail_len, const char *word, uint32_t word_len)
 {
     const struct ctl *c = ctx;
     if (!c->admin)
@@ -513,8 +516,8 @@ static status_t op_prepare_disk(void *ctx, struct idl_txn txn, uint32_t id)
     if (!l)
         return ERR_NO_RESOURCES;
     l->disk = id;
-    printf("init: prepare disk %s\n", what);
-    return later_sent(l, prepare_send(l->txid, id));
+    printf("init: prepare disk %s%s\n", what, word_len ? " (with an erase's confirmation)" : "");
+    return later_sent(l, prepare_send(l->txid, id, tail, tail_len, word, word_len));
 }
 
 /* initctl.disks: a channel to volumes that lists the disks and asks for a

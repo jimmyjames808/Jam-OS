@@ -14,7 +14,9 @@
 # parallel with a separate <outdir> each):
 #   refuse    the Windows-like, a blank and a Jam OS drive: `mount -w` on
 #             Windows' ESP, writes by hand to it, `disk prepare` of Windows'
-#             drive and of the Jam OS one ("not blank"), of the blank one
+#             drive (shown as not empty, its erase asked for and answered
+#             with a wrong serial tail) and of the Jam OS one ("a Jam OS
+#             disk already"), of the blank one
 #             with a wrong serial tail (refused), and the driver's own
 #             refusals with volumes out of the way (utest's nvmew_refuse: a
 #             writable open and create_table on Windows' drive, block.write
@@ -88,7 +90,7 @@ cases=${*:-refuse}
 mkdir -p "$out"
 
 NVW_NOT_JAMOS=${NVW_NOT_JAMOS:-not on a Jam OS disk}     # mount -w on a disk that isn't
-NVW_NOT_BLANK=${NVW_NOT_BLANK:-not blank}                # disk prepare on a disk that isn't
+NVW_NOT_EMPTY=${NVW_NOT_EMPTY:-It is NOT empty}          # disk prepare on a drive that isn't empty
 NVW_ASK=${NVW_ASK:-characters of its serial}             # disk prepare's request for the serial's end
 NVW_WRONG=${NVW_WRONG:-not the end of}                   # and its answer to something else
 NVW_ALREADY=${NVW_ALREADY:-is a Jam OS disk already}     # disk prepare on a Jam OS disk that needs nothing
@@ -327,8 +329,14 @@ refuse() {
         echo "send mkdir /nvme{we}/jamos-refuse; echo rf-\"\"3 \$?"
         echo "wait rf-3 1"
         echo "wait {prompt}"
+        # Windows' drive: shown as not empty, its erase asked for, and
+        # answered with the wrong end of its serial: nothing is written.
         echo "send disk prepare nvme{wd}"
-        echo "wait $NVW_NOT_BLANK"
+        echo "wait $NVW_NOT_EMPTY"
+        echo "wait $NVW_ASK"
+        echo "sleep 1"
+        echo "send xxxx"
+        echo "wait $NVW_WRONG"
         echo "wait {prompt}"
         echo "send disk prepare nvme{jd}"
         echo "wait $NVW_ALREADY"

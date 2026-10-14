@@ -8,8 +8,9 @@
  * blank or someone else's, is cmd.c's to decide (cmd_arm) from the table
  * table.c reads, at the start and after create_table. open_partition
  * with read_only 0 is ERR_ACCESS_DENIED on every drive but a Jam OS one,
- * and create_table on every drive but a blank one, before anything else
- * is looked at but the arguments' form.
+ * and create_table on every drive but a blank one or someone else's whose
+ * erase the owner confirmed (table.c), before anything else is looked at
+ * but the arguments' form. `mode` tells which a drive is.
  *
  * The table decides what a channel may reach: partition i's bounds are
  * the library's t.parts[i], which lie inside the disk, inside GPT's usable
@@ -119,7 +120,7 @@ status_t serve_start(struct nvme *c)
 {
     for (unsigned i = 0; i <= MAX_CONNS; i++)
         conns[i].ch = HANDLE_INVALID;
-    cmd_arm(c, NULL);   /* nothing writable until the table says otherwise */
+    cmd_arm(c, NULL, false);   /* nothing writable until the table says otherwise */
     status_t st = buffer(c);
     if (st != OK)
         return st;
@@ -367,15 +368,33 @@ static status_t s_health(void *ctx, struct idl_txn txn, uint64_t *units_read,
 }
 
 static status_t s_create_table(void *ctx, struct idl_txn txn, const uint8_t disk_guid[16],
-                               const uint8_t esp_guid[16], const uint8_t data_guid[16])
+                               const uint8_t esp_guid[16], const uint8_t data_guid[16],
+                               const char *tail, uint32_t tail_len, const char *word,
+                               uint32_t word_len)
 {
-    if (cmd_mode() != MODE_BLANK)
-        return ERR_ACCESS_DENIED;   /* not a blank drive: before anything else */
-    status_t st = table_create(nv, disk_guid, esp_guid, data_guid);
+    if (cmd_mode() == MODE_JAMOS)
+        return ERR_ACCESS_DENIED;   /* Jam OS's already: before anything else */
+    /* A blank drive, or someone else's that table_create erases only with
+     * the owner's confirmation (it refuses otherwise, before the GUIDs; an
+     * erase under way: ERR_BAD_STATE). */
+    status_t st = table_create(nv, disk_guid, esp_guid, data_guid, tail, tail_len, word,
+                               word_len);
     if (st != OK)
         return st;
     created = keep(ctx, txn);   /* answered from the loop, never before this returns */
     return IDL_LATER;
+}
+
+static status_t s_mode(void *ctx, uint8_t *mode, uint8_t *ro, uint8_t *readable)
+{
+    (void)ctx;
+    _Static_assert(MODE_OTHER == STORAGE_MODE_OTHER && MODE_BLANK == STORAGE_MODE_BLANK &&
+                   MODE_JAMOS == STORAGE_MODE_JAMOS, "the driver's modes are storage's");
+    enum nvme_mode m = cmd_mode();
+    *mode = (uint8_t)(m == MODE_ERASE ? MODE_OTHER : m);   /* an erase under way */
+    *ro = nv->ro;
+    *readable = table_readable();
+    return OK;
 }
 
 void serve_created(status_t st)
@@ -392,6 +411,7 @@ static const struct storage_ops storage_ops = {
     .digest = s_digest,
     .health = s_health,
     .create_table = s_create_table,
+    .mode = s_mode,
 };
 
 /* ---- svc.connect: a `storage` channel of the caller's own ------------------------------ */
