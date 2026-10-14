@@ -143,7 +143,7 @@ status_t disk_open(handle_t block, struct ext_dev *dev)
 
 status_t disk_is_blank(bool *out)
 {
-    static uint8_t first[64u << 10];
+    static uint8_t first[4096];
     uint64_t n = vol.sectors * vol.sector < sizeof(first) ? vol.sectors * vol.sector
                                                           : sizeof(first);
     status_t st = dev_read(NULL, 0, (uint32_t)n, first);

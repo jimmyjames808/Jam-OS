@@ -42,9 +42,10 @@
  * ERR_IO and dropped); and a test's powers (user/services/extfs/test.c).
  *
  * Formatting is off unless a word is EXTFS_ARG_FORMAT. Only then, and only
- * on a writable channel, is a blank partition (its first 64 KiB all zeros)
- * made an ext volume with Jam OS's feature set (ext's mkfs). Nothing else
- * is ever formatted: not a partition holding anything, not one that fails.
+ * on a writable channel, is a blank partition (its first 4 KiB all zeros,
+ * which a format cut short leaves too: ext's mkfs writes them last) made an
+ * ext volume with Jam OS's feature set (ext's mkfs). Nothing else is ever
+ * formatted: not a partition holding anything, not one that fails.
  *
  * Exit codes: 0 nothing left to serve (the fs channel's client closed it,
  * fsctl.stop, or the disk went away); 1 the volume can't be served and a

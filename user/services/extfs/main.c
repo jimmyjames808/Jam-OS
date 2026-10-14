@@ -8,7 +8,7 @@
  * journal, no errors recorded) is served read-write unless the block
  * channel is read-only; anything else it can read is served read-only,
  * and the log says why. Formatting is off unless extfs was started with
- * EXTFS_ARG_FORMAT; with it a writable partition whose first 64 KiB are
+ * EXTFS_ARG_FORMAT; with it a writable partition whose first 4 KiB are
  * all zeros is made an ext volume. Nothing else ever is.
  *
  * A restart: every start mounts from the disk (the replay is the

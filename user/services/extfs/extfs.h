@@ -179,7 +179,8 @@ struct svcstate *state_slots(void);
 
 /* Take the block channel: its info, its buffer mapped; vol.fs's device. */
 status_t disk_open(handle_t block, struct ext_dev *dev);
-/* The partition's first 64 KiB are all zeros. */
+/* The partition's first 4 KiB are all zeros (ext's mkfs writes them last,
+ * the superblock with them, so a format cut short is blank still). */
 status_t disk_is_blank(bool *out);
 /* Device writes so far (test.c's write point counts them). */
 uint64_t disk_writes(void);

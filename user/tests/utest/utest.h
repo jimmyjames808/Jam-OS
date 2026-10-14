@@ -352,6 +352,17 @@ bool t_fat_attrs(void);
 bool t_fat_attrs_read_only(void);
 bool t_fat_attr_views(void);
 bool t_fs_attr_ns(void);
+/* extfs.c, extfs_restart.c: the extfs service (bin/extfs) over a RAM disk. */
+bool t_extfs_basic(void);
+bool t_extfs_links(void);
+bool t_extfs_perms(void);
+bool t_extfs_writers(void);
+bool t_extfs_views(void);
+bool t_extfs_error(void);
+bool t_extfs_restart_steps(void);
+bool t_extfs_restart_handles(void);
+bool t_extfs_restart_bad(void);
+bool t_extfs_spare(void);
 bool t_view_keys_names(void);
 bool t_fat_view_keys(void);
 bool t_view_hides_names(void);
