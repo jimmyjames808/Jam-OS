@@ -1,0 +1,2 @@
+cr-rust-hello: panic mode
+cr-rust-hello: panic in thread 'worker': boom 42

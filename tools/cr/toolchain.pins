@@ -16,3 +16,18 @@ clang llvmorg-24-init-7747-g62397f8b-27 57243988 83f4a4ea3292bfc236d85575fa7af27
 # Jam OS), Kitware's wheel from PyPI installed into the ports builder's
 # venv, ~/.cache/jamos/tools (docs/TESTING.md), beside Meson and Ninja.
 cmake 3.31.10 27808794 2f766bb46367e5e0559fa33184653754bce044583a06014dcaebf8e6dff8a1f1 https://files.pythonhosted.org/packages/f4/2e/cefc60143950ca1a8dda26d4c8484e6fc406db16e7ca098ebae549de35f9/cmake-3.31.10-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+# rust: Chromium's own prebuilt Rust for Linux x86_64 (rustc 1.100.0-dev
+# with cargo, rust-src and its vendored crates, bindgen), the package its
+# tools/rust/update_rust.py fetches (RUST_REVISION
+# 1edd55dcfcd573872c727fa3e086369a71661ee0, RUST_SUB_REVISION 1, named with
+# the clang revision above, without clang's sub-revision). The target's
+# standard library is built from its rust-src (ports/cr-rust-hello), as
+# Chromium's GN does: no std for Jam OS is fetched. Moves with Chromium's
+# version, together with the clang line.
+rust 1edd55dcfcd573872c727fa3e086369a71661ee0-1-llvmorg-24-init-7747-g62397f8b 276475500 793d75e2aade21579a3bf3be0df82fa569d66b5a4ad8c2e8eef64310e6e8202c https://commondatastorage.googleapis.com/chromium-browser-clang/Linux_x64/rust-toolchain-1edd55dcfcd573872c727fa3e086369a71661ee0-1-llvmorg-24-init-7747-g62397f8b.tar.xz
+# gperf: Chromium's build runs it (Blink's and net's perfect hashes) and
+# nothing on the build host is to be depended on: built from this source
+# into ~/.cache/jamos/tools (docs/TESTING.md), where the ports builder, the
+# PC check and later Chromium builds find it first on PATH. 3.1 is what
+# Debian and Ubuntu ship.
+gperf 3.1 1215925 588546b945bba4b70b6a3a616e80b4ab466e3f33024a352fc2198112cdbb3ae2 https://ftp.gnu.org/pub/gnu/gperf/gperf-3.1.tar.gz

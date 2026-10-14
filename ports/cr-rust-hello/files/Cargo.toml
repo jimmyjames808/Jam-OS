@@ -1,0 +1,16 @@
+[package]
+name = "cr-rust-hello"
+version = "1.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "cr-rust-hello"
+path = "src/main.rs"
+
+# Chromium builds its Rust with panic=abort; so does this.
+[profile.release]
+panic = "abort"
+opt-level = 2
+debug = false
+codegen-units = 1

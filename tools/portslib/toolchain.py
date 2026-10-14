@@ -25,7 +25,9 @@ tools/jamos-clang as its `gcc` and `cc` (and `clang`) and
 tools/jamos-clang++ as its `g++` and `c++` (and `clang++`), the same names
 so the cross files and configure find them; the clang they run is
 resolved here (clang_dir) and written into the wrappers, as the build's
-environment is made from nothing.
+environment is made from nothing. `toolchain clang rust` adds Chromium's
+pinned Rust (rust_dir), given to the build as JAMOS_RUST: its build.sh runs
+cargo with the wrapper as the linker (docs/CR-PLAN.md section 1, CT2).
 """
 import os
 import platform
@@ -60,6 +62,39 @@ def clang_dir(top):
                 version = w[1]
     root = os.environ.get("JAMOS_TOOLCHAINS") or os.path.expanduser("~/.cache/jamos/toolchains")
     return os.path.join(root, "clang-%s" % version, "bin")
+
+
+def _pin(top, name):
+    """The pin's (version, size, sha256, url) in tools/cr/toolchain.pins."""
+    with open(os.path.join(top, "tools", "cr", "toolchain.pins")) as f:
+        for line in f:
+            w = line.split()
+            if len(w) == 5 and w[0] == name:
+                return w[1:]
+    raise ToolError("no pin for %s in tools/cr/toolchain.pins" % name)
+
+
+def rust_dir(top):
+    """The directory of the Rust a `toolchain clang rust` port is built with
+    (bin/cargo, bin/rustc, lib/rustlib/src): JAMOS_RUST, or Chromium's pinned
+    Rust where tools/cr/toolchain.sh unpacks it."""
+    if os.environ.get("JAMOS_RUST"):
+        return os.path.abspath(os.environ["JAMOS_RUST"])
+    root = os.environ.get("JAMOS_TOOLCHAINS") or os.path.expanduser("~/.cache/jamos/toolchains")
+    return os.path.join(root, "rust-%s" % _pin(top, "rust")[0])
+
+
+def rust_id(top):
+    """What identifies the Rust (for a port's stamp): its directory and its
+    rustc's --version line; the directory alone when it isn't there."""
+    d = rust_dir(top)
+    try:
+        out = subprocess.run([os.path.join(d, "bin", "rustc"), "--version"],
+                             stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL).stdout.decode(errors="replace")
+    except OSError:
+        return d
+    return d + "\n" + out.split("\n")[0]
 
 
 def clang_id(top):
@@ -107,6 +142,9 @@ def missing_tools(r, top=None):
     if r.toolchain == "clang" and top is not None and \
             not os.access(os.path.join(clang_dir(top), "clang"), os.X_OK):
         want.append("__clang")
+    if r.rust and top is not None and \
+            not os.access(os.path.join(rust_dir(top), "bin", "cargo"), os.X_OK):
+        want.append("__rust")
     if r.style in ("configure", "configure-plain", "make", "cmake", "custom"):
         want.append("make")
     if r.style == "cmake":
@@ -124,6 +162,8 @@ def missing_tools(r, top=None):
             out.append("GNU make 4 (gmake)")
         elif tool in ("pkgconf", "pkg-config") and not pkgconf():
             out.append("pkgconf")
+        elif tool == "__rust":
+            out.append("Rust at %s (tools/cr/toolchain.sh rust; or JAMOS_RUST)" % rust_dir(top))
         elif tool == "__clang":
             out.append("clang at %s (tools/cr/toolchain.sh clang; or JAMOS_CLANG)" %
                        clang_dir(top))
@@ -303,4 +343,6 @@ def environment(r, bindir, sysroot, paths):
         "portdir": os.path.abspath(r.dir), "jobs": str(paths["jobs"]),
         "make": make or "make",
     })
+    if paths.get("rust"):   # `toolchain clang rust`: where bin/cargo and bin/rustc are
+        env["JAMOS_RUST"] = paths["rust"]
     return env

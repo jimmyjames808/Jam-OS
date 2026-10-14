@@ -1,0 +1,26 @@
+# cr-rust-hello: the Rust half of milestone CR-a (docs/CR-PLAN.md, track
+# CT2): a Rust program built by Chromium's pinned Rust (tools/cr/toolchain.sh
+# fetches it), its standard library built from rust-src for
+# x86_64-unknown-linux-musl as Chromium's GN does, and linked by the port's
+# clang driver against Jam OS's musl (-C link-self-contained=no). It runs
+# from /data: eight threads with thread_local destructors, channels, files,
+# collections and number formatting, then (with the argument `panic`) a
+# panic that aborts. Its output is the same on any Rust system:
+# files/expected.txt and expected-panic.txt, which tools/cr-test.sh checks
+# against the build host's own build of it and the test (`test`) against the
+# Jam OS run. Jam OS's own code (`local`).
+name        cr-rust-hello
+version     1
+revision    1
+summary     a Rust test program for Jam OS's clang and Rust toolchain (CR-a)
+category    tests
+licence     BSD-2-Clause
+licence-file LICENSE
+local       files
+place       package
+style       custom
+toolchain   clang rust
+needs       llvm-runtimes
+# It writes its scratch directory in /data (wants/cr-rust-hello).
+program     bin/cr-rust-hello
+files       share/cr-rust-hello/expected.txt share/cr-rust-hello/expected-panic.txt
