@@ -242,11 +242,20 @@ static void own_unheld(void)
 }
 
 /* After a second with nothing to do, the journal's tail moves past what
- * is home, so the next start replays nothing. */
+ * is home, so the next start replays nothing. Once per run of commits: a
+ * tail with nothing to move doesn't count them down. */
+static uint32_t idle_seen = UINT32_MAX;   /* the commits counted at the last idle */
+
+static bool idle_due(void)
+{
+    return vol.fs.jnl && !vol.fs.ro && vol.jnl.since_tail && vol.jnl.since_tail != idle_seen;
+}
+
 static void idle(void)
 {
-    if (vol.fs.jnl && vol.jnl.since_tail && !vol.fs.ro)
+    if (idle_due())
         (void)ext_jnl_checkpoint(&vol.fs);
+    idle_seen = vol.jnl.since_tail;
 }
 
 static status_t run(handle_t serve, handle_t ctl)
@@ -277,7 +286,7 @@ static status_t run(handle_t serve, handle_t ctl)
             views_unheld();
             files_unheld();
         }
-        uint64_t deadline = vol.jnl.since_tail ? now() + IDLE_NS : DEADLINE_NEVER;
+        uint64_t deadline = idle_due() ? now() + IDLE_NS : DEADLINE_NEVER;
         st = xf_wait(idl_held_deadline(&vol.held, deadline), &pkt);
         if (st == ERR_TIMED_OUT) {
             idle();
