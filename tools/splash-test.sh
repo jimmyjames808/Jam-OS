@@ -159,13 +159,13 @@ need "$out/panic.log" "KERNEL PANIC"
 check calm "$out/panic.png" details
 
 # ---- hang: a splash that never finishes ---------------------------------------
-# Booted with every option word the kernel passes init at once (nine with
-# bootdisk=, which Limine gives): all of them reach it, none dropped.
+# Booted with every option word the kernel passes init at once (ten with
+# bootdisk=, which Limine gives; qemu-test.sh adds runlines): all of them reach it, none dropped.
 QEMU_SPLASH=1 QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_INPUT=tools/shell-tests/splash-hang.txt \
     tools/qemu-test.sh "$out" hang shell splashhang hidboot net vlan=none nospare vtdtest \
     > "$out/hang.out" 2>&1 || { echo "hang: the script failed"; tail -3 "$out/hang.out"; ok=0; }
-words="init shell splash hidboot net vlan=none bootdisk=0x[0-9a-f]+ splashhang nospare vtdtest"
-grep -aqE "init: hello from ring 3 \(10 args: $words\)" "$out/hang.log" ||
+words="init shell splash hidboot net vlan=none bootdisk=0x[0-9a-f]+ splashhang nospare vtdtest runlines"
+grep -aqE "init: hello from ring 3 \(11 args: $words\)" "$out/hang.log" ||
     { echo "hang: init was not given all its words"; grep -a "hello from ring 3" "$out/hang.log"; ok=0; }
 need "$out/hang.log" "splash: hanging, as asked" "the splash didn't finish in 20 s: starting the shell" \
     "init: the shell is up" "hang-ok"
