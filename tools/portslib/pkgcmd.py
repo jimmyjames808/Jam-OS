@@ -6,6 +6,13 @@ sections 6 to 8; the formats are the plan's "PO3 notes"):
         build the ports, then their packages, into build/ports/<name>/pkg/
         (or DIR), each checked by the reference verifier; prints each
         package's path, size and SHA-256
+    ports.py package --from DIR [--key ...] [--pkgdir DIR] <port>
+        the package of one port built elsewhere (Chromium, on the PC:
+        docs/CR-PLAN.md section 15): DIR is that build's
+        build/ports/<name>/ (its stage/, stamp and port.sha256, fetched
+        back), packaged here, where the key is, without building; refused
+        unless DIR was built from this very port directory (its
+        port.sha256) and its stage is whole
     ports.py repo [--key FILE | --test-key] [--repo DIR] [--no-tree] [-j N] [<port>...]
         the repository in build/repo (or DIR): every package port (or the
         ones named, and what they run), the index, VULNS, the sources
@@ -50,6 +57,7 @@ def add_parsers(sub):
     g.add_argument("--test-key", action="store_true")
     g.add_argument("--unsigned", action="store_true")
     p.add_argument("--pkgdir")
+    p.add_argument("--from", dest="from_dir", metavar="DIR")
     p.add_argument("-f", "--force", action="store_true")
     p.add_argument("-v", "--verbose", action="store_true")
     p.add_argument("-j", "--jobs", type=int)
@@ -112,14 +120,43 @@ def _key(args, d):
     return args.key or signmod.default_key()
 
 
+def from_stage(r, d):
+    """The stage of r built elsewhere, in d (that build's build/ports/<name>/):
+    PackageError unless it was built from this very port directory and its
+    stage list is there (each file's bytes are checked against it as the
+    package is made)."""
+    try:
+        with open(os.path.join(d, "port.sha256")) as f:
+            theirs = f.read().strip()
+    except OSError:
+        raise packagemod.PackageError("%s: no port.sha256 in %s (not a port's build directory)"
+                                      % (r.name, d))
+    if theirs != buildmod.port_hash(r):
+        raise packagemod.PackageError(
+            "%s: %s was built from another recipe (its port directory hashed %s, this one %s)"
+            % (r.name, d, theirs[:16], buildmod.port_hash(r)[:16]))
+    stage = os.path.join(d, "stage")
+    if not os.path.isfile(os.path.join(stage, "stage.txt")):
+        raise packagemod.PackageError("%s: no stage/stage.txt in %s" % (r.name, d))
+    return stage
+
+
 def package(top, args):
     t = _tree(args)
     if t is None:
         return 1
     b = buildmod.Builder(t, top, args.out, args.jobs, args.port if args.force else (),
                          args.verbose)
+    if args.from_dir and len(args.port) != 1:
+        print("ports: package --from takes one port")
+        return 2
     try:
-        b.build(args.port)
+        stages = {}
+        if args.from_dir:
+            n = args.port[0]
+            stages[n] = from_stage(t.recipes[n], os.path.abspath(args.from_dir))
+        else:
+            b.build(args.port)
         with tempfile.TemporaryDirectory() as d:
             key = _key(args, d)
             pub = pkgverify.UNCHECKED
@@ -128,7 +165,8 @@ def package(top, args):
                 signmod.public(key, pub)
             for n in args.port:
                 out = args.pkgdir or os.path.join(b.base(n), "pkg")
-                for name, path in packagemod.make(t.recipes[n], os.path.join(b.base(n), "stage"),
+                stage = stages.get(n) or os.path.join(b.base(n), "stage")
+                for name, path in packagemod.make(t.recipes[n], stage,
                                                   out, fmt.abi_stamp(top), key):
                     with open(path, "rb") as f:
                         data = f.read()

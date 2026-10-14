@@ -18,9 +18,19 @@
 #           builder, tools/cr/hostcheck.sh and Chromium's build find it
 #           first on PATH: Chromium's build runs gperf, and the build host's
 #           own is not depended on
+#   node    Chromium's pinned Node.js for the build host, unpacked into
+#           ~/.cache/jamos/toolchains/node-<version>/ (track CB1)
+#   sysroot Chromium's pinned Debian sysroot, which its host tools are built
+#           against, unpacked into ~/.cache/jamos/toolchains/sysroot-<version>/
+#           (track CB1)
+#   test-fonts  Chromium's pinned test fonts (its tests' data), unpacked into
+#           ~/.cache/jamos/toolchains/test-fonts-<version>/ (track CB1)
+#   go      the Go Dawn's build runs, unpacked into
+#           ~/.cache/jamos/toolchains/go-<version>/ (track CB1)
 #
-#   tools/cr/toolchain.sh [clang] [cmake] [rust] [gperf]     (no names: all)
-#   tools/cr/toolchain.sh --dir clang         prints clang's directory (or rust's)
+#   tools/cr/toolchain.sh [clang] [cmake] [rust] [gperf] [node] [sysroot] [test-fonts] [go]
+#                                             (no names: all)
+#   tools/cr/toolchain.sh --dir clang         prints clang's directory (or another's)
 #   JAMOS_REMOTE=jamos-pc JAMOS_REMOTE_ONLY=1 tools/remote-test.sh tools/cr/toolchain.sh
 #
 # A download is looked for in the distfiles cache (JAMOS_DISTFILES, default
@@ -43,7 +53,7 @@ tools=${JAMOS_TOOLS:-$HOME/.cache/jamos/tools}
 
 pin() {   # pin <name>: the pin's line's words, or an error
     local line
-    line=$(awk -v n="$1" '$1 == n && NF == 5' "$pins")
+    line=$(awk -v n="$1" '$1 == n && (NF == 5 || NF == 6)' "$pins")
     [ -n "$line" ] || { echo "toolchain: no pin for $1 in $pins" >&2; exit 2; }
     echo "$line"
 }
@@ -60,10 +70,10 @@ good() {   # good <file> <size> <sha256>
     [ -f "$1" ] && [ "$(size_of "$1")" = "$2" ] && [ "$(sha256 "$1")" = "$3" ]
 }
 
-# fetch <size> <sha256> <url>: the file in the cache, checked; prints its path.
+# fetch <size> <sha256> <url> [<file>]: the file in the cache, checked; prints its path.
 fetch() {
-    local size=$1 hash=$2 url=$3 file dst
-    file=${url##*/}
+    local size=$1 hash=$2 url=$3 file=${4:-} dst
+    [ -n "$file" ] || file=${url##*/}
     dst=$distfiles/$file
     mkdir -p "$distfiles"
     if good "$dst" "$size" "$hash"; then
@@ -175,6 +185,35 @@ get_gperf() {
     echo "toolchain: gperf: $("$tools/bin/gperf" --version | head -1) in $tools/bin"
 }
 
+# get_unpacked <name> <test>: a pinned tarball unpacked into
+# toolchains/<name>-<version>/ (once: the directory keeps its pin's line),
+# then <test> (a path in it that must be there) checked.
+get_unpacked() {
+    local name version size hash url file dir tarball
+    read -r name version size hash url file < <(pin "$1")
+    dir=$toolchains/$name-$version
+    if [ -f "$dir/.jamos-pin" ] && [ "$(cat "$dir/.jamos-pin")" = "$name $version $size $hash $url $file" ]; then
+        echo "toolchain: $name $version: there ($dir)"
+        return 0
+    fi
+    tarball=$(fetch "$size" "$hash" "$url" "$file")
+    rm -rf "$dir" "$dir.tmp"
+    mkdir -p "$dir.tmp"
+    tar -xf "$tarball" -C "$dir.tmp"
+    [ -e "$dir.tmp/$2" ] || { echo "toolchain: $name $version: no $2 in it" >&2; exit 1; }
+    echo "$name $version $size $hash $url $file" > "$dir.tmp/.jamos-pin"
+    mv "$dir.tmp" "$dir"
+    echo "toolchain: $name $version: unpacked into $dir ($(du -sh "$dir" | awk '{ print $1 }'))"
+}
+
+get_node() {
+    [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = x86_64 ] ||
+        { echo "toolchain: node: Chromium's Node.js here is Linux x86_64's" >&2; return 1; }
+    get_unpacked node node-linux-x64/bin/node || return 1
+    "$toolchains/node-$(pin node | awk '{ print $2 }')/node-linux-x64/bin/node" --version ||
+        { echo "toolchain: node doesn't run here" >&2; return 1; }
+}
+
 get_cmake() {
     local name version size hash url wheel have
     read -r name version size hash url < <(pin cmake)
@@ -195,7 +234,7 @@ get_cmake() {
 }
 
 names=("$@")
-[ ${#names[@]} -gt 0 ] || names=(clang cmake rust gperf)
+[ ${#names[@]} -gt 0 ] || names=(clang cmake rust gperf node sysroot test-fonts go)
 mkdir -p "$toolchains"
 exec 9> "$toolchains/.lock"
 flock 9 2> /dev/null || true   # the Mac has no flock(1): one run at a time is the user's there
@@ -206,7 +245,12 @@ for n in "${names[@]}"; do
     cmake) get_cmake || rc=1 ;;
     rust) get_rust || rc=1 ;;
     gperf) get_gperf || rc=1 ;;
-    *) echo "toolchain: no toolchain called $n (clang, cmake, rust, gperf)" >&2; rc=2 ;;
+    node) get_node || rc=1 ;;
+    sysroot) get_unpacked sysroot usr/include/stdio.h || rc=1 ;;
+    test-fonts) get_unpacked test-fonts Ahem.ttf || rc=1 ;;
+    go) get_unpacked go go/bin/go || rc=1 ;;
+    *) echo "toolchain: no toolchain called $n (clang, cmake, rust, gperf, node, sysroot," \
+            "test-fonts, go)" >&2; rc=2 ;;
     esac
 done
 exit $rc

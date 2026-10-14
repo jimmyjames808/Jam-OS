@@ -1,0 +1,35 @@
+Description: libsync's sync.h uses glibc's __BEGIN_DECLS and __END_DECLS, which musl doesn't define: defined there when missing.
+Forwarded: not-needed (copium's; its author sends what fits upstream)
+Origin: copium 155.2 (https://codeberg.org/selfisekai/copium: the musl patches Alpine's chromium applies), cr143-libsync-__BEGIN_DECLS.patch
+The author's e-mail address is left out of the From line below.
+Rebased to apply exactly (Jam OS's applier takes no fuzz): the body below is the same change made again by diff -u against this tarball.
+
+From 4ea5b1d3b27539e8a11d7e7ef974075cf1f7e390 Mon Sep 17 00:00:00 2001
+From: LN Liberda
+Date: Tue, 4 Nov 2025 14:57:33 +0100
+Subject: [PATCH] Fix undefined __BEGIN_DECLS define.
+
+Not sure how this worked in the first place.
+---
+ include/ndk/sync.h | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+--- a/third_party/libsync/src/include/ndk/sync.h
++++ b/third_party/libsync/src/include/ndk/sync.h
+@@ -31,6 +31,16 @@
+ 
+ #include <linux/sync_file.h>
+ 
++#if !defined(__BEGIN_DECLS) && !defined(__END_DECLS)
++#ifdef __cplusplus
++#define __BEGIN_DECLS extern "C" {
++#define __END_DECLS }
++#else
++#define __BEGIN_DECLS
++#define __END_DECLS
++#endif
++#endif
++
+ __BEGIN_DECLS
+ 
+ /* Fences indicate the status of an asynchronous task. They are initially

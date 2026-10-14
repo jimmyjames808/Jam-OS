@@ -1,0 +1,28 @@
+Description: no dummy libEGL.so and libGLESv2.so for programs on Jam OS
+ With ANGLE linked into the program (use_static_angle, the default), Linux
+ builds still make two empty shared libraries named like ANGLE's for
+ Google's bots, as data of every program that uses GL. Jam OS runs static
+ programs only (its link driver refuses -shared), and nothing loads them:
+ they are no longer data of the programs there (the targets stay, for the
+ installer's rules that name them).
+Forwarded: not-needed (Jam OS's; the stubs are for Chromium's own bots)
+---
+--- a/ui/gl/BUILD.gn
++++ b/ui/gl/BUILD.gn
+@@ -10,6 +10,7 @@
+ import("//gpu/vulkan/features.gni")
+ import("//testing/test.gni")
+ import("//third_party/angle/gni/angle.gni")
++import("//build/toolchain/jamos/jamos.gni")
+ import("//third_party/dawn/scripts/dawn_features.gni")
+ import("//ui/gl/features.gni")
+
+@@ -220,7 +221,7 @@
+
+   data_deps = []
+
+-  if (use_angle_stubs) {
++  if (use_angle_stubs && !is_jamos) {
+     # Added via data_deps so that the dummy libraries are generated for build
+     # infrastructure but not linked into dependent targets.
+     data_deps += [ ":generate_angle_stubs" ]

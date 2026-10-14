@@ -1,0 +1,43 @@
+Description: no Mesa DRI drivers on Jam OS
+ content/gpu and media/gpu/sandbox take Mesa's DRI driver directory from
+ pkg-config ("dri") on every desktop Linux build, so the GPU and video
+ sandboxes can allow the drivers' files. Jam OS has no Mesa (the GPU is later: G3, G4), so the config is
+ left out there; the code already handles DRI_DRIVER_DIR being undefined.
+Forwarded: not-needed (Jam OS's; Linux builds have Mesa)
+---
+--- a/content/gpu/BUILD.gn
++++ b/content/gpu/BUILD.gn
+@@ -5,5 +5,6 @@
+ import("//build/config/cast.gni")
+ import("//build/config/ui.gni")
++import("//build/toolchain/jamos/jamos.gni")
+ import("//gpu/vulkan/features.gni")
+ import("//media/media_options.gni")
+
+@@ -125,6 +126,6 @@
+
+   # Use DRI on desktop Linux builds.
+   if (current_cpu != "s390x" && current_cpu != "ppc64" && is_linux &&
+-      !is_castos) {
++      !is_castos && !is_jamos) {
+     configs += [ "//build/config/linux/dri" ]
+   }
+--- a/media/gpu/sandbox/BUILD.gn
++++ b/media/gpu/sandbox/BUILD.gn
+@@ -2,6 +2,7 @@
+ # Use of this source code is governed by a BSD-style license that can be
+ # found in the LICENSE file.
+
++import("//build/toolchain/jamos/jamos.gni")
+ import("//media/gpu/args.gni")
+ import("//media/media_options.gni")
+
+@@ -31,7 +32,7 @@
+     deps += [ "//media/gpu/v4l2" ]
+   }
+   if (current_cpu != "s390x" && current_cpu != "ppc64" && is_linux &&
+-      !is_castos) {
++      !is_castos && !is_jamos) {
+     # For DRI_DRIVER_DIR.
+     configs += [ "//build/config/linux/dri" ]
+   }

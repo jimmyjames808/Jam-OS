@@ -2,7 +2,9 @@
 # fetched by tools/cr/toolchain.sh into ~/.cache/jamos/ on the build host
 # (the PC's WSL), each pinned by size and SHA-256. One line each:
 #
-#   <name> <version> <size in bytes> <sha256> <url>
+#   <name> <version> <size in bytes> <sha256> <url> [<file name>]
+#
+# (the file name, when the URL's last part is no name: a cloud object's hash)
 #
 # clang: Chromium's own prebuilt clang and lld for Linux x86_64, the
 # compiler Chromium 155.0.8059.39 is tested with: the package its
@@ -31,3 +33,34 @@ rust 1edd55dcfcd573872c727fa3e086369a71661ee0-1-llvmorg-24-init-7747-g62397f8b 2
 # PC check and later Chromium builds find it first on PATH. 3.1 is what
 # Debian and Ubuntu ship.
 gperf 3.1 1215925 588546b945bba4b70b6a3a616e80b4ab466e3f33024a352fc2198112cdbb3ae2 https://ftp.gnu.org/pub/gnu/gperf/gperf-3.1.tar.gz
+# node: Chromium's own Node.js for the build host (v24.12.0, its
+# third_party/node/update_node_binaries), the object its DEPS pins for
+# src/third_party/node/linux (bucket chromium-nodejs, object_name, sha256sum,
+# size_bytes). The source tarball doesn't bring it (DEPS fetches it from
+# Google Cloud Storage); Chromium's build runs it (WebUI's TypeScript, the
+# resources' bundling). Unpacked into ~/.cache/jamos/toolchains/node-<version>/
+# (node-linux-x64/bin/node), where ports/chromium's build links it into the
+# tree. The sixth word is the file's name in the cache (the URL's last part
+# is the object's hash). Moves with Chromium's version (its DEPS).
+node v24.12.0 53566970 bdea62a6857735d62165ec97242d79a693564c72d551890c4d009d2355abf14c https://storage.googleapis.com/chromium-nodejs/744e6926ffdd4a4fb2080ae2b9ce4575490261e7 node-linux-x64-v24.12.0.tar.gz
+# sysroot: Chromium's own Debian bullseye amd64 sysroot (glibc's headers and
+# libraries), its build/linux/sysroot_scripts/sysroots.json's bullseye_amd64
+# (the object named by its SHA-256). Chromium's host tools (protoc, V8's
+# mksnapshot and torque, the generators) are built against it by the host
+# toolchain (use_sysroot=true), so they run on the build host whatever its
+# distribution has installed, while the target is built against Jam OS's.
+# Unpacked into ~/.cache/jamos/toolchains/sysroot-<version>/.
+sysroot bullseye_amd64-20250129T203412Z-2 19727236 52d61d4446ffebfaa3dda2cd02da4ab4876ff237853f46d273e7f9b666652e1d https://commondatastorage.googleapis.com/chrome-linux-sysroot/52d61d4446ffebfaa3dda2cd02da4ab4876ff237853f46d273e7f9b666652e1d debian_bullseye_amd64_sysroot-20250129T203412Z-2.tar.xz
+# test-fonts: Chromium's test fonts, the object its DEPS pins for
+# src/third_party/test_fonts/test_fonts (bucket chromium-fonts): the tarball
+# leaves them out, and base_unittests' and the other tests' data need them.
+# Unpacked into ~/.cache/jamos/toolchains/test-fonts-<version>/, which
+# ports/chromium's build links into the tree. Moves with Chromium's DEPS.
+test-fonts 9c07d19d9c5e 33413117 f0e9628f9e43e3f3476cde06a1849058de460e0e037b7449ce0d42b9a73c37d5 https://storage.googleapis.com/chromium-fonts/9c07d19d9c5ee1ff94f717e6fb17e0c8c354e6f9 test_fonts-9c07d19d9c5e.tar.gz
+# go: the Go toolchain Dawn's DEPS pins (dawn_go_version 1.26.6, CIPD's
+# infra/3pp/tools/go), here Go's own release of that version, by its published
+# SHA-256: Dawn's build runs `go run` of its source generator (Tint's
+# sources, offline: GOPROXY=off). Unpacked into
+# ~/.cache/jamos/toolchains/go-<version>/ (go/bin/go), which
+# ports/chromium's build links into the tree. Moves with Dawn's DEPS.
+go 1.26.6 66890545 708effb774be8237570d0add163225abbdfaf4fca28b2611df167beba4feef89 https://go.dev/dl/go1.26.6.linux-amd64.tar.gz

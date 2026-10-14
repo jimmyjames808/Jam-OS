@@ -48,8 +48,11 @@ KEYS = {
     "subpackage": ("many", 2, None), "multicall": ("many", 2, None),
     "tool": ("many", 1, 1), "host-of": ("one", 1, 1), "data": ("many", 2, 2),
     "cpe": ("one", 1, 1), "fixed": ("many", 2, 2), "not-affected": ("many", 2, None),
-    "toolchain": ("one", 1, 2),
+    "toolchain": ("one", 1, 2), "tree": ("one", 1, 1),
 }
+# `tree kept`: the port's unpacked source, its build's output and its tools
+# stay between builds (kept.py; docs/CR-PLAN.md section 14), for a port too
+# big to build afresh each time (Chromium). Style custom, `source` lines.
 # `toolchain clang`: the port is compiled by tools/jamos-clang and
 # jamos-clang++ (clang and lld, LLVM's runtimes, C++) instead of jamos-cc
 # (docs/CR-PLAN.md section 1); without the line, jamos-cc and no C++.
@@ -136,6 +139,11 @@ class Recipe:
         """"clang", or None: jamos-cc."""
         words = self.one.get("toolchain")
         return words[0] if words else None
+
+    @property
+    def kept(self):
+        """True for `tree kept` (kept.py)."""
+        return self.get("tree") == "kept"
 
     @property
     def rust(self):
@@ -384,6 +392,12 @@ def _lint_style(r):
         for t in w:
             if not TOOL.match(t):
                 p.append("%s: host tool '%s'" % (r.path, t))
+    if "tree" in r.one:
+        if r.get("tree") != "kept":
+            p.append("%s: tree takes 'kept' (the source and the build's output stay between"
+                     " builds)" % r.path)
+        elif r.style != "custom" or "source" not in r.many:
+            p.append("%s: a kept tree is for a style custom port with source lines" % r.path)
     tc = r.toolchain
     if tc is not None:
         words = r.one["toolchain"]

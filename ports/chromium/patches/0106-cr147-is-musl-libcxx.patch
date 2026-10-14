@@ -1,0 +1,66 @@
+Description: Adds the is_musl build argument (build/config/linux/musl.gni) and tells Chromium's own libc++ it is on musl (_LIBCPP_HAS_MUSL_LIBC), which no preprocessor macro can say.
+Forwarded: not-needed (copium's; its author sends what fits upstream)
+Origin: copium 155.2 (https://codeberg.org/selfisekai/copium: the musl patches Alpine's chromium applies), cr147-is-musl-libcxx.patch
+The author's e-mail address is left out of the From line below.
+Rebased to apply exactly (Jam OS's applier takes no fuzz): the body below is the same change made again by diff -u against this tarball.
+
+From 490f585d15e671a4f45586bbe22c2af2e13965c2 Mon Sep 17 00:00:00 2001
+From: LN Liberda
+Date: Sat, 4 Jan 2025 01:56:11 +0100
+Subject: [PATCH] [musl] Introduce is_musl build arg, indicate musl to libc++
+
+Bug: 40244829
+---
+ build/config/c++/BUILD.gn                   |  7 +++++++
+ build/config/linux/musl.gni                 | 10 ++++++++++
+ buildtools/third_party/libc++/__config_site |  2 --
+ 3 files changed, 17 insertions(+), 2 deletions(-)
+ create mode 100644 build/config/linux/musl.gni
+
+--- a/build/config/c++/BUILD.gn
++++ b/build/config/c++/BUILD.gn
+@@ -3,6 +3,7 @@
+ import("//build/config/chrome_build.gni")
+ import("//build/config/compiler/compiler.gni")
+ import("//build/config/dcheck_always_on.gni")
++import("//build/config/linux/musl.gni")
+ import("//buildtools/deps_revisions.gni")
+ 
+ assert(use_custom_libcxx, "should only be used if use_custom_libcxx is set")
+@@ -54,6 +55,12 @@
+ 
+   defines += [ "CR_LIBCXX_REVISION=$libcxx_revision" ]
+ 
++  # Musl has no preprocessor macro to indicate that it's used,
++  # libc++ needs it indicated explicitly.
++  if (is_musl) {
++    defines += [ "_LIBCPP_HAS_MUSL_LIBC=1" ]
++  }
++
+   if (is_win) {
+     # Intentionally not using libc++abi on Windows because libc++abi only
+     # implements the Itanium C++ ABI, and not the Microsoft ABI which we use on
+--- /dev/null
++++ b/build/config/linux/musl.gni
+@@ -0,0 +1,10 @@
++# Copyright 2025 The Chromium Authors
++# Use of this source code is governed by a BSD-style license that can be
++# found in the LICENSE file.
++
++declare_args() {
++  # Whether the build is targeting musl libc. This is a special variable
++  # because musl cannot be detected with a preprocessor macro.
++  # See: https://wiki.musl-libc.org/faq#Q:-Why-is-there-no-%3Ccode%3E__MUSL__%3C/code%3E-macro
++  is_musl = false
++}
+--- a/buildtools/third_party/libc++/__config_site
++++ b/buildtools/third_party/libc++/__config_site
+@@ -28,8 +28,6 @@
+ 
+ #ifdef ANDROID_HOST_MUSL
+ #define _LIBCPP_HAS_MUSL_LIBC 1
+-#else
+-#define _LIBCPP_HAS_MUSL_LIBC 0
+ #endif
+ 
+ #ifdef _WIN32

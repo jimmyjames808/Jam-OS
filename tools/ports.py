@@ -5,6 +5,11 @@ recipes in ports/, on the Mac or the test host's Linux
 
     ports.py build [-f] [-v] [-j N] <port>...   build, in dependency order,
                                                 what is out of date
+             [--kept DIR] [--clean]             a `tree kept` port's kept
+                                                tree (portslib/kept.py) in
+                                                DIR (JAMOS_KEPT); --clean
+                                                removes it first (a clean
+                                                build of a huge port)
     ports.py lint [<port>...]                   check recipes (all of them:
                                                 make check runs it)
     ports.py fetch <port>...                    only download the sources
@@ -99,7 +104,7 @@ def cmd_build(args):
             print("ports: " + p)
         return 1
     b = buildmod.Builder(t, TOP, args.out, args.jobs, args.port if args.force else (),
-                         args.verbose)
+                         args.verbose, kept=args.kept, clean=args.port if args.clean else ())
     try:
         b.build(args.port)
     except buildmod.BuildError as e:
@@ -114,6 +119,7 @@ def cmd_boot(args):
     nobody."""
     t = load(args)
     args.port, args.force, args.verbose, args.jobs = bootmod.boot_ports(t), False, False, None
+    args.kept, args.clean = None, False
     if cmd_build(args):
         return 1
     try:
@@ -189,6 +195,8 @@ def main(argv):
     b.add_argument("-f", "--force", action="store_true", help="build the named ports anyway")
     b.add_argument("-v", "--verbose", action="store_true")
     b.add_argument("-j", "--jobs", type=int)
+    b.add_argument("--kept", metavar="DIR", help="a kept tree's directory (portslib/kept.py)")
+    b.add_argument("--clean", action="store_true", help="remove the named ports' kept trees first")
     b.add_argument("port", nargs="+")
     for name in ("lint", "graph"):
         sub.add_parser(name).add_argument("port", nargs="*")

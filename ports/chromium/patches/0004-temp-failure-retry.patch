@@ -1,0 +1,25 @@
+Description: TEMP_FAILURE_RETRY is a glibc macro musl doesn't have: the sandbox's process_util.h defines it.
+Forwarded: not-needed (Alpine's musl patch; Alpine carries it)
+Origin: Alpine Linux aports ecc3ce96955f459cf819602db39593b42ded8515, community/chromium/temp-failure-retry.patch
+Rebased to apply exactly (Jam OS's applier takes no fuzz): the body below is the same change made again by diff -u against this tarball.
+
+random glibc macro, not provided by musl.
+https://www.gnu.org/software/libc/manual/html_node/Interrupted-Primitives.html
+
+--- a/sandbox/linux/suid/process_util.h
++++ b/sandbox/linux/suid/process_util.h
+@@ -12,6 +12,14 @@
+ #include <stdint.h>
+ #include <sys/types.h>
+ 
++// Some additional functions
++# define TEMP_FAILURE_RETRY(expression) \
++	(__extension__			\
++	 ({ long int __result;		\
++	  do __result = (long int) (expression); \
++	  while (__result == -1L && errno == EINTR); \
++	  __result; }))
++
+ // This adjusts /proc/process/oom_score_adj so the Linux OOM killer
+ // will prefer certain process types over others. The range for the
+ // adjustment is [-1000, 1000], with [0, 1000] being user accessible.

@@ -1,0 +1,20 @@
+Description: Linux without NSS: the Chrome Root Store alone
+ On Linux the certificate verifier's system trust store is NSS's (user
+ added roots) wrapped around the Chrome Root Store, and
+ CreateSslSystemTrustStoreChromeRoot exists only with
+ use_nss_server_certs. Jam OS has no NSS (use_nss_server_certs=false), so
+ there the verifier uses the Chrome Root Store alone, as ChromeOS's does
+ (CreateChromeOnlySystemTrustStore).
+Forwarded: not-needed (Jam OS's; could go upstream: Linux without NSS)
+---
+--- a/net/cert/cert_verify_proc.cc
++++ b/net/cert/cert_verify_proc.cc
+@@ -420,7 +420,7 @@
+   return CreateCertVerifyProcBuiltin(
+       std::move(cert_net_fetcher), std::move(crl_set), std::move(ct_verifier),
+       std::move(ct_policy_enforcer),
+-#if BUILDFLAG(IS_CHROMEOS)
++#if BUILDFLAG(IS_CHROMEOS) || (BUILDFLAG(IS_LINUX) && !BUILDFLAG(USE_NSS_SERVER_CERTS))
+       CreateChromeOnlySystemTrustStore(std::move(chrome_root)),
+ #else
+       CreateSslSystemTrustStoreChromeRoot(std::move(chrome_root)),

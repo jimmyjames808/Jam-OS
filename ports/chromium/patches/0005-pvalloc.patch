@@ -1,0 +1,39 @@
+Description: musl has no pvalloc (an obsolete glibc call): the allocator shim's and base's tests use it only on glibc.
+Forwarded: not-needed (Alpine's musl patch; Alpine carries it)
+Origin: Alpine Linux aports ecc3ce96955f459cf819602db39593b42ded8515, community/chromium/pvalloc.patch
+Rebased to apply exactly (Jam OS's applier takes no fuzz): the body below is the same change made again by diff -u against this tarball.
+
+the pvalloc/valloc symbols are obsolete and not implemented in musl
+--
+
+--- a/base/allocator/partition_allocator/src/partition_alloc/shim/allocator_shim_unittest.cc
++++ b/base/allocator/partition_allocator/src/partition_alloc/shim/allocator_shim_unittest.cc
+@@ -522,7 +522,7 @@
+   ASSERT_GE(allocs_intercepted_by_alignment[128], 1u);
+   ASSERT_GE(allocs_intercepted_by_size[53], 1u);
+ 
+-#if PA_BUILDFLAG(IS_POSIX) && !PA_BUILDFLAG(IS_ANDROID)
++#if (PA_BUILDFLAG(IS_POSIX) && defined(__GLIBC__)) && !PA_BUILDFLAG(IS_ANDROID)
+   void* pvalloc_ptr = pvalloc(67);
+   ASSERT_NE(nullptr, pvalloc_ptr);
+   ASSERT_EQ(0u, reinterpret_cast<uintptr_t>(pvalloc_ptr) % kPageSize);
+@@ -576,7 +576,7 @@
+   free(memalign_ptr);
+   ASSERT_GE(frees_intercepted_by_addr[Hash(memalign_ptr)], 1u);
+ 
+-#if PA_BUILDFLAG(IS_POSIX) && !PA_BUILDFLAG(IS_ANDROID)
++#if (PA_BUILDFLAG(IS_POSIX) && defined(__GLIBC__)) && !PA_BUILDFLAG(IS_ANDROID)
+   free(pvalloc_ptr);
+   ASSERT_GE(frees_intercepted_by_addr[Hash(pvalloc_ptr)], 1u);
+ #endif  // PA_BUILDFLAG(IS_POSIX) && !PA_BUILDFLAG(IS_ANDROID)
+--- a/base/process/memory_unittest.cc
++++ b/base/process/memory_unittest.cc
+@@ -371,7 +371,7 @@
+ #endif  // BUILDFLAG(IS_WIN)
+ #endif  // !BUILDFLAG(IS_MAC)
+ 
+-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
++#if (BUILDFLAG(IS_LINUX) && defined(__GLIBC__)) || BUILDFLAG(IS_CHROMEOS)
+ 
+ TEST_F(OutOfMemoryDeathTest, Valloc) {
+   ASSERT_OOM_DEATH({

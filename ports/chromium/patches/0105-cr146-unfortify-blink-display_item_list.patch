@@ -1,0 +1,27 @@
+Description: Blink's DisplayItemList::MoveItem copies a display item's whole slot, which a fortified memcpy on musl reads as an overflow of the item's type: __builtin_memcpy there.
+Forwarded: not-needed (copium's; its author sends what fits upstream)
+Origin: copium 155.2 (https://codeberg.org/selfisekai/copium: the musl patches Alpine's chromium applies), cr146-unfortify-blink-display_item_list.patch
+The author's e-mail address is left out of the From line below.
+
+From a2aed8e566f59376a1b25aa6d489fc052808fa6f Mon Sep 17 00:00:00 2001
+From: LN Liberda
+Date: Fri, 20 Mar 2026 05:38:49 +0100
+Subject: [PATCH] Unfortify DisplayItemList
+
+---
+ .../blink/renderer/platform/graphics/paint/display_item_list.h  | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/third_party/blink/renderer/platform/graphics/paint/display_item_list.h b/third_party/blink/renderer/platform/graphics/paint/display_item_list.h
+index b2e70daf80d38..375ee2d0292e2 100644
+--- a/third_party/blink/renderer/platform/graphics/paint/display_item_list.h
++++ b/third_party/blink/renderer/platform/graphics/paint/display_item_list.h
+@@ -262,7 +262,7 @@ class PLATFORM_EXPORT DisplayItemList {
+   }
+ 
+   DisplayItem& MoveItem(DisplayItem& item, ItemSlot* new_item_slot) {
+-    UNSAFE_TODO(memcpy(static_cast<void*>(new_item_slot),
++    UNSAFE_TODO(__builtin_memcpy(static_cast<void*>(new_item_slot),
+                        static_cast<void*>(&item), kMaxItemSize));
+ 
+     // Created a tombstone/"dead display item" that can be safely destructed but

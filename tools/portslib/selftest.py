@@ -16,7 +16,15 @@ build that builds nothing, a needed port's change rebuilding its users,
 and two builds giving the same bytes.
 
 Then the packages, the repository and their formats (pkgtest.py).
+
+Then a kept tree (`tree kept`, kept.py): a recipe's change leaves the
+source and the build's output alone, a new patch rewrites only the file it
+touches and dropping it brings the file back, --clean and a new distfile
+start afresh; and `package --from` packages a build from elsewhere, refused
+when the recipe that built it is not this one.
 """
+import argparse
+import contextlib
 import io
 import os
 import re
@@ -31,6 +39,7 @@ from . import fetch as fetchmod
 from . import fixtures
 from . import licence
 from . import patch as patchmod
+from . import pkgcmd
 from . import pkgtest
 from . import recipe as recipemod
 from . import selftest_hostdata
@@ -380,6 +389,148 @@ def test_bad_builds(tmp, real_ports):
               ["program bin/app", "the recipe chose"], "a program linked with another list")
 
 
+KEPT_BUILD = """# big's build in a kept tree: its output in out/, inside the source.
+build() {
+    mkdir -p out
+    echo run >> out/runs
+    "$CC" -O2 -c x.c -o out/x.o
+    "$CC" -O2 -c y.c -o out/y.o
+    "$CC" -O2 -o out/big out/x.o out/y.o
+}
+
+install() {
+    mkdir -p "$destdir$prefix/bin"
+    cp out/big "$destdir$prefix/bin/"
+}
+"""
+
+KEPT_PATCH = """Description: y returns 3, so the test can tell
+Forwarded: not-needed (a test)
+--- a/y.c
++++ b/y.c
+@@ -1 +1 @@
+-int y(void) { return 2; }
++int y(void) { return 3; }
+"""
+
+
+def test_kept(tmp, real_ports):
+    """A kept tree's rules (kept.py), then package --from (pkgcmd.py)."""
+    root, up = os.path.join(tmp, "kept-ports"), os.path.join(tmp, "kept-up")
+    fixtures.write_tree(root, up, real_ports)
+    files = {"x.c": "int y(void);\nint main(void) { return y(); }\n",
+             "y.c": "int y(void) { return 2; }\n", "LICENSE": "big: MIT, for the test\n"}
+    tarball = os.path.join(up, "big-1.0.tar.gz")
+    d = os.path.join(root, "big")
+    os.makedirs(d)
+
+    def write_recipe(extra=()):
+        fixtures.make_tar(tarball, "big-1.0", files)
+        with open(os.path.join(d, "recipe"), "w") as f:
+            f.write(fixtures.recipe("big", "custom", "MIT", fixtures.source_line(tarball),
+                                    ["tree kept", "program bin/big"] + list(extra)))
+    write_recipe()
+    with open(os.path.join(d, "build.sh"), "w") as f:
+        f.write(KEPT_BUILD)
+    kdir = os.path.join(tmp, "kept-tree")
+    src = os.path.join(kdir, "src", "big-1.0")
+
+    def build(clean=False):
+        t, problems = treemod.load(root)
+        problems += treemod.lint(t, ["big"])
+        expect(not problems, "the kept fixture doesn't load: %s" % problems)
+        b = buildmod.Builder(t, os.getcwd(), os.path.join(tmp, "kept-out"), 4, (), False,
+                             lambda s: None, kept=kdir, clean=["big"] if clean else ())
+        try:
+            b.build(["big"])
+        except buildmod.BuildError as e:
+            FAILS.append("kept: the build failed: %s" % e)
+            return False
+        return True
+
+    def runs():
+        try:
+            with open(os.path.join(src, "out", "runs")) as f:
+                return len(f.read().split())
+        except OSError:
+            return 0
+
+    def mtime(*parts):
+        return os.stat(os.path.join(*parts)).st_mtime_ns
+
+    def text(name):
+        with open(os.path.join(src, name)) as f:
+            return f.read()
+
+    if not build():
+        return
+    expect(runs() == 1, "kept: the first build ran %d times" % runs())
+    x0, y0 = mtime(src, "x.c"), mtime(src, "y.c")
+    libc0 = mtime(kdir, "sysroot", "lib", "libc.a")
+    cc0 = mtime(kdir, "bin", "x86_64-linux-musl-gcc")
+    write_recipe(["category test"])
+    build()
+    expect(runs() == 2, "kept: a recipe's change lost the build's output (runs: %d)" % runs())
+    expect((mtime(src, "x.c"), mtime(src, "y.c")) == (x0, y0),
+           "kept: a recipe's change touched the source")
+    expect(mtime(kdir, "sysroot", "lib", "libc.a") == libc0 and
+           mtime(kdir, "bin", "x86_64-linux-musl-gcc") == cc0,
+           "kept: an unchanged sysroot file or tool was written again")
+    os.makedirs(os.path.join(d, "patches"))
+    with open(os.path.join(d, "patches", "0001-three.patch"), "w") as f:
+        f.write(KEPT_PATCH)
+    build()
+    expect("return 3" in text("y.c"), "kept: a new patch was not applied")
+    expect(mtime(src, "x.c") == x0, "kept: a patch to y.c rewrote x.c")
+    expect(runs() == 3, "kept: a patch's change lost the build's output")
+    os.remove(os.path.join(d, "patches", "0001-three.patch"))
+    build()
+    expect(text("y.c") == files["y.c"], "kept: a dropped patch's file is not upstream's again")
+    expect(mtime(src, "x.c") == x0 and runs() == 4, "kept: dropping a patch touched more")
+    with open(os.path.join(d, "patches", "0001-bad.patch"), "w") as f:
+        f.write(KEPT_PATCH.replace("return 2;", "return 5;"))
+    nfails = len(FAILS)
+    build()
+    expect(len(FAILS) == nfails + 1 and "doesn't apply" in FAILS[-1],
+           "kept: a patch that doesn't apply was taken")
+    del FAILS[nfails:]
+    os.remove(os.path.join(d, "patches", "0001-bad.patch"))
+    build()
+    expect(runs() == 5 and mtime(src, "x.c") == x0,
+           "kept: a patch that didn't apply cost the tree (runs: %d)" % runs())
+    build(clean=True)
+    expect(runs() == 1, "kept: --clean kept the build's output (runs: %d)" % runs())
+    files["x.c"] = files["x.c"].replace("return y();", "return y() + 1;")
+    write_recipe(["category test"])
+    build()
+    expect(runs() == 1 and "y() + 1" in text("x.c"),
+           "kept: a new distfile was not unpacked afresh (runs: %d)" % runs())
+
+    # package --from: the build directory copied elsewhere and packaged
+    # there without building; a build of another recipe refused.
+    there = os.path.join(tmp, "kept-fetched", "big")
+    shutil.copytree(os.path.join(tmp, "kept-out", "big"), there)
+    args = argparse.Namespace(ports=root, out=os.path.join(tmp, "kept-out-mac"), jobs=None,
+                              force=False, verbose=False, port=["big"], from_dir=there,
+                              pkgdir=os.path.join(tmp, "kept-pkg"), key=None, test_key=True,
+                              unsigned=False)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc = pkgcmd.package(os.getcwd(), args)
+    expect(rc == 0 and ".jpk" in out.getvalue(), "package --from: %s" % out.getvalue().strip())
+    expect(not os.path.exists(os.path.join(tmp, "kept-out-mac", "big")),
+           "package --from built the port")
+    write_recipe(["category test", "homepage https://example.org/"])
+    t, _ = treemod.load(root)
+    refused(lambda: pkgcmd.from_stage(t.recipes["big"], there), ["another recipe"],
+            "package --from a build of another recipe")
+    write_recipe(["category test"])
+    os.remove(os.path.join(there, "stage", "stage.txt"))
+    t, _ = treemod.load(root)
+    refused(lambda: pkgcmd.from_stage(t.recipes["big"], there), ["stage.txt"],
+            "package --from a build without its stage")
+
+
 def test_git(tmp):
     """A git source: archived by commit, the same bytes from the cache the
     second time, and a different recorded hash refused."""
@@ -430,6 +581,7 @@ def main(top):
             FAILS.extend(pkgtest.run(tmp, real_ports, top))
             test_fetch(tmp, os.path.join(tmp, "up"))
             test_bad_builds(tmp, real_ports)
+            test_kept(tmp, real_ports)
             test_git(tmp)
             selftest_hostdata.run(tmp, real_ports, expect, refused,
                                   lambda t, d: builder(t, d))

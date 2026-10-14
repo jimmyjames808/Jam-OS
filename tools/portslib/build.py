@@ -6,6 +6,8 @@ Everything a port's build makes is under build/ports/<name>/ (the
 `--out` directory's):
 
     stamp       the inputs' hash at the last good build
+    port.sha256 the hash of the port's directory (recipe, patches, files)
+                that built it: `ports.py package --from` checks it
     log         every command and its output
     sysroot/    build/sysroot plus the libraries it needs (toolchain.py)
     bin/        the cross tools under the target's names (toolchain.py)
@@ -13,6 +15,9 @@ Everything a port's build makes is under build/ports/<name>/ (the
     destdir/    upstream's install (DESTDIR)
     stage/      what the recipe keeps, checked (stage.py), and stage.txt
     dropped.txt what the install made and the recipe didn't keep
+
+A `tree kept` port's source, sysroot and tools are in its kept tree
+instead (kept.py), which stays between builds.
 
 A port is out of date when its stamp changes: the SHA-256 of the
 builder's format, the recipe and every file in the port's directory, the
@@ -33,6 +38,7 @@ import time
 
 from . import fetch as fetchmod
 from . import hostdata
+from . import kept as keptmod
 from . import source as sourcemod
 from . import stage as stagemod
 from . import sysrootid
@@ -46,6 +52,14 @@ FORMAT = b"jamos-ports-build 2\n"
 
 class BuildError(Exception):
     pass
+
+
+def port_hash(r):
+    """The SHA-256 of a port's directory (its recipe, patches, lists, files):
+    the same on every machine that has the same recipe."""
+    h = hashlib.sha256()
+    tree_hash(r.dir, h)
+    return h.hexdigest()
 
 
 def tree_hash(path, h):
@@ -69,12 +83,15 @@ def tree_hash(path, h):
 class Builder:
     """One run of the builder over a ports tree."""
 
-    def __init__(self, tree, top, out, jobs=None, force=(), verbose=False, say=print):
+    def __init__(self, tree, top, out, jobs=None, force=(), verbose=False, say=print,
+                 kept=None, clean=()):
         self.tree = tree                  # tree.Tree
         self.top = top                    # the repository's top directory
         self.out = out                    # build/ports, or --out
         self.jobs = jobs or os.cpu_count() or 4
-        self.force = set(force)           # ports to build even when up to date
+        self.force = set(force) | set(clean)   # ports to build even when up to date
+        self.kept = kept                  # a kept tree's directory (--kept), or None
+        self.clean = set(clean)           # kept trees to remove first (--clean)
         self.verbose = verbose
         self.say = say
         self.sysroot = os.environ.get("JAMOS_BASE_SYSROOT",
@@ -187,6 +204,8 @@ class Builder:
             raise BuildError("%s: %s" % (r.name, e))
         with open(stamp_path, "w") as f:
             f.write(self.stamps[r.name] + "\n")
+        with open(os.path.join(base, "port.sha256"), "w") as f:
+            f.write(port_hash(r) + "\n")
         self.say("%s: built in %.1f s" % (r.name, time.time() - start))
 
     def _steps(self, r, base, distfiles):
@@ -194,13 +213,30 @@ class Builder:
             return hostdata.build_host(self, r, base, distfiles, self.say)
         sysroot, work = os.path.join(base, "sysroot"), os.path.join(base, "work")
         toolchain.make_sysroot(sysroot, self.sysroot, self._libs(r))
+        kept = None
+        if r.kept:   # the sysroot and the tools copied into the kept tree where they changed
+            kept = keptmod.kept_dir(base, self.kept)
+            if r.name in self.clean:
+                keptmod.clean(kept, self._log_say)
+            n = keptmod.sync(sysroot, os.path.join(kept, "sysroot"))
+            self._log_say("kept: %d sysroot files changed" % n)
+            sysroot, work = os.path.join(kept, "sysroot"), os.path.join(kept, "src")
         bindir = toolchain.make_bin(r, self.top, base, sysroot, work)
-        srcdir = sourcemod.prepare(r, distfiles, work, self._log_say)
+        if kept:
+            keptmod.sync(bindir, os.path.join(kept, "bin"))
+            bindir = os.path.join(kept, "bin")
+            try:
+                srcdir = keptmod.prepare(r, distfiles, kept, self._log_say)
+            except keptmod.KeptError as e:
+                raise sourcemod.SourceError(str(e))
+        else:
+            srcdir = sourcemod.prepare(r, distfiles, work, self._log_say)
         tool_bins, tool_pcs = hostdata.tool_dirs(self, r)
-        paths = {"tmp": os.path.join(base, "tmp"), "epoch": self.epoch(r),
+        paths = {"tmp": os.path.join(base, "tmp"), "epoch": self.epoch(r), "kept": kept,
                  "tool_bins": tool_bins, "tool_pcs": tool_pcs,
                  "destdir": os.path.join(base, "destdir"), "srcdir": srcdir,
                  "jobs": self.jobs, "rust": toolchain.rust_dir(self.top) if r.rust else None,
+                 "clang": toolchain.clang_dir(self.top) if r.toolchain == "clang" else None,
                  "config_site": os.path.abspath(self.tree.shared("config.site"))}
         os.makedirs(paths["destdir"])
         env = toolchain.environment(r, bindir, sysroot, paths)

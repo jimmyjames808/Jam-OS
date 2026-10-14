@@ -345,4 +345,8 @@ def environment(r, bindir, sysroot, paths):
     })
     if paths.get("rust"):   # `toolchain clang rust`: where bin/cargo and bin/rustc are
         env["JAMOS_RUST"] = paths["rust"]
+    if paths.get("clang"):   # `toolchain clang`: the bin directory of the clang
+        env["JAMOS_CLANG"] = paths["clang"]
+    if paths.get("kept"):   # `tree kept`: the kept tree (kept.py)
+        env["kept"] = paths["kept"]
     return env

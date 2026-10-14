@@ -1,0 +1,183 @@
+Description: Jam OS's GN toolchains, //build/toolchain/jamos:x64 and :host
+ Chromium's Linux code built for Jam OS (docs/CR-PLAN.md section 1). The
+ target toolchain (custom_toolchain) compiles with Chromium's own clang for
+ x86_64-unknown-linux-musl against Jam OS's sysroot (target_sysroot) with
+ __jamos__ defined, and links with Jam OS's driver (jamos_link_driver:
+ tools/jamos-clang through the port's wrapper, static and
+ position-dependent through posix.ld, the program's list as its note).
+ GN gives the default toolchain the build's own arguments, so args.gn says
+ is_jamos and is_musl (copium's argument), and the host toolchain
+ (host_toolchain), Chromium's Linux clang toolchain otherwise, puts them
+ back to false and builds against Chromium's Debian sysroot.
+ With is_jamos: the executable config gives no -pie; the Rust target for
+ x64 on musl is x86_64-unknown-linux-musl, and that triple joins the known
+ ones (as Alpine adds its own); libffi (Wayland's) is Jam OS's libffi port,
+ a static libffi.a in the sysroot, where Linux takes the sysroot's
+ libffi_pic.a; the sysroot's headers are in include/ (as Fuchsia's), not
+ usr/include, for the system module map.
+Forwarded: not-needed (Jam OS's own toolchain; the -pie and Rust triple
+ lines could go upstream with is_musl)
+---
+--- a/build/config/gcc/BUILD.gn
++++ b/build/config/gcc/BUILD.gn
+@@ -6,6 +6,7 @@
+ import("//build/config/compiler/compiler.gni")
+ import("//build/config/sanitizers/sanitizers.gni")
+ import("//build/config/sysroot.gni")
++import("//build/toolchain/jamos/jamos.gni")
+ import("//build/toolchain/toolchain.gni")
+ 
+ declare_args() {
+@@ -93,7 +94,12 @@
+ # Settings for executables.
+ config("executable_config") {
+   configs = executable_and_shared_library_configs_
+-  ldflags = [ "-pie" ]
++  ldflags = []
++  if (!is_jamos) {
++    # Jam OS runs position-dependent programs only (its link driver refuses
++    # -pie).
++    ldflags += [ "-pie" ]
++  }
+   if (is_android) {
+     ldflags += [
+       "-Bdynamic",
+--- a/build/config/linux/libffi/BUILD.gn
++++ b/build/config/linux/libffi/BUILD.gn
+@@ -3,6 +3,7 @@
+ # found in the LICENSE file.
+ 
+ import("//build/config/linux/pkg_config.gni")
++import("//build/toolchain/jamos/jamos.gni")
+ 
+ declare_args() {
+   # Controls whether the build should use the version of libffi library shipped
+@@ -16,6 +17,11 @@
+ if (use_system_libffi) {
+   pkg_config("libffi") {
+     packages = [ "libffi" ]
++  }
++} else if (is_jamos) {
++  # Jam OS's libffi port, static in the port's sysroot.
++  config("libffi") {
++    libs = [ "ffi" ]
+   }
+ } else {
+   config("libffi") {
+--- a/build/config/rust.gni
++++ b/build/config/rust.gni
+@@ -4,6 +4,7 @@
+ 
+ import("//build/config/chrome_build.gni")
+ import("//build/config/compiler/compiler.gni")
++import("//build/config/linux/musl.gni")
+ import("//build/config/sanitizers/sanitizers.gni")
+ import("//build/toolchain/toolchain.gni")
+ 
+@@ -204,6 +205,8 @@
+     rust_abi_target = "aarch64-unknown-linux-gnu"
+   } else if (current_cpu == "x86") {
+     rust_abi_target = "i686-unknown-linux-gnu"
++  } else if (current_cpu == "x64" && is_musl) {
++    rust_abi_target = "x86_64-unknown-linux-musl"
+   } else if (current_cpu == "x64") {
+     rust_abi_target = "x86_64-unknown-linux-gnu"
+   } else if (current_cpu == "arm") {
+--- a/build/modules/BUILD.gn
++++ b/build/modules/BUILD.gn
+@@ -5,6 +5,7 @@
+ import("//build/config/c++/c++.gni")
+ import("//build/config/clang/clang.gni")
+ import("//build/config/sysroot.gni")
++import("//build/toolchain/jamos/jamos.gni")
+ import("//buildtools/third_party/libc++/libcxx_headers.gni")
+ import("//buildtools/third_party/libc++/modules.gni")
+ if (is_win) {
+@@ -101,6 +102,8 @@
+     extra_headers += [ ":ios_sysroot(${default_toolchain})" ]
+   } else if (is_mac && use_system_xcode) {
+     extra_headers += [ ":mac_sysroot(${default_toolchain})" ]
++  } else if (is_jamos) {
++    root_include_dir = "include"  # Jam OS's sysroot, as Fuchsia's
+   } else if (is_linux || is_mac || is_android || is_chromeos) {
+     root_include_dir = "usr/include"
+   } else if (is_fuchsia) {
+--- a/build/rust/known-target-triples.txt
++++ b/build/rust/known-target-triples.txt
+@@ -41,5 +41,6 @@
+ x86_64-pc-windows-msvc
+ x86_64-unknown-fuchsia
+ x86_64-unknown-linux-gnu
++x86_64-unknown-linux-musl
+ powerpc64le-unknown-linux-gnu
+ s390x-unknown-linux-gnu
+--- /dev/null
++++ b/build/toolchain/jamos/BUILD.gn
+@@ -0,0 +1,53 @@
++# Jam OS's toolchains for Chromium (ports/chromium in Jam OS, its
++# docs/CR-PLAN.md section 1): Chromium's Linux code built for Jam OS's POSIX
++# layer, a musl sysroot. args.gn selects them and describes the target:
++#
++#   custom_toolchain = "//build/toolchain/jamos:x64"
++#   host_toolchain = "//build/toolchain/jamos:host"
++#   is_jamos = true
++#   is_musl = true
++#   target_sysroot = "<Jam OS's sysroot>"
++#   jamos_link_driver = "<the port's link driver>"
++#
++# (The default toolchain's arguments are args.gn's: GN ignores its
++# toolchain_args. So the target's settings are the build's, and the host
++# toolchain puts Linux's back.)
++#
++# x64, the target: compiles are Chromium's own clang (clang_toolchain) for
++# x86_64-unknown-linux-musl against the sysroot, with __jamos__ defined;
++# __linux__ stays defined (the target is Linux's ABI as musl gives it).
++# Links are Jam OS's driver (tools/jamos-clang through the port's wrapper):
++# static and position-dependent (Jam OS runs ET_EXEC programs only), by lld
++# through Jam OS's posix.ld, with LLVM's runtimes and musl from the
++# sysroot, and the program's list as its ELF note.
++
++import("//build/toolchain/gcc_toolchain.gni")
++import("//build/toolchain/jamos/jamos.gni")
++
++clang_toolchain("x64") {
++  assert(is_jamos && is_musl, "args.gn sets is_jamos and is_musl for Jam OS")
++  assert(jamos_link_driver != "", "jamos_link_driver is the port's link driver")
++  ld = jamos_link_driver
++  extra_cppflags = "--target=x86_64-unknown-linux-musl -D__jamos__=1"
++  extra_asmflags = "--target=x86_64-unknown-linux-musl"
++  extra_ldflags = "--target=x86_64-unknown-linux-musl"
++
++  toolchain_args = {
++    current_cpu = "x64"
++    current_os = "linux"
++  }
++}
++
++# The host: Chromium's own Linux clang toolchain (as
++# //build/toolchain/linux:clang_x64), with the target's Jam OS settings
++# undone, against Chromium's Debian sysroot: what it builds runs on the
++# build host (V8's mksnapshot, the generators, Rust's build scripts).
++clang_toolchain("host") {
++  toolchain_args = {
++    current_cpu = "x64"
++    current_os = "linux"
++    is_jamos = false
++    is_musl = false
++    sysroot = "//build/linux/debian_bullseye_amd64-sysroot"
++  }
++}
+--- /dev/null
++++ b/build/toolchain/jamos/jamos.gni
+@@ -0,0 +1,11 @@
++# Jam OS's toolchains for Chromium (build/toolchain/jamos/BUILD.gn).
++
++declare_args() {
++  # The target is Jam OS: a static, position-dependent program. args.gn
++  # sets it; Jam OS's host toolchain puts it back to false.
++  is_jamos = false
++
++  # The program that links for Jam OS: tools/jamos-clang, through the port's
++  # wrapper (it chooses each program's list by the output's name).
++  jamos_link_driver = ""
++}
