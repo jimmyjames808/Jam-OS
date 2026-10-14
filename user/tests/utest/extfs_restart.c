@@ -310,7 +310,7 @@ bool t_extfs_restart_steps(void)
         "die=write:9", "die=journal:4", "die=commit:6", "die=answered:5", "die=write:7",
     };
     static const char *const steps3[] = {
-        "die=answered:12", "die=write:41", "die=journal:9", "die=commit:13", "die=write:3",
+        "die=answered:8", "die=write:41", "die=journal:5", "die=commit:6", "die=write:3",
         "die=write:23", "die=journal:2",
     };
     static const char *const format[] = { "die=write:40", "die=write:3" };

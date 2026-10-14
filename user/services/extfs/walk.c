@@ -222,21 +222,20 @@ status_t walk(const struct xf_ctx *c, const char *path, uint32_t len, uint32_t f
                 return st;
             if (!tlen)
                 return ERR_NOT_FOUND;
+            while (rlen && tlen > 1 && target[tlen - 1] == '/')
+                tlen--;   /* the rest brings its own '/' */
             if (target[0] == '/')
                 return link_out(w, FS_RESOLVE_ABSOLUTE, used, target, (uint32_t)tlen, r, rlen);
-            /* In the name's place: the target, then '/' and the rest if
-             * there is any (a '/' after the last name would ask for a
-             * directory). */
-            uint32_t sep = rlen ? 1 : 0;
-            if (tlen + sep + rlen > sizeof(rest_buf))
+            /* In the name's place: the target, then the rest, which
+             * starts with its '/' (a '/' after the last name would ask
+             * for a directory, so an empty rest adds none). */
+            if (tlen + rlen > sizeof(rest_buf))
                 return ERR_NAME_TOO_LONG;
-            char *nr = rest_buf + sizeof(rest_buf) - (tlen + sep + rlen);
-            memmove(nr + tlen + sep, r, rlen);
+            char *nr = rest_buf + sizeof(rest_buf) - (tlen + rlen);
+            memmove(nr + tlen, r, rlen);
             memcpy(nr, target, tlen);
-            if (sep)
-                nr[tlen] = '/';
             r = nr;
-            rlen += (uint32_t)tlen + sep;
+            rlen += (uint32_t)tlen;
             w->has_name = false;
             continue;
         }

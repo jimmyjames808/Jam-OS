@@ -23,8 +23,9 @@ grep -E "utest: (extfs|[0-9]+ passed)|FAILED" "$out/extfs-svc.log" | head -40
 n=0
 for f in $(mdir -b -i "$out/extfs-svc.after.img@@$DATA_AT" ::/extfs-e2fsck 2>/dev/null); do
     name=$(basename "$f" .sparse)
-    mcopy -o -i "$out/extfs-svc.after.img@@$DATA_AT" "::/extfs-e2fsck/$name.sparse" \
-        "$out/$name.sparse" || { ok=1; continue; }
+    rm -f "$out/$name.sparse" "$out/$name.img"
+    mcopy -n -i "$out/extfs-svc.after.img@@$DATA_AT" "::/extfs-e2fsck/$name.sparse" \
+        "$out/$name.sparse" < /dev/null || { ok=1; continue; }
     python3 - "$out/$name.sparse" "$out/$name.img" <<'EOF' || { ok=1; continue; }
 import struct, sys
 src = open(sys.argv[1], "rb").read()
