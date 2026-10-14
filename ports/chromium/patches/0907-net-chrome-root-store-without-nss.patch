@@ -4,7 +4,9 @@ Description: Linux without NSS: the Chrome Root Store alone
  CreateSslSystemTrustStoreChromeRoot exists only with
  use_nss_server_certs. Jam OS has no NSS (use_nss_server_certs=false), so
  there the verifier uses the Chrome Root Store alone, as ChromeOS's does
- (CreateChromeOnlySystemTrustStore).
+ (CreateChromeOnlySystemTrustStore). The cert verifier service's report
+ of the platform's root store (GetPlatformRootStoreInfo) takes the same
+ store, so it reports no platform roots.
 Forwarded: not-needed (Jam OS's; could go upstream: Linux without NSS)
 ---
 --- a/net/cert/cert_verify_proc.cc
@@ -18,3 +20,17 @@ Forwarded: not-needed (Jam OS's; could go upstream: Linux without NSS)
        CreateChromeOnlySystemTrustStore(std::move(chrome_root)),
  #else
        CreateSslSystemTrustStoreChromeRoot(std::move(chrome_root)),
+--- a/services/cert_verifier/cert_verifier_service_factory.cc
++++ b/services/cert_verifier/cert_verifier_service_factory.cc
+@@ -175,7 +175,11 @@
+   mojom::PlatformRootStoreInfoPtr info_ptr =
+       mojom::PlatformRootStoreInfo::New();
+   std::unique_ptr<net::SystemTrustStore> system_trust_store =
++#if BUILDFLAG(IS_LINUX) && !BUILDFLAG(USE_NSS_SERVER_CERTS)
++      net::CreateChromeOnlySystemTrustStore(
++#else
+       net::CreateSslSystemTrustStoreChromeRoot(
++#endif
+           std::make_unique<net::TrustStoreChrome>());
+ 
+   net::PlatformTrustStore* platform_trust_store =
