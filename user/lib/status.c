@@ -33,6 +33,7 @@ const char *status_str(status_t s)
     case ERR_NAME_TOO_LONG:    return "ERR_NAME_TOO_LONG";
     case ERR_BUSY:             return "ERR_BUSY";
     case ERR_INTERRUPTED:      return "ERR_INTERRUPTED";
+    case ERR_LINK_OUT:         return "ERR_LINK_OUT";
     }
     return "?";
 }

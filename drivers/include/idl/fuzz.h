@@ -1344,6 +1344,46 @@ static status_t idl_fz_file_map(void *ctx, uint32_t flags, handle_t *out_vmo, ui
     *out_size = (uint64_t)0x5a5a5a5a5a5a5a5aull;
     return OK;
 }
+static status_t idl_fz_file_getattr(void *ctx, uint32_t *out_mode, uint32_t *out_nlink, uint32_t *out_uid, uint32_t *out_gid, uint64_t *out_size, uint64_t *out_blocks, uint64_t *out_id, int64_t *out_atime_ns, int64_t *out_mtime_ns, int64_t *out_ctime_ns)
+{
+    (void)ctx;
+    (void)out_mode;
+    (void)out_nlink;
+    (void)out_uid;
+    (void)out_gid;
+    (void)out_size;
+    (void)out_blocks;
+    (void)out_id;
+    (void)out_atime_ns;
+    (void)out_mtime_ns;
+    (void)out_ctime_ns;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    *out_mode = (uint32_t)0x5a5a5a5a5a5a5a5aull;
+    *out_nlink = (uint32_t)0x5a5a5a5a5a5a5a5aull;
+    *out_uid = (uint32_t)0x5a5a5a5a5a5a5a5aull;
+    *out_gid = (uint32_t)0x5a5a5a5a5a5a5a5aull;
+    *out_size = (uint64_t)0x5a5a5a5a5a5a5a5aull;
+    *out_blocks = (uint64_t)0x5a5a5a5a5a5a5a5aull;
+    *out_id = (uint64_t)0x5a5a5a5a5a5a5a5aull;
+    *out_atime_ns = (int64_t)0x5a5a5a5a5a5a5a5aull;
+    *out_mtime_ns = (int64_t)0x5a5a5a5a5a5a5a5aull;
+    *out_ctime_ns = (int64_t)0x5a5a5a5a5a5a5a5aull;
+    return OK;
+}
+static status_t idl_fz_file_setattr(void *ctx, uint32_t mask, uint32_t mode, uint32_t uid, uint32_t gid, int64_t atime_ns, int64_t mtime_ns)
+{
+    (void)ctx;
+    (void)mask;
+    (void)mode;
+    (void)uid;
+    (void)gid;
+    (void)atime_ns;
+    (void)mtime_ns;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    return OK;
+}
 static const struct file_ops idl_fz_file_ops = {
     .read = idl_fz_file_read,
     .write = idl_fz_file_write,
@@ -1351,6 +1391,8 @@ static const struct file_ops idl_fz_file_ops = {
     .stat = idl_fz_file_stat,
     .sync = idl_fz_file_sync,
     .map = idl_fz_file_map,
+    .getattr = idl_fz_file_getattr,
+    .setattr = idl_fz_file_setattr,
 };
 static uint32_t idl_fz_file_serve(const void *q, uint32_t n, const handle_t *hs,
                                 uint32_t nh, void *r, handle_t *rhs, uint32_t *rhn)
@@ -1365,15 +1407,18 @@ static const struct idl_fuzz_msg idl_fz_file_msgs[] = {
     { 0x00110004u, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x00110005u, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x00110006u, 12u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x00110007u, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x00110008u, 40u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
 };
 
 /* ---- fs ---- */
-static status_t idl_fz_fs_open(void *ctx, const char *path, uint32_t path_len, uint32_t flags, handle_t *out_file, handle_t *out_buffer, uint64_t *out_size)
+static status_t idl_fz_fs_open(void *ctx, const char *path, uint32_t path_len, uint32_t flags, uint32_t mode, handle_t *out_file, handle_t *out_buffer, uint64_t *out_size)
 {
     (void)ctx;
     (void)path;
     (void)path_len;
     (void)flags;
+    (void)mode;
     (void)out_file;
     (void)out_buffer;
     (void)out_size;
@@ -1421,11 +1466,12 @@ static status_t idl_fz_fs_readdir(void *ctx, const char *path, uint32_t path_len
     *out_entries_len = 8192;
     return OK;
 }
-static status_t idl_fz_fs_mkdir(void *ctx, const char *path, uint32_t path_len)
+static status_t idl_fz_fs_mkdir(void *ctx, const char *path, uint32_t path_len, uint32_t mode)
 {
     (void)ctx;
     (void)path;
     (void)path_len;
+    (void)mode;
     if (!idl_fuzz_full)
         return ERR_IO;
     return OK;
@@ -1459,24 +1505,142 @@ static status_t idl_fz_fs_sync(void *ctx)
         return ERR_IO;
     return OK;
 }
-static status_t idl_fz_fs_statfs(void *ctx, uint64_t *out_total, uint64_t *out_free, uint8_t *out_read_only, uint8_t out_label[16])
+static status_t idl_fz_fs_statfs(void *ctx, uint64_t *out_total, uint64_t *out_free, uint8_t *out_read_only, uint8_t out_label[16], uint32_t *out_magic, uint32_t *out_name_max, uint32_t *out_features)
 {
     (void)ctx;
     (void)out_total;
     (void)out_free;
     (void)out_read_only;
     (void)out_label;
+    (void)out_magic;
+    (void)out_name_max;
+    (void)out_features;
     if (!idl_fuzz_full)
         return ERR_IO;
     *out_total = (uint64_t)0x5a5a5a5a5a5a5a5aull;
     *out_free = (uint64_t)0x5a5a5a5a5a5a5a5aull;
     *out_read_only = (uint8_t)0x5a5a5a5a5a5a5a5aull;
     __builtin_memset(out_label, 0x5a, 16);
+    *out_magic = (uint32_t)0x5a5a5a5a5a5a5a5aull;
+    *out_name_max = (uint32_t)0x5a5a5a5a5a5a5a5aull;
+    *out_features = (uint32_t)0x5a5a5a5a5a5a5a5aull;
     return OK;
 }
 static status_t idl_fz_fs_view(void *ctx, uint32_t flags, handle_t *out_fs)
 {
     (void)ctx;
+    (void)flags;
+    (void)out_fs;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    if (drv_event_create(out_fs) != OK)
+        return ERR_NO_MEMORY;
+    return OK;
+}
+static status_t idl_fz_fs_getattr(void *ctx, const char *path, uint32_t path_len, uint32_t flags, uint32_t *out_mode, uint32_t *out_nlink, uint32_t *out_uid, uint32_t *out_gid, uint64_t *out_size, uint64_t *out_blocks, uint64_t *out_id, int64_t *out_atime_ns, int64_t *out_mtime_ns, int64_t *out_ctime_ns)
+{
+    (void)ctx;
+    (void)path;
+    (void)path_len;
+    (void)flags;
+    (void)out_mode;
+    (void)out_nlink;
+    (void)out_uid;
+    (void)out_gid;
+    (void)out_size;
+    (void)out_blocks;
+    (void)out_id;
+    (void)out_atime_ns;
+    (void)out_mtime_ns;
+    (void)out_ctime_ns;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    *out_mode = (uint32_t)0x5a5a5a5a5a5a5a5aull;
+    *out_nlink = (uint32_t)0x5a5a5a5a5a5a5a5aull;
+    *out_uid = (uint32_t)0x5a5a5a5a5a5a5a5aull;
+    *out_gid = (uint32_t)0x5a5a5a5a5a5a5a5aull;
+    *out_size = (uint64_t)0x5a5a5a5a5a5a5a5aull;
+    *out_blocks = (uint64_t)0x5a5a5a5a5a5a5a5aull;
+    *out_id = (uint64_t)0x5a5a5a5a5a5a5a5aull;
+    *out_atime_ns = (int64_t)0x5a5a5a5a5a5a5a5aull;
+    *out_mtime_ns = (int64_t)0x5a5a5a5a5a5a5a5aull;
+    *out_ctime_ns = (int64_t)0x5a5a5a5a5a5a5a5aull;
+    return OK;
+}
+static status_t idl_fz_fs_setattr(void *ctx, const char *path, uint32_t path_len, uint32_t flags, uint32_t mask, uint32_t mode, uint32_t uid, uint32_t gid, int64_t atime_ns, int64_t mtime_ns)
+{
+    (void)ctx;
+    (void)path;
+    (void)path_len;
+    (void)flags;
+    (void)mask;
+    (void)mode;
+    (void)uid;
+    (void)gid;
+    (void)atime_ns;
+    (void)mtime_ns;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    return OK;
+}
+static status_t idl_fz_fs_symlink(void *ctx, const char *target, uint32_t target_len, const char *path, uint32_t path_len)
+{
+    (void)ctx;
+    (void)target;
+    (void)target_len;
+    (void)path;
+    (void)path_len;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    return OK;
+}
+static status_t idl_fz_fs_readlink(void *ctx, const char *path, uint32_t path_len, char *out_target, uint32_t *out_target_len)
+{
+    (void)ctx;
+    (void)path;
+    (void)path_len;
+    (void)out_target;
+    (void)out_target_len;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    __builtin_memset(out_target, 'a', 4095u * sizeof(*out_target));
+    *out_target_len = 4095;
+    return OK;
+}
+static status_t idl_fz_fs_link(void *ctx, const char *from, uint32_t from_len, const char *to, uint32_t to_len)
+{
+    (void)ctx;
+    (void)from;
+    (void)from_len;
+    (void)to;
+    (void)to_len;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    return OK;
+}
+static status_t idl_fz_fs_resolve(void *ctx, const char *path, uint32_t path_len, uint32_t flags, uint8_t *out_kind, uint16_t *out_used, char *out_next, uint32_t *out_next_len)
+{
+    (void)ctx;
+    (void)path;
+    (void)path_len;
+    (void)flags;
+    (void)out_kind;
+    (void)out_used;
+    (void)out_next;
+    (void)out_next_len;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    *out_kind = (uint8_t)0x5a5a5a5a5a5a5a5aull;
+    *out_used = (uint16_t)0x5a5a5a5a5a5a5a5aull;
+    __builtin_memset(out_next, 'a', 4095u * sizeof(*out_next));
+    *out_next_len = 4095;
+    return OK;
+}
+static status_t idl_fz_fs_subview(void *ctx, const char *path, uint32_t path_len, uint32_t flags, handle_t *out_fs)
+{
+    (void)ctx;
+    (void)path;
+    (void)path_len;
     (void)flags;
     (void)out_fs;
     if (!idl_fuzz_full)
@@ -1495,6 +1659,13 @@ static const struct fs_ops idl_fz_fs_ops = {
     .sync = idl_fz_fs_sync,
     .statfs = idl_fz_fs_statfs,
     .view = idl_fz_fs_view,
+    .getattr = idl_fz_fs_getattr,
+    .setattr = idl_fz_fs_setattr,
+    .symlink = idl_fz_fs_symlink,
+    .readlink = idl_fz_fs_readlink,
+    .link = idl_fz_fs_link,
+    .resolve = idl_fz_fs_resolve,
+    .subview = idl_fz_fs_subview,
 };
 static uint32_t idl_fz_fs_serve(const void *q, uint32_t n, const handle_t *hs,
                                 uint32_t nh, void *r, handle_t *rhs, uint32_t *rhn)
@@ -1503,15 +1674,22 @@ static uint32_t idl_fz_fs_serve(const void *q, uint32_t n, const handle_t *hs,
     return fs_dispatch_on(HANDLE_INVALID, &idl_fz_fs_ops, NULL, q, n, r, rhs, rhn);
 }
 static const struct idl_fuzz_msg idl_fz_fs_msgs[] = {
-    { 0x00100001u, 12u, 0, 0, 0, 0, { 0 }, 1, { { 1, 1, 4095 } } },
+    { 0x00100001u, 16u, 0, 0, 0, 0, { 0 }, 1, { { 1, 1, 4095 } } },
     { 0x00100002u, 8u, 0, 0, 0, 0, { 0 }, 1, { { 1, 1, 4095 } } },
     { 0x00100003u, 12u, 0, 0, 0, 0, { 0 }, 1, { { 1, 1, 4095 } } },
-    { 0x00100004u, 8u, 0, 0, 0, 0, { 0 }, 1, { { 1, 1, 4095 } } },
+    { 0x00100004u, 12u, 0, 0, 0, 0, { 0 }, 1, { { 1, 1, 4095 } } },
     { 0x00100005u, 12u, 0, 0, 0, 0, { 0 }, 1, { { 1, 1, 4095 } } },
     { 0x00100006u, 12u, 0, 0, 0, 0, { 0 }, 2, { { 1, 1, 4095 }, { 1, 1, 4095 } } },
     { 0x00100007u, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x00100008u, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x00100009u, 12u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x0010000au, 12u, 0, 0, 0, 0, { 0 }, 1, { { 1, 1, 4095 } } },
+    { 0x0010000bu, 44u, 0, 0, 0, 0, { 0 }, 1, { { 1, 1, 4095 } } },
+    { 0x0010000cu, 8u, 0, 0, 0, 0, { 0 }, 2, { { 1, 1, 4095 }, { 1, 1, 4095 } } },
+    { 0x0010000du, 8u, 0, 0, 0, 0, { 0 }, 1, { { 1, 1, 4095 } } },
+    { 0x0010000eu, 8u, 0, 0, 0, 0, { 0 }, 2, { { 1, 1, 4095 }, { 1, 1, 4095 } } },
+    { 0x0010000fu, 12u, 0, 0, 0, 0, { 0 }, 1, { { 1, 1, 4095 } } },
+    { 0x00100010u, 12u, 0, 0, 0, 0, { 0 }, 1, { { 1, 1, 4095 } } },
 };
 
 /* ---- fsctl ---- */
@@ -4917,8 +5095,8 @@ static const struct idl_fuzz_proto idl_fuzz_protos[] __attribute__((unused)) = {
     { "edu", 2, EDU_REQ_MAX, EDU_REP_MAX, EDU_REP_HANDLES, idl_fz_edu_serve, NULL, idl_fz_edu_msgs, 4 },
     { "exec", 47, EXEC_REQ_MAX, EXEC_REP_MAX, EXEC_REP_HANDLES, idl_fz_exec_serve, NULL, idl_fz_exec_msgs, 1 },
     { "exec_prog", 48, EXEC_PROG_REQ_MAX, EXEC_PROG_REP_MAX, EXEC_PROG_REP_HANDLES, idl_fz_exec_prog_serve, NULL, idl_fz_exec_prog_msgs, 1 },
-    { "file", 17, FILE_REQ_MAX, FILE_REP_MAX, FILE_REP_HANDLES, idl_fz_file_serve, NULL, idl_fz_file_msgs, 6 },
-    { "fs", 16, FS_REQ_MAX, FS_REP_MAX, FS_REP_HANDLES, idl_fz_fs_serve, NULL, idl_fz_fs_msgs, 9 },
+    { "file", 17, FILE_REQ_MAX, FILE_REP_MAX, FILE_REP_HANDLES, idl_fz_file_serve, NULL, idl_fz_file_msgs, 8 },
+    { "fs", 16, FS_REQ_MAX, FS_REP_MAX, FS_REP_HANDLES, idl_fz_fs_serve, NULL, idl_fz_fs_msgs, 16 },
     { "fsctl", 20, FSCTL_REQ_MAX, FSCTL_REP_MAX, FSCTL_REP_HANDLES, idl_fz_fsctl_serve, NULL, idl_fz_fsctl_msgs, 2 },
     { "hda", 21, HDA_REQ_MAX, HDA_REP_MAX, HDA_REP_HANDLES, idl_fz_hda_serve, NULL, idl_fz_hda_msgs, 9 },
     { "hda_stream", 51, HDA_STREAM_REQ_MAX, HDA_STREAM_REP_MAX, HDA_STREAM_REP_HANDLES, idl_fz_hda_stream_serve, NULL, idl_fz_hda_stream_msgs, 4 },

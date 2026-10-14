@@ -1,7 +1,7 @@
 # fs: one mounted filesystem, as a filesystem service serves it (fat for
-# /data and /esp, the bootfs server for /boot). libos's namespace sends a
-# path here with the mount point stripped: "/logs/boot-0001.txt" for
-# /data/logs/boot-0001.txt. Paths are '/'-separated UTF-8 of at most 4095
+# /data and /esp, the bootfs server for /boot, extfs for a Unix volume).
+# libos's namespace sends a path here with the mount point stripped:
+# "/logs/boot-0001.txt" for /data/logs/boot-0001.txt. Paths are '/'-separated UTF-8 of at most 4095
 # bytes (str: the generated server refuses a longer one, or one that isn't
 # UTF-8 or holds a NUL, with ERR_INVALID_ARGS); "." and ".." are resolved
 # by the server and never leave the mount. Errors are ERR_* (the server
@@ -11,7 +11,13 @@
 # past what the filesystem holds: fat, 255 UTF-16 units), ERR_BUSY (an open
 # file in the way), ERR_NO_SPACE (full), ERR_ACCESS_DENIED (read-only),
 # ERR_INVALID_ARGS (a name the filesystem can't hold, a bad flag),
-# ERR_NO_RESOURCES (too many open files or views), ERR_IO.
+# ERR_NO_RESOURCES (too many open files or views), ERR_IO,
+# ERR_NOT_SUPPORTED (the filesystem has no such thing: fat and the boot
+# image have no links, no directory-rooted views and no exchange; each
+# method says), ERR_LINK_OUT (a filesystem with symbolic links: the path
+# leads through a link the service does not follow, or above the view's
+# root; the method changed nothing, and `resolve` says where the path
+# goes on).
 # Format: see tools/genidl.py.
 #
 # Restart: fat's restart is not seen (ARCHITECTURE.md, "Services that
@@ -32,8 +38,11 @@ protocol fs 16 kept
 # fs.unlink's flags: remove a directory (empty), not a file (unlinkat's
 # AT_REMOVEDIR).
 const UNLINK_DIR      1
-# fs.rename's flags: replace what is at `to` (POSIX rename).
+# fs.rename's flags: replace what is at `to` (POSIX rename); or swap the
+# two names (Linux's RENAME_EXCHANGE: both must be there, neither is
+# removed, and it is not combined with RENAME_REPLACE).
 const RENAME_REPLACE  1
+const RENAME_EXCHANGE 2
 # The longest path (bytes, without a NUL) and name in a readdir record.
 const PATH_LEN        4095
 const NAME_LEN        765
@@ -41,13 +50,56 @@ const NAME_LEN        765
 # `entries`' size below).
 const DIRENT_FIXED    28
 const READDIR_BYTES   8192
+# The one user (M13's Q7): every file Jam OS makes belongs to uid and gid
+# 1000, and a chown to anyone else is refused.
+const ONE_USER        1000
+# An entry's kind as readdir's `type` byte (Linux's DT_*; 0: not said, so a
+# server that does not know still reads right).
+const DT_UNKNOWN      0
+const DT_DIR          4
+const DT_REG          8
+const DT_LNK          10
+# A mode as getattr gives it, POSIX's st_mode: the kind in the bits of
+# MODE_FMT (MODE_DIR, MODE_REG, MODE_LNK), below them setuid, setgid,
+# sticky and the permission bits (07777).
+const MODE_FMT        0xf000
+const MODE_DIR        0x4000
+const MODE_REG        0x8000
+const MODE_LNK        0xa000
+# setattr's `mask`: which of the fields count (the others are ignored,
+# whatever they hold); ATTR_MASK is all of them.
+const ATTR_MODE       1
+const ATTR_UID        2
+const ATTR_GID        4
+const ATTR_ATIME      8
+const ATTR_MTIME      16
+const ATTR_MASK       31
+# statfs's `features`: what the filesystem does, for libc's choice between
+# FAT's rules (made-up modes, no links, names that ignore case) and Unix's.
+const FEAT_LINKS      1
+const FEAT_MODES      2
+const FEAT_CASE       4
+const FEAT_BIG        8
+const FEAT_MULTI_WRITER 16
+const FEAT_MASK       31
+# resolve's `kind`.
+const RESOLVE_INSIDE   0
+const RESOLVE_ABSOLUTE 1
+const RESOLVE_ABOVE    2
 
 # Open a file (not a directory: ERR_IS_DIR). flags: FS_READ 1, FS_WRITE 2,
 # FS_CREATE 4, FS_TRUNCATE 8, FS_APPEND 16, FS_GATHER 32, FS_EXCL 64 (with
-# FS_CREATE: ERR_ALREADY_EXISTS if it is there) (<os.h>). `file` speaks the
-# file protocol; `buffer` is the VMO its reads and writes go through;
-# `size` is the file's size now. Closing `file` closes the file.
-1  open  (str[<=4095] path, u32 flags) -> (handle file, handle buffer, u64 size)
+# FS_CREATE: ERR_ALREADY_EXISTS if it is there, a dangling symbolic link
+# too), FS_NOFOLLOW 128 (a symbolic link as the last name is not followed:
+# opening it is an error, ERR_INVALID_ARGS; fat and the boot image have no
+# links, so it changes nothing there), FS_DIRECTORY 256 (the path must be a
+# directory, ERR_NOT_DIR if it is not; a directory can't be opened yet, so
+# it is ERR_IS_DIR) (<os.h>). `mode` is the permission bits (07777) of a
+# file FS_CREATE makes, the caller's umask applied already; services that
+# keep no modes (fat, the boot image) ignore it. `file` speaks the file
+# protocol; `buffer` is the VMO its reads and writes go through; `size` is
+# the file's size now. Closing `file` closes the file.
+1  open  (str[<=4095] path, u32 flags, u32 mode) -> (handle file, handle buffer, u64 size)
 # A file or directory: its size (0 for a directory), 1 if a directory,
 # the modification time (Unix seconds, 0 if unknown), and its id: the same
 # for every path that reaches it while it stays where it is (fat: the
@@ -57,14 +109,18 @@ const READDIR_BYTES   8192
 # Entries of directory `path` from `cookie` (0: the first), "." and ".."
 # left out, as many as fit in `entries`: `count` records, each DIRENT_FIXED
 # bytes of u64 id, u64 size (0 for a directory), u64 mtime, u16 name_len,
-# u8 is_dir, u8 0 (little-endian, packed), then the name (UTF-8, no NUL,
+# u8 is_dir, u8 type (little-endian, packed), then the name (UTF-8, no NUL,
 # 1 to NAME_LEN bytes), the next record right after (<fs_idl.h> reads and
-# writes them). `next` is the cookie to go on with; 0: that was the last. A
-# cookie is the server's own (fat's and bootfs's: the index of the next
-# entry); entries may shift if the directory changes between calls.
+# writes them). `type` is DT_*: DT_DIR exactly when is_dir is 1, a symbolic
+# link DT_LNK (is_dir 0: the entry itself, not what it leads to), 0 when
+# the server does not say. `next` is the cookie to go on with; 0: that was
+# the last. A cookie is the server's own (fat's and bootfs's: the index of
+# the next entry; entries may shift if the directory changes between
+# calls).
 3  readdir  (str[<=4095] path, u32 cookie) -> (u32 next, u16 count, u8[<=8192] entries)
-# A new directory (ERR_ALREADY_EXISTS: something is there).
-4  mkdir  (str[<=4095] path) -> ()
+# A new directory (ERR_ALREADY_EXISTS: something is there, a dangling
+# symbolic link too). `mode` as open's.
+4  mkdir  (str[<=4095] path, u32 mode) -> ()
 # Remove a file, or with FS_UNLINK_DIR an empty directory: ERR_IS_DIR,
 # ERR_NOT_DIR for the other kind; ERR_NOT_EMPTY: a directory with entries;
 # ERR_BUSY: an open file. The root: ERR_ACCESS_DENIED.
@@ -74,12 +130,21 @@ const READDIR_BYTES   8192
 # `to` (but `from` itself under another name or case): ERR_ALREADY_EXISTS,
 # or with FS_RENAME_REPLACE it goes (a file for a file, an empty directory
 # for a directory: ERR_IS_DIR, ERR_NOT_DIR, ERR_NOT_EMPTY, ERR_BUSY).
+# FS_RENAME_EXCHANGE: ERR_NOT_SUPPORTED on fat and the boot image.
 6  rename  (str[<=4095] from, str[<=4095] to, u32 flags) -> ()
 # Everything written through this filesystem is on the medium.
 7  sync  () -> ()
 # Bytes in the filesystem and bytes free, 1 if read-only, and the volume
-# label (NUL-terminated).
-8  statfs  () -> (u64 total, u64 free, u8 read_only, u8[16] label)
+# label (NUL-terminated); then what kind of filesystem it is: `magic`
+# (Linux's f_type: fat 0x4d44, the boot image 0x858458f6, ext 0xef53), the
+# longest name it holds in bytes (255) and its `features` (FS_FEAT_*):
+# FEAT_LINKS symbolic and hard links work (so `getattr`, `readlink`,
+# `link`, `resolve` and the rest of the methods below are real, and libc
+# sends paths uncleaned), FEAT_MODES modes, owners and times are stored,
+# FEAT_CASE names are case-sensitive, FEAT_BIG a file may pass 4 GiB,
+# FEAT_MULTI_WRITER a file may be open for writing more than once. fat
+# and the boot image have none of them.
+8  statfs  () -> (u64 total, u64 free, u8 read_only, u8[16] label, u32 magic, u32 name_max, u32 features)
 # A narrower channel onto this filesystem (a "view"), for a program that
 # should have less of it than the caller: flags FS_VIEW_READ_ONLY 1 (every
 # request that would change the volume is ERR_ACCESS_DENIED, and statfs
@@ -91,3 +156,63 @@ const READDIR_BYTES   8192
 # than the channel it came from. ERR_INVALID_ARGS: an unknown flag;
 # ERR_NO_RESOURCES: the service serves as many channels as it can.
 9  view  (u32 flags) -> (handle fs)
+# The attributes of `path`, as POSIX's stat has them: `mode` (st_mode, the
+# kind and the permission bits: FS_MODE_*), `nlink`, `uid` and `gid`,
+# `size` (bytes; a directory's 0 on fat and the boot image), `blocks`
+# (512-byte units, st_blocks), `id` (stat's) and the access, modification
+# and change times in nanoseconds since 1970 (fat and the boot image: the
+# modification time of stat for all three, 0 if unknown). flags: FS_NOFOLLOW
+# 128 (a symbolic link as the last name is described itself, lstat's way;
+# else it is followed). fat and the boot image make it up, as libc did before
+# the services answered: a directory 0755, a file 0644 (a file under the
+# boot image's bin or sbin 0755), the write bits taken off on a read-only
+# mount, one link, owner and group FS_ONE_USER, blocks from the size.
+10 getattr  (str[<=4095] path, u32 flags) -> (u32 mode, u32 nlink, u32 uid, u32 gid, u64 size, u64 blocks, u64 id, i64 atime_ns, i64 mtime_ns, i64 ctime_ns)
+# Set some of `path`'s attributes: `mask` (FS_ATTR_*) says which of mode
+# (the permission bits, 07777; the kind bits are ignored), uid, gid,
+# atime_ns and mtime_ns count. Times are absolute (libc turns "now" into the
+# time before it asks). flags: FS_NOFOLLOW as getattr's. ERR_ACCESS_DENIED:
+# a read-only mount, or a uid or gid other than FS_ONE_USER (there is no
+# other user, and no root); ERR_INVALID_ARGS: a bit of `mask` that is not
+# FS_ATTR_*. fat keeps nothing and changes nothing: OK for a path that is
+# there; the boot image is read-only: ERR_ACCESS_DENIED.
+11 setattr  (str[<=4095] path, u32 flags, u32 mask, u32 mode, u32 uid, u32 gid, i64 atime_ns, i64 mtime_ns) -> ()
+# A symbolic link at `path` leading to `target` (1 to 4095 bytes, not looked
+# at and need not exist). ERR_ALREADY_EXISTS: something is at `path`. fat
+# and the boot image: ERR_NOT_SUPPORTED.
+12 symlink  (str[<=4095] target, str[<=4095] path) -> ()
+# The target of the symbolic link at `path`; ERR_INVALID_ARGS: it is not a
+# link. fat and the boot image: ERR_NOT_SUPPORTED.
+13 readlink  (str[<=4095] path) -> (str[<=4095] target)
+# A hard link: `to` becomes another name for the file at `from` (a
+# directory: ERR_IS_DIR; ERR_ALREADY_EXISTS: something is at `to`). fat and
+# the boot image: ERR_NOT_SUPPORTED.
+14 link  (str[<=4095] from, str[<=4095] to) -> ()
+# After ERR_LINK_OUT: where `path` goes on. The service walks the path as
+# far as it can and answers `kind`, `used` (how many bytes of `path` it took,
+# up to the end of the link's name or of the ".." that climbed above the
+# view's root) and `next`, the path to go on with (what the link leads to,
+# or what was left, joined with the rest of `path`):
+#   FS_RESOLVE_ABSOLUTE  a link whose target is absolute: `next` is the
+#       target and the rest, to be walked from the caller's "/" (a service
+#       does not know the caller's namespace, and never follows such a
+#       link);
+#   FS_RESOLVE_ABOVE  the path climbed above the view's root: `next` is
+#       what is left after that "..", with the links before it followed, to
+#       be walked from the directory the mount point is in, in the caller's
+#       namespace;
+#   FS_RESOLVE_INSIDE  nothing leads out: `used` is all of `path`, and
+#       `next` is its physical form, every link followed and ".." resolved,
+#       relative to the view's root (empty for the root itself). A caller
+#       that asks for a path's place (a current directory) gets this.
+# flags: FS_NOFOLLOW 128 as getattr's: a link as the last name is then not
+# followed. A path of 4095 bytes or more once joined: ERR_NAME_TOO_LONG.
+# fat and the boot image have no links to lead out and are not asked:
+# ERR_NOT_SUPPORTED.
+15 resolve  (str[<=4095] path, u32 flags) -> (u8 kind, u16 used, str[<=4095] next)
+# A view rooted at the directory `path`: a new channel on which that
+# directory is the root, so ".." stops there and nothing above it can be
+# named (a mount of /jam/usr as /usr). flags are view's, and the new
+# channel keeps this channel's own flags too. ERR_NOT_DIR: not a
+# directory. fat and the boot image: ERR_NOT_SUPPORTED.
+16 subview  (str[<=4095] path, u32 flags) -> (handle fs)

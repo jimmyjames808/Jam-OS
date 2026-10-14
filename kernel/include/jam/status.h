@@ -34,5 +34,7 @@ typedef int status_t;
 /* An interruptible wait (object_wait_one, port_wait, futex_wait,
  * sleep_until) ended by thread_interrupt (POSIX's EINTR). */
 #define ERR_INTERRUPTED    -26
+/* A path leads out of a filesystem service's view (fs.resolve says where). */
+#define ERR_LINK_OUT       -27
 
 const char *status_str(status_t s);
