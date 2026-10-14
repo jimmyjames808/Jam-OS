@@ -1,0 +1,63 @@
+# Programs as big as Chromium's on /data (tools/bigprog-test.sh, boot 1 of
+# 2; docs/CR-PLAN.md section 6, CP1). The script put /data/big on the
+# stick: bin/bigprog with a table of 76,800 pages (300 MiB). The boot
+# image's copy (16 pages) checks itself first. /data/big is refused until
+# allowed (read whole to say why: its progress line); `allow` reads and
+# hashes it with the same line, asks, and writes its line and its page
+# table (one file in /data/etc/allow.d named by its hash: the script
+# checks the name); then it runs from its pages: `lazy` touches none of
+# its table (fat's "gone" line between the marks lazy0 and lazy1 counts
+# what it fetched), `check` reads every 64th page of the table and its
+# last, every word right.
+# QEMU_INPUT=this file, command line "shell", QEMU_IMAGE the stick,
+# QEMU_SAVE it again for boot 2. The text waited for is built from $T, so
+# it never appears in the typed line.
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send T=b
+wait {prompt}
+send run bigprog check 1; echo st-$T=$?
+wait bigprog: checked 16 of 16 pages
+wait st-b=0
+wait {prompt}
+
+# ---- not allowed: refused (the whole read says why) ----------------------------------------------
+send run /data/big lazy; echo st-$T=$?
+wait 30 checking /data/big (300 MiB):
+wait 300 100%
+wait 30 run: /data/big is not allowed to run: `allow /data/big` first
+wait st-b=126
+wait {prompt}
+
+# ---- allowed: the progress line, the question, the line and its table ---------------------------
+send allow /data/big; echo st-$T=$?
+wait 30 checking /data/big (300 MiB):
+wait 300 100%
+wait 60 allow big: nothing but its terminal? y/n
+type y
+wait 120 allow: /data/big may run
+wait st-b=0
+wait {prompt}
+send ls /data/etc/allow.d; echo ls-$T=$?
+wait ls-b=0
+wait {prompt}
+
+# ---- from its pages: lazy fetches a few, check reads 1,201 pages of the table -------------------
+send echo mark-$T-lazy0
+wait mark-b-lazy0
+wait {prompt}
+send run /data/big lazy; echo st-$T=$?
+wait 60 bigprog: lazy: a table of 76800 pages, none touched
+wait st-b=0
+wait {prompt}
+send sleep 2; echo mark-$T-lazy1
+wait mark-b-lazy1
+wait {prompt}
+send run /data/big check; echo st-$T=$?
+wait 300 bigprog: checked 1201 of 76800 pages
+wait st-b=0
+wait {prompt}
+send reboot -f
+wait init: /data synced
+wait reboot: resetting

@@ -40,7 +40,7 @@
 #define STACK_TOP   0x00007ff000000000ull
 #define MAX_SEGS    8
 #define MSG_MAX     2048
-#define FILE_MAX    (64ull << 20)   /* the biggest program read from a file */
+#define FILE_MAX    (1ull << 30)    /* the biggest program read from a file: VMO_VERIFIED_MAX */
 /* What the child's SR_NS end can do: take the messages we write. */
 #define NS_RIGHTS   (RIGHT_READ | RIGHT_WAIT)
 

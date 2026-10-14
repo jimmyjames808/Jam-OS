@@ -18,9 +18,15 @@
  * Files with the same bytes share one table.
  *
  * The whole read (sh_program_file): the file is read into a VMO only we
- * hold, made executable (vmo_make_exec, which needs RIGHT_ROOT_VMEX: this
- * shell's root, no program's) and from then on can't change; its hash, its
- * list and its page table are read from those very bytes. `allow` uses it,
+ * hold and hashed as it is read, then made executable (vmo_make_exec,
+ * which needs RIGHT_ROOT_VMEX: this shell's root, no program's) and from
+ * then on can't change; its hash, its list and its page table are of
+ * those very bytes. A program can be as big as Chromium's (DP_PROGRAM_MAX,
+ * 1 GiB; docs/CR-PLAN.md section 6): one of PROGRESS_MIN or more shows a
+ * line while it is read, and Ctrl+C stops it. What it costs: the whole
+ * file in memory while it is checked (until `allow`'s answer), charged to
+ * the shell's job, and a table of 32 bytes a page (8 MiB at 1 GiB) in a
+ * VMO of its own while it is written. `allow` uses it,
  * and so does running a program whose mount has no pages to give, or whose
  * approval has no table yet, or which is refused (the refusal is explained
  * from those bytes): it runs only if a line holds exactly that path and
@@ -36,8 +42,10 @@
 #define TABLE_DIR  DP_TABLE_DIR
 #define ALLOW_HEAD "# Programs on /data the owner allowed to run (the shell's `allow`):\n" \
                    "# <sha-256>\\t<path>\\t<what it asked for>\n"
-#define PROGRAM_MAX DP_PROGRAM_MAX
-#define HEX_LEN     DP_HEX_LEN
+#define PROGRAM_MAX  DP_PROGRAM_MAX
+#define HEX_LEN      DP_HEX_LEN
+#define READ_CHUNK   (1u << 20)      /* bytes read and hashed at a time */
+#define PROGRESS_MIN (32ull << 20)   /* a file this big shows a line while it is read */
 
 bool sh_on_data(const char *abs)
 {
@@ -220,17 +228,23 @@ status_t sh_allow_table_write(const char *hash_hex, handle_t vmo, uint64_t size)
     status_t st = jam_handle_info(vmo, &hi);
     if (st == OK && (hi.type != OBJ_VMO || hi.related_koid))
         st = ERR_NOT_SUPPORTED;
-    uint64_t pages = dp_ptable_pages(size), len = pages * PAGE_SIZE, addr = 0;
+    handle_t self = startup_handle(SR_SELF_VMAR), tv = HANDLE_INVALID;
+    uint64_t pages = dp_ptable_pages(size), len = pages * PAGE_SIZE, addr = 0, at = 0;
     size_t bytes = sizeof(struct dp_ptable_head) + pages * SHA256_BYTES;
-    uint8_t *buf = st == OK ? malloc(bytes) : NULL;
-    if (st == OK && !buf)
-        st = ERR_NO_MEMORY;
+    uint64_t tlen = (bytes + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
+    /* The table in a VMO of its own (8 MiB for the biggest program), not
+     * the heap, whose pages would stay the shell's for good. */
     if (st == OK)
-        st = jam_vmar_map(startup_handle(SR_SELF_VMAR), vmo, 0, len, VMAR_READ, &addr);
+        st = jam_vmo_create(tlen, 0, &tv);
+    if (st == OK)
+        st = jam_vmar_map(self, tv, 0, tlen, VMAR_READ | VMAR_WRITE, &at);
+    uint8_t *buf = (uint8_t *)(uintptr_t)at;
+    if (st == OK)
+        st = jam_vmar_map(self, vmo, 0, len, VMAR_READ, &addr);
     if (st == OK) {
         dp_ptable_hash((const uint8_t *)(uintptr_t)addr, size,
                        buf + sizeof(struct dp_ptable_head));
-        jam_vmar_unmap(startup_handle(SR_SELF_VMAR), addr, len);
+        jam_vmar_unmap(self, addr, len);
         dp_ptable_head(size, sha, (struct dp_ptable_head *)buf);
     }
     char path[SH_PATH_MAX];
@@ -243,7 +257,10 @@ status_t sh_allow_table_write(const char *hash_hex, handle_t vmo, uint64_t size)
         st = sh_write(path, buf, bytes, FS_TRUNCATE);
     if (st == OK)
         st = fs_sync(path);
-    free(buf);
+    if (at)
+        jam_vmar_unmap(self, at, tlen);
+    if (tv)
+        jam_handle_close(tv);
     return st;
 }
 
@@ -271,14 +288,88 @@ static status_t mem_read(void *ctx, uint64_t off, void *dst, uint64_t len)
     return OK;
 }
 
+/* The tenths of a file of total bytes that off has reached, said on the
+ * progress line from *shown on. */
+static void progress(uint64_t off, uint64_t total, unsigned *shown)
+{
+    bool said = false;
+    for (; *shown < 10 && off * 10 >= total * (*shown + 1); ++*shown, said = true)
+        sh_tty(" %u%%", (*shown + 1) * 10);
+    if (said)
+        sh_flush();
+}
+
+/* The file at path read whole into a new VMO that only we hold (*raw,
+ * unmapped; *size bytes, rounded up to whole pages), its SHA-256 taken as
+ * it is read: the bytes hashed are the bytes written, and nothing else
+ * can write the VMO. A file of PROGRESS_MIN or more says how far it got on a
+ * line of its own; Ctrl+C stops it (ERR_CANCELED). ERR_OUT_OF_RANGE: past
+ * PROGRAM_MAX; ERR_IO: it shrank as it was read. */
+static status_t read_whole(const char *path, handle_t *raw, uint64_t *size,
+                           uint8_t digest[SHA256_BYTES])
+{
+    struct jfile f;
+    status_t st = file_open(path, FS_READ, &f);
+    if (st != OK)
+        return st;
+    handle_t self = startup_handle(SR_SELF_VMAR), v = HANDLE_INVALID;
+    uint64_t total = 0, len = 0, addr = 0;
+    st = file_stat(&f, &total, NULL);
+    if (st == OK && total > PROGRAM_MAX)
+        st = ERR_OUT_OF_RANGE;
+    if (st == OK) {
+        len = total ? (total + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1) : PAGE_SIZE;
+        st = jam_vmo_create(len, 0, &v);
+    }
+    if (st == OK)
+        st = jam_vmar_map(self, v, 0, len, VMAR_READ | VMAR_WRITE, &addr);
+    uint8_t *bytes = (uint8_t *)(uintptr_t)addr;
+    bool show = st == OK && total >= PROGRESS_MIN;
+    unsigned shown = 0;
+    if (show) {
+        sh_tty("checking %s (%lu MiB):", path, (unsigned long)(total >> 20));
+        sh_flush();
+    }
+    struct sha256 s;
+    sha256_init(&s);
+    for (uint64_t off = 0; st == OK && off < total;) {
+        size_t want = total - off < READ_CHUNK ? (size_t)(total - off) : READ_CHUNK, got = 0;
+        st = file_read(&f, off, bytes + off, want, &got);
+        if (st == OK && got != want)
+            st = ERR_IO;   /* the file shrank under us */
+        if (st == OK)
+            sha256_add(&s, bytes + off, got);
+        off += got;
+        if (st == OK && sh_interrupted())
+            st = ERR_CANCELED;
+        if (show && st == OK)
+            progress(off, total, &shown);
+    }
+    if (show)
+        sh_tty(st == OK ? "\n" : " stopped\n");
+    file_close(&f);
+    if (addr)
+        jam_vmar_unmap(self, addr, len);   /* vmo_make_exec takes it unmapped */
+    if (st != OK) {
+        if (v)
+            jam_handle_close(v);
+        return st;
+    }
+    sha256_done(&s, digest);
+    *raw = v;
+    *size = total;
+    return OK;
+}
+
 status_t sh_program_file(const char *path, handle_t *vmo, uint64_t *size, char *hex,
                          struct wants *w)
 {
     handle_t raw, x;
     uint64_t n, addr = 0;
+    uint8_t digest[SHA256_BYTES];
     if (!sh_root())
         return ERR_ACCESS_DENIED;   /* a shell init didn't start: no root, no VMEX */
-    status_t st = file_read_vmo(path, PROGRAM_MAX, &raw, &n);
+    status_t st = read_whole(path, &raw, &n, digest);
     if (st != OK)
         return st;
     st = jam_vmo_make_exec(raw, sh_root(), &x);   /* raw is ours alone, and unmapped */
@@ -287,14 +378,12 @@ status_t sh_program_file(const char *path, handle_t *vmo, uint64_t *size, char *
             jam_handle_close(raw);   /* refused before it was taken */
         return st;
     }
+    sha256_hex(digest, hex);
     uint64_t len = (n + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
     st = jam_vmar_map(startup_handle(SR_SELF_VMAR), x, 0, len ? len : PAGE_SIZE, VMAR_READ,
                       &addr);
     if (st == OK) {
         struct mem_image m = { (const uint8_t *)(uintptr_t)addr, n };
-        uint8_t digest[SHA256_BYTES];
-        sha256(m.bytes, n, digest);
-        sha256_hex(digest, hex);
         /* Read as a run from the pages reads it: the same rules, the same
          * answer. */
         st = dp_image_wants(mem_read, &m, n, w);

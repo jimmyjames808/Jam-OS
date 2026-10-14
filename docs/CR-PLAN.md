@@ -91,7 +91,7 @@ GPU after G3 and G4.
 |---|---|---|
 | The compiler | `tools/jamos-cc`: x86_64-elf-gcc 15.2, C only, static, no `__linux__` defined; no C++ runtime for the target, no clang, no Rust | `tools/jamos-cc` |
 | Programs | static ELF, `ET_EXEC` only, linked at 0x400000 by `user/posix/posix.ld`, at most 8 loadable segments; W^X everywhere | `kernel/include/jam/elf.h`, `user/lib/spawn.c` |
-| Program size | **64 MiB at most**: the shell's `PROGRAM_MAX` (a `/data` program read whole), libos's `FILE_MAX`, and `VMO_VERIFIED_MAX` for M12.5's paged programs | `user/services/shell/sh_allow.c`, `user/lib/spawn.c`, `kernel/include/jam/abi.h` |
+| Program size | **64 MiB at most**: the shell's `PROGRAM_MAX` (a `/data` program read whole), libos's `FILE_MAX`, and `VMO_VERIFIED_MAX` for M12.5's paged programs (**1 GiB since CP1**: see "CP1 notes") | `user/services/shell/sh_allow.c`, `user/lib/spawn.c`, `kernel/include/jam/abi.h` |
 | Programs from `/data` | the shell reads the whole file, seals it and runs it (approved by `allow`); M12.5's PX (paged, each page checked against `allow`'s table) to come | [M12.5-PLAN](M12.5-PLAN.md#programs-from-data) |
 | `posix_spawn` | runs boot-image programs only; a program on a file system is EACCES until M13's F1b | `user/posix/sys/spawn.c` |
 | The startup message | argv and the environment in one message of at most 2,048 bytes and 128 entries | `user/lib/spawn.c` (`MSG_MAX`) |
@@ -112,8 +112,9 @@ GPU after G3 and G4.
 
 1. **Programs are capped at 64 MiB** in three places (above), and the
    loader's limit for a program read from a file is the same. Chromium's
-   static binary is 150 to 250 MB. A track raises all three (CP1), and
-   PX's page table for such a program is 2 MB (32 bytes a page).
+   static binary is 150 to 250 MB. A track raises all three (CP1, done:
+   1 GiB), and PX's page table for such a program is 2 MB (32 bytes a
+   page).
 2. **netstack's real cap is 48 sockets in all**, not only 16 an opener:
    one browser tab with a few dozen connections would starve every other
    program. CN1 raises both.
@@ -1165,7 +1166,7 @@ ports, recipes, tests, netstack's caps, the audio API and the docs.
 | **CU2. Named `AF_UNIX` sockets** | section 4's broker, `/svc/unix`: `bind`, `listen`, `accept`, `connect` on socket files and abstract names | the broker (new, user/services/), its IDL (new), `user/posix/sys/socket.c`'s `AF_UNIX` paths, init's start of it | CU1; M13.6's U4 (socket files on `/jam`) | posixtest: a listener and two connectors, a socket file removed, a connector without the file's view refused, abstract names; utest for the broker's limits | **Opus** |
 | **CE1. The exec sealer** | `/svc/exec` in init: a program `posix_spawn`s an approved `/data` program (its own open of the file; init checks the allow line and page table, seals the file's pages with `vmo_make_exec_verified`) and the child gets its own approval only, never its parent's (the owner's decision, 2026-10-12); built, see "CE1 notes" | `abi/idl/exec.idl` (new), `user/services/init/exec.c` (new), `user/include/dataprog.h` + `user/lib/dataprog.c` (PX's helpers moved from the shell), `user/posix/sys/spawn.c` (`file_program`), `user/posix/sys/proc.c` (a child's job for SIGKILL), `user/lib/spawn.c` (`before_start`), utest `execsvc.c` with `user/tests/exectest` and `user/tests/execwide` | M12.5's PX, M13's F1b, R2 | utest `exec_*`; `tools/posix-mmap-test.sh` case `spawn` (the allowed run starts and exits 7); `allow.txt` and pager-test `exec` unchanged | **Opus** (a trust boundary) |
 | **CS1. Launching** | section 5: `addclosefrom_np`, argv and environments in a VMO, `/proc/self/exe` spawns through CL2's image, a child's argv of 64 KiB | `user/posix/sys/spawn.c`, `user/posix/sys/spawnfd.c`, `user/lib/spawn.c` (the VMO), the POSIX start code (`user/posix/crt/`) | CL2's self-image part (or beside it, merged after) | posixtest: a child with 500 arguments and 64 KiB of environment sees them all; `addclosefrom_np` leaves exactly the remapped descriptors (checked through `/proc/self/fd`) | **Opus** |
-| **CP1. Programs this big** | section 6's limits: `VMO_VERIFIED_MAX` 1 GiB, `PROGRAM_MAX`, `FILE_MAX`; `allow`'s progress line; a 300 MB generated test program | `kernel/include/jam/abi.h` (the constant), `kernel/object/vmo_verify.c` if a size is assumed there, `user/services/shell/sh_allow.c` (the constant and the line), `user/lib/spawn.c` (the constant), a generated test program (new) | M12.5's PX merged (it rewrites `sh_allow.c`) | ktest: a 1 GiB verified table; the shell's allow script with the 300 MB program (allowed, run, a changed page refused); cr-test.sh `hello` with the big program | **Opus** (small) |
+| **CP1. Programs this big** | section 6's limits: `VMO_VERIFIED_MAX` 1 GiB, `PROGRAM_MAX`, `FILE_MAX`; `allow`'s progress line; a 300 MB generated test program; built, see "CP1 notes" | `kernel/include/jam/abi.h` (the constant), `kernel/object/vmo_verify.c` if a size is assumed there, `user/services/shell/sh_allow.c` (the constant and the line), `user/lib/spawn.c` (the constant), a generated test program (new) | M12.5's PX merged (it rewrites `sh_allow.c`) | ktest: a 1 GiB verified table; the shell's allow script with the 300 MB program (allowed, run, a changed page refused); cr-test.sh `hello` with the big program | **Opus** (small) |
 | **CN1. netstack's caps** | section 8: the new caps, netstack's memory measured at them | `user/include/net.h`, `user/services/netstack/stack.h` and lwIP's options file if pools must grow, BENCH.md's line | nothing | utest: 256 sockets from one opener, the 257th refused; 512 in all; 1,024 TCP connections to the test host; `tools/net-test.sh` unchanged | Sonnet 5.5 |
 | **CB1. The Chromium build** | section 14 and 15: ports/chromium (the recipe, Alpine's patches, our toolchain patch, args for `base_unittests` and `headless_shell`), the builder's kept tree and `package --from` in tools/ports.py, the persistent tree on WSL behind its lock; builds `base_unittests` and `headless_shell`; reports disk, peak memory and time | ports/chromium (new), tools/ports.py (the two options), tools/cr/ (the build wrapper, new) | CT1, CT2; the main session's CPU-weighted slots in `tools/remote-test.sh` | the build finishes; the syscall scan passes (or lists each site); `make check` (the recipe's lint) | **Opus** (the build glue decides much) |
 | **CB2. `base_unittests` (CR-b)** | cr-test.sh's `base` case; the run with the ENOSYS log on; every failure triaged to a layer (a finding for its track) or fixed in the recipe's test list with a reason | cr-test.sh's case, ports/chromium's test list | CB1, CL1 (stage 1 at least), CL3, CP1 | cr-test.sh `base` | Sonnet 5.5 |
@@ -1405,6 +1406,62 @@ of its own.
   PASS, the root job clean), `posix-mmap-test.sh` case `spawn` (the
   allowed run started, exited 7), `allow.txt`, `pager-test.sh` case
   `exec`, one ktest pass at 4.
+
+## CP1 notes
+
+Track CP1, programs this big (2026-10-14): section 6's limits raised to
+1 GiB, the size of the biggest Chromium build with room to spare.
+
+- **The limits**: `VMO_VERIFIED_MAX` (`kernel/include/jam/abi.h`) is 1 GiB;
+  the shell's `PROGRAM_MAX` is libos's `DP_PROGRAM_MAX`
+  (`user/include/dataprog.h`), now `VMO_VERIFIED_MAX` itself, so the
+  approvals, the tables (`dp_table_read`) and the kernel agree; spawn's
+  `FILE_MAX` (a program read from a file) is 1 GiB too. `vmo_verify.c`
+  assumed no size beyond its comments.
+- **What verification costs at 1 GiB.** The kernel's table is 32 bytes a
+  page: 262,144 hashes in 2048 buddy pages (8 MiB), listed by a 16 KiB
+  array (one 32 KiB heap block), charged to the job of the caller of
+  `vmo_make_exec_verified` (the shell's, or init's for `/svc/exec`) and
+  freed with the VMO; the shell keeps up to 8 such VMOs while their
+  programs run, so 64 MiB of tables at worst. Starting one also reads the
+  table file into a VMO of the same size, closed once the kernel has its
+  copy. The pages themselves are the pager's, fetched as they are touched
+  (a 300 MiB program's `lazy` run fetched 18 pages). Each fetch hashes
+  its 4 KiB in the kernel, as before.
+- **What `allow` costs.** The whole read still holds the whole file: it
+  is read into a VMO only the shell holds, so the bytes approved are the
+  bytes hashed, and that VMO lives until the owner answers, charged to the
+  shell's job (1 GiB of memory for a 1 GiB program, on the PC fine; on a
+  small machine the limit is memory, not the code). The hash is taken as
+  the file is read (one pass, where it was a read then a hash), and the
+  page table is a second pass over the same memory once the answer is yes,
+  built in a VMO of its own (not the heap, whose pages would stay the
+  shell's for good). A program not allowed yet is also read whole once to
+  say why, as before. On the PC's QEMU the 300 MiB program was read and
+  hashed in about 3 s.
+- **The progress line**: a file of 32 MiB or more read whole (`allow`, or
+  a run that falls back to the whole read) shows "checking <path> (N MiB):
+  10% 20% ... 100%" while it is read; Ctrl+C stops it ("interrupted").
+- **The test program** is generated, never kept: `user/tests/bigprog`
+  holds its code and `table.S`, a table of `BIG_PAGES` pages (page i holds
+  the word i 512 times, so a page from the wrong place shows), 16 in the
+  boot image and 76,800 (300 MiB) in the Makefile's
+  `$(BUILD)/bigprog/bigprog`, which only `tools/bigprog-test.sh` asks for
+  (the assembler makes it in under a second).
+- **Not done here**: packages still cap a file at 64 MiB
+  (`tools/portslib/pkgformat.py`'s `FILE_MAX` and `FILES_TOTAL_MAX` of
+  512 MiB, mirrored by `tools/pagetable.c`): a package of Chromium's
+  size is PO13's ("big packages: a 250 MB program"). So cr-test.sh
+  `hello` runs as it was (a small C++ program from a package, now through
+  the raised limits); the 300 MiB program is `bigprog-test.sh`'s.
+- **Tests run** (2026-10-14, the PC): ktest at 4 and 8 CPUs (543 each,
+  with `pager_verified_max`: a 1 GiB VMO's table, entries at each table
+  page's edges, a page at the far end taken and a changed one refused,
+  2048 pages charged and freed; 7 ms); `bigprog-test.sh` (the lazy run
+  fetched 18 of 76,807 pages, `check` read 1,201 table pages in 2.8 s,
+  the changed page killed `check`, the shell lived); `allow.txt`; every
+  `pager-test.sh` case and every `posix-mmap-test.sh` case; cr-test.sh
+  `hello`; the init run (clean); make check.
 
 ## Later
 

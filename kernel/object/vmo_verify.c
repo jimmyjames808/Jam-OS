@@ -2,11 +2,12 @@
  * the check of a page against it.
  *
  * The table is kept in whole pages of the buddy allocator (128 hashes
- * each), listed by an array in its header: a 64 MiB program's table is
- * 128 pages and a 1 KiB array, never one big allocation. It is written
- * once, before the VMO is sealed with it, and only read after, so the
- * check takes no lock: it runs with none held (pager_supply) or under the
- * VMO lock (vmo_pager_publish's second look), and takes nothing itself. */
+ * each), listed by an array in its header: a program of VMO_VERIFIED_MAX
+ * (1 GiB) has a table of 2048 pages (8 MiB) and a 16 KiB array, never one
+ * big allocation. It is written once, before the VMO is sealed with it,
+ * and only read after, so the check takes no lock: it runs with none held
+ * (pager_supply) or under the VMO lock (vmo_pager_publish's second look),
+ * and takes nothing itself. */
 #include <jam/mm.h>
 #include <jam/process.h>
 #include <jam/sha256.h>
@@ -59,7 +60,7 @@ status_t vmo_verify_new(struct job *job, struct vmo *table, uint64_t pages,
 {
     if (pages > VMO_VERIFIED_MAX >> PAGE_SHIFT)
         return ERR_OUT_OF_RANGE;
-    uint64_t bytes = pages * VMO_VERIFIED_HASH_BYTES;   /* 512 KiB at most: no overflow */
+    uint64_t bytes = pages * VMO_VERIFIED_HASH_BYTES;   /* 8 MiB at most: no overflow */
     if (vmo_size(table) < bytes)
         return ERR_INVALID_ARGS;
     uint64_t npages = (bytes + PAGE_SIZE - 1) / PAGE_SIZE;
