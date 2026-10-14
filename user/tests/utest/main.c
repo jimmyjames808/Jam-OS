@@ -46,7 +46,7 @@ JAM_WANTS("svc devmgr\n"
           "svc session\n");
 
 const char *utest_cur;   /* the test running */
-const char *utest_only;  /* "utest only <prefix>": the prefix */
+const char *utest_only;  /* "utest only <prefixes>": the prefixes */
 
 /* ---- helpers ------------------------------------------------------------------ */
 
@@ -1268,18 +1268,49 @@ static const struct {
     { "session_no_grant", t_session_no_grant },
 };
 
+/* Does name start with one of list's comma-separated prefixes? */
+static bool named(const char *name, const char *list)
+{
+    for (const char *p = list;; p++) {
+        const char *comma = strchr(p, ',');
+        size_t len = comma ? (size_t)(comma - p) : strlen(p);
+        if (!strncmp(name, p, len))
+            return true;
+        if (!comma)
+            return false;
+        p = comma;
+    }
+}
+
 int main(int argc, char **argv)
 {
-    /* "utest only <prefix>": the tests whose name starts with prefix (a
-     * quick run while working on one area; the regression runs them all). */
+    /* "utest only <prefixes>": the tests whose name starts with one of the
+     * comma-separated prefixes (a quick run while working on one area);
+     * "utest except <prefixes>": every other test. The regression run runs
+     * them all; its parts (boot/init.cfg's `part` lines, tools/init-test.sh)
+     * split them with these two, and a selection says how many of the
+     * table's tests it runs, in the RESULTS box, so the parts can be
+     * checked to add up to the whole. */
     const char *only = argc == 3 && !strcmp(argv[1], "only") ? argv[2] : NULL;
+    const char *except = argc == 3 && !strcmp(argv[1], "except") ? argv[2] : NULL;
     utest_only = only;
-    if (argc >= 2 && !only)
+    if (argc >= 2 && !only && !except)
         return child_main(argc, argv);
+    const unsigned ntests = sizeof(tests) / sizeof(tests[0]);
     unsigned n = 0, passed = 0, nfailed = 0;
     unsigned failed[64];   /* the tests that failed (indexes into tests[]), the first 64 */
-    for (unsigned i = 0; i < sizeof(tests) / sizeof(tests[0]); i++) {
-        if (only && strncmp(tests[i].name, only, strlen(only)))
+    char line[96];
+    int len;
+    if (only || except) {
+        for (unsigned i = 0; i < ntests; i++)
+            n += only ? named(tests[i].name, only) : !named(tests[i].name, except);
+        len = snprintf(line, sizeof(line), "utest: running %u of %u tests (%s)", n, ntests,
+                       only ? "only" : "except");
+        jam_debug_report(line, (uint64_t)len);
+        n = 0;
+    }
+    for (unsigned i = 0; i < ntests; i++) {
+        if ((only && !named(tests[i].name, only)) || (except && named(tests[i].name, except)))
             continue;
         n++;
         utest_cur = tests[i].name;
@@ -1309,8 +1340,7 @@ int main(int argc, char **argv)
     }
     if (at)
         jam_debug_report(names, (uint64_t)at);
-    char line[96];
-    int len = passed == n ? snprintf(line, sizeof(line), "utest: %u passed", passed)
+    len = passed == n ? snprintf(line, sizeof(line), "utest: %u passed", passed)
                           : snprintf(line, sizeof(line), "utest: %u passed, %u FAILED", passed,
                                      n - passed);
     jam_debug_report(line, (uint64_t)len);

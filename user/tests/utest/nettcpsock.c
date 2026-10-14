@@ -283,13 +283,18 @@ bool t_nettcp_bulk_rings(void)
 /* ---- a connection's options -------------------------------------------------------- */
 
 /* What netstack sent the peer on p's connection until `quiet` passed after
- * the last of it: segments with data (and their bytes), empty ones that are
- * a keep-alive's (one byte before p->rcv), FINs and resets; p->rcv moves on
+ * the last of it (after a reset, which ends the connection, RESET_QUIET at
+ * most): segments with data (and their bytes), empty ones that are a
+ * keep-alive's (one byte before p->rcv), FINs and resets; p->rcv moves on
  * over the data and the FIN. */
 struct seen {
     unsigned segs, probes, resets, fins;
     uint32_t bytes;
 };
+
+/* After a reset: longer than a keep-alive interval (1 s in
+ * t_nettcp_options), so a probe or reset after it would still be seen. */
+#define RESET_QUIET (1500 * NS_PER_MS)
 
 static bool drain(struct tp *p, uint64_t quiet, struct seen *w)
 {
@@ -305,6 +310,8 @@ static bool drain(struct tp *p, uint64_t quiet, struct seen *w)
         uint32_t seq = pkt_get32(t + 4), flags = t[13];
         if (flags & TP_RST) {
             w->resets++;
+            if (quiet > RESET_QUIET)
+                quiet = RESET_QUIET;
             continue;
         }
         if (!paylen && !(flags & TP_FIN) && seq == p->rcv - 1)

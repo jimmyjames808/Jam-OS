@@ -658,6 +658,7 @@ $(PT_LIB_OBJ): $(patsubst %,$(BUILD)/udrv/drivers/lib/%.o,$(PT_LIB)) tools/check
 # kmalloc call, a call into another driver, ...) and accepts a clean one,
 # the Markdown docs still match the tree (tools/checkdocs.py), the
 # RTL8125 listen-only probe has no way to transmit (tools/checknotx.sh),
+# boot/init.cfg's parts add up to its whole run (tools/init-test.sh --check),
 # the NVMe driver writes only a drive it found to be Jam OS's (tools/checknvme.py), and the
 # partition table library keeps to the driver rules and passes
 # tools/gptcheck.c (its cases, mutations and a short fuzz pass), and the
@@ -680,6 +681,7 @@ check: all
 	python3 tools/sortincludes.py
 	sh tools/checkaudio.sh
 	sh tools/checknotx.sh
+	sh tools/init-test.sh --check
 	python3 tools/checknvme.py
 	python3 tools/netpeer.py --selftest
 	python3 tools/pcap-vlan-check.py --selftest

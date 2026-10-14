@@ -391,10 +391,14 @@ bool t_comp_notify_flood(void)
         CHECK(post_one(n, "Flood", 0));
         CHECK(post_one(n, "Refused", 7));   /* a tint there isn't */
     }
-    /* each post before it taken: the compositor never stopped for its log */
+    /* each post before it taken: the compositor never stopped for its log
+     * (the flood's last posts may still fill the queue: a call waits for
+     * room as post_one does, or it is refused ERR_SHOULD_WAIT) */
     struct note x;
     uint32_t id = 0;
     note_make(&x, "Last", "", NULL, NULL);
+    signals_t seen;
+    CHECK_ST(jam_object_wait_one(n, SIG_WRITABLE, now() + CT_WAIT, &seen), OK);
     CHECK_ST(post(n, &x, 0, 0, &id), OK);
     CHECK_ST(ct_roundtrip(&a.k), OK);
     uint64_t secs = (now() - t0) / NS_PER_S + 1;
