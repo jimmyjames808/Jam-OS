@@ -17,10 +17,17 @@
 #               worker costs the tests a host core; the PC runs two per CPU)
 #   QEMU_SMP    CPUs (default 4); run it at 4 and at 8
 #   QEMU_XHCI   passes through
+#   JAMOS_TIER  push or kernel, or it refuses to run: the soak is the
+#               pre-push pass's and kernel changes' (docs/TESTING.md, the tiers)
 #
 # About 3 minutes at 4 CPUs on a quiet Mac; slower next to other QEMUs.
 # Usage: tools/soak-test.sh <outdir> [name]; exit 0 on PASS.
 set -eu
+case ${JAMOS_TIER:-} in
+push | kernel) ;;
+*) echo "soak-test: refused: the soak runs before a push or for a kernel change only: JAMOS_TIER=push or JAMOS_TIER=kernel (docs/TESTING.md, the tiers)" >&2
+   exit 2 ;;
+esac
 out=$1 name=${2:-soak}
 mkdir -p "$out"
 loops=${SOAK_LOOPS:-3}
