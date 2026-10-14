@@ -177,6 +177,7 @@ static inline uint64_t kt_patience_ms(uint64_t ms)
 struct handle_table;
 struct job;
 struct kobject;
+struct pager;
 struct pci_dev;
 
 /* Free pages now (pmm_stats: drains the per-CPU caches first). */
@@ -220,6 +221,13 @@ struct kobject *kt_pci_dev_res(struct pci_dev *d);
 /* A handle in t to job j (a reference of its own) with JOB_RIGHTS: what
  * devmgr holds for a driver's job, e.g. for sys_dma_cap_create. */
 handle_t kt_job_handle(struct handle_table *t, struct job *j);
+/* The pager's next request into *out (pager_next, no flags), waiting
+ * kt_patience_ms(5000) for one: a broken kernel fails the test, not hangs. */
+void kt_pager_next(struct pager *pg, struct pager_request *out);
+/* Close pg's only handle, as its server's end would: every VMO it made is
+ * detached, every PAGER_REQ_GONE answered, and the caller's reference
+ * (pager_create's) goes with it. */
+void kt_pager_close(struct pager *pg);
 
 /* QEMU's edu device (1234:11e8, hw/misc/edu.c): the tests' DMA engine.
  * One transfer copies up to 4 KiB between RAM (any bus address below

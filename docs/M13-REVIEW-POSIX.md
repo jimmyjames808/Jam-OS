@@ -226,5 +226,5 @@ From M13 R3's notes (the kernel review):
   way: a relative deadline saturates only past 2^63 ns of uptime).
 - A futex word the kernel can't read in (PK2's `ERR_IO`) is `EFAULT` in
   libc, `ERR_CANCELED` stays `EINTR` (ffda5170). The kernel's futex_wait
-  still turns both into `ERR_INVALID_ARGS` (`EINVAL`); passing `ERR_IO`
-  through is a kernel change, left to the main session.
+  passes both through since 39aec118 (it had turned them into
+  `ERR_INVALID_ARGS`, `EINVAL`).

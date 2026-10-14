@@ -9,6 +9,7 @@
 #include <jam/irq.h>
 #include <jam/ktest.h>
 #include <jam/mm.h>
+#include <jam/pager.h>
 #include <jam/panic.h>
 #include <jam/percpu.h>
 #include <jam/sched.h>
@@ -445,4 +446,94 @@ KTEST(futex_interrupt_before_during_after)
     KT_EQ((int64_t)y.arg, ERR_INTERRUPTED);
     KT_EQ(futex_queued(as, FBASE), 0);
     cleanup(as);
+}
+
+/* ---- a word on a pager VMO's page ------------------------------------------ */
+
+#define PBASE (FBASE + 0x100000ull)   /* where the pager VMO's two pages are mapped */
+
+/* fx_space's address space with key's pager VMO of pg (two pages, every
+ * one absent until the test answers for it) mapped read-only at PBASE. */
+static struct aspace *fx_pager_space(struct pager *pg, uint64_t key)
+{
+    struct aspace *as = fx_space();
+    struct vmo *v;
+    KT_EQ(pager_create_vmo(pg, key, 2 * PG, &v), OK);
+    uint64_t a = PBASE;
+    KT_EQ(aspace_map(as, v, 0, 2 * PG, ASPACE_READ | ASPACE_FIXED, &a), OK);
+    kobject_unref(vmo_kobject(v));   /* the mapping keeps it */
+    return as;
+}
+
+/* Against a supplied word (0): one that differs, then one that matches. */
+static int64_t supplied_st[2];
+static void supplied_body(struct fx_thread *x)
+{
+    supplied_st[0] = futex_wait(PBASE, 1, DEADLINE_NEVER, 0);
+    supplied_st[1] = futex_wait(PBASE, 0, uptime_ns() + NS_PER_MS, 0);
+    x->st = OK;
+}
+
+/* A word whose page its pager fails is the copy's ERR_IO, whichever status
+ * the pager failed it with, or when the pager doesn't answer in time;
+ * nothing is left queued. An address past the mapping stays
+ * ERR_INVALID_ARGS, and the word once supplied is an ordinary one. */
+KTEST(futex_word_pager_failed_is_io)
+{
+    struct pager *pg, *slow;
+    KT_EQ(pager_create(NULL, 16, 600 * NS_PER_S, &pg), OK);
+    KT_EQ(pager_create(NULL, 16, 30 * NS_PER_MS, &slow), OK);
+    struct aspace *as = fx_pager_space(pg, 41), *sas = fx_pager_space(slow, 42);
+
+    static const int64_t how[] = { ERR_IO, ERR_OUT_OF_RANGE };
+    for (unsigned i = 0; i < 2; i++) {
+        struct fx_thread x = { .as = as, .fn = waiter, .arg = PBASE + i * PG };
+        struct thread *t = fx_spawn(&x, -1);
+        struct pager_request q;
+        kt_pager_next(pg, &q);   /* the read of the word waits for this */
+        KT_EQ(q.key, 41);
+        KT_EQ(q.offset, i * PG);
+        KT_EQ(pager_op(pg, 41, PAGER_OP_FAIL, i * PG, PG, how[i]), OK);
+        thread_join(t);
+        KT_EQ(x.st, ERR_IO);
+        KT_EQ(futex_queued(as, PBASE + i * PG), 0);
+    }
+    KT_EQ(fx_run(sas, waiter, PBASE), ERR_IO);   /* no answer within 30 ms */
+    KT_EQ(futex_queued(sas, PBASE), 0);
+    KT_EQ(fx_run(as, waiter, PBASE + 2 * PG), ERR_INVALID_ARGS);   /* unmapped */
+
+    void *zeros = kzalloc(PG);
+    KT_ASSERT(zeros);
+    struct pager_src src = { .addr = (uint64_t)(uintptr_t)zeros, .user = false };
+    KT_EQ(pager_supply(pg, 41, 0, &src, PG), OK);
+    kfree(zeros);
+    KT_EQ(fx_run(as, supplied_body, 0), OK);
+    KT_EQ(supplied_st[0], ERR_BAD_STATE);
+    KT_EQ(supplied_st[1], ERR_TIMED_OUT);
+    KT_EQ(futex_queued(as, PBASE), 0);
+    cleanup(sas);
+    cleanup(as);
+    kt_pager_close(slow);
+    kt_pager_close(pg);
+}
+
+/* A thread killed while the read of its word waits for the pager gets
+ * the copy's ERR_CANCELED and is no longer queued. */
+KTEST(futex_word_pager_wait_canceled)
+{
+    struct pager *pg;
+    KT_EQ(pager_create(NULL, 16, 600 * NS_PER_S, &pg), OK);
+    struct aspace *as = fx_pager_space(pg, 43);
+    struct fx_thread x = { .as = as, .fn = forever, .arg = PBASE };
+    struct thread *t = fx_spawn(&x, -1);
+    struct pager_request q;
+    kt_pager_next(pg, &q);   /* the read of the word waits for this */
+    KT_EQ(q.key, 43);
+    thread_sleep_ms(5);
+    thread_cancel(t);
+    thread_join(t);
+    KT_EQ(x.st, ERR_CANCELED);
+    KT_EQ(futex_queued(as, PBASE), 0);
+    cleanup(as);
+    kt_pager_close(pg);
 }

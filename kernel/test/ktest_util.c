@@ -7,6 +7,7 @@
 #include <jam/ktest.h>
 #include <jam/mm.h>
 #include <jam/object.h>
+#include <jam/pager.h>
 #include <jam/pci.h>
 #include <jam/percpu.h>
 #include <jam/process.h>
@@ -132,6 +133,28 @@ handle_t kt_job_handle(struct handle_table *t, struct job *j)
     handle_t h = HANDLE_INVALID;
     KT_EQ(handle_insert(t, &kh, &h), OK);
     return h;
+}
+
+void kt_pager_next(struct pager *pg, struct pager_request *out)
+{
+    uint64_t deadline = uptime_ns() + kt_patience_ms(5000) * NS_PER_MS;
+    for (;;) {
+        status_t st = pager_next(pg, 0, out);
+        if (st == OK)
+            return;
+        KT_EQ(st, ERR_SHOULD_WAIT);
+        KT_EQ(object_wait_one(pager_kobject(pg), SIG_READABLE, deadline, NULL), OK);
+    }
+}
+
+void kt_pager_close(struct pager *pg)
+{
+    struct handle_table t;
+    handle_table_init(&t);
+    struct khandle kh = khandle_from_new(pager_kobject(pg), PAGER_RIGHTS);
+    handle_t h;
+    KT_EQ(handle_insert(&t, &kh, &h), OK);
+    handle_table_destroy(&t);
 }
 
 struct kobject *kt_pci_dev_res(struct pci_dev *d)

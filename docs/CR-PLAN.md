@@ -1020,7 +1020,7 @@ waits for the ones named in its tracks):
 
 | Plan | On CR's path | Off it (after Chromium) |
 |---|---|---|
-| M13 | **F1b** (read-only shared file mappings; `posix_spawn` of programs on file systems); the futex error pass-through (open); R2 and J as planned (not gates) | M13.5 (mksh, `fork`, `vfork`) |
+| M13 | **F1b** (read-only shared file mappings; `posix_spawn` of programs on file systems); the futex error pass-through (done, 39aec118); R2 and J as planned (not gates) | M13.5 (mksh, `fork`, `vfork`) |
 | M12.5 | **PF2** (coherence: SQLite's maps), **PX** (paged programs, which CP1 extends), **PR** (its review, before CR-d on the PC) | |
 | M12.7 | stage 2: W2 and W3 (on their branch), its **R3** review, **P2** with the owner (the TEAM drive prepared) | stage 3 (the installer) |
 | M13.6 | **U2a, U2b, U3, U4, U5, U6, U7a, U7b, U8, U10**, its review and join: `/jam` with rename-over, locks, symlinks, a pager | (all of it is on the path) |

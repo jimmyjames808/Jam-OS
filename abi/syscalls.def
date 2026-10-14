@@ -357,7 +357,9 @@
 # never lost) until a futex_wake picks it (OK; spurious wakes are allowed:
 # check the word again) or deadline_ns (ERR_TIMED_OUT); ERR_BAD_STATE at
 # once if *addr != expected; ERR_INVALID_ARGS for flags, an address that
-# isn't 4-aligned, outside user space or not readable.
+# isn't 4-aligned, outside user space or not readable; ERR_IO if the word's
+# page is a pager VMO's that its pager failed (a mapped file whose read
+# failed); ERR_CANCELED if the thread is being killed.
 85  futex_wait        status    const uint32_t *addr, uint32_t expected, uint64_t deadline_ns, uint32_t flags
 # Wake up to count threads waiting on addr, oldest first: how many.
 86  futex_wake        i64       const uint32_t *addr, uint32_t count, uint32_t flags

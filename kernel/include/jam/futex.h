@@ -17,7 +17,10 @@ struct aspace;
  * woken (spurious wakes are allowed: callers check their word again);
  * ERR_BAD_STATE at once if the word held something else; ERR_TIMED_OUT;
  * ERR_INVALID_ARGS for flags, an unaligned address, or one outside user
- * space or not readable; ERR_CANCELED once the thread is being killed;
+ * space or not readable; ERR_IO if the word is on a pager VMO's page that
+ * its pager failed (or that didn't match a verified VMO's hash);
+ * ERR_CANCELED once the thread is being killed (in the wait, or while
+ * the read of the word waited for its pager);
  * ERR_INTERRUPTED when thread_interrupt ends the wait (or ended it before
  * it began) and no wake picked this thread (a wake wins: OK, and the
  * interrupt stays for the next interruptible wait).
