@@ -959,8 +959,8 @@ $(PKG_CHECK): tools/pkgcheck.c $(PKG_LIB) $(PKG_TEST) user/lib/sha256.c user/lib
 # thousands of mutated ones, and its writes (names, links, rename, orphans,
 # mkfs) on volumes held in memory, each checked against a volume's
 # invariants (tools/extinv.c); `make check` runs it. The library is also
-# compiled as Jam OS compiles a program's files ($(EXT_CROSS)), since no
-# program links it yet.
+# compiled as Jam OS compiles a program's files ($(EXT_CROSS)); bin/extfs
+# (user/services/extfs, the service) builds it in as its own subdirectory.
 EXT_DIR      := user/services/extfs/ext
 EXT_SRCS     := $(wildcard $(EXT_DIR)/*.c)
 EXT_HDRS     := $(wildcard $(EXT_DIR)/*.h)

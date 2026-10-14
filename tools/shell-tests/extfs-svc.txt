@@ -1,0 +1,25 @@
+# The extfs service (bin/extfs, docs/M13.6-PLAN.md's U4) from the shell:
+# utest's extfs cases, each extfs over a RAM disk it formats (files, links,
+# the permission bits, many writers, views and subviews, a damaged block,
+# restarts at each step of a request, the warm spare). The disks they leave
+# are saved in /data/extfs-e2fsck for Linux's e2fsck (tools/extfs-svc-test.sh).
+#   tools/extfs-svc-test.sh <outdir>
+# As in cmds.txt, a marker built from $T (x) never appears in the typed
+# line, only when the command before it ran.
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send T=x
+wait {prompt}
+send mkdir /data/extfs-e2fsck; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send utest only extfs; echo st-$T=$?
+wait 1200 passed
+seen utest: 10 passed
+wait st-x=0
+wait {prompt}
+send sync; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send reboot -f
