@@ -1,0 +1,48 @@
+# The ports formats' readers on Jam OS (user/lib/pkg*.c, <pkgfmt.h>), one
+# utest at a time so a failure names itself and none can be lost in the
+# init run's rate-limited log:
+#   pkgfmt_vectors           every line of ports/vectors/CASES gets the answer
+#                            the Python reference gave; each package read
+#                            whole and as a stream of random chunks
+#   pkgfmt_misc              versions, paths, lists, headers, page tables,
+#                            ELF notes, repository names, the range rule
+#   pkgfmt_table_is_allowd   a package's table is the one /data/etc/allow.d
+#                            has (<dataprog.h>), byte for byte
+#   pkgfmt_lists_are_allows  what a package's list may not ask for is what
+#                            `allow` refuses
+#   pkgfmt_note_is_wants     the vector program's ELF note is the list
+#                            libos's wants_read finds
+#   pkgfmt_journal           the journal: round trips, damage, cuts
+#   pkgfmt_fuzz              10,000 mutated packages, indexes, VULNS and
+#                            manifests
+# Run:
+#   QEMU_INPUT=tools/shell-tests/pkgfmt.txt tools/qemu-test.sh build/test pkgfmt shell
+wait 120 Jam OS shell
+wait {prompt}
+send T=x
+wait {prompt}
+
+send utest only pkgfmt_vectors; echo pf1-$T-$?
+wait 60 pf1-x-0
+seen 5 utest: 1 passed
+send utest only pkgfmt_misc; echo pf2-$T-$?
+wait 60 pf2-x-0
+seen 5 utest: 1 passed
+send utest only pkgfmt_table_is_allowd; echo pf3-$T-$?
+wait 60 pf3-x-0
+seen 5 utest: 1 passed
+send utest only pkgfmt_lists_are_allows; echo pf4-$T-$?
+wait 60 pf4-x-0
+seen 5 utest: 1 passed
+send utest only pkgfmt_note_is_wants; echo pf5-$T-$?
+wait 60 pf5-x-0
+seen 5 utest: 1 passed
+send utest only pkgfmt_journal; echo pf6-$T-$?
+wait 60 pf6-x-0
+seen 5 utest: 1 passed
+send utest only pkgfmt_fuzz; echo pf7-$T-$?
+wait 120 pf7-x-0
+seen 5 utest: 1 passed
+
+send reboot -f
+wait reboot: resetting

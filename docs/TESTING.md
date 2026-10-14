@@ -131,7 +131,12 @@ for this checkout) is skipped and claims no CPUs.
   and keeps the ports formats' signatures apart by their first lines
   (`build/host/jamos-sign self-test`); the package formats' test vectors
   are what the packager makes and each gets its answer from the
-  reference verifier (`tools/ports.py vectors`), and the repository
+  reference verifier (`tools/ports.py vectors`), the C readers Jam OS
+  uses for those formats (`user/lib/pkg*.c`) give every vector, and
+  every text and archive the reference was asked about, the same answer,
+  with 10,000 mutations of each kind, under ASan and UBSan
+  (`build/host/pkgcheck`; utest's `pkgfmt_*` run the same checks on Jam
+  OS), and the repository
   server answers only files of the repository, each a whole snapshot
   (`tools/ports-server.py --self-test`); libfun's smooth text holds up
   against hostile input under ASan and UBSan (`build/host/fontcheck
@@ -852,6 +857,7 @@ QEMU_INPUT=tools/shell-tests/<name>.txt tools/qemu-test.sh build/test <name> she
 | `fat-spare.txt`, `fat-nospare.txt` | volumes' warm spare fat: `ps` with the spare; a file written and synced, `kill fat-data`, the file read back, nine times; `kill fat-esp`; ten kills of fat-data in a row; the files all there and logd's log on `/data` still growing; then, booted with `nospare`, five kills each starting a new process | use `tools/fat-spare-test.sh` |
 | `volumes-restart.txt` | volumes started again, and what is under it, on the boot stick: `kill volumes` (its filesystem services go with its job, `/data` and `/esp` leave the namespace and come back once the new volumes has been told of the disk again, logd carries on in its file), `kill devmgr` (its drivers go, usb-storage with them, so do the mounts, and they come back the same way), `kill usb-storage-1:0` (devmgr restarts it, volumes mounts the disk again, and no "Jam OS stick removed" notice: the stick never went) | use `tools/volumes-restart-test.sh` |
 | `ctl-wire.txt` | the wire of init's channels and logd's (`initctl_strings`, `splashch_wire`, `crashres_wire`, `logd_crash_result` and `update_offer_call`: [init's channels](#the-wire-of-inits-channels)) | |
+| `pkgfmt.txt` | the ports formats' readers (`user/lib/pkg*.c`), each utest alone (`pkgfmt_vectors`, `_misc`, `_table_is_allowd`, `_lists_are_allows`, `_note_is_wants`, `_journal`, `_fuzz`): PO3's vectors, 10,000 mutations, the journal, and the parts Jam OS has twice (the page table, the refused lists, the ELF note) against their other copy | |
 | `fbbench.txt` | `fbbench -q` from the shell: it opens a full-screen window, measures and closes it; each section's lines are there, none FAILED, the shell comes back; then a usage error (the numbers are QEMU's, meaningless) | |
 | `wltest.txt` | `run wltest --spawn --script`: wltest's scripted checks against a compositor it starts headless itself, killed half way; libjwl connects again by itself | |
 | `storm.txt` | `storm` (the copy under kills): `/usb0` made writable, then a file copied from it to `/data` at 0, 1, 10 and 100 kills a second (fat-usb0 and fat-data in turn), each MATCH; one stopped by Ctrl+C (130); a rate too high (2); `storm mixer 2 10` while the music player plays a WAV from `/data/music`; `music stop`, `sync`, `reboot -f` | use `tools/fat-storm-test.sh` |

@@ -86,6 +86,28 @@ def good_package(name="vec"):
     return p
 
 
+def multi_package():
+    """A bigger package, for the readers that stream: three programs (one
+    page, a page and a byte, three pages and a few bytes; one in a
+    deeper directory, one with a capital), forty small files (one empty),
+    a path long enough to need the ustar prefix, and two directories that
+    differ by more than case."""
+    p = packagemod.Package("vec-multi", FakeRecipe("vec-multi"))
+    p.built_with = [["musl", "1.2.6"], ["sysroot", "0123456789abcdef"]]
+    progs = [("bin/alpha", LIST, 4096), ("bin/Beta", b"posix\n", 4097),
+             ("libexec/tool/deep/gamma", LIST, 3 * 4096 + 5)]
+    for path, text, length in progs:
+        p.add(path, 0o755, tiny_elf(text, length))
+        p.lists[path] = text
+    for i in range(40):
+        p.add("share/vec-multi/d%d/f%02d.txt" % (i // 8, i), 0o644, (b"file %d\n" % i) * i)
+    p.add("share/vec-multi/%s/%s/%s.txt" % ("d" * 60, "n" * 60, "x" * 50), 0o644, b"long\n")
+    p.add("share/vec-multi/Case/a.txt", 0o644, b"upper\n")
+    p.add("share/vec-multi/case2/a.txt", 0o644, b"lower\n")
+    p.add("share/licences/vec-multi/LICENSE", 0o644, b"MIT, for a test vector\n")
+    return p
+
+
 class Maker:
     """Writes the vectors and their CASES lines into a directory."""
 
@@ -308,6 +330,7 @@ def make_all(d):
     with open(os.path.join(d, "good.jpk"), "rb") as f:
         good = f.read()
     data_pkg = mk.package("data.jpk", good_package("vec-data"), "ok")
+    mk.package("multi.jpk", multi_package(), "ok")
     index_cases(mk, good, data_pkg)
     vulns_cases(mk)
     shutil.copyfile(mk.pub, os.path.join(d, "test.pub"))

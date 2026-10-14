@@ -62,7 +62,8 @@ def signed_lines(text, first, maxlen, pub):
     lines = text[:-1].decode("ascii").split("\n")
     sig = lines[-1].split(" ")
     if pub is UNCHECKED:
-        need(lines[-1] == "signature" or (len(sig) == 2 and fmt.SIG_HEX.match(sig[1])),
+        need(lines[-1] == "signature" or
+             (len(sig) == 2 and sig[0] == "signature" and fmt.SIG_HEX.match(sig[1])),
              "no signature line")
         return lines[1:-1], hashlib.sha256(text).hexdigest()
     need(len(lines) >= 3 and len(sig) == 2 and sig[0] == "signature" and fmt.SIG_HEX.match(sig[1]),

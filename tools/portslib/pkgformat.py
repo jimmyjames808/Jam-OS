@@ -50,7 +50,7 @@ LIST_MAX = 1023               # bytes of a program's list (<wants.h> WANTS_TEXT_
 SERIAL_MAX = (1 << 63) - 1
 
 PAGE = 4096
-TABLE_MAGIC = b"jampages"     # a page-hash table's first 8 bytes
+TABLE_MAGIC = b"JAMPAGES"     # a page-hash table's first 8 bytes
 TABLE_VERSION = 1
 TABLE_HEAD = 64               # bytes of its header; the page hashes follow
 HASH = 32                     # bytes of a SHA-256

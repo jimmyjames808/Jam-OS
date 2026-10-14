@@ -70,6 +70,8 @@ FONT_CHECK := build/host/fontcheck
 GPT_CHECK  := build/host/gptcheck
 # The ext library on the Mac, sanitised (tools/extcheck.c, below).
 EXT_CHECK  := build/host/extcheck
+# The ports formats' readers on the Mac, sanitised (tools/pkgcheck.c, below).
+PKG_CHECK  := build/host/pkgcheck
 ROOTPORT_CHECK := build/host/rootportcheck
 # The kernel's AVL tree on the Mac, sanitised (tools/avlcheck.c, below).
 AVL_CHECK  := build/host/avlcheck
@@ -295,7 +297,8 @@ MONO_SRCS   := $(MONO_DIR)/monocypher.c $(MONO_DIR)/optional/monocypher-ed25519.
 MONO_HDRS   := $(MONO_DIR)/monocypher.h $(MONO_DIR)/optional/monocypher-ed25519.h
 MONO_OBJS   := $(MONO_SRCS:%=$(UOBJ)/%.o)
 LIBOS_OBJS  += $(MONO_OBJS)
-$(MONO_OBJS) $(UOBJ)/user/lib/updsig.c.o: PROG_CFLAGS := -I$(MONO_DIR) -I$(MONO_DIR)/optional
+$(MONO_OBJS) $(UOBJ)/user/lib/updsig.c.o $(UOBJ)/user/lib/pkgfmt.c.o: \
+    PROG_CFLAGS := -I$(MONO_DIR) -I$(MONO_DIR)/optional
 # The programs, by role: user/services/<name> (init, console, devmgr, ...),
 # user/apps/<name> (the apps, on libfun) and user/tests/<name>. Every
 # directory there with a .c file is the program bin/<name> in bootfs, except
@@ -515,6 +518,15 @@ EXTRA_CFLAGS_utest := -iquote user/services/music -iquote drivers/rtl8125 \
                       -iquote user/services/dns -iquote user/services/sntp \
                       -iquote $(FATFS_STAGE) -iquote $(FATFS_PORT) -Iuser/apps/fun
 EXTRA_DEPS_utest   := $(FATFS_HDRS)
+# The ports formats' vectors (ports/vectors/, tools/pkgvec2c.py), linked in
+# for utest/pkgfmt.c: the same bytes `make check` reads on the Mac.
+PKGVEC_C   := $(BUILD)/gen/pkgvectors.c
+PKGVEC_OBJ := $(UOBJ)/$(PKGVEC_C).o
+$(PKGVEC_C): tools/pkgvec2c.py $(wildcard ports/vectors/*)
+	@mkdir -p $(dir $@)
+	python3 tools/pkgvec2c.py ports/vectors $@
+$(PKGVEC_OBJ): PROG_CFLAGS := -iquote user/tests/utest
+EXTRA_OBJS_utest   += $(PKGVEC_OBJ)
 # execwide is exectest's body with a wider list (user/tests/exectest/exectest.h).
 EXTRA_OBJS_execwide   := $(UOBJ)/user/tests/exectest/probe.c.o \
                          $(UOBJ)/user/tests/exectest/client.c.o
@@ -699,6 +711,9 @@ check: all
 	$(ITREE_CHECK)
 	$(MAKE) -s $(EXT_CHECK) $(EXT_FIXTURES) $(EXT_CROSS)
 	$(EXT_CHECK) tools/extfix $(BUILD)/extfix
+	$(MAKE) -s $(PKG_CHECK)
+	python3 tools/ports.py pkgfuzz $(BUILD)/pkgfuzz
+	$(PKG_CHECK) ports/vectors $(BUILD)/pkgfuzz
 
 # The boot splash's video: boot/splash.mpg, committed. It is made from the
 # owner's animation (tools/mksplash.sh), which lives outside the repository
@@ -912,6 +927,28 @@ $(ITREE_CHECK): tools/itreecheck.c kernel/lib/itree.c kernel/lib/avl.c kernel/in
 	$(HOSTCC) -std=gnu17 -O2 -g -Wall -Wextra -Werror -Wvla -fsanitize=address,undefined \
 	    -fno-sanitize-recover=all -Ikernel/include -o $@ tools/itreecheck.c kernel/lib/itree.c \
 	    kernel/lib/avl.c
+
+# pkgcheck (tools/pkgcheck.c): the ports formats' readers (user/lib/pkg*.c, the
+# very files bin/pkg and init link) and utest's checks of them
+# (user/tests/utest/pkg*.c), with ASan and UBSan, over PO3's vectors
+# (ports/vectors, CASES), mutated packages, indexes and texts, and the texts
+# the Python reference reader was asked about (`tools/ports.py pkgfuzz`);
+# `make check` runs it.
+PKG_LIB   := $(addprefix user/lib/,pkgfmt.c pkglist.c pkgmanifest.c pkgtar.c pkgindex.c \
+                                    pkgjournal.c)
+PKG_TEST  := $(addprefix user/tests/utest/,pkgcases.c pkgfuzz.c pkgjnl.c pkgmisc.c)
+PKG_SHIM  := build/host/pkgshim/os.h
+$(PKG_SHIM):
+	@mkdir -p $(dir $@)
+	@printf '#include <stdbool.h>\n#include <stddef.h>\n#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n' > $@
+$(PKG_CHECK): tools/pkgcheck.c $(PKG_LIB) $(PKG_TEST) user/lib/sha256.c user/lib/pkgint.h \
+              user/include/pkgfmt.h user/include/sha256.h user/tests/utest/pkgcases.h \
+              user/tests/utest/pkgcases_int.h $(MONO_SRCS) $(MONO_HDRS) $(PKG_SHIM)
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -std=gnu17 -O1 -g -Wall -Wextra -Werror -Wvla -fsanitize=address,undefined \
+	    -fno-sanitize-recover=all -Ibuild/host/pkgshim -Iuser/include -Ikernel/include \
+	    -Iuser/lib -Iuser/tests/utest -I$(MONO_DIR) -I$(MONO_DIR)/optional -o $@ \
+	    tools/pkgcheck.c $(PKG_LIB) $(PKG_TEST) user/lib/sha256.c $(MONO_SRCS)
 
 # extcheck (tools/extcheck.c and the other tools/ext*.c): the ext library (the
 # extfs service's format code, user/services/extfs/ext, the same files)

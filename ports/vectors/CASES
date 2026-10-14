@@ -31,9 +31,10 @@ package p-case.jpk refused
 package p-list.jpk refused
 package p-session.jpk refused
 package data.jpk ok
+package multi.jpk ok
 index INDEX-good ok
 index INDEX-good ok last=4
-index INDEX-good ok last=5:f4099485c71e26fec04a4c8692c8e7fc4413ddf0c155f266f18cff0daef8f8ef
+index INDEX-good ok last=5:063e9ff94abc749ee2220089baa2972fe1c50f3f17b85b1cf6cefe08a2452ea4
 index INDEX-good refused last=5
 index INDEX-good refused last=6
 inindex INDEX-good ok pkg=good.jpk name=vec
