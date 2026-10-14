@@ -94,7 +94,7 @@ GPU after G3 and G4.
 | The startup message | argv and the environment in one message of at most 2,048 bytes and 128 entries | `user/lib/spawn.c` (`MSG_MAX`) |
 | Memory | `mmap` makes one VMO per mapping; a paged VMO is at most **64 GiB** (a fixed three-level table); execute on anonymous memory refused (EACCES); `MAP_FIXED` over libc's own mappings by `VMAR_REPLACE`; `madvise(MADV_DONTNEED)` decommits | `user/posix/sys/mem.c`, `kernel/object/vmo.c` |
 | The address space | one flat VMAR; mappings in a **sorted list** (O(n) find), at most **16,384**, **never merged**; a VMO's user mappings (its reverse map) a list too | `kernel/mm/aspace.c`, `kernel/object/vmo.c` |
-| Sockets | `AF_INET` over netstack; **`AF_UNIX` is `socketpair` only, `SOCK_STREAM` only**, a channel underneath; `sendmsg` with ancillary data is EINVAL; `shutdown` on a socketpair end is EOPNOTSUPP | `user/posix/sys/pipe.c`, `user/posix/sys/sockio.c`, `user/posix/sys/sockconn.c` |
+| Sockets | `AF_INET` over netstack; **`AF_UNIX` is `socketpair` only** (`SOCK_STREAM` and, since CU1, `SOCK_SEQPACKET`), a channel underneath; since CU1 a socketpair carries descriptors (`SCM_RIGHTS`) and `shutdown(SHUT_RDWR)` closes its end | `user/posix/sys/pipe.c`, `user/posix/sys/sockpair.c`, `user/posix/sys/sockio.c`, `user/posix/sys/sockconn.c` |
 | netstack's limits | 32 openers, **16 sockets an opener and 48 in all**, 64 TCP connections an opener and 256 in all | `user/include/net.h` |
 | memfd | a kept VMO, committed as it grows; seals kept by libc **per process** | `user/posix/sys/memfd.c` |
 | Raw `syscall()` | answered: musl's `syscall()` goes through the layer's whole table (`__jam_calls_all`) | [M13-REVIEW-POSIX](M13-REVIEW-POSIX.md#program-size) |
@@ -424,6 +424,51 @@ translation tables are written in a file of their own for this):
 - **The Wayland socket** (GS1) keeps its own narrow list on the shared
   tables; one translation, two users.
 - Size: about 800 lines and their tests.
+
+**CU1 as built** (`user/posix/sys/sockpair.c`; the code's header has the
+whole model). Where it differs from the design above:
+- More than 64 handles: the parts come **first** and the bytes ride in
+  the **last** one (each part a header with the send's cookie and its
+  place, then hand-over records and their handles), so the receiver holds
+  parts until the last and never waits between them. One send at a time
+  per description (a lock across the send); parts of a send that never
+  finished are dropped when the next send or plain bytes come.
+- Not an inner channel per send: the kernel's cycle rule refuses a channel
+  end whose queue holds a channel end, and that same rule makes sending an
+  end into its own channel (or its peer's) ETOOMANYREFS (Linux allows it;
+  Mojo never does it). A channel end with channel ends queued at it is
+  refused the same way: a race CB5 should know of (an ipcz introduction
+  whose new end got a message with a pipe or socketpair end in it before
+  it was passed on).
+- A file arrives **without its path** (a path is a name in the receiver's
+  namespace: a later give of the file would reopen it with the receiver's
+  rights), so a received file can't be given on to a child or sent again
+  (ENOTSUP / EINVAL).
+- **Eventfds are refused** (EINVAL, logged once): eventfd.c's counter is
+  each process's own (the hand-over gives a child a copy), so one that
+  crossed would not be signalled across processes. Sharing it needs the
+  counter in a VMO and the hand-over's eventfd kind widened: a follow-up
+  if anything needs it (Mojo's eventfd is its optional Linux fast path).
+- `SOCK_SEQPACKET` pairs are built (one send one message, at most 64 KiB,
+  `MSG_TRUNC`), with a hand-over kind of their own (`POSIXFDS_SEQPACKET`)
+  so the type survives a child and `SCM_RIGHTS`.
+- `MSG_PEEK` peeks bytes, never descriptors (Linux installs duplicates).
+- `shutdown(SHUT_RDWR)` swaps the end for one whose peer is gone: a thread
+  already asleep in a read or write of that description is not woken by
+  it (the kernel wakes nothing when a waited-on handle closes).
+- memfd: the write-seal rule is built (every VMO handle given out after
+  `F_SEAL_WRITE` or `F_SEAL_FUTURE_WRITE` lacks `RIGHT_WRITE`);
+  `F_SEAL_WRITE`'s EBUSY while a writable mapping exists is not (libc
+  keeps no mapping's protection; Chromium seals no writes).
+- Tests: posixtest `scm` (in the init run; `tools/shell-tests/posix-scm.txt`
+  alone).
+- For CR2 (a hostile peer): a received file is made by fobj.c's adopter,
+  which asks the file's channel for its size and id within
+  `FS_CALL_TIMEOUT` (60 s): a channel that never answers holds the
+  receiving `recvmsg` that long for each such descriptor (Linux's never
+  waits). A received memfd's VMO is used as it comes: one whose pager
+  never answers would hold a fault in the receiver (the compositor's
+  `VMAR_KEPT_ONLY` rule is the defence there; Chromium maps plainly).
 
 **Named sockets (CU2, for `chrome` only)**: `chrome`'s process singleton
 binds an `AF_UNIX` socket at a path in its profile directory (and a

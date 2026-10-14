@@ -144,6 +144,8 @@ status_t fobj_open_settled(const struct path *p, uint32_t ff, handle_t *ch, hand
 
 /* The kind's adopter (fd_adopters' POSIXFDS_FILE line). */
 fd_adopt_fn file_adopt_fd;
+/* Is d a file's description (fdpass.c: which kinds a socket carries)? */
+bool file_desc_is(const struct fd_desc *d);
 /* mmap of a descriptor (mem.c): what to map. */
 #define FMAP_SHARED (1u << 0)   /* MAP_SHARED (else MAP_PRIVATE) */
 #define FMAP_WRITE  (1u << 1)   /* PROT_WRITE asked for */

@@ -91,6 +91,8 @@ enum posixfds_kind {
     POSIXFDS_DUP = 12,        /* no handles; data: a u32, the number of a descriptor sent
                                * before this one: this is the same open file description
                                * (flags, offset, handles), as dup2 makes it; status 0 */
+    POSIXFDS_SEQPACKET = 13,  /* a SOCK_SEQPACKET socketpair end: a channel end; data: any
+                               * (the message a peek kept, whole) */
     POSIXFDS_KIND_COUNT,
 };
 

@@ -36,6 +36,7 @@ static const struct {
     { "procfs", pt_procfs },
     { "session", pt_session },
     { "wayland", pt_wayland },
+    { "scm", pt_scm },
     { "files-many", pt_files_many },
     { "sockets", pt_sockets },
     { "raw", pt_raw },
@@ -107,6 +108,8 @@ int main(int argc, char **argv)
         return pt_child_mmap_pull(argc, argv);
     if (argc >= 2 && !strcmp(argv[1], "--child-wl"))
         return pt_child_wl(argc, argv);
+    if (argc >= 2 && !strcmp(argv[1], "--child-scm"))
+        return pt_child_scm();
     setvbuf(stdout, NULL, _IOLBF, 0);   /* each line out as it is made */
     unsigned n = sizeof(sections) / sizeof(sections[0]);
     for (unsigned i = 0; i < n; i++) {

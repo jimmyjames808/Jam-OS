@@ -21,9 +21,17 @@
  *
  * Seals (F_ADD_SEALS, with MFD_ALLOW_SEALING): F_SEAL_SHRINK, F_SEAL_GROW,
  * F_SEAL_WRITE and F_SEAL_FUTURE_WRITE refuse what they name (EPERM) in
- * this process, F_SEAL_SEAL refuses more seals. A process that must trust
- * a size another gave it checks the VMO itself (VMAR_KEPT_ONLY), never a
- * seal. */
+ * this process, F_SEAL_SEAL refuses more seals. They travel with the
+ * object (a child's hand-over, SCM_RIGHTS: the wire's seals). And once
+ * F_SEAL_WRITE or F_SEAL_FUTURE_WRITE is set, every handle given out for
+ * the object (vmo_for: a MAP_SHARED mapping, a child, SCM_RIGHTS) lacks
+ * RIGHT_WRITE, so the seal holds in a receiver by the kernel's rights,
+ * not by its libc's word: a writable shared mapping made after the seal
+ * fails (EACCES), and so does a write through any VMO handle given after
+ * it. Mappings made before stay writable (Linux's F_SEAL_FUTURE_WRITE;
+ * F_SEAL_WRITE's EBUSY while one exists is not built: libc keeps no
+ * mapping's protection). A process that must trust a size another gave
+ * it checks the VMO itself (VMAR_KEPT_ONLY), never a seal. */
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -257,11 +265,16 @@ static long memfd_truncate(struct fd_desc *d, int64_t len)
     return memobj_truncate(obj_of(d), (uint64_t)len);
 }
 
-/* A duplicate of the VMO with the rights d's access mode allows. */
+/* A duplicate of the VMO with the rights d's access mode allows: none to
+ * write once the object is write-sealed (the file's header). */
 static long vmo_for(struct fd_desc *d, handle_t *out)
 {
-    bool ro = !fd_can_write(d);
-    status_t st = jam_handle_duplicate(obj_of(d)->vmo, ro ? RO_RIGHTS : RIGHT_SAME, out);
+    struct memobj *m = obj_of(d);
+    lock_take(&m->lock);
+    bool sealed = m->seals & (F_SEAL_WRITE | F_SEAL_FUTURE_WRITE);
+    lock_give(&m->lock);
+    bool ro = !fd_can_write(d) || sealed;
+    status_t st = jam_handle_duplicate(m->vmo, ro ? RO_RIGHTS : RIGHT_SAME, out);
     return st == OK ? 0 : lx_err(st);
 }
 
