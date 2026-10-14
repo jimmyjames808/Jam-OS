@@ -11,8 +11,9 @@
 # at QEMU_TIMEOUT; it passes if every `wait` in the script matched and QEMU
 # ended by itself.
 # QEMU_TIMEOUT: seconds before a run is given up (150: a cap, a run ends
-# as soon as the kernel halts or QEMU goes; the `init` run and the full
-# ktest take about 30 s each, more on a busy machine).
+# as soon as the kernel halts or QEMU goes; the full ktest takes about
+# 30 s, the `init` run about 130 s on the PC (tools/init-test.sh runs it in
+# parts: about 45 s), more on a busy machine).
 # QEMU_USB adds USB devices after the boot stick (which takes xhci.0 port
 # 1), e.g. "-device usb-hub,bus=xhci.0,port=2 -device usb-kbd,bus=xhci.0,port=2.1"
 # (give every device a port=, or QEMU picks the next free one).

@@ -11,7 +11,7 @@ that a bug fix comes with a test is in
 |---|---|---|
 | Build | `make`, `make KTESTS=0`, `make check` | every commit |
 | Kernel tests | `QEMU_SMP=4 tools/qemu-test.sh build/test kt ktest`, again with `QEMU_SMP=8` (the full run takes ~25-30 s) | every kernel change |
-| User regression | `tools/qemu-test.sh build/test init init` (utest, usbtest, then posixtest, the POSIX layer's test: ~30 s) | every change to syscalls, libos, services, drivers |
+| User regression | `tools/init-test.sh build/test/init` (the init run: utest, usbtest, then posixtest, the POSIX layer's test, in three boots at once: ~45 s on the PC, [below](#the-init-run-in-parts)); before a push also `tools/qemu-test.sh build/test init init`, the same run in one boot (~130 s) | every change to syscalls, libos, services, drivers |
 | Shell scripts | [below](#shell-scripts) | shell, console, input |
 | Area scripts | [below](#area-scripts) | the area you touched |
 | Soak | `tools/soak-test.sh build/test`, again with `QEMU_SMP=8` (about 3 minutes each) | **before a push or a milestone sign-off only** (not in an agent's or a fix round's tests): after a change to a kernel test, a service or a driver, and anything that keeps state from one run to the next |
@@ -172,6 +172,50 @@ make run                                                  # interactive: the she
 make debug                                                # the same, stopped for gdb on :1234
 ```
 
+### The init run in parts
+
+```sh
+tools/init-test.sh <outdir> [name] [kernel words...]
+tools/init-test.sh --check     # the parts against the whole run, no QEMU (make check)
+```
+
+The `init` run (`tools/qemu-test.sh <outdir> <name> init`) runs
+`boot/init.cfg`'s programs one after another in one boot: about 130 s on
+the PC (2026-10-14: utest 118 s, posixtest 12 s). Most of utest's time is
+cases waiting out the timers they test (keep-alive probes, a notice's 5 s,
+keys kept 5 s, init's and libjwl's deadlines, logd's syncs): its 20 slowest
+cases take 78 s, the other 640 about 40 s. `tools/init-test.sh` runs the
+same programs split over `boot/init.cfg`'s `part <k>` lines, a boot each
+with the kernel word `initpart=<k>`, all at once: about 45 s.
+
+Each boot is a whole `init` run of its part: devmgr, volumes and their
+boot-time checks, the RESULTS box, init's root job checked clean. The parts
+are checked to add up to the whole run: before the boots, every program but
+utest is in exactly one part with its arguments, and utest's cases are split
+by `utest only <prefixes>` lines and one `utest except <prefixes>` whose
+list is every `only` prefix, none the start of another (so no case runs
+twice and none is left out); after them, the parts' `utest: running <n> of
+<m> tests` lines add up to m. `<outdir>/<name>.log` (name `init` by default)
+has each part's RESULTS box, its verdict said as `part <k> complete: no
+problems` or `part <k> FINISHED WITH PROBLEMS`, and then the run's one
+verdict, as a one-boot log ends: `run complete: no problems` or `run
+FINISHED WITH PROBLEMS` (exit status 0 only for the first); part k's serial
+log is `<name>-<k>.log`.
+
+Boots, not cases at once in one boot: many cases restart or count shared
+things (devmgr's drivers, volumes and `/data`, the console, the job's and
+the process's counts, the clock), and boots share nothing, so a part's
+cases run as in the whole run, in the table's order, only without the other
+parts' cases before them. That is what the parts can't catch: a case broken
+by another part's case that comes before it in one boot; so before a push
+the one-boot run runs too. A case that counts the process's handles stays
+behind the cases that make a handle it would otherwise make first
+(`jwlc_setup` behind the `jwl_` cases). The split is by time, about 40 s a
+part; a new case lands in the `except` part, and when a part passes about
+60 s a prefix moves to an `only` line (and the `except` list). On the PC
+(`tools/remote-test.sh`) the run costs a QEMU per part of the CPU budget, for
+a third of the time.
+
 ### Another machine for the tests
 
 QEMU on an Apple Silicon Mac emulates x86 (TCG): slow, and a few
@@ -180,6 +224,7 @@ once: the full kernel test in about 25 s, the whole regression in
 minutes. `tools/remote-test.sh` runs any test command there:
 
 ```sh
+JAMOS_REMOTE=jamos-pc tools/remote-test.sh tools/init-test.sh build/test/init
 JAMOS_REMOTE=jamos-pc tools/remote-test.sh tools/qemu-test.sh build/test init init
 JAMOS_REMOTE=jamos-pc QEMU_SMP=8 tools/remote-test.sh tools/qemu-test.sh build/test kt8 ktest
 JAMOS_REMOTE=jamos-pc tools/remote-test.sh tools/mixer-test.sh build/test/mixer
@@ -203,7 +248,7 @@ use and starts when that fits beside what is running:
 | Command | Costs |
 |---|---|
 | a QEMU run | `QEMU_SMP` CPUs (4 if unset, as `qemu-test.sh`) and `QEMU_MEM` of memory (2 GB if unset); `QEMU_SMP=8 ... kt8` is 8 |
-| a script that boots several at once | the total: `nvme-driver-test.sh` one boot for each case (6 by default, so 24 CPUs), `ports-test.sh` `PORTS_TEST_JOBS` (3) at a time or the ports given if fewer; `wl-port-test.sh` `WL_PORT_JOBS` (3) groups at a time or the groups given if fewer; `update-menu-test.sh` boots `-smp 2` |
+| a script that boots several at once | the total: `nvme-driver-test.sh` one boot for each case (6 by default, so 24 CPUs), `init-test.sh` one for each part of `boot/init.cfg` (3, so 12 CPUs), `ports-test.sh` `PORTS_TEST_JOBS` (3) at a time or the ports given if fewer; `wl-port-test.sh` `WL_PORT_JOBS` (3) groups at a time or the groups given if fewer; `update-menu-test.sh` boots `-smp 2` |
 | the build before the command | `JAMOS_REMOTE_BUILD_CPUS` (8) CPUs and `make -j` that many: a build is a short burst, but a burst of 16 jobs beside 26 CPUs of QEMU failed timing tests, and waiting for a whole test to end before building would stall everything, so it queues like a small test (a checkout's builds still take turns, and one with nothing to do is quick) |
 | anything else (`make check`, a checker, a port build) | `JAMOS_REMOTE_LIGHT_CPUS` (2) CPUs and `JAMOS_REMOTE_LIGHT_MEM_MB` (1024): say more for a heavy one, `JAMOS_REMOTE_LIGHT_CPUS=12 tools/remote-test.sh ...` |
 
@@ -460,6 +505,9 @@ Other boot words (for `tools/qemu-test.sh`, not in the menu):
   starts the shell anyway (`tools/splash-test.sh`).
 - `pcilist` (the PCI device report), `keytest` (keys to the log for 30 s),
   `memmap`, `init_timeout=<s>` (how long the `init` run may take).
+- `initpart=<k>` with `init`: init runs `boot/init.cfg`'s `part <k>` lines
+  in place of the others: one boot of `tools/init-test.sh`
+  ([below](#the-init-run-in-parts)).
 - `comptest`: init starts only the compositor, on the screen, running its
   test scene (`user/services/init/comptest.c`): three steps of windows and
   two of the desktop held 4 s each, then its `compositor: bench:` lines;
@@ -615,7 +663,9 @@ ends a QEMU run (`-no-reboot`): the shell scripts end with it.
 `run utest only <prefix>` runs the utests whose name starts with prefix
 (a quick run while working on one area; a test that counts the process's
 handles may then see one an earlier test would have made first, as
-`jwlc_setup` does when it runs first).
+`jwlc_setup` does when it runs before the `jwl_` tests); `only` takes a
+comma-separated list of prefixes, and `utest except <prefixes>` runs every
+other test (both say `utest: running <n> of <m> tests` in the RESULTS box).
 `ktest` from the shell runs "live" next to the rest of user space: checks
 on system-wide counts are not made, and tests that need the machine to
 themselves are skipped (`KT_SKIP_LIVE`, in `kernel/include/jam/ktest.h`);

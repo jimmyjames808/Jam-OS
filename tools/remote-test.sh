@@ -28,7 +28,8 @@
 # timing tests fail; fewer left the PC idle behind a queue of small runs.
 #   - a QEMU run: QEMU_SMP CPUs (4 by default, qemu-test.sh's) and QEMU_MEM
 #     (2G) of memory; a script that boots several at once (nvme-driver-test
-#     one for each case, ports-test PORTS_TEST_JOBS, wl-port-test WL_PORT_JOBS) the total of them all;
+#     one for each case, ports-test PORTS_TEST_JOBS, wl-port-test WL_PORT_JOBS,
+#     init-test one for each part of boot/init.cfg) the total of them all;
 #   - the build before it: JAMOS_REMOTE_BUILD_CPUS (8), and `make -j` that;
 #   - anything else (`make check`, a checker): JAMOS_REMOTE_LIGHT_CPUS (2) and
 #     JAMOS_REMOTE_LIGHT_MEM_MB (1024); say more for a heavy one (a big build).
@@ -68,6 +69,7 @@ cost_of() {
     case ${script##*/} in
     qemu-test.sh) ;;
     nvme-driver-test.sh) qemus=6; [ "$after" -eq 0 ] || qemus=$after ;;   # a boot for each case, all at once
+    init-test.sh) qemus=$(awk '$1 == "part" { print $2 }' boot/init.cfg | sort -u | wc -l | tr -d ' ') ;;   # a boot for each part
     ports-test.sh)
         [[ ${jobs:-} =~ ^[0-9]+$ ]] || jobs=3
         qemus=$jobs

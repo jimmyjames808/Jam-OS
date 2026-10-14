@@ -74,6 +74,9 @@ static handle_t bootfs_proc, bootfs_job;                        /* 0: no bootfs 
 /* volumes' watch (KEY_MOUNTS) and the program that runs (KEY_PROGRAM). */
 static handle_t port;
 #define KEY_PROGRAM 1u
+/* The kernel's initpart=<k>: run init.cfg's "part <k>" lines alone (one
+ * boot of tools/init-test.sh's); NULL: the lines without "part". */
+static const char *run_part;
 
 bool init_hidboot;
 bool init_netprobe;
@@ -535,7 +538,10 @@ static bool stop_bootfs(void)
 }
 
 /* init.cfg: one program per line, "<path in bootfs> [args...]"; blank lines
- * and lines starting with '#' are ignored. */
+ * and lines starting with '#' are ignored. A line "part <k> <path>
+ * [args...]" is run only by a boot with initpart=<k> (run_part), which
+ * runs nothing else: the same run in parts, a boot each at once
+ * (tools/init-test.sh). A part with no line is an error. */
 static bool run_config(const char *cfg, uint64_t len)
 {
     char *text = malloc(len + 1);
@@ -547,7 +553,7 @@ static bool run_config(const char *cfg, uint64_t len)
     text[len] = '\0';
 
     bool ok = true;
-    int lineno = 0;
+    int lineno = 0, ran = 0;
     for (char *line = text; line;) {
         char *nl = strchr(line, '\n');
         if (nl)
@@ -555,16 +561,32 @@ static bool run_config(const char *cfg, uint64_t len)
         lineno++;
         char *words[MAX_WORDS + 1];
         int n = line[0] == '#' ? 0 : split(line, words);
+        char **prog = words;
+        if (n > 0 && !strcmp(words[0], "part")) {
+            if (n < 3) {
+                init_say("init: init.cfg:%d: a part with no program", lineno);
+                ok = false;
+            }
+            prog += 2;
+            n = n > 2 && run_part && !strcmp(words[1], run_part) ? n - 2 : 0;
+        } else if (run_part && n > 0) {
+            n = 0;
+        }
         if (n < 0) {
             init_say("init: init.cfg:%d: more than %d words", lineno, MAX_WORDS);
             ok = false;
         } else if (n > 0) {
-            words[n] = NULL;
-            ok &= run(n, words);
+            prog[n] = NULL;
+            ok &= run(n, prog);
+            ran++;
         }
         line = nl ? nl + 1 : NULL;
     }
     free(text);
+    if (run_part && !ran) {
+        init_say("init: init.cfg has no part %s", run_part);
+        ok = false;
+    }
     return ok;
 }
 
@@ -610,6 +632,7 @@ int main(int argc, char **argv)
      * "vtdtest" (passed on to devmgr: drv/hda's IOMMU fault checks),
      * "nvmetest=<words>" (passed on to devmgr: drv/nvme's test reads),
      * "diskro" (passed on to devmgr: every internal drive read-only),
+     * "initpart=<k>" (one part of init.cfg's run: run_config),
      * "verbose" (the log on the first terminal's screen: terms.c). */
     bool splash = false;
     for (int i = 2; i < argc; i++) {
@@ -628,6 +651,8 @@ int main(int argc, char **argv)
         if (!strncmp(argv[i], "nvmetest=", 9))
             init_nvmetest = argv[i];
         init_diskro |= !strcmp(argv[i], "diskro");
+        if (!strncmp(argv[i], "initpart=", 9))
+            run_part = argv[i] + 9;
         init_verbose |= !strcmp(argv[i], "verbose");
         init_runlines |= !strcmp(argv[i], "runlines");
     }

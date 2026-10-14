@@ -492,9 +492,16 @@ static bool run_user_space(bool shell, bool nousb)
      * read-only in every mode, and a GPT disk's bootdisk=gpt:<GUID>:
      * volumes finds an installed drive's /data by the word alone, while a
      * stick's run takes the first Jam OS stick without one, as it always
-     * has); the others describe a plain boot's devices and look. */
-    const char *run_words[4];
+     * has; and initpart=<k>: one part of the run, tools/init-test.sh's); the
+     * others describe a plain boot's devices and look. */
+    const char *run_words[5];
     unsigned nrun = 0;
+    static char part_word[16];
+    uint64_t part = cmdline_get_u64("initpart", 0, 0);
+    if (part && part < 100) {
+        ksnprintf(part_word, sizeof(part_word), "initpart=%lu", part);
+        run_words[nrun++] = part_word;
+    }
     if (boot_vlan)
         run_words[nrun++] = vlan_word;
     if (boot_gpt[0])
