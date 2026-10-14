@@ -1383,6 +1383,14 @@ Track CP1, programs this big (2026-10-14): section 6's limits raised to
   size is PO13's ("big packages: a 250 MB program"). So cr-test.sh
   `hello` runs as it was (a small C++ program from a package, now through
   the raised limits); the 300 MiB program is `bigprog-test.sh`'s.
+- **Tests run** (2026-10-14, the PC): ktest at 4 and 8 CPUs (543 each,
+  with `pager_verified_max`: a 1 GiB VMO's table, entries at each table
+  page's edges, a page at the far end taken and a changed one refused,
+  2048 pages charged and freed; 7 ms); `bigprog-test.sh` (the lazy run
+  fetched 18 of 76,807 pages, `check` read 1,201 table pages in 2.8 s,
+  the changed page killed `check`, the shell lived); `allow.txt`; every
+  `pager-test.sh` case and every `posix-mmap-test.sh` case; cr-test.sh
+  `hello`; the init run (clean); make check.
 
 ## Later
 
