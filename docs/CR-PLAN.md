@@ -3,7 +3,9 @@
 Status (2026-10-11): a plan (CR0), nothing built. 2026-10-13: CT1, the clang
 toolchain and CR-a's C++ half, built ([CT1 as built](#ct1-as-built-2026-10-13)).
 2026-10-14: CT2, CR-a's Rust half and the pinned gperf, built ([CT2 as
-built](#ct2-as-built-2026-10-14)). Written against main
+built](#ct2-as-built-2026-10-14)). 2026-10-15: CB1, the Chromium build,
+most of the way ([CB1 as built](#cb1-as-built-2026-10-14): the port, its
+patches, the kept tree; the compile not yet finished). Written against main
 d28b8b52 with [G2's rescope](G2-PLAN.md#the-chromium-rescope-2026-10-11)
 on top (M13's sockets, sessions, ptys, tinyssh and pipelines merged;
 M12.5's PK1 to PK4, PU and PF1 merged; M13.6's U1 merged; M13.7's PO1,
@@ -389,7 +391,19 @@ call layer as it stood.
 
 Track CB1, the first Chromium build: ports/chromium builds Chromium
 155.0.8059.39 for Jam OS on the PC's WSL with Chromium's own GN, clang
-and Rust, through the ports builder. BUILD-RESULT-PLACEHOLDER
+and Rust, through the ports builder. **Not finished yet** (2026-10-15
+morning): GN generates the build (36,768 targets), every system library
+and shared-library question below is answered, and ninja had built about
+34,000 of the 44,700 steps base_unittests and headless_shell need
+(base, V8, Skia, the Rust standard library for
+`x86_64-unknown-linux-musl`, most of Blink) when the PC stopped
+answering over the VPN (from about 08:25); the errors still open at that
+point are fixed in the tree but not yet compiled (minigbm, fontconfig's
+`strerror_r`, the trust store, Crashpad's `<sys/cdefs.h>`, expat,
+Wayland's GBM). No program has been linked for Jam OS yet, so the link
+(the driver, posix.ld, Rust's std in a C++ link) and the syscall scan of
+the two programs are still to come; the next build round starts where
+ninja stopped (`tools/cr/build.sh start`, with a `wait` kept open).
 
 - **The source** is the chromium-linux-tarballs project's tarball Alpine
   uses (2021203420 bytes, its SHA-256 in the recipe; Alpine's SHA-512
@@ -509,7 +523,18 @@ and Rust, through the ports builder. BUILD-RESULT-PLACEHOLDER
   `tools/cr/build.sh wait 36000` stays connected (a background
   `tools/remote-test.sh` call, its light claim 1 CPU) for as long as the
   build runs; with other agents' tests on the PC it never showed.
-- FIGURES-PLACEHOLDER
+- **The figures so far** (BENCH.md has them): the tarball unpacks in 3.5
+  minutes into 12 GB; Chromium's tools in `~/.cache/jamos/toolchains`
+  2.2 GB; the output directory 6.3 GB after the first 16,000 steps. On
+  the i7-14700's WSL, base and its dependencies (3,100 steps) took 2
+  minutes at `-j10`; the first 17 minutes at `-j18` did 15,900 steps; Blink's
+  core runs at about 75 steps a minute at `-j16`. Memory is the limit,
+  not CPUs: the build's processes' proportional sizes (Pss) peaked at 8 GB
+  at `-j14` in V8 and Blink's bindings but 15 to 22 GB at `-j14` to `-j24`
+  in Blink's core (single compiles of 2.5 to 3.6 GB), with 1.5 to 2.7 GB
+  of swap used; `-j14` to `-j16` and a 16 GB claim kept it under WSL's 23
+  GB. A clean build's time is not measured yet: at those rates it is
+  roughly 2.5 to 3.5 hours at `-j16`.
 
 ### 2. The address space: huge sparse reservations (the top risk)
 
