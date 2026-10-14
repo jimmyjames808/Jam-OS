@@ -106,7 +106,8 @@ $(POSIX_OUT)/jl/%: $(POSIX_OUT)/% $(JL_NAMES_MAP)
 # (tools/jamos-cc) drops what a program doesn't call, where libjam.a's
 # objects come in whole. The few with flags of their own (dr_mp3's and
 # Monocypher's) and the assembly stay as libjam.a has them.
-LIBJAM_GC_SKIP := $(UOBJ)/user/lib/mp3.c.o $(UOBJ)/user/lib/updsig.c.o
+LIBJAM_GC_SKIP := $(UOBJ)/user/lib/mp3.c.o $(UOBJ)/user/lib/updsig.c.o \
+                  $(UOBJ)/user/lib/pkgfmt.c.o
 LIBJAM_GC_FROM := $(filter-out $(LIBJAM_GC_SKIP),$(filter \
                       $(patsubst %,$(UOBJ)/%.o,$(wildcard user/lib/*.c)),$(LIBJAM_OBJS)))
 LIBJAM_GC_OBJS := $(patsubst $(UOBJ)/%,$(POSIX_OUT)/libjam/%,$(LIBJAM_GC_FROM))
