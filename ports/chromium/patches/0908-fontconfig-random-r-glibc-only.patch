@@ -1,0 +1,19 @@
+Description: fontconfig's bundled config: random_r is glibc's
+ Chromium's copy of fontconfig carries one config header for Linux, made
+ on glibc, which says the system has random_r and initstate_r. musl has
+ neither (fontconfig then uses random()): said only on glibc.
+Forwarded: not-needed (Jam OS's; Linux builds use glibc, Alpine the
+ system's fontconfig)
+---
+--- a/third_party/fontconfig/include/meson-config.h
++++ b/third_party/fontconfig/include/meson-config.h
+@@ -98,7 +98,9 @@
+
+ #define HAVE_RANDOM 1
+
++#if defined(__GLIBC__)
+ #define HAVE_RANDOM_R 1
++#endif
+
+ #define HAVE_RAND_R 1
+

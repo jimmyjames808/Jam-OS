@@ -1,0 +1,98 @@
+# ports/chromium's GN arguments (docs/CR-PLAN.md section 14), for
+# base_unittests and headless_shell. build.sh adds the machine's lines:
+# target_sysroot, jamos_link_driver and pkg_config.
+
+# Jam OS's toolchains (patches/0901). The target's settings are the build's
+# own (GN gives the default toolchain args.gn's): Jam OS, musl. The host
+# toolchain, Chromium's Linux clang toolchain with those put back, builds
+# against Chromium's Debian sysroot what runs on the build host: V8's
+# snapshot (mksnapshot) and every generator.
+target_os = "linux"
+target_cpu = "x64"
+custom_toolchain = "//build/toolchain/jamos:x64"
+host_toolchain = "//build/toolchain/jamos:host"
+v8_snapshot_toolchain = "//build/toolchain/jamos:host"
+is_jamos = true
+is_musl = true
+use_sysroot = true
+use_mold = false            # lld, through Jam OS's link driver
+fatal_linker_warnings = false
+
+# A release build without symbols, as Alpine's (and no LTO, no PGO profile,
+# no CFI: plain clang and lld).
+is_debug = false
+is_component_build = false
+is_official_build = false
+symbol_level = 0
+dcheck_always_on = false
+is_clang = true
+use_lld = true
+use_custom_libcxx = true
+enable_rust = true
+treat_warnings_as_errors = false
+is_cfi = false
+use_thin_lto = false
+chrome_pgo_phase = 0
+disable_fieldtrial_testing_config = true
+use_clang_modules = false   # (as Alpine: no module map of musl's headers)
+
+# One file each: ICU's data and V8's snapshot inside the program. No V8
+# context snapshot: it needs Blink built a second time for the host (Mac
+# and Windows cross builds turn it off for the same reason).
+icu_use_data_file = false
+v8_use_external_startup_data = false
+use_v8_context_snapshot = false
+
+# Wayland (Ozone) and headless; nothing of the Linux desktop's own stack.
+ozone_platform = "wayland"
+ozone_platform_wayland = true
+ozone_platform_x11 = false
+ozone_platform_headless = true
+use_wayland_gbm = false
+use_system_minigbm = false
+use_gtk = false
+use_qt5 = false
+use_qt6 = false
+rtc_use_pipewire = false    # WebRTC's screen capture through the portal
+use_glib = false
+use_dbus = false
+use_udev = false
+use_gio = false
+use_pangocairo = false
+use_vaapi = false
+use_pulseaudio = false
+use_alsa = false
+use_cups = false
+use_kerberos = false
+use_nss_client_certs = false   # no NSS: Chrome's own root store verifies
+use_nss_server_certs = false
+# (enable_pdf and enable_printing stay on: GN reads the whole tree, and
+# //chrome/test asserts print preview; only what the targets need is built.)
+
+# No GPU yet (G3, G4): no Vulkan, Dawn or SwiftShader's Vulkan, no libpci
+# for ANGLE's GPU list, no VR (OpenXR). ANGLE is linked in (use_static_angle).
+enable_swiftshader = false
+enable_swiftshader_vulkan = false
+enable_vulkan = false
+angle_enable_vulkan = false
+angle_shared_libvulkan = false
+use_dawn = false
+skia_use_dawn = false
+webnn_use_litert = false    # (its GPU path is Dawn's; WebNN keeps TFLite)
+# Dawn is still built (the on-device model service links it on Linux), but
+# with no Vulkan backend and none of the shared libraries it carries as data.
+dawn_enable_vulkan = false
+dawn_use_swiftshader = false
+dawn_enable_vulkan_validation_layers = false
+use_libpci = false
+enable_vr = false
+enable_openxr = false
+
+# The plain open build: no proprietary codecs, no Widevine, no API keys.
+proprietary_codecs = false
+ffmpeg_branding = "Chromium"
+enable_widevine = false
+
+# The PC's budget (tools/cr/build.sh): links one at a time, as they take
+# the most memory; ninja's jobs are the builder's -j.
+concurrent_links = 1

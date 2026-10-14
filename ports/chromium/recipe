@@ -1,0 +1,42 @@
+# chromium: Chromium's Linux code built for Jam OS (docs/CR-PLAN.md
+# sections 14 and 15, track CB1): the source tarball Alpine's chromium uses
+# (the chromium-linux-tarballs project's, no .git; Alpine's stable, which
+# the version follows), Alpine's and copium's musl patches as Alpine applies
+# them (patches/00*, 01*: each one's reason in its header), and Jam OS's own
+# (09*: the GN toolchain //build/toolchain/jamos:x64). Built with Chromium's
+# own GN, its pinned clang and Rust (tools/cr/toolchain.sh), for
+# x86_64-unknown-linux-musl against the port's sysroot, linked static and
+# position-dependent by tools/jamos-clang. The build is huge: its source and
+# output stay between builds (`tree kept`, tools/portslib/kept.py), on the
+# PC under ~/cr (tools/cr/build.sh, which starts it there at low priority
+# with a claim in the machine's budget). It builds only on the build host
+# (Linux x86_64: Chromium's tools are Linux binaries).
+#
+# CB1 builds base_unittests and headless_shell (files/args.gn); CB2 runs
+# the first, CB3 the second. The programs' lists are wants/<name>. The
+# licence line is Chromium's own; the third parties' licences (its
+# about:credits) come with the `chrome` target (CB6).
+name        chromium
+version     155.0.8059.39
+revision    1
+summary     the Chromium web browser's code: base_unittests and headless_shell
+homepage    https://www.chromium.org/
+category    www
+licence     BSD-3-Clause
+licence-file LICENSE
+source      https://github.com/chromium-linux-tarballs/chromium-tarballs/releases/download/$version/chromium-$version-linux.tar.xz 2021203420 b84bbab0eef2dd4abd73544a95f15dd2c3c815980c4fa47496f3d0ce4f8a2aa7
+place       package
+style       custom
+toolchain   clang rust
+tree        kept
+needs       llvm-runtimes
+# Wayland's (Chromium's own copy of libwayland links libffi), and what
+# Chromium takes from the system on Linux: the keyboard's (pkg-config) and
+# expat (fontconfig's and Skia's XML).
+needs       libffi
+needs       xkbcommon
+needs       expat
+host        python3 ninja
+program     lib/chromium/base_unittests
+program     lib/chromium/headless_shell
+files       lib/chromium/headless_lib_data.pak lib/chromium/headless_lib_strings.pak

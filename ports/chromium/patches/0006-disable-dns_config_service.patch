@@ -1,0 +1,26 @@
+Description: net's Linux DNS configuration reader needs glibc's res_ninit and the internals of its struct __res_state: on musl the build takes the Fuchsia reader instead (an empty configuration).
+Forwarded: not-needed (Alpine's musl patch; Alpine carries it)
+Origin: Alpine Linux aports ecc3ce96955f459cf819602db39593b42ded8515, community/chromium/disable-dns_config_service.patch
+Rebased to apply exactly (Jam OS's applier takes no fuzz): the body below is the same change made again by diff -u against this tarball.
+
+--- a/net/dns/BUILD.gn
++++ b/net/dns/BUILD.gn
+@@ -173,8 +173,8 @@
+     ]
+   } else if (is_linux) {
+     sources += [
+-      "dns_config_service_linux.cc",
+-      "dns_config_service_linux.h",
++      "dns_config_service_fuchsia.cc",
++      "dns_config_service_fuchsia.h",
+     ]
+   } else if (is_posix) {
+     sources += [
+@@ -487,7 +487,6 @@
+       "mock_dns_platform_android_attempt_delegate.h",
+     ]
+   } else if (is_linux) {
+-    sources += [ "dns_config_service_linux_unittest.cc" ]
+   } else if (is_posix) {
+     sources += [ "dns_config_service_posix_unittest.cc" ]
+   }

@@ -1,0 +1,91 @@
+Description: base_unittests without shared libraries on Jam OS
+ Jam OS runs static programs only and has no dynamic loader, so a shared
+ library can't be built for it (the link driver refuses -shared) nor
+ loaded by a test. base_unittests' helpers that exist to be dlopen()ed
+ (immediate_crash_test_helper, test_shared_library, malloc_wrapper for
+ ElfReaderTest) and the Rust build tests (build/rust/tests, executables
+ and shared libraries testing the Linux toolchain's Rust support) are left
+ out there; the tests that load them fail at run time and CB2 lists them.
+ The test trace processor, a shared library on Linux only so that its
+ own copy of SQLite and Perfetto stays hidden from the program's, is a
+ static library on Jam OS.
+Forwarded: not-needed (Jam OS's: static programs only)
+---
+--- a/base/BUILD.gn
++++ b/base/BUILD.gn
+@@ -34,6 +34,7 @@
+ import("//build/config/sanitizers/sanitizers.gni")
+ import("//build/config/sysroot.gni")
+ import("//build/config/ui.gni")
++import("//build/toolchain/jamos/jamos.gni")
+ import("//build/nocompile.gni")
+ import("//build/rust/rust_macro.gni")
+ import("//build/rust/rust_static_library.gni")
+@@ -4225,7 +4226,7 @@
+   # and by
+   # https://ci.chromium.org/ui/p/chromium/builders/try/fuchsia-x64-cast-receiver-rel/1591660/overview
+   # (not diagnosed yet).
+-  if (!is_chromeos && !is_fuchsia) {
++  if (!is_chromeos && !is_fuchsia && !is_jamos) {
+     deps += [ "//build/rust/tests" ]
+   }
+
+@@ -4248,11 +4249,15 @@
+   deps += [ "//build/rust:cxx_cppdeps" ]
+
+   data_deps = [
+-    "//base/test:immediate_crash_test_helper",
+     "//base/test:test_child_process",
+-    "//base/test:test_shared_library",
+     "//testing/buildbot/filters:base_unittests_filters",
+   ]
++  if (!is_jamos) {
++    data_deps += [
++      "//base/test:immediate_crash_test_helper",
++      "//base/test:test_shared_library",
++    ]
++  }
+
+   if (is_win || is_linux && false) {
+     data_deps += [ "//base/allocator:system_allocator_test_helper" ]
+@@ -4628,15 +4633,17 @@
+       "debug/test_elf_image_builder.h",
+     ]
+
+-    deps += [ "//base/test:malloc_wrapper" ]
+     defines += [
+       # This library is used by ElfReaderTest to test reading elf files.
+       "MALLOC_WRAPPER_LIB=\"${shlib_prefix}malloc_wrapper${shlib_extension}\"",
+     ]
+
+-    if (!is_component_build) {
+-      # Set rpath to find libmalloc_wrapper.so even in a non-component build.
+-      configs += [ "//build/config/gcc:rpath_for_built_shared_libraries" ]
++    if (!is_jamos) {
++      deps += [ "//base/test:malloc_wrapper" ]
++      if (!is_component_build) {
++        # Set rpath to find libmalloc_wrapper.so even in a non-component build.
++        configs += [ "//build/config/gcc:rpath_for_built_shared_libraries" ]
++      }
+     }
+   }
+
+--- a/base/test/BUILD.gn
++++ b/base/test/BUILD.gn
+@@ -5,6 +5,7 @@
+ import("//build/compiled_action.gni")
+ import("//build/config/features.gni")
+ import("//build/config/ui.gni")
++import("//build/toolchain/jamos/jamos.gni")
+ import("//build/rust/rust_static_library.gni")
+ import("//build/rust/rust_static_library.gni")
+ import("//build_overrides/build.gni")
+@@ -727,6 +728,8 @@
+ _target_type = "shared_library"
+ if (is_ios) {
+   _target_type = "ios_framework_bundle"
++} else if (is_jamos) {
++  _target_type = "static_library"  # static programs only
+ }
+
+ target(_target_type, "test_trace_processor") {

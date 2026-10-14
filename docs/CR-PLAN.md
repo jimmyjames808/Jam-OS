@@ -205,8 +205,11 @@ toolchain is fetched once per Chromium version into
 `~/.cache/jamos/toolchains/` on the build host by a script
 (tools/cr/toolchain.sh, new), pinned by Chromium's own revision files.
 
-**How Chromium's GN arguments select it** (*unsure* until CB1 tries it;
-the names are checked in Chromium's tree):
+**How Chromium's GN arguments select it** (the plan's guess; CB1 tried it
+and decided otherwise in places: GN gives the default toolchain the
+build's own arguments, so `is_musl` and the sysroot are args.gn's and a
+host toolchain of ours puts Linux's back, see [CB1 as
+built](#cb1-as-built-2026-10-14)):
 - `is_clang=true`, the default `clang_base_path` (Chromium's own clang in
   its tree), `use_lld=true`, `use_custom_libcxx=true`, `is_musl=true`
   (copium's patch), `enable_rust=true` with the default Rust in its tree;
@@ -381,6 +384,125 @@ call layer as it stood.
   (`tool: gperf GNU gperf 3.1`) and CB1's build finds it there. Done once
   per version; with no names the script fetches clang, cmake, Rust and
   gperf.
+
+#### CB1 as built (2026-10-14)
+
+Track CB1, the first Chromium build: ports/chromium builds Chromium
+155.0.8059.39 for Jam OS on the PC's WSL with Chromium's own GN, clang
+and Rust, through the ports builder. BUILD-RESULT-PLACEHOLDER
+
+- **The source** is the chromium-linux-tarballs project's tarball Alpine
+  uses (2021203420 bytes, its SHA-256 in the recipe; Alpine's SHA-512
+  matches it), mirrored in the Mac's `~/jamos-distfiles`. It is the whole
+  tree without `.git` (10 GB, 675,000 files, test data included: base's,
+  net's) but without what Chromium's DEPS fetches from Google's storage
+  and CIPD. **Node.js: the tarball brings none** (the plan's *unsure*),
+  so Chromium's own pinned one (DEPS' `src/third_party/node/linux`
+  object, v24.12.0) is a line of tools/cr/toolchain.pins, as its clang
+  and Rust are, and the build links it into the tree. The same goes for
+  the other things DEPS fetches that the build needs: the Debian bullseye
+  sysroot Chromium's host tools are built against (its
+  `sysroots.json`), the test fonts base_unittests' data names (DEPS'
+  `src/third_party/test_fonts/test_fonts`; Google's separate
+  `-testdata` tarball, 1.3 GB, would add nothing the linux tarball lacks
+  but these fonts), and Go 1.26.6 (Dawn's DEPS' `dawn_go_version`; Go's
+  own release, by its published SHA-256), which Dawn's build runs
+  offline (`GOPROXY=off`) to generate Tint's sources. Each is fetched and
+  unpacked by `tools/cr/toolchain.sh` into `~/.cache/jamos/toolchains`.
+  The tarball's own prebuilt tools that the build runs are kept: GN
+  (`buildtools/linux64/gn`, Chromium's pinned build) and the Python GN
+  runs scripts with (`third_party/cpython3`); its prebuilt gperf (3.2) is
+  replaced by the pinned 3.1 the owner asked for (CT2). Alpine deletes
+  every prebuilt ELF file and uses its system's tools instead; Jam OS
+  takes Chromium's pinned ones, as for clang.
+- **The patches** (ports/chromium/patches, each with its reason): Alpine's
+  six musl ones and copium's eight the plan names, copied with their
+  headers under a DEP-3 header of ours (the authors' e-mail addresses left
+  out of their `From` lines). Seven had to be **rebased to apply exactly**
+  (Alpine's `patch` takes fuzz, the ports builder takes none: the same
+  change, made again by `diff -u` against this tarball), and three had a
+  `+++` name that GNU patch ignores and ours doesn't (copium's two WebRTC
+  ones lack a `/`, Alpine's llvm-subzero one names a `.orig`). The
+  seccomp sandbox's four are not taken: they are run-time fixes, and the
+  code compiles without them. Jam OS's own: 0901 the toolchains (below),
+  0902 the Linux clipboard helpers without D-Bus (Chromium 155's Wayland
+  needs `clipboard_util_linux`, which exists only with `use_dbus`), 0903 no
+  Mesa DRI directory (content/gpu and media/gpu/sandbox ask pkg-config on
+  every Linux build), 0904 `<sys/cdefs.h>` only where there is one
+  (PartitionAlloc's shim, libsync; musl has none, Alpine adds a BSD copy),
+  0905 base_unittests without shared libraries (its dlopen() helpers and
+  the Rust toolchain tests left out on Jam OS, the test trace processor
+  static), 0906 no dummy ANGLE libraries as data of programs that use GL.
+  The launcher patch (2) waits for CB5: nothing needs it to compile.
+- **The toolchains (patch 0901), and where the plan was wrong.** GN gives
+  the default toolchain the build's own arguments and ignores its
+  `toolchain_args`, so a target toolchain can't set `is_musl` or the
+  sysroot for itself. So args.gn describes the target (`is_jamos`,
+  `is_musl`, `target_sysroot` = the port's sysroot,
+  `custom_toolchain = "//build/toolchain/jamos:x64"`), and a second
+  toolchain of ours, `//build/toolchain/jamos:host` (Chromium's Linux clang
+  toolchain otherwise), is `host_toolchain` and `v8_snapshot_toolchain`
+  and puts `is_jamos`, `is_musl` and the Debian sysroot back. The target
+  toolchain compiles with Chromium's clang (`clang_toolchain`) and
+  `--target=x86_64-unknown-linux-musl -D__jamos__=1` added after
+  Chromium's own flags (which say `x86_64-unknown-linux-gnu`; the last
+  `--target` wins), against the port's sysroot (headers in `include/`,
+  as Fuchsia's: the module map's root is changed to match), and links
+  through `jamos_link_driver`: the port's wrapper of tools/jamos-clang
+  (static, non-PIE, posix.ld, the program's list chosen by the output's
+  name). `-pie` is not given on Jam OS, `use_mold` is off (lld), the Rust
+  target is `x86_64-unknown-linux-musl` (added to the known triples), and
+  libffi (Wayland's) is the libffi port's static `libffi.a`. Chromium's
+  own code is compiled `-fPIC` as on Linux; the program is still linked
+  position-dependent.
+- **What the build needs of the sysroot**, found by `tools/cr/build.sh
+  pkgs` (GN with a pkg-config that only writes down what it is asked):
+  only xkbcommon (Jam OS's port, `needs xkbcommon`) once the arguments
+  turn off the rest. Chromium's pkg-config script expects `usr/lib` under
+  a sysroot; the port's own pkg-config wrapper (GN's `pkg_config`) knows
+  the sysroot's layout.
+- **The arguments** (ports/chromium/files/args.gn, the plan's set
+  changed): `enable_pdf` and `enable_printing` stay on (GN reads the
+  whole tree and //chrome/test asserts print preview; the targets build
+  only what they need); off besides the plan's: `use_qt5`,
+  `use_pangocairo`, `rtc_use_pipewire`, `use_nss_client_certs` and
+  `use_nss_server_certs` (no NSS: Chrome's own root store),
+  `use_system_minigbm`, `use_v8_context_snapshot` (it would build Blink
+  twice, for the host too, as Mac and Windows cross builds avoid),
+  `use_clang_modules` (as Alpine), Vulkan everywhere (`enable_vulkan`,
+  ANGLE's, Dawn's, SwiftShader's), `skia_use_dawn`, `webnn_use_litert`,
+  `use_libpci`, VR and OpenXR. ANGLE is linked into the program
+  (`use_static_angle`, the default). Dawn is still built: the on-device
+  model service links it on Linux, and leaving it out would take a patch
+  to that service. No program carries a shared library as data now
+  (`gn desc ... runtime_deps`: base_unittests needs `test_child_process`,
+  headless_shell `chrome_crashpad_handler`, both static programs).
+- **The kept tree and `package --from`** (tools/portslib/kept.py,
+  pkgcmd.py): the recipe line `tree kept` keeps the unpacked source (its
+  output inside it, `out/jamos`), the port's sysroot and its tools in
+  `~/cr/<version>/` (`ports.py build --kept DIR`; `--clean` removes it),
+  rewritten only where their bytes change, so ninja sees as changed only
+  what is. The source is unpacked once with no patches; a patch change
+  takes the files any old or new patch touches as upstream has them
+  (`pristine/`, or the tree itself for a file no patch touched before),
+  applies the new patches to those copies and writes only the files that
+  differ (a patch that doesn't apply leaves the tree as it was). An
+  iteration on a patch or an argument costs seconds, not the 3.5 minutes
+  of an unpacking. `ports.py package --from DIR <port>` packages a build
+  made elsewhere (its `stage/`, checked against `port.sha256`, the hash
+  of the port's directory that built it), so the Mac signs what the PC
+  built.
+- **The PC's budget**: the build holds a claim in tools/remote-slots.py's
+  budget (`--detach`: it waits for its turn, starts the build in the
+  background and returns; the claim lasts as long as the build) of
+  `CR_JOBS` CPUs (ninja's `-j`) and `CR_MEM_MB` of memory, at nice 19 and
+  ionice idle, links one at a time (`concurrent_links = 1`). The build
+  holds `~/cr/.lock`. While a big claim runs, a `tools/remote-test.sh`
+  call's own build step (8 CPUs by default) waits for room: status calls
+  give `JAMOS_REMOTE_BUILD_CPUS=1` and a light claim. A claim whose memory
+  does not fit beside what runs waits (a run of 18 GB beside a 2 GB test
+  in the 20 GB budget waited all night).
+- FIGURES-PLACEHOLDER
 
 ### 2. The address space: huge sparse reservations (the top risk)
 
@@ -891,9 +1013,10 @@ Jam OS):
 6. Whatever CB2 and CB3 find that no general layer can answer (each one
    reported first: the rule is to fix the layer, not to patch around it).
 
-**args.gn for `content_shell` and `headless_shell` first** (*unsure*
-until CB1: [CR-RESEARCH section 8](CR-RESEARCH.md#8-the-build)'s lean set
-plus the toolchain's):
+**args.gn for `content_shell` and `headless_shell` first** (the plan's
+guess: [CR-RESEARCH section 8](CR-RESEARCH.md#8-the-build)'s lean set plus
+the toolchain's; the set CB1 built with is ports/chromium/files/args.gn,
+and [CB1 as built](#cb1-as-built-2026-10-14) says what changed and why):
 
 ```
 target_os="linux" target_cpu="x64" is_debug=false is_component_build=false
@@ -940,12 +1063,13 @@ script run on WSL through `tools/remote-test.sh` (tools/cr/hostcheck.sh,
 new) prints and checks: free disk under the build directory (**150 GB**
 wanted), WSL's memory cap and swap (`free`), CPU threads, the kernel
 version, and the host tools Chromium's build needs (Python 3, `gperf`,
-`ninja`, `pkg-config`, `bison`, `flex`, `xz`; Node.js from Chromium's
-own prebuilt tools or the system's, as Alpine links it: *unsure* which
-the tarball needs). A shortfall stops the track with the numbers (and Q1's
+`ninja`, `pkg-config`, `bison`, `flex`, `xz`; Node.js: decided by CB1,
+the tarball brings none, so Chromium's own pinned Node.js from its DEPS,
+pinned in tools/cr/toolchain.pins like its clang). A shortfall stops the track with the numbers (and Q1's
 answer says what the owner may change on Windows).
 
-**Budget** (*unsure* until CB1 measures; BENCH.md gets the real ones):
+**Budget** (the plan's estimate; CB1's measured figures are in [CB1 as
+built](#cb1-as-built-2026-10-14) and BENCH.md):
 | | Estimate |
 |---|---|
 | Disk | source about 10 to 15 GB unpacked, Chromium's clang and Rust about 3 GB, each output directory at `symbol_level=0` about 15 to 25 GB; two configurations (test targets, `chrome`) and room for a rebase: **about 80 GB used, 150 GB free asked** |

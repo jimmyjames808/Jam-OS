@@ -1,0 +1,48 @@
+Description: <sys/cdefs.h> only where there is one
+ PartitionAlloc's allocator shim, Crashpad's <sys/ptrace.h> wrapper and
+ libsync's sync.h include
+ <sys/cdefs.h>, glibc's (and the BSDs' and Android's) header of
+ declaration macros. musl has none (Alpine adds a BSD compatibility copy):
+ include it only when it is there. The shim's __THROW is then empty on
+ musl, matching musl's own declarations of malloc and the rest, which carry
+ no exception specification (as Alpine's copy defines it for C++).
+Forwarded: not-needed (Jam OS's; could go upstream with is_musl)
+---
+--- a/base/allocator/partition_allocator/src/partition_alloc/shim/allocator_shim_internals.h
++++ b/base/allocator/partition_allocator/src/partition_alloc/shim/allocator_shim_internals.h
+@@ -10,8 +10,10 @@
+
+ #if defined(__GNUC__)
+
+-#if PA_BUILDFLAG(IS_POSIX)
++#if PA_BUILDFLAG(IS_POSIX) && __has_include(<sys/cdefs.h>)
+ #include <sys/cdefs.h>  // for __THROW
++#elif PA_BUILDFLAG(IS_POSIX) && !defined(__THROW)
++#define __THROW  // musl: its declarations have no exception specification
+ #endif
+
+ #ifndef __THROW   // Not a glibc system
+--- a/third_party/crashpad/crashpad/compat/linux/sys/ptrace.h
++++ b/third_party/crashpad/crashpad/compat/linux/sys/ptrace.h
+@@ -18,7 +18,9 @@
+
+ #include_next <sys/ptrace.h>
+
++#if __has_include(<sys/cdefs.h>)
+ #include <sys/cdefs.h>
++#endif
+
+ // https://sourceware.org/bugzilla/show_bug.cgi?id=22433
+ #if !defined(PTRACE_GET_THREAD_AREA) && !defined(PT_GET_THREAD_AREA) && \
+--- a/third_party/libsync/src/include/ndk/sync.h
++++ b/third_party/libsync/src/include/ndk/sync.h
+@@ -27,7 +27,9 @@
+ #define ANDROID_SYNC_H
+
+ #include <stdint.h>
++#if __has_include(<sys/cdefs.h>)
+ #include <sys/cdefs.h>
++#endif
+
+ #include <linux/sync_file.h>
+

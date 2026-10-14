@@ -1,0 +1,91 @@
+Description: Linux's clipboard helpers without D-Bus
+ The Wayland and X11 platforms depend on //ui/base/clipboard:
+ clipboard_util_linux, which exists only with use_dbus: it asks the XDG
+ file transfer portal (over D-Bus) for files dragged or copied between
+ sandboxed apps. Jam OS has no D-Bus (use_dbus=false), so the target is
+ made without it there: the portal is simply not available, the answer the
+ code already handles (no portal key; the plain file URIs are used).
+Forwarded: not-needed (Jam OS's; upstream builds Linux with D-Bus: could go
+ upstream as a fix for use_dbus=false)
+---
+--- a/ui/base/clipboard/BUILD.gn
++++ b/ui/base/clipboard/BUILD.gn
+@@ -65,20 +65,24 @@
+   }
+ }
+
+-if (is_linux && use_dbus) {
++if (is_linux) {
+   source_set("clipboard_util_linux") {
+     sources = [
+       "clipboard_util_linux.cc",
+       "clipboard_util_linux.h",
+     ]
+
+     deps = [
+       ":file_info",
+       "//base",
+-      "//components/dbus",
+       "//net",
+       "//url",
+     ]
++    if (use_dbus) {
++      # Without D-Bus there is no XDG file transfer portal.
++      defines = [ "CLIPBOARD_UTIL_LINUX_PORTAL" ]
++      deps += [ "//components/dbus" ]
++    }
+   }
+ }
+
+--- a/ui/base/clipboard/clipboard_util_linux.cc
++++ b/ui/base/clipboard/clipboard_util_linux.cc
+@@ -7,7 +7,11 @@
+ #include "base/files/file_path.h"
++#include "base/functional/bind.h"
++#include "base/functional/callback.h"
+ #include "base/strings/string_split.h"
+ #include "base/strings/string_util.h"
++#if defined(CLIPBOARD_UTIL_LINUX_PORTAL)
+ #include "components/dbus/xdg/file_transfer_portal.h"
++#endif
+ #include "net/base/filename_util.h"
+ #include "url/gurl.h"
+
+@@ -62,6 +66,10 @@
+     return;
+   }
+
++#if !defined(CLIPBOARD_UTIL_LINUX_PORTAL)
++  // No D-Bus, no portal.
++  std::move(callback).Run("");
++#else
+   dbus_xdg::FileTransferPortal::IsAvailable(base::BindOnce(
+       [](std::vector<std::string> paths,
+          base::OnceCallback<void(std::string)> callback, bool available) {
+@@ -73,6 +81,7 @@
+                                                     std::move(callback));
+       },
+       std::move(paths), std::move(callback)));
++#endif
+ }
+
+ void ExtractPathsFromPortalKey(
+@@ -84,6 +93,10 @@
+   }
+
+   std::string key(key_data.begin(), key_data.end());
++#if !defined(CLIPBOARD_UTIL_LINUX_PORTAL)
++  // No D-Bus, no portal.
++  std::move(callback).Run({});
++#else
+   dbus_xdg::FileTransferPortal::IsAvailable(base::BindOnce(
+       [](std::string key,
+          base::OnceCallback<void(std::vector<std::string>)> callback,
+@@ -95,6 +108,7 @@
+         dbus_xdg::FileTransferPortal::RetrieveFiles(key, std::move(callback));
+       },
+       std::move(key), std::move(callback)));
++#endif
+ }
+
+ }  // namespace ui::clipboard_util
