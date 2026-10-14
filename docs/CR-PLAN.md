@@ -501,7 +501,13 @@ and Rust, through the ports builder. BUILD-RESULT-PLACEHOLDER
   call's own build step (8 CPUs by default) waits for room: status calls
   give `JAMOS_REMOTE_BUILD_CPUS=1` and a light claim. A claim whose memory
   does not fit beside what runs waits (a run of 18 GB beside a 2 GB test
-  in the 20 GB budget waited all night).
+  in the 20 GB budget waited all night). **WSL ends all of a user's
+  processes when their last session closes** (systemd's user sessions):
+  a build left alone on an otherwise idle PC was killed, with no trace,
+  the moment a status call ended and nothing else was connected. So a
+  `tools/cr/build.sh wait 36000` stays connected (a background
+  `tools/remote-test.sh` call, its light claim 1 CPU) for as long as the
+  build runs; with other agents' tests on the PC it never showed.
 - FIGURES-PLACEHOLDER
 
 ### 2. The address space: huge sparse reservations (the top risk)

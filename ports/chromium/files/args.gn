@@ -48,7 +48,8 @@ ozone_platform = "wayland"
 ozone_platform_wayland = true
 ozone_platform_x11 = false
 ozone_platform_headless = true
-use_wayland_gbm = false
+# Wayland's GBM stays on (Chromium 155's Wayland code calls gbm whatever the
+# argument), with Chromium's own minigbm: no GBM device ever opens on Jam OS.
 use_system_minigbm = false
 use_gtk = false
 use_qt5 = false

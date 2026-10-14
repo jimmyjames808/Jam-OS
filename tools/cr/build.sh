@@ -27,7 +27,12 @@
 # status  whether a build runs, its run, its time so far, ninja's last
 #         progress line, the peak memory so far; at the end its result,
 #         time, peak memory and disk
-# wait    status, after waiting up to <seconds> (270) for the build to end
+# wait    status, after waiting up to <seconds> (270) for the build to end.
+#         Keep one running for the whole build (a background
+#         `tools/remote-test.sh tools/cr/build.sh wait 36000`): WSL ends every
+#         process of the user's once their last session closes (seen
+#         2026-10-15: a build killed whenever no remote-test call was open)
+#         unless the machine runs other agents' tests meanwhile
 # stop    ends the running build (its session: nothing else is touched)
 # pkgs    the pkg-config packages GN asks for with the kept tree's args.gn
 #         (each one a system library the sysroot would need)
