@@ -31,6 +31,7 @@ package p-case.jpk refused
 package p-list.jpk refused
 package p-session.jpk refused
 package data.jpk ok
+package multi.jpk ok
 index INDEX-good ok
 index INDEX-good ok last=4
 index INDEX-good ok last=5:063e9ff94abc749ee2220089baa2972fe1c50f3f17b85b1cf6cefe08a2452ea4

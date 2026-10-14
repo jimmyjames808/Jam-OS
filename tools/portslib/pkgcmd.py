@@ -15,6 +15,10 @@ sections 6 to 8; the formats are the plan's "PO3 notes"):
         the formats' test vectors in ports/vectors: made afresh and
         compared with the committed ones, each checked as CASES says
         (make check); --write writes them
+    ports.py pkgfuzz DIR
+        mutated texts and archives from the vectors, with the reference
+        reader's answers, in DIR, for the C readers (tools/pkgcheck.c;
+        make check)
     ports.py abi
         the ABI stamp of this tree
 
@@ -65,6 +69,7 @@ def add_parsers(sub):
     p.add_argument("--last", type=int)
     p.add_argument("file", nargs="+")
     sub.add_parser("vectors").add_argument("--write", action="store_true")
+    sub.add_parser("pkgfuzz").add_argument("dir")
     sub.add_parser("abi")
 
 
@@ -79,8 +84,12 @@ def commands(top):
         from . import vectors
         return vectors.main(top, args.ports, args.write)
 
+    def cmd_pkgfuzz(args):
+        from . import pkgfuzz
+        return pkgfuzz.main(top, args.ports, os.path.abspath(args.dir))
+
     return {"package": cmd_package, "repo": cmd_repo, "verify": verify, "vectors": cmd_vectors,
-            "abi": lambda args: print(fmt.abi_stamp(top)) or 0}
+            "pkgfuzz": cmd_pkgfuzz, "abi": lambda args: print(fmt.abi_stamp(top)) or 0}
 
 
 def _tree(args):

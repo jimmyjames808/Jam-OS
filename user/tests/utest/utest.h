@@ -940,6 +940,16 @@ bool t_bootmenu_good(void);
 bool t_bootmenu_refusals(void);
 bool t_bootmenu_files(void);
 bool t_bootmenu_fuzz(void);
+/* pkgfmt.c: the ports formats (<pkgfmt.h>), over PO3's vectors; the
+ * checks themselves are pkgcases.c, pkgfuzz.c, pkgjnl.c, pkgmisc.c (shared
+ * with the Mac's tools/pkgcheck.c). */
+bool t_pkgfmt_vectors(void);
+bool t_pkgfmt_misc(void);
+bool t_pkgfmt_table_is_allowd(void);
+bool t_pkgfmt_lists_are_allows(void);
+bool t_pkgfmt_note_is_wants(void);
+bool t_pkgfmt_journal(void);
+bool t_pkgfmt_fuzz(void);
 bool t_netlog_golden(void);
 bool t_netlog_hostile(void);
 bool t_netlog_whole_log(void);
