@@ -6,7 +6,8 @@ Description: Linux without NSS: the Chrome Root Store alone
  there the verifier uses the Chrome Root Store alone, as ChromeOS's does
  (CreateChromeOnlySystemTrustStore). The cert verifier service's report
  of the platform's root store (GetPlatformRootStoreInfo) takes the same
- store, so it reports no platform roots.
+ store, so it reports no platform roots, and so does the cert verifier
+ service's own verifier (cert_verifier_creation.cc).
 Forwarded: not-needed (Jam OS's; could go upstream: Linux without NSS)
 ---
 --- a/net/cert/cert_verify_proc.cc
@@ -34,3 +35,14 @@ Forwarded: not-needed (Jam OS's; could go upstream: Linux without NSS)
            std::make_unique<net::TrustStoreChrome>());
  
    net::PlatformTrustStore* platform_trust_store =
+--- a/services/cert_verifier/cert_verifier_creation.cc
++++ b/services/cert_verifier/cert_verifier_creation.cc
+@@ -129,7 +129,7 @@
+                                                 root_store_mtc_metadata);
+ 
+     std::unique_ptr<net::SystemTrustStore> trust_store;
+-#if BUILDFLAG(IS_CHROMEOS)
++#if BUILDFLAG(IS_CHROMEOS) || (BUILDFLAG(IS_LINUX) && !BUILDFLAG(USE_NSS_SERVER_CERTS))
+     trust_store = net::CreateChromeOnlySystemTrustStore(std::move(chrome_root));
+ #else
+     if (instance_params.include_system_trust_store) {
