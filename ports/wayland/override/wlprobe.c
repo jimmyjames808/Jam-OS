@@ -204,6 +204,7 @@ struct env {
     struct kev ke[MAXKE];
     int nke;
     uint32_t kbd_enter_serial;
+    struct wl_surface *kbd_on;   /* the surface the last enter named, NULL after a leave */
     struct xkb_context *xctx;
     struct xkb_keymap *xmap;
     struct xkb_state *xstate;
@@ -568,17 +569,20 @@ static void on_kbd_enter(void *data, struct wl_keyboard *k, uint32_t serial,
                          struct wl_surface *s, struct wl_array *keys)
 {
     struct env *e = data;
-    (void)k, (void)s, (void)keys;
+    (void)k, (void)keys;
     e->last_serial = serial;
     e->kbd_enter_serial = serial;
+    e->kbd_on = s;
     ke_add(e, (struct kev){ .t = KE_ENTER, .serial = serial });
 }
 
 static void on_kbd_leave(void *data, struct wl_keyboard *k, uint32_t serial, struct wl_surface *s)
 {
     struct env *e = data;
-    (void)k, (void)s;
+    (void)k;
     e->last_serial = serial;
+    if (e->kbd_on == s)
+        e->kbd_on = NULL;
     ke_add(e, (struct kev){ .t = KE_LEAVE, .serial = serial });
 }
 
@@ -1922,104 +1926,340 @@ static void case_parent(void)
     env_close(&e);
 }
 
-/* popup: an xdg_popup with a grab (Chromium's menus, tooltips and <select>
- * lists) is configured at the place its positioner says and stays up: popup_done
- * must not come while nothing was clicked. (GC3 builds popups: until then the
- * compositor dismisses them at once.) */
-struct popup {
+/* ---- popups (Chromium's menus, tooltips and <select> lists) -------------------------------------- */
+
+/* A popup and what the compositor told it. */
+struct pup {
+    struct env *e;
+    struct wl_surface *surf;
+    struct xdg_surface *xs;
+    struct xdg_popup *p;
     bool configured, done;
-    int x, y, w, h;
-    unsigned acked;
+    int x, y, w, h;           /* the newest xdg_popup.configure */
+    unsigned confs, acked;    /* xdg_popup.configure and xdg_surface.configure events */
+    bool repositioned;
+    uint32_t token;
 };
 
-static void on_popup_configure(void *data, struct xdg_popup *p, int32_t x, int32_t y, int32_t w,
-                               int32_t h)
+/* What a positioner says. */
+struct pspec {
+    int w, h, ax, ay, aw, ah;
+    uint32_t anchor, gravity, adjust;
+};
+
+static void on_pup_configure(void *data, struct xdg_popup *p, int32_t x, int32_t y, int32_t w,
+                             int32_t h)
 {
-    struct popup *pu = data;
+    struct pup *pu = data;
     (void)p;
     pu->configured = true;
+    pu->confs++;
     pu->x = x, pu->y = y, pu->w = w, pu->h = h;
 }
 
-static void on_popup_done(void *data, struct xdg_popup *p)
+static void on_pup_done(void *data, struct xdg_popup *p)
 {
-    struct popup *pu = data;
+    struct pup *pu = data;
     (void)p;
     pu->done = true;
 }
 
-static void on_popup_repositioned(void *data, struct xdg_popup *p, uint32_t token)
+static void on_pup_repositioned(void *data, struct xdg_popup *p, uint32_t token)
 {
-    (void)data, (void)p, (void)token;
+    struct pup *pu = data;
+    (void)p;
+    pu->repositioned = true;
+    pu->token = token;
 }
 
-static const struct xdg_popup_listener popup_listener = {
-    on_popup_configure, on_popup_done, on_popup_repositioned,
+static const struct xdg_popup_listener pup_listener = {
+    on_pup_configure, on_pup_done, on_pup_repositioned,
 };
 
-static void on_popup_xs_configure(void *data, struct xdg_surface *xs, uint32_t serial)
+static void on_pup_xs_configure(void *data, struct xdg_surface *xs, uint32_t serial)
 {
-    struct popup *pu = data;
+    struct pup *pu = data;
     xdg_surface_ack_configure(xs, serial);
     pu->acked++;
 }
 
-static const struct xdg_surface_listener popup_xs_listener = { on_popup_xs_configure };
+static const struct xdg_surface_listener pup_xs_listener = { on_pup_xs_configure };
 
-static void fill_popup(uint32_t *px, int w, int h, void *user)
+static struct xdg_positioner *pos_make(struct env *e, const struct pspec *s)
 {
-    (void)user;
-    rect(px, w, h, 0, 0, w, h, 0xffe0c030u);
+    struct xdg_positioner *pos = xdg_wm_base_create_positioner(e->wm);
+    xdg_positioner_set_size(pos, s->w, s->h);
+    xdg_positioner_set_anchor_rect(pos, s->ax, s->ay, s->aw, s->ah);
+    xdg_positioner_set_anchor(pos, s->anchor);
+    xdg_positioner_set_gravity(pos, s->gravity);
+    xdg_positioner_set_constraint_adjustment(pos, s->adjust);
+    return pos;
 }
 
+/* A popup on parent placed by s, grabbing with serial (0: no grab), up to its
+ * initial commit: true once its configure (or popup_done) came, within 3 s. */
+static bool pup_open(struct env *e, struct pup *pu, struct xdg_surface *parent,
+                     const struct pspec *s, uint32_t grab)
+{
+    memset(pu, 0, sizeof(*pu));
+    pu->e = e;
+    struct xdg_positioner *pos = pos_make(e, s);
+    pu->surf = wl_compositor_create_surface(e->comp);
+    pu->xs = xdg_wm_base_get_xdg_surface(e->wm, pu->surf);
+    xdg_surface_add_listener(pu->xs, &pup_xs_listener, pu);
+    pu->p = xdg_surface_get_popup(pu->xs, parent, pos);
+    xdg_popup_add_listener(pu->p, &pup_listener, pu);
+    if (grab)
+        xdg_popup_grab(pu->p, e->seat, grab);
+    wl_surface_commit(pu->surf);
+    xdg_positioner_destroy(pos);
+    return WAIT(e, pu->acked > 0 || pu->done, 3000);
+}
+
+static void fill_colour(uint32_t *px, int w, int h, void *user)
+{
+    rect(px, w, h, 0, 0, w, h, *(const uint32_t *)user);
+}
+
+/* Drawn in colour at the size of its newest configure. */
+static void pup_draw(struct pup *pu, uint32_t colour)
+{
+    struct wl_buffer *b = buf_make(pu->e, pu->w, pu->h, WL_SHM_FORMAT_ARGB8888, fill_colour,
+                                   &colour);
+    if (!b)
+        return;
+    wl_surface_attach(pu->surf, b, 0, 0);
+    wl_surface_damage_buffer(pu->surf, 0, 0, pu->w, pu->h);
+    wl_surface_commit(pu->surf);
+}
+
+static void pup_close(struct pup *pu)
+{
+    if (!pu->surf)
+        return;
+    xdg_popup_destroy(pu->p);
+    xdg_surface_destroy(pu->xs);
+    wl_surface_destroy(pu->surf);
+    pu->surf = NULL;
+}
+
+/* The usual start of a popup case: a decorated window with the keys. */
+static bool pup_window(struct env *e, struct win *w, const char *title)
+{
+    if (!env_open(e, 0))
+        return false;
+    if (!env_need_window(e) || !env_keyboard(e) || !win_open(e, w, WF_DECO, title)) {
+        env_close(e);
+        return false;
+    }
+    if (!WAIT(e, e->kbd_enter_serial != 0, 3000)) {
+        fail("the new window got no wl_keyboard.enter");
+        env_close(e);
+        return false;
+    }
+    return true;
+}
+
+#define PA(x) XDG_POSITIONER_ANCHOR_##x
+#define PG(x) XDG_POSITIONER_GRAVITY_##x
+
+/* REQUIRE that closes the case's connection (its window goes, so the next
+ * case's window takes the keys): to the case's `out` label. */
+#define NEED(cond, ...) do { if (!(cond)) { fail(__VA_ARGS__); goto out; } } while (0)
+
+/* The serial of the newest button press the pointer got, 0: none. */
+static uint32_t pressed_serial(const struct env *e)
+{
+    for (int i = e->npe - 1; i >= 0; i--)
+        if (e->pe[i].t == PE_BUTTON && e->pe[i].b == WL_POINTER_BUTTON_STATE_PRESSED)
+            return e->pe[i].serial;
+    return 0;
+}
+
+/* popup: an xdg_popup with a grab (a menu) is configured at the place its
+ * positioner says, stays up (popup_done must not come while nothing was
+ * clicked), and has the keys while it is up (wl_keyboard.enter on it). */
 static void case_popup(void)
 {
     struct env e;
-    if (!env_open(&e, 0))
-        return;
-    if (!env_need_window(&e) || !env_keyboard(&e)) {
-        env_close(&e);
-        return;
-    }
     struct win w;
-    if (!win_open(&e, &w, WF_DECO, "wlprobe popup")) {
-        env_close(&e);
+    if (!pup_window(&e, &w, "wlprobe popup"))
         return;
-    }
-    REQUIRE(WAIT(&e, e.kbd_enter_serial != 0, 3000), "the new window got no wl_keyboard.enter");
-    struct xdg_positioner *pos = xdg_wm_base_create_positioner(e.wm);
-    xdg_positioner_set_size(pos, 120, 80);
-    xdg_positioner_set_anchor_rect(pos, 20, 20, 10, 10);
-    xdg_positioner_set_anchor(pos, XDG_POSITIONER_ANCHOR_BOTTOM_RIGHT);
-    xdg_positioner_set_gravity(pos, XDG_POSITIONER_GRAVITY_BOTTOM_RIGHT);
-    struct popup pu = { 0 };
-    struct wl_surface *surf = wl_compositor_create_surface(e.comp);
-    struct xdg_surface *xs = xdg_wm_base_get_xdg_surface(e.wm, surf);
-    xdg_surface_add_listener(xs, &popup_xs_listener, &pu);
-    struct xdg_popup *popup = xdg_surface_get_popup(xs, w.xs, pos);
-    xdg_popup_add_listener(popup, &popup_listener, &pu);
-    xdg_popup_grab(popup, e.seat, e.kbd_enter_serial);
-    wl_surface_commit(surf);
-    xdg_positioner_destroy(pos);
-    bool conf = WAIT(&e, pu.acked > 0 || pu.done, 3000);
+    struct pup pu;
+    const struct pspec s = { 120, 80, 20, 20, 10, 10, PA(BOTTOM_RIGHT), PG(BOTTOM_RIGHT), 0 };
+    bool conf = pup_open(&e, &pu, w.xs, &s, e.kbd_enter_serial);
     CHECK(conf, "no configure for the popup within 3 s");
-    if (conf && !pu.done) {
-        struct wl_buffer *b = buf_make(&e, 120, 80, WL_SHM_FORMAT_ARGB8888, fill_popup, NULL);
-        if (b) {
-            wl_surface_attach(surf, b, 0, 0);
-            wl_surface_damage_buffer(surf, 0, 0, 120, 80);
-            wl_surface_commit(surf);
-        }
-    }
+    if (conf && !pu.done)
+        pup_draw(&pu, 0xffe0c030u);
     say("popup configure %d,%d %dx%d%s", pu.x, pu.y, pu.w, pu.h, pu.done ? " then popup_done" : "");
     hold_for(&e, 1.5);
-    CHECK(!pu.done, "the popup was dismissed (popup_done) with nothing clicked: popups are not built (GC3)");
+    CHECK(!pu.done, "the popup was dismissed (popup_done) with nothing clicked");
     CHECK(pu.configured, "no xdg_popup.configure");
     if (pu.configured)
         CHECK(pu.x == 30 && pu.y == 30 && pu.w == 120 && pu.h == 80,
               "popup placed at %d,%d %dx%d, wanted 30,30 120x80", pu.x, pu.y, pu.w, pu.h);
+    CHECK(e.kbd_on == pu.surf, "the grabbing popup did not get the keys (wl_keyboard.enter)");
     if (!pu.done)
-        seen("popup at %d,%d %dx%d stayed up", pu.x, pu.y, pu.w, pu.h);
+        seen("popup at %d,%d %dx%d stayed up with the keys", pu.x, pu.y, pu.w, pu.h);
+    pup_close(&pu);
+    CHECK(WAIT(&e, e.kbd_on == w.surf, 2000), "the keys did not come back to the window");
+    env_close(&e);
+}
+
+/* popup-nested: a menu and its submenu, both grabbing: the keys go to the
+ * topmost, and back down the chain as each is destroyed. */
+static void case_popup_nested(void)
+{
+    struct env e;
+    struct win w;
+    if (!pup_window(&e, &w, "wlprobe popup-nested"))
+        return;
+    struct pup m, sub;
+    const struct pspec ms = { 120, 80, 20, 20, 10, 10, PA(BOTTOM_RIGHT), PG(BOTTOM_RIGHT), 0 };
+    const struct pspec ss = { 100, 60, 110, 10, 10, 10, PA(TOP_RIGHT), PG(BOTTOM_RIGHT), 0 };
+    NEED(pup_open(&e, &m, w.xs, &ms, e.kbd_enter_serial) && !m.done, "the menu was not configured");
+    pup_draw(&m, 0xffe0c030u);
+    NEED(WAIT(&e, e.kbd_on == m.surf, 2000), "the menu did not get the keys");
+    NEED(pup_open(&e, &sub, m.xs, &ss, e.kbd_enter_serial) && !sub.done,
+            "the submenu was not configured");
+    CHECK(sub.x == 120 && sub.y == 10, "submenu placed at %d,%d, wanted 120,10", sub.x, sub.y);
+    pup_draw(&sub, 0xff30a0e0u);
+    CHECK(WAIT(&e, e.kbd_on == sub.surf, 2000), "the submenu did not get the keys");
+    hold_for(&e, 0.5);
+    CHECK(!m.done && !sub.done, "dismissed with nothing clicked");
+    pup_close(&sub);
+    CHECK(WAIT(&e, e.kbd_on == m.surf, 2000), "the keys did not go back to the menu");
+    pup_close(&m);
+    CHECK(WAIT(&e, e.kbd_on == w.surf, 2000), "the keys did not go back to the window");
+    CHECK(roundtrip(&e), "protocol error %s code %d", e.err_iface ? e.err_iface : "-", e.err_code);
+    seen("menu, submenu, the keys up the chain and back");
+out:
+    env_close(&e);
+}
+
+/* popup-reposition: xdg_popup.reposition (version 3): repositioned with the
+ * token, then a configure at the new place. */
+static void case_popup_reposition(void)
+{
+    struct env e;
+    struct win w;
+    if (!pup_window(&e, &w, "wlprobe popup-reposition"))
+        return;
+    NEED(e.wm_ver >= 3, "xdg_wm_base bound at %u: no reposition", e.wm_ver);
+    struct pup pu;
+    const struct pspec a = { 80, 40, 10, 10, 10, 10, PA(BOTTOM_RIGHT), PG(BOTTOM_RIGHT), 0 };
+    const struct pspec b = { 90, 50, 50, 60, 10, 10, PA(TOP_LEFT), PG(BOTTOM_RIGHT), 0 };
+    NEED(pup_open(&e, &pu, w.xs, &a, 0) && !pu.done, "the popup was not configured");
+    pup_draw(&pu, 0xffe0c030u);
+    struct xdg_positioner *pos = pos_make(&e, &b);
+    xdg_popup_reposition(pu.p, pos, 42);
+    xdg_positioner_destroy(pos);
+    bool moved = WAIT(&e, pu.confs >= 2, 3000);
+    CHECK(moved, "no configure after reposition");
+    CHECK(pu.repositioned && pu.token == 42, "repositioned %s (token %u)",
+          pu.repositioned ? "came" : "did not come", pu.token);
+    if (moved)
+        CHECK(pu.x == 50 && pu.y == 60 && pu.w == 90 && pu.h == 50,
+              "placed again at %d,%d %dx%d, wanted 50,60 90x50", pu.x, pu.y, pu.w, pu.h);
+    pup_draw(&pu, 0xffe0c030u);
+    CHECK(roundtrip(&e) && !pu.done, "protocol error or dismissed");
+    if (moved)
+        seen("repositioned 42, then %d,%d %dx%d", pu.x, pu.y, pu.w, pu.h);
+out:
+    env_close(&e);
+}
+
+/* popup-flip: a popup taller than the room below its anchor at the window's
+ * bottom, with flip_y: placed above the anchor instead. */
+static void case_popup_flip(void)
+{
+    struct env e;
+    struct win w;
+    if (!pup_window(&e, &w, "wlprobe popup-flip"))
+        return;
+    int h = w.bh - 20;
+    const struct pspec s = { 100, h, 10, w.bh - 10, 10, 10, PA(BOTTOM), PG(BOTTOM),
+                             XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_FLIP_Y };
+    struct pup pu;
+    NEED(pup_open(&e, &pu, w.xs, &s, 0) && !pu.done, "the popup was not configured");
+    CHECK(pu.y == 10 && pu.h == h && pu.x == -35,
+          "a %dx%d popup at the %dx%d window's bottom placed at %d,%d %dx%d, wanted -35,10 (flipped up)",
+          100, h, w.bw, w.bh, pu.x, pu.y, pu.w, pu.h);
+    pup_draw(&pu, 0xffe0c030u);
+    CHECK(roundtrip(&e) && !pu.done, "protocol error or dismissed");
+    seen("flipped above its anchor: %d,%d %dx%d", pu.x, pu.y, pu.w, pu.h);
+out:
+    env_close(&e);
+}
+
+/* popup-tooltip: a popup with no grab (a tooltip) takes no keys and stays up. */
+static void case_popup_tooltip(void)
+{
+    struct env e;
+    struct win w;
+    if (!pup_window(&e, &w, "wlprobe popup-tooltip"))
+        return;
+    const struct pspec s = { 100, 24, 40, 40, 1, 1, PA(BOTTOM_RIGHT), PG(BOTTOM_RIGHT), 0 };
+    struct pup pu;
+    NEED(pup_open(&e, &pu, w.xs, &s, 0) && !pu.done, "the tooltip was not configured");
+    pup_draw(&pu, 0xfff0f0c0u);
+    hold_for(&e, 1.0);
+    CHECK(!pu.done, "the tooltip was dismissed");
+    CHECK(e.kbd_on == w.surf, "the keys left the window for the tooltip");
+    seen("at %d,%d %dx%d, up, the keys still the window's", pu.x, pu.y, pu.w, pu.h);
+out:
+    env_close(&e);
+}
+
+/* popup-parent: the parent window unmapped (a null buffer): its popup is
+ * dismissed. */
+static void case_popup_parent(void)
+{
+    struct env e;
+    struct win w;
+    if (!pup_window(&e, &w, "wlprobe popup-parent"))
+        return;
+    const struct pspec s = { 80, 40, 10, 10, 10, 10, PA(BOTTOM_RIGHT), PG(BOTTOM_RIGHT), 0 };
+    struct pup pu;
+    NEED(pup_open(&e, &pu, w.xs, &s, 0) && !pu.done, "the popup was not configured");
+    pup_draw(&pu, 0xffe0c030u);
+    hold_for(&e, 0.3);
+    wl_surface_attach(w.surf, NULL, 0, 0);
+    wl_surface_commit(w.surf);
+    CHECK(WAIT(&e, pu.done, 3000), "no popup_done when its parent was unmapped");
+    if (pu.done)
+        seen("popup_done when its parent went");
+out:
+    env_close(&e);
+}
+
+/* popup-click: a click on the window opens a menu that grabs with the click's
+ * serial; a click outside the menu's client (the script's, on the terminal)
+ * dismisses it, and the keys come back to the window. */
+static void case_popup_click(void)
+{
+    struct env e;
+    struct win w;
+    if (!pup_window(&e, &w, "wlprobe popup-click"))
+        return;
+    NEED(env_pointer(&e), "no pointer");
+    say("ready");
+    uint32_t serial = 0;
+    bool pressed = WAIT(&e, (serial = pressed_serial(&e)) != 0, g_wait * 1000);
+    NEED(pressed, "no button press on the window within %d s", g_wait);
+    const struct pspec s = { 160, 100, 20, 20, 10, 10, PA(BOTTOM_RIGHT), PG(BOTTOM_RIGHT), 0 };
+    struct pup m;
+    NEED(pup_open(&e, &m, w.xs, &s, serial) && !m.done, "the menu was not configured");
+    pup_draw(&m, 0xffe0c030u);
+    CHECK(WAIT(&e, e.kbd_on == m.surf, 2000), "the menu did not get the keys");
+    say("menu up");
+    double t0 = now_s();
+    bool done = WAIT(&e, m.done, g_wait * 1000);
+    CHECK(done, "no popup_done within %d s of the menu showing", g_wait);
+    CHECK(WAIT(&e, e.kbd_on == w.surf, 2000), "the keys did not come back to the window");
+    if (done)
+        seen("dismissed by the click outside after %.1f s, the keys back", now_s() - t0);
+out:
     env_close(&e);
 }
 
@@ -2754,7 +2994,12 @@ static const struct {
     { "limits-error", case_limits_error, K_AUTO, "a maximum under the minimum is xdg_toplevel invalid_size" },
     { "serial-error", case_serial_error, K_AUTO, "ack_configure of a serial never sent is invalid_serial" },
     { "parent", case_parent, K_AUTO, "set_parent accepted; a window as its own parent is invalid_parent" },
-    { "popup", case_popup, K_AUTO, "an xdg_popup with a grab is configured where its positioner says and stays up (GC3)" },
+    { "popup", case_popup, K_AUTO, "an xdg_popup with a grab is configured where its positioner says, stays up, has the keys" },
+    { "popup-nested", case_popup_nested, K_AUTO, "a menu and a submenu grabbing: the keys to the topmost and back down" },
+    { "popup-reposition", case_popup_reposition, K_AUTO, "xdg_popup.reposition: repositioned with the token, a new configure" },
+    { "popup-flip", case_popup_flip, K_AUTO, "a popup with no room below its anchor flipped above it (flip_y)" },
+    { "popup-tooltip", case_popup_tooltip, K_AUTO, "a popup with no grab takes no keys and stays up" },
+    { "popup-parent", case_popup_parent, K_AUTO, "a popup dismissed when its parent window is unmapped" },
     { "big-buffer", case_big_buffer, K_AUTO, "three 2560x1440 buffers (14.7 MB each), each a new pool" },
     { "resize-storm", case_resize_storm, K_AUTO, "40 maximize/unmaximize requests unanswered, repainted at each configure" },
     { "reuse", case_reuse, K_AUTO, "a wl_surface mapped twice: its xdg objects destroyed and made again" },
@@ -2770,6 +3015,7 @@ static const struct {
     { "keyboard", case_keyboard, K_INPUT, "keyboard enter, keys through the keymap, modifiers (injected)" },
     { "cursor-shape", case_cursor_shape, K_INPUT, "wp_cursor_shape_device_v1 shapes (injected pointer, 3 shots)" },
     { "keyless-click", case_keyless_click, K_INPUT, "a click on a keyless window activates it (injected)" },
+    { "popup-click", case_popup_click, K_INPUT, "a click opens a grabbing menu, a click outside dismisses it (injected)" },
     { "close", case_close, K_INPUT, "Super+Q: xdg_toplevel.close, then a ping (injected)" },
     { "cursor-surface", case_cursor_surface, K_INPUT, "wl_pointer.set_cursor with the client's own surface, then none (injected pointer, 2 shots)" },
     { "clipboard-out", case_clipboard_out, K_INPUT, "the window's selection pasted into a terminal (injected)" },

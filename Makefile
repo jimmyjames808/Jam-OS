@@ -484,7 +484,8 @@ EXTRA_CFLAGS_init := -I$(MONO_DIR) -I$(MONO_DIR)/optional
 # title.c's title bar boxes and the masks (mask.c) and libfun they draw
 # with, and the desktop's logic around them (utest/compdesk*.c: screens,
 # the animations' clock, the strip's layout, the menus, popovers and
-# notifications, desk.c; none of their drawing), and the console's window
+# notifications, desk.c; none of their drawing), and where a positioner
+# puts a popup (utest/compplace.c: xdgplace.c), and the console's window
 # mode's pure parts (utest/conwin.c, conpaint.c, consel.c:
 # wlinput.c, cellpaint.c, view.c, select.c and their console.h), and the
 # shell's bracketed paste (utest/shpaste.c: sh_paste.c and sh_paste.h), and
@@ -503,7 +504,7 @@ EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/serv
                       $(patsubst %,$(UOBJ)/drivers/rtl8125/%.c.o,guard regs chip tx) \
                       $(patsubst %,$(UOBJ)/user/services/compositor/%.c.o,region scene wm wmtile wmkeys \
                         wmgrab wmsave deco title mask screens anim strip menus popover notify desk \
-                        cursors) \
+                        cursors xdgplace) \
                       $(CURSOR_OBJ) $(patsubst %,$(UOBJ)/user/services/console/%.c.o,wlinput \
                         cellpaint view select) $(UOBJ)/user/services/shell/sh_paste.c.o \
                       $(UOBJ)/user/tests/exectest/client.c.o $(UOBJ)/libfun.a

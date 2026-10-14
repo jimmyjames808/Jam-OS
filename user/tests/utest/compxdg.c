@@ -4,8 +4,9 @@
  * own decisions are compwm.c's; here, what a client sees of them: the
  * configure and ack sequence, where its pixels land (a tile whose client
  * hasn't drawn its new size yet: its last picture clipped or padded in its
- * colour, xdg_tile_resize), every protocol error xdg-shell names, and
- * popups dismissed at once.
+ * colour, xdg_tile_resize), every protocol error xdg-shell names, and a
+ * popup shown where its positioner says (comppopup.c has the rest of
+ * popups).
  *
  * The output is 320x240. Decorations are drawn (title.c, shape.c), so the
  * checks that want the wallpaper (comp_ref.c's) look past them: a floating
@@ -404,13 +405,24 @@ bool t_xdg_tiling(void)
 
 /* ---- popups, and requests that do nothing ---------------------------------------------- */
 
-static bool popup_steps(struct xc *x)
+/* A popup on a 64x64 toplevel (its surface at (128, 88)), 100x50 below the
+ * middle of the anchor rectangle's bottom, moved by the offset: configured
+ * at (-50, 15) (inside the output: no adjustment), shown there, over the
+ * wallpaper and its parent; destroyed, gone. Minimising an unmapped
+ * toplevel does nothing. (comppopup.c has the rest.) */
+static bool popup_steps(struct ct_comp *p, struct xc *x)
 {
     struct tl t;
     struct cfg c;
     CHECK(toplevel(x, &t));
     CHECK(ack_commit(x, &t, NULL, 0));
     CHECK(configured(x, &t, &c));
+    /* minimising: ignored while unmapped, as the protocol allows (move,
+     * resize, the window menu and a popup's grab name a wl_seat: the
+     * seat's tests) */
+    CHECK_ST(jwl_xdg_toplevel_set_minimized(x->k.c, t.top), OK);
+    CHECK(ack_commit(x, &t, &c, buffer(x, 0, 64, 64, RED)));
+    CHECK(pixel(p, 128 + 32, 88 + 32, RED));
     uint32_t pos = ct_new(&x->k, &jwl_xdg_positioner_interface, 1), ps, pxs;
     CHECK(pos);
     CHECK_ST(jwl_xdg_wm_base_create_positioner(x->k.c, x->wm, pos), OK);
@@ -424,15 +436,28 @@ static bool popup_steps(struct xc *x)
     uint32_t popup = ct_new(&x->k, &jwl_xdg_popup_interface, 1);
     CHECK(popup);
     CHECK_ST(jwl_xdg_surface_get_popup(x->k.c, pxs, popup, t.xs, pos), OK);
-    CHECK(ct_await(&x->k, &jwl_xdg_popup_interface, JWL_XDG_POPUP_EV_POPUP_DONE, popup, CT_WAIT));
-    /* minimising: ignored, as the protocol allows (move, resize, the window
-     * menu and a popup's grab name a wl_seat: the seat's tests) */
-    CHECK_ST(jwl_xdg_toplevel_set_minimized(x->k.c, t.top), OK);
+    ct_clear(&x->k);
+    CHECK_ST(jwl_wl_surface_commit(x->k.c, ps), OK);   /* its initial commit */
+    CHECK_ST(ct_roundtrip(&x->k), OK);
+    const struct ct_event *e = last(&x->k, &jwl_xdg_popup_interface, JWL_XDG_POPUP_EV_CONFIGURE,
+                                    popup);
+    const struct ct_event *s = last(&x->k, &jwl_xdg_surface_interface,
+                                    JWL_XDG_SURFACE_EV_CONFIGURE, pxs);
+    CHECK(e && s);
+    CHECK((int32_t)e->u[0] == -50 && e->u[1] == 15 && e->u[2] == 100 && e->u[3] == 50);
+    CHECK_ST(jwl_xdg_surface_ack_configure(x->k.c, pxs, s->u[0]), OK);
+    CHECK_ST(jwl_wl_surface_attach(x->k.c, ps, buffer(x, 16384, 100, 50, GREEN), 0, 0), OK);
+    CHECK_ST(jwl_wl_surface_commit(x->k.c, ps), OK);
+    CHECK_ST(ct_roundtrip(&x->k), OK);
+    CHECK(pixel(p, 128 - 50 + 1, 88 + 15 + 1, GREEN));   /* over the wallpaper */
+    CHECK(pixel(p, 128 + 40, 88 + 40, GREEN));           /* over its parent */
+    CHECK(!ct_find(&x->k, &jwl_xdg_popup_interface, JWL_XDG_POPUP_EV_POPUP_DONE, popup));
     CHECK_ST(jwl_xdg_popup_destroy(x->k.c, popup), OK);
     CHECK_ST(jwl_xdg_surface_destroy(x->k.c, pxs), OK);
     CHECK_ST(jwl_wl_surface_destroy(x->k.c, ps), OK);
     CHECK_ST(jwl_xdg_positioner_destroy(x->k.c, pos), OK);
     CHECK_ST(ct_roundtrip(&x->k), OK);
+    CHECK(pixel(p, 128 + 40, 88 + 40, RED));
     CHECK(!x->k.errored);
     return true;
 }
@@ -443,7 +468,7 @@ bool t_xdg_popup(void)
     struct ct_comp p;
     CHECK(ct_start(&p, W, H));
     CHECK(xc_open(&p, &x));
-    bool ok = popup_steps(&x);
+    bool ok = popup_steps(&p, &x);
     xc_close(&x);
     CHECK(ct_stop(&p));
     return ok;

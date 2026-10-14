@@ -108,9 +108,12 @@ uint32_t keyboard_mods(uint8_t hid_mods);
 /* The modifiers every keyboard holds now (INPUT_MOD_*): a press's, for
  * Super+drag. */
 uint8_t  keyboard_held_mods(void);
-/* The focus left w's client's keyboards / arrived on w (enter with the keys held). */
+/* The focus left w's client's keyboards (leave on the surface that had the
+ * keys) / arrived on w (enter with the keys held, on xdg_key_surface's). */
 void     keyboard_leave(struct comp_window *w);
 void     keyboard_enter(struct comp_window *w);
+/* s goes (seat_surface_gone): if it had the keys, no leave is owed for it. */
+void     keyboard_surface_gone(struct comp_surface *s);
 
 /* pointer.c */
 void     pointer_init_position(void);

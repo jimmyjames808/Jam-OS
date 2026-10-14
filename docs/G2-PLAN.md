@@ -206,7 +206,7 @@ newer versions is harmless.
 | `wl_seat` | without it a warning and no input | 9 | nothing; its own xkbcommon compiles our keymap |
 | `wl_output` | screen size and scale | 4 | nothing |
 | `wl_subcompositor` | windows of type popup and bubble with a parent are `WaylandBubble`s, drawn as a desynchronised **subsurface** of their parent (chrome's omnibox list, its bubbles); also every window's primary subsurface when overlay delegation is on (only with `wp_viewporter`) | 1 | **GC2** (built: [notes](#gc2-notes)): needed by `chrome`; `content_shell` may never make one (*unsure*) |
-| `xdg_popup` with grabs | windows of type menu and tooltip are `WaylandPopup`s: menus, tooltips, `<select>` lists | dismissed at once | **GC3** |
+| `xdg_popup` with grabs | windows of type menu and tooltip are `WaylandPopup`s: menus, tooltips, `<select>` lists | real, with grabs (3) | **GC3** (built: [notes](#gc3-notes)) |
 | `zxdg_decoration_manager_v1` | at most 1; asks per toplevel | 1 | **GC1b**: the owner's rule (section 3) |
 | `wl_data_device_manager` | clipboard (and drag and drop) | 3, text | nothing; drag and drop later |
 | `wp_cursor_shape_manager_v1` | cursors by name, no theme needed | 2 | nothing |
@@ -742,7 +742,7 @@ for swayimg (it renders with OpenGL).
 |---|---|
 | libc (`user/posix/sys/`) | `connect` on `AF_UNIX` `SOCK_STREAM` to a path in the service-socket table (today `/svc/wayland`); the Wayland socket descriptor kind: `sendmsg`/`recvmsg` with `SCM_RIGHTS` on it, `MSG_CTRUNC`, `MSG_CMSG_CLOEXEC`; the descriptor-to-handle and handle-to-descriptor tables of section 1, in a file of their own that the Chromium plan's socketpair `SCM_RIGHTS` shares. After Chromium, by need (GS2): `getsockopt(SO_PEERCRED)`, `timerfd_*`, `fallocate` |
 | the compositor's globals and versions | `wl_compositor` 6, `wl_subcompositor` 1, `wl_shm` 2, `wl_output` 4, `wl_seat` 9, `xdg_wm_base` 6, real `xdg_popup` (3), `zxdg_decoration_manager_v1` 1 under the owner's rule (section 3): the set a client may count on is part of what M14 freezes (G1's protocol is M12's). Relative pointer and pointer constraints after Chromium |
-| new caps | subsurface tree depth (8) and children per surface (32); popups per client |
+| new caps | subsurface tree depth (8) and children per surface (32); popups per client (32) and nested (8) |
 | libjwl | windows bind the decoration manager and ask server-side (`user/lib/jwl_window.c`; GC1, built) |
 | the shell's environment | `WAYLAND_DISPLAY`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_DATA_DIRS`, `FONTCONFIG_FILE`, and `XDG_RUNTIME_DIR` (Q10) |
 | M13.7's recipes | host builds and data ports (GP1); `desktop <program> <name> <summary>` (Q9, if GD runs) |
@@ -984,7 +984,7 @@ the docs.
 | **GC1. Versions and decorations** | built 2026-10-11 ([notes](#gc1-notes)) | | | | |
 | **GC1b. The owner's decoration rule, and window geometry** | section 3: a client that bound the manager gets server-side on every toplevel (`client_side` answered `server_side`, a toplevel without a decoration object server-side too), a client that never bound it draws its own; `set_window_geometry` used for placement, the frame and the hit areas, and no corners or shadow of ours on a client-side window whose geometry is smaller than its surface | `user/services/compositor/xdgdeco.c`, `user/services/compositor/xdgtop.c`, the geometry's lines in `user/services/compositor/wm.c`, `user/services/compositor/scene.c` (`window_frame`, `window_surface_box`) and `user/services/compositor/deco.c`; utest's compositor decoration tests | GC1 merged (it is) | utest: a bound client asking `client_side` gets `server_side` and a title bar; a bound client's toplevel with no decoration object gets one; an unbound client gets none; a client-side window with geometry inset by a shadow placed by its geometry, no shadow of ours; `tools/comp-test.sh`, `tools/desk-test.sh`, `tools/apps-test.sh` unchanged | **Opus** (small: about an hour) |
 | **GC2. Subsurfaces** | `wl_subcompositor` and `wl_subsurface` (section 2): trees, sync and desync (Chromium's bubbles are desync), order, position, the tree drawn as one window, input through it, clipping to the window, the new caps; the hostile cases (a cycle, a parent destroyed first, a tree deeper than the cap); GC1's [list of what GC2 needs](#gc1-notes) | `user/services/compositor/surface.c`, a new subsurface file, the painting and input lines it needs (`user/services/compositor/paint.c`, `user/services/compositor/scene.c`, `user/services/compositor/pointer.c`), `user/services/compositor/comp.h` | GC1b merged (the same files) | utest: a parent with three children, commits in sync and desync, place_above/below, a child outside the parent clipped, input to the topmost; a desync child updated while its parent is idle (a bubble's case); the hostile cases refused with the protocol's errors; a screenshot test of a window with subsurfaces (`tools/comp-test.sh`'s way) | **Opus** |
-| **GC3. Popups** | real `xdg_popup`: placement by the positioner on the output (flip, slide, resize), `grab` with a live serial, dismissal by a click outside or Escape, nested popups (a menu's submenu), `reposition`; the window manager's rules for popups (never tiled, above their parent); tooltips (popups without a grab) | `user/services/compositor/xdg.c`, a new popup file, the window manager's lines it needs (`user/services/compositor/wm.c`) | GC2 merged | utest: each positioner case placed exactly, a grab without a serial refused, a click outside dismissing the chain, a tooltip that takes no keys; screenshot of a popup at a screen edge | **Opus** |
+| **GC3. Popups** (built 2026-10-14: [notes](#gc3-notes); Escape is the client's, not a dismissal) | real `xdg_popup`: placement by the positioner on the output (flip, slide, resize), `grab` with a live serial, dismissal by a click outside or Escape, nested popups (a menu's submenu), `reposition`; the window manager's rules for popups (never tiled, above their parent); tooltips (popups without a grab) | `user/services/compositor/xdg.c`, a new popup file, the window manager's lines it needs (`user/services/compositor/wm.c`) | GC2 merged | utest: each positioner case placed exactly, a grab without a serial refused, a click outside dismissing the chain, a tooltip that takes no keys; screenshot of a popup at a screen edge | **Opus** |
 | **GP1. The base ports** | recipes for libffi, expat, wayland (client, cursor, and wayland-scanner as a host build), wayland-protocols (data), xkbcommon; the host-build and data-port pieces in tools/ports.py with their self-tests; meson's cross file's options (static, no `dlopen`) | ports/ recipes (new), tools/ports.py's host-build part, ports/jamos.meson's lines | M13.7's PO1 merged (it is); running, paused with work in its worktree | each recipe's `test`: libffi's own `ffi_call` tests as a program; xkbcommon compiling the compositor's keymap from `tools/genkeymap.py`'s text; libwayland's `wl_display_connect` from a tiny program; the builder's self-test | Sonnet 5.5 |
 | **GP2. The fonts** (rescoped) | the `fonts-jamos` data package (section 4's set: Liberation, Noto Sans, Serif and Sans Mono, Inter, JetBrains Mono, Noto Color Emoji) and its fonts.conf (the directory, the aliases, the cache under `XDG_CACHE_HOME`); every font's licence text in the package | ports/fonts-jamos (new) | GP1's data-port piece | the package's `test`: the files present with their hashes; `fc-match` is not on Jam OS (no fontconfig port), so the configuration is checked on the build host with its own `fc-match` against the staged directory (`sans-serif`, `serif`, `monospace`, `Arial` each resolve as section 4 says) | Sonnet 5.5 |
 | **GT. wlprobe and its script** (built: [GT notes](#gt-notes)) | wlprobe (section 11), a test program on the real libwayland, in the ports tree, with a hold mode (a window that stays, for the soak); tools/wl-port-test.sh (new): a plain boot with packages preinstalled (M13.7's PO8 image), wlprobe's cases by name; the Chromium plan adds its own cases to it later | ports/wayland/override/wlprobe.c and patches/0003 (not a port of its own: a recipe needs an upstream tree), tools/wl-port-test.sh and tools/wl-port-check.py (new) | GS1; GP1; M13.7's PO8 (merged) | itself; it is the end-to-end test of GS1 | Sonnet 5.5 |
@@ -1217,7 +1217,9 @@ no layout; `hold [seconds]` is the soak's window). *auto* needs nothing,
 | `geometry` | auto | `set_window_geometry` and size limits accepted and reset |
 | `geometry-error`, `limits-error`, `serial-error` | auto | a 0x0 geometry is `xdg_surface` `invalid_size`, a maximum under the minimum is `xdg_toplevel` `invalid_size`, an ack of a serial never sent is `invalid_serial` |
 | `parent` | auto | `set_parent` set, unset, set again; a window as its own parent is `invalid_parent` |
-| `popup` | auto | an `xdg_popup` with a grab is configured where its positioner says (30,30 120x80) and stays up (GC3) |
+| `popup` | auto | an `xdg_popup` with a grab is configured where its positioner says (30,30 120x80), stays up and has the keys (GC3) |
+| `popup-nested`, `popup-reposition`, `popup-flip`, `popup-tooltip`, `popup-parent` | auto | GC3's: a submenu's grab takes the keys and gives them back down the chain; `reposition` answered with `repositioned` and a configure; a popup with no room below its anchor flipped above it; a popup with no grab takes no keys; a popup dismissed when its parent is unmapped |
+| `popup-click` | input | GC3's: a click on the window opens a menu grabbing with the click's serial; the script's click on the terminal dismisses it, and the keys come back |
 | `big-buffer` | auto | three 2560x1440 ARGB buffers (14.7 MB each, a new pool each) committed in turn |
 | `resize-storm` | auto | 40 maximize/unmaximize requests with no waiting, repainted at each configure, the window back at its size |
 | `reuse` | auto | a `wl_surface` mapped, its xdg objects destroyed, given new ones and mapped again |
@@ -1270,7 +1272,8 @@ passes while on the list is an XPASS that fails the group. Two today:
 `subcompositor` (GC2: the compositor offers no `wl_subcompositor`) and
 `popup` (GC3: an `xdg_popup` is dismissed at once, `popup_done` before the
 client has drawn it). **No compositor bug was found**: the other 35 cases
-and every screenshot check pass.
+and every screenshot check pass. Both pass with GC2 and GC3 built: the
+list is empty.
 
 **What it does not cover**: `app_id` (the compositor keeps it and shows it
 nowhere: the case sets it and checks for no error), buffers made by another
@@ -1348,6 +1351,94 @@ positioner's anchor rectangle is relative to, and it includes the tree.
 every turn while its parent is idle), a tree at every cap at once, a
 parent destroyed under the pointer's implicit grab, a cache holding the
 last buffer of a pool the client destroyed.
+
+## GC3 notes
+
+*Written 2026-10-14.* What GC3 built, where it differs from the plan, and
+what GR and the Chromium plan need. The model is in the headers of
+`user/services/compositor/xdgpopup.c` and `xdgplace.c`.
+
+**As built.** A popup is a window of its own (`COMP_WIN_POPUP`): no
+decorations (`LOOK_PLAIN`: no title bar, outline, corners or shadow of
+ours), never focused, tiled, cycled by Alt+Tab or remembered across a
+restart; its surface may have subsurfaces like any window's.
+- **Placement** (`xdgplace.c`, arithmetic only, linked into utest): the
+  anchor point, the gravity and the offset, then for each axis on its own
+  flip (kept only if it fits), slide (the gravity's way first, as
+  `slide_x` says) and resize (cut to the room; one with nothing left
+  inside is left as it was). The room is the output below the strip (the
+  toplevel's floor), all of it under a full-screen toplevel. Every number
+  a positioner sends is held to +-2^20 (`XDG_PLACE_MAX`).
+- **The sequence** is a toplevel's: the initial commit (its parent must
+  be shown, or it is dismissed at once), `configure` and
+  `xdg_surface.configure`, the ack, a buffer; the place a configure gave
+  takes effect with the buffer committed after its ack. `reposition` sends
+  `repositioned`, then a configure (a reposition before the initial commit
+  is said by that commit's configure). `set_reactive` places a popup again
+  when its parent's room changes (a configure, which it acks); without it
+  a popup keeps its place against its parent, wherever that goes.
+  `set_parent_size` and `set_parent_configure` are kept nowhere. A
+  commit with no buffer hides the popup (and takes it out of the grab).
+- **Following the parent**: each loop turn before the paint
+  (`xdg_popups_turn`, the one line added to main.c) a shown popup is moved
+  with its parent (a move, a maximise, a tile's glide, a screen's slide)
+  and put back above it if the parent was raised (a click, the focus). A
+  new popup goes above its toplevel's family (the toplevel and the popups
+  on it), not on top of every window: a tooltip of a window behind another
+  stays behind that one.
+- **Dismissal** (`popup_done`, the window gone): the parent unmapped or
+  destroyed (a screen switched or a window minimised unmaps it), the
+  parent's role object or wl_surface gone; the popups on a dismissed one go
+  with it, the newest first.
+- **The grab**: granted for one of the client's last input events'
+  serials (`seat_input_serial_ok`: a key, a button, a keyboard enter) while
+  its toplevel has the keyboard focus, before the popup is mapped; denied
+  (dismissed at once) otherwise, so a program in the background can't take
+  the keys with a menu. The grabbing popups are one chain of one client's,
+  each on the one before; a new grab on the toplevel dismisses the old
+  chain, one on a popup of the chain dismisses what is above it. While
+  the chain lives the pointer goes only to that client's surfaces, its
+  focus following the pointer even with a button held (owner-events: a
+  menu opened by a press is chosen from by the release); a first press
+  anywhere else (another window, a title bar, the background, the strip)
+  dismisses the chain and reaches no one. The keys go to the topmost shown
+  popup of the chain (`wl_keyboard.leave` on the surface that had them,
+  `enter` on the popup), back down the chain as popups go; the toplevel
+  keeps the focus all along (its title bar lit, `activated`). The focus
+  moving to another window (Alt+Tab, a click elsewhere, a screen switch)
+  dismisses the chain.
+- **Errors**: a grab after the popup was mapped, or on a popup that took
+  no grab, `invalid_grab`; a popup destroyed while another (not dismissed)
+  is on it, `not_the_topmost_popup` (wlroots' rule: any child, grab or
+  not); a parent that is no toplevel or popup, `invalid_popup_parent` at
+  `get_popup`, and no parent at the initial commit, the same.
+- **Caps**: 32 `xdg_popup` objects a client (`XDG_POPUPS_MAX`), nested 8
+  deep (`XDG_POPUP_DEPTH_MAX`); past either `no_memory`.
+
+**Differences from the plan, chosen**: Escape dismisses nothing: the keys
+reach the grabbing popup and the client closes it (Chromium's menus close
+one level at a time on Escape, which a compositor dismissing the whole
+chain would break; mutter and wlroots do the same). The press that
+dismisses a grab goes nowhere (GNOME's way), so a click on another window
+only closes the menu; the next click focuses it. Popups are not constrained
+to their parent's window geometry, only to the room on the output.
+
+**What the seat changed** (outside the plan's files, each small):
+`pointer.c` (the grab's pointer routing and the dismissing press),
+`focus.c` (a popup is never focused, a click on one focuses its toplevel,
+the focus moving dismisses a grab), `keyboard.c` (enter and leave name the
+surface `xdg_key_surface` says; `seat_key_surface_changed` moves the keys
+between a client's surfaces), `seat.c` (a window going dismisses the
+popups on it), `scene.c` (`window_raise_above`), `wm.c` (Alt+Tab skips
+popups), `xdgtop.c` (the acked place, the popups of a toplevel dismissed
+with it).
+
+**For GR**: hostile popups to try live: a chain at the depth cap and 32
+popups at once; a popup whose parent is destroyed in the same batch as its
+grab; reposition storms past `XDG_CONFIGS_MAX` unacked (the newest waits
+for an ack); a grab with every recent serial kind, and with one of another
+client's; a client killed with a grab on (the pointer and keys must come
+back); a popup's wl_surface destroyed first (`defunct_role_object`).
 
 ## Tests and the sign-off
 

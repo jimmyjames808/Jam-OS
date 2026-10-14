@@ -25,12 +25,13 @@ sys.dont_write_bytecode = True
 CASES = {
     "proto": ["globals", "bind", "shm", "output", "keymap", "toplevel", "keyless", "deco-server",
               "frames", "geometry", "geometry-error", "limits-error", "serial-error", "parent",
-              "popup", "big-buffer", "resize-storm", "reuse", "clipboard-serial", "maximize",
+              "popup", "popup-nested", "popup-reposition", "popup-flip", "popup-tooltip",
+              "popup-parent", "big-buffer", "resize-storm", "reuse", "clipboard-serial", "maximize",
               "fullscreen", "minimize", "title", "shm-argb", "damage", "csd-geometry",
               "states-tiled", "subcompositor"],
     "floating": ["states-floating"],
     "paint": ["title", "shm-argb", "damage", "csd-geometry"],
-    "pointer": ["pointer", "keyless-click"],
+    "pointer": ["pointer", "keyless-click", "popup-click"],
     "keyboard": ["keyboard", "close"],
     "cursor": ["cursor-shape", "cursor-surface"],
     "clip": ["clipboard-in", "clipboard-out"],
@@ -39,7 +40,6 @@ CASES = {
 
 # Cases the compositor fails today, and why (the track's report has the evidence).
 XFAIL = {
-    "popup": "GC3 (popups) is not merged: xdg_popup is dismissed at once (docs/G2-PLAN.md)",
 }
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")

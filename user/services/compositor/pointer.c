@@ -30,6 +30,13 @@
  * compositor's own (seat_grab_begin: a move, a resize) takes the pointer
  * from every client until the last button is released.
  *
+ * A popup's grab (xdgpopup.c, xdg_grab_client): while one is on, only the
+ * grabbing client's surfaces see the pointer, and the focus follows the
+ * pointer over them even while a button is held (the protocol's
+ * owner-events: a menu opened by a press is chosen from by its release);
+ * a first press anywhere else dismisses the popups and reaches no one,
+ * the window manager included.
+ *
  * A client that is behind on reading (jwl_conn_backlogged) has its motion
  * coalesced: the newest position is sent once it has caught up.
  *
@@ -217,6 +224,9 @@ static struct comp_window *under_pointer(struct comp_surface **s)
     struct comp_window *w = wm_window_at(cursor.x, cursor.y, &on_surface);
     if (!w || !on_surface || !client_alive(w->surface->client))
         return NULL;
+    struct comp_client *g = xdg_grab_client();
+    if (g && w->surface->client != g)
+        return NULL;   /* a popup's grab: only its client's surfaces see the pointer */
     *s = window_input_at(w, cursor.x, cursor.y, NULL, NULL);
     return *s ? w : NULL;
 }
@@ -248,7 +258,7 @@ static void move(int16_t dx, int16_t dy)
         return;
     }
     struct comp_surface *before = over_s;
-    if (!implicit)
+    if (!implicit || xdg_grab_client())   /* a popup's grab: over any of its client's surfaces */
         over_what_is_under();
     cursor_update();   /* the compositor's cursor follows what is under it */
     if (over_s && over_s == before && surface_live(over_s))
@@ -261,6 +271,11 @@ static void press(unsigned b)
     if (first && !grab_ops) {
         over_what_is_under();
         implicit = true;   /* whatever it lands on (a window, or none) keeps the pointer */
+        if (xdg_grab_client() && !over) {   /* outside the popups' client: */
+            xdg_grab_dismiss();             /* they close, and the press goes nowhere */
+            wm_buttons |= (uint8_t)(1u << b);
+            return;
+        }
         if (wm_press(cursor.x, cursor.y, BTN_LEFT + b, keyboard_held_mods())) {
             wm_buttons |= (uint8_t)(1u << b);   /* its release goes nowhere too */
             return;
@@ -352,7 +367,7 @@ void pointer_report(int16_t dx, int16_t dy, int8_t wheel, uint8_t now_buttons)
 
 void pointer_turn(void)
 {
-    if (!grab_ops && !implicit)
+    if (!grab_ops && (!implicit || xdg_grab_client()))
         over_what_is_under();   /* a window or subsurface appeared, moved or went under it */
     if (over_s && surface_live(over_s) && seat_of(over_s->client)->motion_owed &&
         !jwl_conn_backlogged(over_s->client->conn))
@@ -371,6 +386,7 @@ void seat_surface_gone(struct comp_surface *s)
 {
     if (s == over_s)
         set_over(NULL, NULL);   /* (its id is gone already: no leave) */
+    keyboard_surface_gone(s);
 }
 
 void pointer_client_gone(struct comp_client *cl)

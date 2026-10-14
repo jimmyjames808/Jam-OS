@@ -262,6 +262,7 @@ int main(int argc, char **argv)
         desk_tick(now());   /* animations, the strip's clock, notifications */
         wm_save_turn(now());   /* the arrangement into the memory, if it changed */
         paint_splash_check(now());
+        xdg_popups_turn();  /* popups follow their parents (moved, slid, raised) */
         clock_turn();
         conn_flush_all();   /* the frame callbacks the paint answered */
         st = take_packets(next_deadline());

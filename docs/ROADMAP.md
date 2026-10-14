@@ -46,7 +46,7 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 | M14.5 | Maybe: dynamic linking | off Chromium's path (CR-RESEARCH: software compositing needs no `dlopen`) |
 | M15 | Self-hosting | stretch |
 | CR | Chromium: the main goal (the owner, 2026-10-11) | planned: [CR-PLAN.md](CR-PLAN.md) (CR0, 2026-10-12): the layers, their tracks, the milestones CR-a (the toolchain) to CR-f (Jam OS's sandbox); nothing built yet |
-| G2-G4 | Wayland clients, mode setting, 3D | G2 rescoped to what Chromium's Ozone/Wayland needs ([G2-PLAN.md](G2-PLAN.md), 2026-10-11): GC1 (versions, decorations) built, the shim, subsurfaces, popups, wlprobe and a fonts package to come; G3 and G4 deferred: porting first (the owner, 2026-10-11) |
+| G2-G4 | Wayland clients, mode setting, 3D | G2 rescoped to what Chromium's Ozone/Wayland needs ([G2-PLAN.md](G2-PLAN.md), 2026-10-11): GC1 and GC1b (versions, the decoration rule), the shim (GS1), the base ports (GP1), subsurfaces (GC2), wlprobe (GT) and popups with grabs (GC3) built; a fonts package, the review and the join to come; G3 and G4 deferred: porting first (the owner, 2026-10-11) |
 | Maybe | Own UEFI loader in place of Limine | not planned |
 
 ## Now

@@ -210,4 +210,5 @@ void seat_window_gone(struct comp_window *w)
 {
     pointer_window_gone(w);
     focus_window_gone(w);
+    xdg_popups_window_gone(w);   /* the popups on it are dismissed */
 }

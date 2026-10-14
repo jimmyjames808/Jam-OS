@@ -756,12 +756,13 @@ void wm_clicked(struct comp_window *w)
     window_raise(w);   /* wm_focus_changed did, if the focus moved; a click raises anyway */
 }
 
-/* Can the keys go to w: mapped, its client still there, no boot overlay. */
+/* Can the keys go to w: mapped, its client still there, no boot overlay
+ * and no popup (its toplevel is the one cycled to). */
 static bool cyclable(const struct comp_window *w)
 {
     const struct jwl_conn *c = w->surface->client->conn;
-    return (w->flags & COMP_WIN_MAPPED) && !(w->flags & COMP_WIN_OVERLAY) && c &&
-           c->status == OK;
+    return (w->flags & COMP_WIN_MAPPED) && !(w->flags & (COMP_WIN_OVERLAY | COMP_WIN_POPUP)) &&
+           c && c->status == OK;
 }
 
 /* Alt+Tab's order into order[]: the toplevels as they opened, then the
