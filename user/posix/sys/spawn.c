@@ -12,9 +12,11 @@
  *      dup2, open (opened here, into a descriptor of ours kept until the
  *      spawn ends), chdir, fchdir.
  *   3. The program: a name looked up in PATH (posix_spawnp), then a path
- *      (relative ones from the copy's directory): one under /boot runs
- *      from the boot image, as do /bin and /usr/bin, which are the boot
- *      image's bin and usr/bin (there is no other); a file anywhere else
+ *      (relative ones from the copy's directory): /proc/self/exe is this
+ *      program again, from the image it runs from (self_program); one
+ *      under /boot runs from the boot image, as do /bin and /usr/bin,
+ *      which are the boot image's bin and usr/bin (there is no other); a
+ *      file anywhere else
  *      runs only as the owner approved it, sealed and started by init's
  *      /svc/exec (file_program; EACCES without `svc exec` in our list),
  *      ENOENT if missing. Before step 4, which takes things out of ours.
@@ -48,6 +50,7 @@
 #include <spawn.h>
 #include <string.h>
 #include <unistd.h>
+#include "files.h"
 #include "proc.h"
 #include "sig.h"
 #include "spawn.h"
@@ -67,7 +70,7 @@ static const struct { const char *path; const char *name; } boot_dirs[] = {
 /* The program to start. */
 struct program {
     char    *name;       /* PATH_MAX bytes: a bootfs name, or a file's absolute path */
-    handle_t vmo;        /* a program of ours to run from (none yet: 0, the boot image's) */
+    handle_t vmo;        /* our own image to run from (self_program), or 0 */
     uint64_t size;       /* its bytes in vmo */
     handle_t sealed;     /* a file's program sealed by /svc/exec: its exec_prog channel
                           * (init starts it), or 0 */
@@ -132,11 +135,47 @@ static long file_program(const char *abs, handle_t *sealed, handle_t *handover)
     return 0;
 }
 
-/* The program at abs (absolute, cleaned) into *p: a bootfs name, or a
- * file's sealed VMO (file_program). 0, or -ENOENT (missing), -ENOTDIR,
- * -EACCES (a directory, or a file we may not run). */
+static long program(const char *abs, struct program *p);
+
+/* /proc/self/exe (docs/CR-PLAN.md section 6, the self-image): this
+ * program again, from the VMO it runs from when its starter gave it one
+ * (SR_SELF_IMAGE: libjam's spawn gives it to every program started from a
+ * VMO, a /data program's included): no file read and no approval asked
+ * again, and the same pages mapped, fetched and checked once for all of
+ * them; the child gets the image too, and our path as its own. Without an
+ * image it is a boot-image program (its file, by its name) or, if it is
+ * on a file system, that file as any other (/svc/exec checks its approval
+ * now). A program whose file can't be named and that has no image:
+ * ENOENT. The image is only ever the pages this process runs (spawn gives
+ * no child another program's), and the child gets at most our authority:
+ * our job, our namespace or less, nothing of the approval's own
+ * ("CL2 notes"). Our own path spelled out is that file, not the image:
+ * what is there now, and its approval as it is now. */
+static long self_program(struct program *p)
+{
+    const char *exe = proc_exe();   /* never under /proc: procfs.c takes no such path */
+    handle_t img = startup_handle(SR_SELF_IMAGE);
+    if (!img)
+        return exe ? program(exe, p) : -ENOENT;
+    uint64_t size;
+    status_t st = jam_vmo_get_size(img, &size);
+    if (st == OK)
+        st = jam_handle_duplicate(img, RIGHT_SAME, &p->vmo);
+    if (st != OK)
+        return lx_err(st);
+    p->size = size;
+    snprintf(p->name, PATH_MAX, "%s", exe ? exe : "exe");   /* "exe": a name, no path */
+    return 0;
+}
+
+/* The program at abs (absolute, cleaned) into *p: /proc/self/exe
+ * (self_program), a bootfs name, or a file's sealed VMO (file_program).
+ * 0, or -ENOENT (missing), -ENOTDIR, -EACCES (a directory, or a file we
+ * may not run). */
 static long program(const char *abs, struct program *p)
 {
+    if (proc_is_exe(abs))
+        return self_program(p);
     char *name = p->name;
     for (unsigned i = 0; i < sizeof(boot_dirs) / sizeof(boot_dirs[0]); i++) {
         size_t l = strlen(boot_dirs[i].path);
@@ -386,6 +425,8 @@ static int launch(const struct jam_spawn_req *r, bool exec, struct spawnfd *t,
         return (int)-e;
     }
     ho->cwd = t->cwd;
+    if (p->sealed)
+        ho->exe = p->name;   /* init passes it on as written; spawn names the others */
     if (p->sealed && r->grants) {   /* its authority is its approval alone: none of ours */
         posixfds_discard(ho);
         return EPERM;

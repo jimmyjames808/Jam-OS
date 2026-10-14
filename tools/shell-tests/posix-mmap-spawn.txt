@@ -1,7 +1,10 @@
 # posix_spawn of a program on /data (tools/posix-mmap-test.sh, case spawn):
 # a copy of posixtest at /data/pt-prog is EACCES while it isn't allowed;
 # then `allow` (y to its question) and the same spawn again: init's
-# /svc/exec seals and starts it, and it exits 7.
+# /svc/exec seals and starts it, and it exits 7; started so again, and from
+# the shell, its self-image section passes (its /proc/self/exe is its path,
+# and a spawn of /proc/self/exe runs from its own image: docs/CR-PLAN.md,
+# "CL2 notes").
 # QEMU_INPUT=this file, command line "shell".
 wait 120 Jam OS shell
 wait {prompt}
@@ -22,7 +25,12 @@ wait 60 al-s=
 wait {prompt}
 send posixtest spawn-data /data/pt-prog allowed; echo a-$T=$?
 wait 60 posixtest: spawn-data: /data/pt-prog:
-wait 30 a-s=
+wait 60 posixtest: spawn-data: /data/pt-prog self-image: PASS
+wait 30 a-s=0
+wait {prompt}
+send run /data/pt-prog self-image /data/pt-prog; echo si-$T=$?
+wait 60 posixtest: self-image: ok
+wait 30 si-s=0
 wait {prompt}
 send reboot -f
 wait reboot: resetting

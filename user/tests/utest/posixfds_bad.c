@@ -104,6 +104,8 @@ static bool breaks(unsigned which, unsigned *nmsg)
         pfd_raw_drop(&msgs[1]);
         pfd_raw_begin(&msgs[1], 1, true, NULL);
         break;
+    case 46: h0->exe_len = 2; break;                      /* a program's path that isn't there */
+    case 47: h1->exe_len = 2; break;                      /* a path past the first */
     default:
         return false;
     }
@@ -152,7 +154,7 @@ bool t_posixfds_malformed(void)
         if (which == 22 && col.resets != 1)
             FAIL("break 22: the first message's descriptors were not reset");
     }
-    CHECK_EQ(tried, 45u);
+    CHECK_EQ(tried, 47u);
 
     /* A sink that refuses: its error, everything closed. */
     CHECK_ST(good(), OK);

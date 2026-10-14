@@ -32,7 +32,7 @@
  * rawcalls.c, rawfutex.c and rawlog.c (the raw Linux calls Chromium makes, and the
  * ENOSYS log: the log's hooks are the layer's calls.h, a second look inside).
  * start.c, mem.c, memres.c (the job's counts), clock.c, fds.c, poll.c,
- * proc.c, tty.c, fileskid.c, wayland.c and jit.c are
+ * proc.c, tty.c, fileskid.c, wayland.c, jit.c and procfs.c are
  * the ones that include libjam (<jamos/libjam.h>: children started with a hand-over, a mapping libc
  * didn't make, the calls the clocks are checked against; fileskid.c
  * through the layer's fd.h); mem.c, rawcalls.c, rawfutex.c and rawlog.c include Linux's call
@@ -79,6 +79,9 @@ void pt_raw_log(void);
 /* And the futex checks (rawfutex.c). */
 void pt_raw_futex(void);
 void pt_procfs(char **argv);
+/* Only when asked for (procfs.c): a program's own path and its
+ * self-image, from /data (tools/posix-mmap-test.sh, case spawn). */
+void pt_self_image(char **argv);
 void pt_mmap(char **argv);
 /* Only when asked for (mmap.c): tools/posix-mmap-test.sh's cases. */
 void pt_mmap_big(char **argv);

@@ -204,9 +204,12 @@ struct spawn_args {
 /* Load a program (spawn_args.path) into a new process and start it. Its
  * startup message has argv, SELF_PROCESS, SELF_VMAR, SELF_THREAD, JOB (a
  * duplicate of a->job with JOB_RIGHTS_OWN: the child can't change its own
- * limits), BOOTFS (a duplicate of ours), NS (when a->ns is set) and the
- * extras, which are consumed whatever happens (and so are the
- * hand-over's). *proc gets the process handle. ERR_OUT_OF_RANGE: too many
+ * limits), BOOTFS (a duplicate of ours), NS (when a->ns is set),
+ * SELF_IMAGE (a program from a->vmo at offset 0 that can run: its own VMO,
+ * <roles.h>; when the extras leave room) and the extras, which are
+ * consumed whatever happens (and so are the hand-over's, whose program's
+ * path spawn fills in when it has none). *proc gets the process handle.
+ * ERR_OUT_OF_RANGE: too many
  * extras (STARTUP_MAX_HANDLES - 6 fit next to a namespace, one more
  * without), or a stack bigger than SPAWN_STACK_MAX. A hand-over refused
  * by posixfds_write fails the spawn with its error. */
