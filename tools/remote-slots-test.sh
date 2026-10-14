@@ -12,7 +12,10 @@
 #   - an older command waiting past JAMOS_REMOTE_AGE is not passed by a
 #     younger small one (the big run isn't starved);
 #   - JAMOS_REMOTE_SLOTS caps the commands, ~/work/.cpu-budget overrides the
-#     variables, the exit status and a missing command come through.
+#     variables, the exit status and a missing command come through;
+#   - a --detach claim (a long build) returns at once, holds its CPUs while
+#     its command runs in the background (the others wait for them), its
+#     output is in its log, and the claim ends with the command.
 # Usage: tools/remote-slots-test.sh; exit 0 on PASS.
 set -u
 cd "$(dirname "$0")/.." || exit 2
@@ -161,6 +164,21 @@ sleep 1
 msg=$(grep waiting "$tmp/waiting")
 echo "$msg" | grep -q "waiting: 1 of 1 CPUs in use by 1 run(s)" || fail "the waiting line: \"$msg\""
 wait
+
+# ---- a detached claim (a long build) ---------------------------------------------------------------
+rm -rf "$JAMOS_REMOTE_LOCKDIR/.cpu"
+export JAMOS_REMOTE_CPUS=4
+t0=$(now)
+said=$($slots --detach "$tmp/detached.log" 3 512 sh -c 'echo detached-out; sleep 2' 2> /dev/null)
+t1=$(now)
+case $said in "started "[0-9]*) ;; *) fail "--detach said \"$said\", wanted \"started <pid>\"" ;; esac
+python3 -c "import sys; sys.exit(not ($t1 - $t0 < 1.5))" || fail "--detach did not return at once"
+$slots 2 512 true 2> /dev/null   # 3 of 4 CPUs held: waits for the detached command's end
+t2=$(now)
+python3 -c "import sys; sys.exit(not ($t2 - $t0 >= 1.5))" || fail "a command ran beside a detached claim that left no room"
+grep -q detached-out "$tmp/detached.log" || fail "the detached command's output is not in its log"
+sleep 0.5
+[ -z "$(ls "$JAMOS_REMOTE_LOCKDIR/.cpu/run")" ] || fail "a detached claim left its run file"
 
 [ "$ok" = 1 ] && { echo "remote-slots-test: PASS"; exit 0; }
 echo "remote-slots-test: FAIL"

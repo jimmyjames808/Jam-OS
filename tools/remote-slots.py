@@ -8,6 +8,7 @@ once (default 16): more load made timing tests fail, less left the PC idle
 while a queue of small runs waited.
 
     remote-slots.py <cpus> <mem_mb> <command> [args...]
+    remote-slots.py --detach <log> <cpus> <mem_mb> <command> [args...]
     remote-slots.py --status
 
 The command's cost is <cpus> and <mem_mb>; a command that costs more than
@@ -30,6 +31,14 @@ nothing starts ahead of it, so a big run is not starved by a stream of small
 ones. The owner can change the budget while commands wait by writing
 "<cpus> [<mem_gb> [<slots>]]" into <JAMOS_REMOTE_LOCKDIR>/.cpu-budget on the
 machine (it wins over the variables; delete it to go back to them).
+
+A long claim (a Chromium build, hours: docs/CR-PLAN.md section 15) is
+--detach: it waits for its turn as any command does, then starts the
+command in the background (its own session, stdin /dev/null, its output to
+<log>), prints "started <pid>" and returns, so the ssh session that asked
+can end while the claim and the command live on; the claim ends with the
+command. While it holds its CPUs and memory the tests get what is left of
+the budget, and they shrink rather than overcommit the machine.
 
 Test: tools/remote-slots-test.sh (a fake lock directory, no machine)."""
 import fcntl
@@ -165,6 +174,40 @@ def admit(d, ticket, mine, runs_dir, wait_dir, wfd):
     return None, wfd, why, used, cpus_max
 
 
+def detach(cmd, log, rfd, run_file):
+    """--detach: the command in the background, holding the claim (the run
+    file's lock, rfd) for as long as it lives; this process returns at once."""
+    try:
+        out = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    except OSError as e:
+        print("remote-test: %s: %s" % (log, e), file=sys.stderr)
+        os.unlink(run_file)
+        return 2
+    pid = os.fork()
+    if pid:
+        os.close(out)
+        print("started %d" % pid, flush=True)
+        return 0
+    # The child: a session of its own (no hangup when the ssh session ends),
+    # the claim's lock kept, then the command; the claim ends with it.
+    os.setsid()
+    null = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(null, 0)
+    os.dup2(out, 1)
+    os.dup2(out, 2)
+    try:
+        child = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, pass_fds=[rfd])
+        rc = child.wait()
+    except OSError as e:
+        print("remote-test: %s: %s" % (cmd[0], e), file=sys.stderr, flush=True)
+        rc = 127
+    try:
+        os.unlink(run_file)
+    except OSError:
+        pass
+    os._exit(128 - rc if rc < 0 else rc)
+
+
 def main():
     base = os.environ.get("JAMOS_REMOTE_LOCKDIR") or os.path.expanduser("~/work")
     d = os.path.join(base, ".cpu")
@@ -174,10 +217,14 @@ def main():
     if sys.argv[1:] == ["--status"]:
         status(d)
         return 0
-    if len(sys.argv) < 4:
-        print("usage: remote-slots.py <cpus> <mem_mb> <command> [args...]", file=sys.stderr)
+    args, log = sys.argv[1:], None
+    if args[:1] == ["--detach"] and len(args) > 1:
+        log, args = args[1], args[2:]
+    if len(args) < 3:
+        print("usage: remote-slots.py [--detach <log>] <cpus> <mem_mb> <command> [args...]",
+              file=sys.stderr)
         return 2
-    cpus, mem, cmd = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3:]
+    cpus, mem, cmd = int(args[0]), int(args[1]), args[2:]
     ticket = "%019d.%d" % (time.time_ns(), os.getpid())
     text = "%d %d %d %s" % (cpus, mem, os.getpid(), " ".join(cmd)[:200])
     label = os.environ.get("JAMOS_REMOTE_LABEL") or "run"
@@ -200,6 +247,8 @@ def main():
     if not os.environ.get("JAMOS_REMOTE_QUIET") or waited >= 1:
         print("remote-test: %s with %d of %d CPUs in use%s" % (
             "building" if label == "build" else "running", used, budget, " (after %d s)" % waited if waited >= 1 else ""), file=sys.stderr, flush=True)
+    if log is not None:
+        return detach(cmd, log, rfd, os.path.join(runs_dir, ticket))
     try:
         child = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, pass_fds=[rfd])
     except OSError as e:
