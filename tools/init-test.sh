@@ -22,7 +22,8 @@
 # one-boot run's log ends: "run complete: no problems" or "run FINISHED
 # WITH PROBLEMS". Kernel words after the name go to every boot; QEMU_*
 # pass through to tools/qemu-test.sh. On the PC each part costs a QEMU of
-# the CPU budget (tools/remote-test.sh).
+# the CPU budget (tools/remote-test.sh): at QEMU_SMP=8 that is 24 CPUs,
+# which waits for an almost idle PC, so run the one-boot run at 8 instead.
 # Usage: tools/init-test.sh <outdir> [name] [words...]
 #        tools/init-test.sh --check
 # Exit 0 if the run is complete with no problems.

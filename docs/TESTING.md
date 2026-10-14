@@ -139,7 +139,7 @@ utest's `driver_handle_limits`; **no network card** (`-nic none`) unless
 | `QEMU_SMP` | 4 | CPUs |
 | `QEMU_MEM` | 2G | memory |
 | `QEMU_CPU` | max | CPU model, e.g. `max,-x2apic` |
-| `QEMU_TIMEOUT` | 150 | seconds before giving up (only a cap: a run ends when the kernel halts or QEMU goes) |
+| `QEMU_TIMEOUT` | 150 (300 with the boot word `init`: the one-boot init run takes about 130 s, the kernel's `init_timeout`) | seconds before giving up (only a cap: a run ends when the kernel halts or QEMU goes) |
 | `QEMU_IMAGE` | build/jamos.img | another image, e.g. build/noktests/jamos.img |
 | `QEMU_XHCI` | | qemu-xhci properties, e.g. `msi=on,msix=off` (MSI-only, like the PC) |
 | `QEMU_USB` | | more USB devices; give each a `port=` (port 1 is the stick) |
@@ -214,7 +214,9 @@ behind the cases that make a handle it would otherwise make first
 part; a new case lands in the `except` part, and when a part passes about
 60 s a prefix moves to an `only` line (and the `except` list). On the PC
 (`tools/remote-test.sh`) the run costs a QEMU per part of the CPU budget, for
-a third of the time.
+a third of the time: 12 CPUs at the default `QEMU_SMP=4`, but 24 of the 26
+at `QEMU_SMP=8`, which waits for an almost idle PC (and holds back the
+runs queued behind it): at 8 CPUs run the one-boot run instead.
 
 ### Another machine for the tests
 
