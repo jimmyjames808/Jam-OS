@@ -489,7 +489,7 @@ static bool check_replace(const struct fatrun *r)
     CHECK_ST(t_rename_flags(r, "/docs/r3.txt", "/docs/r2.txt", FS_RENAME_REPLACE), OK);
     if (!file_is(r, "/docs/r2.txt", "three"))
         return false;
-    CHECK_ST(t_rename_flags(r, "/docs/r2.txt", "/docs/x", 2), ERR_INVALID_ARGS);
+    CHECK_ST(t_rename_flags(r, "/docs/r2.txt", "/docs/x", 4), ERR_INVALID_ARGS);
     CHECK_ST(t_unlink(r, "/docs/r2.txt"), OK);
     CHECK_ST(t_unlink(r, "/docs/e2"), OK);
     return true;

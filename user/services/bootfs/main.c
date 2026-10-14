@@ -288,6 +288,8 @@ static status_t op_rename(void *ctx, const char *from, uint32_t from_len, const 
     (void)ctx;
     if (flags & ~(FS_RENAME_REPLACE | FS_RENAME_EXCHANGE))
         return ERR_INVALID_ARGS;
+    if (flags & FS_RENAME_EXCHANGE)   /* as fat's: not a thing this filesystem does */
+        return (flags & FS_RENAME_REPLACE) ? ERR_INVALID_ARGS : ERR_NOT_SUPPORTED;
     status_t st = refuse(from, from_len);
     return st == ERR_ACCESS_DENIED ? refuse(to, to_len) : st;
 }
