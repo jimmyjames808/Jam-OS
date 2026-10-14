@@ -1,6 +1,6 @@
 /* pagetable: a program's page-hash table as the PC computes it, on the
  * Mac. The table's format is tools/portslib/pagetable.py's (and
- * /data/etc/allow.d's): a 64-byte header (the magic "jampages", version 1,
+ * /data/etc/allow.d's): a 64-byte header (the magic "JAMPAGES", version 1,
  * the page size 4096, the file's size and page count, its SHA-256; all
  * little-endian), then the SHA-256 of each 4 KiB page, the last one
  * zero-padded to 4096 bytes. Built twice by the Makefile, with the
@@ -74,7 +74,7 @@ int main(int argc, char **argv)
         return 1;
     uint64_t pages = (len + PAGE - 1) / PAGE;
     uint8_t head[HEAD] = { 0 }, page[PAGE], digest[SHA256_BYTES];
-    memcpy(head, "jampages", 8);
+    memcpy(head, "JAMPAGES", 8);
     put32(head + 8, 1);
     put32(head + 12, PAGE);
     put64(head + 16, len);

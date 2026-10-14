@@ -8,7 +8,7 @@ the file, page 0's first, the last page zero-padded to 4096 bytes before
 it is hashed (what fat supplies past the end of the file, and so what
 the kernel hashes). All numbers little-endian:
 
-    0   8  magic "jampages"
+    0   8  magic "JAMPAGES"
     8   4  version: 1
     12  4  the page size: 4096
     16  8  the file's size in bytes (1..64 MiB)
