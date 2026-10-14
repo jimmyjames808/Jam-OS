@@ -128,7 +128,8 @@ static status_t open_raw(const struct path *p, uint32_t ff, handle_t *ch, handle
         return ERR_NOT_FOUND;
     uint32_t len;
     const char *rel = path_rel(p, &len);
-    status_t st = fs_open_within(fs, FILE_TIMEOUT, rel, len, ff, ch, buf, &size);
+    status_t st = fs_open_within(fs, FILE_TIMEOUT, rel, len, ff, FS_MODE_FILE_DEFAULT, ch, buf,
+                                 &size);
     jam_handle_close(fs);
     return st;
 }

@@ -374,7 +374,7 @@ static status_t probe_call(handle_t ch, uint64_t deadline)
 {
     uint64_t total = 0, free_bytes = 0;
     uint8_t ro = 0, label[16];
-    return fs_statfs_until(ch, deadline, &total, &free_bytes, &ro, label);
+    return fs_statfs_until(ch, deadline, &total, &free_bytes, &ro, label, NULL, NULL, NULL);
 }
 
 /* Say how long b's restart took to get it running (at `up`), after the

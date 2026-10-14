@@ -278,7 +278,8 @@ bool path_read_only(const struct path *p)
         return false;
     uint64_t total, free_bytes;
     uint8_t ro = 0, label[16];
-    status_t st = fs_statfs_within(fs, FILE_TIMEOUT, &total, &free_bytes, &ro, label);
+    status_t st = fs_statfs_within(fs, FILE_TIMEOUT, &total, &free_bytes, &ro, label, NULL, NULL,
+                                   NULL);
     jam_handle_close(fs);
     if (st != OK)
         return false;

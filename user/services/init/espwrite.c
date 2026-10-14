@@ -189,7 +189,8 @@ status_t esp_open(struct writer *w, const char *path, const char *suffix, uint32
     handle_t ch, buf;
     uint64_t size;
     uint32_t n = field(p, path, suffix);
-    status_t st = fs_open_until(w->fs, esp_until(w), p, n, flags, &ch, &buf, &size);
+    status_t st = fs_open_until(w->fs, esp_until(w), p, n, flags, FS_MODE_FILE_DEFAULT, &ch, &buf,
+                                &size);
     return st == OK ? file_adopt(ch, buf, flags, f) : st;
 }
 
@@ -459,7 +460,8 @@ static status_t room(struct writer *w)
     uint64_t total = 0, free_bytes = 0, need = 0;
     uint8_t ro = 0, label[16];
     if (st == OK)
-        st = fs_statfs_until(w->fs, esp_until(w), &total, &free_bytes, &ro, label);
+        st = fs_statfs_until(w->fs, esp_until(w), &total, &free_bytes, &ro, label, NULL, NULL,
+                             NULL);
     bool copy = st == OK && !whole(w, prev) && whole(w, cur);   /* copy_previous's */
     for (unsigned f = 0; f < UPDATE_FILES; f++) {
         uint64_t n = 0;

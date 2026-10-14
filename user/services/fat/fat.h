@@ -47,6 +47,8 @@
 #define FAT_VIEWS      32          /* views (fs.view) served at once */
 #define FAT_PATH_MAX   (FS_PATH_LEN + 1)   /* a resolved path and its NUL, bytes */
 #define FAT_ROOT_ID    1ull        /* the root's id (fs.stat): it has no entry (ffx.h) */
+#define FAT_MAGIC      0x4d44u     /* statfs's magic: Linux's MSDOS_SUPER_MAGIC */
+#define FAT_NAME_MAX   255u        /* statfs's longest name: FAT's long names */
 
 /* Port keys: the fs channel, the block channel, open file `slot`
  * (FAT_KEY_FILE(slot, gen); gen tells a reused slot's packets apart) and
@@ -136,7 +138,7 @@ extern struct fat_vol vol;
  * (a test's RAM disk) fat makes one of its own and always starts fresh. */
 
 #define FAT_STATE_KIND 0x20746166u   /* "fat ": svcstate's kind */
-#define FAT_STATE_LAYOUT 6u          /* bump on any change to struct fat_state, or to the
+#define FAT_STATE_LAYOUT 7u          /* bump on any change to struct fat_state, or to the
                                       * fs and file requests its slots replay */
 #define FAT_HOLD_MAX  2304u   /* sectors held at most: a MiB of a file, the FAT sectors
                                * that chain it (on one-sector clusters, 16 per copy) */
@@ -601,6 +603,22 @@ uint64_t fat_unix_time(WORD date, WORD time);
 /* ---- fsops.c --------------------------------------------------------------------- */
 
 extern const struct fs_ops fat_fs_ops;
+
+/* The attributes fs.getattr and file.getattr make up for what FAT keeps
+ * (fs.idl): a directory 0755, a file 0644, the write bits gone on a
+ * read-only volume, one link, the one user as owner; mtime in Unix seconds
+ * (0: unknown) as all three times. */
+struct fat_attr {
+    uint32_t mode, nlink, uid, gid;
+    uint64_t size, blocks, id;
+    int64_t  atime_ns, mtime_ns, ctime_ns;
+};
+void     fat_attr_made(struct fat_attr *a, bool is_dir, uint64_t size, uint64_t mtime,
+                       uint64_t id);
+/* The checks of fs.setattr and file.setattr, which change nothing on FAT:
+ * ERR_INVALID_ARGS for a mask bit that isn't FS_ATTR_*, ERR_ACCESS_DENIED
+ * for a read-only volume or a uid or gid but the one user's. */
+status_t fat_attr_check(uint32_t mask, uint32_t uid, uint32_t gid);
 
 /* ---- main.c ---------------------------------------------------------------------- */
 

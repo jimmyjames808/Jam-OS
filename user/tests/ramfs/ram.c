@@ -153,6 +153,8 @@ static status_t open_node(const char *path, uint32_t len, uint32_t flags, int *o
         st = create(dir, name, false, &i);
     if (st == OK && nodes[i].dir)
         st = ERR_IS_DIR;
+    if (st == OK && (flags & FS_DIRECTORY))   /* it is a file: a directory is never opened */
+        st = ERR_NOT_DIR;
     if (st == OK && (flags & FS_TRUNCATE))
         st = resize(&nodes[i], 0);
     *out = i;
@@ -160,10 +162,13 @@ static status_t open_node(const char *path, uint32_t len, uint32_t flags, int *o
 }
 
 static status_t op_open(void *ctx, const char *path, uint32_t path_len, uint32_t flags,
-                        handle_t *out_file, handle_t *out_buffer, uint64_t *out_size)
+                        uint32_t mode, handle_t *out_file, handle_t *out_buffer,
+                        uint64_t *out_size)
 {
+    (void)mode;
     bool write = flags & FS_WRITE;
     if ((flags & ~FS_FLAGS) || !(flags & (FS_READ | FS_WRITE)) ||
+        ((flags & FS_DIRECTORY) && (flags & FS_CREATE)) ||
         (!write && (flags & (FS_CREATE | FS_TRUNCATE | FS_APPEND | FS_GATHER | FS_EXCL))))
         return ERR_INVALID_ARGS;
     int i;
@@ -239,6 +244,7 @@ static status_t op_readdir(void *ctx, const char *path, uint32_t path_len, uint3
             continue;
         const struct fs_dirent d = {
             .id = id_of(i), .size = nodes[i].size, .is_dir = nodes[i].dir,
+            .type = nodes[i].dir ? FS_DT_DIR : FS_DT_REG,
             .name_len = (uint32_t)strlen(nodes[i].name), .name = nodes[i].name,
         };
         if (!fs_dirent_put(out_entries, FS_READDIR_BYTES, &len, &d)) {
@@ -252,9 +258,10 @@ static status_t op_readdir(void *ctx, const char *path, uint32_t path_len, uint3
     return OK;
 }
 
-static status_t op_mkdir(void *ctx, const char *path, uint32_t path_len)
+static status_t op_mkdir(void *ctx, const char *path, uint32_t path_len, uint32_t mode)
 {
     (void)ctx;
+    (void)mode;
     char rel[FS_PATH_LEN + 1];
     const char *name;
     int dir, i;
@@ -354,10 +361,16 @@ static status_t op_sync(void *ctx)
     return OK;   /* memory is all there is */
 }
 
+#define TMPFS_MAGIC 0x01021994u   /* Linux's tmpfs */
+
 static status_t op_statfs(void *ctx, uint64_t *out_total, uint64_t *out_free,
-                          uint8_t *out_read_only, uint8_t out_label[16])
+                          uint8_t *out_read_only, uint8_t out_label[16], uint32_t *out_magic,
+                          uint32_t *out_name_max, uint32_t *out_features)
 {
     (void)ctx;
+    *out_magic = TMPFS_MAGIC;
+    *out_name_max = 255;
+    *out_features = 0;
     *out_total = RAMFS_CAPACITY;
     *out_free = RAMFS_CAPACITY - stored;
     *out_read_only = 0;

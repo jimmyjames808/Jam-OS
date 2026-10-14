@@ -142,7 +142,8 @@ bool t_fat_format(void)
 
     if (!fat_start(&r, &disk, false))
         return false;
-    CHECK_ST(fs_statfs_until(r.fs, now() + FAT_CALL_NS, &total, &free_bytes, &ro, label), OK);
+    CHECK_ST(fs_statfs_until(r.fs, now() + FAT_CALL_NS, &total, &free_bytes, &ro, label, NULL,
+                             NULL, NULL), OK);
     CHECK(!strcmp((const char *)label, "JAMOS-DATA"));
     CHECK_EQ(ro, 0);
     CHECK(total > 36ull << 20 && total < 40ull << 20 && free_bytes <= total);
@@ -164,7 +165,8 @@ bool t_fat_format(void)
 
     if (!fat_start(&r, &disk, false) || !file_is(&r, "/kept.txt", "still here"))
         return false;
-    CHECK_ST(fs_statfs_until(r.fs, now() + FAT_CALL_NS, NULL, NULL, NULL, label), OK);
+    CHECK_ST(fs_statfs_until(r.fs, now() + FAT_CALL_NS, NULL, NULL, NULL, label, NULL, NULL, NULL),
+                             OK);
     CHECK(!strcmp((const char *)label, "JAMOS-DATA"));
     return fat_stop(&r) && ramdisk_destroy(&disk);
 }
@@ -227,7 +229,7 @@ static bool check_open_flags(const struct fatrun *r)
     CHECK_ST(t_open(r, "/hello.txt", 0, &f), ERR_INVALID_ARGS);
     CHECK_ST(t_open(r, "/hello.txt", FS_READ | FS_CREATE, &f), ERR_INVALID_ARGS);
     CHECK_ST(t_open(r, "/hello.txt", FS_READ | FS_TRUNCATE, &f), ERR_INVALID_ARGS);
-    CHECK_ST(t_open(r, "/hello.txt", FS_READ | 0x100, &f), ERR_INVALID_ARGS);
+    CHECK_ST(t_open(r, "/hello.txt", FS_READ | 0x200, &f), ERR_INVALID_ARGS);
     CHECK_ST(t_open(r, "/", FS_READ, &f), ERR_IS_DIR);
     /* FS_APPEND: at the end, whatever the offset says. */
     CHECK_ST(t_open(r, "/hello.txt", FS_WRITE | FS_APPEND, &f), OK);
@@ -378,7 +380,8 @@ static bool check_shrunk_buffer(const struct fatrun *r)
     handle_t ch, vmo;
     uint64_t size = 0;
     uint32_t n = 0;
-    CHECK_ST(fs_open_until(r->fs, now() + FAT_CALL_NS, "/hello.txt", 10, FS_READ | FS_WRITE, &ch,
+    CHECK_ST(fs_open_until(r->fs, now() + FAT_CALL_NS, "/hello.txt", 10, FS_READ | FS_WRITE,
+                           FS_MODE_FILE_DEFAULT, &ch,
                            &vmo, &size), OK);
     CHECK_ST(jam_vmo_set_size(vmo, 0), ERR_ACCESS_DENIED);
     CHECK_ST(jam_vmo_decommit(vmo, 0, 4096), ERR_ACCESS_DENIED);
@@ -682,7 +685,8 @@ bool t_fat_read_only(void)
 
     if (!fat_start(&r, &disk, true))
         return false;
-    CHECK_ST(fs_statfs_until(r.fs, now() + FAT_CALL_NS, NULL, NULL, &ro, NULL), OK);
+    CHECK_ST(fs_statfs_until(r.fs, now() + FAT_CALL_NS, NULL, NULL, &ro, NULL, NULL, NULL, NULL),
+                             OK);
     CHECK_EQ(ro, 1);
     if (!file_is(&r, "/EFI/limine.conf", "timeout: 3") || !dir_count(&r, "/EFI", NULL, &n, NULL))
         return false;

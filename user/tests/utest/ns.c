@@ -196,7 +196,7 @@ bool t_ns_boot_read_only(void)
     struct jfile g;
     CHECK_ST(file_open("/boot/init.cfg", FS_READ | FS_WRITE, &g), ERR_ACCESS_DENIED);
     CHECK_ST(file_open("/boot/new", FS_WRITE | FS_CREATE, &g), ERR_ACCESS_DENIED);
-    CHECK_ST(file_open("/boot/init.cfg", FS_READ | 0x100, &g), ERR_INVALID_ARGS);
+    CHECK_ST(file_open("/boot/init.cfg", FS_READ | 0x200, &g), ERR_INVALID_ARGS);
     CHECK_ST(file_open("/boot/init.cfg", FS_READ | FS_CREATE, &g), ERR_INVALID_ARGS);
     CHECK_ST(file_open("/boot/init.cfg", 0, &g), ERR_INVALID_ARGS);
     CHECK_ST(file_open("/boot/bin", FS_READ, &g), ERR_IS_DIR);   /* a directory */

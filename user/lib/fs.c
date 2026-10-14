@@ -43,6 +43,11 @@ static status_t map_buffer(struct jfile *f, bool writable)
 
 status_t file_open(const char *path, uint32_t flags, struct jfile *out)
 {
+    return file_open_mode(path, flags, FS_MODE_FILE_DEFAULT, out);
+}
+
+status_t file_open_mode(const char *path, uint32_t flags, uint32_t mode, struct jfile *out)
+{
     uint8_t rel[FS_PATH_MAX];
     handle_t fs;
     unsigned mount;
@@ -54,7 +59,7 @@ status_t file_open(const char *path, uint32_t flags, struct jfile *out)
     if (!fs)   /* "/" and "/svc" are directories; a service is neither */
         return mount == NS_AT_SVC && rel[1] ? ERR_WRONG_TYPE : ERR_IS_DIR;
     struct jfile f = { 0 };
-    st = fs_open_within(fs, FS_CALL_TIMEOUT, (const char *)rel, rel_len(rel), flags, &f.ch,
+    st = fs_open_within(fs, FS_CALL_TIMEOUT, (const char *)rel, rel_len(rel), flags, mode, &f.ch,
                         &f.buf_vmo, &f.size);
     jam_handle_close(fs);
     if (st != OK)
@@ -167,6 +172,23 @@ status_t file_stat(struct jfile *f, uint64_t *size, uint64_t *mtime)
 status_t file_truncate(struct jfile *f, uint64_t size)
 {
     return file_truncate_within(f->ch, FS_CALL_TIMEOUT, size);
+}
+
+status_t file_getattr(struct jfile *f, struct fs_attr *out)
+{
+    struct fs_attr a;
+    status_t st = file_getattr_within(f->ch, FS_CALL_TIMEOUT, &a.mode, &a.nlink, &a.uid, &a.gid,
+                                      &a.size, &a.blocks, &a.id, &a.atime_ns, &a.mtime_ns,
+                                      &a.ctime_ns);
+    if (st == OK)
+        *out = a;
+    return st;
+}
+
+status_t file_setattr(struct jfile *f, const struct fs_attr_set *set)
+{
+    return file_setattr_within(f->ch, FS_CALL_TIMEOUT, set->mask, set->mode, set->uid, set->gid,
+                               set->atime_ns, set->mtime_ns);
 }
 
 void file_close(struct jfile *f)
@@ -334,6 +356,7 @@ static status_t root_entry(uint32_t index, struct fs_entry *out)
         if (mounts++ == index) {
             memcpy(out->name, point + 1, strlen(point + 1) + 1);
             out->is_dir = true;
+            out->type = FS_DT_DIR;
             return OK;
         }
     }
@@ -341,6 +364,7 @@ static status_t root_entry(uint32_t index, struct fs_entry *out)
         return ERR_NOT_FOUND;
     memcpy(out->name, "svc", 4);
     out->is_dir = true;
+    out->type = FS_DT_DIR;
     return OK;
 }
 
@@ -383,6 +407,7 @@ static status_t batch_entry(const struct batch *b, uint32_t k, struct fs_entry *
             memcpy(out->name, e.name, e.name_len);
             out->name[e.name_len] = '\0';
             out->is_dir = e.is_dir;
+            out->type = e.type;
             out->size = e.size;
             out->mtime = e.mtime;
             out->id = e.id;
@@ -461,13 +486,18 @@ status_t fs_readdir(const char *path, uint32_t index, struct fs_entry *out)
 
 status_t fs_mkdir(const char *path)
 {
+    return fs_mkdir_mode(path, FS_MODE_DIR_DEFAULT);
+}
+
+status_t fs_mkdir_mode(const char *path, uint32_t mode)
+{
     uint8_t rel[FS_PATH_MAX];
     handle_t fs;
     unsigned mount;
     status_t st = on_mount(path, rel, &fs, &mount, ERR_ALREADY_EXISTS);
     if (st != OK)
         return st;
-    st = fs_mkdir_within(fs, FS_CALL_TIMEOUT, (const char *)rel, rel_len(rel));
+    st = fs_mkdir_within(fs, FS_CALL_TIMEOUT, (const char *)rel, rel_len(rel), mode);
     jam_handle_close(fs);
     return st;
 }
@@ -541,7 +571,9 @@ status_t fs_statfs(const char *path, uint64_t *total, uint64_t *free_bytes, bool
     status_t st = on_mount(path, rel, &fs, &mount, ERR_INVALID_ARGS);
     if (st != OK)
         return st;
-    st = fs_statfs_within(fs, FS_CALL_TIMEOUT, &tot, &fr, &ro, name);
+    uint32_t magic, name_max, features;
+    st = fs_statfs_within(fs, FS_CALL_TIMEOUT, &tot, &fr, &ro, name, &magic, &name_max,
+                          &features);
     jam_handle_close(fs);
     if (st != OK)
         return st;
@@ -556,4 +588,156 @@ status_t fs_statfs(const char *path, uint64_t *total, uint64_t *free_bytes, bool
         label[16] = '\0';
     }
     return OK;
+}
+
+status_t fs_statfs_kind(const char *path, uint32_t *magic, uint32_t *name_max,
+                        uint32_t *features)
+{
+    uint8_t rel[FS_PATH_MAX], ro = 0, name[16];
+    uint64_t tot = 0, fr = 0;
+    uint32_t m = 0, n = 0, f = 0;
+    handle_t fs;
+    unsigned mount;
+    status_t st = on_mount(path, rel, &fs, &mount, ERR_INVALID_ARGS);
+    if (st != OK)
+        return st;
+    st = fs_statfs_within(fs, FS_CALL_TIMEOUT, &tot, &fr, &ro, name, &m, &n, &f);
+    jam_handle_close(fs);
+    if (st != OK)
+        return st;
+    if (magic)
+        *magic = m;
+    if (name_max)
+        *name_max = n;
+    if (features)
+        *features = f;
+    return OK;
+}
+
+/* ---- links, modes and views ----------------------------------------------------- */
+
+status_t fs_getattr(const char *path, uint32_t flags, struct fs_attr *out)
+{
+    uint8_t rel[FS_PATH_MAX];
+    handle_t fs;
+    unsigned mount;
+    status_t st = ns_resolve(path, rel, &fs, &mount);
+    if (st != OK)
+        return st;
+    struct fs_attr a = { 0 };
+    if (fs) {
+        st = fs_getattr_within(fs, FS_CALL_TIMEOUT, (const char *)rel, rel_len(rel), flags,
+                               &a.mode, &a.nlink, &a.uid, &a.gid, &a.size, &a.blocks, &a.id,
+                               &a.atime_ns, &a.mtime_ns, &a.ctime_ns);
+        jam_handle_close(fs);
+    } else if (mount == NS_AT_SVC && rel[1]) {
+        st = ERR_WRONG_TYPE;   /* a service is neither file nor directory */
+    } else {   /* "/" and "/svc": directories the namespace makes up */
+        a = (struct fs_attr){ .mode = FS_MODE_DIR | 0555, .nlink = 1, .uid = FS_ONE_USER,
+                              .gid = FS_ONE_USER };
+    }
+    if (st == OK)
+        *out = a;
+    return st;
+}
+
+status_t fs_setattr(const char *path, uint32_t flags, const struct fs_attr_set *set)
+{
+    uint8_t rel[FS_PATH_MAX];
+    handle_t fs;
+    unsigned mount;
+    status_t st = on_mount(path, rel, &fs, &mount, ERR_ACCESS_DENIED);
+    if (st != OK)
+        return st;
+    st = fs_setattr_within(fs, FS_CALL_TIMEOUT, (const char *)rel, rel_len(rel), flags,
+                           set->mask, set->mode, set->uid, set->gid, set->atime_ns,
+                           set->mtime_ns);
+    jam_handle_close(fs);
+    return st;
+}
+
+status_t fs_symlink(const char *target, const char *path)
+{
+    uint8_t rel[FS_PATH_MAX];
+    handle_t fs;
+    unsigned mount;
+    size_t n = strlen(target);
+    status_t st = on_mount(path, rel, &fs, &mount, ERR_ALREADY_EXISTS);
+    if (st != OK)
+        return st;
+    st = n > FS_PATH_LEN ? ERR_NAME_TOO_LONG
+                         : fs_symlink_within(fs, FS_CALL_TIMEOUT, target, (uint32_t)n,
+                                             (const char *)rel, rel_len(rel));
+    jam_handle_close(fs);
+    return st;
+}
+
+status_t fs_readlink(const char *path, char *buf, size_t cap)
+{
+    uint8_t rel[FS_PATH_MAX];
+    char target[FS_PATH_LEN + 1];
+    uint32_t len = 0;
+    handle_t fs;
+    unsigned mount;
+    status_t st = on_mount(path, rel, &fs, &mount, ERR_INVALID_ARGS);   /* "/" is no link */
+    if (st != OK)
+        return st;
+    st = fs_readlink_within(fs, FS_CALL_TIMEOUT, (const char *)rel, rel_len(rel), target, &len);
+    jam_handle_close(fs);
+    if (st == OK && len >= cap)
+        st = ERR_BUFFER_TOO_SMALL;
+    if (st == OK) {
+        memcpy(buf, target, len);
+        buf[len] = '\0';
+    }
+    return st;
+}
+
+status_t fs_link(const char *from, const char *to)
+{
+    uint8_t rel_from[FS_PATH_MAX], rel_to[FS_PATH_MAX];
+    handle_t fs, fs_to;
+    unsigned mount, mount_to;
+    status_t st = on_mount(from, rel_from, &fs, &mount, ERR_ACCESS_DENIED);
+    if (st != OK)
+        return st;
+    st = on_mount(to, rel_to, &fs_to, &mount_to, ERR_ALREADY_EXISTS);
+    if (st == OK) {
+        jam_handle_close(fs_to);
+        st = mount == mount_to
+                 ? fs_link_within(fs, FS_CALL_TIMEOUT, (const char *)rel_from, rel_len(rel_from),
+                                  (const char *)rel_to, rel_len(rel_to))
+                 : ERR_NOT_SUPPORTED;
+    }
+    jam_handle_close(fs);
+    return st;
+}
+
+status_t fs_resolve(const char *path, uint32_t flags, uint8_t *kind, uint16_t *used,
+                    char next[4096])
+{
+    uint8_t rel[FS_PATH_MAX];
+    handle_t fs;
+    unsigned mount;
+    uint32_t len = 0;
+    status_t st = on_mount(path, rel, &fs, &mount, ERR_NOT_SUPPORTED);
+    if (st != OK)
+        return st;
+    st = fs_resolve_within(fs, FS_CALL_TIMEOUT, (const char *)rel, rel_len(rel), flags, kind,
+                           used, next, &len);
+    jam_handle_close(fs);
+    return st;
+}
+
+status_t fs_subview(const char *path, uint32_t flags, handle_t *out)
+{
+    uint8_t rel[FS_PATH_MAX];
+    handle_t fs;
+    unsigned mount;
+    status_t st = on_mount(path, rel, &fs, &mount, ERR_NOT_SUPPORTED);
+    if (st != OK)
+        return st;
+    st = fs_subview_within(fs, FS_CALL_TIMEOUT, (const char *)rel, rel_len(rel), flags, out);
+    jam_handle_close(fs);
+    return st;
 }

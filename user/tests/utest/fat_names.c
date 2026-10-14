@@ -231,7 +231,8 @@ bool t_fat_names_shown(void)
     if (strcmp(name, "esc-?-name.txt"))
         FAIL("readdir gives \"%s\"", name);
     uint8_t label[16] = { 0 };
-    CHECK_ST(fs_statfs_until(r.fs, now() + FAT_CALL_NS, NULL, NULL, NULL, label), OK);
+    CHECK_ST(fs_statfs_until(r.fs, now() + FAT_CALL_NS, NULL, NULL, NULL, label, NULL, NULL, NULL),
+                             OK);
     if (strcmp((const char *)label, "?AMOS-DATA"))
         FAIL("statfs's label is \"%s\"", (const char *)label);
     return fat_stop(&r) && ramdisk_destroy(&disk);

@@ -4,9 +4,9 @@
  * and the generated client stubs of the `fs` and `file` protocols (the same
  * names, but taking a channel) can't be declared in one file as they are.
  * Here the stubs that clash get the prefix idl_: idl_fs_stat(ch, ...),
- * idl_file_read(ch, ...), idl_file_map(ch, ...). Everything else in the two headers keeps its
- * name: fs_open, the _until forms (fs_stat_until, file_read_until, ...),
- * and the server side (struct fs_ops, fs_serve_one, ...). Who needs this:
+ * idl_file_read(ch, ...), idl_file_map(ch, ...), idl_fs_getattr(ch, ...).
+ * Everything else in the two headers keeps its name: fs_open, the _until
+ * forms (fs_stat_until, file_read_until, ...), and the server side (struct fs_ops, fs_serve_one, ...). Who needs this:
  * libos's file calls, a server of the protocols (fat, the bootfs server),
  * and tests that call one directly.
  *
@@ -23,12 +23,21 @@
 #define fs_rename  idl_fs_rename
 #define fs_sync    idl_fs_sync
 #define fs_statfs  idl_fs_statfs
+#define fs_getattr idl_fs_getattr
+#define fs_setattr idl_fs_setattr
+#define fs_symlink idl_fs_symlink
+#define fs_readlink idl_fs_readlink
+#define fs_link    idl_fs_link
+#define fs_resolve idl_fs_resolve
+#define fs_subview idl_fs_subview
 #define file_read  idl_file_read
 #define file_write idl_file_write
 #define file_sync  idl_file_sync
 #define file_stat  idl_file_stat
 #define file_truncate idl_file_truncate
 #define file_map   idl_file_map
+#define file_getattr idl_file_getattr
+#define file_setattr idl_file_setattr
 
 #include <idl/file.h>
 #include <idl/fs.h>
@@ -40,12 +49,38 @@
 #undef fs_rename
 #undef fs_sync
 #undef fs_statfs
+#undef fs_getattr
+#undef fs_setattr
+#undef fs_symlink
+#undef fs_readlink
+#undef fs_link
+#undef fs_resolve
+#undef fs_subview
 #undef file_read
 #undef file_write
 #undef file_sync
 #undef file_stat
 #undef file_truncate
 #undef file_map
+#undef file_getattr
+#undef file_setattr
+
+/* Is `type` (a record's byte 27) one a record may have, for its is_dir
+ * flag: unknown, a directory exactly when is_dir, a file or a link otherwise. */
+static inline bool fs_dt_ok(uint8_t type, uint8_t is_dir)
+{
+    switch (type) {
+    case FS_DT_UNKNOWN:
+        return true;
+    case FS_DT_DIR:
+        return is_dir != 0;
+    case FS_DT_REG:
+    case FS_DT_LNK:
+        return is_dir == 0;
+    default:
+        return false;
+    }
+}
 
 /* One record of fs.readdir's `entries`. name is not NUL-terminated: it
  * points into the batch (get) or the server's own name (put). */
@@ -54,6 +89,7 @@ struct fs_dirent {
     uint64_t    size;        /* 0 for a directory */
     uint64_t    mtime;
     bool        is_dir;
+    uint8_t     type;        /* FS_DT_*; 0: the server doesn't say */
     uint32_t    name_len;    /* 1 .. FS_NAME_LEN */
     const char *name;
 };
@@ -73,7 +109,7 @@ static inline bool fs_dirent_put(uint8_t *buf, uint32_t cap, uint32_t *len,
     memcpy(p + 16, &e->mtime, 8);
     memcpy(p + 24, &nl, 2);
     p[26] = e->is_dir ? 1 : 0;
-    p[27] = 0;
+    p[27] = e->type;
     memcpy(p + FS_DIRENT_FIXED, e->name, e->name_len);
     *len += need;
     return true;
@@ -81,7 +117,8 @@ static inline bool fs_dirent_put(uint8_t *buf, uint32_t cap, uint32_t *len,
 
 /* The record at buf[*at] (the batch is len bytes) into *e, *at moved past
  * it: false if it is malformed (cut short, a name empty, over FS_NAME_LEN,
- * not UTF-8, holding a NUL or a '/', or a flag byte not 0 or 1). */
+ * not UTF-8, holding a NUL or a '/', a flag byte not 0 or 1, a type that is
+ * not an FS_DT_* or says the opposite of the flag). */
 static inline bool fs_dirent_get(const uint8_t *buf, uint32_t len, uint32_t *at,
                                  struct fs_dirent *e)
 {
@@ -93,9 +130,11 @@ static inline bool fs_dirent_get(const uint8_t *buf, uint32_t len, uint32_t *at,
     memcpy(&e->size, p + 8, 8);
     memcpy(&e->mtime, p + 16, 8);
     memcpy(&nl, p + 24, 2);
-    if (p[26] > 1 || p[27] || !nl || nl > FS_NAME_LEN || len - *at - FS_DIRENT_FIXED < nl)
+    if (p[26] > 1 || !fs_dt_ok(p[27], p[26]) || !nl || nl > FS_NAME_LEN ||
+        len - *at - FS_DIRENT_FIXED < nl)
         return false;
     e->is_dir = p[26];
+    e->type = p[27];
     e->name_len = nl;
     e->name = (const char *)p + FS_DIRENT_FIXED;
     if (!idl_str_ok(e->name, nl))
