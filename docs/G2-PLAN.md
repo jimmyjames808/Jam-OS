@@ -205,7 +205,7 @@ newer versions is harmless.
 | `xdg_wm_base` | **required** ("No Wayland shell found"); at most 6 | 6 | nothing |
 | `wl_seat` | without it a warning and no input | 9 | nothing; its own xkbcommon compiles our keymap |
 | `wl_output` | screen size and scale | 4 | nothing |
-| `wl_subcompositor` | windows of type popup and bubble with a parent are `WaylandBubble`s, drawn as a desynchronised **subsurface** of their parent (chrome's omnibox list, its bubbles); also every window's primary subsurface when overlay delegation is on (only with `wp_viewporter`) | none | **GC2**: needed by `chrome`; `content_shell` may never make one (*unsure*) |
+| `wl_subcompositor` | windows of type popup and bubble with a parent are `WaylandBubble`s, drawn as a desynchronised **subsurface** of their parent (chrome's omnibox list, its bubbles); also every window's primary subsurface when overlay delegation is on (only with `wp_viewporter`) | 1 | **GC2** (built: [notes](#gc2-notes)): needed by `chrome`; `content_shell` may never make one (*unsure*) |
 | `xdg_popup` with grabs | windows of type menu and tooltip are `WaylandPopup`s: menus, tooltips, `<select>` lists | dismissed at once | **GC3** |
 | `zxdg_decoration_manager_v1` | at most 1; asks per toplevel | 1 | **GC1b**: the owner's rule (section 3) |
 | `wl_data_device_manager` | clipboard (and drag and drop) | 3, text | nothing; drag and drop later |
@@ -1279,6 +1279,75 @@ plan's), interactive move and resize, drag and drop (`start_drag` cancels its
 source), the window menu (ignored), popups beyond the one case, and
 subsurfaces (the `subcompositor` case is the placeholder: GC2 adds its own
 cases here, as Chromium's will).
+## GC2 notes
+
+*Written 2026-10-13.* What GC2 built, where it differs from section 2,
+and what GC3 and GR need. The model is in `comp.h` (struct comp_tree,
+struct comp_sub) and `subsurface.c`'s header.
+
+**As built.** `wl_subcompositor` 1 is global 10. A tree is its main
+surface's one window: scene.c walks it (`surface_tree_walk`, bottom to top
+or top first), paint.c draws it inside the window's drawing (shadow,
+decorations, the tree, the corners cut round), the seat hits it
+(`window_input_at`, used by `wm_window_at` and the pointer). Each parent
+keeps its children's order drawn and pending, itself among them, so
+place_above and place_below may name it; a new child, the order and
+set_position are the parent's double-buffered state. A synchronized
+child's commits are merged into a cache (surface.c) and applied with the
+parent's state, recursively; desynchronized commits apply at once unless a
+parent above is synchronized. Frame callbacks wait with the cache. Damage
+goes where a surface is drawn (`surface_damage`); a commit that changes the
+tree's shape (a child mapped, unmapped, resized, moved or restacked)
+damages the whole window before and after, so a bubble's content updates
+cost only their own boxes.
+
+**The window's box** follows xdg-shell: with no window geometry set, the
+window is the whole tree (`window_tree_box`): the frame, the title bar,
+the shadow, placement and the configure's size go round it (foot's title
+bar subsurface above its main surface works with or without a geometry).
+A geometry set is clamped to the tree. **Clipping**: every subsurface is
+drawn and hit only inside `window_geometry` (a tile's view while tiled);
+the main surface never is, so a client's own shadow in it shows as GC1b
+made it. With no geometry nothing is clipped (the window is the tree);
+with one, a child past it is cut off.
+
+**Caps** (comp.h): 48 wl_subsurface objects a client
+(`COMP_SUBS_MAX`), 32 children a parent, 8 subsurfaces nested below a
+main surface (a subtree brought under a parent counts whole), positions
+held to +-2^20. Past a cap: `no_memory`, as every other cap of the
+compositor's. **Errors**: the surface its own parent or a cycle,
+`bad_parent`; a surface with another role (even one whose role object
+went: roles are for good), or a live wl_subsurface already, `bad_surface`;
+place_above/below naming itself or a non-sibling, wl_subsurface's
+`bad_surface`; a wl_surface destroyed before its wl_subsurface,
+`defunct_role_object` (as xdg-shell's roles here). A parent destroyed
+first is no error: its children are shown nowhere and their
+wl_subsurface objects are inert until destroyed; a new wl_subsurface may
+be made for such a surface after.
+
+**Differences from other compositors, chosen**: set_desync applies a cache
+left waiting at once (weston and wlroots do; the protocol's text leaves it
+to the next commit). A desynchronized child whose commit changes the
+tree's box with no window geometry set (it grows the window left or up)
+moves the frame round the tree, but the window manager places the window
+again only at the main surface's next commit. A window with subsurfaces
+never takes the full-screen path (its rows copied straight from its main
+surface's buffer). The keyboard focus stays the main surface's (a
+subsurface never has it, as the protocol says).
+
+**For GC3 (popups)**: an xdg_popup is a window of its own, and its surface
+may have a tree: `window_tree_box`, the tree drawing and `window_input_at`
+work for any window. The pointer's focus is a window and a surface of its
+tree (pointer.c's `over`, `over_s`): a popup's grab routes to a window,
+then `window_input_at` finds the surface; `surface_on_output` gives any
+surface's place on the output, `surface_tree_window` the window that draws
+it (a popup's parent may be named by any xdg_surface, never a
+subsurface). The parent's window geometry (`window_geom`) is what the
+positioner's anchor rectangle is relative to, and it includes the tree.
+**For GR**: hostile trees to try live: a desync storm (a child committing
+every turn while its parent is idle), a tree at every cap at once, a
+parent destroyed under the pointer's implicit grab, a cache holding the
+last buffer of a pool the client destroyed.
 
 ## Tests and the sign-off
 

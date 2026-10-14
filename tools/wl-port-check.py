@@ -40,7 +40,6 @@ CASES = {
 # Cases the compositor fails today, and why (the track's report has the evidence).
 XFAIL = {
     "popup": "GC3 (popups) is not merged: xdg_popup is dismissed at once (docs/G2-PLAN.md)",
-    "subcompositor": "GC2 (subsurfaces) is not merged: no wl_subcompositor global yet",
 }
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")

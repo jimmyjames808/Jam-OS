@@ -8,6 +8,16 @@
  * result (xdg_toplevel maps, configures, places). A surface without a role
  * shows nothing.
  *
+ * Subsurfaces (subsurface.c): the commit of one that behaves as
+ * synchronized is not applied but merged into its cache (a newer buffer
+ * replaces an older one, damage adds up, a region set replaces the last,
+ * frame callbacks wait with it), which is applied when its parent's state
+ * is, as part of that commit (subsurface_applied); a parent's apply also
+ * makes its children's order and positions current. Damage goes where the
+ * surface is drawn in its tree (surface_damage); a commit that changes
+ * what a tree draws beyond pixels (a subsurface mapped, unmapped, resized,
+ * moved or restacked) damages its whole window, before and after.
+ *
  * Frame callbacks are answered (wl_callback.done with the paint's time in
  * ms) after the first paint following their commit while the surface is
  * visible; while it isn't, at most once every COMP_HIDDEN_FRAME_NS, so a
@@ -64,11 +74,13 @@ status_t surface_create(struct comp_client *cl, uint32_t compositor, uint32_t id
 static void surface_free(struct comp_surface *s, bool dead)
 {
     struct comp_client *cl = s->client;
+    seat_surface_gone(s);
+    subsurface_parent_gone(s);   /* its children shown nowhere, while its window is there */
     if (s->role_ops && s->role_ops->gone)
         s->role_ops->gone(s, dead);
     if (s->window)
         window_destroy(s->window);
-    for (uint32_t i = 0; !dead && i < s->nframes + s->npending; i++)
+    for (uint32_t i = 0; !dead && i < s->nframes + s->ncached + s->npending; i++)
         (void)jwl_conn_delete(cl->conn, s->frames[i]);   /* never answered: just gone */
     if (s->buffer) {
         buffer_unshow(s->buffer);
@@ -76,6 +88,13 @@ static void surface_free(struct comp_surface *s, bool dead)
     }
     if (s->pending.buffer)
         buffer_unref(s->pending.buffer);
+    if (s->cache) {
+        if (s->cache->buffer)
+            buffer_unref(s->cache->buffer);
+        region_fini(&s->cache->opaque);
+        region_fini(&s->cache->input);
+        free(s->cache);
+    }
     region_fini(&s->pending.opaque);
     region_fini(&s->pending.input);
     region_fini(&s->opaque);
@@ -94,6 +113,7 @@ void surfaces_teardown(struct comp_client *cl)
 {
     while (cl->surfaces)
         surface_free(cl->surfaces, true);
+    subsurfaces_teardown(cl);   /* their wl_subsurface states, every surface gone first */
 }
 
 status_t surface_set_role(struct comp_surface *s, enum comp_role role,
@@ -170,9 +190,9 @@ static status_t on_damage(void *data, uint32_t self, int32_t x, int32_t y, int32
 static status_t on_frame(void *data, uint32_t self, uint32_t callback)
 {
     struct comp_surface *s = data;
-    if (s->nframes + s->npending >= COMP_FRAMES_MAX)
+    if (s->nframes + s->ncached + s->npending >= COMP_FRAMES_MAX)
         return comp_no_memory(s->client, self, "too many frame callbacks (64)");
-    s->frames[s->nframes + s->npending++] = callback;
+    s->frames[s->nframes + s->ncached + s->npending++] = callback;
     return OK;
 }
 
@@ -234,13 +254,20 @@ static status_t on_set_buffer_scale(void *data, uint32_t self, int32_t scale)
 
 /* ---- commit ----------------------------------------------------------------------- */
 
-/* The pending buffer becomes the current one. */
-static void apply_buffer(struct comp_surface *s)
+/* Did the commit being applied change what a tree draws beyond its
+ * surfaces' pixels (a subsurface mapped, unmapped or resized, the order, a
+ * position)? Then all of the window is damaged before and after. Set
+ * while one commit applies (commit_now), nested applies included. */
+static bool reshaped;
+
+/* p's buffer (s's pending state's, or its cache's) becomes the current one. */
+static void apply_buffer(struct comp_surface *s, struct comp_state *p)
 {
-    struct comp_state *p = &s->pending;
     struct comp_buffer *old = s->buffer, *b = p->buffer;
     int32_t w = b ? b->width : 0, h = b ? b->height : 0;
     bool resized = w != s->width || h != s->height;
+    if (s->role == COMP_ROLE_SUBSURFACE && resized)
+        reshaped = true;   /* (mapping or unmapping is a resize from or to 0) */
     if (s->window && resized)
         window_damage(s->window);   /* the frame it had */
     if (b)
@@ -257,9 +284,8 @@ static void apply_buffer(struct comp_surface *s)
         window_damage(s->window);   /* the frame it has now */
 }
 
-static status_t apply_regions(struct comp_surface *s)
+static status_t apply_regions(struct comp_surface *s, struct comp_state *p)
 {
-    struct comp_state *p = &s->pending;
     status_t st = OK;
     if (p->opaque_set)
         st = region_copy(&s->opaque, &p->opaque);
@@ -273,32 +299,149 @@ static status_t apply_regions(struct comp_surface *s)
     return st == OK ? OK : comp_no_memory(s->client, s->id, "no memory for a region");
 }
 
-static status_t on_commit(void *data, uint32_t self)
+/* State p (s's pending state, or its cache) made current, at once: the
+ * regions, the buffer, the offset, the damage, the frame callbacks; then
+ * its subsurfaces' order, positions and synchronized caches (parent_sync:
+ * s itself is applied as synchronized); then the role sees it. */
+static status_t apply(struct comp_surface *s, struct comp_state *p, bool parent_sync)
 {
-    struct comp_surface *s = data;
-    struct comp_state *p = &s->pending;
-    (void)self;
-    status_t st = apply_regions(s);
+    status_t st = apply_regions(s, p);
     if (st != OK)
         return st;
     if (p->attached)
-        apply_buffer(s);
+        apply_buffer(s, p);
     if (p->offset_set) {
         s->dx = p->dx;
         s->dy = p->dy;
     }
     p->attached = p->offset_set = false;
     p->dx = p->dy = 0;
-    if (s->window)
-        for (uint32_t i = 0; i < p->damage.n; i++)
-            window_damage_surface(s->window, p->damage.b[i]);
+    for (uint32_t i = 0; i < p->damage.n; i++)
+        surface_damage(s, p->damage.b[i]);
     damage_clear(&p->damage);
-    s->nframes += s->npending;   /* committed: answered after the next paint */
-    s->npending = 0;
-    s->commits++;
+    if (p == s->cache) {   /* committed: answered after the next paint */
+        s->nframes += s->ncached;
+        s->ncached = 0;
+        s->has_cache = false;
+    } else {
+        s->nframes += s->npending;
+        s->npending = 0;
+    }
+    st = subsurface_applied(s, parent_sync, &reshaped);
+    if (st != OK)
+        return st;
     if (!s->role_ops)
         return testwin_commit(s);   /* nothing without the test power */
     return s->role_ops->commit ? s->role_ops->commit(s) : OK;
+}
+
+/* A synchronized subsurface's commit: its pending state merged into its
+ * cache (made the first time), to be applied with its parent's state. */
+static status_t cache_pending(struct comp_surface *s)
+{
+    struct comp_state *c = s->cache, *p = &s->pending;
+    if (!c) {
+        if (!(c = calloc(1, sizeof(*c))))
+            return comp_no_memory(s->client, s->id, "no memory for a subsurface's state");
+        damage_init(&c->damage, c->damage_boxes, COMP_SURFACE_DAMAGE_MAX);
+        region_init(&c->opaque, &s->client->rects);
+        region_init(&c->input, &s->client->rects);
+        s->cache = c;
+    }
+    status_t st = OK;
+    if (p->opaque_set)
+        st = region_copy(&c->opaque, &p->opaque);
+    if (st == OK && p->input_set) {
+        c->input_all = p->input_all;
+        st = region_copy(&c->input, &p->input);
+    }
+    c->opaque_set |= p->opaque_set;
+    c->input_set |= p->input_set;
+    p->opaque_set = p->input_set = false;
+    if (st != OK)
+        return comp_no_memory(s->client, s->id, "regions over 4096 boxes in all, or no memory");
+    if (p->attached) {   /* the newer buffer (or detach) replaces a cached one */
+        if (c->buffer)
+            buffer_unref(c->buffer);
+        c->buffer = p->buffer;
+        c->attached = true;
+        p->buffer = NULL;
+    }
+    if (p->offset_set) {
+        c->dx = p->dx;
+        c->dy = p->dy;
+        c->offset_set = true;
+    }
+    p->attached = p->offset_set = false;
+    p->dx = p->dy = 0;
+    for (uint32_t i = 0; i < p->damage.n; i++)
+        damage_add(&c->damage, p->damage.b[i]);
+    damage_clear(&p->damage);
+    s->ncached += s->npending;   /* committed with the cache, when it is applied */
+    s->npending = 0;
+    s->has_cache = true;
+    return OK;
+}
+
+/* A commit that applies now (s isn't synchronized): its pending state
+ * (with_pending: merged into a cache left from when it was), or only the
+ * cache (set_desync). In a tree, a commit that moves what the tree draws
+ * damages all of its window as it was and as it is. */
+static status_t commit_now(struct comp_surface *s, bool with_pending)
+{
+    bool in_tree = s->tree || s->role == COMP_ROLE_SUBSURFACE;
+    struct comp_window *w = in_tree ? surface_tree_window(s) : NULL;
+    struct comp_box before = w && (w->flags & COMP_WIN_MAPPED) ? window_extent(w)
+                                                               : (struct comp_box){ 0, 0, 0, 0 };
+    reshaped = false;
+    status_t st = OK;
+    if (with_pending && s->has_cache)
+        st = cache_pending(s);
+    if (st == OK)
+        st = apply(s, s->has_cache ? s->cache : &s->pending, false);
+    if (in_tree && reshaped) {
+        scene_damage(before);
+        if ((w = surface_tree_window(s)))   /* (the role may have dropped the old one) */
+            window_damage(w);
+    }
+    s->commits++;
+    return st;
+}
+
+static status_t on_commit(void *data, uint32_t self)
+{
+    struct comp_surface *s = data;
+    (void)self;
+    if (subsurface_synced(s)) {
+        s->commits++;
+        return cache_pending(s);
+    }
+    return commit_now(s, true);
+}
+
+status_t surface_apply_cached(struct comp_surface *s)
+{
+    return s->has_cache ? apply(s, s->cache, true) : OK;
+}
+
+status_t surface_flush_cache(struct comp_surface *s)
+{
+    return s->has_cache ? commit_now(s, false) : OK;
+}
+
+void surface_drop_cache(struct comp_surface *s)
+{
+    struct comp_state *c = s->cache;
+    if (!s->has_cache)
+        return;
+    if (c->buffer)
+        buffer_unref(c->buffer);
+    c->buffer = NULL;
+    c->attached = c->offset_set = c->opaque_set = c->input_set = false;
+    damage_clear(&c->damage);
+    s->nframes += s->ncached;   /* answered as any hidden surface's */
+    s->ncached = 0;
+    s->has_cache = false;
 }
 
 static const struct jwl_wl_surface_requests surface_ops = {
@@ -323,14 +466,15 @@ status_t surface_request(struct comp_client *cl, struct jwl_msg *m)
 
 /* ---- frame callbacks ------------------------------------------------------------------ */
 
-/* s's committed callbacks answered with time t; the ones asked for since
- * the last commit move up. */
+/* s's committed callbacks answered with time t; the cached ones and those
+ * asked for since the last commit move up. */
 static void answer_frames(struct comp_surface *s, uint64_t t)
 {
     struct jwl_conn *c = s->client->conn;
     for (uint32_t i = 0; i < s->nframes; i++)
         (void)jwl_wl_callback_send_done(c, s->frames[i], comp_ms(t));   /* a dead conn: torn down */
-    memmove(s->frames, s->frames + s->nframes, s->npending * sizeof(s->frames[0]));
+    memmove(s->frames, s->frames + s->nframes,
+            (s->ncached + s->npending) * sizeof(s->frames[0]));
     s->nframes = 0;
 }
 

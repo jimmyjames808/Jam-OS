@@ -19,7 +19,9 @@
  *     pixels below its corners kept, its decorations (title.c), then its
  *     buffer: copied (xrgb8888, or inside its opaque region), or blended
  *     over what is below (argb8888, premultiplied, with libfun's
- *     px_over_row: px_over's exact rounding), then its corners cut round;
+ *     px_over_row: px_over's exact rounding), and its subsurfaces' the
+ *     same way in their tree's order, each clipped to the window geometry
+ *     (scene.c's walk), then its corners cut round;
  *   - the tiler's marks (wmdraw.c: a lit gap, a Super+dragged tile);
  *   - the desktop over the windows (deskpaint.c): animations, the
  *     strip, then the cards;
@@ -97,18 +99,25 @@ static bool inside(struct comp_box a, struct comp_box b)
     return a.x1 >= b.x1 && a.y1 >= b.y1 && a.x2 <= b.x2 && a.y2 <= b.y2;
 }
 
-bool paint_opaque_over(const struct comp_window *w, struct comp_box in)
+/* s's pixels in box `in` of the output hide what is below, its (0, 0) at
+ * (x, y): paint_opaque_over's rule, for any surface. */
+static bool surface_opaque_over(const struct comp_surface *s, int32_t x, int32_t y,
+                                struct comp_box in)
 {
-    const struct comp_surface *s = w->surface;
     if (!s->buffer)
         return false;
     if (s->buffer->format != JWL_WL_SHM_FORMAT_ARGB8888)
         return true;
-    struct comp_box rel = box_translate(in, -window_shown_x(w), -window_shown_y(w));
+    struct comp_box rel = box_translate(in, -x, -y);
     for (uint32_t i = 0; i < s->opaque.n; i++)
         if (inside(rel, s->opaque.b[i]))
             return true;
     return false;
+}
+
+bool paint_opaque_over(const struct comp_window *w, struct comp_box in)
+{
+    return surface_opaque_over(w->surface, window_shown_x(w), window_shown_y(w), in);
 }
 
 /* Does w hide all of b (b not empty)? Its frame holds b, b is clear of its
@@ -119,7 +128,12 @@ static bool hides(const struct comp_window *w, struct comp_box b)
     if (!(w->flags & COMP_WIN_MAPPED) || (w->flags & COMP_WIN_ANIMATED) || !w->surface->buffer ||
         !inside(b, window_frame(w)) || shape_corner_meets(w, b))
         return false;
-    struct comp_box in = box_intersect(b, window_surface_box(w));
+    struct comp_box s = window_surface_box(w), in = box_intersect(b, s);
+    /* the window geometry off the main surface is its subsurfaces' (or
+     * nothing): nothing there is known to hide what is below */
+    struct comp_box g = box_intersect(b, window_geometry(w));
+    if (!box_empty(g) && !inside(g, s))
+        return false;
     return box_empty(in) || paint_opaque_over(w, in);
 }
 
@@ -161,7 +175,8 @@ static const struct comp_window *full_screen(void)
          * padded, paint.c's draw_pad; review C7) */
         struct comp_box buf = box_make(window_shown_x(w), window_shown_y(w), w->surface->width,
                                        w->surface->height);
-        bool all = inside(out, window_surface_box(w)) && inside(out, buf) &&
+        bool all = !window_has_subsurfaces(w) &&   /* they are drawn over it */
+                   inside(out, window_surface_box(w)) && inside(out, buf) &&
                    paint_opaque_over(w, out) && !shape_corner_meets(w, out);
         return all ? w : NULL;
     }
@@ -178,16 +193,21 @@ static void copy_rgb(uint32_t *restrict dst, const uint32_t *restrict src, int n
         dst[i] = src[i] & 0xffffff;
 }
 
+/* Row y of surface s's buffer, from output column x, its (0, 0) at (sx, sy). */
+static const uint32_t *surface_row(const struct comp_surface *s, int32_t sx, int32_t sy,
+                                   int32_t x, int32_t y)
+{
+    const struct comp_buffer *b = s->buffer;
+    return (const uint32_t *)(const void *)(comp_buffer_data(b) + (uint64_t)(y - sy) * b->stride) +
+           (x - sx);
+}
+
 /* Row y of window w's buffer, from output column x. */
 static const uint32_t *buffer_at(const struct comp_window *w, int32_t x, int32_t y)
 {
-    const struct comp_buffer *b = w->surface->buffer;
-    return (const uint32_t *)(const void *)(comp_buffer_data(b) +
-                                            (uint64_t)(y - window_shown_y(w)) * b->stride) +
-           (x - window_shown_x(w));
+    return surface_row(w->surface, window_shown_x(w), window_shown_y(w), x, y);
 }
 
-/* Window w's buffer where it meets t (me: the worker, counting; ~0u: none). */
 /* Window w's colour where its buffer doesn't reach its view (comp.h): the
  * buffer's bottom-right pixel (a terminal's or an app's background). */
 static uint32_t pad_colour(const struct comp_window *w)
@@ -215,6 +235,27 @@ static void draw_pad(const struct comp_window *w, const struct tile_buf *t, stru
     }
 }
 
+/* Surface s's pixels in box `in` (inside its buffer and the tile), its
+ * (0, 0) at (sx, sy): copied where they hide what is below, else blended
+ * over it. */
+static void draw_rows(const struct comp_surface *s, int32_t sx, int32_t sy, struct comp_box in,
+                      const struct tile_buf *t, uint32_t me)
+{
+    bool copy = surface_opaque_over(s, sx, sy, in);
+    int n = in.x2 - in.x1;
+    for (int32_t y = in.y1; y < in.y2; y++) {
+        uint32_t *dst = tile_row(t, y) + (in.x1 - t->b.x1);
+        const uint32_t *src = surface_row(s, sx, sy, in.x1, y);
+        if (copy)
+            copy_rgb(dst, src, n);
+        else
+            px_over_row(dst, src, n);
+    }
+    if (me < FUN_MAX_THREADS)
+        pt.count[me].layer_px += (uint64_t)n * (uint64_t)(in.y2 - in.y1);
+}
+
+/* Window w's buffer where it meets t (me: the worker, counting; ~0u: none). */
 static void draw_buffer(const struct comp_window *w, const struct tile_buf *t, uint32_t me)
 {
     struct comp_box in = box_intersect(window_surface_box(w), t->b);
@@ -227,25 +268,49 @@ static void draw_buffer(const struct comp_window *w, const struct tile_buf *t, u
         if (box_empty(in))
             return;
     }
-    bool copy = paint_opaque_over(w, in);
-    int n = in.x2 - in.x1;
-    for (int32_t y = in.y1; y < in.y2; y++) {
-        uint32_t *dst = tile_row(t, y) + (in.x1 - t->b.x1);
-        const uint32_t *src = buffer_at(w, in.x1, y);
-        if (copy)
-            copy_rgb(dst, src, n);
-        else
-            px_over_row(dst, src, n);
+    draw_rows(w->surface, window_shown_x(w), window_shown_y(w), in, t, me);
+}
+
+/* What draw_one draws with: the window, the tile, the worker, and where
+ * the subsurfaces may draw in the tile (the window geometry). */
+struct tree_draw {
+    const struct comp_window *w;
+    const struct tile_buf *t;
+    uint32_t me;
+    struct comp_box clip;
+};
+
+static bool draw_one(const struct comp_surface *s, int32_t x, int32_t y, void *arg)
+{
+    const struct tree_draw *d = arg;
+    if (s == d->w->surface) {
+        draw_buffer(d->w, d->t, d->me);   /* the main surface: its view, never clipped */
+        return true;
     }
-    if (me < FUN_MAX_THREADS)
-        pt.count[me].layer_px += (uint64_t)n * (uint64_t)(in.y2 - in.y1);
+    struct comp_box in = box_intersect(box_make(x, y, s->width, s->height), d->clip);
+    if (!box_empty(in))
+        draw_rows(s, x, y, in, d->t, d->me);
+    return true;
+}
+
+/* Window w's surfaces where they meet t: its main surface and its
+ * subsurfaces in their tree's order, each subsurface clipped to the window
+ * geometry. */
+static void draw_tree(const struct comp_window *w, const struct tile_buf *t, uint32_t me)
+{
+    if (!w->surface->tree) {
+        draw_buffer(w, t, me);
+        return;
+    }
+    struct tree_draw d = { w, t, me, box_intersect(window_geometry(w), t->b) };
+    (void)surface_tree_walk(w->surface, window_shown_x(w), window_shown_y(w), false, draw_one, &d);
 }
 
 void paint_window(const struct comp_window *w, const struct tile_buf *t, uint32_t *save)
 {
     shape_save(w, t, save);
     title_draw(w, t);
-    draw_buffer(w, t, ~0u);
+    draw_tree(w, t, ~0u);
     shape_clip(w, t, save);
 }
 
@@ -262,7 +327,7 @@ static void draw_window(const struct comp_window *w, const struct tile_buf *t, u
     uint32_t *save = pt.buf[me] + TILE_W * TILE_H;
     shape_save(w, t, save);
     title_draw(w, t);
-    draw_buffer(w, t, me);
+    draw_tree(w, t, me);
     shape_clip(w, t, save);
 }
 

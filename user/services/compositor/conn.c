@@ -54,6 +54,7 @@ static const struct jwl_interface *const known[] = {
     &jwl_wl_seat_interface,       &jwl_xdg_wm_base_interface,
     &jwl_wp_cursor_shape_manager_v1_interface, &jwl_wl_data_device_manager_interface,
     &jwl_jam_window_memory_v1_interface, &jwl_zxdg_decoration_manager_v1_interface,
+    &jwl_wl_subcompositor_interface,
 };
 
 /* Each interface's requests. */
@@ -87,6 +88,8 @@ static const struct {
     { &jwl_jam_window_memory_v1_interface, memory_request },
     { &jwl_zxdg_decoration_manager_v1_interface, xdg_deco_manager_request },
     { &jwl_zxdg_toplevel_decoration_v1_interface, xdg_deco_request },
+    { &jwl_wl_subcompositor_interface, subcompositor_request },
+    { &jwl_wl_subsurface_interface, subsurface_request },
 };
 
 /* What goes with a client, module by module (later tracks add theirs:

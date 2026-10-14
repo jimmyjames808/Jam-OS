@@ -37,7 +37,17 @@ static const char *const scene_args[] = {
     "cursorshape=hand", "paint", "hold=4000",
     /* Step 5: the search box, "te" typed into it, the pointer on a row. */
     "popover=clock", "search=te", "cursor=600,195", "paint", "hold=4000",
-    "deskbench", "nodesktop", "bench",
+    "deskbench", "nodesktop",
+    /* Step 6: windows with subsurfaces (numbered on from step 3's): the
+     * first's tree reaches past its surface above, left, right and below,
+     * and its frame, title bar and shadow go round the tree; a child below
+     * it hidden, a translucent one over it with a child of its own; the
+     * second's window geometry is its surface, so its child is clipped. */
+    "clear", "nocursor", "win=150,190,300,200,ff2a6f97,tf", "sub=6,-20,-30,120,80,ff8a4f2a",
+    "sub=6,220,140,140,90,c0e0a040", "sub=6,40,40,80,60,ff3a7a50,b",
+    "sub=8,10,10,40,30,ffd04060", "win=520,120,220,160,ff6a5acd,t", "geom=11,0,0,220,160",
+    "sub=11,150,100,120,100,ffd08020", "paint", "hold=4000",
+    "bench",
 };
 
 bool run_comptest(void)
