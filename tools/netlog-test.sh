@@ -44,6 +44,7 @@ def check(what, cond):
         fails.append(what)
 
 ts = re.compile(r"^\[ *\d+\.\d{6}\] ")
+tsany = re.compile(r"\[ *\d+\.\d{6}\] ")
 esc = re.compile(r"\x1b\[[0-9;=?]*[A-Za-z]")
 serial = esc.sub("", open(os.path.join(out, "netlog.log"), encoding="utf-8",
                           errors="replace").read()).replace("\r", "")
@@ -51,10 +52,35 @@ serial = esc.sub("", open(os.path.join(out, "netlog.log"), encoding="utf-8",
 # can land inside a kernel line, after the timestamp: the netlog file has
 # that line without it, so the reference drops every prompt.
 serial = re.sub(r"jam:/[^\s>]*> ", "", serial)
+# The shell echoes what the script types ("send" lines of netlog.txt) and
+# that, too, can land inside a kernel line on the serial port ("threead").
+# A serial line is the file's line when it is equal, or when the file's
+# line is what is left of it after dropping a few characters the script
+# typed: never a line the file lacks a character of, or one with anything
+# else added.
+typed = set("".join(l[5:] for l in open("tools/shell-tests/netlog.txt", encoding="utf-8")
+                    if l.startswith("send ")))
+
+def same(ref, line):
+    if ref == line:
+        return True
+    if not ts.match(line) or not 0 < len(ref) - len(line) <= 64:
+        return False
+    i, extra = 0, set()
+    for c in ref:
+        if i < len(line) and c == line[i]:
+            i += 1
+        else:
+            extra.add(c)
+    return i == len(line) and extra <= typed
+
 boots, cur = [], None
 for line in serial.split("\n"):
-    if not ts.match(line):
+    # An echo can land before the timestamp too ("k[   17.77...").
+    m = tsany.search(line)
+    if not m or not set(line[:m.start()]) <= typed or m.start() > 64:
         continue
+    line = line[m.start():]
     if "] Jam OS 0." in line and (cur is None or len(cur) > 1):
         cur = []
         boots.append(cur)
@@ -76,19 +102,23 @@ if len(boots) == 2 and len(crash) == 1 and len(lives) == 2:
                              (second[0], boots[1], "the second boot")):
         got = text[name].split("\n")[:-1]
         check("%s's file starts at its first line" % what,
-              bool(got) and got[0] == boot[0] and "] Jam OS 0." in got[0])
+              bool(got) and same(boot[0], got[0]) and "] Jam OS 0." in got[0])
         # The serial copy is the reference, but the shell's echo can land
-        # in the middle of a kernel line there: every serial line up to the
-        # file's last must be in the file, in order, and every line of the
-        # file must be somewhere in the serial text.
+        # in the middle of a kernel line there (same()): every serial line
+        # up to the file's last must be in the file, in order, and every
+        # line of the file must be a line of the serial text.
         k = 0
         for line in got:
-            if k < len(boot) and boot[k] == line:
+            if k < len(boot) and same(boot[k], line):
                 k += 1
-        last = boot.index(got[-1]) + 1 if got and got[-1] in boot else len(boot)
+        last = len(boot)
+        for j, l in enumerate(boot):
+            if got and same(l, got[-1]):
+                last = j + 1
+                break
         check("%s's file is its log, line for line (%d lines; %d of the serial's %d)" %
               (what, len(got), k, len(boot)),
-              k >= last and all(l in serial for l in got))
+              k >= last and k >= len(got))
         check("%s's file has no receiver note (no gap, nothing lost)" % what,
               "[netlog-recv:" not in text[name])
         own = [l for l in got if "] netlog: " in l]
