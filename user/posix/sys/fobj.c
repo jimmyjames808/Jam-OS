@@ -216,7 +216,8 @@ long fobj_open(const struct path *p, uint32_t ff, struct fobj **out)
     if (st == ERR_BUSY && (ff & FS_WRITE))
         return busy(p, ff, out);
     if (st != OK)
-        return path_err(p, st);
+        return (ff & (FS_WRITE | FS_CREATE | FS_TRUNCATE)) ? path_err(p, st)
+                                                          : path_err_read(p, st);
     char m[NS_NAME_MAX];
     mount_of(p, m);
     return fresh_obj(ch, buf, ff, m, out);

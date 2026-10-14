@@ -119,7 +119,7 @@ static long statfs_path(const struct path *p, struct statfs *s)
     status_t st = fs_statfs_within(fs, FILE_TIMEOUT, &total, &free_bytes, &ro, label);
     jam_handle_close(fs);
     if (st != OK)
-        return path_err(p, st);
+        return path_err_read(p, st);
     s->f_type = !memcmp(label, "BOOTFS", 7) ? RAMFS_MAGIC : MSDOS_MAGIC;
     s->f_blocks = total / FS_BSIZE;
     s->f_bfree = s->f_bavail = free_bytes / FS_BSIZE;

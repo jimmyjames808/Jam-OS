@@ -101,7 +101,7 @@ static long fetch(const struct dir *x, struct dir *w, uint32_t cookie)
                                     &blen);
     jam_handle_close(fs);
     if (st != OK)
-        return path_err(&p, st);
+        return path_err_read(&p, st);
     if (!count && next)
         return -EIO;   /* an empty batch that isn't the last: a broken service */
     *w = (struct dir){ .path = w->path, .batch = w->batch, .blen = blen, .bcookie = cookie,

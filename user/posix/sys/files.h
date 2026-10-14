@@ -5,8 +5,8 @@
  *     current directory or a directory descriptor's path, cleaned, and
  *     split into its mount and the path inside it; the current directory;
  *     the calls to a mount's `fs` service (abi/idl/fs.idl), whose statuses
- *     become errno values here (path_err: a refusal on a read-only mount
- *     is EROFS); what stat says about a path;
+ *     become errno values here (path_err: a refused change on a read-only
+ *     mount is EROFS, a refused read EACCES); what stat says about a path;
  *   - file.c: the file kind and open;
  *   - dir.c: the directory kind (getdents64), mkdir, unlink, rmdir,
  *     rename, chdir and getcwd;
@@ -88,6 +88,9 @@ bool path_read_only(const struct path *p);
  * EROFS on a read-only mount (else EACCES), and the `fs` protocol's
  * other errors as fs.idl lists them. */
 long path_err(const struct path *p, status_t st);
+/* The same for a call that changes nothing (stat, readdir, statfs, an
+ * open to read): a refusal there is always EACCES, never EROFS. */
+long path_err_read(const struct path *p, status_t st);
 /* *st for p as path_info found it (fstat's and stat's shared part). */
 void path_fill_stat(const struct path *p, const struct path_info *i, struct stat *st);
 
