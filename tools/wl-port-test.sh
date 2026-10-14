@@ -15,7 +15,8 @@
 #
 #   proto    wlprobe all + subcompositor, in the tiling layout: globals, bind, shm,
 #            output, keymap, toplevel + states-tiled, keyless, deco-server, frames,
-#            geometry and its errors, parent, popup, big-buffer, resize-storm,
+#            geometry and its errors, parent, popup and popup-nested, -reposition,
+#            -flip, -tooltip, -parent, big-buffer, resize-storm,
 #            reuse, clipboard-serial, maximize, fullscreen, minimize (the shot
 #            cases too, without their holds)
 #   floating Super+T, then states-floating and wl-window-test (a decorated window:
@@ -28,7 +29,8 @@
 #            wlprobe holds each window still for the shots
 #   pointer  pointer (enter, motion 1:1, buttons, wheel, leave, injected with
 #            QEMU's mouse; the surface coordinates checked against a screenshot),
-#            keyless-click
+#            keyless-click, popup-click (a menu opened by a click, dismissed by
+#            a click outside)
 #   keyboard keyboard (keys typed on the USB keyboard through the keymap), close
 #   cursor   cursor-shape (three shapes, the drawn cursor differs), cursor-surface
 #   clip     clipboard-in (a terminal's selection read by wlprobe) and

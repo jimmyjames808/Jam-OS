@@ -59,3 +59,24 @@ sleep 0.2
 monitor mouse_button 0
 wait 40 case(s),
 wait {prompt}
+# a menu: a click on the window opens one that grabs with the click's serial
+# (the keys go to it); a click on terminal 1, outside its client, dismisses it
+# and goes nowhere, and the keys come back to the window. `pointer 100 400`
+# takes longer than wlprobe's usual 30 s wait: -t 90
+pointer 960 420
+send run $P/wlprobe -t 90 popup-click
+wait 40 wlprobe: popup-click: ready
+sleep 1
+monitor mouse_move 2 0
+sleep 0.5
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_button 0
+wait 20 wlprobe: popup-click: menu up
+pointer 100 400
+sleep 0.5
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_button 0
+wait 60 case(s),
+wait {prompt}
