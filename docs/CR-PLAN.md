@@ -774,7 +774,9 @@ lands (no WebAssembly then).
   JIT memory decommits in place (a reservation cut and committed again
   keeps one VMO); a `MAP_FIXED` without it replaces JIT memory with plain
   memory. `MAP_JIT` is in `<sys/mman.h>` through an override of musl's
-  `arch/x86_64/bits/mman.h` (user/posix/musl/OVERRIDES).
+  `arch/x86_64/bits/mman.h`, and an override of its `src/mman/mmap.c`
+  keeps the `EPERM` (upstream turns an anonymous mapping's `EPERM` into
+  `ENOMEM`, a fix-up for Linux) (user/posix/musl/OVERRIDES).
 - **V8** (still to do, with CB5): V8 already tells its page allocator
   when a reservation will hold code (`kNoAccessWillJitLater`, made for
   macOS's `MAP_JIT`); a few-line patch in its POSIX platform passes
