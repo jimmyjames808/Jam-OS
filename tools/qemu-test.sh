@@ -93,6 +93,16 @@
 # can't hold spaces, `+` or `,`. Unset: no NVMe drive, nothing else changes.
 # tools/nvme-test.sh is the stage-1 test that uses it, with QEMU's trace of
 # every command (QEMU_EXTRA="-trace pci_nvme_admin_cmd -trace pci_nvme_io_cmd -D <file>").
+# QEMU_BOOT_NVME=1 boots from an installed drive instead of a stick: the
+# image (QEMU_IMAGE's or build/jamos.img), made Jam OS's GPT layout if it
+# is a stick's (tools/mkimage.py --gpt: its ESP and data volumes copied
+# into "Jam OS ESP" and "Jam OS data", a random disk GUID), is an NVMe
+# drive (serial jamos-boot, bootindex=0, a bus address after every other
+# device's but before QEMU_NVME's drives), and there is no stick: nothing on
+# xhci.0 port 1. The drive is the block node "usbstick" as the stick is
+# (QEMU_STICK_THROTTLE slows it the same way), QEMU_SAVE keeps it, and
+# QEMU_MENU_AT works on its ESP. A GPT image (a run's QEMU_SAVE) is booted
+# as it is.
 # QEMU_WORDS: more boot words after the caller's, e.g. "iommu=on" to run
 # an area test with QEMU_IOMMU's unit started (DMA translation and
 # interrupt remapping on).
@@ -147,6 +157,10 @@ mkdir -p "$out"
 
 img="$out/$name.img"
 cp "${QEMU_IMAGE:-build/jamos.img}" "$img"
+if [ "${QEMU_BOOT_NVME:-0}" = 1 ] && [ "$(od -An -tx1 -j450 -N1 "$img" | tr -d ' ')" != ee ]; then
+    python3 tools/mkimage.py --gpt "$img" "$img.gpt" && mv "$img.gpt" "$img" ||
+        { echo "$name: the image can't be made an installed drive's"; exit 1; }
+fi
 kfile=jamos.elf bfile=bootfs.img
 if [ "${QEMU_BOOT_PREV:-0}" = 1 ]; then   # the boot menu's "Jam OS (previous build)"
     kfile=prev-jamos.elf bfile=prev-bootfs.img
@@ -199,6 +213,16 @@ if [ -n "${QEMU_STICK_THROTTLE:-}" ]; then
     stick="$stick -blockdev driver=raw,node-name=stickraw,file=stickfile"
     stick="$stick -blockdev driver=throttle,node-name=usbstick,throttle-group=stickslow,file=stickraw"
 fi
+# The boot disk: the stick on xhci.0 port 1, or (QEMU_BOOT_NVME) an NVMe
+# drive on the same block nodes, after every other PCI device. Its
+# namespace is the controller's own (drive=, not an nvme-ns): OVMF reads
+# the boot order's path for that form ("/pci@i0cf8/nvme@N/namespace@1,0").
+boot="-device usb-storage,id=stick,bus=xhci.0,port=1,drive=usbstick,bootindex=0"
+bootnvme=
+if [ "${QEMU_BOOT_NVME:-0}" = 1 ]; then
+    boot=
+    bootnvme="-device nvme,id=nvmeboot,serial=jamos-boot,drive=usbstick,bootindex=0"
+fi
 ser="build/.qemu-$name.ser"
 rm -f "$log" "$mon" "$ser"
 if [ -n "${QEMU_INPUT:-}" ]; then
@@ -212,11 +236,10 @@ qemu-system-x86_64 -M "$machine" -accel "$accel" -m "${QEMU_MEM:-2G}" -smp "${QE
     -device virtio-rng-pci,vectors=2 \
     -device qemu-xhci,id=xhci${QEMU_XHCI:+,$QEMU_XHCI} \
     -blockdev driver=file,node-name=stickfile,filename="$img" \
-    $stick \
-    -device usb-storage,id=stick,bus=xhci.0,port=1,drive=usbstick,bootindex=0 \
+    $stick $boot \
     ${QEMU_USB:-} $iommu ${QEMU_EXTRA:-} \
     -device edu,dma_mask=0xffffffff \
-    $nic $nvme \
+    $nic $bootnvme $nvme \
     $serial -display none -no-reboot \
     -monitor unix:"$mon",server,nowait &
 qpid=$!

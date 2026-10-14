@@ -14,11 +14,14 @@
  *   1. its channel comes: storage.info is asked without waiting (a stick
  *      may take seconds to spin up, and volumes must keep serving);
  *   2. the answer comes; then each partition's (storage.partition, one at
- *      a time, again without waiting: DISK_PARTS): fewer than two
- *      partitions, or types other than
- *      0xEF then 0x0C, and the disk is not the boot disk (step 4). When
- *      the boot loader named the disk the machine booted from (its MBR
- *      disk id: volumes' argument bootdisk=0x<id>), a disk with another id
+ *      a time, again without waiting: DISK_PARTS). Without Jam OS's layout
+ *      the disk is not the boot disk (step 4; boot_layout): a stick's,
+ *      an MBR with an ESP (0xEF) then a FAT32 data partition (0x0C), on
+ *      any disk but an NVMe drive; or, when the machine booted from a GPT
+ *      disk, Jam OS's mark (mark.c: an installed drive). When the boot
+ *      loader named the disk the machine booted from (a stick by its MBR
+ *      disk id: volumes' argument bootdisk=0x<id>; an installed drive by
+ *      its GPT disk GUID: bootdisk=gpt:<GUID>), a disk named otherwise
  *      waits (DISK_HELD) until that one has come, and is not the boot disk
  *      then; if it never comes (the stick was swapped, or made without an
  *      id), the waiting one goes on after HELD_FROM_START. Else (or then)
@@ -213,12 +216,108 @@ static void look_at_esp(struct disk *d)
         esp_started(d, PART_ESP, st);
 }
 
-/* Is d the disk the machine booted from, as far as the MBR disk ids can
- * tell (storage.info's)? A test disk, or a boot whose loader named no
- * disk, can't tell: yes. */
+bool disk_guid_parse(const char *s, uint8_t out[16])
+{
+    /* The printed form's hex digits, two to a byte, in the order they are
+     * printed: the first three fields' bytes are then reversed. */
+    static const uint8_t at[16] = { 3, 2, 1, 0, 5, 4, 7, 6, 8, 9, 10, 11, 12, 13, 14, 15 };
+    uint8_t b[16];
+    unsigned n = 0, nonzero = 0;
+    for (unsigned i = 0; i < 36; i++) {
+        char c = s[i];
+        if (i == 8 || i == 13 || i == 18 || i == 23) {
+            if (c != '-')
+                return false;
+            continue;
+        }
+        int v = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10
+              : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+        if (v < 0)
+            return false;   /* the end of s among them: c is 0 */
+        b[n / 2] = (uint8_t)(n % 2 ? b[n / 2] << 4 | v : v);
+        nonzero |= (unsigned)v;
+        n++;
+    }
+    if (s[36] || !nonzero)
+        return false;
+    for (unsigned i = 0; i < 16; i++)
+        out[at[i]] = b[i];
+    return true;
+}
+
+/* The printed form of a GUID held as its bytes on disk, into out[37]. */
+static const char *guid_str(const uint8_t *g, char out[37])
+{
+    snprintf(out, 37, "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+             g[3], g[2], g[1], g[0], g[5], g[4], g[7], g[6], g[8], g[9], g[10], g[11], g[12],
+             g[13], g[14], g[15]);
+    return out;
+}
+
+/* Did the machine boot from a GPT disk (bootdisk=gpt:<GUID>)? */
+static bool boot_is_gpt(void)
+{
+    for (unsigned i = 0; i < 16; i++)
+        if (boot_gpt[i])
+            return true;
+    return false;
+}
+
+/* How the log names the disk the machine booted from, and d: "disk id
+ * <MBR id>" or "disk GUID <GUID>" (each its own static buffer). */
+static const char *boot_ident(void)
+{
+    static char s[48];
+    char g[37];
+    if (boot_is_gpt())
+        snprintf(s, sizeof(s), "disk GUID %s", guid_str(boot_gpt, g));
+    else
+        snprintf(s, sizeof(s), "disk id %08x", boot_mbr_id);
+    return s;
+}
+
+static const char *disk_ident(const struct disk *d)
+{
+    static char s[48];
+    char g[37];
+    if (d->scheme == STORAGE_SCHEME_GPT)
+        snprintf(s, sizeof(s), "disk GUID %s", guid_str(d->disk_guid, g));
+    else
+        snprintf(s, sizeof(s), "disk id %08x", d->mbr_id);
+    return s;
+}
+
+/* Why d can't be the boot disk by its partitions, or NULL if it may be.
+ * Jam OS's layout is a stick's (an MBR with an ESP, then a FAT32 data
+ * partition) on any disk but an NVMe drive, or Jam OS's mark (mark.c)
+ * when the machine booted from a GPT disk. An NVMe drive is never the
+ * boot disk by an MBR (its driver opens nothing of one writable, so its
+ * data partition would never open: M12.7-REVIEW finding 5), and a Jam OS
+ * drive is the boot disk only on a boot whose loader named it by its
+ * GUID: on a stick's boot it is another disk, /nvmeN, read-only. */
+static const char *boot_layout(const struct disk *d)
+{
+    const uint8_t *type = d->type;
+    if (disk_jamos_gpt(d))
+        return boot_is_gpt() ? NULL : "a Jam OS drive, but the machine booted from a stick";
+    if (d->partitions < 2 || type[0] != TYPE_ESP || type[1] != TYPE_FAT32_LBA)
+        return "not a Jam OS stick (an ESP, then a FAT32 data partition)";
+    if (d->bus == DISKS_BUS_NVME)
+        return "a stick's partitions on an NVMe drive";
+    return NULL;
+}
+
+/* Is d the disk the machine booted from, as far as the MBR disk ids or
+ * the GPT disk GUIDs can tell (storage.info's)? A test disk, or a boot
+ * whose loader named no disk, can't tell: yes. A boot from a GPT disk
+ * names no MBR disk: none of those is it. */
 static bool booted_from(const struct disk *d)
 {
-    return d->test || !boot_mbr_id || d->mbr_id == boot_mbr_id;
+    if (d->test)
+        return true;
+    if (boot_is_gpt())
+        return d->scheme == STORAGE_SCHEME_GPT && !memcmp(d->disk_guid, boot_gpt, 16);
+    return !boot_mbr_id || d->mbr_id == boot_mbr_id;
 }
 
 /* d is a Jam OS disk, but not the one the machine booted from: it waits
@@ -228,9 +327,8 @@ static void hold_back(struct disk *d)
     uint64_t t = now(), until = volumes_started + HELD_FROM_START;
     d->state = DISK_HELD;
     d->deadline = until > t + HELD_MIN ? until : t + HELD_MIN;
-    say(false, "volumes: %s: disk id %08x, but the machine booted from disk id %08x: it waits "
-        "%lu ms for that one", disk_name(d), d->mbr_id, boot_mbr_id,
-        (unsigned long)((d->deadline - t) / NS_PER_MS));
+    say(false, "volumes: %s: %s, but the machine booted from %s: it waits %lu ms for that one",
+        disk_name(d), disk_ident(d), boot_ident(), (unsigned long)((d->deadline - t) / NS_PER_MS));
 }
 
 /* The boot disk is mounted: the disks waiting for it are not the boot
@@ -243,13 +341,12 @@ static void release_held(const struct disk *boot)
 }
 
 /* Step 2's end: storage.info answered, and each partition it listed (st:
- * the first failure). The two partition types decide whether the ESP is
- * worth a look. Only an MBR's types are looked at: a GPT disk (never one
- * yet: usb-storage reads MBRs alone) has no Jam OS layout and no FAT type
- * bytes, so it is no boot disk and gets no mounts. */
+ * the first failure). The layout (boot_layout) decides whether the ESP is
+ * worth a look, then the disk's name (booted_from). */
 static void got_partitions(struct disk *d, status_t st)
 {
     char why[64];
+    const char *layout;
     const uint8_t *type = d->type;
     d->known = true;
     say(false, "volumes: %s: %s %s, %lu MiB, %u partition(s), types %02x %02x", disk_name(d),
@@ -259,12 +356,12 @@ static void got_partitions(struct disk *d, status_t st)
     if (st != OK) {
         snprintf(why, sizeof(why), "its partitions can't be read (%s)", status_str(st));
         leave_alone(d, why);
-    } else if (d->partitions < 2 || type[0] != TYPE_ESP || type[1] != TYPE_FAT32_LBA) {
-        not_boot(d, "not a Jam OS stick (an ESP, then a FAT32 data partition)");
+    } else if ((layout = boot_layout(d))) {
+        not_boot(d, layout);
     } else if (!booted_from(d) && boot_disk_taken(d)) {
-        /* Its id says why, whether the boot disk came first or not. */
-        say(false, "volumes: %s: disk id %08x, but the machine booted from disk id %08x",
-            disk_name(d), d->mbr_id, boot_mbr_id);
+        /* Its name says why, whether the boot disk came first or not. */
+        say(false, "volumes: %s: %s, but the machine booted from %s", disk_name(d),
+            disk_ident(d), boot_ident());
         not_boot(d, "the machine booted from another disk");
     } else if (boot_disk_taken(d)) {
         not_boot(d, "another disk is the boot disk already");
@@ -370,7 +467,8 @@ static bool disk_answers(struct disk *d)
             continue;
         }
         st = storage_info_result(buf, &m, d->vendor, NULL, d->product, NULL, &d->block_size,
-                                 &d->blocks, &d->scheme, &d->partitions, &d->mbr_id, NULL);
+                                 &d->blocks, &d->scheme, &d->partitions, &d->mbr_id,
+                                 d->disk_guid);
         if (st == OK) {
             memset(d->type, 0, sizeof(d->type));
             memset(d->info, 0, sizeof(d->info));
@@ -702,8 +800,8 @@ static void held_over(struct disk *d)
         not_boot(d, "another disk is the boot disk already");
         return;
     }
-    say(false, "volumes: %s: the disk the machine booted from (id %08x) is not here: this one "
-        "(id %08x) may be the boot disk", disk_name(d), boot_mbr_id, d->mbr_id);
+    say(false, "volumes: %s: the disk the machine booted from (%s) is not here: this one (%s) "
+        "may be the boot disk", disk_name(d), boot_ident(), disk_ident(d));
     look_at_esp(d);
 }
 

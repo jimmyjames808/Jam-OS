@@ -93,6 +93,7 @@ static void print_boot_info(const struct boot_info *bi)
 
 static struct boot_info *boot;
 static uint32_t boot_disk;   /* boot_disk_id(): set once in kmain_stage2 */
+static char boot_gpt[BOOT_GUID_TEXT];   /* boot_disk_gpt() ("": none): set with boot_disk */
 
 /* The network's mode (ARCHITECTURE.md "Networking"): the VLAN every frame
  * Jam OS sends is tagged with and the only one it receives, or untagged
@@ -114,6 +115,45 @@ static char vlan_word[16];   /* "vlan=<id>" or "vlan=none" for init ("" with the
 uint32_t boot_disk_id(void)
 {
     return boot_disk;
+}
+
+const char *boot_disk_gpt(void)
+{
+    return boot_gpt[0] ? boot_gpt : NULL;
+}
+
+void boot_guid_text(const uint8_t g[16], char out[BOOT_GUID_TEXT])
+{
+    ksnprintf(out, BOOT_GUID_TEXT, "%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+              (uint32_t)g[0] | (uint32_t)g[1] << 8 | (uint32_t)g[2] << 16 | (uint32_t)g[3] << 24,
+              g[4] | g[5] << 8, g[6] | g[7] << 8, g[8], g[9], g[10], g[11], g[12], g[13], g[14],
+              g[15]);
+}
+
+bool boot_guid_parse(const char *s, size_t n, char out[BOOT_GUID_TEXT])
+{
+    char t[BOOT_GUID_TEXT];
+    bool nonzero = false;
+    out[0] = '\0';
+    if (n != BOOT_GUID_TEXT - 1)
+        return false;
+    for (size_t i = 0; i < n; i++) {
+        char c = s[i];
+        if (i == 8 || i == 13 || i == 18 || i == 23) {
+            if (c != '-')
+                return false;
+        } else if (c >= 'A' && c <= 'F') {
+            c = (char)(c - 'A' + 'a');
+        } else if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
+            return false;
+        }
+        nonzero |= c != '-' && c != '0';
+        t[i] = c;
+    }
+    t[n] = '\0';
+    if (nonzero)
+        memcpy(out, t, sizeof(t));
+    return nonzero;
 }
 
 void kmain_print_memmap(void)
@@ -194,16 +234,50 @@ static void timer_check_thread(void *arg)
     timer_check_ok = smp_report(1000, true);
 }
 
-/* The disk the machine booted from: its MBR id from the loader, or after a
- * kexec from the bootdisk= word (before the stored kernel is armed: its
- * command line carries it). */
+/* The value of the boot word "bootdisk=gpt:<GUID>" (n: its length), or
+ * NULL if there is none. */
+static const char *gpt_word(size_t *n)
+{
+    static const char key[] = "bootdisk=gpt:";
+    const char *line = cmdline_get();
+    for (const char *p = line; *p; p++) {
+        if ((p != line && p[-1] != ' ') || memcmp(p, key, sizeof(key) - 1))
+            continue;
+        p += sizeof(key) - 1;
+        for (*n = 0; p[*n] && p[*n] != ' '; (*n)++)
+            ;
+        return p;
+    }
+    return NULL;
+}
+
+/* The disk the machine booted from: from the loader, its GPT disk GUID
+ * (an installed drive) or else its MBR id (a stick); after a kexec, from
+ * the bootdisk= word the kernel before passed on (before the stored kernel
+ * is armed: its command line carries it). A GPT disk is named by its GUID
+ * alone, even if its protective MBR has an id. */
 static void boot_disk_init(void)
 {
-    boot_disk = boot->boot_disk_id ? boot->boot_disk_id
-                                   : (uint32_t)cmdline_get_u64("bootdisk", 0, 0);
-    if (boot_disk)
-        kprintf("boot disk:   MBR disk id %08x (%s)\n", boot_disk,
-                boot->boot_disk_id ? "from the loader" : "from the kernel before");
+    static const uint8_t zero[16];
+    bool loader = true;
+    if (memcmp(boot->boot_disk_guid, zero, sizeof(zero))) {
+        boot_guid_text(boot->boot_disk_guid, boot_gpt);
+    } else if (boot->boot_disk_id) {
+        boot_disk = boot->boot_disk_id;
+    } else {
+        loader = false;
+        size_t n;
+        const char *g = gpt_word(&n);
+        if (g && !boot_guid_parse(g, n, boot_gpt))
+            kprintf("boot disk:   the word bootdisk=gpt: names no GUID: left out\n");
+        if (!g)
+            boot_disk = (uint32_t)cmdline_get_u64("bootdisk", 0, 0);
+    }
+    const char *from = loader ? "from the loader" : "from the kernel before";
+    if (boot_gpt[0])
+        kprintf("boot disk:   GPT disk GUID %s (%s)\n", boot_gpt, from);
+    else if (boot_disk)
+        kprintf("boot disk:   MBR disk id %08x (%s)\n", boot_disk, from);
     else
         kprintf("boot disk:   no MBR disk id (devmgr takes the first Jam OS disk)\n");
 }
@@ -317,6 +391,18 @@ static const char *nvme_test_word(void)
     return NULL;
 }
 
+/* init's word for the boot disk: "bootdisk=gpt:<GUID>" or
+ * "bootdisk=0x<id>", or NULL if it isn't known. */
+static const char *disk_word(void)
+{
+    static char word[16 + BOOT_GUID_TEXT];   /* "bootdisk=gpt:" and the GUID */
+    if (boot_gpt[0])
+        ksnprintf(word, sizeof(word), "bootdisk=gpt:%s", boot_gpt);
+    else if (boot_disk)
+        ksnprintf(word, sizeof(word), "bootdisk=0x%08x", boot_disk);
+    return word[0] ? word : NULL;
+}
+
 /* init's option words (at most USERBOOT_MAX_WORDS, which has room for
  * every one below that can come at once, so none is ever dropped: `verbose`
  * never comes with "splash" or `splashhang`): "splash" (splash_boot);
@@ -329,8 +415,9 @@ static const char *nvme_test_word(void)
  * netdev service for netstack (no other boot binds the network chip; a
  * reboot keeps `net` alone: kexec_next_cmdline); vlan=<id> or
  * vlan=none (only when the network is on: boot_vlan), which init passes
- * on to devmgr and devmgr to every network driver; bootdisk=0x<id>, which init passes on
- * to devmgr (the boot disk); `splashhang` (a test's: the splash never
+ * on to devmgr and devmgr to every network driver; bootdisk=0x<id> or
+ * bootdisk=gpt:<GUID> (one word, either way: boot_disk_id, boot_disk_gpt),
+ * which init passes on to volumes (the boot disk); `splashhang` (a test's: the splash never
  * finishes, and init must start the shell anyway); `nospare` (init keeps
  * no warm spare of the mixer: a restart starts a process); `vtdtest`
  * (with `iommu=on`, the "IOMMU checks" test entry), which init passes on
@@ -359,11 +446,8 @@ static unsigned init_words(bool shell, const char *words[USERBOOT_MAX_WORDS])
         words[n++] = "net";
     if (boot_vlan)
         words[n++] = vlan_word;
-    static char disk_word[24];
-    if (boot_disk) {
-        ksnprintf(disk_word, sizeof(disk_word), "bootdisk=0x%08x", boot_disk);
-        words[n++] = disk_word;
-    }
+    if (disk_word())
+        words[n++] = disk_word();
     if (shell && splash_boot() && cmdline_has("splashhang"))
         words[n++] = "splashhang";
     if (cmdline_has("nospare"))
@@ -404,13 +488,17 @@ static bool run_user_space(bool shell, bool nousb)
     unsigned nwords = init_words(shell, words);
     /* The regression run (init.cfg's programs, mode "init") gets the vlan=
      * word alone of the words, so its network drivers start as a plain boot's
-     * would (and a test's nvmetest=, and diskro: the internal drives stay
-     * read-only in every mode); the others describe a plain boot's devices
-     * and look. */
-    const char *run_words[3];
+     * would (and a test's nvmetest=, diskro: the internal drives stay
+     * read-only in every mode, and a GPT disk's bootdisk=gpt:<GUID>:
+     * volumes finds an installed drive's /data by the word alone, while a
+     * stick's run takes the first Jam OS stick without one, as it always
+     * has); the others describe a plain boot's devices and look. */
+    const char *run_words[4];
     unsigned nrun = 0;
     if (boot_vlan)
         run_words[nrun++] = vlan_word;
+    if (boot_gpt[0])
+        run_words[nrun++] = disk_word();
     if (nvme_test_word())
         run_words[nrun++] = nvme_test_word();
     if (cmdline_has("diskro"))
