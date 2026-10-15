@@ -1214,11 +1214,11 @@ static uint64_t umap_va(const struct vmo_umap *u, uint64_t idx)
     return u->base + ((idx - u->pages.first) << PAGE_SHIFT);
 }
 
-/* What walking the user mappings over [lo, hi) of one costs a batch (see
- * VMO_BATCH_BUDGET). */
-static uint64_t umap_cost(uint64_t lo, uint64_t hi)
+/* What walking the user mappings over [lo, hi) of one costs a batch, each
+ * page costing `page` (VMO_BATCH_BUDGET's units). */
+static uint64_t umap_cost(uint64_t lo, uint64_t hi, uint64_t page)
 {
-    return VMO_BATCH_MAPPING_COST + (hi - lo);
+    return VMO_BATCH_MAPPING_COST + page * (hi - lo);
 }
 
 /* With the lock held: zap pages [first, end) from every user mapping.
@@ -1230,7 +1230,7 @@ static uint64_t zap_umaps_locked(const struct vmo *v, uint64_t first, uint64_t e
     for (struct vmo_umap *u = umap_first(v, first, end, &lo, &hi); u;
          u = umap_next(u, first, end, &lo, &hi)) {
         aspace_zap_locked(u->as, umap_va(u, lo), (hi - lo) << PAGE_SHIFT, g);
-        cost += umap_cost(lo, hi);
+        cost += umap_cost(lo, hi, VMO_BATCH_CLEAR_COST);
     }
     return cost;
 }
@@ -1238,15 +1238,15 @@ static uint64_t zap_umaps_locked(const struct vmo *v, uint64_t first, uint64_t e
 uint64_t vmo_batch_ns_most, vmo_batch_cost_most;
 
 /* With the lock held: the first mapping in order over [idx, stop) at which
- * the cost of those so far passes VMO_BATCH_BUDGET (*lo: where it starts in
- * the range), or NULL if they all fit. */
+ * the cost of those so far (each page `page`) passes VMO_BATCH_BUDGET (*lo:
+ * where it starts in the range), or NULL if they all fit. */
 static struct vmo_umap *batch_over_locked(const struct vmo *v, uint64_t idx, uint64_t stop,
-                                          uint64_t *lo)
+                                          uint64_t page, uint64_t *lo)
 {
     uint64_t cost = 0, hi;
     for (struct vmo_umap *u = umap_first(v, idx, stop, lo, &hi); u;
          u = umap_next(u, idx, stop, lo, &hi)) {
-        cost += umap_cost(*lo, hi);
+        cost += umap_cost(*lo, hi, page);
         if (cost > VMO_BATCH_BUDGET)
             return u;
     }
@@ -1254,30 +1254,33 @@ static struct vmo_umap *batch_over_locked(const struct vmo *v, uint64_t idx, uin
 }
 
 /* With the lock held: where a batch of pages [idx, stop) must stop so that
- * its walk over the user mappings stays within VMO_BATCH_BUDGET, down to
- * one page. The mappings come by first page, so the batch can end where
- * the one that passes the budget starts. If that is idx itself (every
- * mapping so far covers page idx), the n mappings over idx allow
- * VMO_BATCH_BUDGET / n - VMO_BATCH_MAPPING_COST pages, and it ends there or
- * where a later one passes. A page under more mappings than one batch
- * allows is a batch of its own, whatever it costs: VMAR_MAX_OVERLAP bounds
- * the mappings each address space has over it. */
-static uint64_t batch_end_locked(const struct vmo *v, uint64_t idx, uint64_t stop)
+ * its walk over the user mappings (each page costing `page`: clearing or
+ * write-protecting) stays within VMO_BATCH_BUDGET, down to one page. The
+ * mappings come by first page, so the batch can end where the one that
+ * passes the budget starts. If that is idx itself (every mapping so far
+ * covers page idx), the n mappings over idx allow (VMO_BATCH_BUDGET / n -
+ * VMO_BATCH_MAPPING_COST) / page pages, and it ends there or where a later
+ * one passes. A page under more mappings than one batch allows is a batch
+ * of its own, whatever it costs: VMAR_MAX_OVERLAP bounds the mappings each
+ * address space has over it. */
+static uint64_t batch_end_locked(const struct vmo *v, uint64_t idx, uint64_t stop,
+                                 uint64_t page)
 {
     uint64_t lo, hi, n = 0;
-    if (!batch_over_locked(v, idx, stop, &lo))
+    if (!batch_over_locked(v, idx, stop, page, &lo))
         return stop;
     if (lo > idx)
         return lo;
     for (struct vmo_umap *u = umap_first(v, idx, idx + 1, &lo, &hi); u;
          u = umap_next(u, idx, idx + 1, &lo, &hi))
         n++;
-    if (n * umap_cost(0, 1) >= VMO_BATCH_BUDGET)
+    if (n * umap_cost(0, 1, page) >= VMO_BATCH_BUDGET)
         return idx + 1;
-    uint64_t most = VMO_BATCH_BUDGET / n - VMO_BATCH_MAPPING_COST;   /* >= 1, by the test above */
+    /* >= 1, by the test above */
+    uint64_t most = (VMO_BATCH_BUDGET / n - VMO_BATCH_MAPPING_COST) / page;
     if (stop > idx + most)
         stop = idx + most;
-    if (!batch_over_locked(v, idx, stop, &lo))
+    if (!batch_over_locked(v, idx, stop, page, &lo))
         return stop;
     return lo > idx ? lo : idx + 1;   /* (the n over idx fit: lo > idx) */
 }
@@ -1319,7 +1322,7 @@ static uint64_t take_batch_locked(struct vmo *v, uint64_t idx, uint64_t end, str
     if (idx == stop)
         return stop;
     uint64_t t0 = uptime_ns();
-    stop = batch_end_locked(v, idx, stop);
+    stop = batch_end_locked(v, idx, stop, VMO_BATCH_CLEAR_COST);
     uint64_t taken = 0, charged = 0;
     for (uint64_t i = idx; i < stop; i++) {
         uint64_t *s = &leaf[i % LEAF_PAGES];
@@ -1830,7 +1833,7 @@ static uint64_t wrprotect_umaps_locked(const struct vmo *v, uint64_t first, uint
          u = umap_next(u, first, end, &lo, &hi)) {
         if (u->writable)
             aspace_wrprotect_locked(u->as, umap_va(u, lo), (hi - lo) << PAGE_SHIFT, g);
-        cost += umap_cost(lo, hi);
+        cost += umap_cost(lo, hi, VMO_BATCH_PROTECT_COST);
     }
     return cost;
 }
@@ -1899,7 +1902,7 @@ static status_t share_pages(struct vmo *p, struct vmo *c, uint64_t offp)
         else if (ranges_overlap_locked(p, idx, stop))
             st = ERR_BAD_STATE;   /* a device or the kernel may write these behind the sharing */
         else {
-            stop = batch_end_locked(p, idx, stop);   /* the write-protects below in budget */
+            stop = batch_end_locked(p, idx, stop, VMO_BATCH_PROTECT_COST);   /* in budget */
             st = share_leaf_locked(p, c, idx, stop, offp, &n);
         }
         batch_note(t0, n ? wrprotect_umaps_locked(p, idx, stop, &g) : 0);

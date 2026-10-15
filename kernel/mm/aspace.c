@@ -224,7 +224,8 @@
  * nobody else; splits and merges never add to it), and a batch is cut
  * short so its walk stays within VMO_BATCH_BUDGET (vmo.c). What is left is
  * one page under the cap's 64 mappings from each of many address spaces:
- * a batch of its own, costing about 37 ns a mapping.
+ * a batch of its own (64 address spaces: 0.23 to 0.45 ms on the PC, where
+ * one address space with 65,535 used to take 2.4 to 2.9 ms).
  *
  * Known limits: no lazy TLB (switching to a kernel thread reloads the
  * kernel CR3, with PCIDs a cheap load that keeps the user entries). The

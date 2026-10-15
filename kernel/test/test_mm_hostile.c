@@ -20,13 +20,14 @@
  *   aspace_hostile_overlap_decommit
  *       CR1 finding 1: one address space holds VMAR_MAX_OVERLAP mappings
  *       over a page of one VMO and no more (first fit, fixed, a range; a
- *       replace in place of one fits), and a decommit batch over them,
- *       all touched, is one batch within VMO_BATCH_BUDGET. Then 64
- *       address spaces map one VMO: 64 x 64 mappings of one page are one
- *       batch of their own (what the cap per address space bounds), and
- *       64 x 16 mappings of 512 pages, all written, make a child's
- *       write-protects and a decommit batches within the budget. The
- *       longest batch of each is printed; every entry is gone after. */
+ *       replace in place of one fits); at the cap over 512 pages, all
+ *       written, a child's write-protects come in batches within
+ *       VMO_BATCH_BUDGET and the decommit in one. Then 64 address spaces
+ *       map one VMO: 64 x 64 mappings of one page are one batch of their
+ *       own (what the cap per address space bounds), and 64 x 4 mappings
+ *       of 512 pages, all written, make a child's write-protects and a
+ *       decommit batches within the budget. The longest batch of each is
+ *       printed; every entry is gone after. */
 #include <jam/aspace.h>
 #include <jam/aspace_vmo.h>
 #include <jam/kprintf.h>
@@ -319,7 +320,7 @@ KTEST(aspace_hostile_protect_storm)
 /* ---- many mappings over the same pages (CR1 finding 1) ------------------------ */
 
 #define OV_SPACES 64   /* address spaces mapping one VMO, as 64 processes would */
-#define OV_WIDE   16   /* mappings of the whole 2 MiB in each */
+#define OV_WIDE   4    /* mappings of the whole 2 MiB in each: 256 in all */
 
 static void batches_reset(void)
 {
@@ -383,12 +384,21 @@ KTEST(aspace_hostile_overlap_decommit)
     KT_EQ(aspace_pte(as, a), 0);
     KT_EQ(aspace_unmap(as, USER_BASE, USER_TOP - USER_BASE), OK);
 
-    /* At the cap over all 512 pages, every page touched: one batch. */
-    ov_map(as, v, 512, VMAR_MAX_OVERLAP, false, &a);
+    /* At the cap over all 512 pages, every page written: a child's
+     * write-protects in batches within the budget, then the decommit in
+     * one batch. */
+    ov_map(as, v, 512, VMAR_MAX_OVERLAP, true, &a);
+    struct vmo *c;
+    batches_reset();
+    KT_EQ(vmo_create_child(NULL, v, VMO_CHILD_SNAPSHOT, 0, 512 * PG, &c), OK);
+    uint64_t wchild_us = batch_us(), wchild_cost = batch_cost();
+    KT_GLOBAL_ASSERT(wchild_cost > VMO_BATCH_BUDGET / 2 && wchild_cost <= VMO_BATCH_BUDGET);
+    put(c);
     batches_reset();
     KT_EQ(vmo_decommit(v, 0, 512 * PG), OK);
     uint64_t wide_us = batch_us(), wide_cost = batch_cost();
-    KT_GLOBAL_EQ(wide_cost, VMAR_MAX_OVERLAP * (VMO_BATCH_MAPPING_COST + 512));
+    KT_GLOBAL_EQ(wide_cost,
+                 VMAR_MAX_OVERLAP * (VMO_BATCH_MAPPING_COST + 512 * VMO_BATCH_CLEAR_COST));
     KT_EQ(aspace_check(as), VMAR_MAX_OVERLAP);   /* (and no entry is left) */
     KT_EQ(vmo_committed(v), 0);
     aspace_unref(as);
@@ -409,10 +419,10 @@ KTEST(aspace_hostile_overlap_decommit)
     batches_reset();
     KT_EQ(vmo_decommit(p, 0, PG), OK);
     uint64_t many_us = batch_us(), many_cost = batch_cost();
-    KT_GLOBAL_EQ(many_cost, OV_SPACES * VMAR_MAX_OVERLAP * (VMO_BATCH_MAPPING_COST + 1));
+    KT_GLOBAL_EQ(many_cost,
+                 OV_SPACES * VMAR_MAX_OVERLAP * (VMO_BATCH_MAPPING_COST + VMO_BATCH_CLEAR_COST));
     KT_EQ(aspace_pte(sp[OV_SPACES - 1], a), 0);
     batches_reset();
-    struct vmo *c;
     KT_EQ(vmo_create_child(NULL, v, VMO_CHILD_SNAPSHOT, 0, 512 * PG, &c), OK);
     uint64_t child_us = batch_us(), child_cost = batch_cost();
     KT_GLOBAL_ASSERT(child_cost > VMO_BATCH_BUDGET / 2 && child_cost <= VMO_BATCH_BUDGET);
@@ -425,9 +435,10 @@ KTEST(aspace_hostile_overlap_decommit)
     KT_EQ(aspace_pte(sp[0], b + 511 * PG), 0);
     KT_EQ(aspace_check(sp[0]), VMAR_MAX_OVERLAP + OV_WIDE);
     kprintf("ktest %s: the longest batch (VMO lock held, interrupts off) over %u mappings of one "
-            "page %lu us, of 512 pages %lu us; %u address spaces: %u mappings of one page %lu us "
-            "(no smaller batch), %u of 512 pages %lu us (a child), %lu us (decommit)\n",
-            ktest_current, VMAR_MAX_OVERLAP, one_us, wide_us, (unsigned)OV_SPACES,
+            "page %lu us, of 512 pages %lu us (a child), %lu us (decommit); %u address spaces: "
+            "%u mappings of one page %lu us (no smaller batch), %u of 512 pages %lu us (a "
+            "child), %lu us (decommit)\n",
+            ktest_current, VMAR_MAX_OVERLAP, one_us, wchild_us, wide_us, (unsigned)OV_SPACES,
             OV_SPACES * VMAR_MAX_OVERLAP, many_us, (unsigned)(OV_SPACES * OV_WIDE), child_us,
             spaces_us);
     for (unsigned i = 0; i < OV_SPACES; i++)

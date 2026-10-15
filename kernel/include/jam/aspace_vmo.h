@@ -99,16 +99,21 @@ void     vmo_umap_remove(struct vmo *v, struct vmo_umap *u);
 
 /* What one batch (a decommit's, a shrink's, a child's creation's) may
  * spend clearing or write-protecting its pages in the user mappings over
- * them, with the VMO lock held and interrupts off, in page-table entries:
- * each mapping costs VMO_BATCH_MAPPING_COST (finding it, its page-table
- * lock, the walk down to its entries) and one for each page of the batch
- * it maps. A batch is cut short to stay within it (vmo.c's "Latency"),
- * down to one page: about 60 us on the PC (ktest
- * aspace_hostile_overlap_decommit). One page under more mappings than that
- * is a batch of its own, whatever it costs: VMAR_MAX_OVERLAP mappings from
- * each address space that maps it at most. */
+ * them, with the VMO lock held and interrupts off, in units of under a
+ * nanosecond on the PC: each mapping costs VMO_BATCH_MAPPING_COST (finding
+ * it, its page-table lock, the walk down to its entries: 60 to 110 ns
+ * when the mappings are in many address spaces), and each page of the
+ * batch it maps VMO_BATCH_CLEAR_COST to clear or VMO_BATCH_PROTECT_COST
+ * to write-protect. A batch is cut short to stay within it (vmo.c's
+ * "Latency"), down to one page: a whole budget took 12 to 61 us on the PC
+ * (ktest aspace_hostile_overlap_decommit, 4 and 8 CPUs). One page under
+ * more mappings than that is a batch of its own, whatever it costs:
+ * VMAR_MAX_OVERLAP mappings from each address space that maps it at most
+ * (4,096 from 64 address spaces: 0.23 to 0.45 ms). */
 #define VMO_BATCH_BUDGET       65536
-#define VMO_BATCH_MAPPING_COST 32
+#define VMO_BATCH_MAPPING_COST 128
+#define VMO_BATCH_CLEAR_COST   1
+#define VMO_BATCH_PROTECT_COST 4
 
 /* Fault: under the VMO lock, commit page idx if needed (paged VMOs) and
  * install it at va in as with `perms` (the mapping's ASPACE_READ/WRITE/EXEC)
