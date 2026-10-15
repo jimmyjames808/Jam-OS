@@ -236,6 +236,7 @@ enum { BOOTFS, COMPOSITOR, CONSOLE, SPLASH, SERIALIN, DEVMGR, VOLUMES, MIXER, MU
                                * processes and channels (sessions_event) */
 #define KEY_SESSION_END 0xe00u
 #define KEY_SSHD     0xf00u   /* the SSH server's look at /data is done (ssh.c) */
+#define KEY_PKG      0x1000u  /* the pkgctl channel, and its worker done (pkg.c) */
 
 struct svc {
     const char *path;          /* in bootfs */
@@ -740,6 +741,19 @@ status_t update_offer_new(handle_t port, uint64_t key, handle_t *client);
  * and answered), or the sender gone. After the answer the channel is
  * closed. */
 void     update_event(void);
+
+/* ---- pkg.c: a package's approvals (abi/idl/pkgctl.idl) and the settle ---------------- */
+
+/* initctl.pkg_channel: a new pkgctl channel (replacing an older one), ours
+ * bound on port with key (call pkg_event on its packets), *client to hand
+ * over. ERR_BAD_STATE while the last call is being worked on. */
+status_t pkg_channel_new(handle_t port, uint64_t key, handle_t *client);
+/* /data came: the journal of a package transaction cut short is settled
+ * (on the worker; its packet comes to port with key). */
+void     pkg_data_came(handle_t port, uint64_t key);
+/* A packet with the channel's key: a request, the worker done (then
+ * answered), or bin/pkg gone. */
+void     pkg_event(void);
 
 /* ---- espwrite.c: `update`'s stick write, on update.c's worker thread -------------- */
 

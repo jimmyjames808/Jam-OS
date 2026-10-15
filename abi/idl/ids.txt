@@ -75,6 +75,7 @@
 82      update          abi/idl/update.idl
 83      splashch        abi/idl/splashch.idl
 84      crashres        abi/idl/logctl.idl
+85      pkgctl          abi/idl/pkgctl.idl
 # 90 to 99: devmgr's (M12 track D)
 90      devmgr          abi/idl/devmgr.idl
 91      devmgrctl       abi/idl/devmgr.idl

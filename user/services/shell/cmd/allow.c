@@ -6,7 +6,9 @@
  *                     first: it may write and run code nobody checked
  *   allow -l          the approvals
  *   allow -r <name>   take away those whose path or file name is <name> (and
- *                     their tables)
+ *                     their tables); a package's (init wrote it, tagged with
+ *                     the package: `allow -l` shows it) is refused, and so is
+ *                     `allow <file>` over one: `pkg remove` takes it back
  * Only the shell init starts can: it alone holds a /data whose etc may
  * change and a root that can make code executable. */
 #include <wants.h>
@@ -67,6 +69,10 @@ static int remove_named(const char *name)
 {
     unsigned n = 0;
     status_t st = sh_allow_remove(name, &n);
+    if (st == ERR_BAD_STATE) {
+        sh_tty("allow: %s: a package's program (allow -l): `pkg remove` takes it back\n", name);
+        return 1;
+    }
     if (st != OK) {
         sh_tty("allow: can't change /data/etc/allow (%s)\n", sh_why(st));
         return 1;
@@ -118,6 +124,10 @@ static int allow_file(const char *arg)
     jam_handle_close(vmo);
     if (!yes)
         return 1;
+    if (st == ERR_BAD_STATE) {
+        sh_tty("allow: %s: a package's program (allow -l): its package approves it\n", abs);
+        return 1;
+    }
     if (st != OK) {
         sh_tty("allow: can't write the approval to /data/etc (%s)%s\n", sh_why(st),
                st == ERR_ACCESS_DENIED ? ": only the shell init starts can allow programs" : "");

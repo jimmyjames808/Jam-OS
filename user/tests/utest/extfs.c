@@ -585,6 +585,28 @@ bool t_extfs_views(void)
     CHECK(put_file(&g, "/usr/etc/conf", "ok"));
     jam_handle_close(g.fs);
 
+    /* The packages' guard, judged where a path resolves: pkg through a
+     * link is pkg; a view without the flag changes it. */
+    CHECK_ST(t_mkdir(&r, "/pkg"), OK);
+    CHECK(put_file(&r, "/pkg/f", "p"));
+    CHECK_ST(xsymlink(r.fs, "pkg", "/pk"), OK);
+    CHECK_ST(fs_view_until(r.fs, dl(), FS_VIEW_GUARD_ETC | FS_VIEW_GUARD_PKG, &ch), OK);
+    CHECK(view_of(&r, ch, &g));
+    CHECK(file_is(&g, "/pk/f", "p"));
+    CHECK_ST(t_open(&g, "/pkg/f", FS_WRITE, &f), ERR_ACCESS_DENIED);
+    CHECK_ST(t_unlink(&g, "/pk/f"), ERR_ACCESS_DENIED);
+    CHECK_ST(t_rename(&g, "/x", "/pk/x"), ERR_ACCESS_DENIED);
+    /* ext's names have case, but the guard folds it as FAT does: stricter */
+    CHECK_ST(t_mkdir(&g, "/PKG"), ERR_ACCESS_DENIED);
+    CHECK_ST(fs_subview_until(g.fs, dl(), "/pkg", 4, 0, &ch2), ERR_ACCESS_DENIED);
+    CHECK_ST(fs_subview_until(g.fs, dl(), "/pk", 3, FS_VIEW_READ_ONLY, &ch2), OK);
+    jam_handle_close(ch2);
+    jam_handle_close(g.fs);
+    CHECK_ST(fs_view_until(r.fs, dl(), FS_VIEW_GUARD_ETC, &ch), OK);
+    CHECK(view_of(&r, ch, &g));
+    CHECK(put_file(&g, "/pk/f", "q"));
+    jam_handle_close(g.fs);
+
     /* Read-only: no write bit shown, no change made. */
     CHECK_ST(fs_view_until(r.fs, dl(), FS_VIEW_READ_ONLY, &ch), OK);
     CHECK(view_of(&r, ch, &ro));
