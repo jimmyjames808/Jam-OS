@@ -203,7 +203,8 @@
  * (aspace_create_charged) charges that job JOB_LIMIT_PAGES units for the
  * kernel memory it holds: 1 for the PML4 from creation to destroy, 1 for
  * every user page-table page from pt_prepare (charged BEFORE it is
- * allocated, so a refused one is never made) until it is detached or
+ * allocated, so a refused one is never made, and the ones made for it
+ * before are taken back) until it is detached or
  * freed, and 1 per ASPACE_MAPPINGS_PER_PAGE mapping structs (`map_pages`,
  * settled under the region lock whenever nmaps changes; a split the job
  * can't pay for fails the unmap/protect up front, before anything
@@ -438,10 +439,41 @@ static uint64_t *pte_find(const struct aspace *as, uint64_t va)
     return &t[ix(va, 1)];
 }
 
+/* pt_lock held: unlink an empty table and hand it to g. */
+static void table_drop(struct aspace *as, uint64_t *entry, uint64_t *t, struct tlb_gather *g)
+{
+    *entry = 0;
+    as->pt_pages--;
+    job_uncharge(as->job, JOB_LIMIT_PAGES, 1);   /* freed once g is finished */
+    tlb_gather_page(g, virt_to_page(t));
+}
+
+/* Region lock held: take back the tables pt_prepare made for va before
+ * the job refused the next one (made[0..n), the entries that link them,
+ * top down). Nothing is under them, but a CPU running the address space
+ * may have cached a link to one already: they go through a shootdown,
+ * as table_drop's do. Else nothing would ever free them before the
+ * address space died (a walk lets a table go only once the one under it
+ * has gone), charged all that time. */
+static void pt_unprepare(struct aspace *as, uint64_t va, uint64_t **made, unsigned n)
+{
+    struct tlb_gather g;
+    tlb_gather_init(&g);
+    uint64_t f = spin_lock_irqsave(&as->pt_lock);
+    while (n--)
+        table_drop(as, made[n], tbl(*made[n]), &g);
+    spin_unlock_irqrestore(&as->pt_lock, f);
+    gather_note(&g, as, va, va + PAGE_SIZE);
+    tlb_gather_finish(&g);
+}
+
 /* Region lock held: create the tables down to va's page table, each one
- * charged to the job before it is allocated. */
+ * charged to the job before it is allocated. ERR_NO_MEMORY if the job
+ * refuses one (or there is none): then those made here are taken back. */
 static status_t pt_prepare(struct aspace *as, uint64_t va)
 {
+    uint64_t *made[3];
+    unsigned n = 0;
     uint64_t f = spin_lock_irqsave(&as->pt_lock);
     uint64_t *t = as->pml4v;
     for (int l = 4; l > 1; l--) {
@@ -453,24 +485,18 @@ static status_t pt_prepare(struct aspace *as, uint64_t va)
                 job_uncharge(as->job, JOB_LIMIT_PAGES, 1);
             if (!pa) {
                 spin_unlock_irqrestore(&as->pt_lock, f);
-                return ERR_NO_MEMORY;   /* tables made so far are freed by unmap/destroy */
+                if (n)   /* (only region-lock holders change the tables: still there) */
+                    pt_unprepare(as, va, made, n);
+                return ERR_NO_MEMORY;
             }
             *e = pa | PTE_P | PTE_W | PTE_U;
             as->pt_pages++;
+            made[n++] = e;
         }
         t = tbl(*e);
     }
     spin_unlock_irqrestore(&as->pt_lock, f);
     return OK;
-}
-
-/* pt_lock held: unlink an empty table and hand it to g. */
-static void table_drop(struct aspace *as, uint64_t *entry, uint64_t *t, struct tlb_gather *g)
-{
-    *entry = 0;
-    as->pt_pages--;
-    job_uncharge(as->job, JOB_LIMIT_PAGES, 1);   /* freed once g is finished */
-    tlb_gather_page(g, virt_to_page(t));
 }
 
 /* What walk_leaves does to each page table: `fn` edits the leaves in

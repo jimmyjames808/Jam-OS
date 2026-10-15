@@ -16,6 +16,7 @@
 #include <jam/ktest.h>
 #include <jam/mm.h>
 #include <jam/percpu.h>
+#include <jam/process.h>
 #include <jam/sched.h>
 #include <jam/spinlock.h>
 #include <jam/string.h>
@@ -598,6 +599,46 @@ KTEST(aspace_protect_quiet)
     aspace_unref(quiet_as);
     put(v);
     kt_unpin_self();
+}
+
+/* A fault whose page table the job refuses leaves none of the tables it
+ * made on the way (a PDPT or a PDPT and a PD, empty, charged until the
+ * address space died: CR1 finding 10, which its TiB test met at 8 CPUs);
+ * the same fault with room makes all three, and a refusal under a PDPT
+ * that was there takes back the PD alone. */
+KTEST(aspace_fault_refused_tables)
+{
+    struct job *j = kt_fresh_job();
+    struct aspace *as;
+    KT_EQ(aspace_create_charged(j, &as), OK);
+    struct vmo *v;
+    KT_EQ(vmo_create(PG, 0, &v), OK);   /* its page charged to nobody */
+    const unsigned map = RW | ASPACE_CAN_READ | ASPACE_CAN_WRITE | ASPACE_FIXED;
+    uint64_t a = 1ull << 42, b = a + (1ull << 30);   /* a fresh 512 GiB; b a GiB on */
+    KT_EQ(aspace_map(as, v, 0, PG, map, &a), OK);
+    KT_EQ(aspace_map(as, v, 0, PG, map, &b), OK);
+    uint64_t used = job_used(j, JOB_LIMIT_PAGES);   /* the PML4 and the mapping structs */
+    for (uint64_t room = 0; room < 3; room++) {
+        KT_EQ(job_set_limit(j, JOB_LIMIT_PAGES, used + room), OK);
+        KT_EQ(aspace_fault(as, a, ASPACE_WRITE), ERR_NO_MEMORY);
+        KT_EQ(aspace_pt_pages(as), 0);
+        KT_EQ(job_used(j, JOB_LIMIT_PAGES), used);
+    }
+    KT_EQ(job_set_limit(j, JOB_LIMIT_PAGES, used + 3), OK);
+    KT_EQ(aspace_fault(as, a, ASPACE_WRITE), OK);
+    KT_EQ(aspace_pt_pages(as), 3);
+    KT_EQ(job_set_limit(j, JOB_LIMIT_PAGES, used + 4), OK);   /* b's PD fits, its PT doesn't */
+    KT_EQ(aspace_fault(as, b, ASPACE_WRITE), ERR_NO_MEMORY);
+    KT_EQ(aspace_pt_pages(as), 3);
+    KT_EQ(job_used(j, JOB_LIMIT_PAGES), used + 3);
+    KT_EQ(job_set_limit(j, JOB_LIMIT_PAGES, JOB_NO_LIMIT), OK);
+    KT_EQ(aspace_fault(as, b, ASPACE_WRITE), OK);
+    KT_EQ(aspace_pt_pages(as), 5);
+    KT_EQ(aspace_check(as), 2);
+    aspace_unref(as);
+    kt_job_is_empty(j);
+    job_unref(j);
+    put(v);
 }
 
 /* ---- decommit and shrink under mappings ----------------------------------- */
