@@ -96,6 +96,17 @@
 #            its first 34 blocks the same before and after (and the host's),
 #            `disk prepare usb0` refused (the disk Jam OS booted from); both
 #            images unchanged, no Write in the trace
+#   jam      M13.6's U7a: a Jam OS drive whose data partition is an ext volume
+#            (made by Linux's mke2fs, Jam OS's feature set, on the test PC)
+#            beside the Windows-like drive: volumes starts bin/extfs on it,
+#            /jam read-write; init mounts /usr, /var, /home and /tmp as
+#            views of it and empties the old /tmp; files go in and come
+#            back through both names; `disks` says (ext); then `install`
+#            over the drive (its data partition held writable for init and
+#            let go: /jam and its views gone and back); afterwards e2fsck
+#            finds the volume clean (its journal replayed first) with the
+#            files in it, the ESP holds the build, and the Windows-like
+#            image is unchanged
 #   checker  no QEMU: tools/nvme-trace-check.py on made-up traces (a clean
 #            one passes; a Write, a Flush, a Format NVM, a Dataset Management,
 #            an unparsable line and a silent trace each fail in stage 1; in
@@ -126,7 +137,7 @@ set -eu
 out=$1
 shift
 cases=${*:-windows}
-[ "$cases" = all ] && cases="checker windows plain twons 4k damaged kill iommu block write wiommu diskro prepare piommu cutprep cutbad erase erasestop"
+[ "$cases" = all ] && cases="checker windows plain twons 4k damaged kill iommu block write wiommu diskro prepare piommu cutprep cutbad erase erasestop jam"
 mkdir -p "$out"
 
 sha256() { if command -v sha256sum > /dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
@@ -613,16 +624,162 @@ s4_erase() {
     if [ $ok = 1 ]; then rm -rf "$era" "$keep" "$dir/made.img" "$era.files" "$keep.files"; echo "nvme-$c: PASS"; else echo "nvme-$c: FAIL (see $dir)"; fails=$((fails + 1)); fi
 }
 
+# ---- M13.6's U7a: /jam, the Jam OS drive's ext data partition --------------------------------
+
+# s5_jam <dir>: a Jam OS drive (tools/mkgpt.py's jamos layout, 1 GiB; QEMU's
+# slot 0: serial jamos-nvme0, its end vme0) whose ESP is a FAT volume
+# (mtools) and whose data partition is an ext volume of Jam OS's feature set
+# that Linux's mke2fs made from a tree (docs/hello.txt, and a tmp/ the last
+# boot "left behind"), beside the Windows-like drive; booted from the stick.
+# volumes finds the superblock and starts bin/extfs on the data partition,
+# /jam, read-write; init gives the namespace /usr, /var, /home and /tmp as
+# views of it and empties the old /tmp. Files go in through /jam and through
+# the views and are read back through the other name; `disks` says (ext);
+# `mount -w` of the Windows-like drive's ESP is still refused. Then `install`
+# over the Jam OS drive (it is Jam OS's already: its ESP's files replaced, its
+# /data kept, /data/etc copied in): the data partition is held writable for
+# init alone (/jam and its views gone meanwhile) and let go (/jam and its
+# views back), and nothing it held is lost. Afterwards, on the host: the
+# ext volume through Linux's e2fsck (the journal replayed first), the file
+# and the copied settings in it, the ESP holding the build, and the Windows-
+# like image unchanged.
+s5_jam() {
+    dir=$1 ok=1
+    win="$dir/windows.img" jam="$dir/jamos.img" log="$dir/nvme-$c.log"
+    esp="$dir/esp.img" ext="$dir/data.img" tree="$dir/tree"
+    PATH=/usr/sbin:/sbin:$PATH
+    for t in mke2fs debugfs e2fsck mformat mdir; do
+        command -v $t > /dev/null 2>&1 ||
+            { echo "nvme-$c: FAIL: no $t here (needs e2fsprogs and mtools: the test PC's WSL has them)"; fails=$((fails + 1)); return; }
+    done
+    python3 tools/nvme-img.py "$win" windows
+    mkdir -p "$tree/docs" "$tree/tmp/old"
+    echo "hello from the Linux-made volume" > "$tree/docs/hello.txt"
+    echo "left by the last boot" > "$tree/tmp/left.txt"
+    echo "left too" > "$tree/tmp/old/more.txt"
+    rm -f "$ext" "$esp"
+    truncate -s 64M "$ext"
+    MKE2FS_CONFIG=/dev/null mke2fs -q -F -o Linux -b 4096 -I 256 -m 0 -J size=4 \
+        -O none,has_journal,extent,flex_bg,64bit,sparse_super,large_file,huge_file,dir_nlink,extra_isize,metadata_csum,filetype \
+        -U 4a414d34-0007-4000-8000-000000000007 -E lazy_itable_init=0,lazy_journal_init=0,root_owner=1000:1000 \
+        -L jamdata -d "$tree" "$ext" > "$dir/mke2fs.log" 2>&1 || { echo "nvme-$c: FAIL: mke2fs (see $dir/mke2fs.log)"; fails=$((fails + 1)); return; }
+    # the one user of Jam OS is uid 1000: the tree's files are its own
+    for p in docs docs/hello.txt tmp tmp/left.txt tmp/old tmp/old/more.txt; do
+        echo "sif /$p uid 1000"
+        echo "sif /$p gid 1000"
+    done > "$dir/owner.cmds"
+    debugfs -w -f "$dir/owner.cmds" "$ext" > "$dir/debugfs.log" 2>&1 || { echo "nvme-$c: FAIL: debugfs (see $dir/debugfs.log)"; fails=$((fails + 1)); return; }
+    truncate -s 128M "$esp"
+    mformat -i "$esp" -T $((128 * 2048)) -F -v JAMOS-ESP :: ||
+        { echo "nvme-$c: FAIL: mformat"; fails=$((fails + 1)); return; }
+    python3 tools/mkgpt.py "$jam" --layout jamos --size 1G --fill "1=$esp" --fill "2=$ext" > /dev/null
+    rm -f "$esp"
+    before=$(sha256 "$win" | cut -d' ' -f1)
+    in="$dir/nvme-$c.in"
+    {
+        echo "# generated by tools/nvme-test.sh: $c"
+        echo "wait 120 Jam OS shell"
+        echo "wait {prompt}"
+        echo "seen 60 init: /data mounted"
+        s3_names bd wd
+        echo "send T=x"
+        echo "wait {prompt}"
+        # /jam and its views
+        echo "seen 60 init: /jam mounted"
+        echo "seen 60 init: /jam: mounted as views: /usr /var /home /tmp"
+        echo "send mount | grep /jam | grep -c read-write | grep ^1\$ && echo ok-\$T-rw"
+        echo "wait ok-x-rw"
+        echo "send mount | grep -c -E '^/(usr|var|home|tmp) ' | grep ^4\$ && echo ok-\$T-views"
+        echo "wait ok-x-views"
+        echo "send cat /jam/docs/hello.txt"
+        echo "wait hello from the Linux-made volume"
+        echo "send ls /jam/tmp | grep -c . | grep ^0\$ && ls /tmp | grep -c . | grep ^0\$ && echo ok-\$T-tmp"
+        echo "wait ok-x-tmp"
+        echo "send write /tmp/t.txt via-the-tmp-view && cat /jam/tmp/t.txt"
+        echo "wait via-the-tmp-view"
+        echo "send mkdir /usr/bin; write /usr/bin/hi.txt in-usr && cat /jam/usr/bin/hi.txt"
+        echo "wait in-usr"
+        echo "send write /var/v.txt in-var && cat /jam/var/v.txt && write /home/h.txt in-home && cat /jam/home/h.txt"
+        echo "wait in-home"
+        echo "send write /jam/new.txt written-to-jam && cat /jam/new.txt"
+        echo "wait written-to-jam"
+        echo "send cat /jam/new.txt | grep -c written-to-jam | grep ^1\$ && ls /jam | grep -c -E '^(docs|home|lost.found|new.txt|tmp|usr|var)\$' | grep ^7\$ && echo ok-\$T-ls"
+        echo "wait ok-x-ls"
+        echo "send disks | grep -c '/jam (ext)' | grep ^1\$ && echo ok-\$T-disks"
+        echo "wait ok-x-disks"
+        echo "send mount -w /nvme{wd}"
+        echo "wait is not on a Jam OS disk: it stays read-only"
+        echo "wait {prompt}"
+        # the installer over it: the data partition held and let go
+        echo "send mkdir /data/etc; write /data/etc/probe.txt jam-probe && sync"
+        echo "wait {prompt}"
+        echo "send install nvme{bd}"
+        echo "wait a Jam OS disk already"
+        echo "wait Type the last 4 characters"
+        echo "send vme0"
+        echo "wait 300 installed on nvme"
+        echo "wait {prompt}"
+        echo "send sleep 3"
+        echo "wait {prompt}"
+        echo "send cat /jam/etc/probe.txt /jam/docs/hello.txt /jam/new.txt"
+        echo "wait jam-probe"
+        echo "wait hello from the Linux-made volume"
+        echo "wait written-to-jam"
+        echo "send mount | grep -c -E '^/(jam|usr|var|home|tmp) ' | grep ^5\$ && echo ok-\$T-back"
+        echo "wait ok-x-back"
+        echo "send write /tmp/t2.txt again && cat /jam/tmp/t2.txt && cat /jam/usr/bin/hi.txt"
+        echo "wait again"
+        echo "wait in-usr"
+        echo "send sync"
+        echo "wait {prompt}"
+        echo "send reboot -f"
+        echo "wait reboot: resetting"
+    } > "$in"
+    QEMU_TIMEOUT=${QEMU_TIMEOUT:-420} QEMU_NVME="$jam $win" QEMU_INPUT="$in" \
+        QEMU_EXTRA="-trace pci_nvme_pci_reset -trace pci_nvme_admin_cmd -trace pci_nvme_io_cmd -trace pci_nvme_write -D $dir/$c.trace" \
+        tools/qemu-test.sh "$dir" "nvme-$c" shell > "$dir/nvme-$c.out" 2>&1 ||
+        { echo "nvme-$c: FAIL: the run failed (see $dir/nvme-$c.out)"; grep -a "serial-feed: .*no '" "$dir/nvme-$c.out" || true; ok=0; }
+    [ "$(sha256 "$win" | cut -d' ' -f1)" = "$before" ] || { echo "nvme-$c: FAIL: the Windows-like image changed"; ok=0; }
+    s2_want "$log" "volumes: nvme[0-9]+ partition 2 -> bin/extfs at /jam \(OK\)" \
+        "volumes: nvme[0-9]+ partition 2 is /jam, read-write" \
+        "extfs /jam: mounted" \
+        "init: /jam: mounted as views: /usr /var /home /tmp \(/tmp: 3 removed\)" \
+        "volumes: /jam is the installer's, read-write, and no mount" \
+        "volumes: /jam is read-write and a mount again \(OK\)" \
+        "installed on nvme" || ok=0
+    s2_want "$log" "volumes: nvme[0-9]+ partition 1 -> bin/fat at /nvme[0-9]+, read-only" || ok=0
+    grep -aqE "extfs-jam.*(crashed|killed)|giving up|did not end cleanly" "$log" &&
+        { echo "nvme-$c: FAIL: a service crashed or was given up on"; ok=0; }
+    # the ext volume on the host: the journal replayed, then clean
+    dd if="$jam" of="$dir/data.out" bs=1M skip=513 count=64 2> /dev/null
+    e2fsck -fy "$dir/data.out" > "$dir/e2fsck-1.txt" 2>&1 || [ $? -le 1 ] ||
+        { echo "nvme-$c: FAIL: e2fsck (see $dir/e2fsck-1.txt)"; ok=0; }
+    e2fsck -fn "$dir/data.out" > "$dir/e2fsck-2.txt" 2>&1 ||
+        { echo "nvme-$c: FAIL: the volume isn't clean after its journal was replayed (see $dir/e2fsck-2.txt)"; ok=0; }
+    for f in docs/hello.txt new.txt tmp/t2.txt usr/bin/hi.txt etc/probe.txt; do
+        debugfs -R "cat /$f" "$dir/data.out" > "$dir/got.txt" 2> /dev/null
+        [ -s "$dir/got.txt" ] || { echo "nvme-$c: FAIL: /$f isn't on the data partition"; ok=0; }
+    done
+    debugfs -R "ls /tmp" "$dir/data.out" 2> /dev/null | grep -q "left.txt\|old" &&
+        { echo "nvme-$c: FAIL: the old /tmp wasn't emptied"; ok=0; }
+    # the ESP: the build there
+    mdir -i "$jam@@1M" ::/boot > "$dir/esp-boot.txt" 2>&1 || true
+    grep -qi "jamos.elf" "$dir/esp-boot.txt" && grep -qi "bootfs.img" "$dir/esp-boot.txt" ||
+        { echo "nvme-$c: FAIL: the ESP doesn't hold the build (see $dir/esp-boot.txt)"; ok=0; }
+    if [ $ok = 1 ]; then rm -rf "$win" "$jam" "$tree" "$dir/data.out" "$ext"; echo "nvme-$c: PASS"; else echo "nvme-$c: FAIL (see $dir)"; fails=$((fails + 1)); fi
+}
+
 for c in $cases; do
     if [ $c = checker ]; then checker; continue; fi
     if [ $c = write ] || [ $c = wiommu ] || [ $c = diskro ] || [ $c = prepare ] || [ $c = piommu ] ||
-       [ $c = cutprep ] || [ $c = cutbad ] || [ $c = erase ] || [ $c = erasestop ]; then
+       [ $c = cutprep ] || [ $c = cutbad ] || [ $c = erase ] || [ $c = erasestop ] || [ $c = jam ]; then
         rm -rf "$out/nvme-$c"
         mkdir -p "$out/nvme-$c"
         s2_iommu=
         [ $c = wiommu ] || [ $c = piommu ] && s2_iommu=1
         case $c in
         diskro) s2_diskro "$out/nvme-$c" ;;
+        jam) s5_jam "$out/nvme-$c" ;;
         prepare | piommu) s3_prepare "$out/nvme-$c" prepare ;;
         cutprep | cutbad) s3_prepare "$out/nvme-$c" $c ;;
         erase | erasestop) s4_erase "$out/nvme-$c" $c ;;
