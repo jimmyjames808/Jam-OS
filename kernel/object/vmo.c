@@ -45,7 +45,13 @@
  * too, under this lock.
  *
  * Latency: decommit and shrink work one leaf table (2 MiB, at most 512
- * pages, or one run of missing tables: above) per lock hold and
+ * pages, or one run of missing tables: above) per lock hold, less when the
+ * user mappings over those pages are many: a batch's walk over them, which
+ * clears each mapping's entries with this lock held, is cut short to stay
+ * within VMO_BATCH_BUDGET (<jam/aspace_vmo.h>), down to one page (a page
+ * under more mappings than that is a batch of its own: VMAR_MAX_OVERLAP
+ * bounds how many each address space has there). A child's creation
+ * write-protects the parent's mappings in batches the same way. They
  * flush/free every 512 pages or so, re-checking under each re-lock: the
  * range is clipped to the current size
  * (a racing shrink already took the rest), and a pin or kernel mapping that
@@ -226,6 +232,7 @@
 #include <jam/sched.h>
 #include <jam/spinlock.h>
 #include <jam/string.h>
+#include <jam/time.h>
 #include <jam/vmo.h>
 #include <jam/vmo_verify.h>
 
@@ -656,8 +663,8 @@ static void drop_from_locked(struct vmo *v, uint64_t first)
         drop_top_from_locked(v, first);
 }
 
-static void zap_umaps_locked(const struct vmo *v, uint64_t first, uint64_t end,
-                             struct tlb_gather *g);
+static uint64_t zap_umaps_locked(const struct vmo *v, uint64_t first, uint64_t end,
+                                 struct tlb_gather *g);
 
 /* What get_page makes sure of. */
 enum get_mode {
@@ -1207,21 +1214,97 @@ static uint64_t umap_va(const struct vmo_umap *u, uint64_t idx)
     return u->base + ((idx - u->pages.first) << PAGE_SHIFT);
 }
 
-/* With the lock held: zap pages [first, end) from every user mapping. */
-static void zap_umaps_locked(const struct vmo *v, uint64_t first, uint64_t end,
-                             struct tlb_gather *g)
+/* What walking the user mappings over [lo, hi) of one costs a batch (see
+ * VMO_BATCH_BUDGET). */
+static uint64_t umap_cost(uint64_t lo, uint64_t hi)
 {
-    uint64_t lo, hi;
+    return VMO_BATCH_MAPPING_COST + (hi - lo);
+}
+
+/* With the lock held: zap pages [first, end) from every user mapping.
+ * Returns what that cost (VMO_BATCH_BUDGET's units). */
+static uint64_t zap_umaps_locked(const struct vmo *v, uint64_t first, uint64_t end,
+                                 struct tlb_gather *g)
+{
+    uint64_t lo, hi, cost = 0;
     for (struct vmo_umap *u = umap_first(v, first, end, &lo, &hi); u;
-         u = umap_next(u, first, end, &lo, &hi))
+         u = umap_next(u, first, end, &lo, &hi)) {
         aspace_zap_locked(u->as, umap_va(u, lo), (hi - lo) << PAGE_SHIFT, g);
+        cost += umap_cost(lo, hi);
+    }
+    return cost;
+}
+
+uint64_t vmo_batch_ns_most, vmo_batch_cost_most;
+
+/* With the lock held: the first mapping in order over [idx, stop) at which
+ * the cost of those so far passes VMO_BATCH_BUDGET (*lo: where it starts in
+ * the range), or NULL if they all fit. */
+static struct vmo_umap *batch_over_locked(const struct vmo *v, uint64_t idx, uint64_t stop,
+                                          uint64_t *lo)
+{
+    uint64_t cost = 0, hi;
+    for (struct vmo_umap *u = umap_first(v, idx, stop, lo, &hi); u;
+         u = umap_next(u, idx, stop, lo, &hi)) {
+        cost += umap_cost(*lo, hi);
+        if (cost > VMO_BATCH_BUDGET)
+            return u;
+    }
+    return NULL;
+}
+
+/* With the lock held: where a batch of pages [idx, stop) must stop so that
+ * its walk over the user mappings stays within VMO_BATCH_BUDGET, down to
+ * one page. The mappings come by first page, so the batch can end where
+ * the one that passes the budget starts. If that is idx itself (every
+ * mapping so far covers page idx), the n mappings over idx allow
+ * VMO_BATCH_BUDGET / n - VMO_BATCH_MAPPING_COST pages, and it ends there or
+ * where a later one passes. A page under more mappings than one batch
+ * allows is a batch of its own, whatever it costs: VMAR_MAX_OVERLAP bounds
+ * the mappings each address space has over it. */
+static uint64_t batch_end_locked(const struct vmo *v, uint64_t idx, uint64_t stop)
+{
+    uint64_t lo, hi, n = 0;
+    if (!batch_over_locked(v, idx, stop, &lo))
+        return stop;
+    if (lo > idx)
+        return lo;
+    for (struct vmo_umap *u = umap_first(v, idx, idx + 1, &lo, &hi); u;
+         u = umap_next(u, idx, idx + 1, &lo, &hi))
+        n++;
+    if (n * umap_cost(0, 1) >= VMO_BATCH_BUDGET)
+        return idx + 1;
+    uint64_t most = VMO_BATCH_BUDGET / n - VMO_BATCH_MAPPING_COST;   /* >= 1, by the test above */
+    if (stop > idx + most)
+        stop = idx + most;
+    if (!batch_over_locked(v, idx, stop, &lo))
+        return stop;
+    return lo > idx ? lo : idx + 1;   /* (the n over idx fit: lo > idx) */
+}
+
+static void note_most(uint64_t *most, uint64_t x)
+{
+    uint64_t old = __atomic_load_n(most, __ATOMIC_RELAXED);
+    while (x > old &&
+           !__atomic_compare_exchange_n(most, &old, x, true, __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+        ;
+}
+
+/* A batch that started at t0 (uptime_ns) has ended, its walk over the
+ * mappings having cost `cost`: the most so far go in vmo_batch_ns_most and
+ * vmo_batch_cost_most. */
+static void batch_note(uint64_t t0, uint64_t cost)
+{
+    note_most(&vmo_batch_ns_most, uptime_ns() - t0);
+    note_most(&vmo_batch_cost_most, cost);
 }
 
 /* With the lock held: take the committed pages in [idx, end), at most up to
- * the end of idx's leaf, out of the table onto g and out of every user
- * mapping. Returns where to continue (past the missing tables that follow
- * a missing leaf: leaf_find_locked; or at a shared page when g's array is
- * full: finish g first). */
+ * the end of idx's leaf and within VMO_BATCH_BUDGET, out of the table onto g
+ * and out of every user mapping. Returns where to continue (past the
+ * missing tables that follow a missing leaf: leaf_find_locked; where the
+ * budget ends the batch; or at a shared page when g's array is full:
+ * finish g first). */
 static uint64_t take_batch_locked(struct vmo *v, uint64_t idx, uint64_t end, struct tlb_gather *g)
 {
     uint64_t next;
@@ -1231,6 +1314,12 @@ static uint64_t take_batch_locked(struct vmo *v, uint64_t idx, uint64_t end, str
     uint64_t stop = ALIGN_UP(idx + 1, LEAF_PAGES);
     if (stop > end)
         stop = end;
+    while (idx < stop && !leaf[idx % LEAF_PAGES])
+        idx++;   /* no page, so no entry anywhere: nothing to take or clear */
+    if (idx == stop)
+        return stop;
+    uint64_t t0 = uptime_ns();
+    stop = batch_end_locked(v, idx, stop);
     uint64_t taken = 0, charged = 0;
     for (uint64_t i = idx; i < stop; i++) {
         uint64_t *s = &leaf[i % LEAF_PAGES];
@@ -1259,8 +1348,7 @@ static uint64_t take_batch_locked(struct vmo *v, uint64_t idx, uint64_t end, str
     bool any = taken != 0;
     /* Entries exist only for committed pages (a fault installs under this
      * lock what the table holds), so nothing taken means nothing to zap. */
-    if (any)
-        zap_umaps_locked(v, idx, stop, g);
+    batch_note(t0, any ? zap_umaps_locked(v, idx, stop, g) : 0);
     return stop;
 }
 
@@ -1731,15 +1819,20 @@ status_t vmo_fault_map(struct vmo *v, uint64_t idx, struct aspace *as, uint64_t 
 /* ---- copy-on-write children (see the file header) ------------------------- */
 
 /* With the lock held: take the write bit off pages [first, end) in every
- * user mapping of v that may be writable (the others never have it). */
-static void wrprotect_umaps_locked(const struct vmo *v, uint64_t first, uint64_t end,
-                                   struct tlb_gather *g)
+ * user mapping of v that may be writable (the others never have it).
+ * Returns what the walk cost (VMO_BATCH_BUDGET's units: every mapping
+ * over the pages counts). */
+static uint64_t wrprotect_umaps_locked(const struct vmo *v, uint64_t first, uint64_t end,
+                                       struct tlb_gather *g)
 {
-    uint64_t lo, hi;
+    uint64_t lo, hi, cost = 0;
     for (struct vmo_umap *u = umap_first(v, first, end, &lo, &hi); u;
-         u = umap_next(u, first, end, &lo, &hi))
+         u = umap_next(u, first, end, &lo, &hi)) {
         if (u->writable)
             aspace_wrprotect_locked(u->as, umap_va(u, lo), (hi - lo) << PAGE_SHIFT, g);
+        cost += umap_cost(lo, hi);
+    }
+    return cost;
 }
 
 /* p's lock held and c's (nested): share p's present pages [idx, stop) (in
@@ -1800,14 +1893,16 @@ static status_t share_pages(struct vmo *p, struct vmo *c, uint64_t offp)
         uint64_t n = 0, next;
         f = vlock(p);
         spin_lock_nested(&c->base.lock, 1);   /* parent, then the new child: nobody else has it */
+        uint64_t t0 = uptime_ns();
         if (!leaf_find_locked(p, idx, &next))   /* past the missing tables, as decommit */
             stop = next < end ? next : end;
         else if (ranges_overlap_locked(p, idx, stop))
             st = ERR_BAD_STATE;   /* a device or the kernel may write these behind the sharing */
-        else
+        else {
+            stop = batch_end_locked(p, idx, stop);   /* the write-protects below in budget */
             st = share_leaf_locked(p, c, idx, stop, offp, &n);
-        if (n)
-            wrprotect_umaps_locked(p, idx, stop, &g);
+        }
+        batch_note(t0, n ? wrprotect_umaps_locked(p, idx, stop, &g) : 0);
         spin_unlock(&c->base.lock);
         vunlock(p, f);
         idx = stop;

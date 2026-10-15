@@ -59,7 +59,8 @@ void     aspace_unref(struct aspace *as);
  * *addr: in, the address for ASPACE_FIXED; out, where it was mapped. The
  * mapping holds a VMO reference. ERR_INVALID_ARGS for W+X on a VMO that
  * isn't a JIT VMO (vmo_is_jit), W or X without R, or a bad range, ERR_OUT_OF_RANGE past the VMO's end,
- * ERR_NO_RESOURCES if it doesn't fit, ERR_ALREADY_BOUND if a FIXED range
+ * ERR_NO_RESOURCES if it doesn't fit or would make more than
+ * VMAR_MAX_OVERLAP mappings of vmo over a page here, ERR_ALREADY_BOUND if a FIXED range
  * overlaps an existing mapping. No permissions at all is allowed (a guard:
  * every access faults with ERR_ACCESS_DENIED). With ASPACE_KEPT_ONLY:
  * ERR_INVALID_ARGS unless the permissions are ASPACE_READ alone,

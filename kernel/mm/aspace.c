@@ -18,7 +18,8 @@
  * holds a VMO reference (through its reverse-map entry, struct vmo_umap),
  * and has its current permissions plus the most aspace_protect may grant
  * (`max`, from ASPACE_CAN_*). Page-table entries are filled lazily by
- * aspace_fault.
+ * aspace_fault. Every mapping is also in `vmaps`, by VMO and VMO page (an
+ * interval tree: "Mappings over the same pages", below).
  *
  * Merging. Two neighbouring mappings of one VMO at contiguous offsets,
  * with the same permissions and the same maximum, neither kept, are one
@@ -212,15 +213,23 @@
  * and destroy credits whatever is left, so the job is exact. Charges are
  * lock-free atomics, fine under pt_lock.
  *
+ * Mappings over the same pages (CR1 finding 1). A decommit batch holds the
+ * VMO lock, with interrupts off, while it clears its pages from every
+ * mapping over them (found through the VMO's interval tree, O(log n) each,
+ * so mappings elsewhere in the VMO cost nothing), so the mappings over one
+ * page are what a program could pile up to stall a CPU. Two bounds: an
+ * address space holds at most VMAR_MAX_OVERLAP mappings of one VMO over
+ * any one page (map and replace count them in `vmaps`, a second tree of
+ * the mappings by VMO page, under the region lock only, so the count costs
+ * nobody else; splits and merges never add to it), and a batch is cut
+ * short so its walk stays within VMO_BATCH_BUDGET (vmo.c). What is left is
+ * one page under the cap's 64 mappings from each of many address spaces:
+ * a batch of its own, costing about 37 ns a mapping.
+ *
  * Known limits: no lazy TLB (switching to a kernel thread reloads the
- * kernel CR3, with PCIDs a cheap load that keeps the user entries); one
- * decommit batch holds the VMO lock (with interrupts off) while it clears
- * up to 512 pages from every mapping that overlaps them (found through
- * the VMO's interval tree, O(log n) each, so mappings elsewhere in the VMO
- * cost nothing), so many mappings over the same pages (one VMO mapped in
- * thousands of address spaces) make that latency grow. The region lock
- * must never be held across a user copy: the copy's fault would take it
- * again. */
+ * kernel CR3, with PCIDs a cheap load that keeps the user entries). The
+ * region lock must never be held across a user copy: the copy's fault
+ * would take it again. */
 #include <jam/aspace.h>
 #include <jam/aspace_vmo.h>
 #include <jam/avl.h>
@@ -276,6 +285,9 @@ struct mapping {
     unsigned         flags;      /* current ASPACE_READ/WRITE/EXEC */
     unsigned         max;        /* what aspace_protect may grant */
     bool             kept;       /* ASPACE_KEPT_ONLY: entries filled at map time, never changed */
+    struct avl_node  vnode;      /* in as->vmaps, by VMO then VMO offset (region lock) */
+    uintptr_t        vmax_vmo;   /* the highest (VMO, end page) in vnode's subtree */
+    uint64_t         vmax_end;   /* (region lock) */
 };
 _Static_assert(sizeof(struct mapping) <= PAGE_SIZE / ASPACE_MAPPINGS_PER_PAGE,
                "the page charged per ASPACE_MAPPINGS_PER_PAGE mappings holds them");
@@ -286,7 +298,8 @@ struct aspace {
     uint64_t          pml4;       /* physical */
     uint64_t         *pml4v;      /* pml4 through the HHDM */
     struct avl_tree   maps;       /* struct mapping, by base (region lock) */
-    uint32_t          nmaps;      /* mappings in maps */
+    struct avl_tree   vmaps;      /* the same, by VMO page (vnode; region lock) */
+    uint32_t          nmaps;      /* mappings in maps (and in vmaps) */
     uint64_t          map_pages;  /* pages charged for the mapping structs (region lock) */
     uint64_t          pt_pages;   /* table pages below the PML4 (pt_lock), each charged */
     struct job       *job;        /* charged for all of it (a reference), or NULL */
@@ -745,21 +758,25 @@ static void gap_fix(struct aspace *as, struct mapping *m)
     avl_propagate(&as->maps, &m->node);
 }
 
-/* Region lock held: put m (its range set, not in the tree) right after
+static void vmap_insert(struct aspace *as, struct mapping *m);
+
+/* Region lock held: put m (its range set, not in the trees) right after
  * prev (NULL: first); the gap after it shrinks. */
 static void map_link(struct aspace *as, struct mapping *m, struct mapping *prev)
 {
     m->gap = m->base - (prev ? mend(prev) : USER_BASE);
     avl_insert_after(&as->maps, &m->node, prev ? &prev->node : NULL);
+    vmap_insert(as, m);
     as->nmaps++;
     gap_fix(as, next_of(m));
 }
 
-/* Region lock held: take m out of the tree; the gap after it grows. */
+/* Region lock held: take m out of the trees; the gap after it grows. */
 static void map_unlink(struct aspace *as, struct mapping *m)
 {
     struct mapping *n = next_of(m);
     avl_erase(&as->maps, &m->node);
+    avl_erase(&as->vmaps, &m->vnode);
     as->nmaps--;
     gap_fix(as, n);
 }
@@ -813,6 +830,202 @@ static status_t maps_account(struct aspace *as, uint32_t n)
     return OK;
 }
 
+/* ---- mappings by VMO page (VMAR_MAX_OVERLAP) ------------------------------ */
+
+/* `vmaps` holds every mapping a second time, by what it maps: it is
+ * <jam/itree.h>'s interval tree on a line where each VMO has a stretch of
+ * its own (positions are pairs, the VMO's address and then a page of it,
+ * compared in that order), each node keeping the highest (VMO, end page)
+ * of its subtree. So itree's search, with pairs for numbers, finds this
+ * address space's mappings over some pages of one VMO, and only those, in
+ * O(log n) each, however many it maps of other VMOs or elsewhere in this
+ * one. map counts them before it adds one (overlap_room). */
+
+static struct mapping *vmap_of(const struct avl_node *n)
+{
+    return n ? container_of(n, struct mapping, vnode) : NULL;
+}
+
+static uint64_t vfirst(const struct mapping *m)
+{
+    return m->vmo_off >> PAGE_SHIFT;
+}
+
+static uint64_t vend(const struct mapping *m)
+{
+    return (m->vmo_off + m->len) >> PAGE_SHIFT;
+}
+
+/* Whether page pa of the VMO at a lies before page pb of the VMO at b. */
+static bool vpos_before(uintptr_t a, uint64_t pa, uintptr_t b, uint64_t pb)
+{
+    return a < b || (a == b && pa < pb);
+}
+
+/* What m's summary should be: the highest (VMO, end page) of its own and
+ * its children's. */
+static void vmax_of(const struct mapping *m, uintptr_t *v, uint64_t *end)
+{
+    *v = (uintptr_t)m->vmo;
+    *end = vend(m);
+    const struct mapping *c[2] = { vmap_of(m->vnode.left), vmap_of(m->vnode.right) };
+    for (unsigned i = 0; i < 2; i++) {
+        if (c[i] && vpos_before(*v, *end, c[i]->vmax_vmo, c[i]->vmax_end)) {
+            *v = c[i]->vmax_vmo;
+            *end = c[i]->vmax_end;
+        }
+    }
+}
+
+/* The tree's summary (<jam/avl.h>). */
+static void vmax_update(struct avl_node *n)
+{
+    struct mapping *m = vmap_of(n);
+    vmax_of(m, &m->vmax_vmo, &m->vmax_end);
+}
+
+/* Region lock held: m (its VMO and range set) into vmaps. */
+static void vmap_insert(struct aspace *as, struct mapping *m)
+{
+    struct avl_node *parent = NULL;
+    bool right = false;
+    for (struct avl_node *n = as->vmaps.root; n;) {
+        const struct mapping *o = vmap_of(n);
+        parent = n;
+        right = !vpos_before((uintptr_t)m->vmo, vfirst(m), (uintptr_t)o->vmo, vfirst(o));
+        n = right ? n->right : n->left;
+    }
+    avl_link(&as->vmaps, &m->vnode, parent, right);
+}
+
+/* A search of vmaps: the mappings over pages [lo, hi) of the VMO at v. */
+struct vsearch {
+    uintptr_t v;
+    uint64_t  lo, hi;
+};
+
+/* Does something in m's subtree end past the search's first page? */
+static bool vs_reaches(const struct vsearch *s, const struct mapping *m)
+{
+    return m && vpos_before(s->v, s->lo, m->vmax_vmo, m->vmax_end);
+}
+
+/* Does m start at or past the search's end (and so everything after it)? */
+static bool vs_past(const struct vsearch *s, const struct mapping *m)
+{
+    return !vpos_before((uintptr_t)m->vmo, vfirst(m), s->v, s->hi);
+}
+
+/* Does m itself end past the search's first page? */
+static bool vs_ends_past(const struct vsearch *s, const struct mapping *m)
+{
+    return vpos_before(s->v, s->lo, (uintptr_t)m->vmo, vend(m));
+}
+
+/* itree.c's subtree_search: the first match in m's subtree (which reaches
+ * past s->lo), or NULL if there is none from there on. */
+static struct mapping *vs_subtree(const struct vsearch *s, struct mapping *m)
+{
+    for (;;) {
+        struct mapping *l = vmap_of(m->vnode.left);
+        if (vs_reaches(s, l)) {
+            m = l;
+            continue;
+        }
+        if (vs_past(s, m))
+            return NULL;
+        if (vs_ends_past(s, m))
+            return m;
+        struct mapping *r = vmap_of(m->vnode.right);
+        if (!vs_reaches(s, r))
+            return NULL;
+        m = r;
+    }
+}
+
+/* Region lock held: the first mapping in vmaps order over s's pages, or
+ * NULL; then each next one (vs_next with the same search, nothing changed
+ * meanwhile) until NULL. */
+static struct mapping *vs_first(const struct aspace *as, const struct vsearch *s)
+{
+    struct mapping *root = vmap_of(as->vmaps.root);
+    if (s->lo >= s->hi || !vs_reaches(s, root))
+        return NULL;
+    return vs_subtree(s, root);
+}
+
+static struct mapping *vs_next(const struct vsearch *s, const struct mapping *m)
+{
+    const struct avl_node *a = &m->vnode;
+    for (;;) {
+        struct mapping *r = vmap_of(a->right);
+        if (vs_reaches(s, r))
+            return vs_subtree(s, r);
+        const struct avl_node *from;
+        do {
+            from = a;
+            a = a->parent;
+            if (!a)
+                return NULL;
+        } while (a->right == from);
+        struct mapping *p = vmap_of(a);
+        if (vs_past(s, p))
+            return NULL;
+        if (vs_ends_past(s, p))
+            return p;
+    }
+}
+
+/* overlap_room's heap: the n smallest-first page numbers in h. */
+static void heap_push(uint64_t *h, unsigned *n, uint64_t x)
+{
+    unsigned i = (*n)++;
+    for (; i && h[(i - 1) / 2] > x; i = (i - 1) / 2)
+        h[i] = h[(i - 1) / 2];
+    h[i] = x;
+}
+
+static void heap_pop(uint64_t *h, unsigned *n)
+{
+    uint64_t x = h[--*n];
+    unsigned i = 0;
+    for (unsigned c; (c = 2 * i + 1) < *n; i = c) {
+        if (c + 1 < *n && h[c + 1] < h[c])
+            c++;
+        if (h[c] >= x)
+            break;
+        h[i] = h[c];
+    }
+    h[i] = x;
+}
+
+/* Region lock held: are fewer than `most` (at most VMAR_MAX_OVERLAP + 1)
+ * of as's mappings of v over each page of [first, end)? A mapping wholly
+ * inside the addresses [skip, skip_end) doesn't count (a replace unmaps it
+ * first); one the replace only cuts counts whole. The mappings come by
+ * first page, so the count is highest at the first page of one of them: a
+ * sweep keeps where the ones still over the page end, in a heap of fewer
+ * than `most`. O(log most) for each mapping of v over [first, end), and
+ * only as's own mappings: the region lock is all it holds. */
+static bool overlap_room(const struct aspace *as, const struct vmo *v, uint64_t first,
+                         uint64_t end, uint64_t skip, uint64_t skip_end, unsigned most)
+{
+    uint64_t ends[VMAR_MAX_OVERLAP];
+    unsigned n = 0;
+    struct vsearch s = { (uintptr_t)v, first, end };
+    for (struct mapping *m = vs_first(as, &s); m; m = vs_next(&s, m)) {
+        if (m->base >= skip && mend(m) <= skip_end)
+            continue;
+        uint64_t lo = vfirst(m) > first ? vfirst(m) : first;
+        while (n && ends[0] <= lo)
+            heap_pop(ends, &n);
+        if (n + 1 >= most)   /* m and the n still open: over page lo */
+            return false;
+        heap_push(ends, &n, vend(m) < end ? vend(m) : end);
+    }
+    return true;
+}
+
 status_t aspace_create(struct aspace **out)
 {
     return aspace_create_charged(NULL, out);
@@ -841,6 +1054,7 @@ status_t aspace_create_charged(struct job *job, struct aspace **out)
     mutex_init(&as->lock, "aspace");
     spin_init(&as->pt_lock, "aspace page tables");
     avl_init(&as->maps, gap_update);
+    avl_init(&as->vmaps, vmax_update);
     as->refs = 1;
     as->pcid_id = pcid_new_id();
     *out = as;
@@ -906,11 +1120,14 @@ static struct mapping *first_in(const struct aspace *as, uint64_t addr, uint64_t
     return m && m->base < end ? m : NULL;
 }
 
-/* Publish m's current range to its reverse-map entry. */
-static void umap_sync(struct mapping *m)
+/* Region lock held: publish m's current range to its reverse-map entry,
+ * and move it to its place in vmaps. */
+static void umap_sync(struct aspace *as, struct mapping *m)
 {
     vmo_umap_set(m->vmo, &m->umap, m->base, m->vmo_off >> PAGE_SHIFT,
                  (m->vmo_off + m->len) >> PAGE_SHIFT);
+    avl_erase(&as->vmaps, &m->vnode);
+    vmap_insert(as, m);
 }
 
 static void umap_fill(struct aspace *as, struct mapping *m)
@@ -939,7 +1156,7 @@ static struct mapping *split(struct aspace *as, struct mapping *m, uint64_t addr
     umap_fill(as, r);
     vmo_umap_add(m->vmo, &r->umap, false);   /* can't fail unchecked */
     m->len = addr - m->base;
-    umap_sync(m);
+    umap_sync(as, m);
     map_link(as, r, m);
     return r;
 }
@@ -1035,8 +1252,9 @@ static bool merge_next(struct aspace *as, struct mapping *m)
     if (!n || !can_merge(m, n))
         return false;
     m->len += n->len;
-    umap_sync(m);
+    umap_sync(as, m);
     avl_erase(&as->maps, &n->node);
+    avl_erase(&as->vmaps, &n->vnode);
     as->nmaps--;
     vmo_umap_remove(n->vmo, &n->umap);   /* never the last reference: m holds one */
     kfree(n);
@@ -1153,18 +1371,19 @@ static void cut_locked(struct aspace *as, struct mapping *first, uint64_t addr, 
         next = next_of(m);
         if (m->base >= addr && mend(m) <= end) {
             avl_erase(&as->maps, &m->node);
+            avl_erase(&as->vmaps, &m->vnode);
             as->nmaps--;
             vmo_umap_remove(m->vmo, &m->umap);
             kfree(m);
         } else if (m->base < addr) {
             m->len = addr - m->base;
-            umap_sync(m);
+            umap_sync(as, m);
         } else {
             uint64_t cut = end - m->base;
             m->base = end;
             m->vmo_off += cut;
             m->len -= cut;
-            umap_sync(m);
+            umap_sync(as, m);
         }
     }
     gap_fix(as, ceil_of(as, end));
@@ -1187,6 +1406,8 @@ static status_t map_place_locked(struct aspace *as, struct mapping *m, unsigned 
     } else {
         st = first_fit(as, m->len, &m->base, &prev);
     }
+    if (st == OK && !overlap_room(as, m->vmo, vfirst(m), vend(m), 0, 0, VMAR_MAX_OVERLAP))
+        st = ERR_NO_RESOURCES;
     if (st == OK)
         st = maps_reserve(as, as->nmaps + 1 - merges_for(as, m), as->nmaps + 1, 0, NULL);
     if (st == OK) {
@@ -1221,6 +1442,8 @@ static status_t map_replace_locked(struct aspace *as, struct mapping *m, const u
         inside += o->base >= base && mend(o) <= end;
     bool split = first && first->base < base && mend(first) > end;
     uint32_t peak = as->nmaps - inside + split + 1;
+    if (!overlap_room(as, m->vmo, vfirst(m), vend(m), base, end, VMAR_MAX_OVERLAP))
+        return ERR_NO_RESOURCES;   /* what the range holds whole doesn't count */
     status_t st = maps_reserve(as, peak - merges_for(as, m), peak, split, &spare);
     if (st != OK)
         return st;
@@ -1571,6 +1794,26 @@ static bool map_before(const struct avl_node *a, const struct avl_node *b)
     return map_of(a)->base < map_of(b)->base;
 }
 
+static bool vmap_before(const struct avl_node *a, const struct avl_node *b)
+{
+    const struct mapping *x = vmap_of(a), *y = vmap_of(b);
+    return !vpos_before((uintptr_t)y->vmo, vfirst(y), (uintptr_t)x->vmo, vfirst(x));
+}
+
+/* aspace_check's look at m in vmaps, region lock held: its summary, and no
+ * page of it under more than VMAR_MAX_OVERLAP mappings. */
+static const char *vmap_check(const struct aspace *as, const struct mapping *m)
+{
+    uintptr_t v;
+    uint64_t end;
+    vmax_of(m, &v, &end);
+    if (v != m->vmax_vmo || end != m->vmax_end)
+        return "a summary in the tree by VMO page";
+    if (!overlap_room(as, m->vmo, vfirst(m), vend(m), 0, 0, VMAR_MAX_OVERLAP + 1))
+        return "a page under more than VMAR_MAX_OVERLAP mappings";
+    return NULL;
+}
+
 /* aspace_check's look at m's entries, region lock held: each present one
  * names the VMO's page for its address now and allows nothing m's flags
  * don't. buf holds a page table's worth of entries, copied under pt_lock
@@ -1625,6 +1868,8 @@ int64_t aspace_check(struct aspace *as)
     int64_t n = avl_check(&as->maps, map_before);
     if (n != as->nmaps)
         why = "the tree";
+    else if (avl_check(&as->vmaps, vmap_before) != n)
+        why = "the tree by VMO page";
     const struct mapping *prev = NULL;
     for (struct mapping *m = first_map(as); m && !why; prev = m, m = next_of(m)) {
         uint64_t below = prev ? mend(prev) : USER_BASE;
@@ -1646,7 +1891,7 @@ int64_t aspace_check(struct aspace *as)
         else if ((m->flags & ~m->max) || !perms_ok(m->flags, vmo_is_jit(m->vmo)) ||
                  (m->kept && m->max != m->flags))
             why = "a mapping's permissions";
-        else
+        else if (!(why = vmap_check(as, m)))
             why = entries_check(as, m, buf);
     }
     if (!why && as->map_pages != map_pages_for(as->nmaps))
