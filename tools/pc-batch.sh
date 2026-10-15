@@ -33,7 +33,11 @@
 # again), 1 one failed, 124 not finished yet, 2 a usage error.
 # --rerun-failed: a failed run runs once more and passes as "rerun-PASS".
 # The PC: JAMOS_REMOTE (jamos-pc), and only there (JAMOS_REMOTE_ONLY=1); if it
-# doesn't answer, the batch tries again once after a minute.
+# doesn't answer, the batch (and a run that finds it gone, before it ran
+# anything) tries again once after a minute. The runs start PC_BATCH_STAGGER
+# (0.3) s apart, at most PC_BATCH_JOBS (32) are out at once (the rest wait
+# their turn here, not as ssh sessions), and every ssh connection is tried
+# again when the PC's sshd cuts it during the login (tools/ssh-retry.sh).
 set -u
 top=$(git rev-parse --show-toplevel 2> /dev/null) || top=$(pwd)
 cd "$top" || exit 2
@@ -76,15 +80,32 @@ now() { date +%s; }
 # ---- the driver: runs in the background, one per batch ----
 
 run_one() {   # run_one <name>: one run, its log, time and exit status
-    local n=$1 rc
+    local n=$1 rc tries=0
     split "$(cat "$d/$n.cmd")"
     now > "$d/$n.t0"
-    env ${assigns[@]+"${assigns[@]}"} JAMOS_REMOTE_NOSYNC=1 \
-        "$rt" ${assigns[@]+env "${assigns[@]}"} "${cmdv[@]}" > "$d/$n.log" 2>&1 < /dev/null
-    rc=$?
+    : > "$d/$n.log"
+    while :; do
+        env ${assigns[@]+"${assigns[@]}"} JAMOS_REMOTE_NOSYNC=1 \
+            "$rt" ${assigns[@]+env "${assigns[@]}"} "${cmdv[@]}" >> "$d/$n.log" 2>&1 < /dev/null
+        rc=$?
+        # remote-test's own "not run" (exit 3 with its line, after the ssh retries
+        # of tools/ssh-retry.sh gave up): nothing ran, so once more is safe. A test
+        # that exits 3 itself has no such line and is not run again.
+        [ $rc = 3 ] && [ $tries = 0 ] && grep -q "doesn't answer, and JAMOS_REMOTE_ONLY=1: not run" "$d/$n.log" || break
+        tries=1
+        echo "pc-batch: the PC didn't answer: once more in a minute" >> "$d/$n.log"
+        sleep "${PC_BATCH_RETRY_DELAY:-60}"
+    done
     now > "$d/$n.t1"
     echo $rc > "$d/$n.rc.new"
     mv "$d/$n.rc.new" "$d/$n.rc"
+}
+
+launch() {   # launch <name>: run_one in the background once a job is free; adds to pids
+    [ -z "$pids" ] || sleep "${PC_BATCH_STAGGER:-0.3}"
+    while [ "$(jobs -rp | wc -l | tr -d ' ')" -ge "${PC_BATCH_JOBS:-32}" ]; do sleep 1; done
+    run_one "$1" &
+    pids="$pids $!"
 }
 
 drive() {
@@ -107,10 +128,14 @@ drive() {
     now > "$d/prepare.t1"
     echo $rc > "$d/prepare.rc"
     if [ $rc = 0 ]; then
+        # The runs start a little apart, and no more than PC_BATCH_JOBS are out
+        # at once (each holds an ssh session and a waiting process on the PC
+        # until the CPU budget has room for it): each opens its ssh connections
+        # at once, and the PC's sshd turns some away when 10 or more are logging
+        # in (tools/ssh-retry.sh also limits the logins).
         pids=
         for n in $(names); do
-            run_one "$n" &
-            pids="$pids $!"
+            launch "$n"
         done
         wait $pids
         if [ -f "$d/rerun-failed" ]; then
@@ -118,8 +143,7 @@ drive() {
             for n in $(names); do
                 [ "$(cat "$d/$n.rc")" = 0 ] && continue
                 for f in log rc t0 t1; do mv "$d/$n.$f" "$d/$n.try1.$f"; done
-                run_one "$n" &
-                pids="$pids $!"
+                launch "$n"
             done
             [ -z "$pids" ] || wait $pids
         fi
@@ -143,6 +167,21 @@ result() {
         else
             res=FAIL note="exit $rc"
             [ "$rc" = 3 ] && note="exit 3: the PC didn't answer"
+            if [ "$rc" = 255 ]; then
+                # The last word of tools/ssh-retry.sh in the log, and whether the command ever started.
+                last=$(grep -E '^ssh-retry: (connection lost|not logged in)' "$d/$n.log" 2> /dev/null | tail -1)
+                started=0
+                grep -q '^remote-test: running with' "$d/$n.log" 2> /dev/null && started=1
+                case $last in
+                'ssh-retry: not logged in'*) note="exit 255: ssh could not log in to the PC (tools/ssh-retry.sh tried); the run did not finish" ;;
+                'ssh-retry: connection lost'*)
+                    if [ $started = 1 ]; then
+                        note="exit 255: the ssh connection to the PC was lost after the run started (it may have gone on there)"
+                    else
+                        note="exit 255: the ssh connection to the PC was lost while the run waited for the budget (tried again, see the log)"
+                    fi ;;
+                esac
+            fi
             [ -f "$d/$n.try1.rc" ] && note="$note (and the first try: exit $(cat "$d/$n.try1.rc"))"
         fi
     elif [ -f "$d/$n.t0" ]; then

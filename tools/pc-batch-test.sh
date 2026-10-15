@@ -10,6 +10,10 @@
 #   - bad runlists (a name twice, a missing script, no command, nothing) are
 #     refused (exit 2) and leave no batch;
 #   - a PC that doesn't answer is tried once more, then the runs are NOT-RUN;
+#     a run that finds it gone (remote-test's exit 3 and its "not run" line) is
+#     run once more, a test that exits 3 by itself is not;
+#   - the runs start PC_BATCH_STAGGER seconds apart, and no more than
+#     PC_BATCH_JOBS are out at once;
 #   - a KTESTS=0 run builds that image too (a second --prepare, no copy);
 #   - cancel stops the runs.
 # Usage: tools/pc-batch-test.sh; exit 0 on PASS.
@@ -25,7 +29,7 @@ cat > "$tmp/fake-remote" <<'EOF'
 echo "$* NOSYNC=${JAMOS_REMOTE_NOSYNC:-} KTESTS=${KTESTS:-}" >> "$FAKE_DIR/calls"
 [ "$1" = --prepare ] && exit "${FAKE_PREPARE_RC:-0}"
 [ "${JAMOS_REMOTE_NOSYNC:-}" = 1 ] || { echo "fake: a run that copies"; exit 99; }
-echo "remote-test: running with 4 of 26 CPUs in use (after 2 s)" >&2
+[ -n "${FAKE_NO_RUNNING:-}" ] || echo "remote-test: running with 4 of 26 CPUs in use (after 2 s)" >&2
 exec "$@"
 EOF
 chmod +x "$tmp/fake-remote"
@@ -102,6 +106,64 @@ rc=$?
 [ $rc = 1 ] || fail "no PC: exit $rc"
 [ "$(grep -c -- '--prepare' "$tmp/calls")" = 2 ] || fail "no PC: prepares $(grep -c -- '--prepare' "$tmp/calls")"
 echo "$out" | grep -qE "^  a +NOT-RUN" || fail "no PC: $out"
+
+# ---- a run that finds the PC gone before it ran: once more; a test's own exit 3: not ----
+cat > "$tmp/noans-once" <<'EOF'
+#!/bin/bash
+f=$FAKE_DIR/noans-once.seen
+[ -f "$f" ] && { echo "second try ran"; exit 0; }
+touch "$f"
+echo "remote-test: jamos-pc doesn't answer, and JAMOS_REMOTE_ONLY=1: not run" >&2
+exit 3
+EOF
+cat > "$tmp/own3" <<'EOF'
+#!/bin/bash
+echo x >> "$FAKE_DIR/own3.runs"
+echo "own3: a test that exits 3 by itself" >&2
+exit 3
+EOF
+chmod +x "$tmp/noans-once" "$tmp/own3"
+printf 'noans %s\nown3 %s\nok true\n' "$tmp/noans-once" "$tmp/own3" > "$tmp/list5"
+out=$($B run "$tmp/list5")
+rc=$?
+[ $rc = 1 ] || fail "a run that finds no PC: exit $rc: $out"
+echo "$out" | grep -qE "^  noans +PASS" || fail "the run that found no PC wasn't run again: $out"
+echo "$out" | grep -qE "^  own3 +FAIL" || fail "own3: $out"
+[ "$(wc -l < "$tmp/own3.runs" | tr -d ' ')" = 1 ] || fail "a test's own exit 3 was run again"
+grep -q "the PC didn't answer: once more" "$PC_BATCH_DIR"/*/noans.log &&
+    grep -q "second try ran" "$PC_BATCH_DIR"/*/noans.log || fail "the run's log lacks the note or the second try"
+
+# ---- the runs start a little apart ----
+printf '#!/bin/bash\npython3 -c "import time; print(time.time())" > "$1"\n' > "$tmp/stamp"
+chmod +x "$tmp/stamp"
+printf 'a %s %s/t.a\nb %s %s/t.b\nc %s %s/t.c\n' "$tmp/stamp" "$tmp" "$tmp/stamp" "$tmp" "$tmp/stamp" "$tmp" > "$tmp/list6"
+PC_BATCH_STAGGER=1 $B run "$tmp/list6" > /dev/null || fail "stagger batch failed"
+[ -s "$tmp/t.a" ] && [ -s "$tmp/t.c" ] || fail "stagger: runs left no time"
+t0=$(cat "$tmp/t.a")
+t2=$(cat "$tmp/t.c")
+awk -v a="$t0" -v c="$t2" 'BEGIN { exit !(c - a >= 1.8) }' || fail "stagger: the third run started only $(awk -v a="$t0" -v c="$t2" 'BEGIN { print c - a }') s after the first"
+
+# ---- what exit 255 says in the table ----
+printf '#!/bin/bash\necho "remote-test: running with 3 of 26 CPUs in use"\necho "ssh-retry: connection lost after login: x"\nexit 255\n' > "$tmp/lost-started"
+printf '#!/bin/bash\necho "ssh-retry: connection lost after login: x"\nexit 255\n' > "$tmp/lost-waiting"
+printf '#!/bin/bash\necho "ssh-retry: connection lost after login: x"\necho "ssh-retry: not logged in: gave up after 3 tries"\nexit 255\n' > "$tmp/no-login"
+chmod +x "$tmp/lost-started" "$tmp/lost-waiting" "$tmp/no-login"
+printf 'a %s\nb FAKE_NO_RUNNING=1 %s\nc FAKE_NO_RUNNING=1 %s\n' "$tmp/lost-started" "$tmp/lost-waiting" "$tmp/no-login" > "$tmp/list8"
+out=$($B run "$tmp/list8")
+echo "$out" | grep -q "exit 255: the ssh connection to the PC was lost after the run started" || fail "255 after start: $out"
+echo "$out" | grep -q "exit 255: the ssh connection to the PC was lost while the run waited for the budget" || fail "255 while waiting: $out"
+echo "$out" | grep -q "exit 255: ssh could not log in to the PC" || fail "255 not logged in: $out"
+
+# ---- no more than PC_BATCH_JOBS runs out at once ----
+printf '#!/bin/bash\necho "+ $$" >> "$FAKE_DIR/conc.log"\nsleep 1\necho "- $$" >> "$FAKE_DIR/conc.log"\n' > "$tmp/conc"
+chmod +x "$tmp/conc"
+: > "$tmp/list7"
+for i in 1 2 3 4 5; do echo "c$i $tmp/conc" >> "$tmp/list7"; done
+rm -f "$tmp/conc.log"
+PC_BATCH_JOBS=2 PC_BATCH_STAGGER=0 $B run "$tmp/list7" > /dev/null || fail "jobs batch failed"
+[ "$(grep -c '^+' "$tmp/conc.log")" = 5 ] || fail "jobs: not all 5 runs ran: $(cat "$tmp/conc.log")"
+awk '$1 == "+" { n++; if (n > m) m = n } $1 == "-" { n-- } END { exit !(m == 2) }' "$tmp/conc.log" ||
+    fail "jobs: more (or fewer) than 2 at once: $(tr '\n' ' ' < "$tmp/conc.log")"
 
 # ---- KTESTS=0 builds its image too ----
 : > "$tmp/calls"
