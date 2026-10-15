@@ -4045,19 +4045,24 @@ static inline status_t voldisks_serve(handle_t ch, const struct voldisks_ops *op
 
 /* ==== protocol `volinstall` (id 75) =========================================
  *
- * volinstall: making a disk Jam OS's (M12.7 stage 2; stage 3's installer
- * adds its methods). Like `volesp`, init's alone: init made this channel when
- * it started volumes (the startup role VOLUMES_SR_INSTALL), holds the client
- * end and gives it to nobody; volumes serves nothing else on it, and
- * nothing of this on any other channel. The shell reaches it through
- * initctl.prepare_disk, after the owner has typed the last four characters
- * of the drive's serial number (and `erase`, for a drive that isn't empty).
+ * volinstall: making a disk Jam OS's (M12.7 stage 2) and the installer's
+ * writable partitions (stage 3). Like `volesp`, init's alone: init made
+ * this channel when it started volumes (the startup role
+ * VOLUMES_SR_INSTALL), holds the client end and gives it to nobody; volumes
+ * serves nothing else on it, and nothing of this on any other channel. The
+ * shell reaches it through initctl.prepare_disk and initctl.install, after
+ * the owner has typed the last four characters of the drive's serial number
+ * (and `erase`, for a drive that isn't empty).
  *
  * Reconnect: ERR_PEER_CLOSED: volumes ended; init has a new channel for the
  * next one, and the request is asked again by its caller. */
 
 #define VOLINSTALL_PROTOCOL_ID 75u
 #define VOLINSTALL_PREPARE          0x004b0001u
+#define VOLINSTALL_OPEN_ESP         0x004b0002u
+#define VOLINSTALL_CLOSE_ESP        0x004b0003u
+#define VOLINSTALL_OPEN_DATA        0x004b0004u
+#define VOLINSTALL_CLOSE_DATA       0x004b0005u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct volinstall_prepare_req {
@@ -4066,6 +4071,42 @@ struct volinstall_prepare_req {
     uint32_t id;
 } __attribute__((packed));
 struct volinstall_prepare_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
+struct volinstall_open_esp_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t id;
+} __attribute__((packed));
+struct volinstall_open_esp_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
+struct volinstall_close_esp_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t id;
+} __attribute__((packed));
+struct volinstall_close_esp_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
+struct volinstall_open_data_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t id;
+} __attribute__((packed));
+struct volinstall_open_data_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
+struct volinstall_close_data_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t id;
+} __attribute__((packed));
+struct volinstall_close_data_rep {
     uint32_t txid;
     int32_t  status;
 } __attribute__((packed));
@@ -4152,6 +4193,184 @@ static inline status_t volinstall_prepare(handle_t ch, uint32_t id, const char *
     return volinstall_prepare_call(ch, false, DEADLINE_NEVER, id, tail, tail_len, word, word_len);
 }
 
+/* volinstall_open_esp_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t volinstall_open_esp_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t id, handle_t *out_fs)
+{
+    _Alignas(8) uint8_t idl_b0[12];
+    _Alignas(8) uint8_t idl_b1[8];
+    struct volinstall_open_esp_req *idl_q = (struct volinstall_open_esp_req *)idl_b0;
+    const struct volinstall_open_esp_rep *idl_r = (const struct volinstall_open_esp_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = VOLINSTALL_OPEN_ESP;
+    idl_q->id = id;
+    handle_t idl_rh[1];
+    if (idl_st == OK)
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 8, &idl_got[0], idl_rh, 1, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st != OK)
+        idl_got[1] = 0;   /* handles arrive only with OK */
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
+    if (idl_st == OK && idl_got[1] != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(idl_handle_is(idl_rh[0], IDL_OBJ_CHANNEL)))
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK)
+        idl_close_all(idl_rh, idl_got[1]);
+    if (idl_st == OK) {
+        if (out_fs)
+            *out_fs = idl_rh[0];
+        else
+            drv_handle_close(idl_rh[0]);
+    }
+    (void)idl_o;
+    return idl_st;
+}
+/* The installer's part (M12.7 stage 3; init's install.c, on its worker
+ * thread): the ESP and then the data partition of a Jam OS disk `id` made
+ * writable for init alone, as `volesp` does for the stick's ESP. The
+ * partition's service stops in order and starts again on a `block` channel
+ * opened read-write; `fs` is a channel to it, init's alone. While it is
+ * writable the partition is no mount at all (every watch is told
+ * `unmounted`), so no namespace holds the writable channel. Called while it
+ * is writable already (by this channel): another handle to the same
+ * channel. Only a Jam OS disk by volumes' own check (mark.c) that is not
+ * the boot disk, whose driver isn't read-only (`diskro`), and whose two
+ * partitions are mounted (read-only, or held by an earlier call). A crash
+ * meanwhile restarts the service writable (still held); a disk pulled ends
+ * it. ERR_NOT_FOUND: no such disk; ERR_ACCESS_DENIED: not a Jam OS disk,
+ * the boot disk, or read-only; ERR_BAD_STATE: its partitions aren't both
+ * mounted and settled, or something else is under way on it; ERR_BUSY: the
+ * partition is mounted read-write for everyone (`mount -w`), not held. */
+static inline status_t volinstall_open_esp_until(handle_t ch, uint64_t deadline_ns, uint32_t id, handle_t *out_fs)
+{
+    return volinstall_open_esp_call(ch, false, deadline_ns, id, out_fs);
+}
+static inline status_t volinstall_open_esp_within(handle_t ch, uint64_t timeout_ns, uint32_t id, handle_t *out_fs)
+{
+    return volinstall_open_esp_call(ch, true, timeout_ns, id, out_fs);
+}
+static inline status_t volinstall_open_esp(handle_t ch, uint32_t id, handle_t *out_fs)
+{
+    return volinstall_open_esp_call(ch, false, DEADLINE_NEVER, id, out_fs);
+}
+
+/* volinstall_close_esp_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t volinstall_close_esp_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t id)
+{
+    struct volinstall_close_esp_req idl_q;
+    struct volinstall_close_esp_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = VOLINSTALL_CLOSE_ESP;
+    idl_q.id = id;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    return idl_st;
+}
+/* Back to read-only: it stops in order (everything on it written, the
+ * volume clean), starts again read-only, and is a mount again (a new
+ * channel). OK at once if it is read-only already. Errors as open_esp's. */
+static inline status_t volinstall_close_esp_until(handle_t ch, uint64_t deadline_ns, uint32_t id)
+{
+    return volinstall_close_esp_call(ch, false, deadline_ns, id);
+}
+static inline status_t volinstall_close_esp_within(handle_t ch, uint64_t timeout_ns, uint32_t id)
+{
+    return volinstall_close_esp_call(ch, true, timeout_ns, id);
+}
+static inline status_t volinstall_close_esp(handle_t ch, uint32_t id)
+{
+    return volinstall_close_esp_call(ch, false, DEADLINE_NEVER, id);
+}
+
+/* volinstall_open_data_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t volinstall_open_data_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t id, handle_t *out_fs)
+{
+    _Alignas(8) uint8_t idl_b0[12];
+    _Alignas(8) uint8_t idl_b1[8];
+    struct volinstall_open_data_req *idl_q = (struct volinstall_open_data_req *)idl_b0;
+    const struct volinstall_open_data_rep *idl_r = (const struct volinstall_open_data_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = VOLINSTALL_OPEN_DATA;
+    idl_q->id = id;
+    handle_t idl_rh[1];
+    if (idl_st == OK)
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 8, &idl_got[0], idl_rh, 1, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st != OK)
+        idl_got[1] = 0;   /* handles arrive only with OK */
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
+    if (idl_st == OK && idl_got[1] != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(idl_handle_is(idl_rh[0], IDL_OBJ_CHANNEL)))
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK)
+        idl_close_all(idl_rh, idl_got[1]);
+    if (idl_st == OK) {
+        if (out_fs)
+            *out_fs = idl_rh[0];
+        else
+            drv_handle_close(idl_rh[0]);
+    }
+    (void)idl_o;
+    return idl_st;
+}
+/* The same for the disk's data partition. */
+static inline status_t volinstall_open_data_until(handle_t ch, uint64_t deadline_ns, uint32_t id, handle_t *out_fs)
+{
+    return volinstall_open_data_call(ch, false, deadline_ns, id, out_fs);
+}
+static inline status_t volinstall_open_data_within(handle_t ch, uint64_t timeout_ns, uint32_t id, handle_t *out_fs)
+{
+    return volinstall_open_data_call(ch, true, timeout_ns, id, out_fs);
+}
+static inline status_t volinstall_open_data(handle_t ch, uint32_t id, handle_t *out_fs)
+{
+    return volinstall_open_data_call(ch, false, DEADLINE_NEVER, id, out_fs);
+}
+
+/* volinstall_close_data_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t volinstall_close_data_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t id)
+{
+    struct volinstall_close_data_req idl_q;
+    struct volinstall_close_data_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = VOLINSTALL_CLOSE_DATA;
+    idl_q.id = id;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    return idl_st;
+}
+static inline status_t volinstall_close_data_until(handle_t ch, uint64_t deadline_ns, uint32_t id)
+{
+    return volinstall_close_data_call(ch, false, deadline_ns, id);
+}
+static inline status_t volinstall_close_data_within(handle_t ch, uint64_t timeout_ns, uint32_t id)
+{
+    return volinstall_close_data_call(ch, true, timeout_ns, id);
+}
+static inline status_t volinstall_close_data(handle_t ch, uint32_t id)
+{
+    return volinstall_close_data_call(ch, false, DEADLINE_NEVER, id);
+}
+
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
 
 /* volinstall_prepare without waiting: the request, with the caller's txid (not 0).
@@ -4196,6 +4415,150 @@ static inline status_t volinstall_prepare_result(const void *idl_rep, struct idl
     return OK;
 }
 
+/* volinstall_open_esp without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then volinstall_open_esp_result. */
+static inline status_t volinstall_open_esp_send(handle_t ch, uint32_t idl_txid, uint32_t id)
+{
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    _Alignas(8) uint8_t idl_b0[12];
+    struct volinstall_open_esp_req *idl_q = (struct volinstall_open_esp_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = VOLINSTALL_OPEN_ESP;
+    idl_q->id = id;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
+}
+
+/* The status and results of a reply to volinstall_open_esp_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t volinstall_open_esp_result(const void *idl_rep, struct idl_msg *idl_m, handle_t *out_fs)
+{
+    const struct volinstall_open_esp_rep *idl_r = (const struct volinstall_open_esp_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(idl_handle_is(idl_m->hs[0], IDL_OBJ_CHANNEL)))
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    if (out_fs)
+        *out_fs = idl_m->hs[0];
+    else
+        drv_handle_close(idl_m->hs[0]);
+    idl_m->nh = 0;
+    return OK;
+}
+
+/* volinstall_close_esp without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then volinstall_close_esp_result. */
+static inline status_t volinstall_close_esp_send(handle_t ch, uint32_t idl_txid, uint32_t id)
+{
+    struct volinstall_close_esp_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = VOLINSTALL_CLOSE_ESP;
+    idl_q.id = id;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to volinstall_close_esp_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t volinstall_close_esp_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct volinstall_close_esp_rep *idl_r = (const struct volinstall_close_esp_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
+/* volinstall_open_data without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then volinstall_open_data_result. */
+static inline status_t volinstall_open_data_send(handle_t ch, uint32_t idl_txid, uint32_t id)
+{
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    _Alignas(8) uint8_t idl_b0[12];
+    struct volinstall_open_data_req *idl_q = (struct volinstall_open_data_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = VOLINSTALL_OPEN_DATA;
+    idl_q->id = id;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
+}
+
+/* The status and results of a reply to volinstall_open_data_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t volinstall_open_data_result(const void *idl_rep, struct idl_msg *idl_m, handle_t *out_fs)
+{
+    const struct volinstall_open_data_rep *idl_r = (const struct volinstall_open_data_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(idl_handle_is(idl_m->hs[0], IDL_OBJ_CHANNEL)))
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    if (out_fs)
+        *out_fs = idl_m->hs[0];
+    else
+        drv_handle_close(idl_m->hs[0]);
+    idl_m->nh = 0;
+    return OK;
+}
+
+/* volinstall_close_data without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then volinstall_close_data_result. */
+static inline status_t volinstall_close_data_send(handle_t ch, uint32_t idl_txid, uint32_t id)
+{
+    struct volinstall_close_data_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = VOLINSTALL_CLOSE_DATA;
+    idl_q.id = id;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to volinstall_close_data_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t volinstall_close_data_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct volinstall_close_data_rep *idl_r = (const struct volinstall_close_data_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -4204,6 +4567,10 @@ static inline status_t volinstall_prepare_result(const void *idl_rep, struct idl
  * with volinstall_reply_<method> (now, or later from anywhere). */
 struct volinstall_ops {
     status_t (*prepare)(void *ctx, struct idl_txn idl_txn, uint32_t id, const char *tail, uint32_t tail_len, const char *word, uint32_t word_len);
+    status_t (*open_esp)(void *ctx, struct idl_txn idl_txn, uint32_t id, handle_t *out_fs);
+    status_t (*close_esp)(void *ctx, struct idl_txn idl_txn, uint32_t id);
+    status_t (*open_data)(void *ctx, struct idl_txn idl_txn, uint32_t id, handle_t *out_fs);
+    status_t (*close_data)(void *ctx, struct idl_txn idl_txn, uint32_t id);
 };
 
 /* Answer the volinstall.prepare request kept in txn: idl_st and, if it is OK, the
@@ -4223,6 +4590,84 @@ static inline status_t volinstall_reply_prepare(struct idl_txn idl_txn, status_t
     }
     status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
     return idl_ws;
+}
+
+/* Answer the volinstall.open_esp request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t volinstall_reply_open_esp(struct idl_txn idl_txn, status_t idl_st, handle_t fs)
+{
+    handle_t idl_hs[1] = { fs };
+    _Alignas(8) uint8_t idl_b0[8];
+    struct volinstall_open_esp_rep *idl_r = (struct volinstall_open_esp_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(fs != HANDLE_INVALID))
+        idl_st = ERR_INTERNAL;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        if (idl_hs[0] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[0]);
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, idl_st == OK ? idl_hs : NULL, idl_st == OK ? 1 : 0);
+    return idl_ws;
+}
+
+/* Answer the volinstall.close_esp request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t volinstall_reply_close_esp(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct volinstall_close_esp_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the volinstall.open_data request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t volinstall_reply_open_data(struct idl_txn idl_txn, status_t idl_st, handle_t fs)
+{
+    handle_t idl_hs[1] = { fs };
+    _Alignas(8) uint8_t idl_b0[8];
+    struct volinstall_open_data_rep *idl_r = (struct volinstall_open_data_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(fs != HANDLE_INVALID))
+        idl_st = ERR_INTERNAL;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        if (idl_hs[0] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[0]);
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, idl_st == OK ? idl_hs : NULL, idl_st == OK ? 1 : 0);
+    return idl_ws;
+}
+
+/* Answer the volinstall.close_data request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t volinstall_reply_close_data(struct idl_txn idl_txn, status_t idl_st)
+{
+    struct volinstall_close_data_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
 }
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
@@ -4274,6 +4719,106 @@ static inline uint32_t volinstall_dispatch_on(handle_t ch, const struct volinsta
         struct idl_txn idl_txn = { ch, idl_h->txid };
         idl_st = ops->prepare(ctx, idl_txn, idl_q->id, (const char *)idl_p0, idl_l0, (const char *)idl_p1, idl_l1);
         /* IDL_LATER: the handler answers with volinstall_reply_prepare. */
+        if (idl_st == IDL_LATER)
+            return 0;
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        return sizeof(*idl_r);
+    }
+    case VOLINSTALL_OPEN_ESP: {
+        const struct volinstall_open_esp_req *idl_q = (const struct volinstall_open_esp_req *)req;
+        struct volinstall_open_esp_rep *idl_r = (struct volinstall_open_esp_rep *)rep;
+        handle_t out_fs = HANDLE_INVALID;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->open_esp) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        struct idl_txn idl_txn = { ch, idl_h->txid };
+        status_t idl_st = ops->open_esp(ctx, idl_txn, idl_q->id, &out_fs);
+        /* IDL_LATER: the handler answers with volinstall_reply_open_esp. */
+        if (idl_st == IDL_LATER) {
+            if (out_fs != HANDLE_INVALID)
+                drv_handle_close(out_fs);
+            return 0;
+        }
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && !(out_fs != HANDLE_INVALID))
+            idl_h->status = ERR_INTERNAL;   /* a handle result left unset */
+        if (idl_h->status != OK) {
+            if (out_fs != HANDLE_INVALID)
+                drv_handle_close(out_fs);
+            return sizeof(*idl_h);
+        }
+        rhs[0] = out_fs;
+        *rhn = 1;
+        return sizeof(*idl_r);
+    }
+    case VOLINSTALL_CLOSE_ESP: {
+        const struct volinstall_close_esp_req *idl_q = (const struct volinstall_close_esp_req *)req;
+        struct volinstall_close_esp_rep *idl_r = (struct volinstall_close_esp_rep *)rep;
+        (void)idl_r;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->close_esp) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        struct idl_txn idl_txn = { ch, idl_h->txid };
+        status_t idl_st = ops->close_esp(ctx, idl_txn, idl_q->id);
+        /* IDL_LATER: the handler answers with volinstall_reply_close_esp. */
+        if (idl_st == IDL_LATER)
+            return 0;
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        return sizeof(*idl_r);
+    }
+    case VOLINSTALL_OPEN_DATA: {
+        const struct volinstall_open_data_req *idl_q = (const struct volinstall_open_data_req *)req;
+        struct volinstall_open_data_rep *idl_r = (struct volinstall_open_data_rep *)rep;
+        handle_t out_fs = HANDLE_INVALID;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->open_data) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        struct idl_txn idl_txn = { ch, idl_h->txid };
+        status_t idl_st = ops->open_data(ctx, idl_txn, idl_q->id, &out_fs);
+        /* IDL_LATER: the handler answers with volinstall_reply_open_data. */
+        if (idl_st == IDL_LATER) {
+            if (out_fs != HANDLE_INVALID)
+                drv_handle_close(out_fs);
+            return 0;
+        }
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && !(out_fs != HANDLE_INVALID))
+            idl_h->status = ERR_INTERNAL;   /* a handle result left unset */
+        if (idl_h->status != OK) {
+            if (out_fs != HANDLE_INVALID)
+                drv_handle_close(out_fs);
+            return sizeof(*idl_h);
+        }
+        rhs[0] = out_fs;
+        *rhn = 1;
+        return sizeof(*idl_r);
+    }
+    case VOLINSTALL_CLOSE_DATA: {
+        const struct volinstall_close_data_req *idl_q = (const struct volinstall_close_data_req *)req;
+        struct volinstall_close_data_rep *idl_r = (struct volinstall_close_data_rep *)rep;
+        (void)idl_r;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->close_data) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        struct idl_txn idl_txn = { ch, idl_h->txid };
+        status_t idl_st = ops->close_data(ctx, idl_txn, idl_q->id);
+        /* IDL_LATER: the handler answers with volinstall_reply_close_data. */
         if (idl_st == IDL_LATER)
             return 0;
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;

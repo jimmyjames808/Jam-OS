@@ -40,6 +40,7 @@
 #define INITCTL_LAUNCH           0x0012000au
 #define INITCTL_DISKS            0x0012000bu
 #define INITCTL_PREPARE_DISK     0x0012000cu
+#define INITCTL_INSTALL          0x0012000du
 
 /* Constants (the .idl's `const` lines). */
 /* The most bytes of kill's name, mount's path, terminal's command and
@@ -152,6 +153,15 @@ struct initctl_prepare_disk_req {
     uint32_t id;
 } __attribute__((packed));
 struct initctl_prepare_disk_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
+struct initctl_install_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t id;
+} __attribute__((packed));
+struct initctl_install_rep {
     uint32_t txid;
     int32_t  status;
 } __attribute__((packed));
@@ -715,6 +725,64 @@ static inline status_t initctl_prepare_disk(handle_t ch, uint32_t id, const char
     return initctl_prepare_disk_call(ch, false, DEADLINE_NEVER, id, tail, tail_len, word, word_len);
 }
 
+/* initctl_install_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t initctl_install_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t id, const char *tail, uint32_t tail_len, const char *word, uint32_t word_len)
+{
+    _Alignas(8) uint8_t idl_b0[44];
+    _Alignas(8) uint8_t idl_b1[8];
+    struct initctl_install_req *idl_q = (struct initctl_install_req *)idl_b0;
+    const struct initctl_install_rep *idl_r = (const struct initctl_install_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = INITCTL_INSTALL;
+    idl_q->id = id;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, tail, tail_len, 20, 1) ||
+                             !idl_str_ok(tail, tail_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, word, word_len, 8, 1) ||
+                             !idl_str_ok(word, word_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK)
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 8, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
+    (void)idl_o;
+    return idl_st;
+}
+/* Install Jam OS on disk `id` (voldisks' ids, `disks`' nvme1): the stage-3
+ * installer (user/services/init/install.c, on a worker thread of init's).
+ * A disk that isn't a Jam OS disk is made one first, as prepare_disk does
+ * (an empty NVMe drive, one a prepare was cut short on, or one the owner
+ * confirmed erasing: `tail` and `word` are prepare_disk's, and aren't looked
+ * at for a Jam OS disk). Then the build this boot runs on (the boot disk's
+ * kernel and boot image, the same Limine as its loader and its boot menu)
+ * is written to the disk's ESP, each file read back and compared, the boot
+ * menu last; the boot disk's /data/etc is copied to the new /data/etc when
+ * the disk has none. A Jam OS disk installed on again keeps its /data; its
+ * ESP's files are replaced. Answered later, when it is all done (ERR_TIMED_OUT
+ * after 20 minutes). The shell's channel only (ERR_ACCESS_DENIED on the
+ * consoles' and the compositor's). Errors are volinstall.prepare's and
+ * open_esp's, and ERR_BAD_STATE while an `update` or another install is
+ * under way, ERR_NOT_FOUND without the boot disk's /esp files, ERR_IO when a
+ * write or a read-back fails (the disk then has no boot menu, so the
+ * firmware can't start half a build: `install` again finishes it). */
+static inline status_t initctl_install_until(handle_t ch, uint64_t deadline_ns, uint32_t id, const char *tail, uint32_t tail_len, const char *word, uint32_t word_len)
+{
+    return initctl_install_call(ch, false, deadline_ns, id, tail, tail_len, word, word_len);
+}
+static inline status_t initctl_install_within(handle_t ch, uint64_t timeout_ns, uint32_t id, const char *tail, uint32_t tail_len, const char *word, uint32_t word_len)
+{
+    return initctl_install_call(ch, true, timeout_ns, id, tail, tail_len, word, word_len);
+}
+static inline status_t initctl_install(handle_t ch, uint32_t id, const char *tail, uint32_t tail_len, const char *word, uint32_t word_len)
+{
+    return initctl_install_call(ch, false, DEADLINE_NEVER, id, tail, tail_len, word, word_len);
+}
+
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
 
 /* initctl_kill without waiting: the request, with the caller's txid (not 0).
@@ -1143,6 +1211,48 @@ static inline status_t initctl_prepare_disk_result(const void *idl_rep, struct i
     return OK;
 }
 
+/* initctl_install without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then initctl_install_result. */
+static inline status_t initctl_install_send(handle_t ch, uint32_t idl_txid, uint32_t id, const char *tail, uint32_t tail_len, const char *word, uint32_t word_len)
+{
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    _Alignas(8) uint8_t idl_b0[44];
+    struct initctl_install_req *idl_q = (struct initctl_install_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = INITCTL_INSTALL;
+    idl_q->id = id;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, tail, tail_len, 20, 1) ||
+                             !idl_str_ok(tail, tail_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, word, word_len, 8, 1) ||
+                             !idl_str_ok(word, word_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
+}
+
+/* The status and results of a reply to initctl_install_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t initctl_install_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct initctl_install_rep *idl_r = (const struct initctl_install_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -1162,6 +1272,7 @@ struct initctl_ops {
     status_t (*launch)(void *ctx, const char *app, uint32_t app_len, uint64_t *out_koid);
     status_t (*disks)(void *ctx, handle_t *out_list);
     status_t (*prepare_disk)(void *ctx, struct idl_txn idl_txn, uint32_t id, const char *tail, uint32_t tail_len, const char *word, uint32_t word_len);
+    status_t (*install)(void *ctx, struct idl_txn idl_txn, uint32_t id, const char *tail, uint32_t tail_len, const char *word, uint32_t word_len);
 };
 
 /* Answer the initctl.kill request kept in txn: idl_st and, if it is OK, the
@@ -1374,6 +1485,25 @@ static inline status_t initctl_reply_prepare_disk(struct idl_txn idl_txn, status
 {
     _Alignas(8) uint8_t idl_b0[8];
     struct initctl_prepare_disk_rep *idl_r = (struct initctl_prepare_disk_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
+}
+
+/* Answer the initctl.install request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t initctl_reply_install(struct idl_txn idl_txn, status_t idl_st)
+{
+    _Alignas(8) uint8_t idl_b0[8];
+    struct initctl_install_rep *idl_r = (struct initctl_install_rep *)idl_b0;
     uint32_t idl_rn = sizeof(*idl_r);
     if (idl_st > 0)
         idl_st = ERR_INTERNAL;
@@ -1684,6 +1814,42 @@ static inline uint32_t initctl_dispatch_on(handle_t ch, const struct initctl_ops
         struct idl_txn idl_txn = { ch, idl_h->txid };
         idl_st = ops->prepare_disk(ctx, idl_txn, idl_q->id, (const char *)idl_p0, idl_l0, (const char *)idl_p1, idl_l1);
         /* IDL_LATER: the handler answers with initctl_reply_prepare_disk. */
+        if (idl_st == IDL_LATER)
+            return 0;
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        return sizeof(*idl_r);
+    }
+    case INITCTL_INSTALL: {
+        const struct initctl_install_req *idl_q = (const struct initctl_install_req *)req;
+        struct initctl_install_rep *idl_r = (struct initctl_install_rep *)rep;
+        (void)idl_r;
+        uint32_t idl_o = sizeof(*idl_q);
+        status_t idl_st = n < sizeof(*idl_q) ? ERR_INVALID_ARGS : OK;
+        const void *idl_p0 = NULL;
+        uint32_t idl_l0 = 0;
+        const void *idl_p1 = NULL;
+        uint32_t idl_l1 = 0;
+        if (idl_st == OK && !idl_get(req, n, &idl_o, 20, 1, &idl_p0, &idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_get(req, n, &idl_o, 8, 1, &idl_p1, &idl_l1))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_str_ok((const char *)idl_p1, idl_l1))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_o != n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st != OK)
+            return sizeof(*idl_h);
+        if (!ops->install) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        struct idl_txn idl_txn = { ch, idl_h->txid };
+        idl_st = ops->install(ctx, idl_txn, idl_q->id, (const char *)idl_p0, idl_l0, (const char *)idl_p1, idl_l1);
+        /* IDL_LATER: the handler answers with initctl_reply_install. */
         if (idl_st == IDL_LATER)
             return 0;
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
