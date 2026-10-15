@@ -4,9 +4,12 @@
 # is never stale) and the command run there, with KVM; the output
 # directories named in its arguments (those under build/) come back, but
 # stick images, and the command's exit status is
-# this script's. Without JAMOS_REMOTE, or when it doesn't answer in 5 s (the
-# PC is off, or booted into Jam OS), the command runs here as it would have,
-# unless JAMOS_REMOTE_ONLY=1: then it isn't run (exit 3).
+# this script's. Without JAMOS_REMOTE, or when it doesn't answer (the PC is
+# off, or booted into Jam OS: 5 s a try, 3 tries), the command runs here as it
+# would have, unless JAMOS_REMOTE_ONLY=1: then it isn't run (exit 3). Every
+# ssh and rsync goes through tools/ssh-retry.sh: a connection that the PC's
+# sshd cut during the login (many runs starting at once) is tried again, a
+# command that has started never is.
 #
 #   tools/remote-test.sh tools/qemu-test.sh build/test init init
 #   QEMU_SMP=8 tools/remote-test.sh tools/qemu-test.sh build/test kt8 ktest
@@ -56,6 +59,9 @@ if [ "$1" = --prepare ]; then
     prepare=1
 fi
 top=$(git rev-parse --show-toplevel 2>/dev/null) || top=$(pwd)
+# Every ssh and rsync below goes through tools/ssh-retry.sh: a connection the
+# PC's sshd cut during the login (many runs starting at once) is tried again.
+sshr=$(cd "$(dirname "$0")" && pwd)/ssh-retry.sh
 cd "$top" || exit 2
 
 # What the command takes of the machine: "<virtual CPUs> <MB of memory>".
@@ -110,7 +116,11 @@ fi
 cost=$(cost_of "$@")
 host=${JAMOS_REMOTE:-}
 ssh_opts=(-o BatchMode=yes -o ConnectTimeout=5)
-if [ -z "$host" ] || ! ssh "${ssh_opts[@]}" "$host" "wsl -e true" < /dev/null > /dev/null 2>&1; then
+# The session that runs the command lives for as long as it waits for the
+# budget and runs (hours, in a big batch): keepalives stop an idle connection
+# from being dropped by a VPN or NAT on the way, and end a dead one in ~3 min.
+ssh_main_opts=("${ssh_opts[@]}" -o ServerAliveInterval=20 -o ServerAliveCountMax=9)
+if [ -z "$host" ] || ! "$sshr" "${ssh_opts[@]}" "$host" "wsl -e true" < /dev/null > /dev/null 2>&1; then
     if [ "${JAMOS_REMOTE_ONLY:-0}" = 1 ]; then   # the tests are the other machine's alone
         echo "remote-test: ${host:-no JAMOS_REMOTE} doesn't answer, and JAMOS_REMOTE_ONLY=1: not run" >&2
         exit 3
@@ -131,17 +141,24 @@ else
 fi
 mkdir -p build
 if [ "$nosync" != 1 ]; then
-    ssh "${ssh_opts[@]}" "$host" "wsl --cd ~ mkdir -p $dir" < /dev/null
+    "$sshr" "${ssh_opts[@]}" "$host" "wsl --cd ~ mkdir -p $dir" < /dev/null
     # Several runs from one checkout copy it one at a time (lockf, the Mac's
     # flock): two rsyncs into one directory at once failed.
     lock=()
     command -v lockf > /dev/null && lock=(lockf -k build/.remote-sync.lock)
     ${lock[@]+"${lock[@]}"} rsync -az --delete --exclude .git --exclude /build --exclude /.claude --exclude test.bin \
         --exclude compile_commands.json --rsync-path="wsl --cd ~ rsync" \
-        -e "ssh ${ssh_opts[*]}" ./ "$host:$dir/" ||
+        -e "$sshr ${ssh_opts[*]}" ./ "$host:$dir/" ||
         { echo "remote-test: copying to $host failed" >&2; exit 2; }
 fi
-{
+# What the PC runs: written to its bash on stdin. runid names this call; a
+# repeat of the session (below) first stops what the lost one left there.
+runid=$$-$(date +%s)-$RANDOM
+remote_script() {
+    echo "mkdir -p ~/work/.runs; find ~/work/.runs -type f -mtime +2 -delete 2> /dev/null"
+    echo "old=\$(cat ~/work/.runs/$runid 2> /dev/null)"
+    echo 'case $(ps -o comm= -p "${old:-0}" 2> /dev/null) in bash | python3) kill $old 2> /dev/null; sleep 1 ;; esac'
+    echo "echo \$\$ > ~/work/.runs/$runid"
     echo "set -u; cd ~/$dir 2> /dev/null && [ -f Makefile ] ||"
     echo "    { echo 'remote-test: nothing copied to ~/$dir yet (JAMOS_REMOTE_NOSYNC=1 needs an earlier copy)' >&2; exit 2; }"
     echo 'export PATH=$HOME/cross/bin:$HOME/qemu-10/bin:$HOME/mtools/bin:/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8'
@@ -175,14 +192,41 @@ fi
     printf 'set -- '; printf '%q ' "$@"; echo
     # The command, when its CPUs and memory fit in the machine's budget (above).
     echo "exec python3 tools/remote-slots.py $cost \"\$@\" < /dev/null"
-} | ssh "${ssh_opts[@]}" "$host" "wsl -e bash -s"
-rc=$?
+}
+# The session, with its stderr also kept in a file (through a fifo, so it is
+# still live). If the connection is lost after the login while the command is
+# still waiting for the budget (no "running with" line yet: a VPN drop in the
+# hours of a big batch's queue), nothing has run: start the session again, up
+# to JAMOS_REMOTE_REQUEUE (3) times. Once the command has started a lost
+# connection is the run's failure (exit 255), never a second run.
+rt_tmp=$(mktemp -d "${TMPDIR:-/tmp}/remote-test.XXXXXX") || exit 2
+trap 'rm -rf "$rt_tmp"' EXIT
+attempt=0
+while :; do
+    attempt=$((attempt + 1))
+    rm -f "$rt_tmp/err"
+    mkfifo "$rt_tmp/err"
+    tee "$rt_tmp/errlog" < "$rt_tmp/err" >&2 &
+    teepid=$!
+    remote_script "$@" | "$sshr" "${ssh_main_opts[@]}" "$host" "wsl -e bash -s" 2> "$rt_tmp/err"
+    rc=$?
+    wait "$teepid" 2> /dev/null
+    if [ $rc = 255 ] && [ $attempt -le "${JAMOS_REMOTE_REQUEUE:-3}" ] && grep -q '^ssh-retry: connection lost' "$rt_tmp/errlog" &&
+        ! grep -q '^remote-test: running with' "$rt_tmp/errlog"; then
+        pause=${JAMOS_REMOTE_REQUEUE_WAIT:-5}
+        pause=$((pause + RANDOM % (pause * 2 + 1)))   # 5 to 15 s: the PC drops the lost session meanwhile
+        echo "remote-test: the connection to $host was lost before the command started: again in $pause s (try $((attempt + 1)))" >&2
+        sleep "$pause"
+        continue
+    fi
+    break
+done
 for a in "$@"; do
     case $a in
     build/?*)
         a=${a%/}
         mkdir -p "$a"
-        rsync -az --exclude '*.img' --rsync-path="wsl --cd ~ rsync" -e "ssh ${ssh_opts[*]}" \
+        rsync -az --exclude '*.img' --rsync-path="wsl --cd ~ rsync" -e "$sshr ${ssh_opts[*]}" \
             "$host:$dir/$a/" "$a/" 2> /dev/null ||
             echo "remote-test: nothing came back for $a" >&2 ;;
     esac
