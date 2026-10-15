@@ -1,0 +1,76 @@
+Description: base's close() wrapper (the FD-ownership check of ScopedFD) without dlsym on Jam OS
+ On Linux base defines close() itself and finds libc's with
+ dlsym(RTLD_NEXT, "close"), which needs a dynamic loader. Jam OS links
+ every program statically and has none, so the link failed (undefined
+ dlsym). The check is kept rather than turned off: on Jam OS the wrapper
+ is named __wrap_close and every program that links base is linked with
+ --wrap=close (an all-dependent config of base), so each call of close()
+ in the program, libc's own and Rust's included, goes through the check
+ as it does on Linux, and __real_close is musl's close(). This is the
+ general way to wrap a libc function in a static program, needs nothing of
+ the libc, and keeps base_unittests' ScopedFD ownership tests meaningful.
+Forwarded: not-needed (Jam OS's: static programs only)
+---
+--- a/base/BUILD.gn
++++ b/base/BUILD.gn
+@@ -189,6 +189,13 @@ config("asan_raw_ptr_service_v2_config") {
+   cflags = [ "-fsanitize-recover=address" ]
+ }
+ 
++# Jam OS: every program that links base links its close() wrapper
++# (files/scoped_file_linux.cc) as __wrap_close, which a static program
++# reaches only through the linker's --wrap.
++config("jamos_wrap_close") {
++  ldflags = [ "-Wl,--wrap=close" ]
++}
++
+ # `asan_raw_ptr_service` is built as a part of `base` without
+ # `-fsanitize=address` to avoid performance regressions.
+ source_set("asan_raw_ptr_service") {
+@@ -2399,6 +2406,9 @@ component("base") {
+ 
+     configs += linux_configs
+     all_dependent_configs += linux_configs
++    if (is_jamos) {
++      all_dependent_configs += [ ":jamos_wrap_close" ]
++    }
+     sources += [
+       "process/set_process_title_linux.cc",
+       "process/set_process_title_linux.h",
+--- a/base/files/scoped_file_linux.cc
++++ b/base/files/scoped_file_linux.cc
+@@ -85,9 +85,21 @@ bool IsFDOwned(int fd) {
+ #if !defined(COMPONENT_BUILD)
+ using LibcCloseFuncPtr = int (*)(int);
+ 
++#if defined(__jamos__)
++// Jam OS links every program statically and has no dynamic loader, so there
++// is no RTLD_NEXT to find libc's close() with. The wrapper is __wrap_close
++// there instead: base gives every program that links it the linker's
++// --wrap=close (base/BUILD.gn's jamos_wrap_close), which sends each call of
++// close() in the program, libc's and Rust's own included, to __wrap_close,
++// and makes __real_close libc's close().
++extern "C" int __real_close(int fd);
++#endif
++
+ // Load the libc close symbol to forward to from the close wrapper.
+ LibcCloseFuncPtr LoadCloseSymbol() {
+-#if defined(THREAD_SANITIZER)
++#if defined(__jamos__)
++  return &__real_close;
++#elif defined(THREAD_SANITIZER)
+   // If TSAN is enabled use __interceptor___close first to make sure the TSAN
+   // wrapper gets called.
+   return reinterpret_cast<LibcCloseFuncPtr>(
+@@ -100,7 +112,11 @@ LibcCloseFuncPtr LoadCloseSymbol() {
+ extern "C" {
+ 
+ NO_SANITIZE("cfi-icall")
++#if defined(__jamos__)
++__attribute__((visibility("default"), noinline)) int __wrap_close(int fd) {
++#else
+ __attribute__((visibility("default"), noinline)) int close(int fd) {
++#endif
+   static LibcCloseFuncPtr libc_close = LoadCloseSymbol();
+   if (base::IsFDOwned(fd) && g_is_ownership_enforced) {
+     CrashOnFdOwnershipViolation();
