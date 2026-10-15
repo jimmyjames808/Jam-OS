@@ -32,10 +32,13 @@ tree        kept
 needs       llvm-runtimes
 # Wayland's (Chromium's own copy of libwayland links libffi), and what
 # Chromium takes from the system on Linux: the keyboard's (pkg-config) and
-# expat (fontconfig's and Skia's XML).
+# expat (fontconfig's and Skia's XML). zlib: FFmpeg's build links the
+# system's libz on every POSIX system but Android and Fuchsia (Chromium's
+# own zlib, which everything else uses, has its symbols renamed).
 needs       libffi
 needs       xkbcommon
 needs       expat
+needs       zlib
 host        python3 ninja
 program     lib/chromium/base_unittests
 program     lib/chromium/headless_shell
