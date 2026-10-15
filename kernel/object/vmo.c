@@ -1779,8 +1779,9 @@ static status_t share_leaf_locked(struct vmo *p, struct vmo *c, uint64_t idx, ui
 }
 
 /* p's "vmo resize" held (its size can't change): share its pages [offp,
- * offp + c's size) into c, a leaf at a time, and take the write bit off
- * p's entries for them; one shootdown at the end. Meanwhile p's
+ * offp + c's size) into c, a leaf at a time (a run of missing tables in
+ * one look), and take the write bit off p's entries for them; one
+ * shootdown at the end. Meanwhile p's
  * `protecting` makes a separation in p wait. ERR_BAD_STATE if a pin or
  * a kernel mapping covers a page there. */
 static status_t share_pages(struct vmo *p, struct vmo *c, uint64_t offp)
@@ -1799,7 +1800,7 @@ static status_t share_pages(struct vmo *p, struct vmo *c, uint64_t offp)
         uint64_t n = 0, next;
         f = vlock(p);
         spin_lock_nested(&c->base.lock, 1);   /* parent, then the new child: nobody else has it */
-        if (!mid_find_locked(p, idx, &next))
+        if (!leaf_find_locked(p, idx, &next))   /* past the missing tables, as decommit */
             stop = next < end ? next : end;
         else if (ranges_overlap_locked(p, idx, stop))
             st = ERR_BAD_STATE;   /* a device or the kernel may write these behind the sharing */

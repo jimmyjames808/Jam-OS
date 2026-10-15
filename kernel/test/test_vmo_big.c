@@ -7,7 +7,8 @@
  * shrink and destroy give the tables back too; a walk over an untouched TiB
  * is a few looks; a job at its limit is refused at the touch, by vmo_write
  * and by a fault; copy-on-write children of a huge parent share across
- * every level; and the kinds that stay within 64 GiB (kept, pager, a pager
+ * every level, and one of a sparse parent walks only the tables that
+ * exist; and the kinds that stay within 64 GiB (kept, pager, a pager
  * VMO's child, physical) are refused past it.
  *
  * Page counts on the whole machine (free pages) are KT_GLOBAL checks; the
@@ -445,6 +446,38 @@ KTEST(vmo_big_child)
     KT_EQ(pages_of(j), 1 + 2 + 1 + 4);
     put(c3);
     put(small);
+    kt_job_is_empty(j);
+    job_unref(j);
+    put(p);
+}
+
+/* A child of a sparse reservation (V8's cage: a page in each GiB of a TiB)
+ * walks only the tables that exist: one look past a run of missing leaves,
+ * as decommit does, not a lock hold per 2 MiB under each mid table (512 K
+ * of them here: CR1 finding 5). Timed, on an idle machine only. */
+KTEST(vmo_big_child_sparse)
+{
+    struct vmo *p;
+    KT_EQ(vmo_create(TIB, 0, &p), OK);
+    for (uint64_t g = 0; g < TIB / GIB; g++)
+        KT_EQ(poke(p, g * (GIB / PG), 0x5000 + g), OK);
+    struct job *j = kt_fresh_job();
+    struct vmo *c;
+    uint64_t t0 = uptime_ns();
+    KT_EQ(vmo_create_child(j, p, SNAP, 0, TIB, &c), OK);
+    uint64_t ns = uptime_ns() - t0;
+    kprintf("vmo_big: a 1 TiB child of a page in each GiB made in %lu us\n", (uint64_t)(ns / NS_PER_US));
+    KT_EQ(vmo_committed(c), (TIB / GIB) * PG);
+    /* each GiB's page, mid and leaf; the top table and uppers 0 and 1 */
+    KT_EQ(pages_of(j), 3 * (TIB / GIB) + 3);
+    KT_EQ(peek(c, 0), 0x5000);
+    KT_EQ(peek(c, 700 * (GIB / PG)), 0x5000 + 700);
+    KT_EQ(peek(c, TIB / PG - GIB / PG), 0x5000 + TIB / GIB - 1);
+    KT_EQ(peek(c, 700 * (GIB / PG) + 1), 0);
+    /* 2,048 lock holds and the child's 3,075 tables and pages: a few ms;
+     * a hold per 2 MiB: half a million more. */
+    KT_IDLE_ASSERT(ns < 25 * NS_PER_MS);
+    put(c);
     kt_job_is_empty(j);
     job_unref(j);
     put(p);
