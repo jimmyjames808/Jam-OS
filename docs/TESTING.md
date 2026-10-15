@@ -1926,7 +1926,8 @@ accepts 150 connections to an abstract name of its own through
 fuzz makes (our sends of random bytes and descriptors of every kind, taken
 off a raw channel and mutated: bytes changed, handles dropped, added or
 swapped for any kind of object, cut short, junk between) and close it.
-The receiver reads each to its end with random room and flags: no
+The receiver reads every one (as many as it is told) to its end with
+random room and flags: no
 `recvmsg` may take over a second, no `poll` wait 10 s for an end already
 closed, and after the last round its job holds the handles it held after
 the first and its lowest free descriptor is the same; it must not be

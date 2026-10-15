@@ -21,7 +21,8 @@
  * always MSG_DONTWAIT), waiting in poll between reads. It fails (its exit
  * code, and a line in the kernel log) if a recvmsg takes more than
  * RECV_SLOW, if a poll waits PEER_HANG for an end that is already closed,
- * or if, after the last round, its job holds other handles than after the
+ * if it read another number of ends than we sent, or if, after the last
+ * round, its job holds other handles than after the
  * first (scm_job_handles) or its lowest free descriptor moved. We wait
  * PEER_WAIT for it; its being killed is a crash. The seed is fixed and
  * printed: a failing run is repeated by its seed (PEER_SEED).
@@ -56,7 +57,7 @@
 #define PEER_WAIT   (60 * NS_PER_S)          /* the child, all of it */
 #define CONN_WAIT   (10 * NS_PER_S)          /* a connect, while the child's backlog is full */
 
-enum { PEER_OK, PEER_SLOW, PEER_HUNG, PEER_LEAK, PEER_FD, PEER_SETUP };
+enum { PEER_OK, PEER_SLOW, PEER_HUNG, PEER_LEAK, PEER_FD, PEER_FEW, PEER_SETUP };
 
 static const char *const verdicts[] = {
     [PEER_OK] = "ok",
@@ -64,6 +65,7 @@ static const char *const verdicts[] = {
     [PEER_HUNG] = "a closed end never ended",
     [PEER_LEAK] = "its job kept handles",
     [PEER_FD] = "its lowest free descriptor moved",
+    [PEER_FEW] = "didn't read every round",
     [PEER_SETUP] = "it couldn't start its side",
 };
 
@@ -86,14 +88,16 @@ static void spoil_into(handle_t to, const int *pool, unsigned npool, bool seq, u
 }
 
 /* The child in mode ("pair" or "unix"; name: the abstract name it listens
- * on) in a job of its own, its descriptor 3 a socketpair end whose other
- * end is *ctl. Its process, or HANDLE_INVALID. */
-static handle_t spawn_receiver(const char *mode, const char *name, int *ctl, handle_t *job)
+ * on), to read `rounds` ends, in a job of its own, its descriptor 3 a
+ * socketpair end whose other end is *ctl. Its process, or HANDLE_INVALID. */
+static handle_t spawn_receiver(const char *mode, const char *name, int rounds, int *ctl,
+                               handle_t *job)
 {
     static const char *const ns[] = { "/svc/unix", NULL };
-    char seed[24];
+    char seed[24], count[16];
     snprintf(seed, sizeof(seed), "%llx", (unsigned long long)scm_seed);
-    const char *const argv[] = { "posixtest", "--child-peer", mode, seed, name };
+    snprintf(count, sizeof(count), "%d", rounds);
+    const char *const argv[] = { "posixtest", "--child-peer", mode, seed, name, count };
     handle_t mine, theirs, proc = HANDLE_INVALID;
     *ctl = -1;
     *job = HANDLE_INVALID;
@@ -105,7 +109,7 @@ static handle_t spawn_receiver(const char *mode, const char *name, int *ctl, han
     const struct posixfds_out ho = { .state = { .umask = 022 }, .cwd = "/", .fds = &d, .nfds = 1 };
     status_t st = jam_job_create(startup_handle(SR_JOB), 0, job);
     if (st == OK) {
-        struct spawn_args a = { .path = "bin/posixtest", .argc = 5, .argv = argv, .job = *job,
+        struct spawn_args a = { .path = "bin/posixtest", .argc = 6, .argv = argv, .job = *job,
                                 .ns = ns, .handover = &ho };
         st = spawn(&a, &proc);   /* theirs goes with the hand-over */
     } else {
@@ -141,8 +145,9 @@ static void say_verdict(const char *what, int v)
 static void check_pairs(const int *pool, unsigned npool, uint8_t *b)
 {
     int ctl;
-    handle_t job, proc = spawn_receiver("pair", "-", &ctl, &job);
-    for (int i = 0; proc && i < PAIR_ROUNDS; i++) {
+    handle_t job, proc = spawn_receiver("pair", "-", PAIR_ROUNDS, &ctl, &job);
+    int i = 0;
+    for (; proc && i < PAIR_ROUNDS; i++) {
         bool seq = scm_rnd(4) == 0;
         handle_t raw, end;
         if (jam_channel_create(&raw, &end) != OK)
@@ -160,6 +165,7 @@ static void check_pairs(const int *pool, unsigned npool, uint8_t *b)
     if (ctl >= 0)
         close(ctl);   /* the last round: the receiver counts and ends */
     say_verdict("socketpairs", receiver_done(proc, job));
+    CHECK(i == PAIR_ROUNDS);
 }
 
 /* Our raw end of a connection to the abstract name, through the broker's
@@ -191,7 +197,7 @@ static void check_named(const int *pool, unsigned npool, uint8_t *b)
     char name[32];
     snprintf(name, sizeof(name), "pt-peer-%d", (int)getpid());
     int ctl;
-    handle_t job, proc = spawn_receiver("unix", name, &ctl, &job);
+    handle_t job, proc = spawn_receiver("unix", name, UNIX_ROUNDS, &ctl, &job);
     for (int i = 0; proc && i < UNIX_ROUNDS; i++) {
         handle_t raw = connect_raw(name);
         CHECK(raw != HANDLE_INVALID);
@@ -353,9 +359,10 @@ static int next_conn(int l, int ctl, bool *ctl_done)
 
 int pt_child_peer(int argc, char **argv)
 {
-    if (argc < 5)
+    if (argc < 6)
         return PEER_SETUP;
     scm_seed = strtoull(argv[3], NULL, 16) ^ 0x5a5a;   /* the receiver's own choices */
+    int want = atoi(argv[5]), rounds = 0;
     bool unix_mode = !strcmp(argv[2], "unix");
     uint8_t *b = malloc(CHANNEL_MAX_BYTES);
     int ctl = 3, l = -1;
@@ -375,16 +382,22 @@ int pt_child_peer(int argc, char **argv)
     int verdict = PEER_OK, lowest = -1;
     uint64_t before = 0;
     bool ctl_done = false;
-    for (int round = 0; verdict == PEER_OK; round++) {
+    for (; verdict == PEER_OK; rounds++) {
         int s = unix_mode ? next_conn(l, ctl, &ctl_done) : next_pair(ctl, b);
         if (s < 0)
             break;
         verdict = drain(s, b);
         close(s);
-        if (round == 0) {   /* the first round's one-time allocations, before the count */
+        if (rounds == 0) {   /* the first round's one-time allocations, before the count */
             lowest = scm_lowest_fd();
             before = scm_job_handles();
         }
+    }
+    if (verdict == PEER_OK && rounds != want) {
+        char what[64];
+        snprintf(what, sizeof(what), "%d rounds read, not %d", rounds, want);
+        child_say(what);
+        verdict = PEER_FEW;
     }
     if (verdict == PEER_OK && lowest >= 0 && scm_lowest_fd() != lowest) {
         child_say("its lowest free descriptor moved");
