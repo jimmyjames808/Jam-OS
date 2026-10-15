@@ -16,6 +16,7 @@
 #include <jam/ktest.h>
 #include <jam/mm.h>
 #include <jam/percpu.h>
+#include <jam/process.h>
 #include <jam/sched.h>
 #include <jam/spinlock.h>
 #include <jam/string.h>
@@ -514,6 +515,130 @@ KTEST(aspace_decommit_two_cpus)
     aspace_unref(two_as[1]);
     put(v);
     kt_unpin_self();
+}
+
+/* A protect that finds no entry in its range shoots nobody down (V8's
+ * commit of untouched reservation pages, CR1 finding 2); one that changes
+ * or clears an entry, or lets a table go, shoots down the CPU running the
+ * address space before it returns. The address space is loaded on CPU 1
+ * (the only CPU in its active mask); its masked flush count says whether
+ * an IPI came. */
+static struct aspace *quiet_as;
+static volatile int quiet_ready, quiet_done;
+
+static void quiet_runner(void *arg)
+{
+    (void)arg;
+    preempt_disable();   /* stay on CPU 1 with the CR3 loaded; IRQs stay on */
+    uint64_t f = irq_save();
+    aspace_switch(NULL, quiet_as);
+    irq_restore(f);
+    __atomic_store_n(&quiet_ready, 1, __ATOMIC_RELEASE);
+    while (!__atomic_load_n(&quiet_done, __ATOMIC_ACQUIRE))
+        cpu_relax();   /* the shootdowns land here */
+    f = irq_save();
+    aspace_switch(quiet_as, NULL);
+    irq_restore(f);
+    preempt_enable();
+}
+
+KTEST(aspace_protect_quiet)
+{
+    if (cpu_count < 2) {
+        kprintf("ktest: %s skipped (needs >= 2 CPUs)\n", ktest_current);
+        return;
+    }
+    kt_pin_self(0);
+    quiet_as = new_as();
+    struct vmo *v;
+    KT_EQ(vmo_create(1024 * PG, 0, &v), OK);
+    uint64_t b = 0x40000000, len = 256 * PG;
+    KT_EQ(aspace_map(quiet_as, v, 0, 1024 * PG,
+                     ASPACE_FIXED | ASPACE_CAN_READ | ASPACE_CAN_WRITE, &b), OK);
+    quiet_ready = quiet_done = 0;
+    cpumask_t m;
+    cpumask_one(&m, 1);
+    struct thread *t = thread_create_on("as-quiet", quiet_runner, NULL, PRIO_DEFAULT, &m);
+    while (!__atomic_load_n(&quiet_ready, __ATOMIC_ACQUIRE))
+        thread_yield();
+
+    /* Untouched: commit and decommit by protect, no IPI. */
+    uint64_t n = tlb_mask_flush_count(1);
+    KT_EQ(aspace_protect(quiet_as, b, len, RW), OK);
+    KT_EQ(aspace_protect(quiet_as, b, len, 0), OK);
+    KT_EQ(aspace_protect(quiet_as, b, len, R), OK);
+    KT_EQ(tlb_mask_flush_count(1), n);
+    /* An entry in the range: each change of it is shot down. */
+    KT_EQ(aspace_protect(quiet_as, b, len, RW), OK);
+    KT_EQ(aspace_fault(quiet_as, b + 7 * PG, ASPACE_WRITE), OK);
+    KT_ASSERT(aspace_pte(quiet_as, b + 7 * PG) & PTE_W);
+    KT_EQ(tlb_mask_flush_count(1), n);   /* (a fault adds, never shoots down) */
+    KT_EQ(aspace_protect(quiet_as, b, len, R), OK);
+    KT_EQ(aspace_pte(quiet_as, b + 7 * PG) & PTE_W, 0);
+    KT_EQ(tlb_mask_flush_count(1), n + 1);
+    KT_EQ(aspace_protect(quiet_as, b, len, 0), OK);   /* cleared, its table let go */
+    KT_EQ(aspace_pte(quiet_as, b + 7 * PG), 0);
+    KT_EQ(tlb_mask_flush_count(1), n + 2);
+    /* Untouched again (decommit leaves no entry, no access left no table). */
+    KT_EQ(aspace_protect(quiet_as, b, len, RW), OK);
+    KT_EQ(tlb_mask_flush_count(1), n + 2);
+    /* A table with no entry left in it (a decommit cleared the page, the
+     * table stays): no IPI for a protect that keeps access, one for the
+     * protect to no access that lets the table go. */
+    KT_EQ(aspace_fault(quiet_as, b + 9 * PG, ASPACE_WRITE), OK);
+    KT_EQ(vmo_decommit(v, 9 * PG, PG), OK);   /* the reverse map always shoots down */
+    uint64_t after = tlb_mask_flush_count(1);
+    KT_EQ(after, n + 3);
+    KT_EQ(aspace_protect(quiet_as, b, len, R), OK);
+    KT_EQ(tlb_mask_flush_count(1), after);
+    KT_EQ(aspace_protect(quiet_as, b, len, 0), OK);
+    KT_EQ(tlb_mask_flush_count(1), after + 1);
+
+    __atomic_store_n(&quiet_done, 1, __ATOMIC_RELEASE);
+    thread_join(t);
+    aspace_unref(quiet_as);
+    put(v);
+    kt_unpin_self();
+}
+
+/* A fault whose page table the job refuses leaves none of the tables it
+ * made on the way (a PDPT or a PDPT and a PD, empty, charged until the
+ * address space died: CR1 finding 10, which its TiB test met at 8 CPUs);
+ * the same fault with room makes all three, and a refusal under a PDPT
+ * that was there takes back the PD alone. */
+KTEST(aspace_fault_refused_tables)
+{
+    struct job *j = kt_fresh_job();
+    struct aspace *as;
+    KT_EQ(aspace_create_charged(j, &as), OK);
+    struct vmo *v;
+    KT_EQ(vmo_create(PG, 0, &v), OK);   /* its page charged to nobody */
+    const unsigned map = RW | ASPACE_CAN_READ | ASPACE_CAN_WRITE | ASPACE_FIXED;
+    uint64_t a = 1ull << 42, b = a + (1ull << 30);   /* a fresh 512 GiB; b a GiB on */
+    KT_EQ(aspace_map(as, v, 0, PG, map, &a), OK);
+    KT_EQ(aspace_map(as, v, 0, PG, map, &b), OK);
+    uint64_t used = job_used(j, JOB_LIMIT_PAGES);   /* the PML4 and the mapping structs */
+    for (uint64_t room = 0; room < 3; room++) {
+        KT_EQ(job_set_limit(j, JOB_LIMIT_PAGES, used + room), OK);
+        KT_EQ(aspace_fault(as, a, ASPACE_WRITE), ERR_NO_MEMORY);
+        KT_EQ(aspace_pt_pages(as), 0);
+        KT_EQ(job_used(j, JOB_LIMIT_PAGES), used);
+    }
+    KT_EQ(job_set_limit(j, JOB_LIMIT_PAGES, used + 3), OK);
+    KT_EQ(aspace_fault(as, a, ASPACE_WRITE), OK);
+    KT_EQ(aspace_pt_pages(as), 3);
+    KT_EQ(job_set_limit(j, JOB_LIMIT_PAGES, used + 4), OK);   /* b's PD fits, its PT doesn't */
+    KT_EQ(aspace_fault(as, b, ASPACE_WRITE), ERR_NO_MEMORY);
+    KT_EQ(aspace_pt_pages(as), 3);
+    KT_EQ(job_used(j, JOB_LIMIT_PAGES), used + 3);
+    KT_EQ(job_set_limit(j, JOB_LIMIT_PAGES, JOB_NO_LIMIT), OK);
+    KT_EQ(aspace_fault(as, b, ASPACE_WRITE), OK);
+    KT_EQ(aspace_pt_pages(as), 5);
+    KT_EQ(aspace_check(as), 2);
+    aspace_unref(as);
+    kt_job_is_empty(j);
+    job_unref(j);
+    put(v);
 }
 
 /* ---- decommit and shrink under mappings ----------------------------------- */

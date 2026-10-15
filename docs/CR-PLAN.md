@@ -973,11 +973,13 @@ lands (no WebAssembly then).
   `clock` and `debug` in `user/include/wants.h`), as every `right` word
   is today.
 - **JIT VMOs** (CJ1): a new call, `vmo_make_jit(vmo, root, *out)`, in
-  `vmo_make_exec`'s shape: a fresh anonymous paged VMO (one handle, no
-  mapping, no pin, never a pager VMO, a child or a kept one) becomes a
-  JIT VMO, and `*out` is its handle with read, write, execute, map and
-  duplicate (not transfer: the creator adds it to a duplicate if it hands
-  one on). Needs `RIGHT_ROOT_JIT` on root. A JIT VMO can never be
+  `vmo_make_exec`'s shape: a plain paged VMO holding nothing (one handle,
+  no page, no mapping, no pin; never a pager VMO, a pager VMO's child or a
+  kept one) becomes a JIT VMO, and `*out` is the same handle with
+  `RIGHT_EXEC` added to a fresh VMO's rights (read, write, map, resize,
+  duplicate and transfer: a duplicate can only narrow rights, so the
+  handle must carry transfer for its creator to hand one on, CR1 finding
+  4). Needs `RIGHT_ROOT_JIT` on root. A JIT VMO can never be
   sealed, verified, made executable the old way, or given a pager.
 - **W+X only there** (CJ1): `perms_ok` in `kernel/mm/aspace.c` allows
   write together with execute only for a mapping of a JIT VMO, and only
@@ -1388,7 +1390,7 @@ ports, recipes, tests, netstack's caps, the audio API and the docs.
 | **CA1. Sound** | section 11: libjam's audio output API and Chromium's back end patch | `<audio.h>` (a header of its own), user/lib/audio.c and audio_flow.c, ports/chromium's audio patch | CB4 (a browser to test it with); the API part at once (**done 2026-10-15**, see "CA1 notes") | utest: a stream's frames reach the mixer (`tools/mixer-test.sh`'s way); cr-test.sh `chrome` playing a WebM's sound into the mixer's capture | Sonnet 5.5 |
 | **CJ1. JIT memory in the kernel** | section 12's kernel part: `RIGHT_ROOT_JIT`, `vmo_make_jit`, W+X only on a JIT VMO's mapping within its handle's rights, the flag in `process_get_info` | `kernel/object/vmo.c` (the kind), `kernel/abi/vmo_sys.c` (the call), `kernel/mm/aspace.c` (`perms_ok` and protect), `abi/syscalls.def`, `kernel/include/jam/abi.h`, new ktests | CK2 merged (`aspace.c`); CK1 merged (`vmo.c`) | ktests: W+X refused on every other VMO; a JIT VMO without the power refused; an execute-only duplicate can't write; a write-only one can't run; a JIT VMO can't be sealed, verified or paged; full ktest 4 and 8; soak 2 | **Opus** |
 | **CJ2. JIT for programs** | section 12's rest: `right jit` (wants, checkwants, allow's and pkg's words, init's slice), `ps`'s mark, libc's `MAP_JIT` (this half done 2026-10-14, see "CJ2 notes"); **still to do, after CB5**: V8's patch, the launcher giving the power to renderers only, `--jitless` for the rest | `user/include/wants.h`, the wants parser in libos, `tools/checkwants.py`, `user/services/shell/sh_allow.c`'s prompt, init's grant, `user/posix/sys/mem.c` (`MAP_JIT`), ports/chromium's V8 and launcher lines | CJ1; CB5 | posixtest: `MAP_JIT` with and without the power; a JIT program writes code and runs it; cr-test.sh `chrome` with a Wasm page (CR-e) | **Opus** |
-| **CR1. Kernel review** | CK1, CK2, CK3, CP1's kernel line, CJ1 if merged: findings first (docs/CR-REVIEW-KERNEL.md, new), then High and Medium fixed with a test each; hostile tests (a TiB of reservations from a job with 16 MiB, 60,000 mappings in a storm of protects from 8 threads while another unmaps) | the files its fixes need | CK1 to CK3 merged | its own; full ktest 4 and 8; soak 4 | **Opus** |
+| **CR1. Kernel review** | CK1, CK2, CK3, CP1's kernel line, CJ1 if merged: findings first (docs/CR-REVIEW-KERNEL.md, new), then High and Medium fixed with a test each; hostile tests (a TiB of reservations from a job with 16 MiB, 60,000 mappings in a storm of protects from 8 threads while another unmaps); **done 2026-10-15** ([CR-REVIEW-KERNEL.md](CR-REVIEW-KERNEL.md): 0 High, 3 Medium, 3 Low, 4 notes; two Mediums and every Low fixed, one Medium a design question) | the files its fixes need | CK1 to CK3 merged | its own; full ktest 4 and 8; soak 4 | **Opus** |
 | **CR2. POSIX and IPC review** | CL1, CL2, CL3, CU1, CU2, CS1: the descriptor passing (what crosses, what leaks, what a hostile peer can make the receiver do), the self-image (can it run anything the owner didn't approve?), `/proc`'s reopen; findings in [CR-REVIEW-POSIX](CR-REVIEW-POSIX.md) | the files its fixes need | CL1, CL2, CU1, CS1 merged | its own; posixtest; a fuzz loop between two processes | **Opus** |
 | **CJR. JIT review** | CJ1 and CJ2 against the owner's rule: can any program without the power get W+X, can a JIT VMO become approved code, can a handle hand-on widen rights; findings first, fixes with tests | the files its fixes need | CJ1, CJ2 merged | its own | **Opus** |
 | **CRJ. The join** | ARCHITECTURE (Memory: reservations, JIT VMOs; Userland: `/proc`, descriptor passing, the self-image, the toolchain), the porter's guide (C++ and Rust ports, the clang drivers, big ports), USING (Chromium), TESTING (cr-test.sh, the build), BENCH (the build's figures, page loads, the JIT's), ROADMAP and HISTORY | the docs | CR1, CR2 merged; CB6 | `make check` | Sonnet 5.5 |
@@ -1652,8 +1654,9 @@ Track CP1, programs this big (2026-10-14): section 6's limits raised to
   `FILE_MAX` (a program read from a file) is 1 GiB too. `vmo_verify.c`
   assumed no size beyond its comments.
 - **What verification costs at 1 GiB.** The kernel's table is 32 bytes a
-  page: 262,144 hashes in 2048 buddy pages (8 MiB), listed by a 16 KiB
-  array (one 32 KiB heap block), charged to the job of the caller of
+  page: 262,144 hashes in 2048 buddy pages (8 MiB), listed by 4 pages
+  of addresses (CR1 made the list pages, where it was one 32 KiB heap
+  block, physically contiguous and uncharged), all charged to the job of the caller of
   `vmo_make_exec_verified` (the shell's, or init's for `/svc/exec`) and
   freed with the VMO; the shell keeps up to 8 such VMOs while their
   programs run, so 64 MiB of tables at worst. Starting one also reads the

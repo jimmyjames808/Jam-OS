@@ -353,7 +353,9 @@ Every driver and service is a userspace process from the start.
 - **TLB**: a kernel unmap does a synchronous range shootdown to all CPUs (a
   full flush above 64 pages). User address spaces keep a mask of the CPUs
   running them, so a shootdown interrupts only those, and a "gather" frees
-  pages only after the flush.
+  pages only after the flush. A protect that found no entry to change and
+  no table to let go (V8 committing untouched reservation pages) shoots
+  nobody down.
 - **PCIDs** (`kernel/arch/x86_64/pcid.c`): each user address space has a
   never-reused id and a TLB generation; each CPU has 8 PCID slots (PCID 0 is
   the kernel's tables) remembering which address space they hold and the
