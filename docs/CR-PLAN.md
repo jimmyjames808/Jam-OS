@@ -1623,7 +1623,7 @@ of its own.
 - **Limits**: 32 openers, 16 sealed programs waiting (4 per opener),
   dropped after 10 s unstarted; 12 KiB of argv and environment (spawn's
   2 KiB startup message refused less until CS1, which carries more in a
-  VMO); 128 hand-over messages.
+  VMO); a hand-over's kept data at most 64 KiB (CR2F, below).
   A worker thread with its own port serves it, every call on a caller's
   channel with a 5 s deadline: a hostile caller can delay other callers by
   that much a request, never init's loop.
@@ -1641,6 +1641,20 @@ of its own.
   PASS, the root job clean), `posix-mmap-test.sh` case `spawn` (the
   allowed run started, exited 7), `allow.txt`, `pager-test.sh` case
   `exec`, one ktest pass at 4.
+- **The hand-over is rewritten, not moved (CR2F, 2026-10-16;
+  [CR-REVIEW-POSIX](CR-REVIEW-POSIX.md) finding 1, Q1 decided A).** The
+  child's namespace may reach what its caller's can't, so it believes no
+  name the caller wrote: init reads the hand-over (`posixfds_read`, every
+  rule checked) and writes the child its own, a file without its path
+  (usable, `ENOTSUP` to give on, as with `SCM_RIGHTS`), no directories nor
+  duplicates of them, the cwd `/`, the program's path the sealed one, and
+  `POSIXFDS_SECURE`, which the crt makes `AT_SECURE` 1 (glibc's unsecure
+  variables left out of the environment; musl's own checks). Every child
+  is marked: init can't tell which program calls. A POSIX child gets a
+  hand-over even when its caller wrote none (0 to 2 then `/dev/null`); a
+  malformed one refuses the start. Later (option C): names as objects, a
+  directory channel for the cwd, so a `make` started this way can inherit
+  its directory and give redirected files on. utest `exec_handover`.
 
 ## CP1 notes
 
@@ -1870,9 +1884,10 @@ the model). Where it differs from section 4's design:
   `EAGAIN` (Linux makes a blocking connect wait for room). A second
   `listen` keeps the first backlog (as the AF_INET path does).
 - **Limits** (unix.idl): 64 openers, 128 listeners (32 per opener
-  channel: libc keeps one per process), names of at most 107 bytes. What
-  waits at a listener is charged to the broker's job until accept reads it:
-  at most 64 small messages a listener.
+  channel: libc keeps one per process; one per program since CR2F,
+  below), names of at most 107 bytes. What waits at a listener is charged
+  to the broker's job until accept reads it: at most 64 small messages a
+  listener.
 - **Names**: `getsockname` of a bound socket says its path or abstract
   name; of a connection, and `getpeername`, `AF_UNIX` with no path, and
   `accept`'s address the same.
@@ -1885,6 +1900,18 @@ the model). Where it differs from section 4's design:
   per opener channel, but it can open several channels with `svc_open`);
   any abstract name is anyone's to take first. A listener that never
   accepts costs the broker at most 64 queued messages.
+- **Counted per program (CR2F, 2026-10-16; [CR-REVIEW-POSIX](CR-REVIEW-POSIX.md)
+  finding 3, Q2 decided A).** libos's grants give `/svc/unix` by name as
+  an opener of the program's own, made with `svc.connect` on the
+  starter's channel when the namespace is sent and marked as handing out
+  no more; `"*"` gives the starter's as it is (init, the shells, their
+  tests hold the shared channel). So one program binds 32 listeners at
+  most whatever it opens, and a listener counts against its opener until
+  it closes (the broker holds the opener's slot till then). Abstract
+  names stay one table (per session later, if a port needs it). Left: a
+  `svc exec` program keeping 64 approved `svc unix` children alive takes
+  every opener; after a broker restart a program with an opener of its
+  own has no `/svc/unix` until it is started again.
 - **Tests**: posixtest's `unix` section (in the init run;
   `tools/shell-tests/posix-unix.txt` alone, in shell mode); utest's
   `unix_names`, `unix_backlog`, `unix_limits` (the broker's protocol and

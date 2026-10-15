@@ -917,7 +917,7 @@ QEMU_INPUT=tools/shell-tests/<name>.txt tools/qemu-test.sh build/test <name> she
 | `posix-files.txt` | posixtest's files-many section (too long for the `init` run): 10,000 files made in one directory of the stick's `/data`, listed (each name once, `.` and `..`, telldir and seekdir), removed; about 2.5 minutes | `QEMU_TIMEOUT=600` |
 | `posix-run.txt` | posixtest's default sections run from the shell (`run posixtest`): descriptor 0 is the terminal, not the null device, and `/svc` holds only what posixtest's list asks for (net, net-listen, dns, exec, unix); the epoll check opens the null device itself (and the two `/svc` checks skip with a printed reason in a namespace with no `/svc`), so it ends PASS and `exited with code 0` | `QEMU_TIMEOUT=900` |
 | `posix-scm.txt` | posixtest's scm section (`run posixtest scm`): socketpairs carrying descriptors (`SCM_RIGHTS`): every kind passed and used on the other side, the read-only twin and seals, 64, 128 and 253 descriptors, too little room (`MSG_CTRUNC`, no handle kept), `SOCK_SEQPACKET`, `shutdown`, Mojo's pattern with a child, the 10,000-round fuzz; also in the `init` run | |
-| `posix-unix.txt` | posixtest's unix section (`run posixtest unix`) against shell mode's broker, bin/unix (`/svc/unix`, [CR-PLAN](CR-PLAN.md#cu2-notes), "CU2 notes"): named `AF_UNIX` sockets, a listener and two connectors, bytes and a descriptor over a connection, the backlog, a socket file removed and a stale one, a 108-byte path's `getsockname` (CR-REVIEW-POSIX finding 5), a child without `/data` refused and one with `/data` read-only let in, abstract names; then `ps` shows `unix`; also in the `init` run (where init starts the broker before the programs) | |
+| `posix-unix.txt` | posixtest's unix section (`run posixtest unix`) against shell mode's broker, bin/unix (`/svc/unix`, [CR-PLAN](CR-PLAN.md#cu2-notes), "CU2 notes"): named `AF_UNIX` sockets, a listener and two connectors, bytes and a descriptor over a connection, the backlog, a socket file removed and a stale one, a 108-byte path's `getsockname` (CR-REVIEW-POSIX finding 5), a child without `/data` refused and one with `/data` read-only let in, abstract names, a child given `/svc/unix` by name binding 32 listeners at most however often it opens it (its opener is its own: CR-REVIEW-POSIX Q2; here it shares posixtest's own); then `ps` shows `unix`; also in the `init` run (where init starts the broker before the programs) | |
 | `posix-raw.txt` | posixtest's raw section (`run posixtest raw`) with `JAMOS_ENOSYS_LOG=1` exported: the raw Linux calls Chromium makes (`prctl`, `setpriority`, affinity, the scheduling policies, futex bitset waits) and the ENOSYS log (an unknown call, option, ioctl or path named once per process in the kernel log: `enosys: posixtest: syscall 163 (acct)`); the section counts the log's lines itself and starts children with and without the variable | `QEMU_TIMEOUT=300` |
 | `posix-loop.txt` | posixtest's socket and loopback sections (`run posixtest socket loopback`) from the shell: netstack runs with no card and no address, and loopback needs neither | `QEMU_TIMEOUT=300` |
 | `posix-net.txt` | posixtest's socket and sockets sections (`run posixtest socket sockets`) against the network peer: run by `tools/posix-net-test.sh`, which sets the address and starts the peer's servers | `QEMU_NET=1` (the script) |
@@ -1970,7 +1970,34 @@ startup message); 3 MiB of arguments is `E2BIG`;
 `posix_spawn_file_actions_addclosefrom_np` (a negative start `EBADF`)
 leaves a child exactly 3, 4 and 9 from 3 up, as its `/proc/self/fd` lists
 them: the `dup2`s before it at 3 and 4, not the one at 7, the one after it
-at 9, and none of our other open descriptors (5, 6, 30, 100).
+at 9, and none of our other open descriptors (5, 6, 30, 100). Malformed
+`SR_ARGS` VMOs from a starter ([CR-REVIEW-POSIX](CR-REVIEW-POSIX.md),
+"Tests"): a bad magic or version, strings past the VMO, the pointers' room
+past 2 MiB (finding 4's wrap, at 262,143 and 262,144 strings), argc and
+envc of 2^31, a path without its NUL, a relative one, one of one byte, a
+string without its NUL, more strings than bytes: each child starts with
+argc 0 (posixtest's main then exits 9) and a "no usable argument VMO" line
+in the log, never killed; a good VMO first, which exits 0.
+
+posixtest's peer section (the `init` run; `posixtest peer`): our IPC
+against a hostile peer in another process ([CR-REVIEW-POSIX](CR-REVIEW-POSIX.md),
+"Tests"). A receiver child in a job of its own is given 400 socketpair
+ends (one in four `SOCK_SEQPACKET`) over a control socketpair, and then
+accepts 150 connections to an abstract name of its own through
+`/svc/unix`; into the raw channel of each we write what the scm section's
+fuzz makes (our sends of random bytes and descriptors of every kind, taken
+off a raw channel and mutated: bytes changed, handles dropped, added or
+swapped for any kind of object, cut short, junk between) and close it.
+The receiver reads every one (as many as it is told) to its end with
+random room and flags: no
+`recvmsg` may take over a second, no `poll` wait 10 s for an end already
+closed, and after the last round its job holds the handles it held after
+the first and its lowest free descriptor is the same; it must not be
+killed (60 s at most). The seed is fixed and printed (`posixtest: peer:
+seed 0x7065657232, ...`); a receiver's failure says why in the kernel log
+(`posixtest: peer child: ...`). Then finding 2's case: a file whose
+channel never answers, received with `MSG_DONTWAIT`, comes at once, and
+closes at once.
 
 posixtest's socket section (the `init` run; `posixtest socket`) needs no
 network: `socket`'s refusals (`AF_INET6`, `AF_UNIX`, a raw socket, a

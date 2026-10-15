@@ -651,14 +651,32 @@ static bool grant_takes(const struct grant *g, const struct entry *e, enum kind 
     return strlen(e->path) == g->len && !memcmp(e->path, g->point, g->len);
 }
 
+/* Services that count what a program holds by the channel it calls on: a
+ * grant that names one gives the program a channel of its own (our
+ * entry's svc.connect, <os.h> "grants"), which hands out no more. The
+ * broker's listeners (docs/CR-REVIEW-POSIX.md, Q2). */
+static const char *const own_channel[] = { SVC_DIR SVC_UNIX };
+
+/* Does grant g, which took entry e, give a channel of the program's own? */
+static bool gets_own(const struct grant *g, const struct entry *e)
+{
+    for (unsigned i = 0; !g->all && e->connect && i < sizeof(own_channel) / sizeof(own_channel[0]);
+         i++)
+        if (!strcmp(e->path, own_channel[i]))
+            return true;
+    return false;
+}
+
 /* What goes out: our entries that a grant takes, each with a duplicate of
- * its channel (to be turned into a view) and the flags of its view. */
+ * its channel (to be turned into a view, or a channel of its own) and the
+ * flags of its view. */
 struct ns_out {
     uint32_t count;                              /* entries used */
     uint8_t  paths[NS_MAX_ENTRIES][NS_NAME_MAX]; /* nschan's `paths`: count records */
     uint8_t  connect[NS_MAX_ENTRIES];            /* ... and its `connect` */
     handle_t hs[NS_MAX_ENTRIES];
     uint32_t view[NS_MAX_ENTRIES];
+    bool     own[NS_MAX_ENTRIES];                /* a service's channel of its own (above) */
 };
 
 /* The entries grants take, duplicated into o (o->count of them). */
@@ -682,26 +700,29 @@ static status_t gather(const char *const *grants, struct ns_out *o)
         memcpy(o->paths[c], ents[i].path, NS_NAME_MAX);
         o->view[c] = k == MOUNT ? g.view : 0;
         o->connect[c] = ents[i].connect;
+        o->own[c] = k == SERVICE && gets_own(&g, &ents[i]);
         o->count++;
     }
     ns_unlock();
     return st;
 }
 
-/* Each entry of o that wants a view gets one in place of its duplicate;
- * one whose service won't make it is left out. */
+/* Each entry of o that wants a view, or a channel of its own, gets one in
+ * place of its duplicate; one whose service won't make it is left out. */
 static void make_views(struct ns_out *o)
 {
     uint32_t keep = 0;
     for (uint32_t i = 0; i < o->count; i++) {
         handle_t h = o->hs[i];
-        if (o->view[i]) {
+        if (o->view[i] || o->own[i]) {
             handle_t v = HANDLE_INVALID;
-            status_t st = fs_view_until(h, now() + NS_VIEW_WAIT, o->view[i], &v);
+            status_t st = o->view[i] ? fs_view_until(h, now() + NS_VIEW_WAIT, o->view[i], &v)
+                                     : svc_connect_until(h, now() + SVC_WAIT, &v);
             jam_handle_close(h);
             if (st != OK)
-                continue;   /* fail closed: no view, no mount */
+                continue;   /* fail closed: no view, no mount; no channel, no service */
             h = v;
+            o->connect[i] = o->own[i] ? 0 : o->connect[i];   /* it hands out no more */
         }
         memcpy(o->paths[keep], o->paths[i], NS_NAME_MAX);
         o->connect[keep] = o->connect[i];

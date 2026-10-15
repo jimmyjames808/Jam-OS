@@ -26,6 +26,7 @@ struct pfd_collect {
     unsigned n;                     /* entries of got */
     unsigned total;                 /* descriptors given, kept or not */
     unsigned resets;                /* reset calls */
+    unsigned secures;               /* secure calls (POSIXFDS_SECURE) */
     status_t refuse;                /* OK, or what fd() answers */
 };
 

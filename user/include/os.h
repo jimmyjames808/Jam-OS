@@ -478,7 +478,11 @@ status_t ns_svc_remove(const char *name);
  *                    point starts with "/usb"
  *   "*:r", "*:w"     every mount, as views (no services)
  * A view is made with a call to the mount's service at the time of the
- * send (each waits at most NS_VIEW_WAIT). */
+ * send (each waits at most NS_VIEW_WAIT). A service that counts what a
+ * program holds by the channel it calls on (/svc/unix: the broker's
+ * listeners) is given by name as a channel of the program's own, asked
+ * of ours with svc.connect at the send, which hands out no more: the
+ * program can't open another to get past its limits. "*" gives ours. */
 #define NS_VIEW_WAIT (2 * NS_PER_S)
 
 /* For fs services: a path inside a mount (fs.idl's str: len bytes, no NUL)

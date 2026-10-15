@@ -12,7 +12,11 @@
  *     process group and the session;
  *   - the program's path, when the starter names one: what libc's
  *     /proc/self/exe reads (docs/CR-PLAN.md section 3). The starter's
- *     word, as argv is: it chose the program.
+ *     word, as argv is: it chose the program;
+ *   - whether the program starts as Linux's AT_SECURE: its argv and
+ *     environment came from a program it doesn't trust as itself (init's
+ *     /svc/exec marks every child it starts so: user/services/init/exec.c).
+ *     A starter can only make its child more careful by it.
  *
  * Descriptors with FD_CLOEXEC are not sent. A message carries at most
  * CHANNEL_MAX_HANDLES handles and CHANNEL_MAX_BYTES bytes, so a big table
@@ -44,6 +48,7 @@
 #define POSIXFDS_MAGIC    0x5853504au   /* "JPSX" */
 #define POSIXFDS_VERSION  1
 #define POSIXFDS_LAST     1u            /* posixfds_msg.flags: the last message */
+#define POSIXFDS_SECURE   2u            /* ... the first only: start as AT_SECURE (above) */
 #define POSIXFDS_MSG_MAX  CHANNEL_MAX_BYTES   /* bytes of one message */
 #define POSIXFDS_FD_MAX   1024          /* descriptors are 0 .. POSIXFDS_FD_MAX - 1 */
 #define POSIXFDS_PATH_MAX 4096          /* the current directory, its NUL included */
@@ -119,7 +124,8 @@ struct posixfds_msg {
     uint32_t txid;          /* channel convention: first 4 bytes; 0 here */
     uint32_t magic;         /* POSIXFDS_MAGIC */
     uint16_t version;       /* POSIXFDS_VERSION */
-    uint16_t flags;         /* POSIXFDS_LAST on the last message; no other bit */
+    uint16_t flags;         /* POSIXFDS_LAST on the last message, POSIXFDS_SECURE
+                             * (or not) on the first; no other bit */
     uint16_t seq;           /* this message's place: 0, 1, 2, ... */
     uint16_t nfds;          /* records; at least 1 but in the first message */
     uint32_t nhandles;      /* handles carried: the records' handles, all of them */
@@ -164,6 +170,7 @@ struct posixfds_out {
     /* NULL, or the program's path, as cwd (spawn names it when this is
      * NULL: spawn_args.path, a boot-image name as /boot/<name>) */
     const char                 *exe;
+    bool                        secure;   /* the program starts as AT_SECURE */
 };
 
 /* Where posixfds_read puts the descriptors, one at a time, each only
@@ -182,6 +189,9 @@ struct posixfds_sink {
     /* NULL, or given the program's path (a string, absolute; gone after
      * the call) once the whole hand-over was taken, if it names one. */
     void (*exe)(void *ctx, const char *path);
+    /* NULL, or called once the whole hand-over was taken, if it says the
+     * program starts as AT_SECURE (POSIXFDS_SECURE). */
+    void (*secure)(void *ctx);
 };
 
 /* How many handles a descriptor of kind has, and of which object types
