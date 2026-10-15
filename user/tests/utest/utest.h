@@ -112,6 +112,21 @@ bool t_audio_formats(void);
 bool t_audio_resample(void);
 bool t_wav_parse(void);
 
+/* audio_out.c: <audio.h>'s float input, room, position, start and pause. The
+ * ones with a stream need the mixer and a sound card (else they skip);
+ * tools/audio-api-test.sh checks what they play. */
+bool t_audio_out_f32(void);
+bool t_audio_out_args(void);
+bool t_audio_out_slots(void);
+bool t_audio_out_s16(void);
+bool t_audio_out_f32_play(void);
+bool t_audio_out_mono44(void);
+bool t_audio_out_room(void);
+bool t_audio_out_arm(void);
+bool t_audio_out_paced(void);
+bool t_audio_out_two(void);
+bool t_audio_out_pause(void);
+
 /* mp3.c: <mp3.h>: frame headers, sniffing, decoding through dr_mp3. */
 bool t_mp3_header(void);
 bool t_mp3_sniff(void);
