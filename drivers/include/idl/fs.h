@@ -20,7 +20,7 @@
  * method says), ERR_LINK_OUT (a filesystem with symbolic links: the path
  * leads through a link the service does not follow, or above the view's
  * root; the method changed nothing, and `resolve` says where the path
- * goes on).
+ * goes on), ERR_LINK_LOOP (more than 40 symbolic links in one walk: a loop).
  * Format: see tools/genidl.py.
  *
  * Restart: fat's restart is not seen (ARCHITECTURE.md, "Services that
@@ -754,7 +754,8 @@ static inline status_t fs_view_call(handle_t ch, bool idl_within, uint64_t idl_t
  * server's host key), FS_VIEW_HIDE_ETC 8 (the rest of `etc`, its listing,
  * and any request on `etc` itself but stat) and FS_VIEW_HIDE_AUTH 16
  * (`etc/authorized_keys`); with all three `etc` doesn't exist (its stat is
- * refused and the root's listing leaves it out) (<fsview.h>). The new
+ * refused and the root's listing leaves it out), and FS_VIEW_GUARD_PKG 32
+ * (as GUARD_ETC, for the top-level `pkg`: the packages) (<fsview.h>). The new
  * channel keeps this channel's own flags too, so a view is never wider
  * than the channel it came from. ERR_INVALID_ARGS: an unknown flag;
  * ERR_NO_RESOURCES: the service serves as many channels as it can. */

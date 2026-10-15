@@ -152,6 +152,9 @@ static bool want_line(struct wants *w, char *line)
         return want_net_listen(w, n == 4);
     if (n == 3 && !strcmp(word[0], "mount"))
         return want_mount(w, word[1], word[2]);
+    if (n == 4 && !strcmp(word[0], "mount") && !strcmp(word[1], "/data") &&
+        !strcmp(word[2], "rw") && !strcmp(word[3], "pkg"))
+        return add_grant(w, "/data:wp", "/data (write, the packages too)");
     if (n == 2 && !strcmp(word[0], "right"))
         return want_right(w, word[1]);
     if (n == 1 && !strcmp(word[0], "posix") && !w->posix) {

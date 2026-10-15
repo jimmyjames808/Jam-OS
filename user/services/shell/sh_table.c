@@ -123,6 +123,15 @@ static const struct sh_cmd cmds[] = {
       "  isn't empty is shown first (its partitions and volumes), and ERASED only\n"
       "  when you then also type erase: everything on it is lost. Never the disk\n"
       "  Jam OS booted from, nor one with a volume mounted read-write"),
+    C(install, C_HARDWARE, "install <disk>",
+      "write Jam OS to an NVMe drive (nvme1: the name `disks` shows) so the PC starts\n"
+      "  from it without the stick. It shows the drive's model, serial and size and asks\n"
+      "  for the last four characters of the serial; an empty drive is prepared as\n"
+      "  `disk prepare` does (one that isn't empty is shown, and erased only when you\n"
+      "  also type erase); a Jam OS disk is installed on again (its /data is kept). Then\n"
+      "  Limine, this build, the boot menu (written last) and /data/etc are written to\n"
+      "  it, each read back. Never the disk Jam OS booted from. Afterwards put the\n"
+      "  drive first in the firmware's boot order (F8 at power-on picks it once)"),
     C(hda, C_HARDWARE, "hda [gain [dB] | bits [n] | jacks]",
       "the HD Audio codecs and their widget graphs, read now by drv/hda\n"
       "  (the lines it logged at boot; pipe it: hda | grep pin), then the path to the\n"

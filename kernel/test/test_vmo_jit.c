@@ -461,6 +461,197 @@ KTEST(vmo_jit_sys_handles)
     handle_table_destroy(&t);
 }
 
+/* ---- hostile (CR1, docs/CR-REVIEW-KERNEL.md) ---------------------------------- */
+
+/* The aspace a vmar handle names (the handle keeps it alive). */
+static struct aspace *aspace_of(struct handle_table *t, handle_t vmar)
+{
+    struct kobject *o;
+    KT_EQ(handle_get(t, vmar, OBJ_VMAR, 0, &o, NULL), OK);
+    struct aspace *as = vmar_aspace(vmar_from_kobject(o));
+    kobject_unref(o);
+    return as;
+}
+
+#define NOJIT (RIGHTS_ROOT & ~RIGHT_ROOT_JIT)
+
+/* A program with every power but the JIT one tries each way to hold one
+ * VMO's pages writable and executable at once: a second mapping through
+ * the same handle, a handle that can't be had, the old way to code (it
+ * seals: nothing writes it again), a copy-on-write child of approved code
+ * (a fresh VMO's rights: no execute). Every way is refused, and the
+ * address space is never marked. */
+KTEST(vmo_jit_hostile_alias)
+{
+    struct handle_table t;
+    handle_t root, vmar, h, h2, x, c, d;
+    sys_setup(&t, NOJIT, &root, &vmar, 2, &h);
+    struct aspace *as = aspace_of(&t, vmar);
+    uint64_t a = 0, b = 0;
+    KT_EQ(sys_vmar_map(&t, vmar, h, 0, PG, VMAR_READ | VMAR_WRITE, &a), OK);
+    KT_EQ(sys_vmo_write(&t, h, 0, "\xc3", 1), OK);   /* a `ret`, written */
+    KT_EQ(sys_vmar_map(&t, vmar, h, 0, PG, VMAR_READ | VMAR_EXEC, &b), ERR_ACCESS_DENIED);
+    KT_EQ(sys_vmar_map(&t, vmar, h, 0, PG, VMAR_READ | VMAR_WRITE | VMAR_EXEC, &b),
+          ERR_INVALID_ARGS);
+    KT_EQ(sys_vmar_protect(&t, vmar, a, PG, VMAR_READ | VMAR_EXEC), ERR_ACCESS_DENIED);
+    KT_EQ(sys_vmar_protect(&t, vmar, a, PG, VMAR_READ | VMAR_WRITE | VMAR_EXEC), ERR_INVALID_ARGS);
+    /* No power: the call takes the handle and changes nothing. */
+    KT_EQ(handle_duplicate(&t, h, RIGHT_SAME, &h2), OK);
+    struct vmo *v = vmo_of(&t, h2);
+    KT_EQ(sys_vmo_make_jit(&t, h, root, &x), ERR_ACCESS_DENIED);
+    KT_EQ(handle_close(&t, h), ERR_BAD_HANDLE);
+    KT_EQ(sys_vmo_make_jit(&t, h2, h2, &x), ERR_WRONG_TYPE);   /* (a VMO is no root) */
+    KT_ASSERT(!vmo_is_jit(v));
+    /* The old way: sealed first, so nothing ever writes it again. */
+    KT_EQ(sys_vmo_create(&t, PG, 0, &h), OK);
+    KT_EQ(sys_vmar_map(&t, vmar, h, 0, PG, VMAR_READ | VMAR_WRITE, &b), OK);
+    KT_EQ(sys_vmo_make_exec(&t, h, root, &x), ERR_BAD_STATE);   /* mapped writable */
+    KT_EQ(sys_vmar_unmap(&t, vmar, b, PG), OK);
+    KT_EQ(sys_vmo_create(&t, PG, 0, &h), OK);
+    KT_EQ(sys_vmo_write(&t, h, 0, "\xc3", 1), OK);
+    KT_EQ(sys_vmo_make_exec(&t, h, root, &x), OK);
+    KT_EQ(rights_of(&t, x) & (RIGHT_WRITE | RIGHT_EXEC), RIGHT_EXEC);
+    KT_EQ(sys_vmar_map(&t, vmar, x, 0, PG, VMAR_READ | VMAR_EXEC, &b), OK);
+    uint64_t w = 0;
+    KT_EQ(sys_vmar_map(&t, vmar, x, 0, PG, VMAR_READ | VMAR_WRITE, &w), ERR_ACCESS_DENIED);
+    KT_EQ(sys_vmar_protect(&t, vmar, b, PG, VMAR_READ | VMAR_WRITE | VMAR_EXEC), ERR_INVALID_ARGS);
+    KT_EQ(sys_vmo_write(&t, x, 0, "\x90", 1), ERR_ACCESS_DENIED);
+    KT_EQ(sys_vmo_decommit(&t, x, 0, PG), ERR_ACCESS_DENIED);
+    /* Its copy-on-write child is a fresh VMO: writable, never executable,
+     * and a write to it leaves the approved page as it was. */
+    KT_EQ(sys_vmo_create_child(&t, x, VMO_CHILD_SNAPSHOT, 0, PG, &c), OK);
+    KT_EQ(rights_of(&t, c) & RIGHT_EXEC, 0);
+    KT_EQ(sys_vmar_map(&t, vmar, c, 0, PG, VMAR_READ | VMAR_EXEC, &w), ERR_ACCESS_DENIED);
+    KT_EQ(sys_vmo_write(&t, c, 0, "\x90", 1), OK);
+    char byte = 0;
+    KT_EQ(sys_vmo_read(&t, x, 0, &byte, 1), OK);
+    KT_EQ((uint8_t)byte, 0xc3);
+    /* The child can't become code either way while it is mapped or shared. */
+    KT_EQ(handle_duplicate(&t, c, RIGHT_SAME, &d), OK);
+    KT_EQ(sys_vmo_make_exec(&t, c, root, &x), ERR_BAD_STATE);   /* d is another handle */
+    KT_EQ(sys_vmo_make_jit(&t, d, root, &x), ERR_ACCESS_DENIED);
+    KT_ASSERT(!aspace_maps_jit(as));
+    KT_EQ(aspace_check(as), 2);   /* a's RW page and b's RX one; W^X entry by entry */
+    handle_table_destroy(&t);
+}
+
+/* A program with the power hands JIT memory to one without it (its own
+ * choice: handles are delegable), narrowed so it can't be passed on. The
+ * receiver gets exactly that: W+X on that VMO alone (and is marked), no
+ * way to pass it on, no JIT memory of its own, no plain copy to keep or
+ * seal, W^X everywhere else. An execute-only duplicate never writes. */
+KTEST(vmo_jit_hostile_handoff)
+{
+    struct handle_table t, u;
+    handle_t root, vmar, h, x;
+    sys_setup(&t, RIGHT_ROOT_JIT, &root, &vmar, 2, &h);
+    KT_EQ(sys_vmo_make_jit(&t, h, root, &x), OK);
+    handle_t uroot, uvmar, uplain;
+    sys_setup(&u, NOJIT, &uroot, &uvmar, 1, &uplain);
+    struct aspace *uas = aspace_of(&u, uvmar);
+
+    handle_t c0, c1, xs[2], got[2];
+    KT_EQ(sys_channel_create(&t, &c0, &c1), OK);
+    struct khandle kc;
+    KT_EQ(handle_remove(&t, c1, &kc), OK);
+    KT_EQ(handle_insert(&u, &kc, &c1), OK);
+    KT_EQ(handle_duplicate(&t, x, RIGHT_SAME, &xs[0]), OK);
+    KT_EQ(handle_duplicate(&t, x, RIGHT_SAME, &xs[1]), OK);
+    const rights_t kept = RIGHT_DUPLICATE | RIGHT_WAIT | RIGHT_INSPECT | VR;
+    rights_t narrow[2] = { kept | RIGHT_WRITE | RIGHT_EXEC, kept | RIGHT_EXEC };
+    KT_EQ(sys_channel_write_rights(&t, c0, "j", 1, xs, narrow, 2), OK);
+    uint32_t nb = 0, nh = 0;
+    char byte;
+    KT_EQ(sys_channel_read(&u, c1, &byte, 1, &nb, got, 2, &nh), OK);
+    KT_EQ(nh, 2);
+    KT_EQ(rights_of(&u, got[0]), narrow[0]);
+
+    /* W+X on it, as given; marked. */
+    uint64_t a = 0, b = 0;
+    KT_ASSERT(!aspace_maps_jit(uas));
+    KT_EQ(sys_vmar_map(&u, uvmar, got[0], 0, PG, VMAR_READ | VMAR_WRITE | VMAR_EXEC, &a), OK);
+    KT_ASSERT(aspace_maps_jit(uas));
+    KT_EQ(aspace_fault(uas, a, ASPACE_WRITE), OK);
+    KT_ASSERT(pte_wx(uas, a));
+    /* No passing it on (no transfer), no JIT memory of its own (no power,
+     * and the handle given is no root), W^X on its own VMOs. */
+    handle_t d0, d1, again;
+    KT_EQ(sys_channel_create(&u, &d0, &d1), OK);
+    KT_EQ(handle_duplicate(&u, got[0], RIGHT_SAME, &again), OK);   /* a copy: no transfer either */
+    KT_EQ(sys_channel_write_rights(&u, d0, "k", 1, &again, (rights_t[]){ RIGHT_SAME }, 1),
+          ERR_ACCESS_DENIED);
+    KT_EQ(handle_close(&u, again), ERR_BAD_HANDLE);   /* (a refused send closes it) */
+    KT_EQ(sys_vmo_make_jit(&u, uplain, uroot, &h), ERR_ACCESS_DENIED);
+    KT_EQ(sys_vmo_create(&u, PG, 0, &uplain), OK);
+    KT_EQ(sys_vmo_make_jit(&u, uplain, got[0], &h), ERR_WRONG_TYPE);
+    KT_EQ(sys_vmo_create(&u, PG, 0, &uplain), OK);
+    KT_EQ(sys_vmar_map(&u, uvmar, uplain, 0, PG, VMAR_READ | VMAR_WRITE | VMAR_EXEC, &b),
+          ERR_INVALID_ARGS);
+    /* No plain copy of the JIT memory to keep writing or to seal. */
+    handle_t kid;
+    KT_EQ(sys_vmo_create_child(&u, got[0], VMO_CHILD_SNAPSHOT, 0, PG, &kid), ERR_NOT_SUPPORTED);
+    KT_EQ(sys_vmo_make_exec(&u, got[0], uroot, &h), ERR_BAD_STATE);   /* never sealed; gone */
+    KT_EQ(sys_vmar_protect(&u, uvmar, a, PG, VMAR_READ | VMAR_EXEC), OK);   /* still its mapping */
+    /* The execute-only one: never writes, by any route. */
+    KT_EQ(sys_vmar_map(&u, uvmar, got[1], 0, PG, VMAR_READ | VMAR_WRITE, &b), ERR_ACCESS_DENIED);
+    KT_EQ(sys_vmar_map(&u, uvmar, got[1], 0, PG, VMAR_READ | VMAR_EXEC, &b), OK);
+    KT_EQ(sys_vmar_protect(&u, uvmar, b, PG, VMAR_READ | VMAR_WRITE | VMAR_EXEC),
+          ERR_ACCESS_DENIED);
+    KT_EQ(sys_vmo_write(&u, got[1], 0, "a", 1), ERR_ACCESS_DENIED);
+    KT_EQ(sys_vmo_set_size(&u, got[1], 0), ERR_ACCESS_DENIED);
+    KT_EQ(aspace_fault(uas, b, ASPACE_WRITE), ERR_ACCESS_DENIED);
+    KT_EQ(aspace_check(uas), 2);
+    handle_table_destroy(&u);
+    handle_table_destroy(&t);
+}
+
+/* W^X across a spawn: a parent holds the vmar of a child's address space
+ * (as spawn does) and maps into it. Without JIT memory nothing it maps
+ * there is W+X; JIT memory it maps there marks the child, which runs it
+ * only through the parent's mapping; a fork-like copy-on-write snapshot of
+ * JIT memory doesn't exist, and one of plain memory never executes. */
+KTEST(vmo_jit_hostile_spawn)
+{
+    struct handle_table t;
+    handle_t root, vmar, h, x, cvmar, plain, snap;
+    sys_setup(&t, RIGHT_ROOT_JIT, &root, &vmar, 2, &h);
+    KT_EQ(sys_vmar_create(&t, &cvmar), OK);   /* the child's address space */
+    struct aspace *child = aspace_of(&t, cvmar), *mine = aspace_of(&t, vmar);
+    KT_EQ(sys_vmo_create(&t, 2 * PG, 0, &plain), OK);
+    uint64_t a = 0, b = 0, c = 0;
+    KT_EQ(sys_vmar_map(&t, cvmar, plain, 0, PG, VMAR_READ | VMAR_WRITE | VMAR_EXEC, &a),
+          ERR_INVALID_ARGS);
+    KT_EQ(sys_vmar_map(&t, cvmar, plain, 0, PG, VMAR_READ | VMAR_WRITE, &a), OK);
+    KT_EQ(sys_vmar_protect(&t, cvmar, a, PG, VMAR_READ | VMAR_WRITE | VMAR_EXEC), ERR_INVALID_ARGS);
+    KT_ASSERT(!aspace_maps_jit(child));
+    /* A fork-like copy of the plain memory: writable, never executable. */
+    KT_EQ(sys_vmo_create_child(&t, plain, VMO_CHILD_SNAPSHOT, 0, 2 * PG, &snap), OK);
+    KT_EQ(sys_vmar_map(&t, cvmar, snap, 0, PG, VMAR_READ | VMAR_EXEC, &b), ERR_ACCESS_DENIED);
+
+    KT_EQ(sys_vmo_make_jit(&t, h, root, &x), OK);
+    KT_EQ(sys_vmar_map(&t, vmar, x, 0, PG, VMAR_READ | VMAR_WRITE | VMAR_EXEC, &b), OK);
+    KT_EQ(sys_vmar_map(&t, cvmar, x, 0, PG, VMAR_READ | VMAR_WRITE | VMAR_EXEC, &c), OK);
+    KT_ASSERT(aspace_maps_jit(child));
+    KT_EQ(aspace_fault(child, c, ASPACE_WRITE), OK);
+    KT_EQ(aspace_fault(mine, b, ASPACE_EXEC), OK);
+    KT_ASSERT(pte_wx(child, c));
+    /* Each address space's mapping is its own: the parent takes write off
+     * its own, and the child's stays as the parent made it (until the
+     * parent, holding the child's vmar, changes that too). */
+    KT_EQ(sys_vmar_protect(&t, vmar, b, PG, VMAR_READ | VMAR_EXEC), OK);
+    KT_ASSERT(pte_wx(child, c));
+    KT_EQ(sys_vmar_protect(&t, cvmar, c, PG, VMAR_READ | VMAR_EXEC), OK);
+    KT_ASSERT(!pte_wx(child, c));
+    /* No fork-like copy of JIT memory at all. */
+    handle_t jsnap;
+    KT_EQ(sys_vmo_create_child(&t, x, VMO_CHILD_SNAPSHOT, 0, PG, &jsnap), ERR_NOT_SUPPORTED);
+    KT_EQ(sys_vmo_create_child(&t, x, VMO_CHILD_SNAPSHOT_AT_LEAST_ON_WRITE, 0, PG, &jsnap),
+          ERR_NOT_SUPPORTED);
+    KT_EQ(aspace_check(child), 2);
+    KT_EQ(aspace_check(mine), 1);
+    handle_table_destroy(&t);
+}
+
 /* ---- races --------------------------------------------------------------------- */
 
 /* At the moment vmo_make_jit has taken the handle out and is about to

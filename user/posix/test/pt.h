@@ -93,6 +93,7 @@ void pt_mmap_coherent(char **argv);
 void pt_spawn_data(char **argv);
 void pt_wayland(char **argv);
 void pt_jit(char **argv);          /* MAP_JIT without the power (jit.c) */
+void pt_links(char **argv);        /* only when asked for: an ext volume at /u6 (links.c) */
 void pt_scm(char **argv);          /* socketpairs carrying descriptors (scm.c, scmkid.c) */
 void pt_unix(char **argv);         /* named AF_UNIX sockets through /svc/unix (unix.c) */
 /* The signal section's second half (sigproc.c): between processes. */
@@ -126,6 +127,7 @@ int  pt_child_mmap_pull(int argc, char **argv);
 int  pt_child_wl(int argc, char **argv);
 int  pt_child_scm(void);
 int  pt_child_unix(int argc, char **argv);
+int  pt_child_links(void);
 
 /* Pages charged to our job now (job_get_info; start.c). */
 uint64_t pt_job_pages(void);

@@ -108,9 +108,14 @@ static void drop_offer(void)
     offer = HANDLE_INVALID;
 }
 
+bool update_busy(void)
+{
+    return busy != NULL || worker_stuck;
+}
+
 status_t update_offer_new(handle_t port, uint64_t key, handle_t *client)
 {
-    if (busy || worker_stuck)
+    if (busy || worker_stuck || install_busy())
         return ERR_BAD_STATE;   /* the last offer's check isn't finished */
     drop_offer();
     handle_t mine, theirs;
@@ -321,6 +326,10 @@ static bool files_match(struct check *c, uint32_t nh)
  * was checked by the generated server.) */
 static bool check_offer(struct check *c, uint32_t nh)
 {
+    if (install_busy()) {   /* the installer reads /esp: no stick write meanwhile */
+        refuse(&c->a, UPDATE_BAD_OFFER, 0, ERR_BAD_STATE);
+        return false;
+    }
     if (nh < UPDATE_FILES || nh > UPDATE_PARTS || !flags_ok(c->flags)) {
         refuse(&c->a, UPDATE_BAD_OFFER, 0, ERR_INVALID_ARGS);
         return false;

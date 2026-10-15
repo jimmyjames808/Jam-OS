@@ -1,0 +1,69 @@
+# pkgctl: init's approvals of a package's programs (docs/M13.7-PLAN.md
+# section 9, track PO5), on the channel init makes for it
+# (initctl.pkg_channel), which the shell hands to bin/pkg when the owner
+# types `pkg`. Served by init (user/services/init/pkg.c, the checks in
+# pkgapprove.c); called by bin/pkg and utest.
+#
+# A program on /data runs only with an approval line in /data/etc/allow
+# (<dataprog.h>), which only init and the shell can write. A package's
+# lines are init's: bin/pkg writes the files under /data/pkg (its view
+# alone may: FS_VIEW_GUARD_PKG, <fsview.h>), then asks init to approve
+# them, sending the package's signed manifest. init trusts nothing bin/pkg
+# says: it checks the manifest's signature with /boot/ports.pub (a build
+# without one approves nothing), reads every program back from /data/pkg
+# itself into memory only it holds, and from those bytes checks the file's
+# size and SHA-256 against the manifest's `file` line, makes the page
+# table and checks its SHA-256 against the `table` line, checks that the
+# program's own list (its ELF note) is the manifest's `program` list, and
+# applies the refusals `allow` applies (dp_wants_refused). Only when every
+# program has passed does it write the tables (/data/etc/allow.d/<sha-256>)
+# and then the lines, each tagged with the package:
+#
+#     <sha-256>\t/data/pkg/<path>\t<what its list asks for>\tpkg=<name> <version>-r<revision>
+#
+# The shell's `allow -l` shows the tag; its `allow -r` and `allow <file>`
+# refuse to drop a tagged line: revoke does, for `pkg remove` and an
+# upgrade's old version.
+#
+# Both methods are answered later, from init's loop, once its worker thread
+# has done the work (a program of 64 MiB takes a moment to read and hash):
+# one at a time per channel, the next read when the last is answered. One
+# channel at a time: a newer pkg_channel closes an older one.
+#
+# Restart: none. After ERR_PEER_CLOSED init is gone; nothing was written
+# that an answer didn't report (a line is written whole with the others, or
+# not at all), and the next `pkg` settles the journal.
+
+protocol pkgctl 85
+
+# The longest name and version (the manifest grammar's), and the longest
+# reason.
+const NAME_MAX 63
+const WHY_MAX  95
+
+# approve's flags: the programs are staged, at `<path>.new` (an install's or
+# an upgrade's files before the swap); the lines name `<path>` all the same.
+const STAGED 1
+
+# Approve the programs of the package whose manifest (the signed text,
+# manifest_bytes of the VMO, at most 4 MiB: PKG_MANIFEST_MAX) is given.
+# The answer: verdict OK and the number of programs approved (a package
+# without programs approves nothing and is OK), or the refusal: verdict
+# ERR_ACCESS_DENIED (no ports key, not the key's signature, a file or a
+# table that isn't the manifest's, a list that isn't the program's own or
+# that asks for what no program from /data may have, a path another
+# package's line holds), ERR_INVALID_ARGS (the manifest's grammar),
+# ERR_NOT_SUPPORTED (a must-understand line this build doesn't know),
+# ERR_NOT_FOUND (a program isn't there), ERR_OUT_OF_RANGE (a size), or the
+# filesystem's error; program: the index of the program a refusal is about
+# (in the manifest's order), 0xffffffff if none; why: a reason for the
+# owner. A refusal writes nothing. Approving a package again writes no
+# second line for the same (hash, path, package).
+1  approve  (u32 flags, u64 manifest_bytes, handle<vmo> manifest) -> (i32 verdict, u32 programs, u32 program, str[<=95] why) later
+
+# Take back every line tagged with this package (its version and
+# revision): the lines go, and the tables no line names any more. lines:
+# how many went (0: none had the tag). ERR_INVALID_ARGS: not a name, a
+# version or a revision the manifest grammar takes; the filesystem's
+# errors (then nothing changed).
+2  revoke  (str[<=63] name, str[<=63] version, u32 revision) -> (u32 lines) later

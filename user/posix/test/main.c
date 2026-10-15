@@ -49,12 +49,13 @@ static const struct {
     { "mmap-coherent", pt_mmap_coherent },
     { "spawn-data", pt_spawn_data },
     { "loopback", pt_loopback },
+    { "links", pt_links },
 };
 
 /* The sections run only when named (long ones). */
 static const char *const asked_only[] = { "files-many", "sockets", "session", "mmap-big",
                                           "mmap-coherent", "spawn-data", "loopback",
-                                          "self-image" };
+                                          "self-image", "links" };
 
 static bool by_default(const char *name)
 {
@@ -119,6 +120,8 @@ int main(int argc, char **argv)
         return pt_child_scm();
     if (argc >= 2 && !strcmp(argv[1], "--child-unix"))
         return pt_child_unix(argc, argv);
+    if (argc >= 2 && !strcmp(argv[1], "--child-links"))
+        return pt_child_links();
     setvbuf(stdout, NULL, _IOLBF, 0);   /* each line out as it is made */
     unsigned n = sizeof(sections) / sizeof(sections[0]);
     for (unsigned i = 0; i < n; i++) {

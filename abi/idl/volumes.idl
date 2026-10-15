@@ -295,13 +295,14 @@ const REFUSED_UNREADABLE 8
 # driver's errors as they come.
 5  prepare_check  (u32 id) -> (u8 plan, u8 refused) later
 
-# volinstall: making a disk Jam OS's (M12.7 stage 2; stage 3's installer
-# adds its methods). Like `volesp`, init's alone: init made this channel when
-# it started volumes (the startup role VOLUMES_SR_INSTALL), holds the client
-# end and gives it to nobody; volumes serves nothing else on it, and
-# nothing of this on any other channel. The shell reaches it through
-# initctl.prepare_disk, after the owner has typed the last four characters
-# of the drive's serial number (and `erase`, for a drive that isn't empty).
+# volinstall: making a disk Jam OS's (M12.7 stage 2) and the installer's
+# writable partitions (stage 3). Like `volesp`, init's alone: init made
+# this channel when it started volumes (the startup role
+# VOLUMES_SR_INSTALL), holds the client end and gives it to nobody; volumes
+# serves nothing else on it, and nothing of this on any other channel. The
+# shell reaches it through initctl.prepare_disk and initctl.install, after
+# the owner has typed the last four characters of the drive's serial number
+# (and `erase`, for a drive that isn't empty).
 #
 # Reconnect: ERR_PEER_CLOSED: volumes ended; init has a new channel for the
 # next one, and the request is asked again by its caller.
@@ -341,3 +342,28 @@ protocol volinstall 75
 # a format failed (the table or a partition may be half done: ask again);
 # ERR_TIMED_OUT: not mounted within the time given (10 minutes).
 1  prepare  (u32 id, str[<=20] tail, str[<=8] word) -> () later
+
+# The installer's part (M12.7 stage 3; init's install.c, on its worker
+# thread): the ESP and then the data partition of a Jam OS disk `id` made
+# writable for init alone, as `volesp` does for the stick's ESP. The
+# partition's service stops in order and starts again on a `block` channel
+# opened read-write; `fs` is a channel to it, init's alone. While it is
+# writable the partition is no mount at all (every watch is told
+# `unmounted`), so no namespace holds the writable channel. Called while it
+# is writable already (by this channel): another handle to the same
+# channel. Only a Jam OS disk by volumes' own check (mark.c) that is not
+# the boot disk, whose driver isn't read-only (`diskro`), and whose two
+# partitions are mounted (read-only, or held by an earlier call). A crash
+# meanwhile restarts the service writable (still held); a disk pulled ends
+# it. ERR_NOT_FOUND: no such disk; ERR_ACCESS_DENIED: not a Jam OS disk,
+# the boot disk, or read-only; ERR_BAD_STATE: its partitions aren't both
+# mounted and settled, or something else is under way on it; ERR_BUSY: the
+# partition is mounted read-write for everyone (`mount -w`), not held.
+2  open_esp  (u32 id) -> (handle<channel> fs) later
+# Back to read-only: it stops in order (everything on it written, the
+# volume clean), starts again read-only, and is a mount again (a new
+# channel). OK at once if it is read-only already. Errors as open_esp's.
+3  close_esp  (u32 id) -> () later
+# The same for the disk's data partition.
+4  open_data  (u32 id) -> (handle<channel> fs) later
+5  close_data  (u32 id) -> () later

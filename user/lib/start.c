@@ -196,7 +196,7 @@ static status_t take_args(handle_t h, char ***argv_out, int *argc)
         return st;
     uint64_t n = (uint64_t)hd.argc + hd.envc, slots = (n + 2) * sizeof(char *);
     if (hd.magic != STARTUP_ARGS_MAGIC || hd.version != STARTUP_ARGS_VERSION ||
-        n > STARTUP_ARGS_MAX / sizeof(char *) || hd.strings_len > STARTUP_ARGS_MAX - slots ||
+        slots > STARTUP_ARGS_MAX || hd.strings_len > STARTUP_ARGS_MAX - slots ||
         hd.exe_len == 1 || hd.exe_len > STARTUP_ARGS_EXE_MAX)
         return ERR_INVALID_ARGS;
     uint64_t size = (slots + hd.strings_len + hd.exe_len + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);

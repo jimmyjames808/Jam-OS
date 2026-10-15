@@ -36,5 +36,7 @@ typedef int status_t;
 #define ERR_INTERRUPTED    -26
 /* A path leads out of a filesystem service's view (fs.resolve says where). */
 #define ERR_LINK_OUT       -27
+/* A path follows more symbolic links than a walk may (40: POSIX's ELOOP). */
+#define ERR_LINK_LOOP      -28
 
 const char *status_str(status_t s);

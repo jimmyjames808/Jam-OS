@@ -3,7 +3,10 @@
  * (docs/HISTORY.md, M8.6; running one from its pages is sh_dataprog.c).
  *
  * The approvals are lines of /data/etc/allow, each "<sha-256>\t<path>\t
- * <what its list asks for>", written only here. Every program's /data is a
+ * <what its list asks for>", written here, and by init for a package's
+ * programs with a fourth field, the package (pkgctl.approve; `allow -l`
+ * shows it, and `allow -r` or `allow <file>` never drops such a line:
+ * `pkg remove` does, through init). Every program's /data is a
  * view that leaves etc alone (<fsview.h>), so only init and this shell,
  * which hold the whole of /data, can change the file: a program can never
  * approve another, or itself. Whoever holds the stick can edit it on
@@ -41,7 +44,7 @@
 #define ALLOW_DIR  DP_ALLOW_DIR
 #define TABLE_DIR  DP_TABLE_DIR
 #define ALLOW_HEAD "# Programs on /data the owner allowed to run (the shell's `allow`):\n" \
-                   "# <sha-256>\\t<path>\\t<what it asked for>\n"
+                   "# <sha-256>\\t<path>\\t<what it asked for>[\\tpkg=<package>]\n"
 #define PROGRAM_MAX  DP_PROGRAM_MAX
 #define HEX_LEN      DP_HEX_LEN
 #define READ_CHUNK   (1u << 20)      /* bytes read and hashed at a time */
@@ -62,6 +65,15 @@ static bool line_path(const char *line, char path[SH_PATH_MAX])
     memcpy(path, t1 + 1, (size_t)(t2 - t1 - 1));
     path[t2 - t1 - 1] = '\0';
     return true;
+}
+
+/* Is the line (left whole) a package's (a tag after its list,
+ * dp_allow_tag)? */
+static bool line_tagged(const char *line)
+{
+    const char *t1 = strchr(line, '\t'), *t2 = t1 ? strchr(t1 + 1, '\t') : NULL;
+    const char *t = t2 ? strrchr(t2 + 1, '\t') : NULL;
+    return t && !strncmp(t + 1, "pkg=", 4);
 }
 
 /* The file's text, a copy the caller frees (NULL and *st: none, or why). */
@@ -91,7 +103,12 @@ int sh_allow_each(void (*fn)(const char *hash, const char *path, const char *tex
         if (nl)
             *nl = '\0';
         if (dp_allow_split(line, &hash, &path, &text)) {
-            fn(hash, path, text, ctx);
+            /* A package's line says so (init wrote it: `pkg remove` takes it back). */
+            static char shown[WANTS_TEXT_MAX + 160];
+            const char *tag = dp_allow_tag(text);
+            if (tag)
+                snprintf(shown, sizeof(shown), "%s [package %s]", text, tag);
+            fn(hash, path, tag ? shown : text, ctx);
             n++;
         }
         line = nl ? nl + 1 : NULL;
@@ -134,7 +151,9 @@ static void drop_tables(const char *gone, unsigned n, const char *kept)
 
 /* The approvals as they are, without those `drop` says to drop, plus one
  * new line (NULL: none), written back whole; then the tables no line
- * needs any more go. *dropped: how many lines went. */
+ * needs any more go. *dropped: how many lines went. ERR_BAD_STATE, and
+ * nothing written, if a line to drop is a package's: only init drops
+ * those (pkgctl.revoke, for `pkg remove`). */
 static status_t rewrite(bool (*drop)(const char *path, void *ctx), void *ctx, const char *add,
                         unsigned *dropped)
 {
@@ -152,17 +171,27 @@ static status_t rewrite(bool (*drop)(const char *path, void *ctx), void *ctx, co
         return ERR_NO_MEMORY;
     }
     size_t n = (size_t)snprintf(out, cap, "%s", ALLOW_HEAD);
+    bool package = false;
     *dropped = 0;
     for (char *line = all; line && *line;) {
         char *nl = strchr(line, '\n');
         if (nl)
             *nl = '\0';
         char path[SH_PATH_MAX];
-        if (line_path(line, path) && drop(path, ctx))
+        if (line_path(line, path) && drop(path, ctx)) {
+            package |= line_tagged(line);
             memcpy(gone + (size_t)(*dropped)++ * HEX_LEN, line, HEX_LEN);
-        else if (line[0] != '#' && line[0])
+        } else if (line[0] != '#' && line[0]) {
             n += (size_t)snprintf(out + n, cap - n, "%s\n", line);
+        }
         line = nl ? nl + 1 : NULL;
+    }
+    if (package) {
+        free(gone);
+        free(out);
+        free(all);
+        *dropped = 0;
+        return ERR_BAD_STATE;
     }
     if (add)
         n += (size_t)snprintf(out + n, cap - n, "%s\n", add);

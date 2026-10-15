@@ -36,6 +36,7 @@ long lx_err(status_t st)
     case ERR_NAME_TOO_LONG:    return -ENAMETOOLONG;
     case ERR_BUSY:             return -EBUSY;
     case ERR_INTERRUPTED:      return -EINTR;
+    case ERR_LINK_LOOP:        return -ELOOP;
     }
     return -EIO;   /* ERR_INTERNAL, and any code this table doesn't know yet */
 }

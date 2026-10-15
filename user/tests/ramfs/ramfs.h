@@ -11,7 +11,8 @@
 #include <fsserver.h>
 
 #define RAMFS_NODES    128           /* files and directories, the root included */
-#define RAMFS_CAPACITY (4u << 20)    /* bytes of file data in all: past it, ERR_NO_SPACE */
+#define RAMFS_CAPACITY (8u << 20)    /* bytes of file data in all: past it, ERR_NO_SPACE
+                                      * (files.txt copies bin/utest in: more than 4 MiB) */
 
 extern const struct fs_ops   ramfs_fs_ops;
 extern const struct file_ops ramfs_file_ops;

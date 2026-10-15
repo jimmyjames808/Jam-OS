@@ -464,7 +464,11 @@ status_t ns_svc_remove(const char *name);
  *   "/data:w"        a view that may write
  *                    (neither view has the top-level `etc` at all: not
  *                    listed, opened, read, made or changed, FS_VIEW_NO_ETC;
- *                    every program's mount, whatever its list says)
+ *                    every program's mount, whatever its list says);
+ *                    the writable one leaves the top-level `pkg` alone
+ *                    too (FS_VIEW_GUARD_PKG: the packages' prefix)
+ *   "/data:wp"       a view that may write, the packages' prefix too
+ *                    (still no etc): bin/pkg's (`mount /data rw pkg`)
  *   "/data:rk"       a read-only view that shows `etc/ssh` (the SSH host
  *                    key) and `etc/authorized_keys`, nothing else of etc:
  *                    only C code writes it (init's grants for sshd, sshd's

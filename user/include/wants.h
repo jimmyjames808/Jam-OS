@@ -23,7 +23,13 @@
  *                             the top-level `etc` at all: the settings,
  *                             approvals and keys); <point>
  *                             is /boot, /esp, /data, /usb* (every other
- *                             stick) or * (every mount)
+ *                             stick) or * (every mount); a writable one
+ *                             can't change the top-level `pkg` (the
+ *                             packages' prefix, /data/pkg)
+ *     mount /data rw pkg      /data writable, the packages' prefix too
+ *                             (still no etc): bin/pkg's; the build allows
+ *                             it only for a service (user/services/), and
+ *                             `allow` never for a program on /data
  *     right <name>            klog, sysinfo, clock, debug or jit: that
  *                             power on the root resource (WANT_RIGHT_*);
  *                             jit (RIGHT_ROOT_JIT, vmo_make_jit: memory it
