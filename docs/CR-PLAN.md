@@ -392,19 +392,37 @@ call layer as it stood.
 
 Track CB1, the first Chromium build: ports/chromium builds Chromium
 155.0.8059.39 for Jam OS on the PC's WSL with Chromium's own GN, clang
-and Rust, through the ports builder. **Not finished yet** (2026-10-15
-morning): GN generates the build (36,768 targets), every system library
-and shared-library question below is answered, and ninja had built about
-34,000 of the 44,700 steps base_unittests and headless_shell need
-(base, V8, Skia, the Rust standard library for
-`x86_64-unknown-linux-musl`, most of Blink) when the PC stopped
-answering over the VPN (from about 08:25); the errors still open at that
-point are fixed in the tree but not yet compiled (minigbm, fontconfig's
-`strerror_r`, the trust store, Crashpad's `<sys/cdefs.h>`, expat,
-Wayland's GBM). No program has been linked for Jam OS yet, so the link
-(the driver, posix.ld, Rust's std in a C++ link) and the syscall scan of
-the two programs are still to come; the next build round starts where
-ninja stopped (`tools/cr/build.sh start`, with a `wait` kept open).
+and Rust, through the ports builder. **Both programs link** (2026-10-15,
+track CB1b): `base_unittests` (76.7 MB: 56.8 MB of code, 1.7 MB of data)
+and `headless_shell` (335.7 MB: 213.4 MB of code, 6.5 MB of data), with
+the two programs they run, `test_child_process` (2.6 MB) and
+`chrome_crashpad_handler` (6.3 MB), static and position-dependent through
+Jam OS's link driver; the ports builder stages them. The syscall scan
+passes `base_unittests` (105 `syscall` instructions, all in Jam OS's
+stubs) and lists 13 sites in `headless_shell`: 12 in Crashpad's client
+(`CrashpadClient::DumpWithoutCrash`, its signal handler's
+`HandleOrReraiseSignal` and `RequestCrashDumpHandler::HandleCrashImpl`,
+`ExceptionHandlerClient::SignalCrashDump`, `ScopedMmap::ResetMmap`,
+`LoggingMunmap`: linux_syscall_support's inline calls) and `SyscallAsm`
+(the seccomp sandbox's raw call), for CB3. Still open:
+`ports.py package --from` refuses the build, as the package format holds
+no file over 64 MiB (PO13's big packages); the two helper programs are
+not in the package yet (CB2 and CB3 add them with their runs).
+
+The last round's link errors and their fixes (CB1b): base's `close()`
+wrapper found libc's with `dlsym(RTLD_NEXT)` (patch 0910: the linker's
+`--wrap=close` instead, so the FD-ownership check stays); Jam OS's libc
+had no `dlopen()` family at all (it gained musl's static stubs, as a
+static Linux program has them: `dlopen()` fails with "Dynamic loading not
+supported"); Crashpad's upload transport wanted libcurl (args.gn:
+`crashpad_http_transport_impl = "socket"`, BoringSSL for https);
+`SafeSPrintfTest.EmitNULL` can't compile where `NULL` is `nullptr`
+(Alpine's patch, 0007, leaves it out); `StackTrace`'s stream output had
+no definition without `backtrace()` (0911); Chromium's fontconfig named a
+libuuid it doesn't call (0912); FFmpeg's build links the system's libz
+(the recipe `needs zlib`). `tools/cr/build.sh`'s detached build now gets
+`CR_JOBS` and `CR_MEM_MB` (the keeper's environment had neither, so
+ninja ran `-j 10`).
 
 - **The source** is the chromium-linux-tarballs project's tarball Alpine
   uses (2021203420 bytes, its SHA-256 in the recipe; Alpine's SHA-512
