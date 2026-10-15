@@ -35,6 +35,7 @@ static const struct {
     { "pty", pt_pty },
     { "procfs", pt_procfs },
     { "self-image", pt_self_image },
+    { "launch", pt_launch },
     { "session", pt_session },
     { "wayland", pt_wayland },
     { "scm", pt_scm },
@@ -107,6 +108,8 @@ int main(int argc, char **argv)
         return pt_child_raw(argc, argv);
     if (argc >= 2 && !strcmp(argv[1], "--child-procfs"))
         return pt_child_procfs(argc, argv);
+    if (argc >= 2 && !strcmp(argv[1], "--child-launch"))
+        return pt_child_launch(argc, argv);
     if (argc >= 2 && !strcmp(argv[1], "--child-mmap-pull"))
         return pt_child_mmap_pull(argc, argv);
     if (argc >= 2 && !strcmp(argv[1], "--child-wl"))

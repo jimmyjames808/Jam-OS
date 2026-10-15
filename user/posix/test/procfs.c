@@ -437,10 +437,10 @@ static uint64_t touch_text(void)
     return pages;
 }
 
-/* posix_spawn of /proc/self/exe (koid: our image's, 0 for none), the
- * child holding on once it is ready (touch: with every page of its code
- * read): how many pages our job grew by meanwhile. */
-static uint64_t self_spawn(const char *want, uint64_t koid, bool touch)
+/* posix_spawn of prog (/proc/self/exe; koid: our image's, 0 for none),
+ * the child holding on once it is ready (touch: with every page of its
+ * code read): how many pages our job grew by meanwhile. */
+static uint64_t self_spawn(const char *prog, const char *want, uint64_t koid, bool touch)
 {
     int up[2] = { -1, -1 }, hold[2] = { -1, -1 };
     CHECK(pipe2(up, O_CLOEXEC) == 0 && pipe2(hold, O_CLOEXEC) == 0);
@@ -454,7 +454,7 @@ static uint64_t self_spawn(const char *want, uint64_t koid, bool touch)
                      NULL };
     uint64_t before = pt_job_pages();
     pid_t pid = -1;
-    int e = posix_spawn(&pid, "/proc/self/exe", &fa, NULL, argv, environ);
+    int e = posix_spawn(&pid, prog, &fa, NULL, argv, environ);
     posix_spawn_file_actions_destroy(&fa);
     close(up[1]);
     close(hold[0]);
@@ -472,17 +472,53 @@ static uint64_t self_spawn(const char *want, uint64_t koid, bool touch)
 /* posix_spawn of /proc/self/exe: this program again (want: our path),
  * from our image. Twice: a child that reads every page of its code grows
  * our job no more than one that doesn't (its own pages, data, stack and
- * heap, are the same in both; the code's are the image's, ours already). */
+ * heap, are the same in both; the code's are the image's, ours already).
+ * Both against the same program started from the boot image, which never
+ * copies its code: the child's own pages are most of what any start
+ * costs (about 95 against posixtest's 162 of code), so only a measure
+ * beside the same child's tells a copy from them. */
 static void check_self_spawn(const char *want)
 {
     uint64_t text = touch_text(), koid = image_koid(NULL);
-    uint64_t still = self_spawn(want, koid, false), touched = self_spawn(want, koid, true);
+    uint64_t base = self_spawn("/bin/posixtest", EXE, 0, false);
+    uint64_t still = self_spawn("/proc/self/exe", want, koid, false);
+    uint64_t touched = self_spawn("/proc/self/exe", want, koid, true);
     printf("posixtest: procfs: /proc/self/exe started %s again from %s: the job grew %llu "
-           "pages, %llu with its %llu pages of code touched\n", want,
+           "pages, %llu with its %llu pages of code touched (%llu from the boot image)\n", want,
            koid ? "its image" : "the boot image", (unsigned long long)still,
-           (unsigned long long)touched, (unsigned long long)text);
-    CHECK(touched < text);               /* no copy of the code made for it */
-    CHECK(touched < still + text / 8);   /* none of the code's pages as it runs */
+           (unsigned long long)touched, (unsigned long long)text, (unsigned long long)base);
+    CHECK(still < base + text / 8);      /* no copy of the code made for it */
+    CHECK(touched < base + text / 8);    /* none of the code's pages as it runs */
+    CHECK(touched < still + text / 8);
+}
+
+/* A child started from our image by libjam's spawn with no POSIX
+ * hand-over (the shell's way for a program in the background): spawn
+ * names its path beside argv (SR_ARGS), so its /proc/self/exe is want
+ * without a look through the file. */
+static void check_no_handover(const char *want)
+{
+    handle_t img = startup_handle(SR_SELF_IMAGE), vmo = HANDLE_INVALID, proc;
+    uint64_t size = 0;
+    const char *argv[] = { "pt-prog", "--child-procfs", "startup-exe", want };
+    static const char *const env[] = { NULL };
+    CHECK(img && jam_vmo_get_size(img, &size) == OK &&
+          jam_handle_duplicate(img, RIGHT_SAME, &vmo) == OK);
+    struct spawn_args a = {
+        .path = want, .vmo = vmo, .size = size, .argc = 4, .argv = argv,
+        .job = startup_handle(SR_JOB), .envp = env, .stack_size = 8ull << 20,
+    };
+    struct process_info info = { 0 };
+    status_t st = vmo ? spawn(&a, &proc) : ERR_BAD_HANDLE;
+    if (vmo)
+        jam_handle_close(vmo);
+    if (st == OK) {
+        st = spawn_wait(proc, 10 * NS_PER_S, &info);
+        jam_handle_close(proc);
+    }
+    printf("posixtest: procfs: a child from our image with no hand-over: %s, code %lld\n",
+           status_str(st), (long long)info.exit_code);
+    CHECK(st == OK && info.exit_code == 0);
 }
 
 /* posixtest self-image <path>, run from path (a copy on /data). */
@@ -501,6 +537,7 @@ void pt_self_image(char **argv)
     rights_t r = 0;
     CHECK(image_koid(&r) && !(r & RIGHT_WRITE));   /* a program from a VMO holds it */
     check_self_spawn(want);
+    check_no_handover(want);
 }
 
 /* ---- children ----------------------------------------------------------------------- */
@@ -552,8 +589,22 @@ static int child_exe(void)
                ? 0 : 1;
 }
 
+/* Started with no hand-over (check_no_handover): the path SR_ARGS named
+ * is want, and so is /proc/self/exe. */
+static int child_startup_exe(const char *want)
+{
+    char buf[256];
+    const char *given = startup_exe();
+    ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    return given && !strcmp(given, want) && n == (ssize_t)strlen(want) &&
+                   !memcmp(buf, want, (size_t)n)
+               ? 0 : 1;
+}
+
 int pt_child_procfs(int argc, char **argv)
 {
+    if (argc >= 4 && !strcmp(argv[2], "startup-exe"))
+        return child_startup_exe(argv[3]);
     if (argc >= 3 && !strcmp(argv[2], "twin"))
         return child_twin();
     if (argc >= 3 && !strcmp(argv[2], "exe"))

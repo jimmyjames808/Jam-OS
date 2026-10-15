@@ -1354,7 +1354,7 @@ ports, recipes, tests, netstack's caps, the audio API and the docs.
 | **CU1. Descriptor passing on socketpairs** | section 4: the framing, every hand-over kind on GS1's tables, more than 64 descriptors, `MSG_CTRUNC`, `MSG_CMSG_CLOEXEC`, `shutdown(SHUT_RDWR)`, seals travelling and the write-seal rule | the translation file GS1 made (widened), `user/posix/sys/pipe.c` (the socketpair's send and receive), `user/posix/sys/sockio.c`, `user/posix/sys/sockconn.c` (shutdown), `user/posix/sys/memfd.c` (the seal rule), posixtest's socketpair section | G2's GS1 merged | posixtest: 1 byte with 64 descriptors, 128, 254 (EINVAL); every kind passed and used on the other side (a pipe written, a memfd mapped, a file read at its offset, an eventfd signalled); the read-only twin passed on stays read-only; too little room; a peer gone mid-send; Mojo's pattern (non-blocking, partial writes, descriptors with the first byte) between two processes; a fuzz loop of mutated headers (no crash, no handle leaked) | **Opus** |
 | **CU2. Named `AF_UNIX` sockets** | section 4's broker, `/svc/unix`: `bind`, `listen`, `accept`, `connect` on socket files and abstract names | the broker (new, user/services/), its IDL (new), `user/posix/sys/socket.c`'s `AF_UNIX` paths, init's start of it | CU1; M13.6's U4 (socket files on `/jam`) | posixtest: a listener and two connectors, a socket file removed, a connector without the file's view refused, abstract names; utest for the broker's limits | **Opus** |
 | **CE1. The exec sealer** | `/svc/exec` in init: a program `posix_spawn`s an approved `/data` program (its own open of the file; init checks the allow line and page table, seals the file's pages with `vmo_make_exec_verified`) and the child gets its own approval only, never its parent's (the owner's decision, 2026-10-12); built, see "CE1 notes" | `abi/idl/exec.idl` (new), `user/services/init/exec.c` (new), `user/include/dataprog.h` + `user/lib/dataprog.c` (PX's helpers moved from the shell), `user/posix/sys/spawn.c` (`file_program`), `user/posix/sys/proc.c` (a child's job for SIGKILL), `user/lib/spawn.c` (`before_start`), utest `execsvc.c` with `user/tests/exectest` and `user/tests/execwide` | M12.5's PX, M13's F1b, R2 | utest `exec_*`; `tools/posix-mmap-test.sh` case `spawn` (the allowed run starts and exits 7); `allow.txt` and pager-test `exec` unchanged | **Opus** (a trust boundary) |
-| **CS1. Launching** | section 5: `addclosefrom_np`, argv and environments in a VMO, `/proc/self/exe` spawns through CL2's image, a child's argv of 64 KiB | `user/posix/sys/spawn.c`, `user/posix/sys/spawnfd.c`, `user/lib/spawn.c` (the VMO), the POSIX start code (`user/posix/crt/`) | CL2's self-image part (or beside it, merged after) | posixtest: a child with 500 arguments and 64 KiB of environment sees them all; `addclosefrom_np` leaves exactly the remapped descriptors (checked through `/proc/self/fd`) | **Opus** |
+| **CS1. Launching** | section 5: `addclosefrom_np`, argv and environments in a VMO, `/proc/self/exe` spawns through CL2's image, a child's argv of 64 KiB; built, see "CS1 notes" | `user/posix/sys/spawn.c`, `user/posix/sys/spawnfd.c`, `user/lib/spawn.c` (the VMO), the POSIX start code (`user/posix/crt/`) | CL2's self-image part (or beside it, merged after) | posixtest: a child with 500 arguments and 64 KiB of environment sees them all; `addclosefrom_np` leaves exactly the remapped descriptors (checked through `/proc/self/fd`) | **Opus** |
 | **CP1. Programs this big** | section 6's limits: `VMO_VERIFIED_MAX` 1 GiB, `PROGRAM_MAX`, `FILE_MAX`; `allow`'s progress line; a 300 MB generated test program; built, see "CP1 notes" | `kernel/include/jam/abi.h` (the constant), `kernel/object/vmo_verify.c` if a size is assumed there, `user/services/shell/sh_allow.c` (the constant and the line), `user/lib/spawn.c` (the constant), a generated test program (new) | M12.5's PX merged (it rewrites `sh_allow.c`) | ktest: a 1 GiB verified table; the shell's allow script with the 300 MB program (allowed, run, a changed page refused); cr-test.sh `hello` with the big program | **Opus** (small) |
 | **CN1. netstack's caps** | section 8: the new caps, netstack's memory measured at them | `user/include/net.h`, `user/services/netstack/stack.h` and lwIP's options file if pools must grow, BENCH.md's line | nothing | utest: 256 sockets from one opener, the 257th refused; 512 in all; 1,024 TCP connections to the test host; `tools/net-test.sh` unchanged | Sonnet 5.5 |
 | **CB1. The Chromium build** | section 14 and 15: ports/chromium (the recipe, Alpine's patches, our toolchain patch, args for `base_unittests` and `headless_shell`), the builder's kept tree and `package --from` in tools/ports.py, the persistent tree on WSL behind its lock; builds `base_unittests` and `headless_shell`; reports disk, peak memory and time | ports/chromium (new), tools/ports.py (the two options), tools/cr/ (the build wrapper, new) | CT1, CT2; the main session's CPU-weighted slots in `tools/remote-test.sh` | the build finishes; the syscall scan passes (or lists each site); `make check` (the recipe's lint) | **Opus** (the build glue decides much) |
@@ -1599,7 +1599,8 @@ of its own.
   notes").
 - **Limits**: 32 openers, 16 sealed programs waiting (4 per opener),
   dropped after 10 s unstarted; 12 KiB of argv and environment (spawn's
-  2 KiB startup message refuses less, until CS1); 128 hand-over messages.
+  2 KiB startup message refused less until CS1, which carries more in a
+  VMO); 128 hand-over messages.
   A worker thread with its own port serves it, every call on a caller's
   channel with a 5 s deadline: a hostile caller can delay other callers by
   that much a request, never init's loop.
@@ -1754,6 +1755,56 @@ self-image.
   writable, the child's image our very VMO (the same object id). utest's
   malformed hand-overs add a program's path that isn't there and one past
   the first message.
+
+## CS1 notes
+
+Track CS1, launching (2026-10-15): section 5's Jam OS half.
+
+- **argv and the environment in a VMO** (`SR_ARGS`, 21, and `struct
+  startup_args` in `<roles.h>`). libjam's spawn keeps them in the startup
+  message while they fit its 2 KiB and 128 strings; past that it writes
+  them into a VMO of their own (made and written here through a mapping,
+  sent read-only) and the message carries none. The child's libos start
+  (user/lib/start.c, `take_args`) checks the header, copies the strings
+  into a VMO of its own with room for argv's and environ's pointers in
+  front, maps it for good and closes `SR_ARGS`: nothing the starter still
+  holds can change them under it, and argv's strings stay writable (a
+  process title). The limit is Linux's usual `ARG_MAX`: the strings and 8
+  bytes a pointer, at most 2 MiB (more is `ERR_OUT_OF_RANGE`, `E2BIG`).
+  The `SR_ARGS` handle takes one of the message's 16 places: the extras
+  give way first (an error), then `SR_SELF_IMAGE` (left out). A malformed
+  VMO leaves the program with argc 0 and a line in the log, as a malformed
+  message does. The POSIX crt builds Linux's block in a VMO of its own when
+  it outgrows 512 longs on the stack. So CE1's 2 KiB cap is gone:
+  `/svc/exec` now takes what its IDL says (12 KiB, 128 strings; raising
+  that is an IDL change, not needed by Chromium, whose children are
+  `/proc/self/exe`'s and never go through `/svc/exec`).
+- **The program's path without a hand-over.** `SR_ARGS` also names the
+  path (`exe_len`) for a program libjam's spawn gives `SR_SELF_IMAGE` and
+  no POSIX hand-over (nor a `before_start`, which passes one on): the
+  shell's background runs from `/data`, a native starter's. libc's
+  `/proc/self/exe` takes the hand-over's path first, then this
+  (`startup_exe`), and only then looks through argv[0]'s file, which for a
+  250 MB program read and compared every page. The cost is one small VMO
+  for such a start.
+- **`posix_spawn_file_actions_addclosefrom_np`** (glibc 2.34's): in our
+  `<spawn.h>` (an override of musl's header, user/posix/include/spawn.h)
+  and musl's posix_spawn override, a new file action (6) that drops every
+  slot of the child's table from N up, in order with the others: a `dup2`
+  before it above N is gone, one after it stays.
+- **The self-spawn check's margin** (CL2's 95 against 162 pages): the
+  child's own pages are most of what a start costs, so posixtest now
+  measures the same program started from the boot image beside it (which
+  never copies its code) and checks the self-image children against that
+  (98 and 98 against 100 from `/data`, 93 against 93 from the boot image,
+  with 165 pages of code).
+- **Tests**: posixtest's `launch` section (the `init` run): 503 arguments
+  (62 KiB) and 64 KiB of environment seen whole by a child from the boot
+  image and from `/proc/self/exe`; 3 MiB `E2BIG`; closefrom checked
+  through the child's `/proc/self/fd`. Its `self-image` section (from
+  `/data`, posix-mmap-test.sh `spawn`) adds a child started from the image
+  with no hand-over, whose `startup_exe` and `/proc/self/exe` are its
+  path.
 
 ## Later
 

@@ -16,7 +16,13 @@
  * goes), its strings become argv and the environment, and main runs as
  * for any start. A dismissal (the channel closed with nothing on it) ends
  * the spare with code 0; a malformed promotion with
- * STANDBY_BAD_PROMOTION, its handles closed. */
+ * STANDBY_BAD_PROMOTION, its handles closed.
+ *
+ * argv and the environment that don't fit the message come in a VMO
+ * (SR_ARGS, <roles.h>), with the program's path when the starter names
+ * it there: copied here into a VMO of our own, mapped for good, with
+ * room for the pointers argv and the environment are, so that nobody
+ * else can change them under us; SR_ARGS is closed and leaves the table. */
 #include <os.h>
 #include <svcstate.h>
 
@@ -38,6 +44,12 @@ static uint64_t  promoted_at_ns;           /* standby_promoted_ns() */
 static handle_t  start_channel;
 static status_t  start_status = ERR_BAD_STATE;
 static char     *str_ptrs[STARTUP_MAX_STRS + 2];   /* argv NULL envp NULL */
+static const char *args_exe;               /* SR_ARGS's path of the program, or NULL */
+
+const char *startup_exe(void)
+{
+    return args_exe;
+}
 
 uint64_t standby_kill_ns(void)
 {
@@ -104,6 +116,8 @@ const char *startup_role_name(uint32_t role)
     case SR_KEEP:         return "keep";
     case SR_STANDBY:      return "standby";
     case SR_SIGNALS:      return "signals";
+    case SR_SELF_IMAGE:   return "self-image";
+    case SR_ARGS:         return "args";
     }
     return role >= SR_USER ? "user" : "?";
 }
@@ -145,11 +159,12 @@ static status_t read_message(handle_t ch, uint32_t *nbytes, uint32_t *nhandles)
     return st;
 }
 
-/* Point argv and the environment at argc + envc NUL-terminated strings,
- * all inside [s, s + len). */
-static status_t point_strings(char *s, uint32_t len, uint32_t argc, uint32_t envc)
+/* Point argv and the environment (ptrs: room for max + 2) at argc + envc
+ * NUL-terminated strings, all inside [s, s + len). */
+static status_t point_strings(char *s, uint32_t len, uint32_t argc, uint32_t envc, char **ptrs,
+                              uint32_t max)
 {
-    if (argc > STARTUP_MAX_STRS || envc > STARTUP_MAX_STRS - argc)
+    if (argc > max || envc > max - argc)
         return ERR_INVALID_ARGS;
     char *end = s + len;
     unsigned n = argc + envc, slot = 0;
@@ -159,13 +174,56 @@ static status_t point_strings(char *s, uint32_t len, uint32_t argc, uint32_t env
             return ERR_INVALID_ARGS;   /* runs off the end */
         if (i == argc)
             slot++;                    /* skip argv's NULL */
-        str_ptrs[slot++] = s;
+        ptrs[slot++] = s;
         s += l + 1;
     }
     if (argc == n)
         slot++;                        /* argv's NULL when there is no env */
-    str_ptrs[argc] = NULL;
-    str_ptrs[slot] = NULL;
+    ptrs[argc] = NULL;
+    ptrs[slot] = NULL;
+    return OK;
+}
+
+/* SR_ARGS's strings (h: its VMO) copied into a VMO of our own and mapped,
+ * after argc + envc + 2 pointers, which become argv and the environment;
+ * the program's path, if it names one, into args_exe. *argv_out: the
+ * pointers. */
+static status_t take_args(handle_t h, char ***argv_out, int *argc)
+{
+    struct startup_args hd;
+    status_t st = jam_vmo_read(h, 0, &hd, sizeof(hd));
+    if (st != OK)
+        return st;
+    uint64_t n = (uint64_t)hd.argc + hd.envc, slots = (n + 2) * sizeof(char *);
+    if (hd.magic != STARTUP_ARGS_MAGIC || hd.version != STARTUP_ARGS_VERSION ||
+        n > STARTUP_ARGS_MAX / sizeof(char *) || hd.strings_len > STARTUP_ARGS_MAX - slots ||
+        hd.exe_len == 1 || hd.exe_len > STARTUP_ARGS_EXE_MAX)
+        return ERR_INVALID_ARGS;
+    uint64_t size = (slots + hd.strings_len + hd.exe_len + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+    handle_t self = startup_handle(SR_SELF_VMAR), v;
+    uint64_t addr = 0;
+    st = jam_vmo_create(size, 0, &v);
+    if (st != OK)
+        return st;
+    st = jam_vmar_map(self, v, 0, size, VMAR_READ | VMAR_WRITE, &addr);
+    jam_handle_close(v);   /* the mapping keeps it */
+    if (st != OK)
+        return st;
+    char **ptrs = (char **)(uintptr_t)addr, *s = (char *)(uintptr_t)addr + slots;
+    st = jam_vmo_read(h, sizeof(hd), s, (uint64_t)hd.strings_len + hd.exe_len);
+    if (st == OK)
+        st = point_strings(s, hd.strings_len, hd.argc, hd.envc, ptrs, (uint32_t)n);
+    const char *exe = s + hd.strings_len;
+    if (st == OK && hd.exe_len &&
+        (exe[0] != '/' || strnlen(exe, hd.exe_len) != hd.exe_len - 1))
+        st = ERR_INVALID_ARGS;   /* a path is absolute, and ends at its NUL */
+    if (st != OK) {
+        jam_vmar_unmap(self, addr, size);
+        return st;
+    }
+    args_exe = hd.exe_len ? exe : NULL;
+    *argv_out = ptrs;
+    *argc = (int)hd.argc;
     return OK;
 }
 
@@ -179,7 +237,8 @@ static status_t parse_message(uint32_t nbytes, uint32_t nhandles, int *argc)
         return ERR_INVALID_ARGS;
     if (m->strings_len != nbytes - sizeof(*m))
         return ERR_INVALID_ARGS;
-    status_t st = point_strings((char *)msg_buf + sizeof(*m), m->strings_len, m->argc, m->envc);
+    status_t st = point_strings((char *)msg_buf + sizeof(*m), m->strings_len, m->argc, m->envc,
+                                str_ptrs, STARTUP_MAX_STRS);
     if (st != OK)
         return st;
     for (unsigned i = 0; i < nhandles; i++)
@@ -204,7 +263,8 @@ static status_t parse_promotion(uint32_t nbytes, uint32_t nhandles, int *argc)
     for (unsigned i = 0; i < nhandles; i++)
         if (m->roles[i] == SR_STANDBY)
             return ERR_INVALID_ARGS;   /* a spare is promoted once */
-    status_t st = point_strings((char *)msg_buf + sizeof(*m), m->strings_len, m->argc, m->envc);
+    status_t st = point_strings((char *)msg_buf + sizeof(*m), m->strings_len, m->argc, m->envc,
+                                str_ptrs, STARTUP_MAX_STRS);
     if (st != OK)
         return st;
     for (unsigned i = 0; i < nhandles; i++)
@@ -295,9 +355,26 @@ void startup_read(handle_t ch, int *argc_out, char ***argv_out)
         str_ptrs[0] = str_ptrs[1] = NULL;
         say("no usable startup message", start_status);
     }
+    char **argv = str_ptrs;
+    unsigned at = entry_of(SR_ARGS);
+    if (at < msg_nhandles) {
+        /* The strings are all there: the message has none of its own. */
+        const struct startup_msg *m = (const struct startup_msg *)msg_buf;
+        start_status = m->argc || m->envc ? ERR_INVALID_ARGS
+                                          : take_args(msg_handles[at], &argv, &argc);
+        drop_entry(at);
+        if (start_status != OK) {
+            argv = str_ptrs;
+            argc = 0;
+            str_ptrs[0] = str_ptrs[1] = NULL;
+            say("no usable argument VMO", start_status);
+        }
+    }
     unsigned sb = entry_of(SR_STANDBY);
-    if (sb < msg_nhandles)
+    if (sb < msg_nhandles) {
         argc = await_promotion(msg_handles[sb], sb);
+        argv = str_ptrs;
+    }
     *argc_out = argc;
-    *argv_out = str_ptrs;
+    *argv_out = argv;
 }

@@ -67,6 +67,37 @@ enum {
                              * the same pages again (docs/CR-PLAN.md section 6).
                              * A boot-image program has none: its file is
                              * SR_BOOTFS's */
+    SR_ARGS = 21,           /* argv and the environment when the startup message
+                             * can't hold them (struct startup_args, below):
+                             * a VMO, read only, which libos copies into the
+                             * program's own memory and closes before main */
+};
+
+/* SR_ARGS's VMO: this header, then strings_len bytes of strings (argc
+ * argv strings, then envc "KEY=value" strings, each NUL-terminated, as in
+ * the startup message), then exe_len bytes of the program's path. libjam's
+ * spawn makes one when argv and the environment don't fit the startup
+ * message (2 KiB, 128 strings), and to name the path of a program it gives
+ * SR_SELF_IMAGE and no POSIX hand-over (the hand-over names it otherwise:
+ * <posixfds.h>). The message then has no strings of its own. The strings
+ * and a pointer for each, as Linux counts them, are at most
+ * STARTUP_ARGS_MAX bytes (Linux's usual ARG_MAX): more is ERR_OUT_OF_RANGE
+ * for the spawn (E2BIG). The child checks it as any input from its
+ * starter: a malformed one leaves it with argc 0, as a malformed message
+ * does. */
+#define STARTUP_ARGS_MAGIC    0x53475241u   /* "ARGS" */
+#define STARTUP_ARGS_VERSION  1
+#define STARTUP_ARGS_MAX      (2u << 20)    /* strings + 8 bytes a string and 2 NULLs */
+#define STARTUP_ARGS_EXE_MAX  4096          /* the path, its NUL included */
+
+struct startup_args {
+    uint32_t magic;          /* STARTUP_ARGS_MAGIC */
+    uint32_t version;        /* STARTUP_ARGS_VERSION */
+    uint32_t argc;           /* argv strings */
+    uint32_t envc;           /* environment strings after them */
+    uint32_t strings_len;    /* bytes of strings after this header */
+    uint32_t exe_len;        /* bytes of the path after them, its NUL included (an
+                              * absolute path, 2 .. STARTUP_ARGS_EXE_MAX), or 0 */
 };
 
 /* The promotion message: the one message on SR_STANDBY, from the

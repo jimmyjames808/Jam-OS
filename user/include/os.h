@@ -62,8 +62,13 @@ uint32_t os_random_u32(void);
  * unusable message leaves argc 0 and no handles, startup_status() saying
  * why and a line in the log. libos's start calls it before main; a POSIX
  * program's crt calls it itself (it uses no heap, no printf and no
- * thread-local storage). Once, at the start. */
+ * thread-local storage). Once, at the start. argv and an environment too
+ * big for the message come in a VMO (SR_ARGS, <roles.h>), copied into our
+ * own memory here. */
 void        startup_read(handle_t ch, int *argc, char ***argv);
+/* The program's path as the starter named it beside argv (SR_ARGS: a
+ * program from a VMO given no POSIX hand-over), or NULL. */
+const char *startup_exe(void);
 /* The channel the startup message came on (still open). */
 handle_t    startup_channel(void);
 /* The first handle with this role (enum startup_role), or HANDLE_INVALID. */
@@ -205,14 +210,17 @@ struct spawn_args {
  * startup message has argv, SELF_PROCESS, SELF_VMAR, SELF_THREAD, JOB (a
  * duplicate of a->job with JOB_RIGHTS_OWN: the child can't change its own
  * limits), BOOTFS (a duplicate of ours), NS (when a->ns is set),
- * SELF_IMAGE (a program from a->vmo at offset 0 that can run: its own VMO,
- * <roles.h>; when the extras leave room) and the extras, which are
- * consumed whatever happens (and so are the hand-over's, whose program's
- * path spawn fills in when it has none). *proc gets the process handle.
- * ERR_OUT_OF_RANGE: too many
- * extras (STARTUP_MAX_HANDLES - 6 fit next to a namespace, one more
- * without), or a stack bigger than SPAWN_STACK_MAX. A hand-over refused
- * by posixfds_write fails the spawn with its error. */
+ * ARGS (argv and the environment when they don't fit the message's 2 KiB
+ * or 128 strings, and the program's path for one given SELF_IMAGE and no
+ * hand-over: <roles.h>), SELF_IMAGE (a program from a->vmo at offset 0
+ * that can run: its own VMO, <roles.h>; when the extras leave room) and
+ * the extras, which are consumed whatever happens (and so are the
+ * hand-over's, whose program's path spawn fills in when it has none).
+ * *proc gets the process handle. ERR_OUT_OF_RANGE: too many extras
+ * (STARTUP_MAX_HANDLES - 6 fit next to a namespace, one more without; one
+ * fewer with ARGS), argv and the environment past STARTUP_ARGS_MAX (their
+ * bytes and 8 a string), or a stack bigger than SPAWN_STACK_MAX. A
+ * hand-over refused by posixfds_write fails the spawn with its error. */
 status_t spawn(const struct spawn_args *a, handle_t *proc);
 /* Drivers: the startup role that hands a driver process a handle with
  * driver role `r` (DR_* in <jam/driver.h>). user/lib/driver_crt.c turns
