@@ -8,8 +8,9 @@
  *     wlprobe -l                       list the cases and what each needs
  *     wlprobe [options] <case>...      run the named cases, in order
  *     wlprobe [options] all            every case that needs no one's help and
- *                                      no particular layout (not input, states-*,
- *                                      subcompositor: ask for those by name)
+ *                                      no particular layout (not input, hostile,
+ *                                      states-*, subcompositor: ask for those by
+ *                                      name)
  *     wlprobe hold [seconds]           a window that stays (the soak's), redrawn
  *                                      on every frame callback, until closed
  *
@@ -23,13 +24,16 @@
  * <case>: ..." lines before). A case that needs help says so first:
  *     wlprobe: <case>: ready          the window is up: inject the input now
  *     wlprobe: <case>: shot <name>    hold still: take the screenshot <name>
- * The exit status is 0 if every case passed.
+ * The hostile-* cases are clients that break the rules on purpose (track
+ * GR, docs/G2-REVIEW.md): each wants the protocol's answer, and a plain
+ * window served after. The exit status is 0 if every case passed.
  *
  * The compositor offers what the plan says (docs/G2-PLAN.md, "What Chromium's
  * Wayland backend needs"); each case binds at the version Chromium would.
  * This is Jam OS's (BSD-2-Clause), not libwayland's. */
 #define _GNU_SOURCE
 #include <errno.h>
+#include <fcntl.h>
 #include <poll.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -37,7 +41,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -766,9 +773,9 @@ static const struct wl_buffer_listener buffer_listener = { on_buffer_release };
 
 typedef void (*fill_fn)(uint32_t *px, int w, int h, void *user);
 
-/* A buffer of w x h pixels in format fmt, filled by fill. NULL if the
- * memory can't be had. */
-static struct wl_buffer *buf_make(struct env *e, int w, int h, uint32_t fmt, fill_fn fill,
+/* A buffer of w x h pixels in format fmt, filled by fill, with no listener
+ * (it is the caller's for good). NULL if the memory can't be had. */
+static struct wl_buffer *buf_keep(struct env *e, int w, int h, uint32_t fmt, fill_fn fill,
                                   void *user)
 {
     int stride = w * 4, size = stride * h;
@@ -789,7 +796,16 @@ static struct wl_buffer *buf_make(struct env *e, int w, int h, uint32_t fmt, fil
     struct wl_buffer *b = wl_shm_pool_create_buffer(pool, 0, w, h, stride, fmt);
     wl_shm_pool_destroy(pool);
     close(fd);
-    wl_buffer_add_listener(b, &buffer_listener, e);
+    return b;
+}
+
+/* The same, used once: destroyed when the compositor releases it. */
+static struct wl_buffer *buf_make(struct env *e, int w, int h, uint32_t fmt, fill_fn fill,
+                                  void *user)
+{
+    struct wl_buffer *b = buf_keep(e, w, h, fmt, fill, user);
+    if (b)
+        wl_buffer_add_listener(b, &buffer_listener, e);
     return b;
 }
 
@@ -2913,6 +2929,492 @@ static void case_cursor_surface(void)
     env_close(&e);
 }
 
+/* ---- hostile clients (track GR, docs/G2-REVIEW.md) ----------------------------------------- */
+
+/* Clients that do what a broken or hostile program might, against the live
+ * compositor: each must get the protocol's answer (or be served), and the
+ * desktop must go on serving a plain client after. */
+
+/* wl_subcompositor bound on e; NULL (and the case failed) if not offered. */
+static struct wl_subcompositor *env_subcompositor(struct env *e)
+{
+    const struct glob *g = env_glob(e, "wl_subcompositor");
+    if (!g) {
+        fail("wl_subcompositor is not offered");
+        return NULL;
+    }
+    return wl_registry_bind(e->reg, g->name, &wl_subcompositor_interface, 1);
+}
+
+/* A connection, a decorated window mapped and the subcompositor. */
+static bool sub_window(struct env *e, struct win *w, struct wl_subcompositor **sc,
+                       const char *title)
+{
+    if (!env_open(e, 0))
+        return false;
+    if (env_need_window(e) && win_open(e, w, WF_DECO, title) && (*sc = env_subcompositor(e)))
+        return true;
+    env_close(e);
+    return false;
+}
+
+/* A buffer attached again and again (to many surfaces at once): kept. */
+static struct wl_buffer *colour_buffer(struct env *e, int side, uint32_t colour)
+{
+    return buf_keep(e, side, side, WL_SHM_FORMAT_XRGB8888, fill_colour, &colour);
+}
+
+/* Flush e's requests, waiting for room while the socket is full (2 s at
+ * most): false once that fails (the connection gone, or no room). */
+static bool flush_out(struct env *e)
+{
+    double end = now_s() + 2;
+    while (wl_display_flush(e->dpy) < 0) {
+        if (errno != EAGAIN || now_s() > end)
+            return false;
+        struct pollfd p = { .fd = wl_display_get_fd(e->dpy), .events = POLLOUT };
+        poll(&p, 1, 100);
+    }
+    return true;
+}
+
+/* The protocol error that ended e's connection: its code, and in *iface the
+ * interface of the object it named ("?": none). libwayland's errno is
+ * EPROTO for most, but ENOMEM, EINVAL or EFAULT for one on wl_display
+ * itself, which check_error keeps as an errno: asked here either way. */
+static int proto_error(struct env *e, const char **iface)
+{
+    const struct wl_interface *i = NULL;
+    uint32_t id = 0;
+    int code = (int)wl_display_get_protocol_error(e->dpy, &i, &id);
+    *iface = i ? i->name : "?";
+    return code;
+}
+
+/* The connection ends within 3 s with error code on an object of interface
+ * iface. */
+static void expect_dead(struct env *e, const char *what, const char *iface, int code)
+{
+    wl_display_flush(e->dpy);
+    WAIT(e, e->dead, 3000);
+    if (!e->dead)
+        roundtrip(e);
+    if (!e->dead) {
+        fail("%s: no protocol error", what);
+        return;
+    }
+    const char *got;
+    int got_code = proto_error(e, &got);
+    CHECK(got_code == code && !strcmp(got, iface), "%s: error %s code %d, wanted %s code %d",
+          what, got, got_code, iface, code);
+    seen("%s: %s %d", what, got, got_code);
+}
+
+/* The desktop still serves a plain client: a new window maps and draws. */
+static void still_serving(void)
+{
+    struct env e;
+    struct win w;
+    if (!env_open(&e, 0))
+        return;
+    if (env_need_window(&e) && win_open(&e, &w, WF_DECO, "wlprobe after"))
+        seen("a new window mapped after");
+    env_close(&e);
+}
+
+/* One past a subsurface cap, on a client of its own: 33 children of one
+ * parent (which 0), 9 nested (1), 49 in all (2). */
+static void sub_past_cap(int which)
+{
+    static const char *const what[] = { "a 33rd child", "9 nested", "a 49th subsurface" };
+    struct env e;
+    struct win w;
+    struct wl_subcompositor *sc;
+    if (!sub_window(&e, &w, &sc, "wlprobe hostile-sub-cap"))
+        return;
+    struct wl_surface *s[49];
+    int n = which == 0 ? 33 : which == 1 ? 9 : 49;
+    for (int k = 0; k < n; k++) {
+        s[k] = wl_compositor_create_surface(e.comp);
+        struct wl_surface *parent = which == 1 && k ? s[k - 1]
+                                    : which == 2 && k >= 32 ? s[k - 32] : w.surf;
+        wl_subcompositor_get_subsurface(sc, s[k], parent);
+    }
+    expect_dead(&e, what[which], "wl_subcompositor", WL_DISPLAY_ERROR_NO_MEMORY);
+    env_close(&e);
+}
+
+/* hostile-sub-storm: subsurfaces made, drawn and destroyed 1,000 times under
+ * a mapped window (half of them desynchronized, the parent committing now
+ * and then), then trees at every cap at once (32 children of the window, a
+ * chain 8 deep, 48 in all) drawn and committed; then one past each cap,
+ * each on a client of its own: no_memory. */
+static void case_hostile_sub_storm(void)
+{
+    struct env e;
+    struct win w;
+    struct wl_subcompositor *sc;
+    if (!sub_window(&e, &w, &sc, "wlprobe hostile-sub-storm"))
+        return;
+    struct wl_buffer *b = colour_buffer(&e, 8, 0xff3060c0u);
+    if (!b) {
+        fail("no memory for a buffer");
+        env_close(&e);
+        return;
+    }
+    double t0 = now_s();
+    int i = 0;
+    for (; i < 1000 && !e.dead; i++) {
+        struct wl_surface *s = wl_compositor_create_surface(e.comp);
+        struct wl_subsurface *ss = wl_subcompositor_get_subsurface(sc, s, w.surf);
+        wl_subsurface_set_position(ss, i % 300, i % 200);
+        if (i & 1)
+            wl_subsurface_set_desync(ss);
+        wl_surface_attach(s, b, 0, 0);
+        wl_surface_commit(s);
+        if (i % 7 == 0)
+            wl_surface_commit(w.surf);   /* the parent applies what waits */
+        wl_subsurface_destroy(ss);
+        wl_surface_destroy(s);
+        if (i % 100 == 99)
+            roundtrip(&e);
+    }
+    CHECK(roundtrip(&e), "the storm: protocol error %s code %d at %d",
+          e.err_iface ? e.err_iface : "-", e.err_code, i);
+    seen("1000 made and destroyed in %.0f ms", (now_s() - t0) * 1000);
+    struct wl_surface *s[48];
+    struct wl_subsurface *ss[48];
+    for (int k = 0; k < 48 && !e.dead; k++) {
+        /* 0-7 a chain under the window, 8-38 more children of it (32 with
+         * the chain's first), 39-47 one each on the chain's 0-6 (depth 8 at most) */
+        struct wl_surface *parent = k < 8 ? (k ? s[k - 1] : w.surf)
+                                    : k < 39 ? w.surf : s[(k - 39) % 7];
+        s[k] = wl_compositor_create_surface(e.comp);
+        ss[k] = wl_subcompositor_get_subsurface(sc, s[k], parent);
+        wl_subsurface_set_position(ss[k], 4 + k * 2, 4 + (k % 8) * 3);
+        wl_surface_attach(s[k], b, 0, 0);
+        wl_surface_commit(s[k]);
+    }
+    for (int k = 7; k >= 0; k--)
+        wl_surface_commit(s[k]);   /* the chain's caches up to the window */
+    unsigned before = w.frames;
+    struct wl_callback *cb = wl_surface_frame(w.surf);
+    wl_callback_add_listener(cb, &frame_listener, &w);
+    wl_surface_commit(w.surf);
+    CHECK(WAIT(&e, w.frames > before, 5000), "the trees at the caps: no frame callback%s",
+          e.dead ? " (connection dead)" : "");
+    CHECK(roundtrip(&e), "the trees at the caps: protocol error %s code %d",
+          e.err_iface ? e.err_iface : "-", e.err_code);
+    if (!e.dead)
+        seen("32 wide, 8 deep, 48 in all shown");
+    env_close(&e);
+    for (int which = 0; which < 3; which++)
+        sub_past_cap(which);
+    still_serving();
+}
+
+/* hostile-desync-flood: a desynchronized child drawn again 2,000 times
+ * with its parent idle, its requests flushed flat out (events read only at
+ * every 250th): the client stays connected, the parent's frame callback
+ * still comes and a round trip is answered. */
+static void case_hostile_desync_flood(void)
+{
+    struct env e;
+    struct win w;
+    struct wl_subcompositor *sc;
+    if (!sub_window(&e, &w, &sc, "wlprobe hostile-desync-flood"))
+        return;
+    struct wl_buffer *b[2] = { colour_buffer(&e, 64, 0xffc03060u),
+                               colour_buffer(&e, 64, 0xff30c060u) };
+    if (!b[0] || !b[1]) {
+        fail("no memory for a buffer");
+        env_close(&e);
+        return;
+    }
+    struct wl_surface *s = wl_compositor_create_surface(e.comp);
+    struct wl_subsurface *ss = wl_subcompositor_get_subsurface(sc, s, w.surf);
+    wl_subsurface_set_position(ss, 40, 40);
+    wl_subsurface_set_desync(ss);
+    wl_surface_commit(w.surf);   /* the child into the tree */
+    double t0 = now_s();
+    int i = 0;
+    bool flushed = true;
+    for (; i < 2000 && flushed && !e.dead; i++) {
+        wl_surface_attach(s, b[i & 1], 0, 0);
+        wl_surface_damage_buffer(s, 0, 0, 64, 64);
+        wl_surface_commit(s);
+        flushed = flush_out(&e);
+        if (i % 250 == 249)
+            pump(&e, 0);
+    }
+    CHECK(flushed, "the flood stopped at commit %d: %s", i, strerror(errno));
+    double t1 = now_s();
+    unsigned before = w.frames;
+    struct wl_callback *cb = wl_surface_frame(w.surf);
+    wl_callback_add_listener(cb, &frame_listener, &w);
+    wl_surface_commit(w.surf);
+    CHECK(WAIT(&e, w.frames > before, 5000), "no frame callback on the parent after the flood%s",
+          e.dead ? " (connection dead)" : "");
+    CHECK(roundtrip(&e), "protocol error %s code %d", e.err_iface ? e.err_iface : "-", e.err_code);
+    if (!e.dead)
+        seen("%d desynchronized commits in %.0f ms, the parent's frame after", i, (t1 - t0) * 1000);
+    env_close(&e);
+    still_serving();
+}
+
+/* hostile-popup-cap: a chain of 8 grabbing popups, each on the one before,
+ * the keys going up it to the eighth; a ninth is no_memory. Then 32 popups
+ * on one toplevel and a 33rd, on another client: no_memory. */
+static void case_hostile_popup_cap(void)
+{
+    struct env e;
+    struct win w;
+    if (!pup_window(&e, &w, "wlprobe hostile-popup-cap"))
+        return;
+    struct pup pu[9];
+    memset(pu, 0, sizeof(pu));
+    const struct pspec s = { 60, 40, 10, 10, 10, 10, PA(BOTTOM_RIGHT), PG(BOTTOM_RIGHT), 0 };
+    for (int k = 0; k < 8; k++) {
+        NEED(pup_open(&e, &pu[k], k ? pu[k - 1].xs : w.xs, &s, e.kbd_enter_serial) && !pu[k].done,
+             "popup %d of the chain was not configured", k + 1);
+        pup_draw(&pu[k], 0xff000000u | (uint32_t)(0x1c1c1c * (k + 1)));
+        NEED(WAIT(&e, e.kbd_on == pu[k].surf, 2000), "popup %d of the chain didn't get the keys",
+             k + 1);
+    }
+    seen("a chain of 8 with the keys at its top");
+    (void)pup_open(&e, &pu[8], pu[7].xs, &s, 0);
+    expect_dead(&e, "a ninth nested", "xdg_popup", WL_DISPLAY_ERROR_NO_MEMORY);
+    env_close(&e);
+    if (!pup_window(&e, &w, "wlprobe hostile-popup-cap 33"))
+        return;
+    struct xdg_positioner *pos = pos_make(&e, &s);
+    for (int k = 0; k < 33; k++) {
+        struct wl_surface *ps = wl_compositor_create_surface(e.comp);
+        struct xdg_surface *xs = xdg_wm_base_get_xdg_surface(e.wm, ps);
+        xdg_surface_get_popup(xs, w.xs, pos);
+    }
+    expect_dead(&e, "a 33rd popup", "xdg_popup", WL_DISPLAY_ERROR_NO_MEMORY);
+out:
+    env_close(&e);
+    still_serving();
+}
+
+/* hostile-deco: a decoration object whose toplevel is destroyed first is
+ * `orphaned`; a decorated toplevel's wl_surface destroyed first is
+ * wl_surface's defunct_role_object (said on wl_display: the surface's id is
+ * gone by then). */
+static void deco_case(bool surface_first)
+{
+    struct env e;
+    struct win w;
+    if (!env_open(&e, 0))
+        return;
+    if (!env_need_window(&e) || !win_open(&e, &w, WF_DECO, "wlprobe hostile-deco")) {
+        env_close(&e);
+        return;
+    }
+    if (!w.deco) {
+        fail("no decoration object (the manager isn't offered)");
+        env_close(&e);
+        return;
+    }
+    if (surface_first) {
+        wl_surface_destroy(w.surf);
+        expect_dead(&e, "the wl_surface first", "wl_display", WL_SURFACE_ERROR_DEFUNCT_ROLE_OBJECT);
+    } else {
+        xdg_toplevel_destroy(w.top);
+        expect_dead(&e, "the toplevel first", "zxdg_toplevel_decoration_v1",
+                    ZXDG_TOPLEVEL_DECORATION_V1_ERROR_ORPHANED);
+    }
+    env_close(&e);
+}
+
+static void case_hostile_deco(void)
+{
+    deco_case(false);
+    deco_case(true);
+    still_serving();
+}
+
+/* sendmsg on the Wayland socket of one byte and n descriptors: its result,
+ * errno in *err. */
+static ssize_t send_fds(int sock, const int *fds, int n, int *err)
+{
+    char byte = 0;
+    struct iovec iov = { &byte, 1 };
+    union {
+        char buf[CMSG_SPACE(32 * sizeof(int))];
+        struct cmsghdr align;
+    } ctl;
+    memset(&ctl, 0, sizeof(ctl));
+    struct msghdr m = { .msg_iov = &iov, .msg_iovlen = 1, .msg_control = ctl.buf,
+                        .msg_controllen = CMSG_SPACE((size_t)n * sizeof(int)) };
+    struct cmsghdr *c = CMSG_FIRSTHDR(&m);
+    c->cmsg_level = SOL_SOCKET;
+    c->cmsg_type = SCM_RIGHTS;
+    c->cmsg_len = CMSG_LEN((size_t)n * sizeof(int));
+    memcpy(CMSG_DATA(c), fds, (size_t)n * sizeof(int));
+    ssize_t r = sendmsg(sock, &m, MSG_DONTWAIT | MSG_NOSIGNAL);
+    *err = errno;
+    return r;
+}
+
+/* hostile-handles: 28 pipe ends given as 28 wl_shm pools, flushed as one
+ * batch of handles: invalid_fd (the compositor closes them all). Then on
+ * the socket itself, one byte with descriptors that can't cross (eventfds,
+ * /dev/null, an AF_UNIX socket, an epoll set: 28 of them; 27 memfds and an
+ * eventfd; 29 memfds): EINVAL each, nothing sent, the connection unharmed. */
+static void case_hostile_handles(void)
+{
+    struct env e;
+    if (!env_open(&e, 0))
+        return;
+    if (!e.shm) {
+        fail("no wl_shm");
+        env_close(&e);
+        return;
+    }
+    for (int k = 0; k < 28; k++) {
+        int p[2];
+        if (pipe(p) < 0) {
+            fail("pipe: %s", strerror(errno));
+            break;
+        }
+        wl_shm_create_pool(e.shm, p[1], 4096);   /* libwayland sends a duplicate */
+        close(p[0]);
+        close(p[1]);
+    }
+    expect_dead(&e, "28 pipe ends as pools", "wl_shm", WL_SHM_ERROR_INVALID_FD);
+    env_close(&e);
+    if (!env_open(&e, 0))
+        return;
+    int sock = wl_display_get_fd(e.dpy), bad[29], mem[29], err = 0;
+    for (int k = 0; k < 29; k++) {
+        bad[k] = k % 4 == 0 ? eventfd(0, 0)
+                 : k % 4 == 1 ? open("/dev/null", O_RDONLY)
+                 : k % 4 == 2 ? socket(AF_UNIX, SOCK_STREAM, 0) : epoll_create1(0);
+        mem[k] = memfd_create("wlprobe-hostile", MFD_CLOEXEC);
+        if (bad[k] < 0 || mem[k] < 0 || ftruncate(mem[k], 4096) < 0)
+            fail("descriptor %d: %s", k, strerror(errno));
+    }
+    ssize_t r = send_fds(sock, bad, 28, &err);
+    CHECK(r < 0 && err == EINVAL, "28 descriptors that can't cross: %zd (%s), wanted EINVAL", r,
+          strerror(err));
+    int mixed[28];
+    memcpy(mixed, mem, 27 * sizeof(int));
+    mixed[27] = bad[0];
+    r = send_fds(sock, mixed, 28, &err);
+    CHECK(r < 0 && err == EINVAL, "27 memfds and an eventfd: %zd (%s), wanted EINVAL", r,
+          strerror(err));
+    r = send_fds(sock, mem, 29, &err);
+    CHECK(r < 0 && err == EINVAL, "29 memfds: %zd (%s), wanted EINVAL", r, strerror(err));
+    CHECK(roundtrip(&e), "the connection after the refused sends: error %s code %d",
+          e.err_iface ? e.err_iface : "-", e.err_code);
+    if (!e.dead)
+        seen("each sendmsg EINVAL, nothing sent");
+    for (int k = 0; k < 29; k++) {
+        close(bad[k]);
+        close(mem[k]);
+    }
+    env_close(&e);
+    still_serving();
+}
+
+/* hostile-never-reads: a client asks for 2,000 registries (each answered
+ * by a global event for every global; no id it uses comes back, so none
+ * is used twice) and reads nothing: the compositor drops it as too slow,
+ * with wl_display's no_memory, which the client reads first when it reads
+ * at last; and goes on. */
+static void case_hostile_never_reads(void)
+{
+    struct env e;
+    if (!env_open(&e, 0))
+        return;
+    int i = 0;
+    bool flushed = true;
+    for (; i < 2000 && flushed; i++) {
+        wl_display_get_registry(e.dpy);
+        if (i % 16 == 15)
+            flushed = flush_out(&e);
+    }
+    say("%d registries asked for, %s", i,
+        flushed ? "reading nothing for 3 s" : "the socket stopped taking them");
+    struct timespec three = { 3, 0 };
+    nanosleep(&three, NULL);   /* not a byte read meanwhile */
+    /* now read: libwayland's dispatch reads what waits even after a write
+     * found the compositor gone */
+    int fd = wl_display_get_fd(e.dpy);
+    for (int k = 0; k < 100 && wl_display_get_error(e.dpy) == 0; k++) {
+        struct pollfd p = { .fd = fd, .events = POLLIN };
+        if (poll(&p, 1, 100) > 0)
+            wl_display_dispatch(e.dpy);
+    }
+    const char *got;
+    int code = proto_error(&e, &got);
+    CHECK(wl_display_get_error(e.dpy) != 0, "still connected after %d registries never read", i);
+    CHECK(code == WL_DISPLAY_ERROR_NO_MEMORY && !strcmp(got, "wl_display"),
+          "ended by %s code %d (errno %d), wanted wl_display no_memory", got, code,
+          wl_display_get_error(e.dpy));
+    seen("dropped after %d registries: %s %d", i, got, code);
+    env_close(&e);
+    still_serving();
+}
+
+/* hostile-regrab (review finding 1): a menu opened by the script's click
+ * on the window, dismissed by its click on the terminal; the client tries
+ * to take the grab straight back, with that click's serial, with the
+ * keyboard enter the keys coming back gave it, and with a new wl_keyboard's
+ * enter: each popup is dismissed at once, and the script's next click on
+ * the terminal reaches it (the window loses the keys). */
+static void case_hostile_regrab(void)
+{
+    struct env e;
+    struct win w;
+    struct wl_keyboard *k2 = NULL;
+    if (!pup_window(&e, &w, "wlprobe hostile-regrab"))
+        return;
+    NEED(env_pointer(&e), "no pointer");
+    say("ready");
+    uint32_t serial = 0;
+    bool pressed = WAIT(&e, (serial = pressed_serial(&e)) != 0, g_wait * 1000);
+    NEED(pressed, "no button press on the window within %d s", g_wait);
+    const struct pspec s = { 160, 100, 20, 20, 10, 10, PA(BOTTOM_RIGHT), PG(BOTTOM_RIGHT), 0 };
+    struct pup m, r[3];
+    NEED(pup_open(&e, &m, w.xs, &s, serial) && !m.done, "the menu was not configured");
+    pup_draw(&m, 0xffe0c030u);
+    NEED(WAIT(&e, e.kbd_on == m.surf, 2000), "the menu did not get the keys");
+    say("menu up");
+    NEED(WAIT(&e, m.done, g_wait * 1000), "no popup_done within %d s of the menu showing", g_wait);
+    NEED(WAIT(&e, e.kbd_on == w.surf, 2000), "the keys did not come back to the window");
+    pup_close(&m);
+    for (int i = 0; i < 3; i++) {
+        uint32_t with = serial;
+        if (i == 1)
+            with = e.kbd_enter_serial;
+        if (i == 2) {   /* a second wl_keyboard: its own enter */
+            uint32_t was = e.kbd_enter_serial;
+            k2 = wl_seat_get_keyboard(e.seat);
+            wl_keyboard_add_listener(k2, &keyboard_listener, &e);
+            NEED(WAIT(&e, e.kbd_enter_serial != was, 2000), "the second wl_keyboard got no enter");
+            with = e.kbd_enter_serial;
+        }
+        bool answered = pup_open(&e, &r[i], w.xs, &s, with);
+        CHECK(answered && r[i].done && !r[i].configured,
+              "grab %d after the dismissal (serial %u) was not refused%s", i + 1, with,
+              r[i].configured ? ": the popup was configured" : "");
+        pup_close(&r[i]);
+    }
+    say("refused");
+    bool left = WAIT(&e, e.kbd_on == NULL, g_wait * 1000);
+    CHECK(left, "the next click outside didn't reach the terminal (the window kept the keys)");
+    if (left && !cur->failed)
+        seen("3 grabs refused after the dismissal; the next click outside went through");
+out:
+    if (k2)
+        wl_keyboard_release(k2);
+    env_close(&e);
+}
+
 /* ---- hold ----------------------------------------------------------------------------------------- */
 
 static void fill_hold(uint32_t *px, int w, int h, void *user)
@@ -2969,7 +3471,7 @@ static int run_hold(double seconds)
 
 /* ---- the table and main ---------------------------------------------------------------------------- */
 
-enum { K_AUTO, K_SHOT, K_INPUT };
+enum { K_AUTO, K_SHOT, K_INPUT, K_HOSTILE };
 
 static const struct {
     const char *name;
@@ -3020,12 +3522,19 @@ static const struct {
     { "cursor-surface", case_cursor_surface, K_INPUT, "wl_pointer.set_cursor with the client's own surface, then none (injected pointer, 2 shots)" },
     { "clipboard-out", case_clipboard_out, K_INPUT, "the window's selection pasted into a terminal (injected)" },
     { "clipboard-in", case_clipboard_in, K_INPUT, "a terminal's selection read by the window (clipboard-in=TEXT)" },
+    { "hostile-sub-storm", case_hostile_sub_storm, K_HOSTILE, "1,000 subsurfaces made and destroyed, trees at every cap, one past each: no_memory" },
+    { "hostile-desync-flood", case_hostile_desync_flood, K_HOSTILE, "a desynchronized child drawn 2,000 times flat out, its parent idle" },
+    { "hostile-popup-cap", case_hostile_popup_cap, K_HOSTILE, "grabbing popups 8 deep, a ninth; 32 popups, a 33rd: no_memory" },
+    { "hostile-deco", case_hostile_deco, K_HOSTILE, "a decoration object's toplevel or wl_surface destroyed first: the errors" },
+    { "hostile-handles", case_hostile_handles, K_HOSTILE, "28 pipe ends as pools; descriptors that can't cross the socket: EINVAL" },
+    { "hostile-never-reads", case_hostile_never_reads, K_HOSTILE, "20,000 syncs never read: dropped as too slow" },
+    { "hostile-regrab", case_hostile_regrab, K_INPUT, "a menu dismissed by a click outside can't grab straight back (injected)" },
 };
 #define NCASES (sizeof(cases) / sizeof(cases[0]))
 
 static void list_cases(void)
 {
-    static const char *const kinds[] = { "auto", "shot", "input" };
+    static const char *const kinds[] = { "auto", "shot", "input", "hostile" };
     for (unsigned i = 0; i < NCASES; i++)
         printf("%-16s %-5s %s\n", cases[i].name, kinds[cases[i].kind], cases[i].what);
     printf("%-16s %-5s %s\n", "hold", "-", "a window that stays (hold [seconds])");
@@ -3073,7 +3582,8 @@ int main(int argc, char **argv)
             int saved = g_hold;
             g_hold = 0;
             for (unsigned c = 0; c < NCASES; c++)
-                if (cases[c].kind != K_INPUT && strcmp(cases[c].name, "subcompositor") != 0 &&
+                if (cases[c].kind != K_INPUT && cases[c].kind != K_HOSTILE &&
+                    strcmp(cases[c].name, "subcompositor") != 0 &&
                     strncmp(cases[c].name, "states-", 7) != 0) {
                     failed += run_case(c);
                     ran++;

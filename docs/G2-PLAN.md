@@ -1452,7 +1452,7 @@ back); a popup's wl_surface destroyed first (`defunct_role_object`).
 | The compositor's additions | utest's compositor tests per protocol (GC1b to GC3); screenshot tests in `tools/comp-test.sh`'s style; every existing desktop script unchanged (`tools/desk-test.sh`, `tools/apps-test.sh`, `tools/clip-test.sh`, `tools/mouse-test.sh`) |
 | The ports | each recipe's `test` through M13.7's ports-test script (GP1, GP2, wlprobe) |
 | End to end | tools/wl-port-test.sh: wlprobe's cases; then the Chromium plan's `content_shell` and `chrome` cases added to the same script |
-| Hostile clients | GR's libwayland-based clients against the live compositor; X1's hostile clients unchanged |
+| Hostile clients | GR's libwayland-based clients against the live compositor (wlprobe's `hostile-*` cases, `tools/wl-port-test.sh`'s `hostile` group; [G2-REVIEW](G2-REVIEW.md)); X1's hostile clients unchanged |
 | The bench | BENCH.md gains: wlprobe's round trip and a 28-descriptor flush through the shim against libjwl's; the compositor's paint cost with a full-screen Chromium window (with the Chromium plan) |
 | The regression | once, after GJ, on the PC: ktest at 4, the init run twice, every area script, the desktop scripts, the new script, the soak at 4 |
 
