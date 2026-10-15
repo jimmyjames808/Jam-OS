@@ -3184,7 +3184,8 @@ decisions, is in [docs/HISTORY.md, M8.5](docs/HISTORY.md#audio-a1-a2-as-and-m85-
   sound's clients for good (the music player, the splash and the mixer:
   the hda driver ends only once its client has gone), stops volumes
   (`volumes.stop`: every writable mount synced, every filesystem service
-  stopped), then devmgr in order (`devmgrctl.shutdown`), and calls
+  stopped in order, so a write that follows the sync, logd's line about it,
+  can't be cut off by a kill and leave the volume dirty), then devmgr in order (`devmgrctl.shutdown`), and calls
   `kexec_reboot` (the other CPUs
   halted, the kernel's screen quiet, the image verified, bus mastering
   off, the IOMMU off, the jump). Any failure before the jump falls back to the firmware
