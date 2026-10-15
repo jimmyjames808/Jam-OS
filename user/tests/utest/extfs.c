@@ -320,7 +320,7 @@ bool t_extfs_links(void)
 
     /* A loop, and dangling links. */
     CHECK_ST(xsymlink(r.fs, "lp", "/t/lp"), OK);
-    CHECK_ST(t_stat(&r, "/t/lp", NULL, NULL, NULL), ERR_OUT_OF_RANGE);
+    CHECK_ST(t_stat(&r, "/t/lp", NULL, NULL, NULL), ERR_LINK_LOOP);
     CHECK_ST(xsymlink(r.fs, "nothere", "/t/dang"), OK);
     CHECK_ST(t_open(&r, "/t/dang", FS_WRITE | FS_CREATE | FS_EXCL, &f), ERR_ALREADY_EXISTS);
     CHECK_ST(t_mkdir(&r, "/t/dang"), ERR_ALREADY_EXISTS);

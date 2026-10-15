@@ -273,7 +273,7 @@ struct xf_walk {
 
 /* Walk path (len bytes, as the protocol carried it) in view c: every name,
  * ".." physically, links inside the view followed (up to XF_LINKS_MAX:
- * ERR_OUT_OF_RANGE past it), the search bit of every directory looked into
+ * ERR_LINK_LOOP past it), the search bit of every directory looked into
  * checked. The last name need not be there (found false). Errors:
  * ERR_LINK_OUT (an absolute link, or ".." above the view's root: w->kind,
  * used, next); ERR_NOT_FOUND, ERR_NOT_DIR on the way; ERR_ACCESS_DENIED
