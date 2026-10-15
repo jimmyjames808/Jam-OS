@@ -114,7 +114,7 @@ the charges and every entry present, W^X entry by entry):
   the parent's to change; no fork-like snapshot of JIT memory, and one of
   plain memory never executes.
 
-**Without the fixes** (each fix undone in a scratch copy, the PC, 4
+**Without the fixes** (each fix undone for one run, uncommitted, the PC, 4
 CPUs): `aspace_protect_quiet` failed (3 IPIs for untouched protects),
 `pager_verified_max` failed (2048 pages charged, not 2052),
 `aspace_fault_refused_tables` failed (a PDPT left charged), and
