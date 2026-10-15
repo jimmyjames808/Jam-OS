@@ -80,28 +80,63 @@ void mixer_put(struct mixer_stream *s, const int16_t *frames, size_t n, size_t *
     *done = put;
 }
 
-/* No room: wait for the mixer to take frames (MIXER_SIG_SPACE), a slice at
- * a time so a dead mixer is noticed. OK when there may be room now. */
-static status_t wait_room(struct mixer_stream *s, uint64_t deadline)
+/* Room in the ring for `need` more frames (at most the ring's size), given
+ * the mixer's `read`. */
+static bool has_room(const struct mixer_stream *s, size_t need, uint64_t read)
 {
+    uint64_t used = s->write > read ? s->write - read : 0;
+    return used + need <= s->frames;
+}
+
+size_t mixer_room(const struct mixer_stream *s)
+{
+    /* Acquire: as mixer_put's. */
+    uint64_t read = __atomic_load_n(&s->hdr->read, __ATOMIC_ACQUIRE);
+    uint64_t used = s->write > read ? s->write - read : 0;
+    return used < s->frames ? s->frames - (size_t)used : 0;
+}
+
+bool mixer_peer_closed(const struct mixer_stream *s)
+{
+    signals_t seen = 0;
+    return jam_object_wait_one(s->ch, SIG_PEER_CLOSED, 0, &seen) == OK && (seen & SIG_PEER_CLOSED);
+}
+
+bool mixer_arm_room(struct mixer_stream *s, size_t need)
+{
+    if (need > s->frames)
+        need = s->frames;
     (void)jam_event_signal(s->event, MIXER_SIG_SPACE, 0);
     __atomic_store_n(&s->hdr->waiting, 1, __ATOMIC_SEQ_CST);
     /* Seen after `waiting` is up: a `read` the mixer moved before it
      * looked at `waiting` (its signal then never comes). */
-    uint64_t read = __atomic_load_n(&s->hdr->read, __ATOMIC_SEQ_CST);
+    if (has_room(s, need, __atomic_load_n(&s->hdr->read, __ATOMIC_SEQ_CST))) {
+        __atomic_store_n(&s->hdr->waiting, 0, __ATOMIC_RELAXED);
+        return true;
+    }
+    return false;
+}
+
+void mixer_disarm_room(struct mixer_stream *s)
+{
+    __atomic_store_n(&s->hdr->waiting, 0, __ATOMIC_RELAXED);
+}
+
+/* No room: wait for the mixer to take frames (MIXER_SIG_SPACE), a slice at
+ * a time so a dead mixer is noticed. OK when there may be room now. */
+status_t mixer_wait_room(struct mixer_stream *s, size_t need, uint64_t deadline)
+{
     status_t st = OK;
-    if (s->write - read >= s->frames) {
+    if (!mixer_arm_room(s, need)) {
         uint64_t t = now() + WAIT_SLICE;
         signals_t seen = 0;
         st = jam_object_wait_one(s->event, MIXER_SIG_SPACE, t < deadline ? t : deadline, &seen);
         if (st == ERR_TIMED_OUT && now() < deadline)
             st = OK;
-        seen = 0;
-        if (jam_object_wait_one(s->ch, SIG_PEER_CLOSED, 0, &seen) == OK &&
-            (seen & SIG_PEER_CLOSED))
+        if (mixer_peer_closed(s))
             st = ERR_PEER_CLOSED;
     }
-    __atomic_store_n(&s->hdr->waiting, 0, __ATOMIC_RELAXED);
+    mixer_disarm_room(s);
     return st;
 }
 
@@ -119,7 +154,7 @@ status_t mixer_write(struct mixer_stream *s, const int16_t *frames, size_t n, ui
         if (!s->started)
             st = mixer_start(s, deadline);
         if (st == OK)
-            st = wait_room(s, deadline);
+            st = mixer_wait_room(s, 1, deadline);
     }
     *done = total;
     return st;

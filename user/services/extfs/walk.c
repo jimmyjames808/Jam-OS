@@ -276,7 +276,8 @@ bool walk_may_change(const struct xf_ctx *c, const struct xf_walk *w)
 {
     if (c->flags & FS_VIEW_READ_ONLY)
         return false;
-    return !((c->flags & FS_VIEW_GUARD_ETC) && fs_view_in_etc(w->phys));
+    return !((c->flags & FS_VIEW_GUARD_ETC) && fs_view_in_etc(w->phys)) &&
+           !((c->flags & FS_VIEW_GUARD_PKG) && fs_view_in_pkg(w->phys));
 }
 
 /* ---- attributes ---------------------------------------------------------------------- */

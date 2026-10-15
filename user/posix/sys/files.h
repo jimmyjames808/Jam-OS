@@ -187,7 +187,9 @@ struct fobj {
                                       * since: a description there follows the end (file.c) */
     bool         multi;              /* its mount lets a file have many writers
                                       * (FS_FEAT_MULTI_WRITER): never lent, its size the
-                                      * service's, an append the service's (FS_APPEND) */
+                                      * service's, an append the service's (FS_APPEND);
+                                      * or its mount isn't known (a file sent over a
+                                      * socket): its size the service's, asked when needed */
     bool         append;             /* opened FS_APPEND (multi only): every write at the end;
                                       * shared only by descriptions with O_APPEND */
     bool         attrs;              /* its mount keeps modes (FS_FEAT_MODES): fstat is

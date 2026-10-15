@@ -53,10 +53,17 @@ static void collect_reset(void *ctx)
     pfd_collect_close(c);
 }
 
+static void collect_secure(void *ctx)
+{
+    struct pfd_collect *c = ctx;
+    c->secures++;
+}
+
 struct posixfds_sink pfd_sink(struct pfd_collect *c)
 {
     memset(c, 0, sizeof(*c));
-    return (struct posixfds_sink){ .ctx = c, .fd = collect_fd, .reset = collect_reset };
+    return (struct posixfds_sink){ .ctx = c, .fd = collect_fd, .reset = collect_reset,
+                                   .secure = collect_secure };
 }
 
 uint64_t pfd_handles(void)
@@ -239,15 +246,19 @@ bool t_posixfds_round_trip(void)
     if (!same_fds(&col, d, out.nfds, koids))
         return false;
     CHECK_EQ(col.resets, 0u);
+    CHECK_EQ(col.secures, 0u);
     CHECK_EQ(pfd_queued(b), 0u);
     pfd_collect_close(&col);
 
-    /* No descriptors at all: one message, the state alone. */
+    /* No descriptors at all: one message, the state alone; marked
+     * AT_SECURE, which the sink hears once. */
     out.nfds = 0;
     out.cwd = "/";
+    out.secure = true;
     CHECK_ST(posixfds_write(a, &out), OK);
     CHECK_ST(posixfds_read(b, &sink, &got, cwd), OK);
     CHECK_EQ(col.n, 0u);
+    CHECK_EQ(col.secures, 1u);
     CHECK(!strcmp(cwd, "/"));
     jam_handle_close(a);
     CHECK_ST(posixfds_read(b, &sink, &got, cwd), ERR_NOT_FOUND);   /* closed, nothing queued */

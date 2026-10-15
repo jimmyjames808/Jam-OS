@@ -37,6 +37,14 @@
  * are still one per file here (and per FS_APPEND): extfs serves a few
  * dozen opens in all.
  *
+ * A file whose mount we don't know (one another process sent over a
+ * socket: fdpass.h, its path not believed) is treated the same way, its
+ * size the service's, and the service is asked nothing when it arrives:
+ * its channel is the sender's to give, and one that never answers would
+ * hold the recvmsg that takes it (FILE_TIMEOUT a descriptor), where Linux
+ * never waits. A call on the descriptor that needs the size asks then, as
+ * any call on a file waits for its service.
+ *
  * Lock order: a description's lock, then its object's lock, then
  * objs_lock (never held across a call to the service). */
 #include <stdlib.h>
@@ -53,12 +61,14 @@ static struct fobj *objs;    /* every object; objs_lock */
 static lock_t       objs_lock;
 
 /* The open's channel and buffer (consumed) as a jfile, mapped, and the
- * file's size and id. */
-static status_t jf_map(handle_t ch, handle_t buf, uint32_t ff, struct jfile *jf, uint64_t *size,
-                       uint64_t *id)
+ * file's size and id asked of its service (unless !ask: 0 and 0, the
+ * service asked nothing). */
+static status_t jf_map(handle_t ch, handle_t buf, uint32_t ff, bool ask, struct jfile *jf,
+                       uint64_t *size, uint64_t *id)
 {
     uint64_t vsz = 0, addr = 0;
     *jf = (struct jfile){ .ch = ch, .buf_vmo = buf, .flags = ff & (FS_READ | FS_WRITE) };
+    *size = *id = 0;
     status_t st = jam_vmo_get_size(buf, &vsz);
     if (st == OK && (!vsz || vsz > BUF_MAX || (vsz & 4095)))
         st = ERR_IO;
@@ -68,7 +78,8 @@ static status_t jf_map(handle_t ch, handle_t buf, uint32_t ff, struct jfile *jf,
     if (st == OK) {
         jf->buf = (uint8_t *)(uintptr_t)addr;
         jf->buf_size = (uint32_t)vsz;
-        st = file_stat_within(ch, FILE_TIMEOUT, size, NULL, NULL, id);
+        if (ask)
+            st = file_stat_within(ch, FILE_TIMEOUT, size, NULL, NULL, id);
     }
     if (st != OK)
         file_close(jf);   /* unmaps what was mapped, closes both */
@@ -110,8 +121,9 @@ static void settle(struct fobj *fresh, struct fobj **out)
     *out = fresh;
 }
 
-/* A new object around an open (consumed) with ff of a file on mount m,
- * whose FS_FEAT_* are features. */
+/* A new object around an open (consumed) with ff of a file on mount m
+ * ("": not known, the service asked nothing: the file's header), whose
+ * FS_FEAT_* are features. */
 static long fresh_obj(handle_t ch, handle_t buf, uint32_t ff, const char *m, uint32_t features,
                       struct fobj **out)
 {
@@ -121,14 +133,15 @@ static long fresh_obj(handle_t ch, handle_t buf, uint32_t ff, const char *m, uin
         jam_handle_close(buf);
         return -ENOMEM;
     }
-    status_t st = jf_map(ch, buf, ff, &o->jf, &o->size, &o->id);
+    bool known = m[0] != '\0';
+    status_t st = jf_map(ch, buf, ff, known, &o->jf, &o->size, &o->id);
     if (st != OK) {
         free(o);
         return lx_err(st);
     }
     o->refs = 1;
-    o->multi = (features & FS_FEAT_MULTI_WRITER) != 0;
-    o->append = o->multi && (ff & FS_APPEND);
+    o->multi = !known || (features & FS_FEAT_MULTI_WRITER) != 0;
+    o->append = known && o->multi && (ff & FS_APPEND);
     o->attrs = (features & FS_FEAT_MODES) != 0;
     memcpy(o->mount, m, strlen(m) + 1);
     settle(o, out);
@@ -194,13 +207,13 @@ static status_t upgrade_locked(struct fobj *o, const struct path *p, uint32_t ff
     file_close(&o->jf);   /* ours was the open in fat's way */
     status_t st = fobj_open_settled(p, FS_READ | FS_WRITE | (ff & FS_TRUNCATE), &ch, &buf);
     if (st == OK)
-        st = jf_map(ch, buf, FS_READ | FS_WRITE, &o->jf, &size, &id);
+        st = jf_map(ch, buf, FS_READ | FS_WRITE, true, &o->jf, &size, &id);
     if (st == OK) {
         o->size = size;
         return OK;
     }
     if (open_raw(p, FS_READ, FS_MODE_FILE_DEFAULT, &ch, &buf) == OK)   /* back as it was, if it can be */
-        (void)jf_map(ch, buf, FS_READ, &o->jf, &size, &id);
+        (void)jf_map(ch, buf, FS_READ, true, &o->jf, &size, &id);
     return st;
 }
 
@@ -279,7 +292,7 @@ status_t fobj_back_locked(struct fobj *o, const char *path)
         return ERR_IO;   /* never: only a file with its path is given, so lent */
     status_t st = fobj_open_settled(&p, o->lent_flags, &ch, &buf);
     if (st == OK)
-        st = jf_map(ch, buf, o->lent_flags, &o->jf, &size, &id);
+        st = jf_map(ch, buf, o->lent_flags, true, &o->jf, &size, &id);
     if (st != OK)
         return st;
     o->size = size;   /* what the child wrote counts: an append goes after it */

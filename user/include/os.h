@@ -464,7 +464,11 @@ status_t ns_svc_remove(const char *name);
  *   "/data:w"        a view that may write
  *                    (neither view has the top-level `etc` at all: not
  *                    listed, opened, read, made or changed, FS_VIEW_NO_ETC;
- *                    every program's mount, whatever its list says)
+ *                    every program's mount, whatever its list says);
+ *                    the writable one leaves the top-level `pkg` alone
+ *                    too (FS_VIEW_GUARD_PKG: the packages' prefix)
+ *   "/data:wp"       a view that may write, the packages' prefix too
+ *                    (still no etc): bin/pkg's (`mount /data rw pkg`)
  *   "/data:rk"       a read-only view that shows `etc/ssh` (the SSH host
  *                    key) and `etc/authorized_keys`, nothing else of etc:
  *                    only C code writes it (init's grants for sshd, sshd's
@@ -474,7 +478,11 @@ status_t ns_svc_remove(const char *name);
  *                    point starts with "/usb"
  *   "*:r", "*:w"     every mount, as views (no services)
  * A view is made with a call to the mount's service at the time of the
- * send (each waits at most NS_VIEW_WAIT). */
+ * send (each waits at most NS_VIEW_WAIT). A service that counts what a
+ * program holds by the channel it calls on (/svc/unix: the broker's
+ * listeners) is given by name as a channel of the program's own, asked
+ * of ours with svc.connect at the send, which hands out no more: the
+ * program can't open another to get past its limits. "*" gives ours. */
 #define NS_VIEW_WAIT (2 * NS_PER_S)
 
 /* For fs services: a path inside a mount (fs.idl's str: len bytes, no NUL)

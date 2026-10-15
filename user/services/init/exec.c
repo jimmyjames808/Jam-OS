@@ -16,8 +16,9 @@
  * and limit it). What the parent does give is its own: the job the child
  * goes in (a kill of the parent's job takes it), argv and the environment,
  * the hand-over (its descriptors, written by the parent onto a channel
- * whose other end init holds, and moved message for message onto the
- * child's startup channel) and the child's end of its signal channel.
+ * whose other end init holds, and written again by init for the child
+ * without the names in it: "the hand-over", below) and the child's end of
+ * its signal channel.
  *
  * Two steps, so that a refusal comes before the parent's hand-over moves
  * anything out of its own table (posix_spawn finds its program first:
@@ -51,7 +52,8 @@
  * sealed programs waiting in all, EXEC_PROGRAMS_PER_OPENER per opener, each
  * dropped after EXEC_WAIT_NS: a caller can hold at most that many sealed
  * VMOs (and their tables, the kernel's, charged to init's job) for that
- * long. A start's hand-over is at most HANDOVER_MAX messages. The child's
+ * long. A start's hand-over keeps at most KEPT_DATA bytes of data (its
+ * descriptors are the format's 1,024 at most). The child's
  * own memory is charged to its job, inside the caller's; what spawn makes
  * for it (its writable segments' copies and its stack's pages) is charged
  * to init's job, as a child of the shell's is to the shell's.
@@ -62,6 +64,7 @@
 #include <idl/exec.h>
 #include <idl/svc.h>
 #include <os.h>
+#include <posixfds.h>
 #include <wants.h>
 #include "init.h"
 
@@ -71,7 +74,8 @@
 #define ROUND        8                       /* requests served on one channel per packet */
 #define CALL_WAIT    (5 * NS_PER_S)          /* a call on a caller's file channel */
 #define POSIX_STACK  (8ull << 20)            /* a POSIX program's stack, as the shell gives */
-#define HANDOVER_MAX 128                     /* hand-over messages moved at most */
+#define KEPT_DATA    (64u << 10)             /* the hand-over's data kept at most (a pipe's
+                                              * unread bytes, a memfd's name, ...) */
 #define STRINGS_MAX  EXEC_STRINGS_MAX
 /* What the caller gets of the child's process and of its job. */
 #define PROC_RIGHTS  (RIGHT_WAIT | RIGHT_INSPECT | RIGHT_DUPLICATE | RIGHT_TRANSFER)
@@ -101,7 +105,6 @@ static int      opener_ids[OPENERS];     /* each one's index, as its handlers' c
 static struct prog progs[PROGRAMS];
 static int      prog_ids[PROGRAMS];
 static uint8_t  worker_stack[64 << 10] __attribute__((aligned(16)));
-static uint8_t  relay_buf[CHANNEL_MAX_BYTES] __attribute__((aligned(8)));   /* the worker's */
 
 static void close_if(handle_t *h)
 {
@@ -344,35 +347,110 @@ static status_t op_open(void *ctx, const char *path, uint32_t path_len, handle_t
 
 static const struct exec_ops open_ops = { .open = op_open };
 
-/* ---- start --------------------------------------------------------------------------- */
+/* ---- the hand-over ------------------------------------------------------------------- */
 
-/* spawn's before_start: the hand-over the caller wrote on its end, moved
- * message for message (handles and all) onto the child's startup
- * channel. ctx: our end of it. */
+/* What the child gets of the caller's hand-over (docs/CR-REVIEW-POSIX.md,
+ * finding 1, the owner's answer A to its Q1). The child's namespace is its
+ * own approval's and may reach what the caller's can't, so the child must
+ * believe no name the caller wrote: it would resolve it with its own
+ * authority. init reads the hand-over (posixfds_read: every rule checked)
+ * and writes the child its own:
+ *   - a file keeps its channel and buffer but not its path: the child can
+ *     use it, not give it on (ENOTSUP), as a file received with SCM_RIGHTS;
+ *   - a directory (a path and nothing else) is left out, and so is a
+ *     duplicate of one;
+ *   - the current directory is "/", the program's path the one sealed;
+ *   - it is marked AT_SECURE (POSIXFDS_SECURE): argv and the environment
+ *     are the caller's too. init can't tell which program calls (an opener
+ *     is anyone's), so every child is marked, the same approval as its
+ *     caller's or not.
+ * The other kinds are objects the caller holds and gives (pipes, sockets,
+ * terminals, memfds, /dev and libc's /etc by their fixed names), kept as
+ * they are, and so is the state (the umask, the signal masks, the ids). A
+ * POSIX program gets a hand-over even when the caller wrote none (no
+ * descriptors: musl's AT_SECURE start opens 0 to 2 on /dev/null), for the
+ * mark; any other program gets the caller's rewritten, or nothing. A
+ * malformed hand-over refuses the start. Names as objects (a directory
+ * channel for the current directory) are later: the plan's option C. */
+
+static struct posixfds_desc kept[POSIXFDS_FD_MAX];   /* the descriptors kept (the worker's) */
+static handle_t kept_hs[POSIXFDS_FD_MAX][POSIXFDS_KIND_HANDLES];
+static uint8_t  kept_data[KEPT_DATA];                /* ... their data */
+
+struct rewrite {
+    unsigned n;                                /* entries of kept */
+    uint32_t used;                             /* bytes of kept_data */
+    uint64_t left_out[POSIXFDS_FD_MAX / 64];   /* descriptors left out */
+};
+
+static bool was_left_out(const struct rewrite *r, uint32_t fd)
+{
+    return fd < POSIXFDS_FD_MAX && (r->left_out[fd / 64] >> (fd % 64) & 1);
+}
+
+/* posixfds_read's sink: one of the caller's descriptors, kept as the child
+ * may have it or left out. */
+static status_t keep_fd(void *ctx, const struct posixfds_fd *rec, const void *data,
+                        const handle_t *hs)
+{
+    struct rewrite *r = ctx;
+    uint32_t target = 0;
+    if (rec->kind == POSIXFDS_DUP)
+        memcpy(&target, data, sizeof(target));   /* four bytes: posixfds_read checked */
+    if (rec->kind == POSIXFDS_DIR || (rec->kind == POSIXFDS_DUP && was_left_out(r, target))) {
+        r->left_out[rec->fd / 64] |= 1ull << (rec->fd % 64);
+        return OK;   /* a name alone: no handles */
+    }
+    uint32_t len = rec->kind == POSIXFDS_FILE ? 0 : rec->data_len;   /* a file's data: its path */
+    if (len > KEPT_DATA - r->used) {
+        for (unsigned i = 0; i < rec->nhandles; i++)
+            jam_handle_close(hs[i]);
+        return ERR_OUT_OF_RANGE;
+    }
+    unsigned i = r->n++;   /* below POSIXFDS_FD_MAX: each descriptor is in it once */
+    memcpy(kept_hs[i], hs, rec->nhandles * sizeof(handle_t));
+    if (len)
+        memcpy(kept_data + r->used, data, len);
+    kept[i] = (struct posixfds_desc){
+        .fd = rec->fd, .kind = rec->kind, .status = rec->status, .offset = rec->offset,
+        .data = len ? kept_data + r->used : NULL, .data_len = len, .handles = kept_hs[i],
+    };
+    r->used += len;
+    return OK;
+}
+
+static void drop_kept(void *ctx)
+{
+    struct rewrite *r = ctx;
+    posixfds_discard(&(struct posixfds_out){ .fds = kept, .nfds = r->n });
+    r->n = r->used = 0;
+}
+
+/* spawn's before_start: the child's hand-over (above) onto its startup
+ * channel. ctx: the program, its `handover` our end of the caller's. */
 static status_t relay(handle_t startup, void *ctx)
 {
-    handle_t from = *(const handle_t *)ctx;
-    for (unsigned n = 0;; n++) {
-        handle_t hs[IDL_HANDLES_MAX];
-        uint32_t got = 0, nh = 0;
-        status_t st = jam_channel_read(&(struct channel_read_args){
-            .h = from, .rd_cap = sizeof(relay_buf), .rd_bytes = (uint64_t)(uintptr_t)relay_buf,
-            .rd_actual = (uint64_t)(uintptr_t)&got, .rd_handles = (uint64_t)(uintptr_t)hs,
-            .rd_hcap = IDL_HANDLES_MAX, .rd_hactual = (uint64_t)(uintptr_t)&nh,
-        });
-        if (st == ERR_SHOULD_WAIT || st == ERR_PEER_CLOSED)
-            return OK;   /* all of it (the caller may have closed its end after writing) */
-        if (st != OK)
-            return st == ERR_BUFFER_TOO_SMALL ? ERR_INVALID_ARGS : st;   /* left, closed with it */
-        if (n == HANDOVER_MAX) {
-            idl_close_all(hs, nh);
-            return ERR_OUT_OF_RANGE;
-        }
-        st = jam_channel_write(startup, relay_buf, got, hs, nh);   /* the handles go either way */
-        if (st != OK)
-            return st;
+    const struct prog *p = ctx;
+    static struct rewrite r;               /* the worker's */
+    static char cwd[POSIXFDS_PATH_MAX];    /* the caller's: not given */
+    struct posixfds_state state = { .umask = 022 };   /* none written: libc's own */
+    memset(&r, 0, sizeof(r));
+    const struct posixfds_sink sink = { .ctx = &r, .fd = keep_fd, .reset = drop_kept };
+    status_t st = posixfds_read(p->handover, &sink, &state, cwd);
+    if (st == ERR_NOT_FOUND && !p->w.posix)
+        return OK;   /* nothing for a program that reads none */
+    if (st != OK && st != ERR_NOT_FOUND) {
+        printf("init: exec: %s: the caller's hand-over is refused (%s)\n", p->path,
+               status_str(st));
+        return st;   /* what it carried is closed */
     }
+    const struct posixfds_out out = {
+        .state = state, .cwd = "/", .fds = kept, .nfds = r.n, .exe = p->path, .secure = true,
+    };
+    return posixfds_write(startup, &out);   /* the handles go whatever happens */
 }
+
+/* ---- start --------------------------------------------------------------------------- */
 
 /* strings (len bytes: argc strings of argv, then the environment, each
  * NUL-terminated) into argv and envp, each NULL-terminated (room for
@@ -428,7 +506,7 @@ static status_t start_child(struct prog *p, const char **argv, int argc, const c
         .path = p->path, .vmo = p->vmo, .size = p->size, .argc = argc, .argv = argv,
         .envp = envp, .job = *sub, .extra = x, .nextra = nx, .extra_rights = xr,
         .ns = p->w.n ? grants : NULL, .stack_size = p->w.posix ? POSIX_STACK : 0,
-        .before_start = relay, .before_start_ctx = &p->handover,
+        .before_start = relay, .before_start_ctx = p,
     };
     st = spawn(&a, proc);   /* the extras are its whatever happens */
     if (st != OK)

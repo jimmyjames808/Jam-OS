@@ -30,11 +30,13 @@
  * wayland.c (the Wayland socket against a fake compositor of its own),
  * scm.c and scmkid.c (socketpairs carrying descriptors: SCM_RIGHTS, Mojo's
  * pattern between two processes, a fuzz loop; ptscm.h), unix.c (named
- * AF_UNIX sockets through /svc/unix: socket files and abstract names) and
+ * AF_UNIX sockets through /svc/unix: socket files and abstract names),
+ * peer.c (socketpairs and connections fed by a hostile peer in another
+ * process: scm's fuzz between two processes) and
  * rawcalls.c, rawfutex.c and rawlog.c (the raw Linux calls Chromium makes, and the
  * ENOSYS log: the log's hooks are the layer's calls.h, a second look inside).
  * start.c, mem.c, memres.c (the job's counts), clock.c, fds.c, poll.c,
- * proc.c, tty.c, fileskid.c, wayland.c, jit.c, procfs.c and unix.c are
+ * proc.c, tty.c, fileskid.c, wayland.c, jit.c, procfs.c, unix.c and peer.c are
  * the ones that include libjam (<jamos/libjam.h>: children started with a hand-over, a mapping libc
  * didn't make, the calls the clocks are checked against; fileskid.c
  * through the layer's fd.h); mem.c, rawcalls.c, rawfutex.c and rawlog.c include Linux's call
@@ -96,10 +98,15 @@ void pt_jit(char **argv);          /* MAP_JIT without the power (jit.c) */
 void pt_links(char **argv);        /* only when asked for: an ext volume at /u6 (links.c) */
 void pt_scm(char **argv);          /* socketpairs carrying descriptors (scm.c, scmkid.c) */
 void pt_unix(char **argv);         /* named AF_UNIX sockets through /svc/unix (unix.c) */
+void pt_peer(char **argv);         /* a hostile peer in another process (peer.c) */
 /* The signal section's second half (sigproc.c): between processes. */
 void pt_sigproc(void);
 /* The mem section's second half (memres.c): big sparse reservations. */
 void pt_mem_reserve(void);
+
+/* main's exit code when started with no arguments at all (argc 0: what a
+ * malformed SR_ARGS leaves a program, launch.c's check). */
+#define PT_NO_ARGS 9
 
 /* The child modes start.c's checks start this program in (main.c runs
  * them instead of the sections): each checks what it was given and exits
@@ -127,6 +134,7 @@ int  pt_child_mmap_pull(int argc, char **argv);
 int  pt_child_wl(int argc, char **argv);
 int  pt_child_scm(void);
 int  pt_child_unix(int argc, char **argv);
+int  pt_child_peer(int argc, char **argv);
 int  pt_child_links(void);
 
 /* Pages charged to our job now (job_get_info; start.c). */

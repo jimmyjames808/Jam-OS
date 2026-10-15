@@ -2343,16 +2343,20 @@ KTEST(pager_verified_refusals)
 
 /* The biggest program (docs/CR-PLAN.md section 6, CP1): a pager VMO of
  * VMO_VERIFIED_MAX (1 GiB), whose table is 262,144 hashes in 2048 pages,
- * every one charged to the caller's job and freed with the VMO. Most of
- * its pages are zero (one hash, computed once); a few, on either side of
- * a table page's edge, at the middle and at the very end, hold words of
- * their own, so an entry read from the wrong table page or slot shows:
- * each marked page matches its own entry and no other. Pages supplied at
- * the far end are checked against their entries there: the approved
- * bytes taken, a changed byte refused. */
+ * listed by 4 pages of 512 addresses (no allocation of more than a page:
+ * CR1 finding 3), every one charged to the caller's job and freed with
+ * the VMO. Most of its pages are zero (one hash, computed once); a few,
+ * on either side of a table page's edge and of a list page's, at the
+ * middle and at the very end, hold words of their own, so an entry read
+ * from the wrong table page or slot shows: each marked page matches its
+ * own entry and no other. Pages supplied at the far end are checked
+ * against their entries there: the approved bytes taken, a changed byte
+ * refused. */
 #define VMAX_PAGES (VMO_VERIFIED_MAX / PG)
+#define VMAX_LIST  (512 * 128)   /* the first page whose hash page is on list page 1 */
 
-static const uint64_t vmax_marked[] = { 0, 127, 128, 129, VMAX_PAGES / 2 - 1, VMAX_PAGES / 2,
+static const uint64_t vmax_marked[] = { 0, 127, 128, 129, VMAX_LIST - 1, VMAX_LIST,
+                                        VMAX_PAGES / 2 - 1, VMAX_PAGES / 2,
                                         VMAX_PAGES - 129, VMAX_PAGES - 128, VMAX_PAGES - 1 };
 #define VMAX_MARKED (sizeof(vmax_marked) / sizeof(vmax_marked[0]))
 
@@ -2418,7 +2422,8 @@ KTEST(pager_verified_max)
 
     uint64_t used0 = job_used(j, JOB_LIMIT_PAGES);
     KT_EQ(sys_vmo_make_exec_verified(&t, h, rh, th, 0, &x), OK);
-    KT_EQ(job_used(j, JOB_LIMIT_PAGES), used0 + VMAX_PAGES * VMO_VERIFIED_HASH_BYTES / PG);
+    /* The 2048 hash pages and the 4 that list them: every page charged. */
+    KT_EQ(job_used(j, JOB_LIMIT_PAGES), used0 + VMAX_PAGES * VMO_VERIFIED_HASH_BYTES / PG + 4);
     struct vmo_verify *vf = vmo_verifier(v);
     KT_ASSERT(vf);
 
@@ -2458,7 +2463,7 @@ KTEST(pager_verified_max)
     handle_table_destroy(&t);
     put(v);
     pg_close(pg);
-    kt_job_is_empty(j);   /* the 2048 table pages went with the VMO */
+    kt_job_is_empty(j);   /* the 2052 table pages went with the VMO */
     job_unref(j);
 }
 

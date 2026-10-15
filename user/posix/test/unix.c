@@ -13,17 +13,22 @@
  *   - names: a second bind of the path EADDRINUSE, a file that isn't a
  *     socket ECONNREFUSED, the socket file removed (connect ENOENT, the
  *     listener's waiting connection still accepted), a stale socket file
- *     (its listener closed: ECONNREFUSED) unlinked and bound again;
+ *     (its listener closed: ECONNREFUSED) unlinked and bound again; a
+ *     path of all 108 bytes, whose getsockname is the whole struct;
  *   - views: a child whose namespace has no /data can't reach the socket
  *     file (ENOENT), one with /data read-only can (reading the file is
  *     the test, its view decides);
  *   - abstract names: bound, reached, taken (EADDRINUSE), free again once
- *     the listener closes. */
+ *     the listener closes;
+ *   - a child given /svc/unix by name holds one opener of its own
+ *     (docs/CR-REVIEW-POSIX.md, Q2): binds through five opens of it stop
+ *     at LISTENERS_PER_OPENER, and a closed one makes room again. */
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <idl/unix.h>
 #include <jamos/libjam.h>
 #include <poll.h>
 #include <posixfds.h>
@@ -39,6 +44,7 @@
 #define SELF          "/boot/bin/posixtest"
 #define SOCK          PT_DIR "/sock"
 #define CHILD_WAIT_NS (60 * NS_PER_S)
+#define REFUSED_MS    500
 
 extern char **environ;
 
@@ -106,10 +112,63 @@ static void serve_one(int l)
 /* posixtest --child-unix connect <path> <byte>: connect, send the byte,
  * expect it + 1 back. --child-unix refused <path>: connect must be ENOENT
  * (the path isn't in our namespace). Exit 0 if all of it held. */
+/* --child-unix own <prefix>: started with /svc/unix by name, so libos's
+ * grants gave us an opener of our own (CR-REVIEW-POSIX Q2). However often
+ * we open /svc/unix it is that one: binds through five opens stop at
+ * LISTENERS_PER_OPENER, and one listener closed makes room for one more.
+ * Exit: the binds that went through, or 250 and up for a wrong answer. */
+static int child_own(const char *prefix)
+{
+    static handle_t ls[UNIX_LISTENERS_MAX];
+    handle_t o[5];
+    uint8_t key[UNIX_KEY_BYTES];
+    char name[64];
+    for (unsigned i = 0; i < 5; i++)
+        if (svc_open(SVC_UNIX, &o[i]) != OK)
+            return 250;
+    unsigned n = 0;
+    status_t st = OK;
+    uint64_t refused_at = 0;   /* a refusal is believed after REFUSED_MS: a listener our
+                                * parent (sharing our opener, in shell mode) closed may
+                                * not be heard of yet */
+    while (n < UNIX_LISTENERS_MAX) {
+        snprintf(name, sizeof(name), "%s-%u", prefix, n);
+        st = unix_bind_within(o[n % 5], 10 * NS_PER_S, (const uint8_t *)name,
+                              (uint32_t)strlen(name), &ls[n], key);
+        if (st == OK) {
+            n++;
+            refused_at = 0;
+            continue;
+        }
+        if (st != ERR_NO_RESOURCES)
+            break;
+        if (!refused_at)
+            refused_at = now();
+        if (now() - refused_at > REFUSED_MS * NS_PER_MS)
+            break;
+        jam_sleep_until(now() + NS_PER_MS);
+    }
+    if (st != ERR_NO_RESOURCES)
+        return 251;
+    jam_handle_close(ls[0]);   /* room for one, once the broker hears it */
+    snprintf(name, sizeof(name), "%s-x", prefix);
+    handle_t l = HANDLE_INVALID;
+    uint64_t end = now() + 2 * NS_PER_S;
+    while ((st = unix_bind_within(o[4], 10 * NS_PER_S, (const uint8_t *)name,
+                                  (uint32_t)strlen(name), &l, key)) == ERR_NO_RESOURCES &&
+           now() < end)
+        jam_sleep_until(now() + NS_PER_MS);
+    if (st != OK)
+        return 252;
+    return (int)n;   /* the listeners close with us */
+}
+
 int pt_child_unix(int argc, char **argv)
 {
     if (argc < 4)
         return 2;
+    if (!strcmp(argv[2], "own"))
+        return child_own(argv[3]);
     struct sockaddr_un a;
     socklen_t len = path_addr(&a, argv[3]);
     if (!strcmp(argv[2], "refused")) {
@@ -340,6 +399,31 @@ static void names(void)
     (void)unlink(SOCK);
 }
 
+/* A path of all of sun_path's 108 bytes, with no NUL: getsockname gives
+ * the whole struct, 110 bytes, as Linux does (never one past it). */
+static void long_path(void)
+{
+    char path[sizeof(((struct sockaddr_un *)0)->sun_path) + 1];
+    size_t dir = strlen(PT_DIR "/");
+    memcpy(path, PT_DIR "/", dir);
+    memset(path + dir, 'l', sizeof(path) - 1 - dir);
+    path[sizeof(path) - 1] = '\0';
+    struct sockaddr_un a = { .sun_family = AF_UNIX };
+    memcpy(a.sun_path, path, sizeof(a.sun_path));   /* no room for the NUL */
+    int l = listen_at(&a, sizeof(a), 4);
+    CHECK(l >= 0);
+    struct {
+        struct sockaddr_un a;
+        char               more[8];   /* room for a length past the struct's */
+    } got;
+    socklen_t glen = sizeof(got);
+    CHECK(l >= 0 && getsockname(l, (struct sockaddr *)&got, &glen) == 0 &&
+          glen == sizeof(struct sockaddr_un) && !memcmp(got.a.sun_path, path, sizeof(a.sun_path)));
+    if (l >= 0)
+        close(l);
+    (void)unlink(path);
+}
+
 static void views(void)
 {
     struct sockaddr_un a;
@@ -394,6 +478,20 @@ static void abstract(void)
     CHECK(connect_to(&other, olen) == -1 && errno == ECONNREFUSED);
 }
 
+/* A child given /svc/unix by name binds LISTENERS_PER_OPENER at most,
+ * however often it opens /svc/unix (child_own). */
+static void own_opener(void)
+{
+    const char *const ns[] = { "/svc/" SVC_UNIX, NULL };
+    char prefix[32];
+    snprintf(prefix, sizeof(prefix), "pt-own-%d", (int)getpid());
+    int code = spawned_exit(spawn_in(ns, "own", prefix));
+    if (code != UNIX_LISTENERS_PER_OPENER)
+        printf("posixtest: unix: a child with an opener of its own: code %d, not %d\n", code,
+               UNIX_LISTENERS_PER_OPENER);
+    CHECK(code == UNIX_LISTENERS_PER_OPENER);
+}
+
 void pt_unix(char **argv)
 {
     (void)argv;
@@ -409,7 +507,9 @@ void pt_unix(char **argv)
     bytes_and_fds();
     backlog();
     names();
+    long_path();
     views();
     abstract();
+    own_opener();
     pt_files_end();
 }

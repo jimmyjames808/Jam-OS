@@ -9,7 +9,10 @@
  * (FS_VIEW_NO_ETC, every program's) refuses every request at or under it,
  * a stat of it too, and leaves it out of the root's listing; the SSH
  * server's views (`:rk`, `:ra`) show its own files of etc and nothing else
- * of it; and fs_view_hides's rules. */
+ * of it; and fs_view_hides's rules. The packages' guard
+ * (FS_VIEW_GUARD_PKG, every program's writable /data) the same for the
+ * top-level pkg, by every name FAT takes for it, and a view without it
+ * (bin/pkg's) that changes it; fs_view_in_pkg's rules. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -29,6 +32,19 @@ bool t_view_etc_names(void)
         CHECK(fs_view_in_etc(in[i]));
     for (unsigned i = 0; i < sizeof(out) / sizeof(out[0]); i++)
         CHECK(!fs_view_in_etc(out[i]));
+    return true;
+}
+
+bool t_view_pkg_names(void)
+{
+    static const char *const in[] = { "pkg", "pkg/bin/vim", "PKG", "Pkg/x", "pkg.", "pkg ..",
+                                      " pkg", "pkg./a", "  PkG . ./db/journal" };
+    static const char *const out[] = { "", "pkgx", "pk", "x/pkg", "pkg2/a", "p.kg", "bin/vim",
+                                       "etc", "pkg-old" };
+    for (unsigned i = 0; i < sizeof(in) / sizeof(in[0]); i++)
+        CHECK(fs_view_in_pkg(in[i]));
+    for (unsigned i = 0; i < sizeof(out) / sizeof(out[0]); i++)
+        CHECK(!fs_view_in_pkg(out[i]));
     return true;
 }
 
@@ -150,6 +166,68 @@ static bool hides_keys(const struct fatrun *v)
     CHECK(file_is(v, "/etc/allow", "x"));   /* the rest of etc reads */
     CHECK(file_is(v, "/a.txt", "a"));
     return true;
+}
+
+/* A view with FS_VIEW_GUARD_PKG (every program's writable /data) refuses
+ * every change at or under the top-level pkg, by every name FAT takes for
+ * it, and reads it; one without the flag (bin/pkg's) changes it. */
+static bool guards_pkg(const struct fatrun *v)
+{
+    struct tfile f;
+    static const char *const pkg[] = { "/pkg/bin/vim", "/PKG/bin/vim", "/x/../pkg/new",
+                                       "/./Pkg/db/x", "/pkg", "/pkg./db/y", "/ pkg/bin/vim",
+                                       "/pkg ../bin/z", "/PKG/BIN/LONGFI~1.TXT" };
+    for (unsigned i = 0; i < sizeof(pkg) / sizeof(pkg[0]); i++) {
+        CHECK_ST(t_open(v, pkg[i], FS_WRITE | FS_CREATE, &f), ERR_ACCESS_DENIED);
+        CHECK_ST(t_open(v, pkg[i], FS_WRITE | FS_TRUNCATE, &f), ERR_ACCESS_DENIED);
+        CHECK_ST(t_mkdir(v, pkg[i]), ERR_ACCESS_DENIED);
+        /* (not t_unlink: its stat first refuses a name fat can't hold) */
+        CHECK_ST(t_unlink_flags(v, pkg[i], 0), ERR_ACCESS_DENIED);
+        CHECK_ST(t_unlink_flags(v, pkg[i], FS_UNLINK_DIR), ERR_ACCESS_DENIED);
+    }
+    CHECK_ST(t_rename(v, "/pkg", "/old"), ERR_ACCESS_DENIED);
+    CHECK_ST(t_rename(v, "/PKG.", "/old"), ERR_ACCESS_DENIED);
+    CHECK_ST(t_rename(v, "/a.txt", "/pkg/bin/a.txt"), ERR_ACCESS_DENIED);
+    CHECK_ST(t_rename(v, "/a.txt", "/Pkg"), ERR_ACCESS_DENIED);
+    CHECK_ST(t_rename(v, "/pkg/bin/vim", "/vim"), ERR_ACCESS_DENIED);
+    CHECK(file_is(v, "/pkg/bin/vim", "v"));   /* every program reads it */
+    CHECK(file_is(v, "/PKG/BIN/LONGFI~1.TXT", "l"));
+    CHECK(put_file(v, "/pkgs.txt", "y"));      /* and writes beside it */
+    CHECK_ST(t_unlink(v, "/pkgs.txt"), OK);
+    return true;
+}
+
+bool t_fat_view_pkg(void)
+{
+    struct fatrun r, g, both, w;
+    if (!ramdisk_create(&disk, 16 * MIB_SECTORS) || !fat_start(&r, &disk, false))
+        return false;
+    CHECK(put_file(&r, "/a.txt", "a"));
+    CHECK_ST(t_mkdir(&r, "/pkg"), OK);
+    CHECK_ST(t_mkdir(&r, "/pkg/bin"), OK);
+    CHECK_ST(t_mkdir(&r, "/pkg/db"), OK);
+    CHECK(put_file(&r, "/pkg/bin/vim", "v"));
+    CHECK(put_file(&r, "/pkg/bin/longfilename.txt", "l"));
+    CHECK(put_file(&r, "/pkg/db/x", "x"));
+    /* Every program's writable /data (`:w`): etc and pkg guarded. */
+    if (!view_of(&r, FS_VIEW_GUARD_ETC | FS_VIEW_GUARD_PKG | FS_VIEW_NO_ETC, &g) ||
+        !guards_pkg(&g))
+        return false;
+    /* A view of it asking for nothing more keeps the guard. */
+    if (!view_of(&g, 0, &both) || !guards_pkg(&both))
+        return false;
+    CHECK_ST(jam_handle_close(both.fs), OK);
+    /* bin/pkg's (`:wp`): no etc, but pkg is its to change. */
+    if (!view_of(&r, FS_VIEW_GUARD_ETC | FS_VIEW_NO_ETC, &w))
+        return false;
+    CHECK(put_file(&w, "/pkg/bin/vim.new", "v2"));
+    CHECK_ST(t_unlink(&w, "/pkg/bin/vim"), OK);
+    CHECK_ST(t_rename(&w, "/pkg/bin/vim.new", "/pkg/bin/vim"), OK);
+    CHECK(file_is(&g, "/pkg/bin/vim", "v2"));
+    CHECK_ST(t_mkdir(&w, "/etc"), ERR_ACCESS_DENIED);
+    CHECK_ST(jam_handle_close(w.fs), OK);
+    CHECK_ST(jam_handle_close(g.fs), OK);
+    return fat_stop(&r);
 }
 
 bool t_fat_view_keys(void)

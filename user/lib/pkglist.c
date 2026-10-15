@@ -44,6 +44,7 @@ status_t pkg_list_decode(struct pkg_str field, uint8_t out[PKG_LIST_MAX], size_t
 static const char *const refused_lines[] = {
     "svc devmgr", "svc devmgr-ctl", "svc volumes", "svc init", "svc net-sys", "svc dns-sys",
     "svc serve", "svc session", "svc net listen low", "svc net-low", "right debug",
+    "mount /data rw pkg",
 };
 
 const char *pkg_list_refused(const uint8_t *list, size_t n)

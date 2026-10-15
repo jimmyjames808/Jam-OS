@@ -185,21 +185,19 @@ void scm_mojo(void)
 
 /* ---- the fuzz loop ---------------------------------------------------------------------- */
 
-static uint64_t seed = 0x6a616d4353ull;
+uint64_t scm_seed = 0x6a616d4353ull;
 static unsigned fuzz_fds, fuzz_cut, fuzz_bytes;   /* what the fuzz's reader got, for its line */
 
-/* A number below n (a 64-bit LCG's high bits). */
-static uint32_t rnd(uint32_t n)
+uint32_t scm_rnd(uint32_t n)
 {
-    seed = seed * 6364136223846793005ull + 1442695040888963407ull;
-    return (uint32_t)(seed >> 33) % n;
+    scm_seed = scm_seed * 6364136223846793005ull + 1442695040888963407ull;
+    return (uint32_t)(scm_seed >> 33) % n;
 }
 
-/* A handle of a random kind: a kept VMO, a channel end, or an event. */
-static handle_t any_handle(void)
+handle_t scm_any_handle(void)
 {
     handle_t h = HANDLE_INVALID, spare;
-    uint32_t kind = rnd(3);
+    uint32_t kind = scm_rnd(3);
     if (kind == 0 && jam_vmo_create(4096, VMO_KEEP_PAGES, &h) == OK)
         return h;
     if (kind == 1 && jam_channel_create(&h, &spare) == OK) {
@@ -210,8 +208,7 @@ static handle_t any_handle(void)
     return h;
 }
 
-/* The channel end h as a socketpair end's descriptor (seq: SOCK_SEQPACKET). */
-static int wrap(handle_t h, bool seq)
+int scm_wrap(handle_t h, bool seq)
 {
     struct fd_desc *d = NULL;
     const struct posixfds_fd rec = { .kind = seq ? POSIXFDS_SEQPACKET : POSIXFDS_PIPE,
@@ -220,9 +217,7 @@ static int wrap(handle_t h, bool seq)
     return r ? -1 : (int)fd_install(d, 0, true);
 }
 
-/* One raw message from `from`, mutated now and then, into `to`. false:
- * nothing more queued. */
-static bool forward(handle_t from, handle_t to, uint8_t *b)
+bool scm_forward(handle_t from, handle_t to, uint8_t *b)
 {
     handle_t hs[CHANNEL_MAX_HANDLES];
     uint32_t nb = 0, nh = 0;
@@ -233,37 +228,37 @@ static bool forward(handle_t from, handle_t to, uint8_t *b)
     };
     if (jam_channel_read(&a) != OK)
         return false;
-    switch (rnd(8)) {
+    switch (scm_rnd(8)) {
     case 0:   /* bytes of the header and the first records changed */
-        for (unsigned k = 1 + rnd(4); nb && k; k--)
-            b[rnd(nb < 96 ? nb : 96)] = (uint8_t)rnd(256);
+        for (unsigned k = 1 + scm_rnd(4); nb && k; k--)
+            b[scm_rnd(nb < 96 ? nb : 96)] = (uint8_t)scm_rnd(256);
         break;
     case 1:   /* a handle dropped */
         if (nh)
             jam_handle_close(hs[--nh]);
         break;
     case 2:   /* a handle of any kind added, or put in another's place */
-        if (nh && rnd(2)) {
-            uint32_t i = rnd(nh);
+        if (nh && scm_rnd(2)) {
+            uint32_t i = scm_rnd(nh);
             jam_handle_close(hs[i]);
-            hs[i] = any_handle();
+            hs[i] = scm_any_handle();
         } else if (nh < CHANNEL_MAX_HANDLES) {
-            hs[nh++] = any_handle();
+            hs[nh++] = scm_any_handle();
         }
         break;
     case 3:   /* cut short */
-        nb = rnd(nb + 1);
+        nb = scm_rnd(nb + 1);
         break;
     case 4: {   /* a random message first */
         uint8_t junk[64];
         handle_t jh[2];
-        uint32_t jn = rnd(3), jl = rnd(sizeof(junk));
+        uint32_t jn = scm_rnd(3), jl = scm_rnd(sizeof(junk));
         for (uint32_t i = 0; i < jl; i++)
-            junk[i] = (uint8_t)rnd(256);
-        if (jl >= 4 && rnd(2))
+            junk[i] = (uint8_t)scm_rnd(256);
+        if (jl >= 4 && scm_rnd(2))
             memcpy(junk, "JSCM", 4);
         for (uint32_t i = 0; i < jn; i++)
-            jh[i] = any_handle();
+            jh[i] = scm_any_handle();
         (void)jam_channel_write(to, junk, jl, jh, jn);   /* the handles go, whatever */
         break;
     }
@@ -274,17 +269,16 @@ static bool forward(handle_t from, handle_t to, uint8_t *b)
     return true;
 }
 
-/* One round's sends: random bytes and descriptors of the pool. */
-static void fuzz_send(int x, const int *pool, unsigned npool, bool seq, uint8_t *b)
+void scm_fuzz_send(int x, const int *pool, unsigned npool, bool seq, uint8_t *b)
 {
-    for (unsigned k = 1 + rnd(3); k; k--) {
+    for (unsigned k = 1 + scm_rnd(3); k; k--) {
         int fds[80];
-        unsigned nf = rnd(3) ? 0 : 1 + rnd(rnd(4) ? 4 : 80);
+        unsigned nf = scm_rnd(3) ? 0 : 1 + scm_rnd(scm_rnd(4) ? 4 : 80);
         for (unsigned i = 0; i < nf; i++)
-            fds[i] = pool[rnd(npool)];
-        size_t n = (seq ? 0 : 1) + rnd(rnd(4) ? 64 : 3000);
+            fds[i] = pool[scm_rnd(npool)];
+        size_t n = (seq ? 0 : 1) + scm_rnd(scm_rnd(4) ? 64 : 3000);
         for (size_t i = 0; i < n; i++)
-            b[i] = (uint8_t)rnd(256);
+            b[i] = (uint8_t)scm_rnd(256);
         if (scm_send(x, b, n, fds, nf, MSG_DONTWAIT | MSG_NOSIGNAL) < 0)
             break;
     }
@@ -293,22 +287,23 @@ static void fuzz_send(int x, const int *pool, unsigned npool, bool seq, uint8_t 
 static void fuzz_round(const int *pool, unsigned npool, uint8_t *b)
 {
     handle_t a, rawa, c = HANDLE_INVALID, e;
-    bool seq = rnd(4) == 0;
+    bool seq = scm_rnd(4) == 0;
     CHECK(jam_channel_create(&a, &rawa) == OK && jam_channel_create(&c, &e) == OK);
-    int x = wrap(a, seq), y = wrap(e, seq);
+    int x = scm_wrap(a, seq), y = scm_wrap(e, seq);
     CHECK(x >= 0 && y >= 0);
-    fuzz_send(x, pool, npool, seq, b);
-    while (forward(rawa, c, b))
+    scm_fuzz_send(x, pool, npool, seq, b);
+    while (scm_forward(rawa, c, b))
         ;
-    if (rnd(3) == 0) {
+    if (scm_rnd(3) == 0) {
         jam_handle_close(c);   /* the sender gone: the end after what came */
         c = HANDLE_INVALID;
     }
     for (int i = 0; i < 10; i++) {
         struct scm_got g = { .n = 0 };
-        int flags = MSG_DONTWAIT | (rnd(4) ? 0 : MSG_PEEK) | (rnd(2) ? MSG_CMSG_CLOEXEC : 0);
-        ssize_t n = scm_recv(y, b, 1 + rnd(rnd(4) ? 200 : CHANNEL_MAX_BYTES), rnd(5) ? rnd(90) : 0,
-                             flags, &g);
+        int flags = MSG_DONTWAIT | (scm_rnd(4) ? 0 : MSG_PEEK) |
+                    (scm_rnd(2) ? MSG_CMSG_CLOEXEC : 0);
+        ssize_t n = scm_recv(y, b, 1 + scm_rnd(scm_rnd(4) ? 200 : CHANNEL_MAX_BYTES),
+                             scm_rnd(5) ? scm_rnd(90) : 0, flags, &g);
         fuzz_fds += g.n;
         fuzz_cut += !!(g.flags & MSG_CTRUNC);
         fuzz_bytes += n > 0 ? (unsigned)n : 0;
@@ -341,7 +336,7 @@ void scm_fuzz(void)
     int rounds = 0, said = 0;
     uint64_t was = before;
     for (int i = 0; i < FUZZ_ROUNDS; i++, rounds++) {
-        uint64_t seed0 = seed;
+        uint64_t seed0 = scm_seed;
         fuzz_round(pool, npool, b);
         uint64_t now = scm_job_handles();
         if (now != was && said++ < 4)   /* which rounds keep handles: their seeds repeat them */

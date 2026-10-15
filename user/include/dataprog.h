@@ -7,8 +7,9 @@
  * trusts the file's bytes, only the approval.
  *
  * The approvals are lines of /data/etc/allow, "<sha-256>\t<path>\t<what
- * its list asks for>", written only by the shell's `allow`; a path's last
- * line is its approval. Every program's /data is a view that leaves etc
+ * its list asks for>", written by the shell's `allow` and, for a
+ * package's programs, by init (a line tagged with its package:
+ * dp_allow_tag); a path's last line is its approval. Every program's /data is a view that leaves etc
  * alone (<fsview.h>), so only init and the shell, which hold the whole of
  * /data, can change the file or the tables beside it: a program can never
  * approve another, or itself.
@@ -105,6 +106,11 @@ bool        dp_on_data(const char *abs);
 /* One line of the approvals, its fields cut in place (hash, path, the
  * list as shown). false: not an approval (a comment, or malformed). */
 bool        dp_allow_split(char *line, char **hash, char **path, char **text);
+/* A package's line (init's approvals, abi/idl/pkgctl.idl) ends in a fourth
+ * field, its tag: "<list>\tpkg=<name> <version>-r<revision>". Of
+ * dp_allow_split's text: the tag cut off in place, returned without its
+ * "pkg=" (NULL for a line without one: the owner's `allow`). */
+char       *dp_allow_tag(char *text);
 /* The hash of path's approval (its last line in DP_ALLOW_FILE) into hex
  * (DP_HEX_LEN digits and a NUL). ERR_NOT_FOUND: no line for it (or no
  * approvals at all); ERR_OUT_OF_RANGE: the file is past DP_ALLOW_MAX; a
