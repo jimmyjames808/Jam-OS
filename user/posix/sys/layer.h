@@ -39,7 +39,9 @@ handle_t lx_self_thread(void);
  * by start.c before main), or NULL if the starter gave none. */
 struct posixfds_state;
 const struct posixfds_state *lx_handover(const char **cwd);
-/* The program's path the hand-over named (absolute), or NULL. */
+/* The program's path the hand-over named (absolute), else the one the
+ * startup's SR_ARGS named (startup_exe: a program started from its image
+ * with no hand-over), or NULL. */
 const char *lx_handover_exe(void);
 
 /* ---- the kernel's calls for POSIX (kposix.c) ------------------------------

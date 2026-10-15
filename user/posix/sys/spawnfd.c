@@ -7,7 +7,8 @@
  * changes nothing in the copy, and close and dup2 only move references.
  * Nothing is exported (no handle made) until every action has worked. An
  * open action opens the file here (with O_CLOEXEC), takes a reference to
- * the new description and closes our descriptor at once. chdir and fchdir
+ * the new description and closes our descriptor at once; closefrom drops
+ * every slot from its number up. chdir and fchdir
  * change only the copy's directory, which the later actions' relative
  * paths start from.
  *
@@ -181,6 +182,20 @@ static long act_fchdir(struct spawnfd *t, const struct jam_spawn_op *op)
     return 0;
 }
 
+/* Every descriptor from `from` up closed (addclosefrom_np): what the
+ * actions before it put there too, as the child would close them. */
+static void closefrom_copy(struct spawnfd *t, int from)
+{
+    for (unsigned i = 0; i < t->nslots;) {
+        if (t->slot[i].fd >= from) {
+            fd_put(t->slot[i].desc);
+            t->slot[i] = t->slot[--t->nslots];
+        } else {
+            i++;
+        }
+    }
+}
+
 long spawnfd_apply(struct spawnfd *t, const struct jam_spawn_op *ops, unsigned n)
 {
     for (unsigned i = 0; i < n; i++) {
@@ -192,6 +207,7 @@ long spawnfd_apply(struct spawnfd *t, const struct jam_spawn_op *ops, unsigned n
         case JAM_SPAWN_OPEN:   e = act_open(t, op); break;
         case JAM_SPAWN_CHDIR:  e = act_chdir(t, op); break;
         case JAM_SPAWN_FCHDIR: e = act_fchdir(t, op); break;
+        case JAM_SPAWN_CLOSEFROM: closefrom_copy(t, op->fd); break;
         default:               e = -EINVAL; break;
         }
         if (e)

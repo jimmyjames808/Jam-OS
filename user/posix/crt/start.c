@@ -13,7 +13,8 @@
  *      table makes them descriptors once musl is up, before the
  *      program's constructors (user/posix/sys/fd.c).
  *   3. Linux's block, on this function's stack (which lives as long as
- *      the program: __libc_start_main never returns): argc, argv, NULL,
+ *      the program: __libc_start_main never returns), or for a big argv
+ *      and environment in a VMO of its own: argc, argv, NULL,
  *      the environment (with TZ added from the system's zone if the
  *      starter gave none), NULL, and the auxiliary vector: AT_PAGESZ,
  *      AT_RANDOM (16 bytes from the kernel's generator), AT_HWCAP,
@@ -31,10 +32,9 @@
 #include <string.h>
 #include "start.h"
 
-#define AUX_MAX   16                    /* auxv pairs, AT_NULL's included */
-#define STRS_MAX  128                   /* libjam's limit on argv + environment strings */
-#define BLOCK_MAX (1 + STRS_MAX + 1 + 1 + 1 + 2 * AUX_MAX)   /* + TZ */
-#define ONE_USER  1000                  /* the one user's uid and gid (M13 Q7) */
+#define AUX_MAX     16                  /* auxv pairs, AT_NULL's included */
+#define BLOCK_STACK 512                 /* the block's longs on the stack; more: a VMO */
+#define ONE_USER    1000                /* the one user's uid and gid (M13 Q7) */
 
 int __libc_start_main(int (*)(), int, char **, void (*)(void), void (*)(void), void (*)(void));
 
@@ -70,7 +70,7 @@ const struct posixfds_state *lx_handover(const char **cwd)
 
 const char *lx_handover_exe(void)
 {
-    return ho_given && ho_exe[0] ? ho_exe : NULL;
+    return ho_given && ho_exe[0] ? ho_exe : startup_exe();
 }
 
 static void sink_exe(void *ctx, const char *path)
@@ -153,6 +153,24 @@ static unsigned fill_aux(long *aux)
     return (unsigned)(sizeof(pairs) / sizeof(pairs[0])) * 2;
 }
 
+/* Room for a block of n longs too big for the stack (a big argv or
+ * environment: libjam's SR_ARGS): a VMO of its own, mapped for good. */
+static long *big_block(size_t n)
+{
+    uint64_t size = (n * sizeof(long) + 4095) & ~4095ull, addr = 0;
+    handle_t v = HANDLE_INVALID;
+    status_t st = jam_vmo_create(size, 0, &v);
+    if (st == OK)
+        st = jam_vmar_map(self_vmar, v, 0, size, VMAR_READ | VMAR_WRITE, &addr);
+    if (v)
+        jam_handle_close(v);   /* the mapping keeps it */
+    if (st != OK) {
+        say("no memory for argv and the environment", st);
+        jam_process_exit(127);
+    }
+    return (long *)(uintptr_t)addr;
+}
+
 _Noreturn void __jam_start(unsigned ch, int (*main)(), void (*init)(void), void (*fini)(void))
 {
     int argc;
@@ -162,14 +180,20 @@ _Noreturn void __jam_start(unsigned ch, int (*main)(), void (*init)(void), void 
     self_vmar = startup_handle(SR_SELF_VMAR);
     take_handover();
 
-    long block[BLOCK_MAX];
-    unsigned n = 0;
+    char **envp = argv + argc + 1;
+    size_t envc = 0;
+    while (envp[envc])
+        envc++;
+    long small[BLOCK_STACK];
+    long *block = small;
+    size_t n = 0, need = 1 + (size_t)argc + 1 + envc + 1 + 1 + 2 * AUX_MAX;
+    if (need > BLOCK_STACK)
+        block = big_block(need);
     block[n++] = argc;
     for (int i = 0; i <= argc; i++)   /* argv and its NULL */
         block[n++] = (long)(uintptr_t)argv[i];
-    char **envp = argv + argc + 1;
-    for (char **e = envp; *e && n < 1 + STRS_MAX + 1; e++)
-        block[n++] = (long)(uintptr_t)*e;
+    for (size_t i = 0; i < envc; i++)
+        block[n++] = (long)(uintptr_t)envp[i];
     if (!has_tz(envp)) {
         tz_posix(tz_env + 3, sizeof(tz_env) - 3);
         block[n++] = (long)(uintptr_t)tz_env;

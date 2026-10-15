@@ -24,6 +24,7 @@
  * network), sockets.c (against the network peer: asked for by name),
  * loopback.c (127.0.0.0/8 through netstack alone: asked for by name),
  * procfs.c (libc's /proc: the program's file and the descriptors),
+ * launch.c (Chromium's launcher's needs: a big argv, addclosefrom_np),
  * mmap.c (files mapped on their pages, msync, posix_spawn from /data),
  * jit.c (MAP_JIT refused without the power, and to bin/jittest as our child),
  * wayland.c (the Wayland socket against a fake compositor of its own),
@@ -82,6 +83,8 @@ void pt_procfs(char **argv);
 /* Only when asked for (procfs.c): a program's own path and its
  * self-image, from /data (tools/posix-mmap-test.sh, case spawn). */
 void pt_self_image(char **argv);
+/* launch.c: a big argv and environment, addclosefrom_np. */
+void pt_launch(char **argv);
 void pt_mmap(char **argv);
 /* Only when asked for (mmap.c): tools/posix-mmap-test.sh's cases. */
 void pt_mmap_big(char **argv);
@@ -116,6 +119,7 @@ int  pt_child_winsize(void);
 int  pt_child_hup(void);
 int  pt_child_raw(int argc, char **argv);
 int  pt_child_procfs(int argc, char **argv);
+int  pt_child_launch(int argc, char **argv);
 int  pt_child_mmap_pull(int argc, char **argv);
 int  pt_child_wl(int argc, char **argv);
 int  pt_child_scm(void);

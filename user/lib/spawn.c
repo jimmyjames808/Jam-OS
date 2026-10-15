@@ -18,7 +18,9 @@
  * program's VMO, writable ones copied into a fresh VMO), then a stack with
  * a guard page below it, a thread, and a startup message on a new channel
  * whose other end process_start hands to the program in rdi (and after
- * it, for a POSIX program, the hand-over messages: <posixfds.h>).
+ * it, for a POSIX program, the hand-over messages: <posixfds.h>). argv
+ * and an environment too big for the message go in a VMO of their own
+ * (SR_ARGS, <roles.h>), up to Linux's 2 MiB, which the child copies.
  *
  * Code is mapped executable only from a VMO handle with RIGHT_EXEC, and
  * only the bootfs image's has it (the kernel gives it to no VMO a process
@@ -40,7 +42,8 @@
 
 #define STACK_TOP   0x00007ff000000000ull
 #define MAX_SEGS    8
-#define MSG_MAX     2048
+#define MSG_MAX     2048             /* a startup message's bytes; more go in SR_ARGS's VMO */
+#define MSG_STRINGS 128              /* its strings (libos's start takes no more) */
 #define FILE_MAX    (1ull << 30)    /* the biggest program read from a file: VMO_VERIFIED_MAX */
 /* What the child's SR_SELF_IMAGE can do (as far as our handle can): run
  * the program again, never change it. */
@@ -222,34 +225,83 @@ static const char *child_name(const struct spawn_args *a)
     return name;
 }
 
-/* The startup message's header, argv and environment into msg (MSG_MAX
- * bytes); *len: its length so far (the handles' roles are filled later).
- * ERR_OUT_OF_RANGE if it doesn't fit. */
-static status_t build_startup_msg(const struct spawn_args *a, uint8_t *msg, size_t *len)
+/* argv and the environment: how many strings (*n, *envc of them the
+ * environment's) and their bytes with their NULs. */
+static void count_strings(const struct spawn_args *a, uint64_t *n, uint32_t *envc,
+                          uint64_t *bytes)
+{
+    *bytes = 0;
+    *envc = 0;
+    for (int i = 0; i < a->argc; i++)
+        *bytes += strlen(a->argv[i]) + 1;
+    for (; a->envp && a->envp[*envc] && *envc < STARTUP_ARGS_MAX; (*envc)++)
+        *bytes += strlen(a->envp[*envc]) + 1;
+    *n = (uint64_t)(a->argc > 0 ? a->argc : 0) + *envc;
+}
+
+/* Every string of argv and then of the environment (envc of them) to p. */
+static void copy_strings(const struct spawn_args *a, uint32_t envc, uint8_t *p)
+{
+    for (int i = 0; i < a->argc; i++) {
+        size_t l = strlen(a->argv[i]) + 1;
+        memcpy(p, a->argv[i], l);
+        p += l;
+    }
+    for (uint32_t i = 0; i < envc; i++) {
+        size_t l = strlen(a->envp[i]) + 1;
+        memcpy(p, a->envp[i], l);
+        p += l;
+    }
+}
+
+/* The startup message's header into msg, and argv and the environment
+ * (envc strings, bytes long) after it unless they go in a VMO (in_vmo);
+ * *len: its length so far (the handles' roles are filled later). The
+ * caller checked that they fit MSG_MAX. */
+static void build_startup_msg(const struct spawn_args *a, bool in_vmo, uint32_t envc,
+                              uint64_t bytes, uint8_t *msg, size_t *len)
 {
     struct startup_msg *m = (struct startup_msg *)msg;
     memset(m, 0, sizeof(*m));
     m->magic = STARTUP_MAGIC;
     m->version = STARTUP_VERSION;
-    m->argc = (uint32_t)a->argc;
-    size_t n = sizeof(*m);
-    for (int i = 0; i < a->argc; i++) {
-        size_t l = strlen(a->argv[i]) + 1;
-        if (n + l > MSG_MAX)
-            return ERR_OUT_OF_RANGE;
-        memcpy(msg + n, a->argv[i], l);
-        n += l;
+    if (!in_vmo) {
+        m->argc = (uint32_t)a->argc;
+        m->envc = envc;
+        m->strings_len = (uint32_t)bytes;
+        copy_strings(a, envc, msg + sizeof(*m));
     }
-    for (unsigned i = 0; a->envp && a->envp[i]; i++) {
-        size_t l = strlen(a->envp[i]) + 1;
-        if (n + l > MSG_MAX || m->argc + m->envc >= 128)
-            return ERR_OUT_OF_RANGE;
-        memcpy(msg + n, a->envp[i], l);
-        n += l;
-        m->envc++;
+    *len = sizeof(*m) + m->strings_len;
+}
+
+/* SR_ARGS's VMO (<roles.h>): argv and the environment (envc strings,
+ * bytes long) and the program's path exe (NULL: none), written through a
+ * mapping of it here. *out: the VMO. */
+static status_t make_args(const struct spawn_args *a, uint32_t envc, uint64_t bytes,
+                          const char *exe, handle_t *out)
+{
+    struct startup_args hd = {
+        .magic = STARTUP_ARGS_MAGIC, .version = STARTUP_ARGS_VERSION,
+        .argc = (uint32_t)a->argc, .envc = envc, .strings_len = (uint32_t)bytes,
+        .exe_len = exe ? (uint32_t)strlen(exe) + 1 : 0,
+    };
+    handle_t self = startup_handle(SR_SELF_VMAR), v = HANDLE_INVALID;
+    uint64_t size = up(sizeof(hd) + bytes + hd.exe_len), addr = 0;
+    status_t st = jam_vmo_create(size, 0, &v);
+    if (st == OK)
+        st = jam_vmar_map(self, v, 0, size, VMAR_READ | VMAR_WRITE, &addr);
+    if (st != OK) {
+        if (v)
+            jam_handle_close(v);
+        return st;
     }
-    m->strings_len = (uint32_t)(n - sizeof(*m));
-    *len = n;
+    uint8_t *p = (uint8_t *)(uintptr_t)addr;
+    memcpy(p, &hd, sizeof(hd));
+    copy_strings(a, envc, p + sizeof(hd));
+    if (exe)
+        memcpy(p + sizeof(hd) + bytes, exe, hd.exe_len);
+    jam_vmar_unmap(self, addr, size);
+    *out = v;
     return OK;
 }
 
@@ -260,6 +312,7 @@ struct child {
     handle_t ch[2];                /* the startup channel: ours, the child's */
     handle_t ns[2];                /* its SR_NS channel: ours (we write), the child's */
     handle_t ns_back;              /* a read-only duplicate of ns[1], for ns_update */
+    handle_t args;                 /* its SR_ARGS VMO, or none */
     uint64_t entry, stack;         /* where its thread starts; its stack top */
 };
 
@@ -376,8 +429,9 @@ static rights_t image_rights(const struct spawn_args *a, const struct image *img
 }
 
 /* The handles, with their roles into m: duplicates of ours, the vmar
- * itself (we don't keep it), its end of the namespace channel, its own
- * program (image: the rights, 0 for none), then the extras. st: whether
+ * itself (we don't keep it), its end of the namespace channel, its
+ * strings' VMO (read only: it copies them), its own program (image: the
+ * rights, 0 for none), then the extras. st: whether
  * the steps so far worked; after a failure only the extras are gathered
  * (to be closed). Returns st, or the failure of a duplicate. */
 static status_t gather_handles(const struct spawn_args *a, struct child *c, rights_t image,
@@ -407,6 +461,12 @@ static status_t gather_handles(const struct spawn_args *a, struct child *c, righ
         out->rights[out->n] = NS_RIGHTS;
         m->roles[out->n++] = SR_NS;
         c->ns[1] = HANDLE_INVALID;
+    }
+    if (st == OK && c->args) {
+        out->h[out->n] = c->args;
+        out->rights[out->n] = RIGHT_READ;
+        m->roles[out->n++] = SR_ARGS;
+        c->args = HANDLE_INVALID;
     }
     if (st == OK && image) {
         st = jam_handle_duplicate(a->vmo, image, &out->h[out->n]);
@@ -470,17 +530,14 @@ static status_t start_child(const struct spawn_args *a, struct child *c, const u
 }
 
 /* From the new process c->proc to its running thread, then its first ns
- * message (nso, made ahead: consumed). The extras are consumed. */
+ * message (nso, made ahead: consumed). The extras are consumed. image:
+ * its SR_SELF_IMAGE's rights (0: none). */
 static status_t make_child(const struct spawn_args *a, const struct image *img, const char *name,
-                           uint8_t *msg, size_t len, struct child *c, struct ns_out *nso)
+                           rights_t image, uint8_t *msg, size_t len, struct child *c,
+                           struct ns_out *nso)
 {
     status_t st = load_child(a, img, name, c);
     struct handout hs = { .n = 0 };
-    /* Its own program, where the message has room for it after ours (5,
-     * the namespace's) and the extras. */
-    rights_t image = image_rights(a, img);
-    if (a->nextra + 6u + (a->ns ? 1u : 0u) > STARTUP_MAX_HANDLES)
-        image = 0;
     st = gather_handles(a, c, image, (struct startup_msg *)msg, &hs, st);
     if (st == OK)
         st = start_child(a, c, msg, len, &hs);
@@ -507,8 +564,8 @@ static status_t make_child(const struct spawn_args *a, const struct image *img, 
 /* Close what is still ours of c, except the process. */
 static void close_child(struct child *c)
 {
-    handle_t *hs[] = { &c->ch[0], &c->ch[1], &c->ns[0], &c->ns[1], &c->ns_back, &c->thread,
-                       &c->vmar };
+    handle_t *hs[] = { &c->ch[0], &c->ch[1], &c->ns[0], &c->ns[1], &c->ns_back, &c->args,
+                       &c->thread, &c->vmar };
     for (unsigned i = 0; i < sizeof(hs) / sizeof(hs[0]); i++)
         if (*hs[i]) {
             jam_handle_close(*hs[i]);
@@ -516,19 +573,58 @@ static void close_child(struct child *c)
         }
 }
 
+/* Where argv and the environment go, and what else the startup message
+ * holds beside our 5 handles, the namespace's and the extras. */
+struct layout {
+    uint64_t    bytes;    /* the strings' */
+    uint32_t    envc;     /* the environment's strings */
+    bool        in_vmo;   /* in SR_ARGS's VMO, not the message */
+    rights_t    image;    /* SR_SELF_IMAGE's rights; 0: none */
+    const char *exe;      /* the path SR_ARGS names (a program with an image and no
+                           * hand-over, which would name it, nor a before_start,
+                           * which passes one on); NULL: none */
+};
+
+/* The layout for a and its program img: ERR_OUT_OF_RANGE if the strings
+ * are past STARTUP_ARGS_MAX or the handles don't fit. The strings are in
+ * the message when they fit it; else SR_ARGS takes a place. The image
+ * comes next, where there is room, then SR_ARGS for the path alone. */
+static status_t plan_layout(const struct spawn_args *a, const struct image *img,
+                            struct layout *l)
+{
+    uint64_t n;
+    count_strings(a, &n, &l->envc, &l->bytes);
+    l->in_vmo = sizeof(struct startup_msg) + l->bytes > MSG_MAX || n > MSG_STRINGS;
+    unsigned room = STARTUP_MAX_HANDLES - 5u - (a->ns ? 1u : 0u), need = a->nextra + l->in_vmo;
+    if (n > STARTUP_ARGS_MAX / 8 || l->bytes + (n + 2) * 8 > STARTUP_ARGS_MAX || need > room)
+        return ERR_OUT_OF_RANGE;
+    room -= need;
+    l->image = room ? image_rights(a, img) : 0;
+    room -= l->image ? 1 : 0;
+    l->exe = NULL;
+    if (l->image && !a->handover && !a->before_start && a->path[0] == '/' &&
+        strlen(a->path) < STARTUP_ARGS_EXE_MAX && (l->in_vmo || room)) {
+        l->exe = a->path;
+        l->in_vmo = true;
+    }
+    return OK;
+}
+
 status_t spawn(const struct spawn_args *a, handle_t *proc_out)
 {
     struct image img;
+    struct layout lay = { 0 };
     status_t st = find_image(a, &img);
-    if (st == OK && (a->nextra > STARTUP_MAX_HANDLES - 5u - (a->ns ? 1u : 0u) ||
-                     !stack_bytes(a)))
-        st = ERR_OUT_OF_RANGE;
+    if (st == OK)
+        st = stack_bytes(a) ? plan_layout(a, &img, &lay) : ERR_OUT_OF_RANGE;
     const char *name = child_name(a);
     _Alignas(8) uint8_t msg[MSG_MAX];   /* the startup message, built on the stack */
     size_t len = 0;
-    if (st == OK)
-        st = build_startup_msg(a, msg, &len);
     struct child c = { 0 };
+    if (st == OK)
+        build_startup_msg(a, lay.in_vmo, lay.envc, lay.bytes, msg, &len);
+    if (st == OK && lay.in_vmo)
+        st = make_args(a, lay.envc, lay.bytes, lay.exe, &c.args);
     struct ns_out *nso = NULL;   /* its first ns message, views made before it starts */
     if (st == OK && a->ns)
         st = ns_prepare(a->ns, &nso);
@@ -546,7 +642,7 @@ status_t spawn(const struct spawn_args *a, handle_t *proc_out)
             ns_prepared_drop(nso);
         return st;
     }
-    st = make_child(a, &img, name, msg, len, &c, nso);
+    st = make_child(a, &img, name, lay.image, msg, len, &c, nso);
     release_image(&img);
     if (st == OK && a->ns_out) {
         *a->ns_out = c.ns[0];

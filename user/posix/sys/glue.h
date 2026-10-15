@@ -55,12 +55,14 @@ _Noreturn void __jam_start(unsigned ch, int (*main)(), void (*init)(void), void 
 
 /* One of posix_spawn's file actions, as the override hands them over (in
  * the order they are applied): close fd; dup2 srcfd onto fd; open path
- * (oflag, mode) as fd; chdir to path; fchdir to fd. */
-#define JAM_SPAWN_CLOSE  1
-#define JAM_SPAWN_DUP2   2
-#define JAM_SPAWN_OPEN   3
-#define JAM_SPAWN_CHDIR  4
-#define JAM_SPAWN_FCHDIR 5
+ * (oflag, mode) as fd; chdir to path; fchdir to fd; close every one from
+ * fd up (posix_spawn_file_actions_addclosefrom_np, glibc's). */
+#define JAM_SPAWN_CLOSE     1
+#define JAM_SPAWN_DUP2      2
+#define JAM_SPAWN_OPEN      3
+#define JAM_SPAWN_CHDIR     4
+#define JAM_SPAWN_FCHDIR    5
+#define JAM_SPAWN_CLOSEFROM 6
 struct jam_spawn_op {
     int         cmd;      /* JAM_SPAWN_* */
     int         fd;       /* the descriptor it acts on */

@@ -59,8 +59,8 @@
 #define EXEC_PROGRAMS_PER_OPENER 4u
 #define EXEC_WAIT_NS 10000000000ull
 /* The most bytes of argv and the environment together (start's strings),
- * and the most strings: spawn's startup message refuses less already
- * (ERR_OUT_OF_RANGE). */
+ * and the most strings (more: ERR_INVALID_ARGS; spawn itself takes up to
+ * 2 MiB since CS1, carrying what its startup message can't in a VMO). */
 #define EXEC_STRINGS_BYTES 12288u
 #define EXEC_STRINGS_MAX 128u
 
@@ -634,7 +634,7 @@ static inline status_t exec_prog_start_call(handle_t ch, bool idl_within, uint64
  * ERR_INVALID_ARGS: the strings malformed (a string without its NUL, argc
  * 0 or past the strings), a handle of the wrong kind, a job without
  * RIGHT_WRITE, a hand-over message too big to move; ERR_OUT_OF_RANGE:
- * argv and the environment don't fit (spawn's startup message), or more
+ * argv and the environment don't fit (spawn's limits), or more
  * than 128 hand-over messages; ERR_ACCESS_DENIED: a page the start reads
  * (the program headers, a writable segment) isn't the approved one;
  * spawn's own errors (ERR_NO_MEMORY, ERR_NO_RESOURCES: the job's limits). */
