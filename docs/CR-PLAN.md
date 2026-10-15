@@ -953,11 +953,13 @@ lands (no WebAssembly then).
   `clock` and `debug` in `user/include/wants.h`), as every `right` word
   is today.
 - **JIT VMOs** (CJ1): a new call, `vmo_make_jit(vmo, root, *out)`, in
-  `vmo_make_exec`'s shape: a fresh anonymous paged VMO (one handle, no
-  mapping, no pin, never a pager VMO, a child or a kept one) becomes a
-  JIT VMO, and `*out` is its handle with read, write, execute, map and
-  duplicate (not transfer: the creator adds it to a duplicate if it hands
-  one on). Needs `RIGHT_ROOT_JIT` on root. A JIT VMO can never be
+  `vmo_make_exec`'s shape: a plain paged VMO holding nothing (one handle,
+  no page, no mapping, no pin; never a pager VMO, a pager VMO's child or a
+  kept one) becomes a JIT VMO, and `*out` is the same handle with
+  `RIGHT_EXEC` added to a fresh VMO's rights (read, write, map, resize,
+  duplicate and transfer: a duplicate can only narrow rights, so the
+  handle must carry transfer for its creator to hand one on, CR1 finding
+  4). Needs `RIGHT_ROOT_JIT` on root. A JIT VMO can never be
   sealed, verified, made executable the old way, or given a pager.
 - **W+X only there** (CJ1): `perms_ok` in `kernel/mm/aspace.c` allows
   write together with execute only for a mapping of a JIT VMO, and only
