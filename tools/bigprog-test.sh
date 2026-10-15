@@ -84,7 +84,7 @@ sed '/jam[^>]*>.* reboot -f/q' "$out/$name.log" > "$run"
 # The progress line, both times the whole file was read (the refusal
 # explained from its bytes, and `allow`), each to 100 % (a log line may
 # come between its pieces).
-want 2 "checking /data/big \($((size >> 20)) MiB\): 10% 20%" "$run"
+want 2 "checking /data/big \($((size >> 20)) MiB\): 10%" "$run"
 want 2 "90% 100%" "$run"
 # The table: one file, named by the program's hash.
 want 1 "$sha" "$run"

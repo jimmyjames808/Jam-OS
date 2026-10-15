@@ -81,7 +81,17 @@ then (the known flaky tests, [Known noise](#known-noise)). A line is `<name>
 <command...>`, shell words; `VAR=value` words before the command (with or
 without `env`) are its environment. `tools/pc-batch.sh <runlist>` does it
 all in the foreground (a terminal). If the PC doesn't answer, the batch
-tries once more after a minute, then every run is NOT-RUN.
+tries once more after a minute, then every run is NOT-RUN. The runs
+start 0.3 s apart (`PC_BATCH_STAGGER`) and at most 32 are out at once
+(`PC_BATCH_JOBS`; the rest show as QUEUED until one ends): each run opens
+ssh connections and holds one while it waits for the budget, and the PC's
+sshd turns some away while 10 or more are logging in (see [Another
+machine](#another-machine-for-the-tests), "Dropped connections", for what
+the tools do about it); a run that finds the PC gone before anything ran
+(exit 3 and remote-test's "not run" line) is run once more after a minute,
+a test's own exit 3 is not. A run that ends with exit 255 either could not
+log in (the table says so) or lost its ssh connection after it started (it
+may have gone on running there).
 
 One run: `JAMOS_REMOTE=jamos-pc JAMOS_REMOTE_ONLY=1 tools/remote-test.sh
 tools/qemu-test.sh build/t/init init init`. Several calls of your own from
@@ -291,8 +301,58 @@ back the output directories its arguments name under `build/` (but stick
 images); its exit status is the command's. Commands from every checkout
 share a budget of CPUs on the machine (below) and wait until theirs fit:
 more runs at once made timing tests fail. Without `JAMOS_REMOTE`, or
-when the machine doesn't answer in 5 s, the command runs here (with
-`JAMOS_REMOTE_ONLY=1`: not run, exit 3).
+when the machine doesn't answer (5 s a try, 3 tries), the command runs
+here (with `JAMOS_REMOTE_ONLY=1`: not run, exit 3).
+
+**Dropped connections** (`tools/ssh-retry.sh`, `remote-test.sh`, `pc-batch.sh`).
+The PC's sshd turns new connections away at random while 10 or more are
+still logging in (`MaxStartups`, more of them as there are more) and,
+loaded, answers too late: a batch of 16 runs at once lost some with
+`kex_exchange_identification: read: Connection reset by peer` or
+`Connection timed out during banner exchange` (exit 255 within seconds:
+"the PC didn't answer", or the run failed with 255), a batch of 163
+lost 128. Four things, in the order a connection meets them:
+- **Few logins at once.** Every ssh and rsync of `remote-test.sh` goes
+  through `tools/ssh-retry.sh`, which takes one of 5 login slots
+  (`SSH_RETRY_LOGINS`; machine-wide on the Mac, every agent shares them) before it
+  connects and frees it the moment ssh is logged in, so a session that lasts
+  hours holds none. `pc-batch.sh` starts its runs `PC_BATCH_STAGGER` (0.3) s
+  apart and keeps at most `PC_BATCH_JOBS` (32) out at once; the rest wait
+  in the batch (table: QUEUED), not as ssh sessions and waiting processes on the PC.
+- **A login that fails is tried again.** When ssh exits 255 **before the
+  login completed** (ssh runs `touch <marker>` as soon as it is logged in,
+  before the remote command starts) and the message is a cut or a refusal:
+  6 tries for a reset, a close or a banner timeout, 3 for "refused" and "timed out"
+  (a PC that is off is found out in about 20 s), waiting 1, 2, 4, 8 s with
+  up to half as much again at random. "Permission denied" and a changed host
+  key are not retried. Each repeat prints `ssh-retry: ...: try 2 of 6 in 1.4 s`
+  into the run's log and a late success `connected on try 3`; the end of a
+  login that never worked is `ssh-retry: not logged in: ...`. `SSH_RETRY_TRIES`,
+  `SSH_RETRY_DOWN_TRIES`, `SSH_RETRY_DELAY_MS` change it.
+- **A run that found no PC** (exit 3 and remote-test's "not run" line, after
+  those tries) is run once more by `pc-batch.sh` after a minute; a test's own
+  exit 3 is not.
+- **A session lost while the run waits for the budget.** The session that
+  runs the command has keepalives (`ServerAliveInterval=20`, a dead
+  link ends it in ~3 min). Hours in the queue of the pre-push pass ended 32 runs
+  with `Read from remote host: Operation timed out`. If the connection is lost
+  after the login (`ssh-retry: connection lost after login`) and
+  the command has not started (no `remote-test: running with` line yet),
+  `remote-test.sh` starts the session again, up to `JAMOS_REMOTE_REQUEUE`
+  (3) times, 5 to 15 s apart; the new session first stops the lost one's
+  leftovers on the PC (a pid file `~/work/.runs/<run id>`). Once the command
+  has started nothing is repeated: a test's own failure (even exit 255)
+  never reruns, and a connection lost mid-run is exit 255 ("the ssh
+  connection was lost after the run started" in `pc-batch.sh`'s table; the
+  run may have gone on there).
+
+No ssh multiplexing (ControlMaster): the PC allows 10 sessions per
+connection (`MaxSessions`), a batch holds many long ones, and a master
+outliving a PC reboot leaves stale sockets. If losses still happen, the
+fix on the PC is `MaxStartups 64:30:128` and `MaxSessions 64` in Windows'
+`sshd_config` then `Restart-Service sshd` (as administrator): the owner's to
+do; nothing here edits the PC. Host tests (no PC, seconds):
+`tools/ssh-retry-test.sh`, `tools/remote-test-test.sh`.
 
 **The CPU budget** (`tools/remote-slots.py`, run by `remote-test.sh` on the
 machine). The PC has 28 CPUs; the old six equal slots left most of them
@@ -1261,7 +1321,9 @@ matters `QEMU_XHCI`) pass through.
 | `tools/sntp-test.sh <outdir>` | bin/sntp end to end, three boots with QEMU's e1000e, the RTC at 2026-01-15 and the peer's SNTP server (`--ntp`: 2031-02-27 from its start): `sntp` (`sntp.txt`: the gateway asked, each answer after a forged one (`--ntp-forge`: the origin a bit off, a year later) that is said to be ignored, the five-year step confirmed by a second reply, `date -u` 2031, `date -r` "set from the network", `date -z` keeps it, sntp restarted moves it under a second, devmgr restarted and init keeps the network's time); checked afterwards: the kernel's set near the peer's time, never the forged year; `sntp-name` (`ntp.server = router.jam`, through `/svc/dns`); `sntp-off` (`ntp = off`: no sntp, not one SNTP request, the RTC's date). About 3 minutes |
 | `tools/ping-test.sh <outdir>` | the shell's `net` and `ping` (`net.txt`) with QEMU's e1000e and the network peer: `ping 1.1.1.1` answered through the gateway, Ctrl+C, `net stats` ([netstack](#netstack)); then the same commands as programs on the same stick (`sysbox-net.txt`) |
 | `tools/remote-slots-test.sh` | the CPU budget on the test machine ([above](#another-machine-for-the-tests)) against a fake lock directory, no PC, about 30 s: the costs of each kind of command; 6 commands of 3 CPUs on a budget of 8 never more than 2 at once; a command bigger than the budget alone; a holder killed (`kill -9`) with and without its command leaks nothing, a dead governor whose command lives still counts; an old waiter is not passed by a younger small one; `JAMOS_REMOTE_SLOTS`, the budget file, `--status`, the exit status; a `--detach` claim returns at once, holds its CPUs while its command runs (the others wait), logs its output and ends with the command; prints PASS |
-| `tools/pc-batch-test.sh` | `tools/pc-batch.sh` ([Running tests on the PC](#running-tests-on-the-pc)) with a stand-in for remote-test, no PC, about 25 s: start returns at once, a short wait says "not yet" (124), the table (PASS, FAIL with its failure line and log, rerun-PASS, the queue time), `VAR=value` words with and without `env`, one copy then every run without one, bad runlists refused, a PC that doesn't answer tried twice, a `KTESTS=0` run's own build, cancel; prints PASS |
+| `tools/pc-batch-test.sh` | `tools/pc-batch.sh` ([Running tests on the PC](#running-tests-on-the-pc)) with a stand-in for remote-test, no PC, about 25 s: start returns at once, a short wait says "not yet" (124), the table (PASS, FAIL with its failure line and log, rerun-PASS, the queue time), `VAR=value` words with and without `env`, one copy then every run without one, bad runlists refused, a PC that doesn't answer tried twice, a run that finds it gone run once more (a test's own exit 3 not), the runs started `PC_BATCH_STAGGER` apart and no more than `PC_BATCH_JOBS` out at once, a `KTESTS=0` run's own build, cancel; prints PASS |
+| `tools/remote-test-test.sh` | `tools/remote-test.sh`'s ssh handling ([Another machine for the tests](#another-machine-for-the-tests), "Dropped connections") with a stand-in for ssh, no PC, about 5 s: a session lost after the login while the command waits for the budget is started again (same run id, up to `JAMOS_REMOTE_REQUEUE` times, then exit 255), one lost after the command started is not, the command's own exit status (5) comes back once, a login cut twice is tried again by `ssh-retry.sh`, keepalives on the session, no temp files left; prints PASS |
+| `tools/ssh-retry-test.sh` | `tools/ssh-retry.sh` ([Another machine for the tests](#another-machine-for-the-tests), "Dropped connections") with a stand-in for ssh, no PC, about 6 s: a login cut by the server (kex_exchange_identification, reset, closed) is tried again up to 6 times with the piped-in script intact, nothing there ("refused", "timed out") 3 times, and never again: "Permission denied", a reset after the login ("connection lost after login"), a remote command that exits 255 or 7; the waits double with up to half as much again; `SSH_RETRY_TRIES=1` turns it off; the login slots (8 helpers, 2 slots: never more than 2 logging in; a dead holder's or a 5-minute-old slot is taken over; `SSH_RETRY_LOGINS=0` makes no lock directory); no temp files left; prints PASS |
 | `tools/rxsoak-test.sh <outdir>` | the receive path over a long run (`rxsoak.txt`, about 4 minutes): the peer floods ~10 000 frames (a trunk port's mix, on VLAN 21 and off it) while it pings every 0.2 s; the late pings must be answered and the guest's own `ping 10.2.21.1` too ([netstack](#netstack)) |
 | `tools/dns-test.sh <outdir>` | bin/dhcp and bin/dns end to end with QEMU's e1000e and the peer's DHCP and DNS servers, two boots ([DHCP and DNS](#dhcp-and-dns-end-to-end)) |
 | `tools/tcp-test.sh <outdir>` | TCP end to end (`tcp.txt`, [HISTORY: M9.5](HISTORY.md#m95-network-streams)): with `net.address` in the stick's settings and the peer's TCP side, `run tcptest send 10.2.21.174 5030 10485760` (10 MiB to the peer and 10 MiB back on one connection, every byte checked on both sides, the SHA-256 said, then CLOSED with no error; the speeds both ways) `run tcptest send 10.2.21.174 5032 8388608 2097152` (8 MiB each way with 2 MiB rings, to a server whose ACKs come 20 ms after their segments: window scaling), and `run tcptest serve 5031 20 262144` (the peer's 20 connections at once to a guest listener, served from one wait set holding the listener and every connection, 256 KiB each way each); then `run tcptest small ... 5033 8 10 0` and `... 5034 8 10 1` (eight 10-byte writes 20 ms apart to servers whose ACKs come 200 ms late, with Nagle's algorithm off and on: `net_tcp_set_options`) `run tcptest keepalive 10.2.21.174 5035 5` (idle 5 s with keep-alive on, the peer answering the probes) and `run tcptest relisten 5036 65536` (a listener with address reuse serves the peer's connection and closes it first, so the port is in TIME_WAIT on the guest; a listener without the flag is then refused, one with it made again at once); PASS needs the peer's 26 connections right and none wrong, 6 segments or more from the no-delay writes (8 seen) and 1 to 3 from the Nagle ones (2), at least 2 keep-alive probes (the peer's `tcp_5033_segs`, `tcp_5034_segs`, `tcp_5035_probes`), on the 2 MiB rings' connection a scaled window over 64 KiB and more than 64 KiB in flight both ways (the peer's `tcp_5032_*` counts), on the default rings' one no window and no flight over 64 KiB, and the run's VLAN checks. `QEMU_NET_VLAN=none` runs it untagged. About 2 minutes |
