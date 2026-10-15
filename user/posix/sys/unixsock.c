@@ -86,6 +86,8 @@ long unix_name_out(const struct unix_name *n, long addr, long lenp)
     } else if (n) {
         memcpy(a.sun_path, n->bytes, n->len);
         full = at + n->len + 1;   /* with its NUL, as Linux */
+        if (full > sizeof(a))
+            full = sizeof(a);     /* a path of all 108 bytes has no room for one */
     }
     memcpy((void *)(uintptr_t)addr, &a, *len < full ? *len : full);
     *len = (socklen_t)full;

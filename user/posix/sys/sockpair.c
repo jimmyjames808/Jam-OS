@@ -280,7 +280,7 @@ static long fill_locked(struct pipe_end *p)
         if (k == PART_MORE || k == PART_DROP)
             continue;
         if (!p->seq && got == skip) {   /* a stream's empty message carries nothing */
-            if (k == PART_LAST && p->fds->ready) {
+            if (k == PART_LAST && p->fds && p->fds->ready) {   /* none: take_part's calloc failed */
                 fds_drop(p->fds);
                 p->fds->lost = true;
             }

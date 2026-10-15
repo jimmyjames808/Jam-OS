@@ -13,7 +13,8 @@
  *   - names: a second bind of the path EADDRINUSE, a file that isn't a
  *     socket ECONNREFUSED, the socket file removed (connect ENOENT, the
  *     listener's waiting connection still accepted), a stale socket file
- *     (its listener closed: ECONNREFUSED) unlinked and bound again;
+ *     (its listener closed: ECONNREFUSED) unlinked and bound again; a
+ *     path of all 108 bytes, whose getsockname is the whole struct;
  *   - views: a child whose namespace has no /data can't reach the socket
  *     file (ENOENT), one with /data read-only can (reading the file is
  *     the test, its view decides);
@@ -340,6 +341,31 @@ static void names(void)
     (void)unlink(SOCK);
 }
 
+/* A path of all of sun_path's 108 bytes, with no NUL: getsockname gives
+ * the whole struct, 110 bytes, as Linux does (never one past it). */
+static void long_path(void)
+{
+    char path[sizeof(((struct sockaddr_un *)0)->sun_path) + 1];
+    size_t dir = strlen(PT_DIR "/");
+    memcpy(path, PT_DIR "/", dir);
+    memset(path + dir, 'l', sizeof(path) - 1 - dir);
+    path[sizeof(path) - 1] = '\0';
+    struct sockaddr_un a = { .sun_family = AF_UNIX };
+    memcpy(a.sun_path, path, sizeof(a.sun_path));   /* no room for the NUL */
+    int l = listen_at(&a, sizeof(a), 4);
+    CHECK(l >= 0);
+    struct {
+        struct sockaddr_un a;
+        char               more[8];   /* room for a length past the struct's */
+    } got;
+    socklen_t glen = sizeof(got);
+    CHECK(l >= 0 && getsockname(l, (struct sockaddr *)&got, &glen) == 0 &&
+          glen == sizeof(struct sockaddr_un) && !memcmp(got.a.sun_path, path, sizeof(a.sun_path)));
+    if (l >= 0)
+        close(l);
+    (void)unlink(path);
+}
+
 static void views(void)
 {
     struct sockaddr_un a;
@@ -409,6 +435,7 @@ void pt_unix(char **argv)
     bytes_and_fds();
     backlog();
     names();
+    long_path();
     views();
     abstract();
     pt_files_end();
