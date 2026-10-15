@@ -26,7 +26,12 @@
                                 * request on `etc` itself but a stat */
 #define FS_VIEW_HIDE_AUTH 16u  /* `etc/authorized_keys`: the keys that may log in, only
                                 * for the SSH server's views (`:rk`, `:ra`) */
-#define FS_VIEW_FLAGS     31u  /* all of them: any other bit is ERR_INVALID_ARGS */
+/* The packages' prefix (docs/M13.7-PLAN.md section 9): every change at or
+ * under the top-level `pkg` refused, as FS_VIEW_GUARD_ETC refuses etc's. Every
+ * program's writable view has it (<os.h> "grants": `:w`); only init, the
+ * shell and bin/pkg (`mount /data rw pkg`, <wants.h>: `:wp`) change /data/pkg. */
+#define FS_VIEW_GUARD_PKG 32u
+#define FS_VIEW_FLAGS     63u  /* all of them: any other bit is ERR_INVALID_ARGS */
 /* The three hiding flags: `etc` doesn't exist for the view. A stat of it is
  * refused too, and a listing of the root leaves it out. Every program's
  * view has them (<os.h> "grants": `:r`, `:w`); only init and the shell it
@@ -39,6 +44,9 @@
  * compared without ASCII case and without leading spaces or trailing dots
  * and spaces, which FAT ignores, so "ETC", "etc." and " Etc" are etc. */
 bool     fs_view_in_etc(const char *clean);
+/* The same for the top-level `pkg` directory (FS_VIEW_GUARD_PKG): "PKG",
+ * "pkg." and " Pkg" are pkg. */
+bool     fs_view_in_pkg(const char *clean);
 /* Is the cleaned path at or under `etc/ssh` (both names compared as
  * fs_view_in_etc compares `etc`)? A whole directory, not its files by
  * name: FAT also opens a file by its short name (`ED2551~1.SK`), which a

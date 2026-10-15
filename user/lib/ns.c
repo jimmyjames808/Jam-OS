@@ -610,10 +610,18 @@ static bool parse_grant(const char *s, struct grant *g)
         /* The key check's (tinysshd-auth): the authorized keys alone. */
         g->view = FS_VIEW_READ_ONLY | FS_VIEW_HIDE_ETC | FS_VIEW_HIDE_KEYS;
         n -= 3;
+    } else if (n >= 3 && !strcmp(s + n - 3, ":wp")) {
+        /* bin/pkg's (`mount /data rw pkg`): no etc, and the packages' prefix
+         * its to change. */
+        g->view = FS_VIEW_GUARD_ETC | FS_VIEW_NO_ETC;
+        n -= 3;
     } else if (n >= 2 && s[n - 2] == ':' && (s[n - 1] == 'r' || s[n - 1] == 'w')) {
         /* A program's view (every list's `mount`, <wants.h>): no etc in it
-         * at all, whoever starts the program. */
-        g->view = (s[n - 1] == 'r' ? FS_VIEW_READ_ONLY : FS_VIEW_GUARD_ETC) | FS_VIEW_NO_ETC;
+         * at all, whoever starts the program, and a writable one leaves the
+         * packages' prefix alone (on every mount: the prefix may move to
+         * another one, M13.6). */
+        g->view = (s[n - 1] == 'r' ? FS_VIEW_READ_ONLY : FS_VIEW_GUARD_ETC | FS_VIEW_GUARD_PKG) |
+                  FS_VIEW_NO_ETC;
         n -= 2;
     }
     if (n == 1 && s[0] == '*' && g->view) {

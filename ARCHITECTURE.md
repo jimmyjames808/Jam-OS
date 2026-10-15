@@ -353,7 +353,9 @@ Every driver and service is a userspace process from the start.
 - **TLB**: a kernel unmap does a synchronous range shootdown to all CPUs (a
   full flush above 64 pages). User address spaces keep a mask of the CPUs
   running them, so a shootdown interrupts only those, and a "gather" frees
-  pages only after the flush.
+  pages only after the flush. A protect that found no entry to change and
+  no table to let go (V8 committing untouched reservation pages) shoots
+  nobody down.
 - **PCIDs** (`kernel/arch/x86_64/pcid.c`): each user address space has a
   never-reused id and a TLB generation; each CPU has 8 PCID slots (PCID 0 is
   the kernel's tables) remembering which address space they hold and the
@@ -3184,7 +3186,8 @@ decisions, is in [docs/HISTORY.md, M8.5](docs/HISTORY.md#audio-a1-a2-as-and-m85-
   sound's clients for good (the music player, the splash and the mixer:
   the hda driver ends only once its client has gone), stops volumes
   (`volumes.stop`: every writable mount synced, every filesystem service
-  stopped), then devmgr in order (`devmgrctl.shutdown`), and calls
+  stopped in order, so a write that follows the sync, logd's line about it,
+  can't be cut off by a kill and leave the volume dirty), then devmgr in order (`devmgrctl.shutdown`), and calls
   `kexec_reboot` (the other CPUs
   halted, the kernel's screen quiet, the image verified, bus mastering
   off, the IOMMU off, the jump). Any failure before the jump falls back to the firmware

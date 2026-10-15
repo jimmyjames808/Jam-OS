@@ -30,6 +30,7 @@ DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /dat
 out=$1
 mkdir -p "$out"
 mib=${STORM_MIB:-40}
+run=${STORM_NAME:-storm}   # the run's name: parallel runs need different ones (QEMU's sockets)
 boot="$out/storm-boot.img"       # the boot stick, with the WAV on /data
 saved="$out/storm-boot-after.img"  # ... as the guest left it
 stick="$out/storm-usb0.img"       # the second stick, /usb0
@@ -58,15 +59,15 @@ cp build/jamos.img "$boot"
 mmd -i "$boot@@$DATA_AT" ::/music
 mcopy -i "$boot@@$DATA_AT" "$tmp/tone.wav" "::/music/tone.wav"
 
-devs="-audiodev wav,id=snd0,path=$out/storm.wav,out.frequency=48000,out.channels=2,out.format=s16 \
+devs="-audiodev wav,id=snd0,path=$out/$run.wav,out.frequency=48000,out.channels=2,out.format=s16 \
 -device intel-hda,id=hda0 -device hda-output,bus=hda0.0,cad=0,audiodev=snd0"
 QEMU_TIMEOUT=${QEMU_TIMEOUT:-600} QEMU_IMAGE="$boot" QEMU_SAVE="$saved" QEMU_EXTRA="$devs" \
     QEMU_USB="-drive if=none,id=s0img,format=raw,file=$stick " \
     QEMU_INPUT=tools/shell-tests/storm.txt \
-    tools/qemu-test.sh "$out" storm shell > "$out/storm.out" 2>&1 ||
-    { echo "fat-storm: the script failed"; grep "serial-feed: .*no '" "$out/storm.out" || true; ok=0; }
-log="$out/storm.log"
-clean="$out/storm.clean.log"
+    tools/qemu-test.sh "$out" $run shell > "$out/$run.out" 2>&1 ||
+    { echo "fat-storm: the script failed"; grep "serial-feed: .*no '" "$out/$run.out" || true; ok=0; }
+log="$out/$run.log"
+clean="$out/$run.clean.log"
 tr -d '\r' < "$log" > "$clean"
 
 count() { grep -ac -- "$1" "$2" || true; }
@@ -154,14 +155,7 @@ never "init: /usb0 is gone" "$out/storm.run.log"
 echo "fat-storm: $(count 'fat /data: restart (killed' "$clean") restarts of fat /data and $(count 'fat /usb0: restart (killed' "$clean") of fat /usb0 carried on"
 
 # ---- the disks afterwards -------------------------------------------------------------------
-rm -f "$tmp/back.bin"
-mcopy -o -i "$saved@@$DATA_AT" "::/s100.bin" "$tmp/back.bin" 2>/dev/null &&
-    cmp -s "$tmp/back.bin" "$tmp/big.bin" ||
-    { echo "fat-storm: /data/s100.bin on the stick isn't the file"; ok=0; }
-for f in s0.bin s1.bin s10.bin cut.bin; do
-    ! mdir -i "$saved@@$DATA_AT" "::/$f" > /dev/null 2>&1 ||
-        { echo "fat-storm: /data/$f is still on the stick (it was removed)"; ok=0; }
-done
+# (before mtools touches the images below: fatcheck's verdict is the guest's)
 for disk in "data:$saved:2" "usb0:$stick:1"; do
     name=${disk%%:*} rest=${disk#*:}
     img=${rest%:*} part=${rest##*:}
@@ -170,6 +164,14 @@ for disk in "data:$saved:2" "usb0:$stick:1"; do
         st=$?
     sed "s/^/fat-storm: \/$name: /" "$out/storm-fatcheck-$name.txt" | grep -v "chains walked" || true
     [ "$st" = 0 ] || { echo "fat-storm: fatcheck on /$name: exit $st"; ok=0; }
+done
+rm -f "$tmp/back.bin"
+mcopy -o -i "$saved@@$DATA_AT" "::/s100.bin" "$tmp/back.bin" 2>/dev/null &&
+    cmp -s "$tmp/back.bin" "$tmp/big.bin" ||
+    { echo "fat-storm: /data/s100.bin on the stick isn't the file"; ok=0; }
+for f in s0.bin s1.bin s10.bin cut.bin; do
+    ! mdir -i "$saved@@$DATA_AT" "::/$f" > /dev/null 2>&1 ||
+        { echo "fat-storm: /data/$f is still on the stick (it was removed)"; ok=0; }
 done
 if command -v hdiutil > /dev/null && command -v fsck_msdos > /dev/null; then
     for disk in "data:$saved:2" "usb0:$stick:1"; do
@@ -206,5 +208,5 @@ echo "$close" | grep -q " 0 late period(s)" || { echo "fat-storm: the music stre
 
 rm -f "$boot" "$tmp/back.bin"
 [ "$ok" = 1 ] && echo "fat-storm: PASS" && exit 0
-echo "fat-storm: FAIL (see $out/storm.log)"
+echo "fat-storm: FAIL (see $out/$run.log)"
 exit 1

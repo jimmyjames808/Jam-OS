@@ -170,8 +170,9 @@ static bool finish(void)
 
 /* Every client is gone, or volumes.stop: no more restarts. Every writable
  * mount is synced while its disk still works, then the spare and every
- * filesystem service stop (killed: what they hold is on the stick, and
- * their disks are about to go with devmgr's drivers anyway). */
+ * filesystem service stop (in order, killed if one does not: what they
+ * hold is on the stick, and their disks are about to go with devmgr's
+ * drivers anyway). */
 bool stop_all(void)
 {
     static bool done, result;
@@ -186,6 +187,11 @@ bool stop_all(void)
         struct vol *b = &vols[i];
         sup_reset(b);
         if (b->proc) {
+            /* In order first: the service settles the volume and then
+             * serves nothing, so a write that comes after the sync (logd
+             * saving the sync's own line) can't be cut off by the kill
+             * and leave the volume dirty. Killed only if it can't. */
+            (void)fs_stop_in_order(b);
             fs_stop(b, true, true);
             stopped++;
         }

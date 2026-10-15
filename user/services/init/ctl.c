@@ -66,7 +66,8 @@
  * shell_ready (the shell, once it is up) lets the boot splash give the
  * screen back (splash.c). kernel_load (the shell's `kernel load`) makes
  * /esp's kernel and boot image the stored copy now (reboot.c);
- * update_offer hands out a channel for a fetched build (update.c). */
+ * update_offer hands out a channel for a fetched build (update.c), and
+ * pkg_channel one for bin/pkg's approvals of a package's programs (pkg.c). */
 #include <idl/devmgr.h>
 #include <idl/initctl.h>
 #include <os.h>
@@ -485,6 +486,15 @@ static status_t op_update_offer(void *ctx, handle_t *out_offer)
     return update_offer_new(ctl_port, KEY_UPDATE, out_offer);
 }
 
+/* initctl.pkg_channel: a channel for bin/pkg's approvals (pkg.c). */
+static status_t op_pkg_channel(void *ctx, handle_t *out_pkg)
+{
+    const struct ctl *c = ctx;
+    if (!c->admin)
+        return ERR_ACCESS_DENIED;
+    return pkg_channel_new(ctl_port, KEY_PKG, out_pkg);
+}
+
 static status_t op_terminal(void *ctx, const char *command, uint32_t command_len,
                             uint8_t *out_number)
 {
@@ -571,6 +581,7 @@ static const struct initctl_ops ops = {
     .kernel_load = op_kernel_load, .update_offer = op_update_offer, .terminal = op_terminal,
     .launch = op_launch, .disks = op_disks, .prepare_disk = op_prepare_disk,
     .install = op_install,
+    .pkg_channel = op_pkg_channel,
 };
 
 static void ctl_close(struct ctl *c)

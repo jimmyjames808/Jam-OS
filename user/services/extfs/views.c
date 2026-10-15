@@ -125,6 +125,9 @@ status_t views_sub(const struct xf_ctx *parent, const struct xf_walk *w, uint32_
         ((pf & FS_VIEW_HIDE_KEYS) ||
          ((pf & FS_VIEW_GUARD_ETC) && !((pf | flags) & FS_VIEW_READ_ONLY))))
         return ERR_ACCESS_DENIED;
+    if (fs_view_in_pkg(w->phys) && (pf & FS_VIEW_GUARD_PKG) &&
+        !((pf | flags) & FS_VIEW_READ_ONLY))
+        return ERR_ACCESS_DENIED;   /* the same for pkg */
     handle_t mine, theirs;
     status_t st = jam_channel_create(&mine, &theirs);
     if (st != OK)
