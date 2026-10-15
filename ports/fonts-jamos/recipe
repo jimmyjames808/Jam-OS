@@ -1,0 +1,100 @@
+# fonts-jamos: the fonts and the fontconfig configuration of Jam OS (G2's
+# GP2, docs/G2-PLAN.md section 4), a data port (style data: files and no
+# build). Chromium builds its own fontconfig, FreeType and HarfBuzz; what it
+# needs from the system is font files and a fonts.conf, and the shell sets
+# FONTCONFIG_FILE to /data/pkg/share/fonts/fonts.conf for every program.
+#
+# The set: Liberation Sans, Serif and Mono (metric-compatible with Arial,
+# Times New Roman and Courier New), Noto Sans, Serif and Sans Mono (Latin,
+# Greek and Cyrillic: the upstream "latin-greek-cyrillic" releases, the
+# static unhinted TrueType files; FreeType's own hinting does the rest),
+# Inter (the static files of its nine weights and their italics; not the
+# Display cut, and not the variable files, whose family is "Inter Variable"),
+# JetBrains Mono (all its
+# static TrueType files) and Noto Color Emoji (the bitmap, CBDT, font that
+# Chromium's FreeType draws). CJK later, as a package of its own.
+#
+# Every font here is under the SIL Open Font License 1.1. Each licence text
+# is a file of its own in the package (share/licences/fonts-jamos/), taken
+# from the same upstream release as the fonts and given a distinct name:
+# several archives carry an OFL.txt of their own, and each would overwrite
+# the last when unpacked together.
+name        fonts-jamos
+version     1.0
+revision    1
+summary     the system fonts (Liberation, Noto, Inter, JetBrains Mono, Noto Color Emoji) and fonts.conf
+homepage    https://github.com/liberationfonts/liberation-fonts
+category    data
+licence     OFL-1.1
+licence-file liberation-LICENSE.txt noto-OFL.txt noto-emoji-OFL.txt inter-LICENSE.txt jetbrains-OFL.txt
+
+# Liberation 2.1.5.
+source      https://github.com/liberationfonts/liberation-fonts/files/7261482/liberation-fonts-ttf-2.1.5.tar.gz 2385008 7191c669bf38899f73a2094ed00f7b800553364f90e2637010a69c0e268f25d0
+source      https://raw.githubusercontent.com/liberationfonts/liberation-fonts/2.1.5/LICENSE 4414 93fed46019c38bbe566b479d22148e2e8a1e85ada614accb0211c37b2c61c19b liberation-LICENSE.txt
+# Noto Sans 2.015, Noto Serif 2.015, Noto Sans Mono 2.014.
+source      https://github.com/notofonts/latin-greek-cyrillic/releases/download/NotoSans-v2.015/NotoSans-v2.015.zip 117491253 0c34df072a3fa7efbb7cbf34950e1f971a4447cffe365d3a359e2d4089b958f5
+source      https://github.com/notofonts/latin-greek-cyrillic/releases/download/NotoSerif-v2.015/NotoSerif-v2.015.zip 70637713 0e9a43c8a4b94ac76f55069ed1d7385bbcaf6b99527a94deb5619e032b7e76c1
+source      https://github.com/notofonts/latin-greek-cyrillic/releases/download/NotoSansMono-v2.014/NotoSansMono-v2.014.zip 31592998 090cf6c5e03f337a755630ca888b1fef463e64ae7b33ee134e9309c05f978732
+source      https://raw.githubusercontent.com/notofonts/latin-greek-cyrillic/NotoSans-v2.015/OFL.txt 4396 cee9892f9f0cc8fe882c9e9537ee6a89621d86ee7ceaf70b02e2b2b1c25c061a noto-OFL.txt
+# Noto Color Emoji 2.051.
+source      https://raw.githubusercontent.com/googlefonts/noto-emoji/v2.051/fonts/NotoColorEmoji.ttf 10673480 72a635cb3d2f3524c51620cdde406b217204e8a6a06c6a096ff8ed4b5fd6e27b
+source      https://raw.githubusercontent.com/googlefonts/noto-emoji/v2.051/fonts/LICENSE 4301 6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2 noto-emoji-OFL.txt
+# Inter 4.1.
+source      https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip 33707794 9883fdd4a49d4fb66bd8177ba6625ef9a64aa45899767dde3d36aa425756b11e
+source      https://raw.githubusercontent.com/rsms/inter/v4.1/LICENSE.txt 4380 262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a inter-LICENSE.txt
+# JetBrains Mono 2.304.
+source      https://github.com/JetBrains/JetBrainsMono/releases/download/v2.304/JetBrainsMono-2.304.zip 5622857 6f6376c6ed2960ea8a963cd7387ec9d76e3f629125bc33d1fdcd7eb7012f7bbf
+source      https://raw.githubusercontent.com/JetBrains/JetBrainsMono/v2.304/OFL.txt 4399 30f0c136e3c88e422d0791acd97238870f9054a9729bc34cf2ff0d4ed8cac4ad jetbrains-OFL.txt
+
+place       package
+style       data
+
+# The configuration (OVERRIDES): the fonts' directory, the aliases, the cache.
+data        jamos/fonts.conf share/fonts/fonts.conf
+
+data        liberation-fonts-ttf-2.1.5/LiberationSans-Regular.ttf share/fonts/jamos/liberation/LiberationSans-Regular.ttf
+data        liberation-fonts-ttf-2.1.5/LiberationSans-Bold.ttf share/fonts/jamos/liberation/LiberationSans-Bold.ttf
+data        liberation-fonts-ttf-2.1.5/LiberationSans-Italic.ttf share/fonts/jamos/liberation/LiberationSans-Italic.ttf
+data        liberation-fonts-ttf-2.1.5/LiberationSans-BoldItalic.ttf share/fonts/jamos/liberation/LiberationSans-BoldItalic.ttf
+data        liberation-fonts-ttf-2.1.5/LiberationSerif-Regular.ttf share/fonts/jamos/liberation/LiberationSerif-Regular.ttf
+data        liberation-fonts-ttf-2.1.5/LiberationSerif-Bold.ttf share/fonts/jamos/liberation/LiberationSerif-Bold.ttf
+data        liberation-fonts-ttf-2.1.5/LiberationSerif-Italic.ttf share/fonts/jamos/liberation/LiberationSerif-Italic.ttf
+data        liberation-fonts-ttf-2.1.5/LiberationSerif-BoldItalic.ttf share/fonts/jamos/liberation/LiberationSerif-BoldItalic.ttf
+data        liberation-fonts-ttf-2.1.5/LiberationMono-Regular.ttf share/fonts/jamos/liberation/LiberationMono-Regular.ttf
+data        liberation-fonts-ttf-2.1.5/LiberationMono-Bold.ttf share/fonts/jamos/liberation/LiberationMono-Bold.ttf
+data        liberation-fonts-ttf-2.1.5/LiberationMono-Italic.ttf share/fonts/jamos/liberation/LiberationMono-Italic.ttf
+data        liberation-fonts-ttf-2.1.5/LiberationMono-BoldItalic.ttf share/fonts/jamos/liberation/LiberationMono-BoldItalic.ttf
+
+data        NotoSans/unhinted/ttf/NotoSans-Regular.ttf share/fonts/jamos/noto/NotoSans-Regular.ttf
+data        NotoSans/unhinted/ttf/NotoSans-Bold.ttf share/fonts/jamos/noto/NotoSans-Bold.ttf
+data        NotoSans/unhinted/ttf/NotoSans-Italic.ttf share/fonts/jamos/noto/NotoSans-Italic.ttf
+data        NotoSans/unhinted/ttf/NotoSans-BoldItalic.ttf share/fonts/jamos/noto/NotoSans-BoldItalic.ttf
+data        NotoSerif/unhinted/ttf/NotoSerif-Regular.ttf share/fonts/jamos/noto/NotoSerif-Regular.ttf
+data        NotoSerif/unhinted/ttf/NotoSerif-Bold.ttf share/fonts/jamos/noto/NotoSerif-Bold.ttf
+data        NotoSerif/unhinted/ttf/NotoSerif-Italic.ttf share/fonts/jamos/noto/NotoSerif-Italic.ttf
+data        NotoSerif/unhinted/ttf/NotoSerif-BoldItalic.ttf share/fonts/jamos/noto/NotoSerif-BoldItalic.ttf
+data        NotoSansMono/unhinted/ttf/NotoSansMono-Regular.ttf share/fonts/jamos/noto/NotoSansMono-Regular.ttf
+data        NotoSansMono/unhinted/ttf/NotoSansMono-Bold.ttf share/fonts/jamos/noto/NotoSansMono-Bold.ttf
+
+data        NotoColorEmoji.ttf share/fonts/jamos/noto-emoji/NotoColorEmoji.ttf
+data        extras/ttf/Inter-Thin.ttf share/fonts/jamos/inter/Inter-Thin.ttf
+data        extras/ttf/Inter-ThinItalic.ttf share/fonts/jamos/inter/Inter-ThinItalic.ttf
+data        extras/ttf/Inter-ExtraLight.ttf share/fonts/jamos/inter/Inter-ExtraLight.ttf
+data        extras/ttf/Inter-ExtraLightItalic.ttf share/fonts/jamos/inter/Inter-ExtraLightItalic.ttf
+data        extras/ttf/Inter-Light.ttf share/fonts/jamos/inter/Inter-Light.ttf
+data        extras/ttf/Inter-LightItalic.ttf share/fonts/jamos/inter/Inter-LightItalic.ttf
+data        extras/ttf/Inter-Regular.ttf share/fonts/jamos/inter/Inter-Regular.ttf
+data        extras/ttf/Inter-Italic.ttf share/fonts/jamos/inter/Inter-Italic.ttf
+data        extras/ttf/Inter-Medium.ttf share/fonts/jamos/inter/Inter-Medium.ttf
+data        extras/ttf/Inter-MediumItalic.ttf share/fonts/jamos/inter/Inter-MediumItalic.ttf
+data        extras/ttf/Inter-SemiBold.ttf share/fonts/jamos/inter/Inter-SemiBold.ttf
+data        extras/ttf/Inter-SemiBoldItalic.ttf share/fonts/jamos/inter/Inter-SemiBoldItalic.ttf
+data        extras/ttf/Inter-Bold.ttf share/fonts/jamos/inter/Inter-Bold.ttf
+data        extras/ttf/Inter-BoldItalic.ttf share/fonts/jamos/inter/Inter-BoldItalic.ttf
+data        extras/ttf/Inter-ExtraBold.ttf share/fonts/jamos/inter/Inter-ExtraBold.ttf
+data        extras/ttf/Inter-ExtraBoldItalic.ttf share/fonts/jamos/inter/Inter-ExtraBoldItalic.ttf
+data        extras/ttf/Inter-Black.ttf share/fonts/jamos/inter/Inter-Black.ttf
+data        extras/ttf/Inter-BlackItalic.ttf share/fonts/jamos/inter/Inter-BlackItalic.ttf
+data        fonts/ttf share/fonts/jamos/jetbrains-mono
+
+files       share/fonts
