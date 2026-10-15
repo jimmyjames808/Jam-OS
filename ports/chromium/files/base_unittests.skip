@@ -1,0 +1,58 @@
+# base_unittests tests that do not pass on Jam OS yet (tools/cr-test.sh base,
+# tools/cr/base-run.py): one line each, "<pattern> <layer> <reason>". The
+# pattern is a test's full name with * as the wildcard. The tests are not
+# run (CR_BASE_ALL=1 runs them anyway and reports a failure as known), so a
+# `base` PASS means every other test passed.
+#
+# SEEDED FROM ONE SHARD ONLY. The first run (2026-10-15, shard 0 of 4 of the
+# suites, 143 suites, 1885 tests) is all that has been triaged: the other
+# shards hung or never started (the test PC's queue stopped answering), so
+# this list is a start, not the whole list, and a full `base` run will name
+# more. The layer is the track that owns the fix (docs/CR-PLAN.md); "?" in
+# the reason marks a cause that is a guess from the failing call, not seen.
+
+# ---- crashes with no output: SIGABRT about 0.8 s after the program starts
+# (gtest's death-test machinery or a test that expects to die; no ENOSYS
+# line was logged for them, so the missing call is not known).
+*DeathTest.*                      posix  SIGABRT at the start of the death test; cause not seen (fork or clone for the death test child?)
+ClampTest.Death                   posix  same
+FlatMap.AtFunction                posix  same (a CHECK death test)
+OptionalTest.DereferencingNoValueCrashes posix same
+Debugger.CrashAtBreakpoint        posix  same
+MultiMemoryConsumerTest.DuplicateInterventionsCheck posix same
+PersistentMemoryAllocatorTest.DelayedAllocationTest posix same
+HistogramSnapshotManagerTest.PrepareDeltasUmaStabilityHistogramFlagFilter posix same (a death test; the program ends with code 0)
+
+# ---- /data is FAT: no symlinks, no named pipes, no permission bits.
+FileUtilTest.*Symlink*            fs     symlink() fails on /data (errno not captured; FAT holds no symlinks?)
+FileUtilTest.CopyDirectoryWithNonRegularFiles fs symlink() and mkfifo() fail on /data
+FileUtilTest.CopyDirectoryExclFileOverFifo fs mkfifo() returns -1 on /data
+FileUtilTest.ReadFileToStringWithNamedPipe fs mkfifo() returns -1 on /data
+FileUtilTest.ChangeFilePermissions* fs   chmod has no effect: the file stays readable and writable
+FileUtilTest.ChangeDirectoryPermissionsAndEnumerate fs same
+FileUtilTest.CopyDirectoryPermissions* fs the mode stays 0644 / 0755 whatever is set
+FileUtilTest.CopyFileExecutablePermission fs same
+FileUtilTest.CopyFileACL          fs     the read-only mode bit is not kept
+FileUtilTest.CopyDirectoryACL     fs     same
+FileUtilTest.ExecutableExistsInPath fs   a file made executable is not found executable (mode bits?)
+FileUtilTest.TouchFile            posix  utimensat does not set the times: the file keeps its own
+FileProxyTest.SetTimes            posix  same
+FileUtilTest.DeleteDeep           fs     mkdirat fails with "Filename too long" (which limit: a name or a path?)
+
+# ---- calls and /proc paths the ENOSYS log named.
+FileUtilTest.CopyFileContentsWithSendfile* posix sendfile (syscall 40) is ENOSYS
+FileUtilTest.ReadFileToStringWithProcFileSystem proc /proc/cpuinfo is not there
+FileUtilTest.CopyFileContentsWithSendfileSeqFile proc /proc/meminfo is not there
+
+# ---- a writable shared mapping of a file on /data.
+MemoryMappedFileTest.WriteableFile fs    MemoryMappedFile READ_WRITE initialisation fails (mmap MAP_SHARED PROT_WRITE of a /data file?)
+MemoryMappedFileTest.ExtendableFile fs   same
+PersistentMemoryAllocatorTest.TruncateTest fs same
+
+# ---- starting other programs: base::LaunchProcess / fork. Plan: the
+# launcher patch of CB5 (docs/CR-PLAN.md section 5); until then these fail.
+ProcessUtilTest.*                 launch process.IsValid() is false after SpawnMultiProcessTestChild / LaunchProcess (no fork line in the log: which call fails is not known)
+ForkWithFlagsTest.*               posix  fork returns -1 (syscall 57 is ENOSYS)
+LoggingTest.AlwaysLogErrorsToStderr posix fork (syscall 57) is ENOSYS
+LoggingTest.CheckCausesDistinctBreakpoints posix fork returns -1
+ProcessGTestOutputTest.*          launch the test launcher's mock-test children cannot start (fork, syscall 57)

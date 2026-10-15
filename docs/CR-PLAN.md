@@ -406,8 +406,9 @@ stubs) and lists 13 sites in `headless_shell`: 12 in Crashpad's client
 `LoggingMunmap`: linux_syscall_support's inline calls) and `SyscallAsm`
 (the seccomp sandbox's raw call), for CB3. Still open:
 `ports.py package --from` refuses the build, as the package format holds
-no file over 64 MiB (PO13's big packages); the two helper programs are
-not in the package yet (CB2 and CB3 add them with their runs).
+no file over 64 MiB (PO13's big packages); `test_child_process` is in
+the recipe since CB2, `chrome_crashpad_handler` is not yet (CB3 adds it
+with its run).
 
 The last round's link errors and their fixes (CB1b): base's `close()`
 wrapper found libc's with `dlsym(RTLD_NEXT)` (patch 0910: the linker's
@@ -554,6 +555,62 @@ ninja ran `-j 10`).
   of swap used; `-j14` to `-j16` and a 16 GB claim kept it under WSL's 23
   GB. A clean build's time is not measured yet: at those rates it is
   roughly 2.5 to 3.5 hours at `-j16`.
+
+#### CB2 as built (2026-10-15; the run is unfinished)
+
+Track CB2, `base_unittests` on Jam OS (CR-b). What is built: the `base`
+case of tools/cr-test.sh, the stick it boots (tools/cr/base-stick.py), the
+driver that runs the tests (tools/cr/base-run.py) and the skip list
+(ports/chromium/files/base_unittests.skip). **What is not done: a complete run.**
+The test PC's budget queue stopped answering after the first partial run
+(six hours of "an older run has waited long enough to go first" with 16
+CPUs held, then "jamos-pc doesn't answer"), so one shard of four was
+triaged and the rest never ran. The findings below are that shard's.
+
+- **How the programs get onto the test disk.** The package format holds no
+  file over 64 MiB (PO13), so nothing is packaged: base-stick.py copies the
+  image, grows its `/data` to 640 MiB (as tools/bigprog-test.sh does) and
+  writes `/data/cr/out/jamos/base_unittests` and `test_child_process` (the
+  stage of `tools/cr/build.sh`: `~/cr/ports/chromium/stage`, which now holds
+  `test_child_process` too: the recipe lists it, the build's `install()`
+  copies it), with their approval lines in `/data/etc/allow` and the page
+  tables in `/data/etc/allow.d/<sha-256>` that the shell's `allow` would have
+  written. A program runs from its pages, so it starts in about a second
+  although it is 77 MB. The test files base reads are beside them
+  (`/data/cr/base/test/data`, three metrics XML files, two generated
+  ones): the source root is two directories above the program's own
+  (`DIR_SRC_TEST_DATA_ROOT`), which is why the layout is `out/jamos/`.
+- **How the tests run.** `--single-process-tests`, one program for each
+  suite (`--gtest_filter=<suite>.*`), all of them typed into one boot's
+  shell by tools/serial-feed.py, with `JAMOS_ENOSYS_LOG=1` exported. After
+  that round only the tests without a result run, six to a program, so a
+  crash or hang costs its few tests and a boot, not the suite. A test that
+  hangs ends the script (a wait of 240 s); the driver sees it in
+  serial-feed's own log and ends the QEMU run itself. Results are in
+  `<outdir>/base/run/`: `results.txt`, `failures/<test>.txt` (the test's
+  output and the kernel log lines that came with it), `enosys.txt`,
+  `summary.txt`. `CR_BASE_SHARD=i/n` splits the suites, `CR_BASE_ALL=1`
+  runs the skip list's tests too, `CR_BASE_ENV="TMPDIR=/data/cr/tmp"` sets
+  shell variables, `CR_BASE_ONLY=<glob>` takes some suites.
+- **Seen so far.** The program starts and runs: `StringUtilTest.*` passes
+  54 of 54 in 75 ms, and `--gtest_list_tests` prints 9,816 lines (suites and
+tests). In the one triaged shard
+  (143 suites, 1,885 tests) 1,280 passed, 10 skipped, 61 failed and 44
+  crashed; 490 never ran in the 8 rounds the first driver allowed (each
+  round skipped one crasher per suite; the driver now runs what has no
+  result a few tests to a program, simulated only). There is no `/tmp`
+  (`ls: /tmp: no such file or directory`), so the run sets `TMPDIR` to
+  `/data/cr/tmp`. The ENOSYS log named `/proc/self/status`,
+  `/proc/self/maps`, `/proc/self/stat`, `/proc/cpuinfo`, `/proc/meminfo`,
+  `/proc/<pid>/stat`, `/proc/self/ns/user`, syscall 40 (`sendfile`),
+  syscall 57 (`fork`) and ioctl `0x80086601`.
+- **The skip list** is seeded from that shard only and says so; its lines
+  give each test's layer and reason, "?" where the cause is a guess.
+- **`dlopen()` is in the log.** musl's static `dlopen` is overridden
+  (user/posix/musl/src/ldso/dlopen.c, in OVERRIDES): it still fails with
+  "Dynamic loading not supported", and `__jam_enosys_dlopen`
+  (user/posix/sys/enosys.c) writes `enosys: <program>: dlopen <library>`
+  once for each library. posixtest's raw section checks it (not run yet).
 
 ### 2. The address space: huge sparse reservations (the top risk)
 

@@ -41,5 +41,6 @@ needs       expat
 needs       zlib
 host        python3 ninja
 program     lib/chromium/base_unittests
+program     lib/chromium/test_child_process
 program     lib/chromium/headless_shell
 files       lib/chromium/headless_lib_data.pak lib/chromium/headless_lib_strings.pak
