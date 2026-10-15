@@ -34,13 +34,28 @@
  * opener (svc.connect). Who calls it: libc (user/posix/sys/unixsock.c),
  * for a program whose list asks for `svc unix`; utest's unix_* cases.
  *
+ * Counted per program (docs/CR-REVIEW-POSIX.md, Q2): the shared channel is
+ * its holders' (init, the shells, what they start with everything, "*").
+ * A program given /svc/unix by name (its list's `svc unix`) gets an opener
+ * channel of its own from its starter, made with svc.connect when its
+ * namespace is sent (libos's grants, <os.h>), not the shared one: it can't
+ * open another, so what it binds counts against that one opener
+ * (LISTENERS_PER_OPENER). A listener counts against its opener until the
+ * listener closes, the opener's channel closed or not, and the opener's
+ * slot is taken until both are gone. A program's children given its
+ * namespace whole share its opener. Abstract names stay one table for
+ * every program (Jam OS has one user); per session later, if a port needs
+ * them so.
+ *
  * Reconnect: a restarted broker serves the same shared channel (init keeps
  * both ends), but every opener's channel and every listener's channel of
  * the old one closes (ERR_PEER_CLOSED): libc opens /svc/unix again for its
- * next call; a listener is gone (accept: ECONNABORTED) and its program
- * must bind again (a socket file left behind is then stale: unlink it
- * first, as after a crash on Linux). Connections already made are channel
- * pairs of their own and carry on.
+ * next call, which a holder of the shared channel can; a program with an
+ * opener of its own has none until it is started again (its namespace holds
+ * the old broker's). A listener is gone (accept: ECONNABORTED) and its
+ * program must bind again (a socket file left behind is then stale: unlink
+ * it first, as after a crash on Linux). Connections already made are
+ * channel pairs of their own and carry on.
  *
  * Protocol `unix` (id 53). Client: unix_<method>(ch, args..., &results...)
  * (and unix_<method>_until with a deadline, _within with a timeout), or
@@ -61,8 +76,8 @@
 
 /* Constants (the .idl's `const` lines). */
 /* Opener channels at once (svc.connect's ERR_NO_RESOURCES past them),
- * listeners at once (bind's ERR_NO_RESOURCES past them; and per opener
- * channel, so one program can't take them all), an abstract name's most
+ * listeners at once (bind's ERR_NO_RESOURCES past them; and per opener,
+ * a program's one, so one program can't take them all), an abstract name's most
  * bytes (sun_path's 108 less the NUL), a key's bytes, and the most
  * connections waiting for accept on one listener (listen's backlog is
  * clamped to 1 .. BACKLOG_MAX). */

@@ -5,10 +5,13 @@
  *                 /svc/unix (a channel per opener, svc.connect); in shell
  *                 mode init keeps both ends, so a restarted broker serves
  *                 the same channel
- * and nothing else: no namespace, no root. It never reads a file: a
- * socket file is libc's (user/posix/sys/unixsock.c), which writes the key
- * bind answers into it and reads it back to connect, so the caller's own
- * namespace and views decide which socket files it may reach.
+ * and nothing else: no namespace, no root. Openers are made on the shared
+ * channel only; a program given /svc/unix by name holds one of its own,
+ * which its starter opened for it (unix.idl, "Counted per program"). It
+ * never reads a file: a socket file is libc's (user/posix/sys/unixsock.c),
+ * which writes the key bind answers into it and reads it back to connect,
+ * so the caller's own namespace and views decide which socket files it may
+ * reach.
  *
  * One thread, one wait set (<netwait.h>): the shared channel, each opener's
  * channel and each listener's. A listener's waiting connections are the
@@ -31,8 +34,12 @@
 
 enum tag { T_SHARED, T_OPENER, T_LISTENER };
 
+/* An opener's slot is taken while its channel is open or any listener
+ * bound through it lives: a program can't free its listeners' count by
+ * closing its channel (it couldn't open another: what its starter gave it
+ * is its only one, unix.idl). */
 struct opener {
-    handle_t ch;          /* our end (0: free) */
+    handle_t ch;          /* our end (0: closed) */
     uint32_t id;          /* its wait set entry */
     bool     held;        /* held back by the unread bound */
     uint32_t listeners;   /* listeners bound through it, still alive */
@@ -44,7 +51,7 @@ struct listener {
     bool     held;
     bool     listening;   /* `listen` called: connects reach it */
     uint16_t backlog;
-    int      opener;      /* the opener slot it counts against; -1: that opener is gone */
+    int      opener;      /* the opener slot it counts against, until it closes */
     uint32_t name_len;    /* an abstract name's bytes; 0: a socket file's (key) */
     uint8_t  name[UNIX_NAME_MAX];
     uint8_t  key[UNIX_KEY_BYTES];
@@ -87,8 +94,8 @@ static void listener_free(unsigned i)
     struct listener *l = &listeners[i];
     (void)netwait_remove(w, l->id);
     jam_handle_close(l->ch);   /* its waiting connections went with its client's end */
-    if (l->opener >= 0 && openers[l->opener].listeners)
-        openers[l->opener].listeners--;
+    if (openers[l->opener].listeners)
+        openers[l->opener].listeners--;   /* the opener's slot is free once both are gone */
     memset(l, 0, sizeof(*l));
 }
 
@@ -229,8 +236,8 @@ static status_t on_svc_connect(void *ctx, handle_t *out)
     (void)ctx;
     for (unsigned i = 0; i < UNIX_OPENERS_MAX; i++) {
         struct opener *o = &openers[i];
-        if (o->ch)
-            continue;
+        if (o->ch || o->listeners)
+            continue;   /* open, or its listeners still count against it */
         handle_t mine, theirs;
         status_t st = jam_channel_create(&mine, &theirs);
         if (st == OK && (st = watch(mine, key_of(T_OPENER, i), &o->id)) != OK) {
@@ -248,15 +255,15 @@ static status_t on_svc_connect(void *ctx, handle_t *out)
     return ERR_NO_RESOURCES;
 }
 
+/* Its channel closed; its listeners live on, counted against it. */
 static void opener_free(unsigned i)
 {
     struct opener *o = &openers[i];
     (void)netwait_remove(w, o->id);
     idl_give_up(o->ch);   /* gone, or broke the protocol: what it left unread taken back */
-    for (unsigned k = 0; k < UNIX_LISTENERS_MAX; k++)
-        if (listeners[k].ch && listeners[k].opener == (int)i)
-            listeners[k].opener = -1;   /* they live on, counted against nobody */
-    memset(o, 0, sizeof(*o));
+    o->ch = HANDLE_INVALID;
+    o->id = 0;
+    o->held = false;
 }
 
 /* ---- the unread bound (tools/genidl.py) ------------------------------------------------ */
