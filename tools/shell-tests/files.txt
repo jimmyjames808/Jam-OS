@@ -110,18 +110,16 @@ wait st-y=1
 send touch empty && ls -l empty | grep -c "0 B  empty" | grep ^1$ && echo ok-$T-touch
 wait ok-y-touch
 # cp: a small file, into a directory, from another mount, and one bigger
-# than the 64 KiB transfer buffer (posixtest, 800 KiB: six copies don't fit
-# the RAM filesystem's 4 MiB below; utest, which was that size itself, grows
-# with every test)
+# than the 64 KiB transfer buffer
 send cp docs/note.txt copy.txt && cat copy.txt
 wait replaced
 send cp copy.txt docs && ls docs | grep -c ^copy.txt$ | grep ^1$ && echo ok-$T-cpdir
 wait ok-y-cpdir
 send cp /boot/init.cfg . && grep -c ^bin/utest$ init.cfg | grep ^1$ && echo ok-$T-cpboot
 wait ok-y-cpboot
-send cp /boot/bin/posixtest big && hexdump -n 4 big
+send cp /boot/bin/utest big && hexdump -n 4 big
 wait 7f 45 4c 46
-send hexdump /boot/bin/posixtest | tail -n 3 | write end1; hexdump big | tail -n 3 | write end2; echo hex-$T-done
+send hexdump /boot/bin/utest | tail -n 3 | write end1; hexdump big | tail -n 3 | write end2; echo hex-$T-done
 wait 60 hex-y-done
 send cat end1 end2 | sort | uniq | wc -l | grep ^3$ && echo ok-$T-cpbig
 wait ok-y-cpbig
