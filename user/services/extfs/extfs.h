@@ -273,7 +273,7 @@ struct xf_walk {
 
 /* Walk path (len bytes, as the protocol carried it) in view c: every name,
  * ".." physically, links inside the view followed (up to XF_LINKS_MAX:
- * ERR_OUT_OF_RANGE past it), the search bit of every directory looked into
+ * ERR_LINK_LOOP past it), the search bit of every directory looked into
  * checked. The last name need not be there (found false). Errors:
  * ERR_LINK_OUT (an absolute link, or ".." above the view's root: w->kind,
  * used, next); ERR_NOT_FOUND, ERR_NOT_DIR on the way; ERR_ACCESS_DENIED
@@ -286,7 +286,8 @@ void     walk_inside(const struct xf_ctx *c, const struct xf_walk *w, char *out,
                      uint32_t *out_len);
 /* Does the view hide what w names (reads and changes alike)? stat: fs.stat. */
 bool     walk_hidden(const struct xf_ctx *c, const struct xf_walk *w, bool stat);
-/* May the view change what w names (FS_VIEW_GUARD_ETC where it resolves)? */
+/* May the view change what w names (FS_VIEW_GUARD_ETC and FS_VIEW_GUARD_PKG
+ * where it resolves)? */
 bool     walk_may_change(const struct xf_ctx *c, const struct xf_walk *w);
 /* The permission bits for the one user: want's bits (4 read, 2 write, 1
  * search) all in the owner's (uid FS_ONE_USER) or the others' bits. */

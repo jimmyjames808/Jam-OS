@@ -41,6 +41,7 @@
 #define DIGEST_WAIT (90 * NS_PER_S)   /* volumes gives the driver 60 s for one */
 #define CHECK_WAIT  (10 * NS_PER_S)   /* prepare_check: volumes asks the driver its mode */
 #define PREPARE_WAIT (700 * NS_PER_S) /* init gives volumes 11 minutes: the format */
+#define INSTALL_WAIT (1300 * NS_PER_S) /* init gives the install 20 minutes */
 #define TYPE_WAIT   (120 * NS_PER_S)  /* the owner's answer */
 #define SERIAL_TAIL 4                 /* the characters of the serial that are typed */
 #define MAX_PARTS   16
@@ -525,6 +526,9 @@ static void say_contents(handle_t list, const struct disk_row *d)
         sh_say("    (%u more not listed)\n", d->partitions - MAX_PARTS);
 }
 
+/* The command the messages name: "disk prepare" or "install". */
+static const char *verb = "disk prepare";
+
 /* Why voldisks.prepare_check says a disk can't be prepared, said; false
  * if it can. */
 static bool refused(const struct disk_row *d, uint8_t why)
@@ -533,38 +537,38 @@ static bool refused(const struct disk_row *d, uint8_t why)
     case VOLDISKS_REFUSED_NONE:
         return false;
     case VOLDISKS_REFUSED_BOOT_DISK:
-        sh_tty("disk prepare: %s is the disk Jam OS booted from: it can't be prepared\n",
+        sh_tty("%s: %s is the disk Jam OS booted from: nothing is written to it\n", verb,
                d->name);
         break;
     case VOLDISKS_REFUSED_IN_USE:
-        sh_tty("disk prepare: %s has a volume mounted read-write: nothing is written (make it "
-               "read-only first: mount -r)\n", d->name);
+        sh_tty("%s: %s has a volume mounted read-write: nothing is written (make it "
+               "read-only first: mount -r)\n", verb, d->name);
         break;
     case VOLDISKS_REFUSED_READ_ONLY:
-        sh_tty("disk prepare: the internal drives are read-only on this boot (diskro): nothing "
-               "is written\n");
+        sh_tty("%s: the internal drives are read-only on this boot (diskro): nothing "
+               "is written\n", verb);
         break;
     case VOLDISKS_REFUSED_JAMOS:
-        sh_say("disk prepare: %s is a Jam OS disk already\n", d->name);
+        sh_say("%s: %s is a Jam OS disk already\n", verb, d->name);
         break;
     case VOLDISKS_REFUSED_NOT_NVME:
-        sh_tty("disk prepare: %s is not an NVMe drive: only one can be made a Jam OS disk\n",
+        sh_tty("%s: %s is not an NVMe drive: only one can be made a Jam OS disk\n", verb,
                d->name);
         break;
     case VOLDISKS_REFUSED_BLOCK_SIZE:
-        sh_tty("disk prepare: %s has %u-byte blocks: Jam OS's FAT needs 512: nothing is "
-               "written\n", d->name, d->block_size);
+        sh_tty("%s: %s has %u-byte blocks: Jam OS's FAT needs 512: nothing is "
+               "written\n", verb, d->name, d->block_size);
         break;
     case VOLDISKS_REFUSED_TOO_SMALL:
-        sh_tty("disk prepare: %s is too small for Jam OS (under about 580 MiB): nothing is "
-               "written\n", d->name);
+        sh_tty("%s: %s is too small for Jam OS (under about 580 MiB): nothing is "
+               "written\n", verb, d->name);
         break;
     case VOLDISKS_REFUSED_UNREADABLE:
-        sh_tty("disk prepare: %s's partition table can't be read (a read failed): it is not "
-               "erased\n", d->name);
+        sh_tty("%s: %s's partition table can't be read (a read failed): it is not "
+               "erased\n", verb, d->name);
         break;
     default:
-        sh_tty("disk prepare: %s can't be prepared (%u)\n", d->name, why);
+        sh_tty("%s: %s can't be prepared (%u)\n", verb, d->name, why);
         break;
     }
     return true;
@@ -603,34 +607,55 @@ static void prepared_line(handle_t list, const char *name)
     sh_say("%s is a Jam OS disk now: ESP %s, data %s\n", name, size[0], size[1]);
 }
 
-static int prepare_cmd(handle_t list, const struct disk_row *d)
+/* Jam OS's version, "0.0.31" ("?" if the kernel doesn't say). */
+static const char *version_str(char out[32])
 {
+    struct sys_info si;
+    snprintf(out, 32, "?");
+    if (sh_sysinfo(&si, "install"))
+        snprintf(out, 32, "%s", si.version);
+    return out;
+}
+
+/* `disk prepare <disk>` (install false) and `install <disk>` (true): what
+ * volumes would do to the disk, shown; the serial's last four characters
+ * (and `erase`, for a drive that isn't empty) asked; then init does it
+ * (initctl.prepare_disk, or initctl.install: the same, then Jam OS written
+ * to the drive). A Jam OS disk can't be prepared again, but can be
+ * installed on again (its ESP's files are replaced, its /data kept). */
+static int write_cmd(handle_t list, const struct disk_row *d, bool install)
+{
+    verb = install ? "install" : "disk prepare";
     uint8_t plan, why;
     status_t st = voldisks_prepare_check_until(list, now() + CHECK_WAIT, d->id, &plan, &why);
     if (st != OK) {
-        sh_tty("disk prepare: %s: %s\n", d->name, prepare_why(st));
+        sh_tty("%s: %s: %s\n", verb, d->name, prepare_why(st));
         return 1;
     }
-    if (refused(d, why))
+    bool again = install && why == VOLDISKS_REFUSED_JAMOS;   /* a Jam OS disk: installed on again */
+    if (!again && refused(d, why))
         return 1;
     uint32_t id = d->id;
     char name[sizeof(d->name)], size[24], typed[16], word[16] = "";
     snprintf(name, sizeof(name), "%s", d->name);
     if (!d->serial[0]) {
-        sh_tty("disk prepare: %s reports no serial number: nothing to confirm with, nothing "
-               "is written\n", name);
+        sh_tty("%s: %s reports no serial number: nothing to confirm with, nothing "
+               "is written\n", verb, name);
         return 1;
     }
-    bool erase = plan == VOLDISKS_PLAN_ERASE;
+    bool erase = !again && plan == VOLDISKS_PLAN_ERASE;
     if (erase && sh_one_line()) {
-        sh_tty("disk prepare: %s isn't empty, and erasing it is confirmed at a prompt, not in a "
-               "command line run from elsewhere (ssh host 'disk prepare'): nothing is written\n",
-               name);
+        sh_tty("%s: %s isn't empty, and erasing it is confirmed at a prompt, not in a "
+               "command line run from elsewhere (ssh host '%s'): nothing is written\n", verb,
+               name, verb);
         return 1;
     }
-    sh_say("disk prepare %s: %s, serial %s, %s\n", name, d->model, d->serial,
+    sh_say("%s %s: %s, serial %s, %s\n", verb, name, d->model, d->serial,
            sh_human(d->blocks * d->block_size, size, sizeof(size)));
-    if (plan == VOLDISKS_PLAN_TABLE)
+    if (again)
+        sh_say("  a Jam OS disk already. This replaces the Jam OS on its ESP (Limine, the build, the\n"
+               "  boot menu) with this one; its /data is kept as it is.\n");
+    else if (plan == VOLDISKS_PLAN_TABLE)
         sh_say("  nothing is on it. This writes Jam OS's partition table to it (an ESP of 512 MiB,\n"
                "  a data partition of the rest) and formats both partitions.\n");
     else if (plan == VOLDISKS_PLAN_FINISH)
@@ -641,14 +666,18 @@ static int prepare_cmd(handle_t list, const struct disk_row *d)
         say_contents(list, d);
         sh_say("  EVERYTHING ON %s WILL BE LOST: every partition and every file on it. This\n"
                "  erases it and writes Jam OS's partition table (an ESP of 512 MiB, a data\n"
-               "  partition of the rest) and formats both partitions. Check the model and the\n"
-               "  serial number: is this the drive you mean?\n", name);
+               "  partition of the rest) and formats both partitions.", name);
+        sh_say("%s", install ? "\n" : " Check the model and the\n  serial number: is this the drive you mean?\n");
     }
+    if (install)
+        sh_say("  Jam OS is then written to it: Limine, this build, its boot menu and your\n"
+               "  /data/etc, so the PC can start from it without the stick.%s\n",
+               erase ? " Check the model and the\n  serial number: is this the drive you mean?" : "");
     char question[96];
     snprintf(question, sizeof(question), "  Type the last %d characters of its serial number to "
              "go on, anything else stops: ", SERIAL_TAIL);
     if (!ask(question, typed, sizeof(typed)) || !serial_tail_is(d->serial, typed)) {
-        sh_tty("disk prepare: that is not the end of %s's serial number: nothing was written\n",
+        sh_tty("%s: that is not the end of %s's serial number: nothing was written\n", verb,
                name);
         return 1;
     }
@@ -656,24 +685,42 @@ static int prepare_cmd(handle_t list, const struct disk_row *d)
         snprintf(question, sizeof(question), "  To erase %s, type erase (anything else stops): ",
                  name);
         if (!ask(question, word, sizeof(word)) || strcmp(word, "erase")) {
-            sh_tty("disk prepare: not erased: nothing was written\n");
+            sh_tty("%s: not erased: nothing was written\n", verb);
             return 1;
         }
     }
     if (!sh_initctl()) {
-        sh_tty("disk prepare: no init to ask\n");
+        sh_tty("%s: no init to ask\n", verb);
         return 1;
     }
-    sh_say("%s %s (the table, then both partitions formatted): this takes a moment\n",
-           erase ? "erasing and preparing" : "preparing", name);
+    if (install)
+        sh_say("installing Jam OS on %s (%s: this takes a minute or more)\n", name,
+               again ? "its ESP's files replaced" : "the table, both partitions, then the files");
+    else
+        sh_say("%s %s (the table, then both partitions formatted): this takes a moment\n",
+               erase ? "erasing and preparing" : "preparing", name);
     sh_flush();
-    st = initctl_prepare_disk_until(sh_initctl(), now() + PREPARE_WAIT, id, typed,
-                                    (uint32_t)strlen(typed), word, (uint32_t)strlen(word));
+    if (install)
+        st = initctl_install_until(sh_initctl(), now() + INSTALL_WAIT, id, typed,
+                                   (uint32_t)strlen(typed), word, (uint32_t)strlen(word));
+    else
+        st = initctl_prepare_disk_until(sh_initctl(), now() + PREPARE_WAIT, id, typed,
+                                        (uint32_t)strlen(typed), word, (uint32_t)strlen(word));
     if (st != OK) {
-        sh_tty("disk prepare: %s: %s\n", name, prepare_why(st));
+        sh_tty("%s: %s: %s\n", verb, name, install && st == ERR_IO
+               ? "a write or read-back failed (see `log`): the disk has no boot menu until "
+                 "`install` is run again and finishes"
+               : prepare_why(st));
         return 1;
     }
-    prepared_line(list, name);
+    if (!install) {
+        prepared_line(list, name);
+        return 0;
+    }
+    char ver[32];
+    sh_say("Jam OS %s installed on %s: choose \"UEFI OS (%s)\" (or the drive's name) first in the\n"
+           "firmware's boot order (F8 at power-on picks it once), then pull the stick out\n",
+           version_str(ver), name, d->model);
     return 0;
 }
 
@@ -696,8 +743,27 @@ SH_CMD(disk)
     struct disk_row d;
     int rc = 1;
     if (find_disk(list, argv[2], &d))
-        rc = prepare ? prepare_cmd(list, &d) : smart ? smart_cmd(list, &d)
+        rc = prepare ? write_cmd(list, &d, false) : smart ? smart_cmd(list, &d)
                                                      : digest_cmd(list, &d, argc, argv);
+    jam_handle_close(list);
+    return rc;
+}
+
+/* install <disk>: Jam OS written to an internal drive (M12.7 stage 3). */
+SH_CMD(install)
+{
+    if (argc != 2) {
+        sh_tty("usage: install <disk>   write Jam OS to an NVMe drive so the PC starts from it\n"
+               "  <disk> is a name `disks` shows (nvme1)\n");
+        return 2;
+    }
+    handle_t list;
+    if (open_list(&list) != OK)
+        return 1;
+    struct disk_row d;
+    int rc = 1;
+    if (find_disk(list, argv[1], &d))
+        rc = write_cmd(list, &d, true);
     jam_handle_close(list);
     return rc;
 }

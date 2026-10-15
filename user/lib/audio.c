@@ -298,12 +298,32 @@ size_t audio_rs_flush(struct audio_rs *rs, int16_t *out, size_t cap)
     return o;
 }
 
+void audio_s16_from_f32(int16_t *out, const float *in, size_t samples, uint32_t *seed)
+{
+    for (size_t i = 0; i < samples; i++) {
+        float y = in[i] * 32768.0f;
+        if (!(y == y)) {            /* NaN */
+            out[i] = 0;
+        } else if (y >= 32767.0f) {
+            out[i] = 32767;
+        } else if (y <= -32768.0f) {
+            out[i] = -32768;
+        } else {
+            uint32_t r = rs_random(seed);
+            float d = ((float)(r & 0xffff) - (float)(r >> 16)) / 65536.0f;   /* TPDF, (-1, 1) */
+            out[i] = rs_out(y, d);
+        }
+    }
+}
+
 /* ---- the backend: a mixer stream ------------------------------------------------- */
 
-int audio_open_as(struct audio_out *a, unsigned rate, unsigned channels, const char *name)
+int audio_open_fmt(struct audio_out *a, unsigned rate, unsigned channels, enum audio_format fmt,
+                   const char *name)
 {
     memset(a, 0, sizeof(*a));
-    if (rate < AUDIO_RATE_MIN || rate > AUDIO_RATE_MAX || (channels != 1 && channels != 2))
+    if (rate < AUDIO_RATE_MIN || rate > AUDIO_RATE_MAX || (channels != 1 && channels != 2) ||
+        (fmt != AUDIO_S16 && fmt != AUDIO_F32))
         return ERR_NOT_SUPPORTED;
     handle_t svc = svc_get(SVC_AUDIO);
     if (svc == HANDLE_INVALID)
@@ -320,7 +340,14 @@ int audio_open_as(struct audio_out *a, unsigned rate, unsigned channels, const c
     a->ring_min = UINT64_MAX;
     a->rate = rate;
     a->channels = channels;
+    a->fmt = fmt;
+    a->seed = 0x9e3779b9u;
     return OK;
+}
+
+int audio_open_as(struct audio_out *a, unsigned rate, unsigned channels, const char *name)
+{
+    return audio_open_fmt(a, rate, channels, AUDIO_S16, name);
 }
 
 int audio_open(struct audio_out *a, unsigned rate, unsigned channels)
@@ -328,47 +355,122 @@ int audio_open(struct audio_out *a, unsigned rate, unsigned channels)
     return audio_open_as(a, rate, channels, "audio");
 }
 
+/* All n frames (device format) into the ring, waiting for room. A full
+ * ring that isn't started is started, or it would never empty, unless
+ * audio_pause stopped it (then this waits for audio_start, and times out). */
+static status_t ring_write(struct audio_out *a, const int16_t *frames, size_t n)
+{
+    uint64_t deadline = now() + SOON;
+    size_t total = 0;
+    status_t st = OK;
+    while (st == OK && total < n) {
+        size_t put = 0;
+        mixer_put(&a->s, frames + 2 * total, n - total, &put);
+        total += put;
+        if (total == n)
+            break;
+        if (!a->s.started && !a->held)
+            st = mixer_start(&a->s, deadline);
+        if (st == OK)
+            st = mixer_wait_room(&a->s, 1, deadline);
+    }
+    return st;
+}
+
+/* The library's one write path: the caller's frames converted (float to
+ * 16 bits, then the resampler to 48 kHz stereo) and put in the ring. With
+ * `block`, all of them, waiting for room; without, as many as fit now.
+ * *taken: the caller's frames used. */
+static status_t feed(struct audio_out *a, const void *frames, size_t nframes, bool block,
+                     size_t *taken)
+{
+    struct mixer_stream *s = &a->s;
+    const size_t frame_bytes = a->channels * (a->fmt == AUDIO_F32 ? sizeof(float) : sizeof(int16_t));
+    const uint8_t *in = frames;
+    int16_t conv[2 * BLOCK], out[2 * BLOCK];
+    size_t left = nframes;
+    status_t st = OK;
+    *taken = 0;
+    if (a->armed) {   /* nobody waits on the event any more */
+        mixer_disarm_room(s);
+        a->armed = false;
+    }
+    while (left && st == OK) {
+        size_t cap = BLOCK;   /* device frames made this round */
+        if (!block) {
+            size_t room = mixer_room(s);
+            if (!room) {
+                /* Full: the caller waits for room, which needs the mixer
+                 * taking frames, and noticing it has gone. */
+                if (!s->started && !a->held)
+                    st = mixer_start(s, now() + SOON);
+                else if (mixer_peer_closed(s))
+                    st = ERR_PEER_CLOSED;
+                break;
+            }
+            if (room < cap)
+                cap = room;
+        }
+        size_t chunk = left < BLOCK ? left : BLOCK;   /* the caller's frames this round */
+        const int16_t *src = (const int16_t *)in;
+        if (a->fmt == AUDIO_F32) {
+            audio_s16_from_f32(conv, (const float *)(const void *)in, chunk * a->channels,
+                               &a->seed);
+            src = conv;
+        }
+        size_t used = 0, done = 0;
+        size_t n = audio_rs_run(&a->rs, src, chunk, &used, out, cap);
+        if (!n && !used) {
+            st = ERR_INTERNAL;
+            break;
+        }
+        if (s->started) {
+            uint64_t queued = s->write - __atomic_load_n(&s->hdr->read, __ATOMIC_ACQUIRE);
+            if (queued < a->ring_min)
+                a->ring_min = queued;
+        }
+        if (block)
+            st = ring_write(a, out, n);   /* the mixer takes a period at a time: room within 43 ms */
+        else
+            mixer_put(s, out, n, &done);  /* n <= the room: all of it went in */
+        if (st != OK)
+            break;
+        in += used * frame_bytes;
+        left -= used;
+        *taken += used;
+    }
+    return st;
+}
+
 long audio_write(struct audio_out *a, const void *frames, size_t nframes)
 {
     if (!a->open)
         return ERR_BAD_STATE;
-    const int16_t *in = frames;
-    size_t left = nframes;
-    int16_t out[2 * BLOCK];
-    while (left) {
-        size_t used = 0, done = 0;
-        size_t n = audio_rs_run(&a->rs, in, left, &used, out, BLOCK);
-        if (!n && !used)
-            return ERR_INTERNAL;
-        /* Blocks while the ring is full: the mixer takes a period at a
-         * time, so room comes within 43 ms while it plays. */
-        if (a->s.started) {
-            uint64_t r = __atomic_load_n(&a->s.hdr->read, __ATOMIC_ACQUIRE);
-            uint64_t queued = a->s.write > r ? a->s.write - r : 0;
-            if (queued < a->ring_min)
-                a->ring_min = queued;
-        }
-        status_t st = mixer_write(&a->s, out, n, now() + SOON, &done);
-        if (st != OK)
-            return st;
-        in += used * a->channels;
-        left -= used;
-    }
-    return (long)nframes;
+    size_t taken;
+    status_t st = feed(a, frames, nframes, true, &taken);
+    return st != OK ? st : (long)nframes;
+}
+
+long audio_try_write(struct audio_out *a, const void *frames, size_t nframes)
+{
+    if (!a->open)
+        return ERR_BAD_STATE;
+    size_t taken;
+    status_t st = feed(a, frames, nframes, false, &taken);
+    return st != OK && !taken ? st : (long)taken;   /* a failure after some frames: next call's */
 }
 
 int audio_drain(struct audio_out *a)
 {
     if (!a->open)
         return ERR_BAD_STATE;
+    a->held = false;   /* a drain plays what is queued */
     /* The resampler's last outputs (it runs taps/2 input frames behind). */
     int16_t out[2 * BLOCK];
     size_t n;
     status_t st = OK;
-    while (st == OK && (n = audio_rs_flush(&a->rs, out, BLOCK)) > 0) {
-        size_t done = 0;
-        st = mixer_write(&a->s, out, n, now() + SOON, &done);
-    }
+    while (st == OK && (n = audio_rs_flush(&a->rs, out, BLOCK)) > 0)
+        st = ring_write(a, out, n);
     audio_rs_reset(&a->rs);
     if (st != OK)
         return st;
@@ -376,10 +478,8 @@ int audio_drain(struct audio_out *a)
         return OK;   /* nothing was ever written */
     st = mixer_drain(&a->s, now() + DRAIN_WAIT);
     static const int16_t quiet[2 * BLOCK];
-    for (unsigned k = 0; st == OK && k < TAIL / BLOCK; k++) {
-        size_t done = 0;
-        st = mixer_write(&a->s, quiet, BLOCK, now() + SOON, &done);
-    }
+    for (unsigned k = 0; st == OK && k < TAIL / BLOCK; k++)
+        st = ring_write(a, quiet, BLOCK);
     if (st == OK)
         st = mixer_drain(&a->s, now() + DRAIN_WAIT);
     return st;
@@ -422,10 +522,8 @@ int audio_set_input(struct audio_out *a, unsigned rate, unsigned channels)
     /* The old resampler's last outputs first (it runs taps/2 frames behind). */
     int16_t out[2 * BLOCK];
     size_t n;
-    while (st == OK && (n = audio_rs_flush(&a->rs, out, BLOCK)) > 0) {
-        size_t done = 0;
-        st = mixer_write(&a->s, out, n, now() + SOON, &done);
-    }
+    while (st == OK && (n = audio_rs_flush(&a->rs, out, BLOCK)) > 0)
+        st = ring_write(a, out, n);
     if (st != OK) {
         audio_rs_free(&rs);
         return st;
@@ -441,8 +539,18 @@ int audio_discard(struct audio_out *a)
 {
     if (!a->open)
         return ERR_BAD_STATE;
-    if (a->s.started)
+    if (a->s.started) {
         fade_out(a);
+    } else {
+        /* The mixer takes nothing from a stopped stream and hears none of
+         * it: forget what is queued, no fade needed. */
+        struct mixer_stream *s = &a->s;
+        uint64_t r = __atomic_load_n(&s->hdr->read, __ATOMIC_ACQUIRE);
+        if (s->write > r) {
+            s->write = r;
+            __atomic_store_n(&s->hdr->write, s->write, __ATOMIC_RELEASE);
+        }
+    }
     audio_rs_reset(&a->rs);
     return OK;
 }

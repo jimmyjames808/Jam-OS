@@ -89,6 +89,10 @@ use_libpci = false
 enable_vr = false
 enable_openxr = false
 
+# Crashpad sends crash reports through its own socket transport (BoringSSL
+# for https, as on Android and Fuchsia), not libcurl: no curl in the sysroot.
+crashpad_http_transport_impl = "socket"
+
 # The plain open build: no proprietary codecs, no Widevine, no API keys.
 proprietary_codecs = false
 ffmpeg_branding = "Chromium"

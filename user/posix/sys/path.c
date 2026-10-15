@@ -4,12 +4,23 @@
  * or not, and the errno of its answers.
  *
  * The current directory is a string under cwd_lock, set from the
- * hand-over's at the first use (else "/"). Whether a mount is read-only
- * is asked with fs.statfs and remembered for a second per mount
- * (ro_cache, under ro_lock), since stat's mode bits need it for every
- * path and FAT's statfs may count free clusters; a view changed under a
+ * hand-over's at the first use (else "/"). Whether a mount is read-only,
+ * and what it is (its FS_FEAT_*: links or not), is asked with fs.statfs
+ * and remembered per mount (ro_cache, under ro_lock: the read-only flag
+ * for a second, the features, which change only with the mount, for a
+ * minute), since every path needs the features and stat's mode bits the
+ * read-only flag,
+ * and FAT's statfs may count free clusters; a view changed under a
  * program shows in the mode bits within that second, and the service
- * refuses its writes at once either way. */
+ * refuses its writes at once either way.
+ *
+ * On a mount with links (files.h) the path after the mount is sent as
+ * written; a link out of it comes back as PATH_LINK_OUT and path_follow
+ * asks fs.resolve where it goes on, which is resolved again from our own
+ * "/": the link's target, or "/" and the rest for a ".." above the
+ * mount's root. Each such step counts as a link, 40 at most (ELOOP); a
+ * loop inside one walk is the service's ERR_LINK_LOOP. */
+#include <stdlib.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <fs_idl.h>
@@ -20,9 +31,11 @@
 #define ID_SVC     2u          /* "/svc" */
 #define ID_SVC0    3u          /* ... and the services from here, in their order */
 #define RO_KEEP_NS NS_PER_S    /* how long a mount's read-only answer is remembered */
+#define FEAT_KEEP_NS (60 * NS_PER_S)   /* ... and its features (they change only with the mount) */
 #define BLOCK      512u        /* st_blocks' unit */
 #define BLKSIZE    65536u      /* st_blksize: the transfer buffer */
 #define ONE_USER   1000u       /* the one user's uid and gid (M13 Q7) */
+#define LINKS_MAX  40u         /* links a path may follow out of mounts (Linux's ELOOP) */
 
 static char   cwd[PATH_BYTES] = "/";   /* cwd_lock */
 static bool   cwd_ready;               /* cwd_lock: the hand-over's was looked at */
@@ -31,10 +44,14 @@ static lock_t cwd_lock;
 static struct {
     char     mount[NS_NAME_MAX];   /* "" for a free entry */
     bool     ro;
+    uint32_t features;             /* FS_FEAT_* */
     uint64_t at;                   /* when it was asked (now()) */
 } ro_cache[NS_MAX_MOUNTS];         /* ro_lock */
 static unsigned ro_next;           /* ro_lock: the entry the next new mount takes */
 static lock_t   ro_lock;
+
+static bool mount_name(const struct path *p, char m[NS_NAME_MAX]);
+static bool mount_ask(const char *m, uint64_t keep, bool *ro, uint32_t *features);
 
 /* ---- resolving ------------------------------------------------------------------- */
 
@@ -52,12 +69,40 @@ static size_t next_name(const char *s, size_t *at, const char **name)
     return l;
 }
 
+/* Does the mount p has just found have links? Its features are asked
+ * only of a mount of our namespace ("/svc", "/dev" and the like aren't). */
+static bool mount_links(const struct path *p)
+{
+    char m[NS_NAME_MAX];
+    bool ro;
+    uint32_t features;
+    if ((p->mount_len == 4 && !memcmp(p->abs, "/svc", 4)) || !mount_name(p, m) ||
+        !path_is_mount(m))
+        return false;
+    return mount_ask(m, FEAT_KEEP_NS, &ro, &features) && (features & FS_FEAT_LINKS);
+}
+
+/* The rest of a path from name on, as written, after a '/' (a mount with
+ * links: the service walks it). */
+static long as_written(const char *name, struct path *out, size_t *len)
+{
+    size_t l = strlen(name);
+    if (*len + 1 + l >= PATH_BYTES)
+        return -ENAMETOOLONG;
+    out->abs[(*len)++] = '/';
+    memcpy(out->abs + *len, name, l);
+    *len += l;
+    return 0;
+}
+
 /* Walk the names of s onto out (files.h's cleaning rules). */
 static long walk(const char *s, struct path *out, size_t *len)
 {
     const char *name;
     size_t at = 0, l;
     while ((l = next_name(s, &at, &name)) != 0) {
+        if (out->links)
+            return as_written(name, out, len);
         if (l == 1 && name[0] == '.')
             continue;
         if (l == 2 && name[0] == '.' && name[1] == '.') {
@@ -74,8 +119,11 @@ static long walk(const char *s, struct path *out, size_t *len)
             out->abs[(*len)++] = '/';
         memcpy(out->abs + *len, name, l);
         *len += l;
-        if (!out->mount_len)
+        if (!out->mount_len) {
             out->mount_len = (uint32_t)*len;
+            out->abs[*len] = '\0';
+            out->links = mount_links(out);
+        }
     }
     return 0;
 }
@@ -92,11 +140,14 @@ static void ending(const char *in, size_t n, struct path *out)
     out->must_dir = in[n - 1] == '/' || out->last_dot || out->last_dotdot;
 }
 
+/* in (n bytes) against base into out; out's nofollow and hops are the
+ * caller's. */
 static long resolve(const char *base, const char *in, size_t n, struct path *out)
 {
     size_t len = 1;
     out->abs[0] = '/';
     out->mount_len = 0;
+    out->links = false;
     long r = walk(base, out, &len);
     if (!r)
         r = walk(in, out, &len);
@@ -141,6 +192,8 @@ long path_get(long dirfd, const char *in, struct path *out)
         return -ENOENT;
     if (n == PATH_BYTES)
         return -ENAMETOOLONG;
+    out->nofollow = false;
+    out->hops = 0;
     if (in[0] == '/')
         return resolve("", in, n, out);
     char base[PATH_BYTES];
@@ -153,7 +206,96 @@ long path_set(const char *abs, struct path *out)
     size_t n = strnlen(abs, PATH_BYTES);
     if (!n || n == PATH_BYTES)
         return -ENAMETOOLONG;
+    out->nofollow = false;
+    out->hops = 0;
     return resolve("", abs, n, out);
+}
+
+/* ---- links that lead out of a mount ------------------------------------------- */
+
+/* fs.resolve of p (p->nofollow: the last link not followed): its kind and
+ * next (PATH_BYTES, NUL-terminated). */
+static long ask_resolve(const struct path *p, uint8_t *kind, char *next)
+{
+    handle_t fs;
+    long r = path_fs(p, &fs);
+    if (r)
+        return r;
+    uint32_t len, nlen = 0;
+    uint16_t used;
+    const char *rel = path_rel(p, &len);
+    status_t st = fs_resolve_within(fs, FILE_TIMEOUT, rel, len, p->nofollow ? FS_NOFOLLOW : 0,
+                                    kind, &used, next, &nlen);
+    jam_handle_close(fs);
+    if (st != OK)
+        return st == ERR_LINK_OUT ? -EIO : path_err_read(p, st);   /* resolve never leads out */
+    next[nlen < PATH_BYTES ? nlen : PATH_BYTES - 1] = '\0';
+    return 0;
+}
+
+/* p again from where fs.resolve said it goes on (buf: PATH_BYTES of room):
+ * inside the mount, its physical form; else from our "/". What p asked
+ * of its end (a directory, "." or "..") still holds: the service's next
+ * drops a trailing '/'. */
+static long go_on(struct path *p, uint8_t kind, const char *next, char *buf)
+{
+    if (kind == FS_RESOLVE_INSIDE) {
+        int n = snprintf(buf, PATH_BYTES, "%.*s%s%s", (int)p->mount_len, p->abs,
+                         next[0] ? "/" : "", next);
+        if (n < 0 || n >= (int)PATH_BYTES)
+            return -ENAMETOOLONG;
+    } else {
+        if (kind != FS_RESOLVE_ABSOLUTE && kind != FS_RESOLVE_ABOVE)
+            return -EIO;   /* a broken service */
+        if (++p->hops > LINKS_MAX)
+            return -ELOOP;
+        int n = snprintf(buf, PATH_BYTES, "%s%s", kind == FS_RESOLVE_ABOVE ? "/" : "", next);
+        if (n < 0 || n >= (int)PATH_BYTES)
+            return -ENAMETOOLONG;
+        if (buf[0] != '/')
+            return -EIO;
+    }
+    bool must_dir = p->must_dir, dot = p->last_dot, dotdot = p->last_dotdot;
+    long r = resolve("", buf, strlen(buf), p);
+    p->must_dir |= must_dir;
+    p->last_dot |= dot;
+    p->last_dotdot |= dotdot;
+    return r;
+}
+
+long path_follow(struct path *p)
+{
+    if (!p->links || p->where != PATH_MOUNT)
+        return -EIO;   /* only a mount with links leads out */
+    char *buf = malloc(2 * PATH_BYTES);
+    if (!buf)
+        return -ENOMEM;
+    uint8_t kind = 0;
+    long r = ask_resolve(p, &kind, buf);
+    if (!r)
+        r = go_on(p, kind, buf, buf + PATH_BYTES);
+    free(buf);
+    return r;
+}
+
+long path_place(struct path *p)
+{
+    if (!p->links || p->where != PATH_MOUNT)
+        return 0;
+    char *buf = malloc(2 * PATH_BYTES);
+    if (!buf)
+        return -ENOMEM;
+    long r = 0;
+    while (!r && p->links && p->where == PATH_MOUNT) {
+        uint8_t kind = 0;
+        r = ask_resolve(p, &kind, buf);
+        if (!r)
+            r = go_on(p, kind, buf, buf + PATH_BYTES);
+        if (!r && kind == FS_RESOLVE_INSIDE)
+            break;
+    }
+    free(buf);
+    return r;
 }
 
 const char *path_rel(const struct path *p, uint32_t *len)
@@ -207,6 +349,29 @@ static long svc_info(const struct path *p, struct path_info *out)
     return -ENOENT;
 }
 
+/* path_info on a mount that keeps modes: fs.getattr's answer. */
+static long attr_info(const struct path *p, struct path_info *out)
+{
+    handle_t fs;
+    long r = path_fs(p, &fs);
+    if (r)
+        return r;
+    uint32_t len;
+    const char *rel = path_rel(p, &len);
+    status_t st = fs_getattr_within(fs, FILE_TIMEOUT, rel, len, p->nofollow ? FS_NOFOLLOW : 0,
+                                    &out->mode, &out->nlink, &out->uid, &out->gid, &out->size,
+                                    &out->blocks, &out->id, &out->atime_ns, &out->mtime_ns,
+                                    &out->ctime_ns);
+    jam_handle_close(fs);
+    if (st != OK)
+        return path_err_read(p, st);
+    out->has_attr = true;
+    out->is_dir = (out->mode & FS_MODE_FMT) == FS_MODE_DIR;
+    out->is_link = (out->mode & FS_MODE_FMT) == FS_MODE_LNK;
+    out->mtime = out->mtime_ns > 0 ? (uint64_t)out->mtime_ns / NS_PER_S : 0;
+    return 0;
+}
+
 long path_info(const struct path *p, struct path_info *out)
 {
     memset(out, 0, sizeof(*out));
@@ -216,6 +381,8 @@ long path_info(const struct path *p, struct path_info *out)
         out->id = ID_ROOT;
     } else if (p->where == PATH_SVC) {
         r = svc_info(p, out);
+    } else if (path_features(p) & (FS_FEAT_LINKS | FS_FEAT_MODES)) {
+        r = attr_info(p, out);
     } else {
         handle_t fs;
         r = path_fs(p, &fs);
@@ -235,19 +402,32 @@ long path_info(const struct path *p, struct path_info *out)
     return r;
 }
 
-/* The mount's read-only answer from the cache: 1, 0, or -1 (not there). */
-static int ro_cached(const char *m, uint64_t t)
+long path_info_follow(struct path *p, struct path_info *out)
 {
-    int r = -1;
-    lock_take(&ro_lock);
-    for (unsigned i = 0; i < NS_MAX_MOUNTS; i++)
-        if (!strcmp(ro_cache[i].mount, m) && t - ro_cache[i].at < RO_KEEP_NS)
-            r = ro_cache[i].ro;
-    lock_give(&ro_lock);
+    long r;
+    do
+        r = path_info(p, out);
+    while (path_again(p, &r));
     return r;
 }
 
-static void ro_remember(const char *m, bool ro, uint64_t t)
+/* The mount's statfs answer from the cache, if it is younger than keep:
+ * true and *ro, *features. */
+static bool ro_cached(const char *m, uint64_t t, uint64_t keep, bool *ro, uint32_t *features)
+{
+    bool found = false;
+    lock_take(&ro_lock);
+    for (unsigned i = 0; i < NS_MAX_MOUNTS; i++)
+        if (!strcmp(ro_cache[i].mount, m) && t - ro_cache[i].at < keep) {
+            *ro = ro_cache[i].ro;
+            *features = ro_cache[i].features;
+            found = true;
+        }
+    lock_give(&ro_lock);
+    return found;
+}
+
+static void ro_remember(const char *m, bool ro, uint32_t features, uint64_t t)
 {
     lock_take(&ro_lock);
     unsigned slot = ro_next;
@@ -258,33 +438,54 @@ static void ro_remember(const char *m, bool ro, uint64_t t)
         ro_next = (ro_next + 1) % NS_MAX_MOUNTS;
     memcpy(ro_cache[slot].mount, m, strlen(m) + 1);
     ro_cache[slot].ro = ro;
+    ro_cache[slot].features = features;
     ro_cache[slot].at = t;
     lock_give(&ro_lock);
+}
+
+/* Mount m's read-only flag and features (fs.statfs, or the cache's if
+ * younger than keep): false if it couldn't be asked (not a mount, or no
+ * answer). */
+static bool mount_ask(const char *m, uint64_t keep, bool *ro, uint32_t *features)
+{
+    uint64_t t = now();
+    if (ro_cached(m, t, keep, ro, features))
+        return true;
+    handle_t fs;
+    if (ns_channel(m, &fs) != OK)
+        return false;
+    uint64_t total, free_bytes;
+    uint8_t r = 0, label[16];
+    uint32_t magic = 0, name_max = 0, f = 0;
+    status_t st = fs_statfs_within(fs, FILE_TIMEOUT, &total, &free_bytes, &r, label, &magic,
+                                   &name_max, &f);
+    jam_handle_close(fs);
+    if (st != OK)
+        return false;
+    *ro = r != 0;
+    *features = f & FS_FEAT_MASK;
+    ro_remember(m, *ro, *features, t);
+    return true;
 }
 
 bool path_read_only(const struct path *p)
 {
     char m[NS_NAME_MAX];
+    bool ro = false;
+    uint32_t features;
     if (p->where != PATH_MOUNT)
         return true;
-    if (!mount_name(p, m))
-        return false;
-    uint64_t t = now();
-    int c = ro_cached(m, t);
-    if (c >= 0)
-        return c;
-    handle_t fs;
-    if (path_fs(p, &fs))
-        return false;
-    uint64_t total, free_bytes;
-    uint8_t ro = 0, label[16];
-    status_t st = fs_statfs_within(fs, FILE_TIMEOUT, &total, &free_bytes, &ro, label, NULL, NULL,
-                                   NULL);
-    jam_handle_close(fs);
-    if (st != OK)
-        return false;
-    ro_remember(m, ro != 0, t);
-    return ro != 0;
+    return mount_name(p, m) && mount_ask(m, RO_KEEP_NS, &ro, &features) && ro;
+}
+
+uint32_t path_features(const struct path *p)
+{
+    char m[NS_NAME_MAX];
+    bool ro;
+    uint32_t features = 0;
+    if (p->where != PATH_MOUNT || !mount_name(p, m) || !mount_ask(m, FEAT_KEEP_NS, &ro, &features))
+        return 0;
+    return features;
 }
 
 long path_err(const struct path *p, status_t st)
@@ -298,7 +499,8 @@ long path_err(const struct path *p, status_t st)
     case ERR_TIMED_OUT:      return -EIO;
     case ERR_OUT_OF_RANGE:   return -EFBIG;
     case ERR_INVALID_ARGS:   return -EINVAL;   /* a name FAT can't hold, as Linux's vfat */
-    default:                 return lx_err(st);
+    case ERR_LINK_OUT:       return p ? PATH_LINK_OUT : -EIO;
+    default:                 return lx_err(st);   /* ERR_LINK_LOOP: ELOOP */
     }
 }
 
@@ -335,8 +537,59 @@ static dev_t mount_dev(const struct path *p)
     return 0;
 }
 
+unsigned path_perm(uint32_t mode, uint32_t uid)
+{
+    return uid == ONE_USER ? (mode >> 6) & 7u : mode & 7u;
+}
+
+long path_program(const char *abs, char *out)
+{
+    struct path *p = malloc(sizeof(*p));
+    struct path_info i;
+    if (!p)
+        return -ENOMEM;
+    long r = path_set(abs, p);
+    if (!r)
+        r = path_place(p);   /* where the links lead: approvals are by that path */
+    if (!r && (path_features(p) & FS_FEAT_MODES)) {
+        r = path_info(p, &i);
+        if (!r && (i.is_dir || !(path_perm(i.mode, i.uid) & 1)))
+            r = -EACCES;   /* no execute bit: refused before anything else */
+    }
+    if (!r)
+        memcpy(out, p->abs, strlen(p->abs) + 1);
+    free(p);
+    return r;
+}
+
+/* ns since 1970 as a timespec. */
+static struct timespec ts_of(int64_t ns)
+{
+    int64_t s = ns / (int64_t)NS_PER_S, rem = ns % (int64_t)NS_PER_S;
+    if (rem < 0) {
+        rem += NS_PER_S;
+        s--;
+    }
+    return (struct timespec){ .tv_sec = (time_t)s, .tv_nsec = (long)rem };
+}
+
 void path_fill_stat(const struct path *p, const struct path_info *i, struct stat *st)
 {
+    if (i->has_attr) {   /* the inode's own */
+        st->st_mode = i->mode;
+        st->st_dev = mount_dev(p);
+        st->st_ino = i->id;
+        st->st_nlink = i->nlink;
+        st->st_uid = i->uid;
+        st->st_gid = i->gid;
+        st->st_size = (off_t)i->size;
+        st->st_blksize = BLKSIZE;
+        st->st_blocks = (blkcnt_t)i->blocks;
+        st->st_atim = ts_of(i->atime_ns);
+        st->st_mtim = ts_of(i->mtime_ns);
+        st->st_ctim = ts_of(i->ctime_ns);
+        return;
+    }
     mode_t mode;
     if (i->is_svc)
         mode = S_IFSOCK | 0666;

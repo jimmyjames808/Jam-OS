@@ -143,5 +143,15 @@ extern uint64_t aspace_pager_waits_held;
 /* The number of user mappings on v's reverse map, or -1 if its tree is
  * not sound (itree_check). Takes the VMO lock: O(n). */
 int64_t vmo_rmap_check(struct vmo *v);
+/* The number of mappings in as, or -1 (and a line on the console saying
+ * what) if anything about them is wrong: the tree (avl_check), the order
+ * and overlaps, every gap and largest gap, two neighbours that could be
+ * one, a reverse-map entry that doesn't say what its mapping maps, flags
+ * past the maximum, W+X on anything but a JIT VMO, the charge for the
+ * structs, and every entry present: it must name the VMO's page there
+ * now, with no permission the mapping lacks. Takes the region lock;
+ * O(n + entries). For tests, on an address space nothing else changes
+ * meanwhile (a racing decommit could clear an entry it is comparing). */
+int64_t aspace_check(struct aspace *as);
 /* Physical address of the page holding `offset`, 0 if not committed. */
 uint64_t vmo_page_phys(struct vmo *v, uint64_t offset);

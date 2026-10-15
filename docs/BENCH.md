@@ -816,13 +816,13 @@ Reading:
 - The reply-and-wait line is still 165 ns over M11.5's 600 ns target (the
   last 165 ns are in the roadmap's follow-ups).
 
-## Chromium's build (CR track CB1), the PC's WSL 2026-10-15, partial
+## Chromium's build (CR tracks CB1, CB1b), the PC's WSL 2026-10-15
 
 Chromium 155.0.8059.39, base_unittests and headless_shell for Jam OS
 (ports/chromium, `tools/cr/build.sh`; [CR-PLAN](CR-PLAN.md#cb1-as-built-2026-10-14)),
 i7-14700 (28 threads), WSL with 23 GB of memory and 8 GB of swap, at
-nice 19. The build had not finished when the PC stopped answering: these
-are the figures so far.
+nice 19. The build was made in rounds over a day (each round fixing the
+errors the last one stopped on), so there is no clean build's time yet.
 
 | What | Figure |
 |---|---|
@@ -833,3 +833,8 @@ are the figures so far.
 | Speed | base and its dependencies, 3,100 steps, 2 min at `-j10`; 15,900 steps in the first 17 min at `-j18`; Blink's core about 75 steps a minute at `-j16` |
 | Peak memory (the build's Pss) | 8 GB at `-j14` (V8, Blink's bindings); 15 to 22 GB at `-j14` to `-j24` in Blink's core, single compiles 2.5 to 3.6 GB, 1.5 to 2.7 GB of swap used |
 | Clean build | not measured yet: roughly 2.5 to 3.5 h at `-j16` from these rates |
+| Output directory, built | 8.5 GB (source and output 20 GB) |
+| The last round (both programs' links and their helpers') | 2 min at `-j16`, the build's Pss at most 5.3 GB |
+| `headless_shell` | 335.7 MB (code 213.4 MB, data 6.5 MB, bss 2.3 MB), static, no debug information (the symbol table kept) |
+| `base_unittests` | 76.7 MB (code 56.8 MB, data 1.7 MB, bss 0.8 MB) |
+| `chrome_crashpad_handler`, `test_child_process` | 6.3 MB, 2.6 MB |

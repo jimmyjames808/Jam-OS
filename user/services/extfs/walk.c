@@ -213,7 +213,7 @@ status_t walk(const struct xf_ctx *c, const char *path, uint32_t len, uint32_t f
         w->found = true;
         if (is_link(&w->in) && (!last || trailing || !(flags & W_NOFOLLOW))) {
             if (++links > XF_LINKS_MAX)
-                return ERR_OUT_OF_RANGE;   /* a loop: libc's ELOOP */
+                return ERR_LINK_LOOP;   /* a loop: ELOOP */
             size_t tlen = 0;
             st = ext_readlink(fs, &w->in, target, FS_PATH_LEN, &tlen);
             if (st == ERR_BUFFER_TOO_SMALL)
@@ -276,7 +276,8 @@ bool walk_may_change(const struct xf_ctx *c, const struct xf_walk *w)
 {
     if (c->flags & FS_VIEW_READ_ONLY)
         return false;
-    return !((c->flags & FS_VIEW_GUARD_ETC) && fs_view_in_etc(w->phys));
+    return !((c->flags & FS_VIEW_GUARD_ETC) && fs_view_in_etc(w->phys)) &&
+           !((c->flags & FS_VIEW_GUARD_PKG) && fs_view_in_pkg(w->phys));
 }
 
 /* ---- attributes ---------------------------------------------------------------------- */

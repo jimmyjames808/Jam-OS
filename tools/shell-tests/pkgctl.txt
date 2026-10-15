@@ -1,0 +1,68 @@
+# The packages' guard and init's approvals (docs/M13.7-PLAN.md section 9,
+# track PO5), one utest at a time so a failure names itself:
+#   view_pkg_names, fat_view_pkg  FS_VIEW_GUARD_PKG: every change under the
+#                                 top-level pkg refused by every name FAT
+#                                 takes for it; a view without it changes it
+#   extfs_views                   the same on extfs, where a path resolves
+#   pkgctl_good ... _other_version  init's approvals over a RAM disk with the
+#                                 vectors' key: a good package, a changed file,
+#                                 a changed table, a wrong key, refused lists,
+#                                 a replayed manifest of another version
+#   pkgctl_settle                 the journal settled after a cut
+#   pkgctl_want                   `mount /data rw pkg`, and allow's refusal
+#   pkgctl_init                   init's own channel (initctl.pkg_channel):
+#                                 the vectors' package refused (not the
+#                                 build's key), a newer channel closes the older
+#   pkgfmt_lists_are_allows       a package's refused lists are allow's
+# then the shell's side: a package's line shown with its package by
+# `allow -l`, and refused by `allow -r` and by `allow <file>` over it.
+# Run:
+#   QEMU_INPUT=tools/shell-tests/pkgctl.txt tools/qemu-test.sh build/test pkgctl shell
+wait 120 Jam OS shell
+wait {prompt}
+send T=x
+wait {prompt}
+
+send utest only view_pkg_names,fat_view_pkg; echo pc1-$T-$?
+wait 60 pc1-x-0
+seen 5 utest: 2 passed
+send utest only extfs_views; echo pc2-$T-$?
+wait 60 pc2-x-0
+seen 5 utest: 1 passed
+send utest only pkgctl_good,pkgctl_changed_file,pkgctl_changed_table; echo pc3-$T-$?
+wait 90 pc3-x-0
+seen 5 utest: 3 passed
+send utest only pkgctl_wrong_key,pkgctl_refused_list,pkgctl_other_version; echo pc4-$T-$?
+wait 90 pc4-x-0
+seen 5 utest: 3 passed
+send utest only pkgctl_settle,pkgctl_want; echo pc5-$T-$?
+wait 90 pc5-x-0
+seen 5 utest: 2 passed
+send utest only pkgctl_init; echo pc6-$T-$?
+wait 60 pc6-x-0
+seen 5 utest: 1 passed
+send utest only pkgfmt_lists_are_allows; echo pc7-$T-$?
+wait 60 pc7-x-0
+seen 5 utest: 1 passed
+
+# The shell's side: a package's line (as init writes it) is shown with its
+# package by `allow -l`, and neither `allow -r` nor `allow <file>` drops it.
+send printf '%s\t/data/pv\tnothing\tpkg=vec 1.0-r1\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa > /data/etc/allow; echo pc8-$T-$?
+wait pc8-x-0
+send allow -l
+wait /data/pv: nothing [package vec 1.0-r1] (sha-256 aaaaaaaaaaaaaaaa...)
+wait {prompt}
+send allow -r pv; echo pc9-$T-$?
+wait allow: pv: a package's program (allow -l): `pkg remove` takes it back
+wait pc9-x-1
+send cp /boot/bin/soakload /data/pv && allow /data/pv; echo pc10-$T-$?
+wait allow pv: every mount (write)? y/n
+type y
+wait allow: /data/pv: a package's program (allow -l): its package approves it
+wait pc10-x-1
+send allow -l
+wait /data/pv: nothing [package vec 1.0-r1]
+wait {prompt}
+
+send reboot -f
+wait reboot: resetting

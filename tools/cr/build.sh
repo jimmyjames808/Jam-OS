@@ -179,7 +179,8 @@ start)
     # outlives this session; tools/pc-detach.sh falls back to a plain start.
     JAMOS_REMOTE_LABEL="Chromium build" "$here/tools/pc-detach.sh" "$r/start.log" \
         python3 "$here/tools/remote-slots.py" --detach "$r/build.log" \
-        "$jobs" "$mem" "$r/checkout/tools/cr/build.sh" run "$r" || exit 2
+        "$jobs" "$mem" env CR_JOBS="$jobs" CR_MEM_MB="$mem" \
+        "$r/checkout/tools/cr/build.sh" run "$r" || exit 2
     ;;
 run) run "$1" ;;
 status) status ;;

@@ -236,6 +236,7 @@ enum { BOOTFS, COMPOSITOR, CONSOLE, SPLASH, SERIALIN, DEVMGR, VOLUMES, MIXER, MU
                                * processes and channels (sessions_event) */
 #define KEY_SESSION_END 0xe00u
 #define KEY_SSHD     0xf00u   /* the SSH server's look at /data is done (ssh.c) */
+#define KEY_PKG      0x1000u  /* the pkgctl channel, and its worker done (pkg.c) */
 
 struct svc {
     const char *path;          /* in bootfs */
@@ -741,6 +742,19 @@ status_t update_offer_new(handle_t port, uint64_t key, handle_t *client);
  * closed. */
 void     update_event(void);
 
+/* ---- pkg.c: a package's approvals (abi/idl/pkgctl.idl) and the settle ---------------- */
+
+/* initctl.pkg_channel: a new pkgctl channel (replacing an older one), ours
+ * bound on port with key (call pkg_event on its packets), *client to hand
+ * over. ERR_BAD_STATE while the last call is being worked on. */
+status_t pkg_channel_new(handle_t port, uint64_t key, handle_t *client);
+/* /data came: the journal of a package transaction cut short is settled
+ * (on the worker; its packet comes to port with key). */
+void     pkg_data_came(handle_t port, uint64_t key);
+/* A packet with the channel's key: a request, the worker done (then
+ * answered), or bin/pkg gone. */
+void     pkg_event(void);
+
 /* ---- espwrite.c: `update`'s stick write, on update.c's worker thread -------------- */
 
 /* One stick write: what to write, and how far it got. */
@@ -774,6 +788,19 @@ struct esp_write {
  * failure leaves); blocks for as long as that takes (seconds: never call
  * it from init's loop). */
 void esp_write_build(struct esp_write *j);
+
+/* ---- install.c: initctl.install, the installer on a worker thread ------------------ */
+
+/* Start installing Jam OS on disk `id` (voldisks' id; `tail` and `word` the
+ * owner's confirmations, as for prepare_send): IDL_LATER, and the worker
+ * answers the request txid on ch (initctl.install) when it is done; or why not (nothing
+ * started): ERR_BAD_STATE while an install or an update is under way. */
+status_t install_start(handle_t ch, uint32_t txid, uint32_t id, const char *tail, uint32_t tail_len,
+                       const char *word, uint32_t word_len);
+/* An install is under way (its worker uses the install channel and /esp). */
+bool     install_busy(void);
+/* update.c: a check or a stick write is on its worker. */
+bool     update_busy(void);
 
 /* ---- lastboot.c: the boot before this one, if it panicked -------------------------- */
 

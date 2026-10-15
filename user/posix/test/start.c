@@ -10,9 +10,12 @@
  *     the null device as 0, nothing at 2): it writes through 1 to us,
  *     reads the end of the file at once from 0, and 2 is EBADF;
  *   - the clocks, a sleep, getrandom and uname;
+ *   - dynamic loading as a static program has it: dlopen() fails with
+ *     dlerror()'s message, dlsym() finds nothing, dlclose() refuses;
  *   - the program's constructors ran before main, the layer's first. */
 #include <stdio.h>
 #include <stdlib.h>
+#include <dlfcn.h>
 #include <elf.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -189,6 +192,18 @@ static void check_machine(void)
     CHECK(sysconf(_SC_PAGESIZE) == 4096);
 }
 
+static void check_dl(void)
+{
+    CHECK(dlerror() == NULL);
+    CHECK(dlopen("libm.so", RTLD_NOW) == NULL);
+    const char *e = dlerror();
+    CHECK(e && !strcmp(e, "Dynamic loading not supported"));
+    CHECK(dlerror() == NULL);   /* read once */
+    CHECK(dlsym(RTLD_NEXT, "close") == NULL && dlerror() != NULL);
+    CHECK(dlsym(RTLD_DEFAULT, "close") == NULL);
+    CHECK(dlclose((void *)8) != 0 && dlerror() != NULL);
+}
+
 /* Set by a constructor of ours: it ran, and the layer's (the descriptor
  * table's and the signal thread's, priorities 101 and 102) ran before it,
  * so stdout was already a descriptor. */
@@ -205,6 +220,7 @@ void pt_start(char **argv)
     check_aux(argv);
     check_time();
     check_machine();
+    check_dl();
     check_child_args();
     check_child_handover();
 }

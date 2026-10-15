@@ -217,6 +217,15 @@ bool dp_allow_split(char *line, char **hash, char **path, char **text)
     return true;
 }
 
+char *dp_allow_tag(char *text)
+{
+    char *t = strrchr(text, '\t');
+    if (!t || strncmp(t + 1, "pkg=", 4))
+        return NULL;
+    *t = '\0';
+    return t + 5;
+}
+
 /* The approvals' text, NUL-terminated, into *out (the caller frees it). */
 static status_t read_allow(char **out)
 {
@@ -347,7 +356,8 @@ status_t dp_table_read(const char *hash_hex, uint64_t size, handle_t *table)
  * the stress test. Nor init's sessions (session): each is a whole shell, with
  * init's namespace and the shell's root powers, past every view and grant;
  * the build allows it only for a service, a port or a test
- * (tools/checkwants.py). */
+ * (tools/checkwants.py). Nor the packages' prefix writable (`mount /data
+ * rw pkg`, bin/pkg's): a program could spoil every package's files. */
 static const char *const refused[] = { SVC_DEVMGR, SVC_DEVMGR_CTL, SVC_VOLUMES, SVC_INIT,
                                        SVC_NET_SYS, SVC_DNS_SYS, SVC_SERVE, SVC_NET_LISTEN_LOW,
                                        SVC_SESSION };
@@ -356,6 +366,9 @@ const char *dp_wants_refused(const struct wants *w)
 {
     if (w->rights & WANT_RIGHT_DEBUG)
         return "right debug";
+    for (unsigned i = 0; i < w->n; i++)   /* the packages' prefix: bin/pkg's alone */
+        if (!strcmp(w->grant[i], "/data:wp"))
+            return "mount /data rw pkg";
     for (unsigned i = 0; i < w->n; i++)
         for (unsigned k = 0; k < sizeof(refused) / sizeof(refused[0]); k++)
             if (!strncmp(w->grant[i], "/svc/", 5) && !strcmp(w->grant[i] + 5, refused[k]))

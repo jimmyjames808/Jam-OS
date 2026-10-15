@@ -236,8 +236,17 @@ bool t_volumes_loop_answers(void)
     if (!wait_usb(vm, &v, 0))
         return false;
     struct fatrun r = mount_of(&v, usbn);
-    if (!put_file(&r, "/held.txt", "written before a slow flush"))
-        return false;
+    /* The file is written and left open: fat flushes when it is closed,
+     * and a handle closed by us is closed by fat in its own time (maybe
+     * before the disk is slow, which would leave the remount nothing to
+     * flush). Open, it is closed by the remount's stop in order, the one
+     * flush the disk holds. */
+    struct tfile held;
+    uint32_t done = 0;
+    CHECK_ST(t_open(&r, "/held.txt", FS_WRITE | FS_CREATE | FS_TRUNCATE, &held), OK);
+    const char text[] = "written before a slow flush";
+    CHECK_ST(t_write(&held, 0, text, sizeof(text) - 1, &done), OK);
+    CHECK_EQ(done, sizeof(text) - 1);
     /* From now on the disk takes HOLD_MS to answer a flush: the remount's
      * stop in order waits for it. */
     uint32_t held0 = dm_count(&mock.held), txid = 0x5b2b0001u;
@@ -273,6 +282,7 @@ bool t_volumes_loop_answers(void)
     CHECK_ST(idl_reply_read(vm, rep, sizeof(rep), &m), OK);
     CHECK_EQ(m.txid, txid);
     CHECK_ST(volumes_remount_result(rep, &m), OK);
+    t_close(&held);
     uint64_t took = now() - t0;
     printf("utest: %s: the remount answered after %lu ms\n", utest_cur,
            (unsigned long)(took / NS_PER_MS));

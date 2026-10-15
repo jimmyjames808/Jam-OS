@@ -24,6 +24,22 @@
  * protocol's own limit. Directory descriptors are paths too: a directory
  * renamed under one is not followed (FAT has no inode to follow).
  *
+ * **Mounts with links** (docs/M13.6-PLAN.md, "Paths and links": extfs,
+ * whose fs.statfs says FS_FEAT_LINKS). Only the names up to the mount are
+ * cleaned; the rest goes to the service as the program wrote it, and the
+ * service resolves it, ".." physically and the links inside its view. A
+ * link that leads out (an absolute one, or ".." above the mount's root)
+ * comes back as ERR_LINK_OUT, which path_err turns into PATH_LINK_OUT: the
+ * call asks fs.resolve where the path goes on (path_follow) and starts
+ * again from there in our own namespace, "/" for a ".." above the mount
+ * (so "/jam/.." is "/", as POSIX has it; FAT's mounts keep B1's rule),
+ * the links counted to 40 (ELOOP). Every call that sends a path runs
+ * `do r = op(&p); while (path_again(&p, &r));`. The current directory and
+ * a directory descriptor's path are kept physical (path_place: links
+ * followed, ".." resolved), so getcwd says where a chdir through a link
+ * led. stat there is fs.getattr's (the inode's mode, links, owner and
+ * times); a file's own open may be one of many writers.
+ *
  * **The mount's channel.** Each call asks libjam's namespace for a
  * duplicate of the mount's `fs` channel (ns_channel) and closes it after,
  * so a mount replaced meanwhile is seen at the next call. */
@@ -46,22 +62,38 @@ enum path_where {
 
 /* A resolved path. */
 struct path {
-    char            abs[PATH_BYTES];    /* absolute and clean: "/", "/data", "/data/a/b" */
+    char            abs[PATH_BYTES];    /* absolute and clean: "/", "/data", "/data/a/b"; on a
+                                         * mount with links clean up to the mount only */
     enum path_where where;
     uint32_t        mount_len;          /* abs[0 .. mount_len) is the mount ("/data") */
     bool            must_dir;           /* written with a trailing '/', "." or "..": only a
                                          * directory will do */
     bool            last_dot;           /* its last name as written was "." */
     bool            last_dotdot;        /* ... or ".." */
+    bool            links;              /* the mount has symbolic links (FS_FEAT_LINKS): what
+                                         * follows it in abs is as written, uncleaned */
+    bool            nofollow;           /* a link as the last name is not followed (the
+                                         * caller's to set: lstat, unlink, O_NOFOLLOW, ...) */
+    uint8_t         hops;               /* links followed out of a mount (path_follow) */
 };
+
+/* A call's answer that a link led out of the mount (ERR_LINK_OUT): never
+ * a program's errno; path_again follows it. */
+#define PATH_LINK_OUT (-4000L)
 
 /* What stat says about a path, as the service answers it. */
 struct path_info {
     bool     is_dir;
     bool     is_svc;     /* a service under /svc: neither file nor directory */
+    bool     is_link;    /* a symbolic link (p->nofollow, on a mount with links) */
     uint64_t size;       /* bytes; 0 for a directory */
     uint64_t mtime;      /* Unix seconds, 0 if unknown */
     uint64_t id;         /* the service's id (fs.stat), or the layer's own for "/" and /svc */
+    bool     has_attr;   /* the rest is the inode's own (fs.getattr on a mount with modes);
+                          * else path_fill_stat makes them up as B1 did */
+    uint32_t mode, nlink, uid, gid;
+    uint64_t blocks;     /* 512-byte units */
+    int64_t  atime_ns, mtime_ns, ctime_ns;
 };
 
 /* ---- path.c ----------------------------------------------------------------------- */
@@ -79,18 +111,54 @@ const char *path_rel(const struct path *p, uint32_t *len);
 /* A duplicate of p's mount's `fs` channel (the caller closes it): 0, or
  * -ENOENT (no such mount). Only for PATH_MOUNT. */
 long path_fs(const struct path *p, handle_t *fs);
-/* What stat says about p: 0, or -errno. */
+/* What stat says about p (lstat's answer if p->nofollow): 0, or -errno,
+ * or PATH_LINK_OUT. */
 long path_info(const struct path *p, struct path_info *out);
+/* The same, the links that lead out followed (p becomes where it led). */
+long path_info_follow(struct path *p, struct path_info *out);
 /* Is p's mount read-only (fs.statfs, remembered a second per mount)?
  * "/" and /svc are. */
 bool path_read_only(const struct path *p);
+/* p's mount's FS_FEAT_* (fs.statfs, remembered with the read-only flag);
+ * 0 for "/", /svc and anything that isn't a mount. */
+uint32_t path_features(const struct path *p);
 /* errno for a mount's answer st to a call on p: ERR_ACCESS_DENIED is
- * EROFS on a read-only mount (else EACCES), and the `fs` protocol's
- * other errors as fs.idl lists them. */
+ * EROFS on a read-only mount (else EACCES), ERR_LINK_OUT is PATH_LINK_OUT
+ * (p not NULL), and the `fs` protocol's other errors as fs.idl lists
+ * them. */
 long path_err(const struct path *p, status_t st);
+/* After PATH_LINK_OUT from a call on p: where the path goes on, asked of
+ * p's mount (fs.resolve), resolved again into p from our own "/" (an
+ * absolute link) or from "/" (".." above the mount's root). 0, or -ELOOP
+ * past 40 links, or the service's answer. */
+long path_follow(struct path *p);
+/* *r was a call's answer on p: if it was PATH_LINK_OUT, follow it and
+ * say whether to call again (*r then 0, or path_follow's error). */
+static inline bool path_again(struct path *p, long *r)
+{
+    if (*r != PATH_LINK_OUT)
+        return false;
+    *r = path_follow(p);
+    return *r == 0;
+}
+/* p in its physical form, on a mount with links: every link followed
+ * (the last one too unless p->nofollow), ".." resolved, as fs.resolve
+ * answers (links out followed in our namespace). Nothing for other
+ * mounts, whose paths are clean already. 0 or -errno. */
+long path_place(struct path *p);
 /* The same for a call that changes nothing (stat, readdir, statfs, an
  * open to read): a refusal there is always EACCES, never EROFS. */
 long path_err_read(const struct path *p, status_t st);
+/* A program's file for spawn (abs: absolute and clean): its path with the
+ * links followed into out (PATH_BYTES; abs itself on a mount without
+ * links), so its approval is looked up where it leads (M13.6's "The
+ * executable bit and approvals"). On a mount that keeps modes a file
+ * without an execute bit is EACCES, before anything else. 0 or -errno. */
+long path_program(const char *abs, char *out);
+/* The permission bits that count for the one user (rwx as 4, 2, 1): a
+ * file's owner bits if it is the one user's, else its others' (extfs
+ * judges them the same way, M13.6's Q4). */
+unsigned path_perm(uint32_t mode, uint32_t uid);
 /* *st for p as path_info found it (fstat's and stat's shared part). */
 void path_fill_stat(const struct path *p, const struct path_info *i, struct stat *st);
 
@@ -117,15 +185,26 @@ struct fobj {
     uint32_t     lent_flags;         /* ... with these FS_* flags */
     uint64_t     lent_end;           /* the file's end when lent, or when last looked at
                                       * since: a description there follows the end (file.c) */
+    bool         multi;              /* its mount lets a file have many writers
+                                      * (FS_FEAT_MULTI_WRITER): never lent, its size the
+                                      * service's, an append the service's (FS_APPEND);
+                                      * or its mount isn't known (a file sent over a
+                                      * socket): its size the service's, asked when needed */
+    bool         append;             /* opened FS_APPEND (multi only): every write at the end;
+                                      * shared only by descriptions with O_APPEND */
+    bool         attrs;              /* its mount keeps modes (FS_FEAT_MODES): fstat is
+                                      * file.getattr's */
 };
 
 /* The object for an open of p with ff (FS_READ, FS_WRITE, FS_CREATE,
- * FS_EXCL, FS_TRUNCATE): a new open, or ours shared (opened again to
- * write if it must), one reference to it in *out. -errno, -EISDIR for a
- * directory, -EBUSY if another process holds a writable open. */
-long fobj_open(const struct path *p, uint32_t ff, struct fobj **out);
+ * FS_EXCL, FS_TRUNCATE, FS_NOFOLLOW; FS_APPEND, kept only on a mount with
+ * many writers) and mode (the permission bits of a file FS_CREATE makes):
+ * a new open, or ours shared (opened again to write if it must), one
+ * reference to it in *out. -errno, -EISDIR for a directory, -EBUSY if
+ * another process holds a writable open (FAT), PATH_LINK_OUT. */
+long fobj_open(const struct path *p, uint32_t ff, uint32_t mode, struct fobj **out);
 /* The object for an open another process gave us (consumed) of path
- * (NULL: not known) with ff. */
+ * (NULL: not known) with ff (FS_APPEND as fobj_open's). */
 long fobj_adopt(handle_t ch, handle_t buf, uint32_t ff, const char *path, struct fobj **out);
 /* Drop a reference; the last closes the open. */
 void fobj_put(struct fobj *o);
@@ -149,6 +228,11 @@ status_t fobj_open_settled(const struct path *p, uint32_t ff, handle_t *ch, hand
 fd_adopt_fn file_adopt_fd;
 /* Is d a file's description (fdpass.c: which kinds a socket carries)? */
 bool file_desc_is(const struct fd_desc *d);
+/* file.setattr (FS_ATTR_* in mask) on the open of d, a file's description
+ * on a mount that keeps modes: 0, -errno, or -ENOTSUP when d has no such
+ * open (another kind, O_PATH, a mount that keeps nothing). */
+long file_setattr_fd(struct fd_desc *d, uint32_t mask, uint32_t mode, uint32_t uid, uint32_t gid,
+                     int64_t atime_ns, int64_t mtime_ns);
 /* mmap of a descriptor (mem.c): what to map. */
 #define FMAP_SHARED (1u << 0)   /* MAP_SHARED (else MAP_PRIVATE) */
 #define FMAP_WRITE  (1u << 1)   /* PROT_WRITE asked for */

@@ -116,6 +116,26 @@ void     mixer_put(struct mixer_stream *s, const int16_t *frames, size_t n, size
  * and open another). */
 status_t mixer_write(struct mixer_stream *s, const int16_t *frames, size_t n, uint64_t deadline,
                      size_t *done);
+/* Frames the ring has room for now (never a call). */
+size_t   mixer_room(const struct mixer_stream *s);
+/* The stream's channel has been closed by the mixer's side (a call: one
+ * zero-timeout wait). */
+bool     mixer_peer_closed(const struct mixer_stream *s);
+/* Room in the ring for `need` frames (at most the ring's size), waiting
+ * for the mixer to take some (MIXER_SIG_SPACE) until deadline, a slice at
+ * a time so a dead mixer is noticed. OK means there may be room now (look
+ * again with mixer_put); ERR_TIMED_OUT: the deadline passed;
+ * ERR_PEER_CLOSED: the mixer is gone. */
+status_t mixer_wait_room(struct mixer_stream *s, size_t need, uint64_t deadline);
+/* The same without waiting, for a caller that waits on `s->event` for
+ * MIXER_SIG_SPACE with something else: clears the signal and asks the
+ * mixer to raise it when it takes frames (`waiting`), then looks. True:
+ * there is room already (and nothing is asked for). False: wait on the
+ * event, and arm again after it. The ask stays until the next arm, wait
+ * or mixer_disarm_room (a mixer that signals nobody waits for costs a
+ * call a period). */
+bool     mixer_arm_room(struct mixer_stream *s, size_t need);
+void     mixer_disarm_room(struct mixer_stream *s);
 /* audio.stream_start / stream_stop. */
 status_t mixer_start(struct mixer_stream *s, uint64_t deadline);
 status_t mixer_stop(struct mixer_stream *s, uint64_t deadline);

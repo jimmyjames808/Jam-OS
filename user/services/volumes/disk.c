@@ -944,6 +944,8 @@ unsigned disk_mounts(struct mount *out)
                 continue;   /* no volume mounted yet (or none at all) */
             if (!b->other && b->part == PART_ESP && b->rw)
                 continue;   /* init's while it writes the stick (volesp): nobody else's */
+            if (b->held)
+                continue;   /* init's while it installs (install.c): nobody else's */
             bool ro = b->other ? !b->rw : b->part == PART_ESP;
             out[n] = (struct mount){ .vol = (uint32_t)(b - vols), .gen = b->chan_gen,
                                      .flags = (uint8_t)((ro ? MOUNTS_READ_ONLY : 0) |
