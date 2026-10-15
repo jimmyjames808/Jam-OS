@@ -1270,7 +1270,12 @@ need to know.
   iconv yet).
 - `user/posix/posix.mk` (included at the end of the Makefile) builds it:
   src/ldso is left out, as the plan says, so `dlopen` and its kin are
-  link errors, not run-time failures. A clean build of musl, the layer
+  link errors, not run-time failures. (Changed for Chromium, track CB1b,
+  2026-10-15: libc has musl's static stubs of them now, as a static Linux
+  program has: base calls `dlopen()` where a library may be loaded, so it
+  fails at run time with "Dynamic loading not supported", and posixtest's
+  start section checks that. Before them, src/ldso gave libc only
+  `dl_iterate_phdr` and `dladdr`, for libunwind.) A clean build of musl, the layer
   and the sysroot takes about 6 s at `make -j10` on the Mac (some 1,300
   files); after that it is never rebuilt unless its sources change.
 - `build/sysroot/lib/libc.a` holds musl, the overrides, the call layer

@@ -1,0 +1,26 @@
+Description: Chromium's fontconfig without libuuid on Jam OS
+ Chromium's copy of fontconfig links libuuid on every system but Windows,
+ though this fontconfig calls nothing of it (its .uuid cache files are
+ only read). Jam OS's sysroot has no libuuid, so the link failed (-luuid
+ not found): left out on Jam OS.
+Forwarded: not-needed (Jam OS's sysroot)
+---
+--- a/third_party/fontconfig/BUILD.gn
++++ b/third_party/fontconfig/BUILD.gn
+@@ -5,6 +5,7 @@
+ import("//build/rust/cargo_crate.gni")
+ import("//build/rust/rust_bindgen.gni")
+ import("//third_party/fontconfig/fontconfig.gni")
++import("//build/toolchain/jamos/jamos.gni")
+ 
+ assert(is_linux || is_chromeos)
+ 
+@@ -164,7 +165,7 @@ if (use_bundled_fontconfig) {
+       ]
+     }
+ 
+-    if (!is_win) {
++    if (!is_win && !is_jamos) {
+       libs = [ "uuid" ]
+     }
+   }

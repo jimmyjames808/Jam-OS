@@ -1,0 +1,28 @@
+Description: StackTrace::OutputToStreamWithPrefixImpl defined without backtrace() too
+ base/debug/stack_trace_posix.cc defines it only with backtrace() (glibc,
+ Apple), but stack_trace.cc's OutputToStreamWithPrefix() calls it on every
+ POSIX system, so a static musl program that keeps a caller (Crashpad's
+ handler does) fails to link. Without backtrace() CollectStackTrace()
+ collects no frames and OutputToStreamWithPrefix() returns before the
+ call, so the definition added for musl only says what uClibc's and AIX's
+ operator<< says.
+Forwarded: not-needed (Jam OS's: musl, static programs)
+---
+--- a/base/debug/stack_trace_posix.cc
++++ b/base/debug/stack_trace_posix.cc
+@@ -1082,6 +1082,15 @@ void StackTrace::OutputToStreamWithPrefixImpl(
+   StreamBacktraceOutputHandler handler(os);
+   ProcessBacktrace(addresses(), prefix_string, &handler);
+ }
++#else
++// Without backtrace() (musl) CollectStackTrace() collects no frames, so
++// OutputToStreamWithPrefix() returns before it gets here: the definition is
++// what links its callers (Crashpad's handler has one).
++void StackTrace::OutputToStreamWithPrefixImpl(
++    std::ostream* os,
++    cstring_view prefix_string) const {
++  (*os) << prefix_string << "StackTrace::OutputToStream not implemented.\n";
++}
+ #endif
+ 
+ namespace internal {
