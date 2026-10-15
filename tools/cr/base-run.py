@@ -18,7 +18,7 @@ and approvals under /data/cr). The run is a few boots of it in QEMU
      crashed (as many rounds as it takes, --rounds at most), and, if the
      serial script times out on a hung test, the suites not yet run.
 
-Tests named in the skip list (ports/chromium/files/base_unittests.skip: a
+Tests named in the skip list (tools/cr/base_unittests.skip: a
 pattern, the layer that owns the failure, the reason) are not run, unless
 --all: then they run, and a failure of one is a known failure, not a new
 one. --shard I/N takes every N-th suite from I (a shard has a listing boot
@@ -197,7 +197,7 @@ def filter_for(suite, tests, neg):
     return f
 
 
-def item_lines(i, flt, suite_timeout):
+def item_lines(i, flt, suite_timeout, extra=""):
     """The script lines for suite number i: split a long filter in pieces
     through the shell's variable F."""
     out = []
@@ -213,7 +213,7 @@ def item_lines(i, flt, suite_timeout):
         for p in parts[1:]:
             out += ["send F=$F" + p, "wait {prompt}"]
         flt = "$F"
-    out += ["send run $B --single-process-tests --gtest_filter=%s ; echo se-$T-%d=$?" % (flt, i),
+    out += ["send run $B --single-process-tests%s --gtest_filter=%s ; echo se-$T-%d=$?" % (extra, flt, i),
             "wait %d re:se-x-%d=\\d+" % (suite_timeout, i), "wait {prompt}"]
     return out
 
@@ -288,7 +288,7 @@ def parse_boot(lines, items, res, hung_last):
 def main(argv):
     ap = argparse.ArgumentParser(prog="base-run.py", description=__doc__.split("\n\n")[0])
     ap.add_argument("--shard", default="0/1")
-    ap.add_argument("--skip", default=os.path.join(TOP, "ports", "chromium", "files", "base_unittests.skip"))
+    ap.add_argument("--skip", default=os.path.join(TOP, "tools", "cr", "base_unittests.skip"))
     ap.add_argument("--all", action="store_true", help="run the skip list's tests too")
     ap.add_argument("--rounds", type=int, default=20)
     ap.add_argument("--chunk", type=int, default=6, help="tests to a program after round 1")
@@ -296,6 +296,7 @@ def main(argv):
     ap.add_argument("--mem", default="4G")
     ap.add_argument("--env", action="append", default=["JAMOS_ENOSYS_LOG=1"])
     ap.add_argument("--only", help="only suites matching this glob")
+    ap.add_argument("--args", default="", help="more arguments for base_unittests, e.g. ' --v=1' (a space first)")
     ap.add_argument("outdir")
     ap.add_argument("stick")
     args = ap.parse_args(argv)
@@ -350,7 +351,7 @@ def main(argv):
                     items.append((len(items), s, ":".join(u[k:k + args.chunk])))
         script = header(args.env)
         for i, s, flt in items:
-            script += item_lines(i, flt, args.suite_timeout)
+            script += item_lines(i, flt, args.suite_timeout, args.args)
         script += FOOTER
         b = Boot(args, "run%d" % rounds, script, 6 * 3600)
         lines = b.run()

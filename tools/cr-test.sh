@@ -30,7 +30,7 @@
 #           stick with a 640 MiB /data (tools/cr/base-stick.py: no package,
 #           the format holds no file over 64 MiB), run suite by suite with
 #           the ENOSYS log on (tools/cr/base-run.py); the tests in
-#           ports/chromium/files/base_unittests.skip are not run. CR_BASE_SHARD=i/n,
+#           tools/cr/base_unittests.skip are not run. CR_BASE_SHARD=i/n,
 #           CR_BASE_ALL=1, CR_BASE_ONLY=<glob>, CR_BASE_ENV="NAME=value ..."
 #           (default TMPDIR=/data/cr/tmp: Jam OS has no /tmp yet); results in
 #           <outdir>/base/run/ (results.txt, failures/, enosys.txt, summary.txt)
@@ -195,13 +195,14 @@ case_base() {
     fi
     sed 's/^/cr-test: /' "$dir/stick.out"
     # CR_BASE_ENV: more shell variables for the program ("TMPDIR=/data/tmp"),
-    # CR_BASE_ONLY: only suites matching a glob, CR_BASE_ALL=1: the skip
-    # list's tests run too (a failure of one is a known failure).
+    # CR_BASE_ONLY: only suites matching a glob, CR_BASE_ARGS: more arguments
+    # for base_unittests ("--v=1"), CR_BASE_ALL=1: the skip list's tests run
+    # too (a failure of one is a known failure).
     extra=
     for e in ${CR_BASE_ENV-TMPDIR=/data/cr/tmp}; do extra="$extra --env $e"; done
     # shellcheck disable=SC2086
     if python3 tools/cr/base-run.py --shard "${CR_BASE_SHARD:-0/1}" --mem "${QEMU_MEM:-4G}" \
-       ${CR_BASE_ALL:+--all} ${CR_BASE_ONLY:+--only "$CR_BASE_ONLY"} $extra \
+       ${CR_BASE_ALL:+--all} ${CR_BASE_ONLY:+--only "$CR_BASE_ONLY"} ${CR_BASE_ARGS:+--args " $CR_BASE_ARGS"} $extra \
        "$dir/run" "$stick" > "$dir/base-run.out" 2>&1; then
         echo PASS > "$dir/result"
     else

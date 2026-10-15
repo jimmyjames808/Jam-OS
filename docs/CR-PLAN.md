@@ -561,7 +561,7 @@ ninja ran `-j 10`).
 Track CB2, `base_unittests` on Jam OS (CR-b). What is built: the `base`
 case of tools/cr-test.sh, the stick it boots (tools/cr/base-stick.py), the
 driver that runs the tests (tools/cr/base-run.py) and the skip list
-(ports/chromium/files/base_unittests.skip). **What is not done: a complete run.**
+(tools/cr/base_unittests.skip). **What is not done: a complete run.**
 The test PC's budget queue stopped answering after the first partial run
 (six hours of "an older run has waited long enough to go first" with 16
 CPUs held, then "jamos-pc doesn't answer"), so one shard of four was
