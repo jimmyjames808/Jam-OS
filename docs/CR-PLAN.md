@@ -1632,8 +1632,9 @@ Track CP1, programs this big (2026-10-14): section 6's limits raised to
   `FILE_MAX` (a program read from a file) is 1 GiB too. `vmo_verify.c`
   assumed no size beyond its comments.
 - **What verification costs at 1 GiB.** The kernel's table is 32 bytes a
-  page: 262,144 hashes in 2048 buddy pages (8 MiB), listed by a 16 KiB
-  array (one 32 KiB heap block), charged to the job of the caller of
+  page: 262,144 hashes in 2048 buddy pages (8 MiB), listed by 4 pages
+  of addresses (CR1 made the list pages, where it was one 32 KiB heap
+  block, physically contiguous and uncharged), all charged to the job of the caller of
   `vmo_make_exec_verified` (the shell's, or init's for `/svc/exec`) and
   freed with the VMO; the shell keeps up to 8 such VMOs while their
   programs run, so 64 MiB of tables at worst. Starting one also reads the

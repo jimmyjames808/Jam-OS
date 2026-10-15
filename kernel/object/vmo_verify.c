@@ -2,12 +2,14 @@
  * the check of a page against it.
  *
  * The table is kept in whole pages of the buddy allocator (128 hashes
- * each), listed by an array in its header: a program of VMO_VERIFIED_MAX
- * (1 GiB) has a table of 2048 pages (8 MiB) and a 16 KiB array, never one
- * big allocation. It is written once, before the VMO is sealed with it,
- * and only read after, so the check takes no lock: it runs with none held
- * (pager_supply) or under the VMO lock (vmo_pager_publish's second look),
- * and takes nothing itself. */
+ * each), listed by pages of their own (512 addresses each): a program of
+ * VMO_VERIFIED_MAX (1 GiB) has a table of 2048 pages (8 MiB) listed by 4
+ * pages, never one big allocation (no block of several pages that a
+ * fragmented machine may not have), and every page of it charged. It is
+ * written once, before the VMO is sealed with it, and only read after, so
+ * the check takes no lock: it runs with none held (pager_supply) or under
+ * the VMO lock (vmo_pager_publish's second look), and takes nothing
+ * itself. */
 #include <jam/mm.h>
 #include <jam/process.h>
 #include <jam/sha256.h>
@@ -16,43 +18,66 @@
 #include <jam/vmo_verify.h>
 
 #define HASHES_PER_PAGE (PAGE_SIZE / VMO_VERIFIED_HASH_BYTES)   /* 128 */
+#define LIST_PER_PAGE   (PAGE_SIZE / sizeof(uint8_t *))         /* 512 */
+#define TABLE_MAX_PAGES (VMO_VERIFIED_MAX / PAGE_SIZE / HASHES_PER_PAGE)
+#define LIST_MAX        ((TABLE_MAX_PAGES + LIST_PER_PAGE - 1) / LIST_PER_PAGE)   /* 4 */
 _Static_assert(VMO_VERIFIED_HASH_BYTES == SHA256_BYTES, "the table holds SHA-256 digests");
 
 struct vmo_verify {
-    struct job *job;      /* charged a page for each of `npages` (a reference), or NULL */
+    struct job *job;      /* charged a page for each page below (a reference), or NULL */
     uint64_t    pages;    /* pages of the VMO the table covers */
-    uint64_t    npages;   /* pages of hashes in page[] */
-    uint8_t    *page[];   /* each HASHES_PER_PAGE hashes (kernel virtual addresses) */
+    uint64_t    npages;   /* pages of hashes, each HASHES_PER_PAGE of them */
+    /* Hash page i is list[i / LIST_PER_PAGE][i % LIST_PER_PAGE] (kernel
+     * virtual addresses); a page not made yet is NULL. */
+    uint8_t   **list[LIST_MAX];
 };
+
+/* A zeroed page charged to vf's job, or NULL. */
+static void *charged_page(struct vmo_verify *vf)
+{
+    if (job_charge(vf->job, JOB_LIMIT_PAGES, 1) != OK)
+        return NULL;
+    struct page *p = pmm_alloc_pages(0, PMM_ZERO);
+    if (!p) {
+        job_uncharge(vf->job, JOB_LIMIT_PAGES, 1);
+        return NULL;
+    }
+    return page_to_virt(p);
+}
+
+static void charged_free(struct vmo_verify *vf, void *va)
+{
+    pmm_free_pages(virt_to_page(va), 0);
+    job_uncharge(vf->job, JOB_LIMIT_PAGES, 1);
+}
 
 /* Free vf and its pages, uncharging them; pages not yet made are NULL. */
 void vmo_verify_free(struct vmo_verify *vf)
 {
-    uint64_t made = 0;
-    for (uint64_t i = 0; i < vf->npages; i++) {
-        if (vf->page[i]) {
-            pmm_free_pages(virt_to_page(vf->page[i]), 0);
-            made++;
-        }
+    for (uint64_t l = 0; l < LIST_MAX; l++) {
+        if (!vf->list[l])
+            continue;
+        for (uint64_t k = 0; k < LIST_PER_PAGE; k++)
+            if (vf->list[l][k])
+                charged_free(vf, vf->list[l][k]);
+        charged_free(vf, vf->list[l]);
     }
-    job_uncharge(vf->job, JOB_LIMIT_PAGES, made);
     job_unref(vf->job);
     kfree(vf);
 }
 
 /* Page i of the table: a fresh page, charged, filled from table's bytes
- * [i * PAGE_SIZE, i * PAGE_SIZE + len) and zero past them. */
+ * [i * PAGE_SIZE, i * PAGE_SIZE + len) and zero past them; its list page
+ * first if it is the first on it. */
 static status_t copy_page(struct vmo_verify *vf, struct vmo *table, uint64_t i, uint64_t len)
 {
-    if (job_charge(vf->job, JOB_LIMIT_PAGES, 1) != OK)
+    uint8_t ***list = &vf->list[i / LIST_PER_PAGE];
+    if (!*list && !(*list = charged_page(vf)))
         return ERR_NO_MEMORY;
-    struct page *p = pmm_alloc_pages(0, PMM_ZERO);
-    if (!p) {
-        job_uncharge(vf->job, JOB_LIMIT_PAGES, 1);
+    uint8_t **slot = &(*list)[i % LIST_PER_PAGE];
+    if (!(*slot = charged_page(vf)))
         return ERR_NO_MEMORY;
-    }
-    vf->page[i] = page_to_virt(p);   /* vmo_verify_free's from here on */
-    return vmo_read(table, i * PAGE_SIZE, vf->page[i], len);
+    return vmo_read(table, i * PAGE_SIZE, *slot, len);   /* vmo_verify_free's from here on */
 }
 
 status_t vmo_verify_new(struct job *job, struct vmo *table, uint64_t pages,
@@ -63,16 +88,15 @@ status_t vmo_verify_new(struct job *job, struct vmo *table, uint64_t pages,
     uint64_t bytes = pages * VMO_VERIFIED_HASH_BYTES;   /* 8 MiB at most: no overflow */
     if (vmo_size(table) < bytes)
         return ERR_INVALID_ARGS;
-    uint64_t npages = (bytes + PAGE_SIZE - 1) / PAGE_SIZE;
-    struct vmo_verify *vf = kzalloc(sizeof(*vf) + npages * sizeof(vf->page[0]));
+    struct vmo_verify *vf = kzalloc(sizeof(*vf));
     if (!vf)
         return ERR_NO_MEMORY;
     job_ref(job);
     vf->job = job;
     vf->pages = pages;
-    vf->npages = npages;
+    vf->npages = (bytes + PAGE_SIZE - 1) / PAGE_SIZE;   /* TABLE_MAX_PAGES at most */
     status_t st = OK;
-    for (uint64_t i = 0; i < npages && st == OK; i++) {
+    for (uint64_t i = 0; i < vf->npages && st == OK; i++) {
         uint64_t len = bytes - i * PAGE_SIZE < PAGE_SIZE ? bytes - i * PAGE_SIZE : PAGE_SIZE;
         st = copy_page(vf, table, i, len);
     }
@@ -90,7 +114,8 @@ bool vmo_verify_match(const struct vmo_verify *vf, uint64_t idx, const void *pag
         return false;   /* no approved bytes for it */
     uint8_t digest[SHA256_BYTES];
     sha256(page, PAGE_SIZE, digest);
-    const uint8_t *want = vf->page[idx / HASHES_PER_PAGE] +
+    uint64_t i = idx / HASHES_PER_PAGE;
+    const uint8_t *want = vf->list[i / LIST_PER_PAGE][i % LIST_PER_PAGE] +
                           (idx % HASHES_PER_PAGE) * VMO_VERIFIED_HASH_BYTES;
     return memcmp(digest, want, SHA256_BYTES) == 0;
 }
