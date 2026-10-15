@@ -36,9 +36,12 @@ memory or a handle; **Medium** lets one program stall or deny another, or
 a call that gives a wrong answer in a common case; **Low** a narrow case,
 a slow path, or a design point.
 
-**1 High, 2 Medium, 9 Low, 2 notes.** The High and one Medium are design
-questions for the owner (below): reported, not decided. The last column
-says what was done, with the commit and its test.
+**1 High, 2 Medium, 9 Low, 2 notes.** The High and one Medium were design
+questions for the owner (below), reported, not decided; the main session
+then decided both (option A each, by the owner's rule for `/svc/exec`: a
+child gets its own approval only) and track CR2F built them, with the
+tests this review left out. The last column says what was done, with the
+commit and its test.
 
 ## What held up
 
@@ -89,10 +92,10 @@ says what was done, with the commit and its test.
 
 | # | Sev | Where | What is wrong | The failure | Done |
 |---|---|---|---|---|---|
-| 1 | High | `user/services/init/exec.c:349-375` (`relay`), `user/posix/sys/file.c:467` (`file_adopt_fd` keeps a record's path), `file.c:396` (`kind_give` reopens it), `dir.c:342-352`, `procfs.c` (`from_handover`), `spawn.c:429` | `/svc/exec` moves the caller's POSIX hand-over to the child message for message, and the child believes its names: a file record's path, a directory record's path, the current directory and the program's path. The child (its own approval's namespace, which may reach what the caller's can't: the owner's CE1 rule) then resolves them with its own authority: a file it gives to a child of its own is opened again by that path with the record's access mode, a directory is opened by its path, the cwd is a name in its namespace, and `/proc/self/exe` reads and opens the named file | A program with `svc exec` starts an approved `/data` program whose namespace is wider and that runs children with its descriptors (a shell, `make`, `xargs`), giving it descriptor 0 as a file record named `/jam/private` with a channel of its own: the grandchild's stdin is a real open of `/jam/private` made with the child's authority, and what it prints comes back on the caller's pipe. `O_WRONLY` the same way writes there; the cwd sends the child's relative writes into a directory the caller can't write. CU1 refused the same belief for `SCM_RIGHTS` ("a path is only a name in ours") | Not fixed: a design question (Q1 below) |
-| 2 | Medium | `user/posix/sys/fobj.c:57-78` (`jf_map`'s `file_stat_within`), reached from `sockpair.c:314` (`deliver_fds`, the description's lock held) | A file that arrives over a socket is made by the hand-over's adopter, which asks the file's channel for its size and id and waits up to `FS_CALL_TIMEOUT` (60 s) for the answer; the channel is the peer's | A peer that sends a file record whose channel never answers holds the receiver's `recvmsg` 60 s for each such descriptor (253 a message: over 4 hours), `MSG_DONTWAIT` or not, and every other thread on that socket with it: a renderer could freeze the browser's IO thread. Linux never waits here (CU1's note for CR2) | Fixed ea5a7807: a file adopted without its path asks nothing; its size is asked of the service when a call needs it, as for a mount with many writers. No new test (the scm section's kinds, Mojo's pattern and fuzz still pass a file); a test with a server that never answers is left for the owner's call (see the report) |
-| 3 | Medium | `user/services/unix/main.c:129-158` (`on_bind`), `251-260` (`opener_free`), `227-249` (`on_svc_connect`); `abi/idl/unix.idl` | The broker's limits are per opener channel, but it can't tell programs apart: one program may open all 64 opener channels, and a listener outlives its opener channel counted against nobody, so even one channel at a time binds all 128 listeners (bind 32, close the channel, open another). Abstract names are one table, first come | Any program with `svc unix` can take every opener slot (every other program's `bind` is `EACCES`, `connect` `ECONNREFUSED`) or every listener (`ENOBUFS`), and can take any abstract name first, so a listener it doesn't own is never reached (CU2's note; abstract names are global by the decided one-user model) | Not fixed: a design question (Q2 below) |
-| 4 | Low | `user/lib/start.c:197-199` (`take_args`) | `STARTUP_ARGS_MAX - slots` wraps (64-bit) when the header's `argc + envc` is 262,143 or 262,144: `slots` is then past `STARTUP_ARGS_MAX`, and the strings' length is not checked at all | A starter's `SR_ARGS` header can make the child copy up to 4 GiB of strings into its own job's memory, past the 2 MiB limit (the starter is the child's creator, so no authority is gained) | Fixed 82f2687a: the pointers' room checked against the limit first. No new test (the launch section's 503 arguments still pass); malformed `SR_ARGS` VMOs remain untested |
+| 1 | High | `user/services/init/exec.c:349-375` (`relay`), `user/posix/sys/file.c:467` (`file_adopt_fd` keeps a record's path), `file.c:396` (`kind_give` reopens it), `dir.c:342-352`, `procfs.c` (`from_handover`), `spawn.c:429` | `/svc/exec` moves the caller's POSIX hand-over to the child message for message, and the child believes its names: a file record's path, a directory record's path, the current directory and the program's path. The child (its own approval's namespace, which may reach what the caller's can't: the owner's CE1 rule) then resolves them with its own authority: a file it gives to a child of its own is opened again by that path with the record's access mode, a directory is opened by its path, the cwd is a name in its namespace, and `/proc/self/exe` reads and opens the named file | A program with `svc exec` starts an approved `/data` program whose namespace is wider and that runs children with its descriptors (a shell, `make`, `xargs`), giving it descriptor 0 as a file record named `/jam/private` with a channel of its own: the grandchild's stdin is a real open of `/jam/private` made with the child's authority, and what it prints comes back on the caller's pipe. `O_WRONLY` the same way writes there; the cwd sends the child's relative writes into a directory the caller can't write. CU1 refused the same belief for `SCM_RIGHTS` ("a path is only a name in ours") | Decided (Q1: A) and fixed b12ec122 (CR2F): init reads the caller's hand-over and writes the child its own: a file keeps its channel, not its path (usable, `ENOTSUP` to give on), a directory and its duplicates are left out, the cwd is `/`, the program's path the sealed one, and the child is `AT_SECURE`. utest `exec_handover` (posixtest's `--child-launch sealed` checks each) |
+| 2 | Medium | `user/posix/sys/fobj.c:57-78` (`jf_map`'s `file_stat_within`), reached from `sockpair.c:314` (`deliver_fds`, the description's lock held) | A file that arrives over a socket is made by the hand-over's adopter, which asks the file's channel for its size and id and waits up to `FS_CALL_TIMEOUT` (60 s) for the answer; the channel is the peer's | A peer that sends a file record whose channel never answers holds the receiver's `recvmsg` 60 s for each such descriptor (253 a message: over 4 hours), `MSG_DONTWAIT` or not, and every other thread on that socket with it: a renderer could freeze the browser's IO thread. Linux never waits here (CU1's note for CR2) | Fixed ea5a7807: a file adopted without its path asks nothing; its size is asked of the service when a call needs it, as for a mount with many writers. Test (CR2F): posixtest's peer section, a file whose channel never answers received with `MSG_DONTWAIT` comes at once |
+| 3 | Medium | `user/services/unix/main.c:129-158` (`on_bind`), `251-260` (`opener_free`), `227-249` (`on_svc_connect`); `abi/idl/unix.idl` | The broker's limits are per opener channel, but it can't tell programs apart: one program may open all 64 opener channels, and a listener outlives its opener channel counted against nobody, so even one channel at a time binds all 128 listeners (bind 32, close the channel, open another). Abstract names are one table, first come | Any program with `svc unix` can take every opener slot (every other program's `bind` is `EACCES`, `connect` `ECONNREFUSED`) or every listener (`ENOBUFS`), and can take any abstract name first, so a listener it doesn't own is never reached (CU2's note; abstract names are global by the decided one-user model) | Decided (Q2: A) and fixed 7c121328 (CR2F): a program given `/svc/unix` by name holds an opener of its own, made by its starter's grants (libos's ns.c), which makes no more; a listener counts against its opener until it closes, the opener's slot held till then. Abstract names stay one table (later, if a port needs them per session). utest `unix_own`, `unix_limits`; posixtest unix (a child binds 32 at most) |
+| 4 | Low | `user/lib/start.c:197-199` (`take_args`) | `STARTUP_ARGS_MAX - slots` wraps (64-bit) when the header's `argc + envc` is 262,143 or 262,144: `slots` is then past `STARTUP_ARGS_MAX`, and the strings' length is not checked at all | A starter's `SR_ARGS` header can make the child copy up to 4 GiB of strings into its own job's memory, past the 2 MiB limit (the starter is the child's creator, so no authority is gained) | Fixed 82f2687a: the pointers' room checked against the limit first. Test (CR2F): posixtest's launch section, eleven malformed `SR_ARGS` VMOs (this wrap at 262,143 and 262,144 strings among them) each leave the child argc 0 |
 | 5 | Low | `user/posix/sys/unixsock.c:86-91` (`unix_name_out`) | For a path of 108 bytes (no NUL in `sun_path`), `full` is `sizeof(struct sockaddr_un) + 1` and the copy reads one byte past the stack `struct sockaddr_un` | `getsockname` and `accept` of a socket bound to a 108-byte path give a length of 111 and one stray stack byte (Linux gives 110) | Fixed 5b724580. posixtest unix: a 108-byte path's `getsockname` length (111 before) |
 | 6 | Low | `user/posix/sys/sockpair.c:231-234`, `283` | When `calloc` of the description's `sp_fds` fails, `take_part` returns `PART_LAST` with `p->fds` still NULL, and `fill_locked` reads `p->fds->ready` for a stream's empty last part | A NULL dereference in the receiver, only when the heap is short and the peer sends a part with no bytes | Fixed 4c0c0b0a. No test: needs `calloc` to fail at that call |
 | 7 | Low | `user/posix/sys/sockpair.c:676-679` | `send_lock` is held across a blocking send's wait for room | A `MSG_DONTWAIT` (or `O_NONBLOCK`) send on a description waits while another thread's blocking send on it waits for a slow reader; Linux's never does. Mojo sends from one thread, non-blocking | Listed |
@@ -102,8 +105,8 @@ says what was done, with the commit and its test.
 | 11 | Low | `user/posix/sys/procfs.c:553` (`reopen_other`) | `/proc/self/fd/N` of a file opens its path again as the path is now (U6: "paths as written") | After a rename, or a symlink put in its place, the reopen gives another file; Linux's link opens the file the descriptor has | Listed |
 | 12 | Low | `user/posix/sys/file.c:363-376` (`lend_locked`), from `fdpass.c` (`give_one`) | A writable file on a one-writer mount (fat) sent with `SCM_RIGHTS` is lent: the sender's own open is closed until the receiver closes its own (M13's model for children) | A receiver that keeps the file denies the sender writes to its own file (`EBUSY`); Linux shares the open | Listed |
 | 13 | Low | `user/posix/sys/maptable.c:71-77`, `mem.c:149-156` | `mt_vmo_shared` walks the whole table, and `drop_pages` and `mt_remove` call it for each entry an unmap or a `MAP_FIXED` touches | An `munmap` over k of n entries costs k times n: slow for a reservation cut into thousands of pieces (CK2 allows 65,536) | Listed |
-| 14 | Note | `user/posix/sys/prctl.c:106-110`, `user/posix/crt/start.c:148` | `PR_SET_NO_NEW_PRIVS` is accepted and changes nothing, and `AT_SECURE` is always 0, while `/svc/exec` can start a child with more authority than its caller (finding 1's boundary) | A sandbox that sets no-new-privileges expecting an exec never to gain authority is not told; the child can't tell from `AT_SECURE` that its environment came from a less trusted caller | Listed (with Q1) |
-| 15 | Note | `user/services/unix/main.c:192-200` | A listener's waiting connections are charged to the broker's job until accept reads them, at most 64 a listener: 8,192 channel ends for 128 listeners nobody accepts on | One program can make the broker hold that much (bounded); with finding 3 it is the same program | Listed (with Q2) |
+| 14 | Note | `user/posix/sys/prctl.c:106-110`, `user/posix/crt/start.c:148` | `PR_SET_NO_NEW_PRIVS` is accepted and changes nothing, and `AT_SECURE` is always 0, while `/svc/exec` can start a child with more authority than its caller (finding 1's boundary) | A sandbox that sets no-new-privileges expecting an exec never to gain authority is not told; the child can't tell from `AT_SECURE` that its environment came from a less trusted caller | `AT_SECURE` done with Q1 (b12ec122): every `/svc/exec` child is `AT_SECURE` (init can't tell which program calls, so not only one whose approval differs), musl then does what it does on Linux, and the crt drops glibc's unsecure variables (`TMPDIR`, `LD_*`, `NLSPATH`, ...). `PR_SET_NO_NEW_PRIVS` still changes nothing: listed |
+| 15 | Note | `user/services/unix/main.c:192-200` | A listener's waiting connections are charged to the broker's job until accept reads them, at most 64 a listener: 8,192 channel ends for 128 listeners nobody accepts on | One program can make the broker hold that much (bounded); with finding 3 it is the same program | Listed; with Q2's answer one program reaches it only by holding 32 listeners and filling their backlogs (2,048 ends), or through many children (below) |
 
 ## Questions for the owner
 
@@ -135,6 +138,25 @@ variables naming files (`FONTCONFIG_FILE`, `TMPDIR`) are the same kind of
 name, smaller; `AT_SECURE` 1 for such a child would let libraries that
 check it ignore them.
 
+**Decided: (A), with `AT_SECURE`** (built by CR2F, b12ec122). init's relay
+is now a rewrite (user/services/init/exec.c, "the hand-over"); the
+hand-over's first message carries a new flag, `POSIXFDS_SECURE`, which the
+crt turns into `AT_SECURE` 1, and a POSIX child gets a hand-over even when
+its caller wrote none, for the flag. Every `/svc/exec` child is marked, not
+only one whose approval differs from its caller's: an opener is anyone's,
+so init can't tell which program calls (option C's work, or a per-program
+`/svc/exec` channel its starter labels, would let it). What `AT_SECURE`
+does: musl's own (`secure_getenv` and `issetugid`, no `NLSPATH`,
+`MUSL_LOCPATH` or TZ file but `/etc/localtime`, descriptors 0 to 2 opened
+on `/dev/null` if closed) and, as glibc does for a set-user-ID program,
+the crt leaves glibc's unsecure variables out of the environment
+(`TMPDIR`, `TZDIR`, `LOCPATH`, `LD_*`, `NLSPATH`, `HOSTALIASES`,
+`RES_OPTIONS`, ...). `FONTCONFIG_FILE` is kept: glibc keeps it, and fonts
+may need it (G2-PLAN section 10). **(C), names as objects, is later**: a
+`/svc/exec` child that must inherit a working directory or give a
+redirected file on to its own children (a `make`) needs it; until then
+such a child starts at `/` and its files can't be given on (`ENOTSUP`).
+
 **Q2 (finding 3): how should `/svc/unix` count a program?** The broker sees
 opener channels, not programs. Options: (A) init gives each program its
 own opener channel when it publishes `/svc/unix` in that program's
@@ -148,10 +170,43 @@ all). Abstract names per session would need the session in the opener
 matter only to ports that use them. My recommendation: (A), and abstract
 names stay global until a port needs them per session.
 
+**Decided: (A)** (built by CR2F, 7c121328). The one place a namespace is
+sent for every starter is libos's grants (user/lib/ns.c), so that is where
+it is done: a grant that names `/svc/unix` (a list's `svc unix`) sends a
+channel made with `svc.connect` on the starter's own, marked as handing
+out no more (`connect` 0); `"*"` still sends the starter's channel as it
+is. So init (the init run's programs, `/svc/exec`'s children), the shell
+(programs from `/data` and the boot image) and any program giving a child
+a named grant each give it an opener of its own; a program holds no
+channel that makes openers, and its children given its namespace whole
+share its one. The broker keeps an opener's slot while any listener bound
+through it lives (unix.idl, "Counted per program"). Left as they are:
+abstract names are one table for everyone (per session later, if a port
+needs it); a program with `svc exec` can still take every opener slot by
+keeping 64 approved children with `svc unix` alive (each its own opener,
+each in its job, killed with it); a program with an opener of its own has
+no `/svc/unix` after the broker restarts (shell mode), until it is started
+again (a holder of the shared channel opens it again).
+
 ## Tests
 
-Added: posixtest unix's 108-byte path (finding 5). Not written in this
-review: the fuzz loop between two processes the CR2 row asks for, a test
-for finding 2 (a file whose server never answers) and malformed `SR_ARGS`
-VMOs for finding 4; the existing scm section's in-process fuzz (10,000
-rounds) still covers the socketpair framing.
+Added by this review: posixtest unix's 108-byte path (finding 5). The
+review left out the fuzz loop between two processes the CR2 row asks for,
+a test for finding 2 (a file whose server never answers) and malformed
+`SR_ARGS` VMOs for finding 4; CR2F wrote them:
+
+- posixtest's **peer** section (peer.c, in the init run): a receiver child
+  in a job of its own takes 400 socketpair ends (over a control
+  socketpair) and 150 connections through `/svc/unix`, each written by us
+  with the scm fuzz's mutated messages (random descriptor counts and kinds,
+  handles of any kind, cut short, junk) and closed; it must never be
+  killed, never wait past its deadlines (a `recvmsg` with `MSG_DONTWAIT`
+  1 s, a closed end's poll 10 s) and end with the handles and lowest free
+  descriptor it had after the first round. A fixed seed, printed. Then
+  finding 2's case: a file whose channel never answers, received with
+  `MSG_DONTWAIT`, arrives at once.
+- posixtest's **launch** section: eleven malformed `SR_ARGS` VMOs (bad
+  magic and version, strings past the VMO, finding 4's wrap, a path
+  without its NUL, ...), each child argc 0, never killed.
+- utest **exec_handover** (Q1) and **unix_own**, **unix_limits** and
+  posixtest unix's child with its own opener (Q2).
