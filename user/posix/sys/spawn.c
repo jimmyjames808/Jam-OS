@@ -190,16 +190,16 @@ static long program(const char *abs, struct program *p)
             return 0;
         return -ENOENT;
     }
+    long e = path_program(abs, name);   /* its links followed; no execute bit: EACCES */
+    if (e)
+        return e;
     bool dir;
-    status_t st = fs_stat(abs, NULL, &dir, NULL);
+    status_t st = fs_stat(name, NULL, &dir, NULL);
     if (st == ERR_NOT_FOUND || st == ERR_NOT_DIR)
         return st == ERR_NOT_FOUND ? -ENOENT : -ENOTDIR;
     if (st != OK || dir)
         return -EACCES;
-    long e = file_program(abs, &p->sealed, &p->handover);
-    if (!e)
-        strcpy(name, abs);   /* fits: both are PATH_MAX */
-    return e;
+    return file_program(name, &p->sealed, &p->handover);
 }
 
 /* The program for r into *prog: its path, or its name looked up in
