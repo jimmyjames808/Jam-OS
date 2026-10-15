@@ -157,8 +157,9 @@ static bool path_ok(uint32_t len, uint32_t n, uint32_t *at)
 static bool header_ok(const struct posixfds_msg *m, uint32_t n, uint32_t nh, uint16_t seq,
                       uint32_t *at)
 {
+    uint16_t may = (uint16_t)(POSIXFDS_LAST | (seq ? 0u : POSIXFDS_SECURE));
     if (n < sizeof(*m) || m->txid || m->magic != POSIXFDS_MAGIC ||
-        m->version != POSIXFDS_VERSION || (m->flags & ~POSIXFDS_LAST) || m->seq != seq ||
+        m->version != POSIXFDS_VERSION || (m->flags & ~may) || m->seq != seq ||
         m->nhandles != nh || m->reserved)
         return false;
     *at = sizeof(*m);
@@ -225,6 +226,7 @@ static void begin_msg(const struct posixfds_out *out, uint16_t seq, uint32_t *n)
     struct posixfds_msg m = { .magic = POSIXFDS_MAGIC, .version = POSIXFDS_VERSION, .seq = seq };
     *n = sizeof(m);
     if (!seq) {
+        m.flags = out->secure ? (uint16_t)POSIXFDS_SECURE : 0;
         m.state = out->state;
         m.cwd_len = add_string(out->cwd, n);
         if (out->exe)
@@ -401,10 +403,11 @@ static status_t deliver(const struct posixfds_sink *sink)
 }
 
 /* The messages from the first to the last, each checked then delivered;
- * the first's state, directory and program's path (empty: none) into
- * *state, cwd and exe. */
+ * the first's state, directory, program's path (empty: none) and secure
+ * mark into *state, cwd, exe and *secure. */
 static status_t read_all(handle_t ch, const struct posixfds_sink *sink,
-                         struct posixfds_state *state, char *cwd, char *exe, bool *given)
+                         struct posixfds_state *state, char *cwd, char *exe, bool *secure,
+                         bool *given)
 {
     for (uint16_t seq = 0;; seq++) {
         uint32_t n, nh;
@@ -422,6 +425,7 @@ static status_t read_all(handle_t ch, const struct posixfds_sink *sink,
         }
         if (seq == 0) {
             *state = m->state;
+            *secure = m->flags & POSIXFDS_SECURE;
             memcpy(cwd, buf + sizeof(*m), m->cwd_len);
             exe[0] = '\0';
             if (m->exe_len)
@@ -441,10 +445,10 @@ status_t posixfds_read(handle_t ch, const struct posixfds_sink *sink,
 {
     struct posixfds_state s;
     static char dir[POSIXFDS_PATH_MAX], exe[POSIXFDS_PATH_MAX];   /* under buf_lock */
-    bool given = false;
+    bool given = false, secure = false;
     lock_take(&buf_lock);
     memset(seen, 0, sizeof(seen));
-    status_t st = read_all(ch, sink, &s, dir, exe, &given);
+    status_t st = read_all(ch, sink, &s, dir, exe, &secure, &given);
     if (st != OK && st != ERR_NOT_FOUND) {
         if (given)
             sink->reset(sink->ctx);
@@ -455,6 +459,8 @@ status_t posixfds_read(handle_t ch, const struct posixfds_sink *sink,
         memcpy(cwd, dir, strnlen(dir, POSIXFDS_PATH_MAX - 1) + 1);
         if (exe[0] && sink->exe)
             sink->exe(sink->ctx, exe);
+        if (secure && sink->secure)
+            sink->secure(sink->ctx);
     }
     lock_give(&buf_lock);
     return st;

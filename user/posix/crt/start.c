@@ -21,7 +21,13 @@
  *      AT_PHDR/AT_PHENT/AT_PHNUM (the program headers, which
  *      user/posix/posix.ld maps, so musl's __init_tls finds PT_TLS),
  *      AT_ENTRY, the user and group ids (the one user's, 1000) and
- *      AT_SECURE 0.
+ *      AT_SECURE: 1 if the hand-over says so (POSIXFDS_SECURE: init's
+ *      /svc/exec, for a program another program started), else 0. Such
+ *      a program's environment loses the variables glibc drops for a
+ *      set-user-ID program (unsecure_vars), and musl does the rest as on
+ *      Linux: secure_getenv says NULL, no locale or message catalogue
+ *      path from the environment, no TZ file but /etc/localtime, and
+ *      descriptors 0 to 2 opened on /dev/null if they are closed.
  *   4. musl's __libc_start_main, unmodified: TLS, the thread pointer,
  *      the init functions, main, exit.
  *
@@ -47,6 +53,7 @@ static struct posixfds_state ho_state;
 static char ho_cwd[POSIXFDS_PATH_MAX];
 static char ho_exe[POSIXFDS_PATH_MAX];   /* the program's path, if named; else empty */
 static bool ho_given;
+static bool ho_secure;                   /* the hand-over says AT_SECURE */
 static uint8_t at_random[16];
 static char tz_env[80] = "TZ=";
 
@@ -92,6 +99,35 @@ static void sink_reset(void *ctx)
     fd_stage_reset();
 }
 
+static void sink_secure(void *ctx)
+{
+    (void)ctx;
+    ho_secure = true;
+}
+
+/* What a program started AT_SECURE leaves out of its environment: the
+ * variables glibc drops for a set-user-ID program (its unsecvars.h), and
+ * musl's locale path. Each names files or libraries a less trusted
+ * starter could point the program at. */
+static const char *const unsecure_vars[] = {
+    "GCONV_PATH", "GETCONF_DIR", "GLIBC_TUNABLES", "HOSTALIASES", "LD_AUDIT", "LD_DEBUG",
+    "LD_DEBUG_OUTPUT", "LD_DYNAMIC_WEAK", "LD_HWCAP_MASK", "LD_LIBRARY_PATH", "LD_ORIGIN_PATH",
+    "LD_PRELOAD", "LD_PROFILE", "LD_SHOW_AUXV", "LD_USE_LOAD_BIAS", "LOCALDOMAIN", "LOCPATH",
+    "MALLOC_TRACE", "MUSL_LOCPATH", "NIS_PATH", "NLSPATH", "RESOLV_HOST_CONF", "RES_OPTIONS",
+    "TMPDIR", "TZDIR",
+};
+
+/* Is the environment string e ("NAME=value") one of unsecure_vars? */
+static bool unsecure(const char *e)
+{
+    for (unsigned i = 0; i < sizeof(unsecure_vars) / sizeof(unsecure_vars[0]); i++) {
+        size_t l = strlen(unsecure_vars[i]);
+        if (!strncmp(e, unsecure_vars[i], l) && e[l] == '=')
+            return true;
+    }
+    return false;
+}
+
 /* "posix: <what> (<status>)\n" in the log, without printf. */
 static void say(const char *what, status_t st)
 {
@@ -103,7 +139,7 @@ static void say(const char *what, status_t st)
 /* Step 2: the hand-over, or the default descriptors. */
 static void take_handover(void)
 {
-    const struct posixfds_sink sink = { NULL, sink_fd, sink_reset, sink_exe };
+    const struct posixfds_sink sink = { NULL, sink_fd, sink_reset, sink_exe, sink_secure };
     status_t st = posixfds_read(startup_channel(), &sink, &ho_state, ho_cwd);
     if (st == ERR_NOT_FOUND) {
         fd_stage_default();
@@ -145,7 +181,7 @@ static unsigned fill_aux(long *aux)
         { AT_PHNUM, eh->e_phnum },
         { AT_ENTRY, (long)eh->e_entry },
         { AT_UID, ONE_USER }, { AT_EUID, ONE_USER }, { AT_GID, ONE_USER }, { AT_EGID, ONE_USER },
-        { AT_SECURE, 0 },
+        { AT_SECURE, ho_secure },
         { AT_NULL, 0 },
     };
     _Static_assert(sizeof(pairs) / sizeof(pairs[0]) <= AUX_MAX, "auxv fits");
@@ -193,7 +229,8 @@ _Noreturn void __jam_start(unsigned ch, int (*main)(), void (*init)(void), void 
     for (int i = 0; i <= argc; i++)   /* argv and its NULL */
         block[n++] = (long)(uintptr_t)argv[i];
     for (size_t i = 0; i < envc; i++)
-        block[n++] = (long)(uintptr_t)envp[i];
+        if (!ho_secure || !unsecure(envp[i]))
+            block[n++] = (long)(uintptr_t)envp[i];
     if (!has_tz(envp)) {
         tz_posix(tz_env + 3, sizeof(tz_env) - 3);
         block[n++] = (long)(uintptr_t)tz_env;
