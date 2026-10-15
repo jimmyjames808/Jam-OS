@@ -323,6 +323,7 @@ comment saying why it is safe.
 | `ERR_TIMED_OUT` / `ERR_CANCELED` | deadline passed / thread or wait cancelled |
 | `ERR_INTERRUPTED` | an interruptible wait ended by `thread_interrupt` (`EINTR`) |
 | `ERR_LINK_OUT` | a filesystem path leads through a link out of the service's view (`fs.resolve` says where; libc continues it, `ELOOP` is libc's count) |
+| `ERR_LINK_LOOP` | a filesystem path follows more than 40 symbolic links in one walk (`ELOOP`) |
 | `ERR_NOT_DIR` / `ERR_IS_DIR` / `ERR_NOT_EMPTY` / `ERR_NAME_TOO_LONG` / `ERR_BUSY` | a filesystem's answers, one POSIX errno each |
 | `ERR_IO` / `ERR_NO_SPACE` / `ERR_ALREADY_EXISTS` | the device failed the request / the medium is full / the name is taken |
 | `ERR_NOT_SUPPORTED` / `ERR_NOT_FOUND` | not implemented or not allowed by design / no such thing |

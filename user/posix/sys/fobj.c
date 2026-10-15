@@ -27,6 +27,16 @@
  * child writing one file at once needs the file protocol's shared cursor
  * (M13 Q5's (B)), and so does a shared offset (each moves its own here).
  *
+ * A mount whose files may have many writers (fs.statfs's
+ * FS_FEAT_MULTI_WRITER: extfs) needs none of that: ERR_BUSY never comes,
+ * a child given a writable file opens its own beside ours (nothing lent),
+ * the file's size is the service's (another process may write it), and
+ * O_APPEND is the service's FS_APPEND, exact across processes: an
+ * O_APPEND description has an object of its own opened so (`append`),
+ * shared with the other O_APPEND descriptions of the file here. Objects
+ * are still one per file here (and per FS_APPEND): extfs serves a few
+ * dozen opens in all.
+ *
  * Lock order: a description's lock, then its object's lock, then
  * objs_lock (never held across a call to the service). */
 #include <stdlib.h>
@@ -67,11 +77,12 @@ static status_t jf_map(handle_t ch, handle_t buf, uint32_t ff, struct jfile *jf,
     return st;
 }
 
-/* The object for mount m and id, or NULL. objs_lock. */
-static struct fobj *find_locked(const char *m, uint64_t id)
+/* The object for mount m and id (opened FS_APPEND or not), or NULL.
+ * objs_lock. */
+static struct fobj *find_locked(const char *m, uint64_t id, bool append)
 {
     for (struct fobj *o = objs; o; o = o->next)
-        if (o->id == id && !strcmp(o->mount, m) && m[0])
+        if (o->id == id && o->append == append && !strcmp(o->mount, m) && m[0])
             return o;
     return NULL;
 }
@@ -81,7 +92,7 @@ static struct fobj *find_locked(const char *m, uint64_t id)
 static void settle(struct fobj *fresh, struct fobj **out)
 {
     lock_take(&objs_lock);
-    struct fobj *o = find_locked(fresh->mount, fresh->id);
+    struct fobj *o = find_locked(fresh->mount, fresh->id, fresh->append);
     bool share = o && ((o->jf.flags & FS_WRITE) || (o->lent && (o->lent_flags & FS_WRITE)) ||
                        !(fresh->jf.flags & FS_WRITE));
     if (share) {
@@ -99,8 +110,10 @@ static void settle(struct fobj *fresh, struct fobj **out)
     *out = fresh;
 }
 
-/* A new object around an open (consumed) of p's mount; m: its mount. */
-static long fresh_obj(handle_t ch, handle_t buf, uint32_t ff, const char *m, struct fobj **out)
+/* A new object around an open (consumed) with ff of a file on mount m,
+ * whose FS_FEAT_* are features. */
+static long fresh_obj(handle_t ch, handle_t buf, uint32_t ff, const char *m, uint32_t features,
+                      struct fobj **out)
 {
     struct fobj *o = calloc(1, sizeof(*o));
     if (!o) {
@@ -114,13 +127,18 @@ static long fresh_obj(handle_t ch, handle_t buf, uint32_t ff, const char *m, str
         return lx_err(st);
     }
     o->refs = 1;
+    o->multi = (features & FS_FEAT_MULTI_WRITER) != 0;
+    o->append = o->multi && (ff & FS_APPEND);
+    o->attrs = (features & FS_FEAT_MODES) != 0;
     memcpy(o->mount, m, strlen(m) + 1);
     settle(o, out);
     return 0;
 }
 
-/* fs.open of p with ff; *ch and *buf on success. */
-static status_t open_raw(const struct path *p, uint32_t ff, handle_t *ch, handle_t *buf)
+/* fs.open of p with ff and mode (a new file's bits); *ch and *buf on
+ * success. */
+static status_t open_raw(const struct path *p, uint32_t ff, uint32_t mode, handle_t *ch,
+                         handle_t *buf)
 {
     handle_t fs;
     uint64_t size;
@@ -128,8 +146,7 @@ static status_t open_raw(const struct path *p, uint32_t ff, handle_t *ch, handle
         return ERR_NOT_FOUND;
     uint32_t len;
     const char *rel = path_rel(p, &len);
-    status_t st = fs_open_within(fs, FILE_TIMEOUT, rel, len, ff, FS_MODE_FILE_DEFAULT, ch, buf,
-                                 &size);
+    status_t st = fs_open_within(fs, FILE_TIMEOUT, rel, len, ff, mode, ch, buf, &size);
     jam_handle_close(fs);
     return st;
 }
@@ -138,7 +155,7 @@ status_t fobj_open_settled(const struct path *p, uint32_t ff, handle_t *ch, hand
 {
     uint64_t end = now() + SETTLE_NS;
     for (;;) {
-        status_t st = open_raw(p, ff, ch, buf);
+        status_t st = open_raw(p, ff, FS_MODE_FILE_DEFAULT, ch, buf);
         if (st != ERR_BUSY || !(ff & FS_WRITE) || now() >= end)
             return st;
         (void)jam_sleep_until(now() + SETTLE_NAP);   /* a signal's interrupt: one try sooner */
@@ -161,7 +178,7 @@ static struct fobj *ours(const struct path *p)
         return NULL;
     mount_of(p, m);
     lock_take(&objs_lock);
-    struct fobj *o = find_locked(m, i.id);
+    struct fobj *o = find_locked(m, i.id, false);
     if (o)
         o->refs++;
     lock_give(&objs_lock);
@@ -182,7 +199,7 @@ static status_t upgrade_locked(struct fobj *o, const struct path *p, uint32_t ff
         o->size = size;
         return OK;
     }
-    if (open_raw(p, FS_READ, &ch, &buf) == OK)   /* back as it was, if it can be */
+    if (open_raw(p, FS_READ, FS_MODE_FILE_DEFAULT, &ch, &buf) == OK)   /* back as it was, if it can be */
         (void)jf_map(ch, buf, FS_READ, &o->jf, &size, &id);
     return st;
 }
@@ -210,27 +227,35 @@ static long busy(const struct path *p, uint32_t ff, struct fobj **out)
     return 0;
 }
 
-long fobj_open(const struct path *p, uint32_t ff, struct fobj **out)
+long fobj_open(const struct path *p, uint32_t ff, uint32_t mode, struct fobj **out)
 {
     handle_t ch, buf;
-    status_t st = open_raw(p, ff, &ch, &buf);
+    uint32_t features = path_features(p);
+    if (!(features & FS_FEAT_MULTI_WRITER))
+        ff &= ~(uint32_t)FS_APPEND;   /* one writer: the layer appends (above) */
+    if (!p->links)
+        ff &= ~(uint32_t)FS_NOFOLLOW;
+    status_t st = open_raw(p, ff, mode, &ch, &buf);
     if (st == ERR_BUSY && (ff & FS_WRITE))
         return busy(p, ff, out);
     if (st != OK)
-        return (ff & (FS_WRITE | FS_CREATE | FS_TRUNCATE)) ? path_err(p, st)
-                                                          : path_err_read(p, st);
+        return (ff & (FS_WRITE | FS_APPEND | FS_CREATE | FS_TRUNCATE)) ? path_err(p, st)
+                                                                       : path_err_read(p, st);
     char m[NS_NAME_MAX];
     mount_of(p, m);
-    return fresh_obj(ch, buf, ff, m, out);
+    return fresh_obj(ch, buf, ff, m, features, out);
 }
 
 long fobj_adopt(handle_t ch, handle_t buf, uint32_t ff, const char *path, struct fobj **out)
 {
     struct path p;
     char m[NS_NAME_MAX] = "";
-    if (path && !path_set(path, &p) && p.where == PATH_MOUNT)
+    uint32_t features = 0;
+    if (path && !path_set(path, &p) && p.where == PATH_MOUNT) {
         mount_of(&p, m);
-    return fresh_obj(ch, buf, ff, m, out);
+        features = path_features(&p);
+    }
+    return fresh_obj(ch, buf, ff, m, features, out);
 }
 
 void fobj_lend_locked(struct fobj *o)

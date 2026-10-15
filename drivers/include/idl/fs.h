@@ -20,7 +20,7 @@
  * method says), ERR_LINK_OUT (a filesystem with symbolic links: the path
  * leads through a link the service does not follow, or above the view's
  * root; the method changed nothing, and `resolve` says where the path
- * goes on).
+ * goes on), ERR_LINK_LOOP (more than 40 symbolic links in one walk: a loop).
  * Format: see tools/genidl.py.
  *
  * Restart: fat's restart is not seen (ARCHITECTURE.md, "Services that

@@ -317,6 +317,7 @@ const char *status_str(status_t s)
     case ERR_BUSY:             return "ERR_BUSY";
     case ERR_INTERRUPTED:      return "ERR_INTERRUPTED";
     case ERR_LINK_OUT:         return "ERR_LINK_OUT";
+    case ERR_LINK_LOOP:        return "ERR_LINK_LOOP";
     default:                   return "ERR_?";
     }
 }

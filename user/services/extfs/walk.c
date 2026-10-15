@@ -213,7 +213,7 @@ status_t walk(const struct xf_ctx *c, const char *path, uint32_t len, uint32_t f
         w->found = true;
         if (is_link(&w->in) && (!last || trailing || !(flags & W_NOFOLLOW))) {
             if (++links > XF_LINKS_MAX)
-                return ERR_OUT_OF_RANGE;   /* a loop: libc's ELOOP */
+                return ERR_LINK_LOOP;   /* a loop: ELOOP */
             size_t tlen = 0;
             st = ext_readlink(fs, &w->in, target, FS_PATH_LEN, &tlen);
             if (st == ERR_BUFFER_TOO_SMALL)

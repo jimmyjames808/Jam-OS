@@ -133,7 +133,7 @@ static bool t_basics(void)
     CHECK_ST((status_t)old, ERR_NOT_SUPPORTED);
     CHECK_ST(jam_object_wait_one(e, SIG_USER_ALL, 0, &seen), OK);
     CHECK_EQ(seen & SIG_USER_ALL, 1u << 24);   /* bit 25 was never set */
-    for (status_t s = OK; s >= ERR_LINK_OUT; s--)   /* every status named in libos too */
+    for (status_t s = OK; s >= ERR_LINK_LOOP; s--)   /* every status named in libos too */
         CHECK(strcmp(status_str(s), "?") != 0);
     CHECK(!strcmp(status_str(ERR_NAME_TOO_LONG), "ERR_NAME_TOO_LONG"));
     CHECK(!strcmp(status_str(ERR_INTERRUPTED), "ERR_INTERRUPTED"));
@@ -757,6 +757,7 @@ static const struct {
     { "extfs_restart_handles", t_extfs_restart_handles },
     { "extfs_restart_bad", t_extfs_restart_bad },
     { "extfs_spare", t_extfs_spare },
+    { "extfs_posix", t_extfs_posix },
     { "view_keys_names", t_view_keys_names },
     { "fat_view_keys", t_fat_view_keys },
     { "view_hides_names", t_view_hides_names },
