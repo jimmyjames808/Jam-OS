@@ -28,11 +28,10 @@
 #         progress line, the peak memory so far; at the end its result,
 #         time, peak memory and disk
 # wait    status, after waiting up to <seconds> (270) for the build to end.
-#         Keep one running for the whole build (a background
-#         `tools/remote-test.sh tools/cr/build.sh wait 36000`): WSL ends every
-#         process of the user's once their last session closes (seen
-#         2026-10-15: a build killed whenever no remote-test call was open)
-#         unless the machine runs other agents' tests meanwhile
+#         WSL 2.4 ends every process a session started when that session
+#         ends (seen 2026-10-15), so `start` hands the build to the keeper
+#         (tools/pc-keeper.sh, run at startup by the Windows task "Jam OS
+#         WSL keep-alive"); with no keeper, keep a `wait 36000` connected
 # stop    ends the running build (its session: nothing else is touched)
 # pkgs    the pkg-config packages GN asks for with the kept tree's args.gn
 #         (each one a system library the sysroot would need)
@@ -176,7 +175,10 @@ start)
     # Older runs' copies go (their logs and figures stay).
     ls -1d "$cr"/runs/[0-9]*/checkout 2> /dev/null | head -n -3 | xargs -r rm -rf
     echo "cr-build: run $(basename "$r"): claiming $jobs CPUs and $((mem / 1024)) GB, log $r/build.log"
-    JAMOS_REMOTE_LABEL="Chromium build" python3 "$here/tools/remote-slots.py" --detach "$r/build.log" \
+    # Through the keeper (tools/pc-keeper.sh) when it runs, so the build
+    # outlives this session; tools/pc-detach.sh falls back to a plain start.
+    JAMOS_REMOTE_LABEL="Chromium build" "$here/tools/pc-detach.sh" "$r/start.log" \
+        python3 "$here/tools/remote-slots.py" --detach "$r/build.log" \
         "$jobs" "$mem" "$r/checkout/tools/cr/build.sh" run "$r" || exit 2
     ;;
 run) run "$1" ;;
