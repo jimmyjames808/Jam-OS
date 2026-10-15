@@ -327,7 +327,12 @@ static status_t copy_tree(struct inst *in, const char *src, const char *dst, uns
     return st;
 }
 
-/* Step 3: /data/etc onto the new disk's data partition. */
+/* Step 3: /data/etc onto the new disk's data partition. This file names no
+ * filesystem for it: the format is volumes' (volinstall.prepare formats
+ * both partitions, prepare.c's `fresh` with fs_format_arg, the service
+ * FAT_PATH), and everything here goes through the generic fs calls on the
+ * channel open_data gives (FS_GATHER is only a hint). Switching the data
+ * partition to ext is volumes' change, in that one place. */
 static status_t copy_etc(struct inst *in)
 {
     status_t st = open_part(in, 1, DATA_LIMIT);
