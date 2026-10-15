@@ -595,7 +595,7 @@ triaged and the rest never ran. The findings below are that shard's.
 - **Seen so far.** The program starts and runs: `StringUtilTest.*` passes
   54 of 54 in 75 ms, and `--gtest_list_tests` prints 9,816 lines (suites and
 tests). In the one triaged shard
-  (143 suites, 1,885 tests) 1,280 passed, 10 skipped, 61 failed and 44
+  (144 suites, 1,885 tests) 1,280 passed, 10 skipped, 61 failed and 44
   crashed; 490 never ran in the 8 rounds the first driver allowed (each
   round skipped one crasher per suite; the driver now runs what has no
   result a few tests to a program, simulated only). There is no `/tmp`

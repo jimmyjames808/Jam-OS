@@ -5,7 +5,7 @@
 # `base` PASS means every other test passed.
 #
 # SEEDED FROM ONE SHARD ONLY. The first run (2026-10-15, shard 0 of 4 of the
-# suites, 143 suites, 1885 tests) is all that has been triaged: the other
+# suites, 144 suites, 1885 tests) is all that has been triaged: the other
 # shards hung or never started (the test PC's queue stopped answering), so
 # this list is a start, not the whole list, and a full `base` run will name
 # more. The layer is the track that owns the fix (docs/CR-PLAN.md); "?" in
