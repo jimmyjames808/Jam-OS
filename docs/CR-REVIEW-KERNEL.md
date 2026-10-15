@@ -35,7 +35,8 @@ meet, or a cost a program can push onto every other one; **Low** is a
 wart, a mismatch with the documented contract that nothing relies on
 yet, or a cost only a holder of a power pays.
 
-Counts: **0 High, 2 Medium, 3 Low, 4 notes.**
+Counts: **0 High, 3 Medium, 3 Low, 4 notes** (finding 10 came from the
+hostile tests, after the rest).
 
 Host checks first, on f3255c61: CK2's model of `kernel/mm/aspace.c`
 (the real file, built for the Mac's x86-64 emulation) ported to CK3's
@@ -57,6 +58,7 @@ functions it copied from `kernel/object/vmo.c` are unchanged since.
 | 7 | Note | `kernel/mm/aspace.c:1220` (aspace_map) | `PROCESS_FLAG_JIT` is set for any mapping of a JIT VMO, also through a handle without `RIGHT_EXEC` (or without write), and a moment after the mapping exists (after the region lock). Errs on the side of marking. | | No change. |
 | 8 | Note | `kernel/mm/aspace.c:1250` (protect_span) against `kernel/include/jam/aspace.h:81` | For a W+X protect over a gap followed by a mapping that isn't JIT memory the answer is `ERR_NOT_FOUND`; the header lists `ERR_INVALID_ARGS` first. Either refuses. | | No change. |
 | 9 | Note | `kernel/object/vmo.c:2450` (vmo_pin_flags) | A JIT VMO may be pinned for a device (a driver holding a JIT handle with the pin rights can let a device write code into it). Not a new power: that handle writes the memory anyway. For CJR to judge. | | Design question 2. |
+| 10 | Medium | `kernel/mm/aspace.c:431` (pt_prepare's refusal) with walk_one (`kernel/mm/aspace.c:477`) | Found by the hostile TiB test at 8 CPUs, after the list above. When the job refuses a page table, the PDPT and PD pt_prepare made for it on the way stay, empty and charged ("freed by unmap/destroy", says the comment), but no walk ever frees them: walk_one lets a PD go only after a PT under it went, and a PDPT only after a PD. So they stay charged to the job until the process dies, two pages for every 1 GiB region a fault was refused in: a program near its limit (a renderer under memory pressure) loses them for good. | A job one page short: fault a fresh GiB, `ERR_NO_MEMORY`, then unmap everything: `aspace_pt_pages` is still 2. | To fix: pt_prepare takes back what it made when it is refused (through a shootdown, as table_drop's tables). |
 
 ## Design questions
 
