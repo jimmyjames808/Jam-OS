@@ -6,7 +6,8 @@
  *     thread or another, writes nothing; a new number writes a line; a
  *     number with no name, and a negative one, are still lines;
  *   - an option (the layer's own hook), an ioctl request nothing
- *     understands and a path are each logged once; the terminal probes
+ *     understands, a path and a library dlopen() was asked for (it always
+ *     fails: a static program) are each logged once; the terminal probes
  *     (isatty) are not gaps;
  *   - the table is bounded: after 256 different gaps one line says so and
  *     no more are made;
@@ -20,6 +21,7 @@
  * serial log hold "enosys: posixtest: syscall 163 (acct)". */
 #include <stdio.h>
 #include <stdlib.h>
+#include <dlfcn.h>
 #include <errno.h>
 #include <pthread.h>
 #include <spawn.h>
@@ -130,6 +132,17 @@ static void check_other_gaps(void)
     CHECK(lx_enosys_lines() == n0 + 2);
     lx_enosys_last(last, sizeof(last));
     CHECK(ends_with(last, ": path /proc/meminfo\n"));
+
+    /* dlopen: fails (a static program), and the library is a gap, once. */
+    n0 = lx_enosys_lines();
+    CHECK(dlopen("libjam-test.so.1", RTLD_NOW) == NULL);
+    CHECK(dlopen("libjam-test.so.1", RTLD_NOW) == NULL);
+    CHECK(dlerror() != NULL);
+    CHECK(lx_enosys_lines() == n0 + 1);
+    lx_enosys_last(last, sizeof(last));
+    CHECK(ends_with(last, ": dlopen libjam-test.so.1\n"));
+    CHECK(dlopen(NULL, RTLD_NOW) == NULL);
+    CHECK(lx_enosys_lines() == n0 + 2);
 
     /* ioctl: through the descriptor table, on a pipe, which understands none. */
     int p[2];
