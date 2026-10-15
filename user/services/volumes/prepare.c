@@ -127,7 +127,7 @@ static bool mounted_rw(const struct disk *d)
 }
 
 /* What d's driver found the drive to be (storage.mode), asked in the task. */
-static status_t driver_mode(struct disk *d, uint8_t *mode, uint8_t *ro, uint8_t *readable)
+status_t driver_mode(struct disk *d, uint8_t *mode, uint8_t *ro, uint8_t *readable)
 {
     struct call c;
     call_begin(&c, d->ch);

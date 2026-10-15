@@ -21,7 +21,8 @@ struct op {
     struct idl_txn txn;      /* where the answer goes: a duplicate of the channel (0: nowhere) */
     struct vol    *b;        /* remount, the ESP: its filesystem service */
     bool           writable; /* ... made writable (or read-only) */
-    uint32_t       id;       /* release_disk, digest, health, the prepares: the disk */
+    uint32_t       id;       /* release_disk, digest, health, the prepares, the installer's: the disk */
+    unsigned       part;     /* the installer's: PART_ESP or PART_DATA */
     uint64_t       lba, count;   /* digest: the blocks */
     char           tail[20], word[8];   /* prepare: the owner's confirmation of an erase */
     uint32_t       tail_len, word_len;
@@ -92,6 +93,8 @@ static status_t v_remount(void *ctx, struct idl_txn txn, const char *mount, uint
     struct vol *b = fs_find_mount(mount, len);
     if (!b || !b->other)
         return ERR_NOT_FOUND;   /* /esp and /data are what they are */
+    if (b->held)
+        return ERR_BUSY;   /* the installer's (install.c) */
     if (b->nvme && writable && (!disk_of(b) || !disk_jamos_gpt(disk_of(b))))
         return ERR_ACCESS_DENIED;   /* only on a Jam OS disk, by our own check (mark.c) */
     status_t st = disk_can_restart(b, writable);
@@ -429,8 +432,63 @@ static status_t i_prepare(void *ctx, struct idl_txn txn, uint32_t id, const char
     return later(txn, &o, prepare_main);
 }
 
+/* The installer's task (install.c): partition `part` of disk `id` made
+ * writable for init (and a channel to it), or read-only again. */
+static void hold_main(void *arg)
+{
+    struct op *o = arg;
+    handle_t fs = HANDLE_INVALID;
+    status_t st = disk_install_hold(o->id, o->part, o->writable, o->writable ? &fs : NULL);
+    if (!o->txn.ch) {
+        if (fs)
+            jam_handle_close(fs);
+    } else if (o->part == PART_ESP) {
+        if (o->writable)
+            (void)volinstall_reply_open_esp(o->txn, st, fs);   /* fs goes either way */
+        else
+            (void)volinstall_reply_close_esp(o->txn, st);
+    } else if (o->writable) {
+        (void)volinstall_reply_open_data(o->txn, st, fs);
+    } else {
+        (void)volinstall_reply_close_data(o->txn, st);
+    }
+    op_done(o);
+}
+
+static status_t hold_start(struct idl_txn txn, uint32_t id, unsigned part, bool writable)
+{
+    if (!disk_named(id))
+        return ERR_NOT_FOUND;
+    return later(txn, &(struct op){ .id = id, .part = part, .writable = writable }, hold_main);
+}
+
+static status_t i_open_esp(void *ctx, struct idl_txn txn, uint32_t id, handle_t *out_fs)
+{
+    (void)ctx, (void)out_fs;
+    return hold_start(txn, id, PART_ESP, true);
+}
+
+static status_t i_close_esp(void *ctx, struct idl_txn txn, uint32_t id)
+{
+    (void)ctx;
+    return hold_start(txn, id, PART_ESP, false);
+}
+
+static status_t i_open_data(void *ctx, struct idl_txn txn, uint32_t id, handle_t *out_fs)
+{
+    (void)ctx, (void)out_fs;
+    return hold_start(txn, id, PART_DATA, true);
+}
+
+static status_t i_close_data(void *ctx, struct idl_txn txn, uint32_t id)
+{
+    (void)ctx;
+    return hold_start(txn, id, PART_DATA, false);
+}
+
 const struct volinstall_ops volinstall_ops = {
-    .prepare = i_prepare,
+    .prepare = i_prepare, .open_esp = i_open_esp, .close_esp = i_close_esp,
+    .open_data = i_open_data, .close_data = i_close_data,
 };
 
 /* ---- volesp ------------------------------------------------------------------------------ */

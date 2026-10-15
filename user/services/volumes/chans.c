@@ -156,8 +156,9 @@ bool chans_init(void)
     chans[SLOT_ESP] = (struct chan){ .h = startup_handle(VOLUMES_SR_ESP), .lv = LEVEL_ESP };
     chans[SLOT_INSTALL] = (struct chan){ .h = startup_handle(VOLUMES_SR_INSTALL),
                                          .lv = LEVEL_INSTALL };
-    /* The ESP and install channels' ends receive no handles (volesp and
-     * volinstall carry none): no queue of ours can hold a channel end
+    /* The ESP and install channels' ends receive no handles (volesp's and
+     * volinstall's requests carry none; their replies carry a channel to a
+     * writable partition, to init): no queue of ours can hold a channel end
      * there (M12's D2). */
     for (unsigned i = SLOT_ESP; i <= SLOT_INSTALL; i++)
         if (chans[i].h && jam_channel_set_flags(chans[i].h, CHANNEL_NO_HANDLES) != OK)

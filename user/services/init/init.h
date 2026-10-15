@@ -761,6 +761,19 @@ struct esp_write {
  * it from init's loop). */
 void esp_write_build(struct esp_write *j);
 
+/* ---- install.c: initctl.install, the installer on a worker thread ------------------ */
+
+/* Start installing Jam OS on disk `id` (voldisks' id; `tail` and `word` the
+ * owner's confirmations, as for prepare_send): IDL_LATER, and the worker
+ * answers the request txid on ch (initctl.install) when it is done; or why not (nothing
+ * started): ERR_BAD_STATE while an install or an update is under way. */
+status_t install_start(handle_t ch, uint32_t txid, uint32_t id, const char *tail, uint32_t tail_len,
+                       const char *word, uint32_t word_len);
+/* An install is under way (its worker uses the install channel and /esp). */
+bool     install_busy(void);
+/* update.c: a check or a stick write is on its worker. */
+bool     update_busy(void);
+
 /* ---- lastboot.c: the boot before this one, if it panicked -------------------------- */
 
 /* At the start of shell mode: take its log (SR_CRASHLOG) if the kernel

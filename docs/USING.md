@@ -223,6 +223,25 @@ blocks are not 512 bytes are listed and not mounted (the FAT service reads
   erase cut short leaves a drive that isn't empty: it asks again).
   `mount -w /nvme2` then makes the data partition writable, `mount -r`
   read-only again.
+- `install nvme1` writes Jam OS to an NVMe drive so the PC starts from it
+  without the stick. It asks the same questions as `disk prepare` (the
+  drive's model, serial and size; the serial's last four characters; for a
+  drive that isn't empty what is on it and `erase`), prepares the drive
+  that way if it isn't a Jam OS disk, then writes Limine, the build this
+  boot runs (the stick's kernel and boot image, twice: the second pair is
+  the "previous build" entry), `/data/etc` (settings, the update key's
+  trust, the network address, the host key) and, last, the boot menu, each
+  file read back and compared before the next. Until the menu is written
+  the firmware can't start the disk, so a cut at any point never leaves a
+  half build bootable: run `install` again to finish. A Jam OS disk can
+  be installed on again (`disk prepare` refuses it): its ESP's files are
+  replaced, its `/data` kept as it is (`/etc` is copied only to a disk that
+  has none). It ends with `Jam OS <version> installed on nvme1: choose
+  "UEFI OS (<model>)" (or the drive's name) first in the firmware's boot
+  order`; Jam OS writes no firmware variable, so you set the order (Del at
+  power-on; F8 picks a drive once). The stick keeps working as a stick:
+  picked with F8 it boots itself and mounts the installed drive read-only.
+  It refuses the disk Jam OS booted from and a drive on a `diskro` boot.
 - `disk smart nvme0` prints the drive's own health log: data read and
   written, host read and write commands, power cycles, unsafe shutdowns,
   the percentage of its life used, the critical warning. "Host write

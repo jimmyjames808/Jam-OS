@@ -138,6 +138,13 @@ status_t    disk_prepare_check(uint32_t id, uint8_t *plan, uint8_t *refused);
 status_t    disk_prepare(uint32_t id, const char *tail, uint32_t tail_len, const char *word,
                          uint32_t word_len);
 
+/* install.c, in a task: volinstall's open_esp / open_data (hold: partition `part`
+ * of disk `id` made writable for init alone; *fs a channel to it) and close_esp /
+ * close_data (back to read-only). */
+status_t    disk_install_hold(uint32_t id, unsigned part, bool hold, handle_t *fs);
+/* prepare.c, in a task: what d's driver found the drive to be (storage.mode). */
+status_t    driver_mode(struct disk *d, uint8_t *mode, uint8_t *ro, uint8_t *readable);
+
 /* disk.c */
 const char *disk_name(const struct disk *d);      /* "disk 7", "test disk 2" (static buffer) */
 /* Step 1 again, for a disk whose partition table has just changed (prepare.c):

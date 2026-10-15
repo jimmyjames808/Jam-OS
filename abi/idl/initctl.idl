@@ -153,3 +153,22 @@ const APP_MAX      15
 # minutes). The shell's channel only (ERR_ACCESS_DENIED on the consoles' and
 # the compositor's). Errors are volinstall.prepare's.
 12 prepare_disk  (u32 id, str[<=20] tail, str[<=8] word) -> () later
+
+# Install Jam OS on disk `id` (voldisks' ids, `disks`' nvme1): the stage-3
+# installer (user/services/init/install.c, on a worker thread of init's).
+# A disk that isn't a Jam OS disk is made one first, as prepare_disk does
+# (an empty NVMe drive, one a prepare was cut short on, or one the owner
+# confirmed erasing: `tail` and `word` are prepare_disk's, and aren't looked
+# at for a Jam OS disk). Then the build this boot runs on (the boot disk's
+# kernel and boot image, the same Limine as its loader and its boot menu)
+# is written to the disk's ESP, each file read back and compared, the boot
+# menu last; the boot disk's /data/etc is copied to the new /data/etc when
+# the disk has none. A Jam OS disk installed on again keeps its /data; its
+# ESP's files are replaced. Answered later, when it is all done (ERR_TIMED_OUT
+# after 20 minutes). The shell's channel only (ERR_ACCESS_DENIED on the
+# consoles' and the compositor's). Errors are volinstall.prepare's and
+# open_esp's, and ERR_BAD_STATE while an `update` or another install is
+# under way, ERR_NOT_FOUND without the boot disk's /esp files, ERR_IO when a
+# write or a read-back fails (the disk then has no boot menu, so the
+# firmware can't start half a build: `install` again finishes it).
+13 install  (u32 id, str[<=20] tail, str[<=8] word) -> () later

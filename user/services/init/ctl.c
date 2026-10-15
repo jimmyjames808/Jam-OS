@@ -48,6 +48,10 @@
  * isn't empty) asks volumes on the install channel, init's alone
  * (prepare.c), to make an NVMe drive a Jam OS disk.
  *
+ * install (the shell's `install nvme1`, the same confirmations) is the
+ * installer (install.c): Jam OS written to the drive on a thread of its own,
+ * which answers the shell itself when it is done.
+ *
  * Answered later: mount, sync, prepare_disk and the kill of a filesystem service wait
  * for volumes (a remount stops a service in order and starts it again,
  * seconds on a slow stick), so init doesn't wait inside the request: it
@@ -510,6 +514,8 @@ static status_t op_prepare_disk(void *ctx, struct idl_txn txn, uint32_t id, cons
         return ERR_ACCESS_DENIED;
     if (!shell_volumes_install())
         return ERR_NOT_FOUND;
+    if (install_busy())
+        return ERR_BAD_STATE;   /* the installer has the install channel */
     char what[NAME_MAX];
     snprintf(what, sizeof(what), "%08x", id);
     struct later *l = later_new(LATER_PREPARE, txn, shell_volumes_install(), what, PREPARE_WAIT);
@@ -518,6 +524,21 @@ static status_t op_prepare_disk(void *ctx, struct idl_txn txn, uint32_t id, cons
     l->disk = id;
     printf("init: prepare disk %s%s\n", what, word_len ? " (with an erase's confirmation)" : "");
     return later_sent(l, prepare_send(l->txid, id, tail, tail_len, word, word_len));
+}
+
+/* initctl.install: Jam OS written to an internal drive (install.c), answered
+ * by its worker thread when it is done. The install channel is one caller's
+ * at a time: not while a prepare_disk waits on it. */
+static status_t op_install(void *ctx, struct idl_txn txn, uint32_t id, const char *tail,
+                           uint32_t tail_len, const char *word, uint32_t word_len)
+{
+    const struct ctl *c = ctx;
+    if (!c->admin)
+        return ERR_ACCESS_DENIED;
+    for (unsigned i = 0; i < MAX_LATER; i++)
+        if (laters[i].used && laters[i].kind == LATER_PREPARE)
+            return ERR_BAD_STATE;
+    return install_start(txn.ch, txn.txid, id, tail, tail_len, word, word_len);
 }
 
 /* initctl.disks: a channel to volumes that lists the disks and asks for a
@@ -549,6 +570,7 @@ static const struct initctl_ops ops = {
     .shell_ready = op_shell_ready, .reboot_firmware = op_reboot_firmware,
     .kernel_load = op_kernel_load, .update_offer = op_update_offer, .terminal = op_terminal,
     .launch = op_launch, .disks = op_disks, .prepare_disk = op_prepare_disk,
+    .install = op_install,
 };
 
 static void ctl_close(struct ctl *c)
