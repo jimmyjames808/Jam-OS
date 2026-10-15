@@ -1,0 +1,244 @@
+# fonts-jamos's test (tools/ports-test.sh): every file of the package is on
+# /data/pkg with the bytes upstream released. `sha256sum` of each font, each
+# licence text and fonts.conf is waited for; the hashes are those of the
+# pinned releases (the recipe's source lines) and of ports/fonts-jamos/override/
+# fonts.conf. The checks that the configuration resolves sans-serif, serif,
+# monospace and Arial as docs/G2-PLAN.md section 4 says run on the build host
+# with its own fc-match (tools/fonts-check.sh): Jam OS has no fontconfig.
+send run $S/sha256sum /data/pkg/share/fonts/fonts.conf
+wait e02d7e69539b1ce99d0d82e50fe57e7b79514571808033ea10823730984ebe43  /data/pkg/share/fonts/fonts.conf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/inter/Inter-Black.ttf
+wait 6342d3ea6dc088b43867f615e807d898adf100c93edb978b8e52c5eb71a264da  /data/pkg/share/fonts/jamos/inter/Inter-Black.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/inter/Inter-BlackItalic.ttf
+wait 1737f7d5b391520e9adcc3ea8c730a0854fe6fdd9b9c93c4100c89beb215a931  /data/pkg/share/fonts/jamos/inter/Inter-BlackItalic.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/inter/Inter-Bold.ttf
+wait 288316099b1e0a47a4716d159098005eef7c0066921f34e3200393dbdb01947f  /data/pkg/share/fonts/jamos/inter/Inter-Bold.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/inter/Inter-BoldItalic.ttf
+wait 948405a16cdc62701da5f4005ed068ca5f4d27061d98f7974ccfc37831d9581d  /data/pkg/share/fonts/jamos/inter/Inter-BoldItalic.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/inter/Inter-ExtraBold.ttf
+wait e6756ad5690b77606aa62249a7b420d9902d45cae4b0048a24911fd4324b0a22  /data/pkg/share/fonts/jamos/inter/Inter-ExtraBold.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/inter/Inter-ExtraBoldItalic.ttf
+wait 31b58a00cb9e8d00cb936057285282310e81d2f834461264c543c96983af64a6  /data/pkg/share/fonts/jamos/inter/Inter-ExtraBoldItalic.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/inter/Inter-ExtraLight.ttf
+wait f3c7079d9eb4a799251a844acea9eb55f99094479306e2ac1bee875dd9f7ae80  /data/pkg/share/fonts/jamos/inter/Inter-ExtraLight.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/inter/Inter-ExtraLightItalic.ttf
+wait 22fca887d9a9336e8a29601b19683947a57b53911c74e251c3657ee798635275  /data/pkg/share/fonts/jamos/inter/Inter-ExtraLightItalic.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/inter/Inter-Italic.ttf
+wait bbc051dd204b5019a1aa0bc0ae2aa8a05ab13e7a3f979fa357631dc7feb6833a  /data/pkg/share/fonts/jamos/inter/Inter-Italic.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/inter/Inter-Light.ttf
+wait 164414f0aacbe98a7e64addc43f7b3bfd2e32f7b90e101feeab227f14c371bda  /data/pkg/share/fonts/jamos/inter/Inter-Light.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/inter/Inter-LightItalic.ttf
+wait c3f9efa776957eefaeac8a2991a990fd1bba6cb928dbaeab7abd0655f3a7693c  /data/pkg/share/fonts/jamos/inter/Inter-LightItalic.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/inter/Inter-Medium.ttf
+wait 97ad806f526e41546d46365bb3a393145f75b7b1568913db74549ad8b8dba872  /data/pkg/share/fonts/jamos/inter/Inter-Medium.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/inter/Inter-MediumItalic.ttf
+wait 51c2c8d7c36f7c26e6e2678b5c3069b329bde9a081154553b0f5bc2d4fc14075  /data/pkg/share/fonts/jamos/inter/Inter-MediumItalic.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/inter/Inter-Regular.ttf
+wait 40d692fce188e4471e2b3cba937be967878f631ad3ebbbdcd587687c7ebe0c82  /data/pkg/share/fonts/jamos/inter/Inter-Regular.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/inter/Inter-SemiBold.ttf
+wait 78a843fade9d4612a5567302fb595b56976eb5fcebf4fea5a5912d638bafcde3  /data/pkg/share/fonts/jamos/inter/Inter-SemiBold.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/inter/Inter-SemiBoldItalic.ttf
+wait eff2930c3d3b35d3fcf5f76252b6baef4c3e907d9d2fde1d16cf5d417f8deef4  /data/pkg/share/fonts/jamos/inter/Inter-SemiBoldItalic.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/inter/Inter-Thin.ttf
+wait 22453f995345e5618d539315a8501f4c74ca41d1898ce44e7d1b8206f0d097d4  /data/pkg/share/fonts/jamos/inter/Inter-Thin.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/inter/Inter-ThinItalic.ttf
+wait d89ffb2849ef91246283de40a929f671b6e0c8ad1c235701f9362fb0406b4cce  /data/pkg/share/fonts/jamos/inter/Inter-ThinItalic.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMono-Bold.ttf
+wait 5590990c82e097397517f275f430af4546e1c45cff408bde4255dad142479dcb  /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMono-Bold.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMono-BoldItalic.ttf
+wait 4039d5ce0ed225bf9c8b2c8c6436290ae2f356b7e90d70fa666227238324aa3b  /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMono-BoldItalic.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMono-ExtraBold.ttf
+wait 8e501d3a6a883e83ea4f7852804fb0894cebdd67751bb1006b37a476cef34cd6  /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMono-ExtraBold.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMono-ExtraBoldItalic.ttf
+wait ec3a860fa87d0a3b1451277d1c2f3072f5ba19d2367aec54f7169d5710872610  /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMono-ExtraBoldItalic.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMono-ExtraLight.ttf
+wait 8391e7ec13e8ba758c1838f56bccd973228ccf4dc74aa5bffe9525b9147b12f8  /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMono-ExtraLight.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMono-ExtraLightItalic.ttf
+wait 3c7fee57538f18b61cc5f0784a8133fe5ee95feb41f633e8f6f7ef609e6207ec  /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMono-ExtraLightItalic.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMono-Italic.ttf
+wait 9d0a1f7a708e6af183f1193b7e81d40da294f5c67682c085d8401c60aac8ded4  /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMono-Italic.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMono-Light.ttf
+wait 60c18d7dd58d81b3bbd12e8ce32744a8771bfe2b5280574082b0eaed46c60d24  /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMono-Light.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMono-LightItalic.ttf
+wait 18ffadb91fa711b45feae027ddfd561e7f97ace805ec4baf9905046cf450befb  /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMono-LightItalic.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMono-Medium.ttf
+wait 31c92d01a8a08528b718a43addf0ad3df0af2ca4b7b3290a452f70f358e14d3d  /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMono-Medium.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMono-MediumItalic.ttf
+wait 4477fda6bd472ef96b11bc1083370f7fc3ff427bdc807e682ced5819e3dee9df  /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMono-MediumItalic.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMono-Regular.ttf
+wait a0bf60ef0f83c5ed4d7a75d45838548b1f6873372dfac88f71804491898d138f  /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMono-Regular.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMono-SemiBold.ttf
+wait 1b3bfa1ed5665a4ce3f9feb68d2d4e40e70bf8b4b7d9a3edd418f321b4e166a0  /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMono-SemiBold.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMono-SemiBoldItalic.ttf
+wait 3b3000507a7285872395ddbb4e53a28f07910dbf494fb0d5e1421dd60b5d8436  /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMono-SemiBoldItalic.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMono-Thin.ttf
+wait 0756e8e8cf1d65fa7519776764479b3973efb15af4f419d5d7274dc27ae1b702  /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMono-Thin.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMono-ThinItalic.ttf
+wait ebcdd13119b6beb7457e2f76b31094cb8cf1108e567030f8402b24dde018e76a  /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMono-ThinItalic.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMonoNL-Bold.ttf
+wait 0198e841824025f8876e5c297f0b9b497ee8d6eb9969710a3328e1303f996ec3  /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMonoNL-Bold.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMonoNL-BoldItalic.ttf
+wait 6c2716f2e85101f4109a8c16916061eb38176b3b10342834858d6221ec2fda1b  /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMonoNL-BoldItalic.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMonoNL-ExtraBold.ttf
+wait 673f0209e5428e5f73a159df85806f8a5bf7f83316bb9554427a3eb877ee0cb7  /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMonoNL-ExtraBold.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMonoNL-ExtraBoldItalic.ttf
+wait 0f386a0bd99bb2d41079fe438725b471b49a48e355b8d57399b7a6e8e1c63da6  /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMonoNL-ExtraBoldItalic.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMonoNL-ExtraLight.ttf
+wait 4ffddcd8bbebbdd8c066bd66ea32aa7995fdb7bc626777b1a8948074c85a2e9f  /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMonoNL-ExtraLight.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMonoNL-ExtraLightItalic.ttf
+wait 7d5c8b4d42d7a4c268398c066f71b606f7f071864e73740c99a58838c55efde5  /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMonoNL-ExtraLightItalic.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMonoNL-Italic.ttf
+wait c7392a134293e1af1d36fbf04940dd844f632afbf97f8325d1591d3af5096cb8  /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMonoNL-Italic.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMonoNL-Light.ttf
+wait 8bf1b1733d0a32c4ada2451deb1bd36e6945be3bf2bf2ba80c2be7c95e57f230  /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMonoNL-Light.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMonoNL-LightItalic.ttf
+wait edbf41bed6eea37ae5d6ccd4353158d5bef140f1d078408ea20e4e599622b895  /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMonoNL-LightItalic.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMonoNL-Medium.ttf
+wait 44099e1efefba55637e0abbbf8dd3f526e59523345888a257bb01d39df4af74c  /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMonoNL-Medium.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMonoNL-MediumItalic.ttf
+wait 2a5c56075d7bec1d54fa9761d5eeef7d4267e134d86962011425503b27e61ddd  /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMonoNL-MediumItalic.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMonoNL-Regular.ttf
+wait fb3b2575d7b0657359707993288f12a7360344d39387bb26050e276d61f6bd2a  /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMonoNL-Regular.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMonoNL-SemiBold.ttf
+wait 2c5dc6725fdbb0dccf65adceb38fdcd95e5fc8a5b74d5c150e38a5faa02a8945  /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMonoNL-SemiBold.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMonoNL-SemiBoldItalic.ttf
+wait f813544badbdab235b1f2f9933bb978be0a87cbde0133aaa05b80a84a7d94c22  /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMonoNL-SemiBoldItalic.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMonoNL-Thin.ttf
+wait 1acb532f18726155022a1e8b717bf7bde3eb30e9e064ccc6d17b3d91e95204b0  /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMonoNL-Thin.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMonoNL-ThinItalic.ttf
+wait 58812240c633523eb930ac6ce86f392f4e2b5ad920549278d1758d70af972ad7  /data/pkg/share/fonts/jamos/jetbrains-mono/JetBrainsMonoNL-ThinItalic.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/liberation/LiberationMono-Bold.ttf
+wait bd62a0672d0b9b6710b01df434c80ad54fa5f0835207eb7b17b7a761463067bb  /data/pkg/share/fonts/jamos/liberation/LiberationMono-Bold.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/liberation/LiberationMono-BoldItalic.ttf
+wait 79451f3c09fe25116098853b7a2ca6e2436220ccc11af022979adbcf195be130  /data/pkg/share/fonts/jamos/liberation/LiberationMono-BoldItalic.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/liberation/LiberationMono-Italic.ttf
+wait 605c01c711b44480a7508d349dfbf3264e81fa43d69e61cfa7d10b86e764c4d1  /data/pkg/share/fonts/jamos/liberation/LiberationMono-Italic.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/liberation/LiberationMono-Regular.ttf
+wait f2b83c763e8afd21709333370bed4774337fae82267937e2b5aea7e2fbd922c1  /data/pkg/share/fonts/jamos/liberation/LiberationMono-Regular.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/liberation/LiberationSans-Bold.ttf
+wait 788abee4c806d660e8aee46689dd8540cd4bb98da03dcc9d171ce3efd99a9173  /data/pkg/share/fonts/jamos/liberation/LiberationSans-Bold.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/liberation/LiberationSans-BoldItalic.ttf
+wait 698da70fc191cc5f33ad4d6d3fe830fe4624b898ea2e3169955928b7c491f1ee  /data/pkg/share/fonts/jamos/liberation/LiberationSans-BoldItalic.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/liberation/LiberationSans-Italic.ttf
+wait e5bae5c4cde31f22142753855f4f8fb86da6ff39955ed3c0a11248b0d16948b0  /data/pkg/share/fonts/jamos/liberation/LiberationSans-Italic.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/liberation/LiberationSans-Regular.ttf
+wait 76d04c18ea243f426b7de1f3ad208e927008f961dc5945e5aad352d0dfde8ee8  /data/pkg/share/fonts/jamos/liberation/LiberationSans-Regular.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/liberation/LiberationSerif-Bold.ttf
+wait d754ba427cfe0bca54ae052384baa8f842da5bd6550ad4da024ac441e7a7d5ce  /data/pkg/share/fonts/jamos/liberation/LiberationSerif-Bold.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/liberation/LiberationSerif-BoldItalic.ttf
+wait f17db8af71e24d2066b587546021d4f0b296be389512b658dec3c09affeb11a7  /data/pkg/share/fonts/jamos/liberation/LiberationSerif-BoldItalic.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/liberation/LiberationSerif-Italic.ttf
+wait 0e3dea9f8d613e006ccfa62201f33e265d19167bd0907725c3e145368b04fc2e  /data/pkg/share/fonts/jamos/liberation/LiberationSerif-Italic.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/liberation/LiberationSerif-Regular.ttf
+wait 058ea80864aef09a23f45cbec2bb5400bc3dfbdea01c3f10538a21fcb497fb74  /data/pkg/share/fonts/jamos/liberation/LiberationSerif-Regular.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/noto/NotoSans-Bold.ttf
+wait 87cb2d84472a7d66da659ee47b6cdb9552326e8c128245231f191b6ac72529d9  /data/pkg/share/fonts/jamos/noto/NotoSans-Bold.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/noto/NotoSans-BoldItalic.ttf
+wait 3d367743f371f28671d2764e911a53d7c20ec9b6aa8791d059e7090389fc52a5  /data/pkg/share/fonts/jamos/noto/NotoSans-BoldItalic.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/noto/NotoSans-Italic.ttf
+wait 678288f868807d4d64a6f3b51466871d117d915780381ce9d0ed4b3bcbd06d37  /data/pkg/share/fonts/jamos/noto/NotoSans-Italic.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/noto/NotoSans-Regular.ttf
+wait f3961a9cde016d41a4879aecda1474d3a36d6bf54fa0e4643de029cc2248b0e8  /data/pkg/share/fonts/jamos/noto/NotoSans-Regular.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/noto/NotoSansMono-Bold.ttf
+wait 1100772b2f79c102402a1011df5e2226517d0f40ac553a25fb12fdbad8c11b85  /data/pkg/share/fonts/jamos/noto/NotoSansMono-Bold.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/noto/NotoSansMono-Regular.ttf
+wait 87f8ce0522a6c99b743ee5fc75b4073cfdd575639119672828b7b9944b65b4f4  /data/pkg/share/fonts/jamos/noto/NotoSansMono-Regular.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/noto/NotoSerif-Bold.ttf
+wait 24ad531e6b05ddad8c3d89572d2c93eb86a6b74e652ce7ee3c3e171de68e84c3  /data/pkg/share/fonts/jamos/noto/NotoSerif-Bold.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/noto/NotoSerif-BoldItalic.ttf
+wait 1bc4f86502eaa368718f6192bee022ea9a703d5af1c18b7d291212657b63074a  /data/pkg/share/fonts/jamos/noto/NotoSerif-BoldItalic.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/noto/NotoSerif-Italic.ttf
+wait c4b3c971741ecdb40f5a443bce754e8fe91efe761b6ea10c92be7c3597cdadc4  /data/pkg/share/fonts/jamos/noto/NotoSerif-Italic.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/noto/NotoSerif-Regular.ttf
+wait a15cfbbc1539d707115111d672d590a3d70d4f74b4c0a315956da20ae19a14e1  /data/pkg/share/fonts/jamos/noto/NotoSerif-Regular.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/fonts/jamos/noto-emoji/NotoColorEmoji.ttf
+wait 72a635cb3d2f3524c51620cdde406b217204e8a6a06c6a096ff8ed4b5fd6e27b  /data/pkg/share/fonts/jamos/noto-emoji/NotoColorEmoji.ttf
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/licences/fonts-jamos/liberation-LICENSE.txt
+wait 93fed46019c38bbe566b479d22148e2e8a1e85ada614accb0211c37b2c61c19b  /data/pkg/share/licences/fonts-jamos/liberation-LICENSE.txt
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/licences/fonts-jamos/noto-OFL.txt
+wait cee9892f9f0cc8fe882c9e9537ee6a89621d86ee7ceaf70b02e2b2b1c25c061a  /data/pkg/share/licences/fonts-jamos/noto-OFL.txt
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/licences/fonts-jamos/noto-emoji-OFL.txt
+wait 6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2  /data/pkg/share/licences/fonts-jamos/noto-emoji-OFL.txt
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/licences/fonts-jamos/inter-LICENSE.txt
+wait 262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a  /data/pkg/share/licences/fonts-jamos/inter-LICENSE.txt
+wait {prompt}
+send run $S/sha256sum /data/pkg/share/licences/fonts-jamos/jetbrains-OFL.txt
+wait 30f0c136e3c88e422d0791acd97238870f9054a9729bc34cf2ff0d4ed8cac4ad  /data/pkg/share/licences/fonts-jamos/jetbrains-OFL.txt
+wait {prompt}

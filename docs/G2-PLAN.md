@@ -986,7 +986,7 @@ the docs.
 | **GC2. Subsurfaces** | `wl_subcompositor` and `wl_subsurface` (section 2): trees, sync and desync (Chromium's bubbles are desync), order, position, the tree drawn as one window, input through it, clipping to the window, the new caps; the hostile cases (a cycle, a parent destroyed first, a tree deeper than the cap); GC1's [list of what GC2 needs](#gc1-notes) | `user/services/compositor/surface.c`, a new subsurface file, the painting and input lines it needs (`user/services/compositor/paint.c`, `user/services/compositor/scene.c`, `user/services/compositor/pointer.c`), `user/services/compositor/comp.h` | GC1b merged (the same files) | utest: a parent with three children, commits in sync and desync, place_above/below, a child outside the parent clipped, input to the topmost; a desync child updated while its parent is idle (a bubble's case); the hostile cases refused with the protocol's errors; a screenshot test of a window with subsurfaces (`tools/comp-test.sh`'s way) | **Opus** |
 | **GC3. Popups** (built 2026-10-14: [notes](#gc3-notes); Escape is the client's, not a dismissal) | real `xdg_popup`: placement by the positioner on the output (flip, slide, resize), `grab` with a live serial, dismissal by a click outside or Escape, nested popups (a menu's submenu), `reposition`; the window manager's rules for popups (never tiled, above their parent); tooltips (popups without a grab) | `user/services/compositor/xdg.c`, a new popup file, the window manager's lines it needs (`user/services/compositor/wm.c`) | GC2 merged | utest: each positioner case placed exactly, a grab without a serial refused, a click outside dismissing the chain, a tooltip that takes no keys; screenshot of a popup at a screen edge | **Opus** |
 | **GP1. The base ports** | recipes for libffi, expat, wayland (client, cursor, and wayland-scanner as a host build), wayland-protocols (data), xkbcommon; the host-build and data-port pieces in tools/ports.py with their self-tests; meson's cross file's options (static, no `dlopen`) | ports/ recipes (new), tools/ports.py's host-build part, ports/jamos.meson's lines | M13.7's PO1 merged (it is); running, paused with work in its worktree | each recipe's `test`: libffi's own `ffi_call` tests as a program; xkbcommon compiling the compositor's keymap from `tools/genkeymap.py`'s text; libwayland's `wl_display_connect` from a tiny program; the builder's self-test | Sonnet 5.5 |
-| **GP2. The fonts** (rescoped) | the `fonts-jamos` data package (section 4's set: Liberation, Noto Sans, Serif and Sans Mono, Inter, JetBrains Mono, Noto Color Emoji) and its fonts.conf (the directory, the aliases, the cache under `XDG_CACHE_HOME`); every font's licence text in the package | ports/fonts-jamos (new) | GP1's data-port piece | the package's `test`: the files present with their hashes; `fc-match` is not on Jam OS (no fontconfig port), so the configuration is checked on the build host with its own `fc-match` against the staged directory (`sans-serif`, `serif`, `monospace`, `Arial` each resolve as section 4 says) | Sonnet 5.5 |
+| **GP2. The fonts** (rescoped) | the `fonts-jamos` data package (section 4's set: Liberation, Noto Sans, Serif and Sans Mono, Inter, JetBrains Mono, Noto Color Emoji) and its fonts.conf (the directory, the aliases, the cache under `XDG_CACHE_HOME`); every font's licence text in the package | ports/fonts-jamos (new) | GP1's data-port piece | the package's `test`: the files present with their hashes; `fc-match` is not on Jam OS (no fontconfig port), so the configuration is checked on the build host with its own `fc-match` against the staged directory (`sans-serif`, `serif`, `monospace`, `Arial` each resolve as section 4 says) | Sonnet 5.5 (**built**: [GP2 notes](#gp2-notes)) |
 | **GT. wlprobe and its script** (built: [GT notes](#gt-notes)) | wlprobe (section 11), a test program on the real libwayland, in the ports tree, with a hold mode (a window that stays, for the soak); tools/wl-port-test.sh (new): a plain boot with packages preinstalled (M13.7's PO8 image), wlprobe's cases by name; the Chromium plan adds its own cases to it later | ports/wayland/override/wlprobe.c and patches/0003 (not a port of its own: a recipe needs an upstream tree), tools/wl-port-test.sh and tools/wl-port-check.py (new) | GS1; GP1; M13.7's PO8 (merged) | itself; it is the end-to-end test of GS1 | Sonnet 5.5 |
 | **GD. The search box** (Q9, only if the owner starts Chromium from it) | the recipe's `desktop` line in tools/ports.py and the package's manifest; `pkg`'s approval recording it; init's `launch` accepting an approved package program; the search box's rows | tools/ports.py's line, init's `launch` check (`user/services/init/apps.c`), the compositor's search rows | Q9; M13.7's PO5 and PO6 merged; Chromium's package (the Chromium plan) | utest for init's check (an unapproved program refused, a program without the line refused); `tools/desk-test.sh` with a preinstalled package | Sonnet 5.5 |
 | **GR. Independent review and fix** | GS1, GC1, GC1b, GC2, GC3: findings first, then High and Medium fixed with a test each; hostile libwayland clients against the live compositor (X1's style): a subsurface storm, a desync bubble flood, a popup chain at the cap, a decoration object on a destroyed toplevel, 28 handles of the wrong kinds, a client that never reads | the files its fixes need, named in its report | GS1, GC1b, GC2 merged (GC3 if merged by then) | its own; utest; GT's script | **Opus** |
@@ -1730,3 +1730,52 @@ same stage lists) and, before the PC went to Jam OS, on the PC's WSL
    `wayland-protocols` (data); the scanner's check is the wayland-protocols
    build itself (it runs the scanner over every protocol file and fails if
    one is refused: 64 `*-enum.h` in the stage).
+
+## GP2 notes
+
+What track GP2 (the fonts) built. `ports/fonts-jamos` is a `style data` port
+(GP1's piece: files and no build), version 1.0, about 34 MB staged.
+
+- **The set**, all SIL OFL 1.1, each pinned by size and SHA-256 in the
+  recipe: Liberation 2.1.5 (Sans, Serif, Mono: the 12 static files);
+  Noto Sans 2.015, Noto Serif 2.015 and Noto Sans Mono 2.014 from the
+  `notofonts/latin-greek-cyrillic` releases (the unhinted static files:
+  Regular, Bold, Italic, BoldItalic; Mono has Regular and Bold; the three
+  zips are 220 MB to download, once into the distfile cache); Inter 4.1 (the
+  18 static files of its nine weights and italics: the variable files'
+  family is "Inter Variable", so a page asking for "Inter" would not find
+  them); JetBrains Mono 2.304 (all 32 static files, with the NL cut);
+  Noto Color Emoji 2.051 (the CBDT bitmap font, 10.7 MB, taken as the one
+  raw file at its tag, not the 210 MB repository archive).
+- **Layout**: `/data/pkg/share/fonts/jamos/<family>/*.ttf` and
+  `/data/pkg/share/fonts/fonts.conf`; the licences in
+  `share/licences/fonts-jamos/` (one file per project: `liberation-LICENSE.txt`,
+  `noto-OFL.txt`, `noto-emoji-OFL.txt`, `inter-LICENSE.txt`, `jetbrains-OFL.txt`).
+  The licence texts are sources of their own with distinct names, because
+  several archives carry an `OFL.txt` and unpacking them together
+  overwrites.
+- **fonts.conf** (`ports/fonts-jamos/override/fonts.conf`, laid in by the
+  recipe's OVERRIDES): the directory `/data/pkg/share/fonts/jamos`;
+  `<cachedir prefix="xdg">fontconfig</cachedir>` (so `XDG_CACHE_HOME`, which
+  the shell sets to `/data/.cache`); `sans-serif` Noto Sans then Liberation
+  Sans, `serif` Noto Serif then Liberation Serif, `monospace` JetBrains
+  Mono then Liberation Mono and Noto Sans Mono, each ending with Noto Color
+  Emoji so an emoji finds a font; `emoji`; Arial and Helvetica to
+  Liberation Sans, Times New Roman and Times to Liberation Serif, Courier
+  New and Courier to Liberation Mono; last, the owner's own
+  `/data/.config/fontconfig/fonts.conf` if it exists. It does not set
+  `FONTCONFIG_FILE`: that is the shell's (section 10), still to do. Inter
+  has no generic alias (nothing asks for it by role yet).
+- **Tests**: `ports/fonts-jamos/test` (PASS on the PC through
+  `tools/ports-test.sh`): `sha256sum` of the 79 files (fonts.conf, 73 font
+  files, 5 licences) against the pinned hashes. `tools/fonts-check.sh`
+  runs the build host's own `fc-match` over the staged directory with the
+  staged fonts.conf (its `/data/pkg` rewritten, a scratch cache) and checks
+  the generics, the Microsoft names, bold and italic, Inter, Noto Sans
+  Mono, and U+1F600 on `sans-serif`: all 15 pass (Homebrew fontconfig on the
+  Mac). `fc-match` reads its argument as a pattern, where `-` starts a size:
+  the family is written `sans\-serif`.
+- **Not done / for others**: nothing sets `FONTCONFIG_FILE` yet (the shell,
+  section 10); the cache directory `/data/.cache/fontconfig` and fontconfig's
+  `mmap` of cache files on fat are Chromium's first run to show (CB tracks);
+  CJK is a package of its own when a page needs it.
