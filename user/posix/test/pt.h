@@ -29,11 +29,12 @@
  * jit.c (MAP_JIT refused without the power, and to bin/jittest as our child),
  * wayland.c (the Wayland socket against a fake compositor of its own),
  * scm.c and scmkid.c (socketpairs carrying descriptors: SCM_RIGHTS, Mojo's
- * pattern between two processes, a fuzz loop; ptscm.h) and
+ * pattern between two processes, a fuzz loop; ptscm.h), unix.c (named
+ * AF_UNIX sockets through /svc/unix: socket files and abstract names) and
  * rawcalls.c, rawfutex.c and rawlog.c (the raw Linux calls Chromium makes, and the
  * ENOSYS log: the log's hooks are the layer's calls.h, a second look inside).
  * start.c, mem.c, memres.c (the job's counts), clock.c, fds.c, poll.c,
- * proc.c, tty.c, fileskid.c, wayland.c, jit.c and procfs.c are
+ * proc.c, tty.c, fileskid.c, wayland.c, jit.c, procfs.c and unix.c are
  * the ones that include libjam (<jamos/libjam.h>: children started with a hand-over, a mapping libc
  * didn't make, the calls the clocks are checked against; fileskid.c
  * through the layer's fd.h); mem.c, rawcalls.c, rawfutex.c and rawlog.c include Linux's call
@@ -93,6 +94,7 @@ void pt_spawn_data(char **argv);
 void pt_wayland(char **argv);
 void pt_jit(char **argv);          /* MAP_JIT without the power (jit.c) */
 void pt_scm(char **argv);          /* socketpairs carrying descriptors (scm.c, scmkid.c) */
+void pt_unix(char **argv);         /* named AF_UNIX sockets through /svc/unix (unix.c) */
 /* The signal section's second half (sigproc.c): between processes. */
 void pt_sigproc(void);
 /* The mem section's second half (memres.c): big sparse reservations. */
@@ -123,6 +125,7 @@ int  pt_child_launch(int argc, char **argv);
 int  pt_child_mmap_pull(int argc, char **argv);
 int  pt_child_wl(int argc, char **argv);
 int  pt_child_scm(void);
+int  pt_child_unix(int argc, char **argv);
 
 /* Pages charged to our job now (job_get_info; start.c). */
 uint64_t pt_job_pages(void);

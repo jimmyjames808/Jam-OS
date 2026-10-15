@@ -779,7 +779,8 @@ who may reach it, exactly as for opening a file); `accept` gets a fresh
 channel pair from the broker. Abstract names (Linux's `\0` paths): a
 per-session table in the broker. One user, no `SO_PEERCRED` beyond "the
 one user". Until CU2, `chrome` runs with its singleton failing (it then
-behaves as the only instance: *unsure*; CB6 checks).
+behaves as the only instance: *unsure*; CB6 checks). As built (a socket
+file is a plain file holding a key): [CU2 notes](#cu2-notes).
 
 ### 5. Launching other programs
 
@@ -1805,6 +1806,68 @@ Track CS1, launching (2026-10-15): section 5's Jam OS half.
   `/data`, posix-mmap-test.sh `spawn`) adds a child started from the image
   with no hand-over, whose `startup_exe` and `/proc/self/exe` are its
   path.
+
+## CU2 notes
+
+Track CU2, named `AF_UNIX` sockets (2026-10-15): `bind`, `listen`,
+`accept` and `connect` on socket files and abstract names, through the
+broker `/svc/unix` (bin/unix, user/services/unix; abi/idl/unix.idl has
+the model). Where it differs from section 4's design:
+
+- **A socket file is an ordinary file**, not a socket inode: the `fs`
+  protocol has no `mknod` and FAT none at all, and Chromium's singleton
+  binds its socket in a temporary directory (`/tmp`, which may be FAT),
+  not only on `/jam`. `bind` asks the broker for a listener and a random
+  128-bit key, makes the file with `O_EXCL` (anything there:
+  `EADDRINUSE`; mode 0777 less the umask) and writes a magic and the key
+  (24 bytes); `connect` opens the file for reading as any open does and
+  gives the broker the key. So the namespace and its views decide who may
+  reach a socket, as the design wanted, by whether the file can be read
+  (Linux asks for write permission; a read-only view lets a connector in
+  here). The broker never reads a file and holds no namespace. What
+  follows: `stat` says `S_IFREG`, not `S_IFSOCK`; a program that read the
+  key once can still connect after the file is unlinked (until the
+  listener closes); a file whose listener is gone is a stale socket
+  (`ECONNREFUSED`, unlink and bind again: Chromium's singleton does just
+  that); a file that isn't a socket file is `ECONNREFUSED`, as Linux's.
+- **Abstract names**: one table for the broker (Jam OS has one user), not
+  per session; any program with `svc unix` reaches any abstract name, as
+  on Linux within a network namespace. Autobind (`bind` of an empty name,
+  `listen` unbound) is not built (`EINVAL`).
+- **A connection is a channel pair** the broker makes (both ends
+  `CHANNEL_BYTE_BOUND`, as `socketpair`'s): the connector's socket holds a
+  socketpair end inside it (unixsock.c's framing passes every call to
+  sockpair.c: `SCM_RIGHTS`, `MSG_PEEK`, `MSG_WAITALL`, `shutdown`, poll),
+  the listener gets the other end as a `conn` event and `accept` makes it
+  a plain socketpair end's descriptor. A connect never waits for accept.
+  A named socket's connection is handed to a child, or sent with
+  `SCM_RIGHTS`, as the socketpair end it holds; a listener is never.
+- **The backlog** is the `conn` events the listener hasn't read (the
+  kernel's `peer_queued`), clamped to 1..64: past it a connect is
+  `EAGAIN` (Linux makes a blocking connect wait for room). A second
+  `listen` keeps the first backlog (as the AF_INET path does).
+- **Limits** (unix.idl): 64 openers, 128 listeners (32 per opener
+  channel: libc keeps one per process), names of at most 107 bytes. What
+  waits at a listener is charged to the broker's job until accept reads it:
+  at most 64 small messages a listener.
+- **Names**: `getsockname` of a bound socket says its path or abstract
+  name; of a connection, and `getpeername`, `AF_UNIX` with no path, and
+  `accept`'s address the same.
+- **Who starts it**: init, in shell mode as a supervised service (`UNIX`
+  in the services' order, after the file server; init keeps both ends of
+  the shared channel), and in the init run before the programs, stopped
+  after them (init/unixsvc.c). A restarted broker loses its listeners:
+  `accept` is `ECONNABORTED`, the program must bind again.
+- **For CR2**: a program with `svc unix` can fill the 128 listeners (32
+  per opener channel, but it can open several channels with `svc_open`);
+  any abstract name is anyone's to take first. A listener that never
+  accepts costs the broker at most 64 queued messages.
+- **Tests**: posixtest's `unix` section (in the init run;
+  `tools/shell-tests/posix-unix.txt` alone, in shell mode); utest's
+  `unix_names`, `unix_backlog`, `unix_limits` (the broker's protocol and
+  limits). The `wayland` section's refusals changed with it: a bind to
+  `/svc/wayland` is `EADDRINUSE`, `listen` unbound `EINVAL`, a connect to
+  an empty path (an abstract name of NULs) `ECONNREFUSED`.
 
 ## Later
 

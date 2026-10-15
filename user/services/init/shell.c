@@ -72,7 +72,8 @@ struct svc svcs[NSVC] = {
     [MUSIC] = { "bin/music" },
     [NETSTACK] = { "bin/netstack" }, [DHCP] = { "bin/dhcp" }, [DNS] = { "bin/dns" },
     [LOGD] = { "bin/logd" }, [NETLOG] = { "bin/netlog" }, [SNTP] = { "bin/sntp" },
-    [SERVE] = { "bin/serve" }, [SSHD] = { "bin/sshd" }, [SHELL] = { "bin/shell" },
+    [SERVE] = { "bin/serve" }, [UNIX] = { "bin/unix" }, [SSHD] = { "bin/sshd" },
+    [SHELL] = { "bin/shell" },
 };
 
 /* A service that has a namespace, kept in step with init's. */
@@ -288,7 +289,7 @@ static bool plain_name(unsigned i, char *buf, size_t n)
         [MIXER] = "Sound", [MUSIC] = "Music player", [NETSTACK] = "Network",
         [DHCP] = "Network address (DHCP)", [DNS] = "Name lookup (DNS)", [LOGD] = "Log saving",
         [NETLOG] = "Network log", [SNTP] = "Clock sync", [SERVE] = "File server",
-        [SSHD] = "SSH server",
+        [SSHD] = "SSH server", [UNIX] = "Unix sockets",
     };
     int k = term_of(i);
     if (k >= 0) {

@@ -144,6 +144,8 @@ enum {
     /* bin/music, bin/serve */
     MUSIC_SR_CTL = SR_USER + 0,         /* the server end of the `music` channel */
     SERVE_SR_CTL = SR_USER + 0,         /* the server end of the `serve` channel */
+    /* bin/unix */
+    UNIX_SR_CTL = SR_USER + 0,          /* the server end of /svc/unix's shared channel */
     /* bin/netstack (and the network card's device channels, SR_DEVMGR_DEVICE) */
     NETSTACK_SR_CTL = SR_USER + 0,      /* the server end of its control channel */
     NETSTACK_SR_NET = SR_USER + 1,      /* /svc/net's shared channel, server end */

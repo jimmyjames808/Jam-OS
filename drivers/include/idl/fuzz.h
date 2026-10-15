@@ -44,6 +44,7 @@
 #include <idl/splashch.h>
 #include <idl/storage.h>
 #include <idl/svc.h>
+#include <idl/unix.h>
 #include <idl/update.h>
 #include <idl/usb.h>
 #include <idl/usbbus.h>
@@ -4237,6 +4238,74 @@ static const struct idl_fuzz_msg idl_fz_svc_msgs[] = {
     { 0x00190001u, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
 };
 
+/* ---- unix ---- */
+static status_t idl_fz_unix_bind(void *ctx, const uint8_t *name, uint32_t name_len, handle_t *out_listener, uint8_t out_key[16])
+{
+    (void)ctx;
+    (void)name;
+    (void)name_len;
+    (void)out_listener;
+    (void)out_key;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    if (drv_event_create(out_listener) != OK)
+        return ERR_NO_MEMORY;
+    __builtin_memset(out_key, 0x5a, 16);
+    return OK;
+}
+static status_t idl_fz_unix_connect(void *ctx, const uint8_t *name, uint32_t name_len, const uint8_t key[16], handle_t *out_conn)
+{
+    (void)ctx;
+    (void)name;
+    (void)name_len;
+    (void)key;
+    (void)out_conn;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    if (drv_event_create(out_conn) != OK)
+        return ERR_NO_MEMORY;
+    return OK;
+}
+static status_t idl_fz_unix_listen(void *ctx, uint16_t backlog)
+{
+    (void)ctx;
+    (void)backlog;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    return OK;
+}
+static void idl_fz_unix_conn(void *ctx, handle_t end)
+{
+    (void)ctx;
+    (void)end;
+    if (end != HANDLE_INVALID)
+        drv_handle_close(end);
+}
+static const struct unix_ops idl_fz_unix_ops = {
+    .bind = idl_fz_unix_bind,
+    .connect = idl_fz_unix_connect,
+    .listen = idl_fz_unix_listen,
+};
+static uint32_t idl_fz_unix_serve(const void *q, uint32_t n, const handle_t *hs,
+                                uint32_t nh, void *r, handle_t *rhs, uint32_t *rhn)
+{
+    idl_close_all(hs, nh);
+    return unix_dispatch_on(HANDLE_INVALID, &idl_fz_unix_ops, NULL, q, n, r, rhs, rhn);
+}
+static const struct unix_events idl_fz_unix_events = {
+    .conn = idl_fz_unix_conn,
+};
+static status_t idl_fz_unix_event(const void *m, struct idl_msg *msg)
+{
+    return unix_event_dispatch(&idl_fz_unix_events, NULL, m, msg);
+}
+static const struct idl_fuzz_msg idl_fz_unix_msgs[] = {
+    { 0x00350001u, 8u, 0, 0, 0, 0, { 0 }, 1, { { 1, 0, 107 } } },
+    { 0x00350002u, 24u, 0, 0, 0, 0, { 0 }, 1, { { 1, 0, 107 } } },
+    { 0x00350003u, 10u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x00350004u, 8u, 2, 1, 0, 0, { IDL_OBJ_CHANNEL }, 0, { { 0, 0, 0 } } },
+};
+
 /* ---- update ---- */
 static status_t idl_fz_update_offer(void *ctx, struct idl_txn idl_txn, uint32_t flags, uint64_t kernel_bytes, uint64_t bootfs_bytes, uint64_t menu_bytes, const uint8_t *manifest, uint32_t manifest_len, const handle_t *files, uint32_t files_len, int32_t *out_verdict, uint32_t *out_why, uint32_t *out_file, uint32_t *out_check_ms, char *out_version, uint32_t *out_version_len, char *out_git, uint32_t *out_git_len, uint32_t *out_write_step, uint32_t *out_stick, uint32_t *out_write_ms, char *out_net, uint32_t *out_net_len, char *out_net_running, uint32_t *out_net_running_len, char *out_needs, uint32_t *out_needs_len, uint32_t *out_menu, int32_t *out_menu_status, char *out_menu_why, uint32_t *out_menu_why_len, uint32_t *out_already)
 {
@@ -5170,6 +5239,7 @@ static const struct idl_fuzz_proto idl_fuzz_protos[] __attribute__((unused)) = {
     { "splashch", 83, SPLASHCH_REQ_MAX, SPLASHCH_REP_MAX, SPLASHCH_REP_HANDLES, idl_fz_splashch_serve, idl_fz_splashch_event, idl_fz_splashch_msgs, 2 },
     { "storage", 14, STORAGE_REQ_MAX, STORAGE_REP_MAX, STORAGE_REP_HANDLES, idl_fz_storage_serve, NULL, idl_fz_storage_msgs, 8 },
     { "svc", 25, SVC_REQ_MAX, SVC_REP_MAX, SVC_REP_HANDLES, idl_fz_svc_serve, NULL, idl_fz_svc_msgs, 1 },
+    { "unix", 53, UNIX_REQ_MAX, UNIX_REP_MAX, UNIX_REP_HANDLES, idl_fz_unix_serve, idl_fz_unix_event, idl_fz_unix_msgs, 4 },
     { "update", 82, UPDATE_REQ_MAX, UPDATE_REP_MAX, UPDATE_REP_HANDLES, idl_fz_update_serve, NULL, idl_fz_update_msgs, 1 },
     { "usb", 10, USB_REQ_MAX, USB_REP_MAX, USB_REP_HANDLES, idl_fz_usb_serve, NULL, idl_fz_usb_msgs, 11 },
     { "usbbus", 13, USBBUS_REQ_MAX, USBBUS_REP_MAX, USBBUS_REP_HANDLES, idl_fz_usbbus_serve, NULL, idl_fz_usbbus_msgs, 5 },

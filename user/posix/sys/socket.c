@@ -4,7 +4,8 @@
  * a socket handed to a child sockgive.c's.
  *
  * **Addresses.** AF_INET here (AF_INET6: EAFNOSUPPORT; AF_UNIX stream
- * sockets are svcsock.c's, socketpair pipe.c's). netstack serves one card
+ * sockets are svcsock.c's, named ones through it unixsock.c's, socketpair
+ * pipe.c's). netstack serves one card
  * interface and the loopback one (127.0.0.0/8): a bind to an address that
  * isn't one of those (or INADDR_ANY) is EADDRNOTAVAIL. A socket bound to a
  * loopback address is reachable from this host only (a datagram socket
@@ -426,8 +427,8 @@ long lx_bind(long fd, long addr, long len, long d4, long e, long f)
     struct sock *s;
     long r = sock_get(fd, &d, &s);
     if (r == -ENOTSOCK && d) {
-        /* no named AF_UNIX sockets; a socketpair end is already "bound" to its peer */
-        r = d->ops == &usock_ops ? -EAFNOSUPPORT : -EINVAL;
+        /* a named AF_UNIX socket (svcsock.c); a socketpair end is already "bound" to its peer */
+        r = d->ops == &usock_ops ? usock_bind(d, addr, len) : -EINVAL;
         fd_put(d);
         return r;
     }
@@ -473,7 +474,7 @@ long lx_listen(long fd, long backlog, long c, long d4, long e, long f)
     struct sock *s;
     long r = sock_get(fd, &d, &s);
     if (r == -ENOTSOCK && d) {
-        r = d->ops == &usock_ops ? -EAFNOSUPPORT : -EOPNOTSUPP;   /* no named AF_UNIX sockets */
+        r = d->ops == &usock_ops ? usock_listen(d, backlog) : -EOPNOTSUPP;   /* svcsock.c's */
         fd_put(d);
         return r;
     }

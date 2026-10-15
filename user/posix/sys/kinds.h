@@ -9,9 +9,10 @@
  *   memfd.c    memfd_create's and shm_open's memory files (kept VMOs)
  *   eventfd.c  eventfd's counter and its event
  *   etc.c      libc's own /etc files
- *   svcsock.c  AF_UNIX stream sockets: connected only to a service
- *              socket (/svc/wayland), each with its framing (wlsock.c's
- *              JWL2); svcsock.h
+ *   svcsock.c  AF_UNIX stream sockets: connected to a service socket
+ *              (/svc/wayland), each with its framing (wlsock.c's JWL2),
+ *              or named (bind, listen, accept, connect through the
+ *              broker /svc/unix: unixsock.c); svcsock.h
  *
  * and fdpass.c, the descriptors such a socket carries (fdpass.h);
  * and dup.c, the calls on descriptors themselves (dup, dup2, dup3,

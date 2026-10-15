@@ -39,6 +39,7 @@ static const struct {
     { "session", pt_session },
     { "wayland", pt_wayland },
     { "scm", pt_scm },
+    { "unix", pt_unix },
     { "files-many", pt_files_many },
     { "sockets", pt_sockets },
     { "raw", pt_raw },
@@ -116,6 +117,8 @@ int main(int argc, char **argv)
         return pt_child_wl(argc, argv);
     if (argc >= 2 && !strcmp(argv[1], "--child-scm"))
         return pt_child_scm();
+    if (argc >= 2 && !strcmp(argv[1], "--child-unix"))
+        return pt_child_unix(argc, argv);
     setvbuf(stdout, NULL, _IOLBF, 0);   /* each line out as it is made */
     unsigned n = sizeof(sections) / sizeof(sections[0]);
     for (unsigned i = 0; i < n; i++) {

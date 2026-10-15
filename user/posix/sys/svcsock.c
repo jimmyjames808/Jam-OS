@@ -14,11 +14,14 @@
 #include "svcsock.h"
 
 /* A socket's state (struct usock's), only ever moving forward but for a
- * failed connect, which goes back to US_NEW. */
+ * failed connect or bind, which goes back to US_NEW. */
 enum usock_state {
     US_NEW = 0,        /* socket(): not connected */
     US_CONNECTING,     /* a connect is opening the service (no lock held) */
     US_CONNECTED,      /* f and conn are set, for good */
+    US_BINDING,        /* a bind is asking the broker (no lock held) */
+    US_BOUND,          /* l is set, for good */
+    US_LISTENING,      /* and listen has been called */
 };
 
 /* A service socket: the path a program connects to, the service behind
@@ -38,6 +41,7 @@ struct usock {
     uint32_t state;                         /* enum usock_state; d->lock, read atomically */
     const struct svcsock_framing *f;        /* US_CONNECTED: the row's framing */
     void *conn;                             /* US_CONNECTED: the framing's state */
+    struct ulisten *l;                      /* US_BOUND, US_LISTENING: the listener */
 };
 
 static uint32_t state_of(const struct usock *u)
@@ -74,8 +78,8 @@ long usock_recvmsg(struct fd_desc *d, struct msghdr *m, int flags)
     void *c = conn_of(d, &f);
     if (!c)
         return -ENOTCONN;
-    if (flags & (MSG_PEEK | MSG_WAITALL | MSG_TRUNC))
-        return -EOPNOTSUPP;   /* not built: no framing keeps bytes to look at twice */
+    if (f != &unixpair_framing && (flags & (MSG_PEEK | MSG_WAITALL | MSG_TRUNC)))
+        return -EOPNOTSUPP;   /* not built: no service framing keeps bytes to look at twice */
     return f->recvmsg(d, c, m, flags);
 }
 
@@ -107,10 +111,19 @@ static long usock_stat(struct fd_desc *d, struct stat *st)
     return 0;
 }
 
+/* d's listener once listen has been called, else NULL. */
+static struct ulisten *listener_of(struct fd_desc *d)
+{
+    struct usock *u = d->priv;
+    return state_of(u) == US_LISTENING ? u->l : NULL;
+}
+
 static uint32_t usock_ready(struct fd_desc *d, uint32_t interest)
 {
     const struct svcsock_framing *f;
     void *c = conn_of(d, &f);
+    if (listener_of(d))
+        return 0;   /* the arm's channel says when a connection waits */
     return c ? f->ready(c, interest) : NETWAIT_WRITE;   /* as Linux: a write says why at once */
 }
 
@@ -118,13 +131,18 @@ static long usock_arm(struct fd_desc *d, uint32_t interest, struct fd_wait *out)
 {
     const struct svcsock_framing *f;
     void *c = conn_of(d, &f);
-    return c ? f->arm(c, interest, out) : sock_arm_idle(out);
+    struct ulisten *l = listener_of(d);
+    return l ? ulisten_arm(l, out) : c ? f->arm(c, interest, out) : sock_arm_idle(out);
 }
 
-/* A connection is one process's: a child is never given it. */
+/* A service socket's connection is one process's, and a listener the
+ * broker's: a child is never given them. A named socket's connection is
+ * its socketpair end's to give. */
 static long usock_give(struct fd_desc *d, struct fd_given *out)
 {
-    return -ENOTSUP;
+    const struct svcsock_framing *f;
+    void *c = conn_of(d, &f);
+    return c && f == &unixpair_framing ? unixpair_give(d, c, out) : -ENOTSUP;
 }
 
 static void usock_close(struct fd_desc *d)
@@ -132,6 +150,8 @@ static void usock_close(struct fd_desc *d)
     struct usock *u = d->priv;
     if (state_of(u) == US_CONNECTED)
         u->f->close(u->conn);
+    if (state_of(u) == US_BOUND || state_of(u) == US_LISTENING)
+        ulisten_close(u->l);
     free(u);
 }
 
@@ -214,8 +234,10 @@ long usock_connect(struct fd_desc *d, long addr, long len)
     size_t at = offsetof(struct sockaddr_un, sun_path);
     const struct svcsock_row *row =
         (size_t)len > at ? row_for(a->sun_path, (size_t)len - at) : NULL;
-    if (!row)
-        return -ENOENT;   /* no named sockets: a path not in the table has no socket file */
+    struct unix_name n;
+    long r = row ? 0 : unix_name_of(addr, len, &n);   /* not a service socket: a named one */
+    if (r)
+        return r;
     struct usock *u = d->priv;
     lock_take(&d->lock);
     uint32_t was = state_of(u);
@@ -223,15 +245,88 @@ long usock_connect(struct fd_desc *d, long addr, long len)
         __atomic_store_n(&u->state, US_CONNECTING, __ATOMIC_RELAXED);
     lock_give(&d->lock);
     if (was != US_NEW)
-        return was == US_CONNECTING ? -EALREADY : -EISCONN;
-    long r;
-    void *conn = open_row(row, &r);
+        return was == US_CONNECTING ? -EALREADY : was == US_CONNECTED ? -EISCONN : -EINVAL;
+    void *conn = row ? open_row(row, &r) : unamed_connect(&n, &r);
     lock_take(&d->lock);
     if (conn) {
-        u->f = row->framing;
+        u->f = row ? row->framing : &unixpair_framing;
         u->conn = conn;
     }
     __atomic_store_n(&u->state, conn ? US_CONNECTED : US_NEW, __ATOMIC_RELEASE);
     lock_give(&d->lock);
     return r;
+}
+
+/* ---- named sockets: bind, listen, accept (unixsock.c's) ----------------------------------- */
+
+long usock_bind(struct fd_desc *d, long addr, long len)
+{
+    struct unix_name n;
+    long r = unix_name_of(addr, len, &n);
+    if (r)
+        return r;
+    if (!n.abstract && row_for(n.bytes, n.len))
+        return -EADDRINUSE;   /* a service socket's path: its service has it */
+    struct usock *u = d->priv;
+    lock_take(&d->lock);
+    uint32_t was = state_of(u);
+    if (was == US_NEW)
+        __atomic_store_n(&u->state, US_BINDING, __ATOMIC_RELAXED);
+    lock_give(&d->lock);
+    if (was != US_NEW)
+        return -EINVAL;   /* bound already, binding, or connected */
+    struct ulisten *l = NULL;
+    r = ulisten_bind(&n, &l);
+    lock_take(&d->lock);
+    u->l = l;
+    __atomic_store_n(&u->state, r ? US_NEW : US_BOUND, __ATOMIC_RELEASE);
+    lock_give(&d->lock);
+    return r;
+}
+
+long usock_listen(struct fd_desc *d, long backlog)
+{
+    struct usock *u = d->priv;
+    uint32_t st = state_of(u);
+    if (st == US_LISTENING)
+        return 0;   /* listen again: Linux changes the backlog, ours stays */
+    if (st != US_BOUND)
+        return -EINVAL;   /* not bound (Linux would autobind a name: not built), or connected */
+    long r = ulisten_listen(u->l, backlog > INT32_MAX ? INT32_MAX : (int)backlog);
+    if (!r)
+        __atomic_store_n(&u->state, US_LISTENING, __ATOMIC_RELEASE);
+    return r;
+}
+
+long usock_accept(struct fd_desc *d, long addr, long lenp, long flags)
+{
+    struct ulisten *l = listener_of(d);
+    if (!l)
+        return -EINVAL;   /* not listening */
+    handle_t ch;
+    long r = ulisten_accept(l, fd_status(d) & O_NONBLOCK, &ch);
+    if (!r)
+        r = unix_accepted(ch, flags);
+    if (r >= 0 && addr)
+        (void)unix_name_out(NULL, addr, lenp);   /* the connector has no name */
+    return r;
+}
+
+long usock_shutdown(struct fd_desc *d, int how)
+{
+    const struct svcsock_framing *f;
+    void *c = conn_of(d, &f);
+    if (!c)
+        return -ENOTCONN;
+    return f == &unixpair_framing ? unixpair_shutdown(c, how) : -EOPNOTSUPP;
+}
+
+long usock_name(struct fd_desc *d, long addr, long lenp, bool peer)
+{
+    struct usock *u = d->priv;
+    uint32_t st = state_of(u);
+    bool bound = st == US_BOUND || st == US_LISTENING;
+    if (peer && st != US_CONNECTED)
+        return -ENOTCONN;
+    return unix_name_out(!peer && bound ? ulisten_name(u->l) : NULL, addr, lenp);
 }

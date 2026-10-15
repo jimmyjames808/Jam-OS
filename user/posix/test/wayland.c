@@ -4,9 +4,10 @@
  * (ns_svc_set: a channel whose other end it keeps) and reads and writes
  * that end as the compositor would, JWL2 batches and handles (<jwl.h>).
  *
- *   - no service socket: a path not in the table, and /svc/wayland while
- *     our list hasn't asked for it, are ENOENT; bind and listen
- *     EAFNOSUPPORT; the calls before connect ENOTCONN;
+ *   - no service socket: a path not in the table (no socket file there),
+ *     and /svc/wayland while our list hasn't asked for it, are ENOENT;
+ *     bind to /svc/wayland EADDRINUSE, listen unbound EINVAL; the calls
+ *     before connect ENOTCONN;
  *   - sending: whole messages into batches (at most 16 KiB, never a
  *     message split), a message split over three sendmsgs, one byte with
  *     28 descriptors then the rest (libwayland's flush), 29 refused (in
@@ -61,14 +62,14 @@ static void check_no_socket(void)
     errno = 0;
     CHECK(wr_connect_to(fd, "/svc/wayland") == -1 && errno == ENOENT);   /* not in our list */
     errno = 0;
-    CHECK(wr_connect_to(fd, "/tmp/wayland-0") == -1 && errno == ENOENT);  /* not in the table */
+    CHECK(wr_connect_to(fd, "/tmp/wayland-0") == -1 && errno == ENOENT);  /* no such socket file */
     errno = 0;
-    CHECK(wr_connect_to(fd, "") == -1 && errno == ENOENT);
+    CHECK(wr_connect_to(fd, "") == -1 && errno == ECONNREFUSED);   /* an abstract name: none */
     struct sockaddr_un a = { .sun_family = AF_UNIX, .sun_path = "/svc/wayland" };
     errno = 0;
-    CHECK(bind(fd, (struct sockaddr *)&a, sizeof(a)) == -1 && errno == EAFNOSUPPORT);
+    CHECK(bind(fd, (struct sockaddr *)&a, sizeof(a)) == -1 && errno == EADDRINUSE);   /* its own */
     errno = 0;
-    CHECK(listen(fd, 1) == -1 && errno == EAFNOSUPPORT);
+    CHECK(listen(fd, 1) == -1 && errno == EINVAL);   /* not bound */
     errno = 0;
     CHECK(send(fd, "x", 1, MSG_NOSIGNAL) == -1 && errno == ENOTCONN);
     char c;
