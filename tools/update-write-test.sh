@@ -39,6 +39,11 @@
 #      refused at ROOM with ERR_NO_SPACE ("can't hold three builds"), and
 #      on the Mac every file of its ESP is as it was, no .new or .old.
 # Every frame of run 2 is tagged VLAN 21 (the peer's and the pcap's checks).
+# WRITE_RUNS picks runs (wfail wstop wnet wfull; wnet is runs 2 to 4). With
+# QEMU_BOOT_NVME=1 every boot of the stick is a boot of an installed drive
+# (qemu-test.sh makes the stick image Jam OS's GPT layout on NVMe; the ESP
+# is at 1M still, /data after it): `WRITE_RUNS=wstop QEMU_BOOT_NVME=1` is
+# the swap's power-cut points on NVMe.
 # Usage: tools/update-write-test.sh <outdir> (after `make -s image`); exit 0 on PASS.
 set -u
 DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
@@ -52,6 +57,7 @@ fail() {
 }
 
 img="$out/wtest.img"
+small="$out/wtest-small.img"   # wfull's old stick
 tools/update-test-key.sh "$out" build/jamos.img "$img" ||
     { echo "update-write-test: can't make the test key's stick"; exit 1; }
 key="$out/testkey/key1/update.key"
@@ -115,8 +121,8 @@ mmd -i "$img@@$DATA_AT" ::/update &&
     mcopy -i "$img@@$DATA_AT" "$out/jamos-C.elf" ::/update/c/jamos.elf &&
     mcopy -i "$img@@$DATA_AT" "$out/bootfs-C.img" ::/update/c/bootfs.img &&
     mmd -i "$img@@$DATA_AT" ::/update/a &&
-    mcopy -o -i "$img@@1M" ::/boot/jamos.elf "$out/jamos-A.elf" &&
-    mcopy -o -i "$img@@1M" ::/boot/bootfs.img "$out/bootfs-A0.img" &&
+    mcopy -n -o -i "$img@@1M" ::/boot/jamos.elf "$out/jamos-A.elf" &&
+    mcopy -n -o -i "$img@@1M" ::/boot/bootfs.img "$out/bootfs-A0.img" &&
     mcopy -i "$img@@$DATA_AT" "$out/jamos-A.elf" ::/update/a/jamos.elf &&
     mcopy -i "$img@@$DATA_AT" "$out/bootfs-A0.img" ::/update/a/bootfs.img &&
     cp "$out/manifest" "$out/manifest-A0" && mcopy -i "$img@@$DATA_AT" "$out/manifest-A0" ::/update/a/manifest ||
@@ -137,8 +143,24 @@ esp() {
 no_new() {
     ! mdir -i "$1@@1M" ::/boot 2>/dev/null | grep -qiE "\.(new|old)"
 }
-mcopy -o -i "$img@@1M" ::/boot/bootfs.img "$out/bootfs-A.img"
+mcopy -n -o -i "$img@@1M" ::/boot/bootfs.img "$out/bootfs-A.img"
 
+# WRITE_RUNS picks runs (default: all; wstop and wnet start from the stick as
+# run 1 leaves it, A as its build and as the previous build: from the stick
+# as it is without run 1). The runs' stick is a QEMU_BOOT_NVME=1 drive when
+# that is set: qemu-test.sh makes it the installed drive's GPT layout
+# (`mkimage.py --gpt`) and the ESP is the same "::/boot/..." at 1M; the
+# power-cut points of the swap are then on NVMe (wstop).
+runs=${WRITE_RUNS:-wfail wstop wnet wfull}
+want() { case " $runs " in *" $1 "*) return 0 ;; esac; return 1; }
+if ! want wfail; then
+    cp "$img" "$out/wtest-1.img" &&
+        mcopy -o -i "$out/wtest-1.img@@1M" "$out/bootfs-A.img" ::/boot/prev-bootfs.img &&
+        mcopy -o -i "$out/wtest-1.img@@1M" build/jamos.elf ::/boot/prev-jamos.elf ||
+        { echo "update-write-test: can't make the stick for the later runs"; exit 1; }
+fi
+
+if want wfail; then
 # Run 1: the failures, then a power cycle.
 cat > "$out/wfail.txt" <<EOF
 wait 120 Jam OS shell
@@ -170,6 +192,8 @@ esp "$out/wtest-1.img" prev-jamos.elf build/jamos.elf &&
     fail "run 1: the previous build isn't A (copied again after the failure that removed it)"
 no_new "$out/wtest-1.img" || fail "run 1: a .new or .old file is left on the ESP"
 
+fi
+if want wstop; then
 # Run 1b: a stop at each change of the swap, on a copy of run 1's stick.
 {
     printf 'wait 120 Jam OS shell\nwait {prompt}\nseen 60 init: /data mounted\n'
@@ -203,6 +227,8 @@ for run in wstopcold wstopprev; do
         fail "$run: the stopped-and-written stick didn't boot build $want (see $out/$run.log)"
 done
 
+fi
+if want wnet; then
 # Run 2: a cold boot (A), `update -m` and `reboot` (B from memory), then
 # `update -w` over the network.
 cat > "$out/wnet.txt" <<EOF
@@ -287,16 +313,17 @@ EOF
         QEMU_INPUT="$out/$run.txt" tools/qemu-test.sh "$out" $run shell > "$out/$run.out" 2>&1 ||
         fail "$run: the stick didn't boot build $want from cold (see $out/$run.log)"
 done
+fi
+if want wfull; then
 # Run 5: an old stick's 63 MiB ESP, with A as its build and as the
 # previous one, its /data as this test's: no room for B beside them.
-small="$out/wtest-small.img"
 python3 tools/mkimage.py "$small" 64 128 &&
     mformat -i "$small@@1M" -T $((63 * 2048)) -F -v JAMOS :: &&
     mformat -i "$small@@64M" -T $((64 * 2048)) -F -v JAMOS-DATA :: &&
     python3 tools/fat-label.py "$small" 1 --fix > /dev/null &&
     python3 tools/fat-label.py "$small" 64 --fix > /dev/null &&
     mmd -i "$small@@1M" ::/EFI ::/EFI/BOOT ::/boot ::/boot/limine &&
-    mcopy -o -i "$img@@1M" ::/EFI/BOOT/BOOTX64.EFI "$out/wfull-limine.efi" &&
+    mcopy -n -o -i "$img@@1M" ::/EFI/BOOT/BOOTX64.EFI "$out/wfull-limine.efi" &&
     mcopy -i "$small@@1M" "$out/wfull-limine.efi" ::/EFI/BOOT/BOOTX64.EFI &&
     mcopy -i "$small@@1M" boot/limine.conf ::/boot/limine/limine.conf &&
     mcopy -i "$small@@1M" build/jamos.elf ::/boot/jamos.elf &&
@@ -344,6 +371,7 @@ esp "$out/wtest-full.img" jamos.elf build/jamos.elf &&
     esp "$out/wtest-full.img" prev-bootfs.img "$out/bootfs-A.img" ||
     fail "run 5: the old stick's builds changed"
 no_new "$out/wtest-full.img" || fail "run 5: a .new or .old file is left on the old stick's ESP"
+fi
 rm -f "$img" "$out/wtest-1.img" "$out/wtest-2.img" "$out/wtest-stop.img" "$out/wtest-got" \
     "$small" "$out/wtest-full.img" "$out/wfull-filler.bin"
 if [ $fails -eq 0 ]; then

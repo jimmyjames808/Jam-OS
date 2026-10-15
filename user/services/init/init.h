@@ -80,7 +80,8 @@ extern bool init_splashhang;
 extern bool init_vtdtest;
 /* The option word "nvmetest=<words>" (main.c, a test's; NULL: none):
  * devmgr is started with it and passes it on to every drv/nvme (its test
- * reads: drivers/nvme/selftest.c). */
+ * reads: drivers/nvme/selftest.c). install.c reads "instcut<point>" in the
+ * list too, a test's power cut during an install (cut_after). */
 extern const char *init_nvmetest;
 /* The option word "diskro" (main.c; the "internal disks read-only"
  * entry): devmgr is started with it and starts every drv/nvme with `ro`,
