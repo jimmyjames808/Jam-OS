@@ -71,11 +71,16 @@ enum level {
     LEVEL_INSTALL,
 };
 
-/* A filesystem service on one partition of a disk: bin/fat, supervised by
+/* A filesystem service on one partition of a disk: bin/fat or bin/extfs
+ * (fsvc.c's fs_choose decides by what the partition holds), supervised by
  * the rule of a service that outlives its process. path NULL: a free
  * slot. */
 struct vol {
-    const char         *path;       /* FAT_PATH; NULL: a free slot */
+    const char         *path;       /* FAT_PATH or EXTFS_PATH; NULL: a free slot */
+    bool                ext;        /* path is EXTFS_PATH: an ext volume (fs_choose's look) */
+    bool                jam;        /* ... the Jam OS drive's data partition, mounted at /jam */
+    bool                dflt_rw;    /* ... its mount is read-write unless asked otherwise: /jam
+                                     * and a test disk's; someone else's ext volume never */
     bool                test;       /* a test disk's: its deaths and giving up are expected */
     /* The service while it runs. */
     handle_t            job, proc;  /* its job and process, 0 while none runs */
@@ -343,8 +348,8 @@ status_t fs_handles(struct vol *b, struct spawn_handle *x, rights_t *xr, unsigne
 status_t fs_open_block(struct vol *b, bool read_only, handle_t *out);
 /* Close b's `fsctl` channel, if it has one. */
 void     fs_ctl_close(struct vol *b);
-/* The mount point b serves: "/data", "/esp-test", "/usb0". The string is
- * good until the next call. */
+/* The mount point b serves: "/data", "/esp-test", "/usb0", "/jam". The
+ * string is good until the next call. */
 const char *fs_mount_path(const struct vol *b);
 /* b won't run again: free its slot. */
 void     fs_retire(struct vol *b);

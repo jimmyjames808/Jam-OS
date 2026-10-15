@@ -128,13 +128,18 @@ static const char *type_name(uint8_t scheme, uint8_t mbr, const uint8_t *guid, c
     }
 }
 
-static const char *fs_note(uint8_t fs, uint32_t block_size, const char *mount, char *buf,
-                           size_t cap)
+static const char *fs_note(uint8_t fs, uint8_t fstype, uint32_t block_size, const char *mount,
+                           char *buf, size_t cap)
 {
     switch (fs) {
-    case VOLDISKS_FS_MOUNTED: return mount;
+    case VOLDISKS_FS_MOUNTED:
+        if (fstype != VOLDISKS_FSTYPE_EXT)
+            return mount;
+        snprintf(buf, cap, "%s (ext)", mount);
+        return buf;
     case VOLDISKS_FS_WAITING: return "(starting)";
-    case VOLDISKS_FS_NO_FAT: return "(no FAT volume)";
+    case VOLDISKS_FS_NO_FAT: return fstype == VOLDISKS_FSTYPE_EXT ? "(no ext volume)"
+                                                                   : "(no FAT volume)";
     case VOLDISKS_FS_BLOCK_SIZE:
         snprintf(buf, cap, "(no FAT: %u-byte blocks)", block_size);
         return buf;
@@ -163,17 +168,17 @@ static status_t get_disk(handle_t list, uint32_t index, struct disk_row *r)
 
 static void say_partition(handle_t list, const struct disk_row *r, unsigned n)
 {
-    uint8_t mbr, guid[16], fs;
+    uint8_t mbr, guid[16], fs, fstype;
     uint64_t start, blocks;
     char label[109], mount[16], tbuf[40], fbuf[40], size[24];
     uint32_t ll, ml;
     status_t st = voldisks_partition_until(list, now() + LIST_WAIT, r->id, n, &mbr, guid, &start,
-                                           &blocks, &fs, label, &ll, mount, &ml);
+                                           &blocks, &fs, &fstype, label, &ll, mount, &ml);
     if (st != OK) {
         sh_say("  %2u  (%s)\n", n + 1, status_str(st));
         return;
     }
-    const char *note = fs_note(fs, r->block_size, mount, fbuf, sizeof(fbuf));
+    const char *note = fs_note(fs, fstype, r->block_size, mount, fbuf, sizeof(fbuf));
     const char *type = type_name(r->scheme, mbr, guid, tbuf, sizeof(tbuf));
     sh_human(blocks * r->block_size, size, sizeof(size));
     if (note[0])
@@ -313,12 +318,12 @@ static int digest_regions(struct digest_run *run)
     if (d->blocks >= 34 && !region(run, "gpt-head", 0, 34))
         return 1;
     for (unsigned n = 0; n < d->partitions && n < MAX_PARTS && d->scheme != 0; n++) {
-        uint8_t mbr, guid[16], fs;
+        uint8_t mbr, guid[16], fs, fstype;
         uint64_t start, blocks;
         char label[109], mount[16];
         uint32_t ll, ml;
         run->st = voldisks_partition_until(run->list, now() + LIST_WAIT, d->id, n, &mbr, guid,
-                                           &start, &blocks, &fs, label, &ll, mount, &ml);
+                                           &start, &blocks, &fs, &fstype, label, &ll, mount, &ml);
         if (run->st != OK) {
             sh_tty("disk digest: partition %u: %s\n", n + 1, status_str(run->st));
             return 1;
@@ -468,12 +473,12 @@ static bool serial_tail_is(const char *serial, const char *typed)
 static bool part_row(handle_t list, const struct disk_row *d, unsigned i, uint64_t *blocks,
                      bool *mounted)
 {
-    uint8_t mbr, guid[16], fs;
+    uint8_t mbr, guid[16], fs, fstype;
     uint64_t start;
     char label[109], mount[16];
     uint32_t ll, ml;
     if (voldisks_partition_until(list, now() + LIST_WAIT, d->id, i, &mbr, guid, &start, blocks, &fs,
-                                 label, &ll, mount, &ml) != OK)
+                                 &fstype, label, &ll, mount, &ml) != OK)
         return false;
     *mounted = fs == VOLDISKS_FS_MOUNTED;
     return true;
@@ -501,12 +506,12 @@ static void say_contents(handle_t list, const struct disk_row *d)
         sh_say("  On it: %s with %u partition%s:\n", d->scheme < 3 ? schemes[d->scheme] : "a table",
                d->partitions, d->partitions == 1 ? "" : "s");
     for (unsigned n = 0; n < d->partitions && n < MAX_PARTS; n++) {
-        uint8_t mbr, guid[16], fs;
+        uint8_t mbr, guid[16], fs, fstype;
         uint64_t start, blocks;
         char label[109], mount[16], tbuf[40], size[24], vol[17] = "";
         uint32_t ll, ml;
         if (voldisks_partition_until(list, now() + LIST_WAIT, d->id, n, &mbr, guid, &start,
-                                     &blocks, &fs, label, &ll, mount, &ml) != OK) {
+                                     &blocks, &fs, &fstype, label, &ll, mount, &ml) != OK) {
             sh_say("    %2u  (not listed)\n", n + 1);
             continue;
         }
@@ -516,10 +521,13 @@ static void say_contents(handle_t list, const struct disk_row *d)
             bool ro = true;
             if (fs_statfs(mount, NULL, NULL, &ro, vol) != OK)
                 vol[0] = '\0';
-            sh_say("        FAT volume%s%s%s, mounted read-only at %s (unmounted first)\n",
-                   vol[0] ? " \"" : " (no label)", vol, vol[0] ? "\"" : "", mount);
+            sh_say("        %s volume%s%s%s, mounted %s at %s (unmounted first)\n",
+                   fstype == VOLDISKS_FSTYPE_EXT ? "ext" : "FAT",
+                   vol[0] ? " \"" : " (no label)", vol, vol[0] ? "\"" : "",
+                   ro ? "read-only" : "read-write", mount);
         } else if (fs == VOLDISKS_FS_NO_FAT) {
-            sh_say("        no FAT volume: data Jam OS doesn't read (NTFS, ext4, ...)\n");
+            sh_say("        no %s volume: data Jam OS doesn't read (NTFS, btrfs, ...)\n",
+                   fstype == VOLDISKS_FSTYPE_EXT ? "ext" : "FAT");
         }
     }
     if (d->partitions > MAX_PARTS)
