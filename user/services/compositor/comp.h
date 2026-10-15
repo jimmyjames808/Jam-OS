@@ -695,6 +695,10 @@ bool     subsurface_synced(const struct comp_surface *s);
  * as synchronized). *reshaped is set if the tree's order or a position
  * changed. OK, or a protocol error posted. */
 status_t subsurface_applied(struct comp_surface *s, bool parent_sync, bool *reshaped);
+/* A commit of subsurface s applied a buffer offset (dx, dy): s moves by it
+ * against its parent, until set_position next sets its place (weston's
+ * rule). True if it moved. */
+bool     subsurface_offset(struct comp_surface *s, int32_t dx, int32_t dy);
 /* s's wl_surface goes: its children lose their parent (shown nowhere
  * since), before its window goes. */
 void     subsurface_parent_gone(struct comp_surface *s);

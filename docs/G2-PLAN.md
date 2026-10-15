@@ -1336,7 +1336,12 @@ moves the frame round the tree, but the window manager places the window
 again only at the main surface's next commit. A window with subsurfaces
 never takes the full-screen path (its rows copied straight from its main
 surface's buffer). The keyboard focus stays the main surface's (a
-subsurface never has it, as the protocol says).
+subsurface never has it, as the protocol says). A commit's buffer offset
+(`wl_surface.offset`, or attach's x and y below version 5) moves a
+subsurface against its parent, cached commits' offsets added up, until
+set_position next sets its place (weston's rule; added by GR, its Low 2).
+An effectively synchronized grandchild's cache waits for its own parent's
+next apply, as wlroots does (GR's Low 3, kept by the owner's decision).
 
 **For GC3 (popups)**: an xdg_popup is a window of its own, and its surface
 may have a tree: `window_tree_box`, the tree drawing and `window_input_at`
