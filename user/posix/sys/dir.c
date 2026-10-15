@@ -76,7 +76,7 @@ static uint64_t id_of(const char *abs, const char *more)
     struct path p;
     struct path_info i;
     snprintf(buf, sizeof(buf), "%s%s", abs, more);
-    return !path_set(buf, &p) && !path_info(&p, &i) && i.id ? i.id : 1;
+    return !path_set(buf, &p) && !path_info_follow(&p, &i) && i.id ? i.id : 1;
 }
 
 /* Ask the service for cookie's batch. d->lock. */
@@ -100,6 +100,8 @@ static long fetch(const struct dir *x, struct dir *w, uint32_t cookie)
     status_t st = fs_readdir_within(fs, FILE_TIMEOUT, rel, len, cookie, &next, &count, w->batch,
                                     &blen);
     jam_handle_close(fs);
+    if (st == ERR_LINK_OUT)
+        return -ENOENT;   /* the directory's place is a link out now */
     if (st != OK)
         return path_err_read(&p, st);
     if (!count && next)
@@ -124,7 +126,7 @@ static long batch_entry(struct dir *x, uint16_t k, struct entry *e)
     memcpy(e->name, de.name, de.name_len);
     e->name[de.name_len] = '\0';
     e->ino = de.id ? de.id : 1;
-    e->type = de.is_dir ? DT_DIR : DT_REG;
+    e->type = de.type ? de.type : de.is_dir ? DT_DIR : DT_REG;   /* FS_DT_* are DT_* */
     return 0;
 }
 
@@ -265,7 +267,7 @@ static long dir_stat(struct fd_desc *d, struct stat *st)
     struct path_info i;
     long r = path_set(x->path, &p);
     if (!r)
-        r = path_info(&p, &i);
+        r = path_info_follow(&p, &i);
     if (!r)
         path_fill_stat(&p, &i, st);
     return r;
@@ -358,7 +360,7 @@ static bool top_level(const struct path *p)
     return p->where != PATH_MOUNT || !p->abs[p->mount_len];
 }
 
-/* Does something exist at p? */
+/* Does something exist at p (a link itself, if p->nofollow)? */
 static bool exists(const struct path *p)
 {
     struct path_info i;
@@ -369,28 +371,39 @@ static bool exists(const struct path *p)
     return which != LIBC_NONE ? !path_libc_stat(&q, which, &st) : !path_info(&q, &i);
 }
 
-long lx_mkdirat(long dirfd, long pathname, long mode, long d, long e, long f)
+/* mkdir of p with mode (the umask applied). */
+static long mkdir_path(struct path *p, uint32_t mode)
 {
-    struct path p;
-    long r = path_get(dirfd, (const char *)(uintptr_t)pathname, &p);
-    if (r)
-        return r;
-    enum path_libc which = path_libc(&p);
-    if (which != LIBC_NONE || top_level(&p)) {
-        if (exists(&p))
+    enum path_libc which = path_libc(p);
+    if (which != LIBC_NONE || top_level(p)) {
+        if (exists(p))
             return -EEXIST;
         return which != LIBC_NONE ? path_libc_refuse(which) : -EROFS;
     }
     handle_t fs;
-    if ((r = path_fs(&p, &fs)) != 0)
+    long r = path_fs(p, &fs);
+    if (r)
         return r;
     uint32_t len;
-    const char *rel = path_rel(&p, &len);
-    status_t st = fs_mkdir_within(fs, FILE_TIMEOUT, rel, len, (uint32_t)mode & 07777u);
+    const char *rel = path_rel(p, &len);
+    status_t st = fs_mkdir_within(fs, FILE_TIMEOUT, rel, len, mode);
     jam_handle_close(fs);
-    if (st == ERR_ACCESS_DENIED && exists(&p))
+    if (st == ERR_ACCESS_DENIED && exists(p))
         return -EEXIST;   /* Linux looks for it before it asks for write access */
-    return st == OK ? 0 : path_err(&p, st);
+    return st == OK ? 0 : path_err(p, st);
+}
+
+long lx_mkdirat(long dirfd, long pathname, long mode, long d, long e, long f)
+{
+    struct path p;
+    long r = path_get(dirfd, (const char *)(uintptr_t)pathname, &p);
+    p.nofollow = true;   /* a link there, dangling or not, is EEXIST */
+    uint32_t bits = ((uint32_t)mode & 07777u) & ~lx_umask_now();
+    if (!r)
+        do
+            r = mkdir_path(&p, bits);
+        while (path_again(&p, &r));
+    return r;
 }
 
 long lx_mkdir(long pathname, long mode, long c, long d, long e, long f)
@@ -398,8 +411,8 @@ long lx_mkdir(long pathname, long mode, long c, long d, long e, long f)
     return lx_mkdirat(AT_FDCWD, pathname, mode, 0, 0, 0);
 }
 
-/* unlink (flags 0) or rmdir (FS_UNLINK_DIR) of p. */
-static long remove_path(const struct path *p, uint32_t flags)
+/* unlink (flags 0) or rmdir (FS_UNLINK_DIR) of p (a link itself). */
+static long remove_path(struct path *p, uint32_t flags)
 {
     bool dir = flags & FS_UNLINK_DIR;
     if (dir && p->last_dot)
@@ -439,7 +452,12 @@ long lx_unlinkat(long dirfd, long pathname, long flags, long d, long e, long f)
         return -EINVAL;
     struct path p;
     long r = path_get(dirfd, (const char *)(uintptr_t)pathname, &p);
-    return r ? r : remove_path(&p, flags & AT_REMOVEDIR ? FS_UNLINK_DIR : 0);
+    p.nofollow = true;
+    if (!r)
+        do
+            r = remove_path(&p, flags & AT_REMOVEDIR ? FS_UNLINK_DIR : 0);
+        while (path_again(&p, &r));
+    return r;
 }
 
 long lx_unlink(long pathname, long b, long c, long d, long e, long f)
@@ -476,11 +494,14 @@ static long rename_check(const struct path *a, const struct path *b)
     return 1;
 }
 
+/* rename of a to b (both physical: path_place) with fs.rename's flags. */
 static long rename_paths(const struct path *a, const struct path *b, uint32_t flags)
 {
     enum path_libc wa = path_libc(a), wb = path_libc(b);
     if (wa != LIBC_NONE || wb != LIBC_NONE)
         return path_libc_refuse(wa != LIBC_NONE ? wa : wb);
+    if ((flags & FS_RENAME_EXCHANGE) && !a->links)
+        return -EINVAL;   /* FAT and the boot image have no exchange */
     long r = rename_check(a, b);
     if (r <= 0)
         return r;
@@ -491,21 +512,31 @@ static long rename_paths(const struct path *a, const struct path *b, uint32_t fl
     const char *arel = path_rel(a, &alen), *brel = path_rel(b, &blen);
     status_t st = fs_rename_within(fs, FILE_TIMEOUT, arel, alen, brel, blen, flags);
     jam_handle_close(fs);
+    if (st == ERR_LINK_OUT)
+        return -EIO;   /* both were placed just now: a link made meanwhile */
     return st == OK ? 0 : path_err(a, st);
 }
 
 long lx_renameat2(long olddirfd, long oldpath, long newdirfd, long newpath, long flags, long f)
 {
-    if (flags & ~(long)RENAME_NOREPLACE)
-        return -EINVAL;   /* RENAME_EXCHANGE and RENAME_WHITEOUT: FAT has neither */
+    if ((flags & ~(long)(RENAME_NOREPLACE | RENAME_EXCHANGE)) ||
+        (flags & (RENAME_NOREPLACE | RENAME_EXCHANGE)) == (RENAME_NOREPLACE | RENAME_EXCHANGE))
+        return -EINVAL;   /* RENAME_WHITEOUT: none here */
     struct path *two = malloc(2 * sizeof(*two));
     if (!two)
         return -ENOMEM;
     long r = path_get(olddirfd, (const char *)(uintptr_t)oldpath, &two[0]);
     if (!r)
         r = path_get(newdirfd, (const char *)(uintptr_t)newpath, &two[1]);
+    two[0].nofollow = two[1].nofollow = true;   /* rename moves a link, never its target */
     if (!r)
-        r = rename_paths(&two[0], &two[1], flags & RENAME_NOREPLACE ? 0 : FS_RENAME_REPLACE);
+        r = path_place(&two[0]);
+    if (!r)
+        r = path_place(&two[1]);
+    uint32_t ff = flags & RENAME_EXCHANGE ? FS_RENAME_EXCHANGE
+                  : flags & RENAME_NOREPLACE ? 0 : FS_RENAME_REPLACE;
+    if (!r)
+        r = rename_paths(&two[0], &two[1], ff);
     free(two);
     return r;
 }
@@ -522,21 +553,32 @@ long lx_rename(long oldpath, long newpath, long c, long d, long e, long f)
 
 /* ---- the current directory ------------------------------------------------------ */
 
-long lx_chdir(long pathname, long b, long c, long d, long e, long f)
+/* chdir's check of p (a directory), and its physical form. */
+static long chdir_path(struct path *p)
 {
-    struct path p;
     struct path_info i;
     struct stat st;
-    long r = path_get(AT_FDCWD, (const char *)(uintptr_t)pathname, &p);
-    enum path_libc which = r ? LIBC_NONE : path_libc(&p);
-    if (!r && which != LIBC_NONE) {
-        r = path_libc_stat(&p, which, &st);
+    long r;
+    enum path_libc which = path_libc(p);
+    if (which != LIBC_NONE) {
+        r = path_libc_stat(p, which, &st);
         i.is_dir = !r && S_ISDIR(st.st_mode);
-    } else if (!r) {
-        r = path_info(&p, &i);
+    } else {
+        r = path_info(p, &i);
     }
     if (!r && !i.is_dir)
         r = -ENOTDIR;
+    return r ? r : path_place(p);   /* where a link led: getcwd says that */
+}
+
+long lx_chdir(long pathname, long b, long c, long d, long e, long f)
+{
+    struct path p;
+    long r = path_get(AT_FDCWD, (const char *)(uintptr_t)pathname, &p);
+    if (!r)
+        do
+            r = chdir_path(&p);
+        while (path_again(&p, &r));
     if (!r)
         path_cwd_set(p.abs);
     return r;

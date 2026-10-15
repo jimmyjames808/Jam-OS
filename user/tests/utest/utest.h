@@ -363,6 +363,8 @@ bool t_extfs_restart_steps(void);
 bool t_extfs_restart_handles(void);
 bool t_extfs_restart_bad(void);
 bool t_extfs_spare(void);
+/* extfs_posix.c: posixtest's links section on an extfs volume (libc, U6). */
+bool t_extfs_posix(void);
 bool t_view_keys_names(void);
 bool t_fat_view_keys(void);
 bool t_view_hides_names(void);
