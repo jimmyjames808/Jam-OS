@@ -474,9 +474,9 @@ KTEST(vmo_big_child_sparse)
     KT_EQ(peek(c, 700 * (GIB / PG)), 0x5000 + 700);
     KT_EQ(peek(c, TIB / PG - GIB / PG), 0x5000 + TIB / GIB - 1);
     KT_EQ(peek(c, 700 * (GIB / PG) + 1), 0);
-    /* 2,048 lock holds and the child's 3,075 tables and pages: a few ms;
-     * a hold per 2 MiB: half a million more. */
-    KT_IDLE_ASSERT(ns < 25 * NS_PER_MS);
+    /* 2,048 lock holds and the child's 3,075 tables and pages: 2 ms on the
+     * PC's QEMU; a hold per 2 MiB, half a million more: 18 ms there. */
+    KT_IDLE_ASSERT(ns < 8 * NS_PER_MS);
     put(c);
     kt_job_is_empty(j);
     job_unref(j);
