@@ -40,6 +40,7 @@
 #define INITCTL_LAUNCH           0x0012000au
 #define INITCTL_DISKS            0x0012000bu
 #define INITCTL_PREPARE_DISK     0x0012000cu
+#define INITCTL_PKG_CHANNEL      0x0012000du
 
 /* Constants (the .idl's `const` lines). */
 /* The most bytes of kill's name, mount's path, terminal's command and
@@ -152,6 +153,14 @@ struct initctl_prepare_disk_req {
     uint32_t id;
 } __attribute__((packed));
 struct initctl_prepare_disk_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
+struct initctl_pkg_channel_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct initctl_pkg_channel_rep {
     uint32_t txid;
     int32_t  status;
 } __attribute__((packed));
@@ -715,6 +724,61 @@ static inline status_t initctl_prepare_disk(handle_t ch, uint32_t id, const char
     return initctl_prepare_disk_call(ch, false, DEADLINE_NEVER, id, tail, tail_len, word, word_len);
 }
 
+/* initctl_pkg_channel_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t initctl_pkg_channel_call(handle_t ch, bool idl_within, uint64_t idl_t, handle_t *out_pkg)
+{
+    _Alignas(8) uint8_t idl_b0[8];
+    _Alignas(8) uint8_t idl_b1[8];
+    struct initctl_pkg_channel_req *idl_q = (struct initctl_pkg_channel_req *)idl_b0;
+    const struct initctl_pkg_channel_rep *idl_r = (const struct initctl_pkg_channel_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = INITCTL_PKG_CHANNEL;
+    handle_t idl_rh[1];
+    if (idl_st == OK)
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 8, &idl_got[0], idl_rh, 1, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st != OK)
+        idl_got[1] = 0;   /* handles arrive only with OK */
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
+    if (idl_st == OK && idl_got[1] != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(idl_handle_is(idl_rh[0], IDL_OBJ_CHANNEL)))
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK)
+        idl_close_all(idl_rh, idl_got[1]);
+    if (idl_st == OK) {
+        if (out_pkg)
+            *out_pkg = idl_rh[0];
+        else
+            drv_handle_close(idl_rh[0]);
+    }
+    (void)idl_o;
+    return idl_st;
+}
+/* A channel that speaks `pkgctl` (abi/idl/pkgctl.idl): init's approvals of
+ * a package's programs, and their revocation. The shell's `pkg` hands it to
+ * bin/pkg, which holds nothing else of init's. A newer channel closes an
+ * older one (its holder sees ERR_PEER_CLOSED), unless the older one's call
+ * is still being worked on: then ERR_BAD_STATE. The shell's channel only
+ * (ERR_ACCESS_DENIED on the consoles' and the compositor's). */
+static inline status_t initctl_pkg_channel_until(handle_t ch, uint64_t deadline_ns, handle_t *out_pkg)
+{
+    return initctl_pkg_channel_call(ch, false, deadline_ns, out_pkg);
+}
+static inline status_t initctl_pkg_channel_within(handle_t ch, uint64_t timeout_ns, handle_t *out_pkg)
+{
+    return initctl_pkg_channel_call(ch, true, timeout_ns, out_pkg);
+}
+static inline status_t initctl_pkg_channel(handle_t ch, handle_t *out_pkg)
+{
+    return initctl_pkg_channel_call(ch, false, DEADLINE_NEVER, out_pkg);
+}
+
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
 
 /* initctl_kill without waiting: the request, with the caller's txid (not 0).
@@ -1143,6 +1207,46 @@ static inline status_t initctl_prepare_disk_result(const void *idl_rep, struct i
     return OK;
 }
 
+/* initctl_pkg_channel without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then initctl_pkg_channel_result. */
+static inline status_t initctl_pkg_channel_send(handle_t ch, uint32_t idl_txid)
+{
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    _Alignas(8) uint8_t idl_b0[8];
+    struct initctl_pkg_channel_req *idl_q = (struct initctl_pkg_channel_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = INITCTL_PKG_CHANNEL;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
+}
+
+/* The status and results of a reply to initctl_pkg_channel_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t initctl_pkg_channel_result(const void *idl_rep, struct idl_msg *idl_m, handle_t *out_pkg)
+{
+    const struct initctl_pkg_channel_rep *idl_r = (const struct initctl_pkg_channel_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(idl_handle_is(idl_m->hs[0], IDL_OBJ_CHANNEL)))
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    if (out_pkg)
+        *out_pkg = idl_m->hs[0];
+    else
+        drv_handle_close(idl_m->hs[0]);
+    idl_m->nh = 0;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -1162,6 +1266,7 @@ struct initctl_ops {
     status_t (*launch)(void *ctx, const char *app, uint32_t app_len, uint64_t *out_koid);
     status_t (*disks)(void *ctx, handle_t *out_list);
     status_t (*prepare_disk)(void *ctx, struct idl_txn idl_txn, uint32_t id, const char *tail, uint32_t tail_len, const char *word, uint32_t word_len);
+    status_t (*pkg_channel)(void *ctx, handle_t *out_pkg);
 };
 
 /* Answer the initctl.kill request kept in txn: idl_st and, if it is OK, the
@@ -1382,6 +1487,30 @@ static inline status_t initctl_reply_prepare_disk(struct idl_txn idl_txn, status
         idl_rn = sizeof(struct idl_rep_hdr);
     }
     status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
+}
+
+/* Answer the initctl.pkg_channel request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t initctl_reply_pkg_channel(struct idl_txn idl_txn, status_t idl_st, handle_t pkg)
+{
+    handle_t idl_hs[1] = { pkg };
+    _Alignas(8) uint8_t idl_b0[8];
+    struct initctl_pkg_channel_rep *idl_r = (struct initctl_pkg_channel_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(pkg != HANDLE_INVALID))
+        idl_st = ERR_INTERNAL;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        if (idl_hs[0] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[0]);
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, idl_st == OK ? idl_hs : NULL, idl_st == OK ? 1 : 0);
     return idl_ws;
 }
 
@@ -1689,6 +1818,29 @@ static inline uint32_t initctl_dispatch_on(handle_t ch, const struct initctl_ops
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
+        return sizeof(*idl_r);
+    }
+    case INITCTL_PKG_CHANNEL: {
+        const struct initctl_pkg_channel_req *idl_q = (const struct initctl_pkg_channel_req *)req;
+        struct initctl_pkg_channel_rep *idl_r = (struct initctl_pkg_channel_rep *)rep;
+        handle_t out_pkg = HANDLE_INVALID;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->pkg_channel) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->pkg_channel(ctx, &out_pkg);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && !(out_pkg != HANDLE_INVALID))
+            idl_h->status = ERR_INTERNAL;   /* a handle result left unset */
+        if (idl_h->status != OK) {
+            if (out_pkg != HANDLE_INVALID)
+                drv_handle_close(out_pkg);
+            return sizeof(*idl_h);
+        }
+        rhs[0] = out_pkg;
+        *rhn = 1;
         return sizeof(*idl_r);
     }
     }

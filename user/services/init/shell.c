@@ -426,6 +426,7 @@ static void data_came(void)
         services_settings(NETSTACK);
         comp_settings();   /* the saved window layout */
         terms_settings();  /* the terminals' font */
+        pkg_data_came(port, KEY_PKG);   /* a package transaction cut short */
     }
     had = has;
 }
@@ -556,6 +557,8 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
             splash_event();
         } else if (pkt.key == KEY_UPDATE) {
             update_event();
+        } else if (pkt.key == KEY_PKG) {
+            pkg_event();
         } else if (pkt.key == KEY_NETCTL) {
             net_netctl_event();
         } else if (pkt.key == KEY_DEVMGR) {

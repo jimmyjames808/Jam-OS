@@ -153,3 +153,11 @@ const APP_MAX      15
 # minutes). The shell's channel only (ERR_ACCESS_DENIED on the consoles' and
 # the compositor's). Errors are volinstall.prepare's.
 12 prepare_disk  (u32 id, str[<=20] tail, str[<=8] word) -> () later
+
+# A channel that speaks `pkgctl` (abi/idl/pkgctl.idl): init's approvals of
+# a package's programs, and their revocation. The shell's `pkg` hands it to
+# bin/pkg, which holds nothing else of init's. A newer channel closes an
+# older one (its holder sees ERR_PEER_CLOSED), unless the older one's call
+# is still being worked on: then ERR_BAD_STATE. The shell's channel only
+# (ERR_ACCESS_DENIED on the consoles' and the compositor's).
+13 pkg_channel  () -> (handle<channel> pkg)

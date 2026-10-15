@@ -365,6 +365,8 @@ bool t_extfs_restart_bad(void);
 bool t_extfs_spare(void);
 bool t_view_keys_names(void);
 bool t_fat_view_keys(void);
+bool t_view_pkg_names(void);
+bool t_fat_view_pkg(void);
 bool t_view_hides_names(void);
 bool t_fat_view_no_etc(void);
 bool t_fat_view_limits(void);
@@ -974,6 +976,19 @@ bool t_pkgfmt_lists_are_allows(void);
 bool t_pkgfmt_note_is_wants(void);
 bool t_pkgfmt_journal(void);
 bool t_pkgfmt_fuzz(void);
+
+/* pkgctl.c: init's approvals of a package's programs (init's pkgapprove.c
+ * over a RAM disk's fat at /pkgt), the settle of a journal, the want
+ * `mount /data rw pkg`, and init's own pkgctl channel. */
+bool t_pkgctl_good(void);
+bool t_pkgctl_changed_file(void);
+bool t_pkgctl_changed_table(void);
+bool t_pkgctl_wrong_key(void);
+bool t_pkgctl_refused_list(void);
+bool t_pkgctl_other_version(void);
+bool t_pkgctl_settle(void);
+bool t_pkgctl_want(void);
+bool t_pkgctl_init(void);
 bool t_netlog_golden(void);
 bool t_netlog_hostile(void);
 bool t_netlog_whole_log(void);

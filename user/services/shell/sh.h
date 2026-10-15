@@ -331,7 +331,9 @@ int      sh_allow_each(void (*fn)(const char *hash, const char *path, const char
 /* Write an approval for path: its page table from vmo, sh_program_file's
  * VMO of size bytes whose SHA-256 is hash_hex, then its line (replacing
  * its old one). Remove those whose path or file name is `name` (*removed:
- * how many). Either way a table no line names any more goes. */
+ * how many). Either way a table no line names any more goes.
+ * ERR_BAD_STATE, nothing changed: a line either would drop is a package's
+ * (init's, tagged: `pkg remove` takes it back). */
 status_t sh_allow_add(const char *path, handle_t vmo, uint64_t size, const char *hash_hex,
                       const char *text);
 status_t sh_allow_remove(const char *name, unsigned *removed);

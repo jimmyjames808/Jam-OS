@@ -67,6 +67,7 @@
 #define IDL_ID_UPDATE         0x0052u   /* abi/idl/update.idl */
 #define IDL_ID_SPLASHCH       0x0053u   /* abi/idl/splashch.idl */
 #define IDL_ID_CRASHRES       0x0054u   /* abi/idl/logctl.idl */
+#define IDL_ID_PKGCTL         0x0055u   /* abi/idl/pkgctl.idl */
 #define IDL_ID_DEVMGR         0x005au   /* abi/idl/devmgr.idl */
 #define IDL_ID_DEVMGRCTL      0x005bu   /* abi/idl/devmgr.idl */
 #define IDL_ID_CRASHER        0x005cu   /* abi/idl/crasher.idl */

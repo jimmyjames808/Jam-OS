@@ -38,6 +38,7 @@
 #include <idl/notify.h>
 #include <idl/nschan.h>
 #include <idl/null.h>
+#include <idl/pkgctl.h>
 #include <idl/serve.h>
 #include <idl/session.h>
 #include <idl/signal.h>
@@ -2553,6 +2554,16 @@ static status_t idl_fz_initctl_prepare_disk(void *ctx, struct idl_txn idl_txn, u
         return ERR_IO;
     return OK;
 }
+static status_t idl_fz_initctl_pkg_channel(void *ctx, handle_t *out_pkg)
+{
+    (void)ctx;
+    (void)out_pkg;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    if (drv_event_create(out_pkg) != OK)
+        return ERR_NO_MEMORY;
+    return OK;
+}
 static const struct initctl_ops idl_fz_initctl_ops = {
     .kill = idl_fz_initctl_kill,
     .sync = idl_fz_initctl_sync,
@@ -2566,6 +2577,7 @@ static const struct initctl_ops idl_fz_initctl_ops = {
     .launch = idl_fz_initctl_launch,
     .disks = idl_fz_initctl_disks,
     .prepare_disk = idl_fz_initctl_prepare_disk,
+    .pkg_channel = idl_fz_initctl_pkg_channel,
 };
 static uint32_t idl_fz_initctl_serve(const void *q, uint32_t n, const handle_t *hs,
                                 uint32_t nh, void *r, handle_t *rhs, uint32_t *rhn)
@@ -2586,6 +2598,7 @@ static const struct idl_fuzz_msg idl_fz_initctl_msgs[] = {
     { 0x0012000au, 8u, 0, 0, 0, 0, { 0 }, 1, { { 1, 1, 15 } } },
     { 0x0012000bu, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x0012000cu, 12u, 0, 0, 0, 0, { 0 }, 2, { { 1, 1, 20 }, { 1, 1, 8 } } },
+    { 0x0012000du, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
 };
 
 /* ---- input ---- */
@@ -3826,6 +3839,59 @@ static const struct idl_fuzz_msg idl_fz_null_msgs[] = {
     { 0x00010002u, 16u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x00010003u, 24u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x00010004u, 13u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+};
+
+/* ---- pkgctl ---- */
+static status_t idl_fz_pkgctl_approve(void *ctx, struct idl_txn idl_txn, uint32_t flags, uint64_t manifest_bytes, handle_t manifest, int32_t *out_verdict, uint32_t *out_programs, uint32_t *out_program, char *out_why, uint32_t *out_why_len)
+{
+    (void)ctx;
+    (void)idl_txn;
+    (void)flags;
+    (void)manifest_bytes;
+    (void)manifest;
+    (void)out_verdict;
+    (void)out_programs;
+    (void)out_program;
+    (void)out_why;
+    (void)out_why_len;
+    if (manifest != HANDLE_INVALID)
+        drv_handle_close(manifest);
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    *out_verdict = (int32_t)0x5a5a5a5a5a5a5a5aull;
+    *out_programs = (uint32_t)0x5a5a5a5a5a5a5a5aull;
+    *out_program = (uint32_t)0x5a5a5a5a5a5a5a5aull;
+    __builtin_memset(out_why, 'a', 95u * sizeof(*out_why));
+    *out_why_len = 95;
+    return OK;
+}
+static status_t idl_fz_pkgctl_revoke(void *ctx, struct idl_txn idl_txn, const char *name, uint32_t name_len, const char *version, uint32_t version_len, uint32_t revision, uint32_t *out_lines)
+{
+    (void)ctx;
+    (void)idl_txn;
+    (void)name;
+    (void)name_len;
+    (void)version;
+    (void)version_len;
+    (void)revision;
+    (void)out_lines;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    *out_lines = (uint32_t)0x5a5a5a5a5a5a5a5aull;
+    return OK;
+}
+static const struct pkgctl_ops idl_fz_pkgctl_ops = {
+    .approve = idl_fz_pkgctl_approve,
+    .revoke = idl_fz_pkgctl_revoke,
+};
+static uint32_t idl_fz_pkgctl_serve(const void *q, uint32_t n, const handle_t *hs,
+                                uint32_t nh, void *r, handle_t *rhs, uint32_t *rhn)
+{
+    return pkgctl_dispatch_h(HANDLE_INVALID, &idl_fz_pkgctl_ops, NULL, q, n, hs, nh, r, rhs, rhn);
+}
+static const struct idl_fuzz_msg idl_fz_pkgctl_msgs[] = {
+    { 0x00550001u, 20u, 0, 1, 0, 0, { IDL_OBJ_VMO }, 0, { { 0, 0, 0 } } },
+    { 0x00550002u, 12u, 0, 0, 0, 0, { 0 }, 2, { { 1, 1, 63 }, { 1, 1, 63 } } },
 };
 
 /* ---- serve ---- */
@@ -5146,7 +5212,7 @@ static const struct idl_fuzz_proto idl_fuzz_protos[] __attribute__((unused)) = {
     { "idltest_two", 34, IDLTEST_TWO_REQ_MAX, IDLTEST_TWO_REP_MAX, IDLTEST_TWO_REP_HANDLES, idl_fz_idltest_two_serve, NULL, idl_fz_idltest_two_msgs, 3 },
     { "idltest_ev", 35, IDLTEST_EV_REQ_MAX, IDLTEST_EV_REP_MAX, IDLTEST_EV_REP_HANDLES, idl_fz_idltest_ev_serve, idl_fz_idltest_ev_event, idl_fz_idltest_ev_msgs, 7 },
     { "idltest_h", 37, IDLTEST_H_REQ_MAX, IDLTEST_H_REP_MAX, IDLTEST_H_REP_HANDLES, idl_fz_idltest_h_serve, NULL, idl_fz_idltest_h_msgs, 8 },
-    { "initctl", 18, INITCTL_REQ_MAX, INITCTL_REP_MAX, INITCTL_REP_HANDLES, idl_fz_initctl_serve, NULL, idl_fz_initctl_msgs, 12 },
+    { "initctl", 18, INITCTL_REQ_MAX, INITCTL_REP_MAX, INITCTL_REP_HANDLES, idl_fz_initctl_serve, NULL, idl_fz_initctl_msgs, 13 },
     { "input", 11, INPUT_REQ_MAX, INPUT_REP_MAX, INPUT_REP_HANDLES, idl_fz_input_serve, idl_fz_input_event, idl_fz_input_msgs, 5 },
     { "jamcover", 26, JAMCOVER_REQ_MAX, JAMCOVER_REP_MAX, JAMCOVER_REP_HANDLES, idl_fz_jamcover_serve, NULL, idl_fz_jamcover_msgs, 1 },
     { "keepch", 80, KEEPCH_REQ_MAX, KEEPCH_REP_MAX, KEEPCH_REP_HANDLES, idl_fz_keepch_serve, idl_fz_keepch_event, idl_fz_keepch_msgs, 4 },
@@ -5163,6 +5229,7 @@ static const struct idl_fuzz_proto idl_fuzz_protos[] __attribute__((unused)) = {
     { "notify", 40, NOTIFY_REQ_MAX, NOTIFY_REP_MAX, NOTIFY_REP_HANDLES, idl_fz_notify_serve, NULL, idl_fz_notify_msgs, 4 },
     { "nschan", 81, NSCHAN_REQ_MAX, NSCHAN_REP_MAX, NSCHAN_REP_HANDLES, idl_fz_nschan_serve, NULL, idl_fz_nschan_msgs, 3 },
     { "null", 1, NULL_REQ_MAX, NULL_REP_MAX, NULL_REP_HANDLES, idl_fz_null_serve, NULL, idl_fz_null_msgs, 4 },
+    { "pkgctl", 85, PKGCTL_REQ_MAX, PKGCTL_REP_MAX, PKGCTL_REP_HANDLES, idl_fz_pkgctl_serve, NULL, idl_fz_pkgctl_msgs, 2 },
     { "serve", 31, SERVE_REQ_MAX, SERVE_REP_MAX, SERVE_REP_HANDLES, idl_fz_serve_serve, NULL, idl_fz_serve_msgs, 3 },
     { "session", 45, SESSION_REQ_MAX, SESSION_REP_MAX, SESSION_REP_HANDLES, idl_fz_session_serve, NULL, idl_fz_session_msgs, 1 },
     { "session_ctl", 46, SESSION_CTL_REQ_MAX, SESSION_CTL_REP_MAX, SESSION_CTL_REP_HANDLES, idl_fz_session_ctl_serve, idl_fz_session_ctl_event, idl_fz_session_ctl_msgs, 4 },

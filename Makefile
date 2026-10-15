@@ -494,7 +494,10 @@ EXTRA_CFLAGS_init := -I$(MONO_DIR) -I$(MONO_DIR)/optional
 # shell's bracketed paste (utest/shpaste.c: sh_paste.c and sh_paste.h), and
 # how a /data program is checked (utest/shimage.c: libos's dataprog.c, which
 # the shell and init's /svc/exec share), and /svc/exec's client
-# (utest/execsvc.c: exectest's client.c).
+# (utest/execsvc.c: exectest's client.c), and init's approvals of a
+# package's programs (utest/pkgctl.c: init's pkgapprove.c over a RAM
+# filesystem, manifests signed with the vectors' public test key by
+# Monocypher).
 NETSTACK_CORE      := $(patsubst %,$(UOBJ)/user/services/netstack/%.o,stack.c ctl.c tcp.c \
                         port/sys_arch.c)
 EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/services/music/tracks.c.o \
@@ -510,13 +513,15 @@ EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/serv
                         cursors xdgplace) \
                       $(CURSOR_OBJ) $(patsubst %,$(UOBJ)/user/services/console/%.c.o,wlinput \
                         cellpaint view select) $(UOBJ)/user/services/shell/sh_paste.c.o \
-                      $(UOBJ)/user/tests/exectest/client.c.o $(UOBJ)/libfun.a
+                      $(UOBJ)/user/tests/exectest/client.c.o $(UOBJ)/libfun.a \
+                      $(UOBJ)/user/services/init/pkgapprove.c.o
 EXTRA_CFLAGS_utest := -iquote user/services/music -iquote drivers/rtl8125 \
                       -iquote user/services/compositor -iquote user/services/console \
                       -iquote user/services/shell -iquote user/tests/exectest \
                       -iquote user/services/netstack -iquote user/services/dhcp \
                       -iquote user/services/dns -iquote user/services/sntp \
-                      -iquote $(FATFS_STAGE) -iquote $(FATFS_PORT) -Iuser/apps/fun
+                      -iquote $(FATFS_STAGE) -iquote $(FATFS_PORT) -Iuser/apps/fun \
+                      -iquote user/services/init -I$(MONO_DIR) -I$(MONO_DIR)/optional
 EXTRA_DEPS_utest   := $(FATFS_HDRS)
 # The ports formats' vectors (ports/vectors/, tools/pkgvec2c.py), linked in
 # for utest/pkgfmt.c: the same bytes `make check` reads on the Mac.

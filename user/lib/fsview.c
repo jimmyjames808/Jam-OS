@@ -43,6 +43,12 @@ bool fs_view_in_etc(const char *clean)
     return name_is(clean, &n, "etc");
 }
 
+bool fs_view_in_pkg(const char *clean)
+{
+    size_t n;
+    return name_is(clean, &n, "pkg");
+}
+
 bool fs_view_in_keys(const char *clean)
 {
     size_t n, m;
@@ -75,6 +81,13 @@ static bool path_in_etc(const char *path, uint32_t len)
     return fs_path_clean(path, len, clean) != OK || fs_view_in_etc(clean);
 }
 
+/* A path (len bytes) at or under pkg, as path_in_etc. */
+static bool path_in_pkg(const char *path, uint32_t len)
+{
+    char clean[FS_PATH_LEN + 1];
+    return fs_path_clean(path, len, clean) != OK || fs_view_in_pkg(clean);
+}
+
 /* A path (len bytes) that a view with flags hides from a request (stat:
  * fs.stat); one that can't be cleaned counts, as for path_in_etc. */
 static bool path_hidden(uint32_t flags, const char *path, uint32_t len, bool stat)
@@ -91,6 +104,9 @@ static status_t change(uint32_t flags, const char *path, uint32_t len, const cha
         return ERR_ACCESS_DENIED;
     if ((flags & FS_VIEW_GUARD_ETC) &&
         (path_in_etc(path, len) || (to && path_in_etc(to, to_len))))
+        return ERR_ACCESS_DENIED;
+    if ((flags & FS_VIEW_GUARD_PKG) &&
+        (path_in_pkg(path, len) || (to && path_in_pkg(to, to_len))))
         return ERR_ACCESS_DENIED;
     return OK;
 }
@@ -180,15 +196,19 @@ status_t fs_view_check(uint32_t flags, const void *req, uint32_t n)
             return OK;
         return change(flags, path, len, to, to_len);
     case FS_SUBVIEW: {
-        /* A directory at or under etc as the root of a new channel: the names
-         * below it would no longer look like etc's. Not for a view that hides
-         * the keys; not for one that guards etc unless the new one is read-only. */
+        /* A directory at or under etc (or pkg) as the root of a new channel:
+         * the names below it would no longer look like etc's. Not for a view
+         * that hides the keys; not for one that guards etc (pkg) unless the
+         * new one is read-only. */
         const struct fs_subview_req *q = req;
         o = sizeof(*q);
-        if (n < sizeof(*q) || !path_at(req, n, &o, &path, &len) || !path_in_etc(path, len))
+        if (n < sizeof(*q) || !path_at(req, n, &o, &path, &len))
             return OK;
-        if ((flags & FS_VIEW_HIDE_KEYS) ||
-            ((flags & FS_VIEW_GUARD_ETC) && !(q->flags & FS_VIEW_READ_ONLY)))
+        bool ro = q->flags & FS_VIEW_READ_ONLY;
+        if (path_in_etc(path, len) &&
+            ((flags & FS_VIEW_HIDE_KEYS) || ((flags & FS_VIEW_GUARD_ETC) && !ro)))
+            return ERR_ACCESS_DENIED;
+        if (path_in_pkg(path, len) && (flags & FS_VIEW_GUARD_PKG) && !ro)
             return ERR_ACCESS_DENIED;
         return OK;
     }
