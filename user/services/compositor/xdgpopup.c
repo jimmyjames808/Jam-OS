@@ -24,7 +24,12 @@
  * serials of the client (seat_input_serial_ok: a key, a button, a keyboard
  * enter) while the popup's toplevel has the keyboard focus, before the
  * popup is shown; else the popup is dismissed at once, as the protocol
- * allows. The grabbing popups form one chain, all of one client's, each
+ * allows. Once we dismiss a client's grab (a press outside, the focus
+ * moving, another client's grab), it may grab again only after its next
+ * key or button press (seat_grab_lock): its old serials, and the enter the
+ * keys coming back give it, would let it meet every click outside with a
+ * new grab, and the mouse could never leave it (docs/G2-REVIEW.md, 1).
+ * The grabbing popups form one chain, all of one client's, each
  * placed on the one before (a menu, its submenu): a new grab on a toplevel
  * dismisses the chain there was, one on a popup of the chain dismisses
  * what is above that popup. While the chain lives:
@@ -179,8 +184,10 @@ static void dismiss(struct xdg_surf *x)
 
 void xdg_grab_dismiss(void)
 {
-    if (pops.nchain)
-        dismiss(pops.chain[0]);
+    if (!pops.nchain)
+        return;
+    seat_grab_lock(pops.chain[0]->cl);   /* no grab again before its next press */
+    dismiss(pops.chain[0]);
 }
 
 void xdg_popups_focus(struct comp_window *w)
@@ -505,11 +512,12 @@ static status_t on_popup_destroy(void *data, uint32_t self)
 }
 
 /* May x take the grab: a serial of one of its client's last input events,
- * and its toplevel has the keys (no grab for a window in the background). */
+ * no grab of its dismissed by us since its last press, and its toplevel has
+ * the keys (no grab for a window in the background). */
 static bool grant(struct xdg_surf *x, uint32_t serial)
 {
     struct comp_window *rw = win_of(root_of(x));
-    return shown(rw) && seat_focused() == rw && seat_input_serial_ok(x->cl, serial);
+    return shown(rw) && seat_focused() == rw && seat_grab_serial_ok(x->cl, serial);
 }
 
 /* x (granted) into the chain: another client's grab dismissed, and every

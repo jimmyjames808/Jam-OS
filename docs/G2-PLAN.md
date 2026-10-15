@@ -1394,7 +1394,11 @@ restart; its surface may have subsurfaces like any window's.
   serials (`seat_input_serial_ok`: a key, a button, a keyboard enter) while
   its toplevel has the keyboard focus, before the popup is mapped; denied
   (dismissed at once) otherwise, so a program in the background can't take
-  the keys with a menu. The grabbing popups are one chain of one client's,
+  the keys with a menu. Once the compositor dismisses a client's grab (a
+  press outside, the focus moving, another client's grab) it may grab again
+  only after its next key or button press (`seat_grab_lock`, GR's finding
+  1: else it could meet every click outside with a new grab and the mouse
+  could never leave it). The grabbing popups are one chain of one client's,
   each on the one before; a new grab on the toplevel dismisses the old
   chain, one on a popup of the chain dismisses what is above it. While
   the chain lives the pointer goes only to that client's surfaces, its

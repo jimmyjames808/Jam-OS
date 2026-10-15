@@ -1134,7 +1134,8 @@ uint64_t xdg_deadline(void);
 /* Popups (xdgpopup.c), for the seat and the loop. */
 /* The client whose popups hold the grab (xdg_popup.grab), or NULL. While
  * one does, the pointer goes only to that client's surfaces, and a press
- * anywhere else dismisses the popups (xdg_grab_dismiss) and goes nowhere. */
+ * anywhere else dismisses the popups (xdg_grab_dismiss) and goes nowhere;
+ * their client may grab again only after its next key or button press. */
 struct comp_client  *xdg_grab_client(void);
 void                 xdg_grab_dismiss(void);
 /* For a popup's window, the window of the toplevel it is placed on (through
