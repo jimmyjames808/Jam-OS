@@ -47,7 +47,14 @@ MUSL_SRCS := $(sort $(filter-out $(addprefix $(MUSL)/,$(MUSL_OVR_UP)),$(MUSL_SRC
 # module, the program's headers from AT_PHDR), by which libunwind finds
 # the unwind tables (tools/jamos-clang++'s C++ exceptions), and dladdr's
 # stub (no symbols to name: 0), which libunwind's function names call.
-MUSL_SRCS += $(MUSL)/src/ldso/dl_iterate_phdr.c $(MUSL)/src/ldso/dladdr.c
+# And the rest of what musl's static libc.a has of it: dlopen() that fails
+# ("Dynamic loading not supported"), dlsym() that finds nothing, dlclose(),
+# dlinfo() and dlerror(), so a program that may load a library (Chromium's
+# base) links and gets an error at run time, as a static Linux program does.
+MUSL_SRCS += $(MUSL)/src/ldso/dl_iterate_phdr.c $(MUSL)/src/ldso/dladdr.c \
+             $(MUSL)/src/ldso/dlopen.c $(MUSL)/src/ldso/__dlsym.c \
+             $(MUSL)/src/ldso/x86_64/dlsym.s $(MUSL)/src/ldso/dlclose.c \
+             $(MUSL)/src/ldso/dlinfo.c $(MUSL)/src/ldso/dlerror.c
 MUSL_OBJS := $(patsubst $(MUSL)/%,$(MUSL_OUT)/obj/%.o,$(MUSL_SRCS))
 
 MUSL_GENH := $(MUSL_OUT)/include/bits/alltypes.h $(MUSL_OUT)/include/bits/syscall.h \
