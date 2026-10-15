@@ -10,7 +10,7 @@
  *      FD_CLOEXEC; with our current directory.
  *   2. The file actions applied to the copy, in order (spawnfd.c): close,
  *      dup2, open (opened here, into a descriptor of ours kept until the
- *      spawn ends), chdir, fchdir.
+ *      spawn ends), chdir, fchdir, closefrom (every one from N up).
  *   3. The program: a name looked up in PATH (posix_spawnp), then a path
  *      (relative ones from the copy's directory): /proc/self/exe is this
  *      program again, from the image it runs from (self_program); one

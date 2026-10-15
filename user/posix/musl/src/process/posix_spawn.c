@@ -10,7 +10,9 @@
  * __execvpe: that means "look the name up in PATH", which spawn.c does
  * itself. posix_spawnattr_setgrants_np (<jamos/spawn.h>) keeps its list in
  * the attributes' spare bytes, where posix_spawnattr_init's zeroes mean
- * "everything we have". */
+ * "everything we have". posix_spawn_file_actions_addclosefrom_np
+ * (glibc's, which Chromium's launcher uses) is here too: it needs musl's
+ * file action list. */
 #define _GNU_SOURCE
 #include <stdlib.h>
 #include <errno.h>
@@ -76,9 +78,29 @@ static int read_actions(const posix_spawn_file_actions_t *fa, struct jam_spawn_o
 	return 0;
 }
 
+/* glibc's addclosefrom_np, which musl lacks: our number after musl's. */
+#define FDOP_CLOSEFROM 6
+
 _Static_assert(FDOP_CLOSE == JAM_SPAWN_CLOSE && FDOP_DUP2 == JAM_SPAWN_DUP2 &&
                FDOP_OPEN == JAM_SPAWN_OPEN && FDOP_CHDIR == JAM_SPAWN_CHDIR &&
-               FDOP_FCHDIR == JAM_SPAWN_FCHDIR, "the file actions keep musl's numbers");
+               FDOP_FCHDIR == JAM_SPAWN_FCHDIR && FDOP_CLOSEFROM == JAM_SPAWN_CLOSEFROM,
+               "the file actions keep musl's numbers");
+
+/* Close every descriptor from `from` up in the child (glibc 2.34's
+ * meaning; declared in our <spawn.h>, user/posix/include/spawn.h). As
+ * musl's addclose: EBADF for a negative one, ENOMEM. */
+int posix_spawn_file_actions_addclosefrom_np(posix_spawn_file_actions_t *fa, int from)
+{
+	if (from < 0) return EBADF;
+	struct fdop *op = malloc(sizeof *op);
+	if (!op) return ENOMEM;
+	op->cmd = FDOP_CLOSEFROM;
+	op->fd = from;
+	if ((op->next = fa->__actions)) op->next->prev = op;
+	op->prev = 0;
+	fa->__actions = op;
+	return 0;
+}
 
 int posix_spawn(pid_t *restrict res, const char *restrict path,
                 const posix_spawn_file_actions_t *fa,
