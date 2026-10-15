@@ -1539,3 +1539,97 @@ uint32_t aspace_mapping_count(struct aspace *as)
     mutex_unlock(&as->lock);
     return n;
 }
+
+static bool map_before(const struct avl_node *a, const struct avl_node *b)
+{
+    return map_of(a)->base < map_of(b)->base;
+}
+
+/* aspace_check's look at m's entries, region lock held: each present one
+ * names the VMO's page for its address now and allows nothing m's flags
+ * don't. buf holds a page table's worth of entries, copied under pt_lock
+ * and checked after it (the VMO lock ranks above it). NULL if all is well,
+ * else what is wrong. */
+static const char *entries_check(struct aspace *as, const struct mapping *m, uint64_t *buf)
+{
+    for (uint64_t va = m->base; va < mend(m);) {
+        uint64_t f = spin_lock_irqsave(&as->pt_lock);
+        const uint64_t *pt = NULL;
+        uint64_t next, n = 0, e4 = as->pml4v[ix(va, 4)];
+        if (!(e4 & PTE_P)) {
+            next = ALIGN_UP(va + 1, SIZE_512G);
+        } else {
+            uint64_t e3 = tbl(e4)[ix(va, 3)];
+            if (!(e3 & PTE_P)) {
+                next = ALIGN_UP(va + 1, SIZE_1G);
+            } else {
+                uint64_t e2 = tbl(e3)[ix(va, 2)];
+                next = ALIGN_UP(va + 1, SIZE_2M);
+                pt = (e2 & PTE_P) ? tbl(e2) : NULL;
+            }
+        }
+        for (uint64_t a = va; pt && a < next && a < mend(m); a += PAGE_SIZE)
+            buf[n++] = pt[ix(a, 1)];
+        spin_unlock_irqrestore(&as->pt_lock, f);
+        for (uint64_t i = 0; i < n; i++) {
+            uint64_t e = buf[i], a = va + i * PAGE_SIZE;
+            if (!(e & PTE_P))
+                continue;
+            if (!(m->flags & ASPACE_READ))
+                return "an entry under no access";
+            if ((e & PTE_W) && !(m->flags & ASPACE_WRITE))
+                return "a writable entry in a mapping that may not write";
+            if (cpu_features.nx && !(e & PTE_NX) && !(m->flags & ASPACE_EXEC))
+                return "an executable entry in a mapping that may not execute";
+            if ((e & PTE_ADDR) != vmo_page_phys(m->vmo, m->vmo_off + (a - m->base)))
+                return "an entry for a page the VMO doesn't hold there";
+        }
+        va = next;
+    }
+    return NULL;
+}
+
+int64_t aspace_check(struct aspace *as)
+{
+    uint64_t *buf = kmalloc(PAGE_SIZE);
+    if (!buf)
+        return -1;
+    const char *why = NULL;
+    mutex_lock(&as->lock);
+    int64_t n = avl_check(&as->maps, map_before);
+    if (n != as->nmaps)
+        why = "the tree";
+    const struct mapping *prev = NULL;
+    for (struct mapping *m = first_map(as); m && !why; prev = m, m = next_of(m)) {
+        uint64_t below = prev ? mend(prev) : USER_BASE;
+        uint64_t l = max_gap_of(m->node.left), r = max_gap_of(m->node.right);
+        uint64_t most = m->gap > l ? m->gap : l;
+        most = most > r ? most : r;
+        if (!m->len || ((m->base | m->len | m->vmo_off) & (PAGE_SIZE - 1)) || m->base < below ||
+            mend(m) > USER_TOP)
+            why = "a mapping out of order, overlapping or unaligned";
+        else if (m->gap != m->base - below || m->max_gap != most)
+            why = "a gap";
+        else if (prev && can_merge(prev, m))
+            why = "two neighbours that could be one";
+        else if (m->umap.as != as || m->umap.base != m->base ||
+                 m->umap.pages.first != m->vmo_off >> PAGE_SHIFT ||
+                 m->umap.pages.end != (m->vmo_off + m->len) >> PAGE_SHIFT ||
+                 m->umap.writable != ((m->max & ASPACE_WRITE) != 0))
+            why = "a reverse-map entry";
+        else if ((m->flags & ~m->max) || !perms_ok(m->flags, vmo_is_jit(m->vmo)) ||
+                 (m->kept && m->max != m->flags))
+            why = "a mapping's permissions";
+        else
+            why = entries_check(as, m, buf);
+    }
+    if (!why && as->map_pages != map_pages_for(as->nmaps))
+        why = "the charge for the mapping structs";
+    mutex_unlock(&as->lock);
+    kfree(buf);
+    if (why) {
+        kprintf("aspace_check: %s\n", why);
+        return -1;
+    }
+    return n;
+}
