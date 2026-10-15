@@ -1,0 +1,85 @@
+# unix: the named AF_UNIX socket broker, /svc/unix (docs/CR-PLAN.md
+# section 4, track CU2; user/services/unix). Jam OS has no socket inodes:
+# a listener is a channel of the broker's, and a name leads to it.
+#
+# Two kinds of name. A **socket file** is an ordinary file that libc's
+# bind creates (O_EXCL: EADDRINUSE if anything is there) and writes a
+# random key into (the key bind answers here); a connect opens the file
+# for reading, as any open (so the namespace and its views decide who may
+# reach the socket, as they decide who may read the file), and gives the
+# key it read. Unlinking the file makes the listener unreachable to anyone
+# who hasn't read the key; a file whose listener is gone is a stale socket
+# (connect: ECONNREFUSED). An **abstract name** (Linux's sun_path starting
+# with a NUL byte) is a name in the broker's one table: any opener may
+# reach it (Jam OS has one user), and it is free again once its listener
+# is gone.
+#
+# A listener's channel (bind's `listener`) speaks this protocol too: its
+# `listen` makes it take connections, and each connection comes on it as
+# a `conn` event carrying the listener's end of a new channel pair (the
+# connector got the other end from `connect`): a socketpair end, as
+# socketpair(2)'s, so descriptors travel on it (CU1's framing). The
+# connections waiting for accept are the `conn` events the listener hasn't
+# read (handle_info's peer_queued): at its backlog, a connect is
+# ERR_SHOULD_WAIT. Closing the listener's channel ends the listener: its
+# name is free, its waiting connections close (their connectors read end
+# of file).
+#
+# Who serves it: bin/unix, which init starts (in shell mode a supervised
+# service; in the init run before the programs), with the server end of
+# the shared channel that init publishes as /svc/unix, a channel per
+# opener (svc.connect). Who calls it: libc (user/posix/sys/unixsock.c),
+# for a program whose list asks for `svc unix`; utest's unix_* cases.
+#
+# Reconnect: a restarted broker serves the same shared channel (init keeps
+# both ends), but every opener's channel and every listener's channel of
+# the old one closes (ERR_PEER_CLOSED): libc opens /svc/unix again for its
+# next call; a listener is gone (accept: ECONNABORTED) and its program
+# must bind again (a socket file left behind is then stale: unlink it
+# first, as after a crash on Linux). Connections already made are channel
+# pairs of their own and carry on.
+
+protocol unix 53
+
+# Opener channels at once (svc.connect's ERR_NO_RESOURCES past them),
+# listeners at once (bind's ERR_NO_RESOURCES past them; and per opener
+# channel, so one program can't take them all), an abstract name's most
+# bytes (sun_path's 108 less the NUL), a key's bytes, and the most
+# connections waiting for accept on one listener (listen's backlog is
+# clamped to 1 .. BACKLOG_MAX).
+const OPENERS_MAX 64
+const LISTENERS_MAX 128
+const LISTENERS_PER_OPENER 32
+const NAME_MAX 107
+const KEY_BYTES 16
+const BACKLOG_MAX 64
+# What a socket file holds: these 8 bytes, then the key.
+const FILE_MAGIC 0x314b434f53584e55
+const FILE_BYTES 24
+
+# Events to a listener may wait unread up to its backlog.
+unread 72 8192
+
+# A new listener, not listening yet (connects to it: ERR_NOT_FOUND until
+# `listen`). `name` empty: for a socket file, whose key is `key` (random,
+# never answered twice); else an abstract name (`key` all zero), at most
+# NAME_MAX bytes, any bytes.
+#   listener  the listener's channel (this protocol: `listen`, `conn`)
+# ERR_ALREADY_EXISTS: a listener has that abstract name;
+# ERR_NO_RESOURCES: LISTENERS_MAX (or LISTENERS_PER_OPENER from this
+#   opener channel); ERR_NOT_SUPPORTED: on a listener's channel.
+1  bind  (u8[<=107] name) -> (handle<channel> listener, u8[16] key)
+# Connect to the listener with abstract name `name`, or (`name` empty) to
+# the socket file's whose key is `key`.
+#   conn  the connector's end of the new channel pair (the listener got
+#         the other as a `conn` event)
+# ERR_NOT_FOUND: no listener by that name or key, or one not listening;
+# ERR_SHOULD_WAIT: it has its backlog of connections waiting for accept;
+# ERR_NOT_SUPPORTED: on a listener's channel.
+2  connect  (u8[<=107] name, u8[16] key) -> (handle<channel> conn)
+# On a listener's channel: take connections, at most `backlog` waiting
+# (clamped to 1 .. BACKLOG_MAX); again: the backlog changes.
+# ERR_NOT_SUPPORTED: on an opener's channel.
+3  listen  (u16 backlog) -> ()
+# To a listener: a connection, the listener's end of its channel pair.
+4  conn  -> (handle<channel> end) event

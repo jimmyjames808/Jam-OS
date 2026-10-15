@@ -1,0 +1,20 @@
+# posixtest's unix section from the shell: named AF_UNIX sockets through
+# /svc/unix (bin/unix, the broker init supervises in shell mode;
+# user/posix/sys/unixsock.c): a listener and two connectors, bytes and a
+# descriptor over a connection, the backlog, a socket file removed and a
+# stale one, a child without /data refused and one with /data read-only
+# let in, abstract names. Also in the init run's posixtest (where init
+# starts the broker before the programs); this is shell mode's broker.
+#   QEMU_INPUT=tools/shell-tests/posix-unix.txt tools/qemu-test.sh <dir> posix-unix shell
+wait 120 Jam OS shell
+wait {prompt}
+send run posixtest unix
+wait 120 posixtest: unix: ok
+wait 20 posixtest: PASS
+wait 20 run: bin/posixtest exited with code 0
+wait {prompt}
+send ps
+wait unix
+wait {prompt}
+send reboot -f
+wait reboot: resetting

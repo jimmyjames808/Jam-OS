@@ -232,9 +232,10 @@ long lx_accept4(long fd, long addr, long lenp, long flags, long e, long f)
     struct fd_desc *d;
     struct sock *s;
     long r = sock_get(fd, &d, &s);
-    if (r == -ENOTSOCK && d) {
+    if (r == -ENOTSOCK && d) {   /* a named AF_UNIX listener's (svcsock.c), or a socketpair end */
+        r = d->ops == &usock_ops ? usock_accept(d, addr, lenp, flags) : -EOPNOTSUPP;
         fd_put(d);
-        return -EOPNOTSUPP;
+        return r;
     }
     if (r)
         return r;
@@ -268,7 +269,7 @@ long lx_shutdown(long fd, long how, long c, long d4, long e, long f)
     struct sock *s;
     long r = sock_get(fd, &d, &s);
     if (r == -ENOTSOCK && d) {   /* a socketpair end (sockpair.c's), or an AF_UNIX stream */
-        r = d->ops == &sockp_ops ? sockp_shutdown(d, (int)how) : -EOPNOTSUPP;
+        r = d->ops == &sockp_ops ? sockp_shutdown(d, (int)how) : usock_shutdown(d, (int)how);
         fd_put(d);
         return r;
     }
@@ -350,7 +351,7 @@ static long names(long fd, long addr, long lenp, bool peer)
     struct sock *s;
     long r = sock_get(fd, &d, &s);
     if (r == -ENOTSOCK && d) {
-        r = unix_out(addr, lenp);
+        r = d->ops == &usock_ops ? usock_name(d, addr, lenp, peer) : unix_out(addr, lenp);
         fd_put(d);
         return r;
     }

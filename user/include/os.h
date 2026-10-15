@@ -409,6 +409,10 @@ status_t ns_update(handle_t to, handle_t back, const char *const *grants);
  * exec.c). Any program may ask for it (`svc exec`): it starts approved
  * programs only, each as approved. */
 #define SVC_EXEC       "exec"
+/* The named AF_UNIX socket broker (unix.idl; bin/unix), a channel per
+ * opener: bind, listen, accept and connect on socket files and abstract
+ * names. Any program may ask for it (`svc unix`). */
+#define SVC_UNIX       "unix"
 
 /* A channel to service `name` for the caller, who closes it. */
 status_t svc_open(const char *name, handle_t *out);

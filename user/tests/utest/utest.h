@@ -733,6 +733,10 @@ bool t_exec_refused(void);
 bool t_exec_changed(void);
 bool t_exec_no_leak(void);
 bool t_exec_cleanup(void);
+/* unixsvc.c: the named socket broker, /svc/unix (bin/unix). */
+bool t_unix_names(void);
+bool t_unix_backlog(void);
+bool t_unix_limits(void);
 /* "utest wl-crash": a Wayland client on the channel at SR_USER that makes
  * a pool, a buffer and a surface, then crashes; "wl-crash-attach" crashes
  * between the attach and the commit. */

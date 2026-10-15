@@ -56,6 +56,7 @@
 48      exec_prog       abi/idl/exec.idl
 50      audio_stream    abi/idl/audio.idl
 51      hda_stream      abi/idl/hda.idl
+53      unix            abi/idl/unix.idl
 # 60 to 69: the network's (M12 track P3)
 60      net_socket      abi/idl/net.idl
 61      net_stream      abi/idl/net.idl

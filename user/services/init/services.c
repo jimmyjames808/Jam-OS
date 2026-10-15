@@ -791,6 +791,7 @@ status_t services_start(unsigned i)
            : i == NETLOG     ? net_netlog_start()
            : i == SNTP       ? net_sntp_start()
            : i == SSHD       ? ssh_start()
+           : i == UNIX       ? unixsvc_start(i)
                              : start_serve();
 }
 
@@ -863,6 +864,11 @@ void services_given_up(unsigned i)
         services_publish(SVC_SERVE, HANDLE_INVALID, false);
         tell_mounts();
     }
+    if (i == UNIX) {
+        unixsvc_given_up();   /* named sockets fail now */
+        services_publish(SVC_UNIX, HANDLE_INVALID, false);
+        tell_mounts();
+    }
     if (i == MIXER || i == MUSIC) {   /* and nobody new gets them */
         services_publish(i == MIXER ? SVC_AUDIO : SVC_MUSIC, HANDLE_INVALID, false);
         if (i == MIXER)
@@ -899,6 +905,9 @@ void services_init(handle_t loop_port, bool no_usb, bool splash, const char *she
     shared_watch(SVC_AUDIOCTL, audio_cli[1]);
     shared_watch(SVC_MUSIC, music_cli);
     shared_watch(SVC_SERVE, serve_cli);
+    unixsvc_init();   /* /svc/unix: the named socket broker's, made once (unixsvc.c) */
+    services_publish(SVC_UNIX, unixsvc_client(), true);
+    shared_watch(SVC_UNIX, unixsvc_client());
     services_publish(SVC_NET, net_svc_channel(), true);
     services_publish(SVC_NET_LISTEN, net_listen_channel(), true);   /* the shell's to give */
     services_publish(SVC_NET_LISTEN_LOW, net_listen_low_channel(), true);   /* ... to bin/serve */

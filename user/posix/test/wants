@@ -5,3 +5,4 @@ mount /usb* r
 svc net listen
 svc dns
 svc exec
+svc unix

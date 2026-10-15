@@ -52,6 +52,7 @@
 #define IDL_ID_EXEC_PROG      0x0030u   /* abi/idl/exec.idl */
 #define IDL_ID_AUDIO_STREAM   0x0032u   /* abi/idl/audio.idl */
 #define IDL_ID_HDA_STREAM     0x0033u   /* abi/idl/hda.idl */
+#define IDL_ID_UNIX           0x0035u   /* abi/idl/unix.idl */
 #define IDL_ID_NET_SOCKET     0x003cu   /* abi/idl/net.idl */
 #define IDL_ID_NET_STREAM     0x003du   /* abi/idl/net.idl */
 #define IDL_ID_NET_LISTENER   0x003eu   /* abi/idl/net.idl */

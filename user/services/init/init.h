@@ -211,7 +211,7 @@ void     splash_shell_ready(void);
  * consoles and shells (terms.c), a pair each, started only when one is
  * opened. */
 enum { BOOTFS, COMPOSITOR, CONSOLE, SPLASH, SERIALIN, DEVMGR, VOLUMES, MIXER, MUSIC, NETSTACK,
-       DHCP, DNS, LOGD, NETLOG, SNTP, SERVE, SSHD, SHELL, TERMS,
+       DHCP, DNS, LOGD, NETLOG, SNTP, SERVE, UNIX, SSHD, SHELL, TERMS,
        NSVC = TERMS + 2 * (TERM_MAX - 1) };
 /* Terminal k's (0: the first, the system's) console and shell. */
 #define TERM_CONSOLE(k) ((k) ? TERMS + 2 * ((k) - 1) : CONSOLE)
@@ -373,6 +373,20 @@ void     sessions_tell(void);
  * Once, at the start. An error is said in the log: no /svc/exec. */
 status_t exec_init(handle_t *client);
 
+/* ---- unixsvc.c: /svc/unix, the named socket broker (bin/unix; unix.idl) ------------ */
+
+/* Shell mode: the shared channel made once (unixsvc_client: its client end,
+ * init's, to publish); service i started on a duplicate of its server end
+ * (no bin/unix: given up); given up: the server end closed. */
+void     unixsvc_init(void);
+handle_t unixsvc_client(void);
+status_t unixsvc_start(unsigned i);
+void     unixsvc_given_up(void);
+/* The init run: the broker started before the programs, /svc/unix in our
+ * namespace; and stopped after them (false: it didn't end cleanly). */
+bool     unixsvc_run_start(void);
+bool     unixsvc_run_stop(void);
+
 /* ---- ssh.c: the SSH server (bin/sshd, the tinyssh port) --------------------------- */
 
 /* Set up once before the loop (the loop's port: KEY_SSHD). */
@@ -456,7 +470,7 @@ bool     comp_notice_run(const char *title, const char *body, char icon, uint8_t
  * bound), so without this one such holder stops its new openers for the
  * rest of the boot. Not for an end init makes calls of its own on with
  * txids of its own. At most SHARED_MAX ends. */
-#define SHARED_MAX 16u
+#define SHARED_MAX 20u
 void     shared_watch(const char *name, handle_t h);
 /* KEY_SHARED + i: end i has something to read. */
 void     shared_event(unsigned i);
