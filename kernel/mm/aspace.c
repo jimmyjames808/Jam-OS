@@ -78,6 +78,18 @@
  * still says whom to interrupt: CPUs running the address space now. The
  * ordering argument is at the top of pcid.c.
  *
+ * A protect that found no entry present in its range and let no table go
+ * asks for no shootdown at all (`quiet`): V8's commit of untouched
+ * reservation pages, thousands of times, would otherwise interrupt every
+ * CPU running the process each time. Nothing can be stale then: under the
+ * region lock only the reverse map's walks (decommit, shrink, a
+ * separation) clear entries behind our back, and each shoots this
+ * address space down itself before it lets the page go, so a TLB entry
+ * that outlives our protect reaches only a page on its way out of the
+ * VMO, with the permissions it had a moment before. The reverse map's own
+ * walks always ask: one may find entries an unmap cleared and hasn't shot
+ * down yet, and must not free the page before that shootdown.
+ *
  * Freeing ("gather"). Pages that leave a user mapping (VMO pages on
  * decommit/shrink, page-table pages on unmap) go on a struct tlb_gather
  * and are released only after its shootdown has completed on every CPU in
@@ -465,17 +477,23 @@ static void table_drop(struct aspace *as, uint64_t *entry, uint64_t *t, struct t
  * [va, stop) of one page table; with `detach` (region lock held), tables
  * left empty are unlinked onto g. */
 struct leaf_walk {
-    /* Edits one page table's leaves in [va, stop). */
-    void (*fn)(uint64_t *pt, uint64_t va, uint64_t stop, unsigned perms);
+    /* Edits one page table's leaves in [va, stop); returns how many of
+     * them were present. */
+    uint64_t (*fn)(uint64_t *pt, uint64_t va, uint64_t stop, unsigned perms);
     unsigned           perms;    /* passed to fn */
     bool               detach;   /* unlink the tables left empty */
+    /* No shootdown if no entry was present and no table went (a protect:
+     * the file header says why); else, and always without it, g gets the
+     * range and the address space's CPUs. */
+    bool               quiet;
     struct tlb_gather *g;        /* gets the unlinked tables, then the range */
 };
 
 /* pt_lock held: apply w to the page table covering va (up to end), if there
- * is one. Returns where the next page table's range starts. */
+ * is one, adding the entries present and the tables let go to *seen.
+ * Returns where the next page table's range starts. */
 static uint64_t walk_one(struct aspace *as, uint64_t va, uint64_t end,
-                         const struct leaf_walk *w)
+                         const struct leaf_walk *w, uint64_t *seen)
 {
     uint64_t *e4 = &as->pml4v[ix(va, 4)];
     if (!(*e4 & PTE_P))
@@ -488,10 +506,11 @@ static uint64_t walk_one(struct aspace *as, uint64_t va, uint64_t end,
     if (!(*e2 & PTE_P))
         return next;
     uint64_t *pt = tbl(*e2);
-    w->fn(pt, va, next < end ? next : end, w->perms);
+    *seen += w->fn(pt, va, next < end ? next : end, w->perms);
     if (!w->detach || !table_empty(pt))
         return next;
     table_drop(as, e2, pt, w->g);
+    (*seen)++;
     if (!table_empty(pd))
         return next;
     table_drop(as, e3, pd, w->g);
@@ -502,49 +521,61 @@ static uint64_t walk_one(struct aspace *as, uint64_t va, uint64_t end,
 
 /* Walk [va, end) one page table (2 MiB) at a time under pt_lock, skipping
  * missing tables (see struct leaf_walk). Then w->g gets the range and as's
- * active CPUs. */
+ * active CPUs, unless w is quiet and found nothing. */
 static void walk_leaves(struct aspace *as, uint64_t va, uint64_t end, const struct leaf_walk *w)
 {
-    uint64_t start = va;
+    uint64_t start = va, seen = 0;
     while (va < end) {
         uint64_t f = spin_lock_irqsave(&as->pt_lock);
-        uint64_t next = walk_one(as, va, end, w);
+        uint64_t next = walk_one(as, va, end, w, &seen);
         spin_unlock_irqrestore(&as->pt_lock, f);
         va = next;
     }
-    gather_note(w->g, as, start, end);
+    if (!w->quiet || seen)
+        gather_note(w->g, as, start, end);
 }
 
-static void leaves_clear(uint64_t *pt, uint64_t va, uint64_t stop, unsigned perms)
+static uint64_t leaves_clear(uint64_t *pt, uint64_t va, uint64_t stop, unsigned perms)
 {
     (void)perms;
-    for (; va < stop; va += PAGE_SIZE)
+    uint64_t n = 0;
+    for (; va < stop; va += PAGE_SIZE) {
+        n += pt[ix(va, 1)] != 0;
         pt[ix(va, 1)] = 0;
+    }
+    return n;
 }
 
 /* The write bit is only ever kept, never added: an entry may be read-only
  * because its page is shared copy-on-write (vmo.c), and only a fault
  * (vmo_fault_map, under the VMO lock) may decide it can be written. */
-static void leaves_protect(uint64_t *pt, uint64_t va, uint64_t stop, unsigned perms)
+static uint64_t leaves_protect(uint64_t *pt, uint64_t va, uint64_t stop, unsigned perms)
 {
-    uint64_t bits = leaf_bits(perms, 0);
+    uint64_t bits = leaf_bits(perms, 0), n = 0;
     for (; va < stop; va += PAGE_SIZE) {
         uint64_t *e = &pt[ix(va, 1)];
-        if (*e & PTE_P)
+        if (*e & PTE_P) {
             *e = (*e & (PTE_ADDR | PTE_CACHE)) | (bits & ~PTE_W) | (bits & *e & PTE_W);
+            n++;
+        }
     }
+    return n;
 }
 
-static void leaves_wrprotect(uint64_t *pt, uint64_t va, uint64_t stop, unsigned perms)
+static uint64_t leaves_wrprotect(uint64_t *pt, uint64_t va, uint64_t stop, unsigned perms)
 {
     (void)perms;
-    for (; va < stop; va += PAGE_SIZE)
+    uint64_t n = 0;
+    for (; va < stop; va += PAGE_SIZE) {
+        n += pt[ix(va, 1)] != 0;
         pt[ix(va, 1)] &= ~PTE_W;
+    }
+    return n;
 }
 
 static void zap(struct aspace *as, uint64_t va, uint64_t end, bool detach, struct tlb_gather *g)
 {
-    const struct leaf_walk w = { leaves_clear, 0, detach, g };
+    const struct leaf_walk w = { leaves_clear, 0, detach, false, g };
     walk_leaves(as, va, end, &w);
 }
 
@@ -555,7 +586,7 @@ void aspace_zap_locked(struct aspace *as, uint64_t va, uint64_t len, struct tlb_
 
 void aspace_wrprotect_locked(struct aspace *as, uint64_t va, uint64_t len, struct tlb_gather *g)
 {
-    const struct leaf_walk w = { leaves_wrprotect, 0, false, g };
+    const struct leaf_walk w = { leaves_wrprotect, 0, false, false, g };
     walk_leaves(as, va, va + len, &w);
 }
 
@@ -1295,7 +1326,8 @@ static uint32_t protect_merges(const struct mapping *first, const struct mapping
 /* Region lock held: flags for every mapping from first up to end (each
  * inside the range, or one that has flags already), and their entries
  * rewritten (or cleared, for no access: x86 can't say "present, no
- * access"), shot down before this returns. */
+ * access"), shot down before this returns if there were any (quiet: the
+ * file header). */
 static void protect_entries(struct aspace *as, struct mapping *first, uint64_t end,
                             unsigned flags)
 {
@@ -1305,12 +1337,9 @@ static void protect_entries(struct aspace *as, struct mapping *first, uint64_t e
         if (m->flags == flags)
             continue;   /* its entries are what they would be rewritten to */
         m->flags = flags;
-        if (flags & ASPACE_READ) {
-            const struct leaf_walk w = { leaves_protect, flags, false, &g };
-            walk_leaves(as, m->base, mend(m), &w);
-        } else {
-            zap(as, m->base, mend(m), true, &g);
-        }
+        const struct leaf_walk w = { (flags & ASPACE_READ) ? leaves_protect : leaves_clear, flags,
+                                     !(flags & ASPACE_READ), true, &g };
+        walk_leaves(as, m->base, mend(m), &w);
     }
     tlb_gather_finish(&g);
 }
