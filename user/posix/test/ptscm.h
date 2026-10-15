@@ -2,7 +2,9 @@
  * (scmkid.c: Mojo's pattern between two processes, the fuzz loop). */
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
+#include <jamos/libjam.h>
 #include <sys/types.h>
 
 #define SCM_ROOM_MAX 256   /* descriptors one helper call sends or takes at most */
@@ -33,3 +35,19 @@ void     scm_close_got(struct scm_got *g);
 /* scmkid.c */
 void scm_mojo(void);
 void scm_fuzz(void);
+
+/* The fuzz's makings (scmkid.c), which the peer section (peer.c) shares.
+ * The generator: a 64-bit LCG, its state scm_seed (set it to repeat a
+ * run); scm_rnd(n) is a number below n. */
+extern uint64_t scm_seed;
+uint32_t scm_rnd(uint32_t n);
+/* A handle of a random kind: a kept VMO, a channel end, or an event. */
+handle_t scm_any_handle(void);
+/* The channel end h as a socketpair end's descriptor (seq: SOCK_SEQPACKET). */
+int      scm_wrap(handle_t h, bool seq);
+/* One raw message from `from`, mutated now and then (bytes changed, a
+ * handle dropped, added or swapped for any kind, cut short, junk first),
+ * into `to` (b: CHANNEL_MAX_BYTES of room). false: nothing more queued. */
+bool     scm_forward(handle_t from, handle_t to, uint8_t *b);
+/* A round's sends on x: random bytes and descriptors of the pool. */
+void     scm_fuzz_send(int x, const int *pool, unsigned npool, bool seq, uint8_t *b);
