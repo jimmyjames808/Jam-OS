@@ -158,8 +158,8 @@ static bool want_line(struct wants *w, char *line)
     if (n == 2 && !strcmp(word[0], "right"))
         return want_right(w, word[1]);
     if (n == 1 && !strcmp(word[0], "posix") && !w->posix) {
-        w->posix = true;   /* grants nothing: it says how to start it */
-        return true;
+        w->posix = true;   /* how to start it, and POSIX's /tmp: init keeps one (tmp.c) */
+        return add_grant(w, "/tmp:w", "/tmp (write)");
     }
     return false;
 }

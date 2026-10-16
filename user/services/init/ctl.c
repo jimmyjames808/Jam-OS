@@ -47,7 +47,9 @@
  * prepare_disk (the shell's `disk prepare nvme1`, after the owner typed the
  * last four characters of the drive's serial, and `erase` for a drive that
  * isn't empty) asks volumes on the install channel, init's alone
- * (prepare.c), to make an NVMe drive a Jam OS disk.
+ * (prepare.c), to make an NVMe drive a Jam OS disk; format_data (`disk
+ * format nvme1 data [fat]`, the serial's end typed) to format a Jam OS
+ * disk's data partition again.
  *
  * install (the shell's `install nvme1`, the same confirmations) is the
  * installer (install.c): Jam OS written to the drive on a thread of its own,
@@ -122,7 +124,8 @@ static bool koid_named(const char *name, uint64_t *koid)
 
 /* ---- answered later: what waits for volumes -------------------------------------- */
 
-enum later_kind { LATER_KILL, LATER_SYNC, LATER_MOUNT, LATER_DEVMGR_KILL, LATER_PREPARE };
+enum later_kind { LATER_KILL, LATER_SYNC, LATER_MOUNT, LATER_DEVMGR_KILL, LATER_PREPARE,
+                  LATER_FORMAT };
 
 /* A request of ours (initctl's) waiting for volumes' answer to the call it
  * made (or devmgr's, for LATER_DEVMGR_KILL: dm.c reads that one). */
@@ -136,7 +139,7 @@ struct later {
     uint64_t        koid;             /* LATER_DEVMGR_KILL: the process asked to be killed */
     char            what[NAME_MAX];   /* the name or path, for the log */
     uint8_t         writable;         /* LATER_MOUNT's */
-    uint32_t        disk;             /* LATER_PREPARE's: the disk's id */
+    uint32_t        disk;             /* LATER_PREPARE's and LATER_FORMAT's: the disk's id */
 };
 
 static struct later laters[MAX_LATER];
@@ -156,6 +159,9 @@ static void later_finish(struct later *l, status_t st, uint64_t koid)
     } else if (l->kind == LATER_PREPARE) {
         prepare_say(l->disk, st, l->t0);
         (void)initctl_reply_prepare_disk(l->txn, st);
+    } else if (l->kind == LATER_FORMAT) {
+        format_say(l->disk, st, l->t0);
+        (void)initctl_reply_format_data(l->txn, st);
     } else {
         printf("init: mount %s %s: %s\n", l->writable ? "-w" : "-r", l->what, status_str(st));
         (void)initctl_reply_mount(l->txn, st);
@@ -206,6 +212,8 @@ static void later_answer(struct later *l, const void *rep, struct idl_msg *m)
         st = volumes_sync_result(rep, m);
     } else if (l->kind == LATER_PREPARE) {
         st = prepare_result(rep, m);
+    } else if (l->kind == LATER_FORMAT) {
+        st = format_result(rep, m);
     } else {
         st = volumes_remount_result(rep, m);
     }
@@ -274,7 +282,8 @@ static void later_poll(void)
         if (l->used && t >= l->deadline)
             later_finish(l, ERR_TIMED_OUT, 0);
         else if (l->used && l->kind != LATER_DEVMGR_KILL &&
-                 l->vm != (l->kind == LATER_PREPARE ? shell_volumes_install() : shell_volumes()))
+                 l->vm != (l->kind == LATER_PREPARE || l->kind == LATER_FORMAT
+                               ? shell_volumes_install() : shell_volumes()))
             later_finish(l, ERR_PEER_CLOSED, 0);   /* volumes was started again meanwhile */
     }
     later_arm();
@@ -537,6 +546,29 @@ static status_t op_prepare_disk(void *ctx, struct idl_txn txn, uint32_t id, cons
     return later_sent(l, prepare_send(l->txid, id, tail, tail_len, word, word_len));
 }
 
+/* initctl.format_data: volumes (volinstall.format_data) formats a Jam OS
+ * disk's data partition again, answered later. The owner's confirmation
+ * goes on as it came: volumes checks it. */
+static status_t op_format_data(void *ctx, struct idl_txn txn, uint32_t id, const char *tail,
+                               uint32_t tail_len, uint8_t fat)
+{
+    const struct ctl *c = ctx;
+    if (!c->admin)
+        return ERR_ACCESS_DENIED;
+    if (!shell_volumes_install())
+        return ERR_NOT_FOUND;
+    if (install_busy())
+        return ERR_BAD_STATE;   /* the installer has the install channel */
+    char what[NAME_MAX];
+    snprintf(what, sizeof(what), "%08x", id);
+    struct later *l = later_new(LATER_FORMAT, txn, shell_volumes_install(), what, PREPARE_WAIT);
+    if (!l)
+        return ERR_NO_RESOURCES;
+    l->disk = id;
+    printf("init: format disk %s's data partition (%s)\n", what, fat ? "FAT32" : "ext");
+    return later_sent(l, format_send(l->txid, id, tail, tail_len, fat != 0));
+}
+
 /* initctl.install: Jam OS written to an internal drive (install.c), answered
  * by its worker thread when it is done. The install channel is one caller's
  * at a time: not while a prepare_disk waits on it. */
@@ -547,7 +579,7 @@ static status_t op_install(void *ctx, struct idl_txn txn, uint32_t id, const cha
     if (!c->admin)
         return ERR_ACCESS_DENIED;
     for (unsigned i = 0; i < MAX_LATER; i++)
-        if (laters[i].used && laters[i].kind == LATER_PREPARE)
+        if (laters[i].used && (laters[i].kind == LATER_PREPARE || laters[i].kind == LATER_FORMAT))
             return ERR_BAD_STATE;
     return install_start(txn.ch, txn.txid, id, tail, tail_len, word, word_len);
 }
@@ -582,7 +614,7 @@ static const struct initctl_ops ops = {
     .kernel_load = op_kernel_load, .update_offer = op_update_offer, .terminal = op_terminal,
     .launch = op_launch, .disks = op_disks, .prepare_disk = op_prepare_disk,
     .install = op_install,
-    .pkg_channel = op_pkg_channel,
+    .pkg_channel = op_pkg_channel, .format_data = op_format_data,
 };
 
 static void ctl_close(struct ctl *c)

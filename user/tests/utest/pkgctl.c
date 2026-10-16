@@ -478,7 +478,8 @@ bool t_pkgctl_other_version(void)
     char l10[1024], want[2100];
     vec_line("vec 1.0-r1", l10, sizeof(l10));
     CHECK(rtext(ALLOW, text, sizeof(text)) > 0);
-    snprintf(want, sizeof(want), "%s\n%s\t%s\t/data (read)\tpkg=vec 1.1-r1\n", l10, hex, VEC);
+    snprintf(want, sizeof(want), "%s\n%s\t%s\t/tmp (write), /data (read)\tpkg=vec 1.1-r1\n", l10,
+             hex, VEC);
     CHECK(!strcmp(text, want));
     uint32_t lines;
     CHECK_ST(pkga_revoke(&at, (struct pkg_str){ "vec", 3 }, (struct pkg_str){ "1.0", 3 }, 1,

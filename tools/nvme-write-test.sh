@@ -23,14 +23,19 @@
 #             on a read-only channel). No Write ever reaches any drive
 #             (trace stage 1), all three images unchanged
 #   prepare   the Windows-like and a blank drive: `disk prepare` (the
-#             serial's last four typed), `disks` and `mount` show the two
-#             partitions, `mount -w`, a storm of 20 files and its check. A
+#             serial's last four typed), `disks` shows the two partitions,
+#             the data partition ext at /jam, read-write (M13.6's U7b), a
+#             storm of 20 files there and its check; the ESP `mount -w` and
+#             3 files. A
 #             second boot: it is a Jam OS disk from the start, `disk
 #             prepare` refuses it, the 20 files are whole, 5 more are
 #             written. The host then reads the image: Jam OS's table,
 #             nothing outside it and the partitions (tools/nvme-written.py),
-#             both partitions FAT32 without damage (tools/fatcheck.py)
-#   cutstorm  a Jam OS drive (made on the host) and the Windows-like one;
+#             the ESP FAT32 without damage (tools/fatcheck.py), the data
+#             partition's ext volume clean once its journal is replayed
+#             (e2fsck)
+#   cutstorm  a Jam OS drive (made on the host: its data partition ext, by
+#             Linux's mke2fs) and the Windows-like one;
 #             QEMU killed with kill -9 at 10 points of a disktest storm and
 #             booted again each time (one chain of boots on the same
 #             images, the storm going on from the files already there): at
@@ -40,9 +45,13 @@
 #             every cut: every file the log said was synced is whole, no
 #             file below the highest is missing, at most the file being
 #             written is damaged; the volume is mounted again and written
-#             on. At the end the host's fatcheck finds no damage
+#             on (/jam: the ext volume's journal replayed at each mount).
+#             At the end e2fsck finds the volume clean once its journal is
+#             replayed
 #   cutprep   the same cut during `disk prepare` of a blank drive, at the
-#             Nth Write of its table (1 to 5) and of the formats after it:
+#             Nth Write of its table (1 to 5) and of the formats after it
+#             (the ESP's FAT, then the data partition's ext, done by the
+#             60th Write or so; then /jam's first writes):
 #             then a boot that finishes the preparation (`disk prepare`
 #             again where the host sees a drive that isn't complete; none
 #             where it is) and writes and checks a storm. The state the cut
@@ -98,7 +107,7 @@ NVW_BLANK_DISK=${NVW_BLANK_DISK:-nothing found on it}    # what `disks` says of 
 NVW_PREPARED=${NVW_PREPARED:-is a Jam OS disk now}       # and its answer when done
 NVW_RW=${NVW_RW:-read-write}                             # mount -w: "is now read-write", "read-write already"
 NVW_POINTS=${NVW_POINTS:-1 2 3 5 8 13 21 34 55 89}
-NVW_PREP_POINTS=${NVW_PREP_POINTS:-1 3 4 5 6 8 12 20 35 50}   # a whole prepare is about 53 Writes
+NVW_PREP_POINTS=${NVW_PREP_POINTS:-1 3 4 5 6 8 12 20 35 50 54 58 62 66 70}   # a whole prepare is about 70 Writes
 NVW_DRV_POINTS=${NVW_DRV_POINTS:-1 3 4 5 6}
 
 sha256() { if command -v sha256sum > /dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
@@ -110,8 +119,22 @@ fails=0
 mk_win() { python3 tools/nvme-img.py "$1" windows; }
 mk_blank() { python3 tools/mkgpt.py "$1" --layout blank --size 640M > /dev/null; }
 # A Jam OS drive with both partitions formatted, as `disk prepare` leaves it:
-# the ESP (512 MiB from 1 MiB) and the data partition (126 MiB from 513 MiB).
+# the ESP (512 MiB from 1 MiB) FAT32 and the data partition (126 MiB from 513
+# MiB) ext, Jam OS's feature set (M13.6's U7b), made by Linux's mke2fs on the
+# host. mk_jam_fat: the data partition FAT32, as M12.7's W2 made it (refuse
+# and restart: no write at the mount, and `kill fat-nvmeN`).
 mk_jam() {
+    python3 tools/mkgpt.py "$1" --layout jamos --size 640M > /dev/null
+    mformat -i "$1@@1M" -T 1048576 -F -v JAMESP ::
+    rm -f "$1.ext"
+    truncate -s 126M "$1.ext"
+    PATH=/usr/sbin:/sbin:$PATH MKE2FS_CONFIG=/dev/null mke2fs -q -F -o Linux -b 4096 -I 256 -m 0 -J size=4 \
+        -O none,has_journal,extent,flex_bg,64bit,sparse_super,large_file,huge_file,dir_nlink,extra_isize,metadata_csum,filetype \
+        -E lazy_itable_init=0,lazy_journal_init=0,root_owner=1000:1000 -L jamdata "$1.ext" > /dev/null
+    dd if="$1.ext" of="$1" bs=1M seek=513 conv=notrunc 2> /dev/null
+    rm -f "$1.ext"
+}
+mk_jam_fat() {
     python3 tools/mkgpt.py "$1" --layout jamos --size 640M > /dev/null
     mformat -i "$1@@1M" -T 1048576 -F -v JAMESP ::
     mformat -i "$1@@513M" -T 258048 -F -v JAMDATA ::
@@ -132,11 +155,12 @@ settle() {
     echo "wait {prompt}"
 }
 
-# names <win slot> <blank slot> <jam slot>: `disks`, and from its answer the
+# names <win slot> <blank slot> <jam slot> [fat]: `disks`, and from its answer the
 # numbers of the drives in those QEMU slots (the order QEMU_NVME gave them;
 # "" for a drive not wanted): {wd} {bd} {jd} their disks (nvme<N>), {we} the
-# Windows drive's ESP mount, {je} and {jm} the Jam OS drive's ESP and data
-# mounts (/nvme<N>), from anywhere in the output so far (`seen`: a drive
+# Windows drive's ESP mount, {je} the Jam OS drive's ESP mount (/nvme<N>)
+# and its data partition /jam (ext); with `fat`, a FAT data partition's
+# mount {jm} (/nvme<N>); from anywhere in the output so far (`seen`: a drive
 # that comes up as a Jam OS disk later is found by a second call).
 names() {
     echo "send disks"
@@ -149,7 +173,11 @@ names() {
     fi
     if [ -n "${3:-}" ]; then
         printf '%s\n' "seen re:nvme(?P<jd>[0-9]+) +QEMU NVMe Ctrl +serial jamos-nvme$3 "
-        printf '%s\n' "seen re:serial jamos-nvme$3 [^\r\n]*\r?\n +1 +EFI system [^\r\n]*?/nvme(?P<je>[0-9]+)[^\r\n]*\r?\n +2 +Jam OS data [^\r\n]*?/nvme(?P<jm>[0-9]+)"
+        if [ "${4:-}" = fat ]; then
+            printf '%s\n' "seen re:serial jamos-nvme$3 [^\r\n]*\r?\n +1 +EFI system [^\r\n]*?/nvme(?P<je>[0-9]+)[^\r\n]*\r?\n +2 +Jam OS data [^\r\n]*?/nvme(?P<jm>[0-9]+)"
+        else   # ext: the data partition is /jam
+            printf '%s\n' "seen re:serial jamos-nvme$3 [^\r\n]*\r?\n +1 +EFI system [^\r\n]*?/nvme(?P<je>[0-9]+)[^\r\n]*\r?\n +2 +Jam OS data [^\r\n]*?/jam \(ext\)"
+        fi
     fi
     echo "wait {prompt}"
 }
@@ -217,7 +245,7 @@ boot_cut() {
             w=$(nwrites "$trace")
             [ "$w" = "$lastw" ] || { echo "$(date +%s.%N) Write $w" >> "$d/$n.polls"; lastw=$w; }
             if [ "$w" -ge "$target" ]; then
-                kill -9 "$qp"
+                kill -9 "$qp" 2> /dev/null || true   # (it may have ended that moment)
                 cut=$w
                 break
             fi
@@ -272,7 +300,7 @@ fatchk() {
 # before it, no file missing, at most one damaged. Needs one check.
 verify() {
     cat "$@" | tr -d '\r' |
-        grep -aoE "synced [0-9]+|check /nvme[0-9]+: files=[0-9]+ whole=[0-9]+ damaged=[0-9]+ missing=[0-9]+ prefix=[0-9]+" |
+        grep -aoE "synced [0-9]+|check /[a-z0-9]+: files=[0-9]+ whole=[0-9]+ damaged=[0-9]+ missing=[0-9]+ prefix=[0-9]+" |
         awk -F'[ =]' -v c="nvme-write-$c" '
             /^synced / { if ($2 + 0 > s) s = $2 + 0; next }
             { n++; why = ""
@@ -311,12 +339,12 @@ refuse() {
     win="$dir/windows.img" blank="$dir/blank.img" jam="$dir/jamos.img"
     mk_win "$win"
     mk_blank "$blank"
-    mk_jam "$jam"
+    mk_jam_fat "$jam"
     sums=$(sha256 "$win" "$blank" "$jam" | cut -d' ' -f1)
     {
         echo "# generated by tools/nvme-write-test.sh: refuse"
         settle
-        names 0 1 2
+        names 0 1 2 fat
         echo "send mount -w /nvme{we}"
         echo "wait $NVW_NOT_JAMOS"
         echo "wait {prompt}"
@@ -367,11 +395,25 @@ refuse() {
 
 # ---- prepare ----------------------------------------------------------------------------
 
+# extchk <label> <image>: the data partition (from 513 MiB) is an ext volume
+# that e2fsck finds clean once its journal is replayed (the replay alone,
+# -E journal_only, then -fn with nothing to fix: a run ends with `reboot -f`
+# or a kill, and the journal holds what was committed last).
+extchk() {
+    PATH=/usr/sbin:/sbin:$PATH
+    dd if="$2" of="$dir/$1.ext" bs=1M skip=513 2> /dev/null
+    e2fsck -E journal_only -y "$dir/$1.ext" > "$dir/e2fsck-$1-replay.txt" 2>&1 || [ $? -le 1 ] ||
+        { echo "nvme-write-$c: FAIL: e2fsck's journal replay of $1 (see $dir/e2fsck-$1-replay.txt)"; return 1; }
+    e2fsck -fn "$dir/$1.ext" > "$dir/e2fsck-$1.txt" 2>&1 ||
+        { echo "nvme-write-$c: FAIL: $1's ext volume isn't clean (see $dir/e2fsck-$1.txt)"; return 1; }
+    rm -f "$dir/$1.ext"
+}
+
 # The prepared drive's checks, on the host: its table, the partitions.
 prepared_ok() {
     written "$1" || return 1
     fatchk esp "$1@@1M" || return 1
-    fatchk data "$1@@513M" --require-clean || return 1
+    extchk data "$1" || return 1
 }
 
 # Drives: 0 Windows-like, 1 blank.
@@ -394,17 +436,14 @@ prepare() {
         echo "wait 360 $NVW_PREPARED"
         echo "wait {prompt}"
         names "" "" 1
-        echo "send mount"
-        echo "wait /nvme{je}"
-        echo "wait /nvme{jm}"
+        echo "seen 60 init: /jam mounted"   # ext: /jam, read-write from the start
+        echo "send mount | grep /jam | grep -c read-write | grep ^1\$ && echo jw-\"\"1"
+        echo "wait jw-1"
         echo "wait {prompt}"
-        echo "send mount -w /nvme{jm}"
-        echo "wait $NVW_RW"
-        echo "wait {prompt}"
-        echo "send disktest /nvme{jm} write 20 96"
+        echo "send disktest /jam write 20 96"
         echo "wait 120 synced 20"
         echo "wait {prompt}"
-        echo "send disktest /nvme{jm} check; echo pr-\"\"1 \$?"
+        echo "send disktest /jam check; echo pr-\"\"1 \$?"
         echo "wait files=20 whole=20 damaged=0 missing=0 prefix=20"
         echo "wait pr-1 0"
         echo "wait {prompt}"
@@ -429,17 +468,15 @@ prepare() {
         echo "send disk prepare nvme{jd}"
         echo "wait $NVW_ALREADY"
         echo "wait {prompt}"
-        echo "send mount -w /nvme{jm}"
-        echo "wait $NVW_RW"
-        echo "wait {prompt}"
-        echo "send disktest /nvme{jm} check; echo pr-\"\"3 \$?"
+        echo "seen 60 init: /jam mounted"   # ext: /jam, read-write from the start
+        echo "send disktest /jam check; echo pr-\"\"3 \$?"
         echo "wait files=20 whole=20 damaged=0 missing=0 prefix=20"
         echo "wait pr-3 0"
         echo "wait {prompt}"
-        echo "send disktest /nvme{jm} write 5 96"
+        echo "send disktest /jam write 5 96"
         echo "wait 60 synced 25"
         echo "wait {prompt}"
-        echo "send disktest /nvme{jm} check; echo pr-\"\"4 \$?"
+        echo "send disktest /jam check; echo pr-\"\"4 \$?"
         echo "wait files=25 whole=25 damaged=0 missing=0 prefix=25"
         echo "wait pr-4 0"
         echo "wait {prompt}"
@@ -483,18 +520,16 @@ cutstorm() {
             echo "# generated by tools/nvme-write-test.sh: cutstorm $k (the cut $delta Writes into the storm)"
             settle
             names "" "" 1
-            echo "send mount -w /nvme{jm}"
-            echo "wait 60 $NVW_RW"
+            echo "seen 60 init: /jam mounted"   # ext: /jam, read-write from the start
+            echo "send disktest /jam check"
+            echo "wait 60 check /jam: files="
             echo "wait {prompt}"
-            echo "send disktest /nvme{jm} check"
-            echo "wait 60 check /nvme{jm}: files="
-            echo "wait {prompt}"
-            echo "send disktest /nvme{jm} write 400 64; echo cs-\"\"$k \$?"
+            echo "send disktest /jam write 400 64; echo cs-\"\"$k \$?"
             echo "wait 300 cs-$k"
             echo "send reboot -f"
             echo "wait reboot: resetting"
         } > "$dir/$bn.in"
-        boot_cut "$dir" $bn "nvmetest=on" "$win $jam" "disktest: writing /nvme" "$delta"
+        boot_cut "$dir" $bn "nvmetest=on" "$win $jam" "disktest: writing /jam" "$delta"
         [ -n "$cut" ] || echo "nvme-write-$c: point $k: the storm ended before $delta Writes (not cut)"
         logs="$logs $dir/$bn.log"
     done
@@ -502,18 +537,16 @@ cutstorm() {
         echo "# generated by tools/nvme-write-test.sh: cutstorm, the last boot (no cut)"
         settle
         names "" "" 1
-        echo "send mount -w /nvme{jm}"
-        echo "wait 60 $NVW_RW"
-        echo "wait {prompt}"
-        echo "send disktest /nvme{jm} check; echo cs-\"\"a \$?"
-        echo "wait 60 check /nvme{jm}: files="
+        echo "seen 60 init: /jam mounted"   # ext: /jam, read-write from the start
+        echo "send disktest /jam check; echo cs-\"\"a \$?"
+        echo "wait 60 check /jam: files="
         echo "wait cs-a"
         echo "wait {prompt}"
-        echo "send disktest /nvme{jm} write 10 64; echo cs-\"\"b \$?"
+        echo "send disktest /jam write 10 64; echo cs-\"\"b \$?"
         echo "wait 120 cs-b 0"
         echo "wait {prompt}"
-        echo "send disktest /nvme{jm} check; echo cs-\"\"c \$?"
-        echo "wait 60 check /nvme{jm}: files="
+        echo "send disktest /jam check; echo cs-\"\"c \$?"
+        echo "wait 60 check /jam: files="
         echo "wait cs-c 0"
         echo "wait {prompt}"
         echo "send sync"
@@ -525,11 +558,11 @@ cutstorm() {
     logs="$logs $dir/nvw-cut-last.log"
     # shellcheck disable=SC2086
     verify $logs || ok=0
-    s_want "$dir/nvw-cut-last.log" "check /nvme[0-9]+: files=[0-9]+ whole=[0-9]+ damaged=0 missing=0 prefix=[0-9]+" || ok=0
+    s_want "$dir/nvw-cut-last.log" "check /[a-z0-9]+: files=[0-9]+ whole=[0-9]+ damaged=0 missing=0 prefix=[0-9]+" || ok=0
     [ "$(sha256 "$win" | cut -d' ' -f1)" = "$before" ] || { echo "nvme-write-$c: FAIL: the Windows-like image changed"; ok=0; }
     written "$jam" || ok=0
     fatchk esp "$jam@@1M" || ok=0
-    fatchk data "$jam@@513M" || ok=0
+    extchk data "$jam" || ok=0
     s_trace "$dir" 2 --write-ranges "$ranges" || ok=0
     finish $ok
 }
@@ -537,14 +570,16 @@ cutstorm() {
 # ---- cutprep ----------------------------------------------------------------------------
 
 # classify <image>: what a cut `disk prepare` left, from the image alone:
-# "complete" (Jam OS's table, both partitions FAT32), "formats missing"
-# (the table is Jam OS's, a partition isn't FAT32), "table incomplete".
+# "complete" (Jam OS's table, the ESP FAT32, the data partition ext: its
+# primary superblock's magic, which ext's mkfs writes last), "formats
+# missing" (the table is Jam OS's, a partition isn't formatted yet), "table
+# incomplete".
 classify() {
     if python3 tools/nvme-written.py "$1" > /dev/null 2>&1; then
-        e=0 d=0
+        e=0
         python3 tools/fatcheck.py "$1@@1M" > /dev/null 2>&1 || e=$?
-        python3 tools/fatcheck.py "$1@@513M" > /dev/null 2>&1 || d=$?
-        if [ $e -ne 3 ] && [ $d -ne 3 ]; then echo complete; else echo "formats missing"; fi
+        magic=$(dd if="$1" bs=1 skip=$((513 * 1048576 + 1080)) count=2 2> /dev/null | od -An -tx1 | tr -d ' ')
+        if [ $e -ne 3 ] && [ "$magic" = 53ef ]; then echo complete; else echo "formats missing"; fi
     else
         echo "table incomplete"
     fi
@@ -595,17 +630,15 @@ cutprep() {
                 echo "wait {prompt}"
                 names "" "" 1 ;;
             esac
-            echo "send mount"
-            echo "wait /nvme{jm}"
+            echo "seen 60 init: /jam mounted"   # ext: /jam, read-write from the start
+            echo "send mount | grep /jam | grep -c read-write | grep ^1\$ && echo jw-\"\"$k"
+            echo "wait jw-$k"
             echo "wait {prompt}"
-            echo "send mount -w /nvme{jm}"
-            echo "wait $NVW_RW"
-            echo "wait {prompt}"
-            echo "send disktest /nvme{jm} write 5 32; echo cp-\"\"$k \$?"
+            echo "send disktest /jam write 5 32; echo cp-\"\"$k \$?"
             echo "wait 120 synced 5"
             echo "wait cp-$k 0"
             echo "wait {prompt}"
-            echo "send disktest /nvme{jm} check; echo cq-\"\"$k \$?"
+            echo "send disktest /jam check; echo cq-\"\"$k \$?"
             echo "wait files=5 whole=5 damaged=0 missing=0 prefix=5"
             echo "wait cq-$k 0"
             echo "wait {prompt}"
@@ -683,12 +716,12 @@ restart() {
     ok=1
     win="$dir/windows.img" jam="$dir/jamos.img"
     mk_win "$win"
-    mk_jam "$jam"
+    mk_jam_fat "$jam"
     before=$(sha256 "$win" | cut -d' ' -f1)
     {
         echo "# generated by tools/nvme-write-test.sh: restart"
         settle
-        names 1 "" 0
+        names 1 "" 0 fat
         echo "send mount -w /nvme{jm}"
         echo "wait 60 $NVW_RW"
         echo "wait {prompt}"

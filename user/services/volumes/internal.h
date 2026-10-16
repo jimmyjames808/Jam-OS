@@ -108,7 +108,7 @@ struct vol {
     handle_t            ctl;        /* our end of its `fsctl` channel (0: none) */
     uint32_t            ctl_gen;    /* bumped with every new one: in its port key */
     /* On a disk that isn't the boot disk (disk.c): a /usbN mount. */
-    bool                other;      /* it is one: never given FAT_ARG_FORMAT */
+    bool                other;      /* it is one: given a format word only by prepare.c */
     bool                rw;         /* its `block` channel is opened read-write (`mount -w`;
                                      * the boot disk's ESP: init's volesp.open_writable) */
     bool                ready;      /* it answered its first fs.stat: a mount */
@@ -314,8 +314,9 @@ status_t disk_test(handle_t ch, uint32_t *id);
  * ended by itself with FAT_EXIT_NO_VOLUME (`no_volume`): the partition
  * holds no FAT volume and is left alone. */
 bool     fs_check_ended(struct vol *b, bool no_volume);
-/* FAT_ARG_FORMAT for the one service that may format a blank partition
- * (the boot disk's data partition), NULL for every other. */
+/* FAT_ARG_FORMAT (EXTFS_ARG_FORMAT for extfs) for a service that may
+ * format a blank partition (the boot disk's data partition, and one being
+ * prepared or formatted again: prepare.c's `fresh`), NULL for every other. */
 const char *fs_format_arg(const struct vol *b);
 /* For an instance that replaces one that ended: FAT_ARG_KILLED after a
  * deliberate kill, FAT_ARG_CRASHED after any other end; NULL for a first

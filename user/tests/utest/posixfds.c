@@ -417,16 +417,17 @@ bool t_spawn_stack_size(void)
 }
 
 /* The list's word `posix` (<wants.h>): once, alone on its line, granting
- * nothing; `svc session` parses as any service (the build and `allow`
- * decide who may have it). */
+ * /tmp writable (M13.6's U7b); `svc session` parses as any service (the
+ * build and `allow` decide who may have it). */
 bool t_wants_posix(void)
 {
     static struct wants w;
     const char *good = "posix\nsvc net\n";
     CHECK_ST(wants_parse(good, strlen(good), &w), OK);
     CHECK(w.posix);
-    CHECK_EQ(w.n, 1u);
-    CHECK(!strcmp(w.grant[0], "/svc/net"));
+    CHECK_EQ(w.n, 2u);
+    CHECK(!strcmp(w.grant[0], "/tmp:w"));
+    CHECK(!strcmp(w.grant[1], "/svc/net"));
     CHECK_ST(wants_parse("svc net\n", 8, &w), OK);
     CHECK(!w.posix);
     static const char *const bad[] = { "posix\nposix\n", "posix now\n", "Posix\n", " posix\n" };

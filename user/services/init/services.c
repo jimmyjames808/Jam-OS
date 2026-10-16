@@ -486,6 +486,7 @@ static status_t start_volumes(void)
         st = mounts_watch(watch, port, KEY_MOUNTS);
     if (st != OK)
         printf("init: not following volumes' mounts (%s)\n", status_str(st));
+    tmp_start(port, KEY_MOUNTS);   /* /tmp from now on, whatever volumes mounts (tmp.c) */
     if (devmgr)
         services_set_volumes(devmgr, dc);   /* its disks, from now on */
     else
