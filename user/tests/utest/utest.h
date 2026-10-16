@@ -89,6 +89,8 @@ bool t_nvmero_refuse(void);
 bool t_disk_mounts(void);
 bool t_disk_not_boot(void);
 bool t_disk_other(void);
+bool t_disk_ext(void);            /* an ext volume on a test disk: bin/extfs, /usbN-test */
+bool t_disk_ext_none(void);       /* a Linux-typed partition with no ext volume: left alone */
 bool t_disk_fs_restart(void);
 bool t_disk_own_channel(void);
 bool t_disk_vanishes(void);

@@ -12,9 +12,10 @@
  * When its process terminates:
  *   - exit 0 by itself (not killed): the service is finished (its fs
  *     channel's clients all left). Not restarted; its job must be empty.
- *   - FAT_EXIT_NO_VOLUME from another stick's partition: no FAT volume
- *     there, left alone (disk.c's fs_check_ended); the ESP's service
- *     ending before it answered the boot-disk check: not the boot disk.
+ *   - FAT_EXIT_NO_VOLUME (EXTFS_EXIT_NO_VOLUME for an ext volume) from
+ *     another stick's partition: no volume there, left alone (fsvc.c's
+ *     fs_check_ended); the ESP's service ending before it answered the
+ *     boot-disk check: not the boot disk.
  *   - anything else -- a crash, a kill by anyone (volumes.kill included),
  *     an exit with an error: restarted, by the rule of a service that
  *     outlives its process (spare.c, docs/HISTORY.md, M11.6 Q5; the restart
@@ -35,15 +36,17 @@
  * in its window and its give-up are notices in plain words ("File system
  * crashed / Jam OS started it again"); a deliberate kill, another stick's
  * service and anything while volumes stops are not. */
+#include <extfssvc.h>
 #include <fatsvc.h>
 #include <idl/fsctl.h>
 #include "disk.h"
 
 /* b ending is never a problem of ours: a test disk's, or the filesystem
- * service of a stick that isn't the boot disk. */
+ * service of a stick that isn't the boot disk (but /jam, the Jam OS drive's
+ * data, is as much ours as /data). */
 static bool excused(const struct vol *b)
 {
-    return b->test || b->other;
+    return b->test || (b->other && !b->jam);
 }
 
 /* A notice of b's crash (first: the first in its window) or give-up, if
@@ -312,7 +315,8 @@ void sup_died(struct vol *b, uint32_t gen)
         return;   /* a stale packet, or it was handled already */
     fs_kill(b);   /* whatever else its job started */
     b->ended_at = now();
-    bool no_volume = !info.killed && !b->killed && info.exit_code == FAT_EXIT_NO_VOLUME;
+    bool no_volume = !info.killed && !b->killed &&
+                     info.exit_code == (b->ext ? EXTFS_EXIT_NO_VOLUME : FAT_EXIT_NO_VOLUME);
     if (fs_check_ended(b, no_volume))
         return;   /* no FAT volume on someone else's partition: no restart, no problem */
     if (!info.killed && info.exit_code == 0 && !b->killed) {
