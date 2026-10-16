@@ -146,8 +146,14 @@ static status_t conn_open(struct conn *c, uint32_t addr, uint16_t port)
 {
     uint64_t deadline = now() + CONNECT_WAIT;
     status_t st = net_wait_up(net_svc(), deadline, NULL);
-    if (st == OK)
+    while (st == OK) {   /* a link that is still coming up (the address came first) is waited for */
         st = net_tcp_open(net_svc(), addr, port, 0, NET_TCP_BULK, &c->s);
+        if (st != ERR_BAD_STATE || now() >= deadline)
+            break;
+        if (pk_net_stopped())
+            return ERR_CANCELED;
+        (void)jam_sleep_until(now() + 200 * NS_PER_MS);   /* its status says only that it woke */
+    }
     if (st != OK)
         return st;
     c->open = true;
