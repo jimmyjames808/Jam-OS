@@ -202,8 +202,9 @@ def install(image, names, ports, stage_dir, offset_mib, key=None, feed=None):
                 f.write("# the approvals written into the image, as `allow -l` shows them\n")
                 f.write("send allow -l\n")
                 for line in allow:
-                    digest, path, text, _tag = line.split("\t")
-                    f.write("wait %s: %s (sha-256 %s\n" % (path, text, digest[:16]))
+                    digest, path, text, tag = line.split("\t")   # shown: `<text> [package <tag>]`
+                    f.write("wait %s: %s [package %s] (sha-256 %s\n" %
+                            (path, text, tag[len("pkg="):], digest[:16]))
                 f.write("wait {prompt}\n")
         print("ports-preinstall: %s: %d files, %d programs allowed (%s)" %
               (os.path.basename(image), len(seen), len(programs), ", ".join(packages)))
