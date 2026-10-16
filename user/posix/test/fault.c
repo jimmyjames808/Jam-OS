@@ -16,12 +16,14 @@
  *   - SIGFPE (FPE_INTDIV) on a division by zero, SIGILL (ILL_ILLOPN) on
  *     ud2, SIGTRAP (SI_KERNEL, Linux's) on int3, SIGBUS (BUS_ADRERR) past
  *     the end of a shrunk VMO (a file truncated under its mapping), each
- *     with Linux's si_addr;
+ *     with Linux's si_addr; SIGFPE (FPE_FLTDIV, REG_TRAPNO 19) on a divss
+ *     by zero with the exception unmasked, the handler clearing MXCSR's
+ *     flags in fpregs (they are clear after);
  *   - masks: the signal and sa_mask blocked in the handler and not after;
  *     uc_sigmask edited by the handler is the mask after; SA_NODEFER runs
  *     a nested handler for a fault in the handler; siglongjmp out of a
- *     handler 1,000 times; SA_RESETHAND; a fault on a second thread is
- *     handled on that thread;
+ *     handler of signal()'s kind 1,000 times; SA_RESETHAND; a fault on a
+ *     second thread is handled on that thread;
  *   - V8's "restore and return": a handler that installs another and
  *     returns re-runs the instruction into the other;
  *   - sent, not faults: raise's si_code <= 0; rt_tgsigqueueinfo to
@@ -97,6 +99,21 @@ __asm__(".text\n"
         "fl_xmm: movdqu (%rsi), %xmm0\n"
         "fl_xmm_at: movzbl (%rdi), %eax\n"
         "fl_xmm_end: movdqu %xmm0, (%rdx)\n"
+        "    ret\n"
+        /* void fl_simd(void): 1.0f / 0 with divide-by-zero unmasked in
+         * MXCSR (#XM); after it MXCSR's mask bit is set again */
+        "fl_simd: sub $8, %rsp\n"
+        "    stmxcsr (%rsp)\n"
+        "    andl $~0x200, (%rsp)\n"
+        "    ldmxcsr (%rsp)\n"
+        "    pxor %xmm1, %xmm1\n"
+        "    mov $1, %eax\n"
+        "    cvtsi2ss %eax, %xmm0\n"
+        "fl_simd_at: divss %xmm1, %xmm0\n"
+        "fl_simd_end: stmxcsr (%rsp)\n"
+        "    orl $0x200, (%rsp)\n"
+        "    ldmxcsr (%rsp)\n"
+        "    add $8, %rsp\n"
         "    ret\n");
 long fl_load(const volatile void *p);
 void fl_store(volatile void *p);
@@ -105,9 +122,10 @@ long fl_ud2(void);
 long fl_int3(void);
 long fl_v8(const volatile void *p);
 void fl_xmm(const volatile void *p, const void *in, void *out);
+void fl_simd(void);
 extern char fl_load_at[], fl_load_end[], fl_store_at[], fl_store_end[], fl_div_at[],
     fl_div_end[], fl_ud2_at[], fl_ud2_end[], fl_int3_end[], fl_v8_at[], fl_v8_pad[],
-    fl_xmm_end[];
+    fl_xmm_end[], fl_simd_at[], fl_simd_end[];
 
 static greg_t addr_of(const void *p)
 {
@@ -291,6 +309,20 @@ static void check_xmm(void)
     signal(SIGSEGV, SIG_DFL);
 }
 
+static volatile uint32_t simd_mxcsr;
+
+/* A SIMD error: MXCSR as the fault left it, then its flags cleared and
+ * every exception masked again in fpregs, and on past the divss. */
+static void simd_handler(int sig, siginfo_t *si, void *ucv)
+{
+    ucontext_t *uc = ucv;
+    fpregset_t fp = uc->uc_mcontext.fpregs;
+    note(sig, si, ucv);
+    simd_mxcsr = fp->mxcsr;
+    fp->mxcsr = (fp->mxcsr & ~0x3fu) | 0x1f80u;
+    uc->uc_mcontext.gregs[REG_RIP] = addr_of(fl_simd_end);
+}
+
 static void check_traps(void)
 {
     on(SIGFPE, 0, note);
@@ -312,6 +344,16 @@ static void check_traps(void)
     CHECK(runs == 1 && got_sig == SIGTRAP && got_code == SI_KERNEL);
     CHECK(got_rip == (uintptr_t)fl_int3_end && got_trapno == 3);
     signal(SIGTRAP, SIG_DFL);
+
+    on(SIGFPE, 0, simd_handler);
+    simd_mxcsr = 0;
+    fl_simd();
+    uint32_t mxcsr;
+    __asm__ volatile("stmxcsr %0" : "=m"(mxcsr));
+    CHECK(runs == 1 && got_code == FPE_FLTDIV && got_addr == (uintptr_t)fl_simd_at);
+    CHECK(got_trapno == 19 && (simd_mxcsr & 0x204) == 0x004);   /* ZE pending, ZM clear */
+    CHECK((mxcsr & 0x3f) == 0);   /* the flags the handler cleared in fpregs */
+    signal(SIGFPE, SIG_DFL);
 }
 
 /* SIGBUS: a VMO mapped in a hole of a mapping of libc's (as mem.c's), then
@@ -374,11 +416,10 @@ static void nested_handler(int sig, siginfo_t *si, void *ucv)
 
 static sigjmp_buf jump;
 
-static void jump_handler(int sig, siginfo_t *si, void *uc)
+/* A handler of signal()'s kind (no SA_SIGINFO) that leaves by siglongjmp. */
+static void jump_handler(int sig)
 {
     (void)sig;
-    (void)si;
-    (void)uc;
     runs++;
     siglongjmp(jump, 1);
 }
@@ -403,7 +444,8 @@ static void check_masks(void)
     fl_load(WILD);
     CHECK(runs == 2 && max_depth == 2 && depth == 0);
 
-    on(SIGSEGV, 0, jump_handler);
+    CHECK(signal(SIGSEGV, jump_handler) != SIG_ERR);
+    runs = 0;
     volatile int back = 0;
     for (volatile int i = 0; i < JUMPS; i++) {
         if (sigsetjmp(jump, 1) == 0)

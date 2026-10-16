@@ -2181,10 +2181,13 @@ handler sees the thread's xmm0 through `fpregs` (Linux's `fpx_sw_bytes` and
 `FP_XSTATE_MAGIC2` after the area) and the xmm0 it writes there is the
 thread's after. SIGFPE (`FPE_INTDIV`) on a division by zero, SIGILL
 (`ILL_ILLOPN`) on `ud2`, SIGTRAP (`SI_KERNEL`, Linux's) on `int3`, SIGBUS
-(`BUS_ADRERR`) past the end of a VMO shrunk under its mapping. The signal
-and `sa_mask` blocked in the handler and not after; `uc_sigmask` edited by
-the handler is the mask after; `SA_NODEFER` runs a nested handler for a
-fault in the handler; `siglongjmp` out of a handler 1,000 times;
+(`BUS_ADRERR`) past the end of a VMO shrunk under its mapping; SIGFPE
+(`FPE_FLTDIV`, `REG_TRAPNO` 19) on a `divss` by zero with the exception
+unmasked, MXCSR's flags cleared by the handler in `fpregs` and clear after.
+The signal and `sa_mask` blocked in the handler and not after; `uc_sigmask`
+edited by the handler is the mask after; `SA_NODEFER` runs a nested handler
+for a fault in the handler; `siglongjmp` out of a handler installed by
+`signal()` (no `SA_SIGINFO`) 1,000 times;
 `SA_RESETHAND`; a fault on a second thread handled there; a handler that
 installs another and returns runs the instruction again into the other
 (V8's "restore and return"); `raise`'s `si_code` <= 0; `rt_tgsigqueueinfo` to
