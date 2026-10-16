@@ -158,9 +158,12 @@ build)" boots the one before it.
   `pkg install <name>`, `pkg upgrade`, `pkg remove [-r] <name>`, `pkg list
   [-u]`, `pkg info`, `pkg files`, `pkg audit`, `pkg check`. An install shows
   every package's licence and what each program asks for, and asks once
-  (`y`); the programs then run from `/data/pkg/bin` (by their path: PATH
-  does not have it yet) without an `allow` of their own (`allow -l` shows
-  them with their package). A power cut in the
+  (`y`); the programs then run by their names (PATH has `/pkg/bin`)
+  without an `allow` of their own (`allow -l` shows them with their
+  package). They are installed under `/jam/pkg` on the Jam OS drive, else
+  `/data/pkg`, and `/pkg` is the read-only view of whichever it is (a
+  stick whose `/data` is still FAT has no `/pkg`: run a program by its
+  path, `/data/pkg/bin/<name>`). A power cut in the
   middle of one is settled at the next boot.
 - `version` names the git commit a build was made from; `uname -a` the
   version, the machine and the CPU.

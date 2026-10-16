@@ -1,6 +1,6 @@
 /* type (which): what each name is: an alias, a builtin, or a program in a
  * directory of $PATH (/boot/bin, /boot/usr/bin, an installed package's
- * /data/pkg/bin). */
+ * /pkg/bin). */
 #include "sh.h"
 
 SH_CMD(type)

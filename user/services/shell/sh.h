@@ -128,8 +128,10 @@ char      **sh_make_env_posix(void);
 void        sh_free_env(char **env);
 /* The directories a bare program name is looked for in (after the shell's
  * own commands), colon-separated, when PATH is unset: the boot image's
- * programs, then the installed packages' (docs/M13.7-PLAN.md section 9). */
-#define SH_PATH_DEFAULT "/boot/bin:/boot/usr/bin:/data/pkg/bin"
+ * programs, then the installed packages' (docs/M13.7-PLAN.md section 9:
+ * /pkg is init's read-only view of the prefix bin/pkg installs to, so the
+ * same word is right on a stick and on the Jam OS drive; PO14). */
+#define SH_PATH_DEFAULT "/boot/bin:/boot/usr/bin:/pkg/bin"
 /* The program called name (no '/') in the first directory of $PATH that has
  * one, as an absolute path into path (cap bytes); false if there is none. */
 bool        sh_path_find(const char *name, char *path, size_t cap);

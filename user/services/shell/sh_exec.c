@@ -1,7 +1,7 @@
 /* Running a line: its lists (; && || &), each list's pipeline, each
  * stage's NAME=value words and alias, and then the command: one in the
  * table, else a program in a directory of $PATH (/boot/bin,
- * /boot/usr/bin and /data/pkg/bin to begin with); a POSIX program takes the stage's
+ * /boot/usr/bin and /pkg/bin to begin with); a POSIX program takes the stage's
  * redirections (< > >> 2>&1: sh_posix.c). The POSIX programs of a pipeline
  * run at once, joined by pipes; the shell's commands run in turn (see
  * exec_pipeline). A command before a single & is a

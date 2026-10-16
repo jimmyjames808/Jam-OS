@@ -1,6 +1,6 @@
 /* Tab completion: the first word of a command completes to a command,
  * alias or program in a directory of $PATH (/boot/bin, /boot/usr/bin, an
- * installed package's /data/pkg/bin); any other word (or one with a /) to
+ * installed package's /pkg/bin); any other word (or one with a /) to
  * a path. One candidate is completed in full; several, as far as they
  * agree, and if that adds nothing they are listed. */
 #include "sh_core.h"

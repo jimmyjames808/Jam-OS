@@ -68,15 +68,20 @@ static bool server(const char *given, char *out, size_t cap)
     return true;
 }
 
-/* How many packages are installed: the files of /data/pkg/db that are
- * manifests (not serial or journal, nor a `.new` or `.sum` of a transaction:
- * the names bin/pkg's pk_name_reserved keeps). bin/update says how many
- * were built for the old system when a new build's ABI stamp differs. */
+/* How many packages are installed: the files of the database (/pkg/db,
+ * init's view of the prefix bin/pkg installs to, which may be /jam/pkg; a
+ * stick whose /data is FAT has no /pkg: /data/pkg/db) that are manifests
+ * (not serial or journal, nor a `.new` or `.sum` of a transaction: the
+ * names bin/pkg's pk_name_reserved keeps). bin/update says how many were
+ * built for the old system when a new build's ABI stamp differs. */
 static unsigned packages_installed(void)
 {
     struct fs_entry ent;
     unsigned n = 0;
-    for (unsigned i = 0; fs_readdir("/data/pkg/db", i, &ent) == OK; i++) {
+    bool dir = false;
+    const char *db = fs_stat("/pkg/db", NULL, &dir, NULL) == OK && dir ? "/pkg/db"
+                                                                      : "/data/pkg/db";
+    for (unsigned i = 0; fs_readdir(db, i, &ent) == OK; i++) {
         size_t l = strlen(ent.name);
         bool aside = !strcmp(ent.name, "serial") || !strcmp(ent.name, "journal") ||
                      (l > 4 && (!strcmp(ent.name + l - 4, ".new") ||
