@@ -1,8 +1,9 @@
 # `pkg` and a program as big as Chromium's, a power cut (tools/pkg-test.sh,
 # case big): bigpkg from the repository whose package stalls halfway
-# (tools/pkg-test-repo.py, "bigslow": 150 MiB are staged under `.new` names on
-# /jam by then), and QEMU is quit during the stall, with the journal at its
-# first steps. The next boot (pkg-bigsettle.txt) settles it.
+# (tools/pkg-test-repo.py, "bigslow": the body stops for 25 s after its first
+# half), and QEMU is quit as pkg says it has 50%: about 150 MiB are staged
+# under `.new` names on /jam, with the journal at its first steps. The next
+# boot (pkg-bigsettle.txt) settles it.
 wait 120 Jam OS shell
 seen 60 init: /data mounted
 seen 90 init: /jam: mounted as views
@@ -13,5 +14,6 @@ send pkg -R http://10.2.21.174:8000/bigslow/ install bigpkg
 wait Install 1 package, 1 program? [y/N]
 type y
 wait Downloading bigpkg 1.0-r1
-sleep @CUT_S@
+wait 300 50% of bigpkg 1.0-r1
+sleep 3
 monitor quit

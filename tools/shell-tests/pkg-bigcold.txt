@@ -30,7 +30,7 @@ send pkg list
 wait No package is installed.
 wait {prompt}
 send allow -l
-wait no program on /data is allowed to run
+wait no program on /data or /jam is allowed to run
 wait {prompt}
 send ls /jam/pkg/bin | grep -c bigpkg | grep ^0$ && echo ok-$T-gone
 wait ok-x-gone

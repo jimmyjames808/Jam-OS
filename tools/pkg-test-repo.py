@@ -32,7 +32,7 @@ http://<host>:<port>/<name>/:
 
 With --bigprog FILE (the Makefile's build/bigpkg/bigpkg, 300 MiB):
     bigslow   serial 1006: bigpkg 1.0, whose one program is FILE, its body
-              stalling halfway for BIG_SLOW_S seconds
+              stalling halfway for SLOW_S seconds
     big       serial 1007: the same package, served whole
 
 The serials rise in the order a test uses them (an index below the last
@@ -178,8 +178,7 @@ def make(out, bigprog=None):
     return web
 
 
-SLOW_S = 25
-BIG_SLOW_S = 150   # 150 MiB are staged by then: the test cuts the power inside it
+SLOW_S = 25   # under bin/pkg's 30 s without a byte
 
 
 def handler_for(web):
@@ -201,8 +200,7 @@ def handler_for(web):
             self.send_response(200)
             self.send_header("Content-Length", str(size))
             self.end_headers()
-            stall = SLOW_S if path.startswith("/slow/pkg/") else \
-                BIG_SLOW_S if path.startswith("/bigslow/pkg/") else 0
+            stall = SLOW_S if path.startswith(("/slow/pkg/", "/bigslow/pkg/")) else 0
             try:
                 step = max(512, min(1 << 20, size // 8))
                 with open(full, "rb") as f:   # in pieces: a package may be 300 MiB

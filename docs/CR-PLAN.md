@@ -405,8 +405,9 @@ stubs) and lists 13 sites in `headless_shell`: 12 in Crashpad's client
 `ExceptionHandlerClient::SignalCrashDump`, `ScopedMmap::ResetMmap`,
 `LoggingMunmap`: linux_syscall_support's inline calls) and `SyscallAsm`
 (the seccomp sandbox's raw call), for CB3. Still open:
-`ports.py package --from` refuses the build, as the package format holds
-no file over 64 MiB (PO13's big packages); the two helper programs are
+`ports.py package --from` refused the build, as the package format held
+no file over 64 MiB (PO13 raised it to 1 GiB, 2 GiB a package: not yet
+tried on this build's stage); the two helper programs are
 not in the package yet (CB2 and CB3 add them with their runs).
 
 The last round's link errors and their fixes (CB1b): base's `close()`
@@ -1423,7 +1424,7 @@ ports, recipes, tests, netstack's caps, the audio API and the docs.
 | **CB4. `content_shell` on Wayland (CR-c2)** | `content_shell --single-process` on the desktop; keys, mouse, wheel, a `<select>` list; screenshots | cr-test.sh's `shell-wl` case | CB3; G2's GS1, GC1b, GT (GC3 for the list), GP2 | cr-test.sh `shell-wl` | Sonnet 5.5 |
 | **CB5. Multi-process (CR-c3)** | Chromium's own launcher, unpatched, on libc's `fork` and `exec` in place ([FORK-PLAN](FORK-PLAN.md)); `--no-zygote --no-sandbox`, every process type started and talking over Mojo; a renderer killed | cr-test.sh's `multi` case | CB4; CU1, CS1, CL2, CN1; M12.5's PX; FORK-PLAN's FK1 to FK3 and FL1a to FL4 | cr-test.sh `multi` | **Opus** (processes cross) |
 | **CB6. `chrome` (CR-d)** | the `chrome` target, its args, its package (programs, paks, licences, initial preferences: Q4), the profile on `/jam`, the singleton on CU2; `pkg install chromium` | ports/chromium (the target's lines), cr-test.sh's `chrome` case | CB5; GC2, GC3, CU2, CA1 (sound), M13.6 (its tracks in section 16), M13.7's `pkg` and PO13 | cr-test.sh `chrome`; the PC check | Sonnet 5.5 |
-| **PO13. The package area on `/jam`** | M13.7's prefix on `/jam` (after M13.6), the guard on it, big packages (a 250 MB program: staged files on `/jam`, init's hashing in steps) | M13.7's files named in its plan's PO5 and PO6 notes (the prefix constant, the guard's line for extfs) | M13.7's PO5 and PO6; M13.6's U4 and U8 | tools/pkg-test.sh (PO8, to come) with a big package on an ext test disk | Sonnet 5.5 |
+| **PO13. The package area on `/jam`** (built: [M13.7's PO13 notes](M13.7-PLAN.md#po13-notes)) | M13.7's prefix on `/jam` (after M13.6), the guard on it, big packages (a 250 MB program: staged files on `/jam`, init's hashing in steps) | M13.7's files named in its plan's PO5 and PO6 notes (the prefix constant, the guard's line for extfs) | M13.7's PO5 and PO6; M13.6's U4 and U8 | tools/pkg-test.sh (PO8, to come) with a big package on an ext test disk | Sonnet 5.5 |
 | **CA1. Sound** | section 11: libjam's audio output API and Chromium's back end patch | `<audio.h>` (a header of its own), user/lib/audio.c and audio_flow.c, ports/chromium's audio patch | CB4 (a browser to test it with); the API part at once (**done 2026-10-15**, see "CA1 notes") | utest: a stream's frames reach the mixer (`tools/mixer-test.sh`'s way); cr-test.sh `chrome` playing a WebM's sound into the mixer's capture | Sonnet 5.5 |
 | **CJ1. JIT memory in the kernel** | section 12's kernel part: `RIGHT_ROOT_JIT`, `vmo_make_jit`, W+X only on a JIT VMO's mapping within its handle's rights, the flag in `process_get_info` | `kernel/object/vmo.c` (the kind), `kernel/abi/vmo_sys.c` (the call), `kernel/mm/aspace.c` (`perms_ok` and protect), `abi/syscalls.def`, `kernel/include/jam/abi.h`, new ktests | CK2 merged (`aspace.c`); CK1 merged (`vmo.c`) | ktests: W+X refused on every other VMO; a JIT VMO without the power refused; an execute-only duplicate can't write; a write-only one can't run; a JIT VMO can't be sealed, verified or paged; full ktest 4 and 8; soak 2 | **Opus** |
 | **CJ2. JIT for programs** | section 12's rest: `right jit` (wants, checkwants, allow's and pkg's words, init's slice), `ps`'s mark, libc's `MAP_JIT` (this half done 2026-10-14, see "CJ2 notes"); **still to do, after CB5**: V8's patch, the power to renderers only (with an unpatched launcher: [FORK-PLAN](FORK-PLAN.md#q4-the-jit-power-for-renderers-only-with-chromiums-own-launcher)'s Q4), `--jitless` for the rest | `user/include/wants.h`, the wants parser in libos, `tools/checkwants.py`, `user/services/shell/sh_allow.c`'s prompt, init's grant, `user/posix/sys/mem.c` (`MAP_JIT`), ports/chromium's V8 lines (and Q4's lines in content's child start, if so answered) | CJ1; CB5 | posixtest: `MAP_JIT` with and without the power; a JIT program writes code and runs it; cr-test.sh `chrome` with a Wasm page (CR-e) | **Opus** |
@@ -1744,9 +1745,11 @@ Track CP1, programs this big (2026-10-14): section 6's limits raised to
 - **Not done here**: packages still cap a file at 64 MiB
   (`tools/portslib/pkgformat.py`'s `FILE_MAX` and `FILES_TOTAL_MAX` of
   512 MiB, mirrored by `tools/pagetable.c`): a package of Chromium's
-  size is PO13's ("big packages: a 250 MB program"). So cr-test.sh
-  `hello` runs as it was (a small C++ program from a package, now through
-  the raised limits); the 300 MiB program is `bigprog-test.sh`'s.
+  size is PO13's ("big packages: a 250 MB program"; built since: 1 GiB a
+  file, 2 GiB a package, and `tools/pkg-test.sh`'s 300 MiB `bigpkg`). So
+  cr-test.sh `hello` runs as it was (a small C++ program from a package,
+  now through the raised limits); the 300 MiB program is
+  `bigprog-test.sh`'s.
 - **Tests run** (2026-10-14, the PC): ktest at 4 and 8 CPUs (543 each,
   with `pager_verified_max`: a 1 GiB VMO's table, entries at each table
   page's edges, a page at the far end taken and a changed one refused,

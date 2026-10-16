@@ -25,6 +25,11 @@
 #   3. pkgsettle  the stick after the cut: init's settle undid the install
 #                 (its log line), pkg check passes; the host then reads the data
 #                 partition: nothing of ccc, no journal, no `.new`
+#   4-7. pkgbig, pkgbigcold, pkgbigcut, pkgbigsettle (M13.7's PO13; PKG_TEST_BIG=0
+#                 leaves them out): the same with a program as big as Chromium's,
+#                 on an emulated NVMe Jam OS drive whose ext volume is /jam (the
+#                 packages' prefix there is /jam/pkg): see the comment before
+#                 `make_jam` below
 # Usage: tools/pkg-test.sh <outdir> (after `make -s image`); exit 0 on PASS.
 set -u
 DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
@@ -133,7 +138,7 @@ make_jam() {
 # One of the scripts of the big cases with the program's numbers in it.
 big_script() {
     sed -e "s/@PAGES@/$big_pages/g" -e "s/@HASH@/$big_hash/g" -e "s/@HASH5@/$big_hash5/g" \
-        -e "s/@CUT_S@/$big_cut_s/g" "tools/shell-tests/$1" > "$out/$1.in"
+        "tools/shell-tests/$1" > "$out/$1.in"
 }
 
 # 4-7. A program as big as Chromium's, on the Jam OS drive's ext volume (PO13).
@@ -152,9 +157,8 @@ if [ "$big" = 1 ]; then
     big_pages=${BIGPROG_PAGES:-76800}
     big_hash=$(python3 tools/bigpkg-hash.py "$big_pages" 16)
     big_hash5=$(python3 tools/bigpkg-hash.py "$big_pages" 5)
-    big_cut_s=${PKG_TEST_BIG_CUT_S:-60}
     for s in pkg-big.txt pkg-bigcold.txt pkg-bigcut.txt pkg-bigsettle.txt; do big_script $s; done
-    timeout=${PKG_TEST_BIG_TIMEOUT:-1500}
+    timeout=${PKG_TEST_BIG_TIMEOUT:-400}
     jam="$out/jam1.img"
     if make_jam "$jam"; then
         nvme="$jam"
