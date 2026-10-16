@@ -149,45 +149,48 @@ FOOTER = ["send reboot -f", "wait 60 reboot: resetting"]
 
 def listing(args):
     """{suite: [test, ...]} in the order gtest lists them."""
-    # The list goes to a file on /data and is read from the stick on this side:
-    # through the serial line a kernel log line can cut into a suite's name,
-    # and a shard that lost one would split the suites differently from the
-    # others.
-    script = header(args.env) + [
-        "send run $B --gtest_list_tests > /data/cr/tests.txt ; echo le-$T=$?",
-        "wait 180 re:le-x=\\d+", "wait {prompt}"] + FOOTER
-    b = Boot(args, "list", script, 300, keep=True)
-    b.run()
-    txt = os.path.join(b.dir, "tests.txt")
-    try:
-        at = subprocess.run([sys.executable, "tools/mkimage.py", "--data-at", b.img],
-                            capture_output=True, text=True, cwd=TOP, check=True).stdout.strip()
-        r = subprocess.run(["mcopy", "-n", "-i", "%s@@%s" % (b.img, at), "::/cr/tests.txt", txt],
-                           cwd=TOP, capture_output=True, text=True)
-        if r.returncode:
-            ls = subprocess.run(["mdir", "-i", "%s@@%s" % (b.img, at), "::/cr"],
-                                cwd=TOP, capture_output=True, text=True)
-            raise SystemExit("base-run: can't read the test list from the stick: mcopy said %r; "
-                             "mdir ::/cr says %r %r (the stick is kept: %s; see %s)"
-                             % (r.stderr.strip()[-300:], ls.stdout.strip()[-300:],
-                                ls.stderr.strip()[-200:], b.img, b.log))
-    except (subprocess.CalledProcessError, OSError) as e:
-        raise SystemExit("base-run: can't read the test list from the stick (%s; see %s)" % (e, b.log))
-    try:
-        os.unlink(b.img)
-    except OSError:
-        pass
-    suites, cur = {}, None
-    for line in open(txt, errors="replace").read().split("\n"):
-        line = line.rstrip("\r")
-        m = re.match(r"^(\S+\.)(\s+#.*)?$", line)
+    # The list comes through the serial line, where a kernel log line can cut
+    # into a name; a shard that lost or garbled one would split the suites
+    # differently from the others. So it is listed three times in the boot and
+    # a test counts when two of the three lists have it.
+    script = header(args.env)
+    for k in (1, 2, 3):
+        script += ["send run $B --gtest_list_tests ; echo le%d-$T=$?" % k,
+                   "wait 180 re:le%d-x=\\d+" % k, "wait {prompt}"]
+    script += FOOTER
+    b = Boot(args, "list", script, 300)
+    lines = b.run()
+    ends = {}
+    for n, line in enumerate(lines):
+        m = re.match(r"le([123])-x=\d+", line)
         if m:
-            cur = m.group(1)[:-1]
-            suites.setdefault(cur, [])
-            continue
-        m = re.match(r"^  (\S+)(\s+#.*)?$", line)
-        if m and cur is not None:
-            suites[cur].append(m.group(1))
+            ends[int(m.group(1))] = n
+    if len(ends) < 3:
+        raise SystemExit("base-run: the listing boot did not list three times (see %s)" % b.log)
+    votes, order, start = {}, [], 0
+    for k in (1, 2, 3):
+        seen, cur = set(), None
+        for line in lines[start:ends[k]]:
+            m = re.match(r"^(\S+\.)(\s+#.*)?$", line)
+            if m:
+                cur = m.group(1)[:-1]
+                continue
+            m = re.match(r"^  (\S+)(\s+#.*)?$", line)
+            if m and cur is not None:
+                key = (cur, m.group(1))
+                if key not in seen:
+                    seen.add(key)
+                    votes[key] = votes.get(key, 0) + 1
+                    if votes[key] == 1:
+                        order.append(key)
+        start = ends[k] + 1
+    suites = {}
+    for key in order:
+        if votes[key] >= 2:
+            suites.setdefault(key[0], []).append(key[1])
+    odd = sum(1 for key in order if votes[key] < 2)
+    if odd:
+        print("base-run: %d list entries in one list only (a log line cut in): left out" % odd)
     if not suites:
         raise SystemExit("base-run: the listing boot listed nothing (see %s)" % b.log)
     return suites
