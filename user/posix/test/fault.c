@@ -28,13 +28,27 @@
  *     returns re-runs the instruction into the other;
  *   - sent, not faults: raise's si_code <= 0; rt_tgsigqueueinfo to
  *     ourselves with SEGV_MAPERR and an address, given as sent;
- *   - children that must end: a fault with no handler (the kernel's kill
- *     as ever), with SIGSEGV default (SIGBUS handled: the entry set),
- *     ignored or blocked, a second fault after SA_RESETHAND, a fault in a
- *     handler without SA_NODEFER, a handler that resets to SIG_DFL and
- *     returns (Chromium's and V8's way out), and Chromium's stack dump
- *     (the registers printed, a sent SIGSEGV sent again with
- *     rt_tgsigqueueinfo). */
+ *   - children that must end (SG4: each ends by the fault's own signal,
+ *     as waitpid says it, never SIGKILL): a fault with no handler (the
+ *     kernel's kill as ever), with SIGSEGV default (SIGBUS handled: the
+ *     entry set), ignored or blocked, a second fault after SA_RESETHAND,
+ *     a fault in a handler without SA_NODEFER, a handler that resets to
+ *     SIG_DFL and returns (Chromium's and V8's way out), and Chromium's
+ *     stack dump (the registers printed, a sent SIGSEGV sent again with
+ *     rt_tgsigqueueinfo); ud2 (SIGILL, with and without the entry set),
+ *     a division by zero (SIGFPE) and int3 (SIGTRAP) with no handler; a
+ *     child killed with kill -9 is SIGKILL;
+ *   - the alternate stack (SG4): sigaltstack's report and errors
+ *     (SS_DISABLE, EINVAL for flags, ENOMEM under the smallest stack, a
+ *     new thread has none, EPERM for a new stack or SS_DISABLE while on
+ *     it); a fault's handler with SA_ONSTACK runs on it, says SS_ONSTACK
+ *     and has uc_stack; one without SA_ONSTACK runs on the interrupted
+ *     stack below its red zone; a fault in either, nested; a signal sent
+ *     to ourselves, the same two ways; infinite recursion on a thread
+ *     with an alternate stack reaches its SA_ONSTACK handler, which
+ *     siglongjmps back three times and the thread goes on; the same
+ *     overflow ends a child by SIGSEGV with no handler, with a handler
+ *     without SA_ONSTACK, and with SA_ONSTACK but no alternate stack. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -525,6 +539,308 @@ static void check_sent(void)
     signal(SIGSEGV, SIG_DFL);
 }
 
+/* ---- the alternate stack (SG4) ------------------------------------------------------- */
+
+#define ALT_SIZE    (16u << 10)
+#define OVF_ROUNDS  3
+#define STACK_BYTES (128u << 10)                  /* a thread that overflows: small */
+
+static char alt_buf[ALT_SIZE] __attribute__((aligned(64)));
+static char alt_other[ALT_SIZE] __attribute__((aligned(64)));
+static char ovf_alt[ALT_SIZE] __attribute__((aligned(64)));
+
+static bool in_buf(uintptr_t p, const char *buf)
+{
+    return p >= (uintptr_t)buf && p < (uintptr_t)buf + ALT_SIZE;
+}
+
+/* What a handler saw of its stacks, one per nesting level. */
+static struct seen {
+    uintptr_t local;      /* a local's address in the handler */
+    uintptr_t rsp;        /* REG_RSP: where the thread was */
+    void     *uc_sp;      /* uc_stack */
+    size_t    uc_size;
+    int       uc_flags;
+    int       state;      /* sigaltstack's own report of the thread in the handler */
+    int       perm;       /* 1: a new stack and SS_DISABLE are both EPERM (only asked on it) */
+} saw[4];
+static volatile int saw_n;
+static volatile int nest;   /* 1: the first handler faults again, once */
+
+/* Look at the stacks, then (a fault) on past the instruction by `skip`. */
+static void alt_look(int sig, siginfo_t *si, void *ucv)
+{
+    (void)sig;
+    (void)si;
+    ucontext_t *uc = ucv;
+    greg_t *g = uc->uc_mcontext.gregs;
+    char marker;
+    int i = saw_n++;
+    struct seen *s = &saw[i];
+    s->local = (uintptr_t)&marker;
+    s->rsp = (uintptr_t)g[REG_RSP];
+    s->uc_sp = uc->uc_stack.ss_sp;
+    s->uc_size = uc->uc_stack.ss_size;
+    s->uc_flags = uc->uc_stack.ss_flags;
+    stack_t o;
+    CHECK(sigaltstack(NULL, &o) == 0);
+    s->state = o.ss_flags;
+    if (o.ss_flags == SS_ONSTACK) {
+        stack_t n = { .ss_sp = alt_other, .ss_size = ALT_SIZE }, d = { .ss_flags = SS_DISABLE };
+        errno = 0;
+        int a = sigaltstack(&n, NULL) == -1 && errno == EPERM;
+        errno = 0;
+        s->perm = a && sigaltstack(&d, NULL) == -1 && errno == EPERM;
+    }
+    if (nest && i == 0) {
+        nest = 0;
+        fl_load(WILD);
+    }
+    if (skip)
+        g[REG_RIP] += skip;
+}
+
+static void alt_set(void *base, size_t size)
+{
+    stack_t ss = { .ss_sp = base, .ss_size = size };
+    CHECK(sigaltstack(&ss, NULL) == 0);
+}
+
+static void alt_off(void)
+{
+    stack_t ss = { .ss_flags = SS_DISABLE }, o;
+    CHECK(sigaltstack(&ss, NULL) == 0 && sigaltstack(NULL, &o) == 0 && o.ss_flags == SS_DISABLE);
+}
+
+/* A stack of `size` taken or not (ENOMEM). */
+static bool alt_takes(size_t size)
+{
+    stack_t ss = { .ss_sp = alt_buf, .ss_size = size };
+    errno = 0;
+    int r = sigaltstack(&ss, NULL);
+    CHECK(r == 0 || (r == -1 && errno == ENOMEM));
+    return r == 0;
+}
+
+/* A handler too small to need room: moves RIP and counts. */
+static void tiny_handler(int sig, siginfo_t *si, void *ucv)
+{
+    (void)sig;
+    (void)si;
+    runs++;
+    ((ucontext_t *)ucv)->uc_mcontext.gregs[REG_RIP] += 3;
+}
+
+static void *no_alt_thread(void *arg)
+{
+    (void)arg;
+    stack_t o;
+    return (void *)(uintptr_t)(sigaltstack(NULL, &o) == 0 && o.ss_flags == SS_DISABLE && !o.ss_size);
+}
+
+static void check_alt_api(void)
+{
+    stack_t o;
+    CHECK(sigaltstack(NULL, &o) == 0 && o.ss_flags == SS_DISABLE && o.ss_size == 0);
+    CHECK(sigaltstack(NULL, NULL) == 0);
+
+    errno = 0;
+    stack_t bad = { .ss_sp = alt_buf, .ss_size = ALT_SIZE, .ss_flags = -1 };
+    CHECK(sigaltstack(&bad, NULL) == -1 && errno == EINVAL);   /* flags before the size */
+    errno = 0;
+    bad.ss_flags = 0;
+    bad.ss_size = MINSIGSTKSZ - 1;
+    CHECK(sigaltstack(&bad, NULL) == -1 && errno == ENOMEM);
+    CHECK(!alt_takes(0) && alt_takes(ALT_SIZE) && alt_takes(SIGSTKSZ));
+
+    /* The smallest stack: between MINSIGSTKSZ and SIGSTKSZ, where a fault's
+     * frame and the handler's ucontext and siginfo fit. */
+    size_t lo = MINSIGSTKSZ - 1, hi = SIGSTKSZ;
+    while (hi - lo > 1) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (alt_takes(mid))
+            hi = mid;
+        else
+            lo = mid;
+    }
+    printf("posixtest: fault: sigaltstack's smallest stack is %zu bytes (MINSIGSTKSZ %d, SIGSTKSZ %d)\n",
+           hi, MINSIGSTKSZ, SIGSTKSZ);
+    CHECK(hi >= MINSIGSTKSZ && hi <= SIGSTKSZ && alt_takes(hi) && !alt_takes(hi - 1));
+    /* a fault on exactly that stack gets its handler (a small one) */
+    CHECK(alt_takes(hi));
+    on(SIGSEGV, SA_ONSTACK, tiny_handler);
+    fl_load(WILD);
+    CHECK(runs == 1);
+
+    stack_t ss = { .ss_sp = alt_buf, .ss_size = ALT_SIZE }, old;
+    CHECK(sigaltstack(&ss, &old) == 0 && old.ss_size == hi && old.ss_flags == 0);
+    CHECK(sigaltstack(NULL, &o) == 0 && o.ss_sp == alt_buf && o.ss_size == ALT_SIZE && o.ss_flags == 0);
+    pthread_t t;
+    void *r = NULL;
+    CHECK(pthread_create(&t, NULL, no_alt_thread, NULL) == 0 && pthread_join(t, &r) == 0 && r);
+    alt_off();
+    CHECK(sigaltstack(NULL, &o) == 0 && o.ss_size == 0 && o.ss_sp == NULL);
+    signal(SIGSEGV, SIG_DFL);
+}
+
+static void check_alt_handlers(void)
+{
+    alt_set(alt_buf, ALT_SIZE);
+    stack_t o;
+
+    /* A fault, the handler with SA_ONSTACK: on the alternate stack, which
+     * says so, and cannot be changed from there */
+    on(SIGSEGV, SA_ONSTACK, alt_look);
+    skip = 3;
+    saw_n = 0;
+    fl_load(WILD);
+    CHECK(saw_n == 1);
+    CHECK(in_buf(saw[0].local, alt_buf) && !in_buf(saw[0].rsp, alt_buf));
+    CHECK(saw[0].state == SS_ONSTACK && saw[0].perm == 1);
+    CHECK(saw[0].uc_sp == alt_buf && saw[0].uc_size == ALT_SIZE && saw[0].uc_flags == 0);
+    CHECK(sigaltstack(NULL, &o) == 0 && o.ss_flags == 0 && o.ss_sp == alt_buf);
+
+    /* the same without SA_ONSTACK: on the interrupted stack, below its red zone */
+    on(SIGSEGV, 0, alt_look);
+    skip = 3;
+    saw_n = 0;
+    fl_load(WILD);
+    CHECK(saw_n == 1);
+    CHECK(!in_buf(saw[0].local, alt_buf) && saw[0].local < saw[0].rsp - 128 &&
+          saw[0].rsp - saw[0].local < 16384);
+    CHECK(saw[0].state == 0 && saw[0].uc_sp == alt_buf && saw[0].uc_flags == 0);
+
+    /* a fault in a handler on the alternate stack: the second handler is on
+     * it too, below the first, and uc_stack says the thread was on it */
+    on(SIGSEGV, SA_ONSTACK | SA_NODEFER, alt_look);
+    skip = 3;
+    saw_n = 0;
+    nest = 1;
+    fl_load(WILD);
+    CHECK(saw_n == 2);
+    CHECK(in_buf(saw[1].local, alt_buf) && saw[1].local < saw[0].local);
+    CHECK(in_buf(saw[1].rsp, alt_buf) && saw[1].state == SS_ONSTACK &&
+          saw[1].uc_flags == SS_ONSTACK);
+
+    /* a fault in a handler that is on the interrupted stack: the kernel
+     * serves it on the alternate stack again, over the first one's frame;
+     * both handlers still run, the second below the first */
+    on(SIGSEGV, SA_NODEFER, alt_look);
+    skip = 3;
+    saw_n = 0;
+    nest = 1;
+    fl_load(WILD);
+    CHECK(saw_n == 2);
+    CHECK(!in_buf(saw[0].local, alt_buf) && !in_buf(saw[1].local, alt_buf) &&
+          saw[1].local < saw[0].local && saw[1].state == 0);
+
+    /* a signal sent to ourselves, run at the call boundary */
+    on(SIGUSR1, SA_ONSTACK, alt_look);
+    saw_n = 0;
+    CHECK(raise(SIGUSR1) == 0);
+    CHECK(saw_n == 1 && in_buf(saw[0].local, alt_buf) && !in_buf(saw[0].rsp, alt_buf) &&
+          saw[0].state == SS_ONSTACK && saw[0].perm == 1);
+    CHECK(saw[0].uc_sp == alt_buf && saw[0].uc_size == ALT_SIZE && saw[0].uc_flags == 0);
+    on(SIGUSR1, 0, alt_look);
+    saw_n = 0;
+    CHECK(raise(SIGUSR1) == 0);
+    CHECK(saw_n == 1 && !in_buf(saw[0].local, alt_buf) && saw[0].state == 0);
+
+    signal(SIGSEGV, SIG_DFL);
+    signal(SIGUSR1, SIG_DFL);
+    alt_off();
+    /* with none set, SA_ONSTACK runs on the thread's own stack */
+    on(SIGUSR1, SA_ONSTACK, alt_look);
+    saw_n = 0;
+    CHECK(raise(SIGUSR1) == 0);
+    CHECK(saw_n == 1 && saw[0].state == SS_DISABLE && saw[0].uc_flags == SS_DISABLE);
+    signal(SIGUSR1, SIG_DFL);
+}
+
+/* Infinite recursion: 512 bytes a call; ovf_limit stops it for the check
+ * that the thread still runs. */
+static volatile long ovf_limit;
+static sigjmp_buf ovf_jump;
+static volatile int ovf_hits, ovf_bad;
+
+__attribute__((noinline)) static long recurse(long n)
+{
+    volatile char pad[512];
+    pad[0] = (char)n;
+    pad[511] = 1;
+    if (ovf_limit && n >= ovf_limit)
+        return 0;
+    return recurse(n + 1) + pad[511];   /* 1 a level */
+}
+
+/* The handler of the overflow: on the alternate stack, as SIGSEGV for the
+ * address just below the stack's end; back by siglongjmp. */
+static void ovf_handler(int sig, siginfo_t *si, void *ucv)
+{
+    ucontext_t *uc = ucv;
+    char marker;
+    stack_t o;
+    ovf_hits++;
+    if (!in_buf((uintptr_t)&marker, ovf_alt))
+        ovf_bad |= 1;
+    if (sigaltstack(NULL, &o) != 0 || o.ss_flags != SS_ONSTACK)
+        ovf_bad |= 2;
+    if (sig != SIGSEGV || si->si_code <= 0)
+        ovf_bad |= 4;
+    uintptr_t rsp = (uintptr_t)uc->uc_mcontext.gregs[REG_RSP], at = (uintptr_t)si->si_addr;
+    if (at + 4096 < rsp || at > rsp + 4096 || in_buf(rsp, ovf_alt))
+        ovf_bad |= 8;
+    if (uc->uc_stack.ss_flags != 0 || uc->uc_stack.ss_sp != ovf_alt)
+        ovf_bad |= 16;
+    siglongjmp(ovf_jump, 1);
+}
+
+static void *ovf_thread(void *arg)
+{
+    (void)arg;
+    stack_t ss = { .ss_sp = ovf_alt, .ss_size = ALT_SIZE };
+    if (sigaltstack(&ss, NULL) != 0)
+        return (void *)1;
+    struct sigaction sa = { .sa_sigaction = ovf_handler, .sa_flags = SA_SIGINFO | SA_ONSTACK };
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGSEGV, &sa, NULL) != 0)
+        return (void *)2;
+    volatile int back = 0;
+    for (int i = 0; i < OVF_ROUNDS; i++) {
+        ovf_limit = 0;
+        if (sigsetjmp(ovf_jump, 1) == 0)
+            recurse(0);   /* never returns */
+        else
+            back++;
+    }
+    /* the thread goes on: its mask is clear, and its stack takes a deep call */
+    sigset_t now;
+    pthread_sigmask(SIG_BLOCK, NULL, &now);
+    if (sigismember(&now, SIGSEGV))
+        return (void *)3;
+    ovf_limit = 20;
+    if (recurse(0) != 20)
+        return (void *)4;
+    return (void *)(uintptr_t)(0x600d0000 + back);
+}
+
+static void check_overflow(void)
+{
+    pthread_attr_t at;
+    CHECK(pthread_attr_init(&at) == 0 && pthread_attr_setstacksize(&at, STACK_BYTES) == 0);
+    pthread_t t;
+    void *r = NULL;
+    ovf_hits = ovf_bad = 0;
+    CHECK(pthread_create(&t, &at, ovf_thread, NULL) == 0 && pthread_join(t, &r) == 0);
+    pthread_attr_destroy(&at);
+    CHECK((uintptr_t)r == 0x600d0000 + OVF_ROUNDS);
+    CHECK(ovf_hits == OVF_ROUNDS);
+    if (ovf_bad)
+        printf("posixtest: fault: the overflow handler saw problems %#x\n", ovf_bad);
+    CHECK(ovf_bad == 0);
+    signal(SIGSEGV, SIG_DFL);
+}
+
 /* ---- children that must end --------------------------------------------------------- */
 
 /* Start `posixtest --child-fault what`, its 1 the write end of a pipe
@@ -556,8 +872,7 @@ static void drain(int fd, char *buf, size_t size)
     close(fd);
 }
 
-/* The child's end, by sig: the kernel's kill (waitpid says SIGKILL for it
- * until SG4 gives a fault's kill its signal) or libc's end with sig. */
+/* The child's wait status. */
 static int end_of(pid_t pid)
 {
     int st = -1;
@@ -565,23 +880,40 @@ static int end_of(pid_t pid)
     return st;
 }
 
+/* Ended by sig, the kernel's kill for a fault included (SG4: waitpid says
+ * the fault's signal for it, SIGKILL only for a real kill). */
 static bool ended_by(int st, int sig)
 {
-    return WIFSIGNALED(st) && (WTERMSIG(st) == sig || WTERMSIG(st) == SIGKILL);
+    return WIFSIGNALED(st) && WTERMSIG(st) == sig;
 }
 
-/* Run child `what`: it ends by its fault, having written `wrote`. */
-static void child_ends(const char *what, const char *wrote)
+/* Run child `what`: it ends by sig, having written `wrote`. */
+static void child_ends(const char *what, const char *wrote, int sig)
 {
     int fd;
     pid_t pid = start(what, &fd);
     char buf[64];
     drain(fd, buf, sizeof(buf));
     int st = end_of(pid);
-    if (!ended_by(st, SIGSEGV) || strcmp(buf, wrote)) {
+    if (!ended_by(st, sig) || strcmp(buf, wrote)) {
         printf("posixtest: fault: child %s: status %#x, wrote \"%s\"\n", what, st, buf);
         CHECK(!"the child ended by its fault");
     }
+}
+
+/* A child killed with kill -9 is SIGKILL, not a fault's signal. */
+static void check_kill9(void)
+{
+    int fd;
+    pid_t pid = start("sleep", &fd);
+    char buf[8];
+    CHECK(read(fd, buf, 1) == 1);   /* it is running */
+    CHECK(kill(pid, SIGKILL) == 0);
+    close(fd);
+    int st = end_of(pid);
+    if (!ended_by(st, SIGKILL))
+        printf("posixtest: fault: kill -9: status %#x\n", st);
+    CHECK(ended_by(st, SIGKILL));
 }
 
 /* Chromium's stack dump: the lines, the registers' (rip the load's),
@@ -620,14 +952,29 @@ void pt_fault(char **argv)
     check_masks();
     check_threads_and_again();
     check_sent();
-    child_ends("none", "");
-    child_ends("default", "");
-    child_ends("ignored", "");
-    child_ends("blocked", "");
-    child_ends("resethand", "h");
-    child_ends("nested", "h");
-    child_ends("reset-return", "h");
+    child_ends("none", "", SIGSEGV);
+    child_ends("default", "", SIGSEGV);
+    child_ends("ignored", "", SIGSEGV);
+    child_ends("blocked", "", SIGSEGV);
+    child_ends("resethand", "h", SIGSEGV);
+    child_ends("nested", "h", SIGSEGV);
+    child_ends("reset-return", "h", SIGSEGV);
     check_dump();
+    /* SG4: the signal a fault's kill is, and a real kill still SIGKILL */
+    child_ends("ud2", "", SIGILL);
+    child_ends("ud2-entry", "", SIGILL);   /* the entry set, SIGILL default: UNHANDLED */
+    child_ends("div", "", SIGFPE);
+    child_ends("int3", "", SIGTRAP);
+    check_kill9();
+    /* the alternate stack */
+    check_alt_api();
+    check_alt_handlers();
+    check_overflow();
+    /* the same overflow with no way to run its handler: the kernel's kill,
+     * SIGSEGV, and no handler ran */
+    child_ends("overflow-plain", "", SIGSEGV);
+    child_ends("overflow-noonstack", "", SIGSEGV);
+    child_ends("overflow-noalt", "", SIGSEGV);
 }
 
 /* ---- the children ------------------------------------------------------------------- */
@@ -693,9 +1040,53 @@ static void handle(int sig, int flags, void (*fn)(int, siginfo_t *, void *))
     sigaction(sig, &sa, NULL);
 }
 
+/* The overflow children's thread: a small stack with a guard page below
+ * it; with the alternate stack for "overflow-noonstack" (the handler has no
+ * SA_ONSTACK: the frame can't be moved to the stack that overflowed). */
+static void *child_overflow(void *arg)
+{
+    if (!strcmp(arg, "overflow-noonstack")) {
+        stack_t ss = { .ss_sp = ovf_alt, .ss_size = ALT_SIZE };
+        sigaltstack(&ss, NULL);
+    }
+    recurse(0);
+    return arg;
+}
+
 int pt_child_fault(int argc, char **argv)
 {
     const char *what = argc > 2 ? argv[2] : "";
+    if (!strcmp(what, "sleep")) {
+        say("r");
+        sleep(60);
+        return 4;
+    }
+    if (!strcmp(what, "ud2") || !strcmp(what, "ud2-entry")) {
+        if (!strcmp(what, "ud2-entry"))
+            handle(SIGSEGV, 0, child_handler);   /* the entry is set; SIGILL isn't handled */
+        fl_ud2();
+        return 3;
+    }
+    if (!strcmp(what, "div")) {
+        fl_div(1);
+        return 3;
+    }
+    if (!strcmp(what, "int3")) {
+        fl_int3();
+        return 3;
+    }
+    if (!strncmp(what, "overflow-", 9)) {
+        if (strcmp(what, "overflow-plain"))
+            handle(SIGSEGV, !strcmp(what, "overflow-noalt") ? SA_ONSTACK : 0, child_handler);
+        pthread_attr_t at;
+        pthread_t t;
+        pthread_attr_init(&at);
+        pthread_attr_setstacksize(&at, STACK_BYTES);
+        pthread_create(&t, &at, child_overflow, (void *)what);
+        pthread_join(t, NULL);
+        say("survived");
+        return 3;
+    }
     if (!strcmp(what, "default") || !strcmp(what, "ignored"))
         handle(SIGBUS, 0, child_handler);   /* the entry is set; SIGSEGV isn't handled */
     if (!strcmp(what, "ignored"))
