@@ -85,8 +85,12 @@ static uint8_t disk_kind(const struct disk *d)
 {
     if (d->state == DISK_BOOT)
         return VOLDISKS_KIND_JAMOS;
+    /* A stick's layout: an ESP, then a FAT32 or an ext data partition (`make
+     * usb`'s). The layout is a guess: a Linux stick with an ESP and an ext
+     * root is listed as one too, and only an ESP holding BOOT_FILE makes
+     * a boot disk. */
     if (d->scheme == STORAGE_SCHEME_MBR && d->partitions >= 2 && d->type[0] == TYPE_ESP &&
-        d->type[1] == TYPE_FAT32_LBA)
+        (d->type[1] == TYPE_FAT32_LBA || d->type[1] == TYPE_LINUX))
         return VOLDISKS_KIND_JAMOS;
     if (disk_jamos_gpt(d))
         return VOLDISKS_KIND_JAMOS;   /* an NVMe drive prepared by Jam OS (mark.c) */

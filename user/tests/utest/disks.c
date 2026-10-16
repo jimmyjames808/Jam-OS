@@ -380,8 +380,9 @@ static bool nothing_to_mount(handle_t vm, bool *skip)
 /* A disk that isn't the boot disk is never /esp or /data: an ESP without
  * boot/jamos.elf, an ESP that is no FAT volume (the filesystem service
  * gives up on it, and volumes does not start it again), and a second
- * partition of another type (volumes doesn't even ask the ESP for the
- * kernel). What it holds that is FAT is a read-only /usbN instead
+ * partition of a type that is neither FAT's nor ext's (type 07: volumes
+ * doesn't even ask the ESP for the kernel, and leaves the partition
+ * alone). What it holds that is FAT is a read-only /usbN instead
  * (t_disk_other has the details). */
 bool t_disk_not_boot(void)
 {
@@ -394,13 +395,13 @@ bool t_disk_not_boot(void)
         return true;
     if (!nothing_to_mount(vm, &skip))
         return skip;
-    if (!attach(vm, 0x83, ESP_BOOT, &id, &skip))
+    if (!attach(vm, 0x07, ESP_BOOT, &id, &skip))
         return skip;
     if (!wait_usb(vm, &v, 1))
         return false;
     CHECK(!mounted(&v, ESP) && !mounted(&v, DATA));
     CHECK_EQ(dm_count(&mock.opened[0]), 2);   /* make_esp's, and the /usbN service's */
-    CHECK_EQ(dm_count(&mock.opened[1]), 1);   /* type 83: not FAT; looked at once, read-only, for ext */
+    CHECK_EQ(dm_count(&mock.opened[1]), 0);   /* type 07: neither FAT nor ext: not opened at all */
     CHECK_EQ(dm_count(&mock.opened_rw), 1);   /* make_esp's */
     struct fatrun usb = mount_of(&v, usb_path(&v));
     CHECK_ST(fs_statfs_until(usb.fs, now() + FAT_CALL_NS, NULL, NULL, &ro, NULL, NULL, NULL, NULL),
@@ -499,9 +500,10 @@ bool t_disk_other(void)
 
 /* A mock disk whose data partition (typed type2) is an ext volume holding
  * /hello.txt and /dir: an extfs of the test's own formats it on a writable
- * channel and ends with the volume clean; the ESP stays blank. Handed to
- * volumes either way. */
-static bool attach_ext(handle_t vm, uint8_t type2, bool format, uint32_t *id, bool *skip)
+ * channel and ends with the volume clean; the ESP is as `esp` says (blank
+ * unless a test wants a stick). Handed to volumes either way. */
+static bool attach_ext(handle_t vm, uint8_t type2, bool format, enum esp_kind esp, uint32_t *id,
+                       bool *skip)
 {
     const struct bootfs_view *b;
     const void *data;
@@ -514,7 +516,7 @@ static bool attach_ext(handle_t vm, uint8_t type2, bool format, uint32_t *id, bo
         printf("utest: %s: no bin/extfs or bin/fat: skipped\n", utest_cur);
         return false;
     }
-    if (!dm_start_sized(&mock, DM_TYPE_ESP, type2, EXT_BLOCKS, &client))
+    if (!dm_start_sized(&mock, DM_TYPE_ESP, type2, EXT_BLOCKS, &client) || !make_esp(client, esp))
         return false;
     if (format) {
         CHECK_ST(storage_open_partition_until(client, now() + 5 * NS_PER_S, PART_DATA, 0, &blk),
@@ -557,7 +559,7 @@ bool t_disk_ext(void)
     struct tfile f;
     if (!vm)
         return true;
-    if (!attach_ext(vm, 0x83, true, &id, &skip))
+    if (!attach_ext(vm, 0x83, true, ESP_BLANK, &id, &skip))
         return skip;
     if (!wait_usb(vm, &v, 0))
         return false;
@@ -633,7 +635,7 @@ bool t_disk_ext_none(void)
     bool skip;
     if (!vm)
         return true;
-    if (!attach_ext(vm, 0x83, false, &id, &skip))
+    if (!attach_ext(vm, 0x83, false, ESP_BLANK, &id, &skip))
         return skip;
     if (!wait_count(&mock.closed[1], 1))
         return false;
@@ -644,6 +646,41 @@ bool t_disk_ext_none(void)
     CHECK_EQ(dm_count(&mock.refused), 0);
     CHECK_ST(view_next(vm, &v, now() + 10 * NS_PER_S), OK);   /* a new watch: the list */
     CHECK(!usb_path(&v) && !mounted(&v, ESP) && !mounted(&v, DATA));
+    return detach(vm, &v);
+}
+
+/* The stick `make usb` makes (docs/M13.6-PLAN.md, "Ext by default"): an ESP
+ * holding boot/jamos.elf, then a data partition typed 83 that holds an ext
+ * volume. It is the boot disk by its layout (an ESP, then a FAT32 or an ext
+ * partition), the ESP a read-only /esp and the data partition /data served
+ * by bin/extfs, writable: the volume's own file is there, not a FAT
+ * volume's blank format. */
+bool t_disk_stick_ext(void)
+{
+    handle_t vm = volumes();
+    struct view v = { 0 };
+    uint32_t id = 0;
+    uint8_t ro = 1;
+    bool skip;
+    if (!vm)
+        return true;
+    if (!attach_ext(vm, 0x83, true, ESP_BOOT, &id, &skip))
+        return skip;
+    if (!wait_mounts(vm, &v, true, true))
+        return false;
+    struct fatrun esp = mount_of(&v, ESP), data = mount_of(&v, DATA);
+    CHECK(!usb_path(&v));
+    CHECK_ST(fs_statfs_until(esp.fs, now() + FAT_CALL_NS, NULL, NULL, &ro, NULL, NULL, NULL, NULL),
+                             OK);
+    CHECK(ro);
+    CHECK(file_is(&data, "/hello.txt", "hello from an ext volume"));
+    CHECK_ST(fs_statfs_until(data.fs, now() + FAT_CALL_NS, NULL, NULL, &ro, NULL, NULL, NULL,
+                             NULL), OK);
+    CHECK(!ro);
+    CHECK_ST(t_mkdir(&data, "/logs"), OK);
+    if (!put_file(&data, "/logs/boot-0001.txt", "hello") ||
+        !file_is(&data, "/logs/boot-0001.txt", "hello"))
+        return false;
     return detach(vm, &v);
 }
 

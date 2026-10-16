@@ -692,6 +692,7 @@ static const struct {
     { "disk_other", t_disk_other },
     { "disk_ext", t_disk_ext },
     { "disk_ext_none", t_disk_ext_none },
+    { "disk_stick_ext", t_disk_stick_ext },
     { "disk_fs_restart", t_disk_fs_restart },
     { "disk_own_channel", t_disk_own_channel },
     { "disk_vanishes", t_disk_vanishes },

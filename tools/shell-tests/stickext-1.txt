@@ -1,0 +1,46 @@
+# The stick with an ext /data (tools/stickext-test.sh boots the same stick
+# twice: stickext-1.txt, stickext-2.txt; M13.6's U11a, "Ext by default"),
+# first boot: the image `make image` makes by default, its data partition an
+# ext volume jamext made (MBR type 83). /esp is FAT and read-only, /data is
+# served by bin/extfs and keeps modes, links and big files; the boot log is
+# in it. Command line "shell". The text waited for is built from $T, so it
+# never appears in the typed line.
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /esp mounted
+seen 60 init: /data mounted
+seen 30 logd: writing /data/logs/boot-0001.txt
+send T=a
+wait {prompt}
+
+# ---- the mounts --------------------------------------------------------------------------
+send disks | grep -c "/data (ext)$" | grep ^1$ && echo ok-$T-ext
+wait ok-a-ext
+send disks | grep -c "/esp$" | grep ^1$ && echo ok-$T-esp
+wait ok-a-esp
+send write /esp/new.txt no; echo st-$T=$?
+wait write: /esp/new.txt: read-only
+wait st-a=1
+send ls -l /data | grep -c "^drwx------  2 jam  jam .* lost+found/$" | grep ^1$ && echo ok-$T-lpf
+wait ok-a-lpf
+
+# ---- /data: written now, read on the next boot ------------------------------------------
+send mkdir "/data/My Notes" && write "/data/My Notes/first boot.txt" kept across a reboot-$T
+wait {prompt}
+send chmod 600 "/data/My Notes/first boot.txt" && ln -s "first boot.txt" "/data/My Notes/link"
+wait {prompt}
+send ls -l "/data/My Notes" | grep -c "^-rw-------  1 jam  jam .* first boot.txt$" | grep ^1$ && echo ok-$T-mode
+wait ok-a-mode
+send cat "/data/My Notes/link"
+wait kept across a reboot-a
+send cp /boot/bin/utest /data/utest.copy && hexdump -n 4 /data/utest.copy
+wait 7f 45 4c 46
+send ls /data/logs | grep -c "^boot-0001.txt$" | grep ^1$ && echo ok-$T-log
+wait ok-a-log
+send grep -c "init: /data mounted" /data/logs/boot-0001.txt | grep ^1$ && echo ok-$T-cat
+wait ok-a-cat
+
+# ---- reboot: init syncs /data first ------------------------------------------------------
+send reboot -f
+wait init: /data synced
+wait reboot: resetting
