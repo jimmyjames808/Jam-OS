@@ -50,6 +50,17 @@ so and there is nothing to measure; the other lines (context switch,
 calls, interrupts) are measured both ways to show the IOMMU leaves the IPC
 path alone.
 
+**The upcall line** (SG1, [SIGNALS-PLAN](SIGNALS-PLAN.md) section 1;
+`upcall_bench_cycles` in `kernel/test/test_upcall.c`): a process pinned
+to P with an exception entry runs `ud2`; the kernel writes the frame on
+its stack and enters the entry, which moves RIP past the instruction and
+calls `exception_done(EXC_RESUME)`. The whole round trip is timed in
+ring 3 around the `ud2`, 4000 samples after 2000 untimed. What a
+SIGSEGV handler that returns costs, less libc's part (SG3). QEMU on the
+PC (KVM), 2026-10-16: median 3.1 us, p99 5.2 us, much of it likely
+KVM's (it intercepts `#UD` to emulate). Not yet measured on the PC
+itself.
+
 **Per-operation lines** (`perop` from the shell; `user/tests/perop/main.c`
 explains each line): what one file operation costs a program, with the
 same TSC method in ring 3: a `stat`, an open and close, a 4 KiB and a

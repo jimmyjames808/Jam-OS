@@ -24,11 +24,27 @@ thread, routing, default actions in the sender, the call boundary,
 `thread_interrupt`, `EINTR` and `SA_RESTART` all stay. The upcall is used
 only where A can't reach: a fault, and a thread running its own code.
 
-Nothing here is built. Tracks SG1 to SG6 and the review SGR are in
-section 5; the questions for the owner in section 6, each with a
-recommendation, which the plan follows until he says otherwise. Names and
-numbers of calls and structures below are proposals: the tracks settle
-them.
+SG1 is built (the kernel's part of section 1: `exception_entry_set` 170,
+`exception_done` 171, `struct exc_frame` in `<jam/abi.h>`,
+kernel/arch/x86_64/upcall.c, ktests `upcall_*`); SG2 to SG6 and the
+review SGR are not. Tracks are in section 5; the questions for the owner
+in section 6, each with a recommendation, which the plan follows until he
+says otherwise. Names and numbers of calls and structures below are
+proposals where SG1 didn't settle them.
+
+What SG1 settled differently from the text below, or added: the frame
+keeps the registers in Linux's gregs order (REG_R8 .. REG_EFL) so libc
+copies them in one go; the frame's XSAVE area has every component of
+XCR0 written out (XSTATE_BV = XCR0) whatever the save left in its
+initial state, and FOP, FIP and FDP only with an x87 exception pending;
+`EXC_RESUME` also checks the frame's size and xsave_size are the
+kernel's, and that the thread was ever given a frame (its cookie is made
+at its first upcall); `EXC_LEAVE` and `EXC_UNHANDLED` outside the window
+are `ERR_BAD_STATE`; an unreadable frame to `EXC_RESUME` is
+`ERR_INVALID_ARGS`. int3's gate is now DPL 3, so `int3` from user code
+is vector 3 with RIP after it (it was a general protection fault). The
+alignment check (17) can't happen yet: CR0.AM is off, so AC in user code
+does nothing.
 
 ## Where things stand
 

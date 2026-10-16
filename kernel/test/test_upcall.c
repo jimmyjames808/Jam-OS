@@ -95,6 +95,9 @@ extern uint64_t user_faults;   /* uentry.c: user threads killed for a fault */
 #define D_VPAT      0x300   /* upc_regs: the vector registers it loads, 32 bytes each (16) */
 #define D_AVEC      0x500   /* upc_regs: the vector registers after the resume (16) */
 #define D_FSWORD    0x800   /* the FS base points here */
+#define D_WARM      0x808   /* upc_bench: rounds before it times (at least 1) */
+#define D_SAMPLES   0x1000  /* upc_bench: each timed round's TSC cycles */
+#define SAMPLES_MAX ((DATA_PAGES * PG - D_SAMPLES) / 8)
 
 #define DONE 0x600d
 
@@ -153,7 +156,7 @@ __asm__(
     DSET(d_finished, D_FINISHED) DSET(d_eregs, D_EREGS) DSET(d_aregs, D_AREGS)
     DSET(d_aflags, D_AFLAGS) DSET(d_acs, D_ACS) DSET(d_ass, D_ASS) DSET(d_amxcsr, D_AMXCSR)
     DSET(d_bad, D_BAD) DSET(d_erip, D_ERIP) DSET(d_erfl, D_ERFL) DSET(d_cookies, D_COOKIES) DSET(d_vpat, D_VPAT) DSET(d_avec, D_AVEC)
-    DSET(d_fsword, D_FSWORD)
+    DSET(d_fsword, D_FSWORD) DSET(d_warm, D_WARM) DSET(d_samples, D_SAMPLES)
     ".set u_more, " S(U_MORE) "\n"
     ".set u_hole, " S(U_HOLE) "\n"
     "upc_blob:\n"
@@ -585,6 +588,44 @@ __asm__(
     "3:  movl $" S(SYS_thread_exit) ", %eax\n"
     "    syscall\n"
     "    ud2\n"
+
+    /* ---- upc_bench: bench.c's line, timed around each ud2 ----------- */
+    "upc_bentry:\n"
+    "    addq $2, " S(F_RIP) "(%rdi)\n"
+    "    movl $" S(H_RESUME) ", %esi\n"
+    "    movl $" S(SYS_exception_done) ", %eax\n"
+    "    syscall\n"
+    "    ud2\n"
+    "upc_bench:\n"
+    "    movl $1, d_noentry\n"
+    "    call upc_setup\n"
+    "    leaq upc_bentry(%rip), %rdi\n"
+    "    movl $" S(SYS_exception_entry_set) ", %eax\n"
+    "    syscall\n"
+    "    movq d_warm, %r13\n"
+    "1:  ud2\n"
+    "    decq %r13\n"
+    "    jnz 1b\n"
+    "    xorl %r12d, %r12d\n"
+    "2:  lfence\n"
+    "    rdtsc\n"
+    "    lfence\n"
+    "    shlq $32, %rdx\n"
+    "    orq %rax, %rdx\n"
+    "    movq %rdx, %r14\n"
+    "    ud2\n"
+    "    lfence\n"
+    "    rdtsc\n"
+    "    lfence\n"
+    "    shlq $32, %rdx\n"
+    "    orq %rax, %rdx\n"
+    "    subq %r14, %rdx\n"
+    "    movq %rdx, d_samples(,%r12,8)\n"
+    "    incq %r12\n"
+    "    cmpq d_rounds, %r12\n"
+    "    jne 2b\n"
+    "    xorl %edi, %edi\n"
+    "    jmp upc_exit\n"
     "upc_blob_end:\n"
     ".popsection\n");
 
@@ -592,7 +633,7 @@ __asm__(
     X(upc_blob) X(upc_blob_end) X(upc_entry) X(upc_regs) X(upc_regs_fault)              \
     X(upc_regs_after) X(upc_generic) X(upc_generic_after) X(upc_nostack)                \
     X(upc_nostack_i) X(upc_badptr) X(upc_forge) X(upc_setargs) X(upc_setargs_i)         \
-    X(upc_oom) X(upc_oom_i) X(upc_spin)                                                 \
+    X(upc_oom) X(upc_oom_i) X(upc_spin) X(upc_bench)                                    \
     X(act_skip) X(act_resume) X(act_exit) X(act_unhandled) X(act_again) X(act_leave)     \
     X(act_edit) X(act_flags) X(act_untf) X(act_poke) X(act_xor)                          \
     X(f_ud2) X(f_ud2_i) X(f_ud2_end) X(f_div) X(f_div_i) X(f_div_end)                    \
@@ -1469,4 +1510,40 @@ KTEST(upcall_threads_stress)
             KT_ASSERT(get(&u, D_COOKIES + k * 8) != c);
     }
     upc_end(&u);
+}
+
+/* ---- the benchmark's line ------------------------------------------------------ */
+
+/* bench.c's "a fault caught and resumed": n faults (a ud2) of a process
+ * pinned to cpu, each caught by its exception entry and resumed past the
+ * instruction, timed in ring 3 around the ud2 (lfence; rdtsc; lfence,
+ * as bench's stamps) after 2000 untimed; their TSC cycles into out.
+ * Returns how many (n, at most SAMPLES_MAX), 0 if the program didn't
+ * end well. */
+unsigned upcall_bench_cycles(uint32_t cpu, uint64_t *out, unsigned n);
+unsigned upcall_bench_cycles(uint32_t cpu, uint64_t *out, unsigned n)
+{
+    if (n > SAMPLES_MAX)
+        n = SAMPLES_MAX;
+    struct upc u;
+    upc_new(&u, "upc-bench");
+    set(&u, D_ROUNDS, n);
+    set(&u, D_WARM, 2000);
+    upc_start_on(&u, upc_bench, 0, (int)cpu);
+    struct process_info info = upc_wait(&u);
+    if (info.killed || info.exit_code)
+        n = 0;
+    else
+        KT_EQ(vmo_read(u.data, D_SAMPLES, out, n * 8ull), OK);
+    upc_end(&u);
+    return n;
+}
+
+/* The benchmark's program runs and times something. */
+KTEST(upcall_bench_program)
+{
+    uint64_t c[64];
+    KT_EQ(upcall_bench_cycles(kt_cur_cpu(), c, 64), 64);
+    for (unsigned i = 0; i < 64; i++)
+        KT_ASSERT(c[i] > 0 && c[i] < 1000000000ull);
 }
