@@ -4,6 +4,7 @@
 # packages stall halfway (tools/pkg-test-repo.py, "slow"), and QEMU is quit while
 # the package is half staged under its `.new` names.
 wait 120 Jam OS shell
+seen 60 init: /data mounted
 seen 60 netstack: link up
 seen 30 netstack: address 10.2.21.5/24
 wait {prompt}
