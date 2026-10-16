@@ -729,7 +729,7 @@ free ones, none reused):
 | `thread_get_info` | `(handle_t thread, struct thread_info *out)`: tid, its process's koid and pid, state, `cpu_ns`, priority | K1 |
 | `struct process_info` | gains `pid` (the u32 `reserved`, no size change) and `cpu_ns` (a new u64: the struct grows; callers rebuild) | K1 |
 | `thread_interrupt` | `(handle_t thread)`: needs `RIGHT_SIGNAL` on the thread; its current or next interruptible wait (`object_wait_one`, `port_wait`, `futex_wait`, `sleep_until`) ends with `ERR_INTERRUPTED` (-26, new); latched once, not counted | K1 |
-| `sys_public_info` | `(struct sys_public_info *out)`, no handle: version, machine ("x86_64"), CPUs online, total pages, page size | K1 |
+| `sys_public_info` | `(struct sys_public_info *out)`, no handle: version, machine ("x86_64"), CPUs online, total pages, page size (and free pages, since PRC) | K1 |
 | `clock_page` | `(handle_t *out)`: the time page, a read-only VMO (`struct time_page` in `<jam/abi.h>`: a sequence word, the TSC's mult and shift, the boot's TSC, the wall clock's offset and flags, an "invariant TSC" bit) | K2 |
 | `vmar_map`'s `VMAR_REPLACE` | with `VMAR_FIXED`: what is mapped there is unmapped and the new mapping made in one step | K2 |
 

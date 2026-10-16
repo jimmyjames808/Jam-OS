@@ -1725,7 +1725,10 @@ Track CP1, programs this big (2026-10-14): section 6's limits raised to
 
 Track CL2, `/proc/self` and the self-image (2026-10-14; the `/proc` half,
 user/posix/sys/procfs.c, came first). Section 3's `/proc` and section 6's
-self-image.
+self-image. CL2 left every other name ENOENT; PRC (2026-10-16, "PRC notes"
+below) added the files Chromium's `base` reads (`stat`, `status`, `statm`,
+`maps`, `cpuinfo`, `meminfo`, `/proc/stat`) and the neutral values it fills
+where Jam OS has no meaning.
 
 - **The program's path.** The POSIX hand-over's first message carries it
   (`exe_len` after the directory, `<posixfds.h>`; the old `reserved`

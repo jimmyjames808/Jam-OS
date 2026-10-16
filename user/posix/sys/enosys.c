@@ -10,7 +10,7 @@
  *   - an option of a call that is answered but not that option (prctl,
  *     futex, setpriority's target): "prctl option 53";
  *   - an ioctl request nothing understands (fd.c): "ioctl 0x5413";
- *   - a /proc path that is not there: "path /proc/cpuinfo".
+ *   - a /proc path that is not there: "path /proc/uptime".
  * Each is one line, "enosys: <program>: <what>", written with one
  * debug_write, so lines from several threads never mix. A gap is logged
  * the first time only, remembered in a table of SEEN_MAX entries (the
