@@ -656,6 +656,10 @@ before it maps it (it writes a byte per block, since `fallocate` is
 `write`. (C) can come later as an addition if a program needs it. Whose:
 the owner's (what a program's data does when the disk can't take it).
 
+**Decided by the main session (2026-10-16, a technical choice): (A)**,
+Linux's way: the pages become clean and the error is reported once by the
+next `msync` or `fsync`; (C)'s early check can come later.
+
 ### Q2. How long a store may wait for the disk
 
 A store without `msync` reaches the disk when its page is written back.
