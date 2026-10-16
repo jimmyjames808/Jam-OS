@@ -1080,6 +1080,7 @@ would have failed on.
 | `posix-scm.txt` | posixtest's scm section (`run posixtest scm`): socketpairs carrying descriptors (`SCM_RIGHTS`): every kind passed and used on the other side, the read-only twin and seals, 64, 128 and 253 descriptors, too little room (`MSG_CTRUNC`, no handle kept), `SOCK_SEQPACKET`, `shutdown`, Mojo's pattern with a child, the 10,000-round fuzz; also in the `init` run | |
 | `posix-procinfo.txt` | posixtest's procfs and procinfo sections (`run posixtest procfs procinfo`) and utest's `process_maps`, `sys_public_info` and `posix_ids` (`utest only <name>`) from the shell: the files of libc's `/proc` that Chromium's base reads (`/proc/self/stat`, `status`, `statm`, `maps`, `/proc/cpuinfo`, `meminfo`, `/proc/stat`, and a child's stat and status from live through zombie to reaped) against proc(5) and what the process really does, and the kernel calls under them (`process_get_maps`, the free-memory figure, a process's creation time and name): [CR-PLAN](CR-PLAN.md#prc-notes), "PRC notes"; also in the `init` run | |
 | `posix-execinfo.txt` | posixtest's execinfo section (`run posixtest execinfo`) from the shell: `backtrace()` from nested functions, a second thread, a signal handler and a `qsort` comparator, and the lines of `backtrace_symbols` and `backtrace_symbols_fd` ([CR-PLAN](CR-PLAN.md#bt-notes), "BT notes"); also in the `init` run | |
+| `posix-fault.txt` | posixtest's fault section (`run posixtest fault`) from the shell: a thread's own faults as Linux's signals with their siginfo and ucontext, the flags and masks, V8's and Chromium's patterns, children that must end ([SIGNALS-PLAN](SIGNALS-PLAN.md#1-faults-on-the-faulting-thread), SG3); and the kernel's line for its first two children, one with no handler and one with the entry set and SIGSEGV default, the same `killed: page fault at rip ..., address 10`; also in the `init` run | |
 | `posix-unix.txt` | posixtest's unix section (`run posixtest unix`) against shell mode's broker, bin/unix (`/svc/unix`, [CR-PLAN](CR-PLAN.md#cu2-notes), "CU2 notes"): named `AF_UNIX` sockets, a listener and two connectors, bytes and a descriptor over a connection, the backlog, a socket file removed and a stale one, a 108-byte path's `getsockname` (CR-REVIEW-POSIX finding 5), a child without `/data` refused and one with `/data` read-only let in, abstract names, a child given `/svc/unix` by name binding 32 listeners at most however often it opens it (its opener is its own: CR-REVIEW-POSIX Q2; here it shares posixtest's own); then `ps` shows `unix`; also in the `init` run (where init starts the broker before the programs) | |
 | `posix-raw.txt` | posixtest's raw section (`run posixtest raw`) with `JAMOS_ENOSYS_LOG=1` exported: the raw Linux calls Chromium makes (`prctl`, `setpriority`, affinity, the scheduling policies, futex bitset waits) and the ENOSYS log (an unknown call, option, ioctl or path named once per process in the kernel log: `enosys: posixtest: syscall 163 (acct)`); the section counts the log's lines itself and starts children with and without the variable | `QEMU_TIMEOUT=300` |
 | `posix-loop.txt` | posixtest's socket and loopback sections (`run posixtest socket loopback`) from the shell: netstack runs with no card and no address, and loopback needs neither | `QEMU_TIMEOUT=300` |
@@ -2165,6 +2166,36 @@ tables), then the raising function and its caller, within 12 frames. A
 pointers, then the strings) and `backtrace_symbols_fd()` the same lines on
 a pipe: `name() [0xaddr]` for an address in the program, `[0xaddr]` for a
 stack or heap one.
+
+posixtest's fault section (the `init` run; `posixtest fault`): a thread's
+own faults as Linux's signals ([SIGNALS-PLAN](SIGNALS-PLAN.md#1-faults-on-the-faulting-thread),
+SG3). SIGSEGV with `si_addr` the address, `REG_TRAPNO` 14, `REG_CR2` and
+`REG_ERR`'s bits: a load from a `PROT_NONE` guard page, its handler moving
+`REG_RIP` past the instruction by its length; a store to a read-only page
+(`SEGV_ACCERR`); a load where nothing is mapped (`SEGV_MAPERR`); a load from
+a `PROT_NONE` reservation (Linux says `SEGV_ACCERR` for it and for the guard
+page: a line says so if ours differs); a non-canonical address (`SI_KERNEL`,
+`si_addr` 0). V8's trap handler's shape 100 times: `REG_RIP` moved to a
+landing pad and `REG_R10` the faulting RIP, which the pad returns. The
+handler sees the thread's xmm0 through `fpregs` (Linux's `fpx_sw_bytes` and
+`FP_XSTATE_MAGIC2` after the area) and the xmm0 it writes there is the
+thread's after. SIGFPE (`FPE_INTDIV`) on a division by zero, SIGILL
+(`ILL_ILLOPN`) on `ud2`, SIGTRAP (`SI_KERNEL`, Linux's) on `int3`, SIGBUS
+(`BUS_ADRERR`) past the end of a VMO shrunk under its mapping. The signal
+and `sa_mask` blocked in the handler and not after; `uc_sigmask` edited by
+the handler is the mask after; `SA_NODEFER` runs a nested handler for a
+fault in the handler; `siglongjmp` out of a handler 1,000 times;
+`SA_RESETHAND`; a fault on a second thread handled there; a handler that
+installs another and returns runs the instruction again into the other
+(V8's "restore and return"); `raise`'s `si_code` <= 0; `rt_tgsigqueueinfo` to
+itself with `SEGV_MAPERR` and an address, given as sent. Children that must
+end (waitpid says SIGKILL for the kernel's kill until SG4): no handler at
+all, SIGSEGV default with SIGBUS handled (the entry set: `EXC_UNHANDLED`),
+ignored, blocked, a second fault after `SA_RESETHAND`, a fault in a handler
+without `SA_NODEFER`, a handler that resets to `SIG_DFL` and returns, and
+Chromium's stack dump (its line, every register with `rip` the load's,
+`[end of stack trace]`; a sent SIGSEGV sent again with `rt_tgsigqueueinfo`
+ends it with SIGSEGV itself).
 
 posixtest's launch section (the `init` run; `posixtest launch`): what
 Chromium's launcher needs of `posix_spawn` ([CR-PLAN](CR-PLAN.md#cs1-notes),

@@ -549,7 +549,7 @@ static void check_dump(void)
 {
     int fd;
     pid_t pid = start("dump", &fd);
-    char buf[512], want[128];
+    char buf[1024], want[128];
     drain(fd, buf, sizeof(buf));
     int st = end_of(pid);
     CHECK(ended_by(st, SIGSEGV));
