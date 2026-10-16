@@ -158,6 +158,10 @@ void process_get_info(struct process *p, struct process_info *out);
 uint64_t process_cpu_tsc(struct process *p);
 /* The process of the current thread, NULL for kernel threads. */
 struct process *process_current(void);
+/* exception_entry_set's entry (a user address; 0: none), and reading it
+ * back (arch/x86_64/upcall.c). Any thread, any context. */
+void     process_set_exc_entry(struct process *p, uint64_t entry);
+uint64_t process_exc_entry(struct process *p);
 /* debug_write / debug_report: print buf[0..n) (kernel memory) line by line
  * as "[name] line"; with report_it the lines also go into the RESULTS box
  * (without the prefix; a few dozen at most across all processes). Control

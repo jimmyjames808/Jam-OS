@@ -49,6 +49,10 @@ void idt_init(void)
      * user-controlled entry (the mov ss / pop ss trick), before the stack
      * is the kernel's. */
     set_gate(1, isr_table[1], IST_DEBUG);
+    /* int3 from user code is a breakpoint (vector 3, RIP after it), as
+     * on Linux, for its exception entry (upcall.c): DPL 3. With DPL 0 it
+     * was a general protection fault. */
+    idt[3].type_attr = 0xee;   /* present, DPL3, 64-bit interrupt gate */
     idt_load();
 }
 
