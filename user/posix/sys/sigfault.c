@@ -366,10 +366,11 @@ static bool runs_on_interrupted(const struct exc_frame *f, const struct sig_act_
 
 #define RUN_BYTES ((sizeof(struct fault_run) + 63) & ~(size_t)63)
 
-/* A handler's way out: from its return to the thread's resume (or the
- * next handler), the thread is in the layer, setting the mask the handler
- * left and looking for the next signal due, then resuming the frame. A
- * raise that comes there runs no handler: the registers it found are the
+/* A handler's way in and out: from EXC_LEAVE to the handler, and from its
+ * return to the thread's resume (or the next handler), the thread is in
+ * the layer, on the way out setting the mask the handler left and looking
+ * for the next signal due, then resuming the frame. A raise that comes
+ * there runs no handler: the registers it found are the
  * layer's, not where the thread goes on (V8's profiler would take a
  * sample in the layer; Chromium's stack copier would copy the wrong
  * stack), and the signal it brings may have come after the last look for
@@ -381,7 +382,7 @@ static bool runs_on_interrupted(const struct exc_frame *f, const struct sig_act_
  * resumed (at its next interrupt). The thread's own, read by its own
  * raise entry. */
 struct sig_tail {
-    volatile uint8_t in;      /* on a handler's way out */
+    volatile uint8_t in;      /* on a handler's way in or out */
     volatile uint8_t again;   /* a raise came there */
 };
 _Static_assert(offsetof(struct sig_tail, in) == 0 && offsetof(struct sig_tail, again) == 1,
@@ -483,13 +484,17 @@ _Noreturn void sig_fault(struct exc_frame *f)
     __jam_sig_moved(copy, r, (void *)lo);
 }
 
+/* The handler, the program's code: off the way in and out (struct
+ * sig_tail) just for it, so a raise during it runs a handler of its own. */
 static void call_handler(void *arg)
 {
     struct handler_args *h = arg;
+    tail.in = 0;
     if (h->act->flags & SA_SIGINFO)
         ((void (*)(int, siginfo_t *, void *))h->act->handler)(h->sig, &h->ctx->info, &h->ctx->uc);
     else
         ((void (*)(int))h->act->handler)(h->sig);
+    tail.in = 1;
 }
 
 /* The rest of a fault or a raise whose signal a handler takes: what it is
@@ -524,7 +529,9 @@ _Noreturn void sig_fault_run(struct fault_run *r)
         memcpy(&ctx.uc.uc_sigmask, &r->was, sizeof(r->was));
         sig_fill_siginfo(&r->si, &ctx.info);
 
-        tail.in = 0;   /* the handler is the program's code */
+        /* On the way in from EXC_LEAVE to the handler, and out after it
+         * (struct sig_tail; call_handler clears `in` for the handler). */
+        tail.in = 1;
         if (!left)
             (void)jam_exception_done(f, EXC_LEAVE);
         left = true;
@@ -534,10 +541,10 @@ _Noreturn void sig_fault_run(struct fault_run *r)
         else
             call_handler(&h);
 
-        /* Back from the handler, on the way out (struct sig_tail): on as
-         * its ucontext says (fpregs as Linux's sigreturn takes it:
-         * wherever the handler left it pointing). */
-        tail.in = 1;
+        /* Back from the handler, on the way out: on as its ucontext says
+         * (fpregs as Linux's sigreturn takes it: wherever the handler left
+         * it pointing). A raise that came on the way in or out is taken
+         * below by its pending bit. */
         tail.again = 0;
         memcpy(frame_regs(f), g, SIG_REGS * sizeof(greg_t));
         if (ctx.uc.uc_mcontext.fpregs)
