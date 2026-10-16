@@ -1968,8 +1968,10 @@ gets none of its parent's powers. Then every other way to writable and
 executable memory, by the raw calls ([CR-REVIEW-JIT](CR-REVIEW-JIT.md)):
 its own code and read-only data (W+X `ERR_INVALID_ARGS`, write
 `ERR_ACCESS_DENIED`, `mprotect` `EACCES`), its stack and heap (W+X
-`ERR_INVALID_ARGS`, execute `ERR_ACCESS_DENIED`), a VMO handle widened to
-execute by a duplicate, a replace or a send (`ERR_INVALID_ARGS`), the root
+`ERR_INVALID_ARGS`, execute `ERR_ACCESS_DENIED`; mapped over in place by
+`VMAR_REPLACE` or `MAP_FIXED`: refused, its page unchanged), a VMO handle
+widened to execute by a duplicate, a replace or a send (`ERR_INVALID_ARGS`),
+a copy-on-write child (no execute right), the root
 widened to the power, `vmo_make_jit` with its root or a VMO as the root,
 and, where init's run gives it `RIGHT_ROOT_VMEX`, sealed code it wrote
 (never writable, never JIT memory); it is never marked. With the power (`jittest`, from the

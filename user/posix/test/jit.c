@@ -84,6 +84,17 @@ static void hostile(void)
         CHECK(mprotect(heap, PG, PROT_READ | PROT_EXEC) == -1 && errno == EACCES);
         CHECK(jam_vmar_protect(vmar, (uint64_t)(uintptr_t)heap, PG, VWX) == ERR_INVALID_ARGS);
         CHECK(jam_vmar_protect(vmar, (uint64_t)(uintptr_t)heap, PG, VRX) == ERR_ACCESS_DENIED);
+        /* Mapped over in place: refused before anything changed. */
+        handle_t fresh;
+        uint64_t at = (uint64_t)(uintptr_t)heap;
+        CHECK(jam_vmo_create(PG, 0, &fresh) == OK);
+        CHECK(jam_vmar_map(vmar, fresh, 0, PG, VWX | VMAR_FIXED | VMAR_REPLACE, &at) ==
+              ERR_INVALID_ARGS);
+        CHECK(jam_vmar_map(vmar, fresh, 0, PG, VRX | VMAR_FIXED | VMAR_REPLACE, &at) ==
+              ERR_ACCESS_DENIED);
+        CHECK(jam_handle_close(fresh) == OK);
+        CHECK(refused(mmap(heap, PG, RWX, ANON | MAP_FIXED, -1, 0), EACCES));
+        CHECK(heap[0] == 0xc3);
         CHECK(munmap(heap, PG) == 0);
     }
     /* No handle gains execute: a duplicate, a replace, a send. */
@@ -104,6 +115,13 @@ static void hostile(void)
     uint64_t a = 0;
     CHECK(jam_vmar_map(vmar, v, 0, PG, VWX, &a) == ERR_INVALID_ARGS);
     CHECK(jam_vmar_map(vmar, v, 0, PG, VRX, &a) == ERR_ACCESS_DENIED);
+    /* A copy-on-write child: a fresh VMO's rights, so no execute either. */
+    handle_t kid;
+    CHECK(jam_vmo_write(v, 0, "\xc3", 1) == OK);
+    CHECK(jam_vmo_create_child(v, VMO_CHILD_SNAPSHOT, 0, PG, &kid) == OK);
+    CHECK(!(rights_of(kid) & RIGHT_EXEC));
+    CHECK(jam_vmar_map(vmar, kid, 0, PG, VRX, &a) == ERR_ACCESS_DENIED);
+    CHECK(jam_handle_close(kid) == OK);
     /* The JIT call: no power on our root (if we have one), and a VMO is no
      * root. Each takes the handle. */
     CHECK(jam_handle_duplicate(v, RIGHT_SAME, &d) == OK);
