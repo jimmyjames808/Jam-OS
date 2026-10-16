@@ -499,7 +499,7 @@ FK2, FK3 and FL1b are about two (their halves can't be tested apart).
 |---|---|---|---|---|---|---|
 | **FK1. Clone modes** | `VMAR_CLONE_SHARE`, `VMAR_CLONE_NONE` on `vmar_map`, kept through protect, split, merge and replace; `map_info.flags` shows them; syscalls.def's text for both new calls (the contract FK2 and FK3 fill); built, see "FK1 notes" | `kernel/mm/aspace.c` (the flags), `kernel/include/jam/abi.h`, `abi/syscalls.def`, a new ktest file | nothing | ktests: each flag kept by every mapping operation, merges only with the same mode, refused with `VMAR_KEPT_ONLY` where it means nothing; full ktest 4 and 8 | 1 | **Opus** |
 | **FK2. The address-space clone** | `vmar_clone` (1.1): one instant, the three modes, the JIT and device rules, the children's handles, the charges and the page-table reserve (1.3), the refusals, random handle generations in the clone's table; built, see "FK2 notes" | `kernel/mm/aspace.c` (the walk), `kernel/object/vmo.c` (protecting many VMOs, then sharing), `kernel/object/process.c`, `kernel/abi/vmar_sys.c`, `kernel/object/handle.c` (the generations), syscalls.def, abi.h, a new ktest file | FK1 | ktests: each kind of mapping cloned and checked from both sides; 8 writer threads keeping an invariant across two VMOs while the clone runs (the child never sees it broken); a 1 TiB reservation with a page per GiB cloned within a bound; 60,000 mappings; charges exact and refused up front; a pin refused; storms of map, unmap and protect from other threads; full ktest 4 and 8; soak 2 | 2 | **Opus** |
-| **FK3. Exec in place** | `process_replace` (section 2) | `kernel/object/process.c`, `kernel/sched/thread.c` (the other threads' end), `kernel/object/handle.c` (all but one closed), `kernel/mm/aspace.c` (the swap), `kernel/abi/sysc_proc.c`, syscalls.def, abi.h, a new ktest file | FK2 (the same files) | ktests: other threads in a wait, a futex, a channel call, a fault waiting for a pager all gone; every handle closed but one; the parent's handle, pid, waits and port bindings unchanged; the old address space's charges back; each refusal; two threads replacing at once; a replace racing a kill; full ktest 4 and 8; soak 2 | 2 | **Opus** |
+| **FK3. Exec in place** | `process_replace` (section 2); built, see "FK3 notes" | `kernel/object/process.c`, `kernel/sched/thread.c` (the other threads' end), `kernel/object/handle.c` (all but one closed), `kernel/mm/aspace.c` (the swap), `kernel/abi/sysc_proc.c`, syscalls.def, abi.h, a new ktest file | FK2 (the same files) | ktests: other threads in a wait, a futex, a channel call, a fault waiting for a pager all gone; every handle closed but one; the parent's handle, pid, waits and port bindings unchanged; the old address space's charges back; each refusal; two threads replacing at once; a replace racing a kill; full ktest 4 and 8; soak 2 | 2 | **Opus** |
 | **FL1a. libjam's fork** | the save and the trampoline (assembly), `jam_fork` (the clone, the thread, the start, the roles of 1.6), the child's rebind of libos's roles and locks, the hooks the POSIX layer registers | a new user/lib/fork.c and its assembly, `user/lib/start.c` (the roles' rebind), `user/include/os.h`, a new message header in user/include/, `abi/idl/ids.txt`, a utest file | FK2 | utest: a native program forks: both sides return, memory separate, the child's roles its own, its handle table exactly the passed set, the parent's charge back after the child exits | 1 | **Opus** |
 | **FL1b. POSIX `fork`** | `lx_fork`, `clone` without `CLONE_VM` (both forms), `vfork` as fork with the parent's wait (Q3's A; the wait itself needs FL4), the layer's locks, signals in the child (1.7), ids and the table of children (1.8), JIT entries removed | a new user/posix/sys/fork.c, `user/posix/sys/calls.def`, the vfork and clone overrides, `user/posix/sys/sigthread.c`, `user/posix/sys/signal.c`, `user/posix/sys/proc.c`, a new posixtest section (fork) | FL1a | posixtest `fork`: returns twice, memory separate (heap, stack, data, `mmap`), `MAP_SHARED` anonymous shared, malloc and atfork in a threaded parent's child, the two-VMO invariant from a threaded parent, a 1 TiB reservation forked within a bound, `ENOMEM` in a job that can't pay, ids, `waitpid`, `SIGCHLD`, `kill`, `SIGKILL`, pending cleared, timers gone, both `clone` forms, `jittest` forking (the child's JIT range faults, it isn't marked) | 2 | **Opus** |
 | **FL2. Descriptors and mappings at fork** | each kind's fork step (1.6's table), the table of mappings' handles, `VMAR_CLONE_SHARE` from `mmap`, `VMAR_CLONE_NONE` on every connection buffer, the cached service channels | `user/posix/sys/fd.h` and each kind's file (pipe, sockpair, memfd, eventfd, dev, etc, svcsock, file, dir, tty, pty, socket, epoll), `user/posix/sys/mem.c`, `user/posix/sys/maptable.c`, `user/posix/sys/resolve.c`, `user/posix/sys/unixsock.c`, libjam's buffer mappings, a new posixtest file | FL1b | posixtest `fork` descriptors: every kind used from both sides after a fork, leftovers read once, close-on-exec ones present until exec, absent kinds absent, `/proc/self/fd` exact, Chromium's child sequence (dup2s, close by `/proc/self/fd`) run in a child; no handle left over | 1.5 | **Opus** |
@@ -628,7 +628,65 @@ What FK3 and FL1a start from (`aspace_clone` in `kernel/mm/aspace.c`, its
   source tables, 2.3 ms; 60,000 mappings of one VMO, 15 ms.
 - Not built: a concurrent `process_start` racing the clone is not tested
   (the `setup` mutex is the argument); the `process_replace` side of the
-  reserve (FK3).
+  reserve (FK3: nothing needed, see its notes).
+
+### FK3 notes
+
+What FL3, FX and FR1 start from (`process_replace` in
+`kernel/object/process.c`, its "exec in place" and the race in its file
+header; `handle_table_close_all` in `handle.c`; ktests `replace_*`):
+
+- **The right is `RIGHT_WRITE` on `proc`**, as the plan says; FX adds the
+  replace-only right for `/svc/exec`'s handle. `proc` must be NEW, without
+  a thread object, in the caller's job (compared as the same job, not an
+  ancestor: the address space's charges are its job's and the process
+  keeps its own), else `ERR_BAD_STATE`, as for the caller's own process,
+  a dying one, or a second thread replacing at once (one wins; the other
+  gets `ERR_BAD_STATE` or is ended first). FX's init must therefore make
+  the program in the caller's job.
+- **`arg0`** needs `RIGHT_TRANSFER` (moved, as `process_start`'s) and must
+  not name `proc` (`ERR_INVALID_ARGS`); it stays where it is, so `rdi` is
+  its old value (FK1's "whether arg0 leaves the table on an error": it
+  never does). Every other slot is closed as `handle_close` closes it, so
+  each old value is stale (generation up); the table keeps its size.
+- **Atomic**: every check comes before anything changes: arg0 taken
+  (reserved), `proc` claimed under its `setup` mutex, then the process
+  marked as replacing (no thread can start in it: `ERR_BAD_STATE`), then
+  `proc`'s address space taken and `proc` torn down (DEAD, exit code 0).
+  From there on nothing fails; a kill meanwhile ends the replacer's wait
+  and the process dies as any killed process (`proc` gone too).
+- **The other threads** end as a kill ends them (`thread_cancel`): a wait,
+  a futex, a channel call, a pager fault (WRITEMAP's store waits too) all
+  return `ERR_CANCELED`; the replacer waits on the process's
+  `replace_wq` until it is the only one counted. A thread made but never
+  started is marked dead (`uthread_start` refuses it), so a handle the
+  old image gave away can't start a thread in the new one. A thread
+  whose start was under way cancels itself when it publishes. Threads
+  leaving meanwhile skip their tid word (the old image is going).
+- **Latency**: a thread running in ring 3 stops at its CPU's next tick
+  (about 10 ms), as for a kill (`thread_cancel` doesn't interrupt a CPU):
+  8 threads ended in 2 to 11 ms on the PC. A forked child has one thread,
+  so Chromium's launches don't wait. A kick in `thread_cancel` would help
+  kills too (a later scheduler change).
+- **The swap**: the process's reference and the thread's own go from the
+  old address space to `proc`'s; the old one dies once nothing else holds
+  it (a vmar handle in our table goes with the close), and with it every
+  charge, the clone's table reserve included (FK2's "goes back when the
+  address space dies"): `replace_frees_old` checks the job pays for the
+  new image and one thread, to the page. `PROCESS_FLAG_JIT` and the clone
+  modes are the new address space's; the exception entry is forgotten.
+- **The thread**: `arch_enter_user` from inside the call (the kernel stack
+  is abandoned, as for a new thread): every register 0 but `rdi`, `rsi`
+  and `rsp`, the default FPU state, FS base 0; its tid word, exception
+  window and frame cookie (SG1) and a latched `thread_interrupt` are
+  cleared. Its tid, priority and affinity stay. SG2 must clear any
+  per-thread state it adds (an exception stack, a raise in flight) at the
+  same place (`process_replace`, "What of this thread belonged to the old
+  image").
+- **The name** changes under the process lock; `process_get_info` copies
+  it under the lock; other readers (`process_name`, the log) may see a
+  mix for a moment, never an unterminated name. The old image's
+  unfinished debug line is printed under its old name first.
 
 ## 6. Questions for the owner
 

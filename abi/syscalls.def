@@ -446,18 +446,26 @@
 138 process_get_maps  i64       handle_t proc, uint64_t from, struct map_info *out, uint32_t cap
 # process_replace: exec in place (docs/FORK-PLAN.md section 2). proc
 # (RIGHT_WRITE) is a process the caller made with process_create in its
-# own job, not started, with no thread (ERR_BAD_STATE otherwise). The
-# caller's process ends its other threads and waits until they are gone,
-# takes proc's address space and drops its own (and its charges), closes
-# every handle in its table but arg0 (a channel end, moved, as
-# process_start's) and takes proc's name; then the calling thread goes on
-# at entry with stack, rdi = arg0's new value, rsi = arg1, FS base 0 and a
-# clean FPU state. The process keeps its pid, its kernel object (every
-# handle others hold of it, their waits and port bindings), its job, its
-# creation time and its CPU time; PROCESS_FLAG_JIT is the new address
-# space's. proc is consumed. Returns only on an error, with nothing changed
-# (an entry at or past the user range's top: ERR_INVALID_ARGS). FK3 builds
-# it: ERR_NOT_SUPPORTED until then.
+# own job, not started, with no thread (ERR_BAD_STATE otherwise, and for
+# the caller's own process, or while another of its threads is replacing
+# it). arg0 is 0 or a handle in the caller's table (usually the startup
+# channel's end) with RIGHT_TRANSFER, not one to proc (ERR_INVALID_ARGS).
+# The caller's process ends its other threads as a kill ends them (a wait,
+# a call, a fault waiting for a pager: each ends) and waits until they are
+# gone; a thread it made but never started can't be started any more, and
+# no thread can be started in it until the call is done (ERR_BAD_STATE).
+# Then it takes proc's address space and drops its own (and its charges),
+# closes every handle in its table but arg0, which keeps its value, takes
+# proc's name and forgets its exception entry; the calling thread goes on
+# at entry with stack, rdi = arg0, rsi = arg1, every other register 0, FS
+# base 0, no tid word and a clean FPU state. The process keeps its pid,
+# its kernel object (every handle others hold of it, their waits and port
+# bindings), its job, its creation time and its CPU time;
+# PROCESS_FLAG_JIT is the new address space's. proc is used up: it ends
+# (DEAD, exit code 0, never having run). Returns only on an error, with
+# nothing changed (arg0 back under its value; an entry at or past the user
+# range's top: ERR_INVALID_ARGS); a process killed while its threads end
+# dies, proc with it.
 139 process_replace   status    handle_t proc, uint64_t entry, uint64_t stack, handle_t arg0, uint64_t arg1
 
 # exceptions: a thread's own faults (docs/SIGNALS-PLAN.md section 1) ----------

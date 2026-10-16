@@ -60,6 +60,11 @@ void     handle_table_init(struct handle_table *t);
 void     handle_table_randomize(struct handle_table *t);
 /* Close every handle and free the table's memory. */
 void     handle_table_destroy(struct handle_table *t);
+/* Close every handle, as handle_close closes each (its generation goes
+ * up: the old value is stale from now on); slots reserved now (in
+ * transit, or for a receive) stay reserved. process_replace's table, whose
+ * owner is its only user meanwhile: nothing may insert while it runs. */
+void     handle_table_close_all(struct handle_table *t);
 
 /* Put a khandle into the table (it is consumed on success). */
 status_t handle_insert(struct handle_table *t, struct khandle *kh, handle_t *out);

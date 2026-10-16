@@ -188,6 +188,26 @@ status_t process_start(struct process *p, struct uthread *ut, uint64_t entry, ui
  * still holds is almost always ERR_BAD_HANDLE in p. */
 status_t process_clone_begin(struct process *p, struct aspace **as);
 void     process_clone_end(struct process *p, struct aspace *as, bool done);
+/* process_replace, exec in place (docs/FORK-PLAN.md section 2): the
+ * current thread's process becomes proc's image. proc must be NEW, with
+ * no thread object, in the caller's job (ERR_BAD_STATE otherwise, and for
+ * the caller's own process); arg0 (HANDLE_INVALID: none) a handle in the
+ * caller's table with RIGHT_TRANSFER, not one to proc (ERR_INVALID_ARGS);
+ * entry below USER_TOP (ERR_INVALID_ARGS). Then every other thread of the
+ * process is ended (as a kill ends them: cancelled, waited for until
+ * gone; one never started can't be started any more), the process takes
+ * proc's address space and name and drops its own address space, closes
+ * every handle but arg0 (which keeps its value), forgets its exception
+ * entry, and the calling thread enters ring 3 at entry with stack, rdi =
+ * arg0, rsi = arg1, FS base 0, no tid word and a clean FPU state. proc is
+ * torn down (DEAD, exit code 0). The process keeps its kernel object, pid,
+ * job, creation time and CPU time. No thread can be started in it while
+ * this runs (uthread_start: ERR_BAD_STATE). Returns only on an error,
+ * with nothing changed (arg0 back under its value), or ERR_CANCELED if
+ * the process was killed while its threads were ending (proc is gone
+ * then too). Takes over the caller's reference on proc. */
+status_t process_replace(struct process *proc, uint64_t entry, uint64_t stack, handle_t arg0,
+                         uint64_t arg1);
 /* Test hook DBG_PROCESS_START's argument: the window after process_start
  * made p RUNNING and before its first thread exists. `fail` makes that
  * thread's creation fail as if the kernel were out of memory. */

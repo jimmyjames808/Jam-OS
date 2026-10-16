@@ -2,8 +2,8 @@
  * are in sysc.h; the objects are in object/process.c and object/job.c.
  *
  * Rights: creating a process in a job, or a child job, needs RIGHT_WRITE on
- * the job; starting, killing and making threads in a process needs
- * RIGHT_WRITE on it; starting a thread or changing its priority needs
+ * the job; starting, killing and making threads in a process, and
+ * becoming it (process_replace), needs RIGHT_WRITE on it; starting a thread or changing its priority needs
  * RIGHT_WRITE on the thread; interrupting a thread's wait needs
  * RIGHT_SIGNAL on it; reading info needs RIGHT_INSPECT. A thread's tid
  * word is its own business: no handle. Changing a
@@ -182,17 +182,18 @@ int64_t sysc_process_get_maps(handle_t proc, uint64_t from, uint64_t out, uint32
     return st == OK ? (int64_t)n : ERR_INVALID_ARGS;
 }
 
-/* Exec in place (docs/FORK-PLAN.md track FK3 builds it; abi/syscalls.def
- * has the contract). Nothing changed: proc and arg0 stay the caller's. */
+/* Exec in place (docs/FORK-PLAN.md section 2; abi/syscalls.def has the
+ * contract, process_replace the work). Returns only on an error, with
+ * proc and arg0 still the caller's. */
 int64_t sysc_process_replace(handle_t proc, uint64_t entry, uint64_t stack, handle_t arg0,
                              uint64_t arg1)
 {
-    (void)proc;
-    (void)entry;
-    (void)stack;
-    (void)arg0;
-    (void)arg1;
-    return ERR_NOT_SUPPORTED;
+    SYSC_TABLE(t);
+    struct kobject *po;
+    status_t st = handle_get(t, proc, OBJ_PROCESS, RIGHT_WRITE, &po, NULL);
+    if (st != OK)
+        return st;
+    return process_replace(process_from_kobject(po), entry, stack, arg0, arg1);   /* takes po */
 }
 
 int64_t sysc_thread_create(handle_t proc, uint64_t name, uint64_t name_len, uint32_t flags,

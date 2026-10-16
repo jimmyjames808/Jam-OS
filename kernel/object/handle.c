@@ -376,6 +376,30 @@ status_t handle_close(struct handle_table *t, handle_t h)
     return st;
 }
 
+void handle_table_close_all(struct handle_table *t)
+{
+    /* As handle_table_destroy's loop, but each slot freed the way a close
+     * frees it. Slots don't move and nothing inserts (the header), so the
+     * scan goes on from where it was. */
+    uint32_t i = 0;
+    for (;;) {
+        struct khandle kh = { 0 };
+        uint64_t f = spin_lock_irqsave(&t->lock);
+        while (i < t->capacity && !t->slots[i].obj)
+            i++;
+        if (i < t->capacity) {
+            kh = free_slot_locked(t, &t->slots[i]);
+            t->charged--;
+            uncharge(t, 1);
+            i++;
+        }
+        spin_unlock_irqrestore(&t->lock, f);
+        if (!kh.obj)
+            break;
+        khandle_release(&kh);   /* outside the lock: may run on_zero_handles */
+    }
+}
+
 /* t->lock held, s checked: a new handle to s's object with `rights` (a
  * subset of s's, or RIGHT_SAME). */
 static status_t duplicate_locked(struct handle_table *t, const struct handle_slot *s,

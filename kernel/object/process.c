@@ -58,7 +58,22 @@
  *     and wakes its futex on its way out, in uthread_exit_current, before
  *     it leaves the address space but after its last instruction in user
  *     mode, so a joiner woken by it may unmap the thread's stack (and the
- *     word) at once: nothing of the thread's touches user memory again. */
+ *     word) at once: nothing of the thread's touches user memory again.
+ *   - process_replace (exec in place) vs everything else. Every check that
+ *     can fail comes first: arg0 taken out of the table (reserved, so it
+ *     can be put back under its value), proc claimed under its setup mutex
+ *     (no process_start or vmar_clone of it meanwhile) and `replace` set
+ *     under the lock (REPLACE_CLAIMED: start_thread refuses, so no thread
+ *     joins while the others are ended; a second replace refuses). From
+ *     REPLACE_KILLING on there is no way back: the other threads are
+ *     cancelled as a kill cancels them, a thread whose start was under way
+ *     cancels itself when it publishes ut->t, and the replacer waits on
+ *     `replace_wq` until nthreads is 1 (thread_left wakes it). A kill
+ *     meanwhile cancels the replacer too: its wait ends with ERR_CANCELED
+ *     and the process dies as any killed process does. Once alone, the
+ *     replacer swaps the address space under the lock, closes the handles
+ *     and only then clears `replace`: no thread can start in the new image
+ *     while the old handles are there. */
 #include <jam/aspace.h>
 #include <jam/dbghook.h>
 #include <jam/futex.h>
@@ -77,6 +92,8 @@
 #include <jam/utf8.h>
 
 enum ut_state { UT_NEW, UT_STARTING, UT_RUNNING, UT_DEAD };
+/* process_replace's progress (the file header). */
+enum { REPLACE_NONE, REPLACE_CLAIMED, REPLACE_KILLING };
 
 #define OUT_LINE        200   /* debug_write lines longer than this are split */
 #define USER_REPORT_MAX 160   /* debug_report lines kept, all processes together */
@@ -95,6 +112,8 @@ struct process {
     bool                teardown;  /* (L) process_finish is claimed: its claimer runs it, once */
     bool                obj_charged; /* (L) our JOB_LIMIT_HANDLES unit is still charged */
     bool                starting;                /* (L) process_start is making the first thread */
+    uint8_t             replace;                 /* (L) REPLACE_*: process_replace under way */
+    struct waitqueue    replace_wq;  /* its replacer waits here for the other threads to leave */
     bool                listed;                  /* on job's list (job_link); cleared at teardown */
     struct job_link     job_link;                /* (the job's lock) */
     int64_t             exit_code;               /* (L) */
@@ -104,7 +123,10 @@ struct process {
     uint64_t            start_ns;                /* uptime when it was created, fixed */
     uint64_t            exc_entry;   /* its exception entry, 0: none (atomic; upcall.c) */
     struct list_node    threads;                 /* (L) struct uthread, every one not destroyed */
-    char                name[PROCESS_NAME_MAX + 1]; /* NUL-terminated */
+    /* NUL-terminated; written under L, only by process_replace. Readers
+     * that don't hold L may see a mix of the two names for a moment, never
+     * an unterminated one: name[PROCESS_NAME_MAX] is always 0. */
+    char                name[PROCESS_NAME_MAX + 1];
     /* debug_write ("process output" lock): the current, unfinished line and
      * the rate limit (see process_debug_write) */
     spinlock_t          out_lock;
@@ -238,6 +260,7 @@ status_t process_create(struct job *job, const char *name, struct process **out)
     handle_table_init(&p->handles);
     p->handles.job = job;
     mutex_init(&p->setup, "process setup");
+    waitqueue_init(&p->replace_wq, "process replace");
     spin_init(&p->out_lock, "process output");
     p->out_tokens = OUT_BURST;
     p->start_ns = p->out_refill_ns = uptime_ns();
@@ -312,11 +335,11 @@ void process_get_info(struct process *p, struct process_info *out)
     out->killed = p->killed;
     out->threads = p->nthreads;
     out->flags = p->as && aspace_maps_jit(p->as) ? PROCESS_FLAG_JIT : 0;   /* lock-free read */
+    copy_name(out->name, sizeof(out->name), p->name);
     punlock(p, f);
     out->koid = p->base.koid;
     out->pid = p->pid;
     out->start_ns = p->start_ns;
-    copy_name(out->name, sizeof(out->name), p->name);
     out->cpu_ns = tsc_to_ns(process_cpu_tsc(p));
 }
 
@@ -645,15 +668,21 @@ static bool thread_left(struct process *p)
         finish = p->state == PROCESS_DYING;
         p->teardown |= finish;
     }
+    /* The last but the replacer: it may go on. (Our uthread's reference
+     * keeps p past the unlock.) */
+    bool wake = p->nthreads == 1 && p->replace == REPLACE_KILLING;
     punlock(p, f);
+    if (wake)
+        waitqueue_wake_all(&p->replace_wq);
     return finish;
 }
 
 /* The thread's tid word (top): 0 stored, then every waiter on it woken,
  * while the address space is still ours. A store that faults (the word
  * unmapped meanwhile) is skipped and nobody is woken: nothing could have
- * seen it change. A thread leaving a dying process leaves its word alone:
- * no thread of the process is left to wait on it. */
+ * seen it change. A thread leaving a dying process, or one ended by
+ * process_replace, leaves its word alone: no thread of the process is
+ * left to wait on it (the replacer's image is going). */
 static void clear_tid_word(struct uthread *u, struct process *p)
 {
     uint64_t addr = u->tid_word;
@@ -661,7 +690,7 @@ static void clear_tid_word(struct uthread *u, struct process *p)
         return;
     u->tid_word = 0;
     uint64_t f = plock(p);
-    bool running = p->state == PROCESS_RUNNING;
+    bool running = p->state == PROCESS_RUNNING && p->replace != REPLACE_KILLING;
     punlock(p, f);
     uint32_t zero = 0;
     if (running && copy_to_user(addr, &zero, sizeof(zero)) == OK)
@@ -751,7 +780,7 @@ static status_t start_thread(struct uthread *u, uint64_t entry, uint64_t stack, 
         return ERR_INVALID_ARGS;
     uint64_t f = plock(p);
     status_t st = OK;
-    if (u->state != UT_NEW || p->starting)
+    if (u->state != UT_NEW || p->starting || p->replace != REPLACE_NONE)
         st = ERR_BAD_STATE;
     else if (p->state != (from_new ? PROCESS_NEW : PROCESS_RUNNING))
         st = ERR_BAD_STATE;
@@ -805,10 +834,12 @@ static status_t start_thread(struct uthread *u, uint64_t entry, uint64_t stack, 
     u->t = t;
     if (from_new)
         p->starting = false;
-    bool dying = p->state >= PROCESS_DYING;
+    /* A kill, or a replace ending the other threads, that ran before u->t
+     * was published: cancel it ourselves (this also wakes it). */
+    bool dying = p->state >= PROCESS_DYING || p->replace == REPLACE_KILLING;
     punlock(p, f);
     if (dying)
-        thread_cancel(t);   /* a kill ran before u->t was published (this also wakes it) */
+        thread_cancel(t);
     else
         thread_wake(t);     /* only now may it run */
     return OK;
@@ -874,6 +905,150 @@ void process_clone_end(struct process *p, struct aspace *as, bool done)
         handle_table_randomize(&p->handles);
     mutex_unlock(&p->setup);
     aspace_unref(as);
+}
+
+/* ---- exec in place ------------------------------------------------------------ */
+
+/* process_replace's claim on proc, with its setup mutex held (no
+ * process_start or vmar_clone of it meanwhile): NEW, no thread object, in
+ * `job`, its address space still its own. With `take` the address space
+ * comes out (*as gets the process's reference) and proc is marked dying
+ * with its teardown claimed, the caller's to run: no thread can be made in
+ * it from here on, and a kill (job_kill's) leaves it to the caller. */
+static status_t replace_claim(struct process *proc, struct job *job, bool take,
+                              struct aspace **as)
+{
+    uint64_t f = plock(proc);
+    bool ok = proc->state == PROCESS_NEW && list_empty(&proc->threads) && !proc->starting &&
+              proc->job == job && proc->as;
+    if (ok && take) {
+        *as = proc->as;
+        proc->as = NULL;
+        proc->state = PROCESS_DYING;
+        proc->exit_code = 0;
+        proc->teardown = true;
+    }
+    punlock(proc, f);
+    return ok ? OK : ERR_BAD_STATE;
+}
+
+status_t process_replace(struct process *proc, uint64_t entry, uint64_t stack, handle_t arg0,
+                         uint64_t arg1)
+{
+    struct thread *t = current_thread();
+    struct process *p = t->process;
+    struct khandle kh = { NULL, 0 };
+    struct aspace *as = NULL;
+    status_t st = OK;
+    if (!p || proc == p)
+        st = ERR_BAD_STATE;
+    else if (entry >= USER_TOP)
+        st = ERR_INVALID_ARGS;
+    /* arg0 out of the table first, reserved, so it can't go away under us
+     * (another thread closing it) once there's no way back. */
+    else if (arg0 != HANDLE_INVALID && (st = handle_take(&p->handles, arg0, &kh)) == OK &&
+             kh.obj == process_kobject(proc))
+        st = ERR_INVALID_ARGS;   /* proc is used up: it can't be the hand-over too */
+    if (st == OK) {
+        mutex_lock(&proc->setup);
+        /* proc first, so a proc that won't do never holds up a thread_start
+         * of ours; then ours (no second replace, not dying); then proc's
+         * address space, unless proc changed in between (a kill, a thread
+         * made in it). */
+        st = replace_claim(proc, p->job, false, NULL);
+        if (st == OK) {
+            uint64_t f = plock(p);
+            if (p->state != PROCESS_RUNNING || p->replace != REPLACE_NONE)
+                st = ERR_BAD_STATE;
+            else
+                p->replace = REPLACE_CLAIMED;
+            punlock(p, f);
+        }
+        if (st == OK && (st = replace_claim(proc, p->job, true, &as)) != OK) {
+            uint64_t f = plock(p);
+            p->replace = REPLACE_NONE;
+            punlock(p, f);
+        }
+        mutex_unlock(&proc->setup);
+    }
+    if (st != OK) {
+        if (kh.obj)
+            handle_untake(&p->handles, arg0, &kh, &arg0);   /* can't fail: its slot was kept */
+        kobject_unref(process_kobject(proc));
+        return st;
+    }
+
+    /* No way back from here. proc is ours to tear down; it never ran. */
+    char name[PROCESS_NAME_MAX + 1];
+    copy_name(name, sizeof(name), proc->name);   /* fixed: proc was never replaced */
+    process_finish(proc);
+    kobject_unref(process_kobject(proc));
+
+    /* Every other thread ends as a kill ends it; we wait until none is
+     * left. A kill of ours meanwhile ends our wait too: the process dies
+     * the usual way, the new address space with nobody's. */
+    struct uthread *me = t->uthread;
+    uint64_t f = plock(p);
+    p->replace = REPLACE_KILLING;
+    for (struct list_node *n = p->threads.next; n != &p->threads; n = n->next) {
+        struct uthread *u = container_of(n, struct uthread, node);
+        if (u == me)
+            continue;
+        if (u->state == UT_NEW)
+            u->state = UT_DEAD;   /* never started: never in the new image either */
+        else if (u->t && u->state != UT_DEAD)
+            thread_cancel(u->t);
+    }
+    while (st == OK && p->nthreads > 1)
+        st = waitqueue_wait_cancellable(&p->replace_wq, &p->base.lock, &f, DEADLINE_NEVER);
+    if (st != OK) {
+        punlock(p, f);
+        aspace_unref(as);
+        if (kh.obj)
+            handle_untake(&p->handles, arg0, &kh, &arg0);
+        return st;
+    }
+    punlock(p, f);
+
+    /* Alone: the old image's unfinished line goes out under its name, then
+     * the swap. The process's reference on the old address space goes, and
+     * our own once this CPU has left it; nothing else of ours is on any
+     * CPU (each thread left it before counting itself out). */
+    out_flush(p);
+    process_set_exc_entry(p, 0);
+    f = plock(p);
+    struct aspace *old = p->as;
+    p->as = as;
+    copy_name(p->name, sizeof(p->name), name);
+    punlock(p, f);
+    aspace_ref(as);   /* the thread's own, as uthread_main takes it */
+    irq_disable();
+    struct aspace *mine = t->aspace;
+    t->aspace = as;
+    aspace_switch(mine, as);
+    t->fs_base = 0;   /* loaded by arch_enter_user */
+    irq_enable();
+    aspace_unref(mine);
+    aspace_unref(old);   /* gone now, unless a vmar handle (ours: closed next) holds it */
+
+    handle_table_close_all(&p->handles);
+    if (kh.obj && handle_untake(&p->handles, arg0, &kh, &arg0) != OK) {
+        kprintf("process_replace: \"%s\" lost its startup handle\n", p->name);   /* never */
+        khandle_release(&kh);
+        arg0 = HANDLE_INVALID;
+    }
+    /* What of this thread belonged to the old image: its tid word, its
+     * exception entry's window and frame cookie (upcall.c makes a new one),
+     * a latched thread_interrupt. arch_enter_user resets every register
+     * and the FPU. */
+    me->tid_word = 0;
+    t->exc_window = false;
+    t->exc_cookie = 0;
+    (void)thread_interrupt_consume(ERR_INTERRUPTED);
+    f = plock(p);
+    p->replace = REPLACE_NONE;
+    punlock(p, f);
+    arch_enter_user(entry, stack, arg0, arg1);
 }
 
 /* ---- what POSIX needs of a thread ------------------------------------------------ */
