@@ -47,8 +47,15 @@
  * handler: a nested fault is served on the alternate stack again, over
  * this frame and what sig_fault keeps there.
  *
- * SG5 adds a raise of one of our threads (EXC_RAISED frames), marked
- * below. */
+ * A raise (an EXC_RAISED frame: a signal sent to this thread while it was
+ * busy in its own code, signal.c's kick) takes the same path with a
+ * pending signal in place of the fault's (sig_raise_begin): the handler
+ * runs with the registers where the thread was, on the stack its
+ * SA_ONSTACK says, and the thread goes on from what it leaves. Then the
+ * next signal due runs on the same frame (sig_raise_next), until none is,
+ * each SA_ONSTACK one through sig_run_onstack and the others where the
+ * first ran. A raise that finds the thread inside the layer, or nothing
+ * due, resumes at once. */
 #include <stddef.h>
 #include <errno.h>
 #include <signal.h>
@@ -68,8 +75,7 @@
 #define FP_XSTATE_MAGIC2 0x46505845u   /* Linux's, just after the area */
 #define UC_FP_XSTATE     1ul           /* uc_flags: fpregs has the XSAVE header and more */
 #define UC_SIGCONTEXT_SS 2ul           /* uc_flags: REG_CSGSFS's top 16 bits are SS */
-#define FRAME_REGS       18            /* REG_R8 .. REG_EFL: the frame's, in that order */
-#define RED_ZONE         128u          /* below RSP: the x86-64 ABI's, leaf code's */
+#define RED_ZONE        128u          /* below RSP: the x86-64 ABI's, leaf code's */
 #define FAULT_ROOM       1024u         /* sig_fault's own frames, in sig_alt_min */
 #define HANDLER_ROOM     1024u         /* a small handler's, in sig_alt_min */
 
@@ -86,7 +92,8 @@ _Static_assert(offsetof(struct exc_frame, r8) == 48 && offsetof(struct exc_frame
                offsetof(struct exc_frame, rsp) == 168 && offsetof(struct exc_frame, rip) == 176,
                "sigentry.S's offsets");
 _Static_assert(offsetof(struct exc_frame, rflags) - offsetof(struct exc_frame, r8) ==
-               REG_EFL * sizeof(greg_t), "the frame's registers in gregs' order");
+               REG_EFL * sizeof(greg_t) && REG_EFL + 1 == SIG_REGS,
+               "the frame's registers in gregs' order");
 _Static_assert(sizeof(struct fpx_sw_bytes) == LEGACY_SIZE - FPX_SW_AT, "fpx_sw_bytes");
 
 /* What the handler is given, below the frame (the vector state's copy is
@@ -104,14 +111,21 @@ struct fault_sig {
     uint64_t addr;   /* si_addr */
 };
 
-/* What the rest of a fault needs once the signal is taken (sig_fault_run):
- * kept with the frame's copy below the interrupted RSP when the handler
- * runs there. */
+/* What the rest of a fault or a raise needs once the signal is taken
+ * (sig_fault_run): kept with the frame's copy below the interrupted RSP
+ * when the handler runs there. */
 struct fault_run {
     struct exc_frame *f;
-    struct fault_sig  fs;
+    struct sig_info   si;    /* the signal: a fault's, or one pending for a raise */
     struct sig_act_io act;   /* the disposition as sig_fault_begin took it */
     uint64_t          was;   /* the mask before the handler */
+};
+
+/* A handler's call (through sig_run_onstack for one with SA_ONSTACK). */
+struct handler_args {
+    const struct sig_act_io *act;
+    int                      sig;
+    struct fault_ctx        *ctx;
 };
 
 void           __jam_sig_entry(void);   /* sigentry.S */
@@ -249,16 +263,12 @@ void sig_alt_reapply(void)
 
 /* The bytes of vector state the kernel saves in a frame: the XSAVE area
  * for the features it enables (CPUID leaf 0xD's size, the area as the
- * kernel sizes it), or FXSAVE's 512. */
+ * kernel sizes it), or FXSAVE's 512. A CPU with XSAVE has leaf 0xD. */
 static size_t xsave_bytes(void)
 {
-    uint32_t a = 0, b, c = 0, d;
+    uint32_t a = 1, b, c = 0, d;
     __asm__ volatile("cpuid" : "+a"(a), "=b"(b), "+c"(c), "=d"(d));
-    uint32_t top = a;
-    a = 1;
-    c = 0;
-    __asm__ volatile("cpuid" : "+a"(a), "=b"(b), "+c"(c), "=d"(d));
-    if (top < 0xd || !(c & (1u << 27)))   /* no XSAVE, or the OS hasn't enabled it */
+    if (!(c & (1u << 27)))   /* no XSAVE, or the OS hasn't enabled it */
         return LEGACY_SIZE;
     a = 0xd;
     c = 0;
@@ -357,15 +367,21 @@ static bool runs_on_interrupted(const struct exc_frame *f, const struct sig_act_
 
 _Noreturn void sig_fault(struct exc_frame *f)
 {
-    /* SG5: an EXC_RAISED frame (a signal to this thread) goes to its own path. */
-    if (f->kind != EXC_FAULT || f->xsave_size < LEGACY_SIZE || f->xsave_size > XSAVE_MAX ||
-        f->size != EXC_FRAME_XSAVE + f->xsave_size)
+    if ((f->kind != EXC_FAULT && f->kind != EXC_RAISED) || f->xsave_size < LEGACY_SIZE ||
+        f->xsave_size > XSAVE_MAX || f->size != EXC_FRAME_XSAVE + f->xsave_size)
         unhandled(f, SIGSEGV);
-    struct fault_run run = { .f = f, .fs = classify(f) };
-    if (!run.fs.sig)
-        resume(f, SIGFPE);   /* a spurious x87 or SIMD error: on, as Linux goes on */
-    if (!sig_fault_begin(run.fs.sig, &run.act, &run.was))
-        unhandled(f, run.fs.sig);
+    struct fault_run run = { .f = f };
+    if (f->kind == EXC_RAISED) {
+        if (!sig_raise_begin((const uint64_t *)(void *)frame_regs(f), &run.si, &run.act, &run.was))
+            resume(f, SIGSEGV);   /* nothing to run here: on at once */
+    } else {
+        struct fault_sig fs = classify(f);
+        if (!fs.sig)
+            resume(f, SIGFPE);   /* a spurious x87 or SIMD error: on, as Linux goes on */
+        if (!sig_fault_begin(fs.sig, &run.act, &run.was))
+            unhandled(f, fs.sig);
+        run.si = (struct sig_info){ .signo = fs.sig, .code = fs.code, .addr = fs.addr };
+    }
     if (!runs_on_interrupted(f, &run.act))
         sig_fault_run(&run);
 
@@ -383,48 +399,66 @@ _Noreturn void sig_fault(struct exc_frame *f)
     __jam_sig_moved(copy, r, (void *)lo);
 }
 
-/* The rest of a fault whose signal a handler takes: what it is given, the
- * handler, and the thread resumed from what it leaves. On the stack the
- * handler runs on (the frame's, or the interrupted one: sig_fault). */
+static void call_handler(void *arg)
+{
+    struct handler_args *h = arg;
+    if (h->act->flags & SA_SIGINFO)
+        ((void (*)(int, siginfo_t *, void *))h->act->handler)(h->sig, &h->ctx->info, &h->ctx->uc);
+    else
+        ((void (*)(int))h->act->handler)(h->sig);
+}
+
+/* The rest of a fault or a raise whose signal a handler takes: what it is
+ * given, the handler, and the thread resumed from what it leaves (after a
+ * raise's, the next signal due first). On the stack the handler runs on
+ * (the frame's, or the interrupted one: sig_fault). */
 _Noreturn void sig_fault_run(struct fault_run *r)
 {
     struct exc_frame *f = r->f;
-    int sig = r->fs.sig;
     struct fault_ctx ctx;
-    memset(&ctx, 0, sizeof(ctx));
     uint8_t *fp = __builtin_alloca(f->xsave_size + sizeof(uint32_t) + 63);
     fp = (uint8_t *)(((uintptr_t)fp + 63) & ~(uintptr_t)63);   /* XSAVE's alignment */
-    ctx.uc.uc_flags = UC_SIGCONTEXT_SS | fp_copy(fp, f);
-    uintptr_t base;
-    size_t size;
-    ctx.uc.uc_stack.ss_flags = sig_alt_state((uintptr_t)f->rsp, &base, &size);
-    ctx.uc.uc_stack.ss_sp = (void *)base;
-    ctx.uc.uc_stack.ss_size = size;
     greg_t *g = ctx.uc.uc_mcontext.gregs;
-    memcpy(g, frame_regs(f), FRAME_REGS * sizeof(greg_t));
-    g[REG_CSGSFS] = (greg_t)selectors();
-    g[REG_ERR] = (greg_t)f->error;
-    g[REG_TRAPNO] = f->vector;
-    g[REG_OLDMASK] = (greg_t)r->was;
-    g[REG_CR2] = (greg_t)f->addr;
-    ctx.uc.uc_mcontext.fpregs = (fpregset_t)(void *)fp;
-    memcpy(&ctx.uc.uc_sigmask, &r->was, sizeof(r->was));
-    struct sig_info si = { .signo = sig, .code = r->fs.code, .addr = r->fs.addr };
-    sig_fill_siginfo(&si, &ctx.info);
+    bool left = false;
+    for (;;) {
+        memset(&ctx, 0, sizeof(ctx));
+        ctx.uc.uc_flags = UC_SIGCONTEXT_SS | fp_copy(fp, f);
+        uintptr_t base;
+        size_t size;
+        ctx.uc.uc_stack.ss_flags = sig_alt_state((uintptr_t)f->rsp, &base, &size);
+        ctx.uc.uc_stack.ss_sp = (void *)base;
+        ctx.uc.uc_stack.ss_size = size;
+        memcpy(g, frame_regs(f), SIG_REGS * sizeof(greg_t));
+        g[REG_CSGSFS] = (greg_t)selectors();
+        g[REG_ERR] = (greg_t)f->error;
+        g[REG_TRAPNO] = f->vector;
+        g[REG_OLDMASK] = (greg_t)r->was;
+        g[REG_CR2] = (greg_t)f->addr;
+        ctx.uc.uc_mcontext.fpregs = (fpregset_t)(void *)fp;
+        memcpy(&ctx.uc.uc_sigmask, &r->was, sizeof(r->was));
+        sig_fill_siginfo(&r->si, &ctx.info);
 
-    (void)jam_exception_done(f, EXC_LEAVE);
-    if (r->act.flags & SA_SIGINFO)
-        ((void (*)(int, siginfo_t *, void *))r->act.handler)(sig, &ctx.info, &ctx.uc);
-    else
-        ((void (*)(int))r->act.handler)(sig);
+        if (!left)
+            (void)jam_exception_done(f, EXC_LEAVE);
+        left = true;
+        struct handler_args h = { &r->act, r->si.signo, &ctx };
+        if (r->act.flags & SA_ONSTACK)
+            sig_run_onstack(call_handler, &h);   /* where it is unless it moved off the stack */
+        else
+            call_handler(&h);
 
-    /* Back from the handler: on as its ucontext says (fpregs as Linux's
-     * sigreturn takes it: wherever the handler left it pointing). */
-    memcpy(frame_regs(f), g, FRAME_REGS * sizeof(greg_t));
-    if (ctx.uc.uc_mcontext.fpregs)
-        memcpy(f->xsave, ctx.uc.uc_mcontext.fpregs, f->xsave_size);
-    uint64_t mask;
-    memcpy(&mask, &ctx.uc.uc_sigmask, sizeof(mask));
-    sig_fault_end(mask);
-    resume(f, sig);
+        /* Back from the handler: on as its ucontext says (fpregs as Linux's
+         * sigreturn takes it: wherever the handler left it pointing). */
+        memcpy(frame_regs(f), g, SIG_REGS * sizeof(greg_t));
+        if (ctx.uc.uc_mcontext.fpregs)
+            memcpy(f->xsave, ctx.uc.uc_mcontext.fpregs, f->xsave_size);
+        uint64_t mask;
+        memcpy(&mask, &ctx.uc.uc_sigmask, sizeof(mask));
+        if (f->kind != EXC_RAISED) {
+            sig_fault_end(mask);
+            resume(f, r->si.signo);
+        }
+        if (!sig_raise_next(mask, &r->si, &r->act, &r->was))
+            resume(f, SIGSEGV);
+    }
 }

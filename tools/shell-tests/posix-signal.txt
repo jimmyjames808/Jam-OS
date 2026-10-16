@@ -1,0 +1,18 @@
+# posixtest's signal section from the shell (docs/M13-PLAN.md section 6,
+# B4, and docs/SIGNALS-PLAN.md section 2, SG5): signals in one process and
+# between processes, and a thread busy in a loop that makes no calls
+# raised for its handler (V8's profiler's SIGPROF, 10,000 from a sampler
+# thread, Chromium's SIGURG stack copier, SIGINT). Also in the init run;
+# this is the section alone, from the shell, with its two timing lines.
+#   QEMU_INPUT=tools/shell-tests/posix-signal.txt tools/qemu-test.sh <dir> posix-signal shell
+wait 120 Jam OS shell
+wait {prompt}
+send run posixtest signal
+wait 120 posixtest: signal: SIGPROF to a busy thread:
+wait 120 posixtest: signal: 10000 SIGPROF from a sampler thread, all handled
+wait 300 posixtest: signal: ok
+wait 20 posixtest: PASS
+wait 20 run: bin/posixtest exited with code 0
+wait {prompt}
+send reboot -f
+wait reboot: resetting

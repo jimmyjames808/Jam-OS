@@ -19,18 +19,40 @@
  *     POSIX timer with SIGEV_SIGNAL and a value, one with SIGEV_THREAD
  *     (its notifications all on one thread that knows its own id, though
  *     musl resets the thread's TLS after each);
- *   - pthread_cancel of a thread blocked in read. */
+ *   - pthread_cancel of a thread blocked in read;
+ *   - a thread busy in a loop that makes no calls (docs/SIGNALS-PLAN.md
+ *     section 2): pthread_kill(SIGPROF) runs its handler at once (most
+ *     within 1 ms, each within 10 ms), on its alternate stack, with RIP
+ *     inside the loop and RBP its frame (V8's profiler); 10,000 SIGPROF
+ *     from a sampler thread, each once the last was handled, all handled;
+ *     tgkill(SIGURG) whose handler copies the stack from the ucontext's
+ *     RSP and wakes the sender on a futex (Chromium's StackCopierSignal),
+ *     on the interrupted stack; SIGINT from kill and from a timer. */
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <errno.h>
 #include <poll.h>
 #include <pthread.h>
+#include <sched.h>
 #include <signal.h>
 #include <string.h>
+#include <sys/syscall.h>
 #include <sys/time.h>
 #include <time.h>
+#include <ucontext.h>
 #include <unistd.h>
 #include "pt.h"
 
 #define ROUNDS 1000
+
+/* Linux's futex operations (<linux/futex.h>, which musl does not ship). */
+#define FUTEX_WAIT_PRIVATE 128
+#define FUTEX_WAKE_PRIVATE 129
+
+/* The busy threads' alternate stack: room for the kernel's frame, the
+ * entry's copy of the vector state and a handler that makes calls. */
+#define BUSY_ALT (64 << 10)
 
 static volatile sig_atomic_t hits[65];       /* handler runs, by signal */
 static volatile pthread_t    ran_on[65];     /* the thread the last one ran on */
@@ -396,6 +418,294 @@ static void check_cancel(void)
     close(p[1]);
 }
 
+/* ---- a thread busy in its own code (SG5) -------------------------------------------- */
+
+/* The loop V8's profiler samples: no calls at all, a frame of its own
+ * (RBP, written to *frame once it runs), and its end named so a handler
+ * can tell its RIP is inside. Spins until *stop. */
+void pt_sig_spin(volatile int *stop, void **frame);
+extern const char pt_sig_spin_end[];
+__asm__(".text\n"
+        ".globl pt_sig_spin, pt_sig_spin_end\n"
+        ".hidden pt_sig_spin, pt_sig_spin_end\n"
+        ".type pt_sig_spin, @function\n"
+        ".p2align 4\n"
+        "pt_sig_spin:\n"
+        "    push %rbp\n"
+        "    mov %rsp, %rbp\n"
+        "    mov %rbp, (%rsi)\n"
+        "1:  pause\n"
+        "    cmpl $0, (%rdi)\n"
+        "    je 1b\n"
+        "    pop %rbp\n"
+        "    ret\n"
+        "pt_sig_spin_end:\n"
+        ".size pt_sig_spin, . - pt_sig_spin\n");
+
+/* A thread in pt_sig_spin, taking SIGPROF, SIGURG and SIGINT, with an
+ * alternate stack if alt is set. */
+struct busy {
+    pthread_t      thread;
+    volatile pid_t tid;
+    volatile int   stop;
+    void *volatile frame;   /* the loop's RBP, once it runs */
+    stack_t        alt;
+};
+
+static struct busy *target;   /* the one the handlers below look at */
+
+static void *busy_run(void *arg)
+{
+    struct busy *b = arg;
+    sigset_t s;
+    sigemptyset(&s);
+    sigaddset(&s, SIGPROF);
+    sigaddset(&s, SIGURG);
+    sigaddset(&s, SIGINT);
+    CHECK(pthread_sigmask(SIG_UNBLOCK, &s, NULL) == 0);
+    if (b->alt.ss_sp)
+        CHECK(sigaltstack(&b->alt, NULL) == 0);
+    b->tid = gettid();
+    pt_sig_spin(&b->stop, (void **)&b->frame);
+    return NULL;
+}
+
+static void busy_start(struct busy *b, size_t alt)
+{
+    *b = (struct busy){ .alt = { .ss_sp = alt ? malloc(alt) : NULL, .ss_size = alt } };
+    target = b;
+    CHECK(pthread_create(&b->thread, NULL, busy_run, b) == 0);
+    for (int i = 0; i < 10000 && !b->frame; i++)
+        nap_ms(1);
+    CHECK(b->frame);
+}
+
+static void busy_stop(struct busy *b)
+{
+    b->stop = 1;
+    CHECK(pthread_join(b->thread, NULL) == 0);
+    free(b->alt.ss_sp);
+}
+
+/* The registers a handler was given are the loop's: RIP inside it, RBP
+ * and RSP its frame. */
+static bool in_loop(const ucontext_t *uc)
+{
+    uintptr_t rip = (uintptr_t)uc->uc_mcontext.gregs[REG_RIP];
+    uintptr_t frame = (uintptr_t)target->frame;
+    return rip >= (uintptr_t)pt_sig_spin && rip < (uintptr_t)pt_sig_spin_end &&
+           (uintptr_t)uc->uc_mcontext.gregs[REG_RBP] == frame &&
+           (uintptr_t)uc->uc_mcontext.gregs[REG_RSP] == frame;
+}
+
+/* addr is on the target's alternate stack. */
+static bool on_target_alt(uintptr_t addr)
+{
+    uintptr_t base = (uintptr_t)target->alt.ss_sp;
+    return base && addr >= base && addr - base < target->alt.ss_size;
+}
+
+static long us_since(const struct timespec *t0, const struct timespec *t)
+{
+    return (t->tv_sec - t0->tv_sec) * 1000000L + (t->tv_nsec - t0->tv_nsec) / 1000;
+}
+
+/* Wait (up to ms, yielding) until *v reaches n. */
+static bool reaches_soon(volatile sig_atomic_t *v, int n, long ms)
+{
+    struct timespec t0, t;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    while (*v < n) {
+        clock_gettime(CLOCK_MONOTONIC, &t);
+        if (us_since(&t0, &t) > ms * 1000)
+            return false;
+        sched_yield();
+    }
+    return true;
+}
+
+static volatile sig_atomic_t busy_hits[65];    /* sample()'s runs, by signal */
+static volatile sig_atomic_t busy_inloop[65];  /* of them, with the loop's registers */
+static volatile sig_atomic_t busy_onalt[65];   /* of them, on the target's alternate stack */
+static struct timespec       busy_at;          /* when the last one ran */
+
+/* V8's profiler's handler, in short: where was the thread? */
+static void sample(int sig, siginfo_t *si, void *uc)
+{
+    (void)si;
+    if (in_loop(uc))
+        busy_inloop[sig]++;
+    if (on_target_alt((uintptr_t)__builtin_frame_address(0)))
+        busy_onalt[sig]++;
+    ran_on[sig] = pthread_self();
+    clock_gettime(CLOCK_MONOTONIC, &busy_at);
+    busy_hits[sig]++;
+}
+
+static void handle_busy(int sig, void (*h)(int, siginfo_t *, void *), int flags)
+{
+    struct sigaction sa = { .sa_sigaction = h, .sa_flags = SA_SIGINFO | flags };
+    sigemptyset(&sa.sa_mask);
+    CHECK(sigaction(sig, &sa, NULL) == 0);
+    busy_hits[sig] = busy_inloop[sig] = busy_onalt[sig] = 0;
+}
+
+#define PROF_ROUNDS  20
+#define PROF_SAMPLES 10000
+
+/* 10,000 SIGPROF, each sent once the last was handled (V8's sampler
+ * thread). */
+static void *sampler(void *arg)
+{
+    (void)arg;
+    for (int i = 0; i < PROF_SAMPLES; i++) {
+        int n = busy_hits[SIGPROF];
+        if (pthread_kill(target->thread, SIGPROF) || !reaches_soon(&busy_hits[SIGPROF], n + 1, 2000))
+            break;
+    }
+    return NULL;
+}
+
+/* V8's CPU profiler: pthread_kill(SIGPROF) to a thread running a loop
+ * that makes no calls runs its handler at once, on its alternate stack
+ * (SA_ONSTACK, V8's flags), with the registers where it was. Most within
+ * a millisecond (the kernel interrupts the thread's CPU for it), each
+ * within 10 ms (a tick); then 10,000 in a row from a sampler thread. */
+static void check_busy_profiler(void)
+{
+    handle_busy(SIGPROF, sample, SA_RESTART | SA_ONSTACK);
+    struct busy b;
+    busy_start(&b, BUSY_ALT);
+    long us[PROF_ROUNDS];
+    int fast = 0, slow = 0;
+    for (int i = 0; i < PROF_ROUNDS; i++) {
+        nap_ms(1);   /* back in its loop: a raise inside a call waits for a tick */
+        struct timespec t0;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        CHECK(pthread_kill(b.thread, SIGPROF) == 0);
+        CHECK(reaches_soon(&busy_hits[SIGPROF], i + 1, 2000));
+        us[i] = us_since(&t0, &busy_at);
+        fast += us[i] < 1000;
+        slow += us[i] >= 10000;
+    }
+    CHECK(busy_inloop[SIGPROF] == PROF_ROUNDS && busy_onalt[SIGPROF] == PROF_ROUNDS);
+    CHECK(pthread_equal(ran_on[SIGPROF], b.thread));
+    CHECK(fast > PROF_ROUNDS / 2 && slow == 0);
+    long worst = 0;
+    for (int i = 0; i < PROF_ROUNDS; i++)
+        worst = us[i] > worst ? us[i] : worst;
+    printf("posixtest: signal: SIGPROF to a busy thread: %d of %d within 1 ms, the slowest %ld us\n",
+           fast, PROF_ROUNDS, worst);
+
+    handle_busy(SIGPROF, sample, SA_RESTART | SA_ONSTACK);
+    pthread_t s;
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    CHECK(pthread_create(&s, NULL, sampler, NULL) == 0);
+    CHECK(pthread_join(s, NULL) == 0);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    CHECK(busy_hits[SIGPROF] == PROF_SAMPLES && busy_inloop[SIGPROF] == PROF_SAMPLES);
+    printf("posixtest: signal: %d SIGPROF from a sampler thread, all handled, %ld us each\n",
+           busy_hits[SIGPROF], us_since(&t0, &t1) / PROF_SAMPLES);
+    busy_stop(&b);
+    deflt(SIGPROF);
+}
+
+/* Chromium's StackCopierSignal: tgkill(SIGURG), the handler copies the
+ * thread's stack from the RSP its ucontext gives up to the stack's top,
+ * then wakes the sender on a futex. No SA_ONSTACK, so the handler runs on
+ * the interrupted stack (below that RSP) though the thread has an
+ * alternate one. */
+static struct {
+    volatile uint32_t done;   /* the futex word: 1 once the copy is made */
+    uintptr_t top;            /* the stack's top */
+    uint8_t  *buf;
+    size_t    cap, len;
+    uintptr_t rsp, here;      /* the ucontext's RSP, the handler's frame */
+    bool      inloop;
+} copy;
+
+static void copy_stack(int sig, siginfo_t *si, void *ucv)
+{
+    (void)sig;
+    (void)si;
+    ucontext_t *uc = ucv;
+    copy.inloop = in_loop(uc);
+    copy.rsp = (uintptr_t)uc->uc_mcontext.gregs[REG_RSP];
+    copy.here = (uintptr_t)__builtin_frame_address(0);
+    copy.len = 0;
+    if (copy.rsp < copy.top && copy.top - copy.rsp <= copy.cap) {
+        copy.len = copy.top - copy.rsp;
+        memcpy(copy.buf, (void *)copy.rsp, copy.len);
+    }
+    __atomic_store_n(&copy.done, 1, __ATOMIC_RELEASE);
+    syscall(SYS_futex, &copy.done, FUTEX_WAKE_PRIVATE, 1, NULL, NULL, 0);
+}
+
+#define COPY_ROUNDS 200
+
+static void check_busy_stack_copy(void)
+{
+    handle_busy(SIGURG, copy_stack, SA_RESTART);
+    struct busy b;
+    busy_start(&b, BUSY_ALT);
+    pthread_attr_t attr;
+    void *base;
+    size_t size;
+    CHECK(pthread_getattr_np(b.thread, &attr) == 0);
+    CHECK(pthread_attr_getstack(&attr, &base, &size) == 0);
+    pthread_attr_destroy(&attr);
+    copy.top = (uintptr_t)base + size;
+    copy.cap = size;
+    copy.buf = malloc(size);
+    uintptr_t frame = (uintptr_t)b.frame;
+    int good = 0;
+    for (int i = 0; i < COPY_ROUNDS; i++) {
+        __atomic_store_n(&copy.done, 0, __ATOMIC_RELAXED);
+        CHECK(syscall(SYS_tgkill, getpid(), b.tid, SIGURG) == 0);
+        struct timespec second = { 1, 0 };
+        for (int w = 0; w < 5 && !__atomic_load_n(&copy.done, __ATOMIC_ACQUIRE); w++)
+            syscall(SYS_futex, &copy.done, FUTEX_WAIT_PRIVATE, 0, &second, NULL, 0);
+        if (!__atomic_load_n(&copy.done, __ATOMIC_ACQUIRE))
+            break;
+        /* the loop's frame in the copy as it is on the stack: its saved
+         * RBP and return address; the handler below the RSP, not on the
+         * alternate stack */
+        size_t at = frame - copy.rsp;
+        good += copy.inloop && copy.len && at + 16 <= copy.len &&
+                !memcmp(copy.buf + at, (void *)frame, 16) && copy.here < copy.rsp &&
+                !on_target_alt(copy.here);
+    }
+    CHECK(good == COPY_ROUNDS);
+    busy_stop(&b);
+    free(copy.buf);
+    deflt(SIGURG);
+}
+
+/* A SIGINT handler runs on a thread in a busy loop, the one thread that
+ * takes it: sent by kill (routed by the sender) and by a timer (routed by
+ * the signal thread). */
+static void check_busy_sigint(void)
+{
+    block(SIGINT, SIG_BLOCK);
+    handle_busy(SIGINT, sample, 0);
+    struct busy b;
+    busy_start(&b, 0);
+    CHECK(kill(getpid(), SIGINT) == 0);
+    CHECK(reaches_soon(&busy_hits[SIGINT], 1, 2000));
+    timer_t t;
+    struct sigevent ev = { .sigev_notify = SIGEV_SIGNAL, .sigev_signo = SIGINT };
+    CHECK(timer_create(CLOCK_MONOTONIC, &ev, &t) == 0);
+    struct itimerspec at = { { 0, 0 }, { 0, 10000000 } };
+    CHECK(timer_settime(t, 0, &at, NULL) == 0);
+    CHECK(reaches_soon(&busy_hits[SIGINT], 2, 2000));
+    CHECK(timer_delete(t) == 0);
+    CHECK(busy_inloop[SIGINT] == 2 && pthread_equal(ran_on[SIGINT], b.thread));
+    busy_stop(&b);
+    deflt(SIGINT);
+    block(SIGINT, SIG_UNBLOCK);
+}
+
 void pt_signal(char **argv)
 {
     (void)argv;
@@ -408,5 +718,8 @@ void pt_signal(char **argv)
     check_sigpipe();
     check_timers();
     check_cancel();
+    check_busy_profiler();
+    check_busy_stack_copy();
+    check_busy_sigint();
     pt_sigproc();
 }

@@ -12,15 +12,23 @@
  * boundary reads `pending`, the process's set and `blocked` without the
  * lock, as atomics, and takes the lock only when something is due.
  *
- * Interrupting: a sender interrupts a thread only while it is inside a
- * call (`calls` > 0), since a thread in user code looks at its sets at its
- * next call anyway. The two sides are a Dekker pair, each with sequential
- * consistency: the sender sets the pending bit then reads `calls`; the
- * thread raises `calls` then reads the pending sets. So either the sender
- * sees the call and interrupts it, or the thread sees the signal before it
- * waits; both may happen, and the interrupt left latched then ends the
- * thread's next wait at once, which the boundary takes for what it is
- * (no handler ran: the call starts again).
+ * Interrupting: a sender interrupts a thread while it is inside a call
+ * (`calls` > 0), and raises it (thread_raise, docs/SIGNALS-PLAN.md section
+ * 2) while it is in its own code: its exception entry then runs the
+ * handler where it was, with those registers (sigfault.c). The two sides
+ * are a Dekker pair, each with sequential consistency: the sender sets the
+ * pending bit then reads `calls`; the thread raises `calls` then reads the
+ * pending sets. So either the sender sees the call and interrupts it, or
+ * the thread sees the signal at its next call, or its entry sees it first;
+ * an interrupt left latched then ends the thread's next wait at once,
+ * which the boundary takes for what it is (no handler ran: the call
+ * starts again), and a raise that finds nothing due resumes at once.
+ *
+ * A raise runs no handler where one must not run: inside a call (the
+ * boundary delivers; its handler's ucontext gets the registers the raise
+ * found, `kept`), inside a quiet call (`quiet`: musl's malloc and unlock
+ * paths) or between take() and give() (`taking`): those two raise the
+ * thread again on their way out (`raise_again`).
  *
  * Standard signals (1 to 31) pending twice are one; real-time ones (32 to
  * 64) queue: the first in its set's info slot, the rest on one queue of
@@ -62,6 +70,9 @@ struct sig_thread {
     uint64_t  pending;           /* its signals: written under sig_lock, read atomically */
     uint64_t  routed;            /* those of pending sent to the process; sig_lock */
     uint32_t  calls;             /* calls it is inside (atomic; its own) */
+    uint32_t  quiet;             /* quiet calls it is inside (atomic; its own) */
+    bool      kept_ok;           /* `kept` is for the boundary's next handler (its own) */
+    uint64_t  kept[SIG_REGS];    /* the registers a raise inside a call found (its own) */
     uint32_t  handled;           /* handlers run on it (its own) */
     uint32_t  norestart;         /* of them, without SA_RESTART (its own) */
     volatile int *cancel;        /* the cancellation point's flag it is in, or NULL (its own) */
@@ -102,6 +113,13 @@ static uintptr_t thread_pointer(void)
 #define HOLDER_OTHER 1
 static uintptr_t holder;
 
+/* A thread with a thread pointer is in take() .. give() from before it
+ * takes the lock until after it gives it (`holder` is only set once it
+ * holds it): its raise entry keeps out. A raise that found it there, or
+ * in a quiet call, has it raised again on its way out. Its own, read by
+ * its own entry: volatile is all the order needed. */
+static __thread volatile bool taking, raise_again;
+
 static uintptr_t holder_id(void)
 {
     if (!__atomic_load_n(&ready, __ATOMIC_ACQUIRE) || sig_on_signal_thread())
@@ -109,16 +127,27 @@ static uintptr_t holder_id(void)
     return thread_pointer();
 }
 
+static void raise_self(void);
+
 static void take(void)
 {
+    uintptr_t id = holder_id();
+    if (id != HOLDER_OTHER)
+        taking = true;
     lock_take(&sig_lock);
-    __atomic_store_n(&holder, holder_id(), __ATOMIC_RELAXED);
+    __atomic_store_n(&holder, id, __ATOMIC_RELAXED);
 }
 
 static void give(void)
 {
+    uintptr_t id = __atomic_load_n(&holder, __ATOMIC_RELAXED);
     __atomic_store_n(&holder, 0, __ATOMIC_RELAXED);
     lock_give(&sig_lock);
+    if (id == HOLDER_OTHER)
+        return;
+    taking = false;
+    if (raise_again)
+        raise_self();
 }
 
 /* The thread-local pointer, as it is. Only ever called once the caller
@@ -257,14 +286,29 @@ static void discard_locked(int sig)
 
 /* ---- routing ------------------------------------------------------------------------ */
 
-/* Interrupt t if it is inside a call (sig.h's Dekker pair: the pending bit
- * was set with sequential consistency before this read). sig_lock. */
-static void kick_locked(struct sig_thread *t)
+/* Interrupt t if it is inside a call (the Dekker pair above: the pending
+ * bit was set with sequential consistency before this read): false if it
+ * is in its own code. The sender itself looks on its way out of this call.
+ * sig_lock. */
+static bool interrupt_locked(struct sig_thread *t)
 {
     if (!sig_on_signal_thread() && t == mine_now())
-        return;   /* the sender itself: it looks on its way out of this call */
-    if (__atomic_load_n(&t->calls, __ATOMIC_SEQ_CST))
-        (void)jam_thread_interrupt(t->handle);   /* a thread that has left is past caring */
+        return true;
+    if (!__atomic_load_n(&t->calls, __ATOMIC_SEQ_CST))
+        return false;
+    (void)jam_thread_interrupt(t->handle);   /* a thread that has left is past caring */
+    return true;
+}
+
+/* Make t look at its sets now: interrupted inside a call, raised in its
+ * own code (the exception entry is set for raises from the first on).
+ * sig_lock. */
+static void kick_locked(struct sig_thread *t)
+{
+    if (interrupt_locked(t))
+        return;
+    sig_entry_need(SIG_ENTRY_RAISE, true);
+    (void)jam_thread_raise(t->handle);   /* dropped if it has left */
 }
 
 /* Every thread blocks sig, counting a sigtimedwait's set as blocked (as
@@ -381,7 +425,7 @@ long sig_send_thread(uint32_t tid, const struct sig_info *si)
         return r;
     }
     if (sig == SIG_INTERNAL_CANCEL) {
-        kick_locked(t);   /* the cancel flag is set: its cancellation point looks */
+        (void)interrupt_locked(t);   /* the cancel flag is set: its cancellation point looks */
     } else if (sig == SIGKILL) {
         die(SIGKILL);
     } else {
@@ -449,6 +493,14 @@ void sig_thread_end(void)
     give();
     mine = NULL;
     free(t);   /* unlisted: nobody else can reach it */
+    /* A raise latched before it was unlisted may still come: with no
+     * exception stack its frame goes below RSP, where it can't be written
+     * once musl has unmapped the stack (and the thread-local storage with
+     * it), so it is dropped rather than entering with no storage. */
+    uintptr_t base;
+    size_t size;
+    if (sig_alt_state(0, &base, &size) != SS_DISABLE)
+        (void)sig_alt_set(0, 0);
 }
 
 uint64_t sig_mask_self(void)
@@ -527,13 +579,18 @@ static void call_handler(void *arg)
 }
 
 /* With SA_ONSTACK on the thread's alternate stack, if it has one and isn't
- * on it (sigaltstack inside says SS_ONSTACK, as for a fault's handler). */
-static void run_handler(const struct sig_act *act, const struct sig_info *si, uint64_t was)
+ * on it (sigaltstack inside says SS_ONSTACK, as for a fault's handler).
+ * The ucontext's registers are regs (REG_R8 .. REG_EFL: what a raise
+ * inside the call found), else 0. */
+static void run_handler(const struct sig_act *act, const struct sig_info *si, uint64_t was,
+                        const uint64_t *regs)
 {
     struct handler_call c = { .act = act, .si = si };
     if (act->flags & SA_SIGINFO) {
         sig_fill_siginfo(si, &c.info);
         memset(&c.uc, 0, sizeof(c.uc));
+        if (regs)
+            memcpy(c.uc.uc_mcontext.gregs, regs, SIG_REGS * sizeof(greg_t));
         memcpy(&c.uc.uc_sigmask, &was, sizeof(was));
         uintptr_t base;
         size_t size;
@@ -576,7 +633,12 @@ static int deliver_one(struct sig_thread *t)
     t->handled++;
     if (!(act.flags & SA_RESTART))
         t->norestart++;
-    run_handler(&act, &si, was);
+    uint64_t kept[SIG_REGS];
+    bool regs = t->kept_ok;
+    if (regs)
+        memcpy(kept, t->kept, sizeof(kept));
+    t->kept_ok = false;   /* one handler's */
+    run_handler(&act, &si, was, regs ? kept : NULL);
     take();
     set_blocked_locked(t, was);
     give();
@@ -617,8 +679,17 @@ long sig_call(const struct sig_frame *f)
 {
     struct sig_thread *t = self();
     long r;
-    if (!t || (f->kind & SIG_CALL_QUIET)) {
+    if (!t) {
         r = call(f);
+        return r == -LX_EINTR_FINAL ? -EINTR : r;
+    }
+    if (f->kind & SIG_CALL_QUIET) {
+        __atomic_add_fetch(&t->quiet, 1, __ATOMIC_RELAXED);
+        r = call(f);
+        bool out = !__atomic_sub_fetch(&t->quiet, 1, __ATOMIC_RELAXED);
+        __atomic_signal_fence(__ATOMIC_SEQ_CST);   /* out of it before raise_again is read */
+        if (out && raise_again)
+            raise_self();
         return r == -LX_EINTR_FINAL ? -EINTR : r;
     }
     uint32_t handled = t->handled, norestart = t->norestart;
@@ -646,6 +717,7 @@ long sig_call(const struct sig_frame *f)
             break;
     }
     t->cancel = outer;
+    t->kept_ok = false;   /* a raise's registers are this call's boundary's only */
     return r;
 }
 
@@ -846,4 +918,81 @@ void sig_fault_end(uint64_t mask)
     give();
     if (due(t))
         deliver(t);
+}
+
+/* ---- raises (sigfault.c) ------------------------------------------------------------ */
+
+/* The calling thread raised again: a raise found it where no handler may
+ * run, and it has left there. */
+static void raise_self(void)
+{
+    raise_again = false;
+    struct sig_thread *t = mine_now();
+    if (t)
+        (void)jam_thread_raise(t->handle);
+}
+
+/* The next signal due on t taken for its handler, as sig_raise_begin says:
+ * one ignored by now is dropped, a default that terminates ends the
+ * process (the lock dies with us). sig_lock. */
+static bool take_due_locked(struct sig_thread *t, struct sig_info *si, struct sig_act_io *act,
+                            uint64_t *was)
+{
+    for (unsigned n = 0; n < DELIVER_MAX; n++) {
+        uint64_t can = (t->pending | shared) & ~t->blocked;
+        if (!can)
+            return false;
+        int sig = __builtin_ctzll(can) + 1;
+        take_locked(t->pending & SIG_BIT(sig) ? t : NULL, sig, si);
+        if (fatal_locked(sig))
+            die(sig);
+        if (!handled_locked(sig))
+            continue;
+        struct sig_act a = acts[sig];
+        if (a.flags & SA_RESETHAND)
+            acts[sig] = (struct sig_act){ .handler = (uintptr_t)SIG_DFL };
+        *was = t->blocked;
+        set_blocked_locked(t, *was | a.mask | (a.flags & SA_NODEFER ? 0 : SIG_BIT(sig)));
+        *act = (struct sig_act_io){ a.handler, a.flags, a.mask };
+        return true;
+    }
+    return false;
+}
+
+bool sig_raise_begin(const uint64_t *regs, struct sig_info *si, struct sig_act_io *act,
+                     uint64_t *was)
+{
+    /* In the kernel's window, as sig_fault_begin: the record by the
+     * thread-local pointer only, and the lock only if this thread is
+     * nowhere near it. */
+    if (!__atomic_load_n(&ready, __ATOMIC_ACQUIRE) || sig_on_signal_thread())
+        return false;
+    struct sig_thread *t = mine_now();
+    if (!t || !due(t))
+        return false;   /* delivered already, or blocked since */
+    if (__atomic_load_n(&t->calls, __ATOMIC_RELAXED)) {
+        memcpy(t->kept, regs, sizeof(t->kept));
+        t->kept_ok = true;
+        return false;
+    }
+    if (__atomic_load_n(&t->quiet, __ATOMIC_RELAXED) || taking) {
+        raise_again = true;
+        return false;
+    }
+    take();
+    bool run = take_due_locked(t, si, act, was);
+    give();
+    return run;
+}
+
+bool sig_raise_next(uint64_t mask, struct sig_info *si, struct sig_act_io *act, uint64_t *was)
+{
+    struct sig_thread *t = mine_now();
+    if (!t)
+        return false;
+    take();
+    set_blocked_locked(t, mask);
+    bool run = take_due_locked(t, si, act, was);
+    give();
+    return run;
 }
