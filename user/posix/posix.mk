@@ -182,11 +182,11 @@ $(MUSL_OUT)/internal/version.h: $(MUSL)/VERSION
 # again when its own flags change, and only then. musl's objects are the
 # most of a build, and a build kept from before a flag changed (the unwind
 # tables, say) must not keep them.
-FLAGS_musl     = $(TOOLID) $(MUSL_CFLAGS)
-FLAGS_musl-ovr = $(TOOLID) $(MUSL_OVR_CFLAGS)
+FLAGS_musl       = $(TOOLID) $(MUSL_CFLAGS)
+FLAGS_musl-ovr   = $(TOOLID) $(MUSL_OVR_CFLAGS)
 FLAGS_musl-ovr-s = $(TOOLID) $(MUSL_OVR_SFLAGS)
-FLAGS_posix    = $(TOOLID) $(POSIX_CFLAGS)
-FLAGS_libjam-gc = $(TOOLID) $(LIBJAM_GC_CFLAGS)
+FLAGS_posix      = $(TOOLID) $(POSIX_CFLAGS)
+FLAGS_libjam-gc  = $(TOOLID) $(LIBJAM_GC_CFLAGS)
 $(foreach s,musl musl-ovr musl-ovr-s posix libjam-gc,$(eval $(call FLAG_STAMP,$(s),FLAGS_$(s))))
 
 $(MUSL_OUT)/obj/%.c.o: $(MUSL)/%.c $(FLAGDIR)/musl | $(MUSL_GENH) $(MUSL_CHECKED)
@@ -201,7 +201,7 @@ $(MUSL_OUT)/obj/%.S.o: $(MUSL)/%.S $(FLAGDIR)/musl | $(MUSL_GENH) $(MUSL_CHECKED
 
 # Our overrides: musl's flags, glue.h (user/posix/sys) and, for the
 # assembly, Jam OS's call numbers.
-MUSL_OVR_CFLAGS  := $(MUSL_CFLAGS) -iquote $(POSIX)/sys
+MUSL_OVR_CFLAGS := $(MUSL_CFLAGS) -iquote $(POSIX)/sys
 MUSL_OVR_SFLAGS := $(MUSL_CFLAGS) -I$(BUILD)/uinc
 $(MUSL_OUT)/ovr/%.c.o: %.c $(FLAGDIR)/musl-ovr | $(MUSL_GENH) $(MUSL_CHECKED)
 	@mkdir -p $(dir $@)
@@ -266,12 +266,17 @@ POSIXTEST_SRCS := $(wildcard $(POSIX)/test/*.c)
 POSIX_PROG_CFLAGS := -std=gnu17 -O2 -g -Wall -Wextra -Werror -Wvla -D_GNU_SOURCE \
                      -I$(POSIX)/include -Iuser/include -I$(BUILD)/uinc -Idrivers/include
 POSIXTEST_CFLAGS  := $(POSIX_PROG_CFLAGS) -include $(JL_NAMES_H)
-FLAGS_posixtest    = $(TOOLID) $(POSIXTEST_CFLAGS)
-FLAGS_posix-progs  = $(TOOLID) $(POSIX_PROG_CFLAGS)
+# jamos-cc compiles and links in one command, so these programs have no -MMD
+# files: the headers they take from outside their own directory are listed
+# (the sysroot's, libjam's, the kernel's copies and the IDL's).
+POSIX_PROG_HDRS   := $(SYSROOT_HDRS) $(UINC) \
+                     $(wildcard user/include/*.h drivers/include/*.h drivers/include/*/*.h)
+FLAGS_posixtest   = $(TOOLID) $(POSIXTEST_CFLAGS)
+FLAGS_posix-progs = $(TOOLID) $(POSIX_PROG_CFLAGS)
 $(foreach s,posixtest posix-progs,$(eval $(call FLAG_STAMP,$(s),FLAGS_$(s))))
 $(POSIXTEST): $(POSIXTEST_SRCS) $(wildcard $(POSIX)/test/*.h) $(POSIX)/test/wants \
               $(SYSROOT_LIBS) $(JL_NAMES_MAP) tools/jamos-cc $(FLAGDIR)/posixtest \
-              | $(UINC) $(SYSCALLS_OK) $(IDL_OK)
+              $(POSIX_PROG_HDRS) | $(SYSCALLS_OK) $(IDL_OK)
 	@mkdir -p $(dir $@)
 	JAMOS_SYSROOT=$(SYSROOT) CROSS=$(CROSS) tools/jamos-cc $(POSIXTEST_CFLAGS) \
 	    --jamos-wants=$(POSIX)/test/wants $(POSIXTEST_SRCS) -o $@
@@ -294,7 +299,7 @@ POSIX_PROGS := sh=bin/sh ls=test/ls pxio=bin/pxio jittest=bin/jittest=user/tests
 define POSIX_PROG_RULES
 $(BUILD)/user/posix-$(1): $(wildcard $(3)/*.c) $(3)/wants \
                           $(SYSROOT_LIBS) tools/jamos-cc $(FLAGDIR)/posix-progs \
-                          | $(UINC) $(SYSCALLS_OK) $(IDL_OK)
+                          $(POSIX_PROG_HDRS) | $(SYSCALLS_OK) $(IDL_OK)
 	@mkdir -p $$(dir $$@)
 	JAMOS_SYSROOT=$(SYSROOT) CROSS=$(CROSS) tools/jamos-cc $(POSIX_PROG_CFLAGS) \
 	    --jamos-wants=$(3)/wants \
