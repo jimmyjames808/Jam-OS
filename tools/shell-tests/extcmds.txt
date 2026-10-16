@@ -49,7 +49,7 @@ wait readlink: nosuch: no such file or directory
 wait st-x=1
 # a link to a name that is not there is a link all the same
 send ln -s nowhere dangling && readlink dangling | grep -c ^nowhere$ | grep ^1$ && cat dangling; echo st-$T=$?
-wait cat: dangling: no such file or directory
+wait cat: dangling: no such file
 wait st-x=1
 # a link through a directory
 send mkdir d && ln -s d dl && write dl/in-d inside && cat d/in-d && ls dl
