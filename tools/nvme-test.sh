@@ -82,6 +82,15 @@
 #            recognise and asks for its erase: the serial's end typed right,
 #            then not `erase`: nothing written, both images unchanged, no
 #            Write in the trace
+#   cuterase an erase of a GPT drive cut after create_table's primary
+#            entry array (tools/mkgpt.py --layout jamos --break
+#            primary-array: the old primary header, whose array CRC is now
+#            wrong, and Jam OS's backup; both partitions hold the erase's
+#            zeros): volumes' mark reads Jam OS's from the backup, the
+#            driver calls it someone else's, so `disk prepare` shows it as
+#            not empty and asks for its erase again (R3 stage 3's S2), and
+#            the serial's end and `erase` make it a Jam OS disk, with the
+#            checks of `prepare`
 #   erase    a drive that isn't empty erased (the owner's decision,
 #            2026-10-14): two Windows-like drives; the second's erase asked
 #            and answered wrong; the first shown (GPT, 4 partitions, the
@@ -126,7 +135,7 @@ set -eu
 out=$1
 shift
 cases=${*:-windows}
-[ "$cases" = all ] && cases="checker windows plain twons 4k damaged kill iommu block write wiommu diskro prepare piommu cutprep cutbad erase erasestop"
+[ "$cases" = all ] && cases="checker windows plain twons 4k damaged kill iommu block write wiommu diskro prepare piommu cutprep cutbad cuterase erase erasestop"
 mkdir -p "$out"
 
 sha256() { if command -v sha256sum > /dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
@@ -305,7 +314,8 @@ s3_names() {
 # jamos-nvme0, its end vme0) and the Windows-like one (slot 1: vme1),
 # booted with the shell. kind: prepare (the blank drive), cutprep (cut
 # after create_table's first write), cutbad (that, and a stray byte: not
-# empty). The Windows-like drive is shown as not empty and its erase asked
+# empty), cuterase (an erase cut after the primary array: erased again).
+# The Windows-like drive is shown as not empty and its erase asked
 # for each time, and answered wrong (nothing written); the blank one is
 # prepared (the wrong end of its serial first in `prepare`); the stray
 # byte's drive is shown as not empty too, its serial's end typed right and
@@ -321,6 +331,7 @@ s3_prepare() {
     prepare) python3 tools/mkgpt.py "$jam" --layout blank --size 640M > /dev/null ;;
     cutprep) python3 tools/mkgpt.py "$jam" --layout jamos --size 640M --cut backup-array > /dev/null ;;
     cutbad) python3 tools/mkgpt.py "$jam" --layout jamos --size 640M --cut backup-array --poke -16596 > /dev/null ;;
+    cuterase) python3 tools/mkgpt.py "$jam" --layout jamos --size 640M --break primary-array > /dev/null ;;
     esac
     before=$(sha256 "$win" "$jam" | cut -d' ' -f1)
     in="$dir/nvme-$c.in"
@@ -333,7 +344,11 @@ s3_prepare() {
         echo "seen 60 init: /data mounted"   # volumes is up, and has been told of the disks
         s3_names bd wd
         echo "send disks"
-        echo "wait nothing found on it"
+        if [ $kind = cuterase ]; then
+            echo "wait Jam OS data"
+        else
+            echo "wait nothing found on it"
+        fi
         echo "wait {prompt}"
         # Windows' drive: shown, its erase asked for, the wrong end of its serial typed.
         echo "send disk prepare nvme{wd}"
@@ -368,9 +383,17 @@ s3_prepare() {
             echo "wait nothing found on it"
             echo "wait {prompt}"
         else
-            echo "wait nothing is on it"
-            echo "wait Type the last 4 characters"
-            echo "send vme0"
+            if [ $kind = cuterase ]; then
+                echo "wait It is NOT empty"
+                echo "wait Type the last 4 characters"
+                echo "send vme0"
+                echo "wait type erase"
+                echo "send erase"
+            else
+                echo "wait nothing is on it"
+                echo "wait Type the last 4 characters"
+                echo "send vme0"
+            fi
             echo "wait 300 is a Jam OS disk now: ESP"
             echo "wait {prompt}"
             echo "send disks"
@@ -410,7 +433,12 @@ s3_prepare() {
     if [ -n "${s2_iommu:-}" ] && grep -aq "vtd: fault" "$log"; then echo "nvme-$c: FAIL: a VT-d fault"; ok=0; fi
     [ "$(grep -ac "that is not the end of" "$log")" -eq "$wrong" ] ||
         { echo "nvme-$c: FAIL: a wrong serial was taken, or not stopped ($wrong expected)"; ok=0; }
-    grep -aq "erasing it, as the owner confirmed" "$log" && { echo "nvme-$c: FAIL: a drive was erased"; ok=0; }
+    if [ $kind = cuterase ]; then
+        s2_want "$log" "volumes: nvme[01] is not empty: erasing it, as the owner confirmed" || ok=0
+    elif grep -aq "erasing it, as the owner confirmed" "$log"; then
+        echo "nvme-$c: FAIL: a drive was erased"
+        ok=0
+    fi
     case $kind in
     cutbad)
         [ "$(sha256 "$jam" | cut -d' ' -f1)" = "$(echo "$before" | sed -n 2p)" ] || { echo "nvme-$c: FAIL: the refused drive's image changed"; ok=0; }
@@ -616,7 +644,7 @@ s4_erase() {
 for c in $cases; do
     if [ $c = checker ]; then checker; continue; fi
     if [ $c = write ] || [ $c = wiommu ] || [ $c = diskro ] || [ $c = prepare ] || [ $c = piommu ] ||
-       [ $c = cutprep ] || [ $c = cutbad ] || [ $c = erase ] || [ $c = erasestop ]; then
+       [ $c = cutprep ] || [ $c = cutbad ] || [ $c = cuterase ] || [ $c = erase ] || [ $c = erasestop ]; then
         rm -rf "$out/nvme-$c"
         mkdir -p "$out/nvme-$c"
         s2_iommu=
@@ -624,7 +652,7 @@ for c in $cases; do
         case $c in
         diskro) s2_diskro "$out/nvme-$c" ;;
         prepare | piommu) s3_prepare "$out/nvme-$c" prepare ;;
-        cutprep | cutbad) s3_prepare "$out/nvme-$c" $c ;;
+        cutprep | cutbad | cuterase) s3_prepare "$out/nvme-$c" $c ;;
         erase | erasestop) s4_erase "$out/nvme-$c" $c ;;
         *) s2_write "$out/nvme-$c" ;;
         esac
