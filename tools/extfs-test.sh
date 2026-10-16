@@ -564,16 +564,22 @@ case_case() {
     make_volume "$out/$name-data.img" 64 "$tree" jamdata
     make_drive "$drive" "$out/$name-data.img"
     rm -f "$out/$name-data.img"
-    # What `exttest sums /jam` must print: every file, the host's hash, but
-    # for the name that makes a path over 255 bytes (FS_PATH_MAX): that one
-    # it says it can't open.
+    # What `exttest sums /jam` must print: every file with a short name (the
+    # log breaks a long line), the host's hash; and `exttest digest /jam`,
+    # one line, every file but the one whose path is over 255 bytes
+    # (FS_PATH_MAX), which it can't open.
     guest=/jam sums="$out/$name.sums"
     (cd "$tree" && find . -maxdepth 1 -type f | sed 's|^\./||' | while IFS= read -r f; do
-        if [ ${#f} -le 250 ]; then
+        if [ ${#f} -le 100 ]; then
             echo "$(sha256sum < "$f" | cut -d' ' -f1)  /jam/$f"
         fi
     done) > "$sums"
     (cd "$tree" && ls -A) > "$out/$name.files"
+    dall=$(cd "$tree" && ls -A | LC_ALL=C sort | while IFS= read -r f; do
+        if [ ${#f} -le 250 ]; then
+            echo "$(sha256sum < "$f" | cut -d' ' -f1)  $f"
+        fi
+    done | sha256sum | cut -d' ' -f1)
     o200=$(printf 'o%.0s' $(seq 1 200))
     m200=$(printf 'm%.0s' $(seq 1 200))
     n255=$(printf 'n%.0s' $(seq 1 255))
@@ -588,6 +594,7 @@ case_case() {
         g a1 sha256sum /jam/Makefile /jam/makefile /jam/MAKEFILE /jam/README /jam/readme /jam/.hidden /jam/-dash
         g a2 sha256sum '"/jam/a b.txt"'
         g a3 exttest sums /jam
+        g a3b exttest digest /jam
         g a4 sha256sum /jam/$o200
         g a5 ls /jam
         g b1 write /jam/Foo one
@@ -612,6 +619,7 @@ case_case() {
     boot "$name" "$out/$name.in" "$drive"
     sums_seen "$run"
     status a3 0
+    want 1 "exttest: digest /jam: 14 files, sha256 $dall" "$run"
     want 1 "^$sp  /jam/a b.txt" "$run"
     want 1 "^$ho  /jam/$o200" "$run"
     want 1 "$n255" "$run"
@@ -1046,6 +1054,9 @@ case_foreign() {
         g_top
         echo "monitor device_add usb-storage,id=sa,bus=xhci.0,port=2,drive=aimg"
         echo "wait 60 init: /usb0 mounted"
+        echo "seen 60 re:volumes: nvme[0-9]+ partition 3 is /nvme[0-9]+, read-only"
+        echo "send sleep 2"
+        echo "wait {prompt}"
         echo "send disks"
         echo "seen re:dirtyj +/nvme(?P<dj>[0-9]+) \\(ext\\)"
         echo "seen re:ext3p +/nvme(?P<e3>[0-9]+) \\(ext\\)"
