@@ -175,6 +175,15 @@ size_t process_debug_write(struct process *p, const char *buf, size_t n, bool re
  * ERR_BAD_STATE), so nothing in p can run before its first thread. */
 status_t process_start(struct process *p, struct uthread *ut, uint64_t entry, uint64_t stack,
                        struct khandle *arg0, uint64_t arg1, const cpumask_t *mask);
+/* vmar_clone's hold on p, a process to fill (docs/FORK-PLAN.md 1.1):
+ * p's `setup` mutex, so process_start waits, and p NEW (ERR_BAD_STATE if
+ * it was started or is dying); *as is its address space with a new
+ * reference. process_clone_end lets go of both; with `done` (the clone
+ * was made) p's handle table starts its slots at random generations
+ * (handle_table_randomize) first, so a parent's handle value its memory
+ * still holds is almost always ERR_BAD_HANDLE in p. */
+status_t process_clone_begin(struct process *p, struct aspace **as);
+void     process_clone_end(struct process *p, struct aspace *as, bool done);
 /* Test hook DBG_PROCESS_START's argument: the window after process_start
  * made p RUNNING and before its first thread exists. `fail` makes that
  * thread's creation fail as if the kernel were out of memory. */

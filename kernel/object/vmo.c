@@ -23,11 +23,14 @@
  * (aspace_vmo.h): an address space's region lock (a mutex) is above it,
  * its page-table lock below it. The kernel page table lock is never taken
  * under it, and data is never copied under it. vmo_set_size is serialised
- * by a mutex ("vmo resize") above everything else but a region lock: a
- * fault (region lock held) may wait on it for a copy-on-write child's
- * creation (cow_wait), which holds it and takes no region lock. Two VMO
- * locks nest only in that creation: the parent's, then the new child's
- * (spin_lock_nested), which nobody else can reach yet.
+ * by a mutex ("vmo resize") above everything else but a region lock; a
+ * copy-on-write child's creation holds it throughout. A fault (region
+ * lock held), a writer or a resize (resize held) may wait for a creation
+ * or a clone to lower `protecting` (cow_wait); neither takes a region
+ * lock other than the clone's own source's, nor "vmo resize" while it
+ * keeps anyone waiting but the creation's own. Two VMO locks nest only in
+ * those: the parent's, then the new child's (spin_lock_nested), which
+ * nobody else can reach yet.
  *
  * User mappings: each address-space mapping of a VMO is a struct
  * vmo_umap in v->umaps and holds a VMO reference. Unlike kernel mappings
@@ -202,6 +205,15 @@
  *     one of the parent's shared pages waits for the creation (cow_wait):
  *     otherwise a thread still writing through a stale writable entry could
  *     change the page after the copy was taken, and its write would be lost.
+ *   - While `protecting` is raised the parent's bytes are frozen for
+ *     everyone but writes through entries not yet shot down: every write
+ *     fault, vmo_write (get_page's GET_PRIVATE, and so every pin and kernel
+ *     mapping), decommit and size change waits for it to fall to 0
+ *     (cow_wait, on one queue for all VMOs: protect_end wakes it), and a
+ *     fault installs nothing writable meanwhile, so a later write faults and
+ *     waits too. So a change a clone (below) or creation doesn't see is one
+ *     that waited, and everything ordered after it waited as well: a clone
+ *     of many VMOs is never torn.
  *   - A separation under the lock: the copy (made with the lock dropped,
  *     from a page held by a reference) goes in if the slot still holds the
  *     page it copied, the old page's entries are cleared in every user
@@ -220,7 +232,17 @@
  * src's page (fetching it first like a pager VMO's reader) into a page of
  * the child's own; past src's end it is zero. The window is charged whole
  * at creation (its pages are never charged one by one: charged_alone) and
- * its tables are made then, so no touch of it charges anything. */
+ * its tables are made then, so no touch of it charges anything.
+ *
+ * Clones (vmar_clone, mm/aspace.c's "Clones"): a copy of an address space
+ * makes one child per VMO it copies (vmo_clone_begin, as large as the VMO
+ * and with the same window if it is a pager child), shares into it only
+ * the ranges the address space maps (vmo_clone_share: share_range, or
+ * copy_pages for a kept VMO), adds the write-protects of every VMO to one
+ * gather, and lowers each VMO's `protecting` (vmo_clone_end) only after
+ * that gather's one shootdown. It takes no "vmo resize": a size change
+ * waits for `protecting` instead, so the size read at vmo_clone_begin
+ * holds. */
 #include <jam/aspace.h>
 #include <jam/aspace_vmo.h>
 #include <jam/dbghook.h>
@@ -411,17 +433,37 @@ void page_share_drop(struct page *p)
 }
 
 /* Pages copied because a write separated them from a relative, and
- * separations that waited for a creation's shootdown (for tests and the
- * benchmark; relaxed). */
+ * changes that waited for a creation or a clone (`protecting`; for tests
+ * and the benchmark; relaxed). */
 uint64_t vmo_cow_copies, vmo_cow_waits;
 
-/* A creation that shares v's pages is still shooting down v's writable
- * entries: wait for it to end (it holds "vmo resize" throughout). */
+/* Everyone waiting for some VMO's `protecting` to fall to 0: few and
+ * brief (a creation or a clone), so one queue, and each waiter looks at
+ * its own VMO again when woken. */
+static struct waitqueue protect_wq = {
+    SPINLOCK_INIT("vmo protecting"), LIST_INIT(protect_wq.waiters)
+};
+
+/* A creation or a clone is sharing v's pages: wait for it to end (the
+ * file header's "protecting"). No lock held. */
 static void cow_wait(struct vmo *v)
 {
     __atomic_add_fetch(&vmo_cow_waits, 1, __ATOMIC_RELAXED);
-    mutex_lock(&v->resize);
-    mutex_unlock(&v->resize);
+    uint64_t f = vlock(v);
+    while (v->protecting)
+        waitqueue_wait(&protect_wq, &v->base.lock, &f);
+    vunlock(v, f);
+}
+
+/* One creation or clone sharing v's pages is done with them: lower
+ * `protecting`, and wake the waiters when it reaches 0. */
+static void protect_end(struct vmo *v)
+{
+    uint64_t f = vlock(v);
+    bool last = --v->protecting == 0;
+    vunlock(v, f);
+    if (last)
+        waitqueue_wake_all(&protect_wq);
 }
 
 /* With the lock held: does absent page idx come from v's pager VMO? */
@@ -766,6 +808,12 @@ static status_t get_page(struct vmo *v, uint64_t idx, enum get_mode mode, struct
             fresh_drop(&fr);
             return ERR_OUT_OF_RANGE;
         }
+        if (mode == GET_PRIVATE && v->protecting) {   /* for a write: frozen meanwhile */
+            vunlock(v, f);
+            fresh_drop(&fr);
+            cow_wait(v);
+            continue;
+        }
         uint64_t *s = slot_locked(v, idx, false);
         struct page *p = s && *s ? pa_page(*s) : NULL;
         if (p && (mode != GET_PRIVATE || !page_shared(v, p))) {
@@ -774,12 +822,6 @@ static status_t get_page(struct vmo *v, uint64_t idx, enum get_mode mode, struct
             fresh_drop(&fr);   /* another CPU committed or separated it first */
             *out = p;
             return OK;
-        }
-        if (p && v->protecting) {   /* shared, and maybe still writable somewhere */
-            vunlock(v, f);
-            fresh_drop(&fr);
-            cow_wait(v);
-            continue;
         }
         if (p && fr.page && fr.from == p) {
             struct tlb_gather g;
@@ -1506,6 +1548,8 @@ status_t vmo_set_size(struct vmo *v, uint64_t size)
         return st;
     }
     uint64_t f = vlock(v);
+    while (v->protecting)   /* frozen while a clone shares its pages (a creation holds resize) */
+        waitqueue_wait(&protect_wq, &v->base.lock, &f);
     uint64_t first = size >> PAGE_SHIFT, end = v->size >> PAGE_SHIFT;
     if (first < end && ranges_overlap_locked(v, first, end)) {
         st = ERR_BAD_STATE;
@@ -1569,6 +1613,12 @@ static status_t decommit_pages(struct vmo *v, uint64_t offset, uint64_t len)
     status_t st = OK;
     for (uint64_t idx = first; idx < end;) {
         f = vlock(v);
+        if (v->protecting) {   /* a decommit changes the bytes: frozen meanwhile */
+            vunlock(v, f);
+            tlb_gather_finish(&g);   /* what it took so far goes first */
+            cow_wait(v);
+            continue;
+        }
         uint64_t stop = v->size >> PAGE_SHIFT;   /* a racing shrink took the rest */
         if (stop > end)
             stop = end;
@@ -1762,6 +1812,15 @@ status_t vmo_fault_map(struct vmo *v, uint64_t idx, struct aspace *as, uint64_t 
             vunlock(v, f);
             return OK;
         }
+        if (write && v->protecting) {   /* frozen while a creation or a clone shares its pages */
+            vunlock(v, f);
+            fresh_drop(&fr);
+            cow_wait(v);
+            continue;
+        }
+        /* Nothing is mapped writable while frozen, so a later write faults
+         * and waits above. */
+        unsigned may = v->protecting ? perms & ~ASPACE_WRITE : perms;
         uint64_t *s = slot_locked(v, idx, false);
         struct page *p = s && *s ? pa_page(*s) : NULL;
         bool shared = p && (perms & ASPACE_WRITE) && page_shared(v, p);
@@ -1769,16 +1828,10 @@ status_t vmo_fault_map(struct vmo *v, uint64_t idx, struct aspace *as, uint64_t 
             /* Installed under the VMO lock: a decommit or a separation that
              * takes this page later zaps this entry too (see the file
              * header). A shared page is never mapped writable. */
-            aspace_set_pte_locked(as, va, *s, shared ? perms & ~ASPACE_WRITE : perms, v->cache);
+            aspace_set_pte_locked(as, va, *s, shared ? perms & ~ASPACE_WRITE : may, v->cache);
             vunlock(v, f);
             fresh_drop(&fr);
             return OK;
-        }
-        if (p && v->protecting) {   /* a creation may not have shot its entries down yet */
-            vunlock(v, f);
-            fresh_drop(&fr);
-            cow_wait(v);
-            continue;
         }
         if (p && fr.page && fr.from == p) {   /* separate it: our copy goes in */
             struct tlb_gather g;
@@ -1814,7 +1867,7 @@ status_t vmo_fault_map(struct vmo *v, uint64_t idx, struct aspace *as, uint64_t 
             *s = page_to_phys(fr.page);   /* the table takes our reference */
             fr.page = NULL;
             v->committed++;
-            aspace_set_pte_locked(as, va, *s, perms, v->cache);
+            aspace_set_pte_locked(as, va, *s, may, v->cache);
             vunlock(v, f);
             return OK;
         }
@@ -1929,9 +1982,7 @@ static status_t share_pages(struct vmo *p, struct vmo *c, uint64_t offp)
     status_t st = share_range(p, c, offp, offp, end, &g);
     DBG_HOOK(DBG_VMO_CHILD_SHOOT, p);
     tlb_gather_finish(&g);
-    f = vlock(p);
-    p->protecting--;
-    vunlock(p, f);
+    protect_end(p);
     return st;
 }
 
@@ -1958,13 +2009,14 @@ static status_t window_set(struct vmo *c, struct vmo *src, uint64_t first, uint6
     return st;
 }
 
-/* A kept p's pages from offp on copied into c, one at a time (a kept VMO
- * is never shared: a separation would swap a page under its kept
- * readers). Each is charged to c as it goes in. */
-static status_t copy_pages(struct vmo *p, struct vmo *c, uint64_t offp)
+/* A kept p's pages copied into c, p's page offp + i as c's page i for i
+ * in [first, end), one at a time (a kept VMO is never shared: a separation
+ * would swap a page under its kept readers). Each is charged to c as it
+ * goes in. */
+static status_t copy_pages(struct vmo *p, struct vmo *c, uint64_t offp, uint64_t first,
+                           uint64_t end)
 {
-    uint64_t n = c->size >> PAGE_SHIFT;
-    for (uint64_t i = 0; i < n; i++) {
+    for (uint64_t i = first; i < end; i++) {
         struct page *from, *pg;
         status_t st = get_page(p, offp + i, GET_PEEK, &from);
         if (st == ERR_OUT_OF_RANGE)
@@ -2018,7 +2070,7 @@ status_t vmo_create_child(struct job *job, struct vmo *p, uint32_t flags, uint64
     if (p->pv) {
         st = window_set(c, p, offp, pages);
     } else if (vmo_is_kept(p)) {
-        st = copy_pages(p, c, offp);
+        st = copy_pages(p, c, offp, 0, pages);
     } else {
         mutex_lock(&p->resize);
         /* A JIT VMO shares nothing (the file header): checked under "vmo
@@ -2041,6 +2093,56 @@ status_t vmo_create_child(struct job *job, struct vmo *p, uint32_t flags, uint64
     }
     *out = c;
     return OK;
+}
+
+/* ---- vmar_clone's copies (aspace_vmo.h) ------------------------------------- */
+
+status_t vmo_clone_begin(struct job *job, struct vmo *v, struct vmo **out)
+{
+    /* aspace.c copies only what its clone_ok allows: never these. */
+    if (v->kind != VMO_PAGED || v->pv || vmo_is_jit(v))
+        return ERR_NOT_SUPPORTED;
+    uint64_t f = vlock(v);
+    v->protecting++;   /* from here on v's bytes and size wait for vmo_clone_end */
+    uint64_t size = v->size, win = v->win;
+    vunlock(v, f);
+    struct vmo *c;
+    status_t st = vmo_create_for(job, size, 0, &c);
+    if (st == OK && v->src) {   /* a pager child's: its pager VMO, the same window */
+        uint64_t pages = size >> PAGE_SHIFT;
+        st = window_set(c, v->src, v->src_first, win < pages ? win : pages);
+        if (st != OK)
+            kobject_unref(&c->base);   /* destroy gives the window back */
+    }
+    if (st != OK) {
+        protect_end(v);
+        return st;
+    }
+    *out = c;
+    return OK;
+}
+
+status_t vmo_clone_share(struct vmo *v, struct vmo *c, uint64_t first, uint64_t end,
+                         struct tlb_gather *g)
+{
+    uint64_t pages = c->size >> PAGE_SHIFT;   /* fixed: nobody else has c yet */
+    if (end > pages)
+        end = pages;   /* v was smaller at vmo_clone_begin: zeros there, as in v */
+    if (first >= end)
+        return OK;
+    if (!vmo_is_kept(v))
+        return share_range(v, c, 0, first, end, g);
+    uint64_t f = vlock(v);
+    bool busy = ranges_overlap_locked(v, first, end);
+    vunlock(v, f);
+    /* Copied, not shared; a pin or kernel mapping appearing now waits for
+     * vmo_clone_end before it can commit (GET_PRIVATE) and so be written. */
+    return busy ? ERR_BAD_STATE : copy_pages(v, c, 0, first, end);
+}
+
+void vmo_clone_end(struct vmo *v)
+{
+    protect_end(v);
 }
 
 /* ---- pager VMOs (<jam/pager.h>) ------------------------------------------- */

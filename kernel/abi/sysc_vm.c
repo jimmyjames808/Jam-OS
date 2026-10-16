@@ -7,6 +7,7 @@
  * VMO commits are charged to the job of the process that created it. */
 #include <jam/aspace.h>
 #include <jam/mm.h>
+#include <jam/process.h>
 #include <jam/sys.h>
 #include <jam/syscall_impl.h>
 #include <jam/vmo.h>
@@ -185,15 +186,35 @@ int64_t sysc_vmar_protect(handle_t vmar, uint64_t addr, uint64_t len, uint32_t f
     return sys_vmar_protect(t, vmar, addr, len, flags);
 }
 
-/* The address space's clone (docs/FORK-PLAN.md track FK2 builds it on the
- * clone modes aspace_map keeps; abi/syscalls.def has the contract). */
+/* The address space's clone (docs/FORK-PLAN.md section 1.1; abi/syscalls.def
+ * has the contract). The children's slots are reserved and their values
+ * written out before the copy, so nothing can fail after it. */
 int64_t sysc_vmar_clone(handle_t dst, uint64_t vmos, uint64_t children, uint32_t n,
                         uint32_t flags)
 {
-    (void)dst;
-    (void)vmos;
-    (void)children;
-    (void)n;
-    (void)flags;
-    return ERR_NOT_SUPPORTED;
+    SYSC_TABLE(t);
+    if (flags)
+        return ERR_INVALID_ARGS;
+    if (n > VMAR_CLONE_MAX)
+        return ERR_OUT_OF_RANGE;
+    handle_t *kv = n ? kmalloc(2 * (size_t)n * sizeof(handle_t)) : NULL;
+    if (n && !kv)
+        return ERR_NO_MEMORY;
+    handle_t *kc = kv ? kv + n : NULL;
+    status_t st = copy_in(kv, vmos, (size_t)n * sizeof(handle_t)) != OK ? ERR_INVALID_ARGS : OK;
+    if (st == OK && n)
+        st = handle_reserve(t, n, kc);
+    if (st == OK && copy_out(children, kc, (size_t)n * sizeof(handle_t)) != OK) {
+        for (uint32_t i = 0; i < n; i++)
+            handle_commit(t, kc[i]);
+        st = ERR_INVALID_ARGS;
+    }
+    if (st == OK) {
+        struct aspace *src = process_aspace(process_current());
+        st = sys_vmar_clone(t, src, dst, kv, kc, n);
+        if (src)
+            aspace_unref(src);
+    }
+    kfree(kv);
+    return st;
 }

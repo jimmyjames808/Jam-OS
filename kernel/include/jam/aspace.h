@@ -5,8 +5,8 @@
  * mappings of VMOs in the user half. Page-table entries are filled on
  * demand by aspace_fault. Lock order: the region lock (a sleeping mutex,
  * class "aspace") -> "vmo" -> "aspace page tables" (spinlock); a fault may
- * also wait on a VMO's "vmo resize" mutex under the region lock (a
- * copy-on-write child being made: vmo.c). */
+ * also wait under the region lock for a VMO's copy-on-write child being
+ * made or a clone of another address space (`protecting`: vmo.c). */
 #pragma once
 
 #include <stdbool.h>
@@ -91,6 +91,31 @@ status_t aspace_unmap(struct aspace *as, uint64_t addr, uint64_t len);
  * may not have them (see ASPACE_CAN_*). W+X: ERR_INVALID_ARGS unless
  * every mapping in the range is a JIT VMO's. */
 status_t aspace_protect(struct aspace *as, uint64_t addr, uint64_t len, unsigned flags);
+/* vmar_clone's kernel half (docs/FORK-PLAN.md section 1.1; aspace.c's
+ * "Clones"): a VMO whose copy's child the caller wants. `v` in (the
+ * caller's reference), `child` out (a new reference, or NULL), `index` the
+ * caller's own: aspace_clone sorts the array by v. */
+struct aspace_clone_req {
+    struct vmo *v;
+    struct vmo *child;
+    uint32_t    index;
+};
+/* Make every mapping of src again in dst, an empty address space
+ * (ERR_BAD_STATE otherwise, and for src itself), at the same address with
+ * the same permissions and maximum, by its clone mode: a copy maps one
+ * copy-on-write child per VMO (every copy of one VMO maps the same child),
+ * holding the pages src's copies map of it; share maps the same VMO; none
+ * leaves the range free. src's region lock is held throughout (no map,
+ * unmap, protect or fault of src runs meanwhile) and every copied byte is
+ * what it was at one moment. Charged to dst's job (ERR_NO_MEMORY): the
+ * children and every page they share, dst's mapping structs, and as many
+ * page tables as src has over the mappings made again, a reserve dst's
+ * own tables draw on first. r[i].child gets the child of r[i].v
+ * (ERR_INVALID_ARGS if src doesn't map that VMO as a copy).
+ * ERR_BAD_STATE if a pin or a kernel mapping covers a page to copy.
+ * Nothing is made, charged or handed out on an error. May sleep. */
+status_t aspace_clone(struct aspace *src, struct aspace *dst, struct aspace_clone_req *r,
+                      uint32_t n);
 /* How many mappings it holds now (merged neighbours count once). Takes the
  * region lock: may sleep. */
 uint32_t aspace_mapping_count(struct aspace *as);

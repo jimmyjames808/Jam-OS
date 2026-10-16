@@ -317,24 +317,33 @@
 60  vmar_map          status    handle_t vmar, handle_t vmo, uint64_t vmo_off, uint64_t len, uint32_t flags, uint64_t *addr
 61  vmar_unmap        status    handle_t vmar, uint64_t addr, uint64_t len
 62  vmar_protect      status    handle_t vmar, uint64_t addr, uint64_t len, uint32_t flags
-# vmar_clone: the caller's address space copied into dst at one instant
-# (fork's kernel half, docs/FORK-PLAN.md section 1.1). dst (RIGHT_WRITE)
-# is the address space of a process the caller made with process_create
-# and hasn't started, with nothing mapped (ERR_BAD_STATE otherwise). Every
-# mapping of the caller's is made again in dst at the same address, with
-# the same permissions and maximum, by its clone mode (vmar_map): a copy
-# maps one copy-on-write child of the VMO
-# (VMO_CHILD_SNAPSHOT_AT_LEAST_ON_WRITE; every copied mapping of one VMO
+# vmar_clone: the caller's address space copied into dst's at one instant
+# (fork's kernel half, docs/FORK-PLAN.md section 1.1). dst is a process
+# (RIGHT_WRITE) the caller made with process_create and hasn't started,
+# with nothing mapped (ERR_BAD_STATE otherwise); it can't be started until
+# the call returns. Every mapping of the caller's is made again in dst at
+# the same address, with the same permissions and maximum, by its clone
+# mode (vmar_map): a copy maps one copy-on-write child of the VMO
+# (VMO_CHILD_SNAPSHOT_AT_LEAST_ON_WRITE, as large as the VMO, holding the
+# pages the caller's copies of it map; every copied mapping of one VMO
 # maps the same child), never executable; share maps the same VMO; none
 # leaves the range free. No thread of the caller's maps, unmaps, protects
-# or faults in its address space while the call runs (they wait), and
-# every copied page holds what it held at one moment, as Linux's fork.
-# children[i] gets a handle (a fresh VMO's rights) to the child made for
-# the VMO vmos[i] names, i < n; ERR_INVALID_ARGS if that VMO isn't mapped
-# as a copy. flags: 0. The children, their page tables and dst's mapping
-# records are charged to the caller's job at the call (ERR_NO_MEMORY);
-# ERR_BAD_STATE if a pin or a kernel mapping covers a page to copy.
-# Nothing is made on any error. FK2 builds it: ERR_NOT_SUPPORTED until then.
+# or faults in its address space while the call runs (they wait), nothing
+# writes, decommits or resizes a copied VMO (it waits), and every copied
+# page holds what it held at one moment, as Linux's fork. children[i] gets
+# a handle (a fresh VMO's rights) to the child made for the VMO vmos[i]
+# names (RIGHT_READ and RIGHT_DUPLICATE, as for vmo_create_child), i < n
+# (at most VMAR_CLONE_MAX: ERR_OUT_OF_RANGE); ERR_INVALID_ARGS if that VMO
+# isn't mapped as a copy, ERR_NO_RESOURCES if the caller's table can't
+# hold n more. flags: 0. The children with every page they share, dst's
+# mapping records, and as many page tables as the caller has under the
+# mappings made again (dst's own tables draw on them first, so a fault
+# there is never refused for a table) are charged to dst's job, the
+# caller's for a fork, at the call (ERR_NO_MEMORY). ERR_BAD_STATE if a pin
+# or a kernel mapping covers a page to copy. Nothing is made on any error.
+# On success dst's handle table starts its slots at random generations,
+# so a handle value of the caller's left in the copy is almost always
+# ERR_BAD_HANDLE there.
 65  vmar_clone        status    handle_t dst, const handle_t *vmos, handle_t *children, uint32_t n, uint32_t flags
 
 # processes, threads, jobs --------------------------------------------------

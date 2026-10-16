@@ -9,9 +9,13 @@
  * straight to aspace_map, which checks the VMO's kind and fills the
  * mapping, or replaces what the range held; so do the clone modes
  * (VMAR_CLONE_SHARE, VMAR_CLONE_NONE), which aspace_map decides with the
- * maximum set here. */
+ * maximum set here. vmar_clone names its destination by a process handle
+ * (RIGHT_WRITE), not a vmar: only the process can say it hasn't started,
+ * and hold that while the copy is made (process_clone_begin). */
 #include <jam/aspace.h>
 #include <jam/handle.h>
+#include <jam/mm.h>
+#include <jam/process.h>
 #include <jam/sys.h>
 #include <jam/vmar.h>
 #include <jam/vmo.h>
@@ -110,5 +114,47 @@ status_t sys_vmar_protect(struct handle_table *t, handle_t vmar, uint64_t addr, 
         return st;
     st = aspace_protect(as, addr, len, flags);   /* ERR_ACCESS_DENIED past the map-time rights */
     kobject_unref(ref);
+    return st;
+}
+
+/* The VMOs first (each a reference, in r), then dst held NEW
+ * (process_clone_begin) for the copy, then the reserved slots filled or
+ * given back: nothing that can fail comes after the copy. */
+status_t sys_vmar_clone(struct handle_table *t, struct aspace *src, handle_t dst,
+                        const handle_t *vmos, const handle_t *children, uint32_t n)
+{
+    struct aspace_clone_req *r = n ? kmalloc((size_t)n * sizeof(*r)) : NULL;
+    status_t st = !src ? ERR_BAD_STATE : n && !r ? ERR_NO_MEMORY : OK;
+    uint32_t got = 0;
+    for (; st == OK && got < n; got++) {
+        struct kobject *o;
+        st = handle_get(t, vmos[got], OBJ_VMO, RIGHT_READ | RIGHT_DUPLICATE, &o, NULL);
+        if (st != OK)
+            break;
+        r[got] = (struct aspace_clone_req){ .v = vmo_from_kobject(o), .index = got };
+    }
+    struct kobject *po = NULL;
+    if (st == OK)
+        st = handle_get(t, dst, OBJ_PROCESS, RIGHT_WRITE, &po, NULL);
+    struct aspace *das;
+    if (st == OK && (st = process_clone_begin(process_from_kobject(po), &das)) == OK) {
+        st = aspace_clone(src, das, r, n);
+        process_clone_end(process_from_kobject(po), das, st == OK);
+    }
+    if (po)
+        kobject_unref(po);
+    for (uint32_t i = 0; i < n; i++) {
+        if (st != OK) {
+            handle_commit(t, children[i]);   /* given back unused */
+            continue;
+        }
+        struct khandle kh = khandle_from_new(vmo_kobject(r[i].child), VMO_RIGHTS);
+        handle_t h;
+        if (handle_untake(t, children[r[i].index], &kh, &h) != OK)
+            khandle_release(&kh);   /* not a slot we reserved: can't happen */
+    }
+    for (uint32_t i = 0; i < got; i++)
+        kobject_unref(vmo_kobject(r[i].v));
+    kfree(r);
     return st;
 }
