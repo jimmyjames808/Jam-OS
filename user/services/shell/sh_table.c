@@ -245,6 +245,14 @@ static const struct sh_cmd cmds[] = {
       "  -w: the same as plain `update`. -r: reboot into it at once. A build whose\n"
       "  network default (VLAN 21 or untagged: local.mk) isn't this one's is refused;\n"
       "  -f takes it"),
+    C(pkg, C_SYSTEM, "pkg <command> [args]",
+      "packages (bin/pkg): update (fetch the index from pkg.repo, default port 8080 of\n"
+      "  net.host: on the Mac make ports, tools/ports-server.py), install <name>... or\n"
+      "  <file.jpk>, upgrade [<name>...], remove [-r] <name>..., list [-u], info <name>,\n"
+      "  files <name>, audit, check. An install shows each package's licence and what\n"
+      "  each program asks for, and asks once (y); init checks and approves the\n"
+      "  programs (allow -l shows them with their package). `pkg -R <address> <command>`\n"
+      "  uses another repository for that command. The prefix is /data/pkg"),
     C(run, C_PROGRAMS, "run <prog|path> [args]",
       "start /boot/bin/<prog> (or a path), wait, say how it ended; Ctrl+C kills it.\n"
       "  Typing a program's name does the same. Exported variables are its environment;\n"
