@@ -7,7 +7,9 @@
  * may grant, so a mapping can never gain a permission the handle lacked.
  * ASPACE_KEPT_ONLY (VMAR_KEPT_ONLY) and ASPACE_REPLACE (VMAR_REPLACE) go
  * straight to aspace_map, which checks the VMO's kind and fills the
- * mapping, or replaces what the range held. */
+ * mapping, or replaces what the range held; so do the clone modes
+ * (VMAR_CLONE_SHARE, VMAR_CLONE_NONE), which aspace_map decides with the
+ * maximum set here. */
 #include <jam/aspace.h>
 #include <jam/handle.h>
 #include <jam/sys.h>
@@ -53,7 +55,8 @@ status_t sys_vmar_create(struct handle_table *t, handle_t *out)
 status_t sys_vmar_map(struct handle_table *t, handle_t vmar, handle_t vmo, uint64_t vmo_off,
                       uint64_t len, uint32_t flags, uint64_t *addr)
 {
-    if (flags & ~(USER_PERMS | ASPACE_FIXED | ASPACE_KEPT_ONLY | ASPACE_REPLACE))
+    if (flags & ~(USER_PERMS | ASPACE_FIXED | ASPACE_KEPT_ONLY | ASPACE_REPLACE |
+                  ASPACE_CLONE_SHARE | ASPACE_CLONE_NONE))
         return ERR_INVALID_ARGS;   /* the CAN bits come from the handle, not the caller */
     bool wx = (flags & ASPACE_WRITE) && (flags & ASPACE_EXEC);
     struct aspace *as;

@@ -184,3 +184,16 @@ int64_t sysc_vmar_protect(handle_t vmar, uint64_t addr, uint64_t len, uint32_t f
     SYSC_TABLE(t);
     return sys_vmar_protect(t, vmar, addr, len, flags);
 }
+
+/* The address space's clone (docs/FORK-PLAN.md track FK2 builds it on the
+ * clone modes aspace_map keeps; abi/syscalls.def has the contract). */
+int64_t sysc_vmar_clone(handle_t dst, uint64_t vmos, uint64_t children, uint32_t n,
+                        uint32_t flags)
+{
+    (void)dst;
+    (void)vmos;
+    (void)children;
+    (void)n;
+    (void)flags;
+    return ERR_NOT_SUPPORTED;
+}

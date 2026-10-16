@@ -44,6 +44,7 @@
 #define SYS_vmar_protect         62
 #define SYS_vmo_create_child     63
 #define SYS_vmo_make_jit         64
+#define SYS_vmar_clone           65
 #define SYS_process_create       70
 #define SYS_process_start        71
 #define SYS_process_kill         72
@@ -98,6 +99,7 @@
 #define SYS_sys_public_info      136
 #define SYS_clock_page           137
 #define SYS_process_get_maps     138
+#define SYS_process_replace      139
 #define SYS_kexec_load           140
 #define SYS_kexec_reboot         141
 #define SYS_random_get           150

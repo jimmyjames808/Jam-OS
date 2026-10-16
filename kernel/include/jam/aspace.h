@@ -26,6 +26,11 @@
 /* aspace_map only, with ASPACE_FIXED and without ASPACE_KEPT_ONLY: unmap
  * whatever is in the range and map, in one step (VMAR_REPLACE). */
 #define ASPACE_REPLACE   (1u << 5)
+/* aspace_map only: the mapping's clone mode, share or none (VMAR_CLONE_SHARE
+ * and VMAR_CLONE_NONE in <jam/abi.h>: the default without either, the two
+ * cases the kernel decides itself); not both, not with ASPACE_KEPT_ONLY. */
+#define ASPACE_CLONE_SHARE (1u << 6)
+#define ASPACE_CLONE_NONE  (1u << 7)
 /* aspace_map only: permissions a later aspace_protect may grant (on top of
  * the ones mapped now). sys_vmar_map sets them from the VMO handle's
  * rights, so a mapping can be made RW, filled, then flipped to RX, but
@@ -72,7 +77,9 @@ void     aspace_unref(struct aspace *as);
  * ASPACE_KEPT_ONLY): what the range overlaps is unmapped and the new
  * mapping made under one hold of the region lock, so a fault sees the old
  * mapping or the new one; every error comes before anything changed
- * (ERR_NO_RESOURCES past MAX_MAPPINGS, counted after the replace). */
+ * (ERR_NO_RESOURCES past MAX_MAPPINGS, counted after the replace). The
+ * mapping's clone mode is decided here, for its life (ASPACE_CLONE_*;
+ * ERR_INVALID_ARGS for both, or either with ASPACE_KEPT_ONLY). */
 status_t aspace_map(struct aspace *as, struct vmo *vmo, uint64_t vmo_off, uint64_t len,
                     unsigned flags, uint64_t *addr);
 /* Remove every mapping page in [addr, addr+len) (splitting mappings as
