@@ -3,9 +3,10 @@
  * program names no other process's). The table starts as the usual
  * Linux defaults: an 8 MiB stack (the one a POSIX child gets), no core
  * files, 1024 descriptors, the rest unlimited. A limit is kept and
- * answered back; two are acted on, because libc and its tests rely on
- * them: RLIMIT_NOFILE (fd.c allocates no descriptor at or past it) and
- * RLIMIT_DATA (brk in mem.c grows no further than it). A child starts
+ * answered back; three are acted on, because libc and its tests rely on
+ * them: RLIMIT_NOFILE (fd.c allocates no descriptor at or past it),
+ * RLIMIT_DATA (brk in mem.c grows no further than it) and RLIMIT_NPROC
+ * (fork.c: EAGAIN at it, counting this process and its children). A child starts
  * with the defaults again: the hand-over message has no field for them.
  * As on Linux a limit may be lowered, and a hard limit only raised by a
  * privileged process, which no process here is. */

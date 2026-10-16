@@ -71,6 +71,7 @@
  * signals, threads, malloc and _exit work. */
 #include <errno.h>
 #include <sched.h>
+#include <sys/resource.h>
 #include "layer.h"
 #include "proc.h"
 #include "sig.h"
@@ -140,9 +141,21 @@ static uint64_t thread_pointer(void)
     return tp;
 }
 
+/* RLIMIT_NPROC, as Linux's fork: EAGAIN while the user's processes are at
+ * the soft limit or over it. Those counted are the ones this process
+ * knows of: itself and its children not yet reaped (one user, M13 Q7; no
+ * process here may pass the limit, none being privileged). */
+static bool at_nproc_limit(void)
+{
+    uint64_t lim = rlimit_cur(RLIMIT_NPROC);
+    return lim != RLIM_INFINITY && 1 + (uint64_t)lx_child_pids(NULL, 0) >= lim;
+}
+
 /* fork's core: the child's pid in the parent, 0 in the child, or -errno. */
 static long fork_core(struct how *how)
 {
+    if (at_nproc_limit())
+        return -EAGAIN;
     jam_fork_set_libc(&hooks);   /* the same each time */
     handle_t sig = HANDLE_INVALID;
     struct jam_fork_args a = { .fs_base = thread_pointer(), .signals = &sig, .ctx = how };
