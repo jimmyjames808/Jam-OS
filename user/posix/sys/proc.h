@@ -59,6 +59,23 @@ uint64_t lx_children_cpu_ns(void);
  * signal to it), or 0. */
 int32_t lx_exec_child(void);
 
+/* What /proc says of a child (procfs.c, procinfo.c): its process group and
+ * session, whether its end was noticed (a zombie until reaped), and its
+ * process_info now. 0, or -ESRCH: not a child of ours (or reaped). */
+struct lx_child_facts {
+    int32_t             pgid, sid;
+    bool                dead;
+    struct process_info info;
+};
+long    lx_child_facts(int32_t pid, struct lx_child_facts *out);
+/* Is pid a child of ours (not yet reaped)? */
+bool    lx_child_exists(int32_t pid);
+/* A child's mappings (kp_process_maps): the count, or -ESRCH / -errno. */
+long    lx_child_maps(int32_t pid, uint64_t from, struct map_info *out, uint32_t cap);
+/* Our children's pids (those not reaped): up to cap into out, in the order
+ * they were made; how many there are in all. */
+unsigned lx_child_pids(int32_t *out, unsigned cap);
+
 /* Signal our children: pid > 0, that one; else those in group pgid (> 0),
  * or all of them (pgid 0). SIGKILL is process_kill; any other signal a
  * `send` on the child's channel with code (si_code) and value; 0 checks

@@ -1274,6 +1274,7 @@ static const struct {
     { "thread_interrupt_calls", t_thread_interrupt_calls },
     { "cpu_ns", t_cpu_ns },
     { "sys_public_info", t_sys_public_info },
+    { "process_maps", t_process_maps },
     { "vmar_replace_calls", t_vmar_replace_calls },
     { "handle_info", t_handle_info },
     { "length_limits", t_length_limits },

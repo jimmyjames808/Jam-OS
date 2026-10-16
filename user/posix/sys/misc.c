@@ -53,8 +53,10 @@ long lx_sysinfo(long out, long b, long c, long d, long e, long f)
     s->uptime = (long)(now() / NS_PER_S);
     s->procs = 1;
     s->mem_unit = 1;
-    if (kp_public_info(&pub) == OK)
+    if (kp_public_info(&pub) == OK) {
         s->totalram = pub.pages * pub.page_size;
+        s->freeram = pub.free_pages * pub.page_size;
+    }
     return 0;
 }
 

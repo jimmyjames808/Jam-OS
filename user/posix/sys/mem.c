@@ -678,3 +678,17 @@ long lx_brk(long want, long b, long c, long d, long e, long f)
     lock_give(&mem_lock);
     return r;
 }
+
+uint32_t mem_kind_at(uint64_t addr)
+{
+    lock_take(&mem_lock);
+    unsigned i = mt_first_after(addr);
+    uint32_t kind = MEM_UNKNOWN;
+    if (i < mt_count() && mt_entries()[i].base <= addr) {
+        uint32_t k = mt_entries()[i].kind;
+        kind = (k & MT_SHARED ? MEM_SHARED : 0) | (k & MT_PAGER_PRIVATE ? MEM_FILE : 0) |
+               (brk_base && addr >= brk_base && addr < brk_base + BRK_SIZE ? MEM_BRK : 0);
+    }
+    lock_give(&mem_lock);
+    return kind;
+}

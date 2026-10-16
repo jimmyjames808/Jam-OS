@@ -1,11 +1,25 @@
 /* /proc (docs/CR-PLAN.md section 3): libc's own, like /dev and /etc, with
  * nothing in the namespace behind it; the few names a Linux program reads
- * about itself, and ENOENT for every other one, never a half-filled file.
+ * about itself, about the machine and about its children, and ENOENT for
+ * every other one, never a half-filled file.
  *
- *   /proc                 a directory: self, and our pid
+ *   /proc                 a directory: self, our pid, the pid of each child
+ *                         of ours not yet reaped, and cpuinfo, meminfo and
+ *                         stat
  *   /proc/self            a link to <pid>; /proc/<pid> is the same
- *                         directory for our own pid only (any other pid is
- *                         ENOENT: a process sees only itself here)
+ *                         directory for our own pid and for a child's (any
+ *                         other pid is ENOENT: a process sees only itself
+ *                         and its children here); a child's has maps, stat,
+ *                         statm and status, no exe or fd
+ *   /proc/cpuinfo, meminfo, stat, /proc/<pid>/maps, stat, statm, status
+ *                         regular files of Linux's text (procinfo.c and
+ *                         cpuinfo.c make it: "PRC notes" in CR-PLAN.md says
+ *                         from what), read only, size 0 as Linux's. A read
+ *                         from the start makes the text afresh, and the
+ *                         later reads of that pass take it from the one
+ *                         copy, so reading a few bytes at a time sees one
+ *                         file. /proc/self/fd/N of one reads
+ *                         /proc/<pid>/<name>
  *   /proc/self/exe        a link to the program's file: readlink gives its
  *                         path, open opens that file for reading (ETXTBSY
  *                         for writing, as Linux), stat stats it;
@@ -60,12 +74,14 @@
 #include <sys/sysmacros.h>
 #include "calls.h"
 #include "files.h"
+#include "kinds.h"
 #include "memfd.h"
 #include "proc.h"
+#include "procinfo.h"
 
 #define PROC_DIR  "/proc"
 #define INO_BASE  0x7000000000ull       /* our nodes' st_ino: clear of every mount's ids */
-#define INO_FD    (INO_BASE + 0x100)    /* + N: /proc/self/fd/N */
+#define INO_FD    (INO_BASE + 0x40000000ull)   /* + N: /proc/self/fd/N (a pid's nodes: node + pid << 8) */
 #define INO_ROOT  1u                    /* "/"'s (path.c's): /proc's ".." */
 #define PH_MAX    16u                   /* program headers we look at */
 #define CHUNK     16384u                /* a file compared this many bytes at a time */
@@ -79,13 +95,39 @@ enum node {
     N_EXE,        /* /proc/self/exe */
     N_FDDIR,      /* /proc/self/fd */
     N_FD,         /* /proc/self/fd/N */
+    N_MAPS,       /* /proc/<pid>/maps (and the files below it) */
+    N_STAT,       /* /proc/<pid>/stat */
+    N_STATM,      /* /proc/<pid>/statm */
+    N_STATUS,     /* /proc/<pid>/status */
+    N_CPUINFO,    /* /proc/cpuinfo */
+    N_MEMINFO,    /* /proc/meminfo */
+    N_SYSSTAT,    /* /proc/stat */
 };
+
+/* The generated files: which text each is, and its name. */
+static const struct { enum node node; enum pfile file; const char *name; } pfiles[] = {
+    { N_MAPS, PF_MAPS, "maps" }, { N_STAT, PF_STAT, "stat" }, { N_STATM, PF_STATM, "statm" },
+    { N_STATUS, PF_STATUS, "status" }, { N_CPUINFO, PF_CPUINFO, "cpuinfo" },
+    { N_MEMINFO, PF_MEMINFO, "meminfo" }, { N_SYSSTAT, PF_SYSSTAT, "stat" },
+};
+
+/* A process directory's entries, after "." and "..": ours has two more
+ * than a child's (exe and fd come first). */
+static const struct { enum node node; uint8_t type; const char *name; } pid_names[] = {
+    { N_EXE, DT_LNK, "exe" }, { N_FDDIR, DT_DIR, "fd" }, { N_MAPS, DT_REG, "maps" },
+    { N_STAT, DT_REG, "stat" }, { N_STATM, DT_REG, "statm" }, { N_STATUS, DT_REG, "status" },
+};
+#define PID_NAMES  (sizeof(pid_names) / sizeof(pid_names[0]))
+#define KID_FIRST  2   /* pid_names[KID_FIRST..] are a child's */
+#define ROOT_FILES_FIRST 4   /* pfiles[ROOT_FILES_FIRST..] are /proc's own */
+#define KIDS_LISTED 256      /* children /proc lists (their files open all the same) */
 
 /* What a /proc path is. */
 struct at {
     enum node node;
     bool      self_link;   /* named through "self" (a link), not "<pid>" */
     int       fd;          /* N_FD: N */
+    int32_t   pid;         /* a process's node: its pid (ours, or a child's) */
 };
 
 /* One entry of a listing. */
@@ -94,6 +136,15 @@ struct pentry {
     uint64_t ino;
     uint8_t  type;   /* DT_* */
     int64_t  next;   /* the position after it */
+};
+
+/* An open generated file: the text of the pass being read (d->lock). */
+struct pfile_state {
+    enum pfile file;
+    int32_t    pid;        /* the process of a /proc/<pid> file */
+    char      *text;       /* NULL until the first read; replaced by a read from the start */
+    size_t     len;
+    char       path[40];   /* /proc/<pid>/<name>, /proc/self/fd/N's link */
 };
 
 /* The program's ELF header: posix.ld maps it, the linker names it. */
@@ -111,6 +162,7 @@ static const struct { const char *path; const char *name; } boot_dirs[] = {
 };
 
 static const struct fd_ops procdir_ops;
+static const struct fd_ops pfile_ops;
 
 /* Before main: argv[0] may be rewritten by the program later (a process
  * title), and exe is asked for only when a program reads it. */
@@ -319,9 +371,18 @@ static bool fd_open(long fd)
     return d != NULL;
 }
 
+/* The generated file of /proc itself (cpuinfo, meminfo, stat) named n, or 0. */
+static enum node root_file(const char *n, size_t l)
+{
+    for (unsigned i = ROOT_FILES_FIRST; i < sizeof(pfiles) / sizeof(pfiles[0]); i++)
+        if (strlen(pfiles[i].name) == l && !memcmp(pfiles[i].name, n, l))
+            return pfiles[i].node;
+    return 0;
+}
+
 /* What abs (clean, proc_path's) is: 0, or -ENOENT (no such name: every
  * ENOENT of a name /proc doesn't have comes from here), -ENOTDIR (a name
- * under a link to something that isn't a directory). */
+ * under a link to something that isn't a directory, or under a file). */
 static long lookup_name(const char *abs, struct at *out)
 {
     const char *s = abs + sizeof(PROC_DIR) - 1, *n;
@@ -330,20 +391,29 @@ static long lookup_name(const char *abs, struct at *out)
     if (!(l = next_name(s, &at, &n)))
         return 0;
     out->self_link = l == 4 && !memcmp(n, "self", 4);
-    if (!out->self_link && number(n, l) != lx_pid())
+    long pid = out->self_link ? lx_pid() : number(n, l);
+    if (pid < 0) {   /* not a process: a file of /proc's own, if it is one */
+        out->node = root_file(n, l);
+        if (!out->node)
+            return -ENOENT;
+        return next_name(s, &at, &n) ? -ENOTDIR : 0;
+    }
+    bool kid = pid != lx_pid();
+    if (kid && !lx_child_exists((int32_t)pid))
         return -ENOENT;   /* another process, or a file of Linux's we don't have */
+    out->pid = (int32_t)pid;
     out->node = N_SELF;
     if (!(l = next_name(s, &at, &n)))
         return 0;
-    if (l == 3 && !memcmp(n, "exe", 3))
-        out->node = N_EXE;
-    else if (l == 2 && !memcmp(n, "fd", 2))
-        out->node = N_FDDIR;
-    else
+    out->node = 0;
+    for (unsigned i = kid ? KID_FIRST : 0; i < PID_NAMES; i++)
+        if (strlen(pid_names[i].name) == l && !memcmp(pid_names[i].name, n, l))
+            out->node = pid_names[i].node;
+    if (!out->node)
         return -ENOENT;
     if (!(l = next_name(s, &at, &n)))
         return 0;
-    if (out->node == N_EXE)
+    if (out->node != N_FDDIR)
         return -ENOTDIR;
     long fd = number(n, l);
     if (fd < 0 || fd >= FD_MAX || !fd_open(fd))
@@ -409,6 +479,8 @@ static void link_of(struct fd_desc *d, char out[PATH_BYTES])
         snprintf(out, PATH_BYTES, "%s", path);
     else if (d->ops == &memfd_ops)
         snprintf(out, PATH_BYTES, "/memfd:%s (deleted)", memfd_name(d));
+    else if (d->ops == &pfile_ops)
+        snprintf(out, PATH_BYTES, "%s", ((struct pfile_state *)d->priv)->path);
     else if (d->ops == &etc_ops && etc_link(d, out))
         return;
     else if (d->ops->stat && !d->ops->stat(d, &st) && S_ISCHR(st.st_mode) &&
@@ -424,18 +496,25 @@ static void link_of(struct fd_desc *d, char out[PATH_BYTES])
 
 /* ---- stat and readlink ------------------------------------------------------------- */
 
-static uint64_t ino_of(enum node node, int fd)
+static bool is_file(enum node node)
 {
-    return node == N_FD ? INO_FD + (uint64_t)fd : INO_BASE + node;
+    return node >= N_MAPS;
 }
 
-static void node_stat(enum node node, int fd, struct stat *st)
+/* id: the descriptor of an N_FD, else the pid of a process's node. */
+static uint64_t ino_of(enum node node, int id)
+{
+    return node == N_FD ? INO_FD + (uint64_t)id : INO_BASE + node + ((uint64_t)id << 8);
+}
+
+static void node_stat(enum node node, int id, struct stat *st)
 {
     bool dir = node == N_ROOT || node == N_SELF || node == N_FDDIR;
-    st->st_mode = dir ? S_IFDIR | (node == N_FDDIR ? 0500 : 0555) : S_IFLNK | 0777;
+    st->st_mode = dir ? S_IFDIR | (node == N_FDDIR ? 0500 : 0555)
+                      : is_file(node) ? S_IFREG | 0444 : S_IFLNK | 0777;
     st->st_nlink = dir ? 2 : 1;
-    st->st_uid = st->st_gid = node == N_ROOT ? 0 : ONE_USER;
-    st->st_ino = ino_of(node, fd);
+    st->st_uid = st->st_gid = node == N_ROOT || node >= N_CPUINFO ? 0 : ONE_USER;
+    st->st_ino = ino_of(node, id);
     st->st_blksize = 4096;
 }
 
@@ -448,7 +527,7 @@ long proc_stat(const struct path *p, bool follow, struct stat *st)
         return r;
     bool link = a.node == N_EXE || a.node == N_FD || (a.node == N_SELF && a.self_link);
     if (link && !follow && !p->must_dir) {   /* "link/" is followed, as Linux */
-        node_stat(a.node == N_SELF ? N_SELFLINK : a.node, a.fd, st);
+        node_stat(a.node == N_SELF ? N_SELFLINK : a.node, a.node == N_FD ? a.fd : a.pid, st);
         return 0;
     }
     const char *e = a.node == N_EXE ? proc_exe() : NULL;
@@ -457,7 +536,7 @@ long proc_stat(const struct path *p, bool follow, struct stat *st)
     else if (a.node == N_FD)
         r = lx_fstat(a.fd, (long)(uintptr_t)st, 0, 0, 0, 0);
     else
-        node_stat(a.node, 0, st);
+        node_stat(a.node, a.pid, st);
     if (!r && p->must_dir && !S_ISDIR(st->st_mode))
         r = -ENOTDIR;
     return r;
@@ -509,12 +588,38 @@ long proc_readlink(const struct path *p, char *buf, size_t size)
 
 /* ---- open ------------------------------------------------------------------------- */
 
-static long open_dir(enum node node, long flags)
+/* A directory's description: its node and, for a process's, its pid in priv. */
+static long open_dir(enum node node, int32_t pid, long flags)
 {
     if ((flags & O_ACCMODE) != O_RDONLY || (flags & (O_CREAT | O_TRUNC)))
         return -EISDIR;
     uint32_t status = O_RDONLY | ((uint32_t)flags & (O_NONBLOCK | O_PATH | O_DIRECTORY));
-    return kind_install(&procdir_ops, (void *)(uintptr_t)node, status, flags & O_CLOEXEC);
+    return kind_install(&procdir_ops, (void *)((uintptr_t)node | (uintptr_t)pid << 8), status,
+                        flags & O_CLOEXEC);
+}
+
+/* A generated file: no writing (Linux's EACCES), no directory. */
+static long open_file(const struct at *a, const struct path *p, long flags)
+{
+    if (p->must_dir || (flags & O_DIRECTORY))
+        return -ENOTDIR;
+    if ((flags & O_ACCMODE) != O_RDONLY || (flags & O_TRUNC))
+        return -EACCES;
+    struct pfile_state *st = calloc(1, sizeof(*st));
+    if (!st)
+        return -ENOMEM;
+    for (unsigned i = 0; i < sizeof(pfiles) / sizeof(pfiles[0]); i++)
+        if (pfiles[i].node == a->node) {
+            st->file = pfiles[i].file;
+            if (i >= ROOT_FILES_FIRST)
+                snprintf(st->path, sizeof(st->path), PROC_DIR "/%s", pfiles[i].name);
+            else
+                snprintf(st->path, sizeof(st->path), PROC_DIR "/%d/%s", (int)a->pid,
+                         pfiles[i].name);
+        }
+    st->pid = a->pid;
+    uint32_t status = O_RDONLY | ((uint32_t)flags & (O_NONBLOCK | O_PATH));
+    return kind_install(&pfile_ops, st, status, flags & O_CLOEXEC);   /* closes st if it fails */
 }
 
 static long open_exe(const struct path *p, long flags)
@@ -590,14 +695,21 @@ long proc_open(const struct path *p, long flags)
         return open_exe(p, flags);
     if (a.node == N_FD)
         return reopen(a.fd, flags, p->must_dir || (flags & O_DIRECTORY));
-    return open_dir(a.node, flags);
+    if (is_file(a.node))
+        return open_file(&a, p, flags);
+    return open_dir(a.node, a.pid, flags);
 }
 
 /* ---- the directories' kind ------------------------------------------------------- */
 
 static enum node node_of(struct fd_desc *d)
 {
-    return (enum node)(uintptr_t)d->priv;
+    return (enum node)((uintptr_t)d->priv & 0xff);
+}
+
+static int32_t pid_of(struct fd_desc *d)
+{
+    return (int32_t)((uintptr_t)d->priv >> 8);
 }
 
 /* /proc/self/fd's entry at pos (2 or more): 1 and *e, or 0 at the end. */
@@ -616,34 +728,60 @@ static int fd_entry(int64_t pos, struct pentry *e)
     return 1;
 }
 
-/* The entry at pos of directory node: 1 and *e, or 0 at the end. Listing
- * positions: 0 ".", 1 "..", then 2 + k: entry k of /proc and /proc/self,
- * and for /proc/self/fd the first open descriptor >= k (so one opened or
- * closed between two calls shows or not as the table is then). */
-static int entry_at(enum node node, int64_t pos, struct pentry *e)
+/* One entry of a listing: name, node and type. */
+static void entry(struct pentry *e, const char *name, uint64_t ino, uint8_t type)
 {
-    static const enum node parent[] = { [N_ROOT] = 0, [N_SELF] = N_ROOT, [N_FDDIR] = N_SELF };
+    snprintf(e->name, NAME_LEN, "%s", name);
+    e->ino = ino;
+    e->type = type;
+}
+
+/* /proc's own entries: "self", our pid, our children (KIDS_LISTED at most,
+ * in the order they were made), then the files. k counts from 0. */
+static int root_entry(int64_t k, struct pentry *e)
+{
+    int32_t kids[KIDS_LISTED];
+    unsigned nk = lx_child_pids(kids, KIDS_LISTED);
+    if (nk > KIDS_LISTED)
+        nk = KIDS_LISTED;
+    char num[NAME_LEN];
+    if (k == 0) {
+        entry(e, "self", ino_of(N_SELFLINK, 0), DT_LNK);
+    } else if (k < 2 + (int64_t)nk) {
+        int32_t pid = k == 1 ? lx_pid() : kids[k - 2];
+        snprintf(num, sizeof(num), "%d", (int)pid);
+        entry(e, num, ino_of(N_SELF, pid), DT_DIR);
+    } else {
+        int64_t j = ROOT_FILES_FIRST + k - 2 - (int64_t)nk;
+        if (j >= (int64_t)(sizeof(pfiles) / sizeof(pfiles[0])))
+            return 0;
+        entry(e, pfiles[j].name, ino_of(pfiles[j].node, 0), DT_REG);
+    }
+    return 1;
+}
+
+/* The entry at pos of directory node (of process pid, for N_SELF and
+ * N_FDDIR): 1 and *e, or 0 at the end. Listing positions: 0 ".", 1 "..",
+ * then 2 + k: entry k of /proc and of a process's directory, and for
+ * /proc/self/fd the first open descriptor >= k (so one opened or closed
+ * between two calls shows or not as the table is then). */
+static int entry_at(enum node node, int32_t pid, int64_t pos, struct pentry *e)
+{
     e->next = pos + 1;
     if (pos < 2) {
-        snprintf(e->name, NAME_LEN, "%s", pos ? ".." : ".");
-        e->ino = pos && node == N_ROOT ? INO_ROOT : ino_of(pos ? parent[node] : node, 0);
-        e->type = DT_DIR;
+        uint64_t up = node == N_ROOT ? INO_ROOT : node == N_SELF ? ino_of(N_ROOT, 0)
+                                                                  : ino_of(N_SELF, pid);
+        entry(e, pos ? ".." : ".", pos ? up : ino_of(node, pid), DT_DIR);
         return 1;
     }
     if (node == N_FDDIR)
         return fd_entry(pos, e);
-    if (pos > 3)
+    if (node == N_ROOT)
+        return root_entry(pos - 2, e);
+    unsigned k = (unsigned)(pos - 2) + (pid == lx_pid() ? 0 : KID_FIRST);
+    if (pos - 2 >= (int64_t)PID_NAMES || k >= PID_NAMES)
         return 0;
-    bool first = pos == 2;   /* the link ("self", "exe"), then the directory */
-    if (node == N_ROOT)
-        snprintf(e->name, NAME_LEN, first ? "self" : "%d", (int)lx_pid());
-    else
-        snprintf(e->name, NAME_LEN, "%s", first ? "exe" : "fd");
-    e->type = first ? DT_LNK : DT_DIR;
-    if (node == N_ROOT)
-        e->ino = ino_of(first ? N_SELFLINK : N_SELF, 0);
-    else
-        e->ino = ino_of(first ? N_EXE : N_FDDIR, 0);
+    entry(e, pid_names[k].name, ino_of(pid_names[k].node, pid), pid_names[k].type);
     return 1;
 }
 
@@ -657,7 +795,7 @@ static long pd_getdents(struct fd_desc *d, void *buf, size_t len)
     struct pentry e;
     size_t used = 0;
     long r;
-    while ((r = entry_at(node_of(d), pos, &e)) > 0) {
+    while ((r = entry_at(node_of(d), pid_of(d), pos, &e)) > 0) {
         size_t k = dir_put((uint8_t *)buf + used, len - used, e.name, e.ino, e.type, e.next);
         if (!k) {
             r = used ? 0 : -EINVAL;   /* the buffer can't hold the next one */
@@ -693,7 +831,7 @@ static long pd_seek(struct fd_desc *d, int64_t off, int whence)
 
 static long pd_stat(struct fd_desc *d, struct stat *st)
 {
-    node_stat(node_of(d), 0, st);
+    node_stat(node_of(d), pid_of(d), st);
     return 0;
 }
 
@@ -703,4 +841,94 @@ static long pd_stat(struct fd_desc *d, struct stat *st)
 static const struct fd_ops procdir_ops = {
     .name = "/proc directory", .read = pd_read, .seek = pd_seek, .stat = pd_stat,
     .getdents = pd_getdents,
+};
+
+/* ---- the generated files' kind ----------------------------------------------------- */
+
+static struct pfile_state *pf_of(struct fd_desc *d)
+{
+    return d->priv;
+}
+
+/* Make the text again (or the first time): outside d's lock, since it asks
+ * the kernel and the descriptor table (fd.h's lock order). On success the
+ * new text is the file's, the old one freed. */
+static long pf_fill(struct fd_desc *d)
+{
+    struct pfile_state *s = pf_of(d);
+    char *text;
+    size_t len;
+    long r = procinfo_text(s->file, s->pid, &text, &len);
+    if (r)
+        return r;
+    lock_take(&d->lock);
+    free(s->text);
+    s->text = text;
+    s->len = len;
+    lock_give(&d->lock);
+    return 0;
+}
+
+static long pf_read(struct fd_desc *d, const struct iovec *iov, int iovcnt, int64_t pos)
+{
+    long n = fd_iov_total(iov, iovcnt);
+    if (n <= 0)
+        return n;
+    struct pfile_state *s = pf_of(d);
+    lock_take(&d->lock);
+    uint64_t off = pos == FD_AT_OFFSET ? (uint64_t)d->offset : (uint64_t)pos;
+    bool fresh = off == 0 || !s->text;   /* a read from the start starts a pass */
+    lock_give(&d->lock);
+    long r = fresh ? pf_fill(d) : 0;
+    if (r)
+        return r;
+    lock_take(&d->lock);
+    off = pos == FD_AT_OFFSET ? (uint64_t)d->offset : (uint64_t)pos;
+    size_t k = off >= s->len ? 0 : s->len - off < (size_t)n ? s->len - (size_t)off : (size_t)n;
+    fd_iov_scatter(iov, iovcnt, 0, s->text + (k ? off : 0), k);
+    if (pos == FD_AT_OFFSET)
+        d->offset += (int64_t)k;
+    lock_give(&d->lock);
+    return (long)k;
+}
+
+static long pf_seek(struct fd_desc *d, int64_t off, int whence)
+{
+    struct pfile_state *s = pf_of(d);
+    if (whence == SEEK_END) {   /* the length of the text now */
+        long r = pf_fill(d);
+        if (r)
+            return r;
+    }
+    lock_take(&d->lock);
+    int64_t base = whence == SEEK_SET ? 0 : whence == SEEK_CUR ? d->offset :
+                   whence == SEEK_END ? (int64_t)s->len : -1;
+    int64_t to;
+    long r = base < 0 || __builtin_add_overflow(base, off, &to) || to < 0 ? -EINVAL : 0;
+    if (!r)
+        d->offset = to;
+    lock_give(&d->lock);
+    return r ? r : (long)to;
+}
+
+static long pf_stat(struct fd_desc *d, struct stat *st)
+{
+    enum node node = 0;
+    for (unsigned i = 0; i < sizeof(pfiles) / sizeof(pfiles[0]); i++)
+        if (pfiles[i].file == pf_of(d)->file)
+            node = pfiles[i].node;
+    node_stat(node, pf_of(d)->pid, st);
+    return 0;
+}
+
+static void pf_close(struct fd_desc *d)
+{
+    free(pf_of(d)->text);
+    free(d->priv);
+}
+
+/* No .give: a child left out of the hand-over opens its own. Always ready
+ * (no .arm), as a file. */
+static const struct fd_ops pfile_ops = {
+    .name = "/proc file", .read = pf_read, .seek = pf_seek, .stat = pf_stat, .close = pf_close,
 };

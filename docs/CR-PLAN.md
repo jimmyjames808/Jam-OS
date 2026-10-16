@@ -673,10 +673,17 @@ dies with the reason, nothing else does).
     `O_RDONLY` gives a handle **without `RIGHT_WRITE`**. That is
     Chromium's read-only twin of a shared memory region, and it is real:
     the receiver can't map it writable, whatever the sender does.
-  - Everything else under `/proc` (`/proc/self/stat`, `/proc/cpuinfo`,
-    `/proc/self/maps`, `/proc/sys/...`): **ENOENT, never a half-filled
-    file.** Chromium's callers of these fail soft (metrics, CPU names,
-    V8's remap fallback); the ENOSYS and ENOENT log (below) shows any
+  - The files Chromium's `base` reads (PRC, built: "PRC notes"):
+    `/proc/self/stat`, `status`, `statm` and `maps` (and a child's, for
+    `/proc/<pid>/` of the processes we started), `/proc/cpuinfo`,
+    `/proc/meminfo` and `/proc/stat`, in Linux's text and field order,
+    from process_get_info, process_get_maps (the address space's
+    mappings), the figures any process may read and CPUID. Fields Jam OS
+    has no meaning for hold Linux's neutral value.
+  - Everything else under `/proc` (`/proc/sys/...`, `smaps`, `cmdline`,
+    `/proc/self/ns/user`, ...): **ENOENT, never a half-filled file.**
+    Chromium's callers of these fail soft (the namespace check reads
+    "no user namespaces"); the ENOSYS and ENOENT log (below) shows any
     that doesn't.
 - **memfd seals across processes** (CU1 with CL2): seals already travel
   with a memfd in the hand-over (size and seals); `SCM_RIGHTS` carries
@@ -1372,7 +1379,8 @@ ports, recipes, tests, netstack's caps, the audio API and the docs.
 | **CK2. Mappings at scale** | section 2: the mapping tree with gap sizes, merging after map, protect and replace, `VMAR_MAX_MAPPINGS` 65,536 | `kernel/mm/aspace.c` (the list and its users), `kernel/include/jam/abi.h` (the constant, a different line from CK1's), new ktests | nothing (beside CK1: different files) | ktests: 50,000 alternating `vmar_protect`s over one mapping end as a few mappings; a fault's time flat with 60,000 mappings; replace inside a big mapping; the job's record charges exact after merges; full ktest 4 and 8; soak 2 | **Opus** |
 | **CK3. The reverse map at scale** | section 2: a VMO's user mappings indexed by page range | `kernel/object/vmo.c` (the reverse map), `kernel/include/jam/aspace_vmo.h` | CK1 and CK2 merged | ktests: a VMO split into 10,000 mappings, a one-page decommit touches one; interrupts-off time measured before and after; full ktest 4 and 8; soak 2 | **Opus** |
 | **CL1. Reservations in libc** | section 2's libc part: any size, one VMO; `MAP_FIXED` anonymous inside libc's own private mapping decommits in place; the tests of V8's and PartitionAlloc's patterns | `user/posix/sys/mem.c`, `user/posix/sys/maptable.c` if needed, posixtest's `mem` section | stage 1 (up to 64 GiB) at once; stage 2 after CK1 and CK2 | posixtest `mem`: section 2's cases; libc-test unchanged | **Opus** |
-| **CL2. `/proc/self` and the self-image** | section 3's `/proc` and section 6's self-image: the program's path in the hand-over and libjam's spawn, `SR_SELF_IMAGE` from every starter, `/proc/self/exe` (readlink, and spawn from the image), `/proc/self/fd` (list, readlink, reopen with the read-only twin), ENOENT for the rest; built, see "CL2 notes" | a new user/posix/sys/procfs.c, the path lines in `user/posix/sys/path.c`, `user/posix/sys/spawn.c` (the self branch), `user/include/posixfds.h`, `user/include/roles.h`, `user/lib/spawn.c` (the path and the role), the shell's and init's start of programs (the role, a line each) | nothing for `/proc`; the self-image of a `/data` program after M12.5's PX | posixtest: readlink of `/proc/self/exe` from a boot-image program and a `/data` one; a spawn of `/proc/self/exe` (shared pages: the child adds no text pages to the job); a memfd reopened read-only can't be mapped writable; `/proc/cpuinfo` ENOENT | **Opus** |
+| **CL2. `/proc/self` and the self-image** | section 3's `/proc` and section 6's self-image: the program's path in the hand-over and libjam's spawn, `SR_SELF_IMAGE` from every starter, `/proc/self/exe` (readlink, and spawn from the image), `/proc/self/fd` (list, readlink, reopen with the read-only twin), ENOENT for the rest; built, see "CL2 notes" | a new user/posix/sys/procfs.c, the path lines in `user/posix/sys/path.c`, `user/posix/sys/spawn.c` (the self branch), `user/include/posixfds.h`, `user/include/roles.h`, `user/lib/spawn.c` (the path and the role), the shell's and init's start of programs (the role, a line each) | nothing for `/proc`; the self-image of a `/data` program after M12.5's PX | posixtest: readlink of `/proc/self/exe` from a boot-image program and a `/data` one; a spawn of `/proc/self/exe` (shared pages: the child adds no text pages to the job); a memfd reopened read-only can't be mapped writable; the rest of `/proc` ENOENT (PRC's files: "PRC notes") | **Opus** |
+| **PRC. `/proc`'s files for `base`** (built 2026-10-16) | section 3's files `base` reads, found missing by CB2's first `base_unittests` run: `/proc/self/stat`, `status`, `statm`, `maps`, `/proc/<pid>/stat` of our children, `/proc/cpuinfo`, `/proc/meminfo`, `/proc/stat`; built, see "PRC notes" | `user/posix/sys/procfs.c`, new `user/posix/sys/procinfo.c`, `procinfo.h`, `cpuinfo.c`; small hooks in `proc.c`, `mem.c`, `time.c`, `misc.c`, `kposix.c`, `layer.h`; kernel: `process_get_maps` (138) in `abi/syscalls.def`, `kernel/abi/sysc_proc.c`, `kernel/mm/aspace.c`, `process_info` (creation time, name) and `sys_public_info` (free pages) in `kernel/include/jam/abi.h` | CL2 | posixtest `procinfo`; utest `process_maps`; ktest `aspace_maps_shapes`; tools/shell-tests/posix-procinfo.txt | **Opus** (a kernel call) |
 | **CL3. Raw calls and the ENOSYS log** | section 3's log and calls: `prctl` names, affinity, thread priorities, futex operations checked, `membarrier` | `user/posix/sys/calls.def` and the handlers' files it touches (`user/posix/sys/misc.c`, `user/posix/sys/thread.c`), a new log file in user/posix/sys/ | nothing | posixtest: each call's cases; the log names an unknown call once | Sonnet 5.5 |
 | **CU1. Descriptor passing on socketpairs** | section 4: the framing, every hand-over kind on GS1's tables, more than 64 descriptors, `MSG_CTRUNC`, `MSG_CMSG_CLOEXEC`, `shutdown(SHUT_RDWR)`, seals travelling and the write-seal rule | the translation file GS1 made (widened), `user/posix/sys/pipe.c` (the socketpair's send and receive), `user/posix/sys/sockio.c`, `user/posix/sys/sockconn.c` (shutdown), `user/posix/sys/memfd.c` (the seal rule), posixtest's socketpair section | G2's GS1 merged | posixtest: 1 byte with 64 descriptors, 128, 254 (EINVAL); every kind passed and used on the other side (a pipe written, a memfd mapped, a file read at its offset, an eventfd signalled); the read-only twin passed on stays read-only; too little room; a peer gone mid-send; Mojo's pattern (non-blocking, partial writes, descriptors with the first byte) between two processes; a fuzz loop of mutated headers (no crash, no handle leaked) | **Opus** |
 | **CU2. Named `AF_UNIX` sockets** | section 4's broker, `/svc/unix`: `bind`, `listen`, `accept`, `connect` on socket files and abstract names | the broker (new, user/services/), its IDL (new), `user/posix/sys/socket.c`'s `AF_UNIX` paths, init's start of it | CU1; M13.6's U4 (socket files on `/jam`) | posixtest: a listener and two connectors, a socket file removed, a connector without the file's view refused, abstract names; utest for the broker's limits | **Opus** |
@@ -1717,7 +1725,10 @@ Track CP1, programs this big (2026-10-14): section 6's limits raised to
 
 Track CL2, `/proc/self` and the self-image (2026-10-14; the `/proc` half,
 user/posix/sys/procfs.c, came first). Section 3's `/proc` and section 6's
-self-image.
+self-image. CL2 left every other name ENOENT; PRC (2026-10-16, "PRC notes"
+below) added the files Chromium's `base` reads (`stat`, `status`, `statm`,
+`maps`, `cpuinfo`, `meminfo`, `/proc/stat`) and the neutral values it fills
+where Jam OS has no meaning.
 
 - **The program's path.** The POSIX hand-over's first message carries it
   (`exe_len` after the directory, `<posixfds.h>`; the old `reserved`
@@ -1793,6 +1804,115 @@ self-image.
   writable, the child's image our very VMO (the same object id). utest's
   malformed hand-overs add a program's path that isn't there and one past
   the first message.
+
+## PRC notes
+
+Track PRC, `/proc`'s files for Chromium's `base` (2026-10-16): CB2's first
+`base_unittests` run logged `/proc/self/status`, `maps`, `stat`,
+`/proc/<pid>/stat`, `/proc/cpuinfo`, `/proc/meminfo` and `/proc/self/ns/user`
+as ENOENT. This is section 3's `/proc` beyond CL2's `exe` and `fd`:
+user/posix/sys/procfs.c (names, opens, listing; a "generated file" kind),
+procinfo.c and cpuinfo.c (the text).
+
+- **What `base` does with each.**
+  - `stat` (ProcessMetrics, `Process::CreationTime`, `GetNumberOfThreads`,
+    ProcessUtilTest's zombie check): the 52 fields of proc(5), parsed after
+    the last `)`. State `R` for ourselves, `S` for a live child, `Z` for one
+    that ended and is not reaped (field 52 its code as `wait` gives it);
+    gone (ENOENT, and ESRCH on a file opened before) once reaped.
+    `CreationTime` is `btime` of `/proc/stat` plus `starttime` in ticks.
+  - `status` (BeingDebugged reads `TracerPid`, memory metrics read `VmRSS`,
+    `VmSwap`, `VmHWM`): Linux's keys in Linux's order.
+  - `statm`, `maps` (stack traces: "Failed to read /proc/self/maps"; V8's
+    shared-library list), `cpuinfo` (`SysInfo::CPUModelName`, the first
+    `model name`), `meminfo` (`SysInfo::AmountOfAvailablePhysicalMemory`,
+    the memory pressure monitor: MemTotal, MemFree, MemAvailable) and `stat`
+    (system): as above.
+  - `/proc/self/ns/user` stays **ENOENT**: Linux has no such file without
+    user namespaces, and the sandbox code's "are unprivileged user
+    namespaces supported" check then says no, which is right (Jam OS has
+    none; the sandbox is its own grants). With `--no-sandbox` it isn't
+    asked.
+- **What is real, and from where.**
+  - A process: `process_get_info` (state, live threads, CPU time, pid, and
+    new in PRC `start_ns`, the uptime at `process_create`, and `name`);
+    our process group, session and parent from the hand-over; a child's
+    from libc's table of children (proc.c: `lx_child_facts`).
+  - The address space: **the one kernel call PRC adds, `process_get_maps`
+    (138, `RIGHT_INSPECT` on a process)**: the mappings from an address on,
+    in order, up to 256 a call (`struct map_info`: base, length, the VMO's
+    koid and offset, the pages present in the page tables now, the
+    permissions). The pages present are counted by walking the page tables
+    (cost: the pages present; a mapping with no read, a reservation not
+    touched, costs nothing), under the address space's region lock like
+    `process_info.mappings`. It serves `maps`, VmSize and VmRSS (stat,
+    status, statm) for ourselves and for each child (through its process
+    handle). libc's table of its mappings (mem.c: `mem_kind_at`) says which
+    are shared (`s`), on a file's own pages (the file's offset), or the
+    break (`[heap]`); our program headers say which are the image (named by
+    `/proc/self/exe`'s path, with its offset). RssAnon, RssFile and
+    RssShmem are the present pages of the other three groups.
+  - CPUs: the count from `sys_public_info`; everything else from CPUID as
+    the CPU we run on answers it (family, model, stepping, brand, cache,
+    address sizes, Linux's names for the feature flags); `cpu MHz` the
+    TSC's rate from the time page, `bogomips` twice it.
+  - Memory: `sys_public_info`, which gained **`mem_free_pages`** (the page
+    allocator's free lists and per-CPU stashes; it does not drain the
+    kernel heap's magazines, so a program asking cannot slow it: the pages
+    cached there count as used). MemTotal and MemFree are those;
+    MemAvailable is MemFree (no page cache is kept apart). `sysinfo(2)`'s
+    freeram is the same figure now.
+  - The clock: `btime` is the wall clock now minus the uptime.
+- **Neutral values** (Linux's "none", where Jam OS has no meaning):
+  stat: tty 0 and tpgid -1, flags `PF_RANDOMIZE`, fault counts 0, stime 0
+  (the kernel keeps one CPU time: utime has all of it), cutime the CPU time
+  of the children we reaped, cstime 0, priority 20, nice 0, itrealvalue 0,
+  rsslim unlimited, startstack and the stack and instruction pointers 0,
+  wchan 0, exit_signal 17, processor 0, rt_priority and policy 0, the
+  data, brk, argument and environment addresses 0; the signal sets are ours
+  (pending, blocked, ignored, caught; a child's 0). status: no tracer, uid
+  and gid 1000, no supplementary groups, no capabilities, `Seccomp: 0`,
+  `NoNewPrivs: 0`, all CPUs allowed, no context switches counted, VmLck,
+  VmPin, VmLib, VmStk, VmPTE and VmSwap 0 (the main stack is not told apart:
+  it is in VmData), VmPeak and VmHWM the largest VmSize and VmRSS this
+  process has seen read here (a child's: its current ones). maps: device
+  `00:00` and inode 0 on every line; no `[stack]`, `[vdso]` or `[vvar]`, and
+  no names for files mapped with `mmap` (only the image and the break are
+  named); a child's lines have no names. cpuinfo: `microcode 0x0` (an MSR),
+  physical id 0, siblings and cpu cores the CPUs online, core id, apicid
+  and initial apicid the CPU's number (a CPU's APIC id needs a root
+  handle), bugs empty. meminfo: every field but the memory figures 0
+  (`Hugepagesize` 2048 kB, `DirectMap4k` all of it). stat (system): the CPU
+  times 0 (`cpu_stat` needs a root handle), `processes` our pid.
+- **A read is a pass.** The text is made when a read starts at offset 0
+  (the first read, or `lseek(0)` and read, or `pread` at 0) and kept for
+  the reads at later offsets of that pass; `lseek(SEEK_END)` makes it to
+  say its length. So a program reading with a small buffer sees one file,
+  and one that reads again sees the new state. Files are 0444, size 0 as
+  Linux's, not writable (EACCES), not directories (ENOTDIR).
+  `/proc/self/fd/N` of one reads `/proc/<pid>/<name>`.
+- **Who is listed.** `/proc` lists `self`, our pid, each child not yet
+  reaped (the first 256), and `cpuinfo`, `meminfo`, `stat`. A child's
+  directory has `maps`, `stat`, `statm` and `status` (no `exe` or `fd`); any
+  other pid is ENOENT, as before. A process reading its own `maps` sees the
+  buffers its read allocates (musl maps any allocation over 7 KiB): as on
+  Linux.
+- **Not built** (each shows up in the ENOENT log if something wants it):
+  `smaps` and `smaps_rollup`, `cmdline`, `task/`, `limits`, `oom_score_adj`,
+  `auxv`, `io`, `uptime`, `loadavg`, `diskstats`, other pids' files.
+- **Tests**: posixtest's `procinfo` section (in the `init` run; also
+  tools/shell-tests/posix-procinfo.txt from the shell): the files against
+  proc(5) and what the process really does (threads made and ended,
+  memory mapped, touched and given back, CPU burned, a protect that splits
+  a mapping, a guard, `MAP_SHARED`, the break, the signal masks, CPUID's
+  vendor, family and feature bits, `sysconf` and `sysinfo` against
+  meminfo, `btime` against the clocks), and a child's from live through
+  zombie (exit code 5 << 8, and 9 for SIGKILL) to reaped. utest's
+  `process_maps` (the call's fields, the cursor, the refusals, a process
+  that never ran), `sys_public_info` (free pages follow 16 MiB committed
+  and given back) and `posix_ids` (the creation time and name). ktest
+  `aspace_maps_shapes` (the list, the cursor, protect's splits, the pages
+  present).
 
 ## CS1 notes
 

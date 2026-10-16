@@ -613,6 +613,31 @@ static uint64_t leaves_wrprotect(uint64_t *pt, uint64_t va, uint64_t stop, unsig
     return n;
 }
 
+/* Changes nothing: how many of the leaves in [va, stop) are present. */
+static uint64_t leaves_present(uint64_t *pt, uint64_t va, uint64_t stop, unsigned perms)
+{
+    (void)perms;
+    uint64_t n = 0;
+    for (; va < stop; va += PAGE_SIZE)
+        n += (pt[ix(va, 1)] & PTE_P) != 0;
+    return n;
+}
+
+/* The pages present in [va, end): one page table (2 MiB) at a time under
+ * pt_lock, skipping missing tables (a reservation nobody touched costs a
+ * step per 512 GiB, 1 GiB or 2 MiB of it that has a table above it). */
+static uint64_t resident_in(struct aspace *as, uint64_t va, uint64_t end)
+{
+    const struct leaf_walk w = { .fn = leaves_present };
+    uint64_t seen = 0;
+    while (va < end) {
+        uint64_t f = spin_lock_irqsave(&as->pt_lock);
+        va = walk_one(as, va, end, &w, &seen);
+        spin_unlock_irqrestore(&as->pt_lock, f);
+    }
+    return seen;
+}
+
 static void zap(struct aspace *as, uint64_t va, uint64_t end, bool detach, struct tlb_gather *g)
 {
     const struct leaf_walk w = { leaves_clear, 0, detach, false, g };
@@ -1786,6 +1811,25 @@ uint32_t aspace_mapping_count(struct aspace *as)
 {
     mutex_lock(&as->lock);
     uint32_t n = as->nmaps;
+    mutex_unlock(&as->lock);
+    return n;
+}
+
+uint32_t aspace_get_maps(struct aspace *as, uint64_t from, struct map_info *out, uint32_t cap)
+{
+    uint32_t n = 0;
+    mutex_lock(&as->lock);
+    for (struct mapping *m = first_in(as, from, UINT64_MAX); m && n < cap; m = next_of(m), n++) {
+        out[n] = (struct map_info){
+            .base = m->base,
+            .len = m->len,
+            .vmo_koid = vmo_kobject(m->vmo)->koid,
+            .vmo_off = m->vmo_off,
+            /* no read, no entries (protect clears them): nothing to walk in a reservation */
+            .resident = (m->flags & ASPACE_READ) ? resident_in(as, m->base, mend(m)) : 0,
+            .perms = m->flags & PERMS,
+        };
+    }
     mutex_unlock(&as->lock);
     return n;
 }

@@ -87,6 +87,13 @@ status_t aspace_protect(struct aspace *as, uint64_t addr, uint64_t len, unsigned
 /* How many mappings it holds now (merged neighbours count once). Takes the
  * region lock: may sleep. */
 uint32_t aspace_mapping_count(struct aspace *as);
+/* The mappings in address order, from the first that ends after `from`: up
+ * to cap of them into out, their number returned (<jam/abi.h> map_info).
+ * One view under the region lock (may sleep); each entry's `resident`
+ * counts the page-table entries present, so a decommit (which clears
+ * entries without the region lock) may make a count a moment old. */
+struct map_info;
+uint32_t aspace_get_maps(struct aspace *as, uint64_t from, struct map_info *out, uint32_t cap);
 /* Whether as has mapped a JIT VMO since it was made (PROCESS_FLAG_JIT).
  * Lock-free. */
 bool     aspace_maps_jit(struct aspace *as);

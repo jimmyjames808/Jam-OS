@@ -612,8 +612,11 @@ Every driver and service is a userspace process from the start.
     `thread_set_tid_word` (cleared and woken when the thread ends, for
     `pthread_join`), `thread_interrupt` (POSIX's `EINTR`) and
     `thread_get_info`. `sys_public_info` gives any program the version,
-    the machine, the CPUs and the memory (`uname`, `sysconf`) with no
-    handle or right.
+    the machine, the CPUs and the memory, all and free (`uname`,
+    `sysconf`, `/proc/meminfo`) with no handle or right.
+    `process_get_maps` lists a process's mappings, each with its VMO and
+    the pages present (`RIGHT_INSPECT`; libc's `/proc/<pid>/maps`, stat and
+    status are made from it).
   - *Drivers*: `dma_cap_create` takes the job that pays for the cap, its
     pins and its IOMMU tables; `dma_vmo_create` makes the contiguous and
     DMA32 VMOs; `vmo_pin` takes its arguments in a struct, with

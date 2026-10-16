@@ -59,11 +59,17 @@ bool t_posix_ids(void)
 
     handle_t job, child, vmar;
     CHECK_ST(new_job(&job), OK);
+    uint64_t before = now();
     CHECK_ST(jam_process_create(job, "ids", 3, 0, &child, &vmar), OK);
     struct process_info ci;
     CHECK_ST(jam_process_get_info(child, &ci), OK);
     CHECK(ci.pid > 0 && ci.pid != pi.pid);
     CHECK_EQ(ci.cpu_ns, 0);   /* never ran */
+    /* When it was made (the uptime) and the name it was made with. */
+    CHECK(ci.start_ns >= before && ci.start_ns <= now());
+    CHECK(!strcmp(ci.name, "ids"));
+    CHECK(pi.start_ns > 0 && pi.start_ns < ci.start_ns);   /* we are older */
+    CHECK(pi.name[0] && !pi.name[sizeof(pi.name) - 1]);
     CHECK_ST(jam_handle_close(vmar), OK);
     CHECK_ST(jam_handle_close(child), OK);
     CHECK_ST(jam_handle_close(job), OK);
@@ -211,9 +217,160 @@ bool t_sys_public_info(void)
     CHECK_EQ(s.page_size, 4096);
     CHECK(s.cpus_online >= 1);
     CHECK(s.mem_total_pages > 1000);
+    CHECK(s.mem_free_pages > 0 && s.mem_free_pages <= s.mem_total_pages);
+    /* The free figure is the allocator's: 16 MiB committed takes at least
+     * half of it from the count, and giving it back puts it back. */
+    handle_t vmo;
+    CHECK_ST(jam_vmo_create(4096 * PAGE_SIZE, 0, &vmo), OK);
+    CHECK_ST(jam_vmo_commit(vmo, 0, 4096 * PAGE_SIZE), OK);
+    struct sys_public_info s2;
+    CHECK_ST(jam_sys_public_info(&s2), OK);
+    CHECK(s2.mem_free_pages + 2048 <= s.mem_free_pages);
+    CHECK_EQ(s2.mem_total_pages, s.mem_total_pages);
+    CHECK_ST(jam_handle_close(vmo), OK);
+    CHECK_ST(jam_sys_public_info(&s2), OK);
+    CHECK(s2.mem_free_pages >= s.mem_free_pages - 1024);
     CHECK_ST(jam_sys_public_info(UNMAPPED), ERR_INVALID_ARGS);
     CHECK_ST(jam_sys_public_info((struct sys_public_info *)0xffff800000000000ull),
              ERR_INVALID_ARGS);
+    return true;
+}
+
+/* ---- process_get_maps ---------------------------------------------------------- */
+
+/* The entry of the list from `from` that starts at base, or NULL. */
+static const struct map_info *entry_at(const struct map_info *m, long n, uint64_t base)
+{
+    for (long i = 0; i < n; i++)
+        if (m[i].base == base)
+            return &m[i];
+    return NULL;
+}
+
+/* Our own mappings, as the call lists them: what we map shows with its
+ * VMO, offset, permissions and pages present; the list is in order and as
+ * long as process_info says; a process that never ran lists what is mapped
+ * for it, with nothing present; the refusals. */
+bool t_process_maps(void)
+{
+    handle_t self = startup_handle(SR_SELF_PROCESS), vmar = startup_handle(SR_SELF_VMAR);
+    handle_t a, b;
+    CHECK_ST(jam_vmo_create(8 * PAGE_SIZE, 0, &a), OK);
+    CHECK_ST(jam_vmo_create(4 * PAGE_SIZE, 0, &b), OK);
+    uint64_t pa = 0, pb = 0;
+    CHECK_ST(jam_vmar_map(vmar, a, 0, 8 * PAGE_SIZE, VMAR_READ | VMAR_WRITE, &pa), OK);
+    CHECK_ST(jam_vmar_map(vmar, b, PAGE_SIZE, 2 * PAGE_SIZE, VMAR_READ, &pb), OK);
+    struct handle_info ia, ib;
+    CHECK_ST(jam_handle_info(a, &ia), OK);
+    CHECK_ST(jam_handle_info(b, &ib), OK);
+
+    struct map_info m[8];
+    long n = jam_process_get_maps(self, pa, m, 8);
+    CHECK(n >= 1);
+    CHECK_EQ(m[0].base, pa);   /* the first that ends after pa is a's */
+    CHECK_EQ(m[0].len, 8 * PAGE_SIZE);
+    CHECK_EQ(m[0].vmo_koid, ia.koid);
+    CHECK_EQ(m[0].vmo_off, 0);
+    CHECK_EQ(m[0].perms, VMAR_READ | VMAR_WRITE);
+    CHECK_EQ(m[0].resident, 0);   /* nothing touched */
+    CHECK_EQ(m[0].flags, 0);
+
+    /* Pages present follow the touches: two of a's, one of b's. */
+    volatile uint8_t *wa = (volatile uint8_t *)(uintptr_t)pa;
+    wa[PAGE_SIZE] = 1;
+    wa[5 * PAGE_SIZE] = 1;
+    volatile uint8_t *rb = (volatile uint8_t *)(uintptr_t)pb;
+    (void)rb[0];
+    n = jam_process_get_maps(self, pa, m, 8);
+    CHECK(n >= 1 && m[0].base == pa);
+    CHECK_EQ(m[0].resident, 2);
+    const struct map_info *mb = entry_at(m, n, pb);
+    if (!mb) {   /* more mappings than 8 between them: ask from b */
+        n = jam_process_get_maps(self, pb, m, 8);
+        mb = entry_at(m, n, pb);
+    }
+    CHECK(mb != NULL);
+    CHECK_EQ(mb->len, 2 * PAGE_SIZE);
+    CHECK_EQ(mb->vmo_koid, ib.koid);
+    CHECK_EQ(mb->vmo_off, PAGE_SIZE);
+    CHECK_EQ(mb->perms, VMAR_READ);
+    CHECK_EQ(mb->resident, 1);
+
+    /* A protect splits a's mapping; one to no access takes its pages out of the count. */
+    CHECK_ST(jam_vmar_protect(vmar, pa + PAGE_SIZE, PAGE_SIZE, VMAR_READ), OK);
+    n = jam_process_get_maps(self, pa, m, 8);
+    CHECK(n >= 3);
+    CHECK_EQ(m[0].len, PAGE_SIZE);
+    CHECK_EQ(m[0].resident, 0);
+    CHECK_EQ(m[1].base, pa + PAGE_SIZE);
+    CHECK_EQ(m[1].len, PAGE_SIZE);
+    CHECK_EQ(m[1].perms, VMAR_READ);
+    CHECK_EQ(m[1].resident, 1);
+    CHECK_EQ(m[2].base, pa + 2 * PAGE_SIZE);
+    CHECK_EQ(m[2].resident, 1);   /* page 5 is in this one's range */
+    CHECK_ST(jam_vmar_protect(vmar, pa + 4 * PAGE_SIZE, 4 * PAGE_SIZE, 0), OK);
+    n = jam_process_get_maps(self, pa + 4 * PAGE_SIZE, m, 8);
+    CHECK(n >= 1 && m[0].base == pa + 4 * PAGE_SIZE && m[0].perms == 0 && m[0].resident == 0);
+
+    /* The whole list: in order, no overlap, as many as process_info counts. */
+    for (unsigned try = 0; try < 4; try++) {
+        struct process_info pi;
+        CHECK_ST(jam_process_get_info(self, &pi), OK);
+        uint64_t from = 0, last_end = 0;
+        long total = 0;
+        for (;;) {
+            n = jam_process_get_maps(self, from, m, 8);
+            CHECK(n >= 0 && n <= 8);
+            for (long i = 0; i < n; i++) {
+                CHECK(m[i].len > 0 && !(m[i].base & (PAGE_SIZE - 1)) && !(m[i].len & (PAGE_SIZE - 1)));
+                CHECK(m[i].base >= last_end);
+                last_end = m[i].base + m[i].len;
+            }
+            total += n;
+            if (n < 8)
+                break;
+            from = last_end;
+        }
+        if (total == pi.mappings)
+            break;
+        CHECK(try < 3);   /* a thread of ours mapped meanwhile: three tries */
+    }
+
+    /* A process that never ran: what is mapped into it is listed, none of it present. */
+    handle_t job, child, cvmar;
+    CHECK_ST(new_job(&job), OK);
+    CHECK_ST(jam_process_create(job, "maps", 4, 0, &child, &cvmar), OK);
+    CHECK_EQ(jam_process_get_maps(child, 0, m, 8), 0);
+    uint64_t pc = 0;
+    CHECK_ST(jam_vmar_map(cvmar, a, 0, 2 * PAGE_SIZE, VMAR_READ, &pc), OK);
+    CHECK_EQ(jam_process_get_maps(child, 0, m, 8), 1);
+    CHECK(m[0].base == pc && m[0].len == 2 * PAGE_SIZE && m[0].vmo_koid == ia.koid &&
+          m[0].resident == 0);   /* the VMO has pages; this address space has none yet */
+    CHECK_EQ(jam_process_get_maps(child, pc + 2 * PAGE_SIZE, m, 8), 0);
+    CHECK_ST(jam_handle_close(cvmar), OK);
+    CHECK_ST(jam_handle_close(child), OK);
+    CHECK_ST(jam_handle_close(job), OK);
+
+    /* Unmapped, they are gone. */
+    CHECK_ST(jam_vmar_unmap(vmar, pa, 8 * PAGE_SIZE), OK);
+    CHECK_ST(jam_vmar_unmap(vmar, pb, 2 * PAGE_SIZE), OK);
+    n = jam_process_get_maps(self, pa, m, 8);
+    CHECK(n >= 0 && (n == 0 || m[0].base > pb));
+    CHECK(!entry_at(m, n, pa) && !entry_at(m, n, pb));
+
+    /* The refusals. */
+    CHECK_EQ(jam_process_get_maps(self, 0, m, 0), ERR_OUT_OF_RANGE);
+    CHECK_EQ(jam_process_get_maps(self, 0, m, MAP_INFO_MAX + 1), ERR_OUT_OF_RANGE);
+    CHECK_EQ(jam_process_get_maps(HANDLE_INVALID, 0, m, 8), ERR_BAD_HANDLE);
+    CHECK_EQ(jam_process_get_maps(a, 0, m, 8), ERR_WRONG_TYPE);
+    CHECK_EQ(jam_process_get_maps(self, 0, (struct map_info *)UNMAPPED, 8), ERR_INVALID_ARGS);
+    CHECK_EQ(jam_process_get_maps(self, UINT64_MAX, m, 8), 0);
+    handle_t blind;
+    CHECK_ST(jam_handle_duplicate(self, RIGHT_WAIT | RIGHT_DUPLICATE, &blind), OK);
+    CHECK_EQ(jam_process_get_maps(blind, 0, m, 8), ERR_ACCESS_DENIED);   /* no RIGHT_INSPECT */
+    CHECK_ST(jam_handle_close(blind), OK);
+    CHECK_ST(jam_handle_close(a), OK);
+    CHECK_ST(jam_handle_close(b), OK);
     return true;
 }
 

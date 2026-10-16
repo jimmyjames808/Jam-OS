@@ -28,6 +28,16 @@ handle_t lx_self_vmar(void);
  * thread's own stack, by __unmapself): libc's table of mappings forgets
  * it, so a later mapping there isn't taken for this one (mem.c). */
 void mem_forget(uint64_t addr, uint64_t len);
+/* What libc's table of its own mappings (mem.c) says of the mapping that
+ * holds addr, for /proc: MEM_UNKNOWN (not one it made: the program's image,
+ * a stack, libjam's), else MEM_* bits. */
+#define MEM_UNKNOWN 0xffffffffu
+#define MEM_SHARED  (1u << 0)   /* MAP_SHARED: the VMO's pages are other holders' too */
+#define MEM_FILE    (1u << 1)   /* a read-only private mapping on a file's own pages */
+#define MEM_BRK     (1u << 2)   /* the break's reservation */
+uint32_t mem_kind_at(uint64_t addr);
+/* The TSC's rate (Hz) from the time page, or 0 without one (time.c). */
+uint64_t time_tsc_hz(void);
 /* The soft limit of a resource (rlimit.c): RLIMIT_NOFILE and RLIMIT_DATA are
  * the ones acted on (fd_alloc, brk); UINT64_MAX is unlimited. */
 uint64_t rlimit_cur(int resource);
@@ -64,6 +74,11 @@ struct kp_public {
     char     version[32];   /* the kernel's version, NUL-terminated */
     uint32_t cpus;          /* CPUs online */
     uint64_t pages;         /* memory, in pages of page_size */
+    uint64_t free_pages;    /* of those, free now */
     uint32_t page_size;     /* bytes */
 };
 status_t kp_public_info(struct kp_public *out);
+/* The mappings of the process behind proc (RIGHT_INSPECT), from the first
+ * that ends after `from`: up to cap (at most MAP_INFO_MAX) into out. Their
+ * number, or -errno. */
+long     kp_process_maps(handle_t proc, uint64_t from, struct map_info *out, uint32_t cap);
