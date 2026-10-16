@@ -14,10 +14,10 @@
  *
  * Memory is the volume's: about 13 bytes an inode, a bit a block, and the
  * largest directory's names (ext_check.h); a drive too big for it says so. */
-#include <idl/block.h>
-#include <idl/volumes.h>
 #include <ext.h>
 #include <ext_check.h>
+#include <idl/block.h>
+#include <idl/volumes.h>
 #include "sh.h"
 
 #define LIST_WAIT   (5 * NS_PER_S)
