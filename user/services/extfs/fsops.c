@@ -341,7 +341,8 @@ static status_t op_getattr(void *ctx, const char *path, uint32_t path_len, uint3
     if (flags & ~(uint32_t)FS_NOFOLLOW)
         return ERR_INVALID_ARGS;
     struct xf_walk *w = &wa;
-    status_t st = walk_found(ctx, path, path_len, flags & FS_NOFOLLOW ? W_NOFOLLOW : 0, w);
+    status_t st = walk_found(ctx, path, path_len, (flags & FS_NOFOLLOW ? W_NOFOLLOW : 0) | W_STAT,
+                             w);
     if (st != OK)
         return st;
     struct xf_attr a;
@@ -463,7 +464,7 @@ static status_t op_resolve(void *ctx, const char *path, uint32_t path_len, uint3
     }
     if (st != OK)
         return st;
-    if (walk_hidden(c, w, false))
+    if (walk_hidden(c, w, true))
         return ERR_ACCESS_DENIED;
     *out_kind = FS_RESOLVE_INSIDE;
     *out_used = (uint16_t)path_len;
