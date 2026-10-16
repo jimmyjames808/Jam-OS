@@ -262,8 +262,8 @@ static long ctl(struct fd_desc *ed, int op, int fd, struct fd_desc *td,
                 const struct epoll_event *uev)
 {
     struct epoll_event ev = { 0 };
-    if (uev)
-        ev = *uev;   /* read once */
+    if (uev && op != EPOLL_CTL_DEL && uc_get(&ev, uev, sizeof(ev)))   /* read once */
+        return -EFAULT;   /* DEL never reads it (Linux's) */
     long r = ctl_check(ed, td, op, uev ? &ev : NULL);
     struct fd_wait wt = { 0 };
     if (!r && op != EPOLL_CTL_DEL)
@@ -334,8 +334,10 @@ static void deliver(struct epoll *ep, struct item *it, struct epoll_event *evs, 
         it->libc_was = 0;                         /* an edge item's own rise counts again */
         return;                                   /* a level item is still pending */
     }
-    evs[*n].events = b;
-    evs[*n].data.u64 = it->data;
+    /* The caller's array (lx_epoll_pwait checked it): an event is lost
+     * only if the program unmaps it during the wait. */
+    struct epoll_event e = { .events = b, .data.u64 = it->data };
+    (void)uc_put(&evs[*n], &e, sizeof(e));
     (*n)++;
     if (it->events & EPOLLONESHOT)
         item_unbind(ep, it);
@@ -401,6 +403,8 @@ long lx_epoll_pwait(long epfd, long evs, long max, long timeout, long mask, long
 {
     if (max <= 0 || max > INT_MAX / (long)sizeof(struct epoll_event))
         return -EINVAL;
+    if (uc_writable((void *)(uintptr_t)evs, (size_t)max * sizeof(struct epoll_event)))
+        return -EFAULT;   /* before anything is taken from the set */
     struct fd_desc *ed = fd_get(epfd);
     if (!ed)
         return -EBADF;

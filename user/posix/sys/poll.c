@@ -346,22 +346,41 @@ struct pollfd *poll_scratch(void)
     return ps ? ps->fds : NULL;
 }
 
+/* poll_run over the caller's pollfds: copied into the thread's scratch
+ * array, and each revents copied back, as Linux's poll does. */
+static long poll_user(long ufds, unsigned long n, uint64_t deadline)
+{
+    if (n > POLL_FDS_MAX)
+        return -EINVAL;
+    struct pollfd *fds = poll_scratch(), *out = (struct pollfd *)(uintptr_t)ufds;
+    if (!fds)
+        return -ENOMEM;
+    if (uc_get(fds, out, n * sizeof(*fds)))
+        return -EFAULT;
+    long r = poll_run(fds, n, deadline);
+    for (unsigned long i = 0; r >= 0 && i < n; i++)
+        if (uc_put(&out[i].revents, &fds[i].revents, sizeof(fds[i].revents)))
+            r = -EFAULT;
+    return r;
+}
+
 long lx_poll(long fds, long n, long timeout, long d, long e, long f)
 {
-    return poll_run((struct pollfd *)(uintptr_t)fds, (unsigned long)n,
-                    ready_deadline_ms((int)timeout));
+    return poll_user(fds, (unsigned long)n, ready_deadline_ms((int)timeout));
 }
 
 long lx_ppoll(long fds, long n, long ts, long mask, long size, long f)
 {
     uint64_t deadline = DEADLINE_NEVER, old = 0;
-    const struct timespec *t = (const struct timespec *)(uintptr_t)ts;
-    long r = t ? ready_deadline(t->tv_sec, t->tv_nsec, &deadline) : 0;
+    struct timespec t;   /* the caller's, read once */
+    if (ts && uc_get(&t, (const void *)(uintptr_t)ts, sizeof(t)))
+        return -EFAULT;
+    long r = ts ? ready_deadline(t.tv_sec, t.tv_nsec, &deadline) : 0;
     if (!r)
         r = ready_mask_set((const void *)(uintptr_t)mask, size, &old);
     if (r)
         return r;
-    r = poll_run((struct pollfd *)(uintptr_t)fds, (unsigned long)n, deadline);
+    r = poll_user(fds, (unsigned long)n, deadline);
     ready_mask_restore((const void *)(uintptr_t)mask, old, r);
     return r;
 }

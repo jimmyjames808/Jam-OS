@@ -460,10 +460,11 @@ long lx_wait4(long pid, long status, long options, long rusage, long e, long f)
     long r = wait_for(&w, &got);
     if (r <= 0)
         return r;
-    if (status)
-        *(int *)(uintptr_t)status = wait_status(&got.info);
-    if (rusage)
-        fill_rusage((struct rusage *)(uintptr_t)rusage, &got.info);
+    struct rusage ru;   /* the caller's are written last (Linux's: the child is reaped) */
+    fill_rusage(&ru, &got.info);
+    if ((status && uc_put_int(status, wait_status(&got.info))) ||
+        (rusage && uc_put((void *)(uintptr_t)rusage, &ru, sizeof(ru))))
+        return -EFAULT;
     return got.pid;
 }
 
@@ -496,16 +497,16 @@ long lx_waitid(long idtype, long id, long info, long options, long rusage, long 
     long r = wait_for(&w, &got);
     if (r < 0)
         return r;
-    siginfo_t *si = (siginfo_t *)(uintptr_t)info;
-    if (si) {
-        memset(si, 0, sizeof(*si));   /* WNOHANG with none: si_pid 0, as Linux */
-        if (r)
-            fill_siginfo(si, &got);
-    }
-    if (rusage) {
-        struct process_info none = { 0 };
-        fill_rusage((struct rusage *)(uintptr_t)rusage, r ? &got.info : &none);
-    }
+    siginfo_t si;   /* the caller's info and rusage are written last */
+    memset(&si, 0, sizeof(si));   /* WNOHANG with none: si_pid 0, as Linux */
+    if (r)
+        fill_siginfo(&si, &got);
+    struct process_info none = { 0 };
+    struct rusage ru;
+    fill_rusage(&ru, r ? &got.info : &none);
+    if ((info && uc_put((void *)(uintptr_t)info, &si, sizeof(si))) ||
+        (rusage && uc_put((void *)(uintptr_t)rusage, &ru, sizeof(ru))))
+        return -EFAULT;
     return 0;
 }
 

@@ -185,9 +185,10 @@ static long base_of(long dirfd, char base[PATH_BYTES])
 
 long path_get(long dirfd, const char *in, struct path *out)
 {
-    if (!in)
-        return -EFAULT;
-    size_t n = strnlen(in, PATH_BYTES);
+    long len = in ? uc_strnlen(in, PATH_BYTES) : -EFAULT;   /* the caller's string */
+    if (len < 0)
+        return len;
+    size_t n = (size_t)len;
     if (!n)
         return -ENOENT;
     if (n == PATH_BYTES)

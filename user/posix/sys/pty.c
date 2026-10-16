@@ -105,7 +105,9 @@ static long master_stat(struct fd_desc *d, struct stat *st)
  * pseudo-terminal's console. */
 static long master_resize(struct master *m, const struct winsize *w)
 {
-    struct winsize ws = *w;   /* read once */
+    struct winsize ws;   /* the caller's, read once */
+    if (uc_get(&ws, w, sizeof(ws)))
+        return -EFAULT;
     if (!ws.ws_col || !ws.ws_row)
         return -EINVAL;
     if (m->pty >= 0)
@@ -127,8 +129,8 @@ static long master_winsize(struct master *m, struct winsize *w)
         r = ptys[m->pty].rows;
         lock_give(&pty_lock);
     }
-    *w = (struct winsize){ .ws_row = r, .ws_col = c };
-    return 0;
+    struct winsize ws = { .ws_row = r, .ws_col = c };
+    return uc_put(w, &ws, sizeof(ws));
 }
 
 static long master_ioctl(struct fd_desc *d, unsigned long req, long arg)
@@ -139,10 +141,7 @@ static long master_ioctl(struct fd_desc *d, unsigned long req, long arg)
     case TIOCSWINSZ: return master_resize(m, p);
     case TIOCGWINSZ: return master_winsize(m, p);
     case TIOCGPTN:
-        if (m->pty < 0)
-            return -ENOTTY;
-        *(unsigned *)p = (unsigned)m->pty;
-        return 0;
+        return m->pty < 0 ? -ENOTTY : uc_put_int(arg, m->pty);
     case TIOCSPTLCK:   /* nothing to unlock: only this process can open the slave */
         return m->pty < 0 ? -ENOTTY : 0;
     case FIONREAD:   return m->bytes->ops->ioctl(m->bytes, req, arg);

@@ -84,7 +84,7 @@ static long stat_path(struct path *p, struct stat *st)
 static long stat_at(long dirfd, const char *pathname, long flags, struct path *p,
                     struct stat *st)
 {
-    if ((flags & AT_EMPTY_PATH) && pathname && !*pathname) {
+    if ((flags & AT_EMPTY_PATH) && pathname && !uc_strnlen(pathname, 1)) {   /* the caller's "" */
         if (dirfd == AT_FDCWD) {
             char cwd[PATH_BYTES];
             path_cwd(cwd);
@@ -104,8 +104,9 @@ long lx_newfstatat(long dirfd, long pathname, long out, long flags, long e, long
     if (flags & ~(long)STAT_FLAGS)
         return -EINVAL;
     struct path p;
-    return stat_at(dirfd, (const char *)(uintptr_t)pathname, flags, &p,
-                   (struct stat *)(uintptr_t)out);
+    struct stat st;
+    long r = stat_at(dirfd, (const char *)(uintptr_t)pathname, flags, &p, &st);
+    return r ? r : uc_put((void *)(uintptr_t)out, &st, sizeof(st));
 }
 
 long lx_stat(long pathname, long out, long c, long d, long e, long f)
@@ -158,7 +159,10 @@ long lx_statfs(long pathname, long out, long c, long d, long e, long f)
     long r = path_get(AT_FDCWD, (const char *)(uintptr_t)pathname, &p);
     if (!r)
         r = stat_path(&p, &st);   /* statfs of something that isn't there: ENOENT */
-    return r ? r : statfs_path(&p, (struct statfs *)(uintptr_t)out);
+    struct statfs s;
+    if (!r)
+        r = statfs_path(&p, &s);
+    return r ? r : uc_put((void *)(uintptr_t)out, &s, sizeof(s));
 }
 
 long lx_fstatfs(long fd, long out, long c, long d, long e, long f)
@@ -171,10 +175,11 @@ long lx_fstatfs(long fd, long out, long c, long d, long e, long f)
     long r = abs ? path_set(abs, &p) : 0;
     if (!abs)
         p = (struct path){ .abs = "/", .where = PATH_ROOT };   /* a pipe, a device: no mount */
+    struct statfs s;
     if (!r)
-        r = statfs_path(&p, (struct statfs *)(uintptr_t)out);
+        r = statfs_path(&p, &s);
     fd_put(desc);
-    return r;
+    return r ? r : uc_put((void *)(uintptr_t)out, &s, sizeof(s));
 }
 
 /* ---- access ---------------------------------------------------------------------- */
@@ -267,7 +272,7 @@ static long change_at(long dirfd, const char *pathname, long flags, const struct
     if (!p)
         return -ENOMEM;
     long r;
-    if ((flags & AT_EMPTY_PATH) && pathname && !*pathname && dirfd != AT_FDCWD) {
+    if ((flags & AT_EMPTY_PATH) && pathname && !uc_strnlen(pathname, 1) && dirfd != AT_FDCWD) {
         struct fd_desc *d = fd_get(dirfd);
         if (!d) {
             free(p);
@@ -383,7 +388,10 @@ long lx_utimensat(long dirfd, long pathname, long times, long flags, long e, lon
 {
     if (flags & ~(long)(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH))
         return -EINVAL;
-    const struct timespec *t = (const struct timespec *)(uintptr_t)times;
+    struct timespec two[2];   /* the caller's, read once */
+    const struct timespec *t = times ? two : NULL;
+    if (times && uc_get(two, (const void *)(uintptr_t)times, sizeof(two)))
+        return -EFAULT;
     struct timespec wall = { 0 };
     (void)lx_clock_gettime(CLOCK_REALTIME, (long)(uintptr_t)&wall, 0, 0, 0, 0);
     int64_t now_ns = (int64_t)wall.tv_sec * (int64_t)NS_PER_S + wall.tv_nsec;
@@ -468,7 +476,7 @@ long lx_linkat(long olddirfd, long oldpath, long newdirfd, long newpath, long fl
     if (flags & ~(long)(AT_SYMLINK_FOLLOW | AT_EMPTY_PATH))
         return -EINVAL;
     const char *from = (const char *)(uintptr_t)oldpath;
-    if ((flags & AT_EMPTY_PATH) && from && !*from) {   /* a descriptor's file: as before */
+    if ((flags & AT_EMPTY_PATH) && from && !uc_strnlen(from, 1)) {   /* a descriptor's file */
         struct path p;
         struct stat st;
         long r = stat_at(olddirfd, from, AT_EMPTY_PATH, &p, &st);
@@ -511,10 +519,11 @@ static long symlink_path(struct path *p, const char *target, size_t tlen)
 
 long lx_symlinkat(long target, long newdirfd, long newpath, long d, long e, long f)
 {
-    const char *t = (const char *)(uintptr_t)target;
-    if (!t)
-        return -EFAULT;
-    size_t tlen = strnlen(t, PATH_BYTES);
+    const char *t = (const char *)(uintptr_t)target;   /* the caller's: checked, then read */
+    long len = t ? uc_strnlen(t, PATH_BYTES) : -EFAULT;
+    if (len < 0)
+        return len;
+    size_t tlen = (size_t)len;
     if (!tlen)
         return -ENOENT;   /* symlink(2): an empty target */
     if (tlen == PATH_BYTES)
@@ -568,7 +577,8 @@ static long readlink_path(struct path *p, char *buf, size_t size)
     jam_handle_close(fs);
     if (s == OK) {
         r = (long)(n < size ? n : size);
-        memcpy(buf, target, (size_t)r);
+        if (uc_put(buf, target, (size_t)r))   /* the caller's */
+            r = -EFAULT;
     } else {
         r = path_err_read(p, s);   /* ERR_INVALID_ARGS: not a link, EINVAL */
     }

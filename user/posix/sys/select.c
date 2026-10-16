@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <poll.h>
+#include <string.h>
 #include <sys/select.h>
 #include <sys/time.h>
 #include "layer.h"
@@ -73,7 +74,16 @@ static long select_run(long n, long r, long w, long e, uint64_t deadline)
         return -EINVAL;
     if (n > FD_SETSIZE)
         n = FD_SETSIZE;   /* as Linux: no descriptor is that high anyway */
-    fd_set *rs = (fd_set *)(uintptr_t)r, *ws = (fd_set *)(uintptr_t)w, *es = (fd_set *)(uintptr_t)e;
+    /* The caller's sets, the longs that hold n bits, copied in and back
+     * out (Linux's way). */
+    size_t bytes = ((size_t)n + 63) / 64 * 8;
+    long user[3] = { r, w, e };
+    fd_set sets[3];
+    memset(sets, 0, sizeof(sets));
+    for (int i = 0; i < 3; i++)
+        if (user[i] && uc_get(&sets[i], (const void *)(uintptr_t)user[i], bytes))
+            return -EFAULT;
+    fd_set *rs = r ? &sets[0] : NULL, *ws = w ? &sets[1] : NULL, *es = e ? &sets[2] : NULL;
     struct pollfd *fds = poll_scratch();
     if (!fds)
         return -ENOMEM;
@@ -81,17 +91,25 @@ static long select_run(long n, long r, long w, long e, uint64_t deadline)
     if (k < 0)
         return k;
     long got = poll_run(fds, (unsigned long)k, deadline);
-    return got < 0 ? got : select_out(fds, k, (int)n, rs, ws, es);
+    if (got < 0)
+        return got;
+    got = select_out(fds, k, (int)n, rs, ws, es);
+    for (int i = 0; i < 3; i++)
+        if (user[i] && uc_put((void *)(uintptr_t)user[i], &sets[i], bytes))
+            return -EFAULT;
+    return got;
 }
 
 long lx_select(long n, long r, long w, long e, long tv, long f)
 {
     uint64_t deadline = DEADLINE_NEVER;
-    const struct timeval *t = (const struct timeval *)(uintptr_t)tv;
-    if (t) {
-        if (t->tv_sec < 0 || t->tv_usec < 0)
+    struct timeval t;   /* the caller's, read once */
+    if (tv && uc_get(&t, (const void *)(uintptr_t)tv, sizeof(t)))
+        return -EFAULT;
+    if (tv) {
+        if (t.tv_sec < 0 || t.tv_usec < 0)
             return -EINVAL;
-        long sec = t->tv_sec, usec = t->tv_usec;
+        long sec = t.tv_sec, usec = t.tv_usec;
         if (usec / 1000000 > LONG_MAX - sec)
             sec = LONG_MAX;   /* never, in effect */
         else
@@ -112,12 +130,15 @@ struct pselect_mask {
 long lx_pselect6(long n, long r, long w, long e, long ts, long data)
 {
     uint64_t deadline = DEADLINE_NEVER, old = 0;
-    const struct timespec *t = (const struct timespec *)(uintptr_t)ts;
-    const struct pselect_mask *m = (const struct pselect_mask *)(uintptr_t)data;
-    const void *mask = m ? m->mask : NULL;
-    long rr = t ? ready_deadline(t->tv_sec, t->tv_nsec, &deadline) : 0;
+    struct timespec t;   /* the caller's, read once */
+    struct pselect_mask m = { NULL, 0 };
+    if ((ts && uc_get(&t, (const void *)(uintptr_t)ts, sizeof(t))) ||
+        (data && uc_get(&m, (const void *)(uintptr_t)data, sizeof(m))))
+        return -EFAULT;
+    const void *mask = m.mask;
+    long rr = ts ? ready_deadline(t.tv_sec, t.tv_nsec, &deadline) : 0;
     if (!rr)
-        rr = ready_mask_set(mask, m ? m->size : 0, &old);
+        rr = ready_mask_set(mask, m.size, &old);
     if (rr)
         return rr;
     rr = select_run(n, r, w, e, deadline);

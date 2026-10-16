@@ -16,6 +16,7 @@
 #include <jamos/libjam.h>
 #include "calls.h"
 #include "glue.h"
+#include "ucopy.h"   /* a caller's pointer is read and written only through these */
 
 /* -errno for a status (errno.c): the default meaning of each ERR_*. */
 long lx_err(status_t st);

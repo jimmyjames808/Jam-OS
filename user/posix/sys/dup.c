@@ -83,18 +83,22 @@ long lx_dup3(long old, long new, long flags, long d, long e, long f)
     return dup_to(old, new, flags & O_CLOEXEC);
 }
 
-/* The record locks: checked, granted, never kept. */
-static long flock_cmd(struct fd_desc *d, long cmd, struct flock *l)
+/* The record locks: checked, granted, never kept. arg is the caller's
+ * struct flock. */
+static long flock_cmd(struct fd_desc *d, long cmd, long arg)
 {
-    if (l->l_whence != SEEK_SET && l->l_whence != SEEK_CUR && l->l_whence != SEEK_END)
+    struct flock l;
+    if (uc_get(&l, (const void *)(uintptr_t)arg, sizeof(l)))
+        return -EFAULT;
+    if (l.l_whence != SEEK_SET && l.l_whence != SEEK_CUR && l.l_whence != SEEK_END)
         return -EINVAL;
-    if (l->l_type != F_RDLCK && l->l_type != F_WRLCK && l->l_type != F_UNLCK)
+    if (l.l_type != F_RDLCK && l.l_type != F_WRLCK && l.l_type != F_UNLCK)
         return -EINVAL;
     if (cmd == F_GETLK || cmd == F_OFD_GETLK) {
-        l->l_type = F_UNLCK;   /* nobody else holds one */
-        return 0;
+        l.l_type = F_UNLCK;   /* nobody else holds one */
+        return uc_put((void *)(uintptr_t)arg, &l, sizeof(l));
     }
-    if ((l->l_type == F_RDLCK && !fd_can_read(d)) || (l->l_type == F_WRLCK && !fd_can_write(d)))
+    if ((l.l_type == F_RDLCK && !fd_can_read(d)) || (l.l_type == F_WRLCK && !fd_can_write(d)))
         return -EBADF;
     return 0;
 }
@@ -129,7 +133,7 @@ static long pipe_size(struct fd_desc *d, long cmd, long arg)
 /* The commands on the description (fd's, held by the caller). */
 static long desc_cmd(struct fd_desc *d, long cmd, long arg)
 {
-    struct f_owner_ex *own = (struct f_owner_ex *)(uintptr_t)arg;
+    struct f_owner_ex own = { .type = F_OWNER_PID, .pid = 0 };
     switch (cmd) {
     case F_GETFL:       return fd_status(d);
     case F_SETFL:       return setfl(d, arg);
@@ -138,10 +142,10 @@ static long desc_cmd(struct fd_desc *d, long cmd, long arg)
     case F_SETLKW:
     case F_OFD_GETLK:
     case F_OFD_SETLK:
-    case F_OFD_SETLKW:  return flock_cmd(d, cmd, (struct flock *)(uintptr_t)arg);
+    case F_OFD_SETLKW:  return flock_cmd(d, cmd, arg);
     case F_GETOWN:      return 0;
     case F_SETOWN:      return 0;
-    case F_GETOWN_EX:   own->type = F_OWNER_PID; own->pid = 0; return 0;
+    case F_GETOWN_EX:   return uc_put((void *)(uintptr_t)arg, &own, sizeof(own));
     case F_SETOWN_EX:   return 0;
     case F_GETPIPE_SZ:
     case F_SETPIPE_SZ:  return pipe_size(d, cmd, arg);

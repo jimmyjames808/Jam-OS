@@ -51,42 +51,48 @@ uint64_t rlimit_cur(int resource)
     return v;
 }
 
-/* Linux's struct rlimit64, which is also the layout of x86-64's rlimit. */
-static long limit_call(long pid, long resource, const struct limit *set, struct limit *get)
+/* Linux's struct rlimit64, which is also the layout of x86-64's rlimit:
+ * set and get are the caller's (NULL: not given; getrlimit and setrlimit
+ * pass theirs whatever they are, so NULL is EFAULT there, as on Linux). */
+static long limit_call(long pid, long resource, long set, long get)
 {
     if (pid && pid != lx_pid())
         return -ESRCH;
     if (resource < 0 || resource >= NLIMITS)
         return -EINVAL;
+    struct limit want;
+    if (set && uc_get(&want, (const void *)(uintptr_t)set, sizeof(want)))
+        return -EFAULT;
     long r = 0;
     lock_take(&limits_lock);
     struct limit old = limits[resource];
     if (set) {
-        if (set->cur > set->max)
+        if (want.cur > want.max)
             r = -EINVAL;
-        else if (set->max > old.max)
+        else if (want.max > old.max)
             r = -EPERM;
         else
-            limits[resource] = *set;
+            limits[resource] = want;
     }
     lock_give(&limits_lock);
     if (!r && get)
-        *get = old;
+        r = uc_put((void *)(uintptr_t)get, &old, sizeof(old));
     return r;
 }
 
 long lx_prlimit64(long pid, long resource, long set, long get, long e, long f)
 {
-    return limit_call(pid, resource, (const struct limit *)(uintptr_t)set,
-                      (struct limit *)(uintptr_t)get);
+    return limit_call(pid, resource, set, get);
 }
 
 long lx_getrlimit(long resource, long get, long c, long d, long e, long f)
 {
-    return limit_call(0, resource, NULL, (struct limit *)(uintptr_t)get);
+    bool known = resource >= 0 && resource < NLIMITS;   /* Linux: EINVAL before EFAULT */
+    return get || !known ? limit_call(0, resource, 0, get) : -EFAULT;
 }
 
 long lx_setrlimit(long resource, long set, long c, long d, long e, long f)
 {
-    return limit_call(0, resource, (const struct limit *)(uintptr_t)set, NULL);
+    bool known = resource >= 0 && resource < NLIMITS;
+    return set || !known ? limit_call(0, resource, set, 0) : -EFAULT;
 }

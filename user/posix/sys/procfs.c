@@ -547,8 +547,7 @@ static long copy_link(const char *text, char *buf, size_t size)
     size_t n = strlen(text);
     if (n > size)
         n = size;   /* readlink(2): cut short, no NUL, never an error */
-    memcpy(buf, text, n);
-    return (long)n;
+    return uc_put(buf, text, n) ? -EFAULT : (long)n;   /* the caller's buf */
 }
 
 long proc_readlink(const struct path *p, char *buf, size_t size)
@@ -796,12 +795,12 @@ static long pd_getdents(struct fd_desc *d, void *buf, size_t len)
     size_t used = 0;
     long r;
     while ((r = entry_at(node_of(d), pid_of(d), pos, &e)) > 0) {
-        size_t k = dir_put((uint8_t *)buf + used, len - used, e.name, e.ino, e.type, e.next);
-        if (!k) {
-            r = used ? 0 : -EINVAL;   /* the buffer can't hold the next one */
+        long k = dir_put((uint8_t *)buf + used, len - used, e.name, e.ino, e.type, e.next);
+        if (k <= 0) {
+            r = used ? 0 : k ? k : -EINVAL;   /* the buffer can't hold the next one */
             break;
         }
-        used += k;
+        used += (size_t)k;
         pos = e.next;
     }
     lock_take(&d->lock);
@@ -885,7 +884,10 @@ static long pf_read(struct fd_desc *d, const struct iovec *iov, int iovcnt, int6
     lock_take(&d->lock);
     off = pos == FD_AT_OFFSET ? (uint64_t)d->offset : (uint64_t)pos;
     size_t k = off >= s->len ? 0 : s->len - off < (size_t)n ? s->len - (size_t)off : (size_t)n;
-    fd_iov_scatter(iov, iovcnt, 0, s->text + (k ? off : 0), k);
+    if (fd_iov_scatter(iov, iovcnt, 0, s->text + (k ? off : 0), k)) {
+        lock_give(&d->lock);
+        return -EFAULT;
+    }
     if (pos == FD_AT_OFFSET)
         d->offset += (int64_t)k;
     lock_give(&d->lock);

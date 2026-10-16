@@ -82,7 +82,8 @@ static long piece(const struct file *f, const struct iovec *iov, int n, size_t d
     uint32_t actual = 0;
     status_t st;
     if (write) {
-        fd_iov_gather(iov, n, done, jf->buf, want);
+        if (fd_iov_gather(iov, n, done, jf->buf, want))
+            return -EFAULT;
         st = file_write_within(jf->ch, FILE_TIMEOUT, off, want, &actual);
     } else {
         st = file_read_within(jf->ch, FILE_TIMEOUT, off, want, &actual);
@@ -91,8 +92,8 @@ static long piece(const struct file *f, const struct iovec *iov, int n, size_t d
         st = ERR_IO;   /* a broken service */
     if (st != OK)
         return file_err(f, st);
-    if (!write)
-        fd_iov_scatter(iov, n, done, jf->buf, actual);
+    if (!write && fd_iov_scatter(iov, n, done, jf->buf, actual))
+        return -EFAULT;
     return actual;
 }
 
@@ -327,9 +328,7 @@ static long kind_ioctl(struct fd_desc *d, unsigned long req, long arg)
     lock_take(&d->lock);
     int64_t left = !r && (int64_t)size > d->offset ? (int64_t)size - d->offset : 0;
     lock_give(&d->lock);
-    if (!r)
-        *(int *)(uintptr_t)arg = left > INT32_MAX ? INT32_MAX : (int)left;
-    return r;
+    return r ? r : uc_put_int(arg, left > INT32_MAX ? INT32_MAX : (int)left);
 }
 
 static const char *kind_path(struct fd_desc *d)

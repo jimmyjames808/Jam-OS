@@ -348,7 +348,8 @@ static long recv_try(struct pipe_end *p, struct rx *x)
         return r;
     uint32_t left = p->have - p->at;
     size_t n = left < x->total ? left : x->total;
-    fd_iov_scatter(x->iov, x->iovcnt, 0, p->buf + p->at, n);
+    if (fd_iov_scatter(x->iov, x->iovcnt, 0, p->buf + p->at, n))
+        return -EFAULT;   /* the message stays for the next read */
     x->whole = left;
     if (x->flags & MSG_PEEK)
         return (long)n;
@@ -739,11 +740,14 @@ static long sp_ioctl(struct fd_desc *d, unsigned long req, long arg)
     lock_take(&d->lock);
     bool have = p->seq ? is_kept(p) : p->at < p->have;
     long r = have || is_shut(p) ? 0 : fill_locked(p);
+    int n = 0;
     if (r >= 0 || r == -EAGAIN) {
-        *(int *)(uintptr_t)arg = (int)(r < 0 || is_shut(p) ? 0 : p->have - p->at);
+        n = (int)(r < 0 || is_shut(p) ? 0 : p->have - p->at);
         r = 0;
     }
     lock_give(&d->lock);
+    if (!r)
+        r = uc_put_int(arg, n);
     return r;
 }
 

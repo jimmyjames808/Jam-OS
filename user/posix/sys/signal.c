@@ -780,6 +780,7 @@ void sig_spawn_masks(uint64_t *blocked, uint64_t *ignored)
 void sig_start_state(uint64_t ignored)
 {
     take();
+    sig_entry_need(SIG_ENTRY_COPY, true);
     for (int s = 1; s <= SIG_MAX; s++)
         if ((ignored & SIG_BIT(s)) && !(SIG_NEVER_MASKED & SIG_BIT(s)))
             acts[s].handler = (uintptr_t)SIG_IGN;

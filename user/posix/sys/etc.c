@@ -80,7 +80,10 @@ static long etc_read(struct fd_desc *d, const struct iovec *iov, int iovcnt, int
     lock_take(&d->lock);
     uint64_t off = pos == FD_AT_OFFSET ? (uint64_t)d->offset : (uint64_t)pos;
     size_t k = off >= len ? 0 : len - off < (size_t)n ? len - (size_t)off : (size_t)n;
-    fd_iov_scatter(iov, iovcnt, 0, text + (k ? off : 0), k);
+    if (fd_iov_scatter(iov, iovcnt, 0, text + (k ? off : 0), k)) {
+        lock_give(&d->lock);
+        return -EFAULT;
+    }
     if (pos == FD_AT_OFFSET)
         d->offset += (int64_t)k;
     lock_give(&d->lock);

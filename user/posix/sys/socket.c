@@ -206,10 +206,8 @@ static long sock_stat(struct fd_desc *d, struct stat *st)
 static long sock_ioctl(struct fd_desc *d, unsigned long req, long arg)
 {
     struct sock *s = d->priv;
-    if (req == SIOCATMARK) {
-        *(int *)(uintptr_t)arg = 0;   /* no out-of-band data, ever */
-        return 0;
-    }
+    if (req == SIOCATMARK)
+        return uc_put_int(arg, 0);   /* no out-of-band data, ever */
     if (req != FIONREAD)
         return -ENOTTY;
     long n = 0;
@@ -225,8 +223,7 @@ static long sock_ioctl(struct fd_desc *d, unsigned long req, long arg)
         n = s->kept ? s->kept->len : 0;
     }
     lock_give(&s->rx_lock);
-    *(int *)(uintptr_t)arg = (int)n;
-    return 0;
+    return uc_put_int(arg, (int)n);
 }
 
 /* poll: what libc itself knows (no lock, no call: ready.h's rule). */

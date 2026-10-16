@@ -139,7 +139,8 @@ uint32_t sig_handled_self(void);
 bool     sig_cancel_asked(void);
 /* si as a siginfo_t at out (Linux's fields; the one user's uid). */
 void     sig_fill_siginfo(const struct sig_info *si, void *out);
-/* The start: the hand-over's ignored signals (sigthread.c's start). */
+/* The start: the hand-over's ignored signals, and the exception entry set
+ * for the checked copies (SIG_ENTRY_COPY) (sigthread.c's start). */
 void     sig_start_state(uint64_t ignored);
 
 /* ---- faults (sigfault.c; signal.c's side of them) ------------------------------------ */
@@ -151,6 +152,8 @@ void     sig_start_state(uint64_t ignored);
 /* Why the process's exception entry is set (sig_entry_need's `why`). SG5
  * adds one for a raise of one of our own threads. */
 #define SIG_ENTRY_HANDLERS 1u   /* a fault signal has a handler */
+#define SIG_ENTRY_COPY     2u   /* always, from the start: the checked copies' faults
+                                 * (ucopy.h) */
 
 /* The entry is needed for `why` (on) or no longer (off): it is set while
  * any reason holds and removed when none does. sig_lock held. */

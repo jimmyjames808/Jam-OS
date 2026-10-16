@@ -134,7 +134,10 @@ static long tty_read(struct fd_desc *d, const struct iovec *iov, int n, int64_t 
     for (;;) {
         lock_take(&d->lock);
         size_t k = t->have - t->at < (size_t)want - got ? t->have - t->at : (size_t)want - got;
-        fd_iov_scatter(iov, n, got, t->buf + t->at, k);
+        if (fd_iov_scatter(iov, n, got, t->buf + t->at, k)) {
+            lock_give(&d->lock);   /* the bytes stay for the next read */
+            return got ? (long)got : -EFAULT;
+        }
         t->at += (uint32_t)k;
         lock_give(&d->lock);
         got += k;
@@ -203,14 +206,15 @@ static long get_termios(const struct tty *t, struct termios *tio)
                                &r.__c_ispeed, &r.__c_ospeed);
     if (st != OK)
         return st == ERR_PEER_CLOSED ? -EIO : lx_err(st);
-    *tio = r;
-    return 0;
+    return uc_put(tio, &r, sizeof(r));
 }
 
 static long set_termios(struct fd_desc *d, unsigned when, const struct termios *tio)
 {
     struct tty *t = d->priv;
-    struct termios s = *tio;   /* read once */
+    struct termios s;   /* the caller's, read once */
+    if (uc_get(&s, tio, sizeof(s)))
+        return -EFAULT;
     status_t st = tty_set_attr(t->ch, (uint8_t)when, s.c_iflag, s.c_oflag, s.c_cflag, s.c_lflag,
                                s.c_cc, s.__c_ispeed, s.__c_ospeed);
     if (st == OK && when == TTY_WHEN_FLUSH) {
@@ -241,8 +245,8 @@ static long winsize(const struct tty *t, struct winsize *w)
     status_t st = tty_get_size(t->ch, &c, &r);
     if (st != OK)
         return st == ERR_PEER_CLOSED ? -EIO : lx_err(st);
-    *w = (struct winsize){ .ws_row = r, .ws_col = c };
-    return 0;
+    struct winsize ws = { .ws_row = r, .ws_col = c };
+    return uc_put(w, &ws, sizeof(ws));
 }
 
 /* FIONREAD: what a read would get now without waiting (this message's
@@ -253,16 +257,18 @@ static long readable(struct fd_desc *d, int *out)
     lock_take(&d->lock);
     if (t->at == t->have)
         (void)fill(t, 0, true);   /* none: 0 */
-    *out = (int)(t->have - t->at);
+    int n = (int)(t->have - t->at);
     lock_give(&d->lock);
-    return 0;
+    return uc_put_int((long)(uintptr_t)out, n);
 }
 
 /* TIOCSWINSZ: a pseudo-terminal slave's size; a console's own terminal
  * has its window's (or its remote terminal's). */
 static long set_winsize(const struct tty *t, const struct winsize *w)
 {
-    struct winsize ws = *w;   /* read once */
+    struct winsize ws;   /* the caller's, read once */
+    if (uc_get(&ws, w, sizeof(ws)))
+        return -EFAULT;
     if (t->pty < 0 || !ws.ws_col || !ws.ws_row)
         return -EINVAL;
     return pty_resize(t->pty, t->pty_gen, ws.ws_col, ws.ws_row);
@@ -307,16 +313,15 @@ static long group_ioctl(struct fd_desc *d, unsigned long req, void *p)
     struct tty *t = d->priv;
     if (!is_ctty(d))
         return -ENOTTY;
-    if (req == TIOCGSID) {
-        *(pid_t *)p = lx_sid();
-        return 0;
-    }
+    if (req == TIOCGSID)
+        return uc_put_int((long)(uintptr_t)p, lx_sid());
     if (req == TIOCGPGRP) {
         int32_t fg = __atomic_load_n(&t->fg, __ATOMIC_RELAXED);
-        *(pid_t *)p = fg ? fg : lx_pgid();
-        return 0;
+        return uc_put_int((long)(uintptr_t)p, fg ? fg : lx_pgid());
     }
-    pid_t g = *(const pid_t *)p;   /* TIOCSPGRP: read once */
+    pid_t g;   /* TIOCSPGRP: read once */
+    if (uc_get(&g, p, sizeof(g)))
+        return -EFAULT;
     if (g <= 0)
         return -EINVAL;
     if (!lx_group_exists(g))

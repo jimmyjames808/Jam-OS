@@ -99,7 +99,10 @@ long ready_mask_set(const void *mask, long size, uint64_t *old)
         return 0;
     if (size != sizeof(uint64_t))
         return -EINVAL;
-    sig_wait_mask(mask, old);
+    uint64_t m;
+    if (uc_get(&m, mask, sizeof(m)))   /* the caller's */
+        return -EFAULT;
+    sig_wait_mask(&m, old);
     return 0;
 }
 

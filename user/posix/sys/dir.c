@@ -193,21 +193,26 @@ static long entry_at(struct fd_desc *d, int64_t pos, struct entry *e)
     return p.where == PATH_MOUNT ? mount_entry(d, pos, e) : top_entry(x, pos, e);
 }
 
-size_t dir_put(void *buf, size_t room, const char *name, uint64_t ino, uint8_t type,
-               int64_t next)
+long dir_put(void *buf, size_t room, const char *name, uint64_t ino, uint8_t type,
+             int64_t next)
 {
     size_t nlen = strlen(name);
     size_t reclen = (DIRENT_HEAD + nlen + 1 + 7) & ~(size_t)7;
+    union {
+        struct dirent de;
+        uint8_t       bytes[(DIRENT_HEAD + FS_NAME_MAX + 1 + 7) & ~(size_t)7];
+    } rec;
+    if (reclen > sizeof(rec))
+        return -ENAMETOOLONG;   /* longer than any name of ours */
     if (reclen > room)
         return 0;
-    struct dirent *de = buf;
-    de->d_ino = ino;
-    de->d_off = next;
-    de->d_reclen = (unsigned short)reclen;
-    de->d_type = type;
-    memcpy(de->d_name, name, nlen);
-    memset(de->d_name + nlen, 0, reclen - DIRENT_HEAD - nlen);
-    return reclen;
+    memset(&rec, 0, reclen);
+    rec.de.d_ino = ino;
+    rec.de.d_off = next;
+    rec.de.d_reclen = (unsigned short)reclen;
+    rec.de.d_type = type;
+    memcpy(rec.de.d_name, name, nlen);
+    return uc_put(buf, &rec, reclen) ? -EFAULT : (long)reclen;
 }
 
 static long dir_getdents(struct fd_desc *d, void *buf, size_t len)
@@ -223,12 +228,12 @@ static long dir_getdents(struct fd_desc *d, void *buf, size_t len)
     size_t used = 0;
     long r;
     while ((r = entry_at(d, d->offset, e)) > 0) {
-        size_t k = dir_put((uint8_t *)buf + used, len - used, e->name, e->ino, e->type, e->next);
-        if (!k) {
-            r = used ? 0 : -EINVAL;   /* the buffer can't hold the next one */
+        long k = dir_put((uint8_t *)buf + used, len - used, e->name, e->ino, e->type, e->next);
+        if (k <= 0) {
+            r = used ? 0 : k ? k : -EINVAL;   /* the buffer can't hold the next one */
             break;
         }
-        used += k;
+        used += (size_t)k;
         d->offset = e->next;
     }
     lock_give(&d->lock);
@@ -603,6 +608,5 @@ long lx_getcwd(long buf, long size, long c, long d, long e, long f)
     size_t n = strlen(cwd) + 1;
     if ((size_t)size < n)
         return -ERANGE;
-    memcpy((char *)(uintptr_t)buf, cwd, n);
-    return (long)n;
+    return uc_put((void *)(uintptr_t)buf, cwd, n) ? -EFAULT : (long)n;
 }
