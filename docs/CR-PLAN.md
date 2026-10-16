@@ -625,9 +625,9 @@ from the failing call.
    `ClampTest.Death` logs `syscall 57 (fork)` (`ENOSYS`); with the default,
    every death test aborts the same way and no fork is logged, because
    `__jam_clone` returns `-ENOSYS` for a process clone (`thread.c:166`) without
-   a log line. The fix is not in the layer (no fork is the plan): patch gtest's
-   death tests to spawn the child as the launcher patch does for
-   `LaunchProcess`, or keep these tests skipped. Small and in the layer:
+   a log line. [FORK-PLAN](FORK-PLAN.md) answers it (`clone(fn, stack,
+   SIGCHLD)` for gtest's threadsafe death tests, `fork` for the fast style:
+   FL1b); until FL1b merges these stay skipped. Small and in the layer now:
    `__jam_clone` should say what it refused.
 2. **POSIX layer: a user pointer that faults kills the process. 29 tests**
    (`BackupRefPtrTest` 23, `ProtectedMemoryTest` 4, `CPUDeathTest`,
@@ -678,7 +678,7 @@ from the failing call.
    `PersistentMemoryAllocatorTest.TruncateTest`): `MemoryMappedFile::Initialize`
    with `READ_WRITE` fails (U10 and WRITEMAP-PLAN's writable pager VMOs);
    two of them then go on to use a null object and fault.
-5. **Starting programs, the launcher patch of CB5: 46 tests**
+5. **Starting programs, FORK-PLAN (or CB5's launcher patch): 46 tests**
    (`ProcessUtilTest` 16, `ProcessTest` 12, `FileLockingTest` 7,
    `PlatformThreadTidCacheTest` 2, `ProcessGTestOutputTest` 2, and `LaunchTest`,
    `ForkWithFlagsTest`, `UnitTestLauncherDelegateTester`, `RustCommandLineTest`,
@@ -687,8 +687,9 @@ from the failing call.
    `--v=1`: the ENOSYS log shows `syscall 57 (fork)` first with
    `ProcessUtilTest.SpawnChild`, and `process.IsValid()` is false right after
    `base::LaunchProcess` / `SpawnMultiProcessTestChild` in each, so
-   `test_child_process` is never started. docs/CR-PLAN.md section 5's launcher
-   patch (`posix_spawn` for `LaunchProcess`) answers all of them.
+   `test_child_process` is never started. A `fork` (FORK-PLAN's FL1b) or
+   section 5's launcher patch (`posix_spawn` for `LaunchProcess`) answers
+   all of them.
 6. **/proc, CL2 and PRC: 14 tests.** The log names `/proc/self/cmdline`
    (`SetProcTitleLinuxTest` 3), `/proc/self/stat`, `/proc/<pid>/stat`,
    `/proc/<tid>/stat` (`PlatformThreadMetricsTest`, `ProcessMetricsTestLinux`),

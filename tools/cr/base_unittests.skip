@@ -331,7 +331,7 @@ ProtectedMemoryTest.VerifySetValue
 [posix] inotify_init and inotify_init1 (syscalls 253 and 294) are ENOSYS: no file watching
 FilePathWatcher*
 
-[launch] base::LaunchProcess and the multi-process test children start with fork (syscall 57, ENOSYS): the launcher patch of CB5 (docs/CR-PLAN.md section 5)
+[launch] base::LaunchProcess and the multi-process test children start with fork (syscall 57, ENOSYS): FORK-PLAN's fork or CB5's launcher patch (docs/CR-PLAN.md section 5)
 FileLockingTest.LockAndUnlockExclusive
 FileLockingTest.LockAndUnlockShared
 FileLockingTest.UnlockOnCloseExclusive
