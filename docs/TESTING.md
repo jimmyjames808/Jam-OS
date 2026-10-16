@@ -1964,7 +1964,15 @@ RIGHT_ROOT_JIT only to a list that asks): `EPERM` writable and executable,
 writable, and for a `PROT_NONE` reservation; `EINVAL` with `MAP_SHARED` or
 a descriptor; execute on plain memory `EACCES`; and bin/jittest started by
 `posix_spawn` (`jittest without`) finds the same refusals, since a child
-gets none of its parent's powers. With the power (`jittest`, from the
+gets none of its parent's powers. Then every other way to writable and
+executable memory, by the raw calls ([CR-REVIEW-JIT](CR-REVIEW-JIT.md)):
+its own code and read-only data (W+X `ERR_INVALID_ARGS`, write
+`ERR_ACCESS_DENIED`, `mprotect` `EACCES`), its stack and heap (W+X
+`ERR_INVALID_ARGS`, execute `ERR_ACCESS_DENIED`), a VMO handle widened to
+execute by a duplicate, a replace or a send (`ERR_INVALID_ARGS`), the root
+widened to the power, `vmo_make_jit` with its root or a VMO as the root,
+and, where init's run gives it `RIGHT_ROOT_VMEX`, sealed code it wrote
+(never writable, never JIT memory); it is never marked. With the power (`jittest`, from the
 shell: `jit.txt`) a `MAP_JIT` page is written and run, patched, switched
 between writable and executable with `mprotect`, and a reservation's pages
 made executable, decommitted in place by `MAP_FIXED | MAP_JIT`, and made

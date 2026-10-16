@@ -41,6 +41,103 @@ static bool holds_power(void)
     return root && jam_handle_info(root, &hi) == OK && (hi.rights & RIGHT_ROOT_JIT);
 }
 
+static rights_t rights_of(handle_t h)
+{
+    struct handle_info hi;
+    return jam_handle_info(h, &hi) == OK ? hi.rights : 0;
+}
+
+/* A page that holds nothing but this: read-only data, never run. */
+static const unsigned char ro_page[PG] __attribute__((aligned(PG))) = { 0xc3 };
+
+#define VR  (VMAR_READ)
+#define VRW (VMAR_READ | VMAR_WRITE)
+#define VRX (VMAR_READ | VMAR_EXEC)
+#define VWX (VMAR_READ | VMAR_WRITE | VMAR_EXEC)
+
+/* Every way to writable and executable memory a program without the power
+ * has (docs/CR-REVIEW-JIT.md), by the raw calls under libc: its own code,
+ * read-only data, stack and heap; a handle widened by a duplicate, a
+ * replace or a send; the JIT call itself; the old way to code (sealed
+ * first, when init's run gives us RIGHT_ROOT_VMEX). Every one refused, and
+ * we are never marked. */
+static void hostile(void)
+{
+    handle_t vmar = startup_handle(SR_SELF_VMAR), root = startup_handle(SR_RESOURCE);
+    uint64_t code = (uint64_t)(uintptr_t)&hostile & ~(PG - 1);
+    uint64_t ro = (uint64_t)(uintptr_t)ro_page;
+    volatile unsigned char on_stack = 0;
+    uint64_t stack = (uint64_t)(uintptr_t)&on_stack & ~(PG - 1);
+    /* Our image: W^X, and no write right on it. */
+    CHECK(jam_vmar_protect(vmar, code, PG, VWX) == ERR_INVALID_ARGS);
+    CHECK(mprotect((void *)(uintptr_t)code, PG, RWX) == -1 && errno == EACCES);
+    CHECK(jam_vmar_protect(vmar, ro, PG, VRW) == ERR_ACCESS_DENIED);
+    CHECK(jam_vmar_protect(vmar, ro, PG, VWX) == ERR_INVALID_ARGS);
+    CHECK(ro_page[0] == 0xc3);
+    /* The stack and the heap: W^X, and no execute right on them. */
+    CHECK(jam_vmar_protect(vmar, stack, PG, VWX) == ERR_INVALID_ARGS);
+    CHECK(jam_vmar_protect(vmar, stack, PG, VRX) == ERR_ACCESS_DENIED);
+    unsigned char *heap = mmap(NULL, PG, RW, ANON, -1, 0);
+    CHECK(heap != MAP_FAILED);
+    if (heap != MAP_FAILED) {
+        heap[0] = 0xc3;
+        CHECK(mprotect(heap, PG, PROT_READ | PROT_EXEC) == -1 && errno == EACCES);
+        CHECK(jam_vmar_protect(vmar, (uint64_t)(uintptr_t)heap, PG, VWX) == ERR_INVALID_ARGS);
+        CHECK(jam_vmar_protect(vmar, (uint64_t)(uintptr_t)heap, PG, VRX) == ERR_ACCESS_DENIED);
+        CHECK(munmap(heap, PG) == 0);
+    }
+    /* No handle gains execute: a duplicate, a replace, a send. */
+    handle_t v, d, c0, c1, x;
+    CHECK(jam_vmo_create(PG, 0, &v) == OK);
+    rights_t vr = rights_of(v);
+    CHECK(!(vr & RIGHT_EXEC));
+    CHECK(jam_handle_duplicate(v, vr | RIGHT_EXEC, &d) == ERR_INVALID_ARGS);
+    CHECK(jam_handle_duplicate(v, RIGHT_SAME, &d) == OK);
+    CHECK(jam_handle_replace(d, vr | RIGHT_EXEC, &x) == ERR_INVALID_ARGS);   /* d is gone */
+    CHECK(jam_handle_close(d) == ERR_BAD_HANDLE);
+    CHECK(jam_channel_create(&c0, &c1) == OK);
+    CHECK(jam_handle_duplicate(v, RIGHT_SAME, &d) == OK);
+    rights_t wider = vr | RIGHT_EXEC;
+    CHECK(jam_channel_write_rights(c0, "x", 1, &d, &wider, 1) == ERR_INVALID_ARGS);
+    CHECK(jam_handle_close(c0) == OK);
+    CHECK(jam_handle_close(c1) == OK);
+    uint64_t a = 0;
+    CHECK(jam_vmar_map(vmar, v, 0, PG, VWX, &a) == ERR_INVALID_ARGS);
+    CHECK(jam_vmar_map(vmar, v, 0, PG, VRX, &a) == ERR_ACCESS_DENIED);
+    /* The JIT call: no power on our root (if we have one), and a VMO is no
+     * root. Each takes the handle. */
+    CHECK(jam_handle_duplicate(v, RIGHT_SAME, &d) == OK);
+    CHECK(jam_vmo_make_jit(d, d, &x) == ERR_WRONG_TYPE);
+    if (root) {
+        handle_t wide;
+        CHECK(jam_handle_duplicate(root, rights_of(root) | RIGHT_ROOT_JIT, &wide) ==
+              ERR_INVALID_ARGS);
+        CHECK(jam_vmo_make_jit(v, root, &x) == ERR_ACCESS_DENIED);
+    } else {
+        CHECK(jam_vmo_make_jit(v, HANDLE_INVALID, &x) == ERR_BAD_HANDLE);
+    }
+    CHECK(jam_handle_close(v) == ERR_BAD_HANDLE);
+    /* The old way, if our root can (init's run): sealed first, so code we
+     * write runs only once nothing can write it again. */
+    if (root && (rights_of(root) & RIGHT_ROOT_VMEX)) {
+        CHECK(jam_vmo_create(PG, 0, &v) == OK);
+        CHECK(jam_vmo_write(v, 0, "\xc3", 1) == OK);
+        CHECK(jam_vmo_make_exec(v, root, &x) == OK);
+        CHECK((rights_of(x) & (RIGHT_WRITE | RIGHT_EXEC)) == RIGHT_EXEC);
+        CHECK(jam_vmar_map(vmar, x, 0, PG, VRW, &a) == ERR_ACCESS_DENIED);
+        CHECK(jam_vmar_map(vmar, x, 0, PG, VWX, &a) == ERR_INVALID_ARGS);
+        CHECK(jam_vmar_map(vmar, x, 0, PG, VRX, &a) == OK);
+        CHECK(jam_vmar_protect(vmar, a, PG, VWX) == ERR_INVALID_ARGS);
+        CHECK(jam_vmar_protect(vmar, a, PG, VRW) == ERR_ACCESS_DENIED);
+        CHECK(jam_vmo_write(x, 0, "\x90", 1) == ERR_ACCESS_DENIED);
+        CHECK(jam_vmo_make_jit(x, root, &d) == ERR_ACCESS_DENIED);   /* x is gone */
+        CHECK(jam_vmar_unmap(vmar, a, PG) == OK);
+    }
+    struct process_info pi;
+    CHECK(jam_process_get_info(startup_handle(SR_SELF_PROCESS), &pi) == OK &&
+          !(pi.flags & PROCESS_FLAG_JIT));
+}
+
 void pt_jit(char **argv)
 {
     (void)argv;
@@ -53,6 +150,7 @@ void pt_jit(char **argv)
         close(fd);
     }
     if (!holds_power()) {
+        hostile();
         CHECK(refused(mmap(NULL, PG, RWX, ANON | MAP_JIT, -1, 0), EPERM));
         CHECK(refused(mmap(NULL, PG, RW, ANON | MAP_JIT, -1, 0), EPERM));
         CHECK(refused(mmap(NULL, 1ul << 30, PROT_NONE, ANON | MAP_NORESERVE | MAP_JIT, -1, 0),
