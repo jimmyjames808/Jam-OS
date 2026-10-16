@@ -1999,6 +1999,23 @@ KTEST(upcall_raise_running)
     upc_end(&u);
 }
 
+/* An interrupt that comes in a call's last microseconds (interrupts off
+ * from the dispatch to sysretq) is taken at the first instruction after
+ * the call, and takes a latched raise there: the right thing (a later
+ * interrupt, in the thread's own code), but what a test can't tell from a
+ * raise taken on the call's return. That one would come there on every
+ * try; such an interrupt hardly ever twice (soak 2026-10-16, 8 CPUs under
+ * load: upcall_raise_in_call saw one). */
+static bool raised_after_call(struct upc *u, uint64_t ret_label, const char *test,
+                              unsigned tries)
+{
+    if (!get(u, D_RET2) || get(u, D_ERIP) != ret_label || tries >= 5)
+        return false;
+    kprintf("ktest %s: an interrupt at the call's return took the raise (try %u): again\n", test,
+            tries);
+    return true;
+}
+
 /* A raise to a thread blocked in a call (sleep_until, which
  * thread_interrupt would end) doesn't end it, and isn't taken on its
  * return: it comes at a later interrupt, in the thread's own code. */
@@ -2016,8 +2033,9 @@ KTEST(upcall_raise_in_call)
         KT_EQ(uthread_raise(u.u[0]), OK);
         KT_ASSERT(wait_word(&u, D_RCOUNT, 1));
         exited(&u, 0);
-        if (rip_in(&u, upc_rcall, upc_rcall_ret) && tries < 5) {
-            upc_end(&u);   /* a slow start: taken before the call; again */
+        if ((rip_in(&u, upc_rcall, upc_rcall_ret) && tries < 5) ||
+            raised_after_call(&u, AT(upc_rcall_ret), "upcall_raise_in_call", tries)) {
+            upc_end(&u);   /* a slow start (taken before the call), or the above: again */
             continue;
         }
         KT_EQ((int64_t)get(&u, D_RET), OK);   /* not ended */
@@ -2063,12 +2081,17 @@ KTEST(upcall_raise_in_window)
 KTEST(upcall_raise_rights)
 {
     struct upc u;
-    upc_new(&u, "upc-rself");
-    set(&u, D_ACTION, AT(act_raised));
-    upc_start(&u, upc_rself);
-    self_handles(&u);
-    set(&u, D_GO, 1);
-    exited(&u, 0);
+    for (unsigned tries = 1;; tries++) {
+        upc_new(&u, "upc-rself");
+        set(&u, D_ACTION, AT(act_raised));
+        upc_start(&u, upc_rself);
+        self_handles(&u);
+        set(&u, D_GO, 1);
+        exited(&u, 0);
+        if (!raised_after_call(&u, AT(upc_rself_ret), "upcall_raise_rights", tries))
+            break;
+        upc_end(&u);
+    }
     KT_EQ((int64_t)get(&u, D_RET), ERR_ACCESS_DENIED);
     KT_EQ((int64_t)get(&u, D_RET3), OK);
     KT_EQ(get(&u, D_RET2), 0);
