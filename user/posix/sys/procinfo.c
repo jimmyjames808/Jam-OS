@@ -42,11 +42,11 @@
  * other fields 0 (swap, buffers, caches, huge pages), Hugepagesize 2048.
  * stat (system): the CPU times 0 (cpu_stat is root's), btime real, processes
  * our pid, procs_running 1, the rest 0. */
-#include <elf.h>
-#include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <elf.h>
+#include <errno.h>
 #include <string.h>
 #include <time.h>
 #include "calls.h"
