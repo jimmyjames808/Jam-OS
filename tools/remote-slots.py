@@ -39,7 +39,9 @@ clears its environment escapes the sweep, and keeps only itself.)
 Fairness: a small command may start ahead of an older waiting one (the idle
 CPUs are used), but once the older one has waited JAMOS_REMOTE_AGE (60) seconds
 nothing starts ahead of it, so a big run is not starved by a stream of small
-ones. Except one that cannot fit however long the others take: a long claim
+ones. (Only when starting first would delay it: an older run that would still
+fit after this one started is not waited for, so a waiter stuck on something
+other than the budget holds no one up.) Except one that cannot fit however long the others take: a long claim
 (below) holds part of the budget for hours, and a run whose cost plus the long
 claims' is over the budget (or the slots) would block everything behind it for
 as long, so it is told so at once ("needs 12 CPUs, but at most 10 can be free
@@ -328,10 +330,17 @@ def admit(d, ticket, claim, runs_dir, wait_dir, wfd):
     cant = hopeless(claim.cpus, claim.mem)
     aged = int(os.environ.get("JAMOS_REMOTE_AGE", "60")) * 10**9
     now = time.time_ns()
-    # Older waiting runs that have waited long enough to go first, but not those
-    # that cannot start until a long claim ends: they hold no one up.
-    ahead = [n for n, t, _ in waits
-             if n < ticket and now - int(n.split(".")[0]) > aged and not hopeless(parse(t)[0], parse(t)[1])]
+    # Older waiting runs that have waited long enough to go first. Not those that
+    # cannot start until a long claim ends (they hold no one up), and not those
+    # that would still fit after this run started (starting first delays them not
+    # at all; one that fits and still waits is stuck on something other than the
+    # budget, an older governor's rule or a client gone, and must not hold the rest).
+    def waits_for(n, t):
+        c, m = parse(t)[0], parse(t)[1]
+        if n >= ticket or now - int(n.split(".")[0]) <= aged or hopeless(c, m):
+            return False
+        return not (used + claim.cpus + c <= cpus_max and used_mem + claim.mem + m <= mem_max and len(runs) + 2 <= slots)
+    ahead = [n for n, t, _ in waits if waits_for(n, t)]
     fits = not runs or (used + claim.cpus <= cpus_max and used_mem + claim.mem <= mem_max and len(runs) < slots)
     if fits and not ahead and not cant:
         rfd = lock_new(os.path.join(runs_dir, ticket), claim.text())

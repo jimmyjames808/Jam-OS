@@ -224,6 +224,44 @@ order=$(awk '/^\+/ { printf "%s ", $1 }' "$tmp/events")
 [ "$order" = "+a +big +late " ] || fail "start order: $order, wanted +a +big +late (the big one first)"
 unset JAMOS_REMOTE_AGE
 
+# An older waiter that has waited long enough but would still fit after a younger run
+# started is not waited for: it is stuck on something other than the budget (an older
+# copy of this script's rule, a client gone). A fake waiter, locked by a process that
+# sleeps; one that needs 1 CPU does not hold a younger 1-CPU run back, one that needs
+# more than would be left does.
+stuck() {   # stuck <cpus> <seconds>: a waiting run, 10 s old, that never starts
+    python3 -c '
+import fcntl, os, sys, time
+d = os.path.join(os.environ["JAMOS_REMOTE_LOCKDIR"], ".cpu", "wait")
+os.makedirs(d, exist_ok=True)
+fd = os.open(os.path.join(d, "%019d.1" % (time.time_ns() - 10 * 10**9)), os.O_RDWR | os.O_CREAT)
+fcntl.flock(fd, fcntl.LOCK_EX)
+os.write(fd, ("%s 512 1 run stuck\n" % sys.argv[1]).encode())
+time.sleep(float(sys.argv[2]))' "$1" "$2" &
+}
+rm -rf "$JAMOS_REMOTE_LOCKDIR/.cpu"
+export JAMOS_REMOTE_CPUS=4 JAMOS_REMOTE_AGE=1
+$slots 2 512 sleep 3 2> /dev/null &       # 2 of 4 CPUs
+sleep 0.4
+stuck 1 3
+sleep 0.4
+t0=$(now)
+$slots 1 512 true 2> /dev/null            # 2 + 1 + 1 <= 4: the stuck 1-CPU waiter still fits
+t1=$(now)
+python3 -c "import sys; sys.exit(not ($t1 - $t0 < 1.5))" || fail "a run waited behind an older waiter that would still fit after it started"
+wait
+rm -rf "$JAMOS_REMOTE_LOCKDIR/.cpu"
+$slots 2 512 sleep 3 2> /dev/null &
+sleep 0.4
+stuck 3 3                                  # needs 3 of 4: not after another 1 starts
+sleep 0.4
+t0=$(now)
+$slots 1 512 true 2> /dev/null
+t1=$(now)
+python3 -c "import sys; sys.exit(not ($t1 - $t0 >= 2))" || fail "a run started ahead of an older waiter it would have kept from fitting"
+wait
+unset JAMOS_REMOTE_AGE
+
 # ---- a long claim: the deadlock of 2026-10-15 ---------------------------------------------------------
 # The Chromium build holds 16 of 26 CPUs for hours. A 12-CPU run (init-test.sh) can never fit
 # beside it; the fairness rule used to hold every younger run behind it for as long. Now it is
