@@ -359,7 +359,7 @@ int pk_cmd_check(struct pk_app *a, int argc, char **argv)
         free(atext);
     }
     if (!bad)
-        pk_say("%u package%s checked: every file is as its manifest says.\n", db.n,
+        pk_say("pkg check: %u package%s, every file is as its manifest says.\n", db.n,
                db.n == 1 ? "" : "s");
     pk_db_free(&db);
     return bad ? 1 : 0;

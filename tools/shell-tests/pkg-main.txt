@@ -41,7 +41,7 @@ send allow -l
 wait no program on /data is allowed to run
 wait {prompt}
 send pkg check
-wait 0 packages checked
+wait pkg check: 0 packages, every file is as its manifest says
 wait {prompt}
 
 # The good repository: bbb runs aaa, one question for both.
@@ -60,7 +60,7 @@ wait aaa 1.0-r1
 wait bbb 1.0-r1
 wait {prompt}
 send pkg check
-wait 2 packages checked
+wait pkg check: 2 packages, every file is as its manifest says
 wait {prompt}
 send pkg files bbb
 wait /data/pkg/bin/bbb (program)
@@ -105,7 +105,7 @@ wait aaa 2.0-r1
 wait bbb 1.0-r1
 wait {prompt}
 send pkg check
-wait 2 packages checked
+wait pkg check: 2 packages, every file is as its manifest says
 wait {prompt}
 send pkg files aaa
 wait /data/pkg/share/aaa/new.txt
@@ -125,7 +125,7 @@ type y
 wait Upgraded aaa 2.0-r1
 wait {prompt}
 send pkg check
-wait 2 packages checked
+wait pkg check: 2 packages, every file is as its manifest says
 wait {prompt}
 
 # Remove aaa with what runs it; the approvals go with them.

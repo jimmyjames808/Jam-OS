@@ -9,7 +9,7 @@ wait aaa 2.0-r1
 wait bbb 1.0-r1
 wait {prompt}
 send pkg check
-wait 2 packages checked
+wait pkg check: 2 packages, every file is as its manifest says
 wait {prompt}
 send allow -l
 wait [package aaa 2.0-r1]

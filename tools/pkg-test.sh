@@ -65,7 +65,7 @@ hport=$(sed -n 's/^serving on //p' "$out/pkg.http.log")
 
 # One QEMU run: image, script, name, saved image.
 guest() {
-    QEMU_IMAGE=$1 QEMU_NET=1 QEMU_TIMEOUT=${QEMU_TIMEOUT:-600} QEMU_SAVE=$4 \
+    QEMU_IMAGE=$1 QEMU_NET=1 QEMU_TIMEOUT=${QEMU_TIMEOUT:-360} QEMU_SAVE=$4 \
         QEMU_NET_PEER="--tcp-relay 8000:$hport" QEMU_INPUT=tools/shell-tests/$2 \
         tools/qemu-test.sh "$out" "$3" shell
 }
