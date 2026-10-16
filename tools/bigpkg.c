@@ -18,14 +18,18 @@
  *                          `mount /pkg r`): it holds this program, of the size
  *                          /jam/pkg/bin/bigpkg has, and refuses a new directory, a
  *                          new file and a removal (M13.7's PO14)
+ *   bigpkg spawn           starts /pkg/bin/bigpkg view as a child (the exec service
+ *                          checks the approval for the /pkg name) and waits for it
  * Exit codes: 0 done; 1 a page holds the wrong words, or the guard was
  * wrong; 64 usage. */
 #include <errno.h>
 #include <fcntl.h>
+#include <spawn.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #define WORDS (4096 / 8)
@@ -34,7 +38,7 @@ extern const uint64_t bigprog_table[], bigprog_table_end[];
 
 static int usage(void)
 {
-    printf("usage: bigpkg [hash [step]] | guard | view\n");
+    printf("usage: bigpkg [hash [step]] | guard | view | spawn\n");
     return 64;
 }
 
@@ -134,6 +138,29 @@ static int view(void)
     return bad;
 }
 
+extern char **environ;
+
+/* A child started by the /pkg name: init's exec service checks that the file at
+ * /pkg/bin/bigpkg is the one the approval for /jam/pkg/bin/bigpkg names, and
+ * gives the child its own list (it holds /pkg too). */
+static int spawn_view(void)
+{
+    pid_t pid;
+    int status = 0;
+    char *args[] = { "bigpkg", "view", NULL };
+    int rc = posix_spawn(&pid, "/pkg/bin/bigpkg", NULL, NULL, args, environ);
+    if (rc) {
+        printf("bigpkg: spawn: can't start /pkg/bin/bigpkg (error %d)\n", rc);
+        return 1;
+    }
+    if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status) || WEXITSTATUS(status)) {
+        printf("bigpkg: spawn: the child ended with status %d\n", status);
+        return 1;
+    }
+    printf("bigpkg: spawn: the child started by its /pkg name said view was right\n");
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 1 || (argc >= 2 && !strcmp(argv[1], "hash") && argc <= 3)) {
@@ -152,5 +179,7 @@ int main(int argc, char **argv)
         return guard();
     if (argc == 2 && !strcmp(argv[1], "view"))
         return view();
+    if (argc == 2 && !strcmp(argv[1], "spawn"))
+        return spawn_view();
     return usage();
 }

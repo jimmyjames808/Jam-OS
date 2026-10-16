@@ -73,6 +73,10 @@ wait {prompt}
 send run /pkg/bin/bigpkg view
 wait bigpkg: view: /pkg holds the program, as big as /jam/pkg's, and refused a directory, a file and a removal
 wait {prompt}
+send run /pkg/bin/bigpkg spawn
+wait bigpkg: view: /pkg holds the program, as big as /jam/pkg's, and refused a directory, a file and a removal
+wait bigpkg: spawn: the child started by its /pkg name said view was right
+wait {prompt}
 
 # Every file is as its manifest says (it reads the 300 MiB again).
 send pkg check
