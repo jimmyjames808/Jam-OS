@@ -497,7 +497,9 @@ EXTRA_CFLAGS_init := -I$(MONO_DIR) -I$(MONO_DIR)/optional
 # (utest/execsvc.c: exectest's client.c), and init's approvals of a
 # package's programs (utest/pkgctl.c: init's pkgapprove.c over a RAM
 # filesystem, manifests signed with the vectors' public test key by
-# Monocypher).
+# Monocypher), and bin/pkg's transaction code (utest/pkgplan.c, pkgtxn.c,
+# pkgcut.c: user/services/pkg's fsx, db, plan, unpack, journal and txn over
+# the same RAM filesystem, cut at every change).
 NETSTACK_CORE      := $(patsubst %,$(UOBJ)/user/services/netstack/%.o,stack.c ctl.c tcp.c \
                         port/sys_arch.c)
 EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/services/music/tracks.c.o \
@@ -514,14 +516,16 @@ EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/serv
                       $(CURSOR_OBJ) $(patsubst %,$(UOBJ)/user/services/console/%.c.o,wlinput \
                         cellpaint view select) $(UOBJ)/user/services/shell/sh_paste.c.o \
                       $(UOBJ)/user/tests/exectest/client.c.o $(UOBJ)/libfun.a \
-                      $(UOBJ)/user/services/init/pkgapprove.c.o
+                      $(UOBJ)/user/services/init/pkgapprove.c.o \
+                      $(patsubst %,$(UOBJ)/user/services/pkg/%.c.o,fsx db plan unpack journal txn)
 EXTRA_CFLAGS_utest := -iquote user/services/music -iquote drivers/rtl8125 \
                       -iquote user/services/compositor -iquote user/services/console \
                       -iquote user/services/shell -iquote user/tests/exectest \
                       -iquote user/services/netstack -iquote user/services/dhcp \
                       -iquote user/services/dns -iquote user/services/sntp \
                       -iquote $(FATFS_STAGE) -iquote $(FATFS_PORT) -Iuser/apps/fun \
-                      -iquote user/services/init -I$(MONO_DIR) -I$(MONO_DIR)/optional
+                      -iquote user/services/init -iquote user/services/pkg \
+                      -I$(MONO_DIR) -I$(MONO_DIR)/optional
 EXTRA_DEPS_utest   := $(FATFS_HDRS)
 # The ports formats' vectors (ports/vectors/, tools/pkgvec2c.py), linked in
 # for utest/pkgfmt.c: the same bytes `make check` reads on the Mac.

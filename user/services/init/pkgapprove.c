@@ -715,11 +715,17 @@ static status_t finish_remove(const struct pkga_place *at, const struct pkg_jour
 void pkga_settle(const struct pkga_place *at, const uint8_t *key, struct pkga_settled *out)
 {
     *out = (struct pkga_settled){ .st = OK };
-    char path[PATH_CAP];
+    char path[PATH_CAP], fresh[PATH_CAP];
     snprintf(path, sizeof(path), "%s/db/journal", at->prefix);
+    snprintf(fresh, sizeof(fresh), "%s/db/journal.new", at->prefix);
     struct mapped t = { 0 };
     uint64_t size = 0;
     status_t st = map_file(path, PKG_JOURNAL_MAX, &t, &size);
+    bool from_new = false;
+    if (st == ERR_NOT_FOUND) {   /* bin/pkg was cut between taking journal away and renaming */
+        st = map_file(fresh, PKG_JOURNAL_MAX, &t, &size);
+        from_new = true;
+    }
     if (st == ERR_NOT_FOUND)
         return;
     out->journal = true;
@@ -727,6 +733,15 @@ void pkga_settle(const struct pkga_place *at, const uint8_t *key, struct pkga_se
     const char *why = NULL;
     if (st == OK)
         st = j ? pkg_journal_parse(t.p, size, j, &why) : ERR_NO_MEMORY;
+    if (st != OK && from_new && st != ERR_NO_MEMORY) {
+        /* A journal.new cut short with no journal: the first step never finished,
+         * so nothing began. */
+        out->journal = false;
+        (void)unlink_ok(fresh);
+        free(j);
+        unmap(&t);
+        return;
+    }
     if (st != OK) {
         snprintf(out->what, sizeof(out->what), "the journal can't be read (%s): left for pkg",
                  why ? why : status_str(st));
@@ -737,6 +752,8 @@ void pkga_settle(const struct pkga_place *at, const uint8_t *key, struct pkga_se
         bool fwd = j->op == PKG_OP_REMOVE || j->step >= PKG_STEP_APPROVED;
         st = j->op == PKG_OP_REMOVE ? finish_remove(at, j, key) :
              fwd                    ? finish(at, j, key) : undo(at, j, key);
+        if (st == OK)
+            st = unlink_ok(fresh);   /* a step bin/pkg wrote but did not publish */
         if (st == OK)
             st = unlink_ok(path);
         out->forward = fwd;

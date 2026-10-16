@@ -90,6 +90,7 @@ net.host = 10.2.21.174
 |---|---|
 | `net.address` | a static address: `<address>/<prefix> [<gateway> [<dns> [<dns>]]]`. Without it the DHCP client gets one |
 | `net.host` | the Mac's address (10.2.21.174 for the owner's, on VLAN 21): where the log goes and where `update` fetches from |
+| `pkg.repo` | where `pkg` fetches packages from: `http://host[:port][/dir]` (only http: the signatures are what is trusted). Without it, port 8080 of `net.host` (tools/ports-server.py on the Mac) |
 | `netlog` | `off`: don't send the log, even with `net.host` set |
 | `ntp.server` | where the clock comes from (SNTP): an IPv4 address or a name. Without it, the network's gateway, then `pool.ntp.org` if the gateway gives no time |
 | `ntp` | `off`: don't set the clock from the network (it stays the real-time clock's, as `rtc` says) |

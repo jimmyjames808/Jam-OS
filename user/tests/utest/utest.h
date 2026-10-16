@@ -1029,6 +1029,25 @@ bool t_pkgctl_other_version(void);
 bool t_pkgctl_settle(void);
 bool t_pkgctl_want(void);
 bool t_pkgctl_init(void);
+
+/* pkgtxn.c, pkgplan.c, pkgcut.c: bin/pkg's transactions, plans and cuts
+ * (user/services/pkg), over pkgmk.c's RAM disk and package maker. */
+bool t_pkgtxn_install(void);
+bool t_pkgtxn_refused(void);
+bool t_pkgtxn_init_no(void);
+bool t_pkgtxn_upgrade(void);
+bool t_pkgtxn_remove(void);
+bool t_pkgtxn_busy(void);
+bool t_pkgtxn_db(void);
+bool t_pkgtxn_runs(void);
+bool t_pkgplan_install(void);
+bool t_pkgplan_upgrade(void);
+bool t_pkgplan_remove(void);
+bool t_pkgplan_paths(void);
+bool t_pkgcut_install(void);
+bool t_pkgcut_upgrade(void);
+bool t_pkgcut_remove(void);
+bool t_pkgcut_double(void);
 bool t_netlog_golden(void);
 bool t_netlog_hostile(void);
 bool t_netlog_whole_log(void);

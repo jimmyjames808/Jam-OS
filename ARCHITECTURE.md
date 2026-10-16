@@ -3057,6 +3057,7 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
   and the keys: `timezone`, `rtc`, `volume`, `music.volume`,
   `music.folder`, and the network's `net.address`, `net.host`,
   `netlog`, `ntp` and `ntp.server`: [Networking](#networking); the
+  packages' `pkg.repo` ([the ports system](docs/M13.7-PLAN.md#po6-notes)); the
   compositor's `display.layout` and `display.hz`; the terminals'
   `terminal.font`). init reads them when `/data`
   comes (the clock, the network's address, the window layout, the

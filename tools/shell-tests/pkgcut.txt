@@ -1,0 +1,30 @@
+# bin/pkg's transactions cut at every change (docs/M13.7-PLAN.md section 9,
+# user/services/pkg/txn.c; utest/pkgcut.c): an install, an upgrade and a
+# removal run with the power taken away before each change to the prefix in
+# turn (and, where the change is a write, half written), on a RAM disk with
+# init's real approvals; then the next boot's settle, init's (pkgapprove.c) or
+# bin/pkg's own. The package must be exactly the old one or exactly the new one,
+# and the two settles must go the same way for the same cut. pkgcut_double
+# cuts the settle of a cut upgrade too.
+# Run:
+#   QEMU_INPUT=tools/shell-tests/pkgcut.txt tools/qemu-test.sh build/test pkgcut shell
+wait 120 Jam OS shell
+wait {prompt}
+send T=x
+wait {prompt}
+
+send utest only pkgcut_install; echo pc1-$T-$?
+wait 60 pc1-x-0
+seen 5 utest: 1 passed
+send utest only pkgcut_upgrade; echo pc2-$T-$?
+wait 60 pc2-x-0
+seen 5 utest: 1 passed
+send utest only pkgcut_remove; echo pc3-$T-$?
+wait 60 pc3-x-0
+seen 5 utest: 1 passed
+send utest only pkgcut_double; echo pc4-$T-$?
+wait 60 pc4-x-0
+seen 5 utest: 1 passed
+
+send reboot -f
+wait reboot: resetting

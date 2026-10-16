@@ -70,5 +70,8 @@ struct pkga_settled {
  * removed. Every file it touches is one a signed manifest names (key; NULL:
  * a build without a ports key, which settles nothing), and every step is
  * one that can be done again, so a cut during the settle is settled the
- * same way next time. */
+ * same way next time. bin/pkg replaces the journal by writing journal.new
+ * and renaming it, so a cut between taking the journal away and the rename
+ * leaves journal.new alone: it is read in the journal's place (one that is
+ * cut short, with no journal, means nothing began), and removed with it. */
 void     pkga_settle(const struct pkga_place *at, const uint8_t *key, struct pkga_settled *out);

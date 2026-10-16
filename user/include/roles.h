@@ -191,4 +191,8 @@ enum {
     PROGRAM_SR_BODY = SR_USER + 3,      /* fetch's: the channel a body goes down in */
     /* bin/update */
     UPDATE_SR_OFFER = SR_USER + 0,      /* the offer channel (initctl.update_offer) */
+    /* bin/pkg (also PROGRAM_SR_STOP) */
+    PKG_SR_CTL = SR_USER + 0,           /* init's pkgctl channel (initctl.pkg_channel) */
+    PKG_SR_ASK = SR_USER + 1,           /* the question: pkg writes one message, the
+                                         * shell answers with one byte, 'y' for yes */
 };

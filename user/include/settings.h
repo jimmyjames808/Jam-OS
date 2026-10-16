@@ -24,6 +24,10 @@
  *                  set, netlog runs (init starts it); and where the
  *                  shell's `update` fetches a build (UDP port 5022,
  *                  tools/update-server.py)
+ *   pkg.repo       where the shell's `pkg` fetches packages from:
+ *                  "http://host[:port][/dir]" (only http, the signatures
+ *                  are what is trusted); the default is port 8080 of
+ *                  net.host (tools/ports-server.py)
  *   netlog         `off`: no netlog even with net.host set (default on)
  *   ntp            `off`: bin/sntp isn't started, the clock stays the
  *                  RTC's (default on)

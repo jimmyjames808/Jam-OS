@@ -1,0 +1,21 @@
+# `pkg` end to end, the third boot (tools/pkg-test.sh): the stick after the
+# power cut of pkg-cold.txt. init settles the journal when /data comes (the
+# install of ccc, cut during its download, is undone), so nothing is left and
+# the installed packages check out.
+wait 120 Jam OS shell
+seen 60 init: /data mounted
+seen 60 init: pkg: settle: install ccc undone at begin: done
+wait {prompt}
+send pkg list
+wait aaa 2.0-r1
+wait bbb 1.0-r1
+wait {prompt}
+send pkg check
+wait pkg check: 2 packages, every file is as its manifest says
+wait {prompt}
+send allow -l
+seen 5 [package aaa 2.0-r1]
+seen 5 [package bbb 1.0-r1]
+wait {prompt}
+send reboot -f
+wait reboot: resetting
