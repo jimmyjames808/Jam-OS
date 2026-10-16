@@ -78,6 +78,20 @@ def wait_log(path, text, timeout):
     return False
 
 
+def wait_none_open(path, timeout):
+    """Every earlier session's tinysshd has ended: sshd's last count in the
+    guest's log is "(0 open)". The client of a refused login exits before
+    the guest's tinysshd does, and until it does it counts against the 8."""
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        counts = re.findall(r"\((\d+) open\)", log_text(path))
+        if not counts or counts[-1] == "0":
+            return True
+        time.sleep(0.2)
+    check(False, "every earlier session ended in the guest's log within %d s" % timeout)
+    return False
+
+
 def plain(b):
     """Bytes the terminal showed, as text: escapes and CRs out."""
     return ANSI.sub(b"", b).replace(b"\r", b"").decode("utf-8", "replace")
@@ -238,6 +252,7 @@ def refusals(s, a):
 
 def at_once(s, a):
     """8 sessions at once, a 9th connection refused; then 4 with output."""
+    wait_none_open(a.log, 30)   # refusals' last login (2026-10-17: it took one of the 8)
     results = [None] * 8
 
     def one(i):
