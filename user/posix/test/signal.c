@@ -25,6 +25,8 @@
  *     within 1 ms, each within 10 ms), on its alternate stack, with RIP
  *     inside the loop and RBP its frame (V8's profiler); 10,000 SIGPROF
  *     from a sampler thread, each once the last was handled, all handled;
+ *     a flood from three threads at once, every handler run with the
+ *     loop's registers (none from a handler's way out in the layer);
  *     200 each to a thread making only quiet calls (mmap, munmap) and to
  *     one making plain calls too, all handled; tgkill(SIGURG) whose handler copies the stack from the ucontext's
  *     RSP and wakes the sender on a futex (Chromium's StackCopierSignal),
@@ -565,6 +567,7 @@ static bool reaches_soon(volatile sig_atomic_t *v, int n, long ms)
 static volatile sig_atomic_t busy_hits[65];    /* sample()'s runs, by signal */
 static volatile sig_atomic_t busy_inloop[65];  /* of them, with the loop's registers */
 static volatile sig_atomic_t busy_onalt[65];   /* of them, on the target's alternate stack */
+static volatile sig_atomic_t busy_outloop[65]; /* of them, with other registers */
 static struct timespec       busy_at;          /* when the last one ran */
 
 /* V8's profiler's handler, in short: where was the thread? */
@@ -573,6 +576,8 @@ static void sample(int sig, siginfo_t *si, void *uc)
     (void)si;
     if (in_loop(uc))
         busy_inloop[sig]++;
+    else
+        busy_outloop[sig]++;
     if (on_target_alt((uintptr_t)__builtin_frame_address(0)))
         busy_onalt[sig]++;
     ran_on[sig] = pthread_self();
@@ -585,7 +590,7 @@ static void handle_busy(int sig, void (*h)(int, siginfo_t *, void *), int flags)
     struct sigaction sa = { .sa_sigaction = h, .sa_flags = SA_SIGINFO | flags };
     sigemptyset(&sa.sa_mask);
     CHECK(sigaction(sig, &sa, NULL) == 0);
-    busy_hits[sig] = busy_inloop[sig] = busy_onalt[sig] = 0;
+    busy_hits[sig] = busy_inloop[sig] = busy_onalt[sig] = busy_outloop[sig] = 0;
 }
 
 #define PROF_ROUNDS  20
@@ -645,6 +650,49 @@ static void check_busy_profiler(void)
     CHECK(busy_hits[SIGPROF] == PROF_SAMPLES && busy_inloop[SIGPROF] == PROF_SAMPLES);
     printf("posixtest: signal: %d SIGPROF from a sampler thread, all handled, %ld us each\n",
            busy_hits[SIGPROF], us_since(&t0, &t1) / PROF_SAMPLES);
+    busy_stop(&b);
+    deflt(SIGPROF);
+}
+
+#define FLOODERS 3
+#define FLOOD_MS 200
+
+static volatile int flood_stop;
+
+static void *flooder(void *arg)
+{
+    (void)arg;
+    while (!flood_stop && !pthread_kill(target->thread, SIGPROF))
+        ;
+    return NULL;
+}
+
+/* SIGPROF from three threads at once, each sending again at once: most
+ * come while the busy thread is on a handler's way out of the layer
+ * (signals coalesce, so nothing is counted but where each run was). Every
+ * handler run has the loop's registers: one that came on the way out is
+ * taken on the frame being resumed, never run with the layer's own
+ * registers. Then one more, after the flood, is handled. */
+static void check_busy_flood(void)
+{
+    handle_busy(SIGPROF, sample, SA_RESTART | SA_ONSTACK);
+    struct busy b;
+    busy_start(&b, true);
+    pthread_t f[FLOODERS];
+    flood_stop = 0;
+    for (int i = 0; i < FLOODERS; i++)
+        CHECK(pthread_create(&f[i], NULL, flooder, NULL) == 0);
+    nap_ms(FLOOD_MS);
+    flood_stop = 1;
+    for (int i = 0; i < FLOODERS; i++)
+        CHECK(pthread_join(f[i], NULL) == 0);
+    int n = busy_hits[SIGPROF];
+    CHECK(pthread_kill(b.thread, SIGPROF) == 0);
+    CHECK(reaches_soon(&busy_hits[SIGPROF], n + 1, 2000));
+    CHECK(busy_hits[SIGPROF] > 0 && busy_outloop[SIGPROF] == 0);
+    if (busy_outloop[SIGPROF])
+        printf("posixtest: signal: flood: %d of %d handler runs not in the loop\n",
+               busy_outloop[SIGPROF], busy_hits[SIGPROF]);
     busy_stop(&b);
     deflt(SIGPROF);
 }
@@ -774,6 +822,7 @@ void pt_signal(char **argv)
     check_timers();
     check_cancel();
     check_busy_profiler();
+    check_busy_flood();
     check_busy_calls();
     check_busy_stack_copy();
     check_busy_sigint();
