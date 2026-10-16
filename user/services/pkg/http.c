@@ -142,18 +142,12 @@ static status_t resolve(struct conn *c, const char *host, uint32_t *addr)
     return st;
 }
 
-static status_t conn_open(struct conn *c, uint32_t addr, uint16_t port)
+static void conn_close(struct conn *c);
+
+/* One try at a connection to addr:port, OPEN, by the deadline. */
+static status_t open_once(struct conn *c, uint32_t addr, uint16_t port, uint64_t deadline)
 {
-    uint64_t deadline = now() + CONNECT_WAIT;
-    status_t st = net_wait_up(net_svc(), deadline, NULL);
-    while (st == OK) {   /* a link that is still coming up (the address came first) is waited for */
-        st = net_tcp_open(net_svc(), addr, port, 0, NET_TCP_BULK, &c->s);
-        if (st != ERR_BAD_STATE || now() >= deadline)
-            break;
-        if (pk_net_stopped())
-            return ERR_CANCELED;
-        (void)jam_sleep_until(now() + 200 * NS_PER_MS);   /* its status says only that it woke */
-    }
+    status_t st = net_tcp_open(net_svc(), addr, port, 0, NET_TCP_BULK, &c->s);
     if (st != OK)
         return st;
     c->open = true;
@@ -169,6 +163,26 @@ static status_t conn_open(struct conn *c, uint32_t addr, uint16_t port)
         if (state == SOCKRING_STATE_CLOSED)
             return err != OK ? err : ERR_PEER_CLOSED;
         st = wait_for(c, TAG_SOCK, deadline, &ready);
+    }
+    return st;
+}
+
+/* A connection to addr:port, OPEN, waiting at most CONNECT_WAIT. The address
+ * comes before the link does, and a connect made in between fails with
+ * ERR_BAD_STATE: it is tried again until the deadline. */
+static status_t conn_open(struct conn *c, uint32_t addr, uint16_t port)
+{
+    uint64_t deadline = now() + CONNECT_WAIT;
+    status_t st = net_wait_up(net_svc(), deadline, NULL);
+    while (st == OK) {   /* each turn is one try */
+        st = open_once(c, addr, port, deadline);
+        if (st != ERR_BAD_STATE || now() >= deadline)
+            break;
+        if (pk_net_stopped())
+            return ERR_CANCELED;
+        conn_close(c);
+        (void)jam_sleep_until(now() + 200 * NS_PER_MS);   /* its status says only that it woke */
+        st = OK;
     }
     return st;
 }
