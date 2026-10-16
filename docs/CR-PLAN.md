@@ -1543,13 +1543,18 @@ After `pkg install chromium` (CR-d), with the Mac's ports server running:
    `/proc` files, netlink, signals into a specific thread, `ioctl`s. The
    ENOSYS log and the syscall scan turn them into a list; each goes to a
    layer, never into a Chromium patch unless no layer can answer.
-6. **Signals and faults**: V8's WebAssembly trap handler and its CPU
-   profiler need a fault delivered to the faulting thread and a signal to
-   a chosen thread; M13's signal thread does neither. Jitless (no Wasm
-   traps) and no profiler avoid it until CR-e, where the trap handler is
-   off (`--no-wasm-trap-handler`: bounds checks in code instead;
-   *unsure* that Chromium's renderer honours it rather than enabling the
-   handler itself).
+6. **Signals and faults**: V8's WebAssembly trap handler, its CPU
+   profiler, Chromium's sampling profiler and its crash stack dumps need a
+   fault delivered to the faulting thread and a signal to a chosen thread
+   wherever it is; M13's signal thread does neither. The owner's rule
+   (2026-10-16): build that layer, don't turn the features off.
+   [SIGNALS-PLAN.md](SIGNALS-PLAN.md) does (tracks SG1 to SG6: an upcall
+   into the faulting thread in the kernel, the rest in libc), independent
+   of CB3 and CB4 and meant to land before CR-e. The workarounds are
+   temporary: jitless (no Wasm traps) and no profiler until then, and
+   Chromium's fault stack dumps don't run (SIGABRT's do); if CR-e comes
+   first, the trap handler is off (`--no-wasm-trap-handler`: bounds checks
+   in code instead) until SG3 and SG4 merge, and SG6 removes the flag.
 7. **Memory on the PC**: a browser with tabs takes GBs; jobs and the
    kept memfds (G2's Q12) mean no overcommit beyond reservations. The
    PC's 32 GB is plenty; QEMU tests run with 8 GB.
