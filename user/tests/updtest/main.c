@@ -10,8 +10,9 @@
  * runs); manifest-otherkey, the same manifest signed with a second key;
  * manifest-othernet, the same build's manifest saying the other network
  * default (untagged for a VLAN build, vlan21 for an untagged one), signed
- * with the first; nak.manifest, signed with the first, for two files that
- * are no kernel.
+ * with the first; manifest-abi, the same manifest with another build's ABI
+ * stamp, and manifest-badabi, with an abi line twice (the second malformed);
+ * nak.manifest, signed with the first, for two files that are no kernel.
  * The shell gives it what its list asks for: /data (read) and init's
  * control channel, whose update_offer is the channel bin/update's offer
  * will travel on.
@@ -30,7 +31,8 @@
  *                  another manifest's signature (the signature), an offer
  *                  with a bad magic, one handle or an unknown flag, the
  *                  build signed as saying the other network default (its
- *                  own refusal, unless forced), and two files that match
+ *                  own refusal, unless forced), a malformed abi line,
+ *                  and two files that match
  *                  their signed manifest but are no kernel (the kernel's
  *                  own refusal); and the build as it is, and the
  *                  other-network one with UPDATE_OFFER_FORCE, each offered
@@ -400,6 +402,24 @@ static void extension_lines(const struct build *b)
            line ? UPDATE_BAD_SIGNATURE : UPDATE_ACCEPTED, 0);
 }
 
+/* The ABI stamp (<update.h>, the `abi` extension line this build takes):
+ * the build's manifest signed with another build's stamp (DIR
+ * "manifest-abi"): taken (check only), a build of another ABI is still a
+ * build; and signed with an abi line that breaks its rules (DIR
+ * "manifest-badabi": the line twice, the second of 15 digits): no manifest. */
+static void abi_line(const struct build *b)
+{
+    struct build v;
+    if (other_manifest(b, DIR "manifest-abi", &v) == OK) {
+        v.flags = UPDATE_OFFER_CHECK_ONLY;
+        expect("an abi line of another build (check only)", &v, 2, UPDATE_ACCEPTED, 0);
+    }
+    if (other_manifest(b, DIR "manifest-badabi", &v) == OK) {
+        v.flags = UPDATE_OFFER_CHECK_ONLY;
+        expect("a malformed abi line", &v, 2, UPDATE_BAD_MANIFEST, 0);
+    }
+}
+
 /* Two files that match their signed manifest exactly but are no kernel
  * (8192 bytes of 0x55, 4096 of 0xaa; the test script signed DIR
  * "nak.manifest" for them): only kexec_load can refuse them. Into *b. */
@@ -645,6 +665,7 @@ static void bad(struct build *b)
     b->flags = 0;
     other_net(b);
     extension_lines(b);
+    abi_line(b);
     if (st == OK)
         expect("not a kernel", &nak, 2, UPDATE_NOT_LOADED, 0);
 }

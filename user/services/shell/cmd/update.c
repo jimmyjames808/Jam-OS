@@ -22,7 +22,10 @@
  * and bin/update just ask. A build without a key fetches nothing: init
  * would refuse every build. -f: taken even if its network default
  * (vlan21, untagged: its build.txt) isn't this build's, which init
- * otherwise refuses. */
+ * otherwise refuses. The shell also tells bin/update this build's ABI
+ * stamp (build.txt's `abi` line) and how many packages are installed, so
+ * that after a build with another stamp it can say they were built for the
+ * old system (docs/M13.7-PLAN.md section 11). */
 #include <idl/initctl.h>
 #include <ipv4.h>
 #include <settings.h>
@@ -63,6 +66,25 @@ static bool server(const char *given, char *out, size_t cap)
         return false;
     }
     return true;
+}
+
+/* How many packages are installed: the files of /data/pkg/db that are
+ * manifests (not serial or journal, nor a `.new` or `.sum` of a transaction:
+ * the names bin/pkg's pk_name_reserved keeps). bin/update says how many
+ * were built for the old system when a new build's ABI stamp differs. */
+static unsigned packages_installed(void)
+{
+    struct fs_entry ent;
+    unsigned n = 0;
+    for (unsigned i = 0; fs_readdir("/data/pkg/db", i, &ent) == OK; i++) {
+        size_t l = strlen(ent.name);
+        bool aside = !strcmp(ent.name, "serial") || !strcmp(ent.name, "journal") ||
+                     (l > 4 && (!strcmp(ent.name + l - 4, ".new") ||
+                                !strcmp(ent.name + l - 4, ".sum")));
+        if (!ent.is_dir && !aside)
+            n++;
+    }
+    return n;
 }
 
 SH_CMD(update)
@@ -114,9 +136,20 @@ SH_CMD(update)
         return 1;
     }
     struct spawn_handle x[3] = { { UPDATE_SR_OFFER, ch } };
-    const char *args[] = { "update", host, mode, s.version, git, force ? "force" : NULL, NULL };
+    char abi_word[8 + UPDATE_ABI_LEN + 1], abi[UPDATE_ABI_LEN + 1], pkgs_word[24];
+    const char *args[8] = { "update", host, mode, s.version, git };
+    int n = 5;
+    if (sh_build_abi(abi)) {   /* what bin/update compares the new build's stamp with */
+        snprintf(abi_word, sizeof(abi_word), "abi=%s", abi);
+        args[n++] = abi_word;
+    }
+    snprintf(pkgs_word, sizeof(pkgs_word), "packages=%u", packages_installed());
+    args[n++] = pkgs_word;
+    if (force)
+        args[n++] = "force";
+    args[n] = NULL;
     sh_flush();
-    int code = sh_run_helper(UPDATE_PATH, force ? 6 : 5, args, x, 1);
+    int code = sh_run_helper(UPDATE_PATH, n, args, x, 1);
     if (!then_reboot)
         return code;   /* bin/update's last line said what `reboot` starts now */
     if (code == 3)
