@@ -2,7 +2,8 @@
  * search box, and the shell's channel). Only the programs <deskapps.h>
  * lists, from the boot image: the compositor names an app and init picks
  * the program, so the compositor's channel can start nothing else (no
- * path, no arguments, nothing from /data).
+ * path, no arguments, nothing from /data). The shell's channel may also
+ * start a test program of test_apps (below) the same way.
  *
  * Each app gets what the shell would give it when typed at a prompt (its
  * own list, <wants.h>: the services and mounts it names, read-only or
@@ -35,14 +36,25 @@ void apps_init(handle_t loop_port)
     port = loop_port;
 }
 
-/* The program for desktop app `cmd`, or NULL: not one init launches. */
-static const char *app_path(const char *cmd)
+/* Test programs init also starts this way, for the shell's channel only
+ * (never the compositor's: its search box starts the desktop's apps and
+ * nothing else). bin/jittest's list asks for `right jit`, as no desktop
+ * app's does yet, so a test sees an app given the root's rights
+ * (tools/shell-tests/jit.txt). */
+static const char *const test_apps[][2] = { { "jittest", "bin/jittest" } };
+
+/* The program for desktop app `cmd` (or, with tests, test program cmd),
+ * or NULL: not one init launches. */
+static const char *app_path(const char *cmd, bool tests)
 {
 #define PATH_OF(c, path, name, about, letter, tint)                        \
     if ((path) && !strcmp(cmd, (c)))                                       \
         return (path);
     DESKAPPS(PATH_OF)
 #undef PATH_OF
+    for (size_t i = 0; tests && i < sizeof(test_apps) / sizeof(test_apps[0]); i++)
+        if (!strcmp(cmd, test_apps[i][0]))
+            return test_apps[i][1];
     return NULL;
 }
 
@@ -68,11 +80,18 @@ static status_t start(struct app *a, const char *cmd, const char *path)
         grants[n++] = "/svc/" SVC_WAYLAND;
     grants[n] = NULL;
     struct spawn_handle x[1];
+    rights_t xr[1] = { RIGHT_SAME };
     unsigned nx = 0;
     if (w.rights) {
-        handle_t root = services_root_with(dp_root_rights(w.rights));
-        if (root)
+        /* The root as it is, narrowed in the send to the list's powers
+         * (never RIGHT_TRANSFER), as /svc/exec does: the startup message's
+         * write needs RIGHT_TRANSFER on the handle it sends, so a copy
+         * already without it would fail the spawn. */
+        handle_t root = services_root_with(RIGHT_SAME);
+        if (root) {
+            xr[nx] = dp_root_rights(w.rights);
             x[nx++] = (struct spawn_handle){ SR_RESOURCE, root };
+        }
     }
     status_t st = dp_job_create(startup_handle(SR_JOB), &a->job);
     if (st != OK) {
@@ -83,7 +102,7 @@ static status_t start(struct app *a, const char *cmd, const char *path)
     const char *argv[] = { path };
     struct spawn_args sa = {
         .path = path, .argc = 1, .argv = argv, .job = a->job, .extra = x, .nextra = nx,
-        .ns = grants,
+        .extra_rights = xr, .ns = grants,
     };
     st = spawn(&sa, &a->proc);   /* the extras go, whatever happens */
     if (st == OK)
@@ -102,7 +121,7 @@ static status_t start(struct app *a, const char *cmd, const char *path)
     return OK;
 }
 
-status_t apps_launch(const char *cmd, uint64_t *koid)
+status_t apps_launch(const char *cmd, bool tests, uint64_t *koid)
 {
     size_t len = strnlen(cmd, 16);
     if (!len || len == 16)
@@ -111,7 +130,7 @@ status_t apps_launch(const char *cmd, uint64_t *koid)
         if (!((cmd[i] >= 'a' && cmd[i] <= 'z') || (cmd[i] >= '0' && cmd[i] <= '9') ||
               cmd[i] == '-'))
             return ERR_INVALID_ARGS;
-    const char *path = app_path(cmd);
+    const char *path = app_path(cmd, tests);
     if (!path)
         return ERR_NOT_FOUND;   /* not a desktop app: nothing else is started this way */
     unsigned i = 0;

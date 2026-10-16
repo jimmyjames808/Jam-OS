@@ -342,8 +342,10 @@ struct process_info {
     char     name[32];    /* the name it was created with (PROCESS_NAME_MAX), NUL-terminated */
 };
 /* process_info.flags and proc_stat.flags: its address space has mapped a
- * JIT VMO (vmo_make_jit) since it was made, writable and executable
- * memory (`ps` marks it). Kept until the address space is torn down. */
+ * JIT VMO (vmo_make_jit) executable since it was made (a map or a protect
+ * with execute; one that only reads or writes it doesn't count): it runs
+ * code it may write (`ps` marks it). Kept until the address space is torn
+ * down. */
 #define PROCESS_FLAG_JIT (1u << 0)
 
 /* Small ids, for POSIX's pid and tid: a process's pid and a thread's tid

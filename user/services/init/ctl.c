@@ -572,7 +572,7 @@ static status_t op_launch(void *ctx, const char *app, uint32_t app_len, uint64_t
         return ERR_INVALID_ARGS;
     memcpy(name, app, app_len);
     name[app_len] = '\0';
-    return apps_launch(name, out_koid);
+    return apps_launch(name, c->admin, out_koid);   /* the shell's: test programs too */
 }
 
 static const struct initctl_ops ops = {

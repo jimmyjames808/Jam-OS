@@ -611,7 +611,9 @@ static inline status_t initctl_launch_call(handle_t ch, bool idl_within, uint64_
  * with the app's own title: "Jamjar"). ERR_NOT_FOUND: not in the list (or
  * not in the boot image); ERR_INVALID_ARGS: not a name; ERR_NO_RESOURCES:
  * DESKAPPS_RUNNING run already; spawn's errors. The compositor's channel
- * (the search box) and the shell's; the consoles' ERR_ACCESS_DENIED. */
+ * (the search box) and the shell's; the consoles' ERR_ACCESS_DENIED. The
+ * shell's may also start init's test programs this way (apps.c:
+ * "jittest"), the compositor's never. */
 static inline status_t initctl_launch_until(handle_t ch, uint64_t deadline_ns, const char *app, uint32_t app_len, uint64_t *out_koid)
 {
     return initctl_launch_call(ch, false, deadline_ns, app, app_len, out_koid);

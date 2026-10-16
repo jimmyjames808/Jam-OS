@@ -474,7 +474,9 @@
 # ERR_BAD_STATE: the cap isn't its function's current one, its bus
 # mastering is off, a page is pinned through it the other way (read only
 # or writable) already, a read-only pin's page isn't committed, or the
-# VMO is sealed and the pin writes.
+# VMO is sealed and the pin writes. ERR_NOT_SUPPORTED: a pager VMO, a
+# child of one, or a JIT VMO (64: JIT memory is written only by threads,
+# never by a device; either way, read only or not).
 106 vmo_pin           status    @vmo_pin_args
 
 # console services ----------------------------------------------------------

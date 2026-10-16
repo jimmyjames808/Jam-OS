@@ -123,9 +123,10 @@ struct vmo_verify *vmo_verifier(struct vmo *v);
  * (not contiguous, physical, kept, a pager VMO or a pager VMO's child);
  * ERR_BAD_STATE (v unchanged) if it has a committed page, a mapping of any
  * kind, a pin or a write path running, or is sealed or a JIT VMO already.
- * A JIT VMO is never sealed (vmo_seal, vmo_seal_verified: ERR_BAD_STATE)
- * and never gets a child (vmo_create_child: ERR_NOT_SUPPORTED). Takes v's
- * "vmo resize" mutex: may sleep. */
+ * A JIT VMO is never sealed (vmo_seal, vmo_seal_verified: ERR_BAD_STATE),
+ * never gets a child (vmo_create_child: ERR_NOT_SUPPORTED) and is never
+ * pinned (vmo_pin_flags: ERR_NOT_SUPPORTED). Takes v's "vmo resize"
+ * mutex: may sleep. */
 status_t vmo_make_jit(struct vmo *v);
 /* Whether v is a JIT VMO (vmo_make_jit). Lock-free; once true, for good. */
 bool vmo_is_jit(const struct vmo *v);
@@ -186,7 +187,9 @@ status_t dma_cap_create(struct kobject **out);
  * a failure too: its contents mean nothing then). With a cap that has an
  * IOMMU domain (dma_cap_translated) each page is also mapped there at
  * that same address, so the device can reach it.
- * ERR_WRONG_TYPE if dma_cap isn't a DMA capability, ERR_BUFFER_TOO_SMALL
+ * ERR_NOT_SUPPORTED for a pager VMO, a pager VMO's child or a JIT VMO
+ * (tested under the lock vmo_make_jit marks one under: no pin of one ever
+ * exists). ERR_WRONG_TYPE if dma_cap isn't a DMA capability, ERR_BUFFER_TOO_SMALL
  * if phys_cap (entries) is too small, ERR_BAD_STATE if the cap is bound to
  * a function whose Bus Master Enable is off, or that has a newer cap,
  * or its last handle is gone, or if the pin writes (no VMO_PIN_READ_ONLY,

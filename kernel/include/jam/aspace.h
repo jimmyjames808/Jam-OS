@@ -94,7 +94,9 @@ uint32_t aspace_mapping_count(struct aspace *as);
  * entries without the region lock) may make a count a moment old. */
 struct map_info;
 uint32_t aspace_get_maps(struct aspace *as, uint64_t from, struct map_info *out, uint32_t cap);
-/* Whether as has mapped a JIT VMO since it was made (PROCESS_FLAG_JIT).
+/* Whether as has mapped a JIT VMO executable since it was made
+ * (PROCESS_FLAG_JIT): aspace_map with ASPACE_EXEC, or aspace_protect
+ * adding it; a mapping that only reads or writes one doesn't count.
  * Lock-free. */
 bool     aspace_maps_jit(struct aspace *as);
 

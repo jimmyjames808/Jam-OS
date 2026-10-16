@@ -129,7 +129,9 @@ const APP_MAX      15
 # with the app's own title: "Jamjar"). ERR_NOT_FOUND: not in the list (or
 # not in the boot image); ERR_INVALID_ARGS: not a name; ERR_NO_RESOURCES:
 # DESKAPPS_RUNNING run already; spawn's errors. The compositor's channel
-# (the search box) and the shell's; the consoles' ERR_ACCESS_DENIED.
+# (the search box) and the shell's; the consoles' ERR_ACCESS_DENIED. The
+# shell's may also start init's test programs this way (apps.c:
+# "jittest"), the compositor's never.
 10 launch  (str[<=15] app) -> (u64 koid)
 # A new channel to volumes that speaks `voldisks` (abi/idl/volumes.idl)
 # alone: the list of the disks and their partitions, and a drive's digest

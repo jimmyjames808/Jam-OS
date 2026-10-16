@@ -3,7 +3,8 @@
 # a POSIX program whose list says `right jit`) is given the power by the
 # shell and writes machine code with MAP_JIT and runs it (patched, switched
 # between writable and executable, a reservation); `ps` marks it [jit]
-# while it holds JIT memory, and the mark goes with it; posixtest's jit
+# while it holds JIT memory, and the mark goes with it; init's `launch`
+# gives it the power too (an app whose list asks for a right); posixtest's jit
 # section (no `right jit`): MAP_JIT EPERM, and jittest as its child refused
 # too; a copy of jittest on /data: refused until allowed, `allow` says on a
 # line of its own that it writes and runs its own code, then it runs with
@@ -41,6 +42,16 @@ wait 10 [1] killed: jittest
 wait {prompt}
 send ps | grep "jit]" || echo ok-$T-gone
 wait ok-x-gone
+wait {prompt}
+# init's desktop apps give a list's powers too (apps.c; the shell's channel
+# may start jittest that way): no terminal, so its lines go to the log
+send launch jittest; echo st-$T=$?
+wait launch: jittest started
+wait st-x=0
+wait {prompt}
+seen init: launch jittest: OK (bin/jittest
+seen 20 init: jittest ended with code 0
+send T=x
 wait {prompt}
 # without the power: posixtest's list has no `right jit`, and its child gets
 # none of its powers
