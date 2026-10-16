@@ -10,6 +10,10 @@
  *       the new image starts with rdi = arg0, rsi = arg1, rsp = stack,
  *       every other register 0, the default MXCSR, x87 control word and
  *       xmm0; the old thread's tid word is never stored to.
+ *   replace_starts_clean
+ *       the old image's exception entry, exception stack and a raise
+ *       latched as the call started stay behind: the new image has no
+ *       entry, or its own, with its frames on its own stack and no raise.
  *   replace_ends_threads
  *       other threads spinning in ring 3 on other CPUs, in a futex wait,
  *       a channel_call nobody answers, object_wait_one, sleep_until and a
@@ -40,6 +44,7 @@
  * each with its own stack and data page. The test drives them through
  * their data pages. The names start "replace_", so `ktest=replace` runs
  * them. */
+#include <stddef.h>
 #include <jam/abi.h>
 #include <jam/aspace.h>
 #include <jam/aspace_vmo.h>
@@ -102,6 +107,9 @@
 #define OD_MXCSR   0x090   /* the main thread's MXCSR, x87 control word, xmm0 */
 #define OD_FCW     0x098
 #define OD_XMM     0x0a0
+#define OD_SELF    0x0a8   /* a handle to the main thread: it raises itself first */
+#define OD_CLEAN   0x0b0   /* 1: the main thread sets an entry and an exception stack */
+#define OD_ENTRIES 0x0b8   /* o_entry's entries */
 #define OD_INFO    0x100   /* handle_info's answer */
 #define OD_CALL    0x200   /* h_call's struct channel_call_args */
 #define OD_CBUF    0x300   /* its request, then its reply buffer */
@@ -118,14 +126,23 @@
 #define ND_FCW     0x038
 #define ND_XMM0    0x040
 #define ND_TIDW    0x048   /* the old main thread's tid word points here */
+#define ND_ENTRIES 0x050   /* n_entry's entries */
+#define ND_FRAME   0x058   /* the last frame's address */
 #define ND_REGS    0x080   /* rax rbx rcx rdx rsi rdi rbp rsp r8 .. r15 at the entry */
 #define ND_INFO    0x100   /* handle_info(rdi)'s answer */
 #define ND_INFO2   0x180
 #define ND_OLD     0x200   /* old handle values, 8 bytes each */
 
+#define O_ESTACK      0x10050000   /* the old main thread's exception stack */
+#define ESTACK_PAGES  4
+
 #define DONE 0x600d
-#define A_SIGNALED 8   /* SIG_SIGNALED as the assembler takes it */
-_Static_assert(A_SIGNALED == SIG_SIGNALED, "the programs' constants");
+#define A_SIGNALED 8   /* SIG_SIGNALED, EXC_RESUME and the frame's RIP as the assembler takes them */
+#define A_RESUME   1
+#define F_RIP      176
+_Static_assert(A_SIGNALED == SIG_SIGNALED && A_RESUME == EXC_RESUME &&
+                   offsetof(struct exc_frame, rip) == F_RIP,
+               "the programs' constants");
 
 #define CHAN_RIGHTS  (RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE | RIGHT_SIGNAL)
 #define EVENT_RIGHTS (RIGHTS_BASIC | RIGHT_SIGNAL)
@@ -145,15 +162,26 @@ __asm__(
     OSET(od_up, OD_UP) OSET(od_ready, OD_READY) OSET(od_spin, OD_SPIN) OSET(od_event, OD_EVENT)
     OSET(od_arg0ok, OD_ARG0OK) OSET(od_go2, OD_GO2) OSET(od_seq2, OD_SEQ2)
     OSET(od_proc2, OD_PROC2) OSET(od_ret2, OD_RET2) OSET(od_mxcsr, OD_MXCSR)
-    OSET(od_fcw, OD_FCW) OSET(od_xmm, OD_XMM)
+    OSET(od_fcw, OD_FCW) OSET(od_xmm, OD_XMM) OSET(od_self, OD_SELF) OSET(od_clean, OD_CLEAN)
+    OSET(od_entries, OD_ENTRIES)
     NSET(nd_up, ND_UP) NSET(nd_go, ND_GO) NSET(nd_how, ND_HOW) NSET(nd_hret, ND_HRET)
     NSET(nd_stale, ND_STALE) NSET(nd_nold, ND_NOLD) NSET(nd_mxcsr, ND_MXCSR)
     NSET(nd_fcw, ND_FCW) NSET(nd_xmm0, ND_XMM0) NSET(nd_regs, ND_REGS) NSET(nd_old, ND_OLD)
+    NSET(nd_entries, ND_ENTRIES) NSET(nd_frame, ND_FRAME)
     "rp_blob:\n"
 
     /* ---- the old image ------------------------------------------------ */
     "o_main:\n"                         /* an FS base, a tid word, FPU state, then replaces */
-    "    movq $" S(O_DATA) " + " S(OD_FSWORD) ", %rdi\n"
+    "    cmpq $0, od_clean\n"           /* and an exception entry and stack */
+    "    je 7f\n"
+    "    leaq o_entry(%rip), %rdi\n"
+    "    movl $" S(SYS_exception_entry_set) ", %eax\n"
+    "    syscall\n"
+    "    movq $" S(O_ESTACK) ", %rdi\n"
+    "    movq $" S(ESTACK_PAGES) " * 4096, %rsi\n"
+    "    movl $" S(SYS_thread_exception_stack) ", %eax\n"
+    "    syscall\n"
+    "7:  movq $" S(O_DATA) " + " S(OD_FSWORD) ", %rdi\n"
     "    movl $" S(SYS_thread_set_fs_base) ", %eax\n"
     "    syscall\n"
     "    movq $" S(N_DATA) " + " S(ND_TIDW) ", %rdi\n"
@@ -167,7 +195,12 @@ __asm__(
     "    movq od_go, %r15\n"
     "    cmpq od_seq, %r15\n"
     "    je 1b\n"
-    "    movq od_proc, %rdi\n"
+    "    movq od_self, %rdi\n"          /* a raise latched as the call starts */
+    "    testq %rdi, %rdi\n"
+    "    jz 8f\n"
+    "    movl $" S(SYS_thread_raise) ", %eax\n"
+    "    syscall\n"
+    "8:  movq od_proc, %rdi\n"
     "    movq od_entry, %rsi\n"
     "    movq od_stack, %rdx\n"
     "    movq od_arg0, %r10\n"
@@ -188,6 +221,13 @@ __asm__(
     "    movq %rax, od_arg0ok\n"
     "    movq %r15, od_seq\n"
     "    jmp 1b\n"
+
+    "o_entry:\n"                        /* count it, go on where it was */
+    "    lock incq od_entries\n"
+    "    movl $" S(A_RESUME) ", %esi\n"
+    "    movl $" S(SYS_exception_done) ", %eax\n"
+    "    syscall\n"
+    "    ud2\n"
 
     "h_replace:\n"                      /* a second thread replacing: OD_PROC2, rsi = 2 */
     "1:  pause\n"
@@ -298,9 +338,10 @@ __asm__(
     "3:  incq %rbx\n"
     "    jmp 2b\n"
     "4:  movq $" S(DONE) ", nd_up\n"
-    "5:  pause\n"
+    "n_tail:\n"                         /* wait for ND_GO, then end by ND_HOW */
+    "    pause\n"
     "    cmpq $0, nd_go\n"
-    "    je 5b\n"
+    "    je n_tail\n"
     "    movq nd_how, %rdi\n"
     "    testq %rdi, %rdi\n"
     "    jz 6f\n"
@@ -310,14 +351,31 @@ __asm__(
     "    syscall\n"
     "    ud2\n"
 
+    "n_clean:\n"                        /* an entry of its own, then a fault */
+    "    leaq n_entry(%rip), %rdi\n"
+    "    movl $" S(SYS_exception_entry_set) ", %eax\n"
+    "    syscall\n"
+    "    ud2\n"
+    "    movq $" S(DONE) ", nd_up\n"
+    "    jmp n_tail\n"
+    "n_entry:\n"                        /* count it, keep the frame's address, skip the ud2 */
+    "    lock incq nd_entries\n"
+    "    movq %rdi, nd_frame\n"
+    "    addq $2, " S(F_RIP) "(%rdi)\n"
+    "    movl $" S(A_RESUME) ", %esi\n"
+    "    movl $" S(SYS_exception_done) ", %eax\n"
+    "    syscall\n"
+    "    ud2\n"
+
     "n_spin:\n"
     "1:  pause\n"
     "    jmp 1b\n"
     "rp_blob_end:\n"
     ".popsection\n");
 
-extern const uint8_t rp_blob[], rp_blob_end[], o_main[], h_replace[], h_spin[], h_futex[],
-    h_call[], h_wait[], h_sleep[], h_pager[], h_touch[], n_main[], n_spin[];
+extern const uint8_t rp_blob[], rp_blob_end[], o_main[], o_entry[], h_replace[], h_spin[],
+    h_futex[], h_call[], h_wait[], h_sleep[], h_pager[], h_touch[], n_main[], n_clean[],
+    n_entry[], n_spin[];
 
 /* Where label l runs in the old image, and in the new. */
 #define AT_O(l) (O_CODE + (uint64_t)((l) - rp_blob))
@@ -658,6 +716,48 @@ KTEST(replace_keeps_identity)
     kobject_unref((struct kobject *)c0);
     kobject_unref((struct kobject *)c3);
     rp_end(&r);
+}
+
+/* The old image's fault handling stays behind: its exception entry, its
+ * exception stack (unmapped in the new image: a frame there would kill),
+ * a raise latched as the call started. Odd rounds the new image sets an
+ * entry of its own and faults: one entry, on its own stack, and no raise
+ * after it however many ticks pass; even rounds it sets none: the
+ * process has no entry. */
+KTEST(replace_starts_clean)
+{
+    enum { ROUNDS = 6 };
+    unsigned raised_before = 0;
+    for (unsigned round = 0; round < ROUNDS; round++) {
+        bool own = round & 1;
+        struct rp r;
+        rp_new(&r, "rp-new");
+        struct vmo *es = new_vmo(ESTACK_PAGES);
+        map_at(r.p, es, O_ESTACK, ESTACK_PAGES * PG, ASPACE_READ | ASPACE_WRITE);
+        put(es);
+        vset(r.odata, OD_CLEAN, 1);
+        rp_start(&r);
+        KT_EQ(process_exc_entry(r.p), AT_O(o_entry));
+        vset(r.odata, OD_SELF, insert(r.p, uthread_kobject(r.u[0]), THREAD_RIGHTS));
+        rp_replace(&r, r.hn, own ? AT_N(n_clean) : AT_N(n_main), N_STACK_TOP, HANDLE_INVALID,
+                   0);
+        rp_new_up(r.ndata);
+        thread_sleep_ms(40);   /* a few ticks: a raise still latched would have come */
+        /* (A tick between its raise and its call gives the raise to the
+         * old image's entry: that round tests the rest only.) */
+        raised_before += vget(r.odata, OD_ENTRIES) != 0;
+        if (own) {
+            KT_EQ(vget(r.ndata, ND_ENTRIES), 1);   /* the ud2, nothing else */
+            uint64_t fr = vget(r.ndata, ND_FRAME);
+            KT_ASSERT(fr >= N_STACK && fr < N_STACK_TOP);
+            KT_EQ(process_exc_entry(r.p), AT_N(n_entry));
+        } else {
+            KT_EQ(process_exc_entry(r.p), 0);
+        }
+        rp_finish(&r, r.ndata, 0);
+        rp_end(&r);
+    }
+    KT_ASSERT(raised_before < ROUNDS);
 }
 
 KTEST(replace_ends_threads)

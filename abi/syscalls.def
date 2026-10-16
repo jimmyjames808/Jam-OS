@@ -458,7 +458,8 @@
 # closes every handle in its table but arg0, which keeps its value, takes
 # proc's name and forgets its exception entry; the calling thread goes on
 # at entry with stack, rdi = arg0, rsi = arg1, every other register 0, FS
-# base 0, no tid word and a clean FPU state. The process keeps its pid,
+# base 0, no tid word, no exception stack, no raise or interrupt latched
+# and a clean FPU state. The process keeps its pid,
 # its kernel object (every handle others hold of it, their waits and port
 # bindings), its job, its creation time and its CPU time;
 # PROCESS_FLAG_JIT is the new address space's. proc is used up: it ends

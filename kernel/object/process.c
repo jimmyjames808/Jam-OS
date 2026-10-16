@@ -1061,12 +1061,17 @@ status_t process_replace(struct process *proc, uint64_t entry, uint64_t stack, h
         arg0 = HANDLE_INVALID;
     }
     /* What of this thread belonged to the old image: its tid word, its
-     * exception entry's window and frame cookie (upcall.c makes a new one),
-     * a latched thread_interrupt. arch_enter_user resets every register
-     * and the FPU. */
+     * exception entry's window, frame cookie (upcall.c makes a new one)
+     * and exception stack, a latched raise (one sent from now on finds the
+     * new image, with no entry yet: dropped) and a latched
+     * thread_interrupt. arch_enter_user resets every register and the
+     * FPU. Any per-thread state of the old image added later is cleared
+     * here too. */
     me->tid_word = 0;
     t->exc_window = false;
     t->exc_cookie = 0;
+    t->exc_stack = t->exc_stack_size = 0;
+    __atomic_store_n(&t->raise_pending, false, __ATOMIC_SEQ_CST);
     (void)thread_interrupt_consume(ERR_INTERRUPTED);
     f = plock(p);
     p->replace = REPLACE_NONE;

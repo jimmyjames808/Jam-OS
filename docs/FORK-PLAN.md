@@ -678,11 +678,11 @@ header; `handle_table_close_all` in `handle.c`; ktests `replace_*`):
 - **The thread**: `arch_enter_user` from inside the call (the kernel stack
   is abandoned, as for a new thread): every register 0 but `rdi`, `rsi`
   and `rsp`, the default FPU state, FS base 0; its tid word, exception
-  window and frame cookie (SG1) and a latched `thread_interrupt` are
-  cleared. Its tid, priority and affinity stay. SG2 must clear any
-  per-thread state it adds (an exception stack, a raise in flight) at the
-  same place (`process_replace`, "What of this thread belonged to the old
-  image").
+  window, frame cookie and exception stack (SG1, SG2), a latched raise
+  and a latched `thread_interrupt` are cleared (`replace_starts_clean`).
+  Its tid, priority and affinity stay. Per-thread state of an image added
+  later is cleared at the same place (`process_replace`, "What of this
+  thread belonged to the old image").
 - **The name** changes under the process lock; `process_get_info` copies
   it under the lock; other readers (`process_name`, the log) may see a
   mix for a moment, never an unterminated name. The old image's
