@@ -844,8 +844,9 @@ status_t memory_bind(struct comp_client *cl, uint32_t id, uint32_t version);
 status_t memory_request(struct comp_client *cl, struct jwl_msg *m);
 /* cl went: its seat objects, and every focus, grab and serial it had. */
 void     seat_teardown(struct comp_client *cl);
-/* Is serial one of the last input events' (wl_keyboard.enter, a key press,
- * a button press) the seat sent cl? (wl_data_device.set_selection is
+/* Is serial one of the last input events' (the wl_keyboard.enter of the
+ * keys coming to it, a key press, a button press) the seat sent cl? (A new
+ * wl_keyboard's enter is not one.) (wl_data_device.set_selection is
  * honoured only then.) */
 bool     seat_input_serial_ok(struct comp_client *cl, uint32_t serial);
 

@@ -90,8 +90,10 @@ status_t seat_res_add(struct comp_client *cl, enum seat_kind kind, uint32_t id, 
                       struct seat_res **out);
 /* r off its client's list and freed (its id is libjwl's business). */
 void     seat_res_free(struct seat_res *r);
-/* serial went to cl with an input event (wl_keyboard.enter, a key press,
- * a button press): one of the serials seat_input_serial_ok accepts. */
+/* serial went to cl with an input event (the wl_keyboard.enter of the keys
+ * coming to it, a key press, a button press): one of the serials
+ * seat_input_serial_ok accepts. Not the enter a new wl_keyboard is told the
+ * focus with (keyboard.c: a client could make those at will). */
 void     seat_input_serial(struct comp_client *cl, uint32_t serial);
 /* The same for a key or button press, which also ends cl's grab lock. */
 void     seat_input_press(struct comp_client *cl, uint32_t serial);

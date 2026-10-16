@@ -7,9 +7,11 @@
  * commit with no buffer (its parent must be shown: else it is dismissed),
  * the configure (xdg_popup.configure with the place, xdg_surface.configure
  * with a serial), the ack, then a commit with a buffer shows it at the
- * place it acked. A commit with no buffer hides it again (and takes it out
- * of the grab); reposition (version 3) places it by new rules: repositioned,
- * then a configure, as the protocol says.
+ * place it acked. A commit with no buffer hides it again (it leaves the
+ * grab, the popups on it are dismissed, shown or not; a grab on it after
+ * that is dismissed at once, as for a parent whose grab is over); reposition
+ * (version 3) places it by new rules: repositioned, then a configure, as
+ * the protocol says.
  *
  * Following the parent. Each loop turn before the paint (xdg_popups_turn)
  * every shown popup is moved with its parent (a window manager's move, a
@@ -170,16 +172,22 @@ static void dismiss_one(struct xdg_surf *x)
         window_destroy(w);
 }
 
-/* x and every popup on it, the newest first. The list keeps its order and
- * its members meanwhile (only windows go), so the walk is safe whatever
- * dismissing one does. */
-static void dismiss(struct xdg_surf *x)
+/* Every popup on x, the newest first, and x itself if self. The list
+ * keeps its order and its members meanwhile (only windows go), so the walk
+ * is safe whatever dismissing one does. */
+static void dismiss_on(struct xdg_surf *x, bool self)
 {
     for (struct xdg_surf *y = pops.last, *before; y; y = before) {
         before = y->pop.prev;
-        if (!y->pop.dismissed && placed_on(y, x))
+        if (!y->pop.dismissed && (self || y != x) && placed_on(y, x))
             dismiss_one(y);
     }
+}
+
+/* x and every popup on it, the newest first. */
+static void dismiss(struct xdg_surf *x)
+{
+    dismiss_on(x, true);
 }
 
 void xdg_grab_dismiss(void)
@@ -361,6 +369,7 @@ static status_t initial_commit(struct xdg_surf *x)
     }
     x->initial = true;
     x->configured = x->acked_new = false;
+    x->pop.grab_over = false;   /* a new start: the grab it takes now, if any, is its own */
     if (x->nsent == XDG_CONFIGS_MAX) {   /* the client must hear this one: the oldest goes */
         x->nsent--;
         memmove(x->sent, x->sent + 1, x->nsent * sizeof(x->sent[0]));
@@ -370,19 +379,25 @@ static status_t initial_commit(struct xdg_surf *x)
 }
 
 /* A commit with no buffer: hidden, out of the grab, and back to before its
- * initial commit. What is on it goes with its window. */
+ * initial commit. The popups on it are dismissed with it, whether they
+ * are shown or not (an unmapped one can hold a place in the grab's chain
+ * too), and a grab on it from now on is dismissed (grab_over; review GR's
+ * Low 4). */
 static void hide(struct xdg_surf *x)
 {
     struct comp_window *w = win_of(x);
-    bool grabbed = in_chain(x);
+    uint32_t was = pops.nchain;
+    dismiss_on(x, false);
     chain_drop(x);
+    if (x->pop.grab)
+        x->pop.grab_over = true;
     x->pop.grab = false;
     if (w)
         window_destroy(w);
     x->initial = x->configured = x->acked_new = x->dirty = false;
     for (uint32_t i = 0; i < x->nsent; i++)
         x->sent[i].stale = true;
-    if (grabbed)
+    if (pops.nchain != was)
         seat_key_surface_changed();   /* the keys back down the chain */
 }
 
@@ -542,10 +557,12 @@ static status_t on_popup_grab(void *data, uint32_t self, uint32_t seat, uint32_t
     if (win_of(x))
         return comp_error(x->cl, self, JWL_XDG_POPUP_ERROR_INVALID_GRAB,
                           "xdg_popup %u grabbed after it was mapped", self);
-    if (px && px->role == XDG_ROLE_POPUP && !px->pop.grab)
+    if (px && px->role == XDG_ROLE_POPUP && !px->pop.grab && !px->pop.grab_over)
         return comp_error(x->cl, self, JWL_XDG_POPUP_ERROR_INVALID_GRAB,
                           "xdg_popup %u grabbed on a popup that took no grab", self);
     x->pop.grab = true;
+    x->pop.grab_over = false;
+    /* (a parent hidden since its grab is in no chain: this one is dismissed) */
     bool nested_ok = !px || px->role != XDG_ROLE_POPUP || in_chain(px);
     if (!px || px->pop.dismissed || !nested_ok || !grant(x, serial))
         dismiss(x);   /* denied: dismissed at once, as the protocol says */
