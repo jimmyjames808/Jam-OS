@@ -2108,6 +2108,31 @@ KTEST(upcall_raise_dropped)
     upc_end(&u);
 }
 
+/* A fault in a raise's window kills with its own line and ", in its
+ * exception entry"; EXC_UNHANDLED there is ERR_BAD_STATE (a raise has no
+ * kill to fall back on). */
+KTEST(upcall_raise_window_ends)
+{
+    struct upc u;
+    upc_new(&u, "upc-ragain");
+    set(&u, D_ACTION, AT(act_again));
+    upc_start(&u, upc_rspin);
+    KT_ASSERT(wait_word(&u, D_LOOPS, 1000));
+    KT_EQ(uthread_raise(u.u[0]), OK);
+    fault_is(killed(&u, "invalid opcode", AT(act_again), 0, ", in its exception entry"), 6, OK);
+    KT_EQ(get(&u, D_COUNT), 1);
+    upc_end(&u);
+
+    upc_new(&u, "upc-runhandled");
+    set(&u, D_ACTION, AT(act_unhandled));
+    upc_start(&u, upc_rspin);
+    KT_ASSERT(wait_word(&u, D_LOOPS, 1000));
+    KT_EQ(uthread_raise(u.u[0]), OK);
+    exited(&u, 98);
+    KT_EQ((int64_t)get(&u, D_RET), ERR_BAD_STATE);
+    upc_end(&u);
+}
+
 #define STORM_THREADS 4
 #define STORM_RAISERS 4
 #define STORM_BURSTS  25
