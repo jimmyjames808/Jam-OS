@@ -373,8 +373,12 @@ def main(argv):
                 items.append((len(items), s, filter_for(s, [], {x for x in excluded if x.startswith(s + ".")})))
             else:
                 u = unrun(s)
-                for k in range(0, len(u), args.chunk):
-                    items.append((len(items), s, ":".join(u[k:k + args.chunk])))
+                # Six tests to a program in round 2, then fewer: what crashed
+                # twice is probably the kind of test that crashes, and alone
+                # it costs one program, not its neighbours.
+                size = args.chunk if rounds == 2 else (2 if rounds <= 4 else 1)
+                for k in range(0, len(u), size):
+                    items.append((len(items), s, ":".join(u[k:k + size])))
         script = header(args.env)
         for i, s, flt in items:
             script += item_lines(i, flt, args.suite_timeout, args.args)
