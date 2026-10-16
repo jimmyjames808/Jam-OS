@@ -590,6 +590,7 @@ static const struct {
     bool (*fn)(void);    /* true: passed */
 } tests[] = {
     { "basics", t_basics },
+    { "verdict_canary", t_verdict_canary },
     { "rights", t_rights },
     { "kexec_refusals", t_kexec_refusals },
     { "root_powers", t_root_powers },

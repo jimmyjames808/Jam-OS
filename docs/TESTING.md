@@ -177,7 +177,10 @@ for this checkout) is skipped and claims no CPUs.
   rule against `tools/checknotx-tests/` first, counting its offences
   there); the network test peer and the pcap check pass their own
   self-tests on the host (`tools/netpeer.py --selftest`,
-  `tools/pcap-vlan-check.py --selftest`); `tools/checkwants.py
+  `tools/pcap-vlan-check.py --selftest`); the shell scripts' failure
+  lines pass theirs (`tools/serial-feed.py --selftest`: the lines a
+  failed test prints, and the lines that must not count);
+  `tools/checkwants.py
   --selftest`: the program-list check takes `svc net listen` and refuses
   `svc net-listen`, a listen on another service and a list over its 24
   wants; the FAT32 checker finds each kind of damage it knows in volumes
@@ -250,7 +253,7 @@ utest's `driver_handle_limits`; **no network card** (`-nic none`) unless
 | `QEMU_XHCI` | | qemu-xhci properties, e.g. `msi=on,msix=off` (MSI-only, like the PC) |
 | `QEMU_USB` | | more USB devices; give each a `port=` (port 1 is the stick) |
 | `QEMU_EXTRA` | | more QEMU arguments, e.g. `-rtc base=2026-01-15T01:02:03` |
-| `QEMU_INPUT` | | a script typed into the serial port by `tools/serial-feed.py` (its header has the commands: `wait`, `seen`, `send`, `type`, `sleep`, `shot`, `monitor`, `usbkeys`, `pointer`; in a `wait` or `seen`, `{prompt}` is the shell's prompt, `jam:<cwd>>` with its colours, in whatever directory: `wait {prompt}`); the run passes if every `wait` matched and QEMU ended by itself |
+| `QEMU_INPUT` | | a script typed into the serial port by `tools/serial-feed.py` (its header has the commands: `wait`, `seen`, `send`, `type`, `sleep`, `shot`, `monitor`, `usbkeys`, `pointer`; in a `wait` or `seen`, `{prompt}` is the shell's prompt, `jam:<cwd>>` with its colours, in whatever directory: `wait {prompt}`); the run passes if every `wait` matched, QEMU ended by itself and the guest printed no failed-test line ([how a script's verdict is reached](#how-a-scripts-verdict-is-reached)) |
 | `QEMU_MONITOR` | | a script of `expect` / `send` / `sleep` lines run against the QEMU monitor |
 | `QEMU_SAVE` | | a file to keep the run's stick image in, with what the guest wrote: a later run's `QEMU_IMAGE` boots the same stick again |
 | `QEMU_BOOT_PREV` | 0 | 1: boot the stick's previous build (`/esp/boot/prev-jamos.elf` and `prev-bootfs.img`, the boot menu's "Jam OS (previous build)") instead of its own |
@@ -1015,6 +1018,48 @@ port. Unless the table says otherwise, run it as:
 QEMU_INPUT=tools/shell-tests/<name>.txt tools/qemu-test.sh build/test <name> shell
 ```
 
+### How a script's verdict is reached
+
+A shell script passes if every `wait` in it matched, QEMU ended by itself
+(the script's `reboot -f`), and `tools/serial-feed.py` saw no failure line
+from the guest's test programs. That last part is the same for every
+script, whatever it waits for: a script's own `wait utest: 3 passed` is
+only a prefix of `utest: 3 passed, 1 FAILED`, and a script that echoes a
+constant after a `utest only` would never notice. serial-feed reads every
+line the guest prints and fails the run on:
+
+- a summary with failures: `N passed, M FAILED` (utest, usbtest, hdatest,
+  mixtest, nettest, ktest and its soak's lines; `dnstest`'s `N failed`),
+  `utest: FAILED tests: ...`, a failed check (`FAILED at line N`, from
+  `user/include/check.h`), `ktest: FAILED ...`, posixtest's `FAIL` and
+  `FAILED` lines, `shell: soak: FAILED`;
+- a `utest only` or `utest except` that printed `utest: running N of M
+  tests` and never printed its `utest: N passed` summary (utest crashed or
+  was killed; `$?` is 137 then, but a script that does not look at it
+  would pass): checked when the next one begins and at the end of the run.
+
+On a failure line the feed says which line (`serial-feed: the guest
+reports a failed test: ...` in the run's output), stops the script at its
+next command or `wait` (that wait is reported as `no '<text>' before the
+guest reported a failed test`) and tells QEMU to quit, so a failure does
+not sit out the run's timeout. The first failure is the finding: a `utest
+only` of several cases stops at its first failed check, with no summary
+naming the others (rerun that case alone for more). A script that expects a test to fail would
+need a way to say so; none does (the deliberate failures, `ktest=review_ktest`
+and the canary below, are not run through serial-feed or are the test of it).
+Scripts still check `$?` where they can (`utest only x; echo st-$T=$?`,
+`wait st-x=0`), which is the stronger check for a crash.
+
+`utest only verdict_canary` is the proof: a case that passes unless the
+shell exported `UTEST_CANARY=fail` (a check fails), `=quiet` (it fails
+without printing the check's line: a busy run's printed lines can be dropped,
+the RESULTS lines are not) or `=crash` (a NULL write, utest killed).
+`tools/verdict-test.sh <outdir> ok|fail|quiet|crash` boots
+`shell-tests/verdict.txt`, which is written the weak way (no `$?`, no
+summary look), and passes when `ok` passes the script and the others fail it
+with the right reason. `serial-feed.py --scan <log>...` says what a saved log
+would have failed on.
+
 | Script | What it covers | Extra setup |
 |---|---|---|
 | `basic.txt` | line editing, history, console protocol levels, restarting serialin and the console; `contest flood` (a client that floods the console must not stop Ctrl+C or other clients) | |
@@ -1086,6 +1131,7 @@ QEMU_INPUT=tools/shell-tests/<name>.txt tools/qemu-test.sh build/test <name> she
 | `mp3.txt` | `play` of MP3 files on `/data` (seven played, noise and an ID3 tag with noise refused, Ctrl+C, `play -n`) | use `tools/mp3-test.sh` |
 | `beep.txt` | `beep 440 500` and `hda gain` (shown, set, clamped at both ends) | use `tools/beep-test.sh` |
 | `mixer.txt` | `vol` (nothing playing, the master set and clamped, a missing stream, usage), then `mixtest` | use `tools/mixer-test.sh` |
+| `verdict.txt` | the shell scripts' verdict on a failing utest ([above](#how-a-scripts-verdict-is-reached)): `utest only verdict_canary` made to pass, fail (loudly or quietly) or crash, in a script that looks at nothing itself | use `tools/verdict-test.sh <outdir> <mode>` (mode ok, fail, quiet or crash) |
 | `audio-api.txt` | `utest only audio_out` (11 cases of libos's sound output API: float samples, the paced writer, pause, two streams) | use `tools/audio-api-test.sh` |
 | `desk.txt` | the desktop's plumbing with real USB input and QEMU's network: netstack's Connected notice with the peer's lease, `notify -w` answered by a click on its card's button, the text bar over a terminal's text (`desk-text-cursor`), `launch` refusing what isn't a desktop app, the search box starting Jamjar through init (busy until its window) and Super+Q ending it, its "Run ... in a terminal" row opening terminal 2 whose shell runs the line (clicks at 1280x800) | use `tools/desk-test.sh` |
 | `readme.txt` | the README's desktop pictures at 2560x1440: Jamjar playing a stick's library beside two tiled terminals (`ps`, `uname -a`), the search box open over that desktop, then the same windows floating (Super+T: each where its tile was, none overlapping; the geometry is in its header) | use `tools/readme-shots.sh` |
@@ -1409,6 +1455,7 @@ matters `QEMU_XHCI`) pass through.
 | `tools/cr-test.sh <outdir> <case>...` | Chromium's layers on Jam OS ([CR-PLAN](CR-PLAN.md#1-the-toolchain)), PC only; each case in `<outdir>/<case>/`. `hello` (CR-a's C++ half, track CT1): fetches the toolchain if it isn't there (`tools/cr/toolchain.sh`), builds `ports/cr-hello` with `tools/jamos-clang++` and what it needs (`ports/llvm-runtimes`, `ports/linux-uapi`; `CR_JOBS` (8) jobs, at low priority), runs the syscall scan on it (`tools/cr/syscall-scan.py`), checks that the build host's own `c++` build of the same source prints its `expected.txt`, then runs it on Jam OS from `/data` through `tools/ports-test.sh` (the same output, byte for byte). About a minute and a half the first time (the runtimes), seconds after. `rust` (CR-a's Rust half, track CT2): the same steps for `ports/cr-rust-hello`, built by Chromium's pinned Rust (`toolchain clang rust`: cargo builds std from rust-src for `x86_64-unknown-linux-musl`, linked by the port's clang wrapper; the case also fetches Rust, 276 MB, and builds gperf into `~/.cache/jamos/tools` through `tools/cr/toolchain.sh`), the build host's rustc build of the same source printing `expected.txt` and, with the argument `panic`, aborting with status 134 and `expected-panic.txt`, then Jam OS printing the same and killed by SIGABRT (status 134); about 25 s to build after the runtimes. The CB tracks add theirs |
 | `tools/cr/build.sh start [--clean] [--gen] [--keep=N] [<target>...]`, `status`, `wait [<s>]`, `stop`, `pkgs`, `scan <outdir>`, `fetch <outdir>` | Chromium's build on the PC ([CR-PLAN](CR-PLAN.md#cb1-as-built-2026-10-14), track CB1), run through `tools/remote-test.sh`: `start` fetches Chromium's pinned tools (`tools/cr/toolchain.sh`), copies the checkout to `~/cr/runs/<run>/`, claims `CR_JOBS` (10) CPUs and `CR_MEM_MB` (12288) in the budget for as long as the build runs (`remote-slots.py --detach`) and returns; the build, `ports.py build -f --kept ~/cr/<version> chromium` at nice 19 and ionice idle, one at a time (`~/cr/.lock`), keeps its source and output in `~/cr/<version>/`. `status` and `wait` (up to 270 s) print ninja's progress, the peak memory (its processes' Pss, sampled every 5 s) and, at the end, `summary.txt`: result, time, peak memory, disk. `pkgs` lists the system libraries GN asks for; `scan` runs the syscall scan on `base_unittests` and `headless_shell`; `fetch` copies the port's stage back for `ports.py package --from`. Waits use a light claim: `JAMOS_REMOTE_LIGHT_CPUS=1 JAMOS_REMOTE_LIGHT_MEM_MB=64` |
 | `tools/soak-test.sh <outdir>` | the soak test (`soak-plug.txt`): `soak loops=3` at a fixed seed (`SOAK_LOOPS`, `SOAK_SEED`), under the kernel's and `bin/soakload`'s load, with a second stick (made writable) pulled in the middle of writes and plugged back and then the boot stick pulled and plugged back (`SOAK_LOAD`: the kernel load workers, default one per CPU); PASS needs 0 FAILED kernel tests, utest runs and file checks, the job tree's message bytes grown by at most 32 KiB (unread messages piling up), and the second stick's own files unchanged |
+| `tools/verdict-test.sh <outdir> ok\|fail\|quiet\|crash` | a shell script's verdict on a failing utest: `utest only verdict_canary` (user/tests/utest/verdict.c) made to pass (the run passes), to fail a check (the run fails, naming the check's line), to fail without printing it (the run fails on utest's RESULTS lines) or to fault (the run fails: a utest began and gave no summary), in `shell-tests/verdict.txt`, which checks nothing itself. One boot each |
 | `tools/ktest-keep-test.sh <outdir>` | the test runner's own failure paths, with three tests that exist for it (`ktest=review_ktest`): with `keep` both failures are recorded and the run goes on; without it (and `crashkernel=0`, so the panic screen says it can't recover) the first panics and its note names loop, seed and test |
 | `tools/hda-test.sh <outdir>` | the HD Audio driver (`hda.txt`): two emulated controllers (intel-hda with hda-duplex and hda-output, ich9-intel-hda with hda-micro), each codec's graph in the log, `hda` from the shell, `kill hda` and devmgr's restart; the path self-test passes and every codec's path is DAC 02 -> pin 03, set up muted; the jack self-test passes (the ALC897's jack table and tags, the RIRB's demultiplexer on a fake RIRB, the debounce, unsolicited responses and the polling fallback against a fake codec that allows jack code only SET_UNSOLICITED_ENABLE, SET_PIN_SENSE and GET_PIN_SENSE; QEMU's codecs have no presence detection, so the real jack path runs only on the PC); QEMU's codecs trace every verb they get and every one must be a GET or a silent SET (power D0, a connection select, pin control with the output off, an amp mute), and none a jack verb (0x708, 0x709); `hda` opens no stream, so no converter format or stream tag either; `hda jacks` shows the RIRB interrupt taken (it is on for unsolicited responses while the dumps' commands are polled, and the dumps must still see no timeout); then the `init` run with the same devices, where each driver must stop cleanly and the run end "run complete: no problems"; then a shell boot with `QEMU_IOMMU=eim` and `iommu=on vtdtest` (`vtdtest.txt`): each drv/hda's read of a page it unpinned is blocked (QEMU hands the controller a 0, so the codec's answer is not the command's) and the kernel logs a read fault naming that controller at that address (or counts it lost: QEMU's unit has one fault record, and the two controllers can fault under a millisecond apart; at least one is logged), then its response ring is pointed into the interrupt window (QEMU passes old-format writes through: blocked only on the PC), `hda` still answers with no timeout (the rings were put back), and `iommu` shows each controller in a domain of its own with its fault counted |
 | `tools/vtd-test.sh <outdir>` | the boot-time VT-d probe ([HISTORY: M11](HISTORY.md#m11-the-iommu)), three `pcilist` boots: with QEMU's `intel-iommu` (interrupt remapping and caching mode on) the DMAR table's lines (the unit, its I/O APIC scope matched with the MADT's, each endpoint scope named by its ids), the unit's registers decoded, translation and interrupt remapping off as the firmware left them, the handover line, nothing in the RESULTS box, and QEMU's trace of the unit's registers: reads, not one write; with `eim=on`: x2APIC ids; without an IOMMU: "no DMAR table". Then two `ktest=vtd iommu=on` boots, caching mode on and off: the unit started and every `vtd_unit_*` test passed (every invalidation kind, the page-table and interrupt-entry callbacks, a refused descriptor reported with the queue going on, the queue wrapping, every CPU submitting at once, the queue turned off and on), interrupt remapping on and every `vtd_irq_*` test passed (COM1's pin remapped, an MSI through its own entry, entries freed on close, another function's, a freed and an out-of-range entry refused and recorded, edu's DMA into the interrupt window blocked, the timer, IPIs and COM1 unaffected, remapping off and on again), translation on (every function in its home domain) and every `vtd_domain_*` test passed (edu blocked with its fault seen, in a domain of its own, a driver's domain taking pins spread one per 2 MiB up to its 2048 table pages, a function whose requester id is shared refused a domain (on a made-up topology, and edu made to look shared), muted after its faults, the tables switched while translating), nothing else in the RESULTS box but the faults those tests provoke; two `ktest=dma iommu=on` boots, caching mode on and off: every `dma_*` test passed, none skipped (edu reaches only what its DMA capability pinned, a killed driver's pages freed once its domain is gone, the quarantine's tests in their translated form, the pin and unpin cost in invalidation waits printed); the same `vtd_domain_*` tests on a unit without pass-through (`pt=off`: nothing depends on it); a boot with a PCIe-to-PCI bridge and a second edu behind it: both named in the RESULTS box as sharing a requester id, and neither given a domain; then two shell boots with `iommu=on` jumping into the stored kernel, by `reboot` and by `crash panic yes`: the jump turns interrupt remapping, translation and the queue off, so both boots find the unit all off, and the next kernel turns interrupt remapping and translation on again; and the ACS boot (`vtd-acs`, `ktest=pci_acs iommu=on`): four root ports, three with ACS (the boot turns it on: SV RR CR UF, a log line each, one without, and the switch downstream port and the two-function device below ports that have none named as such), an edu below the switch port, a two-function device and alone below each of the other two; the first three are refused a domain ("no DMA for it while translating") and the ones alone below a root port, with or without ACS, and 00:04.0 are not, every `pci_acs_*` ktest passes (the control register's bits from the capability, ACS on wherever it is offered, the refusal on a made-up topology and on the live one). `VTD_TEST_INIT=1` adds the `init` run with the IOMMU present, left off and then started with `iommu=on`. About a minute (two more with the init runs) |
@@ -2349,7 +2396,7 @@ of them. Each file's header says more.
 
 | Tool | What |
 |---|---|
-| `tools/serial-feed.py` | types a shell script into QEMU's serial port (`QEMU_INPUT`) |
+| `tools/serial-feed.py` | types a shell script into QEMU's serial port (`QEMU_INPUT`); fails the script on any failed-test line the guest prints ([verdicts](#how-a-scripts-verdict-is-reached)); `--selftest`, `--scan <log>` |
 | `tools/mkstick.py` | disk images standing in for other people's sticks (`tools/sticks-test.sh`, `tools/soak-test.sh`) |
 | `tools/disk-regions.py <device>`, `tools/disk-regions.ps1 -Disk N` | the plan's region list of a disk (the GPT areas, small partitions whole, samples of big ones), each region's SHA-256, opened read-only (the .py refuses a path that is not a block device, `--image` for a file; the .ps1 uses `FileAccess.Read`): the owner's proof that Windows' drive was not touched, and the lines Jam OS's `disk digest` must equal. Never run against a disk by an agent; the tests use images ([M12.7 plan](M12.7-PLAN.md#proving-windows-disk-untouched)) |
 | `tools/nvme-img.py`, `tools/nvme-trace-check.py` | the test drives of `tools/nvme-test.sh` (a Windows-like GPT disk, a second namespace, 4096-byte blocks, a damaged table; files only) and the checker of QEMU's NVMe command trace (with `--write-ranges`, every Write inside the blocks given) |

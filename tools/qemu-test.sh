@@ -8,8 +8,9 @@
 # serial port becomes a socket chardev (still logged to <name>.log) that
 # tools/serial-feed.py drives with the script (its format is in that file).
 # The run ends when QEMU does (e.g. the script's `reboot`: -no-reboot) or
-# at QEMU_TIMEOUT; it passes if every `wait` in the script matched and QEMU
-# ended by itself.
+# at QEMU_TIMEOUT; it passes if every `wait` in the script matched, QEMU
+# ended by itself and the guest printed no failed-test line (serial-feed.py
+# fails the script on one, whatever it waits for).
 # QEMU_TIMEOUT: seconds before a run is given up (150, 300 with the boot
 # word `init`: a cap, a run ends
 # as soon as the kernel halts or QEMU goes; the full ktest takes about

@@ -690,6 +690,7 @@ check: all
 	python3 tools/checknvme.py
 	python3 tools/netpeer.py --selftest
 	python3 tools/pcap-vlan-check.py --selftest
+	python3 tools/serial-feed.py --selftest
 	python3 tools/checkwants.py --selftest
 	python3 tools/mkbootfs.py --selftest
 	python3 tools/ports.py lint
