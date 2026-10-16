@@ -5,6 +5,8 @@
 # and signed in the test:
 #   pkgtxn_install    install, again (refused), fed in pieces of every size
 #   pkgtxn_db         the serials and sums db/ keeps
+#   pkgtxn_runs       what db/ says a package runs, read back from its manifest: a
+#                     dependent blocks a remove, -r orders it first
 #   pkgtxn_refused    a package changed in transit, not the index's, signed by
 #                     another key, stopped, cut short: nothing is left
 #   pkgtxn_init_no    init's refusal, a reserved name, a path under db/ or ending
@@ -23,9 +25,9 @@ wait {prompt}
 send T=x
 wait {prompt}
 
-send utest only pkgtxn_install,pkgtxn_db; echo pt1-$T-$?
+send utest only pkgtxn_install,pkgtxn_db,pkgtxn_runs; echo pt1-$T-$?
 wait 120 pt1-x-0
-seen 5 utest: 2 passed
+seen 5 utest: 3 passed
 send utest only pkgtxn_refused,pkgtxn_init_no; echo pt2-$T-$?
 wait 120 pt2-x-0
 seen 5 utest: 2 passed

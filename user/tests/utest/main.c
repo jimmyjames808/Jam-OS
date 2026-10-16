@@ -900,6 +900,7 @@ static const struct {
     { "pkgtxn_remove", t_pkgtxn_remove },
     { "pkgtxn_busy", t_pkgtxn_busy },
     { "pkgtxn_db", t_pkgtxn_db },
+    { "pkgtxn_runs", t_pkgtxn_runs },
     { "pkgplan_install", t_pkgplan_install },
     { "pkgplan_upgrade", t_pkgplan_upgrade },
     { "pkgplan_remove", t_pkgplan_remove },

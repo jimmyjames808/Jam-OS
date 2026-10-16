@@ -346,6 +346,43 @@ bool t_pkgtxn_busy(void)
     return mk_down();
 }
 
+/* ---- dependencies as installed -------------------------------------------------------------- */
+
+bool t_pkgtxn_runs(void)
+{
+    struct mkpkg a = make_a("1.0", 1), b = make_a("2.0", 1);
+    struct pk_env e;
+    struct pk_dbset db;
+    struct pk_plan p;
+    char why[PK_WHY];
+    b.name = "bbb";
+    b.runs = "aaa 1.0";
+    b.files[0].path = "bin/bbb";
+    b.files[1].path = "share/bbb/readme.txt";
+    b.files[2].path = "share/licences/bbb/LICENSE";
+    CHECK(mk_up() && mk_build(&a) && mk_build(&b));
+    mk_env(&e);
+    CHECK_ST(run_op(&e, PKG_OP_INSTALL, &a, 0, why), OK);
+    CHECK_ST(run_op(&e, PKG_OP_INSTALL, &b, 0, why), OK);
+    /* What db/ says bbb runs, read back from its manifest. */
+    CHECK_ST(pk_db_scan(&e, &db), OK);
+    CHECK_EQ(db.n, 2);
+    CHECK(!strcmp(db.v[1].name, "bbb") && db.v[1].nruns == 1);
+    CHECK(!strcmp(db.v[1].runs[0].name, "aaa") && !strcmp(db.v[1].runs[0].least, "1.0"));
+    CHECK_EQ(db.v[0].nruns, 0);
+    const char *an[] = { "aaa" };
+    CHECK_ST(pk_plan_remove(&db, an, 1, false, &p), ERR_BAD_STATE);
+    pk_plan_free(&p);
+    CHECK_ST(pk_plan_remove(&db, an, 1, true, &p), OK);
+    CHECK_EQ(p.n, 2);
+    CHECK(!strcmp(p.v[0].old->name, "bbb") && !strcmp(p.v[1].old->name, "aaa"));
+    pk_plan_free(&p);
+    pk_db_free(&db);
+    mk_free(&a);
+    mk_free(&b);
+    return mk_down();
+}
+
 /* ---- db ------------------------------------------------------------------------------------ */
 
 bool t_pkgtxn_db(void)

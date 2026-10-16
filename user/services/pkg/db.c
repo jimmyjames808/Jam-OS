@@ -188,11 +188,11 @@ static status_t summarise(struct pk_env *e, const char *file, struct pkg_manifes
                   "a format this pkg doesn't know" : "not a manifest";
         return OK;
     }
-    sha256(text, len, in->msha);
-    free(text);
+    sha256(text, len, in->msha);   /* the manifest's strings point into text: freed last */
     if (!pkg_path_fold_equal(scratch->name, (struct pkg_str){ file, (uint32_t)strlen(file) })) {
         in->broken = true;
         in->why = "its manifest names another package";
+        free(text);
         return OK;
     }
     copy_str(in->name, scratch->name);
@@ -200,14 +200,15 @@ static status_t summarise(struct pk_env *e, const char *file, struct pkg_manifes
     in->revision = scratch->revision;
     in->has_jsha = pk_sum_get(e, in->name, in->msha, in->jsha);
     in->runs = calloc(scratch->nruns ? scratch->nruns : 1, sizeof(*in->runs));
-    if (!in->runs)
-        return ERR_NO_MEMORY;
-    for (uint32_t i = 0; i < scratch->nruns; i++) {
-        copy_str(in->runs[i].name, scratch->runs[i].name);
-        copy_str(in->runs[i].least, scratch->runs[i].least);
+    if (in->runs) {
+        for (uint32_t i = 0; i < scratch->nruns; i++) {
+            copy_str(in->runs[i].name, scratch->runs[i].name);
+            copy_str(in->runs[i].least, scratch->runs[i].least);
+        }
+        in->nruns = scratch->nruns;
     }
-    in->nruns = scratch->nruns;
-    return OK;
+    free(text);
+    return in->runs ? OK : ERR_NO_MEMORY;
 }
 
 static void sort_set(struct pk_dbset *s)

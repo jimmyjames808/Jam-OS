@@ -1032,6 +1032,7 @@ bool t_pkgtxn_upgrade(void);
 bool t_pkgtxn_remove(void);
 bool t_pkgtxn_busy(void);
 bool t_pkgtxn_db(void);
+bool t_pkgtxn_runs(void);
 bool t_pkgplan_install(void);
 bool t_pkgplan_upgrade(void);
 bool t_pkgplan_remove(void);
