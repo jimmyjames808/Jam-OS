@@ -1,0 +1,35 @@
+# `pkg` and a program as big as Chromium's, the boot after the power cut of
+# pkg-bigcut.txt (tools/pkg-test.sh, case big): init settles /jam/pkg's journal
+# when /jam comes (the install of bigpkg, cut during its download, is undone:
+# the half-written 150 MiB goes), so nothing is left, and the package installs
+# whole from the good repository afterwards.
+wait 120 Jam OS shell
+seen 60 init: /data mounted
+seen 90 init: /jam: mounted as views
+seen 90 re:init: pkg: settle: install bigpkg undone
+seen 60 netstack: link up
+seen 30 netstack: address 10.2.21.5/24
+wait {prompt}
+send T=x
+wait {prompt}
+send pkg list
+wait No package is installed.
+wait {prompt}
+send pkg check
+wait pkg check: 0 packages, every file is as its manifest says
+wait {prompt}
+send ls /jam/pkg/bin | grep -c . | grep ^0$ && echo ok-$T-empty
+wait ok-x-empty
+wait {prompt}
+send pkg -R http://10.2.21.174:8000/big/ install bigpkg
+wait Install 1 package, 1 program? [y/N]
+type y
+wait 900 Installed bigpkg 1.0-r1
+wait {prompt}
+send run /jam/pkg/bin/bigpkg
+wait 300 bigpkg: @PAGES@ pages, every 16: hash @HASH@
+wait {prompt}
+send sync
+wait {prompt}
+send reboot -f
+wait reboot: resetting

@@ -21,11 +21,17 @@
 extern const struct pkga_place mk_at;   /* init's places for MK_PREFIX */
 extern uint8_t mk_sk[64], mk_pk[32];    /* the vectors' key */
 
-/* A RAM disk's fat at MK_MNT, and the keys. */
+/* A RAM disk's fat at MK_MNT (16 MiB, or mib), and the keys. */
 bool mk_up(void);
+bool mk_up_mib(unsigned mib);
 bool mk_down(void);
 /* The transaction code's world: MK_PREFIX, the key, init's approvals. */
 void mk_env(struct pk_env *e);
+/* With mk_track_approve set, every approve is watched: mk_approve_peak is
+ * the most pages it added to our job (the last approve's), and the disk and
+ * the package's own memory, there before, are not counted. */
+extern bool     mk_track_approve;
+extern uint64_t mk_approve_peak;
 
 struct mk_file {
     const char *path;
@@ -39,6 +45,7 @@ struct mkpkg {
     unsigned       revision;
     const char    *runs;       /* "dep" or "dep 1.0": a runs line; NULL: none */
     const char    *list;       /* the manifest's list for its programs (NULL: the ELF's own) */
+    size_t         pad;        /* bytes of filler after each program's ELF (a big program) */
     unsigned       nfiles;
     struct mk_file files[MK_FILES];
     /* made by mk_build */

@@ -594,11 +594,20 @@ bool t_pkgctl_want(void)
     CHECK_ST(wants_parse("mount /data rw pkg\n", 19, &w), OK);
     CHECK(w.n == 1 && !strcmp(w.grant[0], "/data:wp"));
     CHECK(dp_wants_refused(&w) && !strcmp(dp_wants_refused(&w), "mount /data rw pkg"));
+    CHECK_ST(wants_parse("mount /jam rw pkg\n", 18, &w), OK);   /* the same on /jam */
+    CHECK(w.n == 1 && !strcmp(w.grant[0], "/jam:wp"));
+    CHECK(dp_wants_refused(&w) && !strcmp(dp_wants_refused(&w), "mount /jam rw pkg"));
     CHECK_ST(wants_parse("mount /data rw\n", 15, &w), OK);
     CHECK(w.n == 1 && !strcmp(w.grant[0], "/data:w") && !dp_wants_refused(&w));
+    CHECK_ST(wants_parse("mount /jam rw\n", 14, &w), OK);   /* an ordinary view of /jam */
+    CHECK(w.n == 1 && !strcmp(w.grant[0], "/jam:w") && !dp_wants_refused(&w));
+    CHECK(dp_on_data("/jam/pkg/bin/x") && dp_on_data("/data/x") && !dp_on_data("/jam") &&
+          !dp_on_data("/jam/") && !dp_on_data("/jamx/y") && !dp_on_data("/usb0/x"));
     static const char *const bad[] = { "mount /data r pkg\n", "mount /usb* rw pkg\n",
                                        "mount * rw pkg\n", "mount /data rw pkg x\n",
-                                       "mount /data rw Pkg\n", "mount /data rwpkg\n" };
+                                       "mount /data rw Pkg\n", "mount /data rwpkg\n",
+                                       "mount /jam r pkg\n", "mount /jam rw Pkg\n",
+                                       "mount /jam rwpkg\n", "mount /jamx rw pkg\n" };
     for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); i++)
         CHECK_ST(wants_parse(bad[i], strlen(bad[i]), &w), ERR_INVALID_ARGS);
     return true;

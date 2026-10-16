@@ -898,6 +898,7 @@ static const struct {
     { "pkgctl_want", t_pkgctl_want },
     { "pkgctl_init", t_pkgctl_init },
     { "pkgtxn_install", t_pkgtxn_install },
+    { "pkgtxn_big", t_pkgtxn_big },
     { "pkgtxn_refused", t_pkgtxn_refused },
     { "pkgtxn_init_no", t_pkgtxn_init_no },
     { "pkgtxn_upgrade", t_pkgtxn_upgrade },
