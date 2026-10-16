@@ -39,6 +39,7 @@ import signal
 import subprocess
 import sys
 import time
+import zlib
 
 TOP = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ANSI = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]")
@@ -60,7 +61,8 @@ def read_log(path):
 class Boot:
     """One QEMU boot of a copy of the stick, fed a script."""
 
-    def __init__(self, args, name, script_lines, timeout):
+    def __init__(self, args, name, script_lines, timeout, keep=False):
+        self.keep = keep   # leave the stick (with what the guest wrote) for the caller
         self.dir = os.path.join(args.outdir, name)
         self.name = name
         os.makedirs(self.dir, exist_ok=True)
@@ -77,7 +79,7 @@ class Boot:
 
     def run(self):
         a = self.args
-        img = os.path.join(self.dir, name_img(self.qname))
+        img = self.img = os.path.join(self.dir, name_img(self.qname))
         shutil.copyfile(a.stick, img)
         env = dict(os.environ, QEMU_IMAGE=img, QEMU_INPUT=self.script,
                    QEMU_TIMEOUT=str(self.timeout), QEMU_MEM=a.mem)
@@ -107,10 +109,11 @@ class Boot:
             self.rc = p.returncode
         if not self.feed_failed:
             self.feed_failed = grep_file(feed, r"serial-feed: .*: no '.*' within")
-        try:
-            os.unlink(img)
-        except OSError:
-            pass
+        if not self.keep:
+            try:
+                os.unlink(img)
+            except OSError:
+                pass
         return read_log(self.log)
 
 
@@ -146,20 +149,31 @@ FOOTER = ["send reboot -f", "wait 60 reboot: resetting"]
 
 def listing(args):
     """{suite: [test, ...]} in the order gtest lists them."""
+    # The list goes to a file on /data and is read from the stick on this side:
+    # through the serial line a kernel log line can cut into a suite's name,
+    # and a shard that lost one would split the suites differently from the
+    # others.
     script = header(args.env) + [
-        "send echo lb-$T", "wait lb-x", "send run $B --gtest_list_tests ; echo le-$T=$?",
+        "send run $B --gtest_list_tests > /data/cr/tests.txt ; echo le-$T=$?",
         "wait 180 re:le-x=\\d+", "wait {prompt}"] + FOOTER
-    b = Boot(args, "list", script, 300)
-    lines = b.run()
-    suites, cur, on = {}, None, False
-    for line in lines:
-        if line.startswith("lb-x"):
-            on = True
-            continue
-        if re.match(r"le-x=\d+", line):
-            break
-        if not on or KERNEL.match(line) or line.startswith("run:"):
-            continue
+    b = Boot(args, "list", script, 300, keep=True)
+    b.run()
+    txt = os.path.join(b.dir, "tests.txt")
+    try:
+        at = subprocess.run([sys.executable, "tools/mkimage.py", "--data-at", b.img],
+                            capture_output=True, text=True, cwd=TOP, check=True).stdout.strip()
+        subprocess.run(["mcopy", "-n", "-i", "%s@@%s" % (b.img, at), "::/cr/tests.txt", txt],
+                       check=True, cwd=TOP, capture_output=True)
+    except (subprocess.CalledProcessError, OSError) as e:
+        raise SystemExit("base-run: can't read the test list from the stick (%s; see %s)" % (e, b.log))
+    finally:
+        try:
+            os.unlink(b.img)
+        except OSError:
+            pass
+    suites, cur = {}, None
+    for line in open(txt, errors="replace").read().split("\n"):
+        line = line.rstrip("\r")
         m = re.match(r"^(\S+\.)(\s+#.*)?$", line)
         if m:
             cur = m.group(1)[:-1]
@@ -276,7 +290,15 @@ def parse_boot(lines, items, res, hung_last):
                 crashed[suite] = cur
             hung = (i, suite)
             break
-        if cur is not None:
+        finished = any(re.search(r"\[==========\] \d+ tests? from .* ran\.", l) for l in seg)
+        if cur is not None and finished:
+            # The program got to gtest's summary: the test's own result line
+            # was lost (a kernel log line cut into it). Code 0 means it passed;
+            # otherwise leave it without a result, so a later round runs it alone.
+            if code == 0:
+                res.status[cur] = "OK"
+                res.text[cur] = buf
+        elif cur is not None:
             res.status[cur] = "CRASH"
             res.text[cur] = buf + ["(the program ended with code %d)" % code]
             crashed[suite] = cur
@@ -314,7 +336,9 @@ def main(argv):
         if s.split("/")[-1].startswith("DISABLED_"):
             continue
         enabled[s] = [t for t in ts if not t.startswith("DISABLED_")]
-    mine = [s for n, s in enumerate(sorted(enabled)) if n % sn == si]
+    # A suite's shard is its name's checksum, not its place in the list, so
+    # shards agree whatever each one's own listing boot saw.
+    mine = [s for s in sorted(enabled) if zlib.crc32(s.encode()) % sn == si]
     if args.only:
         mine = [s for s in mine if fnmatch.fnmatch(s, args.only)]
 
