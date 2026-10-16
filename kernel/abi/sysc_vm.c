@@ -131,6 +131,13 @@ int64_t sysc_vmo_decommit(handle_t h, uint64_t offset, uint64_t len)
     return sys_vmo_decommit(t, h, offset, len);
 }
 
+/* Writable pager VMOs' msync (docs/WRITEMAP-PLAN.md): built with WK3. */
+int64_t sysc_vmo_sync(handle_t vmo, uint64_t offset, uint64_t len, uint32_t flags)
+{
+    (void)vmo, (void)offset, (void)len, (void)flags;
+    return ERR_NOT_SUPPORTED;
+}
+
 int64_t sysc_vmo_create_child(handle_t h, uint32_t flags, uint64_t offset, uint64_t size,
                               uint64_t out)
 {

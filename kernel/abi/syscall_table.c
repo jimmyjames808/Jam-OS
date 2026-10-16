@@ -165,6 +165,11 @@ static int64_t call_port_wait(const struct syscall_frame *f)
     return sysc_port_wait((handle_t)f->args[0], f->args[1], f->args[2]);
 }
 
+static int64_t call_vmo_sync(const struct syscall_frame *f)
+{
+    return sysc_vmo_sync((handle_t)f->args[0], f->args[1], f->args[2], (uint32_t)f->args[3]);
+}
+
 static int64_t call_vmo_read(const struct syscall_frame *f)
 {
     return sysc_vmo_read((handle_t)f->args[0], f->args[1], f->args[2], f->args[3]);
@@ -581,6 +586,17 @@ static int64_t call_pager_op(const struct syscall_frame *f)
                          f->args[4], (int64_t)f->args[5]);
 }
 
+static int64_t call_pager_dirty(const struct syscall_frame *f)
+{
+    return sysc_pager_dirty((handle_t)f->args[0], f->args[1], (uint32_t)f->args[2], f->args[3],
+                            f->args[4]);
+}
+
+static int64_t call_pager_write(const struct syscall_frame *f)
+{
+    return sysc_pager_write((handle_t)f->args[0], f->args[1], f->args[2], f->args[3], f->args[4]);
+}
+
 static int64_t call_exception_entry_set(const struct syscall_frame *f)
 {
     return sysc_exception_entry_set(f->args[0]);
@@ -630,6 +646,7 @@ static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_port_unbind] = call_port_unbind,
     [SYS_port_queue] = call_port_queue,
     [SYS_port_wait] = call_port_wait,
+    [SYS_vmo_sync] = call_vmo_sync,
     [SYS_vmo_read] = call_vmo_read,
     [SYS_vmo_write] = call_vmo_write,
     [SYS_vmo_get_size] = call_vmo_get_size,
@@ -708,6 +725,8 @@ static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_pager_next] = call_pager_next,
     [SYS_pager_supply] = call_pager_supply,
     [SYS_pager_op] = call_pager_op,
+    [SYS_pager_dirty] = call_pager_dirty,
+    [SYS_pager_write] = call_pager_write,
     [SYS_exception_entry_set] = call_exception_entry_set,
     [SYS_exception_done] = call_exception_done,
     [SYS_thread_exception_stack] = call_thread_exception_stack,

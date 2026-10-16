@@ -707,22 +707,37 @@ struct vmo_pin_args {
  * else ERR_BAD_STATE and nothing happens. */
 #define VMO_PIN_READ_ONLY (1u << 0)
 
-/* pagers (abi/syscalls.def 160-164) -------------------------------------------
+/* pagers (abi/syscalls.def 160-166) -------------------------------------------
  * A pager (OBJ_PAGER) supplies the pages of the VMOs made from it (pager
  * VMOs), each under a key the pager chooses: a fault or a vmo_read on an
  * absent page queues a request in the pager, which the pager reads with
  * pager_next and answers with pager_supply or pager_op. Requests stay in
  * the pager object until they are answered, so a pager outlives its
- * process: a successor takes the delivered ones again (PAGER_NEXT_AGAIN). */
+ * process: a successor takes the delivered ones again (PAGER_NEXT_AGAIN).
+ * A writable pager VMO (PAGER_VMO_WRITABLE) may also be mapped writable: a
+ * store marks its page dirty, and the pager writes dirty pages back
+ * (pager_dirty, PAGER_OP_WRITTEN; docs/WRITEMAP-PLAN.md). */
 
 /* pager_create's handle: the pager's holder reads requests (READ), makes
  * VMOs and answers (WRITE), and binds it to a port (WAIT: SIG_READABLE
  * while an undelivered request is queued). */
 #define PAGER_RIGHTS     (RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE)
-/* pager_create_vmo's handle: read and map only. Never RIGHT_WRITE (the
- * pages are the pager's), RIGHT_RESIZE (the size is the pager's) or
- * RIGHT_EXEC. */
+/* pager_create_vmo's handle: read and map only. Never RIGHT_RESIZE (the
+ * size is the pager's) or RIGHT_EXEC, and never RIGHT_WRITE (the pages are
+ * the pager's) but a writable VMO's, beside these: there it means "may be
+ * mapped writable" and nothing more. */
 #define PAGER_VMO_RIGHTS (RIGHTS_BASIC | RIGHT_READ | RIGHT_MAP)
+
+/* pager_create_vmo's flags. PAGER_VMO_WRITABLE: a writable VMO (its
+ * pager's budget at least PAGER_WRITABLE_MIN_PAGES). PAGER_VMO_FIND: no
+ * new VMO, a new handle to the live one under key, with the rights it was
+ * made with (size 0, no other flag). */
+#define PAGER_VMO_WRITABLE (1u << 0)
+#define PAGER_VMO_FIND     (1u << 1)
+/* The smallest budget (pager_create's max_pages) whose pager may make
+ * writable VMOs: a quarter of it, the most its VMOs may hold dirty, is
+ * then 2 pages at least. */
+#define PAGER_WRITABLE_MIN_PAGES 8u
 
 /* pager_create's answer time: how long a request may wait for its answer,
  * 1 ms .. 600 s (ERR_OUT_OF_RANGE outside). */
@@ -746,10 +761,12 @@ struct vmo_pin_args {
 #define PAGER_OP_INVALIDATE 2   /* drop the range's present pages: the next access asks again */
 #define PAGER_OP_SET_SIZE   3   /* offset is the new size: grow, or shrink (past the end: bus error) */
 #define PAGER_OP_DETACH     4   /* cut the key's VMO off for good, or take its PAGER_REQ_GONE */
+#define PAGER_OP_WRITTEN    5   /* the range's write-back ended; arg OK, ERR_IO or ERR_NO_SPACE */
 
 /* struct pager_request's kinds. */
-#define PAGER_REQ_READ 1   /* supply [offset, offset + len), or fail it */
-#define PAGER_REQ_GONE 2   /* the key's VMO has no handle and no mapping left */
+#define PAGER_REQ_READ      1   /* supply [offset, offset + len), or fail it */
+#define PAGER_REQ_GONE      2   /* the key's VMO has no handle, no mapping and no dirty page left */
+#define PAGER_REQ_WRITEBACK 3   /* write back the dirty pages of [offset, offset + len) */
 
 struct pager_request {
     uint64_t key;        /* the VMO's key */
@@ -758,6 +775,28 @@ struct pager_request {
     uint32_t kind;       /* PAGER_REQ_* */
     uint32_t reserved;   /* 0 */
 };
+
+/* pager_dirty's flags: PAGER_DIRTY_BEGIN, the run's write-back begins
+ * (its pages become writing, write-protected in every mapping before
+ * their bytes are copied); PAGER_DIRTY_PEEK, dirty and writing pages are
+ * copied and nothing changes; PAGER_DIRTY_OLDEST, the run around the
+ * pager's oldest dirty page, whatever its VMO (key and the range asked
+ * are ignored). */
+#define PAGER_DIRTY_BEGIN  (1u << 0)
+#define PAGER_DIRTY_PEEK   (1u << 1)
+#define PAGER_DIRTY_OLDEST (1u << 2)
+
+/* pager_dirty's run: in, the range asked (offset, len: page-aligned, len
+ * one page .. PAGER_SUPPLY_MAX); out, the run found in it. */
+struct pager_run {
+    uint64_t key;      /* out: its VMO's key */
+    uint64_t offset;   /* in: the range's start; out: the run's, bytes */
+    uint64_t len;      /* in: the range's length; out: the run's (0: none) */
+    uint64_t age_ns;   /* out: how long ago its oldest page was first dirtied */
+};
+
+/* vmo_sync's flag: wait until the write-back it asks for is done. */
+#define VMO_SYNC_WAIT (1u << 0)
 
 /* vmo_make_exec_verified (abi/syscalls.def 59): the largest pager VMO it
  * takes (a program's limit, spawn's from a file: Chromium's static binary

@@ -1,4 +1,4 @@
-/* System calls 160-164: pagers (abi/syscalls.def; the object is
+/* System calls 160-166: pagers (abi/syscalls.def; the object is
  * <jam/pager.h>). pager_supply's bytes are copied straight from the
  * caller's buffer into each fresh page (struct pager_src), one page at a
  * time with no lock held, so up to PAGER_SUPPLY_MAX bytes never pass
@@ -51,4 +51,26 @@ int64_t sysc_pager_op(handle_t pager, uint64_t key, uint32_t op, uint64_t offset
 {
     SYSC_TABLE(t);
     return sys_pager_op(t, pager, key, op, offset, len, arg);
+}
+
+/* The run comes in and goes out through the caller's struct; the pages'
+ * bytes straight from each page to buf, with no lock held. */
+int64_t sysc_pager_dirty(handle_t pager, uint64_t key, uint32_t flags, uint64_t run, uint64_t buf)
+{
+    SYSC_TABLE(t);
+    struct pager_run r;
+    if (copy_from_user(&r, run, sizeof(r)) != OK)
+        return ERR_INVALID_ARGS;
+    struct pager_dst dst = { .addr = buf, .user = true };
+    status_t st = sys_pager_dirty(t, pager, key, flags, &r, &dst);
+    if (st != OK)
+        return st;
+    return copy_to_user(run, &r, sizeof(r)) == OK ? OK : ERR_INVALID_ARGS;
+}
+
+int64_t sysc_pager_write(handle_t pager, uint64_t key, uint64_t offset, uint64_t buf, uint64_t len)
+{
+    SYSC_TABLE(t);
+    struct pager_src src = { .addr = buf, .user = true };
+    return sys_pager_write(t, pager, key, offset, &src, len);
 }

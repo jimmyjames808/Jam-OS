@@ -210,7 +210,9 @@
  * copy (one copy-on-write child of the VMO). aspace_map decides it once
  * (clone_mode): the caller's flag, else share when the maximum has no
  * write, else a copy; but a JIT VMO's mapping whose maximum has write is
- * always none, and a contiguous or physical VMO's is shared where it would
+ * always none, a writable pager VMO's always shared (a file's pages, the
+ * child's entries made by its own faults: none writable while clean), and
+ * a contiguous or physical VMO's is shared where it would
  * be copied. Nothing changes it afterwards: split copies it, a merge joins
  * only equal modes (joinable), and protect changes permissions only, within
  * the maximum the mode was decided from (a VMO's kind and JIT mark never
@@ -1304,6 +1306,8 @@ static unsigned clone_mode(const struct vmo *vmo, unsigned max, unsigned flags)
 {
     if (vmo_is_jit(vmo) && (max & ASPACE_WRITE))
         return ASPACE_CLONE_NONE;   /* writable JIT memory never reaches a clone */
+    if (vmo_pager_writable(vmo) && (max & ASPACE_WRITE))
+        return ASPACE_CLONE_SHARE;   /* a file's shared pages: never a private snapshot */
     if (flags & ASPACE_CLONE_NONE)
         return ASPACE_CLONE_NONE;
     if ((flags & ASPACE_CLONE_SHARE) || !(max & ASPACE_WRITE) || !vmo_is_paged(vmo))
@@ -2283,14 +2287,17 @@ static const char *vmap_check(const struct aspace *as, const struct mapping *m)
 }
 
 /* aspace_check's look at m's clone mode: one of the three; none if it may
- * ever write JIT memory; shared if kept; a copy only of a paged VMO, not
- * JIT, through a maximum with write. */
+ * ever write JIT memory; shared if kept or if it may ever write a writable
+ * pager VMO; a copy only of a paged VMO, not JIT, through a maximum with
+ * write. */
 static bool clone_ok(const struct mapping *m)
 {
     bool jit = vmo_is_jit(m->vmo), w = (m->max & ASPACE_WRITE) != 0;
     if (m->clone != 0 && m->clone != ASPACE_CLONE_SHARE && m->clone != ASPACE_CLONE_NONE)
         return false;
     if (jit && w && m->clone != ASPACE_CLONE_NONE)
+        return false;
+    if (vmo_pager_writable(m->vmo) && w && m->clone != ASPACE_CLONE_SHARE)
         return false;
     if (m->kept && m->clone != ASPACE_CLONE_SHARE)
         return false;

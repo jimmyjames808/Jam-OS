@@ -15,7 +15,10 @@
  *             the link lives on with its VMO and goes when the VMO does;
  *   GONE      its VMO died while linked: still in the table (the key stays
  *             taken) with its PAGER_REQ_GONE queued, until the pager
- *             answers that with PAGER_OP_DETACH (or closes).
+ *             answers that with PAGER_OP_DETACH (or closes), or makes the
+ *             key again, which takes it over (the GONE withdrawn, the
+ *             link freed). A writable VMO dies only once its dirty pages
+ *             are gone (the hold, vmo.c), so a GONE always means clean.
  *
  * Requests. A read request covers pages [first, end) of one VMO, which
  * were absent when it was made: the page a reader touched and up to
@@ -296,6 +299,23 @@ void pager_page_gone_vlocked(struct pager_vmo *pv, struct page *p)
     pager_cache_remove_vlocked(&pv->pg->cache, p);
 }
 
+unsigned pager_page_state_vlocked(struct pager_vmo *pv, const struct page *p)
+{
+    (void)pv;
+    return pager_cache_state_vlocked(p);
+}
+
+uint64_t pager_page_dirtied_vlocked(struct pager_vmo *pv, const struct page *p)
+{
+    (void)pv;
+    return pager_cache_dirtied_vlocked(p);
+}
+
+void pager_page_store_vlocked(struct pager_vmo *pv, struct page *p)
+{
+    pager_cache_store_vlocked(&pv->pg->cache, p);
+}
+
 void pager_cut_vlocked(struct pager_vmo *pv, uint64_t end, struct list_node *dead)
 {
     struct pager *pg = pv->pg;
@@ -506,6 +526,22 @@ static status_t pv_new(struct pager *pg, uint64_t key, struct pager_vmo **out)
 
 status_t pager_create_vmo(struct pager *pg, uint64_t key, uint64_t size, struct vmo **out)
 {
+    return pager_create_vmo_flags(pg, key, size, 0, out);
+}
+
+status_t pager_create_vmo_flags(struct pager *pg, uint64_t key, uint64_t size, uint32_t flags,
+                                struct vmo **out)
+{
+    if (flags & PAGER_VMO_FIND) {
+        if (flags != PAGER_VMO_FIND || size)
+            return ERR_INVALID_ARGS;
+        return (*out = lookup_vmo(pg, key)) ? OK : ERR_NOT_FOUND;
+    }
+    if (flags & ~PAGER_VMO_WRITABLE)
+        return ERR_INVALID_ARGS;
+    bool writable = flags & PAGER_VMO_WRITABLE;
+    if (writable && pg->cache.max_pages < PAGER_WRITABLE_MIN_PAGES)
+        return ERR_INVALID_ARGS;   /* (its dirty limit would be under 2 pages) */
     if (size > VMO_SMALL_MAX_SIZE)
         return ERR_OUT_OF_RANGE;
     struct pager_vmo *pv;
@@ -513,12 +549,18 @@ status_t pager_create_vmo(struct pager *pg, uint64_t key, uint64_t size, struct 
     if (st != OK)
         return st;
     struct vmo *v;
-    if ((st = vmo_create_pager(pg->job, size, pv, &v)) != OK) {
+    if ((st = vmo_create_pager(pg->job, size, pv, writable, &v)) != OK) {
         pv_free(pv);
         return st;
     }
     uint64_t f = plock(pg);
-    st = pg->closed ? ERR_BAD_STATE : find_locked(pg, key) ? ERR_ALREADY_EXISTS : OK;
+    struct pager_vmo *old = pg->closed ? NULL : find_locked(pg, key);
+    st = pg->closed ? ERR_BAD_STATE : old && old->state == PV_LINKED ? ERR_ALREADY_EXISTS : OK;
+    if (st == OK && old) {   /* GONE, not answered yet: taken over, so a map never waits */
+        list_del(&old->knode);
+        unqueue_locked(&old->gone);
+        sync_readable_locked(pg);
+    }
     if (st == OK) {
         pv->v = v;
         pv->state = PV_LINKED;
@@ -529,6 +571,8 @@ status_t pager_create_vmo(struct pager *pg, uint64_t key, uint64_t size, struct 
         kobject_unref(vmo_kobject(v));   /* a NEW link: its destruction frees pv */
         return st;
     }
+    if (old)
+        pv_free(old);
     *out = v;
     return OK;
 }
@@ -687,6 +731,98 @@ uint64_t pager_resident(struct pager *pg)
     return pager_cache_resident(&pg->cache);
 }
 
+uint64_t pager_dirty_pages(struct pager *pg)
+{
+    return pager_cache_ndirty(&pg->cache);
+}
+
+/* ---- writable VMOs' pages: copied out and in --------------------------------- */
+
+#define RUN_PAGES (PAGER_SUPPLY_MAX / PAGE_SIZE)
+
+status_t pager_dirty(struct pager *pg, uint64_t key, uint32_t flags, struct pager_run *run,
+                     const struct pager_dst *dst)
+{
+    const uint32_t all = PAGER_DIRTY_BEGIN | PAGER_DIRTY_PEEK | PAGER_DIRTY_OLDEST;
+    if ((flags & ~all) || ((flags & PAGER_DIRTY_BEGIN) && (flags & PAGER_DIRTY_PEEK)))
+        return ERR_INVALID_ARGS;
+    if (flags & (PAGER_DIRTY_BEGIN | PAGER_DIRTY_OLDEST))
+        return ERR_NOT_SUPPORTED;   /* write-back: WRITEMAP's WK2 */
+    uint64_t offset = run->offset, len = run->len;
+    if (((offset | len) & (PAGE_SIZE - 1)) || len == 0 || len > UINT64_MAX - offset)
+        return ERR_INVALID_ARGS;
+    if (len > PAGER_SUPPLY_MAX)
+        return ERR_OUT_OF_RANGE;
+    struct page **pages = kmalloc(RUN_PAGES * sizeof(*pages));
+    if (!pages)
+        return ERR_NO_MEMORY;
+    struct vmo *v = lookup_vmo(pg, key);
+    status_t st = !v ? ERR_NOT_FOUND : !vmo_pager_writable(v) ? ERR_INVALID_ARGS : OK;
+    uint64_t first = offset >> PAGE_SHIFT, at = first, n = 0, dirtied = 0;
+    unsigned want = PAGER_PAGE_DIRTY | ((flags & PAGER_DIRTY_PEEK) ? PAGER_PAGE_WRITING : 0);
+    if (st == OK)
+        vmo_pager_dirty_run(v, first, first + (len >> PAGE_SHIFT), want, RUN_PAGES, pages, &at,
+                            &n, &dirtied);
+    if (v)
+        kobject_unref(vmo_kobject(v));
+    /* The bytes, from the page references, with no lock held: a store
+     * meanwhile may show in them (it is in a dirty page all the same). */
+    for (uint64_t i = 0; i < n; i++) {
+        uint64_t to = dst->addr + ((at - first + i) << PAGE_SHIFT);
+        const void *from = page_to_virt(pages[i]);
+        if (st == OK && dst->user)
+            st = copy_to_user(to, from, PAGE_SIZE) == OK ? OK : ERR_INVALID_ARGS;
+        else if (st == OK)
+            memcpy((void *)(uintptr_t)to, from, PAGE_SIZE);
+        page_unref(pages[i]);
+    }
+    kfree(pages);
+    if (st != OK)
+        return st;
+    run->key = key;
+    run->offset = at << PAGE_SHIFT;
+    run->len = n << PAGE_SHIFT;
+    run->age_ns = n ? uptime_ns() - dirtied : 0;
+    return OK;
+}
+
+status_t pager_write(struct pager *pg, uint64_t key, uint64_t offset, const struct pager_src *src,
+                     uint64_t len)
+{
+    if (len > PAGER_SUPPLY_MAX || offset > VMO_SMALL_MAX_SIZE)
+        return ERR_OUT_OF_RANGE;   /* (so offset + len can't overflow below) */
+    struct vmo *v = lookup_vmo(pg, key);
+    if (!v)
+        return ERR_NOT_FOUND;
+    uint64_t first = offset >> PAGE_SHIFT, end = ALIGN_UP(offset + len, PAGE_SIZE) >> PAGE_SHIFT;
+    struct page **pages = kmalloc((RUN_PAGES + 1) * sizeof(*pages));   /* (a range may straddle) */
+    status_t st = !pages ? ERR_NO_MEMORY : len ? vmo_pager_present(v, first, end, offset + len, pages)
+                                               : OK;
+    kobject_unref(vmo_kobject(v));
+    if (st != OK || !len) {
+        kfree(pages);
+        return st;
+    }
+    /* Into the pages present when we looked, with no lock held: one evicted
+     * or dropped meanwhile takes our bytes with it (the disk has them). */
+    for (uint64_t i = first; i < end; i++) {
+        struct page *p = pages[i - first];
+        if (!p)
+            continue;
+        uint64_t lo = i << PAGE_SHIFT > offset ? i << PAGE_SHIFT : offset;
+        uint64_t hi = (i + 1) << PAGE_SHIFT < offset + len ? (i + 1) << PAGE_SHIFT : offset + len;
+        char *to = (char *)page_to_virt(p) + (lo & (PAGE_SIZE - 1));
+        if (st == OK && src->user)
+            st = copy_from_user(to, src->addr + (lo - offset), hi - lo) == OK ? OK
+                                                                              : ERR_INVALID_ARGS;
+        else if (st == OK)
+            memcpy(to, (const char *)(uintptr_t)src->addr + (lo - offset), hi - lo);
+        page_unref(p);
+    }
+    kfree(pages);
+    return st;
+}
+
 /* PAGER_OP_FAIL: key's requests overlapping pages [first, end) fail st. */
 static status_t fail_range(struct pager *pg, uint64_t key, uint64_t first, uint64_t end,
                            status_t st)
@@ -797,6 +933,8 @@ status_t pager_op(struct pager *pg, uint64_t key, uint32_t op, uint64_t offset, 
         if (offset > VMO_SMALL_MAX_SIZE)
             return ERR_OUT_OF_RANGE;
         return set_size(pg, key, ALIGN_UP(offset, PAGE_SIZE));
+    case PAGER_OP_WRITTEN:
+        return ERR_NOT_SUPPORTED;   /* (WK2) */
     default:
         return ERR_INVALID_ARGS;
     }

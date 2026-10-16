@@ -119,3 +119,5 @@ _Static_assert(sizeof(struct handle_info) == 48 && offsetof(struct handle_info, 
 _Static_assert(OBJ_PAGER == 16 && OBJ_TYPE_COUNT == 17, "the object types user code sees");
 _Static_assert(sizeof(struct pager_request) == 32 && offsetof(struct pager_request, kind) == 24,
                "pager_request layout");
+_Static_assert(sizeof(struct pager_run) == 32 && offsetof(struct pager_run, age_ns) == 24,
+               "pager_run layout");

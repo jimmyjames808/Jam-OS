@@ -14,18 +14,36 @@
  * waiter's kill ends its wait.
  *
  * A pager VMO refuses what would put a page in it other than the pager's
- * (vmo_write, vmo_commit, writable mappings), take one away (vmo_decommit,
- * vmo_set_size), make a device or the kernel wait for it (vmo_pin,
- * vmo_map_kernel), keep it (VMAR_KEPT_ONLY) or run it unchecked
- * (vmo_seal: its code runs only through vmo_make_exec_verified, which
- * checks each page as it arrives, <jam/vmo_verify.h>).
+ * (vmo_write, vmo_commit, writable mappings but a writable VMO's), take
+ * one away (vmo_decommit, vmo_set_size), make a device or the kernel wait
+ * for it (vmo_pin, vmo_map_kernel), keep it (VMAR_KEPT_ONLY) or run it
+ * unchecked (vmo_seal: its code runs only through vmo_make_exec_verified,
+ * which checks each page as it arrives, <jam/vmo_verify.h>).
+ *
+ * Writable pager VMOs (PAGER_VMO_WRITABLE, docs/WRITEMAP-PLAN.md): user
+ * mappings may write them, and nothing else. Each page present is clean
+ * (the disk's bytes, as far as the pager knows), dirty (stored to since
+ * its last write-back began) or writing (that write-back hasn't ended;
+ * dirty as well if stored to since): PAGER_PAGE_* in its cache record,
+ * changed under the VMO lock. A page is mapped writable only while dirty,
+ * so the first store to a clean or writing page faults (vmo_fault_map,
+ * the one path that installs entries) and makes it dirty: dirty bits by
+ * write-protection, not the page tables' D bits. Dirty and writing pages
+ * are never evicted, and while a VMO has any it holds a reference to
+ * itself (the hold): it outlives its last handle and mapping, so its
+ * PAGER_REQ_GONE comes only once it is clean and PAGER_VMO_FIND finds it
+ * meanwhile. pager_dirty copies dirty pages out (PEEK) and pager_write
+ * copies bytes into present pages, both on page references with no lock
+ * held. Write-back (pager_dirty's BEGIN, PAGER_OP_WRITTEN, the requests)
+ * and the dirty limit come with WRITEMAP's WK2 and WK3.
  *
  * The page cache: a pager's VMOs hold at most its budget of pages
- * (max_pages) at once. Every page is clean, so the kernel drops the oldest
- * supplied page whenever a supply needs room, or memory or the job runs
- * short, and the next access asks the pager again (kernel/object/
- * pager_cache.h). The pager drops pages itself with PAGER_OP_INVALIDATE
- * (the file changed) and PAGER_OP_SET_SIZE (it shrank).
+ * (max_pages) at once. A clean page may be dropped at any time: the kernel
+ * drops the oldest supplied clean page whenever a supply needs room, or
+ * memory or the job runs short, and the next access asks the pager again
+ * (kernel/object/pager_cache.h). The pager drops pages itself with
+ * PAGER_OP_INVALIDATE (the file changed: clean pages only) and
+ * PAGER_OP_SET_SIZE (it shrank).
  *
  * Objects and lifetimes: the pager holds no reference to its VMOs: each
  * has a struct pager_vmo (pager.c) holding a reference to the pager, and
@@ -46,7 +64,7 @@
  * Charges: the pager is one JOB_LIMIT_HANDLES unit of its creator's job,
  * and so is each of its VMOs' links; the VMOs (struct, tables, pages) are
  * charged to that job as any VMO, and so is each resident page's record
- * in the cache (16 message bytes); a request is charged to the job of the
+ * in the cache (24 message bytes); a request is charged to the job of the
  * thread that made it, as message bytes, until it is answered. */
 #pragma once
 
@@ -72,12 +90,27 @@ static inline struct pager *pager_from_kobject(struct kobject *obj)
     return obj && obj->type == OBJ_PAGER ? (struct pager *)obj : NULL;
 }
 
-/* Where pager_supply's bytes come from: kernel memory, or memory of the
- * current process (copied with copy_from_user, no lock held). */
+/* Where pager_supply's and pager_write's bytes come from: kernel memory,
+ * or memory of the current process (copied with copy_from_user, no lock
+ * held). */
 struct pager_src {
     uint64_t addr;   /* a kernel pointer, or a user address */
     bool     user;   /* addr is a user address */
 };
+
+/* Where pager_dirty's bytes go: the same (copied with copy_to_user). */
+struct pager_dst {
+    uint64_t addr;   /* a kernel pointer, or a user address */
+    bool     user;   /* addr is a user address */
+};
+
+/* What each resident page's record in its pager's cache costs the
+ * pager's job, as message bytes (pager_cache.c's struct pager_rec). */
+#define PAGER_RECORD_BYTES 24u
+
+/* A writable pager VMO's page's state (its cache record's): 0 is clean. */
+#define PAGER_PAGE_DIRTY   1u   /* stored to since its last write-back began */
+#define PAGER_PAGE_WRITING 2u   /* its write-back began and hasn't ended */
 
 /* ---- the object layer (kernel/object/pager.c) ------------------------------ */
 
@@ -91,10 +124,18 @@ status_t pager_create(struct job *job, uint64_t max_pages, uint64_t answer_ns,
                       struct pager **out);
 /* A pager VMO of size bytes (rounded up; VMO_SMALL_MAX_SIZE at most, else
  * ERR_OUT_OF_RANGE) under key, every page absent; the caller gets the only
- * reference. ERR_ALREADY_EXISTS if key is taken (a live VMO, or a gone one
- * whose PAGER_REQ_GONE has no answer yet); ERR_BAD_STATE once the pager's
- * last handle is gone. Thread context. */
+ * reference. ERR_ALREADY_EXISTS if key names a live VMO; a key whose VMO
+ * is gone but whose PAGER_REQ_GONE has no answer yet is taken over (the
+ * GONE withdrawn, delivered or not). ERR_BAD_STATE once the pager's last
+ * handle is gone. Thread context. */
 status_t pager_create_vmo(struct pager *pg, uint64_t key, uint64_t size, struct vmo **out);
+/* pager_create_vmo with flags: PAGER_VMO_WRITABLE, a writable one
+ * (ERR_INVALID_ARGS if the budget is under PAGER_WRITABLE_MIN_PAGES);
+ * PAGER_VMO_FIND (size 0, no other flag), a reference to the live VMO
+ * under key instead (ERR_NOT_FOUND if none: never made, detached, or
+ * dying); any other flag ERR_INVALID_ARGS. */
+status_t pager_create_vmo_flags(struct pager *pg, uint64_t key, uint64_t size, uint32_t flags,
+                                struct vmo **out);
 /* The oldest undelivered request into *out (zeroed first), marked
  * delivered; ERR_SHOULD_WAIT if none. PAGER_NEXT_AGAIN first puts every
  * delivered request without an answer back in the queue; any other flag
@@ -138,6 +179,29 @@ status_t pager_supply(struct pager *pg, uint64_t key, uint64_t offset, const str
 status_t pager_op(struct pager *pg, uint64_t key, uint32_t op, uint64_t offset, uint64_t len,
                   int64_t arg);
 
+/* pager_dirty (flags 0 or PAGER_DIRTY_PEEK; BEGIN and OLDEST are
+ * ERR_NOT_SUPPORTED until write-back is built): the first run of key's
+ * writable VMO's pages in [run->offset, run->offset + run->len) that are
+ * dirty (PEEK: dirty or writing), copied to dst at their place in the
+ * range, and *run set to where it is (len 0: none) and the age of its
+ * oldest page. Nothing changes. ERR_INVALID_ARGS: offset or len not page
+ * aligned, len 0, any other flag, the VMO not writable, dst unwritable
+ * (some of the run copied); ERR_OUT_OF_RANGE: len past PAGER_SUPPLY_MAX;
+ * ERR_NOT_FOUND: no live VMO has key. Interrupts on, no spinlock held. */
+status_t pager_dirty(struct pager *pg, uint64_t key, uint32_t flags, struct pager_run *run,
+                     const struct pager_dst *dst);
+/* pager_write: len bytes from src into key's VMO at offset (any byte,
+ * len at most PAGER_SUPPLY_MAX, else ERR_OUT_OF_RANGE; 0 does nothing),
+ * into the pages of the range present when it looks (any state, which
+ * stays), copied on page references with no lock held; absent pages stay
+ * absent. ERR_NOT_FOUND: no live VMO has key; ERR_OUT_OF_RANGE: past its
+ * size; ERR_BAD_STATE: it is verified; ERR_INVALID_ARGS: src unreadable
+ * (the pages before it written). Interrupts on, no spinlock held. */
+status_t pager_write(struct pager *pg, uint64_t key, uint64_t offset, const struct pager_src *src,
+                     uint64_t len);
+/* Pages of its VMOs that are dirty or writing right now (tests). */
+uint64_t pager_dirty_pages(struct pager *pg);
+
 /* Publish p (a fresh page holding page idx's bytes, the caller's
  * reference, consumed whatever happens) in pg's VMO v as pager_supply
  * does for each page, inside the budget; `checked` as for
@@ -167,11 +231,33 @@ void pager_req_put(struct pager_req *r);
 
 /* ---- the VMO side (kernel/object/vmo.c) ------------------------------------- */
 
-/* A pager VMO of size bytes linked to pv, charged to job. pv is the
- * VMO's from then on: its destruction hands pv back (pager_vmo_gone). */
-status_t vmo_create_pager(struct job *job, uint64_t size, struct pager_vmo *pv, struct vmo **out);
+/* A pager VMO of size bytes linked to pv, charged to job, writable if
+ * `writable`. pv is the VMO's from then on: its destruction hands pv back
+ * (pager_vmo_gone). */
+status_t vmo_create_pager(struct job *job, uint64_t size, struct pager_vmo *pv, bool writable,
+                          struct vmo **out);
 /* Made from a pager (fixed at creation: no lock needed). */
 bool vmo_is_pager(const struct vmo *v);
+/* A writable pager VMO (fixed at creation: no lock needed). */
+bool vmo_pager_writable(const struct vmo *v);
+/* pager_dirty's look at a writable pager VMO: the first run of pages in
+ * [first, end) (clipped to the size) whose state has a bit of `want`, at
+ * most `max` pages, each with a reference in pages[] (the caller drops
+ * them: page_unref); *at its first page, *n its length (0: none), *dirtied
+ * when its oldest page was first dirtied (uptime ns). Nothing changes. */
+void vmo_pager_dirty_run(struct vmo *v, uint64_t first, uint64_t end, unsigned want,
+                         uint64_t max, struct page **pages, uint64_t *at, uint64_t *n,
+                         uint64_t *dirtied);
+/* pager_write's look: pages[i] gets a reference to page first + i if
+ * present, else NULL, for [first, end) (end - first at most max).
+ * ERR_OUT_OF_RANGE: past the size (byte_end, the range's end in bytes,
+ * checked against it); ERR_BAD_STATE: v is verified. */
+status_t vmo_pager_present(struct vmo *v, uint64_t first, uint64_t end, uint64_t byte_end,
+                           struct page **pages);
+/* A writable pager VMO's page idx's state (PAGER_PAGE_*; 0: clean or
+ * absent), and its dirty and writing pages (tests). */
+unsigned vmo_pager_page_state(struct vmo *v, uint64_t idx);
+uint64_t vmo_pager_dirty_count(struct vmo *v);
 /* A pager VMO: its pager's koid (handle_info's related_koid); else 0. */
 uint64_t vmo_pager_koid(struct vmo *v);
 /* For a reader of page idx of a pager VMO, found absent: *out gets a
@@ -237,6 +323,15 @@ void pager_published_vlocked(struct pager_vmo *pv, uint64_t idx, struct page *p,
 /* Page p of pv's VMO leaves its table (taken out, or the VMO destroyed:
  * then no lock is needed): it leaves the pager's cache. */
 void pager_page_gone_vlocked(struct pager_vmo *pv, struct page *p);
+/* Page p (present) of pv's VMO, a writable one: its state (PAGER_PAGE_*,
+ * 0: clean), and when it was first dirtied since it was last clean (uptime
+ * ns; meaningless while clean). */
+unsigned pager_page_state_vlocked(struct pager_vmo *pv, const struct page *p);
+uint64_t pager_page_dirtied_vlocked(struct pager_vmo *pv, const struct page *p);
+/* A store to page p (present) of pv's VMO, a writable one: clean becomes
+ * dirty (off the cache's list onto the pager's dirty list, oldest first:
+ * never evicted), writing becomes writing and dirty. */
+void pager_page_store_vlocked(struct pager_vmo *pv, struct page *p);
 /* pv's VMO shrank to `end` pages: its requests from there on are answered
  * (OK: the waiters look again and find the end), one crossing it is cut
  * there (and answered if all its pages below arrived). */
@@ -258,9 +353,16 @@ uint64_t pager_vmo_pager_koid(const struct pager_vmo *pv);
  * charged to t's job. */
 status_t sys_pager_create(struct handle_table *t, handle_t root, uint64_t max_pages,
                           uint64_t answer_ns, uint32_t flags, handle_t *out);
-/* RIGHT_WRITE on pager; flags 0. *out: PAGER_VMO_RIGHTS. */
+/* RIGHT_WRITE on pager; flags as pager_create_vmo's. *out:
+ * PAGER_VMO_RIGHTS, and RIGHT_WRITE for a writable VMO. */
 status_t sys_pager_create_vmo(struct handle_table *t, handle_t pager, uint64_t key, uint64_t size,
                               uint32_t flags, handle_t *out);
+/* RIGHT_WRITE on pager. */
+status_t sys_pager_dirty(struct handle_table *t, handle_t pager, uint64_t key, uint32_t flags,
+                         struct pager_run *run, const struct pager_dst *dst);
+/* RIGHT_WRITE on pager. */
+status_t sys_pager_write(struct handle_table *t, handle_t pager, uint64_t key, uint64_t offset,
+                         const struct pager_src *src, uint64_t len);
 /* RIGHT_READ on pager. */
 status_t sys_pager_next(struct handle_table *t, handle_t pager, uint32_t flags,
                         struct pager_request *out);

@@ -564,7 +564,7 @@ Each about one agent-hour; WE2 about one and a half.
 
 | Track | What | Files | Gate | Tests | Size | Model |
 |---|---|---|---|---|---|---|
-| **WK1. Writable pager VMOs** | first commit "WK1 ABI:" (every call, flag, op and request kind of 1.12 with its contract text, the stubs `ERR_NOT_SUPPORTED`), so WE1 and WL1 can start; then 1.1, 1.2 (the states, the write fault, clean pages read-only, the lists and counts; `PAGER_DIRTY_BEGIN` left to WK2), `pager_dirty`'s `PEEK`, `pager_write`, the hold (1.8), `FIND` and the GONE takeover, 1.7's rules for shrink, invalidate and detach, FK1's clone-mode override | `kernel/object/vmo.c` (the pager-VMO paths, `vmo_fault_map`, `vmo_umap_add`), `kernel/object/pager.c`, `kernel/object/pager_cache.c` and its header, `kernel/mm/aspace.c` (`clone_mode` only), `kernel/abi/pager_sys.c` and `kernel/abi/sysc_pager.c`, `<jam/pager.h>`, `<jam/abi.h>` and `abi/syscalls.def` (their lines), `kernel/abi/abi_check.c`, a new ktest file kernel/test/test_pager_dirty.c | FK2 merged (vmo.c and aspace.c); beside FK3 and SG1/SG2 | ktests with a kernel-thread pager: a read fault on a writable mapping installs read-only, a store dirties, eviction never takes a dirty page, `PEEK`, `pager_write` on present pages only, the hold (GONE only after clean), `FIND` and the takeover, shrink, invalidate and detach with dirty pages, a fork (once FK2's clone is in) shares the VMO and its clean pages stay read-only; full ktest 4 and 8 | 1 | **Opus** |
+| **WK1. Writable pager VMOs** | first commit "WK1 ABI:" (every call, flag, op and request kind of 1.12 with its contract text, the stubs `ERR_NOT_SUPPORTED`), so WE1 and WL1 can start; then 1.1, 1.2 (the states, the write fault, clean pages read-only, the lists and counts; `PAGER_DIRTY_BEGIN` left to WK2), `pager_dirty`'s `PEEK`, `pager_write`, the hold (1.8), `FIND` and the GONE takeover, 1.7's rules for shrink, invalidate and detach, FK1's clone-mode override; built, see "WK1 notes" | `kernel/object/vmo.c` (the pager-VMO paths, `vmo_fault_map`, `vmo_umap_add`), `kernel/object/pager.c`, `kernel/object/pager_cache.c` and its header, `kernel/mm/aspace.c` (`clone_mode` only), `kernel/abi/pager_sys.c` and `kernel/abi/sysc_pager.c`, `<jam/pager.h>`, `<jam/abi.h>` and `abi/syscalls.def` (their lines), `kernel/abi/abi_check.c`, a new ktest file kernel/test/test_pager_dirty.c | FK2 merged (vmo.c and aspace.c); beside FK3 and SG1/SG2 | ktests with a kernel-thread pager: a read fault on a writable mapping installs read-only, a store dirties, eviction never takes a dirty page, `PEEK`, `pager_write` on present pages only, the hold (GONE only after clean), `FIND` and the takeover, shrink, invalidate and detach with dirty pages, a fork (once FK2's clone is in) shares the VMO and its clean pages stay read-only; full ktest 4 and 8 | 1 | **Opus** |
 | **WK2. Write-back** | 1.3: `PAGER_REQ_WRITEBACK` (made by the background count; `vmo_sync`'s and the throttle's come in WK3), `PAGER_DIRTY_BEGIN` (protect within the batch budget, one shootdown, then the copy), `PAGER_DIRTY_OLDEST`, `PAGER_OP_WRITTEN` and what a request needs (the stamps), the error kept (Q1), `PAGER_NEXT_AGAIN` turning writing pages dirty | WK1's kernel files, kernel/test/test_pager_dirty.c | WK1 merged | ktests: begin protects in every mapping (several address spaces, `VMAR_MAX_OVERLAP` mappings of one page), a store after begin dirties again and is never lost (8 threads storing counters while a pager thread loops begin, copy, written: the last image holds every thread's last count), written with a re-dirtied page leaves it dirty, a death (AGAIN) between begin and written, `vmo_batch_cost_most` within `VMO_BATCH_BUDGET`; full ktest 4 and 8 | 1 | **Opus** |
 | **WK3. Waiting** | 1.4 and 1.5: the dirty limit, a store's wait in `aspace_fault` and in user copies (no region lock, the deadline in all, cancellable), the throttle's request, `vmo_sync` and its requests; the failure table | WK1's kernel files, `kernel/mm/aspace.c` (the fault's wait), `kernel/abi/sysc_vm.c` (`vmo_sync`), kernel/test/test_pager_dirty.c | WK2 merged | ktests: a writer at the limit waits and goes on when the pager writes; a pager that never answers: the writer is killed at the deadline with the line, a copy returns `ERR_IO`, a reader of another VMO of the same pager is never held up; `vmo_sync` answered exactly (a store before it, written by a write-back that began before it, keeps it waiting); `vmo_sync` failing on a close; a kill ends every wait; full ktest 4 and 8; soak 2 | 1 | **Opus** |
 | **WE1. extfs: the map and one cache** | 2.1 and 2.2: `MAP_WRITE`, every shared VMO writable, keys from the inode, `FIND`, the sizes of a found VMO, rights reduced for `MAP_READ`; `pager_write` in `write` and truncate (the tails), `PEEK` in `read`; Q7 both ways; the ordering argument in pager.c's header | `user/services/extfs/pager.c`, `user/services/extfs/files.c`, `user/services/extfs/fsops.c`, `user/services/extfs/extfs.h`, `user/services/extfs/adopt.c` (the slots' lookups), `abi/idl/file.idl` (`MAP_WRITE`, the comments) and its generated header, a new utest file user/tests/utest/extfs_wmap.c | WK1 merged; U9 merged (it works in extfs); no other track in extfs | utest `extfs_wmap`: a store seen by `read`, by a second mapping and a second process; `write` and a store on one page both kept; truncate shrink and grow with the tails zero; a map after the first mapper unmapped (its pages still dirty) finds the same VMO; `MAP_WRITE` refused without `FS_WRITE`, through a read-only view and on a file mapped to run; `MAP_EXEC` refused while a writable map lives; `extfs_map` and `extfs_restart_pager` unchanged; init run | 1 | **Opus** |
@@ -604,6 +604,61 @@ After each kernel merge the main session runs `make syscalls`.
    limit and the window; the soak's growth figures show it.
 6. *FK2's clone* written before writable pager VMOs exist: WK1's fork
    ktest checks its share mode against section 1.2.
+
+### WK1 notes
+
+What WK2, WK3 and WE1 start from (ktests `pager_dirty_*` in
+kernel/test/test_pager_dirty.c):
+
+- **The ABI** is in (commit "WK1 ABI:"): every number of 1.12 with its
+  contract text in syscalls.def (`vmo_sync` took 50, `pager_dirty` 165,
+  `pager_write` 166), `PAGER_WRITABLE_MIN_PAGES` (8) beside the flags.
+  Still `ERR_NOT_SUPPORTED`: `vmo_sync` (WK3), `PAGER_OP_WRITTEN` and
+  `pager_dirty`'s `BEGIN` and `OLDEST` (WK2). Decided in the text:
+  `pager_dirty` with flags 0 copies dirty pages only (PEEK adds writing
+  ones); with `OLDEST`, `buf` stands for the run itself; `PAGER_VMO_FIND`
+  takes size 0 and no other flag; `pager_write`'s len 0 does nothing, and
+  it works on any pager VMO but a verified one (a read-only VMO's clean
+  pages take the bytes too).
+- **The record** grew to 24 bytes (`PAGER_RECORD_BYTES`, charged as
+  before): the VMO, a 32-bit index, the state (`PAGER_PAGE_DIRTY`,
+  `PAGER_PAGE_WRITING`) and `dirtied`, the uptime of its first store since
+  it was last clean. The cache has a second list, `dirty` (oldest dirtied
+  first), and `ndirty`; a page is on `pages` or `dirty` by its `node`,
+  never both, and the state and the list change together under the VMO
+  lock and the cache's (`pager_cache_store_vlocked`).
+- **The store** is `store_locked` in `vmo_fault_map` (the one path): a
+  present page of a writable VMO is installed with the write bit only
+  while its state has `DIRTY`. WK3's limit wait goes just before the
+  store marks the page (the comment there). WK2's BEGIN clears `DIRTY`
+  and sets `WRITING` under the VMO lock with the entries write-protected,
+  and the same rule then keeps them read-only until the next store.
+- **A popped page dirtied**: an evictor pops the oldest clean page and
+  only then locks its VMO; a store in between makes it dirty, moves it to
+  `dirty` and counts it again, and `vmo_pager_evict` (`take_batch_locked`'s
+  `clean_only`) leaves it. `resident` is then one past the budget until a
+  clean page goes (ktest `pager_dirty_popped_then_stored`, through the new
+  hook `DBG_PAGER_EVICT`).
+- **The hold** is `held` and `dirty` in struct vmo (the VMO lock): the
+  first store takes a reference, `hold_end` gives it back once `dirty` is
+  0. Called after a shrink and a detach; WK2's `PAGER_OP_WRITTEN` must
+  call it after pages become clean. `vmo_destroy` asserts no hold.
+- **The GONE takeover** withdraws a queued or delivered GONE (the
+  contract tells a pager to answer one it holds before it makes the key
+  again). The old test `pager_gone` now checks the takeover.
+- **No dirty limit yet**: dirty pages can fill the budget; a supply with no
+  clean page to evict then goes past it as reservations do (WK3).
+- **The writing state** is there in the record and the fault rule, but
+  nothing makes a page writing before WK2's BEGIN; its moves and their
+  tests are WK2's.
+- **Clones**: `clone_mode` makes a writable VMO's mapping with write in its
+  maximum shared, whatever the flags; `clone_ok` refuses anything else.
+  FK2's walk checked: a twin is on the VMO's reverse map when made and
+  gets no entry (its faults make them), so no clean page is ever writable
+  in a child. The plan's "write back, then the child's store dirties it
+  again" half is WK2's to add to `pager_dirty_fork`.
+- The kernel API keeps `pager_create_vmo(pg, key, size, out)` (flags 0)
+  for the many tests that use it; `pager_create_vmo_flags` takes flags.
 
 ## 6. Tests
 

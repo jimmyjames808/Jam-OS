@@ -156,10 +156,26 @@
  * tells the cache (pager_page_gone_vlocked) for every page it takes.
  * Every other call that would commit, write, decommit, resize, seal, pin
  * or kernel-map one is refused at its entry, and so is a writable user
- * mapping. A reader of an absent page (vmo_read here; a
- * fault through vmo_page_request) joins or queues a request under this
- * lock and then the pager's ("vmo" -> "pager"), and waits for it with no
- * lock held. `pv` is fixed at creation, so the refusals need no lock.
+ * mapping unless the VMO is writable (below). A reader of an absent page
+ * (vmo_read here; a fault through vmo_page_request) joins or queues a
+ * request under this lock and then the pager's ("vmo" -> "pager"), and
+ * waits for it with no lock held. `pv` is fixed at creation, so the
+ * refusals need no lock.
+ *
+ * Writable pager VMOs (`pwritable`, <jam/pager.h>): user mappings may
+ * write them. A page's state (clean, dirty, writing) is in its cache
+ * record and changes under this lock. vmo_fault_map installs a page
+ * writable only while it is dirty, so the first store to a clean or
+ * writing page faults, and the fault makes it dirty (store_locked) before
+ * it installs the entry writable: no D bit is ever read, and every other
+ * way to an entry (leaves_protect, a clone's twin, which gets none) only
+ * keeps or takes the write bit. Dirty and writing pages are never taken
+ * by an eviction or an invalidation (take_batch_locked's `clean_only`),
+ * only by a shrink, a detach, or (WRITEMAP's WK2) a write-back that makes
+ * them clean. `dirty` counts them; while it isn't 0 the VMO holds a
+ * reference to itself (`held`, the hold: taken by the first store, given
+ * back by hold_end once they are gone), so it outlives its handles and
+ * mappings and no store is lost because a program unmapped.
  *
  * Verified pager VMOs (vmo_seal_verified, <jam/vmo_verify.h>): a pager
  * VMO sealed with a table of page hashes, for a program from /data. The
@@ -324,6 +340,9 @@ struct vmo {
     struct mutex     resize;              /* serialises vmo_set_size */
     struct pager_vmo *pv;                 /* a pager VMO: its link (fixed at creation), else NULL */
     bool             pdetached;           /* a pager VMO cut off: nothing published any more; lock */
+    bool             pwritable;           /* a writable pager VMO (fixed at creation) */
+    bool             held;                /* the hold: a reference of its own while `dirty`; lock */
+    uint64_t         dirty;               /* a writable pager VMO's dirty and writing pages; lock */
     /* A child of a pager VMO (or of such a child): the pager VMO its absent
      * pages [0, win) come from (a reference, fixed at creation), and its
      * page index of this VMO's page 0; else NULL. win is charged whole to
@@ -626,6 +645,15 @@ static uint64_t phys_locked(struct vmo *v, uint64_t idx)
     return s ? *s : 0;
 }
 
+/* With the lock held (or no reference left): page p leaves pager VMO v's
+ * table, its cache's lists and, if dirty or writing, v's count. */
+static void pager_page_out_locked(struct vmo *v, struct page *p)
+{
+    if (v->pwritable && pager_page_state_vlocked(v->pv, p))
+        v->dirty--;
+    pager_page_gone_vlocked(v->pv, p);
+}
+
 /* drop_from_locked's work on one leaf table, whose first entry is page
  * `base`: drop its pages at index >= first. */
 static void drop_leaf_from_locked(struct vmo *v, uint64_t *leaf, uint64_t base, uint64_t first)
@@ -633,7 +661,7 @@ static void drop_leaf_from_locked(struct vmo *v, uint64_t *leaf, uint64_t base, 
     for (uint64_t l = 0; l < LEAF_PAGES; l++) {
         if (leaf[l] && base + l >= first) {
             if (v->pv) {
-                pager_page_gone_vlocked(v->pv, pa_page(leaf[l]));
+                pager_page_out_locked(v, pa_page(leaf[l]));
                 page_put(pa_page(leaf[l]));
             } else {
                 page_share_drop(pa_page(leaf[l]));   /* no mapping: nothing to shoot down */
@@ -922,6 +950,7 @@ static void vmo_destroy(struct kobject *obj)
     if (!list_empty(&v->ranges) || !itree_empty(&v->umaps))
         panic("vmo: koid %lu destroyed while mapped or pinned", obj->koid);
     if (v->kind == VMO_PAGED) {
+        ASSERT(!v->held && v->dirty == 0);   /* the hold is a reference: no dirty page here */
         drop_from_locked(v, 0);
         ASSERT(v->committed == 0 && v->tables == 0);
         if (v->pv)
@@ -1356,9 +1385,12 @@ static void batch_note(uint64_t t0, uint64_t cost)
  * and out of every user mapping. Returns where to continue (past the
  * missing tables that follow a missing leaf: leaf_find_locked; where the
  * budget ends the batch; or at a shared page when g's array is full:
- * finish g first). */
-static uint64_t take_batch_locked(struct vmo *v, uint64_t idx, uint64_t end, struct tlb_gather *g)
+ * finish g first). `clean_only`: a writable pager VMO's dirty and writing
+ * pages stay (eviction, invalidation: they are newer than the disk). */
+static uint64_t take_batch_locked(struct vmo *v, uint64_t idx, uint64_t end, struct tlb_gather *g,
+                                  bool clean_only)
 {
+    bool keep = clean_only && v->pwritable;
     uint64_t next;
     uint64_t *leaf = leaf_find_locked(v, idx, &next);
     if (!leaf)
@@ -1378,6 +1410,8 @@ static uint64_t take_batch_locked(struct vmo *v, uint64_t idx, uint64_t end, str
         if (!*s)
             continue;
         struct page *p = pa_page(*s);
+        if (keep && pager_page_state_vlocked(v->pv, p))
+            continue;   /* (its entries may be zapped below: the next touch puts them back) */
         /* The table's reference, released after the flush. A page other
          * tables may hold can't use its list node (another gather's). */
         if (page_shared(v, p)) {
@@ -1388,7 +1422,7 @@ static uint64_t take_batch_locked(struct vmo *v, uint64_t idx, uint64_t end, str
             tlb_gather_shared(g, p);
         } else {
             if (v->pv)   /* off its pager's cache first: the gather takes its list node */
-                pager_page_gone_vlocked(v->pv, p);
+                pager_page_out_locked(v, p);
             tlb_gather_page(g, p);
         }
         *s = 0;
@@ -1463,7 +1497,7 @@ static void shrink_pages(struct vmo *v, uint64_t first, uint64_t old_end)
     tlb_gather_init(&g);
     for (uint64_t idx = first; idx < old_end;) {
         uint64_t f = vlock(v);
-        uint64_t next = take_batch_locked(v, idx, old_end, &g);
+        uint64_t next = take_batch_locked(v, idx, old_end, &g, false);
         free_passed_locked(v, idx, next, first, old_end);
         vunlock(v, f);
         gather_maybe_finish(&g);
@@ -1591,8 +1625,9 @@ status_t vmo_commit(struct vmo *v, uint64_t offset, uint64_t len)
     return st;
 }
 
-/* vmo_decommit's work, as a writer (writer_enter). */
-static status_t decommit_pages(struct vmo *v, uint64_t offset, uint64_t len)
+/* vmo_decommit's work, as a writer (writer_enter); `clean_only` as for
+ * take_batch_locked. */
+static status_t decommit_pages(struct vmo *v, uint64_t offset, uint64_t len, bool clean_only)
 {
     uint64_t f = vlock(v);
     if (!in_bounds(offset, len, v->size)) {
@@ -1633,7 +1668,7 @@ static status_t decommit_pages(struct vmo *v, uint64_t offset, uint64_t len)
             st = ERR_BAD_STATE;
             break;
         }
-        idx = take_batch_locked(v, idx, stop, &g);
+        idx = take_batch_locked(v, idx, stop, &g, clean_only);
         vunlock(v, f);
         gather_maybe_finish(&g);
     }
@@ -1650,7 +1685,7 @@ status_t vmo_decommit(struct vmo *v, uint64_t offset, uint64_t len)
     status_t st = writer_enter(v);
     if (st != OK)
         return st;
-    st = decommit_pages(v, offset, len);
+    st = decommit_pages(v, offset, len, false);
     writer_exit(v);
     return st;
 }
@@ -1671,8 +1706,9 @@ status_t vmo_seal(struct vmo *v)
 status_t vmo_seal_verified(struct vmo *v, struct vmo_verify *vf)
 {
     uint64_t f = vlock(v);
-    bool ok = v->pv && !v->pdetached && !v->verify && !v->jit && itree_empty(&v->umaps) &&
-              list_empty(&v->ranges) && v->writers == 0;
+    /* Code never comes from a writable page: never a writable one. */
+    bool ok = v->pv && !v->pwritable && !v->pdetached && !v->verify && !v->jit &&
+              itree_empty(&v->umaps) && list_empty(&v->ranges) && v->writers == 0;
     if (ok) {
         /* Pages that came before the table were never checked. Nothing
          * maps them (no umap) and the table holds the only reference
@@ -1718,11 +1754,11 @@ status_t vmo_umap_add(struct vmo *v, struct vmo_umap *u, bool check)
     uint64_t f = vlock(v);
     /* (A split, unchecked, copies a mapping that exists already: on a
      * sealed VMO that is never a writable one.) */
-    status_t st = !check                                 ? OK
-                  : u->pages.end > v->size >> PAGE_SHIFT ? ERR_OUT_OF_RANGE
-                  : u->writable && v->sealed             ? ERR_BAD_STATE
-                  : u->writable && v->pv                 ? ERR_ACCESS_DENIED   /* pager's pages */
-                                                         : OK;
+    status_t st = !check                                  ? OK
+                  : u->pages.end > v->size >> PAGE_SHIFT  ? ERR_OUT_OF_RANGE
+                  : u->writable && v->sealed              ? ERR_BAD_STATE
+                  : u->writable && v->pv && !v->pwritable ? ERR_ACCESS_DENIED   /* pager's pages */
+                                                          : OK;
     if (st != OK) {
         vunlock(v, f);
         return st;
@@ -1796,6 +1832,35 @@ static status_t fault_fill(struct vmo *v, uint64_t idx, bool src, struct fresh *
     return fr->page ? OK : ERR_NO_MEMORY;
 }
 
+/* With the lock held: a store to page p (present) of v, a writable pager
+ * VMO. A clean page becomes dirty, and v's first dirty page takes the
+ * hold: a reference of v's own (the caller has one, so v lives), kept
+ * until none is left (hold_end). */
+static void store_locked(struct vmo *v, struct page *p)
+{
+    if (!pager_page_state_vlocked(v->pv, p)) {
+        v->dirty++;
+        if (!v->held) {
+            v->held = true;
+            kobject_ref(&v->base);
+        }
+    }
+    pager_page_store_vlocked(v->pv, p);
+}
+
+/* No lock held, a reference of the caller's: if v's dirty and writing
+ * pages are all gone (dropped, or written back), its hold goes. */
+static void hold_end(struct vmo *v)
+{
+    uint64_t f = vlock(v);
+    bool drop = v->held && v->dirty == 0;
+    if (drop)
+        v->held = false;
+    vunlock(v, f);
+    if (drop)
+        kobject_unref(&v->base);   /* never the last: the caller's */
+}
+
 status_t vmo_fault_map(struct vmo *v, uint64_t idx, struct aspace *as, uint64_t va,
                        unsigned perms, bool write)
 {
@@ -1823,6 +1888,16 @@ status_t vmo_fault_map(struct vmo *v, uint64_t idx, struct aspace *as, uint64_t 
         unsigned may = v->protecting ? perms & ~ASPACE_WRITE : perms;
         uint64_t *s = slot_locked(v, idx, false);
         struct page *p = s && *s ? pa_page(*s) : NULL;
+        if (p && v->pwritable) {
+            /* Writable only while dirty: a store to a clean or writing
+             * page makes it dirty here (the file header's "Writable pager
+             * VMOs"). (The dirty limit's wait, WRITEMAP's 1.4, goes
+             * before it: a store waits as a read waits for its page.) */
+            if (write)
+                store_locked(v, p);
+            if (!(pager_page_state_vlocked(v->pv, p) & PAGER_PAGE_DIRTY))
+                may &= ~ASPACE_WRITE;
+        }
         bool shared = p && (perms & ASPACE_WRITE) && page_shared(v, p);
         if (p && (!shared || !write)) {
             /* Installed under the VMO lock: a decommit or a separation that
@@ -2147,7 +2222,8 @@ void vmo_clone_end(struct vmo *v)
 
 /* ---- pager VMOs (<jam/pager.h>) ------------------------------------------- */
 
-status_t vmo_create_pager(struct job *job, uint64_t size, struct pager_vmo *pv, struct vmo **out)
+status_t vmo_create_pager(struct job *job, uint64_t size, struct pager_vmo *pv, bool writable,
+                          struct vmo **out)
 {
     if (size > VMO_SMALL_MAX_SIZE)
         return ERR_OUT_OF_RANGE;
@@ -2160,6 +2236,7 @@ status_t vmo_create_pager(struct job *job, uint64_t size, struct pager_vmo *pv, 
         return st;
     }
     v->pv = pv;
+    v->pwritable = writable;
     *out = v;
     return OK;
 }
@@ -2167,6 +2244,72 @@ status_t vmo_create_pager(struct job *job, uint64_t size, struct pager_vmo *pv, 
 bool vmo_is_pager(const struct vmo *v)
 {
     return v->pv != NULL;
+}
+
+bool vmo_pager_writable(const struct vmo *v)
+{
+    return v->pwritable;
+}
+
+void vmo_pager_dirty_run(struct vmo *v, uint64_t first, uint64_t end, unsigned want,
+                         uint64_t max, struct page **pages, uint64_t *at, uint64_t *n,
+                         uint64_t *dirtied)
+{
+    uint64_t oldest = UINT64_MAX;
+    *at = first;
+    *n = 0;
+    uint64_t f = vlock(v);
+    if (end > v->size >> PAGE_SHIFT)
+        end = v->size >> PAGE_SHIFT;
+    for (uint64_t i = first; i < end && *n < max; i++) {
+        uint64_t *s = slot_locked(v, i, false);
+        struct page *p = s && *s ? pa_page(*s) : NULL;
+        if (!p || !(pager_page_state_vlocked(v->pv, p) & want)) {
+            if (*n)
+                break;   /* the run ends */
+            continue;
+        }
+        if (!*n)
+            *at = i;
+        page_get(p);
+        pages[(*n)++] = p;
+        uint64_t d = pager_page_dirtied_vlocked(v->pv, p);
+        oldest = d < oldest ? d : oldest;
+    }
+    vunlock(v, f);
+    *dirtied = *n ? oldest : 0;
+}
+
+status_t vmo_pager_present(struct vmo *v, uint64_t first, uint64_t end, uint64_t byte_end,
+                           struct page **pages)
+{
+    uint64_t f = vlock(v);
+    status_t st = v->verify ? ERR_BAD_STATE : byte_end > v->size ? ERR_OUT_OF_RANGE : OK;
+    for (uint64_t i = first; i < end && st == OK; i++) {
+        uint64_t *s = slot_locked(v, i, false);
+        pages[i - first] = s && *s ? pa_page(*s) : NULL;
+        if (pages[i - first])
+            page_get(pages[i - first]);
+    }
+    vunlock(v, f);
+    return st;
+}
+
+unsigned vmo_pager_page_state(struct vmo *v, uint64_t idx)
+{
+    uint64_t f = vlock(v);
+    uint64_t pa = v->pwritable && idx < v->size >> PAGE_SHIFT ? phys_locked(v, idx) : 0;
+    unsigned st = pa ? pager_page_state_vlocked(v->pv, pa_page(pa)) : 0;
+    vunlock(v, f);
+    return st;
+}
+
+uint64_t vmo_pager_dirty_count(struct vmo *v)
+{
+    uint64_t f = vlock(v);
+    uint64_t n = v->dirty;
+    vunlock(v, f);
+    return n;
 }
 
 uint64_t vmo_pager_koid(struct vmo *v)
@@ -2272,8 +2415,9 @@ void vmo_pager_evict(struct vmo *v, uint64_t idx, const struct page *p)
     struct tlb_gather g;
     tlb_gather_init(&g);
     uint64_t f = vlock(v);
+    /* (Else it went already, or, dirtied since it was popped, it stays.) */
     if (idx < v->size >> PAGE_SHIFT && phys_locked(v, idx) == page_to_phys(p))
-        (void)take_batch_locked(v, idx, idx + 1, &g);   /* (else it went already) */
+        (void)take_batch_locked(v, idx, idx + 1, &g, true);
     vunlock(v, f);
     tlb_gather_finish(&g);
 }
@@ -2282,8 +2426,9 @@ status_t vmo_pager_invalidate(struct vmo *v, uint64_t offset, uint64_t len)
 {
     /* Not a writer: invalidating changes no byte (the pager supplies the
      * same file's bytes again), so a sealed VMO takes it as it takes an
-     * eviction. No range can exist (pins and kernel mappings are refused). */
-    return decommit_pages(v, offset, len);
+     * eviction. No range can exist (pins and kernel mappings are refused).
+     * A writable VMO's dirty and writing pages stay: newer than the disk. */
+    return decommit_pages(v, offset, len, true);
 }
 
 status_t vmo_pager_set_size(struct vmo *v, uint64_t size, struct list_node *dead)
@@ -2309,6 +2454,7 @@ status_t vmo_pager_set_size(struct vmo *v, uint64_t size, struct list_node *dead
         shrink_pages(v, first, end);   /* nothing reappears past the end: resize is held */
     mutex_unlock(&v->resize);
     writer_exit(v);
+    hold_end(v);   /* (the dirty pages past the end went with the rest) */
     return st;
 }
 
@@ -2319,8 +2465,9 @@ void vmo_pager_detach(struct vmo *v)
     uint64_t size = v->size;
     vunlock(v, f);
     /* No range can exist (pins and kernel mappings are refused), so this
-     * takes every page. */
-    (void)decommit_pages(v, 0, size);
+     * takes every page, dirty ones too (lost, as with a pulled disk). */
+    (void)decommit_pages(v, 0, size, false);
+    hold_end(v);
 }
 
 bool vmo_page_ready(struct vmo *v, uint64_t idx)

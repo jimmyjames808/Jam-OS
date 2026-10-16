@@ -42,6 +42,9 @@ enum {
     DBG_VMO_CHILD_SHOOT,   /* vmo.c share_pages, every page shared and the parent's entries
                               made read-only, before their shootdown; the parent's "vmo
                               resize" held, no spinlock (arg: the parent) */
+    DBG_PAGER_EVICT,       /* pager_cache.c evict, the oldest clean page popped off the list,
+                              before its VMO is locked to take it out; no lock held (arg:
+                              the page) */
     DBG_N
 };
 
