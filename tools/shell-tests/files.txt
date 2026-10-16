@@ -80,7 +80,7 @@ send df | grep /ram | grep -c RAMFS | grep ^1$ && echo ok-$T-df
 wait ok-y-df
 send cd /ram && pwd | grep ^/ram$ && echo ok-$T-cd
 wait ok-y-cd
-send mkdir docs && ls -l | grep -c "<dir>  docs/" | grep ^1$ && echo ok-$T-mkdir
+send mkdir docs && ls -l | grep -c "^d.*  docs/" | grep ^1$ && echo ok-$T-mkdir
 wait ok-y-mkdir
 send mkdir docs; echo st-$T=$?
 wait mkdir: docs: it exists already
@@ -109,6 +109,35 @@ wait write: docs: is a directory
 wait st-y=1
 send touch empty && ls -l empty | grep -c "0 B  empty" | grep ^1$ && echo ok-$T-touch
 wait ok-y-touch
+# modes, owners and links on a mount that keeps none (this one makes them up):
+# ls -l and stat show them, chmod and ln say what the mount can't do
+send ls -l empty | grep -c "^-rw-r--r--  1 jam  jam" | grep ^1$ && echo ok-$T-lsl
+wait ok-y-lsl
+send stat empty | grep -c "regular file" | grep ^1$ && stat docs | grep -c "directory" | grep ^1$ && echo ok-$T-stat
+wait ok-y-stat
+send stat empty | grep -c "Uid: 1000 (jam)" | grep ^1$ && echo ok-$T-uid
+wait ok-y-uid
+send stat nosuch; echo st-$T=$?
+wait stat: nosuch: no such file or directory
+wait st-y=1
+send chmod 600 empty; echo st-$T=$?
+wait chmod: empty: this volume keeps no permission bits
+wait st-y=1
+send chmod nonsense empty; echo st-$T=$?
+wait chmod: nonsense: not a mode
+wait st-y=2
+send ln empty hard; echo st-$T=$?
+wait ln: hard: no hard links here
+wait st-y=1
+send ln -s empty soft; echo st-$T=$?
+wait ln: soft: no symbolic links here
+wait st-y=1
+send readlink empty; echo st-$T=$?
+wait readlink: empty: not a symbolic link
+wait st-y=1
+send ln; echo st-$T=$?
+wait usage: ln [-s] <target> <name>
+wait st-y=2
 # cp: a small file, into a directory, from another mount, and one bigger
 # than the 64 KiB transfer buffer
 send cp docs/note.txt copy.txt && cat copy.txt

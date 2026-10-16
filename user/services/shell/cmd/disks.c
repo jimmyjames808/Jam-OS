@@ -863,13 +863,16 @@ SH_CMD(disk)
     bool digest = argc >= 3 && !strcmp(argv[1], "digest") && (argc == 3 || argc == 5);
     bool smart = argc == 3 && !strcmp(argv[1], "smart");
     bool prepare = argc == 3 && !strcmp(argv[1], "prepare");
+    bool check = argc == 3 && !strcmp(argv[1], "check");
     bool format = (argc == 4 || (argc == 5 && !strcmp(argv[4], "fat"))) &&
                   !strcmp(argv[1], "format") && !strcmp(argv[3], "data");
-    if (!digest && !smart && !prepare && !format) {
+    if (!digest && !smart && !prepare && !check && !format) {
         sh_tty("usage: disk digest <disk> [<lba> <count>]   SHA-256s of the disk's regions\n"
                "       disk smart <disk>                    the drive's health log\n"
                "       disk prepare <disk>                  make an NVMe drive a Jam OS disk (one\n"
                "                                            that isn't empty: erased, if you say so)\n"
+               "       disk check <mount>                   read-only check of an ext volume (/jam):\n"
+               "                                            reports, never repairs or writes\n"
                "       disk format <disk> data [fat]        format a Jam OS disk's data partition\n"
                "                                            again, everything on it lost: ext (fat:\n"
                "                                            FAT32, for another computer)\n"
@@ -879,6 +882,11 @@ SH_CMD(disk)
     handle_t list;
     if (open_list(&list) != OK)
         return 1;
+    if (check) {
+        int rc = sh_disk_check(list, argv[2]);
+        jam_handle_close(list);
+        return rc;
+    }
     struct disk_row d;
     int rc = 1;
     if (find_disk(list, argv[2], &d))

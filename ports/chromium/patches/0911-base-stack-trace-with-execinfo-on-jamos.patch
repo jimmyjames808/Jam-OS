@@ -1,0 +1,28 @@
+Description: base's StackTrace uses backtrace() on Jam OS (libc has <execinfo.h>)
+ base/debug/stack_trace_posix.cc takes backtrace() and backtrace_symbols()
+ only where the C library is glibc (or Apple's), by __GLIBC__. Jam OS's libc
+ is musl with glibc's <execinfo.h> added (user/posix/glibc/execinfo.c:
+ backtrace() walks the program's own unwind tables, takes no lock and calls
+ nothing, so the crash handler may call it), so the glibc path is the right
+ one here: StackTrace collects frames, prints them and streams them. This
+ one condition replaces Alpine's no-execinfo.patch (0001, dropped: its
+ hunks only made musl's lack of <execinfo.h> compile) and our earlier 0911
+ (a StackTrace::OutputToStreamWithPrefixImpl for the build without
+ backtrace()). __jamos__ is defined by the Jam OS toolchain for the target
+ (0901), not for the host's tools.
+Forwarded: not-needed (Jam OS's: musl, static programs)
+---
+--- a/base/debug/stack_trace_posix.cc
++++ b/base/debug/stack_trace_posix.cc
+@@ -46,8 +46,9 @@
+
+ // Surprisingly, uClibc defines __GLIBC__ in some build configs, but
+ // execinfo.h and backtrace(3) are really only present in glibc and in macOS
+-// libc.
+-#if BUILDFLAG(IS_APPLE) || \
++// libc. Jam OS's libc has them too (backtrace() by the program's unwind
++// tables), though it is musl and does not define __GLIBC__.
++#if BUILDFLAG(IS_APPLE) || defined(__jamos__) || \
+     (defined(__GLIBC__) && !defined(__UCLIBC__) && !defined(__AIX))
+ #define HAVE_BACKTRACE
+ #include <execinfo.h>

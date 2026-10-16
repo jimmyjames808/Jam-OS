@@ -48,6 +48,7 @@
  * XSAVES handles, which this file doesn't use). The rule applies only
  * while XCR0 holds nothing but x87, SSE and AVX (call_drop_ok), so turning
  * either on falls back to the full save until fpu_save_called keeps it. */
+#include <jam/abi.h>
 #include <jam/cmdline.h>
 #include <jam/cpu.h>
 #include <jam/kprintf.h>
@@ -72,15 +73,25 @@
  * 24, the x87 environment and ST0-ST7 below 160, XMM0-XMM15 below 416.
  * The XSAVE header follows at 512 (SDM vol. 1, 13.4.2). */
 #define FXSAVE_SIZE   512
+#define FSW_OFF       2
+#define FOP_OFF       6        /* FOP, then FIP (8) and FDP (16): the last x87 instruction */
 #define MXCSR_OFF     24
+#define MXCSR_MASK_OFF 28
+#define X87_REGS      32       /* ST0-ST7 */
 #define X87_END       160
 #define XMM_END       416
 #define XSTATE_BV_OFF 512
+#define XSAVE_HDR_END 576      /* XCOMP_BV and 48 reserved bytes follow XSTATE_BV */
 #define MXCSR_INIT    0x1f80   /* all SIMD exceptions masked, round to nearest */
 #define FCW_INIT      0x037f   /* all x87 exceptions masked, 64-bit precision */
+#define FSW_ES        0x0080   /* an unmasked x87 exception is pending */
+
+_Static_assert(MXCSR_INIT == EXC_MXCSR_INIT, "the entry's MXCSR (abi.h) is the default");
 
 static uint64_t xcr0;
 static uint32_t area_size;
+static uint32_t mxcsr_mask = 0xffbf;   /* the MXCSR bits this CPU takes (FXSAVE's MXCSR_MASK) */
+static uint32_t avx_off, avx_size;     /* AVX's upper halves in the standard form (CPUID 0xd) */
 static struct kmem_cache *area_cache;
 static bool has_xsaveopt;
 static bool call_drop_ok;   /* XCR0 holds only XCR0_DROPPABLE components */
@@ -113,9 +124,21 @@ void fpu_init_cpu(void)
             area_size = b;   /* for the features now enabled in XCR0 */
             cpuid(0xd, 1, &a, &b, &c, &d);
             has_xsaveopt = a & 1;
+            if (xcr0 & XCR0_AVX) {
+                cpuid(0xd, 2, &a, &b, &c, &d);
+                avx_size = a;
+                avx_off = b;
+            }
         } else {
             area_size = FXSAVE_SIZE;
         }
+        /* FXSAVE's MXCSR_MASK says which MXCSR bits XRSTOR takes; 0 means
+         * the original set (SDM vol. 1, 11.6.6). */
+        static uint8_t probe[FXSAVE_SIZE] __attribute__((aligned(16)));
+        __asm__ volatile("fxsave64 (%0)" :: "r"(probe) : "memory");
+        uint32_t m = *(uint32_t *)(probe + MXCSR_MASK_OFF);
+        if (m)
+            mxcsr_mask = m;
         area_cache = kmem_cache_create("fpu state", area_size, 64);
         call_drop_ok = !(xcr0 & ~XCR0_DROPPABLE);
         __atomic_store_n(&fpu_opt, !cmdline_has("nofpuopt"), __ATOMIC_RELAXED);
@@ -224,6 +247,80 @@ void fpu_reset_and_load(struct thread *t)
 uint32_t fpu_area_size(void)
 {
     return area_size;
+}
+
+/* ---- the XSAVE area of a fault's frame (upcall.c) ---------------------------
+ *
+ * A frame (struct exc_frame, <jam/abi.h>) carries the thread's vector and
+ * x87 registers in XSAVE's standard form with every component of XCR0
+ * written out, whatever the save left in its initial state, so libc reads
+ * an XMM register at its place without looking at XSTATE_BV. Only fields
+ * the CPU defines are copied, from the thread's own area just saved: the
+ * reserved and software bytes stay zero, and FOP, FIP and FDP stay zero
+ * unless an x87 exception is pending (some AMD CPUs leave the previous
+ * thread's there otherwise). */
+
+uint32_t fpu_frame_size(void)
+{
+    return area_size <= FPU_FRAME_MAX ? area_size : 0;
+}
+
+/* Interrupts off; t is the current thread, interrupted in ring 3, so this
+ * CPU's registers are t's: save them as a switch would (the XSAVEOPT
+ * tracking stays true), then write the frame's form into out
+ * (fpu_frame_size() bytes the caller zeroed). */
+void fpu_frame_save(struct thread *t, uint8_t *out)
+{
+    uint8_t *a = t->ustate;
+    fpu_save(a);
+    uint64_t bv = cpu_features.xsave ? *(uint64_t *)(a + XSTATE_BV_OFF)
+                                     : XCR0_X87 | XCR0_SSE;   /* FXSAVE writes everything */
+    if (bv & XCR0_X87) {
+        bool pending = *(uint16_t *)(a + FSW_OFF) & FSW_ES;
+        memcpy(out, a, pending ? MXCSR_OFF : FOP_OFF);
+        memcpy(out + X87_REGS, a + X87_REGS, X87_END - X87_REGS);
+    } else {
+        *(uint16_t *)out = FCW_INIT;   /* the rest of x87's initial state is 0 */
+    }
+    *(uint32_t *)(out + MXCSR_OFF) = *(uint32_t *)(a + MXCSR_OFF);   /* always the live one */
+    *(uint32_t *)(out + MXCSR_MASK_OFF) = mxcsr_mask;
+    if (bv & XCR0_SSE)
+        memcpy(out + X87_END, a + X87_END, XMM_END - X87_END);
+    if (!cpu_features.xsave)
+        return;
+    *(uint64_t *)(out + XSTATE_BV_OFF) = xcr0;
+    if (bv & xcr0 & XCR0_AVX)
+        memcpy(out + avx_off, a + avx_off, avx_size);
+}
+
+/* Can XRSTOR (FXRSTOR) take a frame's area (a kernel copy) without
+ * faulting? MXCSR only with bits this CPU takes; the header (XSAVE) with
+ * only XCR0's components, and XCOMP_BV and the reserved bytes 0 (the
+ * standard form). Nothing else in an area makes the restore fault: an
+ * exception it leaves pending faults in user mode, the thread's own. */
+bool fpu_frame_ok(const uint8_t *area)
+{
+    if (*(const uint32_t *)(area + MXCSR_OFF) & ~mxcsr_mask)
+        return false;
+    if (!cpu_features.xsave)
+        return true;
+    if (*(const uint64_t *)(area + XSTATE_BV_OFF) & ~xcr0)
+        return false;
+    for (unsigned i = XSTATE_BV_OFF + 8; i < XSAVE_HDR_END; i++)
+        if (area[i])
+            return false;
+    return true;
+}
+
+/* Interrupts off, t current and about to return to ring 3 (exception_done's
+ * EXC_RESUME): the area (fpu_frame_ok said yes) becomes t's and is loaded
+ * now, so the XSAVEOPT tracking and the owner shortcut (top) refer to what
+ * the registers hold. */
+void fpu_frame_load(struct thread *t, const uint8_t *area)
+{
+    memcpy(t->ustate, area, area_size);
+    t->fpu_cpu = FPU_CPU_NONE;
+    fpu_load(t);
 }
 
 int fpu_ustate_alloc(struct thread *t)

@@ -137,6 +137,9 @@ status_t    list_part(uint32_t id, uint32_t index, struct list_part *o);
  * ERR_NOT_FOUND: no such disk; ERR_BAD_STATE: its driver isn't there. */
 status_t    disk_digest(uint32_t id, uint64_t lba, uint64_t count, uint8_t sha256[32]);
 status_t    disk_health(uint32_t id, struct list_health *o);
+/* A read-only `block` channel on partition `index` of disk id, in a task
+ * (voldisks.open_partition, for the shell's `disk check`). */
+status_t    disk_open_ro(uint32_t id, uint32_t index, handle_t *out);
 
 /* mark.c: Jam OS's mark on a GPT disk, checked with volumes' own code (the
  * driver has its own, in the partition library). */

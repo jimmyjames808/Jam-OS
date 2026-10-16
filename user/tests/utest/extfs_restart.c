@@ -15,8 +15,11 @@
  * the same files with the same free space as the undisturbed run's (the
  * journal replays, so the blocks differ; the files may not). Then: an
  * fs.open's and an fs.view's reply that died with the process are made
- * again; a request in progress at two crashes is answered ERR_IO; and a
- * warm spare promoted in a dead instance's place carries on its files. */
+ * again; a request in progress at two crashes is answered ERR_IO; mapped
+ * files carried on (with a pager: maps, page requests and a write under a
+ * mapping ended at their steps, an unlinked mapped file kept across a
+ * kill); and a warm spare promoted in a dead instance's place carries on
+ * its files. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -39,6 +42,7 @@ struct sup {
     struct fatrun   r;
     handle_t        serve;
     handle_t        state;
+    handle_t        pager;    /* handed to each instance (EXTFS_SR_PAGER), or 0 */
     struct keeper   keeper;
     const char     *dies[MAX_DEATHS];
     const char     *crash;
@@ -82,11 +86,15 @@ static status_t start(struct sup *s, const char *ended)
         argv[argc++] = s->dies[s->instance];
     if (s->crash)
         argv[argc++] = s->crash;
-    struct spawn_handle x[4] = { { EXTFS_SR_BLOCK, block }, { EXTFS_SR_SERVE, serve },
+    struct spawn_handle x[5] = { { EXTFS_SR_BLOCK, block }, { EXTFS_SR_SERVE, serve },
                                  { SR_STATE, state }, { SR_KEEP, keep } };
-    rights_t xr[4] = { RIGHT_SAME, RIGHT_SAME, SVCSTATE_SERVICE_RIGHTS, RIGHT_SAME };
+    rights_t xr[5] = { RIGHT_SAME, RIGHT_SAME, SVCSTATE_SERVICE_RIGHTS, RIGHT_SAME,
+                       RIGHT_READ | RIGHT_WRITE | RIGHT_WAIT };
+    unsigned nx = 4;
+    if (s->pager && jam_handle_duplicate(s->pager, RIGHT_SAME, &x[nx].h) == OK)
+        x[nx++].role = EXTFS_SR_PAGER;
     struct spawn_args a = { .path = "bin/extfs", .argc = argc, .argv = argv, .job = s->r.job,
-                            .extra = x, .nextra = 4, .extra_rights = xr };
+                            .extra = x, .nextra = nx, .extra_rights = xr };
     st = spawn(&a, &s->r.proc);
     s->instance++;
     return st == OK ? keeper_restore(&s->keeper) : st;
@@ -131,10 +139,13 @@ static void supervise(void *arg)
     }
 }
 
-static bool sup_start(struct ramdisk *rd, const char *const *dies, unsigned n, const char *crash)
+/* pager: handed to every instance (a copy each), or 0. */
+static bool sup_begin(struct ramdisk *rd, const char *const *dies, unsigned n, const char *crash,
+                      handle_t pager)
 {
     memset(&sv, 0, offsetof(struct sup, stack));
     sv.r.rd = rd;
+    sv.pager = pager;
     for (unsigned i = 0; i < n && i < MAX_DEATHS; i++)
         sv.dies[i] = dies[i];
     sv.crash = crash;
@@ -145,6 +156,11 @@ static bool sup_start(struct ramdisk *rd, const char *const *dies, unsigned n, c
     CHECK_ST(thread_spawn("extfs supervisor", supervise, &sv, sv.stack, sizeof(sv.stack),
                           &sv.thread), OK);
     return true;
+}
+
+static bool sup_start(struct ramdisk *rd, const char *const *dies, unsigned n, const char *crash)
+{
+    return sup_begin(rd, dies, n, crash, HANDLE_INVALID);
 }
 
 static bool sup_stop(void)
@@ -383,6 +399,92 @@ bool t_extfs_restart_bad(void)
     CHECK_ST(t_stat(&sv.r, "/k", NULL, &is_dir, NULL), OK);
     CHECK(is_dir);
     return sup_stop() && ramdisk_destroy(&test_disk);
+}
+
+/* ---- mapped files ------------------------------------------------------------------- */
+
+#define MAP_CHUNKS 3u          /* the mapped file: 48 pages */
+#define MAP_BUDGET 32u         /* the pager's pages: fewer, so a second pass fetches again */
+#define PATCH      "patched"   /* written at PATCH_AT under the mapping */
+#define PATCH_AT   1000u
+
+/* VMO v's pages: what write_chunks(seed) wrote (PATCH over it if
+ * patched), read a chunk at a time (vmo_read waits for pages as a fault). */
+static bool vmo_chunks(handle_t v, uint32_t seed, bool patched, const char *what)
+{
+    static uint8_t got[CHUNK];
+    for (uint32_t i = 0; i < MAP_CHUNKS; i++) {
+        fill(seed + i);
+        if (patched && !i)
+            memcpy(buf + PATCH_AT, PATCH, sizeof(PATCH) - 1);
+        CHECK_ST(jam_vmo_read(v, (uint64_t)i * CHUNK, got, CHUNK), OK);
+        if (memcmp(got, buf, CHUNK))
+            FAIL("%s: chunk %u of the mapped file reads wrong", what, i);
+    }
+    return true;
+}
+
+/* Mapped files across restarts (pager.c's "Restarts"): a map whose
+ * instance ended having made its VMO (map:1) is run again; a page request
+ * read and not supplied (supply:1) is taken again by the successor
+ * (PAGER_NEXT_AGAIN); a write under a mapping ended after its journal
+ * commit (journal:1) is seen by the mapping; a map to run answered and
+ * then ended (answered:2) gets its VMO made again. Then the file, unlinked
+ * under its mapping, is kept across a kill (the orphan the state's slot
+ * names) and read again from the disk (the budget is less than the file);
+ * once the mapping goes the orphan is dropped. */
+bool t_extfs_restart_pager(void)
+{
+    static struct ramdisk test_disk;
+    static const char *const dies[] = {
+        "die=map:1", "die=supply:1", "die=journal:1", "die=answered:2",
+    };
+    handle_t root = startup_handle(SR_RESOURCE), pager = HANDLE_INVALID;
+    handle_t a = HANDLE_INVALID, x = HANDLE_INVALID;
+    struct tfile f, g;
+    uint64_t size = 0, total = 0, free_before = 0, free_now = 0;
+    uint32_t done = 0;
+    if (!root || jam_pager_create(root, MAP_BUDGET, FAT_CALL_NS, 0, &pager) != OK) {
+        printf("utest: extfs_restart_pager: no pager power (RIGHT_ROOT_PAGER): skipped\n");
+        return true;
+    }
+    if (!ramdisk_create(&test_disk, DISK_SECTORS) || !sup_begin(&test_disk, dies, 4, NULL, pager))
+        return false;
+    CHECK_ST(t_free(&sv.r, &total, &free_before), OK);
+    CHECK_ST(t_open(&sv.r, "/m.bin", FS_READ | FS_WRITE | FS_CREATE, &f), OK);
+    if (!write_chunks(&f, MAP_CHUNKS, 3))
+        return false;
+    CHECK_ST(file_map_until(f.ch, dl(), FILE_MAP_READ, &a, &size), OK);   /* 0 ends */
+    CHECK_EQ(size, MAP_CHUNKS * CHUNK);
+    if (!vmo_chunks(a, 3, false, "mapped"))   /* 1 ends at its first supply */
+        return false;
+    CHECK_ST(t_write(&f, PATCH_AT, PATCH, sizeof(PATCH) - 1, &done), OK);   /* 2 ends */
+    if (!vmo_chunks(a, 3, true, "written under it"))
+        return false;
+    t_close(&f);
+    CHECK_ST(t_open(&sv.r, "/m.bin", FS_READ, &g), OK);
+    CHECK_ST(file_map_until(g.ch, dl(), FILE_MAP_EXEC, &x, &size), OK);   /* 3 ends */
+    if (!vmo_chunks(x, 3, true, "mapped to run"))
+        return false;
+    CHECK_EQ(sv.tests, 4u);
+    CHECK_ST(t_unlink(&sv.r, "/m.bin"), ERR_BUSY);
+    CHECK_ST(jam_handle_close(x), OK);
+    t_close(&g);
+    CHECK_ST(t_unlink(&sv.r, "/m.bin"), OK);
+    jam_job_kill(sv.r.job);   /* the supervisor starts it again: a crash, nothing in progress */
+    if (!vmo_chunks(a, 3, true, "unlinked, after a kill"))
+        return false;
+    CHECK_EQ(sv.crashes, 1u);
+    CHECK_ST(t_free(&sv.r, &total, &free_now), OK);
+    CHECK(free_now < free_before);   /* the orphan holds its blocks */
+    CHECK_ST(jam_handle_close(a), OK);
+    CHECK_ST(t_sync(&sv.r), OK);   /* the GONE first: the orphan dropped */
+    CHECK_ST(t_free(&sv.r, &total, &free_now), OK);
+    CHECK_EQ(free_now, free_before);
+    CHECK_ST(t_stat(&sv.r, "/m.bin", NULL, NULL, NULL), ERR_NOT_FOUND);
+    bool ok = sup_stop() && extfs_save(&test_disk, "restart-pager");
+    CHECK_ST(jam_handle_close(pager), OK);
+    return ramdisk_destroy(&test_disk) && ok;
 }
 
 /* ---- the warm spare ---------------------------------------------------------------- */

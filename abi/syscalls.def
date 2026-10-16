@@ -10,8 +10,8 @@
 #           number fails with ERR_NOT_SUPPORTED. 0 is never used, so a
 #           zeroed rax can't reach a real call.
 # name      C identifier. User code calls jam_<name>(), the kernel
-#           implements sysc_<name>() (a weak ERR_NOT_SUPPORTED default is
-#           generated until the real one exists).
+#           implements sysc_<name>() (no default: the kernel doesn't link
+#           without it; a call not built yet answers ERR_NOT_SUPPORTED).
 # return    status    status_t: OK or a negative ERR_*
 #           i64       a value; negative means an ERR_* code
 #           noreturn  never returns on success (the user wrapper traps
@@ -306,9 +306,45 @@
 # VMAR_KEPT_ONLY: what the range overlaps is unmapped and the new mapping
 # made in one step, so another thread never finds the range unmapped
 # (MAP_FIXED); on any error nothing changed.
+# vmar_map also takes a clone mode, VMAR_CLONE_SHARE (bit 6) or
+# VMAR_CLONE_NONE (bit 7): what vmar_clone (65) makes of the mapping
+# (<jam/abi.h> has the default without either, and the two cases the
+# kernel decides itself). The mode is the mapping's for good: vmar_protect
+# (which takes neither flag: ERR_INVALID_ARGS), splits, merges and a
+# replace that cuts it keep it, and neighbours merge only with the same
+# mode. ERR_INVALID_ARGS for both, or either with VMAR_KEPT_ONLY.
+# process_get_maps shows it (map_info.flags).
 60  vmar_map          status    handle_t vmar, handle_t vmo, uint64_t vmo_off, uint64_t len, uint32_t flags, uint64_t *addr
 61  vmar_unmap        status    handle_t vmar, uint64_t addr, uint64_t len
 62  vmar_protect      status    handle_t vmar, uint64_t addr, uint64_t len, uint32_t flags
+# vmar_clone: the caller's address space copied into dst's at one instant
+# (fork's kernel half, docs/FORK-PLAN.md section 1.1). dst is a process
+# (RIGHT_WRITE) the caller made with process_create and hasn't started,
+# with nothing mapped (ERR_BAD_STATE otherwise); it can't be started until
+# the call returns. Every mapping of the caller's is made again in dst at
+# the same address, with the same permissions and maximum, by its clone
+# mode (vmar_map): a copy maps one copy-on-write child of the VMO
+# (VMO_CHILD_SNAPSHOT_AT_LEAST_ON_WRITE, as large as the VMO, holding the
+# pages the caller's copies of it map; every copied mapping of one VMO
+# maps the same child), never executable; share maps the same VMO; none
+# leaves the range free. No thread of the caller's maps, unmaps, protects
+# or faults in its address space while the call runs (they wait), nothing
+# writes, decommits or resizes a copied VMO (it waits), and every copied
+# page holds what it held at one moment, as Linux's fork. children[i] gets
+# a handle (a fresh VMO's rights) to the child made for the VMO vmos[i]
+# names (RIGHT_READ and RIGHT_DUPLICATE, as for vmo_create_child), i < n
+# (at most VMAR_CLONE_MAX: ERR_OUT_OF_RANGE); ERR_INVALID_ARGS if that VMO
+# isn't mapped as a copy, ERR_NO_RESOURCES if the caller's table can't
+# hold n more. flags: 0. The children with every page they share, dst's
+# mapping records, and as many page tables as the caller has under the
+# mappings made again (dst's own tables draw on them first, so a fault
+# there is never refused for a table) are charged to dst's job, the
+# caller's for a fork, at the call (ERR_NO_MEMORY). ERR_BAD_STATE if a pin
+# or a kernel mapping covers a page to copy. Nothing is made on any error.
+# On success dst's handle table starts its slots at random generations,
+# so a handle value of the caller's left in the copy is almost always
+# ERR_BAD_HANDLE there.
+65  vmar_clone        status    handle_t dst, const handle_t *vmos, handle_t *children, uint32_t n, uint32_t flags
 
 # processes, threads, jobs --------------------------------------------------
 # process_start moves `arg0` (a handle in the caller's table, usually the
@@ -408,6 +444,48 @@
 # its child, or SR_SELF_PROCESS); a process whose address space is gone
 # returns 0. (/proc/<pid>/maps, stat, status and statm.)
 138 process_get_maps  i64       handle_t proc, uint64_t from, struct map_info *out, uint32_t cap
+# process_replace: exec in place (docs/FORK-PLAN.md section 2). proc
+# (RIGHT_WRITE) is a process the caller made with process_create in its
+# own job, not started, with no thread (ERR_BAD_STATE otherwise). The
+# caller's process ends its other threads and waits until they are gone,
+# takes proc's address space and drops its own (and its charges), closes
+# every handle in its table but arg0 (a channel end, moved, as
+# process_start's) and takes proc's name; then the calling thread goes on
+# at entry with stack, rdi = arg0's new value, rsi = arg1, FS base 0 and a
+# clean FPU state. The process keeps its pid, its kernel object (every
+# handle others hold of it, their waits and port bindings), its job, its
+# creation time and its CPU time; PROCESS_FLAG_JIT is the new address
+# space's. proc is consumed. Returns only on an error, with nothing changed
+# (an entry at or past the user range's top: ERR_INVALID_ARGS). FK3 builds
+# it: ERR_NOT_SUPPORTED until then.
+139 process_replace   status    handle_t proc, uint64_t entry, uint64_t stack, handle_t arg0, uint64_t arg1
+
+# exceptions: a thread's own faults (docs/SIGNALS-PLAN.md section 1) ----------
+# The calling process's exception entry (one per process; 0 removes it):
+# from the return on, a fault of any of its threads that would kill it
+# enters `entry` on that thread with a struct exc_frame instead (<jam/abi.h>:
+# which faults, the frame, the registers at the entry). The caller's own
+# process only, as thread_set_fs_base acts on the caller: no handle, no
+# right. ERR_INVALID_ARGS at or past the user range's top (0x7fffffffe000).
+170 exception_entry_set status  uint64_t entry
+# The calling thread is done with a frame its entry was given (how, EXC_*):
+# EXC_RESUME: continue from `frame`'s registers and XSAVE area, read once
+#   (no return). Checked, and a kill if any check fails: the cookie is the
+#   thread's own (it has had a frame), the size and xsave_size are the
+#   kernel's, RIP is below the user range's top, the XSAVE header holds
+#   only XCR0's components with XCOMP_BV and the reserved bytes 0, and
+#   MXCSR only bits the CPU takes. RFLAGS keeps only the bits user code
+#   may set, with IF on; CS, SS and the FS base never come from a frame.
+#   Ends the window, if the thread is in it.
+# EXC_LEAVE: end the window (the handler then runs as ordinary code of
+#   the thread); OK.
+# EXC_UNHANDLED: the process is killed as the fault would have killed it
+#   with no entry, with that kill line (from what the kernel kept, not
+#   from `frame`).
+# `frame` matters only to EXC_RESUME (ERR_INVALID_ARGS if it can't be
+# read). ERR_BAD_STATE for EXC_LEAVE and EXC_UNHANDLED outside the window;
+# ERR_INVALID_ARGS for any other `how`.
+171 exception_done    status    const struct exc_frame *frame, uint32_t how
 
 # hardware ------------------------------------------------------------------
 # Resources (RES_* in <jam/abi.h>): a slice must lie inside its parent,
@@ -474,7 +552,9 @@
 # ERR_BAD_STATE: the cap isn't its function's current one, its bus
 # mastering is off, a page is pinned through it the other way (read only
 # or writable) already, a read-only pin's page isn't committed, or the
-# VMO is sealed and the pin writes.
+# VMO is sealed and the pin writes. ERR_NOT_SUPPORTED: a pager VMO, a
+# child of one, or a JIT VMO (64: JIT memory is written only by threads,
+# never by a device; either way, read only or not).
 106 vmo_pin           status    @vmo_pin_args
 
 # console services ----------------------------------------------------------

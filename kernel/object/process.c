@@ -32,6 +32,9 @@
  *   - process_start inserts into the child's handle table, which teardown
  *     destroys: both hold the `setup` mutex, and start re-checks the state
  *     after its insert, so a table is never written after it is destroyed.
+ *     vmar_clone holds it too, from its check that p is NEW to the end of
+ *     the copy (process_clone_begin), so no thread of p runs on a
+ *     half-made address space.
  *   - process_start vs uthread_start: start_thread makes p
  *     RUNNING with `starting` set and creates the first thread with the
  *     lock dropped, suspended, and wakes it only after clearing `starting`;
@@ -99,6 +102,7 @@ struct process {
     uint64_t            cpu_done;                /* (L) CPU time (TSC) of the threads that left */
     uint32_t            pid;                     /* its small id (pid_space), fixed */
     uint64_t            start_ns;                /* uptime when it was created, fixed */
+    uint64_t            exc_entry;   /* its exception entry, 0: none (atomic; upcall.c) */
     struct list_node    threads;                 /* (L) struct uthread, every one not destroyed */
     char                name[PROCESS_NAME_MAX + 1]; /* NUL-terminated */
     /* debug_write ("process output" lock): the current, unfinished line and
@@ -139,6 +143,16 @@ static void copy_name(char *dst, size_t cap, const char *src)
 struct process *process_current(void)
 {
     return current_thread()->process;
+}
+
+void process_set_exc_entry(struct process *p, uint64_t entry)
+{
+    __atomic_store_n(&p->exc_entry, entry, __ATOMIC_RELAXED);
+}
+
+uint64_t process_exc_entry(struct process *p)
+{
+    return __atomic_load_n(&p->exc_entry, __ATOMIC_RELAXED);
 }
 
 struct job *job_current(void)
@@ -830,6 +844,30 @@ status_t process_start(struct process *p, struct uthread *u, uint64_t entry, uin
     if (finish)
         process_finish(p);
     return st;
+}
+
+status_t process_clone_begin(struct process *p, struct aspace **as)
+{
+    mutex_lock(&p->setup);
+    uint64_t f = plock(p);
+    struct aspace *a = p->state == PROCESS_NEW ? p->as : NULL;
+    if (a)
+        aspace_ref(a);
+    punlock(p, f);
+    if (!a) {
+        mutex_unlock(&p->setup);
+        return ERR_BAD_STATE;
+    }
+    *as = a;
+    return OK;
+}
+
+void process_clone_end(struct process *p, struct aspace *as, bool done)
+{
+    if (done)
+        handle_table_randomize(&p->handles);
+    mutex_unlock(&p->setup);
+    aspace_unref(as);
 }
 
 /* ---- what POSIX needs of a thread ------------------------------------------------ */

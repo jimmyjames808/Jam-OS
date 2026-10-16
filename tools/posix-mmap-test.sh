@@ -25,6 +25,10 @@
 #   spawn     a copy of posixtest on /data: posix_spawn of it is EACCES
 #             while it isn't allowed; then `allow`ed, it runs (init's
 #             /svc/exec seals and starts it) and exits 7.
+# MMAP_DATA=ext runs the cases with the stick's /data an ext volume
+# (tools/ext-stick.sh: extfs serves it, its pager behind every mapping
+# there, docs/M13.6-PLAN.md's U10); the second sticks stay FAT. Needs
+# e2fsprogs and mtools (the test PC's WSL).
 # QEMU_SMP and QEMU_MEM pass through.
 # Usage: tools/posix-mmap-test.sh <outdir> [name]; exit 0 on PASS.
 set -eu
@@ -32,6 +36,13 @@ out=$1 name=${2:-posix-mmap}
 cases=${MMAP_CASES:-mmap big pull coherent spawn}
 mkdir -p "$out"
 ok=1
+image=${QEMU_IMAGE:-build/jamos.img}
+if [ "${MMAP_DATA:-fat}" = ext ]; then
+    image="$out/$name-ext.img"
+    cp build/jamos.img "$image"
+    tools/ext-stick.sh "$image" > "$out/$name-ext.out" 2>&1 ||
+        { echo "$name: the ext stick couldn't be made (see $out/$name-ext.out)"; exit 1; }
+fi
 
 count() { grep -acE -- "$1" "$2" || true; }
 want() {   # want <case> <how many times exactly> <text (a regex)> <log>
@@ -70,7 +81,7 @@ EOF
 run_case() {
     usb=""
     [ -z "${3:-}" ] || usb="-drive if=none,id=aimg,format=raw,file=$3"
-    if ! QEMU_TIMEOUT=${QEMU_TIMEOUT:-600} QEMU_INPUT="$2" QEMU_USB="$usb" \
+    if ! QEMU_TIMEOUT=${QEMU_TIMEOUT:-600} QEMU_INPUT="$2" QEMU_USB="$usb" QEMU_IMAGE="$image" \
          tools/qemu-test.sh "$out" "$name-$1" shell > "$out/$name-$1.out" 2>&1; then
         echo "$name: $1: the shell script FAILED (see $out/$name-$1.log)"
         grep "serial-feed: .*no '" "$out/$name-$1.out" || true
@@ -78,6 +89,8 @@ run_case() {
     fi
     run="$out/$name-$1.run.log"
     sed '/jam[^>]*>.* reboot -f/q' "$out/$name-$1.log" > "$run"
+    # With MMAP_DATA=ext, extfs served /data, with its pager.
+    [ "${MMAP_DATA:-fat}" != ext ] || want "$1" 1 "volumes: extfs-data: pager made: " "$run"
 }
 
 # Nothing went wrong with a page or a program on the way.
@@ -155,6 +168,7 @@ for c in $cases; do
     *) echo "$name: no case called $c"; ok=0 ;;
     esac
 done
+[ "${MMAP_DATA:-fat}" != ext ] || rm -f "$image"
 if [ $ok = 1 ]; then
     echo "$name: PASS"
     exit 0

@@ -1,0 +1,42 @@
+# bin/pkg's transactions and plans (docs/M13.7-PLAN.md sections 8 and 9,
+# user/services/pkg), one utest group at a time so a failure names itself.
+# They run bin/pkg's own code (txn.c, unpack.c, db.c, plan.c) over fat on a
+# RAM disk against init's real approvals (pkgapprove.c), with packages made
+# and signed in the test:
+#   pkgtxn_install    install, again (refused), fed in pieces of every size
+#   pkgtxn_db         the serials and sums db/ keeps
+#   pkgtxn_runs       what db/ says a package runs, read back from its manifest: a
+#                     dependent blocks a remove, -r orders it first
+#   pkgtxn_refused    a package changed in transit, not the index's, signed by
+#                     another key, stopped, cut short: nothing is left
+#   pkgtxn_init_no    init's refusal, a reserved name, a path under db/ or ending
+#                     in .new: nothing is left
+#   pkgtxn_upgrade    changed, added and removed files; the old approvals
+#                     revoked; a rebuild of the same version is newer by hash
+#   pkgtxn_remove     files, empty directories, record, sums
+#   pkgtxn_busy       a file in use: the upgrade waits in the journal, the
+#                     settle finishes it when the file closes
+#   pkgplan_*         what an install, upgrade and remove plan, in what order, on
+#                     made-up indexes (no files); the files two packages share
+# Run:
+#   QEMU_INPUT=tools/shell-tests/pkgtxn.txt tools/qemu-test.sh build/test pkgtxn shell
+wait 120 Jam OS shell
+wait {prompt}
+send T=x
+wait {prompt}
+
+send utest only pkgtxn_install,pkgtxn_db,pkgtxn_runs; echo pt1-$T-$?
+wait 120 pt1-x-0
+seen 5 utest: 3 passed
+send utest only pkgtxn_refused,pkgtxn_init_no; echo pt2-$T-$?
+wait 120 pt2-x-0
+seen 5 utest: 2 passed
+send utest only pkgtxn_upgrade,pkgtxn_remove,pkgtxn_busy; echo pt3-$T-$?
+wait 120 pt3-x-0
+seen 5 utest: 3 passed
+send utest only pkgplan_install,pkgplan_upgrade,pkgplan_remove,pkgplan_paths; echo pt4-$T-$?
+wait 120 pt4-x-0
+seen 5 utest: 4 passed
+
+send reboot -f
+wait reboot: resetting

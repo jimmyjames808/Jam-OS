@@ -246,11 +246,31 @@ struct port_packet {
  * VMO's end, ERR_NO_RESOURCES past VMAR_MAX_MAPPINGS or
  * VMAR_MAX_OVERLAP, ERR_NO_MEMORY). MAP_FIXED's call. */
 #define VMAR_REPLACE   (1u << 5)
+/* vmar_map only: the mapping's clone mode, what vmar_clone (abi/syscalls.def,
+ * docs/FORK-PLAN.md) makes of it in a copy of the address space.
+ * VMAR_CLONE_SHARE: the same VMO, so the same pages both ways (libc's
+ * MAP_SHARED). VMAR_CLONE_NONE: nothing, the range is free in the copy
+ * (MADV_DONTFORK's meaning: a connection's buffers). Without either:
+ * shared when the mapping's maximum (what its handle's rights let a
+ * vmar_protect grant) has no write, since nothing can ever write through
+ * it, else a copy (one copy-on-write child of the VMO, made by
+ * vmo_create_child's VMO_CHILD_SNAPSHOT_AT_LEAST_ON_WRITE). The kernel
+ * decides two cases itself: a mapping of a JIT VMO whose maximum has write
+ * is always VMAR_CLONE_NONE (a copy never holds writable JIT memory, so
+ * never W+X), and a contiguous or physical VMO's mapping, which can't be
+ * copied (no child of one exists), is shared where it would be copied.
+ * The mode is fixed for the mapping's life: vmar_protect, a split, a merge
+ * and a replace that cuts the mapping keep it, and neighbours merge only
+ * with the same mode. map_info.flags shows it. ERR_INVALID_ARGS for both
+ * together, or either with VMAR_KEPT_ONLY (a kept mapping is read-only for
+ * good: always shared). */
+#define VMAR_CLONE_SHARE (1u << 6)
+#define VMAR_CLONE_NONE  (1u << 7)
 
 /* Mappings an address space holds at most (a vmar_map past it, or an
  * unmap or protect that would split one more off, is ERR_NO_RESOURCES).
  * Neighbouring mappings of one VMO at contiguous offsets, with the same
- * permissions and the same maximum, are one mapping (they merge after
+ * permissions, maximum and clone mode, are one mapping (they merge after
  * every map, replace and protect; kept mappings never do), and a call is
  * counted by what it leaves: a protect that splits a piece off and merges
  * it into its neighbour fits even at the cap. */
@@ -266,6 +286,11 @@ struct port_packet {
  * more over any page, so they don't count. */
 #define VMAR_MAX_OVERLAP 64u
 
+/* vmar_clone: the most VMOs one call names (n; more is ERR_OUT_OF_RANGE).
+ * Each must be mapped as a copy, so no program needs more than it may
+ * have mappings. */
+#define VMAR_CLONE_MAX VMAR_MAX_MAPPINGS
+
 /* process_get_maps: one mapping of a process's address space (/proc's
  * maps, stat and status are made from these). */
 struct map_info {
@@ -275,7 +300,8 @@ struct map_info {
     uint64_t vmo_off;    /* the VMO's offset at base */
     uint64_t resident;   /* pages of it present in the page tables now */
     uint32_t perms;      /* VMAR_READ | VMAR_WRITE | VMAR_EXEC, as set now */
-    uint32_t flags;      /* 0 */
+    uint32_t flags;      /* its clone mode: VMAR_CLONE_SHARE, VMAR_CLONE_NONE, or 0
+                            for a copy (the defaults and the kernel's cases applied) */
 };
 /* Entries one process_get_maps fills at most. */
 #define MAP_INFO_MAX 256u
@@ -342,8 +368,10 @@ struct process_info {
     char     name[32];    /* the name it was created with (PROCESS_NAME_MAX), NUL-terminated */
 };
 /* process_info.flags and proc_stat.flags: its address space has mapped a
- * JIT VMO (vmo_make_jit) since it was made, writable and executable
- * memory (`ps` marks it). Kept until the address space is torn down. */
+ * JIT VMO (vmo_make_jit) executable since it was made (a map or a protect
+ * with execute; one that only reads or writes it doesn't count): it runs
+ * code it may write (`ps` marks it). Kept until the address space is torn
+ * down. */
 #define PROCESS_FLAG_JIT (1u << 0)
 
 /* Small ids, for POSIX's pid and tid: a process's pid and a thread's tid
@@ -390,6 +418,70 @@ struct sys_public_info {
 /* A process's or a thread's name (process_create, thread_create): at most
  * this many bytes. */
 #define PROCESS_NAME_MAX 31
+
+/* exceptions: a thread's own faults (abi/syscalls.def 170-171) -----------------
+ * docs/SIGNALS-PLAN.md section 1. A process with an exception entry
+ * (exception_entry_set) has its threads' faults delivered there instead of
+ * being killed for them: the kernel writes a struct exc_frame on the
+ * faulting thread's own stack, below its RSP less the x86-64 ABI's 128-byte
+ * red zone, 64-byte aligned, with a 0 return address just below it, and
+ * returns to user mode at the entry, on that thread, with RDI = the frame
+ * and RSP = the return address's slot (as just after a call). RFLAGS loses
+ * DF, TF, RF and AC; the vector and x87 registers are in their initial
+ * state with MXCSR EXC_MXCSR_INIT; every other register, the FS base
+ * included, is the thread's own. From then until the thread calls
+ * exception_done the thread is in its entry's window: a fault there kills
+ * the process (the first fault's kill line, then "again in its exception
+ * entry").
+ *
+ * Delivered: vectors 0 (divide error), 1 (debug), 3 (int3), 4, 5, 6
+ * (invalid opcode), 11, 12 (stack), 13 (general protection), 14 (page
+ * fault), 16 (x87), 17 (alignment), 19 (SIMD) and 21 from user mode. Still
+ * a kill, entry or not: a page fault whose status is ERR_BAD_STATE (a page
+ * that doesn't match the approved program) or ERR_NO_MEMORY (out of
+ * memory, or the job's page limit), and a fault whose frame can't be
+ * written (RSP in nothing writable: a stack overflow). */
+#define EXC_FAULT  1u   /* exc_frame.kind: a fault of the thread's own */
+
+/* The frame. The registers are the thread's when the fault came, in
+ * Linux's gregs order (REG_R8 .. REG_EFL, ucontext.h), so libc copies them
+ * in one go. Not the FS base, CS or SS: they never change. */
+struct exc_frame {
+    uint32_t size;         /* bytes: EXC_FRAME_XSAVE + xsave_size */
+    uint32_t kind;         /* EXC_FAULT */
+    uint32_t vector;       /* the CPU's exception vector */
+    int32_t  status;       /* page faults: aspace_fault's status: ERR_NOT_FOUND (nothing
+                              mapped there, or a kernel address), ERR_ACCESS_DENIED (not
+                              with that access), ERR_OUT_OF_RANGE (past the end of a
+                              shrunk VMO), ERR_IO, ERR_PEER_CLOSED or ERR_TIMED_OUT (the
+                              pager failed the page); other vectors 0 */
+    uint64_t error;        /* the CPU's error code, 0 for a vector without one; a page
+                              fault at or above the user range's top always says
+                              "present" (bit 0) */
+    uint64_t addr;         /* page faults: the address (CR2); other vectors 0 */
+    uint64_t cookie;       /* the thread's own, random: EXC_RESUME checks it */
+    uint32_t xsave_size;   /* bytes of xsave[] (a multiple of 64) */
+    uint32_t reserved;     /* 0 */
+    uint64_t r8, r9, r10, r11, r12, r13, r14, r15;
+    uint64_t rdi, rsi, rbp, rbx, rdx, rax, rcx, rsp;
+    uint64_t rip, rflags;
+    /* At EXC_FRAME_XSAVE, 64-byte aligned: the vector and x87 registers in
+     * XSAVE's standard (uncompacted) form, every component of XCR0 written
+     * out (XSTATE_BV = XCR0, XCOMP_BV 0): the 512-byte legacy area (FXSAVE's
+     * layout: struct _fpstate), the 64-byte header, then AVX's upper
+     * halves (where CPUID leaf 0xd puts them: byte 576). 832 bytes with
+     * x87, SSE and AVX; FXSAVE's 512 alone on a CPU without XSAVE. Bytes
+     * 416 .. 511 come zeroed: the reserved and software-available words
+     * (where Linux keeps fpx_sw_bytes). */
+    uint8_t  xsave[];
+};
+#define EXC_FRAME_XSAVE 192u
+#define EXC_MXCSR_INIT  0x1f80u   /* every SIMD exception masked, round to nearest */
+
+/* exception_done's `how`. */
+#define EXC_RESUME    1u   /* continue from the frame (checked: abi/syscalls.def 171) */
+#define EXC_LEAVE     2u   /* leave the window: the handler now runs as the thread's code */
+#define EXC_UNHANDLED 3u   /* the kill the fault would have been with no entry */
 
 /* channels --------------------------------------------------------------------
  * A message carries at most CHANNEL_MAX_BYTES bytes and CHANNEL_MAX_HANDLES

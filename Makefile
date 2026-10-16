@@ -497,7 +497,9 @@ EXTRA_CFLAGS_init := -I$(MONO_DIR) -I$(MONO_DIR)/optional
 # (utest/execsvc.c: exectest's client.c), and init's approvals of a
 # package's programs (utest/pkgctl.c: init's pkgapprove.c over a RAM
 # filesystem, manifests signed with the vectors' public test key by
-# Monocypher).
+# Monocypher), and bin/pkg's transaction code (utest/pkgplan.c, pkgtxn.c,
+# pkgcut.c: user/services/pkg's fsx, db, plan, unpack, journal and txn over
+# the same RAM filesystem, cut at every change).
 NETSTACK_CORE      := $(patsubst %,$(UOBJ)/user/services/netstack/%.o,stack.c ctl.c tcp.c \
                         port/sys_arch.c)
 EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/services/music/tracks.c.o \
@@ -514,14 +516,16 @@ EXTRA_OBJS_utest   := $(UOBJ)/user/services/music/spectrum.c.o $(UOBJ)/user/serv
                       $(CURSOR_OBJ) $(patsubst %,$(UOBJ)/user/services/console/%.c.o,wlinput \
                         cellpaint view select) $(UOBJ)/user/services/shell/sh_paste.c.o \
                       $(UOBJ)/user/tests/exectest/client.c.o $(UOBJ)/libfun.a \
-                      $(UOBJ)/user/services/init/pkgapprove.c.o
+                      $(UOBJ)/user/services/init/pkgapprove.c.o \
+                      $(patsubst %,$(UOBJ)/user/services/pkg/%.c.o,fsx db plan unpack journal txn)
 EXTRA_CFLAGS_utest := -iquote user/services/music -iquote drivers/rtl8125 \
                       -iquote user/services/compositor -iquote user/services/console \
                       -iquote user/services/shell -iquote user/tests/exectest \
                       -iquote user/services/netstack -iquote user/services/dhcp \
                       -iquote user/services/dns -iquote user/services/sntp \
                       -iquote $(FATFS_STAGE) -iquote $(FATFS_PORT) -Iuser/apps/fun \
-                      -iquote user/services/init -I$(MONO_DIR) -I$(MONO_DIR)/optional
+                      -iquote user/services/init -iquote user/services/pkg \
+                      -I$(MONO_DIR) -I$(MONO_DIR)/optional
 EXTRA_DEPS_utest   := $(FATFS_HDRS)
 # The ports formats' vectors (ports/vectors/, tools/pkgvec2c.py), linked in
 # for utest/pkgfmt.c: the same bytes `make check` reads on the Mac.
@@ -538,6 +542,11 @@ EXTRA_OBJS_execwide   := $(UOBJ)/user/tests/exectest/probe.c.o \
 EXTRA_CFLAGS_execwide := -iquote user/tests/exectest
 # bigprog's table (user/tests/bigprog/table.S): 16 pages in bootfs's copy.
 EXTRA_OBJS_bigprog    := $(UOBJ)/user/tests/bigprog/table.S.o
+
+# The shell's `disk check` runs the ext library's checker: the objects bin/extfs
+# builds from user/services/extfs/ext (the same files, one build).
+EXTRA_OBJS_shell   := $(patsubst %,$(UOBJ)/%.o,$(wildcard user/services/extfs/ext/*.c))
+EXTRA_CFLAGS_shell := -Iuser/services/extfs/ext
 
 # $(BUILD)/user/<prog> keeps its debug info (for gdb); bootfs gets a copy
 # without it ($(BUILD)/user/<prog>.bootfs), symbols kept for backtraces.
@@ -670,7 +679,9 @@ $(PT_LIB_OBJ): $(patsubst %,$(BUILD)/udrv/drivers/lib/%.o,$(PT_LIB)) tools/check
 # ports' recipes pass their lint and the ports builder its self-test
 # (tools/ports.py: offline, fake ports built with the real sysroot), and the
 # ext library builds for Jam OS and passes tools/extcheck.c (Linux's
-# fixtures, broken checksums, the feature table, a fuzz pass), and the
+# fixtures, broken checksums, the feature table, a fuzz pass), the host tool
+# jamext builds and round-trips a directory, files, links and a volume at
+# an offset, each image checked by extcheck (tools/jamext-test.sh), and the
 # syscall scan (tools/cr/syscall-scan.py) passes a clean program and
 # catches a `syscall` of a program's own.
 check: all
@@ -690,6 +701,7 @@ check: all
 	python3 tools/checknvme.py
 	python3 tools/netpeer.py --selftest
 	python3 tools/pcap-vlan-check.py --selftest
+	python3 tools/serial-feed.py --selftest
 	python3 tools/checkwants.py --selftest
 	python3 tools/mkbootfs.py --selftest
 	python3 tools/ports.py lint
@@ -718,6 +730,8 @@ check: all
 	$(ITREE_CHECK)
 	$(MAKE) -s $(EXT_CHECK) $(EXT_FIXTURES) $(EXT_CROSS)
 	$(EXT_CHECK) tools/extfix $(BUILD)/extfix
+	$(MAKE) -s $(JAMEXT)
+	sh tools/jamext-test.sh $(JAMEXT) $(EXT_CHECK) $(BUILD)/jamext-test $(BUILD)/extfix
 	$(MAKE) -s $(PKG_CHECK)
 	python3 tools/ports.py pkgfuzz $(BUILD)/pkgfuzz
 	$(PKG_CHECK) ports/vectors $(BUILD)/pkgfuzz
@@ -975,7 +989,7 @@ EXT_CROSS    := $(patsubst $(EXT_DIR)/%.c,$(BUILD)/extcross/%.o,$(EXT_SRCS))
 EXT_TOOL     := tools/extcheck.c tools/extbreak.c tools/extmutate.c tools/extinv.c \
                 tools/extvol.c tools/extmkfs.c tools/extnames.c tools/extbig.c \
                 tools/extwrite.c tools/extfile.c tools/extverify.c tools/extcut.c tools/extjnl.c \
-                tools/extnstorm.c
+                tools/extnstorm.c tools/extdetect.c
 $(EXT_CHECK): $(EXT_TOOL) tools/extcheck.h tools/extvol.h tools/extwrite.h tools/extjnl.h \
               $(EXT_SRCS) $(EXT_HDRS) drivers/lib/sha256.c drivers/include/jam/sha256.h \
               kernel/include/jam/status.h
@@ -989,6 +1003,20 @@ $(EXT_FIXTURES): $(BUILD)/extfix/%.img: tools/extfix/%.img.gz
 $(EXT_CROSS): $(BUILD)/extcross/%.o: $(EXT_DIR)/%.c $(EXT_HDRS) | $(UINC)
 	@mkdir -p $(dir $@)
 	$(CC) $(USER_CFLAGS) -c $< -o $@
+
+# jamext (tools/jamext): the same library as a host tool for the Mac and any
+# Unix, so images of an ext volume are made and read without e2fsprogs:
+# `jamext mkimage` builds one from a directory, put/get/ls/ln/check work on
+# an image or a partition of a disk image. `make check` makes images with it
+# and has extcheck (the sanitised build above) check them
+# (tools/jamext-test.sh). Plain -O2: it is a build tool, not a test.
+JAMEXT       := build/host/jamext
+JAMEXT_SRCS  := $(wildcard tools/jamext/*.c)
+$(JAMEXT): $(JAMEXT_SRCS) tools/jamext/jamext.h $(EXT_SRCS) $(EXT_HDRS) \
+           kernel/include/jam/status.h
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -std=gnu17 -O2 -g -Wall -Wextra -Werror -Wvla -Ikernel/include -I$(EXT_DIR) \
+	    -Itools/jamext -o $@ $(JAMEXT_SRCS) $(EXT_SRCS)
 
 $(BUILD)/fontpreview.png: $(FONT_TOOL)
 	$(FONT_TOOL) $@

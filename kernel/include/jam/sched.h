@@ -151,6 +151,16 @@ struct thread {
      * interruptible wait it is in returns ERR_INTERRUPTED (wait.c). */
     bool              interrupt_pending;
 
+    /* Fault upcalls (arch/x86_64/upcall.c), touched only by the thread
+     * itself: whether it is in its exception entry's window, and the fault
+     * that put it there (its kill line, should the window end in one:
+     * a static string, the RIP and the address); the cookie its frames
+     * carry (random, made at its first upcall; 0 before). */
+    bool              exc_window;
+    const char       *exc_why;
+    uint64_t          exc_rip, exc_addr;
+    uint64_t          exc_cookie;
+
     /* A free message buffer of the channels' (kernel/object/channel.c: its
      * slot), or NULL. A small message for a reader that waits for it is
      * built in its writer's slot and handed over without an allocation.

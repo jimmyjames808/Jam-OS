@@ -95,6 +95,7 @@ bool t_disk_fs_restart(void);
 bool t_disk_own_channel(void);
 bool t_disk_vanishes(void);
 bool t_disk_answer_storm(void);
+bool t_disk_open_ro(void);          /* voldisks.open_partition: a read-only block channel */
 bool t_disk_list_channel(void);   /* volumes.list_channel: voldisks alone */
 
 /* logd.c: bin/logd with the fat service over a RAM disk as its /data. */
@@ -381,6 +382,10 @@ bool t_extfs_restart_steps(void);
 bool t_extfs_restart_handles(void);
 bool t_extfs_restart_bad(void);
 bool t_extfs_spare(void);
+bool t_extfs_restart_pager(void);
+/* extfs_map.c: extfs as a pager (U10): mapped files kept right while they
+ * change, programs' files guarded, unlinked mapped files kept. */
+bool t_extfs_map(void);
 /* extfs_posix.c: posixtest's links section on an extfs volume (libc, U6). */
 bool t_extfs_posix(void);
 bool t_view_keys_names(void);
@@ -710,6 +715,9 @@ bool t_conwin_pointer(void);
 bool t_conwin_pointer_shape(void);
 bool t_con_hostile_compositor(void);
 /* conconn.c: the console's connection back end (bin/console "conn"). */
+/* verdict.c: passes, or fails or crashes on request (UTEST_CANARY): the
+ * shell tests' proof that a failing utest fails the script. */
+bool t_verdict_canary(void);
 /* session.c, sessbad.c: init's sessions (/svc/session; sessrig.h). Only
  * a shell-mode init serves them: elsewhere each says it is skipped. */
 bool t_session_shell(void);
@@ -1022,6 +1030,25 @@ bool t_pkgctl_other_version(void);
 bool t_pkgctl_settle(void);
 bool t_pkgctl_want(void);
 bool t_pkgctl_init(void);
+
+/* pkgtxn.c, pkgplan.c, pkgcut.c: bin/pkg's transactions, plans and cuts
+ * (user/services/pkg), over pkgmk.c's RAM disk and package maker. */
+bool t_pkgtxn_install(void);
+bool t_pkgtxn_refused(void);
+bool t_pkgtxn_init_no(void);
+bool t_pkgtxn_upgrade(void);
+bool t_pkgtxn_remove(void);
+bool t_pkgtxn_busy(void);
+bool t_pkgtxn_db(void);
+bool t_pkgtxn_runs(void);
+bool t_pkgplan_install(void);
+bool t_pkgplan_upgrade(void);
+bool t_pkgplan_remove(void);
+bool t_pkgplan_paths(void);
+bool t_pkgcut_install(void);
+bool t_pkgcut_upgrade(void);
+bool t_pkgcut_remove(void);
+bool t_pkgcut_double(void);
 bool t_netlog_golden(void);
 bool t_netlog_hostile(void);
 bool t_netlog_whole_log(void);

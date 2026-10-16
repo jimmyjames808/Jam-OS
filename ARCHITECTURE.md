@@ -980,6 +980,21 @@ port, so while it handles one request every other client waits behind it.
   whose condition is met wins and leaves the flag for the next; every
   other wait (`channel_call`, `channel_reply_wait`, the kernel's own) sees
   a spurious wakeup.
+- **Fault upcalls** (for libc's SIGSEGV and friends,
+  [SIGNALS-PLAN](docs/SIGNALS-PLAN.md) section 1;
+  `arch/x86_64/upcall.c`): a process may set one exception entry
+  (`exception_entry_set`). A fault of one of its threads that would kill
+  it is then delivered on that thread instead: the kernel writes a
+  `struct exc_frame` (every register, the XSAVE area, the vector, error
+  code, address, `aspace_fault`'s status and the thread's random cookie)
+  below the thread's RSP and its red zone and returns to user mode at the
+  entry; `exception_done` resumes from a frame (checked: cookie, RIP,
+  RFLAGS, the XSAVE header, MXCSR; CS, SS and the FS base never come from
+  it), leaves the entry's window, or asks for the kill it would have
+  been. A fault inside the window, a frame that can't be written, a page
+  that doesn't match the approved program and out of memory stay kills;
+  with no entry every fault is the kill it always was. Nothing changes on
+  a fault that is served or on a system call.
 - Every optimisation above that has a switch can be turned off at boot, and
   the benchmark measures its lines both ways in one run
   ([BENCH.md](docs/BENCH.md)).
@@ -3057,6 +3072,7 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
   and the keys: `timezone`, `rtc`, `volume`, `music.volume`,
   `music.folder`, and the network's `net.address`, `net.host`,
   `netlog`, `ntp` and `ntp.server`: [Networking](#networking); the
+  packages' `pkg.repo` ([the ports system](docs/M13.7-PLAN.md#po6-notes)); the
   compositor's `display.layout` and `display.hz`; the terminals'
   `terminal.font`). init reads them when `/data`
   comes (the clock, the network's address, the window layout, the

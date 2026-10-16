@@ -93,6 +93,9 @@ void check_invariants(struct ext_fs *fs, struct inv *out);
  * directory hash) and mkfs, on images it makes and on the fixtures; a
  * storm of `storms` random steps. */
 void check_names(struct img *fixtures, unsigned n, unsigned storms);
+/* extdetect.c: the library's checker (ext_check) finds what is spoilt, one way
+ * at a time, and nothing in a good volume. */
+void check_detects(void);
 /* extcheck.c: the volume listed as tools/extfix/listing.py lists it with
  * Linux's debugfs (at most 4096 names), into path. */
 void write_listing(struct ext_fs *fs, const char *path);

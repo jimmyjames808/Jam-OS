@@ -194,7 +194,7 @@ wait allow: s may no longer run
 wait st-x=0
 wait {prompt}
 send allow -l
-wait allow: no program on /data is allowed to run
+wait allow: no program on /data or /jam is allowed to run
 wait {prompt}
 send rm /data/etc/allow.d && echo tables-$T-gone
 wait tables-x-gone
@@ -204,7 +204,7 @@ wait allow: s: not allowed
 wait st-x=1
 wait {prompt}
 send allow /boot/bin/utest; echo st-$T=$?
-wait allow: /boot/bin/utest: only a program on /data can be allowed
+wait allow: /boot/bin/utest: only a program on /data or /jam can be allowed
 wait st-x=1
 wait {prompt}
 send allow; echo st-$T=$?

@@ -182,6 +182,19 @@ int64_t sysc_process_get_maps(handle_t proc, uint64_t from, uint64_t out, uint32
     return st == OK ? (int64_t)n : ERR_INVALID_ARGS;
 }
 
+/* Exec in place (docs/FORK-PLAN.md track FK3 builds it; abi/syscalls.def
+ * has the contract). Nothing changed: proc and arg0 stay the caller's. */
+int64_t sysc_process_replace(handle_t proc, uint64_t entry, uint64_t stack, handle_t arg0,
+                             uint64_t arg1)
+{
+    (void)proc;
+    (void)entry;
+    (void)stack;
+    (void)arg0;
+    (void)arg1;
+    return ERR_NOT_SUPPORTED;
+}
+
 int64_t sysc_thread_create(handle_t proc, uint64_t name, uint64_t name_len, uint32_t flags,
                            uint64_t out)
 {

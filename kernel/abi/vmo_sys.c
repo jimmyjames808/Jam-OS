@@ -15,8 +15,7 @@
 #include <jam/vmo.h>
 #include <jam/vmo_verify.h>
 
-#define VMO_RIGHTS  (RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE | RIGHT_MAP | RIGHT_RESIZE)
-#define RESIZE_NEED (RIGHT_WRITE | RIGHT_RESIZE)
+#define RESIZE_NEED (RIGHT_WRITE | RIGHT_RESIZE)   /* VMO_RIGHTS: <jam/sys.h> */
 
 /* On success *v holds a reference: vmo_put it. */
 static status_t vmo_get(struct handle_table *t, handle_t h, rights_t need, struct vmo **v)

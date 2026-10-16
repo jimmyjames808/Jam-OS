@@ -352,6 +352,15 @@ jam_vmo_make_jit:
     ret
     .size jam_vmo_make_jit, . - jam_vmo_make_jit
 
+    .globl jam_vmar_clone
+    .type jam_vmar_clone, @function
+jam_vmar_clone:
+    mov %rcx, %r10
+    mov $SYS_vmar_clone, %eax
+    syscall
+    ret
+    .size jam_vmar_clone, . - jam_vmar_clone
+
     .globl jam_process_create
     .type jam_process_create, @function
 jam_process_create:
@@ -802,6 +811,15 @@ jam_process_get_maps:
     ret
     .size jam_process_get_maps, . - jam_process_get_maps
 
+    .globl jam_process_replace
+    .type jam_process_replace, @function
+jam_process_replace:
+    mov %rcx, %r10
+    mov $SYS_process_replace, %eax
+    syscall
+    ret
+    .size jam_process_replace, . - jam_process_replace
+
     .globl jam_kexec_load
     .type jam_kexec_load, @function
 jam_kexec_load:
@@ -870,5 +888,21 @@ jam_pager_op:
     syscall
     ret
     .size jam_pager_op, . - jam_pager_op
+
+    .globl jam_exception_entry_set
+    .type jam_exception_entry_set, @function
+jam_exception_entry_set:
+    mov $SYS_exception_entry_set, %eax
+    syscall
+    ret
+    .size jam_exception_entry_set, . - jam_exception_entry_set
+
+    .globl jam_exception_done
+    .type jam_exception_done, @function
+jam_exception_done:
+    mov $SYS_exception_done, %eax
+    syscall
+    ret
+    .size jam_exception_done, . - jam_exception_done
 
     .section .note.GNU-stack, "", @progbits

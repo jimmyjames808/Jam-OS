@@ -16,8 +16,9 @@
  *   - a keeper (<keep.h>): each instance gets a new keep channel (SR_KEEP);
  *   - a pager (the kernel's, abi/syscalls.def 160-164), made with the first
  *     instance's handles and handed to every one after it and to a promoted
- *     spare as FAT_SR_PAGER (READ WRITE WAIT only, so fat cannot pass it
- *     on). volumes never uses it: the pages of the files fat maps come
+ *     spare as FAT_SR_PAGER (an ext mount's extfs: EXTFS_SR_PAGER, the same
+ *     role), READ WRITE WAIT only, so the service cannot pass it on.
+ *     volumes never uses it: the pages of the files fat or extfs maps come
  *     through it, and its budget and answer time are set here. Its pages
  *     are charged to volumes' job, within the budget (pager_init).
  * All four go when the service is retired (its disk gone, no volume),
@@ -238,10 +239,13 @@ void spare_stop(void)
 
 /* ---- the keeper and the state ---------------------------------------------------------- */
 
-/* b's pager into x (FAT_SR_PAGER): made the first time, a duplicate every
- * time, arriving with READ WRITE WAIT (no duplicate or transfer). One that
- * can't be made is said and left out: the instance maps nothing (file.map
- * is ERR_NOT_SUPPORTED). */
+/* b's pager into x (FAT_SR_PAGER, or an ext mount's EXTFS_SR_PAGER: the
+ * same role, both services pagers alike): made the first time, a
+ * duplicate every time, arriving with READ WRITE WAIT (no duplicate or
+ * transfer). One that can't be made is said and left out: the instance
+ * maps nothing (file.map is ERR_NOT_SUPPORTED). */
+_Static_assert(EXTFS_SR_PAGER == FAT_SR_PAGER, "fat and extfs take the pager as one role");
+
 static void pager_handle(struct vol *b, struct spawn_handle *x, rights_t *xr, unsigned *n)
 {
     handle_t *p = &pagers[b - vols];
@@ -261,7 +265,7 @@ static void pager_handle(struct vol *b, struct spawn_handle *x, rights_t *xr, un
         say(false, "volumes: %s starts without a pager (%s)", b->name, status_str(st));
         return;
     }
-    x[*n] = (struct spawn_handle){ FAT_SR_PAGER, h };
+    x[*n] = (struct spawn_handle){ b->ext ? EXTFS_SR_PAGER : FAT_SR_PAGER, h };
     xr[(*n)++] = RIGHT_READ | RIGHT_WRITE | RIGHT_WAIT;
 }
 

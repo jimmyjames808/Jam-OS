@@ -543,7 +543,7 @@ static int start_failed(struct started *s, status_t st, bool said)
     if (!said)
         sh_tty("run: can't start %s (%s)\n", s->path, status_str(st));
     if (!said && st == ERR_ACCESS_DENIED && s->path[0] == '/')
-        sh_tty("run: only programs in /boot can run, and those on /data the owner "
+        sh_tty("run: only programs in /boot can run, and those on /data or /jam the owner "
                "allowed (`allow`)\n");
     if (!said && st == ERR_IO && sh_on_data(s->path))
         sh_tty("run: a page of %s doesn't match its approval, or /data can't read it: "
@@ -675,6 +675,10 @@ int sh_start_background(int argc, char **argv)
 
 #define STOP_GRACE (3 * NS_PER_S)   /* a stopped helper's time to wind down */
 
+/* The running helper's tick (sh_run_helper_tick), if it has one. */
+static void (*helper_tick)(void *ctx, handle_t out);
+static void *helper_tick_ctx;
+
 /* Wait for the helper to end, copying its output (its lines, and what
  * comes on body_r when it has one: then its lines go to the screen); on
  * Ctrl+C ask it to stop (a byte on stop), and kill its job if it hasn't
@@ -687,6 +691,8 @@ static status_t wait_helper(handle_t proc, handle_t job, handle_t out_r, handle_
     sh_put_fn lines = body_r ? tty_put : sh_put;
     while ((st = spawn_wait(proc, 50 * NS_PER_MS, info)) == ERR_TIMED_OUT) {
         sh_copy_output(out_r, true, lines);
+        if (helper_tick)
+            helper_tick(helper_tick_ctx, out_r);
         sh_jobs_poll(false);
         if (body_r)
             sh_copy_output(body_r, true, sh_put);
@@ -788,6 +794,17 @@ int sh_run_helper_out(const char *path, int argc, const char *const *argv,
                       struct spawn_handle *x, unsigned nx, handle_t body_r)
 {
     return run_helper(path, argc, argv, x, nx, body_r);
+}
+
+int sh_run_helper_tick(const char *path, int argc, const char *const *argv,
+                       struct spawn_handle *x, unsigned nx,
+                       void (*tick)(void *ctx, handle_t out), void *ctx)
+{
+    helper_tick = tick;
+    helper_tick_ctx = ctx;
+    int code = run_helper(path, argc, argv, x, nx, HANDLE_INVALID);
+    helper_tick = NULL;
+    return code;
 }
 
 /* The result line of test program `name` ("<name>: N passed ...", which

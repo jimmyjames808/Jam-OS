@@ -37,7 +37,7 @@ delivered is in [HISTORY.md](HISTORY.md); the design they build is in
 | M12.5 | User-space pagers: mapped files, programs loaded on demand | under way, kernel half built: the pager object, its VMOs and the request queue with system calls 160-164 (PK1), and the fault path that waits for a pager (PK2, 12 ktests). Not yet: eviction (PK3), verified pages and `vmo_make_exec_verified` (PK4), the plumbing (PU), fat as a pager and coherence (PF1, PF2), programs from `/data` (PX), the review and the join. Nothing uses a pager yet ([M12.5-PLAN.md](M12.5-PLAN.md)) |
 | M12.7 | NVMe: read-only first, then writes to a Jam OS disk, then installing Jam OS to it | under way, in wave 5 with M12.5 and M13 (the owner, 2026-10-07). Stage 1, read-only, is built and tested in QEMU (N1-N5): drv/nvme (no write command in it, checked by `make check`), the partition-table library, `volumes` mounting FAT partitions read-only as `/nvmeN`, and the shell's `disks`, `disk digest` and `disk smart`; it binds on every boot. Its check on Windows' drive on the PC (the drive's write counter unmoved) is not recorded yet. Stage 2 (writes, only to the blank second drive fitted on 2026-10-11) and stage 3 (the installer) are to come, with one review at the end ([M12.7-PLAN.md](M12.7-PLAN.md)) |
 | M13 | POSIX on musl | under way ([M13-PLAN.md](M13-PLAN.md)). Merged: the kernel's part (K1: small ids, `thread_interrupt`; K2: the time page), musl 1.2.6 with the sysroot, `jamos-cc` and `posixtest` (A1), libjam and the hand-over (A2), netstack options (N1), the console's connection back end and `tty` (T1, T2), files and directories (B1), pipes, `dup`, `/dev`, `/etc`, memfd and eventfd (B2), `posix_spawn` and waits (B3), signals (B4), `poll`, `select` and `epoll` (B5), and the shell's descriptors and redirections (S1). Not yet: sockets (B6), sessions and ptys (X1), sbase and Lua (P1), libc-test (P2), tinyssh (X2), pipelines (S2), mapped files (F1), the reviews and the join |
-| M13.5 | A real POSIX shell, made the default | after Chromium: CR0 chose a `posix_spawn` branch in Chromium's launcher over an emulated `vfork` ([CR-PLAN](CR-PLAN.md#5-launching-other-programs)) |
+| M13.5 | A real POSIX shell, made the default | its `fork`, `vfork` and an `exec` in place first, for Chromium's launcher unpatched (the owner, 2026-10-16, over CR0's `posix_spawn` branch): planned in [FORK-PLAN](FORK-PLAN.md), before CB5; the shell (mksh) after Chromium |
 | M13.6 | A Unix filesystem: symlinks, permissions, large files, case-sensitive names | porting first (the owner, 2026-10-11); plan being written |
 | M13.7 | The ports system: recipes, dependency order, packages | porting first (the owner, 2026-10-11); plan being written |
 | M10 | ACPI power, tickless idle | deferred: porting first (the owner, 2026-10-11) |
@@ -102,11 +102,19 @@ On Chromium's path (in roughly this order, much of it in parallel):
   - libc additions: `/proc/self/exe` and `/proc/self/fd` (the rest of
     `/proc` failing cleanly), memfd seals, read-only file maps, raw call
     entries (1-2k);
+  - writable shared file mappings on ext (`MAP_SHARED` with `PROT_WRITE`:
+    Chromium's `MemoryMappedFile` `READ_WRITE`, its persistent histograms
+    and metrics files), with `msync` the durability promise; ext only,
+    FAT stays read-only (the owner, 2026-10-16): dirty tracking and
+    write-back in the kernel, extfs writing pages back in its journal;
+    planned in [WRITEMAP-PLAN.md](WRITEMAP-PLAN.md) (about 1k in the
+    kernel, 0.85k in extfs and libc);
   - `AF_UNIX` socketpairs with descriptor passing (`SCM_RIGHTS`: Mojo;
     Wayland clients too) (1.5-3k);
-  - launching other programs: a `posix_spawn` branch in Chromium's
-    launcher (as its macOS one; CR0's choice over an emulated `vfork`),
-    on general libc additions: `addclosefrom_np`, long command lines, a
+  - launching other programs: Chromium's own launcher, unpatched, on
+    libc's `fork` and an `exec` in place ([FORK-PLAN](FORK-PLAN.md); the
+    owner, 2026-10-16, over CR0's `posix_spawn` branch), and the general
+    libc additions: `addclosefrom_np`, long command lines, a
     program starting itself from its own image (0.5-1.5k);
   - G2 for Chromium: the libc shim, `wl_subcompositor` and the protocols
     Ozone needs (2-4k);
@@ -126,6 +134,14 @@ On Chromium's path (in roughly this order, much of it in parallel):
     modes (dual mapping, a per-thread write/execute switch) can be required
     later through the same capability. Small in the kernel; its own
     security review. `--jitless` until it lands (no WebAssembly then);
+  - faults and signals to a thread (the owner's rule, 2026-10-16: build
+    the layer, don't turn Chromium's features off): a fault reaches a
+    handler on the faulting thread with Linux's `siginfo_t` and a full
+    `ucontext_t` (V8's WebAssembly trap handler, Chromium's crash stack
+    dumps, stack overflow on `sigaltstack`), and a signal reaches a chosen
+    thread wherever it is (V8's and Chromium's profilers); a small upcall
+    in the kernel, the rest in libc; planned in
+    [SIGNALS-PLAN.md](SIGNALS-PLAN.md) (1-1.5k, and about 1k of tests);
   - Jam OS's own sandbox (each renderer a job with only its handles; the
     first builds `--no-sandbox`) (1-2k).
 - **The owner's choices for Chromium (2026-10-11)**: early builds without
@@ -138,13 +154,14 @@ On Chromium's path (in roughly this order, much of it in parallel):
   no Safe Browsing).
   Off the path for the first browser: M14.5 (dynamic linking: with
   software compositing nothing needs `dlopen`), a CA store, D-Bus, NSS,
-  SwiftShader (no WebGL until G3/G4), and a real `fork` (no zygote).
+  SwiftShader (no WebGL until G3/G4), and a zygote (`fork` itself is on
+  the path since 2026-10-16: FORK-PLAN).
 - **CR, Chromium itself**: software rendering first (Skia on the CPU or
   SwiftShader); GPU drivers (G3/G4, likely Linux's DRM drivers under the
   2026-10-11 licence rule) make it fast afterwards.
 
 Not on the path, so after Chromium (unless the owner makes one a goal):
-M13.5's mksh, its full `fork` and its emulated `vfork` (Chromium launches through a `posix_spawn` branch, above), M14
+M13.5's mksh (its `fork` and `vfork` come first, for Chromium's launcher: [FORK-PLAN](FORK-PLAN.md)), M14
 (the ABI freeze), M15 (self-hosting), M10 and M10.5 (ACPI power, sleep),
 M12.1's follow-ups, ports nobody needs yet, and new Jam OS apps beyond the
 system's own. **M12.7 is finished whole** (the owner, 2026-10-14): after
@@ -183,7 +200,7 @@ M11 to M12.1 ran in three waves (what they delivered is in [HISTORY.md](HISTORY.
 | M12.5 | User-space pagers. A process (a filesystem service) supplies the pages of a VMO on demand: mapped files (a cached read becomes a memory copy, and M13's `mmap` has something to stand on), programs loaded on demand instead of read whole, and the clean way to run programs from `/data` (the pages come from fat, checked against the approved hash). Pager failures (a pulled stick) end in a clean error, never a kernel hang | a file mapped and read through its pages; a program on `/data` runs from a pager; pulling the stick under a mapping fails the access cleanly |
 | M12.7 | NVMe and installing (the owner, 2026-10-07). A user-space NVMe driver behind the IOMMU (admin and I/O queues, MSI-X), on the block interface M12 reviewed: the second real block device after USB storage. In stages, because the PC's NVMe drive holds Windows: (1) READ-ONLY: drives found, their GPT partition tables read and listed, FAT partitions mounted read-only, no write path built at all; (2) writes only to a disk or partition marked for Jam OS (a second NVMe drive just for Jam OS is the safest: the owner to say whether the PC has a spare M.2 slot), every write refused elsewhere; (3) an installer: Jam OS on that disk with its own ESP entry or boot menu, booting without the stick, updated by `update` with the same power-cut-safe steps as the stick. QEMU emulates NVMe for the tests | (1) on the PC the drives and partitions listed and a FAT partition read, Windows' disk untouched (its hash before and after); (2) a Jam OS disk written, read back, power cut mid-write survives; (3) the PC boots Jam OS from the internal disk and an `update` lands there |
 | M13 | POSIX on musl: file descriptors over handles, `posix_spawn` (no `fork`), paths through the namespace, `poll`/`select` on M9.5's wait sets, a terminal layer (pseudo-terminals: a shell that talks to a connection instead of the screen), then ported programs. **The first test port is tinyssh** (the owner, 2026-10-02): an SSH server, key login only (no passwords), a host key made on first boot, `authorized_keys` in `/data/etc`, the listen permission, one process per connection (its `fork` replaced by `posix_spawn`) | unmodified POSIX programs (shell utilities, a small C program) build and run; `ssh` from the Mac opens a Jam OS shell on the PC |
-| M13.5 | A real POSIX shell, made the default (the owner, 2026-10-11). `vfork` emulated in libc (M13's question 4, option B: the child's descriptor changes recorded until `execve` or `_exit`, then `posix_spawn`), and `fork` without `exec` emulated in libc on the kernel's copy-on-write child VMO (built by M13's track F1 for `MAP_PRIVATE`, before M14 freezes the system calls; the owner, 2026-10-11): a new process of the same static program, each writable VMO of the parent given to it as a copy-on-write child at the same address, the calling thread's registers and the descriptors libc chooses to pass, so a fork costs page tables, not a copy of the memory, and the child holds only what libc hands it. Pages a write separates are charged to the writer's job when the child is made (no overcommit, no surprise kill). Shared offsets for inherited files (M13's question 5, option B) come with it, or `{ a; b; } > f` overwrites instead of appending. Not covered, by design: handles without the duplicate right are not passed to the child (it gets only what may be shared). Then a permissively licensed interactive shell ported unpatched (mksh: line editing, history, Tab, job control within M13's limits). The Jam OS commands (`disks`, `usb`, `dmesg`, ...) as programs in `/bin` first, so no command is lost (built for the ones that need no power a program can't hold: `free uptime version lscpu ps dmesg log mem memmap pci iommu bench net ping host usb df hexdump crashlog` are in five boxes in the boot image, [M13-PLAN: Jam commands as programs](M13-PLAN.md#jam-commands-as-programs-notes); the rest wait for what they need: a POSIX shell that passes the root resource on, and programs allowed to reach init's and the volumes' control channels) Once it matches the Jam shell it is the default in terminals and over SSH (`ssh pc command` and later scp through `sh -c`); the Jam shell stays in the boot image as the recovery shell | the default shell in a Jam OS terminal and over SSH is the ported shell; `$(...)`, subshells, pipelines of builtins and `configure`-style scripts run; every Jam OS command still works from it |
+| M13.5 | A real POSIX shell, made the default (the owner, 2026-10-11). **`fork`, `vfork` and `exec` come first, before Chromium's multi-process milestone, so Chromium's launcher runs unpatched (the owner, 2026-10-16): [FORK-PLAN](FORK-PLAN.md)**, which also asks whether `vfork` becomes `fork` with the parent waiting instead of the recorder below (its Q3), and makes `execve` replace the image in place. `vfork` emulated in libc (M13's question 4, option B: the child's descriptor changes recorded until `execve` or `_exit`, then `posix_spawn`), and `fork` without `exec` emulated in libc on the kernel's copy-on-write child VMO (built by M13's track F1 for `MAP_PRIVATE`, before M14 freezes the system calls; the owner, 2026-10-11): a new process of the same static program, each writable VMO of the parent given to it as a copy-on-write child at the same address, the calling thread's registers and the descriptors libc chooses to pass, so a fork costs page tables, not a copy of the memory, and the child holds only what libc hands it. Pages a write separates are charged to the writer's job when the child is made (no overcommit, no surprise kill). Shared offsets for inherited files (M13's question 5, option B) come with it, or `{ a; b; } > f` overwrites instead of appending. Not covered, by design: handles without the duplicate right are not passed to the child (it gets only what may be shared). Then a permissively licensed interactive shell ported unpatched (mksh: line editing, history, Tab, job control within M13's limits). The Jam OS commands (`disks`, `usb`, `dmesg`, ...) as programs in `/bin` first, so no command is lost (built for the ones that need no power a program can't hold: `free uptime version lscpu ps dmesg log mem memmap pci iommu bench net ping host usb df hexdump crashlog` are in five boxes in the boot image, [M13-PLAN: Jam commands as programs](M13-PLAN.md#jam-commands-as-programs-notes); the rest wait for what they need: a POSIX shell that passes the root resource on, and programs allowed to reach init's and the volumes' control channels) Once it matches the Jam shell it is the default in terminals and over SSH (`ssh pc command` and later scp through `sh -c`); the Jam shell stays in the boot image as the recovery shell | the default shell in a Jam OS terminal and over SSH is the ported shell; `$(...)`, subshells, pipelines of builtins and `configure`-style scripts run; every Jam OS command still works from it |
 | M10 | Moved after M13 (the owner, 2026-10-02). uACPI: poweroff, power button, ACPI reboot (uACPI stays in the kernel); tickless idle (since M11.5 a sleeper due after its CPU's next tick arms no timer and waits for the tick to re-arm for it, `after_next_tick` in `kernel/sched/wait.c`: a CPU that stops its tick must arm its timer for its sleeper queue's head first) | clean shutdown on real hardware |
 | M10.5 | Moved after M13 with M10. S3 sleep (suspend to RAM) on top of M10's ACPI: every driver saves and restores its device | the PC suspends and resumes with USB, audio and the network working again |
 | M14 | Stable syscall ABI: frozen only after POSIX has put its weight on it; versioned and documented. It starts with a short review of every interface added since M12's review (M10's power calls, M10.5's driver suspend and resume, and whatever M12.5 and M13 add), since M10 and M10.5 now come after M13; G1's protocol is M12's, as G1 comes before it | old binaries keep running on new kernels |

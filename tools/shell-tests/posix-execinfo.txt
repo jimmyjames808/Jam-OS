@@ -1,0 +1,16 @@
+# libc's <execinfo.h> from the shell (CR-PLAN.md "BT notes"): posixtest's
+# execinfo section (backtrace() from nested functions, a second thread, a
+# signal handler and a qsort comparator; backtrace_symbols and
+# backtrace_symbols_fd's lines). Also in the init run; this is the section
+# alone, from the shell (descriptor 0 the terminal, the shell's own
+# namespace), and shows the depths it measured.
+#   QEMU_INPUT=tools/shell-tests/posix-execinfo.txt tools/qemu-test.sh <dir> posix-execinfo shell
+wait 120 Jam OS shell
+wait {prompt}
+send run posixtest execinfo
+wait 120 posixtest: execinfo: ok
+wait 20 posixtest: PASS
+wait 20 run: bin/posixtest exited with code 0
+wait {prompt}
+send reboot -f
+wait reboot: resetting

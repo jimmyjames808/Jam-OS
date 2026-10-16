@@ -50,9 +50,12 @@
 #define READ_CHUNK   (1u << 20)      /* bytes read and hashed at a time */
 #define PROGRESS_MIN (32ull << 20)   /* a file this big shows a line while it is read */
 
+/* The mounts a program may be allowed and run from: the stick's /data, and
+ * /jam, the Jam OS drive's ext data partition (M13.6). Approvals stay in
+ * /data/etc/allow either way. */
 bool sh_on_data(const char *abs)
 {
-    return dp_on_data(abs);
+    return dp_on_data(abs) || (!strncmp(abs, "/jam/", 5) && abs[5]);
 }
 
 /* An approval's path, copied out of a line left whole; false: not one. */
