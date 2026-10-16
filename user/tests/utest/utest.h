@@ -690,6 +690,9 @@ bool t_comp_live_caps(void);
 bool t_comp_live_client_crash(void);
 bool t_comp_live_never_reads(void);
 bool t_comp_live_fuzz(void);
+/* msgbudget.c: a client flooding the compositor waits on its own
+ * connection (CHANNEL_BYTE_BOUND), never using up the root's message bytes. */
+bool t_msgbudget_comp_flood(void);
 bool t_comp_regions(void);
 /* conwin.c: the console's window mode: its grid and padding, the view,
  * terminal.font, keys and pointer (wlinput.c, view.c, linked in). */

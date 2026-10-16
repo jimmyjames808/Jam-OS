@@ -11,7 +11,9 @@
  * devmgr, no volumes, /data read-only for exectest, a root with sysinfo
  * alone and never RIGHT_TRANSFER for execwide). The process comes back
  * without RIGHT_WRITE (no threads in it: process_kill refused), the job
- * with RIGHT_MANAGE (job_kill ends a child that waits for ever).
+ * with RIGHT_MANAGE (job_kill ends a child that waits for ever) and a
+ * message budget of its own (DP_JOB_MSG_BYTES: a child that floods a
+ * channel stops at its own job, not at the root's budget).
  *
  * t_exec_wider_than_parent: exectest (narrow: /data read-only, no root)
  * starts execwide through /svc/exec itself: the child has /data writable,
@@ -318,6 +320,9 @@ bool t_exec_sealed_runs(void)
     CHECK_ST(jam_process_kill(proc), ERR_ACCESS_DENIED);
     CHECK_ST(jam_handle_info(job, &hi), OK);
     CHECK((hi.rights & RIGHT_MANAGE) && !(hi.rights & RIGHT_WRITE));
+    struct job_info ji;
+    CHECK_ST(jam_job_get_info(job, &ji), OK);
+    CHECK_EQ(ji.limit[JOB_LIMIT_MSG_BYTES], DP_JOB_MSG_BYTES);
     CHECK_ST(jam_job_kill(job), OK);
     struct process_info info;
     CHECK_ST(spawn_wait(proc, WAIT, &info), OK);

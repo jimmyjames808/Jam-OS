@@ -1176,6 +1176,7 @@ static const struct {
     { "comp_live_client_crash", t_comp_live_client_crash },
     { "comp_live_never_reads", t_comp_live_never_reads },
     { "comp_live_fuzz", t_comp_live_fuzz },
+    { "msgbudget_comp_flood", t_msgbudget_comp_flood },
     { "comp_regions", t_comp_regions },
     { "conwin_grid", t_conwin_grid },
     { "conwin_padding", t_conwin_padding },
