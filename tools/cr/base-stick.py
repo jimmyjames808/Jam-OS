@@ -12,6 +12,12 @@ files. <stage> is the ports builder's output for chromium
 (~/cr/ports/chromium/stage), <source> the Chromium source tree and <out>
 its out/jamos.
 
+The data partition is what the image's is: a FAT volume (mformat and
+mtools) or, for an image made with `make image DATA_FS=ext` (JAMOS_DATA_FS=ext
+in the environment), an ext volume (build/host/jamext: mkfs at the grown
+size, then one import of the whole tree, as tools/ports-preinstall.py
+does). The files are the same either way.
+
 The package format can't hold a file over 64 MiB yet (PO13), so the
 programs don't go in as a package: they are put on /data directly, where
 the shell approves them from a line written here, and the page table of
@@ -97,7 +103,22 @@ def page_table(path):
     return whole.hexdigest(), head + b"".join(pages)
 
 
-def make_stick(image, stick, mib):
+JAMEXT = os.path.join(TOP, "build", "host", "jamext")
+
+
+def data_fs(image):
+    """"ext" or "fat": what the image's data partition is (mkimage.py --data-fs)."""
+    r = subprocess.run([sys.executable, os.path.join(TOP, "tools", "mkimage.py"), "--data-fs", image],
+                       capture_output=True, text=True)
+    if r.returncode or r.stdout.strip() not in ("ext", "fat"):
+        raise Error("%s: no data partition (%s)" % (image, (r.stderr or r.stdout).strip()))
+    return r.stdout.strip()
+
+
+def make_stick(image, stick, mib, fs):
+    """The image grown to mib MiB of /data and its volume made again; the
+    FAT volume's mtools name ("<stick>@@256M"), or for ext (made empty here
+    and filled by jamext, which needs the stick, not a name) the stick."""
     at = subprocess.run([sys.executable, os.path.join(TOP, "tools", "mkimage.py"), "--data-at", image],
                         capture_output=True, text=True)
     if at.returncode:
@@ -109,6 +130,11 @@ def make_stick(image, stick, mib):
         f.truncate((start + mib) << 20)
     subprocess.run([sys.executable, os.path.join(TOP, "tools", "mbr-grow.py"), stick,
                     str((start + mib) * 2048)], check=True, stdout=subprocess.DEVNULL)
+    if fs == "ext":
+        # 2T: more than any MBR partition holds; jamext cuts it to the partition's
+        # (tools/stick-data.sh's mkfs).
+        mtool(JAMEXT, "-q", "--part", "2", "mkfs", "--label", "JAMOS-DATA", stick, "2T")
+        return stick
     part = "%s@@%s" % (stick, at)
     mtool("mformat", "-i", part, "-T", str(mib * 2048), "-F", "-v", "JAMOS-DATA", "::")
     subprocess.run([sys.executable, os.path.join(TOP, "tools", "fat-label.py"), stick,
@@ -128,6 +154,10 @@ def main(argv):
     pre = load_preinstall()
     work = tempfile.mkdtemp(prefix="base-stick.")
     try:
+        fs = data_fs(args.image)
+        if fs == "ext" and not os.access(JAMEXT, os.X_OK):
+            raise Error("%s's data partition is ext and there is no %s (make build/host/jamext)" %
+                        (os.path.basename(args.image), os.path.relpath(JAMEXT, TOP)))
         cr = os.path.join(work, "cr")
         etc = os.path.join(work, "etc")
         os.makedirs(os.path.join(cr, "out", "jamos"))
@@ -162,14 +192,27 @@ def main(argv):
                 shutil.copyfile(src, dst)
             else:
                 raise Error("%s: missing" % src)
-        part = make_stick(args.image, args.stick, args.data_mib)
-        # one recursive copy each; mtools makes the directories
-        mtool("mcopy", "-s", "-m", "-i", part, cr, etc, "::/")
+        part = make_stick(args.image, args.stick, args.data_mib, fs)
+        if fs == "ext":
+            # one import of the tree (jamext makes the directories; a program's
+            # execute bit gives it mode 0755, a file's lack of it 0644)
+            root = os.path.join(work, "root")
+            os.makedirs(root)
+            shutil.move(cr, os.path.join(root, "cr"))
+            shutil.move(etc, os.path.join(root, "etc"))
+            cr = os.path.join(root, "cr")
+            mtool(JAMEXT, "-q", "--part", "2", "import", args.stick, root)
+        else:
+            # one recursive copy each; mtools makes the directories
+            mtool("mcopy", "-s", "-m", "-i", part, cr, etc, "::/")
         # the programs read back, and compared with what the lines say
         for a in allow:
             digest, path, _ = a.split("\t")
             back = os.path.join(work, "back")
-            mtool("mcopy", "-n", "-i", part, "::" + path[len("/data"):], back)
+            if fs == "ext":
+                mtool(JAMEXT, "-q", "--part", "2", "get", args.stick, path[len("/data"):], back)
+            else:
+                mtool("mcopy", "-n", "-i", part, "::" + path[len("/data"):], back)
             h = hashlib.sha256()
             with open(back, "rb") as f:
                 for block in iter(lambda: f.read(1 << 20), b""):
@@ -177,9 +220,9 @@ def main(argv):
             os.unlink(back)
             if h.hexdigest() != digest:
                 raise Error("%s read back from the stick differs" % path)
-        n = sum(len(fs) for _, _, fs in os.walk(cr))
-        print("base-stick: %s: %d MiB of /data, %d files under /data/cr, %d programs approved"
-              % (os.path.basename(args.stick), args.data_mib, n, len(allow)))
+        n = sum(len(names) for _, _, names in os.walk(cr))
+        print("base-stick: %s: %d MiB of /data (%s), %d files under /data/cr, %d programs approved"
+              % (os.path.basename(args.stick), args.data_mib, fs, n, len(allow)))
     except Error as e:
         print("base-stick: %s" % e, file=sys.stderr)
         return 1

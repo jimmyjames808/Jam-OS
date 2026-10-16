@@ -21,9 +21,12 @@ and approvals under /data/cr). The run is a few boots of it in QEMU
 Tests named in the skip list (tools/cr/base_unittests.skip: a
 pattern, the layer that owns the failure, the reason) are not run, unless
 --all: then they run, and a failure of one is a known failure, not a new
-one. --shard I/N takes every N-th suite from I (a shard has a listing boot
-of its own). The environment variables of the shell (JAMOS_ENOSYS_LOG=1,
-TMPDIR) are --env NAME=value.
+one. When the stick's /data is FAT, tools/cr/base_unittests.fat.skip (the
+tests only FAT fails) is added. --shard I/N takes every N-th suite from I (a
+shard has a listing boot of its own). The environment variables of the shell
+(JAMOS_ENOSYS_LOG=1, TMPDIR) are --env NAME=value. The stick's /data is a FAT
+or an ext volume (its listing is read back with mtools or jamext); with
+QEMU_BOOT_NVME=1 in the environment the boots are from an installed NVMe drive.
 
 Writes to <outdir>: results.txt (one line per test: its status and the
 suite's run), failures/<test>.txt (the test's output, and the kernel log
@@ -32,6 +35,7 @@ distinct ENOSYS line of the run), summary.txt. Exit status 0 when every
 test that ran passed (or is a known failure) and nothing is missing."""
 import argparse
 import fnmatch
+import hashlib
 import os
 import re
 import shutil
@@ -45,6 +49,7 @@ TOP = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))
 ANSI = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]")
 KERNEL = re.compile(r"^\[\s*\d+\.\d+\]")            # a kernel log line: "[    2.53] ..."
 PROGRAM = "/data/cr/out/jamos/base_unittests"
+JAMEXT = os.path.join(TOP, "build", "host", "jamext")
 LINE_MAX = 200                                       # the shell takes 240 characters a line
 
 
@@ -162,13 +167,17 @@ def listing(args):
     b.run()
     txt = os.path.join(b.dir, "tests.txt")
     try:
-        at = subprocess.run([sys.executable, "tools/mkimage.py", "--data-at", b.saved],
-                            capture_output=True, text=True, cwd=TOP, check=True).stdout.strip()
-        r = subprocess.run(["mcopy", "-n", "-i", "%s@@%s" % (b.saved, at), "::/cr/tests.txt", txt],
-                           cwd=TOP, capture_output=True, text=True)
+        if args.fs == "ext":   # an ext /data (a stick, or a GPT drive's second partition)
+            cmd = [JAMEXT, "-q", "--part", "2", "get", b.saved, "/cr/tests.txt", txt]
+        else:
+            at = subprocess.run([sys.executable, "tools/mkimage.py", "--data-at", b.saved],
+                                capture_output=True, text=True, cwd=TOP, check=True).stdout.strip()
+            cmd = ["mcopy", "-n", "-i", "%s@@%s" % (b.saved, at), "::/cr/tests.txt", txt]
+        r = subprocess.run(cmd, cwd=TOP, capture_output=True, text=True)
         if r.returncode:
-            raise SystemExit("base-run: can't read the test list from the stick: mcopy said %r "
-                             "(the stick is kept: %s; see %s)" % (r.stderr.strip()[-300:], b.saved, b.log))
+            raise SystemExit("base-run: can't read the test list from the stick: %s said %r "
+                             "(the stick is kept: %s; see %s)" %
+                             (os.path.basename(cmd[0]), (r.stderr or r.stdout).strip()[-300:], b.saved, b.log))
     except (subprocess.CalledProcessError, OSError) as e:
         raise SystemExit("base-run: can't read the test list from the stick (%s; see %s)" % (e, b.log))
     for f in (b.img, b.saved):
@@ -328,24 +337,35 @@ def main(argv):
     ap = argparse.ArgumentParser(prog="base-run.py", description=__doc__.split("\n\n")[0])
     ap.add_argument("--shard", default="0/1")
     ap.add_argument("--skip", default=os.path.join(TOP, "tools", "cr", "base_unittests.skip"))
+    ap.add_argument("--skip-fat", default=os.path.join(TOP, "tools", "cr", "base_unittests.fat.skip"),
+                    help="more tests to leave out when the stick's /data is FAT")
     ap.add_argument("--all", action="store_true", help="run the skip list's tests too")
     ap.add_argument("--rounds", type=int, default=20)
     ap.add_argument("--chunk", type=int, default=6, help="tests to a program after round 1")
     ap.add_argument("--suite-timeout", type=int, default=240)
     ap.add_argument("--mem", default="4G")
     ap.add_argument("--env", action="append", default=["JAMOS_ENOSYS_LOG=1"])
-    ap.add_argument("--only", help="only suites matching this glob")
+    ap.add_argument("--only", help="only suites matching this glob (several: separated by spaces or commas)")
     ap.add_argument("--args", default="", help="more arguments for base_unittests, e.g. ' --v=1' (a space first)")
     ap.add_argument("outdir")
     ap.add_argument("stick")
     args = ap.parse_args(argv)
     os.makedirs(args.outdir, exist_ok=True)
     si, sn = (int(x) for x in args.shard.split("/"))
-    args.tag = "cb%s%d" % (re.sub(r"[^A-Za-z0-9]", "", os.path.basename(args.outdir.rstrip("/")))[:12], si)
+    # QEMU's sockets and logs are named after the run (build/.qemu-<tag>-<boot>.ser,
+    # in the checkout all of a batch's runs share): a name of this output directory's own.
+    args.tag = "cb%s%d" % (hashlib.md5(os.path.abspath(args.outdir).encode()).hexdigest()[:6], si)
+    # What /data is on the stick: the listing boot's file is read back with
+    # mtools or jamext (a GPT image, from QEMU_BOOT_NVME, is told by its volume).
+    r = subprocess.run([sys.executable, "tools/mkimage.py", "--data-fs", args.stick],
+                       capture_output=True, text=True, cwd=TOP)
+    args.fs = r.stdout.strip() if r.returncode == 0 and r.stdout.strip() in ("ext", "fat") else "fat"
 
     suites = listing(args)
     all_tests = [s + "." + t for s, ts in suites.items() for t in ts]
     skips = skip_list(args.skip)
+    if args.fs == "fat":   # what only a FAT /data fails
+        skips += skip_list(args.skip_fat)
     enabled = {}
     for s, ts in suites.items():
         if s.split("/")[-1].startswith("DISABLED_"):
@@ -355,7 +375,8 @@ def main(argv):
     # shards agree whatever each one's own listing boot saw.
     mine = [s for s in sorted(enabled) if zlib.crc32(s.encode()) % sn == si]
     if args.only:
-        mine = [s for s in mine if fnmatch.fnmatch(s, args.only)]
+        globs = args.only.replace(",", " ").split()
+        mine = [s for s in mine if any(fnmatch.fnmatchcase(s, g) for g in globs)]
 
     def skipped(full):
         for pat, layer, reason in skips:
