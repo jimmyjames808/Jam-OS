@@ -39,7 +39,7 @@ send pkg list
 wait No package is installed.
 wait {prompt}
 send allow -l
-wait no program on /data is allowed to run
+wait is allowed to run
 wait {prompt}
 send pkg check
 wait pkg check: 0 packages, every file is as its manifest says
@@ -140,7 +140,7 @@ send pkg list
 wait No package is installed.
 wait {prompt}
 send allow -l
-wait no program on /data is allowed to run
+wait is allowed to run
 wait {prompt}
 
 # Installed again, for the cold boot.
