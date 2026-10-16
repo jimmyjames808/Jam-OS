@@ -339,6 +339,27 @@ static void simd_handler(int sig, siginfo_t *si, void *ucv)
     uc->uc_mcontext.gregs[REG_RIP] = addr_of(fl_simd_end);
 }
 
+/* QEMU's emulated CPU (TCG: storage-test.sh runs under it) sets MXCSR's
+ * flags but raises no SIMD exception (#XM) whatever the masks say: its
+ * CPUID brand string says so. */
+static bool on_qemu_tcg(void)
+{
+    uint32_t r[12], a, b, c, d;
+    a = 0x80000000u;
+    __asm__ volatile("cpuid" : "+a"(a), "=b"(b), "=c"(c), "=d"(d));
+    if (a < 0x80000004u)
+        return false;
+    for (uint32_t leaf = 0; leaf < 3; leaf++) {
+        a = 0x80000002u + leaf;
+        __asm__ volatile("cpuid" : "+a"(a), "=b"(b), "=c"(c), "=d"(d));
+        r[leaf * 4] = a, r[leaf * 4 + 1] = b, r[leaf * 4 + 2] = c, r[leaf * 4 + 3] = d;
+    }
+    char brand[sizeof(r) + 1];
+    memcpy(brand, r, sizeof(r));
+    brand[sizeof(r)] = 0;
+    return strstr(brand, "QEMU TCG") != NULL;
+}
+
 static void check_traps(void)
 {
     on(SIGFPE, 0, note);
@@ -366,9 +387,13 @@ static void check_traps(void)
     fl_simd();
     uint32_t mxcsr;
     __asm__ volatile("stmxcsr %0" : "=m"(mxcsr));
-    CHECK(runs == 1 && got_code == FPE_FLTDIV && got_addr == (uintptr_t)fl_simd_at);
-    CHECK(got_trapno == 19 && (simd_mxcsr & 0x204) == 0x004);   /* ZE pending, ZM clear */
-    CHECK((mxcsr & 0x3f) == 0);   /* the flags the handler cleared in fpregs */
+    if (runs == 0 && on_qemu_tcg()) {
+        printf("posixtest: fault: QEMU's TCG raises no SIMD exception: that case skipped\n");
+    } else {
+        CHECK(runs == 1 && got_code == FPE_FLTDIV && got_addr == (uintptr_t)fl_simd_at);
+        CHECK(got_trapno == 19 && (simd_mxcsr & 0x204) == 0x004);   /* ZE pending, ZM clear */
+        CHECK((mxcsr & 0x3f) == 0);   /* the flags the handler cleared in fpregs */
+    }
     signal(SIGFPE, SIG_DFL);
 }
 

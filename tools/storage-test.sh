@@ -51,9 +51,9 @@ sleep 0.3
 send device_del disk2
 EOF
 # The whole init run in one boot behind the throttled disks: usbtest's
-# slow-disk checks end near 230 s, and posixtest's signal section is slow
-# here (its sampler's rounds take about 3.5 ms, not 10 us: 35 s), so the
-# run needs more than the kernel's default 300 s (init_timeout).
+# slow-disk checks end near 230 s, and posixtest is slow under TCG (its
+# signal section's sampler rounds take about 3.5 ms, not 10 us: 35 s), so
+# the run needs more than the kernel's default 300 s (init_timeout).
 QEMU_TIMEOUT=${QEMU_TIMEOUT:-500} QEMU_MONITOR="$mon" \
 QEMU_USB="-device usb-hub,id=hub1,bus=xhci.0,port=2 \
 -drive if=none,id=disk2img,format=raw,file=$disk,throttling.bps-read=262144 \
