@@ -2,7 +2,7 @@
 # (tools/pkg-test.sh, case big; docs/M13.7-PLAN.md "PO13 notes"): the stick
 # boots, an emulated NVMe drive is the Jam OS drive, so /jam is its ext
 # volume and the packages' prefix is /jam/pkg. bigpkg is a POSIX program of
-# 300 MiB (build/bigpkg/bigpkg, user/tests/bigpkg) in the repository "big"
+# 300 MiB (build/bigpkg/bigpkg, tools/bigpkg.c) in the repository "big"
 # of tools/pkg-test-repo.py. It is downloaded and unpacked to `.new` names
 # in pieces, read back and hashed by init in pieces, swapped into place, and
 # run from its pages. The test script puts the program's expected hash

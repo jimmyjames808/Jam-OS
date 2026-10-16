@@ -585,11 +585,11 @@ $(BUILD)/bigprog/bigprog: $(UOBJ)/user/lib/crt0.S.o $(call prog_objs,bigprog) \
 	$(LD) $(USER_LDFLAGS) -s $(UOBJ)/user/lib/crt0.S.o $(call prog_objs,bigprog) \
 	    $(BUILD)/bigprog/table.o $(UOBJ)/libos.a $(LIBGCC) -o $@
 
-# The same table in a POSIX program (user/tests/bigpkg/main.c, built by
+# The same table in a POSIX program (tools/bigpkg.c, built by
 # jamos-cc with the list `posix` and `mount /jam rw`): tools/pkg-test.sh's big
 # package, installed by `pkg` onto /jam and run from there. Generated when a
 # test asks for it (`make build/bigpkg/bigpkg`), never in bootfs or the tree.
-$(BUILD)/bigpkg/bigpkg: user/tests/bigpkg/main.c $(BUILD)/bigprog/table.o tools/jamos-cc \
+$(BUILD)/bigpkg/bigpkg: tools/bigpkg.c $(BUILD)/bigprog/table.o tools/jamos-cc \
                         $(SYSROOT_LIBS) $(SYSROOT_HDRS)
 	@mkdir -p $(dir $@)
 	printf 'posix\nmount /jam rw\n' > $(BUILD)/bigpkg/list

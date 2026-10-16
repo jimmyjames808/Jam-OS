@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The hash bigpkg prints (user/tests/bigpkg/main.c): FNV-1a, 64 bits, over the
+"""The hash bigpkg prints (tools/bigpkg.c): FNV-1a, 64 bits, over the
 512 words of every STEP-th page of its table and of the last page (the table
 of PAGES pages holds the word i in every place of page i), as 16 hex digits.
 tools/pkg-test.sh puts it in the scripts that run the program.
