@@ -67,13 +67,13 @@ cd "$top" || exit 2
 # What the command takes of the machine: "<virtual CPUs> <MB of memory>".
 # JAMOS_REMOTE_COST_ONLY=1 prints it and stops (tools/remote-slots-test.sh).
 cost_of() {
-    local smp=${QEMU_SMP:-} mem=${QEMU_MEM:-} jobs=${PORTS_TEST_JOBS:-} wljobs=${WL_PORT_JOBS:-} i=0 a script qemus=1 after
+    local smp=${QEMU_SMP:-} mem=${QEMU_MEM:-} jobs=${PORTS_TEST_JOBS:-} wljobs=${WL_PORT_JOBS:-} itjobs=${INIT_TEST_JOBS:-} i=0 a script qemus=1 after knob=
     local args=("$@")
     if [ "${args[0]:-}" = env ]; then
         i=1
         while [[ ${args[i]:-} == [A-Za-z_]*=* ]]; do
             a=${args[i]}
-            case $a in QEMU_SMP=*) smp=${a#*=} ;; QEMU_MEM=*) mem=${a#*=} ;; PORTS_TEST_JOBS=*) jobs=${a#*=} ;; WL_PORT_JOBS=*) wljobs=${a#*=} ;; esac
+            case $a in QEMU_SMP=*) smp=${a#*=} ;; QEMU_MEM=*) mem=${a#*=} ;; PORTS_TEST_JOBS=*) jobs=${a#*=} ;; WL_PORT_JOBS=*) wljobs=${a#*=} ;; INIT_TEST_JOBS=*) itjobs=${a#*=} ;; esac
             i=$((i + 1))
         done
     fi
@@ -91,12 +91,17 @@ cost_of() {
     case ${script##*/} in
     qemu-test.sh) ;;
     nvme-driver-test.sh) qemus=6; [ "$after" -eq 0 ] || qemus=$after ;;   # a boot for each case, all at once
-    init-test.sh) qemus=$(awk '$1 == "part" { print $2 }' boot/init.cfg | sort -u | wc -l | tr -d ' ') ;;   # a boot for each part
+    init-test.sh)   # a boot for each part, INIT_TEST_JOBS at a time
+        knob=INIT_TEST_JOBS
+        qemus=$(awk '$1 == "part" { print $2 }' boot/init.cfg | sort -u | wc -l | tr -d ' ')
+        [[ ${itjobs:-} =~ ^[0-9]+$ ]] && [ "$itjobs" -ge 1 ] && [ "$itjobs" -lt "$qemus" ] && qemus=$itjobs ;;
     ports-test.sh)
+        knob=PORTS_TEST_JOBS
         [[ ${jobs:-} =~ ^[0-9]+$ ]] || jobs=3
         qemus=$jobs
         [ "$after" -eq 0 ] || [ "$after" -ge "$jobs" ] || qemus=$after ;;
     wl-port-test.sh)   # WL_PORT_JOBS (3) groups at a time, one QEMU each
+        knob=WL_PORT_JOBS
         [[ ${wljobs:-} =~ ^[0-9]+$ ]] || wljobs=3
         qemus=$wljobs
         [ "$after" -ge 1 ] || after=9   # no group named: all nine
@@ -107,7 +112,10 @@ cost_of() {
            return
        fi ;;
     esac
-    echo "$((qemus * smp)) $((qemus * mem))"
+    # A script that runs its parts a few at a time also says how to run fewer at
+    # once ("VAR:cpus:mem_mb:parts", remote-slots.py --shrink): it takes fewer when
+    # a long claim leaves the machine too little for all of them.
+    echo "$((qemus * smp)) $((qemus * mem))${knob:+ $knob:$smp:$mem:$qemus}"
 }
 if [ "${JAMOS_REMOTE_COST_ONLY:-0}" = 1 ]; then
     cost_of "$@"
@@ -162,7 +170,7 @@ remote_script() {
     echo "set -u; cd ~/$dir 2> /dev/null && [ -f Makefile ] ||"
     echo "    { echo 'remote-test: nothing copied to ~/$dir yet (JAMOS_REMOTE_NOSYNC=1 needs an earlier copy)' >&2; exit 2; }"
     echo 'export PATH=$HOME/cross/bin:$HOME/qemu-10/bin:$HOME/mtools/bin:/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8'
-    env | grep -E '^(QEMU_[A-Z0-9_]*|KTESTS|JAMOS_[A-Z0-9_]*|PC_RUNS|[A-Z]+_CASES|SOAK_[A-Z0-9_]*|PORTS_TEST_[A-Z0-9_]*|WL_PORT_[A-Z0-9_]*)=' | grep -v '^JAMOS_REMOTE\(_ONLY\)\?=' |
+    env | grep -E '^(QEMU_[A-Z0-9_]*|KTESTS|JAMOS_[A-Z0-9_]*|PC_RUNS|[A-Z]+_CASES|SOAK_[A-Z0-9_]*|PORTS_TEST_[A-Z0-9_]*|WL_PORT_[A-Z0-9_]*|INIT_TEST_[A-Z0-9_]*)=' | grep -v '^JAMOS_REMOTE\(_ONLY\)\?=' |
         while IFS= read -r kv; do printf 'export %q\n' "$kv"; done
     # The build takes its share of the budget too (make -j as many as it costs);
     # a checkout's builds take turns (flock). A tree this checkout has built
@@ -191,7 +199,11 @@ remote_script() {
     [ $prepare = 1 ] && echo 'exit 0'
     printf 'set -- '; printf '%q ' "$@"; echo
     # The command, when its CPUs and memory fit in the machine's budget (above).
-    echo "exec python3 tools/remote-slots.py $cost \"\$@\" < /dev/null"
+    # A third word of the cost says how to run fewer parts at once (--shrink):
+    # used only when a long claim (the Chromium build) leaves too little for all.
+    local ccpus cmem cshrink
+    read -r ccpus cmem cshrink <<< "$cost"
+    echo "exec python3 tools/remote-slots.py ${cshrink:+--shrink $cshrink }$ccpus $cmem \"\$@\" < /dev/null"
 }
 # The session, with its stderr also kept in a file (through a fifo, so it is
 # still live). If the connection is lost after the login while the command is
@@ -201,6 +213,25 @@ remote_script() {
 # connection is the run's failure (exit 255), never a second run.
 rt_tmp=$(mktemp -d "${TMPDIR:-/tmp}/remote-test.XXXXXX") || exit 2
 trap 'rm -rf "$rt_tmp"' EXIT
+# Told to stop (pc-batch cancel, ^C, kill): end the run on the PC too. The ssh
+# session ending is not enough: WSL can leave what it started running for
+# hours, holding its CPUs. The PC's side is the pid file of this call (above):
+# the governor (tools/remote-slots.py), which on SIGTERM takes the command's
+# whole tree down. One short ssh, then exit 143.
+sshpid=
+cancel_remote() {
+    trap - TERM INT HUP
+    echo "remote-test: cancelled: ending the run on $host" >&2
+    if [ -n "$sshpid" ]; then   # the session's ssh (and its ssh child), now
+        pkill -TERM -P "$sshpid" 2> /dev/null
+        kill -TERM "$sshpid" 2> /dev/null
+    fi
+    printf '%s\n' "p=\$(cat ~/work/.runs/$runid 2> /dev/null)" \
+        'case $(ps -o comm= -p "${p:-0}" 2> /dev/null) in bash | python3) kill $p ;; esac' |
+        "$sshr" "${ssh_opts[@]}" -o ServerAliveInterval=5 -o ServerAliveCountMax=3 "$host" "wsl -e bash -s" > /dev/null 2>&1
+    exit 143
+}
+trap cancel_remote TERM INT HUP
 attempt=0
 while :; do
     attempt=$((attempt + 1))
@@ -208,8 +239,13 @@ while :; do
     mkfifo "$rt_tmp/err"
     tee "$rt_tmp/errlog" < "$rt_tmp/err" >&2 &
     teepid=$!
-    remote_script "$@" | "$sshr" "${ssh_main_opts[@]}" "$host" "wsl -e bash -s" 2> "$rt_tmp/err"
+    # In the background and waited for, so that a signal is handled at once (a
+    # trap waits for a foreground command to end).
+    remote_script "$@" | "$sshr" "${ssh_main_opts[@]}" "$host" "wsl -e bash -s" 2> "$rt_tmp/err" &
+    sshpid=$!
+    wait "$sshpid"
     rc=$?
+    sshpid=
     wait "$teepid" 2> /dev/null
     if [ $rc = 255 ] && [ $attempt -le "${JAMOS_REMOTE_REQUEUE:-3}" ] && grep -q '^ssh-retry: connection lost' "$rt_tmp/errlog" &&
         ! grep -q '^remote-test: running with' "$rt_tmp/errlog"; then
@@ -221,6 +257,7 @@ while :; do
     fi
     break
 done
+trap - TERM INT HUP   # the run is over: nothing left on the PC to end
 for a in "$@"; do
     case $a in
     build/?*)

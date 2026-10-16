@@ -1,11 +1,12 @@
 # Other people's USB sticks (tools/sticks-test.sh makes the images a, b, c,
-# d and f and checks them afterwards): mounted read-only at /usb0, /usb1,
+# d, f and g and checks them afterwards): mounted read-only at /usb0, /usb1,
 # made writable and read-only again with `mount`, pulled while in use, and
-# never formatted. The sticks are plugged in here, one at a time, so which
+# never formatted; a Linux stick with an ext volume (g) is mounted by extfs
+# and only ever read. The sticks are plugged in here, one at a time, so which
 # one is /usb0 is known.
 # QEMU_INPUT=this file, command line "shell", the drives aimg, bimg, cimg,
-# dimg and fimg. As in cmds.txt, the text waited for is built from $T, so
-# it never appears in the typed line.
+# dimg, fimg and gimg. As in cmds.txt, the text waited for is built from $T,
+# so it never appears in the typed line.
 wait 120 Jam OS shell
 wait {prompt}
 seen 60 init: /data mounted
@@ -116,6 +117,40 @@ wait 30 init: /usb0 is gone
 seen 120 copy-s-over=1
 send df | grep -c ^/usb0 | grep ^0$ && echo ok-$T-f-gone
 wait ok-s-f-gone
+
+# ---- g: a Linux stick (an MBR, one partition of type 83, the ext4 volume Linux's mke2fs made) --
+# mounted by bin/extfs, read-only at /usb0 (the free name) and never writable: Q9 of
+# docs/M13.6-PLAN.md, someone else's ext volume is only read. Linux's own names (Makefile and
+# makefile are two files), an indexed directory of 150 entries, a link to a directory.
+monitor device_add usb-storage,id=sg,bus=xhci.0,port=2,drive=gimg
+wait 60 init: /usb0 mounted
+send cat /usb0/Makefile /usb0/makefile /usb0/a/b/c/deepfile
+wait all: one
+wait all: two
+wait deep
+send ls /usb0/many | grep -c ^entry- | grep ^150$ && ls /usb0/toa/b/c | grep -c ^deepfile$ | grep ^1$ && echo ok-$T-ext-read
+wait ok-s-ext-read
+send mount | grep /usb0 | grep -c read-only | grep ^1$ && echo ok-$T-ext-ro
+wait ok-s-ext-ro
+send disks | grep -c "/usb0 (ext)" | grep ^1$ && echo ok-$T-ext-disks
+wait ok-s-ext-disks
+send ps | grep -c extfs-usb0 | grep ^1$ && echo ok-$T-ext-ps
+wait ok-s-ext-ps
+send write /usb0/refused.txt not on a Linux stick; echo ext1-$T=$?
+wait write: /usb0/refused.txt: read-only
+wait ext1-s=1
+send mkdir /usb0/newdir; echo ext2-$T=$?
+wait mkdir: /usb0/newdir: read-only
+wait ext2-s=1
+send mount -w /usb0; echo ext3-$T=$?
+wait mount: /usb0 holds an ext volume that isn't Jam OS's: it stays read-only
+wait ext3-s=1
+send mount | grep /usb0 | grep -c read-only | grep ^1$ && echo ok-$T-ext-still
+wait ok-s-ext-still
+send cat /usb0/Makefile | grep -c "all: one" | grep ^1$ && echo ok-$T-ext-kept
+wait ok-s-ext-kept
+monitor device_del sg
+wait 30 init: /usb0 is gone
 
 # ---- c and d: nothing Jam OS can mount: no mount, nothing written --------------------------
 monitor device_add usb-storage,id=sc,bus=xhci.0,port=2,drive=cimg

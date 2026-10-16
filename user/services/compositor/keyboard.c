@@ -213,7 +213,7 @@ static void send_early(struct comp_window *w)
         }
         uint32_t serial = comp_serial(), t = comp_ms(now());
         if (e->state == JWL_WL_KEYBOARD_KEY_STATE_PRESSED)
-            seat_input_serial(cl, serial);
+            seat_input_press(cl, serial);
         for (struct seat_res *r = seat_of(cl)->res[SEAT_KEYBOARD]; r; r = r->next)
             (void)jwl_wl_keyboard_send_key(cl->conn, r->id, serial, t, e->code, e->state);
     }
@@ -324,7 +324,7 @@ static void send_key(uint32_t code, uint32_t state)
     struct comp_client *cl = w->surface->client;
     uint32_t serial = comp_serial(), t = comp_ms(now());
     if (state == JWL_WL_KEYBOARD_KEY_STATE_PRESSED)
-        seat_input_serial(cl, serial);
+        seat_input_press(cl, serial);
     for (struct seat_res *r = seat_of(cl)->res[SEAT_KEYBOARD]; r; r = r->next)
         (void)jwl_wl_keyboard_send_key(cl->conn, r->id, serial, t, code, state);
 }

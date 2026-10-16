@@ -296,6 +296,14 @@ wait {prompt}
 send utest exit7; echo code=$?
 wait code=7
 wait {prompt}
+# a program writing a channel nobody reads stops at its own job's message
+# budget (<dataprog.h>'s DP_JOB_MSG_BYTES), not the root's: the shell and
+# everything else go on writing
+send run utest msgflood && echo ok-$T-flood
+wait 30 msgflood: stopped at its own job's limit
+wait run: bin/utest exited with code 0
+wait ok-x-flood
+wait {prompt}
 
 # ---- keys: Tab completion, Ctrl+C -------------------------------------------------------
 type hexd\t-n 4 bin/ini\t\r

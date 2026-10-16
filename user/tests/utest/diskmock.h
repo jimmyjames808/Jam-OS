@@ -34,7 +34,8 @@ struct dm_block {
 /* One mock disk. The counters are written by the mock's thread and read
  * by the test (dm_count). */
 struct diskmock {
-    uint8_t        *ram;                  /* DM_BLOCKS blocks: ram_vmo, mapped */
+    uint32_t        blocks;               /* the disk's size: DM_BLOCKS, or dm_start_sized's */
+    uint8_t        *ram;                  /* `blocks` blocks: ram_vmo, mapped */
     handle_t        ram_vmo;              /* the disk's memory */
     handle_t        storage;              /* our end of the `storage` channel */
     handle_t        port, thread;         /* the thread's port, and the thread */
@@ -57,6 +58,11 @@ struct diskmock {
 /* Make the disk (partition types type1 and type2, both partitions blank)
  * and start serving; *client: the `storage` channel's client end. */
 bool dm_start(struct diskmock *m, uint8_t type1, uint8_t type2, handle_t *client);
+/* The same with a data partition of data_blocks blocks (the disk is that
+ * and the ESP bigger): room for an ext volume (the smallest extfs makes is
+ * about 6 MiB). */
+bool dm_start_sized(struct diskmock *m, uint8_t type1, uint8_t type2, uint32_t data_blocks,
+                    handle_t *client);
 /* The stick is pulled: every channel of the mock closes, its thread ends. */
 bool dm_stop(struct diskmock *m);
 /* A counter of m, read from the test's thread. */

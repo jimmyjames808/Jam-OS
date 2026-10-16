@@ -170,6 +170,7 @@ status_t list_part(uint32_t id, uint32_t index, struct list_part *o)
     *o = (struct list_part){ .mbr_type = d->type[index], .start = p->start, .blocks = p->blocks };
     memcpy(o->type_guid, p->type_guid, sizeof(o->type_guid));
     o->fs = part_fs(d, index, &mount);
+    o->fstype = d->fstype[index];
     o->label_len = put_str(o->label, sizeof(o->label), p->label);
     o->mount_len = put_str(o->mount, sizeof(o->mount), mount);
     return OK;

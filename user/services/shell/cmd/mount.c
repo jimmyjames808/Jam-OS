@@ -14,7 +14,8 @@
  * writable, and /data always is: asking otherwise is refused here, by
  * init and by volumes. A stick is never formatted, in either mode. An NVMe
  * drive's /nvmeN that is not on a Jam OS disk (Windows' ESP is /nvme0)
- * stays read-only: volumes refuses (ACCESS_DENIED), and so does the driver. */
+ * stays read-only: volumes refuses (ACCESS_DENIED), and so does the driver.
+ * So does a stick's ext volume (a Linux stick's): someone else's, only read. */
 #include <idl/initctl.h>
 #include "sh.h"
 
@@ -107,6 +108,8 @@ SH_CMD(mount)
     if (st != OK) {
         if (st == ERR_ACCESS_DENIED && !strncmp(path, "/nvme", 5))
             sh_tty("mount: %s is not on a Jam OS disk: it stays read-only\n", path);
+        else if (st == ERR_ACCESS_DENIED && !strncmp(path, "/usb", 4) && writable)
+            sh_tty("mount: %s holds an ext volume that isn't Jam OS's: it stays read-only\n", path);
         else
             sh_tty("mount: %s: %s\n", path,
                    st == ERR_ACCESS_DENIED ? "only another stick's mounts (/usbN) can be changed"

@@ -82,8 +82,10 @@ static void remount_main(void *arg)
     op_done(o);
 }
 
-/* /usbN, /usbN-test, or an NVMe drive's /nvmeN if its disk is Jam OS's: the
- * mounts remount may change. */
+/* /usbN, /usbN-test, an NVMe drive's /nvmeN if its disk is Jam OS's, and
+ * /jam: the mounts remount may change. An ext volume that isn't Jam OS's or
+ * a test disk's is never made writable (Q9: someone else's volume is only
+ * read). */
 static status_t v_remount(void *ctx, struct idl_txn txn, const char *mount, uint32_t len,
                           uint8_t writable)
 {
@@ -97,6 +99,8 @@ static status_t v_remount(void *ctx, struct idl_txn txn, const char *mount, uint
         return ERR_BUSY;   /* the installer's (install.c) */
     if (b->nvme && writable && (!disk_of(b) || !disk_jamos_gpt(disk_of(b))))
         return ERR_ACCESS_DENIED;   /* only on a Jam OS disk, by our own check (mark.c) */
+    if (b->ext && writable && !b->dflt_rw)
+        return ERR_ACCESS_DENIED;   /* someone else's ext volume: read-only always */
     status_t st = disk_can_restart(b, writable);
     if (st != IDL_LATER)
         return st;
@@ -313,8 +317,8 @@ static status_t l_disk(void *ctx, uint32_t index, uint32_t *out_id, uint8_t *out
 
 static status_t l_partition(void *ctx, uint32_t id, uint32_t index, uint8_t *out_mbr_type,
                             uint8_t out_type_guid[16], uint64_t *out_start, uint64_t *out_blocks,
-                            uint8_t *out_fs, char *out_label, uint32_t *out_label_len,
-                            char *out_mount, uint32_t *out_mount_len)
+                            uint8_t *out_fs, uint8_t *out_fstype, char *out_label,
+                            uint32_t *out_label_len, char *out_mount, uint32_t *out_mount_len)
 {
     (void)ctx;
     struct list_part o;
@@ -326,6 +330,7 @@ static status_t l_partition(void *ctx, uint32_t id, uint32_t index, uint8_t *out
     *out_start = o.start;
     *out_blocks = o.blocks;
     *out_fs = o.fs;
+    *out_fstype = o.fstype;
     memcpy(out_label, o.label, o.label_len);
     *out_label_len = o.label_len;
     memcpy(out_mount, o.mount, o.mount_len);
