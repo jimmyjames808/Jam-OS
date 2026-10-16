@@ -21,14 +21,18 @@
 #               pre-push pass's and kernel changes' (docs/TESTING.md, the tiers)
 #
 # About 3 minutes at 4 CPUs on a quiet Mac; slower next to other QEMUs.
-# Usage: tools/soak-test.sh <outdir> [name]; exit 0 on PASS.
+# Usage: tools/soak-test.sh <outdir> [name]; exit 0 on PASS. The name
+# (default soak<CPUs>: soak4, soak8) names QEMU's serial and monitor
+# sockets (build/.qemu-<name>.*), so the soaks at 4 and at 8 CPUs can run
+# at once from one checkout (a batch): with one name the second QEMU took
+# the first's sockets, its replugs and its input script (2026-10-16).
 set -eu
 case ${JAMOS_TIER:-} in
 push | kernel) ;;
 *) echo "soak-test: refused: the soak runs before a push or for a kernel change only: JAMOS_TIER=push or JAMOS_TIER=kernel (docs/TESTING.md, the tiers)" >&2
    exit 2 ;;
 esac
-out=$1 name=${2:-soak}
+out=$1 name=${2:-soak${QEMU_SMP:-4}}
 mkdir -p "$out"
 loops=${SOAK_LOOPS:-3}
 seed=${SOAK_SEED:-$((1000 + ${QEMU_SMP:-4}))}
