@@ -39,6 +39,10 @@ AlternateTestParams/PartitionAllocDeathTest.RepeatedAllocReturnNullDirect/0
 AlternateTestParams/PartitionAllocDeathTest.RepeatedAllocReturnNullDirect/1
 AlternateTestParams/PartitionAllocDeathTest.RepeatedReallocReturnNullDirect/0
 AlternateTestParams/PartitionAllocDeathTest.RepeatedReallocReturnNullDirect/1
+AlternateTestParams/PartitionAllocTest.CrashOnUnknownPointer/0
+AlternateTestParams/PartitionAllocTest.CrashOnUnknownPointer/1
+AlternateTestParams/PartitionAllocTest.ExtraExtrasNullfyOffByOneDetection/0
+AlternateTestParams/PartitionAllocTest.ExtraExtrasNullfyOffByOneDetection/1
 AutoSpanificationIncrementTest.PostIncrementEmptySpan
 AutoSpanificationIncrementTest.PreIncrementEmptySpan
 BarrierCallbackTest.ErrorToCallCallbackWithZeroCallbacks
@@ -122,7 +126,15 @@ CompilerHardeningDeathTest.ArrayOutOfBounds
 CompilerHardeningDeathTest.Return
 CompilerHardeningDeathTest.ReturnJumpTable
 Debugger.CrashAtBreakpoint
+EnumSetDeathTest.CrashesOnOutOfRange
+EnumSetDeathTest.EnumWithNegatives
+EnumSetDeathTest.EnumWithOnlyNegatives
+EnumSetDeathTest.FromRangeCrashesOnBadInputs
+EnumSetDeathTest.PutCrashesOnOutOfRange
+EnumSetDeathTest.PutRangeCrashesOnBadInputs
+EnumSetDeathTest.VariadicConstructorCrashesOnOutOfRange
 ExpectedDeathTest.UseAfterMove
+ExpectedVoidTest.DeathTests
 FeatureListTest.RuntimeMutability_EarlyAccess
 FeatureListTest.RuntimeMutability_EnableRuntimeMutability_AfterEarlyAccess
 FeatureListTest.RuntimeMutability_EnableRuntimeMutability_AfterInit
@@ -151,10 +163,12 @@ LinkedListDeathTest.ChecksOnInsertBeforeWhenInList
 MemoryConsumerRegistryTest.MemoryConsumerRegistration_CheckUnregister_Fail
 MemoryConsumerTraitsTest.ActiveConsumerWithPassiveTraitsFails
 MemoryLimitTest.NegativePercentDeathTest
+MultiMemoryConsumerTest.DuplicateInterventionsCheck
 My/FlatTreeTest/0.EraseEndDeath
 My/FlatTreeTest/1.EraseEndDeath
 My/PAFlatTreeTest/0.EraseEndDeath
 My/PAFlatTreeTest/1.EraseEndDeath
+ObserverListThreadSafeDeathTest.CrossThreadRemovalRestricted
 OptionalRefDeathTest.ArrowOnEmpty
 OptionalRefDeathTest.StarOnEmpty
 OptionalRefDeathTest.ValueOnEmpty
@@ -182,6 +196,8 @@ PASpanTest.ReinterpretSpan
 PASpanTest.SplitAt
 PASpanTest.TakeFirst
 PASpanTest.TakeFirstElem
+PartitionAddressSpaceTest.ZeroSegmentInaccessibleBegin
+PartitionAddressSpaceTest.ZeroSegmentInaccessibleEnd
 PartitionAllocAddressPoolManagerTest.TooLargePool
 PathServiceTest.CheckedGetFailure
 PersistentHistogramAllocatorTest.FileReadonlyRecovery
@@ -234,11 +250,18 @@ SafeRefTest.InvalidAfterMoveConstruction
 SafeRefTest.InvalidAfterMoveConversionAssignment
 SafeRefTest.InvalidAfterMoveConversionConstruction
 SampleVectorTest.BucketIndexDeath
+ScopedFD.ScopedFDCrashesOnCloseFailure
 ScopedFDOwnershipTrackingTest.CrashOnUnownedClose
 ScopedFDOwnershipTrackingTest.NoDoubleOwnership
 ScopedGenericTest.Receive
 ScopedThreadPriorityDeathTest.NoRealTime
+SequenceBoundDeathTest.AsyncCallIntArgNoWithArgsShouldCheck
+SequenceBoundDeathTest.AsyncCallIntReturnNoThenShouldCheck
+SequenceCheckerTest.MoveOffSequenceBanned
 SequencedTaskRunnerCurrentDefaultHandleDeathTest.OverrideWithNull
+SingleThreadTaskRunnerCurrentDefaultHandleTest.DeathOnImplicitOverride
+SingleThreadTaskRunnerCurrentDefaultHandleTest.DeathOnSTTCDOverOverride
+SingleThreadTaskRunnerCurrentDefaultHandleTest.OverrideWithNull
 SingleThreadTaskRunnerMainThreadDefaultHandleTest.Basic
 SpanTest.CheckedSpanCrashes
 SpanTest.CheckedSpanDisallowsWraparound
@@ -259,7 +282,10 @@ TaskEnvironmentTest.SingleThreadTaskRunnerGetMainThreadDefault
 TestFutureDeathTest.GetShouldCheckIfTimeoutHappens
 TestFutureDeathTest.TakeShouldCheckIfTimeoutHappens
 TestFutureWithoutTaskEnvironmentDeathTest.WaitShouldDcheckWithoutTaskEnvironment
+TestLauncherTools.TruncateSnippetFocusedMatchesFatalMessagesTest
+TestMockTimeTaskRunnerTest.DefaultUnbound
 ThreadCheckerTest.MoveOffThreadBanned
+TimeBase.AddSubInfinities
 ToArrayDeathTest.DynamicExtentSizeMismatch
 TokenType.TokenFromNullUnguessableToken
 ValuesTest.HardenTests
@@ -314,8 +340,12 @@ FileLockingTest.UnlockOnExitExclusive
 FileLockingTest.UnlockOnExitShared
 FileLockingTest.UnlockOnTerminate
 ForkWithFlagsTest.UpdatesPidCache
+ImportantFileWriterCleanerTest.AddTwice
+ImportantFileWriterCleanerTest.StartTwice
 LaunchTest.GetAppOutputWithInvalidExecutableShouldFail
 LoggingTest.CheckCausesDistinctBreakpoints
+PlatformThreadTidCacheTest.MainThreadFirst
+PlatformThreadTidCacheTest.MainThreadSecond
 ProcessGTestOutputTest.FoundTestCaseNotEnforced
 ProcessGTestOutputTest.RunMockTests
 ProcessMetricsTest.GetChildOpenFdCount
@@ -352,11 +382,34 @@ SystemMetricsTest.MeasureChildCpuUsage
 UnitTestLauncherDelegateTester.RunMockTests
 
 [posix] mincore (syscall 27) is ENOSYS: no residency information
+AlternateTestParams/PartitionAllocTest.Purge/0
+AlternateTestParams/PartitionAllocTest.Purge/1
+AlternateTestParams/PartitionAllocTest.PurgeDiscardableDoubleTruncateFreeList/0
+AlternateTestParams/PartitionAllocTest.PurgeDiscardableDoubleTruncateFreeList/1
+AlternateTestParams/PartitionAllocTest.PurgeDiscardableFirstPage/0
+AlternateTestParams/PartitionAllocTest.PurgeDiscardableFirstPage/1
+AlternateTestParams/PartitionAllocTest.PurgeDiscardableManyPages/0
+AlternateTestParams/PartitionAllocTest.PurgeDiscardableManyPages/1
+AlternateTestParams/PartitionAllocTest.PurgeDiscardableNonPageSizedAlloc/0
+AlternateTestParams/PartitionAllocTest.PurgeDiscardableNonPageSizedAlloc/1
+AlternateTestParams/PartitionAllocTest.PurgeDiscardableNonPageSizedAllocOnSlotBoundary/0
+AlternateTestParams/PartitionAllocTest.PurgeDiscardableNonPageSizedAllocOnSlotBoundary/1
+AlternateTestParams/PartitionAllocTest.PurgeDiscardableSecondPage/0
+AlternateTestParams/PartitionAllocTest.PurgeDiscardableSecondPage/1
+AlternateTestParams/PartitionAllocTest.PurgeDiscardableSmallSlotsWithTruncate/0
+AlternateTestParams/PartitionAllocTest.PurgeDiscardableSmallSlotsWithTruncate/1
+AlternateTestParams/PartitionAllocTest.PurgeDiscardableWithFreeListStraightening/0
+AlternateTestParams/PartitionAllocTest.PurgeDiscardableWithFreeListStraightening/1
 ProcessMemoryDumpTest.CountResidentBytes
 ProcessMemoryDumpTest.CountResidentBytesInSharedMemory
 SamplingHeapProfilerTest.GetSamplesWithResidency
 
 [proc] a /proc file the test reads is missing or incomplete (the ENOSYS log names the paths: self/cmdline, self/stat, self/maps content, <tid>/stat, task/, cpuinfo, meminfo, self/ns/user)
+ModuleCacheTest.CheckAgainstProcMaps
+ModuleCacheTest.GetDebugBasename
+ModuleCacheTest.LookupCodeAddresses
+ModuleCacheTest.ModulesList
+ModuleCacheTest.NativeModuleOverAuxiliaryModuleProvider
 PlatformThreadMetricsTest.GetCumulativeCPUUsage_CurrentThread
 PlatformThreadMetricsTest.GetCumulativeCPUUsage_OtherThread
 ProcMapsTest.ReadProcMaps
@@ -365,9 +418,11 @@ ProcessMetricsTestLinux.GetPageFaultCounts
 SetProcTitleLinuxTest.Empty
 SetProcTitleLinuxTest.Long
 SetProcTitleLinuxTest.Simple
+SystemMetrics2Test.GetSystemMemoryInfo
 
 [posix] dlopen() of a library fails (a static program: musl's stub, logged as `dlopen <library>`)
 ElfReaderTestWithCurrentImage.ReadElfBuildId
+ImmediateCrashTest.ExpectedOpcodeSequence
 NativeLibraryTest.LoadLibrary
 
 [toolchain] the program carries no GNU build-id note (the link has no --build-id)
@@ -391,6 +446,7 @@ FileUtilTest.CopyFileContentsWithSendfileSeqFile
 FileUtilTest.CopyFileContentsWithSendfileSocket
 
 [posix] a thread blocked in recv() on a socket pair is not woken by shutdown() from another thread (or the test's own wait never returns): the test hangs
+CancelableSyncSocketTest.ShutdownCancelsReceive
 SyncSocketTest.DisconnectTest
 
 [posix] uname/sysfs: the kernel version reads as 0.1.0 and there is no DMI hardware information
@@ -443,12 +499,22 @@ FileUtilTest.NormalizeFilePathSymlinks
 FileUtilTest.ReadFileToStringWithNamedPipe
 FileUtilTest.TestNonBlockingFileReadLinux
 FileUtilTest.TouchFile
+ImportantFileWriterCleanerTest.AddAddStart
+ImportantFileWriterCleanerTest.AddStart
+ImportantFileWriterCleanerTest.AddStartAdd
+ImportantFileWriterCleanerTest.DoesNotPreservePrefixedTempFilesWhenTargetExists
+ImportantFileWriterCleanerTest.PreservesLatestPrefixedTempFilePerPrefix
+ImportantFileWriterCleanerTest.PreservesLatestPrefixedTempFileWhenTargetMissing
+ImportantFileWriterCleanerTest.StartAdd
+ImportantFileWriterCleanerTest.StartAddFromOtherThread
 ImportantFileWriterTest.FailedWriteWithObserver
 ImportantFileWriterTest.RestoreMissingFileIfNeeded_UsesLatestCandidate
 
 [fs] a writable shared mapping of a /data file (MemoryMappedFile READ_WRITE, extend, truncate) fails; the null pointer or bad object the test then uses faults
 FilePersistentMemoryAllocatorTest.AcceptableTest
 FilePersistentMemoryAllocatorTest.ExtendTest
+MemoryMappedFileTest.ExtendableFile
+MemoryMappedFileTest.WriteableFile
 PersistentHistogramAllocatorTest.CreateSpareFile
 PersistentHistogramAllocatorTest.CreateWithFile
 PersistentHistogramAllocatorTest.MovePersistentFile
@@ -456,4 +522,7 @@ PersistentMemoryAllocatorTest.TruncateTest
 
 [posix] a purged discardable shared-memory page does not read back as zeros (madvise/memfd semantics)
 DiscardableSharedMemoryTest.ZeroFilledPagesAfterPurge
+
+[?] address-space size query returns 64 KiB where the test expects at least 4 GiB
+PartitionAddressSpaceTest.ZeroSegment
 

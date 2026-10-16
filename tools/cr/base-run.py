@@ -417,8 +417,9 @@ def main(argv):
     counts = {}
     for t in expected:
         st = res.status.get(t)
-        counts[st or "NOT RUN"] = counts.get(st or "NOT RUN", 0) + 1
         sk = skipped(t)
+        label = st or ("on the skip list" if sk and not args.all else "NOT RUN")
+        counts[label] = counts.get(label, 0) + 1
         if st is None:
             if not (sk and not args.all):
                 missing.append(t)
