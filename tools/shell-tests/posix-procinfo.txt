@@ -1,0 +1,35 @@
+# libc's /proc from the shell (CR-PLAN.md "PRC notes"): posixtest's procfs
+# and procinfo sections (the program's file, the descriptors, then the files
+# Chromium's base reads: /proc/self/stat, status, statm, maps, /proc/cpuinfo,
+# meminfo, stat, and a child's stat and status from live to zombie to gone),
+# and utest's process_maps, sys_public_info and posix_ids cases for the
+# kernel calls under them (process_get_maps, the free memory figure, a
+# process's creation time and name). Also in the init run; this is the
+# sections alone, from the shell (descriptor 0 the terminal, the shell's
+# own namespace).
+#   QEMU_INPUT=tools/shell-tests/posix-procinfo.txt tools/qemu-test.sh <dir> posix-procinfo shell
+wait 120 Jam OS shell
+wait {prompt}
+send run posixtest procfs procinfo
+wait 120 posixtest: procfs: ok
+wait 120 posixtest: procinfo: ok
+wait 20 posixtest: PASS
+wait 20 run: bin/posixtest exited with code 0
+wait {prompt}
+send utest only process_maps; echo pi-""1
+wait 60 passed
+seen utest: 1 passed
+wait pi-1
+wait {prompt}
+send utest only sys_public_info; echo pi-""2
+wait 60 passed
+seen utest: 1 passed
+wait pi-2
+wait {prompt}
+send utest only posix_ids; echo pi-""3
+wait 60 passed
+seen utest: 1 passed
+wait pi-3
+wait {prompt}
+send reboot -f
+wait reboot: resetting

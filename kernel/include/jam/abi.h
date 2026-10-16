@@ -329,6 +329,7 @@ struct process_info {
                              most; 0 once it is torn down) */
     uint32_t flags;       /* PROCESS_FLAG_* */
     uint64_t start_ns;    /* the uptime (clock_get) when it was created */
+    char     name[32];    /* the name it was created with (PROCESS_NAME_MAX), NUL-terminated */
 };
 /* process_info.flags and proc_stat.flags: its address space has mapped a
  * JIT VMO (vmo_make_jit) since it was made, writable and executable

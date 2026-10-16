@@ -302,6 +302,7 @@ void process_get_info(struct process *p, struct process_info *out)
     out->koid = p->base.koid;
     out->pid = p->pid;
     out->start_ns = p->start_ns;
+    copy_name(out->name, sizeof(out->name), p->name);
     out->cpu_ns = tsc_to_ns(process_cpu_tsc(p));
 }
 

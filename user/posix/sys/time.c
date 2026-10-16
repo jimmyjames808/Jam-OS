@@ -71,6 +71,12 @@ static const struct time_page *time_page(void)
     return mine == PAGE_NONE ? NULL : mine;
 }
 
+uint64_t time_tsc_hz(void)
+{
+    const struct time_page *p = time_page();
+    return p ? p->tsc_hz : 0;
+}
+
 /* The TSC, read after every instruction before it has finished (lfence),
  * so a clock read never comes out earlier than a read before it. */
 static inline uint64_t tsc_ordered(void)

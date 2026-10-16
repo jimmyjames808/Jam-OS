@@ -295,6 +295,7 @@ bool t_posix_ids(void);
 bool t_thread_interrupt_calls(void);
 bool t_cpu_ns(void);
 bool t_sys_public_info(void);
+bool t_process_maps(void);
 bool t_vmar_replace_calls(void);
 int  tidword_child(void);
 bool t_kill_spinning_and_unstarted(void);
