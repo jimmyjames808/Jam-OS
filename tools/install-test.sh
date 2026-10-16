@@ -290,7 +290,8 @@ check_disk() {
         fi
     done
     for f in /boot/limine.conf /boot/limine/limine.conf.new /boot/limine/limine.conf.prev \
-        /boot/jamos.elf.new /boot/jamos.elf.old /boot/bootfs.img.new /boot/bootfs.img.old /boot/prev-jamos.elf.new; do
+        /boot/jamos.elf.new /boot/jamos.elf.old /boot/bootfs.img.new /boot/bootfs.img.old /boot/prev-jamos.elf.new \
+        /EFI/BOOT/limine.conf /limine.conf; do
         no_esp "$img" "$f" || fail "$n: $f is left on the ESP"
     done
     # /data/etc: copied as /etc.new first, then renamed
@@ -383,10 +384,14 @@ c_again() {
     in_data "$dir/nvme.img" /keep.txt build/build.txt || fail "a1: the file put on the drive's /data isn't there"
     check_disk a1 "$dir/nvme.img" full "$dir/a1.conf" --require-clean
     guid1=$(guid_of "$dir/nvme.img")
-    # what an older install or an update leaves: another build, a spare menu, leftovers
+    # what an older install or an update leaves: another build, a spare menu, leftovers;
+    # and menus put by hand where Limine 11 looks first (/EFI/BOOT/limine.conf)
+    # or last (/limine.conf): left, the first would be read instead of the
+    # installed menu (R3 stage 3's S11)
     printf 'an old build\n' > "$dir/old.txt"
     for f in /boot/jamos.elf /boot/prev-bootfs.img /boot/limine.conf /boot/limine/limine.conf.prev \
-        /boot/jamos.elf.new /boot/bootfs.img.old /boot/prev-jamos.elf.new; do
+        /boot/jamos.elf.new /boot/bootfs.img.old /boot/prev-jamos.elf.new /EFI/BOOT/limine.conf \
+        /limine.conf; do
         mcopy -o -i "$dir/nvme.img@@1M" "$dir/old.txt" "::$f" || { fail "can't age the ESP ($f)"; return; }
     done
     inst_in "$dir/a2.in" "a Jam OS disk already" none
