@@ -25,7 +25,8 @@
  *     within 1 ms, each within 10 ms), on its alternate stack, with RIP
  *     inside the loop and RBP its frame (V8's profiler); 10,000 SIGPROF
  *     from a sampler thread, each once the last was handled, all handled;
- *     tgkill(SIGURG) whose handler copies the stack from the ucontext's
+ *     200 each to a thread making only quiet calls (mmap, munmap) and to
+ *     one making plain calls too, all handled; tgkill(SIGURG) whose handler copies the stack from the ucontext's
  *     RSP and wakes the sender on a futex (Chromium's StackCopierSignal),
  *     on the interrupted stack; SIGINT from kill and from a timer. */
 #include <stdint.h>
@@ -37,6 +38,7 @@
 #include <sched.h>
 #include <signal.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/syscall.h>
 #include <sys/time.h>
 #include <time.h>
@@ -442,21 +444,21 @@ __asm__(".text\n"
         "pt_sig_spin_end:\n"
         ".size pt_sig_spin, . - pt_sig_spin\n");
 
-/* A thread in pt_sig_spin, taking SIGPROF, SIGURG and SIGINT, with an
- * alternate stack if alt is set. */
+/* A busy thread taking SIGPROF, SIGURG and SIGINT, with an alternate stack
+ * if alt is set: in pt_sig_spin, or making calls (busy_calling). */
 struct busy {
     pthread_t      thread;
     volatile pid_t tid;
     volatile int   stop;
-    void *volatile frame;   /* the loop's RBP, once it runs */
+    void *volatile frame;   /* the loop's RBP, once it runs (busy_calling: itself) */
     stack_t        alt;
+    bool           plain;   /* busy_calling: plain calls too */
 };
 
 static struct busy *target;   /* the one the handlers below look at */
 
-static void *busy_run(void *arg)
+static void busy_begin(struct busy *b)
 {
-    struct busy *b = arg;
     sigset_t s;
     sigemptyset(&s);
     sigaddset(&s, SIGPROF);
@@ -466,18 +468,50 @@ static void *busy_run(void *arg)
     if (b->alt.ss_sp)
         CHECK(sigaltstack(&b->alt, NULL) == 0);
     b->tid = gettid();
+}
+
+static void *busy_run(void *arg)
+{
+    struct busy *b = arg;
+    busy_begin(b);
     pt_sig_spin(&b->stop, (void **)&b->frame);
     return NULL;
 }
 
-static void busy_start(struct busy *b, size_t alt)
+/* Quiet calls (mmap and munmap: no handler runs inside them, and a raise
+ * that finds the thread there raises it again once it is out), plain
+ * ones too if b->plain (the boundary delivers), and a spin between. */
+static void *busy_calling(void *arg)
 {
-    *b = (struct busy){ .alt = { .ss_sp = alt ? malloc(alt) : NULL, .ss_size = alt } };
+    struct busy *b = arg;
+    busy_begin(b);
+    b->frame = b;
+    while (!b->stop) {
+        if (b->plain)
+            (void)getppid();
+        void *p = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (p != MAP_FAILED)
+            munmap(p, 4096);
+        for (volatile int i = 0; i < 20000; i++)
+            ;
+    }
+    return NULL;
+}
+
+static void busy_start_with(struct busy *b, size_t alt, void *(*fn)(void *), bool plain)
+{
+    *b = (struct busy){ .alt = { .ss_sp = alt ? malloc(alt) : NULL, .ss_size = alt },
+                        .plain = plain };
     target = b;
-    CHECK(pthread_create(&b->thread, NULL, busy_run, b) == 0);
+    CHECK(pthread_create(&b->thread, NULL, fn, b) == 0);
     for (int i = 0; i < 10000 && !b->frame; i++)
         nap_ms(1);
     CHECK(b->frame);
+}
+
+static void busy_start(struct busy *b, size_t alt)
+{
+    busy_start_with(b, alt, busy_run, false);
 }
 
 static void busy_stop(struct busy *b)
@@ -611,6 +645,27 @@ static void check_busy_profiler(void)
     deflt(SIGPROF);
 }
 
+#define CALL_SAMPLES 200
+
+/* A thread that makes calls gets every signal too: in quiet calls only (a
+ * raise inside one is raised again once out, or the signal would wait for
+ * a call that never comes), and with plain calls among them. */
+static void check_busy_calls(void)
+{
+    for (int plain = 0; plain < 2; plain++) {
+        handle_busy(SIGPROF, sample, SA_RESTART);
+        struct busy b;
+        busy_start_with(&b, 0, busy_calling, plain);
+        int i = 0;
+        while (i < CALL_SAMPLES && !pthread_kill(b.thread, SIGPROF) &&
+               reaches_soon(&busy_hits[SIGPROF], i + 1, 5000))
+            i++;
+        CHECK(i == CALL_SAMPLES);
+        busy_stop(&b);
+    }
+    deflt(SIGPROF);
+}
+
 /* Chromium's StackCopierSignal: tgkill(SIGURG), the handler copies the
  * thread's stack from the RSP its ucontext gives up to the stack's top,
  * then wakes the sender on a futex. No SA_ONSTACK, so the handler runs on
@@ -719,6 +774,7 @@ void pt_signal(char **argv)
     check_timers();
     check_cancel();
     check_busy_profiler();
+    check_busy_calls();
     check_busy_stack_copy();
     check_busy_sigint();
     pt_sigproc();
