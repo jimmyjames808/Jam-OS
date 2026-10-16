@@ -251,6 +251,12 @@ static void check_recovered(struct storm *s, uint64_t n, const struct cut *c,
     uint32_t every = s->cfg->tail_every ? s->cfg->tail_every : EXT_JNL_TAIL_EVERY;
     if (q.j.replayed > every)
         fail("%u transactions replayed: the tail moves every %u", q.j.replayed, every);
+    /* The library's own tail moves once the log holds EXT_JNL_TAIL_BLOCKS
+     * blocks: a cut leaves the one transaction in hand and at most one
+     * before it (smaller than that), so a start replays two at most. */
+    if (!s->cfg->tail_blocks && q.j.replayed > 2)
+        fail("%u transactions replayed: the tail moves every %u blocks", q.j.replayed,
+             EXT_JNL_TAIL_BLOCKS);
     if (n % LIST_EVERY == 0 && want) {
         check_untouched(s, &q, want);
     } else if (n % LIST_EVERY == 0) {

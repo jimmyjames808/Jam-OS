@@ -1100,7 +1100,7 @@ case_foreign() {
     # Someone else's volumes: every byte as it was.
     after=$(sha256sum "$stick" "$ldrive" | cut -d' ' -f1 | tr '\n' ' ')
     [ "$after" = "$before" ] || fail "an image of someone else's volume changed: Jam OS wrote to it"
-    clean "$j1" 64 "of /jam after the first boot"
+    clean "$j1" 64 "of the Jam OS drive after the first boot"
 
     # Boot 2: two Jam OS drives.
     before=$(sha256sum "$j2" "$j3" | cut -d' ' -f1 | tr '\n' ' ')
