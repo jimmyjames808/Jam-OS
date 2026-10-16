@@ -676,3 +676,9 @@ page); a power cut or a kernel panic loses what wasn't written yet.
 5 s keeps a mapped file close to that, and costs little: a page is
 written at most once per 5 s (Chromium's histograms store to the same
 pages all the time), on NVMe. Whose: the owner's (a durability promise).
+
+**Answered by the owner (2026-10-16): 10 seconds to start with, and easy to
+change.** The age after which extfs writes a dirty run back by itself is
+a setting (one value, read at mount and on a settings change, with 10 s
+as its default; WE2 names it and documents it in USING), not a constant
+in code.
