@@ -148,6 +148,11 @@ for this checkout) is skipped and claims no CPUs.
 
 - `make` builds with `-Werror`; `make KTESTS=0` builds a kernel without
   the in-kernel tests, benchmark and test hooks (into `build/noktests/`).
+  A build kept from before a compile or link flag changed builds again
+  what that flag touches and nothing else (flag stamps, `build/flags/`:
+  [CODING-GUIDE](../CODING-GUIDE.md#build-commands)), so the PC's
+  incremental builds need no `make clean` after one; a make with nothing
+  changed builds nothing.
 - `make check`: the generated syscall and IDL code matches `abi/`
   (`tools/gensyscalls.py check`, `tools/genidl.py check`), the generated
   Wayland code matches the vendored XML (`tools/genwl.py check`) and the
