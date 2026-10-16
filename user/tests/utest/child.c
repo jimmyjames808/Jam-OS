@@ -528,6 +528,7 @@ int child_main(int argc, char **argv)
     if (!strncmp(m, "unread-", 7)) return unread_child(argc, argv);
     if (!strncmp(m, "kept-", 5))  return kept_child(argc, argv);
     if (!strncmp(m, "cow-", 4))   return vmochild_child(argc, argv);
+    if (!strncmp(m, "jit-", 4))   return jit_child(argc, argv);
     if (!strncmp(m, "wl-", 3))    return comp_child(argc, argv);
     if (!strncmp(m, "ns-", 3) || !strncmp(m, "fs", 2) || !strcmp(m, "fat-shell"))
         return ns_child(argc, argv);
