@@ -72,7 +72,8 @@ tools/pc-batch.sh wait 14203846            # again until it ends: at most 270 s 
 `wait` returns after at most 270 s (`PC_BATCH_WAIT`) with one progress
 line (exit 124: not finished, call it again) or, at the end, the table
 (exit 0: all passed, 1: one failed): each run's PASS or FAIL, its seconds
-and the seconds it queued for the budget, and for a failure its first
+and the seconds it queued for the budget (its build's turn too, in a
+detached batch), and for a failure its first
 failure lines, its log (`build/batch/<id>/<name>.log`: remote-test's lines
 and the command's) and its output directory. `report [<id>]` prints the
 table again, `cancel [<id>]` stops a batch; `<id>` left out is the newest.

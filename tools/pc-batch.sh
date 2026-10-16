@@ -353,7 +353,10 @@ result() {
     else
         res=QUEUED
     fi
-    [ -f "$rd/$n.log" ] && queued=$(sed -n 's/^remote-test: running with .*(after \([0-9]*\) s)$/\1/p' "$rd/$n.log" | head -1)
+    # The waits for the budget: the run's, and its build's (a detached batch
+    # builds in its first run).
+    [ -f "$rd/$n.log" ] && queued=$(sed -nE 's/^remote-test: (running|building) with .*\(after ([0-9]+) s\)$/\2/p' "$rd/$n.log" |
+        awk '{ s += $1 } END { print s + 0 }')
     [ -n "$queued" ] || queued=0
 }
 
