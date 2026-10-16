@@ -10,13 +10,19 @@
  *                               partition table alone, one line each, in its order
  *   disk smart <disk>           the drive's health log
  *   disk prepare <disk>         make an NVMe drive a Jam OS disk (stage 2): its
- *                               partition table, both partitions formatted, mounted
- *                               read-only. It shows the drive's model, serial number and
- *                               size, and goes on only when the last four characters of the
- *                               serial number are typed. A drive that isn't empty (the
- *                               driver's empty rules) is ERASED: it shows what is on it,
- *                               says everything will be lost, and asks for the serial's
- *                               end and then `erase`
+ *                               partition table, both partitions formatted (the ESP FAT32,
+ *                               mounted read-only; the data partition ext, /jam,
+ *                               read-write: M13.6's U7b). It shows the drive's model,
+ *                               serial number and size, and goes on only when the last four
+ *                               characters of the serial number are typed. A drive that
+ *                               isn't empty (the driver's empty rules) is ERASED: it shows
+ *                               what is on it, says everything will be lost, and asks for
+ *                               the serial's end and then `erase`
+ *   disk format <disk> data [fat]
+ *                               a Jam OS disk's data partition formatted again, everything
+ *                               on it lost: ext, or FAT32 with `fat`. It shows the drive and
+ *                               what the partition holds, and goes on only when the
+ *                               serial's last four characters are typed
  *
  * The shell asks init for a channel that speaks voldisks (initctl.disks,
  * abi/idl/volumes.idl): volumes answers the list from what its drivers said
@@ -732,19 +738,144 @@ static int write_cmd(handle_t list, const struct disk_row *d, bool install)
     return 0;
 }
 
+/* ---- disk format ---------------------------------------------------------------------- */
+
+static const char *format_why(status_t st)
+{
+    switch (st) {
+    case ERR_BUSY: return "the installer is writing it: try again when `install` is done";
+    case ERR_NOT_SUPPORTED: return "not a drive whose data partition Jam OS formats (NVMe; "
+                                   "FAT32: 512-byte blocks)";
+    case ERR_IO: return "the zeros or the format failed (see `log`; `disk format` again, or "
+                        "`disk prepare`, finishes it)";
+    default: return prepare_why(st);
+    }
+}
+
+/* What partition 2 of d (the data partition) holds and where it is
+ * mounted, said ("an ext volume, mounted read-write at /jam"); *where gets
+ * its mount (empty if none). False if it can't be listed. */
+static bool say_data(handle_t list, const struct disk_row *d, char *where, size_t cap)
+{
+    uint8_t mbr, guid[16], fs, fstype;
+    uint64_t start, blocks;
+    char label[109], mount[16], size[24];
+    uint32_t ll, ml;
+    where[0] = '\0';
+    if (voldisks_partition_until(list, now() + LIST_WAIT, d->id, 1, &mbr, guid, &start, &blocks,
+                                 &fs, &fstype, label, &ll, mount, &ml) != OK)
+        return false;
+    sh_say("  its data partition, %s: ", sh_human(blocks * d->block_size, size, sizeof(size)));
+    if (fs == VOLDISKS_FS_MOUNTED) {
+        bool ro = true;
+        if (fs_statfs(mount, NULL, NULL, &ro, NULL) != OK)
+            ro = true;
+        snprintf(where, cap, "%s", mount);
+        sh_say("%s volume, mounted %s at %s\n", fstype == VOLDISKS_FSTYPE_EXT ? "an ext" : "a FAT",
+               ro ? "read-only" : "read-write", mount);
+    } else if (fs == VOLDISKS_FS_NO_FAT) {
+        sh_say("no volume Jam OS reads\n");
+    } else {
+        sh_say("no volume yet\n");
+    }
+    return true;
+}
+
+/* `disk format <disk> data [fat]`: a Jam OS disk's data partition formatted
+ * again (initctl.format_data), everything on it lost: an ext volume, or
+ * FAT32 when asked (a FAT one an older `disk prepare` made becomes ext this
+ * way). The drive and what its data partition holds are shown and the
+ * serial's last four characters asked; volumes checks them again. As for
+ * an erase, a shell that runs one command line for SSH formats nothing. */
+static int format_cmd(handle_t list, const struct disk_row *d, bool fat)
+{
+    verb = "disk format";
+    uint8_t plan, why;
+    status_t st = voldisks_prepare_check_until(list, now() + CHECK_WAIT, d->id, &plan, &why);
+    if (st != OK) {
+        sh_tty("%s: %s: %s\n", verb, d->name, prepare_why(st));
+        return 1;
+    }
+    /* A Jam OS disk, by volumes' mark and its driver's: both partitions
+     * mounted, or one a prepare is still to finish. */
+    bool jamos = why == VOLDISKS_REFUSED_JAMOS ||
+                 (why == VOLDISKS_REFUSED_NONE && plan == VOLDISKS_PLAN_FINISH);
+    if (!jamos && why != VOLDISKS_REFUSED_NONE && why != VOLDISKS_REFUSED_IN_USE &&
+        refused(d, why))
+        return 1;
+    char name[sizeof(d->name)], size[24], typed[16], where[16];
+    snprintf(name, sizeof(name), "%s", d->name);
+    if (!jamos) {
+        sh_tty("%s: %s is not a Jam OS disk (`disk prepare %s` makes one): nothing is "
+               "written\n", verb, name, name);
+        return 1;
+    }
+    if (!d->serial[0]) {
+        sh_tty("%s: %s reports no serial number: nothing to confirm with, nothing is "
+               "written\n", verb, name);
+        return 1;
+    }
+    if (sh_one_line()) {
+        sh_tty("%s: formatting is confirmed at a prompt, not in a command line run from "
+               "elsewhere (ssh host '%s'): nothing is written\n", verb, verb);
+        return 1;
+    }
+    sh_say("%s %s data: %s, serial %s, %s\n", verb, name, d->model, d->serial,
+           sh_human(d->blocks * d->block_size, size, sizeof(size)));
+    if (!say_data(list, d, where, sizeof(where))) {
+        sh_tty("%s: %s's data partition can't be listed: nothing is written\n", verb, name);
+        return 1;
+    }
+    sh_say("  EVERYTHING ON IT WILL BE LOST: every file in it%s. This formats it %s.\n",
+           where[0] ? " (it is unmounted first)" : "",
+           fat ? "FAT32, for another computer" : "ext, Jam OS's own");
+    char question[96];
+    snprintf(question, sizeof(question), "  Type the last %d characters of its serial number to "
+             "go on, anything else stops: ", SERIAL_TAIL);
+    if (!ask(question, typed, sizeof(typed)) || !serial_tail_is(d->serial, typed)) {
+        sh_tty("%s: that is not the end of %s's serial number: nothing was written\n", verb,
+               name);
+        return 1;
+    }
+    if (!sh_initctl()) {
+        sh_tty("%s: no init to ask\n", verb);
+        return 1;
+    }
+    sh_say("formatting %s's data partition (%s): this takes a moment\n", name,
+           fat ? "FAT32" : "ext");
+    sh_flush();
+    st = initctl_format_data_until(sh_initctl(), now() + PREPARE_WAIT, d->id, typed,
+                                   (uint32_t)strlen(typed), fat ? 1 : 0);
+    if (st != OK) {
+        sh_tty("%s: %s: %s\n", verb, name, format_why(st));
+        return 1;
+    }
+    struct disk_row r;
+    sh_say("%s's data partition is formatted:", name);
+    sh_flush();
+    if (!find_disk(list, name, &r) || !say_data(list, &r, where, sizeof(where)))
+        sh_say("\n");
+    return 0;
+}
+
 SH_CMD(disk)
 {
     bool digest = argc >= 3 && !strcmp(argv[1], "digest") && (argc == 3 || argc == 5);
     bool smart = argc == 3 && !strcmp(argv[1], "smart");
     bool prepare = argc == 3 && !strcmp(argv[1], "prepare");
     bool check = argc == 3 && !strcmp(argv[1], "check");
-    if (!digest && !smart && !prepare && !check) {
+    bool format = (argc == 4 || (argc == 5 && !strcmp(argv[4], "fat"))) &&
+                  !strcmp(argv[1], "format") && !strcmp(argv[3], "data");
+    if (!digest && !smart && !prepare && !check && !format) {
         sh_tty("usage: disk digest <disk> [<lba> <count>]   SHA-256s of the disk's regions\n"
                "       disk smart <disk>                    the drive's health log\n"
                "       disk prepare <disk>                  make an NVMe drive a Jam OS disk (one\n"
                "                                            that isn't empty: erased, if you say so)\n"
                "       disk check <mount>                   read-only check of an ext volume (/jam):\n"
                "                                            reports, never repairs or writes\n"
+               "       disk format <disk> data [fat]        format a Jam OS disk's data partition\n"
+               "                                            again, everything on it lost: ext (fat:\n"
+               "                                            FAT32, for another computer)\n"
                "  <disk> is a name `disks` shows (nvme0, usb0)\n");
         return 2;
     }
@@ -759,8 +890,10 @@ SH_CMD(disk)
     struct disk_row d;
     int rc = 1;
     if (find_disk(list, argv[2], &d))
-        rc = prepare ? write_cmd(list, &d, false) : smart ? smart_cmd(list, &d)
-                                                     : digest_cmd(list, &d, argc, argv);
+        rc = prepare ? write_cmd(list, &d, false)
+             : format ? format_cmd(list, &d, argc == 5)
+             : smart  ? smart_cmd(list, &d)
+                      : digest_cmd(list, &d, argc, argv);
     jam_handle_close(list);
     return rc;
 }

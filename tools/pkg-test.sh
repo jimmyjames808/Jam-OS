@@ -11,7 +11,9 @@
 #                 defect refused with nothing left (a byte changed in a
 #                 package, another key's manifest, a file the archive lacks,
 #                 a program asking for what none may have, an index changed after
-#                 it was signed); install of bbb, which runs aaa, one question
+#                 it was signed, an index and a package built for another ABI
+#                 stamp: the repositories sign for this tree's stamp, which the
+#                 image's /boot/build.txt has); install of bbb, which runs aaa, one question
 #                 for both; list, check, files, info, allow -l with the package
 #                 shown, allow -r refused over a package's program, remove
 #                 refused while something runs it; an index from the past

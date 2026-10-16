@@ -25,6 +25,10 @@ http://<host>:<port>/<name>/:
     refuse    serial 904: aaa's program asks for `right debug`, which no
               package may
     badidx    serial 905: the index changed by a byte after it was signed
+    otherabi  serial 906: good's packages, but the index says another ABI stamp
+              (built for another version of Jam OS)
+    pkgabi    serial 907: an index with this build's stamp whose aaa package
+              was made for another one
     rebuild   serial 1004: aaa 2.0 again with another readme (same version and
               revision, another hash: newer by its hash)
     slow      serial 1005: next's packages, but a package's body stalls halfway
@@ -52,7 +56,8 @@ from portslib import sign as signmod  # noqa: E402
 from portslib import ustar  # noqa: E402
 from portslib import vectors  # noqa: E402
 
-ABI = vectors.ABI
+ABI = fmt.abi_stamp(TOP)   # this tree's, as the test image's build.txt has it (the Makefile)
+OTHER_ABI = "fedcba9876543210"   # a build that isn't this one
 MADE = "2026-10-12T00:00:00Z"
 LIST = b"posix\nmount /data r\n"
 
@@ -74,14 +79,14 @@ def package(name, version, runs=(), readme=None, extra=None, list_=LIST, rev=1):
     return p
 
 
-def archive_of(p, key):
-    text = packagemod.manifest(p, ABI)
+def archive_of(p, key, abi=ABI):
+    text = packagemod.manifest(p, abi)
     return packagemod.archive(p, signmod.sign(text, fmt.PKG_FIRST, key))
 
 
-def index_text(entries, serial, key, vulns=None):
+def index_text(entries, serial, key, vulns=None, abi=ABI):
     """INDEX and VULNS for entries: [(Package, jpk bytes)]."""
-    lines = ["serial %d" % serial, "made " + MADE, "abi " + ABI]
+    lines = ["serial %d" % serial, "made " + MADE, "abi " + abi]
     ents = sorted(entries, key=lambda e: e[0].name.encode())
     for p, data in ents:
         lines.append("package %s %s %d %d %s %s" % (p.name, p.version, p.revision, len(data),
@@ -96,8 +101,9 @@ def index_text(entries, serial, key, vulns=None):
     return index, out(v, fmt.VULNS_FIRST)
 
 
-def write_repo(web, name, entries, serial, key, vulns=None, index_edit=None, files=None):
-    index, vtext = index_text(entries, serial, key, vulns)
+def write_repo(web, name, entries, serial, key, vulns=None, index_edit=None, files=None,
+               abi=ABI):
+    index, vtext = index_text(entries, serial, key, vulns, abi)
     if index_edit:
         index = index_edit(index)
     d = os.path.join(web, name)
@@ -143,6 +149,8 @@ def make(out):
                 if x != "share/aaa/readme.txt"]
     members += [("+TABLES/bin/aaa", 0o644, packagemod.pagetable.make(aaa1.files["bin/aaa"][1]))]
     write_repo(web, "missing", [(aaa1, ustar.archive(members))], 903, key)
+    write_repo(web, "otherabi", good, 906, key, abi=OTHER_ABI)
+    write_repo(web, "pkgabi", [(aaa1, archive_of(aaa1, key, OTHER_ABI))], 907, key)
     write_repo(web, "refuse", [entry(package("aaa", "1.0", list_=b"posix\nright debug\n"), key)],
                904, key)
     aaa2b = package("aaa", "2.0", readme="aaa 2.0, rebuilt\n", extra={"share/aaa/new.txt": b"new\n"})

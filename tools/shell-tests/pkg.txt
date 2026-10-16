@@ -1,0 +1,86 @@
+# The shell and the packages, with no network (docs/M13.7-PLAN.md PO7): `pkg
+# list`, `info`, `files`, `check` and `remove` on a package the stick already
+# has (tools/ports-preinstall.py wrote it, signed with the ports vectors' test
+# key, whose public half is the image's /boot/ports.pub), `type`, PATH's
+# /data/pkg/bin and Tab completion of a packaged program. The package is zlib
+# (minigzip). Run by tools/ports-test.sh, which makes the stick and types the
+# start (T=x, the current directory /data, a prompt) before this file:
+#   PORTS_TEST_SCRIPT=tools/shell-tests/pkg.txt tools/ports-test.sh <outdir> zlib
+
+# ---- pkg: the installed package, read from its signed record --------------------------------
+send pkg
+wait usage: pkg update | install
+wait {prompt}
+send pkg list
+wait re:zlib [0-9][0-9.]*-r[0-9]+
+wait {prompt}
+send pkg list | grep -c damaged | grep ^0$ && echo ok-$T-clean
+wait ok-x-clean
+wait {prompt}
+send pkg info zlib
+wait (installed)
+wait licence: Zlib
+wait program bin/minigzip asks for:
+wait {prompt}
+send pkg files zlib
+wait /data/pkg/bin/minigzip (program)
+wait {prompt}
+send pkg check; echo st-$T=$?
+wait every file is as its manifest says
+wait st-x=0
+wait {prompt}
+send allow -l
+wait [package zlib
+wait {prompt}
+
+# ---- type: where a name is found along PATH ---------------------------------------------------
+send echo $PATH
+wait /boot/bin:/boot/usr/bin:/data/pkg/bin
+wait {prompt}
+send type minigzip sed seq nosuchprogram
+wait minigzip is /data/pkg/bin/minigzip
+wait sed is /boot/usr/bin/sed
+wait seq is a shell builtin
+wait nosuchprogram: not found
+wait {prompt}
+
+# ---- PATH: a packaged program by its name; its output through a redirection and a pipe --------
+send printf 'pk-path\n' > /data/pk-in; sha256sum /data/pk-in
+wait 061e46819afbda01c2a07b5733f3d2a4d04561b3f97086d92f2133ffdf6a45fa  /data/pk-in
+wait {prompt}
+send minigzip -c /data/pk-in > /data/pk-c.gz; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send minigzip -d -c /data/pk-c.gz | sha256sum
+wait 061e46819afbda01c2a07b5733f3d2a4d04561b3f97086d92f2133ffdf6a45fa  -
+wait {prompt}
+
+# ---- Tab: the first word completes to a program of /data/pkg/bin --------------------------------
+type minigz\t -c /data/pk-in > /data/pk-t.gz; echo st-$T=$?\r
+wait st-x=0
+wait {prompt}
+send cmp /data/pk-c.gz /data/pk-t.gz && echo ok-$T-tab
+wait ok-x-tab
+wait {prompt}
+
+# ---- pkg remove: the files, the approvals and the name on PATH go with it ---------------------
+send pkg remove zlib
+wait Remove 1 package? [y/N]
+type y
+wait Removed zlib
+wait {prompt}
+send pkg list
+wait No package is installed.
+wait {prompt}
+send pkg check
+wait pkg check: 0 packages
+wait {prompt}
+send type minigzip
+wait minigzip: not found
+wait {prompt}
+send allow -l | grep -c minigzip | grep ^0$ && echo ok-$T-revoked
+wait ok-x-revoked
+wait {prompt}
+send ls /data/pkg/bin | grep -c minigzip | grep ^0$ && echo ok-$T-gone
+wait ok-x-gone
+wait {prompt}

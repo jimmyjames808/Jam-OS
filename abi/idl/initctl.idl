@@ -182,3 +182,14 @@ const APP_MAX      15
 # is still being worked on: then ERR_BAD_STATE. The shell's channel only
 # (ERR_ACCESS_DENIED on the consoles' and the compositor's).
 14 pkg_channel  () -> (handle<channel> pkg)
+
+# Format the data partition of disk `id` (voldisks' ids, `disks`' nvme1),
+# a Jam OS disk, again (volinstall.format_data): everything on it lost, an
+# ext volume made (FAT32 when `fat` is 1). `tail` is what the owner typed
+# to confirm it: the end of its serial number (volumes checks it). The
+# shell has shown the drive and its data partition and asked for it before
+# it calls this. Answered later, when volumes has answered (ERR_TIMED_OUT
+# after 11 minutes). The shell's channel only (ERR_ACCESS_DENIED on the
+# consoles' and the compositor's); ERR_BAD_STATE while an install is under
+# way. Errors are volinstall.format_data's.
+15 format_data  (u32 id, str[<=20] tail, u8 fat) -> () later

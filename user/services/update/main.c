@@ -13,11 +13,14 @@
  * else. It can't load a kernel; it can only offer bytes that init checks.
  * The shell's `update` starts it as a helper (sh_run_helper):
  *   argv: update <server address> load|check|write <running version> <running git>
- *         [force]
+ *         [abi=<running stamp>] [packages=<installed>] [force]
  *   (write, plain `update` and `update -w`: load, and have init write the
  *   build to the stick too; load, `update -m`: into memory only; check,
  *   `update -n`: checked, nothing loaded or written; force: a build whose
- *   network default differs from this one's is taken)
+ *   network default differs from this one's is taken; abi= and packages=:
+ *   this build's ABI stamp and how many packages are installed, for the
+ *   last line: when a taken build has another stamp, they were built for
+ *   the old system)
  *   UPDATE_SR_OFFER   the offer channel (initctl.update_offer)
  *   PROGRAM_SR_STOP   the shell's stop channel: Ctrl+C (or the shell gone)
  * Its lines are the shell's, in plain words (the polish track: "Downloading
@@ -59,6 +62,7 @@ struct fetch {
     unsigned        parts;                        /* how many: UPDATE_FILES, + 1 with a menu */
     uint8_t         manifest[UPDATE_MANIFEST_MAX];
     uint32_t        manifest_len;
+    char            abi[UPDATE_ABI_LEN + 1];      /* the manifest's `abi` stamp; "" if none */
 };
 
 static struct fetch fetch;
@@ -116,6 +120,7 @@ static status_t io_begin(void *ctx, const struct update_manifest *m, const uint8
     }
     memcpy(f->manifest, text, len);   /* len <= a datagram's, <= UPDATE_MANIFEST_MAX: parsed */
     f->manifest_len = (uint32_t)len;
+    memcpy(f->abi, m->abi, sizeof(f->abi));
     char menu[40] = ", no boot menu";
     if (m->has_menu)
         snprintf(menu, sizeof(menu), ", boot menu %lu bytes",
@@ -381,15 +386,37 @@ static void say_next(const struct update_answer *a, uint32_t flags, bool running
     }
 }
 
-/* init's answer, in words, the menu's fate, then what comes next; the
- * exit status (the menu's fate doesn't change it: the build is what was
- * asked for). */
+/* What the owner is told about the installed packages when the build taken
+ * has another ABI stamp than the running one (docs/M13.7-PLAN.md section 11:
+ * a package carries the call layer and the protocols of the build it was
+ * made with, so it may not run on the new one). Said last, and only for a
+ * build that is now loaded, when both stamps are known and there are
+ * packages: running is this build's stamp ("" if its build.txt has none),
+ * packages how many are installed. */
+static void say_packages(const struct update_answer *a, uint32_t flags, const char *running,
+                         unsigned packages)
+{
+    bool taken = (a->why == UPDATE_ACCEPTED && a->status == OK) || a->why == UPDATE_NOT_WRITTEN;
+    if (!taken || (flags & UPDATE_OFFER_CHECK_ONLY) || !fetch.abi[0] || !running[0] ||
+        !strcmp(fetch.abi, running) || !packages)
+        return;
+    detail("update: the new build's ABI stamp is %s, this one's %s: %u installed package%s built "
+           "for the old system\n", fetch.abi, running, packages, packages == 1 ? " was" : "s were");
+    printf("%u installed package%s built for the old system: `pkg upgrade` once the Mac has "
+           "rebuilt %s.\n", packages, packages == 1 ? " was" : "s were",
+           packages == 1 ? "it" : "them");
+}
+
+/* init's answer, in words, the menu's fate, then what comes next, then the
+ * packages' fate; the exit status (the menu's fate doesn't change it: the
+ * build is what was asked for). */
 static int say_answer(const struct update_answer *a, uint32_t flags, const char *from_version,
-                      const char *from_git)
+                      const char *from_git, const char *running_abi, unsigned packages)
 {
     int rc = say_verdict(a, flags, from_version, from_git);
     say_menu(a);
     say_next(a, flags, is_running(a, from_version, from_git));
+    say_packages(a, flags, running_abi, packages);
     return rc;
 }
 
@@ -425,13 +452,31 @@ int main(int argc, char **argv)
     uint32_t host;
     const char *end;
     handle_t ch = startup_handle(ROLE_OFFER);
-    bool force = argc == 6 && !strcmp(argv[5], "force");
-    if ((argc != 5 && !force) || !ipv4_parse(argv[1], &host, &end) || *end ||
+    bool force = false, bad = argc < 5;
+    char running_abi[UPDATE_ABI_LEN + 1] = "";
+    unsigned packages = 0;
+    for (int i = 5; i < argc && !bad; i++) {   /* the words after the running git */
+        const char *w = argv[i];
+        if (!strcmp(w, "force") && !force) {
+            force = true;
+        } else if (!strncmp(w, "abi=", 4) && strlen(w + 4) == UPDATE_ABI_LEN) {
+            memcpy(running_abi, w + 4, UPDATE_ABI_LEN);
+        } else if (!strncmp(w, "packages=", 9) && w[9] && strlen(w + 9) <= 4) {
+            packages = 0;
+            for (const char *d = w + 9; *d && !bad; d++) {
+                bad = *d < '0' || *d > '9';
+                packages = packages * 10 + (unsigned)(*d - '0');
+            }
+        } else {
+            bad = true;
+        }
+    }
+    if (bad || !ipv4_parse(argv[1], &host, &end) || *end ||
         (strcmp(argv[2], "load") && strcmp(argv[2], "check") && strcmp(argv[2], "write")) ||
         !ch) {
         printf("usage: update <server address> load|check|write <running version> "
-               "<running git> [force], with init's offer channel (the shell's `update` starts "
-               "it)\n");
+               "<running git> [abi=<stamp>] [packages=<n>] [force], with init's offer channel "
+               "(the shell's `update` starts it)\n");
         return 2;
     }
     uint32_t flags = !strcmp(argv[2], "check")   ? UPDATE_OFFER_CHECK_ONLY
@@ -462,5 +507,5 @@ int main(int argc, char **argv)
                status_str(st));
         return 1;
     }
-    return say_answer(&a, flags, argv[3], argv[4]);
+    return say_answer(&a, flags, argv[3], argv[4], running_abi, packages);
 }

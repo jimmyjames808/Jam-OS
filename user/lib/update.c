@@ -1,7 +1,7 @@
 /* The update manifest's parser (<update.h>): format 2's seven lines,
  * strictly, and the extension lines between them, which it checks and
- * skips, but for the one it knows (`menu`, the boot menu), which it
- * takes; the public key file's; and the network default line of a
+ * skips, but for the two it knows (`menu`, the boot menu, and `abi`, the
+ * ABI stamp), which it takes; the public key file's; and the network default line of a
  * build.txt, by the manifest's rules. The signature's check is updsig.c's
  * (it alone links Monocypher in).
  *
@@ -193,6 +193,28 @@ static status_t take_menu(struct cur *c, struct update_manifest *m)
     return OK;
 }
 
+/* A stamp: exactly UPDATE_ABI_LEN lower-case hex digits. */
+static bool take_stamp(struct cur *c, char out[UPDATE_ABI_LEN + 1])
+{
+    if (word_len(c) != UPDATE_ABI_LEN)
+        return false;
+    for (size_t i = 0; i < UPDATE_ABI_LEN; i++)
+        if (!hex_char(c->p[i]))
+            return false;
+    memcpy(out, c->p, UPDATE_ABI_LEN);
+    out[UPDATE_ABI_LEN] = '\0';
+    c->p += UPDATE_ABI_LEN;
+    return true;
+}
+
+/* "abi <stamp>\n", after its key: the build's ABI stamp. Once only. */
+static status_t take_abi(struct cur *c, struct update_manifest *m)
+{
+    if (m->abi[0] || !take_text(c, " ") || !take_stamp(c, m->abi) || !take_text(c, "\n"))
+        return ERR_INVALID_ARGS;
+    return OK;
+}
+
 /* One extension line ("<key>" or "<key> <value>\n") taken, if the next
  * line is one: OK; ERR_NOT_FOUND if the next line is one of format 2's
  * (left for the caller); ERR_INVALID_ARGS if it is neither, or take_menu's
@@ -212,6 +234,10 @@ static status_t take_extension(struct cur *c, struct update_manifest *m)
     if (n == 4 && !memcmp(c->p, "menu", 4)) {
         c->p += n;
         return take_menu(c, m);
+    }
+    if (n == 3 && !memcmp(c->p, "abi", 3)) {
+        c->p += n;
+        return take_abi(c, m);
     }
     if (from && !m->needs[0]) {
         memcpy(m->needs, c->p, n);
@@ -319,6 +345,26 @@ status_t update_build_net(const void *text, size_t len, char out[UPDATE_NET_MAX 
         struct cur c = { p, nl + 1 };
         char w[UPDATE_NET_MAX + 1];
         if (take_net(&c, w) && c.p == c.end) {
+            memcpy(out, w, sizeof(w));
+            return OK;
+        }
+        p = nl + 1;
+    }
+    return ERR_NOT_FOUND;
+}
+
+status_t update_build_abi(const void *text, size_t len, char out[UPDATE_ABI_LEN + 1])
+{
+    const uint8_t *p = text, *end = p + (text ? len : 0);
+    while (p < end) {   /* line by line: one is "abi <stamp>" */
+        const uint8_t *nl = p;
+        while (nl < end && *nl != '\n')
+            nl++;
+        if (nl == end)
+            break;   /* a last line without its '\n' is no line */
+        struct cur c = { p, nl + 1 };
+        char w[UPDATE_ABI_LEN + 1];
+        if (take_text(&c, "abi ") && take_stamp(&c, w) && take_text(&c, "\n") && c.p == c.end) {
             memcpy(out, w, sizeof(w));
             return OK;
         }

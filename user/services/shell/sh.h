@@ -127,8 +127,12 @@ char      **sh_make_env(void);
 char      **sh_make_env_posix(void);
 void        sh_free_env(char **env);
 /* The directories a bare program name is looked for in (after the shell's
- * own commands), colon-separated, when PATH is unset. */
-#define SH_PATH_DEFAULT "/boot/bin:/boot/usr/bin"
+ * own commands), colon-separated, when PATH is unset: the boot image's
+ * programs, then the installed packages' (docs/M13.7-PLAN.md section 9). */
+#define SH_PATH_DEFAULT "/boot/bin:/boot/usr/bin:/data/pkg/bin"
+/* The program called name (no '/') in the first directory of $PATH that has
+ * one, as an absolute path into path (cap bytes); false if there is none. */
+bool        sh_path_find(const char *name, char *path, size_t cap);
 
 const char *sh_alias_of(const char *name);   /* NULL if none */
 bool        sh_set_alias(const char *name, const char *value);
@@ -406,6 +410,9 @@ int  sh_procs(struct proc_stat *p, const char *who);
  * Makefile's: "2079f35", "2079f35-dirty") into out (cap bytes), or
  * "unknown" if the boot image has none. */
 void sh_build_git(char *out, size_t cap);
+/* The ABI stamp this boot's build has (build.txt's "abi" line: 16 lower-case
+ * hex digits) into out (17 bytes); false if the boot image has none. */
+bool sh_build_abi(char out[17]);   /* UPDATE_ABI_LEN + 1 */
 /* Tenths of a percent, clamped to 0..1000. */
 unsigned    sh_permille(uint64_t part, uint64_t whole);
 /* "P", "E" or "-". */

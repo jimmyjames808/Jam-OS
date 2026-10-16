@@ -127,18 +127,30 @@ void     mounts_synced(status_t st, uint64_t t0);
  * write, so the volume is left marked clean. */
 void     mounts_settle(void);
 
-/* ---- jammounts.c: /usr, /var, /home and /tmp as views of /jam ----------------------- */
+/* ---- jammounts.c: /usr, /var and /home as views of /jam ----------------------------- */
 
 /* /jam is in init's namespace (mounts.c): on a thread, the directories made
- * if they aren't there, /tmp emptied (once a boot) and the views mounted as
- * /usr, /var, /home and /tmp (fs.subview of /jam/<dir>); KEY_MOUNTS comes
- * on port when a batch is in. */
+ * if they aren't there and the views mounted as /usr, /var and /home
+ * (fs.subview of /jam/<dir>); KEY_MOUNTS comes on port when they are in. */
 void     jam_mounted(handle_t port, uint64_t key);
 /* /jam left the namespace: the views go with it. */
 void     jam_gone(void);
 /* True once after the thread mounted (or took back) views: tell the
  * followers (mounts_event's caller does). Says the thread's line too. */
 bool     jam_changed(void);
+
+/* ---- tmp.c: /tmp always there, emptied at boot (shell mode) ----------------------- */
+
+/* From now on init keeps a /tmp: a view of /jam/tmp, of /data/tmp (an ext
+ * /data), or an ext volume in memory; KEY_MOUNTS comes on port (with `key`)
+ * when it is mounted, KEY_TMP when the memory one's service ends. */
+void     tmp_start(handle_t port, uint64_t key);
+/* path was mounted (came) or went (mounts.c): /jam and /data matter. */
+void     tmp_mount_changed(const char *path, bool came);
+/* KEY_TMP: the memory /tmp's service ended. */
+void     tmp_event(void);
+/* True once after /tmp was mounted: tell the followers. Says its line too. */
+bool     tmp_changed(void);
 
 /* ---- regnet.c: the regression run's network (main.c's `init` mode) ------------------- */
 
@@ -197,6 +209,12 @@ status_t prepare_send(uint32_t txid, uint32_t id, const char *tail, uint32_t tai
 status_t prepare_result(const void *rep, struct idl_msg *m);
 /* The call's end, said in the log: disk id, how it ended, since t0. */
 void     prepare_say(uint32_t id, status_t st, uint64_t t0);
+/* initctl.format_data's call, the same way: volinstall.format_data of disk
+ * id's data partition (`fat`: FAT32, not ext; `tail` the owner's
+ * confirmation), and its answer. */
+status_t format_send(uint32_t txid, uint32_t id, const char *tail, uint32_t tail_len, bool fat);
+status_t format_result(const void *rep, struct idl_msg *m);
+void     format_say(uint32_t id, status_t st, uint64_t t0);
 
 /* ---- splash.c: the boot splash (<splash.h>) --------------------------------------- */
 
@@ -253,6 +271,7 @@ enum { BOOTFS, COMPOSITOR, CONSOLE, SPLASH, SERIALIN, DEVMGR, VOLUMES, MIXER, MU
 #define KEY_SESSION_END 0xe00u
 #define KEY_SSHD     0xf00u   /* the SSH server's look at /data is done (ssh.c) */
 #define KEY_PKG      0x1000u  /* the pkgctl channel, and its worker done (pkg.c) */
+#define KEY_TMP      0x1100u  /* the memory /tmp's service ended (tmp.c) */
 
 struct svc {
     const char *path;          /* in bootfs */

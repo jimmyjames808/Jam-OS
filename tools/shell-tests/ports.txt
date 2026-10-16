@@ -212,7 +212,7 @@ wait {prompt}
 send printf 'pear' > /data/pt-e; cmp /data/pt-dd /data/pt-e && echo ok-$T-dd
 wait ok-x-dd
 wait {prompt}
-# ed and sponge keep a scratch file in $TMPDIR, /tmp without it, and the namespace has no /tmp
+# ed and sponge keep a scratch file in $TMPDIR, /tmp without it (a POSIX program has /tmp since M13.6's U7b: kept on /data here)
 send export TMPDIR=/data
 wait {prompt}
 send printf 'a\nhello ed\n.\nw /data/pt-ed\nq\n' | ed; cat /data/pt-ed

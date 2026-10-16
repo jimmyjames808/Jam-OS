@@ -117,6 +117,9 @@ struct process {
     bool                listed;                  /* on job's list (job_link); cleared at teardown */
     struct job_link     job_link;                /* (the job's lock) */
     int64_t             exit_code;               /* (L) */
+    bool                faulted;   /* (L) a fault of one of its threads killed it: */
+    uint32_t            fault_vector;            /* (L) its vector */
+    int32_t             fault_status;            /* (L) a page fault's status */
     uint32_t            nthreads;                /* (L) started threads that haven't left */
     uint64_t            cpu_done;                /* (L) CPU time (TSC) of the threads that left */
     uint32_t            pid;                     /* its small id (pid_space), fixed */
@@ -335,6 +338,11 @@ void process_get_info(struct process *p, struct process_info *out)
     out->killed = p->killed;
     out->threads = p->nthreads;
     out->flags = p->as && aspace_maps_jit(p->as) ? PROCESS_FLAG_JIT : 0;   /* lock-free read */
+    if (p->faulted) {
+        out->flags |= PROCESS_FLAG_FAULT;
+        out->fault_vector = p->fault_vector;
+        out->fault_status = p->fault_status;
+    }
     copy_name(out->name, sizeof(out->name), p->name);
     punlock(p, f);
     out->koid = p->base.koid;
@@ -552,7 +560,9 @@ static void process_finish(struct process *p)
     kobject_signal(&p->base, 0, SIG_TERMINATED);
 }
 
-void process_kill(struct process *p, int64_t code, bool killed)
+/* process_kill, and the fault that did it (faulted: process_kill_fault). */
+static void process_kill_as(struct process *p, int64_t code, bool killed, bool faulted,
+                            uint32_t vector, status_t status)
 {
     uint64_t f = plock(p);
     if (p->state >= PROCESS_DYING) {
@@ -568,6 +578,9 @@ void process_kill(struct process *p, int64_t code, bool killed)
     p->state = PROCESS_DYING;
     p->exit_code = code;
     p->killed = killed;
+    p->faulted = faulted;
+    p->fault_vector = vector;
+    p->fault_status = status;
     for (struct list_node *n = p->threads.next; n != &p->threads; n = n->next) {
         struct uthread *u = container_of(n, struct uthread, node);
         if (u->t && u->state != UT_DEAD)
@@ -578,6 +591,16 @@ void process_kill(struct process *p, int64_t code, bool killed)
     punlock(p, f);
     if (finish)
         process_finish(p);
+}
+
+void process_kill(struct process *p, int64_t code, bool killed)
+{
+    process_kill_as(p, code, killed, false, 0, OK);
+}
+
+void process_kill_fault(struct process *p, uint32_t vector, status_t status)
+{
+    process_kill_as(p, PROCESS_KILLED_CODE, true, true, vector, status);
 }
 
 /* ---- user threads -------------------------------------------------------------- */
@@ -1077,6 +1100,16 @@ status_t uthread_interrupt(struct uthread *u)
     struct thread *t = u->state != UT_DEAD ? u->t : NULL;
     if (t)
         thread_interrupt(t);   /* our join reference keeps t; the lock orders it with the exit */
+    punlock(u->proc, f);
+    return t ? OK : ERR_BAD_STATE;
+}
+
+status_t uthread_raise(struct uthread *u)
+{
+    uint64_t f = plock(u->proc);
+    struct thread *t = u->state != UT_DEAD ? u->t : NULL;
+    if (t)
+        thread_raise(t);   /* as uthread_interrupt: the lock orders it with the exit */
     punlock(u->proc, f);
     return t ? OK : ERR_BAD_STATE;
 }

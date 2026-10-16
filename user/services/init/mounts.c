@@ -12,7 +12,8 @@
  * Mounts flagged MOUNTS_TEST are the test suite's mock disks (volumes'
  * test_disk): init leaves them alone. /boot is init's own: volumes can't
  * put something else there. /jam, the Jam OS drive's ext volume, brings
- * its own views with it (/usr, /var, /home, /tmp: jammounts.c).
+ * its own views with it (/usr, /var, /home: jammounts.c); /tmp follows /jam
+ * and /data in shell mode (tmp.c).
  *
  * A watch that closes while volumes still runs (volumes drops a watcher
  * that falls MOUNTS_UNREAD_MAX events behind) is made again at once, and
@@ -75,7 +76,9 @@ static void ev_mounted(void *ctx, const char *p, uint32_t len, uint32_t generati
     else if (st != OK)
         printf("init: can't mount %s (%s)\n", path, status_str(st));
     if (st == OK && !strcmp(path, JAM_MOUNT))
-        jam_mounted(port, port_key);   /* /usr, /var, /home, /tmp as its views (jammounts.c) */
+        jam_mounted(port, port_key);   /* /usr, /var, /home as its views (jammounts.c) */
+    if (st == OK)
+        tmp_mount_changed(path, true);   /* /tmp may be a view of it now (tmp.c) */
 }
 
 /* path leaves the namespace and the list. */
@@ -89,6 +92,7 @@ static void forget(const char *path)
     (void)ns_unmount(path);
     memmove(have[i], have[i + 1], (size_t)(nhave - (unsigned)i - 1) * NS_NAME_MAX);
     nhave--;
+    tmp_mount_changed(path, false);   /* a /tmp that was a view of it moves (tmp.c) */
 }
 
 static void ev_unmounted(void *ctx, const char *p, uint32_t len, uint32_t generation)
@@ -213,6 +217,8 @@ bool mounts_event(void)
         port_again(port, watch, port_key, SIG_READABLE | SIG_PEER_CLOSED) != OK)
         watch_lost(&settled);
     if (jam_changed())   /* the views of /jam are in (or out): the followers too */
+        settled = true;
+    if (tmp_changed())   /* /tmp is (another) one now */
         settled = true;
     return settled;
 }

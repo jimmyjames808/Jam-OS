@@ -2,9 +2,13 @@
 # Test ported programs on Jam OS (docs/M13.7-PLAN.md section 14, PO8): each
 # named port is built (tools/ports.py), preinstalled into a copy of the
 # stick image's data partition from this side (tools/ports-preinstall.py:
-# mtools, the files under /data/pkg, the approval lines in /data/etc/allow,
-# as `pkg` and init will have made them; a test image only), booted in
-# QEMU, and the port's own test run through the serial shell.
+# mtools, the files under /data/pkg, their signed manifests in db/, the
+# approval lines in /data/etc/allow and the page tables, as `pkg` and init
+# will have made them; a test image only), booted in QEMU, and the port's own
+# test run through the serial shell. The image's /boot/ports.pub is the ports
+# vectors' public test key (as tools/pkg-test.sh has it: its secret is public,
+# no real image carries it), which signed the manifests, so `pkg list`, `pkg
+# info` and `pkg check` in the guest see the packages as installed.
 #
 #   tools/ports-test.sh <outdir> <port>...
 #
@@ -12,8 +16,10 @@
 # (tools/serial-feed.py; the examples are in tools/shell-tests/). It starts
 # at the shell's prompt with
 #       T=x                     the letter the test builds its answers from
-#       P=/data/pkg/bin         where the port's programs are (PATH has no
-#                               /data/pkg/bin yet: `run $P/<program>`)
+#       P=/data/pkg/bin         where the port's programs are (PATH has it, after
+#                               /boot/bin and /boot/usr/bin: a program of a
+#                               name the boot image has too is run as
+#                               `run $P/<program>`)
 #       S=/boot/usr/bin         sbase's tools: the shell's own commands (seq,
 #                               cat, sort, ...) win by name and only POSIX
 #                               programs take < and >, so `run $S/seq 1 9 > f`
@@ -30,8 +36,10 @@
 # or "FAIL" per port; exit 0 if all passed.
 #
 # Environment: PORTS_TEST_JOBS, PORTS_TEST_IMAGE (default build/jamos.img:
-# `make image` first, which tools/remote-test.sh does), QEMU_TIMEOUT (here
-# default 300), and the tools/qemu-test.sh variables. Build output is in
+# `make image` first, which tools/remote-test.sh does), PORTS_TEST_SCRIPT (a
+# script, run after the same start in place of each port's own `test`: the
+# shell's `pkg` against the installed packages, tools/shell-tests/pkg.txt),
+# QEMU_TIMEOUT (here default 300), and the tools/qemu-test.sh variables. Build output is in
 # build/ports. On the test host:
 #   JAMOS_REMOTE=jamos-pc JAMOS_REMOTE_ONLY=1 tools/remote-test.sh \
 #       tools/ports-test.sh build/test/ports zlib xz
@@ -52,7 +60,8 @@ export QEMU_TIMEOUT=${QEMU_TIMEOUT:-300}
 [ -f "$image" ] || { echo "ports-test: $image: no image (make image first)" >&2; exit 2; }
 for p in $ports; do
     [ -f "ports/$p/recipe" ] || { echo "ports-test: $p: no such port" >&2; exit 2; }
-    [ -f "ports/$p/test" ] || { echo "ports-test: $p: no ports/$p/test" >&2; exit 2; }
+    [ -f "${PORTS_TEST_SCRIPT:-ports/$p/test}" ] ||
+        { echo "ports-test: $p: no ${PORTS_TEST_SCRIPT:-ports/$p/test}" >&2; exit 2; }
 done
 mkdir -p "$out"
 
@@ -74,7 +83,19 @@ shard() {
     mkdir -p "$dir"
     img=$dir/ports-$p-stick.img
     fail() { echo "FAIL ($1)" > "$dir/result"; }
+    # the image with the test key as /boot/ports.pub (tools/pkg-test.sh does the same)
+    if ! mcopy -i "$image@@1M" ::/boot/bootfs.img "$dir/bootfs-in.img" ||
+       ! python3 tools/bootfs-edit.py "$dir/bootfs-in.img" "$dir/bootfs-key.img" \
+            "ports.pub=ports/vectors/test.pub" > "$dir/bootfs-edit.out" 2>&1; then
+        fail "the test key: can't read the boot image or add the key (see $dir/bootfs-edit.out)"
+        return
+    fi
     cp "$image" "$img"
+    if ! mcopy -o -i "$img@@1M" "$dir/bootfs-key.img" ::/boot/bootfs.img; then
+        fail "the test key: can't write the boot image"
+        return
+    fi
+    rm -f "$dir/bootfs-in.img" "$dir/bootfs-key.img"
     if ! python3 tools/ports-preinstall.py install --feed "$dir/allow-check.txt" "$img" $p \
          > "$dir/preinstall.out" 2>&1; then
         fail "the preinstall: $(tail -1 "$dir/preinstall.out")"
@@ -94,8 +115,8 @@ shard() {
         echo "send cd /data"
         echo "wait {prompt}"
         cat "$dir/allow-check.txt"
-        echo "# ---- ports/$p/test ----"
-        cat "ports/$p/test"
+        echo "# ---- ${PORTS_TEST_SCRIPT:-ports/$p/test} ----"
+        cat "${PORTS_TEST_SCRIPT:-ports/$p/test}"
         echo "# ---- the end ----"
         echo "send echo ports-test-done-\$T"
         echo "wait ports-test-done-x"

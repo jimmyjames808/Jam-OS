@@ -18,7 +18,7 @@ same rules: printable ASCII lines, each one of
     mount <point> r|rw    <point>: /boot /esp /data /usb* *
     mount /data rw pkg    /data writable, the packages' prefix too
     right <name>          klog sysinfo clock debug jit
-    posix                 a POSIX program (once; it grants nothing)
+    posix                 a POSIX program (once; it grants /tmp, writable)
 
 and, the build's own policy, the services that kill drivers and services
 (devmgr-ctl, init), the disks' and mounts' (volumes) and the file server's (serve: with it a program could
@@ -105,6 +105,7 @@ def check_text(text, in_tests, svcs, in_services=False, src=""):
             if posix:
                 problems.append("'posix' twice")
             posix = True
+            n += 1   # /tmp, writable (wants.c)
         elif len(w) == 3 and w[:3] == ["svc", "net", "listen"]:
             n += 2   # /svc/net and /svc/net-listen
         elif len(w) == 4 and w == ["svc", "net", "listen", "low"]:

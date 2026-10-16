@@ -11,9 +11,12 @@
  * type, Jam OS's data type) and the boot disk's data partition are looked
  * at for the ext superblock (probe.c); bin/extfs starts on one that has it,
  * bin/fat on any other FAT-typed one (a Linux-only type with no ext volume
- * is left alone). An ext volume is mounted read-write only where it is
+ * is left alone). A blank data partition that is to be formatted (a Jam OS
+ * drive being prepared, or its data partition formatted again, unless the
+ * owner asked for FAT) goes to bin/extfs too: Jam OS makes its data volumes
+ * ext (U7b). An ext volume is mounted read-write only where it is
  * Jam OS's: the data partition of a Jam OS drive (volumes' own mark check,
- * mark.c), which is /jam, and a test disk's; someone else's ext volume is
+ * mark.c, and its driver's), which is /jam, and a test disk's; someone else's ext volume is
  * read-only always, and `mount -w` on it is refused (Q9 of
  * docs/M13.6-PLAN.md). The boot disk's own data partition, ext or FAT, is
  * /data as before.
@@ -258,11 +261,14 @@ const char *fs_format_arg(const struct vol *b)
     const struct disk *d = disk_of(b);
     bool boot_data = d && d->state == DISK_BOOT && !b->other && b->part == PART_DATA;
     /* A partition of a disk prepare.c is making Jam OS's (by our own check),
-     * while it is writable: fat formats it if its first sector holds no
-     * boot signature, and never otherwise. (An ext volume is never made
-     * here: its partition is blank, so it goes to fat. U7b changes that.) */
+     * or whose data partition it formats again, while it is writable: fat
+     * formats it if its first sector holds no boot signature, extfs if its
+     * first 4 KiB are zeros (fs_choose gave a blank data partition to
+     * extfs), and neither ever otherwise. */
     bool fresh = d && b->other && b->rw && (d->fresh >> b->part & 1) && disk_jamos_gpt(d);
-    return !b->ext && (boot_data || fresh) ? FAT_ARG_FORMAT : NULL;
+    if (!boot_data && !fresh)
+        return NULL;
+    return b->ext ? EXTFS_ARG_FORMAT : FAT_ARG_FORMAT;
 }
 
 const char *fs_end_arg(const struct vol *b)
@@ -376,13 +382,18 @@ static bool jam_taken(const struct vol *self)
     return false;
 }
 
-/* b's partition holds an ext volume: its service is bin/extfs, and where
- * and how it is mounted is decided (the rules in this file's header). The
- * Jam OS drive's data partition (an NVMe drive, by volumes' own mark
- * check, mark.c) is /jam, read-write unless its driver is read-only (the
- * `diskro` word); a test disk's ext volume is written too (utest drives
- * extfs through it); anyone else's never is. OK, or ERR_NOT_FOUND (said:
- * no bin/extfs), ERR_PEER_CLOSED (b went meanwhile). */
+/* b's partition holds an ext volume (or is blank, and extfs is to make
+ * one): its service is bin/extfs, and where and how it is mounted is
+ * decided (the rules in this file's header). The Jam OS drive's data
+ * partition (an NVMe drive, by volumes' own mark check, mark.c) is /jam,
+ * read-write when its driver calls the drive Jam OS's too and isn't
+ * read-only (storage.mode: not the `diskro` word, not a drive whose table
+ * the driver reads as someone else's, a header damaged), read-only
+ * otherwise, where the driver would refuse a writable open and the volume
+ * would not be mounted at all; a test disk's ext volume is written too
+ * (utest drives extfs through it); anyone else's never is. OK, or
+ * ERR_NOT_FOUND (said: no bin/extfs), ERR_PEER_CLOSED (b went
+ * meanwhile). */
 static status_t choose_ext(struct vol *b)
 {
     struct disk *d = disk_of(b);
@@ -400,11 +411,14 @@ static status_t choose_ext(struct vol *b)
                  !jam_taken(b);
         b->dflt_rw = d->test;
         if (b->jam) {
-            uint8_t mode, ro = 1, readable;
+            uint8_t mode = STORAGE_MODE_OTHER, ro = 1, readable;
             status_t st = driver_mode(d, &mode, &ro, &readable);
             if (b->serial != serial || stopping)
                 return ERR_PEER_CLOSED;
-            b->dflt_rw = st == OK && !ro;
+            b->dflt_rw = st == OK && !ro && mode == STORAGE_MODE_JAMOS;
+            if (st == OK && !ro && mode != STORAGE_MODE_JAMOS)
+                say(false, "volumes: %s: its driver doesn't read the drive as Jam OS's (a "
+                    "partition table header damaged): /jam is read-only", disk_name(d));
         }
         b->rw = b->rw || b->dflt_rw;
     }
@@ -412,9 +426,25 @@ static status_t choose_ext(struct vol *b)
     return OK;
 }
 
+/* Is a blank partition b serves to be made an ext volume? The data
+ * partition of a Jam OS drive being prepared, or formatted again, unless
+ * the owner asked for FAT (`fresh_fat`), and the boot disk's data
+ * partition when that disk is a Jam OS drive (GPT: booted from the drive).
+ * Every data volume Jam OS makes is ext (docs/M13.6-PLAN.md, "Ext by
+ * default"); the stick's own stays FAT until its image is made with ext. */
+static bool make_ext(const struct disk *d, const struct vol *b)
+{
+    if (b->part != PART_DATA)
+        return false;   /* an ESP: the firmware reads FAT only */
+    if (!b->other)
+        return d->scheme == STORAGE_SCHEME_GPT;
+    return (d->fresh >> b->part & 1) && !(d->fresh_fat >> b->part & 1) && disk_jamos_gpt(d);
+}
+
 /* In the start's task: which service b gets. A partition whose type can
  * hold ext, and the boot disk's data partition, have their superblock
- * looked at (probe.c); the others are FAT, as they always were. OK;
+ * looked at (probe.c); the others are FAT, as they always were. A blank
+ * one that make_ext says is to be ext goes to extfs, which formats it. OK;
  * ERR_NOT_FOUND: nothing either service can read there (said): a Linux
  * type with no ext volume is left alone; ERR_PEER_CLOSED: b went
  * meanwhile. */
@@ -429,15 +459,20 @@ static status_t fs_choose(struct vol *b)
         d->fstype[part] = VOLDISKS_FSTYPE_FAT;
         return OK;
     }
-    bool is_ext = false;
-    status_t st = fs_probe_ext(b, &is_ext);
+    enum part_holds holds = PART_HOLDS_OTHER;
+    status_t st = fs_probe(b, &holds);
     if (st == ERR_PEER_CLOSED)
         return st;
     if (st != OK)
         say(false, "volumes: %s partition %u: its first sectors can't be read (%s)", disk_name(d),
             part + 1, status_str(st));
-    if (is_ext)
+    if (holds == PART_HOLDS_EXT)
         return choose_ext(b);
+    if (holds == PART_HOLDS_BLANK && make_ext(d, b) && fs_format_arg(b)) {
+        say(false, "volumes: %s partition %u is blank: %s makes an ext volume on it",
+            disk_name(d), part + 1, EXTFS_PATH);
+        return choose_ext(b);
+    }
     if (!boot_data && part_fat(d, part) && d->block_size && d->block_size != FAT_BLOCK) {
         d->badsize |= (uint16_t)(1u << part);   /* a FAT-or-ext type, and no ext: fat reads 512 only */
         say(false, "volumes: %s partition %u: %u-byte blocks: %s reads 512-byte blocks only: "

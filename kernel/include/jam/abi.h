@@ -366,6 +366,8 @@ struct process_info {
     uint32_t flags;       /* PROCESS_FLAG_* */
     uint64_t start_ns;    /* the uptime (clock_get) when it was created */
     char     name[32];    /* the name it was created with (PROCESS_NAME_MAX), NUL-terminated */
+    uint32_t fault_vector;   /* with PROCESS_FLAG_FAULT: the fault's exception vector */
+    int32_t  fault_status;   /* with PROCESS_FLAG_FAULT: a page fault's status, else 0 */
 };
 /* process_info.flags and proc_stat.flags: its address space has mapped a
  * JIT VMO (vmo_make_jit) executable since it was made (a map or a protect
@@ -373,6 +375,16 @@ struct process_info {
  * code it may write (`ps` marks it). Kept until the address space is torn
  * down. */
 #define PROCESS_FLAG_JIT (1u << 0)
+/* process_info.flags: a fault of one of its threads killed it (with no
+ * exception entry, or one that didn't take it), so waitpid can say which
+ * signal (docs/SIGNALS-PLAN.md section 1). fault_vector is the CPU's
+ * vector (struct exc_frame's) and fault_status a page fault's status
+ * (exc_frame.status's, or ERR_BAD_STATE for a page that doesn't match the
+ * approved program, ERR_NO_MEMORY for out of memory or the job's page
+ * limit). A return to a bad address or a refused exception_done frame
+ * says 13, general protection (Linux's SIGSEGV for those). Never set for
+ * process_kill, an exit, or a kill that came first. */
+#define PROCESS_FLAG_FAULT (1u << 1)
 
 /* Small ids, for POSIX's pid and tid: a process's pid and a thread's tid
  * are taken when it is made (process_create, thread_create) and given
@@ -440,16 +452,34 @@ struct sys_public_info {
  * a kill, entry or not: a page fault whose status is ERR_BAD_STATE (a page
  * that doesn't match the approved program) or ERR_NO_MEMORY (out of
  * memory, or the job's page limit), and a fault whose frame can't be
- * written (RSP in nothing writable: a stack overflow). */
+ * written (RSP in nothing writable: a stack overflow with no exception
+ * stack).
+ *
+ * The exception stack (thread_exception_stack, sigaltstack's kernel half):
+ * a thread that has one gets its frames at its top, 64-byte aligned, while
+ * RSP is outside it; while RSP is inside it (a handler running there), below
+ * RSP less the red zone as usual, and a frame that would end below its base
+ * isn't written (the fault's kill). A stack overflow into nothing mapped
+ * reaches the entry this way.
+ *
+ * A raise (thread_raise, docs/SIGNALS-PLAN.md section 2): another thread
+ * asked this one to enter its entry now. It comes as a frame of kind
+ * EXC_RAISED with the registers where the thread was interrupted (vector,
+ * status, error and address 0), at the thread's next return to ring 3
+ * from an interrupt or exception, never on a system call's return and
+ * never inside the window (it waits for EXC_LEAVE or EXC_RESUME); the same
+ * stack choice, window and exception_done. With no entry it is dropped,
+ * and so is one whose frame can't be written (the thread goes on). */
 #define EXC_FAULT  1u   /* exc_frame.kind: a fault of the thread's own */
+#define EXC_RAISED 2u   /* exc_frame.kind: a raise (thread_raise) */
 
 /* The frame. The registers are the thread's when the fault came, in
  * Linux's gregs order (REG_R8 .. REG_EFL, ucontext.h), so libc copies them
  * in one go. Not the FS base, CS or SS: they never change. */
 struct exc_frame {
     uint32_t size;         /* bytes: EXC_FRAME_XSAVE + xsave_size */
-    uint32_t kind;         /* EXC_FAULT */
-    uint32_t vector;       /* the CPU's exception vector */
+    uint32_t kind;         /* EXC_FAULT or EXC_RAISED */
+    uint32_t vector;       /* the CPU's exception vector (a raise: 0) */
     int32_t  status;       /* page faults: aspace_fault's status: ERR_NOT_FOUND (nothing
                               mapped there, or a kernel address), ERR_ACCESS_DENIED (not
                               with that access), ERR_OUT_OF_RANGE (past the end of a
@@ -481,7 +511,7 @@ struct exc_frame {
 /* exception_done's `how`. */
 #define EXC_RESUME    1u   /* continue from the frame (checked: abi/syscalls.def 171) */
 #define EXC_LEAVE     2u   /* leave the window: the handler now runs as the thread's code */
-#define EXC_UNHANDLED 3u   /* the kill the fault would have been with no entry */
+#define EXC_UNHANDLED 3u   /* the kill the fault would have been with no entry (not a raise's) */
 
 /* channels --------------------------------------------------------------------
  * A message carries at most CHANNEL_MAX_BYTES bytes and CHANNEL_MAX_HANDLES

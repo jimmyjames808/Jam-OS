@@ -223,6 +223,10 @@ struct dbg_process_start {
  * process that is already dying, except a never-started one whose last
  * handle closed: its teardown is still owed, and the caller does it. */
 void process_kill(struct process *p, int64_t code, bool killed);
+/* process_kill(p, PROCESS_KILLED_CODE, true) for a fault of one of its
+ * threads (uentry.c's user_kill): if this is what ends it, process_info
+ * says PROCESS_FLAG_FAULT with the fault's vector and status. */
+void process_kill_fault(struct process *p, uint32_t vector, status_t status);
 
 /* ---- user threads ---------------------------------------------------------- */
 
@@ -257,6 +261,9 @@ void uthread_get_info(struct uthread *ut, struct thread_info *out);
 /* thread_interrupt: end ut's current interruptible wait, or latch it for
  * its next (wait.c). ERR_BAD_STATE if ut hasn't started or has left. */
 status_t uthread_interrupt(struct uthread *ut);
+/* thread_raise: latch a raise on ut (wait.c, upcall.c). ERR_BAD_STATE if
+ * ut hasn't started or has left. */
+status_t uthread_raise(struct uthread *ut);
 /* thread_set_tid_word for the current user thread: the word (a user
  * address, 4-aligned; 0: none) its end clears and wakes; its tid.
  * ERR_INVALID_ARGS for an unaligned or non-user address; ERR_BAD_STATE

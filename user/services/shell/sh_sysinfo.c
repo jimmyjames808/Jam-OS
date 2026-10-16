@@ -1,6 +1,7 @@
 /* System, CPU and process figures for uname, uptime, lscpu, free, ps and
  * top: syscalls 130-132 (sys_info, cpu_stat, proc_list; RIGHT_ROOT_SYSINFO
  * on the root resource) and how the commands show them. */
+#include <update.h>
 #include "sh.h"
 
 bool sh_sysinfo(struct sys_info *s, const char *who)
@@ -28,6 +29,15 @@ void sh_build_git(char *out, size_t cap)
         return;
     memcpy(out, p, n);
     out[n] = '\0';
+}
+
+bool sh_build_abi(char out[UPDATE_ABI_LEN + 1])
+{
+    const struct bootfs_view *fs;
+    const void *data;
+    uint64_t size = 0;
+    return bootfs_default(&fs) == OK && bootfs_lookup(fs, "build.txt", &data, &size) == OK &&
+           update_build_abi(data, size, out) == OK;
 }
 
 bool sh_cpus(struct cpu_stat *c, uint32_t *n, const char *who)

@@ -19,6 +19,7 @@ regression/tls_get_new-dtv skip: needs dlopen, and Jam OS has no dynamic linking
 # ---- fork and vfork: ENOSYS by design (posix_spawn only) -----------------------------------
 functional/vfork enosys: vfork is ENOSYS by design
 regression/daemon-failure enosys: fork is ENOSYS by design
+regression/fflush-exit enosys: fork is ENOSYS by design (its mkstemp in /tmp works: M13.6's U7b)
 regression/pthread_exit-dtor enosys: fork is ENOSYS by design
 regression/raise-race enosys: fork is ENOSYS by design
 
@@ -26,11 +27,6 @@ regression/raise-race enosys: fork is ENOSYS by design
 functional/ipc_msg enosys: msgget and msgctl are ENOSYS (SysV IPC is not built)
 functional/ipc_sem enosys: semget and semctl are ENOSYS (SysV IPC is not built)
 functional/ipc_shm enosys: shmget and shmctl are ENOSYS (SysV IPC is not built)
-
-# ---- no /tmp: musl's tmpfile is built to TMPDIR (ports/libc-test/files/shim.h), but these name /tmp ---
-functional/fdopen limit: mkstemp("/tmp/...") has no /tmp (a RAM /tmp is a follow-up, docs/M13-PLAN.md section 3)
-regression/ftello-unflushed-append limit: mkstemp("/tmp/...") has no /tmp (a RAM /tmp is a follow-up)
-regression/fflush-exit limit: mkstemp("/tmp/...") has no /tmp, and the test forks (fork is ENOSYS)
 
 # ---- a POSIX shell: /bin/sh is a stub (simple commands only) until M13.5 --------------------------
 functional/popen limit: its second command is a shell script (read; test; kill); /bin/sh is a stub until M13.5; its first needs echo (sbase)

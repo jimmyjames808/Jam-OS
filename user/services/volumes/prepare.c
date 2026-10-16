@@ -14,7 +14,7 @@
  *      and by its driver's (storage.mode) with a partition that has no
  *      service (a prepare cut short after the table); PLAN_ERASE, anything
  *      else: a drive that isn't empty (or Jam OS's by our check alone, a
- *      header damaged, with a partition that has no volume), erased
+ *      header damaged, whether its volumes mount or not), erased
  *      only with the owner's confirmation, the end of its serial number and
  *      "erase" (checked here against the serial its driver gave, then by
  *      the driver again: nothing here decides what may be written);
@@ -29,18 +29,32 @@
  *   4. the disk is read again (disk_relearn: storage.info, .partition, a
  *      Jam OS disk by our check now) and its two partitions are started
  *      like any other disk's (fsvc.c's mount_others), except that each is
- *      opened WRITABLE and given FAT_ARG_FORMAT (`fresh`, fs_format_arg):
- *      fat formats a partition whose first sector holds no boot signature,
- *      and only then, so a partition that already holds a volume is mounted
- *      as it is. `fresh` is set here and nowhere else;
- *   5. once both are mounted, each is stopped in order and started again
- *      read-only (fs_restart), as `mount -r` does: a prepare leaves the
- *      mounts read-only, like every other disk's, and `mount -w` makes one
- *      writable. The answer is OK when both are mounted again.
+ *      opened WRITABLE and given its service's format word (`fresh`,
+ *      fs_format_arg): the ESP goes to fat, which formats a partition whose
+ *      first sector holds no boot signature; the data partition, blank,
+ *      goes to extfs, which makes an ext volume on a partition whose first
+ *      4 KiB are zeros (M13.6's "Ext by default"); each only then, so a
+ *      partition that already holds a volume is mounted as it is. `fresh`
+ *      is set here and nowhere else;
+ *   5. once both are mounted, each goes back to its mount's own way: the
+ *      ESP stopped in order and started again read-only (fs_restart), as
+ *      `mount -r` does, like every other disk's (`mount -w` makes it
+ *      writable); the data partition is /jam, read-write (the first Jam OS
+ *      drive's: a second one's is /nvmeN, read-only). The answer is OK when
+ *      both are mounted again.
  * A cut at any point leaves the drive blank, blank-in-progress (the driver
  * says so: <jam/parttable.h>), or a Jam OS disk with a partition that has no
- * volume yet: the next prepare finishes it. An erase cut short leaves a
- * drive that isn't empty: the next prepare shows it and asks again. */
+ * volume yet (both formats write their volume's first blocks last): the
+ * next prepare finishes it. An erase cut short leaves a drive that isn't
+ * empty: the next prepare shows it and asks again.
+ *
+ * disk_format_data (volinstall.format_data, the shell's `disk format <disk>
+ * data [fat]`) formats a Jam OS disk's data partition again, everything on
+ * it lost: the owner typed the end of its serial number (checked here
+ * again); its mount, if any, stops in order; the partition's first MiB is
+ * written with zeros (part_wipe) and steps 4 and 5 run for it alone, as ext
+ * or, when asked, FAT32. A cut after the zeros leaves a partition with no
+ * volume, which the next prepare (or format) finishes. */
 #include <idl/storage.h>
 #include "disk.h"
 
@@ -181,18 +195,23 @@ static status_t plan_of(struct disk *d, struct plan *pl)
             pl->what = VOLDISKS_PLAN_FINISH;
             return OK;
         }
-        /* Jam OS's by our mark but not by the driver's (a header damaged:
-         * an erase cut after its primary entry array leaves its old header
-         * and Jam OS's backup), with a partition that holds no volume: it
-         * can't be finished, as the driver writes nothing on it, so it is
-         * shown and offered for erase as any drive that isn't empty. */
         if (!pl->todo) {
             for (unsigned p = 0; p < PARTS; p++)
                 if (!vols[d->fs[p] - 1].ready)
                     return ERR_BAD_STATE;   /* still starting: ask again in a moment */
+        }
+        if (!pl->todo && mode == STORAGE_MODE_JAMOS) {
             pl->refused = VOLDISKS_REFUSED_JAMOS;
             return OK;
         }
+        /* Jam OS's by our mark but not by the driver's (a header damaged:
+         * an erase cut after its primary entry array leaves its old header
+         * and Jam OS's backup; a byte changed in it later), whether its
+         * volumes mount from the backup table or not: it can't be
+         * finished, installed on or written at all, as the driver writes
+         * nothing on it, so it is shown and offered for erase as any drive
+         * that isn't empty (R3 stage 3's design question 3, decided yes):
+         * the strong confirmation, the serial's end and `erase`. */
     }
     pl->todo = BOTH;
     if (d->blocks < PREPARE_MIN / d->block_size) {
@@ -240,21 +259,28 @@ static char upper(char ch)
     return ch >= 'a' && ch <= 'z' ? (char)(ch - 'a' + 'A') : ch;
 }
 
-/* The owner's confirmation of an erase (volumes.idl, prepare): `tail` the
- * last ERASE_TAIL characters of the serial number the drive gave (all of
- * it if shorter), in any case, and `word` exactly ERASE_WORD. A drive with
- * no serial can't be confirmed. The driver checks the same again. */
-static bool confirmed(const struct disk *d, const char *tail, uint32_t tail_len,
-                      const char *word, uint32_t word_len)
+/* Is `tail` the last ERASE_TAIL characters of the serial number the drive
+ * gave (all of it if shorter), in any case? A drive with no serial can't
+ * be confirmed. */
+static bool tail_is(const struct disk *d, const char *tail, uint32_t tail_len)
 {
     size_t n = strlen(d->serial), want = n < ERASE_TAIL ? n : ERASE_TAIL;
-    if (!want || tail_len != want || word_len != strlen(ERASE_WORD) ||
-        memcmp(word, ERASE_WORD, word_len))
+    if (!want || tail_len != want)
         return false;
     for (size_t i = 0; i < want; i++)
         if (upper(d->serial[n - want + i]) != upper(tail[i]))
             return false;
     return true;
+}
+
+/* The owner's confirmation of an erase (volumes.idl, prepare): the
+ * serial's end (tail_is) and `word` exactly ERASE_WORD. The driver checks
+ * the same again. */
+static bool confirmed(const struct disk *d, const char *tail, uint32_t tail_len,
+                      const char *word, uint32_t word_len)
+{
+    return word_len == strlen(ERASE_WORD) && !memcmp(word, ERASE_WORD, word_len) &&
+           tail_is(d, tail, tail_len);
 }
 
 /* Step 3: Jam OS's table onto the drive (the owner's confirmation passed
@@ -278,36 +304,52 @@ static status_t make_table(struct disk *d, const char *tail, uint32_t tail_len, 
     return st == OK ? storage_create_table_result(c.rep, &c.m) : st;
 }
 
-/* Step 5: the partitions in mask, read-write since their format, stopped in
- * order and started again read-only. */
-static status_t back_to_read_only(struct disk *d, uint16_t gen, unsigned mask)
+/* Step 5: the partitions in mask, read-write since their format, back to
+ * their mount's own way (the vol's dflt_rw): a FAT volume stopped in order
+ * and started again read-only; /jam, an ext data partition, stays as it is,
+ * read-write. */
+static status_t back_to_own_way(struct disk *d, uint16_t gen, unsigned mask)
 {
     for (unsigned p = 0; p < PARTS; p++) {
         if (!(mask >> p & 1) || !d->fs[p])
             continue;
         d->fresh &= (uint16_t)~(1u << p);
+        d->fresh_fat &= (uint16_t)~(1u << p);
         struct vol *b = &vols[d->fs[p] - 1];
         uint32_t serial = b->serial;
         uint64_t until = now() + BACK_WAIT;
-        status_t st = disk_can_restart(b, false);
+        bool want = b->dflt_rw;
+        status_t st = disk_can_restart(b, want);
         while (st == ERR_BAD_STATE && now() < until && still(d, gen) && b->serial == serial) {
             task_wait(tasks, now() + STEP);   /* its start is not over yet */
-            st = disk_can_restart(b, false);
+            st = disk_can_restart(b, want);
         }
         if (b->serial != serial)
             return ERR_BAD_STATE;   /* retired meanwhile */
         if (st == OK)
-            continue;   /* read-only already */
+            continue;   /* that way already */
         if (st != IDL_LATER)
             return st;
         b->busy = true;
-        st = fs_restart(b, false);
+        st = fs_restart(b, want);
         if (b->serial == serial)
             b->busy = false;
         if (st != OK)
             return st;
     }
     return OK;
+}
+
+/* Where partition p of d is mounted, and how ("/nvme1, read-only"), into out. */
+static void mounted_as(const struct disk *d, unsigned p, char *out, size_t cap)
+{
+    if (!d->fs[p]) {
+        snprintf(out, cap, "?");
+        return;
+    }
+    const struct vol *b = &vols[d->fs[p] - 1];
+    snprintf(out, cap, "%s (%s), %s", fs_mount_path(b), b->ext ? "ext" : "FAT",
+             b->rw ? "read-write" : "read-only");
 }
 
 /* Steps 2 to 5 on d, which the plan allows. */
@@ -349,7 +391,7 @@ static status_t steps(struct disk *d, uint16_t gen, const struct plan *pl, const
             st = ERR_IO;
         }
     if (st == OK)
-        st = back_to_read_only(d, gen, todo);
+        st = back_to_own_way(d, gen, todo);
     if (st == OK)
         st = wait_settled(d, gen, BOTH, now() + BACK_WAIT);
     return st;
@@ -382,18 +424,128 @@ status_t disk_prepare(uint32_t id, const char *tail, uint32_t tail_len, const ch
     d = disk_named(id);   /* its slot may have been given up and used again meanwhile */
     if (d) {
         d->preparing = false;
-        d->fresh = 0;
+        d->fresh = d->fresh_fat = 0;
     }
     if (st == OK && d) {
-        char esp[16] = "?", data[16] = "?";   /* fs_mount_path's buffer is static */
-        if (d->fs[0])
-            snprintf(esp, sizeof(esp), "%s", fs_mount_path(&vols[d->fs[0] - 1]));
-        if (d->fs[1])
-            snprintf(data, sizeof(data), "%s", fs_mount_path(&vols[d->fs[1] - 1]));
-        say(true, "volumes: %s is a Jam OS disk now: %s and %s, read-only", disk_name(d), esp,
-            data);
+        char esp[48], data[48];   /* fs_mount_path's buffer is static */
+        mounted_as(d, PART_ESP, esp, sizeof(esp));
+        mounted_as(d, PART_DATA, data, sizeof(data));
+        say(true, "volumes: %s is a Jam OS disk now: %s and %s", disk_name(d), esp, data);
     } else if (st != OK) {
         say(true, "volumes: prepare of disk %08x: %s", id, status_str(st));
+    }
+    return st;
+}
+
+/* ---- the data partition formatted again ------------------------------------------ */
+
+/* Why d's data partition can't be formatted, by what volumes knows (the
+ * driver is asked next); OK if it may be. */
+static status_t format_refused(const struct disk *d, bool fat)
+{
+    if (!d)
+        return ERR_NOT_FOUND;
+    if (d->state == DISK_BOOT || (d->state == DISK_DOWN && d->boot_down))
+        return ERR_ACCESS_DENIED;   /* what Jam OS runs from */
+    if (d->bus != DISKS_BUS_NVME || (fat && d->block_size != FAT_BLOCK))
+        return ERR_NOT_SUPPORTED;
+    if (!d->known || !d->ch || d->state != DISK_OTHER || d->preparing || d->releasing)
+        return ERR_BAD_STATE;
+    if (!disk_jamos_gpt(d) || d->nparts < PARTS)
+        return ERR_ACCESS_DENIED;   /* not a Jam OS disk, by our own check */
+    if (d->fs[PART_DATA] && vols[d->fs[PART_DATA] - 1].held)
+        return ERR_BUSY;   /* the installer writes it (install.c) */
+    return OK;
+}
+
+/* The format on d, which the checks allow: the data partition's mount
+ * stopped in order, its first MiB zeros, then a service that formats it
+ * (prepare's steps 4 and 5 for it alone). */
+static status_t format_steps(struct disk *d, uint16_t gen, bool fat)
+{
+    const unsigned bit = 1u << PART_DATA;
+    if (d->fs[PART_DATA]) {
+        struct vol *b = &vols[d->fs[PART_DATA] - 1];
+        if (b->busy || b->starting || b->stopping)
+            return ERR_BAD_STATE;   /* a remount or a restart is under way on it */
+        uint32_t serial = b->serial;
+        say(true, "volumes: %s: its data partition is formatted again, as the owner confirmed: "
+            "%s stops first", disk_name(d), fs_mount_path(b));
+        b->busy = true;
+        (void)fs_stop_in_order(b);   /* said if it had to be killed */
+        if (b->serial == serial) {
+            b->busy = false;
+            fs_retire(b);
+        }
+        mounts_update();
+        if (!still(d, gen))
+            return ERR_BAD_STATE;
+    }
+    d->fstype[PART_DATA] = VOLDISKS_FSTYPE_NONE;
+    status_t st = part_wipe(d, PART_DATA);
+    if (!still(d, gen))
+        return ERR_BAD_STATE;
+    if (st != OK) {
+        say(true, "volumes: %s partition %u: its first MiB couldn't be written with zeros (%s)",
+            disk_name(d), PART_DATA + 1, status_str(st));
+        d->want |= (uint16_t)bit;   /* mounted again as it is now, if it holds a volume */
+        others_pump();
+        return ERR_IO;
+    }
+    d->fresh |= (uint16_t)bit;
+    d->fresh_fat = (uint16_t)(fat ? bit : 0);
+    d->nofat &= (uint16_t)~bit;
+    d->want |= (uint16_t)bit;
+    others_pump();
+    st = wait_settled(d, gen, bit, now() + MOUNT_WAIT);
+    if (st == OK && !d->fs[PART_DATA]) {
+        say(true, "volumes: %s partition %u: not mounted after its format", disk_name(d),
+            PART_DATA + 1);
+        st = ERR_IO;
+    }
+    if (st == OK)
+        st = back_to_own_way(d, gen, bit);
+    if (st == OK)
+        st = wait_settled(d, gen, bit, now() + BACK_WAIT);
+    return st;
+}
+
+status_t disk_format_data(uint32_t id, const char *tail, uint32_t tail_len, bool fat)
+{
+    struct disk *d = disk_named(id);
+    status_t st = format_refused(d, fat);
+    if (st == OK && !tail_is(d, tail, tail_len)) {
+        say(true, "volumes: %s: the format of its data partition wasn't confirmed (the end of "
+            "its serial number): nothing done", disk_name(d));
+        st = ERR_ACCESS_DENIED;
+    }
+    if (st != OK) {
+        say(true, "volumes: format of disk %08x's data partition: %s", id, status_str(st));
+        return st;
+    }
+    uint16_t gen = d->gen;
+    d->preparing = true;   /* nothing else (a prepare, an install's hold, a release) meanwhile */
+    uint8_t mode = STORAGE_MODE_OTHER, ro = 1, readable = 0;
+    st = driver_mode(d, &mode, &ro, &readable);
+    d = disk_named(id);
+    if (!d || !still(d, gen) || d->state != DISK_OTHER)
+        st = ERR_BAD_STATE;   /* gone, or its driver restarted, meanwhile */
+    else if (st == OK && (ro || mode != STORAGE_MODE_JAMOS))
+        st = ERR_ACCESS_DENIED;   /* `diskro`, or a table the driver doesn't read as Jam OS's:
+                                   * it opens nothing writable, so nothing is stopped */
+    else if (st == OK)
+        st = format_steps(d, gen, fat);
+    d = disk_named(id);   /* its slot may have been given up and used again meanwhile */
+    if (d) {
+        d->preparing = false;
+        d->fresh = d->fresh_fat = 0;
+    }
+    if (st == OK && d) {
+        char data[48];
+        mounted_as(d, PART_DATA, data, sizeof(data));
+        say(true, "volumes: %s's data partition is formatted: %s", disk_name(d), data);
+    } else {
+        say(true, "volumes: format of disk %08x's data partition: %s", id, status_str(st));
     }
     return st;
 }

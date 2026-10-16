@@ -26,8 +26,11 @@ only where A can't reach: a fault, and a thread running its own code.
 
 SG1 is built (the kernel's part of section 1: `exception_entry_set` 170,
 `exception_done` 171, `struct exc_frame` in `<jam/abi.h>`,
-kernel/arch/x86_64/upcall.c, ktests `upcall_*`); SG2 to SG6 and the
-review SGR are not. Tracks are in section 5; the questions for the owner
+kernel/arch/x86_64/upcall.c, ktests `upcall_*`), and so is SG2 (the
+exception stack, raises and a fault's end: `thread_exception_stack` 172,
+`thread_raise` 173, `EXC_RAISED`, `process_info`'s `PROCESS_FLAG_FAULT`
+with `fault_vector` and `fault_status`); SG3 to SG6 and the review SGR
+are not. Tracks are in section 5; the questions for the owner
 in section 6, each with a recommendation, which the plan follows until he
 says otherwise. Names and numbers of calls and structures below are
 proposals where SG1 didn't settle them.
@@ -45,6 +48,27 @@ are `ERR_BAD_STATE`; an unreadable frame to `EXC_RESUME` is
 is vector 3 with RIP after it (it was a general protection fault). The
 alignment check (17) can't happen yet: CR0.AM is off, so AC in user code
 does nothing.
+
+What SG2 settled: `thread_exception_stack(base, size)` acts on the
+calling thread (size 0 with base 0 removes it); RSP is "on it" as Linux's
+`on_sig_stack` says (above its base, at most its top), and a frame that
+would end below its base, or a stack smaller than a frame, isn't written
+(the fault's kill, never a write below it). A raise's frame has vector,
+status, error code and address 0; a raise whose frame can't be written is
+dropped like one with no entry (the thread goes on; libc's signal stays
+pending for its next call). A fault in a raise's window kills with its
+own line and ", in its exception entry"; `EXC_UNHANDLED` there is
+`ERR_BAD_STATE` (a raise has no kill to fall back on). The kick is
+`sched_kick`'s reschedule interrupt, sent only when the thread is running
+on another CPU and not inside a call (read as a hint: a raise that misses
+it waits for the thread's next tick). `process_info.flags` says
+`PROCESS_FLAG_FAULT` with the fault's vector and status for every kill by
+a fault, with or without an entry, the window's kill naming the first
+fault; a return to a bad address and a refused `EXC_RESUME` frame say 13
+(Linux's SIGSEGV for those); out of memory and the tamper check say 14
+with their status (SG4 picks the signal: Linux's SIGKILL and SIGBUS).
+The raise's test of a blocked call uses `sleep_until` (which
+`thread_interrupt` would end) rather than `channel_call`.
 
 ## Where things stand
 

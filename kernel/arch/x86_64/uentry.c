@@ -178,7 +178,8 @@ void return_to_user_work(void)
  * stack at the bottom (nothing of the kernel's below it, no locks), so
  * leaving from here is like leaving from a syscall. `more` (or NULL) ends
  * the line. */
-_Noreturn void user_kill(const char *why, uint64_t rip, uint64_t addr, const char *more)
+_Noreturn void user_kill(const char *why, uint64_t rip, uint64_t addr, const char *more,
+                         uint32_t vector, status_t status)
 {
     struct thread *t = current_thread();
     irq_enable();
@@ -190,7 +191,7 @@ _Noreturn void user_kill(const char *why, uint64_t rip, uint64_t addr, const cha
     if (t->process) {
         kprintf("user: process \"%s\" killed: %s at rip %lx, address %lx (thread \"%s\")%s\n",
                 process_name(t->process), why, rip, addr, t->name, more);
-        process_kill(t->process, PROCESS_KILLED_CODE, true);
+        process_kill_fault(t->process, vector, status);
     } else {
         kprintf("user: killed thread \"%s\" (id %lu): %s at rip %lx, address %lx%s\n", t->name,
                 t->id, why, rip, addr, more);
@@ -198,9 +199,11 @@ _Noreturn void user_kill(const char *why, uint64_t rip, uint64_t addr, const cha
     leave_user();
 }
 
+/* A return to a bad address: the general protection fault it would have
+ * been at that RIP (Linux's SIGSEGV), for process_info. */
 _Noreturn static void kill_current(const char *why, uint64_t rip, uint64_t addr)
 {
-    user_kill(why, rip, addr, NULL);
+    user_kill(why, rip, addr, NULL, 13, OK);
 }
 
 /* The C half of syscall_entry. Interrupts are off on entry and on return;
@@ -241,6 +244,10 @@ int64_t syscall_entry_c(struct syscall_frame *f)
 void user_trap_return(struct trap_frame *f)
 {
     return_to_user_work();
+    /* A raise is looked for here only, beside return_to_user_work's own
+     * flags: never on the system call return, whose cost stays as it was. */
+    if (__atomic_load_n(&current_thread()->raise_pending, __ATOMIC_RELAXED))
+        user_raise(f);
     /* iretq to a non-canonical RIP would #GP in ring 0 after the swapgs. */
     if (f->rip >= USER_TOP || f->cs != (GDT_USER_CODE | 3) || f->ss != (GDT_USER_DATA | 3))
         kill_current("iret to a bad frame", f->rip, 0);
