@@ -1,0 +1,146 @@
+# The shell's file commands on an ext volume, /jam (docs/M13.6-PLAN.md, U8):
+# ls -l (modes, link counts, owner, a link's target), stat, ln and ln -s,
+# chmod (octal and symbolic), readlink, a link through a directory, a link
+# that leads out of the volume (said, not followed), and allow on a program
+# on /jam (the whole-file way: extfs has no pages to give yet).
+# tools/extcmds-test.sh runs it with a Jam OS drive whose data partition
+# jamext made (tools/jamext) and checks the volume on the host afterwards.
+# QEMU_INPUT=this file, command line "shell" (and QEMU_NVME=the drive).
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /jam mounted
+send T=x
+wait {prompt}
+
+# ---- a tree jamext made: modes and owners as it put them -----------------------------------
+send ls -l /jam/docs | grep -c "^-rw-r--r--  1 jam  jam .* hello.txt$" | grep ^1$ && echo ok-$T-lsl
+wait ok-x-lsl
+send ls -l /jam | grep -c "^d" | grep ^[3-9]$ && echo ok-$T-dirs
+wait ok-x-dirs
+send ls -l /jam/docs/run.sh | grep -c "^-rwxr-xr-x  1 jam  jam" | grep ^1$ && echo ok-$T-exec
+wait ok-x-exec
+send ls -l /jam/docs/ln-hello | grep -c " -> hello.txt$" | grep ^1$ && echo ok-$T-treelink
+wait ok-x-treelink
+send ls -l /jam/docs | grep -c "^-rw-r--r--  2 jam  jam" | grep ^2$ && echo ok-$T-treehard
+wait ok-x-treehard
+send cat /jam/docs/ln-hello
+wait hello from the host tool
+send stat /jam/docs/hello.txt | grep -c "Links: 2" | grep ^1$ && stat /jam/docs/hello.txt | grep -c "Uid: 1000 (jam)" | grep ^1$ && echo ok-$T-stat
+wait ok-x-stat
+
+# ---- ln -s and readlink, a link read through, and shown as itself ---------------------------
+send cd /jam && mkdir t && cd t && write a hello-a && ln -s a b && cat b
+wait hello-a
+send readlink b | grep -c ^a$ | grep ^1$ && echo ok-$T-readlink
+wait ok-x-readlink
+send ls -l | grep -c "^lrwxrwxrwx  1 jam  jam .* b -> a$" | grep ^1$ && echo ok-$T-lslink
+wait ok-x-lslink
+send stat b | grep -c "File: b -> a" | grep ^1$ && stat b | grep -c "symbolic link" | grep ^1$ && echo ok-$T-statlink
+wait ok-x-statlink
+send stat -L b | grep -c "regular file" | grep ^1$ && echo ok-$T-statL
+wait ok-x-statL
+send ls -l b | grep -c "^lrwxrwxrwx" | grep ^1$ && echo ok-$T-lslinkarg
+wait ok-x-lslinkarg
+send readlink a; echo st-$T=$?
+wait readlink: a: not a symbolic link
+wait st-x=1
+send readlink nosuch; echo st-$T=$?
+wait readlink: nosuch: no such file or directory
+wait st-x=1
+# a link to a name that is not there is a link all the same
+send ln -s nowhere dangling && readlink dangling | grep -c ^nowhere$ | grep ^1$ && cat dangling; echo st-$T=$?
+wait cat: dangling: no such file or directory
+wait st-x=1
+# a link through a directory
+send mkdir d && ln -s d dl && write dl/in-d inside && cat d/in-d && ls dl
+wait inside
+send ls dl | grep -c ^in-d$ | grep ^1$ && echo ok-$T-dirlink
+wait ok-x-dirlink
+# one that leads out of the volume (an absolute target) is stored as it is and said, not followed
+send ln -s /jam/t/a abs && readlink abs | grep -c ^/jam/t/a$ | grep ^1$ && echo ok-$T-abs
+wait ok-x-abs
+send cat abs; echo st-$T=$?
+wait leads out of its volume
+wait st-x=1
+send ln -s a b; echo st-$T=$?
+wait ln: b: it exists already
+wait st-x=1
+
+# ---- hard links: a second name, the same file ------------------------------------------------
+send ln a c && ls -l a c | grep -c "^-rw-r--r--  2 jam  jam" | grep ^2$ && echo ok-$T-hard
+wait ok-x-hard
+send write -a a more && cat c | wc -l | grep ^2$ && echo ok-$T-same
+wait ok-x-same
+send stat a | awk 1 | grep -c "Links: 2"; stat a | grep -c "Inode:"
+wait {prompt}
+send rm a && ls -l c | grep -c "^-rw-r--r--  1 jam  jam" | grep ^1$ && echo ok-$T-unlinked
+wait ok-x-unlinked
+send ln c d; echo st-$T=$?
+wait st-x=0
+send ls d | grep -c ^c$ | grep ^1$ && echo ok-$T-lndir
+wait ok-x-lndir
+send ln d e; echo st-$T=$?
+wait ln: e: a directory can't have a hard link
+wait st-x=1
+send ln c /data/c; echo st-$T=$?
+wait ln: /data/c: no hard links here
+wait st-x=1
+send ln; echo st-$T=$?
+wait usage: ln [-s] <target> <name>
+wait st-x=2
+
+# ---- chmod: octal, then symbolic ---------------------------------------------------------------
+send chmod 755 c && ls -l c | grep -c "^-rwxr-xr-x" | grep ^1$ && echo ok-$T-755
+wait ok-x-755
+send chmod go-x c && ls -l c | grep -c "^-rwxr--r--" | grep ^1$ && echo ok-$T-gox
+wait ok-x-gox
+send chmod u=rw,g=,o= c && ls -l c | grep -c "^-rw-------" | grep ^1$ && echo ok-$T-eq
+wait ok-x-eq
+send chmod a+x c && ls -l c | grep -c "^-rwx--x--x" | grep ^1$ && echo ok-$T-ax
+wait ok-x-ax
+send chmod 0644 c && stat c | grep -c "Mode: 0644 (-rw-r--r--)" | grep ^1$ && echo ok-$T-stat644
+wait ok-x-stat644
+send chmod 700 d && ls -l /jam/t | grep -c "^drwx------.* d/$" | grep ^1$ && echo ok-$T-dir700
+wait ok-x-dir700
+send chmod 755 d
+wait {prompt}
+send chmod 999 c; echo st-$T=$?
+wait chmod: 999: not a mode
+wait st-x=2
+send chmod 644 nosuch; echo st-$T=$?
+wait chmod: nosuch: no such file or directory
+wait st-x=1
+# the mode is kept through a link: chmod on a link changes the file it leads to
+send ln -s c cl && chmod 600 cl && ls -l c | grep -c "^-rw-------" | grep ^1$ && echo ok-$T-chlink
+wait ok-x-chlink
+send ls -l cl | grep -c "^lrwxrwxrwx" | grep ^1$ && echo ok-$T-linkmode
+wait ok-x-linkmode
+
+# ---- a program on /jam: allowed with allow, then run ----------------------------------------
+send cd /jam && cp /boot/bin/soakload /jam/s && echo ok-$T-copied
+wait ok-x-copied
+wait {prompt}
+send run /jam/s 1; echo st-$T=$?
+wait run: /jam/s is not allowed to run: `allow /jam/s` first
+wait st-x=126
+wait {prompt}
+send allow /jam/s; echo st-$T=$?
+wait allow s: every mount (write)? y/n
+type y
+wait allow: /jam/s may run
+wait st-x=0
+wait {prompt}
+send allow -l | grep -c "/jam/s" | grep ^1$ && echo ok-$T-listed
+wait ok-x-listed
+send run /jam/s 1; echo st-$T=$?
+wait soakload:
+wait run: /jam/s exited with code 0
+wait st-x=0
+wait {prompt}
+send allow -r /jam/s; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send sync
+wait {prompt}
+send reboot -f
+wait reboot: resetting
