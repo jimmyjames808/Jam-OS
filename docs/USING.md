@@ -168,6 +168,11 @@ boot's kernel log is saved to `/data/logs/` and can be read on another
 computer; after a panic the next boot saves the panicked boot's log too,
 and `crashlog` shows it ([ARCHITECTURE.md](../ARCHITECTURE.md#storage)).
 
+`/tmp` is always there and empty at every boot: the Jam OS drive's
+`/jam/tmp` when it is in, the drive's own `/data/tmp` when the PC started
+from it, else a volume in memory. Every POSIX program (the ports, Chromium)
+may write it; native programs get only what their lists name.
+
 **Internal NVMe drives.** Jam OS binds an NVMe drive's driver on every
 boot (M12.7). The drive's FAT partitions (a Windows drive's EFI system
 partition) appear read-only at `/nvme0`, `/nvme1`, ..., apart from the
@@ -204,8 +209,10 @@ blocks are not 512 bytes are listed and not mounted (the FAT service reads
   last four characters of the serial number (any case; anything else stops,
   and so does Ctrl+C): then it writes the partition table (an ESP of 512
   MiB at 1 MiB, a data partition of the rest, at most 2 TiB), formats both
-  partitions and mounts them read-only (`/nvme1`, `/nvme2`: the next free
-  numbers), and says `nvme1 is a Jam OS disk now: ESP 512.0 MiB, data ...`.
+  partitions and mounts them: the ESP FAT32, read-only (`/nvme1`: the
+  next free number), the data partition ext, read-write, as `/jam` (with
+  `/usr`, `/var`, `/home` and `/tmp` as views of it), and says `nvme1 is a
+  Jam OS disk now: ESP 512.0 MiB, data ...`.
   A drive that isn't empty (anything at its first or last 64 KiB, or in
   the first MiB at 1 MiB or at 513 MiB) is **erased**, and only if you
   say so twice: it says "It is NOT empty", lists what is on it (its
@@ -220,9 +227,17 @@ blocks are not 512 bytes are listed and not mounted (the FAT service reads
   A prepare that was cut short (the power) is finished by running it
   again: whatever it left is a blank drive, a drive with only half a
   table, or a Jam OS disk with a partition that has no volume yet (an
-  erase cut short leaves a drive that isn't empty: it asks again).
-  `mount -w /nvme2` then makes the data partition writable, `mount -r`
-  read-only again.
+  erase cut short leaves a drive that isn't empty: it asks again). A Jam
+  OS disk whose partition table Jam OS reads only from its backup (a
+  header damaged) can't be written: its volumes are mounted read-only and
+  `disk prepare` offers it for erase like a drive that isn't empty.
+- `disk format nvme1 data` formats a Jam OS disk's data partition again,
+  **everything on it lost**: an ext volume (a FAT32 one the first `disk
+  prepare`s made is turned into ext this way); `disk format nvme1 data
+  fat` makes FAT32 instead (for a drive another computer will read). It
+  shows the drive and what its data partition holds and goes on only when
+  you type the serial's last four characters; the partition's mount
+  (`/jam` and its views too) goes first. Not over SSH.
 - `install nvme1` writes Jam OS to an NVMe drive so the PC starts from it
   without the stick. It asks the same questions as `disk prepare` (the
   drive's model, serial and size; the serial's last four characters; for a
@@ -240,7 +255,9 @@ blocks are not 512 bytes are listed and not mounted (the FAT service reads
   "UEFI OS (<model>)" (or the drive's name) first in the firmware's boot
   order`; Jam OS writes no firmware variable, so you set the order (Del at
   power-on; F8 picks a drive once). The stick keeps working as a stick:
-  picked with F8 it boots itself and mounts the installed drive read-only.
+  picked with F8 it boots itself and mounts the installed drive's ESP
+  read-only and its data partition as `/jam`, read-write. Booted from the
+  drive, its data partition is `/data` (ext).
   It refuses the disk Jam OS booted from and a drive on a `diskro` boot.
 - `disk smart nvme0` prints the drive's own health log: data read and
   written, host read and write commands, power cycles, unsafe shutdowns,

@@ -903,7 +903,9 @@ a renderer per site). Three pieces, all general:
 - **`inotify`** (file watchers): ENOSYS, and Chromium's watchers that
   need it fail soft (*unsure*: CB2's run with the log on lists any that
   doesn't).
-- **`/tmp`**: M13.6's U7a empties it at boot on the Jam OS drive;
+- **`/tmp`**: always there in shell mode and empty at boot (M13.6's U7b:
+  `/jam/tmp`, an ext `/data`'s `/data/tmp`, or an ext volume in memory),
+  and every POSIX program's list grants it writable (the word `posix`);
   `XDG_RUNTIME_DIR` stays unset (Chromium warns).
 
 ### 8. The network

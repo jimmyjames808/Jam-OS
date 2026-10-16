@@ -50,8 +50,8 @@
 #             replayed
 #   cutprep   the same cut during `disk prepare` of a blank drive, at the
 #             Nth Write of its table (1 to 5) and of the formats after it
-#             (the ESP's FAT, then the data partition's ext: about 190
-#             Writes in all, most of them the ext volume's):
+#             (the ESP's FAT, then the data partition's ext, done by the
+#             60th Write or so; then /jam's first writes):
 #             then a boot that finishes the preparation (`disk prepare`
 #             again where the host sees a drive that isn't complete; none
 #             where it is) and writes and checks a storm. The state the cut
@@ -107,7 +107,7 @@ NVW_BLANK_DISK=${NVW_BLANK_DISK:-nothing found on it}    # what `disks` says of 
 NVW_PREPARED=${NVW_PREPARED:-is a Jam OS disk now}       # and its answer when done
 NVW_RW=${NVW_RW:-read-write}                             # mount -w: "is now read-write", "read-write already"
 NVW_POINTS=${NVW_POINTS:-1 2 3 5 8 13 21 34 55 89}
-NVW_PREP_POINTS=${NVW_PREP_POINTS:-1 3 4 5 6 8 12 20 35 50 70 100 140 180}   # a whole prepare is about 190 Writes
+NVW_PREP_POINTS=${NVW_PREP_POINTS:-1 3 4 5 6 8 12 20 35 50 54 58 62 66 70}   # a whole prepare is about 70 Writes
 NVW_DRV_POINTS=${NVW_DRV_POINTS:-1 3 4 5 6}
 
 sha256() { if command -v sha256sum > /dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
@@ -245,7 +245,7 @@ boot_cut() {
             w=$(nwrites "$trace")
             [ "$w" = "$lastw" ] || { echo "$(date +%s.%N) Write $w" >> "$d/$n.polls"; lastw=$w; }
             if [ "$w" -ge "$target" ]; then
-                kill -9 "$qp"
+                kill -9 "$qp" 2> /dev/null || true   # (it may have ended that moment)
                 cut=$w
                 break
             fi
