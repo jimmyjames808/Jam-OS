@@ -36,6 +36,8 @@ CASES = {
     "cursor": ["cursor-shape", "cursor-surface"],
     "clip": ["clipboard-in", "clipboard-out"],
     "hold": ["hold"],
+    "hostile": ["hostile-sub-storm", "hostile-desync-flood", "hostile-popup-cap", "hostile-deco",
+                "hostile-handles", "hostile-never-reads", "hostile-regrab", "toplevel"],
 }
 
 # Cases the compositor fails today, and why (the track's report has the evidence).
@@ -483,6 +485,39 @@ def check_hold(outdir, lines):
     if img is not None:
         got = {px(img, x, y) for x in range(700, 760, 4) for y in range(300, 360, 4)}
         report("hold bands", "PASS" if got & set(BANDS) else "FAIL", "the bands are on the screen")
+
+
+JOB_LINE = re.compile(r"job \d+: \d+ pages, (\d+) handles, \d+ threads?, (\d+) message bytes")
+COMP_LINE = re.compile(r"process \d+ compositor\b")
+HANDLES_SLACK, BYTES_SLACK = 4, 16384   # the terminal's own pools and unread events may move
+
+
+def compositor_jobs(lines):
+    """(handles, message bytes) of the compositor's job in each `ps -k` listing,
+    in order: the job line just above its process line."""
+    out, last = [], None
+    for line in lines:
+        m = JOB_LINE.search(line)
+        if m:
+            last = (int(m.group(1)), int(m.group(2)))
+        elif COMP_LINE.search(line) and last:
+            out.append(last)
+            last = None
+    return out
+
+
+def check_hostile(outdir, lines):
+    """The compositor's job after the hostile clients is where it was before
+    them: a client gone, however it went, leaves no handle or message of its
+    own charged to the compositor (X1's leak, G1)."""
+    jobs = compositor_jobs(lines)
+    if len(jobs) < 2:
+        report("hostile leak", "FAIL", "the compositor's job is in %d ps -k listing(s), wanted 2" % len(jobs))
+        return
+    (h0, b0), (h1, b1) = jobs[0], jobs[-1]
+    ok = h1 <= h0 + HANDLES_SLACK and b1 <= b0 + BYTES_SLACK
+    report("hostile leak", "PASS" if ok else "FAIL",
+           "the compositor's handles %d -> %d, message bytes %d -> %d" % (h0, h1, b0, b1))
 
 
 def main():

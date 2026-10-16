@@ -1336,7 +1336,12 @@ moves the frame round the tree, but the window manager places the window
 again only at the main surface's next commit. A window with subsurfaces
 never takes the full-screen path (its rows copied straight from its main
 surface's buffer). The keyboard focus stays the main surface's (a
-subsurface never has it, as the protocol says).
+subsurface never has it, as the protocol says). A commit's buffer offset
+(`wl_surface.offset`, or attach's x and y below version 5) moves a
+subsurface against its parent, cached commits' offsets added up, until
+set_position next sets its place (weston's rule; added by GR, its Low 2).
+An effectively synchronized grandchild's cache waits for its own parent's
+next apply, as wlroots does (GR's Low 3, kept by the owner's decision).
 
 **For GC3 (popups)**: an xdg_popup is a window of its own, and its surface
 may have a tree: `window_tree_box`, the tree drawing and `window_input_at`
@@ -1394,7 +1399,11 @@ restart; its surface may have subsurfaces like any window's.
   serials (`seat_input_serial_ok`: a key, a button, a keyboard enter) while
   its toplevel has the keyboard focus, before the popup is mapped; denied
   (dismissed at once) otherwise, so a program in the background can't take
-  the keys with a menu. The grabbing popups are one chain of one client's,
+  the keys with a menu. Once the compositor dismisses a client's grab (a
+  press outside, the focus moving, another client's grab) it may grab again
+  only after its next key or button press (`seat_grab_lock`, GR's finding
+  1: else it could meet every click outside with a new grab and the mouse
+  could never leave it). The grabbing popups are one chain of one client's,
   each on the one before; a new grab on the toplevel dismisses the old
   chain, one on a popup of the chain dismisses what is above it. While
   the chain lives the pointer goes only to that client's surfaces, its
@@ -1448,7 +1457,7 @@ back); a popup's wl_surface destroyed first (`defunct_role_object`).
 | The compositor's additions | utest's compositor tests per protocol (GC1b to GC3); screenshot tests in `tools/comp-test.sh`'s style; every existing desktop script unchanged (`tools/desk-test.sh`, `tools/apps-test.sh`, `tools/clip-test.sh`, `tools/mouse-test.sh`) |
 | The ports | each recipe's `test` through M13.7's ports-test script (GP1, GP2, wlprobe) |
 | End to end | tools/wl-port-test.sh: wlprobe's cases; then the Chromium plan's `content_shell` and `chrome` cases added to the same script |
-| Hostile clients | GR's libwayland-based clients against the live compositor; X1's hostile clients unchanged |
+| Hostile clients | GR's libwayland-based clients against the live compositor (wlprobe's `hostile-*` cases, `tools/wl-port-test.sh`'s `hostile` group; [G2-REVIEW](G2-REVIEW.md)); X1's hostile clients unchanged |
 | The bench | BENCH.md gains: wlprobe's round trip and a 28-descriptor flush through the shim against libjwl's; the compositor's paint cost with a full-screen Chromium window (with the Chromium plan) |
 | The regression | once, after GJ, on the PC: ktest at 4, the init run twice, every area script, the desktop scripts, the new script, the soak at 4 |
 
