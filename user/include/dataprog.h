@@ -113,8 +113,16 @@ status_t dp_wants_vmo(handle_t x, uint64_t size, struct wants *w);
 
 /* ---- approvals ----------------------------------------------------------------------- */
 
-/* abs is a file path on /data ("/data/x", not "/data" itself). */
+/* abs is a file path on /data ("/data/x", not "/data" itself), on /jam (the
+ * Jam OS drive's volume) or in /pkg (init's read-only view of the packages'
+ * prefix, M13.7's PO14), which are all places a program must be approved
+ * to run from. */
 bool        dp_on_data(const char *abs);
+/* Are a and b the same approved place? Equal paths are; so are the three
+ * names of one package file: /pkg/bin/x is /jam/pkg/bin/x or /data/pkg/bin/x
+ * (whichever the prefix is: an approval line names the prefix's own path,
+ * and a program run through the view names /pkg). */
+bool        dp_path_same(const char *a, const char *b);
 /* One line of the approvals, its fields cut in place (hash, path, the
  * list as shown). false: not an approval (a comment, or malformed). */
 bool        dp_allow_split(char *line, char **hash, char **path, char **text);
@@ -123,7 +131,8 @@ bool        dp_allow_split(char *line, char **hash, char **path, char **text);
  * dp_allow_split's text: the tag cut off in place, returned without its
  * "pkg=" (NULL for a line without one: the owner's `allow`). */
 char       *dp_allow_tag(char *text);
-/* The hash of path's approval (its last line in DP_ALLOW_FILE) into hex
+/* The hash of path's approval (its last line in DP_ALLOW_FILE, a line for
+ * a path dp_path_same takes for path) into hex
  * (DP_HEX_LEN digits and a NUL). ERR_NOT_FOUND: no line for it (or no
  * approvals at all); ERR_OUT_OF_RANGE: the file is past DP_ALLOW_MAX; a
  * read's error. */

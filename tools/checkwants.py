@@ -15,7 +15,8 @@ same rules: printable ASCII lines, each one of
                           (/svc/net-listen, never named on its own)
     svc net listen low    the same on ports below 1024 too
                           (/svc/net-low, never named on its own)
-    mount <point> r|rw    <point>: /boot /esp /data /jam /usb* *
+    mount <point> r|rw    <point>: /boot /esp /data /jam /pkg /usb* * (/pkg: r only,
+                          init's read-only view of the packages' prefix)
     mount /data rw pkg    /data writable, the packages' prefix too
     mount /jam rw pkg     the same on /jam (the Jam OS drive's volume)
     right <name>          klog sysinfo clock debug jit
@@ -46,7 +47,7 @@ import struct
 import sys
 
 OS_H = "user/include/os.h"
-POINTS = {"/boot", "/esp", "/data", "/jam", "/usb*", "*"}
+POINTS = {"/boot", "/esp", "/data", "/jam", "/pkg", "/usb*", "*"}
 RIGHTS = {"klog", "sysinfo", "clock", "debug", "jit"}
 JIT_DIRS = ("ports/", "user/ports/", "user/tests/")   # `right jit`: packages and tests only
 TESTS_ONLY = {"devmgr-ctl", "init", "serve", "volumes"}
@@ -127,6 +128,8 @@ def check_text(text, in_tests, svcs, in_services=False, src=""):
                 problems.append("'%s': only a service, a port or a test may ask for it" % line)
             n += 1
         elif len(w) == 3 and w[0] == "mount" and w[1] in POINTS and w[2] in ("r", "rw"):
+            if w[1] == "/pkg" and w[2] == "rw":
+                problems.append("'%s': /pkg is a read-only view (mount /pkg r)" % line)
             n += 1
         elif w in (["mount", "/data", "rw", "pkg"], ["mount", "/jam", "rw", "pkg"]):
             if not in_services:
@@ -150,7 +153,8 @@ def selftest():
     svcs = services()
     take = [b"svc net\n", b"svc net listen\n", b"svc net listen\nsvc dns\nmount /data rw\n",
             b"right clock\n", b"svc init\n", b"svc volumes\n", b"posix\n",
-            b"posix\nsvc net\nmount /data rw\n", b"svc session\n"]
+            b"posix\nsvc net\nmount /data rw\n", b"svc session\n", b"mount /pkg r\n",
+            b"posix\nmount /data r\nmount /pkg r\n"]
     take_services = [b"svc net listen low\n", b"svc net-sys\n", b"mount /data rw pkg\n",
                      b"mount /jam rw pkg\n", b"mount /data rw pkg\nmount /jam rw pkg\n"]
     refuse = [b"svc net-listen\n", b"svc dns listen\n", b"svc net listen now\n",
@@ -163,7 +167,8 @@ def selftest():
               b"svc session\n", b"right jit\n", b"right JIT\n", b"mount /data rw pkg\n",
               b"mount /data r pkg\n", b"mount * rw pkg\n", b"mount /usb* rw pkg\n",
               b"mount /data rw Pkg\n", b"mount /data rw pkg now\n", b"mount /jam rw pkg\n",
-              b"mount /jam r pkg\n", b"mount /usb0 rw pkg\n"]
+              b"mount /jam r pkg\n", b"mount /usb0 rw pkg\n", b"mount /pkg rw\n",
+              b"mount /pkg r pkg\n", b"mount /pkg\n", b"mount /pkgx r\n", b"mount /pkg/bin r\n"]
     fails = []
     for t in take:
         problems, _ = check_text(t, True, svcs)

@@ -96,13 +96,15 @@ static bool want_net_listen(struct wants *w, bool low)
 /* "mount <point> r|rw". */
 static bool want_mount(struct wants *w, const char *point, const char *mode)
 {
-    static const char *const points[] = { "/boot", "/esp", "/data", "/jam", "/usb*", "*" };
+    static const char *const points[] = { "/boot", "/esp", "/data", "/jam", "/pkg", "/usb*", "*" };
     bool known = false;
     for (unsigned i = 0; i < sizeof(points) / sizeof(points[0]); i++)
         known |= !strcmp(point, points[i]);
     bool ro = !strcmp(mode, "r");
     if (!known || (!ro && strcmp(mode, "rw")))
         return false;
+    if (!ro && !strcmp(point, "/pkg"))
+        return false;   /* init's /pkg is a read-only view: only bin/pkg changes the prefix */
     char g[24], shown[40];
     snprintf(g, sizeof(g), "%s:%c", point, ro ? 'r' : 'w');
     snprintf(shown, sizeof(shown), "%s (%s)", !strcmp(point, "*") ? "every mount" : point,

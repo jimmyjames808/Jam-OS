@@ -216,7 +216,28 @@ status_t dp_wants_vmo(handle_t x, uint64_t size, struct wants *w)
 
 bool dp_on_data(const char *abs)
 {
-    return (!strncmp(abs, "/data/", 6) && abs[6]) || (!strncmp(abs, "/jam/", 5) && abs[5]);
+    return (!strncmp(abs, "/data/", 6) && abs[6]) || (!strncmp(abs, "/jam/", 5) && abs[5]) ||
+           (!strncmp(abs, "/pkg/", 5) && abs[5]);
+}
+
+/* What follows the packages' prefix in p ("bin/x" of "/jam/pkg/bin/x"), or NULL. */
+static const char *pkg_rest(const char *p)
+{
+    if (!strncmp(p, "/pkg/", 5))
+        return p + 5;
+    if (!strncmp(p, "/jam/pkg/", 9))
+        return p + 9;
+    if (!strncmp(p, "/data/pkg/", 10))
+        return p + 10;
+    return NULL;
+}
+
+bool dp_path_same(const char *a, const char *b)
+{
+    if (!strcmp(a, b))
+        return true;
+    const char *x = pkg_rest(a), *y = pkg_rest(b);
+    return x && y && *x && !strcmp(x, y);
 }
 
 bool dp_allow_split(char *line, char **hash, char **path, char **text)
@@ -278,7 +299,7 @@ status_t dp_allow_hash(const char *path, char hex[DP_HEX_LEN + 1])
         char *nl = strchr(line, '\n'), *hash, *p, *text;
         if (nl)
             *nl = '\0';
-        if (dp_allow_split(line, &hash, &p, &text) && !strcmp(p, path)) {
+        if (dp_allow_split(line, &hash, &p, &text) && dp_path_same(p, path)) {
             memcpy(hex, hash, DP_HEX_LEN + 1);   /* the last line wins (allow writes one) */
             st = OK;
         }

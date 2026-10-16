@@ -604,11 +604,28 @@ bool t_pkgctl_want(void)
     CHECK(w.n == 1 && !strcmp(w.grant[0], "/jam:w") && !dp_wants_refused(&w));
     CHECK(dp_on_data("/jam/pkg/bin/x") && dp_on_data("/data/x") && !dp_on_data("/jam") &&
           !dp_on_data("/jam/") && !dp_on_data("/jamx/y") && !dp_on_data("/usb0/x"));
+    /* M13.7's PO14: /pkg, init's read-only view of the prefix, is a place to run from, a
+     * read-only mount a list may ask for, and the same files as the prefix's own names. */
+    CHECK(dp_on_data("/pkg/bin/x") && !dp_on_data("/pkg") && !dp_on_data("/pkg/") &&
+          !dp_on_data("/pkgx/y"));
+    CHECK_ST(wants_parse("mount /pkg r\n", 13, &w), OK);
+    CHECK(w.n == 1 && !strcmp(w.grant[0], "/pkg:r") && !dp_wants_refused(&w));
+    CHECK_ST(wants_parse("posix\nmount /data r\nmount /pkg r\n", 33, &w), OK);
+    CHECK(w.n == 3 && !strcmp(w.grant[0], "/tmp:w") && !strcmp(w.grant[2], "/pkg:r"));
+    CHECK(dp_path_same("/pkg/bin/x", "/pkg/bin/x") && dp_path_same("/pkg/bin/x", "/jam/pkg/bin/x") &&
+          dp_path_same("/data/pkg/bin/x", "/pkg/bin/x") &&
+          dp_path_same("/data/pkg/bin/x", "/jam/pkg/bin/x") &&
+          dp_path_same("/data/x", "/data/x"));
+    CHECK(!dp_path_same("/pkg/bin/x", "/pkg/bin/y") && !dp_path_same("/pkg/bin/x", "/data/bin/x") &&
+          !dp_path_same("/pkg/", "/jam/pkg/") && !dp_path_same("/pkg/bin/x", "/jam/pkgx/bin/x") &&
+          !dp_path_same("/jam/x", "/data/x") && !dp_path_same("/pkg/bin/x", "/pkg/bin/x/y"));
     static const char *const bad[] = { "mount /data r pkg\n", "mount /usb* rw pkg\n",
                                        "mount * rw pkg\n", "mount /data rw pkg x\n",
                                        "mount /data rw Pkg\n", "mount /data rwpkg\n",
                                        "mount /jam r pkg\n", "mount /jam rw Pkg\n",
-                                       "mount /jam rwpkg\n", "mount /jamx rw pkg\n" };
+                                       "mount /jam rwpkg\n", "mount /jamx rw pkg\n",
+                                       "mount /pkg rw\n", "mount /pkg r pkg\n",
+                                       "mount /pkg\n", "mount /pkgx r\n" };
     for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); i++)
         CHECK_ST(wants_parse(bad[i], strlen(bad[i]), &w), ERR_INVALID_ARGS);
     return true;

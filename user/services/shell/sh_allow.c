@@ -50,12 +50,13 @@
 #define READ_CHUNK   (1u << 20)      /* bytes read and hashed at a time */
 #define PROGRESS_MIN (32ull << 20)   /* a file this big shows a line while it is read */
 
-/* The mounts a program may be allowed and run from: the stick's /data, and
- * /jam, the Jam OS drive's ext data partition (M13.6). Approvals stay in
- * /data/etc/allow either way. */
+/* The places a program may be allowed and run from: /data, /jam (the Jam
+ * OS drive's ext data partition, M13.6) and /pkg (init's read-only view of
+ * the packages' prefix, M13.7's PO14), all of dp_on_data's. Approvals stay
+ * in /data/etc/allow either way. */
 bool sh_on_data(const char *abs)
 {
-    return dp_on_data(abs) || (!strncmp(abs, "/jam/", 5) && abs[5]);
+    return dp_on_data(abs);
 }
 
 /* An approval's path, copied out of a line left whole; false: not one. */
@@ -215,7 +216,7 @@ static status_t rewrite(bool (*drop)(const char *path, void *ctx), void *ctx, co
 
 static bool same_path(const char *path, void *ctx)
 {
-    return !strcmp(path, ctx);
+    return dp_path_same(path, ctx);
 }
 
 /* name is the path, or its last name. */
@@ -441,7 +442,7 @@ static void find_line(const char *hash, const char *path, const char *text, void
 {
     struct find *f = ctx;
     (void)text;
-    if (strcmp(path, f->path))
+    if (!dp_path_same(path, f->path))
         return;
     f->path_seen = true;
     f->match |= !strcmp(hash, f->hex);
