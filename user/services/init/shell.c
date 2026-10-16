@@ -578,6 +578,8 @@ bool init_shell(bool no_usb, bool splash, const char *shell_arg)
             sessions_event((unsigned)(pkt.key - KEY_SESSION));
         } else if (pkt.key == KEY_SSHD) {
             ssh_event();
+        } else if (pkt.key == KEY_TMP) {
+            tmp_event();
         }
     }
 }

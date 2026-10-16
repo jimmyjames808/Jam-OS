@@ -36,7 +36,7 @@ sudo dd if="$img" of="$raw" bs=4m
 sync
 # The image's data partition is 64 MiB: grow it to the end of the stick. A
 # FAT one Jam OS formats, full size, on the first boot; an ext one (the
-# default) is made again here at the stick's size, with the files of DATA_DIR
+# DATA_FS=ext) is made again here at the stick's size, with the files of DATA_DIR
 # (the Makefile's: the owner's key and the like) in it, since nothing on the
 # Mac can write it after the first boot (tools/stick-data.sh).
 here=$(dirname "$0")

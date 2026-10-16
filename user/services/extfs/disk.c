@@ -19,7 +19,10 @@
  *
  * Every call has a time limit (BLOCK_WAIT), so a disk that stops answering
  * fails the request with ERR_IO instead of hanging extfs; a call that finds
- * the channel closed sets vol.disk_gone, and main.c winds extfs down. */
+ * the channel closed sets vol.disk_gone, and main.c winds extfs down.
+ *
+ * In place of the channel, the disk may be a VMO (EXTFS_SR_RAM, init's
+ * /tmp in memory): mapped whole, each read and write a copy. */
 #include <idl/block.h>
 #include "extfs.h"
 
@@ -141,12 +144,68 @@ status_t disk_open(handle_t block, struct ext_dev *dev)
     return OK;
 }
 
+/* ---- a VMO as the disk (EXTFS_SR_RAM) ------------------------------------------------- */
+
+#define RAM_SECTOR 512u   /* what vol.sector says of it: the library's 1 KiB reads fit */
+#define RAM_MIN    (1ull << 20)
+
+static uint8_t *ram;      /* the VMO, mapped whole; NULL: the disk is a block channel */
+
+static status_t ram_read(void *ctx, uint64_t off, uint32_t len, void *buf)
+{
+    (void)ctx;
+    uint64_t size = vol.sectors * RAM_SECTOR;
+    if (off > size || len > size - off)
+        return ERR_OUT_OF_RANGE;
+    memcpy(buf, ram + off, len);
+    return OK;
+}
+
+static status_t ram_write(void *ctx, uint64_t off, uint32_t len, const void *buf)
+{
+    (void)ctx;
+    uint64_t size = vol.sectors * RAM_SECTOR;
+    if (off > size || len > size - off)
+        return ERR_OUT_OF_RANGE;
+    memcpy(ram + off, buf, len);
+    writes++;
+    test_die(XF_DIE_WRITE);
+    return OK;
+}
+
+status_t disk_open_ram(handle_t vmo, struct ext_dev *dev)
+{
+    uint64_t size = 0, addr = 0;
+    status_t st = jam_vmo_get_size(vmo, &size);
+    size -= size % PAGE_SIZE;
+    if (st == OK && size < RAM_MIN)
+        st = ERR_INVALID_ARGS;
+    if (st == OK)
+        st = jam_vmar_map(startup_handle(SR_SELF_VMAR), vmo, 0, size, VMAR_READ | VMAR_WRITE,
+                          &addr);
+    if (st != OK) {
+        printf("extfs %s: the memory to serve can't be mapped: %s\n", vol.name, status_str(st));
+        return st;
+    }
+    ram = (uint8_t *)(uintptr_t)addr;
+    vol.ram = true;
+    vol.block = HANDLE_INVALID;
+    vol.sector = RAM_SECTOR;
+    vol.sectors = size / RAM_SECTOR;
+    vol.max_sectors = (uint32_t)(size / RAM_SECTOR > UINT32_MAX ? UINT32_MAX : size / RAM_SECTOR);
+    vol.read_only = false;
+    *dev = (struct ext_dev){
+        .ctx = NULL, .bytes = size, .read = ram_read, .write = ram_write,
+    };
+    return OK;
+}
+
 status_t disk_is_blank(bool *out)
 {
     static uint8_t first[4096];
     uint64_t n = vol.sectors * vol.sector < sizeof(first) ? vol.sectors * vol.sector
                                                           : sizeof(first);
-    status_t st = dev_read(NULL, 0, (uint32_t)n, first);
+    status_t st = ram ? ram_read(NULL, 0, (uint32_t)n, first) : dev_read(NULL, 0, (uint32_t)n, first);
     if (st != OK)
         return st;
     *out = true;

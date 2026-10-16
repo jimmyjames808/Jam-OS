@@ -138,7 +138,8 @@ struct thread {
     bool              in_syscall;    /* inside a system call, so its vector registers
                                       * are not live (fpu.c keeps only the control
                                       * words). Written only by the thread itself,
-                                      * with interrupts off; read by its own switches */
+                                      * with interrupts off; read by its own switches
+                                      * (and, as a hint, by thread_raise) */
     uint64_t          fs_base;       /* its FS base in ring 3 (thread-local storage):
                                       * set before it first enters ring 3, then only by
                                       * the thread itself, with interrupts off; loaded
@@ -150,6 +151,26 @@ struct thread {
     /* Set by thread_interrupt, cleared only by the thread itself when an
      * interruptible wait it is in returns ERR_INTERRUPTED (wait.c). */
     bool              interrupt_pending;
+
+    /* Fault upcalls (arch/x86_64/upcall.c), touched only by the thread
+     * itself: whether it is in its exception entry's window, and the fault
+     * that put it there (its kill line, should the window end in one:
+     * a static string, the RIP, the address, the vector and the page
+     * fault's status; exc_why NULL for a raise's window); the cookie its
+     * frames carry (random, made at its first upcall; 0 before); its
+     * exception stack (thread_exception_stack: [base, base + size), size 0
+     * for none). */
+    bool              exc_window;
+    const char       *exc_why;
+    uint64_t          exc_rip, exc_addr;
+    uint32_t          exc_vector;
+    int32_t           exc_status;
+    uint64_t          exc_cookie;
+    uint64_t          exc_stack, exc_stack_size;
+    /* A raise is latched (thread_raise, wait.c): set by any thread, taken
+     * (cleared) only by the thread itself on a return to ring 3 from an
+     * interrupt or exception (upcall.c). Atomic. */
+    bool              raise_pending;
 
     /* A free message buffer of the channels' (kernel/object/channel.c: its
      * slot), or NULL. A small message for a reader that waits for it is
@@ -233,6 +254,17 @@ void thread_interrupt(struct thread *t);
 status_t thread_interrupt_consume(status_t st);
 /* Is an interrupt latched on t, not yet taken? (Tests.) */
 bool thread_interrupt_pending(const struct thread *t);
+/* Latch a raise on user thread t (docs/SIGNALS-PLAN.md section 2): at its
+ * next return to ring 3 from an interrupt or exception, outside its
+ * exception entry's window, it enters its process's entry with a frame of
+ * kind EXC_RAISED (upcall.c; dropped with no entry). If t is running in
+ * ring 3 on another CPU, that CPU is interrupted so this comes now.
+ * Latched, not counted: one already latched does nothing more and sends
+ * no second interrupt. Returns whether this call latched it. Any context
+ * but an interrupt handler's; t must stay allocated meanwhile. */
+bool thread_raise(struct thread *t);
+/* Raises that latched, and the interrupts they sent (atomic; tests). */
+extern uint64_t raise_latched, raise_kicked;
 /* Ask t to stop waiting: set its cancel flag (for good) and wake it. Its
  * cancellable waits return ERR_CANCELED; plain waits just see a spurious
  * wakeup and carry on. */

@@ -41,7 +41,10 @@
  *     posix                   a POSIX program (on musl, docs/M13-PLAN.md):
  *                             its starter gives it file descriptors (the
  *                             hand-over, <posixfds.h>) and an 8 MiB stack;
- *                             it grants nothing (the compiler wrapper adds it)
+ *                             it grants /tmp, writable, which POSIX
+ *                             promises and init's shell mode always has
+ *                             (M13.6's U7b), as `mount /tmp rw` would (the
+ *                             compiler wrapper adds the word)
  * `svc session` (/svc/session, init's sessions: a whole shell) is for a
  * boot-image service, port or test only, and `allow` refuses it for a
  * program on /data.

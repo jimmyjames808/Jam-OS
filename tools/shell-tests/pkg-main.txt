@@ -35,6 +35,12 @@ wait {prompt}
 send pkg -R http://10.2.21.174:8000/badidx/ update
 wait is not signed by this build's ports key
 wait {prompt}
+send pkg -R http://10.2.21.174:8000/otherabi/ update
+wait are built for another version of Jam OS
+wait {prompt}
+send pkg -R http://10.2.21.174:8000/pkgabi/ install aaa
+wait pkg: aaa: it is built for another version of Jam OS
+wait {prompt}
 send pkg list
 wait No package is installed.
 wait {prompt}

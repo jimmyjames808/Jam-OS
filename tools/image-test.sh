@@ -7,7 +7,7 @@
 # and the boot image); the images are made under <outdir> with
 # `make image IMAGE=...`, so build/jamos.img and the runs that read it are
 # not touched.
-#   ext     the default image (DATA_FS=ext) with a DATA_DIR tree: partition 2
+#   ext     an ext image (DATA_FS=ext) with a DATA_DIR tree: partition 2
 #           is MBR type 0x83, mkimage.py --data-fs says ext, jamext check is
 #           clean and reads the tree back byte for byte, the ESP still has
 #           Limine, the kernel and the boot image, e2fsck -fn is clean;
@@ -16,12 +16,13 @@
 #           parts), and a DATA_DIR that isn't there leaves the volume empty;
 #   fat     DATA_FS=fat: type 0x0C, a FAT volume mtools reads at --data-at,
 #           and jamext says it is no ext volume;
+#   default no DATA_FS (and no JAMOS_DATA_FS): FAT32 for now;
 #   bogus   DATA_FS=nonsense is refused;
 #   stick   what `make usb` does after dd: the image on a bigger "stick"
 #           (a sparse file), tools/mbr-grow.py, tools/stick-data.sh: the
 #           volume is as big as the grown partition, holds the tree, is clean
 #           (jamext, e2fsck), and the ESP is byte for byte what it was;
-#   dflt    build/jamos.img, if it is an ext image, is clean.
+#   dflt    build/jamos.img, if it is an ext image (DATA_FS=ext), is clean.
 # Exit 0 when every case passes.
 set -eu
 
@@ -146,6 +147,17 @@ if [ -f "$out/fat.img" ]; then
     if "$JX" --part 2 check "$out/fat.img" > /dev/null 2>&1; then
         fail "fat: jamext check took a FAT volume"
     fi
+fi
+
+# ---- default (FAT until U11b flips it to ext: this case changes then) ------
+
+if env -u JAMOS_DATA_FS make -s image IMAGE="$out/def.img" DATA_DIR="$out/no-such-dir" > "$out/def.make" 2>&1; then
+    [ "$(python3 tools/mkimage.py --data-fs "$out/def.img")" = fat ] &&
+        pass "default: with no DATA_FS the data partition is FAT32" ||
+        fail "default: with no DATA_FS the data partition is not FAT32"
+else
+    tail -5 "$out/def.make"
+    fail "default: make image failed"
 fi
 
 # ---- bogus -----------------------------------------------------------------

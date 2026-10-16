@@ -62,6 +62,15 @@ printf 'net.address = 10.2.21.5/24 10.2.21.1 10.2.21.1\nnet.host = 10.2.21.174\n
 mmd -i "$img@@$DATA_AT" ::/etc 2>/dev/null || true
 mcopy -o -i "$img@@$DATA_AT" "$out/updnet.settings" ::/etc/settings ||
     { echo "update-net-test: can't write the stick's settings"; exit 1; }
+# Two packages installed, as far as the shell counts them (the files of
+# /data/pkg/db but serial, journal and the `.new` of a change): build B has
+# another ABI stamp, so `update` says they were built for the old system.
+mkdir -p "$out/pkgdb" && printf 'x\n' > "$out/pkgdb/aaa" && cp "$out/pkgdb/aaa" "$out/pkgdb/bbb" &&
+    cp "$out/pkgdb/aaa" "$out/pkgdb/serial" && cp "$out/pkgdb/aaa" "$out/pkgdb/bbb.new" &&
+    mmd -i "$img@@$DATA_AT" ::/pkg ::/pkg/db &&
+    mcopy -i "$img@@$DATA_AT" "$out/pkgdb/aaa" "$out/pkgdb/bbb" "$out/pkgdb/serial" \
+        "$out/pkgdb/bbb.new" ::/pkg/db/ ||
+    { echo "update-net-test: can't write the stick's package records"; exit 1; }
 
 # Build B.
 va=$(python3 tools/update-server.py --manifest build/jamos.elf build/bootfs.img |
@@ -77,7 +86,7 @@ EOF
 ) || { echo "update-net-test: can't make build B's kernel"; exit 1; }
 marker="update-marker: build B $$"
 printf '%s\n' "$marker" > "$out/updnet-marker.txt"
-printf 'git b0b0b0b\n%s\n' "$(sed -n 's/^\(net .*\)$/\1/p' build/build.txt)" \
+printf 'git b0b0b0b\n%s\nabi fedcba9876543210\n' "$(sed -n 's/^\(net .*\)$/\1/p' build/build.txt)" \
     > "$out/updnet-build.txt"
 python3 tools/bootfs-edit.py "$out/testkey/bootfs-key.img" "$out/bootfs-B.img" \
     "update-marker.txt=$out/updnet-marker.txt" "build.txt=$out/updnet-build.txt" ||
@@ -139,6 +148,7 @@ send update -m
 wait 120 -> $vb (b0b0b0b): checked by init in
 wait loaded into memory only (-m)
 wait update: loaded into memory only:
+wait 2 installed packages were built for the old system
 wait {prompt}
 send version
 wait Jam OS $va, git
@@ -150,6 +160,7 @@ send update
 wait 120 -> $vb (b0b0b0b): checked by init in
 wait loaded and written to the stick
 wait update: written to the stick and loaded:
+wait 2 installed packages were built for the old system
 wait {prompt}
 send version
 wait Jam OS $va, git

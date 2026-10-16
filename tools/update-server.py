@@ -9,10 +9,11 @@ boot/limine.conf and their manifest, over UDP.
         `update -w` also writes to the stick) until ^C, each manifest
         signed with KEY (default ~/.config/jamos/update.key)
     update-server.py --manifest KERNEL BOOTFS [--menu FILE] [--version V] [--git G] [--net N]
-                     [--key KEY] [--extra LINE]...
+                     [--abi S] [--key KEY] [--extra LINE]...
         print the manifest of those two files (and of the menu FILE: its
-        `menu` line) and exit (signed with KEY if one is given, else with a
-        bare signature line: unsigned), with each LINE as an extension line
+        `menu` line; and the ABI stamp S or the boot image's: its `abi`
+        line) and exit (signed with KEY if one is given, else with a bare
+        signature line: unsigned), with each LINE as an extension line
         before the signature line
     update-server.py --build-net BOOTFS
         print the boot image's network default ("vlan21", "untagged", or
@@ -34,6 +35,8 @@ parser is user/lib/update.c):
     kernel <size> <sha256>
     bootfs <size> <sha256>
     menu <size> <sha256>          (an extension line: the boot menu)
+    abi <16 hex digits>           (an extension line: the build's ABI stamp, from its
+                                   build.txt; an older build skips it)
     signature <128 hex digits>
 
 Format 2 is the stable base: a later build adds extension lines
@@ -149,10 +152,15 @@ def menu_line(menu):
     return "menu %d %s" % (len(menu), hashlib.sha256(menu).hexdigest())
 
 
-def manifest(kernel, bootfs, version, git, net, extra=(), fmt=FORMAT_MAX, menu=None):
+ABI_RE = re.compile(rb"[0-9a-f]{16}$")
+
+
+def manifest(kernel, bootfs, version, git, net, extra=(), fmt=FORMAT_MAX, menu=None, abi=None):
     """The manifest's bytes for these two files' contents, in format fmt;
     menu: the boot menu's bytes (its `menu` line, after bootfs), or None;
-    extra: extension lines (str), put before the signature line."""
+    abi: the build's ABI stamp (its `abi` line, after the menu's), or None
+    (a build made before build.txt had one); extra: extension lines (str),
+    put before the signature line."""
     if not FORMAT_MIN <= fmt <= FORMAT_MAX:
         raise ValueError("manifest format %d isn't made here" % fmt)
     if not VERSION_RE.match(version.encode()) or not GIT_RE.match(git.encode()):
@@ -167,6 +175,10 @@ def manifest(kernel, bootfs, version, git, net, extra=(), fmt=FORMAT_MAX, menu=N
         lines.append("%s %d %s" % (name, len(data), hashlib.sha256(data).hexdigest()))
     if menu is not None:
         lines.append(menu_line(menu))
+    if abi is not None:
+        if not ABI_RE.match(abi.encode()):
+            raise ValueError("the ABI stamp %r is not 16 lower-case hex digits" % (abi,))
+        lines.append("abi " + abi)
     for line in extra:
         if not ext_ok(line.encode()):
             raise ValueError("not an extension line: %r" % (line,))
@@ -193,14 +205,15 @@ MENU_RE = re.compile(rb"menu ([1-9][0-9]{0,9}) ([0-9a-f]{64})$")
 
 def parse_manifest(text, old=False):
     """The C parser's rules, for the self-test: (version, git, [(size, sha)],
-    net, needs, menu) or None; needs is the first must-understand extension
-    line's key ("" if none), menu the `menu` line's (size, sha) or None.
-    Other extension lines are checked and skipped; old=True parses as a
-    build older than the `menu` line does (it skips that one too)."""
+    net, needs, menu, abi) or None; needs is the first must-understand
+    extension line's key ("" if none), menu the `menu` line's (size, sha)
+    or None, abi the `abi` line's stamp or "". Other extension lines are
+    checked and skipped; old=True parses as a build older than the `menu`
+    and `abi` lines does (it skips those too)."""
     lines = text.split(b"\n")
     if len(text) > MANIFEST_MAX or lines[0] != b"jamos-update 2" or lines[-1] != b"":
         return None
-    needs, base, menu = "", [lines[0]], None
+    needs, base, menu, abi = "", [lines[0]], None, ""
     for line in lines[1:-1]:
         if line.split(b" ", 1)[0] in BASE_KEYS:
             base.append(line)
@@ -211,6 +224,10 @@ def parse_manifest(text, old=False):
             if not m or menu or int(m.group(1)) > MENU_MAX:
                 return None
             menu = (int(m.group(1)), m.group(2).decode())
+        elif line.split(b" ", 1)[0] == b"abi" and not old:
+            if abi or not re.match(rb"abi [0-9a-f]{16}$", line):
+                return None
+            abi = line[4:].decode()
         elif line.startswith(b"!") and not needs:
             needs = line.split(b" ", 1)[0].decode()
     lines = base + [b""]
@@ -232,7 +249,7 @@ def parse_manifest(text, old=False):
         files.append((int(w[1]), w[2].decode()))
     if not SIG_RE.match(lines[6]):
         return None
-    return v[1].decode(), g[1].decode(), files, n[1].decode(), needs, menu
+    return v[1].decode(), g[1].decode(), files, n[1].decode(), needs, menu, abi
 
 
 def elf_symbol_string(data, name):
@@ -301,6 +318,17 @@ def build_net(bootfs):
     text = bootfs_file(bootfs, "build.txt") or b""
     for line in text.split(b"\n")[:-1]:
         if line.startswith(b"net ") and net_ok(line[4:].decode(errors="replace")):
+            return line[4:].decode()
+    return None
+
+
+def build_abi(bootfs):
+    """The ABI stamp in the boot image's build.txt (its line "abi <16 hex
+    digits>"), or None: a build made before the stamp, which gets no `abi`
+    line in its manifest."""
+    text = bootfs_file(bootfs, "build.txt") or b""
+    for line in text.split(b"\n")[:-1]:
+        if line.startswith(b"abi ") and ABI_RE.match(line[4:]):
             return line[4:].decode()
     return None
 
@@ -377,7 +405,8 @@ class Server:
         kernel, bootfs, menu = self.read_files()
         text = manifest(kernel, bootfs, self.version or build_version(kernel),
                         self.git or build_git(bootfs) or git_hash(),
-                        self.net or build_net(bootfs), fmt=fmt, menu=menu)
+                        self.net or build_net(bootfs), fmt=fmt, menu=menu,
+                        abi=build_abi(bootfs))
         text, kernel, bootfs, menu = self.prepare(text, kernel, bootfs, menu)
         text = self.signed(text)
         sid = 0
@@ -878,6 +907,37 @@ def self_test():
     check("extension lines skipped, the first must-understand one named",
           m is not None and m[0] == "1.0" and m[4] == MUSTKNOW_LINE.split()[0])
     check("no must-understand line: none named", parse_manifest(good)[4] == "")
+    # The ABI stamp: an extension line a build that knows it takes, one that doesn't skips.
+    stamp = "0123456789abcdef"
+    with_abi = manifest(b"k", b"b", "1.0", "abcdef0", "vlan21", abi=stamp)
+    check("the abi line is the line before the signature", b"\nabi %s\nsignature" % stamp.encode()
+          in with_abi)
+    check("a manifest with an abi line parses: the stamp is taken",
+          parse_manifest(with_abi) is not None and parse_manifest(with_abi)[6] == stamp)
+    check("an older build skips the abi line", parse_manifest(with_abi, old=True) is not None and
+          parse_manifest(with_abi, old=True)[6] == "")
+    check("no abi line: no stamp", parse_manifest(good)[6] == "")
+    for what, line in (("twice", b"abi %s\nabi %s" % (stamp.encode(), stamp.encode())),
+                       ("15 digits", b"abi 0123456789abcde"), ("17 digits", b"abi 0123456789abcdef0"),
+                       ("upper case", b"abi 0123456789ABCDEF"), ("empty", b"abi"),
+                       ("not hex", b"abi 0123456789abcdeg")):
+        check("an abi line refused: " + what,
+              parse_manifest(good.replace(b"signature", line + b"\nsignature")) is None)
+    for bad_abi in ("", "0123456789abcde", "0123456789ABCDEF", "xyz"):
+        try:
+            manifest(b"k", b"b", "1.0", "abcdef0", "vlan21", abi=bad_abi)
+            check("no manifest with the stamp %r" % (bad_abi,), False)
+        except ValueError:
+            pass
+    entry_at = BOOTFS_HEADER.size + BOOTFS_ENTRY.size
+    for text, want in ((b"git 0123abc\nnet vlan21\nabi 0123456789abcdef\n", "0123456789abcdef"),
+                       (b"git 0123abc\nnet vlan21\n", None),
+                       (b"git 0123abc\nabi 0123456789abcdef", None),
+                       (b"git 0123abc\nabi 0123456789abcde\n", None),
+                       (b"git 0123abc\nabi 0123456789ABCDEF\n", None)):
+        img = (BOOTFS_HEADER.pack(b"JAMBOOTF", 1, 1, entry_at + len(text)) +
+               BOOTFS_ENTRY.pack(b"build.txt", entry_at, len(text)) + text)
+        check("build.txt %r: ABI stamp %r" % (text, want), build_abi(img) == want)
     for what, broken in (("an upper-case key", b"Future 1"), ("an empty value", b"future "),
                          ("a 33-byte key", b"k" * 33), ("a bare !", b"!"),
                          ("a format line's name", b"version 2")):
@@ -939,6 +999,9 @@ def main():
     ap.add_argument("--git")
     ap.add_argument("--key", help="the secret key to sign with (default %s)" % DEFAULT_KEY)
     ap.add_argument("--net", help="the network default to claim (vlan<id>, untagged)")
+    ap.add_argument("--abi", metavar="STAMP",
+                    help="--manifest: the ABI stamp to claim (default: the boot image's "
+                         "build.txt's `abi` line, if it has one)")
     ap.add_argument("--extra", action="append", default=[], metavar="LINE",
                     help="--manifest: an extension line to add (again for more)")
     ap.add_argument("--menu", metavar="FILE",
@@ -959,7 +1022,7 @@ def main():
         k, b = (open(p, "rb").read() for p in a.manifest)
         menu = open(a.menu, "rb").read() if a.menu else None
         text = manifest(k, b, a.version or build_version(k), a.git or build_git(b) or git_hash(),
-                        a.net or build_net(b), a.extra, menu=menu)
+                        a.net or build_net(b), a.extra, menu=menu, abi=a.abi or build_abi(b))
         sys.stdout.write((sign(text, a.key) if a.key else text).decode())
         return 0
     key = a.key or DEFAULT_KEY

@@ -78,9 +78,10 @@ VMO A then VMO B can leave the child B's new value with A's old one,
 which no Linux program can see. So the kernel copies the whole address
 space in one call:
 
-- **`vmar_clone(dst, vmos, children, n, flags)`** (new): `dst` is the
-  address space of a process the caller made with `process_create` and
-  hasn't started, still empty (`ERR_BAD_STATE` otherwise); the source is
+- **`vmar_clone(dst, vmos, children, n, flags)`** (new): `dst` is a
+  process the caller made with `process_create` and hasn't started (its
+  handle, `RIGHT_WRITE`), its address space still empty (`ERR_BAD_STATE`
+  otherwise); the source is
   always the caller's own address space. Every mapping of the source is
   made again in `dst` at the same address, with the same permissions and
   maximum, by its **clone mode**:
@@ -107,13 +108,16 @@ space in one call:
   write is *none* (section 1.10), and a physical or contiguous VMO (device
   memory; no POSIX program maps one) is *share*.
 - **One instant.** The clone holds the source's region lock throughout (no
-  map, unmap, protect or fault there meanwhile), first raises
-  `protecting` on every VMO it will copy and takes the write bit from all
-  their writable entries, then does one shootdown, and only then shares
-  the pages: after that shootdown no thread can change any of them
-  without faulting and waiting (`cow_wait`), so the child holds the
-  memory as it was at one moment, as Linux's fork does. The kernel track
-  sizes its batches to CR1's interrupts-off budgets.
+  map, unmap, protect or fault there meanwhile), raises `protecting` on
+  each VMO it copies before sharing its first page (from then on every
+  other writer of it waits: a write fault, `vmo_write`, a decommit, a
+  resize), shares the pages and takes the write bit from their entries
+  in batches within CR1's interrupts-off budgets, and does one shootdown
+  of them all at the end, before any `protecting` falls: a source thread
+  that writes faults and waits for the whole clone, and one still writing
+  through a stale entry writes the page the child shares. So no write the
+  child misses comes before one it holds, and the child holds the memory
+  as it was at one moment, as Linux's fork does (FK2 notes).
 - **Refusals**: a pin or a kernel mapping over a page to copy
   (`ERR_BAD_STATE`: drivers don't fork); the charge (1.3); the child's
   mapping records (a page per 16 mappings, charged now). Nothing is made
@@ -494,7 +498,7 @@ FK2, FK3 and FL1b are about two (their halves can't be tested apart).
 | Track | What | Files | Gate | Tests | Size | Model |
 |---|---|---|---|---|---|---|
 | **FK1. Clone modes** | `VMAR_CLONE_SHARE`, `VMAR_CLONE_NONE` on `vmar_map`, kept through protect, split, merge and replace; `map_info.flags` shows them; syscalls.def's text for both new calls (the contract FK2 and FK3 fill); built, see "FK1 notes" | `kernel/mm/aspace.c` (the flags), `kernel/include/jam/abi.h`, `abi/syscalls.def`, a new ktest file | nothing | ktests: each flag kept by every mapping operation, merges only with the same mode, refused with `VMAR_KEPT_ONLY` where it means nothing; full ktest 4 and 8 | 1 | **Opus** |
-| **FK2. The address-space clone** | `vmar_clone` (1.1): one instant, the three modes, the JIT and device rules, the children's handles, the charges and the page-table reserve (1.3), the refusals, random handle generations in the clone's table | `kernel/mm/aspace.c` (the walk), `kernel/object/vmo.c` (protecting many VMOs, then sharing), `kernel/object/process.c`, `kernel/abi/vmar_sys.c`, `kernel/object/handle.c` (the generations), syscalls.def, abi.h, a new ktest file | FK1 | ktests: each kind of mapping cloned and checked from both sides; 8 writer threads keeping an invariant across two VMOs while the clone runs (the child never sees it broken); a 1 TiB reservation with a page per GiB cloned within a bound; 60,000 mappings; charges exact and refused up front; a pin refused; storms of map, unmap and protect from other threads; full ktest 4 and 8; soak 2 | 2 | **Opus** |
+| **FK2. The address-space clone** | `vmar_clone` (1.1): one instant, the three modes, the JIT and device rules, the children's handles, the charges and the page-table reserve (1.3), the refusals, random handle generations in the clone's table; built, see "FK2 notes" | `kernel/mm/aspace.c` (the walk), `kernel/object/vmo.c` (protecting many VMOs, then sharing), `kernel/object/process.c`, `kernel/abi/vmar_sys.c`, `kernel/object/handle.c` (the generations), syscalls.def, abi.h, a new ktest file | FK1 | ktests: each kind of mapping cloned and checked from both sides; 8 writer threads keeping an invariant across two VMOs while the clone runs (the child never sees it broken); a 1 TiB reservation with a page per GiB cloned within a bound; 60,000 mappings; charges exact and refused up front; a pin refused; storms of map, unmap and protect from other threads; full ktest 4 and 8; soak 2 | 2 | **Opus** |
 | **FK3. Exec in place** | `process_replace` (section 2) | `kernel/object/process.c`, `kernel/sched/thread.c` (the other threads' end), `kernel/object/handle.c` (all but one closed), `kernel/mm/aspace.c` (the swap), `kernel/abi/sysc_proc.c`, syscalls.def, abi.h, a new ktest file | FK2 (the same files) | ktests: other threads in a wait, a futex, a channel call, a fault waiting for a pager all gone; every handle closed but one; the parent's handle, pid, waits and port bindings unchanged; the old address space's charges back; each refusal; two threads replacing at once; a replace racing a kill; full ktest 4 and 8; soak 2 | 2 | **Opus** |
 | **FL1a. libjam's fork** | the save and the trampoline (assembly), `jam_fork` (the clone, the thread, the start, the roles of 1.6), the child's rebind of libos's roles and locks, the hooks the POSIX layer registers | a new user/lib/fork.c and its assembly, `user/lib/start.c` (the roles' rebind), `user/include/os.h`, a new message header in user/include/, `abi/idl/ids.txt`, a utest file | FK2 | utest: a native program forks: both sides return, memory separate, the child's roles its own, its handle table exactly the passed set, the parent's charge back after the child exits | 1 | **Opus** |
 | **FL1b. POSIX `fork`** | `lx_fork`, `clone` without `CLONE_VM` (both forms), `vfork` as fork with the parent's wait (Q3's A; the wait itself needs FL4), the layer's locks, signals in the child (1.7), ids and the table of children (1.8), JIT entries removed | a new user/posix/sys/fork.c, `user/posix/sys/calls.def`, the vfork and clone overrides, `user/posix/sys/sigthread.c`, `user/posix/sys/signal.c`, `user/posix/sys/proc.c`, a new posixtest section (fork) | FL1a | posixtest `fork`: returns twice, memory separate (heap, stack, data, `mmap`), `MAP_SHARED` anonymous shared, malloc and atfork in a threaded parent's child, the two-VMO invariant from a threaded parent, a 1 TiB reservation forked within a bound, `ENOMEM` in a job that can't pay, ids, `waitpid`, `SIGCHLD`, `kill`, `SIGKILL`, pending cleared, timers gone, both `clone` forms, `jittest` forking (the child's JIT range faults, it isn't marked) | 2 | **Opus** |
@@ -580,6 +584,51 @@ What FK2 and FK3 start from:
   file of weak calls, so the header now says so.) Left to FK2: the limit
   on `n` and the rights `vmos` need; to FK3: whether `arg0` leaves the
   table on an error (the text says nothing changes, the stub's behaviour).
+
+### FK2 notes
+
+What FK3 and FL1a start from (`aspace_clone` in `kernel/mm/aspace.c`, its
+"Clones"; `vmo_clone_*` in `kernel/object/vmo.c`; ktests `vmar_clone_*`):
+
+- **`dst` is a process handle** (`RIGHT_WRITE`), not a vmar: only the
+  process can say it hasn't started, and `process_clone_begin` holds its
+  `setup` mutex from that check to the end of the copy, so
+  `process_start` waits for it. On success its handle table starts every
+  slot at a random generation (`handle_table_randomize`).
+- **`vmos`** need `RIGHT_READ | RIGHT_DUPLICATE` (`vmo_create_child`'s
+  rule: a child is a new way to reach the bytes); `n` is at most
+  `VMAR_CLONE_MAX` (= `VMAR_MAX_MAPPINGS`: each must be mapped as a
+  copy); duplicates get the same child. The children's slots are reserved
+  and their values written to `children[]` before the copy, so nothing
+  fails after it; on an error `children[]` holds values that name nothing.
+- **A copy's child** is as large as the VMO and holds only the pages the
+  caller's copies map (pages mapped nowhere aren't copied, as Linux's
+  fork), with a pager child's window if it is one; a kept VMO's pages are
+  copied, not shared.
+- **One instant**: the source's region lock for the whole call; each
+  copied VMO's `protecting` raised before its first page is shared and
+  lowered only after one shootdown of every write-protect at the end.
+  `protecting` now freezes the VMO for every other writer: a write fault
+  (any page), `vmo_write` and every pin or kernel mapping (`GET_PRIVATE`),
+  decommit and a size change wait for it (one wait queue for all VMOs,
+  instead of the "vmo resize" mutex, which the clone never takes), and a
+  fault meanwhile installs nothing writable. That is what makes a clone of
+  many VMOs untorn for writers outside the source too.
+- **Charges**, to `dst`'s job (the caller's for a fork; the syscall text
+  says so): the children (their struct, every page they share and their
+  tables), `dst`'s mapping structs, and the table reserve: as many table
+  pages as the source has over the mappings made again (`clone_tables`),
+  which `dst`'s `pt_prepare` draws on before charging; what is left goes
+  back when the address space dies (so FK3's swap gives it back with the
+  old one). Kept twins get their entries at the clone, from the reserve.
+- **Two region locks are never held at once** (lockdep has no subclass
+  for mutexes): the new mappings are built in a tree of their own under
+  the source's lock and moved into `dst` under `dst`'s.
+- Measured on the PC (QEMU, 4 CPUs): 1 TiB with a page per GiB, 2,050
+  source tables, 2.3 ms; 60,000 mappings of one VMO, 15 ms.
+- Not built: a concurrent `process_start` racing the clone is not tested
+  (the `setup` mutex is the argument); the `process_replace` side of the
+  reserve (FK3).
 
 ## 6. Questions for the owner
 

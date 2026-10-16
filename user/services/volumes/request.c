@@ -25,7 +25,9 @@ struct op {
     unsigned       part;     /* the installer's: PART_ESP or PART_DATA */
     uint32_t       index;    /* open_partition: the partition's place in the table */
     uint64_t       lba, count;   /* digest: the blocks */
-    char           tail[20], word[8];   /* prepare: the owner's confirmation of an erase */
+    char           tail[20], word[8];   /* prepare: the owner's confirmation of an erase;
+                                         * format_data: the tail */
+    bool           fat;      /* format_data: FAT32, not ext */
     uint32_t       tail_len, word_len;
 };
 
@@ -515,9 +517,32 @@ static status_t i_close_data(void *ctx, struct idl_txn txn, uint32_t id)
     return hold_start(txn, id, PART_DATA, false);
 }
 
+/* A format's task: the data partition formatted again (prepare.c). */
+static void format_main(void *arg)
+{
+    struct op *o = arg;
+    status_t st = disk_format_data(o->id, o->tail, o->tail_len, o->fat);
+    if (o->txn.ch)
+        (void)volinstall_reply_format_data(o->txn, st);
+    op_done(o);
+}
+
+static status_t i_format_data(void *ctx, struct idl_txn txn, uint32_t id, const char *tail,
+                              uint32_t tail_len, uint8_t fat)
+{
+    (void)ctx;
+    if (!disk_named(id))
+        return ERR_NOT_FOUND;
+    struct op o = { .id = id, .tail_len = tail_len, .fat = fat != 0 };
+    if (tail_len > sizeof(o.tail) || fat > 1)
+        return ERR_INVALID_ARGS;
+    memcpy(o.tail, tail, tail_len);
+    return later(txn, &o, format_main);
+}
+
 const struct volinstall_ops volinstall_ops = {
     .prepare = i_prepare, .open_esp = i_open_esp, .close_esp = i_close_esp,
-    .open_data = i_open_data, .close_data = i_close_data,
+    .open_data = i_open_data, .close_data = i_close_data, .format_data = i_format_data,
 };
 
 /* ---- volesp ------------------------------------------------------------------------------ */

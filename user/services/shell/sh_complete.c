@@ -1,10 +1,12 @@
 /* Tab completion: the first word of a command completes to a command,
- * alias or program in /boot/bin; any other word (or one with a /) to a
- * path. One candidate is completed in full; several, as far as they agree,
- * and if that adds nothing they are listed. */
+ * alias or program in a directory of $PATH (/boot/bin, /boot/usr/bin, an
+ * installed package's /data/pkg/bin); any other word (or one with a /) to
+ * a path. One candidate is completed in full; several, as far as they
+ * agree, and if that adds nothing they are listed. */
 #include "sh_core.h"
 
-#define MAX_CAND 128
+#define MAX_CAND 512
+#define DIR_MAX  256   /* entries read from one directory of $PATH */
 
 struct cands {
     char     names[MAX_CAND][64];   /* the candidates */
@@ -23,6 +25,32 @@ static void cand_add(struct cands *c, const char *name, bool dir)
     }
 }
 
+/* The programs starting with word in the directories of $PATH (the boot
+ * image's, an installed package's). */
+static void program_cands(struct cands *c, const char *word)
+{
+    size_t wl = strlen(word);
+    const char *dirs = sh_getvar("PATH");
+    struct sh_dirent *ents = calloc(DIR_MAX, sizeof(*ents));
+    if (!dirs)
+        dirs = SH_PATH_DEFAULT;
+    while (ents && *dirs) {
+        const char *end = strchr(dirs, ':');
+        size_t l = end ? (size_t)(end - dirs) : strlen(dirs);
+        char dir[SH_PATH_MAX], abs[SH_PATH_MAX];
+        if (l && l < sizeof(dir)) {
+            memcpy(dir, dirs, l);
+            dir[l] = '\0';
+            int n = sh_resolve(dir, abs, sizeof(abs)) ? sh_readdir(abs, ents, DIR_MAX) : -1;
+            for (int i = 0; i < n; i++)
+                if (!ents[i].dir && !strncmp(ents[i].name, word, wl))
+                    cand_add(c, ents[i].name, false);
+        }
+        dirs += end ? l + 1 : l;
+    }
+    free(ents);
+}
+
 /* Commands, aliases and programs starting with word. */
 static void command_cands(struct cands *c, const char *word)
 {
@@ -35,12 +63,7 @@ static void command_cands(struct cands *c, const char *word)
     for (int i = 0; i < SH_MAX_ALIAS; i++)
         if (sh_alias_at(i, &name, &value) && !strncmp(name, word, wl))
             cand_add(c, name, false);
-    struct sh_dirent *ents = calloc(64, sizeof(*ents));
-    int n = ents ? sh_readdir("/boot/bin", ents, 64) : -1;
-    for (int i = 0; i < n; i++)
-        if (!strncmp(ents[i].name, word, wl))
-            cand_add(c, ents[i].name, false);
-    free(ents);
+    program_cands(c, word);
 }
 
 /* A path: list the directory part, match the last part. Returns that last

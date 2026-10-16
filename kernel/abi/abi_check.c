@@ -51,11 +51,13 @@ _Static_assert(sizeof(struct pci_dev_info) == 176 && offsetof(struct pci_dev_inf
                    offsetof(struct pci_dev_info, bar) == 24,
                "pci_dev_info layout");
 _Static_assert(sizeof(struct job_info) == 88, "job_info layout");
-_Static_assert(sizeof(struct process_info) == 88 && offsetof(struct process_info, pid) == 20 &&
+_Static_assert(sizeof(struct process_info) == 96 && offsetof(struct process_info, pid) == 20 &&
                    offsetof(struct process_info, cpu_ns) == 32 &&
                    offsetof(struct process_info, mappings) == 40 &&
                    offsetof(struct process_info, start_ns) == 48 &&
                    offsetof(struct process_info, name) == 56 &&
+                   offsetof(struct process_info, fault_vector) == 88 &&
+                   offsetof(struct process_info, fault_status) == 92 &&
                    sizeof(((struct process_info *)0)->name) == PROCESS_NAME_MAX + 1,
                "process_info layout");
 _Static_assert(sizeof(struct map_info) == 48 && offsetof(struct map_info, resident) == 32 &&
@@ -63,6 +65,14 @@ _Static_assert(sizeof(struct map_info) == 48 && offsetof(struct map_info, reside
                "map_info layout");
 _Static_assert(sizeof(struct thread_info) == 40 && offsetof(struct thread_info, tid) == 24,
                "thread_info layout");
+_Static_assert(sizeof(struct exc_frame) == EXC_FRAME_XSAVE &&
+                   offsetof(struct exc_frame, xsave) == EXC_FRAME_XSAVE &&
+                   EXC_FRAME_XSAVE % 64 == 0 && offsetof(struct exc_frame, error) == 16 &&
+                   offsetof(struct exc_frame, cookie) == 32 &&
+                   offsetof(struct exc_frame, r8) == 48 &&
+                   offsetof(struct exc_frame, rip) == 48 + 16 * 8 &&
+                   offsetof(struct exc_frame, rflags) == 48 + 17 * 8,
+               "exc_frame layout: 18 registers in gregs order, the XSAVE area 64-byte aligned");
 _Static_assert(sizeof(struct sys_public_info) == 72 &&
                    offsetof(struct sys_public_info, mem_total_pages) == 48 &&
                    offsetof(struct sys_public_info, mem_free_pages) == 64,

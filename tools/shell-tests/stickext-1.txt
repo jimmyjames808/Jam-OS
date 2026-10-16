@@ -1,6 +1,6 @@
 # The stick with an ext /data (tools/stickext-test.sh boots the same stick
 # twice: stickext-1.txt, stickext-2.txt; M13.6's U11a, "Ext by default"),
-# first boot: the image `make image` makes by default, its data partition an
+# first boot: an image made with DATA_FS=ext, its data partition an
 # ext volume jamext made (MBR type 83). /esp is FAT and read-only, /data is
 # served by bin/extfs and keeps modes, links and big files; the boot log is
 # in it. Command line "shell". The text waited for is built from $T, so it

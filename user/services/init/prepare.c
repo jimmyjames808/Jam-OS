@@ -1,5 +1,7 @@
 /* init: asking volumes to make an NVMe drive a Jam OS disk
- * (initctl.prepare_disk, abi/idl/initctl.idl; M12.7 stage 2). The shell has
+ * (initctl.prepare_disk, abi/idl/initctl.idl; M12.7 stage 2), or to format
+ * a Jam OS disk's data partition again (initctl.format_data; M13.6's U7b:
+ * ext, or FAT32 when asked; the serial's end is the confirmation). The shell has
  * shown the owner the drive's model, serial number and size (and, for a
  * drive that isn't empty, what is on it) and had the last four characters
  * of the serial typed (and `erase`) before it calls; init passes the disk's
@@ -36,5 +38,25 @@ status_t prepare_result(const void *rep, struct idl_msg *m)
 void prepare_say(uint32_t id, status_t st, uint64_t t0)
 {
     printf("init: prepare disk %08x: %s (%lu ms)\n", id, status_str(st),
+           (unsigned long)((now() - t0) / NS_PER_MS));
+}
+
+/* initctl.format_data (the shell's `disk format nvme1 data [fat]`): a Jam
+ * OS disk's data partition formatted again, the same way. */
+status_t format_send(uint32_t txid, uint32_t id, const char *tail, uint32_t tail_len, bool fat)
+{
+    handle_t vm = shell_volumes_install();
+    return vm ? volinstall_format_data_send(vm, txid, id, tail, tail_len, fat ? 1 : 0)
+              : ERR_NOT_FOUND;
+}
+
+status_t format_result(const void *rep, struct idl_msg *m)
+{
+    return volinstall_format_data_result(rep, m);
+}
+
+void format_say(uint32_t id, status_t st, uint64_t t0)
+{
+    printf("init: format disk %08x's data partition: %s (%lu ms)\n", id, status_str(st),
            (unsigned long)((now() - t0) / NS_PER_MS));
 }

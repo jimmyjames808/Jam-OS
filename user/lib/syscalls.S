@@ -889,4 +889,36 @@ jam_pager_op:
     ret
     .size jam_pager_op, . - jam_pager_op
 
+    .globl jam_exception_entry_set
+    .type jam_exception_entry_set, @function
+jam_exception_entry_set:
+    mov $SYS_exception_entry_set, %eax
+    syscall
+    ret
+    .size jam_exception_entry_set, . - jam_exception_entry_set
+
+    .globl jam_exception_done
+    .type jam_exception_done, @function
+jam_exception_done:
+    mov $SYS_exception_done, %eax
+    syscall
+    ret
+    .size jam_exception_done, . - jam_exception_done
+
+    .globl jam_thread_exception_stack
+    .type jam_thread_exception_stack, @function
+jam_thread_exception_stack:
+    mov $SYS_thread_exception_stack, %eax
+    syscall
+    ret
+    .size jam_thread_exception_stack, . - jam_thread_exception_stack
+
+    .globl jam_thread_raise
+    .type jam_thread_raise, @function
+jam_thread_raise:
+    mov $SYS_thread_raise, %eax
+    syscall
+    ret
+    .size jam_thread_raise, . - jam_thread_raise
+
     .section .note.GNU-stack, "", @progbits

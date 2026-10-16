@@ -23,12 +23,16 @@
  * thread it waits in the process's set until a thread unblocks it. A
  * default action happens at once, in whichever thread sent it (often the
  * signal thread): "terminate" is process_exit(LX_EXIT_SIGNAL + N), so
- * Ctrl+C ends a busy loop. Faults are not signals (the kernel kills the
- * process, as for any program).
+ * Ctrl+C ends a busy loop. A fault is a signal on the faulting thread
+ * only while a fault signal has a handler (sigfault.c: the kernel's
+ * exception entry); otherwise the kernel kills the process, as for any
+ * program.
  *
  * Locks: sig_lock (signal.c) guards the dispositions, every pending set
  * and the list of threads. It is a leaf: nothing waits, calls another
- * process or runs a handler with it held. */
+ * process or runs a handler with it held. Its holder is marked, so the
+ * fault entry never waits for a lock its own thread holds (a fault in
+ * signal.c is the kernel's kill). */
 #pragma once
 
 #include "layer.h"
@@ -47,6 +51,8 @@ struct sig_info {
     int64_t value;     /* sigqueue's value; a timer's sigev_value */
     int32_t timer;     /* SI_TIMER: the timer's id */
     int32_t overrun;   /* SI_TIMER: expirations not delivered */
+    uint64_t addr;     /* a fault's si_addr: SIGSEGV, SIGBUS, SIGILL, SIGFPE and
+                          SIGTRAP with si_code > 0 carry it in place of a sender */
 };
 
 /* ---- threads (signal.c, from thread.c) --------------------------------------------- */
@@ -135,6 +141,35 @@ bool     sig_cancel_asked(void);
 void     sig_fill_siginfo(const struct sig_info *si, void *out);
 /* The start: the hand-over's ignored signals (sigthread.c's start). */
 void     sig_start_state(uint64_t ignored);
+
+/* ---- faults (sigfault.c; signal.c's side of them) ------------------------------------ */
+
+/* The signals a fault becomes (SIGILL, SIGTRAP, SIGBUS, SIGFPE, SIGSEGV):
+ * while one has a handler, the exception entry is set. */
+#define SIG_FAULTS (SIG_BIT(4) | SIG_BIT(5) | SIG_BIT(7) | SIG_BIT(8) | SIG_BIT(11))
+
+/* Why the process's exception entry is set (sig_entry_need's `why`). SG5
+ * adds one for a raise of one of our own threads. */
+#define SIG_ENTRY_HANDLERS 1u   /* a fault signal has a handler */
+
+/* The entry is needed for `why` (on) or no longer (off): it is set while
+ * any reason holds and removed when none does. sig_lock held. */
+void sig_entry_need(unsigned why, bool on);
+
+/* The fault entry (sigfault.c), on the faulting thread, in the kernel's
+ * window: is the fault's signal sig taken by a handler? True with *act its
+ * disposition as it was and *was the thread's mask: the action is reset
+ * first if SA_RESETHAND, and the thread now blocks act's mask and sig
+ * (unless SA_NODEFER). False, nothing changed, for the kernel's kill: sig
+ * blocked, ignored or default (Linux forces the default on a fault), a
+ * thread libc doesn't list (the signal thread, one whose record it can't
+ * find without the lock), or one that holds sig_lock itself. */
+bool sig_fault_begin(int sig, struct sig_act_io *act, uint64_t *was);
+/* After the handler returned: the thread's mask is `mask` (its ucontext's
+ * uc_sigmask), and what that lets through is delivered now, as Linux does
+ * on the way out of sigreturn (a signal the handler sent itself, blocked
+ * while it ran, then acts before the thread goes on). */
+void sig_fault_end(uint64_t mask);
 
 /* ---- the signal thread (sigthread.c) ------------------------------------------------- */
 

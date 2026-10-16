@@ -1587,8 +1587,51 @@ static void vmo_child_bench(void)
     kobject_unref(vmo_kobject(p));
 }
 
+/* ---- a fault caught and resumed (test_upcall.c) ------------------------------ */
+
+unsigned upcall_bench_cycles(uint32_t cpu, uint64_t *out, unsigned n);
+
+/* A user fault (ud2) delivered to its process's exception entry, which
+ * resumes past it: the whole round trip, timed in ring 3. */
+static void upcall_bench(void)
+{
+    unsigned n = upcall_bench_cycles(cpu_p, samples, SAMPLES);
+    if (!n) {
+        report("bench: user: a fault caught and resumed: the program failed (see the log)");
+        return;
+    }
+    for (unsigned i = 0; i < n; i++)
+        samples[i] = span_ps(0, samples[i], 1);
+    result("user: a fault caught and resumed (upcall, P)", samples, n);
+}
+
+unsigned upcall_raise_bench_cycles(uint32_t cpu, uint32_t from, uint64_t *out, unsigned n);
+
+/* A thread spinning on P raised by a thread of its process on another
+ * core (thread_raise): from just before the raiser's call to the
+ * target's exception entry, timed in ring 3 on both sides. */
+static void raise_bench(void)
+{
+    int from = cpu_p2 >= 0 ? cpu_p2 : cpu_ht;
+    if (from < 0) {
+        report("bench: user: a raise to its upcall: needs a second CPU, skipped");
+        return;
+    }
+    unsigned n = upcall_raise_bench_cycles(cpu_p, from, samples, SAMPLES);
+    if (!n) {
+        report("bench: user: a raise to its upcall: the program failed (see the log)");
+        return;
+    }
+    for (unsigned i = 0; i < n; i++)
+        samples[i] = span_ps(0, samples[i], 1);
+    result(from == cpu_p2 ? "user: a raise to its upcall (P2 to P)"
+                          : "user: a raise to its upcall (HT to P)",
+           samples, n);
+}
+
 /* Serial output, sleep accuracy, TLB shootdown, address-space switches,
- * FPU state, the IOMMU, copy-on-write children and the ring-3 benchmarks. */
+ * FPU state, fault upcalls, the IOMMU, copy-on-write children and the
+ * ring-3 benchmarks. */
 static void system_benches(void)
 {
     serial_output();
@@ -1606,6 +1649,8 @@ static void system_benches(void)
     }
     as_switch();
     fpu_state();
+    upcall_bench();
+    raise_bench();
     iommu_bench();
     vmo_child_bench();
     user_benches();

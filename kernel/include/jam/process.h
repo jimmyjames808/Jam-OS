@@ -158,6 +158,10 @@ void process_get_info(struct process *p, struct process_info *out);
 uint64_t process_cpu_tsc(struct process *p);
 /* The process of the current thread, NULL for kernel threads. */
 struct process *process_current(void);
+/* exception_entry_set's entry (a user address; 0: none), and reading it
+ * back (arch/x86_64/upcall.c). Any thread, any context. */
+void     process_set_exc_entry(struct process *p, uint64_t entry);
+uint64_t process_exc_entry(struct process *p);
 /* debug_write / debug_report: print buf[0..n) (kernel memory) line by line
  * as "[name] line"; with report_it the lines also go into the RESULTS box
  * (without the prefix; a few dozen at most across all processes). Control
@@ -175,6 +179,15 @@ size_t process_debug_write(struct process *p, const char *buf, size_t n, bool re
  * ERR_BAD_STATE), so nothing in p can run before its first thread. */
 status_t process_start(struct process *p, struct uthread *ut, uint64_t entry, uint64_t stack,
                        struct khandle *arg0, uint64_t arg1, const cpumask_t *mask);
+/* vmar_clone's hold on p, a process to fill (docs/FORK-PLAN.md 1.1):
+ * p's `setup` mutex, so process_start waits, and p NEW (ERR_BAD_STATE if
+ * it was started or is dying); *as is its address space with a new
+ * reference. process_clone_end lets go of both; with `done` (the clone
+ * was made) p's handle table starts its slots at random generations
+ * (handle_table_randomize) first, so a parent's handle value its memory
+ * still holds is almost always ERR_BAD_HANDLE in p. */
+status_t process_clone_begin(struct process *p, struct aspace **as);
+void     process_clone_end(struct process *p, struct aspace *as, bool done);
 /* Test hook DBG_PROCESS_START's argument: the window after process_start
  * made p RUNNING and before its first thread exists. `fail` makes that
  * thread's creation fail as if the kernel were out of memory. */
@@ -190,6 +203,10 @@ struct dbg_process_start {
  * process that is already dying, except a never-started one whose last
  * handle closed: its teardown is still owed, and the caller does it. */
 void process_kill(struct process *p, int64_t code, bool killed);
+/* process_kill(p, PROCESS_KILLED_CODE, true) for a fault of one of its
+ * threads (uentry.c's user_kill): if this is what ends it, process_info
+ * says PROCESS_FLAG_FAULT with the fault's vector and status. */
+void process_kill_fault(struct process *p, uint32_t vector, status_t status);
 
 /* ---- user threads ---------------------------------------------------------- */
 
@@ -224,6 +241,9 @@ void uthread_get_info(struct uthread *ut, struct thread_info *out);
 /* thread_interrupt: end ut's current interruptible wait, or latch it for
  * its next (wait.c). ERR_BAD_STATE if ut hasn't started or has left. */
 status_t uthread_interrupt(struct uthread *ut);
+/* thread_raise: latch a raise on ut (wait.c, upcall.c). ERR_BAD_STATE if
+ * ut hasn't started or has left. */
+status_t uthread_raise(struct uthread *ut);
 /* thread_set_tid_word for the current user thread: the word (a user
  * address, 4-aligned; 0: none) its end clears and wakes; its tid.
  * ERR_INVALID_ARGS for an unaligned or non-user address; ERR_BAD_STATE

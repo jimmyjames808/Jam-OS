@@ -64,12 +64,7 @@ uint64_t (*uentry_test_cr3)(struct thread *t);
 bool (*uentry_test_nmi)(struct trap_frame *f);
 #endif
 
-/* RFLAGS bits user code may carry back through sysret. IOPL, NT, RF, VM
- * and friends are never the user's to set; IF is always on. */
-#define USER_RFLAGS_OK (RFLAGS_CF | RFLAGS_PF | RFLAGS_AF | RFLAGS_ZF | RFLAGS_SF | \
-                        RFLAGS_TF | RFLAGS_DF | RFLAGS_OF | RFLAGS_AC | RFLAGS_ID)
-
-uint64_t user_faults;   /* user threads killed for a fault (atomic) */
+uint64_t user_faults;   /* user threads killed for a fault (atomic; not upcalls) */
 
 void syscall_init_cpu(void)
 {
@@ -153,7 +148,7 @@ _Noreturn static void leave_user(void)
     thread_exit();
 }
 
-static void return_to_user_work(void)
+void return_to_user_work(void)
 {
     for (;;) {
         /* A cancelled user thread's process is being killed (process_kill):
@@ -178,33 +173,37 @@ static void return_to_user_work(void)
               t->sleep_depth);
 }
 
-/* A user thread did something fatal: its whole process is killed (there
- * are no exception channels). Runs on its kernel stack at the bottom (nothing
- * of the kernel's below it, no locks), so leaving from here is like leaving
- * from a syscall. */
-_Noreturn static void kill_current(const char *why, uint64_t rip, uint64_t addr)
+/* A user thread did something fatal: its whole process is killed (a fault
+ * its exception entry, if any, didn't take: upcall.c). Runs on its kernel
+ * stack at the bottom (nothing of the kernel's below it, no locks), so
+ * leaving from here is like leaving from a syscall. `more` (or NULL) ends
+ * the line. */
+_Noreturn void user_kill(const char *why, uint64_t rip, uint64_t addr, const char *more,
+                         uint32_t vector, status_t status)
 {
     struct thread *t = current_thread();
     irq_enable();
     if (preempt_count_now())
         panic("user fault (%s) in \"%s\" with preemption disabled", why, t->name);
     __atomic_add_fetch(&user_faults, 1, __ATOMIC_RELAXED);
+    if (!more)
+        more = "";
     if (t->process) {
-        kprintf("user: process \"%s\" killed: %s at rip %lx, address %lx (thread \"%s\")\n",
-                process_name(t->process), why, rip, addr, t->name);
-        process_kill(t->process, PROCESS_KILLED_CODE, true);
+        kprintf("user: process \"%s\" killed: %s at rip %lx, address %lx (thread \"%s\")%s\n",
+                process_name(t->process), why, rip, addr, t->name, more);
+        process_kill_fault(t->process, vector, status);
     } else {
-        kprintf("user: killed thread \"%s\" (id %lu): %s at rip %lx, address %lx\n", t->name,
-                t->id, why, rip, addr);
+        kprintf("user: killed thread \"%s\" (id %lu): %s at rip %lx, address %lx%s\n", t->name,
+                t->id, why, rip, addr, more);
     }
     leave_user();
 }
 
-_Noreturn void user_fault_kill(struct trap_frame *f, const char *why)
+/* A return to a bad address: the general protection fault it would have
+ * been at that RIP (Linux's SIGSEGV), for process_info. */
+_Noreturn static void kill_current(const char *why, uint64_t rip, uint64_t addr)
 {
-    if (!(f->cs & 3))
-        panic("user_fault_kill (%s) for a kernel-mode frame at %lx", why, f->rip);
-    kill_current(why, f->rip, f->vector == 14 ? read_cr2() : 0);
+    user_kill(why, rip, addr, NULL, 13, OK);
 }
 
 /* The C half of syscall_entry. Interrupts are off on entry and on return;
@@ -245,6 +244,10 @@ int64_t syscall_entry_c(struct syscall_frame *f)
 void user_trap_return(struct trap_frame *f)
 {
     return_to_user_work();
+    /* A raise is looked for here only, beside return_to_user_work's own
+     * flags: never on the system call return, whose cost stays as it was. */
+    if (__atomic_load_n(&current_thread()->raise_pending, __ATOMIC_RELAXED))
+        user_raise(f);
     /* iretq to a non-canonical RIP would #GP in ring 0 after the swapgs. */
     if (f->rip >= USER_TOP || f->cs != (GDT_USER_CODE | 3) || f->ss != (GDT_USER_DATA | 3))
         kill_current("iret to a bad frame", f->rip, 0);
@@ -344,15 +347,18 @@ bool trap_page_fault(struct trap_frame *f)
          * (return_to_user_work), with no fault of its own to report. */
         if (!fix && s == ERR_CANCELED)
             return true;
-        if (!fix)
-            kill_current(fault_reason(s), f->rip, addr);
+        if (!fix) {
+            user_fault(f, fault_reason(s), addr, s);   /* returns only if delivered */
+            return true;
+        }
     }
     if (fix) {
         f->rax = (uint64_t)(int64_t)copy_status(s);   /* the fixups return it (usercopy.S) */
         f->rip = fix->fixup;
         return true;
     }
-    kill_current("page fault", f->rip, addr);
+    user_fault(f, "page fault", addr, s);   /* a kernel address, or no address space */
+    return true;
 }
 
 /* The copies may sleep (a page fault commits a page), so they need a

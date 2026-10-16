@@ -261,6 +261,18 @@ int64_t sysc_thread_interrupt(handle_t thread)
     return st;
 }
 
+int64_t sysc_thread_raise(handle_t thread)
+{
+    SYSC_TABLE(t);
+    struct kobject *to;
+    status_t st = handle_get(t, thread, OBJ_THREAD, RIGHT_SIGNAL, &to, NULL);
+    if (st != OK)
+        return st;
+    st = uthread_raise(uthread_from_kobject(to));
+    kobject_unref(to);
+    return st;
+}
+
 int64_t sysc_thread_get_info(handle_t thread, uint64_t out)
 {
     SYSC_TABLE(t);

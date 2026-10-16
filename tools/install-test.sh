@@ -14,12 +14,15 @@
 #            on nvme<N>"; on the host (mtools) the ESP holds Limine, the
 #            build twice (as the current and the previous build, the stick's
 #            files byte for byte) and the stick's boot menu, /data/etc is
-#            the stick's, both FAT volumes are clean (tools/fatcheck.py) and
+#            the stick's (debugfs: the data partition is ext since M13.6's
+#            U7b), the ESP's FAT volume is clean (tools/fatcheck.py), the
+#            ext volume too once its journal is replayed (e2fsck), and
 #            the table is Jam OS's (tools/nvme-written.py). Then a cold boot
 #            of that drive alone: the kernel names its GPT disk GUID as the
 #            boot disk (from the loader) and its command line is the stick
-#            run's, /esp and /data are the drive's, /data/etc/ has the
-#            files, the ESP's build is the stick's
+#            run's, /esp and /data are the drive's (/data ext, bin/extfs),
+#            /data/etc/ has the files, the ESP's build is the stick's, /tmp
+#            is a view of /data/tmp
 #   again    `install` over a Jam OS drive: after the first install a file
 #            is put on its /data and /etc/probe.txt changed, and on the host
 #            the ESP gets an old build, a spare menu and an update's
@@ -38,7 +41,8 @@
 #            the host the disk is exactly what that point leaves (the files
 #            written so far whole, the later ones not there; no menu before
 #            the last point; a whole /etc.new or /etc as the point says; the
-#            FAT volumes without damage). The points are tried in the order
+#            ESP's FAT volume without damage, the data partition's ext
+#            volume clean once its journal is replayed). The points are tried in the order
 #            given (each over what the one before left: keep them in the
 #            order above). Then a boot of the drive alone, if the last cut
 #            left no menu: Limine finds nothing to boot, no kernel starts.
@@ -54,17 +58,21 @@
 #            listed, the drive is a whole install, and it cold-boots
 #   both     the stick put back beside the installed drive, picked (its
 #            boot index first): it boots itself (the kernel names the
-#            stick's MBR disk id, /data is the stick's), the drive is
-#            /nvme<N> read-only, a write there is refused, and the drive's
-#            image is byte for byte the same after the run with no Write in
-#            QEMU's trace; then the drive picked with the stick beside it
-#            (its /usb1): /data is the drive's
+#            stick's MBR disk id, /data is the stick's), the drive's ESP is
+#            /nvme<N> read-only, its ext data partition /jam, read-write
+#            (M13.6's rule for a Jam OS drive that isn't the boot disk), a
+#            file written there; every Write in QEMU's trace lies in the
+#            data partition, the ESP and the table byte for byte the same;
+#            then the drive picked with the stick beside it (its /usb1):
+#            /data is the drive's, the file in it
 #   damaged  an installed drive whose primary GPT is damaged after (a byte
 #            of its primary entry array changed): the driver calls it
 #            someone else's, volumes' mark Jam OS's, both volumes mount from
-#            the backup table; `install` on it is refused twice before
-#            anything is stopped (not "busy" the second time), its data
-#            partition stays mounted, the image is unchanged
+#            the backup table, the data partition read-only (/jam: R3 stage
+#            3's question 2); `install` on it shows it as not empty and asks
+#            for its erase (R3 stage 3's design question 3), answered `no`
+#            twice: nothing stopped, its data partition stays mounted, the
+#            image is unchanged
 #   nomenu   a reinstall cut after the new kernel (the old boot image made
 #            distinct on the ESP first), then the drive picked with a copy
 #            of the stick as a second NVMe drive: no kernel starts from the
@@ -80,6 +88,7 @@ cases=${*:-install}
 cuts=${INSTALL_CUTS:-prepared etcnew etc cleared limine kernel prevkernel bootfs prevbootfs}
 mkdir -p "$out"
 tmo=${QEMU_TIMEOUT:-300}
+PATH=/usr/sbin:/sbin:$PATH   # e2fsck and debugfs (e2fsprogs: the test PC's WSL has them)
 
 sha() { sha256sum "$1" | cut -d' ' -f1; }
 
@@ -169,12 +178,13 @@ inst_in() {
     } > "$1"
 }
 
-# disks_in: `disks` after the install, with the drive's two partitions' mounts
-# captured as {je} (ESP) and {jm} (data).
+# disks_in [ro]: `disks` after the install, the drive's ESP's mount captured
+# as {je}, its data partition /jam (ext); `ro`: /jam read-only, its driver
+# reading the drive as someone else's (damaged).
 disks_in() {
     echo "send disks"
-    printf '%s\n' "seen re:serial jamos-nvme0 [^\r\n]*\r?\n +1 +EFI system [^\r\n]*?/nvme(?P<je>[0-9]+)[^\r\n]*\r?\n +2 +Jam OS data [^\r\n]*?/nvme(?P<jm>[0-9]+)"
-    echo "wait Jam OS disk"
+    printf '%s\n' "seen re:serial jamos-nvme0 [^\r\n]*\r?\n +1 +EFI system [^\r\n]*?/nvme(?P<je>[0-9]+)[^\r\n]*\r?\n +2 +Jam OS data [^\r\n]*?/jam \(ext\)"
+    [ "${1:-}" = ro ] || echo "wait Jam OS disk"
     echo "wait {prompt}"
 }
 
@@ -205,6 +215,13 @@ nvme_in() {
         echo "wait {prompt}"
         echo "send sha256sum /esp/boot/prev-bootfs.img"
         echo "wait $(sha "$dir/ref-bootfs.img")"
+        echo "wait {prompt}"
+        # /tmp: a view of the drive's ext /data (there is no /jam on this boot)
+        echo "seen 60 init: /tmp: a view of /data/tmp"
+        echo "send T=x"
+        echo "wait {prompt}"
+        echo "send write /tmp/t.txt in-tmp-\$T && cat /data/tmp/t.txt"
+        echo "wait in-tmp-x"
         echo "wait {prompt}"
         [ -z "${2:-}" ] || printf '%s\n' "$2"
         end_in
@@ -249,13 +266,28 @@ in_esp() {
     rm -f "$dir/got"
     mcopy -i "$1@@1M" "::$2" "$dir/got" 2> /dev/null && cmp -s "$dir/got" "$3"
 }
-# in_data <image> <path> <file>: the same on the data partition.
-in_data() {
-    rm -f "$dir/got"
-    mcopy -i "$1@@$(python3 tools/mkimage.py --data-at "$1")" "::$2" "$dir/got" 2> /dev/null && cmp -s "$dir/got" "$3"
-}
 no_esp() { ! mdir -i "$1@@1M" "::$2" > /dev/null 2>&1; }
-no_data() { ! mdir -i "$1@@$(python3 tools/mkimage.py --data-at "$1")" "::$2" > /dev/null 2>&1; }
+
+# data_out <image>: its data partition, an ext volume (M13.6's U7b: `install`
+# makes it with ext), copied to $dir/data.ext and its journal replayed
+# (e2fsck -E journal_only: what was committed is there, nothing else
+# fixed); then e2fsck -fn must find it clean. in_data and no_data read that
+# copy (debugfs).
+data_out() {
+    dat=$(python3 tools/mkimage.py --data-at "$1") || { fail "no data partition in $1"; return 1; }
+    dd if="$1" of="$dir/data.ext" bs=1M skip="${dat%M}" 2> /dev/null
+    e2fsck -E journal_only -y "$dir/data.ext" > "$dir/e2fsck-replay.txt" 2>&1 || [ $? -le 1 ] ||
+        { fail "e2fsck's journal replay of the data partition (see $dir/e2fsck-replay.txt)"; return 1; }
+    e2fsck -fn "$dir/data.ext" > "$dir/e2fsck.txt" 2>&1 ||
+        { fail "the data partition's ext volume isn't clean (see $dir/e2fsck.txt)"; return 1; }
+}
+# in_data <path> <file>: the data partition (data_out's copy) has <path>,
+# the bytes of <file>; no_data <path>: it hasn't.
+in_data() {
+    debugfs -R "stat $1" "$dir/data.ext" 2> /dev/null | grep -q "^Inode:" || return 1
+    debugfs -R "cat $1" "$dir/data.ext" > "$dir/got" 2> /dev/null && cmp -s "$dir/got" "$2"
+}
+no_data() { ! debugfs -R "stat $1" "$dir/data.ext" 2> /dev/null | grep -q "^Inode:"; }
 
 # fatchk <label> <image@@offset> [--require-clean]: damage fails; lost
 # clusters (fatcheck's 2: a cut leaves them, there is no fsck) are said.
@@ -273,11 +305,10 @@ fatchk() {
 # a cut after <point> leaves it ("full": a whole install, with the menu).
 check_disk() {
     n=$1 img=$2 r=$(rank "$3") conf=$4 clean=${5:-}
-    dat=$(python3 tools/mkimage.py --data-at "$img") || { fail "$n: no data partition"; return; }
     python3 tools/nvme-written.py "$img" --pattern none ${before_img:+--before "$before_img"} > "$dir/written-$n.txt" 2>&1 ||
         fail "$n: $(tail -1 "$dir/written-$n.txt")"
     fatchk "$n-esp" "$img@@1M" $clean
-    fatchk "$n-data" "$img@@$dat" $clean
+    data_out "$img" || return
     # the ESP: each file whole once its point is past, not there before
     for spec in "5 /EFI/BOOT/BOOTX64.EFI $dir/ref-limine.efi" "6 /boot/jamos.elf $dir/ref-jamos.elf" \
         "7 /boot/prev-jamos.elf $dir/ref-jamos.elf" "8 /boot/bootfs.img $dir/ref-bootfs.img" \
@@ -298,18 +329,18 @@ check_disk() {
     base=
     if [ "$r" -ge 3 ]; then
         base=/etc
-        no_data "$img" /etc.new || fail "$n: /etc.new is left"
+        no_data /etc.new || fail "$n: /etc.new is left"
     elif [ "$r" -eq 2 ]; then
         base=/etc.new
-        no_data "$img" /etc || fail "$n: /etc is there before its rename"
+        no_data /etc || fail "$n: /etc is there before its rename"
     else
-        no_data "$img" /etc || fail "$n: /etc is there before its point"
-        no_data "$img" /etc.new || fail "$n: /etc.new is there before its point"
+        no_data /etc || fail "$n: /etc is there before its point"
+        no_data /etc.new || fail "$n: /etc.new is there before its point"
     fi
     if [ -n "$base" ]; then
-        in_data "$img" "$base/probe.txt" "$want_probe" || fail "$n: $base/probe.txt isn't the stick's"
-        in_data "$img" "$base/sub/deep.txt" "$dir/deep.txt" || fail "$n: $base/sub/deep.txt isn't the stick's"
-        in_data "$img" "$base/empty.txt" "$dir/empty.txt" || fail "$n: $base/empty.txt isn't the stick's (empty)"
+        in_data "$base/probe.txt" "$want_probe" || fail "$n: $base/probe.txt isn't the stick's"
+        in_data "$base/sub/deep.txt" "$dir/deep.txt" || fail "$n: $base/sub/deep.txt isn't the stick's"
+        in_data "$base/empty.txt" "$dir/empty.txt" || fail "$n: $base/empty.txt isn't the stick's (empty)"
     fi
 }
 
@@ -323,7 +354,8 @@ nvme_log_checks() {
     grep -aq "volumes: nvme[0-9]* is the boot disk: its ESP is mounted, its data partition too" "$log" ||
         fail "$1: volumes didn't say the drive is the boot disk"
     grep -aq "partition 1 -> bin/fat at /esp, read-only" "$log" || fail "$1: no /esp from the drive"
-    grep -aq "partition 2 -> bin/fat at /data (OK)" "$log" || fail "$1: no /data from the drive"
+    grep -aq "partition 2 -> bin/extfs at /data (OK)" "$log" || fail "$1: no ext /data from the drive"
+    grep -aq "init: /tmp: a view of /data/tmp" "$log" || fail "$1: /tmp isn't a view of the drive's /data/tmp"
     got=$(loader_line "$log")
     [ -n "$got" ] && [ "$got" = "$(loader_line "$2")" ] ||
         fail "$1: the command line isn't the stick run's (the installed menu's): '$got'"
@@ -369,20 +401,14 @@ c_again() {
     inst_in "$dir/a1.in" "nothing is on it" none
     {
         disks_in
-        echo "send mount -w /nvme{jm}"
-        echo "wait 60 is now read-write"
-        echo "wait {prompt}"
-        echo "send cp /boot/build.txt /nvme{jm}/keep.txt; cp /data/changed.txt /nvme{jm}/etc/probe.txt; sync"
-        echo "wait {prompt}"
-        echo "send mount -r /nvme{jm}"
-        echo "wait 60 is now read-only"
+        echo "send cp /boot/build.txt /jam/keep.txt; cp /data/changed.txt /jam/etc/probe.txt; sync"
         echo "wait {prompt}"
         end_in
     } >> "$dir/a1.in"
     stick_boot a1 "" || return
     want_probe="$dir/changed.txt"
-    in_data "$dir/nvme.img" /keep.txt build/build.txt || fail "a1: the file put on the drive's /data isn't there"
     check_disk a1 "$dir/nvme.img" full "$dir/a1.conf" --require-clean
+    in_data /keep.txt build/build.txt || fail "a1: the file put on the drive's /data isn't there"
     guid1=$(guid_of "$dir/nvme.img")
     # what an older install or an update leaves: another build, a spare menu, leftovers;
     # and menus put by hand where Limine 11 looks first (/EFI/BOOT/limine.conf)
@@ -401,7 +427,7 @@ c_again() {
     grep -aq "init: install: the disk is a Jam OS disk already" "$dir/a2.log" || fail "init didn't find a Jam OS disk"
     grep -aq "init: install: the disk has a /etc already" "$dir/a2.log" || fail "init didn't keep the drive's /etc"
     # /data as it was left: the file on it, and the changed probe.txt
-    in_data "$dir/nvme.img" /keep.txt build/build.txt || fail "the file on the drive's /data is gone or changed"
+    data_out "$dir/nvme.img" && { in_data /keep.txt build/build.txt || fail "the file on the drive's /data is gone or changed"; }
     installed_ok a2 a2 "send cat /data/keep.txt
 wait $(head -1 build/build.txt)
 wait {prompt}"
@@ -497,7 +523,8 @@ c_both() {
     end_in >> "$dir/b1.in"
     stick_boot b1 "" || return
     check_disk b1 "$dir/nvme.img" full "$dir/b1.conf" --require-clean
-    before=$(sha "$dir/nvme.img")
+    data=$(sed -n 's/.*data \([0-9]*\)+\([0-9]*\);.*/\1-\2/p' "$dir/written-b1.txt")
+    esp_before=$(dd if="$dir/nvme.img" bs=1M count=513 2> /dev/null | sha256sum | cut -d' ' -f1)
     # the stick picked, the installed drive beside it
     sid=$(od -An -tx4 -j440 -N4 build/jamos.img | tr -d ' ')
     {
@@ -511,21 +538,28 @@ c_both() {
         echo "wait stick-only.txt"
         echo "wait {prompt}"
         disks_in
-        echo "send ls /nvme{jm}"
+        echo "send ls /jam"
         echo "wait etc"
         echo "wait {prompt}"
-        echo "send cp /data/stick-only.txt /nvme{jm}/x.txt; echo wr-\"\"\$?"
-        echo "wait re:wr-[1-9]"
+        echo "send cp /data/stick-only.txt /jam/x.txt; sync; echo wr-\"\"\$?"
+        echo "wait wr-0"
+        echo "wait {prompt}"
+        echo "send write /nvme{je}/x.txt x; echo we-\"\"\$?"
+        echo "wait re:we-[1-9]"
         echo "wait {prompt}"
         end_in
     } > "$dir/b2.in"
     stick_boot b2 "" "-trace pci_nvme_io_cmd -trace pci_nvme_write -D $dir/b2.trace" || return
     grep -aq "boot disk:   MBR disk id $sid" "$dir/b2.log" || fail "b2: the kernel didn't name the stick's disk id $sid"
     grep -aqE "partition 1 is /nvme[0-9]+, read-only" "$dir/b2.log" || fail "b2: the drive's ESP isn't read-only"
-    grep -aqE "partition 2 is /nvme[0-9]+, read-only" "$dir/b2.log" || fail "b2: the drive's data partition isn't read-only"
-    [ "$(sha "$dir/nvme.img")" = "$before" ] || fail "b2: the drive's image changed while the stick booted"
-    grep -aq '^pci_nvme_io_cmd ' "$dir/b2.trace" 2> /dev/null || fail "b2: the trace is dead (no command seen)"
-    [ "$(grep -ac '^pci_nvme_write ' "$dir/b2.trace" 2> /dev/null)" = 0 ] || fail "b2: a Write reached the drive"
+    grep -aqE "partition 2 is /jam, read-write" "$dir/b2.log" || fail "b2: the drive's data partition isn't /jam, read-write"
+    [ "$(dd if="$dir/nvme.img" bs=1M count=513 2> /dev/null | sha256sum | cut -d' ' -f1)" = "$esp_before" ] ||
+        fail "b2: the drive's table or ESP changed while the stick booted"
+    # every Write in the data partition (b exclusive: start-blocks as nvme-written.py says)
+    a=${data%-*} n=${data#*-}
+    python3 tools/nvme-trace-check.py --stage 2 --require-io 02 --write-ranges "$a-$((a + n))" "$dir/b2.trace" \
+        > "$dir/b2.trace.check" 2>&1 || fail "b2: a Write outside the data partition (see $dir/b2.trace.check)"
+    data_out "$dir/nvme.img" && { in_data /x.txt "$dir/stick-only.txt" || fail "b2: the file written to /jam isn't there"; }
     # the drive picked, the stick beside it
     want=$(guid_of "$dir/nvme.img")
     cp "$dir/stick.img" "$dir/stick2.img"
@@ -538,6 +572,7 @@ c_both() {
         echo "wait {prompt}"
         echo "send ls /data"
         echo "wait etc"
+        echo "wait x.txt"
         echo "wait {prompt}"
         echo "send ls /usb1"
         echo "wait stick-only.txt"
@@ -556,10 +591,11 @@ c_both() {
 # its primary entry array changed: the array's CRC is wrong, so the backup
 # table is read): the driver calls it someone else's and writes nothing,
 # while volumes' own mark sees Jam OS's two partitions and both volumes
-# mount. `install` on it (a Jam OS disk: installed on again) is refused
-# before anything is stopped, and again the second time (not "busy"), and
-# its data partition is still mounted (R3 stage 3's S3); the image is
-# unchanged.
+# mount, the data partition read-only (/jam: R3 stage 3's question 2).
+# `install` on it shows it as not empty and asks for its erase (R3 stage 3's
+# design question 3, decided yes: before it, S3's refusal in the hold), and
+# `no` stops it twice: no install started, nothing held, its data partition
+# still mounted; the image is unchanged.
 c_damaged() {
     wrong=0
     inst_in "$dir/d1.in" "nothing is on it" none
@@ -579,16 +615,19 @@ f.seek(1040); f.write(bytes([b ^ 0xff]))' "$dir/nvme.img"   # LBA 2 + 16: entry 
         echo "send disks"
         printf '%s\n' "seen re:nvme(?P<bd>[0-9]+) +QEMU NVMe Ctrl +serial jamos-nvme0 "
         echo "wait {prompt}"
-        disks_in
+        disks_in ro
         for i in 1 2; do
             echo "send install nvme{bd}"
-            echo "wait a Jam OS disk already"
+            echo "wait It is NOT empty"
+            echo "wait mounted read-only at /jam"
             echo "wait Type the last 4 characters"
             echo "send vme0"
-            echo "wait 120 install: nvme{bd}: refused"
+            echo "wait type erase"
+            echo "send no"
+            echo "wait not erased: nothing was written"
             echo "wait {prompt}"
         done
-        echo "send ls /nvme{jm}"
+        echo "send ls /jam"
         echo "wait etc"
         echo "wait {prompt}"
         end_in
@@ -596,7 +635,10 @@ f.seek(1040); f.write(bytes([b ^ 0xff]))' "$dir/nvme.img"   # LBA 2 + 16: entry 
     stick_boot d2 "" || return
     [ "$(sha "$dir/nvme.img")" = "$before" ] || fail "d2: the damaged drive's image changed"
     grep -aq "the drive is read-only" "$dir/d2.log" || fail "d2: the driver didn't call the drive someone else's"
+    grep -aqE "partition 2 is /jam, read-only" "$dir/d2.log" || fail "d2: the data partition isn't /jam, read-only"
     grep -aq "is the installer's, read-write" "$dir/d2.log" && fail "d2: a partition was held writable"
+    grep -aq "init: install: step 1/6" "$dir/d2.log" && fail "d2: an install was started"
+    grep -aq "a Jam OS disk already" "$dir/d2.log" && fail "d2: the damaged drive was installed on as a Jam OS disk"
 }
 
 # nomenu: a reinstall cut right after the new kernel is written, the old

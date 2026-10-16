@@ -172,6 +172,40 @@ bool t_update_manifest_menu(void)
     return true;
 }
 
+/* The ABI stamp's line (`abi <16 hex digits>`, the other extension line this
+ * build knows): taken wherever extension lines may be, once; one that breaks
+ * its rules refuses the manifest (an older build would have skipped it);
+ * `!abi` is another line, a must-understand one this build doesn't know. */
+bool t_update_manifest_abi(void)
+{
+    static const char stamp[] = "0123456789abcdef";
+    char with[256];
+    struct update_manifest m;
+    CHECK_ST(update_manifest_parse(golden, strlen(golden), &m), OK);
+    CHECK(!m.abi[0]);
+    snprintf(with, sizeof(with), "abi %s\nsignature\n", stamp);
+    CHECK_ST(edited("signature\n", with, &m), OK);
+    CHECK(!strcmp(m.abi, stamp) && !m.needs[0]);
+    CHECK_EQ(m.signed_len, strlen(golden) + strlen(with) - 2 * strlen("signature\n"));
+    snprintf(with, sizeof(with), "jamos-update 2\nabi %s\n", stamp);
+    CHECK_ST(edited("jamos-update 2\n", with, &m), OK);
+    CHECK(!strcmp(m.abi, stamp));
+    static const char *const bad[] = {
+        "abi\n", "abi \n", "abi 0123456789abcde\n", "abi 0123456789abcdef0\n",
+        "abi 0123456789ABCDEF\n", "abi 0123456789abcdeg\n", "abi  0123456789abcdef\n",
+        "abi 0123456789abcdef x\n", "abi 0123456789abcdef\nabi 0123456789abcdef\n",
+    };
+    for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        snprintf(with, sizeof(with), "%ssignature\n", bad[i]);
+        if (edited("signature\n", with, &m) != ERR_INVALID_ARGS)
+            FAIL("the abi line %u (\"%s\") wasn't refused as it should be", i, bad[i]);
+    }
+    snprintf(with, sizeof(with), "!abi %s\nsignature\n", stamp);
+    CHECK_ST(edited("signature\n", with, &m), OK);
+    CHECK(!m.abi[0] && !strcmp(m.needs, "!abi"));
+    return true;
+}
+
 /* Each line wrong in each way: refused, with the status that says why. */
 bool t_update_manifest_refusals(void)
 {
@@ -437,6 +471,38 @@ bool t_update_build_net(void)
     CHECK_ST(update_build_net(t, strlen(t) - 1, net), ERR_NOT_FOUND);
     CHECK_ST(update_build_net(t, strlen(t) - 3, net), ERR_NOT_FOUND);
     CHECK_ST(update_build_net(NULL, 0, net), ERR_NOT_FOUND);
+    return true;
+}
+
+/* The ABI stamp line of a build.txt (the Makefile's; `update` tells bin/update
+ * the running build's, and the manifest carries the new build's). */
+bool t_update_build_abi(void)
+{
+    char abi[UPDATE_ABI_LEN + 1];
+    static const struct { const char *text; const char *want; } cases[] = {
+        { "git 5e3d102\nnet vlan21\nabi 23f43a3c93e81a21\n", "23f43a3c93e81a21" },
+        { "abi 0123456789abcdef\ngit 5e3d102\n", "0123456789abcdef" },
+        { "git 5e3d102\nnet vlan21\n", NULL },              /* a build from before */
+        { "git 5e3d102\nabi 23f43a3c93e81a21", NULL },      /* no newline: no line */
+        { "git 5e3d102\nabi 23f43a3c93e81a2\n", NULL },     /* 15 digits */
+        { "git 5e3d102\nabi 23f43a3c93e81a211\n", NULL },   /* 17 */
+        { "git 5e3d102\nabi 23F43A3C93E81A21\n", NULL },    /* upper case */
+        { "git 5e3d102\nabi 23f43a3c93e81a2g\n", NULL },
+        { "git 5e3d102\nabi 23f43a3c93e81a21 \n", NULL },
+        { "git 5e3d102\n abi 23f43a3c93e81a21\n", NULL },
+        { "git 5e3d102\nabi23f43a3c93e81a21\n", NULL },
+        { "", NULL },
+    };
+    for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        memset(abi, 'x', sizeof(abi));
+        status_t st = update_build_abi(cases[i].text, strlen(cases[i].text), abi);
+        bool ok = cases[i].want ? st == OK && !strcmp(abi, cases[i].want) : st == ERR_NOT_FOUND;
+        if (!ok)
+            FAIL("case %u: %s", i, status_str(st));
+    }
+    const char *t = "git 5e3d102\nabi 23f43a3c93e81a21\n";   /* never read past len */
+    CHECK_ST(update_build_abi(t, strlen(t) - 1, abi), ERR_NOT_FOUND);
+    CHECK_ST(update_build_abi(NULL, 0, abi), ERR_NOT_FOUND);
     return true;
 }
 

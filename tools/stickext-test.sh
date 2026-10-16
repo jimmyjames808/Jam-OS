@@ -1,6 +1,6 @@
 #!/bin/sh
 # The stick with an ext /data, end to end (M13.6's U11a, "Ext by default"):
-# two boots of `make image`'s default image in QEMU, each typed into by a
+# two boots of an ext image (JAMOS_DATA_FS=ext make image) in QEMU, each typed into by a
 # shell script (tools/shell-tests/stickext-1.txt, stickext-2.txt).
 #   boot 1  the mounts (/data is ext, /esp FAT and read-only), a file with
 #           a mode and a symbolic link, a copy of a program, the boot log;
@@ -12,7 +12,7 @@
 # jamext replays the journal and checks the volume, Linux's e2fsck -fn (where
 # it is installed: the test PC) agrees, and the files, the mode, the link and
 # the boot logs are on it. Exit 2 when the image's data partition is FAT
-# (JAMOS_DATA_FS=fat: the tests of the FAT /data run on that image).
+# (the default, until U11b: run it as JAMOS_DATA_FS=ext).
 # QEMU_SMP and QEMU_XHCI pass through.
 # Usage: tools/stickext-test.sh <outdir> [name]; exit 0 on PASS.
 set -eu
@@ -21,7 +21,7 @@ JX=build/host/jamext
 out=$1 name=${2:-stickext}
 mkdir -p "$out"
 [ "$(python3 tools/mkimage.py --data-fs build/jamos.img)" = ext ] ||
-    { echo "$name: build/jamos.img's data partition is not ext (make image, without DATA_FS=fat)"; exit 2; }
+    { echo "$name: build/jamos.img's data partition is not ext (JAMOS_DATA_FS=ext make image)"; exit 2; }
 make -s "$JX" || { echo "$name: can't build jamext"; exit 1; }
 stick="$out/$name-stick.img"
 ok=1

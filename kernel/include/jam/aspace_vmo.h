@@ -26,6 +26,7 @@
 #include <jam/status.h>
 
 struct aspace;
+struct job;
 struct page;
 struct vmo;
 
@@ -135,6 +136,24 @@ status_t vmo_fault_map(struct vmo *v, uint64_t idx, struct aspace *as, uint64_t 
  * answered whole, so one that failed may still have brought it. */
 bool     vmo_page_ready(struct vmo *v, uint64_t idx);
 
+/* ---- vmar_clone's copies (aspace.c's clone; vmo.c's "Clones") ----------- */
+
+/* Begin a clone's copy of v, a paged VMO mapped as a copy (never a pager
+ * or JIT VMO: ERR_NOT_SUPPORTED): v's `protecting` is raised, so every
+ * change to its bytes or size waits for vmo_clone_end, and *out is a new
+ * VMO as large as v (a pager child's gets the same window), charged to
+ * job (ERR_NO_MEMORY, and nothing raised, if it refuses). */
+status_t vmo_clone_begin(struct job *job, struct vmo *v, struct vmo **out);
+/* Give c, v's copy, v's pages [first, end) (up to c's size): shared
+ * copy-on-write with v's writable entries for them write-protected into g,
+ * which the caller shoots down before vmo_clone_end; a kept VMO's are
+ * copied. ERR_BAD_STATE if a pin or a kernel mapping covers one,
+ * ERR_NO_MEMORY if c's job refuses one; what was given stays in c. */
+status_t vmo_clone_share(struct vmo *v, struct vmo *c, uint64_t first, uint64_t end,
+                         struct tlb_gather *g);
+/* v's copy is over and g shot down: v may change again. */
+void     vmo_clone_end(struct vmo *v);
+
 /* ---- address-space side, called by vmo.c with the VMO lock held --------- */
 
 /* Install one leaf entry (its tables must exist). */
@@ -154,6 +173,8 @@ void aspace_wrprotect_locked(struct aspace *as, uint64_t va, uint64_t len, struc
 uint64_t aspace_pte(struct aspace *as, uint64_t va);
 /* Page-table pages the address space owns below its PML4. */
 uint64_t aspace_pt_pages(struct aspace *as);
+/* Page-table pages a clone paid for that it hasn't made yet (pt_reserve). */
+uint64_t aspace_pt_reserve(struct aspace *as);
 /* aspace_fault calls on as so far (every one, resolved or not). */
 uint64_t aspace_fault_count(struct aspace *as);
 /* Faults that waited for a pager while their thread held a mutex (atomic;

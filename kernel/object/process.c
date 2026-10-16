@@ -32,6 +32,9 @@
  *   - process_start inserts into the child's handle table, which teardown
  *     destroys: both hold the `setup` mutex, and start re-checks the state
  *     after its insert, so a table is never written after it is destroyed.
+ *     vmar_clone holds it too, from its check that p is NEW to the end of
+ *     the copy (process_clone_begin), so no thread of p runs on a
+ *     half-made address space.
  *   - process_start vs uthread_start: start_thread makes p
  *     RUNNING with `starting` set and creates the first thread with the
  *     lock dropped, suspended, and wakes it only after clearing `starting`;
@@ -95,10 +98,14 @@ struct process {
     bool                listed;                  /* on job's list (job_link); cleared at teardown */
     struct job_link     job_link;                /* (the job's lock) */
     int64_t             exit_code;               /* (L) */
+    bool                faulted;   /* (L) a fault of one of its threads killed it: */
+    uint32_t            fault_vector;            /* (L) its vector */
+    int32_t             fault_status;            /* (L) a page fault's status */
     uint32_t            nthreads;                /* (L) started threads that haven't left */
     uint64_t            cpu_done;                /* (L) CPU time (TSC) of the threads that left */
     uint32_t            pid;                     /* its small id (pid_space), fixed */
     uint64_t            start_ns;                /* uptime when it was created, fixed */
+    uint64_t            exc_entry;   /* its exception entry, 0: none (atomic; upcall.c) */
     struct list_node    threads;                 /* (L) struct uthread, every one not destroyed */
     char                name[PROCESS_NAME_MAX + 1]; /* NUL-terminated */
     /* debug_write ("process output" lock): the current, unfinished line and
@@ -139,6 +146,16 @@ static void copy_name(char *dst, size_t cap, const char *src)
 struct process *process_current(void)
 {
     return current_thread()->process;
+}
+
+void process_set_exc_entry(struct process *p, uint64_t entry)
+{
+    __atomic_store_n(&p->exc_entry, entry, __ATOMIC_RELAXED);
+}
+
+uint64_t process_exc_entry(struct process *p)
+{
+    return __atomic_load_n(&p->exc_entry, __ATOMIC_RELAXED);
 }
 
 struct job *job_current(void)
@@ -298,6 +315,11 @@ void process_get_info(struct process *p, struct process_info *out)
     out->killed = p->killed;
     out->threads = p->nthreads;
     out->flags = p->as && aspace_maps_jit(p->as) ? PROCESS_FLAG_JIT : 0;   /* lock-free read */
+    if (p->faulted) {
+        out->flags |= PROCESS_FLAG_FAULT;
+        out->fault_vector = p->fault_vector;
+        out->fault_status = p->fault_status;
+    }
     punlock(p, f);
     out->koid = p->base.koid;
     out->pid = p->pid;
@@ -509,7 +531,9 @@ static void process_finish(struct process *p)
     kobject_signal(&p->base, 0, SIG_TERMINATED);
 }
 
-void process_kill(struct process *p, int64_t code, bool killed)
+/* process_kill, and the fault that did it (faulted: process_kill_fault). */
+static void process_kill_as(struct process *p, int64_t code, bool killed, bool faulted,
+                            uint32_t vector, status_t status)
 {
     uint64_t f = plock(p);
     if (p->state >= PROCESS_DYING) {
@@ -525,6 +549,9 @@ void process_kill(struct process *p, int64_t code, bool killed)
     p->state = PROCESS_DYING;
     p->exit_code = code;
     p->killed = killed;
+    p->faulted = faulted;
+    p->fault_vector = vector;
+    p->fault_status = status;
     for (struct list_node *n = p->threads.next; n != &p->threads; n = n->next) {
         struct uthread *u = container_of(n, struct uthread, node);
         if (u->t && u->state != UT_DEAD)
@@ -535,6 +562,16 @@ void process_kill(struct process *p, int64_t code, bool killed)
     punlock(p, f);
     if (finish)
         process_finish(p);
+}
+
+void process_kill(struct process *p, int64_t code, bool killed)
+{
+    process_kill_as(p, code, killed, false, 0, OK);
+}
+
+void process_kill_fault(struct process *p, uint32_t vector, status_t status)
+{
+    process_kill_as(p, PROCESS_KILLED_CODE, true, true, vector, status);
 }
 
 /* ---- user threads -------------------------------------------------------------- */
@@ -832,6 +869,30 @@ status_t process_start(struct process *p, struct uthread *u, uint64_t entry, uin
     return st;
 }
 
+status_t process_clone_begin(struct process *p, struct aspace **as)
+{
+    mutex_lock(&p->setup);
+    uint64_t f = plock(p);
+    struct aspace *a = p->state == PROCESS_NEW ? p->as : NULL;
+    if (a)
+        aspace_ref(a);
+    punlock(p, f);
+    if (!a) {
+        mutex_unlock(&p->setup);
+        return ERR_BAD_STATE;
+    }
+    *as = a;
+    return OK;
+}
+
+void process_clone_end(struct process *p, struct aspace *as, bool done)
+{
+    if (done)
+        handle_table_randomize(&p->handles);
+    mutex_unlock(&p->setup);
+    aspace_unref(as);
+}
+
 /* ---- what POSIX needs of a thread ------------------------------------------------ */
 
 void uthread_get_info(struct uthread *u, struct thread_info *out)
@@ -858,6 +919,16 @@ status_t uthread_interrupt(struct uthread *u)
     struct thread *t = u->state != UT_DEAD ? u->t : NULL;
     if (t)
         thread_interrupt(t);   /* our join reference keeps t; the lock orders it with the exit */
+    punlock(u->proc, f);
+    return t ? OK : ERR_BAD_STATE;
+}
+
+status_t uthread_raise(struct uthread *u)
+{
+    uint64_t f = plock(u->proc);
+    struct thread *t = u->state != UT_DEAD ? u->t : NULL;
+    if (t)
+        thread_raise(t);   /* as uthread_interrupt: the lock orders it with the exit */
     punlock(u->proc, f);
     return t ? OK : ERR_BAD_STATE;
 }

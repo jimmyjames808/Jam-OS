@@ -50,6 +50,33 @@ so and there is nothing to measure; the other lines (context switch,
 calls, interrupts) are measured both ways to show the IOMMU leaves the IPC
 path alone.
 
+**The upcall line** (SG1, [SIGNALS-PLAN](SIGNALS-PLAN.md) section 1;
+`upcall_bench_cycles` in `kernel/test/test_upcall.c`): a process pinned
+to P with an exception entry runs `ud2`; the kernel writes the frame on
+its stack and enters the entry, which moves RIP past the instruction and
+calls `exception_done(EXC_RESUME)`. The whole round trip is timed in
+ring 3 around the `ud2`, 4000 samples after 2000 untimed. What a
+SIGSEGV handler that returns costs, less libc's part (SG3). QEMU on the
+PC (KVM), 2026-10-16: median 3.1 us, p99 5.2 us, much of it likely
+KVM's (it intercepts `#UD` to emulate). Not yet measured on the PC
+itself.
+
+**The raise line** (SG2, [SIGNALS-PLAN](SIGNALS-PLAN.md) section 2;
+`upcall_raise_bench_cycles` in `kernel/test/test_upcall.c`): a thread
+pinned to P spins in its own code with an exception entry; a thread of
+the same process pinned to P2 (P's hyperthread without one) calls
+`thread_raise` on it, waiting for each raise to be taken before the
+next. Timed from just before the raiser's call (its TSC) to the target's
+entry (the target's TSC): the call, the reschedule interrupt to P, the
+frame written on the target's stack and the entry. 4000 samples after
+2000 untimed. What `pthread_kill` to a busy thread will cost (SIGPROF to
+V8's thread), less libc's part (SG5). QEMU on the PC (KVM), 2026-10-16:
+median 7.9 us, p99 13 us (the interrupt between virtual CPUs is most of
+it); the context switch and reply-and-wait lines of the same run were
+within QEMU's noise of the earlier ones (the raise adds one load to the
+return from an interrupt, nothing to a system call or a switch). Not yet
+measured on the PC itself.
+
 **Per-operation lines** (`perop` from the shell; `user/tests/perop/main.c`
 explains each line): what one file operation costs a program, with the
 same TSC method in ring 3: a `stat`, an open and close, a 4 KiB and a

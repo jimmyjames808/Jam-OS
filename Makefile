@@ -97,20 +97,22 @@ ESP_END_MIB := 256
 IMAGE_MIB := $(shell echo $$(( $(ESP_END_MIB) + 64 )))
 
 # The data partition's filesystem (docs/M13.6-PLAN.md, "Ext by default"):
-# ext (MBR type 0x83), made by jamext, unless asked for FAT32 (type 0x0C,
-# mformat): `make image DATA_FS=fat`, or JAMOS_DATA_FS=fat in the
-# environment (the PC's builds forward JAMOS_*; the tests that still write
-# /data with mtools build that way until they move to jamext, U11b). The
-# ESP is FAT32 either way: the firmware reads only FAT.
+# FAT32 (MBR type 0x0C, mformat) for now, ext (type 0x83, made by jamext)
+# with `make image DATA_FS=ext`, or JAMOS_DATA_FS=ext in the environment
+# (the PC's builds forward JAMOS_*). The default is FAT while the test
+# scripts write /data with mtools; U11b moves them to jamext and flips it to
+# ext (the owner's choice: every data volume Jam OS makes is ext). The ESP is
+# FAT32 either way: the firmware reads only FAT.
 # The ext volume is the same bytes every time (DATA_SEED: its uuid and its
 # inodes' generations; DATA_TIME: every time written, SOURCE_DATE_EPOCH
-# when that is set). DATA_DIR, if it is a directory, is copied into /data
-# before the first boot (jamext import): the owner's ~/.config/jamos/data
-# holds the files a stick needs (etc/authorized_keys), since the Mac
-# can't read the stick afterwards. `make usb` makes the stick's volume
-# again at the stick's size and copies DATA_DIR in once more
-# (tools/stick-data.sh). The stamp rebuilds the image when any of it changes.
-DATA_FS   ?= $(if $(JAMOS_DATA_FS),$(JAMOS_DATA_FS),ext)
+# when that is set). DATA_DIR, if it is a directory, is copied into an ext
+# /data before the first boot (jamext import): the owner's
+# ~/.config/jamos/data holds the files a stick needs (etc/authorized_keys),
+# since the Mac can't read an ext stick afterwards. `make usb` of an ext
+# image makes the stick's volume again at the stick's size and copies
+# DATA_DIR in once more (tools/stick-data.sh). The stamp rebuilds the image
+# when any of it changes.
+DATA_FS   ?= $(if $(JAMOS_DATA_FS),$(JAMOS_DATA_FS),fat)
 ifneq ($(filter-out ext fat,$(DATA_FS)),)
 $(error DATA_FS is ext or fat, not "$(DATA_FS)")
 endif
@@ -779,14 +781,19 @@ boot/splash.mpg: $(SPLASH_FILES)
 # 2079f35", "-dirty" when tracked files had changes), which `version` and
 # `update` show and tools/update-server.py puts in the manifest, then the
 # network's default mode ("net vlan21", "net untagged"), which init's
-# update check and tools/flash-usb.sh read. Written again only when it
-# changes, so an unchanged tree packs nothing anew.
+# update check and tools/flash-usb.sh read, then the ABI stamp ("abi
+# 23f43a3c93e81a21": tools/ports.py abi, the hash of the system calls and
+# protocols a ported program carries the call layer for: bin/pkg refuses a
+# package of another stamp, `update` says when a new build has another,
+# docs/M13.7-PLAN.md section 11). Written again only when it changes, so an
+# unchanged tree packs nothing anew.
 BUILD_INFO := $(BUILD)/build.txt
 $(BUILD_INFO): $(NET_STAMP) FORCE
 	@mkdir -p $(BUILD)
 	@h=$$(git rev-parse --short=7 HEAD 2>/dev/null) || h=0000000; \
 	 [ $$h = 0000000 ] || git diff --quiet HEAD -- 2>/dev/null || h=$$h-dirty; \
-	 printf 'git %s\n%s\n' "$$h" "$(NET_TEXT)" > $@.new; \
+	 a=$$(python3 tools/ports.py abi) || exit 1; \
+	 printf 'git %s\n%s\nabi %s\n' "$$h" "$(NET_TEXT)" "$$a" > $@.new; \
 	 if cmp -s $@.new $@; then rm $@.new; else mv $@.new $@; fi
 FORCE:
 

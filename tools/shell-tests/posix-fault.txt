@@ -1,0 +1,19 @@
+# posixtest's fault section from the shell (docs/SIGNALS-PLAN.md section 1,
+# SG3): a thread's own faults as Linux's signals (SIGSEGV, SIGBUS, SIGILL,
+# SIGFPE and SIGTRAP with their siginfo and ucontext), the flags and masks,
+# V8's and Chromium's patterns, and children that must end. Also in the
+# init run; this is the section alone, from the shell, with the kernel's
+# lines for its first two children: one with no handler at all and one
+# with the entry set and SIGSEGV default end by the same kill line.
+#   QEMU_INPUT=tools/shell-tests/posix-fault.txt tools/qemu-test.sh <dir> posix-fault shell
+wait 120 Jam OS shell
+wait {prompt}
+send run posixtest fault
+wait 60 re:user: process "posixtest" killed: page fault at rip [0-9a-f]+, address 10 \(thread
+wait 60 re:user: process "posixtest" killed: page fault at rip [0-9a-f]+, address 10 \(thread
+wait 120 posixtest: fault: ok
+wait 20 posixtest: PASS
+wait 20 run: bin/posixtest exited with code 0
+wait {prompt}
+send reboot -f
+wait reboot: resetting

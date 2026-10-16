@@ -125,3 +125,7 @@ status_t jam_pager_create_vmo(handle_t pager, uint64_t key, uint64_t size, uint3
 status_t jam_pager_next(handle_t pager, uint32_t flags, struct pager_request *out);
 status_t jam_pager_supply(handle_t pager, uint64_t key, uint64_t offset, const void *buf, uint64_t len);
 status_t jam_pager_op(handle_t pager, uint64_t key, uint32_t op, uint64_t offset, uint64_t len, int64_t arg);
+status_t jam_exception_entry_set(uint64_t entry);
+status_t jam_exception_done(const struct exc_frame *frame, uint32_t how);
+status_t jam_thread_exception_stack(uint64_t base, uint64_t size);
+status_t jam_thread_raise(handle_t thread);
