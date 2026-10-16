@@ -322,12 +322,17 @@ BOOTFS_FILES += usr/bin/pxio-usr=$(BUILD)/user/posix-pxio.bootfs
 # musl's libc defines; a program that defines names the layer uses inside
 # libc.a (tools/posix-link-test.c) links, and links none of the handlers
 # for calls it can't make (calls.def: here, starting programs, socket
-# options, timers).
+# options, timers); and the members of libc.a a backtrace passes through
+# (the signal delivery, a thread's start, qsort, execinfo itself, libjam's
+# files) hold unwind tables (tools/checkeh.py: a build kept from before the
+# flag was set has none, and only posixtest's execinfo section would say).
 .PHONY: posix-check
 posix-check: $(MUSL_LIB) $(SYSROOT_LIBS)
 	python3 tools/checkoverrides.py $(MUSL_OVR) $(MUSL)
 	python3 tools/checkoverrides.py --selftest $(MUSL_OVR) $(MUSL)
 	python3 tools/checklibjam.py $(CROSS)nm $(UOBJ)/libjam.a $(MUSL_LIB)
+	python3 tools/checkeh.py $(CROSS)readelf $(SYSROOT)/lib/libc.a raise.c.o qsort.c.o \
+	    pthread_create.c.o signal.c.o calls.c.o sigcalls.c.o execinfo.c.o fs.c.o
 	JAMOS_SYSROOT=$(SYSROOT) CROSS=$(CROSS) tools/jamos-cc -O2 tools/posix-link-test.c \
 	    -o $(BUILD)/posix-link-test
 	@! $(CROSS)nm $(BUILD)/posix-link-test | grep -E ' __jl_lx_(execve|setsockopt|timer_create)$$' || \
