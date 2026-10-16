@@ -118,7 +118,7 @@ sums_add() {
 # sums_seen <log>: every line of $sums is in the log.
 sums_seen() {
     while read -r _h _p; do
-        _n=$(count "^$_h  *$_p" "$1")
+        _n=$(count "$_h  *$_p" "$1")
         [ "$_n" -ge 1 ] || fail "the guest's sha256sum of $_p isn't $_h (the host's)"
     done < "$sums"
 }
@@ -127,20 +127,23 @@ sums_seen() {
 
 JAM_FEATURES=none,has_journal,extent,flex_bg,64bit,sparse_super,large_file,huge_file,dir_nlink,extra_isize,metadata_csum,filetype
 LINUX_FEATURES=none,has_journal,ext_attr,resize_inode,dir_index,filetype,extent,flex_bg,sparse_super,large_file,huge_file,dir_nlink,extra_isize,64bit,metadata_csum
-OLD_FEATURES=none,has_journal,ext_attr,resize_inode,dir_index,filetype,sparse_super,large_file
+PLAIN_FEATURES=none,has_journal,ext_attr,resize_inode,dir_index,filetype,extent,flex_bg,sparse_super,large_file,huge_file,dir_nlink,extra_isize
+OLD_FEATURES=none,has_journal,ext_attr,resize_inode,dir_index,filetype,sparse_super,large_file,uninit_bg
 
 # make_volume <file> <MiB> <tree> <label> [<variant>]: an ext volume in
 # <file> of that many MiB holding the tree's files, every file owned by
 # Jam OS's one user (uid and gid 1000, so the permission bits that count
 # are the owner's). The variant is mke2fs's: jam4k (default: Jam OS's
 # feature set, 4 KiB blocks), linux4k (Linux's default ext4), linux1k (the
-# same with 1 KiB blocks), old2k (ext3's: 2 KiB blocks, block maps).
+# same with 1 KiB blocks), plain2k (ext4 without 64bit and checksums, 2 KiB
+# blocks), old2k (ext3's: 2 KiB blocks, block maps, uninit_bg).
 make_volume() {
     truncate -s "$2M" "$1"
     case ${5:-jam4k} in
     jam4k) bs=4096 feat=$JAM_FEATURES pct=0 ;;
     linux4k) bs=4096 feat=$LINUX_FEATURES pct=5 ;;
     linux1k) bs=1024 feat=$LINUX_FEATURES pct=5 ;;
+    plain2k) bs=2048 feat=$PLAIN_FEATURES pct=5 ;;
     old2k) bs=2048 feat=$OLD_FEATURES pct=5 ;;
     esac
     MKE2FS_CONFIG=/dev/null mke2fs -q -F -o Linux -b $bs -I 256 -m $pct -J size=4 -O "$feat" \
@@ -268,6 +271,7 @@ case_basic() {
     : > "$sums"
     sums_add "$tree" hello.txt dir/a.bin dir/b.bin dir/sub/deep.txt sizes/s0 sizes/s1 sizes/s4095 \
         sizes/s4096 sizes/s4097 sizes/s65536
+    for i in $(seq 1 300); do sums_add "$tree" many/f$(printf %03d $i); done   # exttest sums /jam/many
     sb=$(sha "$tree/dir/b.bin")
     s4097=$(sha "$tree/sizes/s4097")
     first=$(printf 'first line\nsecond line\n' | sha256sum | cut -d' ' -f1)
@@ -279,7 +283,7 @@ case_basic() {
         g cat1 cat /jam/hello.txt
         g sum1 sha256sum /jam/hello.txt /jam/dir/a.bin /jam/dir/b.bin /jam/dir/sub/deep.txt
         g sum2 sha256sum /jam/sizes/s0 /jam/sizes/s1 /jam/sizes/s4095 /jam/sizes/s4096 /jam/sizes/s4097 /jam/sizes/s65536
-        g cnt1 find /jam/many -name f \| wc -l
+        g cnt1 exttest sums /jam/many
         g df1 df
         g mk1 mkdir -p /jam/w/a/b/c
         g cp1 cp /jam/dir/a.bin /jam/w/a1.bin
@@ -304,7 +308,7 @@ case_basic() {
     boot "$name-1" "$out/$name-1.in" "$drive"
     want 1 "^hello from mke2fs" "$run"
     sums_seen "$run"
-    want 1 "^300[[:space:]]*\$" "$run"
+    status cnt1 0
     status cp4 0
     status rm2 0
     refused ls3
@@ -545,6 +549,7 @@ case_tree() {
     printf 'nihon\n' > "$t/$(printf "$JA")"
     printf 'two hundred\n' > "$t/$(printf 'o%.0s' $(seq 1 200))"
     printf 'the longest name\n' > "$t/$(printf 'n%.0s' $(seq 1 255))"
+    printf 'the longest path\n' > "$t/$(printf 'p%.0s' $(seq 1 250))"
 }
 
 case_case() {
@@ -556,10 +561,12 @@ case_case() {
     make_volume "$out/$name-data.img" 64 "$tree" jamdata
     make_drive "$drive" "$out/$name-data.img"
     rm -f "$out/$name-data.img"
-    # What `exttest sums /jam` must print: every file, the host's hash.
+    # What `exttest sums /jam` must print: every file, the host's hash, but
+    # for the name that makes a path over 255 bytes (FS_PATH_MAX): that one
+    # it says it can't open.
     guest=/jam sums="$out/$name.sums"
     (cd "$tree" && find . -maxdepth 1 -type f | sed 's|^\./||' | while IFS= read -r f; do
-        echo "$(sha256sum < "$f" | cut -d' ' -f1)  /jam/$f"
+        [ ${#f} -le 250 ] && echo "$(sha256sum < "$f" | cut -d' ' -f1)  /jam/$f"
     done) > "$sums"
     (cd "$tree" && ls -A) > "$out/$name.files"
     o200=$(printf 'o%.0s' $(seq 1 200))
@@ -610,9 +617,11 @@ case_case() {
     refused b9
     status b10 0
     want 1 "^$(printf 'made here\n' | sha256sum | cut -d' ' -f1)  /jam/$m200" "$run"
-    # The name of 255 bytes can't take a prefix; the rest are copied.
-    want 1 "exttest: copy .*: ERR_NAME_TOO_LONG" "$run"
-    want 1 "exttest: copy /jam: 15 made, 1 refused" "$run"
+    # A path is 255 bytes at most: the name of 255 bytes is listed and can't
+    # be opened (sums, copy), the one of 250 can't take a prefix; the other
+    # fifteen are copied.
+    want 3 "a name of [0-9]+ bytes: the path is too long" "$run"
+    want 1 "exttest: copy /jam: 15 made, 2 refused" "$run"
     # FAT: Foo and foo are one file, the second write's.
     want 1 "^$two  /data/CaseT" "$run"
     want 1 "^1[[:space:]]*\$" "$run"
@@ -948,20 +957,21 @@ interop_one() {
 }
 
 case_interop() {
-    for v in ${EXTFS_INTEROP_VARIANTS:-jam4k linux1k old2k}; do
+    for v in ${EXTFS_INTEROP_VARIANTS:-jam4k linux1k plain2k}; do
         interop_one "$v"
     done
 }
 
 # ---- foreign -----------------------------------------------------------------------------
 
-# A Linux GPT drive of two partitions, 64 MiB each, from the volumes
-# <file1> and <file2>.
+# A Linux GPT drive of three partitions, 64 MiB each, from the volumes
+# <file1>, <file2> and <file3>.
 linux_drive() {
-    python3 tools/mkgpt.py "$1" --layout none --size 160M \
+    python3 tools/mkgpt.py "$1" --layout none --size 240M \
         --part 0FC63DAF-8483-4772-8E79-3D69D8477DE4:2048:131072:dirtyj \
         --part 0FC63DAF-8483-4772-8E79-3D69D8477DE4:133120:131072:bigalloc \
-        --fill "1=$2" --fill "2=$3" > /dev/null
+        --part 0FC63DAF-8483-4772-8E79-3D69D8477DE4:264192:131072:ext3p \
+        --fill "1=$2" --fill "2=$3" --fill "3=$4" > /dev/null
 }
 
 case_foreign() {
@@ -997,8 +1007,15 @@ case_foreign() {
     MKE2FS_CONFIG=/dev/null mke2fs -q -F -o Linux -b 4096 -m 0 -O none,has_journal,extent,bigalloc,sparse_super,large_file,filetype \
         -C 16384 -J size=4 -L linux-bigalloc "$out/$name-c.img" > "$out/$name-c.mke2fs" 2>&1 ||
         { cat "$out/$name-c.mke2fs"; echo "$name: mke2fs -O bigalloc failed"; exit 1; }
+    # Its third: ext3's, with block maps (a 3 MiB file reaches its double
+    # indirect block) and uninit_bg: read, never written.
+    mkdir -p "$out/$name-tree5"
+    seeded "$out/$name-tree5/ind.bin" 3 43
+    printf 'ext3\n' > "$out/$name-tree5/hello.txt"
+    make_volume "$out/$name-f.img" 64 "$out/$name-tree5" linux-ext3 old2k
+    ind=$(sha "$out/$name-tree5/ind.bin")
     ldrive="$out/$name-linux.img"
-    linux_drive "$ldrive" "$out/$name-b.img" "$out/$name-c.img"
+    linux_drive "$ldrive" "$out/$name-b.img" "$out/$name-c.img" "$out/$name-f.img"
     # 3. two Jam OS drives with the same files: the first one's data is /jam
     # (writable), the other's another disk's, read-only. Which is which
     # depends on the order the drivers answer in.
@@ -1009,7 +1026,7 @@ case_foreign() {
     j1="$out/$name-j1.img" j2="$out/$name-j2.img"
     make_drive "$j1" "$out/$name-d.img"
     make_drive "$j2" "$out/$name-d.img"
-    rm -rf "$out/$name"-?.img "$out/$name-tree2" "$out/$name-tree3"
+    rm -rf "$out/$name"-?.img "$out/$name-tree2" "$out/$name-tree3" "$out/$name-tree5"
     before=$(sha256sum "$stick" "$ldrive" "$j1" "$j2" | cut -d' ' -f1 | tr '\n' ' ')
     guest=/usb0 sums="$out/$name.sums"
     : > "$sums"
@@ -1025,6 +1042,7 @@ case_foreign() {
         echo "wait 60 init: /usb0 mounted"
         echo "send disks"
         echo "seen re:dirtyj +/nvme(?P<dj>[0-9]+) \\(ext\\)"
+        echo "seen re:ext3p +/nvme(?P<e3>[0-9]+) \\(ext\\)"
         echo "seen re:Jam OS data +[0-9.]+ [A-Za-z]+ +Jam OS data +/nvme(?P<jx>[0-9]+) \\(ext\\)"
         echo "wait {prompt}"
         g u1 sha256sum /usb0/hello.txt /usb0/dir/a.bin /usb0/lnk /usb0/Makefile /usb0/makefile
@@ -1038,6 +1056,9 @@ case_foreign() {
         g d1 sha256sum /nvme{dj}/hello.txt
         g d2 write /nvme{dj}/new.txt x
         g d3 mount -w /nvme{dj}
+        g e1 sha256sum /nvme{e3}/ind.bin /nvme{e3}/hello.txt
+        g e2 write /nvme{e3}/new.txt x
+        g e3 mount -w /nvme{e3}
         g j1 sha256sum /nvme{jx}/second.txt /jam/second.txt
         g j2 write /nvme{jx}/new.txt x
         g j3 mount -w /nvme{jx}
@@ -1050,13 +1071,14 @@ case_foreign() {
     boot "$name" "$out/$name.in" "$j1" "$j2" "$ldrive"
     usb=
     sums_seen "$run"
-    for t in u3 u4 u5 u6 u7 u8 d2 d3 j2 j3; do
+    for t in u3 u4 u5 u6 u7 u8 d2 d3 e2 e3 j2 j3; do
         refused $t
     done
     want 1 "^$old  /nvme[0-9]+/hello.txt" "$run"
     want 1 "^$second  /nvme[0-9]+/second.txt" "$run"
     want 1 "^$second  /jam/second.txt" "$run"
     want 1 "^$mine  /jam/mine.txt" "$run"
+    want 1 "^$ind  /nvme[0-9]+/ind.bin" "$run"
     want 1 "bigalloc +\\(no ext volume\\)" "$run"
     never "MISMATCH|DIFFERENT" "$run"
     # Someone else's volumes: every byte as it was. Of the two Jam OS

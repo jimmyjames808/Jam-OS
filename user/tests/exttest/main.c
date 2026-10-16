@@ -5,12 +5,14 @@
  *   exttest sums <dir>           the SHA-256 of every file of the directory
  *                                (not the ones below it), as the shell's
  *                                sha256sum prints it. Names made of bytes
- *                                over 127, or of 255, can't be typed into
- *                                the shell: this reads them as they come.
+ *                                over 127 can't be typed into the shell:
+ *                                this reads them as they come. A name
+ *                                whose path is over 255 bytes (FS_PATH_MAX)
+ *                                is said, not read.
  *   exttest copy <dir> <prefix>  every file of the directory copied to a
  *                                new name, the prefix and the old name; a
- *                                copy that can't be made (the name is too
- *                                long) is said and the rest go on.
+ *                                copy that can't be made (a path over 255
+ *                                bytes) is said and the rest go on.
  *
  *   exttest big <path> <MiB>     writes <MiB> MiB of the pattern below into
  *                                the file (made, or emptied), 1 MiB a write,
@@ -298,7 +300,7 @@ static int cmd_sparse(const char *path)
 
 /* ---- names ---------------------------------------------------------------------------- */
 
-#define MAX_NAMES 64
+#define MAX_NAMES 512
 
 static char names[MAX_NAMES][FS_NAME_MAX];
 
@@ -342,8 +344,11 @@ static int cmd_sums(const char *dir)
         struct sha256 s;
         struct jfile f;
         sha256_init(&s);
-        if (!join(path, sizeof(path), dir, "", names[i]))
+        if (!join(path, sizeof(path), dir, "", names[i])) {
+            printf("exttest: sums %s: a name of %u bytes: the path is too long\n", dir,
+                   (unsigned)strlen(names[i]));
             continue;
+        }
         st = file_open(path, FS_READ, &f);
         if (st == OK) {
             struct fs_attr a;
@@ -379,8 +384,12 @@ static int cmd_copy(const char *dir, const char *prefix)
         char from[FS_PATH_MAX], to[FS_PATH_MAX];
         struct jfile in, outf;
         if (!join(from, sizeof(from), dir, "", names[i]) ||
-            !join(to, sizeof(to), dir, prefix, names[i]))
+            !join(to, sizeof(to), dir, prefix, names[i])) {
+            printf("exttest: copy %s: a name of %u bytes: the path is too long\n", dir,
+                   (unsigned)strlen(names[i]));
+            refused++;
             continue;
+        }
         st = file_open(from, FS_READ, &in);
         if (st != OK) {
             printf("exttest: copy %s: %s\n", from, status_str(st));
