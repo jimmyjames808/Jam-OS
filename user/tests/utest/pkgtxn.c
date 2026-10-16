@@ -45,6 +45,35 @@ static status_t run_op(struct pk_env *e, enum pkg_op op, const struct mkpkg *p, 
     return pk_run(e, &job, why);
 }
 
+/* A program past the old 64 MiB cap, through the whole path: bin/pkg's code
+ * unpacks it in pieces, init's approve reads it back in pieces (never whole:
+ * the pages it adds to the job are a few, not the program's 17,921), the
+ * line and the table are init's; removed again. */
+bool t_pkgtxn_big(void)
+{
+    enum { BIG_MIB = 70, DISK_MIB = 160, ADDED_MAX = 1024 };   /* pages: 4 MiB */
+    struct mkpkg b = { .name = "big", .version = "1.0", .revision = 1, .pad = (size_t)BIG_MIB << 20 };
+    b.files[b.nfiles++] = (struct mk_file){ "bin/big", 0755, NULL, true };
+    b.files[b.nfiles++] = (struct mk_file){ "share/big/readme.txt", 0644, "big\n", false };
+    struct pk_env e;
+    char why[PK_WHY];
+    CHECK(mk_up_mib(DISK_MIB) && mk_build(&b));
+    CHECK(b.size[0] > (64u << 20));
+    mk_env(&e);
+    mk_track_approve = true;
+    status_t st = run_op(&e, PKG_OP_INSTALL, &b, 65536, why);
+    mk_track_approve = false;
+    CHECK_ST(st, OK);
+    printf("utest: %s: approve added %lu pages to the job (the program is %lu)\n", utest_cur,
+           (unsigned long)mk_approve_peak, (unsigned long)(b.size[0] / PAGE_SIZE));
+    CHECK(mk_approve_peak <= ADDED_MAX);
+    CHECK(mk_installed(&b));
+    CHECK_ST(run_op(&e, PKG_OP_REMOVE, &b, 0, why), OK);
+    CHECK(mk_absent(&b));
+    mk_free(&b);
+    return mk_down();
+}
+
 bool t_pkgtxn_install(void)
 {
     struct mkpkg a = make_a("1.0", 1);

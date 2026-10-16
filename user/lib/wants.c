@@ -96,7 +96,7 @@ static bool want_net_listen(struct wants *w, bool low)
 /* "mount <point> r|rw". */
 static bool want_mount(struct wants *w, const char *point, const char *mode)
 {
-    static const char *const points[] = { "/boot", "/esp", "/data", "/usb*", "*" };
+    static const char *const points[] = { "/boot", "/esp", "/data", "/jam", "/usb*", "*" };
     bool known = false;
     for (unsigned i = 0; i < sizeof(points) / sizeof(points[0]); i++)
         known |= !strcmp(point, points[i]);
@@ -152,9 +152,12 @@ static bool want_line(struct wants *w, char *line)
         return want_net_listen(w, n == 4);
     if (n == 3 && !strcmp(word[0], "mount"))
         return want_mount(w, word[1], word[2]);
-    if (n == 4 && !strcmp(word[0], "mount") && !strcmp(word[1], "/data") &&
-        !strcmp(word[2], "rw") && !strcmp(word[3], "pkg"))
-        return add_grant(w, "/data:wp", "/data (write, the packages too)");
+    if (n == 4 && !strcmp(word[0], "mount") && !strcmp(word[2], "rw") && !strcmp(word[3], "pkg")) {
+        if (!strcmp(word[1], "/data"))
+            return add_grant(w, "/data:wp", "/data (write, the packages too)");
+        if (!strcmp(word[1], "/jam"))
+            return add_grant(w, "/jam:wp", "/jam (write, the packages too)");
+    }
     if (n == 2 && !strcmp(word[0], "right"))
         return want_right(w, word[1]);
     if (n == 1 && !strcmp(word[0], "posix") && !w->posix) {

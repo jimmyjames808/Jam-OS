@@ -6,27 +6,29 @@
 #
 # A program on /data runs only with an approval line in /data/etc/allow
 # (<dataprog.h>), which only init and the shell can write. A package's
-# lines are init's: bin/pkg writes the files under /data/pkg (its view
-# alone may: FS_VIEW_GUARD_PKG, <fsview.h>), then asks init to approve
+# lines are init's: bin/pkg writes the files under the packages' prefix
+# (/jam/pkg on a machine with the Jam OS drive's volume, else /data/pkg; its
+# view alone may: FS_VIEW_GUARD_PKG, <fsview.h>), then asks init to approve
 # them, sending the package's signed manifest. init trusts nothing bin/pkg
 # says: it checks the manifest's signature with /boot/ports.pub (a build
-# without one approves nothing), reads every program back from /data/pkg
-# itself into memory only it holds, and from those bytes checks the file's
-# size and SHA-256 against the manifest's `file` line, makes the page
-# table and checks its SHA-256 against the `table` line, checks that the
-# program's own list (its ELF note) is the manifest's `program` list, and
-# applies the refusals `allow` applies (dp_wants_refused). Only when every
-# program has passed does it write the tables (/data/etc/allow.d/<sha-256>)
-# and then the lines, each tagged with the package:
+# without one approves nothing), reads every program back from the prefix
+# itself, in pieces (a program of 300 MB is never in memory), and from those
+# bytes checks the file's size and SHA-256 against the manifest's `file`
+# line, makes the page table and checks its SHA-256 against the `table`
+# line, checks that the program's own list (its ELF note) is the manifest's
+# `program` list, and applies the refusals `allow` applies
+# (dp_wants_refused). Only when every program has passed does it write the
+# tables (/data/etc/allow.d/<sha-256>) and then the lines, each tagged with
+# the package:
 #
-#     <sha-256>\t/data/pkg/<path>\t<what its list asks for>\tpkg=<name> <version>-r<revision>
+#     <sha-256>\t<prefix>/<path>\t<what its list asks for>\tpkg=<name> <version>-r<revision>
 #
 # The shell's `allow -l` shows the tag; its `allow -r` and `allow <file>`
 # refuse to drop a tagged line: revoke does, for `pkg remove` and an
 # upgrade's old version.
 #
 # Both methods are answered later, from init's loop, once its worker thread
-# has done the work (a program of 64 MiB takes a moment to read and hash):
+# has done the work (a program of 300 MB takes a few seconds to read and hash):
 # one at a time per channel, the next read when the last is answered. One
 # channel at a time: a newer pkg_channel closes an older one.
 #
@@ -43,7 +45,10 @@ const WHY_MAX  95
 
 # approve's flags: the programs are staged, at `<path>.new` (an install's or
 # an upgrade's files before the swap); the lines name `<path>` all the same.
+# JAM: the packages' prefix is /jam/pkg (the Jam OS drive's volume), not
+# /data/pkg (a stick on its own: no /jam).
 const STAGED 1
+const JAM    2
 
 # Approve the programs of the package whose manifest (the signed text,
 # manifest_bytes of the VMO, at most 4 MiB: PKG_MANIFEST_MAX) is given.

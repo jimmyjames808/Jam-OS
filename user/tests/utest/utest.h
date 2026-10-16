@@ -1046,6 +1046,7 @@ bool t_pkgctl_init(void);
 /* pkgtxn.c, pkgplan.c, pkgcut.c: bin/pkg's transactions, plans and cuts
  * (user/services/pkg), over pkgmk.c's RAM disk and package maker. */
 bool t_pkgtxn_install(void);
+bool t_pkgtxn_big(void);
 bool t_pkgtxn_refused(void);
 bool t_pkgtxn_init_no(void);
 bool t_pkgtxn_upgrade(void);

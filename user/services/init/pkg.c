@@ -1,12 +1,14 @@
 /* init's side of the packages (docs/M13.7-PLAN.md section 9, track PO5):
  * the pkgctl channel (abi/idl/pkgctl.idl) that the shell hands to bin/pkg,
- * and the settle of a package transaction cut short, once /data is
- * mounted at boot.
+ * and the settle of a package transaction cut short, once the volume that
+ * holds the packages is mounted at boot (/data, or /jam when the Jam OS
+ * drive's volume is there: each has its own journal).
  *
- * The work is pkgapprove.c's, on paths under /data, with the ports key in
+ * The work is pkgapprove.c's, on paths under /data/pkg or /jam/pkg (the
+ * approvals are /data's), with the ports key in
  * this build's own boot image (/boot/ports.pub: PORTS_KEY_FILE; a build
  * without one approves nothing and settles nothing). It reads and hashes
- * programs of up to 64 MiB and writes files, so it runs on a worker
+ * programs of up to 1 GiB, in pieces, and writes files, so it runs on a worker
  * thread, as update.c's check does, and the loop goes on serving: a
  * request on the channel is read only when the worker is idle (the next
  * one waits in the channel), handed to the worker, and answered from the
@@ -25,13 +27,18 @@
 #include "pkgapprove.h"
 
 #define PORTS_KEY_FILE "ports.pub"     /* the ports key's public half, in bootfs */
-#define PKG_PREFIX     DATA_MOUNT "/pkg"
+#define PKG_PREFIX     DATA_MOUNT "/pkg"   /* a stick on its own */
+#define PKG_JAM_PREFIX JAM_MOUNT "/pkg"    /* with the Jam OS drive's volume (pkgctl's JAM) */
 #define WORKER_STACK   (64u << 10)
 #define WORKER_END     (2 * NS_PER_S)  /* its packet came: it ends within this */
 #define QUEUE_TRIES    100             /* a full port: tries 10 ms apart */
 
-static const struct pkga_place place = {
-    .prefix = PKG_PREFIX, .etc = DP_ALLOW_DIR, .allow = DP_ALLOW_FILE, .tables = DP_TABLE_DIR,
+/* The two places the packages may be: [0] on /data, [1] on /jam. The
+ * approvals are /data's in both. */
+static const struct pkga_place places[2] = {
+    { .prefix = PKG_PREFIX, .etc = DP_ALLOW_DIR, .allow = DP_ALLOW_FILE, .tables = DP_TABLE_DIR },
+    { .prefix = PKG_JAM_PREFIX, .etc = DP_ALLOW_DIR, .allow = DP_ALLOW_FILE,
+      .tables = DP_TABLE_DIR },
 };
 
 enum job_kind { JOB_APPROVE, JOB_REVOKE, JOB_SETTLE };
@@ -50,6 +57,7 @@ struct job {
     struct pkga_result r;            /* approve's answer */
     uint32_t           lines;        /* revoke's */
     status_t           st;           /* revoke's */
+    bool               jam;          /* the settle's: of /jam/pkg (else /data/pkg) */
     struct pkga_settled settled;     /* the settle's */
     bool               done;         /* the worker's hand-back */
 };
@@ -60,7 +68,7 @@ static uint64_t     port_key;
 static struct job  *busy;            /* on the worker (NULL: none) */
 static handle_t     worker;
 static bool         worker_stuck;    /* one didn't end: its stack can't be used again */
-static bool         settle_due;      /* /data came while the worker was busy */
+static unsigned     settle_due;      /* a volume came while the worker was busy: bit 0 /data, 1 /jam */
 static uint8_t      worker_stack[WORKER_STACK];
 
 /* This build's ports key. ERR_NOT_FOUND: built without one. */
@@ -103,14 +111,15 @@ static void run_approve(struct job *j)
         snprintf(j->r.why, sizeof(j->r.why), "can't map the manifest");
         return;
     }
-    pkga_approve(&place, key, text, j->manifest.len, j->flags, &j->r);
+    pkga_approve(&places[(j->flags & PKGCTL_JAM) != 0], key, text, j->manifest.len,
+                 j->flags & ~PKGCTL_JAM, &j->r);
     jam_vmar_unmap(startup_handle(SR_SELF_VMAR), (uint64_t)(uintptr_t)text, len);
 }
 
 static void run_settle(struct job *j)
 {
     uint8_t key[PKG_KEY_BYTES];
-    pkga_settle(&place, ports_key(key) == OK ? key : NULL, &j->settled);
+    pkga_settle(&places[j->jam], ports_key(key) == OK ? key : NULL, &j->settled);
 }
 
 static void worker_main(void *arg)
@@ -121,7 +130,7 @@ static void worker_main(void *arg)
     } else if (j->kind == JOB_REVOKE) {
         struct pkg_str name = { j->name, (uint32_t)strlen(j->name) };
         struct pkg_str version = { j->version, (uint32_t)strlen(j->version) };
-        j->st = pkga_revoke(&place, name, version, j->revision, &j->lines);
+        j->st = pkga_revoke(&places[0], name, version, j->revision, &j->lines);   /* /data's */
     } else {
         run_settle(j);
     }
@@ -284,10 +293,10 @@ static status_t op_revoke(void *ctx, struct idl_txn txn, const char *name, uint3
 
 static const struct pkgctl_ops ops = { .approve = op_approve, .revoke = op_revoke };
 
-void pkg_data_came(handle_t to_port, uint64_t key)
+void pkg_data_came(handle_t to_port, uint64_t key, bool jam)
 {
     if (busy) {
-        settle_due = true;
+        settle_due |= 1u << jam;
         return;
     }
     port = to_port;
@@ -298,6 +307,7 @@ void pkg_data_came(handle_t to_port, uint64_t key)
         return;
     }
     j->kind = JOB_SETTLE;
+    j->jam = jam;
     start(j);
 }
 
@@ -308,10 +318,11 @@ void pkg_event(void)
             return;   /* the channel spoke meanwhile: read once the worker is done */
         worker_done();
     }
-    if (settle_due && !busy) {
-        settle_due = false;
-        pkg_data_came(port, port_key);
-    }
+    for (unsigned v = 0; v < 2 && !busy; v++)
+        if (settle_due & 1u << v) {
+            settle_due &= ~(1u << v);
+            pkg_data_came(port, port_key, v);
+        }
     /* One request at a time: the next is read once this one is answered
      * (the worker's packet brings us back here). */
     status_t st = ch && !busy ? pkgctl_serve_one(ch, &ops, NULL) : OK;

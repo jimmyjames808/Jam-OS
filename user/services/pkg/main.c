@@ -1,6 +1,7 @@
 /* bin/pkg: packages (docs/M13.7-PLAN.md sections 8 and 9). It fetches the
  * Mac's repository over HTTP, shows the owner what an install would do,
- * asks once, and writes the files under /data/pkg. The shell's `pkg`
+ * asks once, and writes the files under /jam/pkg (or /data/pkg when there
+ * is no /jam: a stick on its own). The shell's `pkg`
  * starts it as a helper with the repository's address and the channels it
  * needs:
  *   argv: pkg [-R <repository address>] <command> [arguments]
@@ -15,8 +16,8 @@
  *
  * It parses what the network sends, so it holds only what it needs: the
  * network and the resolver, the boot image (the ports key and the ABI stamp,
- * read-only), a stick (to install a package from), and /data with the
- * packages' prefix writable and nothing under etc. What may run is init's to
+ * read-only), a stick (to install a package from), and /jam and /data with
+ * the packages' prefix writable and nothing under etc. What may run is init's to
  * decide: it checks the manifest's signature and every program itself.
  *
  * Its lines are the owner's, in plain words. Exit: 0 done, 1 failed or
@@ -31,11 +32,23 @@ JAM_WANTS("svc net\n"
           "svc dns\n"
           "mount /boot r\n"
           "mount /usb* r\n"
-          "mount /data rw pkg\n");
+          "mount /data rw pkg\n"
+          "mount /jam rw pkg\n");
 
-#define PREFIX     "/data/pkg"
-#define KEY_FILE   "/boot/ports.pub"
-#define BUILD_FILE "/boot/build.txt"
+#define PREFIX_DATA "/data/pkg"   /* a stick on its own */
+#define PREFIX_JAM  "/jam/pkg"    /* the Jam OS drive's volume, when it is mounted */
+#define KEY_FILE    "/boot/ports.pub"
+#define BUILD_FILE  "/boot/build.txt"
+
+/* Where the packages are: on /jam when that is in our namespace (the shell
+ * had it, and gave it with `mount /jam rw pkg`), else on /data. init is told
+ * which (e->jam), so it reads the programs from the same place. */
+static void pick_prefix(struct pk_env *e)
+{
+    bool dir = false;
+    e->jam = fs_stat("/jam", NULL, &dir, NULL) == OK && dir;
+    e->prefix = e->jam ? PREFIX_JAM : PREFIX_DATA;
+}
 
 /* This build's ports key. false: it has none, and takes no repository. */
 static bool load_key(struct pk_env *e)
@@ -109,7 +122,7 @@ int main(int argc, char **argv)
     }
     if (i >= argc)
         return usage();
-    a.env.prefix = PREFIX;
+    pick_prefix(&a.env);
     a.env.have_key = load_key(&a.env);
     load_abi(&a.env);
     a.env.stopped = stopped;

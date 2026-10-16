@@ -1,0 +1,71 @@
+# `pkg` and a program as big as Chromium's, on the Jam OS drive's ext volume
+# (tools/pkg-test.sh, case big; docs/M13.7-PLAN.md "PO13 notes"): the stick
+# boots, an emulated NVMe drive is the Jam OS drive, so /jam is its ext
+# volume and the packages' prefix is /jam/pkg. bigpkg is a POSIX program of
+# 300 MiB (build/bigpkg/bigpkg, tools/bigpkg.c) in the repository "big"
+# of tools/pkg-test-repo.py. It is downloaded and unpacked to `.new` names
+# in pieces, read back and hashed by init in pieces, swapped into place, and
+# run from its pages. The test script puts the program's expected hash
+# where @HASH@ and its page count where @PAGES@ are.
+wait 120 Jam OS shell
+seen 60 init: /data mounted
+seen 90 init: /jam: mounted as views
+seen 60 netstack: link up
+seen 30 netstack: address 10.2.21.5/24
+wait {prompt}
+send T=x
+wait {prompt}
+
+# /jam is the drive's ext volume; nothing is installed there yet.
+send disks | grep -c "/jam (ext)" | grep ^1$ && echo ok-$T-jam
+wait ok-x-jam
+wait {prompt}
+send pkg list
+wait No package is installed.
+wait {prompt}
+
+# The install: one question, the download, init's read, the swap.
+send pkg -R http://10.2.21.174:8000/big/ install bigpkg
+wait Install 1 package, 1 program? [y/N]
+type y
+wait Downloading bigpkg 1.0-r1
+wait 900 Installed bigpkg 1.0-r1
+wait {prompt}
+send pkg list
+wait bigpkg 1.0-r1
+wait {prompt}
+send pkg files bigpkg
+wait /jam/pkg/bin/bigpkg (program)
+wait {prompt}
+send allow -l
+seen 5 /jam/pkg/bin/bigpkg
+seen 5 [package bigpkg 1.0-r1]
+wait {prompt}
+send ls -l /jam/pkg/bin
+seen 5 bigpkg
+wait {prompt}
+send ls /jam/pkg/bin | grep -c "\.new" | grep ^0$ && echo ok-$T-nonew
+wait ok-x-nonew
+wait {prompt}
+
+# It runs, from its pages, and says what it holds.
+send run /jam/pkg/bin/bigpkg
+wait 300 bigpkg: @PAGES@ pages, every 16: hash @HASH@
+wait {prompt}
+send run /jam/pkg/bin/bigpkg hash 5
+wait 600 bigpkg: @PAGES@ pages, every 5: hash @HASH5@
+wait {prompt}
+
+# The prefix is guarded for a program that holds /jam writable.
+send run /jam/pkg/bin/bigpkg guard
+wait bigpkg: guard: /jam/pkg refused a directory, a file and a removal; /jam took a file
+wait {prompt}
+
+# Every file is as its manifest says (it reads the 300 MiB again).
+send pkg check
+wait 300 pkg check: 1 package, every file is as its manifest says
+wait {prompt}
+send sync
+wait {prompt}
+send reboot -f
+wait reboot: resetting

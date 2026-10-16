@@ -98,6 +98,13 @@ typedef status_t (*dp_read_fn)(void *ctx, uint64_t off, void *dst, uint64_t len)
  * loader takes, a broken list, or notes past DP_NOTES_MAX; a reader's
  * error as it is; ERR_NO_MEMORY. */
 status_t dp_image_wants(dp_read_fn read, void *ctx, uint64_t size, struct wants *w);
+/* The part of the program a list is read from, gathered as dp_image_wants
+ * does it: a small ELF file of the same headers (*len bytes in a new heap
+ * block, *out: the caller frees it) holding the ELF header, the program
+ * headers and the PT_NOTE segments, and nothing else, so wants_read and
+ * pkg_elf_list_is (<pkgfmt.h>) can read the list of a program that is
+ * never in memory whole. Errors as dp_image_wants'. */
+status_t dp_image_small(dp_read_fn read, void *ctx, uint64_t size, uint8_t **out, uint64_t *len);
 /* The same from x, a verified VMO of size bytes, read with vmo_read only
  * (never mapped: a page that fails its hash is ERR_IO here, where a mapping
  * would kill the reader). ERR_IO: a page isn't the approved one (the file

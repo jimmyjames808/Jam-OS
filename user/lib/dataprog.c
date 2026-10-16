@@ -146,9 +146,8 @@ static bool notes_fit(const struct phdr *ph, unsigned n, uint64_t size, uint64_t
     return true;
 }
 
-status_t dp_image_wants(dp_read_fn read, void *ctx, uint64_t size, struct wants *w)
+status_t dp_image_small(dp_read_fn read, void *ctx, uint64_t size, uint8_t **out, uint64_t *len)
 {
-    memset(w, 0, sizeof(*w));
     struct ehdr eh;
     struct phdr ph[MAX_PHDRS];
     if (size < sizeof(eh))
@@ -177,13 +176,28 @@ status_t dp_image_wants(dp_read_fn read, void *ctx, uint64_t size, struct wants 
         ph[i].offset = at;
         at += ph[i].filesz;
     }
-    if (st == OK) {
-        eh.phoff = sizeof(eh);
-        memcpy(small, &eh, sizeof(eh));
-        memcpy(small + sizeof(eh), ph, eh.phnum * sizeof(struct phdr));
-        st = wants_read(small, at, w);
+    if (st != OK) {
+        free(small);
+        return st;
     }
-    free(small);
+    eh.phoff = sizeof(eh);
+    memcpy(small, &eh, sizeof(eh));
+    memcpy(small + sizeof(eh), ph, eh.phnum * sizeof(struct phdr));
+    *out = small;
+    *len = at;
+    return OK;
+}
+
+status_t dp_image_wants(dp_read_fn read, void *ctx, uint64_t size, struct wants *w)
+{
+    memset(w, 0, sizeof(*w));
+    uint8_t *small;
+    uint64_t n;
+    status_t st = dp_image_small(read, ctx, size, &small, &n);
+    if (st == OK) {
+        st = wants_read(small, n, w);
+        free(small);
+    }
     return st;
 }
 
@@ -202,7 +216,7 @@ status_t dp_wants_vmo(handle_t x, uint64_t size, struct wants *w)
 
 bool dp_on_data(const char *abs)
 {
-    return !strncmp(abs, "/data/", 6) && abs[6];
+    return (!strncmp(abs, "/data/", 6) && abs[6]) || (!strncmp(abs, "/jam/", 5) && abs[5]);
 }
 
 bool dp_allow_split(char *line, char **hash, char **path, char **text)
@@ -367,8 +381,8 @@ const char *dp_wants_refused(const struct wants *w)
     if (w->rights & WANT_RIGHT_DEBUG)
         return "right debug";
     for (unsigned i = 0; i < w->n; i++)   /* the packages' prefix: bin/pkg's alone */
-        if (!strcmp(w->grant[i], "/data:wp"))
-            return "mount /data rw pkg";
+        if (!strcmp(w->grant[i], "/data:wp") || !strcmp(w->grant[i], "/jam:wp"))
+            return w->grant[i][1] == 'd' ? "mount /data rw pkg" : "mount /jam rw pkg";
     for (unsigned i = 0; i < w->n; i++)
         for (unsigned k = 0; k < sizeof(refused) / sizeof(refused[0]); k++)
             if (!strncmp(w->grant[i], "/svc/", 5) && !strcmp(w->grant[i] + 5, refused[k]))

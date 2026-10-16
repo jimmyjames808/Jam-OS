@@ -784,9 +784,10 @@ void     update_event(void);
  * bound on port with key (call pkg_event on its packets), *client to hand
  * over. ERR_BAD_STATE while the last call is being worked on. */
 status_t pkg_channel_new(handle_t port, uint64_t key, handle_t *client);
-/* /data came: the journal of a package transaction cut short is settled
- * (on the worker; its packet comes to port with key). */
-void     pkg_data_came(handle_t port, uint64_t key);
+/* /data came (jam false), or /jam did (true): the journal of a package
+ * transaction cut short on that volume is settled (on the worker; its
+ * packet comes to port with key). */
+void     pkg_data_came(handle_t port, uint64_t key, bool jam);
 /* A packet with the channel's key: a request, the worker done (then
  * answered), or bin/pkg gone. */
 void     pkg_event(void);

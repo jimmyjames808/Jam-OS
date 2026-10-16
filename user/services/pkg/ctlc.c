@@ -6,9 +6,11 @@
 #include <idl/pkgctl.h>
 #include "pkg.h"
 
-#define APPROVE_WAIT (120 * NS_PER_S)   /* init reads and hashes the programs */
+#define APPROVE_WAIT (600 * NS_PER_S)   /* init reads and hashes the programs: gigabytes of them */
 #define REVOKE_WAIT  (30 * NS_PER_S)
-#define STAGED       PKGCTL_STAGED
+
+_Static_assert(PK_APPROVE_STAGED == PKGCTL_STAGED && PK_APPROVE_JAM == PKGCTL_JAM,
+               "pkg.h's flags are pkgctl's");
 
 static status_t approve(void *ctx, uint32_t flags, const void *text, size_t len,
                         struct pk_verdict *v)

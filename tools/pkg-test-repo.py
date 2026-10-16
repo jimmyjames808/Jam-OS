@@ -45,6 +45,11 @@ http://<host>:<port>/<name>/:
     slow      serial 1005: next's packages, but a package's body stalls halfway
               for SLOW_S seconds (a power cut in the middle of a download)
 
+With --bigprog FILE (the Makefile's build/bigpkg/bigpkg, 300 MiB):
+    bigslow   serial 1006: bigpkg 1.0, whose one program is FILE, its body
+              stalling halfway for SLOW_S seconds
+    big       serial 1007: the same package, served whole
+
 The serials rise in the order a test uses them (an index below the last
 accepted is refused, so the defects come first with the lowest, then good,
 next, rebuild, slow).
@@ -134,7 +139,25 @@ def entry(p, key):
     return p, archive_of(p, key)
 
 
-def make(out, ports=()):
+BIG_LIST = b"posix\nmount /jam rw\n"   # the list build/bigpkg/bigpkg is linked with
+
+
+def big_package(path):
+    """bigpkg 1.0: the 300 MiB program at path (the Makefile's
+    build/bigpkg/bigpkg), a readme and a licence."""
+    r = vectors.FakeRecipe("bigpkg", "1.0", 1)
+    r.values["summary"] = "a test package with a program as big as Chromium's"
+    p = packagemod.Package("bigpkg", r)
+    p.built_with = [["musl", "1.2.6"]]
+    with open(path, "rb") as f:
+        p.add("bin/bigpkg", 0o755, f.read())
+    p.lists["bin/bigpkg"] = BIG_LIST
+    p.add("share/bigpkg/readme.txt", 0o644, b"a program as big as Chromium's\n")
+    p.add("share/licences/bigpkg/LICENSE", 0o644, b"MIT, for a test package\n")
+    return p
+
+
+def make(out, ports=(), bigprog=None):
     web = os.path.join(out, "web")
     key, _pub = signmod.test_key(os.path.join(out, "keys"), "ports vectors")
     key2, _ = signmod.test_key(os.path.join(out, "keys2"), "ports vectors, another")
@@ -168,6 +191,10 @@ def make(out, ports=()):
     aaa2b = package("aaa", "2.0", readme="aaa 2.0, rebuilt\n", extra={"share/aaa/new.txt": b"new\n"})
     write_repo(web, "rebuild", [entry(aaa2b, key), good[1], entry(ccc1, key)], 1004, key)
     write_repo(web, "slow", [entry(aaa2, key), good[1], entry(ccc1, key)], 1005, key)
+    if bigprog:
+        big = entry(big_package(bigprog), key)
+        write_repo(web, "bigslow", [big], 1006, key)
+        write_repo(web, "big", [big], 1007, key)
     if ports:
         make_real(out, web, ports, key)
     return web
@@ -193,7 +220,7 @@ def make_real(out, web, ports, key):
     write_repo(web, "conflict", [entry(compat, key)], serial + 1, key)
 
 
-SLOW_S = 25
+SLOW_S = 25   # under bin/pkg's 30 s without a byte
 
 
 def handler_for(web):
@@ -211,20 +238,24 @@ def handler_for(web):
             if not full.startswith(root + os.sep) or not os.path.isfile(full):
                 self.send_error(404)
                 return
-            with open(full, "rb") as f:
-                data = f.read()
+            size = os.path.getsize(full)
             self.send_response(200)
-            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Content-Length", str(size))
             self.end_headers()
+            stall = SLOW_S if path.startswith(("/slow/pkg/", "/bigslow/pkg/")) else 0
             try:
-                if path.startswith("/slow/pkg/"):
-                    half = len(data) // 2
-                    self.wfile.write(data[:half])
-                    self.wfile.flush()
-                    time.sleep(SLOW_S)
-                    self.wfile.write(data[half:])
-                else:
-                    self.wfile.write(data)
+                step = max(512, min(1 << 20, size // 8))
+                with open(full, "rb") as f:   # in pieces: a package may be 300 MiB
+                    sent = 0
+                    while True:
+                        piece = f.read(step)
+                        if not piece:
+                            break
+                        self.wfile.write(piece)
+                        sent += len(piece)
+                        if stall and sent >= size // 2 and sent - len(piece) < size // 2:
+                            self.wfile.flush()
+                            time.sleep(stall)
             except (BrokenPipeError, ConnectionResetError):
                 pass   # the client has what it wanted (a head), or is gone
 
@@ -244,8 +275,9 @@ def main():
     ap.add_argument("dir")
     ap.add_argument("--port", type=int, default=0)
     ap.add_argument("--ports", nargs="*", default=[], help="ports for the real repository")
+    ap.add_argument("--bigprog", help="a program of 300 MiB: adds the repositories big and bigslow")
     a = ap.parse_args()
-    web = make(a.dir, a.ports)
+    web = make(a.dir, a.ports, a.bigprog)
     if a.cmd == "serve":
         serve(web, a.port)
     else:

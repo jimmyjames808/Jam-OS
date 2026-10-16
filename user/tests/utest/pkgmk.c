@@ -28,15 +28,20 @@ static void test_key(uint8_t s[64], uint8_t p[32])
     crypto_ed25519_key_pair(s, p, seed);   /* wipes seed */
 }
 
-bool mk_up(void)
+bool mk_up_mib(unsigned mib)
 {
     handle_t h;
-    if (!ramdisk_create(&disk, 16 * 2048) || !fat_start(&run, &disk, false))
+    if (!ramdisk_create(&disk, (uint64_t)mib * 2048) || !fat_start(&run, &disk, false))
         return false;
     CHECK_ST(jam_handle_duplicate(run.fs, RIGHT_SAME, &h), OK);
     CHECK_ST(ns_mount(MK_MNT, h), OK);
     test_key(mk_sk, mk_pk);
     return true;
+}
+
+bool mk_up(void)
+{
+    return mk_up_mib(16);
 }
 
 bool mk_down(void)
@@ -45,12 +50,57 @@ bool mk_down(void)
     return fat_stop(&run) && ramdisk_destroy(&disk);
 }
 
+/* What approve costs in memory: with mk_track_approve, a thread samples the
+ * pages charged to our job while init's approve runs, and mk_approve_peak is
+ * the most it saw above what they were when approve began (the RAM disk's
+ * and the package's own memory are there before: only what approve adds). */
+bool     mk_track_approve;
+uint64_t mk_approve_peak;
+
+static struct {
+    uint64_t base, peak;
+    bool     stop;
+    uint8_t  stack[16384] __attribute__((aligned(16)));
+} samp;
+
+static uint64_t job_pages(void)
+{
+    struct job_info ji;
+    return jam_job_get_info(startup_handle(SR_JOB), &ji) == OK ? ji.used[JOB_LIMIT_PAGES] : 0;
+}
+
+static void sampler(void *arg)
+{
+    (void)arg;
+    while (!__atomic_load_n(&samp.stop, __ATOMIC_ACQUIRE)) {
+        uint64_t now_pages = job_pages();
+        if (now_pages > __atomic_load_n(&samp.peak, __ATOMIC_RELAXED))
+            __atomic_store_n(&samp.peak, now_pages, __ATOMIC_RELAXED);
+        jam_sleep_until(now() + 500 * NS_PER_US);
+    }
+}
+
 static status_t ctl_approve(void *ctx, uint32_t flags, const void *text, size_t len,
                             struct pk_verdict *v)
 {
     (void)ctx;
     struct pkga_result r;
+    handle_t th = HANDLE_INVALID;
+    bool tracking = mk_track_approve;
+    if (tracking) {
+        samp.base = samp.peak = job_pages();
+        samp.stop = false;
+        tracking = thread_spawn("approve-peak", sampler, NULL, samp.stack, sizeof(samp.stack),
+                                &th) == OK;
+    }
     (void)pkga_approve(&mk_at, mk_pk, text, len, flags, &r);
+    if (tracking) {
+        __atomic_store_n(&samp.stop, true, __ATOMIC_RELEASE);
+        signals_t seen;
+        (void)jam_object_wait_one(th, SIG_TERMINATED, now() + NS_PER_S, &seen);
+        jam_handle_close(th);
+        mk_approve_peak = samp.peak > samp.base ? samp.peak - samp.base : 0;
+    }
     v->verdict = r.verdict;
     v->programs = r.programs;
     v->program = r.program;
@@ -95,8 +145,9 @@ static const uint8_t *vec_elf(void)
 }
 
 /* A program's bytes: bin/vec's with a field the loader ignores (e_flags)
- * set from the package, so that each version's programs hash differently. */
-static uint8_t *program_bytes(const struct mkpkg *p, const char *path, size_t *n)
+ * set from the package, so that each version's programs hash differently,
+ * and pad bytes of filler after it (a big program: nothing reads the rest). */
+static uint8_t *program_bytes(const struct mkpkg *p, const char *path, size_t pad, size_t *n)
 {
     const uint8_t *elf = vec_elf();
     uint8_t d[SHA256_BYTES];
@@ -105,12 +156,14 @@ static uint8_t *program_bytes(const struct mkpkg *p, const char *path, size_t *n
         return NULL;
     snprintf(seed, sizeof(seed), "%s %s %u %s", p->name, p->version, p->revision, path);
     sha256(seed, strlen(seed), d);
-    uint8_t *b = malloc(VEC_SIZE);
+    uint8_t *b = malloc(VEC_SIZE + pad);
     if (!b)
         return NULL;
     memcpy(b, elf, VEC_SIZE);
     memcpy(b + 0x30, d, 4);
-    *n = VEC_SIZE;
+    for (size_t i = 0; i < pad; i++)
+        b[VEC_SIZE + i] = (uint8_t)(((uint32_t)i * 2654435761u >> 24) + d[4]);
+    *n = VEC_SIZE + pad;
     return b;
 }
 
@@ -128,7 +181,7 @@ static void sort_files(struct mkpkg *p)
 #define BODY_CAP 8192u
 
 /* The manifest's text, signed, into m (BODY_CAP bytes); its length. */
-static size_t manifest_text(struct mkpkg *p, uint8_t tables[MK_FILES][512],
+static size_t manifest_text(struct mkpkg *p, uint8_t *const tables[MK_FILES],
                             uint32_t tsize[MK_FILES], char *m)
 {
     size_t n = 0;
@@ -168,15 +221,16 @@ static size_t manifest_text(struct mkpkg *p, uint8_t tables[MK_FILES][512],
 }
 
 /* The page tables of the programs (a table is 64 + 32 a page: 192 bytes for
- * 4100). */
-static bool make_tables(struct mkpkg *p, uint8_t (*tables)[512], uint32_t *tsize)
+ * 4100), each in memory of its own. */
+static bool make_tables(struct mkpkg *p, uint8_t **tables, uint32_t *tsize)
 {
     for (unsigned i = 0; i < p->nfiles; i++) {
         if (!p->files[i].program)
             continue;
         struct pkg_tabler t;
         tsize[i] = (uint32_t)pkg_table_size(p->size[i]);
-        CHECK(tsize[i] <= 512);
+        tables[i] = malloc(tsize[i]);
+        CHECK(tables[i]);
         pkg_tabler_begin(&t, p->size[i], tables[i], NULL);
         CHECK(pkg_tabler_add(&t, p->data[i], p->size[i]) && pkg_tabler_end(&t));
     }
@@ -197,14 +251,14 @@ static bool member(struct mkpkg *p, size_t *at, const char *path, unsigned mode,
 
 bool mk_build(struct mkpkg *p)
 {
-    static uint8_t tables[MK_FILES][512];
+    uint8_t *tables[MK_FILES] = { 0 };
     uint32_t tsize[MK_FILES] = { 0 };
     char *text = malloc(BODY_CAP);
     sort_files(p);
     CHECK(text);
     for (unsigned i = 0; i < p->nfiles; i++) {
         if (p->files[i].program) {
-            p->data[i] = program_bytes(p, p->files[i].path, &p->size[i]);
+            p->data[i] = program_bytes(p, p->files[i].path, p->pad, &p->size[i]);
         } else {
             p->size[i] = strlen(p->files[i].text);
             p->data[i] = malloc(p->size[i] + 1);
@@ -236,6 +290,8 @@ bool mk_build(struct mkpkg *p)
     sha256(p->jpk, p->jlen, p->jsha);
     sha256(p->jpk + PKG_BLOCK, p->mlen, p->msha);
     free(text);
+    for (unsigned i = 0; i < MK_FILES; i++)
+        free(tables[i]);
     return true;
 }
 
@@ -321,7 +377,7 @@ static bool file_has_bytes(const struct mkpkg *p, unsigned i)
     handle_t v;
     uint64_t size;
     snprintf(path, sizeof(path), "%s/%s", MK_PREFIX, p->files[i].path);
-    if (file_read_vmo(path, 1u << 20, &v, &size) != OK)
+    if (file_read_vmo(path, p->size[i], &v, &size) != OK)   /* a bigger file: no */
         return false;
     uint8_t *b = malloc(size + 1);
     bool same = b && size == p->size[i] && jam_vmo_read(v, 0, b, size) == OK &&

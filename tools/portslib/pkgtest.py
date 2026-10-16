@@ -115,7 +115,11 @@ def test_pagetable(tmp, top, stage_program):
                    "packager's" % (os.path.basename(t), os.path.basename(path),
                                    os.path.getsize(path)))
     expect(len(pagetable.make(b"x" * 4097)) == 64 + 2 * 32, "pagetable: the size of 2 pages")
-    for bad in (b"", b"x" * (fmt.FILE_MAX + 1)):
+    class OneTooBig:   # the length alone is looked at: a real gigabyte is not made here
+        def __len__(self):
+            return fmt.FILE_MAX + 1
+
+    for bad in (b"", OneTooBig()):
         try:
             pagetable.make(bad)
             FAILS.append("pagetable: a file of %d bytes taken" % len(bad))

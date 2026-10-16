@@ -40,7 +40,7 @@ PART = re.compile(r"[A-Za-z0-9_+~-][A-Za-z0-9._+~-]{0,254}\Z")
 DEPTH = 2           # /INDEX, /pkg/<file>
 TRIES = 5           # reads of a file that keeps changing before 503
 CHUNK = 1 << 16
-FILE_MAX = 1 << 30  # the largest file served (tools/portslib/pkgformat.py ARCHIVE_MAX)
+FILE_MAX = 4 << 30  # the largest file served (tools/portslib/pkgformat.py ARCHIVE_MAX)
 
 
 class Busy(Exception):

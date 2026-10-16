@@ -4,6 +4,9 @@
 # RAM disk against init's real approvals (pkgapprove.c), with packages made
 # and signed in the test:
 #   pkgtxn_install    install, again (refused), fed in pieces of every size
+#   pkgtxn_big        a program of 70 MiB (past the old 64 MiB cap) installed and
+#                     removed; init's approve adds a few pages to its job, not
+#                     the program's 17,921 (it reads in pieces)
 #   pkgtxn_db         the serials and sums db/ keeps
 #   pkgtxn_runs       what db/ says a package runs, read back from its manifest: a
 #                     dependent blocks a remove, -r orders it first
@@ -37,6 +40,10 @@ seen 5 utest: 3 passed
 send utest only pkgplan_install,pkgplan_upgrade,pkgplan_remove,pkgplan_paths; echo pt4-$T-$?
 wait 120 pt4-x-0
 seen 5 utest: 4 passed
+send utest only pkgtxn_big; echo pt5-$T-$?
+wait 240 pt5-x-0
+seen 5 utest: 1 passed
+seen 5 re:approve added [0-9]+ pages to the job \(the program is 17921\)
 
 send reboot -f
 wait reboot: resetting

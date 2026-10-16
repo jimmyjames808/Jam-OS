@@ -417,8 +417,11 @@ static void ended(unsigned i)
  * starts, so its file is dated by the settings' clock. */
 static void data_came(void)
 {
-    static bool had;
-    bool has = mounted(DATA_MOUNT);
+    static bool had, had_jam;
+    bool has = mounted(DATA_MOUNT), jam = mounted(JAM_MOUNT);
+    if (has && jam && !(had && had_jam))   /* its approvals are /data's: both are needed */
+        pkg_data_came(port, KEY_PKG, true);   /* /jam/pkg's transaction cut short */
+    had_jam = jam;
     if (has && !had) {
         settings_clock();
         settings_first_file();
@@ -427,7 +430,7 @@ static void data_came(void)
         services_settings(NETSTACK);
         comp_settings();   /* the saved window layout */
         terms_settings();  /* the terminals' font */
-        pkg_data_came(port, KEY_PKG);   /* a package transaction cut short */
+        pkg_data_came(port, KEY_PKG, false);   /* a package transaction cut short */
     }
     had = has;
 }
