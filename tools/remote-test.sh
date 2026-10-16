@@ -51,6 +51,10 @@
 #   tools/remote-test.sh --prepare     copy and build only, run nothing
 #   JAMOS_REMOTE_NOSYNC=1 tools/remote-test.sh <command>
 #                                      don't copy: use what the last copy left
+#   JAMOS_REMOTE_SCRIPT_ONLY=1 tools/remote-test.sh <command>
+#                                      print what the PC would run, run nothing
+#                                      (pc-batch.sh start --detach; JAMOS_REMOTE_RUNID
+#                                      names the run instead of a new id)
 set -u
 [ $# -gt 0 ] || { echo "usage: tools/remote-test.sh <command> [args...] | --prepare"; exit 2; }
 prepare=0
@@ -120,7 +124,8 @@ ssh_opts=(-o BatchMode=yes -o ConnectTimeout=5)
 # budget and runs (hours, in a big batch): keepalives stop an idle connection
 # from being dropped by a VPN or NAT on the way, and end a dead one in ~3 min.
 ssh_main_opts=("${ssh_opts[@]}" -o ServerAliveInterval=20 -o ServerAliveCountMax=9)
-if [ -z "$host" ] || ! "$sshr" "${ssh_opts[@]}" "$host" "wsl -e true" < /dev/null > /dev/null 2>&1; then
+script_only=${JAMOS_REMOTE_SCRIPT_ONLY:-0}
+if [ "$script_only" != 1 ] && { [ -z "$host" ] || ! "$sshr" "${ssh_opts[@]}" "$host" "wsl -e true" < /dev/null > /dev/null 2>&1; }; then
     if [ "${JAMOS_REMOTE_ONLY:-0}" = 1 ]; then   # the tests are the other machine's alone
         echo "remote-test: ${host:-no JAMOS_REMOTE} doesn't answer, and JAMOS_REMOTE_ONLY=1: not run" >&2
         exit 3
@@ -153,7 +158,7 @@ if [ "$nosync" != 1 ]; then
 fi
 # What the PC runs: written to its bash on stdin. runid names this call; a
 # repeat of the session (below) first stops what the lost one left there.
-runid=$$-$(date +%s)-$RANDOM
+runid=${JAMOS_REMOTE_RUNID:-$$-$(date +%s)-$RANDOM}
 remote_script() {
     echo "mkdir -p ~/work/.runs; find ~/work/.runs -type f -mtime +2 -delete 2> /dev/null"
     echo "old=\$(cat ~/work/.runs/$runid 2> /dev/null)"
@@ -193,6 +198,7 @@ remote_script() {
     # The command, when its CPUs and memory fit in the machine's budget (above).
     echo "exec python3 tools/remote-slots.py $cost \"\$@\" < /dev/null"
 }
+[ "$script_only" = 1 ] && { remote_script "$@"; exit 0; }
 # The session, with its stderr also kept in a file (through a fifo, so it is
 # still live). If the connection is lost after the login while the command is
 # still waiting for the budget (no "running with" line yet: a VPN drop in the

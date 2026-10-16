@@ -15,7 +15,15 @@
 #   - the runs start PC_BATCH_STAGGER seconds apart, and no more than
 #     PC_BATCH_JOBS are out at once;
 #   - a KTESTS=0 run builds that image too (a second --prepare, no copy);
-#   - cancel stops the runs.
+#   - cancel stops the runs;
+#   - start --detach, against a fake PC (a home directory with the real
+#     keeper, driver and remote-slots.py): the Mac's driver is gone once the
+#     batch is handed over and nothing asks the PC until the wait; the table,
+#     the outputs back (no disk images), a run id for each try, two
+#     checkouts at once, a second wait and status that don't ask the PC
+#     again; a second detached batch of one checkout refused; a wait with
+#     the PC down (exit 3); cancel (every process, one in a session of its
+#     own too, and the claim); a reboot (LOST, then --resume); no keeper.
 # Usage: tools/pc-batch-test.sh; exit 0 on PASS.
 set -u
 cd "$(dirname "$0")/.." || exit 2
@@ -26,8 +34,21 @@ trap 'rm -rf "$tmp"' EXIT
 export PC_BATCH_DIR=$tmp/batch PC_BATCH_REMOTE_TEST=$tmp/fake-remote FAKE_DIR=$tmp PC_BATCH_RETRY_DELAY=1
 cat > "$tmp/fake-remote" <<'EOF'
 #!/bin/bash
+if [ "${JAMOS_REMOTE_SCRIPT_ONLY:-}" = 1 ]; then   # start --detach: what the PC would run
+    [ "${JAMOS_REMOTE_NOSYNC:-}" = 1 ] && [ -z "${JAMOS_REMOTE:-}" ] && [ "${JAMOS_REMOTE_RUNID:-}" = @runid@ ] ||
+        { echo "fake: a script asked for with a copy, a host or no run id"; exit 99; }
+    printf 'cd %q || exit 2\n' "$FAKE_HOME/work/${PWD##*/}"
+    printf 'echo @runid@ >> %q\n' "$FAKE_DIR/runids"
+    for v in JAMOS_TIER KTESTS; do [ -n "${!v:-}" ] && printf 'export %q\n' "$v=${!v}"; done
+    printf 'set -- '; printf '%q ' "$@"; echo
+    printf 'exec python3 %q 2 100 "$@"\n' "$FAKE_SLOTS"
+    exit 0
+fi
 echo "$* NOSYNC=${JAMOS_REMOTE_NOSYNC:-} KTESTS=${KTESTS:-}" >> "$FAKE_DIR/calls"
-[ "$1" = --prepare ] && exit "${FAKE_PREPARE_RC:-0}"
+if [ "$1" = --prepare ]; then
+    [ -n "${FAKE_HOME:-}" ] && mkdir -p "$FAKE_HOME/work/${PWD##*/}"
+    exit "${FAKE_PREPARE_RC:-0}"
+fi
 [ "${JAMOS_REMOTE_NOSYNC:-}" = 1 ] || { echo "fake: a run that copies"; exit 99; }
 [ -n "${FAKE_NO_RUNNING:-}" ] || echo "remote-test: running with 4 of 26 CPUs in use (after 2 s)" >&2
 exec "$@"
@@ -186,6 +207,171 @@ kill -0 "$(cat "$tmp/longpid" 2> /dev/null)" 2> /dev/null && fail "cancel left t
 out=$($B wait "$id")
 rc=$?
 [ $rc != 0 ] && [ $rc != 124 ] && echo "$out" | grep -q "driver is gone" || fail "wait after cancel: exit $rc: $out"
+
+# ---- detached: a fake PC (a home with the keeper, ssh and wsl stand-ins) ----
+# The real keeper, driver and remote-slots.py run "on the PC"; setsid and
+# flock are stand-ins where the host has none (the Mac).
+pc=$tmp/pc/home
+mkdir -p "$pc" "$tmp/bin" "$tmp/slots"
+export FAKE_HOME=$pc FAKE_BIN=$tmp/bin FAKE_SLOTS=$PWD/tools/remote-slots.py PC_BATCH_SSH=$tmp/fake-ssh PC_BATCH_POLL=1
+cat > "$tmp/fake-ssh" <<'EOF'
+#!/bin/bash
+echo "$*" >> "$FAKE_DIR/ssh.log"
+while [ $# -gt 0 ]; do case $1 in -o) shift 2 ;; -*) shift ;; *) break ;; esac; done
+shift   # the host
+[ -n "${FAKE_PC_DOWN:-}" ] && { echo "ssh: connect to host pc port 22: Connection refused" >&2; exit 255; }
+cd "$FAKE_HOME" && HOME=$FAKE_HOME PATH=$FAKE_BIN:$PATH exec bash -c "$*"
+EOF
+cat > "$tmp/bin/wsl" <<'EOF'
+#!/bin/bash
+while [ $# -gt 0 ]; do case $1 in --cd) cd "$2" || exit 1; shift 2 ;; -e) shift; break ;; *) break ;; esac; done
+exec "$@"
+EOF
+cat > "$tmp/bin/setsid" <<'EOF'
+#!/usr/bin/env python3
+import os, sys
+if os.getpgrp() == os.getpid():
+    if os.fork():
+        os._exit(0)
+os.setsid()
+os.execvp(sys.argv[1], sys.argv[1:])
+EOF
+cat > "$tmp/bin/flock" <<'EOF'
+#!/usr/bin/env python3
+import fcntl, os, subprocess, sys
+a, how = sys.argv[1:], fcntl.LOCK_EX
+if a[:1] == ["-n"]:
+    a, how = a[1:], how | fcntl.LOCK_NB
+if len(a) == 1 and a[0].isdigit():
+    fd, cmd = int(a[0]), []
+else:
+    fd, cmd = os.open(a[0], os.O_RDONLY | os.O_CREAT, 0o666), a[1:]
+try:
+    fcntl.flock(fd, how)
+except OSError:
+    sys.exit(1)
+sys.exit(subprocess.call(cmd) if cmd else 0)
+EOF
+chmod +x "$tmp/fake-ssh" "$tmp/bin/"*
+keeper=
+keeper_start() {
+    HOME=$pc PATH=$tmp/bin:$PATH JAMOS_REMOTE_LOCKDIR=$tmp/slots JAMOS_REMOTE_POLL=0.2 \
+        bash tools/pc-keeper.sh > /dev/null 2>&1 < /dev/null &
+    keeper=$!
+    disown $keeper
+}
+trap 'kill $keeper $(cat "$tmp"/kid* 2> /dev/null) 2> /dev/null; rm -rf "$tmp"' EXIT
+keeper_start
+for c in co co2; do
+    mkdir -p "$tmp/$c/tools"
+    cp tools/pc-batch.sh tools/pc-batch-driver.sh tools/pc-detach.sh "$tmp/$c/tools/"
+done
+D() { local c=$1; shift; (cd "$tmp/$c" && PC_BATCH_DIR= tools/pc-batch.sh "$@"); }
+row2() { echo "$out" | grep -qE "^  $1 +$2( |\$)" || fail "no row \"$1 $2\" in: $out"; }   # no seconds
+bidof() { echo "$1" | sed -n 's/^batch \([^:]*\):.*/\1/p'; }
+upto() {   # upto <seconds> <test...>: until the test holds
+    local i=0 n=$(($1 * 10))
+    shift
+    until "$@"; do [ $i -ge $n ] && return 1; sleep 0.1; i=$((i + 1)); done
+}
+
+# A batch the PC runs alone (the Mac's driver gone once it is handed over),
+# and a second checkout's at the same time: each gets its own runs and outputs.
+cat > "$tmp/co/list" <<EOF
+ok     true
+bad    sh -c 'echo "bad: FAILED (on the PC)"; exit 1'
+flaky  sh -c 'f=$tmp/dflaky; [ -f \$f ] && exit 0; touch \$f; echo "flaky: TIMEOUT"; exit 1'
+out    sh -c 'mkdir -p build/t/out && echo one > build/t/out/f && echo disk > build/t/out/x.img' build/t/out/
+tier   sh -c 'test "\$JAMOS_TIER" = push'
+EOF
+printf '%s\n' "out2 sh -c 'mkdir -p build/t/out && echo two > build/t/out/f' build/t/out" > "$tmp/co2/list"
+: > "$tmp/ssh.log"
+out=$(JAMOS_TIER=push D co start --detach --rerun-failed list)
+id=$(bidof "$out")
+out2=$(D co2 start --detach list)
+id2=$(bidof "$out2")
+[ -n "$id" ] && [ -n "$id2" ] || fail "detached starts said: $out / $out2"
+upto 20 test -f "$tmp/co/build/batch/$id/handed" || fail "never handed: $(cat "$tmp/co/build/batch/$id/handoff.log" 2> /dev/null)"
+upto 5 eval '! kill -0 $(cat "$tmp/co/build/batch/$id/driver.pid") 2> /dev/null' || fail "the Mac's driver lives on after the hand-off"
+calls=$(wc -l < "$tmp/ssh.log")
+upto 30 test -f "$pc/work/.batch/co/$id/done" || fail "the PC never finished the batch: $(cat "$pc/work/.batch/co/$id/driver.out" 2> /dev/null)"
+upto 30 test -f "$pc/work/.batch/co2/$id2/done" || fail "the PC never finished co2's batch"
+[ "$(wc -l < "$tmp/ssh.log")" = "$calls" ] || fail "ssh while the Mac slept: $(tail -n +$((calls + 1)) "$tmp/ssh.log")"
+out=$(D co wait "$id")
+rc=$?
+[ $rc = 1 ] || fail "detached wait: exit $rc: $out"
+row ok PASS 0
+row bad FAIL 0
+row flaky rerun-PASS 0
+row out PASS 0
+row tier PASS 0
+echo "$out" | grep -q "^batch $id: 5 runs: 3 PASS, 1 rerun-PASS, 1 FAIL; " || fail "detached summary: $out"
+echo "$out" | grep -q "| bad: FAILED (on the PC)" || fail "detached: bad's failure line: $out"
+echo "$out" | grep -q "log build/batch/$id/pc/runs/bad.log" || fail "detached: bad's log: $out"
+[ "$(cat "$tmp/co/build/t/out/f" 2> /dev/null)" = one ] || fail "detached: build/t/out didn't come back"
+[ ! -e "$tmp/co/build/t/out/x.img" ] || fail "detached: a disk image came back"
+[ "$(cat "$tmp/co2/build/t/out/f" 2> /dev/null)" = "" ] || fail "co2's output before its wait"
+[ "$(D co2 wait "$id2" > /dev/null; echo $?)" = 0 ] || fail "co2's batch"
+[ "$(cat "$tmp/co2/build/t/out/f" 2> /dev/null)" = two ] && [ "$(cat "$tmp/co/build/t/out/f")" = one ] ||
+    fail "the two checkouts' outputs mixed"
+grep -q @runid@ "$tmp/runids" && fail "a run id left as @runid@"
+[ "$(sort -u "$tmp/runids" | wc -l | tr -d ' ')" = 8 ] || fail "run ids: not one for each of the 8 tries: $(cat "$tmp/runids")"
+calls=$(wc -l < "$tmp/ssh.log")
+out2=$(D co wait "$id")
+[ $? = 1 ] && [ "$out2" = "$out" ] || fail "a second wait differs: $out2"
+out2=$(D co status "$id")
+[ $? = 1 ] && [ "$out2" = "$out" ] || fail "status differs: $out2"
+[ "$(wc -l < "$tmp/ssh.log")" = "$calls" ] || fail "collected, yet the PC was asked again"
+
+# Cancel: every process of the batch, one in a session of its own too, and
+# its claim on the budget; meanwhile a second batch of the checkout is
+# refused, and a wait while the PC doesn't answer says so (exit 3).
+printf '%s\n' "long sh -c 'sleep 60 & echo \$! > $tmp/kid1; setsid sleep 60 & echo \$! > $tmp/kid2; wait'" > "$tmp/co/list2"
+id=$(bidof "$(D co start --detach list2)")
+upto 30 test -s "$tmp/kid2" || fail "cancel: the run never started"
+out=$(D co start --detach list2 2>&1)
+[ $? = 2 ] && echo "$out" | grep -q "still runs on the PC" || fail "a second detached batch of one checkout: $out"
+out=$(FAKE_PC_DOWN=1 PC_BATCH_WAIT=1 D co wait "$id")
+[ $? = 3 ] && echo "$out" | grep -q "the PC didn't answer" || fail "wait with the PC down: $out"
+out=$(D co cancel "$id")
+[ $? = 0 ] || fail "cancel: $out"
+upto 5 eval '! kill -0 $(cat "$tmp/kid1") 2> /dev/null && ! kill -0 $(cat "$tmp/kid2") 2> /dev/null' ||
+    fail "cancel left a process of the batch: $(ps -p "$(cat "$tmp/kid1")" -p "$(cat "$tmp/kid2")" 2>&1)"
+JAMOS_REMOTE_LOCKDIR=$tmp/slots python3 tools/remote-slots.py --status | grep -q "^remote-slots: 0 of" ||
+    fail "cancel left a claim: $(JAMOS_REMOTE_LOCKDIR=$tmp/slots python3 tools/remote-slots.py --status)"
+out=$(D co wait "$id")
+[ $? = 1 ] || fail "wait after a cancel: $out"
+row2 long CANCELLED
+echo "$out" | grep -q "1 CANCELLED" || fail "cancelled summary: $out"
+
+# A reboot of the PC mid-run: LOST, then --resume runs it again.
+printf '%s\n' "quick true" "long sh -c 'f=$tmp/lost.seen; [ -f \$f ] && exit 0; touch \$f; exec sleep 60'" > "$tmp/co/list3"
+id=$(bidof "$(D co start --detach list3)")
+b=$pc/work/.batch/co/$id
+upto 30 test -f "$tmp/lost.seen" -a -f "$b/runs/quick.rc" || fail "lost: the runs never started"
+kill -9 $keeper
+kill -9 -- "-$(cat "$b/pgid")"
+out=$(PC_BATCH_WAIT=1 D co wait "$id")
+[ $? = 1 ] || fail "wait after a reboot: $out"
+row quick PASS 0
+row2 long LOST
+echo "$out" | grep -q -- "start --detach --resume $id" || fail "no resume hint: $out"
+keeper_start
+out=$(D co start --detach --resume "$id")
+[ $? = 0 ] || fail "resume: $out"
+out=$(D co wait "$id")
+[ $? = 0 ] || fail "wait after resume: $out"
+row quick PASS 0
+row long PASS 0
+[ -f "$tmp/co/build/batch/$id/pc/runs/long.lost.log" ] || fail "the lost try's log is gone"
+
+# No keeper on the PC: the hand-off fails and says so.
+kill $keeper
+upto 5 eval '! kill -0 $keeper 2> /dev/null'
+id=$(bidof "$(D co start --detach list3)")
+out=$(D co wait "$id")
+[ $? = 1 ] && echo "$out" | grep -q "no keeper runs on the PC" || fail "no keeper: $out"
+row2 quick NOT-RUN
 
 [ "$ok" = 1 ] && { echo "pc-batch-test: PASS"; exit 0; }
 echo "pc-batch-test: FAIL"
