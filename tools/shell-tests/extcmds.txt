@@ -15,7 +15,7 @@ wait {prompt}
 # ---- a tree jamext made: modes and owners as it put them -----------------------------------
 send ls -l /jam/docs | grep -c "^-rw-r--r--  2 jam  jam .* hello.txt$" | grep ^1$ && echo ok-$T-lsl
 wait ok-x-lsl
-send ls -l /jam | grep -c "^d" | grep ^[3-9]$ && echo ok-$T-dirs
+send ls -l /jam | grep -c "^drwx------  2 jam  jam .* lost+found/$" | grep ^1$ && echo ok-$T-dirs
 wait ok-x-dirs
 send ls -l /jam/docs/run.sh | grep -c "^-rwxr-xr-x  1 jam  jam" | grep ^1$ && echo ok-$T-exec
 wait ok-x-exec
