@@ -55,7 +55,7 @@ static const struct fd_ops file_ops;
 /* The FS_* access an open with status flags s needs. */
 static uint32_t fs_access(uint32_t s)
 {
-    uint32_t acc = s & O_ACCMODE, f = 0;
+    uint32_t acc = s & FD_ACCMODE, f = 0;
     if (acc != O_WRONLY)
         f |= FS_READ;
     if (acc != O_RDONLY)
@@ -499,10 +499,11 @@ static uint32_t open_fs_flags(long flags)
 }
 
 /* A directory found where open was asked to open: a directory
- * description if the flags allow one, its path physical. */
+ * description if the flags allow one (read-only, or O_PATH: musl's
+ * O_ACCMODE holds O_PATH, so the mode is FD_ACCMODE's), its path physical. */
 static long open_dir(struct path *p, long flags, struct fd_desc **out)
 {
-    if ((flags & O_ACCMODE) != O_RDONLY || (flags & (O_CREAT | O_TRUNC)))
+    if ((flags & FD_ACCMODE) != O_RDONLY || (flags & (O_CREAT | O_TRUNC)))
         return -EISDIR;
     long r = path_place(p);
     return r ? r : dir_new(p, (uint32_t)flags & (FILE_STATUS | O_DIRECTORY), out);
@@ -560,8 +561,8 @@ static long open_flags_ok(long flags)
         return -EINVAL;
     if ((flags & O_TMPFILE) == O_TMPFILE)
         return -EOPNOTSUPP;   /* no unnamed files on FAT */
-    if ((flags & O_ACCMODE) == O_ACCMODE)
-        return -EINVAL;
+    if ((flags & FD_ACCMODE) == FD_ACCMODE && !(flags & O_PATH))
+        return -EINVAL;   /* access mode 3 (O_PATH ignores the mode) */
     if ((flags & (O_CREAT | O_DIRECTORY)) == (O_CREAT | O_DIRECTORY))
         return -EINVAL;       /* Linux 6.4 on */
     return 0;

@@ -5,6 +5,10 @@
  *     (execute refused), madvise(MADV_DONTNEED) reading zero after, and
  *     the arguments Linux refuses refused the same way; MADV_DONTNEED on
  *     a MAP_SHARED mapping (a memfd's, an anonymous one) keeps its data;
+ *   - mincore (none, all and some of a mapping's pages resident, the
+ *     arguments Linux refuses), MADV_REMOVE over shared memory reading
+ *     zero after for every holder, and pkey_alloc, pkey_free and
+ *     pkey_mprotect without protection keys (ENOSPC, EINVAL);
  *   - MAP_FIXED in one step: a thread reads four pages without pause
  *     while they are mapped over again and again (a moment with nothing
  *     there would kill the program), and a MAP_FIXED whose range holds a
@@ -240,10 +244,151 @@ static void check_mlock(void)
     CHECK(munmap(p, 2 * PG) == 0);
 }
 
+/* Resident pages of p's n pages by mincore, or -1. */
+static int resident_pages(void *p, size_t n)
+{
+    unsigned char vec[16];
+    memset(vec, 0xff, sizeof(vec));
+    if (mincore(p, n * PG, vec) != 0)
+        return -1;
+    int r = 0;
+    for (size_t i = 0; i < n; i++)
+        r += vec[i] & 1;
+    return r;
+}
+
+/* mincore: a mapping with no page touched reads as none, all touched as
+ * all, none again after madvise(MADV_DONTNEED); the length rounds up, a
+ * length of 0 is fine, an unaligned start is EINVAL, and an unmapped
+ * range ENOMEM (with what came before it filled in). Between all and
+ * none the kernel counts a mapping's present pages without saying which:
+ * the count over the whole mapping is right (docs/CR-PLAN.md, "CBF2b
+ * notes"). */
+static void check_mincore(void)
+{
+    char *p = mmap(NULL, 8 * PG, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(p != MAP_FAILED);
+    if (p == MAP_FAILED)
+        return;
+    CHECK(resident_pages(p, 8) == 0);
+    for (unsigned i = 0; i < 3; i++)
+        p[i * PG] = 1;
+    int some = resident_pages(p, 8);
+    CHECK(some >= 3 && some < 8);   /* the count of the mapping's present pages */
+    for (unsigned i = 0; i < 8; i++)
+        p[i * PG] = 1;
+    CHECK(resident_pages(p, 8) == 8);
+    CHECK(resident_pages(p + 2 * PG, 1) == 1);
+    unsigned char vec[16];
+    memset(vec, 0, sizeof(vec));
+    CHECK(mincore(p, 2 * PG + 1, vec) == 0 && vec[0] == 1 && vec[1] == 1 && vec[2] == 1);   /* 3 pages */
+    CHECK(mincore(p, 0, vec) == 0);
+    errno = 0;
+    CHECK(mincore(p + 1, PG, vec) == -1 && errno == EINVAL);
+    CHECK(madvise(p, 8 * PG, MADV_DONTNEED) == 0 && resident_pages(p, 8) == 0);
+    p[PG] = 1;
+    CHECK(resident_pages(p, 8) >= 1);
+    /* a range running off the end of its mapping */
+    for (unsigned i = 0; i < 8; i++)
+        p[i * PG] = 1;
+    CHECK(munmap(p + 4 * PG, 4 * PG) == 0);
+    memset(vec, 0xff, sizeof(vec));
+    errno = 0;
+    CHECK(mincore(p + 2 * PG, 4 * PG, vec) == -1 && errno == ENOMEM);
+    CHECK(vec[0] == 1 && vec[1] == 1);   /* the two pages that are there */
+    errno = 0;
+    CHECK(mincore(p + 4 * PG, PG, vec) == -1 && errno == ENOMEM);
+    CHECK(munmap(p, 4 * PG) == 0);
+    errno = 0;
+    CHECK(mincore(p, PG, vec) == -1 && errno == ENOMEM);
+}
+
+/* MADV_REMOVE over shared memory frees its pages for every holder: they
+ * read zero after, through the mapping, a second mapping and read() of the
+ * memfd (Chromium's discardable memory purges so); private memory is
+ * EINVAL, and a range nothing maps ENOMEM. */
+static void check_madv_remove(void)
+{
+    int fd = memfd_create("remove", 0);
+    CHECK(fd >= 0 && ftruncate(fd, 4 * PG) == 0);
+    char *a = mmap(NULL, 4 * PG, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    char *b = mmap(NULL, 4 * PG, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    CHECK(a != MAP_FAILED && b != MAP_FAILED);
+    if (a != MAP_FAILED && b != MAP_FAILED) {
+        memset(a, 0xaa, 4 * PG);
+        CHECK(b[0] == (char)0xaa && b[3 * PG] == (char)0xaa);
+        CHECK(madvise(a + PG, 2 * PG, MADV_REMOVE) == 0);   /* pages 1 and 2 */
+        bool zero_a = true, zero_b = true;
+        for (unsigned i = PG; i < 3 * PG; i++) {
+            zero_a &= a[i] == 0;
+            zero_b &= b[i] == 0;
+        }
+        CHECK(zero_a);
+        CHECK(zero_b);
+        CHECK(a[0] == (char)0xaa && a[3 * PG + 7] == (char)0xaa);   /* the rest stays */
+        char x = 1;
+        CHECK(pread(fd, &x, 1, PG + 5) == 1 && x == 0);
+        CHECK(madvise(a, 4 * PG, MADV_REMOVE) == 0 && b[0] == 0 && b[3 * PG] == 0);
+        a[0] = 7;   /* the pages come back on touch */
+        CHECK(b[0] == 7);
+    }
+    if (a != MAP_FAILED)
+        munmap(a, 4 * PG);
+    if (b != MAP_FAILED)
+        munmap(b, 4 * PG);
+    close(fd);
+    char *s = mmap(NULL, PG, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    CHECK(s != MAP_FAILED);
+    if (s != MAP_FAILED) {
+        s[9] = 3;
+        CHECK(madvise(s, PG, MADV_REMOVE) == 0 && s[9] == 0);
+        munmap(s, PG);
+    }
+    char *q = mmap(NULL, PG, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(q != MAP_FAILED);
+    if (q != MAP_FAILED) {
+        q[0] = 4;
+        errno = 0;
+        CHECK(madvise(q, PG, MADV_REMOVE) == -1 && errno == EINVAL && q[0] == 4);
+        CHECK(munmap(q, PG) == 0);
+        errno = 0;
+        CHECK(madvise(q, PG, MADV_REMOVE) == -1 && errno == ENOMEM);
+    }
+}
+
+/* Protection keys: none on Jam OS, answered as Linux does without them
+ * (CBF2b: PartitionAlloc calls pkey_alloc whatever CPUID says). */
+static void check_pkey(void)
+{
+    errno = 0;
+    CHECK(syscall(SYS_pkey_alloc, 0, 0) == -1 && errno == ENOSPC);
+    CHECK(syscall(SYS_pkey_alloc, 0, 2) == -1 && errno == ENOSPC);   /* PKEY_DISABLE_WRITE */
+    CHECK(syscall(SYS_pkey_alloc, 1, 0) == -1 && errno == EINVAL);   /* no flags yet */
+    CHECK(syscall(SYS_pkey_alloc, 0, 4) == -1 && errno == EINVAL);   /* an access right unknown */
+    CHECK(syscall(SYS_pkey_free, 1) == -1 && errno == EINVAL);
+    CHECK(syscall(SYS_pkey_free, 0) == -1 && errno == EINVAL);
+    char *p = mmap(NULL, 2 * PG, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(p != MAP_FAILED);
+    if (p == MAP_FAILED)
+        return;
+    p[0] = 1;
+    CHECK(syscall(SYS_pkey_mprotect, p, PG, PROT_READ, 0) == 0);    /* the default key */
+    CHECK(syscall(SYS_pkey_mprotect, p + PG, PG, PROT_READ, -1) == 0);   /* -1: none asked for */
+    CHECK(p[0] == 1 && mprotect(p, 2 * PG, PROT_READ | PROT_WRITE) == 0);
+    CHECK(syscall(SYS_pkey_mprotect, p, PG, PROT_READ, 1) == -1 && errno == EINVAL);
+    CHECK(syscall(SYS_pkey_mprotect, p, PG, PROT_READ, 15) == -1 && errno == EINVAL);
+    /* the key is an int: 0xffffffff in a register of 64 bits is -1 */
+    CHECK(syscall(SYS_pkey_mprotect, p, PG, PROT_READ, 0xffffffffl) == 0);
+    CHECK(munmap(p, 2 * PG) == 0);
+}
+
 void pt_mem(char **argv __attribute__((unused)))
 {
     check_mmap();
     check_dontneed_shared();
+    check_mincore();
+    check_madv_remove();
+    check_pkey();
     check_refusals();
     check_fixed_one_step();
     check_brk();

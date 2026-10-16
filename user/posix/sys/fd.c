@@ -689,6 +689,81 @@ long lx_pwritev2(long fd, long iov, long n, long pos_l, long pos_h, long flags)
     return rw2(fd, iov, n, pos_l, flags, true);
 }
 
+#define SENDFILE_CHUNK 65536   /* bytes copied at a time */
+
+/* sendfile: up to count bytes of in_fd's file, from *offset (and *offset
+ * moves on, in_fd's own offset staying where it was) or, with no offset
+ * pointer, from in_fd's offset (which moves on), written to out_fd at its
+ * offset. in_fd must be a file with an offset: a pipe or socket is EINVAL,
+ * as on Linux (base's CopyFileContentsWithSendfile falls back to a plain
+ * copy on it). Only the bytes written count: after a write that came
+ * up short or failed, the offsets stand at what was sent, and a failure
+ * after some bytes returns them. The copy goes through a buffer here. */
+long lx_sendfile(long out_fd, long in_fd, long offp, long count, long e, long f)
+{
+    struct fd_desc *in = fd_get(in_fd), *out = fd_get(out_fd);
+    long r = 0;
+    char *buf = NULL;
+    if (!in || !out)
+        r = -EBADF;
+    else if (!fd_can_read(in) || !fd_can_write(out))
+        r = -EBADF;
+    else if (!in->ops->read || !in->ops->seek || !out->ops->write)
+        r = -EINVAL;
+    else if (!(buf = malloc(SENDFILE_CHUNK)))
+        r = -ENOMEM;
+    int64_t pos = 0;
+    if (!r && offp) {
+        if (uc_get(&pos, (const void *)(uintptr_t)offp, sizeof(pos)))
+            r = -EFAULT;
+        else if (pos < 0)
+            r = -EINVAL;
+    } else if (!r) {
+        long at = in->ops->seek(in, 0, SEEK_CUR);
+        if (at < 0)
+            r = at;
+        pos = at;
+    }
+    uint64_t want = (uint64_t)count > (uint64_t)FD_RW_MAX ? (uint64_t)FD_RW_MAX : (uint64_t)count;
+    uint64_t done = 0;
+    while (!r && done < want) {
+        struct iovec v = { buf, want - done < SENDFILE_CHUNK ? want - done : SENDFILE_CHUNK };
+        long got = in->ops->read(in, &v, 1, pos + (int64_t)done);
+        if (got <= 0) {
+            r = got < 0 && !done ? got : 0;
+            break;
+        }
+        long sent = 0;
+        while (sent < got) {
+            struct iovec w = { buf + sent, (size_t)(got - sent) };
+            long k = out->ops->write(out, &w, 1, FD_AT_OFFSET);
+            if (k <= 0) {
+                r = k < 0 && !done && !sent ? k : 0;
+                break;
+            }
+            sent += k;
+        }
+        done += (uint64_t)sent;
+        if (sent < got)
+            break;
+    }
+    if (!r && in && out) {   /* the offsets stand where the bytes sent end */
+        int64_t now = pos + (int64_t)done;
+        if (offp)
+            r = uc_put((void *)(uintptr_t)offp, &now, sizeof(now));   /* -EFAULT, as Linux */
+        else
+            (void)in->ops->seek(in, now, SEEK_SET);
+        if (!r)
+            r = (long)done;
+    }
+    free(buf);
+    if (in)
+        fd_put(in);
+    if (out)
+        fd_put(out);
+    return r;
+}
+
 long lx_lseek(long fd, long off, long whence, long d, long e, long f)
 {
     struct fd_desc *desc = fd_get(fd);

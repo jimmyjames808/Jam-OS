@@ -384,7 +384,7 @@ RustCommandLineTest.SpawnsSubprocessWithNewCommandLine
 SystemMetricsTest.MeasureChildCpuUsage
 UnitTestLauncherDelegateTester.RunMockTests
 
-[posix] mincore (syscall 27) is ENOSYS: no residency information
+[posix] mincore (syscall 27) was ENOSYS. CBF2b answers it from the kernel's count of present pages in each mapping: exact for a mapping with all or none of its pages present, a guess between (which pages: the first ones), so a PartitionAlloc purge test that asks about one page of a part-resident mapping can still fail: CR-PLAN, "CBF2b notes". Rerun with CR_BASE_ALL=1 to see which pass now
 AlternateTestParams/PartitionAllocTest.Purge/0
 AlternateTestParams/PartitionAllocTest.Purge/1
 AlternateTestParams/PartitionAllocTest.PurgeDiscardableDoubleTruncateFreeList/0
@@ -428,7 +428,7 @@ ElfReaderTestWithCurrentImage.ReadElfBuildId
 ImmediateCrashTest.ExpectedOpcodeSequence
 NativeLibraryTest.LoadLibrary
 
-[toolchain] the program carries no GNU build-id note (the link has no --build-id)
+[toolchain] the program carries no GNU build-id note: Chromium's link asks for one (--build-id=fast, after the driver's =none) but user/posix/posix.ld discards `.note.*` (CBF2b: the fix is a PT_NOTE and a section line in posix.ld, which changes every port's sysroot: CR-PLAN, "CBF2b notes")
 ElfReaderTestWithCurrentElfImage.ReadElfBuildId
 
 [jit] mprotect/mmap of anonymous memory with PROT_EXEC is refused without the JIT right (W^X by design, docs/CR-PLAN.md section 12); the null buffer then faults
@@ -443,7 +443,7 @@ UnixDomainSocketTest.RecvPid
 UnixDomainSocketTest.RecvPidWithMaxDescriptors
 UnixDomianSocketTest.RecvPidDisconnectedSocket
 
-[posix] sendfile (syscall 40) is ENOSYS
+[posix] sendfile (syscall 40) was ENOSYS: CBF2b has it (the first and the socket test should pass now; SeqFile also reads /proc/meminfo and /proc/self/cmdline, CBF4's)
 FileUtilTest.CopyFileContentsWithSendfile
 FileUtilTest.CopyFileContentsWithSendfileSeqFile
 FileUtilTest.CopyFileContentsWithSendfileSocket
@@ -452,7 +452,7 @@ FileUtilTest.CopyFileContentsWithSendfileSocket
 CancelableSyncSocketTest.ShutdownCancelsReceive
 SyncSocketTest.DisconnectTest
 
-[posix] uname/sysfs: the kernel version reads as 0.1.0 and there is no DMI hardware information
+[posix] uname/sysfs: the kernel version read as 0.1.0 and there was no DMI hardware information; CBF2b: uname's release is 5.10.0-jamos and /sys/devices/virtual/dmi/id/{sys_vendor,product_name} are served, so both should pass now
 SysInfoTest.GetHardwareInfo
 SysInfoTest.KernelVersionNumber
 
@@ -493,9 +493,9 @@ PersistentHistogramAllocatorTest.CreateWithFile
 PersistentHistogramAllocatorTest.MovePersistentFile
 PersistentMemoryAllocatorTest.TruncateTest
 
-[posix] a purged discardable shared-memory page does not read back as zeros (madvise/memfd semantics)
+[posix] a purged discardable shared-memory page did not read back as zeros: base purges with madvise(MADV_REMOVE), which the layer refused; CBF2b zeroes the range for every holder, so it should pass now
 DiscardableSharedMemoryTest.ZeroFilledPagesAfterPurge
 
-[?] address-space size query returns 64 KiB where the test expects at least 4 GiB
+[toolchain] PartitionAlloc reserves the low 4 GiB (a PROT_NONE zero segment, from 64 KiB, its own constant: nothing is read from the OS) as one mapping, and the program's image sits at 0x400000 in the way, so it keeps the 64 KiB it assumes (the layer also ignores an mmap address hint: CR-PLAN, "CBF2b notes")
 PartitionAddressSpaceTest.ZeroSegment
 

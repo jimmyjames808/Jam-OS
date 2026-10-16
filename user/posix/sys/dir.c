@@ -217,6 +217,8 @@ long dir_put(void *buf, size_t room, const char *name, uint64_t ino, uint8_t typ
 
 static long dir_getdents(struct fd_desc *d, void *buf, size_t len)
 {
+    if (fd_status(d) & O_PATH)
+        return -EBADF;   /* an O_PATH descriptor names the directory and reads nothing */
     struct entry *e = malloc(sizeof(*e));
     if (!e)
         return -ENOMEM;
@@ -333,7 +335,8 @@ long dir_new(const struct path *p, uint32_t status, struct fd_desc **out)
 {
     struct dir *x = calloc(1, sizeof(*x));
     char *path = strdup(p->abs);
-    struct fd_desc *d = x && path ? fd_new(&dir_ops, (status & ~O_ACCMODE) | O_RDONLY, x) : NULL;
+    /* read-only, with O_PATH kept: such a description lists nothing (dir_getdents) */
+    struct fd_desc *d = x && path ? fd_new(&dir_ops, (status & ~FD_ACCMODE) | O_RDONLY, x) : NULL;
     if (!d) {
         free(path);
         free(x);

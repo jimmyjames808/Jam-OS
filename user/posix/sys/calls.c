@@ -62,6 +62,7 @@ static unsigned kind_of(long n, long b, long c, long d)
     case SYS_rt_sigtimedwait: case SYS_pause: case SYS_connect:
         return SIG_CALL_NORESTART;   /* signal(7): never restarted (connect goes on) */
     case SYS_write: case SYS_writev: case SYS_pwrite64: case SYS_pwritev: case SYS_pwritev2:
+    case SYS_sendfile:
         return SIG_CALL_PIPE;
     case SYS_sendto:
         return d & MSG_NOSIGNAL ? 0 : SIG_CALL_PIPE;

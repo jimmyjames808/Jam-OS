@@ -366,7 +366,7 @@ long pty_open(const char *abs, int flags)
     if (!strcmp(abs, PTMX))
         return (flags & O_DIRECTORY) ? -ENOTDIR : ptmx_open(flags);
     if (!strcmp(abs, PTS_DIR))
-        return (flags & O_ACCMODE) != O_RDONLY ? -EISDIR : -ENOTSUP;   /* no listing */
+        return (flags & FD_ACCMODE) != O_RDONLY ? -EISDIR : -ENOTSUP;   /* no listing */
     return pts_open(pts_index(abs), flags);
 }
 

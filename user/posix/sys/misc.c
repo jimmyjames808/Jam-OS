@@ -1,7 +1,7 @@
 /* The machine and randomness: uname, sysinfo and sched_getaffinity (what
  * musl's sysconf reads for the CPUs and the memory) from the figures any
  * process may read (sys_public_info, kposix.c; without it: one CPU, no
- * memory figure, an "unknown" release), and getrandom from the kernel's
+ * memory figure, an "unknown" Jam OS version), and getrandom from the kernel's
  * generator (random_get, through libjam's os_random).
  *
  * sched_setaffinity is accepted and changes nothing: every thread runs
@@ -9,6 +9,7 @@
  * the CPUs in it is EINVAL, as on Linux). membarrier is ENOSYS, as an old
  * kernel answers: musl then does the barrier itself with signals, and a
  * program that asks which commands exist is told none. */
+#include <stdio.h>
 #include <errno.h>
 #include <string.h>
 #include <sys/random.h>
@@ -30,16 +31,29 @@ static void copy_field(char *dst, size_t cap, const char *src)
     dst[n] = '\0';
 }
 
+/* uname's release is a Linux kernel release, not Jam OS's version
+ * (docs/CR-PLAN.md, "CBF2b notes"): programs of the Linux ABI read it as
+ * "major.minor.patch" and gate features on it (Chromium's
+ * SysInfo::KernelVersionNumber, libuv's io_uring, rand_util's getrandom),
+ * and "0.1.0" put Jam OS below every gate. 5.10 is Debian 11's kernel, the
+ * one Chromium's own Linux sysroot is built for: the calls the layer
+ * answers are the ones a 5.10 has, a feature newer than that is tried only
+ * by a program that probes for it (ENOSYS). The suffix keeps it plain that
+ * this is not a Linux; Jam OS's own version is uname's `version`. */
+#define LX_RELEASE    "5.10.0-jamos"
+
 long lx_uname(long out, long b, long c, long d, long e, long f)
 {
     struct utsname u;
     struct kp_public pub;
-    const char *release = kp_public_info(&pub) == OK && pub.version[0] ? pub.version : "unknown";
+    char version[sizeof(u.version)];
+    snprintf(version, sizeof(version), "#1 JamOS %s",
+             kp_public_info(&pub) == OK && pub.version[0] ? pub.version : "unknown");
     memset(&u, 0, sizeof(u));
     copy_field(u.sysname, sizeof(u.sysname), SYSNAME);
     copy_field(u.nodename, sizeof(u.nodename), NODENAME);
-    copy_field(u.release, sizeof(u.release), release);
-    copy_field(u.version, sizeof(u.version), release);
+    copy_field(u.release, sizeof(u.release), LX_RELEASE);
+    copy_field(u.version, sizeof(u.version), version);
     copy_field(u.machine, sizeof(u.machine), MACHINE);
     copy_field(u.domainname, sizeof(u.domainname), "(none)");
     return uc_put((void *)(uintptr_t)out, &u, sizeof(u));

@@ -51,7 +51,8 @@ long sig_call(const struct sig_frame *f);
 
 /* Memory (mem.c): mappings and the break. */
 lx_call lx_mmap, lx_munmap, lx_mprotect, lx_madvise, lx_mremap, lx_brk, lx_mlock, lx_munlock,
-        lx_mlock2, lx_mlockall, lx_munlockall, lx_msync;
+        lx_mlock2, lx_mlockall, lx_munlockall, lx_msync, lx_mincore, lx_pkey_alloc,
+        lx_pkey_free, lx_pkey_mprotect;
 
 /* Threads (thread.c). */
 lx_call lx_set_tid_address, lx_gettid, lx_arch_prctl, lx_exit, lx_exit_group, lx_futex,
@@ -97,8 +98,8 @@ lx_call lx_getrlimit, lx_setrlimit, lx_prlimit64;
 
 /* The descriptor table: the calls that route to a descriptor's kind (fd.c). */
 lx_call lx_read, lx_write, lx_readv, lx_writev, lx_pread64, lx_pwrite64, lx_preadv,
-        lx_pwritev, lx_preadv2, lx_pwritev2, lx_lseek, lx_close, lx_fstat, lx_ioctl, lx_fsync,
-        lx_fdatasync, lx_ftruncate, lx_getdents64;
+        lx_pwritev, lx_preadv2, lx_pwritev2, lx_sendfile, lx_lseek, lx_close, lx_fstat, lx_ioctl,
+        lx_fsync, lx_fdatasync, lx_ftruncate, lx_getdents64;
 
 /* Files, directories and what they are (file.c, dir.c, meta.c). */
 lx_call lx_open, lx_openat, lx_creat, lx_truncate;
