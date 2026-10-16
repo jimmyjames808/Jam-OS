@@ -1383,7 +1383,8 @@ restart; its surface may have subsurfaces like any window's.
   when its parent's room changes (a configure, which it acks); without it
   a popup keeps its place against its parent, wherever that goes.
   `set_parent_size` and `set_parent_configure` are kept nowhere. A
-  commit with no buffer hides the popup (and takes it out of the grab).
+  commit with no buffer hides the popup (it leaves the grab, the popups on
+  it are dismissed, shown or not; GR's Low 4).
 - **Following the parent**: each loop turn before the paint
   (`xdg_popups_turn`, the one line added to main.c) a shown popup is moved
   with its parent (a move, a maximise, a tile's glide, a screen's slide)
@@ -1417,7 +1418,8 @@ restart; its surface may have subsurfaces like any window's.
   moving to another window (Alt+Tab, a click elsewhere, a screen switch)
   dismisses the chain.
 - **Errors**: a grab after the popup was mapped, or on a popup that took
-  no grab, `invalid_grab`; a popup destroyed while another (not dismissed)
+  no grab, `invalid_grab` (a grab on one that was dismissed, or hidden
+  since its grab, is dismissed at once instead); a popup destroyed while another (not dismissed)
   is on it, `not_the_topmost_popup` (wlroots' rule: any child, grab or
   not); a parent that is no toplevel or popup, `invalid_popup_parent` at
   `get_popup`, and no parent at the initial commit, the same.
