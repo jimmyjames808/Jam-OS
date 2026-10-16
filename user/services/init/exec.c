@@ -52,7 +52,9 @@
  * dropped after EXEC_WAIT_NS: a caller can hold at most that many sealed
  * VMOs (and their tables, the kernel's, charged to init's job) for that
  * long. A start's hand-over is at most HANDOVER_MAX messages. The child's
- * own memory is charged to its job, inside the caller's; what spawn makes
+ * own memory is charged to its job, inside the caller's, which has a
+ * message budget of its own (dp_job_create: a child that floods a channel
+ * stops there, whatever its caller's job allows); what spawn makes
  * for it (its writable segments' copies and its stack's pages) is charged
  * to init's job, as a child of the shell's is to the shell's.
  *
@@ -407,7 +409,7 @@ static status_t start_child(struct prog *p, const char **argv, int argc, const c
     struct spawn_handle x[2] = { { SR_SIGNALS, signals } };
     rights_t xr[2] = { RIGHT_SAME };
     unsigned nx = 1;
-    status_t st = jam_job_create(job, 0, sub);
+    status_t st = dp_job_create(job, sub);   /* its own message budget, inside the caller's */
     if (st == OK && p->w.rights) {
         /* The root with the list's powers, never RIGHT_TRANSFER (spawn
          * passes it on with those rights alone). */

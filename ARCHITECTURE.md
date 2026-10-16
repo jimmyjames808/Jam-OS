@@ -554,7 +554,15 @@ Every driver and service is a userspace process from the start.
   (including `MANAGE`: `job_set_limit`, `job_kill`); a program is handed
   its own job (`SR_JOB`) with `JOB_RIGHTS_OWN`, without `MANAGE`, so it
   can start processes and child jobs in it but can't lift the limits its
-  parent set (init gets the root job the same way). **Kill**: `job_kill`
+  parent set (init gets the root job the same way). **A started
+  program's budget**: the shell (its `run` and helpers), `/svc/exec` and
+  init's desktop apps start every program in a job with a message limit of
+  its own, 16 MiB (`dp_job_create`, `<dataprog.h>`: 16 one-MiB pipes,
+  socketpairs or Wayland connections full at once), so a program that
+  writes faster than it is read stops at its own job, never at the root's
+  budget that every writer shares; a `/svc/exec` child's job is inside its
+  caller's, so the caller's budget holds for both (init's test runner,
+  `boot/init.cfg`'s programs, sets none). **Kill**: `job_kill`
   kills every process in the job and all jobs below it (orphans too),
   returns once each has been taken off its job's list, and the killed jobs
   take no new processes or jobs. That happens in the teardown just before
@@ -654,7 +662,8 @@ Every driver and service is a userspace process from the start.
   `channel_set_flags(CHANNEL_NO_HANDLES)` (init's and devmgr's kept server
   ends; only its sole holder may mark it) receives no handles, so its
   queue never holds an endpoint and it can always be sent on. One marked
-  `CHANNEL_BYTE_BOUND` (a POSIX pipe's ends) is full at 1 MiB of queued
+  `CHANNEL_BYTE_BOUND` (a POSIX pipe's and socketpair's ends, the
+  compositor's ends of its connections) is full at 1 MiB of queued
   bytes as well as at 1024 messages (`ERR_SHOULD_WAIT`, its writer not
   `SIG_WRITABLE`): 1024 messages of 64 KiB would be 64 MiB, the root
   job's whole message budget, so a writer far ahead of a slow reader would
