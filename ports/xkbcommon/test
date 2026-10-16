@@ -3,7 +3,7 @@
 # (share/xkbcommon-test/us.xkb in the xkbcommon-test package, a copy that
 # `genkeymap.py check` keeps current). The expected lines are what the same
 # xkbcommon 1.13.2 printed built for x86-64 Linux (2026-10-11).
-send K=/data/pkg/share/xkbcommon-test/us.xkb; X=/data/pkg/libexec/xkbcommon
+send K=$PK/share/xkbcommon-test/us.xkb; X=$PK/libexec/xkbcommon
 wait {prompt}
 # the keymap compiles and prints back as 720 lines
 send run $X/xkbcli-compile-keymap --from-xkb $K | run $S/wc -l | run $S/sed s/^/count-/

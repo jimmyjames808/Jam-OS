@@ -1,2 +1,3 @@
 posix
 mount /data r
+mount /pkg r

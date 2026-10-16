@@ -1760,15 +1760,18 @@ What track GP2 (the fonts) built. `ports/fonts-jamos` is a `style data` port
   them); JetBrains Mono 2.304 (all 32 static files, with the NL cut);
   Noto Color Emoji 2.051 (the CBDT bitmap font, 10.7 MB, taken as the one
   raw file at its tag, not the 210 MB repository archive).
-- **Layout**: `/data/pkg/share/fonts/jamos/<family>/*.ttf` and
-  `/data/pkg/share/fonts/fonts.conf`; the licences in
+- **Layout**: `/pkg/share/fonts/jamos/<family>/*.ttf` and
+  `/pkg/share/fonts/fonts.conf` (`/pkg`: init's read-only view of where
+  packages are installed, `/jam/pkg` or `/data/pkg`; a program that reads
+  them asks for `mount /pkg r`; M13.7's PO14 changed the prefix from
+  `/data/pkg`); the licences in
   `share/licences/fonts-jamos/` (one file per project: `liberation-LICENSE.txt`,
   `noto-OFL.txt`, `noto-emoji-OFL.txt`, `inter-LICENSE.txt`, `jetbrains-OFL.txt`).
   The licence texts are sources of their own with distinct names, because
   several archives carry an `OFL.txt` and unpacking them together
   overwrites.
 - **fonts.conf** (`ports/fonts-jamos/override/fonts.conf`, laid in by the
-  recipe's OVERRIDES): the directory `/data/pkg/share/fonts/jamos`;
+  recipe's OVERRIDES): the directory `/pkg/share/fonts/jamos`;
   `<cachedir prefix="xdg">fontconfig</cachedir>` (so `XDG_CACHE_HOME`, which
   the shell sets to `/data/.cache`); `sans-serif` Noto Sans then Liberation
   Sans, `serif` Noto Serif then Liberation Serif, `monospace` JetBrains
@@ -1783,7 +1786,7 @@ What track GP2 (the fonts) built. `ports/fonts-jamos` is a `style data` port
   `tools/ports-test.sh`): `sha256sum` of the 79 files (fonts.conf, 73 font
   files, 5 licences) against the pinned hashes. `tools/fonts-check.sh`
   runs the build host's own `fc-match` over the staged directory with the
-  staged fonts.conf (its `/data/pkg` rewritten, a scratch cache) and checks
+  staged fonts.conf (its `/pkg` rewritten, a scratch cache) and checks
   the generics, the Microsoft names, bold and italic, Inter, Noto Sans
   Mono, and U+1F600 on `sans-serif`: all 15 pass (Homebrew fontconfig on the
   Mac). `fc-match` reads its argument as a pattern, where `-` starts a size:
