@@ -19,12 +19,17 @@
  *
  * One lock guards the table; nothing blocks under it except the one
  * bounded wait for the starter's first message. svc_get's cache has its
- * own lock and never calls out under it. */
+ * own lock and never calls out under it.
+ *
+ * A forked child (fork.c) starts with both empty and their locks free
+ * (ns_forked: its copy's values were its parent's): its parent sends it
+ * its whole namespace on a new SR_NS, as a starter does. */
 #include <fs_idl.h>
 #include <fsview.h>
 #include <idl/nschan.h>
 #include <idl/svc.h>
 #include <os.h>
+#include "fork.h"
 #include "ns.h"
 
 #define TAKE_MAX 64   /* messages taken in one go: a flooding starter can't hold a lookup */
@@ -524,6 +529,16 @@ static void kept_take(void)
 static void kept_give(void)
 {
     lock_give(&kept_lock);
+}
+
+void ns_forked(void)
+{
+    nents = 0;
+    started = false;
+    starter_gone = false;
+    lock = (lock_t){ 0 };
+    memset(kept, 0, sizeof(kept));
+    kept_lock = (lock_t){ 0 };
 }
 
 /* The other end of h is gone. */

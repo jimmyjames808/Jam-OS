@@ -242,6 +242,80 @@ typedef struct {
 void     lock_take(lock_t *l);
 void     lock_give(lock_t *l);
 
+/* fork ----------------------------------------------------------------------------
+ * A copy of this process (docs/FORK-PLAN.md section 1; user/lib/fork.c):
+ * the same program in a new process in our job (SR_JOB), with our address
+ * space copied at one instant (vmar_clone: copy-on-write, shared or left
+ * out by each mapping's clone mode), and one thread, the calling one,
+ * which goes on from the call. The child holds only what libjam and the C
+ * library hand it, as duplicates: its own process, address space and
+ * thread, our job, our namespace (each entry duplicated), our SR_STDOUT,
+ * SR_CONSOLE, SR_BOOTFS and SR_SELF_IMAGE, a new signal channel if asked;
+ * never our root (SR_RESOURCE) nor a service's roles. Every other handle
+ * value in its copy of our memory names nothing there (its table starts
+ * at random generations): libjam's own caches of handles (the namespace,
+ * svc_get's channels, printf's SR_STDOUT) are made again in the child. */
+
+/* What a fork passes besides libjam's own roles. */
+struct jam_fork_args {
+    /* The calling thread's FS base (its thread pointer), which the
+     * child's thread gets before anything runs there; 0: none (libos
+     * itself uses no thread-local storage). */
+    uint64_t        fs_base;
+    /* The child process's name; NULL: ours. */
+    const char     *name;
+    /* n VMOs of ours mapped as copies whose children (vmar_clone) we want
+     * handles to, at most VMAR_CLONE_MAX; children[i] gets the one made
+     * for vmos[i]. They are ours: the C library's give moves them to the
+     * child and zeroes their entries, and whatever is left non-zero after
+     * jam_fork is ours to close. A clone that fails leaves them all 0. */
+    const handle_t *vmos;
+    handle_t       *children;
+    uint32_t        n;
+    /* NULL, or where the client end of the child's new signal channel
+     * goes (its server end is the child's SR_SIGNALS, <roles.h>), on
+     * success only. */
+    handle_t       *signals;
+    /* The C library's, passed to each of its hooks. */
+    void           *ctx;
+};
+
+/* The C library's part of every fork, set once at its start
+ * (jam_fork_set_libc): libos's own (startmain.c: its heap's lock and
+ * printf's channel) or the POSIX layer's. In the parent: prepare takes the
+ * C library's locks, in its fixed order, right before the clone, so its
+ * memory is whole in the child's copy; give writes its own messages on the
+ * child's startup channel after libjam's, its locks still held; parent
+ * gives the locks back, the fork done or failed (st). In the child, on the
+ * forking thread's stack before jam_fork returns 0: child makes those locks
+ * fresh and reads what give wrote, after libjam has made the child's roles
+ * its own. None of them may allocate memory, nor may anything between
+ * prepare and parent (the allocator's lock may be held: libos's is in
+ * its prepare, musl's fork takes its own). Any of them may be NULL. */
+struct jam_fork_libc {
+    void     (*prepare)(void *ctx);
+    /* to: our end of the child's startup channel; proc: the child, not
+     * started. Another status than OK fails the fork with it. */
+    status_t (*give)(void *ctx, handle_t to, handle_t proc);
+    void     (*parent)(void *ctx, status_t st);
+    /* from: the child's startup channel (startup_channel()). */
+    void     (*child)(void *ctx, handle_t from);
+};
+void    jam_fork_set_libc(const struct jam_fork_libc *libc);
+
+/* Fork: returns twice, in the parent the child's process handle (> 0,
+ * ours to wait on, kill or close: closing it doesn't end a started
+ * child), and 0 in the child; a status (< 0) in the parent, with no child
+ * made, if it fails: ERR_NO_MEMORY when our job can't pay for the copy
+ * (every page the child shares is charged once more, at the fork, and
+ * nothing later), ERR_BAD_STATE when a pin or a kernel mapping covers
+ * memory to copy (a driver), or a creation's or the C library's give's
+ * error. The child resumes with the caller's callee-saved registers, stack
+ * pointer, MXCSR and x87 control word as they were at the call. Only the
+ * calling thread is in the child; a lock another thread of ours held at
+ * the fork stays held there, unless the C library or libjam lists it. */
+int64_t jam_fork(const struct jam_fork_args *a);
+
 /* ports --------------------------------------------------------------------------- */
 
 /* Another turn for h, which a loop stopped reading with messages still

@@ -16,6 +16,7 @@
  * reader runs before a POSIX program's C library does. */
 #include <os.h>
 #include <posixfds.h>
+#include "fork.h"
 
 _Static_assert(sizeof(struct posixfds_state) == 32, "posixfds_state has no padding");
 _Static_assert(sizeof(struct posixfds_msg) == 64, "posixfds_msg has no padding");
@@ -51,6 +52,13 @@ static lock_t   buf_lock;                              /* guards everything belo
 static _Alignas(8) uint8_t buf[POSIXFDS_MSG_MAX];      /* the message being built or read */
 static handle_t hbuf[CHANNEL_MAX_HANDLES];             /* ... its handles */
 static uint64_t seen[POSIXFDS_FD_MAX / 64];            /* descriptors already in the hand-over */
+
+/* A forked child (fork.c): a spawn another thread of its parent was
+ * writing is no spawn of the child's. */
+void fdmsg_forked(void)
+{
+    buf_lock = (lock_t){ 0 };
+}
 
 int posixfds_kind_handles(uint32_t kind, uint32_t types[POSIXFDS_KIND_HANDLES])
 {

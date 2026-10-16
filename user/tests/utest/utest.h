@@ -402,6 +402,15 @@ bool t_fat_view_limits(void);
 bool t_jit(void);
 bool t_jit_spawn(void);
 int  jit_child(int argc, char **argv);
+/* fork.c: libjam's fork (jam_fork) and vmar_clone's arguments, each in a
+ * mode of ours ("utest fork-<what>") in a job of its own. */
+bool t_fork_memory(void);
+bool t_fork_threads(void);
+bool t_fork_handles(void);
+bool t_fork_nomem(void);
+bool t_fork_jit(void);
+bool t_fork_vmar_clone_args(void);
+int  fork_child_mode(int argc, char **argv);
 /* rights.c: the root's powers, vmo_make_exec and _verified. */
 bool t_root_powers(void);
 bool t_vmo_make_exec(void);

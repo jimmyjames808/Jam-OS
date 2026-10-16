@@ -10,6 +10,7 @@
  * back to debug_write. */
 #include <stdbool.h>
 #include <os.h>
+#include "fork.h"
 
 #define PRINTF_BUF 512
 
@@ -217,10 +218,18 @@ int snprintf(char *buf, size_t size, const char *fmt, ...)
     return n;
 }
 
+static int have = -1;   /* SR_STDOUT: -1 not looked yet, 0 none/gone, 1 yes */
+static handle_t out;
+
+/* A forked child (fork.c): its SR_STDOUT is its own duplicate, if any. */
+void stdio_forked(void)
+{
+    have = -1;
+    out = HANDLE_INVALID;
+}
+
 static void emit(const char *s, uint64_t n)
 {
-    static int have = -1;   /* SR_STDOUT: -1 not looked yet, 0 none/gone, 1 yes */
-    static handle_t out;
     if (have < 0) {
         out = startup_handle(SR_STDOUT);
         have = out != HANDLE_INVALID;

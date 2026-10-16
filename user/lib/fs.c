@@ -12,6 +12,7 @@
  * is the file's pages as a service supplies them (file.map): no copy
  * through the buffer, and a page the service can't supply is a fault. */
 #include <fs_idl.h>
+#include "fork.h"
 #include "ns.h"
 
 #define BUF_MAX (1u << 20)   /* a bigger transfer buffer than this is a broken service */
@@ -393,6 +394,15 @@ struct batch {
  * takes it out under the lock, so two threads never share one. */
 static struct batch *cached;
 static lock_t cached_lock;
+
+/* A forked child (fork.c): the batch is left where it is (its memory may
+ * not be freed yet), and the lock may have been held by a thread that
+ * isn't there. */
+void fs_forked(void)
+{
+    cached = NULL;
+    cached_lock = (lock_t){ 0 };
+}
 
 /* Every record of b in order: OK, or ERR_INTERNAL for a malformed batch
  * (the service is broken). Entry k into *out if k < b->count. */
