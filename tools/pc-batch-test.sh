@@ -355,12 +355,14 @@ row2 long CANCELLED
 echo "$out" | grep -q "1 CANCELLED" || fail "cancelled summary: $out"
 
 # A reboot of the PC mid-run: LOST, then --resume runs it again.
-printf '%s\n' "quick true" "long sh -c 'f=$tmp/lost.seen; [ -f \$f ] && exit 0; touch \$f; exec sleep 60'" > "$tmp/co/list3"
+printf '%s\n' "quick true" "long sh -c 'echo \$\$ > $tmp/kid3; f=$tmp/lost.seen; [ -f \$f ] && exit 0; touch \$f; exec sleep 60'" > "$tmp/co/list3"
 id=$(bidof "$(D co start --detach list3)")
 b=$pc/work/.batch/co/$id
 upto 30 test -f "$tmp/lost.seen" -a -f "$b/runs/quick.rc" || fail "lost: the runs never started"
+# Everything of it dies at once: the keeper, the batch's group (the driver,
+# the governors) and the command in its own session.
 kill -9 $keeper
-kill -9 -- "-$(cat "$b/pgid")"
+kill -9 -- "-$(cat "$b/pgid")" "$(cat "$tmp/kid3")"
 out=$(PC_BATCH_WAIT=1 D co wait "$id")
 [ $? = 1 ] || fail "wait after a reboot: $out"
 row quick PASS 0

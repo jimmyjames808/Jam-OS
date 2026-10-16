@@ -29,8 +29,8 @@
 # output directories (but disk images) in out/<name>/, copied there as each
 # run ends so that a later run of the checkout can't overwrite them before
 # the Mac collects them. The driver holds an flock on lock for as long as it
-# (or a run of it) lives: started, no done and a free lock means the PC lost
-# the batch (a reboot), and `pull` writes gone.
+# (or a run of it, or a run's governor) lives: started, no done and a free
+# lock means the PC lost the batch (a reboot), and `pull` writes gone.
 set -u
 b=$(cd "$(dirname "$0")" && pwd) || exit 2
 cd "$b" || exit 2
@@ -50,7 +50,9 @@ run_one() {   # run_one <name> <try>: one try of a run
     : > "$r.log"
     # A run id of its own for each try (remote-test's ~/work/.runs/<id>).
     sed "s/@runid@/batch-$id-$n-$2-$(now)/g" "$r.sh" > "$r.run.sh"
-    bash "$r.run.sh" < /dev/null >> "$r.log" 2>&1 9>&-
+    # The run keeps the lock (fd 9) open, and so does the remote-slots.py
+    # governor it becomes; the command the governor starts doesn't.
+    bash "$r.run.sh" < /dev/null >> "$r.log" 2>&1
     rc=$?
     while IFS= read -r a; do
         [ -n "$a" ] && [ -d "$work/$a" ] || continue
@@ -145,15 +147,19 @@ cancel() {
     until [ -s pgid ] || [ $i -ge 10 ]; do sleep 1; i=$((i + 1)); done
     pg=$(cat pgid 2> /dev/null)
     [ -n "$pg" ] || { echo "pc-batch: batch $id: no process group"; return 1; }
-    # The whole tree first, then the signal, so a process that a dying parent
-    # leaves behind is not missed; what TERM leaves after 20 s gets KILL.
+    # The whole tree first (for the KILL below), then TERM to the batch's own
+    # group: the driver, its runs and their remote-slots.py governors. Each
+    # governor ends its command's group and, after JAMOS_REMOTE_KILL_GRACE
+    # (10 s), whatever still carries its claim's id, then lets the claim go;
+    # the lock is free when every governor is gone. What is left after 40 s
+    # gets KILL.
     list=$(procs "$pg")
-    kill -TERM $list 2> /dev/null
+    kill -TERM -- "-$pg" 2> /dev/null
     i=0
-    until idle || [ $i -ge 20 ]; do sleep 1; i=$((i + 1)); done
+    until idle || [ $i -ge 40 ]; do sleep 1; i=$((i + 1)); done
     list="$list $(procs "$pg")"
     kill -KILL $list 2> /dev/null
-    echo "pc-batch: batch $id: cancelled ($(echo $list | wc -w | tr -d ' ') processes stopped)"
+    echo "pc-batch: batch $id: cancelled ($(echo $list | wc -w | tr -d ' ') processes of it were running)"
 }
 
 submit() {

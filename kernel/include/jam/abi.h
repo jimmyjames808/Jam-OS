@@ -243,8 +243,8 @@ struct port_packet {
  * one, never nothing (a fault there waits for the step to end). Mappings
  * that reach past the range keep their parts outside it; holes are
  * fine. On any error nothing has changed (ERR_OUT_OF_RANGE past the
- * VMO's end, ERR_NO_RESOURCES past VMAR_MAX_MAPPINGS, ERR_NO_MEMORY).
- * MAP_FIXED's call. */
+ * VMO's end, ERR_NO_RESOURCES past VMAR_MAX_MAPPINGS or
+ * VMAR_MAX_OVERLAP, ERR_NO_MEMORY). MAP_FIXED's call. */
 #define VMAR_REPLACE   (1u << 5)
 
 /* Mappings an address space holds at most (a vmar_map past it, or an
@@ -255,6 +255,16 @@ struct port_packet {
  * counted by what it leaves: a protect that splits a piece off and merges
  * it into its neighbour fits even at the cap. */
 #define VMAR_MAX_MAPPINGS 65536u
+
+/* Mappings of one VMO an address space holds over any one page of it at
+ * most (a vmar_map that would make one more is ERR_NO_RESOURCES; a
+ * replace doesn't count what it unmaps whole, but does count whole a
+ * mapping it only cuts). Each costs every decommit of the page (the
+ * kernel clears the page from every mapping of it with interrupts off),
+ * and nothing needs many: a JIT's two views, a shared memory region
+ * mapped in a few places. Splitting a mapping and merging two never make
+ * more over any page, so they don't count. */
+#define VMAR_MAX_OVERLAP 64u
 
 /* jobs ---------------------------------------------------------------------
  * Every process belongs to a job. A job has a limit on each resource below

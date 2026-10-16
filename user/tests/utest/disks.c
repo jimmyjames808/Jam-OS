@@ -4,8 +4,11 @@
  * isn't the boot disk gets read-only /usbN mounts for its FAT volumes and
  * is never formatted, a killed filesystem service comes back on the
  * channel volumes kept, and a disk that goes takes its mounts with it. A
- * test disk's mounts are /esp-test and /data-test; whatever the real stick
- * has mounted is left alone and ignored here.
+ * partition that may hold ext (type 83, and the boot disk's data
+ * partition) is looked at for the ext superblock first, and an ext volume
+ * on a test disk gets bin/extfs (disk_ext). A test disk's mounts are
+ * /esp-test and /data-test; whatever the real stick has mounted is left
+ * alone and ignored here.
  *
  * Each test first makes the mock's ESP what it needs (a fat of the test's
  * own formats it and writes boot/jamos.elf, or doesn't), then hands the
@@ -14,6 +17,7 @@
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
+#include <extfssvc.h>
 #include <fatsvc.h>
 #include <idl/storage.h>
 #include "disks.h"
@@ -301,11 +305,13 @@ bool t_disk_mounts(void)
     if (!wait_mounts(vm, &v, true, true))
         return false;
     /* volumes asked once and opened each partition once (the ESP a second
-     * time, after our own fat), the ESP read-only: nothing tried to write it */
+     * time, after our own fat; the data partition a first time to look for an
+     * ext superblock, read-only, before its service's), the ESP read-only:
+     * nothing tried to write it */
     struct fatrun esp = mount_of(&v, ESP), data = mount_of(&v, DATA);
     CHECK_EQ(dm_count(&mock.infos), 1);
     CHECK_EQ(dm_count(&mock.opened[0]), 2);
-    CHECK_EQ(dm_count(&mock.opened[1]), 1);
+    CHECK_EQ(dm_count(&mock.opened[1]), 2);
     CHECK_ST(t_stat(&esp, "/boot/jamos.elf", &size, &is_dir, NULL), OK);
     CHECK(!is_dir && size > 0);
     CHECK_ST(fs_statfs_until(esp.fs, now() + FAT_CALL_NS, NULL, NULL, &ro, NULL, NULL, NULL, NULL),
@@ -393,7 +399,7 @@ bool t_disk_not_boot(void)
         return false;
     CHECK(!mounted(&v, ESP) && !mounted(&v, DATA));
     CHECK_EQ(dm_count(&mock.opened[0]), 2);   /* make_esp's, and the /usbN service's */
-    CHECK_EQ(dm_count(&mock.opened[1]), 0);   /* type 83: not FAT, not looked at */
+    CHECK_EQ(dm_count(&mock.opened[1]), 1);   /* type 83: not FAT; looked at once, read-only, for ext */
     CHECK_EQ(dm_count(&mock.opened_rw), 1);   /* make_esp's */
     struct fatrun usb = mount_of(&v, usb_path(&v));
     CHECK_ST(fs_statfs_until(usb.fs, now() + FAT_CALL_NS, NULL, NULL, &ro, NULL, NULL, NULL, NULL),
@@ -486,6 +492,160 @@ bool t_disk_other(void)
     return wait_usb(vm, &v, -1);
 }
 
+/* ---- ext volumes (M13.6's U7a) ---------------------------------------------------- */
+
+#define EXT_BLOCKS (32u * 1024)   /* the data partition of an ext mock: 16 MiB */
+
+/* A mock disk whose data partition (typed type2) is an ext volume holding
+ * /hello.txt and /dir: an extfs of the test's own formats it on a writable
+ * channel and ends with the volume clean; the ESP stays blank. Handed to
+ * volumes either way. */
+static bool attach_ext(handle_t vm, uint8_t type2, bool format, uint32_t *id, bool *skip)
+{
+    const struct bootfs_view *b;
+    const void *data;
+    uint64_t size;
+    handle_t client, blk, serve;
+    struct fatrun r = { 0 };
+    *skip = bootfs_default(&b) != OK || bootfs_lookup(b, "bin/extfs", &data, &size) != OK ||
+            bootfs_lookup(b, "bin/fat", &data, &size) != OK;
+    if (*skip) {
+        printf("utest: %s: no bin/extfs or bin/fat: skipped\n", utest_cur);
+        return false;
+    }
+    if (!dm_start_sized(&mock, DM_TYPE_ESP, type2, EXT_BLOCKS, &client))
+        return false;
+    if (format) {
+        CHECK_ST(storage_open_partition_until(client, now() + 5 * NS_PER_S, PART_DATA, 0, &blk),
+                 OK);
+        CHECK_ST(jam_channel_create(&r.fs, &serve), OK);
+        CHECK_ST(new_job(&r.job), OK);
+        const char *argv[] = { "extfs", "utest-ext", EXTFS_ARG_FORMAT };
+        struct spawn_handle x[2] = { { EXTFS_SR_BLOCK, blk }, { EXTFS_SR_SERVE, serve } };
+        struct spawn_args a = {
+            .path = "bin/extfs", .argc = 3, .argv = argv, .job = r.job, .extra = x, .nextra = 2,
+        };
+        CHECK_ST(spawn(&a, &r.proc), OK);
+        if (!put_file(&r, "/hello.txt", "hello from an ext volume"))
+            return false;
+        CHECK_ST(t_mkdir(&r, "/dir"), OK);
+        CHECK_ST(jam_handle_close(r.fs), OK);
+        if (!fat_wait(&r, 0))
+            return false;
+    }
+    CHECK_ST(volumes_test_disk_until(vm, now() + 10 * NS_PER_S, client, id), OK);   /* consumes client */
+    return true;
+}
+
+/* A test disk whose data partition (typed 83) holds an ext volume: volumes
+ * finds the superblock (a read-only look at the partition), starts
+ * bin/extfs and mounts it at /usbN-test, read-write (a test disk's ext
+ * volume is written; someone else's real one never is). The ESP-typed
+ * blank partition 1 is a FAT type with no volume: left alone. The service
+ * is killed and restarted on the channel volumes kept (a new process, no
+ * warm spare), read-only and back with remount, and the disk pulled. */
+bool t_disk_ext(void)
+{
+    handle_t vm = volumes(), old;
+    struct view v = { 0 };
+    uint32_t id = 0, state = 0, restarts = 0, backoff = 0, promoted = 0;
+    uint8_t spare = 0;
+    uint64_t koid = 0;
+    bool skip, is_dir = false;
+    char usbn[16];
+    struct tfile f;
+    if (!vm)
+        return true;
+    if (!attach_ext(vm, 0x83, true, &id, &skip))
+        return skip;
+    if (!wait_usb(vm, &v, 0))
+        return false;
+    snprintf(usbn, sizeof(usbn), "%s", usb_path(&v));
+    struct fatrun usb = mount_of(&v, usbn);
+    /* make_ext's channel (writable), the superblock look (read-only), the
+     * service's (writable) */
+    CHECK_EQ(dm_count(&mock.opened[1]), 3);
+    CHECK_EQ(dm_count(&mock.opened_rw), 2);
+    CHECK(file_is(&usb, "/hello.txt", "hello from an ext volume"));
+    CHECK_ST(t_stat(&usb, "/dir", NULL, &is_dir, NULL), OK);
+    CHECK(is_dir);
+    CHECK(put_file(&usb, "/new.txt", "written to ext"));
+    CHECK(file_is(&usb, "/new.txt", "written to ext"));
+    CHECK_ST(volumes_supervision_until(vm, now() + 10 * NS_PER_S, usbn, (uint32_t)strlen(usbn),
+                                       &state, &restarts, &backoff, &promoted, &spare), OK);
+    CHECK_EQ(state, VOLUMES_SUP_RUNNING);
+
+    /* killed: a call on the channel we had waits for the next instance, and
+     * an open file is carried across */
+    CHECK_ST(jam_handle_duplicate(usb.fs, RIGHT_SAME, &old), OK);
+    struct fatrun before = { .fs = old };
+    uint32_t done = 0;
+    char got[8] = { 0 };
+    CHECK_ST(t_open(&usb, "/open.txt", FS_READ | FS_WRITE | FS_CREATE, &f), OK);
+    CHECK_ST(t_write(&f, 0, "kept", 4, &done), OK);
+    CHECK_ST(volumes_kill_until(vm, now() + 30 * NS_PER_S, usbn, (uint32_t)strlen(usbn), &koid),
+             OK);
+    CHECK(koid != 0);
+    CHECK_ST(t_stat(&before, "/dir", NULL, &is_dir, NULL), OK);
+    CHECK(is_dir);
+    CHECK_ST(t_read(&f, 0, got, 4, &done), OK);
+    CHECK_EQ(done, 4);
+    CHECK(!memcmp(got, "kept", 4));
+    t_close(&f);
+    CHECK_ST(jam_handle_close(old), OK);
+    CHECK(file_is(&usb, "/new.txt", "written to ext"));
+    CHECK_ST(volumes_supervision_until(vm, now() + 10 * NS_PER_S, usbn, (uint32_t)strlen(usbn),
+                                       &state, &restarts, &backoff, &promoted, &spare), OK);
+    CHECK_EQ(state, VOLUMES_SUP_RUNNING);
+    CHECK_EQ(restarts, 1);
+    CHECK_EQ(promoted, 0);   /* the warm spare is a fat: an ext mount starts a process */
+
+    /* read-only (a new service on a read-only channel), then back */
+    CHECK_ST(remount(vm, usbn, false), OK);
+    if (!wait_usb(vm, &v, 1))
+        return false;
+    usb = mount_of(&v, usbn);
+    CHECK(file_is(&usb, "/new.txt", "written to ext"));
+    CHECK(t_open(&usb, "/refused.txt", FS_WRITE | FS_CREATE, &f) != OK);
+    CHECK(t_mkdir(&usb, "/refused") != OK);
+    CHECK_ST(remount(vm, usbn, true), OK);
+    if (!wait_usb(vm, &v, 0))
+        return false;
+    usb = mount_of(&v, usbn);
+    CHECK(put_file(&usb, "/again.txt", "writable again"));
+    CHECK(file_is(&usb, "/new.txt", "written to ext"));
+    CHECK_EQ(dm_count(&mock.refused), 0);   /* extfs refused: the disk never had to */
+    if (!detach(vm, &v))
+        return false;
+    return wait_usb(vm, &v, -1);
+}
+
+/* A partition of a Linux type with no ext volume in it (blank, here) gets
+ * a read-only look at its first sectors and nothing else: no service, no
+ * mount, not one write. A partition of a FAT type is not looked at (the
+ * FAT tests count the opens). */
+bool t_disk_ext_none(void)
+{
+    handle_t vm = volumes();
+    struct view v = { 0 };
+    uint32_t id = 0;
+    bool skip;
+    if (!vm)
+        return true;
+    if (!attach_ext(vm, 0x83, false, &id, &skip))
+        return skip;
+    if (!wait_count(&mock.closed[1], 1))
+        return false;
+    jam_sleep_until(now() + 300 * NS_PER_MS);   /* time to do what it must not */
+    CHECK_EQ(dm_count(&mock.opened[1]), 1);   /* the look, read-only */
+    CHECK_EQ(dm_count(&mock.opened_rw), 0);
+    CHECK_EQ(dm_count(&mock.writes), 0);
+    CHECK_EQ(dm_count(&mock.refused), 0);
+    CHECK_ST(view_next(vm, &v, now() + 10 * NS_PER_S), OK);   /* a new watch: the list */
+    CHECK(!usb_path(&v) && !mounted(&v, ESP) && !mounted(&v, DATA));
+    return detach(vm, &v);
+}
+
 /* Killing a filesystem service (a deliberate kill: restarted at once, not
  * counted): volumes kept its `fs` channel, so the mount never went and the
  * channel clients had still works, served by the new instance (on a new
@@ -531,10 +691,11 @@ bool t_disk_fs_restart(void)
         return false;
     CHECK(mounted(&v, ESP) && mounted(&v, DATA));
     CHECK(file_is(&data, "/unsynced.txt", "kept"));
-    /* a second `block` channel on the data partition; the first was closed
-     * by the death; the ESP's was never touched */
-    CHECK_EQ(dm_count(&mock.opened[1]), 2);
-    CHECK_EQ(dm_count(&mock.closed[1]), 1);
+    /* the look for an ext superblock, the first service's `block` channel and
+     * a second one for the restart; the look's was closed at once and the
+     * first service's by the death; the ESP's was never touched */
+    CHECK_EQ(dm_count(&mock.opened[1]), 3);
+    CHECK_EQ(dm_count(&mock.closed[1]), 2);
     CHECK_EQ(dm_count(&mock.opened[0]), 2);
     CHECK_ST(volumes_supervision_until(vm, now() + 10 * NS_PER_S, DATA, sizeof(DATA) - 1, &state,
                                        &restarts, &backoff, &promoted, &spare), OK);

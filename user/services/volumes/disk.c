@@ -37,23 +37,29 @@
  *      disk id from the loader the first Jam OS disk to get here is the
  *      boot disk;
  *   4. any other disk (mount_others): a filesystem service is started on
- *      each partition whose type says FAT (fat_type; usb-storage lists a
- *      stick with no partition table and a FAT boot sector as one
- *      partition of type 00), on a READ-ONLY `block` channel, and takes
- *      the lowest free /usbN, one service at a time (others_pump) so the
- *      numbers follow the order the volumes were found in. It is a mount
- *      once it has answered a first fs.stat (its volume is mounted); one
- *      that ends with
- *      FAT_EXIT_NO_VOLUME instead is not started again: the partition is
- *      left alone, and nothing was written to it. A GPT disk (its table
- *      lists one partition of type EE) gets no mounts.
+ *      each partition whose type says FAT (fsvc.c's fat_type; usb-storage
+ *      lists a stick with no partition table and a FAT boot sector as one
+ *      partition of type 00) or may say ext (MBR 0x83, GPT's Linux
+ *      filesystem type, Jam OS's data type: fs_choose looks for the ext
+ *      superblock, and bin/extfs starts on one that has it), on a
+ *      READ-ONLY `block` channel (but for an ext volume that is Jam OS's:
+ *      the NVMe drive's data partition, /jam, and a test disk's), and
+ *      takes the lowest free /usbN, one service at a time (others_pump) so
+ *      the numbers follow the order the volumes were found in. It is a
+ *      mount once it has answered a first fs.stat (its volume is
+ *      mounted); one that ends with
+ *      FAT_EXIT_NO_VOLUME (EXTFS_EXIT_NO_VOLUME) instead is not started
+ *      again: the partition is left alone, and nothing was written to it.
+ *      A GPT disk (its table lists one partition of type EE) gets no
+ *      mounts.
  * No answer to storage.info within INFO_WAIT leaves the disk alone.
  *
  * Never formatted: fat formats only when it is started with
  * FAT_ARG_FORMAT, and fs_format_arg gives that to the boot disk's data
  * partition and, while prepare.c makes an NVMe drive Jam OS's, the two
  * partitions of that drive (a disk our own mark check calls Jam OS's: mark.c).
- * No other partition of any disk ever gets it, in either mode.
+ * No other partition of any disk ever gets it, in either mode. (bin/extfs
+ * is never given its format word here: M13.6's U7b makes ext volumes.)
  *
  * Read-only below the filesystem: an other disk's partition is opened
  * read-only (storage.open_partition), so usb-storage refuses every write

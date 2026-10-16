@@ -148,6 +148,13 @@ status_t conn_connect(void *ctx, handle_t *out)
         return st;
     cl->slot = slot;
     clients[slot] = cl;
+    /* What the client writes waits on our end charged to its job until we
+     * read it, and we read 64 messages a turn: bounded (as a pipe's end),
+     * a client far ahead of us waits at 1 MiB unread (libjwl holds its
+     * batches, the Wayland socket says EAGAIN) instead of using up its
+     * job's message bytes and, above it, the root's (docs/G2-REVIEW.md, D1). */
+    if (st == OK && (st = jam_channel_set_flags(mine, CHANNEL_BYTE_BOUND)) != OK)
+        jam_handle_close(mine);
     if (st == OK)
         st = make_conn(mine, cl);   /* consumes mine */
     if (st == OK)

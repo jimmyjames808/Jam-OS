@@ -24,7 +24,12 @@
  * The pure parts (the table's format and checks, the list's reader, the
  * line's fields, the refusals) make no system calls: utest checks them
  * (shimage.c). dp_allow_hash, dp_table_read and dp_wants_vmo do I/O, and
- * are safe from any thread. */
+ * are safe from any thread, as is dp_job_create.
+ *
+ * The job a started program runs in (dp_job_create, with its own message
+ * budget) is here too: the shell, /svc/exec and init's apps, the three
+ * that start programs, make it by the same rule, whether the program is on
+ * /data or in the boot image. */
 #pragma once
 
 #include <stdbool.h>
@@ -130,3 +135,27 @@ const char *dp_wants_refused(const struct wants *w);
  * the program's copy gets. Never RIGHT_TRANSFER: it can narrow its copy
  * (RIGHT_DUPLICATE), never pass it on. */
 rights_t    dp_root_rights(uint32_t want);
+
+/* ---- a program's job ------------------------------------------------------------------ */
+
+/* The message bytes a started program's job may have waiting unread
+ * (JOB_LIMIT_MSG_BYTES), its own and every job's under it: what it wrote
+ * that nobody has read is charged to it and to every job up to the root,
+ * whose budget is all the system's (1/8 of memory, at most 64 MiB:
+ * kernel/proc/userboot.c). Without a limit of its own, a program writing
+ * faster than a service reads could fill the root's, and every other
+ * writer in the system would get ERR_NO_MEMORY; with one, the flood stops
+ * at its own job. 16 MiB: every queue a program normally writes to holds
+ * at most 1 MiB (a pipe, a socketpair: Chromium's Mojo channels, the
+ * compositor's connection: CHANNEL_BYTE_BOUND), so this is 16 of them full
+ * at once, where Chromium's processes together have kilobytes in flight
+ * (its big transfers go in shared memory); and a quarter of the root's. */
+#define DP_JOB_MSG_BYTES (16u << 20)
+
+/* A new job under parent for a program to run in, with that budget: what
+ * the shell's run and its helpers, /svc/exec's children and init's
+ * desktop apps start programs in (init's test runner, boot/init.cfg's
+ * programs, gives none). The program's own SR_JOB has no RIGHT_MANAGE, so
+ * it can't lift it; whoever holds the job with RIGHT_MANAGE (a /svc/exec
+ * caller its child's) may set another. *out ours on OK. */
+status_t    dp_job_create(handle_t parent, handle_t *out);
