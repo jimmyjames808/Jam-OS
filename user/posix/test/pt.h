@@ -24,6 +24,7 @@
  * network), sockets.c (against the network peer: asked for by name),
  * loopback.c (127.0.0.0/8 through netstack alone: asked for by name),
  * procfs.c (libc's /proc: the program's file and the descriptors),
+ * procinfo.c (/proc's generated files: stat, status, maps, cpuinfo, ...),
  * launch.c (Chromium's launcher's needs: a big argv, addclosefrom_np),
  * mmap.c (files mapped on their pages, msync, posix_spawn from /data),
  * jit.c (MAP_JIT refused without the power, and to bin/jittest as our child),
@@ -83,6 +84,9 @@ void pt_raw_log(void);
 /* And the futex checks (rawfutex.c). */
 void pt_raw_futex(void);
 void pt_procfs(char **argv);
+/* procinfo.c: the generated files of /proc (stat, status, maps, cpuinfo, ...). */
+void pt_procinfo(char **argv);
+int  pt_child_block(void);   /* its child: says so, waits for stdin to close, exits 5 */
 /* Only when asked for (procfs.c): a program's own path and its
  * self-image, from /data (tools/posix-mmap-test.sh, case spawn). */
 void pt_self_image(char **argv);

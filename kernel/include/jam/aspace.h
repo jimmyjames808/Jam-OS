@@ -59,7 +59,8 @@ void     aspace_unref(struct aspace *as);
  * *addr: in, the address for ASPACE_FIXED; out, where it was mapped. The
  * mapping holds a VMO reference. ERR_INVALID_ARGS for W+X on a VMO that
  * isn't a JIT VMO (vmo_is_jit), W or X without R, or a bad range, ERR_OUT_OF_RANGE past the VMO's end,
- * ERR_NO_RESOURCES if it doesn't fit, ERR_ALREADY_BOUND if a FIXED range
+ * ERR_NO_RESOURCES if it doesn't fit or would make more than
+ * VMAR_MAX_OVERLAP mappings of vmo over a page here, ERR_ALREADY_BOUND if a FIXED range
  * overlaps an existing mapping. No permissions at all is allowed (a guard:
  * every access faults with ERR_ACCESS_DENIED). With ASPACE_KEPT_ONLY:
  * ERR_INVALID_ARGS unless the permissions are ASPACE_READ alone,
@@ -86,6 +87,13 @@ status_t aspace_protect(struct aspace *as, uint64_t addr, uint64_t len, unsigned
 /* How many mappings it holds now (merged neighbours count once). Takes the
  * region lock: may sleep. */
 uint32_t aspace_mapping_count(struct aspace *as);
+/* The mappings in address order, from the first that ends after `from`: up
+ * to cap of them into out, their number returned (<jam/abi.h> map_info).
+ * One view under the region lock (may sleep); each entry's `resident`
+ * counts the page-table entries present, so a decommit (which clears
+ * entries without the region lock) may make a count a moment old. */
+struct map_info;
+uint32_t aspace_get_maps(struct aspace *as, uint64_t from, struct map_info *out, uint32_t cap);
 /* Whether as has mapped a JIT VMO since it was made (PROCESS_FLAG_JIT).
  * Lock-free. */
 bool     aspace_maps_jit(struct aspace *as);

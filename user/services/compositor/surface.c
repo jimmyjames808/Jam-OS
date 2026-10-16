@@ -33,8 +33,8 @@
  *
  * The offset (attach's x and y, or from version 5 wl_surface.offset, when
  * attach's must be 0) is double-buffered like the rest; only roles that
- * place by it read it (testwin's windows: a toplevel is placed by the
- * window manager). */
+ * place by it read it (testwin's windows, and a subsurface, which moves by
+ * it against its parent: a toplevel is placed by the window manager). */
 #include <jwl/wayland.h>
 #include "comp.h"
 
@@ -313,6 +313,8 @@ static status_t apply(struct comp_surface *s, struct comp_state *p, bool parent_
     if (p->offset_set) {
         s->dx = p->dx;
         s->dy = p->dy;
+        if (s->role == COMP_ROLE_SUBSURFACE)
+            reshaped |= subsurface_offset(s, p->dx, p->dy);   /* it moves by it */
     }
     p->attached = p->offset_set = false;
     p->dx = p->dy = 0;
@@ -333,6 +335,13 @@ static status_t apply(struct comp_surface *s, struct comp_state *p, bool parent_
     if (!s->role_ops)
         return testwin_commit(s);   /* nothing without the test power */
     return s->role_ops->commit ? s->role_ops->commit(s) : OK;
+}
+
+/* a + b (a client's offsets) held to +-COMP_COORD_MAX. */
+static int32_t add_held(int32_t a, int32_t b)
+{
+    int64_t v = (int64_t)a + b;
+    return v < -COMP_COORD_MAX ? -COMP_COORD_MAX : v > COMP_COORD_MAX ? COMP_COORD_MAX : (int32_t)v;
 }
 
 /* A synchronized subsurface's commit: its pending state merged into its
@@ -367,9 +376,9 @@ static status_t cache_pending(struct comp_surface *s)
         c->attached = true;
         p->buffer = NULL;
     }
-    if (p->offset_set) {
-        c->dx = p->dx;
-        c->dy = p->dy;
+    if (p->offset_set) {   /* offsets add up, as the moves they make would have */
+        c->dx = c->offset_set ? add_held(c->dx, p->dx) : p->dx;
+        c->dy = c->offset_set ? add_held(c->dy, p->dy) : p->dy;
         c->offset_set = true;
     }
     p->attached = p->offset_set = false;

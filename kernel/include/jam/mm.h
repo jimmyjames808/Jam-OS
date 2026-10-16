@@ -87,6 +87,10 @@ void         pmm_stats(uint64_t *total_pages, uint64_t *free_pages);
 /* The pages the allocator manages (pmm_stats' total, without its drain:
  * cheap enough for a call any program may make). */
 uint64_t     pmm_total_pages(void);
+/* The free pages (the buddy lists and the per-CPU stashes) without
+ * pmm_stats' drain of the heap's magazines: the pages parked there count
+ * as used. Cheap enough for a call any program may make. */
+uint64_t     pmm_free_page_count(void);
 uint64_t     pmm_max_pfn(void);
 /* Does [base, base + len) touch memory the boot memory map calls RAM
  * (usable, loader/ACPI reclaimable, ACPI NVS, kernel and modules) or bad

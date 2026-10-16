@@ -1,11 +1,17 @@
-# volumes: the disks, their filesystem services (bin/fat) and the mounts
-# they make (user/services/volumes). init starts it right after devmgr and
+# volumes: the disks, their filesystem services (bin/fat, bin/extfs) and the
+# mounts they make (user/services/volumes). init starts it right after devmgr and
 # holds its control channel; tests reach it at /svc/volumes (a channel per
 # opener: svc.connect, abi/idl/svc.idl, which the control channel answers
-# too). Mounts are named by their path: the boot disk's "/esp" (read-only)
-# and "/data", another stick's FAT volumes "/usb0", "/usb1", ... (read-only
-# until `remount`), and a test disk's "/esp-test", "/data-test",
-# "/usb0-test", ...
+# too). Which service a partition gets is decided by what it holds: a
+# partition whose type can hold ext (MBR 0x83, GPT's Linux filesystem type,
+# Jam OS's data type) and the boot disk's data partition have their first
+# sectors read for the ext superblock, and bin/extfs starts on one that has
+# it, bin/fat on any other FAT-typed partition. Mounts are named by their
+# path: the boot disk's "/esp" (read-only) and "/data", another stick's
+# volumes "/usb0", "/usb1", ... (read-only until `remount`; an ext volume of
+# someone else's, a Linux stick's, always), an NVMe drive's "/nvme0", ...,
+# the ext data partition of a Jam OS drive "/jam" (read-write), and a test
+# disk's "/esp-test", "/data-test", "/usb0-test", "/jam-test", ...
 #
 # Supervision of the filesystem services, by the rule of a service that
 # outlives its process (<supervise.h>): exit 0 is the end of it; a
@@ -42,8 +48,8 @@ const SUP_FINISHED   4
 # unread is dropped (its channel closed): it watches again, and gets the
 # whole list. ERR_NO_RESOURCES: as many watches as volumes keeps.
 1  watch  () -> (handle<channel> events)
-# The mount `mount` (another stick's /usbN, or a test disk's /usbN-test)
-# writable (1) or read-only (0), answered later (volumes serves its other
+# The mount `mount` (another stick's /usbN, a Jam OS drive's /jam, or a test
+# disk's /usbN-test) writable (1) or read-only (0), answered later (volumes serves its other
 # requests meanwhile): its service stops in order (fsctl.stop:
 # its files closed, everything flushed, the volume clean) and starts again
 # on a `block` channel opened the new way (read-only: the disk itself
@@ -54,6 +60,8 @@ const SUP_FINISHED   4
 # already. ERR_NOT_FOUND: no such mount, or not one that can be asked for
 # (/esp, /data: they are what they are); ERR_BAD_STATE: its service isn't
 # serving, or another remount or a release of it is under way;
+# ERR_ACCESS_DENIED: writable asked of an NVMe drive's mount on a disk that
+# isn't Jam OS's, or of an ext volume that is someone else's (never written);
 # ERR_INVALID_ARGS: writable past 1.
 2  remount  (str[<=15] mount, u8 writable) -> () later
 # Kill the mount's filesystem service (a deliberate kill: not counted,
@@ -216,18 +224,28 @@ const KIND_NO_TABLE 1
 const KIND_JAMOS    2
 
 # A partition's `fs`: what became of its filesystem service.
-# its type says it holds no FAT volume: never started
+# its type says it holds no FAT or ext volume (or volumes looked for an ext
+# superblock and found none): never started
 const FS_NONE        0
 # mounted at `mount`
 const FS_MOUNTED     1
-# a FAT type whose service has not started or not found its volume yet
+# a FAT or ext type whose service has not started or not found its volume yet
 const FS_WAITING     2
-# started and found no FAT volume: left alone, nothing written
+# started and found no volume it can read (FAT or ext, by `fstype`): left
+# alone, nothing written
 const FS_NO_FAT      3
 # a FAT type on a disk whose block size is not 512: fat reads 512 only
 const FS_BLOCK_SIZE  4
 # not looked at: more partitions than volumes keeps (MAX_PARTS)
 const FS_UNLISTED    5
+
+# A partition's `fstype`: the kind of volume its service is for (bin/fat or
+# bin/extfs), from the first time volumes looked at the partition (a type that
+# can hold ext gets its first sectors read for the ext superblock); NONE
+# while it is not known (not started yet, or no service).
+const FSTYPE_NONE    0
+const FSTYPE_FAT     1
+const FSTYPE_EXT     2
 
 # Disk number `index` (0-based, in the order they came; the real ones, not
 # a test disk). `id` is the disk's (disks.attach's; digest and partition
@@ -246,9 +264,10 @@ const FS_UNLISTED    5
 1  disk  (u32 index) -> (u32 id, u8 bus, u8 ready, u8 kind, u8 scheme, u8 read_only, u32 block_size, u64 blocks, u32 partitions, str[<=8] name, str[<=40] model, str[<=20] serial, str[<=8] firmware) idempotent
 # Partition `index` (0-based, in table order) of disk `id`: storage.partition's
 # MBR type byte, GPT type GUID, first block, length and GPT name, then `fs`
-# (FS_*) and, mounted, its `mount` ("/nvme0"; empty otherwise). ERR_NOT_FOUND:
+# (FS_*), the kind of volume it holds (`fstype`, FSTYPE_*) and, mounted, its
+# `mount` ("/nvme0", "/jam"; empty otherwise). ERR_NOT_FOUND:
 # no such disk; ERR_OUT_OF_RANGE: past the last partition volumes keeps.
-2  partition  (u32 id, u32 index) -> (u8 mbr_type, u8[16] type_guid, u64 start, u64 blocks, u8 fs, str[<=108] label, str[<=15] mount) idempotent
+2  partition  (u32 id, u32 index) -> (u8 mbr_type, u8[16] type_guid, u64 start, u64 blocks, u8 fs, u8 fstype, str[<=108] label, str[<=15] mount) idempotent
 # The SHA-256 of `count` blocks from `lba` of disk `id`, read in its driver
 # (storage.digest; its errors come back as they are). ERR_NOT_FOUND: no
 # such disk; ERR_BAD_STATE: its driver is not there (restarting).

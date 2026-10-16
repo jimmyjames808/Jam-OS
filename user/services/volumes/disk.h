@@ -11,9 +11,11 @@
 #define MAX_NVME_MOUNTS 4                  /* /nvme0 .. /nvme3 */
 #define LABEL_MAX 108                 /* a GPT partition's name, UTF-8 (storage.idl) */
 #define FAT_PATH       "bin/fat"
+#define EXTFS_PATH     "bin/extfs"
 #define BOOT_FILE      "/boot/jamos.elf"   /* on the ESP: what makes it the boot disk */
 #define TYPE_ESP       0xef                /* MBR partition types */
 #define TYPE_FAT32_LBA 0x0c
+#define TYPE_LINUX     0x83                /* ... a Linux filesystem: ext, here */
 #define FAT_BLOCK      512                 /* the only block size bin/fat reads */
 #define INFO_WAIT      (30 * NS_PER_S)     /* storage.info: the stick may be spinning up */
 #define ESP_WAIT       (10 * NS_PER_S)     /* the ESP's service: start, mount, one stat */
@@ -74,6 +76,8 @@ struct disk {
     uint8_t         type[MAX_PARTS];   /* their MBR types */
     struct part_info info[MAX_PARTS];  /* ... and the rest of storage.partition's answers */
     uint32_t        fs[MAX_PARTS];     /* vols index + 1 of each partition's service; 0: none */
+    uint8_t         fstype[MAX_PARTS]; /* VOLDISKS_FSTYPE_* of each partition, once known (the
+                                        * listing's; stays when a service is retired) */
     uint64_t        mib;        /* its size (storage.info), MiB */
     uint16_t        told;       /* bit n: partition n's mount was on the desktop (a notice) */
     char            at[MAX_PARTS][16];   /* ... where it was mounted ("/usb0") */
@@ -103,7 +107,7 @@ struct list_disk {
 struct list_part {
     uint64_t start, blocks;
     uint32_t label_len, mount_len;
-    uint8_t  mbr_type, fs, type_guid[16];
+    uint8_t  mbr_type, fs, fstype, type_guid[16];
     char     label[LABEL_MAX], mount[15];
 };
 struct list_health {
@@ -162,12 +166,18 @@ void        not_boot(struct disk *d, const char *why);      /* step 4 */
  * zeros. */
 bool        disk_guid_parse(const char *s, uint8_t out[16]);
 
+/* probe.c, in a task: does the partition b serves hold an ext superblock?
+ * Looked at through a read-only `block` channel of its own, closed again.
+ * OK with *is_ext; else why it couldn't be looked at (*is_ext false). */
+status_t    fs_probe_ext(struct vol *b, bool *is_ext);
+
 /* fsvc.c */
 /* Start the filesystem service on partition `part` of d (other: d is not
- * the boot disk, the service gets a /usbN). The start itself runs as a
- * task (it waits for a `block` channel); `done` is told how it went, in
- * that task, unless d moved on meanwhile (the service was retired). An
- * error returned here: nothing started, `done` is not called. */
+ * the boot disk, the service gets a /usbN, or /jam). The start itself runs
+ * as a task (it looks at what the partition holds, and waits for a `block`
+ * channel); `done` is told how it went, in that task, unless d moved on
+ * meanwhile (the service was retired). An error returned here: nothing
+ * started, `done` is not called. */
 status_t    fs_start(struct disk *d, unsigned part, bool other,
                      void (*done)(struct disk *d, unsigned part, status_t st));
 /* d moves to `state` (one with nothing mounted) and its services go. */

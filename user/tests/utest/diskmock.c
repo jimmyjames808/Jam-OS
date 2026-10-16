@@ -164,7 +164,7 @@ static status_t s_info(void *ctx, char *vendor, uint32_t *vendor_len, char *prod
     memcpy(vendor, "JAMOS", *vendor_len = 5);
     memcpy(product, "utest RAM disk", *product_len = 14);
     *block_size = DM_BLOCK;
-    *blocks = DM_BLOCKS;
+    *blocks = m->blocks;
     *scheme = STORAGE_SCHEME_MBR;
     *partitions = 0;
     while (mbr_entry(m, *partitions, &type, &start, &n))
@@ -271,15 +271,22 @@ static void mbr_set(uint8_t *ram, unsigned index, uint8_t type, uint32_t start, 
 
 bool dm_start(struct diskmock *m, uint8_t type1, uint8_t type2, handle_t *client)
 {
+    return dm_start_sized(m, type1, type2, DM_DATA_BLOCKS, client);
+}
+
+bool dm_start_sized(struct diskmock *m, uint8_t type1, uint8_t type2, uint32_t data_blocks,
+                    handle_t *client)
+{
     uint64_t addr = 0;
     memset(m, 0, offsetof(struct diskmock, stack));
+    m->blocks = DM_DATA_START + data_blocks;
     /* a VMO of its own, not the heap: only the blocks written take memory */
-    CHECK_ST(jam_vmo_create(DM_BLOCKS * DM_BLOCK, 0, &m->ram_vmo), OK);
-    CHECK_ST(jam_vmar_map(startup_handle(SR_SELF_VMAR), m->ram_vmo, 0, DM_BLOCKS * DM_BLOCK,
-                          VMAR_READ | VMAR_WRITE, &addr), OK);
+    CHECK_ST(jam_vmo_create((uint64_t)m->blocks * DM_BLOCK, 0, &m->ram_vmo), OK);
+    CHECK_ST(jam_vmar_map(startup_handle(SR_SELF_VMAR), m->ram_vmo, 0,
+                          (uint64_t)m->blocks * DM_BLOCK, VMAR_READ | VMAR_WRITE, &addr), OK);
     m->ram = (uint8_t *)(uintptr_t)addr;
     mbr_set(m->ram, 0, type1, DM_ESP_START, DM_ESP_BLOCKS);
-    mbr_set(m->ram, 1, type2, DM_DATA_START, DM_DATA_BLOCKS);
+    mbr_set(m->ram, 1, type2, DM_DATA_START, data_blocks);
     m->ram[510] = 0x55;
     m->ram[511] = 0xaa;
     CHECK_ST(jam_port_create(&m->port), OK);
@@ -302,7 +309,7 @@ bool dm_stop(struct diskmock *m)
     CHECK_ST(jam_handle_close(m->storage), OK);
     CHECK_ST(jam_handle_close(m->port), OK);
     CHECK_ST(jam_vmar_unmap(startup_handle(SR_SELF_VMAR), (uint64_t)(uintptr_t)m->ram,
-                            DM_BLOCKS * DM_BLOCK), OK);
+                            (uint64_t)m->blocks * DM_BLOCK), OK);
     CHECK_ST(jam_handle_close(m->ram_vmo), OK);
     m->ram = NULL;
     return true;

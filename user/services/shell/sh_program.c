@@ -575,7 +575,7 @@ static int start_program(int argc, char **argv, bool bg, struct started *s)
     status_t st = OK;
     if (!redirections_ok(s, bg))
         st = ERR_INVALID_ARGS;
-    else if ((st = jam_job_create(startup_handle(SR_JOB), 0, &s->job)) != OK)
+    else if ((st = dp_job_create(startup_handle(SR_JOB), &s->job)) != OK)   /* message budget */
         sh_tty("run: no job (%s)\n", status_str(st));
     if (st != OK) {
         sh_data_release(vmo, HANDLE_INVALID);
@@ -720,7 +720,7 @@ static status_t helper_setup(struct helper *h, struct spawn_handle *x, unsigned 
 {
     handle_t out_w, stop_r;
     *h = (struct helper){ 0 };
-    status_t st = jam_job_create(startup_handle(SR_JOB), 0, &h->job);
+    status_t st = dp_job_create(startup_handle(SR_JOB), &h->job);
     if (st == OK && (st = jam_channel_create(&h->out_r, &out_w)) == OK)
         x[(*nx)++] = (struct spawn_handle){ SR_STDOUT, out_w };
     if (st == OK && (st = jam_channel_create(&h->stop_w, &stop_r)) == OK)

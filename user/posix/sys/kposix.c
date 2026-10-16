@@ -1,6 +1,7 @@
 /* The kernel's calls for POSIX, in one place (layer.h, "the kernel's
  * calls for POSIX"): thread_set_tid_word, thread_get_info, the process's
- * CPU time (process_info.cpu_ns) and sys_public_info (docs/M13-PLAN.md,
+ * CPU time (process_info.cpu_ns), process_get_maps (/proc) and
+ * sys_public_info (docs/M13-PLAN.md,
  * "The new and changed interfaces"). The rest of the layer goes through
  * these, so a change to those calls' shapes is a change to this file. */
 #include "layer.h"
@@ -46,6 +47,13 @@ status_t kp_public_info(struct kp_public *out)
     memcpy(out->version, info.version, sizeof(out->version) - 1);   /* NUL kept by the memset */
     out->cpus = info.cpus_online;
     out->pages = info.mem_total_pages;
+    out->free_pages = info.mem_free_pages;
     out->page_size = info.page_size;
     return OK;
+}
+
+long kp_process_maps(handle_t proc, uint64_t from, struct map_info *out, uint32_t cap)
+{
+    int64_t n = jam_process_get_maps(proc, from, out, cap);
+    return n < 0 ? lx_err((status_t)n) : (long)n;
 }

@@ -17,7 +17,8 @@
  * the parent; a desynchronized child (Chromium's bubbles) updated with its
  * parent idle, its frame callbacks answered; a synchronized child of a
  * desynchronized one, applied with that one's commit; set_desync showing
- * what was cached; a wl_subsurface destroyed, unmapped at once.
+ * what was cached; a buffer offset moving a child until set_position sets
+ * its place again; a wl_subsurface destroyed, unmapped at once.
  * t_comp_sub_input: the pointer enters the topmost surface of the tree
  * under it, in that surface's coordinates; a child with an empty input
  * region lets it through; an input region, the order and a position
@@ -355,6 +356,27 @@ static bool desync_steps(struct cs *t, struct subc *x, uint32_t tick, struct kid
     return true;
 }
 
+/* A commit's buffer offset (attach's x and y: these surfaces are version
+ * 4) moves C3 against P, at once as it is desynchronized; set_position,
+ * applied by P's commit, sets its place again (weston's rule; review GR's
+ * Low 2). Moved by (-30, 10), C3's 40 x 40 is at (160, 160). */
+static bool offset_steps(struct cs *t, struct subc *x, uint32_t p, struct kid *k)
+{
+    struct jwl_conn *c = x->c.k.c;
+    uint32_t b = solid(x, 40, 40, BLUE);
+    CHECK(b);
+    CHECK_ST(jwl_wl_surface_attach(c, k[2].s, b, -30, 10), OK);
+    CHECK_ST(jwl_wl_surface_damage(c, k[2].s, 0, 0, 40, 40), OK);
+    CHECK(commit(x, k[2].s));
+    CHECK(becomes(t, x, 165, 195, BLUE));
+    CHECK(becomes(t, x, 225, 185, RED));   /* gone from where it was */
+    CHECK_ST(jwl_wl_subsurface_set_position(c, k[2].sub, 90, 50), OK);
+    CHECK(commit(x, p));
+    CHECK(becomes(t, x, 225, 185, BLUE));
+    CHECK(becomes(t, x, 165, 195, RED));
+    return true;
+}
+
 bool t_comp_sub_commits(void)
 {
     static struct subc x;
@@ -365,7 +387,7 @@ bool t_comp_sub_commits(void)
     uint32_t tick = ok ? main_at(&x, 600, 440, 8, 8, GREY) : 0;
     uint32_t p = tick ? main_at(&x, PX, PY, 200, 150, RED) : 0;
     ok = p && becomes(&t, &x, 120, 120, RED) && order_steps(&t, &x, tick, p, k) &&
-         desync_steps(&t, &x, tick, k);
+         desync_steps(&t, &x, tick, k) && offset_steps(&t, &x, p, k);
     if (ok) {   /* C1's wl_subsurface destroyed: gone at once, C3 under it shows */
         CHECK_ST(jwl_wl_subsurface_destroy(x.c.k.c, k[0].sub), OK);
         ok = becomes(&t, &x, 195, 155, BLUE) && becomes(&t, &x, 165, 125, RED);

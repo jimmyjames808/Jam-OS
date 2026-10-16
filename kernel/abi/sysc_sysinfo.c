@@ -144,6 +144,7 @@ int64_t sysc_sys_public_info(uint64_t out)
     trimmed(s.version, sizeof(s.version), jamos_version);
     trimmed(s.machine, sizeof(s.machine), "x86_64");
     s.mem_total_pages = pmm_total_pages();
+    s.mem_free_pages = pmm_free_page_count();
     s.page_size = PAGE_SIZE;
     for (uint32_t i = 0; i < cpu_count; i++)
         s.cpus_online += cpus[i] && cpu_online(cpus[i]);
