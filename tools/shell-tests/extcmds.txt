@@ -13,7 +13,7 @@ send T=x
 wait {prompt}
 
 # ---- a tree jamext made: modes and owners as it put them -----------------------------------
-send ls -l /jam/docs | grep -c "^-rw-r--r--  1 jam  jam .* hello.txt$" | grep ^1$ && echo ok-$T-lsl
+send ls -l /jam/docs | grep -c "^-rw-r--r--  2 jam  jam .* hello.txt$" | grep ^1$ && echo ok-$T-lsl
 wait ok-x-lsl
 send ls -l /jam | grep -c "^d" | grep ^[3-9]$ && echo ok-$T-dirs
 wait ok-x-dirs
@@ -140,7 +140,23 @@ wait {prompt}
 send allow -r /jam/s; echo st-$T=$?
 wait st-x=0
 wait {prompt}
+# ---- disk check: the library's checker, read-only, on the mounted volume -----------------------
 send sync
 wait {prompt}
+send disk check /jam
+wait disk check: /jam: no problems
+wait {prompt}
+send disk check /data; echo st-$T=$?
+wait disk check: /data: not an ext volume
+wait st-x=1
+send disk check /nosuch; echo st-$T=$?
+wait disk check: /nosuch: no disk has a partition mounted there
+wait st-x=1
+send disk check nvme0; echo st-$T=$?
+wait disk check: nvme0: give a mount
+wait st-x=2
+send disk check; echo st-$T=$?
+wait usage: disk digest
+wait st-x=2
 send reboot -f
 wait reboot: resetting
