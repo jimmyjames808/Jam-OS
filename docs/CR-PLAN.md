@@ -2150,8 +2150,11 @@ Chromium's `StackTrace` takes its glibc path instead of being patched out
 - **Its own unwinder, not `_Unwind_Backtrace`** (the plan was libunwind's).
   `backtrace()` reads the program's `.eh_frame` through `.eh_frame_hdr`'s
   index (found from `__ehdr_start`'s program headers) and runs the call
-  frame instructions for each return address: about 400 lines, x86-64
-  only, no libunwind. Why: the cross GCC's libgcc has an unwinder but no
+  frame instructions for each return address: about 550 lines of C, x86-64
+  only, no libunwind (its tables read over every function of posixtest
+  on the Mac first: 1,841 functions, a row for each with its return address
+  at CFA-8, none without one but the assembly: `_start`, `__unmapself`,
+  `__restore_rt` and libjam's call stubs). Why: the cross GCC's libgcc has an unwinder but no
   way to find a frame (it looks only at frames `crtbegin.o` registers,
   and jamos-cc links none: checked with `nm`, `unwind-dw2-fde.o` not
   `-dip`), so a GCC-linked C program, posixtest included, could not use
@@ -2200,13 +2203,20 @@ Chromium's `StackTrace` takes its glibc path instead of being patched out
   `operator<<` and the unit tests are upstream's again, so base_unittests'
   `StackTrace.*` tests now run on Jam OS (CB2 triages any failure: they
   need `/proc/self/maps` and the program's file for names, `symbol_level =
-  0` and a stripped program give addresses). The kept tree takes the
-  change as a patch change: five files go back to or away from upstream's
-  bytes and only their objects and the links rebuild (not run by BT: the
-  tree was busy with CB2/CB3). BT checked the one translation unit
-  instead (see the report: `stack_trace_posix.cc` compiled with the
-  build's own flags, with libc's header, defines `HAVE_BACKTRACE` and
-  calls `backtrace`).
+  0` and a stripped program give addresses; with `USE_SYMBOLIZE` on,
+  as the build has it, Chromium's own reader names the frames and
+  `backtrace_symbols()` is not called). The kept tree takes the change
+  as a patch change: `stack_trace.cc`, `stack_trace_unittest.cc`,
+  V8's `external-reference-table.cc` and SwiftShader's config go back to
+  upstream's bytes and `stack_trace_posix.cc` changes, so only their
+  objects and the links rebuild (BT did not run that build: the tree is
+  CB2's and CB3's). Checked instead, on the PC: the new patch applies to
+  the pristine file with no fuzz, and that file compiled with the
+  build's own command line for it (from `ninja -t commands`, the source
+  and output swapped, libc's new header ahead of the sysroot's, nothing
+  in the tree written) gives an object that calls `backtrace` and holds
+  `ProcessBacktrace` and the stream handler. The first build of the
+  tree after this merges does the rest.
 - **Tests**: posixtest's `execinfo` section (the `init` run): four nested
   functions give exactly their return addresses; a short array; a second
   thread; a trace from a signal handler reaches the raising function and
