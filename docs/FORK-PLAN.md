@@ -609,6 +609,11 @@ of one copy-on-write fork, and it is wrong for any call it doesn't
 record; (A) is right for every program and a few lines. Whose: the owner's
 (it changes his roadmap text).
 
+**Answered by the owner (2026-10-16): (A)** — `vfork` is the virtual `fork`
+(`vmar_clone` + `process_replace` through libc) with the parent waiting
+for the child's `exec` or `_exit`. No recorder.
+
+
 ### Q4. The JIT power for renderers only, with Chromium's own launcher
 
 The owner's default is "renderers only". CJR (design question 2)
@@ -634,3 +639,9 @@ can't choose which child gets it.
 hold once their start is done, at the cost of a small patch away from the
 launcher; it is needed only at CR-e (the JIT), after CB5. Whose: the
 owner's (his JIT rule meets his no-launcher-patch decision).
+
+**Answered by the owner (2026-10-16): (A)** — every forked child inherits
+CJR's JIT-only handle across an `exec` of the same program, and
+Chromium's content child start closes it in every process that isn't a
+renderer (a few lines of policy in Chromium, not a missing layer).
+
