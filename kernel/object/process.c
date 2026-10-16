@@ -475,15 +475,10 @@ size_t process_debug_write(struct process *p, const char *buf, size_t n, bool re
     return printed;
 }
 
-/* Close the handle table and drop the address space: the process is dead.
- * Runs once (see the file header), in a context that may sleep, with a
- * reference on p held by the caller. */
-static void process_finish(struct process *p)
+/* p's unfinished line, even without a newline, and how many lines it lost:
+ * its last words, as its image ends. No lock held. */
+static void out_flush(struct process *p)
 {
-    mutex_lock(&p->setup);
-    handle_table_destroy(&p->handles);   /* credits the job for every slot */
-    mutex_unlock(&p->setup);
-    /* Its last words, even without a newline, and how many lines it lost. */
     char line[OUT_LINE] = "";
     enum out_kind kind = OUT_NONE;
     uint64_t of = spin_lock_irqsave(&p->out_lock);
@@ -495,6 +490,17 @@ static void process_finish(struct process *p)
     p->out_dropped = 0;
     spin_unlock_irqrestore(&p->out_lock, of);
     out_print(p, line, kind, dropped);
+}
+
+/* Close the handle table and drop the address space: the process is dead.
+ * Runs once (see the file header), in a context that may sleep, with a
+ * reference on p held by the caller. */
+static void process_finish(struct process *p)
+{
+    mutex_lock(&p->setup);
+    handle_table_destroy(&p->handles);   /* credits the job for every slot */
+    mutex_unlock(&p->setup);
+    out_flush(p);
 
     uint64_t f = plock(p);
     struct aspace *as = p->as;
