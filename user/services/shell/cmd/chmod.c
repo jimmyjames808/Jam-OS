@@ -84,8 +84,12 @@ SH_CMD(chmod)
         return 2;
     }
     const char *spec = argv[1];
-    uint32_t fixed;
+    uint32_t fixed, probe;
     bool is_octal = octal(spec, &fixed);
+    if (!is_octal && !apply(spec, 0644, false, &probe)) {   /* a mode, before any file is looked at */
+        sh_tty("chmod: %s: not a mode (octal like 755, or u+x, go-w, a=r)\n", spec);
+        return 2;
+    }
     int status = 0;
     for (int i = 2; i < argc; i++) {
         char abs[SH_PATH_MAX];
@@ -105,10 +109,8 @@ SH_CMD(chmod)
             bool dir = (a.mode & SH_MODE_FMT) == SH_MODE_DIR;
             if (is_octal)
                 mode = fixed;
-            else if (!apply(spec, a.mode, dir, &mode)) {
-                sh_tty("chmod: %s: not a mode (octal like 755, or u+x, go-w, a=r)\n", spec);
-                return 2;
-            }
+            else
+                (void)apply(spec, a.mode, dir, &mode);   /* it parsed above */
             struct fs_attr_set set = { .mask = SH_ATTR_MODE, .mode = mode };
             st = fs_setattr(abs, 0, &set);
         }

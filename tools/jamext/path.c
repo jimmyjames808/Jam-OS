@@ -132,12 +132,15 @@ status_t jx_locate(struct jx *x, const char *path, bool follow_last, struct jx_l
                 st = ERR_NO_MEMORY;
                 goto out;
             }
-            if (strlen(target) + strlen(rest) + 2 >= PATH_MAX_BYTES) {
+            size_t tl = strlen(target), rl = strlen(rest);
+            if (tl + rl + 2 >= PATH_MAX_BYTES) {
                 free(joined);
                 st = ERR_NAME_TOO_LONG;
                 goto out;
             }
-            sprintf(joined, "%s/%s", target, rest);
+            memcpy(joined, target, tl);
+            joined[tl] = '/';
+            memcpy(joined + tl + 1, rest, rl + 1);
             free(expanded);
             expanded = joined;
             rest = joined;
