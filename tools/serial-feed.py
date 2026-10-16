@@ -57,12 +57,153 @@ the script, one command per line:
 After the script it keeps reading until QEMU closes the socket (a `reboot`
 with -no-reboot ends QEMU), so the guest never blocks on a full socket.
 Exit status 0 if every wait matched; on a timeout it says which and exits 1
-(and stops typing, but still drains until QEMU goes)."""
+(and stops typing, but still drains until QEMU goes).
+
+Test verdicts. Whatever the script waits for, a test program's own failure
+line anywhere in the output fails the script (FAILED_LINES below: a
+summary "N passed, M FAILED" of utest, usbtest, hdatest, mixtest, nettest
+or ktest, a failed check, posixtest's FAIL), and so does a `utest only` or
+`utest except` that said it was running and never gave its summary (it
+crashed or was killed). A script's own `wait utest: 3 passed` is a prefix of
+"utest: 3 passed, 1 FAILED" and could not tell. The run stops at the first
+failure line (QEMU is told to quit) and says which line it was.
+
+    serial-feed.py --selftest      the line patterns, on sample lines
+    serial-feed.py --scan <log>... the failure lines a saved log would have
+                                   made this script fail on"""
 import re
 import socket
 import sys
 import threading
 import time
+
+# The lines a failed test prints (the programs' result lines: user/include/check.h,
+# utest, usbtest, hdatest, mixtest, nettest, dnstest, posixtest, the kernel's ktest, the shell's soak).
+FAILED_LINES = [
+    # "utest: 5 passed, 1 FAILED", usbtest's "..., 1 FAILED, 2 skipped", ktest's "..., 0 skipped, 1 FAILED"
+    re.compile(rb"\b[0-9]+ passed, (?:[0-9]+ skipped, )?[1-9][0-9]* FAILED"),
+    re.compile(rb"\bdnstest: [0-9]+ passed, [1-9][0-9]* failed"),
+    re.compile(rb"\butest: FAILED tests:"),
+    re.compile(rb"\bFAILED at line [0-9]+"),   # a failed check (user/include/check.h)
+    re.compile(rb"\bktest: FAILED "),
+    re.compile(rb"\bposixtest: FAIL(?:ED)?\b"),
+    re.compile(rb"\bposixtest: .*: FAIL(?:ED)?$"),   # a section's "name: FAILED", a spawn test's "...: FAIL"
+    re.compile(rb"\bshell: soak: FAILED"),
+    re.compile(rb"\b[0-9]+ run\(s\), [1-9][0-9]* FAILED"),   # the soak's utest runs between loops
+]
+UTEST_RUNNING = re.compile(rb"\butest: running [0-9]+ of [0-9]+ tests\b")
+UTEST_RESULT = re.compile(rb"\butest: [0-9]+ passed\b")
+ESCAPES = re.compile(rb"\x1b\[[0-9;]*[A-Za-z]")
+
+
+class Verdict:
+    """The guest's output, line by line, for the failure lines above.
+    failed: the lines that matched (the first ones); running: the line of a
+    `utest only` that has not given its summary yet, else None."""
+    KEEP = 10
+
+    def __init__(self, say=None):
+        self.at = 0
+        self.failed = []
+        self.running = None
+        self.crashed = None   # a utest that was running when the next one began
+        self.say = say
+
+    def feed(self, buf):
+        """Look at the complete lines of buf that were not looked at yet."""
+        while True:
+            nl = buf.find(b"\n", self.at)
+            if nl < 0:
+                return
+            self.line(bytes(buf[self.at:nl]))
+            self.at = nl + 1
+
+    def line(self, raw):
+        text = ESCAPES.sub(b"", raw).replace(b"\r", b"").strip()
+        if UTEST_RUNNING.search(text):
+            if self.running is not None and self.crashed is None:
+                self.crashed = self.running
+            self.running = text
+        elif UTEST_RESULT.search(text):
+            self.running = None
+        if any(p.search(text) for p in FAILED_LINES):
+            if len(self.failed) < self.KEEP:
+                self.failed.append(text.decode(errors="replace"))
+            if self.say:
+                self.say("serial-feed: the guest reports a failed test: "
+                         + text.decode(errors="replace"))
+
+    def problems(self, at_end):
+        """Why the script fails: what the guest printed, and (at the end of
+        the run, or when another began) a utest that never gave its summary."""
+        out = list(self.failed)
+        no_result = self.crashed or (self.running if at_end else None)
+        if no_result is not None:
+            out.append("a utest began and gave no summary (it crashed, was killed or had not "
+                       "finished): " + no_result.decode(errors="replace"))
+        return out
+
+
+def selftest():
+    """Sample lines against the patterns. Exit status 0 if all are right."""
+    bad = [b"utest: 509 passed, 1 FAILED", b"usbtest: 4 passed, 1 FAILED, 2 skipped",
+           b"hdatest: 3 passed, 2 FAILED", b"nettest rx: 10 passed, 1 FAILED",
+           b"ktest: loop 1 of 2 done in 68 ms: 1 passed, 0 skipped, 2 FAILED",
+           b"  kernel tests: 2 loop(s): 5 passed, 0 skipped, 1 FAILED",
+           b"dnstest: 4 passed, 1 failed", b"utest: FAILED tests: fat_names session_hangup",
+           b"utest: fat_names: FAILED at line 331: x is OK, want ERR",
+           b"ktest: FAILED aspace_maps: x == 3 failed", b"posixtest: FAIL", b"posixtest: FAILED fds.c:9: x",
+           b"posixtest: procfs: FAILED", b"posixtest: spawn-data: /data/p self-image: FAIL",
+           b"shell: soak: FAILED after 40 s", b"utest between the loops: 3 run(s), 1 FAILED",
+           b"\x1b[1m\x1b[91mutest: 3 passed, 1 FAILED\x1b[0m\r"]
+    good = [b"utest: 11 passed", b"utest: running 3 of 960 tests (only)", b"utest: fat_names ok (12 ms)",
+            b"usbtest: 12 passed", b"hdatest: 3 passed", b"dnstest: 5 passed, 0 failed",
+            b"ktest: loop 1 of 2 done in 68 ms: 1 passed, 0 skipped, 0 FAILED",
+            b"utest between the loops: 3 run(s), 0 FAILED", b"posixtest: PASS", b"posixtest: procfs: ok",
+            b"posixtest: spawn-data: /data/p self-image: PASS", b"shell: soak: PASSED after 40 s",
+            b"send utest only x; echo st-$T=$?", b"ktest (live system): 231 passed, 23 skipped; not checked: 4"]
+    fails = []
+    for l in bad:
+        v = Verdict()
+        v.feed(bytearray(l + b"\n"))
+        if not v.failed:
+            fails.append("not caught: " + l.decode())
+    for l in good:
+        v = Verdict()
+        v.feed(bytearray(l + b"\n"))
+        if v.failed:
+            fails.append("a false alarm: " + l.decode())
+    # utest's start and summary lines pair up; a start with none is a crash.
+    v = Verdict()
+    v.feed(bytearray(b"utest: running 1 of 9 tests (only)\nutest: x ok (3 ms)\nutest: 1 passed\n"))
+    if v.problems(True):
+        fails.append("a finished utest only is a problem")
+    v = Verdict()
+    v.feed(bytearray(b"utest: running 1 of 9 tests (only)\nrun: bin/utest was killed after 40 ms\n"))
+    if v.problems(False) or not v.problems(True):
+        fails.append("a utest only with no summary: a problem at the end, not before")
+    v = Verdict()
+    v.feed(bytearray(b"utest: running 1 of 9 tests (only)\nutest: running 1 of 9 tests (only)\nutest: 1 passed\n"))
+    if not v.problems(False):
+        fails.append("a utest only that began again without a summary")
+    for f in fails:
+        print("serial-feed selftest: FAILED: " + f)
+    print("serial-feed selftest: %s" % ("FAIL" if fails else "PASS"))
+    return 1 if fails else 0
+
+
+if sys.argv[1:2] == ["--selftest"]:
+    sys.exit(selftest())
+if sys.argv[1:2] == ["--scan"]:
+    status = 0
+    for path in sys.argv[2:]:
+        v = Verdict(say=lambda m, p=path: print(p + ": " + m))
+        v.feed(bytearray(open(path, "rb").read() + b"\n"))
+        for why in v.problems(True)[len(v.failed):]:
+            print(path + ": " + why)
+            status = 1
+        status = status or (1 if v.failed else 0)
+    sys.exit(status)
 
 sock_path, script = sys.argv[1], sys.argv[2]
 
@@ -81,6 +222,7 @@ if s is None:
 buf = bytearray()
 lock = threading.Condition()
 closed = False
+verdict = Verdict(say=lambda m: print(m, file=sys.stderr, flush=True))
 
 
 def reader():
@@ -96,6 +238,7 @@ def reader():
                 lock.notify_all()
                 return
             buf.extend(d)
+            verdict.feed(buf)
             lock.notify_all()
 
 
@@ -300,10 +443,23 @@ def send(data):
 
 mark = 0
 ok = True
+
+
+def guest_failed():
+    """The guest has printed a failure line, or a utest began over a utest
+    that never finished."""
+    return bool(verdict.failed or verdict.crashed)
+
+
 for lineno, raw in enumerate(open(script), 1):
     line = raw.rstrip("\n")
     if not line.strip() or line.lstrip().startswith("#"):
         continue
+    if guest_failed():
+        print(f"serial-feed: {script}:{lineno}: stopped, the guest reported a failed test",
+              file=sys.stderr)
+        ok = False
+        break
     cmd, _, arg = line.partition(" ")
     if cmd in ("wait", "seen"):
         timeout = 60.0
@@ -317,6 +473,11 @@ for lineno, raw in enumerate(open(script), 1):
         end = time.time() + timeout
         with lock:
             while True:
+                if guest_failed():
+                    print(f"serial-feed: {script}:{lineno}: no '{arg}' before the guest "
+                          "reported a failed test", file=sys.stderr)
+                    ok = False
+                    break
                 hit = find(needle, mark if cmd == "wait" else 0)
                 if hit:
                     if cmd == "wait":
@@ -370,9 +531,20 @@ for lineno, raw in enumerate(open(script), 1):
     else:
         sys.exit(f"serial-feed: {script}:{lineno}: unknown command '{cmd}'")
 
+if guest_failed():
+    try:   # nothing more to learn from this boot: don't wait for the run's timeout
+        monitor("quit")
+    except (SystemExit, OSError):
+        pass
 if mon_sock is not None:
     mon_sock.close()   # qemu-test.sh's screendump needs the monitor
 with lock:
     while not closed:
         lock.wait(1)
-sys.exit(0 if ok else 1)
+problems = verdict.problems(True)
+for why in problems:
+    print("serial-feed: " + why, file=sys.stderr)
+if problems:
+    print(f"serial-feed: {script}: FAILED, the guest reported {len(problems)} failure(s)",
+          file=sys.stderr)
+sys.exit(0 if ok and not problems else 1)

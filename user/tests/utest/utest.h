@@ -710,6 +710,9 @@ bool t_conwin_pointer(void);
 bool t_conwin_pointer_shape(void);
 bool t_con_hostile_compositor(void);
 /* conconn.c: the console's connection back end (bin/console "conn"). */
+/* verdict.c: passes, or fails or crashes on request (UTEST_CANARY): the
+ * shell tests' proof that a failing utest fails the script. */
+bool t_verdict_canary(void);
 /* session.c, sessbad.c: init's sessions (/svc/session; sessrig.h). Only
  * a shell-mode init serves them: elsewhere each says it is skipped. */
 bool t_session_shell(void);

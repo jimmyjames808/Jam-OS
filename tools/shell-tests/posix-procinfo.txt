@@ -16,20 +16,20 @@ wait 120 posixtest: procinfo: ok
 wait 20 posixtest: PASS
 wait 20 run: bin/posixtest exited with code 0
 wait {prompt}
-send utest only process_maps; echo pi-""1
+send utest only process_maps; echo pi-1-$?
 wait 60 passed
 seen utest: 1 passed
-wait pi-1
+wait pi-1-0
 wait {prompt}
-send utest only sys_public_info; echo pi-""2
+send utest only sys_public_info; echo pi-2-$?
 wait 60 passed
 seen utest: 1 passed
-wait pi-2
+wait pi-2-0
 wait {prompt}
-send utest only posix_ids; echo pi-""3
+send utest only posix_ids; echo pi-3-$?
 wait 60 passed
 seen utest: 1 passed
-wait pi-3
+wait pi-3-0
 wait {prompt}
 send reboot -f
 wait reboot: resetting
