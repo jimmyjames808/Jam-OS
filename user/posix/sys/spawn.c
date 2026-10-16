@@ -501,8 +501,30 @@ int __jam_posix_spawn(int *pid, const struct jam_spawn_req *r)
     return spawn_child(r, false, pid);
 }
 
+/* The caller's NULL-ended array of strings v (NULL: none) can be read,
+ * each string to its NUL: 0, or -EFAULT. */
+static long strings_readable(char *const *v)
+{
+    for (size_t i = 0; v; i++) {
+        const char *s;
+        if (uc_get(&s, &v[i], sizeof(s)))
+            return -EFAULT;
+        if (!s)
+            return 0;
+        if (uc_strnlen(s, SIZE_MAX) < 0)
+            return -EFAULT;
+    }
+    return 0;
+}
+
 long lx_execve(long path, long argv, long envp, long d, long e, long f)
 {
+    /* The caller's path and arrays, checked before the start reads them
+     * as they are (Linux's EFAULT, the process going on). */
+    if (!path || uc_strnlen((const char *)(uintptr_t)path, SIZE_MAX) < 0 ||
+        strings_readable((char *const *)(uintptr_t)argv) ||
+        strings_readable((char *const *)(uintptr_t)envp))
+        return -EFAULT;
     const struct jam_spawn_req r = {
         .path = (const char *)(uintptr_t)path,
         .argv = (char *const *)(uintptr_t)argv,

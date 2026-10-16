@@ -54,6 +54,7 @@ static const struct {
     { "links", pt_links },
     { "execinfo", pt_execinfo },
     { "fault", pt_fault },
+    { "efault", pt_efault },
 };
 
 /* The sections run only when named (long ones). */
@@ -132,6 +133,8 @@ int main(int argc, char **argv)
         return pt_child_links();
     if (argc >= 2 && !strcmp(argv[1], "--child-fault"))
         return pt_child_fault(argc, argv);
+    if (argc >= 2 && !strcmp(argv[1], "--child-efault"))
+        return pt_child_efault(argc, argv);
     setvbuf(stdout, NULL, _IOLBF, 0);   /* each line out as it is made */
     unsigned n = sizeof(sections) / sizeof(sections[0]);
     for (unsigned i = 0; i < n; i++) {

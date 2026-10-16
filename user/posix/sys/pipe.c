@@ -458,13 +458,18 @@ static long make_pair(bool sock, bool seq, const rights_t rights[2], const uint3
     for (int i = 0; i < 2; i++) {
         if (!r) {
             fd_place(fd[i], d[i], cloexec);
-            fds[i] = (int)fd[i];
             continue;
         }
         if (fd[i] >= 0)
             fd_free(fd[i]);
         if (d[i])
             fd_put(d[i]);   /* desc_on freed p[i] if it made none */
+    }
+    int pair[2] = { (int)fd[0], (int)fd[1] };
+    if (!r && uc_put(fds, pair, sizeof(pair))) {   /* the caller's: Linux closes both */
+        (void)fd_close(fd[0]);
+        (void)fd_close(fd[1]);
+        r = -EFAULT;
     }
     return r;
 }

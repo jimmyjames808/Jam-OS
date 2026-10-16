@@ -184,7 +184,8 @@ static bool nonblocking(struct fd_desc *d, int flags)
 static size_t src_take(struct src *s, uint8_t *to, size_t want)
 {
     size_t k = s->total - s->pos < want ? s->total - s->pos : want;
-    fd_iov_gather(s->iov, s->iovcnt, s->pos, to, k);
+    if (fd_iov_gather(s->iov, s->iovcnt, s->pos, to, k))
+        memset(to, 0, k);   /* unmapped since the send's check (fd.h): never stale bytes */
     s->pos += k;
     return k;
 }
@@ -429,7 +430,8 @@ static long recv_try(struct wlconn *c, struct msghdr *m, size_t total, int flags
     c->in_nh = 0;
     uint32_t at = at_of(c), left = len_of(c) - at;
     size_t n = left < total ? left : total;
-    fd_iov_scatter(m->msg_iov, m->msg_iovlen, 0, c->in + at, n);
+    if (fd_iov_scatter(m->msg_iov, m->msg_iovlen, 0, c->in + at, n))
+        return -EFAULT;   /* the bytes stay; the descriptors are in the table */
     __atomic_store_n(&c->in_at, at + (uint32_t)n, __ATOMIC_RELAXED);
     fdpass_cmsg_put(m, fds, sink.got);
     m->msg_flags = sink.cut ? MSG_CTRUNC : 0;

@@ -9,9 +9,8 @@
  * no handler installed and no signal state touched. Any other fault whose
  * signal is blocked, ignored or default (a program that never asks for a
  * handler has only those), on a thread libc doesn't list, or on a thread
- * that holds sig_lock
- * (sig_fault_begin) is EXC_UNHANDLED: the kernel's kill with the line it
- * would have had with no entry.
+ * that holds sig_lock (sig_fault_begin) is EXC_UNHANDLED: the kernel's
+ * kill with the line it would have had with no entry.
  *
  * From the entry to EXC_LEAVE the thread is in the kernel's window, where
  * a second fault kills the process: up to there only the frame, the stack

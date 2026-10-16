@@ -86,6 +86,8 @@ static long efd_read(struct fd_desc *d, const struct iovec *iov, int iovcnt, int
         return -ESPIPE;
     if (iovcnt < 1 || iov[0].iov_len < sizeof(uint64_t))
         return -EINVAL;
+    if (uc_writable(iov[0].iov_base, sizeof(uint64_t)))
+        return -EFAULT;   /* before the count is taken */
     struct efd *e = efd_of(d);
     for (;;) {
         lock_take(&d->lock);
@@ -94,10 +96,8 @@ static long efd_read(struct fd_desc *d, const struct iovec *iov, int iovcnt, int
         if (v)
             signal_locked(e);
         lock_give(&d->lock);
-        if (v) {
-            memcpy(iov[0].iov_base, &v, sizeof(v));
-            return sizeof(v);
-        }
+        if (v)
+            return uc_put(iov[0].iov_base, &v, sizeof(v)) ? -EFAULT : (long)sizeof(v);
         long r = fd_status(d) & O_NONBLOCK ? -EAGAIN : wait_bit(e, EFD_READABLE);
         if (r)
             return r;
@@ -111,7 +111,8 @@ static long efd_write(struct fd_desc *d, const struct iovec *iov, int iovcnt, in
     uint64_t v;
     if (iovcnt < 1 || iov[0].iov_len < sizeof(v))
         return -EINVAL;
-    memcpy(&v, iov[0].iov_base, sizeof(v));
+    if (uc_get(&v, iov[0].iov_base, sizeof(v)))
+        return -EFAULT;
     if (v == UINT64_MAX)
         return -EINVAL;
     struct efd *e = efd_of(d);

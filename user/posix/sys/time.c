@@ -163,8 +163,9 @@ long lx_clock_gettime(long clk, long out, long c, long d, long e, long f)
     long r = clock_ns(clk, &ns);
     if (r)
         return r;
-    to_timespec(ns, (struct timespec *)(uintptr_t)out);
-    return 0;
+    struct timespec ts;
+    to_timespec(ns, &ts);
+    return uc_put((void *)(uintptr_t)out, &ts, sizeof(ts));
 }
 
 long lx_clock_getres(long clk, long out, long c, long d, long e, long f)
@@ -173,9 +174,8 @@ long lx_clock_getres(long clk, long out, long c, long d, long e, long f)
     long r = clock_ns(clk, &ns);
     if (r)
         return r;
-    if (out)
-        *(struct timespec *)(uintptr_t)out = (struct timespec){ 0, 1 };
-    return 0;
+    struct timespec res = { 0, 1 };
+    return out ? uc_put((void *)(uintptr_t)out, &res, sizeof(res)) : 0;
 }
 
 long lx_clock_settime(long clk, long in, long c, long d, long e, long f)
@@ -214,7 +214,10 @@ long lx_clock_nanosleep(long clk, long flags, long req, long rem, long e, long f
     if (flags & ~TIMER_ABSTIME)
         return -EINVAL;
     int64_t ns;
-    long r = timespec_ns((const struct timespec *)(uintptr_t)req, &ns);
+    struct timespec want;   /* the caller's, read once */
+    if (uc_get(&want, (const void *)(uintptr_t)req, sizeof(want)))
+        return -EFAULT;
+    long r = timespec_ns(&want, &ns);
     if (r)
         return r;
     uint64_t deadline, start = up_ns();
@@ -229,8 +232,10 @@ long lx_clock_nanosleep(long clk, long flags, long req, long rem, long e, long f
         /* What is left of the request, not of the deadline: a deadline
          * that saturated to DEADLINE_NEVER would give a negative time. */
         uint64_t slept = up_ns() - start;
-        to_timespec(slept < (uint64_t)ns ? ns - (int64_t)slept : 0,
-                    (struct timespec *)(uintptr_t)rem);
+        struct timespec left;
+        to_timespec(slept < (uint64_t)ns ? ns - (int64_t)slept : 0, &left);
+        if (uc_put((void *)(uintptr_t)rem, &left, sizeof(left)))
+            return -EFAULT;
     }
     return lx_err(st);
 }
@@ -260,10 +265,9 @@ long lx_times(long out, long b, long c, long d, long e, long f)
 {
     uint64_t self = 0;
     (void)kp_cpu_ns(lx_self_process(), HANDLE_INVALID, &self);   /* our own process: can't fail */
-    if (out)
-        *(struct lx_tms *)(uintptr_t)out = (struct lx_tms){
-            .utime = ns_to_ticks(self), .cutime = ns_to_ticks(lx_children_cpu_ns()),
-        };
+    struct lx_tms t = { .utime = ns_to_ticks(self), .cutime = ns_to_ticks(lx_children_cpu_ns()) };
+    if (out && uc_put((void *)(uintptr_t)out, &t, sizeof(t)))
+        return -EFAULT;
     return ns_to_ticks(up_ns());   /* ticks since boot: only differences mean anything */
 }
 
@@ -281,9 +285,9 @@ long lx_getrusage(long who, long out, long c, long d, long e, long f)
         return -EINVAL;
     if (st != OK)
         return lx_err(st);
-    struct rusage *ru = (struct rusage *)(uintptr_t)out;
-    memset(ru, 0, sizeof(*ru));
-    ru->ru_utime.tv_sec = (time_t)(ns / NS_PER_S);
-    ru->ru_utime.tv_usec = (suseconds_t)(ns % NS_PER_S / 1000);
-    return 0;
+    struct rusage ru;
+    memset(&ru, 0, sizeof(ru));
+    ru.ru_utime.tv_sec = (time_t)(ns / NS_PER_S);
+    ru.ru_utime.tv_usec = (suseconds_t)(ns % NS_PER_S / 1000);
+    return uc_put((void *)(uintptr_t)out, &ru, sizeof(ru));
 }

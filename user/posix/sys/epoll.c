@@ -319,8 +319,11 @@ static void look_libc(struct epoll *ep)
     }
 }
 
-/* Deliver it into evs[*n] if it has anything asked for and there is room. */
-static void deliver(struct epoll *ep, struct item *it, struct epoll_event *evs, int max, int *n)
+/* Deliver it into evs[*n] (the caller's array) if it has anything asked
+ * for and there is room. A store that faults sets *fault (Linux's EFAULT)
+ * and the event is kept as if there were no room, for this and the rest. */
+static void deliver(struct epoll *ep, struct item *it, struct epoll_event *evs, int max, int *n,
+                    bool *fault)
 {
     uint32_t b = it->got & (it->events | EPOLLERR | EPOLLHUP);
     bool edge_seen = it->reported && (it->events & EPOLLET);
@@ -328,16 +331,15 @@ static void deliver(struct epoll *ep, struct item *it, struct epoll_event *evs, 
     it->reported = false;
     if (!b || !it->d)
         return;
-    if (*n == max) {   /* no room: the next wait must see it again */
+    struct epoll_event e = { .events = b, .data.u64 = it->data };
+    if (*n < max && !*fault && uc_put(&evs[*n], &e, sizeof(e)))
+        *fault = true;
+    if (*n == max || *fault) {   /* no room: the next wait must see it again */
         if (edge_seen)
             (void)netwait_touch(ep->w, it->id);   /* the set took it off its list */
         it->libc_was = 0;                         /* an edge item's own rise counts again */
         return;                                   /* a level item is still pending */
     }
-    /* The caller's array (lx_epoll_pwait checked it): an event is lost
-     * only if the program unmaps it during the wait. */
-    struct epoll_event e = { .events = b, .data.u64 = it->data };
-    (void)uc_put(&evs[*n], &e, sizeof(e));
     (*n)++;
     if (it->events & EPOLLONESHOT)
         item_unbind(ep, it);
@@ -365,16 +367,17 @@ static long collect(struct epoll *ep, struct epoll_event *evs, int max)
     }
     look_libc(ep);
     int n = 0;
+    bool fault = false;
     for (uint32_t r = 0; r < nr; r++)
-        deliver(ep, ep->out[r].user, evs, max, &n);
+        deliver(ep, ep->out[r].user, evs, max, &n, &fault);
     for (uint32_t k = 0; k < NETWAIT_MAX; k++) {
         uint32_t i = (ep->turn + k) % NETWAIT_MAX;
         int before = n;
-        deliver(ep, &ep->items[i], evs, max, &n);
+        deliver(ep, &ep->items[i], evs, max, &n, &fault);
         if (n > before)
             ep->turn = (i + 1) % NETWAIT_MAX;
     }
-    return n;
+    return fault && !n ? -EFAULT : n;   /* what was delivered counts, as Linux */
 }
 
 static long epoll_run(struct epoll *ep, struct epoll_event *evs, int max, uint64_t deadline)
@@ -403,8 +406,6 @@ long lx_epoll_pwait(long epfd, long evs, long max, long timeout, long mask, long
 {
     if (max <= 0 || max > INT_MAX / (long)sizeof(struct epoll_event))
         return -EINVAL;
-    if (uc_writable((void *)(uintptr_t)evs, (size_t)max * sizeof(struct epoll_event)))
-        return -EFAULT;   /* before anything is taken from the set */
     struct fd_desc *ed = fd_get(epfd);
     if (!ed)
         return -EBADF;

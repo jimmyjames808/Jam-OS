@@ -502,13 +502,19 @@ long fd_iov_gather(const struct iovec *iov, int iovcnt, size_t skip, void *dst, 
     return 0;
 }
 
-long fd_iov_readable(const struct iovec *iov, int iovcnt, size_t n)
+long fd_iov_check(const struct iovec *iov, int iovcnt, size_t skip, size_t n, bool write)
 {
     for (int i = 0; i < iovcnt && n; i++) {
-        size_t k = iov[i].iov_len < n ? iov[i].iov_len : n;
-        if (uc_readable(iov[i].iov_base, k))
+        if (skip >= iov[i].iov_len) {
+            skip -= iov[i].iov_len;
+            continue;
+        }
+        uint8_t *b = (uint8_t *)iov[i].iov_base + skip;
+        size_t k = iov[i].iov_len - skip < n ? iov[i].iov_len - skip : n;
+        if (write ? uc_writable(b, k) : uc_readable(b, k))
             return -EFAULT;
         n -= k;
+        skip = 0;
     }
     return 0;
 }
@@ -561,7 +567,7 @@ static long rw(long fd, const struct iovec *iov, long iovcnt, int64_t pos, unsig
         r = -ESPIPE;   /* pread(2): checked before the offset */
     else if (r >= 0 && (how & RW_AT) && pos < 0)
         r = -EINVAL;
-    else if (r > 0 && write && fd_iov_readable(iov, (int)iovcnt, (size_t)r))
+    else if (r > 0 && write && fd_iov_check(iov, (int)iovcnt, 0, (size_t)r, false))
         r = -EFAULT;   /* the bytes to write, before any of them goes */
     else if (r >= 0 && write && (how & RW_NOAPPEND) && d->ops->write_at)
         r = d->ops->write_at(d, iov, (int)iovcnt, pos);

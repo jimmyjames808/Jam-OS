@@ -481,7 +481,8 @@ static const uint8_t *bytes_at(const struct tx *t, size_t from, size_t len, uint
 {
     if (t->iovcnt == 1)
         return (const uint8_t *)t->iov[0].iov_base + from;
-    fd_iov_gather(t->iov, t->iovcnt, from, buf, len);
+    if (fd_iov_gather(t->iov, t->iovcnt, from, buf, len))
+        memset(buf, 0, len);   /* unmapped since the send's check (fd.h): never stale bytes */
     return buf;
 }
 
@@ -604,7 +605,8 @@ static status_t parts_write(struct pipe_end *p, const struct tx *t, struct fd_gi
         if (k == parts - 1) {
             size_t room_left = PIPE_SIZE - (size_t)len;
             *first = t->total < room_left ? t->total : room_left;
-            fd_iov_gather(t->iov, t->iovcnt, 0, msg + len, *first);
+            if (fd_iov_gather(t->iov, t->iovcnt, 0, msg + len, *first))
+                memset(msg + len, 0, *first);   /* as bytes_at: only after the check */
             len += (long)*first;
         }
         status_t st = is_shut(p) ? ERR_PEER_CLOSED

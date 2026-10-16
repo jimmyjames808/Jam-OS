@@ -56,8 +56,7 @@ static long int_in(long val, long len, int *out)
         return -EFAULT;
     if (len < INT_SZ)
         return -EINVAL;
-    memcpy(out, (const void *)(uintptr_t)val, sizeof(*out));
-    return 0;
+    return uc_get(out, (const void *)(uintptr_t)val, sizeof(*out));   /* the caller's */
 }
 
 /* A struct timeval as ns (0: no timeout). */
@@ -68,7 +67,8 @@ static long time_in(long val, long len, uint64_t *out)
         return -EFAULT;
     if (len < (long)sizeof(tv))
         return -EINVAL;
-    memcpy(&tv, (const void *)(uintptr_t)val, sizeof(tv));
+    if (uc_get(&tv, (const void *)(uintptr_t)val, sizeof(tv)))
+        return -EFAULT;
     if (tv.tv_sec < 0 || tv.tv_usec < 0 || tv.tv_usec >= 1000000)
         return -EDOM;
     uint64_t ns;
@@ -82,15 +82,15 @@ static long time_in(long val, long len, uint64_t *out)
 /* Copy n bytes of v out to val, at most *lenp (said back): Linux's rule. */
 static long out(long val, long lenp, const void *v, socklen_t n)
 {
-    if (!val || !lenp)
+    socklen_t len;   /* the caller's room, said back */
+    if (!val || !lenp || uc_get(&len, (const void *)(uintptr_t)lenp, sizeof(len)))
         return -EFAULT;
-    socklen_t *len = (socklen_t *)(uintptr_t)lenp;
-    if ((int)*len < 0)
+    if ((int)len < 0)
         return -EINVAL;
-    if (*len < n)
-        n = *len;
-    memcpy((void *)(uintptr_t)val, v, n);
-    *len = n;
+    if (len < n)
+        n = len;
+    if (uc_put((void *)(uintptr_t)val, v, n) || uc_put((void *)(uintptr_t)lenp, &n, sizeof(n)))
+        return -EFAULT;
     return 0;
 }
 
@@ -141,7 +141,8 @@ static long set_socket_level(struct sock *s, int name, long val, long len)
             return -EFAULT;
         if (len < (long)sizeof(l))
             return -EINVAL;
-        memcpy(&l, (const void *)(uintptr_t)val, sizeof(l));
+        if (uc_get(&l, (const void *)(uintptr_t)val, sizeof(l)))
+            return -EFAULT;
         s->opts.linger_on = l.l_onoff != 0;
         s->opts.linger_s = l.l_linger < 0 ? 0 : (uint32_t)l.l_linger;
         return 0;

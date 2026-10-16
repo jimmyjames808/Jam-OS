@@ -116,8 +116,10 @@ static size_t stream_peek(struct sock *s, const struct xfer *x)
         n = x->total;
     uint32_t off = (uint32_t)(e->count & (e->size - 1));
     size_t first = n < e->size - off ? n : e->size - off;
-    fd_iov_scatter(x->iov, x->iovcnt, 0, e->data + off, first);
-    fd_iov_scatter(x->iov, x->iovcnt, first, e->data, n - first);
+    /* Checked by stream_read_locked: only a buffer unmapped since fails. */
+    if (fd_iov_scatter(x->iov, x->iovcnt, 0, e->data + off, first) ||
+        fd_iov_scatter(x->iov, x->iovcnt, first, e->data, n - first))
+        return 0;
     return n;
 }
 
@@ -127,6 +129,11 @@ static long stream_read_locked(struct sock *s, struct xfer *x)
         return -ENOTCONN;   /* handed away meanwhile */
     if (s->rd_shut || x->done == x->total)
         return 0;
+    /* The bytes the ring is about to give, checked first: the ring's
+     * reads write the caller's buffer as they are. */
+    size_t ready = sockring_ready(&s->ns.r.rx), want = x->total - x->done;
+    if (fd_iov_check(x->iov, x->iovcnt, x->done, ready < want ? ready : want, true))
+        return -EFAULT;
     size_t n = x->flags & MSG_PEEK ? stream_peek(s, x) : stream_move(s, x, true);
     if (n)
         return (long)n;
@@ -214,7 +221,8 @@ static long dgram_recv_locked(struct sock *s, struct xfer *x)
             s->kept = g;
     }
     size_t n = g->len < x->total ? g->len : x->total;
-    fd_iov_scatter(x->iov, x->iovcnt, 0, g->data, n);
+    if (fd_iov_scatter(x->iov, x->iovcnt, 0, g->data, n))
+        return -EFAULT;   /* the datagram is gone unless kept (Linux drops it too) */
     x->from = true;
     x->addr = g->addr;
     x->port = g->port;
@@ -322,7 +330,8 @@ static long dgram_send(struct fd_desc *d, struct sock *s, struct xfer *x)
     long r = dgram_ready(d, s);
     if (r)
         return r;
-    fd_iov_gather(x->iov, x->iovcnt, 0, buf, x->total);
+    if (fd_iov_gather(x->iov, x->iovcnt, 0, buf, x->total))
+        return -EFAULT;
     x->buf = buf;
     uint64_t timeout = s->opts.sndtimeo;
     return sock_wait(s, SIDE_TX, dgram_send_try, x, nonblocking(d, x->flags),
@@ -440,10 +449,14 @@ long lx_recvfrom(long fd, long buf, long len, long flags, long addr, long lenp)
     struct iovec v = one(buf, len);
     struct xfer x = { .iov = &v, .iovcnt = 1, .total = v.iov_len, .flags = (int)flags };
     long r = recv_on(fd, &x);
+    socklen_t none = 0;   /* a stream has no sender's address */
+    long w = 0;
     if (r >= 0 && x.from)
-        (void)sock_addr_out(addr, lenp, x.addr, x.port);   /* a bad length: nothing written */
+        w = sock_addr_out(addr, lenp, x.addr, x.port);   /* a bad length: nothing written */
     else if (r >= 0 && lenp)
-        *(socklen_t *)(uintptr_t)lenp = 0;   /* a stream has no sender's address */
+        w = uc_put((void *)(uintptr_t)lenp, &none, sizeof(none));
+    if (w == -EFAULT)
+        return w;
     return r >= 0 && x.from && (flags & MSG_TRUNC) ? (long)x.dg_len : r;
 }
 
@@ -451,6 +464,8 @@ long lx_sendto(long fd, long buf, long len, long flags, long addr, long alen)
 {
     struct iovec v = one(buf, len);
     struct xfer x = { .iov = &v, .iovcnt = 1, .total = v.iov_len, .flags = (int)flags };
+    if (fd_iov_check(&v, 1, 0, v.iov_len, false))
+        return -EFAULT;   /* the bytes to send, before any goes (fd.h) */
     if (addr) {
         long r = sock_addr_in(addr, alen, &x.addr, &x.port);
         if (r)
@@ -535,14 +550,112 @@ static long sendmsg_one(long fd, const struct msghdr *m, long flags)
     return send_on(fd, &x);
 }
 
+/* ---- a program's msghdr --------------------------------------------------------- */
+
+#define CTL_FAST 64      /* control data this small is copied to the stack */
+#define CTL_MAX  65536   /* a send's with more is ENOBUFS (Linux's limit: optmem_max) */
+
+/* A program's msghdr made ours: the header, its iovecs and its control
+ * data copied in, so the kinds below read and write only our memory
+ * (msg_name stays the caller's: sock_addr_in and sock_addr_out check
+ * it). A receive's control data is room of ours, copied out by
+ * umsg_out with the header's lengths and flags. */
+struct umsg {
+    struct msghdr m;
+    struct iovec  fast[FD_IOV_FAST], *iov;
+    uint8_t       cfast[CTL_FAST], *ctl;
+    void         *user_ctl;   /* the caller's msg_control */
+};
+
+static long umsg_in(struct umsg *u, long msg, bool recv)
+{
+    u->iov = u->fast;
+    u->ctl = u->cfast;
+    u->user_ctl = NULL;
+    if (uc_get(&u->m, (const void *)(uintptr_t)msg, sizeof(u->m)))
+        return -EFAULT;
+    long n = u->m.msg_iovlen > INT_MAX ? -1 : (long)u->m.msg_iovlen;
+    long r = fd_iov_in(u->m.msg_iov, n, u->fast, &u->iov);
+    if (r)
+        return r;
+    u->m.msg_iov = u->iov;
+    size_t len = u->m.msg_controllen;
+    if (!u->m.msg_control || !len)
+        return 0;
+    if (!recv && len > CTL_MAX)
+        return -ENOBUFS;
+    size_t room = len > CTL_MAX ? CTL_MAX : len;   /* a receive's: no more is ever written */
+    if (room > CTL_FAST && !(u->ctl = malloc(room))) {
+        u->ctl = u->cfast;
+        return -ENOMEM;
+    }
+    if (recv)
+        memset(u->ctl, 0, room);
+    else if (uc_get(u->ctl, u->m.msg_control, room))
+        return -EFAULT;
+    u->user_ctl = u->m.msg_control;
+    u->m.msg_control = u->ctl;
+    u->m.msg_controllen = room;
+    return 0;
+}
+
+/* A receive's answer to the caller's msghdr at msg: the control data
+ * written, then msg_namelen, msg_controllen and msg_flags. 0 or -EFAULT. */
+static long umsg_out(const struct umsg *u, long msg)
+{
+    struct msghdr *um = (struct msghdr *)(uintptr_t)msg;
+    if (u->user_ctl && u->m.msg_controllen &&
+        uc_put(u->user_ctl, u->ctl, u->m.msg_controllen))
+        return -EFAULT;
+    if (uc_put(&um->msg_namelen, &u->m.msg_namelen, sizeof(um->msg_namelen)) ||
+        uc_put(&um->msg_controllen, &u->m.msg_controllen, sizeof(um->msg_controllen)) ||
+        uc_put(&um->msg_flags, &u->m.msg_flags, sizeof(um->msg_flags)))
+        return -EFAULT;
+    return 0;
+}
+
+static void umsg_done(struct umsg *u)
+{
+    fd_iov_done(u->iov, u->fast);
+    if (u->ctl != u->cfast)
+        free(u->ctl);
+}
+
+static long recvmsg_user(long fd, long msg, long flags)
+{
+    struct umsg u;
+    long r = umsg_in(&u, msg, true);
+    if (!r)
+        r = recvmsg_one(fd, &u.m, flags);
+    if (r >= 0) {
+        long w = umsg_out(&u, msg);
+        r = w ? w : r;
+    }
+    umsg_done(&u);
+    return r;
+}
+
+static long sendmsg_user(long fd, long msg, long flags)
+{
+    struct umsg u;
+    long r = umsg_in(&u, msg, false);
+    long n = r ? r : fd_iov_total(u.m.msg_iov, (int)u.m.msg_iovlen);
+    if (n > 0 && fd_iov_check(u.m.msg_iov, (int)u.m.msg_iovlen, 0, (size_t)n, false))
+        r = -EFAULT;   /* the bytes to send, before any goes (fd.h) */
+    if (!r)
+        r = sendmsg_one(fd, &u.m, flags);
+    umsg_done(&u);
+    return r;
+}
+
 long lx_recvmsg(long fd, long msg, long flags, long d, long e, long f)
 {
-    return msg ? recvmsg_one(fd, (struct msghdr *)(uintptr_t)msg, flags) : -EFAULT;
+    return recvmsg_user(fd, msg, flags);
 }
 
 long lx_sendmsg(long fd, long msg, long flags, long d, long e, long f)
 {
-    return msg ? sendmsg_one(fd, (const struct msghdr *)(uintptr_t)msg, flags) : -EFAULT;
+    return sendmsg_user(fd, msg, flags);
 }
 
 /* sendmmsg: each message in turn; the count sent, or the first's error. */
@@ -552,10 +665,12 @@ long lx_sendmmsg(long fd, long vec, long vlen, long flags, long e, long f)
     if (vlen > MMSG_MAX)
         vlen = MMSG_MAX;
     for (long i = 0; i < vlen; i++) {
-        long r = sendmsg_one(fd, &mm[i].msg_hdr, flags);
+        long r = sendmsg_user(fd, (long)(uintptr_t)&mm[i].msg_hdr, flags);
+        unsigned sent = (unsigned)r;
+        if (r >= 0 && uc_put(&mm[i].msg_len, &sent, sizeof(sent)))
+            r = -EFAULT;
         if (r < 0)
             return i ? i : r;
-        mm[i].msg_len = (unsigned)r;
     }
     return vlen;
 }
@@ -572,10 +687,12 @@ long lx_recvmmsg(long fd, long vec, long vlen, long flags, long timeout, long f)
         vlen = MMSG_MAX;
     long fl = flags & ~(long)MSG_WAITFORONE;
     for (long i = 0; i < vlen; i++) {
-        long r = recvmsg_one(fd, &mm[i].msg_hdr, fl);
+        long r = recvmsg_user(fd, (long)(uintptr_t)&mm[i].msg_hdr, fl);
+        unsigned got = (unsigned)r;
+        if (r >= 0 && uc_put(&mm[i].msg_len, &got, sizeof(got)))
+            r = -EFAULT;
         if (r < 0)
             return i ? i : r;
-        mm[i].msg_len = (unsigned)r;
         if (flags & MSG_WAITFORONE)
             fl |= MSG_DONTWAIT;
     }
