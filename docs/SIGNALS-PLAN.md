@@ -549,6 +549,14 @@ security plan, and no Chromium milestone needs it.
 path, and the workaround never ships; if the kernel slot is busy when
 CR-e is ready, CR-e may go first with the flag for a while.
 
+**Decided by the main session (2026-10-16), under the standing rule that
+technical choices follow the recommendation:** Q1 (A) an upcall into the
+faulting thread; Q2 (A) `thread_raise`; Q3 (A) the tamper check and out of
+memory stay kills; Q4 (A) the per-thread cookie; Q6 (A) SG1 to SG5 now,
+beside CB3 and CB4. Q5 (A) for now: crash dumps in-process; Crashpad's
+out-of-process minidumps need a debugger power, a capability question
+planned with the owner later.
+
 ## Size
 
 The kernel: about 400 to 600 lines (the frame, delivery, the checked
