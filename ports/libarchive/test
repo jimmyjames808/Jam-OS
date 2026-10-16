@@ -1,0 +1,184 @@
+# libarchive's test (tools/ports-test.sh): bsdtar, bsdcpio, bsdcat and
+# bsdunzip from the package on /data/pkg, with the three programs of the
+# packages it runs (minigzip, bzip2, xz) to check each other's files.
+# A tree (two levels of directories, an empty one, an empty file, a text
+# file of 108894 bytes, a binary one of megabytes, a name of 104 characters
+# that a plain ustar header cannot hold) is archived in every format and
+# with every compression bsdtar has here, listed, extracted and compared
+# with `cmp`; each compressed archive is read by the standalone program of
+# its compression and the other way round. The working directory is
+# /data/lt, so the programs' relative paths are tried too.
+send run $P/bsdtar --version
+wait bsdtar 3.8.10 - libarchive 3.8.10 zlib/1.3.2 liblzma/5.8.4 bz2lib/1.0.8
+wait {prompt}
+send run $P/bsdcpio --version
+wait bsdcpio 3.8.10 - libarchive 3.8.10 zlib/1.3.2 liblzma/5.8.4 bz2lib/1.0.8
+wait {prompt}
+send run $P/bsdcat --version
+wait bsdcat 3.8.10 - libarchive 3.8.10 zlib/1.3.2 liblzma/5.8.4 bz2lib/1.0.8
+wait {prompt}
+send run $P/bsdunzip --version
+wait bsdunzip 3.8.10 - libarchive 3.8.10 zlib/1.3.2 liblzma/5.8.4 bz2lib/1.0.8
+wait {prompt}
+
+# ---- the tree ---------------------------------------------------------------------------
+send mkdir -p /data/lt/tree/s/d /data/lt/tree/empty; cd /data/lt; N=a-file-with-a-name-longer-than-a-hundred-characters-which-a-plain-ustar-header-has-no-room-for-so-pax-keeps-it.txt
+wait {prompt}
+send run $S/seq 1 20000 > tree/a.txt; run $S/printf 'hello\n' > tree/s/b.txt; run $S/printf 'long\n' > tree/s/$N; run $S/printf '' > tree/empty.txt; cp /boot/bin/utest /data/lt/tree/s/d/c.bin
+wait {prompt}
+send sha256sum tree/a.txt
+wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  tree/a.txt
+wait {prompt}
+
+# ---- tar, uncompressed: nine entries; extracted and compared -----------------------------------------
+send run $P/bsdtar -cf t.tar tree; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send run $P/bsdtar -tf t.tar | run $S/grep -c ^tree/ | run $S/sed s/^/n-/
+wait n-9
+wait {prompt}
+send run $P/bsdtar -tf t.tar | run $S/grep ^tree/empty/$ | run $S/sed s/^/e-/
+wait e-tree/empty/
+wait {prompt}
+send mkdir o1; run $P/bsdtar -xf t.tar -C o1; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send cmp tree/a.txt o1/tree/a.txt && cmp tree/s/b.txt o1/tree/s/b.txt && cmp tree/s/d/c.bin o1/tree/s/d/c.bin && cmp tree/s/$N o1/tree/s/$N && echo ok-$T-tar
+wait ok-x-tar
+wait {prompt}
+send ls o1/tree | grep ^empty/$ && ls o1/tree | grep ^empty.txt$ && echo ok-$T-tar2
+wait ok-x-tar2
+wait {prompt}
+
+# ---- gzip: -z; minigzip reads what bsdtar wrote (the tar inside is the plain tar), and the other way ----
+send run $P/bsdtar -czf t.tgz tree; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send run $P/minigzip -d -c t.tgz > t-gz.tar; cmp t-gz.tar t.tar && echo ok-$T-gzx
+wait ok-x-gzx
+wait {prompt}
+send run $P/bsdcat t.tgz > t-cat.tar; cmp t-cat.tar t.tar && echo ok-$T-gzcat
+wait ok-x-gzcat
+wait {prompt}
+send mkdir o2; run $P/bsdtar -xzf t.tgz -C o2; cmp tree/a.txt o2/tree/a.txt && cmp tree/s/d/c.bin o2/tree/s/d/c.bin && cmp tree/s/$N o2/tree/s/$N && echo ok-$T-tgz
+wait ok-x-tgz
+wait {prompt}
+send run $P/minigzip -c t.tar > e.tgz; run $P/bsdtar -tf e.tgz | run $S/grep -c ^tree/ | run $S/sed s/^/n-/
+wait n-9
+wait {prompt}
+
+# ---- bzip2: -j ---------------------------------------------------------------------------
+send run $P/bsdtar -cjf t.tbz tree; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send run $P/bzip2 -t t.tbz; run $P/bzip2 -d -c t.tbz > t-bz.tar; cmp t-bz.tar t.tar && echo ok-$T-bzx
+wait ok-x-bzx
+wait {prompt}
+send mkdir o3; run $P/bsdtar -xf t.tbz -C o3; cmp tree/a.txt o3/tree/a.txt && cmp tree/s/d/c.bin o3/tree/s/d/c.bin && cmp tree/s/$N o3/tree/s/$N && echo ok-$T-tbz
+wait ok-x-tbz
+wait {prompt}
+send run $P/bzip2 -c t.tar > e.tbz; run $P/bsdtar -tf e.tbz | run $S/grep -c ^tree/ | run $S/sed s/^/n-/
+wait n-9
+wait {prompt}
+
+# ---- xz: -J, and the old .lzma format ------------------------------------------------------
+send run $P/bsdtar -cJf t.txz tree; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send run $P/xz -t t.txz; run $P/xz -d -c t.txz > t-xz.tar; cmp t-xz.tar t.tar && echo ok-$T-xzx
+wait ok-x-xzx
+wait {prompt}
+send mkdir o4; run $P/bsdtar -xf t.txz -C o4; cmp tree/a.txt o4/tree/a.txt && cmp tree/s/d/c.bin o4/tree/s/d/c.bin && cmp tree/s/$N o4/tree/s/$N && echo ok-$T-txz
+wait ok-x-txz
+wait {prompt}
+send run $P/xz -c t.tar > e.txz; run $P/bsdtar -tf e.txz | run $S/grep -c ^tree/ | run $S/sed s/^/n-/
+wait n-9
+wait {prompt}
+send run $P/bsdtar --lzma -cf t.tlz tree; run $P/xz -F lzma -d -c t.tlz > t-lz.tar; cmp t-lz.tar t.tar && echo ok-$T-lzma
+wait ok-x-lzma
+wait {prompt}
+send run $P/xz -F lzma -c t.tar > e.tlz; run $P/bsdtar -tf e.tlz | run $S/grep -c ^tree/ | run $S/sed s/^/n-/
+wait n-9
+wait {prompt}
+
+# ---- zip (deflate): bsdtar writes it, bsdunzip lists and extracts it ------------------------
+send run $P/bsdtar --format zip -cf t.zip tree; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send run $P/bsdunzip -l t.zip | run $S/grep -c tree/ | run $S/sed s/^/n-/
+wait n-9
+wait {prompt}
+send mkdir o5; run $P/bsdunzip -d o5 t.zip; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send cmp tree/a.txt o5/tree/a.txt && cmp tree/s/b.txt o5/tree/s/b.txt && cmp tree/s/d/c.bin o5/tree/s/d/c.bin && cmp tree/s/$N o5/tree/s/$N && echo ok-$T-zip
+wait ok-x-zip
+wait {prompt}
+
+# ---- 7-zip with each of its compressions (LZMA, LZMA2, bzip2, deflate, none) ---------------
+send run $P/bsdtar --format 7zip -cf t.7z tree; run $P/bsdtar --format 7zip --options 7zip:compression=lzma2 -cf t2.7z tree; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send run $P/bsdtar --format 7zip --options 7zip:compression=bzip2 -cf t3.7z tree; run $P/bsdtar --format 7zip --options 7zip:compression=deflate -cf t4.7z tree; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send run $P/bsdtar --format 7zip --options 7zip:compression=copy -cf t5.7z tree; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send mkdir o6 o7 o8 o9 o10; run $P/bsdtar -xf t.7z -C o6; run $P/bsdtar -xf t2.7z -C o7; run $P/bsdtar -xf t3.7z -C o8; run $P/bsdtar -xf t4.7z -C o9; run $P/bsdtar -xf t5.7z -C o10; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send cmp tree/a.txt o6/tree/a.txt && cmp tree/s/d/c.bin o6/tree/s/d/c.bin && cmp tree/s/$N o6/tree/s/$N && echo ok-$T-7z-lzma
+wait ok-x-7z-lzma
+wait {prompt}
+send cmp tree/a.txt o7/tree/a.txt && cmp tree/s/d/c.bin o7/tree/s/d/c.bin && cmp tree/s/$N o7/tree/s/$N && echo ok-$T-7z-lzma2
+wait ok-x-7z-lzma2
+wait {prompt}
+send cmp tree/a.txt o8/tree/a.txt && cmp tree/s/d/c.bin o8/tree/s/d/c.bin && cmp tree/s/$N o8/tree/s/$N && echo ok-$T-7z-bzip2
+wait ok-x-7z-bzip2
+wait {prompt}
+send cmp tree/a.txt o9/tree/a.txt && cmp tree/s/d/c.bin o9/tree/s/d/c.bin && cmp tree/s/$N o9/tree/s/$N && echo ok-$T-7z-deflate
+wait ok-x-7z-deflate
+wait {prompt}
+send cmp tree/a.txt o10/tree/a.txt && cmp tree/s/d/c.bin o10/tree/s/d/c.bin && cmp tree/s/$N o10/tree/s/$N && echo ok-$T-7z-copy
+wait ok-x-7z-copy
+wait {prompt}
+
+# ---- cpio: bsdcpio -o from a list of names (newc), -it, and -id in another directory ---------
+send run $S/find tree | run $P/bsdcpio -o --format newc > t.cpio; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send run $P/bsdcpio -it < t.cpio | run $S/grep -c ^tree | run $S/sed s/^/n-/
+wait n-9
+wait {prompt}
+send mkdir o11; cd o11; run $P/bsdcpio -id < ../t.cpio; echo st-$T=$?; cd ..
+wait st-x=0
+wait {prompt}
+send cmp tree/a.txt o11/tree/a.txt && cmp tree/s/d/c.bin o11/tree/s/d/c.bin && cmp tree/s/$N o11/tree/s/$N && echo ok-$T-cpio
+wait ok-x-cpio
+wait {prompt}
+
+# ---- a program started as the compression filter (posix_spawn): sbase's cat as an identity filter ----
+send run $P/bsdtar -cf up.tar --use-compress-program=$S/cat tree; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send cmp up.tar t.tar && echo ok-$T-filter
+wait ok-x-filter
+wait {prompt}
+
+# ---- refusals: an entry named ../x is not extracted; a damaged xz; a file that isn't there ---------
+send run $P/bsdtar -cPf evil.tar -C tree/s ../a.txt; mkdir o12; run $P/bsdtar -xf evil.tar -C o12; echo st-$T=$?
+wait st-x=1
+wait {prompt}
+send ls /data/lt | grep -c ^a.txt$ | run $S/sed s/^/n-/
+wait n-0
+wait {prompt}
+send cp t.txz t-dam.txz; printf 'Z' | run $S/dd of=t-dam.txz bs=1 seek=300 conv=notrunc; run $P/bsdtar -tf t-dam.txz > junk.txt; echo st-$T=$?
+wait st-x=1
+wait {prompt}
+send run $P/bsdtar -tf nothere.tar; echo st-$T=$?
+wait st-x=1
+wait {prompt}
+send cd /data; rm -r /data/lt; ls /data | grep -c ^lt$ | run $S/sed s/^/n-/
+wait n-0
+wait {prompt}

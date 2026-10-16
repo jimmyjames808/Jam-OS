@@ -1,0 +1,26 @@
+# bzip2: the bzip2 compressor and libbz2 (rung 2 of the first ports,
+# docs/M13.7-PLAN.md section 16): the first plain-Makefile port (`style
+# make`: the builder gives it CC, AR, RANLIB and PREFIX), and a library
+# libarchive `needs`. Only the programs and the library: bzgrep, bzmore and
+# bzdiff are shell scripts that wait for a POSIX shell.
+name        bzip2
+version     1.0.8
+revision    1
+summary     the bzip2 compressor and libbz2
+homepage    https://sourceware.org/bzip2/
+category    archivers
+licence     bzip2-1.0.6
+licence-file LICENSE
+source      https://sourceware.org/pub/bzip2/bzip2-$version.tar.gz 810029 ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269
+place       package
+style       make
+# bzip2 and bzip2recover read and write the files they are named, in
+# /data (wants/bzip2). bunzip2 and bzcat are bzip2 under other names (it
+# reads argv[0]: upstream's install copies the file).
+program     bin/bzip2
+program     bin/bzip2recover wants/bzip2
+multicall   bin/bzip2 bunzip2 bzcat
+library     lib/libbz2.a include/bzlib.h
+# The files of upstream's own `make test` (three samples, compressed and
+# not), for the test on Jam OS (ports/bzip2/test), never in the repository.
+subpackage  bzip2-test share/bzip2/test/*

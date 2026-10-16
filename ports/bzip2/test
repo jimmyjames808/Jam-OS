@@ -1,0 +1,132 @@
+# bzip2's test (tools/ports-test.sh): bzip2 and bzip2recover from the
+# package on /data/pkg, and upstream's own `make test`: the three sample
+# files it ships (the bzip2-test package: /data/pkg/share/bzip2/test) are
+# compressed at -1, -2 and -3 to the very bytes upstream's .bz2 files hold,
+# and those are decompressed (sample3 in -s, small, mode) to the .ref files.
+# The rest uses `seq 1 20000`, 108894 bytes of text whose SHA-256 below was
+# made on the Mac with Python's hashlib; so were the sizes of its .bz2 at
+# -1 (25483, two blocks) and -9 (25147): Python's bz2 is libbz2 too, and
+# libbz2's output is fixed for a level.
+send run $S/seq 1 20000 > /data/bt-in; sha256sum /data/bt-in
+wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  /data/bt-in
+wait {prompt}
+
+# ---- upstream's `make test`: compress, compare with the shipped .bz2; decompress, compare with the .ref ----
+send run $P/bzip2 -1 < /data/pkg/share/bzip2/test/sample1.ref > /data/bt-s1.rb2; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send cmp /data/bt-s1.rb2 /data/pkg/share/bzip2/test/sample1.bz2 && echo ok-$T-s1
+wait ok-x-s1
+wait {prompt}
+send run $P/bzip2 -2 < /data/pkg/share/bzip2/test/sample2.ref > /data/bt-s2.rb2; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send cmp /data/bt-s2.rb2 /data/pkg/share/bzip2/test/sample2.bz2 && echo ok-$T-s2
+wait ok-x-s2
+wait {prompt}
+send run $P/bzip2 -3 < /data/pkg/share/bzip2/test/sample3.ref > /data/bt-s3.rb2; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send cmp /data/bt-s3.rb2 /data/pkg/share/bzip2/test/sample3.bz2 && echo ok-$T-s3
+wait ok-x-s3
+wait {prompt}
+send run $P/bzip2 -d < /data/pkg/share/bzip2/test/sample1.bz2 > /data/bt-s1.tst; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send cmp /data/bt-s1.tst /data/pkg/share/bzip2/test/sample1.ref && echo ok-$T-d1
+wait ok-x-d1
+wait {prompt}
+send run $P/bzip2 -d < /data/pkg/share/bzip2/test/sample2.bz2 > /data/bt-s2.tst; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send cmp /data/bt-s2.tst /data/pkg/share/bzip2/test/sample2.ref && echo ok-$T-d2
+wait ok-x-d2
+wait {prompt}
+send run $P/bzip2 -ds < /data/pkg/share/bzip2/test/sample3.bz2 > /data/bt-s3.tst; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send cmp /data/bt-s3.tst /data/pkg/share/bzip2/test/sample3.ref && echo ok-$T-d3
+wait ok-x-d3
+wait {prompt}
+
+# ---- in place: bzip2 FILE makes FILE.bz2 and removes FILE; -d does the reverse ------------
+send cp /data/bt-in /data/bt-w; run $P/bzip2 /data/bt-w; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send ls /data | grep ^bt-w.bz2$ && ls /data | grep -c ^bt-w$ | grep ^0$ && echo ok-$T-bz
+wait ok-x-bz
+wait {prompt}
+send run $S/wc -c /data/bt-w.bz2 | run $S/sed s/^/size-/
+wait size-25147 /data/bt-w.bz2
+wait {prompt}
+send sha256sum /data/bt-w.bz2
+wait 11bc453662b7f78536302ebf0145b83c014cc0ba3a06419bfe64d1268712106a  /data/bt-w.bz2
+wait {prompt}
+send run $P/bzip2 -t /data/bt-w.bz2; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send run $P/bzip2 -d /data/bt-w.bz2; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send sha256sum /data/bt-w
+wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  /data/bt-w
+wait {prompt}
+
+# ---- -k keeps the input; -c to standard output; the same input gives the same bytes -------
+send run $P/bzip2 -k /data/bt-in; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send ls /data | grep ^bt-in.bz2$ && ls /data | grep ^bt-in$ && echo ok-$T-kept
+wait ok-x-kept
+wait {prompt}
+send run $P/bzip2 -c /data/bt-in > /data/bt-c1.bz2; run $P/bzip2 -c /data/bt-in > /data/bt-c2.bz2; cmp /data/bt-c1.bz2 /data/bt-c2.bz2 && cmp /data/bt-c1.bz2 /data/bt-in.bz2 && echo ok-$T-same
+wait ok-x-same
+wait {prompt}
+send cat /data/bt-in | run $P/bzip2 | run $P/bzip2 -d | sha256sum
+wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  -
+wait {prompt}
+
+# ---- -1: another size, two blocks; bzip2recover cuts them apart ---------------------------
+send run $P/bzip2 -1 -c /data/bt-in > /data/bt-r.bz2; run $S/wc -c /data/bt-r.bz2 | run $S/sed s/^/size-/
+wait size-25483 /data/bt-r.bz2
+wait {prompt}
+send run $P/bzip2recover /data/bt-r.bz2; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send ls /data | grep -c ^rec0000.bt-r.bz2$ | grep ^2$ && echo ok-$T-rec
+wait ok-x-rec
+wait {prompt}
+send run $P/bzip2 -t /data/rec00001bt-r.bz2; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send run $P/bzip2 -dc /data/rec00001bt-r.bz2 /data/rec00002bt-r.bz2 | sha256sum
+wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  -
+wait {prompt}
+
+# ---- binary data: a program of the boot image, megabytes of it ---------------------------
+send cp /boot/bin/utest /data/bt-bin; run $P/bzip2 -k /data/bt-bin; run $P/bzip2 -t /data/bt-bin.bz2; mv /data/bt-bin /data/bt-bin.orig; run $P/bzip2 -d /data/bt-bin.bz2; cmp /data/bt-bin /data/bt-bin.orig && echo ok-$T-bin
+wait ok-x-bin
+wait {prompt}
+
+# ---- an empty file (14 bytes of .bz2) and back ---------------------------------------------
+send printf '' > /data/bt-empty; run $P/bzip2 /data/bt-empty; run $S/wc -c /data/bt-empty.bz2 | run $S/sed s/^/size-/
+wait size-14 /data/bt-empty.bz2
+wait {prompt}
+send run $P/bzip2 -d /data/bt-empty.bz2; run $S/wc -c /data/bt-empty | run $S/sed s/^/size-/
+wait size-0 /data/bt-empty
+wait {prompt}
+
+# ---- failures: a file that isn't bzip2 and a damaged one (status 2), a file that isn't there (1) ----
+send printf 'this is not bzip2 data\n' > /data/bt-bad.bz2; run $P/bzip2 -t /data/bt-bad.bz2; echo st-$T=$?
+wait bad magic number
+wait st-x=2
+wait {prompt}
+send cp /data/pkg/share/bzip2/test/sample1.bz2 /data/bt-dam.bz2; printf 'Z' | run $S/dd of=/data/bt-dam.bz2 bs=1 seek=100 conv=notrunc; run $P/bzip2 -t /data/bt-dam.bz2; echo st-$T=$?
+wait st-x=2
+wait {prompt}
+send run $S/dd if=/data/bt-c1.bz2 of=/data/bt-cut.bz2 bs=100 count=1; run $P/bzip2 -t /data/bt-cut.bz2; echo st-$T=$?
+wait st-x=2
+wait {prompt}
+send run $P/bzip2 -t /data/bt-nothere.bz2; echo st-$T=$?
+wait st-x=1
+wait {prompt}

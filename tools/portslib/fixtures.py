@@ -105,6 +105,7 @@ install() {
     mkdir -p "$destdir$prefix/bin" "$destdir$prefix/share/app"
     cp app helper "$destdir$prefix/bin/"
     cp data.txt "$destdir$prefix/share/app/data.txt"
+    cp data.txt "$destdir$prefix/share/app/check.txt"
     ln -s data.txt "$destdir$prefix/share/app/alias.txt"
 }
 """
@@ -180,6 +181,7 @@ RECIPES = {
                                                  "library lib/libb.a include/b.h lib/pkgconfig/libb.pc"]),
     "app": ("custom", "ISC", ["needs libb", "program bin/app", "files share/app",
                               "subpackage app-extra share/app/alias.txt",
+                              "subpackage app-test share/app/check.txt",
                               "multicall bin/app app-a app-b"]),
     "bootapp": ("custom", "MIT", ["place boot", "program bin/boxy", "multicall bin/boxy tool1 tool2"]),
     "sneaky": ("custom", "MIT", ["needs liba", "program bin/sneaky"]),

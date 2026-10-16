@@ -78,3 +78,19 @@ send run $S/dd if=/data/zt-c1.gz of=/data/zt-cut.gz bs=100 count=1; run $P/minig
 wait st-x=0
 wait size-85 /data/zt-cut
 wait {prompt}
+
+# ---- zlib's own test program (the zlib-test package; what its `make test` runs after minigzip):
+# compress, uncompress, gzopen/gzread/gzseek/gzgets on a file, deflate and inflate in
+# pieces, a large inflate, inflateSync past damage, a preset dictionary; each CHECK_ERR
+# failure exits 1 with its message, and every line below is a success ----------------------
+send run $P/example /data/zt-ex.gz; echo st-$T=$?
+wait zlib version 1.3.2
+wait uncompress(): hello, hello!
+wait gzread(): hello, hello!
+wait gzgets() after gzseek:
+wait inflate(): hello, hello!
+wait large_inflate(): OK
+wait after inflateSync(): hello, hello!
+wait inflate with dictionary: hello, hello!
+wait st-x=0
+wait {prompt}

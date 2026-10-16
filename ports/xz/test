@@ -61,6 +61,25 @@ wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  -
 wait {prompt}
 send run $P/xz -T2 -c /data/xt-in | run $P/xz -d | sha256sum
 wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  -
+wait {prompt}
+
+# ---- other containers: threads over several blocks (-T0 is every CPU), the old .lzma format
+# (named, and found by its header), a raw stream, and two .xz files in one (concatenated:
+# xz reads both, so the input's hash comes out twice over) ----------------------------------
+send run $P/xz -T0 --block-size=20KiB -c /data/xt-in > /data/xt-b.xz; run $P/xz -t /data/xt-b.xz; run $P/xz -d -c /data/xt-b.xz | sha256sum
+wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  -
+wait {prompt}
+send run $P/xz -F lzma -c /data/xt-in > /data/xt-l.lzma; run $P/xz -F lzma -d -c /data/xt-l.lzma | sha256sum
+wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  -
+wait {prompt}
+send run $P/xz -d -c /data/xt-l.lzma | sha256sum
+wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  -
+wait {prompt}
+send run $P/xz -F raw --lzma2=preset=3 -c /data/xt-in > /data/xt-r.raw; run $P/xz -F raw --lzma2=preset=3 -d -c /data/xt-r.raw | sha256sum
+wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  -
+wait {prompt}
+send run $S/cat /data/xt-1.xz /data/xt-2.xz > /data/xt-cat.xz; run $P/xz -t /data/xt-cat.xz; run $P/xz -d -c /data/xt-cat.xz | sha256sum
+wait 73a87de7ba60678fe89b1170b07e0507d2e430ef007f50665abaa9e843c88dfb  -
 
 # ---- damage: -t fails on a file that isn't xz, and on an xz whose data was changed -------
 wait {prompt}

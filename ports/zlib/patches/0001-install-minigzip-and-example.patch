@@ -1,12 +1,15 @@
-Description: install minigzip, zlib's small gzip, with the library
+Description: install minigzip, zlib's small gzip, and example, its test program
  zlib's `make install` puts in only the library, its headers, its man page
  and zlib.pc. Jam OS's package carries minigzip too: a program that shows
- the library works on Jam OS, and what the port's test runs.
-Forwarded: not-needed (upstream builds minigzip as a test, not a program to install)
+ the library works on Jam OS, and what the port's test runs. `example` is
+ zlib's own test of the library's calls (what `make test` runs after
+ minigzip): it is installed for the zlib-test subpackage, which runs it on
+ Jam OS, and never goes into the repository.
+Forwarded: not-needed (upstream builds minigzip and example as tests, not programs to install)
 ---
 --- a/Makefile.in
 +++ b/Makefile.in
-@@ -345,6 +345,10 @@ install: install-libs
+@@ -345,6 +345,13 @@ install: install-libs
  	rm -f $(DESTDIR)$(includedir)/zlib.h $(DESTDIR)$(includedir)/zconf.h
  	cp $(SRCDIR)zlib.h zconf.h $(DESTDIR)$(includedir)
  	chmod 644 $(DESTDIR)$(includedir)/zlib.h $(DESTDIR)$(includedir)/zconf.h
@@ -14,6 +17,9 @@ Forwarded: not-needed (upstream builds minigzip as a test, not a program to inst
 +	rm -f $(DESTDIR)$(exec_prefix)/bin/minigzip$(EXE)
 +	cp minigzip$(EXE) $(DESTDIR)$(exec_prefix)/bin
 +	chmod 755 $(DESTDIR)$(exec_prefix)/bin/minigzip$(EXE)
++	rm -f $(DESTDIR)$(exec_prefix)/bin/example$(EXE)
++	cp example$(EXE) $(DESTDIR)$(exec_prefix)/bin
++	chmod 755 $(DESTDIR)$(exec_prefix)/bin/example$(EXE)
 
  uninstall:
  	cd $(DESTDIR)$(includedir) && rm -f zlib.h zconf.h
