@@ -136,6 +136,20 @@ isr_common_gs_ok:
     swapgs
 1:  iretq
 
+/* _Noreturn void user_resume_iret(struct trap_frame *f)
+ * exception_done's EXC_RESUME (upcall.c): back to ring 3 with every
+ * register from f, as isr_common's tail returns. Interrupts are off, the
+ * FPU state loaded, f's RIP, CS, SS and RFLAGS checked; f lies on this
+ * thread's kernel stack, and whatever the stack held above it is
+ * abandoned (the next entry starts at its top again). */
+    .global user_resume_iret
+user_resume_iret:
+    movq %rdi, %rsp
+    POP_GPRS
+    addq $16, %rsp          /* vector + error code */
+    swapgs
+    iretq
+
 /* NMI, #MC, #DB on their IST stacks. */
 isr_ist:
     testb $3, 24(%rsp)

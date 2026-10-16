@@ -451,6 +451,33 @@
 # it: ERR_NOT_SUPPORTED until then.
 139 process_replace   status    handle_t proc, uint64_t entry, uint64_t stack, handle_t arg0, uint64_t arg1
 
+# exceptions: a thread's own faults (docs/SIGNALS-PLAN.md section 1) ----------
+# The calling process's exception entry (one per process; 0 removes it):
+# from the return on, a fault of any of its threads that would kill it
+# enters `entry` on that thread with a struct exc_frame instead (<jam/abi.h>:
+# which faults, the frame, the registers at the entry). The caller's own
+# process only, as thread_set_fs_base acts on the caller: no handle, no
+# right. ERR_INVALID_ARGS at or past the user range's top (0x7fffffffe000).
+170 exception_entry_set status  uint64_t entry
+# The calling thread is done with a frame its entry was given (how, EXC_*):
+# EXC_RESUME: continue from `frame`'s registers and XSAVE area, read once
+#   (no return). Checked, and a kill if any check fails: the cookie is the
+#   thread's own (it has had a frame), the size and xsave_size are the
+#   kernel's, RIP is below the user range's top, the XSAVE header holds
+#   only XCR0's components with XCOMP_BV and the reserved bytes 0, and
+#   MXCSR only bits the CPU takes. RFLAGS keeps only the bits user code
+#   may set, with IF on; CS, SS and the FS base never come from a frame.
+#   Ends the window, if the thread is in it.
+# EXC_LEAVE: end the window (the handler then runs as ordinary code of
+#   the thread); OK.
+# EXC_UNHANDLED: the process is killed as the fault would have killed it
+#   with no entry, with that kill line (from what the kernel kept, not
+#   from `frame`).
+# `frame` matters only to EXC_RESUME (ERR_INVALID_ARGS if it can't be
+# read). ERR_BAD_STATE for EXC_LEAVE and EXC_UNHANDLED outside the window;
+# ERR_INVALID_ARGS for any other `how`.
+171 exception_done    status    const struct exc_frame *frame, uint32_t how
+
 # hardware ------------------------------------------------------------------
 # Resources (RES_* in <jam/abi.h>): a slice must lie inside its parent,
 # which needs RIGHT_SLICE.

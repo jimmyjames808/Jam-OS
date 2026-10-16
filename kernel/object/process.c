@@ -99,6 +99,7 @@ struct process {
     uint64_t            cpu_done;                /* (L) CPU time (TSC) of the threads that left */
     uint32_t            pid;                     /* its small id (pid_space), fixed */
     uint64_t            start_ns;                /* uptime when it was created, fixed */
+    uint64_t            exc_entry;   /* its exception entry, 0: none (atomic; upcall.c) */
     struct list_node    threads;                 /* (L) struct uthread, every one not destroyed */
     char                name[PROCESS_NAME_MAX + 1]; /* NUL-terminated */
     /* debug_write ("process output" lock): the current, unfinished line and
@@ -139,6 +140,16 @@ static void copy_name(char *dst, size_t cap, const char *src)
 struct process *process_current(void)
 {
     return current_thread()->process;
+}
+
+void process_set_exc_entry(struct process *p, uint64_t entry)
+{
+    __atomic_store_n(&p->exc_entry, entry, __ATOMIC_RELAXED);
+}
+
+uint64_t process_exc_entry(struct process *p)
+{
+    return __atomic_load_n(&p->exc_entry, __ATOMIC_RELAXED);
 }
 
 struct job *job_current(void)

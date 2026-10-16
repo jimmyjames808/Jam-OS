@@ -1587,8 +1587,27 @@ static void vmo_child_bench(void)
     kobject_unref(vmo_kobject(p));
 }
 
+/* ---- a fault caught and resumed (test_upcall.c) ------------------------------ */
+
+unsigned upcall_bench_cycles(uint32_t cpu, uint64_t *out, unsigned n);
+
+/* A user fault (ud2) delivered to its process's exception entry, which
+ * resumes past it: the whole round trip, timed in ring 3. */
+static void upcall_bench(void)
+{
+    unsigned n = upcall_bench_cycles(cpu_p, samples, SAMPLES);
+    if (!n) {
+        report("bench: user: a fault caught and resumed: the program failed (see the log)");
+        return;
+    }
+    for (unsigned i = 0; i < n; i++)
+        samples[i] = span_ps(0, samples[i], 1);
+    result("user: a fault caught and resumed (upcall, P)", samples, n);
+}
+
 /* Serial output, sleep accuracy, TLB shootdown, address-space switches,
- * FPU state, the IOMMU, copy-on-write children and the ring-3 benchmarks. */
+ * FPU state, fault upcalls, the IOMMU, copy-on-write children and the
+ * ring-3 benchmarks. */
 static void system_benches(void)
 {
     serial_output();
@@ -1606,6 +1625,7 @@ static void system_benches(void)
     }
     as_switch();
     fpu_state();
+    upcall_bench();
     iommu_bench();
     vmo_child_bench();
     user_benches();

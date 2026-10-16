@@ -2,8 +2,9 @@
  *
  * Vectors 32 and up are interrupts (irq_dispatch); below 32 are CPU
  * exceptions. A page fault may be demand paging or a user copy, handled
- * by trap_page_fault. Any other exception kills the user thread that
- * caused it, or panics if it happened in the kernel. */
+ * by trap_page_fault. Any other exception from user code goes to its
+ * process's exception entry or kills the process (user_fault), and
+ * panics if it happened in the kernel. */
 #include <jam/ipi.h>
 #include <jam/irq.h>
 #include <jam/kprintf.h>
@@ -14,8 +15,6 @@
 #include <jam/trap.h>
 #include <jam/uentry.h>
 #include <jam/uentry_test.h>
-
-void user_trap_return(struct trap_frame *f);
 
 static const char *const user_fault_names[32] = {
     [0] = "divide error", [1] = "debug trap", [3] = "breakpoint", [4] = "overflow",
@@ -69,8 +68,11 @@ void trap_dispatch(struct trap_frame *f)
         panic_trap(f);
     }
     if (from_user) {
+        /* A kill, or its process's exception entry (upcall.c). */
         const char *name = user_fault_names[f->vector];
-        user_fault_kill(f, name ? name : "exception");
+        user_fault(f, name ? name : "exception", 0, OK);   /* returns only if delivered */
+        user_trap_return(f);
+        return;
     }
     panic_trap(f);   /* every other exception in the kernel is fatal */
 }
