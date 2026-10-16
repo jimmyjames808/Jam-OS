@@ -1,7 +1,7 @@
 /* Running a line: its lists (; && || &), each list's pipeline, each
  * stage's NAME=value words and alias, and then the command: one in the
- * table, else a program in a directory of $PATH (/boot/bin and
- * /boot/usr/bin to begin with); a POSIX program takes the stage's
+ * table, else a program in a directory of $PATH (/boot/bin,
+ * /boot/usr/bin and /data/pkg/bin to begin with); a POSIX program takes the stage's
  * redirections (< > >> 2>&1: sh_posix.c). The POSIX programs of a pipeline
  * run at once, joined by pipes; the shell's commands run in turn (see
  * exec_pipeline). A command before a single & is a
@@ -25,7 +25,7 @@ int sh_status(void)
 /* The program called name (no '/') in the first directory of $PATH that
  * has one (SH_PATH_DEFAULT when PATH is unset), as an absolute path into
  * path. false if there is none. */
-static bool path_find(const char *name, char *path, size_t cap)
+bool sh_path_find(const char *name, char *path, size_t cap)
 {
     const char *dirs = sh_getvar("PATH");
     if (!dirs)
@@ -55,7 +55,7 @@ static bool path_find(const char *name, char *path, size_t cap)
 static int exec_unknown(int argc, char **argv, bool bg)
 {
     char path[SH_PATH_MAX], std[SH_PATH_MAX];
-    if (!strchr(argv[0], '/') && path_find(argv[0], path, sizeof(path))) {
+    if (!strchr(argv[0], '/') && sh_path_find(argv[0], path, sizeof(path))) {
         snprintf(std, sizeof(std), "/boot/bin/%s", argv[0]);
         char *by_path[SH_MAX_WORDS + 1];
         if (strcmp(path, std)) {
@@ -222,7 +222,7 @@ static bool stage_is_posix(const char *text)
     if (w.argc && !sh_assignment(w.argv[0]) && !strchr(w.argv[0], '/') &&
         !sh_find_cmd(w.argv[0]) && (w.quoted[0] || !sh_alias_of(w.argv[0]))) {
         char path[SH_PATH_MAX], std[SH_PATH_MAX];
-        if (path_find(w.argv[0], path, sizeof(path))) {
+        if (sh_path_find(w.argv[0], path, sizeof(path))) {
             snprintf(std, sizeof(std), "/boot/bin/%s", w.argv[0]);
             posix = sh_program_is_posix(strcmp(path, std) ? path : w.argv[0]);
         }

@@ -14,22 +14,25 @@
         the shell's `allow -l` lists every approval
 
 What `install` writes, as `pkg` and init would have (section 9), for a test
-image only:
+image only. The packages are the ones `ports.py package` makes (the port's
+own, and one for each `subpackage`: a `-test` subpackage's files are in
+`<port>-test`; `library` files are for other builds and never go into a
+package), each with a signed manifest:
 
-    /data/pkg/<path>        every file of the package: the stage's `program`,
-                            `file` and `licence` lines (a `-test` subpackage's
-                            files are `file` lines too; `library` files are
-                            for other builds and never go into a package)
-    /data/pkg/db/<name>     the manifest, without a signature (`pkg check`
-                            would refuse it: nothing signed this image)
-    /data/etc/allow         one approval per `program`:
-                            <sha-256>\\t/data/pkg/<path>\\t<what its list asks for>
+    /data/pkg/<path>        every file of every package
+    /data/pkg/db/<name>     the package's manifest, signed with the ports
+                            vectors' test key (--key: another), its `abi` the
+                            tree's stamp (tools/ports.py abi), so `pkg list`,
+                            `pkg info` and `pkg check` on the image see an
+                            installed package, as long as the image's
+                            /boot/ports.pub is test.pub (tools/ports-test.sh
+                            puts it there)
+    /data/etc/allow         one approval per `program`, tagged with its package:
+                            <sha-256>\\t/data/pkg/<path>\\t<what its list asks for>\\tpkg=<name> <version>-r<rev>
+    /data/etc/allow.d/<sha> the program's page-hash table (the manifest's `table` line)
 
-Not written, because the pieces are not on main yet: the page-hash tables in
-/data/etc/allow.d/ (M12.5's PX: until it lands the shell reads a program
-whole and needs only the approval line), db/serial and db/journal (PO6).
-Programs run from /data today as `run /data/pkg/bin/<name>`; /data/pkg/bin
-is on no PATH yet (PO7).
+Not written: db/serial and db/journal (the first `pkg update` makes the
+serial; nothing is in the middle of a change).
 
 After writing, every program is read back from the image and its SHA-256
 compared with the stage's. Runs on the Mac's Python 3.9 and the test
@@ -46,6 +49,10 @@ TOP = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(TOP, "tools"))
 sys.dont_write_bytecode = True
 
+from portslib import package as packagemod  # noqa: E402
+from portslib import pagetable  # noqa: E402
+from portslib import pkgformat as fmt  # noqa: E402
+from portslib import sign as signmod  # noqa: E402
 from portslib import tree as treemod  # noqa: E402
 
 
@@ -106,33 +113,6 @@ def wants_text(lines):
     return ", ".join(shown) if shown else "nothing"
 
 
-# ---- the stage list (tools/portslib/stage.py) --------------------------------------------
-
-def read_stage(stage_dir, name):
-    """{'port': [...], 'built-with': [...], 'files': [(kind, path, size, sha, list)]}"""
-    path = os.path.join(stage_dir, name, "stage", "stage.txt")
-    try:
-        lines = open(path).read().splitlines()
-    except OSError:
-        raise Error("%s: not built (no %s): run tools/ports.py build %s" % (name, path, name))
-    if not lines or lines[0] != "jamos-stage 1":
-        raise Error("%s: not a jamos-stage 1 list" % path)
-    out = {"port": None, "built-with": [], "files": [], "root": os.path.dirname(path)}
-    for line in lines[1:]:
-        w = line.split()
-        if not w:
-            continue
-        if w[0] == "port":
-            out["port"] = w[1:]
-        elif w[0] == "built-with":
-            out["built-with"].append(w[1:])
-        elif w[0] in ("program", "file", "licence", "library"):
-            out["files"].append((w[0], w[1], int(w[2]), w[3], w[4] if len(w) > 4 else None))
-    if not out["port"]:
-        raise Error("%s: no port line" % path)
-    return out
-
-
 def sha256(path):
     h = hashlib.sha256()
     with open(path, "rb") as f:
@@ -151,56 +131,60 @@ def mtool(*args):
     return r.stdout
 
 
-def install(image, names, ports, stage_dir, offset_mib, feed=None):
+def install(image, names, ports, stage_dir, offset_mib, key=None, feed=None):
     t = load_tree(ports)
     order = closure(t, names)
+    abi = fmt.abi_stamp(TOP)
     part = "%s@@%dM" % (image, offset_mib)
     work = tempfile.mkdtemp(prefix="ports-preinstall.")
     try:
+        if not key:   # the ports vectors' key: its public half is ports/vectors/test.pub
+            key, _pub = signmod.test_key(os.path.join(work, "keys"), "ports vectors")
         pkg, etc = os.path.join(work, "pkg"), os.path.join(work, "etc")
+        tables = os.path.join(etc, "allow.d")
         os.makedirs(os.path.join(pkg, "db"))
-        os.makedirs(etc)
-        allow, programs = [], []
-        seen = {}   # path -> port: two packages must not own one file
+        os.makedirs(tables)
+        allow, programs, packages = [], [], []
+        seen = {}   # path -> package: two packages must not own one file
         for name in order:
             r = t.recipes[name]
             if r.place != "package":
                 raise Error("%s is a boot-image port (place %s): nothing to install" %
                             (name, r.place))
-            st = read_stage(stage_dir, name)
-            prefix = st["port"][4]
-            if prefix != "/data/pkg":
-                raise Error("%s: staged for %s, not /data/pkg" % (name, prefix))
-            manifest = ["jamos-pkg 1", "name " + st["port"][0], "version " + st["port"][1],
-                        "revision " + st["port"][2],
-                        "# written by tools/ports-preinstall.py for a test image: no signature"]
-            manifest += ["built-with " + " ".join(b) for b in st["built-with"]]
-            progs = []
-            for kind, rel, size, digest, lst in st["files"]:
-                if kind == "library":
-                    continue
-                src = os.path.join(st["root"], rel)
-                if not os.path.isfile(src) or sha256(src) != digest:
-                    raise Error("%s: %s is not what stage.txt says (rebuild it)" % (name, rel))
-                if rel in seen or rel.startswith("db/"):
-                    raise Error("%s: %s is also %s's" % (name, rel, seen.get(rel, "db/")))
-                seen[rel] = name
-                dst = os.path.join(pkg, rel)
-                os.makedirs(os.path.dirname(dst), exist_ok=True)
-                shutil.copyfile(src, dst)
-                mode = "755" if os.stat(src).st_mode & 0o111 else "644"
-                manifest.append("file %s %s %d %s" % (rel, mode, size, digest))
-                if kind == "program":
-                    lines = ["posix"]
-                    if lst and lst != "-":
-                        lines = open(os.path.join(r.dir, lst)).read().splitlines()
-                    text = wants_text(lines)
-                    progs.append("program %s %s" % (rel, text))
-                    allow.append("%s\t%s/%s\t%s" % (digest, prefix, rel, text))
-                    programs.append((rel, digest))
-            manifest += progs
-            with open(os.path.join(pkg, "db", name), "w") as f:
-                f.write("\n".join(manifest) + "\n")
+            stage = os.path.join(stage_dir, name, "stage")
+            if not os.path.isfile(os.path.join(stage, "stage.txt")):
+                raise Error("%s: not built (no %s/stage.txt): run tools/ports.py build %s" %
+                            (name, stage, name))
+            try:
+                pkgs = packagemod.plan(r, stage)
+                problems = ["%s: %s" % (p.name, x) for p in pkgs for x in packagemod.check(p)]
+                if problems:
+                    raise Error("the format can't hold it:\n  " + "\n  ".join(problems))
+                texts = [signmod.sign(packagemod.manifest(p, abi), fmt.PKG_FIRST, key)
+                         for p in pkgs]
+            except (packagemod.PackageError, signmod.SignError) as e:
+                raise Error("%s: %s" % (name, e))
+            for p, signed in zip(pkgs, texts):
+                tag = "pkg=%s %s-r%d" % (p.name, p.version, p.revision)
+                for rel in sorted(p.files):
+                    if rel in seen or rel.startswith("db/"):
+                        raise Error("%s: %s is also %s's" % (p.name, rel, seen.get(rel, "db/")))
+                    seen[rel] = p.name
+                    data = p.files[rel][1]
+                    dst = os.path.join(pkg, rel)
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    with open(dst, "wb") as f:
+                        f.write(data)
+                    if rel in p.lists:
+                        digest = hashlib.sha256(data).hexdigest()
+                        text = wants_text(p.lists[rel].decode().splitlines())
+                        allow.append("%s\t/data/pkg/%s\t%s\t%s" % (digest, rel, text, tag))
+                        programs.append((rel, digest))
+                        with open(os.path.join(tables, digest), "wb") as f:
+                            f.write(pagetable.make(data))
+                with open(os.path.join(pkg, "db", p.name), "wb") as f:
+                    f.write(signed)
+                packages.append("%s %s-r%d" % (p.name, p.version, p.revision))
         with open(os.path.join(etc, "allow"), "w") as f:
             f.write(ALLOW_HEAD + "".join(a + "\n" for a in allow))
         # one recursive copy each; mtools makes the directories
@@ -218,12 +202,12 @@ def install(image, names, ports, stage_dir, offset_mib, feed=None):
                 f.write("# the approvals written into the image, as `allow -l` shows them\n")
                 f.write("send allow -l\n")
                 for line in allow:
-                    digest, path, text = line.split("\t")
-                    f.write("wait %s: %s (sha-256 %s\n" % (path, text, digest[:16]))
+                    digest, path, text, tag = line.split("\t")   # shown: `<text> [package <tag>]`
+                    f.write("wait %s: %s [package %s] (sha-256 %s\n" %
+                            (path, text, tag[len("pkg="):], digest[:16]))
                 f.write("wait {prompt}\n")
-        names_done = ", ".join(order)
         print("ports-preinstall: %s: %d files, %d programs allowed (%s)" %
-              (os.path.basename(image), len(seen), len(programs), names_done))
+              (os.path.basename(image), len(seen), len(programs), ", ".join(packages)))
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
@@ -237,6 +221,10 @@ def main(argv):
     sub.add_parser("closure").add_argument("port", nargs="+")
     i = sub.add_parser("install")
     i.add_argument("--offset-mib", type=int, help="default: from the image's MBR")
+    i.add_argument("--key", metavar="FILE",
+                   help="the secret key that signs the manifests (default: the ports vectors' "
+                        "test key, whose public half tools/ports-test.sh puts in the image "
+                        "as /boot/ports.pub)")
     i.add_argument("--feed", metavar="FILE",
                    help="write the serial script lines that check `allow -l` shows the approvals")
     i.add_argument("image")
@@ -252,7 +240,7 @@ def main(argv):
             if not os.path.isfile(args.image):
                 raise Error("%s: no such image" % args.image)
             offset = args.offset_mib if args.offset_mib is not None else data_mib(args.image)
-            install(args.image, args.port, args.ports, args.stage, offset, args.feed)
+            install(args.image, args.port, args.ports, args.stage, offset, args.key, args.feed)
     except Error as e:
         print("ports-preinstall: %s" % e, file=sys.stderr)
         return 1

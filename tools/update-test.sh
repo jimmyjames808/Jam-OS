@@ -12,7 +12,10 @@
 #      "needs a newer build"; changed after signing: the signature), two
 #      files that match their signed manifest but are no kernel), the
 #      manifest with an extension line no build knows, signed (taken,
-#      check only), and the good build offered check only (accepted, not
+#      check only), with another build's ABI stamp in its `abi` line (taken,
+#      check only: an older build skips the line) and with an `abi` line
+#      twice, one of them 15 digits (refused: no manifest; the line is the
+#      extension line this build knows), and the good build offered check only (accepted, not
 #      loaded), and the other-network one forced and check only (accepted,
 #      not loaded); `run updtest wire`: the offer's wire by hand (a message
 #      of another protocol, a manifest past its cap, a count that is not the
@@ -66,7 +69,11 @@ python3 tools/update-server.py --manifest build/jamos.elf "$out/bootfs-marked.im
     python3 tools/update-server.py --manifest build/jamos.elf "$out/bootfs-marked.img" \
         --extra "future-note no build knows this line" --key "$key1" > "$out/manifest-ext" &&
     python3 tools/update-server.py --manifest build/jamos.elf "$out/bootfs-marked.img" \
-        --extra "!future-must 1" --key "$key1" > "$out/manifest-must" ||
+        --extra "!future-must 1" --key "$key1" > "$out/manifest-must" &&
+    python3 tools/update-server.py --manifest build/jamos.elf "$out/bootfs-marked.img" \
+        --abi fedcba9876543210 --key "$key1" > "$out/manifest-abi" &&
+    python3 tools/update-server.py --manifest build/jamos.elf "$out/bootfs-marked.img" \
+        --extra "abi 0123456789abcde" --key "$key1" > "$out/manifest-badabi" ||
     { echo "update-test: no manifest"; exit 1; }
 # Two files that are no kernel (updtest makes the same bytes), signed.
 python3 -c 'import sys; open(sys.argv[1], "wb").write(b"\x55" * 8192);
@@ -77,7 +84,7 @@ open(sys.argv[2], "wb").write(b"\xaa" * 4096)' "$out/nak.elf" "$out/nak.img" &&
 mmd -i "$stick@@$DATA_AT" ::/update &&
     mcopy -i "$stick@@$DATA_AT" "$out/manifest" "$out/manifest-otherkey" \
         "$out/manifest-othernet" "$out/manifest-ext" "$out/manifest-must" \
-        "$out/nak.manifest" ::/update/ &&
+        "$out/manifest-abi" "$out/manifest-badabi" "$out/nak.manifest" ::/update/ &&
     mcopy -i "$stick@@$DATA_AT" build/jamos.elf ::/update/jamos.elf &&
     mcopy -i "$stick@@$DATA_AT" "$out/bootfs-marked.img" ::/update/bootfs.img ||
     { echo "update-test: can't write the stick's /data"; exit 1; }
@@ -131,8 +138,8 @@ QEMU_IMAGE="$stick" QEMU_TIMEOUT=${QEMU_TIMEOUT:-600} QEMU_INPUT="$out/update.tx
 log="$out/update.log"
 grep -aq "updtest: bad: PASS" "$log" || fail "a damaged offer wasn't refused for its reason"
 grep -aq "updtest: wire: PASS" "$log" || fail "a malformed offer wasn't refused by its wire"
-[ "$(grep -ac "init: update: refused: " "$log")" -eq 20 ] ||
-    fail "not 20 refusals logged by init"
+[ "$(grep -ac "init: update: refused: " "$log")" -eq 21 ] ||
+    fail "not 21 refusals logged by init"
 [ "$(grep -ac "init: update: refused: the signature isn't this build's key's" "$log")" -eq 4 ] ||
     fail "not 4 refusals for the signature"
 needs="init: update: refused: it needs a newer build than this one to take it (it has"
@@ -142,6 +149,10 @@ grep -aq "$needs \"jamos-update 3\"" "$log" ||
     fail "another format wasn't refused as needing a newer build"
 grep -aq "updtest: an extension line (check only): accepted" "$log" ||
     fail "a manifest with an extension line wasn't taken"
+grep -aq "updtest: an abi line of another build (check only): .* as expected" "$log" ||
+    fail "a manifest with another build's ABI stamp wasn't taken"
+grep -aq "updtest: a malformed abi line: .* as expected" "$log" ||
+    fail "a manifest with a malformed abi line wasn't refused as no manifest"
 [ "$(grep -ac "init: update: refused: the manifest is not signed" "$log")" -eq 1 ] ||
     fail "the unsigned manifest wasn't refused for that"
 grep -aq "init: update: refused: its network default is $othernet, this build's $net" "$log" ||

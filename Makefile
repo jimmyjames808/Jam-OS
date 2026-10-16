@@ -752,14 +752,19 @@ boot/splash.mpg: $(SPLASH_FILES)
 # 2079f35", "-dirty" when tracked files had changes), which `version` and
 # `update` show and tools/update-server.py puts in the manifest, then the
 # network's default mode ("net vlan21", "net untagged"), which init's
-# update check and tools/flash-usb.sh read. Written again only when it
-# changes, so an unchanged tree packs nothing anew.
+# update check and tools/flash-usb.sh read, then the ABI stamp ("abi
+# 23f43a3c93e81a21": tools/ports.py abi, the hash of the system calls and
+# protocols a ported program carries the call layer for: bin/pkg refuses a
+# package of another stamp, `update` says when a new build has another,
+# docs/M13.7-PLAN.md section 11). Written again only when it changes, so an
+# unchanged tree packs nothing anew.
 BUILD_INFO := $(BUILD)/build.txt
 $(BUILD_INFO): $(NET_STAMP) FORCE
 	@mkdir -p $(BUILD)
 	@h=$$(git rev-parse --short=7 HEAD 2>/dev/null) || h=0000000; \
 	 [ $$h = 0000000 ] || git diff --quiet HEAD -- 2>/dev/null || h=$$h-dirty; \
-	 printf 'git %s\n%s\n' "$$h" "$(NET_TEXT)" > $@.new; \
+	 a=$$(python3 tools/ports.py abi) || exit 1; \
+	 printf 'git %s\n%s\nabi %s\n' "$$h" "$(NET_TEXT)" "$$a" > $@.new; \
 	 if cmp -s $@.new $@; then rm $@.new; else mv $@.new $@; fi
 FORCE:
 

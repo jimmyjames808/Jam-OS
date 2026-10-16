@@ -41,6 +41,7 @@
  * that breaks its own rules makes the manifest ERR_INVALID_ARGS):
  *
  *     menu <size> <SHA-256>       boot/limine.conf, the boot menu
+ *     abi <stamp>                 the build's ABI stamp (16 lower-case hex digits)
  *
  * `menu` names the boot menu that goes with the build (the server's
  * boot/limine.conf, size 1..UPDATE_MENU_MAX): a third file to fetch,
@@ -50,6 +51,16 @@
  * extension line, not a must-understand one: a build older than it skips
  * it and updates the build alone, its menu left as it was. A manifest
  * without it (an older server's) updates the build alone too.
+ *
+ * `abi` is the build's ABI stamp, the one its build.txt has (the Makefile
+ * computes it, tools/ports.py abi prints it: the hash of the system calls
+ * and protocols a ported program carries the call layer for,
+ * docs/M13.7-PLAN.md section 11). After an update whose stamp differs from
+ * the running build's, bin/update tells the owner how many installed
+ * packages were built for the old system. An extension line too: a build
+ * older than it skips it. A manifest without it (an older server's, or
+ * one served from a build that has none) is of an unknown stamp: nothing
+ * is said.
  *
  * A size is decimal bytes, 1..UPDATE_FILE_MAX, no leading zero; a SHA-256
  * is 64 lower-case hex digits; a VLAN has no leading zero. The `net` line
@@ -120,6 +131,7 @@
 #define UPDATE_FILE_MAX     (32u << 20)    /* bytes of either file: the stored kernel's region */
 #define UPDATE_VERSION_MAX  47u            /* bytes of the version string */
 #define UPDATE_GIT_MAX      47u            /* bytes of the git field (40 hex + "-dirty") */
+#define UPDATE_ABI_LEN      16u            /* digits of an ABI stamp */
 #define UPDATE_NET_MAX      15u            /* bytes of the net field ("vlan4094", "untagged") */
 #define UPDATE_KEY_BYTES    32u            /* an Ed25519 public key */
 #define UPDATE_SIG_BYTES    64u            /* an Ed25519 signature */
@@ -143,6 +155,7 @@ struct update_manifest {
         uint8_t  sha256[SHA256_BYTES];
     } file[UPDATE_PARTS];                       /* [UPDATE_MENU]: only if has_menu */
     bool     has_menu;                          /* a `menu` line names the boot menu */
+    char     abi[UPDATE_ABI_LEN + 1];           /* the `abi` line's stamp; "" if none */
     size_t   signed_len;                        /* bytes before the signature line */
     bool     has_signature;                     /* the signature line has a value */
     uint8_t  signature[UPDATE_SIG_BYTES];       /* ... this one (zeros if not) */
@@ -160,7 +173,8 @@ struct update_manifest {
  * checked). Extension lines it doesn't know are skipped. ERR_INVALID_ARGS:
  * not a manifest (a line missing, out of order, misspelt, twice, a bad
  * character, too long, a signature that isn't 128 hex digits, anything
- * after the end, a `menu` line that breaks its rules or comes twice);
+ * after the end, a `menu` or `abi` line that breaks its rules or comes
+ * twice);
  * ERR_OUT_OF_RANGE: a size of 0 or over UPDATE_FILE_MAX (a menu's, over
  * UPDATE_MENU_MAX);
  * ERR_NOT_SUPPORTED: another format (out->needs alone is written: its
@@ -171,6 +185,11 @@ status_t update_manifest_parse(const void *text, size_t len, struct update_manif
  * (written only on success). ERR_NOT_FOUND: no such line, or not a valid
  * value (a build made before build.txt had one). */
 status_t update_build_net(const void *text, size_t len, char out[UPDATE_NET_MAX + 1]);
+/* The ABI stamp a build.txt of len bytes records (its line "abi <16
+ * lower-case hex digits>"), into out (written only on success).
+ * ERR_NOT_FOUND: no such line, or not a valid value (a build made before
+ * it had one). */
+status_t update_build_abi(const void *text, size_t len, char out[UPDATE_ABI_LEN + 1]);
 /* Did `key` sign exactly the first m->signed_len bytes of text, the
  * manifest m was parsed from? OK if so; ERR_ACCESS_DENIED if m has no
  * signature, or it isn't key's signature of those bytes. */
