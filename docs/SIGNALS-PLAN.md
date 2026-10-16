@@ -270,6 +270,13 @@ What the triage after SG5 found (TB, 2026-10-17; for SGR):
   last fork is resumed by `__jam_sig_resume` in user mode (XRSTOR, the
   registers, a jump through memory). libc-test's `regression/raise-race`
   lost children so, now and then; posixtest forks in a raised handler.
+- **The posix-signal hang** (300 s after the sampler line, once) was the
+  test's: three waits were `while (!flag) pause();` (signal.c's taker,
+  sigproc.c's counting child, tty.c's child), and a signal that comes
+  between the look and pause() runs its handler there, so pause() sleeps
+  for good (Linux has the same race; a raise only made the window real).
+  Seen again in the storage run under TCG; each now waits in sigsuspend
+  with its signal blocked outside it, as pty.c's wait_hup does.
 - **An ending thread** cleared its thread-local record pointer only after
   putting the record on the spare list and giving `sig_lock`: a thread
   started in between could take it while a raise to the ending one read
