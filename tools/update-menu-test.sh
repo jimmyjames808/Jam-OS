@@ -57,6 +57,10 @@
 #      build)") with its command line. Each boot is stopped at the kernel's
 #      `loader:` line.
 # MENU_RUNS picks runs (2-4 need 1; 6 needs 5). About 15 minutes for all.
+# With QEMU_BOOT_NVME=1 every boot is of an installed drive: qemu-test.sh makes
+# the stick image Jam OS's GPT layout on NVMe (its ESP is at 1M still) and
+# boot_entry attaches it as NVMe too: `MENU_RUNS="menus stops" QEMU_BOOT_NVME=1`
+# is the menu swap's power-cut points on NVMe.
 # Usage: tools/update-menu-test.sh <outdir> (after `make -s image`); exit 0 on PASS.
 set -u
 DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
@@ -125,7 +129,7 @@ printf 'git b0b0b0b\n%s\n' "$(sed -n 's/^\(net .*\)$/\1/p' build/build.txt)" > "
 python3 tools/bootfs-edit.py "$out/testkey/bootfs-key.img" "$out/bootfs-B.img" \
     "update-marker.txt=$out/mtest-marker.txt" "build.txt=$out/mtest-build.txt" ||
     { echo "update-menu-test: can't make build B's boot image"; exit 1; }
-mcopy -i "$img@@1M" ::/boot/bootfs.img "$out/bootfs-A.img"
+mcopy -n -i "$img@@1M" ::/boot/bootfs.img "$out/bootfs-A.img"
 put() {   # put <file> <path on /data>
     mcopy -o -i "$img@@$DATA_AT" "$1" "::$2" || { echo "update-menu-test: can't write $2"; exit 1; }
 }
@@ -205,8 +209,8 @@ boot_entry() {
     cp "$1" "$i"
     mdel -i "$i@@1M" ::/EFI/BOOT/limine.conf 2>/dev/null
     if [ "$3" != 0 ]; then
-        mcopy -i "$i@@1M" ::/boot/limine/limine.conf "$out/$2.conf" 2>/dev/null ||
-            mcopy -i "$i@@1M" ::/boot/limine.conf "$out/$2.conf"
+        mcopy -n -i "$i@@1M" ::/boot/limine/limine.conf "$out/$2.conf" 2>/dev/null ||
+            mcopy -n -i "$i@@1M" ::/boot/limine.conf "$out/$2.conf"
         python3 - "$out/$2.conf" "$3" <<'EOF'
 import sys
 lines = [l for l in open(sys.argv[1]).read().split("\n")[:-1] if not l.startswith("timeout:")]
@@ -221,11 +225,15 @@ EOF
     . "$(dirname "$0")/qemu-host.sh"   # ovmf_code, ovmf_vars, accel, machine
     cp "$ovmf_vars" "$out/$2.vars"
     rm -f "$out/$2.log"
+    # the stick, or (QEMU_BOOT_NVME=1: the image is Jam OS's GPT layout) the
+    # installed drive, as qemu-test.sh attaches it
+    bootdev="-device usb-storage,bus=xhci.0,port=1,drive=stick,bootindex=0"
+    [ "${QEMU_BOOT_NVME:-0}" = 1 ] && bootdev="-device nvme,serial=jamos-boot,drive=stick,bootindex=0"
     qemu-system-x86_64 -M "$machine" -accel "$accel" -m 2G -smp 2 -cpu max -snapshot \
         -drive if=pflash,format=raw,readonly=on,file="$ovmf_code" \
         -drive if=pflash,format=raw,file="$out/$2.vars" \
         -device qemu-xhci,id=xhci -drive if=none,id=stick,format=raw,file="$i" \
-        -device usb-storage,bus=xhci.0,port=1,drive=stick,bootindex=0 \
+        $bootdev \
         -serial file:"$out/$2.log" -display none -no-reboot -nic none 2> "$out/$2.qemu" &
     q=$!
     j=0
@@ -365,7 +373,7 @@ entries)
     got=$(boot_entry "$out/m5-saved.img" m6-0 0)
     echo "update-menu-test: m6: Limine's own pick starts: $got"
     [ "$got" = "$vb|" ] || fail "m6: the written stick's default isn't B with no words ($got)"
-    mcopy -i "$out/m5-saved.img@@1M" ::/boot/limine/limine.conf "$out/m6.conf"
+    mcopy -n -i "$out/m5-saved.img@@1M" ::/boot/limine/limine.conf "$out/m6.conf"
     python3 - "$out/m6.conf" > "$out/m6.entries" <<'EOF'
 import sys
 n = 0

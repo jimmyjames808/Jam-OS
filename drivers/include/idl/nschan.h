@@ -46,11 +46,11 @@
 
 /* Constants (the .idl's `const` lines). */
 /* Mounts in one namespace. */
-#define NSCHAN_MAX_MOUNTS 8u
+#define NSCHAN_MAX_MOUNTS 16u
 /* Services in one namespace. */
 #define NSCHAN_MAX_SVCS 32u
 /* Entries in one message (MAX_MOUNTS + MAX_SVCS). */
-#define NSCHAN_MAX_ENTRIES 40u
+#define NSCHAN_MAX_ENTRIES 48u
 /* Bytes of one entry's path, with its NUL. */
 #define NSCHAN_NAME_MAX 32u
 
@@ -68,9 +68,9 @@ struct nschan_set_msg {   /* an event: txid 0 */
     uint32_t ordinal;
 } __attribute__((packed));
 
-#define NSCHAN_REQ_MAX 1332u   /* bytes: the biggest message to the server */
+#define NSCHAN_REQ_MAX 1596u   /* bytes: the biggest message to the server */
 #define NSCHAN_REP_MAX 8u   /* bytes: the biggest message to the client */
-#define NSCHAN_REQ_HANDLES 40   /* handles: read with each message to the server */
+#define NSCHAN_REQ_HANDLES 48   /* handles: read with each message to the server */
 #define NSCHAN_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
 #define NSCHAN_UNREAD_MSGS IDL_UNREAD_MSGS   /* the unread bound: messages ... */
 #define NSCHAN_UNREAD_BYTES IDL_UNREAD_BYTES   /* ... or bytes a client may leave unread */
@@ -88,19 +88,19 @@ struct nschan_set_msg {   /* an event: txid 0 */
  * write that failed (the caller never closes them after this). */
 static inline status_t nschan_mount(handle_t ch, const uint8_t *paths, uint32_t paths_len, const uint8_t *connect, uint32_t connect_len, const handle_t *hs, uint32_t hs_len)
 {
-    _Alignas(8) uint8_t idl_b0[1332];
+    _Alignas(8) uint8_t idl_b0[1596];
     struct nschan_mount_msg *idl_q = (struct nschan_mount_msg *)idl_b0;
     uint32_t idl_qn = sizeof(*idl_q);
     status_t idl_st = OK;
     idl_q->txid = 0;   /* an event */
     idl_q->ordinal = NSCHAN_MOUNT;
-    if (idl_st == OK && (hs_len > 40 || (hs_len && !hs)))
+    if (idl_st == OK && (hs_len > 48 || (hs_len && !hs)))
         idl_st = ERR_INVALID_ARGS;
-    if (idl_st == OK && !idl_put(idl_b0, &idl_qn, paths, paths_len, 1280, 1))
+    if (idl_st == OK && !idl_put(idl_b0, &idl_qn, paths, paths_len, 1536, 1))
         idl_st = ERR_INVALID_ARGS;
-    if (idl_st == OK && !idl_put(idl_b0, &idl_qn, connect, connect_len, 40, 1))
+    if (idl_st == OK && !idl_put(idl_b0, &idl_qn, connect, connect_len, 48, 1))
         idl_st = ERR_INVALID_ARGS;
-    handle_t idl_hs[40];
+    handle_t idl_hs[48];
     uint32_t idl_hn = 0;
     if (idl_st == OK) {
         for (uint32_t idl_i = 0; idl_i < hs_len; idl_i++)
@@ -119,13 +119,13 @@ static inline status_t nschan_mount(handle_t ch, const uint8_t *paths, uint32_t 
  * ERR_SHOULD_WAIT: the peer's queue is full (its flow control). */
 static inline status_t nschan_unmount(handle_t ch, const uint8_t *paths, uint32_t paths_len)
 {
-    _Alignas(8) uint8_t idl_b0[1290];
+    _Alignas(8) uint8_t idl_b0[1546];
     struct nschan_unmount_msg *idl_q = (struct nschan_unmount_msg *)idl_b0;
     uint32_t idl_qn = sizeof(*idl_q);
     status_t idl_st = OK;
     idl_q->txid = 0;   /* an event */
     idl_q->ordinal = NSCHAN_UNMOUNT;
-    if (idl_st == OK && !idl_put(idl_b0, &idl_qn, paths, paths_len, 1280, 1))
+    if (idl_st == OK && !idl_put(idl_b0, &idl_qn, paths, paths_len, 1536, 1))
         idl_st = ERR_INVALID_ARGS;
     if (idl_st == OK)
         idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
@@ -141,19 +141,19 @@ static inline status_t nschan_unmount(handle_t ch, const uint8_t *paths, uint32_
  * write that failed (the caller never closes them after this). */
 static inline status_t nschan_set(handle_t ch, const uint8_t *paths, uint32_t paths_len, const uint8_t *connect, uint32_t connect_len, const handle_t *hs, uint32_t hs_len)
 {
-    _Alignas(8) uint8_t idl_b0[1332];
+    _Alignas(8) uint8_t idl_b0[1596];
     struct nschan_set_msg *idl_q = (struct nschan_set_msg *)idl_b0;
     uint32_t idl_qn = sizeof(*idl_q);
     status_t idl_st = OK;
     idl_q->txid = 0;   /* an event */
     idl_q->ordinal = NSCHAN_SET;
-    if (idl_st == OK && (hs_len > 40 || (hs_len && !hs)))
+    if (idl_st == OK && (hs_len > 48 || (hs_len && !hs)))
         idl_st = ERR_INVALID_ARGS;
-    if (idl_st == OK && !idl_put(idl_b0, &idl_qn, paths, paths_len, 1280, 1))
+    if (idl_st == OK && !idl_put(idl_b0, &idl_qn, paths, paths_len, 1536, 1))
         idl_st = ERR_INVALID_ARGS;
-    if (idl_st == OK && !idl_put(idl_b0, &idl_qn, connect, connect_len, 40, 1))
+    if (idl_st == OK && !idl_put(idl_b0, &idl_qn, connect, connect_len, 48, 1))
         idl_st = ERR_INVALID_ARGS;
-    handle_t idl_hs[40];
+    handle_t idl_hs[48];
     uint32_t idl_hn = 0;
     if (idl_st == OK) {
         for (uint32_t idl_i = 0; idl_i < hs_len; idl_i++)
@@ -195,13 +195,13 @@ static inline status_t nschan_event_in(const struct nschan_ops *idl_tab, void *c
         uint32_t idl_l0 = 0;
         const void *idl_p1 = NULL;
         uint32_t idl_l1 = 0;
-        if (idl_st == OK && !idl_get(idl_m, idl_n, &idl_o, 1280, 1, &idl_p0, &idl_l0))
+        if (idl_st == OK && !idl_get(idl_m, idl_n, &idl_o, 1536, 1, &idl_p0, &idl_l0))
             idl_st = ERR_INVALID_ARGS;
-        if (idl_st == OK && !idl_get(idl_m, idl_n, &idl_o, 40, 1, &idl_p1, &idl_l1))
+        if (idl_st == OK && !idl_get(idl_m, idl_n, &idl_o, 48, 1, &idl_p1, &idl_l1))
             idl_st = ERR_INVALID_ARGS;
         if (idl_st == OK && idl_o != idl_n)
             idl_st = ERR_INVALID_ARGS;
-        if (idl_st == OK && idl_nh > 40)
+        if (idl_st == OK && idl_nh > 48)
             idl_st = ERR_INVALID_ARGS;
         if (idl_st == OK && !idl_tab->mount)
             idl_st = ERR_NOT_SUPPORTED;
@@ -218,7 +218,7 @@ static inline status_t nschan_event_in(const struct nschan_ops *idl_tab, void *c
         status_t idl_st = idl_n < sizeof(*idl_e) ? ERR_INVALID_ARGS : OK;
         const void *idl_p0 = NULL;
         uint32_t idl_l0 = 0;
-        if (idl_st == OK && !idl_get(idl_m, idl_n, &idl_o, 1280, 1, &idl_p0, &idl_l0))
+        if (idl_st == OK && !idl_get(idl_m, idl_n, &idl_o, 1536, 1, &idl_p0, &idl_l0))
             idl_st = ERR_INVALID_ARGS;
         if (idl_st == OK && idl_o != idl_n)
             idl_st = ERR_INVALID_ARGS;
@@ -241,13 +241,13 @@ static inline status_t nschan_event_in(const struct nschan_ops *idl_tab, void *c
         uint32_t idl_l0 = 0;
         const void *idl_p1 = NULL;
         uint32_t idl_l1 = 0;
-        if (idl_st == OK && !idl_get(idl_m, idl_n, &idl_o, 1280, 1, &idl_p0, &idl_l0))
+        if (idl_st == OK && !idl_get(idl_m, idl_n, &idl_o, 1536, 1, &idl_p0, &idl_l0))
             idl_st = ERR_INVALID_ARGS;
-        if (idl_st == OK && !idl_get(idl_m, idl_n, &idl_o, 40, 1, &idl_p1, &idl_l1))
+        if (idl_st == OK && !idl_get(idl_m, idl_n, &idl_o, 48, 1, &idl_p1, &idl_l1))
             idl_st = ERR_INVALID_ARGS;
         if (idl_st == OK && idl_o != idl_n)
             idl_st = ERR_INVALID_ARGS;
-        if (idl_st == OK && idl_nh > 40)
+        if (idl_st == OK && idl_nh > 48)
             idl_st = ERR_INVALID_ARGS;
         if (idl_st == OK && !idl_tab->set)
             idl_st = ERR_NOT_SUPPORTED;

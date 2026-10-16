@@ -15,8 +15,12 @@
  * its parent's state; a desynchronized one's apply at once, unless a
  * parent above it is synchronized (subsurface_synced: the protocol's
  * "effectively synchronized"). set_desync applies a cache left waiting
- * at once, as other compositors do. A wl_subsurface's destroy takes its
- * surface out of the tree at once; its cache is dropped.
+ * at once, as other compositors do. A commit's buffer offset
+ * (wl_surface.offset, or attach's x and y below version 5) moves the
+ * subsurface against its parent, the offsets of cached commits added up,
+ * until set_position next sets its place (subsurface_offset: weston's rule).
+ * A wl_subsurface's destroy takes its surface out of the tree at once; its
+ * cache is dropped.
  *
  * Lifetimes. A child's wl_surface destroyed before its wl_subsurface is
  * the protocol's defunct_role_object error, as xdg-shell's roles are here.
@@ -331,9 +335,20 @@ static status_t on_sub_destroy(void *data, uint32_t self)
     return OK;
 }
 
-static int32_t clamp_pos(int32_t v)
+static int32_t clamp_pos(int64_t v)
 {
-    return v < -COMP_SUB_POS_MAX ? -COMP_SUB_POS_MAX : v > COMP_SUB_POS_MAX ? COMP_SUB_POS_MAX : v;
+    return v < -COMP_SUB_POS_MAX ? -COMP_SUB_POS_MAX
+           : v > COMP_SUB_POS_MAX ? COMP_SUB_POS_MAX : (int32_t)v;
+}
+
+bool subsurface_offset(struct comp_surface *s, int32_t dx, int32_t dy)
+{
+    struct comp_sub *sub = s->sub;
+    if (!sub || (!dx && !dy))
+        return false;
+    sub->x = clamp_pos((int64_t)sub->x + dx);
+    sub->y = clamp_pos((int64_t)sub->y + dy);
+    return true;
 }
 
 static status_t on_set_position(void *data, uint32_t self, int32_t x, int32_t y)

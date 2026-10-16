@@ -16,10 +16,18 @@
  *
  * t_unix_limits: LISTENERS_PER_OPENER on one opener, LISTENERS_MAX across
  * openers, OPENERS_MAX openers, each ERR_NO_RESOURCES past it and free
- * again once closed; utest's job holds the handles it held before. */
+ * again once closed; an opener closed with a listener still bound through
+ * it keeps its slot until that listener closes (CR-REVIEW-POSIX Q2);
+ * utest's job holds the handles it held before.
+ *
+ * t_unix_own: libos's grants give /svc/unix by name as an opener of the
+ * program's own (connect 0: one bind works, svc.connect on it gets none)
+ * and "*" as our channel is (connect 1: svc.connect hands out openers). */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
+#include <idl/nschan.h>
+#include <idl/svc.h>
 #include <idl/unix.h>
 #include <os.h>
 #include "utest.h"
@@ -198,28 +206,113 @@ bool t_unix_limits(void)
         jam_handle_close(ls[i]);
     for (unsigned k = 0; k < nopen; k++)
         jam_handle_close(os[k]);
-    /* Openers: OPENERS_MAX, then the next refused until one closes. */
+    /* Openers: OPENERS_MAX, then the next refused until one closes. One
+     * whose channel closed with a listener bound through it still alive
+     * keeps its slot until the listener closes too (CR-REVIEW-POSIX Q2). */
+    handle_t kept = opener(), kl = HANDLE_INVALID;
+    CHECK(kept != HANDLE_INVALID);
+    CHECK_ST(bind_soon(kept, "utest-kept", &kl), OK);
+    jam_handle_close(kept);   /* its channel gone, its listener not */
     unsigned n = 0;
     uint64_t until = now() + SOON;   /* the ones above, closed a moment ago */
-    while (n < UNIX_OPENERS_MAX && now() < until) {
+    while (n < UNIX_OPENERS_MAX - 1 && now() < until) {
         handle_t h = HANDLE_INVALID;
         if (svc_open(SVC_UNIX, &h) == OK)
             os[n++] = h;
         else
             (void)jam_sleep_until(now() + NS_PER_MS);
     }
-    CHECK_EQ(n, UNIX_OPENERS_MAX);
+    CHECK_EQ(n, UNIX_OPENERS_MAX - 1);
     handle_t h = HANDLE_INVALID;
+    CHECK_ST(svc_open(SVC_UNIX, &h), ERR_NO_RESOURCES);   /* the kept one's slot counts */
+    jam_handle_close(kl);
+    until = now() + SOON;
+    status_t st;
+    while ((st = svc_open(SVC_UNIX, &h)) == ERR_NO_RESOURCES && now() < until)
+        (void)jam_sleep_until(now() + NS_PER_MS);
+    CHECK_ST(st, OK);   /* its listener gone: its slot is free */
+    os[n++] = h;
     CHECK_ST(svc_open(SVC_UNIX, &h), ERR_NO_RESOURCES);
     jam_handle_close(os[0]);
     until = now() + SOON;
-    status_t st;
     while ((st = svc_open(SVC_UNIX, &h)) == ERR_NO_RESOURCES && now() < until)
         (void)jam_sleep_until(now() + NS_PER_MS);
     CHECK_ST(st, OK);
     os[0] = h;
     for (unsigned k = 0; k < n; k++)
         jam_handle_close(os[k]);
+    CHECK_ST(jam_job_get_info(startup_handle(SR_JOB), &after), OK);
+    CHECK_EQ(after.used[JOB_LIMIT_HANDLES], before.used[JOB_LIMIT_HANDLES]);
+    return true;
+}
+
+/* What ns_send wrote for /svc/unix, read back: its connect byte and its
+ * channel (ours now). */
+struct sent_svc {
+    unsigned n;
+    uint8_t  connect;
+    handle_t h;
+};
+
+static void sent_mount(void *ctx, const uint8_t *paths, uint32_t paths_len,
+                       const uint8_t *connect, uint32_t connect_len, const handle_t *hs,
+                       uint32_t nh)
+{
+    struct sent_svc *s = ctx;
+    for (uint32_t i = 0; i < nh; i++) {
+        bool ours = s->n == 0 && i < connect_len && (i + 1) * NS_NAME_MAX <= paths_len &&
+                    !strcmp((const char *)paths + (size_t)i * NS_NAME_MAX, "/svc/" SVC_UNIX);
+        if (ours) {
+            s->connect = connect[i];
+            s->h = hs[i];
+            s->n++;
+        } else {
+            jam_handle_close(hs[i]);
+        }
+    }
+}
+
+/* /svc/unix as ns_send gives it for grants. */
+static bool sent_unix(const char *const *grants, struct sent_svc *s)
+{
+    static const struct nschan_ops ops = { .mount = sent_mount };
+    handle_t a, b;
+    memset(s, 0, sizeof(*s));
+    CHECK_ST(jam_channel_create(&a, &b), OK);
+    CHECK_ST(ns_send(a, grants), OK);
+    CHECK_ST(nschan_serve_one(b, &ops, s), OK);
+    jam_handle_close(a);
+    jam_handle_close(b);
+    CHECK_EQ(s->n, 1u);
+    return true;
+}
+
+bool t_unix_own(void)
+{
+    handle_t o = opener();
+    if (!o) {
+        printf("utest: unix_own: skipped: no /svc/unix\n");
+        return true;
+    }
+    jam_handle_close(o);
+    struct job_info before, after;
+    CHECK_ST(jam_job_get_info(startup_handle(SR_JOB), &before), OK);
+    /* By name: an opener of the program's own, which hands out no more. */
+    struct sent_svc s;
+    const char *const named[] = { "/svc/" SVC_UNIX, NULL };
+    CHECK(sent_unix(named, &s));
+    CHECK_EQ(s.connect, 0);
+    handle_t l = HANDLE_INVALID, h = HANDLE_INVALID;
+    CHECK_ST(bind_abs(s.h, "utest-own", &l), OK);    /* it is an opener */
+    CHECK(svc_connect_within(s.h, WAIT, &h) != OK);   /* that makes none: the broker drops it */
+    jam_handle_close(l);
+    jam_handle_close(s.h);
+    /* "*": our channel as we have it, which hands out openers. */
+    CHECK(sent_unix(NS_ALL, &s));
+    CHECK_EQ(s.connect, 1);
+    CHECK_ST(svc_connect_within(s.h, WAIT, &h), OK);
+    jam_handle_close(h);
+    jam_handle_close(s.h);
     CHECK_ST(jam_job_get_info(startup_handle(SR_JOB), &after), OK);
     CHECK_EQ(after.used[JOB_LIMIT_HANDLES], before.used[JOB_LIMIT_HANDLES]);
     return true;

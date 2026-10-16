@@ -146,6 +146,53 @@ bool lx_group_exists(int32_t pgid)
     return found;
 }
 
+/* The three below ask the kernel with the table's lock held: its calls are
+ * short (a process_get_maps waits only for the region lock, which a fault's
+ * wait for a pager gives up), and the handle can't be reaped meanwhile. */
+long lx_child_facts(int32_t pid, struct lx_child_facts *out)
+{
+    lock_take(&lock);
+    const struct child *c = find_locked(pid);
+    long r = c ? 0 : -ESRCH;
+    if (c) {
+        out->pgid = c->pgid;
+        out->sid = c->sid;
+        out->dead = c->dead;
+        if (jam_process_get_info(c->proc, &out->info) != OK)
+            out->info = (struct process_info){ .state = PROCESS_DEAD, .killed = 1,
+                                               .exit_code = PROCESS_KILLED_CODE, .pid = (uint32_t)pid };
+    }
+    lock_give(&lock);
+    return r;
+}
+
+bool lx_child_exists(int32_t pid)
+{
+    lock_take(&lock);
+    bool yes = find_locked(pid) != NULL;
+    lock_give(&lock);
+    return yes;
+}
+
+long lx_child_maps(int32_t pid, uint64_t from, struct map_info *out, uint32_t cap)
+{
+    lock_take(&lock);
+    const struct child *c = find_locked(pid);
+    long r = c ? kp_process_maps(c->proc, from, out, cap) : -ESRCH;
+    lock_give(&lock);
+    return r;
+}
+
+unsigned lx_child_pids(int32_t *out, unsigned cap)
+{
+    lock_take(&lock);
+    for (unsigned i = 0; i < nkids && i < cap; i++)
+        out[i] = kids[i].pid;
+    unsigned n = nkids;
+    lock_give(&lock);
+    return n;
+}
+
 /* c into the table, its end bound to the signal thread's port. */
 static status_t add(struct child c)
 {

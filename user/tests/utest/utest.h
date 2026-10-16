@@ -89,6 +89,8 @@ bool t_nvmero_refuse(void);
 bool t_disk_mounts(void);
 bool t_disk_not_boot(void);
 bool t_disk_other(void);
+bool t_disk_ext(void);            /* an ext volume on a test disk: bin/extfs, /usbN-test */
+bool t_disk_ext_none(void);       /* a Linux-typed partition with no ext volume: left alone */
 bool t_disk_fs_restart(void);
 bool t_disk_own_channel(void);
 bool t_disk_vanishes(void);
@@ -295,6 +297,7 @@ bool t_posix_ids(void);
 bool t_thread_interrupt_calls(void);
 bool t_cpu_ns(void);
 bool t_sys_public_info(void);
+bool t_process_maps(void);
 bool t_vmar_replace_calls(void);
 int  tidword_child(void);
 bool t_kill_spinning_and_unstarted(void);
@@ -388,8 +391,12 @@ bool t_view_hides_names(void);
 bool t_fat_view_no_etc(void);
 bool t_fat_view_limits(void);
 
-/* jit.c: JIT memory (vmo_make_jit): code written, run, patched, passed on. */
+/* jit.c: JIT memory (vmo_make_jit): code written, run, patched, passed on;
+ * a program started from it never writes its own code (its child's mode
+ * "jit-text"). */
 bool t_jit(void);
+bool t_jit_spawn(void);
+int  jit_child(int argc, char **argv);
 /* rights.c: the root's powers, vmo_make_exec and _verified. */
 bool t_root_powers(void);
 bool t_vmo_make_exec(void);
@@ -688,6 +695,9 @@ bool t_comp_live_caps(void);
 bool t_comp_live_client_crash(void);
 bool t_comp_live_never_reads(void);
 bool t_comp_live_fuzz(void);
+/* msgbudget.c: a client flooding the compositor waits on its own
+ * connection (CHANNEL_BYTE_BOUND), never using up the root's message bytes. */
+bool t_msgbudget_comp_flood(void);
 bool t_comp_regions(void);
 /* conwin.c: the console's window mode: its grid and padding, the view,
  * terminal.font, keys and pointer (wlinput.c, view.c, linked in). */
@@ -750,12 +760,14 @@ bool t_exec_sealed_runs(void);
 bool t_exec_wider_than_parent(void);
 bool t_exec_refused(void);
 bool t_exec_changed(void);
+bool t_exec_handover(void);
 bool t_exec_no_leak(void);
 bool t_exec_cleanup(void);
 /* unixsvc.c: the named socket broker, /svc/unix (bin/unix). */
 bool t_unix_names(void);
 bool t_unix_backlog(void);
 bool t_unix_limits(void);
+bool t_unix_own(void);
 /* "utest wl-crash": a Wayland client on the channel at SR_USER that makes
  * a pool, a buffer and a surface, then crashes; "wl-crash-attach" crashes
  * between the attach and the commit. */

@@ -11,8 +11,10 @@
  *      is under way on it. Otherwise one of three plans: PLAN_TABLE, an
  *      empty drive (the driver decides with its empty rules: storage.mode
  *      says MODE_BLANK); PLAN_FINISH, Jam OS's by our own check (mark.c)
- *      with a partition that has no service (a prepare cut short after the
- *      table); PLAN_ERASE, anything else: a drive that isn't empty, erased
+ *      and by its driver's (storage.mode) with a partition that has no
+ *      service (a prepare cut short after the table); PLAN_ERASE, anything
+ *      else: a drive that isn't empty (or Jam OS's by our check alone, a
+ *      header damaged, with a partition that has no volume), erased
  *      only with the owner's confirmation, the end of its serial number and
  *      "erase" (checked here against the serial its driver gave, then by
  *      the driver again: nothing here decides what may be written);
@@ -175,15 +177,22 @@ static status_t plan_of(struct disk *d, struct plan *pl)
     }
     if (disk_jamos_gpt(d)) {
         pl->todo = unmounted(d);
-        if (pl->todo) {
+        if (pl->todo && mode == STORAGE_MODE_JAMOS) {
             pl->what = VOLDISKS_PLAN_FINISH;
             return OK;
         }
-        for (unsigned p = 0; p < PARTS; p++)
-            if (!vols[d->fs[p] - 1].ready)
-                return ERR_BAD_STATE;   /* still starting: ask again in a moment */
-        pl->refused = VOLDISKS_REFUSED_JAMOS;
-        return OK;
+        /* Jam OS's by our mark but not by the driver's (a header damaged:
+         * an erase cut after its primary entry array leaves its old header
+         * and Jam OS's backup), with a partition that holds no volume: it
+         * can't be finished, as the driver writes nothing on it, so it is
+         * shown and offered for erase as any drive that isn't empty. */
+        if (!pl->todo) {
+            for (unsigned p = 0; p < PARTS; p++)
+                if (!vols[d->fs[p] - 1].ready)
+                    return ERR_BAD_STATE;   /* still starting: ask again in a moment */
+            pl->refused = VOLDISKS_REFUSED_JAMOS;
+            return OK;
+        }
     }
     pl->todo = BOTH;
     if (d->blocks < PREPARE_MIN / d->block_size) {

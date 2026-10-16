@@ -149,3 +149,66 @@ bool t_jit(void)
     CHECK_ST(jam_handle_close(power), OK);
     return true;
 }
+
+/* A program started from JIT memory (spawn given a JIT VMO's handle,
+ * docs/CR-REVIEW-JIT.md finding 1): it runs, marked, from the bytes its
+ * starter wrote; but it holds no handle that writes them, so its code is
+ * never writable: the child (jit_child, "jit-text") can't protect the page
+ * it runs on writable and executable, which would let a program without
+ * the power write its starter's JIT memory. */
+bool t_jit_spawn(void)
+{
+    handle_t root = startup_handle(SR_RESOURCE), power, v, x, job, proc;
+    if (!root || jam_handle_duplicate(root, RIGHT_DUPLICATE | RIGHT_ROOT_JIT, &power) != OK) {
+        printf("utest: %s: no RIGHT_ROOT_JIT on our root: skipped\n", utest_cur);
+        return true;
+    }
+    const struct bootfs_view *fs;
+    const void *data;
+    uint64_t size;
+    CHECK_ST(bootfs_default(&fs), OK);
+    CHECK_ST(bootfs_lookup(fs, "bin/utest", &data, &size), OK);
+    CHECK_ST(jam_vmo_create(size, 0, &v), OK);
+    CHECK_ST(jam_vmo_make_jit(v, power, &x), OK);
+    CHECK_ST(jam_handle_close(power), OK);
+    CHECK_ST(jam_vmo_write(x, 0, data, size), OK);
+    CHECK_ST(jam_job_create(startup_handle(SR_JOB), 0, &job), OK);
+    const char *argv[] = { "utest", "jit-text" };
+    struct spawn_args a = {
+        .path = "bin/utest", .name = "utest-jit-text", .vmo = x, .size = size, .argc = 2,
+        .argv = argv, .job = job,
+    };
+    CHECK_ST(spawn(&a, &proc), OK);
+    CHECK_ST(jam_handle_close(x), OK);   /* the child's mappings keep the VMO */
+    struct process_info info;
+    CHECK_ST(spawn_wait(proc, 10 * NS_PER_S, &info), OK);
+    CHECK(!info.killed);
+    CHECK_EQ(info.exit_code, 0);
+    CHECK_ST(jam_handle_close(proc), OK);
+    CHECK_ST(jam_handle_close(job), OK);
+    return true;
+}
+
+/* "jit-text", started by t_jit_spawn from a JIT VMO: 0 if it runs marked,
+ * its image may run and not write, and its code can't be made writable;
+ * else what failed. */
+int jit_child(int argc, char **argv)
+{
+    (void)argc;
+    if (strcmp(argv[1], "jit-text"))
+        return 127;
+    struct process_info pi;
+    if (jam_process_get_info(startup_handle(SR_SELF_PROCESS), &pi) != OK ||
+        !(pi.flags & PROCESS_FLAG_JIT))
+        return 2;   /* runs JIT memory, unmarked */
+    handle_t img = startup_handle(SR_SELF_IMAGE);
+    if (!img || (rights_of(img) & (RIGHT_WRITE | RIGHT_EXEC)) != RIGHT_EXEC)
+        return 3;
+    uint64_t page = (uint64_t)(uintptr_t)&jit_child & ~(uint64_t)(PG - 1);
+    status_t st = jam_vmar_protect(startup_handle(SR_SELF_VMAR), page, PG, RWX);
+    if (st == OK) {
+        printf("utest: jit-text: our code is writable and executable\n");
+        return 1;
+    }
+    return st == ERR_ACCESS_DENIED ? 0 : 4;
+}

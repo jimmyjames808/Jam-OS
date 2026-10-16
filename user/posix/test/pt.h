@@ -24,17 +24,22 @@
  * network), sockets.c (against the network peer: asked for by name),
  * loopback.c (127.0.0.0/8 through netstack alone: asked for by name),
  * procfs.c (libc's /proc: the program's file and the descriptors),
+ * procinfo.c (/proc's generated files: stat, status, maps, cpuinfo, ...),
  * launch.c (Chromium's launcher's needs: a big argv, addclosefrom_np),
+ * execinfo.c (backtrace and its lines: nested calls, a thread, a signal
+ * handler, qsort's comparator),
  * mmap.c (files mapped on their pages, msync, posix_spawn from /data),
  * jit.c (MAP_JIT refused without the power, and to bin/jittest as our child),
  * wayland.c (the Wayland socket against a fake compositor of its own),
  * scm.c and scmkid.c (socketpairs carrying descriptors: SCM_RIGHTS, Mojo's
  * pattern between two processes, a fuzz loop; ptscm.h), unix.c (named
- * AF_UNIX sockets through /svc/unix: socket files and abstract names) and
+ * AF_UNIX sockets through /svc/unix: socket files and abstract names),
+ * peer.c (socketpairs and connections fed by a hostile peer in another
+ * process: scm's fuzz between two processes) and
  * rawcalls.c, rawfutex.c and rawlog.c (the raw Linux calls Chromium makes, and the
  * ENOSYS log: the log's hooks are the layer's calls.h, a second look inside).
  * start.c, mem.c, memres.c (the job's counts), clock.c, fds.c, poll.c,
- * proc.c, tty.c, fileskid.c, wayland.c, jit.c, procfs.c and unix.c are
+ * proc.c, tty.c, fileskid.c, wayland.c, jit.c, procfs.c, unix.c and peer.c are
  * the ones that include libjam (<jamos/libjam.h>: children started with a hand-over, a mapping libc
  * didn't make, the calls the clocks are checked against; fileskid.c
  * through the layer's fd.h); mem.c, rawcalls.c, rawfutex.c and rawlog.c include Linux's call
@@ -81,6 +86,9 @@ void pt_raw_log(void);
 /* And the futex checks (rawfutex.c). */
 void pt_raw_futex(void);
 void pt_procfs(char **argv);
+/* procinfo.c: the generated files of /proc (stat, status, maps, cpuinfo, ...). */
+void pt_procinfo(char **argv);
+int  pt_child_block(void);   /* its child: says so, waits for stdin to close, exits 5 */
 /* Only when asked for (procfs.c): a program's own path and its
  * self-image, from /data (tools/posix-mmap-test.sh, case spawn). */
 void pt_self_image(char **argv);
@@ -94,12 +102,18 @@ void pt_spawn_data(char **argv);
 void pt_wayland(char **argv);
 void pt_jit(char **argv);          /* MAP_JIT without the power (jit.c) */
 void pt_links(char **argv);        /* only when asked for: an ext volume at /u6 (links.c) */
+void pt_execinfo(char **argv);     /* backtrace() and its lines (execinfo.c) */
 void pt_scm(char **argv);          /* socketpairs carrying descriptors (scm.c, scmkid.c) */
 void pt_unix(char **argv);         /* named AF_UNIX sockets through /svc/unix (unix.c) */
+void pt_peer(char **argv);         /* a hostile peer in another process (peer.c) */
 /* The signal section's second half (sigproc.c): between processes. */
 void pt_sigproc(void);
 /* The mem section's second half (memres.c): big sparse reservations. */
 void pt_mem_reserve(void);
+
+/* main's exit code when started with no arguments at all (argc 0: what a
+ * malformed SR_ARGS leaves a program, launch.c's check). */
+#define PT_NO_ARGS 9
 
 /* The child modes start.c's checks start this program in (main.c runs
  * them instead of the sections): each checks what it was given and exits
@@ -127,6 +141,7 @@ int  pt_child_mmap_pull(int argc, char **argv);
 int  pt_child_wl(int argc, char **argv);
 int  pt_child_scm(void);
 int  pt_child_unix(int argc, char **argv);
+int  pt_child_peer(int argc, char **argv);
 int  pt_child_links(void);
 
 /* Pages charged to our job now (job_get_info; start.c). */

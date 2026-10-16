@@ -34,12 +34,14 @@ static const struct {
     { "socket", pt_socket },
     { "pty", pt_pty },
     { "procfs", pt_procfs },
+    { "procinfo", pt_procinfo },
     { "self-image", pt_self_image },
     { "launch", pt_launch },
     { "session", pt_session },
     { "wayland", pt_wayland },
     { "scm", pt_scm },
     { "unix", pt_unix },
+    { "peer", pt_peer },
     { "files-many", pt_files_many },
     { "sockets", pt_sockets },
     { "raw", pt_raw },
@@ -50,6 +52,7 @@ static const struct {
     { "spawn-data", pt_spawn_data },
     { "loopback", pt_loopback },
     { "links", pt_links },
+    { "execinfo", pt_execinfo },
 };
 
 /* The sections run only when named (long ones). */
@@ -74,6 +77,8 @@ static void run(unsigned i, char **argv)
 
 int main(int argc, char **argv)
 {
+    if (argc < 1)
+        return PT_NO_ARGS;   /* the launch section's malformed SR_ARGS children */
     if (argc >= 2 && !strcmp(argv[1], "--child-start"))
         return pt_child_start(argc, argv);
     if (argc >= 2 && !strcmp(argv[1], "--child-handover"))
@@ -120,6 +125,8 @@ int main(int argc, char **argv)
         return pt_child_scm();
     if (argc >= 2 && !strcmp(argv[1], "--child-unix"))
         return pt_child_unix(argc, argv);
+    if (argc >= 2 && !strcmp(argv[1], "--child-peer"))
+        return pt_child_peer(argc, argv);
     if (argc >= 2 && !strcmp(argv[1], "--child-links"))
         return pt_child_links();
     setvbuf(stdout, NULL, _IOLBF, 0);   /* each line out as it is made */

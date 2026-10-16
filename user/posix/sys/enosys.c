@@ -10,7 +10,7 @@
  *   - an option of a call that is answered but not that option (prctl,
  *     futex, setpriority's target): "prctl option 53";
  *   - an ioctl request nothing understands (fd.c): "ioctl 0x5413";
- *   - a /proc path that is not there: "path /proc/cpuinfo";
+ *   - a /proc path that is not there: "path /proc/uptime";
  *   - a library the program tried to load (a static program cannot):
  *     "dlopen libvulkan.so.1".
  * Each is one line, "enosys: <program>: <what>", written with one

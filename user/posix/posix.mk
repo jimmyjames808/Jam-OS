@@ -3,7 +3,8 @@
 # configure) from third_party/musl, unmodified, less its dynamic linker
 # (ldso/, src/ldso) and the files our overrides replace
 # (user/posix/musl/OVERRIDES); the Linux call layer (user/posix/sys/) and
-# the start (user/posix/crt/); the sysroot, build/sysroot, that
+# the start (user/posix/crt/); glibc's extensions musl lacks
+# (user/posix/glibc/: <execinfo.h>); the sysroot, build/sysroot, that
 # tools/jamos-cc compiles and links against; and posixtest
 # (user/posix/test/), built with jamos-cc, as bin/posixtest in bootfs.
 #
@@ -65,13 +66,20 @@ MUSL_CHECKED := $(MUSL_OUT)/overrides.ok
 # musl's own flags (its configure's choices for GCC on x86-64), plus
 # -fno-tree-loop-distribute-patterns everywhere (no loop turned into a
 # call of the function it implements) and our override directory first
-# on the include path (syscall_arch.h).
+# on the include path (syscall_arch.h). Unlike musl's configure, musl
+# has unwind tables (-fasynchronous-unwind-tables, as the layer's code
+# and libjam's in libc.a): backtrace() (user/posix/glibc/execinfo.c)
+# walks the stack by them, through qsort's comparator calls, a thread's
+# start and the delivery of a signal to its handler (a call boundary in
+# libc, user/posix/sys/sig.h), and C++ exceptions unwind through them.
+# .eh_frame costs a program about a tenth of its code's size (posixtest:
+# 58 KiB more on 576 KiB of code, a file 0.5% bigger).
 MUSL_INC    := -I$(POSIX)/musl/arch/x86_64 -I$(MUSL)/arch/x86_64 -I$(MUSL)/arch/generic \
                -I$(MUSL_OUT)/internal -I$(MUSL)/src/include -I$(MUSL)/src/internal \
                -I$(MUSL_OUT)/include -I$(MUSL)/include
 MUSL_CFLAGS := -std=c99 -nostdinc -ffreestanding -fexcess-precision=standard -frounding-math \
                -fno-strict-aliasing -Wa,--noexecstack -D_XOPEN_SOURCE=700 $(MUSL_INC) \
-               -O2 -pipe -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables \
+               -O2 -pipe -fomit-frame-pointer -fasynchronous-unwind-tables \
                -ffunction-sections -fdata-sections -fno-stack-protector \
                -fno-tree-loop-distribute-patterns -fno-PIC -fno-pie -m64 -march=x86-64 \
                -mcmodel=small -Wno-pointer-to-int-cast -Werror=implicit-function-declaration \
@@ -87,13 +95,20 @@ MUSL_CFLAGS := -std=c99 -nostdinc -ffreestanding -fexcess-precision=standard -fr
 # Linux call and uses what its call has: -Wno-unused-parameter.
 POSIX_CFLAGS := -std=gnu17 -O2 -g -Wall -Wextra -Werror -Wvla -Wno-unused-parameter \
                 -ffreestanding -fno-stack-protector -fno-stack-check -fno-PIC -fno-pie \
-                -fno-omit-frame-pointer -fno-asynchronous-unwind-tables -m64 -march=x86-64 \
+                -fno-omit-frame-pointer -fasynchronous-unwind-tables -m64 -march=x86-64 \
                 -mcmodel=small -ffunction-sections -fdata-sections -D_GNU_SOURCE \
                 -nostdinc -isystem $(SYSROOT)/include -I$(POSIX)/include -Iuser/include \
                 -I$(BUILD)/uinc -Idrivers/include -iquote $(POSIX)/sys -iquote $(POSIX)/crt \
                 -MMD -MP
 POSIX_SRCS := $(wildcard $(POSIX)/sys/*.c) $(filter-out %/crt1.c,$(wildcard $(POSIX)/crt/*.c))
 POSIX_OBJS := $(POSIX_SRCS:%=$(POSIX_OUT)/%.o)
+
+# glibc's extensions that musl lacks (user/posix/glibc/: <execinfo.h>),
+# built with the layer's flags but, unlike the layer, with their names as
+# they are: they are libc's public names, so they are not renamed
+# (below), and a program that defines one of its own links its own.
+POSIX_GLIBC_SRCS := $(wildcard $(POSIX)/glibc/*.c)
+POSIX_GLIBC_OBJS := $(POSIX_GLIBC_SRCS:%=$(POSIX_OUT)/%.o)
 
 # The layer's objects as libc.a holds them: every global name that isn't
 # the implementation's own (__*) or a public extension (jamos_*) renamed
@@ -122,7 +137,8 @@ LIBJAM_GC_OBJS := $(patsubst $(UOBJ)/%,$(POSIX_OUT)/libjam/%,$(LIBJAM_GC_FROM))
 LIBJAM_IN_LIBC := $(filter-out $(LIBJAM_GC_FROM),$(LIBJAM_OBJS)) $(LIBJAM_GC_OBJS)
 $(POSIX_OUT)/libjam/%.c.o: %.c | $(UINC) $(SYSCALLS_OK) $(IDL_OK) $(WL_OK)
 	@mkdir -p $(dir $@)
-	$(CC) $(USER_CFLAGS) -ffunction-sections -fdata-sections -c $< -o $@
+	$(CC) $(USER_CFLAGS) -fasynchronous-unwind-tables -ffunction-sections -fdata-sections \
+	    -c $< -o $@
 -include $(LIBJAM_GC_OBJS:.o=.d)
 
 SYSROOT_HDRS := $(SYSROOT)/include/.made
@@ -218,7 +234,8 @@ define POSIX_ARCHIVE
 endef
 $(MUSL_LIB): $(MUSL_OBJS) $(MUSL_OVR_OBJS)
 	$(POSIX_ARCHIVE)
-$(SYSROOT)/lib/libc.a: $(MUSL_OBJS) $(MUSL_OVR_OBJS) $(POSIX_JL_OBJS) $(LIBJAM_IN_LIBC)
+$(SYSROOT)/lib/libc.a: $(MUSL_OBJS) $(MUSL_OVR_OBJS) $(POSIX_JL_OBJS) $(POSIX_GLIBC_OBJS) \
+                       $(LIBJAM_IN_LIBC)
 	@mkdir -p $(dir $@)
 	$(POSIX_ARCHIVE)
 
@@ -283,5 +300,5 @@ posix-check: $(MUSL_LIB) $(SYSROOT_LIBS)
 	    { echo "posix-check: a program that calls write links handlers it never calls"; exit 1; }
 check: posix-check
 
--include $(MUSL_OBJS:.o=.d) $(MUSL_OVR_OBJS:.o=.d) $(POSIX_OBJS:.o=.d) \
+-include $(MUSL_OBJS:.o=.d) $(MUSL_OVR_OBJS:.o=.d) $(POSIX_OBJS:.o=.d) $(POSIX_GLIBC_OBJS:.o=.d) \
          $(POSIX_OUT)/$(POSIX)/crt/crt1.c.d

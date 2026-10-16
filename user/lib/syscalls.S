@@ -793,6 +793,15 @@ jam_clock_page:
     ret
     .size jam_clock_page, . - jam_clock_page
 
+    .globl jam_process_get_maps
+    .type jam_process_get_maps, @function
+jam_process_get_maps:
+    mov %rcx, %r10
+    mov $SYS_process_get_maps, %eax
+    syscall
+    ret
+    .size jam_process_get_maps, . - jam_process_get_maps
+
     .globl jam_kexec_load
     .type jam_kexec_load, @function
 jam_kexec_load:

@@ -64,6 +64,11 @@
 static const char LIMINE[] = "/EFI/BOOT/BOOTX64.EFI";
 static const char MENU[] = "/boot/limine/limine.conf";
 static const char SPARE[] = "/boot/limine.conf";
+/* The other places Limine 11 looks for a menu (/EFI/BOOT/limine.conf before
+ * MENU): Jam OS writes none of them, but one put there by hand would be
+ * read instead of the menu installed, or boot a drive cut before it. */
+static const char *const elsewhere[] = { "/EFI/BOOT/limine.conf", "/EFI/limine/limine.conf",
+                                         "/limine.conf", "/limine/limine.conf" };
 static const char *const cur[UPDATE_FILES] = { "/boot/jamos.elf", "/boot/bootfs.img" };
 static const char *const prev[UPDATE_FILES] = { "/boot/prev-jamos.elf", "/boot/prev-bootfs.img" };
 #define NEW  ".new"
@@ -118,6 +123,35 @@ static void inst_say(const char *fmt, ...)
 static void inst_step(unsigned n, const char *what)
 {
     inst_say("step %u/%u: %s", n, STEPS, what);
+}
+
+/* Test only (tools/install-test.sh's `cut`): a power cut right after the
+ * change named point reached the disk, synced. The test asks for it with a
+ * word in the boot word "nvmetest=" (a comma-separated list that only
+ * drv/nvme read before, and it ignores words it doesn't know), "instcut"
+ * and the point's name: prepared (the disk made a Jam OS disk), etcnew
+ * (/data/etc copied as etc.new), etc (renamed), cleared (the ESP's menu
+ * and leftovers removed), limine, kernel, bootfs, prevkernel, prevbootfs,
+ * menu (the last change). The worker stops here for good, logs it, and the
+ * test ends QEMU on that line; no other change is made, nothing is closed,
+ * so the disk is as a cut there would leave it. A point that isn't reached
+ * (etcnew and etc on a disk that has a /etc) never stops. */
+static void cut_after(const char *point)
+{
+    static const char key[] = "instcut";
+    size_t klen = sizeof(key) - 1, plen = strlen(point);
+    const char *eq = init_nvmetest ? strchr(init_nvmetest, '=') : NULL;
+    for (const char *p = eq ? eq + 1 : ""; *p;) {
+        size_t n = 0;
+        while (p[n] && p[n] != ',')
+            n++;
+        if (n == klen + plen && !memcmp(p, key, klen) && !memcmp(p + klen, point, plen)) {
+            inst_say("cut after %s, as the test asked: nothing more is done", point);
+            for (;;)
+                (void)jam_sleep_until(now() + 10 * NS_PER_S);
+        }
+        p += n + (p[n] == ',');
+    }
 }
 
 /* ---- the sources ------------------------------------------------------------------ */
@@ -350,9 +384,13 @@ static status_t copy_etc(struct inst *in)
         if (st == OK)
             st = esp_sync(&in->w);
         if (st == OK)
+            cut_after("etcnew");
+        if (st == OK)
             st = esp_rename(&in->w, "/etc.new", "", "/etc", "");
         if (st == OK)
             st = esp_sync(&in->w);
+        if (st == OK)
+            cut_after("etc");
         inst_say("/data/etc: %u files copied (%s)", in->etc_files, status_str(st));
     }
     status_t closed = close_part(in, 1);
@@ -361,8 +399,9 @@ static status_t copy_etc(struct inst *in)
 
 /* ---- the ESP ------------------------------------------------------------------------ */
 
-/* path (no suffix) written from s, synced and read back against s->sha. */
-static status_t put(struct inst *in, const char *path, struct src *s)
+/* path (no suffix) written from s, synced and read back against s->sha;
+ * point is its name for the test's cut (cut_after). */
+static status_t put(struct inst *in, const char *path, struct src *s, const char *point)
 {
     status_t st = esp_unlink(&in->w, path, "");
     uint8_t back[SHA256_BYTES];
@@ -370,6 +409,8 @@ static status_t put(struct inst *in, const char *path, struct src *s)
         st = esp_write_file(&in->w, path, "", s->size, UPDATE_WRITE_NONE, esp_from_vmo, &s->vmo);
     if (st == OK)
         st = esp_sync(&in->w);
+    if (st == OK)
+        cut_after(point);
     if (st == OK)
         st = esp_hash(&in->w, path, "", s->size, back);
     if (st == OK && memcmp(back, s->sha, SHA256_BYTES))
@@ -415,6 +456,8 @@ static status_t write_esp(struct inst *in)
         st = esp_unlink(&in->w, MENU, i == 0 ? NEW : i == 1 ? PREV : OLD);
     if (st == OK)
         st = esp_unlink(&in->w, SPARE, "");
+    for (unsigned i = 0; st == OK && i < sizeof(elsewhere) / sizeof(elsewhere[0]); i++)
+        st = esp_unlink(&in->w, elsewhere[i], "");
     for (unsigned f = 0; st == OK && f < UPDATE_FILES; f++) {   /* an update's leftovers */
         st = esp_unlink(&in->w, cur[f], NEW);
         if (st == OK)
@@ -425,6 +468,8 @@ static status_t write_esp(struct inst *in)
     if (st == OK)
         st = esp_sync(&in->w);
     if (st == OK)
+        cut_after("cleared");
+    if (st == OK)
         st = room(in);
     if (st == OK) {
         make_dir(in, "/EFI");
@@ -432,17 +477,17 @@ static status_t write_esp(struct inst *in)
         make_dir(in, "/boot");
         make_dir(in, "/boot/limine");
         inst_step(4, "Limine and the build written");
-        st = put(in, LIMINE, &in->efi);
+        st = put(in, LIMINE, &in->efi, "limine");
     }
     for (unsigned f = 0; st == OK && f < UPDATE_FILES; f++) {
-        st = put(in, cur[f], &in->file[f]);
+        st = put(in, cur[f], &in->file[f], f ? "bootfs" : "kernel");
         if (st == OK)
-            st = put(in, prev[f], &in->file[f]);
+            st = put(in, prev[f], &in->file[f], f ? "prevbootfs" : "prevkernel");
     }
     if (st == OK) {
         menu_note(&in->menu, &in->w);   /* against the files the disk has now */
         inst_step(5, "the boot menu, last");
-        st = put(in, MENU, &in->menu);
+        st = put(in, MENU, &in->menu, "menu");
     }
     status_t closed = close_part(in, 0);
     return st != OK ? st : closed;
@@ -462,6 +507,7 @@ static status_t install_run(struct inst *in)
     inst_say("prepare: %s", status_str(st));
     if (st != OK)
         return st;
+    cut_after("prepared");
     inst_step(2, "the build, Limine and the boot menu read");
     st = read_sources(in);
     if (st != OK)

@@ -71,6 +71,11 @@ struct seat_client {
      * wl_data_device.set_selection must name (data.c). */
     uint32_t input[SEAT_INPUT_SERIALS];
     unsigned input_at;             /* the next slot of input to write */
+    /* Its popups' grab was dismissed by the compositor (a press outside, the
+     * focus moving): no grab again until it is sent a key or button press,
+     * so the click that closed a menu can't be met by a new grab with an
+     * old serial, and the next click elsewhere goes through (xdgpopup.c). */
+    bool grab_locked;
 };
 
 /* seat.c */
@@ -85,9 +90,19 @@ status_t seat_res_add(struct comp_client *cl, enum seat_kind kind, uint32_t id, 
                       struct seat_res **out);
 /* r off its client's list and freed (its id is libjwl's business). */
 void     seat_res_free(struct seat_res *r);
-/* serial went to cl with an input event (wl_keyboard.enter, a key press,
- * a button press): one of the serials seat_input_serial_ok accepts. */
+/* serial went to cl with an input event (the wl_keyboard.enter of the keys
+ * coming to it, a key press, a button press): one of the serials
+ * seat_input_serial_ok accepts. Not the enter a new wl_keyboard is told the
+ * focus with (keyboard.c: a client could make those at will). */
 void     seat_input_serial(struct comp_client *cl, uint32_t serial);
+/* The same for a key or button press, which also ends cl's grab lock. */
+void     seat_input_press(struct comp_client *cl, uint32_t serial);
+/* cl's grab was dismissed by the compositor: it may grab again only after
+ * its next key or button press. */
+void     seat_grab_lock(struct comp_client *cl);
+/* May cl's popup grab with serial: one of its input serials, and no
+ * dismissal by the compositor since its last press (xdg_popup.grab). */
+bool     seat_grab_serial_ok(struct comp_client *cl, uint32_t serial);
 
 /* keyboard.c */
 status_t keyboard_init(void);

@@ -1,5 +1,5 @@
 /* utest: init's sealer, /svc/exec (init's exec.c; abi/idl/exec.idl). The
- * boot image's exectest, execwide, pxtest and wantsession are copied to
+ * boot image's exectest, execwide, pxtest, posixtest and wantsession are copied to
  * /data and approved here as `allow` approves (a line in /data/etc/allow,
  * a page table in /data/etc/allow.d: <dataprog.h>); exec_cleanup puts
  * /data back. Skipped without /svc/exec or /data.
@@ -11,7 +11,9 @@
  * devmgr, no volumes, /data read-only for exectest, a root with sysinfo
  * alone and never RIGHT_TRANSFER for execwide). The process comes back
  * without RIGHT_WRITE (no threads in it: process_kill refused), the job
- * with RIGHT_MANAGE (job_kill ends a child that waits for ever).
+ * with RIGHT_MANAGE (job_kill ends a child that waits for ever) and a
+ * message budget of its own (DP_JOB_MSG_BYTES: a child that floods a
+ * channel stops at its own job, not at the root's budget).
  *
  * t_exec_wider_than_parent: exectest (narrow: /data read-only, no root)
  * starts execwide through /svc/exec itself: the child has /data writable,
@@ -32,6 +34,17 @@
  * through; the child dies at that page, killed by the kernel). And while a
  * program is sealed, fat won't open its file for writing (ERR_BUSY).
  *
+ * t_exec_handover: what a POSIX child keeps of its caller's hand-over
+ * (docs/CR-REVIEW-POSIX.md, finding 1 and Q1): posixtest (copied to /data
+ * and approved too) given a file said to be /data/etc/allow, the
+ * directory /data/etc and duplicates of both, /data/etc as its current
+ * directory and a shell as its program: its file is the real one, usable
+ * and not given on, the directory and its duplicate gone, its current
+ * directory "/", /proc/self/exe the sealed path, AT_SECURE (no TMPDIR, no
+ * secure_getenv), the umask and the pipe kept (posixtest's `--child-launch
+ * sealed` checks). And with no hand-over of ours, it is still AT_SECURE,
+ * 0 to 2 on /dev/null. utest's job holds as many handles after.
+ *
  * t_exec_no_leak: 40 programs sealed and dropped and 12 started and
  * waited for on one opener (past PROGRAMS_PER_OPENER and PROGRAMS_MAX:
  * init frees each), with utest's job holding as many handles after as
@@ -43,14 +56,17 @@
 #include <dataprog.h>
 #include <idl/exec.h>
 #include <os.h>
+#include <posixfds.h>
 #include <sha256.h>
 #include "disks.h"
 #include "exectest.h"
+#include "pfdtest.h"
 #include "utest.h"
 
 #define NARROW   "/data/ce-narrow"
 #define WIDE     "/data/ce-wide"
 #define PX       "/data/ce-px"
+#define PT       "/data/ce-pt"            /* posixtest: what a POSIX child is handed */
 #define SESS     "/data/ce-sess"
 #define UNALLOW  "/data/ce-unallowed"
 #define PX_CUE   "/data/ce-cue-never"     /* pxtest waits for it: never made */
@@ -181,6 +197,7 @@ static bool setup(void)
     CHECK(place("bin/exectest", NARROW, true));
     CHECK(place("bin/execwide", WIDE, true));
     CHECK(place("bin/pxtest", PX, true));
+    CHECK(place("bin/posixtest", PT, true));
     CHECK(place("bin/wantsession", SESS, true));
     CHECK(place("bin/exectest", UNALLOW, false));
     /* The old approvals, then ours (a path's last line is its approval). */
@@ -303,6 +320,9 @@ bool t_exec_sealed_runs(void)
     CHECK_ST(jam_process_kill(proc), ERR_ACCESS_DENIED);
     CHECK_ST(jam_handle_info(job, &hi), OK);
     CHECK((hi.rights & RIGHT_MANAGE) && !(hi.rights & RIGHT_WRITE));
+    struct job_info ji;
+    CHECK_ST(jam_job_get_info(job, &ji), OK);
+    CHECK_EQ(ji.limit[JOB_LIMIT_MSG_BYTES], DP_JOB_MSG_BYTES);
     CHECK_ST(jam_job_kill(job), OK);
     struct process_info info;
     CHECK_ST(spawn_wait(proc, WAIT, &info), OK);
@@ -462,6 +482,93 @@ bool t_exec_no_leak(void)
     CHECK_ST(write_soon(WIDE, b, n), OK);
     return true;
 }
+/* posixtest (on /data as PT) started through /svc/exec as
+ * `posixtest --child-launch <mode> PT` with HOME and TMPDIR in its
+ * environment, the hand-over ho written on our end first (NULL: none):
+ * its exit code into *code (-1: killed). */
+static bool pt_run(const char *mode, const struct posixfds_out *ho, int64_t *code)
+{
+    const char *const strs[] = { "posixtest", "--child-launch", mode, PT,
+                                 "HOME=/data", "TMPDIR=/data/etc" };
+    enum { ARGC = 4 };
+    uint8_t strings[256];
+    uint32_t len = 0;
+    for (unsigned i = 0; i < sizeof(strs) / sizeof(strs[0]); i++) {
+        size_t l = strlen(strs[i]) + 1;
+        memcpy(strings + len, strs[i], l);
+        len += (uint32_t)l;
+    }
+    handle_t svc, file, mine, theirs, prog, job, sig, sig_theirs, proc, cjob;
+    uint8_t posix = 0;
+    char wants[1024];
+    uint32_t wl;
+    CHECK(file_of(PT, &file));
+    CHECK_ST(svc_open(SVC_EXEC, &svc), OK);
+    CHECK_ST(jam_channel_create(&mine, &theirs), OK);
+    status_t st = exec_open_within(svc, WAIT, PT, (uint32_t)strlen(PT), file, theirs, &prog,
+                                   &posix, wants, &wl);
+    jam_handle_close(svc);
+    CHECK_ST(st, OK);
+    CHECK(posix);
+    if (ho)
+        CHECK_ST(posixfds_write(mine, ho), OK);
+    jam_handle_close(mine);   /* written: init reads it all at the start */
+    CHECK_ST(jam_handle_duplicate(startup_handle(SR_JOB), RIGHT_SAME, &job), OK);
+    CHECK_ST(jam_channel_create(&sig, &sig_theirs), OK);
+    st = exec_prog_start_within(prog, WAIT, ARGC, strings, len, job, sig_theirs, &proc, &cjob);
+    jam_handle_close(prog);
+    if (st != OK)
+        jam_handle_close(sig);
+    CHECK_ST(st, OK);
+    struct process_info info;
+    st = spawn_wait(proc, WAIT, &info);
+    if (st != OK)
+        jam_job_kill(cjob);
+    jam_handle_close(proc);
+    jam_handle_close(cjob);
+    jam_handle_close(sig);
+    CHECK_ST(st, OK);
+    *code = info.killed ? -1 : info.exit_code;
+    return true;
+}
+
+bool t_exec_handover(void)
+{
+    CHECK(setup());
+    if (skipped)
+        return true;
+    uint64_t before = pfd_handles();
+    /* Names the child's approval reaches and its caller's may not: a file
+     * (really NARROW's, an ELF) said to be /data/etc/allow, the directory
+     * /data/etc, duplicates of both, the directory as the current one, a
+     * shell as the program; and the caller's pipe at 1. */
+    static const char lie[] = DP_ALLOW_FILE, dir[] = "/data/etc";
+    const uint32_t four = 4, three = 3;
+    handle_t pipe_mine, pipe_h[1], file_h[2];
+    struct jfile f;
+    CHECK_ST(jam_channel_create(&pipe_mine, &pipe_h[0]), OK);
+    CHECK_ST(file_open(NARROW, FS_READ, &f), OK);
+    file_give(&f, &file_h[0], &file_h[1]);
+    const struct posixfds_desc d[] = {
+        { .fd = 1, .kind = POSIXFDS_PIPE, .status = 1 /* O_WRONLY */, .handles = pipe_h },
+        { .fd = 3, .kind = POSIXFDS_FILE, .data = lie, .data_len = sizeof(lie),
+          .handles = file_h },
+        { .fd = 4, .kind = POSIXFDS_DIR, .data = dir, .data_len = sizeof(dir) },
+        { .fd = 5, .kind = POSIXFDS_DUP, .data = &four, .data_len = sizeof(four) },
+        { .fd = 6, .kind = POSIXFDS_DUP, .data = &three, .data_len = sizeof(three) },
+    };
+    const struct posixfds_out ho = { .state = { .umask = 027 }, .cwd = dir, .fds = d,
+                                     .nfds = sizeof(d) / sizeof(d[0]), .exe = "/boot/bin/sh" };
+    int64_t code = -2;
+    CHECK(pt_run("sealed", &ho, &code));
+    jam_handle_close(pipe_mine);
+    CHECK_EQ(code, 0);   /* else launch.c's child_sealed says which check */
+    /* No hand-over of ours: init writes one for the mark all the same. */
+    CHECK(pt_run("sealed-bare", NULL, &code));
+    CHECK_EQ(code, 0);
+    CHECK_EQ(pfd_handles(), before);
+    return true;
+}
 
 /* /data as utest found it: ours unmounted, volumes' watch closed. */
 static void data_back(void)
@@ -478,7 +585,7 @@ bool t_exec_cleanup(void)
         data_back();
         return true;
     }
-    const char *files[] = { NARROW, WIDE, PX, SESS, UNALLOW, EXT_PROBE_FILE };
+    const char *files[] = { NARROW, WIDE, PX, PT, SESS, UNALLOW, EXT_PROBE_FILE };
     for (unsigned i = 0; i < sizeof(files) / sizeof(files[0]); i++)
         (void)fs_unlink(files[i]);
     for (unsigned i = 0; i < ntables; i++) {

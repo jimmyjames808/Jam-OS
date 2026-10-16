@@ -328,7 +328,7 @@ status_t port_again(handle_t port, handle_t h, uint64_t key, signals_t mask);
 #define FS_CALL_TIMEOUT (60 * NS_PER_S)
 
 #define NS_NAME_MAX    32  /* an entry's path with its NUL: "/data", "/svc/devmgr-ctl" */
-#define NS_MAX_MOUNTS  8   /* mounts in one namespace */
+#define NS_MAX_MOUNTS  16  /* mounts in one namespace */
 #define NS_MAX_SVCS    32  /* services in one namespace */
 #define NS_MAX_ENTRIES (NS_MAX_MOUNTS + NS_MAX_SVCS)   /* entries in one nschan event */
 #define NS_FIRST_WAIT  (5 * NS_PER_S)
@@ -478,7 +478,11 @@ status_t ns_svc_remove(const char *name);
  *                    point starts with "/usb"
  *   "*:r", "*:w"     every mount, as views (no services)
  * A view is made with a call to the mount's service at the time of the
- * send (each waits at most NS_VIEW_WAIT). */
+ * send (each waits at most NS_VIEW_WAIT). A service that counts what a
+ * program holds by the channel it calls on (/svc/unix: the broker's
+ * listeners) is given by name as a channel of the program's own, asked
+ * of ours with svc.connect at the send, which hands out no more: the
+ * program can't open another to get past its limits. "*" gives ours. */
 #define NS_VIEW_WAIT (2 * NS_PER_S)
 
 /* For fs services: a path inside a mount (fs.idl's str: len bytes, no NUL)

@@ -3,6 +3,7 @@
  * a second process that behaves in one particular way: crashes, blocks in
  * a call, allocates until its job says no, echoes messages... Each returns
  * the exit code the spawner checks for. */
+#include <dataprog.h>
 #include <os.h>
 #include "utest.h"
 
@@ -394,6 +395,42 @@ static int raise_own_limit(void)
     return st == OK ? 0 : 51;
 }
 
+/* The shell's test (tools/shell-tests/cmds.txt): a program the shell
+ * started writes 64 KiB messages flat out on a channel nobody reads. Its
+ * job's own message budget (DP_JOB_MSG_BYTES, <dataprog.h>) stops it with
+ * ERR_NO_MEMORY, long before the 1024 messages a channel holds or the
+ * root's budget, which the whole system writes from. In a job without that
+ * budget it floods nothing (61): it would fill the root's. */
+static int msgflood(void)
+{
+    struct job_info ji;
+    if (jam_job_get_info(startup_handle(SR_JOB), &ji) != OK)
+        return 60;
+    uint64_t limit = ji.limit[JOB_LIMIT_MSG_BYTES];
+    if (limit != DP_JOB_MSG_BYTES) {
+        printf("msgflood: our job's message limit is %lu, not a program's %lu: no flood\n",
+               (unsigned long)limit, (unsigned long)DP_JOB_MSG_BYTES);
+        return 61;
+    }
+    handle_t a, b;
+    if (jam_channel_create(&a, &b) != OK)
+        return 62;
+    static uint8_t buf[CHANNEL_MAX_BYTES];
+    unsigned sent = 0;
+    status_t st;
+    while ((st = jam_channel_write(a, buf, sizeof(buf), NULL, 0)) == OK)
+        sent++;
+    uint64_t used = jam_job_get_info(startup_handle(SR_JOB), &ji) == OK
+                        ? ji.used[JOB_LIMIT_MSG_BYTES] : 0;
+    jam_handle_close(a);
+    jam_handle_close(b);   /* what it holds is dropped: our job is paid back */
+    bool ok = st == ERR_NO_MEMORY && used <= limit && used + sizeof(buf) > limit;
+    printf("msgflood: %s: %u messages of 64 KiB, then %s; the job's message bytes %lu of %lu\n",
+           ok ? "stopped at its own job's limit" : "FAILED", sent, status_str(st),
+           (unsigned long)used, (unsigned long)limit);
+    return ok ? 0 : 63;
+}
+
 /* The shell's test (tools/shell-tests/cmds.txt): print the environment
  * and the arguments, which `run` passes (and, in a pipe, through the
  * SR_STDOUT channel). */
@@ -478,6 +515,7 @@ int child_main(int argc, char **argv)
     if (!strcmp(m, "tidword"))    return tidword_child();
     if (!strcmp(m, "font-write")) return font_write_child();
     if (!strcmp(m, "env"))        return print_env(argc, argv);
+    if (!strcmp(m, "msgflood"))   return msgflood();
     if (!strcmp(m, "say"))        return say(argc, argv);
     if (!strcmp(m, "impostor"))   return impostor();
     if (!strcmp(m, "raise-own-limit")) return raise_own_limit();
@@ -490,6 +528,7 @@ int child_main(int argc, char **argv)
     if (!strncmp(m, "unread-", 7)) return unread_child(argc, argv);
     if (!strncmp(m, "kept-", 5))  return kept_child(argc, argv);
     if (!strncmp(m, "cow-", 4))   return vmochild_child(argc, argv);
+    if (!strncmp(m, "jit-", 4))   return jit_child(argc, argv);
     if (!strncmp(m, "wl-", 3))    return comp_child(argc, argv);
     if (!strncmp(m, "ns-", 3) || !strncmp(m, "fs", 2) || !strcmp(m, "fat-shell"))
         return ns_child(argc, argv);

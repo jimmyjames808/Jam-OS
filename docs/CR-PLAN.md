@@ -77,9 +77,9 @@ GPU after G3 and G4.
   WebGL fallback anyway).
 - **No CA store, no NSS, no D-Bus.** Chromium on Linux verifies TLS with
   its compiled-in root store; D-Bus and NSS are off by GN arguments.
-- **No real `fork`.** No zygote (`--no-zygote`); children start through
-  `posix_spawn` (section 5). M13.5's emulated `fork` and `vfork` stay off
-  the path.
+- **No zygote** (`--no-zygote`). Children start through Chromium's own
+  launcher, `fork` then `execvp`, on libc's `fork` and an `exec` in place
+  ([FORK-PLAN](FORK-PLAN.md); the owner, 2026-10-16: no launcher patch).
 - **No X11, no Xwayland.**
 - **No building on Jam OS.** Chromium is cross-built on the PC's WSL
   (the owner's choice); M15 is not on the path.
@@ -419,7 +419,8 @@ supported"); Crashpad's upload transport wanted libcurl (args.gn:
 `crashpad_http_transport_impl = "socket"`, BoringSSL for https);
 `SafeSPrintfTest.EmitNULL` can't compile where `NULL` is `nullptr`
 (Alpine's patch, 0007, leaves it out); `StackTrace`'s stream output had
-no definition without `backtrace()` (0911); Chromium's fontconfig named a
+no definition without `backtrace()` (0911, since replaced: libc has
+`<execinfo.h>`, see "BT notes"); Chromium's fontconfig named a
 libuuid it doesn't call (0912); FFmpeg's build links the system's libz
 (the recipe `needs zlib`). `tools/cr/build.sh`'s detached build now gets
 `CR_JOBS` and `CR_MEM_MB` (the keeper's environment had neither, so
@@ -468,7 +469,8 @@ ninja ran `-j 10`).
   0905 base_unittests without shared libraries (its dlopen() helpers and
   the Rust toolchain tests left out on Jam OS, the test trace processor
   static), 0906 no dummy ANGLE libraries as data of programs that use GL.
-  The launcher patch (2) waits for CB5: nothing needs it to compile.
+  The launcher patch (2) is dropped: Chromium's launcher runs on libc's
+  `fork` ([FORK-PLAN](FORK-PLAN.md)).
 - **The toolchains (patch 0901), and where the plan was wrong.** GN gives
   the default toolchain the build's own arguments and ignores its
   `toolchain_args`, so a target toolchain can't set `is_musl` or the
@@ -730,10 +732,17 @@ dies with the reason, nothing else does).
     `O_RDONLY` gives a handle **without `RIGHT_WRITE`**. That is
     Chromium's read-only twin of a shared memory region, and it is real:
     the receiver can't map it writable, whatever the sender does.
-  - Everything else under `/proc` (`/proc/self/stat`, `/proc/cpuinfo`,
-    `/proc/self/maps`, `/proc/sys/...`): **ENOENT, never a half-filled
-    file.** Chromium's callers of these fail soft (metrics, CPU names,
-    V8's remap fallback); the ENOSYS and ENOENT log (below) shows any
+  - The files Chromium's `base` reads (PRC, built: "PRC notes"):
+    `/proc/self/stat`, `status`, `statm` and `maps` (and a child's, for
+    `/proc/<pid>/` of the processes we started), `/proc/cpuinfo`,
+    `/proc/meminfo` and `/proc/stat`, in Linux's text and field order,
+    from process_get_info, process_get_maps (the address space's
+    mappings), the figures any process may read and CPUID. Fields Jam OS
+    has no meaning for hold Linux's neutral value.
+  - Everything else under `/proc` (`/proc/sys/...`, `smaps`, `cmdline`,
+    `/proc/self/ns/user`, ...): **ENOENT, never a half-filled file.**
+    Chromium's callers of these fail soft (the namespace check reads
+    "no user namespaces"); the ENOSYS and ENOENT log (below) shows any
     that doesn't.
 - **memfd seals across processes** (CU1 with CL2): seals already travel
   with a memfd in the hand-over (size and seals); `SCM_RIGHTS` carries
@@ -882,6 +891,13 @@ smaller copy of the same.
 a technical choice). The Chromium patch is small, has macOS's shape, and
 could go upstream; everything Jam OS adds for it is general. (B) stays
 M13.5's, after Chromium.
+
+**Superseded by the owner (2026-10-16)**: "Build the fork/vfork emulation
+layer in libc first and use it for Chromium's launcher instead of
+patching it." Neither (A) nor (B): libc gets a real copy-on-write `fork`
+and an `execve` that replaces the image in place, and Chromium's launcher
+runs unpatched. The plan is [FORK-PLAN](FORK-PLAN.md); CS1's additions
+below stay (they serve `posix_spawn` and exec alike).
 
 **What Jam OS adds (CS1)**:
 - `posix_spawn_file_actions_addclosefrom_np` (glibc 2.34's name and
@@ -1091,15 +1107,21 @@ lands (no WebAssembly then).
   remap, must keep `MAP_JIT`, or the pages become plain memory).
 - **Only renderers** (still to do, with CB5): the owner's default is
   Chromium's renderers, nothing else. The browser holds the power (its
-  list asks for it) and hands it to renderer children only (the launcher
-  branch's grants for `--type=renderer`); every other Chromium process
-  runs V8 with `--jitless`.
+  list asks for it) and hands it to renderer children only; every other
+  Chromium process runs V8 with `--jitless`. How, now that the launcher
+  is Chromium's own `fork` and no launcher branch picks the children:
+  [FORK-PLAN](FORK-PLAN.md#110-jit-memory-the-power-wx) and its Q4.
 - **Stricter modes later** through the same power: a per-thread switch
   with Intel's protection keys (the PC has PKU; the kernel would enable
   PKRU in XCR0 and give `pkey_alloc`/`pkey_mprotect`), or dual mapping
   (a write-only view and an execute-only view of the same VMO, which the
   rights already allow) with a V8 patch.
-- **A security review of its own** (CJR) before CR-e is used on the PC.
+- **A security review of its own** (CJR) before CR-e is used on the PC:
+  done 2026-10-16 for CJ1 and CJ2's first half
+  ([CR-REVIEW-JIT.md](CR-REVIEW-JIT.md): no program without the power gets
+  W+X memory, no JIT memory becomes approved code; 3 Low, one fixed; pins
+  and handing the power to renderers are design questions). V8's patch and
+  the launcher (CB5) get a look of their own when they land.
 
 ### 13. Jam OS's sandbox for Chromium (later: CR-f)
 
@@ -1130,8 +1152,8 @@ stable does (the owner's rule); each move is a recipe change, its
 patches rebased.
 
 **Patches, from Alpine** (copied with their headers; each one's reason in
-the recipe's lint): the musl ones: `no-execinfo.patch`,
-`no-mallinfo.patch`, `no-res-ninit-nclose.patch`,
+the recipe's lint): the musl ones: `no-execinfo.patch` (left out again
+since BT: libc has `<execinfo.h>`), `no-mallinfo.patch`, `no-res-ninit-nclose.patch`,
 `temp-failure-retry.patch`, `pvalloc.patch`,
 `disable-dns_config_service.patch`; and copium's
 `cr140-musl-prctl.patch`, `cr143-libsync-__BEGIN_DECLS.patch`,
@@ -1151,8 +1173,9 @@ Jam OS):
 1. The GN toolchain and config for Jam OS (section 1): a new
    `build/toolchain/jamos` directory and its config (static, non-PIE,
    `posix.ld`, the program's list as a note), the Rust triple line.
-2. The `posix_spawn` launcher branch (section 5), under
-   `use_posix_spawn_launcher`.
+2. Dropped: the `posix_spawn` launcher branch (section 5). The owner
+   (2026-10-16): Chromium's own launcher runs unpatched on libc's `fork`
+   ([FORK-PLAN](FORK-PLAN.md)).
 3. Later: the audio back end (section 11), `use_jamos_audio`.
 4. Later: `MAP_JIT` in V8's POSIX platform (section 12).
 5. Later: the per-type spawn table (section 13).
@@ -1257,7 +1280,7 @@ waits for the ones named in its tracks):
 
 | Plan | On CR's path | Off it (after Chromium) |
 |---|---|---|
-| M13 | **F1b** (read-only shared file mappings; `posix_spawn` of programs on file systems); the futex error pass-through (done, 39aec118); R2 and J as planned (not gates) | M13.5 (mksh, `fork`, `vfork`) |
+| M13 | **F1b** (read-only shared file mappings; `posix_spawn` of programs on file systems); the futex error pass-through (done, 39aec118); R2 and J as planned (not gates); M13.5's `fork`, `vfork` and an `exec` in place ([FORK-PLAN](FORK-PLAN.md), for CB5) | M13.5's shell (mksh) |
 | M12.5 | **PF2** (coherence: SQLite's maps), **PX** (paged programs, which CP1 extends), **PR** (its review, before CR-d on the PC) | |
 | M12.7 | stage 2: W2 and W3 (on their branch), its **R3** review, **P2** with the owner (the TEAM drive prepared) | stage 3 (the installer) |
 | M13.6 | **U2a, U2b, U3, U4, U5, U6, U7a, U7b, U8, U10**, its review and join: `/jam` with rename-over, locks, symlinks, a pager | (all of it is on the path) |
@@ -1319,8 +1342,9 @@ clients that bind the manager get the compositor's title bar).
 
 **Decided by this plan's recommendation** (technical, under the standing
 rule; say if you'd rather otherwise): the launcher is a `posix_spawn`
-branch in Chromium's launcher, not an emulated `vfork` (section 5); the
-first builds have no sound, then a mixer back end (section 11); the JIT
+branch in Chromium's launcher, not an emulated `vfork` (section 5;
+superseded by the owner on 2026-10-16: Chromium's own launcher on libc's
+`fork`, [FORK-PLAN](FORK-PLAN.md)); the first builds have no sound, then a mixer back end (section 11); the JIT
 power goes to renderers only, every other Chromium process `--jitless`
 (section 12); programs link non-PIE until a static-PIE track (finding 6);
 crash reporting off.
@@ -1429,27 +1453,29 @@ ports, recipes, tests, netstack's caps, the audio API and the docs.
 | **CK2. Mappings at scale** | section 2: the mapping tree with gap sizes, merging after map, protect and replace, `VMAR_MAX_MAPPINGS` 65,536 | `kernel/mm/aspace.c` (the list and its users), `kernel/include/jam/abi.h` (the constant, a different line from CK1's), new ktests | nothing (beside CK1: different files) | ktests: 50,000 alternating `vmar_protect`s over one mapping end as a few mappings; a fault's time flat with 60,000 mappings; replace inside a big mapping; the job's record charges exact after merges; full ktest 4 and 8; soak 2 | **Opus** |
 | **CK3. The reverse map at scale** | section 2: a VMO's user mappings indexed by page range | `kernel/object/vmo.c` (the reverse map), `kernel/include/jam/aspace_vmo.h` | CK1 and CK2 merged | ktests: a VMO split into 10,000 mappings, a one-page decommit touches one; interrupts-off time measured before and after; full ktest 4 and 8; soak 2 | **Opus** |
 | **CL1. Reservations in libc** | section 2's libc part: any size, one VMO; `MAP_FIXED` anonymous inside libc's own private mapping decommits in place; the tests of V8's and PartitionAlloc's patterns | `user/posix/sys/mem.c`, `user/posix/sys/maptable.c` if needed, posixtest's `mem` section | stage 1 (up to 64 GiB) at once; stage 2 after CK1 and CK2 | posixtest `mem`: section 2's cases; libc-test unchanged | **Opus** |
-| **CL2. `/proc/self` and the self-image** | section 3's `/proc` and section 6's self-image: the program's path in the hand-over and libjam's spawn, `SR_SELF_IMAGE` from every starter, `/proc/self/exe` (readlink, and spawn from the image), `/proc/self/fd` (list, readlink, reopen with the read-only twin), ENOENT for the rest; built, see "CL2 notes" | a new user/posix/sys/procfs.c, the path lines in `user/posix/sys/path.c`, `user/posix/sys/spawn.c` (the self branch), `user/include/posixfds.h`, `user/include/roles.h`, `user/lib/spawn.c` (the path and the role), the shell's and init's start of programs (the role, a line each) | nothing for `/proc`; the self-image of a `/data` program after M12.5's PX | posixtest: readlink of `/proc/self/exe` from a boot-image program and a `/data` one; a spawn of `/proc/self/exe` (shared pages: the child adds no text pages to the job); a memfd reopened read-only can't be mapped writable; `/proc/cpuinfo` ENOENT | **Opus** |
+| **CL2. `/proc/self` and the self-image** | section 3's `/proc` and section 6's self-image: the program's path in the hand-over and libjam's spawn, `SR_SELF_IMAGE` from every starter, `/proc/self/exe` (readlink, and spawn from the image), `/proc/self/fd` (list, readlink, reopen with the read-only twin), ENOENT for the rest; built, see "CL2 notes" | a new user/posix/sys/procfs.c, the path lines in `user/posix/sys/path.c`, `user/posix/sys/spawn.c` (the self branch), `user/include/posixfds.h`, `user/include/roles.h`, `user/lib/spawn.c` (the path and the role), the shell's and init's start of programs (the role, a line each) | nothing for `/proc`; the self-image of a `/data` program after M12.5's PX | posixtest: readlink of `/proc/self/exe` from a boot-image program and a `/data` one; a spawn of `/proc/self/exe` (shared pages: the child adds no text pages to the job); a memfd reopened read-only can't be mapped writable; the rest of `/proc` ENOENT (PRC's files: "PRC notes") | **Opus** |
+| **PRC. `/proc`'s files for `base`** (built 2026-10-16) | section 3's files `base` reads, found missing by CB2's first `base_unittests` run: `/proc/self/stat`, `status`, `statm`, `maps`, `/proc/<pid>/stat` of our children, `/proc/cpuinfo`, `/proc/meminfo`, `/proc/stat`; built, see "PRC notes" | `user/posix/sys/procfs.c`, new `user/posix/sys/procinfo.c`, `procinfo.h`, `cpuinfo.c`; small hooks in `proc.c`, `mem.c`, `time.c`, `misc.c`, `kposix.c`, `layer.h`; kernel: `process_get_maps` (138) in `abi/syscalls.def`, `kernel/abi/sysc_proc.c`, `kernel/mm/aspace.c`, `process_info` (creation time, name) and `sys_public_info` (free pages) in `kernel/include/jam/abi.h` | CL2 | posixtest `procinfo`; utest `process_maps`; ktest `aspace_maps_shapes`; tools/shell-tests/posix-procinfo.txt | **Opus** (a kernel call) |
 | **CL3. Raw calls and the ENOSYS log** | section 3's log and calls: `prctl` names, affinity, thread priorities, futex operations checked, `membarrier` | `user/posix/sys/calls.def` and the handlers' files it touches (`user/posix/sys/misc.c`, `user/posix/sys/thread.c`), a new log file in user/posix/sys/ | nothing | posixtest: each call's cases; the log names an unknown call once | Sonnet 5.5 |
 | **CU1. Descriptor passing on socketpairs** | section 4: the framing, every hand-over kind on GS1's tables, more than 64 descriptors, `MSG_CTRUNC`, `MSG_CMSG_CLOEXEC`, `shutdown(SHUT_RDWR)`, seals travelling and the write-seal rule | the translation file GS1 made (widened), `user/posix/sys/pipe.c` (the socketpair's send and receive), `user/posix/sys/sockio.c`, `user/posix/sys/sockconn.c` (shutdown), `user/posix/sys/memfd.c` (the seal rule), posixtest's socketpair section | G2's GS1 merged | posixtest: 1 byte with 64 descriptors, 128, 254 (EINVAL); every kind passed and used on the other side (a pipe written, a memfd mapped, a file read at its offset, an eventfd signalled); the read-only twin passed on stays read-only; too little room; a peer gone mid-send; Mojo's pattern (non-blocking, partial writes, descriptors with the first byte) between two processes; a fuzz loop of mutated headers (no crash, no handle leaked) | **Opus** |
 | **CU2. Named `AF_UNIX` sockets** | section 4's broker, `/svc/unix`: `bind`, `listen`, `accept`, `connect` on socket files and abstract names | the broker (new, user/services/), its IDL (new), `user/posix/sys/socket.c`'s `AF_UNIX` paths, init's start of it | CU1; M13.6's U4 (socket files on `/jam`) | posixtest: a listener and two connectors, a socket file removed, a connector without the file's view refused, abstract names; utest for the broker's limits | **Opus** |
 | **CE1. The exec sealer** | `/svc/exec` in init: a program `posix_spawn`s an approved `/data` program (its own open of the file; init checks the allow line and page table, seals the file's pages with `vmo_make_exec_verified`) and the child gets its own approval only, never its parent's (the owner's decision, 2026-10-12); built, see "CE1 notes" | `abi/idl/exec.idl` (new), `user/services/init/exec.c` (new), `user/include/dataprog.h` + `user/lib/dataprog.c` (PX's helpers moved from the shell), `user/posix/sys/spawn.c` (`file_program`), `user/posix/sys/proc.c` (a child's job for SIGKILL), `user/lib/spawn.c` (`before_start`), utest `execsvc.c` with `user/tests/exectest` and `user/tests/execwide` | M12.5's PX, M13's F1b, R2 | utest `exec_*`; `tools/posix-mmap-test.sh` case `spawn` (the allowed run starts and exits 7); `allow.txt` and pager-test `exec` unchanged | **Opus** (a trust boundary) |
 | **CS1. Launching** | section 5: `addclosefrom_np`, argv and environments in a VMO, `/proc/self/exe` spawns through CL2's image, a child's argv of 64 KiB; built, see "CS1 notes" | `user/posix/sys/spawn.c`, `user/posix/sys/spawnfd.c`, `user/lib/spawn.c` (the VMO), the POSIX start code (`user/posix/crt/`) | CL2's self-image part (or beside it, merged after) | posixtest: a child with 500 arguments and 64 KiB of environment sees them all; `addclosefrom_np` leaves exactly the remapped descriptors (checked through `/proc/self/fd`) | **Opus** |
+| **BT. Stack traces** | libc's `<execinfo.h>` (`backtrace`, `backtrace_symbols`, `backtrace_symbols_fd`) by the program's own unwind tables, so Chromium's and V8's `StackTrace` take their glibc path and Alpine's no-execinfo patch and our 0911 are gone; built, see "BT notes" | `user/posix/glibc/` (new), `user/posix/include/execinfo.h`, `user/posix/posix.mk` (unwind tables in musl, the layer and libjam), posixtest's execinfo section, ports/chromium's patches | nothing | posixtest `execinfo`: nested frames, a thread, a signal handler, qsort's comparator, the lines | Sonnet 5.5 |
 | **CP1. Programs this big** | section 6's limits: `VMO_VERIFIED_MAX` 1 GiB, `PROGRAM_MAX`, `FILE_MAX`; `allow`'s progress line; a 300 MB generated test program; built, see "CP1 notes" | `kernel/include/jam/abi.h` (the constant), `kernel/object/vmo_verify.c` if a size is assumed there, `user/services/shell/sh_allow.c` (the constant and the line), `user/lib/spawn.c` (the constant), a generated test program (new) | M12.5's PX merged (it rewrites `sh_allow.c`) | ktest: a 1 GiB verified table; the shell's allow script with the 300 MB program (allowed, run, a changed page refused); cr-test.sh `hello` with the big program | **Opus** (small) |
 | **CN1. netstack's caps** | section 8: the new caps, netstack's memory measured at them | `user/include/net.h`, `user/services/netstack/stack.h` and lwIP's options file if pools must grow, BENCH.md's line | nothing | utest: 256 sockets from one opener, the 257th refused; 512 in all; 1,024 TCP connections to the test host; `tools/net-test.sh` unchanged | Sonnet 5.5 |
 | **CB1. The Chromium build** | section 14 and 15: ports/chromium (the recipe, Alpine's patches, our toolchain patch, args for `base_unittests` and `headless_shell`), the builder's kept tree and `package --from` in tools/ports.py, the persistent tree on WSL behind its lock; builds `base_unittests` and `headless_shell`; reports disk, peak memory and time | ports/chromium (new), tools/ports.py (the two options), tools/cr/ (the build wrapper, new) | CT1, CT2; the main session's CPU-weighted slots in `tools/remote-test.sh` | the build finishes; the syscall scan passes (or lists each site); `make check` (the recipe's lint) | **Opus** (the build glue decides much) |
 | **CB2. `base_unittests` (CR-b)** | cr-test.sh's `base` case; the run with the ENOSYS log on; every failure triaged to a layer (a finding for its track) or fixed in the recipe's test list with a reason | cr-test.sh's case, ports/chromium's test list | CB1, CL1 (stage 1 at least), CL3, CP1 | cr-test.sh `base` | Sonnet 5.5 |
 | **CB3. `headless_shell` (CR-c1)** | the single-process headless screenshot of a local page and an HTTPS page; the findings | cr-test.sh's `headless` case, the recipe's args | CB2; CL1 stage 2 (V8's cage); M13's F1b (the `.pak` maps) | cr-test.sh `headless` | Sonnet 5.5 |
 | **CB4. `content_shell` on Wayland (CR-c2)** | `content_shell --single-process` on the desktop; keys, mouse, wheel, a `<select>` list; screenshots | cr-test.sh's `shell-wl` case | CB3; G2's GS1, GC1b, GT (GC3 for the list), GP2 | cr-test.sh `shell-wl` | Sonnet 5.5 |
-| **CB5. Multi-process (CR-c3)** | the launcher patch (section 5), `--no-zygote --no-sandbox`, every process type started and talking over Mojo; a renderer killed | ports/chromium's launcher patch, cr-test.sh's `multi` case | CB4; CU1, CS1, CL2, CN1; M12.5's PX | cr-test.sh `multi` | **Opus** (the patch crosses processes) |
+| **CB5. Multi-process (CR-c3)** | Chromium's own launcher, unpatched, on libc's `fork` and `exec` in place ([FORK-PLAN](FORK-PLAN.md)); `--no-zygote --no-sandbox`, every process type started and talking over Mojo; a renderer killed | cr-test.sh's `multi` case | CB4; CU1, CS1, CL2, CN1; M12.5's PX; FORK-PLAN's FK1 to FK3 and FL1a to FL4 | cr-test.sh `multi` | **Opus** (processes cross) |
 | **CB6. `chrome` (CR-d)** | the `chrome` target, its args, its package (programs, paks, licences, initial preferences: Q4), the profile on `/jam`, the singleton on CU2; `pkg install chromium` | ports/chromium (the target's lines), cr-test.sh's `chrome` case | CB5; GC2, GC3, CU2, CA1 (sound), M13.6 (its tracks in section 16), M13.7's `pkg` and PO13 | cr-test.sh `chrome`; the PC check | Sonnet 5.5 |
 | **PO13. The package area on `/jam`** | M13.7's prefix on `/jam` (after M13.6), the guard on it, big packages (a 250 MB program: staged files on `/jam`, init's hashing in steps) | M13.7's files named in its plan's PO5 and PO6 notes (the prefix constant, the guard's line for extfs) | M13.7's PO5 and PO6; M13.6's U4 and U8 | tools/pkg-test.sh (PO8, to come) with a big package on an ext test disk | Sonnet 5.5 |
 | **CA1. Sound** | section 11: libjam's audio output API and Chromium's back end patch | `<audio.h>` (a header of its own), user/lib/audio.c and audio_flow.c, ports/chromium's audio patch | CB4 (a browser to test it with); the API part at once (**done 2026-10-15**, see "CA1 notes") | utest: a stream's frames reach the mixer (`tools/mixer-test.sh`'s way); cr-test.sh `chrome` playing a WebM's sound into the mixer's capture | Sonnet 5.5 |
 | **CJ1. JIT memory in the kernel** | section 12's kernel part: `RIGHT_ROOT_JIT`, `vmo_make_jit`, W+X only on a JIT VMO's mapping within its handle's rights, the flag in `process_get_info` | `kernel/object/vmo.c` (the kind), `kernel/abi/vmo_sys.c` (the call), `kernel/mm/aspace.c` (`perms_ok` and protect), `abi/syscalls.def`, `kernel/include/jam/abi.h`, new ktests | CK2 merged (`aspace.c`); CK1 merged (`vmo.c`) | ktests: W+X refused on every other VMO; a JIT VMO without the power refused; an execute-only duplicate can't write; a write-only one can't run; a JIT VMO can't be sealed, verified or paged; full ktest 4 and 8; soak 2 | **Opus** |
-| **CJ2. JIT for programs** | section 12's rest: `right jit` (wants, checkwants, allow's and pkg's words, init's slice), `ps`'s mark, libc's `MAP_JIT` (this half done 2026-10-14, see "CJ2 notes"); **still to do, after CB5**: V8's patch, the launcher giving the power to renderers only, `--jitless` for the rest | `user/include/wants.h`, the wants parser in libos, `tools/checkwants.py`, `user/services/shell/sh_allow.c`'s prompt, init's grant, `user/posix/sys/mem.c` (`MAP_JIT`), ports/chromium's V8 and launcher lines | CJ1; CB5 | posixtest: `MAP_JIT` with and without the power; a JIT program writes code and runs it; cr-test.sh `chrome` with a Wasm page (CR-e) | **Opus** |
+| **CJ2. JIT for programs** | section 12's rest: `right jit` (wants, checkwants, allow's and pkg's words, init's slice), `ps`'s mark, libc's `MAP_JIT` (this half done 2026-10-14, see "CJ2 notes"); **still to do, after CB5**: V8's patch, the power to renderers only (with an unpatched launcher: [FORK-PLAN](FORK-PLAN.md#q4-the-jit-power-for-renderers-only-with-chromiums-own-launcher)'s Q4), `--jitless` for the rest | `user/include/wants.h`, the wants parser in libos, `tools/checkwants.py`, `user/services/shell/sh_allow.c`'s prompt, init's grant, `user/posix/sys/mem.c` (`MAP_JIT`), ports/chromium's V8 lines (and Q4's lines in content's child start, if so answered) | CJ1; CB5 | posixtest: `MAP_JIT` with and without the power; a JIT program writes code and runs it; cr-test.sh `chrome` with a Wasm page (CR-e) | **Opus** |
 | **CR1. Kernel review** | CK1, CK2, CK3, CP1's kernel line, CJ1 if merged: findings first (docs/CR-REVIEW-KERNEL.md, new), then High and Medium fixed with a test each; hostile tests (a TiB of reservations from a job with 16 MiB, 60,000 mappings in a storm of protects from 8 threads while another unmaps); **done 2026-10-15** ([CR-REVIEW-KERNEL.md](CR-REVIEW-KERNEL.md): 0 High, 3 Medium, 3 Low, 4 notes; two Mediums and every Low fixed, one Medium a design question) | the files its fixes need | CK1 to CK3 merged | its own; full ktest 4 and 8; soak 4 | **Opus** |
 | **CR2. POSIX and IPC review** | CL1, CL2, CL3, CU1, CU2, CS1: the descriptor passing (what crosses, what leaks, what a hostile peer can make the receiver do), the self-image (can it run anything the owner didn't approve?), `/proc`'s reopen; findings in [CR-REVIEW-POSIX](CR-REVIEW-POSIX.md) | the files its fixes need | CL1, CL2, CU1, CS1 merged | its own; posixtest; a fuzz loop between two processes | **Opus** |
-| **CJR. JIT review** | CJ1 and CJ2 against the owner's rule: can any program without the power get W+X, can a JIT VMO become approved code, can a handle hand-on widen rights; findings first, fixes with tests | the files its fixes need | CJ1, CJ2 merged | its own | **Opus** |
+| **CJR. JIT review** | CJ1 and CJ2 against the owner's rule: can any program without the power get W+X, can a JIT VMO become approved code, can a handle hand-on widen rights; findings first, fixes with tests; **done 2026-10-16** for CJ1 and CJ2's first half ([CR-REVIEW-JIT.md](CR-REVIEW-JIT.md): 0 High, 0 Medium, 3 Low, 4 notes; finding 1 fixed, two design questions) | the files its fixes need | CJ1, CJ2 merged | its own | **Opus** |
 | **CRJ. The join** | ARCHITECTURE (Memory: reservations, JIT VMOs; Userland: `/proc`, descriptor passing, the self-image, the toolchain), the porter's guide (C++ and Rust ports, the clang drivers, big ports), USING (Chromium), TESTING (cr-test.sh, the build), BENCH (the build's figures, page loads, the JIT's), ROADMAP and HISTORY | the docs | CR1, CR2 merged; CB6 | `make check` | Sonnet 5.5 |
 
 **Later** (not tracked yet): the Jam OS sandbox (CR-f, its own plan),
@@ -1473,7 +1499,8 @@ after GC1b, **GT** after GS1 and GP1.
 
 **Wave 3**: **CB2** (CR-b) after CB1; **CB3** after CB2, CL1 stage 2 and
 F1b; **CR1** (the kernel review) once CK1 to CK3 are merged; **CB4**
-after CB3 and G2's pieces; **CB5** after CB4, CU1, CS1 and PX; **CR2**
+after CB3 and G2's pieces; **CB5** after CB4, CU1, CS1, PX and
+[FORK-PLAN](FORK-PLAN.md)'s libc `fork` and `exec` (its own order); **CR2**
 once CL1, CL2, CU1 and CS1 are merged; **CA1**'s API part any time.
 
 **Wave 4**: **CU2** after CU1 and M13.6's U4; **PO13** after PO5, PO6
@@ -1680,7 +1707,7 @@ of its own.
 - **Limits**: 32 openers, 16 sealed programs waiting (4 per opener),
   dropped after 10 s unstarted; 12 KiB of argv and environment (spawn's
   2 KiB startup message refused less until CS1, which carries more in a
-  VMO); 128 hand-over messages.
+  VMO); a hand-over's kept data at most 64 KiB (CR2F, below).
   A worker thread with its own port serves it, every call on a caller's
   channel with a 5 s deadline: a hostile caller can delay other callers by
   that much a request, never init's loop.
@@ -1698,6 +1725,20 @@ of its own.
   PASS, the root job clean), `posix-mmap-test.sh` case `spawn` (the
   allowed run started, exited 7), `allow.txt`, `pager-test.sh` case
   `exec`, one ktest pass at 4.
+- **The hand-over is rewritten, not moved (CR2F, 2026-10-16;
+  [CR-REVIEW-POSIX](CR-REVIEW-POSIX.md) finding 1, Q1 decided A).** The
+  child's namespace may reach what its caller's can't, so it believes no
+  name the caller wrote: init reads the hand-over (`posixfds_read`, every
+  rule checked) and writes the child its own, a file without its path
+  (usable, `ENOTSUP` to give on, as with `SCM_RIGHTS`), no directories nor
+  duplicates of them, the cwd `/`, the program's path the sealed one, and
+  `POSIXFDS_SECURE`, which the crt makes `AT_SECURE` 1 (glibc's unsecure
+  variables left out of the environment; musl's own checks). Every child
+  is marked: init can't tell which program calls. A POSIX child gets a
+  hand-over even when its caller wrote none (0 to 2 then `/dev/null`); a
+  malformed one refuses the start. Later (option C): names as objects, a
+  directory channel for the cwd, so a `make` started this way can inherit
+  its directory and give redirected files on. utest `exec_handover`.
 
 ## CP1 notes
 
@@ -1760,7 +1801,10 @@ Track CP1, programs this big (2026-10-14): section 6's limits raised to
 
 Track CL2, `/proc/self` and the self-image (2026-10-14; the `/proc` half,
 user/posix/sys/procfs.c, came first). Section 3's `/proc` and section 6's
-self-image.
+self-image. CL2 left every other name ENOENT; PRC (2026-10-16, "PRC notes"
+below) added the files Chromium's `base` reads (`stat`, `status`, `statm`,
+`maps`, `cpuinfo`, `meminfo`, `/proc/stat`) and the neutral values it fills
+where Jam OS has no meaning.
 
 - **The program's path.** The POSIX hand-over's first message carries it
   (`exe_len` after the directory, `<posixfds.h>`; the old `reserved`
@@ -1836,6 +1880,115 @@ self-image.
   writable, the child's image our very VMO (the same object id). utest's
   malformed hand-overs add a program's path that isn't there and one past
   the first message.
+
+## PRC notes
+
+Track PRC, `/proc`'s files for Chromium's `base` (2026-10-16): CB2's first
+`base_unittests` run logged `/proc/self/status`, `maps`, `stat`,
+`/proc/<pid>/stat`, `/proc/cpuinfo`, `/proc/meminfo` and `/proc/self/ns/user`
+as ENOENT. This is section 3's `/proc` beyond CL2's `exe` and `fd`:
+user/posix/sys/procfs.c (names, opens, listing; a "generated file" kind),
+procinfo.c and cpuinfo.c (the text).
+
+- **What `base` does with each.**
+  - `stat` (ProcessMetrics, `Process::CreationTime`, `GetNumberOfThreads`,
+    ProcessUtilTest's zombie check): the 52 fields of proc(5), parsed after
+    the last `)`. State `R` for ourselves, `S` for a live child, `Z` for one
+    that ended and is not reaped (field 52 its code as `wait` gives it);
+    gone (ENOENT, and ESRCH on a file opened before) once reaped.
+    `CreationTime` is `btime` of `/proc/stat` plus `starttime` in ticks.
+  - `status` (BeingDebugged reads `TracerPid`, memory metrics read `VmRSS`,
+    `VmSwap`, `VmHWM`): Linux's keys in Linux's order.
+  - `statm`, `maps` (stack traces: "Failed to read /proc/self/maps"; V8's
+    shared-library list), `cpuinfo` (`SysInfo::CPUModelName`, the first
+    `model name`), `meminfo` (`SysInfo::AmountOfAvailablePhysicalMemory`,
+    the memory pressure monitor: MemTotal, MemFree, MemAvailable) and `stat`
+    (system): as above.
+  - `/proc/self/ns/user` stays **ENOENT**: Linux has no such file without
+    user namespaces, and the sandbox code's "are unprivileged user
+    namespaces supported" check then says no, which is right (Jam OS has
+    none; the sandbox is its own grants). With `--no-sandbox` it isn't
+    asked.
+- **What is real, and from where.**
+  - A process: `process_get_info` (state, live threads, CPU time, pid, and
+    new in PRC `start_ns`, the uptime at `process_create`, and `name`);
+    our process group, session and parent from the hand-over; a child's
+    from libc's table of children (proc.c: `lx_child_facts`).
+  - The address space: **the one kernel call PRC adds, `process_get_maps`
+    (138, `RIGHT_INSPECT` on a process)**: the mappings from an address on,
+    in order, up to 256 a call (`struct map_info`: base, length, the VMO's
+    koid and offset, the pages present in the page tables now, the
+    permissions). The pages present are counted by walking the page tables
+    (cost: the pages present; a mapping with no read, a reservation not
+    touched, costs nothing), under the address space's region lock like
+    `process_info.mappings`. It serves `maps`, VmSize and VmRSS (stat,
+    status, statm) for ourselves and for each child (through its process
+    handle). libc's table of its mappings (mem.c: `mem_kind_at`) says which
+    are shared (`s`), on a file's own pages (the file's offset), or the
+    break (`[heap]`); our program headers say which are the image (named by
+    `/proc/self/exe`'s path, with its offset). RssAnon, RssFile and
+    RssShmem are the present pages of the other three groups.
+  - CPUs: the count from `sys_public_info`; everything else from CPUID as
+    the CPU we run on answers it (family, model, stepping, brand, cache,
+    address sizes, Linux's names for the feature flags); `cpu MHz` the
+    TSC's rate from the time page, `bogomips` twice it.
+  - Memory: `sys_public_info`, which gained **`mem_free_pages`** (the page
+    allocator's free lists and per-CPU stashes; it does not drain the
+    kernel heap's magazines, so a program asking cannot slow it: the pages
+    cached there count as used). MemTotal and MemFree are those;
+    MemAvailable is MemFree (no page cache is kept apart). `sysinfo(2)`'s
+    freeram is the same figure now.
+  - The clock: `btime` is the wall clock now minus the uptime.
+- **Neutral values** (Linux's "none", where Jam OS has no meaning):
+  stat: tty 0 and tpgid -1, flags `PF_RANDOMIZE`, fault counts 0, stime 0
+  (the kernel keeps one CPU time: utime has all of it), cutime the CPU time
+  of the children we reaped, cstime 0, priority 20, nice 0, itrealvalue 0,
+  rsslim unlimited, startstack and the stack and instruction pointers 0,
+  wchan 0, exit_signal 17, processor 0, rt_priority and policy 0, the
+  data, brk, argument and environment addresses 0; the signal sets are ours
+  (pending, blocked, ignored, caught; a child's 0). status: no tracer, uid
+  and gid 1000, no supplementary groups, no capabilities, `Seccomp: 0`,
+  `NoNewPrivs: 0`, all CPUs allowed, no context switches counted, VmLck,
+  VmPin, VmLib, VmStk, VmPTE and VmSwap 0 (the main stack is not told apart:
+  it is in VmData), VmPeak and VmHWM the largest VmSize and VmRSS this
+  process has seen read here (a child's: its current ones). maps: device
+  `00:00` and inode 0 on every line; no `[stack]`, `[vdso]` or `[vvar]`, and
+  no names for files mapped with `mmap` (only the image and the break are
+  named); a child's lines have no names. cpuinfo: `microcode 0x0` (an MSR),
+  physical id 0, siblings and cpu cores the CPUs online, core id, apicid
+  and initial apicid the CPU's number (a CPU's APIC id needs a root
+  handle), bugs empty. meminfo: every field but the memory figures 0
+  (`Hugepagesize` 2048 kB, `DirectMap4k` all of it). stat (system): the CPU
+  times 0 (`cpu_stat` needs a root handle), `processes` our pid.
+- **A read is a pass.** The text is made when a read starts at offset 0
+  (the first read, or `lseek(0)` and read, or `pread` at 0) and kept for
+  the reads at later offsets of that pass; `lseek(SEEK_END)` makes it to
+  say its length. So a program reading with a small buffer sees one file,
+  and one that reads again sees the new state. Files are 0444, size 0 as
+  Linux's, not writable (EACCES), not directories (ENOTDIR).
+  `/proc/self/fd/N` of one reads `/proc/<pid>/<name>`.
+- **Who is listed.** `/proc` lists `self`, our pid, each child not yet
+  reaped (the first 256), and `cpuinfo`, `meminfo`, `stat`. A child's
+  directory has `maps`, `stat`, `statm` and `status` (no `exe` or `fd`); any
+  other pid is ENOENT, as before. A process reading its own `maps` sees the
+  buffers its read allocates (musl maps any allocation over 7 KiB): as on
+  Linux.
+- **Not built** (each shows up in the ENOENT log if something wants it):
+  `smaps` and `smaps_rollup`, `cmdline`, `task/`, `limits`, `oom_score_adj`,
+  `auxv`, `io`, `uptime`, `loadavg`, `diskstats`, other pids' files.
+- **Tests**: posixtest's `procinfo` section (in the `init` run; also
+  tools/shell-tests/posix-procinfo.txt from the shell): the files against
+  proc(5) and what the process really does (threads made and ended,
+  memory mapped, touched and given back, CPU burned, a protect that splits
+  a mapping, a guard, `MAP_SHARED`, the break, the signal masks, CPUID's
+  vendor, family and feature bits, `sysconf` and `sysinfo` against
+  meminfo, `btime` against the clocks), and a child's from live through
+  zombie (exit code 5 << 8, and 9 for SIGKILL) to reaped. utest's
+  `process_maps` (the call's fields, the cursor, the refusals, a process
+  that never ran), `sys_public_info` (free pages follow 16 MiB committed
+  and given back) and `posix_ids` (the creation time and name). ktest
+  `aspace_maps_shapes` (the list, the cursor, protect's splits, the pages
+  present).
 
 ## CS1 notes
 
@@ -1927,9 +2080,10 @@ the model). Where it differs from section 4's design:
   `EAGAIN` (Linux makes a blocking connect wait for room). A second
   `listen` keeps the first backlog (as the AF_INET path does).
 - **Limits** (unix.idl): 64 openers, 128 listeners (32 per opener
-  channel: libc keeps one per process), names of at most 107 bytes. What
-  waits at a listener is charged to the broker's job until accept reads it:
-  at most 64 small messages a listener.
+  channel: libc keeps one per process; one per program since CR2F,
+  below), names of at most 107 bytes. What waits at a listener is charged
+  to the broker's job until accept reads it: at most 64 small messages a
+  listener.
 - **Names**: `getsockname` of a bound socket says its path or abstract
   name; of a connection, and `getpeername`, `AF_UNIX` with no path, and
   `accept`'s address the same.
@@ -1942,6 +2096,18 @@ the model). Where it differs from section 4's design:
   per opener channel, but it can open several channels with `svc_open`);
   any abstract name is anyone's to take first. A listener that never
   accepts costs the broker at most 64 queued messages.
+- **Counted per program (CR2F, 2026-10-16; [CR-REVIEW-POSIX](CR-REVIEW-POSIX.md)
+  finding 3, Q2 decided A).** libos's grants give `/svc/unix` by name as
+  an opener of the program's own, made with `svc.connect` on the
+  starter's channel when the namespace is sent and marked as handing out
+  no more; `"*"` gives the starter's as it is (init, the shells, their
+  tests hold the shared channel). So one program binds 32 listeners at
+  most whatever it opens, and a listener counts against its opener until
+  it closes (the broker holds the opener's slot till then). Abstract
+  names stay one table (per session later, if a port needs it). Left: a
+  `svc exec` program keeping 64 approved `svc unix` children alive takes
+  every opener; after a broker restart a program with an opener of its
+  own has no `/svc/unix` until it is started again.
 - **Tests**: posixtest's `unix` section (in the init run;
   `tools/shell-tests/posix-unix.txt` alone, in shell mode); utest's
   `unix_names`, `unix_backlog`, `unix_limits` (the broker's protocol and
@@ -2042,6 +2208,95 @@ nothing is renamed.
     among same-parameter streams, and falls back to a fake output if
     `Open` fails.
 
+## BT notes
+
+Track BT, stack traces (2026-10-16): glibc's `<execinfo.h>` in libc, so
+Chromium's `StackTrace` takes its glibc path instead of being patched out
+(the owner's rule: fix the layer, not Chromium).
+
+- **What libc has now**: `backtrace()`, `backtrace_symbols()` and
+  `backtrace_symbols_fd()` (user/posix/glibc/execinfo.c; the header,
+  user/posix/include/execinfo.h, is new, not an override of musl's). The
+  directory is a new one in posix.mk: glibc's extensions musl lacks,
+  built with the layer's flags but, unlike the layer's objects, not
+  renamed `__jl_*` (they are libc's public names). They are in libc.a as
+  one member, linked only by a program that calls them.
+- **Its own unwinder, not `_Unwind_Backtrace`** (the plan was libunwind's).
+  `backtrace()` reads the program's `.eh_frame` through `.eh_frame_hdr`'s
+  index (found from `__ehdr_start`'s program headers) and runs the call
+  frame instructions for each return address: about 550 lines of C, x86-64
+  only, no libunwind (its tables read over every function of posixtest
+  on the Mac first: 1,841 functions, a row for each with its return address
+  at CFA-8, none without one but the assembly: `_start`, `__unmapself`,
+  `__restore_rt` and libjam's call stubs). Why: the cross GCC's libgcc has an unwinder but no
+  way to find a frame (it looks only at frames `crtbegin.o` registers,
+  and jamos-cc links none: checked with `nm`, `unwind-dw2-fde.o` not
+  `-dip`), so a GCC-linked C program, posixtest included, could not use
+  `_Unwind_Backtrace`; and a crash handler wants a walk with no lock, no
+  malloc and no call (libunwind finds a frame through `dl_iterate_phdr`
+  and a cache under a lock). Backtrace's entry is assembly (it saves the
+  callee-saved registers before any prologue changes them) and the walk
+  stays on the caller's stack. A frame whose CFA is an expression, a frame
+  without a table (`_start`, hand-written assembly) or a corrupt one ends
+  the trace; a pc without a table is still the last one stored (libgcc's
+  way). The stack is read only where a table says a caller's registers
+  were saved; CFAs must rise, so a trace ends.
+- **Unwind tables in musl, the layer and libjam's objects in libc.a**
+  (posix.mk: `-fasynchronous-unwind-tables`; musl's configure and the
+  layer had turned them off). On Jam OS a signal handler runs at a call
+  boundary in libc (sig.h), so a trace from a handler passes `run_handler`,
+  `deliver`, `sig_call`, the call layer's entry and musl's `raise` before
+  the function that raised the signal: all need tables. The same tables
+  let a trace cross a `qsort` comparator, a thread's start, `main`'s
+  caller, and C++ exceptions unwind through musl. Cost: `.eh_frame` is
+  about a tenth of a program's code (posixtest: 12 KiB to 70 KiB on
+  576 KiB of code, the file 0.5% bigger); no code changes. Not done: the
+  start code's `_start` has no CFI (a trace ends there, as it should).
+  Faults are not signals on Jam OS (the kernel ends the process), so
+  Chromium's SIGSEGV/SIGILL dump handlers never run; `abort()` is a
+  signal (SIGABRT) and does.
+- **The lines**: a program on Jam OS keeps no symbol table in memory (the
+  loader maps segments only), so `backtrace_symbols()` prints what glibc
+  prints for a non-PIE program with no symbol it can find: `name() [0xaddr]`
+  with argv[0] for an address in the program's segments, `[0xaddr]` for
+  any other. Naming functions would mean reading the program's file
+  (`/proc/self/exe`) and its `.symtab`; Chromium's `StackTrace` does that
+  itself (base/third_party/symbolize) and only falls back to
+  `backtrace_symbols()` where it is not built in, so nothing waits for it.
+  `backtrace_symbols_fd()` allocates nothing (one `writev` a line).
+- **Chromium**: the upstream tree uses `<execinfo.h>` in three files
+  (grep of the pristine 155 tree): `base/debug/stack_trace_posix.cc`
+  (`HAVE_BACKTRACE`, by `__GLIBC__`), V8's `external-reference-table.cc`
+  (DEBUG builds only) and SwiftShader's LLVM config (not built here).
+  Alpine's `no-execinfo.patch` (our 0001) and our own 0911 (a definition
+  for the build without `backtrace()`) are gone; the new 0911 adds
+  `defined(__jamos__)` to the one condition in stack_trace_posix.cc
+  (`__jamos__` is what the toolchain, 0901, already defines for the target;
+  `__GLIBC__` itself is not defined, which would turn on every other
+  glibc-only path Alpine's patches avoid). With it `stack_trace.cc`,
+  `operator<<` and the unit tests are upstream's again, so base_unittests'
+  `StackTrace.*` tests now run on Jam OS (CB2 triages any failure: they
+  need `/proc/self/maps` and the program's file for names, `symbol_level =
+  0` and a stripped program give addresses; with `USE_SYMBOLIZE` on,
+  as the build has it, Chromium's own reader names the frames and
+  `backtrace_symbols()` is not called). The kept tree takes the change
+  as a patch change: `stack_trace.cc`, `stack_trace_unittest.cc`,
+  V8's `external-reference-table.cc` and SwiftShader's config go back to
+  upstream's bytes and `stack_trace_posix.cc` changes, so only their
+  objects and the links rebuild (BT did not run that build: the tree is
+  CB2's and CB3's). Checked instead, on the PC: the new patch applies to
+  the pristine file with no fuzz, and that file compiled with the
+  build's own command line for it (from `ninja -t commands`, the source
+  and output swapped, libc's new header ahead of the sysroot's, nothing
+  in the tree written) gives an object that calls `backtrace` and holds
+  `ProcessBacktrace` and the stream handler. The first build of the
+  tree after this merges does the rest.
+- **Tests**: posixtest's `execinfo` section (the `init` run): four nested
+  functions give exactly their return addresses; a short array; a second
+  thread; a trace from a signal handler reaches the raising function and
+  its caller; a `qsort` comparator's trace reaches `qsort`'s caller;
+  `backtrace_symbols` and `backtrace_symbols_fd` lines.
+
 ## Later
 
 - **CR-f, the sandbox** (section 13): its own plan once CR-d works.
@@ -2060,7 +2315,9 @@ nothing is renamed.
   drivers must be loaded.
 - **Static-PIE** for every program (address randomisation): the loader
   takes `ET_DYN` with musl's self-relocating start.
-- **An emulated `fork`** stays M13.5's; Chromium doesn't need it.
+- **A zygote** (fork without exec, Chromium's Linux default): possible
+  once [FORK-PLAN](FORK-PLAN.md)'s `fork` is in; with Jam OS's sandbox
+  (CR-f) if at all.
 - **Security updates**: M13.7's PO12 audit with Chromium's CVEs, and a
   rebuild at each Alpine stable bump.
 - **More**: CJK fonts, input methods, drag and drop, the microphone and

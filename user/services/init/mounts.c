@@ -11,7 +11,8 @@
  *
  * Mounts flagged MOUNTS_TEST are the test suite's mock disks (volumes'
  * test_disk): init leaves them alone. /boot is init's own: volumes can't
- * put something else there.
+ * put something else there. /jam, the Jam OS drive's ext volume, brings
+ * its own views with it (/usr, /var, /home, /tmp: jammounts.c).
  *
  * A watch that closes while volumes still runs (volumes drops a watcher
  * that falls MOUNTS_UNREAD_MAX events behind) is made again at once, and
@@ -73,6 +74,8 @@ static void ev_mounted(void *ctx, const char *p, uint32_t len, uint32_t generati
         memcpy(have[nhave++], path, sizeof(path));
     else if (st != OK)
         printf("init: can't mount %s (%s)\n", path, status_str(st));
+    if (st == OK && !strcmp(path, JAM_MOUNT))
+        jam_mounted(port, port_key);   /* /usr, /var, /home, /tmp as its views (jammounts.c) */
 }
 
 /* path leaves the namespace and the list. */
@@ -81,6 +84,8 @@ static void forget(const char *path)
     int i = find(have, nhave, path);
     if (i < 0)
         return;
+    if (!strcmp(path, JAM_MOUNT))
+        jam_gone();   /* its views go first */
     (void)ns_unmount(path);
     memmove(have[i], have[i + 1], (size_t)(nhave - (unsigned)i - 1) * NS_NAME_MAX);
     nhave--;
@@ -207,6 +212,8 @@ bool mounts_event(void)
     if (watch && port && st != ERR_SHOULD_WAIT &&
         port_again(port, watch, port_key, SIG_READABLE | SIG_PEER_CLOSED) != OK)
         watch_lost(&settled);
+    if (jam_changed())   /* the views of /jam are in (or out): the followers too */
+        settled = true;
     return settled;
 }
 

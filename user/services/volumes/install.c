@@ -6,7 +6,8 @@
  * stick's ESP for `update` (volesp):
  *   - the disk must be Jam OS's by volumes' own check (mark.c), not the
  *     boot disk, with both partitions mounted and settled, and its driver
- *     not read-only (`diskro`; asked: storage.mode);
+ *     must call it Jam OS's too and not be read-only (`diskro`; asked:
+ *     storage.mode), before anything is stopped;
  *   - the partition's service stops in order and starts again on a `block`
  *     channel opened read-write (fs_restart), and `held` is set: it is no
  *     mount for anyone (disk_mounts leaves it out, every watch is told
@@ -14,10 +15,16 @@
  *     namespace;
  *   - at the end, failed or not, init asks for it read-only again (the
  *     service stops in order, the volume clean) and it is a mount again.
+ * The data partition may hold ext (M13.6's U7a): it is /jam, read-write and
+ * in the namespaces, so holding it starts its service again too, on a new
+ * channel (the old one's holders see it close), and letting go starts it
+ * again as /jam. Which way a mount is by default is the vol's `dflt_rw`:
+ * read-only for FAT and someone else's volumes, read-write for /jam.
  * A partition `mount -w` made writable for everyone is not held: ERR_BUSY.
  * The driver still refuses every write outside Jam OS's table and
  * partitions, and everything on a disk that isn't Jam OS's: nothing here
  * decides what may be written. */
+#include <idl/storage.h>
 #include "disk.h"
 
 #define INSTALL_PARTS 2u   /* a Jam OS disk's partitions: PART_ESP, PART_DATA */
@@ -34,9 +41,14 @@ static bool same(const struct disk *d, uint16_t gen)
 /* Hold b writable (or find it held), a channel to it into *fs. */
 static status_t hold_it(struct disk *d, uint16_t gen, struct vol *b, handle_t *fs)
 {
-    if (b->rw && !b->held)
+    if (b->rw && !b->held && !b->jam)
         return ERR_BUSY;   /* `mount -w`'s: in the namespaces */
     status_t st = disk_can_restart(b, true);
+    /* /jam (the data partition, ext) is writable already, and in the
+     * namespaces: it starts again all the same, so that the channel init is
+     * given is a new one and the old one's holders see ERR_PEER_CLOSED. */
+    if (st == OK && b->jam && !b->held)
+        st = IDL_LATER;
     if (st == IDL_LATER) {
         uint32_t serial = b->serial;
         b->busy = true;
@@ -62,18 +74,22 @@ static status_t hold_it(struct disk *d, uint16_t gen, struct vol *b, handle_t *f
     return b->client ? jam_handle_duplicate(b->client, RIGHT_SAME, fs) : ERR_BAD_STATE;
 }
 
-/* Back to read-only and a mount. */
+/* Back to the mount's own way (read-only, but for /jam, which is
+ * read-write, as its partition's driver allows) and a mount. */
 static status_t let_go(struct disk *d, uint16_t gen, struct vol *b)
 {
-    if (!b->rw) {
+    bool want = b->dflt_rw;
+    if (b->rw == want && !(b->jam && b->held)) {
         b->held = false;
         return OK;
     }
-    status_t st = disk_can_restart(b, false);
+    status_t st = disk_can_restart(b, want);
+    if (st == OK && b->jam && b->held)
+        st = IDL_LATER;   /* the same way, but a new channel for the namespaces */
     if (st == IDL_LATER) {
         uint32_t serial = b->serial;
         b->busy = true;
-        st = fs_restart(b, false);
+        st = fs_restart(b, want);
         if (b->serial != serial)
             return ERR_BAD_STATE;
         b->busy = false;
@@ -81,8 +97,8 @@ static status_t let_go(struct disk *d, uint16_t gen, struct vol *b)
         if (st == OK && !same(d, gen))
             st = ERR_BAD_STATE;
         mounts_update();
-        say(false, "volumes: %s is read-only and a mount again (%s)", fs_mount_path(b),
-            status_str(st));
+        say(false, "volumes: %s is %s and a mount again (%s)", fs_mount_path(b),
+            want ? "read-write" : "read-only", status_str(st));
         return st;
     }
     if (st == OK)
@@ -114,22 +130,23 @@ status_t disk_install_hold(uint32_t id, unsigned part, bool hold, handle_t *fs)
             return ERR_BAD_STATE;
     }
     d->preparing = true;   /* nothing else (a prepare, a release) begins on it meanwhile */
-    uint8_t mode, ro = 1, readable;
+    uint8_t mode = STORAGE_MODE_OTHER, ro = 1, readable;
     status_t st = hold ? driver_mode(d, &mode, &ro, &readable) : OK;
     d = disk_named(id);
-    if (!d || !same(d, gen)) {
-        if (d && d->gen == gen)
-            d->preparing = false;
-        return ERR_BAD_STATE;   /* gone or changed meanwhile */
-    }
-    if (st == OK && hold && ro)
+    if (!d || !same(d, gen) || !d->fs[part])
+        st = ERR_BAD_STATE;   /* gone or changed meanwhile */
+    else if (st == OK && hold && ro)
         st = ERR_ACCESS_DENIED;   /* the `diskro` word */
-    if (st == OK) {
-        struct vol *b = &vols[d->fs[part] - 1];
-        uint32_t serial = b->serial;
-        st = hold ? hold_it(d, gen, b, fs) : let_go(d, gen, b);
-        d = b->serial == serial ? disk_named(id) : NULL;
-    }
+    else if (st == OK && hold && mode != STORAGE_MODE_JAMOS)
+        st = ERR_ACCESS_DENIED;   /* not Jam OS's by the driver's own reading (a header
+                                   * damaged): it opens nothing writable, so nothing is
+                                   * stopped */
+    else if (st == OK)
+        st = hold ? hold_it(d, gen, &vols[d->fs[part] - 1], fs)
+                  : let_go(d, gen, &vols[d->fs[part] - 1]);
+    /* The drive's slot, whatever became of the partition's service or the
+     * driver (a restart moves gen; the slot stays): never left preparing. */
+    d = disk_named(id);
     if (d)
         d->preparing = false;
     return st;

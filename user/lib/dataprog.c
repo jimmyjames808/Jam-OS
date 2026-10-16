@@ -1,8 +1,8 @@
 /* Programs on /data as Jam OS checks them (<dataprog.h>): the page table,
- * the program's list read in pieces, the approvals and their tables, and
- * the refusals. Moved here from the shell (PX's sh_image.c and the table
- * read of sh_allow.c) so that init's /svc/exec (exec.c) seals a program by
- * exactly the shell's rules.
+ * the program's list read in pieces, the approvals and their tables, the
+ * refusals, and the job any started program runs in. Moved here from the
+ * shell (PX's sh_image.c and the table read of sh_allow.c) so that init's
+ * /svc/exec (exec.c) seals a program by exactly the shell's rules.
  *
  * The list is read without the whole file: the ELF header, the program
  * headers and each PT_NOTE segment are read through the caller's reader
@@ -385,4 +385,16 @@ rights_t dp_root_rights(uint32_t want)
     r |= want & WANT_RIGHT_DEBUG ? RIGHT_ROOT_DEBUG : 0;
     r |= want & WANT_RIGHT_JIT ? RIGHT_ROOT_JIT : 0;
     return r;
+}
+
+/* ---- a program's job ------------------------------------------------------------------ */
+
+status_t dp_job_create(handle_t parent, handle_t *out)
+{
+    status_t st = jam_job_create(parent, 0, out);
+    if (st == OK && (st = jam_job_set_limit(*out, JOB_LIMIT_MSG_BYTES, DP_JOB_MSG_BYTES)) != OK) {
+        jam_handle_close(*out);
+        *out = HANDLE_INVALID;
+    }
+    return st;
 }
