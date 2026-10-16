@@ -5,9 +5,20 @@ with the ports vectors' public test key (the one tools/pkg-test.sh puts in
 the test image as /boot/ports.pub; its secret is public and no real image
 carries it).
 
-    pkg-test-repo.py make DIR            write the repositories under DIR/web/
-    pkg-test-repo.py serve DIR [--port N]  make, then serve DIR/web/ on N (0: any)
+    pkg-test-repo.py make DIR [--ports P...]    write the repositories under DIR/web/
+    pkg-test-repo.py serve DIR [--port N] [--ports P...]
+                                          make, then serve DIR/web/ on N (0: any)
                                           and print "serving on <port>"
+
+With --ports, two more repositories hold real packages (tools/pkg-ports-test.sh):
+
+    real      the ports named and every package they `runs`, built and signed
+              by `tools/ports.py repo` with the test key (a serial from the
+              clock; the system's ABI stamp, as an image of this tree has it);
+              a `-test` subpackage is not in it
+    conflict  one package, bzip2-compat, whose `bin/bunzip2` is a file of the
+              real bzip2 package: in an index whose serial is one above real's,
+              so it is used after it
 
 Each directory under web/ is a repository (INDEX, VULNS, pkg/), reached as
 http://<host>:<port>/<name>/:
@@ -43,6 +54,7 @@ import hashlib
 import http.server
 import os
 import socketserver
+import subprocess
 import sys
 import time
 
@@ -122,7 +134,7 @@ def entry(p, key):
     return p, archive_of(p, key)
 
 
-def make(out):
+def make(out, ports=()):
     web = os.path.join(out, "web")
     key, _pub = signmod.test_key(os.path.join(out, "keys"), "ports vectors")
     key2, _ = signmod.test_key(os.path.join(out, "keys2"), "ports vectors, another")
@@ -156,7 +168,29 @@ def make(out):
     aaa2b = package("aaa", "2.0", readme="aaa 2.0, rebuilt\n", extra={"share/aaa/new.txt": b"new\n"})
     write_repo(web, "rebuild", [entry(aaa2b, key), good[1], entry(ccc1, key)], 1004, key)
     write_repo(web, "slow", [entry(aaa2, key), good[1], entry(ccc1, key)], 1005, key)
+    if ports:
+        make_real(out, web, ports, key)
     return web
+
+
+def make_real(out, web, ports, key):
+    """The `real` and `conflict` repositories (see the top)."""
+    global ABI
+    repo = os.path.join(web, "real")
+    log = os.path.join(out, "real-repo.log")
+    cmd = [sys.executable, os.path.join(TOP, "tools", "ports.py"), "repo", "--key", key,
+           "--repo", repo, "--no-tree"] + list(ports)
+    with open(log, "w") as f:
+        if subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT).returncode:
+            sys.exit("pkg-test-repo: ports.py repo failed, see %s" % log)
+    with open(os.path.join(repo, "INDEX"), "rb") as f:
+        f.readline()    # jamos-ports 1
+        serial = int(f.readline().split()[1])
+    ABI = fmt.abi_stamp(TOP)    # the conflict package is of this system, as the real ones
+    compat = package("bzip2-compat", "1.0")
+    compat.add("bin/bunzip2", 0o755, vectors.tiny_elf(LIST, 4096))
+    compat.lists["bin/bunzip2"] = LIST
+    write_repo(web, "conflict", [entry(compat, key)], serial + 1, key)
 
 
 SLOW_S = 25
@@ -209,8 +243,9 @@ def main():
     ap.add_argument("cmd", choices=("make", "serve"))
     ap.add_argument("dir")
     ap.add_argument("--port", type=int, default=0)
+    ap.add_argument("--ports", nargs="*", default=[], help="ports for the real repository")
     a = ap.parse_args()
-    web = make(a.dir)
+    web = make(a.dir, a.ports)
     if a.cmd == "serve":
         serve(web, a.port)
     else:

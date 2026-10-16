@@ -1,0 +1,47 @@
+# libarchive: the archive library, and bsdtar, bsdcpio, bsdcat and bsdunzip
+# (rung 3 of the first ports, docs/M13.7-PLAN.md section 16): the chain. It
+# `needs` zlib, bzip2 and xz (their static libraries are linked in) and
+# `runs` them (a real `tar` with compression on Jam OS: bsdtar starts the
+# programs of those packages for `--use-compress-program`, and the three
+# are what a user of its formats expects installed beside it), so the graph
+# has four nodes and an order. The first CMake port (ports/jamos.cmake).
+# Without OpenSSL (no digests for mtree and the zip/7-zip encryption
+# options), lz4, zstd, libxml2, expat, PCRE, ACLs, extended attributes and
+# the test programs; iconv is musl's own.
+name        libarchive
+version     3.8.10
+revision    1
+summary     the archive library, with bsdtar, bsdcpio, bsdcat and bsdunzip
+homepage    https://libarchive.org/
+category    archivers
+# COPYING: the 2-clause BSD licence for all but a few files: the compress
+# filters (3-clause, the Regents), archive_parse_date.c (public domain), and
+# the BLAKE2 reference code (CC0, OpenSSL or Apache-2.0 at the user's
+# choice). SPDX has no name for "public domain".
+licence     BSD-2-Clause AND BSD-3-Clause AND (CC0-1.0 OR Apache-2.0)
+licence-file COPYING
+source      https://github.com/libarchive/libarchive/releases/download/v$version/libarchive-$version.tar.xz 6735604 56cad765459d5ee25a3b761f90c47d99379d28297fbfb72d908880d6b875fb96
+place       package
+style       cmake
+host        cmake
+needs       zlib
+needs       bzip2
+needs       xz
+runs        bzip2
+runs        xz
+runs        zlib
+cmake       -DENABLE_OPENSSL=OFF -DENABLE_MBEDTLS=OFF -DENABLE_NETTLE=OFF -DENABLE_LIBB2=OFF
+cmake       -DENABLE_LZ4=OFF -DENABLE_LZO=OFF -DENABLE_ZSTD=OFF -DENABLE_LIBXML2=OFF
+cmake       -DENABLE_BSDXML=OFF -DENABLE_EXPAT=OFF -DENABLE_PCREPOSIX=OFF -DENABLE_PCRE2POSIX=OFF
+cmake       -DENABLE_LIBGCC=OFF -DENABLE_ACL=OFF -DENABLE_XATTR=OFF -DENABLE_TEST=OFF
+# No fork, ever (ports/config.site says why; CMake has no such file): musl's
+# fork and vfork link, so CMake finds them, and libarchive then takes them
+# over posix_spawnp for the programs it starts (`--use-compress-program`).
+cmake       -DHAVE_FORK=0 -DHAVE_VFORK=0
+# The tools read and write the files and directories they are named, so
+# they may write in /data (wants/bsdtar, shared by the four).
+program     bin/bsdtar
+program     bin/bsdcpio wants/bsdtar
+program     bin/bsdcat wants/bsdtar
+program     bin/bsdunzip wants/bsdtar
+library     lib/libarchive.a include/archive.h include/archive_entry.h lib/pkgconfig/libarchive.pc
