@@ -1,6 +1,6 @@
 /* ps: every process with its job, threads, state, CPU time and job memory,
  * indented by job, and "[jit]" after the name of one that has mapped JIT
- * memory (PROCESS_FLAG_JIT: memory it may write and run, its list's `right
+ * memory to run (PROCESS_FLAG_JIT: memory it may write and run, its list's `right
  * jit`, docs/CR-PLAN.md section 12); -k the kernel's own listing, into the
  * kernel log. */
 #include "sh.h"

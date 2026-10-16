@@ -311,7 +311,7 @@ struct aspace {
     uint64_t          pcid_id;
     uint64_t          tlb_gen;
     uint64_t          faults;     /* aspace_fault calls (atomic, relaxed; for tests) */
-    bool              jit;        /* has mapped a JIT VMO (atomic, set once; PROCESS_FLAG_JIT) */
+    bool              jit;        /* mapped JIT memory to run (aspace_maps_jit; atomic, once) */
 };
 
 static uint64_t mend(const struct mapping *m)
@@ -1523,7 +1523,7 @@ status_t aspace_map(struct aspace *as, struct vmo *vmo, uint64_t vmo_off, uint64
         kfree(m);   /* never placed (or taken back): still ours */
         return st;
     }
-    if (jit)
+    if (jit && (perms & ASPACE_EXEC))   /* JIT memory that may run marks it */
         __atomic_store_n(&as->jit, true, __ATOMIC_RELAXED);
     *addr = at;   /* m itself may have merged into a neighbour by now */
     return OK;
@@ -1548,24 +1548,27 @@ status_t aspace_unmap(struct aspace *as, uint64_t addr, uint64_t len)
 }
 
 /* Region lock held: the mappings covering [addr, end), *first to *last,
- * for aspace_protect. ERR_INVALID_ARGS if flags are W+X and a mapping met
- * isn't of a JIT VMO (W^X: the file header), else ERR_NOT_FOUND if any of
- * the range isn't mapped, else ERR_ACCESS_DENIED if a mapping may not have
- * flags (past its maximum, or a kept one changed: its entries stay as they
- * were filled). */
+ * for aspace_protect, and *jit: one of them maps a JIT VMO.
+ * ERR_INVALID_ARGS if flags are W+X and a mapping met isn't of a JIT VMO
+ * (W^X: the file header), else ERR_NOT_FOUND if any of the range isn't
+ * mapped, else ERR_ACCESS_DENIED if a mapping may not have flags (past its
+ * maximum, or a kept one changed: its entries stay as they were filled). */
 static status_t protect_span(const struct aspace *as, uint64_t addr, uint64_t end,
-                             unsigned flags, struct mapping **first, struct mapping **last)
+                             unsigned flags, struct mapping **first, struct mapping **last,
+                             bool *jit)
 {
     struct mapping *f = find(as, addr), *l = NULL;
     bool wx = perms_wx(flags);
     if (!f)
         return wx ? ERR_INVALID_ARGS : ERR_NOT_FOUND;   /* W+X needs a JIT VMO there */
-    bool denied = false;
+    bool denied = false, any = false;
     for (struct mapping *m = f;; m = next_of(m)) {
         if (!m || (l && m->base != mend(l)))
             return ERR_NOT_FOUND;   /* ran out, or a gap */
-        if (wx && !vmo_is_jit(m->vmo))
+        bool j = vmo_is_jit(m->vmo);
+        if (wx && !j)
             return ERR_INVALID_ARGS;
+        any |= j;
         denied |= (flags & ~m->max) != 0;
         denied |= m->kept && flags != m->flags;
         l = m;
@@ -1576,6 +1579,7 @@ static status_t protect_span(const struct aspace *as, uint64_t addr, uint64_t en
         return ERR_ACCESS_DENIED;
     *first = f;
     *last = l;
+    *jit = any;
     return OK;
 }
 
@@ -1627,7 +1631,8 @@ status_t aspace_protect(struct aspace *as, uint64_t addr, uint64_t len, unsigned
     uint64_t end = addr + len;
     mutex_lock(&as->lock);
     struct mapping *first = NULL, *last = NULL, *spare[2] = { NULL, NULL };
-    status_t st = protect_span(as, addr, end, flags, &first, &last);
+    bool jit = false;
+    status_t st = protect_span(as, addr, end, flags, &first, &last, &jit);
     /* An end mapping that has flags already isn't split: its two pieces
      * would only merge again. */
     bool lsplit = st == OK && first->base < addr && first->flags != flags;
@@ -1654,6 +1659,8 @@ status_t aspace_protect(struct aspace *as, uint64_t addr, uint64_t len, unsigned
     struct mapping *before = prev_of(first);
     merge_range(as, before ? before : first, end);
     (void)maps_account(as, as->nmaps);   /* at most the reservation: can't fail */
+    if (jit && (flags & ASPACE_EXEC))   /* JIT memory that may run now marks it */
+        __atomic_store_n(&as->jit, true, __ATOMIC_RELAXED);
     mutex_unlock(&as->lock);
     return OK;
 }
