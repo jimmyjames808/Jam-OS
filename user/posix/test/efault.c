@@ -19,7 +19,6 @@
  *     set from the start) and then ends by a real fault's SIGSEGV. */
 #include <stdio.h>
 #include <stdlib.h>
-#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -29,7 +28,6 @@
 #include <signal.h>
 #include <spawn.h>
 #include <string.h>
-#include <time.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/ioctl.h>
@@ -43,6 +41,7 @@
 #include <sys/time.h>
 #include <sys/uio.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 #include "pt.h"
 
@@ -275,8 +274,9 @@ static void check_pipes(void)
     for (int i = 0; i < nbad[IN_OPT]; i++) {   /* a good header naming bad control data */
         m.msg_control = bad[IN_OPT][i];
         m.msg_controllen = 64;
-        errno = 0;
-        CHECK(sendmsg(sp[1], &m, 0) == -1 && errno == EFAULT);
+        errno = 0;   /* raw: musl's sendmsg copies the control data itself first */
+        CHECK(syscall(SYS_sendmsg, sp[1], &m, 0) == -1 && errno == EFAULT);
+        checked++;
     }
     socklen_t len = sizeof(struct sockaddr_storage);
     struct sockaddr_storage sa;

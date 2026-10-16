@@ -90,8 +90,8 @@ out of sigreturn). `int3` is `SI_KERNEL` with `si_addr` 0 (Linux's
 `do_int3_user`), a debug trap `TRAP_TRACE`; a spurious x87 or SIMD
 error (no unmasked exception pending) resumes, as Linux's does.
 `SA_RESETHAND` leaves the entry set (the next fault is `UNHANDLED`, the
-same kill line); `sigaction` removes it once no fault signal has a
-handler. `rt_tgsigqueueinfo` and `rt_sigqueueinfo` carry `si_addr` for a
+same kill line); `sigaction` removed it once no fault signal had a
+handler, until CBF1 (below). `rt_tgsigqueueinfo` and `rt_sigqueueinfo` carry `si_addr` for a
 fault signal with `si_code` > 0. The entry's unwind table describes the
 interrupted frame with DWARF expressions (as glibc's `__restore_rt`
 does), so libgcc's and LLVM's unwinders and debuggers walk through it;
@@ -103,6 +103,17 @@ the handler's frames only, until execinfo runs `DW_OP_breg`/`DW_OP_deref`
 `mprotect` and on a `PROT_NONE` reservation (CL1's). The SIGBUS case
 maps a VMO and shrinks it under the mapping: a memfd can't give one
 (libc's memfd is a kept VMO, which never shrinks).
+
+A fault inside the POSIX layer's own code reached SIGSEGV where Linux
+says `EFAULT` (a call given a pointer it can't read or write). CBF1
+(CR-PLAN's "CBF1 notes") answers it: the layer reads and writes a
+program's memory only through user/posix/sys/ucopy.S's checked copies,
+whose loads and stores have an exception table; `sig_fault`'s first step,
+`uc_fault`, resumes a page fault or #GP at one of them at its fixup with
+-EFAULT, in the window, before any signal logic; and the entry is set
+from the start (`SIG_ENTRY_COPY`, never cleared), so it works with no
+handler and never touches signal state. A fault anywhere else in the
+layer is still SIGSEGV. A fork's child (FL1b) must set the entry again.
 
 What SG4 settled, or added (for SG5 and SG6):
 
@@ -366,7 +377,9 @@ SG2's):
   is dropped); with it set and no handler for a fault, the entry says
   `UNHANDLED` and the kill's line is the same. A program that never asks
   keeps the kernel's own kill, line for line, with libc nowhere on the
-  path.
+  path. (Since CBF1 the entry is set from the start in every POSIX
+  program, for the layer's checked copies: a program that never asks
+  goes through the entry to `UNHANDLED`, the same line.)
 - **The entry** (a new user/posix/sys/sigentry.S calling C in a new
   user/posix/sys/sigfault.c): finds the thread's record through its FS
   base, as `signal.c` does; a thread without one (the signal thread,

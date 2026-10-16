@@ -1103,7 +1103,8 @@ would have failed on.
 | `posix-scm.txt` | posixtest's scm section (`run posixtest scm`): socketpairs carrying descriptors (`SCM_RIGHTS`): every kind passed and used on the other side, the read-only twin and seals, 64, 128 and 253 descriptors, too little room (`MSG_CTRUNC`, no handle kept), `SOCK_SEQPACKET`, `shutdown`, Mojo's pattern with a child, the 10,000-round fuzz; also in the `init` run | |
 | `posix-procinfo.txt` | posixtest's procfs and procinfo sections (`run posixtest procfs procinfo`) and utest's `process_maps`, `sys_public_info` and `posix_ids` (`utest only <name>`) from the shell: the files of libc's `/proc` that Chromium's base reads (`/proc/self/stat`, `status`, `statm`, `maps`, `/proc/cpuinfo`, `meminfo`, `/proc/stat`, and a child's stat and status from live through zombie to reaped) against proc(5) and what the process really does, and the kernel calls under them (`process_get_maps`, the free-memory figure, a process's creation time and name): [CR-PLAN](CR-PLAN.md#prc-notes), "PRC notes"; also in the `init` run | |
 | `posix-execinfo.txt` | posixtest's execinfo section (`run posixtest execinfo`) from the shell: `backtrace()` from nested functions, a second thread, a signal handler and a `qsort` comparator, and the lines of `backtrace_symbols` and `backtrace_symbols_fd` ([CR-PLAN](CR-PLAN.md#bt-notes), "BT notes"); also in the `init` run | |
-| `posix-fault.txt` | posixtest's fault section (`run posixtest fault`) from the shell: a thread's own faults as Linux's signals with their siginfo and ucontext, the flags and masks, V8's and Chromium's patterns, children that must end, each by the fault's own signal; the alternate stack and `SA_ONSTACK` (stack overflow reaching a handler on it, the move to the interrupted stack, `sigaltstack`'s report and errors) ([SIGNALS-PLAN](SIGNALS-PLAN.md#1-faults-on-the-faulting-thread), SG3 and SG4); and the kernel's line for its first two children, one with no handler and one with the entry set and SIGSEGV default, the same `killed: page fault at rip ..., address 10`; also in the `init` run | |
+| `posix-fault.txt` | posixtest's fault section (`run posixtest fault`) from the shell: a thread's own faults as Linux's signals with their siginfo and ucontext, the flags and masks, V8's and Chromium's patterns, children that must end, each by the fault's own signal; the alternate stack and `SA_ONSTACK` (stack overflow reaching a handler on it, the move to the interrupted stack, `sigaltstack`'s report and errors) ([SIGNALS-PLAN](SIGNALS-PLAN.md#1-faults-on-the-faulting-thread), SG3 and SG4); and the kernel's line for its first two children, one with no handler and one with SIGBUS handled and SIGSEGV default, the same `killed: page fault at rip ..., address 10`; also in the `init` run | |
+| `posix-efault.txt` | posixtest's efault section (`run posixtest efault`) from the shell: every call the layer answers into or reads from a program's memory, given a read-only page, a `PROT_NONE` page, an unmapped address, NULL and a non-canonical address, is -1 with `EFAULT` and the process goes on ([CR-PLAN](CR-PLAN.md#cbf1-notes-2026-10-16), "CBF1 notes": the checked copies); with SIGSEGV and SIGBUS handled the handlers never run; a child with no handler gets `EFAULT`, then ends by a real fault with the kernel's `killed: page fault at rip ...` line; also in the `init` run | |
 | `posix-unix.txt` | posixtest's unix section (`run posixtest unix`) against shell mode's broker, bin/unix (`/svc/unix`, [CR-PLAN](CR-PLAN.md#cu2-notes), "CU2 notes"): named `AF_UNIX` sockets, a listener and two connectors, bytes and a descriptor over a connection, the backlog, a socket file removed and a stale one, a 108-byte path's `getsockname` (CR-REVIEW-POSIX finding 5), a child without `/data` refused and one with `/data` read-only let in, abstract names, a child given `/svc/unix` by name binding 32 listeners at most however often it opens it (its opener is its own: CR-REVIEW-POSIX Q2; here it shares posixtest's own); then `ps` shows `unix`; also in the `init` run (where init starts the broker before the programs) | |
 | `posix-raw.txt` | posixtest's raw section (`run posixtest raw`) with `JAMOS_ENOSYS_LOG=1` exported: the raw Linux calls Chromium makes (`prctl`, `setpriority`, affinity, the scheduling policies, futex bitset waits) and the ENOSYS log (an unknown call, option, ioctl or path named once per process in the kernel log: `enosys: posixtest: syscall 163 (acct)`); the section counts the log's lines itself and starts children with and without the variable | `QEMU_TIMEOUT=300` |
 | `posix-loop.txt` | posixtest's socket and loopback sections (`run posixtest socket loopback`) from the shell: netstack runs with no card and no address, and loopback needs neither | `QEMU_TIMEOUT=300` |
@@ -2254,6 +2255,25 @@ deep call and has SIGSEGV unblocked. The same overflow in a child ends it
 by SIGSEGV with no handler, with a handler without `SA_ONSTACK` (the
 kernel's kill "again in its exception entry": the frame can't be moved) and
 with `SA_ONSTACK` but no alternate stack, and the handler never runs.
+(Since CBF1 every child has the exception entry from its start, so "with
+no handler" and "with the entry set" differ only in the other handlers.)
+
+posixtest's efault section (the `init` run; `posixtest efault`): a call
+given a pointer it can't read or write is -1 with `EFAULT` and the process
+goes on, as on Linux ([CR-PLAN](CR-PLAN.md#cbf1-notes-2026-10-16), "CBF1
+notes"). base's `CheckMemoryReadOnly` exactly: `getrlimit(RLIMIT_NPROC,
+<a read-only page>)`. Then every call the layer's sweep converted, made raw
+with `syscall()` (musl's wrappers read some pointers themselves), with each
+bad pointer of its kind: a read-only page where the call writes, a
+`PROT_NONE` page where it reads, address 0x10, NULL where NULL isn't "not
+given", and a non-canonical address (a #GP, not a page fault): 428 calls,
+counted on the line `posixtest: efault: N calls with bad pointers`. A
+socketpair's bytes, an eventfd's count and a ready epoll event are still
+there for the next good call. With SIGSEGV and SIGBUS handled the calls
+still say `EFAULT` (a second thread's too) and the handlers never run,
+while a real store to the read-only page reaches the handler. A child that
+never installs a handler gets `EFAULT` and then ends by a real fault,
+SIGSEGV, with the kernel's line.
 
 posixtest's launch section (the `init` run; `posixtest launch`): what
 Chromium's launcher needs of `posix_spawn` ([CR-PLAN](CR-PLAN.md#cs1-notes),

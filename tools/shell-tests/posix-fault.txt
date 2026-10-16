@@ -4,7 +4,8 @@
 # V8's and Chromium's patterns, and children that must end. Also in the
 # init run; this is the section alone, from the shell, with the kernel's
 # lines for its first two children: one with no handler at all and one
-# with the entry set and SIGSEGV default end by the same kill line.
+# with SIGBUS handled and SIGSEGV default end by the same kill line (both
+# have the exception entry, set from the start since CBF1).
 #   QEMU_INPUT=tools/shell-tests/posix-fault.txt tools/qemu-test.sh <dir> posix-fault shell
 wait 120 Jam OS shell
 wait {prompt}
