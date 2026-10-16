@@ -1,5 +1,5 @@
 /* Pagers (see pager.h): the pager object, its keys, its request queue,
- * supplying pages and failing or detaching them.
+ * supplying pages, failing or detaching them, and write-back.
  *
  * State. A pager has a table of keys (KEY_BUCKETS lists of struct
  * pager_vmo), a queue of undelivered requests and a list of delivered ones
@@ -44,6 +44,36 @@
  * the queue. Supplying a present page is a no-op, so an answer given twice
  * is harmless.
  *
+ * Write-back requests (struct pager_wb) cover at most PAGER_SUPPLY_MAX of
+ * one writable VMO's pages, which may be in other write-back requests too
+ * (they are on the link's `wbs`, not `reqs`). What one needs (the rule
+ * that makes vmo_sync exact) is kept page by page in two bits, set when
+ * it is made: `need`, the page must still be written back (it was dirty
+ * or writing), and `begin`, by a write-back that begins later (it was
+ * dirty: stored to since its last write-back began). A write-back's
+ * begin clears `begin` (pager_begun_vlocked), its end clears `need` where
+ * `begin` is clear (pager_written_vlocked): so a page writing when the
+ * request was made needs that write-back's end, a dirty one a whole
+ * write-back after it, and a page dirtied later nothing. Only one
+ * write-back of a page runs at a time (BEGIN takes dirty pages that are
+ * not writing; one stored to while writing waits for that write-back's
+ * end), so the end of a page's write-back is the end of the one its
+ * `begin` was cleared by; a write-back cut off by a death (or a copy that
+ * failed) leaves its pages dirty, and the next end of one of them is then
+ * of a write-back begun later still: the bits need no change. The request
+ * is answered when no bit is left (with the first error a write-back of
+ * one of its pages ended with), by a shrink's dropping its pages (done),
+ * or failed with its VMO's detach. One left needing pages nobody is
+ * writing back after a PAGER_OP_WRITTEN goes back in the queue, so a pager
+ * that answered it sees it again (a page that was being written when it
+ * was made, and stored to since).
+ *
+ * The background request (`bg`): when a store takes a pager's dirty and
+ * writing pages past half its dirty limit, the run of dirty pages around
+ * its oldest one (pager_writeback_kick), one at a time per pager, charged
+ * to the pager's job. Nobody waits on it, so it ends at its deadline when
+ * the next kick or pager_next meets it.
+ *
  * Budget: the pages of a pager's VMOs are its page cache (`cache`,
  * pager_cache.c): at most max_pages of them, the oldest evicted first. */
 #include <jam/aspace_vmo.h>
@@ -65,11 +95,12 @@ enum pv_state { PV_NEW, PV_LINKED, PV_DETACHED, PV_GONE };
 
 struct pager_req {
     struct list_node qnode;      /* the queue or delivered (pager lock); then a dead list */
-    struct list_node vnode;      /* its VMO's link's reqs, while unanswered (read requests) */
-    struct pager    *pg;         /* a reference (read requests; GONE's is its link's) */
-    struct job      *job;        /* charged sizeof() message bytes (a reference), or NULL */
+    struct list_node vnode;      /* its VMO's link's reqs (read) or wbs (write-back), while
+                                    unanswered */
+    struct pager    *pg;         /* a reference (GONE's is its link's) */
+    struct job      *job;        /* charged req_bytes() message bytes (a reference), or NULL */
     uint64_t         key;        /* its VMO's key */
-    uint64_t         first, end; /* page indices (read requests) */
+    uint64_t         first, end; /* page indices (read and write-back requests) */
     uint64_t         deadline;   /* uptime ns: failed ERR_TIMED_OUT from then on */
     uint32_t         kind;       /* PAGER_REQ_* */
     uint32_t         refs;       /* the queue's and each waiter's; pager lock */
@@ -81,6 +112,28 @@ struct pager_req {
     struct waitqueue wq;         /* its waiters (class "pager request") */
 };
 
+/* A write-back request: its pages' bits (the file header's "Write-back
+ * requests"), page first + i at bit i; pager lock. */
+struct pager_wb {
+    struct pager_req r;
+    uint64_t         need[PAGER_WB_WORDS];    /* must still be written back */
+    uint64_t         begin[PAGER_WB_WORDS];   /* by a write-back that begins later */
+    status_t         err;                     /* the first error one of them ended with */
+};
+
+#define RUN_PAGES (PAGER_SUPPLY_MAX / PAGE_SIZE)
+_Static_assert(PAGER_WB_WORDS * 64 == RUN_PAGES, "a write-back request's bits");
+
+static struct pager_wb *wb_of(struct pager_req *r)
+{
+    return container_of(r, struct pager_wb, r);
+}
+
+static uint64_t req_bytes(uint32_t kind)
+{
+    return kind == PAGER_REQ_WRITEBACK ? sizeof(struct pager_wb) : sizeof(struct pager_req);
+}
+
 struct pager_vmo {
     struct list_node knode;      /* in its key bucket while LINKED or GONE; pager lock */
     struct list_node work;       /* the pager's close: its private list */
@@ -89,6 +142,7 @@ struct pager_vmo {
     uint64_t         key;        /* fixed */
     enum pv_state    state;      /* pager lock */
     struct list_node reqs;       /* its unanswered read requests; pager lock */
+    struct list_node wbs;        /* its unanswered write-back requests; pager lock */
     struct pager_req gone;       /* its PAGER_REQ_GONE (no references, never waited on) */
 };
 
@@ -100,6 +154,7 @@ struct pager {
     bool             closed;     /* the last handle is gone: no new VMOs */
     struct list_node queue;      /* struct pager_req, undelivered, oldest first */
     struct list_node delivered;  /* struct pager_req, delivered, not answered */
+    struct pager_req *bg;        /* the background write-back request, unanswered, or NULL */
     struct list_node keys[KEY_BUCKETS];   /* struct pager_vmo, LINKED or GONE */
 };
 
@@ -124,29 +179,41 @@ static void req_init(struct pager_req *r, uint32_t kind, uint64_t key)
     waitqueue_init(&r->wq, "pager request");
 }
 
-status_t pager_req_alloc(struct pager_vmo *pv, struct pager_req **out)
+/* A request of `kind` for key's VMO of pg, charged to job. */
+static status_t req_new(struct pager *pg, uint64_t key, struct job *job, uint32_t kind,
+                        struct pager_req **out)
 {
-    struct job *job = job_current();
-    status_t st = job_charge(job, JOB_LIMIT_MSG_BYTES, sizeof(struct pager_req));
+    uint64_t bytes = req_bytes(kind);
+    status_t st = job_charge(job, JOB_LIMIT_MSG_BYTES, bytes);
     if (st != OK)
         return ERR_NO_MEMORY;
-    struct pager_req *r = kzalloc(sizeof(*r));
+    struct pager_req *r = kzalloc(bytes);   /* (a write-back request: r is its first member) */
     if (!r) {
-        job_uncharge(job, JOB_LIMIT_MSG_BYTES, sizeof(struct pager_req));
+        job_uncharge(job, JOB_LIMIT_MSG_BYTES, bytes);
         return ERR_NO_MEMORY;
     }
-    req_init(r, PAGER_REQ_READ, pv->key);
+    req_init(r, kind, key);
     job_ref(job);
     r->job = job;
-    kobject_ref(pager_kobject(pv->pg));
-    r->pg = pv->pg;
+    kobject_ref(pager_kobject(pg));
+    r->pg = pg;
     *out = r;
     return OK;
 }
 
+status_t pager_req_alloc(struct pager_vmo *pv, struct pager_req **out)
+{
+    return req_new(pv->pg, pv->key, job_current(), PAGER_REQ_READ, out);
+}
+
+status_t pager_wb_alloc(struct pager_vmo *pv, struct job *job, struct pager_req **out)
+{
+    return req_new(pv->pg, pv->key, job, PAGER_REQ_WRITEBACK, out);
+}
+
 void pager_req_free(struct pager_req *r)
 {
-    job_uncharge(r->job, JOB_LIMIT_MSG_BYTES, sizeof(struct pager_req));
+    job_uncharge(r->job, JOB_LIMIT_MSG_BYTES, req_bytes(r->kind));
     job_unref(r->job);
     kobject_unref(pager_kobject(r->pg));   /* may be the pager's last: no lock held */
     kfree(r);
@@ -171,14 +238,16 @@ static void unqueue_locked(struct pager_req *r)
     }
 }
 
-/* Pager lock held: answer read request r with st, wake its waiters, drop
- * the queue's reference (onto dead if it was the last). */
+/* Pager lock held: answer read or write-back request r with st, wake its
+ * waiters, drop the queue's reference (onto dead if it was the last). */
 static void finish_locked(struct pager_req *r, status_t st, struct list_node *dead)
 {
     r->done = true;
     r->status = st;
     list_del(&r->vnode);
     unqueue_locked(r);
+    if (r->pg->bg == r)
+        r->pg->bg = NULL;
     waitqueue_wake_all(&r->wq);
     if (--r->refs == 0)
         list_add_tail(dead, &r->qnode);
@@ -189,6 +258,8 @@ static void fail_all_locked(struct pager_vmo *pv, status_t st, struct list_node 
 {
     while (!list_empty(&pv->reqs))
         finish_locked(list_first(&pv->reqs, struct pager_req, vnode), st, dead);
+    while (!list_empty(&pv->wbs))
+        finish_locked(list_first(&pv->wbs, struct pager_req, vnode), st, dead);
 }
 
 /* Pager lock held: SIG_READABLE exactly while a request waits undelivered. */
@@ -222,6 +293,14 @@ status_t pager_req_wait(struct pager_req *r)
     punlock(pg, f);
     reap(&dead);
     return st;
+}
+
+bool pager_req_answered(struct pager_req *r)
+{
+    uint64_t f = plock(r->pg);
+    bool done = r->done;
+    punlock(r->pg, f);
+    return done;
 }
 
 void pager_req_put(struct pager_req *r)
@@ -311,9 +390,183 @@ uint64_t pager_page_dirtied_vlocked(struct pager_vmo *pv, const struct page *p)
     return pager_cache_dirtied_vlocked(p);
 }
 
-void pager_page_store_vlocked(struct pager_vmo *pv, struct page *p)
+bool pager_page_store_vlocked(struct pager_vmo *pv, struct page *p)
 {
-    pager_cache_store_vlocked(&pv->pg->cache, p);
+    return pager_cache_store_vlocked(&pv->pg->cache, p);
+}
+
+void pager_page_begin_vlocked(struct pager_vmo *pv, struct page *p)
+{
+    pager_cache_begin_vlocked(&pv->pg->cache, p);
+}
+
+bool pager_page_written_vlocked(struct pager_vmo *pv, struct page *p)
+{
+    return pager_cache_written_vlocked(&pv->pg->cache, p);
+}
+
+void pager_page_unbegin_vlocked(struct pager_vmo *pv, struct page *p)
+{
+    pager_cache_unbegin_vlocked(&pv->pg->cache, p);
+}
+
+/* ---- write-back requests (the file header's "Write-back requests") ------- */
+
+static bool bit(const uint64_t *b, uint64_t i)
+{
+    return (b[i / 64] >> (i % 64)) & 1;
+}
+
+static void bit_clear(uint64_t *b, uint64_t i)
+{
+    b[i / 64] &= ~(1ull << (i % 64));
+}
+
+static bool bits_none(const uint64_t *b)
+{
+    for (unsigned w = 0; w < PAGER_WB_WORDS; w++)
+        if (b[w])
+            return false;
+    return true;
+}
+
+/* Pager lock held: the overlap of write-back request r with pages [first,
+ * end), as r's bit numbers [*lo, *hi); false if none. */
+static bool wb_overlap(const struct pager_req *r, uint64_t first, uint64_t end, uint64_t *lo,
+                       uint64_t *hi)
+{
+    uint64_t a = r->first > first ? r->first : first, b = r->end < end ? r->end : end;
+    *lo = a - r->first;
+    *hi = b - r->first;
+    return a < b;
+}
+
+status_t pager_wb_queue_vlocked(struct pager_vmo *pv, struct pager_req *r, uint64_t first,
+                                uint64_t end, const uint64_t *need, const uint64_t *begin,
+                                bool caller, bool bg)
+{
+    struct pager *pg = pv->pg;
+    struct pager_wb *w = wb_of(r);
+    uint64_t f = plock(pg);
+    status_t st = pv->state != PV_LINKED ? ERR_PEER_CLOSED : bg && pg->bg ? ERR_ALREADY_EXISTS : OK;
+    if (st == OK) {
+        r->key = pv->key;   /* (the background one's is known only now) */
+        r->first = first;
+        r->end = end;
+        memcpy(w->need, need, sizeof(w->need));
+        memcpy(w->begin, begin, sizeof(w->begin));
+        w->err = OK;
+        r->deadline = uptime_ns() + pg->answer_ns;
+        r->refs = caller ? 2 : 1;   /* the queue's, and the caller's */
+        r->queued = true;
+        list_add_tail(&pv->wbs, &r->vnode);
+        list_add_tail(&pg->queue, &r->qnode);
+        if (bg)
+            pg->bg = r;
+        sync_readable_locked(pg);
+    }
+    punlock(pg, f);
+    return st;
+}
+
+void pager_begun_vlocked(struct pager_vmo *pv, uint64_t first, uint64_t end)
+{
+    struct pager *pg = pv->pg;
+    uint64_t f = plock(pg);
+    for (struct list_node *n = pv->wbs.next; n != &pv->wbs; n = n->next) {
+        struct pager_req *r = container_of(n, struct pager_req, vnode);
+        uint64_t lo, hi;
+        if (wb_overlap(r, first, end, &lo, &hi))
+            for (uint64_t i = lo; i < hi; i++)
+                bit_clear(wb_of(r)->begin, i);
+    }
+    punlock(pg, f);
+}
+
+/* Pager lock held (and v's): does write-back request r still need a page
+ * that is being written back? */
+static bool wb_waits_on_writing(struct pager_req *r, struct vmo *v)
+{
+    for (uint64_t i = 0; i < r->end - r->first; i++)
+        if (bit(wb_of(r)->need, i) && vmo_pager_writing_locked(v, r->first + i))
+            return true;
+    return false;
+}
+
+void pager_written_vlocked(struct pager_vmo *pv, struct vmo *v, uint64_t first, uint64_t end,
+                           const uint64_t *ended, status_t st, struct list_node *dead)
+{
+    struct pager *pg = pv->pg;
+    uint64_t f = plock(pg);
+    for (struct list_node *n = pv->wbs.next; n != &pv->wbs;) {
+        struct pager_req *r = container_of(n, struct pager_req, vnode);
+        struct pager_wb *w = wb_of(r);
+        n = n->next;   /* finish_locked unlinks r */
+        uint64_t lo, hi;
+        if (!wb_overlap(r, first, end, &lo, &hi))
+            continue;
+        for (uint64_t i = lo; i < hi; i++) {
+            if (!bit(ended, r->first + i - first) || !bit(w->need, i) || bit(w->begin, i))
+                continue;
+            bit_clear(w->need, i);
+            if (st != OK && w->err == OK)
+                w->err = st;
+        }
+        if (bits_none(w->need)) {
+            finish_locked(r, w->err, dead);
+        } else if (r->delivered && !wb_waits_on_writing(r, v)) {
+            list_del(&r->qnode);   /* the pager's answer left pages it must begin again */
+            list_add_tail(&pg->queue, &r->qnode);
+            r->delivered = false;
+        }
+    }
+    sync_readable_locked(pg);
+    punlock(pg, f);
+}
+
+uint64_t pager_dirty_limit(const struct pager *pg)
+{
+    return pg->cache.max_pages / 4;
+}
+
+/* No lock held: past half the dirty limit, pg's background request for its
+ * oldest dirty run, unless it has one (or one past its deadline: that one
+ * fails, nobody waiting on it to end it). */
+static void kick(struct pager *pg)
+{
+    if (pager_cache_ndirty(&pg->cache) <= pager_dirty_limit(pg) / 2)
+        return;
+    struct list_node dead;
+    list_init(&dead);
+    uint64_t f = plock(pg);
+    if (pg->bg && uptime_ns() >= pg->bg->deadline)
+        finish_locked(pg->bg, ERR_TIMED_OUT, &dead);
+    bool busy = pg->bg || pg->closed;
+    sync_readable_locked(pg);
+    punlock(pg, f);
+    reap(&dead);
+    struct pager_req *r;
+    if (busy || req_new(pg, 0, pg->job, PAGER_REQ_WRITEBACK, &r) != OK)
+        return;   /* (no memory: the next store tries again) */
+    struct vmo *v;
+    uint64_t idx, dirtied;
+    status_t st = ERR_NOT_FOUND;
+    if (pager_cache_first(&pg->cache, false, &v, &idx, &dirtied)) {
+        st = vmo_pager_writeback_bg(v, idx, r);
+        kobject_unref(vmo_kobject(v));   /* (the last if written back meanwhile: no lock held) */
+    }
+    if (st != OK)
+        pager_req_free(r);   /* (written back meanwhile, or another store made it) */
+}
+
+void pager_writeback_kick(struct pager_vmo *pv)
+{
+    kick(pv->pg);
+}
+
+uint64_t pager_vmo_key(const struct pager_vmo *pv)
+{
+    return pv->key;
 }
 
 void pager_cut_vlocked(struct pager_vmo *pv, uint64_t end, struct list_node *dead)
@@ -331,6 +584,23 @@ void pager_cut_vlocked(struct pager_vmo *pv, uint64_t end, struct list_node *dea
         }
         if (r->first >= end || arrived_all(r))
             finish_locked(r, OK, dead);   /* the waiters look again */
+    }
+    /* A write-back request's pages past the end are done: dropped with
+     * the file's end (their stores go with it, as Linux's truncate). */
+    for (struct list_node *n = pv->wbs.next; n != &pv->wbs;) {
+        struct pager_req *r = container_of(n, struct pager_req, vnode);
+        struct pager_wb *w = wb_of(r);
+        n = n->next;   /* finish_locked unlinks r */
+        if (r->end <= end)
+            continue;
+        for (uint64_t i = r->first > end ? 0 : end - r->first; i < r->end - r->first; i++) {
+            bit_clear(w->need, i);
+            bit_clear(w->begin, i);
+        }
+        if (r->first < end)
+            r->end = end;
+        if (bits_none(w->need))
+            finish_locked(r, w->err, dead);
     }
     sync_readable_locked(pg);
     punlock(pg, f);
@@ -519,6 +789,7 @@ static status_t pv_new(struct pager *pg, uint64_t key, struct pager_vmo **out)
     pv->key = key;
     pv->state = PV_NEW;
     list_init(&pv->reqs);
+    list_init(&pv->wbs);
     req_init(&pv->gone, PAGER_REQ_GONE, key);
     *out = pv;
     return OK;
@@ -589,6 +860,23 @@ static void again_locked(struct pager *pg)
     }
 }
 
+/* No lock held: every page of pg's VMOs being written back dirty again
+ * (a successor starts: the write-backs its predecessor began won't end).
+ * The first writing page at a time, each under its VMO's lock; as many as
+ * were writing when it started, so pages a live writer begins meanwhile
+ * (at the list's tail) can't keep it going. */
+static void again_writing(struct pager *pg)
+{
+    for (uint64_t n = pager_cache_nwriting(&pg->cache); n; n--) {
+        struct vmo *v;
+        uint64_t idx, dirtied;
+        if (!pager_cache_first(&pg->cache, true, &v, &idx, &dirtied))
+            break;
+        vmo_pager_unbegin(v, idx, idx + 1);
+        kobject_unref(vmo_kobject(v));   /* (the last if written meanwhile: no lock held) */
+    }
+}
+
 status_t pager_next(struct pager *pg, uint32_t flags, struct pager_request *out)
 {
     if (flags & ~PAGER_NEXT_AGAIN)
@@ -597,12 +885,14 @@ status_t pager_next(struct pager *pg, uint32_t flags, struct pager_request *out)
     struct list_node dead;
     list_init(&dead);
     status_t st = ERR_SHOULD_WAIT;
+    if (flags & PAGER_NEXT_AGAIN)
+        again_writing(pg);
     uint64_t f = plock(pg);
     if (flags & PAGER_NEXT_AGAIN)
         again_locked(pg);
     while (st == ERR_SHOULD_WAIT && !list_empty(&pg->queue)) {
         struct pager_req *r = list_first(&pg->queue, struct pager_req, qnode);
-        if (r->kind == PAGER_REQ_READ && uptime_ns() >= r->deadline) {
+        if (r->kind != PAGER_REQ_GONE && uptime_ns() >= r->deadline) {
             finish_locked(r, ERR_TIMED_OUT, &dead);
             continue;
         }
@@ -611,7 +901,7 @@ status_t pager_next(struct pager *pg, uint32_t flags, struct pager_request *out)
         r->delivered = true;
         out->key = r->key;
         out->kind = r->kind;
-        if (r->kind == PAGER_REQ_READ) {
+        if (r->kind != PAGER_REQ_GONE) {
             out->offset = r->first << PAGE_SHIFT;
             out->len = (r->end - r->first) << PAGE_SHIFT;
         }
@@ -736,9 +1026,41 @@ uint64_t pager_dirty_pages(struct pager *pg)
     return pager_cache_ndirty(&pg->cache);
 }
 
+uint64_t pager_writing_pages(struct pager *pg)
+{
+    return pager_cache_nwriting(&pg->cache);
+}
+
 /* ---- writable VMOs' pages: copied out and in --------------------------------- */
 
-#define RUN_PAGES (PAGER_SUPPLY_MAX / PAGE_SIZE)
+/* How many times OLDEST looks for the oldest dirty page again when the one
+ * it found moved on before it locked its VMO (begun, written, dropped). */
+#define OLDEST_TRIES 8
+
+/* pager_dirty's OLDEST: the run around the oldest dirty page, into *v (a
+ * reference), *at and *n; none (n = 0) if that page is younger than
+ * min_age, *age then its age. ERR_NOT_FOUND if no page is dirty. */
+static status_t oldest_run(struct pager *pg, uint32_t flags, uint64_t max, uint64_t min_age,
+                           struct page **pages, struct vmo **v, uint64_t *at, uint64_t *n,
+                           uint64_t *dirtied, uint64_t *age)
+{
+    for (unsigned tries = 0; tries < OLDEST_TRIES; tries++) {
+        uint64_t idx, d;
+        *v = NULL;
+        if (!pager_cache_first(&pg->cache, false, v, &idx, &d))
+            return ERR_NOT_FOUND;
+        uint64_t now = uptime_ns();
+        *age = now > d ? now - d : 0;
+        if (*age < min_age)
+            return OK;   /* (n is 0) */
+        vmo_pager_dirty_run(*v, 0, UINT64_MAX, idx, flags, max, pages, at, n, dirtied);
+        if (*n)
+            return OK;
+        kobject_unref(vmo_kobject(*v));
+    }
+    *v = NULL;
+    return OK;   /* moving faster than we look: none this time */
+}
 
 status_t pager_dirty(struct pager *pg, uint64_t key, uint32_t flags, struct pager_run *run,
                      const struct pager_dst *dst)
@@ -746,9 +1068,8 @@ status_t pager_dirty(struct pager *pg, uint64_t key, uint32_t flags, struct page
     const uint32_t all = PAGER_DIRTY_BEGIN | PAGER_DIRTY_PEEK | PAGER_DIRTY_OLDEST;
     if ((flags & ~all) || ((flags & PAGER_DIRTY_BEGIN) && (flags & PAGER_DIRTY_PEEK)))
         return ERR_INVALID_ARGS;
-    if (flags & (PAGER_DIRTY_BEGIN | PAGER_DIRTY_OLDEST))
-        return ERR_NOT_SUPPORTED;   /* write-back: WRITEMAP's WK2 */
-    uint64_t offset = run->offset, len = run->len;
+    bool oldest = flags & PAGER_DIRTY_OLDEST;
+    uint64_t offset = oldest ? 0 : run->offset, len = run->len;
     if (((offset | len) & (PAGE_SIZE - 1)) || len == 0 || len > UINT64_MAX - offset)
         return ERR_INVALID_ARGS;
     if (len > PAGER_SUPPLY_MAX)
@@ -756,17 +1077,24 @@ status_t pager_dirty(struct pager *pg, uint64_t key, uint32_t flags, struct page
     struct page **pages = kmalloc(RUN_PAGES * sizeof(*pages));
     if (!pages)
         return ERR_NO_MEMORY;
-    struct vmo *v = lookup_vmo(pg, key);
-    status_t st = !v ? ERR_NOT_FOUND : !vmo_pager_writable(v) ? ERR_INVALID_ARGS : OK;
-    uint64_t first = offset >> PAGE_SHIFT, at = first, n = 0, dirtied = 0;
-    unsigned want = PAGER_PAGE_DIRTY | ((flags & PAGER_DIRTY_PEEK) ? PAGER_PAGE_WRITING : 0);
-    if (st == OK)
-        vmo_pager_dirty_run(v, first, first + (len >> PAGE_SHIFT), want, RUN_PAGES, pages, &at,
-                            &n, &dirtied);
-    if (v)
-        kobject_unref(vmo_kobject(v));
+    uint32_t look = flags & (PAGER_DIRTY_BEGIN | PAGER_DIRTY_PEEK);
+    uint64_t first = offset >> PAGE_SHIFT, at = first, n = 0, dirtied = 0, age = 0;
+    struct vmo *v = NULL;
+    status_t st;
+    if (oldest) {
+        st = oldest_run(pg, look, len >> PAGE_SHIFT, run->age_ns, pages, &v, &at, &n, &dirtied,
+                        &age);
+        first = at;   /* buf stands for the run itself */
+    } else {
+        v = lookup_vmo(pg, key);
+        st = !v ? ERR_NOT_FOUND : !vmo_pager_writable(v) ? ERR_INVALID_ARGS : OK;
+        if (st == OK)
+            vmo_pager_dirty_run(v, first, first + (len >> PAGE_SHIFT), UINT64_MAX, look,
+                                RUN_PAGES, pages, &at, &n, &dirtied);
+    }
     /* The bytes, from the page references, with no lock held: a store
-     * meanwhile may show in them (it is in a dirty page all the same). */
+     * meanwhile may show in them (in a dirty page all the same; after a
+     * BEGIN's shootdown, one that made its page dirty again). */
     for (uint64_t i = 0; i < n; i++) {
         uint64_t to = dst->addr + ((at - first + i) << PAGE_SHIFT);
         const void *from = page_to_virt(pages[i]);
@@ -777,13 +1105,17 @@ status_t pager_dirty(struct pager *pg, uint64_t key, uint32_t flags, struct page
         page_unref(pages[i]);
     }
     kfree(pages);
-    if (st != OK)
-        return st;
-    run->key = key;
-    run->offset = at << PAGE_SHIFT;
-    run->len = n << PAGE_SHIFT;
-    run->age_ns = n ? uptime_ns() - dirtied : 0;
-    return OK;
+    if (st != OK && n && (flags & PAGER_DIRTY_BEGIN))
+        vmo_pager_unbegin(v, at, at + n);   /* never told where: no write-back began */
+    if (st == OK) {
+        run->key = v ? vmo_pager_key(v) : key;
+        run->offset = at << PAGE_SHIFT;
+        run->len = n << PAGE_SHIFT;
+        run->age_ns = n ? uptime_ns() - dirtied : age;
+    }
+    if (v)
+        kobject_unref(vmo_kobject(v));
+    return st;
 }
 
 status_t pager_write(struct pager *pg, uint64_t key, uint64_t offset, const struct pager_src *src,
@@ -883,6 +1215,28 @@ static status_t set_size(struct pager *pg, uint64_t key, uint64_t size)
     return st == ERR_PEER_CLOSED ? ERR_NOT_FOUND : st;   /* detached meanwhile */
 }
 
+/* PAGER_OP_WRITTEN: the writing pages of key's VMO in [first, end) end
+ * their write-back with st. Then, if it still has too many dirty pages,
+ * the background request again (the one it may just have answered). */
+static status_t written(struct pager *pg, uint64_t key, uint64_t first, uint64_t end,
+                        status_t st)
+{
+    struct vmo *v = lookup_vmo(pg, key);
+    if (!v)
+        return ERR_NOT_FOUND;
+    if (!vmo_pager_writable(v)) {
+        kobject_unref(vmo_kobject(v));
+        return ERR_INVALID_ARGS;
+    }
+    struct list_node dead;
+    list_init(&dead);
+    vmo_pager_written(v, first, end, st, &dead);
+    kobject_unref(vmo_kobject(v));
+    reap(&dead);
+    kick(pg);
+    return OK;
+}
+
 /* PAGER_OP_DETACH: cut key's VMO off, or answer its PAGER_REQ_GONE. */
 static status_t detach_key(struct pager *pg, uint64_t key)
 {
@@ -934,7 +1288,11 @@ status_t pager_op(struct pager *pg, uint64_t key, uint32_t op, uint64_t offset, 
             return ERR_OUT_OF_RANGE;
         return set_size(pg, key, ALIGN_UP(offset, PAGE_SIZE));
     case PAGER_OP_WRITTEN:
-        return ERR_NOT_SUPPORTED;   /* (WK2) */
+        if (arg != OK && arg != ERR_IO && arg != ERR_NO_SPACE)
+            return ERR_INVALID_ARGS;
+        if (((offset | len) & (PAGE_SIZE - 1)) || len == 0 || len > UINT64_MAX - offset)
+            return ERR_INVALID_ARGS;
+        return written(pg, key, offset >> PAGE_SHIFT, (offset + len) >> PAGE_SHIFT, (status_t)arg);
     default:
         return ERR_INVALID_ARGS;
     }

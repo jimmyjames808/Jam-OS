@@ -171,11 +171,17 @@
  * way to an entry (leaves_protect, a clone's twin, which gets none) only
  * keeps or takes the write bit. Dirty and writing pages are never taken
  * by an eviction or an invalidation (take_batch_locked's `clean_only`),
- * only by a shrink, a detach, or (WRITEMAP's WK2) a write-back that makes
- * them clean. `dirty` counts them; while it isn't 0 the VMO holds a
- * reference to itself (`held`, the hold: taken by the first store, given
- * back by hold_end once they are gone), so it outlives its handles and
- * mappings and no store is lost because a program unmapped.
+ * only by a shrink, a detach, or a write-back that makes them clean. `dirty`
+ * counts them; while it isn't 0 the VMO holds a reference to itself
+ * (`held`, the hold: taken by the first store, given back by hold_end once
+ * they are gone), so it outlives its handles and mappings and no store is
+ * lost because a program unmapped. A write-back's begin
+ * (vmo_pager_dirty_run with PAGER_DIRTY_BEGIN) makes a run of dirty pages
+ * writing and takes their write bit in every mapping under this lock (a
+ * batch within VMO_BATCH_BUDGET, as a child's creation protects), then
+ * shoots down with no lock held before anyone copies them: the same rule
+ * then keeps them read-only, and a store after the shootdown faults and
+ * makes its page dirty again.
  *
  * Verified pager VMOs (vmo_seal_verified, <jam/vmo_verify.h>): a pager
  * VMO sealed with a table of page hashes, for a program from /data. The
@@ -343,6 +349,7 @@ struct vmo {
     bool             pwritable;           /* a writable pager VMO (fixed at creation) */
     bool             held;                /* the hold: a reference of its own while `dirty`; lock */
     uint64_t         dirty;               /* a writable pager VMO's dirty and writing pages; lock */
+    status_t         pwb_error;           /* the error a write-back ended with, until taken; lock */
     /* A child of a pager VMO (or of such a child): the pager VMO its absent
      * pages [0, win) come from (a reference, fixed at creation), and its
      * page index of this VMO's page 0; else NULL. win is charged whole to
@@ -1835,8 +1842,9 @@ static status_t fault_fill(struct vmo *v, uint64_t idx, bool src, struct fresh *
 /* With the lock held: a store to page p (present) of v, a writable pager
  * VMO. A clean page becomes dirty, and v's first dirty page takes the
  * hold: a reference of v's own (the caller has one, so v lives), kept
- * until none is left (hold_end). */
-static void store_locked(struct vmo *v, struct page *p)
+ * until none is left (hold_end). True if the pager has one more dirty page
+ * (the caller then kicks its write-back, with no lock held). */
+static bool store_locked(struct vmo *v, struct page *p)
 {
     if (!pager_page_state_vlocked(v->pv, p)) {
         v->dirty++;
@@ -1845,7 +1853,7 @@ static void store_locked(struct vmo *v, struct page *p)
             kobject_ref(&v->base);
         }
     }
-    pager_page_store_vlocked(v->pv, p);
+    return pager_page_store_vlocked(v->pv, p);
 }
 
 /* No lock held, a reference of the caller's: if v's dirty and writing
@@ -1888,13 +1896,14 @@ status_t vmo_fault_map(struct vmo *v, uint64_t idx, struct aspace *as, uint64_t 
         unsigned may = v->protecting ? perms & ~ASPACE_WRITE : perms;
         uint64_t *s = slot_locked(v, idx, false);
         struct page *p = s && *s ? pa_page(*s) : NULL;
+        bool kick = false;
         if (p && v->pwritable) {
             /* Writable only while dirty: a store to a clean or writing
              * page makes it dirty here (the file header's "Writable pager
              * VMOs"). (The dirty limit's wait, WRITEMAP's 1.4, goes
              * before it: a store waits as a read waits for its page.) */
             if (write)
-                store_locked(v, p);
+                kick = store_locked(v, p);
             if (!(pager_page_state_vlocked(v->pv, p) & PAGER_PAGE_DIRTY))
                 may &= ~ASPACE_WRITE;
         }
@@ -1906,6 +1915,8 @@ status_t vmo_fault_map(struct vmo *v, uint64_t idx, struct aspace *as, uint64_t 
             aspace_set_pte_locked(as, va, *s, shared ? perms & ~ASPACE_WRITE : may, v->cache);
             vunlock(v, f);
             fresh_drop(&fr);
+            if (kick)   /* one more dirty page: past half the limit, write-back's request */
+                pager_writeback_kick(v->pv);
             return OK;
         }
         if (p && fr.page && fr.from == p) {   /* separate it: our copy goes in */
@@ -2251,33 +2262,212 @@ bool vmo_pager_writable(const struct vmo *v)
     return v->pwritable;
 }
 
-void vmo_pager_dirty_run(struct vmo *v, uint64_t first, uint64_t end, unsigned want,
-                         uint64_t max, struct page **pages, uint64_t *at, uint64_t *n,
-                         uint64_t *dirtied)
+/* With the lock held: page idx of v (a writable pager VMO) if present,
+ * else NULL. */
+static struct page *ppage_locked(struct vmo *v, uint64_t idx)
 {
+    uint64_t *s = slot_locked(v, idx, false);
+    return s && *s ? pa_page(*s) : NULL;
+}
+
+/* With the lock held: is page idx in the state pager_dirty's `flags` look
+ * for (vmo_pager_dirty_run)? */
+static bool run_page_locked(struct vmo *v, uint64_t idx, uint32_t flags)
+{
+    struct page *p = ppage_locked(v, idx);
+    unsigned st = p ? pager_page_state_vlocked(v->pv, p) : 0;
+    if (flags & PAGER_DIRTY_BEGIN)
+        return st == PAGER_PAGE_DIRTY;   /* one write-back of a page at a time */
+    if (flags & PAGER_DIRTY_PEEK)
+        return st != 0;
+    return st & PAGER_PAGE_DIRTY;
+}
+
+void vmo_pager_dirty_run(struct vmo *v, uint64_t first, uint64_t end, uint64_t around,
+                         uint32_t flags, uint64_t max, struct page **pages, uint64_t *at,
+                         uint64_t *n, uint64_t *dirtied)
+{
+    struct tlb_gather g;
+    tlb_gather_init(&g);
     uint64_t oldest = UINT64_MAX;
     *at = first;
     *n = 0;
     uint64_t f = vlock(v);
     if (end > v->size >> PAGE_SHIFT)
         end = v->size >> PAGE_SHIFT;
-    for (uint64_t i = first; i < end && *n < max; i++) {
-        uint64_t *s = slot_locked(v, i, false);
-        struct page *p = s && *s ? pa_page(*s) : NULL;
-        if (!p || !(pager_page_state_vlocked(v->pv, p) & want)) {
-            if (*n)
-                break;   /* the run ends */
-            continue;
-        }
-        if (!*n)
-            *at = i;
+    if (v->pdetached)
+        end = first;   /* its pages are going: none */
+    if (around != UINT64_MAX) {   /* the run holding page `around`, from as far back as it goes */
+        uint64_t lo = first;
+        if (around < lo || around >= end || !run_page_locked(v, around, flags))
+            end = first;
+        else
+            for (first = around;
+                 first > lo && around - first + 1 < max && run_page_locked(v, first - 1, flags);)
+                first--;
+    }
+    uint64_t i = first;
+    while (i < end && !run_page_locked(v, i, flags))
+        i++;
+    *at = i;
+    while (i < end && i - *at < max && run_page_locked(v, i, flags))
+        i++;
+    uint64_t stop = i;
+    uint64_t t0 = uptime_ns();
+    if (stop > *at && (flags & PAGER_DIRTY_BEGIN))
+        stop = batch_end_locked(v, *at, stop, VMO_BATCH_PROTECT_COST);   /* in budget */
+    for (i = *at; i < stop; i++) {
+        struct page *p = ppage_locked(v, i);
         page_get(p);
         pages[(*n)++] = p;
         uint64_t d = pager_page_dirtied_vlocked(v->pv, p);
         oldest = d < oldest ? d : oldest;
+        if (flags & PAGER_DIRTY_BEGIN)
+            pager_page_begin_vlocked(v->pv, p);
+    }
+    if (*n && (flags & PAGER_DIRTY_BEGIN)) {
+        pager_begun_vlocked(v->pv, *at, stop);
+        batch_note(t0, wrprotect_umaps_locked(v, *at, stop, &g));
     }
     vunlock(v, f);
+    tlb_gather_finish(&g);   /* the one shootdown: no stale writable entry once we return */
     *dirtied = *n ? oldest : 0;
+}
+
+void vmo_pager_unbegin(struct vmo *v, uint64_t first, uint64_t end)
+{
+    uint64_t f = vlock(v);
+    if (end > v->size >> PAGE_SHIFT)
+        end = v->size >> PAGE_SHIFT;
+    for (uint64_t i = first; i < end; i++) {
+        struct page *p = ppage_locked(v, i);
+        if (p && (pager_page_state_vlocked(v->pv, p) & PAGER_PAGE_WRITING))
+            pager_page_unbegin_vlocked(v->pv, p);
+    }
+    vunlock(v, f);
+}
+
+void vmo_pager_written(struct vmo *v, uint64_t first, uint64_t end, status_t st,
+                       struct list_node *dead)
+{
+    const uint64_t batch = PAGER_WB_WORDS * 64;   /* a write-back request's pages at most */
+    for (uint64_t idx = first; idx < end;) {
+        uint64_t ended[PAGER_WB_WORDS] = { 0 };
+        uint64_t f = vlock(v);
+        uint64_t stop = end - idx > batch ? idx + batch : end;
+        if (stop > v->size >> PAGE_SHIFT)
+            stop = v->size >> PAGE_SHIFT;   /* (a shrink took the rest, with its requests) */
+        if (idx >= stop) {
+            vunlock(v, f);
+            break;
+        }
+        for (uint64_t i = idx; i < stop; i++) {
+            struct page *p = ppage_locked(v, i);
+            if (!p || !(pager_page_state_vlocked(v->pv, p) & PAGER_PAGE_WRITING))
+                continue;
+            if (pager_page_written_vlocked(v->pv, p))
+                v->dirty--;   /* clean: its entries are read-only already */
+            ended[(i - idx) / 64] |= 1ull << ((i - idx) % 64);
+        }
+        if (st != OK)
+            v->pwb_error = st;   /* (the latest, as Linux keeps one per file) */
+        pager_written_vlocked(v->pv, v, idx, stop, ended, st, dead);
+        vunlock(v, f);
+        idx = stop;
+    }
+    hold_end(v);
+}
+
+status_t vmo_pager_take_error(struct vmo *v)
+{
+    uint64_t f = vlock(v);
+    status_t st = v->pwb_error;
+    v->pwb_error = OK;
+    vunlock(v, f);
+    return st;
+}
+
+/* With the lock held: the pages of [first, end) (end - first at most
+ * PAGER_WB_WORDS * 64) a write-back request made now needs (pager.c's
+ * "Write-back requests"): dirty or writing pages in need[], those dirty
+ * (stored to since their write-back began, if one did) in begin[] too.
+ * False if none. */
+static bool wb_needs_locked(struct vmo *v, uint64_t first, uint64_t end, uint64_t *need,
+                            uint64_t *begin)
+{
+    bool any = false;
+    memset(need, 0, PAGER_WB_WORDS * sizeof(*need));
+    memset(begin, 0, PAGER_WB_WORDS * sizeof(*begin));
+    for (uint64_t i = first; i < end; i++) {
+        struct page *p = ppage_locked(v, i);
+        unsigned st = p ? pager_page_state_vlocked(v->pv, p) : 0;
+        uint64_t b = 1ull << ((i - first) % 64);
+        if (st)
+            need[(i - first) / 64] |= b;
+        if (st & PAGER_PAGE_DIRTY)
+            begin[(i - first) / 64] |= b;
+        any |= st != 0;
+    }
+    return any;
+}
+
+status_t vmo_pager_writeback(struct vmo *v, uint64_t first, uint64_t end, struct pager_req **out)
+{
+    *out = NULL;
+    if (!v->pwritable)
+        return ERR_NOT_SUPPORTED;
+    if (end <= first || end - first > PAGER_WB_WORDS * 64)
+        return ERR_OUT_OF_RANGE;
+    struct pager_req *r;
+    status_t st = pager_wb_alloc(v->pv, job_current(), &r);   /* before the locks: it allocates */
+    if (st != OK)
+        return st;
+    uint64_t need[PAGER_WB_WORDS], begin[PAGER_WB_WORDS];
+    uint64_t f = vlock(v);
+    st = end > v->size >> PAGE_SHIFT ? ERR_OUT_OF_RANGE : v->pdetached ? ERR_PEER_CLOSED : OK;
+    bool any = st == OK && wb_needs_locked(v, first, end, need, begin);
+    if (any)
+        st = pager_wb_queue_vlocked(v->pv, r, first, end, need, begin, true, false);
+    vunlock(v, f);
+    if (st == OK && any)
+        *out = r;
+    else
+        pager_req_free(r);
+    return st;
+}
+
+status_t vmo_pager_writeback_bg(struct vmo *v, uint64_t idx, struct pager_req *r)
+{
+    uint64_t need[PAGER_WB_WORDS], begin[PAGER_WB_WORDS];
+    const uint64_t max = PAGER_WB_WORDS * 64;
+    uint64_t f = vlock(v);
+    status_t st = v->pdetached ? ERR_PEER_CLOSED : OK;
+    uint64_t end = v->size >> PAGE_SHIFT, first = idx;
+    if (st == OK && (idx >= end || !run_page_locked(v, idx, PAGER_DIRTY_BEGIN)))
+        st = ERR_NOT_FOUND;
+    if (st == OK) {
+        while (first > 0 && idx - first + 1 < max &&
+               run_page_locked(v, first - 1, PAGER_DIRTY_BEGIN))
+            first--;
+        uint64_t stop = idx + 1;
+        while (stop < end && stop - first < max && run_page_locked(v, stop, PAGER_DIRTY_BEGIN))
+            stop++;
+        (void)wb_needs_locked(v, first, stop, need, begin);
+        st = pager_wb_queue_vlocked(v->pv, r, first, stop, need, begin, false, true);
+    }
+    vunlock(v, f);
+    return st;
+}
+
+bool vmo_pager_writing_locked(struct vmo *v, uint64_t idx)
+{
+    struct page *p = idx < v->size >> PAGE_SHIFT ? ppage_locked(v, idx) : NULL;
+    return p && (pager_page_state_vlocked(v->pv, p) & PAGER_PAGE_WRITING);
+}
+
+uint64_t vmo_pager_key(struct vmo *v)
+{
+    return pager_vmo_key(v->pv);
 }
 
 status_t vmo_pager_present(struct vmo *v, uint64_t first, uint64_t end, uint64_t byte_end,

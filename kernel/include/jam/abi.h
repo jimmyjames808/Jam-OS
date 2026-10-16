@@ -780,8 +780,8 @@ struct pager_request {
  * (its pages become writing, write-protected in every mapping before
  * their bytes are copied); PAGER_DIRTY_PEEK, dirty and writing pages are
  * copied and nothing changes; PAGER_DIRTY_OLDEST, the run around the
- * pager's oldest dirty page, whatever its VMO (key and the range asked
- * are ignored). */
+ * pager's oldest dirty page, whatever its VMO (key and the range's start
+ * are ignored; the length is the most the run may be). */
 #define PAGER_DIRTY_BEGIN  (1u << 0)
 #define PAGER_DIRTY_PEEK   (1u << 1)
 #define PAGER_DIRTY_OLDEST (1u << 2)
@@ -792,8 +792,16 @@ struct pager_run {
     uint64_t key;      /* out: its VMO's key */
     uint64_t offset;   /* in: the range's start; out: the run's, bytes */
     uint64_t len;      /* in: the range's length; out: the run's (0: none) */
-    uint64_t age_ns;   /* out: how long ago its oldest page was first dirtied */
+    uint64_t age_ns;   /* in, with OLDEST: the least age wanted; out: how long
+                          its oldest page has been dirty */
 };
+
+/* How long a page may stay dirty before its pager writes it back by itself
+ * (WRITEMAP's Q2, the owner's answer: 10 s to start with): the default of
+ * a filesystem's write-back age setting, which it passes as run->age_ns to
+ * pager_dirty with PAGER_DIRTY_OLDEST. The kernel keeps no timer and no
+ * copy of the setting: changing it is the filesystem's. */
+#define PAGER_WRITEBACK_AGE_NS 10000000000ull
 
 /* vmo_sync's flag: wait until the write-back it asks for is done. */
 #define VMO_SYNC_WAIT (1u << 0)

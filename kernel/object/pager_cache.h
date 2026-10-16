@@ -15,16 +15,19 @@
  * VMOs") are never evicted: they leave only by a shrink, a detach, or
  * once written back, clean again.
  *
- * The lists. A resident page is on one of its cache's two lists through
+ * The lists. A resident page is on one of its cache's three lists through
  * its struct page's `node`, which is free while the page is in a VMO's
  * table (the free lists and gathers use it only before the page is
  * published and after it is taken out): `pages`, the clean ones, oldest
- * supplied first (the evictors' list), or `dirty`, the dirty and writing
- * ones, oldest dirtied first (write-back's); `node.next` is NULL once it is
- * off both. Its struct page's `private` points at its record (struct
- * pager_rec: the VMO, the index, the state and when it was dirtied, 24
- * bytes, charged to the pager's job as message bytes), which says where an
- * evictor finds it. A record lives exactly as long as its page is in its
+ * supplied (or written back) first, the evictors' list; `dirty`, the dirty
+ * ones not being written back, oldest dirtied first (write-back's: the
+ * age write-back and the background request start at its head); or
+ * `writing`, those being written back (writing, and dirty as well if
+ * stored to since), in the order their write-backs began. `node.next` is
+ * NULL once it is off all three. Its struct page's `private` points at its
+ * record (struct pager_rec: the VMO, the index, the state and when it was
+ * dirtied, 24 bytes, charged to the pager's job as message bytes), which
+ * says where an evictor (or write-back) finds it. A record lives exactly as long as its page is in its
  * table: whoever takes the page out frees it (pager_cache_remove_vlocked).
  * The state and the list a page is on change together, under the VMO lock
  * and this one.
@@ -40,7 +43,16 @@
  * the page it made room for, so the pages in the tables stay within the
  * budget too; the one exception is a page of a VMO being destroyed, which
  * no evictor can reach (it goes with its VMO a moment later). `ndirty`
- * counts the pages on `dirty`.
+ * counts the pages on `dirty` and `writing`, `nwriting` those on
+ * `writing`.
+ *
+ * Age (`dirtied`, the order of `dirty`): when a clean page's first store
+ * made it dirty; for a page stored to while it was being written back,
+ * when that write-back ended (it is dirty from then on, so a page stored
+ * to all the time is written back once per age, not on every look); for a
+ * page whose write-back was cut off (its pager died, or the copy failed),
+ * its age from before, made no younger than the head of `dirty`, where it
+ * goes back.
  *
  * Lock: "pager cache" (`lock`), taken under "vmo" (publishing and taking a
  * page out) and alone (reserving, evicting), never the other way round: an
@@ -64,11 +76,13 @@ struct pager_cache {
     spinlock_t       lock;        /* "pager cache": everything below */
     struct job      *job;         /* pays for the records (the pager's; no reference of its own) */
     uint64_t         max_pages;   /* the budget, > 0; fixed */
-    uint64_t         resident;    /* pages on `pages` and `dirty` + reserved slots */
-    uint64_t         ndirty;      /* pages on `dirty` */
+    uint64_t         resident;    /* pages on the lists + reserved slots */
+    uint64_t         ndirty;      /* pages on `dirty` and `writing` */
+    uint64_t         nwriting;    /* pages on `writing` */
     struct list_node pages;       /* struct page (via node): clean pages, oldest supplied first */
-    struct list_node dirty;       /* struct page (via node): dirty and writing pages, oldest
-                                     dirtied first */
+    struct list_node dirty;       /* struct page (via node): dirty pages not being written
+                                     back, oldest dirtied first */
+    struct list_node writing;     /* struct page (via node): pages being written back */
 };
 
 /* An empty cache of max_pages (> 0) for a pager paid for by job. */
@@ -102,17 +116,37 @@ void pager_cache_add_vlocked(struct pager_cache *c, struct page *p, struct pager
 void pager_cache_remove_vlocked(struct pager_cache *c, struct page *p);
 
 /* The VMO lock held, p in its table: its state (PAGER_PAGE_*, 0: clean)
- * and when it was first dirtied since it was last clean (uptime ns). */
+ * and its age (uptime ns: "Age" above). */
 unsigned pager_cache_state_vlocked(const struct page *p);
 uint64_t pager_cache_dirtied_vlocked(const struct page *p);
 
 /* The VMO lock held, p in its table: a store. Clean: dirty now, onto the
  * dirty list's tail stamped with the time (off the cache's list, or, if an
- * evictor popped it, counted again). Writing: writing and dirty, where it
- * is. Dirty: nothing. */
-void pager_cache_store_vlocked(struct pager_cache *c, struct page *p);
+ * evictor popped it, counted again); true (one more dirty page). Writing:
+ * writing and dirty, where it is. Dirty: nothing. */
+bool pager_cache_store_vlocked(struct pager_cache *c, struct page *p);
 
-/* Pages counted against the budget right now, and those dirty or writing
- * (tests and statistics). */
+/* The VMO lock held, p dirty and not writing: its write-back begins
+ * (writing now, onto `writing`). */
+void pager_cache_begin_vlocked(struct pager_cache *c, struct page *p);
+/* The VMO lock held, p writing: its write-back ended. Clean (onto the
+ * clean list, newest: true), or, stored to since, dirty (onto `dirty`'s
+ * tail, its age counted from now: false). */
+bool pager_cache_written_vlocked(struct pager_cache *c, struct page *p);
+/* The VMO lock held, p writing: its write-back won't end (the pager died,
+ * or the copy out failed): dirty again, at `dirty`'s head. */
+void pager_cache_unbegin_vlocked(struct pager_cache *c, struct page *p);
+
+/* The oldest dirty page not being written back (`dirty`'s head), or with
+ * `writing` the first page being written back: true, *v a reference to
+ * its VMO, *idx its index and *dirtied its age; false if there is none.
+ * No lock held: by the time the caller locks the VMO the page may have
+ * moved on (it looks again). */
+bool pager_cache_first(struct pager_cache *c, bool writing, struct vmo **v, uint64_t *idx,
+                       uint64_t *dirtied);
+
+/* Pages counted against the budget right now, those dirty or writing, and
+ * those writing (tests and statistics). */
 uint64_t pager_cache_resident(struct pager_cache *c);
 uint64_t pager_cache_ndirty(struct pager_cache *c);
+uint64_t pager_cache_nwriting(struct pager_cache *c);
