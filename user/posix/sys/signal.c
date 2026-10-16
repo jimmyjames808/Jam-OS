@@ -996,6 +996,11 @@ static void raise_self(void)
         (void)jam_thread_raise(t->handle);
 }
 
+void sig_raise_later(void)
+{
+    raise_self();
+}
+
 /* The next signal due on t taken for its handler, as sig_raise_begin says:
  * one ignored by now is dropped, a default that terminates ends the
  * process (the lock dies with us). sig_lock. */

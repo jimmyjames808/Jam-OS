@@ -18,7 +18,11 @@
  * frame there, so a nested fault, which the kernel serves on the alternate
  * stack again, can't touch what the handler's thread still needs);
  * __jam_sig_stack_call runs a function on another stack and comes back
- * (a handler with SA_ONSTACK for a signal delivered at a call boundary). */
+ * (a handler with SA_ONSTACK for a signal delivered at a call boundary);
+ * __jam_sig_resume is a handler's last step out, the resume, where a
+ * raise that comes is told by its RIP. */
+
+#include <jam/syscall_nums.h>
 
 /* struct exc_frame's offsets (sigfault.c checks them against <jam/abi.h>). */
 #define F_R8   48
@@ -135,5 +139,36 @@ __jam_sig_stack_call:
     ret
     .cfi_endproc
     .size __jam_sig_stack_call, . - __jam_sig_stack_call
+
+/* long __jam_sig_resume(struct exc_frame *f, struct sig_tail *t, long outer):
+ * the last step of a handler's way out (sigfault.c's struct sig_tail):
+ * t->in = outer, then, unless a raise came meanwhile (t->again: back in
+ * the way out, 1 returned), exception_done(f, EXC_RESUME), which returns
+ * only the kernel's refusal. A raise from the first instruction to the
+ * system call finds RIP in [__jam_sig_resume, __jam_sig_resume_end):
+ * the thread is still on its way out though t->in says not. */
+#define EXC_RESUME 1   /* <jam/abi.h>'s */
+#define T_IN       0   /* struct sig_tail's fields */
+#define T_AGAIN    1
+
+    .globl __jam_sig_resume, __jam_sig_resume_end
+    .hidden __jam_sig_resume, __jam_sig_resume_end
+    .type __jam_sig_resume, @function
+    .p2align 4
+__jam_sig_resume:
+    .cfi_startproc
+    movb %dl, T_IN(%rsi)
+    cmpb $0, T_AGAIN(%rsi)
+    je 1f
+    movb $1, T_IN(%rsi)       /* on the way out again: the raise's signal first */
+    mov $1, %eax
+    ret
+1:  mov $EXC_RESUME, %esi
+    mov $SYS_exception_done, %eax
+    syscall
+__jam_sig_resume_end:
+    ret
+    .cfi_endproc
+    .size __jam_sig_resume, . - __jam_sig_resume
 
     .section .note.GNU-stack, "", @progbits

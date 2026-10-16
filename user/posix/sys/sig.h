@@ -214,6 +214,10 @@ bool sig_raise_begin(const uint64_t *regs, struct sig_info *si, struct sig_act_i
 /* After a raise's handler: the thread's mask is `mask` (its ucontext's),
  * and the next signal due is taken as sig_raise_begin takes one (true). */
 bool sig_raise_next(uint64_t mask, struct sig_info *si, struct sig_act_io *act, uint64_t *was);
+/* Raise the calling (listed) thread again: the raise comes at its next
+ * interrupt in its own code (sigfault.c: a raise that came on a handler's
+ * way out, once that has resumed the thread). */
+void sig_raise_later(void);
 
 /* The signal a fault that killed a process (process_info's
  * PROCESS_FLAG_FAULT with its fault_vector and fault_status) is, as
