@@ -53,7 +53,9 @@ status_t sys_pager_create_vmo(struct handle_table *t, handle_t pager, uint64_t k
     if (st != OK)
         return st;
     struct vmo *v;
-    st = flags ? ERR_INVALID_ARGS : pager_create_vmo(pg, key, size, &v);
+    st = flags & ~(PAGER_VMO_WRITABLE | PAGER_VMO_FIND) ? ERR_INVALID_ARGS
+         : flags                                         ? ERR_NOT_SUPPORTED   /* (WK1) */
+                                                         : pager_create_vmo(pg, key, size, &v);
     kobject_unref(pager_kobject(pg));
     if (st != OK)
         return st;

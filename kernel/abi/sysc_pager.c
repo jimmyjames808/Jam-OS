@@ -1,4 +1,4 @@
-/* System calls 160-164: pagers (abi/syscalls.def; the object is
+/* System calls 160-166: pagers (abi/syscalls.def; the object is
  * <jam/pager.h>). pager_supply's bytes are copied straight from the
  * caller's buffer into each fresh page (struct pager_src), one page at a
  * time with no lock held, so up to PAGER_SUPPLY_MAX bytes never pass
@@ -51,4 +51,18 @@ int64_t sysc_pager_op(handle_t pager, uint64_t key, uint32_t op, uint64_t offset
 {
     SYSC_TABLE(t);
     return sys_pager_op(t, pager, key, op, offset, len, arg);
+}
+
+/* Writable pager VMOs' calls (docs/WRITEMAP-PLAN.md): the ABI first, the
+ * kernel halves with WK1 and WK2. */
+int64_t sysc_pager_dirty(handle_t pager, uint64_t key, uint32_t flags, uint64_t run, uint64_t buf)
+{
+    (void)pager, (void)key, (void)flags, (void)run, (void)buf;
+    return ERR_NOT_SUPPORTED;
+}
+
+int64_t sysc_pager_write(handle_t pager, uint64_t key, uint64_t offset, uint64_t buf, uint64_t len)
+{
+    (void)pager, (void)key, (void)offset, (void)buf, (void)len;
+    return ERR_NOT_SUPPORTED;
 }

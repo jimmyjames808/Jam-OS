@@ -39,6 +39,7 @@ int64_t sysc_port_bind(handle_t port, handle_t obj, uint64_t key, signals_t mask
 int64_t sysc_port_unbind(handle_t port, handle_t obj, uint64_t key);
 int64_t sysc_port_queue(handle_t port, uint64_t pkt);
 int64_t sysc_port_wait(handle_t port, uint64_t deadline_ns, uint64_t out);
+int64_t sysc_vmo_sync(handle_t vmo, uint64_t offset, uint64_t len, uint32_t flags);
 int64_t sysc_vmo_read(handle_t h, uint64_t offset, uint64_t buf, uint64_t len);
 int64_t sysc_vmo_write(handle_t h, uint64_t offset, uint64_t buf, uint64_t len);
 int64_t sysc_vmo_get_size(handle_t h, uint64_t size);
@@ -134,5 +135,7 @@ int64_t sysc_pager_supply(handle_t pager, uint64_t key, uint64_t offset, uint64_
                           uint64_t len);
 int64_t sysc_pager_op(handle_t pager, uint64_t key, uint32_t op, uint64_t offset, uint64_t len,
                       int64_t arg);
+int64_t sysc_pager_dirty(handle_t pager, uint64_t key, uint32_t flags, uint64_t run, uint64_t buf);
+int64_t sysc_pager_write(handle_t pager, uint64_t key, uint64_t offset, uint64_t buf, uint64_t len);
 int64_t sysc_exception_entry_set(uint64_t entry);
 int64_t sysc_exception_done(uint64_t frame, uint32_t how);

@@ -797,6 +797,8 @@ status_t pager_op(struct pager *pg, uint64_t key, uint32_t op, uint64_t offset, 
         if (offset > VMO_SMALL_MAX_SIZE)
             return ERR_OUT_OF_RANGE;
         return set_size(pg, key, ALIGN_UP(offset, PAGE_SIZE));
+    case PAGER_OP_WRITTEN:
+        return ERR_NOT_SUPPORTED;   /* (WK2) */
     default:
         return ERR_INVALID_ARGS;
     }

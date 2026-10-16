@@ -234,6 +234,15 @@ jam_port_wait:
     ret
     .size jam_port_wait, . - jam_port_wait
 
+    .globl jam_vmo_sync
+    .type jam_vmo_sync, @function
+jam_vmo_sync:
+    mov %rcx, %r10
+    mov $SYS_vmo_sync, %eax
+    syscall
+    ret
+    .size jam_vmo_sync, . - jam_vmo_sync
+
     .globl jam_vmo_read
     .type jam_vmo_read, @function
 jam_vmo_read:
@@ -888,6 +897,24 @@ jam_pager_op:
     syscall
     ret
     .size jam_pager_op, . - jam_pager_op
+
+    .globl jam_pager_dirty
+    .type jam_pager_dirty, @function
+jam_pager_dirty:
+    mov %rcx, %r10
+    mov $SYS_pager_dirty, %eax
+    syscall
+    ret
+    .size jam_pager_dirty, . - jam_pager_dirty
+
+    .globl jam_pager_write
+    .type jam_pager_write, @function
+jam_pager_write:
+    mov %rcx, %r10
+    mov $SYS_pager_write, %eax
+    syscall
+    ret
+    .size jam_pager_write, . - jam_pager_write
 
     .globl jam_exception_entry_set
     .type jam_exception_entry_set, @function

@@ -209,7 +209,7 @@
 # unchanged if it can't). Any other bit is ERR_INVALID_ARGS: contiguous and
 # below-4-GiB memory is dma_vmo_create's. A copy-on-write child is
 # vmo_create_child's (63). (Number 50 was vmo_create with a dma_cap
-# argument until M12: retired.)
+# argument until M12; it is vmo_sync's now.)
 58  vmo_create        status    uint64_t size, uint32_t flags, handle_t *out
 51  vmo_read          status    handle_t h, uint64_t offset, void *buf, uint64_t len
 52  vmo_write         status    handle_t h, uint64_t offset, const void *buf, uint64_t len
@@ -217,6 +217,19 @@
 54  vmo_set_size      status    handle_t h, uint64_t size
 55  vmo_commit        status    handle_t h, uint64_t offset, uint64_t len
 56  vmo_decommit      status    handle_t h, uint64_t offset, uint64_t len
+# vmo_sync: for a writable pager VMO (pager_create_vmo's
+# PAGER_VMO_WRITABLE, 161), ask its pager to write back the dirty pages of
+# [offset, offset + len) (a PAGER_REQ_WRITEBACK for each MiB of the range
+# that holds a dirty or writing page) and, with VMO_SYNC_WAIT, wait until
+# every store made to the range before the call is written (the pager's
+# answer time for each request at most): libc's msync. OK at once for any
+# other VMO, and for a range with nothing dirty. The VMO keeps the first
+# write-back error since the last vmo_sync and returns it once: ERR_IO, or
+# ERR_NO_SPACE for a full volume. ERR_TIMED_OUT: the pager didn't answer
+# in time; ERR_PEER_CLOSED: the VMO was cut off its pager; ERR_CANCELED:
+# the thread was killed; ERR_OUT_OF_RANGE: past the size;
+# ERR_INVALID_ARGS: any other flag. RIGHT_READ on vmo.
+50  vmo_sync          status    handle_t vmo, uint64_t offset, uint64_t len, uint32_t flags
 # vmo_make_exec: *out gets vmo's handle again with RIGHT_EXEC and without
 # RIGHT_WRITE, so its code can be mapped executable; vmo's handle is gone
 # whatever the status (closed on any error, as a send's handles). Needs
@@ -712,7 +725,8 @@
 # answer time fails ERR_TIMED_OUT. A pager VMO refuses vmo_write,
 # vmo_commit, vmo_decommit, vmo_set_size, vmo_make_exec (its code runs only
 # through vmo_make_exec_verified, 59), vmo_pin, writable
-# mappings and VMAR_KEPT_ONLY; vmo_read of an absent page waits for it
+# mappings (but a writable VMO's, 161) and VMAR_KEPT_ONLY; vmo_read of an
+# absent page waits for it
 # (ERR_IO if the pager fails it, is detached or doesn't answer in time;
 # ERR_CANCELED if the thread is killed). handle_info's related_koid of a
 # pager VMO is its pager's koid.
@@ -728,15 +742,42 @@
 # A pager VMO of size bytes (rounded up to pages; VMO_SMALL_MAX_SIZE at most,
 # ERR_OUT_OF_RANGE past it), every page absent, under key: handle
 # PAGER_VMO_RIGHTS. The pager holds no handle to it. RIGHT_WRITE on the
-# pager; ERR_ALREADY_EXISTS while key names a live VMO of the pager, or a
-# gone one whose PAGER_REQ_GONE has no answer yet; flags 0.
+# pager; ERR_ALREADY_EXISTS while key names a live VMO of the pager. A key
+# whose VMO is gone but whose PAGER_REQ_GONE has no answer yet is taken
+# over: the GONE is withdrawn, delivered or not (a pager holding one
+# answers it before it makes the key again: a DETACH after the make cuts
+# the new VMO off). flags: 0, or PAGER_VMO_WRITABLE, a writable VMO
+# (ERR_INVALID_ARGS if the pager's budget is under
+# PAGER_WRITABLE_MIN_PAGES): its handle has RIGHT_WRITE too, which lets it
+# be mapped writable and nothing more (vmo_write, vmo_set_size,
+# vmo_commit, vmo_decommit, vmo_pin and kernel mappings stay refused; it
+# is never executable: vmo_make_exec_verified is ERR_BAD_STATE). Its pages
+# are clean (the disk's bytes), dirty (stored to since their last
+# write-back began) or writing (that write-back hasn't ended). A clean or
+# writing page is mapped read-only in every mapping, so a store faults and
+# makes it dirty, then writable where the mapping allows; dirty and
+# writing pages are never evicted, and keep the VMO alive after its last
+# handle and mapping go: its PAGER_REQ_GONE comes once none is left. A
+# writable mapping of one is always shared by vmar_clone (VMAR_CLONE_SHARE,
+# whatever its flags). PAGER_VMO_FIND (size 0, no other flag): no new VMO,
+# a new handle to the live VMO under key, with the rights it was made with;
+# ERR_NOT_FOUND if there is none (never made, detached, or gone). Any other
+# flag is ERR_INVALID_ARGS.
 161 pager_create_vmo  status    handle_t pager, uint64_t key, uint64_t size, uint32_t flags, handle_t *out
 # The oldest undelivered request into *out, now delivered: ERR_SHOULD_WAIT
 # if there is none (the pager is SIG_READABLE while there is). flags:
 # PAGER_NEXT_AGAIN puts every delivered request without an answer back
-# first. A read request is answered by pager_supply of all its pages, or
-# by pager_op FAIL or DETACH; a PAGER_REQ_GONE by pager_op DETACH of its
-# key, which frees the key. RIGHT_READ on the pager.
+# first, and makes every writing page of the pager's VMOs dirty again (a
+# write-back cut off by a death is done again). A read request is answered
+# by pager_supply of all its pages, or by pager_op FAIL or DETACH; a
+# PAGER_REQ_GONE by pager_op DETACH of its key, which frees the key; a
+# PAGER_REQ_WRITEBACK (at most PAGER_SUPPLY_MAX bytes) by beginning the
+# write-back of every dirty run in its range (pager_dirty with
+# PAGER_DIRTY_BEGIN), writing them, and PAGER_OP_WRITTEN over the range
+# (it may write back more than asked). The kernel makes one for vmo_sync,
+# when a pager's dirty pages pass half the most its VMOs may hold dirty (a
+# quarter of its budget), and for a store waiting at that limit; it waits
+# its answer time as a read request does. RIGHT_READ on the pager.
 162 pager_next        status    handle_t pager, uint32_t flags, struct pager_request *out
 # Fill the absent pages of [offset, offset + len) of key's VMO from buf
 # (offset and len page-aligned, len one page .. PAGER_SUPPLY_MAX: else
@@ -752,13 +793,54 @@
 # ERR_OUT_OF_RANGE. PAGER_OP_DETACH (offset, len, arg 0): cut key's VMO
 # off for good: its requests, waiting and later, fail ERR_PEER_CLOSED, its
 # present pages are dropped (unmapped from every mapping), and the key is
-# free; or take a PAGER_REQ_GONE for key (the key is free).
+# free; or take a PAGER_REQ_GONE for key (the key is free). A writable
+# VMO's dirty and writing pages are dropped with the rest: their stores
+# are lost (as with a pulled disk).
 # PAGER_OP_INVALIDATE (page-aligned, len > 0, arg 0): drop the present
 # pages of the range from the VMO and every mapping (the file changed: the
-# next access asks again); ERR_OUT_OF_RANGE past the size.
+# next access asks again); ERR_OUT_OF_RANGE past the size. A writable
+# VMO's dirty and writing pages stay (they are newer than the disk).
 # PAGER_OP_SET_SIZE (offset: the new size, len and arg 0; past
-# VMO_SMALL_MAX_SIZE: ERR_OUT_OF_RANGE): grow, or shrink: the pages past the end
-# go, and readers waiting past it find the end (a fault there is a bus
-# error, a read ERR_OUT_OF_RANGE). ERR_NOT_FOUND for an unknown key;
-# ERR_INVALID_ARGS for any other op or argument. RIGHT_WRITE on the pager.
+# VMO_SMALL_MAX_SIZE: ERR_OUT_OF_RANGE): grow, or shrink: the pages past
+# the end go (dirty and writing ones too), and readers waiting past it
+# find the end (a fault there is a bus error, a read ERR_OUT_OF_RANGE).
+# PAGER_OP_WRITTEN (page-aligned, len >
+# 0; arg OK, ERR_IO or ERR_NO_SPACE): the writing pages of the range end
+# their write-back: clean, or dirty if stored to since; after an error
+# they become clean all the same and the VMO keeps the error for the next
+# vmo_sync. The PAGER_REQ_WRITEBACKs it finishes are answered.
+# ERR_INVALID_ARGS on a VMO not made writable. ERR_NOT_FOUND for an
+# unknown key; ERR_INVALID_ARGS for any other op or argument. RIGHT_WRITE
+# on the pager.
 164 pager_op          status    handle_t pager, uint64_t key, uint32_t op, uint64_t offset, uint64_t len, int64_t arg
+# pager_dirty: the first run of dirty pages (with PAGER_DIRTY_PEEK, dirty
+# or writing) of key's writable VMO in [run->offset, run->offset +
+# run->len) (page-aligned, len one page .. PAGER_SUPPLY_MAX: else
+# ERR_INVALID_ARGS / ERR_OUT_OF_RANGE; consecutive pages, cut shorter to
+# bound the kernel's work): its bytes are copied into buf, which stands
+# for the range asked (the run's byte at offset o goes to buf + o -
+# run->offset), and *run says where it is: key, offset, len (0: no such
+# page in the range), age_ns of its oldest page (since first dirtied).
+# flags: 0 (nothing changes), PAGER_DIRTY_PEEK (nothing changes: a
+# filesystem's read overlays the bytes on the disk's), or PAGER_DIRTY_BEGIN
+# (the run's write-back begins: its pages become writing, write-protected
+# in every mapping and shot down before they are copied, so a store after
+# the copy faults and makes its page dirty again); PAGER_DIRTY_OLDEST
+# with any of them: key and run->offset are ignored, the run is the one
+# around the pager's oldest dirty page, whatever its VMO, and buf stands
+# for the run itself. Pages past the VMO's size are no run's.
+# ERR_NOT_FOUND: no live VMO has key (OLDEST: none is dirty);
+# ERR_INVALID_ARGS: run or buf unusable, any other flag, a VMO not made
+# writable. RIGHT_WRITE on the pager.
+165 pager_dirty       status    handle_t pager, uint64_t key, uint32_t flags, struct pager_run *run, void *buf
+# pager_write: len bytes of buf into key's VMO at offset (byte-granular,
+# len at most PAGER_SUPPLY_MAX, else ERR_OUT_OF_RANGE; 0 does nothing),
+# into the pages of the range that are present, whatever their state,
+# which doesn't change; absent pages stay absent (the next touch asks the
+# pager, whose disk has the bytes). A filesystem's write to a mapped file
+# and the zeroed tail of a truncate: it races a mapper's stores to the
+# same bytes as two threads' stores race. ERR_NOT_FOUND: no live VMO has
+# key; ERR_OUT_OF_RANGE: past the VMO's size; ERR_BAD_STATE: a verified
+# VMO (vmo_make_exec_verified); ERR_INVALID_ARGS: buf unreadable (the
+# pages before it written). RIGHT_WRITE on the pager.
+166 pager_write       status    handle_t pager, uint64_t key, uint64_t offset, const void *buf, uint64_t len

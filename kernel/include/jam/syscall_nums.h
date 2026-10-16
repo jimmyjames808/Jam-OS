@@ -30,6 +30,7 @@
 #define SYS_port_unbind          42
 #define SYS_port_queue           43
 #define SYS_port_wait            44
+#define SYS_vmo_sync             50
 #define SYS_vmo_read             51
 #define SYS_vmo_write            52
 #define SYS_vmo_get_size         53
@@ -108,6 +109,8 @@
 #define SYS_pager_next           162
 #define SYS_pager_supply         163
 #define SYS_pager_op             164
+#define SYS_pager_dirty          165
+#define SYS_pager_write          166
 #define SYS_exception_entry_set  170
 #define SYS_exception_done       171
 

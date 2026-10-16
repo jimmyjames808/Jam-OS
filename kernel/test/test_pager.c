@@ -593,7 +593,7 @@ KTEST(pager_handles)
     KT_EQ(hi.rights, PAGER_RIGHTS);
     uint64_t pager_koid = hi.koid;
 
-    KT_EQ(sys_pager_create_vmo(&t, pgh, 1, PG, 1, &vh), ERR_INVALID_ARGS);
+    KT_EQ(sys_pager_create_vmo(&t, pgh, 1, PG, 4, &vh), ERR_INVALID_ARGS);   /* (1, 2: WRITEMAP's) */
     KT_EQ(sys_pager_create_vmo(&t, pgh, 1, VMO_MAX_SIZE + 1, 0, &vh), ERR_OUT_OF_RANGE);
     KT_EQ(sys_pager_create_vmo(&t, ev, 1, PG, 0, &vh), ERR_WRONG_TYPE);
     KT_EQ(handle_duplicate(&t, pgh, RIGHTS_BASIC | RIGHT_READ, &ro), OK);
