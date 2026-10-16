@@ -31,10 +31,15 @@
  *     a stale copy left by a torn write passes it. Commit blocks without
  *     the digest (Linux's) are taken on their tags.
  *   - The tail: the journal superblock's s_start moves past checkpointed
- *     transactions every EXT_JNL_TAIL_EVERY commits (tail_every), when
- *     the log has no room for the next one, or when the caller asks
- *     (ext_jnl_checkpoint: the service's idle second), so a replay reads
- *     at most that many transactions.
+ *     transactions every EXT_JNL_TAIL_EVERY commits (tail_every), as soon
+ *     as the log holds EXT_JNL_TAIL_BLOCKS blocks since it (tail_blocks:
+ *     every commit but the smallest), when the log has no room for the
+ *     next one, or when the caller asks (ext_jnl_checkpoint: the
+ *     service's idle second), so a replay reads at most that many
+ *     transactions and about that many blocks. A move is one write of the
+ *     journal superblock; a replay is a read of every block twice and a
+ *     write of every copy, so a service that is killed again and again
+ *     (storm) must not find much to replay at each start.
  *   - The mount (ext_jnl_mount) is the recovery: ext_mount, then a replay
  *     of every whole transaction from the tail (a transaction any of whose
  *     blocks fails its checksum ends the log before it), then the journal
@@ -93,7 +98,8 @@
 #define EXT_JNL_RUNS       32   /* extents the journal's inode may have */
 #define EXT_JNL_STAGE_MIN  4    /* blocks staged for the device, at least ... */
 #define EXT_JNL_STAGE_MAX  64   /* ... and at most */
-#define EXT_JNL_TAIL_EVERY 64   /* commits between the tail's moves (the plan's 64) */
+#define EXT_JNL_TAIL_EVERY 64   /* commits between the tail's moves (the plan's 64) ... */
+#define EXT_JNL_TAIL_BLOCKS 8   /* ... or log blocks since it, if that comes first */
 
 /* ext_jnl_init's flags */
 #define EXT_JNL_ONE_WRITE  0x1  /* asynchronous commit: a transaction in one write (above) */
@@ -119,6 +125,7 @@ struct ext_jnl {
     /* Set by the caller (ext_jnl_init gives the defaults). */
     uint32_t flags;                  /* EXT_JNL_* */
     uint32_t tail_every;             /* commits between tail moves */
+    uint32_t tail_blocks;            /* log blocks since the tail that move it */
     void   (*on_commit)(void *ctx, uint32_t tid);   /* just before a commit is written */
     void    *ctx;                    /* on_commit's first argument */
     uint64_t commit_sec;             /* the time commit blocks carry (informational) */

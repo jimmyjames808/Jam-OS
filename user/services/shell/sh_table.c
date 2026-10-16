@@ -296,7 +296,7 @@ static const struct sh_cmd cmds[] = {
       "  copy is whole: the bytes, MB/s, the kills, kill to first answer (median, p99,\n"
       "  worst: from the kill to the killed service's first answer to a call), both\n"
       "  files' SHA-256 read back, MATCH or DIFFERENT. Killed by default: each side's\n"
-      "  filesystem service (fat-usb0, fat-data), taking turns; 0 kills/s: none, the\n"
+      "  filesystem service (fat-usb0, fat-data, extfs-jam), taking turns; 0 kills/s: none, the\n"
       "  baseline. e.g. storm /usb0/big.bin /data/big.bin 10. storm mixer 2 60: the\n"
       "  mixer twice a second for a minute while music plays, then the kills and the\n"
       "  mixer's own restart lines (the least audio left written ahead, late periods).\n"
