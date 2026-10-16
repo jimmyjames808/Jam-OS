@@ -28,6 +28,8 @@ int32_t lx_pid(void);
 int32_t lx_pgid(void);
 int32_t lx_sid(void);
 
+/* fork's step (layer.h's LX_FORK_*): our ids and the table of children. */
+void    proc_fork(int step);
 /* A child posix_spawn started: proc and sigch (our end of its signal
  * channel, or 0), and job: 0 for a child we made ourselves, or the job of
  * one init's /svc/exec started for us (its process then has no

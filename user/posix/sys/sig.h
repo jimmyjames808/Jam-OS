@@ -142,6 +142,21 @@ void     sig_fill_siginfo(const struct sig_info *si, void *out);
 /* The start: the hand-over's ignored signals (sigthread.c's start). */
 void     sig_start_state(uint64_t ignored);
 
+/* ---- fork (fork.c) ------------------------------------------------------------------ */
+
+/* signal.c's step (layer.h's LX_FORK_*): sig_lock across the clone; in
+ * the child, the calling thread alone on the list (after thread.c's
+ * thread_forked: its id), nothing pending, the exception entry set again
+ * if a fault signal has a handler. */
+void sig_fork(int step);
+/* In the child, last: the signal thread started again on a port of its
+ * own, listening to the child's SR_SIGNALS (the parent's client end is in
+ * its table of children). sigthread.c. */
+void sig_thread_forked(void);
+/* In the child: no timer, alarm or interval timer (POSIX: they aren't
+ * inherited); their kernel timers were the parent's. sigtimer.c. */
+void sig_timer_forked(void);
+
 /* ---- faults (sigfault.c; signal.c's side of them) ------------------------------------ */
 
 /* The signals a fault becomes (SIGILL, SIGTRAP, SIGBUS, SIGFPE, SIGSEGV):

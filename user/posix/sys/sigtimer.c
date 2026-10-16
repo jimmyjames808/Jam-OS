@@ -22,6 +22,7 @@
  * never after. */
 #include <errno.h>
 #include <signal.h>
+#include <string.h>
 #include <sys/time.h>
 #include <time.h>
 #include "sig.h"
@@ -91,6 +92,14 @@ static void left_locked(const struct ptimer *t, uint64_t *value, uint64_t *inter
     uint64_t n = now();
     *value = t->armed ? (t->next > n ? t->next - n : 1) : 0;
     *interval = t->interval;
+}
+
+/* ---- fork (fork.c) ------------------------------------------------------------------ */
+
+void sig_timer_forked(void)
+{
+    tlock = (lock_t){ 0 };
+    memset(timers, 0, sizeof(timers));   /* forgotten, not closed: the parent's */
 }
 
 /* ---- firing (the signal thread) ---------------------------------------------------- */

@@ -629,6 +629,16 @@ long lx_umask(long mask, long b, long c, long d, long e, long f)
     return old;
 }
 
+void umask_fork(int step)
+{
+    if (step == LX_FORK_TAKE)
+        lock_take(&umask_lock);
+    else if (step == LX_FORK_GIVE)
+        lock_give(&umask_lock);
+    else
+        umask_lock = (lock_t){ 0 };   /* the child: the umask is ours */
+}
+
 long lx_sync(long a, long b, long c, long d, long e, long f)
 {
     char m[NS_NAME_MAX];

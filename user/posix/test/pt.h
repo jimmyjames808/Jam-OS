@@ -36,12 +36,13 @@
  * pattern between two processes, a fuzz loop; ptscm.h), unix.c (named
  * AF_UNIX sockets through /svc/unix: socket files and abstract names),
  * peer.c (socketpairs and connections fed by a hostile peer in another
- * process: scm's fuzz between two processes) and
+ * process: scm's fuzz between two processes), fork.c (fork, vfork and
+ * clone without CLONE_VM, each case in a job of its own) and
  * rawcalls.c, rawfutex.c and rawlog.c (the raw Linux calls Chromium makes, and the
  * ENOSYS log: the log's hooks are the layer's calls.h, a second look inside).
  * start.c, mem.c, memres.c (the job's counts), clock.c, fds.c, poll.c,
- * proc.c, tty.c, fileskid.c, wayland.c, jit.c, procfs.c, unix.c, peer.c and
- * fault.c (a VMO shrunk under its mapping) are
+ * proc.c, tty.c, fileskid.c, wayland.c, jit.c, procfs.c, unix.c, peer.c,
+ * fork.c and fault.c (a VMO shrunk under its mapping) are
  * the ones that include libjam (<jamos/libjam.h>: children started with a hand-over, a mapping libc
  * didn't make, the calls the clocks are checked against; fileskid.c
  * through the layer's fd.h); mem.c, rawcalls.c, rawfutex.c and rawlog.c include Linux's call
@@ -109,6 +110,7 @@ void pt_fault(char **argv);        /* a thread's own faults as signals (fault.c)
 void pt_scm(char **argv);          /* socketpairs carrying descriptors (scm.c, scmkid.c) */
 void pt_unix(char **argv);         /* named AF_UNIX sockets through /svc/unix (unix.c) */
 void pt_peer(char **argv);         /* a hostile peer in another process (peer.c) */
+void pt_fork(char **argv);         /* fork, vfork and clone without CLONE_VM (fork.c) */
 /* The signal section's second half (sigproc.c): between processes. */
 void pt_sigproc(void);
 /* The mem section's second half (memres.c): big sparse reservations. */
@@ -147,6 +149,7 @@ int  pt_child_unix(int argc, char **argv);
 int  pt_child_peer(int argc, char **argv);
 int  pt_child_links(void);
 int  pt_child_fault(int argc, char **argv);   /* ends by a fault (fault.c says which) */
+int  pt_child_fork(int argc, char **argv);    /* one of fork.c's cases, in a job of its own */
 
 /* Pages charged to our job now (job_get_info; start.c). */
 uint64_t pt_job_pages(void);

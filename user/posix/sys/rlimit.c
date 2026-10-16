@@ -51,6 +51,16 @@ uint64_t rlimit_cur(int resource)
     return v;
 }
 
+void rlimit_fork(int step)
+{
+    if (step == LX_FORK_TAKE)
+        lock_take(&limits_lock);
+    else if (step == LX_FORK_GIVE)
+        lock_give(&limits_lock);
+    else
+        limits_lock = (lock_t){ 0 };   /* the child: the limits are ours */
+}
+
 /* Linux's struct rlimit64, which is also the layout of x86-64's rlimit. */
 static long limit_call(long pid, long resource, const struct limit *set, struct limit *get)
 {

@@ -225,6 +225,30 @@ _Noreturn static void fail(const char *what, status_t st)
     jam_process_exit(127);
 }
 
+/* The port, the starter's channel (SR_SIGNALS) on it, the terminal if
+ * tty_too (bind_tty), and the thread. */
+static void start_listening(bool tty_too)
+{
+    status_t st = jam_port_create(&port);
+    if (st != OK)
+        fail("no port", st);
+    channel = startup_handle(SR_SIGNALS);
+    if (channel) {
+        st = jam_port_bind(port, channel, KEY_CHANNEL, SIG_READABLE, PORT_BIND_PERSISTENT);
+        if (st != OK)
+            fail("the signal channel can't be bound", st);
+    }
+    if (tty_too)
+        bind_tty();
+    handle_t t;
+    st = thread_spawn("signals", loop, NULL, stack, sizeof(stack), &t);
+    if (st != OK)
+        fail("no signal thread", st);
+    jam_handle_close(t);
+    if (channel)
+        take_channel();   /* sent before the binding */
+}
+
 /* After the descriptor table (fd.c's start, 101), before the program's
  * constructors: the main thread listed with the hand-over's mask, the
  * ignored signals, the port and the thread. */
@@ -235,21 +259,20 @@ __attribute__((constructor(102))) static void sig_start(void)
     sig_start_state(ho ? ho->sigignore : 0);
     sig_thread_begin(startup_handle(SR_SELF_THREAD), (uint32_t)lx_gettid(0, 0, 0, 0, 0, 0),
                      ho ? ho->sigmask : 0);
-    status_t st = jam_port_create(&port);
-    if (st != OK)
-        fail("no port", st);
-    channel = startup_handle(SR_SIGNALS);
-    if (channel) {
-        st = jam_port_bind(port, channel, KEY_CHANNEL, SIG_READABLE, PORT_BIND_PERSISTENT);
-        if (st != OK)
-            fail("the signal channel can't be bound", st);
-    }
-    bind_tty();
-    handle_t t;
-    st = thread_spawn("signals", loop, NULL, stack, sizeof(stack), &t);
-    if (st != OK)
-        fail("no signal thread", st);
-    jam_handle_close(t);
-    if (channel)
-        take_channel();   /* sent before the binding */
+    start_listening(true);
+}
+
+/* A forked child (fork.c, docs/FORK-PLAN.md section 1.7): the parent's
+ * signal thread isn't in it, and its port, channel and terminal were the
+ * parent's. A new port and thread (the stack is free: no thread of the
+ * child runs on it), listening to the child's own SR_SIGNALS, whose
+ * client end the parent keeps in its table of children. The terminal is
+ * a descriptor, the child's only once FL2 gives descriptors their fork
+ * step: until then it isn't listened to (sig_tty_attached binds it at
+ * its next attach). */
+void sig_thread_forked(void)
+{
+    port = channel = HANDLE_INVALID;
+    tty = NULL;   /* its reference was the parent's to keep */
+    start_listening(false);
 }

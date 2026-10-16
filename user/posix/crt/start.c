@@ -67,6 +67,12 @@ handle_t lx_self_vmar(void)
     return self_vmar;
 }
 
+void lx_start_forked(void)
+{
+    self_process = startup_handle(SR_SELF_PROCESS);
+    self_vmar = startup_handle(SR_SELF_VMAR);
+}
+
 const struct posixfds_state *lx_handover(const char **cwd)
 {
     if (!ho_given)

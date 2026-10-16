@@ -54,6 +54,32 @@ const struct posixfds_state *lx_handover(const char **cwd);
  * with no hand-over), or NULL. */
 const char *lx_handover_exe(void);
 
+/* ---- fork (fork.c) ----------------------------------------------------------------
+ * fork's step in each module whose state a forked child goes on using
+ * (docs/FORK-PLAN.md section 1.5; fork.c calls them in its fixed order and
+ * says why that order). LX_FORK_TAKE, in the parent just before the clone:
+ * the module's lock taken, so its state is whole in the child's copy;
+ * LX_FORK_GIVE, in the parent after the clone: the lock given back;
+ * LX_FORK_CHILD, in the child before fork returns 0 there: the lock made
+ * fresh, and what the child can't use dropped without closing anything
+ * (those handles were the parent's). None of them allocates or frees
+ * memory (musl's fork holds malloc's lock across the call). proc.h and
+ * sig.h have proc.c's and signal.c's. */
+#define LX_FORK_TAKE  0
+#define LX_FORK_GIVE  1
+#define LX_FORK_CHILD 2
+void path_fork(int step);     /* path.c: the current directory (and the read-only cache) */
+void umask_fork(int step);    /* meta.c: the umask */
+void fd_fork(int step);       /* fd.c: the descriptor table (its descriptors are FL2's) */
+void mem_fork(int step);      /* mem.c: libc's table of mappings and the break; the child's
+                               * JIT entries removed (its JIT memory isn't in it) */
+void rlimit_fork(int step);   /* rlimit.c: the limits */
+/* In the child only, first: start.c's own process and address space
+ * handles become the child's (startup_handle's, which libjam has made
+ * the child's), and thread.c's table holds this thread alone, id tid. */
+void lx_start_forked(void);
+void thread_forked(uint32_t tid);
+
 /* ---- the kernel's calls for POSIX (kposix.c) ------------------------------
  * Small thread ids, a thread's tid word, CPU time and the figures any
  * process may read (docs/M13-PLAN.md, "The new and changed interfaces").

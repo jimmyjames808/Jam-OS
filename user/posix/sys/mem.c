@@ -209,6 +209,34 @@ void mem_forget(uint64_t addr, uint64_t len)
     lock_give(&mem_lock);
 }
 
+/* The table whole across fork's clone (layer.h). In the child, JIT memory
+ * is gone (the kernel leaves a writable JIT mapping out of a clone, and
+ * the child holds no handle to the VMO: docs/FORK-PLAN.md section 1.10),
+ * so its entries go, their handles forgotten, not closed (the parent's).
+ * The other entries' handles are the parent's until FL2 gives them the
+ * clone's children. */
+void mem_fork(int step)
+{
+    if (step == LX_FORK_TAKE) {
+        lock_take(&mem_lock);
+        return;
+    }
+    if (step == LX_FORK_GIVE) {
+        lock_give(&mem_lock);
+        return;
+    }
+    mem_lock = (lock_t){ 0 };
+    struct mt_entry *t = mt_entries();
+    for (unsigned i = 0; i < mt_count(); i++)
+        if (t[i].kind & MT_JIT)
+            t[i].vmo = HANDLE_INVALID;   /* so mt_remove closes nothing */
+    for (unsigned i = 0; i < mt_count();)
+        if (t[i].kind & MT_JIT)
+            mt_remove(i);
+        else
+            i++;
+}
+
 /* -errno for a mapping whose VMO couldn't be made: a length past what a
  * VMO may hold (VMO_MAX_SIZE, 128 TiB) is ENOMEM, Linux's answer for more
  * than the address space can give, which V8 and PartitionAlloc take as
@@ -512,6 +540,8 @@ long lx_mmap(long addr, long len, long prot, long flags, long fd, long off)
     uint64_t size = page_round((uint64_t)len), at = (uint64_t)addr;
     bool fixed = flags & (MAP_FIXED | MAP_FIXED_NOREPLACE);
     struct map_src src = { HANDLE_INVALID, 0, mt_kind(flags) };
+    if (src.kind & MT_SHARED)
+        perms |= VMAR_CLONE_SHARE;   /* a forked child shares it (docs/FORK-PLAN.md 1.6) */
     if (!(flags & MAP_ANONYMOUS)) {   /* outside mem_lock: reading a file may malloc */
         r = file_source(fd, off, size, prot, flags, &src);
         if (r)
