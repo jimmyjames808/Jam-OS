@@ -149,7 +149,8 @@ pages of `[offset, offset + len)` of `key`'s VMO" (at most
 `PAGER_SUPPLY_MAX` bytes). Like a read request it stays in the pager
 object until answered, is delivered by `pager_next`, put back by
 `PAGER_NEXT_AGAIN`, has a deadline (the answer time) and is charged as
-message bytes (with a bit a page, 32 bytes more). The kernel makes one:
+message bytes (with two bits a page, 64 bytes more: "WK2 notes"). The
+kernel makes one:
 
 1. for `vmo_sync` (libc's `msync`), one per 1 MiB chunk of the range that
    holds a dirty or writing page, one at a time per calling thread;
@@ -565,7 +566,7 @@ Each about one agent-hour; WE2 about one and a half.
 | Track | What | Files | Gate | Tests | Size | Model |
 |---|---|---|---|---|---|---|
 | **WK1. Writable pager VMOs** | first commit "WK1 ABI:" (every call, flag, op and request kind of 1.12 with its contract text, the stubs `ERR_NOT_SUPPORTED`), so WE1 and WL1 can start; then 1.1, 1.2 (the states, the write fault, clean pages read-only, the lists and counts; `PAGER_DIRTY_BEGIN` left to WK2), `pager_dirty`'s `PEEK`, `pager_write`, the hold (1.8), `FIND` and the GONE takeover, 1.7's rules for shrink, invalidate and detach, FK1's clone-mode override; built, see "WK1 notes" | `kernel/object/vmo.c` (the pager-VMO paths, `vmo_fault_map`, `vmo_umap_add`), `kernel/object/pager.c`, `kernel/object/pager_cache.c` and its header, `kernel/mm/aspace.c` (`clone_mode` only), `kernel/abi/pager_sys.c` and `kernel/abi/sysc_pager.c`, `<jam/pager.h>`, `<jam/abi.h>` and `abi/syscalls.def` (their lines), `kernel/abi/abi_check.c`, a new ktest file kernel/test/test_pager_dirty.c | FK2 merged (vmo.c and aspace.c); beside FK3 and SG1/SG2 | ktests with a kernel-thread pager: a read fault on a writable mapping installs read-only, a store dirties, eviction never takes a dirty page, `PEEK`, `pager_write` on present pages only, the hold (GONE only after clean), `FIND` and the takeover, shrink, invalidate and detach with dirty pages, a fork (once FK2's clone is in) shares the VMO and its clean pages stay read-only; full ktest 4 and 8 | 1 | **Opus** |
-| **WK2. Write-back** | 1.3: `PAGER_REQ_WRITEBACK` (made by the background count; `vmo_sync`'s and the throttle's come in WK3), `PAGER_DIRTY_BEGIN` (protect within the batch budget, one shootdown, then the copy), `PAGER_DIRTY_OLDEST`, `PAGER_OP_WRITTEN` and what a request needs (the stamps), the error kept (Q1), `PAGER_NEXT_AGAIN` turning writing pages dirty | WK1's kernel files, kernel/test/test_pager_dirty.c | WK1 merged | ktests: begin protects in every mapping (several address spaces, `VMAR_MAX_OVERLAP` mappings of one page), a store after begin dirties again and is never lost (8 threads storing counters while a pager thread loops begin, copy, written: the last image holds every thread's last count), written with a re-dirtied page leaves it dirty, a death (AGAIN) between begin and written, `vmo_batch_cost_most` within `VMO_BATCH_BUDGET`; full ktest 4 and 8 | 1 | **Opus** |
+| **WK2. Write-back** | 1.3: `PAGER_REQ_WRITEBACK` (made by the background count; `vmo_sync`'s and the throttle's come in WK3), `PAGER_DIRTY_BEGIN` (protect within the batch budget, one shootdown, then the copy), `PAGER_DIRTY_OLDEST`, `PAGER_OP_WRITTEN` and what a request needs (the stamps), the error kept (Q1), `PAGER_NEXT_AGAIN` turning writing pages dirty; built, see "WK2 notes" | WK1's kernel files, kernel/test/test_pager_dirty.c | WK1 merged | ktests: begin protects in every mapping (several address spaces, `VMAR_MAX_OVERLAP` mappings of one page), a store after begin dirties again and is never lost (8 threads storing counters while a pager thread loops begin, copy, written: the last image holds every thread's last count), written with a re-dirtied page leaves it dirty, a death (AGAIN) between begin and written, `vmo_batch_cost_most` within `VMO_BATCH_BUDGET`; full ktest 4 and 8 | 1 | **Opus** |
 | **WK3. Waiting** | 1.4 and 1.5: the dirty limit, a store's wait in `aspace_fault` and in user copies (no region lock, the deadline in all, cancellable), the throttle's request, `vmo_sync` and its requests; the failure table | WK1's kernel files, `kernel/mm/aspace.c` (the fault's wait), `kernel/abi/sysc_vm.c` (`vmo_sync`), kernel/test/test_pager_dirty.c | WK2 merged | ktests: a writer at the limit waits and goes on when the pager writes; a pager that never answers: the writer is killed at the deadline with the line, a copy returns `ERR_IO`, a reader of another VMO of the same pager is never held up; `vmo_sync` answered exactly (a store before it, written by a write-back that began before it, keeps it waiting); `vmo_sync` failing on a close; a kill ends every wait; full ktest 4 and 8; soak 2 | 1 | **Opus** |
 | **WE1. extfs: the map and one cache** | 2.1 and 2.2: `MAP_WRITE`, every shared VMO writable, keys from the inode, `FIND`, the sizes of a found VMO, rights reduced for `MAP_READ`; `pager_write` in `write` and truncate (the tails), `PEEK` in `read`; Q7 both ways; the ordering argument in pager.c's header | `user/services/extfs/pager.c`, `user/services/extfs/files.c`, `user/services/extfs/fsops.c`, `user/services/extfs/extfs.h`, `user/services/extfs/adopt.c` (the slots' lookups), `abi/idl/file.idl` (`MAP_WRITE`, the comments) and its generated header, a new utest file user/tests/utest/extfs_wmap.c | WK1 merged; U9 merged (it works in extfs); no other track in extfs | utest `extfs_wmap`: a store seen by `read`, by a second mapping and a second process; `write` and a store on one page both kept; truncate shrink and grow with the tails zero; a map after the first mapper unmapped (its pages still dirty) finds the same VMO; `MAP_WRITE` refused without `FS_WRITE`, through a read-only view and on a file mapped to run; `MAP_EXEC` refused while a writable map lives; `extfs_map` and `extfs_restart_pager` unchanged; init run | 1 | **Opus** |
 | **WE2. extfs: write-back** | 2.3 to 2.7: serving `PAGER_REQ_WRITEBACK`, a transaction a batch of runs, the size clip, holes and unwritten extents in ordered mode, the times, the age check, `file.sync` and `fs.sync`, the orderly stop, errors kept per slot, a fresh start's keys; test powers `die=wback:<n>`; extcheck's cut storm gains a write-back step | `user/services/extfs/pager.c` (or a new user/services/extfs/wback.c beside it), `user/services/extfs/main.c` (the age check), `user/services/extfs/fsops.c` (sync), `user/services/extfs/test.c`, `user/services/extfs/extfs.h`, `tools/extcheck.c` (the storm's new step), new utest files for `extfs_wback` and `extfs_restart_wback` | WE1, WK3 merged | utest `extfs_wback` (stores written by `msync`, by `fsync`, by age; a store over a hole and in an unwritten extent; a full volume's error at the next sync), `extfs_restart_wback` (a death at every step of 2.6, the data right after each); `tools/extfs-svc-test.sh` (every disk `e2fsck -fn` clean); extcheck's cut storm (`make check`); init run | 1.5 | **Opus** |
@@ -659,6 +660,91 @@ kernel/test/test_pager_dirty.c):
   again" half is WK2's to add to `pager_dirty_fork`.
 - The kernel API keeps `pager_create_vmo(pg, key, size, out)` (flags 0)
   for the many tests that use it; `pager_create_vmo_flags` takes flags.
+
+### WK2 notes
+
+What WK3 and WE1 start from (ktests `pager_dirty_begin_protects` to
+`pager_dirty_oldest` in kernel/test/test_pager_dirty.c, and the fork
+test's write-back half):
+
+- **Three lists.** The cache keeps `pages` (clean), `dirty` (dirty and not
+  being written back, oldest first) and `writing` (writing, dirty as well
+  or not); `ndirty` counts the last two, `nwriting` the last. A page's age
+  (`dirtied`) is its first store while clean, or, for a page stored to
+  while it was being written, the end of that write-back (a page stored
+  to all the time is written once per age, not on every check); a
+  write-back cut off puts its pages back at the head of `dirty` with their
+  age (made no younger than the head's).
+- **One write-back of a page at a time.** BEGIN takes pages that are dirty
+  and not writing; one stored to while writing (both bits) waits for that
+  write-back's WRITTEN, which leaves it dirty, and the next BEGIN takes
+  it. Flags 0 still means the dirty bit (WK1's), PEEK dirty or writing.
+- **BEGIN** (`vmo_pager_dirty_run` with `PAGER_DIRTY_BEGIN`): the run cut
+  by `batch_end_locked` at `VMO_BATCH_PROTECT_COST`, the pages writing,
+  the requests told, `wrprotect_umaps_locked` and `batch_note`, then the
+  shootdown with no lock held, all before the copy. A copy that fails (a
+  bad buf) makes the run dirty again (`ERR_INVALID_ARGS`, nothing begun);
+  `sysc_pager_dirty` writes the run struct back before a BEGIN, so a run
+  can't begin without the pager being told where.
+- **OLDEST**: the head of `dirty` (`pager_cache_first`), the run reaching
+  back before it as far as `run->len` allows. `run->age_ns` is now in and
+  out: in, the least age wanted; a younger oldest page gives no run and
+  its age, so the age write-back is one call a check and knows when the
+  next is due. **The age setting (Q2):** `PAGER_WRITEBACK_AGE_NS` (10 s)
+  in `<jam/abi.h>` is its default; the setting itself is the
+  filesystem's (WE2 names it, reads it at mount and on a settings change,
+  and passes it in each call), and the kernel keeps no copy and no timer.
+- **What a request needs** (1.3's stamps, kept as bits instead of
+  sequence numbers): a write-back request (`struct pager_wb`, pager.c) has
+  two bits a page, set when it is made: `need` (the page was dirty or
+  writing) and `begin` (it was dirty). BEGIN clears `begin`; WRITTEN
+  clears `need` where `begin` is clear. Since a page has one write-back
+  at a time, AGAIN and a failed copy change no bit (the next end of that
+  page's write-back is of one begun later still). Charged
+  `sizeof(struct pager_wb)` (a read request's size is unchanged). They
+  are on the link's `wbs`; read requests stay alone on `reqs` (a page in
+  one at most). Answered when no `need` bit is left (with the first error
+  one of its pages ended with, else OK), by a shrink (bits past the end
+  done; wholly past it, answered), failed `ERR_PEER_CLOSED` by a detach or
+  the pager's close. A delivered one that a WRITTEN leaves needing only
+  pages nobody is writing back (writing and dirty when it was made) goes
+  back in the queue, so the pager is asked again. Deadlines as for reads:
+  `pager_next` fails an expired one, a waiter times it out.
+- **For WK3:** `vmo_pager_writeback(v, first, end, &r)` (256 pages at
+  most) makes and queues one with a reference for the caller
+  (`pager_req_wait`, `pager_req_put`), or none if nothing there needs
+  writing: `vmo_sync`'s, a chunk at a time. The throttle's can take the
+  shape of the background one (`vmo_pager_writeback_bg`: the run around
+  the oldest dirty page). `pager_dirty_limit` is the quarter of the
+  budget. The limit's wait goes before `store_locked` (WK1's comment).
+  The kept error is `pwb_error` in struct vmo (the latest WRITTEN error;
+  the pages clean all the same), taken by `vmo_pager_take_error` (once);
+  a request's answer carries its pages' error too, so `vmo_sync` should
+  take the kept one whenever it reports one, or it is reported twice.
+- **The background request** (`kick` in pager.c) after a store that made
+  a clean page dirty (`vmo_fault_map`, once the VMO lock is dropped; the
+  region lock may be held: spinlocks and an allocation only) and after
+  every WRITTEN: past half the dirty limit and with none outstanding, one
+  for the run of dirty pages around the oldest, charged to the pager's
+  job, with no waiter; the next kick fails one past its deadline.
+- **AGAIN** walks `writing` from its head, one page per VMO lock hold, as
+  many as were writing when it started (a live writer's new ones go to
+  the tail and can't keep it going).
+- **Small things decided:** `PAGER_OP_FAIL` fails read requests only (a
+  pager that can't write answers with BEGIN and WRITTEN's error: Q1's A);
+  WRITTEN takes any length, 256 pages per VMO lock hold, and clips at the
+  size (a shrink may race a write-back) instead of refusing;
+  `vmo_pager_writeback` refuses a VMO not writable `ERR_NOT_SUPPORTED`;
+  the test pager thread (`kpager`) leaves write-back requests unanswered,
+  as the WK1 tests with small budgets now get background ones.
+- **For WE1**, the pager's side: on a `PAGER_REQ_WRITEBACK`, `pager_dirty`
+  with BEGIN over its range from each run's end until none is left, write
+  the runs, commit, then one WRITTEN over the range (OK, `ERR_IO` or
+  `ERR_NO_SPACE`); by age, once a second, OLDEST with BEGIN and the
+  setting in `age_ns` while it gives a run, each written and answered
+  with a WRITTEN over the run; a successor's first `pager_next` with
+  AGAIN makes the old writing pages dirty and gives the old requests
+  back.
 
 ## 6. Tests
 
