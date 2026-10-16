@@ -236,6 +236,15 @@ be compatible with that.
 | `make compdb` | `compile_commands.json` for editors |
 | `make clean` | remove `build/` |
 
+A changed compile or link flag builds again the objects that have it, and
+only those: each group of objects (the kernel, the user programs, the
+drivers, musl, the POSIX layer, ...) depends on a stamp in `build/flags/`
+that holds its flags, rewritten only when they differ, so no `make clean` is
+needed after a flag changes and a build with nothing changed builds nothing.
+A new group of objects with flags of its own needs a stamp the same way
+(`FLAG_STAMP` and `PROG_FLAGS` in the Makefile). A header change is seen
+through the compiler's `-MMD` dependency files.
+
 ## 3. C rules
 
 The build is `-std=gnu17 -Wall -Wextra -Werror -Wvla`, freestanding, and

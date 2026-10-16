@@ -97,6 +97,38 @@ IMAGE_MIB := $(shell echo $$(( $(ESP_END_MIB) + 64 )))
 LIMINE  := third_party/limine
 OVMF_DIR ?= $(shell brew --prefix qemu 2>/dev/null)/share/qemu
 
+# Flag stamps. make doesn't see a compile command change, so a build kept
+# from before a flag changed would keep its objects: stale ones that look
+# up to date. Every group of objects that is built with one set of flags
+# depends on a stamp file, $(FLAGDIR)/<name>, holding that set. A stamp is
+# written again only when its text differs, so a changed flag builds
+# exactly the group that has it, and a tree with nothing changed builds
+# nothing (the stamp's rule runs on every make, FORCE, but touches the
+# file only on a difference; it reads it with the shell's `read`, no
+# program started: the build asks about a hundred stamps each time).
+#   $(call FLAG_STAMP,<name>,<variable>)   the stamp <name>, holding the
+#       variable's text (given as a name, as flags may hold commas);
+#       the group's rules list $(FLAGDIR)/<name> among their prerequisites.
+#   $(call PROG_FLAGS,<name>,<objects>)    the objects are compiled with
+#       PROG_CFLAGS := $(PF_<name>), on top of the group's flags, and have
+#       a stamp of it, pf-<name>.
+# The compiler's name and version (the path of its libgcc) are in every
+# compile stamp: a new compiler builds everything again. (The stamps'
+# rules come before `all`'s: it is named the default goal here.)
+.DEFAULT_GOAL := all
+FLAGDIR := $(BUILD)/flags
+TOOLID   = $(CC) $(LIBGCC)
+define FLAG_STAMP
+$(FLAGDIR)/$(1): FORCE
+	@old=; [ -f $$@ ] && IFS= read -r old < $$@; \
+	 [ "$$$$old" = '$$($(2))' ] || { mkdir -p $$(@D); printf '%s\n' '$$($(2))' > $$@; }
+endef
+define PROG_FLAGS
+$(2): PROG_CFLAGS := $$(PF_$(1))
+$(2): $(FLAGDIR)/pf-$(1)
+$(call FLAG_STAMP,pf-$(1),PF_$(1))
+endef
+
 # -Wvla: no variable-length arrays (CODING-GUIDE.md "Recursion and the
 # stack"). -Wframe-larger-than: a kernel thread has a 64 KiB stack; the
 # largest frame today is sys_channel_call's, about 2.4 KiB (its message
@@ -128,6 +160,13 @@ PANIC_GLYPHS := $(BUILD)/gen/panicglyphs.c
 OBJS         += $(PANIC_GLYPHS:.c=.o)
 
 NET_STAMP := $(BUILD)/net-default.txt
+
+# The kernel's flags: its compile (every object, ksyms and the panic glyphs
+# too) and its link.
+FLAGS_kernel      = $(TOOLID) $(CFLAGS) | $(ASFLAGS)
+FLAGS_kernel-link = $(LD) $(LDFLAGS)
+$(eval $(call FLAG_STAMP,kernel,FLAGS_kernel))
+$(eval $(call FLAG_STAMP,kernel-link,FLAGS_kernel-link))
 
 # Drivers (the rules are further down, after the user programs'): every
 # drivers/<name>/*.c, and every test driver's drivers/test/<name>/*.c, is
@@ -225,7 +264,7 @@ $(BUILD)/ksyms_empty.c: tools/gensyms.py
 	: > $(BUILD)/empty.nm
 	python3 tools/gensyms.py gen $(BUILD)/empty.nm $@
 
-$(BUILD)/jamos.stage1.elf: $(OBJS) $(BUILD)/ksyms_empty.o kernel/linker.ld
+$(BUILD)/jamos.stage1.elf: $(OBJS) $(BUILD)/ksyms_empty.o kernel/linker.ld $(FLAGDIR)/kernel-link
 	$(LD) $(LDFLAGS) $(OBJS) $(BUILD)/ksyms_empty.o -o $@
 
 $(BUILD)/ksyms.c: $(BUILD)/jamos.stage1.elf tools/gensyms.py
@@ -237,7 +276,7 @@ $(BUILD)/ksyms.c: $(BUILD)/jamos.stage1.elf tools/gensyms.py
 # without (--strip-debug: about 5 of its 7 MB, which nothing reads at run
 # time). Its .symtab stays (update-server.py reads jamos_version there);
 # the panic screen's names are .ksyms, a loaded section, untouched.
-$(KERNEL_DEBUG): $(OBJS) $(BUILD)/ksyms.o kernel/linker.ld
+$(KERNEL_DEBUG): $(OBJS) $(BUILD)/ksyms.o kernel/linker.ld $(FLAGDIR)/kernel-link
 	$(LD) $(LDFLAGS) $(OBJS) $(BUILD)/ksyms.o -o $@
 	$(CROSS)nm -n --defined-only $@ > $(BUILD)/final.nm
 	python3 tools/gensyms.py verify $(BUILD)/stage1.nm $(BUILD)/final.nm
@@ -262,6 +301,9 @@ $(BUILD)/%.S.o: %.S
 	@mkdir -p $(dir $@)
 	$(CC) $(ASFLAGS) -c $< -o $@
 
+# (after the compile rules above: $< is each one's own first prerequisite)
+$(OBJS) $(BUILD)/ksyms_empty.o $(BUILD)/ksyms.o: $(FLAGDIR)/kernel
+
 # User programs (user/): the same cross compiler, freestanding, static at
 # 0x400000 (user/linker.ld). SSE is fine here; the red zone too. User code
 # sees only the kernel headers in UINC_HDRS, copied into their own include
@@ -273,6 +315,14 @@ USER_CFLAGS := -std=gnu17 -O2 -g -Wall -Wextra -Werror -Wvla \
                -Iuser/include -I$(BUILD)/uinc -Idrivers/include -MMD -MP
 USER_LDFLAGS := -nostdlib -static -z max-page-size=0x1000 -z noexecstack -T user/linker.ld
 LIBGCC      := $(shell $(CC) -print-libgcc-file-name)
+# Their stamps: the compile flags (every object of user/, libos, libfun, the
+# drivers' shared files, FatFs, lwIP and the rest below that is compiled
+# with them; a group with more flags has a stamp of its own too) and the
+# link's (every program, driver and bigprog).
+FLAGS_user      = $(TOOLID) $(USER_CFLAGS)
+FLAGS_user-link = $(LD) $(USER_LDFLAGS) $(LIBGCC)
+$(eval $(call FLAG_STAMP,user,FLAGS_user))
+$(eval $(call FLAG_STAMP,user-link,FLAGS_user-link))
 UINC_HDRS   := abi.h bootfs.h startup.h status.h syscall_nums.h
 UINC        := $(UINC_HDRS:%=$(BUILD)/uinc/jam/%)
 UOBJ        := $(BUILD)/uobj
@@ -285,8 +335,10 @@ LIBOS_OBJS  := $(LIBOS_SRCS:%=$(UOBJ)/%.o)
 # (user/lib/mp3.c). A program that never calls mp3_open doesn't link it.
 DRMP3_OBJ   := $(UOBJ)/user/lib/mp3port/dr_mp3_impl.c.o
 LIBOS_OBJS  += $(DRMP3_OBJ)
-$(DRMP3_OBJ): PROG_CFLAGS := -Iuser/lib/mp3port -Ithird_party/dr_mp3
-$(UOBJ)/user/lib/mp3.c.o: PROG_CFLAGS := -Ithird_party/dr_mp3
+PF_drmp3 := -Iuser/lib/mp3port -Ithird_party/dr_mp3
+$(eval $(call PROG_FLAGS,drmp3,$(DRMP3_OBJ)))
+PF_mp3   := -Ithird_party/dr_mp3
+$(eval $(call PROG_FLAGS,mp3,$(UOBJ)/user/lib/mp3.c.o))
 # Monocypher (third_party/monocypher, vendored unmodified): Ed25519 as RFC
 # 8032 has it, for signed updates (<update.h>, user/lib/updsig.c) and the
 # SSH server's host key (init's ssh.c). Into libos; only a program that
@@ -297,8 +349,8 @@ MONO_SRCS   := $(MONO_DIR)/monocypher.c $(MONO_DIR)/optional/monocypher-ed25519.
 MONO_HDRS   := $(MONO_DIR)/monocypher.h $(MONO_DIR)/optional/monocypher-ed25519.h
 MONO_OBJS   := $(MONO_SRCS:%=$(UOBJ)/%.o)
 LIBOS_OBJS  += $(MONO_OBJS)
-$(MONO_OBJS) $(UOBJ)/user/lib/updsig.c.o $(UOBJ)/user/lib/pkgfmt.c.o: \
-    PROG_CFLAGS := -I$(MONO_DIR) -I$(MONO_DIR)/optional
+PF_mono := -I$(MONO_DIR) -I$(MONO_DIR)/optional
+$(eval $(call PROG_FLAGS,mono,$(MONO_OBJS) $(UOBJ)/user/lib/updsig.c.o $(UOBJ)/user/lib/pkgfmt.c.o))
 # The programs, by role: user/services/<name> (init, console, devmgr, ...),
 # user/apps/<name> (the apps, on libfun) and user/tests/<name>. Every
 # directory there with a .c file is the program bin/<name> in bootfs, except
@@ -329,11 +381,11 @@ $(UINC): $(BUILD)/uinc/jam/%.h: kernel/include/jam/%.h
 	@mkdir -p $(dir $@)
 	cp $< $@
 
-$(UOBJ)/%.c.o: %.c | $(UINC) $(SYSCALLS_OK) $(IDL_OK) $(WL_OK)
+$(UOBJ)/%.c.o: %.c $(FLAGDIR)/user | $(UINC) $(SYSCALLS_OK) $(IDL_OK) $(WL_OK)
 	@mkdir -p $(dir $@)
 	$(CC) $(USER_CFLAGS) $(PROG_CFLAGS) -c $< -o $@
 
-$(UOBJ)/%.S.o: %.S | $(UINC) $(SYSCALLS_OK)
+$(UOBJ)/%.S.o: %.S $(FLAGDIR)/user | $(UINC) $(SYSCALLS_OK)
 	@mkdir -p $(dir $@)
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -357,7 +409,8 @@ $(UOBJ)/libjam.a: $(LIBJAM_OBJS)
 all: $(UOBJ)/libjam.a
 
 LIBJAM_LINK := $(BUILD)/libjam-link
-$(LIBJAM_LINK): $(UOBJ)/libjam.a tools/libjam-stub.c tools/checklibjam.py
+$(LIBJAM_LINK): $(UOBJ)/libjam.a tools/libjam-stub.c tools/checklibjam.py $(FLAGDIR)/user \
+                $(FLAGDIR)/user-link
 	$(CC) $(filter-out -I% -MMD -MP,$(USER_CFLAGS)) -c tools/libjam-stub.c -o $@-stub.o
 	$(LD) $(USER_LDFLAGS) --fatal-warnings -e _start $@-stub.o \
 	    --whole-archive $(UOBJ)/libjam.a --no-whole-archive $(LIBGCC) -o $@
@@ -392,7 +445,8 @@ FONT_FACES  := third_party/inter/Inter-Regular.ttf third_party/inter/Inter-Mediu
                third_party/jetbrains-mono/JetBrainsMono-Bold.ttf
 FONT_SRCS   := $(addprefix $(LIBFUN_DIR)/,font.c fontdraw.c fontdata.c ttf.c utf8.c alpha.c)
 FONT_STB_OBJS := $(UOBJ)/$(LIBFUN_DIR)/ttf.c.o $(UOBJ)/$(LIBFUN_DIR)/font.c.o
-$(FONT_STB_OBJS): PROG_CFLAGS := -Ithird_party/stb_truetype
+PF_stb := -Ithird_party/stb_truetype
+$(eval $(call PROG_FLAGS,stb,$(FONT_STB_OBJS)))
 $(UOBJ)/$(LIBFUN_DIR)/fontdata.c.o: $(FONT_FACES)
 
 # FatFs (third_party/fatfs, vendored unmodified), built into the fat
@@ -415,7 +469,9 @@ $(FATFS_OBJS:.o=.c): $(FATFS_STAGE)/%.c: $(FATFS_SRC)/%.c
 	@mkdir -p $(dir $@)
 	cp $< $@
 
-$(FATFS_STAGE)/%.o: $(FATFS_STAGE)/%.c $(FATFS_HDRS) | $(UINC) $(SYSCALLS_OK)
+$(eval $(call FLAG_STAMP,fatfs,FATFS_INC))
+$(FATFS_STAGE)/%.o: $(FATFS_STAGE)/%.c $(FATFS_HDRS) $(FLAGDIR)/user $(FLAGDIR)/fatfs \
+                    | $(UINC) $(SYSCALLS_OK)
 	$(CC) $(USER_CFLAGS) $(FATFS_INC) -c $< -o $@
 
 # lwIP (third_party/lwip, vendored unmodified: only the files netstack
@@ -428,7 +484,8 @@ LWIP_INC    := -I$(LWIP_DIR)/include -I$(LWIP_PORT)
 LWIP_SRCS   := $(wildcard $(LWIP_DIR)/core/*.c $(LWIP_DIR)/core/ipv4/*.c $(LWIP_DIR)/netif/*.c)
 LWIP_OBJS   := $(LWIP_SRCS:%.c=$(BUILD)/lwip/%.o)
 
-$(LWIP_OBJS): $(BUILD)/lwip/%.o: %.c | $(UINC) $(SYSCALLS_OK)
+$(eval $(call FLAG_STAMP,lwip,LWIP_INC))
+$(LWIP_OBJS): $(BUILD)/lwip/%.o: %.c $(FLAGDIR)/user $(FLAGDIR)/lwip | $(UINC) $(SYSCALLS_OK)
 	@mkdir -p $(dir $@)
 	$(CC) $(USER_CFLAGS) $(LWIP_INC) -c $< -o $@
 
@@ -445,7 +502,8 @@ $(CURSOR_GEN): tools/cursorgen.c tools/png.c tools/fontpreview.h
 $(CURSOR_SET): $(CURSOR_GEN)
 	@mkdir -p $(dir $@)
 	$(CURSOR_GEN) $@ $(BUILD)/cursors.png
-$(CURSOR_OBJ): PROG_CFLAGS := -iquote user/services/compositor -I$(LIBFUN_DIR)
+PF_cursor := -iquote user/services/compositor -I$(LIBFUN_DIR)
+$(eval $(call PROG_FLAGS,cursor,$(CURSOR_OBJ)))
 
 # What a program links, includes and needs made first beyond its own
 # directory and libos.
@@ -534,7 +592,8 @@ PKGVEC_OBJ := $(UOBJ)/$(PKGVEC_C).o
 $(PKGVEC_C): tools/pkgvec2c.py $(wildcard ports/vectors/*)
 	@mkdir -p $(dir $@)
 	python3 tools/pkgvec2c.py ports/vectors $@
-$(PKGVEC_OBJ): PROG_CFLAGS := -iquote user/tests/utest
+PF_pkgvec := -iquote user/tests/utest
+$(eval $(call PROG_FLAGS,pkgvec,$(PKGVEC_OBJ)))
 EXTRA_OBJS_utest   += $(PKGVEC_OBJ)
 # execwide is exectest's body with a wider list (user/tests/exectest/exectest.h).
 EXTRA_OBJS_execwide   := $(UOBJ)/user/tests/exectest/probe.c.o \
@@ -554,14 +613,14 @@ EXTRA_CFLAGS_shell := -Iuser/services/extfs/ext
 # "sh.h" works from shell/cmd/), for an app the apps library's <fun.h>,
 # and the program's EXTRA_CFLAGS.
 define USER_PROG
-$(call prog_objs,$(1)): PROG_CFLAGS := -iquote $(call prog_dir,$(1)) \
-                                       $(if $(filter $(1),$(FUN_PROGS)),-I$(LIBFUN_DIR)) \
-                                       $(EXTRA_CFLAGS_$(1))
+PF_$(1) := -iquote $(call prog_dir,$(1)) $(if $(filter $(1),$(FUN_PROGS)),-I$(LIBFUN_DIR)) \
+           $(EXTRA_CFLAGS_$(1))
+$(call PROG_FLAGS,$(1),$(call prog_objs,$(1)))
 $(call prog_objs,$(1)): | $(EXTRA_DEPS_$(1))
 
 $(BUILD)/user/$(1): $(UOBJ)/user/lib/crt0.S.o $(call prog_objs,$(1)) $(EXTRA_OBJS_$(1)) \
                     $(if $(filter $(1),$(FUN_PROGS)),$(UOBJ)/libfun.a) $(UOBJ)/libos.a \
-                    user/linker.ld
+                    user/linker.ld $(FLAGDIR)/user-link
 	@mkdir -p $$(dir $$@)
 	$(LD) $(USER_LDFLAGS) $(UOBJ)/user/lib/crt0.S.o $(call prog_objs,$(1)) $(EXTRA_OBJS_$(1)) \
 	    $(if $(filter $(1),$(FUN_PROGS)),$(UOBJ)/libfun.a) $(UOBJ)/libos.a $(LIBGCC) -o $$@
@@ -577,11 +636,14 @@ $(foreach p,$(USER_PROGS),$(eval $(call USER_PROG,$(p))))
 # test asks for it (`make build/bigprog/bigprog`), stripped of its debug
 # information, never in bootfs or the tree.
 BIGPROG_PAGES ?= 76800
-$(BUILD)/bigprog/table.o: user/tests/bigprog/table.S | $(UINC) $(SYSCALLS_OK)
+$(eval $(call FLAG_STAMP,bigprog,BIGPROG_PAGES))
+$(BUILD)/bigprog/table.o: user/tests/bigprog/table.S $(FLAGDIR)/user $(FLAGDIR)/bigprog \
+                          | $(UINC) $(SYSCALLS_OK)
 	@mkdir -p $(dir $@)
 	$(CC) $(USER_CFLAGS) -DBIG_PAGES=$(BIGPROG_PAGES) -c $< -o $@
 $(BUILD)/bigprog/bigprog: $(UOBJ)/user/lib/crt0.S.o $(call prog_objs,bigprog) \
-                          $(BUILD)/bigprog/table.o $(UOBJ)/libos.a user/linker.ld
+                          $(BUILD)/bigprog/table.o $(UOBJ)/libos.a user/linker.ld \
+                          $(FLAGDIR)/user-link
 	$(LD) $(USER_LDFLAGS) -s $(UOBJ)/user/lib/crt0.S.o $(call prog_objs,bigprog) \
 	    $(BUILD)/bigprog/table.o $(UOBJ)/libos.a $(LIBGCC) -o $@
 
@@ -633,7 +695,9 @@ $(filter $(DRV_INC)/idl/%,$(DRV_HDRS)): $(DRV_INC)/idl/%.h: drivers/include/idl/
 	@mkdir -p $(dir $@)
 	cp $< $@
 
-$(BUILD)/udrv/drivers/%.o: drivers/%.c | $(DRV_HDRS)
+FLAGS_drv = $(TOOLID) $(DRV_CFLAGS)
+$(eval $(call FLAG_STAMP,drv,FLAGS_drv))
+$(BUILD)/udrv/drivers/%.o: drivers/%.c $(FLAGDIR)/drv | $(DRV_HDRS)
 	@mkdir -p $(dir $@)
 	$(CC) $(DRV_CFLAGS) -c $< -o $@
 
@@ -644,7 +708,7 @@ $(BUILD)/udrv/$(1).o: $(call DRV_OBJS,$(1)) tools/checkdriver.py $(DRV_SURFACE)
 	mv $$@.r $$@
 
 $(BUILD)/drv/$(1): $(UOBJ)/user/lib/crt0.S.o $(UOBJ)/user/lib/driver_crt.c.o $(BUILD)/udrv/$(1).o \
-                   $(UOBJ)/libos.a user/linker.ld
+                   $(UOBJ)/libos.a user/linker.ld $(FLAGDIR)/user-link
 	@mkdir -p $$(dir $$@)
 	$(LD) $(USER_LDFLAGS) $(UOBJ)/user/lib/crt0.S.o $(UOBJ)/user/lib/driver_crt.c.o \
 	    $(BUILD)/udrv/$(1).o $(UOBJ)/libos.a $(LIBGCC) -o $$@
@@ -1005,7 +1069,7 @@ $(EXT_CHECK): $(EXT_TOOL) tools/extcheck.h tools/extvol.h tools/extwrite.h tools
 $(EXT_FIXTURES): $(BUILD)/extfix/%.img: tools/extfix/%.img.gz
 	@mkdir -p $(dir $@)
 	gzip -dc $< > $@
-$(EXT_CROSS): $(BUILD)/extcross/%.o: $(EXT_DIR)/%.c $(EXT_HDRS) | $(UINC)
+$(EXT_CROSS): $(BUILD)/extcross/%.o: $(EXT_DIR)/%.c $(EXT_HDRS) $(FLAGDIR)/user | $(UINC)
 	@mkdir -p $(dir $@)
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -1046,8 +1110,13 @@ font:
 clean:
 	rm -rf $(BUILD)
 
+# (the objects a program is linked with beside its own, EXTRA_OBJS: utest's
+# drivers' files and the cursor set, bigprog's table, ... and the ext
+# library's cross build: their headers too)
 -include $(OBJS:.o=.d) $(USER_OBJS:.o=.d) $(FATFS_OBJS:.o=.d) $(LWIP_OBJS:.o=.d) \
-         $(patsubst %.o,%.d,$(foreach d,$(DRIVERS),$(call DRV_OBJS,$(d))))
+         $(patsubst %.o,%.d,$(foreach d,$(DRIVERS),$(call DRV_OBJS,$(d)))) \
+         $(patsubst %.o,%.d,$(filter %.o,$(foreach p,$(USER_PROGS),$(EXTRA_OBJS_$(p))))) \
+         $(EXT_CROSS:.o=.d)
 
 # POSIX on musl: musl, the call layer, the sysroot, posixtest (its own file).
 include user/posix/posix.mk
