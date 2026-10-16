@@ -18,7 +18,7 @@
 #               DNS server.
 # QEMU_SMP passes through. Usage: tools/dns-test.sh <outdir>; exit 0 on PASS.
 set -eu
-DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
+. tools/datafs.sh
 out=$1
 mkdir -p "$out"
 ok=1
@@ -47,8 +47,7 @@ grep -q "dhcp: .*didn't" "$out/dns.log" && { echo "dns: netstack refused the lea
 img="$out/dns-static.base.img"
 cp "${QEMU_IMAGE:-build/jamos.img}" "$img"
 printf 'net.address = 10.2.21.5/24 10.2.21.1 10.2.21.1\n' > "$out/dns-static.settings"
-mmd -i "$img@@$DATA_AT" ::/etc 2>/dev/null || true
-mcopy -o -i "$img@@$DATA_AT" "$out/dns-static.settings" ::/etc/settings
+data_put "$img" "$out/dns-static.settings" etc/settings
 QEMU_IMAGE="$img" QEMU_NET=1 QEMU_INPUT=tools/shell-tests/dns-static.txt \
     tools/qemu-test.sh "$out" dns-static shell || ok=0
 rm -f "$img"

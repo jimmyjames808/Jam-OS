@@ -44,7 +44,7 @@
 # build's default).
 # Usage: tools/update-net-test.sh <outdir> (after `make -s image`); exit 0 on PASS.
 set -u
-DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
+. tools/datafs.sh
 out=$1
 mkdir -p "$out"
 fails=0
@@ -59,17 +59,16 @@ tools/update-test-key.sh "$out" "${QEMU_IMAGE:-build/jamos.img}" "$img" ||
     { echo "update-net-test: can't make the test key's stick"; exit 1; }
 printf 'net.address = 10.2.21.5/24 10.2.21.1 10.2.21.1\nnet.host = 10.2.21.174\n' \
     > "$out/updnet.settings"
-mmd -i "$img@@$DATA_AT" ::/etc 2>/dev/null || true
-mcopy -o -i "$img@@$DATA_AT" "$out/updnet.settings" ::/etc/settings ||
+data_put "$img" "$out/updnet.settings" etc/settings ||
     { echo "update-net-test: can't write the stick's settings"; exit 1; }
 # Two packages installed, as far as the shell counts them (the files of
 # /data/pkg/db but serial, journal and the `.new` of a change): build B has
 # another ABI stamp, so `update` says they were built for the old system.
 mkdir -p "$out/pkgdb" && printf 'x\n' > "$out/pkgdb/aaa" && cp "$out/pkgdb/aaa" "$out/pkgdb/bbb" &&
     cp "$out/pkgdb/aaa" "$out/pkgdb/serial" && cp "$out/pkgdb/aaa" "$out/pkgdb/bbb.new" &&
-    mmd -i "$img@@$DATA_AT" ::/pkg ::/pkg/db &&
-    mcopy -i "$img@@$DATA_AT" "$out/pkgdb/aaa" "$out/pkgdb/bbb" "$out/pkgdb/serial" \
-        "$out/pkgdb/bbb.new" ::/pkg/db/ ||
+    for f in aaa bbb serial bbb.new; do
+        data_put "$img" "$out/pkgdb/$f" "pkg/db/$f" || exit 1
+    done ||
     { echo "update-net-test: can't write the stick's package records"; exit 1; }
 
 # Build B.

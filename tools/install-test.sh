@@ -82,6 +82,7 @@
 # Usage: tools/install-test.sh <outdir> [case...]; exit 0 on PASS (after
 # `make -s image`; the PC only).
 set -u
+. tools/datafs.sh
 out=$1
 shift
 cases=${*:-install}
@@ -109,19 +110,16 @@ fail() {
 mk_stick() {
     stick="$dir/stick.img"
     cp build/jamos.img "$stick"
-    sat=$(python3 tools/mkimage.py --data-at "$stick") || return 1
     printf 'install-test probe %s\n' "$$" > "$dir/probe.txt"
     printf 'deep file\n' > "$dir/deep.txt"
     : > "$dir/empty.txt"
     printf 'only on the stick\n' > "$dir/stick-only.txt"
     printf 'changed\n' > "$dir/changed.txt"
-    mmd -i "$stick@@$sat" ::/etc 2> /dev/null
-    mmd -i "$stick@@$sat" ::/etc/sub 2> /dev/null
-    mcopy -o -i "$stick@@$sat" "$dir/probe.txt" ::/etc/probe.txt &&
-        mcopy -o -i "$stick@@$sat" "$dir/deep.txt" ::/etc/sub/deep.txt &&
-        mcopy -o -i "$stick@@$sat" "$dir/empty.txt" ::/etc/empty.txt &&
-        mcopy -o -i "$stick@@$sat" "$dir/stick-only.txt" ::/stick-only.txt &&
-        mcopy -o -i "$stick@@$sat" "$dir/changed.txt" ::/changed.txt &&
+    data_put "$stick" "$dir/probe.txt" etc/probe.txt &&
+        data_put "$stick" "$dir/deep.txt" etc/sub/deep.txt &&
+        data_put "$stick" "$dir/empty.txt" etc/empty.txt &&
+        data_put "$stick" "$dir/stick-only.txt" stick-only.txt &&
+        data_put "$stick" "$dir/changed.txt" changed.txt &&
         mcopy -o -i "$stick@@1M" ::/EFI/BOOT/BOOTX64.EFI "$dir/ref-limine.efi" &&
         mcopy -o -i "$stick@@1M" ::/boot/jamos.elf "$dir/ref-jamos.elf" &&
         mcopy -o -i "$stick@@1M" ::/boot/bootfs.img "$dir/ref-bootfs.img" ||

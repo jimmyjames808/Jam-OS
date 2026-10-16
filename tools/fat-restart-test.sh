@@ -15,16 +15,19 @@
 # with and without the spare. QEMU_SMP passes through.
 # Usage: tools/fat-restart-test.sh <outdir>; exit 0 on PASS.
 set -eu
-DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
+. tools/datafs.sh
 out=$1
 mkdir -p "$out"
 ok=1
+# fat is the service under test: a FAT stick of its own (the default image's /data is ext)
+fat="$out/fr-boot.img"
+data_fat_image "$fat" || { echo "fat-restart: no FAT boot image"; exit 1; }
 
 for run in spare nospare; do
     words=shell
     [ "$run" = nospare ] && words="shell nospare"
     # shellcheck disable=SC2086 # the boot words are separate arguments
-    QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_INPUT=tools/shell-tests/fat-restart.txt \
+    QEMU_IMAGE="$fat" QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_INPUT=tools/shell-tests/fat-restart.txt \
         QEMU_SAVE="$out/fr-$run-stick.img" \
         tools/qemu-test.sh "$out" "fr-$run" $words > "$out/fr-$run.out" 2>&1 ||
         { echo "fat-restart: the $run script failed"; grep "serial-feed: .*no '" "$out/fr-$run.out" || true; ok=0; }
@@ -75,13 +78,13 @@ for run in spare nospare; do
     # The stick, on the host.
     img="$out/fr-$run-stick.img"
     for f in u1.txt u2.txt u3.txt burst.txt; do
-        mtype -i "$img@@$DATA_AT" "::/fr/$f" > "$out/fr-$run-$f" 2>/dev/null ||
+        data_cat "$img" "fr/$f" > "$out/fr-$run-$f" 2>/dev/null ||
             { echo "fat-restart: $run: /fr/$f isn't on the stick"; ok=0; }
     done
     grep -q "unsynced-1" "$out/fr-$run-u1.txt" && grep -q "again-1" "$out/fr-$run-u1.txt" &&
         grep -q "unsynced-3" "$out/fr-$run-u3.txt" && grep -q "b-2" "$out/fr-$run-burst.txt" ||
         { echo "fat-restart: $run: the stick's files don't hold what was written"; ok=0; }
-    mcopy -o -i "$img@@$DATA_AT" ::/fr/k1.bin "$out/fr-$run-k1.bin" 2>/dev/null &&
+    data_get "$img" fr/k1.bin "$out/fr-$run-k1.bin" &&
         mcopy -o -i "$img@@1M" ::/boot/jamos.elf "$out/fr-$run-jamos.elf" 2>/dev/null &&
         cmp -s "$out/fr-$run-k1.bin" "$out/fr-$run-jamos.elf" ||
         { echo "fat-restart: $run: the stick's /fr/k1.bin isn't its kernel"; ok=0; }
@@ -93,6 +96,7 @@ done
 need 1 "spare promoted" "$out/fr-spare.log"
 never "spare promoted" "$out/fr-nospare.log"
 
+rm -f "$fat"
 [ "$ok" = 1 ] && echo "fat-restart: PASS" && exit 0
 echo "fat-restart: FAIL"
 exit 1

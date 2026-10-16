@@ -34,8 +34,8 @@
 #           CR_BASE_ALL=1, CR_BASE_ONLY=<glob>, CR_BASE_ENV="NAME=value ..."
 #           (default TMPDIR and TEST_TMPDIR=/data/cr/tmp; CR_BASE_ENV= empty
 #           leaves both unset and the programs use init's /tmp); the stick's
-#           /data is the image's: FAT, or ext when JAMOS_DATA_FS=ext made the
-#           image (tools/cr/base-stick.py then fills it with jamext;
+#           /data is the image's: ext, or FAT when JAMOS_DATA_FS=fat made the
+#           image (tools/cr/base-stick.py fills an ext one with jamext;
 #           QEMU_BOOT_NVME=1 boots the stick as an installed NVMe drive); results in
 #           <outdir>/base/run/ (results.txt, failures/, enosys.txt, summary.txt)
 #
@@ -191,7 +191,7 @@ case_base() {
     image=${PORTS_TEST_IMAGE:-build/jamos.img}
     [ -f "$image" ] || { echo "FAIL (no $image: make image first)" > "$dir/result"; return; }
     stick=$dir/base-stick.img
-    # An ext /data (JAMOS_DATA_FS=ext made the image) is filled by jamext.
+    # An ext /data (the default image's) is filled by jamext.
     if [ "$(python3 tools/mkimage.py --data-fs "$image")" = ext ] &&
        ! make -s build/host/jamext > "$dir/jamext.out" 2>&1; then
         cat "$dir/jamext.out"

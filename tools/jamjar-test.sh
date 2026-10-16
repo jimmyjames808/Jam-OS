@@ -30,7 +30,7 @@
 # tools/jamjar-test.sh <outdir>`.
 # QEMU_SMP passes through. Usage: tools/jamjar-test.sh <outdir>; exit 0 on PASS.
 set -eu
-DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
+. tools/datafs.sh
 out=$1
 mkdir -p "$out"
 name=jamjar
@@ -206,17 +206,16 @@ tagged("garbled.mp3", b"\xff\xd8\xff\xe0" + bytes(rnd.randrange(256) for _ in ra
 PY
 
 cp build/jamos.img "$stick"
-img="$stick@@$DATA_AT"
 L="music/OnTheSpot"
 for d in music "$L" "$L/JAŸ-Z" "$L/JAŸ-Z/2017_4-44" "$L/¥\$" "$L/¥\$/2024_Vultures_1" \
          "$L/Kanye_West" "$L/Kanye_West/2010_My_Beautiful_Dark_Twisted_Fantasy" \
          "$L/Daft_Punk" "$L/Daft_Punk/2001_Discovery" "$L/Test_Tones" \
          "$L/Test_Tones/2020_Calibration" "$L/Broken" "$L/Broken/2019_Oversized" \
          "$L/Broken/2019_Garbled"; do
-    mmd -i "$img" "::/$d" || { echo "jamjar: can't make $d on the stick image"; exit 1; }
+    data_mkdir "$stick" "$d" || { echo "jamjar: can't make $d on the stick image"; exit 1; }
 done
 put() {
-    mcopy -o -i "$img" "$tmp/$1" "::/$L/$2" || { echo "jamjar: can't copy $2"; exit 1; }
+    data_put "$stick" "$tmp/$1" "$L/$2" || { echo "jamjar: can't copy $2"; exit 1; }
 }
 put song0.mp3 "JAŸ-Z/2017_4-44/Kill_Jay_Z.mp3"
 put song1.mp3 "JAŸ-Z/2017_4-44/The_Story_of_O.J..mp3"

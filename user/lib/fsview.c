@@ -144,7 +144,10 @@ static bool hidden_request(uint32_t flags, const void *req, uint32_t n)
         { FS_SUBVIEW, sizeof(struct fs_subview_req), false, false },
     };
     const struct idl_req_hdr *h = req;
-    bool stat = h->ordinal == FS_STAT;
+    /* a stat of etc itself answers in a partial view; on an ext volume, whose files have
+     * attributes of their own and links, that is fs.getattr and fs.resolve too
+     * (chdir("/data/etc"), as tinysshd-auth does, asks both) */
+    bool stat = h->ordinal == FS_STAT || h->ordinal == FS_GETATTR || h->ordinal == FS_RESOLVE;
     for (unsigned i = 0; i < sizeof(with_paths) / sizeof(with_paths[0]); i++) {
         if (h->ordinal != with_paths[i].ordinal)
             continue;

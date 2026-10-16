@@ -3,7 +3,7 @@
 # extfs cases from the shell, then every RAM disk they saved on /data
 # (sparse, user/tests/utest/extfs.c's extfs_save) made an image again and
 # checked by Linux's e2fsck -fn: what extfs leaves must be a volume Linux
-# calls clean. Needs e2fsprogs and mtools (the test PC's WSL):
+# calls clean. Needs e2fsprogs (the test PC's WSL):
 #
 #     JAMOS_REMOTE=jamos-pc JAMOS_REMOTE_ONLY=1 \
 #         tools/remote-test.sh tools/extfs-svc-test.sh build/test/extfs-svc
@@ -11,21 +11,21 @@
 # Into <outdir>: the run's log, <name>.img for each disk, <name>.fsck.
 # Exit 0 when the run passed and e2fsck called every disk clean.
 set -u
+. tools/datafs.sh
 out=${1:?usage: tools/extfs-svc-test.sh <outdir>}
 export PATH=/usr/sbin:/sbin:$PATH LC_ALL=C
 command -v e2fsck > /dev/null || { echo "extfs-svc-test: no e2fsck here (e2fsprogs)"; exit 2; }
 mkdir -p "$out"
-DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1
 ok=0
 QEMU_TIMEOUT=${QEMU_TIMEOUT:-1500} QEMU_SAVE="$out/extfs-svc.after.img" \
     QEMU_INPUT=tools/shell-tests/extfs-svc.txt tools/qemu-test.sh "$out" extfs-svc shell || ok=1
 grep -E "utest: (extfs|[0-9]+ passed)|FAILED" "$out/extfs-svc.log" | head -40
 n=0
-for f in $(mdir -b -i "$out/extfs-svc.after.img@@$DATA_AT" ::/extfs-e2fsck 2>/dev/null); do
+for f in $(data_ls "$out/extfs-svc.after.img" extfs-e2fsck); do
     name=$(basename "$f" .sparse)
     rm -f "$out/$name.sparse" "$out/$name.img"
-    mcopy -n -i "$out/extfs-svc.after.img@@$DATA_AT" "::/extfs-e2fsck/$name.sparse" \
-        "$out/$name.sparse" < /dev/null || { ok=1; continue; }
+    data_get "$out/extfs-svc.after.img" "extfs-e2fsck/$name.sparse" "$out/$name.sparse" ||
+        { ok=1; continue; }
     python3 - "$out/$name.sparse" "$out/$name.img" <<'EOF' || { ok=1; continue; }
 import struct, sys
 src = open(sys.argv[1], "rb").read()

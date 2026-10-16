@@ -40,9 +40,8 @@ functional/pthread_robust limit: robust mutexes need set_robust_list, which Jam 
 regression/pthread-robust-detach limit: robust mutexes need set_robust_list, which Jam OS has not
 
 # ---- files and the system -----------------------------------------------------------------------
-functional/sem_open limit: named semaphores publish their file with link(), which is EPERM (FAT has no links); the test then dereferences SEM_FAILED
-regression/sem_close-unmap limit: named semaphores publish their file with link(), which is EPERM (FAT has no links); the test then dereferences SEM_FAILED
-functional/utime limit: utimensat and futimens succeed and change nothing (the file protocol has no way to set times)
+functional/sem_open limit: named semaphores publish their file with link() under /dev/shm, whose names are libc's own and take no links (EACCES, user/posix/sys/dev.c; FAT or ext under /data makes no difference); the test then dereferences SEM_FAILED
+regression/sem_close-unmap limit: named semaphores publish their file with link() under /dev/shm, whose names are libc's own and take no links (EACCES, user/posix/sys/dev.c); the test then dereferences SEM_FAILED
 regression/statvfs limit: / is the namespace root, a list of mounts, not a file system: statvfs("/") reports no blocks
 
 # ---- musl 1.2.6 against a newer libc-test ---------------------------------------------------------

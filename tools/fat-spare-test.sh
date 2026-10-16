@@ -16,14 +16,18 @@
 # QEMU_SMP passes through. Usage: tools/fat-spare-test.sh <outdir>; exit 0
 # on PASS.
 set -eu
+. tools/datafs.sh
 out=$1
 mkdir -p "$out"
 ok=1
+# fat is the service under test: a FAT stick of its own (the default image's /data is ext)
+fat="$out/fatspare-boot.img"
+data_fat_image "$fat" || { echo "fat-spare: no FAT boot image"; exit 1; }
 
-QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_INPUT=tools/shell-tests/fat-spare.txt \
+QEMU_IMAGE="$fat" QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_INPUT=tools/shell-tests/fat-spare.txt \
     tools/qemu-test.sh "$out" fatspare shell > "$out/fatspare.out" 2>&1 ||
     { echo "fat-spare: the spare script failed"; grep "serial-feed: .*no '" "$out/fatspare.out" || true; ok=0; }
-QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_INPUT=tools/shell-tests/fat-nospare.txt \
+QEMU_IMAGE="$fat" QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_INPUT=tools/shell-tests/fat-nospare.txt \
     tools/qemu-test.sh "$out" fatnospare shell nospare > "$out/fatnospare.out" 2>&1 ||
     { echo "fat-spare: the nospare script failed"; grep "serial-feed: .*no '" "$out/fatnospare.out" || true; ok=0; }
 log="$out/fatspare.log"
@@ -81,6 +85,7 @@ stats "kill to first answer, spare" "fat-data: kill to first answer" "$log"
 stats "new process started after the kill" "fat-data: new process started (no spare waited)" "$nolog"
 stats "kill to first answer, no spare" "fat-data: kill to first answer" "$nolog"
 
+rm -f "$fat"
 [ "$ok" = 1 ] && echo "fat-spare: PASS" && exit 0
 echo "fat-spare: FAIL"
 exit 1

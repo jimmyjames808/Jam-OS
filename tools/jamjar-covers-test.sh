@@ -15,7 +15,7 @@
 # QEMU_SMP passes through. Usage: tools/jamjar-covers-test.sh <outdir>;
 # exit 0 on PASS.
 set -eu
-DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
+. tools/datafs.sh
 out=$1
 mkdir -p "$out"
 name=jamjar-covers
@@ -52,18 +52,17 @@ for a in range(albums):
 PY
 
 cp build/jamos.img "$stick"
-img="$stick@@$DATA_AT"
-mmd -i "$img" ::/many || { echo "$name: can't make /many on the stick image"; exit 1; }
+data_mkdir "$stick" many || { echo "$name: can't make /many on the stick image"; exit 1; }
 a=0
 while [ $a -lt $ALBUMS ]; do
     n=$(printf %02d $a)
-    mmd -i "$img" "::/many/Artist_$n" "::/many/Artist_$n/2020_Album_$n"
+    data_mkdir "$stick" "many/Artist_$n/2020_Album_$n"
     for t in 0 1; do
         ffmpeg -hide_banner -loglevel error -y -i "$tmp/s${n}_$t.wav" -i "$tmp/c$n.png" \
             -map 0:a -map 1:v -c:a libmp3lame -b:a 96k -c:v copy -id3v2_version 3 \
             -metadata:s:v title="Album cover" -metadata:s:v comment="Cover (front)" \
             "$tmp/song.mp3"
-        mcopy -o -i "$img" "$tmp/song.mp3" "::/many/Artist_$n/2020_Album_$n/Song_$t.mp3" ||
+        data_put "$stick" "$tmp/song.mp3" "many/Artist_$n/2020_Album_$n/Song_$t.mp3" ||
             { echo "$name: can't copy a song"; exit 1; }
     done
     a=$((a + 1))

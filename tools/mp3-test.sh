@@ -33,7 +33,7 @@
 # known; each one traced excuses one click and 2048 frames of length.
 # QEMU_SMP passes through. Usage: tools/mp3-test.sh <outdir>; exit 0 on PASS.
 set -eu
-DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
+. tools/datafs.sh
 out=$1
 mkdir -p "$out"
 wav="$out/mp3.wav"
@@ -116,7 +116,7 @@ PY
 
 cp build/jamos.img "$stick"
 for f in a44.mp3 v48.mp3 m22.mp3 tag.mp3 l2.mp2 bad.mp3 cut.mp3 garbage.mp3 id3.mp3 long.mp3; do
-    mcopy -o -i "$stick@@$DATA_AT" "$out/$f" "::/$f" ||
+    data_put "$stick" "$out/$f" "$f" ||
         { echo "mp3: can't copy $f to the stick image"; exit 1; }
 done
 

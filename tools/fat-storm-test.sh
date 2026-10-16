@@ -26,7 +26,7 @@
 # about 1.2 s of copying under KVM on the PC, so that 1 kill a second kills; 32 took 0.98 s and killed nothing; the data partition is 63 MiB, so no more).
 # Usage: tools/fat-storm-test.sh <outdir>; exit 0 on PASS.
 set -eu
-DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
+. tools/datafs.sh
 out=$1
 mkdir -p "$out"
 mib=${STORM_MIB:-40}
@@ -55,9 +55,9 @@ want=$(shasum -a 256 "$tmp/big.bin" | cut -c1-64)
 python3 tools/mkstick.py "$stick" 64 0c
 mformat -i "$stick@@1M" -T $((63 * 2048)) -F -v STORM ::
 mcopy -i "$stick@@1M" "$tmp/big.bin" ::/big.bin
-cp build/jamos.img "$boot"
-mmd -i "$boot@@$DATA_AT" ::/music
-mcopy -i "$boot@@$DATA_AT" "$tmp/tone.wav" "::/music/tone.wav"
+# the boot stick is a FAT one (fat is under test; the default image's /data is ext)
+data_fat_image "$boot" || { echo "fat-storm: no FAT boot image"; exit 1; }
+data_put "$boot" "$tmp/tone.wav" music/tone.wav
 
 devs="-audiodev wav,id=snd0,path=$out/$run.wav,out.frequency=48000,out.channels=2,out.format=s16 \
 -device intel-hda,id=hda0 -device hda-output,bus=hda0.0,cad=0,audiodev=snd0"
@@ -166,11 +166,11 @@ for disk in "data:$saved:2" "usb0:$stick:1"; do
     [ "$st" = 0 ] || { echo "fat-storm: fatcheck on /$name: exit $st"; ok=0; }
 done
 rm -f "$tmp/back.bin"
-mcopy -o -i "$saved@@$DATA_AT" "::/s100.bin" "$tmp/back.bin" 2>/dev/null &&
+data_get "$saved" s100.bin "$tmp/back.bin" &&
     cmp -s "$tmp/back.bin" "$tmp/big.bin" ||
     { echo "fat-storm: /data/s100.bin on the stick isn't the file"; ok=0; }
 for f in s0.bin s1.bin s10.bin cut.bin; do
-    ! mdir -i "$saved@@$DATA_AT" "::/$f" > /dev/null 2>&1 ||
+    ! data_has "$saved" "$f" ||
         { echo "fat-storm: /data/$f is still on the stick (it was removed)"; ok=0; }
 done
 if command -v hdiutil > /dev/null && command -v fsck_msdos > /dev/null; then

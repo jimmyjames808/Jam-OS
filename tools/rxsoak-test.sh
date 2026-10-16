@@ -12,7 +12,7 @@
 # first must still be answered (at least 90% of them).
 # Usage: tools/rxsoak-test.sh <outdir>
 set -eu
-DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
+. tools/datafs.sh
 out=$1
 mkdir -p "$out"
 FLOOD=${RXSOAK_FLOOD:-60}
@@ -21,8 +21,7 @@ FLOOD_MIN=6000
 img="$out/rxsoak.base.img"
 cp "${QEMU_IMAGE:-build/jamos.img}" "$img"
 printf 'net.address = 10.2.21.5/24 10.2.21.1 10.2.21.1\n' > "$out/rxsoak.settings"
-mmd -i "$img@@$DATA_AT" ::/etc 2>/dev/null || true
-mcopy -o -i "$img@@$DATA_AT" "$out/rxsoak.settings" ::/etc/settings
+data_put "$img" "$out/rxsoak.settings" etc/settings
 ok=1
 QEMU_IMAGE="$img" QEMU_NET=1 QEMU_TIMEOUT=${QEMU_TIMEOUT:-360} \
     QEMU_NET_PEER="--ping 10.2.21.5 --ping-every 0.2 --flood $FLOOD --late-after $LATE" \

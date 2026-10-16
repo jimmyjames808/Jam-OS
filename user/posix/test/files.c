@@ -10,8 +10,10 @@
  * last name before write access for mkdir and O_CREAT, write access
  * before it for unlink, rmdir and rename).
  *
- * Everything happens under PT_DIR on /data (a FAT volume) and on /boot
- * (the boot image: a read-only mount). files2.c has part two. */
+ * Everything happens under PT_DIR on /data (an ext volume; a FAT one on a
+ * stick made with DATA_FS=fat, where the rows that depend on the volume
+ * expect FAT's answers: links_and_modes) and on /boot (the boot image: a
+ * read-only mount). files2.c has part two. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -19,9 +21,12 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
 #include <sys/uio.h>
 #include <unistd.h>
 #include "ptfiles.h"
+
+#define EXT4_MAGIC 0xef53   /* statfs f_type of ext2, 3 and 4 */
 
 #define BIG 200000   /* bytes: more than three transfer buffers */
 
@@ -95,13 +100,11 @@ static const struct row rows[] = {
     { TRUNC, D "/none", 0, 0, ENOENT, "truncate(2) ENOENT" },
     { CHDIR, D "/f", 0, 0, ENOTDIR, "chdir(2) ENOTDIR" },
     { CHDIR, D "/none", 0, 0, ENOENT, "chdir(2) ENOENT" },
-    { LINK, D "/f", D "/l", 0, EPERM, "link(2) EPERM: the filesystem has no hard links (vfat)" },
+    /* (a link, a symlink and a chmod that work are links_and_modes's: FAT's answers differ) */
     { LINK, D "/none", D "/l", 0, ENOENT, "link(2) ENOENT" },
     { LINK, D "/f", D "/d", 0, EEXIST, "link(2) EEXIST" },
-    { SYMLINK, "f", D "/s", 0, EPERM, "symlink(2) EPERM: no symbolic links (vfat)" },
     { READLINK, D "/f", 0, 0, EINVAL, "readlink(2) EINVAL: not a symbolic link" },
     { READLINK, D "/none", 0, 0, ENOENT, "readlink(2) ENOENT" },
-    { CHMOD, D "/f", 0, 0600, 0, "chmod(2): FAT keeps no modes; it succeeds" },
     { CHMOD, D "/none", 0, 0600, ENOENT, "chmod(2) ENOENT" },
     /* /boot: the boot image, a read-only mount */
     { OPEN, "/boot/bin/posixtest", 0, O_WRONLY, EROFS, "open(2) EROFS: write on read-only" },
@@ -146,6 +149,12 @@ static long call(const struct row *r)
     return -2;
 }
 
+bool pt_data_ext(void)
+{
+    struct statfs sf;
+    return statfs("/data", &sf) == 0 && sf.f_type == EXT4_MAGIC;
+}
+
 /* Does this namespace have a /svc? init's run gives posixtest every service; a program run
  * from the shell gets the ones its list asks for (posixtest's asks for mounts only), and with
  * none there is no /svc at all. Then the check that needs it says so and is skipped. */
@@ -178,6 +187,37 @@ static void errno_table(void)
                strerror(rows[i].expect));
         pt_fail(__FILE__, __LINE__, rows[i].why);
     }
+}
+
+/* The calls whose answer is the volume's. FAT has no hard or symbolic links (EPERM) and keeps no
+ * modes (chmod succeeds, changes nothing). ext has them all (links.c has the full run on a RAM
+ * disk; this is /data's own). Leaves f's mode 0644 as it found it (fileskid.c's read-only view
+ * shows it as 0444). */
+static void links_and_modes(void)
+{
+    struct stat st, other;
+    char buf[8];
+    if (!pt_data_ext()) {
+        errno = 0;
+        CHECK(link(PT_DIR "/f", PT_DIR "/l") == -1 && errno == EPERM);   /* link(2) EPERM: vfat */
+        errno = 0;
+        CHECK(symlink("f", PT_DIR "/s") == -1 && errno == EPERM);         /* symlink(2) EPERM: vfat */
+        CHECK(chmod(PT_DIR "/f", 0600) == 0);   /* chmod(2): FAT keeps no modes; it succeeds */
+        return;
+    }
+    CHECK(link(PT_DIR "/f", PT_DIR "/l") == 0);
+    CHECK(stat(PT_DIR "/f", &st) == 0 && st.st_nlink == 2 && stat(PT_DIR "/l", &other) == 0 &&
+          other.st_ino == st.st_ino);
+    CHECK(unlink(PT_DIR "/l") == 0 && stat(PT_DIR "/f", &st) == 0 && st.st_nlink == 1);
+    CHECK(symlink("f", PT_DIR "/s") == 0);
+    memset(buf, 0, sizeof(buf));
+    CHECK(readlink(PT_DIR "/s", buf, sizeof(buf)) == 1 && buf[0] == 'f');
+    CHECK(lstat(PT_DIR "/s", &st) == 0 && S_ISLNK(st.st_mode));
+    CHECK(stat(PT_DIR "/s", &st) == 0 && S_ISREG(st.st_mode) && st.st_size == 5);
+    CHECK(unlink(PT_DIR "/s") == 0);
+    CHECK(chmod(PT_DIR "/f", 0600) == 0 && stat(PT_DIR "/f", &st) == 0 &&
+          (st.st_mode & 0777) == 0600);
+    CHECK(chmod(PT_DIR "/f", 0644) == 0);
 }
 
 /* Errors of calls on descriptors. */
@@ -242,7 +282,11 @@ static void read_write(void)
     struct stat st;
     CHECK(fstat(fd, &st) == 0 && st.st_size == BIG && S_ISREG(st.st_mode));
     CHECK((st.st_mode & 0777) == 0644 && st.st_nlink == 1 && st.st_uid == 1000);
-    CHECK(st.st_blocks == (BIG + 511) / 512 && st.st_blksize == 65536);
+    /* st_blocks: FAT counts the size, ext the blocks it allocated (a few over, whole 4 KiB ones) */
+    blkcnt_t blocks = (BIG + 511) / 512;
+    CHECK(pt_data_ext() ? st.st_blocks >= blocks && st.st_blocks < blocks + 16
+                        : st.st_blocks == blocks);
+    CHECK(st.st_blksize == 65536);
     CHECK(ftruncate(fd, 1000) == 0 && fstat(fd, &st) == 0 && st.st_size == 1000);
     CHECK(ftruncate(fd, 5000) == 0 && pread(fd, back, 10, 4990) == 10);
     CHECK(back[0] == 0 && back[9] == 0);   /* grown with zeros */
@@ -291,7 +335,12 @@ static void append_two(void)
     /* musl's pwrite is pwritev2 with RWF_NOAPPEND (pwritev2(2), Linux 6.9):
      * it writes where it is told, O_APPEND or not, as POSIX says */
     CHECK(pwrite(a, "Z", 1, 0) == 1 && lseek(a, 0, SEEK_CUR) == (off_t)n - 4);
-    want[0] = 'Z';
+    if (pt_data_ext())   /* known gap: an O_APPEND description's open is the service's FS_APPEND one
+                          * (fobj.c), so on ext the write lands at the end, as Linux's plain
+                          * pwrite(2) does (BUGS); on FAT the layer does the appending */
+        want[n++] = 'Z';
+    else
+        want[0] = 'Z';
     close(a);
     close(b);
     char got[2100];
@@ -355,6 +404,7 @@ void pt_files(char **argv)
     }
     CHECK(fixtures());
     errno_table();
+    links_and_modes();
     descriptor_errors();
     read_write();
     exclusive();

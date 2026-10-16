@@ -18,7 +18,7 @@
 #     datagram), and the receiver dropped datagrams (late and paused).
 # Usage: tools/netlog-test.sh <outdir>
 set -eu
-DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
+. tools/datafs.sh
 out=$1
 mkdir -p "$out"
 rm -rf "$out/netlog"
@@ -26,8 +26,7 @@ img="$out/netlog.base.img"
 cp "${QEMU_IMAGE:-build/jamos.img}" "$img"
 printf 'net.address = 10.2.21.5/24 10.2.21.1 10.2.21.1\nnet.host = 10.2.21.174\n' \
     > "$out/netlog.settings"
-mmd -i "$img@@$DATA_AT" ::/etc 2>/dev/null || true
-mcopy -o -i "$img@@$DATA_AT" "$out/netlog.settings" ::/etc/settings
+data_put "$img" "$out/netlog.settings" etc/settings
 ok=1
 QEMU_IMAGE="$img" QEMU_NET=1 QEMU_INPUT=tools/shell-tests/netlog.txt \
     QEMU_NET_PEER="--netlog $out/netlog --netlog-late 5 --netlog-pause 6000:6" \

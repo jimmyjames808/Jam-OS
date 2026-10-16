@@ -177,8 +177,9 @@ static void writable_to_child(void)
     close(f);
     file_text(PT_DIR "/kidw", buf, sizeof(buf));
     CHECK(!strcmp(buf, "ABCD"));
-    /* Without O_APPEND (`cmd > f`): a description at the file's end follows
-     * the end its children leave, as a shared offset would. */
+    /* Without O_APPEND (`cmd > f`): a description at the file's end follows the end its
+     * children leave, as a shared offset would: on FAT because the parent lent its open, on ext
+     * (many writers, nothing lent) because file.c's follow_given_locked does the same. */
     f = open(PT_DIR "/kidw", O_WRONLY | O_TRUNC);
     CHECK(f >= 0 && write(f, "a", 1) == 1);
     CHECK(spawn_writer(f, NULL, "b") == 0 && spawn_writer(f, NULL, "c") == 0);

@@ -16,13 +16,14 @@
 #           parts), and a DATA_DIR that isn't there leaves the volume empty;
 #   fat     DATA_FS=fat: type 0x0C, a FAT volume mtools reads at --data-at,
 #           and jamext says it is no ext volume;
-#   default no DATA_FS (and no JAMOS_DATA_FS): FAT32 for now;
+#   default no DATA_FS (and no JAMOS_DATA_FS): ext, the default since U11b;
 #   bogus   DATA_FS=nonsense is refused;
 #   stick   what `make usb` does after dd: the image on a bigger "stick"
 #           (a sparse file), tools/mbr-grow.py, tools/stick-data.sh: the
 #           volume is as big as the grown partition, holds the tree, is clean
 #           (jamext, e2fsck), and the ESP is byte for byte what it was;
-#   dflt    build/jamos.img, if it is an ext image (DATA_FS=ext), is clean.
+#   dflt    build/jamos.img, if it is an ext image (the default; not with DATA_FS=fat),
+#           is clean.
 # Exit 0 when every case passes.
 set -eu
 
@@ -149,12 +150,15 @@ if [ -f "$out/fat.img" ]; then
     fi
 fi
 
-# ---- default (FAT until U11b flips it to ext: this case changes then) ------
+# ---- default (ext: the owner's choice, M13.6's U11b) ------------------------
 
 if env -u JAMOS_DATA_FS make -s image IMAGE="$out/def.img" DATA_DIR="$out/no-such-dir" > "$out/def.make" 2>&1; then
-    [ "$(python3 tools/mkimage.py --data-fs "$out/def.img")" = fat ] &&
-        pass "default: with no DATA_FS the data partition is FAT32" ||
-        fail "default: with no DATA_FS the data partition is not FAT32"
+    if [ "$(python3 tools/mkimage.py --data-fs "$out/def.img")" = ext ] &&
+       "$JX" --part 2 check "$out/def.img" > /dev/null 2>&1; then
+        pass "default: with no DATA_FS the data partition is an ext volume, clean"
+    else
+        fail "default: with no DATA_FS the data partition is not a clean ext volume"
+    fi
 else
     tail -5 "$out/def.make"
     fail "default: make image failed"
@@ -212,7 +216,7 @@ if [ -f build/jamos.img ] && [ "$(python3 tools/mkimage.py --data-fs build/jamos
         fail "dflt: build/jamos.img: $(cat "$out/dflt.check")"
     fi
 else
-    echo "image-test: build/jamos.img is not an ext image here (DATA_FS=fat?): dflt skipped"
+    echo "image-test: build/jamos.img is not an ext image here (built with DATA_FS=fat?): dflt skipped"
 fi
 
 if [ $fails = 0 ]; then

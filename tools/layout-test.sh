@@ -18,12 +18,14 @@
 #             /data/tmp, /pkg of /data/pkg
 # The images are made from build/jamos.img (`make image` first), whichever
 # filesystem its /data has: the other one is made on a copy
-# (tools/ext-stick.sh for ext, the same files; mformat for an empty FAT32).
+# (tools/ext-stick.sh for ext, the same files; `make image DATA_FS=fat` for a
+# FAT one, empty).
 # Every ext volume a run wrote is clean for Linux's e2fsck afterwards (the
 # journal replayed first). Needs e2fsprogs and mtools (the test PC's WSL):
 # PC only. QEMU_SMP and QEMU_MEM pass through.
 # Usage: tools/layout-test.sh <outdir> [case...]; exit 0 on PASS.
 set -eu
+. tools/datafs.sh
 out=$1
 shift
 cases=${*:-drive both stick stickext}
@@ -47,22 +49,19 @@ never() {   # never <case> <text> <log>
 }
 
 # stick_with fat|ext <image>: a copy of build/jamos.img whose /data has
-# that filesystem.
+# that filesystem. A FAT one is `make image DATA_FS=fat` (tools/datafs.sh: its
+# partition has FAT's type); an ext one is the image itself (ext is the
+# default) or, on a FAT image, the same files made again by mke2fs (the type
+# stays: volumes reads the boot disk's data partition by what it holds).
 stick_with() {
-    cp build/jamos.img "$2"
-    [ "$(python3 tools/mkimage.py --data-fs "$2")" = "$1" ] && return 0
-    if [ "$1" = ext ]; then
-        tools/ext-stick.sh "$2" > "$2.out" 2>&1 ||
-            { echo "$name: the ext stick couldn't be made (see $2.out)"; return 1; }
+    if [ "$1" = fat ]; then
+        data_fat_image "$2" || { echo "$name: the FAT stick couldn't be made"; return 1; }
         return 0
     fi
-    # The data partition, MBR entry 2 (its type stays: volumes reads the boot
-    # disk's data partition by what it holds).
-    set -- "$2" $(python3 -c "import struct, sys; d = open(sys.argv[1], 'rb').read(512)
-lba, n = struct.unpack_from('<II', d, 446 + 16 + 8)
-print(lba * 512, n)" "$2")
-    mformat -i "$1@@$2" -T "$3" -F -v JAMOS-DATA :: > "$1.out" 2>&1 ||
-        { echo "$name: the FAT stick couldn't be made (see $1.out)"; return 1; }
+    cp build/jamos.img "$2"
+    [ "$(python3 tools/mkimage.py --data-fs "$2")" = ext ] && return 0
+    tools/ext-stick.sh "$2" > "$2.out" 2>&1 ||
+        { echo "$name: the ext stick couldn't be made (see $2.out)"; return 1; }
 }
 
 # ext_clean <case> <image>: the image's ext data partition (MBR or GPT),

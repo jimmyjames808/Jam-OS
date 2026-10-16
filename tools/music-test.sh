@@ -25,7 +25,7 @@
 #   - between the end of the music and the marker: silence.
 # QEMU_SMP passes through. Usage: tools/music-test.sh <outdir>; exit 0 on PASS.
 set -eu
-DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
+. tools/datafs.sh
 out=$1
 mkdir -p "$out"
 wav="$out/music.wav"
@@ -76,14 +76,13 @@ $ff -i "$tmp/src4.wav" -c:a libmp3lame -b:a 64k "$tmp/four.mp3"
 $ff -i "$tmp/src6.wav" -c:a libmp3lame -b:a 128k "$tmp/six.mp3"
 
 cp build/jamos.img "$stick"
-img="$stick@@$DATA_AT"
 for d in "music" "music/A" "music/A/Album" "music/B'Side" "music/B'Side/2001 Disc (Deluxe)" \
          "music/JAŸ-Z" "music/JAŸ-Z/2025 \$ome \$ongs 4 U" "music/Spaced Name" \
          "music/Spaced Name/Some Album" "music/Bad" "music/Bad/x" "music/Empty" "music/Empty/Nested"; do
-    mmd -i "$img" "::/$d" || { echo "music: can't make $d on the stick image"; exit 1; }
+    data_mkdir "$stick" "$d" || { echo "music: can't make $d on the stick image"; exit 1; }
 done
 put() {
-    mcopy -o -i "$img" "$tmp/$1" "::/music/$2" || { echo "music: can't copy $2 to the stick image"; exit 1; }
+    data_put "$stick" "$tmp/$1" "music/$2" || { echo "music: can't copy $2 to the stick image"; exit 1; }
 }
 put one.mp3 "A/Album/1. One.mp3"
 put two.wav "A/Album/2. Two.wav"
@@ -97,12 +96,11 @@ put junk "A/.DS_Store"
 put junk "._Loose.Mp3"
 put junk ".onthespot-library.json"
 put notes.txt "notes.txt"
-# mtools turns some apostrophes in folder names into '_' (it did for
-# "2001 Disc (Int'l Version)"; a Mac's cp doesn't), so the apostrophes here
-# are in names it keeps: check.
-mdir -i "$img" -/ ::/music > "$out/music-tree.txt" 2>&1 || true
+# The names as the guest will see them (mtools turns some apostrophes in folder names into '_' on
+# a FAT image; jamext keeps every byte): check.
+data_tree "$stick" music > "$out/music-tree.txt" 2>&1 || true
 for name in "B'Side" "Three's (H.O.V.A.).mp3" "JAŸ-Z" "Fünf ~ Ÿ.mp3" "\$ome \$ongs 4 U"; do
-    grep -qF "$name" "$out/music-tree.txt" || { echo "music: mtools didn't keep the name $name"; exit 1; }
+    grep -qF "$name" "$out/music-tree.txt" || { echo "music: the image didn't keep the name $name"; exit 1; }
 done
 
 python3 tools/mkstick.py "$p" 64 0c

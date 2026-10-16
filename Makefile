@@ -97,12 +97,13 @@ ESP_END_MIB := 256
 IMAGE_MIB := $(shell echo $$(( $(ESP_END_MIB) + 64 )))
 
 # The data partition's filesystem (docs/M13.6-PLAN.md, "Ext by default"):
-# FAT32 (MBR type 0x0C, mformat) for now, ext (type 0x83, made by jamext)
-# with `make image DATA_FS=ext`, or JAMOS_DATA_FS=ext in the environment
-# (the PC's builds forward JAMOS_*). The default is FAT while the test
-# scripts write /data with mtools; U11b moves them to jamext and flips it to
-# ext (the owner's choice: every data volume Jam OS makes is ext). The ESP is
-# FAT32 either way: the firmware reads only FAT.
+# ext (MBR type 0x83, made by jamext) unless asked for FAT32 (type 0x0C,
+# mformat) with `make image DATA_FS=fat`, or JAMOS_DATA_FS=fat in the
+# environment (the PC's builds forward JAMOS_*): the owner's choice, that
+# every data volume Jam OS makes is ext and FAT only when asked. The test
+# scripts that are about FAT make a FAT image of their own
+# (tools/datafs.sh's data_fat_image). The ESP is FAT32 either way: the
+# firmware reads only FAT.
 # The ext volume is the same bytes every time (DATA_SEED: its uuid and its
 # inodes' generations; DATA_TIME: every time written, SOURCE_DATE_EPOCH
 # when that is set). DATA_DIR, if it is a directory, is copied into an ext
@@ -112,7 +113,7 @@ IMAGE_MIB := $(shell echo $$(( $(ESP_END_MIB) + 64 )))
 # image makes the stick's volume again at the stick's size and copies
 # DATA_DIR in once more (tools/stick-data.sh). The stamp rebuilds the image
 # when any of it changes.
-DATA_FS   ?= $(if $(JAMOS_DATA_FS),$(JAMOS_DATA_FS),fat)
+DATA_FS   ?= $(if $(JAMOS_DATA_FS),$(JAMOS_DATA_FS),ext)
 ifneq ($(filter-out ext fat,$(DATA_FS)),)
 $(error DATA_FS is ext or fat, not "$(DATA_FS)")
 endif

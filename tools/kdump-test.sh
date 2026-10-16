@@ -39,7 +39,7 @@
 # QEMU_SMP and QEMU_XHCI pass through. Usage: tools/kdump-test.sh <outdir>
 # [case ...]; exit 0 on PASS.
 set -u
-DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
+. tools/datafs.sh
 out=$1
 shift
 cases=${*:-save notice loop bad nostick screen}
@@ -107,11 +107,10 @@ case_save() {
         "$log" ||
         fail save "the stored kernel's command line isn't the plain boot's"
     f="$out/kdump-save-crash.txt"
-    data="$out/kdump-save-stick.img@@$DATA_AT"
-    mtype -i "$data" ::/logs/boot-0001-crash.txt > "$f" 2>/dev/null ||
+    data_get "$out/kdump-save-stick.img" logs/boot-0001-crash.txt "$f" ||
         { fail save "no logs/boot-0001-crash.txt on the stick"; return; }
     for n in boot-0001.txt boot-0002.txt; do
-        mdir -i "$data" ::/logs/$n > /dev/null 2>&1 || fail save "no logs/$n on the stick"
+        data_has "$out/kdump-save-stick.img" logs/$n || fail save "no logs/$n on the stick"
     done
     for want in "Jam OS crash log: the end of the kernel log of boot-0001, which panicked" \
                 "The panic: test panic requested (crash test)" \
@@ -125,11 +124,11 @@ case_save() {
     line_panic=$(grep -nF "JAM OS KERNEL PANIC" "$f" | head -1 | cut -d: -f1)
     [ -n "$line_before" ] && [ -n "$line_panic" ] && [ "$line_before" -lt "$line_panic" ] ||
         fail save "the lines before the panic are not before it"
-    mtype -i "$data" ::/logs/boot-0002.txt 2>/dev/null |
+    data_cat "$out/kdump-save-stick.img" logs/boot-0002.txt |
         grep -q "logd: the last boot's log is saved as /data/logs/boot-0001-crash.txt" ||
         fail save "boot-0002.txt doesn't say where the last boot's log went"
-    python3 tools/fat-label.py "$out/kdump-save-stick.img" ${DATA_AT%M} > /dev/null 2>&1 ||
-        fail save "the data volume's label is damaged"
+    data_check "$out/kdump-save-stick.img" ||
+        fail save "the data volume is damaged after the crash"
 }
 
 case_loop() {
@@ -166,7 +165,7 @@ case_bad() {
     unset IFS
     boot bad "shell reset=none" "$@" || { fail bad "the script (see $out/kdump-bad.log)"; return; }
     [ "$(count "$out/kdump-bad.log" 'Jam OS kexec')" -eq 0 ] || fail bad "a second kernel started anyway"
-    mdir -i "$out/kdump-bad-stick.img@@$DATA_AT" ::/logs/boot-0001-crash.txt > /dev/null 2>&1 &&
+    data_has "$out/kdump-bad-stick.img" logs/boot-0001-crash.txt &&
         fail bad "a crash log was saved"
     python3 tools/splash-check.py calm "$out/kdump-bad-0s.png" > /dev/null ||
         fail bad "the screen at 0 s isn't the calm panic screen without its details"

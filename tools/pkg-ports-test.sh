@@ -14,7 +14,7 @@
 # over the network peer's TCP relay as tools/pkg-test.sh does.
 # Usage: tools/pkg-ports-test.sh <outdir> (after `make -s image`); exit 0 on PASS.
 set -u
-DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
+. tools/datafs.sh
 out=$1
 mkdir -p "$out"
 
@@ -31,8 +31,7 @@ mcopy -o -i "$img@@1M" "$out/bootfs-key.img" ::/boot/bootfs.img ||
 rm -f "$out/bootfs-in.img" "$out/bootfs-key.img"
 printf 'net.address = 10.2.21.5/24 10.2.21.1 10.2.21.1\npkg.repo = http://10.2.21.174:8000/real/\n' \
     > "$out/pkgports.settings"
-mmd -i "$img@@$DATA_AT" ::/etc 2>/dev/null || true
-mcopy -o -i "$img@@$DATA_AT" "$out/pkgports.settings" ::/etc/settings ||
+data_put "$img" "$out/pkgports.settings" etc/settings ||
     { echo "pkg-ports-test: can't write the stick's settings"; exit 1; }
 
 # The repositories (the real packages are built here), served on a free port.

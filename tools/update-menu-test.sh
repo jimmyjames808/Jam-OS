@@ -63,7 +63,7 @@
 # is the menu swap's power-cut points on NVMe.
 # Usage: tools/update-menu-test.sh <outdir> (after `make -s image`); exit 0 on PASS.
 set -u
-DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
+. tools/datafs.sh
 out=$1
 mkdir -p "$out"
 fails=0
@@ -80,8 +80,7 @@ tools/update-test-key.sh "$out" build/jamos.img "$img" ||
 key="$out/testkey/key1/update.key"
 printf 'net.address = 10.2.21.5/24 10.2.21.1 10.2.21.1\nnet.host = 10.2.21.174\n' \
     > "$out/mtest.settings"
-mmd -i "$img@@$DATA_AT" ::/etc 2>/dev/null || true
-mcopy -o -i "$img@@$DATA_AT" "$out/mtest.settings" ::/etc/settings ||
+data_put "$img" "$out/mtest.settings" etc/settings ||
     { echo "update-menu-test: can't write the stick's settings"; exit 1; }
 
 # The menus: new (the repo's), old (without the IOMMU entries), bad.
@@ -131,9 +130,9 @@ python3 tools/bootfs-edit.py "$out/testkey/bootfs-key.img" "$out/bootfs-B.img" \
     { echo "update-menu-test: can't make build B's boot image"; exit 1; }
 mcopy -n -i "$img@@1M" ::/boot/bootfs.img "$out/bootfs-A.img"
 put() {   # put <file> <path on /data>
-    mcopy -o -i "$img@@$DATA_AT" "$1" "::$2" || { echo "update-menu-test: can't write $2"; exit 1; }
+    data_put "$img" "$1" "${2#/}" || { echo "update-menu-test: can't write $2"; exit 1; }
 }
-mmd -i "$img@@$DATA_AT" ::/update ::/update/mnew ::/update/mold ::/update/mbad
+for d in update update/mnew update/mold update/mbad; do data_mkdir "$img" "$d" || exit 1; done
 python3 tools/update-server.py --manifest "$out/jamos-B.elf" "$out/bootfs-B.img" --key "$key" \
     > "$out/manifest-none" || { echo "update-menu-test: no manifest"; exit 1; }
 put "$out/manifest-none" /update/manifest
