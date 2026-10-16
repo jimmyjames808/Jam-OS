@@ -29,12 +29,11 @@ SG1 is built (the kernel's part of section 1: `exception_entry_set` 170,
 kernel/arch/x86_64/upcall.c, ktests `upcall_*`), and so is SG2 (the
 exception stack, raises and a fault's end: `thread_exception_stack` 172,
 `thread_raise` 173, `EXC_RAISED`, `process_info`'s `PROCESS_FLAG_FAULT`
-with `fault_vector` and `fault_status`); SG3 to SG6 and the review SGR
-are not. Tracks are in section 5; the questions for the owner
-
-kernel/arch/x86_64/upcall.c, ktests `upcall_*`), and so is SG3 (libc's
-part: user/posix/sys/sigentry.S and sigfault.c, posixtest's `fault`
-section); SG2, SG4 to SG6 and the review SGR are not. Tracks are in section 5; the questions for the owner
+with `fault_vector` and `fault_status`), SG3 (libc's part:
+user/posix/sys/sigentry.S and sigfault.c, posixtest's `fault` section) and
+SG4 (`sigaltstack`, `SA_ONSTACK` and a fault's `WTERMSIG`: the same
+section); SG5, SG6 and the review SGR are not. Tracks are in section 5;
+the questions for the owner
 in section 6, each with a recommendation, which the plan follows until he
 says otherwise. Names and numbers of calls and structures below are
 proposals where SG1 didn't settle them.
@@ -105,6 +104,68 @@ the handler's frames only, until execinfo runs `DW_OP_breg`/`DW_OP_deref`
 maps a VMO and shrinks it under the mapping: a memfd can't give one
 (libc's memfd is a kept VMO, which never shrinks).
 
+What SG4 settled, or added (for SG5 and SG6):
+
+- **The alternate stack's state** is per thread, in a thread-local record in
+  sigfault.c (`alt`: base and size; a new thread has none) and, the same
+  range, the kernel's exception stack for the thread (`sig_alt_set` sets the
+  kernel's first). `sigaltstack` (sigcalls.c) answers in Linux's order:
+  `EPERM` while the call is on the stack (the layer runs on the caller's
+  stack, so its own frame address says), `EINVAL` for a flag other than
+  `SS_DISABLE` (`SS_ONSTACK` is read as "on"; `SS_AUTODISARM` is refused),
+  `ENOMEM` under `sig_alt_min()`; `EFAULT` if the kernel refuses the range.
+  The old stack is written only when the call succeeds. A forked child
+  has the record (its memory is the parent's) but not the kernel's state:
+  its start hook must call `sig_alt_reapply()` (after re-setting the
+  exception entry); exec starts both clean.
+- **The smallest stack** (`sig_alt_min()`): the kernel's frame (192 bytes
+  and the XSAVE area) plus what `sig_fault_run` builds (the ucontext and
+  siginfo, a copy of the XSAVE area) plus 2 KiB for its own frames and a
+  small handler; the XSAVE size from CPUID leaf 0xD, as the kernel sizes
+  it; never under `MINSIGSTKSZ` (2048). 4,968 bytes with AVX. A program
+  that passes exactly `MINSIGSTKSZ` gets `ENOMEM`, as on a Linux with
+  AVX-512. `sysconf(_SC_MINSIGSTKSZ)` still says 2,048, because the aux
+  vector has no `AT_MINSIGSTKSZ` (crt/start.c would add
+  `{ AT_MINSIGSTKSZ, sig_alt_min() }`: left, it runs in every program).
+  Each fault level costs about 3.4 KiB (the kernel's 1 KiB frame, then
+  about 2.4 KiB in `sig_fault_run`) on the stack it runs on.
+- **A fault's handler**: the kernel always puts the frame on the exception
+  stack when RSP is outside it, so `sig_fault` decides: a handler with
+  `SA_ONSTACK` (or RSP already on the stack, a fault in a handler there)
+  runs where it is; a handler without it runs on the interrupted stack, as
+  on Linux (`runs_on_interrupted`). The move copies a small run state and the
+  whole kernel frame below RSP less its 128-byte red zone, 64-byte
+  aligned, and then **the whole rest of the fault** (`sig_fault_run`) runs
+  there through `__jam_sig_moved` (sigentry.S, with the entry's own unwind
+  table, built on the copy), not only the handler: a nested fault is served
+  on the exception stack's top again and would overwrite whatever
+  `sig_fault` had left there. The copy is still in the kernel's window, so a
+  stack that can't take it (an overflow) is the kernel's kill with the
+  first fault's line, "again in its exception entry", and waitpid says
+  SIGSEGV. `uc_stack` is `{base, size, SS_ONSTACK or 0}` for the stack
+  the thread was on (`SS_DISABLE` with none, as Linux), and
+  `sigaltstack` inside a handler on the stack says `SS_ONSTACK`.
+  SG5's raised path (an `EXC_RAISED` frame is at the same place, on the
+  same stack) needs the same: run the due handlers through
+  `runs_on_interrupted` and `__jam_sig_moved`, or `sig_run_onstack` for
+  those with `SA_ONSTACK` (V8's SIGPROF has it), and keep nothing it
+  needs after the handler on the exception stack while the handler may
+  run on the thread's own.
+- **Handlers at a call boundary** (`run_handler` in signal.c): with
+  `SA_ONSTACK` and an alternate stack that the thread isn't on, the
+  handler runs there (`sig_run_onstack`: `__jam_sig_stack_call` in
+  sigentry.S, a frame-pointer unwind table so an unwinder walks from the
+  handler into the caller); `uc_stack` is filled as for a fault. This
+  ended libc-test's `regression/sigaltstack` as an expected failure (its
+  line is gone from expected-failures.txt; it passes).
+- **WTERMSIG**: `sig_fault_signal(vector, status)` (sigfault.c: the
+  table's own, `classify`) for a process `killed` with
+  `PROCESS_FLAG_FAULT`: SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGTRAP; out of
+  memory (`ERR_NO_MEMORY`) is SIGKILL and a page that doesn't match the
+  approved program (`ERR_BAD_STATE`) SIGBUS. Every other kill is SIGKILL
+  still. `/proc/<pid>/stat`'s exit code (procinfo.c) still says 9 for any
+  kill.
+
 ## Where things stand
 
 - **The kernel.** Every exception from ring 3 lands in `trap_dispatch`
@@ -127,10 +188,10 @@ maps a VMO and shrinks it under the mapping: a memfd can't give one
   default actions happen at once in the sender; handlers run on the
   target thread at a call boundary (`sig_call`), a blocked wait ended by
   `thread_interrupt`. A handler gets a `siginfo_t` (signo, code, pid, ...)
-  and a zeroed `ucontext_t` with `uc_sigmask` set. `sigaltstack` is
-  accepted and says disabled; `SA_ONSTACK` is accepted. `waitpid` reports
-  a killed process as `WTERMSIG` SIGKILL (`wait_status` in
-  `user/posix/sys/proc.c`), so a crash and a `kill -9` look the same.
+  and a zeroed `ucontext_t` with `uc_sigmask` set. (Before SG4:)
+  `sigaltstack` is accepted and says disabled; `SA_ONSTACK` is accepted.
+  `waitpid` reports a killed process as `WTERMSIG` SIGKILL (`wait_status`
+  in `user/posix/sys/proc.c`), so a crash and a `kill -9` look the same.
 
 What needs more than that:
 

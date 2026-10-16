@@ -388,7 +388,7 @@ boundary, with one small kernel call to end a blocked call.**
   still happens at once, from the signal thread: Ctrl+C on a busy loop
   ends it); faults (SIGSEGV, SIGFPE, SIGILL, SIGBUS) are not delivered as
   signals: the process is killed as today; no `sigaltstack` (accepted,
-  unused). Option B (a kernel upcall) removes the first two at the cost of
+  unused; SIGNALS-PLAN's SG3 and SG4 changed these two). Option B (a kernel upcall) removes the first two at the cost of
   a kernel path M14 then freezes.
 - **The ones that matter for M13**: SIGINT, SIGQUIT, SIGTERM, SIGHUP
   (Ctrl+C, Ctrl+\, a stop, a closed session), SIGCHLD (tinyssh's self
@@ -2174,7 +2174,8 @@ sigproc.c. nosig.c is gone.
   another signal's handler.
 - **sigaction**: unknown flags are EINVAL (fail closed; Linux ignores
   them); `SA_ONSTACK` is accepted; `sigaltstack` is accepted and says
-  disabled (handlers run on the thread's own stack, at a call). A handler
+  disabled (handlers run on the thread's own stack, at a call; SG4 made
+  both real, [SIGNALS-PLAN](SIGNALS-PLAN.md)). A handler
   gets a siginfo_t (signo, code, pid, the one user's uid, value or
   status, a timer's id and overrun) and a zeroed ucontext_t with
   `uc_sigmask` set.

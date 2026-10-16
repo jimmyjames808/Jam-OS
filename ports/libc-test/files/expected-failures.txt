@@ -47,9 +47,6 @@ regression/sem_close-unmap limit: named semaphores publish their file with link(
 functional/utime limit: utimensat and futimens succeed and change nothing (the file protocol has no way to set times)
 regression/statvfs limit: / is the namespace root, a list of mounts, not a file system: statvfs("/") reports no blocks
 
-# ---- signals ----------------------------------------------------------------------------------
-regression/sigaltstack limit: handlers run at a call boundary on the thread's own stack, never on the alternate one
-
 # ---- musl 1.2.6 against a newer libc-test ---------------------------------------------------------
 functional/strptime limit: libc-test master tests strptime's %s and a two-digit %z, which musl 1.2.6 does not do (its %s only skips the digits)
 functional/socket limit: loopback works now, but the test calls getsockname on a bound stream socket that is not listening yet and connects to the port it reports: Jam OS picks a stream socket's port at listen (B6 notes), so it reports 0; its UDP part sets SO_RCVTIMEO to 1 microsecond, which Linux rounds up to its tick and which here is exact (netstack delivers a loopback datagram a moment after the send); and bin/libc-test's list has no `svc net` (EACCES at the first bind)
