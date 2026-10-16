@@ -118,8 +118,14 @@ POSIX_GLIBC_OBJS := $(POSIX_GLIBC_SRCS:%=$(POSIX_OUT)/%.o)
 POSIX_JL_OBJS := $(POSIX_OBJS:$(POSIX_OUT)/%=$(POSIX_OUT)/jl/%)
 JL_NAMES_MAP  := $(POSIX_OUT)/jl-names.map
 JL_NAMES_H    := $(POSIX_OUT)/jl-names.h
-$(JL_NAMES_MAP): $(POSIX_OBJS) tools/posixnames.py   # and JL_NAMES_H
+JL_NAMES_OK   := $(POSIX_OUT)/jl-names.ok
+# (posixnames.py leaves the map and the header alone when their text is the
+# same, so they stay older than the objects they came from, and a rule on
+# them would run it on every make: the rule is on a stamp it touches.)
+$(JL_NAMES_OK): $(POSIX_OBJS) tools/posixnames.py
 	python3 tools/posixnames.py $(CROSS)nm $(JL_NAMES_MAP) $(JL_NAMES_H) $(POSIX_OBJS)
+	touch $@
+$(JL_NAMES_MAP) $(JL_NAMES_H): $(JL_NAMES_OK)
 $(POSIX_OUT)/jl/%: $(POSIX_OUT)/% $(JL_NAMES_MAP)
 	@mkdir -p $(dir $@)
 	$(CROSS)objcopy --redefine-syms=$(JL_NAMES_MAP) $< $@
@@ -135,10 +141,11 @@ LIBJAM_GC_FROM := $(filter-out $(LIBJAM_GC_SKIP),$(filter \
                       $(patsubst %,$(UOBJ)/%.o,$(wildcard user/lib/*.c)),$(LIBJAM_OBJS)))
 LIBJAM_GC_OBJS := $(patsubst $(UOBJ)/%,$(POSIX_OUT)/libjam/%,$(LIBJAM_GC_FROM))
 LIBJAM_IN_LIBC := $(filter-out $(LIBJAM_GC_FROM),$(LIBJAM_OBJS)) $(LIBJAM_GC_OBJS)
-$(POSIX_OUT)/libjam/%.c.o: %.c | $(UINC) $(SYSCALLS_OK) $(IDL_OK) $(WL_OK)
+LIBJAM_GC_CFLAGS := $(USER_CFLAGS) -fasynchronous-unwind-tables -ffunction-sections \
+                    -fdata-sections
+$(POSIX_OUT)/libjam/%.c.o: %.c $(FLAGDIR)/libjam-gc | $(UINC) $(SYSCALLS_OK) $(IDL_OK) $(WL_OK)
 	@mkdir -p $(dir $@)
-	$(CC) $(USER_CFLAGS) -fasynchronous-unwind-tables -ffunction-sections -fdata-sections \
-	    -c $< -o $@
+	$(CC) $(LIBJAM_GC_CFLAGS) -c $< -o $@
 -include $(LIBJAM_GC_OBJS:.o=.d)
 
 SYSROOT_HDRS := $(SYSROOT)/include/.made
@@ -172,24 +179,37 @@ $(MUSL_OUT)/internal/version.h: $(MUSL)/VERSION
 	@mkdir -p $(dir $@)
 	printf '#define VERSION "%s"\n' "$$(cat $<)" > $@
 
-$(MUSL_OUT)/obj/%.c.o: $(MUSL)/%.c | $(MUSL_GENH) $(MUSL_CHECKED)
+# Flag stamps (the Makefile's FLAG_STAMP): each group of objects is built
+# again when its own flags change, and only then. musl's objects are the
+# most of a build, and a build kept from before a flag changed (the unwind
+# tables, say) must not keep them.
+FLAGS_musl       = $(TOOLID) $(MUSL_CFLAGS)
+FLAGS_musl-ovr   = $(TOOLID) $(MUSL_OVR_CFLAGS)
+FLAGS_musl-ovr-s = $(TOOLID) $(MUSL_OVR_SFLAGS)
+FLAGS_posix      = $(TOOLID) $(POSIX_CFLAGS)
+FLAGS_libjam-gc  = $(TOOLID) $(LIBJAM_GC_CFLAGS)
+$(foreach s,musl musl-ovr musl-ovr-s posix libjam-gc,$(eval $(call FLAG_STAMP,$(s),FLAGS_$(s))))
+
+$(MUSL_OUT)/obj/%.c.o: $(MUSL)/%.c $(FLAGDIR)/musl | $(MUSL_GENH) $(MUSL_CHECKED)
 	@mkdir -p $(dir $@)
 	$(CC) $(MUSL_CFLAGS) -c $< -o $@
-$(MUSL_OUT)/obj/%.s.o: $(MUSL)/%.s | $(MUSL_GENH) $(MUSL_CHECKED)
+$(MUSL_OUT)/obj/%.s.o: $(MUSL)/%.s $(FLAGDIR)/musl | $(MUSL_GENH) $(MUSL_CHECKED)
 	@mkdir -p $(dir $@)
 	$(CC) $(MUSL_CFLAGS) -c $< -o $@
-$(MUSL_OUT)/obj/%.S.o: $(MUSL)/%.S | $(MUSL_GENH) $(MUSL_CHECKED)
+$(MUSL_OUT)/obj/%.S.o: $(MUSL)/%.S $(FLAGDIR)/musl | $(MUSL_GENH) $(MUSL_CHECKED)
 	@mkdir -p $(dir $@)
 	$(CC) $(MUSL_CFLAGS) -c $< -o $@
 
 # Our overrides: musl's flags, glue.h (user/posix/sys) and, for the
 # assembly, Jam OS's call numbers.
-$(MUSL_OUT)/ovr/%.c.o: %.c | $(MUSL_GENH) $(MUSL_CHECKED)
+MUSL_OVR_CFLAGS := $(MUSL_CFLAGS) -iquote $(POSIX)/sys
+MUSL_OVR_SFLAGS := $(MUSL_CFLAGS) -I$(BUILD)/uinc
+$(MUSL_OUT)/ovr/%.c.o: %.c $(FLAGDIR)/musl-ovr | $(MUSL_GENH) $(MUSL_CHECKED)
 	@mkdir -p $(dir $@)
-	$(CC) $(MUSL_CFLAGS) -iquote $(POSIX)/sys -c $< -o $@
-$(MUSL_OUT)/ovr/%.S.o: %.S | $(MUSL_GENH) $(MUSL_CHECKED) $(UINC) $(SYSCALLS_OK)
+	$(CC) $(MUSL_OVR_CFLAGS) -c $< -o $@
+$(MUSL_OUT)/ovr/%.S.o: %.S $(FLAGDIR)/musl-ovr-s | $(MUSL_GENH) $(MUSL_CHECKED) $(UINC) $(SYSCALLS_OK)
 	@mkdir -p $(dir $@)
-	$(CC) $(MUSL_CFLAGS) -I$(BUILD)/uinc -c $< -o $@
+	$(CC) $(MUSL_OVR_SFLAGS) -c $< -o $@
 
 $(SYSROOT_HDRS): $(MUSL_GENH) $(shell find $(MUSL)/include $(MUSL)/arch/generic/bits \
                                           $(MUSL)/arch/x86_64/bits $(POSIX)/include \
@@ -206,7 +226,7 @@ $(SYSROOT_HDRS): $(MUSL_GENH) $(shell find $(MUSL)/include $(MUSL)/arch/generic/
 	cp -R $(POSIX)/include/. $(SYSROOT)/include/
 	touch $@
 
-$(POSIX_OUT)/%.c.o: %.c | $(SYSROOT_HDRS) $(UINC) $(SYSCALLS_OK) $(IDL_OK)
+$(POSIX_OUT)/%.c.o: %.c $(FLAGDIR)/posix | $(SYSROOT_HDRS) $(UINC) $(SYSCALLS_OK) $(IDL_OK)
 	@mkdir -p $(dir $@)
 	$(CC) $(POSIX_CFLAGS) -c $< -o $@
 $(POSIX_OUT)/%.S.o: %.S | $(SYSROOT_HDRS) $(UINC) $(SYSCALLS_OK) $(IDL_OK)
@@ -246,13 +266,24 @@ $(SYSROOT)/lib/libc.a: $(MUSL_OBJS) $(MUSL_OVR_OBJS) $(POSIX_JL_OBJS) $(POSIX_GL
 # later tracks add theirs), built with jamos-cc as any port is.
 POSIXTEST      := $(BUILD)/user/posixtest
 POSIXTEST_SRCS := $(wildcard $(POSIX)/test/*.c)
+# The flags of the programs built here (posixtest and the layer's own, below).
+POSIX_PROG_CFLAGS := -std=gnu17 -O2 -g -Wall -Wextra -Werror -Wvla -D_GNU_SOURCE \
+                     -I$(POSIX)/include -Iuser/include -I$(BUILD)/uinc -Idrivers/include
+POSIXTEST_CFLAGS  := $(POSIX_PROG_CFLAGS) -include $(JL_NAMES_H)
+# jamos-cc compiles and links in one command, so these programs have no -MMD
+# files: the headers they take from outside their own directory are listed
+# (the sysroot's, libjam's, the kernel's copies and the IDL's).
+POSIX_PROG_HDRS   := $(SYSROOT_HDRS) $(UINC) \
+                     $(wildcard user/include/*.h drivers/include/*.h drivers/include/*/*.h)
+FLAGS_posixtest   = $(TOOLID) $(POSIXTEST_CFLAGS)
+FLAGS_posix-progs = $(TOOLID) $(POSIX_PROG_CFLAGS)
+$(foreach s,posixtest posix-progs,$(eval $(call FLAG_STAMP,$(s),FLAGS_$(s))))
 $(POSIXTEST): $(POSIXTEST_SRCS) $(wildcard $(POSIX)/test/*.h) $(POSIX)/test/wants \
-              $(SYSROOT_LIBS) $(JL_NAMES_MAP) tools/jamos-cc | $(UINC) $(SYSCALLS_OK) $(IDL_OK)
+              $(SYSROOT_LIBS) $(JL_NAMES_MAP) tools/jamos-cc $(FLAGDIR)/posixtest \
+              $(POSIX_PROG_HDRS) | $(SYSCALLS_OK) $(IDL_OK)
 	@mkdir -p $(dir $@)
-	JAMOS_SYSROOT=$(SYSROOT) CROSS=$(CROSS) tools/jamos-cc -std=gnu17 -O2 -g -Wall -Wextra \
-	    -Werror -Wvla -D_GNU_SOURCE -I$(POSIX)/include -Iuser/include -I$(BUILD)/uinc \
-	    -Idrivers/include -include $(JL_NAMES_H) --jamos-wants=$(POSIX)/test/wants \
-	    $(POSIXTEST_SRCS) -o $@
+	JAMOS_SYSROOT=$(SYSROOT) CROSS=$(CROSS) tools/jamos-cc $(POSIXTEST_CFLAGS) \
+	    --jamos-wants=$(POSIX)/test/wants $(POSIXTEST_SRCS) -o $@
 $(POSIXTEST).bootfs: $(POSIXTEST) tools/checkwants.py
 	$(STRIP) --strip-debug $< -o $@
 	python3 tools/checkwants.py $(POSIX)/test=$@
@@ -271,11 +302,11 @@ $(BOOTFS): $(POSIXTEST).bootfs
 POSIX_PROGS := sh=bin/sh ls=test/ls pxio=bin/pxio jittest=bin/jittest=user/tests/jittest
 define POSIX_PROG_RULES
 $(BUILD)/user/posix-$(1): $(wildcard $(3)/*.c) $(3)/wants \
-                          $(SYSROOT_LIBS) tools/jamos-cc | $(UINC) $(SYSCALLS_OK) $(IDL_OK)
+                          $(SYSROOT_LIBS) tools/jamos-cc $(FLAGDIR)/posix-progs \
+                          $(POSIX_PROG_HDRS) | $(SYSCALLS_OK) $(IDL_OK)
 	@mkdir -p $$(dir $$@)
-	JAMOS_SYSROOT=$(SYSROOT) CROSS=$(CROSS) tools/jamos-cc -std=gnu17 -O2 -g -Wall -Wextra \
-	    -Werror -Wvla -D_GNU_SOURCE -I$(POSIX)/include -Iuser/include -I$(BUILD)/uinc \
-	    -Idrivers/include --jamos-wants=$(3)/wants \
+	JAMOS_SYSROOT=$(SYSROOT) CROSS=$(CROSS) tools/jamos-cc $(POSIX_PROG_CFLAGS) \
+	    --jamos-wants=$(3)/wants \
 	    $(wildcard $(3)/*.c) -o $$@
 $(BUILD)/user/posix-$(1).bootfs: $(BUILD)/user/posix-$(1) tools/checkwants.py
 	$(STRIP) --strip-debug $$< -o $$@
@@ -291,12 +322,17 @@ BOOTFS_FILES += usr/bin/pxio-usr=$(BUILD)/user/posix-pxio.bootfs
 # musl's libc defines; a program that defines names the layer uses inside
 # libc.a (tools/posix-link-test.c) links, and links none of the handlers
 # for calls it can't make (calls.def: here, starting programs, socket
-# options, timers).
+# options, timers); and the members of libc.a a backtrace passes through
+# (the signal delivery, a thread's start, qsort, execinfo itself, libjam's
+# files) hold unwind tables (tools/checkeh.py: a build kept from before the
+# flag was set has none, and only posixtest's execinfo section would say).
 .PHONY: posix-check
 posix-check: $(MUSL_LIB) $(SYSROOT_LIBS)
 	python3 tools/checkoverrides.py $(MUSL_OVR) $(MUSL)
 	python3 tools/checkoverrides.py --selftest $(MUSL_OVR) $(MUSL)
 	python3 tools/checklibjam.py $(CROSS)nm $(UOBJ)/libjam.a $(MUSL_LIB)
+	python3 tools/checkeh.py $(CROSS)readelf $(SYSROOT)/lib/libc.a raise.c.o qsort.c.o \
+	    pthread_create.c.o signal.c.o calls.c.o sigcalls.c.o execinfo.c.o fs.c.o
 	JAMOS_SYSROOT=$(SYSROOT) CROSS=$(CROSS) tools/jamos-cc -O2 tools/posix-link-test.c \
 	    -o $(BUILD)/posix-link-test
 	@! $(CROSS)nm $(BUILD)/posix-link-test | grep -E ' __jl_lx_(execve|setsockopt|timer_create)$$' || \
