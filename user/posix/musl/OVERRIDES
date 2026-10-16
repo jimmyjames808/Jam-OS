@@ -23,7 +23,7 @@ src/mman/mmap.c f0acee38db856ed16a9dd647af69b8dce22cc950b38a1e65f16fa51c336ba37b
 crt/crt1.c 012269a9166c76a4812d5b2437a43589ad1759999bd369d571527ef345615999 user/posix/crt/crt1.c
 # The thread pointer: thread_set_fs_base.
 src/thread/x86_64/__set_thread_area.s 9a6299228be5f8f467652263e8f98c1f9ab2e0937243589b8c5642f0ebe3236d user/posix/musl/src/thread/x86_64/__set_thread_area.c
-# A thread: thread_create and thread_start (user/posix/sys/thread.c).
+# A thread: thread_create and thread_start (user/posix/sys/thread.c); a process: a fork running fn (user/posix/sys/fork.c).
 src/thread/x86_64/clone.s 1046d162ddd8d902a657b8774bc9c0e8f029c24ea6394055b4ffb0a5c39d39f1 user/posix/musl/src/thread/x86_64/clone.c
 # A detached thread's end: vmar_unmap of its own stack, then thread_exit.
 src/thread/x86_64/__unmapself.s dab063e96f4c9874892b39545e3ea02cd6f6e71532d84705422bd0a8ad62eb00 user/posix/musl/src/thread/x86_64/__unmapself.S
@@ -31,7 +31,7 @@ src/thread/x86_64/__unmapself.s dab063e96f4c9874892b39545e3ea02cd6f6e71532d84705
 src/thread/x86_64/syscall_cp.s 3d84c844e6a26b934f80fd35e0c7d814b184e489fdd71cd95b176b8ed15be618 user/posix/musl/src/thread/x86_64/syscall_cp.c
 # pthread_cancel: the flag and an interrupt (no SIGCANCEL handler, no address check).
 src/thread/pthread_cancel.c aedb26402bbafc18e00129040379d906f9e391302e41752584e3ac1ac3259fb1 user/posix/musl/src/thread/pthread_cancel.c
-# vfork: ENOSYS (no fork of any kind).
+# vfork: a fork, as a C call (docs/FORK-PLAN.md section 3; user/posix/sys/fork.c).
 src/process/x86_64/vfork.s 4d5aad85cb686f9cf66e32f5889471614d7b564503cb2038d21aa6e442287fdd user/posix/musl/src/process/x86_64/vfork.c
 # The signal restorer: never used (signals are delivered in libc).
 src/signal/x86_64/restore.s 1aa9c1d8b1d809a64f5edcfcb518f9d95e8cf538ddeab74d6048e489e63b3ea1 user/posix/musl/src/signal/x86_64/restore.S

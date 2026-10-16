@@ -67,18 +67,18 @@ wait st-x=126
 wait {prompt}
 send allow /data/j; echo st-$T=$?
 wait allow j: it asks to write and run its own code (JIT memory): the system can't check that code, so allow it only if you trust the program
-wait allow j: may write and run its own code: JIT? y/n
+wait re:allow j: (/tmp \(write\), )?may write and run its own code: JIT\? y/n
 type n
 wait st-x=1
 wait {prompt}
 send allow /data/j; echo st-$T=$?
-wait allow j: may write and run its own code: JIT? y/n
+wait re:allow j: (/tmp \(write\), )?may write and run its own code: JIT\? y/n
 type y
 wait allow: /data/j may run
 wait st-x=0
 wait {prompt}
 send allow -l
-wait /data/j: may write and run its own code: JIT (sha-256
+wait re:/data/j: (/tmp \(write\), )?may write and run its own code: JIT \(sha-256
 wait {prompt}
 send run /data/j; echo st-$T=$?
 wait jittest: PASS

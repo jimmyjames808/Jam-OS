@@ -640,6 +640,20 @@ void path_cwd_set(const char *abs)
     lock_give(&cwd_lock);
 }
 
+void path_fork(int step)
+{
+    if (step == LX_FORK_TAKE) {
+        lock_take(&cwd_lock);
+    } else if (step == LX_FORK_GIVE) {
+        lock_give(&cwd_lock);
+    } else {   /* the child: the directory is ours; the cache asks again */
+        cwd_lock = (lock_t){ 0 };
+        ro_lock = (lock_t){ 0 };
+        memset(ro_cache, 0, sizeof(ro_cache));
+        ro_next = 0;
+    }
+}
+
 /* ---- libc's own trees -------------------------------------------------------- */
 
 enum path_libc path_libc(const struct path *p)

@@ -682,18 +682,6 @@ static bool gets_own(const struct grant *g, const struct entry *e)
     return false;
 }
 
-/* What goes out: our entries that a grant takes, each with a duplicate of
- * its channel (to be turned into a view, or a channel of its own) and the
- * flags of its view. */
-struct ns_out {
-    uint32_t count;                              /* entries used */
-    uint8_t  paths[NS_MAX_ENTRIES][NS_NAME_MAX]; /* nschan's `paths`: count records */
-    uint8_t  connect[NS_MAX_ENTRIES];            /* ... and its `connect` */
-    handle_t hs[NS_MAX_ENTRIES];
-    uint32_t view[NS_MAX_ENTRIES];
-    bool     own[NS_MAX_ENTRIES];                /* a service's channel of its own (above) */
-};
-
 /* The entries grants take, duplicated into o (o->count of them). */
 static status_t gather(const char *const *grants, struct ns_out *o)
 {
@@ -746,29 +734,47 @@ static void make_views(struct ns_out *o)
     o->count = keep;
 }
 
-status_t ns_prepare(const char *const *grants, struct ns_out **out)
+status_t ns_prepare_in(const char *const *grants, struct ns_out *o)
 {
-    struct ns_out *o = calloc(1, sizeof(*o));
-    if (!o)
-        return ERR_NO_MEMORY;
+    memset(o, 0, sizeof(*o));
     status_t st = grants ? gather(grants, o) : OK;
     if (st != OK) {
-        ns_prepared_drop(o);
+        ns_prepared_close(o);
         return st;
     }
     make_views(o);
+    return OK;
+}
+
+status_t ns_prepare(const char *const *grants, struct ns_out **out)
+{
+    struct ns_out *o = malloc(sizeof(*o));
+    if (!o)
+        return ERR_NO_MEMORY;
+    status_t st = ns_prepare_in(grants, o);
+    if (st != OK) {
+        free(o);
+        return st;
+    }
     *out = o;
     return OK;
 }
 
+void ns_prepared_close(struct ns_out *o)
+{
+    for (uint32_t i = 0; i < o->count; i++)
+        jam_handle_close(o->hs[i]);
+    o->count = 0;
+}
+
 void ns_prepared_drop(struct ns_out *o)
 {
-    for (uint32_t i = 0; o && i < o->count; i++)
-        jam_handle_close(o->hs[i]);
+    if (o)
+        ns_prepared_close(o);
     free(o);
 }
 
-status_t ns_send_prepared(handle_t to, uint32_t kind, struct ns_out *o)
+status_t ns_send_in(handle_t to, uint32_t kind, struct ns_out *o)
 {
     uint32_t n = o->count;
     status_t st = kind == NS_SET ? nschan_set(to, o->paths[0], n * NS_NAME_MAX, o->connect, n,
@@ -779,6 +785,12 @@ status_t ns_send_prepared(handle_t to, uint32_t kind, struct ns_out *o)
      * moved): never closed after the write, as their values may already be
      * another thread's new handles. */
     o->count = 0;
+    return st;
+}
+
+status_t ns_send_prepared(handle_t to, uint32_t kind, struct ns_out *o)
+{
+    status_t st = ns_send_in(to, kind, o);
     ns_prepared_drop(o);
     return st;
 }

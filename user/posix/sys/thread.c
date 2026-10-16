@@ -59,6 +59,7 @@ static struct thread_slot threads[THREADS_MAX];   /* [0 .. nthreads), any order 
 static unsigned nthreads;
 
 static __thread uint32_t self_tid;   /* this thread's id, once it has asked for it */
+static uint32_t first;               /* the first thread's id, once known (first_tid) */
 
 /* What a new thread needs, written on its own stack by clone. */
 struct clone_start {
@@ -164,7 +165,7 @@ int __jam_clone(int (*fn)(void *), void *stack, int flags, void *arg, int *ptid,
                 int *ctid)
 {
     if ((flags & (CLONE_VM | CLONE_THREAD)) != (CLONE_VM | CLONE_THREAD))
-        return -ENOSYS;   /* a process: no fork of any kind */
+        return -ENOSYS;   /* not a thread: __clone sends a process to fork.c */
     if (flags & ~(CLONE_OK | 0xff))   /* the low byte: the exit signal, unused */
         return -EINVAL;
     handle_t h;
@@ -202,6 +203,17 @@ unsigned __jam_unmapself_prepare(void *base, unsigned long size)
     return lx_self_vmar();
 }
 
+/* A forked child (fork.c): the forking thread is its first and only
+ * thread, its handle the startup message's (so not in the table); the
+ * other threads' entries were the parent's. */
+void thread_forked(uint32_t tid)
+{
+    threads_lock = (lock_t){ 0 };
+    nthreads = 0;
+    self_tid = tid;
+    __atomic_store_n(&first, tid, __ATOMIC_RELEASE);
+}
+
 long lx_set_tid_address(long word, long b, long c, long d, long e, long f)
 {
     int64_t tid = kp_set_tid_word((uint32_t *)(uintptr_t)word);
@@ -220,7 +232,6 @@ long lx_gettid(long a, long b, long c, long d, long e, long f)
  * not in the table), once asked for; 0 if the kernel did not say. */
 static uint32_t first_tid(void)
 {
-    static uint32_t first;
     uint32_t t = __atomic_load_n(&first, __ATOMIC_ACQUIRE);
     if (!t && kp_thread_tid(startup_handle(SR_SELF_THREAD), &t) == OK)
         __atomic_store_n(&first, t, __ATOMIC_RELEASE);

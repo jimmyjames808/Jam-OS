@@ -184,8 +184,11 @@ LX(epoll_ctl)
 LX_CP(epoll_wait)
 LX_CP(epoll_pwait)
 
-/* processes: proc.c, spawn.c (fork, vfork and clone without CLONE_VM
- * have no entry: -ENOSYS) */
+/* processes: proc.c, spawn.c; fork.c (fork, vfork, and clone without
+ * CLONE_VM: a thread comes through musl's __clone, thread.c) */
+LX(fork)
+LX(vfork)
+LX(clone)
 LX(getpid)
 LX(getppid)
 LX(getpgid)

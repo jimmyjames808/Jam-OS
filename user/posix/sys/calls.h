@@ -125,9 +125,10 @@ lx_call lx_getuid, lx_geteuid, lx_getgid, lx_getegid, lx_getresuid, lx_getresgid
 lx_call lx_poll, lx_ppoll, lx_select, lx_pselect6, lx_epoll_create, lx_epoll_create1,
         lx_epoll_ctl, lx_epoll_wait, lx_epoll_pwait;
 
-/* Processes (proc.c: ids, groups, sessions, waits; spawn.c: execve). */
+/* Processes (proc.c: ids, groups, sessions, waits; spawn.c: execve;
+ * fork.c: fork, vfork and clone without CLONE_VM). */
 lx_call lx_getpid, lx_getppid, lx_getpgid, lx_setpgid, lx_getsid, lx_setsid, lx_wait4,
-        lx_waitid, lx_execve;
+        lx_waitid, lx_execve, lx_fork, lx_vfork, lx_clone;
 
 /* Signals (sigcalls.c) and the timers that send them (sigtimer.c). */
 lx_call lx_rt_sigaction, lx_rt_sigprocmask, lx_rt_sigpending, lx_rt_sigsuspend, lx_pause,

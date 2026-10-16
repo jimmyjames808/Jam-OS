@@ -1,7 +1,8 @@
 /* musl's posix_spawn on Jam OS: overrides upstream's src/process/posix_spawn.c
  * (user/posix/musl/OVERRIDES). Upstream's clones a vfork child that applies
- * the file actions to itself and calls execve; Jam OS has no fork of any
- * kind, so the parent does it all (docs/M13-PLAN.md section 5): this file
+ * the file actions to itself and calls execve; on Jam OS a fork copies the
+ * whole process (docs/FORK-PLAN.md), so the parent does it all instead
+ * (docs/M13-PLAN.md section 5): this file
  * reads musl's attributes and file actions into a plain request and the
  * call layer's spawn.c starts the program with libjam's spawn and the
  * POSIX hand-over.

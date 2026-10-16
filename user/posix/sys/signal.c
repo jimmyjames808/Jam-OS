@@ -3,8 +3,9 @@
  * process's signal to a thread, and the call boundary that runs handlers.
  *
  * Each thread's record (struct sig_thread) is allocated by the thread at
- * its start and listed (sig_lock) from sig_thread_begin to
- * sig_thread_end, so a sender can route to it and interrupt it. The
+ * its start (or an ended thread's is reused: `spare`) and listed
+ * (sig_lock) from sig_thread_begin to sig_thread_end, so a sender can
+ * route to it and interrupt it. The
  * thread finds its own through a thread-local pointer, and when that is
  * gone (musl's SIGEV_THREAD timers reset a thread's thread-local storage
  * between notifications) by its thread pointer, in the list. A record is written by its
@@ -84,6 +85,11 @@ static struct rtq_entry  rtq[RTQ_MAX];           /* [0, nrtq) in use, any order;
 static unsigned          nrtq;
 static uint64_t          rtq_seq;                /* sig_lock */
 static bool              ready;                  /* the main thread is listed (atomic) */
+/* Ended threads' records, for the next threads: never freed, since a
+ * thread ends holding musl's thread list lock (pthread_exit), which musl's
+ * fork takes after malloc's (fork.c): a free there could wait for a fork
+ * that waits for it. sig_lock. */
+static struct sig_thread *spare;
 
 static __thread struct sig_thread *mine;   /* the calling thread's record, or NULL */
 static struct sig_thread nobody;           /* stands in for a thread with none: never listed */
@@ -412,7 +418,15 @@ bool sig_is_pending(int signo)
 
 void sig_thread_begin(handle_t handle, uint32_t tid, uint64_t mask)
 {
-    struct sig_thread *t = calloc(1, sizeof(*t));
+    take();
+    struct sig_thread *t = spare;
+    if (t)
+        spare = t->next;
+    give();
+    if (t)
+        memset(t, 0, sizeof(*t));
+    else
+        t = calloc(1, sizeof(*t));
     if (!t)
         return;   /* no memory: this thread gets no signals (none is routed to it) */
     t->handle = handle;
@@ -446,9 +460,10 @@ void sig_thread_end(void)
             rtq[i] = rtq[--nrtq];
         else
             i++;
+    t->next = spare;   /* unlisted: nobody else can reach it */
+    spare = t;
     give();
     mine = NULL;
-    free(t);   /* unlisted: nobody else can reach it */
 }
 
 uint64_t sig_mask_self(void)
@@ -807,6 +822,53 @@ void sig_start_state(uint64_t ignored)
         if ((ignored & SIG_BIT(s)) && !(SIG_NEVER_MASKED & SIG_BIT(s)))
             acts[s].handler = (uintptr_t)SIG_IGN;
     give();
+}
+
+/* ---- fork (fork.c) ------------------------------------------------------------------ */
+
+void sig_fork(int step)
+{
+    if (step == LX_FORK_TAKE) {
+        take();
+        return;
+    }
+    if (step == LX_FORK_GIVE) {
+        give();
+        return;
+    }
+    /* The child (docs/FORK-PLAN.md section 1.7): the dispositions and the
+     * mask as they were; the forking thread alone on the list, with its own
+     * handle and id; nothing pending, for it or the process. The other
+     * threads' records are spares for its next threads. */
+    sig_lock = (lock_t){ 0 };
+    holder = 0;
+    struct sig_thread *me = me_ptr();
+    take();
+    for (struct sig_thread *t = threads, *next; t; t = next) {
+        next = t->next;
+        if (t != me) {
+            t->next = spare;
+            spare = t;
+        }
+    }
+    threads = me;
+    if (me) {
+        me->next = NULL;
+        me->handle = startup_handle(SR_SELF_THREAD);
+        me->tid = (uint32_t)lx_gettid(0, 0, 0, 0, 0, 0);
+        me->pending = me->routed = me->waiting = 0;
+        memset(me->info, 0, sizeof(me->info));
+    }
+    shared = 0;
+    memset(shared_info, 0, sizeof(shared_info));
+    nrtq = 0;
+    /* The exception entry is the process's, so not in the child: set again
+     * if a fault signal has a handler (sigfault.c), every other reason gone
+     * with the threads it was for. */
+    sig_entry_need(~0u, false);
+    sig_entry_need(SIG_ENTRY_HANDLERS, fault_handled_locked());
+    give();
+    sig_alt_reapply();   /* the thread's sigaltstack is in the copy, not its kernel stack */
 }
 
 /* ---- faults (sigfault.c) ------------------------------------------------------------ */

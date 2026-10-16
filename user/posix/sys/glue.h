@@ -30,9 +30,18 @@ int __jam_set_thread_area(void *tp);
  * runs (CLONE_PARENT_SETTID) and ctid as its tid word (CLONE_CHILD_CLEARTID:
  * 0 is stored there and woken once it is gone). The new thread's id, or
  * -errno: -ENOSYS for anything but a thread of this process (CLONE_VM and
- * CLONE_THREAD), so fork fails cleanly (posix_spawn is overridden). thread.c. */
+ * CLONE_THREAD). thread.c. */
 int __jam_clone(int (*fn)(void *), void *stack, int flags, void *arg, int *ptid, void *tls,
                 int *ctid);
+
+/* __clone, a process (no CLONE_VM): a fork whose child runs fn(arg) on
+ * stack and ends with its value (musl's clone(), gtest's death tests);
+ * its pid stored at *ptid in the parent (CLONE_PARENT_SETTID) and its
+ * tid at *ctid in the child (CLONE_CHILD_SETTID). The child's pid, or
+ * -errno: -ENOSYS for CLONE_VM without CLONE_THREAD (a child sharing our
+ * memory), -EINVAL for a flag it doesn't take. fork.c. */
+int __jam_clone_process(int (*fn)(void *), void *stack, int flags, void *arg, int *ptid,
+                        void *tls, int *ctid);
 
 /* __unmapself's first half, on the stack it is about to unmap: this
  * thread's own handle closed and forgotten, and the stack [base, base +

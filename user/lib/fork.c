@@ -11,8 +11,10 @@
  *   3. takes the C library's locks (its prepare), copies our address space
  *      into the child's at one instant (vmar_clone), lets the C library
  *      write its own messages (give) and gives its locks back (parent);
- *   4. snapshots our namespace (ns_prepare of NS_ALL: every entry
- *      duplicated), starts the child's thread at jam_fork_trampoline with
+ *   4. snapshots our namespace (ns_prepare_in of NS_ALL: every entry
+ *      duplicated, into our stack: nothing in the parent's fork allocates,
+ *      as musl's fork holds its allocator's lock across the whole call),
+ *      starts the child's thread at jam_fork_trampoline with
  *      the startup channel and the block's address, a little below the
  *      block on its copy of our stack, and sends the namespace on SR_NS.
  *
@@ -215,14 +217,15 @@ int64_t jam_fork_parent(struct fork_block *b, const struct jam_fork_args *a)
     b->fs_base = a->fs_base;
     b->ctx = a->ctx;
     struct kid k = { 0 };
-    struct ns_out *nso = NULL;
+    struct ns_out nso;   /* ours, not the heap's: the C library may hold its allocator's lock */
     status_t st = make_kid(a, &k);
     if (st == OK)
         st = write_roles(&k);
     if (st == OK)
         st = clone(a, libc, &k);
     if (st == OK)
-        st = ns_prepare(NS_ALL, &nso);   /* after the clone: the child's copy holds none of it */
+        st = ns_prepare_in(NS_ALL, &nso);   /* after the clone: the child's copy holds none of it */
+    bool prepared = st == OK;
     if (st == OK) {
         uint64_t sp = ((uint64_t)(uintptr_t)b - CHILD_GAP) & ~15ull;
         st = jam_process_start(k.proc, k.thread, (uint64_t)(uintptr_t)jam_fork_trampoline, sp,
@@ -230,15 +233,14 @@ int64_t jam_fork_parent(struct fork_block *b, const struct jam_fork_args *a)
         k.ch[1] = HANDLE_INVALID;   /* the child's now, or closed */
     }
     if (st == OK) {
-        st = ns_send_prepared(k.ns[0], NS_MOUNT, nso);
-        nso = NULL;
+        st = ns_send_in(k.ns[0], NS_MOUNT, &nso);   /* its handles gone, whatever the status */
         if (st == ERR_PEER_CLOSED)
             st = OK;   /* it has ended already, without looking */
         else if (st != OK)
             jam_process_kill(k.proc);   /* it would run without its namespace */
     }
-    if (nso)
-        ns_prepared_drop(nso);
+    if (prepared)
+        ns_prepared_close(&nso);   /* none left if it was sent */
     if (st == OK && a->signals) {
         *a->signals = k.sig[0];
         k.sig[0] = HANDLE_INVALID;

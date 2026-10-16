@@ -13,8 +13,8 @@
  *     WNOWAIT, then reaped;
  *   - descriptors: one inherited, one moved by posix_spawn_file_actions,
  *     an FD_CLOEXEC one not inherited;
- *   - execve as spawn, wait, exit; posix_spawnp through PATH; fork and
- *     vfork ENOSYS; a missing program ENOENT;
+ *   - execve as spawn, wait, exit; posix_spawnp through PATH; a missing
+ *     program ENOENT (fork and vfork: the fork section, fork.c);
  *   - system and popen (through bin/sh, and test/ls for `ls`), the
  *     listing read whole and compared with fs_readdir's;
  *   - a hand-over cut short: the reader gives up at once and closes what
@@ -335,10 +335,6 @@ static void check_exec(void)
     CHECK(WIFEXITED(s) && WEXITSTATUS(s) == 9);
     CHECK(posix_spawn(&p, "/boot/bin/no-such-program", NULL, NULL, argv, environ) == ENOENT);
     CHECK(posix_spawnp(&p, "no-such-program", NULL, NULL, argv, environ) == ENOENT);
-    errno = 0;
-    CHECK(fork() == -1 && errno == ENOSYS);
-    errno = 0;
-    CHECK(vfork() == -1 && errno == ENOSYS);
 }
 
 static void check_fds(void)

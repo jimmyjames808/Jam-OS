@@ -8,7 +8,7 @@
  * sessions are libc's bookkeeping: setpgid and setsid change only what
  * this process and its children are told, never what the kernel knows.
  *
- * Children. posix_spawn puts each child here (lx_child_add): its process
+ * Children. posix_spawn and fork put each child here (lx_child_add): its process
  * handle, its signal channel (our end: kill's way to it), pid, group and
  * session (and for a program from /data, which init's /svc/exec starts,
  * its job: that process handle can't kill it, the job can), and a serial number that keys its binding on the signal
@@ -35,7 +35,9 @@
  *
  * Locks: `lock` guards everything below but `gen`, which is read and
  * bumped under it and waited on without it. No call that waits is made
- * with it held. */
+ * with it held, and no malloc: it is the first of the locks fork holds
+ * across its clone (fork.c's list), which musl's malloc lock comes
+ * before. */
 #include <stdlib.h>
 #include <errno.h>
 #include <idl/session.h>
@@ -123,6 +125,30 @@ long lx_getpid(long a, long b, long c, long d, long e, long f)
 long lx_getppid(long a, long b, long c, long d, long e, long f)
 {
     return read_id(&parent_pid);
+}
+
+/* fork's step (fork.c): the ids and the table whole across the clone; in
+ * the child, its pid the kernel's, its parent us, our group and session,
+ * and its table of children empty (cleared, not closed: those handles
+ * were the parent's; docs/FORK-PLAN.md section 1.8). */
+void proc_fork(int step)
+{
+    if (step == LX_FORK_TAKE) {
+        lock_take(&lock);
+        ids_init_locked();   /* our pid: the child's parent's */
+        return;
+    }
+    if (step == LX_FORK_GIVE) {
+        lock_give(&lock);
+        return;
+    }
+    lock = (lock_t){ 0 };
+    struct process_info info;
+    parent_pid = self_pid;
+    self_pid = jam_process_get_info(lx_self_process(), &info) == OK ? (int32_t)info.pid : 0;
+    nkids = 0;
+    exec_child = 0;
+    reaped_cpu_ns = 0;
 }
 
 /* ---- the table -------------------------------------------------------------------- */
@@ -318,10 +344,19 @@ static long signal_one(handle_t h, bool session, bool job, int signo, int code, 
 
 long lx_child_signal(int32_t pid, int32_t pgid, int signo, int code, int32_t value)
 {
+    unsigned n = 0, matched = 0, room = 0;
+    struct { handle_t h; bool session, job; } *to = NULL;
     lock_take(&lock);
-    unsigned n = 0, matched = 0;
-    struct { handle_t h; bool session, job; } *to = malloc(sizeof(*to) * (nkids ? nkids : 1));
-    for (unsigned i = 0; to && i < nkids; i++) {
+    while (nkids > room) {   /* room for each, allocated without the lock (fork.c says why) */
+        room = nkids;
+        lock_give(&lock);
+        free(to);
+        to = malloc(sizeof(*to) * room);
+        if (!to)
+            return -ENOMEM;
+        lock_take(&lock);
+    }
+    for (unsigned i = 0; i < nkids; i++) {
         struct child *c = &kids[i];
         if ((pid > 0 && c->pid != pid) || (pgid > 0 && c->pgid != pgid))
             continue;
@@ -334,8 +369,6 @@ long lx_child_signal(int32_t pid, int32_t pgid, int signo, int code, int32_t val
             n++;
     }
     lock_give(&lock);
-    if (!to)
-        return -ENOMEM;
     long r = 0;
     for (unsigned i = 0; i < n; i++) {
         long e = signal_one(to[i].h, to[i].session, to[i].job, signo, code, value);

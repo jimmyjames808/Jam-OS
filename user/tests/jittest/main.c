@@ -10,7 +10,8 @@
  *                     PROT_NONE, then pages made writable and executable),
  *                     a MAP_FIXED | MAP_JIT inside it decommitting in
  *                     place, a MAP_FIXED without MAP_JIT making a page plain
- *                     memory again; ps's mark (PROCESS_FLAG_JIT)
+ *                     memory again; ps's mark (PROCESS_FLAG_JIT); a fork,
+ *                     whose child isn't marked and faults at the JIT page
  *   jittest without   without the power (a child posixtest starts, which
  *                     gets no root): MAP_JIT is EPERM, execute EACCES
  *   jittest hold      the first page made and run, "jittest: holding JIT
@@ -25,6 +26,7 @@
 #include <signal.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #define PG      4096ul
@@ -136,6 +138,30 @@ static char *first_page(void)
     return p;
 }
 
+/* A fork with p, a writable JIT page, mapped: the child isn't marked and
+ * has nothing at p (a writable JIT mapping never reaches a fork's child:
+ * docs/FORK-PLAN.md section 1.10), so running it there is a fault that
+ * ends it; ours still runs. The child can't print (its descriptors are
+ * the parent's until FL2): its exit code says what failed. */
+static void forked(char *p)
+{
+    pid_t pid = fork();
+    if (pid == 0) {
+        if (marked())
+            _exit(3);
+        (void)run(p);
+        _exit(4);
+    }
+    CHECK(pid > 0);
+    int st = 0;
+    CHECK(pid > 0 && waitpid(pid, &st, 0) == pid);
+    CHECK(WIFSIGNALED(st));   /* not exit 3 (marked) nor 4 (it ran) */
+    if (!WIFSIGNALED(st))
+        printf("jittest: the forked child's wait status %#x\n", st);
+    CHECK(marked());
+    CHECK(run(p) == 43);
+}
+
 static void with(void)
 {
     CHECK(holds_power());
@@ -143,6 +169,7 @@ static void with(void)
     plain();
     char *p = first_page();
     if (p) {
+        forked(p);
         CHECK(mprotect(p, PG, RX) == 0);
         CHECK(run(p) == 43);
         CHECK(mprotect(p, PG, RW) == 0);

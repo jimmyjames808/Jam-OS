@@ -162,6 +162,19 @@ void fd_free(long fd)
     lock_give(&table_lock);
 }
 
+/* The table whole across fork's clone (layer.h). The child's copy of each
+ * description holds the parent's handles until FL2 gives each kind its
+ * fork step (docs/FORK-PLAN.md section 1.6). */
+void fd_fork(int step)
+{
+    if (step == LX_FORK_TAKE)
+        lock_take(&table_lock);
+    else if (step == LX_FORK_GIVE)
+        lock_give(&table_lock);
+    else
+        table_lock = (lock_t){ 0 };
+}
+
 long fd_install(struct fd_desc *d, long min, bool cloexec_on)
 {
     long fd = fd_alloc(min);
