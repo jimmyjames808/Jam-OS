@@ -522,6 +522,7 @@ def main():
                 os.unlink(os.path.join(wait_dir, ticket))
             except OSError:
                 pass
+            sys.stderr = open(os.devnull, "w")   # else Python's flush at exit fails and the status is 120
             return 141
         time.sleep(POLL)
     waited = time.time() - started
@@ -531,6 +532,7 @@ def main():
                 "building" if label == "build" else "running", used, budget, " (after %d s)" % waited if waited >= 1 else ""))
     except OSError:   # the client is gone: the command would run for no one
         os.unlink(os.path.join(runs_dir, ticket))
+        sys.stderr = open(os.devnull, "w")
         return 141
     run_file = os.path.join(runs_dir, ticket)
     if log is not None:
