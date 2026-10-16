@@ -201,7 +201,7 @@ KTEST(vmar_clone_modes_and_bytes)
     KT_EQ(aspace_check(src), 5);
     KT_EQ(aspace_check(dst), 4);
     KT_EQ(vmo_size(c), vmo_size(a));
-    KT_EQ(vmo_committed(c), 6);   /* pages 4 and 5 are mapped nowhere: not copied */
+    KT_EQ(vmo_committed(c), 6 * PG);   /* pages 4 and 5 are mapped nowhere: not copied */
     KT_EQ(aspace_pt_reserve(dst), tables);
     KT_EQ(aspace_pt_pages(dst), 0);
 
@@ -308,7 +308,7 @@ KTEST(vmar_clone_charges_exact)
         KT_EQ(st, OK);
         KT_EQ(job_used(j, JOB_LIMIT_PAGES), pages + want);
         KT_EQ(job_used(j, JOB_LIMIT_HANDLES), handles + 1);
-        KT_EQ(vmo_committed(c), 5);
+        KT_EQ(vmo_committed(c), 5 * PG);
         /* The child's faults draw on the reserve: no charge. */
         KT_EQ(uword(dst, BASE + 4 * PG), 0xc4);
         KT_EQ(uword(dst, BASE + 7 * PG), 0);   /* a zero page of the child's own: charged */
@@ -350,7 +350,7 @@ KTEST(vmar_clone_sparse_cage)
     uint64_t ns = uptime_ns() - t0;
     kprintf("vmar_clone_sparse_cage: 1 TiB, 1024 pages, %lu tables: %lu us\n", tables, ns / 1000);
     KT_IDLE_ASSERT(ns < 20 * NS_PER_MS);
-    KT_EQ(vmo_committed(c), 1024);
+    KT_EQ(vmo_committed(c), 1024 * PG);
     KT_EQ(aspace_pt_reserve(dst), tables);
     for (uint64_t g = 0; g < 1024; g += 101)
         KT_EQ(uword(dst, base + g * GIB + g * PG % GIB), 0xca9e0000 + g);
@@ -377,7 +377,7 @@ KTEST(vmar_clone_sparse_cage)
     KT_EQ(aspace_mapping_count(dst), MANY);
     KT_EQ(aspace_check(dst), MANY);
     KT_EQ(aspace_check(src), MANY);
-    KT_EQ(vmo_committed(c), 1);
+    KT_EQ(vmo_committed(c), PG);
     KT_EQ(uword(dst, BASE + (MANY - 1) * PG), 0x600d);
     put(c);
     aspace_unref(dst);
@@ -598,7 +598,7 @@ KTEST(vmar_clone_kept)
     KT_EQ(aspace_fault_count(dst), faults);
     KT_EQ(info_at(dst, BASE).vmo_koid, vmo_kobject(k)->koid);
     /* The copy: its own pages from the start (a kept VMO is never shared). */
-    KT_EQ(vmo_committed(c), 2);
+    KT_EQ(vmo_committed(c), 2 * PG);
     KT_ASSERT(vmo_page_phys(c, 0) != vmo_page_phys(k, 0));
     KT_EQ(uword(dst, BASE + 8 * PG + 8), 0x4e9);
     KT_EQ(uput(dst, BASE + 8 * PG, 0x4ea), OK);
