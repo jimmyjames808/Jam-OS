@@ -70,7 +70,12 @@ next. Timed from just before the raiser's call (its TSC) to the target's
 entry (the target's TSC): the call, the reschedule interrupt to P, the
 frame written on the target's stack and the entry. 4000 samples after
 2000 untimed. What `pthread_kill` to a busy thread will cost (SIGPROF to
-V8's thread), less libc's part (SG5).
+V8's thread), less libc's part (SG5). QEMU on the PC (KVM), 2026-10-16:
+median 7.9 us, p99 13 us (the interrupt between virtual CPUs is most of
+it); the context switch and reply-and-wait lines of the same run were
+within QEMU's noise of the earlier ones (the raise adds one load to the
+return from an interrupt, nothing to a system call or a switch). Not yet
+measured on the PC itself.
 
 **Per-operation lines** (`perop` from the shell; `user/tests/perop/main.c`
 explains each line): what one file operation costs a program, with the
