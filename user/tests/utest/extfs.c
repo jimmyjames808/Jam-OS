@@ -33,8 +33,9 @@ static uint32_t L(const char *s)
     return (uint32_t)strlen(s);
 }
 
-bool extfs_start(struct fatrun *r, struct ramdisk *rd, bool read_only, const char *const *extra,
-                 unsigned n)
+/* pager: a copy handed to extfs (EXTFS_SR_PAGER, as volumes hands it), or 0. */
+static bool start(struct fatrun *r, struct ramdisk *rd, bool read_only, const char *const *extra,
+                  unsigned n, handle_t pager)
 {
     handle_t block, serve, ctl;
     *r = (struct fatrun){ .rd = rd };
@@ -47,13 +48,31 @@ bool extfs_start(struct fatrun *r, struct ramdisk *rd, bool read_only, const cha
     int argc = 3;
     for (unsigned i = 0; i < n && argc < 12; i++)
         argv[argc++] = extra[i];
-    struct spawn_handle x[3] = { { EXTFS_SR_BLOCK, block }, { EXTFS_SR_SERVE, serve },
+    struct spawn_handle x[4] = { { EXTFS_SR_BLOCK, block }, { EXTFS_SR_SERVE, serve },
                                  { EXTFS_SR_CTL, ctl } };
+    rights_t xr[4] = { RIGHT_SAME, RIGHT_SAME, RIGHT_SAME, RIGHT_READ | RIGHT_WRITE | RIGHT_WAIT };
+    unsigned nx = 3;
+    if (pager) {
+        CHECK_ST(jam_handle_duplicate(pager, RIGHT_SAME, &x[nx].h), OK);
+        x[nx++].role = EXTFS_SR_PAGER;
+    }
     struct spawn_args a = {
-        .path = "bin/extfs", .argc = argc, .argv = argv, .job = r->job, .extra = x, .nextra = 3,
+        .path = "bin/extfs", .argc = argc, .argv = argv, .job = r->job, .extra = x, .nextra = nx,
+        .extra_rights = xr,
     };
     CHECK_ST(spawn(&a, &r->proc), OK);
     return true;
+}
+
+bool extfs_start(struct fatrun *r, struct ramdisk *rd, bool read_only, const char *const *extra,
+                 unsigned n)
+{
+    return start(r, rd, read_only, extra, n, HANDLE_INVALID);
+}
+
+bool extfs_start_pager(struct fatrun *r, struct ramdisk *rd, handle_t pager)
+{
+    return start(r, rd, false, NULL, 0, pager);
 }
 
 /* Saved sparse (the stick's /data is small): "jamspars", a u64 of the

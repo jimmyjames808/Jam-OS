@@ -16,7 +16,8 @@
  * replay, then the orphan list). What the state VMO keeps is small: the
  * request slots and each one's transaction id, the open files (inode
  * number and generation, flags), the views (flags, the root's inode and
- * place). The block cache and the directory hash are rebuilt.
+ * place), the mapped files (inode, kind, key). The block cache and the
+ * directory hash are rebuilt.
  *
  * Files: main.c the startup, the mount (and the format), the event loop;
  * disk.c the ext library's device over `block`; state.c the state VMO;
@@ -27,7 +28,8 @@
  * names, links followed inside the view, `..`, the permission bits, what
  * a view hides judged where a path resolves; fsops.c the `fs` methods;
  * files.c the open files and the `file` methods; views.c views and
- * subviews; test.c the test powers. */
+ * subviews; pager.c mapped files and the mount's pager; test.c the test
+ * powers. */
 #pragma once
 
 #include <stdbool.h>
@@ -54,12 +56,19 @@
 #define XF_FEATURES    (FS_FEAT_LINKS | FS_FEAT_MODES | FS_FEAT_CASE | FS_FEAT_BIG | \
                         FS_FEAT_MULTI_WRITER)
 #define XF_DEFER_MAX   64u         /* orphans and truncations left for after an answer */
+#define XF_MAX_MAPS    64u         /* mapped files at once (file.map's VMOs: pager.c) */
+
+/* A mapped file's key: a sequence number and its slot of maps[] (pager.c). */
+#define XF_MAP_KEY(seq, i) ((uint64_t)(seq) << 8 | (uint64_t)(i))
+#define XF_MAP_SLOT(key)   ((unsigned)((key) & 0xff))
+_Static_assert(XF_MAX_MAPS <= 256, "a slot fits a key's low byte");
 
 /* Port keys and channel ids: fat's (fat.h), the same scheme. */
 #define XF_KEY_FS          1ull
 #define XF_KEY_BLOCK       2ull
 #define XF_KEY_CTL         3ull
 #define XF_KEY_OWN         4ull
+#define XF_KEY_PAGER       5ull
 #define XF_KEY_FILE_BIT    (1ull << 62)
 #define XF_KEY_FILE(s, g)  (XF_KEY_FILE_BIT | (uint64_t)(g) << 16 | (uint64_t)(s))
 #define XF_KEY_VIEW_BIT    (1ull << 61)
@@ -106,7 +115,7 @@ extern struct xf_vol vol;
 /* ---- the state (state.c) --------------------------------------------------------- */
 
 #define XF_STATE_KIND   0x73667865u   /* "exfs": svcstate's kind */
-#define XF_STATE_LAYOUT 1u            /* bump on any change to struct xf_state or the
+#define XF_STATE_LAYOUT 2u            /* bump on any change to struct xf_state or the
                                        * requests its slots replay */
 /* A slot's request area: the request (fs.rename's two paths), then from
  * XF_SLOT_DATA its data: the bounce buffer a write's bytes are copied
@@ -134,6 +143,15 @@ struct xf_view {
     char     root[XF_ROOT_MAX];
 };
 
+/* One VMO file.map made (pager.c): the file it shows, and how. */
+struct xf_map {
+    bool     used;
+    uint8_t  kind;            /* FILE_MAP_READ (the file's shared VMO) or FILE_MAP_EXEC */
+    uint32_t ino;             /* the file: its inode ... */
+    uint32_t igen;            /* ... and that inode's generation */
+    uint64_t key;             /* its VMO's key: XF_MAP_KEY(seq, its slot) */
+};
+
 /* What a slot's request did to the journal: set before its commit
  * (on_commit), so a successor that finds the slot not committed knows
  * whether the journal has it (then its reply, already in the slot, is
@@ -145,11 +163,15 @@ struct xf_slot {
     uint32_t has_tid;         /* ... set (released) just before the commit block goes */
 };
 
-/* The slot of files[] or views[] the request numbered `seq` made, which
- * its reply hands out (adopt.c makes the client's end again if the reply
- * never went out, and drops it if the request runs again). */
-#define XF_MADE_FILE 1u
-#define XF_MADE_VIEW 2u
+/* The slot of files[], views[] or maps[] the request numbered `seq` made,
+ * which its reply hands out (adopt.c makes the client's end again if the
+ * reply never went out, and drops it if the request runs again). A map
+ * that shared a slot made before (XF_MADE_MAP_SHARED) is remade but never
+ * dropped: other mappers have it. */
+#define XF_MADE_FILE       1u
+#define XF_MADE_VIEW       2u
+#define XF_MADE_MAP        3u
+#define XF_MADE_MAP_SHARED 4u
 struct xf_made {
     uint64_t seq;
     uint32_t kind;
@@ -164,6 +186,8 @@ struct xf_state {
     struct xf_slot  slot[2];
     struct xf_made  made;
     uint64_t        data_seq[2];   /* slot i's data holds request data_seq[i]'s bytes */
+    struct xf_map   maps[XF_MAX_MAPS];
+    uint64_t        map_seq;       /* the last key's sequence number (pager.c) */
 };
 
 extern struct xf_state *kept;
@@ -321,6 +345,11 @@ status_t files_open(const struct ext_inode *in, uint32_t flags, bool nochange,
 status_t files_truncate(struct ext_inode *in, uint64_t size);
 /* Is inode ino open (a slot names it)? */
 bool     files_has(uint32_t ino);
+/* ... open for writing (FS_WRITE or FS_APPEND)? */
+bool     files_writing(uint32_t ino);
+/* ... open or mapped: its inode lives, if it has no name, on the orphan
+ * list until neither (adopt.c keeps such orphans across a restart). */
+bool     files_held(uint32_t ino);
 void     files_event(uint64_t key);
 void     files_unheld(void);
 void     files_reap(void);
@@ -357,11 +386,47 @@ const char *views_check(void);
 /* The whole volume, as the mount's own channels see it. */
 void     views_whole(struct xf_ctx *c);
 
+/* ---- pager.c ----------------------------------------------------------------- */
+
+/* file.map of inode ino (its generation igen, fsize bytes long) with
+ * flags FILE_MAP_READ or FILE_MAP_EXEC (files.c checked them, the open's
+ * read right and, to run, that nobody writes it): a VMO into *out.
+ * ERR_NOT_SUPPORTED with no pager; ERR_NO_RESOURCES: XF_MAX_MAPS. */
+status_t maps_make(uint32_t ino, uint32_t igen, uint32_t flags, uint64_t fsize, handle_t *out);
+/* Is inode ino mapped (a slot names it)? ... mapped to run? */
+bool     maps_has(uint32_t ino);
+bool     maps_exec(uint32_t ino);
+/* Its last fs.open closed: its shared VMO is its mappers' alone now. */
+void     maps_let_go(uint32_t ino);
+/* Inode ino changed, inside the request that changed it: bytes [lo, hi)
+ * written (or cut: lo == hi), its size now `size`. Its mappings see it. */
+void     maps_changed(uint32_t ino, uint64_t lo, uint64_t hi, uint64_t size);
+/* The running request ended: done, its change committed; not, given up
+ * (the mapped files' sizes set again from their inodes). */
+void     maps_settle(bool done);
+/* A map the running request made goes (its reply failed). */
+void     maps_unmake(uint32_t i);
+/* A successor's: the keeper's handle of slot i; the table checked; its
+ * handles made to agree with the open files; a map's reply made again. */
+bool     maps_take(uint32_t i, const handle_t *hs, unsigned n);
+const char *maps_check(void);
+void     maps_adopt(void);
+void     maps_drop_unknown(void);
+status_t maps_remake(uint32_t i, handle_t *out);
+/* After the start: the pager waited on, and what the instance before
+ * took and never answered served. */
+void     pager_start(void);
+/* The pager's binding fired: one request served. */
+void     pager_event(void);
+/* What is queued, served (before each fs request). */
+void     pager_reap(void);
+
 /* ---- keeper.c ---------------------------------------------------------------- */
 
 #define XF_KEEP_FILE(i) ((uint32_t)(i))
 #define XF_KEEP_VIEW(i) ((uint32_t)(XF_MAX_FILES + (i)))
-#define XF_KEEP_SLOTS   (XF_MAX_FILES + XF_VIEWS)
+#define XF_KEEP_MAP(i)  ((uint32_t)(XF_MAX_FILES + XF_VIEWS + (i)))
+#define XF_KEEP_SLOTS   (XF_MAX_FILES + XF_VIEWS + XF_MAX_MAPS)
 
 status_t kept_put(uint32_t slot, const handle_t *hs, unsigned n);
 void     kept_drop(uint32_t slot);
@@ -383,6 +448,8 @@ enum xf_die {
     XF_DIE_JOURNAL,           /* the request's transaction committed, the slot not yet */
     XF_DIE_COMMIT,            /* the slot committed, not answered */
     XF_DIE_ANSWERED,          /* answered: its reply waits for the next system call */
+    XF_DIE_MAP,               /* a file.map made its VMO, not answered */
+    XF_DIE_SUPPLY,            /* a page request read, its pages not supplied */
     XF_DIE_COUNT,
 };
 bool     test_word(const char *w);

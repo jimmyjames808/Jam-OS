@@ -18,10 +18,11 @@
  * what devmgr runs (a PCI function's driver, "usb-bus" or "hda", and for a
  * USB device a class driver per interface, "hid-6.1:0", "usb-storage-1:0"),
  * and through volumes.kill a filesystem service per mount ("fat-data" is
- * /data's, "fat-usb0-test" /usb0-test's), whatever its process is called
- * now (a restarted one is volumes' warm spare promoted, which keeps the
- * name "fat-spare", and `kill fat-spare` names the first of those: volumes
- * knows which). For devmgr's, the kernel's process list says which process
+ * /data's, "fat-usb0-test" /usb0-test's, "extfs-jam" /jam's), whatever
+ * its process is called now (a restarted one is volumes' warm spare
+ * promoted, which keeps the name "fat-spare", and `kill fat-spare` names
+ * the first of those: volumes knows which). For devmgr's, the kernel's
+ * process list says which process
  * has the name and devmgr finds the binding that runs it; it restarts a
  * driver that dies, like any.
  *
@@ -367,7 +368,7 @@ static status_t op_kill(void *ctx, struct idl_txn txn, const char *name, uint32_
     if (!strcmp(who, "init"))
         return ERR_ACCESS_DENIED;   /* nobody would restart anything afterwards */
     status_t st = shell_kill_service(who, out_koid);
-    if (st == ERR_NOT_FOUND && !strncmp(who, "fat-", 4)) {
+    if (st == ERR_NOT_FOUND && (!strncmp(who, "fat-", 4) || !strncmp(who, "extfs-", 6))) {
         st = later_kill(txn, who);   /* a filesystem service: volumes', answered later */
         if (st == IDL_LATER)
             return st;

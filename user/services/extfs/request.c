@@ -222,8 +222,8 @@ void defer_run(void)
     while (ndefers) {
         uint32_t ino = defers[0].ino, kind = defers[0].kind;
         memmove(defers, defers + 1, --ndefers * sizeof(defers[0]));
-        if (kind == DEFER_DROP && files_has(ino))
-            continue;   /* open again: its last close drops it */
+        if (kind == DEFER_DROP && files_held(ino))
+            continue;   /* open or mapped: its last close or unmap drops it */
         bool more = true;
         status_t st = OK;
         while (more && st == OK) {
@@ -341,6 +341,8 @@ static void unmake(void)
         files_release(m->index);
     else if (m->kind == XF_MADE_VIEW)
         views_drop(m->index);
+    else if (m->kind == XF_MADE_MAP)
+        maps_unmake(m->index);
 }
 
 /* Step 1. */
@@ -377,6 +379,7 @@ static uint32_t commit(unsigned slot, uint32_t rn, uint32_t ro_before, handle_t 
         tx_abort();
     }
     op.running = false;
+    maps_settle(ok && st == OK);   /* given up: the mapped files' sizes as the disk has them */
     if (damaged() && !(ro_before & EXT_RO_DAMAGED))
         went_bad("a request");
     if (st == OK)

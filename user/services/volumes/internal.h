@@ -422,8 +422,8 @@ void     pager_init(uint64_t pages);
  * first answered. Errors as fs_spawn's. */
 status_t fs_run(struct vol *b, bool restart);
 /* b's state VMO (made the first time), a new keep channel and b's pager
- * (made the first time) into x (SR_STATE, SR_KEEP, FAT_SR_PAGER), for its
- * next instance. One that can't be made is
+ * (made the first time) into x (SR_STATE, SR_KEEP, FAT_SR_PAGER or for an
+ * ext mount EXTFS_SR_PAGER), for its next instance. One that can't be made is
  * said and left out: that instance starts fresh. */
 void     fs_kept_handles(struct vol *b, struct spawn_handle *x, rights_t *xr, unsigned *n);
 /* The `block` channel opened in advance for b (the boot disk's /data)

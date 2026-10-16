@@ -405,6 +405,10 @@ void pt_spawn_data(char **argv)
     CHECK(path && want && (!strcmp(want, "allowed") || !strcmp(want, "refused")));
     if (!path || !want)
         return;
+    /* The shell's cp made it without the execute bit: on a mount with
+     * modes (an ext /data, tools/posix-mmap-test.sh's MMAP_DATA=ext) that
+     * alone is EACCES. FAT has no bits to set. */
+    (void)chmod(path, 0755);
     char *const args[] = { "pt-prog", "--child-proc", "exit", "7", NULL };
     pid_t pid = 0;
     int r = posix_spawn(&pid, path, NULL, NULL, args, NULL);

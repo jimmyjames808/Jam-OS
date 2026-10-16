@@ -12,6 +12,9 @@
  * and the words in extra (n of them: test powers). */
 bool extfs_start(struct fatrun *r, struct ramdisk *rd, bool read_only, const char *const *extra,
                  unsigned n);
+/* The same, writable, handed a copy of pager (EXTFS_SR_PAGER, with the
+ * rights volumes gives): its files can be mapped. */
+bool extfs_start_pager(struct fatrun *r, struct ramdisk *rd, handle_t pager);
 /* The disk as it is now, saved (sparse) as /data/extfs-e2fsck/<name>.sparse
  * when that directory exists (tools/extfs-svc-test.sh makes it, then runs
  * Linux's e2fsck on every image): only after extfs has stopped (the journal
