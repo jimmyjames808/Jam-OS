@@ -64,6 +64,11 @@
 static const char LIMINE[] = "/EFI/BOOT/BOOTX64.EFI";
 static const char MENU[] = "/boot/limine/limine.conf";
 static const char SPARE[] = "/boot/limine.conf";
+/* The other places Limine 11 looks for a menu (/EFI/BOOT/limine.conf before
+ * MENU): Jam OS writes none of them, but one put there by hand would be
+ * read instead of the menu installed, or boot a drive cut before it. */
+static const char *const elsewhere[] = { "/EFI/BOOT/limine.conf", "/EFI/limine/limine.conf",
+                                         "/limine.conf", "/limine/limine.conf" };
 static const char *const cur[UPDATE_FILES] = { "/boot/jamos.elf", "/boot/bootfs.img" };
 static const char *const prev[UPDATE_FILES] = { "/boot/prev-jamos.elf", "/boot/prev-bootfs.img" };
 #define NEW  ".new"
@@ -451,6 +456,8 @@ static status_t write_esp(struct inst *in)
         st = esp_unlink(&in->w, MENU, i == 0 ? NEW : i == 1 ? PREV : OLD);
     if (st == OK)
         st = esp_unlink(&in->w, SPARE, "");
+    for (unsigned i = 0; st == OK && i < sizeof(elsewhere) / sizeof(elsewhere[0]); i++)
+        st = esp_unlink(&in->w, elsewhere[i], "");
     for (unsigned f = 0; st == OK && f < UPDATE_FILES; f++) {   /* an update's leftovers */
         st = esp_unlink(&in->w, cur[f], NEW);
         if (st == OK)

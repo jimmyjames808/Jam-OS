@@ -23,8 +23,10 @@
  *      disk id: volumes' argument bootdisk=0x<id>; an installed drive by
  *      its GPT disk GUID: bootdisk=gpt:<GUID>), a disk named otherwise
  *      waits (DISK_HELD) until that one has come, and is not the boot disk
- *      then; if it never comes (the stick was swapped, or made without an
- *      id), the waiting one goes on after HELD_FROM_START. Else (or then)
+ *      then; if a stick never comes (it was swapped, or made without an
+ *      id), the waiting one goes on after HELD_FROM_START. An installed
+ *      drive can't be swapped: after a boot from one, a disk that waited
+ *      is never the boot disk (held_over). Else (or then)
  *      a read-only filesystem service is started on the ESP and asked,
  *      again without waiting, for boot/jamos.elf;
  *   3. the file is there: this is the boot disk. The data partition's
@@ -799,9 +801,20 @@ void disk_close_all(void)
 }
 
 /* d waited for the disk the machine booted from, which hasn't come: d
- * may be the boot disk after all. */
+ * may be the boot disk after all (a stick swapped for another), unless the
+ * machine booted from a GPT drive. That is an internal drive, named by its
+ * GUID, which nothing replaces: the stick and any other Jam OS drive are
+ * other disks, read-only (M12.7's Q8), and the drive is the boot disk
+ * whenever it comes. */
 static void held_over(struct disk *d)
 {
+    if (boot_is_gpt()) {
+        char why[112];
+        snprintf(why, sizeof(why), "the drive the machine booted from (%s) is not here",
+                 boot_ident());
+        not_boot(d, why);
+        return;
+    }
     if (boot_disk_taken(d)) {
         not_boot(d, "another disk is the boot disk already");
         return;

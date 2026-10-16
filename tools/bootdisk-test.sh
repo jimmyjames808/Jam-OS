@@ -16,10 +16,57 @@
 # before), both others are held back for it, /data is the boot drive's
 # (neither file in `ls /data`), the other stick's data partition is /usb1
 # and the other drive's /nvme1, read-only (an input script made here).
-# QEMU_SMP passes through. Usage: tools/bootdisk-test.sh <outdir>; exit 0 on PASS.
+# With the second argument `gone`, the boot names a GPT drive that isn't
+# there (R3 stage 3's S1): the stick, its MBR disk id zeroed so the kernel
+# takes the boot word bootdisk=gpt:<GUID> as after a kexec from an
+# installed drive, is held for that drive and then mounted read-only
+# (/usb0, /usb1), never the boot disk: no /esp, no /data.
+# QEMU_SMP passes through. Usage: tools/bootdisk-test.sh <outdir> [gone];
+# exit 0 on PASS.
 set -eu
 DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
 out=$1 name=bootdisk
+if [ "${2:-}" = gone ]; then
+    name=bootdisk-gone
+    mkdir -p "$out"
+    stick="$out/$name-stick.img" log="$out/$name.log"
+    gone=5b7e0c1a-2f4d-4e8b-9a31-6c0d2e4f8a17
+    cp build/jamos.img "$stick"
+    printf '\000\000\000\000' | dd of="$stick" bs=1 seek=440 conv=notrunc 2>/dev/null
+    cat > "$out/$name.txt" <<EOF
+# tools/bootdisk-test.sh gone: the boot word names GPT disk GUID $gone,
+# which no disk has; the stick waits for it, then is another disk.
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 GPT disk GUID $gone (from the kernel before)
+wait 60 is not here
+wait 30 partition 2 is /usb1, read-only
+sleep 1
+send mount
+wait /usb1
+wait {prompt}
+send reboot -f
+wait reboot: resetting
+EOF
+    QEMU_TIMEOUT=${QEMU_TIMEOUT:-180} QEMU_INPUT="$out/$name.txt" QEMU_IMAGE="$stick" \
+        tools/qemu-test.sh "$out" "$name" shell "bootdisk=gpt:$gone" > "$out/$name.out" 2>&1 ||
+        { echo "$name: the script failed"; tail -3 "$out/$name.out"; }
+    ok=1
+    grep -aq "init: hello from ring 3 (.* bootdisk=gpt:$gone" "$log" ||
+        { echo "$name: init was not given bootdisk=gpt:$gone"; ok=0; }
+    grep -aq "but the machine booted from disk GUID $gone: it waits" "$log" ||
+        { echo "$name: the stick was not held for the named drive"; ok=0; }
+    if grep -aq "may be the boot disk\|is the boot disk" "$log"; then
+        echo "$name: the stick became the boot disk on a boot from a GPT drive"
+        ok=0
+    fi
+    grep -aq "partition 1 is /usb0, read-only" "$log" ||
+        { echo "$name: the stick's ESP is not /usb0, read-only"; ok=0; }
+    grep -q "serial-feed: saw 'reboot: resetting'" "$out/$name.out" || ok=0
+    [ $ok = 1 ] && { echo "$name: PASS"; exit 0; }
+    echo "$name: FAIL (see $log)"
+    exit 1
+fi
 mkdir -p "$out"
 other="$out/$name-other.img"
 cp build/jamos.img "$other"
