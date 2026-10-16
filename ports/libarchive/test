@@ -22,9 +22,26 @@ wait bsdunzip 3.8.10 - libarchive 3.8.10 zlib/1.3.2 liblzma/5.8.4 bz2lib/1.0.8
 wait {prompt}
 
 # ---- the tree ---------------------------------------------------------------------------
-send mkdir -p /data/lt/tree/s/d /data/lt/tree/empty; cd /data/lt; N=a-file-with-a-name-longer-than-a-hundred-characters-which-a-plain-ustar-header-has-no-room-for-so-pax-keeps-it.txt
+# (A line longer than the terminal's row scrolls in the shell's editor, which redraws the
+# prompt at every key: a `wait {prompt}` after such a line is met at once. The lines that
+# have no output of their own to wait for are kept short.)
+send mkdir -p /data/lt/tree/s/d /data/lt/tree/empty
 wait {prompt}
-send run $S/seq 1 20000 > tree/a.txt; run $S/printf 'hello\n' > tree/s/b.txt; run $S/printf 'long\n' > tree/s/$N; run $S/printf '' > tree/empty.txt; cp /boot/bin/utest /data/lt/tree/s/d/c.bin
+send cd /data/lt
+wait {prompt}
+send N=0123456789012345678901234567890123456789
+wait {prompt}
+send N=$N$N$N.txt
+wait {prompt}
+send run $S/seq 1 20000 > tree/a.txt
+wait {prompt}
+send run $S/printf 'hello\n' > tree/s/b.txt
+wait {prompt}
+send run $S/printf 'long\n' > tree/s/$N
+wait {prompt}
+send run $S/printf '' > tree/empty.txt
+wait {prompt}
+send cp /boot/bin/utest /data/lt/tree/s/d/c.bin
 wait {prompt}
 send sha256sum tree/a.txt
 wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  tree/a.txt

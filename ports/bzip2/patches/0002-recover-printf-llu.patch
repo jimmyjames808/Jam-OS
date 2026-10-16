@@ -1,0 +1,19 @@
+Description: bzip2recover prints its block positions with %llu, not %Lu
+ bzip2recover writes the 64-bit positions of the blocks it finds with the
+ format "%Lu": "L" is the size of a long double in printf, and the
+ combination is no conversion at all. glibc takes it as a long long; musl
+ (which Jam OS uses) refuses it, and bzip2recover stops at the first block
+ with "I/O error ... Invalid argument" before it has written a file.
+Forwarded: not-needed (a one-line portability fix for musl; Jam OS has no fork to send it from)
+---
+--- a/bzip2recover.c
++++ b/bzip2recover.c
+@@ -37,7 +37,7 @@
+ */
+ #ifdef __GNUC__
+    typedef  unsigned long long int  MaybeUInt64;
+-#  define MaybeUInt64_FMT "%Lu"
++#  define MaybeUInt64_FMT "%llu"
+ #else
+ #ifdef _MSC_VER
+    typedef  unsigned __int64  MaybeUInt64;
