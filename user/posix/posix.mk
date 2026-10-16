@@ -99,7 +99,8 @@ POSIX_CFLAGS := -std=gnu17 -O2 -g -Wall -Wextra -Werror -Wvla -Wno-unused-parame
                 -nostdinc -isystem $(SYSROOT)/include -I$(POSIX)/include -Iuser/include \
                 -I$(BUILD)/uinc -Idrivers/include -iquote $(POSIX)/sys -iquote $(POSIX)/crt \
                 -MMD -MP
-POSIX_SRCS := $(wildcard $(POSIX)/sys/*.c) $(filter-out %/crt1.c,$(wildcard $(POSIX)/crt/*.c))
+POSIX_SRCS := $(wildcard $(POSIX)/sys/*.c) $(wildcard $(POSIX)/sys/*.S) \
+              $(filter-out %/crt1.c,$(wildcard $(POSIX)/crt/*.c))
 POSIX_OBJS := $(POSIX_SRCS:%=$(POSIX_OUT)/%.o)
 
 # glibc's extensions that musl lacks (user/posix/glibc/: <execinfo.h>),
@@ -206,6 +207,9 @@ $(SYSROOT_HDRS): $(MUSL_GENH) $(shell find $(MUSL)/include $(MUSL)/arch/generic/
 	touch $@
 
 $(POSIX_OUT)/%.c.o: %.c | $(SYSROOT_HDRS) $(UINC) $(SYSCALLS_OK) $(IDL_OK)
+	@mkdir -p $(dir $@)
+	$(CC) $(POSIX_CFLAGS) -c $< -o $@
+$(POSIX_OUT)/%.S.o: %.S | $(SYSROOT_HDRS) $(UINC) $(SYSCALLS_OK) $(IDL_OK)
 	@mkdir -p $(dir $@)
 	$(CC) $(POSIX_CFLAGS) -c $< -o $@
 
