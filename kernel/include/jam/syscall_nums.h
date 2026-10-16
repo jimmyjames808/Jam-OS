@@ -106,6 +106,8 @@
 #define SYS_pager_next           162
 #define SYS_pager_supply         163
 #define SYS_pager_op             164
+#define SYS_exception_entry_set  170
+#define SYS_exception_done       171
 
 /* One past the highest number: the size of the dispatch table. */
-#define SYSCALL_COUNT 165
+#define SYSCALL_COUNT 172

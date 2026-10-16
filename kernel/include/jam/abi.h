@@ -393,6 +393,70 @@ struct sys_public_info {
  * this many bytes. */
 #define PROCESS_NAME_MAX 31
 
+/* exceptions: a thread's own faults (abi/syscalls.def 170-171) -----------------
+ * docs/SIGNALS-PLAN.md section 1. A process with an exception entry
+ * (exception_entry_set) has its threads' faults delivered there instead of
+ * being killed for them: the kernel writes a struct exc_frame on the
+ * faulting thread's own stack, below its RSP less the x86-64 ABI's 128-byte
+ * red zone, 64-byte aligned, with a 0 return address just below it, and
+ * returns to user mode at the entry, on that thread, with RDI = the frame
+ * and RSP = the return address's slot (as just after a call). RFLAGS loses
+ * DF, TF, RF and AC; the vector and x87 registers are in their initial
+ * state with MXCSR EXC_MXCSR_INIT; every other register, the FS base
+ * included, is the thread's own. From then until the thread calls
+ * exception_done the thread is in its entry's window: a fault there kills
+ * the process (the first fault's kill line, then "again in its exception
+ * entry").
+ *
+ * Delivered: vectors 0 (divide error), 1 (debug), 3 (int3), 4, 5, 6
+ * (invalid opcode), 11, 12 (stack), 13 (general protection), 14 (page
+ * fault), 16 (x87), 17 (alignment), 19 (SIMD) and 21 from user mode. Still
+ * a kill, entry or not: a page fault whose status is ERR_BAD_STATE (a page
+ * that doesn't match the approved program) or ERR_NO_MEMORY (out of
+ * memory, or the job's page limit), and a fault whose frame can't be
+ * written (RSP in nothing writable: a stack overflow). */
+#define EXC_FAULT  1u   /* exc_frame.kind: a fault of the thread's own */
+
+/* The frame. The registers are the thread's when the fault came, in
+ * Linux's gregs order (REG_R8 .. REG_EFL, ucontext.h), so libc copies them
+ * in one go. Not the FS base, CS or SS: they never change. */
+struct exc_frame {
+    uint32_t size;         /* bytes: EXC_FRAME_XSAVE + xsave_size */
+    uint32_t kind;         /* EXC_FAULT */
+    uint32_t vector;       /* the CPU's exception vector */
+    int32_t  status;       /* page faults: aspace_fault's status: ERR_NOT_FOUND (nothing
+                              mapped there, or a kernel address), ERR_ACCESS_DENIED (not
+                              with that access), ERR_OUT_OF_RANGE (past the end of a
+                              shrunk VMO), ERR_IO, ERR_PEER_CLOSED or ERR_TIMED_OUT (the
+                              pager failed the page); other vectors 0 */
+    uint64_t error;        /* the CPU's error code, 0 for a vector without one; a page
+                              fault at or above the user range's top always says
+                              "present" (bit 0) */
+    uint64_t addr;         /* page faults: the address (CR2); other vectors 0 */
+    uint64_t cookie;       /* the thread's own, random: EXC_RESUME checks it */
+    uint32_t xsave_size;   /* bytes of xsave[] (a multiple of 64) */
+    uint32_t reserved;     /* 0 */
+    uint64_t r8, r9, r10, r11, r12, r13, r14, r15;
+    uint64_t rdi, rsi, rbp, rbx, rdx, rax, rcx, rsp;
+    uint64_t rip, rflags;
+    /* At EXC_FRAME_XSAVE, 64-byte aligned: the vector and x87 registers in
+     * XSAVE's standard (uncompacted) form, every component of XCR0 written
+     * out (XSTATE_BV = XCR0, XCOMP_BV 0): the 512-byte legacy area (FXSAVE's
+     * layout: struct _fpstate), the 64-byte header, then AVX's upper
+     * halves (where CPUID leaf 0xd puts them: byte 576). 832 bytes with
+     * x87, SSE and AVX; FXSAVE's 512 alone on a CPU without XSAVE. Bytes
+     * 416 .. 511 come zeroed: the reserved and software-available words
+     * (where Linux keeps fpx_sw_bytes). */
+    uint8_t  xsave[];
+};
+#define EXC_FRAME_XSAVE 192u
+#define EXC_MXCSR_INIT  0x1f80u   /* every SIMD exception masked, round to nearest */
+
+/* exception_done's `how`. */
+#define EXC_RESUME    1u   /* continue from the frame (checked: abi/syscalls.def 171) */
+#define EXC_LEAVE     2u   /* leave the window: the handler now runs as the thread's code */
+#define EXC_UNHANDLED 3u   /* the kill the fault would have been with no entry */
+
 /* channels --------------------------------------------------------------------
  * A message carries at most CHANNEL_MAX_BYTES bytes and CHANNEL_MAX_HANDLES
  * handles (more: ERR_OUT_OF_RANGE). At most CHANNEL_MAX_QUEUED messages wait

@@ -871,4 +871,20 @@ jam_pager_op:
     ret
     .size jam_pager_op, . - jam_pager_op
 
+    .globl jam_exception_entry_set
+    .type jam_exception_entry_set, @function
+jam_exception_entry_set:
+    mov $SYS_exception_entry_set, %eax
+    syscall
+    ret
+    .size jam_exception_entry_set, . - jam_exception_entry_set
+
+    .globl jam_exception_done
+    .type jam_exception_done, @function
+jam_exception_done:
+    mov $SYS_exception_done, %eax
+    syscall
+    ret
+    .size jam_exception_done, . - jam_exception_done
+
     .section .note.GNU-stack, "", @progbits

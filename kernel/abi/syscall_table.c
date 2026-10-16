@@ -569,6 +569,16 @@ static int64_t call_pager_op(const struct syscall_frame *f)
                          f->args[4], (int64_t)f->args[5]);
 }
 
+static int64_t call_exception_entry_set(const struct syscall_frame *f)
+{
+    return sysc_exception_entry_set(f->args[0]);
+}
+
+static int64_t call_exception_done(const struct syscall_frame *f)
+{
+    return sysc_exception_done(f->args[0], (uint32_t)f->args[1]);
+}
+
 static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_debug_write] = call_debug_write,
     [SYS_process_exit] = call_process_exit,
@@ -674,6 +684,8 @@ static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_pager_next] = call_pager_next,
     [SYS_pager_supply] = call_pager_supply,
     [SYS_pager_op] = call_pager_op,
+    [SYS_exception_entry_set] = call_exception_entry_set,
+    [SYS_exception_done] = call_exception_done,
 };
 
 /* i if i < n, else 0, computed without a branch the CPU could
