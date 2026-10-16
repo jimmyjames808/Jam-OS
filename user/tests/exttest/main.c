@@ -1,0 +1,299 @@
+/* exttest: files bigger than 4 GiB, and sparse ones, written and read back
+ * by a program, for tools/extfs-test.sh's `big` case (docs/M13.6-PLAN.md,
+ * U9). Every line it prints starts with "exttest:".
+ *
+ *   exttest big <path> <MiB>     writes <MiB> MiB of the pattern below into
+ *                                the file (made, or emptied), 1 MiB a write,
+ *                                syncs it, closes it, opens it again and
+ *                                reads it back whole. Says the SHA-256 of
+ *                                what it wrote and of what it read.
+ *   exttest sparse <path>        makes the file below: data in four places
+ *                                of a 6 GiB-and-a-bit file, holes between,
+ *                                a hole at the end (the size set by a
+ *                                truncate that grows it); syncs, closes,
+ *                                opens again and reads the whole file
+ *                                (holes as zeros). Says the SHA-256 of the
+ *                                file as it should be and as it read, and
+ *                                the size and the 512-byte units the file
+ *                                holds (the holes must not be counted).
+ *
+ * The pattern: a 1 MiB block of xorshift64 bytes (seed 0x9E3779B97F4A7C15),
+ * 4 KiB at a time, the first eight bytes of each 4 KiB block replaced by its
+ * number (little endian), so a block that lands in the wrong place is
+ * seen. tools/extfs-test.sh makes the same bytes on the host, hashes them,
+ * and compares with the hashes here and with the file read out of the
+ * volume by Linux's debugfs.
+ *
+ * `sparse`'s file, in bytes:
+ *   [0, 64 KiB)                     blocks 0 to 15 of the pattern, in place
+ *   [5 GiB - 8 KiB, 5 GiB + 56 KiB) 16 blocks of the pattern, in place
+ *   100 bytes at 5 GiB + 5 MiB + 77 byte i is (i * 7 + 3) & 255
+ *   [6 GiB, 6 GiB + 1 MiB)          256 blocks of the pattern, in place
+ *   size 6 GiB + 1 MiB + 8 KiB      zeros everywhere else
+ *
+ * Exit codes: 0 every check held; 1 a mismatch or a failed call; 2 usage.
+ * Its list gives it every mount read-write. */
+#include <os.h>
+#include <sha256.h>
+#include <wants.h>
+
+JAM_WANTS("mount * rw\n");
+
+#define BLK        4096u
+#define PAT_BYTES  (1u << 20)
+#define IO_BYTES   (1u << 20)     /* the size of one write or read */
+#define GIB        ((uint64_t)1 << 30)
+
+static uint8_t pat[PAT_BYTES];
+static uint8_t io[IO_BYTES];
+
+static void make_pattern(void)
+{
+    uint64_t s = 0x9E3779B97F4A7C15ull;
+    for (uint32_t i = 0; i < PAT_BYTES; i += 8) {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        memcpy(pat + i, &s, 8);
+    }
+}
+
+/* Block number n of the pattern, into out (BLK bytes). */
+static void block(uint64_t n, uint8_t *out)
+{
+    memcpy(out, pat + (n % (PAT_BYTES / BLK)) * BLK, BLK);
+    memcpy(out, &n, 8);
+}
+
+static uint64_t ms_since(uint64_t t0)
+{
+    return (now() - t0) / NS_PER_MS;
+}
+
+static bool number(const char *s, uint64_t *out)
+{
+    uint64_t v = 0;
+    if (!*s)
+        return false;
+    for (; *s; s++) {
+        if (*s < '0' || *s > '9' || v > (UINT64_MAX - 9) / 10)
+            return false;
+        v = v * 10 + (uint64_t)(*s - '0');
+    }
+    *out = v;
+    return true;
+}
+
+static void hex(const struct sha256 *s, char out[2 * SHA256_BYTES + 1])
+{
+    struct sha256 copy = *s;
+    uint8_t d[SHA256_BYTES];
+    sha256_done(&copy, d);
+    sha256_hex(d, out);
+}
+
+/* Read the whole file (size bytes) through f, into h. */
+static status_t read_all(struct jfile *f, uint64_t size, struct sha256 *h)
+{
+    for (uint64_t at = 0; at < size;) {
+        size_t want = size - at < IO_BYTES ? (size_t)(size - at) : IO_BYTES, done = 0;
+        status_t st = file_read(f, at, io, want, &done);
+        if (st != OK)
+            return st;
+        if (done != want)
+            return ERR_IO;
+        sha256_add(h, io, done);
+        at += done;
+    }
+    return OK;
+}
+
+/* Write the 1 MiB at `at` (blocks of the pattern) and add it to h. */
+static status_t put_blocks(struct jfile *f, uint64_t at, uint64_t blocks, struct sha256 *h)
+{
+    for (uint64_t b = 0; b < blocks;) {
+        uint32_t n = blocks - b < IO_BYTES / BLK ? (uint32_t)(blocks - b) : IO_BYTES / BLK;
+        for (uint32_t i = 0; i < n; i++)
+            block(at / BLK + b + i, io + (size_t)i * BLK);
+        size_t done = 0;
+        status_t st = file_write(f, at + b * BLK, io, (size_t)n * BLK, &done);
+        if (st != OK)
+            return st;
+        if (done != (size_t)n * BLK)
+            return ERR_NO_SPACE;
+        if (h)
+            sha256_add(h, io, done);
+        b += n;
+    }
+    return OK;
+}
+
+static int cmd_big(const char *path, uint64_t mib)
+{
+    struct jfile f;
+    struct sha256 w, r;
+    char wh[2 * SHA256_BYTES + 1], rh[2 * SHA256_BYTES + 1];
+    sha256_init(&w);
+    sha256_init(&r);
+    uint64_t t0 = now();
+    status_t st = file_open(path, FS_READ | FS_WRITE | FS_CREATE | FS_TRUNCATE, &f);
+    if (st != OK) {
+        printf("exttest: big %s: can't open: %s\n", path, status_str(st));
+        return 1;
+    }
+    for (uint64_t m = 0; st == OK && m < mib; m++)
+        st = put_blocks(&f, m << 20, 256, &w);
+    if (st == OK)
+        st = file_sync(&f);
+    file_close(&f);
+    if (st != OK) {
+        printf("exttest: big %s: the write failed: %s\n", path, status_str(st));
+        return 1;
+    }
+    uint64_t wrote = ms_since(t0);
+    t0 = now();
+    st = file_open(path, FS_READ, &f);
+    if (st == OK) {
+        st = read_all(&f, mib << 20, &r);
+        file_close(&f);
+    }
+    if (st != OK) {
+        printf("exttest: big %s: the read failed: %s\n", path, status_str(st));
+        return 1;
+    }
+    hex(&w, wh);
+    hex(&r, rh);
+    printf("exttest: big %s: %lu bytes written in %lu ms, read back in %lu ms\n", path,
+           (unsigned long)(mib << 20), (unsigned long)wrote, (unsigned long)ms_since(t0));
+    printf("exttest: big %s: wrote sha256 %s\n", path, wh);
+    printf("exttest: big %s: read sha256 %s\n", path, rh);
+    bool same = !strcmp(wh, rh);
+    printf("exttest: big %s: %s\n", path, same ? "PASS" : "MISMATCH");
+    return same ? 0 : 1;
+}
+
+/* The runs of sparse's file: where (bytes) and how many blocks. */
+static const struct {
+    uint64_t at, blocks;
+} runs[] = {
+    { 0, 16 },
+    { 5 * GIB - 8192, 16 },
+    { 6 * GIB, 256 },
+};
+#define ODD_AT   (5 * GIB + (5u << 20) + 77)
+#define ODD_LEN  100u
+#define SP_SIZE  (6 * GIB + (1u << 20) + 8192)
+
+/* The file as it should be, hashed (zeros between the runs). */
+static void expected(struct sha256 *h)
+{
+    static const uint8_t zeros[IO_BYTES];
+    uint8_t odd[ODD_LEN];
+    for (uint32_t i = 0; i < ODD_LEN; i++)
+        odd[i] = (uint8_t)(i * 7 + 3);
+    uint64_t at = 0;
+    for (;;) {
+        /* The next thing that isn't a zero: the start of a run, or the odd bytes. */
+        uint64_t next = SP_SIZE;
+        int which = -1;
+        for (unsigned k = 0; k < sizeof(runs) / sizeof(runs[0]); k++)
+            if (runs[k].at >= at && runs[k].at < next) {
+                next = runs[k].at;
+                which = (int)k;
+            }
+        if (ODD_AT >= at && ODD_AT < next) {
+            next = ODD_AT;
+            which = -2;
+        }
+        for (; at < next; at += next - at < IO_BYTES ? next - at : IO_BYTES)
+            sha256_add(h, zeros, next - at < IO_BYTES ? (size_t)(next - at) : IO_BYTES);
+        if (which == -1)
+            return;
+        if (which == -2) {
+            sha256_add(h, odd, ODD_LEN);
+            at += ODD_LEN;
+            continue;
+        }
+        uint8_t b[BLK];
+        for (uint64_t k = 0; k < runs[which].blocks; k++) {
+            block(runs[which].at / BLK + k, b);
+            sha256_add(h, b, BLK);
+        }
+        at += runs[which].blocks * BLK;
+    }
+}
+
+static int cmd_sparse(const char *path)
+{
+    struct jfile f;
+    struct sha256 want, got;
+    char wh[2 * SHA256_BYTES + 1], gh[2 * SHA256_BYTES + 1];
+    sha256_init(&want);
+    sha256_init(&got);
+    uint64_t t0 = now();
+    status_t st = file_open(path, FS_READ | FS_WRITE | FS_CREATE | FS_TRUNCATE, &f);
+    if (st != OK) {
+        printf("exttest: sparse %s: can't open: %s\n", path, status_str(st));
+        return 1;
+    }
+    for (unsigned k = 0; st == OK && k < sizeof(runs) / sizeof(runs[0]); k++)
+        st = put_blocks(&f, runs[k].at, runs[k].blocks, NULL);
+    uint8_t odd[ODD_LEN];
+    for (uint32_t i = 0; i < ODD_LEN; i++)
+        odd[i] = (uint8_t)(i * 7 + 3);
+    size_t done = 0;
+    if (st == OK)
+        st = file_write(&f, ODD_AT, odd, ODD_LEN, &done);
+    if (st == OK && done != ODD_LEN)
+        st = ERR_NO_SPACE;
+    if (st == OK)
+        st = file_truncate(&f, SP_SIZE);   /* grows: the end is a hole */
+    if (st == OK)
+        st = file_sync(&f);
+    file_close(&f);
+    if (st != OK) {
+        printf("exttest: sparse %s: the write failed: %s\n", path, status_str(st));
+        return 1;
+    }
+    uint64_t wrote = ms_since(t0);
+    t0 = now();
+    struct fs_attr a;
+    st = file_open(path, FS_READ, &f);
+    if (st == OK)
+        st = file_getattr(&f, &a);
+    if (st == OK)
+        st = read_all(&f, a.size, &got);
+    file_close(&f);
+    if (st != OK) {
+        printf("exttest: sparse %s: the read failed: %s\n", path, status_str(st));
+        return 1;
+    }
+    expected(&want);
+    hex(&want, wh);
+    hex(&got, gh);
+    printf("exttest: sparse %s: written in %lu ms, read back in %lu ms\n", path,
+           (unsigned long)wrote, (unsigned long)ms_since(t0));
+    printf("exttest: sparse %s: size %lu, %lu units of 512 bytes held\n", path,
+           (unsigned long)a.size, (unsigned long)a.blocks);
+    printf("exttest: sparse %s: wanted sha256 %s\n", path, wh);
+    printf("exttest: sparse %s: read sha256 %s\n", path, gh);
+    bool same = !strcmp(wh, gh) && a.size == SP_SIZE;
+    /* Holes aren't held: the data is about 1.4 MiB (2,900 units) and the
+     * allocation's overhead (extent nodes) a little more. */
+    bool small = a.blocks < (16u << 20) / 512;
+    printf("exttest: sparse %s: %s%s\n", path, same ? "PASS" : "MISMATCH",
+           small ? "" : " (not sparse: the holes are held)");
+    return same && small ? 0 : 1;
+}
+
+int main(int argc, char **argv)
+{
+    uint64_t mib = 0;
+    make_pattern();
+    if (argc == 4 && !strcmp(argv[1], "big") && number(argv[3], &mib) && mib)
+        return cmd_big(argv[2], mib);
+    if (argc == 3 && !strcmp(argv[1], "sparse"))
+        return cmd_sparse(argv[2]);
+    printf("usage: exttest big <path> <MiB> | exttest sparse <path>\n");
+    return 2;
+}
