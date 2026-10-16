@@ -506,8 +506,8 @@ void sig_thread_end(void)
             i++;
     t->next = spare;   /* unlisted: nobody else can reach it */
     spare = t;
+    mine = NULL;   /* before a new thread can take t: a raise from here on finds none */
     give();
-    mine = NULL;
     /* A raise latched before it was unlisted may still come: with no
      * exception stack its frame goes below RSP, where it can't be written
      * once musl has unmapped the stack (and the thread-local storage with
