@@ -23,6 +23,8 @@
 #include "ptfiles.h"
 
 #define MANY      10000   /* files in one directory: files-many */
+#define MANY_EXT  7000    /* ... on ext: the image's 64 MiB volume has 8192 inodes (statfs
+                           * doesn't say how many are free) */
 #define FEW       300     /* ... in the files section: still several readdir batches */
 #define MAP_BYTES 10000   /* the mapped file's size: two pages and part of a third */
 
@@ -411,7 +413,7 @@ void pt_files_many(char **argv)
         CHECK(!"no /data to test on");
         return;
     }
-    many_files(MANY);
+    many_files(pt_data_ext() ? MANY_EXT : MANY);
     pt_files_end();
 }
 

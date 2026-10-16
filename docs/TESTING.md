@@ -279,23 +279,36 @@ utest's `driver_handle_limits`; **no network card** (`-nic none`) unless
 | `QEMU_BOOT_NVME` | 0 | 1: boot from an installed drive instead of a stick: the image, made Jam OS's GPT layout if it is a stick's (`tools/mkimage.py --gpt`: its ESP and data volumes in "Jam OS ESP" and "Jam OS data", a random disk GUID), is an NVMe drive (`bootindex=0`, before `QEMU_NVME`'s drives) and nothing is on xhci port 1; `QEMU_STICK_THROTTLE`, `QEMU_SAVE` and `QEMU_MENU_AT` work on it as on the stick, and a GPT image is booted as it is. `tools/bootdisk-test.sh` uses it; in an `init` run with it utest's `nvme_*` cases skip the boot drive (a Jam OS drive allows the writable opens they expect refused) and say so |
 | `QEMU_WORDS` | | more boot words after the script's own, e.g. `QEMU_IOMMU=eim QEMU_WORDS=iommu=on tools/usb-test.sh ...`: an area test with DMA translation and interrupt remapping on |
 
-**The image's `/data` is FAT for now, ext when asked** (M13.6's U11a, "Ext
-by default"): `make image` builds partition 2 as FAT32 (MBR type 0C), as it
-always did, until U11b has moved the test scripts that write or read the
-stick's `/data` with mtools (`mcopy -i img@@$DATA_AT`, `mdir`, `mtype`,
-`fatcheck`) to `jamext`; U11b then flips the default. `make image
-DATA_FS=ext` (or `JAMOS_DATA_FS=ext` in the environment, which
-`tools/remote-test.sh` and `tools/pc-batch.sh start` pass to the PC's build
-and put in its stamp: `JAMOS_DATA_FS=ext tools/pc-batch.sh start
-build/runs.txt`) builds the ext one: type 83, made with `jamext`, the same
-bytes every time (`DATA_SEED`, `DATA_TIME`), with `DATA_DIR` (default
-`~/.config/jamos/data`, if it is a directory) copied into it.
-`python3 tools/mkimage.py --data-fs <image>` says which an image is (`ext`,
-`fat`; `--data-at` still prints where partition 2 starts, for either).
-`tools/stickext-test.sh` and the ext cases of `tools/image-test.sh` need
-(or make) an ext image; on one, the init run's posixtest part, `files`,
-`files2` and `fileskid`, still expects FAT's behaviour on `/data` (no hard
-links, no modes) and fails until U11b.
+**The image's `/data` is ext, FAT when asked** (M13.6's U11a and U11b, "Ext
+by default"): `make image` builds partition 2 as an ext volume (MBR type
+83, made with `jamext`, the same bytes every time: `DATA_SEED`,
+`DATA_TIME`), with `DATA_DIR` (default `~/.config/jamos/data`, if it is a
+directory) copied into it. `make image DATA_FS=fat` (or `JAMOS_DATA_FS=fat`
+in the environment, which `tools/remote-test.sh` and `tools/pc-batch.sh
+start` pass to the PC's build and put in its stamp: `JAMOS_DATA_FS=fat
+tools/pc-batch.sh start build/runs.txt`) builds a FAT32 one (type 0C), as
+it always was before U11b. `python3 tools/mkimage.py --data-fs <image>`
+says which an image is (`ext`, `fat`; `--data-at` still prints where
+partition 2 starts, for either). **A test script that puts files on the
+stick's `/data` before a boot, or reads them after one, sources
+`tools/datafs.sh`** and calls its functions on the image copy
+(`data_put`, `data_get`, `data_cat`, `data_has`, `data_ls`, `data_tree`,
+`data_mkdir`, `data_mtime`, `data_check`, `data_grow`; the file's header
+says each): jamext for an ext image (a read-back replays the journal
+first, as a mount would), mtools for a FAT one, so every script works on
+either image. The scripts that are about FAT itself (the fat service, its
+restarts and storms, FAT as a data volume: `data-test.sh`,
+`fat-restart-test.sh`, `fat-spare-test.sh`, `fat-storm-test.sh` and the
+fat cases of `pager-test.sh`) make a FAT image of their own with
+`data_fat_image` (`make image DATA_FS=fat IMAGE=<outdir>/...`) and boot
+that with `QEMU_IMAGE`, so a batch with the default image holds them too;
+the ones with FAT disks of their own (`sticks-test.sh`,
+`storage-test.sh`, `replug-test.sh`, `nvme-write-test.sh`, the second
+sticks of `music-test.sh` and `fat-storm-test.sh`) are as they were.
+posixtest's files section (`files.c`, `files2.c`, `fileskid.c`) asks
+`statfs` what `/data` is and expects ext's answers (links, symbolic links
+and modes work, `..` above the mount is `/`, `st_blocks` counts the
+blocks allocated), or FAT's on a FAT stick.
 
 Examples:
 
