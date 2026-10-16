@@ -327,7 +327,7 @@ bool t_extfs_restart_steps(void)
     };
     static const char *const steps3[] = {
         "die=answered:8", "die=write:41", "die=journal:5", "die=commit:6", "die=write:3",
-        "die=write:23", "die=journal:2",
+        "die=write:23", "die=journal:1",
     };
     static const char *const format[] = { "die=write:40", "die=write:3" };
     struct fatrun r;
