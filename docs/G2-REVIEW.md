@@ -30,16 +30,17 @@ test will meet, or a missing defence; **Low** is a wart, a fragile limit,
 or something only a crafted client meets with no harm to others.
 
 Counts: **0 High, 1 Medium, 5 Low**, and one design question outside
-these tracks' files (D1). The Medium is fixed, with a test that failed
-before it; the Lows are reported.
+these tracks' files (D1). The Medium and Low 2 are fixed, each with a test
+that failed before it; Low 3 is kept as it is (the owner's decision); the
+other Lows are reported. D1 is track MB's.
 
 ## Findings
 
 | # | Sev | Where | What is wrong | Failure scenario | Fix | Outcome |
 |---|---|---|---|---|---|---|
 | 1 | Medium | `user/services/compositor/xdgpopup.c:509` (grant), `user/services/compositor/seat.c:88` (seat_input_serial_ok), `user/services/compositor/pointer.c:274` (the dismissing press), `user/services/compositor/keyboard.c:263,281` (enters that register a serial) | A grab is granted for any of the client's last 8 input serials while its toplevel has the keyboard focus, and the press that dismisses a grab is swallowed and moves no focus (both decided in GC3). Together: the client still has the focus and its serials after the dismissal, so it can take the grab again at once, with the serial it used before, with the `wl_keyboard.enter` the keys coming back from the popup give it, or with one from a `wl_keyboard` it makes. A grabbing popup need not even be mapped to hold the pointer. | A focused client answers `popup_done` by making a new popup and grabbing with its last serial (or re-grabs an unmapped popup each turn). Every click on another window, the background or the strip is swallowed and closes a menu nobody sees: the mouse can't leave the client. Only the keyboard (Alt+Tab, the Super keys) gets out. | When the compositor dismisses a client's grab (a press outside, the focus moving, another client's grab), that client's grabs are refused until it is sent a key or button press (`seat_grab_lock`). A user's dismissal stays the user's: the next press elsewhere goes through. | Fixed (d24be43b). utest `popup_grab`'s new steps failed without it (the old serial's grab configured, line 511) and pass with it; the live `hostile-regrab` case passes |
-| 2 | Low | `user/services/compositor/scene.c:82,142` (walk, surface_on_output), `user/services/compositor/surface.c:313` | `wl_surface.offset` (and attach's x and y below version 5) on a subsurface is kept (`s->dx`, `s->dy`) and never used: its content does not move. GC1's notes said it would ("for a subsurface it moves the content against set_position"); weston adds it to the subsurface's position. | A client growing a subsurface to the left or up by an offset sees it grow right or down instead. No known client does it (Chromium places its subsurfaces with set_position). | Add each applied offset to the subsurface's position, as weston does. | Reported |
-| 3 | Low | `user/services/compositor/subsurface.c:173,385` (subsurface_applied, on_set_desync) | A desynchronized child under a synchronized one is effectively synchronized, so its commits are cached; when its parent is applied without a cache of its own (it hasn't committed since), or turns desynchronized, the grandchild's cache stays until the grandchild commits again. wlroots does the same; weston applies the whole subtree. The protocol leaves it open. | A nested tree's innermost content shows a commit late. | Apply the subtree's caches whenever an ancestor is applied as synchronized (weston's rule). | Reported |
+| 2 | Low | `user/services/compositor/scene.c:82,142` (walk, surface_on_output), `user/services/compositor/surface.c:313` | `wl_surface.offset` (and attach's x and y below version 5) on a subsurface is kept (`s->dx`, `s->dy`) and never used: its content does not move. GC1's notes said it would ("for a subsurface it moves the content against set_position"); weston adds it to the subsurface's position. | A client growing a subsurface to the left or up by an offset sees it grow right or down instead. No known client does it (Chromium places its subsurfaces with set_position). | Add each applied offset to the subsurface's position, as weston does. | Fixed (a8f32859, the owner's decision): `subsurface_offset`, cached commits' offsets added up, set_position setting the place again. utest `comp_sub_commits`' new offset step failed without it (the child stayed put) and passes |
+| 3 | Low | `user/services/compositor/subsurface.c:173,385` (subsurface_applied, on_set_desync) | A desynchronized child under a synchronized one is effectively synchronized, so its commits are cached; when its parent is applied without a cache of its own (it hasn't committed since), or turns desynchronized, the grandchild's cache stays until the grandchild commits again. wlroots does the same; weston applies the whole subtree. The protocol leaves it open. | A nested tree's innermost content shows a commit late. | Apply the subtree's caches whenever an ancestor is applied as synchronized (weston's rule). | Kept as wlroots does it (the owner's decision); noted in G2-PLAN's GC2 notes |
 | 4 | Low | `user/services/compositor/xdgpopup.c:367` (hide), `:537` (on_popup_grab) | A grabbing popup hidden by a commit with no buffer leaves the chain and forgets its grab, but the popups grabbed on it stay in the chain, and a later grab on it by a child is `invalid_grab`, a protocol error that ends the client, where the protocol keeps that error for a parent that never grabbed (one whose grab is over is "dismissed at once"). | A client hides a menu that has a submenu open, or opens a submenu on a hidden menu. The left-over chain entries can't be shown and any focus change dismisses them: no harm to others. | hide() dismisses what is above it in the chain; a grab on a popup whose grab ended is a dismissal, not an error. | Reported |
 | 5 | Low | `user/services/compositor/xdgpopup.c:583` (xdg_popups_turn), `:307` (family_top), `:322` (above) | Each turn walks the stacking order once or twice for every shown popup: with every client at its caps (64 clients, 32 popups each, about 4,000 windows) that is about 10^7 steps a turn. | Needs every client slot; one client's caps make it about 32 x 64 steps. | Keep a count of shown popups, or restack only when the order changed. | Reported |
 | 6 | Low | `user/services/compositor/keyboard.c:281` (keyboard_create) | Each new `wl_keyboard` of the focused client is sent an enter whose serial counts as an input event's (`seat_input_serial`): a focused client can make serials for `set_selection` at will. | None beyond what focus already allows (`set_selection` needs the focus anyway); finding 1's fix does not count enters. | Only enters from a focus change count. | Reported |
@@ -100,7 +101,7 @@ Not findings (checked and correct):
 
 ## Design questions for the owner
 
-1. **D1: queued messages to a service are charged up the writer's job
+1. **D1 (now track MB's): queued messages to a service are charged up the writer's job
    tree with no limit of the program's own** (`user/services/compositor/conn.c:134`,
    and every service channel; outside these tracks' files). A message
    waiting unread is charged to its writer's job and every job above it,
@@ -128,23 +129,24 @@ cases (real libwayland, through libc's Wayland socket) against the
 desktop's own compositor; each case then opens a plain window, and the
 group ends with wlprobe's `toplevel` and `ps -k`, whose listing before
 and after `tools/wl-port-check.py` compares for the compositor's job.
-Run on the PC with finding 1's fix (the group's second run; the first
-found only a bug of the test's own, a buffer used after libwayland had
-destroyed it): **no compositor bug found**. The compositor's handles were
-51 before and 51 after, its message bytes 13,376 and 13,376.
+Run on the PC with finding 1's fix: **no compositor bug found**. The
+compositor's handles were 51 before and 51 after, its message bytes 13,376
+and 13,376. (The group's first runs found only bugs of the test's own: a
+buffer used after libwayland had destroyed it, and the two noted below.)
 
 | Case | What it does | What happened |
 |---|---|---|
 | `hostile-sub-storm` | subsurfaces made, drawn and destroyed 1,000 times under a mapped window (half desynchronized, the parent committing now and then); trees at every cap at once (32 children of the window, a chain 8 deep, 48 in all) drawn and committed; then a 33rd child, a ninth level and a 49th subsurface, each on a client of its own | PASS: the trees shown and the window's frame callback answered; each past a cap `no_memory` on `wl_subcompositor`; a new window after |
 | `hostile-desync-flood` | a desynchronized child drawn 2,000 times with its parent idle, flushed flat out (events read every 250th) | PASS: still connected, the parent's frame callback after, a round trip answered |
 | `hostile-popup-cap` | grabbing popups 8 deep, the keys going up to the eighth, then a ninth; on another client 32 popups and a 33rd | PASS: the keys at the chain's top; the ninth and the 33rd `no_memory` on `xdg_popup` |
-| `hostile-deco` | a decoration object whose toplevel is destroyed first; a decorated toplevel whose `wl_surface` is | `orphaned` on the decoration object: PASS. The `wl_surface` first: the compositor answered `defunct_role_object` (4), said on `wl_display` because the surface's id is gone by then; the case read libwayland's errno (EFAULT for an unknown code on `wl_display`) instead of the protocol error, fixed in the case, not run again (below) |
+| `hostile-deco` | a decoration object whose toplevel is destroyed first; a decorated toplevel whose `wl_surface` is | PASS: `orphaned` on the decoration object; the `wl_surface` first `defunct_role_object` (4), said on `wl_display` because the surface's id is gone by then (the case's first version read libwayland's errno, EFAULT for that code on `wl_display`, instead of the protocol error) |
 | `hostile-handles` | 28 pipe ends given as 28 `wl_shm` pools in one flush; on the socket itself one byte with 28 descriptors that can't cross (eventfds, `/dev/null`, AF_UNIX sockets, epoll sets), with 27 memfds and an eventfd, with 29 memfds | PASS: `invalid_fd` on `wl_shm`; each `sendmsg` EINVAL, nothing sent, the connection unharmed |
-| `hostile-never-reads` | 2,000 `wl_display.get_registry` (each answered by a global event for every global) and nothing read | First run with 20,000 `wl_display.sync`: a client that never reads never gets its ids back (`delete_id`), so it met the compositor's 4,096-object map first and was ended with `no_memory` ("no room for object 4097"), a correct answer but not the slow path. Changed to registries (2,000 ids, about 800 KB of events), not run again (below) |
+| `hostile-never-reads` | 2,000 `wl_display.get_registry` (each answered by a global event for every global) and nothing read | PASS: dropped as too slow, `no_memory` on `wl_display`, read first. (The case's first version sent 20,000 `wl_display.sync`: a client that never reads never gets its ids back by `delete_id`, so it met the compositor's 4,096-object map first, also `no_memory`, "no room for object 4097": a correct answer but not the slow path) |
 | `hostile-regrab` | finding 1: a menu opened by the script's click on the window and dismissed by its click on terminal 1; grabs at once with that click's serial, with the enter the keys coming back gave, with a new `wl_keyboard`'s enter; the script's next click on terminal 1 | PASS: the three grabs dismissed at once, and the next click reached the terminal (the window lost the keys) |
 
-**Not run after the last changes**: the PC stopped answering (2026-10-16,
-about 04:30) before the final batch (the init run, ktest at 4, every
-`wl-port-test.sh` group with the two corrected cases, `mouse-test.sh`,
-`clip-test.sh`); the two cases were changed after the run above and are
-checked only by a compile on the Mac.
+The final run (2026-10-16, main merged in, both fixes in): the whole
+group PASS, every case above, the compositor's handles 51 to 51 and message
+bytes 13,376 to 13,376 again; with it the init run (712 utest cases),
+ktest at 4, `mouse-test.sh`, `clip-test.sh` and every other
+`wl-port-test.sh` group PASS (`cursor` on a rerun: its first boot lost a
+keystroke at the shell's prompt before any case ran, the known flake).
