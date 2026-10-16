@@ -144,6 +144,9 @@ status_t    disk_open_ro(uint32_t id, uint32_t index, handle_t *out);
 /* mark.c: Jam OS's mark on a GPT disk, checked with volumes' own code (the
  * driver has its own, in the partition library). */
 bool        disk_jamos_gpt(const struct disk *d);
+/* disk.c: did the machine boot from a GPT disk, the Jam OS drive (the loader named
+ * it by its GUID)? */
+bool        disk_booted_from_drive(void);
 /* prepare.c, in a task: voldisks.prepare_check (*plan VOLDISKS_PLAN_*, *refused
  * VOLDISKS_REFUSED_*), and volinstall.prepare with the owner's confirmation of an
  * erase (`tail`, `word`: looked at only when the drive isn't empty). */

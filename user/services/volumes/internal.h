@@ -78,7 +78,8 @@ enum level {
 struct vol {
     const char         *path;       /* FAT_PATH or EXTFS_PATH; NULL: a free slot */
     bool                ext;        /* path is EXTFS_PATH: an ext volume (fs_choose's look) */
-    bool                jam;        /* ... the Jam OS drive's data partition, mounted at /jam */
+    bool                jam;        /* ... the Jam OS drive's data partition, mounted at /jam
+                                     * (booted from that drive: /data, and /jam too) */
     bool                dflt_rw;    /* ... its mount is read-write unless asked otherwise: /jam
                                      * and a test disk's; someone else's ext volume never */
     bool                test;       /* a test disk's: its deaths and giving up are expected */
