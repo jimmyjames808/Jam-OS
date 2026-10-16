@@ -23,7 +23,9 @@
 /* A Jam OS disk with another MBR disk id than the boot's waits for the
  * one it booted from until HELD_FROM_START after volumes started, and at
  * least HELD_MIN after it came; then it may be the boot disk after all
- * (that stick was swapped for this one, or its id changed). */
+ * (that stick was swapped for this one, or its id changed). After a boot
+ * from a GPT drive (named by its GUID) it is then another disk, never the
+ * boot disk: disk.c's held_over. */
 #define HELD_FROM_START (10 * NS_PER_S)
 #define HELD_MIN        (3 * NS_PER_S)
 
