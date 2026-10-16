@@ -1,6 +1,16 @@
 /* exttest: files bigger than 4 GiB, and sparse ones, written and read back
  * by a program, for tools/extfs-test.sh's `big` case (docs/M13.6-PLAN.md,
- * U9). Every line it prints starts with "exttest:".
+ * U9). Every line it prints starts with "exttest:", but a hash's.
+ *
+ *   exttest sums <dir>           the SHA-256 of every file of the directory
+ *                                (not the ones below it), as the shell's
+ *                                sha256sum prints it. Names made of bytes
+ *                                over 127, or of 255, can't be typed into
+ *                                the shell: this reads them as they come.
+ *   exttest copy <dir> <prefix>  every file of the directory copied to a
+ *                                new name, the prefix and the old name; a
+ *                                copy that can't be made (the name is too
+ *                                long) is said and the rest go on.
  *
  *   exttest big <path> <MiB>     writes <MiB> MiB of the pattern below into
  *                                the file (made, or emptied), 1 MiB a write,
@@ -286,6 +296,128 @@ static int cmd_sparse(const char *path)
     return same && small ? 0 : 1;
 }
 
+/* ---- names ---------------------------------------------------------------------------- */
+
+#define MAX_NAMES 64
+
+static char names[MAX_NAMES][FS_NAME_MAX];
+
+/* The files (not directories) of dir, their names into names[]. */
+static status_t list_files(const char *dir, unsigned *count)
+{
+    struct fs_entry e;
+    *count = 0;
+    for (uint32_t i = 0;; i++) {
+        status_t st = fs_readdir(dir, i, &e);
+        if (st == ERR_NOT_FOUND)
+            return OK;
+        if (st != OK)
+            return st;
+        if (e.is_dir)
+            continue;
+        if (*count == MAX_NAMES)
+            return ERR_OUT_OF_RANGE;
+        memcpy(names[(*count)++], e.name, FS_NAME_MAX);
+    }
+}
+
+/* "<dir>/<prefix><name>" into path; false if it doesn't fit. */
+static bool join(char *path, size_t cap, const char *dir, const char *prefix, const char *name)
+{
+    int n = snprintf(path, cap, "%s/%s%s", dir, prefix, name);
+    return n > 0 && (size_t)n < cap;
+}
+
+static int cmd_sums(const char *dir)
+{
+    unsigned count;
+    status_t st = list_files(dir, &count);
+    if (st != OK) {
+        printf("exttest: sums %s: can't list it: %s\n", dir, status_str(st));
+        return 1;
+    }
+    int bad = 0;
+    for (unsigned i = 0; i < count; i++) {
+        char path[FS_PATH_MAX], h[2 * SHA256_BYTES + 1];
+        struct sha256 s;
+        struct jfile f;
+        sha256_init(&s);
+        if (!join(path, sizeof(path), dir, "", names[i]))
+            continue;
+        st = file_open(path, FS_READ, &f);
+        if (st == OK) {
+            struct fs_attr a;
+            st = file_getattr(&f, &a);
+            if (st == OK)
+                st = read_all(&f, a.size, &s);
+            file_close(&f);
+        }
+        if (st != OK) {
+            printf("exttest: sums %s: %s\n", path, status_str(st));
+            bad = 1;
+            continue;
+        }
+        hex(&s, h);
+        printf("%s  %s\n", h, path);
+    }
+    return bad;
+}
+
+/* Every file of dir copied to a new name, prefix and the old one (a name
+ * made of bytes over 127 stays what it was). One that can't be made says
+ * why and the rest go on. */
+static int cmd_copy(const char *dir, const char *prefix)
+{
+    unsigned count;
+    status_t st = list_files(dir, &count);
+    if (st != OK) {
+        printf("exttest: copy %s: can't list it: %s\n", dir, status_str(st));
+        return 1;
+    }
+    unsigned made = 0, refused = 0;
+    for (unsigned i = 0; i < count; i++) {
+        char from[FS_PATH_MAX], to[FS_PATH_MAX];
+        struct jfile in, outf;
+        if (!join(from, sizeof(from), dir, "", names[i]) ||
+            !join(to, sizeof(to), dir, prefix, names[i]))
+            continue;
+        st = file_open(from, FS_READ, &in);
+        if (st != OK) {
+            printf("exttest: copy %s: %s\n", from, status_str(st));
+            return 1;
+        }
+        st = file_open(to, FS_READ | FS_WRITE | FS_CREATE | FS_TRUNCATE, &outf);
+        if (st != OK) {
+            printf("exttest: copy %s: %s\n", to, status_str(st));
+            file_close(&in);
+            refused++;
+            continue;
+        }
+        struct fs_attr a;
+        st = file_getattr(&in, &a);
+        for (uint64_t at = 0; st == OK && at < a.size;) {
+            size_t want = a.size - at < IO_BYTES ? (size_t)(a.size - at) : IO_BYTES, done = 0;
+            st = file_read(&in, at, io, want, &done);
+            if (st == OK && done != want)
+                st = ERR_IO;
+            if (st == OK)
+                st = file_write(&outf, at, io, done, &done);
+            at += want;
+        }
+        if (st == OK)
+            st = file_sync(&outf);
+        file_close(&in);
+        file_close(&outf);
+        if (st != OK) {
+            printf("exttest: copy %s: %s\n", to, status_str(st));
+            return 1;
+        }
+        made++;
+    }
+    printf("exttest: copy %s: %u made, %u refused\n", dir, made, refused);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     uint64_t mib = 0;
@@ -294,6 +426,10 @@ int main(int argc, char **argv)
         return cmd_big(argv[2], mib);
     if (argc == 3 && !strcmp(argv[1], "sparse"))
         return cmd_sparse(argv[2]);
-    printf("usage: exttest big <path> <MiB> | exttest sparse <path>\n");
+    if (argc == 3 && !strcmp(argv[1], "sums"))
+        return cmd_sums(argv[2]);
+    if (argc == 4 && !strcmp(argv[1], "copy"))
+        return cmd_copy(argv[2], argv[3]);
+    printf("usage: exttest big <path> <MiB> | sparse <path> | sums <dir> | copy <dir> <prefix>\n");
     return 2;
 }
