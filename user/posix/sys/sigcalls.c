@@ -12,8 +12,9 @@
  * The waits for a signal (sigsuspend, pause, sigtimedwait) sleep with
  * sleep_until, an interruptible wait: a sender interrupts the thread it
  * routed a signal to, and the wait looks again. sigaltstack is accepted
- * and never used: handlers run on the thread's own stack, at a call
- * boundary, so there is no stack overflow for one to catch. */
+ * and not used yet: handlers run on the thread's own stack, a fault's
+ * (sigfault.c) too, until SG4 (docs/SIGNALS-PLAN.md) gives it the
+ * kernel's exception stack. */
 #include <errno.h>
 #include <signal.h>
 #include <string.h>
@@ -222,7 +223,8 @@ long lx_rt_sigqueueinfo(long pid, long sig, long info, long d, long e, long f)
     if (in->si_code >= 0 && pid != lx_pid())
         return -EPERM;   /* only sigqueue's own codes go to another process (Linux's rule) */
     struct sig_info si = { .signo = (int32_t)sig, .code = in->si_code, .pid = lx_pid(),
-                           .value = (intptr_t)in->si_value.sival_ptr };
+                           .value = (intptr_t)in->si_value.sival_ptr,
+                           .addr = (uintptr_t)in->si_addr };
     return send_to(pid, &si);
 }
 
@@ -249,8 +251,12 @@ long lx_rt_tgsigqueueinfo(long tgid, long tid, long sig, long info, long e, long
         return -EINVAL;
     if (tgid != lx_pid())
         return -ESRCH;
+    /* Any code to a thread of ours, as Linux allows within a thread group: a
+     * fault's code and address too (Chromium's stack dump sends a fault on
+     * so), given as the handler's siginfo at this call's boundary. */
     const siginfo_t *in = (const siginfo_t *)(uintptr_t)info;
     struct sig_info si = { .signo = (int32_t)sig, .code = in->si_code, .pid = lx_pid(),
-                           .value = (intptr_t)in->si_value.sival_ptr };
+                           .value = (intptr_t)in->si_value.sival_ptr,
+                           .addr = (uintptr_t)in->si_addr };
     return sig_send_thread((uint32_t)tid, &si);
 }

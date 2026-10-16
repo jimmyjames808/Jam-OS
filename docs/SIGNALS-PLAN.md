@@ -31,6 +31,10 @@ exception stack, raises and a fault's end: `thread_exception_stack` 172,
 `thread_raise` 173, `EXC_RAISED`, `process_info`'s `PROCESS_FLAG_FAULT`
 with `fault_vector` and `fault_status`); SG3 to SG6 and the review SGR
 are not. Tracks are in section 5; the questions for the owner
+
+kernel/arch/x86_64/upcall.c, ktests `upcall_*`), and so is SG3 (libc's
+part: user/posix/sys/sigentry.S and sigfault.c, posixtest's `fault`
+section); SG2, SG4 to SG6 and the review SGR are not. Tracks are in section 5; the questions for the owner
 in section 6, each with a recommendation, which the plan follows until he
 says otherwise. Names and numbers of calls and structures below are
 proposals where SG1 didn't settle them.
@@ -69,6 +73,37 @@ fault; a return to a bad address and a refused `EXC_RESUME` frame say 13
 with their status (SG4 picks the signal: Linux's SIGKILL and SIGBUS).
 The raise's test of a blocked call uses `sleep_until` (which
 `thread_interrupt` would end) rather than `channel_call`.
+
+What SG3 settled differently, or added: the fault entry reads the
+dispositions under `sig_lock`, not by a sequence count: every take marks
+its holder (the thread pointer), and a fault on the thread that holds it
+is `UNHANDLED`; a thread whose record the thread-local pointer doesn't
+give (musl's `SIGEV_THREAD` timer threads after their reset) is
+`UNHANDLED` too. `fpregs` points at a copy of the frame's XSAVE area
+below the frame, 64-byte aligned, not at the frame's own: Linux puts
+`FP_XSTATE_MAGIC2` just after the area, and after the frame there is
+only the interrupted code's red zone. The handler's return copies the
+area back from wherever `fpregs` then points (Linux's sigreturn takes it
+from there). After the handler and before `RESUME`, signals the restored
+mask lets through are delivered (a SIGSEGV the handler sent itself with
+`rt_tgsigqueueinfo` while it was blocked then acts, as on Linux's way
+out of sigreturn). `int3` is `SI_KERNEL` with `si_addr` 0 (Linux's
+`do_int3_user`), a debug trap `TRAP_TRACE`; a spurious x87 or SIMD
+error (no unmasked exception pending) resumes, as Linux's does.
+`SA_RESETHAND` leaves the entry set (the next fault is `UNHANDLED`, the
+same kill line); `sigaction` removes it once no fault signal has a
+handler. `rt_tgsigqueueinfo` and `rt_sigqueueinfo` carry `si_addr` for a
+fault signal with `si_code` > 0. The entry's unwind table describes the
+interrupted frame with DWARF expressions (as glibc's `__restore_rt`
+does), so libgcc's and LLVM's unwinders and debuggers walk through it;
+libc's own `backtrace()` (user/posix/glibc/execinfo.c) doesn't run
+expressions and stops there, so a stack dump from a fault handler shows
+the handler's frames only, until execinfo runs `DW_OP_breg`/`DW_OP_deref`
+(open: for SG6's renderer crash). Both of Linux's answers for
+`PROT_NONE` hold here: `SEGV_ACCERR` on a guard page made by
+`mprotect` and on a `PROT_NONE` reservation (CL1's). The SIGBUS case
+maps a VMO and shrinks it under the mapping: a memfd can't give one
+(libc's memfd is a kept VMO, which never shrinks).
 
 ## Where things stand
 

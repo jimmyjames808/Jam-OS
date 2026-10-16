@@ -24,7 +24,13 @@
  *
  * Standard signals (1 to 31) pending twice are one; real-time ones (32 to
  * 64) queue: the first in its set's info slot, the rest on one queue of
- * RTQ_MAX for the whole process, in order. */
+ * RTQ_MAX for the whole process, in order.
+ *
+ * A fault (sigfault.c) is no pending signal: the fault entry asks
+ * sig_fault_begin on the faulting thread, which reads the record by the
+ * thread-local pointer alone and takes sig_lock unless the thread holds
+ * it itself (`holder`, marked by every take), and sig_action sets or
+ * removes the entry as the fault signals gain or lose handlers. */
 #include <stdlib.h>
 #include <errno.h>
 #include <signal.h>
@@ -89,6 +95,32 @@ static uintptr_t thread_pointer(void)
     return tp;
 }
 
+/* sig_lock's holder (sig.h): a listed thread's thread pointer, or
+ * HOLDER_OTHER for a thread that has none to read (the signal thread, the
+ * main thread before it is listed); 0 while it is free. Only the fault
+ * entry reads it, to tell whether the faulting thread itself holds it. */
+#define HOLDER_OTHER 1
+static uintptr_t holder;
+
+static uintptr_t holder_id(void)
+{
+    if (!__atomic_load_n(&ready, __ATOMIC_ACQUIRE) || sig_on_signal_thread())
+        return HOLDER_OTHER;
+    return thread_pointer();
+}
+
+static void take(void)
+{
+    lock_take(&sig_lock);
+    __atomic_store_n(&holder, holder_id(), __ATOMIC_RELAXED);
+}
+
+static void give(void)
+{
+    __atomic_store_n(&holder, 0, __ATOMIC_RELAXED);
+    lock_give(&sig_lock);
+}
+
 /* The thread-local pointer, as it is. Only ever called once the caller
  * is known not to be the signal thread, which has no thread-local
  * storage: a call the compiler can't move ahead of that test (reading
@@ -107,11 +139,11 @@ __attribute__((noinline)) static struct sig_thread *me_ptr(void)
     if (mine)
         return mine;
     uintptr_t tp = thread_pointer();
-    lock_take(&sig_lock);
+    take();
     struct sig_thread *t = threads;
     while (t && t->tp != tp)
         t = t->next;
-    lock_give(&sig_lock);
+    give();
     mine = t;
     return t;
 }
@@ -317,17 +349,17 @@ void sig_send_process(const struct sig_info *si)
     int sig = si->signo;
     if (sig == SIGKILL)
         die(SIGKILL);
-    lock_take(&sig_lock);
+    take();
     bool blocked = all_block_locked(sig);
     if (ignored_locked(sig) && !blocked) {
-        lock_give(&sig_lock);
+        give();
         return;
     }
     if (fatal_locked(sig) && !blocked)
         die(sig);   /* the lock dies with us */
     if (add_locked(NULL, si))
         route_locked(sig);
-    lock_give(&sig_lock);
+    give();
 }
 
 static struct sig_thread *find_locked(uint32_t tid)
@@ -341,11 +373,11 @@ static struct sig_thread *find_locked(uint32_t tid)
 long sig_send_thread(uint32_t tid, const struct sig_info *si)
 {
     int sig = si->signo;
-    lock_take(&sig_lock);
+    take();
     struct sig_thread *t = find_locked(tid);
     long r = t ? 0 : -ESRCH;
     if (!t || !sig) {
-        lock_give(&sig_lock);
+        give();
         return r;
     }
     if (sig == SIG_INTERNAL_CANCEL) {
@@ -362,17 +394,17 @@ long sig_send_thread(uint32_t tid, const struct sig_info *si)
                 kick_locked(t);
         }
     }
-    lock_give(&sig_lock);
+    give();
     return r;
 }
 
 bool sig_is_pending(int signo)
 {
-    lock_take(&sig_lock);
+    take();
     bool p = shared & SIG_BIT(signo);
     for (struct sig_thread *t = threads; t && !p; t = t->next)
         p = t->pending & SIG_BIT(signo);
-    lock_give(&sig_lock);
+    give();
     return p;
 }
 
@@ -387,12 +419,12 @@ void sig_thread_begin(handle_t handle, uint32_t tid, uint64_t mask)
     t->tid = tid;
     t->tp = thread_pointer();
     t->blocked = mask & ~SIG_NEVER_MASKED;
-    lock_take(&sig_lock);
+    take();
     struct sig_thread **tail = &threads;   /* at the end: the main thread stays first */
     while (*tail)
         tail = &(*tail)->next;
     *tail = t;
-    lock_give(&sig_lock);
+    give();
     mine = t;
     __atomic_store_n(&ready, true, __ATOMIC_RELEASE);
 }
@@ -402,7 +434,7 @@ void sig_thread_end(void)
     struct sig_thread *t = me_ptr();
     if (!t)
         return;
-    lock_take(&sig_lock);
+    take();
     struct sig_thread **p = &threads;
     while (*p && *p != t)
         p = &(*p)->next;
@@ -414,7 +446,7 @@ void sig_thread_end(void)
             rtq[i] = rtq[--nrtq];
         else
             i++;
-    lock_give(&sig_lock);
+    give();
     mine = NULL;
     free(t);   /* unlisted: nobody else can reach it */
 }
@@ -445,12 +477,24 @@ static bool due(struct sig_thread *t)
     return p & ~__atomic_load_n(&t->blocked, __ATOMIC_RELAXED);
 }
 
+/* A siginfo of sig with this code carries an address, not a sender: a
+ * fault's (the kernel's codes are > 0), or one sent as a fault with
+ * rt_tgsigqueueinfo. Linux's layout. */
+static bool has_addr(int sig, int code)
+{
+    return code > 0 && (SIG_BIT(sig) & SIG_FAULTS);
+}
+
 void sig_fill_siginfo(const struct sig_info *si, void *out)
 {
     siginfo_t *info = out;
     memset(info, 0, sizeof(*info));
     info->si_signo = si->signo;
     info->si_code = si->code;
+    if (has_addr(si->signo, si->code)) {
+        info->si_addr = (void *)(uintptr_t)si->addr;
+        return;
+    }
     info->si_pid = si->pid;
     info->si_uid = ONE_USER;
     if (si->signo == SIGCHLD) {
@@ -484,10 +528,10 @@ static void run_handler(const struct sig_act *act, const struct sig_info *si, ui
  * handler run, or its default done), 0 if none was due. */
 static int deliver_one(struct sig_thread *t)
 {
-    lock_take(&sig_lock);
+    take();
     uint64_t can = (t->pending | shared) & ~t->blocked;
     if (!can) {
-        lock_give(&sig_lock);
+        give();
         return 0;
     }
     int sig = __builtin_ctzll(can) + 1;
@@ -501,7 +545,7 @@ static int deliver_one(struct sig_thread *t)
             acts[sig] = (struct sig_act){ .handler = (uintptr_t)SIG_DFL };
         set_blocked_locked(t, was | act.mask | (act.flags & SA_NODEFER ? 0 : SIG_BIT(sig)));
     }
-    lock_give(&sig_lock);
+    give();
     if (act.handler == (uintptr_t)SIG_DFL && !default_ignores(sig))
         die(sig);
     if (!handler)
@@ -510,9 +554,9 @@ static int deliver_one(struct sig_thread *t)
     if (!(act.flags & SA_RESTART))
         t->norestart++;
     run_handler(&act, &si, was);
-    lock_take(&sig_lock);
+    take();
     set_blocked_locked(t, was);
-    lock_give(&sig_lock);
+    give();
     return 1;
 }
 
@@ -590,93 +634,111 @@ bool sig_cancel_asked(void)
 
 /* ---- the calls' own steps (sigcalls.c) ---------------------------------------------- */
 
+/* sig's disposition is a handler of the program's. sig_lock. */
+static bool handled_locked(int sig)
+{
+    uintptr_t h = acts[sig].handler;
+    return h != (uintptr_t)SIG_DFL && h != (uintptr_t)SIG_IGN;
+}
+
+/* A fault signal has a handler: the exception entry is needed. sig_lock. */
+static bool fault_handled_locked(void)
+{
+    for (uint64_t m = SIG_FAULTS; m; m &= m - 1)
+        if (handled_locked(__builtin_ctzll(m) + 1))
+            return true;
+    return false;
+}
+
 long sig_action(int sig, const struct sig_act_io *in, struct sig_act_io *out)
 {
-    lock_take(&sig_lock);
+    take();
     if (out)
         *out = (struct sig_act_io){ acts[sig].handler, acts[sig].flags, acts[sig].mask };
     if (in) {
         acts[sig] = (struct sig_act){ in->handler, in->flags, in->mask & ~SIG_NEVER_MASKED };
         if (ignored_locked(sig))
             discard_locked(sig);   /* POSIX: an ignored pending signal is dropped */
+        if (SIG_BIT(sig) & SIG_FAULTS)
+            sig_entry_need(SIG_ENTRY_HANDLERS, fault_handled_locked());
     }
-    lock_give(&sig_lock);
+    give();
     return 0;
 }
 
 uint64_t sig_ignored_set(void)
 {
     uint64_t ign = 0;
-    lock_take(&sig_lock);
+    take();
     for (int s = 1; s <= SIG_MAX; s++)
         if (acts[s].handler == (uintptr_t)SIG_IGN)
             ign |= SIG_BIT(s);
-    lock_give(&sig_lock);
+    give();
     return ign;
 }
 
 bool sig_reaps_children(void)
 {
-    lock_take(&sig_lock);
+    take();
     bool reap = acts[SIGCHLD].handler == (uintptr_t)SIG_IGN || (acts[SIGCHLD].flags & SA_NOCLDWAIT);
-    lock_give(&sig_lock);
+    give();
     return reap;
 }
 
 uint64_t sig_set_mask(int how, uint64_t set, bool given)
 {
     struct sig_thread *t = me_or_nobody();
-    lock_take(&sig_lock);
+    take();
     uint64_t was = t->blocked;
     if (given) {
         uint64_t m = how == SIG_BLOCK ? was | set : how == SIG_UNBLOCK ? was & ~set : set;
         set_blocked_locked(t, m);
     }
-    lock_give(&sig_lock);
+    give();
     return was;
 }
 
 uint64_t sig_pending_set(void)
 {
     struct sig_thread *t = me_or_nobody();
-    lock_take(&sig_lock);
+    take();
     uint64_t p = (t->pending | shared) & t->blocked;
-    lock_give(&sig_lock);
+    give();
     return p;
 }
 
 bool sig_take_waited(uint64_t want, struct sig_info *out)
 {
     struct sig_thread *t = me_or_nobody();
-    lock_take(&sig_lock);
+    take();
     uint64_t can = (t->pending | shared) & want;
     if (can) {
         int sig = __builtin_ctzll(can) + 1;
         take_locked(t->pending & SIG_BIT(sig) ? t : NULL, sig, out);
     }
-    lock_give(&sig_lock);
+    give();
     return can;
 }
 
 void sig_wait_begin(uint64_t want, uint64_t *was)
 {
     struct sig_thread *t = me_or_nobody();
-    lock_take(&sig_lock);
+    take();
     *was = t->blocked;
     t->waiting = want;
     set_blocked_locked(t, t->blocked & ~want);
     for (uint64_t m = want & shared; m; m &= m - 1)   /* the process's, now ours to take */
         route_locked(__builtin_ctzll(m) + 1);
-    lock_give(&sig_lock);
+    give();
 }
 
 void sig_wait_end(uint64_t was)
 {
     struct sig_thread *t = me_or_nobody();
-    lock_take(&sig_lock);
+    take();
     t->waiting = 0;
     set_blocked_locked(t, was);
-    lock_give(&sig_lock);
+    give();
 }
 
 bool sig_due_self(void)
@@ -717,9 +779,48 @@ void sig_spawn_masks(uint64_t *blocked, uint64_t *ignored)
 
 void sig_start_state(uint64_t ignored)
 {
-    lock_take(&sig_lock);
+    take();
     for (int s = 1; s <= SIG_MAX; s++)
         if ((ignored & SIG_BIT(s)) && !(SIG_NEVER_MASKED & SIG_BIT(s)))
             acts[s].handler = (uintptr_t)SIG_IGN;
-    lock_give(&sig_lock);
+    give();
+}
+
+/* ---- faults (sigfault.c) ------------------------------------------------------------ */
+
+bool sig_fault_begin(int sig, struct sig_act_io *act, uint64_t *was)
+{
+    /* In the kernel's window: nothing here may fault or wait for this
+     * thread. The record by the thread-local pointer only (me_ptr's
+     * search takes the lock), and the lock only if another thread has it. */
+    if (!__atomic_load_n(&ready, __ATOMIC_ACQUIRE) || sig_on_signal_thread())
+        return false;
+    struct sig_thread *t = mine_now();
+    if (!t || __atomic_load_n(&holder, __ATOMIC_RELAXED) == thread_pointer())
+        return false;
+    take();
+    struct sig_act a = acts[sig];
+    if (!handled_locked(sig) || (t->blocked & SIG_BIT(sig))) {
+        give();
+        return false;
+    }
+    if (a.flags & SA_RESETHAND)
+        acts[sig] = (struct sig_act){ .handler = (uintptr_t)SIG_DFL };
+    *was = t->blocked;
+    set_blocked_locked(t, *was | a.mask | (a.flags & SA_NODEFER ? 0 : SIG_BIT(sig)));
+    give();
+    *act = (struct sig_act_io){ a.handler, a.flags, a.mask };
+    return true;
+}
+
+void sig_fault_end(uint64_t mask)
+{
+    struct sig_thread *t = me_ptr();
+    if (!t)
+        return;
+    take();
+    set_blocked_locked(t, mask);
+    give();
+    if (due(t))
+        deliver(t);
 }
