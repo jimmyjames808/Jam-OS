@@ -70,15 +70,21 @@ $(TS_HDRS): $(TS_OUT)/inc/%.h: $(TS_PORT)/tinyssh-features.h
 	@mkdir -p $(dir $@)
 	printf '#include "tinyssh-features.h"\n' > $@
 
+# Flag stamps (the Makefile's FLAG_STAMP), and jamos-cc itself: it adds flags.
+TS_CFLAGS_OURS := $(TS_CFLAGS) -Werror
+FLAGS_ts-up    = $(TOOLID) $(TS_CFLAGS)
+FLAGS_ts-ours  = $(TOOLID) $(TS_CFLAGS_OURS)
+$(foreach s,ts-up ts-ours,$(eval $(call FLAG_STAMP,$(s),FLAGS_$(s))))
+
 # (jamos-cc wants the whole sysroot, libc.a too, even to compile.)
-$(TS_OUT)/up/%.o: $(TS_SRC)/%.c $(TS_PORT)/tinyssh-features.h | $(TS_HDRS) $(TS_CHECKED) $(SYSROOT_LIBS) \
-                  $(SYSROOT_HDRS)
+$(TS_OUT)/up/%.o: $(TS_SRC)/%.c $(TS_PORT)/tinyssh-features.h $(FLAGDIR)/ts-up tools/jamos-cc \
+                  | $(TS_HDRS) $(TS_CHECKED) $(SYSROOT_LIBS) $(SYSROOT_HDRS)
 	@mkdir -p $(dir $@)
 	$(TS_CC) $(TS_CFLAGS) -c $< -o $@
-$(TS_OUT)/ours/%.o: $(TS_PORT)/%.c $(TS_PORT)/tinyssh-features.h | $(TS_HDRS) $(TS_CHECKED) \
-                    $(SYSROOT_LIBS) $(SYSROOT_HDRS)
+$(TS_OUT)/ours/%.o: $(TS_PORT)/%.c $(TS_PORT)/tinyssh-features.h $(FLAGDIR)/ts-ours tools/jamos-cc \
+                    | $(TS_HDRS) $(TS_CHECKED) $(SYSROOT_LIBS) $(SYSROOT_HDRS)
 	@mkdir -p $(dir $@)
-	$(TS_CC) $(TS_CFLAGS) -Werror -c $< -o $@
+	$(TS_CC) $(TS_CFLAGS_OURS) -c $< -o $@
 
 $(TS_BIN): $(TS_OBJS) $(TS_PORT)/wants $(SYSROOT_LIBS) tools/jamos-cc
 	@mkdir -p $(dir $@)

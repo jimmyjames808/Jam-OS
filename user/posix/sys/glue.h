@@ -53,6 +53,10 @@ unsigned __jam_unmapself_prepare(void *base, unsigned long size);
  * name (size bytes): 0, or an errno (EBADF, ENOTTY, ERANGE). tty.c. */
 int __jam_ttyname(int fd, char *name, unsigned long size);
 
+/* dlopen's override: tell the ENOSYS log (enosys.c) which library the
+ * program tried to load; nothing if the log is off. */
+void __jam_enosys_dlopen(const char *file);
+
 /* crt1's start: read the startup message on the channel ch (a handle_t),
  * build Linux's start block (argc, argv, envp, auxv) and run main through
  * musl's __libc_start_main with init and fini, as musl's own crt1 does

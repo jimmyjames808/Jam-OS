@@ -26,7 +26,10 @@
  * Ctrl+C ends a busy loop. A fault is a signal on the faulting thread
  * only while a fault signal has a handler (sigfault.c: the kernel's
  * exception entry); otherwise the kernel kills the process, as for any
- * program.
+ * program, and waitpid says the fault's signal (sig_fault_signal).
+ * A handler with SA_ONSTACK runs on the thread's alternate stack
+ * (sigaltstack, below), a fault's and one delivered at a call boundary;
+ * one without it on the stack the thread was on.
  *
  * Locks: sig_lock (signal.c) guards the dispositions, every pending set
  * and the list of threads. It is a leaf: nothing waits, calls another
@@ -185,6 +188,41 @@ bool sig_fault_begin(int sig, struct sig_act_io *act, uint64_t *was);
  * on the way out of sigreturn (a signal the handler sent itself, blocked
  * while it ran, then acts before the thread goes on). */
 void sig_fault_end(uint64_t mask);
+
+/* The signal a fault that killed a process (process_info's
+ * PROCESS_FLAG_FAULT with its fault_vector and fault_status) is, as
+ * Linux's waitpid says it: SIGSEGV, SIGBUS, SIGILL, SIGFPE or SIGTRAP; out
+ * of memory is SIGKILL (the OOM killer's), a page that doesn't match the
+ * approved program SIGBUS. */
+int sig_fault_signal(uint32_t vector, int32_t status);
+
+/* ---- the alternate stack (sigfault.c; sigcalls.c's sigaltstack) ---------------------- */
+
+/* Each thread's own (a new thread has none; no lock). The kernel's
+ * exception stack (thread_exception_stack) is the same range, so a fault
+ * that finds the thread's stack unusable reaches the entry on it: a
+ * handler with SA_ONSTACK runs there, one without it is moved to the
+ * interrupted stack (sigfault.c). */
+
+/* The calling thread's, as sigaltstack says it for the stack pointer sp:
+ * the return is SS_DISABLE (none: *base and *size 0), SS_ONSTACK (sp is on
+ * it) or 0. */
+int  sig_alt_state(uintptr_t sp, uintptr_t *base, size_t *size);
+/* Set it to [base, base + size), or remove it (size 0). The kernel's
+ * range is set first. 0, or -EFAULT (the kernel refused the range). The
+ * caller checked the size (sig_alt_min) and that it isn't on it. */
+long sig_alt_set(uintptr_t base, size_t size);
+/* The smallest stack a fault's frame and its siginfo and ucontext fit on
+ * with a little room for a handler: what sigaltstack's ENOMEM compares
+ * with (never less than MINSIGSTKSZ). Depends on the CPU's vector state. */
+size_t sig_alt_min(void);
+/* fn(arg) as a handler with SA_ONSTACK runs: on the calling thread's
+ * alternate stack unless there is none or it is on it already. */
+void sig_run_onstack(void (*fn)(void *), void *arg);
+/* The calling thread's kernel exception stack set again from the record,
+ * for a thread that has the record's memory and not the kernel's state (a
+ * forked child's). */
+void sig_alt_reapply(void);
 
 /* ---- the signal thread (sigthread.c) ------------------------------------------------- */
 

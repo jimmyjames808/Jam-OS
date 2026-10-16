@@ -406,8 +406,9 @@ stubs) and lists 13 sites in `headless_shell`: 12 in Crashpad's client
 `LoggingMunmap`: linux_syscall_support's inline calls) and `SyscallAsm`
 (the seccomp sandbox's raw call), for CB3. Still open:
 `ports.py package --from` refuses the build, as the package format holds
-no file over 64 MiB (PO13's big packages); the two helper programs are
-not in the package yet (CB2 and CB3 add them with their runs).
+no file over 64 MiB (PO13's big packages); `test_child_process` is in
+the recipe since CB2, `chrome_crashpad_handler` is not yet (CB3 adds it
+with its run).
 
 The last round's link errors and their fixes (CB1b): base's `close()`
 wrapper found libc's with `dlsym(RTLD_NEXT)` (patch 0910: the linker's
@@ -556,6 +557,172 @@ ninja ran `-j 10`).
   of swap used; `-j14` to `-j16` and a 16 GB claim kept it under WSL's 23
   GB. A clean build's time is not measured yet: at those rates it is
   roughly 2.5 to 3.5 hours at `-j16`.
+
+#### CB2 as built (2026-10-16)
+
+Track CB2, `base_unittests` on Jam OS (CR-b): `tools/cr-test.sh base` runs
+every unit test of base, one program for each suite, in QEMU on the test PC
+with the ENOSYS log on. **base_unittests runs**: 77 MB from `/data`, started
+in about a second (it runs from its pages). Of the 8,956 tests in 778 suites,
+8,277 pass, 39 skip themselves and 640 are on the skip list
+(`tools/cr/base_unittests.skip`: 475 named tests and the 165 of
+`FilePathWatcher*`, each with its layer and reason). `base` leaves those out,
+and with the list the six shards of `base` all PASS (2026-10-16, main at
+6af21c8a plus this track): a PASS means every test that is not on the list
+passed. The findings below are the list's groups, most tests first.
+
+- **How the programs get onto the test disk.** The package format holds no
+  file over 64 MiB (PO13), so nothing is packaged: `tools/cr/base-stick.py`
+  copies the image, grows its `/data` to 640 MiB (as `tools/bigprog-test.sh`
+  does) and writes `/data/cr/out/jamos/base_unittests` and
+  `test_child_process` (from `~/cr/ports/chromium/stage`, built by
+  `tools/cr/build.sh`; the recipe lists `test_child_process` now), their
+  approval lines in `/data/etc/allow` and their page tables in
+  `/data/etc/allow.d/<sha-256>` as the shell's `allow` would have made them
+  (`tools/portslib/pagetable.py` stops at 64 MiB, so the stick's writer has
+  its own). Base's test files go beside them (`/data/cr/base/test/data`,
+  three metrics XML files, two generated ones): the source root is two
+  directories above the program's own (`DIR_SRC_TEST_DATA_ROOT`), hence
+  `out/jamos/`. **A static program is linked against its build's libc**: after
+  the start protocol changed (CS1, CU2, U6) the stage's old `base_unittests`
+  died with a general protection fault in `ids_init_locked` at its first
+  instruction. After a libc change, remove it from the kept tree and
+  `tools/cr/build.sh start base_unittests test_child_process` (2 minutes).
+- **How the tests run.** `tools/cr/base-run.py`. A boot lists the tests (the
+  program writes `--gtest_list_tests` to a file and the host reads it from
+  the saved stick: ten thousand lines through the serial line come out
+  garbled). A boot then runs each suite as a program of its own
+  (`--single-process-tests --gtest_filter=<suite>.*`), typed into the shell
+  by `tools/serial-feed.py` with `JAMOS_ENOSYS_LOG=1`; and rounds run only
+  the tests that have no result, six to a program, then two, then one, so a
+  crash costs its own test and one boot, not its neighbours. A hang ends
+  the script (a wait of 240 s), and the driver ends QEMU itself when
+  serial-feed's log says so. A suite's shard is its name's checksum.
+  Results are in `<outdir>/base/run/`: `results.txt`, `failures/<test>.txt`
+  (the test's output and the kernel log lines that came with it),
+  `enosys.txt`, `summary.txt`. A shard takes 4 to 11 minutes with the list,
+  and 5 to over 60 without it (`CR_BASE_ALL=1`: a crash is a boot, and
+  every `FilePathWatcher` test waits out its timeout). `CR_BASE_ARGS` adds
+  arguments for the program (`--v=1`, `--gtest_death_test_style=fast`).
+- **No `/tmp`.** `ls /tmp` says "no such file or directory": every Chromium
+  program expects one. The run points `TMPDIR` (base) and `TEST_TMPDIR`
+  (gtest's captured streams and death tests, which use `/tmp` whatever
+  `TMPDIR` says) at `/data/cr/tmp`. Without `TEST_TMPDIR` a death test
+  dies earlier, in `CaptureStderr`'s `mkstemp`.
+
+**Findings.** The causes marked "seen" were seen in the log; "?" is a guess
+from the failing call.
+
+1. **POSIX layer: a process `clone` and `fork`. 281 death tests**
+   (`*DeathTest.*` and every test that expects a `CHECK` to abort:
+   `SpanTest`, `CheckDeathTest`, `ByteSizeTest`, `FeatureListTest`,
+   PartitionAlloc's death tests, and the rest). gtest makes a death test's
+   child with `fork()` (`--gtest_death_test_style=fast`) or
+   `clone(SIGCHLD)` (`threadsafe`: `gtest-death-test.cc:1329`; the style the
+   default runs use, since they log no fork), after `CaptureStderr()` has pointed stderr at
+   a file; so the abort that follows prints nothing, and the program is
+   killed by SIGABRT about 0.8 s after it starts. Seen: with the fast style
+   `ClampTest.Death` logs `syscall 57 (fork)` (`ENOSYS`); with the default,
+   every death test aborts the same way and no fork is logged, because
+   `__jam_clone` returns `-ENOSYS` for a process clone (`thread.c:166`) without
+   a log line. [FORK-PLAN](FORK-PLAN.md) answers it (`clone(fn, stack,
+   SIGCHLD)` for gtest's threadsafe death tests, `fork` for the fast style:
+   FL1b); until FL1b merges these stay skipped. Small and in the layer now:
+   `__jam_clone` should say what it refused.
+2. **POSIX layer: a user pointer that faults kills the process. 29 tests**
+   (`BackupRefPtrTest` 23, `ProtectedMemoryTest` 4, `CPUDeathTest`,
+   `ProtectedMemoryDeathTest`). Seen: the page fault ("page fault at rip
+   ..., address <a page of the program's `protected_memory` section>") is the
+   store in `lx_prlimit64` (`rlimit.c`, `movups` through the fourth
+   argument), symbolised and disassembled. base's `CheckMemoryReadOnly`
+   (`protected_memory_posix.cc:45`) calls `getrlimit(RLIMIT_NPROC, <a
+   page it made read-only>)` and CHECKs for `-1` with `EFAULT`: Linux's way
+   of asking "is this page read-only". Here the handler writes through the
+   pointer and the process dies. Every handler that stores into a caller's
+   buffer has the hole, and Chromium and Crashpad probe memory with `write`
+   to a pipe and expect `EFAULT`: one checked copy-out (a fault-tolerant
+   store, or a call that writes for the caller) answers them all.
+3. **POSIX layer: calls the log names.** `inotify_init` and `inotify_init1`
+   (253, 294): all 165 `FilePathWatcher*` tests (37 failing at the first
+   call, the rest wait out their timeouts: a minute each, so the list
+   leaves them all out); one hangs. `mincore` (27): 21 tests, PartitionAlloc's
+   purge tests, `ProcessMemoryDumpTest.CountResidentBytes*`,
+   `SamplingHeapProfilerTest.GetSamplesWithResidency`. `pkey_alloc` (330):
+   `PartitionAllocDeathTest`'s set-up (22 of the death tests). `sendfile` (40):
+   `FileUtilTest.CopyFileContentsWithSendfile*` (3). Socket options:
+   `UnixDomainSocket::EnableReceiveProcessId` fails (`SO_PASSCRED`: 3 tests
+   `RecvPid*`), a non-blocking `Send` on a socket pair returns a wrong
+   count (`SyncSocketTest.NonBlockingWriteTest`), and two tests wait for a
+   blocked receiver that `shutdown()` should wake (`SyncSocketTest.DisconnectTest`,
+   `CancelableSyncSocketTest.ShutdownCancelsReceive`: hang, cause ?).
+   `uname`: the release reads `0.1.0`, so `SysInfo::KernelVersionNumber` is
+   below every Linux feature gate (`SysInfoTest.KernelVersionNumber`), and
+   there is no DMI hardware information (`GetHardwareInfo`). Shared memory:
+   a purged discardable page does not read back as zeros
+   (`DiscardableSharedMemoryTest.ZeroFilledPagesAfterPurge`).
+4. **File system under `/data` (FAT now): 54 tests** (`FileUtilTest` 30,
+   `ImportantFileWriterCleanerTest` 10, `FileTest` 6, `FileProxyTest` 3,
+   `ImportantFileWriterTest` 2, `FileEnumerator.SymLinkLoops`,
+   `FileUtilMultiThreadedTest`, `DriveInfoTest`). `symlink()` fails (the
+   `SingletonLock` of a Chromium profile is a symlink), `mkfifo` fails,
+   `chmod` has no effect (modes read back 0644 and 0755, and the
+   read-only bit is not kept), `utimensat` does not set times (so the
+   cleaner's old-file tests find nothing old), a file unlinked while open is
+   still found by name, `mkdirat` of a long name says "Filename too long" (which
+   limit: ?), and a descriptor's `O_RDONLY` or write-only mode is not
+   enforced (`FileTest.Length`, `ReadWriteSpans`: ?). M13.6's ext volume
+   (U6 gives `extfs` symlinks, modes, owners and times) should clear most:
+   rerun `base` on an ext test disk once U7a merges. **A writable shared
+   mapping of a `/data` file** (8 tests: `MemoryMappedFileTest`,
+   `FilePersistentMemoryAllocatorTest`, `PersistentHistogramAllocatorTest`,
+   `PersistentMemoryAllocatorTest.TruncateTest`): `MemoryMappedFile::Initialize`
+   with `READ_WRITE` fails (U10 and WRITEMAP-PLAN's writable pager VMOs);
+   two of them then go on to use a null object and fault.
+5. **Starting programs, FORK-PLAN (or CB5's launcher patch): 46 tests**
+   (`ProcessUtilTest` 16, `ProcessTest` 12, `FileLockingTest` 7,
+   `PlatformThreadTidCacheTest` 2, `ProcessGTestOutputTest` 2, and `LaunchTest`,
+   `ForkWithFlagsTest`, `UnitTestLauncherDelegateTester`, `RustCommandLineTest`,
+   `ProcessMetricsTest.GetChildOpenFdCount`,
+   `SystemMetricsTest.MeasureChildCpuUsage`, `LoggingTest`). Seen with
+   `--v=1`: the ENOSYS log shows `syscall 57 (fork)` first with
+   `ProcessUtilTest.SpawnChild`, and `process.IsValid()` is false right after
+   `base::LaunchProcess` / `SpawnMultiProcessTestChild` in each, so
+   `test_child_process` is never started. A `fork` (FORK-PLAN's FL1b) or
+   section 5's launcher patch (`posix_spawn` for `LaunchProcess`) answers
+   all of them.
+6. **/proc, CL2 and PRC: 14 tests.** The log names `/proc/self/cmdline`
+   (`SetProcTitleLinuxTest` 3), `/proc/self/stat`, `/proc/<pid>/stat`,
+   `/proc/<tid>/stat` (`PlatformThreadMetricsTest`, `ProcessMetricsTestLinux`),
+   `/proc/<pid>/task`, `/proc/self/ns/user`, `/proc/self/mem`, `/proc/meminfo`,
+   `/proc/cpuinfo`. `/proc/self/maps` is there but lacks what the tests look
+   for (the stack's line, the program's own mappings: `ProcMapsTest`,
+   `ModuleCacheTest` 5, `PlatformSharedMemoryRegionTest.MappingProtectionSetCorrectly`).
+7. **Executable memory, CJ1: `PartitionAllocPageAllocatorTest` (5).**
+   `mprotect(PROT_EXEC)` of anonymous memory is refused without the JIT
+   right (W^X, by design: section 12); the tests then use a null buffer.
+8. **`dlopen`: 3 tests** (`NativeLibraryTest.LoadLibrary`,
+   `ImmediateCrashTest.ExpectedOpcodeSequence`,
+   `ElfReaderTestWithCurrentImage.ReadElfBuildId`). Seen: the static
+   `dlopen` fails, and the ENOSYS log now names the library (`dlopen
+   /data/cr/out/jamos/libtest_shared_library.so`, `dlopen libmalloc_wrapper.so`).
+   They need shared libraries as data and stay skipped. Any Chromium
+   program that tries to load one (a GPU driver, a codec) shows here.
+9. **The link, 1 test** (`ElfReaderTestWithCurrentElfImage.ReadElfBuildId`):
+   the program has no GNU build-id note (Chromium's crash reporting keys
+   modules by it): `--build-id` in the link driver (CT).
+10. **Not understood, 1**: `PartitionAddressSpaceTest.ZeroSegment` reads an
+    address-space size of 65,536 where it wants at least 4 GiB.
+
+**Infrastructure notes** (for the main session). `pc-batch.sh cancel` did not
+stop one run's QEMU and driver (`remote-slots.py --status` showed it holding
+4 CPUs an hour later; the classifier refused a `pkill` through
+`remote-test.sh`). A batch still running when the laptop sleeps is lost,
+with its output. The serial line garbles a burst of ten thousand lines and can
+cut a kernel log line into a test's result line (the driver reads the list
+from the stick and tolerates the cut). `QEMU_SAVE` is needed to read
+anything the guest wrote. The init run on this tree fails only
+posixtest's `execinfo` section (`execinfo.c:194/195/227/235`), the known
+regression since BT.
 
 ### 2. The address space: huge sparse reservations (the top risk)
 
@@ -2257,6 +2424,22 @@ Chromium's `StackTrace` takes its glibc path instead of being patched out
   thread; a trace from a signal handler reaches the raising function and
   its caller; a `qsort` comparator's trace reaches `qsort`'s caller;
   `backtrace_symbols` and `backtrace_symbols_fd` lines.
+- **A kept build fails it (2026-10-16, track XR)**: after BT merged,
+  posixtest's execinfo section failed on the main checkout's PC tree
+  (`execinfo.c:194`, `:195`, `:227`, `:235`: a trace through musl's or the
+  layer's frames too short) and passed everywhere else. No code had
+  regressed: that tree was built before BT, and the Makefile then had no
+  rule that rebuilds an object when its flags change, so musl's and the
+  layer's objects that BT's sources did not touch kept being compiled
+  without unwind tables (`.eh_frame` missing in `qsort.c.o`, `raise.c.o`,
+  `calls.c.o`, `kill.c.o` of `~/work/jamos`'s libc.a; every dir of the PC
+  from before the 16th was the same). The flag stamps (MKF: `build/flags/`)
+  are the fix, and `make check` now also refuses a libc.a whose signal,
+  thread-start, qsort, execinfo or libjam members have no `.eh_frame`
+  (`tools/checkeh.py`). Checked on the PC in one tree: built with the
+  flags off, then the flags back on without a rebuild (the old Makefile):
+  `execinfo.c:183` fails both times; with MKF merged the same tree
+  rebuilds and passes.
 
 ## Later
 

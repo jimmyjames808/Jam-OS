@@ -172,7 +172,7 @@ def test_packages(tmp, real_ports, key, pub):
     abi = "00112233445566ff"
     stage = os.path.join(b.base("app"), "stage")
     made = packagemod.make(t.recipes["app"], stage, os.path.join(tmp, "pk1"), abi, key)
-    expect([n for n, _ in made] == ["app", "app-extra"], "packages: app makes %s" % made)
+    expect([n for n, _ in made] == ["app", "app-extra", "app-test"], "packages: app makes %s" % made)
     blobs = {}
     for name, path in made:
         with open(path, "rb") as f:
@@ -192,6 +192,10 @@ def test_packages(tmp, real_ports, key, pub):
     expect([p for p, _, _, _ in e.files] == ["share/app/alias.txt",
                                              "share/licences/app-extra/LICENSE"]
            and not e.programs and not e.built_with, "packages: app-extra: %s" % e.files)
+    tp = pkgverify.verify_package(blobs["app-test"], pub, abi)
+    expect([p for p, _, _, _ in tp.files] == ["share/app/check.txt",
+                                              "share/licences/app-test/LICENSE"],
+           "packages: app-test (made, though the repository leaves it out): %s" % tp.files)
     expect(packagemod.plan(t.recipes["liba"], os.path.join(b.base("liba"), "stage")) == [],
            "packages: a library port made a package")
     again = packagemod.make(t.recipes["app"], stage, os.path.join(tmp, "pk2"), abi, key)
@@ -273,7 +277,8 @@ def test_repo(tmp, t, b, key, pub, key2):
     s1 = repomod.make(t, b, top, repodir, key, ["app"], False, now=2000000000, say=quiet)
     x, v, ms = check_repo(repodir, pub)
     expect(s1 == 2000000000 and sorted(x.packages) == ["app", "app-extra", "tool"],
-           "repo: serial %d, packages %s" % (s1, sorted(x.packages)))
+           "repo: serial %d, packages %s (a -test subpackage is never in the repository)" %
+           (s1, sorted(x.packages)))
     expect(sorted(x.sources) == ["app", "tool"], "repo: sources %s" % sorted(x.sources))
     expect(x.packages["app"]["runs"] == [("tool", None)], "repo: app's runs in the index")
     ids = sorted(i for _, i, _ in pkgverify.affected(v, ms["app"]))

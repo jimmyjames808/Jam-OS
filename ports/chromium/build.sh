@@ -82,7 +82,8 @@ link() {
 install() {
     d=$destdir$prefix/lib/chromium
     mkdir -p "$d"
-    for f in base_unittests headless_shell headless_lib_data.pak headless_lib_strings.pak; do
+    for f in base_unittests test_child_process headless_shell headless_lib_data.pak \
+             headless_lib_strings.pak; do
         cp "out/jamos/$f" "$d/$f"
     done
 }

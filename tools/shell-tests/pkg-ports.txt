@@ -1,0 +1,168 @@
+# The libarchive chain through `pkg` (tools/pkg-ports-test.sh; docs/M13.7-PLAN.md, PO9):
+# real packages (zlib, bzip2, xz, libarchive, built by tools/ports.py) in the repository
+# `real` of tools/pkg-test-repo.py, joined by the network peer's TCP relay (the guest
+# connects to 10.2.21.174:8000). The image's /boot/ports.pub is the ports vectors'
+# public test key, and so is the repository's. The repository `conflict` is used last: its
+# serial is one above `real`'s, so `real` would be an old index after it.
+wait 120 Jam OS shell
+seen 60 init: /data mounted
+seen 60 netstack: link up
+seen 30 netstack: address 10.2.21.5/24
+wait {prompt}
+send T=x
+wait {prompt}
+send P=/data/pkg/bin
+wait {prompt}
+send S=/boot/usr/bin
+wait {prompt}
+
+# ---- the repository has the four packages (a -test subpackage is never in it) -----------
+send pkg update
+wait The repository has 4 packages (serial
+wait Everything installed is up to date.
+wait {prompt}
+
+# ---- one question for libarchive and what it runs; the three go in first, in order ------
+send pkg install libarchive
+wait Install 4 packages, 12 programs? [y/N]
+type y
+wait Installed bzip2 1.0.8-r1
+wait Installed xz 5.8.4-r1
+wait Installed zlib 1.3.2-r1
+wait Installed libarchive 3.8.10-r1
+wait {prompt}
+send pkg list
+wait bzip2 1.0.8-r1
+wait libarchive 3.8.10-r1
+wait xz 5.8.4-r1
+wait zlib 1.3.2-r1
+wait {prompt}
+send pkg check
+wait pkg check: 4 packages, every file is as its manifest says
+wait {prompt}
+send pkg info libarchive
+wait libarchive 3.8.10-r1 (installed)
+wait runs: bzip2
+wait runs: xz
+wait runs: zlib
+wait {prompt}
+send allow -l | grep -c package | run $S/sed s/^/n-/
+wait n-12
+wait {prompt}
+send ls /data/pkg/bin | grep -c ^example$ | run $S/sed s/^/n-/
+wait n-0
+wait {prompt}
+send ls /data/pkg/share | grep -c ^bzip2 | run $S/sed s/^/n-/
+wait n-0
+wait {prompt}
+
+# ---- every program runs, the multi-call names too (copies, each with its own approval) --
+send run $S/seq 1 20000 > /data/pk-in
+wait {prompt}
+send run $P/bzip2 -k /data/pk-in
+wait {prompt}
+send run $P/xz -k /data/pk-in
+wait {prompt}
+send run $P/minigzip -c /data/pk-in > /data/pk-in.gz
+wait {prompt}
+send run $P/bzcat /data/pk-in.bz2 | sha256sum
+wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  -
+wait {prompt}
+send run $P/bunzip2 -c /data/pk-in.bz2 | sha256sum
+wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  -
+wait {prompt}
+send run $P/xzcat /data/pk-in.xz | sha256sum
+wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  -
+wait {prompt}
+send run $P/unxz -c /data/pk-in.xz | sha256sum
+wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  -
+wait {prompt}
+send run $P/bsdcat /data/pk-in.gz | sha256sum
+wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  -
+wait {prompt}
+send run $P/bsdcat /data/pk-in.bz2 | sha256sum
+wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  -
+wait {prompt}
+send run $P/bsdcat /data/pk-in.xz | sha256sum
+wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  -
+wait {prompt}
+
+# ---- bsdtar in a round trip through each of the three, read back by the other programs --
+send mkdir /data/pk-t
+wait {prompt}
+send cp /data/pk-in /data/pk-t/a.txt
+wait {prompt}
+send run $P/bsdtar -cjf /data/pk.tbz -C /data pk-t; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send run $P/bzip2 -t /data/pk.tbz; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send run $P/bsdtar -cJf /data/pk.txz -C /data pk-t; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send run $P/xz -t /data/pk.txz; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send run $P/bsdtar -czf /data/pk.tgz -C /data pk-t; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send run $P/minigzip -d -c /data/pk.tgz | run $P/bsdtar -tf - | run $S/grep -c ^pk-t | run $S/sed s/^/n-/
+wait n-2
+wait {prompt}
+send mkdir /data/pk-o; run $P/bsdtar -xf /data/pk.txz -C /data/pk-o; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send cmp /data/pk-t/a.txt /data/pk-o/pk-t/a.txt && echo ok-$T-tree
+wait ok-x-tree
+wait {prompt}
+
+# ---- libarchive runs zlib: zlib can't be removed alone; -r takes both ---------------------
+send pkg remove zlib
+wait libarchive runs zlib: remove it first, or use -r
+wait {prompt}
+send pkg remove -r zlib
+wait Remove 2 packages? [y/N]
+type y
+wait Removed libarchive
+wait Removed zlib
+wait {prompt}
+send pkg list
+wait bzip2 1.0.8-r1
+wait xz 5.8.4-r1
+wait {prompt}
+send pkg check
+wait pkg check: 2 packages, every file is as its manifest says
+wait {prompt}
+send ls /data/pkg/bin | grep -c bsd | run $S/sed s/^/n-/
+wait n-0
+wait {prompt}
+send allow -l | grep -c package | run $S/sed s/^/n-/
+wait n-7
+wait {prompt}
+
+# ---- installed again: only what is missing (zlib and libarchive) is fetched and asked about ----
+send pkg install libarchive
+wait Install 2 packages, 5 programs? [y/N]
+type y
+wait Installed zlib 1.3.2-r1
+wait Installed libarchive 3.8.10-r1
+wait {prompt}
+send pkg check
+wait pkg check: 4 packages, every file is as its manifest says
+wait {prompt}
+send run $P/bsdtar -tf /data/pk.tbz | run $S/grep -c ^pk-t | run $S/sed s/^/n-/
+wait n-2
+wait {prompt}
+
+# ---- a package with a file bzip2 has: refused before the question, nothing installed --------
+send pkg -R http://10.2.21.174:8000/conflict/ install bzip2-compat
+wait bzip2-compat has a file that bzip2 already has
+wait {prompt}
+send pkg check
+wait pkg check: 4 packages, every file is as its manifest says
+wait {prompt}
+send sync
+wait {prompt}
+send reboot -f
+wait reboot: resetting

@@ -525,18 +525,41 @@ void sig_fill_siginfo(const struct sig_info *si, void *out)
 
 /* Call the handler of act for si, with the mask `was` as the handler's
  * context says (the one restored after it). */
+struct handler_call {
+    const struct sig_act  *act;
+    const struct sig_info *si;
+    siginfo_t              info;   /* SA_SIGINFO only */
+    ucontext_t             uc;
+};
+
+static void call_handler(void *arg)
+{
+    struct handler_call *c = arg;
+    if (c->act->flags & SA_SIGINFO)
+        ((void (*)(int, siginfo_t *, void *))c->act->handler)(c->si->signo, &c->info, &c->uc);
+    else
+        ((void (*)(int))c->act->handler)(c->si->signo);
+}
+
+/* With SA_ONSTACK on the thread's alternate stack, if it has one and isn't
+ * on it (sigaltstack inside says SS_ONSTACK, as for a fault's handler). */
 static void run_handler(const struct sig_act *act, const struct sig_info *si, uint64_t was)
 {
-    if (!(act->flags & SA_SIGINFO)) {
-        ((void (*)(int))act->handler)(si->signo);
-        return;
+    struct handler_call c = { .act = act, .si = si };
+    if (act->flags & SA_SIGINFO) {
+        sig_fill_siginfo(si, &c.info);
+        memset(&c.uc, 0, sizeof(c.uc));
+        memcpy(&c.uc.uc_sigmask, &was, sizeof(was));
+        uintptr_t base;
+        size_t size;
+        c.uc.uc_stack.ss_flags = sig_alt_state((uintptr_t)__builtin_frame_address(0), &base, &size);
+        c.uc.uc_stack.ss_sp = (void *)base;
+        c.uc.uc_stack.ss_size = size;
     }
-    siginfo_t info;
-    sig_fill_siginfo(si, &info);
-    ucontext_t uc;
-    memset(&uc, 0, sizeof(uc));
-    memcpy(&uc.uc_sigmask, &was, sizeof(was));
-    ((void (*)(int, siginfo_t *, void *))act->handler)(si->signo, &info, &uc);
+    if (act->flags & SA_ONSTACK)
+        sig_run_onstack(call_handler, &c);
+    else
+        call_handler(&c);
 }
 
 /* Deliver one signal due on t (its own thread): 1 if one was taken (its

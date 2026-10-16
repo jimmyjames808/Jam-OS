@@ -17,8 +17,9 @@
 /* A process ended by a signal's default action exits with this plus the
  * signal's number (1 to 64): a code outside 0 to 255, so a program's own
  * exit(130) stays an exit. waitpid reports such a code as WIFSIGNALED
- * with that WTERMSIG; a process the kernel killed (process_kill, a fault,
- * PROCESS_KILLED_CODE) is WTERMSIG SIGKILL. */
+ * with that WTERMSIG; a process the kernel killed for a fault is that
+ * fault's signal (sig_fault_signal: SIGSEGV, SIGILL, ...), any other kill
+ * (process_kill, PROCESS_KILLED_CODE) WTERMSIG SIGKILL. */
 #define LX_EXIT_SIGNAL 0x10000
 
 /* Our own ids: the pid (the kernel's), the parent's (from the hand-over;

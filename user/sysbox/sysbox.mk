@@ -42,15 +42,19 @@ SYSBOX_RO    := df hexdump hd=hexdump crashlog
 SYSBOX_CFLAGS := -std=gnu17 -O2 -g -Wall -Wextra -Werror -Wvla -DSH_BOX -include jamos/libjam.h \
                  -I$(POSIX)/include -Iuser/include -I$(BUILD)/uinc -Idrivers/include \
                  -iquote $(SH_DIR) -iquote $(SYSBOX) -MMD -MP
+# Its flag stamp (the Makefile's FLAG_STAMP); jamos-cc itself adds flags.
+FLAGS_sysbox  = $(TOOLID) $(SYSBOX_CFLAGS)
+$(eval $(call FLAG_STAMP,sysbox,FLAGS_sysbox))
+SYSBOX_FLAGS  := $(FLAGDIR)/sysbox tools/jamos-cc
 SYSBOX_NEEDS  := | $(SYSROOT_HDRS) $(SYSROOT)/lib/libc.a $(UINC) $(SYSCALLS_OK) $(IDL_OK)
 
-$(SYSBOX_OUT)/obj/cmd/%.o: $(SH_DIR)/cmd/%.c $(SYSBOX_NEEDS)
+$(SYSBOX_OUT)/obj/cmd/%.o: $(SH_DIR)/cmd/%.c $(SYSBOX_FLAGS) $(SYSBOX_NEEDS)
 	@mkdir -p $(dir $@)
 	$(PORT_CC) $(SYSBOX_CFLAGS) -c $< -o $@
-$(SYSBOX_OUT)/obj/lib/%.o: $(SH_DIR)/%.c $(SYSBOX_NEEDS)
+$(SYSBOX_OUT)/obj/lib/%.o: $(SH_DIR)/%.c $(SYSBOX_FLAGS) $(SYSBOX_NEEDS)
 	@mkdir -p $(dir $@)
 	$(PORT_CC) $(SYSBOX_CFLAGS) -c $< -o $@
-$(SYSBOX_OUT)/obj/box_io.o: $(SYSBOX)/box_io.c $(SYSBOX)/box.h $(SYSBOX_NEEDS)
+$(SYSBOX_OUT)/obj/box_io.o: $(SYSBOX)/box_io.c $(SYSBOX)/box.h $(SYSBOX_FLAGS) $(SYSBOX_NEEDS)
 	@mkdir -p $(dir $@)
 	$(PORT_CC) $(SYSBOX_CFLAGS) -c $< -o $@
 
@@ -65,7 +69,7 @@ define SYSBOX_BOX
 $(SYSBOX_OUT)/box-$(1).c: $(SYSBOX)/mkbox.sh $(SYSBOX)/sysbox.mk
 	@mkdir -p $$(dir $$@)
 	sh $(SYSBOX)/mkbox.sh sys-$(1) $(3) $(2) > $$@
-$(SYSBOX_OUT)/box-$(1).o: $(SYSBOX_OUT)/box-$(1).c $(SYSBOX)/box.h $(SYSBOX_NEEDS)
+$(SYSBOX_OUT)/box-$(1).o: $(SYSBOX_OUT)/box-$(1).c $(SYSBOX)/box.h $(SYSBOX_FLAGS) $(SYSBOX_NEEDS)
 	$(PORT_CC) $(SYSBOX_CFLAGS) -c $$< -o $$@
 $(call PORT_PROGRAM,sysbox,sys-$(1),$(SYSBOX_OUT)/box-$(1).o $(sort $(foreach c,$(2),$(SYSBOX_OUT)/obj/cmd/$(lastword $(subst =, ,$(c))).o)),$(SYSBOX)/wants-$(1),$(SYSBOX_OUT)/libsysbox.a,bin/sys-$(1))
 BOOTFS_FILES += $(foreach c,$(2),bin/$(firstword $(subst =, ,$(c)))=$(SYSBOX_OUT)/bin/sys-$(1).bootfs)

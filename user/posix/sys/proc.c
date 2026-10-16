@@ -458,10 +458,14 @@ static long wait_for(const struct want *w, struct found *out)
     }
 }
 
-/* A child's end as waitpid's status. */
+/* A child's end as waitpid's status: a fault the kernel killed it for
+ * (with no handler, or one that gave it up) is that fault's signal, SIGSEGV
+ * for a bad access, SIGILL for ud2 and so on; any other kill is SIGKILL. */
 static int wait_status(const struct process_info *info)
 {
     int64_t code = info->exit_code;
+    if (info->killed && (info->flags & PROCESS_FLAG_FAULT))
+        return sig_fault_signal(info->fault_vector, info->fault_status);
     if (info->killed || code == PROCESS_KILLED_CODE)
         return SIGKILL;
     if (code > LX_EXIT_SIGNAL && code <= LX_EXIT_SIGNAL + 64)
