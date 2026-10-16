@@ -110,6 +110,8 @@
 #define SYS_pager_op             164
 #define SYS_exception_entry_set  170
 #define SYS_exception_done       171
+#define SYS_thread_exception_stack 172
+#define SYS_thread_raise         173
 
 /* One past the highest number: the size of the dispatch table. */
-#define SYSCALL_COUNT 172
+#define SYSCALL_COUNT 174

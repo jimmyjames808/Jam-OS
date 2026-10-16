@@ -289,6 +289,21 @@ bool thread_interrupt_pending(const struct thread *t)
     return interrupt_seen(t);
 }
 
+uint64_t raise_latched, raise_kicked;
+
+bool thread_raise(struct thread *t)
+{
+    /* The exchange orders whatever the raiser wrote before (libc's pending
+     * signal) before the latch the thread takes, and tells a new latch
+     * from one already there: only a new one kicks. */
+    if (__atomic_exchange_n(&t->raise_pending, true, __ATOMIC_SEQ_CST))
+        return false;
+    __atomic_add_fetch(&raise_latched, 1, __ATOMIC_RELAXED);
+    if (sched_kick_running(t))
+        __atomic_add_fetch(&raise_kicked, 1, __ATOMIC_RELAXED);
+    return true;
+}
+
 bool sched_timer_expire(void)
 {
     struct sleepq *q = &sleepqs[this_cpu()->index];

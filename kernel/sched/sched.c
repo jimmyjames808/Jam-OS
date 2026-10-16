@@ -406,6 +406,22 @@ static void sched_kick(uint32_t cpu)
     ipi_send(cpu, VEC_RESCHEDULE);
 }
 
+bool sched_kick_running(struct thread *t)
+{
+    /* Without its run queue lock: t may be switching in or out, or
+     * entering a call, as we look. Then its raise waits for its next
+     * interrupt in ring 3 (the tick at the latest). */
+    if (thread_state(t) != T_RUNNING || __atomic_load_n(&t->in_syscall, __ATOMIC_RELAXED))
+        return false;
+    uint32_t cpu = thread_cpu(t);
+    preempt_disable();
+    bool remote = cpus[cpu] != this_cpu();
+    preempt_enable_no_resched();
+    if (remote)
+        sched_kick(cpu);
+    return remote;
+}
+
 /* ---- the switch ------------------------------------------------------------ */
 
 /* First thing on the far side of every switch_context. */

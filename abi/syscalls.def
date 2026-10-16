@@ -474,9 +474,30 @@
 #   with no entry, with that kill line (from what the kernel kept, not
 #   from `frame`).
 # `frame` matters only to EXC_RESUME (ERR_INVALID_ARGS if it can't be
-# read). ERR_BAD_STATE for EXC_LEAVE and EXC_UNHANDLED outside the window;
-# ERR_INVALID_ARGS for any other `how`.
+# read). ERR_BAD_STATE for EXC_LEAVE and EXC_UNHANDLED outside the window,
+# and for EXC_UNHANDLED in a raise's window (a raise has no kill to fall
+# back on); ERR_INVALID_ARGS for any other `how`.
 171 exception_done    status    const struct exc_frame *frame, uint32_t how
+# The calling thread's exception stack, sigaltstack's kernel half: from
+# the return on, its frames go to [base, base + size) while RSP is outside
+# it (a stack overflow reaches the entry), and below RSP on it while RSP is
+# inside it; a frame that doesn't fit on it isn't written (the fault's
+# kill). size 0 (with base 0) removes it. The caller only, no handle.
+# ERR_INVALID_ARGS for a range outside user space, or size 0 with base not
+# 0; ERR_BAD_STATE for a thread with no user state.
+172 thread_exception_stack status uint64_t base, uint64_t size
+# Raise a thread (docs/SIGNALS-PLAN.md section 2): at its next return to
+# user mode from an interrupt or exception, outside its window, it enters
+# its process's exception entry with a frame of kind EXC_RAISED and the
+# registers where it was (<jam/abi.h>); one running in user mode on another
+# CPU is interrupted for it at once. Never on a system call's return: one
+# raised inside a call (blocked in channel_call ...) gets it at an
+# interrupt after the call returns, and the call is not ended. Latched,
+# not counted: raises before the entry runs are one upcall, and one CPU
+# interrupt. Dropped with no entry, or if the frame can't be written.
+# Needs RIGHT_SIGNAL on the thread; ERR_BAD_STATE if it hasn't started or
+# has left.
+173 thread_raise      status    handle_t thread
 
 # hardware ------------------------------------------------------------------
 # Resources (RES_* in <jam/abi.h>): a slice must lie inside its parent,

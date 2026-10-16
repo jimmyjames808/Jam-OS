@@ -136,3 +136,5 @@ int64_t sysc_pager_op(handle_t pager, uint64_t key, uint32_t op, uint64_t offset
                       int64_t arg);
 int64_t sysc_exception_entry_set(uint64_t entry);
 int64_t sysc_exception_done(uint64_t frame, uint32_t how);
+int64_t sysc_thread_exception_stack(uint64_t base, uint64_t size);
+int64_t sysc_thread_raise(handle_t thread);

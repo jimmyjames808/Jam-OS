@@ -14,6 +14,10 @@ void thread_start(void);
 /* sched.c: first thing on the far side of every switch_context, and in a
  * new thread before it runs its function. */
 void finish_switch(void);
+/* sched.c, for thread_raise: interrupt the CPU t is running on, if t runs
+ * there in ring 3 (not inside a call: in_syscall read as a hint) and it
+ * isn't this CPU. Returns whether it did. */
+bool sched_kick_running(struct thread *t);
 
 /* thread.c */
 void thread_cache_init(void);
