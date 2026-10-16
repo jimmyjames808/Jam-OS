@@ -10,17 +10,29 @@ struct uc_line {
     int32_t at, fixup;
 };
 extern const struct uc_line uc_table[], uc_table_end[];
+void uc_fail_io(void);   /* ucopy.S: the -EIO fixup */
+
+/* A page fault's status that says the file's pager failed the page (an
+ * I/O error, the pager gone, or no answer in time): the kernel's own
+ * copies answer ERR_IO for such a page, so ours say EIO too. */
+static bool pager_failed(const struct exc_frame *f)
+{
+    return f->vector == 14 &&
+           (f->status == ERR_IO || f->status == ERR_PEER_CLOSED || f->status == ERR_TIMED_OUT);
+}
 
 bool uc_fault(struct exc_frame *f)
 {
-    /* A page fault (Linux's EFAULT for every kind: nothing mapped, no
-     * access, a file's page that failed), or a general protection fault:
-     * an address that isn't one. Not a trap after the instruction. */
+    /* A page fault (EFAULT: nothing mapped, no access, past the end of a
+     * shrunk file, as Linux; EIO: a page the file's pager failed), or a
+     * general protection fault: an address that isn't one. Not a trap
+     * after the instruction. */
     if (f->kind != EXC_FAULT || (f->vector != 14 && f->vector != 13))
         return false;
     for (const struct uc_line *l = uc_table; l < uc_table_end; l++)
         if ((uintptr_t)&l->at + (uintptr_t)(intptr_t)l->at == f->rip) {
-            f->rip = (uintptr_t)&l->fixup + (uintptr_t)(intptr_t)l->fixup;
+            f->rip = pager_failed(f) ? (uintptr_t)uc_fail_io
+                                     : (uintptr_t)&l->fixup + (uintptr_t)(intptr_t)l->fixup;
             return true;
         }
     return false;

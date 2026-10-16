@@ -7,7 +7,11 @@
  * and stores of the caller's memory has a line in its exception table: a
  * fault there (a page fault, or a general protection fault for an
  * address that isn't one) goes on at the routine's fixup, which returns
- * -EFAULT to the routine's caller. sigfault.c asks uc_fault first, in the
+ * -EFAULT to the routine's caller; -EIO for a page of a mapped file whose
+ * pager failed it (a stick pulled: the kernel's own copies answer so for
+ * that page, and fd.c's write passes it on, as before these copies; most
+ * other callers answer EFAULT for any failed copy). sigfault.c asks
+ * uc_fault first, in the
  * kernel's window, before anything of signals: so it works with no
  * handler installed and never touches signal state. The process's
  * exception entry is set from the start for this (SIG_ENTRY_COPY, set by
