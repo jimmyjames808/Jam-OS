@@ -25,6 +25,16 @@
 #           aborts with expected-panic.txt); then on Jam OS from /data it
 #           prints the same, byte for byte, and aborts the same way
 #           (ports/cr-rust-hello/test)
+#   base    base_unittests (track CB2, CR-b) from the kept tree's stage
+#           (~/cr/ports/chromium/stage: tools/cr/build.sh start first), on a
+#           stick with a 640 MiB /data (tools/cr/base-stick.py: no package,
+#           the format holds no file over 64 MiB), run suite by suite with
+#           the ENOSYS log on (tools/cr/base-run.py); the tests in
+#           tools/cr/base_unittests.skip are not run. CR_BASE_SHARD=i/n,
+#           CR_BASE_ALL=1, CR_BASE_ONLY=<glob>, CR_BASE_ENV="NAME=value ..."
+#           (default TMPDIR and TEST_TMPDIR=/data/cr/tmp: Jam OS has no /tmp
+#           yet, and gtest's captured streams and death tests want one); results in
+#           <outdir>/base/run/ (results.txt, failures/, enosys.txt, summary.txt)
 #
 # The toolchain is fetched first if it isn't there (tools/cr/toolchain.sh:
 # clang, cmake, and for `rust` Rust; gperf, which Chromium's build needs, is
@@ -164,11 +174,51 @@ case_rust() {
     fi
 }
 
+case_base() {
+    dir=$out/base
+    rm -rf "$dir"
+    mkdir -p "$dir"
+    cr=${CR_DIR:-$HOME/cr}
+    version=$(awk '$1 == "version" { print $2 }' ports/chromium/recipe)
+    stage=$cr/ports/chromium/stage
+    srcdir=$cr/$version/src/chromium-$version
+    for f in "$stage/lib/chromium/base_unittests" "$stage/lib/chromium/test_child_process" "$srcdir/base/test/data"; do
+        [ -e "$f" ] || { echo "FAIL (no $f: tools/cr/build.sh start builds it)" > "$dir/result"; return; }
+    done
+    image=${PORTS_TEST_IMAGE:-build/jamos.img}
+    [ -f "$image" ] || { echo "FAIL (no $image: make image first)" > "$dir/result"; return; }
+    stick=$dir/base-stick.img
+    if ! python3 tools/cr/base-stick.py --data-mib "${CR_BASE_DATA_MIB:-640}" "$image" "$stick" \
+         "$stage" "$srcdir" "$srcdir/out/jamos" > "$dir/stick.out" 2>&1; then
+        cat "$dir/stick.out"
+        echo "FAIL (the stick, see $dir/stick.out)" > "$dir/result"
+        return
+    fi
+    sed 's/^/cr-test: /' "$dir/stick.out"
+    # CR_BASE_ENV: more shell variables for the program ("TMPDIR=/data/tmp"),
+    # CR_BASE_ONLY: only suites matching a glob, CR_BASE_ARGS: more arguments
+    # for base_unittests ("--v=1"), CR_BASE_ALL=1: the skip list's tests run
+    # too (a failure of one is a known failure).
+    extra=
+    for e in ${CR_BASE_ENV-TMPDIR=/data/cr/tmp TEST_TMPDIR=/data/cr/tmp}; do extra="$extra --env $e"; done
+    # shellcheck disable=SC2086
+    if python3 tools/cr/base-run.py --shard "${CR_BASE_SHARD:-0/1}" --mem "${QEMU_MEM:-4G}" \
+       ${CR_BASE_ALL:+--all} ${CR_BASE_ONLY:+--only "$CR_BASE_ONLY"} ${CR_BASE_ARGS:+--args " $CR_BASE_ARGS"} $extra \
+       "$dir/run" "$stick" > "$dir/base-run.out" 2>&1; then
+        echo PASS > "$dir/result"
+    else
+        echo "FAIL ($(grep 'base-run: [0-9]* new failures' "$dir/base-run.out" | sed 's/^base-run: //'), see $dir/run/)" > "$dir/result"
+    fi
+    sed 's/^/cr-test: /' "$dir/base-run.out"
+    rm -f "$stick"
+}
+
 for c in "$@"; do
     case $c in
     hello) case_hello ;;
     rust) case_rust ;;
-    *) echo "cr-test: no case $c (hello, rust)" >&2
+    base) case_base ;;
+    *) echo "cr-test: no case $c (hello, rust, base)" >&2
        mkdir -p "$out/$c"
        echo "FAIL (no such case)" > "$out/$c/result" ;;
     esac

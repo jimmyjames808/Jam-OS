@@ -10,7 +10,9 @@
  *   - an option of a call that is answered but not that option (prctl,
  *     futex, setpriority's target): "prctl option 53";
  *   - an ioctl request nothing understands (fd.c): "ioctl 0x5413";
- *   - a /proc path that is not there: "path /proc/uptime".
+ *   - a /proc path that is not there: "path /proc/uptime";
+ *   - a library the program tried to load (a static program cannot):
+ *     "dlopen libvulkan.so.1".
  * Each is one line, "enosys: <program>: <what>", written with one
  * debug_write, so lines from several threads never mix. A gap is logged
  * the first time only, remembered in a table of SEEN_MAX entries (the
@@ -36,7 +38,7 @@
 #define PATH_SHOWN 100   /* bytes of a path or a word shown (the whole is what is remembered) */
 
 /* What kind of gap an entry of the table is. */
-enum { GAP_CALL = 1, GAP_OPTION, GAP_IOCTL, GAP_PATH };
+enum { GAP_CALL = 1, GAP_OPTION, GAP_IOCTL, GAP_PATH, GAP_DLOPEN };
 
 #define MODE_OFF 1   /* mode's values; 0: not decided yet */
 #define MODE_ON  2
@@ -231,6 +233,20 @@ void lx_enosys_path(const char *path)
     put(&l, "path ", 5);
     put(&l, path, PATH_SHOWN);
     log_once(GAP_PATH, hash(path), &l);
+}
+
+/* dlopen's override (user/posix/musl/src/ldso/dlopen.c): a static program
+ * has no dynamic linker, so every dlopen fails; the library it asked for
+ * is the gap. NULL (the program itself) is logged as "dlopen (null)". */
+void __jam_enosys_dlopen(const char *file)
+{
+    if (!enabled())
+        return;
+    struct line l;
+    begin(&l);
+    put(&l, "dlopen ", 7);
+    put(&l, file ? file : "(null)", PATH_SHOWN);
+    log_once(GAP_DLOPEN, hash(file ? file : "(null)"), &l);
 }
 
 void lx_enosys_set(int on)

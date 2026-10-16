@@ -47,3 +47,5 @@ src/network/lookup_name.c dc2444b5626bb0549a1611e35174ac8722d71541000c44c96a303a
 src/network/res_msend.c c14dc4baca3608efb40b0ab15de53018ac057fd22ad47b8b309b56a7834139b4 user/posix/musl/src/network/res_msend.c
 # The cancellation point's fallback: the layer called directly (sccp's run-time number would link every handler).
 src/thread/__syscall_cp.c 9bf39f2e3d932dcee04e145bc7fce93f2f6908d08f3a0512a20d642450c437c2 user/posix/musl/src/thread/__syscall_cp.c
+# dlopen: fails as upstream's static stub does, and names the library in the ENOSYS log (user/posix/sys/enosys.c).
+src/ldso/dlopen.c 71d2136173da73e3853c51cc477194befc7bc6072e2e227f4b8ec9c86d50217c user/posix/musl/src/ldso/dlopen.c
