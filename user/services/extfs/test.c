@@ -13,6 +13,10 @@
  *                       commit    its slot committed, not answered;
  *                       answered  answered, the reply waiting for the next
  *                                 system call;
+ *                       map       a file.map made its VMO (and recorded its
+ *                                 slot), not committed;
+ *                       supply    a page request read from the disk, its
+ *                                 pages not supplied;
  *   crash-on=<name>   a request on a path whose last name is <name>
  *                     crashes extfs (an invalid instruction): the bad
  *                     request of the restart rule, every time it runs;
@@ -25,7 +29,7 @@
 
 static const char *const point_names[XF_DIE_COUNT] = {
     [XF_DIE_WRITE] = "write", [XF_DIE_JOURNAL] = "journal", [XF_DIE_COMMIT] = "commit",
-    [XF_DIE_ANSWERED] = "answered",
+    [XF_DIE_ANSWERED] = "answered", [XF_DIE_MAP] = "map", [XF_DIE_SUPPLY] = "supply",
 };
 
 static struct {

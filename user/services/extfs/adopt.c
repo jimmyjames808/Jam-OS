@@ -56,7 +56,7 @@ static bool crashed(void)
 static bool keep_open(void *ctx, uint32_t ino)
 {
     (void)ctx;
-    return files_has(ino);
+    return files_held(ino);   /* open, or mapped */
 }
 
 void recover_orphans(void)
@@ -97,8 +97,9 @@ static bool take(void *ctx, uint32_t slot, const handle_t *hs, unsigned n)
     const struct taking *t = ctx;
     if (slot < XF_KEEP_VIEW(0))
         return t->files && files_take(slot, hs, n);
-    return t->views && slot - XF_KEEP_VIEW(0) < XF_VIEWS &&
-           views_take(slot - XF_KEEP_VIEW(0), hs, n);
+    if (slot >= XF_KEEP_MAP(0))
+        return t->files && maps_take(slot - XF_KEEP_MAP(0), hs, n);
+    return t->views && views_take(slot - XF_KEEP_VIEW(0), hs, n);
 }
 
 static bool restore(struct found *f, struct taking t)
@@ -159,7 +160,8 @@ static const char *reply_again(const struct xf_chan *c, unsigned slot)
     }
     handle_t hs[2];
     status_t st = m->kind == XF_MADE_FILE ? files_remake(m->index, &hs[0], &hs[1])
-                                          : views_remake(m->index, &hs[0]);
+                  : m->kind == XF_MADE_VIEW ? views_remake(m->index, &hs[0])
+                                            : maps_remake(m->index, &hs[0]);
     if (st != OK) {
         answer_status(c, slot, st);
         return "its handles couldn't be made again: answered with the error";
@@ -242,6 +244,7 @@ static status_t start_fresh(struct found *f)
     }
     files_drop_unknown();
     views_drop_unknown();
+    maps_drop_unknown();   /* their VMOs' pages: the requests of keys it doesn't know */
     recover_orphans();
     f->views = views_adopt();
     struct xf_chan c;
@@ -261,6 +264,8 @@ static void unmake(unsigned slot)
         kept->files[m->index].used = false;   /* the keeper's copy is refused, so dropped */
     else if (m->kind == XF_MADE_VIEW && m->index < XF_VIEWS)
         kept->views[m->index].used = false;
+    else if (m->kind == XF_MADE_MAP && m->index < XF_MAX_MAPS)
+        kept->maps[m->index].used = false;    /* its VMO's GONE finds a key nobody knows */
 }
 
 status_t adopt(bool adopted, bool *no_volume)
@@ -286,12 +291,15 @@ status_t adopt(bool adopted, bool *no_volume)
     f.keep_views = !f.why;
     if (!f.why && (!kept->mounted || memcmp(kept->uuid, vol.fs.sb.uuid, sizeof(kept->uuid))))
         f.why = "a state of another volume";
-    if (!f.why && (kept->made.kind > XF_MADE_VIEW ||
+    if (!f.why && (kept->made.kind > XF_MADE_MAP_SHARED ||
                    kept->made.index >= (kept->made.kind == XF_MADE_FILE ? XF_MAX_FILES
-                                                                        : XF_VIEWS)))
+                                        : kept->made.kind == XF_MADE_VIEW ? XF_VIEWS
+                                                                          : XF_MAX_MAPS)))
         f.why = "the request's slot out of range";
     if (!f.why)
         f.why = files_check();
+    if (!f.why)
+        f.why = maps_check();
     if (f.why)
         return start_fresh(&f);
     if (f.k == SVCSTATE_RERUN) {
@@ -310,6 +318,7 @@ status_t adopt(bool adopted, bool *no_volume)
     reply_flush();
     f.files = files_adopt();
     f.views = views_adopt();
+    maps_adopt();   /* after files_adopt, whose closes let go of shared VMOs */
     say(&f);
     return OK;
 }

@@ -11,8 +11,12 @@
  *
  * Unlink of an open file succeeds: the inode, with no name left, is on the
  * orphan list (on the disk, so a cut frees it at the next mount) and
- * lives while a slot names it; its last close drops it (defer_drop). A
- * successor keeps the orphans its state holds open (adopt.c).
+ * lives while a slot names it, or a mapped file's (pager.c); its last
+ * close or unmap drops it (defer_drop). A successor keeps the orphans its
+ * state holds open or mapped (adopt.c).
+ *
+ * file.map is pager.c's; here are its checks and the changes its mappings
+ * must see (a write's bytes and a truncate's size: maps_changed).
  *
  * The tables are in the state (kept->files); each slot's channel and
  * buffer, handles, are here by the same index, and with the keeper. The
@@ -46,6 +50,20 @@ bool files_has(uint32_t ino)
     return false;
 }
 
+bool files_writing(uint32_t ino)
+{
+    for (unsigned i = 0; i < XF_MAX_FILES; i++)
+        if (kept->files[i].used && kept->files[i].ino == ino &&
+            (kept->files[i].flags & (FS_WRITE | FS_APPEND)))
+            return true;
+    return false;
+}
+
+bool files_held(uint32_t ino)
+{
+    return files_has(ino) || maps_has(ino);
+}
+
 /* The file's inode as it is now: ERR_IO if it isn't the one opened (it
  * can't be freed while a slot names it, so that is damage). */
 static status_t inode_of(const struct xf_file *f, struct ext_inode *in)
@@ -68,14 +86,13 @@ static status_t stamp(struct ext_inode *in)
     return st == OK ? ext_iput(&vol.fs, in) : st;
 }
 
-status_t files_truncate(struct ext_inode *in, uint64_t size)
+/* files_truncate's change of the inode (size at most ext's largest). */
+static status_t set_size(struct ext_inode *in, uint64_t size)
 {
     struct ext_fs *fs = &vol.fs;
     uint64_t old = ext_isize(in);
     bool done = false;
     status_t st;
-    if (size > ext_max_size(fs))
-        return ERR_OUT_OF_RANGE;
     if (size >= old) {   /* growing: a hole after the old end, no blocks */
         st = size > old ? ext_truncate(fs, in, size, &done) : OK;
         return st == OK ? stamp(in) : st;
@@ -98,6 +115,21 @@ status_t files_truncate(struct ext_inode *in, uint64_t size)
         defer_trunc(in->ino, own);
     if (st == OK)
         st = ext_iget(fs, in->ino, EXT_IGET_UNLINKED, in);   /* the list changed it */
+    return st;
+}
+
+status_t files_truncate(struct ext_inode *in, uint64_t size)
+{
+    uint64_t old = ext_isize(in);
+    if (size > ext_max_size(&vol.fs))
+        return ERR_OUT_OF_RANGE;
+    status_t st = set_size(in, size);
+    /* Its mappings: the new size, and the last page (zeros past the end
+     * now, or the old end's page grown). A failure's too: the last
+     * block's tail may be zero on the disk already, and the size goes
+     * back (maps_settle). */
+    maps_changed(in->ino, size < old ? size : old, size < old ? old : size,
+                 st == OK ? size : old);
     return st;
 }
 
@@ -152,6 +184,10 @@ static status_t op_write(void *ctx, uint64_t offset, uint32_t length, uint32_t *
         st = OK;   /* what was written stays: a short write */
     if (st == OK && length)
         st = stamp(&in);
+    /* Its mappings see the bytes, and a failed write's too: what ext wrote
+     * over the file's own blocks is on the disk whatever the answer. */
+    if (length)
+        maps_changed(in.ino, offset, offset + (st == OK ? n : length), ext_isize(&in));
     if (st != OK)
         return st;
     *out_actual = (uint32_t)n;
@@ -227,11 +263,20 @@ static status_t op_setattr(void *ctx, uint32_t mask, uint32_t mode, uint32_t uid
 
 static status_t op_map(void *ctx, uint32_t flags, handle_t *out_vmo, uint64_t *out_size)
 {
-    (void)ctx;
-    (void)flags;
-    (void)out_vmo;
-    (void)out_size;
-    return ERR_NOT_SUPPORTED;   /* the pager is M13.6's U10 */
+    struct xf_file *f = ctx;
+    if (flags != FILE_MAP_READ && flags != FILE_MAP_EXEC)
+        return ERR_INVALID_ARGS;
+    if (!(f->flags & FS_READ))
+        return ERR_ACCESS_DENIED;
+    if (flags == FILE_MAP_EXEC && files_writing(f->ino))
+        return ERR_BUSY;   /* a program's bytes don't change while it runs (Q7) */
+    struct ext_inode in;
+    status_t st = inode_of(f, &in);
+    if (st == OK)
+        st = maps_make(f->ino, f->igen, flags, ext_isize(&in), out_vmo);
+    if (st == OK)
+        *out_size = ext_isize(&in);
+    return st;
 }
 
 const struct file_ops xf_file_ops = {
@@ -277,14 +322,18 @@ void files_drop_unknown(void)
             release_handles(i);
 }
 
-/* The slot goes; an inode with no name left goes with its last open. The
- * state forgets the slot first, so a death after it leaves an orphan the
- * next mount drops. */
+/* The slot goes; with the file's last open, its shared VMO is its mappers'
+ * alone (pager.c), and an inode with no name left goes with its last open
+ * or mapping. The state forgets the slot first, so a death after it leaves
+ * an orphan the next mount drops. */
 static void close_file(struct xf_file *f)
 {
     uint32_t ino = f->ino;
     files_release(slot_of(f));
-    if (files_has(ino) || !vol.mounted)
+    if (files_has(ino))
+        return;
+    maps_let_go(ino);
+    if (maps_has(ino) || !vol.mounted)
         return;
     struct ext_inode in;
     if (ext_iget(&vol.fs, ino, EXT_IGET_UNLINKED, &in) == OK && !in.d.links_count) {
@@ -373,9 +422,11 @@ static struct xf_chan chan_of(struct xf_file *f)
 
 /* Every file whose client has closed it: what it left queued, then the
  * close (before each fs request, so a close followed by an fs call is
- * seen in that order). */
+ * seen in that order). The pager's requests first: a mapping let go, then
+ * its file removed, is seen in that order too. */
 void files_reap(void)
 {
+    pager_reap();
     for (unsigned i = 0; i < XF_MAX_FILES; i++) {
         struct xf_file *f = &kept->files[i];
         if (!f->used || jam_object_wait_one(fh[i].ch, SIG_PEER_CLOSED, 0, NULL) != OK)

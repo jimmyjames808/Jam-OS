@@ -97,6 +97,8 @@ static status_t op_open(void *ctx, const char *path, uint32_t path_len, uint32_t
         if ((flags & (FS_WRITE | FS_APPEND | FS_TRUNCATE)) &&
             (!writable() || !walk_may_change(c, w)))
             return ERR_ACCESS_DENIED;
+        if ((flags & (FS_WRITE | FS_APPEND | FS_TRUNCATE)) && maps_exec(in.ino))
+            return ERR_BUSY;   /* a program runs from it (pager.c) */
         if ((flags & FS_TRUNCATE) && ext_isize(&in)) {
             st = files_truncate(&in, 0);
             if (st != OK)
@@ -249,6 +251,8 @@ static status_t op_unlink(void *ctx, const char *path, uint32_t path_len, uint32
     st = may_name(c, w);
     if (st != OK)
         return st;
+    if (maps_exec(w->in.ino))
+        return ERR_BUSY;   /* a program runs from it (pager.c) */
     struct ext_time now;
     time_now(&now);
     uint32_t orphan = 0;
@@ -283,6 +287,9 @@ static status_t op_rename(void *ctx, const char *from, uint32_t from_len, const 
         st = may_name(c, &wb);
     if (st != OK)
         return st;
+    if (wb.found && !(flags & FS_RENAME_EXCHANGE) && wb.in.ino != wa.in.ino &&
+        maps_exec(wb.in.ino))
+        return ERR_BUSY;   /* renamed over, a program's file would lose its name (pager.c) */
     /* One directory: one copy of it, which both halves keep current. */
     bool same = wa.dir.ino == wb.dir.ino;
     struct ext_rename r = {
