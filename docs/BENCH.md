@@ -61,6 +61,17 @@ PC (KVM), 2026-10-16: median 3.1 us, p99 5.2 us, much of it likely
 KVM's (it intercepts `#UD` to emulate). Not yet measured on the PC
 itself.
 
+**The raise line** (SG2, [SIGNALS-PLAN](SIGNALS-PLAN.md) section 2;
+`upcall_raise_bench_cycles` in `kernel/test/test_upcall.c`): a thread
+pinned to P spins in its own code with an exception entry; a thread of
+the same process pinned to P2 (P's hyperthread without one) calls
+`thread_raise` on it, waiting for each raise to be taken before the
+next. Timed from just before the raiser's call (its TSC) to the target's
+entry (the target's TSC): the call, the reschedule interrupt to P, the
+frame written on the target's stack and the entry. 4000 samples after
+2000 untimed. What `pthread_kill` to a busy thread will cost (SIGPROF to
+V8's thread), less libc's part (SG5).
+
 **Per-operation lines** (`perop` from the shell; `user/tests/perop/main.c`
 explains each line): what one file operation costs a program, with the
 same TSC method in ring 3: a `stat`, an open and close, a 4 KiB and a
