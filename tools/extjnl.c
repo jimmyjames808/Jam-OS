@@ -49,14 +49,19 @@
 
 #define LIST_EVERY 4   /* cuts between two full listings */
 
+/* The first seven keep the log long (the tail moves by commits only), so
+ * their cuts replay many transactions; the last two have the library's own
+ * tail (every few blocks), whose cuts replay one or two. */
 static const struct storm_cfg storms[] = {
-    { "jam4k", 0, 0, true, 0, 0, 24, 0x5101, 0 },
-    { "jam4k-onewrite", 0, EXT_JNL_ONE_WRITE, true, 0, 0, 24, 0x5102, 0 },
-    { "jam4k-wrap", 0, 0, true, 48, 4, 40, 0x5103, 0 },
-    { "linux1k", 1, 0, true, 0, 0, 24, 0x5104, 0 },
-    { "linux1k-wrap-onewrite", 1, EXT_JNL_ONE_WRITE, true, 64, 0, 30, 0x5105, 0 },
-    { "names4k", 0, 0, true, 0, 0, 100, 0x5106, 4096 },
-    { "names1k-onewrite", 0, EXT_JNL_ONE_WRITE, true, 0, 4, 100, 0x5107, 1024 },
+    { "jam4k", 0, 0, true, 0, 0, 24, 0x5101, 0, UINT32_MAX },
+    { "jam4k-onewrite", 0, EXT_JNL_ONE_WRITE, true, 0, 0, 24, 0x5102, 0, UINT32_MAX },
+    { "jam4k-wrap", 0, 0, true, 48, 4, 40, 0x5103, 0, UINT32_MAX },
+    { "linux1k", 1, 0, true, 0, 0, 24, 0x5104, 0, UINT32_MAX },
+    { "linux1k-wrap-onewrite", 1, EXT_JNL_ONE_WRITE, true, 64, 0, 30, 0x5105, 0, UINT32_MAX },
+    { "names4k", 0, 0, true, 0, 0, 100, 0x5106, 4096, UINT32_MAX },
+    { "names1k-onewrite", 0, EXT_JNL_ONE_WRITE, true, 0, 4, 100, 0x5107, 1024, UINT32_MAX },
+    { "jam4k-tail", 0, 0, true, 0, 0, 24, 0x5108, 0, 0 },
+    { "linux1k-tail-onewrite", 1, EXT_JNL_ONE_WRITE, true, 0, 0, 24, 0x5109, 0, 0 },
 };
 
 /* What one cut run left. */
@@ -648,6 +653,7 @@ static void check_freed(struct storm *s)
         cut_reset(&s->cd);
         if (run_mount(s, &r) != OK || r.fs.ro)
             fail("the mount");
+        r.j.tail_blocks = UINT32_MAX;   /* only the checkpoint below moves the tail */
         struct ext_inode in;
         struct ext_path p;
         lookup(&r.fs, "holes", &in);
@@ -773,12 +779,12 @@ void check_journal(struct img *fixtures, const char *listdir, const char *images
     for (unsigned f = 0; f < 2; f++) {
         static struct storm s;
         static const struct storm_cfg plain[2] = {
-            { "jam4k-plain", 0, 0, false, 0, 0, 1, 1, 0 },
-            { "linux1k-plain", 1, 0, false, 0, 0, 1, 1, 0 },
+            { "jam4k-plain", 0, 0, false, 0, 0, 1, 1, 0, 0 },
+            { "linux1k-plain", 1, 0, false, 0, 0, 1, 1, 0, 0 },
         };
         static const struct storm_cfg small[2] = {
-            { "jam4k-small", 0, 0, false, 48, 0, 1, 1, 0 },
-            { "linux1k-small", 1, 0, false, 64, 0, 1, 1, 0 },
+            { "jam4k-small", 0, 0, false, 48, 0, 1, 1, 0, 0 },
+            { "linux1k-small", 1, 0, false, 64, 0, 1, 1, 0, 0 },
         };
         where = plain[f].name;
         storm_make(&s, &plain[f], &fixtures[f]);

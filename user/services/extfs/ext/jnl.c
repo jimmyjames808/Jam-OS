@@ -44,6 +44,7 @@ status_t ext_jnl_init(struct ext_jnl *j, void *mem, size_t mem_size, uint32_t fl
     j->mem_size = mem_size;
     j->flags = flags;
     j->tail_every = EXT_JNL_TAIL_EVERY;
+    j->tail_blocks = EXT_JNL_TAIL_BLOCKS;
     return OK;
 }
 
@@ -328,7 +329,8 @@ status_t jnl_checkpointed(struct ext_fs *fs, struct ext_jnl *j)
     j->clean = j->head;
     j->clean_tid = j->tid;
     j->sb_before = fs->sb;
-    if (j->since_tail >= j->tail_every)
+    if (j->since_tail >= j->tail_every ||
+        (j->tail && jnl_dist(j, j->tail, j->head) >= j->tail_blocks))
         return move_tail(fs, j);
     return OK;
 }

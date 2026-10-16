@@ -466,6 +466,8 @@ status_t run_mount(struct storm *s, struct run *r)
         fail("ext_jnl_init: %d", st);
     if (s->cfg->tail_every)
         r->j.tail_every = s->cfg->tail_every;
+    if (s->cfg->tail_blocks)
+        r->j.tail_blocks = s->cfg->tail_blocks;
     r->j.on_commit = on_commit;
     r->j.ctx = r;
     r->j.commit_sec = 1760000000;

@@ -105,6 +105,8 @@ struct storm_cfg {
     uint64_t seed;
     uint32_t mkfs_bs;         /* 0: a fixture storm; else the names storm (extnstorm.c) on a
                                * volume mkfs made with blocks of this size */
+    uint32_t tail_blocks;     /* 0: the default; UINT32_MAX: the tail never moves for blocks
+                               * (the log holds up to tail_every commits) */
 };
 
 /* One mount's state while a storm runs on it. */

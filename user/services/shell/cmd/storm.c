@@ -8,7 +8,8 @@
  * (any size). A thread of storm's own, which serves nothing, kills the
  * services at a fixed rate through init's control channel (initctl.kill:
  * the path `kill` takes), taking turns; by default the filesystem service
- * of each side ("fat-usb0" for /usb0, "fat-data" for /data). A kill that
+ * of each side ("fat-usb0" for /usb0, "fat-data" for /data, "extfs-jam"
+ * for /jam). A kill that
  * takes longer than the period is followed by the next at once, never by
  * a burst to catch up. Rate 0: no kills at all (the baseline line).
  *
@@ -226,21 +227,25 @@ static bool add_target(struct storm *s, const char *name)
     if (!strcmp(name, "mixer") && sh_audio_ctl()) {
         t->probe = PROBE_MIXER;
         t->ch = sh_audio_ctl();   /* the shell's own channel: not ours to close */
-    } else if (!strncmp(name, "fat-", 4) && strlen(name + 4) + 2 <= sizeof(path)) {
-        snprintf(path, sizeof(path), "/%s", name + 4);
+    } else if ((!strncmp(name, "fat-", 4) || !strncmp(name, "extfs-", 6)) &&
+               strlen(strchr(name, '-') + 1) + 2 <= sizeof(path)) {
+        snprintf(path, sizeof(path), "/%s", strchr(name, '-') + 1);
         if (ns_channel(path, &t->ch) == OK)
             t->probe = PROBE_FS;
     }
     return true;
 }
 
-/* The filesystem service of the mount holding abs, if it has one. */
+/* The filesystem service of the mount holding abs, if it has one: fat's
+ * for /data, /esp and /usbN, extfs's for /jam. */
 static bool add_side(struct storm *s, const char *abs)
 {
     char m[NS_NAME_MAX], name[NAME_MAX];
-    if (!mount_name(abs, m, sizeof(m)) || !fat_mount(m))
+    if (!mount_name(abs, m, sizeof(m)))
         return true;
-    snprintf(name, sizeof(name), "fat-%s", m);
+    if (!fat_mount(m) && strcmp(m, "jam"))
+        return true;
+    snprintf(name, sizeof(name), "%s-%s", strcmp(m, "jam") ? "fat" : "extfs", m);
     return add_target(s, name);
 }
 
