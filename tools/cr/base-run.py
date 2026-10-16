@@ -162,15 +162,21 @@ def listing(args):
     try:
         at = subprocess.run([sys.executable, "tools/mkimage.py", "--data-at", b.img],
                             capture_output=True, text=True, cwd=TOP, check=True).stdout.strip()
-        subprocess.run(["mcopy", "-n", "-i", "%s@@%s" % (b.img, at), "::/cr/tests.txt", txt],
-                       check=True, cwd=TOP, capture_output=True)
+        r = subprocess.run(["mcopy", "-n", "-i", "%s@@%s" % (b.img, at), "::/cr/tests.txt", txt],
+                           cwd=TOP, capture_output=True, text=True)
+        if r.returncode:
+            ls = subprocess.run(["mdir", "-i", "%s@@%s" % (b.img, at), "::/cr"],
+                                cwd=TOP, capture_output=True, text=True)
+            raise SystemExit("base-run: can't read the test list from the stick: mcopy said %r; "
+                             "mdir ::/cr says %r %r (the stick is kept: %s; see %s)"
+                             % (r.stderr.strip()[-300:], ls.stdout.strip()[-300:],
+                                ls.stderr.strip()[-200:], b.img, b.log))
     except (subprocess.CalledProcessError, OSError) as e:
         raise SystemExit("base-run: can't read the test list from the stick (%s; see %s)" % (e, b.log))
-    finally:
-        try:
-            os.unlink(b.img)
-        except OSError:
-            pass
+    try:
+        os.unlink(b.img)
+    except OSError:
+        pass
     suites, cur = {}, None
     for line in open(txt, errors="replace").read().split("\n"):
         line = line.rstrip("\r")
@@ -190,16 +196,25 @@ def listing(args):
 def skip_list(path):
     """[(pattern, layer, reason)] from the skip file."""
     out = []
+    group = None   # a "[layer] reason" line sets (layer, reason) for the patterns after it
     if not path or not os.path.isfile(path):
         return out
     for n, line in enumerate(open(path), 1):
         line = line.strip()
         if not line or line.startswith("#"):
             continue
+        m = re.match(r"^\[(\S+)\]\s+(.+)$", line)
+        if m:
+            group = (m.group(1), m.group(2))
+            continue
         w = line.split(None, 2)
-        if len(w) < 3:
-            raise SystemExit("%s:%d: want '<pattern> <layer> <reason>'" % (path, n))
-        out.append((w[0], w[1], w[2]))
+        if len(w) == 1 and group:
+            out.append((w[0], group[0], group[1]))
+        elif len(w) == 3:
+            out.append((w[0], w[1], w[2]))
+        else:
+            raise SystemExit("%s:%d: want '<pattern> <layer> <reason>', or a pattern after a "
+                             "'[layer] reason' line" % (path, n))
     return out
 
 
