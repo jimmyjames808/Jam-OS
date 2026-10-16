@@ -1881,27 +1881,19 @@ static status_t share_leaf_locked(struct vmo *p, struct vmo *c, uint64_t idx, ui
     return st;
 }
 
-/* p's "vmo resize" held (its size can't change): share its pages [offp,
- * offp + c's size) into c, a leaf at a time (a run of missing tables in
- * one look), and take the write bit off p's entries for them; one
- * shootdown at the end. Meanwhile p's
- * `protecting` makes a separation in p wait. ERR_BAD_STATE if a pin or
- * a kernel mapping covers a page there. */
-static status_t share_pages(struct vmo *p, struct vmo *c, uint64_t offp)
+/* p's `protecting` raised by the caller: share p's present pages [first,
+ * end) into c, p's page i as c's page i - offp, a leaf at a time (a run of
+ * missing tables in one look), and take the write bit off p's entries for
+ * them, adding their ranges and CPUs to g (the caller shoots them down).
+ * ERR_BAD_STATE if a pin or a kernel mapping covers a page there. */
+static status_t share_range(struct vmo *p, struct vmo *c, uint64_t offp, uint64_t first,
+                            uint64_t end, struct tlb_gather *g)
 {
-    uint64_t f = vlock(p);
-    uint64_t end = offp + (c->size >> PAGE_SHIFT);   /* (no overflow: both at most 2^35) */
-    if (end > p->size >> PAGE_SHIFT)
-        end = p->size >> PAGE_SHIFT;   /* past it the child's pages are zero */
-    p->protecting++;
-    vunlock(p, f);
-    struct tlb_gather g;
-    tlb_gather_init(&g);
     status_t st = OK;
-    for (uint64_t idx = offp; idx < end && st == OK;) {
+    for (uint64_t idx = first; idx < end && st == OK;) {
         uint64_t stop = ALIGN_UP(idx + 1, LEAF_PAGES) < end ? ALIGN_UP(idx + 1, LEAF_PAGES) : end;
         uint64_t n = 0, next;
-        f = vlock(p);
+        uint64_t f = vlock(p);
         spin_lock_nested(&c->base.lock, 1);   /* parent, then the new child: nobody else has it */
         uint64_t t0 = uptime_ns();
         if (!leaf_find_locked(p, idx, &next))   /* past the missing tables, as decommit */
@@ -1912,11 +1904,29 @@ static status_t share_pages(struct vmo *p, struct vmo *c, uint64_t offp)
             stop = batch_end_locked(p, idx, stop, VMO_BATCH_PROTECT_COST);   /* in budget */
             st = share_leaf_locked(p, c, idx, stop, offp, &n);
         }
-        batch_note(t0, n ? wrprotect_umaps_locked(p, idx, stop, &g) : 0);
+        batch_note(t0, n ? wrprotect_umaps_locked(p, idx, stop, g) : 0);
         spin_unlock(&c->base.lock);
         vunlock(p, f);
         idx = stop;
     }
+    return st;
+}
+
+/* p's "vmo resize" held (its size can't change): share its pages [offp,
+ * offp + c's size) into c (share_range); one shootdown at the end.
+ * Meanwhile p's `protecting` makes a separation in p wait. ERR_BAD_STATE
+ * if a pin or a kernel mapping covers a page there. */
+static status_t share_pages(struct vmo *p, struct vmo *c, uint64_t offp)
+{
+    uint64_t f = vlock(p);
+    uint64_t end = offp + (c->size >> PAGE_SHIFT);   /* (no overflow: both at most 2^35) */
+    if (end > p->size >> PAGE_SHIFT)
+        end = p->size >> PAGE_SHIFT;   /* past it the child's pages are zero */
+    p->protecting++;
+    vunlock(p, f);
+    struct tlb_gather g;
+    tlb_gather_init(&g);
+    status_t st = share_range(p, c, offp, offp, end, &g);
     DBG_HOOK(DBG_VMO_CHILD_SHOOT, p);
     tlb_gather_finish(&g);
     f = vlock(p);
