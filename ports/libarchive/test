@@ -31,6 +31,10 @@ send mkdir -p /data/lt/tree/s/d /data/lt/tree/empty
 wait {prompt}
 send cd /data/lt
 wait {prompt}
+# The 7-zip writer keeps its data in a temporary file, in $TMPDIR or /tmp: no program has a
+# /tmp yet (a gap the ext data volume closes), so the test points it at its own directory.
+send export TMPDIR=/data/lt
+wait {prompt}
 send N=0123456789012345678901234567890123456789
 wait {prompt}
 send N=$N$N$N.txt
