@@ -49,6 +49,7 @@ static const struct {
     { "jit", pt_jit },
     { "mmap-big", pt_mmap_big },
     { "mmap-coherent", pt_mmap_coherent },
+    { "mmap-tmp", pt_mmap_tmp },
     { "spawn-data", pt_spawn_data },
     { "loopback", pt_loopback },
     { "links", pt_links },
@@ -60,7 +61,7 @@ static const struct {
 
 /* The sections run only when named (long ones). */
 static const char *const asked_only[] = { "files-many", "sockets", "session", "mmap-big",
-                                          "mmap-coherent", "spawn-data", "loopback",
+                                          "mmap-coherent", "mmap-tmp", "spawn-data", "loopback",
                                           "self-image", "links" };
 
 static bool by_default(const char *name)
