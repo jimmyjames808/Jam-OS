@@ -493,7 +493,7 @@ FK2, FK3 and FL1b are about two (their halves can't be tested apart).
 
 | Track | What | Files | Gate | Tests | Size | Model |
 |---|---|---|---|---|---|---|
-| **FK1. Clone modes** | `VMAR_CLONE_SHARE`, `VMAR_CLONE_NONE` on `vmar_map`, kept through protect, split, merge and replace; `map_info.flags` shows them; syscalls.def's text for both new calls (the contract FK2 and FK3 fill) | `kernel/mm/aspace.c` (the flags), `kernel/include/jam/abi.h`, `abi/syscalls.def`, a new ktest file | nothing | ktests: each flag kept by every mapping operation, merges only with the same mode, refused with `VMAR_KEPT_ONLY` where it means nothing; full ktest 4 and 8 | 1 | **Opus** |
+| **FK1. Clone modes** | `VMAR_CLONE_SHARE`, `VMAR_CLONE_NONE` on `vmar_map`, kept through protect, split, merge and replace; `map_info.flags` shows them; syscalls.def's text for both new calls (the contract FK2 and FK3 fill); built, see "FK1 notes" | `kernel/mm/aspace.c` (the flags), `kernel/include/jam/abi.h`, `abi/syscalls.def`, a new ktest file | nothing | ktests: each flag kept by every mapping operation, merges only with the same mode, refused with `VMAR_KEPT_ONLY` where it means nothing; full ktest 4 and 8 | 1 | **Opus** |
 | **FK2. The address-space clone** | `vmar_clone` (1.1): one instant, the three modes, the JIT and device rules, the children's handles, the charges and the page-table reserve (1.3), the refusals, random handle generations in the clone's table | `kernel/mm/aspace.c` (the walk), `kernel/object/vmo.c` (protecting many VMOs, then sharing), `kernel/object/process.c`, `kernel/abi/vmar_sys.c`, `kernel/object/handle.c` (the generations), syscalls.def, abi.h, a new ktest file | FK1 | ktests: each kind of mapping cloned and checked from both sides; 8 writer threads keeping an invariant across two VMOs while the clone runs (the child never sees it broken); a 1 TiB reservation with a page per GiB cloned within a bound; 60,000 mappings; charges exact and refused up front; a pin refused; storms of map, unmap and protect from other threads; full ktest 4 and 8; soak 2 | 2 | **Opus** |
 | **FK3. Exec in place** | `process_replace` (section 2) | `kernel/object/process.c`, `kernel/sched/thread.c` (the other threads' end), `kernel/object/handle.c` (all but one closed), `kernel/mm/aspace.c` (the swap), `kernel/abi/sysc_proc.c`, syscalls.def, abi.h, a new ktest file | FK2 (the same files) | ktests: other threads in a wait, a futex, a channel call, a fault waiting for a pager all gone; every handle closed but one; the parent's handle, pid, waits and port bindings unchanged; the old address space's charges back; each refusal; two threads replacing at once; a replace racing a kill; full ktest 4 and 8; soak 2 | 2 | **Opus** |
 | **FL1a. libjam's fork** | the save and the trampoline (assembly), `jam_fork` (the clone, the thread, the start, the roles of 1.6), the child's rebind of libos's roles and locks, the hooks the POSIX layer registers | a new user/lib/fork.c and its assembly, `user/lib/start.c` (the roles' rebind), `user/include/os.h`, a new message header in user/include/, `abi/idl/ids.txt`, a utest file | FK2 | utest: a native program forks: both sides return, memory separate, the child's roles its own, its handle table exactly the passed set, the parent's charge back after the child exits | 1 | **Opus** |
@@ -545,6 +545,41 @@ the kernel (FK2 500, FK3 400) and 2,000 in libc and libjam, besides tests.
 5. *Linux-specific use of `fork` in Chromium* that this plan didn't read
    (the sandbox's `clone` with namespace flags is off; a call the scan
    finds later goes to FL1b's table of flags).
+
+### FK1 notes
+
+What FK2 and FK3 start from:
+
+- **The mode** is `clone` in `struct mapping` (`kernel/mm/aspace.c`):
+  `ASPACE_CLONE_SHARE`, `ASPACE_CLONE_NONE` or 0 for a copy, the same
+  bits as `VMAR_CLONE_*` (bits 6 and 7; `abi_check.c` holds them equal),
+  so `aspace_get_maps` copies it into `map_info.flags` as it is.
+  `clone_mode` decides it once in `mapping_new`, from the flags and the
+  maximum; `split` copies it, `joinable` (every merge, and the counts
+  `merges_for` and `protect_merges` make before a change) compares it, and
+  nothing else writes it. `aspace_check` refuses a mode the rules don't
+  allow (`clone_ok`): FK2's walk may trust that a copy is of a paged VMO,
+  not JIT, through a maximum with write.
+- **Decided here**: the clone flags with `VMAR_KEPT_ONLY` are
+  `ERR_INVALID_ARGS` (the row's "refused where it means nothing": a kept
+  mapping is always shared); a contiguous or physical VMO's mapping keeps
+  an explicit `VMAR_CLONE_NONE` (only its copy becomes share: nothing is
+  lost by giving a child nothing); `VMAR_CLONE_SHARE` asked on a JIT
+  VMO's mapping whose maximum has write is not refused but made none,
+  as the plan's "the kernel overrides" says, so `MAP_SHARED` over JIT
+  memory keeps working in the parent. `vmar_protect` takes neither flag
+  (its mask already refused them). A new `vmo_is_paged` (`vmo.c`) tells
+  the device kinds apart.
+- **The two calls** are in syscalls.def as 65 `vmar_clone(dst, vmos,
+  children, n, flags)` and 139 `process_replace(proc, entry, stack, arg0,
+  arg1)`, with the contract text; their kernel halves
+  (`sysc_vmar_clone` in `kernel/abi/sysc_vm.c`, `sysc_process_replace` in
+  `kernel/abi/sysc_proc.c`) answer `ERR_NOT_SUPPORTED` and touch nothing
+  until FK2 and FK3 replace them. (syscalls.def's header said a weak
+  default was generated; none has been since the generator dropped its
+  file of weak calls, so the header now says so.) Left to FK2: the limit
+  on `n` and the rights `vmos` need; to FK3: whether `arg0` leaves the
+  table on an error (the text says nothing changes, the stub's behaviour).
 
 ## 6. Questions for the owner
 

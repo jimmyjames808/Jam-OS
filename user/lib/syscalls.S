@@ -352,6 +352,15 @@ jam_vmo_make_jit:
     ret
     .size jam_vmo_make_jit, . - jam_vmo_make_jit
 
+    .globl jam_vmar_clone
+    .type jam_vmar_clone, @function
+jam_vmar_clone:
+    mov %rcx, %r10
+    mov $SYS_vmar_clone, %eax
+    syscall
+    ret
+    .size jam_vmar_clone, . - jam_vmar_clone
+
     .globl jam_process_create
     .type jam_process_create, @function
 jam_process_create:
@@ -801,6 +810,15 @@ jam_process_get_maps:
     syscall
     ret
     .size jam_process_get_maps, . - jam_process_get_maps
+
+    .globl jam_process_replace
+    .type jam_process_replace, @function
+jam_process_replace:
+    mov %rcx, %r10
+    mov $SYS_process_replace, %eax
+    syscall
+    ret
+    .size jam_process_replace, . - jam_process_replace
 
     .globl jam_kexec_load
     .type jam_kexec_load, @function

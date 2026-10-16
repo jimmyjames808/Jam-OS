@@ -989,6 +989,11 @@ bool vmo_is_kept(const struct vmo *v)
     return (v->flags & VMO_KEEP_PAGES) != 0;
 }
 
+bool vmo_is_paged(const struct vmo *v)
+{
+    return v->kind == VMO_PAGED;
+}
+
 status_t vmo_create_physical(uint64_t phys, uint64_t size, unsigned cache, struct vmo **out)
 {
     if ((phys & (PAGE_SIZE - 1)) || size == 0 ||

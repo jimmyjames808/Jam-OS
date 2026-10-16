@@ -77,6 +77,9 @@ struct job;
 status_t vmo_create_for(struct job *job, uint64_t size, uint32_t flags, struct vmo **out);
 /* Made with VMO_KEEP_PAGES (fixed at creation, so no lock is needed). */
 bool vmo_is_kept(const struct vmo *v);
+/* A paged VMO: not contiguous or physical, the kinds no copy-on-write
+ * child is made of (fixed at creation, so no lock is needed). */
+bool vmo_is_paged(const struct vmo *v);
 /* A VMO over [phys, phys+size), which must be page-aligned. The pages are
  * never freed. cache: VM_UC, VM_WC or 0 (write-back), used for mappings.
  * Byte access (vmo_read/vmo_write) is ERR_NOT_SUPPORTED: map it instead. */
