@@ -543,7 +543,7 @@ static int start_failed(struct started *s, status_t st, bool said)
     if (!said)
         sh_tty("run: can't start %s (%s)\n", s->path, status_str(st));
     if (!said && st == ERR_ACCESS_DENIED && s->path[0] == '/')
-        sh_tty("run: only programs in /boot can run, and those on /data the owner "
+        sh_tty("run: only programs in /boot can run, and those on /data or /jam the owner "
                "allowed (`allow`)\n");
     if (!said && st == ERR_IO && sh_on_data(s->path))
         sh_tty("run: a page of %s doesn't match its approval, or /data can't read it: "

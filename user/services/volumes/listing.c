@@ -206,6 +206,23 @@ status_t disk_digest(uint32_t id, uint64_t lba, uint64_t count, uint8_t sha256[3
     return st == OK ? storage_digest_result(c.rep, &c.m, sha256) : st;
 }
 
+status_t disk_open_ro(uint32_t id, uint32_t index, handle_t *out)
+{
+    struct disk *d;
+    status_t st = asked_disk(id, &d);
+    if (st != OK)
+        return st;
+    struct call c;
+    call_begin(&c, d->ch);
+    st = storage_open_partition_send(d->ch, c.txid, index, 1);
+    if (st != OK) {
+        call_end(&c);
+        return st;
+    }
+    st = call_wait(&c, now() + CALL_WAIT);
+    return st == OK ? storage_open_partition_result(c.rep, &c.m, out) : st;
+}
+
 status_t disk_health(uint32_t id, struct list_health *o)
 {
     struct disk *d;

@@ -250,10 +250,10 @@ static const struct sh_cmd cmds[] = {
       "  Typing a program's name does the same. Exported variables are its environment;\n"
       "  in a pipe its printf output goes down the pipe: run utest | grep passed.\n"
       "  It gets what its list asks for (services, mounts) and its terminal. A program\n"
-      "  on /data runs once `allow` has marked it, and only as the file was then.\n"
+      "  on /data or /jam runs once `allow` has marked it, and only as the file was then.\n"
       "  run prog &: in the background (see jobs)"),
     C(allow, C_PROGRAMS, "allow <file> | -l | -r <name>",
-      "let a program on /data run: shows what it asks for (services, mounts) and\n"
+      "let a program on /data or /jam run: shows what it asks for (services, mounts) and\n"
       "  asks y/n; y keeps its hash and list in /data/etc/allow, each page's hash in\n"
       "  /data/etc/allow.d. A changed file is refused until allowed again, a changed\n"
       "  page when it is read. -l: the allowed ones. -r: take one back"),
@@ -301,8 +301,23 @@ static const struct sh_cmd cmds[] = {
     C(panic, C_KERNEL, "panic", "panic the kernel (a test: its screen must show)"),
     C(pwd, C_FILES, "pwd", "the current directory"),
     C(cd, C_FILES, "cd [dir]", "change directory (no argument: $HOME)"),
-    C(ls, C_FILES, "ls [-l] [path...]", "list a directory (-l: sizes)"),
+    C(ls, C_FILES, "ls [-l] [path...]",
+      "list a directory. -l: mode, links, owner and size of each name, and a symbolic\n"
+      "  link's target (name -> target)"),
     C(find, C_FILES, "find [dir] [-name text]", "every file below dir (names containing text)"),
+    C(stat, C_FILES, "stat [-L] <path>...",
+      "a file's kind, size, blocks, mode, owner, links, inode and times; a link is\n"
+      "  shown as itself (-L: the file it leads to)"),
+    C(ln, C_FILES, "ln [-s] <target> <name>",
+      "a hard link (the same file under another name, within one mount), or with -s a\n"
+      "  symbolic link: <name> then holds the text <target> (relative to its directory).\n"
+      "  If <name> is a directory, the link goes into it, under the target's own name.\n"
+      "  Only /jam and the other ext volumes have links; /data (FAT) does not"),
+    C(chmod, C_FILES, "chmod <mode> <path>...",
+      "set permission bits: octal (755, 0644) or symbolic ([ugoa][+-=][rwx], comma\n"
+      "  separated: u+x, go-w, a=r). Only on a volume that keeps them (/jam); the bits\n"
+      "  are what ported programs expect to see, not what keeps a program out"),
+    C(readlink, C_FILES, "readlink <path>", "the text of a symbolic link; fails on anything else"),
     C(mkdir, C_FILES, "mkdir [-p] <dir>...", "make directories (-p: and the ones above them)"),
     C(touch, C_FILES, "touch <file>...", "make an empty file where there is none"),
     C(write, C_FILES, "write [-a] <file> <text...>",

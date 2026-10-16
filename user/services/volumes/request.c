@@ -23,6 +23,7 @@ struct op {
     bool           writable; /* ... made writable (or read-only) */
     uint32_t       id;       /* release_disk, digest, health, the prepares, the installer's: the disk */
     unsigned       part;     /* the installer's: PART_ESP or PART_DATA */
+    uint32_t       index;    /* open_partition: the partition's place in the table */
     uint64_t       lba, count;   /* digest: the blocks */
     char           tail[20], word[8];   /* prepare: the owner's confirmation of an erase */
     uint32_t       tail_len, word_len;
@@ -401,9 +402,32 @@ static status_t l_prepare_check(void *ctx, struct idl_txn txn, uint32_t id, uint
     return later(txn, &(struct op){ .id = id }, check_main);
 }
 
+/* A read-only block channel on a partition, asked of the driver in a task. */
+static void open_main(void *arg)
+{
+    struct op *o = arg;
+    handle_t blk = HANDLE_INVALID;
+    status_t st = disk_open_ro(o->id, o->index, &blk);
+    if (o->txn.ch)
+        (void)voldisks_reply_open_partition(o->txn, st, blk);   /* takes the handle in any case */
+    else if (blk != HANDLE_INVALID)
+        jam_handle_close(blk);   /* nobody to give it to */
+    op_done(o);
+}
+
+static status_t l_open_partition(void *ctx, struct idl_txn txn, uint32_t id, uint32_t index,
+                                 handle_t *out_block)
+{
+    (void)ctx;
+    (void)out_block;   /* answered later */
+    if (!disk_named(id))
+        return ERR_NOT_FOUND;
+    return later(txn, &(struct op){ .id = id, .index = index }, open_main);
+}
+
 const struct voldisks_ops voldisks_ops = {
     .disk = l_disk, .partition = l_partition, .digest = l_digest, .health = l_health,
-    .prepare_check = l_prepare_check,
+    .prepare_check = l_prepare_check, .open_partition = l_open_partition,
 };
 
 /* ---- volinstall ------------------------------------------------------------------------- */

@@ -117,6 +117,9 @@ const char *sh_why(status_t st)
     case ERR_NOT_DIR:        return "not a directory";
     case ERR_NOT_EMPTY:      return "a directory with entries";
     case ERR_BUSY:           return "in use";
+    case ERR_LINK_OUT:       return "a symbolic link that leads out of its volume (readlink shows it)";
+    case ERR_LINK_LOOP:      return "too many symbolic links";
+    case ERR_NOT_SUPPORTED:  return "not supported here";
     case ERR_NAME_TOO_LONG:  return "the name is too long";
     case ERR_CANCELED:       return "interrupted";
     default:                 return status_str(st);
@@ -263,6 +266,53 @@ status_t sh_sha256_file(const char *abs, uint8_t digest[SHA256_BYTES])
     if (st == OK)
         sha256_done(&s, digest);
     return st;
+}
+
+void sh_mode_str(uint32_t mode, char out[11])
+{
+    switch (mode & SH_MODE_FMT) {
+    case SH_MODE_REG:  out[0] = '-'; break;
+    case SH_MODE_DIR:  out[0] = 'd'; break;
+    case SH_MODE_LNK:  out[0] = 'l'; break;
+    case SH_MODE_CHR:  out[0] = 'c'; break;
+    case SH_MODE_BLK:  out[0] = 'b'; break;
+    case SH_MODE_FIFO: out[0] = 'p'; break;
+    case SH_MODE_SOCK: out[0] = 's'; break;
+    default:           out[0] = '?'; break;
+    }
+    for (int i = 0; i < 9; i++)
+        out[1 + i] = (mode >> (8 - i) & 1) ? "rwxrwxrwx"[i] : '-';
+    if (mode & 04000)
+        out[3] = (mode & 0100) ? 's' : 'S';
+    if (mode & 02000)
+        out[6] = (mode & 0010) ? 's' : 'S';
+    if (mode & 01000)
+        out[9] = (mode & 0001) ? 't' : 'T';
+    out[10] = '\0';
+}
+
+const char *sh_owner(uint32_t id, char *buf, size_t cap)
+{
+    if (id == SH_ONE_USER)
+        return "jam";
+    snprintf(buf, cap, "%u", (unsigned)id);
+    return buf;
+}
+
+status_t sh_getattr(const char *abs, uint32_t flags, struct fs_attr *a)
+{
+    status_t st = fs_getattr(abs, flags, a);
+    if (st != ERR_NOT_SUPPORTED)
+        return st;
+    bool dir;
+    uint64_t size;
+    st = sh_stat(abs, &dir, &size);
+    if (st != OK)
+        return st;
+    *a = (struct fs_attr){ .mode = (dir ? SH_MODE_DIR | 0755u : SH_MODE_REG | 0644u), .nlink = 1,
+                           .uid = SH_ONE_USER, .gid = SH_ONE_USER, .size = size,
+                           .blocks = (size + 511) / 512 };
+    return OK;
 }
 
 bool sh_chdir(const char *path)

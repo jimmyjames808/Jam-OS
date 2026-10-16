@@ -5222,12 +5222,26 @@ static status_t idl_fz_voldisks_prepare_check(void *ctx, struct idl_txn idl_txn,
     *out_refused = (uint8_t)0x5a5a5a5a5a5a5a5aull;
     return OK;
 }
+static status_t idl_fz_voldisks_open_partition(void *ctx, struct idl_txn idl_txn, uint32_t id, uint32_t index, handle_t *out_block)
+{
+    (void)ctx;
+    (void)idl_txn;
+    (void)id;
+    (void)index;
+    (void)out_block;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    if (drv_event_create(out_block) != OK)
+        return ERR_NO_MEMORY;
+    return OK;
+}
 static const struct voldisks_ops idl_fz_voldisks_ops = {
     .disk = idl_fz_voldisks_disk,
     .partition = idl_fz_voldisks_partition,
     .digest = idl_fz_voldisks_digest,
     .health = idl_fz_voldisks_health,
     .prepare_check = idl_fz_voldisks_prepare_check,
+    .open_partition = idl_fz_voldisks_open_partition,
 };
 static uint32_t idl_fz_voldisks_serve(const void *q, uint32_t n, const handle_t *hs,
                                 uint32_t nh, void *r, handle_t *rhs, uint32_t *rhn)
@@ -5241,6 +5255,7 @@ static const struct idl_fuzz_msg idl_fz_voldisks_msgs[] = {
     { 0x004a0003u, 28u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x004a0004u, 12u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x004a0005u, 12u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x004a0006u, 16u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
 };
 
 /* ---- volinstall ---- */
@@ -5380,7 +5395,7 @@ static const struct idl_fuzz_proto idl_fuzz_protos[] __attribute__((unused)) = {
     { "volesp", 71, VOLESP_REQ_MAX, VOLESP_REP_MAX, VOLESP_REP_HANDLES, idl_fz_volesp_serve, NULL, idl_fz_volesp_msgs, 2 },
     { "disks", 72, DISKS_REQ_MAX, DISKS_REP_MAX, DISKS_REP_HANDLES, idl_fz_disks_serve, NULL, idl_fz_disks_msgs, 2 },
     { "mounts", 73, MOUNTS_REQ_MAX, MOUNTS_REP_MAX, MOUNTS_REP_HANDLES, idl_fz_mounts_serve, idl_fz_mounts_event, idl_fz_mounts_msgs, 3 },
-    { "voldisks", 74, VOLDISKS_REQ_MAX, VOLDISKS_REP_MAX, VOLDISKS_REP_HANDLES, idl_fz_voldisks_serve, NULL, idl_fz_voldisks_msgs, 5 },
+    { "voldisks", 74, VOLDISKS_REQ_MAX, VOLDISKS_REP_MAX, VOLDISKS_REP_HANDLES, idl_fz_voldisks_serve, NULL, idl_fz_voldisks_msgs, 6 },
     { "volinstall", 75, VOLINSTALL_REQ_MAX, VOLINSTALL_REP_MAX, VOLINSTALL_REP_HANDLES, idl_fz_volinstall_serve, NULL, idl_fz_volinstall_msgs, 5 },
 };
 #define IDL_FUZZ_PROTOS (sizeof(idl_fuzz_protos) / sizeof(idl_fuzz_protos[0]))

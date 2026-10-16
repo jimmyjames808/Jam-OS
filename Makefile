@@ -539,6 +539,11 @@ EXTRA_CFLAGS_execwide := -iquote user/tests/exectest
 # bigprog's table (user/tests/bigprog/table.S): 16 pages in bootfs's copy.
 EXTRA_OBJS_bigprog    := $(UOBJ)/user/tests/bigprog/table.S.o
 
+# The shell's `disk check` runs the ext library's checker: the objects bin/extfs
+# builds from user/services/extfs/ext (the same files, one build).
+EXTRA_OBJS_shell   := $(patsubst %,$(UOBJ)/%.o,$(wildcard user/services/extfs/ext/*.c))
+EXTRA_CFLAGS_shell := -Iuser/services/extfs/ext
+
 # $(BUILD)/user/<prog> keeps its debug info (for gdb); bootfs gets a copy
 # without it ($(BUILD)/user/<prog>.bootfs), symbols kept for backtraces.
 # PROG_CFLAGS: the program's own directory on the "..." include path (so

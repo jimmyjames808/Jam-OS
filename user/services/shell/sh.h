@@ -468,6 +468,35 @@ const char *sh_bootfs_name(const char *abs);
 bool        sh_dest(const char *from_abs, const char *to, char *out, size_t cap);
 /* abs is "/" or a mount point itself ("/data"). */
 bool        sh_is_mount(const char *abs);
+/* `disk check <mount>` (sh_extcheck.c): a read-only check of the ext volume mounted
+ * at arg, through the voldisks channel `list`; said on the terminal. 0: no problems. */
+int         sh_disk_check(handle_t list, const char *arg);
+
+/* ---- modes, owners and links (sh_vfs.c) -------------------------------------------- */
+
+/* fs_attr.mode's kind bits and fs_attr_set's mask, the numbers of abi/idl/fs.idl
+ * (<idl/fs.h> can't be included beside <os.h>: it declares the same names). */
+#define SH_MODE_FMT  0xf000u
+#define SH_MODE_FIFO 0x1000u
+#define SH_MODE_CHR  0x2000u
+#define SH_MODE_DIR  0x4000u
+#define SH_MODE_BLK  0x6000u
+#define SH_MODE_REG  0x8000u
+#define SH_MODE_LNK  0xa000u
+#define SH_MODE_SOCK 0xc000u
+#define SH_ATTR_MODE 1u
+#define SH_FEAT_LINKS 1u           /* fs_statfs_kind's features: symbolic and hard links */
+#define SH_FEAT_MODES 2u           /* ... permission bits that are kept */
+#define SH_ONE_USER  1000u
+
+/* A mode as `ls -l` prints it: "drwxr-xr-x" (out: 11 bytes). */
+void        sh_mode_str(uint32_t mode, char out[11]);
+/* The owner or group an id is called: "jam" for the one user, else its number. */
+const char *sh_owner(uint32_t id, char *buf, size_t cap);
+/* The file's attributes (fs_getattr: flags 0, or FS_NOFOLLOW for a link itself): what
+ * `ls -l` and `stat` show. A mount that makes them up (FAT) answers with its made-up
+ * ones; a mount that can't say (ERR_NOT_SUPPORTED) gets a plain file or directory by size. */
+status_t    sh_getattr(const char *abs, uint32_t flags, struct fs_attr *a);
 /* Why a file call failed, in words ("no such file or directory"). */
 const char *sh_why(status_t st);
 
@@ -498,6 +527,7 @@ SH_CMD(jamjar);
 /* files and text */
 SH_CMD(pwd); SH_CMD(cd); SH_CMD(ls); SH_CMD(find); SH_CMD(mkdir); SH_CMD(rm); SH_CMD(mv);
 SH_CMD(cp); SH_CMD(touch); SH_CMD(write); SH_CMD(df); SH_CMD(sync); SH_CMD(mount);
+SH_CMD(stat); SH_CMD(ln); SH_CMD(chmod); SH_CMD(readlink);
 SH_CMD(cat); SH_CMD(hexdump); SH_CMD(sha256sum); SH_CMD(wc);
 SH_CMD(head); SH_CMD(tail); SH_CMD(grep); SH_CMD(sort); SH_CMD(uniq); SH_CMD(seq);
 /* disks (cmd/disks.c) */
