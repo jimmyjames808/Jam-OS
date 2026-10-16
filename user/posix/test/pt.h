@@ -26,6 +26,8 @@
  * procfs.c (libc's /proc: the program's file and the descriptors),
  * procinfo.c (/proc's generated files: stat, status, maps, cpuinfo, ...),
  * launch.c (Chromium's launcher's needs: a big argv, addclosefrom_np),
+ * execinfo.c (backtrace and its lines: nested calls, a thread, a signal
+ * handler, qsort's comparator),
  * mmap.c (files mapped on their pages, msync, posix_spawn from /data),
  * jit.c (MAP_JIT refused without the power, and to bin/jittest as our child),
  * wayland.c (the Wayland socket against a fake compositor of its own),
@@ -100,6 +102,7 @@ void pt_spawn_data(char **argv);
 void pt_wayland(char **argv);
 void pt_jit(char **argv);          /* MAP_JIT without the power (jit.c) */
 void pt_links(char **argv);        /* only when asked for: an ext volume at /u6 (links.c) */
+void pt_execinfo(char **argv);     /* backtrace() and its lines (execinfo.c) */
 void pt_scm(char **argv);          /* socketpairs carrying descriptors (scm.c, scmkid.c) */
 void pt_unix(char **argv);         /* named AF_UNIX sockets through /svc/unix (unix.c) */
 void pt_peer(char **argv);         /* a hostile peer in another process (peer.c) */
