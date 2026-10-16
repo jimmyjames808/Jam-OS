@@ -203,12 +203,12 @@ static status_t find_mount(handle_t list, const char *mount, uint32_t *id, uint3
         if (st != OK)
             return st;
         for (uint32_t n = 0; n < parts && n < MAX_MOUNTS; n++) {
-            uint8_t mbr, guid[16], fs;
+            uint8_t mbr, guid[16], fs, fstype;
             uint64_t start, pblocks;
             char label[109], where[16];
             uint32_t ll, wl;
             if (voldisks_partition_until(list, now() + LIST_WAIT, did, n, &mbr, guid, &start,
-                                         &pblocks, &fs, label, &ll, where, &wl) == OK &&
+                                         &pblocks, &fs, &fstype, label, &ll, where, &wl) == OK &&
                 fs == VOLDISKS_FS_MOUNTED && wl == strlen(mount) && !memcmp(where, mount, wl)) {
                 *id = did;
                 *part = n;
