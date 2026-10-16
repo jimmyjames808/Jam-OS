@@ -139,7 +139,7 @@ def entry(p, key):
     return p, archive_of(p, key)
 
 
-BIG_LIST = b"posix\nmount /jam rw\nmount /pkg r\n"   # the list build/bigpkg/bigpkg is linked with
+BIG_LIST = b"posix\nmount /jam rw\nmount /pkg r\nsvc exec\n"   # the list build/bigpkg/bigpkg is linked with
 
 
 def big_package(path):

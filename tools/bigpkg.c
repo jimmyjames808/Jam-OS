@@ -4,7 +4,8 @@
  * $(BUILD)/bigpkg/bigpkg links this with bigprog's table (BIGPROG_PAGES
  * pages of constant data, page i holding the word i in each of its 512
  * places: user/tests/bigprog/table.S) by jamos-cc, with the list
- * `posix`, `mount /jam rw` and `mount /pkg r`; generated when a test asks for it, never
+ * `posix`, `mount /jam rw`, `mount /pkg r` and `svc exec` (to start a child by a
+ * data path); generated when a test asks for it, never
  * kept. The table is in the read-only segment, so a page of it is fetched
  * from the volume only when it is touched, and checked by the kernel against
  * the approval's page table then.
