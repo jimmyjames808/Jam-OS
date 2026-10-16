@@ -139,11 +139,13 @@ void     jam_gone(void);
  * followers (mounts_event's caller does). Says the thread's line too. */
 bool     jam_changed(void);
 
-/* ---- tmp.c: /tmp always there, emptied at boot (shell mode) ----------------------- */
+/* ---- tmp.c: /tmp always there, emptied at boot; /pkg (shell mode) ----------------- */
 
 /* From now on init keeps a /tmp: a view of /jam/tmp, of /data/tmp (an ext
- * /data), or an ext volume in memory; KEY_MOUNTS comes on port (with `key`)
- * when it is mounted, KEY_TMP when the memory one's service ends. */
+ * /data), or an ext volume in memory (with its pager); and a /pkg, a
+ * read-only view of /jam/pkg or /data/pkg, where bin/pkg installs.
+ * KEY_MOUNTS comes on port (with `key`) when either is mounted, KEY_TMP
+ * when the memory /tmp's service ends. */
 void     tmp_start(handle_t port, uint64_t key);
 /* path was mounted (came) or went (mounts.c): /jam and /data matter. */
 void     tmp_mount_changed(const char *path, bool came);

@@ -706,8 +706,10 @@ __asm__(
     "    movl $" S(H_LEAVE) ", %esi\n"
     "    movl $" S(SYS_exception_done) ", %eax\n"
     "    syscall\n"
+    "upc_rleave_ret:\n"
     "    movq %rax, d_ret\n"
     "    jmp upc_rwait\n"
+    "upc_rleave_end:\n"
     "upc_rspin:\n"                      /* its own code, no calls, until D_GO */
     "    call upc_setup\n"
     "    movq $1, d_ready\n"
@@ -735,6 +737,7 @@ __asm__(
     "    movq %rcx, d_ret2\n"
     "    movq %rax, d_ret\n"
     "    jmp upc_rwait\n"
+    "upc_rcall_end:\n"
     "upc_rself:\n"                      /* thread_raise of itself, after D_GO */
     "    call upc_setup\n"
     "1:  cmpq $0, d_go\n"
@@ -751,6 +754,7 @@ __asm__(
     "    movq %rcx, d_ret2\n"
     "    movq %rax, d_ret3\n"
     "    jmp upc_rwait\n"
+    "upc_rself_end:\n"
     "upc_rbadsp:\n"                     /* RSP at D_ARG (nothing writable) until D_GO */
     "    call upc_setup\n"
     "    movq d_arg, %rsp\n"
@@ -860,7 +864,8 @@ __asm__(
     X(f_mf) X(f_mf_i) X(f_mf_end) X(f_xm) X(f_xm_i) X(f_xm_end)                          \
     X(upc_recurse) X(upc_recurse_i) X(upc_esargs) X(act_raised) X(act_winspin)           \
     X(upc_rspin) X(upc_rspin_loop) X(upc_rspin_end) X(upc_rwait) X(upc_rwait_end)        \
-    X(upc_rcall) X(upc_rcall_ret) X(upc_rself) X(upc_rself_ret) X(upc_rbadsp)            \
+    X(upc_rcall) X(upc_rcall_ret) X(upc_rcall_end) X(upc_rself) X(upc_rself_ret)         \
+    X(upc_rself_end) X(upc_rleave_ret) X(upc_rleave_end) X(upc_rbadsp)                   \
     X(upc_rstorm) X(upc_rbspin) X(upc_rbench)
 #define DECLARE(l) extern const uint8_t l[];
 LABELS(DECLARE)
@@ -1999,6 +2004,26 @@ KTEST(upcall_raise_running)
     upc_end(&u);
 }
 
+/* An interrupt that comes in a call's last microseconds (interrupts off
+ * from the dispatch to sysretq) is taken at the first instruction after
+ * the call, and takes a latched raise there: the right thing (a later
+ * interrupt, in the thread's own code), but what a test can't tell from a
+ * raise taken on the call's return. A raise taken anywhere in the few
+ * instructions between the call and upc_rwait ([from, to)) tries again: a
+ * kernel that took raises on the call's return would land there on every
+ * try, such an interrupt hardly ever twice (soak 2026-10-16, 8 CPUs under
+ * load: upcall_raise_in_call once; `ktest=upcall_raise load=16` at 8 CPUs:
+ * upcall_raise_in_window in its third loop). */
+static bool taken_after_call(struct upc *u, const uint8_t *from, const uint8_t *to,
+                             const char *test, unsigned tries)
+{
+    if (!rip_in(u, from, to) || tries >= 5)
+        return false;
+    kprintf("ktest %s: an interrupt at the call's return took the raise (try %u): again\n", test,
+            tries);
+    return true;
+}
+
 /* A raise to a thread blocked in a call (sleep_until, which
  * thread_interrupt would end) doesn't end it, and isn't taken on its
  * return: it comes at a later interrupt, in the thread's own code. */
@@ -2016,8 +2041,9 @@ KTEST(upcall_raise_in_call)
         KT_EQ(uthread_raise(u.u[0]), OK);
         KT_ASSERT(wait_word(&u, D_RCOUNT, 1));
         exited(&u, 0);
-        if (rip_in(&u, upc_rcall, upc_rcall_ret) && tries < 5) {
-            upc_end(&u);   /* a slow start: taken before the call; again */
+        if ((rip_in(&u, upc_rcall, upc_rcall_ret) && tries < 5) ||
+            taken_after_call(&u, upc_rcall_ret, upc_rcall_end, "upcall_raise_in_call", tries)) {
+            upc_end(&u);   /* a slow start (taken before the call), or the above: again */
             continue;
         }
         KT_EQ((int64_t)get(&u, D_RET), OK);   /* not ended */
@@ -2034,19 +2060,26 @@ KTEST(upcall_raise_in_call)
 KTEST(upcall_raise_in_window)
 {
     struct upc u;
-    upc_new(&u, "upc-rwin");
-    set(&u, D_FAULTER, AT(f_ud2));
-    set(&u, D_ACTION, AT(act_winspin));
-    upc_start(&u, upc_generic);
-    KT_ASSERT(wait_word(&u, D_READY, 1));
-    uint64_t latched0 = __atomic_load_n(&raise_latched, __ATOMIC_RELAXED);
-    KT_EQ(uthread_raise(u.u[0]), OK);
-    KT_EQ(uthread_raise(u.u[0]), OK);
-    thread_sleep_ms(50);   /* ticks come meanwhile */
-    KT_EQ(get(&u, D_RCOUNT), 0);
-    KT_EQ(get(&u, D_COUNT), 1);
-    set(&u, D_GO, 1);
-    exited(&u, 0);
+    uint64_t latched0;
+    for (unsigned tries = 1;; tries++) {
+        upc_new(&u, "upc-rwin");
+        set(&u, D_FAULTER, AT(f_ud2));
+        set(&u, D_ACTION, AT(act_winspin));
+        upc_start(&u, upc_generic);
+        KT_ASSERT(wait_word(&u, D_READY, 1));
+        latched0 = __atomic_load_n(&raise_latched, __ATOMIC_RELAXED);
+        KT_EQ(uthread_raise(u.u[0]), OK);
+        KT_EQ(uthread_raise(u.u[0]), OK);
+        thread_sleep_ms(50);   /* ticks come meanwhile */
+        KT_EQ(get(&u, D_RCOUNT), 0);
+        KT_EQ(get(&u, D_COUNT), 1);
+        set(&u, D_GO, 1);
+        exited(&u, 0);
+        if (!taken_after_call(&u, upc_rleave_ret, upc_rleave_end, "upcall_raise_in_window",
+                              tries))
+            break;
+        upc_end(&u);
+    }
     KT_GLOBAL_EQ(__atomic_load_n(&raise_latched, __ATOMIC_RELAXED) - latched0, 1);
     KT_EQ((int64_t)get(&u, D_RET), OK);
     KT_EQ(get(&u, D_RET2), 0);
@@ -2063,12 +2096,17 @@ KTEST(upcall_raise_in_window)
 KTEST(upcall_raise_rights)
 {
     struct upc u;
-    upc_new(&u, "upc-rself");
-    set(&u, D_ACTION, AT(act_raised));
-    upc_start(&u, upc_rself);
-    self_handles(&u);
-    set(&u, D_GO, 1);
-    exited(&u, 0);
+    for (unsigned tries = 1;; tries++) {
+        upc_new(&u, "upc-rself");
+        set(&u, D_ACTION, AT(act_raised));
+        upc_start(&u, upc_rself);
+        self_handles(&u);
+        set(&u, D_GO, 1);
+        exited(&u, 0);
+        if (!taken_after_call(&u, upc_rself_ret, upc_rself_end, "upcall_raise_rights", tries))
+            break;
+        upc_end(&u);
+    }
     KT_EQ((int64_t)get(&u, D_RET), ERR_ACCESS_DENIED);
     KT_EQ((int64_t)get(&u, D_RET3), OK);
     KT_EQ(get(&u, D_RET2), 0);

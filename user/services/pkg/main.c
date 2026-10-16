@@ -41,12 +41,15 @@ JAM_WANTS("svc net\n"
 #define BUILD_FILE  "/boot/build.txt"
 
 /* Where the packages are: on /jam when that is in our namespace (the shell
- * had it, and gave it with `mount /jam rw pkg`), else on /data. init is told
- * which (e->jam), so it reads the programs from the same place. */
+ * had it, and gave it with `mount /jam rw pkg`) and read-write, else on
+ * /data. init is told which (e->jam), so it reads the programs from the
+ * same place, and init's /pkg view follows the same rule (tmp.c): /pkg is
+ * always the place chosen here. */
 static void pick_prefix(struct pk_env *e)
 {
-    bool dir = false;
-    e->jam = fs_stat("/jam", NULL, &dir, NULL) == OK && dir;
+    bool dir = false, ro = true;
+    e->jam = fs_stat("/jam", NULL, &dir, NULL) == OK && dir &&
+             fs_statfs("/jam", NULL, NULL, &ro, NULL) == OK && !ro;
     e->prefix = e->jam ? PREFIX_JAM : PREFIX_DATA;
 }
 

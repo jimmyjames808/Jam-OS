@@ -1,0 +1,56 @@
+# A boot from the installed Jam OS drive (tools/layout-test.sh's drive
+# case: QEMU_BOOT_NVME=1, the drive's data partition ext): the data
+# partition is /data and /jam, one volume under two names
+# (docs/M13.6-PLAN.md's DB1 notes), so /jam's views /usr /var /home come,
+# /tmp is a view of /jam/tmp and /pkg a read-only view of /jam/pkg; a file
+# in /tmp is mapped (posixtest's mmap-tmp: the pager behind it).
+# As in cmds.txt, a marker built from $T (d) never appears in the typed line.
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+seen 60 init: /jam mounted
+seen 60 the machine booted from this Jam OS drive: its data partition is /jam too
+seen 60 init: /jam: mounted as views: /usr /var /home
+seen 60 init: /tmp: a view of /jam/tmp
+seen 60 init: /pkg: a view of /jam/pkg, read-only
+send T=d
+wait {prompt}
+
+# ---- one volume, two names --------------------------------------------------------------
+send write /data/one.txt one-$T && cat /jam/one.txt
+wait one-d
+send write /jam/two.txt two-$T && cat /data/two.txt
+wait two-d
+send mount | grep ^/jam | grep -c read-write | grep ^1$ && echo ok-$T-rw
+wait ok-d-rw
+
+# ---- the views ----------------------------------------------------------------------------
+send write /usr/u.txt usr-$T && cat /data/usr/u.txt
+wait usr-d
+send write /home/h.txt home-$T && cat /jam/home/h.txt
+wait home-d
+send write /tmp/t.txt tmp-$T && cat /data/tmp/t.txt
+wait tmp-d
+
+# ---- /pkg: where bin/pkg installs (/jam/pkg here), read-only ----------------------------
+send write /jam/pkg/p.txt pkg-$T && cat /pkg/p.txt
+wait pkg-d
+send mount | grep ^/pkg | grep -c read-only | grep ^1$ && echo ok-$T-pkgro
+wait ok-d-pkgro
+send write /pkg/q.txt q; echo st-$T=$?
+wait st-d=1
+send ls /data/pkg | grep -c ^q.txt$ | grep ^0$ && echo ok-$T-noq
+wait ok-d-noq
+send rm /jam/pkg/p.txt && ls /pkg | grep -c ^p.txt$ | grep ^0$ && echo ok-$T-rm
+wait ok-d-rm
+
+# ---- a file in /tmp mapped ----------------------------------------------------------------
+send posixtest mmap-tmp; echo mt-$T=$?
+wait 120 posixtest: mmap-tmp: ok
+wait mt-d=0
+wait {prompt}
+
+send sync
+wait {prompt}
+send reboot -f
+wait reboot: resetting

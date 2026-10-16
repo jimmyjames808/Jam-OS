@@ -30,6 +30,9 @@
  *                             untouched one following the file (needs fat
  *                             to keep mappings coherent with writes: until
  *                             then the shared mapping is ENODEV)
+ *   mmap-tmp                  the mmap section in /tmp instead of /data,
+ *                             its pager required (init's /tmp, a volume's
+ *                             view or the memory one: tools/layout-test.sh)
  *   spawn-data <path> allowed|refused
  *                             posix_spawn of a copy of posixtest on /data:
  *                             runs (and exits 7) once `allow`ed, else
@@ -54,13 +57,15 @@
 #include "pt.h"
 
 #define PG        4096ul
-#define MF_PATH   "/data/pt-mmap.bin"
+#define MF_PATH   mf_path               /* in the section's directory (mmap_in) */
 #define MF_SIZE   (3 * PG + 100)        /* three pages and a bit */
 #define MF_MAP    (4 * PG)              /* the file's pages, the last one part zero */
-#define MF_BIG    "/data/pt-mmap-big.bin"
+#define MF_BIG    mf_big
 #define MF_BIGSZ  (4ul << 20)
 #define MF_COH    "/data/pt-mmap-coh.bin"
 #define SETTLE_MS 3000                  /* how long an unlink waits out EBUSY */
+
+static char mf_path[64] = "/data/pt-mmap.bin", mf_big[64] = "/data/pt-mmap-big.bin";
 
 /* The byte at offset i of every file this section writes. */
 static uint8_t pat(uint64_t i)
@@ -267,17 +272,22 @@ static void big_no_copy(bool pager)
     CHECK(unlink_settled(MF_BIG) == 0);
 }
 
-void pt_mmap(char **argv)
+/* The mmap section's checks on files in dir; need_pager: its mount must
+ * have one. */
+static void mmap_in(const char *dir, bool need_pager)
 {
-    (void)argv;
+    snprintf(mf_path, sizeof(mf_path), "%s/pt-mmap.bin", dir);
+    snprintf(mf_big, sizeof(mf_big), "%s/pt-mmap-big.bin", dir);
     if (!put_file(MF_PATH, MF_SIZE)) {
-        CHECK(!"no /data to test on");
+        printf("posixtest: mmap: %s can't be written: %s\n", MF_PATH, strerror(errno));
+        CHECK(!"no directory to test in");
         return;
     }
     bool pager = has_pager(MF_PATH);
+    CHECK(pager || !need_pager);
     if (!pager)
-        printf("posixtest: mmap: /data has no pager here: MAP_SHARED is ENODEV, and "
-               "MAP_PRIVATE a copy\n");
+        printf("posixtest: mmap: %s has no pager here: MAP_SHARED is ENODEV, and "
+               "MAP_PRIVATE a copy\n", dir);
     shared_write_refused();
     int fd = open(MF_PATH, O_RDONLY);
     CHECK(fd >= 0);
@@ -306,6 +316,20 @@ void pt_mmap(char **argv)
         munmap((void *)e, PG);
     close(b);
     big_no_copy(pager);
+}
+
+void pt_mmap(char **argv)
+{
+    (void)argv;
+    mmap_in("/data", false);
+}
+
+/* The same in init's /tmp, which always has a pager (M13.6's DB1: the
+ * memory volume's too). */
+void pt_mmap_tmp(char **argv)
+{
+    (void)argv;
+    mmap_in("/tmp", true);
 }
 
 /* ---- asked for by name --------------------------------------------------------- */

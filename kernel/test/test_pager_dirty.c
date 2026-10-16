@@ -1246,7 +1246,7 @@ static void storer_main(void *arg)
     enter(s->as, NULL);
     for (uint64_t c = 1; !__atomic_load_n(s->stop, __ATOMIC_ACQUIRE); c++) {
         KT_EQ(copy_to_user(s->va, &c, 8), OK);
-        s->last = c;
+        __atomic_store_n(&s->last, c, __ATOMIC_RELAXED);   /* the test polls the first */
     }
     enter(NULL, s->as);
 }
@@ -1314,6 +1314,14 @@ KTEST(pager_dirty_store_storm)
                                 .va = a + (t % ST_PAGES) * PG + (t / ST_PAGES + 1) * 64 };
         s[t].t = thread_create("wk-store", storer_main, &s[t], PRIO_DEFAULT);
     }
+    /* Every storer has stored before the 300 ms start: under the soak's
+     * load a stress worker of a higher priority can keep a new thread
+     * off its CPU until the starvation boost (STARVE_TICKS, 1 s), and one
+     * that first ran after the stop never stored (soak 2026-10-17). */
+    uint64_t until = uptime_ns() + kt_patience_ms(5000) * NS_PER_MS;
+    for (unsigned t = 0; t < ST_THREADS; t++)
+        while (!__atomic_load_n(&s[t].last, __ATOMIC_RELAXED) && uptime_ns() < until)
+            thread_sleep_ns(NS_PER_MS);
     thread_sleep_ns(300 * NS_PER_MS);
     __atomic_store_n(&stop, true, __ATOMIC_RELEASE);
     for (unsigned t = 0; t < ST_THREADS; t++)
