@@ -771,7 +771,7 @@ static bool say_data(handle_t list, const struct disk_row *d, char *where, size_
         if (fs_statfs(mount, NULL, NULL, &ro, NULL) != OK)
             ro = true;
         snprintf(where, cap, "%s", mount);
-        sh_say("an %s volume, mounted %s at %s\n", fstype == VOLDISKS_FSTYPE_EXT ? "ext" : "FAT",
+        sh_say("%s volume, mounted %s at %s\n", fstype == VOLDISKS_FSTYPE_EXT ? "an ext" : "a FAT",
                ro ? "read-only" : "read-write", mount);
     } else if (fs == VOLDISKS_FS_NO_FAT) {
         sh_say("no volume Jam OS reads\n");

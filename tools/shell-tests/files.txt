@@ -201,6 +201,19 @@ type \x03
 wait 10 run: bin/ramfs was killed
 wait {prompt}
 
+# ---- /tmp, always there (M13.6's U7b): on a stick boot with no ext volume, in memory ------
+seen 30 init: /tmp: in memory
+send mount | grep ^/tmp | grep -c read-write | grep ^1$ && echo ok-$T-tmp
+wait ok-x-tmp
+send mkdir /tmp/d-$T; write /tmp/d-$T/f.txt in-tmp-$T && cat /tmp/d-x/f.txt
+wait in-tmp-x
+send mv /tmp/d-$T/f.txt /tmp/g.txt && rm -r /tmp/d-$T && ls /tmp | grep -c ^g.txt$ | grep ^1$ && echo ok-$T-tmp2
+wait ok-x-tmp2
+send rm /tmp/g.txt && ls /tmp | grep -c ^g.txt$ | grep ^0$ && echo ok-$T-tmp3
+wait ok-x-tmp3
+send df | grep -c ^/tmp | grep ^1$ && echo ok-$T-tmp4
+wait ok-x-tmp4
+
 # ---- init sends the shell its mounts again when the bootfs server restarts --------------
 send kill bootfs
 wait shell: killed process

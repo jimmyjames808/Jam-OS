@@ -113,7 +113,7 @@ static bool join(char *out, const char *path, const char *name)
  * DEPTH_MAX deep). An entry that can't be removed stays (skip counts them
  * in each directory, so the walk goes on past them). Returns how many
  * entries went; *left: some stayed (or the time ran out). */
-static unsigned empty_dir(const char *dir, uint64_t deadline, uint32_t gen, bool *left)
+static unsigned empty_dir(const char *dir, uint64_t deadline, bool *left)
 {
     static char path[PATH_MAX_LEN], child[PATH_MAX_LEN];   /* the thread's alone */
     unsigned skip[DEPTH_MAX + 1] = { 0 };
@@ -121,7 +121,7 @@ static unsigned empty_dir(const char *dir, uint64_t deadline, uint32_t gen, bool
     snprintf(path, sizeof(path), "%s", dir);
     *left = false;
     for (;;) {
-        if (now() >= deadline || !current(gen)) {
+        if (now() >= deadline) {
             *left = true;
             return removed;
         }
@@ -165,7 +165,7 @@ static unsigned empty_dir(const char *dir, uint64_t deadline, uint32_t gen, bool
 /* A view of s's tmp directory into *out: made if it isn't there, emptied
  * the first time this boot. ERR_NOT_SUPPORTED: the volume has no views
  * (FAT: asked first, so nothing is made on it). */
-static status_t view_of(enum src s, uint32_t gen, handle_t *out, char *note, size_t cap)
+static status_t view_of(enum src s, handle_t *out, char *note, size_t cap)
 {
     status_t st = fs_subview(srcs[s].dir, 0, out);
     if (st == ERR_NOT_FOUND) {
@@ -178,8 +178,8 @@ static status_t view_of(enum src s, uint32_t gen, handle_t *out, char *note, siz
     note[0] = '\0';
     if (!tm.emptied[s]) {
         bool left = false;
-        unsigned removed = empty_dir(srcs[s].dir, now() + TMP_LIMIT, gen, &left);
-        tm.emptied[s] = !left || current(gen);
+        unsigned removed = empty_dir(srcs[s].dir, now() + TMP_LIMIT, &left);
+        tm.emptied[s] = true;   /* once: what couldn't go in TMP_LIMIT stays */
         snprintf(note, cap, " (emptied: %u removed%s)", removed, left ? ", some left" : "");
     }
     return OK;
@@ -269,8 +269,9 @@ static enum src wanted(void)
     return SRC_RAM;
 }
 
-/* One pass for generation gen: /tmp from the best source, if it isn't. */
-static void pass(uint32_t gen)
+/* One pass: /tmp from the best source, if it isn't (the thread goes round again
+ * while the generation moves). */
+static void pass(void)
 {
     enum src want = wanted();
     uint32_t sgen = __atomic_load_n(&tm.src_gen[want], __ATOMIC_ACQUIRE);
@@ -280,7 +281,7 @@ static void pass(uint32_t gen)
     char note[64] = "";
     status_t st = ERR_NOT_FOUND;
     if (want != SRC_RAM) {
-        st = view_of(want, gen, &h, note, sizeof(note));
+        st = view_of(want, &h, note, sizeof(note));
         if (st != OK && st != ERR_NOT_SUPPORTED)
             say_later("init: /tmp can't be a view of %s (%s): it is in memory", srcs[want].dir,
                       status_str(st));
@@ -327,7 +328,7 @@ static void thread_main(void *arg)
     (void)arg;
     for (;;) {
         uint32_t gen = __atomic_load_n(&tm.gen, __ATOMIC_ACQUIRE);
-        pass(gen);
+        pass();
         __atomic_store_n(&tm.running, false, __ATOMIC_RELEASE);
         bool again = false;
         if (!current(gen)) {
