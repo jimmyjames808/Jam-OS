@@ -138,7 +138,7 @@ class Verdict:
         the run, or when another began) a utest that never gave its summary."""
         out = list(self.failed)
         no_result = self.crashed or (self.running if at_end else None)
-        if no_result is not None:
+        if no_result is not None and not self.failed:   # (else the run was cut short)
             out.append("a utest began and gave no summary (it crashed, was killed or had not "
                        "finished): " + no_result.decode(errors="replace"))
         return out
@@ -186,6 +186,10 @@ def selftest():
     v.feed(bytearray(b"utest: running 1 of 9 tests (only)\nutest: running 1 of 9 tests (only)\nutest: 1 passed\n"))
     if not v.problems(False):
         fails.append("a utest only that began again without a summary")
+    v = Verdict()
+    v.feed(bytearray(b"utest: running 1 of 9 tests (only)\nutest: x: FAILED at line 3: y\n"))
+    if len(v.problems(True)) != 1:
+        fails.append("a failed check in a run that was cut short: one problem, not a second for the missing summary")
     for f in fails:
         print("serial-feed selftest: FAILED: " + f)
     print("serial-feed selftest: %s" % ("FAIL" if fails else "PASS"))
