@@ -102,6 +102,13 @@ On Chromium's path (in roughly this order, much of it in parallel):
   - libc additions: `/proc/self/exe` and `/proc/self/fd` (the rest of
     `/proc` failing cleanly), memfd seals, read-only file maps, raw call
     entries (1-2k);
+  - writable shared file mappings on ext (`MAP_SHARED` with `PROT_WRITE`:
+    Chromium's `MemoryMappedFile` `READ_WRITE`, its persistent histograms
+    and metrics files), with `msync` the durability promise; ext only,
+    FAT stays read-only (the owner, 2026-10-16): dirty tracking and
+    write-back in the kernel, extfs writing pages back in its journal;
+    planned in [WRITEMAP-PLAN.md](WRITEMAP-PLAN.md) (about 1k in the
+    kernel, 0.85k in extfs and libc);
   - `AF_UNIX` socketpairs with descriptor passing (`SCM_RIGHTS`: Mojo;
     Wayland clients too) (1.5-3k);
   - launching other programs: Chromium's own launcher, unpatched, on

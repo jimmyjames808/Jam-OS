@@ -907,6 +907,11 @@ a renderer per site). Three pieces, all general:
   M13.6's U10 on ext) are gates. A mapping that only pretends to be
   `MAP_SHARED` (a copy) would corrupt databases: libc keeps answering
   ENODEV until the real one exists, and SQLite falls back to `read`.
+  Writable shared mappings (`base::MemoryMappedFile` `READ_WRITE`: the
+  persistent histograms' and metrics files, some databases; CB2's
+  finding) come on ext only, with `msync` the durability promise (the
+  owner, 2026-10-16): [WRITEMAP-PLAN.md](WRITEMAP-PLAN.md). FAT keeps
+  ENODEV.
   ICU's data and V8's snapshot are compiled in (`icu_use_data_file=false`,
   `v8_use_external_startup_data=false`), so fewer files are mapped.
 - **`inotify`** (file watchers): ENOSYS, and Chromium's watchers that
