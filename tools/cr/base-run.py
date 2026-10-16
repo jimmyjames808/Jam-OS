@@ -202,8 +202,10 @@ def item_lines(i, flt, suite_timeout, extra=""):
     through the shell's variable F."""
     out = []
     if len(flt) > LINE_MAX - 60:
+        # Pieces begin with ':' (or are the first), never with a letter: the
+        # shell would read "$F" and the letters as one variable's name.
         parts, cur = [], ""
-        for tok in re.split(r"(?<=[:-])", flt):
+        for tok in re.split(r"(?=:)", flt):
             if len(cur) + len(tok) > LINE_MAX - 30:
                 parts.append(cur)
                 cur = ""
@@ -355,10 +357,15 @@ def main(argv):
         script += FOOTER
         b = Boot(args, "run%d" % rounds, script, 6 * 3600)
         lines = b.run()
+        before = len(res.status)
         crashed, hung = parse_boot(lines, items, res, None)
-        print("base-run: round %d: %d programs, %d crashed, %s" %
-              (rounds, len(items), len(crashed), "stopped by a hang" if hung else "ran to the end"))
+        print("base-run: round %d: %d programs, %d crashed, %s, %d new results" %
+              (rounds, len(items), len(crashed), "stopped by a hang" if hung else "ran to the end",
+               len(res.status) - before))
         pending = [s for s in mine if unrun(s)]
+        if len(res.status) == before and rounds > 1:
+            print("base-run: a round with no new result: the rest is NOT RUN")
+            break
 
     # ---- the reconciliation and the reports ----
     ran = set(res.status)

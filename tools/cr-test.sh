@@ -32,7 +32,8 @@
 #           the ENOSYS log on (tools/cr/base-run.py); the tests in
 #           tools/cr/base_unittests.skip are not run. CR_BASE_SHARD=i/n,
 #           CR_BASE_ALL=1, CR_BASE_ONLY=<glob>, CR_BASE_ENV="NAME=value ..."
-#           (default TMPDIR=/data/cr/tmp: Jam OS has no /tmp yet); results in
+#           (default TMPDIR and TEST_TMPDIR=/data/cr/tmp: Jam OS has no /tmp
+#           yet, and gtest's captured streams and death tests want one); results in
 #           <outdir>/base/run/ (results.txt, failures/, enosys.txt, summary.txt)
 #
 # The toolchain is fetched first if it isn't there (tools/cr/toolchain.sh:
@@ -199,7 +200,7 @@ case_base() {
     # for base_unittests ("--v=1"), CR_BASE_ALL=1: the skip list's tests run
     # too (a failure of one is a known failure).
     extra=
-    for e in ${CR_BASE_ENV-TMPDIR=/data/cr/tmp}; do extra="$extra --env $e"; done
+    for e in ${CR_BASE_ENV-TMPDIR=/data/cr/tmp TEST_TMPDIR=/data/cr/tmp}; do extra="$extra --env $e"; done
     # shellcheck disable=SC2086
     if python3 tools/cr/base-run.py --shard "${CR_BASE_SHARD:-0/1}" --mem "${QEMU_MEM:-4G}" \
        ${CR_BASE_ALL:+--all} ${CR_BASE_ONLY:+--only "$CR_BASE_ONLY"} ${CR_BASE_ARGS:+--args " $CR_BASE_ARGS"} $extra \
