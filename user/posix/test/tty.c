@@ -152,9 +152,16 @@ int pt_child_tty_sig(void)
     char b[8];
     errno = 0;
     CHECK(read(0, b, sizeof(b)) == -1 && errno == EINTR && got_int == 1);
+    /* SIGWINCH blocked but for the sigsuspend: a pause() after a look at
+     * got_winch would sleep for good if the signal came between the two. */
+    sigset_t winch, during;
+    sigemptyset(&winch);
+    sigaddset(&winch, SIGWINCH);
+    sigprocmask(SIG_BLOCK, &winch, &during);
     say("ready-winch\n");
     while (!got_winch)
-        pause();
+        sigsuspend(&during);
+    sigprocmask(SIG_SETMASK, &during, NULL);
     struct winsize w;
     CHECK(ioctl(1, TIOCGWINSZ, &w) == 0 && w.ws_col == 100 && w.ws_row == 30);
     say(pt_failures() ? "child-failed\n" : "sig-done\n");

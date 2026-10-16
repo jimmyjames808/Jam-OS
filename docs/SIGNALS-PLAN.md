@@ -277,7 +277,11 @@ What the triage after SG5 found (TB, 2026-10-17; for SGR):
 - **Cost**: SG5's signal section takes about 5 s more than before it,
   mostly 400 raises to threads in quiet calls, each waiting for a tick;
   `tools/usb-test.sh` (the whole init run in one boot, 146 of its 150 s
-  before SG5) now has the init run's own 300 s cap.
+  before SG5) now has the init run's own 300 s cap, and
+  `tools/storage-test.sh` (the same under TCG, where the sampler's rounds
+  take about 3.5 ms) gives the init run 450 s (`init_timeout`). TCG raises
+  no SIMD exception (#XM) at all, so posixtest's fault section skips that
+  case there (CPUID's brand string says QEMU's TCG CPU).
 
 ## Where things stand
 

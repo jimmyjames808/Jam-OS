@@ -122,13 +122,19 @@ static bool reaches(volatile sig_atomic_t *v, int n)
 
 static volatile sig_atomic_t taker_go;
 
-/* A thread that takes SIGUSR1 (all others block it) until told to stop. */
+/* A thread that takes SIGUSR1 (all others block it) until told to stop.
+ * It blocks it too, but for its sigsuspend: a pause() after its look at
+ * taker_go would sleep for good if the last SIGUSR1 came between the two
+ * (a lost wake, as likely as the machine is slow: it hung under QEMU's
+ * TCG). */
 static void *taker(void *arg)
 {
     (void)arg;
-    block(SIGUSR1, SIG_UNBLOCK);
+    sigset_t during;
+    CHECK(pthread_sigmask(SIG_BLOCK, NULL, &during) == 0);
+    sigdelset(&during, SIGUSR1);
     while (!taker_go)
-        pause();
+        sigsuspend(&during);
     return NULL;
 }
 

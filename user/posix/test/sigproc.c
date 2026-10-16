@@ -75,9 +75,17 @@ static int child_count(void)
     struct sigaction sa = { .sa_sigaction = on_queued, .sa_flags = SA_SIGINFO };
     sigemptyset(&sa.sa_mask);
     sigaction(SIGRTMIN, &sa, NULL);
+    /* SIGTERM blocked but for the sigsuspend: a pause() after a look at
+     * `term` would sleep for good if SIGTERM came between the two (the
+     * signal section hung so, once, after its sampler line). */
+    sigset_t term_set, during;
+    sigemptyset(&term_set);
+    sigaddset(&term_set, SIGTERM);
+    sigprocmask(SIG_BLOCK, &term_set, &during);
     (void)write(1, "r", 1);
     while (!term)
-        pause();
+        sigsuspend(&during);
+    sigprocmask(SIG_SETMASK, &during, NULL);
     for (int i = 0; i < 1000 && queued < QUEUED; i++)   /* SIGTERM may come first */
         usleep(10000);
     long want = (long)QUEUED * (QUEUED + 1) / 2;
