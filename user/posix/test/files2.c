@@ -12,8 +12,11 @@
 #include <limits.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/sendfile.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
+#include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
 #include "ptfiles.h"
@@ -223,7 +226,122 @@ static void at_calls(void)
     CHECK(p >= 0 && fstat(p, &st) == 0 && st.st_size == 5);
     CHECK(read(p, buf, 1) == -1 && errno == EBADF);   /* open(2) O_PATH: no reading */
     close(p);
+    /* O_PATH on a directory (musl's O_ACCMODE holds O_PATH, so this once
+     * failed with EISDIR; libarchive's extraction opens each directory so):
+     * a descriptor for the *at calls and fstat, that lists and reads nothing. */
+    int pd = open(PT_DIR, O_PATH | O_DIRECTORY);
+    CHECK(pd >= 0);
+    if (pd >= 0) {
+        CHECK(fstat(pd, &st) == 0 && S_ISDIR(st.st_mode));
+        CHECK(fcntl(pd, F_GETFL) & O_PATH);
+        fd = openat(pd, "f", O_RDONLY);
+        memset(buf, 0, sizeof(buf));
+        CHECK(fd >= 0 && read(fd, buf, 5) == 5 && !strcmp(buf, "hello"));
+        close(fd);
+        CHECK(fstatat(pd, "d", &st, 0) == 0 && S_ISDIR(st.st_mode));
+        char ents[256];
+        errno = 0;
+        CHECK(syscall(SYS_getdents64, pd, ents, sizeof(ents)) == -1 && errno == EBADF);
+        close(pd);
+    }
+    errno = 0;
+    CHECK(open(PT_DIR "/f", O_PATH | O_DIRECTORY) == -1 && errno == ENOTDIR);
+    CHECK(open(PT_DIR, O_WRONLY) == -1 && errno == EISDIR);   /* still not for writing */
+    int ep = open("/etc/passwd", O_PATH);   /* a file libc itself serves */
+    CHECK(ep >= 0 && read(ep, buf, 1) == -1 && errno == EBADF);
+    if (ep >= 0)
+        close(ep);
     close(dfd);
+}
+
+#define SF_BIG 150000   /* more than sendfile's 64 KiB at a time */
+
+/* sendfile: from a file to a file at both descriptors' offsets, with an
+ * offset pointer (the input's own offset stays), to a socket; the count
+ * cut at the end of the file; a pipe or a socket as input is EINVAL (base's
+ * CopyFileContentsWithSendfile falls back to a plain copy on it). */
+static void sendfile_calls(void)
+{
+    char buf[32];
+    int in = open(PT_DIR "/sf-in", O_RDWR | O_CREAT | O_TRUNC, 0644);
+    int out = open(PT_DIR "/sf-out", O_RDWR | O_CREAT | O_TRUNC, 0644);
+    CHECK(in >= 0 && out >= 0);
+    if (in < 0 || out < 0)
+        return;
+    CHECK(write(in, "0123456789ABCDEF", 16) == 16 && write(out, "GHIJKL", 6) == 6);
+    /* Both at 1: the output's offset is G and the rest of its old contents. */
+    CHECK(lseek(in, 1, SEEK_SET) == 1 && lseek(out, 1, SEEK_SET) == 1);
+    CHECK(sendfile(out, in, NULL, 15) == 15);
+    CHECK(lseek(in, 0, SEEK_CUR) == 16 && lseek(out, 0, SEEK_CUR) == 16);
+    memset(buf, 0, sizeof(buf));
+    CHECK(pread(out, buf, 16, 0) == 16 && !memcmp(buf, "G123456789ABCDEF", 16));
+    CHECK(sendfile(out, in, NULL, 10) == 0);   /* the input is at its end */
+    /* An offset pointer: it moves on, the input's own offset doesn't. */
+    off_t off = 4;
+    CHECK(lseek(in, 2, SEEK_SET) == 2 && lseek(out, 0, SEEK_SET) == 0);
+    CHECK(sendfile(out, in, &off, 5) == 5 && off == 9);
+    CHECK(lseek(in, 0, SEEK_CUR) == 2 && lseek(out, 0, SEEK_CUR) == 5);
+    memset(buf, 0, sizeof(buf));
+    CHECK(pread(out, buf, 5, 0) == 5 && !memcmp(buf, "45678", 5));
+    off = 12;
+    CHECK(sendfile(out, in, &off, 100) == 4 && off == 16);   /* cut at the end */
+    off = 16;
+    CHECK(sendfile(out, in, &off, 5) == 0 && off == 16);
+    off = 3;
+    CHECK(sendfile(out, in, &off, 0) == 0 && off == 3);
+    off = -1;
+    errno = 0;
+    CHECK(sendfile(out, in, &off, 1) == -1 && errno == EINVAL);
+    /* The wrong kinds. */
+    int wo = open(PT_DIR "/sf-out", O_WRONLY), ro = open(PT_DIR "/sf-out", O_RDONLY);
+    errno = 0;
+    CHECK(sendfile(out, wo, NULL, 1) == -1 && errno == EBADF);    /* input not readable */
+    CHECK(sendfile(ro, in, NULL, 1) == -1 && errno == EBADF);     /* output not writable */
+    CHECK(sendfile(out, 999, NULL, 1) == -1 && errno == EBADF);
+    int pp[2];
+    CHECK(pipe(pp) == 0);
+    CHECK(sendfile(out, pp[0], NULL, 1) == -1 && errno == EINVAL);
+    int sp[2];
+    CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, sp) == 0);
+    CHECK(sendfile(out, sp[1], NULL, 1) == -1 && errno == EINVAL);
+    /* To a socket and to a pipe. */
+    CHECK(lseek(in, 0, SEEK_SET) == 0);
+    CHECK(sendfile(sp[0], in, NULL, 16) == 16);
+    memset(buf, 0, sizeof(buf));
+    CHECK(read(sp[1], buf, 16) == 16 && !memcmp(buf, "0123456789ABCDEF", 16));
+    off = 10;
+    CHECK(sendfile(pp[1], in, &off, 6) == 6 && off == 16);
+    memset(buf, 0, sizeof(buf));
+    CHECK(read(pp[0], buf, 6) == 6 && !memcmp(buf, "ABCDEF", 6));
+    for (int i = 0; i < 2; i++) {
+        close(pp[i]);
+        close(sp[i]);
+    }
+    if (wo >= 0)
+        close(wo);
+    if (ro >= 0)
+        close(ro);
+    close(in);
+    close(out);
+    /* More than one chunk, at an offset. */
+    static unsigned char big[SF_BIG], back[SF_BIG];
+    for (int i = 0; i < SF_BIG; i++)
+        big[i] = (unsigned char)(i * 7 + (i >> 8));
+    in = open(PT_DIR "/sf-big-in", O_RDWR | O_CREAT | O_TRUNC, 0644);
+    out = open(PT_DIR "/sf-big-out", O_RDWR | O_CREAT | O_TRUNC, 0644);
+    CHECK(in >= 0 && out >= 0 && write(in, big, SF_BIG) == SF_BIG);
+    off = 1000;
+    CHECK(sendfile(out, in, &off, SF_BIG) == SF_BIG - 1000 && off == SF_BIG);
+    CHECK(pread(out, back, SF_BIG - 1000, 0) == SF_BIG - 1000 &&
+          !memcmp(back, big + 1000, SF_BIG - 1000));
+    if (in >= 0)
+        close(in);
+    if (out >= 0)
+        close(out);
+    unlink(PT_DIR "/sf-in");
+    unlink(PT_DIR "/sf-out");
+    unlink(PT_DIR "/sf-big-in");
+    unlink(PT_DIR "/sf-big-out");
 }
 
 /* What stat and statvfs say about /data, /boot, "/" and /svc. */
@@ -299,6 +417,7 @@ void pt_files2(void)
     many_files(FEW);
     current_dir();
     at_calls();
+    sendfile_calls();
     stats();
     map_private();
     pt_files_children();

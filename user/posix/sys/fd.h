@@ -182,6 +182,12 @@ void            fd_put(struct fd_desc *d);
  * ops->setfl allows it: its -errno, or 0). */
 uint32_t        fd_status(const struct fd_desc *d);
 long            fd_status_set(struct fd_desc *d, uint32_t mask, uint32_t bits);
+/* The access-mode bits of open flags and of a status: O_RDONLY, O_WRONLY or
+ * O_RDWR. musl's O_ACCMODE is 03 | O_PATH (O_SEARCH is O_PATH), so a test
+ * of the mode alone ("is it read-only?") masks with this: with O_ACCMODE
+ * an O_PATH open reads as not read-only. */
+#define FD_ACCMODE 03
+
 /* d's access mode allows reading / writing (O_PATH allows neither). */
 bool            fd_can_read(const struct fd_desc *d);
 bool            fd_can_write(const struct fd_desc *d);

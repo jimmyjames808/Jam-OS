@@ -188,6 +188,25 @@ static void check_machine(void)
     CHECK(getrandom(x, 1, 0x80) == -1 && errno == EINVAL);
     struct utsname u;
     CHECK(uname(&u) == 0 && !strcmp(u.sysname, "JamOS") && !strcmp(u.machine, "x86_64"));
+    /* The release is a Linux one, "major.minor.patch" and past every gate a
+     * program of the Linux ABI sets (CBF2b: base's KernelVersionNumber); the
+     * version names Jam OS. */
+    int major = 0, minor = 0, patch = 0;
+    CHECK(sscanf(u.release, "%d.%d.%d", &major, &minor, &patch) == 3 && major >= 5);
+    CHECK(strstr(u.version, "JamOS") != NULL);
+    /* The two DMI files base's SysInfo::GetHardwareInfo reads. */
+    static const char *const dmi_files[] = { "/sys/devices/virtual/dmi/id/sys_vendor",
+                                             "/sys/devices/virtual/dmi/id/product_name" };
+    for (unsigned i = 0; i < 2; i++) {
+        char dmi[64];
+        int fd = open(dmi_files[i], O_RDONLY);
+        ssize_t n = fd >= 0 ? read(fd, dmi, sizeof(dmi)) : -1;
+        CHECK(n > 1 && dmi[n - 1] == '\n');
+        if (fd >= 0)
+            close(fd);
+    }
+    errno = 0;
+    CHECK(open("/sys/devices/virtual/dmi/id/sys_vendor", O_WRONLY) == -1 && errno == EROFS);
     CHECK(sysconf(_SC_NPROCESSORS_ONLN) >= 1);
     CHECK(sysconf(_SC_PAGESIZE) == 4096);
 }

@@ -575,6 +575,60 @@ long lx_mprotect(long addr, long len, long prot, long d, long e, long f)
     return lx_err(st);
 }
 
+/* The VMO range [off, off + len) (whole pages) emptied: its pages given
+ * back, or, in a VMO that keeps its pages (a memfd's: none ever leaves),
+ * overwritten with zeros. Every holder reads zero there after. */
+static status_t vmo_zero_range(handle_t vmo, uint64_t off, uint64_t len)
+{
+    static uint8_t zeros[PAGE];   /* in the bss, never written: not const, so not in the file */
+    status_t st = jam_vmo_decommit(vmo, off, len);
+    if (st != ERR_BAD_STATE)
+        return st;
+    for (uint64_t at = 0; at < len; at += PAGE) {
+        st = jam_vmo_write(vmo, off + at, zeros, PAGE);
+        if (st != OK)
+            return st;
+    }
+    return OK;
+}
+
+/* MADV_REMOVE: free the range's pages and the backing store behind them,
+ * so every holder of the memory reads zero there after (Linux: a hole
+ * punched in a shared tmpfs or memfd mapping; Chromium's discardable
+ * memory purges with it). Only MAP_SHARED memory made here has such a
+ * store (a memfd's or an anonymous mapping's VMO; a memfd's pages stay,
+ * zeroed): private memory is EINVAL (no file behind it, as Linux), a
+ * mapping the VMO's handle can't write EACCES, a file's pages EOPNOTSUPP,
+ * a range the table doesn't know ENOMEM. */
+static long madvise_remove(uint64_t addr, uint64_t end)
+{
+    const struct mt_entry *t = mt_entries();
+    long r = 0;
+    lock_take(&mem_lock);
+    uint64_t at = addr;
+    for (unsigned i = mt_first_after(addr); at < end; i++) {
+        if (i >= mt_count() || t[i].base > at) {
+            r = -ENOMEM;   /* a hole: what's mapped before and after it is still done */
+            if (i >= mt_count())
+                break;
+            at = t[i].base;
+            if (at >= end)
+                break;
+        }
+        uint64_t stop = t[i].base + t[i].len < end ? t[i].base + t[i].len : end;
+        if (!(t[i].kind & MT_SHARED)) {
+            r = -EINVAL;
+        } else {
+            status_t st = vmo_zero_range(t[i].vmo, t[i].vmo_off + (at - t[i].base), stop - at);
+            if (st != OK)
+                r = st == ERR_ACCESS_DENIED ? -EACCES : -EOPNOTSUPP;
+        }
+        at = stop;
+    }
+    lock_give(&mem_lock);
+    return r;
+}
+
 long lx_madvise(long addr, long len, long advice, long d, long e, long f)
 {
     uint64_t size = page_round((uint64_t)len);
@@ -582,6 +636,8 @@ long lx_madvise(long addr, long len, long advice, long d, long e, long f)
         (uint64_t)addr > UINT64_MAX - size)
         return -EINVAL;
     switch (advice) {
+    case MADV_REMOVE:
+        return size ? madvise_remove((uint64_t)addr, (uint64_t)addr + size) : 0;
     case MADV_DONTNEED:
     case MADV_FREE:
         lock_take(&mem_lock);
@@ -595,6 +651,77 @@ long lx_madvise(long addr, long len, long advice, long d, long e, long f)
         return 0;   /* advice Jam OS has no use for */
     }
     return -EINVAL;
+}
+
+#define MINCORE_BATCH 16   /* mappings asked of the kernel at once (on the stack: no malloc here) */
+
+/* The pages [from, to) of mapping m, whose first vec byte is out. The
+ * kernel counts the pages of a mapping that are present in its page tables
+ * (m->resident), not which: a mapping with all of its pages present or
+ * none is told exactly, and in between the first m->resident pages of the
+ * mapping read as resident, so the count over a whole mapping is right
+ * and a page's own answer is a guess (docs/CR-PLAN.md, "CBF2b notes"). */
+static void mincore_fill(uint8_t *out, const struct map_info *m, uint64_t from, uint64_t to)
+{
+    uint64_t pages = m->len / PAGE, first = (from - m->base) / PAGE;
+    for (uint64_t k = first; k < first + (to - from) / PAGE; k++)
+        *out++ = m->resident >= pages || k < m->resident;
+}
+
+/* mincore: which pages of the range are in memory. A page is in memory
+ * when the process's page tables hold it now, which is what Linux's answer
+ * means for private memory (a page never touched, or given back by
+ * madvise, is not; PROT_NONE memory has no entries, so it reads as not). */
+long lx_mincore(long addr, long len, long vec, long d, long e, long f)
+{
+    if (!page_aligned((uint64_t)addr))
+        return -EINVAL;
+    uint64_t size = page_round((uint64_t)len);
+    if (len < 0 || (len && !size) || (uint64_t)addr > UINT64_MAX - size)
+        return -ENOMEM;
+    uint8_t *out = (uint8_t *)(uintptr_t)vec;
+    uint64_t pos = (uint64_t)addr, end = pos + size;
+    struct map_info m[MINCORE_BATCH];
+    while (pos < end) {
+        long n = kp_process_maps(lx_self_process(), pos, m, MINCORE_BATCH);
+        if (n < 0)
+            return n;
+        for (long i = 0; i < n && pos < end; i++) {
+            if (m[i].base > pos)
+                return -ENOMEM;   /* a hole at pos: what came before is filled in */
+            uint64_t stop = m[i].base + m[i].len < end ? m[i].base + m[i].len : end;
+            mincore_fill(out + (pos - (uint64_t)addr) / PAGE, &m[i], pos, stop);
+            pos = stop;
+        }
+        if (!n)
+            return -ENOMEM;   /* nothing mapped from pos up */
+    }
+    return 0;
+}
+
+/* Protection keys: Jam OS has none (the kernel never turns on CR4.PKE, so
+ * CPUID's OSPKE bit reads 0 and Chromium's PartitionAlloc, which calls
+ * pkey_alloc whatever CPUID says, goes on without a key). A system without
+ * the feature answers as Linux does: pkey_alloc finds no key (ENOSPC),
+ * pkey_free has no key to free, and pkey_mprotect knows only key 0, the
+ * default every page has, and -1 (no key asked for), which are mprotect. */
+long lx_pkey_alloc(long flags, long init_val, long c, long d, long e, long f)
+{
+    if (flags || (init_val & ~3l))   /* PKEY_DISABLE_ACCESS | PKEY_DISABLE_WRITE */
+        return -EINVAL;
+    return -ENOSPC;
+}
+
+long lx_pkey_free(long pkey, long b, long c, long d, long e, long f)
+{
+    return -EINVAL;
+}
+
+long lx_pkey_mprotect(long addr, long len, long prot, long pkey, long e, long f)
+{
+    if ((int)pkey != -1 && (int)pkey != 0)   /* an int in a register of 64 bits */
+        return -EINVAL;
+    return lx_mprotect(addr, len, prot, 0, 0, 0);
 }
 
 /* mlock and its kin: Jam OS never pages memory out, so every page is as

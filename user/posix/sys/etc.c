@@ -10,6 +10,12 @@
  *   resolv.conf  empty: names are resolved through /svc/dns
  *   shells       the Jam OS shell
  *
+ * and two files of Linux's /sys that base's SysInfo::GetHardwareInfo reads
+ * (the machine's maker and model, which Jam OS can't tell: /sys is no
+ * mount here), served the same way if the namespace has no /sys mount:
+ *
+ *   /sys/devices/virtual/dmi/id/sys_vendor, product_name
+ *
  * There is no localtime: TZ is always set (the start adds it). The files
  * are fixed text, read only (opening one to write, or creating one, is
  * EROFS); a description's priv is the file's entry in `files`, its offset
@@ -20,23 +26,26 @@
 #include "kinds.h"
 
 #define ETC_DIR "/etc/"
+#define SYS_DIR "/sys/"
 
 struct etc_file {
-    const char *name;   /* under /etc */
+    const char *path;   /* absolute, under /etc or /sys */
     const char *text;
 };
 
 static const struct etc_file files[] = {
-    { "passwd", "jam:x:1000:1000:jam:/data:/boot/bin/shell\n" },
-    { "group", "jam:x:1000:jam\n" },
-    { "hosts", "127.0.0.1\tlocalhost\n127.0.1.1\tjamos\n" },
-    { "services", "ssh\t\t22/tcp\n"
-                  "domain\t\t53/tcp\n"
-                  "domain\t\t53/udp\n"
-                  "http\t\t80/tcp\n"
-                  "ntp\t\t123/udp\n" },
-    { "resolv.conf", "" },
-    { "shells", "/boot/bin/shell\n" },
+    { "/etc/passwd", "jam:x:1000:1000:jam:/data:/boot/bin/shell\n" },
+    { "/etc/group", "jam:x:1000:jam\n" },
+    { "/etc/hosts", "127.0.0.1\tlocalhost\n127.0.1.1\tjamos\n" },
+    { "/etc/services", "ssh\t\t22/tcp\n"
+                       "domain\t\t53/tcp\n"
+                       "domain\t\t53/udp\n"
+                       "http\t\t80/tcp\n"
+                       "ntp\t\t123/udp\n" },
+    { "/etc/resolv.conf", "" },
+    { "/etc/shells", "/boot/bin/shell\n" },
+    { "/sys/devices/virtual/dmi/id/sys_vendor", "JamOS\n" },
+    { "/sys/devices/virtual/dmi/id/product_name", "JamOS machine\n" },
 };
 
 static const struct etc_file *file_of(struct fd_desc *d)
@@ -44,30 +53,30 @@ static const struct etc_file *file_of(struct fd_desc *d)
     return d->priv;
 }
 
-/* Is /etc a mount of the namespace (then it is the mount's, not ours)? */
-static bool etc_mounted(void)
+/* Is dir a mount of the namespace (then it is the mount's, not ours)? */
+static bool mounted(const char *dir)
 {
     char name[NS_NAME_MAX];
     for (unsigned i = 0; ns_mount_at(i, name); i++)
-        if (!strcmp(name, "/etc"))
+        if (!strcmp(name, dir))
             return true;
     return false;
 }
 
-bool etc_path(const char *abs)
-{
-    return (!strcmp(abs, "/etc") || !strncmp(abs, ETC_DIR, sizeof(ETC_DIR) - 1)) &&
-           !etc_mounted();
-}
-
 static const struct etc_file *file_at(const char *abs)
 {
-    if (strncmp(abs, ETC_DIR, sizeof(ETC_DIR) - 1))
-        return NULL;
     for (unsigned i = 0; i < sizeof(files) / sizeof(files[0]); i++)
-        if (!strcmp(abs + sizeof(ETC_DIR) - 1, files[i].name))
+        if (!strcmp(abs, files[i].path))
             return &files[i];
     return NULL;
+}
+
+bool etc_path(const char *abs)
+{
+    if (!strncmp(abs, SYS_DIR, sizeof(SYS_DIR) - 1))
+        return file_at(abs) && !mounted("/sys");
+    return (!strcmp(abs, "/etc") || !strncmp(abs, ETC_DIR, sizeof(ETC_DIR) - 1)) &&
+           !mounted("/etc");
 }
 
 static long etc_read(struct fd_desc *d, const struct iovec *iov, int iovcnt, int64_t pos)
@@ -119,10 +128,10 @@ static long etc_fstat(struct fd_desc *d, struct stat *st)
  * or a directory has an offset in the hand-over). */
 static long etc_give(struct fd_desc *d, struct fd_given *out)
 {
-    char path[64];
-    int n = snprintf(path, sizeof(path), "%s%s", ETC_DIR, file_of(d)->name);
+    const char *path = file_of(d)->path;
+    size_t n = strlen(path);
     long r = 0;
-    void *data = kind_data(path, (size_t)n + 1, &r);
+    void *data = kind_data(path, n + 1, &r);
     if (r)
         return r;
     out->kind = POSIXFDS_ETC;
@@ -148,12 +157,12 @@ static long etc_lookup(const char *abs, int flags, const struct etc_file **out)
 {
     const struct etc_file *f = file_at(abs);
     if (!f && !strcmp(abs, "/etc"))
-        return (flags & O_ACCMODE) != O_RDONLY ? -EISDIR : -ENOTSUP;   /* no listing */
+        return (flags & FD_ACCMODE) != O_RDONLY ? -EISDIR : -ENOTSUP;   /* no listing */
     if (!f)
         return (flags & O_CREAT) ? -EROFS : -ENOENT;
     if ((flags & O_CREAT) && (flags & O_EXCL))
         return -EEXIST;
-    if ((flags & O_ACCMODE) != O_RDONLY || (flags & O_TRUNC))
+    if ((flags & FD_ACCMODE) != O_RDONLY || (flags & O_TRUNC))
         return -EROFS;
     if (flags & O_DIRECTORY)
         return -ENOTDIR;
@@ -177,7 +186,7 @@ long etc_adopt(const struct posixfds_fd *rec, const void *data, const handle_t *
                struct fd_desc **out)
 {
     const struct etc_file *f;
-    long r = etc_lookup(data, (int)(rec->status & O_ACCMODE), &f);   /* a string: checked */
+    long r = etc_lookup(data, (int)(rec->status & FD_ACCMODE), &f);   /* a string: checked */
     if (r)
         return r;
     *out = fd_new(&etc_ops, rec->status, (void *)f);

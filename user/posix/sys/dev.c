@@ -328,7 +328,7 @@ static long shm_open_path(const char *name, int flags)
     long r = shm_lookup(name, flags, &m);
     if (r)
         return r;
-    if ((flags & O_TRUNC) && (flags & O_ACCMODE) != O_RDONLY)
+    if ((flags & (O_TRUNC | O_PATH)) == O_TRUNC && (flags & FD_ACCMODE) != O_RDONLY)
         r = memobj_truncate(m, 0);
     void *priv = r ? NULL : memfd_priv_new(m);
     memobj_unref(m);
@@ -367,7 +367,7 @@ long dev_open(const char *abs, int flags, mode_t mode)
     if (name)
         return err ? err : shm_open_path(name, flags);
     if (is_dir(abs))
-        return (flags & O_ACCMODE) != O_RDONLY ? -EISDIR : -ENOTSUP;   /* no listing */
+        return (flags & FD_ACCMODE) != O_RDONLY ? -EISDIR : -ENOTSUP;   /* no listing */
     if (pty_path(abs))
         return pty_open(abs, flags);
     if (!strcmp(abs, "/dev/tty")) {

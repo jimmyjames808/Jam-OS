@@ -711,7 +711,9 @@ from the failing call.
    the program has no GNU build-id note (Chromium's crash reporting keys
    modules by it): `--build-id` in the link driver (CT).
 10. **Not understood, 1**: `PartitionAddressSpaceTest.ZeroSegment` reads an
-    address-space size of 65,536 where it wants at least 4 GiB.
+    address-space size of 65,536 where it wants at least 4 GiB (understood
+    by CBF2b: [notes below](#cbf2b-notes-2026-10-16); items 3 and 9 have
+    their answers there too).
 
 **Infrastructure notes** (for the main session). `pc-batch.sh cancel` did not
 stop one run's QEMU and driver (`remote-slots.py --status` showed it holding
@@ -723,6 +725,138 @@ from the stick and tolerates the cut). `QEMU_SAVE` is needed to read
 anything the guest wrote. The init run on this tree fails only
 posixtest's `execinfo` section (`execinfo.c:194/195/227/235`), the known
 regression since BT.
+
+#### CBF2b notes (2026-10-16)
+
+Track CBF2b (branch `cbf2b-calls`): the small calls CB2's findings 3, 9 and
+10 named, and PO9's `O_PATH`. Posixtest has a case for each (`posix-mem.txt`
+and the files and start sections: [TESTING](TESTING.md)). The base tests
+below stay on `tools/cr/base_unittests.skip` (their lines say what changed)
+until the CB3-gate rerun runs them (`CR_BASE_ALL=1`) and takes the passing
+ones off; the programs need relinking against the new libc first.
+
+- **`open(dir, O_PATH | O_DIRECTORY)`** (PO9). musl's `O_ACCMODE` is
+  `03 | O_PATH`, so every "is it read-only?" test of open flags read an
+  `O_PATH` open as write access. The tests that mean the mode now mask with
+  `FD_ACCMODE` (`fd.h`; `open_dir`, the mode-3 check and `fs_access` in
+  file.c, dir.c's `dir_new`, dev.c, etc.c, pty.c). An `O_PATH` directory
+  description keeps `O_PATH` (`F_GETFL` says so; `getdents64` on it is
+  EBADF, `fstat` and the `*at` calls work), and `open("/etc/passwd",
+  O_PATH)` opens instead of EROFS. ports/libarchive's patch is removed and
+  `ports-test.sh libarchive` passes without it. Clears: libarchive's
+  extraction (no base test).
+- **`mincore`** (27). Reads `process_get_maps` (the kernel counts the pages
+  of each mapping that are present in the page tables, not which ones) of
+  the range's mappings: a mapping with none of its pages present reads as
+  none resident, with all of them as all, and in between the first
+  `resident` pages of the mapping read as resident (so a sum over a whole
+  mapping is right, a page's own answer is a guess). `PROT_NONE` memory has
+  no entries (the kernel clears them), so it reads as not resident;
+  `EINVAL` for an unaligned start, `ENOMEM` for a range with an unmapped
+  page (the pages before it are filled in, as Linux does), 0 for a length
+  of 0. Should clear `ProcessMemoryDumpTest.CountResidentBytes` and
+  `...InSharedMemory` (fresh or fully written mappings; base_unittests was
+  not run for any of this). **Will not clear
+  the 18 `PartitionAllocTest.Purge*` tests whose mappings are part-resident**
+  (they ask about one page of a committed run, some of it discarded with
+  `madvise`): they need which pages, a kernel query (below). The heap
+  profiler's residency test: unknown until it runs. The bytes of `vec` are
+  stored without a checked copy: CBF1's EFAULT work should cover them.
+- **`pkey_alloc`, `pkey_free`, `pkey_mprotect`** (330, 331, 329). Jam OS has
+  no protection keys, so the answers are Linux's on a machine without them:
+  `pkey_alloc` EINVAL for flags or an unknown access right, else ENOSPC;
+  `pkey_free` EINVAL; `pkey_mprotect` is `mprotect` for key 0 (the default)
+  and -1 (none asked for), EINVAL for any other key (the key is an `int`:
+  musl passes it in a 64-bit register, so it is cut to 32 bits first).
+  What PartitionAlloc expects: `PartitionAllocTest::InitializeMainTestAllocators`
+  calls `PkeyAlloc` whatever CPUID says (`has_pku` is CPUID leaf 7 ECX bit 4,
+  OSPKE, 0 here: the kernel never sets CR4.PKE) and takes -1 as "no key"
+  (`pkey_` stays `kInvalidPkey`, the pkey allocator is made without thread
+  isolation, `PkeyFree` is not called). With ENOSYS the same call ended the
+  set-up. Clears the set-up of `PartitionAllocDeathTest`'s 22 tests; they
+  still need FL1b's `fork`/`clone` to be death tests at all.
+- **`sendfile`** (40). In `fd.c` over the descriptions' own `read` and
+  `write` (64 KiB at a time through a buffer): from `*offset` (which moves
+  on; the input's offset stays) or from the input's offset (which moves
+  on), to a file at its offset, a socket or a pipe; the count cut at the end
+  of the file and at 0x7ffff000; only the bytes written count (after a short
+  write the offsets stand where the bytes sent end). An input with no offset
+  (pipe, socket, terminal) is EINVAL, as Linux, which is what base's
+  `CopyFileContentsWithSendfile` falls back on; EBADF for a descriptor that
+  can't read or write; a write's EPIPE raises SIGPIPE (calls.c). Should clear
+  `FileUtilTest.CopyFileContentsWithSendfile` and `...Socket`;
+  `...SeqFile` also reads `/proc/meminfo` and `/proc/self/cmdline`, CBF4's.
+- **`uname`** (63, and the DMI files). **Decision: the release is
+  `5.10.0-jamos`**, the version `#1 JamOS <Jam OS's version>`. Programs of
+  the Linux ABI parse the release as `major.minor.patch` and gate features
+  on it: Chromium's `SysInfo::KernelVersionNumber` (`rand_util` wants 3.17
+  for `getrandom`), libuv's io_uring check, glibc's minimum 3.2. `0.1.0`
+  put Jam OS below every gate. 5.10 is what the Debian 11 sysroot
+  Chromium's host tools build against runs on, and below the few gates that
+  want calls Jam OS lacks (the priority-inheritance futex check in
+  `lock_impl_posix.cc` is Android only; programs probe newer calls and take
+  ENOSYS); the suffix says it is not a Linux. `sysname` stays `JamOS` (shell
+  scripts match `uname -s`); Jam OS's own version is in `version`. The
+  `/proc` files that say the same (`sys/kernel/osrelease`, `version`) are
+  CBF4's to make agree (`LX_RELEASE`, misc.c). `SysInfo::GetHardwareInfo`
+  reads `/sys/devices/virtual/dmi/id/sys_vendor` and `product_name` and wants
+  both non-empty: etc.c serves them like `/etc`'s files (read only, `JamOS`
+  and `JamOS machine`: Jam OS can't tell the machine's real maker and model)
+  unless the namespace has a `/sys` mount. Clears `SysInfoTest.KernelVersionNumber`
+  and `SysInfoTest.GetHardwareInfo`.
+- **A purged discardable page reads zero.** base's
+  `DiscardableSharedMemory::Purge` uses `madvise(MADV_REMOVE)` on Linux and
+  Android (and `MADV_FREE` elsewhere); the layer had refused it (EINVAL).
+  Now over MAP_SHARED memory it empties the range for every holder: an
+  anonymous shared mapping's VMO gives its pages back, a memfd's (a
+  `VMO_KEEP_PAGES` VMO: no page ever leaves) is overwritten with zeros, so
+  the memory is not freed there but reads as Linux's does; private memory is
+  EINVAL, a range nothing maps ENOMEM, a mapping whose handle can't write
+  EACCES. Clears `DiscardableSharedMemoryTest.ZeroFilledPagesAfterPurge`.
+- **`PartitionAddressSpaceTest.ZeroSegment`: not a layer answer.** Nothing
+  is read from the OS: `GetZeroSegmentSizeFromOS` is a constant (0x10000, a
+  TODO for a larger `mmap_min_addr`), and `InitZeroSegment` reserves
+  `[0x10000, 4 GiB)` as one PROT_NONE mmap at that address, keeping the
+  64 KiB (65,536) if it doesn't get it. Two things stop it. The layer
+  ignores an `mmap` address hint (`map_new` passes it to `vmar_map` without
+  `VMAR_FIXED`, so the kernel chooses): Linux uses a free hint, and
+  PartitionAlloc's pools and V8's code range ask for theirs. And the
+  program's image is linked at 0x400000 (`posix.ld`), inside the range, so
+  the reservation could not be made even with the hint honoured. Left as
+  is: honouring a free hint is a layer change with a wider effect (every
+  pool and V8 range would land where asked: do it with a test of V8 and
+  PartitionAlloc on it), and the test needs the Chromium programs linked
+  above 4 GiB (a base address for `posix.ld` that the link driver can set;
+  that the kernel's loader takes an ET_EXEC there is untested) or the test
+  skipped.
+- **`--build-id`: not done.** The driver (`tools/jamos-clang`) passes
+  `-Wl,--build-id=none` before Chromium's own flags, and Chromium's
+  `build/config/compiler/BUILD.gn` (line 1085) adds `-Wl,--build-id=fast`
+  after, so the flag is not what is missing: `user/posix/posix.ld` ends with
+  `/DISCARD/ : { *(.note .note.*) ... }`, which takes lld's
+  `.note.gnu.build-id` too. Checked on the PC with the Chromium lld and a
+  one-instruction program (a scratch run, not kept): the script as
+  it is gives no note with `--build-id=fast`; with one added PHDR
+  (`buildid PT_NOTE FLAGS(4);`, after `wants`, so the program's list stays
+  the first note segment) and one line before `.jamos.wants`
+  (`.note.gnu.build-id : { *(.note.gnu.build-id) } :rodata :buildid`) the
+  note is there, 8 bytes (16 hex digits: what `ElfReaderTest` accepts), in
+  its own PT_NOTE of the read-only segment; with `--build-id=none` the extra
+  PT_NOTE is empty (size 0, as the `wants` one already is when a program has
+  no list). It is a `posix.ld` change, so it changes the sysroot and with it
+  every port's stamp, and Chromium needs relinking: **written down, not
+  done**. Whoever does it should check the kernel's and the exec service's
+  readers of PT_NOTE (they look for the `JamOS` note; a second segment, or
+  an empty one, must not confuse them) and GNU ld on the same script
+  (jamos-cc's links).
+- **For a later track (decisions for the owner).** (1) Exact `mincore`
+  needs a kernel query for which pages of a range are present (a
+  `vmar` call filling one byte a page, over the walk `process_get_maps`
+  already does); without it the 18 purge tests and any caller of one page
+  stay a guess. (2) Honour `mmap`'s free address hint. (3) A high image base
+  for Chromium's programs (ZeroSegment, and a null-page hardening that is
+  worth having anyway). (4) `/proc/sys/kernel/osrelease` and
+  `/proc/version` to say what `uname` says.
 
 ### 2. The address space: huge sparse reservations (the top risk)
 
