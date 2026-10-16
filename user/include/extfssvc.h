@@ -18,6 +18,15 @@
  *                    ends nothing.
  *   EXTFS_SR_PAGER   optional: the mount's pager. Taken and kept, unused
  *                    until M13.6's U10 (file.map is ERR_NOT_SUPPORTED).
+ *   EXTFS_SR_RAM     in place of EXTFS_SR_BLOCK: a VMO that is the disk
+ *                    itself (all of it, whole pages), read and written in
+ *                    memory, nothing to flush: a volume that lasts as long
+ *                    as the VMO (init's /tmp when no disk gives one). The
+ *                    format of it (EXTFS_ARG_FORMAT) takes it to be all
+ *                    zeros, as a new VMO is, and zeroes nothing (only the
+ *                    pages the volume's metadata needs are touched), so
+ *                    the word is for the first start on a new VMO alone;
+ *                    a successor on the same VMO mounts what is there.
  *   SR_STATE         optional: its state VMO (<svcstate.h>),
  *                    EXTFS_STATE_SIZE bytes, made and kept by the spawner
  *                    across its restarts, with SVCSTATE_SERVICE_RIGHTS. An
@@ -61,6 +70,7 @@
 #define EXTFS_SR_CTL   (SR_USER + 3)
 #define EXTFS_SR_OWN   (SR_USER + 4)
 #define EXTFS_SR_PAGER (SR_USER + 5)
+#define EXTFS_SR_RAM   (SR_USER + 6)
 
 /* SR_STATE's size: room for extfs's layout (two request slots of 76 KiB,
  * its tables) and its growth. Pages are committed only as they are used. */

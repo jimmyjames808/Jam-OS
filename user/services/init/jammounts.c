@@ -1,25 +1,23 @@
 /* init's default subtree mounts of /jam (docs/M13.6-PLAN.md, Q3 and U7a):
- * ported software and `#!` lines name /usr, /var, /tmp and /home, so when
- * the Jam OS drive's ext volume is mounted at /jam (volumes, mounts.c),
- * init gives its namespace those names as views of the volume's
- * directories (fs.subview of /jam/usr and so on): each is a mount whose
- * root is that directory, so `..` stops there and nothing above it can be
- * named. They go into init's namespace like volumes' own mounts, so every
- * program init starts, and every shell it follows, has them.
+ * ported software and `#!` lines name /usr, /var and /home, so when the
+ * Jam OS drive's ext volume is mounted at /jam (volumes, mounts.c), init
+ * gives its namespace those names as views of the volume's directories
+ * (fs.subview of /jam/usr and so on): each is a mount whose root is that
+ * directory, so `..` stops there and nothing above it can be named. They
+ * go into init's namespace like volumes' own mounts, so every program init
+ * starts, and every shell it follows, has them. /tmp is tmp.c's: a view of
+ * /jam/tmp too while /jam is read-write, and there whatever else is
+ * mounted (U7b).
  *
  * The table below is a default: which names, and what lives under /usr, is
  * M13.7's to settle.
  *
  * What is done, on a thread of its own (the calls go to the volume's
- * service, a /tmp full of files takes a while to empty, and init's loop
- * must not wait): the directories made if they aren't there; /tmp emptied
- * once a boot (the first time /jam comes: a /tmp left by the last boot, or
- * by a cut, is gone; a /jam that comes back later, a remount for the
- * installer, keeps what it has); the views made, the ones that need
- * nothing first (/usr, /var, /home) mounted at once and /tmp when it is
- * empty. The loop is told when each batch is in (KEY_MOUNTS, so
- * mounts_event says the change is whole and the followers are updated), and
- * the log says what happened.
+ * service, and init's loop must not wait): the directories made if they
+ * aren't there (a read-only /jam has those it has), the views made and
+ * mounted. The loop is told when they are in (KEY_MOUNTS, so mounts_event
+ * says the change is whole and the followers are updated), and the log
+ * says what happened.
  *
  * /jam leaving (jam_gone) takes the views out with it. A thread still at
  * work is told by the generation: it notices before it mounts anything and
@@ -27,21 +25,16 @@
  * work again. */
 #include "init.h"
 
-#define STACK        (96u << 10)   /* fs calls carry 4 KiB path buffers; the tree walk is flat */
+#define STACK        (64u << 10)   /* fs calls carry 4 KiB path buffers */
 #define THREAD_END   (2 * NS_PER_S)    /* a finished thread ends within this */
-#define TMP_LIMIT    (30 * NS_PER_S)   /* /tmp left as it is after this much deleting */
-#define DEPTH_MAX    16            /* directories deep in /tmp that are emptied */
-#define PATH_MAX_LEN 1024          /* a path in /tmp that is emptied */
 
 static const struct {
     const char *mount;   /* the name in the namespace */
     const char *dir;     /* the directory of /jam it shows */
-    bool        empty;   /* emptied at boot */
 } views[] = {
-    { "/usr", "usr", false },
-    { "/var", "var", false },
-    { "/home", "home", false },
-    { "/tmp", "tmp", true },
+    { "/usr", "usr" },
+    { "/var", "var" },
+    { "/home", "home" },
 };
 #define NVIEWS (sizeof(views) / sizeof(views[0]))
 
@@ -52,7 +45,6 @@ static struct {
     uint32_t gen;            /* bumped by every change of presence (atomic) */
     bool     running;        /* the thread is at work (atomic) */
     handle_t thread;
-    bool     tmp_done;       /* the thread's: /tmp emptied this boot */
     bool     changed;        /* the thread mounted views: the loop tells the followers (atomic) */
     bool     said;           /* the log line below is for the loop to say (atomic) */
     char     line[160];      /* ... written before `said` is set */
@@ -89,71 +81,9 @@ static void add_name(char *buf, size_t cap, const char *name)
     snprintf(buf + n, cap - n, "%s ", name);
 }
 
-/* ---- emptying /tmp -------------------------------------------------------------------- */
-
-/* The path of a directory entry: path + "/" + name into out. False if it
- * doesn't fit. */
-static bool join(char *out, const char *path, const char *name)
-{
-    int n = snprintf(out, PATH_MAX_LEN, "%s/%s", path, name);
-    return n > 0 && n < PATH_MAX_LEN;
-}
-
-/* Everything below dir removed, as far as it can be and until the deadline:
- * a tree walk with the directory path itself as the stack (no recursion,
- * DEPTH_MAX deep). An entry that can't be removed stays (skip counts them
- * in each directory, so the walk goes on past them). Returns how many
- * entries went; *left: some stayed (or the time ran out). */
-static unsigned empty_dir(const char *dir, uint64_t deadline, uint32_t gen, bool *left)
-{
-    static char path[PATH_MAX_LEN], child[PATH_MAX_LEN];   /* the thread's alone */
-    unsigned skip[DEPTH_MAX + 1] = { 0 };
-    unsigned depth = 0, removed = 0;
-    snprintf(path, sizeof(path), "%s", dir);
-    *left = false;
-    for (;;) {
-        if (now() >= deadline || !current(gen)) {
-            *left = true;
-            return removed;
-        }
-        struct fs_entry e;
-        if (skip[depth])
-            (void)fs_readdir(path, 0, &e);   /* libos goes on from a batch it kept: ask afresh */
-        status_t st = fs_readdir(path, skip[depth], &e);
-        if (st != OK) {   /* the end of this directory (or it can't be read) */
-            if (depth == 0)
-                return removed;
-            bool gone = st == ERR_NOT_FOUND && fs_unlink(path) == OK;
-            *strrchr(path, '/') = '\0';   /* up to the parent */
-            depth--;
-            if (gone) {
-                removed++;
-            } else {
-                *left = true;   /* the subdirectory stays: not empty, or it can't be removed */
-                skip[depth]++;
-            }
-            continue;
-        }
-        if (!join(child, path, e.name)) {
-            *left = true;
-            skip[depth]++;   /* a name too long to follow */
-            continue;
-        }
-        if (e.is_dir && depth < DEPTH_MAX) {
-            snprintf(path, sizeof(path), "%s", child);
-            skip[++depth] = 0;
-        } else if (!e.is_dir && fs_unlink(child) == OK) {
-            removed++;
-        } else {
-            *left = true;
-            skip[depth]++;
-        }
-    }
-}
-
 /* ---- the thread --------------------------------------------------------------------- */
 
-/* One pass for generation gen: the directories, the views, /tmp. The views
+/* One pass for generation gen: the directories and the views. The views
  * are mounted only while gen is the current one, and taken back if it
  * moved meanwhile. */
 static void pass(uint32_t gen)
@@ -164,13 +94,10 @@ static void pass(uint32_t gen)
     for (unsigned i = 0; i < NVIEWS && current(gen); i++) {
         snprintf(path, sizeof(path), "/jam/%s", views[i].dir);
         status_t st = fs_mkdir_mode(path, FS_MODE_DIR_DEFAULT);
-        if (st != OK && st != ERR_ALREADY_EXISTS) {
+        if (st != OK && st != ERR_ALREADY_EXISTS && st != ERR_ACCESS_DENIED) {
             say_later("init: /jam/%s can't be made (%s): no %s", views[i].dir, status_str(st),
                       views[i].mount);
             continue;
-        }
-        if (views[i].empty) {
-            continue;   /* its view comes when it is empty */
         }
         st = fs_subview(path, 0, &h[i]);
         if (st != OK) {
@@ -178,7 +105,6 @@ static void pass(uint32_t gen)
             say_later("init: %s can't be a view of %s (%s)", views[i].mount, path, status_str(st));
         }
     }
-    /* The ones that need nothing first. */
     for (unsigned i = 0; i < NVIEWS && current(gen); i++)
         if (h[i]) {
             if (ns_mount(views[i].mount, h[i]) == OK) {
@@ -190,35 +116,8 @@ static void pass(uint32_t gen)
     for (unsigned i = 0; i < NVIEWS; i++)
         if (h[i])
             jam_handle_close(h[i]);   /* gen moved on: not mounted */
-    if (made) {
-        __atomic_store_n(&jm.changed, true, __ATOMIC_RELEASE);
-        wake();
-    }
-    /* /tmp: emptied the first time this boot, then its view. */
-    for (unsigned i = 0; i < NVIEWS && current(gen); i++) {
-        if (!views[i].empty)
-            continue;
-        snprintf(path, sizeof(path), "/jam/%s", views[i].dir);
-        unsigned removed = 0;
-        bool left = false;
-        if (!jm.tmp_done) {
-            removed = empty_dir(path, now() + TMP_LIMIT, gen, &left);
-            jm.tmp_done = current(gen);
-        }
-        handle_t v = HANDLE_INVALID;
-        status_t st = current(gen) ? fs_subview(path, 0, &v) : ERR_BAD_STATE;
-        if (st == OK && current(gen) && ns_mount(views[i].mount, v) == OK) {
-            made++;
-            add_name(names, sizeof(names), views[i].mount);
-        } else if (st == OK) {
-            jam_handle_close(v);
-        } else if (st != ERR_BAD_STATE) {
-            say_later("init: %s can't be a view of %s (%s)", views[i].mount, path, status_str(st));
-        }
-        if (made && current(gen))
-            say_later("init: /jam: mounted as views: %s(/tmp: %u removed%s)", names, removed,
-                      left ? ", some left" : "");
-    }
+    if (made && current(gen))
+        say_later("init: /jam: mounted as views: %s", names);
     if (!current(gen)) {   /* /jam went (or came again) while we worked: back out */
         for (unsigned i = 0; i < NVIEWS; i++)
             (void)ns_unmount(views[i].mount);
@@ -270,7 +169,7 @@ void jam_mounted(handle_t port, uint64_t key)
     if (st != OK) {
         __atomic_store_n(&jm.running, false, __ATOMIC_RELEASE);
         jm.thread = HANDLE_INVALID;
-        init_say("init: no thread for /jam's views (%s): no /usr, /var, /tmp or /home",
+        init_say("init: no thread for /jam's views (%s): no /usr, /var or /home",
                  status_str(st));
     }
 }

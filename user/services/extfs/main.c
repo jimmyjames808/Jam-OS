@@ -56,7 +56,8 @@ static status_t block_size_of(uint32_t *out)
 
 static status_t format(void)
 {
-    struct ext_mkfs p = { .uid = FS_ONE_USER, .gid = FS_ONE_USER, .label = LABEL };
+    struct ext_mkfs p = { .uid = FS_ONE_USER, .gid = FS_ONE_USER, .label = LABEL,
+                          .flags = vol.ram ? EXT_MKFS_ZEROED : 0 };   /* a new VMO is zeros */
     struct ext_time t;
     time_now(&t);
     p.now = t.sec;
@@ -264,7 +265,7 @@ static status_t run(handle_t serve, handle_t ctl)
     const struct xf_chan fc = { .ch = ctl, .id = XF_CHAN_CTL, .proto = XF_PROTO_CTL };
     views_whole(&fs.ctx);
     status_t st = arm_fs(serve);
-    if (st == OK)
+    if (st == OK && !vol.ram)
         st = jam_port_bind(vol.port, vol.block, XF_KEY_BLOCK, SIG_PEER_CLOSED, PORT_BIND_ONCE);
     if (st == OK && ctl)
         st = jam_port_bind(vol.port, ctl, XF_KEY_CTL, SIG_READABLE, PORT_BIND_PERSISTENT);
@@ -341,7 +342,8 @@ int main(int argc, char **argv)
     words(argc, argv);
     bool no_volume = false, adopted = false;
     handle_t serve = startup_handle(EXTFS_SR_SERVE), block = startup_handle(EXTFS_SR_BLOCK);
-    if (serve == HANDLE_INVALID || block == HANDLE_INVALID) {
+    handle_t ram = startup_handle(EXTFS_SR_RAM);
+    if (serve == HANDLE_INVALID || (block == HANDLE_INVALID && ram == HANDLE_INVALID)) {
         printf("extfs %s: no %s channel: nothing to do\n", vol.name,
                serve == HANDLE_INVALID ? "fs" : "block");
         return 1;
@@ -354,7 +356,7 @@ int main(int argc, char **argv)
     vol.at[XF_AT_MAIN] = now();
     status_t st = jam_port_create(&vol.port);
     if (st == OK)
-        st = disk_open(block, &dev);
+        st = block != HANDLE_INVALID ? disk_open(block, &dev) : disk_open_ram(ram, &dev);
     vol.at[XF_AT_DISK] = now();
     if (st == OK)
         st = state_open(&adopted);

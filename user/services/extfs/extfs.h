@@ -88,6 +88,7 @@ struct xf_vol {
     uint64_t    sectors;      /* ... and its blocks */
     uint32_t    max_sectors;  /* the most one block call moves */
     bool        read_only;    /* block.info said so */
+    bool        ram;          /* the disk is a VMO (EXTFS_SR_RAM): no block channel */
     bool        may_format;   /* EXTFS_ARG_FORMAT */
     bool        disk_gone;    /* a block call saw ERR_PEER_CLOSED */
     handle_t    keep, serve, own, ctl, pager;
@@ -179,6 +180,8 @@ struct svcstate *state_slots(void);
 
 /* Take the block channel: its info, its buffer mapped; vol.fs's device. */
 status_t disk_open(handle_t block, struct ext_dev *dev);
+/* ... or a VMO as the disk (EXTFS_SR_RAM): mapped whole; vol.ram. */
+status_t disk_open_ram(handle_t vmo, struct ext_dev *dev);
 /* The partition's first 4 KiB are all zeros (ext's mkfs writes them last,
  * the superblock with them, so a format cut short is blank still). */
 status_t disk_is_blank(bool *out);
