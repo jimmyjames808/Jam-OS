@@ -1,9 +1,10 @@
 /* bin/pkg's parts (docs/M13.7-PLAN.md sections 8 and 9). The program is a
  * native libos one, like bin/update: it fetches the repository's index and
  * packages over HTTP, shows the owner what an install will do, asks once,
- * and writes the files under the packages' prefix (/data/pkg, which only
- * its own view and init's and the shell's may change). It parses what the
- * network sends, so it holds only the network, /data's packages, the boot
+ * and writes the files under the packages' prefix (/jam/pkg on a machine
+ * with the Jam OS drive's volume, else /data/pkg; only its own view and
+ * init's and the shell's may change it). It parses what the
+ * network sends, so it holds only the network, the packages' volume, the boot
  * image and the pkgctl channel to init: init decides what may run.
  *
  * The files:
@@ -52,10 +53,14 @@ struct pk_verdict {
 };
 
 /* init, as the transaction code calls it. */
+#define PK_APPROVE_STAGED 1u   /* pkgctl's STAGED and JAM (ctlc.c checks they agree) */
+#define PK_APPROVE_JAM    2u
+
 struct pk_ctl {
     void    *ctx;
     /* Approve the package whose signed manifest is text (len bytes);
-     * flags: pkgctl's STAGED. Returns the call's status; the answer in *v. */
+     * flags: pkgctl's STAGED, and JAM for a prefix on /jam. Returns the
+     * call's status; the answer in *v. */
     status_t (*approve)(void *ctx, uint32_t flags, const void *text, size_t len,
                         struct pk_verdict *v);
     /* Take back the lines of (name, version, revision). */
@@ -65,7 +70,8 @@ struct pk_ctl {
 
 /* Everything the transaction code touches. */
 struct pk_env {
-    const char   *prefix;            /* the packages' prefix: "/data/pkg" */
+    const char   *prefix;            /* the packages' prefix: "/jam/pkg", or "/data/pkg" */
+    bool          jam;               /* ... the first: init is told (pkgctl's JAM) */
     uint8_t       key[PKG_KEY_BYTES];   /* the ports key (/boot/ports.pub) */
     bool          have_key;
     char          abi[17];           /* this build's stamp; "" if it has none (not checked) */

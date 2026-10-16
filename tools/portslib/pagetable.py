@@ -11,7 +11,7 @@ the kernel hashes). All numbers little-endian:
     0   8  magic "JAMPAGES"
     8   4  version: 1
     12  4  the page size: 4096
-    16  8  the file's size in bytes (1..64 MiB)
+    16  8  the file's size in bytes (1..1 GiB)
     24  8  pages: (size + 4095) / 4096
     32 32  the SHA-256 of the whole file
     64     pages x 32 bytes: each page's SHA-256

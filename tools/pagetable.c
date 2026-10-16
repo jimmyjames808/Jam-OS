@@ -27,7 +27,7 @@
 #endif
 
 #define PAGE      4096u
-#define FILE_MAX  (64u << 20)   /* the shell's PROGRAM_MAX: the largest program */
+#define FILE_MAX  (1u << 30)    /* the shell's PROGRAM_MAX: the largest program (VMO_VERIFIED_MAX) */
 #define HEAD      64u
 
 static void put32(uint8_t *p, uint32_t v)

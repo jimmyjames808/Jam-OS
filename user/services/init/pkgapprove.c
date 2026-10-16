@@ -3,16 +3,21 @@
  *
  * What decides that a package's program may run is here, so it trusts
  * nothing bin/pkg says: only the manifest's signature by the ports key,
- * and the bytes it reads back itself. Each program is read whole into a
- * VMO only init holds (file_read_vmo), and every check is of those bytes:
- * the size and SHA-256 the manifest's `file` line names, the page table
- * made from them (pkg_tabler) against the SHA-256 the `table` line names
- * (the table bin/pkg shipped is never read: the one written is init's
- * own), the program's own list (its ELF note, wants_read) against the
- * manifest's `program` list byte for byte (pkg_elf_list_is), and what no
- * program from /data may have (dp_wants_refused, `allow`'s refusals). The
- * file at the path can change afterwards: the line approves the hash, so
- * only these bytes run.
+ * and the bytes it reads back itself. Each program is read once, in pieces
+ * (a program may be a few hundred megabytes: it is never held whole), and
+ * every check is of those bytes: the size and SHA-256 the manifest's `file`
+ * line names, the page table made from them (pkg_tabler, together with the
+ * SHA-256) against the SHA-256 the `table` line names (the table bin/pkg
+ * shipped is never read: the one written is init's own), the program's own
+ * list (its ELF note, wants_read) against the manifest's `program` list
+ * byte for byte (pkg_elf_list_is), and what no program from /data may have
+ * (dp_wants_refused, `allow`'s refusals). The list is read afterwards from
+ * the notes alone (dp_image_small), every page of them checked against that
+ * table as the kernel's pager checks a page it fetches, so it is the list
+ * of the bytes hashed. The file at the path can change afterwards: the line
+ * approves the hash, so only these bytes run. What init holds meanwhile is
+ * a 128 KiB piece, a page, the notes and the tables of the package's
+ * programs (32 bytes a page of program).
  *
  * All or nothing: every program is checked before anything is written;
  * then the tables (inert without a line naming their hash), then the
@@ -47,6 +52,7 @@
 #include "pkgapprove.h"
 
 #define PATH_CAP   400   /* a prefix (at most ~100 bytes), '/', a path (255), ".new" */
+#define CHUNK      (128u << 10)   /* the pieces a program is read in */
 #define LINE_CAP   (DP_HEX_LEN + 1 + PATH_CAP + 1 + WANTS_TEXT_MAX + 1 + PKGA_TAG_MAX + 2)
 
 /* ---- memory of our own ------------------------------------------------------------- */
@@ -248,58 +254,143 @@ static status_t refuse(struct pkga_result *r, status_t st, uint32_t program, con
     return st;
 }
 
+/* A program being checked, read through its open file. */
+struct readback {
+    struct jfile   f;
+    uint64_t       size;
+    const uint8_t *table;     /* the table made from the bytes read: its header, then a hash a page */
+    uint8_t        page[PAGE_SIZE];
+    uint64_t       page_no;   /* the page `page` holds (UINT64_MAX: none) */
+};
+
+/* What a call to approve needs room for besides the programs' tables. */
+struct scratch {
+    uint8_t         chunk[CHUNK];
+    struct readback rb;
+};
+
+/* dp_image_small's reader: the bytes of the file at off, taken a page at a
+ * time and each page checked against the table made from the bytes the
+ * file's SHA-256 was taken of (as the kernel's pager checks a page it
+ * fetches), so the list that is read is the list of the bytes approved.
+ * ERR_IO: the file isn't the one hashed (or is shorter now). */
+static status_t checked_read(void *ctx, uint64_t off, void *dst, uint64_t len)
+{
+    struct readback *rb = ctx;
+    uint8_t *out = dst;
+    if (off > rb->size || len > rb->size - off)
+        return ERR_OUT_OF_RANGE;
+    while (len) {
+        uint64_t p = off / PAGE_SIZE;
+        if (rb->page_no != p) {
+            uint64_t left = rb->size - p * PAGE_SIZE;
+            size_t want = left < PAGE_SIZE ? (size_t)left : PAGE_SIZE, done = 0;
+            uint8_t h[SHA256_BYTES];
+            rb->page_no = UINT64_MAX;
+            status_t st = file_read(&rb->f, p * PAGE_SIZE, rb->page, want, &done);
+            if (st != OK)
+                return st;
+            if (done != want)
+                return ERR_IO;
+            memset(rb->page + want, 0, PAGE_SIZE - want);
+            sha256(rb->page, PAGE_SIZE, h);
+            if (memcmp(h, rb->table + PKG_TABLE_HEAD + (size_t)SHA256_BYTES * p, SHA256_BYTES))
+                return ERR_IO;
+            rb->page_no = p;
+        }
+        size_t in = (size_t)(off % PAGE_SIZE);
+        size_t take = PAGE_SIZE - in < len ? PAGE_SIZE - in : (size_t)len;
+        memcpy(out, rb->page + in, take);
+        out += take;
+        off += take;
+        len -= take;
+    }
+    return OK;
+}
+
 /* Program i of m, read back and checked; its table into table (its
- * pkg_table_size bytes). */
+ * pkg_table_size bytes). The program is never held whole: it is read once,
+ * in pieces, for the SHA-256 and the page table (made together by
+ * pkg_tabler), then its list is read from the notes alone, each page of
+ * them checked against that table (checked_read). */
 static status_t check_program(const struct pkga_place *at, const struct pkg_manifest *m,
-                              uint32_t i, uint32_t flags, uint8_t *table, struct passed *out,
-                              struct pkga_result *r)
+                              uint32_t i, uint32_t flags, uint8_t *table, struct scratch *sc,
+                              struct passed *out, struct pkga_result *r)
 {
     const struct pkg_program *p = &m->programs[i];
     const struct pkg_file *f = &m->files[p->file];
+    struct readback *rb = &sc->rb;
     int pn = (int)p->path.n;
     char path[PATH_CAP];
     under(at, p->path, flags & PKGA_STAGED ? ".new" : "", path);
-    struct mapped b;
-    uint64_t size = 0;
-    status_t st = map_file(path, PKG_FILE_MAX, &b, &size);
+    *rb = (struct readback){ .table = table, .page_no = UINT64_MAX };
+    status_t st = file_open(path, FS_READ, &rb->f);
+    if (st == OK) {
+        st = file_stat(&rb->f, &rb->size, NULL);
+        if (st != OK)
+            file_close(&rb->f);
+    }
     if (st != OK)
         return refuse(r, st, i, "%.*s: can't read it (%s)", pn, p->path.p, status_str(st));
+    uint64_t size = rb->size;
     if (size != f->size) {
-        unmap(&b);
+        file_close(&rb->f);
         return refuse(r, ERR_ACCESS_DENIED, i, "%.*s: %lu bytes, the manifest says %lu", pn,
                       p->path.p, (unsigned long)size, (unsigned long)f->size);
-    }
-    uint8_t digest[SHA256_BYTES], tdigest[SHA256_BYTES];
-    sha256(b.p, size, digest);
-    if (memcmp(digest, f->sha256, SHA256_BYTES)) {
-        unmap(&b);
-        return refuse(r, ERR_ACCESS_DENIED, i, "%.*s isn't the manifest's (its SHA-256)", pn,
-                      p->path.p);
     }
     uint64_t tlen = pkg_table_size(size);
     struct pkg_tabler t;
     pkg_tabler_begin(&t, size, table, NULL);
-    bool made = pkg_tabler_add(&t, b.p, size) && pkg_tabler_end(&t);
-    if (made)
-        sha256(table, tlen, tdigest);
-    if (!made || tlen != p->table_size || memcmp(tdigest, p->table_sha256, SHA256_BYTES)) {
-        unmap(&b);
+    for (uint64_t off = 0; st == OK && off < size;) {
+        size_t want = size - off < CHUNK ? (size_t)(size - off) : CHUNK, done = 0;
+        st = file_read(&rb->f, off, sc->chunk, want, &done);
+        if (st == OK && done != want)
+            st = ERR_IO;   /* the file shrank under us */
+        if (st == OK && !pkg_tabler_add(&t, sc->chunk, want))
+            st = ERR_INTERNAL;
+        off += want;
+    }
+    if (st == OK && !pkg_tabler_end(&t))
+        st = ERR_INTERNAL;
+    if (st != OK) {
+        file_close(&rb->f);
+        return refuse(r, st, i, "%.*s: can't read it (%s)", pn, p->path.p, status_str(st));
+    }
+    uint8_t digest[SHA256_BYTES], tdigest[SHA256_BYTES];
+    memcpy(digest, table + offsetof(struct dp_ptable_head, sha256), SHA256_BYTES);   /* the file's */
+    if (memcmp(digest, f->sha256, SHA256_BYTES)) {
+        file_close(&rb->f);
+        return refuse(r, ERR_ACCESS_DENIED, i, "%.*s isn't the manifest's (its SHA-256)", pn,
+                      p->path.p);
+    }
+    sha256(table, tlen, tdigest);
+    if (tlen != p->table_size || memcmp(tdigest, p->table_sha256, SHA256_BYTES)) {
+        file_close(&rb->f);
         return refuse(r, ERR_ACCESS_DENIED, i, "%.*s: its page table isn't the manifest's", pn,
                       p->path.p);
     }
+    uint8_t *small = NULL;
+    uint64_t small_len = 0;
+    st = dp_image_small(checked_read, rb, size, &small, &small_len);
+    file_close(&rb->f);
     static struct wants w;   /* one approval at a time (the worker's) */
-    uint8_t list[PKG_LIST_MAX];
-    size_t n = 0;
-    st = wants_read(b.p, size, &w);
+    if (st == OK)
+        st = wants_read(small, small_len, &w);
     if (st == OK && !w.found)
         st = ERR_INVALID_ARGS;
     if (st != OK) {
-        unmap(&b);
+        free(small);
+        if (st == ERR_IO)   /* a page isn't the one that was hashed */
+            return refuse(r, ERR_ACCESS_DENIED, i, "%.*s changed while it was read", pn,
+                          p->path.p);
         return refuse(r, ERR_ACCESS_DENIED, i, "%.*s: not a program Jam OS runs, or no list",
                       pn, p->path.p);
     }
-    bool same = pkg_list_decode(p->list, list, &n) == OK && pkg_elf_list_is(b.p, size, list, n);
-    unmap(&b);
+    uint8_t list[PKG_LIST_MAX];
+    size_t n = 0;
+    bool same = pkg_list_decode(p->list, list, &n) == OK &&
+                pkg_elf_list_is(small, small_len, list, n);
+    free(small);
     if (!same)
         return refuse(r, ERR_ACCESS_DENIED, i, "%.*s: its own list isn't the manifest's", pn,
                       p->path.p);
@@ -412,9 +503,11 @@ status_t pkga_approve(const struct pkga_place *at, const uint8_t key[PKG_KEY_BYT
         return refuse(r, st, PKGA_NONE, "the manifest: %s", why ? why : status_str(st));
     }
     struct passed *ps = calloc(m->nprograms ? m->nprograms : 1, sizeof(*ps));
+    struct scratch *sc = m->nprograms ? malloc(sizeof(*sc)) : NULL;
     struct mapped tables = { 0 };
     uint64_t total = pkg_tables_bytes(m);
-    if (!ps || (total && map_new(total, &tables) != OK)) {
+    if (!ps || (m->nprograms && !sc) || (total && map_new(total, &tables) != OK)) {
+        free(sc);
         free(ps);
         free(m);
         return refuse(r, ERR_NO_MEMORY, PKGA_NONE, "out of memory");
@@ -422,9 +515,10 @@ status_t pkga_approve(const struct pkga_place *at, const uint8_t key[PKG_KEY_BYT
     uint64_t off = 0;
     for (uint32_t i = 0; st == OK && i < m->nprograms; i++) {
         ps[i].table_at = off;
-        st = check_program(at, m, i, flags, tables.p + off, &ps[i], r);
+        st = check_program(at, m, i, flags, tables.p + off, sc, &ps[i], r);
         off += ps[i].table_len;
     }
+    free(sc);
     if (st == OK && m->nprograms) {
         st = write_tables(at, m, ps, tables.p);
         if (st != OK)

@@ -472,7 +472,8 @@ static status_t approve(struct run *r, char why[PK_WHY])
         return ERR_NOT_SUPPORTED;
     if (pk_cut(e, "approve", false) != PK_GO)
         return ERR_IO;
-    status_t st = e->ctl.approve(e->ctl.ctx, 1, r->job->text, r->job->len, &v);
+    status_t st = e->ctl.approve(e->ctl.ctx, PK_APPROVE_STAGED | (e->jam ? PK_APPROVE_JAM : 0),
+                                 r->job->text, r->job->len, &v);
     if (st == OK && v.verdict != OK) {
         snprintf(why, PK_WHY, "%s", v.why);
         st = v.verdict;

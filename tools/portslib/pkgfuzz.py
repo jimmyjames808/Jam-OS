@@ -34,11 +34,12 @@ UNCHECKED = pkgverify.UNCHECKED
 # What init refuses a program from a package (user/lib/pkglist.c).
 REFUSED_LINES = {"svc devmgr", "svc devmgr-ctl", "svc volumes", "svc init", "svc net-sys",
                  "svc dns-sys", "svc serve", "svc session", "svc net listen low", "svc net-low",
-                 "right debug", "mount /data rw pkg"}
+                 "right debug", "mount /data rw pkg", "mount /jam rw pkg"}
 
 TOKENS = ["0", "1", "2", "00", "-", "-1", "644", "755", "600", "a", "A", "vec", "bin/vec",
           "../x", "/x", "x" * 64, "0" * 64, "f" * 64, "F" * 64, "9999999999",
-          "99999999999999999999", "4194304", "67108864", "67108865", "1.0", "1.0.0", "z",
+          "99999999999999999999", "4194304", "67108864", "67108865", "1073741824", "1073741825", "2147483648",
+          "2147483649", "4294967296", "4294967297", "1.0", "1.0.0", "z",
           "+x", "!x", "a.", ".", "..", "MIT", "runs", "file", "signature", "\\x0a", "\\", "~"]
 SPECIAL = [b"\n", b" ", b"\0", b"\xff", b"0", b"9", b"-", b"/", b".", b"!", b"a", b"f", b"\r"]
 

@@ -58,9 +58,9 @@
 #define PKG_PROGRAMS_MAX     256u
 #define PKG_DEPS_MAX         64u           /* runs lines of a package; built-with lines */
 #define PKG_PATH_MAX         255u          /* bytes of a path under the prefix */
-#define PKG_FILE_MAX         (64u << 20)   /* bytes of one file */
-#define PKG_FILES_TOTAL_MAX  (512u << 20)  /* bytes of a package's files together */
-#define PKG_ARCHIVE_MAX      (1u << 30)    /* bytes of a .jpk */
+#define PKG_FILE_MAX         (1ull << 30)  /* bytes of one file: VMO_VERIFIED_MAX, the biggest program */
+#define PKG_FILES_TOTAL_MAX  (2ull << 30)  /* bytes of a package's files together */
+#define PKG_ARCHIVE_MAX      (4ull << 30)  /* bytes of a .jpk or a .src.tar */
 #define PKG_PACKAGES_MAX     4096u         /* package lines of an index */
 #define PKG_VULNS_ENTRIES_MAX 4096u
 #define PKG_BUSY_MAX         PKG_FILES_MAX /* busy lines of a journal */

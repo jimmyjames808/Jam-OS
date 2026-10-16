@@ -22,14 +22,17 @@
  *     mount <point> r|rw      a mount, read-only or writable (neither has
  *                             the top-level `etc` at all: the settings,
  *                             approvals and keys); <point>
- *                             is /boot, /esp, /data, /usb* (every other
- *                             stick) or * (every mount); a writable one
- *                             can't change the top-level `pkg` (the
- *                             packages' prefix, /data/pkg)
+ *                             is /boot, /esp, /data, /jam (the Jam OS
+ *                             drive's volume), /usb* (every other stick)
+ *                             or * (every mount); a writable one can't
+ *                             change the top-level `pkg` (the packages'
+ *                             prefix: /jam/pkg, or /data/pkg when there is
+ *                             no /jam)
  *     mount /data rw pkg      /data writable, the packages' prefix too
- *                             (still no etc): bin/pkg's; the build allows
- *                             it only for a service (user/services/), and
- *                             `allow` never for a program on /data
+ *     mount /jam rw pkg       (still no etc), or /jam: bin/pkg's; the
+ *                             build allows them only for a service
+ *                             (user/services/), and `allow` never for a
+ *                             program on /data or /jam
  *     right <name>            klog, sysinfo, clock, debug or jit: that
  *                             power on the root resource (WANT_RIGHT_*);
  *                             jit (RIGHT_ROOT_JIT, vmo_make_jit: memory it

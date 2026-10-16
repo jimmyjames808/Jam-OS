@@ -41,7 +41,7 @@ void     pkga_tag(struct pkg_str name, struct pkg_str version, uint32_t revision
 /* Approve the programs of the package whose signed manifest is the len
  * bytes at text (init's own copy), key the ports key: the signature, then
  * each program read back from the prefix (at `<path>.new` with
- * PKGA_STAGED) into memory of our own and checked from those bytes (its
+ * PKGA_STAGED), in pieces, never whole, and checked from those bytes (its
  * size and SHA-256, its page table's SHA-256, its own list against the
  * manifest's, the refusals of dp_wants_refused), and only when all
  * passed, the tables and then the lines, tagged. *r says how it went; the
