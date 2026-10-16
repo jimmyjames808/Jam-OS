@@ -17,6 +17,7 @@ functional/tls_init_dlopen skip: needs dlopen, and Jam OS has no dynamic linking
 regression/tls_get_new-dtv skip: needs dlopen, and Jam OS has no dynamic linking (M14.5)
 
 # ---- fork: a forked child's descriptors and exec (docs/FORK-PLAN.md) ---------------------------
+functional/fcntl pending: its forked children test the parent's record lock on its file, which needs a forked child's descriptors (FORK-PLAN's FL2) and locks told apart by process
 functional/vfork pending: its child execs /bin/sh, which needs a forked child's descriptors and exec (FORK-PLAN's FL2, FL3)
 regression/daemon-failure pending: its child dup2s a pipe, which needs a forked child's descriptors (FORK-PLAN's FL2)
 regression/fflush-exit pending: its child dups a file, which needs a forked child's descriptors (FORK-PLAN's FL2)
