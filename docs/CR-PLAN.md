@@ -604,7 +604,8 @@ passed. The findings below are the list's groups, most tests first.
   and 5 to over 60 without it (`CR_BASE_ALL=1`: a crash is a boot, and
   every `FilePathWatcher` test waits out its timeout). `CR_BASE_ARGS` adds
   arguments for the program (`--v=1`, `--gtest_death_test_style=fast`).
-- **No `/tmp`.** `ls /tmp` says "no such file or directory": every Chromium
+- **No `/tmp`** (when CB2 ran; init's `/tmp` came after, see [CB2b](#cb2b-on-ext-2026-10-16)).
+  `ls /tmp` said "no such file or directory": every Chromium
   program expects one. The run points `TMPDIR` (base) and `TEST_TMPDIR`
   (gtest's captured streams and death tests, which use `/tmp` whatever
   `TMPDIR` says) at `/data/cr/tmp`. Without `TEST_TMPDIR` a death test
@@ -660,7 +661,8 @@ from the failing call.
    there is no DMI hardware information (`GetHardwareInfo`). Shared memory:
    a purged discardable page does not read back as zeros
    (`DiscardableSharedMemoryTest.ZeroFilledPagesAfterPurge`).
-4. **File system under `/data` (FAT now): 54 tests** (`FileUtilTest` 30,
+4. **File system under `/data` (FAT now): 54 tests; on ext 10 of them still
+   fail, see [CB2b](#cb2b-on-ext-2026-10-16)** (`FileUtilTest` 30,
    `ImportantFileWriterCleanerTest` 10, `FileTest` 6, `FileProxyTest` 3,
    `ImportantFileWriterTest` 2, `FileEnumerator.SymLinkLoops`,
    `FileUtilMultiThreadedTest`, `DriveInfoTest`). `symlink()` fails (the
@@ -723,6 +725,108 @@ from the stick and tolerates the cut). `QEMU_SAVE` is needed to read
 anything the guest wrote. The init run on this tree fails only
 posixtest's `execinfo` section (`execinfo.c:194/195/227/235`), the known
 regression since BT.
+
+#### CB2b on ext (2026-10-16)
+
+Track CB2b: the same `base_unittests`, the same tests, on a `/data` that is an
+ext volume (`JAMOS_DATA_FS=ext`, U11a's image), to find which of CB2's
+file-system failures were only FAT's. Main at c961c5f8 plus this track; the
+programs relinked first. **The skip list's file-system group shrank from 54
+tests to 10** (and 44 tests now pass), and `base` on ext leaves 596 tests out:
+
+| `/data` | pass | self-skip | on the skip list |
+|---------|-----:|----------:|-----------------:|
+| FAT (CB2; the same again today) | 8,277 | 39 | 640 |
+| ext, `TMPDIR` and `TEST_TMPDIR` at `/data/cr/tmp` | 8,321 | 39 | 596 |
+| ext, neither set (init's `/tmp`) | 8,321 | 39 | 596 |
+
+Each row is the six shards of 8,956 tests, all PASS (a test of shard 4 self-skips
+in some runs: 17 or 18 of the 39). Two shards also ran booted from an NVMe drive
+(3/6 and 1/6 in the first batches): the same counts as the stick's. On the first
+ext run, with CB2's full list, the pass count was 8,278 and 640 stayed listed.
+
+- **Relink.** `base_unittests` and `test_child_process` are static: they were
+  removed from the kept tree on the PC
+  (`~/cr/155.0.8059.39/src/chromium-155.0.8059.39/out/jamos/`, the stage in
+  `~/cr/ports/chromium/stage`) and `tools/cr/build.sh start base_unittests
+  test_child_process` linked them again from this checkout's libc: 140 s
+  (2 min 20 s) from the command to "built", with the PC's CPUs busy with other
+  runs. The stage's files changed (76,865,672 to 76,890,904 bytes).
+- **The ext stick.** `tools/cr/base-stick.py` now follows the image: for an
+  ext image (`mkimage.py --data-fs`) it grows the partition, makes the volume
+  with `jamext mkfs` (as `tools/stick-data.sh` does) and writes the whole tree
+  (`/cr` and `/etc`: the programs, their approval lines and page tables, base's
+  test files, `/cr/tmp`) with one `jamext import`, and reads the programs back
+  by hash with `jamext get`; modes are jamext's (0755 for a program). FAT is
+  as before. `base-run.py` reads the listing back with `jamext` on an ext
+  stick, adds `tools/cr/base_unittests.fat.skip` (the 44 tests only FAT fails)
+  on a FAT one, names a run's QEMU files after its output directory (two runs
+  of one batch with the same shard number shared a name), and
+  `CR_BASE_ONLY` takes several globs. `tools/cr-test.sh base` makes
+  `build/host/jamext` for an ext image. Set `JAMOS_DATA_FS=ext` for **every**
+  run of a batch: a run with another value rebuilds the image under the others.
+- **What ext fixed (44 tests).** Mostly what CB2 expected of it: symbolic
+  links (`CreateAndReadSymlinks`, `CopyDirectory*OverSymlink`,
+  `NormalizeFilePathSymlinks`, `FileEnumerator.SymLinkLoops`, `DeleteSymlink*`),
+  modes (`ChangeFilePermissionsAndRead`, `CopyFileExecutablePermission`,
+  `ExecutableExistsInPath`, `CopyDirectoryPermissions*`), times (`TouchFile`,
+  `FileProxyTest.SetTimes`, the ten `ImportantFileWriterCleanerTest` tests that look for
+  old files, `GetLatestTemporaryFileWithNamePrefix`), a file unlinked while
+  open (`DeleteOpenFile`, `DuplicateDeleteOnClose`, `CreatingFileWithSameNameAfterDelete`,
+  `DeleteDirRecursiveWithOpenFile`), and tests CB2 could only guess at
+  (`FileTest.Length` and `ReadWriteSpans`, set-length, creation time, the ACL copies).
+  They are in `tools/cr/base_unittests.fat.skip`, which `base-run.py` adds on a FAT `/data`.
+- **What still fails on ext**, with `CR_BASE_ALL=1` on the file-system suites
+  (`FileUtil*`, `ImportantFileWriter*`, `FileTest`, `FileProxyTest`,
+  `FileEnumerator*`, `DriveInfoTest`) and the four mapping suites, 246 tests:
+  223 pass, 23 fail. Three of the 23 are `sendfile` (`FileUtilTest.CopyFileContentsWithSendfile*`:
+  syscall 40, CBF2b, and `/proc/self/cmdline`, CBF4) and two are death tests
+  (fork, FL1b). The other 18 are below; each is in `base_unittests.skip` under
+  its layer.
+
+  | Layer | Tests | Cause (seen = in the log or the code) | Fix track |
+  |-------|-------|----------------------------------------|-----------|
+  | extfs | `FileUtilMultiThreadedTest.MultiThreadedTempFiles` | 64 threads each make, write, close and read back a temporary file. Seen: `CreateAndOpenTemporaryStream` returns null (file_util_unittest.cc:5363, then a null dereference: SEGV) or, another run, `ReadFileToString` of a just-written file fails (:5381), 2 of 2,048 times, in `/data/cr/tmp` and in `/tmp` alike. Likely: `XF_MAX_FILES` is 32 (extfs.h): `files_open` answers `ERR_NO_RESOURCES` (files.c:395) when no slot is free, and the layer turns that into `EAGAIN` (errno.c:29); the test holds up to 64 open at once. Not proved (no errno is logged). Chromium opens far more than 32 files at once (profile databases, caches, packs): raise it, and look at `XF_MAX_MAPS` (64 mapped files) with it; each open file has a 64 KiB buffer (`XF_FILE_BUF`) | extfs (U9 / the ext review) |
+  | libc: libos paths | `FileUtilTest.DeleteDeep` | `mkdirat(dirfd, <255-byte name>)` says "Filename too long": libos limits a path to `FS_PATH_MAX`, 256 bytes (os.h:379, `ns_resolve` ns.c:351 and every `rel[FS_PATH_MAX]`), though the fs protocol carries 4,095 (`FS_PATH_LEN`) and the layer's own `PATH_BYTES` is 4096. os.h says libos's limit "goes up to it when nothing shares it any more". Any path past 255 bytes fails, not only this test's | POSIX layer / libos |
+  | libc: file calls | `FileUtilTest.ChangeFilePermissionsAndWrite` | an `O_WRONLY` open asks the service for read access too (`fs_access`, file.c:56: "the one open serves every description"), so a file with mode 0200 gives EACCES; Linux opens it for its owner | POSIX layer |
+  | libc: file calls | `CopyDirectoryExclFileOverFifo`, `CopyDirectoryWithNonRegularFiles`, `ReadFileToStringWithNamedPipe`, `TestNonBlockingFileReadLinux` | `mkfifo` is `mknod`, and `lx_mknodat` answers `EPERM` (meta.c:537, "mknod is EPERM"): no named pipes; fs.idl has no `mknod` (extfs can hold the inode). Only tests need it | POSIX layer + fs.idl (a named-pipe design) |
+  | libc: file calls | `MakeAbsoluteFilePathNoResolveSymbolicLinks` | the working directory is a path as text (dir.c `lx_getcwd`): after the test removes it, `getcwd` still answers; Linux gives `ENOENT` | POSIX layer (small) |
+  | libc: sysfs | `DriveInfoTest.GetFileDriveInfo` | `has_seek_penalty`, `is_removable` and the size come from `/sys/dev/block/<major:minor>`; none of it exists, so the calls give `nullopt` | POSIX layer (with uname/sysfs, CBF2b) |
+  | musl | `FileUtilTest.FileToFILE` | `fdopen(-1, "w")` returns a `FILE` (musl does not look at the descriptor), the test expects null. Alpine's build fails it the same | none; leave it out |
+  | mmap (WE1) | `MemoryMappedFileTest.WriteableFile`, `ExtendableFile`; `FilePersistentMemoryAllocatorTest.AcceptableTest`, `ExtendTest`; `PersistentHistogramAllocatorTest.CreateSpareFile`, `CreateWithFile`, `MovePersistentFile`; `PersistentMemoryAllocatorTest.TruncateTest` (8) | `MemoryMappedFile::Initialize` with `READ_WRITE` fails on ext too (expected: WK2 and WE1, extfs's write-back, are not built); `CreateWithFile` and `MovePersistentFile` then dereference the failed object (SEGV at 0x8) | WE1 |
+
+- **`/tmp`.** init's `/tmp` is there in every boot: on the ext stick and on
+  the NVMe boot it is a view of `/data/tmp` ("init: /tmp: a view of
+  /data/tmp (emptied: 0 removed)", after a memory volume first). All six
+  shards with `CR_BASE_ENV=` empty (no `TMPDIR`, no `TEST_TMPDIR`: base uses
+  `/tmp`, shown by the temporary names in the failure output) pass with the
+  same results as with both set at `/data/cr/tmp`. gtest's
+  `CaptureStderr` `mkstemp` works: `ClampTest.Death` without either variable
+  aborts exactly as it does with them (silently, killed by SIGABRT, no
+  "Unable to create a temporary file" line), at the child's `clone`/`fork`. The
+  harness keeps `TMPDIR=/data/cr/tmp` by default, so a run is the same on a
+  boot with no `/tmp`.
+- **The NVMe boot.** `QEMU_BOOT_NVME=1` boots the same stick as an installed
+  drive (`tools/qemu-test.sh` makes it GPT: `nvme0`, "Jam OS data" mounted as
+  `/data`, ext). Shards 3/6 and 1/6 pass with the numbers of the stick runs
+  and cost no change to the scripts (the listing is read back with `jamext
+  --part 2` from the GPT image). `/tmp` is the same view of `/data/tmp`. A
+  drive boot with `/jam` is DB1's.
+- **A transient disk error kills the program.** On a loaded PC (15 runs at
+  once) one shard lost a program to `usb-storage: command 28: ERR_TIMED_OUT`
+  (QEMU's USB disk, ten seconds late), `extfs: read of 128 blocks failed`,
+  `mapped file ... can't read at 3624960: ERR_IO` and then SIGBUS in the
+  program running from its pages (`ToArrayTest.IdentityFixedExtent` was the
+  test that was running); one timing test of a socket pair
+  (`CancelableSyncSocketTest.ShutdownCancelsReceiveWithTimeout`) failed in
+  another. Both passed run again alone; a read error of a program's page is a
+  SIGBUS by design.
+- **Evidence.** Run with `tools/pc-batch.sh` (batches 16211943, 16213418,
+  16214455, 16215035): `cr-test.sh base` shards `e0`..`e5` (ext, `TMPDIR`
+  set), `n0`..`n5` (ext, none), `f0`..`f5` (FAT), `fsx` and `fsn` (the
+  file-system and mapping suites with `CR_BASE_ALL=1`, with and without
+  `TMPDIR`), `nv1` and `nv3` (NVMe boot). The numbers above are each
+  `base/run/summary.txt`'s; the output of each failure is in `failures/`.
 
 ### 2. The address space: huge sparse reservations (the top risk)
 

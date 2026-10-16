@@ -1,0 +1,52 @@
+# base_unittests tests that fail on a FAT /data and pass on an ext one (tools/cr-test.sh base,
+# tools/cr/base-run.py adds this list to base_unittests.skip when the stick's /data is FAT;
+# same format). Made 2026-10-16 (CB2b, docs/CR-PLAN.md "CB2b on ext") from the 54 tests
+# CB2's file-system group listed: these 44 pass on ext (extfs keeps symlinks, modes, owners and
+# times, finds a file unlinked while open by its name no longer, and enforces the open
+# mode); the 10 that still fail on ext are in base_unittests.skip with the layer that owns them.
+
+[fs] /data is FAT: symlink(), mkfifo(), chmod bits and utimensat are not kept; a file unlinked while open is still found; read-only/write-only flags are not enforced (the ENOSYS log's ioctl 0x80086601 is FS_IOC_GETFLAGS)
+FileEnumerator.SymLinkLoops
+FileProxyTest.SetLength_Expand
+FileProxyTest.SetLength_Shrink
+FileProxyTest.SetTimes
+FileTest.Create
+FileTest.DeleteOpenFile
+FileTest.DuplicateDeleteOnClose
+FileTest.GetInfoForCreationTime
+FileTest.Length
+FileTest.ReadWriteSpans
+FileUtilTest.ChangeDirectoryPermissionsAndEnumerate
+FileUtilTest.ChangeFilePermissionsAndRead
+FileUtilTest.CopyDirectoryACL
+FileUtilTest.CopyDirectoryExclDirectoryOverDanglingSymlink
+FileUtilTest.CopyDirectoryExclDirectoryOverSymlink
+FileUtilTest.CopyDirectoryExclFileOverDanglingSymlink
+FileUtilTest.CopyDirectoryExclFileOverSymlink
+FileUtilTest.CopyDirectoryPermissions
+FileUtilTest.CopyDirectoryPermissionsOverExistingFile
+FileUtilTest.CopyFileACL
+FileUtilTest.CopyFileExecutablePermission
+FileUtilTest.CopyFileFollowsSymlinks
+FileUtilTest.CreateAndReadRelativeSymlinks
+FileUtilTest.CreateAndReadSymlinks
+FileUtilTest.CreatingFileWithSameNameAfterDelete
+FileUtilTest.DeleteDirRecursiveWithOpenFile
+FileUtilTest.DeleteSymlinkToExistentFile
+FileUtilTest.DeleteSymlinkToNonExistentFile
+FileUtilTest.ExecutableExistsInPath
+FileUtilTest.GetLatestTemporaryFileWithNamePrefix
+FileUtilTest.NormalizeFilePathSymlinks
+FileUtilTest.TouchFile
+ImportantFileWriterCleanerTest.AddAddStart
+ImportantFileWriterCleanerTest.AddStart
+ImportantFileWriterCleanerTest.AddStartAdd
+ImportantFileWriterCleanerTest.AddTwice
+ImportantFileWriterCleanerTest.DoesNotPreservePrefixedTempFilesWhenTargetExists
+ImportantFileWriterCleanerTest.PreservesLatestPrefixedTempFilePerPrefix
+ImportantFileWriterCleanerTest.PreservesLatestPrefixedTempFileWhenTargetMissing
+ImportantFileWriterCleanerTest.StartAdd
+ImportantFileWriterCleanerTest.StartAddFromOtherThread
+ImportantFileWriterCleanerTest.StartTwice
+ImportantFileWriterTest.FailedWriteWithObserver
+ImportantFileWriterTest.RestoreMissingFileIfNeeded_UsesLatestCandidate

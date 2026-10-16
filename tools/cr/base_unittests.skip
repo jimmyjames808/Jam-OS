@@ -9,10 +9,15 @@
 # base_unittests relinked against main's libc (tools/cr/base-run.py: each
 # suite a program of its own; tests that crashed alone). The layer is the
 # track that owns the fix: posix (libc and its call layer), proc (/proc
-# files), fs (the file system under /data: FAT now), launch (starting
-# programs: CB5's launcher patch), jit (executable memory by capability),
-# toolchain (the link). A cause marked "?" is a guess from the failing call.
-# Findings with their evidence: docs/CR-PLAN.md, "CB2 as built".
+# files), fs (a file system under /data: extfs, or the mapping calls),
+# launch (starting programs: CB5's launcher patch), jit (executable memory
+# by capability), toolchain (the link), musl (musl's own behaviour: the
+# same on Linux with musl). A cause marked "?" is a guess from the failing call.
+# Findings with their evidence: docs/CR-PLAN.md, "CB2 as built" and "CB2b on ext".
+#
+# The list is for an ext /data (CB2b, 2026-10-16: the 44 file-system tests that
+# only a FAT /data fails are in base_unittests.fat.skip, which base-run.py adds
+# when the stick's /data is FAT).
 
 [posix] death tests: gtest makes the test's child with fork() (fast style: syscall 57, ENOSYS, seen with TEST_TMPDIR set) or clone(SIGCHLD) (threadsafe style: gtest-death-test.cc:1329; __jam_clone refuses a process clone with -ENOSYS and no log line), CaptureStderr() has already redirected stderr, so the abort that follows is silent
 All/Base64Test.Overflow/0
@@ -454,63 +459,31 @@ SysInfoTest.KernelVersionNumber
 [posix] sockets: a non-blocking send on a socket pair gives the wrong count
 SyncSocketTest.NonBlockingWriteTest
 
-[fs] /data is FAT: symlink(), mkfifo(), chmod bits and utimensat are not kept; a file unlinked while open is still found; long names (mkdirat "Filename too long"); read-only/write-only flags are not enforced (the ENOSYS log's ioctl 0x80086601 is FS_IOC_GETFLAGS)
-DriveInfoTest.GetFileDriveInfo
-FileEnumerator.SymLinkLoops
-FileProxyTest.SetLength_Expand
-FileProxyTest.SetLength_Shrink
-FileProxyTest.SetTimes
-FileTest.Create
-FileTest.DeleteOpenFile
-FileTest.DuplicateDeleteOnClose
-FileTest.GetInfoForCreationTime
-FileTest.Length
-FileTest.ReadWriteSpans
-FileUtilMultiThreadedTest.MultiThreadedTempFiles
-FileUtilTest.ChangeDirectoryPermissionsAndEnumerate
-FileUtilTest.ChangeFilePermissionsAndRead
-FileUtilTest.ChangeFilePermissionsAndWrite
-FileUtilTest.CopyDirectoryACL
-FileUtilTest.CopyDirectoryExclDirectoryOverDanglingSymlink
-FileUtilTest.CopyDirectoryExclDirectoryOverSymlink
-FileUtilTest.CopyDirectoryExclFileOverDanglingSymlink
+[posix] mkfifo/mknod answer EPERM (lx_mknodat, meta.c: the layer has no named pipes and fs.idl no mknod; a symbolic link and every other call these tests make work on ext)
 FileUtilTest.CopyDirectoryExclFileOverFifo
-FileUtilTest.CopyDirectoryExclFileOverSymlink
-FileUtilTest.CopyDirectoryPermissions
-FileUtilTest.CopyDirectoryPermissionsOverExistingFile
 FileUtilTest.CopyDirectoryWithNonRegularFiles
-FileUtilTest.CopyFileACL
-FileUtilTest.CopyFileExecutablePermission
-FileUtilTest.CopyFileFollowsSymlinks
-FileUtilTest.CreateAndReadRelativeSymlinks
-FileUtilTest.CreateAndReadSymlinks
-FileUtilTest.CreatingFileWithSameNameAfterDelete
-FileUtilTest.DeleteDeep
-FileUtilTest.DeleteDirRecursiveWithOpenFile
-FileUtilTest.DeleteSymlinkToExistentFile
-FileUtilTest.DeleteSymlinkToNonExistentFile
-FileUtilTest.ExecutableExistsInPath
-FileUtilTest.FileToFILE
-FileUtilTest.GetLatestTemporaryFileWithNamePrefix
-FileUtilTest.MakeAbsoluteFilePathNoResolveSymbolicLinks
-FileUtilTest.NormalizeFilePathSymlinks
 FileUtilTest.ReadFileToStringWithNamedPipe
 FileUtilTest.TestNonBlockingFileReadLinux
-FileUtilTest.TouchFile
-ImportantFileWriterCleanerTest.AddAddStart
-ImportantFileWriterCleanerTest.AddStart
-ImportantFileWriterCleanerTest.AddStartAdd
-ImportantFileWriterCleanerTest.AddTwice
-ImportantFileWriterCleanerTest.DoesNotPreservePrefixedTempFilesWhenTargetExists
-ImportantFileWriterCleanerTest.PreservesLatestPrefixedTempFilePerPrefix
-ImportantFileWriterCleanerTest.PreservesLatestPrefixedTempFileWhenTargetMissing
-ImportantFileWriterCleanerTest.StartAdd
-ImportantFileWriterCleanerTest.StartAddFromOtherThread
-ImportantFileWriterCleanerTest.StartTwice
-ImportantFileWriterTest.FailedWriteWithObserver
-ImportantFileWriterTest.RestoreMissingFileIfNeeded_UsesLatestCandidate
 
-[fs] a writable shared mapping of a /data file (MemoryMappedFile READ_WRITE, extend, truncate) fails; the null pointer or bad object the test then uses faults
+[posix] an open for writing only asks the fs service for read access too (file.c fs_access: "the one open serves every description"), so a file with mode 0200 can't be opened O_WRONLY (EACCES; Linux's owner may)
+FileUtilTest.ChangeFilePermissionsAndWrite
+
+[posix] libos limits a path to FS_PATH_MAX, 256 bytes (os.h, ns_resolve in ns.c: ERR_NAME_TOO_LONG), not the fs protocol's 4,095 (FS_PATH_LEN) or the layer's PATH_BYTES 4096: mkdirat of a 255-byte name (NAME_MAX) under a 50-byte directory fails
+FileUtilTest.DeleteDeep
+
+[posix] the working directory is a path kept as text (dir.c lx_getcwd): after it is deleted getcwd still answers, Linux's says ENOENT
+FileUtilTest.MakeAbsoluteFilePathNoResolveSymbolicLinks
+
+[posix] no sysfs block-device information (DriveInfo reads has_seek_penalty, is_removable and the size from /sys/dev/block)
+DriveInfoTest.GetFileDriveInfo
+
+[musl] fdopen(-1, "w") returns a FILE (musl does not check the descriptor), and the test expects null: the same on Alpine, a test to leave out on any musl build
+FileUtilTest.FileToFILE
+
+[fs] extfs: with 64 threads each creating, writing, closing and reading back a temporary file, 2 of 2,048 reads of a just-written file fail (in /data/cr/tmp and in /tmp, which is a view of /data/tmp); likely cause XF_MAX_FILES, 32 open files at once (extfs.h; files.c answers ERR_NO_RESOURCES when no slot is free), not proved
+FileUtilMultiThreadedTest.MultiThreadedTempFiles
+
+[fs] a writable shared mapping of a /data file (MemoryMappedFile READ_WRITE, extend, truncate) fails on ext too (WE1: extfs's write-back is not built); the null pointer or bad object the test then uses faults
 FilePersistentMemoryAllocatorTest.AcceptableTest
 FilePersistentMemoryAllocatorTest.ExtendTest
 MemoryMappedFileTest.ExtendableFile

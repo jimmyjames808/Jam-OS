@@ -32,8 +32,11 @@
 #           the ENOSYS log on (tools/cr/base-run.py); the tests in
 #           tools/cr/base_unittests.skip are not run. CR_BASE_SHARD=i/n,
 #           CR_BASE_ALL=1, CR_BASE_ONLY=<glob>, CR_BASE_ENV="NAME=value ..."
-#           (default TMPDIR and TEST_TMPDIR=/data/cr/tmp: Jam OS has no /tmp
-#           yet, and gtest's captured streams and death tests want one); results in
+#           (default TMPDIR and TEST_TMPDIR=/data/cr/tmp; CR_BASE_ENV= empty
+#           leaves both unset and the programs use init's /tmp); the stick's
+#           /data is the image's: FAT, or ext when JAMOS_DATA_FS=ext made the
+#           image (tools/cr/base-stick.py then fills it with jamext;
+#           QEMU_BOOT_NVME=1 boots the stick as an installed NVMe drive); results in
 #           <outdir>/base/run/ (results.txt, failures/, enosys.txt, summary.txt)
 #
 # The toolchain is fetched first if it isn't there (tools/cr/toolchain.sh:
@@ -188,6 +191,13 @@ case_base() {
     image=${PORTS_TEST_IMAGE:-build/jamos.img}
     [ -f "$image" ] || { echo "FAIL (no $image: make image first)" > "$dir/result"; return; }
     stick=$dir/base-stick.img
+    # An ext /data (JAMOS_DATA_FS=ext made the image) is filled by jamext.
+    if [ "$(python3 tools/mkimage.py --data-fs "$image")" = ext ] &&
+       ! make -s build/host/jamext > "$dir/jamext.out" 2>&1; then
+        cat "$dir/jamext.out"
+        echo "FAIL (no build/host/jamext, see $dir/jamext.out)" > "$dir/result"
+        return
+    fi
     if ! python3 tools/cr/base-stick.py --data-mib "${CR_BASE_DATA_MIB:-640}" "$image" "$stick" \
          "$stage" "$srcdir" "$srcdir/out/jamos" > "$dir/stick.out" 2>&1; then
         cat "$dir/stick.out"
