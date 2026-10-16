@@ -1,7 +1,7 @@
 # libc-test's functional and regression sets, run by the libc-test program
 # (runner.c; tools/libc-test.sh): the tests that are expected not to pass,
 # each with its reason. One line a test: `set/name kind: reason`.
-#   enosys   by design (docs/M13-PLAN.md "What M13 is not": fork, vfork, SysV IPC)
+#   enosys   by design (docs/M13-PLAN.md "What M13 is not": SysV IPC)
 #   limit    a known limit of Jam OS or of this port
 #   bug      a bug of ours in user/posix, not fixed yet (a one-line description)
 #   pending  waits for another track (named in the reason)
@@ -16,12 +16,10 @@ functional/tls_align_dlopen skip: needs dlopen, and Jam OS has no dynamic linkin
 functional/tls_init_dlopen skip: needs dlopen, and Jam OS has no dynamic linking (M14.5)
 regression/tls_get_new-dtv skip: needs dlopen, and Jam OS has no dynamic linking (M14.5)
 
-# ---- fork and vfork: ENOSYS by design (posix_spawn only) -----------------------------------
-functional/vfork enosys: vfork is ENOSYS by design
-regression/daemon-failure enosys: fork is ENOSYS by design
-regression/fflush-exit enosys: fork is ENOSYS by design (its mkstemp in /tmp works: M13.6's U7b)
-regression/pthread_exit-dtor enosys: fork is ENOSYS by design
-regression/raise-race enosys: fork is ENOSYS by design
+# ---- fork: a forked child's descriptors and exec (docs/FORK-PLAN.md) ---------------------------
+functional/vfork pending: its child execs /bin/sh, which needs a forked child's descriptors and exec (FORK-PLAN's FL2, FL3)
+regression/daemon-failure pending: its child dup2s a pipe, which needs a forked child's descriptors (FORK-PLAN's FL2)
+regression/fflush-exit pending: its child dups a file, which needs a forked child's descriptors (FORK-PLAN's FL2)
 
 # ---- SysV IPC: not provided ---------------------------------------------------------------
 functional/ipc_msg enosys: msgget and msgctl are ENOSYS (SysV IPC is not built)
