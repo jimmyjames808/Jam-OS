@@ -150,7 +150,8 @@ void     sig_start_state(uint64_t ignored);
 /* signal.c's step (layer.h's LX_FORK_*): sig_lock across the clone; in
  * the child, the calling thread alone on the list (after thread.c's
  * thread_forked: its id), nothing pending, the exception entry set again
- * if a fault signal has a handler. */
+ * if a fault signal has a handler, then the thread's alternate stack
+ * (sig_alt_reapply). */
 void sig_fork(int step);
 /* In the child, last: the signal thread started again on a port of its
  * own, listening to the child's SR_SIGNALS (the parent's client end is in

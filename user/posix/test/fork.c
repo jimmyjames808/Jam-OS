@@ -32,7 +32,8 @@
  *     inherited, its signal thread its own); SIGKILL (WTERMSIG); a signal
  *     pending in the parent not pending in the child; alarm and a POSIX
  *     timer gone in the child, ours kept; a SIGSEGV handler run in the
- *     child (its exception entry set again).
+ *     child on its sigaltstack (the exception entry and the kernel's
+ *     exception stack set again).
  *   clone: syscall(SYS_clone, SIGCHLD, ...) with CLONE_PARENT_SETTID and
  *     CLONE_CHILD_SETTID, and its refusals (CLONE_VM alone, a new stack, an
  *     unknown flag); clone(fn, stack, SIGCHLD, arg) ending with fn's value;
@@ -67,6 +68,7 @@
 #define WRITERS   4
 #define HAMMERS   4
 #define JOB_PAGES 8192               /* nomem's job: 32 MiB */
+#define ALT_SIZE  (64u << 10)        /* the alternate signal stack */
 
 /* What forked children report: a MAP_SHARED page. */
 struct report {
@@ -449,9 +451,19 @@ static volatile pid_t chld_pid;
 static volatile int chld_status, chld_code;
 static sigjmp_buf segv_env;
 
+static char *alt_base;            /* the alternate stack the fault handler runs on */
+static volatile int segv_on_alt;
+
 static void on_usr1(int sig) { (void)sig; usr1s++; }
 static void on_usr2(int sig) { (void)sig; usr2s++; }
-static void on_segv(int sig) { (void)sig; siglongjmp(segv_env, 1); }
+
+static void on_segv(int sig)
+{
+    (void)sig;
+    char here;
+    segv_on_alt = (uintptr_t)&here - (uintptr_t)alt_base < ALT_SIZE;
+    siglongjmp(segv_env, 1);
+}
 
 static void on_chld(int sig, siginfo_t *si, void *uc)
 {
@@ -581,22 +593,34 @@ static void fork_signals(void)
     CHECK(timer_delete(timer) == 0);
     CHECK(usr2s == 0 && sigprocmask(SIG_UNBLOCK, &usr2, NULL) == 0 && usr2s == 1);
 
-    /* A fault handler runs in the child: its exception entry is set again. */
+    /* A fault handler runs in the child, on its alternate stack: its
+     * exception entry and its kernel exception stack are set again. */
     char *guard = mmap(NULL, PG, PROT_NONE, ANON, -1, 0);
-    CHECK(guard != MAP_FAILED);
-    handle(SIGSEGV, on_segv);
+    alt_base = malloc(ALT_SIZE);
+    CHECK(guard != MAP_FAILED && alt_base);
+    if (guard == MAP_FAILED || !alt_base)
+        return;
+    stack_t ss = { .ss_sp = alt_base, .ss_size = ALT_SIZE };
+    CHECK(sigaltstack(&ss, NULL) == 0);
+    struct sigaction segv = { .sa_handler = on_segv, .sa_flags = SA_ONSTACK };
+    sigemptyset(&segv.sa_mask);
+    CHECK(sigaction(SIGSEGV, &segv, NULL) == 0);
     pid = fork();
     if (pid == 0) {
         if (!sigsetjmp(segv_env, 1)) {
             *(volatile char *)guard = 1;
             KID(!"the fault came");
         }
+        KID(segv_on_alt);
         kid_end(0);
     }
     CHECK(pid > 0);
     if (pid > 0)
         reaped(pid, 0);
     handle(SIGSEGV, SIG_DFL);
+    ss = (stack_t){ .ss_flags = SS_DISABLE };
+    CHECK(sigaltstack(&ss, NULL) == 0);
+    free(alt_base);
     munmap(guard, PG);
 }
 

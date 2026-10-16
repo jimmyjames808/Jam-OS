@@ -868,6 +868,7 @@ void sig_fork(int step)
     sig_entry_need(~0u, false);
     sig_entry_need(SIG_ENTRY_HANDLERS, fault_handled_locked());
     give();
+    sig_alt_reapply();   /* the thread's sigaltstack is in the copy, not its kernel stack */
 }
 
 /* ---- faults (sigfault.c) ------------------------------------------------------------ */

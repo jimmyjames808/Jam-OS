@@ -1104,6 +1104,7 @@ would have failed on.
 | `posix-procinfo.txt` | posixtest's procfs and procinfo sections (`run posixtest procfs procinfo`) and utest's `process_maps`, `sys_public_info` and `posix_ids` (`utest only <name>`) from the shell: the files of libc's `/proc` that Chromium's base reads (`/proc/self/stat`, `status`, `statm`, `maps`, `/proc/cpuinfo`, `meminfo`, `/proc/stat`, and a child's stat and status from live through zombie to reaped) against proc(5) and what the process really does, and the kernel calls under them (`process_get_maps`, the free-memory figure, a process's creation time and name): [CR-PLAN](CR-PLAN.md#prc-notes), "PRC notes"; also in the `init` run | |
 | `posix-execinfo.txt` | posixtest's execinfo section (`run posixtest execinfo`) from the shell: `backtrace()` from nested functions, a second thread, a signal handler and a `qsort` comparator, and the lines of `backtrace_symbols` and `backtrace_symbols_fd` ([CR-PLAN](CR-PLAN.md#bt-notes), "BT notes"); also in the `init` run | |
 | `posix-fault.txt` | posixtest's fault section (`run posixtest fault`) from the shell: a thread's own faults as Linux's signals with their siginfo and ucontext, the flags and masks, V8's and Chromium's patterns, children that must end, each by the fault's own signal; the alternate stack and `SA_ONSTACK` (stack overflow reaching a handler on it, the move to the interrupted stack, `sigaltstack`'s report and errors) ([SIGNALS-PLAN](SIGNALS-PLAN.md#1-faults-on-the-faulting-thread), SG3 and SG4); and the kernel's line for its first two children, one with no handler and one with the entry set and SIGSEGV default, the same `killed: page fault at rip ..., address 10`; also in the `init` run | |
+| `posix-fork.txt` | posixtest's fork section (`run posixtest fork`) from the shell: `fork`, `vfork` and both `clone` forms, each case in a job of its own that ends empty (returns twice, ids, memory separate and `MAP_SHARED` shared, `malloc` and atfork in a threaded parent's child, the two-VMO invariant, a 1 TiB reservation with its time and charge line, `ENOMEM`, `SIGCHLD`, `kill`, `SIGKILL`, pending, timers, a fault handler on the alternate stack: the fork section's paragraph below; [FORK-PLAN](FORK-PLAN.md#fl1b-notes), FL1b); also in the `init` run | |
 | `posix-unix.txt` | posixtest's unix section (`run posixtest unix`) against shell mode's broker, bin/unix (`/svc/unix`, [CR-PLAN](CR-PLAN.md#cu2-notes), "CU2 notes"): named `AF_UNIX` sockets, a listener and two connectors, bytes and a descriptor over a connection, the backlog, a socket file removed and a stale one, a 108-byte path's `getsockname` (CR-REVIEW-POSIX finding 5), a child without `/data` refused and one with `/data` read-only let in, abstract names, a child given `/svc/unix` by name binding 32 listeners at most however often it opens it (its opener is its own: CR-REVIEW-POSIX Q2; here it shares posixtest's own); then `ps` shows `unix`; also in the `init` run (where init starts the broker before the programs) | |
 | `posix-raw.txt` | posixtest's raw section (`run posixtest raw`) with `JAMOS_ENOSYS_LOG=1` exported: the raw Linux calls Chromium makes (`prctl`, `setpriority`, affinity, the scheduling policies, futex bitset waits) and the ENOSYS log (an unknown call, option, ioctl or path named once per process in the kernel log: `enosys: posixtest: syscall 163 (acct)`); the section counts the log's lines itself and starts children with and without the variable | `QEMU_TIMEOUT=300` |
 | `posix-loop.txt` | posixtest's socket and loopback sections (`run posixtest socket loopback`) from the shell: netstack runs with no card and no address, and loopback needs neither | `QEMU_TIMEOUT=300` |
@@ -1140,7 +1141,7 @@ would have failed on.
 | `net-vlan.txt`, `net-vlan-off.txt` | every path that transmits in one boot (the DHCP lease, netlog, `host`, `ping <name>`, `ping 1.1.1.1`, `update -n`, sntp's requests, the peer's pings answered, `fetch`, `serve` and `speed` over TCP); the same commands on a `vlan=off` boot, each saying why it can't | use `tools/net-vlan-test.sh` |
 | `sntp.txt`, `sntp-name.txt`, `sntp-off.txt` | the clock from the network: the jump to the peer's 2031 past forged replies, `date -r`, `date -z`, sntp restarted, devmgr restarted and the network's time kept; `ntp.server` by name; `ntp = off` ([netstack](#netstack)) | use `tools/sntp-test.sh` |
 | `allow.txt` | programs on `/data` (and `/jam`: the same words, `extcmds.txt` runs it there): a copy of bin/soakload refused until `allow`ed (n refuses, y allows), `allow -l`, run, a program can't change `/data/etc`, nor read, list or make anything there by any spelling (`ETC`, `etc.`, `x/../etc`, relative to a `cd /data`): utest and sbase's tools from `/boot`, sbase's `cat` allowed from `/data`, a changed file refused, a list asking for devmgr or init (a copy of bin/utest) or for `right debug` (a copy of bin/wantdebug) or for the ports below 1024 (a copy of bin/serve, `svc net listen low`) refused, approval or not, `svc net listen` (bin/wantlisten: port 5000 refused on `/svc/net`, taken on `/svc/net-listen`, a TCP listener on port 80 refused there, from `/boot`, and from `/data` once `allow` showed "accepting connections from the network"), `allow -r`, a file off `/data` and a second shell refused | |
-| `jit.txt` | JIT memory from programs ([CR-PLAN](CR-PLAN.md#12-the-jit-by-capability)): no process marked `[jit]` by `ps` at first; bin/jittest (a POSIX program whose list says `right jit`) given the power by the shell: `MAP_JIT` code written and run (`jittest: PASS`); `jittest hold &` marked `[jit]` by `ps` with the footnote, the mark gone with it; `launch jittest` (init's desktop-app start, which the shell's channel may use for init's test programs: an app whose list asks for a right) runs it with the power, `init: jittest ended with code 0` in the log; `posixtest jit` (no power: `EPERM`, and jittest as its child refused); a copy on `/data` refused until allowed, `allow` saying on a line of its own that it writes and runs its own code (n, then y), `allow -l`, run with the power, `allow -r` | |
+| `jit.txt` | JIT memory from programs ([CR-PLAN](CR-PLAN.md#12-the-jit-by-capability)): no process marked `[jit]` by `ps` at first; bin/jittest (a POSIX program whose list says `right jit`) given the power by the shell: `MAP_JIT` code written and run, and a fork whose child isn't marked and faults at the JIT page (`jittest: PASS`; the child's `killed: page fault` line, FORK-PLAN 1.10); `jittest hold &` marked `[jit]` by `ps` with the footnote, the mark gone with it; `launch jittest` (init's desktop-app start, which the shell's channel may use for init's test programs: an app whose list asks for a right) runs it with the power, `init: jittest ended with code 0` in the log; `posixtest jit` (no power: `EPERM`, and jittest as its child refused); a copy on `/data` refused until allowed, `allow` saying on a line of its own that it writes and runs its own code (n, then y), `allow -l`, run with the power, `allow -r` | |
 | `sessions.txt` | init's sessions (`/svc/session`, what an SSH login runs in): `utest only session` (an interactive session: the prompt, `echo`, TERM and a resize as a POSIX program on it sees them, `exit 7` as its end; commands with their status and no banner; hang-ups by `hangup`, by signal 15 and by closing the master, and SIGHUP reaching a POSIX program on the terminal; the limit of 8; posixtest's session section; bad arguments, junk on every channel, the control channel closed first, answers left unread, 1,000 connects and 1,000 sessions opened and closed; a namespace without it), `posixtest pty` from the shell, bin/wantsession given `/svc/session` from `/boot` and refused by `allow` on `/data` | |
 | `ssh.txt`, `ssh-again.txt` | the SSH server (bin/sshd, the tinyssh port): init's host key made on the first boot and its fingerprint, sshd listening on 22, the shell's `ssh`, and nothing open once the test host's client is done (its last login, as `sshcheck-done`, refused on purpose); the second boot of the same stick: no new key. Run by `tools/ssh-test.sh`, which puts the keys on the stick and runs the client | `QEMU_NET=1` (the script) |
 | `parse-limits.txt` | the shell's 32-segment limit and unclosed quotes | |
@@ -2254,6 +2255,42 @@ deep call and has SIGSEGV unblocked. The same overflow in a child ends it
 by SIGSEGV with no handler, with a handler without `SA_ONSTACK` (the
 kernel's kill "again in its exception entry": the frame can't be moved) and
 with `SA_ONSTACK` but no alternate stack, and the handler never runs.
+
+posixtest's fork section (the `init` run; `posixtest fork`;
+`posix-fork.txt` alone): POSIX's `fork`, `vfork` and `clone` without
+`CLONE_VM` ([FORK-PLAN](FORK-PLAN.md#fl1b-notes), "FL1b notes"). Each case
+is a child of posixtest's (`--child-fork <case>`) in a job of its own that
+must end with nothing left in it. A forked child reports through a
+`MAP_SHARED` page and its exit code (its descriptors are the parent's
+until FL2; a failed check there also writes `posixtest: fork: a child
+FAILED line N` to the kernel log). `twice`: 0 in the child, its pid in the
+parent; `getpid`, `getppid`, the group and session, `getpgid` and
+`/proc/<pid>/stat`'s parent from the parent, the child's own table empty
+(`ECHILD`); data, bss, heap, stack and a private mapping separate both ways
+and a `MAP_SHARED` anonymous page shared; `WNOHANG` 0 while it lives, its
+exit code, `ECHILD` after. `threads`: four threads in `malloc` and in every
+call whose lock fork holds (`mmap`, `sigprocmask`, `getpid`, `open`,
+`umask`, `getcwd`, `getrlimit`, `kill(0, 0)`) and one starting and joining
+threads, while it forks 16 times with `pthread_atfork` handlers: each child
+ran the child handler, and `malloc`, a new thread, `mmap` and the signal
+calls work there. `torn`: four writers keep A >= B >= A - 1 across two
+mappings (A first) through 20 forks; no child sees it broken. `huge`: a
+1 TiB reservation with a page in every GiB forked in under a second and
+charged no more than our pages again and the tables (the line `a 1 TiB
+reservation with 1024 pages forked in N us; P pages charged before, Q with
+the child`), the child reading the pages and its write not ours. `nomem`:
+in a 32 MiB job, three quarters of the room committed: `fork` is `ENOMEM`
+twice with nothing left charged, and works once it is unmapped.
+`signals`: `SIGCHLD` with the child's pid and status; `kill` and
+`kill(-pgid)` reaching the child's handler (the disposition and the mask
+inherited); `SIGKILL`; a signal pending in us and not in the child;
+`setitimer` and a POSIX timer gone in the child and ours kept; a `SIGSEGV`
+handler with `SA_ONSTACK` run in the child on its alternate stack (its
+exception entry and kernel exception stack set again). `clone`: the raw
+call with `CLONE_PARENT_SETTID` and `CLONE_CHILD_SETTID`, its refusals
+(`CLONE_VM` alone `ENOSYS`, a new stack and an unknown flag `EINVAL`);
+`clone(fn, stack, SIGCHLD | CLONE_PARENT_SETTID, arg)` ending with fn's
+value; `vfork` (a fork until FL4).
 
 posixtest's launch section (the `init` run; `posixtest launch`): what
 Chromium's launcher needs of `posix_spawn` ([CR-PLAN](CR-PLAN.md#cs1-notes),
