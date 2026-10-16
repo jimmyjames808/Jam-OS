@@ -30,8 +30,10 @@
  *     ourselves with SEGV_MAPERR and an address, given as sent;
  *   - children that must end (SG4: each ends by the fault's own signal,
  *     as waitpid says it, never SIGKILL): a fault with no handler (the
- *     kernel's kill as ever), with SIGSEGV default (SIGBUS handled: the
- *     entry set), ignored or blocked, a second fault after SA_RESETHAND,
+ *     kernel's kill as ever; since CBF1 the entry is set from the start in
+ *     every child, so "with and without the entry set" below means with
+ *     and without a handler for another fault signal), with SIGSEGV
+ *     default (SIGBUS handled), ignored or blocked, a second fault after SA_RESETHAND,
  *     a fault in a handler without SA_NODEFER, a handler that resets to
  *     SIG_DFL and returns (Chromium's and V8's way out), and Chromium's
  *     stack dump (the registers printed, a sent SIGSEGV sent again with

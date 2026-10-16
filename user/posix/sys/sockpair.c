@@ -348,7 +348,8 @@ static long recv_try(struct pipe_end *p, struct rx *x)
         return r;
     uint32_t left = p->have - p->at;
     size_t n = left < x->total ? left : x->total;
-    fd_iov_scatter(x->iov, x->iovcnt, 0, p->buf + p->at, n);
+    if (fd_iov_scatter(x->iov, x->iovcnt, 0, p->buf + p->at, n))
+        return -EFAULT;   /* the message stays for the next read */
     x->whole = left;
     if (x->flags & MSG_PEEK)
         return (long)n;
@@ -480,7 +481,8 @@ static const uint8_t *bytes_at(const struct tx *t, size_t from, size_t len, uint
 {
     if (t->iovcnt == 1)
         return (const uint8_t *)t->iov[0].iov_base + from;
-    fd_iov_gather(t->iov, t->iovcnt, from, buf, len);
+    if (fd_iov_gather(t->iov, t->iovcnt, from, buf, len))
+        memset(buf, 0, len);   /* unmapped since the send's check (fd.h): never stale bytes */
     return buf;
 }
 
@@ -603,7 +605,8 @@ static status_t parts_write(struct pipe_end *p, const struct tx *t, struct fd_gi
         if (k == parts - 1) {
             size_t room_left = PIPE_SIZE - (size_t)len;
             *first = t->total < room_left ? t->total : room_left;
-            fd_iov_gather(t->iov, t->iovcnt, 0, msg + len, *first);
+            if (fd_iov_gather(t->iov, t->iovcnt, 0, msg + len, *first))
+                memset(msg + len, 0, *first);   /* as bytes_at: only after the check */
             len += (long)*first;
         }
         status_t st = is_shut(p) ? ERR_PEER_CLOSED
@@ -739,11 +742,14 @@ static long sp_ioctl(struct fd_desc *d, unsigned long req, long arg)
     lock_take(&d->lock);
     bool have = p->seq ? is_kept(p) : p->at < p->have;
     long r = have || is_shut(p) ? 0 : fill_locked(p);
+    int n = 0;
     if (r >= 0 || r == -EAGAIN) {
-        *(int *)(uintptr_t)arg = (int)(r < 0 || is_shut(p) ? 0 : p->have - p->at);
+        n = (int)(r < 0 || is_shut(p) ? 0 : p->have - p->at);
         r = 0;
     }
     lock_give(&d->lock);
+    if (!r)
+        r = uc_put_int(arg, n);
     return r;
 }
 

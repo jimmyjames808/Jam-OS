@@ -226,14 +226,18 @@ static void *open_row(const struct svcsock_row *row, long *r)
 
 long usock_connect(struct fd_desc *d, long addr, long len)
 {
-    const struct sockaddr_un *a = (const struct sockaddr_un *)(uintptr_t)addr;
-    if (!a)
+    struct sockaddr_un a;   /* the caller's first len bytes */
+    if (!addr)
         return -EFAULT;
-    if (len < (long)sizeof(sa_family_t) || len > (long)sizeof(*a) || a->sun_family != AF_UNIX)
+    if (len < (long)sizeof(sa_family_t) || len > (long)sizeof(a))
+        return -EINVAL;
+    if (uc_get(&a, (const void *)(uintptr_t)addr, (size_t)len))
+        return -EFAULT;
+    if (a.sun_family != AF_UNIX)
         return -EINVAL;
     size_t at = offsetof(struct sockaddr_un, sun_path);
     const struct svcsock_row *row =
-        (size_t)len > at ? row_for(a->sun_path, (size_t)len - at) : NULL;
+        (size_t)len > at ? row_for(a.sun_path, (size_t)len - at) : NULL;
     struct unix_name n;
     long r = row ? 0 : unix_name_of(addr, len, &n);   /* not a service socket: a named one */
     if (r)

@@ -52,31 +52,35 @@ struct ulisten {
 
 long unix_name_of(long addr, long len, struct unix_name *n)
 {
-    const struct sockaddr_un *a = (const struct sockaddr_un *)(uintptr_t)addr;
+    struct sockaddr_un a;   /* the caller's first len bytes */
     size_t at = offsetof(struct sockaddr_un, sun_path);
-    if (!a)
+    if (!addr)
         return -EFAULT;
-    if (len < (long)sizeof(sa_family_t) || len > (long)sizeof(*a) || a->sun_family != AF_UNIX)
+    if (len < (long)sizeof(sa_family_t) || len > (long)sizeof(a))
+        return -EINVAL;
+    if (uc_get(&a, (const void *)(uintptr_t)addr, (size_t)len))
+        return -EFAULT;
+    if (a.sun_family != AF_UNIX)
         return -EINVAL;
     size_t room = (size_t)len > at ? (size_t)len - at : 0;
     memset(n, 0, sizeof(*n));
-    if (room && !a->sun_path[0]) {   /* abstract: every byte after the NUL */
+    if (room && !a.sun_path[0]) {   /* abstract: every byte after the NUL */
         n->abstract = true;
         n->len = (uint32_t)(room - 1);
-        memcpy(n->bytes, a->sun_path + 1, n->len);
+        memcpy(n->bytes, a.sun_path + 1, n->len);
         return n->len ? 0 : -EINVAL;   /* autobind (an empty name): not built */
     }
-    n->len = (uint32_t)strnlen(a->sun_path, room);
-    memcpy(n->bytes, a->sun_path, n->len);   /* bytes[len] stays NUL: a C string */
+    n->len = (uint32_t)strnlen(a.sun_path, room);
+    memcpy(n->bytes, a.sun_path, n->len);   /* bytes[len] stays NUL: a C string */
     return n->len ? 0 : -EINVAL;
 }
 
 long unix_name_out(const struct unix_name *n, long addr, long lenp)
 {
-    socklen_t *len = (socklen_t *)(uintptr_t)lenp;
-    if (!addr || !lenp)
+    socklen_t len;   /* the caller's room, said back */
+    if (!addr || !lenp || uc_get(&len, (const void *)(uintptr_t)lenp, sizeof(len)))
         return -EFAULT;
-    if ((int)*len < 0)
+    if ((int)len < 0)
         return -EINVAL;
     struct sockaddr_un a = { .sun_family = AF_UNIX };
     size_t at = offsetof(struct sockaddr_un, sun_path), full = at;
@@ -89,8 +93,10 @@ long unix_name_out(const struct unix_name *n, long addr, long lenp)
         if (full > sizeof(a))
             full = sizeof(a);     /* a path of all 108 bytes has no room for one */
     }
-    memcpy((void *)(uintptr_t)addr, &a, *len < full ? *len : full);
-    *len = (socklen_t)full;
+    socklen_t said = (socklen_t)full;
+    if (uc_put((void *)(uintptr_t)addr, &a, len < full ? len : full) ||
+        uc_put((void *)(uintptr_t)lenp, &said, sizeof(said)))
+        return -EFAULT;
     return 0;
 }
 

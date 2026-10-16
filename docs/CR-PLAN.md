@@ -642,7 +642,8 @@ from the failing call.
    pointer and the process dies. Every handler that stores into a caller's
    buffer has the hole, and Chromium and Crashpad probe memory with `write`
    to a pipe and expect `EFAULT`: one checked copy-out (a fault-tolerant
-   store, or a call that writes for the caller) answers them all.
+   store, or a call that writes for the caller) answers them all. Built:
+   "CBF1 notes" below.
 3. **POSIX layer: calls the log names.** `inotify_init` and `inotify_init1`
    (253, 294): all 165 `FilePathWatcher*` tests (37 failing at the first
    call, the rest wait out their timeouts: a minute each, so the list
@@ -827,6 +828,137 @@ ext run, with CB2's full list, the pass count was 8,278 and 640 stayed listed.
   file-system and mapping suites with `CR_BASE_ALL=1`, with and without
   `TMPDIR`), `nv1` and `nv3` (NVMe boot). The numbers above are each
   `base/run/summary.txt`'s; the output of each failure is in `failures/`.
+
+#### CBF1 notes (2026-10-16)
+
+Track CBF1 answers finding 2: a call given a pointer the program can't
+read or write returns -1 with `EFAULT` and the process goes on, as on
+Linux. It clears finding 2's skip-list group once the rerun confirms it:
+`BackupRefPtrTest` (23) and `ProtectedMemoryTest` (4) need nothing more;
+`CPUDeathTest` and `ProtectedMemoryDeathTest` are death tests, so they also
+wait for FL1b's fork (finding 1). The skip list itself is left to the rerun.
+
+- **Checked copies, kernel style.** user/posix/sys/ucopy.S holds the only
+  code that touches a program's memory for a handler: `uc_get` and `uc_put`
+  (one `rep movsb`), `uc_zero`, `uc_strnlen` (a byte at a time), and the
+  probes `uc_readable` and `uc_writable` (a load, or a locked add of 0, on
+  each page). Each of their loads and stores of the caller's memory has a
+  line in an exception table in the same file (the instruction and its
+  fixup, as offsets: no absolute address); no routine moves RSP, so the one
+  fixup returns -EFAULT to the routine's caller. Only those instructions:
+  a fault on the layer's own side of a copy, or anywhere else in the
+  layer, is still SIGSEGV. ucopy.h says the rule for handlers (a struct
+  built in a local and copied out once, read into a local once), and
+  `uc_put_int` is the int answer of many ioctls and calls.
+- **The fault path.** sig_fault (sigfault.c) first asks `uc_fault`
+  (ucopy.c): a page fault (vector 14, any status: Linux's `EFAULT` for a
+  truncated file's page too) or a general protection fault (13: an address
+  that isn't one) at a table line moves RIP to the fixup and `EXC_RESUME`s
+  in the kernel's window, before any signal logic: it works with no handler
+  installed, on any thread (the signal thread too), and touches only the
+  frame and the table. SG5's raised frames and everything after are
+  unchanged below it.
+- **The entry from the start.** The exception entry used to be set only
+  while a fault signal had a handler. Now `sig_start_state` (the start,
+  under sig_lock) sets it for every POSIX program with a new reason,
+  `SIG_ENTRY_COPY`, which is never cleared, so `sigaction` never removes
+  it. A fault with no handler goes entry, `sig_fault_begin` false,
+  `EXC_UNHANDLED`: the kernel's kill with the same line (posix-fault's
+  first child checks it). **For FL1b:** the child of a fork must set the
+  entry again unconditionally (the entry is the process's).
+- **The sweep** (user/posix/sys; every handler that reads or writes a
+  pointer it was given):
+  `rlimit.c` getrlimit, setrlimit, prlimit64 (getrlimit and setrlimit with
+  NULL are EFAULT, as Linux); `time.c` clock_gettime, clock_getres,
+  nanosleep and clock_nanosleep (request and remainder), times, getrusage;
+  `misc.c` uname, sysinfo, sched_getaffinity, sched_setaffinity (the mask
+  read before the thread is looked up, Linux's order), getrandom (made in a
+  512-byte chunk, then copied: a fault part way returns the bytes so far);
+  `sched.c` getcpu, sched_getparam, sched_setparam, sched_setscheduler;
+  `user.c` getresuid, getresgid, getgroups; `prctl.c` PR_SET_NAME,
+  PR_GET_NAME and every int answer; `thread.c` arch_prctl(ARCH_GET_FS),
+  futex (the timeout read once, first; a word the kernel can't read is
+  EFAULT through `uc_or_fault`); `sigcalls.c` rt_sigaction,
+  rt_sigprocmask, rt_sigpending, rt_sigsuspend, rt_sigtimedwait (set,
+  timeout, info), rt_sigqueueinfo, rt_tgsigqueueinfo, sigaltstack;
+  `sigtimer.c` getitimer, setitimer, timer_create (sigevent, and the id:
+  a bad id pointer makes no timer), timer_settime, timer_gettime;
+  `proc.c` wait4 and waitid (status, rusage, siginfo: written last, the
+  child reaped, as Linux); `spawn.c` execve (path, argv and envp and each
+  string checked before the start reads them); `path.c` path_get (the
+  path checked with `uc_strnlen`, then read in place: every path call),
+  `meta.c` stat, lstat, newfstatat, statfs, fstatfs (a local struct copied
+  out), the `AT_EMPTY_PATH` tests, utimensat's times, symlink's target,
+  readlink's answer (and procfs's `copy_link`); `dir.c` getcwd and
+  getdents64 (`dir_put` builds each record locally; procfs's listing too);
+  `fd.c` fstat, ioctl(FIONBIO), the iovec arrays of readv, writev,
+  preadv, pwritev, preadv2, pwritev2 (`fd_iov_in`: copied, 8 on the stack
+  and more from malloc, as Linux's `UIO_FASTIOV`), and `fd_iov_scatter`
+  and `fd_iov_gather` now checked (they return -EFAULT; every caller
+  stops there: pipe, socketpair, tty, file, `/etc`, `/proc`, the devices,
+  sockets, Wayland); `dup.c` fcntl's record locks and F_GETOWN_EX;
+  `epoll.c` epoll_ctl (not read for DEL, Linux's) and epoll_wait's events
+  (a store that faults keeps that event and the rest for the next wait,
+  and says EFAULT if none went: Linux's); `ready.c` the wait masks of
+  ppoll, pselect6 and epoll_pwait; `poll.c` poll and ppoll (the pollfds
+  copied into the thread's scratch array, each revents copied back);
+  `select.c` select and pselect6 (the sets' longs copied in and out, the
+  timeouts and pselect6's mask pair); the ioctls of `file.c`, `pipe.c`,
+  `socket.c`, `sockpair.c` (FIONREAD, SIOCATMARK), `pty.c` (window sizes,
+  TIOCGPTN) and `tty.c` (termios, window sizes, FIONREAD, the process
+  group calls); `pipe.c` pipe and pipe2, `sockpair.c` socketpair (the pair
+  written last; a bad pointer closes both, Linux's); `eventfd.c` (the
+  buffer checked before the count is taken, so it stays); `memfd.c`
+  memfd_create's name (copied) and the reads the kernel makes into the
+  caller's buffer (`uc_or_fault`); `dev.c` /dev/urandom (made in a chunk,
+  then copied) and /dev/zero; `socket.c` `sock_addr_in` and
+  `sock_addr_out`, `sockconn.c` connect's family, accept4's length (read
+  before the wait; a bad address after it closes the new descriptor,
+  Linux's), a socketpair's name; `unixsock.c` and `svcsock.c` an
+  `AF_UNIX` name in and out; `sockopt.c` every option in and out;
+  `sockio.c` recvfrom's length, sendto, and sendmsg, recvmsg, sendmmsg and
+  recvmmsg through a `struct umsg` (the header, its iovecs and the control
+  data copied in; a receive's control data and its lengths and flags
+  copied out after; a send's control data over 64 KiB is ENOBUFS).
+- **Two ways for a buffer the kernel or another library touches.** A
+  write's and a send's bytes are probed readable before any goes
+  (`fd_iov_check` in `rw` and the send calls): kinds hand a single buffer
+  to the kernel as it is (a pipe's message, a tty's, a memfd's), and this
+  is the probe Chromium and the sanitizers make (a write to a pipe of
+  memory that may not be readable). A read is not probed up front (it would
+  commit pages a short read never touches): a kernel call that writes the
+  caller's buffer and fails with `ERR_INVALID_ARGS` is asked again by
+  `uc_or_fault` (the buffer probed only then), and a TCP read probes just
+  the bytes the ring is about to give (the ring's code writes the buffer
+  itself).
+- **Where it differs from Linux** (all decided here, small): a write to
+  `/dev/null` of an unreadable buffer is EFAULT (Linux's null device never
+  reads it); a pipe read into a buffer the kernel can't write loses that
+  message (the kernel's `channel_read` has taken it off the queue; Linux
+  keeps the bytes) where a socketpair's, an eventfd's and epoll's keep
+  theirs; a write's buffer is checked whole before any byte goes (Linux
+  may write the readable part first); a path, an `AF_UNIX` send and
+  execve's strings are checked and then read in place, and a gather after
+  a send's check sends zeros, so a program that unmaps its own buffer
+  during the call can still fault there (SIGSEGV) or send zeros; a
+  received descriptor whose control-data copy-out then faults stays open.
+  musl's own wrappers still read some pointers first (`sendmsg` copies the
+  control data, `sigaction` the struct), as glibc's do on Linux: those
+  fault in the program, not the layer. `__jam_clone`'s stores (musl's own
+  pointers) and `set_tid_address` (the kernel stores at exit) are not
+  checked.
+- **Tests.** posixtest's `efault` section (efault.c, in the init run, and
+  `tools/shell-tests/posix-efault.txt` from the shell): base's
+  `getrlimit(RLIMIT_NPROC, <read-only page>)` exactly; 428 calls with bad
+  pointers, every converted call with each of its kind (a read-only page
+  where it writes, a `PROT_NONE` page where it reads, address 0x10, NULL
+  where NULL isn't "not given", a non-canonical address: the #GP path),
+  made raw with `syscall()`; that a socketpair's bytes, an eventfd's count
+  and a ready epoll event survive the failed call; the same with SIGSEGV
+  and SIGBUS handled (EFAULT, the handlers never run, a second thread's
+  fixup too) and a real store to the read-only page reaching the handler;
+  and a child that never installs a handler getting EFAULT, then dying by
+  a real fault with SIGSEGV and the kernel's line.
 
 ### 2. The address space: huge sparse reservations (the top risk)
 

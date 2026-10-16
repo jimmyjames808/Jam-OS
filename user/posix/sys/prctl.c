@@ -54,38 +54,28 @@ static unsigned long timer_slack = SLACK_DEFAULT;
 
 static long set_name(long addr)
 {
-    if (!addr)
-        return -EFAULT;
     const char *src = (const char *)(uintptr_t)addr;
     char name[NAME_BYTES];
-    size_t n = 0;
-    while (n < NAME_BYTES - 1 && src[n]) {
-        name[n] = src[n];
-        n++;
-    }
-    memset(name + n, 0, NAME_BYTES - n);
+    long n = uc_strnlen(src, NAME_BYTES - 1);   /* the caller's */
+    if (n < 0 || uc_get(name, src, (size_t)n))
+        return -EFAULT;
+    memset(name + n, 0, NAME_BYTES - (size_t)n);
     memcpy(thread_name, name, NAME_BYTES);
     return 0;
 }
 
 static long get_name(long addr)
 {
-    if (!addr)
-        return -EFAULT;
-    char *dst = (char *)(uintptr_t)addr;
-    memset(dst, 0, NAME_BYTES);
+    char dst[NAME_BYTES] = { 0 };
     const char *name = thread_name[0] ? thread_name : program_invocation_short_name;
     if (name)
         strncpy(dst, name, NAME_BYTES - 1);
-    return 0;
+    return uc_put((void *)(uintptr_t)addr, dst, NAME_BYTES);
 }
 
 static long put_int(long addr, int v)
 {
-    if (!addr)
-        return -EFAULT;
-    *(int *)(uintptr_t)addr = v;
-    return 0;
+    return uc_put_int(addr, v);
 }
 
 long lx_prctl(long option_l, long a2, long a3, long a4, long a5, long f)

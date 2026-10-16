@@ -1,0 +1,19 @@
+# posixtest's efault section from the shell (docs/CR-PLAN.md, "CBF1 notes"):
+# every call the layer answers into or reads from a program's memory,
+# given a read-only page, a PROT_NONE page, an unmapped address, NULL and a
+# non-canonical address, is -1 with EFAULT and the process goes on (the
+# layer's checked copies); with SIGSEGV and SIGBUS handled the handlers
+# never run; and a child that never asked for a handler gets EFAULT, then
+# ends by a real fault with the kernel's line. Also in the init run.
+#   QEMU_INPUT=tools/shell-tests/posix-efault.txt tools/qemu-test.sh <dir> posix-efault shell
+wait 120 Jam OS shell
+wait {prompt}
+send run posixtest efault
+wait 60 re:user: process "posixtest" killed: page fault at rip [0-9a-f]+, address [0-9a-f]+ \(thread
+wait 60 re:posixtest: efault: [0-9]+ calls with bad pointers
+wait 60 posixtest: efault: ok
+wait 20 posixtest: PASS
+wait 20 run: bin/posixtest exited with code 0
+wait {prompt}
+send reboot -f
+wait reboot: resetting

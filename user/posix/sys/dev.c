@@ -72,18 +72,16 @@ static long node_read(struct fd_desc *d, const struct iovec *iov, int iovcnt, in
     long n = fd_iov_total(iov, iovcnt);
     if (n <= 0 || node_of(d)->kind == N_NULL)
         return n < 0 ? n : 0;
-    if (node_of(d)->kind == N_RANDOM) {
-        size_t left = (size_t)n;
-        for (int i = 0; i < iovcnt && left; i++) {
-            size_t k = iov[i].iov_len < left ? iov[i].iov_len : left;
-            os_random(iov[i].iov_base, k);
-            left -= k;
-        }
-        return n;
+    bool random = node_of(d)->kind == N_RANDOM;
+    uint8_t chunk[512];   /* random bytes made here, then copied out */
+    size_t step = random ? sizeof(chunk) : ZERO_CHUNK;
+    for (size_t at = 0; at < (size_t)n; at += step) {
+        size_t k = (size_t)n - at < step ? (size_t)n - at : step;
+        if (random)
+            os_random(chunk, k);
+        if (fd_iov_scatter(iov, iovcnt, at, random ? chunk : zeros, k))
+            return at ? (long)at : -EFAULT;
     }
-    for (size_t at = 0; at < (size_t)n; at += ZERO_CHUNK)
-        fd_iov_scatter(iov, iovcnt, at, zeros,
-                       (size_t)n - at < ZERO_CHUNK ? (size_t)n - at : ZERO_CHUNK);
     return n;
 }
 

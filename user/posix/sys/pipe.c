@@ -122,7 +122,8 @@ void pipe_set_leftover(struct pipe_end *p, uint32_t at, uint32_t have)
 long pipe_take_leftover(struct pipe_end *p, const struct iovec *iov, int iovcnt, size_t n)
 {
     size_t k = p->have - p->at < n ? p->have - p->at : n;
-    fd_iov_scatter(iov, iovcnt, 0, p->buf + p->at, k);
+    if (fd_iov_scatter(iov, iovcnt, 0, p->buf + p->at, k))
+        return -EFAULT;   /* the bytes stay for the next read */
     __atomic_store_n(&p->at, p->at + (uint32_t)k, __ATOMIC_RELAXED);
     return (long)k;
 }
@@ -134,10 +135,12 @@ static long next_message_locked(struct pipe_end *p, const struct iovec *iov, int
                                 size_t n)
 {
     for (;;) {
-        uint32_t got;
+        uint32_t got, cap = n < PIPE_SIZE ? (uint32_t)n : PIPE_SIZE;
         status_t st = ERR_BUFFER_TOO_SMALL;
-        if (iovcnt == 1)
-            st = read_msg(p->ch, iov[0].iov_base, n < PIPE_SIZE ? (uint32_t)n : PIPE_SIZE, &got);
+        if (iovcnt == 1)   /* the kernel writes the caller's buffer */
+            st = read_msg(p->ch, iov[0].iov_base, cap, &got);
+        if (st == ERR_INVALID_ARGS)
+            return uc_or_fault(-EINVAL, iov[0].iov_base, cap, true);
         if (st == ERR_BUFFER_TOO_SMALL) {
             if (!pipe_buf(p))
                 return -ENOMEM;
@@ -216,12 +219,12 @@ static long pipe_write(struct fd_desc *d, const struct iovec *iov, int iovcnt, i
     long r = 0;
     while (!r && done < (size_t)n) {
         uint32_t len = (size_t)n - done > PIPE_SIZE ? PIPE_SIZE : (uint32_t)((size_t)n - done);
-        const uint8_t *b = (const uint8_t *)iov[0].iov_base + done;
-        if (gather) {
-            fd_iov_gather(iov, iovcnt, done, gather, len);
-            b = gather;
+        const uint8_t *b = (const uint8_t *)iov[0].iov_base + done;   /* checked by rw */
+        if (gather && fd_iov_gather(iov, iovcnt, done, gather, len)) {
+            r = -EFAULT;
+            break;
         }
-        r = send_one(d, b, len);
+        r = send_one(d, gather ? gather : b, len);
         if (!r)
             done += len;
     }
@@ -269,10 +272,9 @@ static long pipe_ioctl(struct fd_desc *d, unsigned long req, long arg)
     uint32_t got;
     if (!r && p->at == p->have && read_msg(p->ch, p->buf, PIPE_SIZE, &got) == OK)
         pipe_set_leftover(p, 0, got);
-    if (!r)
-        *(int *)(uintptr_t)arg = (int)(p->have - p->at);
+    int n = (int)(p->have - p->at);
     lock_give(&d->lock);
-    return r;
+    return r ? r : uc_put_int(arg, n);
 }
 
 void pipe_end_free(struct pipe_end *p)
@@ -456,13 +458,18 @@ static long make_pair(bool sock, bool seq, const rights_t rights[2], const uint3
     for (int i = 0; i < 2; i++) {
         if (!r) {
             fd_place(fd[i], d[i], cloexec);
-            fds[i] = (int)fd[i];
             continue;
         }
         if (fd[i] >= 0)
             fd_free(fd[i]);
         if (d[i])
             fd_put(d[i]);   /* desc_on freed p[i] if it made none */
+    }
+    int pair[2] = { (int)fd[0], (int)fd[1] };
+    if (!r && uc_put(fds, pair, sizeof(pair))) {   /* the caller's: Linux closes both */
+        (void)fd_close(fd[0]);
+        (void)fd_close(fd[1]);
+        r = -EFAULT;
     }
     return r;
 }

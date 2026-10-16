@@ -208,17 +208,21 @@ long lx_getitimer(long which, long cur, long c, long d, long e, long f)
 {
     if (which != ITIMER_REAL)
         return -EINVAL;
+    struct itimerval out;
     lock_take(&tlock);
-    real_left((struct itimerval *)(uintptr_t)cur);
+    real_left(&out);
     lock_give(&tlock);
-    return 0;
+    return uc_put((void *)(uintptr_t)cur, &out, sizeof(out));
 }
 
 long lx_setitimer(long which, long nv, long ov, long d, long e, long f)
 {
     if (which != ITIMER_REAL)
         return -EINVAL;
-    const struct itimerval *in = (const struct itimerval *)(uintptr_t)nv;
+    struct itimerval want, old;   /* the caller's new value, read once; the old one, written last */
+    const struct itimerval *in = nv ? &want : NULL;
+    if (nv && uc_get(&want, (const void *)(uintptr_t)nv, sizeof(want)))
+        return -EFAULT;
     if (in && (in->it_value.tv_sec < 0 || in->it_value.tv_usec < 0 ||
                in->it_value.tv_usec >= 1000000 || in->it_interval.tv_sec < 0 ||
                in->it_interval.tv_usec < 0 || in->it_interval.tv_usec >= 1000000))
@@ -231,15 +235,14 @@ long lx_setitimer(long which, long nv, long ov, long d, long e, long f)
         t->notify = SIGEV_SIGNAL;
         t->signo = SIGALRM;
         t->clock = CLOCK_MONOTONIC;
-        if (ov)
-            real_left((struct itimerval *)(uintptr_t)ov);
+        real_left(&old);
         if (in)
             arm_locked(t, deadline_of(CLOCK_MONOTONIC,
                                       ns_of(in->it_value.tv_sec, in->it_value.tv_usec * 1000), false),
                        ns_of(in->it_interval.tv_sec, in->it_interval.tv_usec * 1000));
     }
     lock_give(&tlock);
-    return r;
+    return r || !ov ? r : uc_put((void *)(uintptr_t)ov, &old, sizeof(old));
 }
 
 /* ---- the POSIX timers --------------------------------------------------------------- */
@@ -272,6 +275,9 @@ long lx_timer_create(long clk, long sev, long idp, long d, long e, long f)
 {
     if (clk != CLOCK_REALTIME && clk != CLOCK_MONOTONIC && clk != CLOCK_BOOTTIME)
         return -EINVAL;
+    struct k_sigevent ev;   /* the caller's, read once */
+    if (sev && uc_get(&ev, (const void *)(uintptr_t)sev, sizeof(ev)))
+        return -EFAULT;
     lock_take(&tlock);
     long id = 0;
     while (id < TIMERS_MAX && timers[id].used)
@@ -279,16 +285,19 @@ long lx_timer_create(long clk, long sev, long idp, long d, long e, long f)
     long r = id == TIMERS_MAX ? -EAGAIN : 0;
     struct ptimer t;
     if (!r)
-        r = take_event((const struct k_sigevent *)(uintptr_t)sev, id, &t);
+        r = take_event(sev ? &ev : NULL, id, &t);
     if (!r) {
         t.h = timers[id].h;   /* a kernel timer from an earlier one: kept */
         t.clock = (int)clk;
         r = make_locked(&t, (unsigned)id);
     }
+    if (!r && uc_put_int(idp, (int)id)) {
+        timers[id].h = t.h;   /* no timer (Linux's EFAULT): its kernel timer is kept */
+        r = -EFAULT;
+    }
     if (!r) {
         t.used = true;
         timers[id] = t;
-        *(int *)(uintptr_t)idp = (int)id;
     }
     lock_give(&tlock);
     return r;
@@ -304,30 +313,35 @@ static void spec_left(const struct ptimer *t, struct itimerspec *out)
 
 long lx_timer_settime(long id, long flags, long nv, long ov, long e, long f)
 {
-    const struct itimerspec *in = (const struct itimerspec *)(uintptr_t)nv;
+    struct itimerspec want, old;   /* the caller's new value, read once; the old, written last */
+    const struct itimerspec *in = &want;
+    if (uc_get(&want, (const void *)(uintptr_t)nv, sizeof(want)))
+        return -EFAULT;
     if ((flags & ~TIMER_ABSTIME) || !good_ts(&in->it_value) || !good_ts(&in->it_interval))
         return -EINVAL;
     lock_take(&tlock);
     struct ptimer *t = timer_at(id);
     if (t) {
-        if (ov)
-            spec_left(t, (struct itimerspec *)(uintptr_t)ov);
+        spec_left(t, &old);
         uint64_t v = ns_of(in->it_value.tv_sec, in->it_value.tv_nsec);
         arm_locked(t, deadline_of(t->clock, v, flags & TIMER_ABSTIME),
                    ns_of(in->it_interval.tv_sec, in->it_interval.tv_nsec));
     }
     lock_give(&tlock);
-    return t ? 0 : -EINVAL;
+    if (!t)
+        return -EINVAL;
+    return ov ? uc_put((void *)(uintptr_t)ov, &old, sizeof(old)) : 0;
 }
 
 long lx_timer_gettime(long id, long cur, long c, long d, long e, long f)
 {
+    struct itimerspec out;
     lock_take(&tlock);
     struct ptimer *t = timer_at(id);
     if (t)
-        spec_left(t, (struct itimerspec *)(uintptr_t)cur);
+        spec_left(t, &out);
     lock_give(&tlock);
-    return t ? 0 : -EINVAL;
+    return t ? uc_put((void *)(uintptr_t)cur, &out, sizeof(out)) : -EINVAL;
 }
 
 long lx_timer_getoverrun(long id, long b, long c, long d, long e, long f)

@@ -43,7 +43,10 @@ long lx_rt_sigaction(long sig, long act, long oact, long size, long e, long f)
 {
     if (size != sizeof(uint64_t) || !valid_signo(sig))
         return -EINVAL;
-    const struct k_sigaction *ka = (const struct k_sigaction *)(uintptr_t)act;
+    struct k_sigaction k;   /* the caller's, read once */
+    const struct k_sigaction *ka = act ? &k : NULL;
+    if (act && uc_get(&k, (const void *)(uintptr_t)act, sizeof(k)))
+        return -EFAULT;
     struct sig_act_io in, out;
     if (ka) {
         /* musl passes sa_flags, an int, sign-extended: SA_RESETHAND is bit 31. */
@@ -53,9 +56,10 @@ long lx_rt_sigaction(long sig, long act, long oact, long size, long e, long f)
         in = (struct sig_act_io){ ka->handler, flags & ~(uint32_t)SA_RESTORER_LX, ka->mask };
     }
     long r = sig_action((int)sig, ka ? &in : NULL, oact ? &out : NULL);
-    if (!r && oact)
-        *(struct k_sigaction *)(uintptr_t)oact =
-            (struct k_sigaction){ .handler = out.handler, .flags = out.flags, .mask = out.mask };
+    if (!r && oact) {
+        struct k_sigaction o = { .handler = out.handler, .flags = out.flags, .mask = out.mask };
+        r = uc_put((void *)(uintptr_t)oact, &o, sizeof(o));   /* after the change, as Linux */
+    }
     return r;
 }
 
@@ -65,19 +69,19 @@ long lx_rt_sigprocmask(long how, long set, long old, long size, long e, long f)
         return -EINVAL;
     if (set && how != SIG_BLOCK && how != SIG_UNBLOCK && how != SIG_SETMASK)
         return -EINVAL;
-    uint64_t s = set ? *(const uint64_t *)(uintptr_t)set : 0;
+    uint64_t s = 0;
+    if (set && uc_get(&s, (const void *)(uintptr_t)set, sizeof(s)))
+        return -EFAULT;
     uint64_t was = sig_set_mask((int)how, s, set != 0);
-    if (old)
-        *(uint64_t *)(uintptr_t)old = was;
-    return 0;
+    return old ? uc_put((void *)(uintptr_t)old, &was, sizeof(was)) : 0;
 }
 
 long lx_rt_sigpending(long set, long size, long c, long d, long e, long f)
 {
     if (size != sizeof(uint64_t))
         return -EINVAL;
-    *(uint64_t *)(uintptr_t)set = sig_pending_set();
-    return 0;
+    uint64_t s = sig_pending_set();
+    return uc_put((void *)(uintptr_t)set, &s, sizeof(s));
 }
 
 /* The calling thread's alternate stack (sigfault.c keeps it, and the
@@ -89,7 +93,10 @@ long lx_rt_sigpending(long set, long size, long c, long d, long e, long f)
  * on the caller's stack. */
 long lx_sigaltstack(long ss, long old, long c, long d, long e, long f)
 {
-    const stack_t *in = (const stack_t *)(uintptr_t)ss;
+    stack_t want;   /* the caller's, read once */
+    const stack_t *in = ss ? &want : NULL;
+    if (ss && uc_get(&want, (const void *)(uintptr_t)ss, sizeof(want)))
+        return -EFAULT;
     uintptr_t base;
     size_t size;
     int flags = sig_alt_state((uintptr_t)__builtin_frame_address(0), &base, &size);
@@ -109,14 +116,12 @@ long lx_sigaltstack(long ss, long old, long c, long d, long e, long f)
         if (r)
             return r;
     }
-    if (old) {
-        stack_t *o = (stack_t *)(uintptr_t)old;
-        memset(o, 0, sizeof(*o));
-        o->ss_sp = (void *)base;
-        o->ss_size = size;
-        o->ss_flags = flags;
-    }
-    return 0;
+    stack_t o;
+    memset(&o, 0, sizeof(o));
+    o.ss_sp = (void *)base;
+    o.ss_size = size;
+    o.ss_flags = flags;
+    return old ? uc_put((void *)(uintptr_t)old, &o, sizeof(o)) : 0;
 }
 
 /* ---- waiting for a signal ----------------------------------------------------------- */
@@ -144,7 +149,10 @@ long lx_rt_sigsuspend(long mask, long size, long c, long d, long e, long f)
 {
     if (size != sizeof(uint64_t))
         return -EINVAL;
-    uint64_t was = sig_set_mask(SIG_SETMASK, *(const uint64_t *)(uintptr_t)mask, true);
+    uint64_t m;
+    if (uc_get(&m, (const void *)(uintptr_t)mask, sizeof(m)))
+        return -EFAULT;
+    uint64_t was = sig_set_mask(SIG_SETMASK, m, true);
     long r = until_handled();   /* the handlers run with the call's mask */
     (void)sig_set_mask(SIG_SETMASK, was, true);
     return r;
@@ -185,8 +193,13 @@ long lx_rt_sigtimedwait(long set, long info, long timeout, long size, long e, lo
 {
     if (size != sizeof(uint64_t))
         return -EINVAL;
-    uint64_t want = *(const uint64_t *)(uintptr_t)set & ~SIG_NEVER_MASKED, deadline;
-    long r = deadline_of((const struct timespec *)(uintptr_t)timeout, &deadline);
+    uint64_t want, deadline;   /* the caller's set and timeout, read once */
+    struct timespec ts;
+    if (uc_get(&want, (const void *)(uintptr_t)set, sizeof(want)) ||
+        (timeout && uc_get(&ts, (const void *)(uintptr_t)timeout, sizeof(ts))))
+        return -EFAULT;
+    want &= ~SIG_NEVER_MASKED;
+    long r = deadline_of(timeout ? &ts : NULL, &deadline);
     if (r)
         return r;
     struct sig_info si;
@@ -198,8 +211,12 @@ long lx_rt_sigtimedwait(long set, long info, long timeout, long size, long e, lo
         if (r < 0)
             return r;
     }
-    if (info)
-        sig_fill_siginfo(&si, (void *)(uintptr_t)info);
+    siginfo_t out;
+    if (info) {
+        sig_fill_siginfo(&si, &out);
+        if (uc_put((void *)(uintptr_t)info, &out, sizeof(out)))
+            return -EFAULT;   /* the signal is taken: Linux's too */
+    }
     return si.signo;
 }
 
@@ -244,12 +261,14 @@ long lx_rt_sigqueueinfo(long pid, long sig, long info, long d, long e, long f)
 {
     if (sig < 0 || sig > SIG_MAX)
         return -EINVAL;
-    const siginfo_t *in = (const siginfo_t *)(uintptr_t)info;
-    if (in->si_code >= 0 && pid != lx_pid())
+    siginfo_t in;   /* the caller's, read once */
+    if (uc_get(&in, (const void *)(uintptr_t)info, sizeof(in)))
+        return -EFAULT;
+    if (in.si_code >= 0 && pid != lx_pid())
         return -EPERM;   /* only sigqueue's own codes go to another process (Linux's rule) */
-    struct sig_info si = { .signo = (int32_t)sig, .code = in->si_code, .pid = lx_pid(),
-                           .value = (intptr_t)in->si_value.sival_ptr,
-                           .addr = (uintptr_t)in->si_addr };
+    struct sig_info si = { .signo = (int32_t)sig, .code = in.si_code, .pid = lx_pid(),
+                           .value = (intptr_t)in.si_value.sival_ptr,
+                           .addr = (uintptr_t)in.si_addr };
     return send_to(pid, &si);
 }
 
@@ -279,9 +298,11 @@ long lx_rt_tgsigqueueinfo(long tgid, long tid, long sig, long info, long e, long
     /* Any code to a thread of ours, as Linux allows within a thread group: a
      * fault's code and address too (Chromium's stack dump sends a fault on
      * so), given as the handler's siginfo at this call's boundary. */
-    const siginfo_t *in = (const siginfo_t *)(uintptr_t)info;
-    struct sig_info si = { .signo = (int32_t)sig, .code = in->si_code, .pid = lx_pid(),
-                           .value = (intptr_t)in->si_value.sival_ptr,
-                           .addr = (uintptr_t)in->si_addr };
+    siginfo_t in;   /* the caller's, read once */
+    if (uc_get(&in, (const void *)(uintptr_t)info, sizeof(in)))
+        return -EFAULT;
+    struct sig_info si = { .signo = (int32_t)sig, .code = in.si_code, .pid = lx_pid(),
+                           .value = (intptr_t)in.si_value.sival_ptr,
+                           .addr = (uintptr_t)in.si_addr };
     return sig_send_thread((uint32_t)tid, &si);
 }

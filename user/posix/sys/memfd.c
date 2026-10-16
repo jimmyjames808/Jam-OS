@@ -187,9 +187,9 @@ static long piece_locked(struct memobj *m, void *buf, size_t n, uint64_t off, bo
     if (!write)
         n = off >= m->size ? 0 : m->size - off < n ? (size_t)(m->size - off) : n;
     status_t st = OK;
-    if (!r && n)
+    if (!r && n)   /* the kernel reads or writes the caller's buffer (a write's: checked by rw) */
         st = write ? jam_vmo_write(m->vmo, off, buf, n) : jam_vmo_read(m->vmo, off, buf, n);
-    return r ? r : st != OK ? lx_err(st) : (long)n;
+    return r ? r : st != OK ? uc_or_fault(lx_err(st), buf, n, !write) : (long)n;
 }
 
 /* A read or write of iov at pos, or at (and moving) the description's
@@ -439,9 +439,14 @@ long lx_memfd_create(long name, long flags, long c, long d, long e, long f)
         return -EINVAL;   /* MFD_HUGETLB and its sizes: not here */
     if ((flags & MFD_NOEXEC_SEAL) && (flags & MFD_EXEC))
         return -EINVAL;
-    const char *n = (const char *)(uintptr_t)name;
-    if (strnlen(n, NAME_LEN) >= NAME_LEN)
+    char n[NAME_LEN];   /* the caller's, copied */
+    long len = uc_strnlen((const char *)(uintptr_t)name, NAME_LEN);
+    if (len < 0)
+        return len;
+    if (len >= NAME_LEN)
         return -EINVAL;
+    if (uc_get(n, (const char *)(uintptr_t)name, (size_t)len + 1))
+        return -EFAULT;
     long err = 0;
     struct memobj *m = memobj_new(n, flags & (MFD_ALLOW_SEALING | MFD_NOEXEC_SEAL), &err);
     if (!m)

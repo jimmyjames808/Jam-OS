@@ -479,7 +479,7 @@ long fd_iov_total(const struct iovec *iov, int iovcnt)
     return total > FD_RW_MAX ? FD_RW_MAX : (long)total;
 }
 
-void fd_iov_scatter(const struct iovec *iov, int iovcnt, size_t skip, const void *src, size_t n)
+long fd_iov_scatter(const struct iovec *iov, int iovcnt, size_t skip, const void *src, size_t n)
 {
     const uint8_t *p = src;
     for (int i = 0; i < iovcnt && n; i++) {
@@ -488,14 +488,16 @@ void fd_iov_scatter(const struct iovec *iov, int iovcnt, size_t skip, const void
             continue;
         }
         size_t k = iov[i].iov_len - skip < n ? iov[i].iov_len - skip : n;
-        memcpy((uint8_t *)iov[i].iov_base + skip, p, k);
+        if (uc_put((uint8_t *)iov[i].iov_base + skip, p, k))
+            return -EFAULT;
         p += k;
         n -= k;
         skip = 0;
     }
+    return 0;
 }
 
-void fd_iov_gather(const struct iovec *iov, int iovcnt, size_t skip, void *dst, size_t n)
+long fd_iov_gather(const struct iovec *iov, int iovcnt, size_t skip, void *dst, size_t n)
 {
     uint8_t *p = dst;
     for (int i = 0; i < iovcnt && n; i++) {
@@ -504,11 +506,54 @@ void fd_iov_gather(const struct iovec *iov, int iovcnt, size_t skip, void *dst, 
             continue;
         }
         size_t k = iov[i].iov_len - skip < n ? iov[i].iov_len - skip : n;
-        memcpy(p, (const uint8_t *)iov[i].iov_base + skip, k);
+        if (uc_get(p, (const uint8_t *)iov[i].iov_base + skip, k))
+            return -EFAULT;
         p += k;
         n -= k;
         skip = 0;
     }
+    return 0;
+}
+
+long fd_iov_check(const struct iovec *iov, int iovcnt, size_t skip, size_t n, bool write)
+{
+    for (int i = 0; i < iovcnt && n; i++) {
+        if (skip >= iov[i].iov_len) {
+            skip -= iov[i].iov_len;
+            continue;
+        }
+        uint8_t *b = (uint8_t *)iov[i].iov_base + skip;
+        size_t k = iov[i].iov_len - skip < n ? iov[i].iov_len - skip : n;
+        if (write ? uc_writable(b, k) : uc_readable(b, k))
+            return -EFAULT;
+        n -= k;
+        skip = 0;
+    }
+    return 0;
+}
+
+long fd_iov_in(const struct iovec *uiov, long iovcnt, struct iovec fast[FD_IOV_FAST],
+               struct iovec **out)
+{
+    *out = fast;
+    if (iovcnt < 0 || iovcnt > IOV_MAX)
+        return -EINVAL;
+    if (iovcnt > FD_IOV_FAST && !(*out = malloc((size_t)iovcnt * sizeof(**out)))) {
+        *out = fast;
+        return -ENOMEM;
+    }
+    if (uc_get(*out, uiov, (size_t)iovcnt * sizeof(**out))) {
+        fd_iov_done(*out, fast);
+        *out = fast;
+        return -EFAULT;
+    }
+    return 0;
+}
+
+void fd_iov_done(struct iovec *iov, struct iovec fast[FD_IOV_FAST])
+{
+    if (iov != fast)
+        free(iov);
 }
 
 /* ---- the calls that route to a kind ------------------------------------------ */
@@ -535,6 +580,8 @@ static long rw(long fd, const struct iovec *iov, long iovcnt, int64_t pos, unsig
         r = -ESPIPE;   /* pread(2): checked before the offset */
     else if (r >= 0 && (how & RW_AT) && pos < 0)
         r = -EINVAL;
+    else if (r > 0 && write && fd_iov_check(iov, (int)iovcnt, 0, (size_t)r, false))
+        r = -EFAULT;   /* the bytes to write, before any of them goes */
     else if (r >= 0 && write && (how & RW_NOAPPEND) && d->ops->write_at)
         r = d->ops->write_at(d, iov, (int)iovcnt, pos);
     else if (r >= 0 && write)
@@ -577,25 +624,36 @@ long lx_pwrite64(long fd, long buf, long len, long pos, long e, long f)
     return rw(fd, &v, 1, pos, RW_WRITE | RW_AT);
 }
 
+/* rw over the caller's iovec array (copied in first). */
+static long rwv(long fd, long uiov, long iovcnt, int64_t pos, unsigned how)
+{
+    struct iovec fast[FD_IOV_FAST], *iov;
+    long r = fd_iov_in((const struct iovec *)(uintptr_t)uiov, iovcnt, fast, &iov);
+    if (!r)
+        r = rw(fd, iov, iovcnt, pos, how);
+    fd_iov_done(iov, fast);
+    return r;
+}
+
 long lx_readv(long fd, long iov, long n, long d, long e, long f)
 {
-    return rw(fd, (const struct iovec *)(uintptr_t)iov, n, 0, RW_READ);
+    return rwv(fd, iov, n, 0, RW_READ);
 }
 
 long lx_writev(long fd, long iov, long n, long d, long e, long f)
 {
-    return rw(fd, (const struct iovec *)(uintptr_t)iov, n, 0, RW_WRITE);
+    return rwv(fd, iov, n, 0, RW_WRITE);
 }
 
 /* On x86-64 the offset is one register (pos_l); Linux ignores pos_h. */
 long lx_preadv(long fd, long iov, long n, long pos_l, long pos_h, long f)
 {
-    return rw(fd, (const struct iovec *)(uintptr_t)iov, n, pos_l, RW_READ | RW_AT);
+    return rwv(fd, iov, n, pos_l, RW_READ | RW_AT);
 }
 
 long lx_pwritev(long fd, long iov, long n, long pos_l, long pos_h, long f)
 {
-    return rw(fd, (const struct iovec *)(uintptr_t)iov, n, pos_l, RW_WRITE | RW_AT);
+    return rwv(fd, iov, n, pos_l, RW_WRITE | RW_AT);
 }
 
 /* preadv2 and pwritev2 (musl's pwrite is pwritev2 with RWF_NOAPPEND, so
@@ -612,7 +670,7 @@ static long rw2(long fd, long iov, long n, long pos, long flags, bool write)
         return -EINVAL;
     unsigned how = (write ? RW_WRITE : RW_READ) | (pos == -1 ? 0 : RW_AT) |
                    (flags & RWF_NOAPPEND ? RW_NOAPPEND : 0);
-    long r = rw(fd, (const struct iovec *)(uintptr_t)iov, n, pos, how);
+    long r = rwv(fd, iov, n, pos, how);
     if (r > 0 && (flags & (RWF_DSYNC | RWF_SYNC))) {
         long s = lx_fsync(fd, 0, 0, 0, 0, 0);
         if (s < 0)
@@ -651,18 +709,18 @@ long lx_fstat(long fd, long out, long c, long d, long e, long f)
     struct fd_desc *desc = fd_get(fd);
     if (!desc)
         return -EBADF;
-    struct stat *st = (struct stat *)(uintptr_t)out;
-    memset(st, 0, sizeof(*st));
+    struct stat st;
+    memset(&st, 0, sizeof(st));
     long r = 0;
     if (desc->ops->stat) {
-        r = desc->ops->stat(desc, st);
+        r = desc->ops->stat(desc, &st);
     } else {
-        st->st_mode = S_IFCHR | 0600;
-        st->st_nlink = 1;
-        st->st_blksize = 4096;
+        st.st_mode = S_IFCHR | 0600;
+        st.st_nlink = 1;
+        st.st_blksize = 4096;
     }
     fd_put(desc);
-    return r;
+    return r ? r : uc_put((void *)(uintptr_t)out, &st, sizeof(st));
 }
 
 long lx_ioctl(long fd, long req_l, long arg, long d, long e, long f)
@@ -674,9 +732,12 @@ long lx_ioctl(long fd, long req_l, long arg, long d, long e, long f)
     if (!desc)
         return -EBADF;
     long r;
+    int on;
     switch (req) {
     case FIONBIO:
-        r = fd_status_set(desc, O_NONBLOCK, *(const int *)(uintptr_t)arg ? O_NONBLOCK : 0);
+        r = uc_get(&on, (const void *)(uintptr_t)arg, sizeof(on));
+        if (!r)
+            r = fd_status_set(desc, O_NONBLOCK, on ? O_NONBLOCK : 0);
         break;
     case FIOCLEX:
     case FIONCLEX:

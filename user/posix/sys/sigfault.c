@@ -4,13 +4,13 @@
  * thread, and the thread resumed from the ucontext as the handler left it.
  *
  * The entry (sigentry.S's __jam_sig_entry, which calls sig_fault here) is
- * set only while one of SIGSEGV, SIGBUS, SIGILL, SIGFPE and SIGTRAP has a
- * handler (sig_entry_need, from sig_action): a program that never asks
- * keeps the kernel's own kill, line for line, with libc nowhere on the
- * path. With it set, a fault whose signal is blocked, ignored or default,
- * on a thread libc doesn't list, or on a thread that holds sig_lock
- * (sig_fault_begin) is EXC_UNHANDLED: the kernel's kill with the line it
- * would have had with no entry.
+ * set from the start (sig_entry_need's SIG_ENTRY_COPY): a fault in one of
+ * ucopy.S's checked copies goes on at its fixup with -EFAULT, first, with
+ * no handler installed and no signal state touched. Any other fault whose
+ * signal is blocked, ignored or default (a program that never asks for a
+ * handler has only those), on a thread libc doesn't list, or on a thread
+ * that holds sig_lock (sig_fault_begin) is EXC_UNHANDLED: the kernel's
+ * kill with the line it would have had with no entry.
  *
  * From the entry to EXC_LEAVE the thread is in the kernel's window, where
  * a second fault kills the process: up to there only the frame, the stack
@@ -357,6 +357,8 @@ static bool runs_on_interrupted(const struct exc_frame *f, const struct sig_act_
 
 _Noreturn void sig_fault(struct exc_frame *f)
 {
+    if (uc_fault(f))   /* a checked copy's bad pointer: on with -EFAULT (ucopy.c) */
+        resume(f, SIGSEGV);
     /* SG5: an EXC_RAISED frame (a signal to this thread) goes to its own path. */
     if (f->kind != EXC_FAULT || f->xsave_size < LEGACY_SIZE || f->xsave_size > XSAVE_MAX ||
         f->size != EXC_FRAME_XSAVE + f->xsave_size)

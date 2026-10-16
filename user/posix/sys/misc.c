@@ -32,32 +32,32 @@ static void copy_field(char *dst, size_t cap, const char *src)
 
 long lx_uname(long out, long b, long c, long d, long e, long f)
 {
-    struct utsname *u = (struct utsname *)(uintptr_t)out;
+    struct utsname u;
     struct kp_public pub;
     const char *release = kp_public_info(&pub) == OK && pub.version[0] ? pub.version : "unknown";
-    memset(u, 0, sizeof(*u));
-    copy_field(u->sysname, sizeof(u->sysname), SYSNAME);
-    copy_field(u->nodename, sizeof(u->nodename), NODENAME);
-    copy_field(u->release, sizeof(u->release), release);
-    copy_field(u->version, sizeof(u->version), release);
-    copy_field(u->machine, sizeof(u->machine), MACHINE);
-    copy_field(u->domainname, sizeof(u->domainname), "(none)");
-    return 0;
+    memset(&u, 0, sizeof(u));
+    copy_field(u.sysname, sizeof(u.sysname), SYSNAME);
+    copy_field(u.nodename, sizeof(u.nodename), NODENAME);
+    copy_field(u.release, sizeof(u.release), release);
+    copy_field(u.version, sizeof(u.version), release);
+    copy_field(u.machine, sizeof(u.machine), MACHINE);
+    copy_field(u.domainname, sizeof(u.domainname), "(none)");
+    return uc_put((void *)(uintptr_t)out, &u, sizeof(u));
 }
 
 long lx_sysinfo(long out, long b, long c, long d, long e, long f)
 {
-    struct sysinfo *s = (struct sysinfo *)(uintptr_t)out;
+    struct sysinfo s;
     struct kp_public pub;
-    memset(s, 0, sizeof(*s));
-    s->uptime = (long)(now() / NS_PER_S);
-    s->procs = 1;
-    s->mem_unit = 1;
+    memset(&s, 0, sizeof(s));
+    s.uptime = (long)(now() / NS_PER_S);
+    s.procs = 1;
+    s.mem_unit = 1;
     if (kp_public_info(&pub) == OK) {
-        s->totalram = pub.pages * pub.page_size;
-        s->freeram = pub.free_pages * pub.page_size;
+        s.totalram = pub.pages * pub.page_size;
+        s.freeram = pub.free_pages * pub.page_size;
     }
-    return 0;
+    return uc_put((void *)(uintptr_t)out, &s, sizeof(s));
 }
 
 static status_t thread_exists(handle_t t, void *arg)
@@ -83,23 +83,24 @@ long lx_sched_getaffinity(long pid, long size, long mask, long d, long e, long f
     size_t n = size < AFFINITY_MAX ? (size_t)size : AFFINITY_MAX;
     if (cpus > n * 8)
         cpus = (unsigned)(n * 8);
-    uint8_t *m = (uint8_t *)(uintptr_t)mask;
+    uint8_t m[AFFINITY_MAX];
     memset(m, 0, n);
     for (unsigned i = 0; i < cpus; i++)
         m[i / 8] |= (uint8_t)(1u << (i % 8));
-    return (long)n;
+    return uc_put((void *)(uintptr_t)mask, m, n) ? -EFAULT : (long)n;
 }
 
 long lx_sched_setaffinity(long pid, long size, long mask, long d, long e, long f)
 {
-    if (size < 0 || !mask)
-        return -EFAULT;   /* Linux reads the mask first; a missing one is a bad address */
+    /* Linux reads the mask first (a missing one is a bad address); it is
+     * zero-extended past size, and only the CPUs that exist count. */
+    uint8_t m[AFFINITY_MAX];
+    size_t n = size < AFFINITY_MAX ? (size_t)size : AFFINITY_MAX;
+    if (size < 0 || !mask || uc_get(m, (const void *)(uintptr_t)mask, n))
+        return -EFAULT;
     long r = thread_apply((int)pid, thread_exists, NULL);
     if (r)
         return r;
-    /* Linux's mask is zero-extended past size, and only the CPUs that exist count. */
-    const uint8_t *m = (const uint8_t *)(uintptr_t)mask;
-    size_t n = size < AFFINITY_MAX ? (size_t)size : AFFINITY_MAX;
     unsigned cpus = cpus_online();
     for (unsigned i = 0; i < cpus && i / 8 < n; i++)
         if (m[i / 8] & (1u << (i % 8)))
@@ -119,6 +120,12 @@ long lx_getrandom(long buf, long len, long flags, long d, long e, long f)
     if (len < 0)
         return -EINVAL;
     size_t n = len > GETRANDOM_MAX ? GETRANDOM_MAX : (size_t)len;
-    os_random((void *)(uintptr_t)buf, n);   /* never blocks: the generator is seeded at boot */
+    uint8_t chunk[512];   /* made here, then copied to the caller's */
+    for (size_t at = 0; at < n; at += sizeof(chunk)) {
+        size_t k = n - at < sizeof(chunk) ? n - at : sizeof(chunk);
+        os_random(chunk, k);   /* never blocks: the generator is seeded at boot */
+        if (uc_put((uint8_t *)(uintptr_t)buf + at, chunk, k))
+            return at ? (long)at : -EFAULT;
+    }
     return (long)n;
 }

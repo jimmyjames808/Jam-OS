@@ -107,10 +107,8 @@ long lx_getpriority(long which, long who, long c, long d, long e, long f)
 
 long lx_getcpu(long cpu, long node, long cache, long d, long e, long f)
 {
-    if (cpu)
-        *(unsigned *)(uintptr_t)cpu = 0;
-    if (node)
-        *(unsigned *)(uintptr_t)node = 0;
+    if ((cpu && uc_put_int(cpu, 0)) || (node && uc_put_int(node, 0)))
+        return -EFAULT;
     return 0;
 }
 
@@ -131,17 +129,18 @@ long lx_sched_getparam(long pid_l, long param, long c, long d, long e, long f)
     if (pid < 0 || !param)
         return -EINVAL;
     long r = thread_apply(pid, exists, NULL);
-    if (!r)
-        *(int *)(uintptr_t)param = 0;   /* Linux's sched_param is this one int */
-    return r;
+    return r ? r : uc_put_int(param, 0);   /* Linux's sched_param is this one int */
 }
 
 long lx_sched_setparam(long pid_l, long param, long c, long d, long e, long f)
 {
     int pid = (int)pid_l;
+    int prio;
     if (pid < 0 || !param)
         return -EINVAL;
-    if (*(const int *)(uintptr_t)param != 0)
+    if (uc_get(&prio, (const void *)(uintptr_t)param, sizeof(prio)))
+        return -EFAULT;
+    if (prio != 0)
         return -EINVAL;   /* SCHED_OTHER has priority 0 only */
     return thread_apply(pid, exists, NULL);
 }
@@ -152,7 +151,9 @@ long lx_sched_setscheduler(long pid_l, long policy, long param, long d, long e, 
     if (pid < 0 || pol < 0 || !param)
         return -EINVAL;
     pol &= ~SCHED_RESET_ON_FORK;
-    int prio = *(const int *)(uintptr_t)param;
+    int prio;
+    if (uc_get(&prio, (const void *)(uintptr_t)param, sizeof(prio)))
+        return -EFAULT;
     bool rt = pol == SCHED_FIFO || pol == SCHED_RR;
     if (!rt && pol != SCHED_OTHER && pol != SCHED_BATCH && pol != SCHED_IDLE)
         return -EINVAL;

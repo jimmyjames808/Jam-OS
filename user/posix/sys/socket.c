@@ -163,13 +163,15 @@ long sock_addr_in(long addr, long len, uint32_t *ip, uint16_t *port)
         return -EFAULT;
     if (len < (long)sizeof(sa_family_t))
         return -EINVAL;
-    const struct sockaddr_in *a = (const struct sockaddr_in *)(uintptr_t)addr;
-    if (a->sin_family != AF_INET)
+    struct sockaddr_in a = { 0 };   /* the caller's, its first len bytes */
+    if (uc_get(&a, (const void *)(uintptr_t)addr, len < (long)sizeof(a) ? (size_t)len : sizeof(a)))
+        return -EFAULT;
+    if (a.sin_family != AF_INET)
         return -EAFNOSUPPORT;
     if (len < (long)sizeof(struct sockaddr_in))
         return -EINVAL;
-    *ip = ntohl(a->sin_addr.s_addr);
-    *port = ntohs(a->sin_port);
+    *ip = ntohl(a.sin_addr.s_addr);
+    *port = ntohs(a.sin_port);
     return 0;
 }
 
@@ -179,13 +181,16 @@ long sock_addr_out(long addr, long lenp, uint32_t ip, uint16_t port)
 {
     if (!addr || !lenp)
         return 0;
-    socklen_t *len = (socklen_t *)(uintptr_t)lenp;
-    if ((int)*len < 0)
+    socklen_t len, full = sizeof(struct sockaddr_in);   /* the caller's room, said back */
+    if (uc_get(&len, (const void *)(uintptr_t)lenp, sizeof(len)))
+        return -EFAULT;
+    if ((int)len < 0)
         return -EINVAL;
     struct sockaddr_in a = { .sin_family = AF_INET, .sin_port = htons(port),
                              .sin_addr = { htonl(ip) } };
-    memcpy((void *)(uintptr_t)addr, &a, *len < sizeof(a) ? *len : sizeof(a));
-    *len = sizeof(a);
+    if (uc_put((void *)(uintptr_t)addr, &a, len < full ? len : full) ||
+        uc_put((void *)(uintptr_t)lenp, &full, sizeof(full)))
+        return -EFAULT;
     return 0;
 }
 
@@ -206,10 +211,8 @@ static long sock_stat(struct fd_desc *d, struct stat *st)
 static long sock_ioctl(struct fd_desc *d, unsigned long req, long arg)
 {
     struct sock *s = d->priv;
-    if (req == SIOCATMARK) {
-        *(int *)(uintptr_t)arg = 0;   /* no out-of-band data, ever */
-        return 0;
-    }
+    if (req == SIOCATMARK)
+        return uc_put_int(arg, 0);   /* no out-of-band data, ever */
     if (req != FIONREAD)
         return -ENOTTY;
     long n = 0;
@@ -225,8 +228,7 @@ static long sock_ioctl(struct fd_desc *d, unsigned long req, long arg)
         n = s->kept ? s->kept->len : 0;
     }
     lock_give(&s->rx_lock);
-    *(int *)(uintptr_t)arg = (int)n;
-    return 0;
+    return uc_put_int(arg, (int)n);
 }
 
 /* poll: what libc itself knows (no lock, no call: ready.h's rule). */

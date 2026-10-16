@@ -244,8 +244,29 @@ extern fd_adopt_fn *const fd_adopters[POSIXFDS_KIND_COUNT];
 /* The total of iov's lengths, or -EINVAL (iovcnt out of 0 .. IOV_MAX, or
  * the total past SSIZE_MAX); cut to FD_RW_MAX. */
 long   fd_iov_total(const struct iovec *iov, int iovcnt);
-/* Copy n bytes into iov from src, skipping the first `skip` bytes of
- * iov; and out of iov into dst. They stop at iov's end. */
-void   fd_iov_scatter(const struct iovec *iov, int iovcnt, size_t skip, const void *src,
+/* Copy n bytes into iov's buffers (the caller's) from src, skipping the
+ * first `skip` bytes of iov; and out of them into dst. They stop at iov's
+ * end. 0, or -EFAULT (a buffer the caller can't write or read: some bytes
+ * may have been copied). */
+long   fd_iov_scatter(const struct iovec *iov, int iovcnt, size_t skip, const void *src,
                       size_t n);
-void   fd_iov_gather(const struct iovec *iov, int iovcnt, size_t skip, void *dst, size_t n);
+long   fd_iov_gather(const struct iovec *iov, int iovcnt, size_t skip, void *dst, size_t n);
+/* Can n bytes of iov's buffers from byte skip on be read (or written:
+ * write; uc_readable, uc_writable): 0, or -EFAULT. A write's and a send's
+ * bytes are checked so before any goes: kinds hand a single buffer to the
+ * kernel as it is (a pipe's message), and Linux's EFAULT for a buffer
+ * that can't be read is how Chromium and the sanitizers ask whether
+ * memory can be (a write to a pipe). A read checks only what it is about
+ * to write, where a kind writes the caller's buffer through code that
+ * isn't ours (a socket's ring). */
+long   fd_iov_check(const struct iovec *iov, int iovcnt, size_t skip, size_t n, bool write);
+/* The caller's array of iovcnt iovecs at uiov, copied into ours: into
+ * fast if they fit (FD_IOV_FAST, Linux's UIO_FASTIOV), else into an array
+ * malloc gives. *out is the copy (0 iovecs: fast). 0, -EINVAL (iovcnt out
+ * of 0 .. IOV_MAX), -EFAULT or -ENOMEM; fd_iov_done frees it. A handler
+ * reads a program's iovecs only through this (the buffers they name only
+ * through the two above). */
+#define FD_IOV_FAST 8
+long   fd_iov_in(const struct iovec *uiov, long iovcnt, struct iovec fast[FD_IOV_FAST],
+                 struct iovec **out);
+void   fd_iov_done(struct iovec *iov, struct iovec fast[FD_IOV_FAST]);

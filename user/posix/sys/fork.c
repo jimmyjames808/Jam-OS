@@ -28,7 +28,7 @@
  * the child's; each module's LX_FORK_CHILD step (layer.h); no timers; the
  * tid words CLONE_CHILD_* ask for; then the signal thread, on a port of
  * its own. The exception entry, the process's and so not in the child, is
- * set again by signal.c's step if a fault signal has a handler.
+ * set again by signal.c's step: always, for the checked copies (ucopy.S).
  *
  * Locks (section 1.5). Before the clone the layer takes, in this order,
  * and gives back after it in the reverse (the child makes them fresh):

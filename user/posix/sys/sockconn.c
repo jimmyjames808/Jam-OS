@@ -37,12 +37,15 @@
 /* A socketpair end's name: AF_UNIX with no path. */
 static long unix_out(long addr, long lenp)
 {
-    socklen_t *len = (socklen_t *)(uintptr_t)lenp;
-    if (!addr || !lenp || (int)*len < 0)
-        return addr && lenp ? -EINVAL : -EFAULT;
+    socklen_t len, full = sizeof(sa_family_t);   /* the caller's room, said back */
+    if (!addr || !lenp || uc_get(&len, (const void *)(uintptr_t)lenp, sizeof(len)))
+        return -EFAULT;
+    if ((int)len < 0)
+        return -EINVAL;
     sa_family_t f = AF_UNIX;
-    memcpy((void *)(uintptr_t)addr, &f, *len < sizeof(f) ? *len : sizeof(f));
-    *len = sizeof(f);
+    if (uc_put((void *)(uintptr_t)addr, &f, len < full ? len : full) ||
+        uc_put((void *)(uintptr_t)lenp, &full, sizeof(full)))
+        return -EFAULT;
     return 0;
 }
 
@@ -108,10 +111,13 @@ static long connected_try(struct sock *s, void *arg)
 
 static long dgram_connect_locked(struct sock *s, long addr, long len)
 {
-    const struct sockaddr *sa = (const struct sockaddr *)(uintptr_t)addr;
+    sa_family_t family = AF_INET;   /* the caller's, read once */
+    if (addr && len >= (long)sizeof(family) &&
+        uc_get(&family, (const void *)(uintptr_t)addr, sizeof(family)))
+        return -EFAULT;
     uint32_t ip = 0;
     uint16_t port = 0;
-    bool unspec = addr && len >= (long)sizeof(sa_family_t) && sa->sa_family == AF_UNSPEC;
+    bool unspec = addr && len >= (long)sizeof(sa_family_t) && family == AF_UNSPEC;
     long r = unspec ? 0 : sock_addr_in(addr, len, &ip, &port);
     if (!r)
         r = sock_dgram_open_locked(s);
@@ -227,7 +233,10 @@ long lx_accept4(long fd, long addr, long lenp, long flags, long e, long f)
 {
     if (flags & ~(long)(SOCK_NONBLOCK | SOCK_CLOEXEC))
         return -EINVAL;
-    if (addr && lenp && (int)*(socklen_t *)(uintptr_t)lenp < 0)
+    socklen_t room = 0;   /* the caller's, checked before the wait */
+    if (addr && lenp && uc_get(&room, (const void *)(uintptr_t)lenp, sizeof(room)))
+        return -EFAULT;
+    if ((int)room < 0)
         return -EINVAL;
     struct fd_desc *d;
     struct sock *s;
@@ -250,8 +259,10 @@ long lx_accept4(long fd, long addr, long lenp, long flags, long e, long f)
         lock_give(&d->lock);
         r = accept_install(&opts, &ns, flags);
     }
-    if (r >= 0)
-        (void)sock_addr_out(addr, lenp, peer, port);   /* its length checked above */
+    if (r >= 0 && sock_addr_out(addr, lenp, peer, port) == -EFAULT) {   /* length checked above */
+        (void)fd_close(r);   /* Linux's: the connection goes with the bad address */
+        r = -EFAULT;
+    }
     fd_put(d);
     return r;
 }

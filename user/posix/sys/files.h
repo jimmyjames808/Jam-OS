@@ -307,7 +307,7 @@ long dir_new(const struct path *p, uint32_t status, struct fd_desc **out);
 /* The kind's adopter (fd_adopters' POSIXFDS_DIR line). */
 fd_adopt_fn dir_adopt_fd;
 /* One getdents64 record (Linux's linux_dirent64, padded to 8 bytes) for
- * name at buf, d_off next: its length, or 0 if it doesn't fit in room
- * bytes (nothing written then). */
-size_t dir_put(void *buf, size_t room, const char *name, uint64_t ino, uint8_t type,
-               int64_t next);
+ * name at the caller's buf, d_off next: its length, 0 if it doesn't fit
+ * in room bytes (nothing written then), or -EFAULT. */
+long dir_put(void *buf, size_t room, const char *name, uint64_t ino, uint8_t type,
+             int64_t next);

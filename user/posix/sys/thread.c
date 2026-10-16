@@ -284,8 +284,7 @@ long lx_arch_prctl(long code, long addr, long c, long d, long e, long f)
          * keeps that word), so %fs:0 is the FS base. */
         uint64_t fs;
         __asm__ volatile("mov %%fs:0, %0" : "=r"(fs));
-        *(uint64_t *)(uintptr_t)addr = fs;
-        return 0;
+        return uc_put((void *)(uintptr_t)addr, &fs, sizeof(fs));
     }
     return -EINVAL;
 }
@@ -363,7 +362,7 @@ static long futex_wait(uint32_t *word, uint32_t val, uint64_t deadline)
     case ERR_CANCELED:       return -EINTR;
     case ERR_IO:             return -EFAULT;   /* the word's page couldn't be read in */
     }
-    return lx_err(st);
+    return uc_or_fault(lx_err(st), word, sizeof(*word), false);   /* the kernel reads it */
 }
 
 /* A count as Linux's futex takes it: an int, where INT_MAX means all. */
@@ -416,11 +415,15 @@ static long futex_wait_bitset(uint32_t *word, long op, long val, const struct ti
 long lx_futex(long addr, long op, long val, long timeout, long addr2, long val3)
 {
     uint32_t *word = (uint32_t *)(uintptr_t)addr;
-    const struct timespec *ts = (const struct timespec *)(uintptr_t)timeout;
     op = (int)op;   /* Linux's int */
     long cmd = op & ~(long)(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
     if ((op & FUTEX_CLOCK_REALTIME) && cmd != FUTEX_WAIT_BITSET)
         return -ENOSYS;   /* Linux takes the clock flag on the bitset wait only */
+    struct timespec t;   /* a wait's timeout, the caller's: read once, first */
+    const struct timespec *ts = timeout ? &t : NULL;
+    if ((cmd == FUTEX_WAIT || cmd == FUTEX_WAIT_BITSET) && timeout &&
+        uc_get(&t, (const void *)(uintptr_t)timeout, sizeof(t)))
+        return -EFAULT;
     uint64_t deadline;
     long r;
     int64_t n;

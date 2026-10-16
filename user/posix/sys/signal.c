@@ -818,6 +818,7 @@ void sig_spawn_masks(uint64_t *blocked, uint64_t *ignored)
 void sig_start_state(uint64_t ignored)
 {
     take();
+    sig_entry_need(SIG_ENTRY_COPY, true);
     for (int s = 1; s <= SIG_MAX; s++)
         if ((ignored & SIG_BIT(s)) && !(SIG_NEVER_MASKED & SIG_BIT(s)))
             acts[s].handler = (uintptr_t)SIG_IGN;
@@ -863,9 +864,10 @@ void sig_fork(int step)
     memset(shared_info, 0, sizeof(shared_info));
     nrtq = 0;
     /* The exception entry is the process's, so not in the child: set again
-     * if a fault signal has a handler (sigfault.c), every other reason gone
-     * with the threads it was for. */
+     * for the checked copies (always) and if a fault signal has a handler
+     * (sigfault.c), every other reason gone with the threads it was for. */
     sig_entry_need(~0u, false);
+    sig_entry_need(SIG_ENTRY_COPY, true);
     sig_entry_need(SIG_ENTRY_HANDLERS, fault_handled_locked());
     give();
     sig_alt_reapply();   /* the thread's sigaltstack is in the copy, not its kernel stack */

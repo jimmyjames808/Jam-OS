@@ -46,9 +46,8 @@ long lx_getegid(long a, long b, long c, long d, long e, long f)
 /* getresuid and getresgid: the real, effective and saved ids. */
 static long three_ids(long r, long e, long s)
 {
-    *(uid_t *)(uintptr_t)r = ONE_ID;
-    *(uid_t *)(uintptr_t)e = ONE_ID;
-    *(uid_t *)(uintptr_t)s = ONE_ID;
+    if (uc_put_int(r, ONE_ID) || uc_put_int(e, ONE_ID) || uc_put_int(s, ONE_ID))
+        return -EFAULT;
     return 0;
 }
 
@@ -110,8 +109,7 @@ long lx_getgroups(long size, long list, long c, long d, long e, long f)
         return -EINVAL;
     if (size == 0)
         return 1;   /* how many there are */
-    *(gid_t *)(uintptr_t)list = ONE_ID;
-    return 1;
+    return uc_put_int(list, ONE_ID) ? -EFAULT : 1;
 }
 
 long lx_setgroups(long size, long list, long c, long d, long e, long f)
