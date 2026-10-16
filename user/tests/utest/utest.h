@@ -388,8 +388,12 @@ bool t_view_hides_names(void);
 bool t_fat_view_no_etc(void);
 bool t_fat_view_limits(void);
 
-/* jit.c: JIT memory (vmo_make_jit): code written, run, patched, passed on. */
+/* jit.c: JIT memory (vmo_make_jit): code written, run, patched, passed on;
+ * a program started from it never writes its own code (its child's mode
+ * "jit-text"). */
 bool t_jit(void);
+bool t_jit_spawn(void);
+int  jit_child(int argc, char **argv);
 /* rights.c: the root's powers, vmo_make_exec and _verified. */
 bool t_root_powers(void);
 bool t_vmo_make_exec(void);

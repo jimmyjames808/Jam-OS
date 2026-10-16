@@ -61,7 +61,8 @@ struct image {
                               * mapped here) */
     uint64_t       size;     /* how many */
     uint64_t       mapped;   /* bytes at data to unmap afterwards (0: bootfs's mapping, kept) */
-    bool           own_vmo;  /* vmo was made here (a file's copy): closed afterwards */
+    bool           own_vmo;  /* vmo was made here (a file's copy, or a caller's VMO's
+                              * handle without write): closed afterwards */
 };
 
 /* The ELF64 bits we read (the kernel's elf.c has the full checks). */
@@ -359,7 +360,22 @@ static status_t find_image(const struct spawn_args *a, struct image *img)
 {
     memset(img, 0, sizeof(*img));
     if (a->vmo) {
-        img->vmo = a->vmo;
+        /* The child's code and read-only data are mapped straight from it,
+         * each mapping allowed what the handle allows: through one that
+         * can't write, so the child never makes them writable (a JIT VMO's
+         * handle writes and runs: its code would be W+X there, its writes
+         * in the caller's memory; docs/CR-REVIEW-JIT.md finding 1). */
+        struct handle_info hi;
+        status_t st = jam_handle_info(a->vmo, &hi);
+        if (st == OK && (hi.rights & (RIGHT_WRITE | RIGHT_RESIZE))) {
+            st = jam_handle_duplicate(a->vmo, hi.rights & ~(RIGHT_WRITE | RIGHT_RESIZE),
+                                      &img->vmo);
+            img->own_vmo = st == OK;
+        } else if (st == OK) {
+            img->vmo = a->vmo;
+        }
+        if (st != OK)
+            return st;
         img->off = a->offset;
         img->size = a->size;
         return caller_image(img);

@@ -596,6 +596,7 @@ static const struct {
     { "vmo_make_exec", t_vmo_make_exec },
     { "vmo_make_exec_verified", t_vmo_make_exec_verified },
     { "jit", t_jit },
+    { "jit_spawn", t_jit_spawn },
     { "kept_vmo_refusals", t_kept_vmo_refusals },
     { "kept_vmo_client_and_compositor", t_kept_vmo_client_and_compositor },
     { "vmo_child_shares", t_vmo_child_shares },
