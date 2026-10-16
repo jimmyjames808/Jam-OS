@@ -63,7 +63,9 @@ static bool drawing(void)
 
 static void draw_cell(uint32_t col, uint32_t row)
 {
-    if (!drawing())
+    /* Never past the framebuffer, whatever the cursor says: the last
+     * cell's last pixel is the framebuffer's last mapped byte. */
+    if (!drawing() || col >= cols || row >= rows)
         return;
     const struct cell *c = &cells[row][col];
     const uint8_t *glyph = font_8x16[(uint8_t)c->ch & 0x7f];
@@ -92,7 +94,9 @@ static void clear_row(uint32_t row)
         cells[row][c] = (struct cell){ ' ', cur_fg, cur_bg };
 }
 
-static void scroll(void)
+/* The cells a third of the screen up, the cursor at the first cleared row;
+ * nothing drawn. */
+static void scroll_cells(void)
 {
     uint32_t n = rows / 3 ? rows / 3 : 1;
     for (uint32_t r = 0; r + n < rows; r++)
@@ -101,6 +105,11 @@ static void scroll(void)
     for (uint32_t r = rows - n; r < rows; r++)
         clear_row(r);
     cy = rows - n;
+}
+
+static void scroll(void)
+{
+    scroll_cells();
     redraw_all();
 }
 
@@ -239,9 +248,30 @@ uint64_t fbcon_time_redraw(uint64_t (*now)(void))
     return t1 - t0;
 }
 
+/* The lock broken: its holder may have been a CPU halted by an NMI
+ * (ipi_halt_others) half-way through a line, with the cursor past the last
+ * column (glyph_locked before newline) or one row below the screen
+ * (newline before scroll_cells, or in the middle of it). Put the cursor
+ * back on the screen before anything is drawn at it: drawn there, the
+ * next character went past the framebuffer's end (JAM-PF in reboot's
+ * first line, a-ssh 2026-10-16). Nothing is drawn here: the callers
+ * redraw (fbcon_release, fbcon_unquiet) when they show the text. */
+static void repair_after_break(void)
+{
+    if (!ready)
+        return;
+    if (cx >= cols) {
+        cx = 0;
+        cy++;
+    }
+    if (cy >= rows)
+        scroll_cells();
+}
+
 void fbcon_force_unlock(void)
 {
     spin_force_unlock(&lock);
+    repair_after_break();
     __atomic_store_n(&taken, false, __ATOMIC_RELAXED);   /* a panic always draws */
     __atomic_store_n(&quiet, false, __ATOMIC_RELAXED);
 }
@@ -249,6 +279,7 @@ void fbcon_force_unlock(void)
 void fbcon_go_dark(void)
 {
     spin_force_unlock(&lock);
+    repair_after_break();
     __atomic_store_n(&taken, false, __ATOMIC_RELAXED);
     __atomic_store_n(&quiet, true, __ATOMIC_RELAXED);
 }
@@ -303,3 +334,27 @@ bool fbcon_is_taken(void)
 {
     return __atomic_load_n(&taken, __ATOMIC_RELAXED);
 }
+
+#ifndef JAM_NO_KTESTS
+void fbcon_test_break_at(uint32_t *x, uint32_t *y, uint32_t *ncols, uint32_t *nrows)
+{
+    uint64_t f = spin_lock_irqsave(&lock);
+    cx = *x;
+    cy = *y;
+    repair_after_break();
+    *x = cx;
+    *y = cy;
+    *ncols = cols;
+    *nrows = rows;
+    redraw_all();   /* as fbcon_release does after a break */
+    spin_unlock_irqrestore(&lock, f);
+}
+
+void fbcon_test_draw_below(void)
+{
+    uint64_t f = spin_lock_irqsave(&lock);
+    draw_cell(0, rows);
+    draw_cell(cols, 0);
+    spin_unlock_irqrestore(&lock, f);
+}
+#endif
