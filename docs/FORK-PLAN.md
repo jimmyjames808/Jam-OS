@@ -546,6 +546,41 @@ the kernel (FK2 500, FK3 400) and 2,000 in libc and libjam, besides tests.
    (the sandbox's `clone` with namespace flags is off; a call the scan
    finds later goes to FL1b's table of flags).
 
+### FK1 notes
+
+What FK2 and FK3 start from:
+
+- **The mode** is `clone` in `struct mapping` (`kernel/mm/aspace.c`):
+  `ASPACE_CLONE_SHARE`, `ASPACE_CLONE_NONE` or 0 for a copy, the same
+  bits as `VMAR_CLONE_*` (bits 6 and 7; `abi_check.c` holds them equal),
+  so `aspace_get_maps` copies it into `map_info.flags` as it is.
+  `clone_mode` decides it once in `mapping_new`, from the flags and the
+  maximum; `split` copies it, `joinable` (every merge, and the counts
+  `merges_for` and `protect_merges` make before a change) compares it, and
+  nothing else writes it. `aspace_check` refuses a mode the rules don't
+  allow (`clone_ok`): FK2's walk may trust that a copy is of a paged VMO,
+  not JIT, through a maximum with write.
+- **Decided here**: the clone flags with `VMAR_KEPT_ONLY` are
+  `ERR_INVALID_ARGS` (the row's "refused where it means nothing": a kept
+  mapping is always shared); a contiguous or physical VMO's mapping keeps
+  an explicit `VMAR_CLONE_NONE` (only its copy becomes share: nothing is
+  lost by giving a child nothing); `VMAR_CLONE_SHARE` asked on a JIT
+  VMO's mapping whose maximum has write is not refused but made none,
+  as the plan's "the kernel overrides" says, so `MAP_SHARED` over JIT
+  memory keeps working in the parent. `vmar_protect` takes neither flag
+  (its mask already refused them). A new `vmo_is_paged` (`vmo.c`) tells
+  the device kinds apart.
+- **The two calls** are in syscalls.def as 65 `vmar_clone(dst, vmos,
+  children, n, flags)` and 139 `process_replace(proc, entry, stack, arg0,
+  arg1)`, with the contract text; their kernel halves
+  (`sysc_vmar_clone` in `kernel/abi/sysc_vm.c`, `sysc_process_replace` in
+  `kernel/abi/sysc_proc.c`) answer `ERR_NOT_SUPPORTED` and touch nothing
+  until FK2 and FK3 replace them. (syscalls.def's header said a weak
+  default was generated; none has been since the generator dropped its
+  file of weak calls, so the header now says so.) Left to FK2: the limit
+  on `n` and the rights `vmos` need; to FK3: whether `arg0` leaves the
+  table on an error (the text says nothing changes, the stub's behaviour).
+
 ## 6. Questions for the owner
 
 One at a time, in this order; each ends with a recommendation, which the
@@ -634,38 +669,3 @@ can't choose which child gets it.
 hold once their start is done, at the cost of a small patch away from the
 launcher; it is needed only at CR-e (the JIT), after CB5. Whose: the
 owner's (his JIT rule meets his no-launcher-patch decision).
-
-## FK1 notes
-
-What FK2 and FK3 start from:
-
-- **The mode** is `clone` in `struct mapping` (`kernel/mm/aspace.c`):
-  `ASPACE_CLONE_SHARE`, `ASPACE_CLONE_NONE` or 0 for a copy, the same
-  bits as `VMAR_CLONE_*` (bits 6 and 7; `abi_check.c` holds them equal),
-  so `aspace_get_maps` copies it into `map_info.flags` as it is.
-  `clone_mode` decides it once in `mapping_new`, from the flags and the
-  maximum; `split` copies it, `joinable` (every merge, and the counts
-  `merges_for` and `protect_merges` make before a change) compares it, and
-  nothing else writes it. `aspace_check` refuses a mode the rules don't
-  allow (`clone_ok`): FK2's walk may trust that a copy is of a paged VMO,
-  not JIT, through a maximum with write.
-- **Decided here**: the clone flags with `VMAR_KEPT_ONLY` are
-  `ERR_INVALID_ARGS` (the row's "refused where it means nothing": a kept
-  mapping is always shared); a contiguous or physical VMO's mapping keeps
-  an explicit `VMAR_CLONE_NONE` (only its copy becomes share: nothing is
-  lost by giving a child nothing); `VMAR_CLONE_SHARE` asked on a JIT
-  VMO's mapping whose maximum has write is not refused but made none,
-  as the plan's "the kernel overrides" says, so `MAP_SHARED` over JIT
-  memory keeps working in the parent. `vmar_protect` takes neither flag
-  (its mask already refused them). A new `vmo_is_paged` (`vmo.c`) tells
-  the device kinds apart.
-- **The two calls** are in syscalls.def as 65 `vmar_clone(dst, vmos,
-  children, n, flags)` and 139 `process_replace(proc, entry, stack, arg0,
-  arg1)`, with the contract text; their kernel halves
-  (`sysc_vmar_clone` in `kernel/abi/sysc_vm.c`, `sysc_process_replace` in
-  `kernel/abi/sysc_proc.c`) answer `ERR_NOT_SUPPORTED` and touch nothing
-  until FK2 and FK3 replace them. (syscalls.def's header said a weak
-  default was generated; none has been since the generator dropped its
-  file of weak calls, so the header now says so.) Left to FK2: the limit on
-  `n` and the rights `vmos` need; to FK3: whether `arg0` leaves the table
-  on an error (the text says nothing changes, the stub's behaviour).
