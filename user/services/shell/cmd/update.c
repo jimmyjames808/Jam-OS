@@ -137,7 +137,7 @@ SH_CMD(update)
     }
     struct spawn_handle x[3] = { { UPDATE_SR_OFFER, ch } };
     char abi_word[8 + UPDATE_ABI_LEN + 1], abi[UPDATE_ABI_LEN + 1], pkgs_word[24];
-    const char *args[8] = { "update", host, mode, s.version, git };
+    const char *args[9] = { "update", host, mode, s.version, git };   /* + abi, packages, force, NULL */
     int n = 5;
     if (sh_build_abi(abi)) {   /* what bin/update compares the new build's stamp with */
         snprintf(abi_word, sizeof(abi_word), "abi=%s", abi);
