@@ -97,12 +97,13 @@ may have gone on running there).
 the Mac may sleep before the batch ends (the owner closes the laptop for
 the day) or the batch is long (the pre-push pass): without it every run is
 an ssh session from the Mac for its whole length, and a sleeping Mac loses
-every run in flight. The Mac copies and builds as usual (a minute or two
-awake), then hands the whole runlist to the PC's keeper
-(`tools/pc-keeper.sh`, the Windows task that keeps WSL jobs alive) as one
-job: `tools/pc-batch-driver.sh` runs each line there under the same CPU
-budget and with exactly what remote-test would run (the same build check
-and forwarded variables, `JAMOS_TIER` too), and writes each run's status,
+every run in flight. The Mac copies the checkout (seconds awake: no
+waiting for the build's turn in the budget), then hands the whole runlist
+to the PC's keeper (`tools/pc-keeper.sh`, the Windows task that keeps WSL
+jobs alive) as one job: `tools/pc-batch-driver.sh` runs each line there
+under the same CPU budget and with exactly what remote-test would run (the
+same build check, so the first run builds and the rest find it built, and
+the same forwarded variables, `JAMOS_TIER` too), and writes each run's status,
 times, log and a copy of its output directories (but disk images) into
 `~/work/.batch/<checkout>/<id>/` on the PC. Once `wait` says "on the PC",
 nothing on the Mac is needed until you collect.

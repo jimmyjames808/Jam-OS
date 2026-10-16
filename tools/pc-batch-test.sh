@@ -46,6 +46,7 @@ if [ "${JAMOS_REMOTE_SCRIPT_ONLY:-}" = 1 ]; then   # start --detach: what the PC
 fi
 echo "$* NOSYNC=${JAMOS_REMOTE_NOSYNC:-} KTESTS=${KTESTS:-}" >> "$FAKE_DIR/calls"
 if [ "$1" = --prepare ]; then
+    [ "${JAMOS_REMOTE_COPY_ONLY:-}" = 1 ] && echo "${PWD##*/}" >> "$FAKE_DIR/copyonly"
     [ -n "${FAKE_HOME:-}" ] && mkdir -p "$FAKE_HOME/work/${PWD##*/}"
     exit "${FAKE_PREPARE_RC:-0}"
 fi
@@ -322,6 +323,7 @@ echo "$out" | grep -q "log build/batch/$id/pc/runs/bad.log" || fail "detached: b
 [ "$(D co2 wait "$id2" > /dev/null; echo $?)" = 0 ] || fail "co2's batch"
 [ "$(cat "$tmp/co2/build/t/out/f" 2> /dev/null)" = two ] && [ "$(cat "$tmp/co/build/t/out/f")" = one ] ||
     fail "the two checkouts' outputs mixed"
+[ "$(sort "$tmp/copyonly" 2> /dev/null | tr '\n' ' ')" = "co co2 " ] || fail "detached batches didn't copy alone: $(cat "$tmp/copyonly" 2> /dev/null)"
 grep -q @runid@ "$tmp/runids" && fail "a run id left as @runid@"
 [ "$(sort -u "$tmp/runids" | wc -l | tr -d ' ')" = 8 ] || fail "run ids: not one for each of the 8 tries: $(cat "$tmp/runids")"
 calls=$(wc -l < "$tmp/ssh.log")

@@ -43,12 +43,12 @@
 # their turn here, not as ssh sessions), and every ssh connection is tried
 # again when the PC's sshd cuts it during the login (tools/ssh-retry.sh).
 #
-# --detach: the copy and the build as above (the Mac awake for a minute or
-# two), then the whole batch goes to the PC, which runs it on its own
+# --detach: the copy as above (the Mac awake for that alone, seconds), then
+# the whole batch goes to the PC, which runs it on its own
 # (tools/pc-batch-driver.sh, started by the PC's keeper, tools/pc-keeper.sh):
 # no connection stays open, so the Mac may sleep once `wait` says "on the
 # PC". Each run is what remote-test would run there (the same build check,
-# variables and CPU budget). `wait` and `status` look at the PC with one
+# variables and CPU budget): the first run builds, the others find it built. `wait` and `status` look at the PC with one
 # short connection every PC_BATCH_POLL (30) s, and once it is over copy each
 # run's output directory back to where the runlist named it (again, or days
 # later, is fine). A run in flight when the PC rebooted is LOST; `start
@@ -252,10 +252,18 @@ drive() {
     local n tries=0 rc pids
     now > "$d/prepare.t0"
     while :; do
-        "$rt" --prepare >> "$d/prepare.log" 2>&1 < /dev/null
-        rc=$?
+        if [ -f "$d/detached" ]; then
+            # Detached: the copy alone. The PC builds before the first run
+            # (each run's own build check, remote-test's), so the Mac needn't
+            # stay awake while the build waits for the budget.
+            JAMOS_REMOTE_COPY_ONLY=1 "$rt" --prepare >> "$d/prepare.log" 2>&1 < /dev/null
+            rc=$?
+        else
+            "$rt" --prepare >> "$d/prepare.log" 2>&1 < /dev/null
+            rc=$?
+        fi
         # Runs that build without the kernel tests: that build too, now.
-        if [ $rc = 0 ] && grep -q '^KTESTS=0$' "$d/variants" 2> /dev/null; then
+        if [ $rc = 0 ] && [ ! -f "$d/detached" ] && grep -q '^KTESTS=0$' "$d/variants" 2> /dev/null; then
             KTESTS=0 JAMOS_REMOTE_NOSYNC=1 "$rt" --prepare >> "$d/prepare.log" 2>&1 < /dev/null
             rc=$?
         fi
@@ -381,7 +389,9 @@ report() {
     fi
     local wall=$(( ${fin:-$(now)} - $(cat "$d/start") ))
     local prep=
-    [ -f "$d/prepare.t1" ] && prep=", copy+build $(($(cat "$d/prepare.t1") - $(cat "$d/prepare.t0"))) s"
+    local how=copy+build
+    [ -f "$d/detached" ] && how=copy
+    [ -f "$d/prepare.t1" ] && prep=", $how $(($(cat "$d/prepare.t1") - $(cat "$d/prepare.t0"))) s"
     local more=
     [ $lost -gt 0 ] && more="$more, $lost LOST"
     [ $cancelled -gt 0 ] && more="$more, $cancelled CANCELLED"
@@ -428,6 +438,7 @@ progress() {
     local what="$done of $total done ($failed failed), $running running"
     if [ ! -f "$d/prepare.rc" ]; then
         what="copying and building"
+        [ -f "$d/detached" ] && what="copying"
     elif [ -f "$d/detached" ] && [ ! -f "$d/handed" ]; then
         what="handing it to the PC"
     elif [ -f "$d/pc/nokeeper" ]; then
@@ -568,7 +579,7 @@ os.execvp(sys.argv[2], sys.argv[2:])' "$d/driver.pid" bash "$me" _drive "$d" > "
     until [ -s "$d/driver.pid" ] || [ $n -ge 50 ]; do sleep 0.1; n=$((n + 1)); done
     [ -s "$d/driver.pid" ] || die "batch $id: the driver didn't start ($d/driver.log)"
     local how=
-    [ $detach = 1 ] && how=" (detached: the PC runs them once copied and built; the Mac may sleep once wait says \"on the PC\")"
+    [ $detach = 1 ] && how=" (detached: the PC builds and runs them once copied; the Mac may sleep once wait says \"on the PC\")"
     echo "batch $id: $(wc -l < "$d/names" | tr -d ' ') runs started$how; next: $me wait $id"
 }
 

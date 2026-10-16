@@ -49,6 +49,7 @@
 #
 # Several commands from one copy (tools/pc-batch.sh does this):
 #   tools/remote-test.sh --prepare     copy and build only, run nothing
+#                                      (JAMOS_REMOTE_COPY_ONLY=1: copy only)
 #   JAMOS_REMOTE_NOSYNC=1 tools/remote-test.sh <command>
 #                                      don't copy: use what the last copy left
 #   JAMOS_REMOTE_SCRIPT_ONLY=1 tools/remote-test.sh <command>
@@ -156,6 +157,7 @@ if [ "$nosync" != 1 ]; then
         -e "$sshr ${ssh_opts[*]}" ./ "$host:$dir/" ||
         { echo "remote-test: copying to $host failed" >&2; exit 2; }
 fi
+[ $prepare = 1 ] && [ "${JAMOS_REMOTE_COPY_ONLY:-0}" = 1 ] && exit 0   # the copy alone (the runs build)
 # What the PC runs: written to its bash on stdin. runid names this call; a
 # repeat of the session (below) first stops what the lost one left there.
 runid=${JAMOS_REMOTE_RUNID:-$$-$(date +%s)-$RANDOM}
