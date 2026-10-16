@@ -35,11 +35,23 @@
  * that looks for the extended state finds it. A copy, because the frame
  * has no room after it (the interrupted code's red zone is there).
  *
- * SG4 adds sigaltstack (the kernel's exception stack: uc_stack, and the
- * move to the interrupted stack for a handler without SA_ONSTACK) and SG5
- * a raise of one of our threads (EXC_RAISED frames): both are marked
+ * The alternate stack (sigaltstack, SG4) is the kernel's exception stack
+ * for the thread, set by sig_alt_set: while the thread's RSP is outside
+ * it the kernel puts every frame at its top, whichever handler the signal
+ * has. A handler with SA_ONSTACK runs there (uc_stack says so, and
+ * sigaltstack inside it says SS_ONSTACK). One without it runs on the
+ * interrupted stack, as on Linux: sig_fault copies the frame and what the
+ * rest needs below the interrupted RSP's red zone, and the rest runs
+ * there (__jam_sig_moved), still in the window, so a stack that can't take
+ * the copy (an overflow) is the kernel's kill with the first fault's line,
+ * a SIGSEGV for waitpid. It is the whole rest that moves, not only the
+ * handler: a nested fault is served on the alternate stack again, over
+ * this frame and what sig_fault keeps there.
+ *
+ * SG5 adds a raise of one of our threads (EXC_RAISED frames), marked
  * below. */
 #include <stddef.h>
+#include <errno.h>
 #include <signal.h>
 #include <string.h>
 #include <ucontext.h>
@@ -58,6 +70,9 @@
 #define UC_FP_XSTATE     1ul           /* uc_flags: fpregs has the XSAVE header and more */
 #define UC_SIGCONTEXT_SS 2ul           /* uc_flags: REG_CSGSFS's top 16 bits are SS */
 #define FRAME_REGS       18            /* REG_R8 .. REG_EFL: the frame's, in that order */
+#define RED_ZONE         128u          /* below RSP: the x86-64 ABI's, leaf code's */
+#define FAULT_ROOM       1024u         /* sig_fault's own frames, in sig_alt_min */
+#define HANDLER_ROOM     1024u         /* a small handler's, in sig_alt_min */
 
 /* Linux's struct _fpx_sw_bytes. */
 struct fpx_sw_bytes {
@@ -90,8 +105,21 @@ struct fault_sig {
     uint64_t addr;   /* si_addr */
 };
 
+/* What the rest of a fault needs once the signal is taken (sig_fault_run):
+ * kept with the frame's copy below the interrupted RSP when the handler
+ * runs there. */
+struct fault_run {
+    struct exc_frame *f;
+    struct fault_sig  fs;
+    struct sig_act_io act;   /* the disposition as sig_fault_begin took it */
+    uint64_t          was;   /* the mask before the handler */
+};
+
 void           __jam_sig_entry(void);   /* sigentry.S */
+_Noreturn void __jam_sig_moved(struct exc_frame *copy, struct fault_run *run, void *top);
+void           __jam_sig_stack_call(void (*fn)(void *), void *arg, void *top);
 _Noreturn void sig_fault(struct exc_frame *f);
+_Noreturn void sig_fault_run(struct fault_run *r);
 
 /* ---- the entry ---------------------------------------------------------------------- */
 
@@ -168,6 +196,103 @@ static struct fault_sig classify(const struct exc_frame *f)
     }
 }
 
+int sig_fault_signal(uint32_t vector, int32_t status)
+{
+    if (vector == 14 && status == ERR_NO_MEMORY)
+        return SIGKILL;   /* out of memory, or the job's page limit */
+    if (vector == 14 && status == ERR_BAD_STATE)
+        return SIGBUS;    /* a page that doesn't match the approved program */
+    if (vector == 16 || vector == 19)
+        return SIGFPE;    /* killed with an unmasked exception pending */
+    struct exc_frame f = { .vector = vector, .status = status };
+    return classify(&f).sig;
+}
+
+/* ---- the alternate stack ------------------------------------------------------------ */
+
+/* The calling thread's sigaltstack: this thread's own, so no lock; a new
+ * thread's is zero (none). The kernel has the same range. */
+static __thread struct {
+    uintptr_t base;
+    size_t    size;
+} alt;
+
+/* sp is on the stack: above its base, at most its top (Linux's on_sig_stack
+ * and the kernel's own test). */
+static bool on_alt(uintptr_t sp)
+{
+    return alt.size && sp > alt.base && sp - alt.base <= alt.size;
+}
+
+int sig_alt_state(uintptr_t sp, uintptr_t *base, size_t *size)
+{
+    *base = alt.base;
+    *size = alt.size;
+    return !alt.size ? SS_DISABLE : on_alt(sp) ? SS_ONSTACK : 0;
+}
+
+long sig_alt_set(uintptr_t base, size_t size)
+{
+    if (size == 0)
+        base = 0;
+    if (jam_thread_exception_stack(base, size) != OK)
+        return -EFAULT;
+    alt.base = base;
+    alt.size = size;
+    return 0;
+}
+
+void sig_alt_reapply(void)
+{
+    if (alt.size)
+        (void)jam_thread_exception_stack(alt.base, alt.size);
+}
+
+/* The bytes of vector state the kernel saves in a frame: the XSAVE area
+ * for the features it enables (CPUID leaf 0xD's size, the area as the
+ * kernel sizes it), or FXSAVE's 512. */
+static size_t xsave_bytes(void)
+{
+    uint32_t a = 0, b, c = 0, d;
+    __asm__ volatile("cpuid" : "+a"(a), "=b"(b), "+c"(c), "=d"(d));
+    uint32_t top = a;
+    a = 1;
+    c = 0;
+    __asm__ volatile("cpuid" : "+a"(a), "=b"(b), "+c"(c), "=d"(d));
+    if (top < 0xd || !(c & (1u << 27)))   /* no XSAVE, or the OS hasn't enabled it */
+        return LEGACY_SIZE;
+    a = 0xd;
+    c = 0;
+    __asm__ volatile("cpuid" : "+a"(a), "=b"(b), "+c"(c), "=d"(d));
+    return b < LEGACY_SIZE ? LEGACY_SIZE : (b + 63u) & ~63u;
+}
+
+size_t sig_alt_min(void)
+{
+    static size_t cached;   /* a racing first call computes the same */
+    size_t min = __atomic_load_n(&cached, __ATOMIC_RELAXED);
+    if (!min) {
+        size_t xs = xsave_bytes();
+        /* the kernel's frame at the top, then what sig_fault_run builds
+         * (the ucontext and siginfo, a copy of the vector state) and
+         * its own and a handler's frames */
+        min = EXC_FRAME_XSAVE + xs + sizeof(struct fault_ctx) + xs + FAULT_ROOM + HANDLER_ROOM;
+        if (min < MINSIGSTKSZ)
+            min = MINSIGSTKSZ;
+        __atomic_store_n(&cached, min, __ATOMIC_RELAXED);
+    }
+    return min;
+}
+
+void sig_run_onstack(void (*fn)(void *), void *arg)
+{
+    if (!alt.size || on_alt((uintptr_t)__builtin_frame_address(0))) {
+        fn(arg);
+        return;
+    }
+    __jam_sig_stack_call(fn, arg, (void *)((alt.base + alt.size) & ~(uintptr_t)15));
+}
+
 /* ---- the context -------------------------------------------------------------------- */
 
 /* The frame's registers, REG_R8 .. REG_EFL. */
@@ -221,6 +346,16 @@ _Noreturn static void resume(struct exc_frame *f, int sig)
     jam_process_exit(LX_EXIT_SIGNAL + sig);   /* never: only a frame it can't read returns */
 }
 
+/* The handler runs on the interrupted stack, not on the alternate one it
+ * was entered on: the thread has an alternate stack, its RSP wasn't on it,
+ * and the handler has no SA_ONSTACK. */
+static bool runs_on_interrupted(const struct exc_frame *f, const struct sig_act_io *act)
+{
+    return alt.size && !on_alt(f->rsp) && !(act->flags & SA_ONSTACK);
+}
+
+#define RUN_BYTES ((sizeof(struct fault_run) + 63) & ~(size_t)63)
+
 _Noreturn void sig_fault(struct exc_frame *f)
 {
     if (uc_fault(f))   /* a checked copy's bad pointer: on with -EFAULT (ucopy.c) */
@@ -229,39 +364,62 @@ _Noreturn void sig_fault(struct exc_frame *f)
     if (f->kind != EXC_FAULT || f->xsave_size < LEGACY_SIZE || f->xsave_size > XSAVE_MAX ||
         f->size != EXC_FRAME_XSAVE + f->xsave_size)
         unhandled(f, SIGSEGV);
-    struct fault_sig fs = classify(f);
-    if (!fs.sig)
+    struct fault_run run = { .f = f, .fs = classify(f) };
+    if (!run.fs.sig)
         resume(f, SIGFPE);   /* a spurious x87 or SIMD error: on, as Linux goes on */
-    struct sig_act_io act;
-    uint64_t was;
-    if (!sig_fault_begin(fs.sig, &act, &was))
-        unhandled(f, fs.sig);
+    if (!sig_fault_begin(run.fs.sig, &run.act, &run.was))
+        unhandled(f, run.fs.sig);
+    if (!runs_on_interrupted(f, &run.act))
+        sig_fault_run(&run);
 
+    /* The move, still in the window: the run state and a copy of the
+     * frame below the interrupted RSP and its red zone, 64-byte aligned,
+     * and the rest of the fault on the stack below them. A stack that
+     * can't take the copy faults here: the kernel's kill. */
+    size_t fsz = ((size_t)f->size + 63) & ~(size_t)63;
+    uintptr_t lo = ((uintptr_t)f->rsp - RED_ZONE - RUN_BYTES - fsz) & ~(uintptr_t)63;
+    struct fault_run *r = (struct fault_run *)lo;
+    struct exc_frame *copy = (struct exc_frame *)(lo + RUN_BYTES);
+    memcpy(copy, f, f->size);
+    *r = run;
+    r->f = copy;
+    __jam_sig_moved(copy, r, (void *)lo);
+}
+
+/* The rest of a fault whose signal a handler takes: what it is given, the
+ * handler, and the thread resumed from what it leaves. On the stack the
+ * handler runs on (the frame's, or the interrupted one: sig_fault). */
+_Noreturn void sig_fault_run(struct fault_run *r)
+{
+    struct exc_frame *f = r->f;
+    int sig = r->fs.sig;
     struct fault_ctx ctx;
     memset(&ctx, 0, sizeof(ctx));
     uint8_t *fp = __builtin_alloca(f->xsave_size + sizeof(uint32_t) + 63);
     fp = (uint8_t *)(((uintptr_t)fp + 63) & ~(uintptr_t)63);   /* XSAVE's alignment */
     ctx.uc.uc_flags = UC_SIGCONTEXT_SS | fp_copy(fp, f);
-    ctx.uc.uc_stack.ss_flags = SS_DISABLE;   /* SG4: the alternate stack, if one is set */
+    uintptr_t base;
+    size_t size;
+    ctx.uc.uc_stack.ss_flags = sig_alt_state((uintptr_t)f->rsp, &base, &size);
+    ctx.uc.uc_stack.ss_sp = (void *)base;
+    ctx.uc.uc_stack.ss_size = size;
     greg_t *g = ctx.uc.uc_mcontext.gregs;
     memcpy(g, frame_regs(f), FRAME_REGS * sizeof(greg_t));
     g[REG_CSGSFS] = (greg_t)selectors();
     g[REG_ERR] = (greg_t)f->error;
     g[REG_TRAPNO] = f->vector;
-    g[REG_OLDMASK] = (greg_t)was;
+    g[REG_OLDMASK] = (greg_t)r->was;
     g[REG_CR2] = (greg_t)f->addr;
     ctx.uc.uc_mcontext.fpregs = (fpregset_t)(void *)fp;
-    memcpy(&ctx.uc.uc_sigmask, &was, sizeof(was));
-    struct sig_info si = { .signo = fs.sig, .code = fs.code, .addr = fs.addr };
+    memcpy(&ctx.uc.uc_sigmask, &r->was, sizeof(r->was));
+    struct sig_info si = { .signo = sig, .code = r->fs.code, .addr = r->fs.addr };
     sig_fill_siginfo(&si, &ctx.info);
 
-    /* SG4: a handler without SA_ONSTACK, entered on the exception stack,
-     * gets ctx moved to the interrupted stack here, still in the window. */
     (void)jam_exception_done(f, EXC_LEAVE);
-    if (act.flags & SA_SIGINFO)
-        ((void (*)(int, siginfo_t *, void *))act.handler)(fs.sig, &ctx.info, &ctx.uc);
+    if (r->act.flags & SA_SIGINFO)
+        ((void (*)(int, siginfo_t *, void *))r->act.handler)(sig, &ctx.info, &ctx.uc);
     else
-        ((void (*)(int))act.handler)(fs.sig);
+        ((void (*)(int))r->act.handler)(sig);
 
     /* Back from the handler: on as its ucontext says (fpregs as Linux's
      * sigreturn takes it: wherever the handler left it pointing). */
@@ -271,5 +429,5 @@ _Noreturn void sig_fault(struct exc_frame *f)
     uint64_t mask;
     memcpy(&mask, &ctx.uc.uc_sigmask, sizeof(mask));
     sig_fault_end(mask);
-    resume(f, fs.sig);
+    resume(f, sig);
 }

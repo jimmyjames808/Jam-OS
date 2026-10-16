@@ -11,10 +11,9 @@
  *
  * The waits for a signal (sigsuspend, pause, sigtimedwait) sleep with
  * sleep_until, an interruptible wait: a sender interrupts the thread it
- * routed a signal to, and the wait looks again. sigaltstack is accepted
- * and not used yet: handlers run on the thread's own stack, a fault's
- * (sigfault.c) too, until SG4 (docs/SIGNALS-PLAN.md) gives it the
- * kernel's exception stack. */
+ * routed a signal to, and the wait looks again. sigaltstack is the
+ * thread's own alternate stack, which handlers with SA_ONSTACK run on
+ * (signal.c's call-boundary handlers and sigfault.c's faults). */
 #include <errno.h>
 #include <signal.h>
 #include <string.h>
@@ -81,15 +80,41 @@ long lx_rt_sigpending(long set, long size, long c, long d, long e, long f)
     return 0;
 }
 
+/* The calling thread's alternate stack (sigfault.c keeps it, and the
+ * kernel's exception stack the same). The order is Linux's: on it is
+ * EPERM, a flag other than SS_DISABLE (SS_ONSTACK is taken as "on")
+ * EINVAL, a size under the smallest a fault's frame fits (never under
+ * MINSIGSTKSZ) ENOMEM; the old one is written only if the call succeeds.
+ * Whether we are on it is this call's own stack pointer: the layer runs
+ * on the caller's stack. */
 long lx_sigaltstack(long ss, long old, long c, long d, long e, long f)
 {
     const stack_t *in = (const stack_t *)(uintptr_t)ss;
-    if (in && (in->ss_flags & ~SS_DISABLE))
-        return -EINVAL;
+    uintptr_t base;
+    size_t size;
+    int flags = sig_alt_state((uintptr_t)__builtin_frame_address(0), &base, &size);
+    if (in) {
+        if (flags == SS_ONSTACK)
+            return -EPERM;
+        if (in->ss_flags & ~(SS_DISABLE | SS_ONSTACK))
+            return -EINVAL;
+        long r;
+        if (in->ss_flags & SS_DISABLE) {
+            r = sig_alt_set(0, 0);
+        } else {
+            if (in->ss_size < sig_alt_min())
+                return -ENOMEM;
+            r = sig_alt_set((uintptr_t)in->ss_sp, in->ss_size);
+        }
+        if (r)
+            return r;
+    }
     if (old) {
         stack_t *o = (stack_t *)(uintptr_t)old;
         memset(o, 0, sizeof(*o));
-        o->ss_flags = SS_DISABLE;   /* handlers never run on one */
+        o->ss_sp = (void *)base;
+        o->ss_size = size;
+        o->ss_flags = flags;
     }
     return 0;
 }

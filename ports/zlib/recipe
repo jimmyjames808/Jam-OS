@@ -16,7 +16,12 @@ configure   --static
 # minigzip compresses the files it is named, so it may write in /data
 # (wants/minigzip); the library and its headers are for ports that need it.
 program     bin/minigzip
-library     lib/libz.a include/zlib.h include/zconf.h lib/pkgconfig/zlib.pc
+# zlib's own test program (what its `make test` runs): the zlib-test package
+# of the port's test on Jam OS, never in the repository. It writes foo.gz
+# beside the file it is given, so it may write in /data (wants/example).
+program     bin/example
+subpackage  zlib-test bin/example
+library    lib/libz.a include/zlib.h include/zconf.h lib/pkgconfig/zlib.pc
 cpe         cpe:2.3:a:zlib:zlib
 fixed       CVE-2022-37434 1.2.13     # inflateGetHeader's extra field overflow
 fixed       CVE-2023-45853 1.3.1      # minizip's zip header fields (contrib: not built here)

@@ -130,6 +130,8 @@ class Run:
             r = self.t.recipes[n]
             stage = os.path.join(self.builder.base(n), "stage")
             for name, path in packagemod.make(r, stage, staging, self.abi, self.key):
+                if name.endswith("-test"):
+                    continue     # a port's test program or data (section 14): never in the repository
                 with open(path, "rb") as f:
                     data = f.read()
                 m = pkgverify.verify_package(data, self.pub, self.abi)
