@@ -30,7 +30,7 @@
 #           kernel); the stick's default entry still boots A.
 # init's progress lines (`init: update: write: ...`) are printed.
 # PC_RUNS picks runs ("fast" alone: about 2 minutes; all four about 9;
-# `again` needs `fast` before it);
+# `again` boots fast's stick, so PC_RUNS=again runs `fast` first);
 # PC_SANDISK=0 leaves the second stick out.
 # Usage: tools/update-pc-test.sh <outdir> (after `make -s image`); exit 0 on PASS.
 set -u
@@ -154,7 +154,13 @@ EOF
 }
 
 slow="${PC_THROTTLE-x-iops-write=100,x-bps-write=10485760}"
-for run in ${PC_RUNS:-fast again stuck reboot}; do
+runs=${PC_RUNS:-fast again stuck reboot}
+# `again` boots the stick `fast` left: asked for without `fast`, fast runs first
+case " $runs " in
+*" fast "*) ;;
+*" again "*) runs="fast $runs" ;;
+esac
+for run in $runs; do
     cmd=update
     [ $run = again ] && cmd="update -w"
     begin $run "$cmd"
@@ -174,6 +180,8 @@ EOF
             boot fast "$slow"
             cp "$out/fast-done.img" "$out/again-stick.img"
         else
+            [ -f "$out/again-stick.img" ] ||
+                { fail "again: no stick from fast (fast must run before again)"; continue; }
             boot again "$slow" "$out/again-stick.img"
             rm -f "$out/again-stick.img"
             grep -aq "init: update: write: the stick has this build already" "$out/again.log" ||

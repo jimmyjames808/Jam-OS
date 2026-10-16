@@ -502,7 +502,7 @@ case_links() {
     want 1 "^changed" "$run"
     # The one thing Jam OS can't read is the loop.
     want 1 "can't read it" "$run"
-    want 1 "loop-a: can't read it \\(ERR_LINK_LOOP\\)" "$run"
+    want 1 "loop-a: can't read it \\(too many symbolic links\\)" "$run"
     never "MISMATCH|DIFFERENT|[^0-9] failed" "$run"
     # Linux's view: the same names, the links as they should be.
     clean "$drive" 64 "after the run"
