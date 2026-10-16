@@ -51,6 +51,7 @@ static const struct {
     { "spawn-data", pt_spawn_data },
     { "loopback", pt_loopback },
     { "links", pt_links },
+    { "execinfo", pt_execinfo },
 };
 
 /* The sections run only when named (long ones). */
