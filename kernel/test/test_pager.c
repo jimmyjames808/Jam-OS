@@ -426,7 +426,8 @@ KTEST(pager_detach)
 }
 
 /* A VMO's end: PAGER_REQ_GONE, delivered and given again like any request,
- * keeps its key taken until PAGER_OP_DETACH answers it. */
+ * keeps its key taken until PAGER_OP_DETACH answers it, or a create of the
+ * key takes it over. */
 KTEST(pager_gone)
 {
     struct pager *pg = pg_new(NULL, ANSWER);
@@ -444,7 +445,6 @@ KTEST(pager_gone)
     none_queued(pg);
     KT_EQ(supply(pg, 9, 0, 1), ERR_NOT_FOUND);
     KT_EQ(pager_op(pg, 9, PAGER_OP_FAIL, 0, PG, ERR_IO), ERR_NOT_FOUND);
-    KT_EQ(pager_create_vmo(pg, 9, PG, &v2), ERR_ALREADY_EXISTS);
     next(pg, PAGER_NEXT_AGAIN, &q);
     KT_EQ(q.kind, PAGER_REQ_GONE);
     KT_EQ(pager_op(pg, 9, PAGER_OP_DETACH, 0, 0, 0), OK);   /* the answer */
@@ -452,6 +452,13 @@ KTEST(pager_gone)
     KT_EQ(pager_next(pg, PAGER_NEXT_AGAIN, &q), ERR_SHOULD_WAIT);
     KT_EQ(pager_op(pg, 9, PAGER_OP_DETACH, 0, 0, 0), ERR_NOT_FOUND);
     KT_EQ(pager_create_vmo(pg, 9, PG, &v2), OK);
+    put(v2);
+    /* A create of a key whose GONE has no answer takes it over (WRITEMAP's
+     * 1.1): the GONE is withdrawn, never given again. */
+    next(pg, 0, &q);
+    KT_EQ(q.kind, PAGER_REQ_GONE);
+    KT_EQ(pager_create_vmo(pg, 9, PG, &v2), OK);
+    KT_EQ(pager_next(pg, PAGER_NEXT_AGAIN, &q), ERR_SHOULD_WAIT);
     put(v2);
     pg_close(pg);   /* answers the new GONE */
 }
@@ -1518,7 +1525,7 @@ KTEST(pager_cache_budget)
     for (uint64_t i = 0; i < 16; i++)
         KT_EQ(vmo_page_phys(v, i * PG) != 0, i >= 12);
     KT_EQ(job_used(j, JOB_LIMIT_PAGES), 4 + 2);   /* the pages, a mid and a leaf table */
-    KT_EQ(job_used(j, JOB_LIMIT_MSG_BYTES), 4 * 16);
+    KT_EQ(job_used(j, JOB_LIMIT_MSG_BYTES), 4 * PAGER_RECORD_BYTES);
 
     uint64_t pa = vmo_page_phys(v, 12 * PG);
     KT_EQ(supply(pg, 40, 12, 4), OK);   /* present: the first copy stays, nothing goes */
@@ -1546,7 +1553,7 @@ KTEST(pager_cache_budget)
     KT_EQ(q.kind, PAGER_REQ_GONE);
     KT_EQ(pager_op(pg, 41, PAGER_OP_DETACH, 0, 0, 0), OK);
     KT_EQ(job_used(j, JOB_LIMIT_PAGES), 2 + 2);
-    KT_EQ(job_used(j, JOB_LIMIT_MSG_BYTES), 2 * 16);
+    KT_EQ(job_used(j, JOB_LIMIT_MSG_BYTES), 2 * PAGER_RECORD_BYTES);
 
     KT_EQ(pager_op(pg, 40, PAGER_OP_DETACH, 0, 0, 0), OK);
     KT_EQ(pager_resident(pg), 0);
@@ -1723,7 +1730,7 @@ KTEST(pager_cache_invalidate)
     KT_EQ(vmo_committed(v), 2 * PG);
     KT_EQ(pager_resident(pg), 2);
     KT_EQ(job_used(j, JOB_LIMIT_PAGES), 2 + 2);
-    KT_EQ(job_used(j, JOB_LIMIT_MSG_BYTES), 2 * 16);
+    KT_EQ(job_used(j, JOB_LIMIT_MSG_BYTES), 2 * PAGER_RECORD_BYTES);
     struct rd r;
     rd_start(&r, v, PG, 2 * PG);
     struct pager_request q;
@@ -1796,7 +1803,7 @@ KTEST(pager_cache_shrink)
     KT_EQ(aspace_pte(as, a + 3 * PG), 0);
     KT_EQ(vmo_committed(v), 2 * PG);
     KT_EQ(pager_resident(pg), 2);
-    KT_EQ(job_used(j, JOB_LIMIT_MSG_BYTES), 2 * 16);
+    KT_EQ(job_used(j, JOB_LIMIT_MSG_BYTES), 2 * PAGER_RECORD_BYTES);
     KT_EQ(aspace_fault(as, a + 3 * PG, ASPACE_READ), ERR_OUT_OF_RANGE);
     KT_EQ(vmo_read(v, 3 * PG, &w, 8), ERR_OUT_OF_RANGE);
     KT_EQ(supply(pg, 45, 3, 1), ERR_OUT_OF_RANGE);
@@ -1862,7 +1869,7 @@ KTEST(pager_cache_pressure)
         KT_EQ(vmo_page_phys(v, i * PG) != 0, i >= 12);
 
     KT_EQ(job_set_limit(j, JOB_LIMIT_PAGES, JOB_NO_LIMIT), OK);
-    KT_EQ(job_set_limit(j, JOB_LIMIT_MSG_BYTES, 6 * 16), OK);   /* 6 records */
+    KT_EQ(job_set_limit(j, JOB_LIMIT_MSG_BYTES, 6 * PAGER_RECORD_BYTES), OK);   /* 6 records */
     KT_EQ(supply(pg, 47, 0, 8), OK);
     KT_EQ(pager_resident(pg), 6);
     for (uint64_t i = 0; i < 16; i++)

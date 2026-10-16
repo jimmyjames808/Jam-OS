@@ -1,23 +1,29 @@
-/* A pager's page cache: the budget, the list of resident pages oldest
- * first, publishing a supplied page inside the budget and evicting the
- * oldest. The model, the counting rule and the lock order are in
+/* A pager's page cache: the budget, the lists of clean pages oldest first
+ * and of dirty ones, publishing a supplied page inside the budget,
+ * evicting the oldest clean one, and a store's move from one list to the
+ * other. The model, the counting rule and the lock order are in
  * pager_cache.h; the VMO side of an eviction (zap, gather, free) is
  * vmo.c's vmo_pager_evict. */
 #include <jam/aspace_vmo.h>
+#include <jam/dbghook.h>
 #include <jam/mm.h>
 #include <jam/pager.h>
 #include <jam/panic.h>
 #include <jam/process.h>
+#include <jam/time.h>
 #include <jam/vmo.h>
 #include "pager_cache.h"
 
-/* Where a resident page is: the evictor's way back from the list to the
- * table. */
+/* Where a resident page is (the evictor's way back from the list to the
+ * table), and what state it is in. */
 struct pager_rec {
-    struct vmo *v;     /* its VMO (no reference: the record goes before the VMO can) */
-    uint64_t    idx;   /* its page index there */
+    struct vmo *v;         /* its VMO (no reference: the record goes before the VMO can) */
+    uint32_t    idx;       /* its page index there (a pager VMO has fewer than 2^32) */
+    uint32_t    state;     /* PAGER_PAGE_* (0: clean); the VMO lock and the cache's */
+    uint64_t    dirtied;   /* uptime ns it was first dirtied since it was last clean */
 };
-_Static_assert(sizeof(struct pager_rec) == 16, "a resident page costs its job 16 bytes");
+_Static_assert(sizeof(struct pager_rec) == PAGER_RECORD_BYTES, "a resident page's cost to its job");
+_Static_assert((VMO_SMALL_MAX_SIZE >> PAGE_SHIFT) <= UINT32_MAX, "a page index fits in idx");
 
 /* A page taken off the list by an evictor. */
 struct victim {
@@ -32,7 +38,9 @@ void pager_cache_init(struct pager_cache *c, struct job *job, uint64_t max_pages
     c->job = job;
     c->max_pages = max_pages;
     c->resident = 0;
+    c->ndirty = 0;
     list_init(&c->pages);
+    list_init(&c->dirty);
 }
 
 static uint64_t cache_lock(struct pager_cache *c)
@@ -76,11 +84,14 @@ static void pop_locked(struct pager_cache *c, struct victim *out)
     out->v = kobject_tryref(vmo_kobject(r->v)) ? r->v : NULL;
 }
 
-/* Take a popped page out of its table, if it is still there. */
+/* Take a popped page out of its table, if it is still there and still
+ * clean (a store may have dirtied it since the pop: it stays, counted
+ * again by the store). */
 static void evict(struct victim *vic)
 {
     if (!vic->v)
         return;   /* its VMO's destruction takes it */
+    DBG_HOOK(DBG_PAGER_EVICT, vic->p);
     vmo_pager_evict(vic->v, vic->idx, vic->p);
     kobject_unref(vmo_kobject(vic->v));
 }
@@ -144,7 +155,9 @@ status_t pager_cache_publish(struct pager_cache *c, struct vmo *v, uint64_t idx,
         return ERR_NO_MEMORY;
     }
     rec->v = v;
-    rec->idx = idx;
+    rec->idx = (uint32_t)idx;   /* (past the size, vmo_pager_publish refuses it) */
+    rec->state = 0;
+    rec->dirtied = 0;
     reserve(c);
     status_t st;
     while ((st = vmo_pager_publish(v, idx, p, checked, rec)) == ERR_NO_MEMORY &&
@@ -171,19 +184,56 @@ void pager_cache_remove_vlocked(struct pager_cache *c, struct page *p)
     struct pager_rec *rec = (struct pager_rec *)p->private;
     ASSERT(rec);   /* every page of a pager VMO came in through pager_cache_add_vlocked */
     uint64_t f = cache_lock(c);
-    if (p->node.next) {   /* still listed: no evictor has it */
+    if (p->node.next) {   /* still listed: no evictor has it (none ever has a dirty one) */
         list_del(&p->node);
         c->resident--;
+        if (rec->state)
+            c->ndirty--;
     }
     p->private = 0;
     cache_unlock(c, f);
     rec_free(c, rec);
 }
 
+unsigned pager_cache_state_vlocked(const struct page *p)
+{
+    return ((const struct pager_rec *)p->private)->state;
+}
+
+uint64_t pager_cache_dirtied_vlocked(const struct page *p)
+{
+    return ((const struct pager_rec *)p->private)->dirtied;
+}
+
+void pager_cache_store_vlocked(struct pager_cache *c, struct page *p)
+{
+    struct pager_rec *rec = (struct pager_rec *)p->private;
+    uint64_t f = cache_lock(c);
+    if (!rec->state) {
+        if (p->node.next)
+            list_del(&p->node);   /* off the clean list: its count goes with it */
+        else
+            c->resident++;   /* popped: its count became the evictor's slot, which it keeps */
+        list_add_tail(&c->dirty, &p->node);
+        c->ndirty++;
+        rec->dirtied = uptime_ns();
+    }
+    rec->state |= PAGER_PAGE_DIRTY;
+    cache_unlock(c, f);
+}
+
 uint64_t pager_cache_resident(struct pager_cache *c)
 {
     uint64_t f = cache_lock(c);
     uint64_t n = c->resident;
+    cache_unlock(c, f);
+    return n;
+}
+
+uint64_t pager_cache_ndirty(struct pager_cache *c)
+{
+    uint64_t f = cache_lock(c);
+    uint64_t n = c->ndirty;
     cache_unlock(c, f);
     return n;
 }

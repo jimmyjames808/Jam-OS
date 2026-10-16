@@ -3,8 +3,11 @@
  * pager VMO makes whoever touches it wait for the pager, so only the
  * filesystems the system trusts (volumes' fat) may make them. Reading
  * requests needs RIGHT_READ on the pager; making VMOs and answering,
- * RIGHT_WRITE. A pager VMO's handle never carries RIGHT_WRITE,
- * RIGHT_RESIZE or RIGHT_EXEC (PAGER_VMO_RIGHTS). */
+ * RIGHT_WRITE. A pager VMO's handle never carries RIGHT_RESIZE or
+ * RIGHT_EXEC (PAGER_VMO_RIGHTS), nor RIGHT_WRITE unless the VMO is
+ * writable (PAGER_VMO_WRITABLE), where it lets the VMO be mapped writable
+ * and nothing more; a PAGER_VMO_FIND's handle has the rights the VMO was
+ * made with. */
 #include <jam/handle.h>
 #include <jam/pager.h>
 #include <jam/sysinfo.h>
@@ -53,13 +56,36 @@ status_t sys_pager_create_vmo(struct handle_table *t, handle_t pager, uint64_t k
     if (st != OK)
         return st;
     struct vmo *v;
-    st = flags & ~(PAGER_VMO_WRITABLE | PAGER_VMO_FIND) ? ERR_INVALID_ARGS
-         : flags                                         ? ERR_NOT_SUPPORTED   /* (WK1) */
-                                                         : pager_create_vmo(pg, key, size, &v);
+    st = pager_create_vmo_flags(pg, key, size, flags, &v);
     kobject_unref(pager_kobject(pg));
     if (st != OK)
         return st;
-    return insert(t, vmo_kobject(v), PAGER_VMO_RIGHTS, out);
+    rights_t rights = PAGER_VMO_RIGHTS | (vmo_pager_writable(v) ? RIGHT_WRITE : 0);
+    return insert(t, vmo_kobject(v), rights, out);
+}
+
+status_t sys_pager_dirty(struct handle_table *t, handle_t pager, uint64_t key, uint32_t flags,
+                         struct pager_run *run, const struct pager_dst *dst)
+{
+    struct pager *pg;
+    status_t st = pager_get(t, pager, RIGHT_WRITE, &pg);
+    if (st != OK)
+        return st;
+    st = pager_dirty(pg, key, flags, run, dst);
+    kobject_unref(pager_kobject(pg));
+    return st;
+}
+
+status_t sys_pager_write(struct handle_table *t, handle_t pager, uint64_t key, uint64_t offset,
+                         const struct pager_src *src, uint64_t len)
+{
+    struct pager *pg;
+    status_t st = pager_get(t, pager, RIGHT_WRITE, &pg);
+    if (st != OK)
+        return st;
+    st = pager_write(pg, key, offset, src, len);
+    kobject_unref(pager_kobject(pg));
+    return st;
 }
 
 status_t sys_pager_next(struct handle_table *t, handle_t pager, uint32_t flags,
