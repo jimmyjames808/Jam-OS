@@ -2,7 +2,9 @@
 # puts the mode in place of @MODE@ and checks that this script fails, or
 # passes, as that mode should):
 #   ok      utest's verdict_canary passes (the control)
-#   fail    it fails a check: "utest: 0 passed, 1 FAILED"
+#   fail    it fails a check: "FAILED at line", then "utest: 0 passed, 1 FAILED"
+#   quiet   it fails without printing the check's line: only the names of the
+#           failed tests and the summary say so
 #   crash   it faults: utest is killed and gives no summary
 # The script is written the weak way on purpose, as audio-api.txt and
 # posix-procinfo.txt were: nothing here looks at the summary line or at $?

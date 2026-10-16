@@ -5,8 +5,12 @@
  * made to do either, so the script can show that it does.
  *
  * t_verdict_canary: passes. If the shell exported UTEST_CANARY it does
- * what that says instead, once:
- *     fail     a check fails (the summary says "1 FAILED")
+ * what that says instead:
+ *     fail     a check fails (it prints "FAILED at line", the summary says
+ *              "1 FAILED")
+ *     quiet    it fails without a word: only the RESULTS lines (the names
+ *              of the failed tests, the summary), which the kernel never
+ *              drops, say so
  *     crash    a NULL write: the kernel kills utest, no summary comes
  * Without it (every normal run) it only reads the environment. */
 #define CHECK_PROG "utest"
@@ -30,6 +34,8 @@ bool t_verdict_canary(void)
         return true;
     if (!strcmp(what, "crash"))
         *(volatile int *)0 = 1;
+    if (!strcmp(what, "quiet"))
+        return false;
     CHECK(strcmp(what, "fail") != 0);   /* the failure the script asked for */
     return true;
 }
