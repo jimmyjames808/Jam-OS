@@ -668,6 +668,7 @@ static void check_alt_api(void)
     printf("posixtest: fault: sigaltstack's smallest stack is %zu bytes (MINSIGSTKSZ %d, SIGSTKSZ %d)\n",
            hi, MINSIGSTKSZ, SIGSTKSZ);
     CHECK(hi >= MINSIGSTKSZ && hi <= SIGSTKSZ && alt_takes(hi) && !alt_takes(hi - 1));
+    CHECK(sysconf(_SC_MINSIGSTKSZ) == (long)hi);   /* the aux vector's AT_MINSIGSTKSZ (SG5) */
     /* a fault on exactly that stack gets its handler (a small one) */
     CHECK(alt_takes(hi));
     on(SIGSEGV, SA_ONSTACK, tiny_handler);

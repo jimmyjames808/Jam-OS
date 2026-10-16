@@ -20,9 +20,12 @@
  *      AT_RANDOM (16 bytes from the kernel's generator), AT_HWCAP,
  *      AT_PHDR/AT_PHENT/AT_PHNUM (the program headers, which
  *      user/posix/posix.ld maps, so musl's __init_tls finds PT_TLS),
- *      AT_ENTRY, the user and group ids (the one user's, 1000) and
+ *      AT_ENTRY, the user and group ids (the one user's, 1000),
  *      AT_SECURE: 1 if the hand-over says so (POSIXFDS_SECURE: init's
- *      /svc/exec, for a program another program started), else 0. Such
+ *      /svc/exec, for a program another program started), else 0, and
+ *      AT_MINSIGSTKSZ, so that sysconf(_SC_MINSIGSTKSZ), which adds 1 KiB
+ *      to it, says sigaltstack's smallest stack (sig_alt_min: from
+ *      CPUID's XSAVE size, read once and kept). Such
  *      a program's environment loses the variables glibc drops for a
  *      set-user-ID program (unsecure_vars), and musl does the rest as on
  *      Linux: secure_getenv says NULL, no locale or message catalogue
@@ -36,11 +39,13 @@
  * posixfds_read use none either). */
 #include <elf.h>
 #include <string.h>
+#include "sig.h"
 #include "start.h"
 
 #define AUX_MAX     16                  /* auxv pairs, AT_NULL's included */
 #define BLOCK_STACK 512                 /* the block's longs on the stack; more: a VMO */
 #define ONE_USER    1000                /* the one user's uid and gid (M13 Q7) */
+#define SIGFRAME_SLACK 1024             /* what musl's sysconf adds to AT_MINSIGSTKSZ */
 
 int __libc_start_main(int (*)(), int, char **, void (*)(void), void (*)(void), void (*)(void));
 
@@ -188,6 +193,7 @@ static unsigned fill_aux(long *aux)
         { AT_ENTRY, (long)eh->e_entry },
         { AT_UID, ONE_USER }, { AT_EUID, ONE_USER }, { AT_GID, ONE_USER }, { AT_EGID, ONE_USER },
         { AT_SECURE, ho_secure },
+        { AT_MINSIGSTKSZ, (long)sig_alt_min() - SIGFRAME_SLACK },
         { AT_NULL, 0 },
     };
     _Static_assert(sizeof(pairs) / sizeof(pairs[0]) <= AUX_MAX, "auxv fits");

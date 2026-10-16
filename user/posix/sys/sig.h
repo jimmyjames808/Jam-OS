@@ -5,10 +5,10 @@
  * the terminal, the timers) and sigtimer.c (alarm, setitimer, the POSIX
  * timers) share, and what the rest of the layer calls.
  *
- * The model. Nothing interrupts a thread in user code: a signal is
- * delivered in libc, at a call boundary (calls.c's __jam_syscall runs
- * every call through sig_call, which runs the handlers due before and
- * after it). A thread blocked in an interruptible wait is woken for a
+ * The model. A signal is delivered in libc: at a call boundary, or by a
+ * raise for a thread busy in its own code (below). calls.c's
+ * __jam_syscall runs every call through sig_call, which runs the handlers
+ * due before and after it. A thread blocked in an interruptible wait is woken for a
  * signal by thread_interrupt (K1's latched interrupt): the wait ends with
  * ERR_INTERRUPTED (EINTR), the handler runs, and the call returns EINTR
  * or starts again (SA_RESTART). The rule that loses nothing (M13-PLAN's
@@ -31,6 +31,13 @@
  * (sigaltstack, below), a fault's and one delivered at a call boundary;
  * one without it on the stack the thread was on.
  *
+ * A thread busy in its own code (no call to look at its sets) is raised
+ * instead of interrupted (docs/SIGNALS-PLAN.md section 2): the kernel
+ * enters the exception entry on it with the registers where it was, and
+ * the entry runs its due handlers there, as Linux's signal frame would
+ * (sigfault.c), with that ucontext. A raise that finds the thread inside
+ * the layer leaves the signal to its call's boundary.
+ *
  * Locks: sig_lock (signal.c) guards the dispositions, every pending set
  * and the list of threads. It is a leaf: nothing waits, calls another
  * process or runs a handler with it held. Its holder is marked, so the
@@ -44,6 +51,7 @@
 #define SIG_BIT(n) (1ull << ((n) - 1))              /* signal n in a mask */
 #define SIG_NEVER_MASKED (SIG_BIT(9) | SIG_BIT(19)) /* SIGKILL and SIGSTOP */
 #define SIG_INTERNAL_CANCEL 33                      /* musl's SIGCANCEL: a wake, never pending */
+#define SIG_REGS 18                                 /* REG_R8 .. REG_EFL: an exc_frame's, gregs' order */
 
 /* What a handler's siginfo_t says of a signal (Linux's fields). */
 struct sig_info {
@@ -168,11 +176,11 @@ void sig_timer_forked(void);
  * while one has a handler, the exception entry is set. */
 #define SIG_FAULTS (SIG_BIT(4) | SIG_BIT(5) | SIG_BIT(7) | SIG_BIT(8) | SIG_BIT(11))
 
-/* Why the process's exception entry is set (sig_entry_need's `why`). SG5
- * adds one for a raise of one of our own threads. */
+/* Why the process's exception entry is set (sig_entry_need's `why`). */
 #define SIG_ENTRY_HANDLERS 1u   /* a fault signal has a handler */
 #define SIG_ENTRY_COPY     2u   /* always, from the start: the checked copies' faults
                                  * (ucopy.h) */
+#define SIG_ENTRY_RAISE    4u   /* one of our threads has been raised: set from then on */
 
 /* The entry is needed for `why` (on) or no longer (off): it is set while
  * any reason holds and removed when none does. sig_lock held. */
@@ -192,6 +200,20 @@ bool sig_fault_begin(int sig, struct sig_act_io *act, uint64_t *was);
  * on the way out of sigreturn (a signal the handler sent itself, blocked
  * while it ran, then acts before the thread goes on). */
 void sig_fault_end(uint64_t mask);
+
+/* The raise entry (sigfault.c), on the raised thread, in the kernel's
+ * window; regs are its registers where it was (SIG_REGS). Take a signal
+ * due on it for its handler to run now: true with *si the signal and *act
+ * and *was as sig_fault_begin gives them (the handler's mask is set). An
+ * ignored one is dropped, a default that terminates ends the process.
+ * False to go on at once: nothing due; a thread libc doesn't list; inside
+ * a call (its boundary delivers, with regs in the handler's ucontext);
+ * inside a quiet call or holding sig_lock (raised again once out). */
+bool sig_raise_begin(const uint64_t *regs, struct sig_info *si, struct sig_act_io *act,
+                     uint64_t *was);
+/* After a raise's handler: the thread's mask is `mask` (its ucontext's),
+ * and the next signal due is taken as sig_raise_begin takes one (true). */
+bool sig_raise_next(uint64_t mask, struct sig_info *si, struct sig_act_io *act, uint64_t *was);
 
 /* The signal a fault that killed a process (process_info's
  * PROCESS_FLAG_FAULT with its fault_vector and fault_status) is, as

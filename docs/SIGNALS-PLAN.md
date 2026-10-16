@@ -32,7 +32,9 @@ exception stack, raises and a fault's end: `thread_exception_stack` 172,
 with `fault_vector` and `fault_status`), SG3 (libc's part:
 user/posix/sys/sigentry.S and sigfault.c, posixtest's `fault` section) and
 SG4 (`sigaltstack`, `SA_ONSTACK` and a fault's `WTERMSIG`: the same
-section); SG5, SG6 and the review SGR are not. Tracks are in section 5;
+section), and SG5 (signals to a busy thread by a raise: user/posix/sys/
+signal.c's routing, sigfault.c's raised path, posixtest's `signal`
+section); SG6 and the review SGR are not. Tracks are in section 5;
 the questions for the owner
 in section 6, each with a recommendation, which the plan follows until he
 says otherwise. Names and numbers of calls and structures below are
@@ -176,6 +178,74 @@ What SG4 settled, or added (for SG5 and SG6):
   approved program (`ERR_BAD_STATE`) SIGBUS. Every other kill is SIGKILL
   still. `/proc/<pid>/stat`'s exit code (procinfo.c) still says 9 for any
   kill.
+
+What SG5 settled, or added (for SG6 and the review SGR):
+
+- **Routing** (signal.c's `kick_locked`): a sender that finds its target
+  inside a call (`calls` > 0) interrupts it as before; one that finds it
+  in its own code raises it (`thread_raise`), with the pending bit set
+  first (the Dekker pair is unchanged). The cancel wake
+  (`SIG_INTERNAL_CANCEL`) still only interrupts, so an asynchronous
+  cancel of a busy thread still never acts (libc-test's
+  `functional/pthread_cancel` stays on the list). The entry is set at the
+  first raise and stays set (`SIG_ENTRY_RAISE`, beside
+  `SIG_ENTRY_HANDLERS`): a program that never signals a busy thread of its
+  own never has it for this. A forked child must set the entry again
+  whenever `needs` is not 0, not only for fault handlers.
+- **The raised path** (sigfault.c's `sig_fault` for an `EXC_RAISED`
+  frame, signal.c's `sig_raise_begin`): in the window, the record by the
+  thread-local pointer only; nothing due (the boundary got there first, or
+  the signal is blocked now), an unlisted thread or no record: `RESUME` at
+  once. Otherwise the signal is taken as `deliver_one` takes it (an
+  ignored one dropped, a default that terminates kills there) and the
+  rest is a fault's run (`sig_fault_run`): the same ucontext (gregs from
+  the frame, `REG_TRAPNO`, `REG_ERR` and `REG_CR2` 0, the vector state's
+  copy), the same stack choice (`runs_on_interrupted`, the move through
+  `__jam_sig_moved`), the handler's ucontext written back and `RESUME`.
+  After a raise's handler the next due signal runs on the same frame
+  (`sig_raise_next`, at most `DELIVER_MAX`): an `SA_ONSTACK` one through
+  `sig_run_onstack`, the others on the stack the first ran on (Linux
+  would put each by its own flags; the first decides here). The raised
+  path does not count in `handled`/`norestart`: it is never inside a
+  call, so no call's `EINTR` depends on it.
+- **Where no handler runs**: a raise that finds the thread inside a call
+  keeps the frame's registers (`kept`, 18 words) for the boundary, whose
+  next handler's ucontext gets them (zeros as before otherwise; cleared
+  at the end of each call); one inside a quiet call (`quiet`: mmap,
+  munmap, futex wakes, exits: musl's malloc and unlock paths) or between
+  `take()` and `give()` (a thread-local `taking`, set before the lock is
+  taken and cleared after it is given, since `holder` is only right while
+  it is held) sets `raise_again`, and the thread raises itself when it
+  leaves there. A self-raise comes at the next interrupt in user mode
+  (the tick at the latest: `thread_raise` sends no interrupt to a thread
+  in a call), so these cost up to 10 ms, not a lost signal. Layer entry
+  points musl calls directly rather than through `__jam_syscall`
+  (`__jam_clone`, `__jam_posix_spawn`, `__jam_resolve`,
+  `__jam_ttyname`) are not marked: a raise there runs the handler inside
+  them, so a handler that calls back into the layer for a lock they hold
+  would wait for ever. Linux's rule (only async-signal-safe calls in a
+  handler) keeps V8's and Chromium's handlers clear of them; SGR to judge
+  whether to mark them.
+- **A thread's end**: `sig_thread_end` drops the kernel's exception stack
+  if the thread had one, so a raise latched before it was unlisted is
+  dropped (its frame can't be written below an unmapped stack) instead of
+  entering with the thread-local storage gone (musl unmaps both together).
+- **Costs measured** (QEMU on the PC, 4 CPUs): `pthread_kill(SIGPROF)` to
+  a thread spinning on another CPU runs its handler within 28 to 105 us
+  (the slowest of 20, over three runs); one SIGPROF round trip from a
+  sampler thread (send, handler, see it) 9 to 15 us. A raise that comes
+  while the thread is in the tail of the last handler (in
+  `exception_done`) waits for the tick.
+- **posixtest**: the signal section's new cases keep their buffers static
+  (the alternate stack, the stack copy): procinfo's maps check
+  (procinfo.c's "the pieces are gone" after `munmap`, later in the same
+  process) fails when an earlier section leaves malloc's mappings changed,
+  since `slurp`'s buffer can then land exactly where a piece was.
+- **`AT_MINSIGSTKSZ`** is in the aux vector (crt/start.c): `sig_alt_min()`
+  less 1 KiB, since musl's `sysconf` adds 1 KiB to it, so
+  `sysconf(_SC_MINSIGSTKSZ)` is exactly sigaltstack's smallest stack
+  (4,968 bytes with AVX). The XSAVE size now takes two CPUIDs (leaves 1
+  and 0xD; a CPU with XSAVE has leaf 0xD), once per program.
 
 ## Where things stand
 
