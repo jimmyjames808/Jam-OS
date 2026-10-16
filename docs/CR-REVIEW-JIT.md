@@ -149,4 +149,38 @@ than it may mean to (finding 1).
 
 ## Tests
 
+**The hostile tests** (from a program without the power):
+
+- posixtest's jit section (the init run, where init's run gives it
+  `RIGHT_ROOT_VMEX`, and `posixtest jit` from the shell, where it has no
+  root): its own code and read-only data (W+X `ERR_INVALID_ARGS`, write
+  `ERR_ACCESS_DENIED`, `mprotect` `EACCES`), its stack and heap (W+X
+  `ERR_INVALID_ARGS`, execute `ERR_ACCESS_DENIED`; mapped over in place by
+  `VMAR_REPLACE` and `MAP_FIXED`: refused, the page unchanged), a VMO
+  handle widened to execute by a duplicate, a replace and a send, a
+  copy-on-write child, the root widened to the power, `vmo_make_jit` with
+  its root, no root or a VMO as the root, sealed code it wrote (never
+  writable, never JIT memory), and no mark. All held before any fix.
+- utest `jit_spawn` (finding 1): a program started from JIT memory,
+  without the power: marked, its image run-only, its code never writable.
+  Without the fix (the PC, 2026-10-16): `jit_spawn: FAILED ...
+  info.exit_code == 0: 1 vs 0` ("our code is writable and executable").
+- CR1's kernel hostile tests (`vmo_jit_hostile_alias`, `_handoff`,
+  `_spawn`) cover a second mapping, a hand-off narrowed or not, and a
+  parent mapping into its child.
+
+**On the branch's head** (fecfa8dc, main 82acedcf merged; the PC, one
+batch): the init run (`tools/init-test.sh`, `jit_spawn` and posixtest's
+jit section in it), ktest at 4 CPUs (555 passed), `jit.txt`, `allow.txt`,
+`basic.txt`, `cmds.txt`, `commands.txt`, `files.txt`, kdump `save`,
+`tools/pager-test.sh` case `exec` (both boots), `tools/posix-mmap-test.sh`
+case `spawn`: all PASS. `make check` on the Mac, PASS. No kernel change.
+
 ## Fixes
+
+- Finding 1 (dce73960): `user/lib/spawn.c`'s find_image.
+- Findings 2 and 3, and the design questions: left to the main session.
+  Finding 2's fix, if wanted: init's apps.c duplicates its root as it is
+  and gives `dp_root_rights` as the extra's rights (`extra_rights`), as
+  `/svc/exec` does; no test can fail without it until a desktop app asks
+  for a right.
