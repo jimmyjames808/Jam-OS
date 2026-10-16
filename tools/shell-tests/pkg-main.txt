@@ -1,0 +1,153 @@
+# `pkg` end to end, the first boot (tools/pkg-test.sh; docs/M13.7-PLAN.md
+# sections 8 and 9): bin/pkg in the guest against the repositories of
+# tools/pkg-test-repo.py, joined by the network peer's TCP relay (the guest
+# connects to 10.2.21.174:8000). The image's /boot/ports.pub is the ports
+# vectors' public test key. The repositories' serials rise in the order they are
+# used here (the defects first, then good, next, rebuild).
+wait 120 Jam OS shell
+seen 60 netstack: address 10.2.21.5/24
+wait {prompt}
+send T=x
+wait {prompt}
+
+# Nothing installed; every defect refused, nothing left.
+send pkg list
+wait No package is installed.
+wait {prompt}
+send pkg -R http://10.2.21.174:8000/badpkg/ install aaa
+wait Install 1 package, 1 program? [y/N]
+type y
+wait was not installed
+wait {prompt}
+send pkg -R http://10.2.21.174:8000/otherkey/ install aaa
+wait pkg: aaa:
+wait {prompt}
+send pkg -R http://10.2.21.174:8000/missing/ install aaa
+wait Install 1 package, 1 program? [y/N]
+type y
+wait was not installed
+wait {prompt}
+send pkg -R http://10.2.21.174:8000/refuse/ install aaa
+wait pkg: aaa:
+wait {prompt}
+send pkg -R http://10.2.21.174:8000/badidx/ update
+wait is not signed by this build's ports key
+wait {prompt}
+send pkg list
+wait No package is installed.
+wait {prompt}
+send allow -l
+wait no program on /data is allowed to run
+wait {prompt}
+send pkg check
+wait 0 packages checked
+wait {prompt}
+
+# The good repository: bbb runs aaa, one question for both.
+send pkg update
+wait The repository has 2 packages (serial 1001
+wait Everything installed is up to date.
+wait {prompt}
+send pkg install bbb
+wait Install 2 packages, 2 programs? [y/N]
+type y
+wait Installed aaa 1.0-r1
+wait Installed bbb 1.0-r1
+wait {prompt}
+send pkg list
+wait aaa 1.0-r1
+wait bbb 1.0-r1
+wait {prompt}
+send pkg check
+wait 2 packages checked
+wait {prompt}
+send pkg files bbb
+wait /data/pkg/bin/bbb (program)
+wait {prompt}
+send pkg info bbb
+wait bbb 1.0-r1 (installed)
+wait runs: aaa 1.0
+wait {prompt}
+send allow -l
+wait [package aaa 1.0-r1]
+wait [package bbb 1.0-r1]
+wait {prompt}
+send allow -r aaa
+wait a package's program (allow -l): `pkg remove` takes it back
+wait {prompt}
+send pkg remove aaa
+wait bbb runs aaa: remove it first, or use -r
+wait {prompt}
+send pkg install bbb
+wait Already installed: nothing to do
+wait {prompt}
+
+# An index from the past is refused.
+send pkg -R http://10.2.21.174:8000/old/ update
+wait is older than one already accepted
+wait {prompt}
+
+# The next repository: aaa 2.0 (a file gone, one added), an advisory.
+send pkg -R http://10.2.21.174:8000/next/ audit
+wait CVE-2026-1234
+wait {prompt}
+send pkg -R http://10.2.21.174:8000/next/ list -u
+wait aaa 1.0-r1 -> 2.0-r1
+wait {prompt}
+send pkg -R http://10.2.21.174:8000/next/ upgrade
+wait Upgrade 1 package, 1 program? [y/N]
+type y
+wait Upgraded aaa 2.0-r1
+wait {prompt}
+send pkg list
+wait aaa 2.0-r1
+wait bbb 1.0-r1
+wait {prompt}
+send pkg check
+wait 2 packages checked
+wait {prompt}
+send pkg files aaa
+wait /data/pkg/share/aaa/new.txt
+wait {prompt}
+send allow -l
+wait [package aaa 2.0-r1]
+wait [package bbb 1.0-r1]
+wait {prompt}
+
+# The same version rebuilt: newer by its hash.
+send pkg -R http://10.2.21.174:8000/rebuild/ list -u
+wait aaa 2.0-r1 -> 2.0-r1
+wait {prompt}
+send pkg -R http://10.2.21.174:8000/rebuild/ upgrade
+wait Upgrade 1 package, 1 program? [y/N]
+type y
+wait Upgraded aaa 2.0-r1
+wait {prompt}
+send pkg check
+wait 2 packages checked
+wait {prompt}
+
+# Remove aaa with what runs it; the approvals go with them.
+send pkg remove -r aaa
+wait Remove 2 packages? [y/N]
+type y
+wait Removed bbb
+wait Removed aaa
+wait {prompt}
+send pkg list
+wait No package is installed.
+wait {prompt}
+send allow -l
+wait no program on /data is allowed to run
+wait {prompt}
+
+# Installed again, for the cold boot.
+send pkg -R http://10.2.21.174:8000/rebuild/ install bbb
+wait Install 2 packages, 2 programs? [y/N]
+type y
+wait Installed bbb 1.0-r1
+wait {prompt}
+send sync
+wait {prompt}
+send reboot -f
+wait reboot: resetting

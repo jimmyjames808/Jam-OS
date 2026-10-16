@@ -1,0 +1,25 @@
+# `pkg` end to end, the second boot (tools/pkg-test.sh): the stick the first
+# boot left, from cold. What was installed is there and checks out; then a
+# power cut in the middle of a download: ccc from the repository whose
+# packages stall halfway (tools/pkg-test-repo.py, "slow"), and QEMU is quit while
+# the package is half staged under its `.new` names.
+wait 120 Jam OS shell
+seen 60 netstack: address 10.2.21.5/24
+wait {prompt}
+send pkg list
+wait aaa 2.0-r1
+wait bbb 1.0-r1
+wait {prompt}
+send pkg check
+wait 2 packages checked
+wait {prompt}
+send allow -l
+wait [package aaa 2.0-r1]
+wait [package bbb 1.0-r1]
+wait {prompt}
+send pkg -R http://10.2.21.174:8000/slow/ install ccc
+wait Install 1 package, 1 program? [y/N]
+type y
+wait Downloading ccc 1.0-r1
+sleep 4
+monitor quit
