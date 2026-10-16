@@ -286,6 +286,11 @@ struct port_packet {
  * more over any page, so they don't count. */
 #define VMAR_MAX_OVERLAP 64u
 
+/* vmar_clone: the most VMOs one call names (n; more is ERR_OUT_OF_RANGE).
+ * Each must be mapped as a copy, so no program needs more than it may
+ * have mappings. */
+#define VMAR_CLONE_MAX VMAR_MAX_MAPPINGS
+
 /* process_get_maps: one mapping of a process's address space (/proc's
  * maps, stat and status are made from these). */
 struct map_info {

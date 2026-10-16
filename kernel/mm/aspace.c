@@ -173,11 +173,14 @@
  *      vmo_fault_map, a kept fill, leaves_protect, which may only take the
  *      write bit away); nothing else in the kernel writes user leaves but
  *      clearing (zap) and write-protecting (copy-on-write).
- *   2. A mapping's `flags` are set in three places only: mapping_new
- *      (aspace_map), protect_entries (aspace_protect) and split, which
- *      copies them to a piece of the same mapping (same VMO). A merge
- *      joins two mappings of one VMO with equal flags. So W+X flags exist
- *      only where aspace_map or aspace_protect allowed them.
+ *   2. A mapping's `flags` are set in four places only: mapping_new
+ *      (aspace_map), protect_entries (aspace_protect), split, which
+ *      copies them to a piece of the same mapping (same VMO), and
+ *      twin_add (aspace_clone), which copies them to a twin of the same
+ *      VMO (shared) or of a copy's child, made only of a mapping that
+ *      isn't a JIT VMO's and so has no W+X flags. A merge joins two
+ *      mappings of one VMO with equal flags. So W+X flags exist only
+ *      where aspace_map or aspace_protect allowed them.
  *   3. aspace_map allows them (perms_ok's `jit`) only when the VMO is a
  *      JIT VMO, and aspace_protect (protect_span) only when every mapping
  *      in the range maps one; each also needs ASPACE_CAN_WRITE and
@@ -214,6 +217,43 @@
  * change while it is mapped: the W^X argument's point 4). So no mapping
  * that may ever be made writable over JIT memory reaches a clone, and a
  * copy is always of a VMO that can have a child (vmo_create_child).
+ *
+ * Clones (aspace_clone, vmar_clone's kernel half). The source's region
+ * lock is held from the first look to the last write-protect's shootdown,
+ * so none of its threads maps, unmaps, protects or faults meanwhile: a
+ * thread that writes a page whose entry the clone took the write bit off
+ * faults and waits for the whole clone. The walk goes a VMO at a time in
+ * `vmaps` order (all of one VMO's mappings together, by VMO page): a VMO
+ * with a copy mapping gets one child (vmo_clone_begin, which raises the
+ * VMO's `protecting`: from then on every other writer of it, in other
+ * address spaces or through vmo_write, decommit or a resize, waits), each
+ * run of the pages its copies map is shared into the child
+ * (vmo_clone_share; pages it maps nowhere aren't copied, as Linux's fork
+ * copies only what is mapped), and their write-protects go into one
+ * gather, shot down once at the end, before any `protecting` falls
+ * (vmo_clone_end). So what the child holds of each page is the page as it
+ * was when its VMO was frozen, or later through a write a thread still
+ * had a stale writable entry for (a write the parent sees too, in the same
+ * page); and anything a write that waited came after was not in the child
+ * either: no copy is torn (vmo.c's header has the argument).
+ * The new mappings ("twins") are made in a tree of their own while the
+ * source's lock is held, each on its VMO's reverse map at once, and the
+ * tree is moved into the destination under the destination's lock after
+ * the source's is let go: two region locks are never held at once. The
+ * destination must be empty (a process vmar_clone holds unstarted), so
+ * its tree is taken whole; kept twins get their entries filled then, as
+ * aspace_map fills them, and nothing else gets any: the destination's
+ * faults make its entries. Charges, to the destination's job, before
+ * anything is made: its mapping structs, and its `pt_reserve`, as many
+ * table pages as the source has over the mappings made again
+ * (clone_tables), which its pt_prepare draws on before charging again, so
+ * a forked child's touch of what its parent touched never fails for a
+ * table (FORK-PLAN 1.3: "no surprise kill"); what is left goes back when
+ * it dies. The children charge their own pages as they share them. Any
+ * error takes everything back. A twin's permissions, maximum and mode are
+ * its source's, so the clone keeps every rule above: a copy's child is
+ * a plain paged VMO and its twin is never W+X (a copied mapping is never
+ * a JIT VMO's), and no writable JIT mapping reaches a clone at all.
  *
  * Job charges. An address space made for a process
  * (aspace_create_charged) charges that job JOB_LIMIT_PAGES units for the
@@ -320,6 +360,8 @@ struct aspace {
     uint32_t          nmaps;      /* mappings in maps (and in vmaps) */
     uint64_t          map_pages;  /* pages charged for the mapping structs (region lock) */
     uint64_t          pt_pages;   /* table pages below the PML4 (pt_lock), each charged */
+    uint64_t          pt_reserve; /* table pages a clone paid for ahead: pt_prepare's
+                                     first (region lock; "Clones" in the file header) */
     struct job       *job;        /* charged for all of it (a reference), or NULL */
     uint32_t          refs;       /* references (atomic once published) */
     cpumask_t         active;     /* CPUs with this CR3 loaded (atomic bits) */
@@ -499,8 +541,10 @@ static void pt_unprepare(struct aspace *as, uint64_t va, uint64_t **made, unsign
 }
 
 /* Region lock held: create the tables down to va's page table, each one
- * charged to the job before it is allocated. ERR_NO_MEMORY if the job
- * refuses one (or there is none): then those made here are taken back. */
+ * charged to the job before it is allocated, or drawn from what a clone
+ * paid for ahead (pt_reserve), which a table that goes later gives back to
+ * the job like any other. ERR_NO_MEMORY if the job refuses one (or there
+ * is none): then those made here are taken back. */
 static status_t pt_prepare(struct aspace *as, uint64_t va)
 {
     uint64_t *made[3];
@@ -511,9 +555,12 @@ static status_t pt_prepare(struct aspace *as, uint64_t va)
         uint64_t *e = &t[ix(va, l)];
         if (!(*e & PTE_P)) {
             uint64_t pa = 0;
-            if (job_charge(as->job, JOB_LIMIT_PAGES, 1) == OK &&
-                !(pa = pmm_alloc_page_phys(PMM_ZERO)))
+            bool paid = as->pt_reserve != 0;
+            if ((paid || job_charge(as->job, JOB_LIMIT_PAGES, 1) == OK) &&
+                !(pa = pmm_alloc_page_phys(PMM_ZERO)) && !paid)
                 job_uncharge(as->job, JOB_LIMIT_PAGES, 1);
+            if (pa && paid)
+                as->pt_reserve--;
             if (!pa) {
                 spin_unlock_irqrestore(&as->pt_lock, f);
                 if (n)   /* (only region-lock holders change the tables: still there) */
@@ -1130,8 +1177,9 @@ static void aspace_destroy(struct aspace *as)
     if (freed != as->pt_pages)
         panic("aspace: freed %lu table pages, owned %lu", freed, as->pt_pages);
     pmm_free_page_phys(as->pml4);
-    /* Tables, mapping structs and the PML4 (the mappings are gone). */
-    job_uncharge(as->job, JOB_LIMIT_PAGES, freed + as->map_pages + 1);
+    /* Tables, mapping structs, a clone's tables never made, and the PML4
+     * (the mappings are gone). */
+    job_uncharge(as->job, JOB_LIMIT_PAGES, freed + as->map_pages + as->pt_reserve + 1);
     job_unref(as->job);
     kfree(as);
 }
@@ -1698,6 +1746,332 @@ status_t aspace_protect(struct aspace *as, uint64_t addr, uint64_t len, unsigned
     return OK;
 }
 
+/* ---- clones (vmar_clone) --------------------------------------------------- */
+
+/* A mapping's VMO page run in vmaps order (by VMO, then VMO page): all the
+ * mappings of one VMO come together, so a clone takes a VMO at a time. */
+static struct mapping *vmaps_first(const struct aspace *as)
+{
+    return vmap_of(avl_first(&as->vmaps));
+}
+
+static struct mapping *vmaps_next(const struct mapping *m)
+{
+    return vmap_of(avl_next(&m->vnode));
+}
+
+static void req_sift(struct aspace_clone_req *r, uint32_t i, uint32_t n)
+{
+    for (uint32_t c; (c = 2 * i + 1) < n; i = c) {
+        if (c + 1 < n && (uintptr_t)r[c].v < (uintptr_t)r[c + 1].v)
+            c++;
+        if ((uintptr_t)r[i].v >= (uintptr_t)r[c].v)
+            return;
+        struct aspace_clone_req x = r[i];
+        r[i] = r[c];
+        r[c] = x;
+    }
+}
+
+/* r[0..n) by VMO, vmaps' order (a heap sort: no memory, O(n log n)). */
+static void reqs_sort(struct aspace_clone_req *r, uint32_t n)
+{
+    for (uint32_t i = n / 2; i-- > 0;)
+        req_sift(r, i, n);
+    for (uint32_t end = n; end > 1;) {
+        end--;
+        struct aspace_clone_req x = r[0];
+        r[0] = r[end];
+        r[end] = x;
+        req_sift(r, 0, end);
+    }
+}
+
+/* src's region lock held: how many mappings a clone of src makes again
+ * (*made: the copied and the shared), and whether each of r[0..n) (sorted)
+ * names a VMO src maps as a copy (ERR_INVALID_ARGS if one doesn't). */
+static status_t clone_count(const struct aspace *src, const struct aspace_clone_req *r,
+                            uint32_t n, uint32_t *made)
+{
+    uint32_t k = 0, i = 0;
+    for (const struct mapping *m = vmaps_first(src); m;) {
+        uintptr_t v = (uintptr_t)m->vmo;
+        bool copy = false;
+        for (; m && (uintptr_t)m->vmo == v; m = vmaps_next(m)) {
+            copy |= m->clone == 0;
+            k += m->clone != ASPACE_CLONE_NONE;
+        }
+        for (; i < n && (uintptr_t)r[i].v <= v; i++)
+            if ((uintptr_t)r[i].v < v || !copy)
+                return ERR_INVALID_ARGS;
+    }
+    *made = k;
+    return i == n ? OK : ERR_INVALID_ARGS;
+}
+
+/* clone_tables' look at [lo, hi): does a mapping the clone makes again
+ * overlap it? *at walks src's mappings forward in address order, past the
+ * none ones and those ending by lo: lo never goes down between calls. */
+static bool cloned_over(struct mapping **at, uint64_t lo, uint64_t hi)
+{
+    struct mapping *m = *at;
+    while (m && (m->clone == ASPACE_CLONE_NONE || mend(m) <= lo))
+        m = next_of(m);
+    *at = m;
+    return m && m->base < hi;
+}
+
+/* src's region lock held: src's page-table pages (below the PML4) over a
+ * mapping the clone makes again, the reserve the clone pays for (the file
+ * header's "Clones"). The tables in address order, each level's entries
+ * before the next one's: O(tables + mappings), and no leaf is read. Only
+ * region-lock holders link or unlink a table (pt_prepare, the detaching
+ * walks), so the links are read without pt_lock. */
+static uint64_t clone_tables(const struct aspace *src)
+{
+    struct mapping *at = first_map(src);
+    uint64_t n = 0;
+    for (uint64_t i = 0; i < 256; i++) {
+        uint64_t e4 = src->pml4v[i], lo4 = i * SIZE_512G;
+        if (!(e4 & PTE_P) || !cloned_over(&at, lo4, lo4 + SIZE_512G))
+            continue;
+        n++;
+        const uint64_t *pdpt = tbl(e4);
+        for (uint64_t j = 0; j < 512; j++) {
+            uint64_t lo3 = lo4 + j * SIZE_1G;
+            if (!(pdpt[j] & PTE_P) || !cloned_over(&at, lo3, lo3 + SIZE_1G))
+                continue;
+            n++;
+            const uint64_t *pd = tbl(pdpt[j]);
+            for (uint64_t k = 0; k < 512; k++) {
+                uint64_t lo2 = lo3 + k * SIZE_2M;
+                n += (pd[k] & PTE_P) && cloned_over(&at, lo2, lo2 + SIZE_2M);
+            }
+        }
+    }
+    return n;
+}
+
+/* m made again for dst, mapping vmo (m's own, or its copy's child) in stg's
+ * trees: on vmo's reverse map at once (its reference keeps vmo alive), in
+ * dst's tree once installed. */
+static status_t twin_add(struct aspace *stg, struct aspace *dst, const struct mapping *m,
+                         struct vmo *vmo)
+{
+    struct mapping *t = kzalloc(sizeof(*t));
+    if (!t)
+        return ERR_NO_MEMORY;
+    t->vmo = vmo;
+    t->base = m->base;
+    t->len = m->len;
+    t->vmo_off = m->vmo_off;
+    t->flags = m->flags;
+    t->max = m->max;
+    t->kept = m->kept;
+    t->clone = m->clone;
+    umap_fill(dst, t);
+    vmo_umap_add(vmo, &t->umap, false);   /* unchecked (a split's way): can't fail */
+    map_link(stg, t, floor_of(stg, t->base));
+    return OK;
+}
+
+/* src's region lock held: every mapping of src but the none ones made
+ * again in stg, a VMO at a time in vmaps order. A VMO mapped as a copy gets
+ * its child (vmo_clone_begin, which freezes it) and each run of the pages
+ * its copies map shared into it, with their write-protects in g; the
+ * requests for it (r[0..n), sorted and checked) get the child. On an error
+ * *stop is the first mapping of the VMO it failed on, *begun whether that
+ * VMO's copy was begun, and what was made stays for the caller to undo. */
+static status_t clone_walk(struct aspace *src, struct aspace *dst, struct aspace *stg,
+                           struct aspace_clone_req *r, uint32_t n, struct tlb_gather *g,
+                           struct mapping **stop, bool *begun)
+{
+    uint32_t i = 0;
+    for (struct mapping *m = vmaps_first(src); m;) {
+        struct mapping *first = m;
+        struct vmo *v = m->vmo, *c = NULL;
+        uint64_t lo = 0, hi = 0;   /* copied pages not shared yet: one run */
+        status_t st = OK;
+        for (; m && m->vmo == v; m = vmaps_next(m)) {
+            if (m->clone == ASPACE_CLONE_NONE)
+                continue;
+            if (m->clone == 0 && !c && (st = vmo_clone_begin(dst->job, v, &c)) != OK)
+                break;
+            if (m->clone == 0 && vfirst(m) > hi) {   /* a gap: share the run before it */
+                if (hi > lo && (st = vmo_clone_share(v, c, lo, hi, g)) != OK)
+                    break;
+                lo = vfirst(m);
+                hi = vend(m);
+            } else if (m->clone == 0 && vend(m) > hi) {
+                hi = vend(m);
+            }
+            if ((st = twin_add(stg, dst, m, m->clone ? v : c)) != OK)
+                break;
+        }
+        if (st == OK && hi > lo)
+            st = vmo_clone_share(v, c, lo, hi, g);
+        for (; st == OK && i < n && r[i].v == v; i++) {
+            kobject_ref(vmo_kobject(c));
+            r[i].child = c;
+        }
+        if (c)
+            kobject_unref(vmo_kobject(c));   /* the creation's: its twins hold it now */
+        if (st != OK) {
+            *stop = first;
+            *begun = c != NULL;
+            return st;
+        }
+    }
+    return OK;
+}
+
+/* src's region lock held, after the shootdown of every write-protect:
+ * end the copies clone_walk began, each copied VMO's before stop (all of
+ * them for NULL) and stop's if it was begun. */
+static void clone_end_all(struct aspace *src, struct mapping *stop, bool begun)
+{
+    for (struct mapping *m = vmaps_first(src); m && m != stop;) {
+        struct vmo *v = m->vmo;
+        bool copy = false;
+        for (; m && m->vmo == v; m = vmaps_next(m))
+            copy |= m->clone == 0;
+        if (copy)
+            vmo_clone_end(v);
+    }
+    if (stop && begun)
+        vmo_clone_end(stop->vmo);
+}
+
+/* Free stg's twins (off their VMOs' reverse maps: a child whose last twin
+ * goes is destroyed, its pages and charges given back). */
+static void staging_free(struct aspace *stg)
+{
+    for (struct mapping *m; (m = first_map(stg));) {
+        avl_erase(&stg->maps, &m->node);
+        vmo_umap_remove(m->vmo, &m->umap);
+        kfree(m);
+    }
+}
+
+/* dst's region lock held: take back an installed clone whose kept fill
+ * failed: every entry and table, every mapping, the structs' charge, and
+ * what is left of the reserve above r0 (what dst had before). */
+static void clone_unmake_locked(struct aspace *dst, uint64_t r0)
+{
+    struct tlb_gather g;
+    tlb_gather_init(&g);
+    for (struct mapping *m = first_map(dst); m; m = next_of(m))
+        zap(dst, m->base, mend(m), true, &g);
+    tlb_gather_finish(&g);
+    for (struct mapping *m; (m = first_map(dst));) {
+        map_unlink(dst, m);
+        vmo_umap_remove(m->vmo, &m->umap);
+        kfree(m);
+    }
+    (void)maps_account(dst, 0);   /* shrinking: can't fail */
+    uint64_t give = dst->pt_reserve > r0 ? dst->pt_reserve - r0 : 0;
+    job_uncharge(dst->job, JOB_LIMIT_PAGES, give);
+    dst->pt_reserve -= give;
+}
+
+/* stg's twins into dst, which must still be empty (ERR_BAD_STATE: they
+ * stay in stg), with the structs and `tables` of reserve the caller
+ * charged (dst's from here on: *charged goes false); then each kept twin's
+ * entries filled, as aspace_map fills them (ERR_NO_MEMORY: dst is emptied
+ * again, its charges with it). */
+static status_t clone_install(struct aspace *dst, struct aspace *stg, uint64_t tables,
+                              bool *charged)
+{
+    mutex_lock(&dst->lock);
+    if (dst->nmaps) {   /* mapped into meanwhile, through a vmar handle */
+        mutex_unlock(&dst->lock);
+        return ERR_BAD_STATE;
+    }
+    ASSERT(dst->map_pages == 0);
+    uint64_t r0 = dst->pt_reserve;
+    dst->maps = stg->maps;   /* the trees move whole: their nodes don't point at them */
+    dst->vmaps = stg->vmaps;
+    dst->nmaps = stg->nmaps;
+    dst->map_pages = map_pages_for(stg->nmaps);
+    dst->pt_reserve += tables;
+    avl_init(&stg->maps, gap_update);
+    avl_init(&stg->vmaps, vmax_update);
+    stg->nmaps = 0;
+    *charged = false;
+    status_t st = OK;
+    bool jit = false;
+    for (struct mapping *m = first_map(dst); m && st == OK; m = next_of(m)) {
+        if (m->kept)
+            st = fill_kept(dst, m);
+        jit |= vmo_is_jit(m->vmo) && (m->flags & ASPACE_EXEC);
+    }
+    if (st != OK)
+        clone_unmake_locked(dst, r0);
+    else if (jit)   /* JIT code it may run, as aspace_map marks it */
+        __atomic_store_n(&dst->jit, true, __ATOMIC_RELAXED);
+    mutex_unlock(&dst->lock);
+    return st;
+}
+
+status_t aspace_clone(struct aspace *src, struct aspace *dst, struct aspace_clone_req *r,
+                      uint32_t n)
+{
+    if (src == dst)
+        return ERR_BAD_STATE;
+    for (uint32_t i = 0; i < n; i++)
+        r[i].child = NULL;
+    mutex_lock(&dst->lock);
+    bool empty = dst->nmaps == 0;
+    mutex_unlock(&dst->lock);
+    if (!empty)
+        return ERR_BAD_STATE;
+    /* The twins are made in a tree of their own, installed in dst at the
+     * end: the two region locks are never held at once. */
+    struct aspace *stg = kzalloc(sizeof(*stg));
+    if (!stg)
+        return ERR_NO_MEMORY;
+    avl_init(&stg->maps, gap_update);
+    avl_init(&stg->vmaps, vmax_update);
+    reqs_sort(r, n);
+
+    mutex_lock(&src->lock);
+    uint32_t made = 0;
+    uint64_t tables = 0;
+    bool charged = false, walked = false, begun = false;
+    struct mapping *stop = NULL;
+    status_t st = clone_count(src, r, n, &made);
+    if (st == OK) {
+        tables = clone_tables(src);
+        st = job_charge(dst->job, JOB_LIMIT_PAGES, tables + map_pages_for(made));
+        charged = st == OK;
+    }
+    struct tlb_gather g;
+    tlb_gather_init(&g);
+    if (st == OK) {
+        st = clone_walk(src, dst, stg, r, n, &g, &stop, &begun);
+        walked = true;
+    }
+    tlb_gather_finish(&g);   /* every copied VMO's write-protects, in one shootdown */
+    if (walked)
+        clone_end_all(src, stop, begun);
+    mutex_unlock(&src->lock);
+
+    if (st == OK)
+        st = clone_install(dst, stg, tables, &charged);
+    if (st != OK) {
+        staging_free(stg);
+        for (uint32_t i = 0; i < n; i++) {
+            if (r[i].child)
+                kobject_unref(vmo_kobject(r[i].child));
+            r[i].child = NULL;
+        }
+        if (charged)
+            job_uncharge(dst->job, JOB_LIMIT_PAGES, tables + map_pages_for(made));
+    }
+    kfree(stg);
+    return st;
+}
+
 /* A fault waits for a pager this many times at most before it gives up
  * (ERR_NO_MEMORY): its page was taken away again between each supply and
  * the retry's look (vmo.c's FETCH_ROUNDS, the same rule for vmo_read). */
@@ -1834,6 +2208,14 @@ uint64_t aspace_pt_pages(struct aspace *as)
     uint64_t f = spin_lock_irqsave(&as->pt_lock);
     uint64_t n = as->pt_pages;
     spin_unlock_irqrestore(&as->pt_lock, f);
+    return n;
+}
+
+uint64_t aspace_pt_reserve(struct aspace *as)
+{
+    mutex_lock(&as->lock);
+    uint64_t n = as->pt_reserve;
+    mutex_unlock(&as->lock);
     return n;
 }
 

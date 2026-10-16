@@ -4,7 +4,12 @@
  * reserved for a receive) costs its table's job one JOB_LIMIT_HANDLES unit.
  * Charges are taken before a slot is filled and credited when it goes back
  * on the free list; t->charged (under the lock) says how many are out, so
- * destroying the table credits exactly those. */
+ * destroying the table credits exactly those.
+ *
+ * Generations: a slot's starts at 0, or, in a table made random
+ * (handle_table_randomize: a process that vmar_clone filled, whose memory
+ * holds its parent's handle values), at a value of its own from the
+ * table's seed; either way it goes up by one on each reuse. */
 #include <jam/channel.h>   /* channel_get_info */
 #include <jam/handle.h>
 #include <jam/mm.h>
@@ -12,6 +17,7 @@
 #include <jam/panic.h>
 #include <jam/pathstat.h>
 #include <jam/process.h>
+#include <jam/random.h>
 #include <jam/string.h>
 #include <jam/vmo.h>
 
@@ -34,6 +40,19 @@ struct handle_slot {
 static handle_t encode(uint32_t slot, uint32_t gen)
 {
     return (slot + 1) << GEN_BITS | (gen & GEN_MASK);
+}
+
+/* The generation slot idx starts at: 0, or after handle_table_randomize
+ * one from the table's seed (splitmix64's mix of it and the slot, so each
+ * slot has its own). Lock held. */
+static uint32_t gen_start(const struct handle_table *t, uint32_t idx)
+{
+    if (!t->gen_seed)
+        return 0;
+    uint64_t z = t->gen_seed + (uint64_t)(idx + 1) * 0x9e3779b97f4a7c15ull;
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
+    return (uint32_t)(z ^ (z >> 31));
 }
 
 /* Returns the slot for h if it is live and current, else NULL. A free or
@@ -87,6 +106,20 @@ void handle_table_init(struct handle_table *t)
     t->capacity = t->used = t->free_head = t->free_tail = 0;
     t->job = NULL;
     t->charged = 0;
+    t->gen_seed = 0;
+}
+
+void handle_table_randomize(struct handle_table *t)
+{
+    uint64_t seed = random_u64() | 1;   /* (0 would mean "not random") */
+    uint64_t f = spin_lock_irqsave(&t->lock);
+    t->gen_seed = seed;
+    /* A reserved slot keeps its generation: handle_untake gives back the
+     * value it was reserved under. */
+    for (uint32_t i = 0; i < t->capacity; i++)
+        if (!t->slots[i].obj && !t->slots[i].intransit)
+            t->slots[i].gen = gen_start(t, i);
+    spin_unlock_irqrestore(&t->lock, f);
 }
 
 /* Charge n handle units to t's job (no lock needed: job counters are
@@ -156,8 +189,10 @@ static status_t ensure_free_locked(struct handle_table *t)
     if (t->slots)
         memcpy(slots, t->slots, sizeof(*slots) * t->capacity);
     /* Chain the new slots onto the free list. */
-    for (uint32_t i = t->capacity; i < cap; i++)
+    for (uint32_t i = t->capacity; i < cap; i++) {
         slots[i].next_free = i + 1 < cap ? i + 2 : 0;
+        slots[i].gen = gen_start(t, i);
+    }
     kfree(t->slots);
     t->free_head = t->capacity + 1;
     t->free_tail = cap;
@@ -188,8 +223,10 @@ static status_t grow_table(struct handle_table *t, uint32_t oldcap)
     }
     if (t->slots)
         memcpy(slots, t->slots, sizeof(*slots) * oldcap);
-    for (uint32_t i = oldcap; i < cap; i++)
+    for (uint32_t i = oldcap; i < cap; i++) {
         slots[i].next_free = i + 1 < cap ? i + 2 : 0;
+        slots[i].gen = gen_start(t, i);
+    }
     struct handle_slot *old = t->slots;
     t->slots = slots;
     t->capacity = cap;

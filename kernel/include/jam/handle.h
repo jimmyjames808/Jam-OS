@@ -47,9 +47,17 @@ struct handle_table {
      * the job reference. */
     struct job         *job;
     uint32_t            charged;
+    /* 0, or the seed a fresh slot's generation comes from
+     * (handle_table_randomize; lock). */
+    uint64_t            gen_seed;
 };
 
 void     handle_table_init(struct handle_table *t);
+/* From now on every free slot of t, and every slot it grows, starts at a
+ * generation of its own drawn from a random seed, not 0: so a value from
+ * another table (a forked child's copy of its parent's memory, FORK-PLAN
+ * 1.1) is almost always ERR_BAD_HANDLE here, never some other object. */
+void     handle_table_randomize(struct handle_table *t);
 /* Close every handle and free the table's memory. */
 void     handle_table_destroy(struct handle_table *t);
 

@@ -138,6 +138,9 @@ status_t sys_object_wait_one(struct handle_table *t, handle_t h, signals_t mask,
 /* VMOs ------------------------------------------------------------------------
  * (kernel/abi/vmo_sys.c; semantics as in <jam/vmo.h>) */
 
+/* A fresh VMO's handle (sys_vmo_create, a child's, vmar_clone's children). */
+#define VMO_RIGHTS (RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE | RIGHT_MAP | RIGHT_RESIZE)
+
 /* New VMO; the handle gets
  * RIGHTS_BASIC | RIGHT_READ | RIGHT_WRITE | RIGHT_MAP | RIGHT_RESIZE. flags: 0
  * or VMO_KEEP_PAGES (anything else, VMO_CONTIGUOUS and VMO_DMA32 included,
@@ -181,6 +184,8 @@ status_t sys_vmo_create_child(struct handle_table *t, handle_t h, uint32_t flags
 /* VMARs (address spaces) -------------------------------------------------------
  * (kernel/abi/vmar_sys.c; semantics as in <jam/aspace.h>, <jam/vmar.h>) */
 
+struct aspace;
+
 /* New vmar over an empty address space: RIGHTS_BASIC | RIGHT_READ |
  * RIGHT_WRITE. (For tests; a process gets its own with process_create.) */
 status_t sys_vmar_create(struct handle_table *t, handle_t *out);
@@ -196,6 +201,14 @@ status_t sys_vmar_unmap(struct handle_table *t, handle_t vmar, uint64_t addr,
  * didn't carry. */
 status_t sys_vmar_protect(struct handle_table *t, handle_t vmar, uint64_t addr, uint64_t len,
                           uint32_t flags);
+/* vmar_clone (abi/syscalls.def; aspace_clone): src, the caller's address
+ * space, copied into process dst's (RIGHT_WRITE on dst). vmos[0..n) need
+ * RIGHT_READ | RIGHT_DUPLICATE (a child is a new way to reach a VMO's
+ * bytes, as for sys_vmo_create_child). children[0..n) are values
+ * handle_reserve reserved in t: on success children[i] holds VMO_RIGHTS to
+ * vmos[i]'s child, on an error they are all given back. */
+status_t sys_vmar_clone(struct handle_table *t, struct aspace *src, handle_t dst,
+                        const handle_t *vmos, const handle_t *children, uint32_t n);
 /* end VMARs */
 
 /* interrupts --------------------------------------------------------------------
