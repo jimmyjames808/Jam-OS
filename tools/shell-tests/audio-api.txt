@@ -5,15 +5,15 @@
 # cases write exact patterns, tones and silence through the mixer, one
 # after the other (float and 16-bit input, a paced writer, two streams at
 # once, pause and resume); the WAV must hold what they wrote.
-# (The markers are echoed as ap-""1 so the typed line itself never matches
-# the wait.)
+# (The status is echoed as ap-$?, so the typed line itself never matches
+# the wait for ap-0: a failed or killed utest is ap-1 or ap-137.)
 wait 120 Jam OS shell
 wait {prompt}
 seen 60 1 codec(s) answered; 0 verb(s) timed out
-send utest only audio_out; echo ap-""1
+send utest only audio_out; echo ap-$?
 wait 300 passed
 seen utest: 11 passed
-wait ap-1
+wait ap-0
 wait {prompt}
 send reboot -f
 wait reboot: resetting

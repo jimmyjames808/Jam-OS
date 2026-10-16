@@ -238,6 +238,12 @@ static int64_t call_vmo_make_jit(const struct syscall_frame *f)
     return sysc_vmo_make_jit((handle_t)f->args[0], (handle_t)f->args[1], f->args[2]);
 }
 
+static int64_t call_vmar_clone(const struct syscall_frame *f)
+{
+    return sysc_vmar_clone((handle_t)f->args[0], f->args[1], f->args[2], (uint32_t)f->args[3],
+                           (uint32_t)f->args[4]);
+}
+
 static int64_t call_process_create(const struct syscall_frame *f)
 {
     return sysc_process_create((handle_t)f->args[0], f->args[1], f->args[2], (uint32_t)f->args[3],
@@ -525,6 +531,12 @@ static int64_t call_process_get_maps(const struct syscall_frame *f)
                                  (uint32_t)f->args[3]);
 }
 
+static int64_t call_process_replace(const struct syscall_frame *f)
+{
+    return sysc_process_replace((handle_t)f->args[0], f->args[1], f->args[2], (handle_t)f->args[3],
+                                f->args[4]);
+}
+
 static int64_t call_kexec_load(const struct syscall_frame *f)
 {
     return sysc_kexec_load((handle_t)f->args[0], (handle_t)f->args[1], (handle_t)f->args[2],
@@ -612,6 +624,7 @@ static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_vmar_protect] = call_vmar_protect,
     [SYS_vmo_create_child] = call_vmo_create_child,
     [SYS_vmo_make_jit] = call_vmo_make_jit,
+    [SYS_vmar_clone] = call_vmar_clone,
     [SYS_process_create] = call_process_create,
     [SYS_process_start] = call_process_start,
     [SYS_process_kill] = call_process_kill,
@@ -666,6 +679,7 @@ static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_sys_public_info] = call_sys_public_info,
     [SYS_clock_page] = call_clock_page,
     [SYS_process_get_maps] = call_process_get_maps,
+    [SYS_process_replace] = call_process_replace,
     [SYS_kexec_load] = call_kexec_load,
     [SYS_kexec_reboot] = call_kexec_reboot,
     [SYS_random_get] = call_random_get,

@@ -996,14 +996,20 @@ lands (no WebAssembly then).
   duplicate and transfer: a duplicate can only narrow rights, so the
   handle must carry transfer for its creator to hand one on, CR1 finding
   4). Needs `RIGHT_ROOT_JIT` on root. A JIT VMO can never be
-  sealed, verified, made executable the old way, or given a pager.
+  sealed, verified, made executable the old way, or given a pager, and is
+  never pinned for a device (`ERR_NOT_SUPPORTED`, a pager VMO's answer;
+  CJF, CJR's design question 1): JIT memory is written only by threads,
+  so the stricter modes below can see and switch every writer, and a
+  decommit of code pages never leaves a pinned page behind.
 - **W+X only there** (CJ1): `perms_ok` in `kernel/mm/aspace.c` allows
   write together with execute only for a mapping of a JIT VMO, and only
   as far as the handle's rights allow (`ASPACE_CAN_*` from the rights:
   a handle without write maps execute-only). `vmar_protect` follows the
   same rule. Everything else stays W^X.
 - **Marked** (CJ1, CJ2): `process_get_info` and `proc_list` give
-  `PROCESS_FLAG_JIT` (the address space has mapped a JIT VMO); `ps` puts
+  `PROCESS_FLAG_JIT` (the address space has mapped a JIT VMO executable:
+  a map or a protect with execute, CJF; one that only reads or writes it,
+  such as JIT memory handed on as shared memory, isn't marked); `ps` puts
   `[jit]` after such a process's name, with a footnote saying what it
   means. A power held but never used isn't marked: only the root handle's
   rights say it, and with no JIT VMO mapped the program can't run code of
@@ -1418,7 +1424,7 @@ ports, recipes, tests, netstack's caps, the audio API and the docs.
 | **CJ2. JIT for programs** | section 12's rest: `right jit` (wants, checkwants, allow's and pkg's words, init's slice), `ps`'s mark, libc's `MAP_JIT` (this half done 2026-10-14, see "CJ2 notes"); **still to do, after CB5**: V8's patch, the power to renderers only (with an unpatched launcher: [FORK-PLAN](FORK-PLAN.md#q4-the-jit-power-for-renderers-only-with-chromiums-own-launcher)'s Q4), `--jitless` for the rest | `user/include/wants.h`, the wants parser in libos, `tools/checkwants.py`, `user/services/shell/sh_allow.c`'s prompt, init's grant, `user/posix/sys/mem.c` (`MAP_JIT`), ports/chromium's V8 lines (and Q4's lines in content's child start, if so answered) | CJ1; CB5 | posixtest: `MAP_JIT` with and without the power; a JIT program writes code and runs it; cr-test.sh `chrome` with a Wasm page (CR-e) | **Opus** |
 | **CR1. Kernel review** | CK1, CK2, CK3, CP1's kernel line, CJ1 if merged: findings first (docs/CR-REVIEW-KERNEL.md, new), then High and Medium fixed with a test each; hostile tests (a TiB of reservations from a job with 16 MiB, 60,000 mappings in a storm of protects from 8 threads while another unmaps); **done 2026-10-15** ([CR-REVIEW-KERNEL.md](CR-REVIEW-KERNEL.md): 0 High, 3 Medium, 3 Low, 4 notes; two Mediums and every Low fixed, one Medium a design question) | the files its fixes need | CK1 to CK3 merged | its own; full ktest 4 and 8; soak 4 | **Opus** |
 | **CR2. POSIX and IPC review** | CL1, CL2, CL3, CU1, CU2, CS1: the descriptor passing (what crosses, what leaks, what a hostile peer can make the receiver do), the self-image (can it run anything the owner didn't approve?), `/proc`'s reopen; findings in [CR-REVIEW-POSIX](CR-REVIEW-POSIX.md) | the files its fixes need | CL1, CL2, CU1, CS1 merged | its own; posixtest; a fuzz loop between two processes | **Opus** |
-| **CJR. JIT review** | CJ1 and CJ2 against the owner's rule: can any program without the power get W+X, can a JIT VMO become approved code, can a handle hand-on widen rights; findings first, fixes with tests; **done 2026-10-16** for CJ1 and CJ2's first half ([CR-REVIEW-JIT.md](CR-REVIEW-JIT.md): 0 High, 0 Medium, 3 Low, 4 notes; finding 1 fixed, two design questions) | the files its fixes need | CJ1, CJ2 merged | its own | **Opus** |
+| **CJR. JIT review** | CJ1 and CJ2 against the owner's rule: can any program without the power get W+X, can a JIT VMO become approved code, can a handle hand-on widen rights; findings first, fixes with tests; **done 2026-10-16** for CJ1 and CJ2's first half ([CR-REVIEW-JIT.md](CR-REVIEW-JIT.md): 0 High, 0 Medium, 3 Low, 4 notes; finding 1 fixed, two design questions); **CJF** (2026-10-16) fixed findings 2 and 3 and took design question 1's (b), JIT VMOs never pinned | the files its fixes need | CJ1, CJ2 merged | its own | **Opus** |
 | **CRJ. The join** | ARCHITECTURE (Memory: reservations, JIT VMOs; Userland: `/proc`, descriptor passing, the self-image, the toolchain), the porter's guide (C++ and Rust ports, the clang drivers, big ports), USING (Chromium), TESTING (cr-test.sh, the build), BENCH (the build's figures, page loads, the JIT's), ROADMAP and HISTORY | the docs | CR1, CR2 merged; CB6 | `make check` | Sonnet 5.5 |
 
 **Later** (not tracked yet): the Jam OS sandbox (CR-f, its own plan),
@@ -1555,13 +1561,18 @@ After `pkg install chromium` (CR-d), with the Mac's ports server running:
    `/proc` files, netlink, signals into a specific thread, `ioctl`s. The
    ENOSYS log and the syscall scan turn them into a list; each goes to a
    layer, never into a Chromium patch unless no layer can answer.
-6. **Signals and faults**: V8's WebAssembly trap handler and its CPU
-   profiler need a fault delivered to the faulting thread and a signal to
-   a chosen thread; M13's signal thread does neither. Jitless (no Wasm
-   traps) and no profiler avoid it until CR-e, where the trap handler is
-   off (`--no-wasm-trap-handler`: bounds checks in code instead;
-   *unsure* that Chromium's renderer honours it rather than enabling the
-   handler itself).
+6. **Signals and faults**: V8's WebAssembly trap handler, its CPU
+   profiler, Chromium's sampling profiler and its crash stack dumps need a
+   fault delivered to the faulting thread and a signal to a chosen thread
+   wherever it is; M13's signal thread does neither. The owner's rule
+   (2026-10-16): build that layer, don't turn the features off.
+   [SIGNALS-PLAN.md](SIGNALS-PLAN.md) does (tracks SG1 to SG6: an upcall
+   into the faulting thread in the kernel, the rest in libc), independent
+   of CB3 and CB4 and meant to land before CR-e. The workarounds are
+   temporary: jitless (no Wasm traps) and no profiler until then, and
+   Chromium's fault stack dumps don't run (SIGABRT's do); if CR-e comes
+   first, the trap handler is off (`--no-wasm-trap-handler`: bounds checks
+   in code instead) until SG3 and SG4 merge, and SG6 removes the flag.
 7. **Memory on the PC**: a browser with tabs takes GBs; jobs and the
    kept memfds (G2's Q12) mean no overcommit beyond reservations. The
    PC's 32 GB is plenty; QEMU tests run with 8 GB.

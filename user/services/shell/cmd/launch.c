@@ -2,7 +2,8 @@
  * compositor's search box does (abi/idl/initctl.idl launch: only the
  * programs <deskapps.h> lists, from the boot image, each with what its
  * list asks for and /svc/wayland, no terminal). The shell's way to see
- * what init allows the compositor. */
+ * what init allows the compositor; the shell's channel may also start
+ * init's test programs ("jittest"), which the compositor's can't. */
 #include <idl/initctl.h>
 #include "sh.h"
 

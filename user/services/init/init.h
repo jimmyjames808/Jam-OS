@@ -425,10 +425,11 @@ status_t ssh_start(void);
 
 /* Set up once before the loop (the loop's port: KEY_APPS + a slot). */
 void     apps_init(handle_t port);
-/* Start desktop app cmd ("jamjar"): *koid its process's. ERR_NOT_FOUND:
- * not one of <deskapps.h>'s programs; ERR_INVALID_ARGS: not a name;
+/* Start desktop app cmd ("jamjar"), or with tests (the shell's channel)
+ * also one of apps.c's test programs ("jittest"): *koid its process's.
+ * ERR_NOT_FOUND: not one of those; ERR_INVALID_ARGS: not a name;
  * ERR_NO_RESOURCES: DESKAPPS_RUNNING run; spawn's errors. */
-status_t apps_launch(const char *cmd, uint64_t *koid);
+status_t apps_launch(const char *cmd, bool tests, uint64_t *koid);
 /* KEY_APPS + i: app i's process ended (its job goes), or an old packet. */
 void     apps_event(unsigned i);
 

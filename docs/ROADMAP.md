@@ -127,6 +127,14 @@ On Chromium's path (in roughly this order, much of it in parallel):
     modes (dual mapping, a per-thread write/execute switch) can be required
     later through the same capability. Small in the kernel; its own
     security review. `--jitless` until it lands (no WebAssembly then);
+  - faults and signals to a thread (the owner's rule, 2026-10-16: build
+    the layer, don't turn Chromium's features off): a fault reaches a
+    handler on the faulting thread with Linux's `siginfo_t` and a full
+    `ucontext_t` (V8's WebAssembly trap handler, Chromium's crash stack
+    dumps, stack overflow on `sigaltstack`), and a signal reaches a chosen
+    thread wherever it is (V8's and Chromium's profilers); a small upcall
+    in the kernel, the rest in libc; planned in
+    [SIGNALS-PLAN.md](SIGNALS-PLAN.md) (1-1.5k, and about 1k of tests);
   - Jam OS's own sandbox (each renderer a job with only its handles; the
     first builds `--no-sandbox`) (1-2k).
 - **The owner's choices for Chromium (2026-10-11)**: early builds without

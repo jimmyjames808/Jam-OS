@@ -590,6 +590,7 @@ static const struct {
     bool (*fn)(void);    /* true: passed */
 } tests[] = {
     { "basics", t_basics },
+    { "verdict_canary", t_verdict_canary },
     { "rights", t_rights },
     { "kexec_refusals", t_kexec_refusals },
     { "root_powers", t_root_powers },
@@ -761,6 +762,8 @@ static const struct {
     { "extfs_restart_handles", t_extfs_restart_handles },
     { "extfs_restart_bad", t_extfs_restart_bad },
     { "extfs_spare", t_extfs_spare },
+    { "extfs_map", t_extfs_map },
+    { "extfs_restart_pager", t_extfs_restart_pager },
     { "extfs_posix", t_extfs_posix },
     { "view_keys_names", t_view_keys_names },
     { "fat_view_keys", t_fat_view_keys },

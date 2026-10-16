@@ -36,7 +36,8 @@
  * RIGHT_ROOT_PAGER alone (without one no mount has a pager, and file.map
  * is ERR_NOT_SUPPORTED): each mount's pager is made from it, with a budget
  * of n pages (init says 1/16 of the memory; 4096 if the word is missing),
- * and handed to the mount's fat as FAT_SR_PAGER (<fatsvc.h>). */
+ * and handed to the mount's fat as FAT_SR_PAGER (<fatsvc.h>), or to its
+ * extfs as EXTFS_SR_PAGER (<extfssvc.h>). */
 #define VOLUMES_SR_CTL    (SR_USER + 0)
 #define VOLUMES_SR_ESP    (SR_USER + 1)
 #define VOLUMES_SR_DISKS  (SR_USER + 2)

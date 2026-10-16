@@ -382,6 +382,10 @@ bool t_extfs_restart_steps(void);
 bool t_extfs_restart_handles(void);
 bool t_extfs_restart_bad(void);
 bool t_extfs_spare(void);
+bool t_extfs_restart_pager(void);
+/* extfs_map.c: extfs as a pager (U10): mapped files kept right while they
+ * change, programs' files guarded, unlinked mapped files kept. */
+bool t_extfs_map(void);
 /* extfs_posix.c: posixtest's links section on an extfs volume (libc, U6). */
 bool t_extfs_posix(void);
 bool t_view_keys_names(void);
@@ -711,6 +715,9 @@ bool t_conwin_pointer(void);
 bool t_conwin_pointer_shape(void);
 bool t_con_hostile_compositor(void);
 /* conconn.c: the console's connection back end (bin/console "conn"). */
+/* verdict.c: passes, or fails or crashes on request (UTEST_CANARY): the
+ * shell tests' proof that a failing utest fails the script. */
+bool t_verdict_canary(void);
 /* session.c, sessbad.c: init's sessions (/svc/session; sessrig.h). Only
  * a shell-mode init serves them: elsewhere each says it is skipped. */
 bool t_session_shell(void);

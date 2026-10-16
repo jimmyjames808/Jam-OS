@@ -17,12 +17,13 @@
  * Each mapping maps [vmo_off, vmo_off+len) of one VMO at [base, base+len),
  * holds a VMO reference (through its reverse-map entry, struct vmo_umap),
  * and has its current permissions plus the most aspace_protect may grant
- * (`max`, from ASPACE_CAN_*). Page-table entries are filled lazily by
+ * (`max`, from ASPACE_CAN_*), and its clone mode (`clone`: "Clone modes",
+ * below). Page-table entries are filled lazily by
  * aspace_fault. Every mapping is also in `vmaps`, by VMO and VMO page (an
  * interval tree: "Mappings over the same pages", below).
  *
  * Merging. Two neighbouring mappings of one VMO at contiguous offsets,
- * with the same permissions and the same maximum, neither kept, are one
+ * with the same permissions, maximum and clone mode, neither kept, are one
  * mapping (can_merge): map, replace and protect merge what they leave
  * that way, so no two neighbours ever could be (the invariant), and a
  * program that commits pieces of a big reservation (protect to read-write)
@@ -200,6 +201,20 @@
  * no copy-on-write child (its pages are never shared, so its writable
  * entries are never write-protected by one).
  *
+ * Clone modes (docs/FORK-PLAN.md section 1.1). Each mapping says what a
+ * clone of the address space (vmar_clone) makes of it, in `clone`:
+ * ASPACE_CLONE_SHARE (the same VMO), ASPACE_CLONE_NONE (nothing) or 0, a
+ * copy (one copy-on-write child of the VMO). aspace_map decides it once
+ * (clone_mode): the caller's flag, else share when the maximum has no
+ * write, else a copy; but a JIT VMO's mapping whose maximum has write is
+ * always none, and a contiguous or physical VMO's is shared where it would
+ * be copied. Nothing changes it afterwards: split copies it, a merge joins
+ * only equal modes (joinable), and protect changes permissions only, within
+ * the maximum the mode was decided from (a VMO's kind and JIT mark never
+ * change while it is mapped: the W^X argument's point 4). So no mapping
+ * that may ever be made writable over JIT memory reaches a clone, and a
+ * copy is always of a VMO that can have a child (vmo_create_child).
+ *
  * Job charges. An address space made for a process
  * (aspace_create_charged) charges that job JOB_LIMIT_PAGES units for the
  * kernel memory it holds: 1 for the PML4 from creation to destroy, 1 for
@@ -262,8 +277,9 @@
 
 #define PERMS     (ASPACE_READ | ASPACE_WRITE | ASPACE_EXEC)
 #define CAN_SHIFT 8   /* ASPACE_CAN_x == ASPACE_x << CAN_SHIFT */
-#define MAP_FLAGS (PERMS | ASPACE_FIXED | ASPACE_KEPT_ONLY | ASPACE_REPLACE | ASPACE_CAN_READ | \
-                   ASPACE_CAN_WRITE | ASPACE_CAN_EXEC)
+#define CLONE     (ASPACE_CLONE_SHARE | ASPACE_CLONE_NONE)
+#define MAP_FLAGS (PERMS | ASPACE_FIXED | ASPACE_KEPT_ONLY | ASPACE_REPLACE | CLONE | \
+                   ASPACE_CAN_READ | ASPACE_CAN_WRITE | ASPACE_CAN_EXEC)
 #define MAX_MAPPINGS VMAR_MAX_MAPPINGS   /* <jam/abi.h>: 65536 */
 
 #define SIZE_2M   (1ull << 21)
@@ -286,7 +302,8 @@ struct mapping {
     unsigned         flags;      /* current ASPACE_READ/WRITE/EXEC */
     unsigned         max;        /* what aspace_protect may grant */
     bool             kept;       /* ASPACE_KEPT_ONLY: entries filled at map time, never changed */
-    struct avl_node  vnode;      /* in as->vmaps, by VMO then VMO offset (region lock) */
+    unsigned         clone;      /* ASPACE_CLONE_SHARE, _NONE or 0 (a copy), for good */
+    struct avl_node  vnode;     /* in as->vmaps, by VMO then VMO offset (region lock) */
     uintptr_t        vmax_vmo;   /* the highest (VMO, end page) in vnode's subtree */
     uint64_t         vmax_end;   /* (region lock) */
 };
@@ -311,7 +328,7 @@ struct aspace {
     uint64_t          pcid_id;
     uint64_t          tlb_gen;
     uint64_t          faults;     /* aspace_fault calls (atomic, relaxed; for tests) */
-    bool              jit;        /* has mapped a JIT VMO (atomic, set once; PROCESS_FLAG_JIT) */
+    bool              jit;        /* mapped JIT memory to run (aspace_maps_jit; atomic, once) */
 };
 
 static uint64_t mend(const struct mapping *m)
@@ -1179,6 +1196,7 @@ static struct mapping *split(struct aspace *as, struct mapping *m, uint64_t addr
     r->flags = m->flags;
     r->max = m->max;
     r->kept = m->kept;
+    r->clone = m->clone;
     umap_fill(as, r);
     vmo_umap_add(m->vmo, &r->umap, false);   /* can't fail unchecked */
     m->len = addr - m->base;
@@ -1187,14 +1205,15 @@ static struct mapping *split(struct aspace *as, struct mapping *m, uint64_t addr
     return r;
 }
 
-/* ASPACE_KEPT_ONLY's own checks: read-only (a bad combination of flags),
- * then a kept VMO (ERR_NOT_SUPPORTED for another: it is a VMO, the right
- * type, of a kind this mapping can't be made of). */
+/* ASPACE_KEPT_ONLY's own checks: read-only and no clone flag (a bad
+ * combination of flags: a kept mapping is always shared), then a kept VMO
+ * (ERR_NOT_SUPPORTED for another: it is a VMO, the right type, of a kind
+ * this mapping can't be made of). */
 static status_t kept_check(const struct vmo *vmo, unsigned flags)
 {
     if (!(flags & ASPACE_KEPT_ONLY))
         return OK;
-    if ((flags & PERMS) != ASPACE_READ)
+    if ((flags & PERMS) != ASPACE_READ || (flags & CLONE))
         return ERR_INVALID_ARGS;
     return vmo_is_kept(vmo) ? OK : ERR_NOT_SUPPORTED;
 }
@@ -1231,6 +1250,19 @@ static void map_undo(struct aspace *as, struct mapping *m)
     (void)maps_account(as, as->nmaps);   /* shrinking: can't fail */
 }
 
+/* The clone mode of a new mapping of vmo with maximum max, from aspace_map's
+ * flags (the file header's "Clone modes"). */
+static unsigned clone_mode(const struct vmo *vmo, unsigned max, unsigned flags)
+{
+    if (vmo_is_jit(vmo) && (max & ASPACE_WRITE))
+        return ASPACE_CLONE_NONE;   /* writable JIT memory never reaches a clone */
+    if (flags & ASPACE_CLONE_NONE)
+        return ASPACE_CLONE_NONE;
+    if ((flags & ASPACE_CLONE_SHARE) || !(max & ASPACE_WRITE) || !vmo_is_paged(vmo))
+        return ASPACE_CLONE_SHARE;
+    return 0;   /* a copy */
+}
+
 /* A new mapping struct for aspace_map (not placed yet), or NULL. */
 static struct mapping *mapping_new(struct vmo *vmo, uint64_t vmo_off, uint64_t len,
                                    unsigned flags)
@@ -1246,6 +1278,7 @@ static struct mapping *mapping_new(struct vmo *vmo, uint64_t vmo_off, uint64_t l
     m->kept = (flags & ASPACE_KEPT_ONLY) != 0;
     /* A kept mapping stays as it is made: no CAN bits. */
     m->max = m->kept ? perms : perms | ((flags >> CAN_SHIFT) & PERMS);
+    m->clone = clone_mode(vmo, m->max, flags);
     return m;
 }
 
@@ -1253,12 +1286,12 @@ static struct mapping *mapping_new(struct vmo *vmo, uint64_t vmo_off, uint64_t l
 
 /* Whether a (with permissions fa) and b right after it (with fb) can be one
  * mapping: the same VMO at contiguous addresses and offsets, the same
- * permissions and maximum, and neither kept (a kept mapping stays as it was
- * made). The cache mode is the VMO's, so it matches too. */
+ * permissions, maximum and clone mode, and neither kept (a kept mapping
+ * stays as it was made). The cache mode is the VMO's, so it matches too. */
 static bool joinable(const struct mapping *a, unsigned fa, const struct mapping *b, unsigned fb)
 {
     return mend(a) == b->base && a->vmo == b->vmo && a->vmo_off + a->len == b->vmo_off &&
-           fa == fb && a->max == b->max && !a->kept && !b->kept;
+           fa == fb && a->max == b->max && a->clone == b->clone && !a->kept && !b->kept;
 }
 
 static bool can_merge(const struct mapping *a, const struct mapping *b)
@@ -1491,7 +1524,7 @@ static status_t map_replace_locked(struct aspace *as, struct mapping *m, const u
 status_t aspace_map(struct aspace *as, struct vmo *vmo, uint64_t vmo_off, uint64_t len,
                     unsigned flags, uint64_t *addr)
 {
-    if (!as || !vmo || !addr || (flags & ~MAP_FLAGS))
+    if (!as || !vmo || !addr || (flags & ~MAP_FLAGS) || (flags & CLONE) == CLONE)
         return ERR_INVALID_ARGS;
     unsigned perms = flags & PERMS;
     bool jit = vmo_is_jit(vmo);   /* for good once true; never true for a kept VMO */
@@ -1523,7 +1556,7 @@ status_t aspace_map(struct aspace *as, struct vmo *vmo, uint64_t vmo_off, uint64
         kfree(m);   /* never placed (or taken back): still ours */
         return st;
     }
-    if (jit)
+    if (jit && (perms & ASPACE_EXEC))   /* JIT memory that may run marks it */
         __atomic_store_n(&as->jit, true, __ATOMIC_RELAXED);
     *addr = at;   /* m itself may have merged into a neighbour by now */
     return OK;
@@ -1548,24 +1581,27 @@ status_t aspace_unmap(struct aspace *as, uint64_t addr, uint64_t len)
 }
 
 /* Region lock held: the mappings covering [addr, end), *first to *last,
- * for aspace_protect. ERR_INVALID_ARGS if flags are W+X and a mapping met
- * isn't of a JIT VMO (W^X: the file header), else ERR_NOT_FOUND if any of
- * the range isn't mapped, else ERR_ACCESS_DENIED if a mapping may not have
- * flags (past its maximum, or a kept one changed: its entries stay as they
- * were filled). */
+ * for aspace_protect, and *jit: one of them maps a JIT VMO.
+ * ERR_INVALID_ARGS if flags are W+X and a mapping met isn't of a JIT VMO
+ * (W^X: the file header), else ERR_NOT_FOUND if any of the range isn't
+ * mapped, else ERR_ACCESS_DENIED if a mapping may not have flags (past its
+ * maximum, or a kept one changed: its entries stay as they were filled). */
 static status_t protect_span(const struct aspace *as, uint64_t addr, uint64_t end,
-                             unsigned flags, struct mapping **first, struct mapping **last)
+                             unsigned flags, struct mapping **first, struct mapping **last,
+                             bool *jit)
 {
     struct mapping *f = find(as, addr), *l = NULL;
     bool wx = perms_wx(flags);
     if (!f)
         return wx ? ERR_INVALID_ARGS : ERR_NOT_FOUND;   /* W+X needs a JIT VMO there */
-    bool denied = false;
+    bool denied = false, any = false;
     for (struct mapping *m = f;; m = next_of(m)) {
         if (!m || (l && m->base != mend(l)))
             return ERR_NOT_FOUND;   /* ran out, or a gap */
-        if (wx && !vmo_is_jit(m->vmo))
+        bool j = vmo_is_jit(m->vmo);
+        if (wx && !j)
             return ERR_INVALID_ARGS;
+        any |= j;
         denied |= (flags & ~m->max) != 0;
         denied |= m->kept && flags != m->flags;
         l = m;
@@ -1576,6 +1612,7 @@ static status_t protect_span(const struct aspace *as, uint64_t addr, uint64_t en
         return ERR_ACCESS_DENIED;
     *first = f;
     *last = l;
+    *jit = any;
     return OK;
 }
 
@@ -1627,7 +1664,8 @@ status_t aspace_protect(struct aspace *as, uint64_t addr, uint64_t len, unsigned
     uint64_t end = addr + len;
     mutex_lock(&as->lock);
     struct mapping *first = NULL, *last = NULL, *spare[2] = { NULL, NULL };
-    status_t st = protect_span(as, addr, end, flags, &first, &last);
+    bool jit = false;
+    status_t st = protect_span(as, addr, end, flags, &first, &last, &jit);
     /* An end mapping that has flags already isn't split: its two pieces
      * would only merge again. */
     bool lsplit = st == OK && first->base < addr && first->flags != flags;
@@ -1654,6 +1692,8 @@ status_t aspace_protect(struct aspace *as, uint64_t addr, uint64_t len, unsigned
     struct mapping *before = prev_of(first);
     merge_range(as, before ? before : first, end);
     (void)maps_account(as, as->nmaps);   /* at most the reservation: can't fail */
+    if (jit && (flags & ASPACE_EXEC))   /* JIT memory that may run now marks it */
+        __atomic_store_n(&as->jit, true, __ATOMIC_RELAXED);
     mutex_unlock(&as->lock);
     return OK;
 }
@@ -1828,6 +1868,7 @@ uint32_t aspace_get_maps(struct aspace *as, uint64_t from, struct map_info *out,
             /* no read, no entries (protect clears them): nothing to walk in a reservation */
             .resident = (m->flags & ASPACE_READ) ? resident_in(as, m->base, mend(m)) : 0,
             .perms = m->flags & PERMS,
+            .flags = m->clone,   /* ASPACE_CLONE_* == VMAR_CLONE_* (abi_check.c) */
         };
     }
     mutex_unlock(&as->lock);
@@ -1857,6 +1898,21 @@ static const char *vmap_check(const struct aspace *as, const struct mapping *m)
     if (!overlap_room(as, m->vmo, vfirst(m), vend(m), 0, 0, VMAR_MAX_OVERLAP + 1))
         return "a page under more than VMAR_MAX_OVERLAP mappings";
     return NULL;
+}
+
+/* aspace_check's look at m's clone mode: one of the three; none if it may
+ * ever write JIT memory; shared if kept; a copy only of a paged VMO, not
+ * JIT, through a maximum with write. */
+static bool clone_ok(const struct mapping *m)
+{
+    bool jit = vmo_is_jit(m->vmo), w = (m->max & ASPACE_WRITE) != 0;
+    if (m->clone != 0 && m->clone != ASPACE_CLONE_SHARE && m->clone != ASPACE_CLONE_NONE)
+        return false;
+    if (jit && w && m->clone != ASPACE_CLONE_NONE)
+        return false;
+    if (m->kept && m->clone != ASPACE_CLONE_SHARE)
+        return false;
+    return m->clone != 0 || (w && !jit && vmo_is_paged(m->vmo));
 }
 
 /* aspace_check's look at m's entries, region lock held: each present one
@@ -1936,6 +1992,8 @@ int64_t aspace_check(struct aspace *as)
         else if ((m->flags & ~m->max) || !perms_ok(m->flags, vmo_is_jit(m->vmo)) ||
                  (m->kept && m->max != m->flags))
             why = "a mapping's permissions";
+        else if (!clone_ok(m))
+            why = "a mapping's clone mode";
         else if (!(why = vmap_check(as, m)))
             why = entries_check(as, m, buf);
     }

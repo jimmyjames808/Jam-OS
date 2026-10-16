@@ -2,7 +2,7 @@
 # ls -l (modes, link counts, owner, a link's target), stat, ln and ln -s,
 # chmod (octal and symbolic), readlink, a link through a directory, a link
 # that leads out of the volume (said, not followed), and allow on a program
-# on /jam (the whole-file way: extfs has no pages to give yet).
+# on /jam (from its pages: extfs's file.map).
 # tools/extcmds-test.sh runs it with a Jam OS drive whose data partition
 # jamext made (tools/jamext) and checks the volume on the host afterwards.
 # QEMU_INPUT=this file, command line "shell" (and QEMU_NVME=the drive).

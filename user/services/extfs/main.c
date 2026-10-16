@@ -1,7 +1,8 @@
 /* extfs: the ext filesystem service (docs/M13.6-PLAN.md's U4). One process
  * serves one partition: it takes a `block` channel, mounts the ext volume
  * on it with the ext library (the journal replayed first: the recovery)
- * and serves the `fs` protocol, plus a `file` channel per open file.
+ * and serves the `fs` protocol, plus a `file` channel per open file and,
+ * given the mount's pager, the pages of the files it maps (pager.c).
  * <extfssvc.h> has the startup handles, extfs.h the map of the files.
  *
  * Mounting: a volume the library may write (Jam OS's feature set, a
@@ -302,6 +303,8 @@ static status_t run(handle_t serve, handle_t ctl)
             vol.disk_gone = true;
         } else if (pkt.key == XF_KEY_OWN) {
             own_event();
+        } else if (pkt.key == XF_KEY_PAGER) {
+            pager_event();
         } else if (pkt.key & XF_KEY_FILE_BIT) {
             files_event(pkt.key);
         } else if (pkt.key & XF_KEY_VIEW_BIT) {
@@ -350,7 +353,7 @@ int main(int argc, char **argv)
     vol.ctl = startup_handle(EXTFS_SR_CTL);
     vol.own = startup_handle(EXTFS_SR_OWN);
     vol.keep = startup_handle(SR_KEEP);
-    vol.pager = startup_handle(EXTFS_SR_PAGER);   /* kept for U10: nothing is mapped yet */
+    vol.pager = startup_handle(EXTFS_SR_PAGER);   /* none: nothing is mapped (a test's extfs) */
     vol.at[XF_AT_MAIN] = now();
     status_t st = jam_port_create(&vol.port);
     if (st == OK)
@@ -370,6 +373,7 @@ int main(int argc, char **argv)
         printf("extfs %s: not serving: %s\n", vol.name, status_str(st));
         return no_volume ? EXTFS_EXIT_NO_VOLUME : 1;
     }
+    pager_start();
     st = run(serve, vol.ctl);
     reply_flush();
     files_close_all();

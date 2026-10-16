@@ -125,7 +125,9 @@
  * JIT VMO can never be sealed (vmo_seal, vmo_seal_verified: no approved
  * code is ever writable) or give a copy-on-write child (vmo_create_child,
  * checked under "vmo resize", so a creation and the marking never
- * overlap: a child holds nothing a JIT VMO ever held).
+ * overlap: a child holds nothing a JIT VMO ever held), and is never
+ * pinned (range_add, under the lock: a device never writes code, nor
+ * keeps a page a decommit of code should take).
  *
  * Kept VMOs (VMO_KEEP_PAGES, a paged VMO): every page below the size is
  * committed from vmo_create_for to destroy. Creation commits them all
@@ -985,6 +987,11 @@ status_t vmo_create(uint64_t size, uint32_t flags, struct vmo **out)
 bool vmo_is_kept(const struct vmo *v)
 {
     return (v->flags & VMO_KEEP_PAGES) != 0;
+}
+
+bool vmo_is_paged(const struct vmo *v)
+{
+    return v->kind == VMO_PAGED;
 }
 
 status_t vmo_create_physical(uint64_t phys, uint64_t size, unsigned cache, struct vmo **out)
@@ -2233,13 +2240,16 @@ uint64_t vmo_page_phys(struct vmo *v, uint64_t offset)
 /* ---- mapping and pinning ranges ----------------------------------------- */
 
 /* Record r (busy) if it lies inside the VMO. On success it holds a VMO
- * reference and, for pins, gets its id. */
+ * reference and, for pins, gets its id. A JIT VMO is never pinned: the
+ * test is here, under the lock vmo_make_jit marks it under (and where it
+ * looks for pins), so a pin and the marking never pass each other. */
 static status_t range_add(struct vmo *v, struct vmo_range *r)
 {
     uint64_t f = vlock(v);
-    status_t st = r->end > v->size >> PAGE_SHIFT ? ERR_OUT_OF_RANGE
-                  : r->writes && v->sealed       ? ERR_BAD_STATE
-                                                 : OK;
+    status_t st = r->kind == RANGE_PIN && v->jit   ? ERR_NOT_SUPPORTED
+                  : r->end > v->size >> PAGE_SHIFT ? ERR_OUT_OF_RANGE
+                  : r->writes && v->sealed         ? ERR_BAD_STATE
+                                                   : OK;
     if (st != OK) {
         vunlock(v, f);
         return st;

@@ -16,8 +16,11 @@
  *   EXTFS_SR_OWN     optional: the server end of a second `fs` channel, the
  *                    spawner's own, served as EXTFS_SR_SERVE's is; its close
  *                    ends nothing.
- *   EXTFS_SR_PAGER   optional: the mount's pager. Taken and kept, unused
- *                    until M13.6's U10 (file.map is ERR_NOT_SUPPORTED).
+ *   EXTFS_SR_PAGER   optional: the mount's pager (abi/syscalls.def
+ *                    160-164), with READ WRITE WAIT, the same one for every
+ *                    instance: file.map answers VMOs made from it and
+ *                    extfs supplies their pages (user/services/extfs/
+ *                    pager.c). Without it file.map is ERR_NOT_SUPPORTED.
  *   SR_STATE         optional: its state VMO (<svcstate.h>),
  *                    EXTFS_STATE_SIZE bytes, made and kept by the spawner
  *                    across its restarts, with SVCSTATE_SERVICE_RIGHTS. An

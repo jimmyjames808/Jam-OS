@@ -246,11 +246,31 @@ struct port_packet {
  * VMO's end, ERR_NO_RESOURCES past VMAR_MAX_MAPPINGS or
  * VMAR_MAX_OVERLAP, ERR_NO_MEMORY). MAP_FIXED's call. */
 #define VMAR_REPLACE   (1u << 5)
+/* vmar_map only: the mapping's clone mode, what vmar_clone (abi/syscalls.def,
+ * docs/FORK-PLAN.md) makes of it in a copy of the address space.
+ * VMAR_CLONE_SHARE: the same VMO, so the same pages both ways (libc's
+ * MAP_SHARED). VMAR_CLONE_NONE: nothing, the range is free in the copy
+ * (MADV_DONTFORK's meaning: a connection's buffers). Without either:
+ * shared when the mapping's maximum (what its handle's rights let a
+ * vmar_protect grant) has no write, since nothing can ever write through
+ * it, else a copy (one copy-on-write child of the VMO, made by
+ * vmo_create_child's VMO_CHILD_SNAPSHOT_AT_LEAST_ON_WRITE). The kernel
+ * decides two cases itself: a mapping of a JIT VMO whose maximum has write
+ * is always VMAR_CLONE_NONE (a copy never holds writable JIT memory, so
+ * never W+X), and a contiguous or physical VMO's mapping, which can't be
+ * copied (no child of one exists), is shared where it would be copied.
+ * The mode is fixed for the mapping's life: vmar_protect, a split, a merge
+ * and a replace that cuts the mapping keep it, and neighbours merge only
+ * with the same mode. map_info.flags shows it. ERR_INVALID_ARGS for both
+ * together, or either with VMAR_KEPT_ONLY (a kept mapping is read-only for
+ * good: always shared). */
+#define VMAR_CLONE_SHARE (1u << 6)
+#define VMAR_CLONE_NONE  (1u << 7)
 
 /* Mappings an address space holds at most (a vmar_map past it, or an
  * unmap or protect that would split one more off, is ERR_NO_RESOURCES).
  * Neighbouring mappings of one VMO at contiguous offsets, with the same
- * permissions and the same maximum, are one mapping (they merge after
+ * permissions, maximum and clone mode, are one mapping (they merge after
  * every map, replace and protect; kept mappings never do), and a call is
  * counted by what it leaves: a protect that splits a piece off and merges
  * it into its neighbour fits even at the cap. */
@@ -275,7 +295,8 @@ struct map_info {
     uint64_t vmo_off;    /* the VMO's offset at base */
     uint64_t resident;   /* pages of it present in the page tables now */
     uint32_t perms;      /* VMAR_READ | VMAR_WRITE | VMAR_EXEC, as set now */
-    uint32_t flags;      /* 0 */
+    uint32_t flags;      /* its clone mode: VMAR_CLONE_SHARE, VMAR_CLONE_NONE, or 0
+                            for a copy (the defaults and the kernel's cases applied) */
 };
 /* Entries one process_get_maps fills at most. */
 #define MAP_INFO_MAX 256u
@@ -342,8 +363,10 @@ struct process_info {
     char     name[32];    /* the name it was created with (PROCESS_NAME_MAX), NUL-terminated */
 };
 /* process_info.flags and proc_stat.flags: its address space has mapped a
- * JIT VMO (vmo_make_jit) since it was made, writable and executable
- * memory (`ps` marks it). Kept until the address space is torn down. */
+ * JIT VMO (vmo_make_jit) executable since it was made (a map or a protect
+ * with execute; one that only reads or writes it doesn't count): it runs
+ * code it may write (`ps` marks it). Kept until the address space is torn
+ * down. */
 #define PROCESS_FLAG_JIT (1u << 0)
 
 /* Small ids, for POSIX's pid and tid: a process's pid and a thread's tid

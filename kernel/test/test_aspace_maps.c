@@ -4,7 +4,8 @@
  *
  *   aspace_maps_shapes
  *       a read-write mapping, a read-only one and a guard (no access): the
- *       entries' bases, lengths, VMOs, offsets and permissions; `resident`
+ *       entries' bases, lengths, VMOs, offsets, permissions and clone
+ *       modes; `resident`
  *       follows the faults (and is 0 for the guard); a protect splits one
  *       mapping into three and one to no access clears its count; the
  *       `from` cursor and the cap walk the same list in pieces; an unmap
@@ -67,7 +68,10 @@ KTEST(aspace_maps_shapes)
     KT_EQ(m[2].base, BASE + 14 * PG);
     KT_EQ(m[2].perms, 0);
     KT_EQ(m[2].resident, 0);
-    KT_EQ(m[0].flags | m[1].flags | m[2].flags, 0);
+    /* Clone modes (test_aspace_clone.c): a copy where the maximum writes. */
+    KT_EQ(m[0].flags, 0);
+    KT_EQ(m[1].flags, VMAR_CLONE_SHARE);
+    KT_EQ(m[2].flags, VMAR_CLONE_SHARE);
 
     /* Pages present follow the faults: two of a's, one of b's. */
     touch(as, 1, ASPACE_WRITE);

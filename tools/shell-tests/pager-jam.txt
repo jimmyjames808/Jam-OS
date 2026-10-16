@@ -1,0 +1,94 @@
+# Mapped files on /jam, an ext volume served by extfs with the mount's
+# pager (docs/M13.6-PLAN.md's U10; tools/pager-test.sh's jam case, which
+# makes the drive and checks the log): pager.bin, put on the volume by the
+# host's mke2fs, hashed through a mapping twice and through a VMO of our
+# own; pagertest's writes and truncates of every kind under a mapping; the
+# shell's `write` emptying a mapped file (a copy past the new end refused,
+# a load there a bus error); and `rm` of a mapped file, which on ext its
+# mapping outlives (the inode stays until the mapping goes): a copy from
+# it and a load both read on.
+#   PAGER_CASES=jam tools/pager-test.sh <outdir>
+# As in cmds.txt, a marker built from $T (j) never appears in the typed
+# line, only when the command before it ran.
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send T=j
+wait {prompt}
+seen 60 init: /jam mounted
+
+send pagertest hash /jam/pager.bin 2; echo h1-$T=$?
+wait 120 pagertest: /jam/pager.bin: 2097152 bytes: mapped sha256
+wait h1-j=0
+wait {prompt}
+seen 10 extfs /jam: mapped file
+send pagertest xhash /jam/pager.bin; echo x1-$T=$?
+wait 120 pagertest: /jam/pager.bin: 2097152 bytes: own VMO sha256
+wait x1-j=0
+wait {prompt}
+send sha256sum /jam/pager.bin; echo s1-$T=$?
+wait s1-j=0
+wait {prompt}
+
+send pagertest write /jam/w.bin; echo w1-$T=$?
+wait 120 pagertest: write /jam/w.bin: PASS
+wait w1-j=0
+wait {prompt}
+
+send cp /jam/pager.bin /jam/t.bin; echo c1-$T=$?
+wait 120 c1-j=0
+wait {prompt}
+send pagertest touch /jam/t.bin 1048576 copy /jam/cue1 &
+wait pagertest: waiting for /jam/cue1
+send write /jam/t.bin short; echo s2-$T=$?
+wait s2-j=0
+wait {prompt}
+send write /jam/cue1 go; echo q1-$T=$?
+wait q1-j=0
+seen 30 pagertest: touch /jam/t.bin at 1048576 by a copy: ERR_INVALID_ARGS
+wait {prompt}
+
+send sleep 1; cp /jam/pager.bin /jam/t.bin; echo c2-$T=$?
+wait 120 c2-j=0
+wait {prompt}
+send pagertest touch /jam/t.bin 1048576 load /jam/cue2 &
+wait pagertest: waiting for /jam/cue2
+send write /jam/t.bin short; echo s3-$T=$?
+wait s3-j=0
+wait {prompt}
+send write /jam/cue2 go; echo q2-$T=$?
+wait q2-j=0
+seen 30 killed: bus error: page past the end of a shrunk VMO
+wait {prompt}
+
+send sleep 1; cp /jam/pager.bin /jam/u.bin; echo c3-$T=$?
+wait 120 c3-j=0
+wait {prompt}
+send pagertest touch /jam/u.bin 4096 copy /jam/cue3 &
+wait pagertest: waiting for /jam/cue3
+send rm /jam/u.bin; echo r1-$T=$?
+wait r1-j=0
+wait {prompt}
+send write /jam/cue3 go; echo q3-$T=$?
+wait q3-j=0
+seen 30 pagertest: touch /jam/u.bin at 4096 by a copy: OK
+wait {prompt}
+send sleep 1; cp /jam/pager.bin /jam/u.bin; echo c4-$T=$?
+wait 120 c4-j=0
+wait {prompt}
+send pagertest touch /jam/u.bin 4096 load /jam/cue4 &
+wait pagertest: waiting for /jam/cue4
+send rm /jam/u.bin; echo r2-$T=$?
+wait r2-j=0
+wait {prompt}
+send write /jam/cue4 go; echo q4-$T=$?
+wait q4-j=0
+seen 30 pagertest: touched /jam/u.bin at 4096: byte
+wait {prompt}
+send sleep 1; rm /jam/t.bin /jam/w.bin /jam/cue1 /jam/cue2 /jam/cue3 /jam/cue4; echo e-$T=$?
+wait e-j=0
+wait {prompt}
+send sync
+wait {prompt}
+send reboot -f
+wait reboot: resetting

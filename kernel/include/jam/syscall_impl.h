@@ -56,6 +56,7 @@ int64_t sysc_vmar_protect(handle_t vmar, uint64_t addr, uint64_t len, uint32_t f
 int64_t sysc_vmo_create_child(handle_t vmo, uint32_t flags, uint64_t offset, uint64_t size,
                               uint64_t out);
 int64_t sysc_vmo_make_jit(handle_t vmo, handle_t root, uint64_t out);
+int64_t sysc_vmar_clone(handle_t dst, uint64_t vmos, uint64_t children, uint32_t n, uint32_t flags);
 int64_t sysc_process_create(handle_t job, uint64_t name, uint64_t name_len, uint32_t flags,
                             uint64_t proc_out, uint64_t vmar_out);
 int64_t sysc_process_start(handle_t proc, handle_t thread, uint64_t entry, uint64_t stack,
@@ -118,6 +119,8 @@ int64_t sysc_wallclock_set(handle_t root, uint64_t in);
 int64_t sysc_sys_public_info(uint64_t out);
 int64_t sysc_clock_page(uint64_t out);
 int64_t sysc_process_get_maps(handle_t proc, uint64_t from, uint64_t out, uint32_t cap);
+int64_t sysc_process_replace(handle_t proc, uint64_t entry, uint64_t stack, handle_t arg0,
+                             uint64_t arg1);
 int64_t sysc_kexec_load(handle_t root, handle_t kernel, handle_t bootfs, uint64_t cmdline,
                         uint64_t len, uint32_t flags);
 int64_t sysc_kexec_reboot(handle_t root);
