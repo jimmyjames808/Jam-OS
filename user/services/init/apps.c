@@ -10,9 +10,10 @@
  * /svc/wayland whether its list says so or not (a desktop app is a
  * window); but no console (it was started from no terminal) and no
  * SR_STDOUT: what it prints goes to the log. It runs in a job of its own
- * under init's, watched on the loop's port (KEY_APPS + its slot): when its
- * process ends, the job is killed (anything it left running goes) and its
- * slot is free. init never starts one again: closing its window is the end
+ * under init's, with a message budget of its own as every started program
+ * (<dataprog.h>'s dp_job_create), watched on the loop's port (KEY_APPS +
+ * its slot): when its process ends, the job is killed (anything it left
+ * running goes) and its slot is free. init never starts one again: closing its window is the end
  * of it. At most DESKAPPS_RUNNING at once. */
 #include <dataprog.h>
 #include <deskapps.h>
@@ -73,7 +74,7 @@ static status_t start(struct app *a, const char *cmd, const char *path)
         if (root)
             x[nx++] = (struct spawn_handle){ SR_RESOURCE, root };
     }
-    status_t st = jam_job_create(startup_handle(SR_JOB), 0, &a->job);
+    status_t st = dp_job_create(startup_handle(SR_JOB), &a->job);
     if (st != OK) {
         for (unsigned i = 0; i < nx; i++)
             jam_handle_close(x[i].h);

@@ -13,8 +13,13 @@
 #   c  an MBR with a blank partition of type 0c (what a freshly flashed Jam
 #      OS data partition looks like) and a type 07 partition of noise
 #   d  noise from the first byte to the last: no table, no filesystem
+#   g  a Linux stick: an MBR with one partition of type 83 holding the ext4
+#      volume Linux's mke2fs made (tools/extfix/linux1k.img.gz): mounted by
+#      bin/extfs, read-only at /usb0 and never writable (`mount -w` refused:
+#      someone else's ext volume is only read), read through Linux's names,
+#      an indexed directory and a link
 # Then the images are looked at from this side. a holds the file written
-# while it was writable (mtools) and none of the refused ones; b, c and d
+# while it was writable (mtools) and none of the refused ones; b, c, d and g
 # are byte for byte what they were: a stick that is only read, or that
 # holds nothing Jam OS can mount, is never written, let alone formatted.
 # QEMU_SMP and QEMU_XHCI pass through.
@@ -23,7 +28,7 @@ set -eu
 out=$1 name=${2:-sticks}
 mkdir -p "$out"
 a="$out/$name-a.img" b="$out/$name-b.img" c="$out/$name-c.img" d="$out/$name-d.img"
-f="$out/$name-f.img"
+f="$out/$name-f.img" g="$out/$name-g.img"
 tmp="$out/$name-files"
 mkdir -p "$tmp"
 echo "hello from stick a" > "$tmp/hello.txt"
@@ -55,7 +60,9 @@ mcopy -i "$f@@1M" "$tmp/f.txt" "$tmp/big.bin" ::/
 python3 tools/mkstick.py "$c" 16 0c:8 07 --fill
 dd if=/dev/zero of="$c" bs=1048576 seek=1 count=8 conv=notrunc 2>/dev/null   # a blank 0c
 python3 tools/mkstick.py "$d" 8 --fill
-for i in b c d; do
+python3 tools/mkstick.py "$g" 40 83
+gunzip -c tools/extfix/linux1k.img.gz | dd of="$g" bs=1048576 seek=1 conv=notrunc 2> /dev/null
+for i in b c d g; do
     eval "cp \"\$$i\" \"\$$i.before\""
 done
 
@@ -64,7 +71,7 @@ drive() {
     printf -- '-drive if=none,id=%simg,format=raw,file=%s%s ' "$1" "$2" "${3:-}"
 }
 if ! QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_INPUT=tools/shell-tests/sticks.txt \
-     QEMU_USB="$(drive a "$a" ,throttling.bps-read=2097152)$(drive b "$b")$(drive c "$c")$(drive d "$d")$(drive f "$f" ,throttling.bps-write=1048576)" \
+     QEMU_USB="$(drive a "$a" ,throttling.bps-read=2097152)$(drive b "$b")$(drive c "$c")$(drive d "$d")$(drive g "$g")$(drive f "$f" ,throttling.bps-write=1048576)" \
      tools/qemu-test.sh "$out" "$name" shell; then
     echo "$name: the shell script FAILED (see $out/$name.log)"
     ok=0
@@ -79,6 +86,7 @@ never() {
 want "volumes: disk [0-9]+ partition 1 is /usb0, read-only"
 want "volumes: disk [0-9]+ partition 1 is /usb0, read-write"
 want "volumes: disk [0-9]+ partition 1 is /usb1, read-only"
+want "volumes: disk [0-9]+ partition 1 -> bin/extfs at /usb0, read-only"
 want "volumes: disk [0-9]+ partition 1 \(type 0c\) holds no FAT volume bin/fat can read: left alone"
 want "volumes: disk [0-9]+ partition 2: type 07 is not FAT: left alone"
 want "volumes: disk [0-9]+: no FAT partition to mount: left alone"
@@ -87,10 +95,10 @@ never "formatting it|formatted"
 # `mount -r` no news; one per stick pulled.
 want "compositor: notice [0-9]+: USB stick added: [0-9.]+ [MG]B at /usb0, read-only"
 want "compositor: notice [0-9]+: USB stick added: [0-9.]+ [MG]B at /usb1, read-only"
-[ "$(grep -ac "USB stick added" "$log")" -eq 3 ] ||
-    { echo "$name: not three 'USB stick added' notices (a, b, f)"; ok=0; }
-[ "$(grep -ac "compositor: notice [0-9]*: USB stick removed: /usb0" "$log")" -eq 2 ] ||
-    { echo "$name: not two 'USB stick removed: /usb0' notices (a, f)"; ok=0; }
+[ "$(grep -ac "USB stick added" "$log")" -eq 4 ] ||
+    { echo "$name: not four 'USB stick added' notices (a, b, f, g)"; ok=0; }
+[ "$(grep -ac "compositor: notice [0-9]*: USB stick removed: /usb0" "$log")" -eq 3 ] ||
+    { echo "$name: not three 'USB stick removed: /usb0' notices (a, f, g)"; ok=0; }
 never "did not end cleanly|left [0-9]+ units of job kind"
 
 # The images, from this side.
@@ -100,6 +108,7 @@ same() {
 same "$b" "the superfloppy, only ever mounted read-only,"
 same "$c" "the stick with a blank partition and a foreign one"
 same "$d" "the stick without any filesystem"
+same "$g" "the Linux stick (an ext volume, mounted by extfs and only read)"
 mtype -i "$a@@1M" ::/new.txt 2>/dev/null | grep -q "written while writable" ||
     { echo "$name: stick a doesn't hold the file written after mount -w"; ok=0; }
 for gone in refused.txt refused2.txt newdir; do
@@ -110,9 +119,9 @@ mtype -i "$a@@1M" ::/hello.txt 2>/dev/null | grep -q "hello from stick a" ||
     { echo "$name: stick a lost hello.txt"; ok=0; }
 mtype -i "$f@@1M" ::/f.txt 2>/dev/null | grep -q "stick f was here" ||
     { echo "$name: stick f lost f.txt"; ok=0; }
-rm -rf "$tmp" "$b.before" "$c.before" "$d.before"
+rm -rf "$tmp" "$b.before" "$c.before" "$d.before" "$g.before"
 if [ $ok = 1 ]; then
-    rm -f "$a" "$b" "$c" "$d" "$f"
+    rm -f "$a" "$b" "$c" "$d" "$f" "$g"
     echo "$name: PASS"
     exit 0
 fi

@@ -28,20 +28,20 @@
 protocol nschan 81
 
 # Mounts in one namespace.
-const MAX_MOUNTS    8
+const MAX_MOUNTS    16
 # Services in one namespace.
 const MAX_SVCS      32
 # Entries in one message (MAX_MOUNTS + MAX_SVCS).
-const MAX_ENTRIES   40
+const MAX_ENTRIES   48
 # Bytes of one entry's path, with its NUL.
 const NAME_MAX      32
 
 # Add these mounts and services, replacing the entries of the same paths.
-1  mount    (u8[<=1280] paths, u8[<=40] connect, handle[<=40] hs) event
+1  mount    (u8[<=1536] paths, u8[<=48] connect, handle[<=48] hs) event
 # Remove the entries of these paths (no handles; a path that is not there is
 # no error).
-2  unmount  (u8[<=1280] paths) event
+2  unmount  (u8[<=1536] paths) event
 # Make the starter's entries exactly these: the starter's others go, then these
 # are added as `mount` does. The program's own entries (ns_mount, ns_svc_set)
 # stay, unless one of the same path replaces them.
-3  set      (u8[<=1280] paths, u8[<=40] connect, handle[<=40] hs) event
+3  set      (u8[<=1536] paths, u8[<=48] connect, handle[<=48] hs) event

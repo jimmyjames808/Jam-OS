@@ -31,7 +31,9 @@
  * its rule against a request that crashes it again and again.
  *
  * **The warm spare** is one bin/fat (process name "fat-spare"), so it can
- * become any mount's service. When a filesystem service is restarted
+ * become any FAT mount's service (an ext mount's restart always starts a
+ * process: extfs could be a spare too, but nothing asks for one yet; its
+ * state is EXTFS_STATE_SIZE, not fat's). When a filesystem service is restarted
  * (supervise.c: at once for a deliberate kill and the first crash in a
  * minute) the spare is promoted with the handles a new process would have
  * been given, and the time of the kill. Without a spare (the boot word
@@ -54,6 +56,7 @@
  * feels it.
  *
  * Everything here runs on volumes' loop thread. */
+#include <extfssvc.h>
 #include <fatsvc.h>
 #include <fs_idl.h>
 #include <idl/storage.h>
@@ -266,7 +269,7 @@ void fs_kept_handles(struct vol *b, struct spawn_handle *x, rights_t *xr, unsign
 {
     pager_handle(b, x, xr, n);
     if (!b->kept && (b->kept = calloc(1, sizeof(*b->kept))) != NULL)
-        sup_kept_init(b->kept, port, FAT_STATE_SIZE, b->name);
+        sup_kept_init(b->kept, port, b->ext ? EXTFS_STATE_SIZE : FAT_STATE_SIZE, b->name);
     if (!b->kept) {
         say(false, "volumes: %s starts without its state and keeper (no memory)", b->name);
         return;
@@ -389,7 +392,8 @@ static void restarted(struct vol *b, bool promoted, uint64_t up)
 
 status_t fs_run(struct vol *b, bool restart)
 {
-    status_t st = restart ? promote(b) : ERR_NOT_FOUND;
+    /* The warm spare is a fat: an ext volume's restart starts a process. */
+    status_t st = restart && !b->ext ? promote(b) : ERR_NOT_FOUND;
     bool promoted = st == OK;
     if (st == ERR_NOT_FOUND)
         st = fs_spawn(b);
