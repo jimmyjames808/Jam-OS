@@ -36,6 +36,12 @@
 #   clip     clipboard-in (a terminal's selection read by wlprobe) and
 #            clipboard-out (the window's selection pasted into a second terminal)
 #   hold     wlprobe hold: a window redrawn on every frame callback for 20 s
+#   hostile  wlprobe's hostile-* cases (track GR, docs/G2-REVIEW.md): subsurface
+#            storms and caps, a desynchronized flood, popups at their caps,
+#            decoration objects left behind, descriptors of the wrong kinds, a
+#            client that never reads, and hostile-regrab with the mouse; then
+#            a plain window, and the compositor's handles and message bytes
+#            back where they were (ps -k before and after)
 #
 # Groups run WL_PORT_JOBS (default 3) at a time, each in
 # <outdir>/<group>/ (the serial log, the screenshots, the image of a failed
@@ -58,7 +64,7 @@ if [ $# -lt 1 ]; then
 fi
 out=$1
 shift
-all="proto floating tiled paint pointer keyboard cursor clip hold"
+all="proto floating tiled paint pointer keyboard cursor clip hold hostile"
 groups="${*:-$all}"
 image=${WL_PORT_IMAGE:-build/jamos.img}
 jobs=${WL_PORT_JOBS:-3}

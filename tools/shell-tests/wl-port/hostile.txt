@@ -1,0 +1,48 @@
+# group hostile (tools/wl-port-test.sh): track GR's hostile clients
+# (docs/G2-REVIEW.md) against the desktop's own compositor: wlprobe's
+# hostile-* cases on the real libwayland (subsurface storms and trees at the
+# caps, a desynchronized flood, popups at their caps, decoration objects
+# left behind, descriptors of the wrong kinds, a client that never reads),
+# each wanting the protocol's answer and a plain window served after; then
+# hostile-regrab with the mouse (as the pointer group's popup-click: a menu
+# opened by a click on the window, dismissed by a click on terminal 1; the
+# client can't grab straight back, so a second click on terminal 1 reaches
+# it); then a plain window, and the terminal still answering. `ps -k` before
+# and after puts the compositor's job in the log: tools/wl-port-check.py
+# checks its handles and message bytes came back (the clients gone left
+# nothing of theirs with it).
+send ps -k; echo psk-before-$T
+wait 20 psk-before-x
+wait {prompt}
+send run $P/wlprobe hostile-sub-storm hostile-desync-flood hostile-popup-cap hostile-deco hostile-handles hostile-never-reads
+wait 300 case(s),
+wait {prompt}
+pointer 960 420
+send run $P/wlprobe -t 90 hostile-regrab
+wait 40 wlprobe: hostile-regrab: ready
+sleep 1
+monitor mouse_move 2 0
+sleep 0.5
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_button 0
+wait 20 wlprobe: hostile-regrab: menu up
+pointer 100 400
+sleep 0.5
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_button 0
+wait 20 wlprobe: hostile-regrab: refused
+sleep 0.5
+monitor mouse_button 1
+sleep 0.2
+monitor mouse_button 0
+wait 60 case(s),
+wait {prompt}
+send run $P/wlprobe toplevel
+wait 60 case(s),
+wait {prompt}
+sleep 2
+send ps -k; echo psk-after-$T
+wait 20 psk-after-x
+wait {prompt}

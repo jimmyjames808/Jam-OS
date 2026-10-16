@@ -101,6 +101,9 @@ struct xdg_popup_state {
     uint32_t token;                /* the last reposition's, for repositioned */
     bool repositioned;             /* repositioned goes with the next configure */
     bool grab;                     /* it took an explicit grab: it is in the grab's chain */
+    bool grab_over;                /* it had one, and a commit with no buffer hid it: a grab
+                                    * on it is dismissed, not a protocol error (until it
+                                    * grabs again, or its initial commit comes) */
     bool dismissed;                /* popup_done sent: shown nowhere, inert until destroyed */
 };
 

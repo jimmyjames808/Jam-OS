@@ -19,10 +19,16 @@
  * client's window gets no pointer; a submenu's grab takes the keys on, and
  * gives them back when it is destroyed; a click outside (the background)
  * dismisses the chain and reaches no one, and the keys go back to the
- * toplevel. A grab with a serial the client was never sent, or while its
- * toplevel doesn't have the keys, is refused: popup_done at once. A
- * tooltip (no grab) takes no keys and stays up when another window is
- * clicked; the focus moving away (Alt+Tab) dismisses a grab.
+ * toplevel; the client's next grabs, with its old serial or the enter the
+ * keys coming back gave it, are refused (popup_done at once) and another
+ * client's window sees the pointer, until a key press lets it grab again
+ * (review GR's finding 1). A grab with a serial the client was never
+ * sent, or while its toplevel doesn't have the keys, is refused:
+ * popup_done at once. A tooltip (no grab) takes no keys and stays up when
+ * another window is clicked; the focus moving away (Alt+Tab) dismisses a
+ * grab. A menu hidden by a commit with no buffer takes the popups on it
+ * along, shown or not, out of the grab (review GR's Low 4): a grab on it
+ * after that is dismissed, not a protocol error, and it can grab again.
  * t_popup_bad: the protocol errors: a grab after the popup was mapped, or
  * on a popup that took no grab (invalid_grab); a popup destroyed while
  * another is on it (not_the_topmost_popup); a popup with no parent at its
@@ -493,8 +499,29 @@ static bool menu_steps(struct cs *t, struct pc *a, struct sc *b, struct top *tl,
     return true;
 }
 
+/* After a click outside dismissed its menu, the client can't take the grab
+ * straight back (review GR's finding 1): not with the serial it grabbed
+ * with, nor with the enter the keys coming back gave it; and the pointer is
+ * free again: another client's window sees it. */
+static bool regrab_steps(struct cs *t, struct pc *a, struct sc *b, struct top *tl,
+                         uint32_t serial, uint32_t enter)
+{
+    const uint32_t old[] = { serial, enter };
+    for (unsigned i = 0; i < 2; i++) {
+        struct pop r;
+        CHECK(popup(a, &r, tl->xs, &menu, old[i]));
+        CHECK(done(a, &r) && !r.serial);   /* dismissed at once, never configured */
+        CHECK(destroy(a, &r));
+    }
+    ct_clear(&b->k);
+    CHECK(cs_pointer_to(t, 70, 70) && cs_sync(&a->c, b));
+    CHECK(find_ev(b, &jwl_wl_pointer_interface, JWL_WL_POINTER_EV_ENTER));
+    return true;
+}
+
 /* A submenu takes the keys on, and gives them back as it goes; a click on
- * the background dismisses the menu and reaches no one. */
+ * the background dismisses the menu and reaches no one, and the client may
+ * grab again only after its next key press. */
 static bool chain_steps(struct cs *t, struct pc *a, struct sc *b, struct top *tl, struct pop *m,
                         uint32_t serial)
 {
@@ -518,12 +545,23 @@ static bool chain_steps(struct cs *t, struct pc *a, struct sc *b, struct top *tl
     const struct ct_event *back = ct_await(k, &jwl_wl_keyboard_interface,
                                            JWL_WL_KEYBOARD_EV_ENTER, 0, CT_WAIT);
     CHECK(back && back->u[1] == tl->s);
+    uint32_t enter = back->u[0];
     CHECK(gone(t, TOP_X + 130, TOP_Y + 100, GREEN));
+    CHECK(regrab_steps(t, a, b, tl, serial, enter));
     CHECK(destroy(a, m));
     ct_clear(k);
     CHECK(cs_tap(t, U_A, 0) && cs_sync(&a->c, b));   /* the keys still its */
     const uint32_t ka[] = { DOWN(KEY_A), UP(KEY_A) };
     CHECK(keys_are(k, ka, 2));
+    /* a key press: it may grab again */
+    const struct ct_event *key = find_ev(&a->c, &jwl_wl_keyboard_interface,
+                                         JWL_WL_KEYBOARD_EV_KEY);
+    CHECK(key);
+    struct pop r;
+    CHECK(popup(a, &r, tl->xs, &menu, key->u[0]));
+    CHECK(show(a, &r, 100, 80, 60, 40, GREEN));
+    CHECK(keys_moved(a, tl->s, r.s));
+    CHECK(destroy(a, &r));
     return true;
 }
 
@@ -582,6 +620,63 @@ static bool tooltip_steps(struct cs *t, struct pc *a, struct sc *b, struct top *
     return true;
 }
 
+/* A menu hidden by a commit with no buffer takes the popups on it along
+ * (review GR's Low 4). First a menu and a submenu that both took the
+ * grab and were never shown: the commit dismisses the submenu (popup_done)
+ * and the chain is empty (another client's window sees the pointer
+ * again); a grab on the hidden menu is dismissed at once, not a protocol
+ * error; the menu can grab and be shown again. Then a submenu shown on it
+ * goes with its next hide. */
+static bool hide_steps(struct cs *t, struct pc *a, struct sc *b, struct top *tl)
+{
+    struct ct_client *k = &a->c.k;
+    struct pop m, s, g, h;
+    const struct place sp = { 50, 30, 50, 10, 10, 10, JWL_XDG_POSITIONER_ANCHOR_TOP_RIGHT, BR,
+                              0 };
+    ct_clear(k);
+    CHECK(click(t, TOP_X + 50, TOP_Y + 40, &a->c, b));
+    const struct ct_event *press = find_ev(&a->c, &jwl_wl_pointer_interface,
+                                           JWL_WL_POINTER_EV_BUTTON);
+    CHECK(press);
+    uint32_t serial = press->u[0];
+    CHECK(popup(a, &m, tl->xs, &menu, serial));
+    CHECK(popup_objects(a, &s, m.xs, &sp));
+    CHECK_ST(jwl_xdg_popup_grab(k->c, s.popup, a->c.seat, serial), OK);
+    CHECK_ST(ct_roundtrip(k), OK);
+    CHECK(!k->errored);
+    ct_clear(&b->k);
+    CHECK(cs_pointer_to(t, 70, 70) && cs_sync(&a->c, b));   /* the chain holds the pointer */
+    CHECK(!find_ev(b, &jwl_wl_pointer_interface, JWL_WL_POINTER_EV_ENTER));
+    ct_clear(k);
+    CHECK(attach(a, m.s, 0));   /* the menu hidden */
+    CHECK(done(a, &s));
+    CHECK(!ct_find(k, &jwl_xdg_popup_interface, JWL_XDG_POPUP_EV_POPUP_DONE, m.popup));
+    ct_clear(&b->k);
+    CHECK(cs_pointer_to(t, 75, 75) && cs_sync(&a->c, b));
+    CHECK(find_ev(b, &jwl_wl_pointer_interface, JWL_WL_POINTER_EV_ENTER));
+    CHECK(popup(a, &g, m.xs, &sp, serial));   /* a grab on the hidden menu */
+    CHECK(done(a, &g) && !g.serial);
+    CHECK(!k->errored);
+    /* the menu grabs again and is shown; a submenu on it, shown */
+    CHECK_ST(jwl_xdg_popup_grab(k->c, m.popup, a->c.seat, serial), OK);
+    ct_clear(k);
+    CHECK(attach(a, m.s, 0));
+    configured(a, &m);
+    CHECK(show(a, &m, 100, 80, 60, 40, GREEN));
+    CHECK(keys_moved(a, tl->s, m.s));
+    CHECK(popup(a, &h, m.xs, &sp, serial));
+    CHECK(show(a, &h, 60, 10, 50, 30, BLUE));
+    CHECK(pixel(t, TOP_X + 100 + 60 + 10, TOP_Y + 80 + 10 + 10, BLUE));
+    ct_clear(k);
+    CHECK(attach(a, m.s, 0));
+    CHECK(done(a, &h));
+    CHECK(gone(t, TOP_X + 100 + 60 + 10, TOP_Y + 80 + 10 + 10, BLUE));
+    CHECK(gone(t, TOP_X + 130, TOP_Y + 100, GREEN));
+    CHECK(!k->errored);
+    CHECK(destroy(a, &h) && destroy(a, &g) && destroy(a, &s) && destroy(a, &m));
+    return true;
+}
+
 static bool grab_steps(struct cs *t, struct pc *a, struct sc *b)
 {
     struct top tl;
@@ -593,6 +688,7 @@ static bool grab_steps(struct cs *t, struct pc *a, struct sc *b)
     CHECK(chain_steps(t, a, b, &tl, &m, serial));
     CHECK(refused_steps(t, a, b, &tl));
     CHECK(tooltip_steps(t, a, b, &tl));
+    CHECK(hide_steps(t, a, b, &tl));
     return true;
 }
 

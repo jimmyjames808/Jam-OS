@@ -174,7 +174,10 @@ static unsigned held_codes(uint32_t *out)
 }
 
 /* enter on s (a surface of the focused client's), then the modifiers, to
- * its keyboards (or only one). */
+ * its keyboards. The keys going to s count as an input event of the
+ * client's (its serial may grab or set the selection); `only`, a new
+ * wl_keyboard told where the keys are, doesn't: a client could make itself
+ * as many enters as it likes by making keyboards (review GR's Low 6). */
 static void send_enter(struct comp_surface *s, const struct seat_res *only)
 {
     struct comp_client *cl = s->client;
@@ -183,7 +186,8 @@ static void send_enter(struct comp_surface *s, const struct seat_res *only)
     uint32_t serial = comp_serial();
     sent_depressed = depressed();
     sent_locked = locked;
-    seat_input_serial(cl, serial);
+    if (!only)
+        seat_input_serial(cl, serial);
     for (struct seat_res *r = seat_of(cl)->res[SEAT_KEYBOARD]; r; r = r->next)
         if (!only || r == only)
             (void)jwl_wl_keyboard_send_enter(cl->conn, r->id, serial, s->id, codes,
@@ -213,7 +217,7 @@ static void send_early(struct comp_window *w)
         }
         uint32_t serial = comp_serial(), t = comp_ms(now());
         if (e->state == JWL_WL_KEYBOARD_KEY_STATE_PRESSED)
-            seat_input_serial(cl, serial);
+            seat_input_press(cl, serial);
         for (struct seat_res *r = seat_of(cl)->res[SEAT_KEYBOARD]; r; r = r->next)
             (void)jwl_wl_keyboard_send_key(cl->conn, r->id, serial, t, e->code, e->state);
     }
@@ -324,7 +328,7 @@ static void send_key(uint32_t code, uint32_t state)
     struct comp_client *cl = w->surface->client;
     uint32_t serial = comp_serial(), t = comp_ms(now());
     if (state == JWL_WL_KEYBOARD_KEY_STATE_PRESSED)
-        seat_input_serial(cl, serial);
+        seat_input_press(cl, serial);
     for (struct seat_res *r = seat_of(cl)->res[SEAT_KEYBOARD]; r; r = r->next)
         (void)jwl_wl_keyboard_send_key(cl->conn, r->id, serial, t, code, state);
 }

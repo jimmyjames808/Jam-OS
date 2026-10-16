@@ -7,7 +7,8 @@
 # never closes.
 #
 #   install:  tools/remote-test.sh tools/pc-keeper.sh --install
-#   jobs:     tools/pc-detach.sh <log> <command...>   (writes a job file)
+#   jobs:     tools/pc-detach.sh <log> <command...>   (writes a job file;
+#             tools/cr/build.sh start and tools/pc-batch.sh start --detach use it)
 #
 # A job is a file ~/.jamos-spool/<id>.job: a bash script, run once with its
 # output in the log it names. The keeper renames it <id>.run when it starts

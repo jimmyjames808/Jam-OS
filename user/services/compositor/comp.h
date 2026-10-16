@@ -695,6 +695,10 @@ bool     subsurface_synced(const struct comp_surface *s);
  * as synchronized). *reshaped is set if the tree's order or a position
  * changed. OK, or a protocol error posted. */
 status_t subsurface_applied(struct comp_surface *s, bool parent_sync, bool *reshaped);
+/* A commit of subsurface s applied a buffer offset (dx, dy): s moves by it
+ * against its parent, until set_position next sets its place (weston's
+ * rule). True if it moved. */
+bool     subsurface_offset(struct comp_surface *s, int32_t dx, int32_t dy);
 /* s's wl_surface goes: its children lose their parent (shown nowhere
  * since), before its window goes. */
 void     subsurface_parent_gone(struct comp_surface *s);
@@ -840,8 +844,9 @@ status_t memory_bind(struct comp_client *cl, uint32_t id, uint32_t version);
 status_t memory_request(struct comp_client *cl, struct jwl_msg *m);
 /* cl went: its seat objects, and every focus, grab and serial it had. */
 void     seat_teardown(struct comp_client *cl);
-/* Is serial one of the last input events' (wl_keyboard.enter, a key press,
- * a button press) the seat sent cl? (wl_data_device.set_selection is
+/* Is serial one of the last input events' (the wl_keyboard.enter of the
+ * keys coming to it, a key press, a button press) the seat sent cl? (A new
+ * wl_keyboard's enter is not one.) (wl_data_device.set_selection is
  * honoured only then.) */
 bool     seat_input_serial_ok(struct comp_client *cl, uint32_t serial);
 
@@ -1134,7 +1139,8 @@ uint64_t xdg_deadline(void);
 /* Popups (xdgpopup.c), for the seat and the loop. */
 /* The client whose popups hold the grab (xdg_popup.grab), or NULL. While
  * one does, the pointer goes only to that client's surfaces, and a press
- * anywhere else dismisses the popups (xdg_grab_dismiss) and goes nowhere. */
+ * anywhere else dismisses the popups (xdg_grab_dismiss) and goes nowhere;
+ * their client may grab again only after its next key or button press. */
 struct comp_client  *xdg_grab_client(void);
 void                 xdg_grab_dismiss(void);
 /* For a popup's window, the window of the toplevel it is placed on (through

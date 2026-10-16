@@ -94,6 +94,22 @@ bool seat_input_serial_ok(struct comp_client *cl, uint32_t serial)
     return false;
 }
 
+void seat_input_press(struct comp_client *cl, uint32_t serial)
+{
+    seat_input_serial(cl, serial);
+    seat_of(cl)->grab_locked = false;
+}
+
+void seat_grab_lock(struct comp_client *cl)
+{
+    seat_of(cl)->grab_locked = true;
+}
+
+bool seat_grab_serial_ok(struct comp_client *cl, uint32_t serial)
+{
+    return !seat_of(cl)->grab_locked && seat_input_serial_ok(cl, serial);
+}
+
 /* ---- wl_seat ---------------------------------------------------------------------- */
 
 status_t seat_bind(struct comp_client *cl, uint32_t id, uint32_t version)

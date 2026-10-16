@@ -4,8 +4,9 @@
  *
  * t_comp_data_selection: the selection only to and from the client with
  * the keyboard focus: set_selection refused (its source cancelled) with a
- * serial that isn't one of the client's input events, or without the
- * focus; only text types offered on; the focused client told the selection
+ * serial that isn't one of the client's input events (the enter a new
+ * wl_keyboard is told the focus with isn't one), or without the focus;
+ * only text types offered on; the focused client told the selection
  * before wl_keyboard.enter, an unfocused one never; a receive passed on to
  * the source with a channel end the source can write and not read, its
  * data reaching the reader; receives refused (the reader's end closed, the
@@ -219,6 +220,38 @@ static bool a_copies(struct dc *a, uint32_t *src)
     return true;
 }
 
+/* A new wl_keyboard of a's, told where the keys are, gets an enter whose
+ * serial is no input event's (review GR's Low 6): a client could make
+ * itself serials for set_selection by making keyboards. Refused, its
+ * source cancelled, and the selection a set stays. */
+static bool new_keyboard_enter(struct dc *a, uint32_t src)
+{
+    struct ct_client *k = &a->s.k;
+    static const char *const types[] = { TEXT };
+    uint32_t kb = ct_new(k, &jwl_wl_keyboard_interface, 5);
+    CHECK(kb);
+    ct_clear(k);
+    CHECK_ST(jwl_wl_seat_get_keyboard(k->c, a->s.seat, kb), OK);
+    CHECK_ST(ct_roundtrip(k), OK);
+    if (k->kept != HANDLE_INVALID)   /* its keymap */
+        jam_handle_close(k->kept);
+    k->kept = HANDLE_INVALID;
+    const struct ct_event *e = ct_find(k, &jwl_wl_keyboard_interface, JWL_WL_KEYBOARD_EV_ENTER,
+                                       kb);
+    CHECK(e && e->u[0]);
+    uint32_t serial = e->u[0], s = source(a, types, 1);
+    CHECK(s);
+    CHECK_ST(jwl_wl_data_device_set_selection(k->c, a->dev, s, serial), OK);
+    CHECK(ct_await(k, &jwl_wl_data_source_interface, JWL_WL_DATA_SOURCE_EV_CANCELLED, s,
+                   CT_WAIT));
+    CHECK(!ct_find(k, &jwl_wl_data_source_interface, JWL_WL_DATA_SOURCE_EV_CANCELLED, src));
+    CHECK_ST(jwl_wl_data_source_destroy(k->c, s), OK);
+    CHECK_ST(jwl_wl_keyboard_release(k->c, kb), OK);
+    CHECK_ST(ct_roundtrip(k), OK);
+    CHECK(!ct_find(k, &jwl_wl_data_source_interface, JWL_WL_DATA_SOURCE_EV_CANCELLED, src));
+    return true;
+}
+
 /* b, unfocused, hears nothing and may not set the selection. */
 static bool b_unfocused(struct dc *a, struct dc *b)
 {
@@ -296,6 +329,7 @@ bool t_comp_data_selection(void)
     uint32_t src;
     CHECK(a_copies(&a, &src));
     uint32_t a_offer = told(&a);
+    CHECK(new_keyboard_enter(&a, src));
     CHECK(b_unfocused(&a, &b));
     CHECK(window_told_first(&b, 300, 1));
     CHECK(b_pastes(&t, &a, &b, src, a_offer));

@@ -243,8 +243,8 @@ struct port_packet {
  * one, never nothing (a fault there waits for the step to end). Mappings
  * that reach past the range keep their parts outside it; holes are
  * fine. On any error nothing has changed (ERR_OUT_OF_RANGE past the
- * VMO's end, ERR_NO_RESOURCES past VMAR_MAX_MAPPINGS, ERR_NO_MEMORY).
- * MAP_FIXED's call. */
+ * VMO's end, ERR_NO_RESOURCES past VMAR_MAX_MAPPINGS or
+ * VMAR_MAX_OVERLAP, ERR_NO_MEMORY). MAP_FIXED's call. */
 #define VMAR_REPLACE   (1u << 5)
 
 /* Mappings an address space holds at most (a vmar_map past it, or an
@@ -255,6 +255,30 @@ struct port_packet {
  * counted by what it leaves: a protect that splits a piece off and merges
  * it into its neighbour fits even at the cap. */
 #define VMAR_MAX_MAPPINGS 65536u
+
+/* Mappings of one VMO an address space holds over any one page of it at
+ * most (a vmar_map that would make one more is ERR_NO_RESOURCES; a
+ * replace doesn't count what it unmaps whole, but does count whole a
+ * mapping it only cuts). Each costs every decommit of the page (the
+ * kernel clears the page from every mapping of it with interrupts off),
+ * and nothing needs many: a JIT's two views, a shared memory region
+ * mapped in a few places. Splitting a mapping and merging two never make
+ * more over any page, so they don't count. */
+#define VMAR_MAX_OVERLAP 64u
+
+/* process_get_maps: one mapping of a process's address space (/proc's
+ * maps, stat and status are made from these). */
+struct map_info {
+    uint64_t base;       /* its first byte (page-aligned) */
+    uint64_t len;        /* bytes (page-aligned, > 0) */
+    uint64_t vmo_koid;   /* the VMO mapped */
+    uint64_t vmo_off;    /* the VMO's offset at base */
+    uint64_t resident;   /* pages of it present in the page tables now */
+    uint32_t perms;      /* VMAR_READ | VMAR_WRITE | VMAR_EXEC, as set now */
+    uint32_t flags;      /* 0 */
+};
+/* Entries one process_get_maps fills at most. */
+#define MAP_INFO_MAX 256u
 
 /* jobs ---------------------------------------------------------------------
  * Every process belongs to a job. A job has a limit on each resource below
@@ -314,6 +338,8 @@ struct process_info {
     uint32_t mappings;    /* its address space's mappings now (VMAR_MAX_MAPPINGS at
                              most; 0 once it is torn down) */
     uint32_t flags;       /* PROCESS_FLAG_* */
+    uint64_t start_ns;    /* the uptime (clock_get) when it was created */
+    char     name[32];    /* the name it was created with (PROCESS_NAME_MAX), NUL-terminated */
 };
 /* process_info.flags and proc_stat.flags: its address space has mapped a
  * JIT VMO (vmo_make_jit) since it was made, writable and executable
@@ -351,6 +377,8 @@ struct sys_public_info {
     uint64_t mem_total_pages;   /* pages the kernel manages */
     uint32_t page_size;         /* 4096 */
     uint32_t cpus_online;       /* CPUs running now */
+    uint64_t mem_free_pages;    /* of mem_total_pages, free now (the allocator's lists and
+                                   per-CPU stashes; not the kernel heap's cached objects) */
 };
 
 /* Thread priorities: 0 (lowest) .. 31. User threads start at

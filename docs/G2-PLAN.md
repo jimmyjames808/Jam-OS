@@ -990,6 +990,7 @@ the docs.
 | **GT. wlprobe and its script** (built: [GT notes](#gt-notes)) | wlprobe (section 11), a test program on the real libwayland, in the ports tree, with a hold mode (a window that stays, for the soak); tools/wl-port-test.sh (new): a plain boot with packages preinstalled (M13.7's PO8 image), wlprobe's cases by name; the Chromium plan adds its own cases to it later | ports/wayland/override/wlprobe.c and patches/0003 (not a port of its own: a recipe needs an upstream tree), tools/wl-port-test.sh and tools/wl-port-check.py (new) | GS1; GP1; M13.7's PO8 (merged) | itself; it is the end-to-end test of GS1 | Sonnet 5.5 |
 | **GD. The search box** (Q9, only if the owner starts Chromium from it) | the recipe's `desktop` line in tools/ports.py and the package's manifest; `pkg`'s approval recording it; init's `launch` accepting an approved package program; the search box's rows | tools/ports.py's line, init's `launch` check (`user/services/init/apps.c`), the compositor's search rows | Q9; M13.7's PO5 and PO6 merged; Chromium's package (the Chromium plan) | utest for init's check (an unapproved program refused, a program without the line refused); `tools/desk-test.sh` with a preinstalled package | Sonnet 5.5 |
 | **GR. Independent review and fix** | GS1, GC1, GC1b, GC2, GC3: findings first, then High and Medium fixed with a test each; hostile libwayland clients against the live compositor (X1's style): a subsurface storm, a desync bubble flood, a popup chain at the cap, a decoration object on a destroyed toplevel, 28 handles of the wrong kinds, a client that never reads | the files its fixes need, named in its report | GS1, GC1b, GC2 merged (GC3 if merged by then) | its own; utest; GT's script | **Opus** |
+| **MB. Message budgets** (built: GR's design question D1) | a client's unread batches were charged up its job tree to the root's message budget (at most 64 MiB, the whole system's), with nothing of the program's own on the way: four clients writing faster than the compositor reads filled it, and every other writer got `ERR_NO_MEMORY`. The compositor's connection ends are `CHANNEL_BYTE_BOUND` (a flood waits at 1 MiB on its own connection); every program the shell, `/svc/exec` and init's apps start gets a job with a 16 MiB message limit (`dp_job_create`, `<dataprog.h>`), which stops a flood on any channel at the program's own job. The other `/svc` channels a program may name were looked at: all are calls answered one at a time or shared-memory rings (their one-way writes are small: libos's stdout at most 4 KiB a message, the terminal's 2 KiB, notices for services only), so none needs a bound of its own | `user/services/compositor/conn.c` (the bound), `user/lib/dataprog.c` and `user/include/dataprog.h`, the four places that make a program's job (`sh_program.c`'s run and helpers, init's `apps.c` and `exec.c`) | GR's report | utest `msgbudget_comp_flood`, `exec_sealed_runs` (the child's job's limit); `cmds.txt`'s `run utest msgflood` | **Opus** |
 | **GJ. The join** | ARCHITECTURE (Graphics: ported clients, the protocols offered, decorations; Userland: the Wayland socket), the porter's guide (GUI ports: the shim, the environment, the fonts and keyboard pieces, what is offered), TESTING (the new script), `third_party/wayland-protocols`'s README, ROADMAP and HISTORY | the docs | GR merged | `make check` | Sonnet 5.5 |
 
 **Off the path since the rescope** (after Chromium, by need; their rows
@@ -1336,7 +1337,12 @@ moves the frame round the tree, but the window manager places the window
 again only at the main surface's next commit. A window with subsurfaces
 never takes the full-screen path (its rows copied straight from its main
 surface's buffer). The keyboard focus stays the main surface's (a
-subsurface never has it, as the protocol says).
+subsurface never has it, as the protocol says). A commit's buffer offset
+(`wl_surface.offset`, or attach's x and y below version 5) moves a
+subsurface against its parent, cached commits' offsets added up, until
+set_position next sets its place (weston's rule; added by GR, its Low 2).
+An effectively synchronized grandchild's cache waits for its own parent's
+next apply, as wlroots does (GR's Low 3, kept by the owner's decision).
 
 **For GC3 (popups)**: an xdg_popup is a window of its own, and its surface
 may have a tree: `window_tree_box`, the tree drawing and `window_input_at`
@@ -1378,7 +1384,8 @@ restart; its surface may have subsurfaces like any window's.
   when its parent's room changes (a configure, which it acks); without it
   a popup keeps its place against its parent, wherever that goes.
   `set_parent_size` and `set_parent_configure` are kept nowhere. A
-  commit with no buffer hides the popup (and takes it out of the grab).
+  commit with no buffer hides the popup (it leaves the grab, the popups on
+  it are dismissed, shown or not; GR's Low 4).
 - **Following the parent**: each loop turn before the paint
   (`xdg_popups_turn`, the one line added to main.c) a shown popup is moved
   with its parent (a move, a maximise, a tile's glide, a screen's slide)
@@ -1391,10 +1398,15 @@ restart; its surface may have subsurfaces like any window's.
   parent's role object or wl_surface gone; the popups on a dismissed one go
   with it, the newest first.
 - **The grab**: granted for one of the client's last input events'
-  serials (`seat_input_serial_ok`: a key, a button, a keyboard enter) while
+  serials (`seat_input_serial_ok`: a key, a button, the keyboard enter of
+  the keys coming to it, not a new `wl_keyboard`'s: GR's Low 6) while
   its toplevel has the keyboard focus, before the popup is mapped; denied
   (dismissed at once) otherwise, so a program in the background can't take
-  the keys with a menu. The grabbing popups are one chain of one client's,
+  the keys with a menu. Once the compositor dismisses a client's grab (a
+  press outside, the focus moving, another client's grab) it may grab again
+  only after its next key or button press (`seat_grab_lock`, GR's finding
+  1: else it could meet every click outside with a new grab and the mouse
+  could never leave it). The grabbing popups are one chain of one client's,
   each on the one before; a new grab on the toplevel dismisses the old
   chain, one on a popup of the chain dismisses what is above it. While
   the chain lives the pointer goes only to that client's surfaces, its
@@ -1408,7 +1420,8 @@ restart; its surface may have subsurfaces like any window's.
   moving to another window (Alt+Tab, a click elsewhere, a screen switch)
   dismisses the chain.
 - **Errors**: a grab after the popup was mapped, or on a popup that took
-  no grab, `invalid_grab`; a popup destroyed while another (not dismissed)
+  no grab, `invalid_grab` (a grab on one that was dismissed, or hidden
+  since its grab, is dismissed at once instead); a popup destroyed while another (not dismissed)
   is on it, `not_the_topmost_popup` (wlroots' rule: any child, grab or
   not); a parent that is no toplevel or popup, `invalid_popup_parent` at
   `get_popup`, and no parent at the initial commit, the same.
@@ -1448,7 +1461,7 @@ back); a popup's wl_surface destroyed first (`defunct_role_object`).
 | The compositor's additions | utest's compositor tests per protocol (GC1b to GC3); screenshot tests in `tools/comp-test.sh`'s style; every existing desktop script unchanged (`tools/desk-test.sh`, `tools/apps-test.sh`, `tools/clip-test.sh`, `tools/mouse-test.sh`) |
 | The ports | each recipe's `test` through M13.7's ports-test script (GP1, GP2, wlprobe) |
 | End to end | tools/wl-port-test.sh: wlprobe's cases; then the Chromium plan's `content_shell` and `chrome` cases added to the same script |
-| Hostile clients | GR's libwayland-based clients against the live compositor; X1's hostile clients unchanged |
+| Hostile clients | GR's libwayland-based clients against the live compositor (wlprobe's `hostile-*` cases, `tools/wl-port-test.sh`'s `hostile` group; [G2-REVIEW](G2-REVIEW.md)); X1's hostile clients unchanged |
 | The bench | BENCH.md gains: wlprobe's round trip and a 28-descriptor flush through the shim against libjwl's; the compositor's paint cost with a full-screen Chromium window (with the Chromium plan) |
 | The regression | once, after GJ, on the PC: ktest at 4, the init run twice, every area script, the desktop scripts, the new script, the soak at 4 |
 

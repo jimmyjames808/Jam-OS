@@ -8,7 +8,8 @@
  * strictly):
  *   - set_selection is honoured only from the client with the keyboard
  *     focus, with the serial of an input event the seat sent it (a key or
- *     button press, wl_keyboard.enter: seat_input_serial_ok) that is no
+ *     button press, the wl_keyboard.enter of the keys coming to it, not a
+ *     new wl_keyboard's: seat_input_serial_ok) that is no
  *     older than the current selection's; otherwise its source is told
  *     `cancelled` at once. A new selection cancels the old one's source;
  *   - the focused client's data devices hear the selection, as a new

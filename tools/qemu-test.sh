@@ -29,6 +29,9 @@
 # (which Limine 11 reads first) instead of over boot/limine/limine.conf, so
 # the stick keeps its own boot menu (tools/update-menu-test.sh: `update -w`
 # writes that one); the saved image has the run's menu there too.
+# QEMU_MENU_AT=keep writes no menu: the image's own boot menu is what Limine
+# reads (an installed drive's, as `install` wrote it: tools/install-test.sh;
+# the run's cmdline words are then the ones in that menu).
 # QEMU_SAVE=<file> keeps the run's stick image, with what the guest wrote
 # to it, as <file> (for a later run's QEMU_IMAGE: a second boot of the
 # same stick). QEMU_BOOT_PREV=1 boots the stick's previous build
@@ -190,7 +193,9 @@ fi
     printf '    module_path: boot():/boot/%s\n' "$bfile"
     printf '    module_path: boot():/boot/%s\n    cmdline: %s\n' "$kfile" "$cmdline"
 } > "$out/$name.conf"
-if [ "${QEMU_MENU_AT:-}" = efi ]; then
+if [ "${QEMU_MENU_AT:-}" = keep ]; then
+    :   # the image's own menu stays
+elif [ "${QEMU_MENU_AT:-}" = efi ]; then
     # The stick's own menu stays as it is (`update -w` writes it): Limine
     # reads EFI/BOOT/limine.conf, beside itself, before boot/limine/.
     mcopy -o -i "$img@@1M" "$out/$name.conf" ::/EFI/BOOT/limine.conf
