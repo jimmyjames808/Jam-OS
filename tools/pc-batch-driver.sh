@@ -18,7 +18,8 @@
 #   driver.sh run      the keeper's job: every run, then the file done
 #   driver.sh pull <rsync's arguments>
 #                      rsync's --rsync-path when the Mac looks: first notes
-#                      whether the batch still lives (gone, nokeeper), then rsync
+#                      the PC's time (now) and whether the batch still lives
+#                      (gone, nokeeper), then rsync
 #   driver.sh cancel   stop every process of the batch (its claims on the
 #                      budget end with them)
 #   driver.sh resume   after a reboot or a cancel: run what didn't finish
@@ -75,7 +76,7 @@ run() {
     [ -f cancelled ] && { echo "pc-batch: batch $id was cancelled before it started"; exit 0; }
     # The keeper started this in a session of its own: its process group is
     # every process of the batch (cancel).
-    ps -o pgid= -p $$ | tr -d ' ' > pgid
+    ps -o pgid= -p $$ 2> /dev/null | tr -d ' ' > pgid
     now > started
     echo "pc-batch: batch $id started $(date)"
     pids=
@@ -99,6 +100,9 @@ run() {
 # ---- the Mac's looks ----
 
 pull() {
+    # The PC's clock (WSL's can drift from the Mac's, after Windows slept):
+    # the Mac turns the PC's times into its own with it.
+    now > "$b/now"
     if [ ! -f "$b/done" ] && [ ! -f "$b/gone" ] && [ ! -f "$b/cancelled" ]; then
         if [ -f "$b/started" ]; then
             # The driver writes done before it lets go of the lock: with the
@@ -116,7 +120,7 @@ pull() {
 # ---- cancel, resume ----
 
 procs() {   # procs <process group>: its processes and every descendant of them
-    ps -A -o pid= -o ppid= -o pgid= | awk -v g="$1" '
+    ps -A -o pid= -o ppid= -o pgid= 2> /dev/null | awk -v g="$1" '
         { p[NR] = $1; pp[NR] = $2; if ($3 == g) s[$1] = 1 }
         END {
             do {

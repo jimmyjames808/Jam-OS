@@ -252,6 +252,12 @@ except OSError:
     sys.exit(1)
 sys.exit(subprocess.call(cmd) if cmd else 0)
 EOF
+# The PC's clock 300 s ahead (WSL's can drift).
+cat > "$tmp/bin/date" <<'EOF'
+#!/bin/bash
+[ "$*" = +%s ] && { echo $(($(/bin/date +%s) + 300)); exit 0; }
+exec /bin/date "$@"
+EOF
 chmod +x "$tmp/fake-ssh" "$tmp/bin/"*
 keeper=
 keeper_start() {
@@ -306,6 +312,8 @@ row flaky rerun-PASS 0
 row out PASS 0
 row tier PASS 0
 echo "$out" | grep -q "^batch $id: 5 runs: 3 PASS, 1 rerun-PASS, 1 FAIL; " || fail "detached summary: $out"
+wall=$(echo "$out" | sed -n 's/^batch .* FAIL; \(-*[0-9]*\) s.*/\1/p')
+[ -n "$wall" ] && [ "$wall" -ge 0 ] && [ "$wall" -lt 100 ] || fail "the PC's clock not taken into account: $wall s"
 echo "$out" | grep -q "| bad: FAILED (on the PC)" || fail "detached: bad's failure line: $out"
 echo "$out" | grep -q "log build/batch/$id/pc/runs/bad.log" || fail "detached: bad's log: $out"
 [ "$(cat "$tmp/co/build/t/out/f" 2> /dev/null)" = one ] || fail "detached: build/t/out didn't come back"

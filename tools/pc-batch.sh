@@ -122,8 +122,14 @@ pc_pull() {
     rsync -az --delete --rsync-path="wsl --cd ~ bash $dir/driver.sh pull" -e "$sshr ${ssh_opts[*]}" \
         "$(cat "$d/pc-host"):$dir/" "$d/pc/" > "$d/pull.log" 2>&1
     rc=$?
-    [ $rc = 0 ] || [ $rc = 24 ]
+    [ $rc = 0 ] || [ $rc = 24 ] || return 1
+    # How far the PC's clock is ahead of this one's (WSL's can drift).
+    [ -s "$d/pc/now" ] && echo $(($(cat "$d/pc/now") - $(now))) > "$d/pc-skew"
+    return 0
 }
+
+# A time on the PC's clock as this machine's (a detached batch).
+pctime() { echo $(($1 - $(cat "$d/pc-skew" 2> /dev/null || echo 0))); }
 
 pc_ended() { [ -f "$d/pc/done" ] || [ -f "$d/pc/gone" ] || [ -f "$d/pc/cancelled" ]; }
 
@@ -172,9 +178,10 @@ handoff() {
         # What remote-test would run on the PC for it (the same build check,
         # variables and claim on the budget), with a run id for each try.
         env ${assigns[@]+"${assigns[@]}"} JAMOS_REMOTE= JAMOS_REMOTE_NOSYNC=1 JAMOS_REMOTE_SCRIPT_ONLY=1 JAMOS_REMOTE_RUNID=@runid@ \
-            "$rt" ${assigns[@]+env "${assigns[@]}"} "${cmdv[@]}" < /dev/null > "$p/runs/$n.sh" 2>> "$d/handoff.log"
+            "$rt" ${assigns[@]+env "${assigns[@]}"} "${cmdv[@]}" < /dev/null > "$p/runs/$n.sh" 2> "$d/script.err"
         rc=$?
         if [ $rc != 0 ] || ! grep -q . "$p/runs/$n.sh"; then
+            cat "$d/script.err" >> "$d/handoff.log"
             echo "pc-batch: $n: remote-test made no script for the PC (exit $rc)" >> "$d/handoff.log"
             echo 2 > "$d/handoff.rc"
             return 1
@@ -182,6 +189,7 @@ handoff() {
         sed -i.x '/^export JAMOS_REMOTE_SCRIPT_ONLY=/d' "$p/runs/$n.sh" && rm -f "$p/runs/$n.sh.x"
         for a in "${cmdv[@]}"; do case $a in build/?*) echo "${a%/}" ;; esac; done > "$p/runs/$n.outs"
     done
+    rm -f "$d/script.err"
     names > "$p/names"
     {
         printf 'id=%q\n' "$bid"
@@ -324,9 +332,9 @@ result() {
     elif [ -f "$rd/$n.t0" ] && [ -f "$d/pc/gone" ]; then
         res=LOST note="the PC lost it while it ran (a reboot?): $me start --detach --resume $bid runs it again"
     elif [ -f "$rd/$n.t0" ] && [ -f "$d/pc/cancelled" ]; then
-        res=CANCELLED note="cancelled while it ran"
+        res=CANCELLED note="cancelled before it finished"
     elif [ -f "$rd/$n.t0" ]; then
-        res=RUNNING secs=$(($(now) - $(cat "$rd/$n.t0")))
+        res=RUNNING secs=$(($(now) - $(pctime "$(cat "$rd/$n.t0")")))
         grep -q '^remote-test: running with' "$rd/$n.log" 2> /dev/null || res=QUEUED
     elif [ -f "$d/prepare.rc" ] && [ "$(cat "$d/prepare.rc")" != 0 ]; then
         res=NOT-RUN note="copy or build failed"
@@ -366,7 +374,11 @@ report() {
         total=$((total + 1))
     done
     local fin
-    fin=$(cat "$d/done" "$d/pc/done" "$d/pc/gone" "$d/pc/cancelled" 2> /dev/null | head -1)
+    fin=$(cat "$d/done" 2> /dev/null)
+    if [ -z "$fin" ]; then   # a detached batch's end, on the PC's clock
+        fin=$(cat "$d/pc/done" "$d/pc/gone" "$d/pc/cancelled" 2> /dev/null | head -1)
+        [ -z "$fin" ] || fin=$(pctime "$fin")
+    fi
     local wall=$(( ${fin:-$(now)} - $(cat "$d/start") ))
     local prep=
     [ -f "$d/prepare.t1" ] && prep=", copy+build $(($(cat "$d/prepare.t1") - $(cat "$d/prepare.t0"))) s"
