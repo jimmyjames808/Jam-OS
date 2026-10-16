@@ -197,6 +197,12 @@ status_t prepare_send(uint32_t txid, uint32_t id, const char *tail, uint32_t tai
 status_t prepare_result(const void *rep, struct idl_msg *m);
 /* The call's end, said in the log: disk id, how it ended, since t0. */
 void     prepare_say(uint32_t id, status_t st, uint64_t t0);
+/* initctl.format_data's call, the same way: volinstall.format_data of disk
+ * id's data partition (`fat`: FAT32, not ext; `tail` the owner's
+ * confirmation), and its answer. */
+status_t format_send(uint32_t txid, uint32_t id, const char *tail, uint32_t tail_len, bool fat);
+status_t format_result(const void *rep, struct idl_msg *m);
+void     format_say(uint32_t id, status_t st, uint64_t t0);
 
 /* ---- splash.c: the boot splash (<splash.h>) --------------------------------------- */
 

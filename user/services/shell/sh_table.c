@@ -106,7 +106,8 @@ static const struct sh_cmd cmds[] = {
       "  (ssh) the code, 0 to 255 (0 if none), is the session's"),
     C(devices, C_HARDWARE, "devices", "PCI functions and the drivers devmgr bound (alias lspci)"),
     C(usb, C_HARDWARE, "usb", "USB devices from usb-bus (alias lsusb)"),
-    C(disk, C_HARDWARE, "disk digest <disk> [<lba> <count>] | disk smart <disk> | disk prepare <disk>",
+    C(disk, C_HARDWARE, "disk digest <disk> [<lba> <count>] | disk smart <disk> | disk prepare <disk>"
+                        " | disk format <disk> data [fat]",
       "ask a whole disk, by the name `disks` shows (nvme0, usb0). digest: SHA-256s\n"
       "  computed in its driver (the data never leaves it): without a range the\n"
       "  regions tools/disk-regions.py makes on Linux from the partition table\n"
@@ -119,10 +120,13 @@ static const struct sh_cmd cmds[] = {
       "  make an NVMe drive a Jam OS disk: shows its model, serial and size,\n"
       "  and asks for the last four characters of the serial; then writes Jam OS's\n"
       "  partition table (an ESP of 512 MiB, a data partition of the rest), formats\n"
-      "  both and mounts them read-only (mount -w makes one writable). A drive that\n"
+      "  both and mounts them: the ESP FAT32, read-only (mount -w makes it writable),\n"
+      "  the data partition ext, read-write at /jam. A drive that\n"
       "  isn't empty is shown first (its partitions and volumes), and ERASED only\n"
       "  when you then also type erase: everything on it is lost. Never the disk\n"
-      "  Jam OS booted from, nor one with a volume mounted read-write"),
+      "  Jam OS booted from, nor one with a volume mounted read-write. format ...\n"
+      "  data: a Jam OS disk's data partition formatted again (ext; with fat, FAT32\n"
+      "  for another computer), everything on it lost, after the serial's last four"),
     C(install, C_HARDWARE, "install <disk>",
       "write Jam OS to an NVMe drive (nvme1: the name `disks` shows) so the PC starts\n"
       "  from it without the stick. It shows the drive's model, serial and size and asks\n"

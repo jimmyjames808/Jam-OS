@@ -2578,6 +2578,18 @@ static status_t idl_fz_initctl_pkg_channel(void *ctx, handle_t *out_pkg)
         return ERR_NO_MEMORY;
     return OK;
 }
+static status_t idl_fz_initctl_format_data(void *ctx, struct idl_txn idl_txn, uint32_t id, const char *tail, uint32_t tail_len, uint8_t fat)
+{
+    (void)ctx;
+    (void)idl_txn;
+    (void)id;
+    (void)tail;
+    (void)tail_len;
+    (void)fat;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    return OK;
+}
 static const struct initctl_ops idl_fz_initctl_ops = {
     .kill = idl_fz_initctl_kill,
     .sync = idl_fz_initctl_sync,
@@ -2593,6 +2605,7 @@ static const struct initctl_ops idl_fz_initctl_ops = {
     .prepare_disk = idl_fz_initctl_prepare_disk,
     .install = idl_fz_initctl_install,
     .pkg_channel = idl_fz_initctl_pkg_channel,
+    .format_data = idl_fz_initctl_format_data,
 };
 static uint32_t idl_fz_initctl_serve(const void *q, uint32_t n, const handle_t *hs,
                                 uint32_t nh, void *r, handle_t *rhs, uint32_t *rhn)
@@ -2615,6 +2628,7 @@ static const struct idl_fuzz_msg idl_fz_initctl_msgs[] = {
     { 0x0012000cu, 12u, 0, 0, 0, 0, { 0 }, 2, { { 1, 1, 20 }, { 1, 1, 8 } } },
     { 0x0012000du, 12u, 0, 0, 0, 0, { 0 }, 2, { { 1, 1, 20 }, { 1, 1, 8 } } },
     { 0x0012000eu, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x0012000fu, 13u, 0, 0, 0, 0, { 0 }, 1, { { 1, 1, 20 } } },
 };
 
 /* ---- input ---- */
@@ -5301,12 +5315,25 @@ static status_t idl_fz_volinstall_close_data(void *ctx, struct idl_txn idl_txn, 
         return ERR_IO;
     return OK;
 }
+static status_t idl_fz_volinstall_format_data(void *ctx, struct idl_txn idl_txn, uint32_t id, const char *tail, uint32_t tail_len, uint8_t fat)
+{
+    (void)ctx;
+    (void)idl_txn;
+    (void)id;
+    (void)tail;
+    (void)tail_len;
+    (void)fat;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    return OK;
+}
 static const struct volinstall_ops idl_fz_volinstall_ops = {
     .prepare = idl_fz_volinstall_prepare,
     .open_esp = idl_fz_volinstall_open_esp,
     .close_esp = idl_fz_volinstall_close_esp,
     .open_data = idl_fz_volinstall_open_data,
     .close_data = idl_fz_volinstall_close_data,
+    .format_data = idl_fz_volinstall_format_data,
 };
 static uint32_t idl_fz_volinstall_serve(const void *q, uint32_t n, const handle_t *hs,
                                 uint32_t nh, void *r, handle_t *rhs, uint32_t *rhn)
@@ -5320,6 +5347,7 @@ static const struct idl_fuzz_msg idl_fz_volinstall_msgs[] = {
     { 0x004b0003u, 12u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x004b0004u, 12u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x004b0005u, 12u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x004b0006u, 13u, 0, 0, 0, 0, { 0 }, 1, { { 1, 1, 20 } } },
 };
 
 static const struct idl_fuzz_proto idl_fuzz_protos[] __attribute__((unused)) = {
@@ -5348,7 +5376,7 @@ static const struct idl_fuzz_proto idl_fuzz_protos[] __attribute__((unused)) = {
     { "idltest_two", 34, IDLTEST_TWO_REQ_MAX, IDLTEST_TWO_REP_MAX, IDLTEST_TWO_REP_HANDLES, idl_fz_idltest_two_serve, NULL, idl_fz_idltest_two_msgs, 3 },
     { "idltest_ev", 35, IDLTEST_EV_REQ_MAX, IDLTEST_EV_REP_MAX, IDLTEST_EV_REP_HANDLES, idl_fz_idltest_ev_serve, idl_fz_idltest_ev_event, idl_fz_idltest_ev_msgs, 7 },
     { "idltest_h", 37, IDLTEST_H_REQ_MAX, IDLTEST_H_REP_MAX, IDLTEST_H_REP_HANDLES, idl_fz_idltest_h_serve, NULL, idl_fz_idltest_h_msgs, 8 },
-    { "initctl", 18, INITCTL_REQ_MAX, INITCTL_REP_MAX, INITCTL_REP_HANDLES, idl_fz_initctl_serve, NULL, idl_fz_initctl_msgs, 14 },
+    { "initctl", 18, INITCTL_REQ_MAX, INITCTL_REP_MAX, INITCTL_REP_HANDLES, idl_fz_initctl_serve, NULL, idl_fz_initctl_msgs, 15 },
     { "input", 11, INPUT_REQ_MAX, INPUT_REP_MAX, INPUT_REP_HANDLES, idl_fz_input_serve, idl_fz_input_event, idl_fz_input_msgs, 5 },
     { "jamcover", 26, JAMCOVER_REQ_MAX, JAMCOVER_REP_MAX, JAMCOVER_REP_HANDLES, idl_fz_jamcover_serve, NULL, idl_fz_jamcover_msgs, 1 },
     { "keepch", 80, KEEPCH_REQ_MAX, KEEPCH_REP_MAX, KEEPCH_REP_HANDLES, idl_fz_keepch_serve, idl_fz_keepch_event, idl_fz_keepch_msgs, 4 },
@@ -5383,6 +5411,6 @@ static const struct idl_fuzz_proto idl_fuzz_protos[] __attribute__((unused)) = {
     { "disks", 72, DISKS_REQ_MAX, DISKS_REP_MAX, DISKS_REP_HANDLES, idl_fz_disks_serve, NULL, idl_fz_disks_msgs, 2 },
     { "mounts", 73, MOUNTS_REQ_MAX, MOUNTS_REP_MAX, MOUNTS_REP_HANDLES, idl_fz_mounts_serve, idl_fz_mounts_event, idl_fz_mounts_msgs, 3 },
     { "voldisks", 74, VOLDISKS_REQ_MAX, VOLDISKS_REP_MAX, VOLDISKS_REP_HANDLES, idl_fz_voldisks_serve, NULL, idl_fz_voldisks_msgs, 5 },
-    { "volinstall", 75, VOLINSTALL_REQ_MAX, VOLINSTALL_REP_MAX, VOLINSTALL_REP_HANDLES, idl_fz_volinstall_serve, NULL, idl_fz_volinstall_msgs, 5 },
+    { "volinstall", 75, VOLINSTALL_REQ_MAX, VOLINSTALL_REP_MAX, VOLINSTALL_REP_HANDLES, idl_fz_volinstall_serve, NULL, idl_fz_volinstall_msgs, 6 },
 };
 #define IDL_FUZZ_PROTOS (sizeof(idl_fuzz_protos) / sizeof(idl_fuzz_protos[0]))

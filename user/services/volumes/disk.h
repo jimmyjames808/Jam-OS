@@ -87,8 +87,12 @@ struct disk {
     uint16_t        nofat;      /* bit n: partition n's service found no FAT volume */
     uint16_t        badsize;    /* bit n: partition n's blocks are not 512 bytes: no service */
     uint16_t        fresh;      /* bit n: partition n may be formatted (prepare.c: a Jam OS
-                                 * disk, by volumes' own check, being prepared): its service is
-                                 * started writable with FAT_ARG_FORMAT until prepare is over */
+                                 * disk, by volumes' own check, being prepared, or its data
+                                 * partition formatted again): its service is started writable
+                                 * with the right to format a blank partition until that is
+                                 * over (fs_format_arg); a blank data partition gets extfs */
+    uint16_t        fresh_fat;  /* ... bit n: FAT32 for it, as the owner asked (`disk format
+                                 * <disk> data fat`), not ext */
     bool            preparing;  /* a prepare is under way on it (prepare.c): one at a time */
     char            model[41], serial[21], firmware[9];   /* storage.ident (NVMe); else empty */
     bool            boot_down;  /* DISK_DOWN: it was the boot disk when its driver stopped */
@@ -143,6 +147,10 @@ bool        disk_jamos_gpt(const struct disk *d);
 status_t    disk_prepare_check(uint32_t id, uint8_t *plan, uint8_t *refused);
 status_t    disk_prepare(uint32_t id, const char *tail, uint32_t tail_len, const char *word,
                          uint32_t word_len);
+/* prepare.c, in a task: volinstall.format_data: the data partition of a Jam
+ * OS disk formatted again (ext, or FAT32 when `fat`), with the owner's
+ * confirmation (`tail`, the end of its serial number). */
+status_t    disk_format_data(uint32_t id, const char *tail, uint32_t tail_len, bool fat);
 
 /* install.c, in a task: volinstall's open_esp / open_data (hold: partition `part`
  * of disk `id` made writable for init alone; *fs a channel to it) and close_esp /
@@ -165,10 +173,21 @@ void        not_boot(struct disk *d, const char *why);      /* step 4 */
  * zeros. */
 bool        disk_guid_parse(const char *s, uint8_t out[16]);
 
-/* probe.c, in a task: does the partition b serves hold an ext superblock?
- * Looked at through a read-only `block` channel of its own, closed again.
- * OK with *is_ext; else why it couldn't be looked at (*is_ext false). */
-status_t    fs_probe_ext(struct vol *b, bool *is_ext);
+/* What the start of a partition holds (probe.c's look). */
+enum part_holds {
+    PART_HOLDS_OTHER,   /* something that isn't ext: FAT, or anything else */
+    PART_HOLDS_EXT,     /* an ext superblock */
+    PART_HOLDS_BLANK,   /* its first 4 KiB all zeros: extfs's rule of a partition it may format */
+};
+/* probe.c, in a task: what the partition b serves holds, looked at through
+ * a read-only `block` channel of its own, closed again. OK with *what;
+ * else why it couldn't be looked at (*what PART_HOLDS_OTHER). */
+status_t    fs_probe(struct vol *b, enum part_holds *what);
+/* probe.c, in a task: the first MiB of partition `part` of d written with
+ * zeros, on a writable `block` channel of its own (a format's start: the
+ * owner confirmed it; the driver refuses it on a drive that isn't Jam
+ * OS's). */
+status_t    part_wipe(struct disk *d, unsigned part);
 
 /* fsvc.c */
 /* Start the filesystem service on partition `part` of d (other: d is not

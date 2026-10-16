@@ -56,12 +56,14 @@
  *      mounts.
  * No answer to storage.info within INFO_WAIT leaves the disk alone.
  *
- * Never formatted: fat formats only when it is started with
- * FAT_ARG_FORMAT, and fs_format_arg gives that to the boot disk's data
- * partition and, while prepare.c makes an NVMe drive Jam OS's, the two
- * partitions of that drive (a disk our own mark check calls Jam OS's: mark.c).
- * No other partition of any disk ever gets it, in either mode. (bin/extfs
- * is never given its format word here: M13.6's U7b makes ext volumes.)
+ * Never formatted: fat and extfs format only when started with their
+ * format word (FAT_ARG_FORMAT, EXTFS_ARG_FORMAT), and only a blank
+ * partition; fs_format_arg gives it to the boot disk's data partition and,
+ * while prepare.c makes an NVMe drive Jam OS's or formats its data
+ * partition again, the partitions of that drive it formats (a disk our own
+ * mark check calls Jam OS's: mark.c). No other partition of any disk ever
+ * gets it, in either mode. A data partition to be formatted is ext unless
+ * the owner asked for FAT (fsvc.c's make_ext).
  *
  * Read-only below the filesystem: an other disk's partition is opened
  * read-only (storage.open_partition), so usb-storage refuses every write
