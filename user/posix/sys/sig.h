@@ -253,6 +253,10 @@ void sig_run_onstack(void (*fn)(void *), void *arg);
  * for a thread that has the record's memory and not the kernel's state (a
  * forked child's). */
 void sig_alt_reapply(void);
+/* In a forked child: frames made before the fork (a handler that forked
+ * returns to one, made for the parent's thread) are resumed by libc, not
+ * by exception_done, which refuses them. */
+void sig_fault_forked(void);
 
 /* ---- the signal thread (sigthread.c) ------------------------------------------------- */
 

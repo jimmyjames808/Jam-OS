@@ -387,8 +387,19 @@ _Static_assert(offsetof(struct sig_tail, in) == 0 && offsetof(struct sig_tail, a
                "sigentry.S's offsets");
 static __thread struct sig_tail tail;
 
-long __jam_sig_resume(struct exc_frame *f, struct sig_tail *t, long outer);
+long __jam_sig_resume(struct exc_frame *f, struct sig_tail *t, long outer, long here);
 extern const char __jam_sig_resume_end[];
+
+/* Forks this process's memory has been through (sig_fault_forked, in the
+ * child): a handler that was running when its thread forked returns, in
+ * the child, to a frame the kernel made for the parent's thread, which
+ * exception_done refuses; such a frame is resumed in user mode. */
+static unsigned forks;
+
+void sig_fault_forked(void)
+{
+    forks++;
+}
 
 /* A raise that found the thread on a handler's way out (in the window). */
 static bool raised_on_way_out(const struct exc_frame *f)
@@ -404,11 +415,13 @@ static bool raised_on_way_out(const struct exc_frame *f)
 }
 
 /* The way out's last step: f resumed, the thread's `in` as it was before
- * this handler (outer: a fault in a way out goes back into it). Returns
- * only if a raise came on the way out: its signal is to be taken first. */
-static void way_out(struct exc_frame *f, uint8_t outer, int sig)
+ * this handler (outer: a fault in a way out goes back into it), by the
+ * kernel unless the process forked since f was made (made_at: `forks`
+ * then). Returns only if a raise came on the way out: its signal is to be
+ * taken first. */
+static void way_out(struct exc_frame *f, uint8_t outer, unsigned made_at, int sig)
 {
-    if (__jam_sig_resume(f, &tail, outer) > 0) {
+    if (__jam_sig_resume(f, &tail, outer, made_at != forks) > 0) {
         tail.again = 0;
         return;
     }
@@ -475,6 +488,7 @@ _Noreturn void sig_fault_run(struct fault_run *r)
     greg_t *g = ctx.uc.uc_mcontext.gregs;
     bool left = false;
     uint8_t outer = tail.in;   /* 1 only for a fault on a way out (the layer's own) */
+    unsigned made_at = forks;
     for (;;) {
         memset(&ctx, 0, sizeof(ctx));
         ctx.uc.uc_flags = UC_SIGCONTEXT_SS | fp_copy(fp, f);
@@ -516,10 +530,10 @@ _Noreturn void sig_fault_run(struct fault_run *r)
         if (f->kind != EXC_RAISED) {
             for (;;) {   /* what a raise on the way out brought: delivered here too */
                 sig_fault_end(mask);
-                way_out(f, outer, r->si.signo);
+                way_out(f, outer, made_at, r->si.signo);
             }
         }
         while (!sig_raise_next(mask, &r->si, &r->act, &r->was))
-            way_out(f, outer, SIGSEGV);
+            way_out(f, outer, made_at, SIGSEGV);
     }
 }
