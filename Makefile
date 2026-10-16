@@ -670,7 +670,9 @@ $(PT_LIB_OBJ): $(patsubst %,$(BUILD)/udrv/drivers/lib/%.o,$(PT_LIB)) tools/check
 # ports' recipes pass their lint and the ports builder its self-test
 # (tools/ports.py: offline, fake ports built with the real sysroot), and the
 # ext library builds for Jam OS and passes tools/extcheck.c (Linux's
-# fixtures, broken checksums, the feature table, a fuzz pass), and the
+# fixtures, broken checksums, the feature table, a fuzz pass), the host tool
+# jamext builds and round-trips a directory, files, links and a volume at
+# an offset, each image checked by extcheck (tools/jamext-test.sh), and the
 # syscall scan (tools/cr/syscall-scan.py) passes a clean program and
 # catches a `syscall` of a program's own.
 check: all
@@ -718,6 +720,8 @@ check: all
 	$(ITREE_CHECK)
 	$(MAKE) -s $(EXT_CHECK) $(EXT_FIXTURES) $(EXT_CROSS)
 	$(EXT_CHECK) tools/extfix $(BUILD)/extfix
+	$(MAKE) -s $(JAMEXT)
+	sh tools/jamext-test.sh $(JAMEXT) $(EXT_CHECK) $(BUILD)/jamext-test $(BUILD)/extfix
 	$(MAKE) -s $(PKG_CHECK)
 	python3 tools/ports.py pkgfuzz $(BUILD)/pkgfuzz
 	$(PKG_CHECK) ports/vectors $(BUILD)/pkgfuzz
@@ -975,7 +979,7 @@ EXT_CROSS    := $(patsubst $(EXT_DIR)/%.c,$(BUILD)/extcross/%.o,$(EXT_SRCS))
 EXT_TOOL     := tools/extcheck.c tools/extbreak.c tools/extmutate.c tools/extinv.c \
                 tools/extvol.c tools/extmkfs.c tools/extnames.c tools/extbig.c \
                 tools/extwrite.c tools/extfile.c tools/extverify.c tools/extcut.c tools/extjnl.c \
-                tools/extnstorm.c
+                tools/extnstorm.c tools/extdetect.c
 $(EXT_CHECK): $(EXT_TOOL) tools/extcheck.h tools/extvol.h tools/extwrite.h tools/extjnl.h \
               $(EXT_SRCS) $(EXT_HDRS) drivers/lib/sha256.c drivers/include/jam/sha256.h \
               kernel/include/jam/status.h
@@ -989,6 +993,20 @@ $(EXT_FIXTURES): $(BUILD)/extfix/%.img: tools/extfix/%.img.gz
 $(EXT_CROSS): $(BUILD)/extcross/%.o: $(EXT_DIR)/%.c $(EXT_HDRS) | $(UINC)
 	@mkdir -p $(dir $@)
 	$(CC) $(USER_CFLAGS) -c $< -o $@
+
+# jamext (tools/jamext): the same library as a host tool for the Mac and any
+# Unix, so images of an ext volume are made and read without e2fsprogs:
+# `jamext mkimage` builds one from a directory, put/get/ls/ln/check work on
+# an image or a partition of a disk image. `make check` makes images with it
+# and has extcheck (the sanitised build above) check them
+# (tools/jamext-test.sh). Plain -O2: it is a build tool, not a test.
+JAMEXT       := build/host/jamext
+JAMEXT_SRCS  := $(wildcard tools/jamext/*.c)
+$(JAMEXT): $(JAMEXT_SRCS) tools/jamext/jamext.h $(EXT_SRCS) $(EXT_HDRS) \
+           kernel/include/jam/status.h
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -std=gnu17 -O2 -g -Wall -Wextra -Werror -Wvla -Ikernel/include -I$(EXT_DIR) \
+	    -Itools/jamext -o $@ $(JAMEXT_SRCS) $(EXT_SRCS)
 
 $(BUILD)/fontpreview.png: $(FONT_TOOL)
 	$(FONT_TOOL) $@

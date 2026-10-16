@@ -6,6 +6,8 @@
  *
  *     extcheck <fixtures dir> <images dir> [--fuzz N] [--storm N] [--seed S] [--save DIR]
  *              [--cut-images DIR]
+ *     extcheck --image <file>...      each file a volume another tool made (jamext's):
+ *                                     mounted as it lies, its invariants checked
  *
  * Seven parts, each failing the run (exit 1, a line saying what) at the
  * first mistake:
@@ -161,10 +163,8 @@ void check_pins(const struct ext_fs *fs)
         fail("%u buffers left pinned", n);
 }
 
-static void load(struct img *m, const char *dir, const char *name)
+static void load_file(struct img *m, const char *path, const char *name)
 {
-    char path[1024];
-    snprintf(path, sizeof(path), "%s/%s.img", dir, name);
     FILE *f = fopen(path, "rb");
     if (!f || fseek(f, 0, SEEK_END))
         fail("%s: %s", path, strerror(errno));
@@ -178,6 +178,13 @@ static void load(struct img *m, const char *dir, const char *name)
         fail("%s: can't read it", path);
     fclose(f);
     m->read_limit = 1000000;
+}
+
+static void load(struct img *m, const char *dir, const char *name)
+{
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/%s.img", dir, name);
+    load_file(m, path, name);
 }
 
 /* ---- reading a file as listing.py does ------------------------------------------------- */
@@ -600,10 +607,41 @@ static void check_crcs(void)
         fail("CRC32C in pieces");
 }
 
+/* Images another tool made (tools/jamext): each mounted as it lies, with no
+ * journal replayed (a clean unmount leaves nothing to replay: a volume that
+ * needs it fails), its invariants and bitmaps checked. */
+static void check_images(int n, char **paths)
+{
+    for (int i = 0; i < n; i++) {
+        static struct img m;
+        memset(&m, 0, sizeof(m));
+        where = paths[i];
+        load_file(&m, paths[i], paths[i]);
+        struct ext_fs fs = { 0 };
+        status_t st = mount_img(&m, &fs, CACHE_BYTES, EXT_MOUNT_READ_ONLY);
+        if (st != OK)
+            fail("%s: mount: %d (%s)", paths[i], st, fs.why ? fs.why : "");
+        if (fs.needs_recovery)
+            fail("%s: its journal needs recovery: not left clean", paths[i]);
+        struct inv inv;
+        check_invariants(&fs, &inv);
+        check_bitmaps(&fs);
+        printf("extcheck: %s: %u names, %u directories, %llu blocks free%s: ok\n", paths[i],
+               inv.names, inv.dirs, (unsigned long long)inv.free_blocks,
+               inv.exact ? "" : " (blocks not all attributed)");
+        free(m.bytes);
+        free(m.cache);
+    }
+}
+
 int main(int argc, char **argv)
 {
     unsigned nfuzz = FUZZ_DEFAULT, nstorm = STORM_DEFAULT;
     const char *cut_images = NULL;
+    if (argc >= 3 && !strcmp(argv[1], "--image")) {
+        check_images(argc - 2, argv + 2);
+        return 0;
+    }
     if (argc < 3)
         fail("usage: extcheck <fixtures dir> <images dir> [--fuzz N] [--storm N] [--seed S] "
              "[--save DIR] [--cut-images DIR]");
@@ -633,6 +671,7 @@ int main(int argc, char **argv)
     }
     check_features(&imgs[0]);
     check_names(imgs, N, nstorm);
+    check_detects();
     for (unsigned i = 0; i < N; i++)
         check_writes(&imgs[i], fixtures[i].ro == 0);
     for (unsigned i = 0; i < N; i++)
