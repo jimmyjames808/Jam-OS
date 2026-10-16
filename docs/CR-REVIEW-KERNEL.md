@@ -57,7 +57,7 @@ functions it copied from `kernel/object/vmo.c` are unchanged since.
 | 6 | Note | `kernel/object/vmo.c:1483` and take_batch_locked's skip (`kernel/object/vmo.c:1229`) | A decommit re-checks for a pin made since it started only over the leaves it works on; a pin made meanwhile over a part with no pages doesn't fail it (CK1 noted the risk). Harmless: nothing there was decommitted, and the pin's pages come after. | | No change. |
 | 7 | Note | `kernel/mm/aspace.c:1220` (aspace_map) | `PROCESS_FLAG_JIT` is set for any mapping of a JIT VMO, also through a handle without `RIGHT_EXEC` (or without write), and a moment after the mapping exists (after the region lock). Errs on the side of marking. | | No change. |
 | 8 | Note | `kernel/mm/aspace.c:1250` (protect_span) against `kernel/include/jam/aspace.h:81` | For a W+X protect over a gap followed by a mapping that isn't JIT memory the answer is `ERR_NOT_FOUND`; the header lists `ERR_INVALID_ARGS` first. Either refuses. | | No change. |
-| 9 | Note | `kernel/object/vmo.c:2450` (vmo_pin_flags) | A JIT VMO may be pinned for a device (a driver holding a JIT handle with the pin rights can let a device write code into it). Not a new power: that handle writes the memory anyway. For CJR to judge. | | Design question 2. |
+| 9 | Note | `kernel/object/vmo.c:2450` (vmo_pin_flags) | A JIT VMO may be pinned for a device (a driver holding a JIT handle with the pin rights can let a device write code into it). Not a new power: that handle writes the memory anyway. For CJR to judge. | | Design question 2; fixed by CJF: every pin of a JIT VMO is refused (`ERR_NOT_SUPPORTED`, tested in range_add under the VMO lock). |
 | 10 | Medium | `kernel/mm/aspace.c:431` (pt_prepare's refusal) with walk_one (`kernel/mm/aspace.c:477`) | Found by the hostile TiB test at 8 CPUs, after the list above. When the job refuses a page table, the PDPT and PD pt_prepare made for it on the way stay, empty and charged ("freed by unmap/destroy", says the comment), but no walk ever frees them: walk_one lets a PD go only after a PT under it went, and a PDPT only after a PD. So they stay charged to the job until the process dies, two pages for every 1 GiB region a fault was refused in: a program near its limit (a renderer under memory pressure) loses them for good. | A job one page short: fault a fresh GiB, `ERR_NO_MEMORY`, then unmap everything: `aspace_pt_pages` is still 2. | Fixed (8db1fe61): pt_prepare takes back the tables it made when the next one is refused, through a shootdown (a CPU running the address space may have cached a link to one), as table_drop's go. ktest `aspace_fault_refused_tables` (without the fix: a PDPT left, then a PDPT and a PD). |
 
 ## Design questions
@@ -78,7 +78,8 @@ functions it copied from `kernel/object/vmo.c` are unchanged since.
    a JIT's two views, a shared region mapped in a few places, as
    Chromium's read-only twin of a memfd), so the cap is 64.
 2. **Pins of JIT memory (note 9).** Refuse them (as for pager VMOs), or
-   leave them to the handle's rights? CJR's call.
+   leave them to the handle's rights? CJR's call. Decided: refused (CJR's
+   design question 1, (b); done by CJF).
 
 ## Tests
 

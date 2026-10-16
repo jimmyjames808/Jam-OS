@@ -147,6 +147,36 @@ KTEST(vmo_jit_kind_refusals)
     put(v);
 }
 
+/* A JIT VMO is never pinned (a device never writes code, nor keeps a page
+ * a decommit of code should take; CJR's design question 1): a pinned VMO
+ * doesn't become one, and once it is one every pin is refused, writable
+ * or read only, committed or not, leaving nothing behind. */
+KTEST(vmo_jit_pin_refused)
+{
+    struct kobject *cap;
+    KT_EQ(dma_cap_create(&cap), OK);
+    uint64_t phys[2], pin;
+    struct vmo *v;
+    KT_EQ(vmo_create(2 * PG, 0, &v), OK);
+    KT_EQ(vmo_pin(v, cap, 0, PG, phys, 2, &pin), OK);
+    KT_EQ(vmo_make_jit(v), ERR_BAD_STATE);
+    KT_ASSERT(!vmo_is_jit(v));
+    KT_EQ(vmo_unpin(v, cap, pin), OK);
+    KT_EQ(vmo_decommit(v, 0, 2 * PG), OK);
+    KT_EQ(vmo_make_jit(v), OK);
+
+    KT_EQ(vmo_pin(v, cap, 0, PG, phys, 2, &pin), ERR_NOT_SUPPORTED);
+    KT_EQ(vmo_pin(v, cap, 0, 2 * PG, phys, 2, &pin), ERR_NOT_SUPPORTED);
+    KT_EQ(vmo_committed(v), 0);   /* the refusal committed nothing */
+    KT_EQ(vmo_commit(v, 0, PG), OK);
+    KT_EQ(vmo_pin_flags(v, cap, 0, PG, VMO_PIN_READ_ONLY, phys, 2, &pin), ERR_NOT_SUPPORTED);
+    KT_EQ(vmo_pin(v, cap, 0, PG, phys, 2, &pin), ERR_NOT_SUPPORTED);
+    KT_EQ(vmo_decommit(v, 0, 2 * PG), OK);   /* no pin keeps the page */
+    KT_EQ(vmo_committed(v), 0);
+    put(v);
+    kobject_unref(cap);
+}
+
 /* ---- the mappings ------------------------------------------------------------ */
 
 /* W+X: refused on a VMO that isn't JIT even with every CAN bit (the kernel's
@@ -690,5 +720,41 @@ KTEST(vmo_jit_sys_make_races_map)
     KT_EQ(aspace_unmap(jr_as, jr_addr, PG), OK);
     aspace_unref(jr_as);
     put(jr_vmo);
+    handle_table_destroy(&t);
+}
+
+/* The same moment, a pin instead (a driver's vmo_pin past its handle_get):
+ * the marking sees it under the lock and refuses. (A pin after the
+ * marking is refused under that lock: vmo_jit_pin_refused.) */
+static struct kobject *jp_cap;
+static uint64_t jp_pin;
+static status_t jp_pin_st;
+
+static void jp_hook(void *arg)
+{
+    if (arg != jr_vmo)
+        return;
+    uint64_t phys[1];
+    jp_pin_st = vmo_pin(jr_vmo, jp_cap, 0, PG, phys, 1, &jp_pin);
+}
+
+KTEST(vmo_jit_sys_make_races_pin)
+{
+    struct handle_table t;
+    handle_t root, vmar, h, x;
+    sys_setup(&t, RIGHT_ROOT_JIT, &root, &vmar, 1, &h);
+    jr_vmo = vmo_of(&t, h);
+    kobject_ref(vmo_kobject(jr_vmo));
+    KT_EQ(dma_cap_create(&jp_cap), OK);
+    jp_pin_st = ERR_INTERNAL;
+    __atomic_store_n(&dbg_hooks[DBG_VMO_EXEC_CHECK], jp_hook, __ATOMIC_RELEASE);
+    status_t st = sys_vmo_make_jit(&t, h, root, &x);
+    __atomic_store_n(&dbg_hooks[DBG_VMO_EXEC_CHECK], NULL, __ATOMIC_RELEASE);
+    KT_EQ(jp_pin_st, OK);
+    KT_EQ(st, ERR_BAD_STATE);
+    KT_ASSERT(!vmo_is_jit(jr_vmo));
+    KT_EQ(vmo_unpin(jr_vmo, jp_cap, jp_pin), OK);
+    put(jr_vmo);
+    kobject_unref(jp_cap);
     handle_table_destroy(&t);
 }

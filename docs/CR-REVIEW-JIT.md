@@ -76,7 +76,12 @@ than it may mean to (finding 1).
    **Recommended: (b)**: the smallest rule to reason about once the
    stricter modes come, at no cost today, and the same answer
    `vmo_make_jit` gives a VMO that is pinned already. The main session
-   decides.
+   decides. **Decided: (b)**, done by CJF: range_add refuses a pin of a
+   JIT VMO under the VMO lock; ktests `vmo_jit_pin_refused` (a pinned VMO
+   isn't marked; a JIT VMO's pins refused, writable or read only, nothing
+   committed or kept; without the fix the pin succeeds) and
+   `vmo_jit_sys_make_races_pin` (a pin made at the marking's check makes
+   it refuse).
 
 2. **Handing the power to renderers only (note 4, for CB5).** The options:
    - (a) **`RIGHT_TRANSFER` on the root of a program whose list says
@@ -179,7 +184,9 @@ case `spawn`: all PASS. `make check` on the Mac, PASS. No kernel change.
 ## Fixes
 
 - Finding 1 (dce73960): `user/lib/spawn.c`'s find_image.
-- Findings 2 and 3, and the design questions: left to the main session.
+- Design question 1 (CJF, the main session's choice (b)):
+  `kernel/object/vmo.c`'s range_add refuses every pin of a JIT VMO.
+- Findings 2 and 3, and design question 2: left to the main session.
   Finding 2's fix, if wanted: init's apps.c duplicates its root as it is
   and gives `dp_root_rights` as the extra's rights (`extra_rights`), as
   `/svc/exec` does; no test can fail without it until a desktop app asks

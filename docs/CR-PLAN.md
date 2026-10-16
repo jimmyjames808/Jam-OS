@@ -987,7 +987,11 @@ lands (no WebAssembly then).
   duplicate and transfer: a duplicate can only narrow rights, so the
   handle must carry transfer for its creator to hand one on, CR1 finding
   4). Needs `RIGHT_ROOT_JIT` on root. A JIT VMO can never be
-  sealed, verified, made executable the old way, or given a pager.
+  sealed, verified, made executable the old way, or given a pager, and is
+  never pinned for a device (`ERR_NOT_SUPPORTED`, a pager VMO's answer;
+  CJF, CJR's design question 1): JIT memory is written only by threads,
+  so the stricter modes below can see and switch every writer, and a
+  decommit of code pages never leaves a pinned page behind.
 - **W+X only there** (CJ1): `perms_ok` in `kernel/mm/aspace.c` allows
   write together with execute only for a mapping of a JIT VMO, and only
   as far as the handle's rights allow (`ASPACE_CAN_*` from the rights:
