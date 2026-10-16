@@ -107,6 +107,7 @@ extern uint64_t user_faults;   /* uentry.c: user threads killed for a fault */
 #define F_XSIZE    40
 #define F_R12      80
 #define F_RBX      136
+#define F_RSP      168
 #define F_RIP      176
 #define F_RFLAGS   184
 #define F_X        192
@@ -114,6 +115,7 @@ _Static_assert(offsetof(struct exc_frame, cookie) == F_COOKIE &&
                    offsetof(struct exc_frame, xsave_size) == F_XSIZE &&
                    offsetof(struct exc_frame, r12) == F_R12 &&
                    offsetof(struct exc_frame, rbx) == F_RBX &&
+                   offsetof(struct exc_frame, rsp) == F_RSP &&
                    offsetof(struct exc_frame, rip) == F_RIP &&
                    offsetof(struct exc_frame, rflags) == F_RFLAGS && EXC_FRAME_XSAVE == F_X,
                "the programs' frame offsets");
@@ -1283,6 +1285,25 @@ KTEST(upcall_bad_frames_kill)
            "");
     put(v);
     upc_end(&u);
+}
+
+/* A resumed RSP is the thread's business, wherever it points: iretq takes
+ * it, and the next fault, its frame unwritable there, is the old kill. */
+KTEST(upcall_resume_wild_rsp)
+{
+    static const uint64_t rsps[] = { 0x8000000000000000ull, 0xffff800000000000ull, 0 };
+    for (size_t i = 0; i < sizeof(rsps) / sizeof(rsps[0]); i++) {
+        struct upc u;
+        upc_new(&u, "upc-wildrsp");
+        set(&u, D_FAULTER, AT(f_ud2));
+        set(&u, D_ACTION, AT(act_poke));
+        set(&u, D_ARGOFF, F_RSP);
+        set(&u, D_ARG, rsps[i]);
+        upc_start(&u, upc_generic);
+        killed(&u, "invalid opcode", AT(f_ud2_i), 0, "");
+        KT_EQ(get(&u, D_COUNT), 1);
+        upc_end(&u);
+    }
 }
 
 /* System calls with bad pointers return their errors, with an entry set
