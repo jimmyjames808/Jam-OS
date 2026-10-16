@@ -1397,7 +1397,8 @@ restart; its surface may have subsurfaces like any window's.
   parent's role object or wl_surface gone; the popups on a dismissed one go
   with it, the newest first.
 - **The grab**: granted for one of the client's last input events'
-  serials (`seat_input_serial_ok`: a key, a button, a keyboard enter) while
+  serials (`seat_input_serial_ok`: a key, a button, the keyboard enter of
+  the keys coming to it, not a new `wl_keyboard`'s: GR's Low 6) while
   its toplevel has the keyboard focus, before the popup is mapped; denied
   (dismissed at once) otherwise, so a program in the background can't take
   the keys with a menu. Once the compositor dismisses a client's grab (a
