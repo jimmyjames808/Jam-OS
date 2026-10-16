@@ -48,6 +48,9 @@ struct file {
     struct fobj *o;          /* the file's open here; NULL for O_PATH */
     char        *path;       /* absolute; NULL if adopted without one */
     bool         nofollow;   /* O_PATH | O_NOFOLLOW: path names a link itself */
+    bool         given;      /* given to a child on a mount with many writers, at the end of the
+                              * file (given_end), and not used since: follow_given_locked */
+    uint64_t     given_end;
 };
 
 static const struct fd_ops file_ops;
@@ -144,6 +147,40 @@ static status_t append_end_locked(struct fobj *o)
     return st;
 }
 
+/* On a mount with many writers nothing is lent: a child given a writable
+ * description opens the file again beside ours, at our offset, and offsets
+ * stay per process (M13 Q5's A). A description that was at the end of the
+ * file when it was given away, and has not been used since, moves to the end
+ * the children left, as a shared offset would (`xargs cmd > f`,
+ * `(a; b) > f`): the rule follow_end_locked has for a lent file, which ext
+ * needs as much as FAT does. d->lock and the object's held. */
+static void follow_given_locked(struct fd_desc *d, struct file *f)
+{
+    if (!f->given)
+        return;
+    f->given = false;
+    if (append_end_locked(f->o) == OK)
+        follow_end_locked(d, f->given_end, f->o->size);
+}
+
+/* kind_give's part for a writable description on a many-writers mount (not
+ * O_APPEND: the service appends): follow what the last child left, then
+ * note whether the description is at the end now. d->lock held. */
+static void give_locked(struct fd_desc *d, struct file *f)
+{
+    struct fobj *o = f->o;
+    lock_take(&o->lock);
+    if (append_end_locked(o) == OK) {
+        if (f->given)
+            follow_end_locked(d, f->given_end, o->size);
+        f->given = (uint64_t)d->offset == o->size;
+        f->given_end = o->size;
+    } else {
+        f->given = false;
+    }
+    lock_give(&o->lock);
+}
+
 /* A read or write at pos (FD_AT_OFFSET: the description's offset); a
  * write with O_APPEND at the end unless noappend. */
 static long xfer(struct fd_desc *d, const struct iovec *iov, int n, int64_t pos, bool write,
@@ -161,6 +198,8 @@ static long xfer(struct fd_desc *d, const struct iovec *iov, int n, int64_t pos,
     status_t back = fobj_back_locked(f->o, f->path);   /* lent to a child: ours again */
     if (back == OK && was_lent)
         follow_end_locked(d, was_end, f->o->size);
+    if (back == OK)
+        follow_given_locked(d, f);   /* a many-writers mount: after a child, the end it left */
     bool append = write && (s & O_APPEND) && !noappend;
     if (back == OK && append && f->o->multi && !f->o->append)
         back = append_end_locked(f->o);   /* O_APPEND set since the open (F_SETFL) */
@@ -249,8 +288,16 @@ static long seek_to(struct fd_desc *d, int64_t off, int whence, int64_t *to)
 
 static long kind_seek(struct fd_desc *d, int64_t off, int whence)
 {
+    struct file *f = d->priv;
     int64_t to = 0;
     lock_take(&d->lock);
+    if (f->given && f->o && whence != SEEK_SET) {   /* many writers: after a child, its end */
+        lock_take(&f->o->lock);
+        follow_given_locked(d, f);
+        lock_give(&f->o->lock);
+    }
+    if (whence == SEEK_SET)
+        f->given = false;   /* the description is placed by hand */
     long r = seek_to(d, off, whence, &to);
     if (!r)
         d->offset = to;
@@ -376,7 +423,7 @@ static void lend_locked(struct fd_desc *d, const struct file *f)
 
 static long kind_give(struct fd_desc *d, struct fd_given *out)
 {
-    const struct file *f = d->priv;
+    struct file *f = d->priv;
     uint32_t s = fd_status(d);
     if (!f->o || !f->path)
         return -ENOTSUP;   /* O_PATH, or a file we were given without its path */
@@ -386,6 +433,8 @@ static long kind_give(struct fd_desc *d, struct fd_given *out)
     lock_take(&d->lock);
     if ((fs_access(s) & FS_WRITE) && !f->o->multi)
         lend_locked(d, f);   /* fat's one writer */
+    else if ((fs_access(s) & FS_WRITE) && !(s & O_APPEND))
+        give_locked(d, f);   /* many writers: no lending, but the offset follows the children */
     int64_t off = d->offset;
     lock_give(&d->lock);
     *out = (struct fd_given){

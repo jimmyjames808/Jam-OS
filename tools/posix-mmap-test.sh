@@ -25,10 +25,10 @@
 #   spawn     a copy of posixtest on /data: posix_spawn of it is EACCES
 #             while it isn't allowed; then `allow`ed, it runs (init's
 #             /svc/exec seals and starts it) and exits 7.
-# MMAP_DATA=ext runs the cases with the stick's /data an ext volume
-# (tools/ext-stick.sh: extfs serves it, its pager behind every mapping
-# there, docs/M13.6-PLAN.md's U10); the second sticks stay FAT. Needs
-# e2fsprogs and mtools (the test PC's WSL).
+# The image's /data is ext (extfs serves it, its pager behind every mapping
+# there, docs/M13.6-PLAN.md's U10); the second sticks are FAT. MMAP_DATA=ext
+# makes it an ext volume Linux's mke2fs made instead (tools/ext-stick.sh), which
+# needs e2fsprogs and mtools (the test PC's WSL).
 # QEMU_SMP and QEMU_MEM pass through.
 # Usage: tools/posix-mmap-test.sh <outdir> [name]; exit 0 on PASS.
 set -eu
@@ -89,8 +89,8 @@ run_case() {
     fi
     run="$out/$name-$1.run.log"
     sed '/jam[^>]*>.* reboot -f/q' "$out/$name-$1.log" > "$run"
-    # With MMAP_DATA=ext, extfs served /data, with its pager.
-    [ "${MMAP_DATA:-fat}" != ext ] || want "$1" 1 "volumes: extfs-data: pager made: " "$run"
+    # On an ext /data (the default), extfs served it, with its pager.
+    [ "$(python3 tools/mkimage.py --data-fs "$image")" != ext ] || want "$1" 1 "volumes: extfs-data: pager made: " "$run"
 }
 
 # Nothing went wrong with a page or a program on the way.
