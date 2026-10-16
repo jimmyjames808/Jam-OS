@@ -17,14 +17,13 @@
 # QEMU_NET_VLAN=none runs it untagged.
 # Usage: tools/posix-net-test.sh <outdir>
 set -eu
-DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
+. tools/datafs.sh
 out=$1
 mkdir -p "$out"
 img="$out/posix-net.base.img"
 cp "${QEMU_IMAGE:-build/jamos.img}" "$img"
 printf 'net.address = 10.2.21.5/24 10.2.21.1 10.2.21.1\n' > "$out/posix-net.settings"
-mmd -i "$img@@$DATA_AT" ::/etc 2>/dev/null || true
-mcopy -o -i "$img@@$DATA_AT" "$out/posix-net.settings" ::/etc/settings
+data_put "$img" "$out/posix-net.settings" etc/settings
 ok=1
 serve="5040:1048576,5041:65536,5042:100,5043:100,5046:4096,5047:4096"
 QEMU_IMAGE="$img" QEMU_NET=1 QEMU_TIMEOUT=${QEMU_TIMEOUT:-600} \

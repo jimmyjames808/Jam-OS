@@ -7,15 +7,14 @@
 # peer's pings must have been answered, across a netstack restart.
 # Usage: tools/netstack-test.sh <outdir>
 set -eu
-DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
+. tools/datafs.sh
 out=$1
 mkdir -p "$out"
 PINGS_MIN=8
 img="$out/netstack.base.img"
 cp "${QEMU_IMAGE:-build/jamos.img}" "$img"
 printf 'net.address = 10.2.21.5/24 10.2.21.1 10.2.21.1\n' > "$out/netstack.settings"
-mmd -i "$img@@$DATA_AT" ::/etc 2>/dev/null || true
-mcopy -o -i "$img@@$DATA_AT" "$out/netstack.settings" ::/etc/settings
+data_put "$img" "$out/netstack.settings" etc/settings
 ok=1
 QEMU_IMAGE="$img" QEMU_NET=1 QEMU_NET_PEER="--ping 10.2.21.5" \
     QEMU_INPUT=tools/shell-tests/netstack.txt tools/qemu-test.sh "$out" netstack shell || ok=0

@@ -1,6 +1,8 @@
 #!/bin/sh
-# The stick's filesystems end to end: three boots of one stick image in
-# QEMU, each typed into by a shell script (tools/shell-tests/).
+# The stick's filesystems end to end, FAT's: three boots of one stick image in
+# QEMU, each typed into by a shell script (tools/shell-tests/). The stick is a
+# FAT one made here (`make image DATA_FS=fat`, tools/datafs.sh): the default
+# image's /data is ext, which tools/stickext-test.sh covers the same way.
 #   boot 1  data-1.txt: /esp (read-only) and /data mounted through
 #           usb-storage, fat, devmgr and init; a file written; the fat
 #           service and devmgr killed and the mounts back; `reboot` (init
@@ -15,12 +17,14 @@
 # QEMU_SMP and QEMU_XHCI pass through.
 # Usage: tools/data-test.sh <outdir> [name]; exit 0 on PASS.
 set -eu
-DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
+. tools/datafs.sh
 out=$1 name=${2:-data}
 mkdir -p "$out"
 stick="$out/$name-stick.img"
 ok=1
-image=build/jamos.img
+data_fat_image "$out/$name-fat-boot.img" || { echo "$name: no FAT boot image"; exit 1; }
+image=$out/$name-fat-boot.img
+DATA_AT=$(python3 tools/mkimage.py --data-at "$image")
 for n in 1 2 3; do
     if ! QEMU_TIMEOUT=${QEMU_TIMEOUT:-240} QEMU_IMAGE="$image" QEMU_SAVE="$stick" \
          QEMU_INPUT="tools/shell-tests/data-$n.txt" tools/qemu-test.sh "$out" "$name-$n" shell; then
@@ -30,28 +34,29 @@ for n in 1 2 3; do
     fi
     image=$stick
 done
-# The data partition starts at the Makefile's ESP_END_MIB (DATA_AT, from the image).
-data="$stick@@$DATA_AT"
+# The data partition starts at the Makefile's ESP_END_MIB (DATA_AT, from the image); the stick's
+# FAT volume is read with tools/datafs.sh.
 want() {
     "$@" > /dev/null 2>&1 || { echo "$name: on the stick: '$*' failed"; ok=0; }
 }
 # The labels, as macOS and Windows read them: a plain label entry in the
 # root directory and the same text in the boot sector.
 want python3 tools/fat-label.py build/jamos.img 1
-want python3 tools/fat-label.py build/jamos.img ${DATA_AT%M}
+want python3 tools/fat-label.py "$out/$name-fat-boot.img" ${DATA_AT%M}
 if [ $ok = 1 ]; then
     want python3 tools/fat-label.py "$stick" ${DATA_AT%M}
-    want mdir -i "$data" ::/logs/boot-0001.txt ::/logs/boot-0002.txt ::/logs/boot-0003.txt
-    want mdir -i "$data" ::/after.txt
-    mtype -i "$data" ::/logs/boot-0001.txt 2>/dev/null | grep -q "init: /data mounted" ||
+    for f in logs/boot-0001.txt logs/boot-0002.txt logs/boot-0003.txt after.txt; do
+        want data_has "$stick" $f
+    done
+    data_cat "$stick" logs/boot-0001.txt | grep -q "init: /data mounted" ||
         { echo "$name: boot-0001.txt on the stick doesn't hold the first boot's log"; ok=0; }
     # boot 1 ended with `reboot`: its log holds the shutdown's own lines
-    mtype -i "$data" ::/logs/boot-0001.txt 2>/dev/null | grep -q "init: /data synced in" ||
+    data_cat "$stick" logs/boot-0001.txt | grep -q "init: /data synced in" ||
         { echo "$name: boot-0001.txt on the stick ends before the reboot's sync line"; ok=0; }
-    mtype -i "$data" ::/after.txt 2>/dev/null | grep -q "after the pull-c" ||
+    data_cat "$stick" after.txt | grep -q "after the pull-c" ||
         { echo "$name: after.txt on the stick doesn't hold what boot 3 wrote"; ok=0; }
 fi
-rm -f "$stick"
+rm -f "$stick" "$out/$name-fat-boot.img"
 if [ $ok = 1 ]; then
     echo "$name: PASS"
     exit 0

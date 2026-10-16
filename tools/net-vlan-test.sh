@@ -42,7 +42,7 @@
 # QEMU_SMP passes through. Usage: tools/net-vlan-test.sh <outdir> [21|none]
 # (after `make -s image`); exit 0 on PASS.
 set -u
-DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
+. tools/datafs.sh
 out=$1
 mode=${2:-21}
 mkdir -p "$out"
@@ -71,9 +71,8 @@ tools/update-test-key.sh "$out" "${QEMU_IMAGE:-build/jamos.img}" "$img" ||
 printf 'net.host = 10.2.21.174\n' > "$out/net-vlan.settings"
 python3 -c "import random,sys; sys.stdout.buffer.write(random.Random(21).randbytes(65536))" \
     > "$out/served.bin"
-mmd -i "$img@@$DATA_AT" ::/etc 2>/dev/null || true
-mcopy -o -i "$img@@$DATA_AT" "$out/net-vlan.settings" ::/etc/settings &&
-    mcopy -o -i "$img@@$DATA_AT" "$out/served.bin" ::/served.bin ||
+data_put "$img" "$out/net-vlan.settings" etc/settings &&
+    data_put "$img" "$out/served.bin" served.bin ||
     { echo "net-vlan-test: can't write the stick's settings and file"; exit 1; }
 # The Mac's ends of the TCP paths, through the peer's relay.
 set -- $(python3 tools/netpeer.py --free-ports 3)

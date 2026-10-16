@@ -46,7 +46,7 @@
 # the swap's power-cut points on NVMe.
 # Usage: tools/update-write-test.sh <outdir> (after `make -s image`); exit 0 on PASS.
 set -u
-DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
+. tools/datafs.sh
 out=$1
 mkdir -p "$out"
 fails=0
@@ -65,16 +65,11 @@ key="$out/testkey/key1/update.key"
 # the image's 64 MiB data partition, so this stick's is made 192 MiB (the
 # MBR grown as tools/write-usb.sh grows a stick's, then formatted here).
 data_mib=192
-python3 -c "import sys; open(sys.argv[1], 'r+b').truncate(int(sys.argv[2]) << 20)" "$img" \
-    $((${DATA_AT%M} + data_mib)) &&
-    python3 tools/mbr-grow.py "$img" $(((${DATA_AT%M} + data_mib) * 2048)) > /dev/null &&
-    mformat -i "$img@@$DATA_AT" -T $((data_mib * 2048)) -F -v JAMOS-DATA :: &&
-    python3 tools/fat-label.py "$img" ${DATA_AT%M} --fix > /dev/null ||
+data_grow "$img" "$data_mib" ||
     { echo "update-write-test: can't grow the stick's /data"; exit 1; }
 printf 'net.address = 10.2.21.5/24 10.2.21.1 10.2.21.1\nnet.host = 10.2.21.174\n' \
     > "$out/wtest.settings"
-mmd -i "$img@@$DATA_AT" ::/etc 2>/dev/null || true
-mcopy -o -i "$img@@$DATA_AT" "$out/wtest.settings" ::/etc/settings ||
+data_put "$img" "$out/wtest.settings" etc/settings ||
     { echo "update-write-test: can't write the stick's settings"; exit 1; }
 
 # Build B, and its signed manifest on /data/update for updtest.
@@ -112,20 +107,19 @@ python3 tools/bootfs-edit.py "$out/testkey/bootfs-key.img" "$out/bootfs-C.img" \
     { echo "update-write-test: can't make build C's boot image"; exit 1; }
 python3 tools/update-server.py --manifest "$out/jamos-C.elf" "$out/bootfs-C.img" --key "$key" \
     > "$out/manifest-C" || { echo "update-write-test: no manifest for C"; exit 1; }
-mmd -i "$img@@$DATA_AT" ::/update &&
-    mcopy -i "$img@@$DATA_AT" "$out/manifest" ::/update/manifest &&
-    mcopy -i "$img@@$DATA_AT" "$out/jamos-B.elf" ::/update/jamos.elf &&
-    mcopy -i "$img@@$DATA_AT" "$out/bootfs-B.img" ::/update/bootfs.img &&
-    mmd -i "$img@@$DATA_AT" ::/update/c &&
-    mcopy -i "$img@@$DATA_AT" "$out/manifest-C" ::/update/c/manifest &&
-    mcopy -i "$img@@$DATA_AT" "$out/jamos-C.elf" ::/update/c/jamos.elf &&
-    mcopy -i "$img@@$DATA_AT" "$out/bootfs-C.img" ::/update/c/bootfs.img &&
-    mmd -i "$img@@$DATA_AT" ::/update/a &&
+data_put "$img" "$out/manifest" update/manifest &&
+    data_put "$img" "$out/jamos-B.elf" update/jamos.elf &&
+    data_put "$img" "$out/bootfs-B.img" update/bootfs.img &&
+    data_mkdir "$img" update/c &&
+    data_put "$img" "$out/manifest-C" update/c/manifest &&
+    data_put "$img" "$out/jamos-C.elf" update/c/jamos.elf &&
+    data_put "$img" "$out/bootfs-C.img" update/c/bootfs.img &&
+    data_mkdir "$img" update/a &&
     mcopy -n -o -i "$img@@1M" ::/boot/jamos.elf "$out/jamos-A.elf" &&
     mcopy -n -o -i "$img@@1M" ::/boot/bootfs.img "$out/bootfs-A0.img" &&
-    mcopy -i "$img@@$DATA_AT" "$out/jamos-A.elf" ::/update/a/jamos.elf &&
-    mcopy -i "$img@@$DATA_AT" "$out/bootfs-A0.img" ::/update/a/bootfs.img &&
-    cp "$out/manifest" "$out/manifest-A0" && mcopy -i "$img@@$DATA_AT" "$out/manifest-A0" ::/update/a/manifest ||
+    data_put "$img" "$out/jamos-A.elf" update/a/jamos.elf &&
+    data_put "$img" "$out/bootfs-A0.img" update/a/bootfs.img &&
+    cp "$out/manifest" "$out/manifest-A0" && data_put "$img" "$out/manifest-A0" update/a/manifest ||
     { echo "update-write-test: can't write the stick's /data"; exit 1; }
 cat > "$out/wtest.spec.json" <<EOF
 {"kernel": "$out/jamos-B.elf", "bootfs": "$out/bootfs-B.img", "key": "$key", "plan": []}

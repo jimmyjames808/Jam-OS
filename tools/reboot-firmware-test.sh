@@ -11,13 +11,13 @@
 #           any other method is tried. Then a second boot of the same
 #           stick: the file is there, /data was left clean (no "dirty"),
 #           logd writes boot-0002, and boot-0001.txt has the sync's line
-#           (on the Mac, with mtools)
+#           (on the Mac, tools/datafs.sh)
 #   cf9     reset=cf9: 0xCF9's full reset (0x02, then 0x0e) alone does it
 #   8042    reset=8042: the keyboard controller's pulse reset does it
 #   triple  reset=triple: the triple fault does it
 # Usage: tools/reboot-firmware-test.sh <outdir> [run ...]; exit 0 on PASS.
 set -u
-DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
+. tools/datafs.sh
 out=$1
 shift
 runs=${*:-data cf9 8042 triple}
@@ -57,14 +57,14 @@ run_data() {
         fail data "the ACPI reset register didn't reset the machine"
     grep -aq "driver(s) stopped; exiting" "$log" || fail data "devmgr's drivers weren't stopped"
     grep -aq "devmgr didn't stop in order" "$log" && fail data "devmgr had to be killed"
-    mtype -i "$stick@@$DATA_AT" ::/logs/boot-0001.txt 2>/dev/null | grep -q "init: /data synced" || fail data "boot-0001.txt doesn't have the reset's sync"
+    data_cat "$stick" logs/boot-0001.txt | grep -q "init: /data synced" || fail data "boot-0001.txt doesn't have the reset's sync"
     QEMU_IMAGE="$stick" run data2 shell "wait 120 Jam OS shell" "wait {prompt}" \
         "seen 60 init: /data mounted" "seen 60 logd: writing /data/logs/boot-0002.txt" \
         "send T=k && cat /data/rbf.txt && echo ok-\$T" "wait written before the reset" \
         "wait ok-k" "send reboot -f" "wait 30 reboot: trying the ACPI reset register" ||
         fail data "the second boot (see $out/rbf-data2.log)"
-    grep -aq "fat /data: the volume is dirty" "$out/rbf-data2.log" &&
-        fail data "/data wasn't left clean"
+    grep -aqE "fat /data: the volume is dirty|extfs /data: mounted.*; the journal: " "$out/rbf-data2.log" &&
+        fail data "/data wasn't left clean (fat: dirty; extfs: a journal to replay)"
     rm -f "$stick"
 }
 

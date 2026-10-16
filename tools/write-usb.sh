@@ -34,11 +34,12 @@ diskutil unmountDisk "$dev"
 raw=$(echo "$dev" | sed 's|/dev/disk|/dev/rdisk|')
 sudo dd if="$img" of="$raw" bs=4m
 sync
-# The image's data partition is 64 MiB: grow it to the end of the stick. A
-# FAT one Jam OS formats, full size, on the first boot; an ext one (the
-# DATA_FS=ext) is made again here at the stick's size, with the files of DATA_DIR
-# (the Makefile's: the owner's key and the like) in it, since nothing on the
-# Mac can write it after the first boot (tools/stick-data.sh).
+# The image's data partition is 64 MiB: grow it to the end of the stick. An
+# ext one (the default) is made again here at the stick's size, with the
+# files of DATA_DIR (the Makefile's: the owner's key and the like) in it,
+# since nothing on the Mac can write it after the first boot
+# (tools/stick-data.sh); a FAT one (DATA_FS=fat) Jam OS formats, full size,
+# on the first boot.
 here=$(dirname "$0")
 diskutil unmountDisk "$dev" >/dev/null 2>&1 || true   # macOS may mount the new volumes
 bytes=$(diskutil info -plist "$dev" | plutil -extract TotalSize raw -)

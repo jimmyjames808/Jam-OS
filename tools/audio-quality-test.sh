@@ -29,7 +29,7 @@
 # QEMU_SMP passes through. Usage: tools/audio-quality-test.sh <outdir>;
 # exit 0 on PASS.
 set -eu
-DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
+. tools/datafs.sh
 out=$1
 mkdir -p "$out"
 wav="$out/quality.wav"
@@ -93,7 +93,7 @@ PY
 
 cp build/jamos.img "$stick"
 for f in bitx t1k r44 long; do
-    mcopy -o -i "$stick@@$DATA_AT" "$out/$f.wav" "::/$f.wav" ||
+    data_put "$stick" "$out/$f.wav" "$f.wav" ||
         { echo "quality: can't copy $f.wav to the stick image"; exit 1; }
 done
 

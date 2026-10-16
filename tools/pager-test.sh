@@ -2,7 +2,9 @@
 # Mapped files and the pagers behind them (docs/M12.5-PLAN.md). The cases
 # named in PAGER_CASES (default: all of them, one after the other; give each
 # its own output directory to run them side by side), each a shell boot
-# (tools/shell-tests/pager-<case>.txt) and a look at its log:
+# (tools/shell-tests/pager-<case>.txt) and a look at its log. The cases
+# about fat (all but jam, jstorm and xexec) boot a FAT stick of their own
+# (`make image DATA_FS=fat`, tools/datafs.sh), since the image's /data is ext:
 #   plumb  what volumes and libos do: one pager a mount (made with the
 #          mount, the same one across fat-data's restart and the spare's
 #          promotion, closed with the stick), the budget a sixteenth of
@@ -65,17 +67,30 @@
 #          second: the copy MATCHes, the hashes are the host's, the
 #          restarts carry on (none fresh), no page fails; e2fsck clean.
 #   xexec  the exec case (both boots, the same steps and checks) with the
-#          stick's /data an ext volume: the image's FAT data partition made
-#          again by mke2fs from its files, so extfs serves /data; between
-#          the boots the three bytes are changed in the files' blocks on
-#          the image (debugfs's bmap finds them). e2fsck -fn after each.
+#          stick's /data an ext volume Linux's mke2fs made (the image's own
+#          is jamext's), so extfs serves /data and e2fsck and debugfs judge
+#          it; between the boots the three bytes are changed in the files'
+#          blocks on the image (debugfs's bmap finds them). e2fsck -fn
+#          after each.
 # QEMU_SMP and QEMU_MEM pass through (budget sets its own QEMU_MEM).
 # Usage: tools/pager-test.sh <outdir> [name]; exit 0 on PASS.
 set -eu
+. tools/datafs.sh
 out=$1 name=${2:-pager}
 cases=${PAGER_CASES:-plumb map budget kill exec write pull jam jstorm xexec}
 mkdir -p "$out"
 ok=1
+
+# The cases about fat (plumb, map, budget, kill, exec, write, pull) boot a FAT stick: build/jamos.img's
+# /data is ext (M13.6's U11b). Made once for the run, from `make image DATA_FS=fat`.
+fat_boot() { echo "$out/$name-fat-boot.img"; }
+for c in $cases; do
+    case $c in
+    plumb | map | budget | kill | exec | write | pull)
+        data_fat_image "$(fat_boot)" || { echo "$name: no FAT boot image"; exit 1; }
+        break ;;
+    esac
+done
 
 count() { grep -acE -- "$1" "$2" || true; }
 # want <case> <how many times exactly> <text (a regex)> <log>
@@ -113,6 +128,7 @@ make_stick() {
 # closes everything) into $run.
 run_case() {
     if ! QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_INPUT="tools/shell-tests/pager-$1.txt" \
+         QEMU_IMAGE="$(fat_boot)" \
          QEMU_USB="-blockdev driver=file,node-name=aimgf,filename=$2 -blockdev driver=raw,node-name=aimg,file=aimgf" \
          tools/qemu-test.sh "$out" "$name-$1" shell > "$out/$name-$1.out" 2>&1; then
         echo "$name: $1: the shell script FAILED (see $out/$name-$1.log)"
@@ -330,7 +346,7 @@ case_exec() {
     stick="$out/$name-$c-stick.img"
     rm -f "$stick"
     if ! QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_INPUT=tools/shell-tests/pager-exec.txt \
-         QEMU_SAVE="$stick" QEMU_IMAGE="${from:-${QEMU_IMAGE:-build/jamos.img}}" \
+         QEMU_SAVE="$stick" QEMU_IMAGE="${from:-$(fat_boot)}" \
          tools/qemu-test.sh "$out" "$name-$c" shell > "$out/$name-$c.out" 2>&1; then
         echo "$name: $c: boot 1's shell script FAILED (see $out/$name-$c.log)"
         grep "serial-feed: .*no '" "$out/$name-$c.out" || true
@@ -555,6 +571,7 @@ for c in $cases; do
     *) echo "$name: no case called $c"; ok=0 ;;
     esac
 done
+rm -f "$(fat_boot)"
 if [ $ok = 1 ]; then
     echo "$name: PASS"
     exit 0

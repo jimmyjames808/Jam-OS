@@ -5,9 +5,10 @@
      one UEFI boots (Limine, the kernel, bootfs). Jam OS never writes it.
   2. the data partition: from esp_end_mib to the end of the image, mounted
      at /data, labelled JAMOS-DATA. Type 0x83 when it is to be an ext volume
-     (`--data ext`: docs/M13.6-PLAN.md "Ext by default"; the Makefile's
-     DATA_FS=ext), type 0x0C (FAT32 LBA) when it is FAT32 (`--data fat`, the
-     default here and, for now, the Makefile's).
+     (`--data ext`: docs/M13.6-PLAN.md "Ext by default"; the Makefile's DATA_FS,
+     ext unless asked for FAT), type 0x0C (FAT32 LBA) when it is FAT32
+     (`--data fat`, or none: the tests' own FAT disks; the Makefile always
+     says which).
 
 The Makefile formats the ESP with mtools (mformat, mcopy at image@@1M: the
 firmware reads only FAT) and the data partition with jamext (an ext volume,

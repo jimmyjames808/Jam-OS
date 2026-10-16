@@ -35,10 +35,10 @@
 # build's kernel and a copy of that boot image with one more file
 # (update-marker.txt), its manifest made by tools/update-server.py
 # --manifest and signed with the test key (and once more with a second
-# key), all put on the stick's /data (update/) with mtools before the boot.
+# key), all put on the stick's /data (update/) before the boot (tools/datafs.sh).
 # Usage: tools/update-test.sh <outdir>; exit 0 on PASS.
 set -u
-DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
+. tools/datafs.sh
 out=$1
 mkdir -p "$out"
 fails=0
@@ -81,12 +81,13 @@ open(sys.argv[2], "wb").write(b"\xaa" * 4096)' "$out/nak.elf" "$out/nak.img" &&
     python3 tools/update-server.py --manifest "$out/nak.elf" "$out/nak.img" \
         --version not-a-kernel --git 0000000 --net "$net" --key "$key1" > "$out/nak.manifest" ||
     { echo "update-test: no manifest for the files that are no kernel"; exit 1; }
-mmd -i "$stick@@$DATA_AT" ::/update &&
-    mcopy -i "$stick@@$DATA_AT" "$out/manifest" "$out/manifest-otherkey" \
-        "$out/manifest-othernet" "$out/manifest-ext" "$out/manifest-must" \
-        "$out/manifest-abi" "$out/manifest-badabi" "$out/nak.manifest" ::/update/ &&
-    mcopy -i "$stick@@$DATA_AT" build/jamos.elf ::/update/jamos.elf &&
-    mcopy -i "$stick@@$DATA_AT" "$out/bootfs-marked.img" ::/update/bootfs.img ||
+data_mkdir "$stick" update &&
+    for f in manifest manifest-otherkey manifest-othernet manifest-ext manifest-must \
+             manifest-abi manifest-badabi nak.manifest; do
+        data_put "$stick" "$out/$f" "update/$f" || exit 1
+    done &&
+    data_put "$stick" build/jamos.elf update/jamos.elf &&
+    data_put "$stick" "$out/bootfs-marked.img" update/bootfs.img ||
     { echo "update-test: can't write the stick's /data"; exit 1; }
 
 cat > "$out/update.txt" <<EOF
@@ -181,9 +182,10 @@ rm -f "$stick"
 #    `update -n -r` is a usage error (nothing to reboot into).
 nokey="$out/update-nokey.img"
 tools/update-test-key.sh "$out" build/jamos.img "$nokey" nokey &&
-    mmd -i "$nokey@@$DATA_AT" ::/update &&
-    mcopy -i "$nokey@@$DATA_AT" "$out/manifest" build/jamos.elf ::/update/ &&
-    mcopy -i "$nokey@@$DATA_AT" "$out/bootfs-marked.img" ::/update/bootfs.img ||
+    data_mkdir "$nokey" update &&
+    data_put "$nokey" "$out/manifest" update/manifest &&
+    data_put "$nokey" build/jamos.elf update/jamos.elf &&
+    data_put "$nokey" "$out/bootfs-marked.img" update/bootfs.img ||
     { echo "update-test: can't make the keyless stick"; exit 1; }
 cat > "$out/nokey.txt" <<EOF
 wait 120 Jam OS shell

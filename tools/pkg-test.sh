@@ -34,7 +34,7 @@
 #                 `make_jam` below
 # Usage: tools/pkg-test.sh <outdir> (after `make -s image`); exit 0 on PASS.
 set -u
-DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
+. tools/datafs.sh
 out=$1
 mkdir -p "$out"
 fails=0
@@ -57,8 +57,7 @@ mcopy -o -i "$img@@1M" "$out/bootfs-key.img" ::/boot/bootfs.img ||
 rm -f "$out/bootfs-in.img" "$out/bootfs-key.img"
 printf 'net.address = 10.2.21.5/24 10.2.21.1 10.2.21.1\npkg.repo = http://10.2.21.174:8000/good/\n' \
     > "$out/pkg.settings"
-mmd -i "$img@@$DATA_AT" ::/etc 2>/dev/null || true
-mcopy -o -i "$img@@$DATA_AT" "$out/pkg.settings" ::/etc/settings ||
+data_put "$img" "$out/pkg.settings" etc/settings ||
     { echo "pkg-test: can't write the stick's settings"; exit 1; }
 
 # The big package's program (a 300 MiB POSIX program, generated, never kept in
@@ -113,7 +112,7 @@ if [ -s "$out/pkg.cut.img" ]; then
     rm -rf "$out/pkgfiles"
     mkdir -p "$out/pkgfiles"
     for d in pkg/bin pkg/db; do
-        mdir -b -i "$out/pkg.after.img@@$DATA_AT" "::/$d" > "$out/pkgfiles/$(echo "$d" | tr / _).txt" 2>&1 ||
+        data_ls "$out/pkg.after.img" "$d" > "$out/pkgfiles/$(echo "$d" | tr / _).txt" 2>&1 ||
             fail "can't list /data/$d"
     done
     for want in bin/aaa bin/bbb; do

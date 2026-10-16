@@ -24,7 +24,7 @@
 # QEMU_SMP passes through. Usage: tools/bootdisk-test.sh <outdir> [gone];
 # exit 0 on PASS.
 set -eu
-DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1   # /data in the image: mtools' @@offset
+. tools/datafs.sh
 out=$1 name=bootdisk
 if [ "${2:-}" = gone ]; then
     name=bootdisk-gone
@@ -73,7 +73,7 @@ cp build/jamos.img "$other"
 # (octal: dash's printf, Ubuntu's /bin/sh, has no \x)
 printf '\132\132\017\017' | dd of="$other" bs=1 seek=440 conv=notrunc 2>/dev/null
 echo "the other stick" > "$out/other-stick.txt"
-mcopy -o -i "$other@@$DATA_AT" "$out/other-stick.txt" ::/other-stick.txt
+data_put "$other" "$out/other-stick.txt" other-stick.txt
 log="$out/$name.log"
 ok=1
 
@@ -88,9 +88,8 @@ if [ "${QEMU_BOOT_NVME:-0}" = 1 ]; then
     boot="$out/$name-boot.img" drive="$out/$name-drive.img"
     python3 tools/mkimage.py --gpt build/jamos.img "$boot"
     python3 tools/mkimage.py --gpt build/jamos.img "$drive"   # another random GUID
-    drive_at=$(python3 tools/mkimage.py --data-at "$drive")
     echo "the other drive" > "$out/other-drive.txt"
-    mcopy -o -i "$drive@@$drive_at" "$out/other-drive.txt" ::/other-drive.txt
+    data_put "$drive" "$out/other-drive.txt" other-drive.txt
     want=$(guid_of "$boot") theirs=$(guid_of "$drive")
     [ "$want" != "$theirs" ] || { echo "$name: both drives got GUID $want"; exit 1; }
     cat > "$out/$name.txt" <<EOF

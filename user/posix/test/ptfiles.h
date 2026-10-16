@@ -6,6 +6,11 @@
 
 #define PT_DIR "/data/ptfiles"   /* the section's own directory on /data, made afresh */
 
+/* Is /data an ext volume (statfs says 0xef53)? The section is written for ext, the default;
+ * where FAT's answers differ (no links, no modes, ".." stops at the mount) it checks those
+ * too when /data is FAT (a stick made with DATA_FS=fat). */
+bool pt_data_ext(void);
+
 /* PT_DIR emptied and made again (after waiting for /data to be mounted):
  * false if there is no /data to test on. */
 bool pt_files_start(void);

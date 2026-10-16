@@ -10,7 +10,7 @@
 #          got while it reads and hashes the 300 MiB, the question comes,
 #          and its line and page table (2.4 MB, named by its hash) are
 #          written; then it runs from its pages: `lazy` touches none of the
-#          table and fetches a few of its pages (fat's "gone" line between
+#          table and fetches a few of its pages (the fs's "gone" line between
 #          the marks), `check` reads every 64th page of the table and its
 #          last, each holding the right words.
 #   then this script changes one byte of a page of the table that `check`
@@ -21,6 +21,7 @@
 # QEMU_SMP and QEMU_MEM pass through; DATA_MIB (448) sizes /data.
 # Usage: tools/bigprog-test.sh <outdir> (after `make -s image`); exit 0 on PASS.
 set -u
+. tools/datafs.sh
 out=$1
 name=bigprog
 data_mib=${DATA_MIB:-448}
@@ -37,12 +38,12 @@ never() {   # never <text> <log>
     n=$(count "$1" "$2")
     [ "$n" -eq 0 ] || { echo "$name: \"$1\" $n times in $(basename "$2")"; ok=0; }
 }
-# gone_pages <from> <to>: fat's "gone" lines for /data's mapped files
+# gone_pages <from> <to>: the fs's (fat or extfs) "gone" lines for /data's mapped files
 # between the output lines <from> and <to> of $run, as the pages each
 # supplied, one a line.
 gone_pages() {
     sed -n "/$1/,/$2/p" "$run" |
-        sed -n 's/.*fat \/data: mapped file [0-9a-f]* gone: [0-9]* page requests, \([0-9]*\) pages supplied.*/\1/p'
+        sed -n -E 's/.*(fat|extfs) \/data: mapped file [0-9a-f]* gone: [0-9]* page requests, ([0-9]*) pages supplied.*/\2/p'
 }
 
 prog=build/bigprog/bigprog
@@ -57,15 +58,10 @@ echo "$name: $prog is $size bytes ($((size >> 20)) MiB), $pages pages"
 
 # The stick: the image with its data partition grown to data_mib (the MBR
 # as tools/write-usb.sh grows a stick's), formatted here, /data/big on it.
-DATA_AT=$(python3 tools/mkimage.py --data-at build/jamos.img) || exit 1
 stick="$out/$name-stick.img"
 cp build/jamos.img "$stick" &&
-    python3 -c "import sys; open(sys.argv[1], 'r+b').truncate(int(sys.argv[2]) << 20)" "$stick" \
-        $((${DATA_AT%M} + data_mib)) &&
-    python3 tools/mbr-grow.py "$stick" $(((${DATA_AT%M} + data_mib) * 2048)) > /dev/null &&
-    mformat -i "$stick@@$DATA_AT" -T $((data_mib * 2048)) -F -v JAMOS-DATA :: &&
-    python3 tools/fat-label.py "$stick" ${DATA_AT%M} --fix > /dev/null &&
-    mcopy -i "$stick@@$DATA_AT" "$prog" ::/big ||
+    data_grow "$stick" "$data_mib" &&
+    data_put "$stick" "$prog" big 755 ||
     { echo "$name: can't make the stick"; rm -f "$stick"; exit 1; }
 
 # ---- boot 1: allowed, run ---------------------------------------------------------------------
@@ -112,7 +108,7 @@ d[start + page * 4096 + 100] ^= 0x5a
 open(dst, "wb").write(d)
 EOF
     { echo "$name: can't change the program"; ok=0; }
-mcopy -o -i "$saved@@$DATA_AT" "$copy" ::/big ||
+data_put "$saved" "$copy" big 755 ||
     { echo "$name: can't put the changed program on the stick"; ok=0; }
 rm -f "$copy"
 
@@ -127,8 +123,8 @@ rm -f "$saved"
 run="$out/${name}2.run.log"
 sed '/jam[^>]*>.* reboot -f/q' "$out/${name}2.log" > "$run"
 want 1 'user: process "big" killed: page fault: a page doesn.t match the approved program' "$run"
-n=$(count "fat /data: mapped file [0-9a-f]+: the disk.s pages don.t match the approved" "$run")
-[ "$n" -ge 1 ] || { echo "$name: fat's mismatch line $n times, wanted 1 or more"; ok=0; }
+n=$(count "(fat|extfs) /data: mapped file [0-9a-f]+: the disk.s pages don.t match the approved" "$run")
+[ "$n" -ge 1 ] || { echo "$name: the fs's mismatch line $n times, wanted 1 or more"; ok=0; }
 never 'user: process "shell" killed' "$run"
 never "did not end cleanly|left [0-9]+ units of job kind|its job still holds" "$run"
 

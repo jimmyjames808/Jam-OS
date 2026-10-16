@@ -2,8 +2,9 @@
  * listed, telldir and seekdir, the current directory, the *at calls,
  * what stat and statvfs say, and MAP_PRIVATE of a file. The answers are
  * Linux's (files.c says how they were written) but where M13's plan
- * chose otherwise: ".." stops at a mount's root (docs/M13-PLAN.md
- * section 3), so chdir("/data/..") stays in /data. */
+ * chose otherwise: ".." stops at a FAT mount's root (docs/M13-PLAN.md
+ * section 3), so chdir("/data/..") stays in /data there; above an ext
+ * mount's root it is "/" (M13.6). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <dirent.h>
@@ -174,9 +175,11 @@ static void current_dir(void)
     close(fd);
     CHECK(chdir("d") == 0 && getcwd(cwd, sizeof(cwd)) && !strcmp(cwd, PT_DIR "/d"));
     CHECK(chdir("../.") == 0 && getcwd(cwd, sizeof(cwd)) && !strcmp(cwd, PT_DIR));
-    CHECK(chdir("/data/..") == 0 && getcwd(cwd, sizeof(cwd)) && !strcmp(cwd, "/data"));
     errno = 0;
     CHECK(getcwd(cwd, 3) == NULL && errno == ERANGE);   /* getcwd(3) ERANGE */
+    /* ".." above a mount's root: an ext volume's is "/" (links.c); FAT's /data stayed in /data */
+    CHECK(chdir("/data/..") == 0 && getcwd(cwd, sizeof(cwd)) &&
+          !strcmp(cwd, pt_data_ext() ? "/" : "/data"));
     int dfd = open(PT_DIR "/d", O_RDONLY | O_DIRECTORY);
     CHECK(dfd >= 0 && fchdir(dfd) == 0 && getcwd(cwd, sizeof(cwd)) && !strcmp(cwd, PT_DIR "/d"));
     close(dfd);
