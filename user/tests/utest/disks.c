@@ -851,41 +851,49 @@ bool t_disk_answer_storm(void)
 }
 
 /* voldisks.open_partition (the shell's `disk check`): a block channel on a
- * partition of a disk, opened read-only (the mock disk's open_partition is
- * told read_only, and its block says so), whether or not a service has the
- * partition; a disk that isn't there is ERR_NOT_FOUND; nothing is written
- * and no mount changes. Done on a Linux-typed partition with no ext volume,
- * which volumes only looks at (read-only) and leaves alone. */
+ * partition of a real disk (a test disk is no disk to the listing), opened
+ * read-only: the block says so, and a disk that isn't there is
+ * ERR_NOT_FOUND. The first real disk with a partition is asked (the boot
+ * stick in a run; a machine with none skips the positive half). */
 bool t_disk_open_ro(void)
 {
     handle_t vm = volumes(), list = HANDLE_INVALID, blk = HANDLE_INVALID;
-    struct view v = { 0 };
-    uint32_t id = 0, bs = 0, maxb = 0;
-    uint64_t blocks = 0;
-    uint8_t ro = 0;
-    bool skip;
     if (!vm)
         return true;
-    if (!attach_ext(vm, 0x83, false, &id, &skip))
-        return skip;
-    if (!wait_count(&mock.closed[1], 1))
-        return false;
-    CHECK_EQ(dm_count(&mock.opened[1]), 1);   /* the look */
     const uint64_t until = now() + 10 * NS_PER_S;
     CHECK_ST(volumes_list_channel_until(vm, until, &list), OK);
-    CHECK_ST(voldisks_open_partition_until(list, until, 0xdeadbeef, PART_DATA, &blk),
-             ERR_NOT_FOUND);
-    CHECK_ST(voldisks_open_partition_until(list, until, id, PART_DATA, &blk), OK);
-    CHECK_ST(block_info_within(blk, 5 * NS_PER_S, &bs, &blocks, &ro, &maxb, NULL, NULL), OK);
-    CHECK_EQ(ro, 1);
-    CHECK_EQ(dm_count(&mock.opened[1]), 2);   /* the look, and ours */
-    CHECK_EQ(dm_count(&mock.opened_rw), 0);
-    CHECK_EQ(dm_count(&mock.writes), 0);
-    CHECK_ST(jam_handle_close(blk), OK);
+    CHECK_ST(voldisks_open_partition_until(list, until, 0xdeadbeef, 0, &blk), ERR_NOT_FOUND);
+    for (uint32_t i = 0;; i++) {
+        uint32_t id, bs, parts, nl, ml, sl, fl;
+        uint64_t blocks;
+        uint8_t bus, ready, kind, scheme, ro;
+        char name[9], model[41], serial[21], fw[9];
+        status_t st = voldisks_disk_until(list, until, i, &id, &bus, &ready, &kind, &scheme, &ro,
+                                          &bs, &blocks, &parts, name, &nl, model, &ml, serial,
+                                          &sl, fw, &fl);
+        if (st == ERR_OUT_OF_RANGE) {
+            printf("utest: %s: no real disk with a partition: the positive half skipped\n",
+                   utest_cur);
+            break;
+        }
+        CHECK_ST(st, OK);
+        if (!ready || !parts)
+            continue;
+        uint32_t cbs = 0, maxb = 0;
+        uint64_t cblocks = 0;
+        uint8_t cro = 0;
+        CHECK_ST(voldisks_open_partition_until(list, until, id, 0, &blk), OK);
+        CHECK_ST(block_info_within(blk, 5 * NS_PER_S, &cbs, &cblocks, &cro, &maxb, NULL, NULL),
+                 OK);
+        CHECK_EQ(cro, 1);
+        CHECK(cblocks > 0);
+        CHECK_ST(jam_handle_close(blk), OK);
+        /* a partition that isn't in the table: the driver's refusal, no channel */
+        CHECK(voldisks_open_partition_until(list, until, id, 1000, &blk) != OK);
+        break;
+    }
     CHECK_ST(jam_handle_close(list), OK);
-    CHECK_ST(view_next(vm, &v, now() + 10 * NS_PER_S), OK);
-    CHECK(!usb_path(&v) && !mounted(&v, ESP) && !mounted(&v, DATA));   /* no mount came of it */
-    return detach(vm, &v);
+    return true;
 }
 
 /* volumes.list_channel: a channel that speaks voldisks (the disk listing,

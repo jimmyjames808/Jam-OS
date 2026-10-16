@@ -7,7 +7,8 @@
 #     JAMOS_REMOTE=jamos-pc JAMOS_REMOTE_ONLY=1 \
 #         tools/remote-test.sh tools/jamext-pc-test.sh build/t/jamext
 #
-# Into <outdir>: the test's scratch files. Exit 0: PASS; 2 without e2fsck.
+# Into <outdir>: the test's scratch files (kept on a failure only). Exit 0: PASS;
+# 2 without e2fsck.
 set -u
 out=${1:?usage: tools/jamext-pc-test.sh <outdir>}
 export PATH=/usr/sbin:/sbin:$PATH LC_ALL=C
@@ -17,6 +18,8 @@ done
 make -s build/host/jamext build/host/extcheck build/extfix/jam4k.img build/extfix/linux1k.img \
     build/extfix/old2k.img || exit 1
 if sh tools/jamext-test.sh build/host/jamext build/host/extcheck "$out" build/extfix; then
+    rm -rf "$out"    # the images are big and sparse: nothing worth copying back
+    mkdir -p "$out"
     echo "jamext-pc-test: PASS"
 else
     echo "jamext-pc-test: FAIL"
