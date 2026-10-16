@@ -247,6 +247,38 @@ What SG5 settled, or added (for SG6 and the review SGR):
   (4,968 bytes with AVX). The XSAVE size now takes two CPUIDs (leaves 1
   and 0xD; a CPU with XSAVE has leaf 0xD), once per program.
 
+What the triage after SG5 found (TB, 2026-10-17; for SGR):
+
+- **A raise on a handler's way in or out.** From `EXC_LEAVE` to the
+  handler, and from its return to the resume, the thread is in the layer
+  with nothing marking it: a raise there (the sampler's next SIGPROF,
+  sent the moment the last was handled) ran the handler with the layer's
+  registers, and could leave the process killed for a bad vector state.
+  posixtest's sampler case failed so once under a slow stick
+  (`signal.c`: a run not in the loop). Now sigfault.c's `struct sig_tail`
+  marks the run (`in`), `call_handler` clears it for the handler alone, a
+  raise that finds it set notes `again` and goes on at once, and the way
+  out takes the signal on the frame it resumes. The resume is sigentry.S's
+  `__jam_sig_resume`: it clears the mark and looks at `again` before its
+  system call; a raise inside it also raises the thread again, which
+  comes once the frame is resumed (at the next interrupt, as a raise
+  inside a quiet call does). posixtest widens the window with a test hook
+  (calls.h's `lx_sig_test_way_out`) and sends 200 the sampler's way.
+- **A handler that forks** on a raise's or a fault's frame: in the child
+  the frame is the parent's thread's, which `exception_done` refuses ("a
+  frame that isn't this thread's"); a frame made before the process's
+  last fork is resumed by `__jam_sig_resume` in user mode (XRSTOR, the
+  registers, a jump through memory). libc-test's `regression/raise-race`
+  lost children so, now and then; posixtest forks in a raised handler.
+- **An ending thread** cleared its thread-local record pointer only after
+  putting the record on the spare list and giving `sig_lock`: a thread
+  started in between could take it while a raise to the ending one read
+  it. Cleared under the lock now.
+- **Cost**: SG5's signal section takes about 5 s more than before it,
+  mostly 400 raises to threads in quiet calls, each waiting for a tick;
+  `tools/usb-test.sh` (the whole init run in one boot, 146 of its 150 s
+  before SG5) now has the init run's own 300 s cap.
+
 ## Where things stand
 
 - **The kernel.** Every exception from ring 3 lands in `trap_dispatch`

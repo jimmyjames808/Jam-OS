@@ -854,7 +854,9 @@ wait for FL1b's fork (finding 1). The skip list itself is left to the rerun.
   `uc_put_int` is the int answer of many ioctls and calls.
 - **The fault path.** sig_fault (sigfault.c) first asks `uc_fault`
   (ucopy.c): a page fault (vector 14, any status: Linux's `EFAULT` for a
-  truncated file's page too) or a general protection fault (13: an address
+  truncated file's page too; since triage TB, `EIO` for a page its pager
+  failed, as the kernel's own copies say and `write()` returns, so
+  posix-mmap-test's pull case gets `EIO` again) or a general protection fault (13: an address
   that isn't one) at a table line moves RIP to the fixup and `EXC_RESUME`s
   in the kernel's window, before any signal logic: it works with no handler
   installed, on any thread (the signal thread too), and touches only the
