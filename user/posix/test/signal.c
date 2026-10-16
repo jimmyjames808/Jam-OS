@@ -25,8 +25,10 @@
  *     within 1 ms, each within 10 ms), on its alternate stack, with RIP
  *     inside the loop and RBP its frame (V8's profiler); 10,000 SIGPROF
  *     from a sampler thread, each once the last was handled, all handled;
- *     a flood from three threads at once, every handler run with the
- *     loop's registers (none from a handler's way out in the layer);
+ *     200 more with the layer's way out from a handler made long (a test
+ *     hook), every handler run with the loop's registers (none with the
+ *     layer's, from a raise on the way out); a handler that forks, whose
+ *     child goes back to the loop and on;
  *     200 each to a thread making only quiet calls (mmap, munmap) and to
  *     one making plain calls too, all handled; tgkill(SIGURG) whose handler copies the stack from the ucontext's
  *     RSP and wakes the sender on a futex (Chromium's StackCopierSignal),
@@ -42,9 +44,11 @@
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <sys/time.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <ucontext.h>
 #include <unistd.h>
+#include "../sys/calls.h"
 #include "pt.h"
 
 #define ROUNDS 1000
@@ -654,45 +658,77 @@ static void check_busy_profiler(void)
     deflt(SIGPROF);
 }
 
-#define FLOODERS 3
-#define FLOOD_MS 200
+#define WAY_OUT_ROUNDS 200
+#define WAY_OUT_TICKS  200000   /* TSC ticks: some tens of microseconds */
 
-static volatile int flood_stop;
-
-static void *flooder(void *arg)
-{
-    (void)arg;
-    while (!flood_stop && !pthread_kill(target->thread, SIGPROF))
-        ;
-    return NULL;
-}
-
-/* SIGPROF from three threads at once, each sending again at once: most
- * come while the busy thread is on a handler's way out of the layer
- * (signals coalesce, so nothing is counted but where each run was). Every
- * handler run has the loop's registers: one that came on the way out is
- * taken on the frame being resumed, never run with the layer's own
- * registers. Then one more, after the flood, is handled. */
-static void check_busy_flood(void)
+/* The sampler's pattern with the layer's way out from a handler made long
+ * (its test hook waits there after the last look for a signal due), so
+ * the next SIGPROF comes while the thread is on its way out. Each is
+ * handled, and every handler run has the loop's registers: a raise there
+ * is taken on the frame being resumed, never run with the layer's own
+ * registers (the sampler case failed so, once, under a slow stick). */
+static void check_busy_way_out(void)
 {
     handle_busy(SIGPROF, sample, SA_RESTART | SA_ONSTACK);
     struct busy b;
     busy_start(&b, true);
-    pthread_t f[FLOODERS];
-    flood_stop = 0;
-    for (int i = 0; i < FLOODERS; i++)
-        CHECK(pthread_create(&f[i], NULL, flooder, NULL) == 0);
-    nap_ms(FLOOD_MS);
-    flood_stop = 1;
-    for (int i = 0; i < FLOODERS; i++)
-        CHECK(pthread_join(f[i], NULL) == 0);
-    int n = busy_hits[SIGPROF];
-    CHECK(pthread_kill(b.thread, SIGPROF) == 0);
-    CHECK(reaches_soon(&busy_hits[SIGPROF], n + 1, 2000));
-    CHECK(busy_hits[SIGPROF] > 0 && busy_outloop[SIGPROF] == 0);
+    lx_sig_test_way_out(WAY_OUT_TICKS);
+    int i = 0;
+    while (i < WAY_OUT_ROUNDS && !pthread_kill(b.thread, SIGPROF) &&
+           reaches_soon(&busy_hits[SIGPROF], i + 1, 2000))
+        i++;
+    lx_sig_test_way_out(0);
+    CHECK(i == WAY_OUT_ROUNDS);
+    CHECK(busy_outloop[SIGPROF] == 0);
     if (busy_outloop[SIGPROF])
-        printf("posixtest: signal: flood: %d of %d handler runs not in the loop\n",
+        printf("posixtest: signal: way out: %d of %d handler runs not in the loop\n",
                busy_outloop[SIGPROF], busy_hits[SIGPROF]);
+    busy_stop(&b);
+    deflt(SIGPROF);
+}
+
+/* A handler that forks, run on a busy thread by a raise (libc-test's
+ * regression/raise-race forks in a handler): the child returns from it to
+ * the loop, though the kernel made that frame for the parent's thread,
+ * and goes on from there with the loop's registers; then it leaves. */
+static volatile int   forked_child;
+static volatile int   child_regs_ok;
+static volatile pid_t fork_pid;
+
+static void fork_in_handler(int sig, siginfo_t *si, void *uc)
+{
+    (void)si;
+    pid_t p = fork();
+    if (p == 0) {
+        forked_child = 1;
+        child_regs_ok = in_loop(uc);
+        target->stop = 1;   /* the child's copy: its loop ends once it is back there */
+        return;
+    }
+    fork_pid = p;
+    busy_hits[sig]++;
+}
+
+static void *busy_fork_run(void *arg)
+{
+    struct busy *b = arg;
+    busy_begin(b);
+    pt_sig_spin(&b->stop, (void **)&b->frame);
+    if (forked_child)
+        _exit(child_regs_ok ? 0 : 3);   /* the child, back in the loop and out of it */
+    return NULL;
+}
+
+static void check_busy_fork(void)
+{
+    handle_busy(SIGPROF, fork_in_handler, SA_ONSTACK);
+    struct busy b;
+    busy_start_with(&b, true, busy_fork_run, false);
+    CHECK(pthread_kill(b.thread, SIGPROF) == 0);
+    CHECK(reaches_soon(&busy_hits[SIGPROF], 1, 2000));
+    int st = 0;
+    CHECK(fork_pid > 0 && waitpid(fork_pid, &st, 0) == fork_pid);
+    CHECK(WIFEXITED(st) && WEXITSTATUS(st) == 0);
     busy_stop(&b);
     deflt(SIGPROF);
 }
@@ -822,7 +858,8 @@ void pt_signal(char **argv)
     check_timers();
     check_cancel();
     check_busy_profiler();
-    check_busy_flood();
+    check_busy_way_out();
+    check_busy_fork();
     check_busy_calls();
     check_busy_stack_copy();
     check_busy_sigint();

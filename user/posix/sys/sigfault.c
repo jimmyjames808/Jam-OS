@@ -61,6 +61,7 @@
 #include <signal.h>
 #include <string.h>
 #include <ucontext.h>
+#include "calls.h"
 #include "proc.h"
 #include "sig.h"
 
@@ -414,6 +415,21 @@ static bool raised_on_way_out(const struct exc_frame *f)
     return true;
 }
 
+static volatile uint64_t way_out_ticks;   /* posixtest's wait (calls.h) */
+
+void lx_sig_test_way_out(uint64_t ticks)
+{
+    way_out_ticks = ticks;
+}
+
+/* posixtest's wait on the way out, after the last look for a signal. */
+static void way_out_wait(void)
+{
+    uint64_t ticks = way_out_ticks;
+    for (uint64_t t0 = __builtin_ia32_rdtsc(); ticks && __builtin_ia32_rdtsc() - t0 < ticks;)
+        __builtin_ia32_pause();
+}
+
 /* The way out's last step: f resumed, the thread's `in` as it was before
  * this handler (outer: a fault in a way out goes back into it), by the
  * kernel unless the process forked since f was made (made_at: `forks`
@@ -421,6 +437,7 @@ static bool raised_on_way_out(const struct exc_frame *f)
  * taken first. */
 static void way_out(struct exc_frame *f, uint8_t outer, unsigned made_at, int sig)
 {
+    way_out_wait();
     if (__jam_sig_resume(f, &tail, outer, made_at != forks) > 0) {
         tail.again = 0;
         return;

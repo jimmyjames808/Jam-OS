@@ -21,6 +21,7 @@
 #pragma once
 
 #include <stddef.h>
+#include <stdint.h>
 
 typedef long lx_call(long a, long b, long c, long d, long e, long f);
 
@@ -86,6 +87,12 @@ const char *lx_sysname(long n);
 void   lx_enosys_set(int on);
 unsigned lx_enosys_lines(void);
 size_t lx_enosys_last(char *buf, size_t cap);
+
+/* For posixtest (sigfault.c): a handler's way out waits this many TSC
+ * ticks after its last look for a signal due, before the thread is
+ * resumed (0: no wait), so a raise sent once the handler has run comes
+ * there. */
+void   lx_sig_test_way_out(uint64_t ticks);
 
 /* Clocks and sleeps, and CPU time (time.c). */
 lx_call lx_clock_gettime, lx_clock_getres, lx_clock_settime, lx_clock_nanosleep,
