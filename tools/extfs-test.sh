@@ -127,7 +127,7 @@ sums_seen() {
 
 JAM_FEATURES=none,has_journal,extent,flex_bg,64bit,sparse_super,large_file,huge_file,dir_nlink,extra_isize,metadata_csum,filetype
 LINUX_FEATURES=none,has_journal,ext_attr,resize_inode,dir_index,filetype,extent,flex_bg,sparse_super,large_file,huge_file,dir_nlink,extra_isize,64bit,metadata_csum
-PLAIN_FEATURES=none,has_journal,ext_attr,resize_inode,dir_index,filetype,extent,flex_bg,sparse_super,large_file,huge_file,dir_nlink,extra_isize
+PLAIN_FEATURES=none,has_journal,ext_attr,resize_inode,dir_index,filetype,extent,flex_bg,sparse_super,large_file,huge_file,dir_nlink,extra_isize,metadata_csum
 OLD_FEATURES=none,has_journal,ext_attr,resize_inode,dir_index,filetype,sparse_super,large_file,uninit_bg
 
 # make_volume <file> <MiB> <tree> <label> [<variant>]: an ext volume in
@@ -135,7 +135,7 @@ OLD_FEATURES=none,has_journal,ext_attr,resize_inode,dir_index,filetype,sparse_su
 # Jam OS's one user (uid and gid 1000, so the permission bits that count
 # are the owner's). The variant is mke2fs's: jam4k (default: Jam OS's
 # feature set, 4 KiB blocks), linux4k (Linux's default ext4), linux1k (the
-# same with 1 KiB blocks), plain2k (ext4 without 64bit and checksums, 2 KiB
+# same with 1 KiB blocks), plain2k (ext4 without 64bit, 2 KiB
 # blocks), old2k (ext3's: 2 KiB blocks, block maps, uninit_bg).
 make_volume() {
     truncate -s "$2M" "$1"
@@ -271,7 +271,10 @@ case_basic() {
     : > "$sums"
     sums_add "$tree" hello.txt dir/a.bin dir/b.bin dir/sub/deep.txt sizes/s0 sizes/s1 sizes/s4095 \
         sizes/s4096 sizes/s4097 sizes/s65536
-    for i in $(seq 1 300); do sums_add "$tree" many/f$(printf %03d $i); done   # exttest sums /jam/many
+    # `exttest digest /jam/many`: the SHA-256 of "hash  name" lines in byte order.
+    many=$(cd "$tree/many" && ls | LC_ALL=C sort | while read -r f; do
+        echo "$(sha256sum < "$f" | cut -d' ' -f1)  $f"
+    done | sha256sum | cut -d' ' -f1)
     sb=$(sha "$tree/dir/b.bin")
     s4097=$(sha "$tree/sizes/s4097")
     first=$(printf 'first line\nsecond line\n' | sha256sum | cut -d' ' -f1)
@@ -283,7 +286,7 @@ case_basic() {
         g cat1 cat /jam/hello.txt
         g sum1 sha256sum /jam/hello.txt /jam/dir/a.bin /jam/dir/b.bin /jam/dir/sub/deep.txt
         g sum2 sha256sum /jam/sizes/s0 /jam/sizes/s1 /jam/sizes/s4095 /jam/sizes/s4096 /jam/sizes/s4097 /jam/sizes/s65536
-        g cnt1 exttest sums /jam/many
+        g cnt1 exttest digest /jam/many
         g df1 df
         g mk1 mkdir -p /jam/w/a/b/c
         g cp1 cp /jam/dir/a.bin /jam/w/a1.bin
@@ -308,7 +311,7 @@ case_basic() {
     boot "$name-1" "$out/$name-1.in" "$drive"
     want 1 "^hello from mke2fs" "$run"
     sums_seen "$run"
-    status cnt1 0
+    want 1 "exttest: digest /jam/many: 300 files, sha256 $many" "$run"
     status cp4 0
     status rm2 0
     refused ls3
@@ -566,7 +569,9 @@ case_case() {
     # it says it can't open.
     guest=/jam sums="$out/$name.sums"
     (cd "$tree" && find . -maxdepth 1 -type f | sed 's|^\./||' | while IFS= read -r f; do
-        [ ${#f} -le 250 ] && echo "$(sha256sum < "$f" | cut -d' ' -f1)  /jam/$f"
+        if [ ${#f} -le 250 ]; then
+            echo "$(sha256sum < "$f" | cut -d' ' -f1)  /jam/$f"
+        fi
     done) > "$sums"
     (cd "$tree" && ls -A) > "$out/$name.files"
     o200=$(printf 'o%.0s' $(seq 1 200))
@@ -1025,7 +1030,8 @@ case_foreign() {
     make_volume "$out/$name-d.img" 64 "$out/$name-tree3" jamdata
     j1="$out/$name-j1.img" j2="$out/$name-j2.img"
     make_drive "$j1" "$out/$name-d.img"
-    make_drive "$j2" "$out/$name-d.img"
+    make_volume "$out/$name-g.img" 64 "$out/$name-tree3" jamdata   # another volume: its own UUID
+    make_drive "$j2" "$out/$name-g.img"
     rm -rf "$out/$name"-?.img "$out/$name-tree2" "$out/$name-tree3" "$out/$name-tree5"
     before=$(sha256sum "$stick" "$ldrive" "$j1" "$j2" | cut -d' ' -f1 | tr '\n' ' ')
     guest=/usb0 sums="$out/$name.sums"

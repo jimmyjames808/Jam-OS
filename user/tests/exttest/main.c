@@ -9,6 +9,10 @@
  *                                this reads them as they come. A name
  *                                whose path is over 255 bytes (FS_PATH_MAX)
  *                                is said, not read.
+ *   exttest digest <dir>         one line for a directory of hundreds (the
+ *                                log keeps few lines at a time): the
+ *                                SHA-256 of the lines "<file's hash>  <name>"
+ *                                of its files, names in byte order.
  *   exttest copy <dir> <prefix>  every file of the directory copied to a
  *                                new name, the prefix and the old name; a
  *                                copy that can't be made (a path over 255
@@ -368,6 +372,55 @@ static int cmd_sums(const char *dir)
     return bad;
 }
 
+/* One digest for the whole directory (the log takes few lines at a time): the
+ * SHA-256 of the lines "<hash of the file>  <name>\n" for every file, the
+ * names in byte order. */
+static int cmd_digest(const char *dir)
+{
+    static unsigned order[MAX_NAMES];
+    unsigned count;
+    status_t st = list_files(dir, &count);
+    if (st != OK) {
+        printf("exttest: digest %s: can't list it: %s\n", dir, status_str(st));
+        return 1;
+    }
+    for (unsigned i = 0; i < count; i++) {   /* insertion sort of the names */
+        unsigned j = i;
+        for (; j > 0 && strcmp(names[order[j - 1]], names[i]) > 0; j--)
+            order[j] = order[j - 1];
+        order[j] = i;
+    }
+    struct sha256 all;
+    sha256_init(&all);
+    for (unsigned k = 0; k < count; k++) {
+        char path[FS_PATH_MAX], h[2 * SHA256_BYTES + 1], line[FS_NAME_MAX + 2 * SHA256_BYTES + 4];
+        struct sha256 s;
+        struct jfile f;
+        struct fs_attr a;
+        sha256_init(&s);
+        if (!join(path, sizeof(path), dir, "", names[order[k]]))
+            continue;
+        st = file_open(path, FS_READ, &f);
+        if (st == OK) {
+            st = file_getattr(&f, &a);
+            if (st == OK)
+                st = read_all(&f, a.size, &s);
+            file_close(&f);
+        }
+        if (st != OK) {
+            printf("exttest: digest %s: %s\n", path, status_str(st));
+            return 1;
+        }
+        hex(&s, h);
+        int n = snprintf(line, sizeof(line), "%s  %s\n", h, names[order[k]]);
+        sha256_add(&all, line, (size_t)n);
+    }
+    char h[2 * SHA256_BYTES + 1];
+    hex(&all, h);
+    printf("exttest: digest %s: %u files, sha256 %s\n", dir, count, h);
+    return 0;
+}
+
 /* Every file of dir copied to a new name, prefix and the old one (a name
  * made of bytes over 127 stays what it was). One that can't be made says
  * why and the rest go on. */
@@ -437,8 +490,11 @@ int main(int argc, char **argv)
         return cmd_sparse(argv[2]);
     if (argc == 3 && !strcmp(argv[1], "sums"))
         return cmd_sums(argv[2]);
+    if (argc == 3 && !strcmp(argv[1], "digest"))
+        return cmd_digest(argv[2]);
     if (argc == 4 && !strcmp(argv[1], "copy"))
         return cmd_copy(argv[2], argv[3]);
-    printf("usage: exttest big <path> <MiB> | sparse <path> | sums <dir> | copy <dir> <prefix>\n");
+    printf("usage: exttest big <path> <MiB> | sparse <path> | sums <dir> | digest <dir> | "
+           "copy <dir> <prefix>\n");
     return 2;
 }
