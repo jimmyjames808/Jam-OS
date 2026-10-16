@@ -256,6 +256,20 @@ struct port_packet {
  * it into its neighbour fits even at the cap. */
 #define VMAR_MAX_MAPPINGS 65536u
 
+/* process_get_maps: one mapping of a process's address space (/proc's
+ * maps, stat and status are made from these). */
+struct map_info {
+    uint64_t base;       /* its first byte (page-aligned) */
+    uint64_t len;        /* bytes (page-aligned, > 0) */
+    uint64_t vmo_koid;   /* the VMO mapped */
+    uint64_t vmo_off;    /* the VMO's offset at base */
+    uint64_t resident;   /* pages of it present in the page tables now */
+    uint32_t perms;      /* VMAR_READ | VMAR_WRITE | VMAR_EXEC, as set now */
+    uint32_t flags;      /* 0 */
+};
+/* Entries one process_get_maps fills at most. */
+#define MAP_INFO_MAX 256u
+
 /* jobs ---------------------------------------------------------------------
  * Every process belongs to a job. A job has a limit on each resource below
  * and counts what its processes (and, through them, its child jobs) use
@@ -314,6 +328,7 @@ struct process_info {
     uint32_t mappings;    /* its address space's mappings now (VMAR_MAX_MAPPINGS at
                              most; 0 once it is torn down) */
     uint32_t flags;       /* PROCESS_FLAG_* */
+    uint64_t start_ns;    /* the uptime (clock_get) when it was created */
 };
 /* process_info.flags and proc_stat.flags: its address space has mapped a
  * JIT VMO (vmo_make_jit) since it was made, writable and executable
@@ -351,6 +366,8 @@ struct sys_public_info {
     uint64_t mem_total_pages;   /* pages the kernel manages */
     uint32_t page_size;         /* 4096 */
     uint32_t cpus_online;       /* CPUs running now */
+    uint64_t mem_free_pages;    /* of mem_total_pages, free now (the allocator's lists and
+                                   per-CPU stashes; not the kernel heap's cached objects) */
 };
 
 /* Thread priorities: 0 (lowest) .. 31. User threads start at

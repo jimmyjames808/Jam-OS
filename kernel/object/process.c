@@ -98,6 +98,7 @@ struct process {
     uint32_t            nthreads;                /* (L) started threads that haven't left */
     uint64_t            cpu_done;                /* (L) CPU time (TSC) of the threads that left */
     uint32_t            pid;                     /* its small id (pid_space), fixed */
+    uint64_t            start_ns;                /* uptime when it was created, fixed */
     struct list_node    threads;                 /* (L) struct uthread, every one not destroyed */
     char                name[PROCESS_NAME_MAX + 1]; /* NUL-terminated */
     /* debug_write ("process output" lock): the current, unfinished line and
@@ -225,7 +226,7 @@ status_t process_create(struct job *job, const char *name, struct process **out)
     mutex_init(&p->setup, "process setup");
     spin_init(&p->out_lock, "process output");
     p->out_tokens = OUT_BURST;
-    p->out_refill_ns = uptime_ns();
+    p->start_ns = p->out_refill_ns = uptime_ns();
     p->state = PROCESS_NEW;
     list_init(&p->threads);
     copy_name(p->name, sizeof(p->name), name);
@@ -300,6 +301,7 @@ void process_get_info(struct process *p, struct process_info *out)
     punlock(p, f);
     out->koid = p->base.koid;
     out->pid = p->pid;
+    out->start_ns = p->start_ns;
     out->cpu_ns = tsc_to_ns(process_cpu_tsc(p));
 }
 
