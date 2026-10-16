@@ -1,0 +1,31 @@
+# A stick's boot with a FAT /data and no Jam OS drive (tools/layout-test.sh's
+# stick case): no /jam, no views of it; /tmp is init's ext volume in memory
+# with a pager of its own (docs/M13.6-PLAN.md's DB1 notes), so a file in it
+# is mapped (posixtest's mmap-tmp); no /pkg, as FAT has no views.
+# As in cmds.txt, a marker built from $T (s) never appears in the typed line.
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+seen 60 init: /tmp: in memory
+seen 60 a pager of
+seen 60 init: no /pkg: /data/pkg can't be a view (its volume is FAT)
+send T=s
+wait {prompt}
+
+send ls /jam; echo st-$T=$?
+wait st-s=1
+send ls /pkg; echo st2-$T=$?
+wait st2-s=1
+send mount | grep -c ^/usr | grep ^0$ && echo ok-$T-nousr
+wait ok-s-nousr
+send write /tmp/t.txt tmp-$T && cat /tmp/t.txt
+wait tmp-s
+
+# ---- a file in the memory /tmp mapped ------------------------------------------------------
+send posixtest mmap-tmp; echo mt-$T=$?
+wait 120 posixtest: mmap-tmp: ok
+wait mt-s=0
+wait {prompt}
+
+send reboot -f
+wait reboot: resetting

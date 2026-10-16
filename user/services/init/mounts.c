@@ -12,8 +12,10 @@
  * Mounts flagged MOUNTS_TEST are the test suite's mock disks (volumes'
  * test_disk): init leaves them alone. /boot is init's own: volumes can't
  * put something else there. /jam, the Jam OS drive's ext volume, brings
- * its own views with it (/usr, /var, /home: jammounts.c); /tmp follows /jam
- * and /data in shell mode (tmp.c).
+ * its own views with it (/usr, /var, /home: jammounts.c); /tmp and /pkg
+ * follow /jam and /data in shell mode (tmp.c). Booted from the Jam OS
+ * drive, volumes sends its data partition twice, as /data and as /jam: one
+ * channel, two names, and everything here takes them as two mounts.
  *
  * A watch that closes while volumes still runs (volumes drops a watcher
  * that falls MOUNTS_UNREAD_MAX events behind) is made again at once, and

@@ -21,8 +21,9 @@
 #            of that drive alone: the kernel names its GPT disk GUID as the
 #            boot disk (from the loader) and its command line is the stick
 #            run's, /esp and /data are the drive's (/data ext, bin/extfs),
-#            /data/etc/ has the files, the ESP's build is the stick's, /tmp
-#            is a view of /data/tmp
+#            /data/etc/ has the files, the ESP's build is the stick's, the
+#            data partition is /jam too (M13.6's DB1), /tmp a view of
+#            /jam/tmp and /pkg of /jam/pkg
 #   again    `install` over a Jam OS drive: after the first install a file
 #            is put on its /data and /etc/probe.txt changed, and on the host
 #            the ESP gets an old build, a spare menu and an update's
@@ -216,12 +217,17 @@ nvme_in() {
         echo "send sha256sum /esp/boot/prev-bootfs.img"
         echo "wait $(sha "$dir/ref-bootfs.img")"
         echo "wait {prompt}"
-        # /tmp: a view of the drive's ext /data (there is no /jam on this boot)
-        echo "seen 60 init: /tmp: a view of /data/tmp"
+        # /data is /jam too on this boot (M13.6's DB1): /tmp a view of /jam/tmp
+        echo "seen 60 init: /jam mounted"
+        echo "seen 60 init: /tmp: a view of /jam/tmp"
+        echo "seen 60 init: /pkg: a view of /jam/pkg, read-only"
         echo "send T=x"
         echo "wait {prompt}"
         echo "send write /tmp/t.txt in-tmp-\$T && cat /data/tmp/t.txt"
         echo "wait in-tmp-x"
+        echo "wait {prompt}"
+        echo "send cat /jam/etc/sub/deep.txt"
+        echo "wait deep file"
         echo "wait {prompt}"
         [ -z "${2:-}" ] || printf '%s\n' "$2"
         end_in
@@ -355,7 +361,8 @@ nvme_log_checks() {
         fail "$1: volumes didn't say the drive is the boot disk"
     grep -aq "partition 1 -> bin/fat at /esp, read-only" "$log" || fail "$1: no /esp from the drive"
     grep -aq "partition 2 -> bin/extfs at /data (OK)" "$log" || fail "$1: no ext /data from the drive"
-    grep -aq "init: /tmp: a view of /data/tmp" "$log" || fail "$1: /tmp isn't a view of the drive's /data/tmp"
+    grep -aq "its data partition is /jam too" "$log" || fail "$1: the drive's data partition isn't /jam too"
+    grep -aq "init: /tmp: a view of /jam/tmp" "$log" || fail "$1: /tmp isn't a view of the drive's /jam/tmp"
     got=$(loader_line "$log")
     [ -n "$got" ] && [ "$got" = "$(loader_line "$2")" ] ||
         fail "$1: the command line isn't the stick run's (the installed menu's): '$got'"

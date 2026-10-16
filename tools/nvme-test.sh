@@ -112,11 +112,13 @@
 #            (made by Linux's mke2fs, Jam OS's feature set, on the test PC)
 #            beside the Windows-like drive: volumes starts bin/extfs on it,
 #            /jam read-write; init mounts /usr, /var, /home and /tmp as
-#            views of it (/tmp in memory until /jam comes: U7b) and empties
-#            the old /tmp; files go in and come back through both names;
+#            views of it (/tmp in memory until /jam comes: U7b), and /pkg
+#            as a read-only view of /jam/pkg (DB1), and empties the old
+#            /tmp; files go in and come back through both names;
 #            `disks` says (ext); then `install` over the drive (its data
 #            partition held writable for init and let go: /jam and its
-#            views gone and back, /tmp in memory meanwhile); afterwards
+#            views gone and back, /tmp in memory and /pkg on the stick's
+#            /data meanwhile, none on a FAT one); afterwards
 #            e2fsck finds the volume clean (its journal replayed first) with
 #            the files in it, the ESP holds the build, and the Windows-like
 #            image is unchanged
@@ -767,6 +769,7 @@ s5_jam() {
         echo "seen 60 init: /jam mounted"
         echo "seen 60 init: /jam: mounted as views: /usr /var /home"
         echo "seen 60 init: /tmp: a view of /jam/tmp"
+        echo "seen 60 init: /pkg: a view of /jam/pkg, read-only"
         echo "send mount | grep /jam | grep -c read-write | grep ^1\$ && echo ok-\$T-rw"
         echo "wait ok-x-rw"
         # (the shell's grep takes one plain pattern, anchors allowed: no -E)
@@ -789,6 +792,8 @@ s5_jam() {
         echo "wait in-home"
         echo "send write /jam/new.txt written-to-jam && cat /jam/new.txt"
         echo "wait written-to-jam"
+        echo "send write /jam/pkg/p.txt in-pkg-\$T && cat /pkg/p.txt"
+        echo "wait in-pkg-x"
         # (ls shows a directory with a / after it)
         echo "send ls /jam | grep -c ^docs/\$ | grep ^1\$ && ls /jam | grep -c ^new.txt\$ | grep ^1\$ && echo ok-\$T-ls1"
         echo "wait ok-x-ls1"
@@ -824,6 +829,8 @@ s5_jam() {
         echo "wait ok-x-back2"
         echo "send mount | grep -c ^/tmp | grep ^1\$ && echo ok-\$T-back3"
         echo "wait ok-x-back3"
+        echo "send cat /pkg/p.txt"
+        echo "wait in-pkg-x"
         echo "send write /tmp/t2.txt again-\$T && cat /jam/tmp/t2.txt && cat /jam/usr/bin/hi.txt"
         echo "wait again-x"
         echo "wait in-usr"
@@ -846,6 +853,10 @@ s5_jam() {
         "init: /tmp: in memory" \
         "volumes: /jam is read-write and a mount again \(OK\)" \
         "installed on nvme" || ok=0
+    # /pkg followed /jam: to the stick's /data meanwhile (none on a FAT one), and back (DB1)
+    [ "$(grep -ac "init: /pkg: a view of /jam/pkg" "$log")" -ge 2 ] &&
+        grep -aqE "init: (/pkg: a view of /data/pkg|no /pkg: /data/pkg can't be a view)" "$log" ||
+        { echo "nvme-$c: FAIL: /pkg didn't follow /jam away and back"; ok=0; }
     # /tmp went to memory while the installer held /jam, and came back to /jam/tmp, not emptied again
     [ "$(grep -ac "init: /tmp: a view of /jam/tmp" "$log")" -ge 2 ] && [ "$(grep -ac "emptied:" "$log")" -eq 1 ] ||
         { echo "nvme-$c: FAIL: /tmp didn't come back to /jam/tmp once, emptied once"; ok=0; }
@@ -858,7 +869,7 @@ s5_jam() {
         { echo "nvme-$c: FAIL: e2fsck (see $dir/e2fsck-1.txt)"; ok=0; }
     e2fsck -fn "$dir/data.out" > "$dir/e2fsck-2.txt" 2>&1 ||
         { echo "nvme-$c: FAIL: the volume isn't clean after its journal was replayed (see $dir/e2fsck-2.txt)"; ok=0; }
-    for f in docs/hello.txt new.txt tmp/t2.txt usr/bin/hi.txt etc/probe.txt; do
+    for f in docs/hello.txt new.txt tmp/t2.txt usr/bin/hi.txt etc/probe.txt pkg/p.txt; do
         debugfs -R "cat /$f" "$dir/data.out" > "$dir/got.txt" 2> /dev/null
         [ -s "$dir/got.txt" ] || { echo "nvme-$c: FAIL: /$f isn't on the data partition"; ok=0; }
     done

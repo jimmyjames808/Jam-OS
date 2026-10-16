@@ -19,7 +19,8 @@
  * mark.c, and its driver's), which is /jam, and a test disk's; someone else's ext volume is
  * read-only always, and `mount -w` on it is refused (Q9 of
  * docs/M13.6-PLAN.md). The boot disk's own data partition, ext or FAT, is
- * /data as before.
+ * /data as before; booted from the Jam OS drive, its ext data partition is
+ * /jam too (one volume, two names: DB1).
  *
  * A service's `fs` channel is volumes', both ends, from its first start
  * until it is retired, given up on or stopped in order (a remount): each
@@ -391,9 +392,11 @@ static bool jam_taken(const struct vol *self)
  * the driver reads as someone else's, a header damaged), read-only
  * otherwise, where the driver would refuse a writable open and the volume
  * would not be mounted at all; a test disk's ext volume is written too
- * (utest drives extfs through it); anyone else's never is. OK, or
- * ERR_NOT_FOUND (said: no bin/extfs), ERR_PEER_CLOSED (b went
- * meanwhile). */
+ * (utest drives extfs through it); anyone else's never is. When the
+ * machine booted from a Jam OS drive, that drive's data partition is
+ * /data and /jam both (disk_mounts), and another Jam OS drive's is
+ * /nvmeN, read-only, as its ESP is (M12.7's Q8). OK, or ERR_NOT_FOUND
+ * (said: no bin/extfs), ERR_PEER_CLOSED (b went meanwhile). */
 static status_t choose_ext(struct vol *b)
 {
     struct disk *d = disk_of(b);
@@ -405,10 +408,12 @@ static status_t choose_ext(struct vol *b)
     b->ext = true;
     b->path = EXTFS_PATH;
     d->fstype[b->part] = VOLDISKS_FSTYPE_EXT;
+    if (!b->other)   /* the boot disk's: /data, and /jam too when it is the Jam OS drive */
+        b->jam = b->part == PART_DATA && disk_jamos_gpt(d);
     if (b->other) {
         uint32_t serial = b->serial;
         b->jam = b->part == PART_DATA && d->bus == DISKS_BUS_NVME && disk_jamos_gpt(d) &&
-                 !jam_taken(b);
+                 !jam_taken(b) && (d->test || !disk_booted_from_drive());
         b->dflt_rw = d->test;
         if (b->jam) {
             uint8_t mode = STORAGE_MODE_OTHER, ro = 1, readable;
@@ -512,6 +517,9 @@ static void start_main(void *arg)
         say(false, "volumes: %s partition %u -> %s at %s%s (%s)", disk_name(d), part + 1,
             b->path, fs_mount_path(b), (other || part == PART_ESP) && !b->rw ? ", read-only" : "",
             status_str(st));
+    if (chose == OK && st == OK && !other && b->jam)
+        say(false, "volumes: %s: the machine booted from this Jam OS drive: its data partition "
+            "is %s too", disk_name(d), d->test ? "/jam-test" : "/jam");
     if (st != OK)
         fs_retire(b);
     if (done)

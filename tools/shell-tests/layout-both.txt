@@ -1,0 +1,47 @@
+# A stick's boot beside an installed Jam OS drive (tools/layout-test.sh's
+# both case: the stick's /data FAT, the drive's data partition ext): as
+# before DB1, /data is the stick's and /jam the drive's, two volumes; /jam
+# brings /usr /var /home, /tmp is a view of /jam/tmp and /pkg a read-only
+# view of /jam/pkg (where bin/pkg installs with /jam in); a file in /tmp is
+# mapped (posixtest's mmap-tmp).
+# As in cmds.txt, a marker built from $T (b) never appears in the typed line.
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+seen 60 init: /jam mounted
+seen 60 init: /jam: mounted as views: /usr /var /home
+seen 60 init: /tmp: a view of /jam/tmp
+seen 60 init: /pkg: a view of /jam/pkg, read-only
+send T=b
+wait {prompt}
+
+# ---- two volumes ----------------------------------------------------------------------------
+send write /data/s.txt stick-$T && cat /data/s.txt
+wait stick-b
+send cat /jam/s.txt; echo st-$T=$?
+wait st-b=1
+send write /jam/d.txt drive-$T && cat /jam/d.txt
+wait drive-b
+send cat /data/d.txt; echo st2-$T=$?
+wait st2-b=1
+
+# ---- the views and /pkg ---------------------------------------------------------------------
+send write /var/v.txt var-$T && cat /jam/var/v.txt
+wait var-b
+send write /tmp/t.txt tmp-$T && cat /jam/tmp/t.txt
+wait tmp-b
+send write /jam/pkg/p.txt pkg-$T && cat /pkg/p.txt
+wait pkg-b
+send write /pkg/q.txt q; echo st3-$T=$?
+wait st3-b=1
+
+# ---- a file in /tmp mapped ----------------------------------------------------------------
+send posixtest mmap-tmp; echo mt-$T=$?
+wait 120 posixtest: mmap-tmp: ok
+wait mt-b=0
+wait {prompt}
+
+send sync
+wait {prompt}
+send reboot -f
+wait reboot: resetting

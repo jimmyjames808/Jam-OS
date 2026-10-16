@@ -102,6 +102,8 @@ void pt_mmap(char **argv);
 /* Only when asked for (mmap.c): tools/posix-mmap-test.sh's cases. */
 void pt_mmap_big(char **argv);
 void pt_mmap_coherent(char **argv);
+/* ... and tools/layout-test.sh's: the mmap section in /tmp, which must have a pager. */
+void pt_mmap_tmp(char **argv);
 void pt_spawn_data(char **argv);
 void pt_wayland(char **argv);
 void pt_jit(char **argv);          /* MAP_JIT without the power (jit.c) */

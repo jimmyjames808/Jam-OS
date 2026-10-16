@@ -274,6 +274,11 @@ static bool boot_is_gpt(void)
     return false;
 }
 
+bool disk_booted_from_drive(void)
+{
+    return boot_is_gpt();
+}
+
 /* How the log names the disk the machine booted from, and d: "disk id
  * <MBR id>" or "disk GUID <GUID>" (each its own static buffer). */
 static const char *boot_ident(void)
@@ -977,6 +982,16 @@ unsigned disk_mounts(struct mount *out)
                                                         (disks[i].test ? MOUNTS_TEST : 0)) };
             snprintf(out[n].path, sizeof(out[n].path), "%s", fs_mount_path(b));
             n++;
+            /* Booted from the Jam OS drive: its ext data partition, /data,
+             * is /jam too, the same channel under a second name (one
+             * volume, one service), so /jam's views come as on a stick's
+             * boot beside the drive (docs/M13.6-PLAN.md's DB1 notes). */
+            if (!b->other && b->jam && n < MAX_VOLS) {
+                out[n] = out[n - 1];
+                snprintf(out[n].path, sizeof(out[n].path), "%s",
+                         disks[i].test ? "/jam-test" : "/jam");
+                n++;
+            }
         }
     }
     return n;

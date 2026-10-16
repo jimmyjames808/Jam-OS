@@ -1,0 +1,33 @@
+# A stick's boot with an ext /data and no Jam OS drive (tools/layout-test.sh's
+# stickext case): no /jam (the stick keeps its layout: docs/M13.6-PLAN.md's
+# DB1 notes); /tmp is a view of /data/tmp and /pkg a read-only view of
+# /data/pkg, where bin/pkg installs without /jam; a file in /tmp is mapped
+# (posixtest's mmap-tmp).
+# As in cmds.txt, a marker built from $T (e) never appears in the typed line.
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+seen 60 init: /tmp: a view of /data/tmp
+seen 60 init: /pkg: a view of /data/pkg, read-only
+send T=e
+wait {prompt}
+
+send ls /jam; echo st-$T=$?
+wait st-e=1
+send write /data/pkg/p.txt pkg-$T && cat /pkg/p.txt
+wait pkg-e
+send write /pkg/q.txt q; echo st2-$T=$?
+wait st2-e=1
+send write /tmp/t.txt tmp-$T && cat /data/tmp/t.txt
+wait tmp-e
+
+# ---- a file in /tmp mapped ----------------------------------------------------------------
+send posixtest mmap-tmp; echo mt-$T=$?
+wait 120 posixtest: mmap-tmp: ok
+wait mt-e=0
+wait {prompt}
+
+send sync
+wait {prompt}
+send reboot -f
+wait reboot: resetting
