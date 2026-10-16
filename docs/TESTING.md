@@ -279,6 +279,10 @@ part; a new case lands in the `except` part, and when a part passes about
 a third of the time: 12 CPUs at the default `QEMU_SMP=4`, but 24 of the 26
 at `QEMU_SMP=8`, which waits for an almost idle PC (and holds back the
 runs queued behind it): at 8 CPUs run the one-boot run instead.
+`INIT_TEST_JOBS=n` runs at most n parts at once, in rounds (the same
+boots; 8 CPUs for 2, about 90 s): `remote-test.sh` sets it itself when a
+long claim, Chromium's build, leaves the PC too little for all three
+([the CPU budget](#another-machine-for-the-tests), `--shrink`).
 
 ### Another machine for the tests
 
@@ -362,7 +366,7 @@ use and starts when that fits beside what is running:
 | Command | Costs |
 |---|---|
 | a QEMU run | `QEMU_SMP` CPUs (4 if unset, as `qemu-test.sh`) and `QEMU_MEM` of memory (2 GB if unset); `QEMU_SMP=8 ... kt8` is 8 |
-| a script that boots several at once | the total: `nvme-driver-test.sh` one boot for each case (6 by default, so 24 CPUs), `init-test.sh` one for each part of `boot/init.cfg` (3, so 12 CPUs), `ports-test.sh` `PORTS_TEST_JOBS` (3) at a time or the ports given if fewer; `wl-port-test.sh` `WL_PORT_JOBS` (3) groups at a time or the groups given if fewer; `update-menu-test.sh` boots `-smp 2` |
+| a script that boots several at once | the total: `nvme-driver-test.sh` one boot for each case (6 by default, so 24 CPUs), `init-test.sh` one for each part of `boot/init.cfg` (3, so 12 CPUs) or `INIT_TEST_JOBS` at a time if fewer, `ports-test.sh` `PORTS_TEST_JOBS` (3) at a time or the ports given if fewer; `wl-port-test.sh` `WL_PORT_JOBS` (3) groups at a time or the groups given if fewer (these three also take fewer parts at once by themselves when a long claim leaves too little: `--shrink`, below); `update-menu-test.sh` boots `-smp 2` |
 | the build before the command | `JAMOS_REMOTE_BUILD_CPUS` (8) CPUs and `make -j` that many: a build is a short burst, but a burst of 16 jobs beside 26 CPUs of QEMU failed timing tests, and waiting for a whole test to end before building would stall everything, so it queues like a small test (a checkout's builds still take turns; one with nothing to do, the tree built last, is skipped and claims nothing) |
 | anything else (`make check`, a checker, a port build) | `JAMOS_REMOTE_LIGHT_CPUS` (2) CPUs and `JAMOS_REMOTE_LIGHT_MEM_MB` (1024): say more for a heavy one, `JAMOS_REMOTE_LIGHT_CPUS=12 tools/remote-test.sh ...` |
 
@@ -374,7 +378,21 @@ needs 4 CPUs, 2.0 GB)` (again every 2 minutes) and `running with 24 of 26
 CPUs in use (after 41 s)` when it starts. A small command may start ahead
 of an older one that doesn't fit yet, but once the older has waited 60 s
 (`JAMOS_REMOTE_AGE`) nothing starts ahead of it, so a big run is not
-starved by a stream of small ones.
+starved by a stream of small ones (only if starting first would keep the
+older one from fitting: an older run that would still fit after the younger
+started is not waited for, so one stuck on something other than the budget,
+an older copy of the script on the PC, say, holds no one up).
+**Except a run that cannot fit however
+long the others take**: a long claim (below) holds part of the budget for
+hours, and a run whose cost plus the long claims' is over the CPUs, the
+memory or the slots (the init run's 12 CPUs beside the Chromium build's 16)
+used to hold every younger run behind it for as long (the queue stood still
+for 3.5 hours on 2026-10-15). Now it is told at once (`waiting: this run
+needs 12 CPUs, 6.0 GB, but at most 10 CPUs, 8.0 GB can be free while the
+long claim holds 16 CPUs, ...: it starts when that ends and the runs that
+fit go ahead of it`), does not count in the rule above, and starts when the
+long claim ends. For a run that is made of parts, no waiting at all: see
+`--shrink` below.
 
 **Fewer QEMUs for a while** (the owner is training on the PC, say): one
 variable, `JAMOS_REMOTE_CPUS=12` in the environment of whoever launches the
@@ -385,22 +403,64 @@ stopped.
 
 **A long claim** (Chromium's build, hours: [CR-PLAN](CR-PLAN.md#15-the-build-on-the-pc)):
 `remote-slots.py --detach <log> <cpus> <mem_mb> <command>` waits for its
-turn like any command, then starts the command in the background (a session
-of its own, its output in `<log>`), prints `started <pid>` and returns, so
-the ssh session that asked can end. The command holds its CPUs and memory
-for as long as it runs; the tests share what is left (with the build's
-default claim of 10 CPUs and 12 GB, 16 CPUs and 8 GB), so they shrink
-rather than overcommit the machine's memory. `tools/cr/build.sh start` is
-its user.
+turn like any command, then starts the command in the background (a
+governor process of its own, in a session of its own, with the command's
+output in `<log>`), prints `started <pid>` and returns, so the ssh session
+that asked can end. The command holds its CPUs and memory for as long as it
+runs; the tests share what is left (with the build's default claim of 10
+CPUs and 12 GB, 16 CPUs and 8 GB), so they shrink rather than overcommit
+the machine's memory. `tools/cr/build.sh start` is its user.
 
-**A crashed client leaks nothing.** Each running command holds an `flock` on
-a file of its own in `~/work/.cpu/run/`, which the kernel drops when the
-holder (and any process it left behind) is gone; the next caller finds
-an unlocked file and removes it. `python3 tools/remote-slots.py --status`
-(on the PC, in a checkout's directory) lists what runs and waits. The host
-test `tools/remote-slots-test.sh` (a fake lock directory, about 30 s, no PC)
-checks the accounting, the oversized run, the crashed holders, the
-fairness, the costs and the long claim.
+**`--shrink`: a run made of parts takes fewer while a long claim runs.**
+`remote-test.sh` gives `remote-slots.py` how to run fewer parts at once
+(`--shrink INIT_TEST_JOBS:4:2048:3`: three parts of 4 CPUs and 2048 MB each,
+the variable that says how many run at once) for `init-test.sh`
+(`INIT_TEST_JOBS`: its three boots, in rounds of that many),
+`ports-test.sh` (`PORTS_TEST_JOBS`) and `wl-port-test.sh`
+(`WL_PORT_JOBS`). When all parts would never fit beside the long claims,
+the claim is for as many as do (at least one), the command starts with the
+variable set, and the run says so (`takes INIT_TEST_JOBS=2 part(s) at a
+time (8 CPUs, 4.0 GB) so that it fits`). The same boots run, in two rounds
+instead of one (the init run about 90 s instead of 45); a run that fits is
+not changed. Set the variable yourself (`INIT_TEST_JOBS=1`, in the runlist
+line) to ask for fewer parts at once.
+
+**A claim lives and dies with the process that runs the command (the
+"governor"), nothing else.** Each running command has a file in
+`~/work/.cpu/run/` with an `flock` held by its governor (`remote-slots.py`)
+alone, not by what the command starts. The command runs in a session of its
+own with `JAMOS_CLAIM=<id>` in its environment, which everything it starts
+inherits, a QEMU or a serial feeder that made a session of its own too.
+- The command ends: the governor kills every process still carrying the id
+  (`the command left 2 process(es) running: killed them`), then ends the
+  claim. A QEMU hung by a cancelled run can no longer keep its CPUs for
+  hours (as on 2026-10-15/16, when an `flock` that every leftover process
+  shared did).
+- A cancel (`pc-batch.sh cancel`, ^C: `remote-test.sh` traps SIGTERM, SIGINT
+  and SIGHUP, ends its ssh and asks the PC, in one short ssh, to SIGTERM the
+  governor named in `~/work/.runs/<run id>`) reaches the command's whole
+  process group; what is still there after `JAMOS_REMOTE_KILL_GRACE` (10) s
+  is killed.
+- A governor that dies without a word (`kill -9`, the PC's WSL ending it)
+  leaves a file nobody holds: the next caller kills the processes carrying
+  its id (`the run of pid 123 (...) is gone: killed the 2 process(es) it
+  left`) and removes the file. A waiting run whose client is gone, when its
+  stderr is closed, gives up its place at its next "waiting" line (2
+  minutes).
+- A process that clears its environment escapes the sweep (it keeps only
+  itself). A governor that lives on although its client is gone (an ssh
+  session the PC's sshd still thinks open after the Mac slept) is not
+  noticed: setting `ClientAliveInterval 30` and `ClientAliveCountMax 4` in
+  the PC's `sshd_config` makes sshd end such sessions in two minutes.
+
+`python3 tools/remote-slots.py --status` (on the PC, in a checkout's
+directory) lists what runs and waits with each governor's pid, age and
+command (`long` marks a long claim, `GONE` a claim whose governor died). The
+host test `tools/remote-slots-test.sh` (a fake lock directory, about 55 s,
+no PC) checks the accounting, the oversized run, the crashed and cancelled
+governors and what they leave, the deadlock (a 16-CPU long claim, a 12-CPU
+waiter, 4-CPU runs that must start) beside the fairness rule for a run that
+does fit, `--shrink`, the costs and the long claim.
 
 The machine: Windows with its OpenSSH server (a key login), and WSL2's
 Ubuntu 24.04 behind `wsl` with:
@@ -1328,9 +1388,9 @@ matters `QEMU_XHCI`) pass through.
 | `tools/net-vlan-test.sh <outdir> [21\|none]` | the network rule over every path that transmits ([ARCHITECTURE](../ARCHITECTURE.md#networking)); with `none`, one boot in the untagged mode (`net-untagged`: the same script with `net` saying untagged, the peer and the pcap with `--vlan none`: every frame untagged, any tag fails); otherwise two boots with QEMU's e1000e and the peer (`--netlog`, `--update` serving this build, `--ntp` with the Mac's time, `--ping 10.2.21.100`, `--noise 5`, and its TCP relay: `--tcp-relay` 8000 to `tools/httptest.py` and 5201 to `tools/speed.py server`, `--tcp-forward` a Mac port to the guest's 8080), only `net.host = 10.2.21.174` and a 64 KiB `served.bin` on the stick: `net-vlan` (`net-vlan.txt`: the DHCP lease, netlog, `host one.one.one.one`, `ping mac.jam`, `ping 1.1.1.1`, `update -n` (checked by init, not loaded), `fetch` of `small.txt` into a pipe, `serve /data/served.bin` fetched by curl on the Mac (its bytes must be the file's), a 1 s `speed` sending, sntp setting the clock from the gateway, netstack answering ARP and the peer's pings; the peer's and the pcap's checks, then the pcap's frames counted per path: ARP, DHCP, DNS, echo requests, echo replies, netlog, update, SNTP, fetch, serve and speed must each have sent at least one, none may be from another path, and the peer must have seen exactly the pcap's frames) and `net-vlan-off` (`net-vlan-off.txt`: a `vlan=off` boot with the same commands: not one frame (the peer's `--expect-none` and the pcap's), the driver's "no VLAN" line and nothing touched, `net` with no card, `host` and `ping` with no DNS server or route, `update` with no address, `fetch`, `serve` and `speed` giving up on an address that never comes, no lease, no netlog file). A mode that is the build's default (build/build.txt's `net` line) boots with no `vlan=` word and the kernel must say `(the build's default)`; the other gets the word: run both modes to cover both. About 1 minute each (QEMU, 2 CPUs, 2026-10-02: about 43000 frames in the VLAN run, 35000 of them `speed`'s) |
 | `tools/sntp-test.sh <outdir>` | bin/sntp end to end, three boots with QEMU's e1000e, the RTC at 2026-01-15 and the peer's SNTP server (`--ntp`: 2031-02-27 from its start): `sntp` (`sntp.txt`: the gateway asked, each answer after a forged one (`--ntp-forge`: the origin a bit off, a year later) that is said to be ignored, the five-year step confirmed by a second reply, `date -u` 2031, `date -r` "set from the network", `date -z` keeps it, sntp restarted moves it under a second, devmgr restarted and init keeps the network's time); checked afterwards: the kernel's set near the peer's time, never the forged year; `sntp-name` (`ntp.server = router.jam`, through `/svc/dns`); `sntp-off` (`ntp = off`: no sntp, not one SNTP request, the RTC's date). About 3 minutes |
 | `tools/ping-test.sh <outdir>` | the shell's `net` and `ping` (`net.txt`) with QEMU's e1000e and the network peer: `ping 1.1.1.1` answered through the gateway, Ctrl+C, `net stats` ([netstack](#netstack)); then the same commands as programs on the same stick (`sysbox-net.txt`) |
-| `tools/remote-slots-test.sh` | the CPU budget on the test machine ([above](#another-machine-for-the-tests)) against a fake lock directory, no PC, about 30 s: the costs of each kind of command; 6 commands of 3 CPUs on a budget of 8 never more than 2 at once; a command bigger than the budget alone; a holder killed (`kill -9`) with and without its command leaks nothing, a dead governor whose command lives still counts; an old waiter is not passed by a younger small one; `JAMOS_REMOTE_SLOTS`, the budget file, `--status`, the exit status; a `--detach` claim returns at once, holds its CPUs while its command runs (the others wait), logs its output and ends with the command; prints PASS |
+| `tools/remote-slots-test.sh` | the CPU budget on the test machine ([above](#another-machine-for-the-tests)) against a fake lock directory, no PC, about 55 s: the costs of each kind of command (with the `--shrink` spec of the scripts that have parts); 6 commands of 3 CPUs on a budget of 8 never more than 2 at once; a command bigger than the budget alone; a holder killed (`kill -9`) with and without its command leaks nothing, and a dead governor's command (and a process it left in a session of its own) is killed by the next caller, the CPUs freed at once; a command that leaves such a process has it killed when it ends; a cancelled governor (SIGTERM) takes its tree down, a command that ignores SIGTERM after `JAMOS_REMOTE_KILL_GRACE`, one that ends on it keeps its own status; an old waiter is not passed by a younger small one, unless it would still fit after that one started (a stuck waiter holds no one up); the 2026-10-15 deadlock (a 16-CPU long claim, a 12-CPU waiter told at once that it can't fit, 4-CPU runs that start, the 12-CPU run after the long claim ends, and an 8-CPU run that does fit keeps its place); `--shrink` takes 2 of 3 parts beside the long claim and none off a run that fits; `JAMOS_REMOTE_SLOTS`, the budget file, `--status` (pid, age, command, a dead governor's `GONE`), the exit status; a waiting run whose stderr is closed gives up (141); a `--detach` claim returns at once, holds its CPUs while its command runs (the others wait), logs its output, ends with the command and, made inside another claim, outlives it; prints PASS |
 | `tools/pc-batch-test.sh` | `tools/pc-batch.sh` ([Running tests on the PC](#running-tests-on-the-pc)) with a stand-in for remote-test, no PC, about 25 s: start returns at once, a short wait says "not yet" (124), the table (PASS, FAIL with its failure line and log, rerun-PASS, the queue time), `VAR=value` words with and without `env`, one copy then every run without one, bad runlists refused, a PC that doesn't answer tried twice, a run that finds it gone run once more (a test's own exit 3 not), the runs started `PC_BATCH_STAGGER` apart and no more than `PC_BATCH_JOBS` out at once, a `KTESTS=0` run's own build, cancel; prints PASS |
-| `tools/remote-test-test.sh` | `tools/remote-test.sh`'s ssh handling ([Another machine for the tests](#another-machine-for-the-tests), "Dropped connections") with a stand-in for ssh, no PC, about 5 s: a session lost after the login while the command waits for the budget is started again (same run id, up to `JAMOS_REMOTE_REQUEUE` times, then exit 255), one lost after the command started is not, the command's own exit status (5) comes back once, a login cut twice is tried again by `ssh-retry.sh`, keepalives on the session, no temp files left; prints PASS |
+| `tools/remote-test-test.sh` | `tools/remote-test.sh`'s ssh handling ([Another machine for the tests](#another-machine-for-the-tests), "Dropped connections") with a stand-in for ssh, no PC, about 5 s: a session lost after the login while the command waits for the budget is started again (same run id, up to `JAMOS_REMOTE_REQUEUE` times, then exit 255), one lost after the command started is not, the command's own exit status (5) comes back once, a login cut twice is tried again by `ssh-retry.sh`, keepalives on the session, a cancel (SIGTERM) ends the session's ssh at once and asks the PC in one more ssh to end the run by its pid file (exit 143), `init-test.sh`'s `--shrink` spec and `INIT_TEST_JOBS` reach the PC's script, no temp files left; prints PASS |
 | `tools/ssh-retry-test.sh` | `tools/ssh-retry.sh` ([Another machine for the tests](#another-machine-for-the-tests), "Dropped connections") with a stand-in for ssh, no PC, about 6 s: a login cut by the server (kex_exchange_identification, reset, closed) is tried again up to 6 times with the piped-in script intact, nothing there ("refused", "timed out") 3 times, and never again: "Permission denied", a reset after the login ("connection lost after login"), a remote command that exits 255 or 7; the waits double with up to half as much again; `SSH_RETRY_TRIES=1` turns it off; the login slots (8 helpers, 2 slots: never more than 2 logging in; a dead holder's or a 5-minute-old slot is taken over; `SSH_RETRY_LOGINS=0` makes no lock directory); no temp files left; prints PASS |
 | `tools/rxsoak-test.sh <outdir>` | the receive path over a long run (`rxsoak.txt`, about 4 minutes): the peer floods ~10 000 frames (a trunk port's mix, on VLAN 21 and off it) while it pings every 0.2 s; the late pings must be answered and the guest's own `ping 10.2.21.1` too ([netstack](#netstack)) |
 | `tools/dns-test.sh <outdir>` | bin/dhcp and bin/dns end to end with QEMU's e1000e and the peer's DHCP and DNS servers, two boots ([DHCP and DNS](#dhcp-and-dns-end-to-end)) |
