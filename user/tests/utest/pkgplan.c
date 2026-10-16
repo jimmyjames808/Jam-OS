@@ -304,7 +304,7 @@ bool t_pkgplan_paths(void)
     CHECK_ST(pk_run(&e, &job, why), OK);
     CHECK_ST(pk_db_scan(&e, &db), OK);
     CHECK_ST(pk_db_conflict(&e, &db, &mb, owner, path), ERR_ALREADY_EXISTS);
-    CHECK(!strcmp(owner, "aaa") && !strcmp(path, "share/x/README"));
+    CHECK(!strcmp(owner, "aaa") && !strcmp(path, "share/x/Readme"));   /* the owner's spelling */
     CHECK_ST(pk_db_conflict(&e, &db, &mc, owner, path), OK);
     CHECK_ST(pk_db_conflict(&e, &db, &ma, owner, path), OK);
     pk_db_free(&db);

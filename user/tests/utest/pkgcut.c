@@ -82,21 +82,43 @@ static int where(enum scen s)
     return a == 1 ? 0 : mk_state(&v2) == 1 ? 1 : -1;
 }
 
+/* Every directory the packages' files go in, so that the n-th change of an
+ * operation is the same change whatever the runs before it left (a removal
+ * takes empty directories away, an undo leaves them). */
+static bool prime(void)
+{
+    const struct mkpkg *p[] = { &v1, &v2 };
+    for (unsigned k = 0; k < 2; k++)
+        for (unsigned i = 0; i < p[k]->nfiles; i++) {
+            char dir[300];
+            snprintf(dir, sizeof(dir), "%s/%s", MK_PREFIX, p[k]->files[i].path);
+            for (char *sl = strchr(dir + strlen(MK_MNT) + 1, '/'); sl; sl = strchr(sl + 1, '/')) {
+                *sl = '\0';
+                status_t st = fs_mkdir(dir);
+                CHECK(st == OK || st == ERR_ALREADY_EXISTS);
+                *sl = '/';
+            }
+        }
+    status_t st = fs_mkdir(MK_PREFIX "/db");
+    CHECK(st == OK || st == ERR_ALREADY_EXISTS);
+    return true;
+}
+
 /* Back to the state before the operation, by operations that aren't cut. */
 static bool reset(enum scen s)
 {
     struct pk_env e;
     mk_env(&e);
-    if (where(s) == 0)
-        return true;
-    if (s == S_INSTALL)
-        CHECK_ST(run_op(&e, PKG_OP_REMOVE, &v1), OK);
-    else if (s == S_UPGRADE)
-        CHECK_ST(run_op(&e, PKG_OP_UPGRADE, &v1), OK);
-    else
-        CHECK_ST(run_op(&e, PKG_OP_INSTALL, &v1), OK);
-    CHECK_EQ(where(s), 0);
-    return true;
+    if (where(s) != 0) {
+        if (s == S_INSTALL)
+            CHECK_ST(run_op(&e, PKG_OP_REMOVE, &v1), OK);
+        else if (s == S_UPGRADE)
+            CHECK_ST(run_op(&e, PKG_OP_UPGRADE, &v1), OK);
+        else
+            CHECK_ST(run_op(&e, PKG_OP_INSTALL, &v1), OK);
+        CHECK_EQ(where(s), 0);
+    }
+    return prime();
 }
 
 /* The next boot: init's settle (the journal as it finds it), or bin/pkg's at
@@ -164,12 +186,15 @@ static bool cut_all(enum scen s)
     mk_env(&e);
     if (s != S_INSTALL)
         CHECK_ST(run_op(&e, PKG_OP_INSTALL, &v1), OK);
-    CHECK(count_ops(s, &known, &total));
+    CHECK(prime() && count_ops(s, &known, &total));
     printf("utest: %s: %u changes\n", utest_cur, total);
     for (unsigned n = 1; n <= total; n++) {
         for (int init = 0; init <= 1; init++)
             CHECK(one_cut(s, n, 1, init, &known));
-        CHECK_EQ(outcome[0][n], outcome[1][n]);   /* both settles go the same way */
+        if (outcome[0][n] != outcome[1][n])   /* both settles go the same way */
+            FAIL("cut before change %u (%s): bin/pkg's settle leaves %s, init's %s", n,
+                 known.what[n], outcome[0][n] ? "the new one" : "the old one",
+                 outcome[1][n] ? "the new one" : "the old one");
         if (!strcmp(known.what[n], "write"))
             for (int init = 0; init <= 1; init++)
                 CHECK(one_cut(s, n, 2, init, &known));
@@ -211,7 +236,7 @@ bool t_pkgcut_double(void)
     struct pk_env e;
     mk_env(&e);
     CHECK_ST(run_op(&e, PKG_OP_INSTALL, &v1), OK);
-    CHECK(count_ops(S_UPGRADE, &known, &total));
+    CHECK(prime() && count_ops(S_UPGRADE, &known, &total));
     for (unsigned n = 3; n <= total; n += 4) {
         struct cutter c = { .at = n, .mode = 1 };
         CHECK(reset(S_UPGRADE));
