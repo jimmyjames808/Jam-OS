@@ -51,3 +51,12 @@ bool     fbcon_is_taken(void);
  * owns the screen). For a run whose user space ended before the console
  * took the screen, so its RESULTS are seen. */
 void     fbcon_unquiet(void);
+
+/* ktests only (kernel/test/test_fbcon.c). break_at: what fbcon_force_unlock
+ * and fbcon_go_dark do with the cursor a CPU halted half-way through a
+ * line left at (*x, *y), the cursor after back through x and y, with the
+ * grid's size; the lock is held the ordinary way all through, so a live
+ * kernel's other writers only wait. draw_below: draw the cell one row
+ * below the grid and the one right of it (both must draw nothing). */
+void fbcon_test_break_at(uint32_t *x, uint32_t *y, uint32_t *ncols, uint32_t *nrows);
+void fbcon_test_draw_below(void);
