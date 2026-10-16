@@ -72,7 +72,8 @@ tools/pc-batch.sh wait 14203846            # again until it ends: at most 270 s 
 `wait` returns after at most 270 s (`PC_BATCH_WAIT`) with one progress
 line (exit 124: not finished, call it again) or, at the end, the table
 (exit 0: all passed, 1: one failed): each run's PASS or FAIL, its seconds
-and the seconds it queued for the budget, and for a failure its first
+and the seconds it queued for the budget (its build's turn too, in a
+detached batch), and for a failure its first
 failure lines, its log (`build/batch/<id>/<name>.log`: remote-test's lines
 and the command's) and its output directory. `report [<id>]` prints the
 table again, `cancel [<id>]` stops a batch; `<id>` left out is the newest.
@@ -92,6 +93,49 @@ the tools do about it); a run that finds the PC gone before anything ran
 a test's own exit 3 is not. A run that ends with exit 255 either could not
 log in (the table says so) or lost its ssh connection after it started (it
 may have gone on running there).
+
+**Detached: the PC runs the batch alone** (`start --detach`). Use it when
+the Mac may sleep before the batch ends (the owner closes the laptop for
+the day) or the batch is long (the pre-push pass): without it every run is
+an ssh session from the Mac for its whole length, and a sleeping Mac loses
+every run in flight. The Mac copies the checkout (seconds awake: no
+waiting for the build's turn in the budget), then hands the whole runlist
+to the PC's keeper (`tools/pc-keeper.sh`, the Windows task that keeps WSL
+jobs alive) as one job: `tools/pc-batch-driver.sh` runs each line there
+under the same CPU budget and with exactly what remote-test would run (the
+same build check, so the first run builds and the rest find it built, and
+the same forwarded variables, `JAMOS_TIER` too), and writes each run's status,
+times, log and a copy of its output directories (but disk images) into
+`~/work/.batch/<checkout>/<id>/` on the PC. Once `wait` says "on the PC",
+nothing on the Mac is needed until you collect.
+
+```sh
+tools/pc-batch.sh start --detach --rerun-failed build/runs.txt   # then close the lid
+tools/pc-batch.sh wait 16140212     # hours later: the table, outputs copied back
+```
+
+`wait` and `status [<id>]` look at the PC with one short connection every
+`PC_BATCH_POLL` (30) s (never a session held open); when the batch is over
+they copy every run's output directory back to where the runlist named it
+and print the same table. Collecting again (or a week later: the PC keeps
+a batch 7 days) prints the table without asking the PC. `wait` exits 3 if
+the PC never answered during the call (the batch goes on there; call it
+later). `--rerun-failed` reruns on the PC. `cancel` stops every process
+of the batch on the PC: TERM to the driver and its runs, whose
+`remote-slots.py` governors end their commands and whatever still carries
+their claim (as for any cancelled run: "A claim lives and dies with the
+process that runs the command", below), then KILL to anything of the batch's
+process tree left after 40 s; its claims on the budget go with the
+governors, and the table shows its unfinished runs CANCELLED. A PC reboot mid-batch: the runs in flight show
+as LOST (the driver's lock is gone and it never wrote done), the ones not
+started NOT-RUN; `tools/pc-batch.sh start --detach --resume <id>` runs
+them again on the PC's copy as it is. Logs are under
+`build/batch/<id>/pc/runs/`. One detached batch at a time per checkout
+(`start --detach` refuses a second while the first runs there): don't run
+other PC tests from the checkout until it's over, they would change the
+copy it tests. Batches from different checkouts don't collide (each has
+its own directory and copy). Without a keeper on the PC the hand-off fails
+and every run is NOT-RUN ("no keeper runs on the PC").
 
 One run: `JAMOS_REMOTE=jamos-pc JAMOS_REMOTE_ONLY=1 tools/remote-test.sh
 tools/qemu-test.sh build/t/init init init`. Several calls of your own from
@@ -1390,7 +1434,7 @@ matters `QEMU_XHCI`) pass through.
 | `tools/sntp-test.sh <outdir>` | bin/sntp end to end, three boots with QEMU's e1000e, the RTC at 2026-01-15 and the peer's SNTP server (`--ntp`: 2031-02-27 from its start): `sntp` (`sntp.txt`: the gateway asked, each answer after a forged one (`--ntp-forge`: the origin a bit off, a year later) that is said to be ignored, the five-year step confirmed by a second reply, `date -u` 2031, `date -r` "set from the network", `date -z` keeps it, sntp restarted moves it under a second, devmgr restarted and init keeps the network's time); checked afterwards: the kernel's set near the peer's time, never the forged year; `sntp-name` (`ntp.server = router.jam`, through `/svc/dns`); `sntp-off` (`ntp = off`: no sntp, not one SNTP request, the RTC's date). About 3 minutes |
 | `tools/ping-test.sh <outdir>` | the shell's `net` and `ping` (`net.txt`) with QEMU's e1000e and the network peer: `ping 1.1.1.1` answered through the gateway, Ctrl+C, `net stats` ([netstack](#netstack)); then the same commands as programs on the same stick (`sysbox-net.txt`) |
 | `tools/remote-slots-test.sh` | the CPU budget on the test machine ([above](#another-machine-for-the-tests)) against a fake lock directory, no PC, about 55 s: the costs of each kind of command (with the `--shrink` spec of the scripts that have parts); 6 commands of 3 CPUs on a budget of 8 never more than 2 at once; a command bigger than the budget alone; a holder killed (`kill -9`) with and without its command leaks nothing, and a dead governor's command (and a process it left in a session of its own) is killed by the next caller, the CPUs freed at once; a command that leaves such a process has it killed when it ends; a cancelled governor (SIGTERM) takes its tree down, a command that ignores SIGTERM after `JAMOS_REMOTE_KILL_GRACE`, one that ends on it keeps its own status; an old waiter is not passed by a younger small one, unless it would still fit after that one started (a stuck waiter holds no one up); the 2026-10-15 deadlock (a 16-CPU long claim, a 12-CPU waiter told at once that it can't fit, 4-CPU runs that start, the 12-CPU run after the long claim ends, and an 8-CPU run that does fit keeps its place); `--shrink` takes 2 of 3 parts beside the long claim and none off a run that fits; `JAMOS_REMOTE_SLOTS`, the budget file, `--status` (pid, age, command, a dead governor's `GONE`), the exit status; a waiting run whose stderr is closed gives up (141); a `--detach` claim returns at once, holds its CPUs while its command runs (the others wait), logs its output, ends with the command and, made inside another claim, outlives it; prints PASS |
-| `tools/pc-batch-test.sh` | `tools/pc-batch.sh` ([Running tests on the PC](#running-tests-on-the-pc)) with a stand-in for remote-test, no PC, about 25 s: start returns at once, a short wait says "not yet" (124), the table (PASS, FAIL with its failure line and log, rerun-PASS, the queue time), `VAR=value` words with and without `env`, one copy then every run without one, bad runlists refused, a PC that doesn't answer tried twice, a run that finds it gone run once more (a test's own exit 3 not), the runs started `PC_BATCH_STAGGER` apart and no more than `PC_BATCH_JOBS` out at once, a `KTESTS=0` run's own build, cancel; prints PASS |
+| `tools/pc-batch-test.sh` | `tools/pc-batch.sh` ([Running tests on the PC](#running-tests-on-the-pc)) with a stand-in for remote-test, no PC, about 25 s: start returns at once, a short wait says "not yet" (124), the table (PASS, FAIL with its failure line and log, rerun-PASS, the queue time), `VAR=value` words with and without `env`, one copy then every run without one, bad runlists refused, a PC that doesn't answer tried twice, a run that finds it gone run once more (a test's own exit 3 not), the runs started `PC_BATCH_STAGGER` apart and no more than `PC_BATCH_JOBS` out at once, a `KTESTS=0` run's own build, cancel; then `start --detach` against a fake PC (a home dir with the real keeper, `tools/pc-batch-driver.sh` and `remote-slots.py`; ssh, `wsl`, `setsid` and `flock` stand-ins), about 20 s more: the Mac's driver gone after the hand-off and no ssh until the wait, the table (FAIL, rerun-PASS, `JAMOS_TIER` reaching the run), outputs copied back without disk images, a run id for each try, two checkouts' batches at once, collecting twice and `status` without asking the PC again, a second detached batch of one checkout refused, `wait` with the PC down (exit 3), cancel (a process in a session of its own too, the claim freed, CANCELLED), a reboot (LOST, then `--resume`), no keeper (NOT-RUN); prints PASS |
 | `tools/remote-test-test.sh` | `tools/remote-test.sh`'s ssh handling ([Another machine for the tests](#another-machine-for-the-tests), "Dropped connections") with a stand-in for ssh, no PC, about 5 s: a session lost after the login while the command waits for the budget is started again (same run id, up to `JAMOS_REMOTE_REQUEUE` times, then exit 255), one lost after the command started is not, the command's own exit status (5) comes back once, a login cut twice is tried again by `ssh-retry.sh`, keepalives on the session, a cancel (SIGTERM) ends the session's ssh at once and asks the PC in one more ssh to end the run by its pid file (exit 143), `init-test.sh`'s `--shrink` spec and `INIT_TEST_JOBS` reach the PC's script, no temp files left; prints PASS |
 | `tools/ssh-retry-test.sh` | `tools/ssh-retry.sh` ([Another machine for the tests](#another-machine-for-the-tests), "Dropped connections") with a stand-in for ssh, no PC, about 6 s: a login cut by the server (kex_exchange_identification, reset, closed) is tried again up to 6 times with the piped-in script intact, nothing there ("refused", "timed out") 3 times, and never again: "Permission denied", a reset after the login ("connection lost after login"), a remote command that exits 255 or 7; the waits double with up to half as much again; `SSH_RETRY_TRIES=1` turns it off; the login slots (8 helpers, 2 slots: never more than 2 logging in; a dead holder's or a 5-minute-old slot is taken over; `SSH_RETRY_LOGINS=0` makes no lock directory); no temp files left; prints PASS |
 | `tools/rxsoak-test.sh <outdir>` | the receive path over a long run (`rxsoak.txt`, about 4 minutes): the peer floods ~10 000 frames (a trunk port's mix, on VLAN 21 and off it) while it pings every 0.2 s; the late pings must be answered and the guest's own `ping 10.2.21.1` too ([netstack](#netstack)) |
