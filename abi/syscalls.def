@@ -392,8 +392,22 @@
 # priority (struct thread_info); needs RIGHT_INSPECT.
 89  thread_get_info   status    handle_t thread, struct thread_info *out
 # struct sys_public_info: the version, the machine, the CPUs online, the
-# memory and the page size (uname, sysconf). No handle or right needed.
+# memory (all, and free now) and the page size (uname, sysconf, /proc/meminfo).
+# No handle or right needed.
 136 sys_public_info   status    struct sys_public_info *out
+# The mappings of a process's address space, in address order, starting
+# with the first that ends after `from`: fills up to cap entries (struct
+# map_info, <jam/abi.h>; cap 1 .. MAP_INFO_MAX, else ERR_OUT_OF_RANGE)
+# and returns how many. Fewer than cap means the last one is in; to go
+# on, ask again from the last one's end. Each says which VMO it maps and
+# how many of its pages are present in the page tables now (counted by
+# walking them: the cost is the pages present, not the range, and it
+# holds the address space's region lock, so a map, unmap or fault there
+# waits). The address space changes between calls; one call is a consistent
+# view. Needs RIGHT_INSPECT on the process (the handle a parent holds of
+# its child, or SR_SELF_PROCESS); a process whose address space is gone
+# returns 0. (/proc/<pid>/maps, stat, status and statm.)
+138 process_get_maps  i64       handle_t proc, uint64_t from, struct map_info *out, uint32_t cap
 
 # hardware ------------------------------------------------------------------
 # Resources (RES_* in <jam/abi.h>): a slice must lie inside its parent,

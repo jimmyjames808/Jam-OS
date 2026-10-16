@@ -149,9 +149,8 @@ static bool listed(const char *dir, const char *name)
 static void check_missing(void)
 {
     static const char *const gone[] = {
-        "/proc/cpuinfo", "/proc/meminfo", "/proc/stat", "/proc/self/stat",
-        "/proc/self/maps", "/proc/self/status", "/proc/self/task", "/proc/self/cwd",
-        "/proc/sys/kernel/osrelease", "/proc/self/fd/01", "/proc/self/fd/x", "/proc/self/exe2",
+        "/proc/uptime", "/proc/self/smaps", "/proc/self/task", "/proc/self/cwd",
+        "/proc/self/ns/user", "/proc/sys/kernel/osrelease", "/proc/self/fd/01", "/proc/self/fd/x", "/proc/self/exe2",
     };
     char buf[64];
     struct stat st;
@@ -166,7 +165,7 @@ static void check_missing(void)
         CHECK(access(gone[i], F_OK) == -1 && errno == ENOENT);
     }
     errno = 0;
-    CHECK(fopen("/proc/self/maps", "r") == NULL && errno == ENOENT);
+    CHECK(fopen("/proc/self/smaps", "r") == NULL && errno == ENOENT);
     char other[32];
     snprintf(other, sizeof(other), "/proc/%d", (int)getpid() + 1);   /* only we are here */
     errno = 0;
@@ -605,6 +604,8 @@ int pt_child_procfs(int argc, char **argv)
 {
     if (argc >= 4 && !strcmp(argv[2], "startup-exe"))
         return child_startup_exe(argv[3]);
+    if (argc >= 3 && !strcmp(argv[2], "block"))
+        return pt_child_block();   /* procinfo.c's */
     if (argc >= 3 && !strcmp(argv[2], "twin"))
         return child_twin();
     if (argc >= 3 && !strcmp(argv[2], "exe"))

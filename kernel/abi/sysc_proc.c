@@ -13,6 +13,7 @@
  * a job needs RIGHT_MANAGE too. */
 #include <jam/aspace.h>
 #include <jam/kprintf.h>
+#include <jam/mm.h>
 #include <jam/sched.h>
 #include <jam/syscall_impl.h>
 #include <jam/uentry.h>
@@ -155,6 +156,30 @@ int64_t sysc_process_get_info(handle_t proc, uint64_t out)
     }
     kobject_unref(po);
     return copy_to_user(out, &info, sizeof(info));
+}
+
+int64_t sysc_process_get_maps(handle_t proc, uint64_t from, uint64_t out, uint32_t cap)
+{
+    SYSC_TABLE(t);
+    if (!cap || cap > MAP_INFO_MAX)
+        return ERR_OUT_OF_RANGE;
+    struct kobject *po;
+    status_t st = handle_get(t, proc, OBJ_PROCESS, RIGHT_INSPECT, &po, NULL);
+    if (st != OK)
+        return st;
+    struct map_info *buf = kmalloc((size_t)cap * sizeof(*buf));
+    struct aspace *as = buf ? process_aspace(process_from_kobject(po)) : NULL;
+    kobject_unref(po);
+    if (!buf)
+        return ERR_NO_MEMORY;
+    uint32_t n = 0;
+    if (as) {   /* NULL once the process is torn down */
+        n = aspace_get_maps(as, from, buf, cap);   /* the region lock: may sleep */
+        aspace_unref(as);
+    }
+    st = copy_out(out, buf, (size_t)n * sizeof(*buf));
+    kfree(buf);
+    return st == OK ? (int64_t)n : ERR_INVALID_ARGS;
 }
 
 int64_t sysc_thread_create(handle_t proc, uint64_t name, uint64_t name_len, uint32_t flags,

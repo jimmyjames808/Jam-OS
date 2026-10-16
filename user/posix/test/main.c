@@ -34,6 +34,7 @@ static const struct {
     { "socket", pt_socket },
     { "pty", pt_pty },
     { "procfs", pt_procfs },
+    { "procinfo", pt_procinfo },
     { "self-image", pt_self_image },
     { "launch", pt_launch },
     { "session", pt_session },
