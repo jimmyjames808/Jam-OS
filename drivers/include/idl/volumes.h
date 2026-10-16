@@ -2832,6 +2832,7 @@ static inline status_t mounts_serve(handle_t ch, const struct mounts_ops *ops, v
 #define VOLDISKS_DIGEST           0x004a0003u
 #define VOLDISKS_HEALTH           0x004a0004u
 #define VOLDISKS_PREPARE_CHECK    0x004a0005u
+#define VOLDISKS_OPEN_PARTITION   0x004a0006u
 
 /* Constants (the .idl's `const` lines). */
 /* A disk's `kind`: the Jam OS layout (an ESP then a FAT32 data partition on
@@ -2969,6 +2970,16 @@ struct voldisks_prepare_check_rep {
     int32_t  status;
     uint8_t plan;
     uint8_t refused;
+} __attribute__((packed));
+struct voldisks_open_partition_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t id;
+    uint32_t index;
+} __attribute__((packed));
+struct voldisks_open_partition_rep {
+    uint32_t txid;
+    int32_t  status;
 } __attribute__((packed));
 
 #define VOLDISKS_REQ_MAX 28u   /* bytes: the biggest request */
@@ -3303,6 +3314,65 @@ static inline status_t voldisks_prepare_check(handle_t ch, uint32_t id, uint8_t 
     return voldisks_prepare_check_call(ch, false, DEADLINE_NEVER, id, out_plan, out_refused);
 }
 
+/* voldisks_open_partition_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t voldisks_open_partition_call(handle_t ch, bool idl_within, uint64_t idl_t, uint32_t id, uint32_t index, handle_t *out_block)
+{
+    _Alignas(8) uint8_t idl_b0[16];
+    _Alignas(8) uint8_t idl_b1[8];
+    struct voldisks_open_partition_req *idl_q = (struct voldisks_open_partition_req *)idl_b0;
+    const struct voldisks_open_partition_rep *idl_r = (const struct voldisks_open_partition_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = VOLDISKS_OPEN_PARTITION;
+    idl_q->id = id;
+    idl_q->index = index;
+    handle_t idl_rh[1];
+    if (idl_st == OK)
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 8, &idl_got[0], idl_rh, 1, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st != OK)
+        idl_got[1] = 0;   /* handles arrive only with OK */
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
+    if (idl_st == OK && idl_got[1] != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(idl_handle_is(idl_rh[0], IDL_OBJ_CHANNEL)))
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK)
+        idl_close_all(idl_rh, idl_got[1]);
+    if (idl_st == OK) {
+        if (out_block)
+            *out_block = idl_rh[0];
+        else
+            drv_handle_close(idl_rh[0]);
+    }
+    (void)idl_o;
+    return idl_st;
+}
+/* A `block` channel (abi/idl/block.idl) on partition `index` (0-based, in
+ * table order, as `partition` counts them) of disk `id`, opened read-only
+ * (storage.open_partition with read_only 1: the disk refuses every write
+ * on it), for the shell's `disk check` to read a volume with, whether the
+ * volume is mounted or not. It is the caller's own channel: nothing of the
+ * mounts changes, so this channel is still read-only by construction. ERR_NOT_FOUND:
+ * no such disk; ERR_BAD_STATE: its driver is not there (restarting); the
+ * driver's errors as they come (ERR_OUT_OF_RANGE: no such partition). */
+static inline status_t voldisks_open_partition_until(handle_t ch, uint64_t deadline_ns, uint32_t id, uint32_t index, handle_t *out_block)
+{
+    return voldisks_open_partition_call(ch, false, deadline_ns, id, index, out_block);
+}
+static inline status_t voldisks_open_partition_within(handle_t ch, uint64_t timeout_ns, uint32_t id, uint32_t index, handle_t *out_block)
+{
+    return voldisks_open_partition_call(ch, true, timeout_ns, id, index, out_block);
+}
+static inline status_t voldisks_open_partition(handle_t ch, uint32_t id, uint32_t index, handle_t *out_block)
+{
+    return voldisks_open_partition_call(ch, false, DEADLINE_NEVER, id, index, out_block);
+}
+
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
 
 /* voldisks_disk without waiting: the request, with the caller's txid (not 0).
@@ -3604,6 +3674,48 @@ static inline status_t voldisks_prepare_check_result(const void *idl_rep, struct
     return OK;
 }
 
+/* voldisks_open_partition without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then voldisks_open_partition_result. */
+static inline status_t voldisks_open_partition_send(handle_t ch, uint32_t idl_txid, uint32_t id, uint32_t index)
+{
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    _Alignas(8) uint8_t idl_b0[16];
+    struct voldisks_open_partition_req *idl_q = (struct voldisks_open_partition_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = VOLDISKS_OPEN_PARTITION;
+    idl_q->id = id;
+    idl_q->index = index;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
+}
+
+/* The status and results of a reply to voldisks_open_partition_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t voldisks_open_partition_result(const void *idl_rep, struct idl_msg *idl_m, handle_t *out_block)
+{
+    const struct voldisks_open_partition_rep *idl_r = (const struct voldisks_open_partition_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(idl_handle_is(idl_m->hs[0], IDL_OBJ_CHANNEL)))
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    if (out_block)
+        *out_block = idl_m->hs[0];
+    else
+        drv_handle_close(idl_m->hs[0]);
+    idl_m->nh = 0;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -3616,6 +3728,7 @@ struct voldisks_ops {
     status_t (*digest)(void *ctx, struct idl_txn idl_txn, uint32_t id, uint64_t lba, uint64_t count, uint8_t out_sha256[32]);
     status_t (*health)(void *ctx, struct idl_txn idl_txn, uint32_t id, uint64_t *out_units_read, uint64_t *out_units_written, uint64_t *out_host_reads, uint64_t *out_host_writes, uint64_t *out_power_cycles, uint64_t *out_unsafe_shutdowns, uint8_t *out_percent_used, uint8_t *out_critical);
     status_t (*prepare_check)(void *ctx, struct idl_txn idl_txn, uint32_t id, uint8_t *out_plan, uint8_t *out_refused);
+    status_t (*open_partition)(void *ctx, struct idl_txn idl_txn, uint32_t id, uint32_t index, handle_t *out_block);
 };
 
 /* Answer the voldisks.disk request kept in txn: idl_st and, if it is OK, the
@@ -3747,6 +3860,30 @@ static inline status_t voldisks_reply_prepare_check(struct idl_txn idl_txn, stat
     idl_r.plan = plan;
     idl_r.refused = refused;
     return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the voldisks.open_partition request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t voldisks_reply_open_partition(struct idl_txn idl_txn, status_t idl_st, handle_t block)
+{
+    handle_t idl_hs[1] = { block };
+    _Alignas(8) uint8_t idl_b0[8];
+    struct voldisks_open_partition_rep *idl_r = (struct voldisks_open_partition_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(block != HANDLE_INVALID))
+        idl_st = ERR_INTERNAL;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        if (idl_hs[0] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[0]);
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, idl_st == OK ? idl_hs : NULL, idl_st == OK ? 1 : 0);
+    return idl_ws;
 }
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
@@ -3941,6 +4078,36 @@ static inline uint32_t voldisks_dispatch_on(handle_t ch, const struct voldisks_o
             return sizeof(*idl_h);
         idl_r->plan = out_plan;
         idl_r->refused = out_refused;
+        return sizeof(*idl_r);
+    }
+    case VOLDISKS_OPEN_PARTITION: {
+        const struct voldisks_open_partition_req *idl_q = (const struct voldisks_open_partition_req *)req;
+        struct voldisks_open_partition_rep *idl_r = (struct voldisks_open_partition_rep *)rep;
+        handle_t out_block = HANDLE_INVALID;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->open_partition) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        struct idl_txn idl_txn = { ch, idl_h->txid };
+        status_t idl_st = ops->open_partition(ctx, idl_txn, idl_q->id, idl_q->index, &out_block);
+        /* IDL_LATER: the handler answers with voldisks_reply_open_partition. */
+        if (idl_st == IDL_LATER) {
+            if (out_block != HANDLE_INVALID)
+                drv_handle_close(out_block);
+            return 0;
+        }
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && !(out_block != HANDLE_INVALID))
+            idl_h->status = ERR_INTERNAL;   /* a handle result left unset */
+        if (idl_h->status != OK) {
+            if (out_block != HANDLE_INVALID)
+                drv_handle_close(out_block);
+            return sizeof(*idl_h);
+        }
+        rhs[0] = out_block;
+        *rhn = 1;
         return sizeof(*idl_r);
     }
     }

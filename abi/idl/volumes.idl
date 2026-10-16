@@ -314,6 +314,16 @@ const REFUSED_UNREADABLE 8
 # driver's errors as they come.
 5  prepare_check  (u32 id) -> (u8 plan, u8 refused) later
 
+# A `block` channel (abi/idl/block.idl) on partition `index` (0-based, in
+# table order, as `partition` counts them) of disk `id`, opened read-only
+# (storage.open_partition with read_only 1: the disk refuses every write
+# on it), for the shell's `disk check` to read a volume with, whether the
+# volume is mounted or not. It is the caller's own channel: nothing of the
+# mounts changes, so this channel is still read-only by construction. ERR_NOT_FOUND:
+# no such disk; ERR_BAD_STATE: its driver is not there (restarting); the
+# driver's errors as they come (ERR_OUT_OF_RANGE: no such partition).
+6  open_partition  (u32 id, u32 index) -> (handle<channel> block) later
+
 # volinstall: making a disk Jam OS's (M12.7 stage 2) and the installer's
 # writable partitions (stage 3). Like `volesp`, init's alone: init made
 # this channel when it started volumes (the startup role

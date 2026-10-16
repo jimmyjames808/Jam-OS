@@ -1,4 +1,4 @@
-/* allow: the owner marks a program on /data runnable and grants it what it
+/* allow: the owner marks a program on /data or /jam runnable and grants it what it
  * asks for (sh_allow.c; docs/HISTORY.md, M8.6):
  *   allow <file>      show the file's list and ask y/n; y writes the approval
  *                     (its line, and its page table: each page's hash); a
@@ -61,7 +61,7 @@ static int list(void)
         return 1;
     }
     if (!n)
-        sh_say("allow: no program on /data is allowed to run\n");
+        sh_say("allow: no program on /data or /jam is allowed to run\n");
     return 0;
 }
 
@@ -92,7 +92,7 @@ static int allow_file(const char *arg)
     handle_t vmo;
     uint64_t size;
     if (!sh_resolve(arg, abs, sizeof(abs)) || !sh_on_data(abs)) {
-        sh_tty("allow: %s: only a program on /data can be allowed (copy it to /data first)\n",
+        sh_tty("allow: %s: only a program on /data or /jam can be allowed (copy it there first)\n",
                arg);
         return 1;
     }
