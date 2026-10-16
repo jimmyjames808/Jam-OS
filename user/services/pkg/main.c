@@ -4,7 +4,10 @@
  * is no /jam: a stick on its own). The shell's `pkg`
  * starts it as a helper with the repository's address and the channels it
  * needs:
- *   argv: pkg [-R <repository address>] <command> [arguments]
+ *   argv: pkg [-R <repository address>] [-H <point>] <command> [arguments]
+ *         -H is for tools/pkg-test.sh: the journal stands still, after saying
+ *         "pkg: held at <point>", when it reaches <point> (pk_env's hold), so
+ *         the test can end QEMU there, as a power cut would
  *   PKG_SR_CTL         init's pkgctl channel (initctl.pkg_channel): init
  *                      checks and approves a package's programs
  *   PKG_SR_ASK         where the question goes: a message with the question,
@@ -105,6 +108,16 @@ static const struct {
     { "check",   pk_cmd_check,   "check                  every installed file against its manifest" },
 };
 
+/* -H <point>: stand still when the journal reaches the point, until Ctrl+C. */
+static void hold_at(void *ctx, const char *point)
+{
+    if (strcmp(ctx, point))
+        return;
+    pk_say("pkg: held at %s\n", point);
+    while (!pk_net_stopped())
+        jam_sleep_until(now() + 100 * NS_PER_MS);
+}
+
 static int usage(void)
 {
     pk_say("usage: pkg [-R <repository address>] <command>\n");
@@ -118,14 +131,21 @@ int main(int argc, char **argv)
 {
     static struct pk_app a;
     int i = 1;
-    const char *url = NULL;
-    if (i + 1 < argc && !strcmp(argv[i], "-R")) {
-        url = argv[i + 1];
+    const char *url = NULL, *hold = NULL;
+    while (i + 1 < argc && (!strcmp(argv[i], "-R") || !strcmp(argv[i], "-H"))) {
+        if (argv[i][1] == 'R')
+            url = argv[i + 1];
+        else
+            hold = argv[i + 1];
         i += 2;
     }
     if (i >= argc)
         return usage();
     pick_prefix(&a.env);
+    if (hold) {
+        a.env.hold = hold_at;
+        a.env.hold_ctx = (void *)hold;
+    }
     a.env.have_key = load_key(&a.env);
     load_abi(&a.env);
     a.env.stopped = stopped;

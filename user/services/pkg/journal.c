@@ -43,6 +43,18 @@ status_t pk_journal_get(struct pk_env *e, struct pkg_journal *j, uint8_t **text,
     return OK;
 }
 
+/* The journal is at step (with state: ":new", ":alone", or ""): a test may hold it
+ * there (pk_env's hold). */
+static void held(struct pk_env *e, const char *step, const char *state)
+{
+    char point[32];
+    if (e->hold && !e->dead) {
+        (void)pk_flush(e);   /* the point's state is on the medium before anyone stops here */
+        snprintf(point, sizeof(point), "%s%s", step, state);
+        e->hold(e->hold_ctx, point);
+    }
+}
+
 status_t pk_journal_put(struct pk_env *e, const struct pkg_journal *j)
 {
     char path[PK_PATH], fresh[PK_PATH];
@@ -51,15 +63,25 @@ status_t pk_journal_put(struct pk_env *e, const struct pkg_journal *j)
     if (!buf)
         return ERR_NO_MEMORY;
     size_t n = pkg_journal_write(j, buf, cap);
+    const char *step = pkg_step_name(j->step);
     pk_db_path(e, "journal", "", path);
     pk_db_path(e, "journal", ".new", fresh);
     status_t st = n ? pk_mkdirs(e, path) : ERR_INVALID_ARGS;
     if (st == OK)
         st = pk_write(e, fresh, buf, n);
-    if (st == OK)
-        st = pk_move(e, fresh, path);
+    if (st == OK) {
+        held(e, step, ":new");
+        st = pk_remove(e, path);   /* pk_move's two changes, a hold between them */
+    }
+    if (st == OK) {
+        held(e, step, ":alone");
+        st = pk_rename(e, fresh, path);
+    }
     free(buf);
-    return st == OK ? pk_flush(e) : st;
+    st = st == OK ? pk_flush(e) : st;
+    if (st == OK)
+        held(e, step, "");
+    return st;
 }
 
 status_t pk_journal_drop(struct pk_env *e)
@@ -68,8 +90,12 @@ status_t pk_journal_drop(struct pk_env *e)
     pk_db_path(e, "journal", ".new", path);
     status_t st = pk_remove(e, path);   /* first: a journal left alone is only a step behind */
     if (st == OK) {
+        held(e, "done", ":new");
         pk_db_path(e, "journal", "", path);
         st = pk_remove(e, path);
     }
-    return st == OK ? pk_flush(e) : st;
+    st = st == OK ? pk_flush(e) : st;
+    if (st == OK)
+        held(e, "done", "");
+    return st;
 }

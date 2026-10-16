@@ -260,13 +260,16 @@ static const struct sh_cmd cmds[] = {
       "  files <name>, audit, check. An install shows each package's licence and what\n"
       "  each program asks for, and asks once (y); init checks and approves the\n"
       "  programs (allow -l shows them with their package). `pkg -R <address> <command>`\n"
-      "  uses another repository for that command. The prefix is /data/pkg"),
+      "  uses another repository for that command. Packages are installed under /jam/pkg\n"
+      "  on the Jam OS drive, else /data/pkg; /pkg is the read-only view of that, where\n"
+      "  PATH finds their programs (/pkg/bin)"),
     C(run, C_PROGRAMS, "run <prog|path> [args]",
       "start /boot/bin/<prog> (or a path), wait, say how it ended; Ctrl+C kills it.\n"
       "  Typing a program's name does the same. Exported variables are its environment;\n"
       "  in a pipe its printf output goes down the pipe: run utest | grep passed.\n"
       "  It gets what its list asks for (services, mounts) and its terminal. A program\n"
-      "  on /data or /jam runs once `allow` has marked it, and only as the file was then.\n"
+      "  on /data, /jam or /pkg runs once `allow` has marked it (a package's, once pkg\n"
+      "  has), and only as the file was then.\n"
       "  run prog &: in the background (see jobs)"),
     C(allow, C_PROGRAMS, "allow <file> | -l | -r <name>",
       "let a program on /data or /jam run: shows what it asks for (services, mounts) and\n"

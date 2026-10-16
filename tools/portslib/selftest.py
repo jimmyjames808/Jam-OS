@@ -338,6 +338,29 @@ def test_builds(tmp, real_ports):
     b, _ = builder(t, tmp)
     done = b.build(["app"])
     expect(all(s == "up to date" for _, s in done), "a no-op build built: %s" % done)
+    # A stage built for another prefix is out of date though no input of the stamp
+    # changed (PO14 moved a package's prefix from /data/pkg to /pkg); a port that
+    # keeps its prefix (recipe.KEEP_PREFIX: Chromium) is not.
+    listing = os.path.join(tmp, "out", "app", "stage", "stage.txt")
+    with open(listing) as f:
+        text = f.read()
+    expect(" package /pkg\n" in text, "app's stage list names its prefix: %s" % text.split("\n")[1])
+    with open(listing, "w") as f:
+        f.write(text.replace(" package /pkg\n", " package /data/pkg\n", 1))
+    b, _ = builder(t, tmp)
+    done = b.build(["app"])
+    expect([s for n, s in done if n == "app"] == ["built"] and
+           all(s == "up to date" for n, s in done if n != "app"),
+           "a stage of another prefix wasn't built again, alone: %s" % done)
+    recipemod.KEEP_PREFIX["app"] = "/data/pkg"
+    try:
+        with open(listing, "w") as f:
+            f.write(text.replace(" package /pkg\n", " package /data/pkg\n", 1))
+        b, _ = builder(t, tmp)
+        expect(all(s == "up to date" for _, s in b.build(["app"])),
+               "a port kept on /data/pkg was built again")
+    finally:
+        del recipemod.KEEP_PREFIX["app"]
     b, _ = builder(t, tmp, ["app"])
     b.build(["app"])
     expect(stage_bytes(tmp, "app") == before, "two builds of app differ")

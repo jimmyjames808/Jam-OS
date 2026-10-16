@@ -2,7 +2,7 @@
 # GP2, docs/G2-PLAN.md section 4), a data port (style data: files and no
 # build). Chromium builds its own fontconfig, FreeType and HarfBuzz; what it
 # needs from the system is font files and a fonts.conf, and the shell sets
-# FONTCONFIG_FILE to /data/pkg/share/fonts/fonts.conf for every program.
+# FONTCONFIG_FILE to /pkg/share/fonts/fonts.conf for every program.
 #
 # The set: Liberation Sans, Serif and Mono (metric-compatible with Arial,
 # Times New Roman and Courier New), Noto Sans, Serif and Sans Mono (Latin,

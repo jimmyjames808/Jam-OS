@@ -3,7 +3,7 @@
 # with the build host's own fc-match: Jam OS has no fontconfig port, so this
 # is where fonts.conf is run. The staged package (build/ports/fonts-jamos/stage,
 # from `python3 tools/ports.py build fonts-jamos`) is the font directory; the
-# configuration is the staged one with /data/pkg replaced by the stage's path
+# configuration is the staged one with /pkg replaced by the stage's path
 # and the cache in a scratch directory.
 #
 #   tools/fonts-check.sh [stagedir]
@@ -18,7 +18,7 @@ command -v fc-match >/dev/null 2>&1 || { echo "fonts-check: no fc-match on this 
 stage=$(cd "$stage" && pwd)
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/fonts-check.XXXXXX") || exit 2
 trap 'rm -rf "$tmp"' EXIT
-sed "s|/data/pkg|$stage|g" "$conf" > "$tmp/fonts.conf"
+sed "s|/pkg/|$stage/|g" "$conf" > "$tmp/fonts.conf"
 FONTCONFIG_FILE=$tmp/fonts.conf
 XDG_CACHE_HOME=$tmp/cache
 export FONTCONFIG_FILE XDG_CACHE_HOME

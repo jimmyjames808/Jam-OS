@@ -143,8 +143,16 @@ class Builder:
         if r.name in self.force or not os.path.isfile(path):
             return False
         with open(path) as f:
-            return f.read().strip() == stamp and \
-                os.path.isfile(os.path.join(self.base(r.name), "stage", "stage.txt"))
+            if f.read().strip() != stamp:
+                return False
+        # A stage built for another prefix is out of date though no input of
+        # the stamp changed (the prefix is the builder's, recipe.py's PREFIX:
+        # /data/pkg until PO14 made it /pkg).
+        try:
+            head = stagemod.read_list(os.path.join(self.base(r.name), "stage", "stage.txt"))[0]
+        except (OSError, IndexError, stagemod.StageError):
+            return False
+        return head[:1] == ["port"] and (r.place != "package" or head[-1] == r.prefix)
 
     def build(self, names):
         """Build names and what they need, in order. Returns [(name, "built"

@@ -130,3 +130,19 @@ wait {prompt}
 send run $P/bzip2 -t /data/bt-nothere.bz2; echo st-$T=$?
 wait st-x=1
 wait {prompt}
+
+# ---- the multi-call names: bunzip2 and bzcat are bzip2 under other names (each a copy of
+# the program with its own approval, which the preinstall writes as pkg would) ----------
+send run $P/bzcat /data/bt-in.bz2 | sha256sum
+wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  -
+wait {prompt}
+send run $P/bunzip2 -c /data/bt-in.bz2 | sha256sum
+wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  -
+wait {prompt}
+send cp /data/bt-in.bz2 /data/bt-u.bz2; run $P/bunzip2 /data/bt-u.bz2; echo st-$T=$?; cmp /data/bt-u /data/bt-in && echo ok-$T-bunzip2
+wait st-x=0
+wait ok-x-bunzip2
+wait {prompt}
+send ls /data | grep -c ^bt-u.bz2$ | grep ^0$ && echo ok-$T-bunzip2-removed
+wait ok-x-bunzip2-removed
+wait {prompt}

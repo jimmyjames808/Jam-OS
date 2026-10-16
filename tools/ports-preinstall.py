@@ -32,6 +32,12 @@ package), each with a signed manifest:
                             <sha-256>\\t/data/pkg/<path>\\t<what its list asks for>\\tpkg=<name> <version>-r<rev>
     /data/etc/allow.d/<sha> the program's page-hash table (the manifest's `table` line)
 
+The prefix is /data/pkg, where bin/pkg installs on a stick with no Jam OS
+drive in. When the stick's data partition is ext, init's /pkg is a read-only
+view of it (M13.6's DB1), and an approval that names /data/pkg/bin/x covers
+the program run as /pkg/bin/x (M13.7's PO14: dp_path_same); a `multicall`
+name is a copy of its program with its own approval, as pkg installs it.
+
 Not written: db/serial and db/journal (the first `pkg update` makes the
 serial; nothing is in the middle of a change).
 

@@ -94,3 +94,19 @@ wait {prompt}
 send cp /boot/bin/utest /data/xt-bin; run $P/xz -k /data/xt-bin; run $P/xz -t /data/xt-bin.xz; mv /data/xt-bin /data/xt-bin.orig; run $P/xz -d /data/xt-bin.xz; cmp /data/xt-bin /data/xt-bin.orig && echo ok-$T-bin
 wait ok-x-bin
 wait {prompt}
+
+# ---- the multi-call names: unxz and xzcat are xz under other names (each a copy of the
+# program with its own approval, which the preinstall writes as pkg would) -------------
+send run $P/xzcat /data/xt-1.xz | sha256sum
+wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  -
+wait {prompt}
+send run $P/unxz -c /data/xt-1.xz | sha256sum
+wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  -
+wait {prompt}
+send cp /data/xt-1.xz /data/xt-u.xz; run $P/unxz /data/xt-u.xz; echo st-$T=$?; cmp /data/xt-u /data/xt-in && echo ok-$T-unxz
+wait st-x=0
+wait ok-x-unxz
+wait {prompt}
+send ls /data | grep -c ^xt-u.xz$ | grep ^0$ && echo ok-$T-unxz-removed
+wait ok-x-unxz-removed
+wait {prompt}

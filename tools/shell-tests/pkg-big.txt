@@ -61,6 +61,23 @@ send run /jam/pkg/bin/bigpkg guard
 wait bigpkg: guard: /jam/pkg refused a directory, a file and a removal; /jam took a file
 wait {prompt}
 
+# /pkg is the read-only view of /jam/pkg (init's, since DB1): the program found by its /pkg
+# name runs on the approval that names /jam/pkg/bin/bigpkg, and its list's `mount /pkg r`
+# gives it the view, which holds it and refuses a directory, a file and a removal.
+send ls /pkg/bin
+seen 5 bigpkg
+wait {prompt}
+send type bigpkg
+wait bigpkg is /pkg/bin/bigpkg
+wait {prompt}
+send run /pkg/bin/bigpkg view
+wait bigpkg: view: /pkg holds the program, as big as /jam/pkg's, and refused a directory, a file and a removal
+wait {prompt}
+send run /pkg/bin/bigpkg spawn
+wait bigpkg: view: /pkg holds the program, as big as /jam/pkg's, and refused a directory, a file and a removal
+wait bigpkg: spawn: the child started by its /pkg name said view was right
+wait {prompt}
+
 # Every file is as its manifest says (it reads the 300 MiB again).
 send pkg check
 wait 300 pkg check: 1 package, every file is as its manifest says

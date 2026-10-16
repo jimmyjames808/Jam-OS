@@ -14,6 +14,8 @@
  *                     removed files, the old approvals revoked, the sum;
  *                     the same version rebuilt is newer by its hash
  *   pkgtxn_remove     a package removed: files, empty directories, record
+ *   pkgtxn_hold       the journal's hold points (`pkg -H`), in order, for an install,
+ *                     an upgrade and a removal
  *   pkgtxn_busy       an upgrade and a removal that wait for a program in use
  *   pkgtxn_db         the serials and sums db/ keeps */
 #define CHECK_PROG "utest"
@@ -321,6 +323,64 @@ bool t_pkgtxn_remove(void)
     /* Not installed: refused. */
     CHECK_ST(run_op(&e, PKG_OP_REMOVE, &a, 0, why), ERR_NOT_FOUND);
     mk_free(&a);
+    return mk_down();
+}
+
+/* ---- the journal's hold points (`pkg -H <point>`, tools/pkg-test.sh) ------------------------ */
+
+struct points {
+    char     at[40][24];
+    unsigned n;
+};
+
+static void note_point(void *ctx, const char *point)
+{
+    struct points *p = ctx;
+    if (p->n < sizeof(p->at) / sizeof(p->at[0]))
+        snprintf(p->at[p->n++], sizeof(p->at[0]), "%s", point);
+}
+
+/* Did the journal stand at <step>:new, <step>:alone and <step> for each of the n steps, in
+ * order, and then at done:new and done? */
+static bool steps_are(const struct points *p, const char *const *steps, unsigned n)
+{
+    static const char *const state[] = { ":new", ":alone", "" };
+    if (p->n != n * 3 + 2)
+        return false;
+    for (unsigned i = 0; i < n; i++)
+        for (unsigned k = 0; k < 3; k++) {
+            char want[24];
+            snprintf(want, sizeof(want), "%s%s", steps[i], state[k]);
+            if (strcmp(p->at[i * 3 + k], want))
+                return false;
+        }
+    return !strcmp(p->at[n * 3], "done:new") && !strcmp(p->at[n * 3 + 1], "done");
+}
+
+bool t_pkgtxn_hold(void)
+{
+    static const char *const install[] = { "begin", "staged", "approved", "swapped", "recorded" };
+    static const char *const upgrade[] = { "begin", "staged", "approved", "swapped", "revoked",
+                                           "recorded" };
+    static const char *const remove[] = { "begin", "revoked", "removed", "recorded" };
+    struct mkpkg v1 = make_a1(), v2 = make_a2("hello a, again\n");
+    struct pk_env e;
+    struct points p = { .n = 0 };
+    char why[PK_WHY];
+    CHECK(mk_up() && mk_build(&v1) && mk_build(&v2));
+    mk_env(&e);
+    e.hold = note_point;
+    e.hold_ctx = &p;
+    CHECK_ST(run_op(&e, PKG_OP_INSTALL, &v1, 0, why), OK);
+    CHECK(mk_installed(&v1) && steps_are(&p, install, 5));
+    p.n = 0;
+    CHECK_ST(run_op(&e, PKG_OP_UPGRADE, &v2, 0, why), OK);
+    CHECK(mk_installed(&v2) && steps_are(&p, upgrade, 6));
+    p.n = 0;
+    CHECK_ST(run_op(&e, PKG_OP_REMOVE, &v2, 0, why), OK);
+    CHECK(mk_absent(&v2) && steps_are(&p, remove, 4));
+    mk_free(&v1);
+    mk_free(&v2);
     return mk_down();
 }
 

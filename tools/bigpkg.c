@@ -4,7 +4,8 @@
  * $(BUILD)/bigpkg/bigpkg links this with bigprog's table (BIGPROG_PAGES
  * pages of constant data, page i holding the word i in each of its 512
  * places: user/tests/bigprog/table.S) by jamos-cc, with the list
- * `posix` and `mount /jam rw`; generated when a test asks for it, never
+ * `posix`, `mount /jam rw`, `mount /pkg r` and `svc exec` (to start a child by a
+ * data path); generated when a test asks for it, never
  * kept. The table is in the read-only segment, so a page of it is fetched
  * from the volume only when it is touched, and checked by the kernel against
  * the approval's page table then.
@@ -14,14 +15,22 @@
  *   bigpkg guard           the packages' prefix is not ours to change:
  *                          /jam/pkg refuses a new directory, a new file and
  *                          a removal, and /jam beside it takes a file
+ *   bigpkg view            /pkg, init's read-only view of the prefix (the list's
+ *                          `mount /pkg r`): it holds this program, of the size
+ *                          /jam/pkg/bin/bigpkg has, and refuses a new directory, a
+ *                          new file and a removal (M13.7's PO14)
+ *   bigpkg spawn           starts /pkg/bin/bigpkg view as a child (the exec service
+ *                          checks the approval for the /pkg name) and waits for it
  * Exit codes: 0 done; 1 a page holds the wrong words, or the guard was
  * wrong; 64 usage. */
 #include <errno.h>
 #include <fcntl.h>
+#include <spawn.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #define WORDS (4096 / 8)
@@ -30,7 +39,7 @@ extern const uint64_t bigprog_table[], bigprog_table_end[];
 
 static int usage(void)
 {
-    printf("usage: bigpkg [hash [step]] | guard\n");
+    printf("usage: bigpkg [hash [step]] | guard | view | spawn\n");
     return 64;
 }
 
@@ -97,6 +106,62 @@ static int guard(void)
     return bad;
 }
 
+/* /pkg is the prefix as a read-only view: the program is there, and nothing can be added to
+ * it or taken from it. */
+static int view(void)
+{
+    int bad = 0;
+    struct stat a, b;
+    if (stat("/pkg/bin/bigpkg", &a) || stat("/jam/pkg/bin/bigpkg", &b) || !a.st_size ||
+        a.st_size != b.st_size) {
+        printf("bigpkg: view: /pkg/bin/bigpkg is not the program /jam/pkg/bin/bigpkg is "
+               "(errno %d)\n", errno);
+        bad = 1;
+    }
+    if (mkdir("/pkg/bigpkg-evil", 0755) == 0) {
+        printf("bigpkg: view: made a directory in /pkg\n");
+        bad = 1;
+    }
+    int fd = open("/pkg/bigpkg-evil.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd >= 0) {
+        close(fd);
+        unlink("/pkg/bigpkg-evil.txt");
+        printf("bigpkg: view: made a file in /pkg\n");
+        bad = 1;
+    }
+    if (unlink("/pkg/bin/bigpkg") == 0) {
+        printf("bigpkg: view: removed a package's program\n");
+        bad = 1;
+    }
+    if (!bad)
+        printf("bigpkg: view: /pkg holds the program, as big as /jam/pkg's, and refused a "
+               "directory, a file and a removal\n");
+    return bad;
+}
+
+extern char **environ;
+
+/* A child started by the /pkg name: init's exec service checks that the file at
+ * /pkg/bin/bigpkg is the one the approval for /jam/pkg/bin/bigpkg names, and
+ * gives the child its own list (it holds /pkg too). */
+static int spawn_view(void)
+{
+    pid_t pid;
+    int status = 0;
+    char *args[] = { "bigpkg", "view", NULL };
+    int rc = posix_spawn(&pid, "/pkg/bin/bigpkg", NULL, NULL, args, environ);
+    if (rc) {
+        printf("bigpkg: spawn: can't start /pkg/bin/bigpkg (error %d)\n", rc);
+        return 1;
+    }
+    if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status) || WEXITSTATUS(status)) {
+        printf("bigpkg: spawn: the child ended with status %d\n", status);
+        return 1;
+    }
+    printf("bigpkg: spawn: the child started by its /pkg name said view was right\n");
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 1 || (argc >= 2 && !strcmp(argv[1], "hash") && argc <= 3)) {
@@ -113,5 +178,9 @@ int main(int argc, char **argv)
     }
     if (argc == 2 && !strcmp(argv[1], "guard"))
         return guard();
+    if (argc == 2 && !strcmp(argv[1], "view"))
+        return view();
+    if (argc == 2 && !strcmp(argv[1], "spawn"))
+        return spawn_view();
     return usage();
 }

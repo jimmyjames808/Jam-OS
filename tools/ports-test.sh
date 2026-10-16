@@ -16,8 +16,14 @@
 # (tools/serial-feed.py; the examples are in tools/shell-tests/). It starts
 # at the shell's prompt with
 #       T=x                     the letter the test builds its answers from
-#       P=/data/pkg/bin         where the port's programs are (PATH has it, after
-#                               /boot/bin and /boot/usr/bin: a program of a
+#       PK=/pkg                 the packages' prefix as a program sees it: /pkg,
+#                               init's read-only view, when the image's /data is
+#                               ext; /data/pkg (where they are) when it is FAT,
+#                               which has no views (a program that reads its
+#                               package's files asks for `mount /pkg r`, or has
+#                               `mount /data r` beside it for this case)
+#       P=$PK/bin               where the port's programs are (PATH has /pkg/bin,
+#                               after /boot/bin and /boot/usr/bin: a program of a
 #                               name the boot image has too is run as
 #                               `run $P/<program>`)
 #       S=/boot/usr/bin         sbase's tools: the shell's own commands (seq,
@@ -91,6 +97,8 @@ shard() {
         return
     fi
     cp "$image" "$img"
+    pk=/data/pkg
+    [ "$(python3 tools/mkimage.py --data-fs "$img" 2> /dev/null)" = ext ] && pk=/pkg
     if ! mcopy -o -i "$img@@1M" "$dir/bootfs-key.img" ::/boot/bootfs.img; then
         fail "the test key: can't write the boot image"
         return
@@ -106,9 +114,12 @@ shard() {
         echo "wait 120 Jam OS shell"
         echo "wait {prompt}"
         echo "seen 60 init: /data mounted"
+        [ "$pk" = /pkg ] && echo "seen 60 init: /pkg: a view of /data/pkg, read-only"
         echo "send T=x"
         echo "wait {prompt}"
-        echo "send P=/data/pkg/bin"
+        echo "send PK=$pk"
+        echo "wait {prompt}"
+        echo "send P=\$PK/bin"
         echo "wait {prompt}"
         echo "send S=/boot/usr/bin"
         echo "wait {prompt}"

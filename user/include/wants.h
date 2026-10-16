@@ -23,11 +23,14 @@
  *                             the top-level `etc` at all: the settings,
  *                             approvals and keys); <point>
  *                             is /boot, /esp, /data, /jam (the Jam OS
- *                             drive's volume), /usb* (every other stick)
- *                             or * (every mount); a writable one can't
- *                             change the top-level `pkg` (the packages'
- *                             prefix: /jam/pkg, or /data/pkg when there is
- *                             no /jam)
+ *                             drive's volume), /pkg (init's read-only view
+ *                             of the packages' prefix, so `r` only: a
+ *                             program that reads its package's files by the
+ *                             prefix compiled into it asks for it), /usb*
+ *                             (every other stick) or * (every mount); a
+ *                             writable one can't change the top-level
+ *                             `pkg` (the packages' prefix: /jam/pkg, or
+ *                             /data/pkg when there is no /jam)
  *     mount /data rw pkg      /data writable, the packages' prefix too
  *     mount /jam rw pkg       (still no etc), or /jam: bin/pkg's; the
  *                             build allows them only for a service

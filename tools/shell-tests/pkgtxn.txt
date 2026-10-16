@@ -17,6 +17,8 @@
 #   pkgtxn_upgrade    changed, added and removed files; the old approvals
 #                     revoked; a rebuild of the same version is newer by hash
 #   pkgtxn_remove     files, empty directories, record, sums
+#   pkgtxn_hold       the journal's hold points, in order, for an install, an upgrade and
+#                     a remove (`pkg -H <point>`: what tools/pkg-test.sh cuts at)
 #   pkgtxn_busy       a file in use: the upgrade waits in the journal, the
 #                     settle finishes it when the file closes
 #   pkgplan_*         what an install, upgrade and remove plan, in what order, on
@@ -34,9 +36,9 @@ seen 5 utest: 3 passed
 send utest only pkgtxn_refused,pkgtxn_init_no; echo pt2-$T-$?
 wait 120 pt2-x-0
 seen 5 utest: 2 passed
-send utest only pkgtxn_upgrade,pkgtxn_remove,pkgtxn_busy; echo pt3-$T-$?
+send utest only pkgtxn_upgrade,pkgtxn_remove,pkgtxn_hold,pkgtxn_busy; echo pt3-$T-$?
 wait 120 pt3-x-0
-seen 5 utest: 3 passed
+seen 5 utest: 4 passed
 send utest only pkgplan_install,pkgplan_upgrade,pkgplan_remove,pkgplan_paths; echo pt4-$T-$?
 wait 120 pt4-x-0
 seen 5 utest: 4 passed

@@ -22,9 +22,18 @@ from . import licence
 
 # Where a port's files go once installed; a port is built for it, since
 # programs find their data by the prefix compiled in.
+# A package's is /pkg: init's read-only view of where bin/pkg installs
+# (/jam/pkg on the Jam OS drive, else /data/pkg), so a program that bakes it
+# in finds its files on either (M13.7's PO14; a program asks for the view with
+# `mount /pkg r`).
 # (A host port, hostdata.py, is installed where it is built: /host is only
 # what it is called until then.)
-PREFIX = {"package": "/data/pkg", "boot": "/boot/usr", "host": "/host"}
+PREFIX = {"package": "/pkg", "boot": "/boot/usr", "host": "/host"}
+# A package kept on its old prefix, /data/pkg: Chromium is built once, for
+# hours, in a kept tree, and finds its files beside its executable, so its
+# prefix is only the name the builder stages it under; moving it would make
+# its stage out of date (build.py's up_to_date) and the next build a new one.
+KEEP_PREFIX = {"chromium": "/data/pkg"}
 STYLES = ("configure", "configure-plain", "make", "cmake", "meson", "custom", "data")
 # Which styles take which extra-argument key.
 ARG_STYLES = {
@@ -152,6 +161,8 @@ class Recipe:
 
     @property
     def prefix(self):
+        if self.place == "package" and self.name in KEEP_PREFIX:
+            return KEEP_PREFIX[self.name]
         return self.prefix_override or PREFIX.get(self.place, "/")
 
     def deps(self, key):

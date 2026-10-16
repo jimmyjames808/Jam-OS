@@ -682,7 +682,7 @@ $(BUILD)/bigprog/bigprog: $(UOBJ)/user/lib/crt0.S.o $(call prog_objs,bigprog) \
 $(BUILD)/bigpkg/bigpkg: tools/bigpkg.c $(BUILD)/bigprog/table.o tools/jamos-cc \
                         $(SYSROOT_LIBS) $(SYSROOT_HDRS)
 	@mkdir -p $(dir $@)
-	printf 'posix\nmount /jam rw\n' > $(BUILD)/bigpkg/list
+	printf 'posix\nmount /jam rw\nmount /pkg r\nsvc exec\n' > $(BUILD)/bigpkg/list
 	JAMOS_SYSROOT=$(SYSROOT) CROSS=$(CROSS) tools/jamos-cc -O2 -Wall -Werror \
 	    --jamos-wants=$(BUILD)/bigpkg/list -o $@ $< $(BUILD)/bigprog/table.o
 
