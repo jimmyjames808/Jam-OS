@@ -1,0 +1,30 @@
+# storm with a mapper on /jam (docs/M13.6-PLAN.md's U10; tools/pager-test.sh's
+# jstorm case makes the drive and checks the log): big.bin, half again as
+# big as the pager's budget (the case boots with 512 MiB), hashed through
+# a mapping six times in the background, so every pass asks extfs for
+# every page, while `storm` copies src.bin to dst.bin on /jam and kills
+# extfs-jam twice a second; the copy MATCHes and the hash is the
+# host's.
+#   PAGER_CASES=jstorm tools/pager-test.sh <outdir>
+# As in cmds.txt, a marker built from $T (k) never appears in the typed
+# line, only when the command before it ran.
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send T=k
+wait {prompt}
+seen 60 init: /jam mounted
+
+send pagertest hash /jam/big.bin 6 &
+wait {prompt}
+send storm /jam/src.bin /jam/dst.bin 2 extfs-jam; echo st-$T=$?
+wait 300 st-k=0
+seen 300 pagertest: /jam/big.bin: 50331648 bytes: mapped sha256
+wait {prompt}
+send sleep 1; rm /jam/dst.bin; echo e-$T=$?
+wait e-k=0
+wait {prompt}
+send sync
+wait {prompt}
+send reboot -f
+wait reboot: resetting
