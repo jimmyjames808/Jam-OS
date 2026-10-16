@@ -85,13 +85,16 @@ bool pk_ask(struct pk_app *a, const char *question)
         return false;
     uint64_t end = now() + 600 * NS_PER_S;   /* the owner has ten minutes */
     while (now() < end && !pk_net_stopped()) {   /* each turn waits a tenth of a second */
-        signals_t seen;
+        signals_t seen = 0;
         status_t st = jam_object_wait_one(a->ask, SIG_READABLE | SIG_PEER_CLOSED,
                                           now() + 100 * NS_PER_MS, &seen);
         if (st != OK && st != ERR_TIMED_OUT)
             return false;
-        if (!(seen & SIG_READABLE))
+        if (!(seen & SIG_READABLE)) {
+            if (st == OK && (seen & SIG_PEER_CLOSED))
+                return false;   /* the shell is gone: no one to answer */
             continue;
+        }
         uint8_t ans[8];
         uint32_t got = 0, nh = 0;
         struct channel_read_args r = {

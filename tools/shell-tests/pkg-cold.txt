@@ -15,8 +15,8 @@ send pkg check
 wait pkg check: 2 packages, every file is as its manifest says
 wait {prompt}
 send allow -l
-wait [package aaa 2.0-r1]
-wait [package bbb 1.0-r1]
+seen 5 [package aaa 2.0-r1]
+seen 5 [package bbb 1.0-r1]
 wait {prompt}
 send pkg -R http://10.2.21.174:8000/slow/ install ccc
 wait Install 1 package, 1 program? [y/N]

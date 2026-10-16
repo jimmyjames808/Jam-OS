@@ -70,8 +70,8 @@ wait bbb 1.0-r1 (installed)
 wait runs: aaa 1.0
 wait {prompt}
 send allow -l
-wait [package aaa 1.0-r1]
-wait [package bbb 1.0-r1]
+seen 5 [package aaa 1.0-r1]
+seen 5 [package bbb 1.0-r1]
 wait {prompt}
 send allow -r aaa
 wait a package's program (allow -l): `pkg remove` takes it back
@@ -111,8 +111,8 @@ send pkg files aaa
 wait /data/pkg/share/aaa/new.txt
 wait {prompt}
 send allow -l
-wait [package aaa 2.0-r1]
-wait [package bbb 1.0-r1]
+seen 5 [package aaa 2.0-r1]
+seen 5 [package bbb 1.0-r1]
 wait {prompt}
 
 # The same version rebuilt: newer by its hash.
