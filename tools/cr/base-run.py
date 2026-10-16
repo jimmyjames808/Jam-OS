@@ -281,7 +281,8 @@ def parse_boot(lines, items, res, hung_last):
             if m:
                 cur, buf = m.group(1), []
                 continue
-            m = re.search(r"\[\s+(OK|FAILED|SKIPPED)\s+\] (\S+) \(\d+ ms\)", line)
+            # (a parameterized test that failed says ", where GetParam() = ..." first)
+            m = re.search(r"\[\s+(OK|FAILED|SKIPPED)\s+\] (\S+?)(?:,\s+where .*?)? \(\d+ ms\)", line)
             if m and cur == m.group(2):
                 st = {"OK": "OK", "FAILED": "FAILED", "SKIPPED": "SKIPPED"}[m.group(1)]
                 res.status[cur] = st
