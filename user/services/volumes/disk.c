@@ -16,7 +16,8 @@
  *   2. the answer comes; then each partition's (storage.partition, one at
  *      a time, again without waiting: DISK_PARTS). Without Jam OS's layout
  *      the disk is not the boot disk (step 4; boot_layout): a stick's,
- *      an MBR with an ESP (0xEF) then a FAT32 data partition (0x0C), on
+ *      an MBR with an ESP (0xEF) then a data partition, FAT32 (0x0C) or
+ *      ext (0x83: the default, docs/M13.6-PLAN.md "Ext by default"), on
  *      any disk but an NVMe drive; or, when the machine booted from a GPT
  *      disk, Jam OS's mark (mark.c: an installed drive). When the boot
  *      loader named the disk the machine booted from (a stick by its MBR
@@ -298,9 +299,11 @@ static const char *disk_ident(const struct disk *d)
 }
 
 /* Why d can't be the boot disk by its partitions, or NULL if it may be.
- * Jam OS's layout is a stick's (an MBR with an ESP, then a FAT32 data
- * partition) on any disk but an NVMe drive, or Jam OS's mark (mark.c)
- * when the machine booted from a GPT disk. An NVMe drive is never the
+ * Jam OS's layout is a stick's (an MBR with an ESP, then a FAT32 or an
+ * ext data partition) on any disk but an NVMe drive, or Jam OS's mark
+ * (mark.c) when the machine booted from a GPT disk. (A Linux stick with an
+ * ESP and an ext root has this layout too; it is the boot disk only if
+ * its ESP holds BOOT_FILE.) An NVMe drive is never the
  * boot disk by an MBR (its driver opens nothing of one writable, so its
  * data partition would never open: M12.7-REVIEW finding 5), and a Jam OS
  * drive is the boot disk only on a boot whose loader named it by its
@@ -310,8 +313,9 @@ static const char *boot_layout(const struct disk *d)
     const uint8_t *type = d->type;
     if (disk_jamos_gpt(d))
         return boot_is_gpt() ? NULL : "a Jam OS drive, but the machine booted from a stick";
-    if (d->partitions < 2 || type[0] != TYPE_ESP || type[1] != TYPE_FAT32_LBA)
-        return "not a Jam OS stick (an ESP, then a FAT32 data partition)";
+    if (d->partitions < 2 || type[0] != TYPE_ESP ||
+        (type[1] != TYPE_FAT32_LBA && type[1] != TYPE_LINUX))
+        return "not a Jam OS stick (an ESP, then a FAT32 or ext data partition)";
     if (d->bus == DISKS_BUS_NVME)
         return "a stick's partitions on an NVMe drive";
     return NULL;

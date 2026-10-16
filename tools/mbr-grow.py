@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Grow Jam OS's data partition (MBR entry 2) to the end of the disk, and
-wipe its first MiB so Jam OS formats it, full size, on the next boot.
+wipe its first MiB: a FAT one is formatted by Jam OS, full size, on the next
+boot; an ext one (type 0x83) is made by tools/stick-data.sh right after.
 
 tools/write-usb.sh runs it on the stick right after writing the image
 (which holds a 64 MiB data partition). It refuses a disk whose MBR isn't
-Jam OS's layout (entry 1 type 0xEF, entry 2 type 0x0C), a shrink, and a
-size it can't use.
+Jam OS's layout (entry 1 type 0xEF, entry 2 type 0x0C or 0x83), a shrink,
+and a size it can't use.
 Usage: mbr-grow.py <disk or image> <total 512-byte sectors>"""
 import struct
 import sys
@@ -19,8 +20,8 @@ with open(path, "r+b", buffering=0) as f:
         sys.exit("mbr-grow: no MBR signature: not a Jam OS disk")
     esp = struct.unpack(ENTRY, mbr[446:462])
     data = list(struct.unpack(ENTRY, mbr[462:478]))
-    if esp[2] != 0xEF or data[2] != 0x0C:
-        sys.exit("mbr-grow: partitions are not ESP + FAT32 data: not a Jam OS disk")
+    if esp[2] != 0xEF or data[2] not in (0x0C, 0x83):
+        sys.exit("mbr-grow: partitions are not ESP + FAT32 or ext data: not a Jam OS disk")
     start = data[4]
     if total >= 1 << 32:
         sys.exit("mbr-grow: disk too big for an MBR partition (2 TiB)")
@@ -31,6 +32,6 @@ with open(path, "r+b", buffering=0) as f:
     f.seek(0)
     f.write(bytes(mbr))
     f.seek(start * 512)
-    f.write(bytes(1 << 20))   # no FAT here now: Jam OS formats it, full size
+    f.write(bytes(1 << 20))   # no filesystem here now: made again, full size
 print(f"mbr-grow: data partition now {data[5]} sectors ({data[5] * 512 >> 20} MiB) from "
-      f"sector {start}; it is formatted on the first boot")
+      f"sector {start}; its first MiB is wiped")

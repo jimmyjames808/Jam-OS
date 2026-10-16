@@ -34,11 +34,18 @@ diskutil unmountDisk "$dev"
 raw=$(echo "$dev" | sed 's|/dev/disk|/dev/rdisk|')
 sudo dd if="$img" of="$raw" bs=4m
 sync
-# The image's data partition is 64 MiB: grow it to the end of the stick
-# (Jam OS formats it, full size, on the first boot).
+# The image's data partition is 64 MiB: grow it to the end of the stick. A
+# FAT one Jam OS formats, full size, on the first boot; an ext one (the
+# DATA_FS=ext) is made again here at the stick's size, with the files of DATA_DIR
+# (the Makefile's: the owner's key and the like) in it, since nothing on the
+# Mac can write it after the first boot (tools/stick-data.sh).
+here=$(dirname "$0")
 diskutil unmountDisk "$dev" >/dev/null 2>&1 || true   # macOS may mount the new volumes
 bytes=$(diskutil info -plist "$dev" | plutil -extract TotalSize raw -)
-sudo python3 "$(dirname "$0")/mbr-grow.py" "$raw" $((bytes / 512))
+sudo python3 "$here/mbr-grow.py" "$raw" $((bytes / 512))
+if [ "$(python3 "$here/mkimage.py" --data-fs "$img")" = ext ]; then
+    sudo sh "$here/stick-data.sh" "${JAMEXT:-$here/../build/host/jamext}" "$raw" "${DATA_DIR:-}"
+fi
 sync
 diskutil eject "$dev"
 echo "done: boot your PC from this stick (UEFI, Secure Boot off)."

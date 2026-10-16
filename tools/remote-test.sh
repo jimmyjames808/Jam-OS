@@ -43,7 +43,7 @@
 #
 # A build with nothing to do costs nothing: the machine keeps a stamp of the
 # tree it last built for this checkout (build/.remote-built-k<KTESTS>: every
-# file's name, size and time, and KTESTS and JAMOS_VLAN), and when the tree
+# file's name, size and time, and KTESTS, JAMOS_VLAN and JAMOS_DATA_FS), and when the tree
 # and the stamp agree and the image is there, the build is skipped without
 # asking the budget for its CPUs. JAMOS_REMOTE_REBUILD=1 builds anyway.
 #
@@ -189,7 +189,7 @@ remote_script() {
 (
     flock 9 || exit 1
     stamp=build/.remote-built-k${KTESTS:-1}
-    fp=$({ echo "KTESTS=${KTESTS-} JAMOS_VLAN=${JAMOS_VLAN-}"
+    fp=$({ echo "KTESTS=${KTESTS-} JAMOS_VLAN=${JAMOS_VLAN-} JAMOS_DATA_FS=${JAMOS_DATA_FS-}"
            find . \( -path ./build -o -path ./build-remote.log -o -name __pycache__ \) -prune -o ! -type d -printf "%y %P %s %T@ %l\n" |
                LC_ALL=C sort; } | md5sum)
     fp=${fp%% *}

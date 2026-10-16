@@ -134,7 +134,7 @@ wait {prompt}
 # tools/nvme-test.sh's windows case)
 send disks | grep "Jam OS disk" && echo ok-$T-disks1
 wait ok-x-disks1
-send disks | grep -c "/data$" | grep ^1$ && echo ok-$T-disks2
+send disks | grep -c "/data" | grep ^1$ && echo ok-$T-disks2
 wait ok-x-disks2
 send disk digest nosuchdisk
 wait no disk called nosuchdisk

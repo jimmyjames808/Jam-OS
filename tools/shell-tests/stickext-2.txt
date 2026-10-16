@@ -1,0 +1,32 @@
+# The stick with an ext /data, second boot of the same stick
+# (tools/stickext-test.sh, after stickext-1.txt): what the first boot wrote
+# is there (the mode, the link, the big file, the first boot's log), and this
+# boot has a log of its own. Then the plug is pulled: QEMU quits while a
+# program is writing a file it never syncs; the test replays the journal on
+# the host and checks the volume (jamext, and e2fsck where it is installed).
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+seen 30 logd: writing /data/logs/boot-0002.txt
+send T=b
+wait {prompt}
+send cat "/data/My Notes/first boot.txt"
+wait kept across a reboot-a
+send ls -l "/data/My Notes" | grep -c "^-rw-------  1 jam  jam .* first boot.txt$" | grep ^1$ && echo ok-$T-mode
+wait ok-b-mode
+send readlink "/data/My Notes/link" | grep -c "^first boot.txt$" | grep ^1$ && echo ok-$T-link
+wait ok-b-link
+send hexdump /boot/bin/utest | tail -n 3 | write /data/end1; hexdump /data/utest.copy | tail -n 3 | write /data/end2; echo hex-$T-done
+wait 60 hex-b-done
+send cat /data/end1 /data/end2 | sort | uniq | wc -l | grep ^3$ && echo ok-$T-copy
+wait ok-b-copy
+send ls /data/logs | grep -c ^boot-000..txt$ | grep ^2$ && echo ok-$T-logs
+wait ok-b-logs
+send grep -c "init: /data mounted" /data/logs/boot-0001.txt | grep -v ^0$ && echo ok-$T-log1
+wait ok-b-log1
+send write "/data/My Notes/second boot.txt" written on boot two-$T && sync && echo ok-$T-sync
+wait ok-b-sync
+send run utest fs-hold /data/pulled.bin
+wait 20 fs-hold: writing /data/pulled.bin
+sleep 0.5
+monitor quit

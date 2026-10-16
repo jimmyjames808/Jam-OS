@@ -8,7 +8,8 @@
     ports-preinstall.py install [options] <image> <port>...
         write that set into <image>'s data partition (the Makefile's
         layout: MBR partition 2, wherever the image's MBR says it starts,
-        or --offset-mib); the ports must be built
+        or --offset-mib: a FAT volume, mtools; an ext one, `make image
+        DATA_FS=ext`'s, build/host/jamext import --part 2); the ports must be built
         (tools/ports.py build) into --stage (default build/ports).
         --feed FILE: also write the tools/serial-feed.py lines that check
         the shell's `allow -l` lists every approval
@@ -36,7 +37,8 @@ serial; nothing is in the middle of a change).
 
 After writing, every program is read back from the image and its SHA-256
 compared with the stage's. Runs on the Mac's Python 3.9 and the test
-host's 3.12; needs mtools (mformat's partner tools: mmd, mcopy)."""
+host's 3.12; needs mtools (mformat's partner tools: mmd, mcopy) for a FAT
+data partition, build/host/jamext (`make build/host/jamext`) for an ext one."""
 import argparse
 import hashlib
 import os
@@ -131,16 +133,32 @@ def mtool(*args):
     return r.stdout
 
 
+def data_is_ext(image):
+    """Is the image's data partition an ext volume (MBR type 0x83;
+    tools/mkimage.py --data-fs) and not a FAT one?"""
+    r = subprocess.run([sys.executable, os.path.join(TOP, "tools", "mkimage.py"), "--data-fs",
+                        image], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise Error(r.stderr.strip() or "%s: no data partition" % image)
+    return r.stdout.strip() == "ext"
+
+
 def install(image, names, ports, stage_dir, offset_mib, key=None, feed=None):
     t = load_tree(ports)
     order = closure(t, names)
     abi = fmt.abi_stamp(TOP)
     part = "%s@@%dM" % (image, offset_mib)
+    ext = data_is_ext(image)
+    jamext = os.path.join(TOP, "build", "host", "jamext")
+    if ext and not os.access(jamext, os.X_OK):
+        raise Error("%s's data partition is ext and there is no %s (make build/host/jamext)" %
+                    (os.path.basename(image), os.path.relpath(jamext, TOP)))
     work = tempfile.mkdtemp(prefix="ports-preinstall.")
     try:
         if not key:   # the ports vectors' key: its public half is ports/vectors/test.pub
             key, _pub = signmod.test_key(os.path.join(work, "keys"), "ports vectors")
-        pkg, etc = os.path.join(work, "pkg"), os.path.join(work, "etc")
+        root = os.path.join(work, "root")   # what goes into /data: pkg and etc
+        pkg, etc = os.path.join(root, "pkg"), os.path.join(root, "etc")
         tables = os.path.join(etc, "allow.d")
         os.makedirs(os.path.join(pkg, "db"))
         os.makedirs(tables)
@@ -175,6 +193,7 @@ def install(image, names, ports, stage_dir, offset_mib, key=None, feed=None):
                     os.makedirs(os.path.dirname(dst), exist_ok=True)
                     with open(dst, "wb") as f:
                         f.write(data)
+                    os.chmod(dst, 0o755 if p.files[rel][0] & 0o111 else 0o644)   # jamext import's 0755
                     if rel in p.lists:
                         digest = hashlib.sha256(data).hexdigest()
                         text = wants_text(p.lists[rel].decode().splitlines())
@@ -187,13 +206,18 @@ def install(image, names, ports, stage_dir, offset_mib, key=None, feed=None):
                 packages.append("%s %s-r%d" % (p.name, p.version, p.revision))
         with open(os.path.join(etc, "allow"), "w") as f:
             f.write(ALLOW_HEAD + "".join(a + "\n" for a in allow))
-        # one recursive copy each; mtools makes the directories
-        mtool("mcopy", "-s", "-i", part, pkg, etc, "::/")
+        if ext:   # one import of the tree (jamext makes the directories, the volume stays clean)
+            mtool(jamext, "-q", "--part", "2", "import", image, root)
+        else:     # one recursive copy each; mtools makes the directories
+            mtool("mcopy", "-s", "-i", part, pkg, etc, "::/")
         pkg_dir = os.path.join(work, "back")
         os.makedirs(pkg_dir)
         for rel, digest in programs:
             back = os.path.join(pkg_dir, os.path.basename(rel))
-            mtool("mcopy", "-n", "-i", part, "::/pkg/" + rel, back)
+            if ext:
+                mtool(jamext, "-q", "--part", "2", "get", image, "/pkg/" + rel, back)
+            else:
+                mtool("mcopy", "-n", "-i", part, "::/pkg/" + rel, back)
             if sha256(back) != digest:
                 raise Error("%s: read back from the image, it differs" % rel)
             os.unlink(back)

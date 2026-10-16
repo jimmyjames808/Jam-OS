@@ -70,6 +70,8 @@ FONT_CHECK := build/host/fontcheck
 GPT_CHECK  := build/host/gptcheck
 # The ext library on the Mac, sanitised (tools/extcheck.c, below).
 EXT_CHECK  := build/host/extcheck
+# The host tool for ext volumes (tools/jamext, below): the image's /data.
+JAMEXT     := build/host/jamext
 # The ports formats' readers on the Mac, sanitised (tools/pkgcheck.c, below).
 PKG_CHECK  := build/host/pkgcheck
 ROOTPORT_CHECK := build/host/rootportcheck
@@ -81,7 +83,7 @@ ITREE_CHECK := build/host/itreecheck
 # the previous one (what boot/limine.conf may name; `make check`).
 STICK_FILES := /boot/jamos.elf /boot/bootfs.img /boot/prev-jamos.elf /boot/prev-bootfs.img
 # The ESP ends at 256 MiB (it starts at 1 MiB: 255 MiB, FAT32 with 2 KiB
-# clusters); the data partition (/data, FAT32 "JAMOS-DATA") fills the rest
+# clusters); the data partition (/data, "JAMOS-DATA") fills the rest
 # of the image: 64 MiB in QEMU, the rest of the stick once
 # tools/write-usb.sh has grown it. `update` keeps three builds on the ESP
 # while it writes one (the stick's, the previous one and the new one:
@@ -93,6 +95,31 @@ STICK_FILES := /boot/jamos.elf /boot/bootfs.img /boot/prev-jamos.elf /boot/prev-
 # `make usb` remakes it.
 ESP_END_MIB := 256
 IMAGE_MIB := $(shell echo $$(( $(ESP_END_MIB) + 64 )))
+
+# The data partition's filesystem (docs/M13.6-PLAN.md, "Ext by default"):
+# FAT32 (MBR type 0x0C, mformat) for now, ext (type 0x83, made by jamext)
+# with `make image DATA_FS=ext`, or JAMOS_DATA_FS=ext in the environment
+# (the PC's builds forward JAMOS_*). The default is FAT while the test
+# scripts write /data with mtools; U11b moves them to jamext and flips it to
+# ext (the owner's choice: every data volume Jam OS makes is ext). The ESP is
+# FAT32 either way: the firmware reads only FAT.
+# The ext volume is the same bytes every time (DATA_SEED: its uuid and its
+# inodes' generations; DATA_TIME: every time written, SOURCE_DATE_EPOCH
+# when that is set). DATA_DIR, if it is a directory, is copied into an ext
+# /data before the first boot (jamext import): the owner's
+# ~/.config/jamos/data holds the files a stick needs (etc/authorized_keys),
+# since the Mac can't read an ext stick afterwards. `make usb` of an ext
+# image makes the stick's volume again at the stick's size and copies
+# DATA_DIR in once more (tools/stick-data.sh). The stamp rebuilds the image
+# when any of it changes.
+DATA_FS   ?= $(if $(JAMOS_DATA_FS),$(JAMOS_DATA_FS),fat)
+ifneq ($(filter-out ext fat,$(DATA_FS)),)
+$(error DATA_FS is ext or fat, not "$(DATA_FS)")
+endif
+DATA_DIR  ?= $(HOME)/.config/jamos/data
+DATA_TIME ?= $(if $(SOURCE_DATE_EPOCH),$(SOURCE_DATE_EPOCH),1792000000)
+DATA_SEED ?= 1
+DATA_STAMP := $(IMAGE).data-fs
 
 LIMINE  := third_party/limine
 OVMF_DIR ?= $(shell brew --prefix qemu 2>/dev/null)/share/qemu
@@ -681,8 +708,9 @@ $(PT_LIB_OBJ): $(patsubst %,$(BUILD)/udrv/drivers/lib/%.o,$(PT_LIB)) tools/check
 # ext library builds for Jam OS and passes tools/extcheck.c (Linux's
 # fixtures, broken checksums, the feature table, a fuzz pass), the host tool
 # jamext builds and round-trips a directory, files, links and a volume at
-# an offset, each image checked by extcheck (tools/jamext-test.sh), and the
-# syscall scan (tools/cr/syscall-scan.py) passes a clean program and
+# an offset, each image checked by extcheck (tools/jamext-test.sh), the
+# stick's images (ext /data by default, FAT when asked, the flashing tool's
+# data step: tools/image-test.sh), and the syscall scan (tools/cr/syscall-scan.py) passes a clean program and
 # catches a `syscall` of a program's own.
 check: all
 	python3 tools/gensyscalls.py check
@@ -732,6 +760,7 @@ check: all
 	$(EXT_CHECK) tools/extfix $(BUILD)/extfix
 	$(MAKE) -s $(JAMEXT)
 	sh tools/jamext-test.sh $(JAMEXT) $(EXT_CHECK) $(BUILD)/jamext-test $(BUILD)/extfix
+	sh tools/image-test.sh $(BUILD)/image-test
 	$(MAKE) -s $(PKG_CHECK)
 	python3 tools/ports.py pkgfuzz $(BUILD)/pkgfuzz
 	$(PKG_CHECK) ports/vectors $(BUILD)/pkgfuzz
@@ -820,13 +849,34 @@ $(BOOTFS): $(USER_PROGS:%=$(BUILD)/user/%.bootfs) $(DRIVERS:%=$(BUILD)/drv/%.boo
 
 image: $(IMAGE)
 
-$(IMAGE): $(KERNEL) $(BOOTFS) boot/limine.conf tools/mkimage.py tools/fat-label.py tools/mkbootfs.py
-	python3 tools/mkimage.py $@ $(ESP_END_MIB) $(IMAGE_MIB)
+$(DATA_STAMP): FORCE
+	@mkdir -p $(BUILD)
+	@{ echo "$(DATA_FS) $(DATA_TIME) $(DATA_SEED)"; \
+	   if [ $(DATA_FS) = ext ] && [ -d "$(DATA_DIR)" ]; then \
+	       (cd "$(DATA_DIR)" && find . -type f | LC_ALL=C sort | while read -r f; do \
+	           echo "$$f"; cksum < "$$f"; done); \
+	   fi; } > $@.new; \
+	 if cmp -s $@.new $@; then rm $@.new; else mv $@.new $@; fi
+
+$(IMAGE): $(KERNEL) $(BOOTFS) boot/limine.conf tools/mkimage.py tools/fat-label.py tools/mkbootfs.py \
+          $(DATA_STAMP) $(if $(filter ext,$(DATA_FS)),$(JAMEXT))
+	python3 tools/mkimage.py $@ $(ESP_END_MIB) $(IMAGE_MIB) --data $(DATA_FS)
 	mformat -i $@@@1M -T $$(( ($(ESP_END_MIB) - 1) * 2048 )) -F -v JAMOS ::
+	python3 tools/fat-label.py $@ 1 --fix
+ifeq ($(DATA_FS),ext)
+	$(JAMEXT) -q --seed $(DATA_SEED) --time $(DATA_TIME) --part 2 mkfs --label JAMOS-DATA $@ 2T \
+	    || { rm -f $@; exit 1; }
+	@if [ -d "$(DATA_DIR)" ]; then \
+	    echo "data: $(DATA_DIR) goes into /data"; \
+	    $(JAMEXT) -q --seed $(DATA_SEED) --time $(DATA_TIME) --part 2 import $@ "$(DATA_DIR)" \
+	        || { rm -f $@; exit 1; }; \
+	fi
+	$(JAMEXT) -q --part 2 check $@ > /dev/null || { rm -f $@; exit 1; }
+else
 	mformat -i $@@@$(ESP_END_MIB)M -T $$(( ($(IMAGE_MIB) - $(ESP_END_MIB)) * 2048 )) -F \
 	    -v JAMOS-DATA ::
-	python3 tools/fat-label.py $@ 1 --fix
 	python3 tools/fat-label.py $@ $(ESP_END_MIB) --fix
+endif
 	mmd -i $@@@1M ::/EFI ::/EFI/BOOT ::/boot ::/boot/limine
 	mcopy -i $@@@1M $(LIMINE)/BOOTX64.EFI ::/EFI/BOOT/
 	mcopy -i $@@@1M boot/limine.conf ::/boot/limine/
@@ -1015,7 +1065,6 @@ $(EXT_CROSS): $(BUILD)/extcross/%.o: $(EXT_DIR)/%.c $(EXT_HDRS) | $(UINC)
 # an image or a partition of a disk image. `make check` makes images with it
 # and has extcheck (the sanitised build above) check them
 # (tools/jamext-test.sh). Plain -O2: it is a build tool, not a test.
-JAMEXT       := build/host/jamext
 JAMEXT_SRCS  := $(wildcard tools/jamext/*.c)
 $(JAMEXT): $(JAMEXT_SRCS) tools/jamext/jamext.h $(EXT_SRCS) $(EXT_HDRS) \
            kernel/include/jam/status.h
@@ -1027,8 +1076,8 @@ $(BUILD)/fontpreview.png: $(FONT_TOOL)
 	$(FONT_TOOL) $@
 
 # Write the image to a USB stick. Refuses anything that isn't external.
-usb: $(IMAGE)
-	tools/write-usb.sh $(IMAGE) $(DEV)
+usb: $(IMAGE) $(JAMEXT)
+	JAMEXT=$(JAMEXT) DATA_DIR="$(DATA_DIR)" tools/write-usb.sh $(IMAGE) $(DEV)
 
 # Update a stick that already boots Jam OS: the kernel, bootfs and
 # limine.conf onto its ESP; nothing erased, /data untouched. DEV is optional
