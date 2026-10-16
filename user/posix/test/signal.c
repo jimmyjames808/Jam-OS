@@ -31,7 +31,6 @@
  *     on the interrupted stack; SIGINT from kill and from a timer. */
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <errno.h>
 #include <poll.h>
 #include <pthread.h>
@@ -53,8 +52,14 @@
 #define FUTEX_WAKE_PRIVATE 129
 
 /* The busy threads' alternate stack: room for the kernel's frame, the
- * entry's copy of the vector state and a handler that makes calls. */
-#define BUSY_ALT (64 << 10)
+ * entry's copy of the vector state and a handler that makes calls. Static,
+ * as the stack copy's buffer is, so that the section leaves malloc's
+ * mappings as it found them (procinfo's maps checks come later in the same
+ * process). One busy thread at a time. */
+#define BUSY_ALT  (64 << 10)
+#define COPY_SIZE (64 << 10)
+static char busy_alt[BUSY_ALT] __attribute__((aligned(16)));
+static uint8_t copy_buf[COPY_SIZE];
 
 static volatile sig_atomic_t hits[65];       /* handler runs, by signal */
 static volatile pthread_t    ran_on[65];     /* the thread the last one ran on */
@@ -498,9 +503,9 @@ static void *busy_calling(void *arg)
     return NULL;
 }
 
-static void busy_start_with(struct busy *b, size_t alt, void *(*fn)(void *), bool plain)
+static void busy_start_with(struct busy *b, bool alt, void *(*fn)(void *), bool plain)
 {
-    *b = (struct busy){ .alt = { .ss_sp = alt ? malloc(alt) : NULL, .ss_size = alt },
+    *b = (struct busy){ .alt = { .ss_sp = alt ? busy_alt : NULL, .ss_size = alt ? BUSY_ALT : 0 },
                         .plain = plain };
     target = b;
     CHECK(pthread_create(&b->thread, NULL, fn, b) == 0);
@@ -509,7 +514,7 @@ static void busy_start_with(struct busy *b, size_t alt, void *(*fn)(void *), boo
     CHECK(b->frame);
 }
 
-static void busy_start(struct busy *b, size_t alt)
+static void busy_start(struct busy *b, bool alt)
 {
     busy_start_with(b, alt, busy_run, false);
 }
@@ -518,7 +523,6 @@ static void busy_stop(struct busy *b)
 {
     b->stop = 1;
     CHECK(pthread_join(b->thread, NULL) == 0);
-    free(b->alt.ss_sp);
 }
 
 /* The registers a handler was given are the loop's: RIP inside it, RBP
@@ -609,7 +613,7 @@ static void check_busy_profiler(void)
 {
     handle_busy(SIGPROF, sample, SA_RESTART | SA_ONSTACK);
     struct busy b;
-    busy_start(&b, BUSY_ALT);
+    busy_start(&b, true);
     long us[PROF_ROUNDS];
     int fast = 0, slow = 0;
     for (int i = 0; i < PROF_ROUNDS; i++) {
@@ -655,7 +659,7 @@ static void check_busy_calls(void)
     for (int plain = 0; plain < 2; plain++) {
         handle_busy(SIGPROF, sample, SA_RESTART);
         struct busy b;
-        busy_start_with(&b, 0, busy_calling, plain);
+        busy_start_with(&b, false, busy_calling, plain);
         int i = 0;
         while (i < CALL_SAMPLES && !pthread_kill(b.thread, SIGPROF) &&
                reaches_soon(&busy_hits[SIGPROF], i + 1, 5000))
@@ -674,8 +678,7 @@ static void check_busy_calls(void)
 static struct {
     volatile uint32_t done;   /* the futex word: 1 once the copy is made */
     uintptr_t top;            /* the stack's top */
-    uint8_t  *buf;
-    size_t    cap, len;
+    size_t    len;
     uintptr_t rsp, here;      /* the ucontext's RSP, the handler's frame */
     bool      inloop;
 } copy;
@@ -689,9 +692,9 @@ static void copy_stack(int sig, siginfo_t *si, void *ucv)
     copy.rsp = (uintptr_t)uc->uc_mcontext.gregs[REG_RSP];
     copy.here = (uintptr_t)__builtin_frame_address(0);
     copy.len = 0;
-    if (copy.rsp < copy.top && copy.top - copy.rsp <= copy.cap) {
+    if (copy.rsp < copy.top && copy.top - copy.rsp <= sizeof(copy_buf)) {
         copy.len = copy.top - copy.rsp;
-        memcpy(copy.buf, (void *)copy.rsp, copy.len);
+        memcpy(copy_buf, (void *)copy.rsp, copy.len);
     }
     __atomic_store_n(&copy.done, 1, __ATOMIC_RELEASE);
     syscall(SYS_futex, &copy.done, FUTEX_WAKE_PRIVATE, 1, NULL, NULL, 0);
@@ -703,7 +706,7 @@ static void check_busy_stack_copy(void)
 {
     handle_busy(SIGURG, copy_stack, SA_RESTART);
     struct busy b;
-    busy_start(&b, BUSY_ALT);
+    busy_start(&b, true);
     pthread_attr_t attr;
     void *base;
     size_t size;
@@ -711,8 +714,6 @@ static void check_busy_stack_copy(void)
     CHECK(pthread_attr_getstack(&attr, &base, &size) == 0);
     pthread_attr_destroy(&attr);
     copy.top = (uintptr_t)base + size;
-    copy.cap = size;
-    copy.buf = malloc(size);
     uintptr_t frame = (uintptr_t)b.frame;
     int good = 0;
     for (int i = 0; i < COPY_ROUNDS; i++) {
@@ -728,12 +729,11 @@ static void check_busy_stack_copy(void)
          * alternate stack */
         size_t at = frame - copy.rsp;
         good += copy.inloop && copy.len && at + 16 <= copy.len &&
-                !memcmp(copy.buf + at, (void *)frame, 16) && copy.here < copy.rsp &&
+                !memcmp(copy_buf + at, (void *)frame, 16) && copy.here < copy.rsp &&
                 !on_target_alt(copy.here);
     }
     CHECK(good == COPY_ROUNDS);
     busy_stop(&b);
-    free(copy.buf);
     deflt(SIGURG);
 }
 
@@ -745,7 +745,7 @@ static void check_busy_sigint(void)
     block(SIGINT, SIG_BLOCK);
     handle_busy(SIGINT, sample, 0);
     struct busy b;
-    busy_start(&b, 0);
+    busy_start(&b, false);
     CHECK(kill(getpid(), SIGINT) == 0);
     CHECK(reaches_soon(&busy_hits[SIGINT], 1, 2000));
     timer_t t;
