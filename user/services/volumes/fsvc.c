@@ -6,6 +6,18 @@
  * volumes.remount, and volesp (the boot disk's ESP read-write
  * for init alone: the same stop and restart, and no mount meanwhile).
  *
+ * Which service a partition gets (fs_choose, in the start's task): a
+ * partition whose type can hold ext (MBR 0x83, GPT's Linux filesystem
+ * type, Jam OS's data type) and the boot disk's data partition are looked
+ * at for the ext superblock (probe.c); bin/extfs starts on one that has it,
+ * bin/fat on any other FAT-typed one (a Linux-only type with no ext volume
+ * is left alone). An ext volume is mounted read-write only where it is
+ * Jam OS's: the data partition of a Jam OS drive (volumes' own mark check,
+ * mark.c), which is /jam, and a test disk's; someone else's ext volume is
+ * read-only always, and `mount -w` on it is refused (Q9 of
+ * docs/M13.6-PLAN.md). The boot disk's own data partition, ext or FAT, is
+ * /data as before.
+ *
  * A service's `fs` channel is volumes', both ends, from its first start
  * until it is retired, given up on or stopped in order (a remount): each
  * instance is handed a duplicate of the server end (fs_serve_end), so a
@@ -16,6 +28,7 @@
  * the disk's driver), so every start runs in a task (calls.c): fs_start's
  * own (start_main), a restart's (supervise.c), a remount's and the ESP
  * write's (fs_restart, in their request's task). */
+#include <extfssvc.h>
 #include <fatsvc.h>
 #include <fs_idl.h>
 #include <idl/fsctl.h>
@@ -28,6 +41,8 @@ const char *fs_mount_path(const struct vol *b)
     const struct disk *d = disk_of(b);
     bool test = d && d->test;
     if (b->other) {
+        if (b->jam)
+            return test ? "/jam-test" : "/jam";
         snprintf(usb, sizeof(usb), "/%s%u%s", b->nvme ? "nvme" : "usb", b->usbn,
                  test ? "-test" : "");
         return usb;
@@ -244,9 +259,10 @@ const char *fs_format_arg(const struct vol *b)
     bool boot_data = d && d->state == DISK_BOOT && !b->other && b->part == PART_DATA;
     /* A partition of a disk prepare.c is making Jam OS's (by our own check),
      * while it is writable: fat formats it if its first sector holds no
-     * boot signature, and never otherwise. */
+     * boot signature, and never otherwise. (An ext volume is never made
+     * here: its partition is blank, so it goes to fat. U7b changes that.) */
     bool fresh = d && b->other && b->rw && (d->fresh >> b->part & 1) && disk_jamos_gpt(d);
-    return boot_data || fresh ? FAT_ARG_FORMAT : NULL;
+    return !b->ext && (boot_data || fresh) ? FAT_ARG_FORMAT : NULL;
 }
 
 const char *fs_end_arg(const struct vol *b)
@@ -263,7 +279,7 @@ static int mount_number(bool test, bool nvme)
     for (unsigned n = 0; n < (nvme ? MAX_NVME_MOUNTS : MAX_USB_MOUNTS); n++) {
         bool used = false;
         for (unsigned i = 0; i < nvols && !used; i++)
-            used = vols[i].path && vols[i].other && vols[i].nvme == nvme &&
+            used = vols[i].path && vols[i].other && !vols[i].jam && vols[i].nvme == nvme &&
                    vols[i].test == test && vols[i].usbn == n;
         if (!used)
             return (int)n;
@@ -301,7 +317,146 @@ static struct vol *fs_slot(struct disk *d, unsigned part, bool other)
     return b;
 }
 
-/* fs_start's task: the start, then what its caller wanted done. */
+/* ---- which service a partition gets ------------------------------------------- */
+
+/* May a partition of this MBR type hold a FAT volume? 00 is usb-storage's
+ * "no table: the whole disk is one FAT volume". */
+static bool fat_type(uint8_t type)
+{
+    return type == 0x00 || type == 0x01 || type == 0x04 || type == 0x06 || type == 0x0b ||
+           type == 0x0c || type == 0x0e || type == TYPE_ESP;
+}
+
+/* GPT type GUIDs as their bytes on disk (the first three fields little-endian). */
+static const uint8_t guid_esp[16] = { 0x28, 0x73, 0x2a, 0xc1, 0x1f, 0xf8, 0xd2, 0x11,
+                                      0xba, 0x4b, 0x00, 0xa0, 0xc9, 0x3e, 0xc9, 0x3b };
+static const uint8_t guid_basic[16] = { 0xa2, 0xa0, 0xd0, 0xeb, 0xe5, 0xb9, 0x33, 0x44,
+                                        0x87, 0xc0, 0x68, 0xb6, 0xb7, 0x26, 0x99, 0xc7 };
+static const uint8_t guid_jamos[16] = { 0x65, 0xe5, 0xba, 0x71, 0xa8, 0xd4, 0x15, 0x43,
+                                        0x8c, 0x81, 0x9b, 0x35, 0x46, 0x2c, 0xc1, 0x58 };
+static const uint8_t guid_linux[16] = { 0xaf, 0x3d, 0xc6, 0x0f, 0x83, 0x84, 0x72, 0x47,
+                                        0x8e, 0x79, 0x3d, 0x69, 0xd8, 0x47, 0x7d, 0xe4 };
+
+/* May a GPT partition of this type GUID (its bytes on disk) hold a FAT
+ * volume? The ESP's type, Microsoft's basic data, which is also NTFS's and
+ * exFAT's (fat looks at the boot sector and exits FAT_EXIT_NO_VOLUME having
+ * read one block), and Jam OS's own data type. The MSR, recovery and
+ * anything else are listed, never started. */
+static bool fat_guid(const uint8_t *g)
+{
+    return !memcmp(g, guid_esp, 16) || !memcmp(g, guid_basic, 16) || !memcmp(g, guid_jamos, 16);
+}
+
+/* ... an ext volume? GPT's Linux filesystem type and Jam OS's own data
+ * type (a partition of that type holds FAT or ext: probe.c looks). */
+static bool ext_guid(const uint8_t *g)
+{
+    return !memcmp(g, guid_linux, 16) || !memcmp(g, guid_jamos, 16);
+}
+
+/* May partition `part` of d hold a FAT volume, by its type? ... an ext one? */
+static bool part_fat(const struct disk *d, unsigned part)
+{
+    return d->scheme == STORAGE_SCHEME_GPT ? fat_guid(d->info[part].type_guid)
+                                           : fat_type(d->type[part]);
+}
+
+static bool part_ext(const struct disk *d, unsigned part)
+{
+    return d->scheme == STORAGE_SCHEME_GPT ? ext_guid(d->info[part].type_guid)
+                                           : d->type[part] == TYPE_LINUX;
+}
+
+/* Is another mount (of a test disk's if b's is) the Jam OS drive's /jam? */
+static bool jam_taken(const struct vol *self)
+{
+    for (unsigned i = 0; i < nvols; i++)
+        if (&vols[i] != self && vols[i].path && vols[i].jam && vols[i].test == self->test)
+            return true;
+    return false;
+}
+
+/* b's partition holds an ext volume: its service is bin/extfs, and where
+ * and how it is mounted is decided (the rules in this file's header). The
+ * Jam OS drive's data partition (an NVMe drive, by volumes' own mark
+ * check, mark.c) is /jam, read-write unless its driver is read-only (the
+ * `diskro` word); a test disk's ext volume is written too (utest drives
+ * extfs through it); anyone else's never is. OK, or ERR_NOT_FOUND (said:
+ * no bin/extfs), ERR_PEER_CLOSED (b went meanwhile). */
+static status_t choose_ext(struct vol *b)
+{
+    struct disk *d = disk_of(b);
+    if (!in_bootfs(EXTFS_PATH)) {
+        say(false, "volumes: %s: %s is not in bootfs: no filesystem for its ext volume",
+            disk_name(d), EXTFS_PATH);
+        return ERR_NOT_FOUND;
+    }
+    b->ext = true;
+    b->path = EXTFS_PATH;
+    d->fstype[b->part] = VOLDISKS_FSTYPE_EXT;
+    if (b->other) {
+        uint32_t serial = b->serial;
+        b->jam = b->part == PART_DATA && d->bus == DISKS_BUS_NVME && disk_jamos_gpt(d) &&
+                 !jam_taken(b);
+        b->dflt_rw = d->test;
+        if (b->jam) {
+            uint8_t mode, ro = 1, readable;
+            status_t st = driver_mode(d, &mode, &ro, &readable);
+            if (b->serial != serial || stopping)
+                return ERR_PEER_CLOSED;
+            b->dflt_rw = st == OK && !ro;
+        }
+        b->rw = b->rw || b->dflt_rw;
+    }
+    snprintf(b->name, sizeof(b->name), "extfs-%s", fs_mount_path(b) + 1);
+    return OK;
+}
+
+/* In the start's task: which service b gets. A partition whose type can
+ * hold ext, and the boot disk's data partition, have their superblock
+ * looked at (probe.c); the others are FAT, as they always were. OK;
+ * ERR_NOT_FOUND: nothing either service can read there (said): a Linux
+ * type with no ext volume is left alone; ERR_PEER_CLOSED: b went
+ * meanwhile. */
+static status_t fs_choose(struct vol *b)
+{
+    struct disk *d = disk_of(b);
+    unsigned part = b->part;
+    bool boot_data = !b->other && part == PART_DATA;
+    if (!d)
+        return ERR_PEER_CLOSED;
+    if (!boot_data && !part_ext(d, part)) {
+        d->fstype[part] = VOLDISKS_FSTYPE_FAT;
+        return OK;
+    }
+    bool is_ext = false;
+    status_t st = fs_probe_ext(b, &is_ext);
+    if (st == ERR_PEER_CLOSED)
+        return st;
+    if (st != OK)
+        say(false, "volumes: %s partition %u: its first sectors can't be read (%s)", disk_name(d),
+            part + 1, status_str(st));
+    if (is_ext)
+        return choose_ext(b);
+    if (!boot_data && part_fat(d, part) && d->block_size && d->block_size != FAT_BLOCK) {
+        d->badsize |= (uint16_t)(1u << part);   /* a FAT-or-ext type, and no ext: fat reads 512 only */
+        say(false, "volumes: %s partition %u: %u-byte blocks: %s reads 512-byte blocks only: "
+            "left alone", disk_name(d), part + 1, d->block_size, FAT_PATH);
+        return ERR_NOT_FOUND;
+    }
+    if (boot_data || part_fat(d, part)) {
+        d->fstype[part] = VOLDISKS_FSTYPE_FAT;
+        return OK;
+    }
+    d->fstype[part] = VOLDISKS_FSTYPE_NONE;
+    say(false, "volumes: %s partition %u (%s) holds no ext volume %s can read: left alone, "
+        "nothing written to it", disk_name(d), part + 1,
+        d->scheme == STORAGE_SCHEME_GPT ? "a Linux filesystem type" : "type 83", EXTFS_PATH);
+    return ERR_NOT_FOUND;
+}
+
+/* fs_start's task: which service, the start, then what its caller wanted
+ * done. */
 static void start_main(void *arg)
 {
     struct vol *b = arg;
@@ -310,15 +465,18 @@ static void start_main(void *arg)
     unsigned part = b->part;
     bool other = b->other;
     void (*done)(struct disk *, unsigned, status_t) = b->on_started;
-    b->last = fs_run(b, false);
+    status_t chose = fs_choose(b), st = chose;
+    if (chose == OK)
+        st = fs_run(b, false);
+    b->last = st;
     if (b->serial != serial || stopping)
         return;   /* retired meanwhile: its disk moved on without it */
     b->starting = false;
     task_kick(tasks);   /* a kill may wait for this start (request.c) */
-    status_t st = b->last;
-    say(false, "volumes: %s partition %u -> %s at %s%s (%s)", disk_name(d), part + 1, FAT_PATH,
-        fs_mount_path(b), (other || part == PART_ESP) && !b->rw ? ", read-only" : "",
-        status_str(st));
+    if (chose == OK)
+        say(false, "volumes: %s partition %u -> %s at %s%s (%s)", disk_name(d), part + 1,
+            b->path, fs_mount_path(b), (other || part == PART_ESP) && !b->rw ? ", read-only" : "",
+            status_str(st));
     if (st != OK)
         fs_retire(b);
     if (done)
@@ -427,30 +585,6 @@ void drop_services(struct disk *d, enum disk_state state)
     mounts_update();
 }
 
-/* May a partition of this MBR type hold a FAT volume? 00 is usb-storage's
- * "no table: the whole disk is one FAT volume". */
-static bool fat_type(uint8_t type)
-{
-    return type == 0x00 || type == 0x01 || type == 0x04 || type == 0x06 || type == 0x0b ||
-           type == 0x0c || type == 0x0e || type == TYPE_ESP;
-}
-
-/* May a GPT partition of this type GUID (its bytes on disk) hold a FAT
- * volume? The ESP's type, Microsoft's basic data, which is also NTFS's and
- * exFAT's (fat looks at the boot sector and exits FAT_EXIT_NO_VOLUME having
- * read one block), and Jam OS's own data type. The MSR, recovery and
- * anything else are listed, never started. */
-static bool fat_guid(const uint8_t *g)
-{
-    static const uint8_t esp[16] = { 0x28, 0x73, 0x2a, 0xc1, 0x1f, 0xf8, 0xd2, 0x11,
-                                     0xba, 0x4b, 0x00, 0xa0, 0xc9, 0x3e, 0xc9, 0x3b };
-    static const uint8_t basic[16] = { 0xa2, 0xa0, 0xd0, 0xeb, 0xe5, 0xb9, 0x33, 0x44,
-                                       0x87, 0xc0, 0x68, 0xb6, 0xb7, 0x26, 0x99, 0xc7 };
-    static const uint8_t jamos[16] = { 0x65, 0xe5, 0xba, 0x71, 0xa8, 0xd4, 0x15, 0x43,
-                                       0x8c, 0x81, 0x9b, 0x35, 0x46, 0x2c, 0xc1, 0x58 };
-    return !memcmp(g, esp, 16) || !memcmp(g, basic, 16) || !memcmp(g, jamos, 16);
-}
-
 /* A /usbN service's start went: one that failed lets the next one go. */
 static void other_started(struct disk *d, unsigned part, status_t st)
 {
@@ -485,21 +619,23 @@ void others_pump(void)
     }
 }
 
-/* Step 4: d is not the boot disk. Each of its FAT partitions gets a
- * read-only filesystem service and a /usbN (others_pump starts them). */
+/* Step 4: d is not the boot disk. Each of its FAT and ext partitions gets
+ * a filesystem service (read-only, but for an ext volume that is Jam OS's)
+ * and a /usbN (others_pump starts them). */
 void mount_others(struct disk *d)
 {
     d->state = DISK_OTHER;
     d->want = d->nofat = d->badsize = 0;
+    memset(d->fstype, 0, sizeof(d->fstype));
     for (unsigned i = 0; i < d->nparts && i < MAX_PARTS; i++) {
-        bool gpt = d->scheme == STORAGE_SCHEME_GPT;
-        if (gpt && !fat_guid(d->info[i].type_guid))
+        bool fat = part_fat(d, i), ext = part_ext(d, i);
+        if (!fat && !ext && d->scheme == STORAGE_SCHEME_GPT)
             say(false, "volumes: %s partition %u: its GPT type is not FAT: left alone",
                 disk_name(d), i + 1);
-        else if (!gpt && !fat_type(d->type[i]))
+        else if (!fat && !ext)
             say(false, "volumes: %s partition %u: type %02x is not FAT: left alone", disk_name(d),
                 i + 1, d->type[i]);
-        else if (d->block_size && d->block_size != FAT_BLOCK)
+        else if (!ext && d->block_size && d->block_size != FAT_BLOCK)
             d->badsize |= (uint16_t)(1u << i);   /* said below, once */
         else
             d->want |= (uint16_t)(1u << i);
@@ -534,8 +670,9 @@ bool fs_check_ended(struct vol *b, bool no_volume)
     }
     if (!b->other || !no_volume)
         return false;
-    say(false, "volumes: %s partition %u (type %02x) holds no FAT volume %s can read: left alone, "
-        "nothing written to it", disk_name(d), b->part + 1, d->type[b->part], FAT_PATH);
+    say(false, "volumes: %s partition %u (type %02x) holds no %s volume %s can read: left alone, "
+        "nothing written to it", disk_name(d), b->part + 1, d->type[b->part],
+        b->ext ? "ext" : "FAT", b->path);
     problems += !sup_job_empty(b->job, b->path);
     d->nofat |= (uint16_t)(1u << b->part);   /* the listing says so */
     fs_forget(b);

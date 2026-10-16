@@ -3787,9 +3787,9 @@ static uint32_t idl_fz_nschan_serve(const void *q, uint32_t n, const handle_t *h
     return nschan_dispatch_h(HANDLE_INVALID, &idl_fz_nschan_ops, NULL, q, n, hs, nh, r, rhs, rhn);
 }
 static const struct idl_fuzz_msg idl_fz_nschan_msgs[] = {
-    { 0x00510001u, 8u, 1, 0, 40, 0, { 0 }, 2, { { 1, 0, 1280 }, { 1, 0, 40 } } },
-    { 0x00510002u, 8u, 1, 0, 0, 0, { 0 }, 1, { { 1, 0, 1280 } } },
-    { 0x00510003u, 8u, 1, 0, 40, 0, { 0 }, 2, { { 1, 0, 1280 }, { 1, 0, 40 } } },
+    { 0x00510001u, 8u, 1, 0, 48, 0, { 0 }, 2, { { 1, 0, 1536 }, { 1, 0, 48 } } },
+    { 0x00510002u, 8u, 1, 0, 0, 0, { 0 }, 1, { { 1, 0, 1536 } } },
+    { 0x00510003u, 8u, 1, 0, 48, 0, { 0 }, 2, { { 1, 0, 1536 }, { 1, 0, 48 } } },
 };
 
 /* ---- null ---- */
@@ -5144,7 +5144,7 @@ static status_t idl_fz_voldisks_disk(void *ctx, uint32_t index, uint32_t *out_id
     *out_firmware_len = 8;
     return OK;
 }
-static status_t idl_fz_voldisks_partition(void *ctx, uint32_t id, uint32_t index, uint8_t *out_mbr_type, uint8_t out_type_guid[16], uint64_t *out_start, uint64_t *out_blocks, uint8_t *out_fs, char *out_label, uint32_t *out_label_len, char *out_mount, uint32_t *out_mount_len)
+static status_t idl_fz_voldisks_partition(void *ctx, uint32_t id, uint32_t index, uint8_t *out_mbr_type, uint8_t out_type_guid[16], uint64_t *out_start, uint64_t *out_blocks, uint8_t *out_fs, uint8_t *out_fstype, char *out_label, uint32_t *out_label_len, char *out_mount, uint32_t *out_mount_len)
 {
     (void)ctx;
     (void)id;
@@ -5154,6 +5154,7 @@ static status_t idl_fz_voldisks_partition(void *ctx, uint32_t id, uint32_t index
     (void)out_start;
     (void)out_blocks;
     (void)out_fs;
+    (void)out_fstype;
     (void)out_label;
     (void)out_label_len;
     (void)out_mount;
@@ -5165,6 +5166,7 @@ static status_t idl_fz_voldisks_partition(void *ctx, uint32_t id, uint32_t index
     *out_start = (uint64_t)0x5a5a5a5a5a5a5a5aull;
     *out_blocks = (uint64_t)0x5a5a5a5a5a5a5a5aull;
     *out_fs = (uint8_t)0x5a5a5a5a5a5a5a5aull;
+    *out_fstype = (uint8_t)0x5a5a5a5a5a5a5a5aull;
     __builtin_memset(out_label, 'a', 108u * sizeof(*out_label));
     *out_label_len = 108;
     __builtin_memset(out_mount, 'a', 15u * sizeof(*out_mount));

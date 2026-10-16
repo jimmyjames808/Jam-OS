@@ -90,6 +90,16 @@ static void refs_are(struct vmo *v, uint32_t n)
     KT_EQ(vmo_kobject(v)->refs, n);
 }
 
+/* The page for the i-th of many one-page mappings of a VMO of SPREAD_PAGES
+ * made in a row: VMAR_MAX_OVERLAP over each page at most, and never two in
+ * a row at contiguous pages (they would merge). */
+#define SPREAD_PAGES (2 * VMAR_MAX_MAPPINGS / VMAR_MAX_OVERLAP)
+
+static uint64_t spread(uint32_t i)
+{
+    return 2 * (i / VMAR_MAX_OVERLAP);
+}
+
 /* ---- merging ---------------------------------------------------------------- */
 
 KTEST(aspace_merge_shapes)
@@ -269,16 +279,17 @@ KTEST(aspace_cap_65536)
     struct job *j = kt_fresh_job();
     struct aspace *as;
     KT_EQ(aspace_create_charged(j, &as), OK);
-    struct vmo *v = new_vmo(3, 0), *w = new_vmo(3, 0);
+    struct vmo *v = new_vmo(SPREAD_PAGES + 1, 0), *w = new_vmo(3, 0);
     /* Two neighbours that don't merge (other permissions), high up:
      * P = w[0,1) R, Q = w[1,3) RW, both may be read-write. */
     uint64_t y = 1ull << 44;
     map_at(as, w, 0, 1, R | CANRW, y, OK);
     map_at(as, w, 1, 2, RW | CANRW, y + PG, OK);
-    /* The rest by first fit, each page 0 of v: none merge. */
-    uint64_t a = 0, last = 0;
+    /* The rest by first fit, each a page of v (spread): none merge. */
+    uint64_t a = 0, last = 0, lastp = 0;
     for (uint32_t i = 2; i < VMAR_MAX_MAPPINGS; i++) {
-        KT_EQ(aspace_map(as, v, 0, PG, R | CANRW, &a), OK);
+        lastp = spread(i);
+        KT_EQ(aspace_map(as, v, lastp * PG, PG, R | CANRW, &a), OK);
         last = a;
     }
     KT_EQ(last, USER_BASE + (VMAR_MAX_MAPPINGS - 3) * PG);
@@ -288,7 +299,7 @@ KTEST(aspace_cap_65536)
     /* One more is refused; so is a split, by protect or unmap. */
     KT_EQ(aspace_map(as, v, 0, PG, R | CANRW, &a), ERR_NO_RESOURCES);
     KT_EQ(aspace_protect(as, y + 2 * PG, PG, 0), ERR_NO_RESOURCES);
-    map_at(as, v, 1, 2, R | CANRW, last + PG, OK);   /* v[1,3) after last's v[0,1): merges */
+    map_at(as, v, lastp + 1, 2, R | CANRW, last + PG, OK);   /* after last's page: merges */
     KT_EQ(aspace_mapping_count(as), VMAR_MAX_MAPPINGS);
     KT_EQ(aspace_unmap(as, last + PG, PG), ERR_NO_RESOURCES);   /* a hole in [last, +3) */
     KT_EQ(aspace_mapping_count(as), VMAR_MAX_MAPPINGS);
@@ -414,13 +425,13 @@ KTEST(aspace_first_fit_holes)
 {
     struct aspace *as;
     KT_EQ(aspace_create(&as), OK);
-    struct vmo *v = new_vmo(16, 0);
+    struct vmo *v = new_vmo(SPREAD_PAGES, 0), *w = new_vmo(16 * 600, 0);
     uint8_t *used = kzalloc(FIT_PAGES + 16);
     KT_ASSERT(used);
     uint64_t rng = 0xf17;
-    /* Every page its own mapping (page 0 of v each time: none merge). */
+    /* Every page its own mapping (pages of v spread: none merge). */
     for (unsigned i = 0; i < FIT_PAGES; i++) {
-        map_at(as, v, 0, 1, R, USER_BASE + i * PG, OK);
+        map_at(as, v, spread(i), 1, R, USER_BASE + i * PG, OK);
         used[i] = 1;
     }
     for (unsigned h = 0; h < 300; h++) {
@@ -439,7 +450,7 @@ KTEST(aspace_first_fit_holes)
         unsigned n = 1 + (unsigned)(kt_rng(&rng) % 10);
         unsigned want = fit_expect(used, n);
         uint64_t a = 0;
-        KT_EQ(aspace_map(as, v, 0, n * PG, R, &a), OK);
+        KT_EQ(aspace_map(as, w, 16 * t * PG, n * PG, R, &a), OK);   /* pages of its own */
         KT_EQ(a, USER_BASE + want * PG);
         if (want + n > FIT_PAGES || t % 2) {
             KT_EQ(aspace_unmap(as, a, n * PG), OK);   /* keep the window's model whole */
@@ -451,7 +462,9 @@ KTEST(aspace_first_fit_holes)
     kfree(used);
     aspace_unref(as);
     refs_are(v, 1);
+    refs_are(w, 1);
     put(v);
+    put(w);
 }
 
 /* ---- the cost stays flat ---------------------------------------------------- */
@@ -490,17 +503,17 @@ KTEST(aspace_fault_time_flat)
 {
     struct aspace *as;
     KT_EQ(aspace_create(&as), OK);
-    struct vmo *v = new_vmo(16, 0), *f = new_vmo(1, 0);
+    struct vmo *v = new_vmo(16, 0), *f = new_vmo(SPREAD_PAGES, 0);
     uint64_t t = 0x7f0000000000ull, a = 0;
     map_at(as, v, 0, 16, RW, t, OK);
     for (unsigned i = 0; i < 16; i++)
         KT_EQ(aspace_fault(as, t + i * PG, ASPACE_WRITE), OK);
     for (unsigned i = 0; i < 63; i++)
-        KT_EQ(aspace_map(as, f, 0, PG, R, &a), OK);
+        KT_EQ(aspace_map(as, f, spread(i) * PG, PG, R, &a), OK);
     (void)measure(as, v, t);   /* warm: caches, the heap's magazines */
     struct cost small = measure(as, v, t);
     for (unsigned i = 63; i < 59999; i++)
-        KT_EQ(aspace_map(as, f, 0, PG, R, &a), OK);
+        KT_EQ(aspace_map(as, f, spread(i) * PG, PG, R, &a), OK);
     KT_EQ(aspace_mapping_count(as), 60000);
     struct cost big = measure(as, v, t);
     kprintf("ktest %s: %u faults %lu us with 64 mappings, %lu us with 60,000; %u maps and "

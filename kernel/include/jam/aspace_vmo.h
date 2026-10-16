@@ -10,7 +10,9 @@
  * for the pages (aspace_zap_locked), and collect the CPUs to shoot down
  * and the pages to free in a struct tlb_gather. The pages are freed only after the
  * shootdown (tlb_gather_finish), so a freed page is never still reachable
- * through any TLB.
+ * through any TLB. What one batch of pages may spend on that walk is
+ * bounded (VMO_BATCH_BUDGET, below), and so is how many mappings of a VMO
+ * one address space holds over a page (VMAR_MAX_OVERLAP, <jam/abi.h>).
  *
  * Lock order: aspace region lock (mutex) -> "vmo" -> "aspace page tables".
  * See the header of mm/aspace.c for the races this covers. */
@@ -95,6 +97,24 @@ void     vmo_umap_set(struct vmo *v, struct vmo_umap *u, uint64_t base, uint64_t
  * caller has already cleared and shot down u's page-table entries. */
 void     vmo_umap_remove(struct vmo *v, struct vmo_umap *u);
 
+/* What one batch (a decommit's, a shrink's, a child's creation's) may
+ * spend clearing or write-protecting its pages in the user mappings over
+ * them, with the VMO lock held and interrupts off, in units of under a
+ * nanosecond on the PC: each mapping costs VMO_BATCH_MAPPING_COST (finding
+ * it, its page-table lock, the walk down to its entries: 60 to 110 ns
+ * when the mappings are in many address spaces), and each page of the
+ * batch it maps VMO_BATCH_CLEAR_COST to clear or VMO_BATCH_PROTECT_COST
+ * to write-protect. A batch is cut short to stay within it (vmo.c's
+ * "Latency"), down to one page: a whole budget took 12 to 61 us on the PC
+ * (ktest aspace_hostile_overlap_decommit, 4 and 8 CPUs). One page under
+ * more mappings than that is a batch of its own, whatever it costs:
+ * VMAR_MAX_OVERLAP mappings from each address space that maps it at most
+ * (4,096 from 64 address spaces: 0.23 to 0.45 ms). */
+#define VMO_BATCH_BUDGET       65536
+#define VMO_BATCH_MAPPING_COST 128
+#define VMO_BATCH_CLEAR_COST   1
+#define VMO_BATCH_PROTECT_COST 4
+
 /* Fault: under the VMO lock, commit page idx if needed (paged VMOs) and
  * install it at va in as with `perms` (the mapping's ASPACE_READ/WRITE/EXEC)
  * and the VMO's cache type, through aspace_set_pte_locked. `write`: the
@@ -143,10 +163,16 @@ extern uint64_t aspace_pager_waits_held;
 /* The number of user mappings on v's reverse map, or -1 if its tree is
  * not sound (itree_check). Takes the VMO lock: O(n). */
 int64_t vmo_rmap_check(struct vmo *v);
+/* The most a decommit or shrink batch, or a child's creation's batch, has
+ * taken so far with the VMO lock held: ns (from the walk's start), and its
+ * walk over the user mappings in VMO_BATCH_BUDGET's units (atomic,
+ * relaxed: a test zeroes them, makes batches, reads them). */
+extern uint64_t vmo_batch_ns_most, vmo_batch_cost_most;
 /* The number of mappings in as, or -1 (and a line on the console saying
  * what) if anything about them is wrong: the tree (avl_check), the order
  * and overlaps, every gap and largest gap, two neighbours that could be
- * one, a reverse-map entry that doesn't say what its mapping maps, flags
+ * one, the tree by VMO page and VMAR_MAX_OVERLAP on every page, a
+ * reverse-map entry that doesn't say what its mapping maps, flags
  * past the maximum, W+X on anything but a JIT VMO, the charge for the
  * structs, and every entry present: it must name the VMO's page there
  * now, with no permission the mapping lacks. Takes the region lock;

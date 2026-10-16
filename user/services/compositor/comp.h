@@ -695,6 +695,10 @@ bool     subsurface_synced(const struct comp_surface *s);
  * as synchronized). *reshaped is set if the tree's order or a position
  * changed. OK, or a protocol error posted. */
 status_t subsurface_applied(struct comp_surface *s, bool parent_sync, bool *reshaped);
+/* A commit of subsurface s applied a buffer offset (dx, dy): s moves by it
+ * against its parent, until set_position next sets its place (weston's
+ * rule). True if it moved. */
+bool     subsurface_offset(struct comp_surface *s, int32_t dx, int32_t dy);
 /* s's wl_surface goes: its children lose their parent (shown nowhere
  * since), before its window goes. */
 void     subsurface_parent_gone(struct comp_surface *s);
@@ -1134,7 +1138,8 @@ uint64_t xdg_deadline(void);
 /* Popups (xdgpopup.c), for the seat and the loop. */
 /* The client whose popups hold the grab (xdg_popup.grab), or NULL. While
  * one does, the pointer goes only to that client's surfaces, and a press
- * anywhere else dismisses the popups (xdg_grab_dismiss) and goes nowhere. */
+ * anywhere else dismisses the popups (xdg_grab_dismiss) and goes nowhere;
+ * their client may grab again only after its next key or button press. */
 struct comp_client  *xdg_grab_client(void);
 void                 xdg_grab_dismiss(void);
 /* For a popup's window, the window of the toplevel it is placed on (through

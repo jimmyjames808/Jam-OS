@@ -24,6 +24,9 @@
 # pass through to tools/qemu-test.sh. On the PC each part costs a QEMU of
 # the CPU budget (tools/remote-test.sh): at QEMU_SMP=8 that is 24 CPUs,
 # which waits for an almost idle PC, so run the one-boot run at 8 instead.
+# INIT_TEST_JOBS=n runs at most n boots at once, in rounds (the same boots, a
+# longer wall time): remote-test.sh sets it itself when a long claim, the
+# Chromium build, leaves the PC too little for all parts at once.
 # Usage: tools/init-test.sh <outdir> [name] [words...]
 #        tools/init-test.sh --check
 # Exit 0 if the run is complete with no problems.
@@ -91,14 +94,25 @@ mkdir -p "$out"
 check_parts || { echo "$name: the parts don't add up to the run: not run"; exit 1; }
 parts=$(awk '$1 == "part" { print $2 }' "$cfg" | sort -nu)
 
+ok=1
+# INIT_TEST_JOBS=n: at most n boots at once, in rounds of n parts (the same boots, one
+# after another when the machine has room for fewer: tools/remote-test.sh sets it when
+# a long claim, the Chromium build, leaves too little for all parts). Unset: all at once.
+jobs=${INIT_TEST_JOBS:-0}
+case $jobs in '' | *[!0-9]*) jobs=0 ;; esac
+round=
+n=0
 for k in $parts; do
     tools/qemu-test.sh "$out" "$name-$k" init "initpart=$k" "$@" > "$out/$name-$k.out" 2>&1 &
     eval "pid_$k=$!"
+    round="$round $k"
+    n=$((n + 1))
+    if [ "$jobs" -gt 0 ] && [ $n -ge "$jobs" ]; then
+        for j in $round; do eval "wait \$pid_$j" || ok=0; done
+        round= n=0
+    fi
 done
-ok=1
-for k in $parts; do
-    eval "wait \$pid_$k" || ok=0
-done
+for j in $round; do eval "wait \$pid_$j" || ok=0; done
 
 # The RESULTS box of a part's log, its verdict line renamed.
 box() {

@@ -7,7 +7,8 @@
  * the boot splash that plays first in shell mode; lastboot.c the boot
  * before this one, if it panicked (its log saved by logd, one line for the
  * shell); reboot.c a reboot by kexec; mounts.c keeps init's namespace in
- * step with volumes' mounts; ctl.c serves init's control channels
+ * step with volumes' mounts (jammounts.c gives /jam its views, /usr and the
+ * like); ctl.c serves init's control channels
  * (abi/idl/initctl.idl); settings.c the clock and the volumes from
  * /data/etc/settings; net.c the network services (netstack, dhcp, dns, netlog, sntp); regnet.c
  * the regression run's network (netstack, dhcp, logd, netlog); update.c
@@ -24,6 +25,7 @@
 
 #define BOOT_MOUNT "/boot"
 #define DATA_MOUNT "/data"
+#define JAM_MOUNT  "/jam"    /* the Jam OS drive's ext data partition (jammounts.c's views) */
 #define USB_MOUNT  "/usb"    /* another stick's mounts: /usb0, /usb1, ... */
 #define USB_MOUNTS 8         /* ... the N that are tried */
 #define NVME_MOUNT "/nvme"   /* an NVMe drive's: /nvme0, ... (writable only on a Jam OS disk) */
@@ -124,6 +126,19 @@ void     mounts_synced(status_t st, uint64_t t0);
 /* /data once more, without a word, for at most 1 s: after logd's last
  * write, so the volume is left marked clean. */
 void     mounts_settle(void);
+
+/* ---- jammounts.c: /usr, /var, /home and /tmp as views of /jam ----------------------- */
+
+/* /jam is in init's namespace (mounts.c): on a thread, the directories made
+ * if they aren't there, /tmp emptied (once a boot) and the views mounted as
+ * /usr, /var, /home and /tmp (fs.subview of /jam/<dir>); KEY_MOUNTS comes
+ * on port when a batch is in. */
+void     jam_mounted(handle_t port, uint64_t key);
+/* /jam left the namespace: the views go with it. */
+void     jam_gone(void);
+/* True once after the thread mounted (or took back) views: tell the
+ * followers (mounts_event's caller does). Says the thread's line too. */
+bool     jam_changed(void);
 
 /* ---- regnet.c: the regression run's network (main.c's `init` mode) ------------------- */
 

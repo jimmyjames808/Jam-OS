@@ -9,7 +9,10 @@
 #   - a session lost after the command started is NOT started again (exit 255);
 #   - a command's own exit status (5) comes back, once;
 #   - a login cut by the server is tried again by tools/ssh-retry.sh, invisibly;
-#   - the session has keepalives, and its script has the run id.
+#   - the session has keepalives, and its script has the run id;
+#   - a cancel (SIGTERM) ends the session's ssh and asks the PC, in one more ssh,
+#     to end the run by its pid file; a script with parts to run a few at a time
+#     (init-test.sh) passes remote-slots.py its --shrink spec.
 # Usage: tools/remote-test-test.sh; exit 0 on PASS.
 set -u
 cd "$(dirname "$0")/.." || exit 2
@@ -52,6 +55,8 @@ lostrunning) echo "remote-test: running with 3 of 26 CPUs in use (after 4 s)" >&
              echo "client_loop: send disconnect: Broken pipe" >> "$log"; exit 255 ;;
 ok)          echo "remote-test: running with 3 of 26 CPUs in use" >&2; echo "the command's output"; exit 0 ;;
 rc5)         echo "remote-test: running with 3 of 26 CPUs in use" >&2; exit 5 ;;
+hang)        echo "remote-test: waiting: 24 of 26 CPUs in use by 6 run(s) (this run needs 2 CPUs, 1.0 GB)" >&2; exec sleep 30 ;;
+cancelled)   exit 0 ;;
 *)           echo "fake-ssh: no outcome left" >&2; exit 99 ;;
 esac
 EOF
@@ -104,6 +109,34 @@ expect "JAMOS_REMOTE_REQUEUE=0" 255 1
 run reset reset ok
 expect "a login cut twice (ssh-retry's)" 0 3
 echo "$err" | grep -q "ssh-retry: kex_exchange_identification" || fail "no ssh-retry note: $err"
+
+# A cancel (pc-batch cancel, ^C): SIGTERM ends the session's ssh at once and one more
+# ssh asks the PC to end the run by its pid file (the governor kills the command's tree).
+printf '%s\n' hang cancelled > "$tmp/plan"
+rm -f "$tmp/sessions" "$tmp"/script.* "$tmp"/opts.*
+tools/remote-test.sh true 2> "$tmp/err" &
+rtpid=$!
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do [ -s "$tmp/script.1" ] && break; sleep 0.2; done
+sleep 0.5
+t0=$(date +%s)
+kill -TERM "$rtpid"
+wait "$rtpid"
+rc=$?
+t1=$(date +%s)
+[ "$rc" = 143 ] || fail "a cancelled remote-test exited $rc, wanted 143: $(cat "$tmp/err")"
+[ "$((t1 - t0))" -lt 10 ] || fail "a cancelled remote-test took $((t1 - t0)) s"
+[ "$(cat "$tmp/sessions" 2> /dev/null)" = 2 ] || fail "a cancel made $(cat "$tmp/sessions" 2> /dev/null) sessions, wanted 2 (the run and the one that ends it)"
+id=$(sed -n 's/^echo \$\$ > ~\/work\/\.runs\/\(.*\)$/\1/p' "$tmp/script.1")
+grep -q "cat ~/work/.runs/$id" "$tmp/script.2" 2> /dev/null && grep -q 'kill \$p' "$tmp/script.2" || fail "the cancel doesn't kill the run by its pid file: $(cat "$tmp/script.2" 2> /dev/null)"
+grep -q "remote-test: cancelled" "$tmp/err" || fail "no word of the cancel: $(cat "$tmp/err")"
+
+# A script that runs parts a few at a time tells the governor how to run fewer (--shrink),
+# and INIT_TEST_JOBS is forwarded.
+printf '%s\n' ok > "$tmp/plan"
+rm -f "$tmp/sessions" "$tmp"/script.*
+INIT_TEST_JOBS=2 tools/remote-test.sh tools/init-test.sh build/test/x > /dev/null 2>&1
+grep -q '^exec python3 tools/remote-slots.py --shrink INIT_TEST_JOBS:4:2048:2 8 4096 ' "$tmp/script.1" || fail "no --shrink in the script: $(tail -2 "$tmp/script.1")"
+grep -q "INIT_TEST_JOBS=2" "$tmp/script.1" || fail "INIT_TEST_JOBS is not forwarded to the PC"
 
 [ -z "$(ls "$tmp/t")" ] || fail "temp files left: $(ls "$tmp/t")"
 

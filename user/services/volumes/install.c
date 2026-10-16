@@ -15,6 +15,11 @@
  *     namespace;
  *   - at the end, failed or not, init asks for it read-only again (the
  *     service stops in order, the volume clean) and it is a mount again.
+ * The data partition may hold ext (M13.6's U7a): it is /jam, read-write and
+ * in the namespaces, so holding it starts its service again too, on a new
+ * channel (the old one's holders see it close), and letting go starts it
+ * again as /jam. Which way a mount is by default is the vol's `dflt_rw`:
+ * read-only for FAT and someone else's volumes, read-write for /jam.
  * A partition `mount -w` made writable for everyone is not held: ERR_BUSY.
  * The driver still refuses every write outside Jam OS's table and
  * partitions, and everything on a disk that isn't Jam OS's: nothing here
@@ -36,9 +41,14 @@ static bool same(const struct disk *d, uint16_t gen)
 /* Hold b writable (or find it held), a channel to it into *fs. */
 static status_t hold_it(struct disk *d, uint16_t gen, struct vol *b, handle_t *fs)
 {
-    if (b->rw && !b->held)
+    if (b->rw && !b->held && !b->jam)
         return ERR_BUSY;   /* `mount -w`'s: in the namespaces */
     status_t st = disk_can_restart(b, true);
+    /* /jam (the data partition, ext) is writable already, and in the
+     * namespaces: it starts again all the same, so that the channel init is
+     * given is a new one and the old one's holders see ERR_PEER_CLOSED. */
+    if (st == OK && b->jam && !b->held)
+        st = IDL_LATER;
     if (st == IDL_LATER) {
         uint32_t serial = b->serial;
         b->busy = true;
@@ -64,18 +74,22 @@ static status_t hold_it(struct disk *d, uint16_t gen, struct vol *b, handle_t *f
     return b->client ? jam_handle_duplicate(b->client, RIGHT_SAME, fs) : ERR_BAD_STATE;
 }
 
-/* Back to read-only and a mount. */
+/* Back to the mount's own way (read-only, but for /jam, which is
+ * read-write, as its partition's driver allows) and a mount. */
 static status_t let_go(struct disk *d, uint16_t gen, struct vol *b)
 {
-    if (!b->rw) {
+    bool want = b->dflt_rw;
+    if (b->rw == want && !(b->jam && b->held)) {
         b->held = false;
         return OK;
     }
-    status_t st = disk_can_restart(b, false);
+    status_t st = disk_can_restart(b, want);
+    if (st == OK && b->jam && b->held)
+        st = IDL_LATER;   /* the same way, but a new channel for the namespaces */
     if (st == IDL_LATER) {
         uint32_t serial = b->serial;
         b->busy = true;
-        st = fs_restart(b, false);
+        st = fs_restart(b, want);
         if (b->serial != serial)
             return ERR_BAD_STATE;
         b->busy = false;
@@ -83,8 +97,8 @@ static status_t let_go(struct disk *d, uint16_t gen, struct vol *b)
         if (st == OK && !same(d, gen))
             st = ERR_BAD_STATE;
         mounts_update();
-        say(false, "volumes: %s is read-only and a mount again (%s)", fs_mount_path(b),
-            status_str(st));
+        say(false, "volumes: %s is %s and a mount again (%s)", fs_mount_path(b),
+            want ? "read-write" : "read-only", status_str(st));
         return st;
     }
     if (st == OK)
