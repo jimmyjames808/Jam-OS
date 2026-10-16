@@ -838,7 +838,10 @@
 # 0; arg OK, ERR_IO or ERR_NO_SPACE): the writing pages of the range end
 # their write-back: clean, or dirty if stored to since; after an error
 # they become clean all the same and the VMO keeps the error for the next
-# vmo_sync. The PAGER_REQ_WRITEBACKs it finishes are answered.
+# vmo_sync. The PAGER_REQ_WRITEBACKs it finishes are answered (with the
+# error, if one of their pages had it); a delivered one it leaves needing
+# pages that nobody is writing back (one stored to while it was being
+# written when the request was made) is given to the pager again.
 # ERR_INVALID_ARGS on a VMO not made writable. ERR_NOT_FOUND for an
 # unknown key; ERR_INVALID_ARGS for any other op or argument. RIGHT_WRITE
 # on the pager.
@@ -850,18 +853,24 @@
 # bound the kernel's work): its bytes are copied into buf, which stands
 # for the range asked (the run's byte at offset o goes to buf + o -
 # run->offset), and *run says where it is: key, offset, len (0: no such
-# page in the range), age_ns of its oldest page (since first dirtied).
-# flags: 0 (nothing changes), PAGER_DIRTY_PEEK (nothing changes: a
+# page in the range), age_ns of its oldest page (how long it has been
+# dirty). flags: 0 (nothing changes), PAGER_DIRTY_PEEK (nothing changes: a
 # filesystem's read overlays the bytes on the disk's), or PAGER_DIRTY_BEGIN
 # (the run's write-back begins: its pages become writing, write-protected
 # in every mapping and shot down before they are copied, so a store after
-# the copy faults and makes its page dirty again); PAGER_DIRTY_OLDEST
-# with any of them: key and run->offset are ignored, the run is the one
-# around the pager's oldest dirty page, whatever its VMO, and buf stands
-# for the run itself. Pages past the VMO's size are no run's.
-# ERR_NOT_FOUND: no live VMO has key (OLDEST: none is dirty);
-# ERR_INVALID_ARGS: run or buf unusable, any other flag, a VMO not made
-# writable. RIGHT_WRITE on the pager.
+# the copy faults and makes its page dirty again; BEGIN takes dirty pages
+# not being written back already, one stored to while writing waits for
+# that write-back's PAGER_OP_WRITTEN; a buf it can't copy to begins
+# nothing); PAGER_DIRTY_OLDEST with any of them: key and run->offset are
+# ignored, the run is the one around the pager's oldest dirty page not
+# being written back, whatever its VMO (run->len at most, reaching back
+# before that page as far as it allows), and buf stands for the run itself;
+# with run->age_ns (in) above that page's age, no run (len 0, age_ns its
+# age): a filesystem's age write-back passes its setting there
+# (PAGER_WRITEBACK_AGE_NS by default). Pages past the VMO's size are no
+# run's. ERR_NOT_FOUND: no live VMO has key (OLDEST: none is dirty);
+# ERR_INVALID_ARGS: run or buf unusable, any other flag, BEGIN with PEEK, a
+# VMO not made writable. RIGHT_WRITE on the pager.
 165 pager_dirty       status    handle_t pager, uint64_t key, uint32_t flags, struct pager_run *run, void *buf
 # pager_write: len bytes of buf into key's VMO at offset (byte-granular,
 # len at most PAGER_SUPPLY_MAX, else ERR_OUT_OF_RANGE; 0 does nothing),

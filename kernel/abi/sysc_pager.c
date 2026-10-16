@@ -54,12 +54,16 @@ int64_t sysc_pager_op(handle_t pager, uint64_t key, uint32_t op, uint64_t offset
 }
 
 /* The run comes in and goes out through the caller's struct; the pages'
- * bytes straight from each page to buf, with no lock held. */
+ * bytes straight from each page to buf, with no lock held. A BEGIN whose
+ * run can't be told (its struct read-only) would leave pages writing that
+ * nobody knows of: the struct is written back as it came first. */
 int64_t sysc_pager_dirty(handle_t pager, uint64_t key, uint32_t flags, uint64_t run, uint64_t buf)
 {
     SYSC_TABLE(t);
     struct pager_run r;
     if (copy_from_user(&r, run, sizeof(r)) != OK)
+        return ERR_INVALID_ARGS;
+    if ((flags & PAGER_DIRTY_BEGIN) && copy_to_user(run, &r, sizeof(r)) != OK)
         return ERR_INVALID_ARGS;
     struct pager_dst dst = { .addr = buf, .user = true };
     status_t st = sys_pager_dirty(t, pager, key, flags, &r, &dst);

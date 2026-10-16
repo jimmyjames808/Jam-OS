@@ -1,7 +1,7 @@
-/* A pager's page cache: the budget, the lists of clean pages oldest first
- * and of dirty ones, publishing a supplied page inside the budget,
- * evicting the oldest clean one, and a store's move from one list to the
- * other. The model, the counting rule and the lock order are in
+/* A pager's page cache: the budget, the lists of clean pages oldest first,
+ * of dirty ones and of those being written back, publishing a supplied
+ * page inside the budget, evicting the oldest clean one, and the moves
+ * from list to list (a store, a write-back's begin and end). The model, the counting rule and the lock order are in
  * pager_cache.h; the VMO side of an eviction (zap, gather, free) is
  * vmo.c's vmo_pager_evict. */
 #include <jam/aspace_vmo.h>
@@ -20,7 +20,7 @@ struct pager_rec {
     struct vmo *v;         /* its VMO (no reference: the record goes before the VMO can) */
     uint32_t    idx;       /* its page index there (a pager VMO has fewer than 2^32) */
     uint32_t    state;     /* PAGER_PAGE_* (0: clean); the VMO lock and the cache's */
-    uint64_t    dirtied;   /* uptime ns it was first dirtied since it was last clean */
+    uint64_t    dirtied;   /* uptime ns: its age (pager_cache.h's "Age"); 0 while clean */
 };
 _Static_assert(sizeof(struct pager_rec) == PAGER_RECORD_BYTES, "a resident page's cost to its job");
 _Static_assert((VMO_SMALL_MAX_SIZE >> PAGE_SHIFT) <= UINT32_MAX, "a page index fits in idx");
@@ -39,8 +39,10 @@ void pager_cache_init(struct pager_cache *c, struct job *job, uint64_t max_pages
     c->max_pages = max_pages;
     c->resident = 0;
     c->ndirty = 0;
+    c->nwriting = 0;
     list_init(&c->pages);
     list_init(&c->dirty);
+    list_init(&c->writing);
 }
 
 static uint64_t cache_lock(struct pager_cache *c)
@@ -189,6 +191,8 @@ void pager_cache_remove_vlocked(struct pager_cache *c, struct page *p)
         c->resident--;
         if (rec->state)
             c->ndirty--;
+        if (rec->state & PAGER_PAGE_WRITING)
+            c->nwriting--;
     }
     p->private = 0;
     cache_unlock(c, f);
@@ -205,11 +209,12 @@ uint64_t pager_cache_dirtied_vlocked(const struct page *p)
     return ((const struct pager_rec *)p->private)->dirtied;
 }
 
-void pager_cache_store_vlocked(struct pager_cache *c, struct page *p)
+bool pager_cache_store_vlocked(struct pager_cache *c, struct page *p)
 {
     struct pager_rec *rec = (struct pager_rec *)p->private;
     uint64_t f = cache_lock(c);
-    if (!rec->state) {
+    bool was_clean = !rec->state;
+    if (was_clean) {
         if (p->node.next)
             list_del(&p->node);   /* off the clean list: its count goes with it */
         else
@@ -218,8 +223,83 @@ void pager_cache_store_vlocked(struct pager_cache *c, struct page *p)
         c->ndirty++;
         rec->dirtied = uptime_ns();
     }
-    rec->state |= PAGER_PAGE_DIRTY;
+    rec->state |= PAGER_PAGE_DIRTY;   /* (a writing page stays on `writing`) */
     cache_unlock(c, f);
+    return was_clean;
+}
+
+void pager_cache_begin_vlocked(struct pager_cache *c, struct page *p)
+{
+    struct pager_rec *rec = (struct pager_rec *)p->private;
+    ASSERT(rec->state == PAGER_PAGE_DIRTY);
+    uint64_t f = cache_lock(c);
+    list_del(&p->node);
+    list_add_tail(&c->writing, &p->node);
+    c->nwriting++;
+    rec->state = PAGER_PAGE_WRITING;   /* (its age stays: a cut-off write-back keeps it) */
+    cache_unlock(c, f);
+}
+
+bool pager_cache_written_vlocked(struct pager_cache *c, struct page *p)
+{
+    struct pager_rec *rec = (struct pager_rec *)p->private;
+    ASSERT(rec->state & PAGER_PAGE_WRITING);
+    uint64_t f = cache_lock(c);
+    bool clean = !(rec->state & PAGER_PAGE_DIRTY);
+    list_del(&p->node);
+    c->nwriting--;
+    if (clean) {
+        list_add_tail(&c->pages, &p->node);
+        c->ndirty--;
+        rec->state = 0;
+        rec->dirtied = 0;
+    } else {
+        list_add_tail(&c->dirty, &p->node);
+        rec->state = PAGER_PAGE_DIRTY;
+        rec->dirtied = uptime_ns();   /* (dirty since its write-back's copy, at the latest) */
+    }
+    cache_unlock(c, f);
+    return clean;
+}
+
+void pager_cache_unbegin_vlocked(struct pager_cache *c, struct page *p)
+{
+    struct pager_rec *rec = (struct pager_rec *)p->private;
+    ASSERT(rec->state & PAGER_PAGE_WRITING);
+    uint64_t f = cache_lock(c);
+    list_del(&p->node);
+    c->nwriting--;
+    if (!list_empty(&c->dirty)) {   /* the head's age at most: `dirty` stays in order */
+        const struct page *head = list_first(&c->dirty, struct page, node);
+        uint64_t oldest = ((const struct pager_rec *)head->private)->dirtied;
+        if (rec->dirtied > oldest)
+            rec->dirtied = oldest;
+    }
+    list_add(&c->dirty, &p->node);
+    rec->state = PAGER_PAGE_DIRTY;
+    cache_unlock(c, f);
+}
+
+bool pager_cache_first(struct pager_cache *c, bool writing, struct vmo **v, uint64_t *idx,
+                       uint64_t *dirtied)
+{
+    struct list_node *l = writing ? &c->writing : &c->dirty;
+    bool any = false;
+    uint64_t f = cache_lock(c);
+    if (!list_empty(l)) {
+        const struct page *p = list_first(l, struct page, node);
+        const struct pager_rec *r = (const struct pager_rec *)p->private;
+        /* Its VMO's memory is valid while the page is listed (pop_locked);
+         * a dirty or writing page's VMO is held, so the reference comes. */
+        any = kobject_tryref(vmo_kobject(r->v));
+        if (any) {
+            *v = r->v;
+            *idx = r->idx;
+            *dirtied = r->dirtied;
+        }
+    }
+    cache_unlock(c, f);
+    return any;
 }
 
 uint64_t pager_cache_resident(struct pager_cache *c)
@@ -234,6 +314,14 @@ uint64_t pager_cache_ndirty(struct pager_cache *c)
 {
     uint64_t f = cache_lock(c);
     uint64_t n = c->ndirty;
+    cache_unlock(c, f);
+    return n;
+}
+
+uint64_t pager_cache_nwriting(struct pager_cache *c)
+{
+    uint64_t f = cache_lock(c);
+    uint64_t n = c->nwriting;
     cache_unlock(c, f);
     return n;
 }
