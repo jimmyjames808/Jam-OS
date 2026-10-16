@@ -22,9 +22,17 @@
  * (SR_ARGS, <roles.h>), with the program's path when the starter names
  * it there: copied here into a VMO of our own, mapped for good, with
  * room for the pointers argv and the environment are, so that nobody
- * else can change them under us; SR_ARGS is closed and leaves the table. */
+ * else can change them under us; SR_ARGS is closed and leaves the table.
+ *
+ * A forked child (fork.c) reads no startup message: its copy of this
+ * table holds its parent's values, and startup_forked puts the fork
+ * message's handles in their place (argv and the environment stay the
+ * copy's). The C library's fork hooks are kept here, where every program
+ * has them, so that setting them links no fork into a program that never
+ * forks. */
 #include <os.h>
 #include <svcstate.h>
+#include "fork.h"
 
 #define STARTUP_BUF_MAX  8192   /* bytes; bigger startup messages are refused */
 #define STARTUP_MAX_STRS 128    /* argv + environment strings */
@@ -45,6 +53,28 @@ static handle_t  start_channel;
 static status_t  start_status = ERR_BAD_STATE;
 static char     *str_ptrs[STARTUP_MAX_STRS + 2];   /* argv NULL envp NULL */
 static const char *args_exe;               /* SR_ARGS's path of the program, or NULL */
+static const struct jam_fork_libc *fork_hooks;   /* jam_fork_set_libc's */
+
+void jam_fork_set_libc(const struct jam_fork_libc *libc)
+{
+    fork_hooks = libc;
+}
+
+const struct jam_fork_libc *jam_fork_hooks(void)
+{
+    return fork_hooks;
+}
+
+void startup_forked(handle_t ch, const handle_t *hs, const uint32_t *roles, unsigned n)
+{
+    start_channel = ch;
+    start_status = OK;
+    for (unsigned i = 0; i < n && i < TABLE_MAX; i++) {
+        msg_handles[i] = hs[i];
+        msg_roles[i] = roles[i];
+    }
+    msg_nhandles = n < TABLE_MAX ? n : TABLE_MAX;
+}
 
 const char *startup_exe(void)
 {

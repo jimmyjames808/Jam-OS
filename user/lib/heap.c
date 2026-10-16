@@ -21,6 +21,7 @@
  * keep few; big buffers can still come from VMOs of their own. A lock
  * (lock_take) makes it safe for several threads. */
 #include <os.h>
+#include "fork.h"
 
 #define ALIGN       16u
 #define SPLIT_MIN   64u   /* don't split off remainders smaller than this */
@@ -46,6 +47,24 @@ static void lock(void)
 static void unlock(void)
 {
     lock_give(&heap_lock);
+}
+
+/* A fork (fork.c, startmain.c's hooks): held across the clone, so the
+ * child's copy of the heap is never one half-changed by another thread;
+ * the child's copy of the lock is the forking thread's, and is made free. */
+void heap_fork_prepare(void)
+{
+    lock();
+}
+
+void heap_fork_parent(void)
+{
+    unlock();
+}
+
+void heap_fork_child(void)
+{
+    heap_lock = (lock_t){ 0 };
 }
 
 static struct block **next_of(struct block *b)

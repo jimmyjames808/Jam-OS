@@ -500,7 +500,7 @@ FK2, FK3 and FL1b are about two (their halves can't be tested apart).
 | **FK1. Clone modes** | `VMAR_CLONE_SHARE`, `VMAR_CLONE_NONE` on `vmar_map`, kept through protect, split, merge and replace; `map_info.flags` shows them; syscalls.def's text for both new calls (the contract FK2 and FK3 fill); built, see "FK1 notes" | `kernel/mm/aspace.c` (the flags), `kernel/include/jam/abi.h`, `abi/syscalls.def`, a new ktest file | nothing | ktests: each flag kept by every mapping operation, merges only with the same mode, refused with `VMAR_KEPT_ONLY` where it means nothing; full ktest 4 and 8 | 1 | **Opus** |
 | **FK2. The address-space clone** | `vmar_clone` (1.1): one instant, the three modes, the JIT and device rules, the children's handles, the charges and the page-table reserve (1.3), the refusals, random handle generations in the clone's table; built, see "FK2 notes" | `kernel/mm/aspace.c` (the walk), `kernel/object/vmo.c` (protecting many VMOs, then sharing), `kernel/object/process.c`, `kernel/abi/vmar_sys.c`, `kernel/object/handle.c` (the generations), syscalls.def, abi.h, a new ktest file | FK1 | ktests: each kind of mapping cloned and checked from both sides; 8 writer threads keeping an invariant across two VMOs while the clone runs (the child never sees it broken); a 1 TiB reservation with a page per GiB cloned within a bound; 60,000 mappings; charges exact and refused up front; a pin refused; storms of map, unmap and protect from other threads; full ktest 4 and 8; soak 2 | 2 | **Opus** |
 | **FK3. Exec in place** | `process_replace` (section 2) | `kernel/object/process.c`, `kernel/sched/thread.c` (the other threads' end), `kernel/object/handle.c` (all but one closed), `kernel/mm/aspace.c` (the swap), `kernel/abi/sysc_proc.c`, syscalls.def, abi.h, a new ktest file | FK2 (the same files) | ktests: other threads in a wait, a futex, a channel call, a fault waiting for a pager all gone; every handle closed but one; the parent's handle, pid, waits and port bindings unchanged; the old address space's charges back; each refusal; two threads replacing at once; a replace racing a kill; full ktest 4 and 8; soak 2 | 2 | **Opus** |
-| **FL1a. libjam's fork** | the save and the trampoline (assembly), `jam_fork` (the clone, the thread, the start, the roles of 1.6), the child's rebind of libos's roles and locks, the hooks the POSIX layer registers | a new user/lib/fork.c and its assembly, `user/lib/start.c` (the roles' rebind), `user/include/os.h`, a new message header in user/include/, `abi/idl/ids.txt`, a utest file | FK2 | utest: a native program forks: both sides return, memory separate, the child's roles its own, its handle table exactly the passed set, the parent's charge back after the child exits | 1 | **Opus** |
+| **FL1a. libjam's fork** | the save and the trampoline (assembly), `jam_fork` (the clone, the thread, the start, the roles of 1.6), the child's rebind of libos's roles and locks, the hooks the POSIX layer registers; built, see "FL1a notes" | a new user/lib/fork.c and its assembly, `user/lib/start.c` (the roles' rebind), `user/include/os.h`, a new message header in user/include/, `abi/idl/ids.txt`, a utest file | FK2 | utest: a native program forks: both sides return, memory separate, the child's roles its own, its handle table exactly the passed set, the parent's charge back after the child exits | 1 | **Opus** |
 | **FL1b. POSIX `fork`** | `lx_fork`, `clone` without `CLONE_VM` (both forms), `vfork` as fork with the parent's wait (Q3's A; the wait itself needs FL4), the layer's locks, signals in the child (1.7), ids and the table of children (1.8), JIT entries removed | a new user/posix/sys/fork.c, `user/posix/sys/calls.def`, the vfork and clone overrides, `user/posix/sys/sigthread.c`, `user/posix/sys/signal.c`, `user/posix/sys/proc.c`, a new posixtest section (fork) | FL1a | posixtest `fork`: returns twice, memory separate (heap, stack, data, `mmap`), `MAP_SHARED` anonymous shared, malloc and atfork in a threaded parent's child, the two-VMO invariant from a threaded parent, a 1 TiB reservation forked within a bound, `ENOMEM` in a job that can't pay, ids, `waitpid`, `SIGCHLD`, `kill`, `SIGKILL`, pending cleared, timers gone, both `clone` forms, `jittest` forking (the child's JIT range faults, it isn't marked) | 2 | **Opus** |
 | **FL2. Descriptors and mappings at fork** | each kind's fork step (1.6's table), the table of mappings' handles, `VMAR_CLONE_SHARE` from `mmap`, `VMAR_CLONE_NONE` on every connection buffer, the cached service channels | `user/posix/sys/fd.h` and each kind's file (pipe, sockpair, memfd, eventfd, dev, etc, svcsock, file, dir, tty, pty, socket, epoll), `user/posix/sys/mem.c`, `user/posix/sys/maptable.c`, `user/posix/sys/resolve.c`, `user/posix/sys/unixsock.c`, libjam's buffer mappings, a new posixtest file | FL1b | posixtest `fork` descriptors: every kind used from both sides after a fork, leftovers read once, close-on-exec ones present until exec, absent kinds absent, `/proc/self/fd` exact, Chromium's child sequence (dup2s, close by `/proc/self/fd`) run in a child; no handle left over | 1.5 | **Opus** |
 | **FL3. libc's exec in place** | `execve` by build-then-replace (section 2); (a) kept for `/data` programs; rlimits in the hand-over if needed | `user/posix/sys/spawn.c` (execve), `user/lib/spawn.c` (all but the start), `user/include/posixfds.h` if rlimits go in, a new posixtest file | FK3, FL1b | posixtest `exec`: pid, parent's wait, kill and `/proc/<pid>/stat` the same before and after; threads gone; close-on-exec closed; handlers reset, mask kept; the fork's charge back; a failed exec returns; `/proc/self/exe` exec'd from a forked child; utest: a native starter (the shell's way) waits on a POSIX program that execs | 1 | **Opus** |
@@ -629,6 +629,59 @@ What FK3 and FL1a start from (`aspace_clone` in `kernel/mm/aspace.c`, its
 - Not built: a concurrent `process_start` racing the clone is not tested
   (the `setup` mutex is the argument); the `process_replace` side of the
   reserve (FK3).
+
+### FL1a notes
+
+What FL1b, FL2 and FL4 start from (`jam_fork` in `user/include/os.h`,
+`user/lib/fork.c` and `fork_entry.S`; the message in `user/include/forkmsg.h`;
+utests `fork_*`):
+
+- **The call** is `int64_t jam_fork(const struct jam_fork_args *a)`: the
+  child's process handle in the parent, 0 in the child, a status with nothing
+  made on a failure. `a` (NULL for none) gives the calling thread's FS base
+  (the caller's to say: FSGSBASE is off, so libjam can't read it; libos
+  itself uses none), the child's name, the `vmos` and `children` arrays
+  passed to `vmar_clone` (the children's handles are the caller's, for its
+  give to move; a failed clone leaves them 0), `signals` (NULL, or where the
+  client end of the child's new `SR_SIGNALS` goes: lx_fork asks, as
+  posix_spawn does) and a context for the hooks.
+- **The C library's hooks** (`struct jam_fork_libc`, set once at its start
+  with `jam_fork_set_libc`; start.c keeps them, so setting them links no
+  fork): `prepare` takes its locks just before the clone, `give` writes its
+  messages on the child's startup channel after libjam's (the descriptors
+  and the table of mappings: FL2), `parent` gives the locks back with the
+  fork's status, and `child` runs in the child after libjam has made the
+  roles its own (fresh locks, its messages read, the signal thread and the
+  exception entry, which is the process's and so not in the child, started
+  again: FL1b and SG3). None of them may allocate: libos's heap lock is in
+  libos's `prepare` (startmain.c), and musl's fork holds its malloc lock
+  across `_Fork`. FL1b's order to check: a layer lock held by a thread
+  that then calls malloc meets musl's fork holding malloc's lock and
+  waiting for that layer lock.
+- **libjam's own locks are not held across the clone** (section 1.5 listed
+  them): each module whose state the child can't use starts again empty
+  there instead (`ns_forked`, `fs_forked`, `fdmsg_forked`, start.c's table,
+  libos's printf channel), so neither a lock another thread held nor a
+  table it was changing matters, and no lock order ties them to the C
+  library's. There is no console lock in libjam. The namespace comes to the
+  child as a starter's would: `ns_prepare(NS_ALL)` after the clone (the
+  child's copy holds none of it) and an `nschan` mount on its new `SR_NS`
+  after the start, as spawn sends it; svc_get's cache starts empty.
+- **The roles** are fork.c's `dup_roles` and the made ones, each only if
+  ours has `RIGHT_DUPLICATE` and `RIGHT_TRANSFER`; CJR's JIT-only handle
+  (Q4 (A)) is one line there once CJ2 gives it a startup role. The child
+  ends with `FORK_BAD_MESSAGE` (3) if its message is malformed.
+- **The child's stack** is its copy of the forking thread's, from 128 bytes
+  below the saved block; its set-up runs there.
+- **The handle count** (`fork_handles`): the job's `JOB_LIMIT_HANDLES`
+  counts objects too (a process while it lives, every VMO's struct, so
+  each VMO `vmar_clone` makes), and the parent's heap may be made inside
+  the fork (`ns_prepare`'s allocation): the test counts all of them.
+- Not built here: anything POSIX (lx_fork, vfork's wait, descriptors,
+  signals, ids: FL1b, FL2, FL4); libjam's per-connection buffers mapped
+  `VMAR_CLONE_NONE` (FL2); a native program's open files (`struct jfile`)
+  keep the parent's values in the child, as any handle the program holds
+  itself.
 
 ## 6. Questions for the owner
 
