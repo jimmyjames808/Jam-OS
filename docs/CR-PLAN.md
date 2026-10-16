@@ -2257,6 +2257,22 @@ Chromium's `StackTrace` takes its glibc path instead of being patched out
   thread; a trace from a signal handler reaches the raising function and
   its caller; a `qsort` comparator's trace reaches `qsort`'s caller;
   `backtrace_symbols` and `backtrace_symbols_fd` lines.
+- **A kept build fails it (2026-10-16, track XR)**: after BT merged,
+  posixtest's execinfo section failed on the main checkout's PC tree
+  (`execinfo.c:194`, `:195`, `:227`, `:235`: a trace through musl's or the
+  layer's frames too short) and passed everywhere else. No code had
+  regressed: that tree was built before BT, and the Makefile then had no
+  rule that rebuilds an object when its flags change, so musl's and the
+  layer's objects that BT's sources did not touch kept being compiled
+  without unwind tables (`.eh_frame` missing in `qsort.c.o`, `raise.c.o`,
+  `calls.c.o`, `kill.c.o` of `~/work/jamos`'s libc.a; every dir of the PC
+  from before the 16th was the same). The flag stamps (MKF: `build/flags/`)
+  are the fix, and `make check` now also refuses a libc.a whose signal,
+  thread-start, qsort, execinfo or libjam members have no `.eh_frame`
+  (`tools/checkeh.py`). Checked on the PC in one tree: built with the
+  flags off, then the flags back on without a rebuild (the old Makefile):
+  `execinfo.c:183` fails both times; with MKF merged the same tree
+  rebuilds and passes.
 
 ## Later
 
