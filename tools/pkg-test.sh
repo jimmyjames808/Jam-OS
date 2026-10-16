@@ -212,6 +212,7 @@ if [ "$big" = 1 ]; then
     nvme=
     rm -f "$out/jam1.img" "$out/jam2.img" "$out/pkg.bigA.img" "$out/pkg.bigB.img" \
         "$out/pkg.bigcut.img" "$out/pkg.bigafter.img"
+    rm -rf "$out/repo/web/big" "$out/repo/web/bigslow"   # 300 MiB each: not carried back
 fi
 grep -a "init: pkg: " "$out"/pkgmain.log "$out"/pkgsettle.log "$out"/pkgbig*.log 2>/dev/null | sed 's/^/pkg-test: /' | head -40
 rm -f "$out/pkg.base.img" "$out/pkg.main.img" "$out/pkg.cut.img" "$out/pkg.after.img"
