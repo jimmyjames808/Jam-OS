@@ -20,12 +20,17 @@
  *   crash-on=<name>   a request on a path whose last name is <name>
  *                     crashes extfs (an invalid instruction): the bad
  *                     request of the restart rule, every time it runs;
- *   fixed-time        every time extfs writes is 2026-01-01 00:00:00. */
+ *   fixed-time        every time extfs writes is 2026-01-01 00:00:00;
+ *   tail-lazy         the journal's tail moves every 64 commits only (not
+ *                     every few blocks: EXT_JNL_TAIL_BLOCKS), the way the
+ *                     steps of utest's extfs_restart_steps were counted:
+ *                     a start then replays a long log, and its writes count. */
 #include "extfs.h"
 
 #define DIE_PREFIX   "die="
 #define CRASH_PREFIX "crash-on="
 #define FIXED_TIME   "fixed-time"
+#define LAZY_TAIL    "tail-lazy"
 
 static const char *const point_names[XF_DIE_COUNT] = {
     [XF_DIE_WRITE] = "write", [XF_DIE_JOURNAL] = "journal", [XF_DIE_COMMIT] = "commit",
@@ -38,11 +43,17 @@ static struct {
     uint32_t    reached;
     const char *crash;
     bool        fixed;
+    bool        lazy_tail;
 } t = { .point = -1 };
 
 bool test_fixed_time(void)
 {
     return t.fixed;
+}
+
+bool test_lazy_tail(void)
+{
+    return t.lazy_tail;
 }
 
 static bool die_word(const char *w)
@@ -67,6 +78,10 @@ bool test_word(const char *w)
 {
     if (!strcmp(w, FIXED_TIME)) {
         t.fixed = true;
+        return true;
+    }
+    if (!strcmp(w, LAZY_TAIL)) {
+        t.lazy_tail = true;
         return true;
     }
     if (!strncmp(w, DIE_PREFIX, strlen(DIE_PREFIX)))

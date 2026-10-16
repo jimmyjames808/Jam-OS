@@ -162,6 +162,8 @@ status_t mount(bool *no_volume)
     if (!jmem)
         return ERR_NO_MEMORY;
     st = ext_jnl_init(&vol.jnl, jmem, jsize, 0);
+    if (st == OK && test_lazy_tail())
+        vol.jnl.tail_blocks = UINT32_MAX;
     request_init();
     if (st == OK)
         st = ext_jnl_mount(fs, &vol.jnl, &dev, cache, cache_size, flags);

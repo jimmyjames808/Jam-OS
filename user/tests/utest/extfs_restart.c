@@ -58,6 +58,7 @@ static struct sup sv;
 static struct ramdisk blank_disk, test_disk;
 static uint8_t buf[CHUNK];
 static uint64_t ref_free;
+static bool lazy_tail;   /* instances started with tail-lazy (extfs/test.c) */
 
 static uint64_t dl(void)
 {
@@ -86,6 +87,8 @@ static status_t start(struct sup *s, const char *ended)
         argv[argc++] = s->dies[s->instance];
     if (s->crash)
         argv[argc++] = s->crash;
+    if (lazy_tail)
+        argv[argc++] = "tail-lazy";
     struct spawn_handle x[5] = { { EXTFS_SR_BLOCK, block }, { EXTFS_SR_SERVE, serve },
                                  { SR_STATE, state }, { SR_KEEP, keep } };
     rights_t xr[5] = { RIGHT_SAME, RIGHT_SAME, SVCSTATE_SERVICE_RIGHTS, RIGHT_SAME,
@@ -327,7 +330,7 @@ bool t_extfs_restart_steps(void)
     };
     static const char *const steps3[] = {
         "die=answered:8", "die=write:41", "die=journal:5", "die=commit:6", "die=write:3",
-        "die=write:23", "die=journal:1",
+        "die=write:23", "die=journal:2",
     };
     static const char *const format[] = { "die=write:40", "die=write:3" };
     struct fatrun r;
@@ -336,10 +339,16 @@ bool t_extfs_restart_steps(void)
     ref_free = 0;
     /* A formatted disk every run starts from (fixed-time: the same each time). */
     const char *fixed = "fixed-time";
+    /* The steps were counted when the journal's tail moved every 64 commits,
+     * so a start replayed a long log and its writes counted: those storms run
+     * with tail-lazy. The first runs again with the tail as it is (a start
+     * replays one or two transactions). */
     bool ok = extfs_start(&r, &blank_disk, false, &fixed, 1) && fat_stop(&r) &&
-              storm(NULL, 0, false, NULL) && storm(steps1, 5, false, NULL) &&
-              storm(steps2, 5, false, NULL) && storm(steps3, 7, false, "restart") &&
-              storm(format, 2, true, NULL);
+              storm(NULL, 0, false, NULL) && storm(steps1, 5, false, NULL);
+    lazy_tail = true;
+    ok = ok && storm(steps1, 5, false, NULL) && storm(steps2, 5, false, NULL) &&
+         storm(steps3, 7, false, "restart") && storm(format, 2, true, NULL);
+    lazy_tail = false;
     return ramdisk_destroy(&test_disk) && ramdisk_destroy(&blank_disk) && ok;
 }
 
