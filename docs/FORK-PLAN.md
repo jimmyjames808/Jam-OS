@@ -573,6 +573,11 @@ a copy made one VMO at a time while other threads run is torn.
 (a VMO child, an address space), and they must enter the ABI before M14.
 Whose: the owner's (his architecture rule).
 
+**Answered by the owner (2026-10-16): (A), and Goals' line stays as it
+is.** `vmar_clone` and `process_replace` are not a fork call; used
+together by libc they make a safer, virtual `fork`, so the rule "no
+`fork` in the kernel" already allows them and needs no rewording.
+
 ### Q2. `execve`: in place, or forwarded
 
 Section 2's table. **(a)** spawn-wait-forward as today: leaks a copy of
@@ -587,6 +592,10 @@ reach the renderer through it; (b) is the only way every observer agrees,
 and it mends `execve` for every program. Whose: technical (decided by
 this recommendation unless the owner says otherwise), but it adds a
 system call before M14.
+
+**Decided by the main session (2026-10-16, a technical choice): (b)**, in
+place through `process_replace`: Chromium's kill, waitpid and
+`/proc/<pid>/stat` must reach the renderer by the pid it holds.
 
 ### Q3. `vfork`: as `fork`, or the recorder
 
