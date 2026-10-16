@@ -2033,6 +2033,23 @@ between writable and executable with `mprotect`, and a reservation's pages
 made executable, decommitted in place by `MAP_FIXED | MAP_JIT`, and made
 plain memory again by a `MAP_FIXED` without it.
 
+posixtest's execinfo section (the `init` run; `posixtest execinfo`):
+`backtrace()` and its lines ([CR-PLAN](CR-PLAN.md#bt-notes), "BT notes").
+Four nested functions (each noting `__builtin_return_address(0)`) give a
+trace whose first frame is in the innermost and whose next three are the
+return addresses they were called with, up to the test function, `main`
+and the program's start (at least 7 frames); a one-slot array stores one
+frame and leaves the next untouched, size 0 stores nothing. The same
+chain in a second thread ends in libc's thread start. From a signal
+handler (`raise(SIGUSR1)` in a function of the test): the handler's frame,
+then libc's delivery and musl's `raise` (the layer's and musl's unwind
+tables), then the raising function and its caller, within 12 frames. A
+`qsort` comparator's trace reaches the function that called `qsort`
+(musl's own frames between). `backtrace_symbols()` gives one block (the
+pointers, then the strings) and `backtrace_symbols_fd()` the same lines on
+a pipe: `name() [0xaddr]` for an address in the program, `[0xaddr]` for a
+stack or heap one.
+
 posixtest's launch section (the `init` run; `posixtest launch`): what
 Chromium's launcher needs of `posix_spawn` ([CR-PLAN](CR-PLAN.md#cs1-notes),
 "CS1 notes"). A child given 503 arguments (500 of 128 bytes) and 64 KiB of

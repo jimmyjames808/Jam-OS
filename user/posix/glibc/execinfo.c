@@ -34,13 +34,13 @@
  * with the name argv[0] gives, and one outside it "[0xaddr]". Chromium's
  * StackTrace reads the program's own file for names (base/third_party/
  * symbolize) and does not call these. */
-#include <elf.h>
-#include <errno.h>
-#include <execinfo.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <elf.h>
+#include <errno.h>
+#include <execinfo.h>
 #include <string.h>
 #include <sys/uio.h>
 #include <unistd.h>

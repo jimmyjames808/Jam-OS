@@ -418,7 +418,8 @@ supported"); Crashpad's upload transport wanted libcurl (args.gn:
 `crashpad_http_transport_impl = "socket"`, BoringSSL for https);
 `SafeSPrintfTest.EmitNULL` can't compile where `NULL` is `nullptr`
 (Alpine's patch, 0007, leaves it out); `StackTrace`'s stream output had
-no definition without `backtrace()` (0911); Chromium's fontconfig named a
+no definition without `backtrace()` (0911, since replaced: libc has
+`<execinfo.h>`, see "BT notes"); Chromium's fontconfig named a
 libuuid it doesn't call (0912); FFmpeg's build links the system's libz
 (the recipe `needs zlib`). `tools/cr/build.sh`'s detached build now gets
 `CR_JOBS` and `CR_MEM_MB` (the keeper's environment had neither, so
@@ -1080,8 +1081,8 @@ stable does (the owner's rule); each move is a recipe change, its
 patches rebased.
 
 **Patches, from Alpine** (copied with their headers; each one's reason in
-the recipe's lint): the musl ones: `no-execinfo.patch`,
-`no-mallinfo.patch`, `no-res-ninit-nclose.patch`,
+the recipe's lint): the musl ones: `no-execinfo.patch` (left out again
+since BT: libc has `<execinfo.h>`), `no-mallinfo.patch`, `no-res-ninit-nclose.patch`,
 `temp-failure-retry.patch`, `pvalloc.patch`,
 `disable-dns_config_service.patch`; and copium's
 `cr140-musl-prctl.patch`, `cr143-libsync-__BEGIN_DECLS.patch`,
@@ -1386,6 +1387,7 @@ ports, recipes, tests, netstack's caps, the audio API and the docs.
 | **CU2. Named `AF_UNIX` sockets** | section 4's broker, `/svc/unix`: `bind`, `listen`, `accept`, `connect` on socket files and abstract names | the broker (new, user/services/), its IDL (new), `user/posix/sys/socket.c`'s `AF_UNIX` paths, init's start of it | CU1; M13.6's U4 (socket files on `/jam`) | posixtest: a listener and two connectors, a socket file removed, a connector without the file's view refused, abstract names; utest for the broker's limits | **Opus** |
 | **CE1. The exec sealer** | `/svc/exec` in init: a program `posix_spawn`s an approved `/data` program (its own open of the file; init checks the allow line and page table, seals the file's pages with `vmo_make_exec_verified`) and the child gets its own approval only, never its parent's (the owner's decision, 2026-10-12); built, see "CE1 notes" | `abi/idl/exec.idl` (new), `user/services/init/exec.c` (new), `user/include/dataprog.h` + `user/lib/dataprog.c` (PX's helpers moved from the shell), `user/posix/sys/spawn.c` (`file_program`), `user/posix/sys/proc.c` (a child's job for SIGKILL), `user/lib/spawn.c` (`before_start`), utest `execsvc.c` with `user/tests/exectest` and `user/tests/execwide` | M12.5's PX, M13's F1b, R2 | utest `exec_*`; `tools/posix-mmap-test.sh` case `spawn` (the allowed run starts and exits 7); `allow.txt` and pager-test `exec` unchanged | **Opus** (a trust boundary) |
 | **CS1. Launching** | section 5: `addclosefrom_np`, argv and environments in a VMO, `/proc/self/exe` spawns through CL2's image, a child's argv of 64 KiB; built, see "CS1 notes" | `user/posix/sys/spawn.c`, `user/posix/sys/spawnfd.c`, `user/lib/spawn.c` (the VMO), the POSIX start code (`user/posix/crt/`) | CL2's self-image part (or beside it, merged after) | posixtest: a child with 500 arguments and 64 KiB of environment sees them all; `addclosefrom_np` leaves exactly the remapped descriptors (checked through `/proc/self/fd`) | **Opus** |
+| **BT. Stack traces** | libc's `<execinfo.h>` (`backtrace`, `backtrace_symbols`, `backtrace_symbols_fd`) by the program's own unwind tables, so Chromium's and V8's `StackTrace` take their glibc path and Alpine's no-execinfo patch and our 0911 are gone; built, see "BT notes" | `user/posix/glibc/` (new), `user/posix/include/execinfo.h`, `user/posix/posix.mk` (unwind tables in musl, the layer and libjam), posixtest's execinfo section, ports/chromium's patches | nothing | posixtest `execinfo`: nested frames, a thread, a signal handler, qsort's comparator, the lines | Sonnet 5.5 |
 | **CP1. Programs this big** | section 6's limits: `VMO_VERIFIED_MAX` 1 GiB, `PROGRAM_MAX`, `FILE_MAX`; `allow`'s progress line; a 300 MB generated test program; built, see "CP1 notes" | `kernel/include/jam/abi.h` (the constant), `kernel/object/vmo_verify.c` if a size is assumed there, `user/services/shell/sh_allow.c` (the constant and the line), `user/lib/spawn.c` (the constant), a generated test program (new) | M12.5's PX merged (it rewrites `sh_allow.c`) | ktest: a 1 GiB verified table; the shell's allow script with the 300 MB program (allowed, run, a changed page refused); cr-test.sh `hello` with the big program | **Opus** (small) |
 | **CN1. netstack's caps** | section 8: the new caps, netstack's memory measured at them | `user/include/net.h`, `user/services/netstack/stack.h` and lwIP's options file if pools must grow, BENCH.md's line | nothing | utest: 256 sockets from one opener, the 257th refused; 512 in all; 1,024 TCP connections to the test host; `tools/net-test.sh` unchanged | Sonnet 5.5 |
 | **CB1. The Chromium build** | section 14 and 15: ports/chromium (the recipe, Alpine's patches, our toolchain patch, args for `base_unittests` and `headless_shell`), the builder's kept tree and `package --from` in tools/ports.py, the persistent tree on WSL behind its lock; builds `base_unittests` and `headless_shell`; reports disk, peak memory and time | ports/chromium (new), tools/ports.py (the two options), tools/cr/ (the build wrapper, new) | CT1, CT2; the main session's CPU-weighted slots in `tools/remote-test.sh` | the build finishes; the syscall scan passes (or lists each site); `make check` (the recipe's lint) | **Opus** (the build glue decides much) |
@@ -2131,6 +2133,85 @@ nothing is renamed.
     (`ERR_NO_RESOURCES`): Chromium's output mixer shares a physical stream
     among same-parameter streams, and falls back to a fake output if
     `Open` fails.
+
+## BT notes
+
+Track BT, stack traces (2026-10-16): glibc's `<execinfo.h>` in libc, so
+Chromium's `StackTrace` takes its glibc path instead of being patched out
+(the owner's rule: fix the layer, not Chromium).
+
+- **What libc has now**: `backtrace()`, `backtrace_symbols()` and
+  `backtrace_symbols_fd()` (user/posix/glibc/execinfo.c; the header,
+  user/posix/include/execinfo.h, is new, not an override of musl's). The
+  directory is a new one in posix.mk: glibc's extensions musl lacks,
+  built with the layer's flags but, unlike the layer's objects, not
+  renamed `__jl_*` (they are libc's public names). They are in libc.a as
+  one member, linked only by a program that calls them.
+- **Its own unwinder, not `_Unwind_Backtrace`** (the plan was libunwind's).
+  `backtrace()` reads the program's `.eh_frame` through `.eh_frame_hdr`'s
+  index (found from `__ehdr_start`'s program headers) and runs the call
+  frame instructions for each return address: about 400 lines, x86-64
+  only, no libunwind. Why: the cross GCC's libgcc has an unwinder but no
+  way to find a frame (it looks only at frames `crtbegin.o` registers,
+  and jamos-cc links none: checked with `nm`, `unwind-dw2-fde.o` not
+  `-dip`), so a GCC-linked C program, posixtest included, could not use
+  `_Unwind_Backtrace`; and a crash handler wants a walk with no lock, no
+  malloc and no call (libunwind finds a frame through `dl_iterate_phdr`
+  and a cache under a lock). Backtrace's entry is assembly (it saves the
+  callee-saved registers before any prologue changes them) and the walk
+  stays on the caller's stack. A frame whose CFA is an expression, a frame
+  without a table (`_start`, hand-written assembly) or a corrupt one ends
+  the trace; a pc without a table is still the last one stored (libgcc's
+  way). The stack is read only where a table says a caller's registers
+  were saved; CFAs must rise, so a trace ends.
+- **Unwind tables in musl, the layer and libjam's objects in libc.a**
+  (posix.mk: `-fasynchronous-unwind-tables`; musl's configure and the
+  layer had turned them off). On Jam OS a signal handler runs at a call
+  boundary in libc (sig.h), so a trace from a handler passes `run_handler`,
+  `deliver`, `sig_call`, the call layer's entry and musl's `raise` before
+  the function that raised the signal: all need tables. The same tables
+  let a trace cross a `qsort` comparator, a thread's start, `main`'s
+  caller, and C++ exceptions unwind through musl. Cost: `.eh_frame` is
+  about a tenth of a program's code (posixtest: 12 KiB to 70 KiB on
+  576 KiB of code, the file 0.5% bigger); no code changes. Not done: the
+  start code's `_start` has no CFI (a trace ends there, as it should).
+  Faults are not signals on Jam OS (the kernel ends the process), so
+  Chromium's SIGSEGV/SIGILL dump handlers never run; `abort()` is a
+  signal (SIGABRT) and does.
+- **The lines**: a program on Jam OS keeps no symbol table in memory (the
+  loader maps segments only), so `backtrace_symbols()` prints what glibc
+  prints for a non-PIE program with no symbol it can find: `name() [0xaddr]`
+  with argv[0] for an address in the program's segments, `[0xaddr]` for
+  any other. Naming functions would mean reading the program's file
+  (`/proc/self/exe`) and its `.symtab`; Chromium's `StackTrace` does that
+  itself (base/third_party/symbolize) and only falls back to
+  `backtrace_symbols()` where it is not built in, so nothing waits for it.
+  `backtrace_symbols_fd()` allocates nothing (one `writev` a line).
+- **Chromium**: the upstream tree uses `<execinfo.h>` in three files
+  (grep of the pristine 155 tree): `base/debug/stack_trace_posix.cc`
+  (`HAVE_BACKTRACE`, by `__GLIBC__`), V8's `external-reference-table.cc`
+  (DEBUG builds only) and SwiftShader's LLVM config (not built here).
+  Alpine's `no-execinfo.patch` (our 0001) and our own 0911 (a definition
+  for the build without `backtrace()`) are gone; the new 0911 adds
+  `defined(__jamos__)` to the one condition in stack_trace_posix.cc
+  (`__jamos__` is what the toolchain, 0901, already defines for the target;
+  `__GLIBC__` itself is not defined, which would turn on every other
+  glibc-only path Alpine's patches avoid). With it `stack_trace.cc`,
+  `operator<<` and the unit tests are upstream's again, so base_unittests'
+  `StackTrace.*` tests now run on Jam OS (CB2 triages any failure: they
+  need `/proc/self/maps` and the program's file for names, `symbol_level =
+  0` and a stripped program give addresses). The kept tree takes the
+  change as a patch change: five files go back to or away from upstream's
+  bytes and only their objects and the links rebuild (not run by BT: the
+  tree was busy with CB2/CB3). BT checked the one translation unit
+  instead (see the report: `stack_trace_posix.cc` compiled with the
+  build's own flags, with libc's header, defines `HAVE_BACKTRACE` and
+  calls `backtrace`).
+- **Tests**: posixtest's `execinfo` section (the `init` run): four nested
+  functions give exactly their return addresses; a short array; a second
+  thread; a trace from a signal handler reaches the raising function and
+  its caller; a `qsort` comparator's trace reaches `qsort`'s caller;
+  `backtrace_symbols` and `backtrace_symbols_fd` lines.
 
 ## Later
 

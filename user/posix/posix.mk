@@ -3,7 +3,8 @@
 # configure) from third_party/musl, unmodified, less its dynamic linker
 # (ldso/, src/ldso) and the files our overrides replace
 # (user/posix/musl/OVERRIDES); the Linux call layer (user/posix/sys/) and
-# the start (user/posix/crt/); the sysroot, build/sysroot, that
+# the start (user/posix/crt/); glibc's extensions musl lacks
+# (user/posix/glibc/: <execinfo.h>); the sysroot, build/sysroot, that
 # tools/jamos-cc compiles and links against; and posixtest
 # (user/posix/test/), built with jamos-cc, as bin/posixtest in bootfs.
 #
@@ -70,7 +71,8 @@ MUSL_CHECKED := $(MUSL_OUT)/overrides.ok
 # walks the stack by them, through qsort's comparator calls, a thread's
 # start and the delivery of a signal to its handler (a call boundary in
 # libc, user/posix/sys/sig.h), and C++ exceptions unwind through them.
-# .eh_frame costs a program about 3 to 4% of its size.
+# .eh_frame costs a program about a tenth of its code's size (posixtest:
+# 58 KiB more on 576 KiB of code, a file 0.5% bigger).
 MUSL_INC    := -I$(POSIX)/musl/arch/x86_64 -I$(MUSL)/arch/x86_64 -I$(MUSL)/arch/generic \
                -I$(MUSL_OUT)/internal -I$(MUSL)/src/include -I$(MUSL)/src/internal \
                -I$(MUSL_OUT)/include -I$(MUSL)/include

@@ -16,12 +16,12 @@
  *   - backtrace_symbols_fd() on a pipe, backtrace_symbols() in one block:
  *     "name() [0xaddr]" for an address in the program, "[0xaddr]" for one
  *     outside it. */
+#include <stdio.h>
+#include <stdlib.h>
 #include <errno.h>
 #include <execinfo.h>
 #include <pthread.h>
 #include <signal.h>
-#include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include "pt.h"
@@ -102,9 +102,10 @@ static void test_nested(void)
 {
     memset(&main_trace, 0, sizeof main_trace);
     caller(&main_trace);
-    /* caller's caller is this function, then pt_execinfo, main.c's run,
-     * main, musl's start and the layer's (__jam_start, _start_c, _start). */
-    check_nested(&main_trace, 8);
+    /* caller's caller is this function, then pt_execinfo, main (main.c's
+     * run is inlined or a frame of its own), and musl's start and the
+     * layer's below (__libc_start_main, __jam_start, _start_c, _start). */
+    check_nested(&main_trace, 7);
     CHECK(inside(main_trace.buf[4], (void *)test_nested));
     printf("posixtest: execinfo: nested %d frames\n", main_trace.n);
 
