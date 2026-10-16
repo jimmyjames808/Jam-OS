@@ -19,7 +19,7 @@ out=$1
 mkdir -p "$out"
 
 base=${QEMU_IMAGE:-build/jamos.img}
-img="$out/pkgports.img"
+img="$out/pkgports-stick.img"
 rm -f "$out/bootfs-in.img"
 mcopy -i "$base@@1M" ::/boot/bootfs.img "$out/bootfs-in.img" ||
     { echo "pkg-ports-test: can't read the boot image"; exit 1; }

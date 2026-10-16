@@ -176,6 +176,7 @@ def make_real(out, web, ports, key):
         if subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT).returncode:
             sys.exit("pkg-test-repo: ports.py repo failed, see %s" % log)
     with open(os.path.join(repo, "INDEX"), "rb") as f:
+        f.readline()    # jamos-ports 1
         serial = int(f.readline().split()[1])
     ABI = fmt.abi_stamp(TOP)    # the conflict package is of this system, as the real ones
     compat = package("bzip2-compat", "1.0")

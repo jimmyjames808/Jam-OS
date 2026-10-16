@@ -2,8 +2,10 @@
 # bsdunzip from the package on /data/pkg, with the three programs of the
 # packages it runs (minigzip, bzip2, xz) to check each other's files.
 # A tree (two levels of directories, an empty one, an empty file, a text
-# file of 108894 bytes, a binary one of megabytes, a name of 104 characters
-# that a plain ustar header cannot hold) is archived in every format and
+# file of 108894 bytes, a binary one (bzip2's, half a megabyte: the test
+# stick's /data is small and every archive and extraction is a copy of the
+# tree), a name of 124 characters that a plain ustar header cannot hold) is
+# archived in every format and
 # with every compression bsdtar has here, listed, extracted and compared
 # with `cmp`; each compressed archive is read by the standalone program of
 # its compression and the other way round. The working directory is
@@ -41,7 +43,7 @@ send run $S/printf 'long\n' > tree/s/$N
 wait {prompt}
 send run $S/printf '' > tree/empty.txt
 wait {prompt}
-send cp /boot/bin/utest /data/lt/tree/s/d/c.bin
+send cp /data/pkg/bin/bzip2 /data/lt/tree/s/d/c.bin
 wait {prompt}
 send sha256sum tree/a.txt
 wait f6351f5ead9a700e34275480b3856ea738122a7c57bdeb744a631251c069587a  tree/a.txt
