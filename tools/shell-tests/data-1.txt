@@ -14,7 +14,8 @@ send T=a
 wait {prompt}
 
 # ---- the mounts --------------------------------------------------------------------------
-send ls / | sort | head -3 | tail -1 | grep ^esp/$ && ls / | grep -c /$ | grep ^4$ && ls / | grep -c ^svc/$ | grep ^1$ && echo ok-$T-root
+# (/tmp is init's memory volume: the stick's FAT /data gives no view of /data/tmp)
+send ls / | sort | head -3 | tail -1 | grep ^esp/$ && ls / | grep -c /$ | grep ^5$ && ls / | grep -c ^svc/$ | grep ^1$ && ls / | grep -c ^tmp/$ | grep ^1$ && echo ok-$T-root
 wait ok-a-root
 send df
 wait /esp
