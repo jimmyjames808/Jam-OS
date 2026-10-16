@@ -905,4 +905,20 @@ jam_exception_done:
     ret
     .size jam_exception_done, . - jam_exception_done
 
+    .globl jam_thread_exception_stack
+    .type jam_thread_exception_stack, @function
+jam_thread_exception_stack:
+    mov $SYS_thread_exception_stack, %eax
+    syscall
+    ret
+    .size jam_thread_exception_stack, . - jam_thread_exception_stack
+
+    .globl jam_thread_raise
+    .type jam_thread_raise, @function
+jam_thread_raise:
+    mov $SYS_thread_raise, %eax
+    syscall
+    ret
+    .size jam_thread_raise, . - jam_thread_raise
+
     .section .note.GNU-stack, "", @progbits

@@ -127,3 +127,5 @@ status_t jam_pager_supply(handle_t pager, uint64_t key, uint64_t offset, const v
 status_t jam_pager_op(handle_t pager, uint64_t key, uint32_t op, uint64_t offset, uint64_t len, int64_t arg);
 status_t jam_exception_entry_set(uint64_t entry);
 status_t jam_exception_done(const struct exc_frame *frame, uint32_t how);
+status_t jam_thread_exception_stack(uint64_t base, uint64_t size);
+status_t jam_thread_raise(handle_t thread);

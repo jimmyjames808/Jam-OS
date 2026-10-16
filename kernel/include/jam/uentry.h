@@ -55,13 +55,22 @@ bool trap_page_fault(struct trap_frame *f);
  * exits. Interrupts in either state; returns with them off. */
 void user_fault(struct trap_frame *f, const char *why, uint64_t addr, status_t status);
 /* For upcall.c (uentry.c, isr.S): the kill itself, its line with `more`
- * appended (NULL: none); the work before any return to ring 3
- * (interrupts off: a pending reschedule, a kill); and the return to ring
- * 3 with every register from f (interrupts off, f checked). */
-_Noreturn void user_kill(const char *why, uint64_t rip, uint64_t addr, const char *more);
+ * appended (NULL: none), the process's end naming the fault (vector, a
+ * page fault's status: process_kill_fault); the work before any return to
+ * ring 3 (interrupts off: a pending reschedule, a kill); and the return to
+ * ring 3 with every register from f (interrupts off, f checked). */
+_Noreturn void user_kill(const char *why, uint64_t rip, uint64_t addr, const char *more,
+                         uint32_t vector, status_t status);
 void return_to_user_work(void);
 void user_trap_return(struct trap_frame *f);
 _Noreturn void user_resume_iret(struct trap_frame *f);
+/* A raise latched on the current thread (thread_raise), from
+ * user_trap_return: enter its exception entry with a frame of kind
+ * EXC_RAISED and f's registers, or drop it (no entry, or a frame that
+ * can't be written); outside the window only (there it stays latched).
+ * Interrupts off on entry and return; return_to_user_work is done again
+ * if it turned them on. */
+void user_raise(struct trap_frame *f);
 
 /* RFLAGS bits user code may carry back into ring 3 (sysret, an
  * exception_done EXC_RESUME). IOPL, NT, RF, VM and friends are never the

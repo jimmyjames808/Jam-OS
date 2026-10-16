@@ -96,6 +96,18 @@ extern uint64_t user_faults;   /* uentry.c: user threads killed for a fault */
 #define D_AVEC      0x500   /* upc_regs: the vector registers after the resume (16) */
 #define D_FSWORD    0x800   /* the FS base points here */
 #define D_WARM      0x808   /* upc_bench: rounds before it times (at least 1) */
+#define D_ESTACK    0x810   /* upc_setup: the exception stack's base and size (0: none) */
+#define D_ESIZE     0x818
+#define D_ESRET     0x820   /* upc_setup: thread_exception_stack's result */
+#define D_RCOUNT    0x828   /* act_raised, upc_rbentry: raises taken */
+#define D_RKIND     0x830   /* act_raised: the frame's kind */
+#define D_RTSC      0x838   /* act_raised: the TSC at its entry */
+#define D_LOOPS     0x840   /* upc_rspin: rounds of its loop */
+#define D_HSELF     0x848   /* a handle to thread t0 with RIGHT_SIGNAL */
+#define D_HNOSIG    0x850   /* one without */
+#define D_TSC0      0x858   /* upc_rbench: the TSC before its raise */
+#define D_STOP      0x860   /* upc_rstorm: stop */
+#define D_RCOUNTS   0x880   /* upc_rstorm: each thread's raises taken (8) */
 #define D_SAMPLES   0x1000  /* upc_bench: each timed round's TSC cycles */
 #define SAMPLES_MAX ((DATA_PAGES * PG - D_SAMPLES) / 8)
 
@@ -103,6 +115,7 @@ extern uint64_t user_faults;   /* uentry.c: user threads killed for a fault */
 
 /* The frame's offsets the programs use (abi.h's struct exc_frame). */
 #define F_SIZE     0
+#define F_KIND     4
 #define F_COOKIE   32
 #define F_XSIZE    40
 #define F_R12      80
@@ -111,7 +124,8 @@ extern uint64_t user_faults;   /* uentry.c: user threads killed for a fault */
 #define F_RIP      176
 #define F_RFLAGS   184
 #define F_X        192
-_Static_assert(offsetof(struct exc_frame, cookie) == F_COOKIE &&
+_Static_assert(offsetof(struct exc_frame, kind) == F_KIND &&
+                   offsetof(struct exc_frame, cookie) == F_COOKIE &&
                    offsetof(struct exc_frame, xsave_size) == F_XSIZE &&
                    offsetof(struct exc_frame, r12) == F_R12 &&
                    offsetof(struct exc_frame, rbx) == F_RBX &&
@@ -133,8 +147,9 @@ _Static_assert(offsetof(struct exc_frame, cookie) == F_COOKIE &&
 #define H_LEAVE     2
 #define H_UNHANDLED 3
 #define U_TOP       0x00007fffffffe000
+#define K_RAISED    2
 _Static_assert(H_RESUME == EXC_RESUME && H_LEAVE == EXC_LEAVE && H_UNHANDLED == EXC_UNHANDLED &&
-                   U_TOP == USER_TOP,
+                   U_TOP == USER_TOP && K_RAISED == EXC_RAISED,
                "the programs' constants");
 
 #define S_(x) #x
@@ -159,6 +174,10 @@ __asm__(
     DSET(d_aflags, D_AFLAGS) DSET(d_acs, D_ACS) DSET(d_ass, D_ASS) DSET(d_amxcsr, D_AMXCSR)
     DSET(d_bad, D_BAD) DSET(d_erip, D_ERIP) DSET(d_erfl, D_ERFL) DSET(d_cookies, D_COOKIES) DSET(d_vpat, D_VPAT) DSET(d_avec, D_AVEC)
     DSET(d_fsword, D_FSWORD) DSET(d_warm, D_WARM) DSET(d_samples, D_SAMPLES)
+    DSET(d_estack, D_ESTACK) DSET(d_esize, D_ESIZE) DSET(d_esret, D_ESRET)
+    DSET(d_rcount, D_RCOUNT) DSET(d_rkind, D_RKIND) DSET(d_rtsc, D_RTSC) DSET(d_loops, D_LOOPS)
+    DSET(d_hself, D_HSELF) DSET(d_hnosig, D_HNOSIG) DSET(d_tsc0, D_TSC0) DSET(d_stop, D_STOP)
+    DSET(d_rcounts, D_RCOUNTS)
     ".set u_more, " S(U_MORE) "\n"
     ".set u_hole, " S(U_HOLE) "\n"
     "upc_blob:\n"
@@ -276,8 +295,8 @@ __asm__(
     "    jmp act_skip\n"
 
     /* ---- common pieces ----------------------------------------------- */
-    "upc_setup:\n"                      /* the FS base; the entry unless D_NOENTRY */
-    "    movq $d_fsword, %rdi\n"
+    "upc_setup:\n"                      /* the FS base; the entry unless D_NOENTRY; */
+    "    movq $d_fsword, %rdi\n"        /* the exception stack if D_ESIZE */
     "    movl $" S(SYS_thread_set_fs_base) ", %eax\n"
     "    syscall\n"
     "    cmpq $0, d_noentry\n"
@@ -285,7 +304,14 @@ __asm__(
     "    leaq upc_entry(%rip), %rdi\n"
     "    movl $" S(SYS_exception_entry_set) ", %eax\n"
     "    syscall\n"
-    "1:  ret\n"
+    "1:  cmpq $0, d_esize\n"
+    "    je 2f\n"
+    "    movq d_estack, %rdi\n"
+    "    movq d_esize, %rsi\n"
+    "    movl $" S(SYS_thread_exception_stack) ", %eax\n"
+    "    syscall\n"
+    "    movq %rax, d_esret\n"
+    "2:  ret\n"
     "upc_exit:\n"                       /* edi = the exit code */
     "    movl $" S(SYS_process_exit) ", %eax\n"
     "    syscall\n"
@@ -628,6 +654,192 @@ __asm__(
     "    jne 2b\n"
     "    xorl %edi, %edi\n"
     "    jmp upc_exit\n"
+
+    /* ---- exception stacks (SG2) ---------------------------------------- */
+    "upc_recurse:\n"                    /* a stack overflow into nothing mapped */
+    "    call upc_setup\n"
+    "upc_recurse_i:\n"
+    "    call upc_recurse_i\n"
+    "upc_esargs:\n"                     /* thread_exception_stack's refusals, then none */
+    "    call upc_setup\n"
+    "    movabsq $(" S(U_TOP) " - 0x1000), %rdi\n"
+    "    movl $0x2000, %esi\n"
+    "    movl $" S(SYS_thread_exception_stack) ", %eax\n"
+    "    syscall\n"
+    "    movq %rax, d_ret\n"
+    "    movl $u_more, %edi\n"
+    "    xorl %esi, %esi\n"
+    "    movl $" S(SYS_thread_exception_stack) ", %eax\n"
+    "    syscall\n"
+    "    movq %rax, d_ret2\n"
+    "    movl $0x800, %edi\n"
+    "    movl $0x1000, %esi\n"
+    "    movl $" S(SYS_thread_exception_stack) ", %eax\n"
+    "    syscall\n"
+    "    movq %rax, d_ret3\n"
+    "    xorl %edi, %edi\n"
+    "    xorl %esi, %esi\n"
+    "    movl $" S(SYS_thread_exception_stack) ", %eax\n"
+    "    syscall\n"
+    "    movq %rax, d_ret4\n"
+    "    xorl %edi, %edi\n"
+    "    jmp upc_exit\n"
+
+    /* ---- raises (SG2) -------------------------------------------------- */
+    "act_raised:\n"                     /* a raise: its kind, the TSC, a count; on */
+    "    rdtsc\n"
+    "    shlq $32, %rdx\n"
+    "    orq %rax, %rdx\n"
+    "    movq %rdx, d_rtsc\n"
+    "    movl " S(F_KIND) "(%rdi), %eax\n"
+    "    movq %rax, d_rkind\n"
+    "    lock incq d_rcount\n"
+    "    jmp act_resume\n"
+    "act_winspin:\n"                    /* in the window until D_GO; LEAVE; wait for a raise */
+    "    movq $1, d_ready\n"
+    "1:  cmpq $0, d_go\n"
+    "    je 1b\n"
+    "    movq d_rcount, %rax\n"
+    "    movq %rax, d_ret2\n"
+    "    leaq act_raised(%rip), %rax\n"
+    "    movq %rax, d_action\n"
+    "    movl $" S(H_LEAVE) ", %esi\n"
+    "    movl $" S(SYS_exception_done) ", %eax\n"
+    "    syscall\n"
+    "    movq %rax, d_ret\n"
+    "    jmp upc_rwait\n"
+    "upc_rspin:\n"                      /* its own code, no calls, until D_GO */
+    "    call upc_setup\n"
+    "    movq $1, d_ready\n"
+    "upc_rspin_loop:\n"
+    "    incq d_loops\n"
+    "    cmpq $0, d_go\n"
+    "    je upc_rspin_loop\n"
+    "upc_rspin_end:\n"
+    "    xorl %edi, %edi\n"
+    "    jmp upc_exit\n"
+    "upc_rwait:\n"                      /* until a raise was taken */
+    "    cmpq $0, d_rcount\n"
+    "    je upc_rwait\n"
+    "upc_rwait_end:\n"
+    "    xorl %edi, %edi\n"
+    "    jmp upc_exit\n"
+    "upc_rcall:\n"                      /* sleep_until D_ARG, then wait for a raise */
+    "    call upc_setup\n"
+    "    movq $1, d_ready\n"
+    "    movq d_arg, %rdi\n"
+    "    movl $" S(SYS_sleep_until) ", %eax\n"
+    "    syscall\n"
+    "upc_rcall_ret:\n"
+    "    movq d_rcount, %rcx\n"         /* raises taken by the call's return: none */
+    "    movq %rcx, d_ret2\n"
+    "    movq %rax, d_ret\n"
+    "    jmp upc_rwait\n"
+    "upc_rself:\n"                      /* thread_raise of itself, after D_GO */
+    "    call upc_setup\n"
+    "1:  cmpq $0, d_go\n"
+    "    je 1b\n"
+    "    movq d_hnosig, %rdi\n"
+    "    movl $" S(SYS_thread_raise) ", %eax\n"
+    "    syscall\n"
+    "    movq %rax, d_ret\n"
+    "    movq d_hself, %rdi\n"
+    "    movl $" S(SYS_thread_raise) ", %eax\n"
+    "    syscall\n"
+    "upc_rself_ret:\n"
+    "    movq d_rcount, %rcx\n"         /* not on the call's return */
+    "    movq %rcx, d_ret2\n"
+    "    movq %rax, d_ret3\n"
+    "    jmp upc_rwait\n"
+    "upc_rbadsp:\n"                     /* RSP at D_ARG (nothing writable) until D_GO */
+    "    call upc_setup\n"
+    "    movq d_arg, %rsp\n"
+    "    movq $1, d_ready\n"
+    "1:  cmpq $0, d_go\n"
+    "    je 1b\n"
+    "    xorl %edi, %edi\n"
+    "    jmp upc_exit\n"
+
+    /* ---- upc_rstorm: threads spinning, raised from the kernel ---------- */
+    "upc_rsentry:\n"                    /* r12 = the thread's index */
+    "    cmpl $" S(K_RAISED) ", " S(F_KIND) "(%rdi)\n"
+    "    je 1f\n"
+    "    lock incq d_bad\n"
+    "1:  lock incq d_rcounts(,%r12,8)\n"
+    "    movl $" S(H_RESUME) ", %esi\n"
+    "    movl $" S(SYS_exception_done) ", %eax\n"
+    "    syscall\n"
+    "    lock incq d_bad\n"
+    "    ud2\n"
+    "upc_rstorm:\n"                     /* rdi = the thread's index; until D_STOP */
+    "    movq %rdi, %r12\n"
+    "    movl $1, d_noentry\n"
+    "    call upc_setup\n"
+    "    leaq upc_rsentry(%rip), %rdi\n"
+    "    movl $" S(SYS_exception_entry_set) ", %eax\n"
+    "    syscall\n"
+    "    lock incq d_ready\n"
+    "1:  cmpq $0, d_stop\n"
+    "    je 1b\n"
+    "    movl $1, %eax\n"
+    "    lock xaddq %rax, d_finished\n"
+    "    incq %rax\n"
+    "    cmpq d_threads, %rax\n"
+    "    jne 3f\n"
+    "    xorl %edi, %edi\n"
+    "    jmp upc_exit\n"
+    "3:  movl $" S(SYS_thread_exit) ", %eax\n"
+    "    syscall\n"
+    "    ud2\n"
+
+    /* ---- the raise's benchmark line: t1 raises t0, timed --------------- */
+    "upc_rbentry:\n"                    /* t0's: the TSC since the raise, then on */
+    "    rdtsc\n"
+    "    shlq $32, %rdx\n"
+    "    orq %rax, %rdx\n"
+    "    subq d_tsc0, %rdx\n"
+    "    movq d_rcount, %rax\n"
+    "    movq %rdx, d_samples(,%rax,8)\n"
+    "    lock incq d_rcount\n"
+    "    movl $" S(H_RESUME) ", %esi\n"
+    "    movl $" S(SYS_exception_done) ", %eax\n"
+    "    syscall\n"
+    "    ud2\n"
+    "upc_rbspin:\n"                     /* t0: spin until D_GO */
+    "    movl $1, d_noentry\n"
+    "    call upc_setup\n"
+    "    leaq upc_rbentry(%rip), %rdi\n"
+    "    movl $" S(SYS_exception_entry_set) ", %eax\n"
+    "    syscall\n"
+    "    movq $1, d_ready\n"
+    "1:  cmpq $0, d_go\n"
+    "    je 1b\n"
+    "    xorl %edi, %edi\n"
+    "    jmp upc_exit\n"
+    "upc_rbench:\n"                     /* t1: D_ROUNDS raises, each once the last was taken */
+    "1:  cmpq $0, d_ready\n"
+    "    je 1b\n"
+    "    xorl %r12d, %r12d\n"
+    "2:  cmpq %r12, d_rcount\n"
+    "    jne 2b\n"
+    "    lfence\n"
+    "    rdtsc\n"
+    "    lfence\n"
+    "    shlq $32, %rdx\n"
+    "    orq %rax, %rdx\n"
+    "    movq %rdx, d_tsc0\n"
+    "    movq d_hself, %rdi\n"
+    "    movl $" S(SYS_thread_raise) ", %eax\n"
+    "    syscall\n"
+    "    incq %r12\n"
+    "    cmpq d_rounds, %r12\n"
+    "    jne 2b\n"
+    "3:  cmpq %r12, d_rcount\n"
+    "    jne 3b\n"
+    "    movq $1, d_go\n"
+    "    movl $" S(SYS_thread_exit) ", %eax\n"
+    "    syscall\n"
+    "    ud2\n"
     "upc_blob_end:\n"
     ".popsection\n");
 
@@ -645,7 +857,11 @@ __asm__(
     X(f_gpnc) X(f_gpnc_i) X(f_gpnc_end) X(f_gpint) X(f_gpint_i) X(f_gpint_end)           \
     X(f_pfmap) X(f_pfmap_i) X(f_pfmap_end) X(f_pfro) X(f_pfro_i) X(f_pfro_end)           \
     X(f_pfnx) X(f_pfnx_i) X(f_pfnx_end) X(f_load) X(f_load_i) X(f_load_end)              \
-    X(f_mf) X(f_mf_i) X(f_mf_end) X(f_xm) X(f_xm_i) X(f_xm_end)
+    X(f_mf) X(f_mf_i) X(f_mf_end) X(f_xm) X(f_xm_i) X(f_xm_end)                          \
+    X(upc_recurse) X(upc_recurse_i) X(upc_esargs) X(act_raised) X(act_winspin)           \
+    X(upc_rspin) X(upc_rspin_loop) X(upc_rspin_end) X(upc_rwait) X(upc_rwait_end)        \
+    X(upc_rcall) X(upc_rcall_ret) X(upc_rself) X(upc_rself_ret) X(upc_rbadsp)            \
+    X(upc_rstorm) X(upc_rbspin) X(upc_rbench)
 #define DECLARE(l) extern const uint8_t l[];
 LABELS(DECLARE)
 
@@ -784,6 +1000,8 @@ static void exited(struct upc *u, int64_t code)
     struct process_info info = upc_wait(u);
     KT_ASSERT(!info.killed);
     KT_EQ(info.exit_code, code);
+    KT_EQ(info.flags & PROCESS_FLAG_FAULT, 0);   /* an exit names no fault */
+    KT_EQ(info.fault_vector, 0);
     KT_GLOBAL_EQ(__atomic_load_n(&user_faults, __ATOMIC_RELAXED), u->faults0);
 }
 
@@ -809,12 +1027,15 @@ static bool log_has_line(uint64_t from, const char *line)
 }
 
 /* It was killed with exactly this line: "user: process "<name>" killed:
- * <why> at rip <rip>, address <addr> (thread "t0")<more>". */
-static void killed(struct upc *u, const char *why, uint64_t rip, uint64_t addr, const char *more)
+ * <why> at rip <rip>, address <addr> (thread "t0")<more>", and its
+ * process_info names a fault: its info (fault_vector, fault_status). */
+static struct process_info killed(struct upc *u, const char *why, uint64_t rip, uint64_t addr,
+                                  const char *more)
 {
     struct process_info info = upc_wait(u);
     KT_ASSERT(info.killed);
     KT_EQ(info.exit_code, PROCESS_KILLED_CODE);
+    KT_EQ(info.flags & PROCESS_FLAG_FAULT, PROCESS_FLAG_FAULT);
     KT_GLOBAL_EQ(__atomic_load_n(&user_faults, __ATOMIC_RELAXED), u->faults0 + 1);
     char line[200];
     ksnprintf(line, sizeof(line),
@@ -822,6 +1043,14 @@ static void killed(struct upc *u, const char *why, uint64_t rip, uint64_t addr, 
               why, rip, addr, more);
     if (!log_has_line(u->log0, line))
         ktest_fail("no line \"%s\"", line);
+    return info;
+}
+
+/* process_info named this fault (vector, a page fault's status). */
+static void fault_is(struct process_info info, uint32_t vector, status_t status)
+{
+    KT_EQ(info.fault_vector, vector);
+    KT_EQ(info.fault_status, status);
 }
 
 /* The frame the last entry was given (still on the stack), header and
@@ -897,7 +1126,7 @@ KTEST(upcall_none_kills_as_before)
     set(&u, D_NOENTRY, 1);
     set(&u, D_FAULTER, AT(f_ud2));
     upc_start(&u, upc_generic);
-    killed(&u, "invalid opcode", AT(f_ud2_i), 0, "");
+    fault_is(killed(&u, "invalid opcode", AT(f_ud2_i), 0, ""), 6, OK);
     KT_EQ(get(&u, D_COUNT), 0);
     upc_end(&u);
 
@@ -905,14 +1134,14 @@ KTEST(upcall_none_kills_as_before)
     set(&u, D_NOENTRY, 1);
     set(&u, D_FAULTER, AT(f_pfmap));
     upc_start(&u, upc_generic);
-    killed(&u, "page fault", AT(f_pfmap_i), U_HOLE, "");
+    fault_is(killed(&u, "page fault", AT(f_pfmap_i), U_HOLE, ""), 14, ERR_NOT_FOUND);
     upc_end(&u);
 
     upc_new(&u, "upc-none-bp");
     set(&u, D_NOENTRY, 1);
     set(&u, D_FAULTER, AT(f_int3));
     upc_start(&u, upc_generic);
-    killed(&u, "breakpoint", AT(f_int3_end), 0, "");
+    fault_is(killed(&u, "breakpoint", AT(f_int3_end), 0, ""), 3, OK);
     upc_end(&u);
 
     /* The kernel's own threads have no process: no entry to set. */
@@ -1263,7 +1492,7 @@ KTEST(upcall_bad_frames_kill)
         upc_start(&u, upc_generic);
         uint64_t rip = c->off != F_RIP ? AT(f_ud2_i) + (c->xor ? 2 : 0) : c->val;
         uint64_t at = (U_STACK_TOP - 128 - EXC_FRAME_XSAVE - fpu_frame_size()) & ~63ull;
-        killed(&u, c->why, rip, at, "");
+        fault_is(killed(&u, c->why, rip, at, ""), 13, OK);   /* Linux's SIGSEGV */
         KT_EQ(get(&u, D_COUNT), 1);
         KT_EQ(get(&u, D_DONE), 0);
         upc_end(&u);
@@ -1330,7 +1559,9 @@ KTEST(upcall_fault_in_window_kills)
     set(&u, D_FAULTER, AT(f_pfmap));
     set(&u, D_ACTION, AT(act_again));
     upc_start(&u, upc_generic);
-    killed(&u, "page fault", AT(f_pfmap_i), U_HOLE, ", again in its exception entry");
+    /* The first fault's line, and its vector (not the ud2's). */
+    fault_is(killed(&u, "page fault", AT(f_pfmap_i), U_HOLE, ", again in its exception entry"),
+             14, ERR_NOT_FOUND);
     KT_EQ(get(&u, D_COUNT), 1);
     upc_end(&u);
 }
@@ -1352,7 +1583,7 @@ KTEST(upcall_unhandled_kills_as_before)
     set(&u, D_FAULTER, AT(f_div));
     set(&u, D_ACTION, AT(act_unhandled));
     upc_start(&u, upc_generic);
-    killed(&u, "divide error", AT(f_div_i), 0, "");
+    fault_is(killed(&u, "divide error", AT(f_div_i), 0, ""), 0, OK);
     upc_end(&u);
 }
 
@@ -1427,7 +1658,9 @@ KTEST(upcall_out_of_memory_kills)
     KT_EQ(get(&u, D_READY), 1);
     KT_EQ(job_set_limit(u.j, JOB_LIMIT_PAGES, job_used(u.j, JOB_LIMIT_PAGES)), OK);
     set(&u, D_GO, 1);
-    killed(&u, "page fault: out of memory (or the job's page limit)", AT(upc_oom_i), U_MORE, "");
+    fault_is(killed(&u, "page fault: out of memory (or the job's page limit)", AT(upc_oom_i),
+                    U_MORE, ""),
+             14, ERR_NO_MEMORY);
     KT_EQ(get(&u, D_COUNT), 0);
     KT_EQ(job_set_limit(u.j, JOB_LIMIT_PAGES, JOB_NO_LIMIT), OK);
     put(v);
@@ -1480,7 +1713,9 @@ KTEST(upcall_tampered_page_kills)
     page[100] ^= 1;   /* not what was approved */
     struct pager_src src = { .addr = (uint64_t)(uintptr_t)page, .user = false };
     KT_EQ(pager_supply(pg, 9, 0, &src, PG), ERR_IO);
-    killed(&u, "page fault: a page doesn't match the approved program", AT(f_load_i), U_MORE, "");
+    fault_is(killed(&u, "page fault: a page doesn't match the approved program", AT(f_load_i),
+                    U_MORE, ""),
+             14, ERR_BAD_STATE);
     KT_EQ(get(&u, D_COUNT), 0);
     handle_table_destroy(&t);
     put(v);
@@ -1533,6 +1768,463 @@ KTEST(upcall_threads_stress)
     upc_end(&u);
 }
 
+/* ---- exception stacks (SG2) ------------------------------------------------- */
+
+#define ES_PAGES 4
+#define ES_TOP   (U_MORE + ES_PAGES * PG)
+
+static uint64_t fsize(void)
+{
+    return EXC_FRAME_XSAVE + fpu_frame_size();
+}
+
+/* A VMO mapped at U_MORE, and the program's exception stack [U_MORE,
+ * U_MORE + size) (upc_setup sets it). */
+static struct vmo *estack_new(struct upc *u, uint64_t size)
+{
+    struct vmo *v;
+    KT_EQ(vmo_create(ES_PAGES * PG, 0, &v), OK);
+    map(u, v, U_MORE, ES_PAGES * PG, ASPACE_READ | ASPACE_WRITE);
+    set(u, D_ESTACK, U_MORE);
+    set(u, D_ESIZE, size);
+    return v;
+}
+
+/* The frame at `at`, in VMO v mapped at vbase. The caller kfrees it. */
+static struct exc_frame *frame_in(struct vmo *v, uint64_t vbase, uint64_t at)
+{
+    struct exc_frame *f = kzalloc(fsize());
+    KT_ASSERT(f);
+    KT_EQ(vmo_read(v, at - vbase, f, fsize()), OK);
+    return f;
+}
+
+/* A stack overflow into nothing mapped (a recursion off the stack's end)
+ * reaches the entry on the exception stack, at its top; without one it is
+ * the old kill, and process_info names the page fault. */
+KTEST(upcall_estack_overflow)
+{
+    struct upc u;
+    upc_new(&u, "upc-overflow");
+    struct vmo *es = estack_new(&u, ES_PAGES * PG);
+    set(&u, D_ACTION, AT(act_exit));
+    upc_start(&u, upc_recurse);
+    exited(&u, 42);
+    KT_EQ((int64_t)get(&u, D_ESRET), OK);
+    KT_EQ(get(&u, D_COUNT), 1);
+    uint64_t at = get(&u, D_FRAME);
+    KT_EQ(at, (ES_TOP - fsize()) & ~63ull);
+    KT_EQ(get(&u, D_EREGS + 15 * 8), at - 8);   /* rsp: as just after a call */
+    struct exc_frame *f = frame_in(es, U_MORE, at);
+    KT_EQ(f->kind, EXC_FAULT);
+    KT_EQ(f->vector, 14);
+    KT_EQ(f->status, ERR_NOT_FOUND);
+    KT_EQ(f->addr, U_STACK - 8);
+    KT_EQ(f->rsp, U_STACK);
+    KT_EQ(f->rip, AT(upc_recurse_i));
+    kfree(f);
+    put(es);
+    upc_end(&u);
+
+    upc_new(&u, "upc-overflow");
+    upc_start(&u, upc_recurse);
+    fault_is(killed(&u, "page fault", AT(upc_recurse_i), U_STACK - 8, ""), 14, ERR_NOT_FOUND);
+    KT_EQ(get(&u, D_COUNT), 0);
+    upc_end(&u);
+}
+
+/* With RSP outside the exception stack the frame goes to its top; a fault
+ * in a handler running there (after LEAVE) nests below RSP on it. */
+KTEST(upcall_estack_nested)
+{
+    struct upc u;
+    upc_new(&u, "upc-estack");
+    struct vmo *es = estack_new(&u, ES_PAGES * PG);
+    set(&u, D_FAULTER, AT(f_ud2));
+    set(&u, D_ACTION, AT(act_leave));
+    upc_start(&u, upc_generic);
+    exited(&u, 44);
+    KT_EQ(get(&u, D_COUNT), 2);
+    uint64_t first = (ES_TOP - fsize()) & ~63ull;
+    struct exc_frame *f = frame_in(es, U_MORE, first);
+    KT_EQ(f->vector, 6);
+    KT_EQ(f->rip, AT(f_ud2_i));
+    KT_EQ(f->rsp, U_STACK_TOP);
+    kfree(f);
+    uint64_t at = get(&u, D_FRAME);
+    KT_EQ(at, (first - 8 - 128 - fsize()) & ~63ull);
+    f = frame_in(es, U_MORE, at);
+    KT_EQ(f->vector, 6);
+    KT_EQ(f->rsp, first - 8);   /* the handler's, on the exception stack */
+    kfree(f);
+    put(es);
+    upc_end(&u);
+}
+
+/* What doesn't fit is the old kill, never a write below the exception
+ * stack's base: RSP inside it with no room left, a stack smaller than a
+ * frame. RSP in nothing writable outside it is taken there.
+ * thread_exception_stack's refusals. */
+KTEST(upcall_estack_limits)
+{
+    struct upc u;
+    upc_new(&u, "upc-nostack");
+    struct vmo *es = estack_new(&u, ES_PAGES * PG);
+    set(&u, D_ARG, U_MORE + 256);
+    upc_start(&u, upc_nostack);
+    fault_is(killed(&u, "invalid opcode", AT(upc_nostack_i), 0, ""), 6, OK);
+    KT_EQ(get(&u, D_COUNT), 0);
+    put(es);
+    upc_end(&u);
+
+    upc_new(&u, "upc-nostack");
+    es = estack_new(&u, 512);
+    set(&u, D_ARG, U_HOLE + PG);
+    upc_start(&u, upc_nostack);
+    killed(&u, "invalid opcode", AT(upc_nostack_i), 0, "");
+    KT_EQ(get(&u, D_COUNT), 0);
+    put(es);
+    upc_end(&u);
+
+    upc_new(&u, "upc-nostack");
+    es = estack_new(&u, ES_PAGES * PG);
+    set(&u, D_ARG, U_HOLE + PG);
+    set(&u, D_ACTION, AT(act_exit));
+    upc_start(&u, upc_nostack);
+    exited(&u, 42);
+    KT_EQ(get(&u, D_COUNT), 1);
+    KT_EQ(get(&u, D_FRAME), (ES_TOP - fsize()) & ~63ull);
+    put(es);
+    upc_end(&u);
+
+    upc_new(&u, "upc-esargs");
+    upc_start(&u, upc_esargs);
+    exited(&u, 0);
+    KT_EQ((int64_t)get(&u, D_RET), ERR_INVALID_ARGS);    /* past the user range */
+    KT_EQ((int64_t)get(&u, D_RET2), ERR_INVALID_ARGS);   /* size 0, base not 0 */
+    KT_EQ((int64_t)get(&u, D_RET3), ERR_INVALID_ARGS);   /* below it */
+    KT_EQ((int64_t)get(&u, D_RET4), OK);                 /* none */
+    upc_end(&u);
+
+    KT_EQ(sysc_thread_exception_stack(0, 0), ERR_BAD_STATE);   /* a kernel thread */
+}
+
+/* ---- raises (SG2) ------------------------------------------------------------- */
+
+/* Wait until the data word at off is at least want: false past a bound
+ * (there so a broken kernel fails, not a timing check). */
+static bool wait_word(struct upc *u, uint64_t off, uint64_t want)
+{
+    uint64_t deadline = uptime_ns() + kt_patience_ms(5000) * NS_PER_MS;
+    while (get(u, off) < want) {
+        if (uptime_ns() > deadline)
+            return false;
+        thread_sleep_ms(1);
+    }
+    return true;
+}
+
+/* Handles to thread t0 in its own process: D_HSELF with RIGHT_SIGNAL,
+ * D_HNOSIG without. */
+static void self_handles(struct upc *u)
+{
+    struct handle_table *t = process_handles(u->p);
+    struct kobject *o = uthread_kobject(u->u[0]);
+    kobject_ref(o);
+    set(u, D_HSELF, insert(t, o, RIGHTS_BASIC | RIGHT_SIGNAL));
+    kobject_ref(o);
+    set(u, D_HNOSIG, insert(t, o, RIGHTS_BASIC));
+}
+
+static bool rip_in(struct upc *u, const uint8_t *from, const uint8_t *to)
+{
+    uint64_t rip = get(u, D_ERIP);
+    return rip >= AT(from) && rip < AT(to);
+}
+
+/* A raise to a thread spinning in its own code on another CPU reaches its
+ * entry at once (that CPU is interrupted: within 10 ms on an idle
+ * machine), with RIP inside the loop and a frame of kind EXC_RAISED below
+ * the red zone, one interrupt per latch; after RESUME it goes on, and the
+ * next raise comes the same way. */
+KTEST(upcall_raise_running)
+{
+    struct upc u;
+    upc_new(&u, "upc-raise");
+    set(&u, D_ACTION, AT(act_raised));
+    int cpu = cpu_count > 1 ? (int)cpu_count - 1 : -1;
+    kt_pin_self(0);
+    upc_start_on(&u, upc_rspin, 0, cpu);
+    bool ok = wait_word(&u, D_LOOPS, 1000);
+    uint64_t latched0 = __atomic_load_n(&raise_latched, __ATOMIC_RELAXED);
+    uint64_t kicked0 = __atomic_load_n(&raise_kicked, __ATOMIC_RELAXED);
+    uint64_t worst = 0;
+    bool kinds = true, rips = true;
+    for (unsigned round = 1; ok && round <= 2; round++) {
+        uint64_t t0 = rdtsc();
+        ok = uthread_raise(u.u[0]) == OK && wait_word(&u, D_RCOUNT, round);
+        int64_t d = (int64_t)(get(&u, D_RTSC) - t0);
+        uint64_t ns = tsc_to_ns(d > 0 ? (uint64_t)d : 0);
+        kprintf("ktest upcall_raise_running: raise %u taken after %lu us\n", round,
+                (unsigned long)(ns / 1000));
+        worst = ns > worst ? ns : worst;
+        kinds &= get(&u, D_RKIND) == EXC_RAISED;
+        rips &= rip_in(&u, upc_rspin_loop, upc_rspin_end);
+    }
+    kt_unpin_self();
+    uint64_t latched = __atomic_load_n(&raise_latched, __ATOMIC_RELAXED) - latched0;
+    uint64_t kicked = __atomic_load_n(&raise_kicked, __ATOMIC_RELAXED) - kicked0;
+    set(&u, D_GO, 1);
+    exited(&u, 0);
+    KT_ASSERT(ok);
+    KT_ASSERT(kinds);
+    KT_ASSERT(rips);
+    if (cpu >= 0)
+        KT_IDLE_ASSERT(worst < 10 * NS_PER_MS);
+    uint64_t at;
+    struct exc_frame *f = frame_of(&u, &at);
+    KT_GLOBAL_EQ(latched, 2);
+    if (cpu >= 0)
+        KT_IDLE_EQ(kicked, 2);
+    KT_EQ(get(&u, D_COUNT), 2);
+    KT_EQ(at, (U_STACK_TOP - 128 - fsize()) & ~63ull);
+    KT_EQ(f->kind, EXC_RAISED);
+    KT_EQ(f->vector, 0);
+    KT_EQ(f->status, 0);
+    KT_EQ(f->error, 0);
+    KT_EQ(f->addr, 0);
+    KT_EQ(f->rsp, U_STACK_TOP);
+    KT_ASSERT(f->cookie);
+    kfree(f);
+    upc_end(&u);
+}
+
+/* A raise to a thread blocked in a call (sleep_until, which
+ * thread_interrupt would end) doesn't end it, and isn't taken on its
+ * return: it comes at a later interrupt, in the thread's own code. */
+KTEST(upcall_raise_in_call)
+{
+    for (unsigned tries = 1;; tries++) {
+        struct upc u;
+        upc_new(&u, "upc-rcall");
+        set(&u, D_ACTION, AT(act_raised));
+        uint64_t deadline = uptime_ns() + 200 * NS_PER_MS;
+        set(&u, D_ARG, deadline);
+        upc_start(&u, upc_rcall);
+        KT_ASSERT(wait_word(&u, D_READY, 1));
+        thread_sleep_ms(20);   /* it is in the call by now */
+        KT_EQ(uthread_raise(u.u[0]), OK);
+        KT_ASSERT(wait_word(&u, D_RCOUNT, 1));
+        exited(&u, 0);
+        if (rip_in(&u, upc_rcall, upc_rcall_ret) && tries < 5) {
+            upc_end(&u);   /* a slow start: taken before the call; again */
+            continue;
+        }
+        KT_EQ((int64_t)get(&u, D_RET), OK);   /* not ended */
+        KT_EQ(get(&u, D_RET2), 0);            /* not taken on its return */
+        KT_ASSERT(rip_in(&u, upc_rwait, upc_rwait_end));
+        KT_ASSERT(uptime_ns() >= deadline);
+        upc_end(&u);
+        break;
+    }
+}
+
+/* A raise while the thread is in its entry's window waits there, however
+ * many interrupts come (latched once); after LEAVE it comes at the next. */
+KTEST(upcall_raise_in_window)
+{
+    struct upc u;
+    upc_new(&u, "upc-rwin");
+    set(&u, D_FAULTER, AT(f_ud2));
+    set(&u, D_ACTION, AT(act_winspin));
+    upc_start(&u, upc_generic);
+    KT_ASSERT(wait_word(&u, D_READY, 1));
+    uint64_t latched0 = __atomic_load_n(&raise_latched, __ATOMIC_RELAXED);
+    KT_EQ(uthread_raise(u.u[0]), OK);
+    KT_EQ(uthread_raise(u.u[0]), OK);
+    thread_sleep_ms(50);   /* ticks come meanwhile */
+    KT_EQ(get(&u, D_RCOUNT), 0);
+    KT_EQ(get(&u, D_COUNT), 1);
+    set(&u, D_GO, 1);
+    exited(&u, 0);
+    KT_GLOBAL_EQ(__atomic_load_n(&raise_latched, __ATOMIC_RELAXED) - latched0, 1);
+    KT_EQ((int64_t)get(&u, D_RET), OK);
+    KT_EQ(get(&u, D_RET2), 0);
+    KT_EQ(get(&u, D_RCOUNT), 1);
+    KT_EQ(get(&u, D_COUNT), 2);
+    KT_EQ(get(&u, D_RKIND), EXC_RAISED);
+    KT_ASSERT(rip_in(&u, upc_rwait, upc_rwait_end));
+    upc_end(&u);
+}
+
+/* thread_raise needs RIGHT_SIGNAL. A thread may raise itself: it comes at
+ * its next interrupt, not on the call's return. A thread gone:
+ * ERR_BAD_STATE. */
+KTEST(upcall_raise_rights)
+{
+    struct upc u;
+    upc_new(&u, "upc-rself");
+    set(&u, D_ACTION, AT(act_raised));
+    upc_start(&u, upc_rself);
+    self_handles(&u);
+    set(&u, D_GO, 1);
+    exited(&u, 0);
+    KT_EQ((int64_t)get(&u, D_RET), ERR_ACCESS_DENIED);
+    KT_EQ((int64_t)get(&u, D_RET3), OK);
+    KT_EQ(get(&u, D_RET2), 0);
+    KT_EQ(get(&u, D_RCOUNT), 1);
+    KT_ASSERT(rip_in(&u, upc_rwait, upc_rwait_end));
+    KT_EQ(uthread_raise(u.u[0]), ERR_BAD_STATE);
+    upc_end(&u);
+}
+
+/* A raise is dropped with no entry, or when its frame can't be written
+ * (RSP in nothing writable): the thread goes on as if none came. */
+KTEST(upcall_raise_dropped)
+{
+    struct upc u;
+    upc_new(&u, "upc-rdrop");
+    set(&u, D_NOENTRY, 1);
+    upc_start(&u, upc_rspin);
+    KT_ASSERT(wait_word(&u, D_LOOPS, 1000));
+    KT_EQ(uthread_raise(u.u[0]), OK);
+    thread_sleep_ms(30);
+    KT_ASSERT(wait_word(&u, D_LOOPS, get(&u, D_LOOPS) + 1000));   /* still going */
+    set(&u, D_GO, 1);
+    exited(&u, 0);
+    KT_EQ(get(&u, D_COUNT), 0);
+    upc_end(&u);
+
+    upc_new(&u, "upc-rdrop");
+    set(&u, D_ARG, U_HOLE + PG);
+    set(&u, D_ACTION, AT(act_raised));
+    upc_start(&u, upc_rbadsp);
+    KT_ASSERT(wait_word(&u, D_READY, 1));
+    KT_EQ(uthread_raise(u.u[0]), OK);
+    thread_sleep_ms(30);
+    set(&u, D_GO, 1);
+    exited(&u, 0);
+    KT_EQ(get(&u, D_COUNT), 0);
+    upc_end(&u);
+}
+
+/* A fault in a raise's window kills with its own line and ", in its
+ * exception entry"; EXC_UNHANDLED there is ERR_BAD_STATE (a raise has no
+ * kill to fall back on). */
+KTEST(upcall_raise_window_ends)
+{
+    struct upc u;
+    upc_new(&u, "upc-ragain");
+    set(&u, D_ACTION, AT(act_again));
+    upc_start(&u, upc_rspin);
+    KT_ASSERT(wait_word(&u, D_LOOPS, 1000));
+    KT_EQ(uthread_raise(u.u[0]), OK);
+    fault_is(killed(&u, "invalid opcode", AT(act_again), 0, ", in its exception entry"), 6, OK);
+    KT_EQ(get(&u, D_COUNT), 1);
+    upc_end(&u);
+
+    upc_new(&u, "upc-runhandled");
+    set(&u, D_ACTION, AT(act_unhandled));
+    upc_start(&u, upc_rspin);
+    KT_ASSERT(wait_word(&u, D_LOOPS, 1000));
+    KT_EQ(uthread_raise(u.u[0]), OK);
+    exited(&u, 98);
+    KT_EQ((int64_t)get(&u, D_RET), ERR_BAD_STATE);
+    upc_end(&u);
+}
+
+#define STORM_THREADS 4
+#define STORM_RAISERS 4
+#define STORM_BURSTS  25
+#define STORM_PER     25   /* each raiser raises each thread this often a burst: 10,000 */
+
+struct storm {
+    struct upc *u;
+    uint32_t    go, done;   /* bursts started; raisers' bursts done (atomic) */
+    uint32_t    refused;    /* raises that weren't OK (atomic) */
+};
+
+static void storm_raiser(void *arg)
+{
+    struct storm *s = arg;
+    for (uint32_t b = 1; b <= STORM_BURSTS; b++) {
+        while (__atomic_load_n(&s->go, __ATOMIC_ACQUIRE) < b)
+            thread_sleep_ms(1);
+        for (unsigned i = 0; i < STORM_PER; i++)
+            for (unsigned k = 0; k < STORM_THREADS; k++)
+                if (uthread_raise(s->u->u[k]) != OK)
+                    __atomic_add_fetch(&s->refused, 1, __ATOMIC_RELAXED);
+        __atomic_add_fetch(&s->done, 1, __ATOMIC_RELEASE);
+    }
+}
+
+/* 10,000 raises from 4 kernel threads to 4 threads spinning in their own
+ * code, in 25 bursts: every thread takes at least one upcall a burst,
+ * every frame a raise's, no more upcalls than latches and no more CPU
+ * interrupts than latches (a latched raise sends none), no panic. */
+KTEST(upcall_raise_storm)
+{
+    struct upc u;
+    upc_new(&u, "upc-rstorm");
+    set(&u, D_THREADS, STORM_THREADS);
+    uint32_t spare = cpu_count > 1 ? cpu_count - 1 : 0;
+    upc_start_on(&u, upc_rstorm, 0, spare ? 1 : -1);
+    for (unsigned i = 1; i < STORM_THREADS; i++) {
+        char name[8];
+        ksnprintf(name, sizeof(name), "t%u", i);
+        KT_EQ(uthread_create(u.p, name, &u.u[i]), OK);
+        u.nu++;
+        cpumask_t m;
+        if (spare)
+            cpumask_one(&m, 1 + i % spare);
+        KT_EQ(uthread_start(u.u[i], AT(upc_rstorm), U_STACK_TOP - i * 2 * PG, i, 0, 0,
+                            spare ? &m : NULL),
+              OK);
+    }
+    bool ok = wait_word(&u, D_READY, STORM_THREADS);
+    uint64_t latched0 = __atomic_load_n(&raise_latched, __ATOMIC_RELAXED);
+    uint64_t kicked0 = __atomic_load_n(&raise_kicked, __ATOMIC_RELAXED);
+    struct storm s = { .u = &u };
+    struct thread *raisers[STORM_RAISERS];
+    for (unsigned r = 0; r < STORM_RAISERS; r++)
+        raisers[r] = thread_create("upc-raiser", storm_raiser, &s, PRIO_DEFAULT + 2);
+    for (uint32_t b = 1; ok && b <= STORM_BURSTS; b++) {
+        uint64_t before[STORM_THREADS];
+        for (unsigned k = 0; k < STORM_THREADS; k++)
+            before[k] = get(&u, D_RCOUNTS + k * 8);
+        __atomic_store_n(&s.go, b, __ATOMIC_RELEASE);
+        uint64_t deadline = uptime_ns() + kt_patience_ms(5000) * NS_PER_MS;
+        while (ok && __atomic_load_n(&s.done, __ATOMIC_ACQUIRE) < b * STORM_RAISERS) {
+            ok = uptime_ns() < deadline;
+            thread_sleep_ms(1);
+        }
+        for (unsigned k = 0; ok && k < STORM_THREADS; k++)
+            ok = wait_word(&u, D_RCOUNTS + k * 8, before[k] + 1);
+        if (!ok)
+            kprintf("ktest upcall_raise_storm: burst %u: a thread took no raise\n", b);
+    }
+    __atomic_store_n(&s.go, STORM_BURSTS, __ATOMIC_RELEASE);   /* the raisers finish */
+    for (unsigned r = 0; r < STORM_RAISERS; r++)
+        thread_join(raisers[r]);
+    set(&u, D_STOP, 1);
+    exited(&u, 0);
+    uint64_t latched = __atomic_load_n(&raise_latched, __ATOMIC_RELAXED) - latched0;
+    uint64_t kicked = __atomic_load_n(&raise_kicked, __ATOMIC_RELAXED) - kicked0;
+    uint64_t taken = 0;
+    for (unsigned k = 0; k < STORM_THREADS; k++)
+        taken += get(&u, D_RCOUNTS + k * 8);
+    kprintf("ktest upcall_raise_storm: %u raises, %lu latched, %lu CPU interrupts, %lu taken\n",
+            STORM_RAISERS * STORM_BURSTS * STORM_PER * STORM_THREADS, (unsigned long)latched,
+            (unsigned long)kicked, (unsigned long)taken);
+    KT_ASSERT(ok);
+    KT_EQ(s.refused, 0);
+    KT_EQ(get(&u, D_BAD), 0);
+    KT_ASSERT(taken >= STORM_BURSTS * STORM_THREADS);
+    KT_GLOBAL_ASSERT(taken <= latched);
+    KT_GLOBAL_ASSERT(kicked <= latched);
+    upc_end(&u);
+}
+
 /* ---- the benchmark's line ------------------------------------------------------ */
 
 /* bench.c's "a fault caught and resumed": n faults (a ud2) of a process
@@ -1565,6 +2257,52 @@ KTEST(upcall_bench_program)
 {
     uint64_t c[64];
     KT_EQ(upcall_bench_cycles(kt_cur_cpu(), c, 64), 64);
+    for (unsigned i = 0; i < 64; i++)
+        KT_ASSERT(c[i] > 0 && c[i] < 1000000000ull);
+}
+
+#define RB_WARM 2000
+
+/* bench.c's "a raise to its upcall": thread t0 spins pinned to cpu with
+ * an exception entry; t1, pinned to `from`, raises it n times
+ * (thread_raise), each once the last was taken, after RB_WARM untimed.
+ * Each sample is the TSC cycles from just before t1's call to t0's entry.
+ * Returns how many (n, at most SAMPLES_MAX - RB_WARM), 0 if the program
+ * didn't end well. */
+unsigned upcall_raise_bench_cycles(uint32_t cpu, uint32_t from, uint64_t *out, unsigned n);
+unsigned upcall_raise_bench_cycles(uint32_t cpu, uint32_t from, uint64_t *out, unsigned n)
+{
+    if (n > SAMPLES_MAX - RB_WARM)
+        n = SAMPLES_MAX - RB_WARM;
+    struct upc u;
+    upc_new(&u, "upc-rbench");
+    set(&u, D_ROUNDS, RB_WARM + n);
+    upc_start_on(&u, upc_rbspin, 0, (int)cpu);
+    self_handles(&u);
+    KT_EQ(uthread_create(u.p, "t1", &u.u[1]), OK);
+    u.nu = 2;
+    cpumask_t m;
+    cpumask_one(&m, from);
+    KT_EQ(uthread_start(u.u[1], AT(upc_rbench), U_STACK_TOP - 4 * PG, 0, 0, 0, &m), OK);
+    if (object_wait_one(process_kobject(u.p), SIG_TERMINATED,
+                        uptime_ns() + kt_patience_ms(30000) * NS_PER_MS, NULL) != OK)
+        process_kill(u.p, PROCESS_KILLED_CODE, true);   /* a raise lost: don't hang */
+    struct process_info info = upc_wait(&u);
+    if (info.killed || info.exit_code)
+        n = 0;
+    else
+        KT_EQ(vmo_read(u.data, D_SAMPLES + RB_WARM * 8, out, n * 8ull), OK);
+    upc_end(&u);
+    return n;
+}
+
+/* The raise's benchmark program runs and times something. */
+KTEST(upcall_raise_bench_program)
+{
+    if (cpu_count < 2)
+        return;   /* it needs two CPUs */
+    uint64_t c[64];
+    KT_EQ(upcall_raise_bench_cycles(cpu_count - 1, 0, c, 64), 64);
     for (unsigned i = 0; i < 64; i++)
         KT_ASSERT(c[i] > 0 && c[i] < 1000000000ull);
 }
