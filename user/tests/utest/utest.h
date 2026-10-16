@@ -1051,6 +1051,7 @@ bool t_pkgtxn_refused(void);
 bool t_pkgtxn_init_no(void);
 bool t_pkgtxn_upgrade(void);
 bool t_pkgtxn_remove(void);
+bool t_pkgtxn_hold(void);
 bool t_pkgtxn_busy(void);
 bool t_pkgtxn_db(void);
 bool t_pkgtxn_runs(void);

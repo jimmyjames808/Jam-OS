@@ -2,7 +2,9 @@
 # list`, `info`, `files`, `check` and `remove` on a package the stick already
 # has (tools/ports-preinstall.py wrote it, signed with the ports vectors' test
 # key, whose public half is the image's /boot/ports.pub), `type`, PATH's
-# /data/pkg/bin and Tab completion of a packaged program. The package is zlib
+# /pkg/bin and Tab completion of a packaged program. /pkg is init's read-only
+# view of /data/pkg (the stick has no Jam OS drive; M13.6's DB1, M13.7's PO14),
+# so the stick's /data is ext (JAMOS_DATA_FS=ext). The package is zlib
 # (minigzip). Run by tools/ports-test.sh, which makes the stick and types the
 # start (T=x, the current directory /data, a prompt) before this file:
 #   PORTS_TEST_SCRIPT=tools/shell-tests/pkg.txt tools/ports-test.sh <outdir> zlib
@@ -35,10 +37,10 @@ wait {prompt}
 
 # ---- type: where a name is found along PATH ---------------------------------------------------
 send echo $PATH
-wait /boot/bin:/boot/usr/bin:/data/pkg/bin
+wait /boot/bin:/boot/usr/bin:/pkg/bin
 wait {prompt}
 send type minigzip sed seq nosuchprogram
-wait minigzip is /data/pkg/bin/minigzip
+wait minigzip is /pkg/bin/minigzip
 wait sed is /boot/usr/bin/sed
 wait seq is a shell builtin
 wait nosuchprogram: not found
@@ -55,7 +57,25 @@ send minigzip -d -c /data/pk-c.gz | sha256sum
 wait 061e46819afbda01c2a07b5733f3d2a4d04561b3f97086d92f2133ffdf6a45fa  -
 wait {prompt}
 
-# ---- Tab: the first word completes to a program of /data/pkg/bin --------------------------------
+# ---- /pkg: the view of /data/pkg; a program run by its /pkg name is the one approved by the
+# line that names /data/pkg/bin/minigzip -------------------------------------------------------
+send mount | grep ^/pkg | grep -c read-only | grep ^1$ && echo ok-$T-pkgro
+wait ok-x-pkgro
+wait {prompt}
+send ls /pkg/bin | grep -c ^minigzip$ | grep ^1$ && echo ok-$T-pkgls
+wait ok-x-pkgls
+wait {prompt}
+send run /pkg/bin/minigzip -c /data/pk-in > /data/pk-v.gz; echo st-$T=$?
+wait st-x=0
+wait {prompt}
+send cmp /data/pk-c.gz /data/pk-v.gz && echo ok-$T-pkgrun
+wait ok-x-pkgrun
+wait {prompt}
+send run /data/pkg/bin/minigzip -d -c /data/pk-v.gz | sha256sum
+wait 061e46819afbda01c2a07b5733f3d2a4d04561b3f97086d92f2133ffdf6a45fa  -
+wait {prompt}
+
+# ---- Tab: the first word completes to a program of /pkg/bin --------------------------------
 type minigz\t -c /data/pk-in > /data/pk-t.gz; echo st-$T=$?\r
 wait st-x=0
 wait {prompt}
@@ -64,11 +84,12 @@ wait ok-x-tab
 wait {prompt}
 
 # ---- pkg remove: the files, the approvals and the name on PATH go with it ---------------------
-send pkg remove zlib
-wait Remove 1 package? [y/N]
+send pkg remove zlib zlib-test
+wait Remove 2 packages? [y/N]
 type y
-wait Removed zlib
 wait {prompt}
+seen 5 re:Removed zlib\s
+seen 5 Removed zlib-test
 send pkg list
 wait No package is installed.
 wait {prompt}

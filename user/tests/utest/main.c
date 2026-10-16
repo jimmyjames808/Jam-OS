@@ -912,6 +912,7 @@ static const struct {
     { "pkgtxn_init_no", t_pkgtxn_init_no },
     { "pkgtxn_upgrade", t_pkgtxn_upgrade },
     { "pkgtxn_remove", t_pkgtxn_remove },
+    { "pkgtxn_hold", t_pkgtxn_hold },
     { "pkgtxn_busy", t_pkgtxn_busy },
     { "pkgtxn_db", t_pkgtxn_db },
     { "pkgtxn_runs", t_pkgtxn_runs },

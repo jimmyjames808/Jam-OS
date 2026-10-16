@@ -84,6 +84,15 @@ struct pk_env {
      * it answered, every change fails with ERR_IO. */
     int         (*cut)(void *ctx, unsigned n, const char *what);
     void         *cut_ctx;
+    /* For `pkg -H <point>` (tools/pkg-test.sh quits QEMU there): the journal is
+     * at <point> and may stand still as long as it likes. The points are the
+     * journal's steps, each in three states (journal.c): "staged:new" (the new
+     * text is written beside the old journal), "staged:alone" (the old one is
+     * removed, the new not yet renamed: init's settle reads journal.new) and
+     * "staged" (replaced); then "done:new" (journal.new removed) and "done"
+     * (the journal gone). NULL: not asked. */
+    void        (*hold)(void *ctx, const char *point);
+    void         *hold_ctx;
     unsigned      ops;               /* changes made so far */
     bool          dead;              /* the power went */
 };

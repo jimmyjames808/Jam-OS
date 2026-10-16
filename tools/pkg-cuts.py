@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+"""The power cuts of tools/pkg-cuts-test.sh: what to expect after QEMU is
+quit with bin/pkg's journal at each of its change points, and the serial
+script (tools/serial-feed.py) of each boot (docs/M13.7-PLAN.md, PO8 and PO14).
+
+    pkg-cuts.py points <op>             the hold points of install, upgrade or remove
+    pkg-cuts.py expect <op> <point>     what the next boot's settle does there
+    pkg-cuts.py script <op> <k> <repo>  boot k's script (k from 0): it checks
+                                        the state cut k-1 left, brings back
+                                        the starting state, and cuts at point k
+                                        (the last boot only checks)
+
+A journal is replaced at each step in three moves (user/services/pkg/journal.c:
+the new text beside the old, the old journal removed, the new renamed), so the
+disk has three states per step, `<step>:new`, `<step>:alone` and `<step>`
+(`pkg -H <point>` stops there), and two more at the end, `done:new` (the
+new journal removed, the old one at `recorded` left) and `done` (no journal).
+init's settle reads the journal, or journal.new when there is none, and
+finishes the operation if it had reached `approved` (a removal always: its
+commit point is `begin`), else undoes it.
+
+The package is aaa of tools/pkg-test-repo.py: 1.0 in `good`, 2.0 in `next`.
+repo is the address the guest reaches the repositories at, without the
+repository's name ("http://10.2.21.174:8000")."""
+import sys
+
+STEPS = {
+    "install": ["begin", "staged", "approved", "swapped", "recorded"],
+    "upgrade": ["begin", "staged", "approved", "swapped", "revoked", "recorded"],
+    "remove": ["begin", "revoked", "removed", "recorded"],
+}
+# The question each operation asks, and what it says when it is done.
+ASKS = {"install": "Install 1 package, 1 program? [y/N]",
+        "upgrade": "Upgrade 1 package, 1 program? [y/N]",
+        "remove": "Remove 1 package? [y/N]"}
+DATA = "/data/pkg"   # the prefix on the test stick (no Jam OS drive)
+
+
+def points(op):
+    out = []
+    for s in STEPS[op]:
+        out += [s + ":new", s + ":alone", s]
+    return out + ["done:new", "done"]
+
+
+def expect(op, point):
+    """(step the settle finds, finished?) for a cut at point; None: no journal is
+    left, the operation had finished."""
+    steps = STEPS[op]
+    if point == "done":
+        return None
+    if point == "done:new":
+        step = steps[-1]
+    else:
+        s, _, state = point.partition(":")
+        i = steps.index(s)
+        step = steps[i - 1] if state == "new" and i > 0 else s
+    return step, op == "remove" or steps.index(step) >= steps.index("approved")
+
+
+def after(op, point):
+    """What is installed once the next boot has settled: None (nothing) or the
+    version of aaa."""
+    e = expect(op, point)
+    finished = e is None or e[1]
+    if op == "remove":
+        return None
+    if op == "install":
+        return "1.0" if finished else None
+    return "2.0" if finished else "1.0"
+
+
+# The state each operation's cut starts from, and the repository it fetches.
+START = {"install": None, "upgrade": "1.0", "remove": "1.0"}
+
+
+def ok(cmd, tag):
+    """Lines: cmd (a pipeline that succeeds when the check holds) and a word that only its
+    success prints. Each is short: a typed line over about 100 characters scrolls."""
+    return ["send %s && echo ok-$T-%s" % (cmd, tag), "wait ok-x-%s" % tag, "wait {prompt}"]
+
+
+def verify(version):
+    """Lines that check the stick as aaa at version (None: absent) and nothing of a
+    transaction is left."""
+    L = []
+    if version is None:
+        L += ["send pkg check", "wait pkg check: 0 packages, every file is as its manifest says",
+              "wait {prompt}", "send pkg list", "wait No package is installed.", "wait {prompt}"]
+        L += ok("allow -l | grep -c 'package aaa' | grep ^0$", "noapproval")
+        L += ok("ls %s/bin | grep -c ^aaa$ | grep ^0$" % DATA, "nofile")
+    else:
+        L += ["send pkg check", "wait pkg check: 1 package, every file is as its manifest says",
+              "wait {prompt}", "send pkg list", "wait aaa %s-r1" % version, "wait {prompt}",
+              "send allow -l", "seen 5 [package aaa %s-r1]" % version, "wait {prompt}"]
+        L += ok("allow -l | grep -c 'aaa .*-r1' | grep ^1$", "oneapproval")
+        have, gone = ("new.txt", "old.txt") if version == "2.0" else ("old.txt", "new.txt")
+        L += ok("ls %s/share/aaa | grep -c ^%s$ | grep ^1$" % (DATA, have), "have")
+        L += ok("ls %s/share/aaa | grep -c ^%s$ | grep ^0$" % (DATA, gone), "gone")
+    # nothing of a transaction: no journal, no .new anywhere in db/ or bin/
+    L += ok("ls %s/db | grep -c journal | grep ^0$" % DATA, "nojournal")
+    L += ok("ls %s/db | grep -c new | grep ^0$" % DATA, "nonewdb")
+    L += ok("ls %s/bin | grep -c new | grep ^0$" % DATA, "nonewbin")
+    return L
+
+
+def script(op, k, repo):
+    pts = points(op)
+    L = ["# generated by tools/pkg-cuts.py: %s, boot %d of %d" % (op, k, len(pts) + 1),
+         "wait 120 Jam OS shell", "seen 60 init: /data mounted", "seen 60 netstack: link up",
+         "seen 30 netstack: address 10.2.21.5/24"]
+    state = None   # what the last cut left
+    if k > 0:
+        point = pts[k - 1]
+        e = expect(op, point)
+        if e:
+            L.append("seen 60 init: pkg: settle: %s aaa %s at %s: done" %
+                     (op, "finished" if e[1] else "undone", e[0]))
+        state = after(op, point)
+    L += ["wait {prompt}", "send T=x", "wait {prompt}"]
+    L += verify(state)
+    if k == len(pts):
+        return "\n".join(L + ["send reboot -f", "wait reboot: resetting"]) + "\n"
+    # the starting state of the next cut
+    if state != START[op]:
+        if state is not None:
+            L += ["send pkg remove aaa", "wait Remove 1 package? [y/N]", "type y",
+                  "wait Removed aaa", "wait {prompt}"]
+        if START[op] is not None:
+            # an older index than the last accepted (next's) is taken with -f
+            L += ["send pkg -R %s/good/ update -f" % repo, "wait 60 The repository has",
+                  "wait {prompt}",
+                  "send pkg -R %s/good/ install aaa" % repo, "wait 60 Install 1 package",
+                  "type y", "wait 60 Installed aaa 1.0-r1", "wait {prompt}"]
+    r = "-R %s/next/ " % repo if op == "upgrade" else ""
+    L += ["send pkg %s-H %s %s aaa" % (r, pts[k], op), "wait 60 " + ASKS[op], "type y",
+          "wait 60 pkg: held at %s" % pts[k], "sleep 1", "monitor quit"]
+    return "\n".join(L) + "\n"
+
+
+def main(argv):
+    if len(argv) >= 2 and argv[0] == "points" and argv[1] in STEPS:
+        print("\n".join(points(argv[1])))
+    elif len(argv) == 3 and argv[0] == "expect" and argv[1] in STEPS and argv[2] in points(argv[1]):
+        e = expect(argv[1], argv[2])
+        print("no journal left" if e is None else
+              "%s at %s" % ("finished" if e[1] else "undone", e[0]),
+              "->", after(argv[1], argv[2]) or "nothing installed")
+    elif len(argv) == 4 and argv[0] == "script" and argv[1] in STEPS:
+        sys.stdout.write(script(argv[1], int(argv[2]), argv[3]))
+    else:
+        print(__doc__.split("\n\n")[0], file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

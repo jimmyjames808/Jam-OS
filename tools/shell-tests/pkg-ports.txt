@@ -4,6 +4,8 @@
 # connects to 10.2.21.174:8000). The image's /boot/ports.pub is the ports vectors'
 # public test key, and so is the repository's. The repository `conflict` is used last: its
 # serial is one above `real`'s, so `real` would be an old index after it.
+# The programs are run by their /pkg names (init's read-only view of /data/pkg, M13.7's PO14: the
+# stick's /data is ext, JAMOS_DATA_FS=ext), approved by lines that name /data/pkg/bin/<name>.
 wait 120 Jam OS shell
 seen 60 init: /data mounted
 seen 60 netstack: link up
@@ -11,7 +13,7 @@ seen 30 netstack: address 10.2.21.5/24
 wait {prompt}
 send T=x
 wait {prompt}
-send P=/data/pkg/bin
+send P=/pkg/bin
 wait {prompt}
 send S=/boot/usr/bin
 wait {prompt}

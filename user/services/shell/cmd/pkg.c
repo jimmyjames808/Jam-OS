@@ -107,6 +107,13 @@ SH_CMD(pkg)
         snprintf(repo, sizeof(repo), "%s", argv[2]);
         first = 3;
     }
+    /* `pkg [-R ..] -H <point> <command>`: for tools/pkg-test.sh, bin/pkg stands
+     * still when its journal reaches the point (bin/pkg's main.c). */
+    const char *hold = NULL;
+    if (argc > first + 2 && !strcmp(argv[first], "-H")) {
+        hold = argv[first + 1];
+        first += 2;
+    }
     if (changes(argv[first])) {
         status_t st = sh_initctl() ? initctl_pkg_channel_until(sh_initctl(), now() + CHANNEL_WAIT,
                                                                &ch) : ERR_NOT_FOUND;
@@ -127,6 +134,10 @@ SH_CMD(pkg)
     if (repo[0]) {
         args[n++] = "-R";
         args[n++] = repo;
+    }
+    if (hold) {
+        args[n++] = "-H";
+        args[n++] = hold;
     }
     for (int i = first; i < argc; i++) {
         bool file = i > first && !strcmp(argv[first], "install") && (strchr(argv[i], '/') ||
