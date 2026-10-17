@@ -2,9 +2,9 @@
  * "The disk is the state").
  *
  * Every request extfs serves (fs on the mount's channels or a view, file,
- * fsctl) is read into a slot of the state VMO (svcstate_prepare, then the
- * protocol's generated <proto>_take_slot) and run from there, in four
- * steps:
+ * fsctl, fswatch) is read into a slot of the state VMO (svcstate_prepare,
+ * then the protocol's generated <proto>_take_slot; fs's with svcstate_read,
+ * which keeps the writer's pid) and run from there, in four steps:
  *   1. begin: the journal's transaction (ext_jnl_begin), and the slot's
  *      record of it emptied (kept->slot: no transaction id yet);
  *   2. run, with its generated <proto>_run_slot (fs_view_dispatch for fs,
@@ -219,6 +219,17 @@ static status_t defer_step(uint32_t ino, uint32_t kind, bool *more)
     return st;
 }
 
+/* Orphan ino goes now: its watches hear of it (IN_DELETE_SELF, IN_IGNORED). */
+static void gone(uint32_t ino)
+{
+    struct ext_inode in;
+    if (watching() && ext_iget(&vol.fs, ino, EXT_IGET_UNLINKED, &in) == OK &&
+        !in.d.links_count) {
+        const struct fsw_key key = xf_key(&in);
+        ev_gone(&key);
+    }
+}
+
 void defer_run(void)
 {
     while (ndefers) {
@@ -226,6 +237,8 @@ void defer_run(void)
         memmove(defers, defers + 1, --ndefers * sizeof(defers[0]));
         if (kind == DEFER_DROP && files_held(ino))
             continue;   /* open or mapped: its last close or unmap drops it */
+        if (kind == DEFER_DROP)
+            gone(ino);
         bool more = true;
         status_t st = OK;
         while (more && st == OK) {
@@ -272,13 +285,24 @@ void op_made(uint32_t kind, uint32_t index)
         kept->made = (struct xf_made){ .seq = op.seq, .kind = kind, .index = index };
 }
 
-static status_t take(const struct xf_chan *c, const struct idl_slot *is)
+uint32_t op_pid(void)
+{
+    return op.running ? svcstate_pid(state_slots(), op.slot) : 0;
+}
+
+static status_t take(const struct xf_chan *c, unsigned slot, const struct idl_slot *is)
 {
     if (c->proto == XF_PROTO_FILE)
         return file_take_slot(c->ch, is, &reply);
     if (c->proto == XF_PROTO_CTL)
         return fsctl_take_slot(c->ch, is, &reply);
-    return fs_take_slot(c->ch, is, &reply);
+    if (c->proto == XF_PROTO_WATCH)
+        return fswatch_take_slot(c->ch, is, &reply);
+    /* fs: read keeping the writer's pid (fs.watch's per-process share), which
+     * a read that sends the waiting reply can't ask for: that reply on its
+     * own first, if one waits (seldom: the port's wait sent it). */
+    reply_flush();
+    return idl_taken(c->ch, is, svcstate_read(state_slots(), slot, c->ch));
 }
 
 void reply_flush(void)
@@ -299,6 +323,8 @@ static uint32_t dispatch(const struct xf_chan *c, unsigned slot, handle_t *rhs, 
         return file_run_slot(c->ch, &is, &xf_file_ops, c->file, rhs, rhn);
     if (c->proto == XF_PROTO_CTL)
         return fsctl_run_slot(c->ch, &is, &xf_ctl_ops, NULL, rhs, rhn);
+    if (c->proto == XF_PROTO_WATCH)
+        return fswatch_run_slot(c->ch, &is, &xf_watch_ops, c->watch, rhs, rhn);
     struct xf_ctx *ctx = (struct xf_ctx *)&c->ctx;
     const struct fs_view_server v = {
         .flags = views_lexical(ctx), .ops = &xf_fs_ops, .ctx = ctx, .add = views_add,
@@ -355,6 +381,7 @@ static void begin(uint64_t seq, unsigned slot)
     x->seq = seq;
     op = (typeof(op)){ .running = true, .seq = seq, .slot = slot, .tid = vol.jnl.tid,
                        .writes = disk_writes() };
+    ev_begin();
     if (writable() && tx_begin() != OK)
         printf("extfs %s: a transaction couldn't begin\n", vol.name);
 }
@@ -388,6 +415,7 @@ static uint32_t commit(unsigned slot, uint32_t rn, uint32_t ro_before, handle_t 
     }
     op.running = false;
     maps_settle(ok && st == OK);   /* given up: the mapped files' sizes as the disk has them */
+    ev_settle(ok && st == OK);     /* the request's events: queued now, or never */
     if (damaged() && !(ro_before & EXT_RO_DAMAGED))
         went_bad("a request");
     if (st == OK)
@@ -414,7 +442,7 @@ status_t serve_one(const struct xf_chan *c)
     unsigned slot = 0;
     struct idl_slot is;
     svcstate_prepare(s, c->id, &slot, &is);
-    status_t st = take(c, &is);
+    status_t st = take(c, slot, &is);
     if (!svcstate_taken(s, slot) || st != OK)
         return st;
     if (s->h->slot[slot].nhandles) {

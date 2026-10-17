@@ -176,8 +176,8 @@ service keeps in memory and moves with renames of that name).
 | a new name: `fs.open` with `FS_CREATE` making the file, `mkdir`, `symlink`, `link` | `IN_CREATE` | `link`: `IN_ATTRIB` (its link count) |
 | `unlink` of a file | `IN_DELETE` (after the inode's `IN_ATTRIB`) | `IN_ATTRIB`; when the inode goes (its last name and its last open): `IN_DELETE_SELF`, `IN_IGNORED` |
 | `unlink` with `UNLINK_DIR` | `IN_DELETE` | `IN_DELETE_SELF`, `IN_IGNORED` |
-| `rename` | `IN_MOVED_FROM` in the old directory, `IN_MOVED_TO` in the new, one cookie | `IN_MOVE_SELF`; a replaced target's inode as unlink's (*unsure* of its `IN_ATTRIB`) |
-| `rename` with `RENAME_EXCHANGE` | two pairs, a cookie each (*unsure*) | `IN_MOVE_SELF` on both |
+| `rename` | `IN_MOVED_FROM` in the old directory, `IN_MOVED_TO` in the new, one cookie | a replaced target's inode `IN_ATTRIB` (its link count, a directory's too), then the moved one's `IN_MOVE_SELF`; the target's `IN_DELETE_SELF` when it goes |
+| `rename` with `RENAME_EXCHANGE` | two pairs, a cookie each (vfs_rename's second fsnotify_move) | each pair followed by its inode's `IN_MOVE_SELF` |
 | `file.write`, `file.truncate`, `fs.open` with `FS_TRUNCATE` | `IN_MODIFY` | `IN_MODIFY` |
 | `setattr` (`fs.` or `file.`): mode, owner, or both times | `IN_ATTRIB` | `IN_ATTRIB` |
 | `setattr` of one time alone | `IN_ACCESS` (atime) or `IN_MODIFY` (mtime) | the same |
@@ -186,8 +186,11 @@ service keeps in memory and moves with renames of that name).
 | the file's channel closed | `IN_CLOSE_WRITE` if opened `FS_WRITE`, else `IN_CLOSE_NOWRITE` | the same |
 | `readdir`, `getattr`, `stat`, `readlink`, `resolve`, `file.map`, stores to a mapping | nothing | nothing |
 
-`IN_ISDIR` is set whenever the subject is a directory. The directory's
-event comes first, then the inode's own (Linux's order). A directory's
+`IN_ISDIR` is set whenever the subject is a directory, but never on
+`IN_DELETE_SELF` and `IN_MOVE_SELF` (inotify masks it off those). The
+directory's event comes first, then the inode's own (Linux's order),
+except a new link's and an unlink's `IN_ATTRIB`, which come before the
+name's `IN_CREATE` or `IN_DELETE` (fsnotify_link, vfs_unlink). A directory's
 own times changing because of a new or removed name make no event (Linux
 makes none). An event goes only to watches whose mask has its bit;
 `IN_IGNORED`, `IN_Q_OVERFLOW` and `IN_UNMOUNT` always go. `IN_ONESHOT`
@@ -474,7 +477,7 @@ after it (`pager.c`, `main.c`, `fsops.c`, `test.c`, `extfs.h`),
 | Track | What | Files | Gate | Tests | Size | Model |
 |---|---|---|---|---|---|---|
 | **IP. The protocol and the library** (built: [IP notes](#ip-notes)) | 2.4 and the service-independent half of 2.2, 2.5 and 2.7: `fs.watch`, the `fswatch` protocol, and a library every service uses: the watcher channels, the inode index, the queues with the merge and overflow rules, ids with generations, the bell, the per-process cap, the `take` encoding, the state records' layout; utest `port_order` | `abi/idl/fs.idl` (method 17 and its comment), a new abi/idl/fswatch.idl and its line in `abi/idl/ids.txt`, the generated headers, a new user/lib/fswatch.c and user/include/fswatch.h, new utest files user/tests/utest/fswatch.c (a fake service in-process) and user/tests/utest/port_order.c | none: new files, and `fs.idl` has no other editor (a missing method is `ERR_NOT_SUPPORTED` in every other `fs` server, so fat, bootfs and ramfs build unchanged) | utest `fswatch_` (merge, one overflow then drops, `take`'s room and `more`, ids not given again, the bell rung once per empty to not empty, a removed watch's events dropped and `IN_IGNORED` last, the caps), `port_order`; `make check` (genidl's check); init run; shell scripts basic, cmds, commands, files and kdump save (an IDL changed) | 1 | **Opus** |
-| **IE1. extfs: events and order** | 2.1 to 2.3 on extfs: `fs.watch`, `add` walked in the view (`IN_ONLYDIR`, `IN_DONT_FOLLOW`, the mask flags, the read bit), every row of 2.2's table at its request, the open files' directory and name in memory, `IN_DELETE_SELF` when an orphan goes, cookies, the close-first rule; a restart ends every watch in this track | a new user/services/extfs/watch.c, `user/services/extfs/fsops.c`, `user/services/extfs/files.c`, `user/services/extfs/main.c` (the rule), `user/services/extfs/request.c`, `user/services/extfs/extfs.h`, a new utest file user/tests/utest/extfs_watch.c, `tools/shell-tests/extfs-svc.txt` (its line) | IP and WE1 merged; never beside WE2 (same files): before or after it | utest `extfs_watch`: each row of 2.2 with its exact events and order; a change through one view seen through another view of the volume; a move across directories with one cookie; the order case (write and close, add, write and close: exactly one `IN_CLOSE_WRITE`); `IN_ONESHOT`, `IN_EXCL_UNLINK`, `IN_MASK_CREATE`; `tools/extfs-svc-test.sh`; init run | 1 | **Opus** |
+| **IE1. extfs: events and order** (built: [IE1 notes](#ie1-notes)) | 2.1 to 2.3 on extfs: `fs.watch`, `add` walked in the view (`IN_ONLYDIR`, `IN_DONT_FOLLOW`, the mask flags, the read bit), every row of 2.2's table at its request, the open files' directory and name in memory, `IN_DELETE_SELF` when an orphan goes, cookies, the close-first rule; a restart ends every watch in this track | a new user/services/extfs/watch.c, `user/services/extfs/fsops.c`, `user/services/extfs/files.c`, `user/services/extfs/main.c` (the rule), `user/services/extfs/request.c`, `user/services/extfs/extfs.h`, a new utest file user/tests/utest/extfs_watch.c, `tools/shell-tests/extfs-svc.txt` (its line) | IP and WE1 merged; never beside WE2 (same files): before or after it | utest `extfs_watch`: each row of 2.2 with its exact events and order; a change through one view seen through another view of the volume; a move across directories with one cookie; the order case (write and close, add, write and close: exactly one `IN_CLOSE_WRITE`); `IN_ONESHOT`, `IN_EXCL_UNLINK`, `IN_MASK_CREATE`; `tools/extfs-svc-test.sh`; init run | 1 | **Opus** |
 | **IE2. extfs: rights and restarts** | 2.6 and 2.8: the hidden-name filter, the reach check at a rename (Q2), watches and watcher records in the state VMO, keeper slots for each channel and its bell, the successor's adopt (watches back, `IN_Q_OVERFLOW` queued and the bell rung on each), a fresh start closing them, test powers that kill extfs between a change and its event; volumes' handle limits for extfs's job | user/services/extfs/watch.c, `user/services/extfs/views.c`, `user/services/extfs/walk.c` (the reach), `user/services/extfs/state.c`, `user/services/extfs/keeper.c`, `user/services/extfs/adopt.c`, `user/services/extfs/test.c`, `user/services/extfs/extfs.h`, volumes' extfs limits (a line), a new utest file user/tests/utest/extfs_restart_watch.c | IE1 merged | utest `extfs_watch`'s view cases (a hidden name never in an event, an add on one refused, a subview's watch ending when its directory moves above the root, a `HIDE_KEYS` watcher's watch ending when its directory moves into `etc/ssh`), `extfs_restart_watch` (killed at each point: the watches back, the overflow first, new events after; a fresh start: the channel closed); `tools/extfs-svc-test.sh`; `tools/layout-test.sh` drive; init run | 1 | **Opus** |
 | **IL1. libc: the descriptor** (built: [IL1 notes](#il1-notes)) | 3.1 to 3.4 and 3.6 | a new user/posix/sys/inotify.c, `user/posix/sys/kinds.h` (its ops), `user/posix/sys/calls.def` (the four calls), `user/posix/sys/enosysnames.c` (the two names out), a new posixtest file user/posix/test/inotify.c (section `inotify`) and tools/shell-tests' new posix-inotify.txt | IP merged to start, CBF6 merged (the call tables); IE1 merged before its last run (events on ext); beside IE2 | posixtest `inotify` on ext `/data` and on `/tmp`: the records (padding, `len`, alignment), `FIONREAD`, a short read `EINVAL`, a 0-byte read, `O_NONBLOCK`'s `EAGAIN`, a blocking read woken, `poll`, `epoll` and `select` with another thread changing files, Chromium's reader loop copied (poll, `FIONREAD`, read) over 1,000 changes, quiet watches on "/", `/etc`, `/proc` and the boot image, `IN_ONLYDIR`, `IN_MASK_ADD`, `rm_watch`'s `IN_IGNORED`, `wd`s not reused; shell scripts basic, cmds, commands, files; init run | 1 | **Opus** |
 | **IL2. libc: limits, fork, exec** | 3.4's tests, 3.5, `/proc/self/fd`'s name | `user/posix/sys/procfs.c` (`/proc/sys/fs/inotify`), user/posix/sys/inotify.c (the fork and give steps if IL1 left them), posixtest's `user/posix/test/procfs.c` and `user/posix/test/forkfd.c` (an inotify case each), the TESTING rows | IL1 and CBF6 merged | posixtest `procfs` (the three files), `fork` (absent in the child), `exec` (gone after `execve`); `tools/shell-tests/posix-fork.txt`; init run | 0.5 | Sonnet 5.5 |
@@ -623,6 +626,74 @@ on a new directory, then a create, a write and close, a rename, a
 non-zero cookie. Until then the section prints `no watches from its
 service yet` for each and goes on. After IE1 merges: `posix-inotify.txt`
 and the init run on ext.
+
+### IE1 notes
+
+Built (2026-10-18): extfs serves `fs.watch` (user/services/extfs/watch.c),
+2.2's rows at their requests (fsops.c, files.c), `IN_DELETE_SELF` when an
+orphan goes (request.c's defer_run), and the close rule (main.c's
+order_closes); utest `extfs_watch_*`
+([TESTING](TESTING.md#file-watching-inotify-plan)). Also svcstate's slot
+keeps its request's writer pid (`svcstate_read`, `svcstate_pid`:
+`CHANNEL_READ_PID`; `SVCSTATE_VERSION` 3), which extfs's fs requests are
+read with, so `FSW_PER_PROCESS` counts real processes.
+
+**What held differently from the plan, or from Linux.**
+- *Linux's events, checked against its source* (fsnotify.h, namei.c,
+  inotify_fsnotify.c): a replaced rename target gets `IN_ATTRIB` (a
+  directory too); `RENAME_EXCHANGE` is two fsnotify_move calls, so two
+  pairs with a cookie each, each followed by its inode's `IN_MOVE_SELF`; a
+  link's `IN_ATTRIB` and an unlink's come before the name's event;
+  `IN_ISDIR` is never on `IN_DELETE_SELF` or `IN_MOVE_SELF` (inotify masks
+  it), which the library's end_watch set: fixed there (fswatch_rules
+  expects it). 2.2's text says so now.
+- *Open then truncate*: `fs.open` with `FS_TRUNCATE` of a file that was
+  there makes `IN_OPEN` then `IN_MODIFY`, also for an empty file (Linux
+  since 6.10's vfs_open; before it the other order).
+- *Not made, where Linux makes them*: Linux's getdents makes `IN_ACCESS`
+  (with `IN_ISDIR`) on the directory, and opendir/closedir `IN_OPEN` and
+  `IN_CLOSE_NOWRITE`; extfs has no directory handles (readdir is by path),
+  so the table's "readdir: nothing" stands until DIRHANDLE-PLAN's handles
+  give it an open and a close. A path that doesn't end in a name (`.`,
+  `..`, a view's root) gives the inode's own event only, no directory
+  event (Linux's dentry has a parent there).
+- *A removed watch's queued events* are dropped by the library's
+  `fsw_remove` (IP's choice); Linux leaves them in the queue before
+  `IN_IGNORED`. Chromium skips events of a `wd` it no longer holds, so
+  this is kept; IR may weigh it.
+- *The close rule's own order*: before a file's request the rule runs only
+  when that channel has a message queued; a packet that is the file's own
+  close is handled in the port's order (running the rule there handled a
+  later close first: `extfs_watch_order` caught it). A watcher channel's
+  close is not in the rule; `fs.watch` refused for the process's share
+  first ends every watcher channel whose client has closed it, then tries
+  again.
+- *Events wait for the commit*: a request's events are held (at most 8,
+  an exchange makes 6) until its transaction commits and dropped if it is
+  given up; a close's and an orphan's going come outside requests, at
+  once. The open files' renamed and unlinked names are moved at the
+  request, not at its commit (a failed commit is a volume going read-only).
+- *Restarts*: the table is the instance's memory; the watcher channels die
+  with it (libc's `IN_UNMOUNT`, `IN_IGNORED`). An `fs.watch` the successor
+  finds committed and not answered is answered from its slot with no
+  handle (adopt.c's reply_again knows no `XF_MADE_*` for it): IE2's.
+
+**For IE2.** watch.c's `table` goes into the state VMO (`XF_STATE_LAYOUT`
+bump) and `wc[]`'s view copy with it (flags, root inode and generation,
+the root's place: today memory only, 32 x 1 KiB); the channels and bells to
+the keeper; `XF_CHAN_WATCH(slot, gen)` ids are in the slots already, so
+adopt.c's chan_of needs a case for them, and `fs.watch` an `XF_MADE_*`
+kind so reply_again makes the client's end again. The hidden-name hook
+(`w.hidden`) is unset. files.c's `at[]` (each open file's directory and
+name) stays memory only, as 2.8 says.
+
+**For IL1.** extfs answers `fs.watch` on every view and subview, a
+read-only volume's too; `add` with no `IN_*` bit is `ERR_INVALID_ARGS`, a
+link out `ERR_LINK_OUT` (resolve and add on the other mount, as other
+calls), no read bit `ERR_ACCESS_DENIED`, `IN_ONLYDIR` or a trailing `/` on
+a file `ERR_NOT_DIR`; a ninth channel of one process `ERR_NO_RESOURCES`.
+A close and an inode's going are queued before any later request of
+yours is served, so a take after a `close` sees its event.
 
 ## 6. Tests
 

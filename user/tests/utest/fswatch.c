@@ -635,14 +635,14 @@ bool t_fswatch_rules(void)
     CHECK_EQ(n, 0);
 
     /* A watch the service ends (out of its view's reach): IN_MOVE_SELF
-     * (with IN_ISDIR) if asked, then IN_IGNORED. */
+     * (never with IN_ISDIR, as Linux's inotify) if asked, then IN_IGNORED. */
     int on_e = 0;
     fsw_each(&w, &K_E, count_one, &on_e);
     CHECK_EQ(on_e, 1);
     fsw_end(&w, ide & ((1u << FSW_SLOT_BITS) - 1), true);
     fsw_end(&w, ide & ((1u << FSW_SLOT_BITS) - 1), true);   /* ended: nothing */
     CHECK(take_all(&w, c, r, 16, &n));
-    CHECK(n == 2 && is(&r[0], ide, IN(MOVE_SELF) | IN(ISDIR), "") && is(&r[1], ide, IN(IGNORED), ""));
+    CHECK(n == 2 && is(&r[0], ide, IN(MOVE_SELF), "") && is(&r[1], ide, IN(IGNORED), ""));
     on_e = 0;
     fsw_each(&w, &K_E, count_one, &on_e);
     CHECK_EQ(on_e, 0);
