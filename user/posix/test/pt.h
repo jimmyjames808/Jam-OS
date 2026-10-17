@@ -38,7 +38,8 @@
  * AF_UNIX sockets through /svc/unix: socket files and abstract names),
  * peer.c (socketpairs and connections fed by a hostile peer in another
  * process: scm's fuzz between two processes), fork.c (fork, vfork and
- * clone without CLONE_VM, each case in a job of its own), exec.c (execve
+ * clone without CLONE_VM, each case in a job of its own; forkfd.c's and
+ * forknote.c's cases too: descriptors, vfork's wait, a child's notices), exec.c (execve
  * in place from a forked child, each case in a job of its own) and
  * rawcalls.c, rawfutex.c and rawlog.c (the raw Linux calls Chromium makes, and the
  * ENOSYS log: the log's hooks are the layer's calls.h, a second look inside).
@@ -162,6 +163,12 @@ void pt_fork_fds(void);
 void pt_fork_chromium(void);
 void pt_fork_ttys(void);
 void pt_fork_maps(void);
+/* forknote.c: fork.c's cases for vfork's wait and a child's notices (FL4),
+ * and the program a junk case's child starts to forge one. */
+void pt_fork_vfork(void);
+void pt_fork_groups(void);
+void pt_fork_junk(void);
+int  pt_child_notice(int argc, char **argv);
 int  pt_child_efault(int argc, char **argv);  /* exits, or EFAULT then a real fault (efault.c) */
 /* exec.c: a case in a job of its own, a new image's checks, or utest's
  * program that execs at once. */

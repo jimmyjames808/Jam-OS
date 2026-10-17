@@ -5,8 +5,8 @@
  *
  * The ways in (section 1.11): musl's fork and _Fork (unmodified) make
  * SYS_fork; musl's vfork (its override) makes SYS_vfork, which is fork's
- * core here too: the parent's wait for the child's exec or exit is FL4's
- * (Q3 (A)), so until then the parent runs on at once, as after fork; a raw
+ * core here too, then the parent's wait until the child has exec'd or
+ * ended (Q3 (A); proc.c's lx_vfork_wait, the child's notice); a raw
  * SYS_clone without CLONE_VM (lx_clone: CLONE_PARENT_SETTID,
  * CLONE_CHILD_SETTID and CLONE_CHILD_CLEARTID honoured, no new stack); and
  * musl's clone() without CLONE_VM, through the __clone override
@@ -356,8 +356,12 @@ long lx_fork(long a, long b, long c, long d, long e, long f)
 long lx_vfork(long a, long b, long c, long d, long e, long f)
 {
     struct how how = { 0 };
-    /* FL4: the parent waits here for the child's exec or exit (section 3). */
-    return fork_core(&how);
+    long r = fork_core(&how);
+    if (r == 0)
+        lx_vforked();   /* our exec tells the parent (proc.c) */
+    else if (r > 0)
+        lx_vfork_wait((int32_t)r);   /* until the child's exec or end (section 3) */
+    return r;
 }
 
 /* A clone flag set this layer can't make: logged (the ENOSYS log). */

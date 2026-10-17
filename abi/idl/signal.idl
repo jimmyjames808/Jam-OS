@@ -31,3 +31,24 @@ const CODE_QUEUE 1
 # sender waits for room. A program drops what it can't use (a signal
 # number out of range, SIGKILL, an unknown code) without a word.
 1  send  (u8 signo, u8 code, i32 value) event
+
+# The other way, the program's notices to its starter (docs/FORK-PLAN.md
+# section 1.7): what a POSIX starter's table of children must hear of. A
+# POSIX starter's signal thread reads them (user/posix/sys/proc.c); the
+# native shell reads none (they wait in its end, a few bytes each, until
+# the program has ended). The starter trusts nothing in them: one whose
+# writer (CHANNEL_READ_PID) isn't the program, that breaks its format or
+# names what the program can't be is dropped without a word, and one too
+# big for any notice ends the starter's listening to that program. The
+# program waits up to a second for room, then drops it.
+
+# The program has exec'd: the new image is in place (or started, for one
+# that can't be exec'd in place). Sent only by a vfork child, whose parent
+# waits for it (or for the child's end) before vfork returns.
+2  exec     -> () event
+# The program's process group is now pgid (setpgid on itself): its own pid,
+# or a group of its session.
+3  group    -> (i32 pgid) event
+# The program leads a session of its own now (setsid): its session and its
+# process group are its pid.
+4  session  -> () event

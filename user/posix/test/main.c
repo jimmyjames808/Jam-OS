@@ -140,6 +140,8 @@ int main(int argc, char **argv)
         return pt_child_fault(argc, argv);
     if (argc >= 2 && !strcmp(argv[1], "--child-fork"))
         return pt_child_fork(argc, argv);
+    if (argc >= 2 && !strcmp(argv[1], "--child-notice"))
+        return pt_child_notice(argc, argv);
     if (argc >= 2 && !strcmp(argv[1], "--child-efault"))
         return pt_child_efault(argc, argv);
     if (argc >= 2 && !strcmp(argv[1], "--child-exec"))

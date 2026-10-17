@@ -33,6 +33,9 @@
 
 #define SIGNAL_PROTOCOL_ID 44u
 #define SIGNAL_SEND             0x002c0001u
+#define SIGNAL_EXEC             0x002c0002u
+#define SIGNAL_GROUP            0x002c0003u
+#define SIGNAL_SESSION          0x002c0004u
 
 /* Constants (the .idl's `const` lines). */
 /* How a signal was sent: by kill (or the shell's Ctrl+C, a terminal's
@@ -48,9 +51,22 @@ struct signal_send_msg {   /* an event: txid 0 */
     uint8_t code;
     int32_t value;
 } __attribute__((packed));
+struct signal_exec_msg {   /* an event: txid 0 */
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct signal_group_msg {   /* an event: txid 0 */
+    uint32_t txid;
+    uint32_t ordinal;
+    int32_t pgid;
+} __attribute__((packed));
+struct signal_session_msg {   /* an event: txid 0 */
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
 
 #define SIGNAL_REQ_MAX 14u   /* bytes: the biggest message to the server */
-#define SIGNAL_REP_MAX 8u   /* bytes: the biggest message to the client */
+#define SIGNAL_REP_MAX 12u   /* bytes: the biggest message to the client */
 #define SIGNAL_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
 #define SIGNAL_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
 #define SIGNAL_UNREAD_MSGS IDL_UNREAD_MSGS   /* the unread bound: messages ... */
@@ -83,6 +99,160 @@ static inline status_t signal_send(handle_t ch, uint8_t signo, uint8_t code, int
     idl_q->value = value;
     if (idl_st == OK)
         idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
+}
+
+/* The program has exec'd: the new image is in place (or started, for one
+ * that can't be exec'd in place). Sent only by a vfork child, whose parent
+ * waits for it (or for the child's end) before vfork returns. */
+/* The event signal.exec, to the client: written on ch, never answered.
+ * ERR_SHOULD_WAIT: the peer's queue is full (its flow control). */
+static inline status_t signal_exec(handle_t ch)
+{
+    _Alignas(8) uint8_t idl_b0[8];
+    struct signal_exec_msg *idl_q = (struct signal_exec_msg *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = 0;   /* an event */
+    idl_q->ordinal = SIGNAL_EXEC;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
+}
+
+/* The program's process group is now pgid (setpgid on itself): its own pid,
+ * or a group of its session. */
+/* The event signal.group, to the client: written on ch, never answered.
+ * ERR_SHOULD_WAIT: the peer's queue is full (its flow control). */
+static inline status_t signal_group(handle_t ch, int32_t pgid)
+{
+    _Alignas(8) uint8_t idl_b0[12];
+    struct signal_group_msg *idl_q = (struct signal_group_msg *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = 0;   /* an event */
+    idl_q->ordinal = SIGNAL_GROUP;
+    idl_q->pgid = pgid;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
+}
+
+/* The program leads a session of its own now (setsid): its session and its
+ * process group are its pid. */
+/* The event signal.session, to the client: written on ch, never answered.
+ * ERR_SHOULD_WAIT: the peer's queue is full (its flow control). */
+static inline status_t signal_session(handle_t ch)
+{
+    _Alignas(8) uint8_t idl_b0[8];
+    struct signal_session_msg *idl_q = (struct signal_session_msg *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = 0;   /* an event */
+    idl_q->ordinal = SIGNAL_SESSION;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
+}
+
+/* The client's handlers of the events from the server: a NULL one drops
+ * its event (handles closed). A handler owns the handles it is given;
+ * its arrays point into the message (copy what it keeps). */
+struct signal_events {
+    void (*exec)(void *ctx);
+    void (*group)(void *ctx, int32_t pgid);
+    void (*session)(void *ctx);
+};
+
+/* Client: run the event read with idl_reply_read into msg and *m (an
+ * event has txid 0, a reply any other): OK, its handler ran with its
+ * handles; otherwise it is dropped, its handles closed:
+ * ERR_NOT_SUPPORTED (no such event, or no handler), ERR_INVALID_ARGS
+ * (it breaks the format, or isn't an event). */
+static inline status_t signal_event_dispatch(const struct signal_events *idl_tab, void *ctx,
+                                             const void *idl_m, struct idl_msg *m)
+{
+    uint32_t idl_n = m->n, idl_nh = m->nh;
+    const handle_t *idl_hs = m->hs;
+    m->nh = 0;   /* each path below takes them */
+    if (idl_n < sizeof(struct idl_req_hdr) || ((const struct idl_req_hdr *)idl_m)->txid) {
+        idl_close_all(idl_hs, idl_nh);
+        return ERR_INVALID_ARGS;
+    }
+    switch (((const struct idl_req_hdr *)idl_m)->ordinal) {
+    case SIGNAL_EXEC: {
+        const struct signal_exec_msg *idl_e = (const struct signal_exec_msg *)idl_m;
+        uint32_t idl_o = sizeof(*idl_e);
+        status_t idl_st = idl_n < sizeof(*idl_e) ? ERR_INVALID_ARGS : OK;
+        if (idl_o != idl_n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_nh != 0)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_tab->exec)
+            idl_st = ERR_NOT_SUPPORTED;
+        if (idl_st != OK) {
+            idl_close_all(idl_hs, idl_nh);
+            return idl_st;
+        }
+        idl_tab->exec(ctx);
+        return OK;
+    }
+    case SIGNAL_GROUP: {
+        const struct signal_group_msg *idl_e = (const struct signal_group_msg *)idl_m;
+        uint32_t idl_o = sizeof(*idl_e);
+        status_t idl_st = idl_n < sizeof(*idl_e) ? ERR_INVALID_ARGS : OK;
+        if (idl_o != idl_n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_nh != 0)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_tab->group)
+            idl_st = ERR_NOT_SUPPORTED;
+        if (idl_st != OK) {
+            idl_close_all(idl_hs, idl_nh);
+            return idl_st;
+        }
+        idl_tab->group(ctx, idl_e->pgid);
+        return OK;
+    }
+    case SIGNAL_SESSION: {
+        const struct signal_session_msg *idl_e = (const struct signal_session_msg *)idl_m;
+        uint32_t idl_o = sizeof(*idl_e);
+        status_t idl_st = idl_n < sizeof(*idl_e) ? ERR_INVALID_ARGS : OK;
+        if (idl_o != idl_n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_nh != 0)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_tab->session)
+            idl_st = ERR_NOT_SUPPORTED;
+        if (idl_st != OK) {
+            idl_close_all(idl_hs, idl_nh);
+            return idl_st;
+        }
+        idl_tab->session(ctx);
+        return OK;
+    }
+    }
+    idl_close_all(idl_hs, idl_nh);
+    return ERR_NOT_SUPPORTED;
+}
+
+/* Client: read the next message on ch and run it as an event of the
+ * server's (signal_event_dispatch's results). ERR_SHOULD_WAIT: nothing is
+ * queued; ERR_PEER_CLOSED: the server is gone; ERR_INTERNAL: a message
+ * that is no event (a reply to a call that gave up), dropped. For a
+ * channel whose replies come with idl_reply_read, call
+ * signal_event_dispatch for the messages with txid 0 instead. */
+static inline status_t signal_read_event(handle_t ch, const struct signal_events *idl_tab, void *ctx)
+{
+    _Alignas(8) uint8_t idl_b[SIGNAL_REP_MAX];
+    struct idl_msg idl_m;
+    status_t idl_st = idl_reply_read(ch, idl_b, SIGNAL_REP_MAX, &idl_m);
+    if (idl_st == OK && idl_m.txid) {
+        idl_msg_drop(&idl_m);
+        idl_st = ERR_INTERNAL;
+    } else if (idl_st == OK) {
+        idl_st = signal_event_dispatch(idl_tab, ctx, idl_b, &idl_m);
+    }
     return idl_st;
 }
 

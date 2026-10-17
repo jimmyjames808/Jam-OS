@@ -504,7 +504,7 @@ FK2, FK3 and FL1b are about two (their halves can't be tested apart).
 | **FL1b. POSIX `fork`** | `lx_fork`, `clone` without `CLONE_VM` (both forms), `vfork` as fork with the parent's wait (Q3's A; the wait itself needs FL4), the layer's locks, signals in the child (1.7), ids and the table of children (1.8), JIT entries removed; built, see "FL1b notes" | a new user/posix/sys/fork.c, `user/posix/sys/calls.def`, the vfork and clone overrides, `user/posix/sys/sigthread.c`, `user/posix/sys/signal.c`, `user/posix/sys/proc.c`, a new posixtest section (fork) | FL1a | posixtest `fork`: returns twice, memory separate (heap, stack, data, `mmap`), `MAP_SHARED` anonymous shared, malloc and atfork in a threaded parent's child, the two-VMO invariant from a threaded parent, a 1 TiB reservation forked within a bound, `ENOMEM` in a job that can't pay, ids, `waitpid`, `SIGCHLD`, `kill`, `SIGKILL`, pending cleared, timers gone, both `clone` forms, `jittest` forking (the child's JIT range faults, it isn't marked) | 2 | **Opus** |
 | **FL2. Descriptors and mappings at fork** | each kind's fork step (1.6's table), the table of mappings' handles, `VMAR_CLONE_SHARE` from `mmap`, `VMAR_CLONE_NONE` on every connection buffer, the cached service channels; built, see "FL2 notes" | `user/posix/sys/fd.h` and each kind's file (pipe, sockpair, memfd, eventfd, dev, etc, svcsock, file, dir, tty, pty, socket, epoll), `user/posix/sys/mem.c`, `user/posix/sys/maptable.c`, `user/posix/sys/resolve.c`, `user/posix/sys/unixsock.c`, libjam's buffer mappings, a new posixtest file | FL1b | posixtest `fork` descriptors: every kind used from both sides after a fork, leftovers read once, close-on-exec ones present until exec, absent kinds absent, `/proc/self/fd` exact, Chromium's child sequence (dup2s, close by `/proc/self/fd`) run in a child; no handle left over | 1.5 | **Opus** |
 | **FL3. libc's exec in place** | `execve` by build-then-replace (section 2); (a) kept for `/data` programs; rlimits in the hand-over if needed; built, see "FL3 notes" | `user/posix/sys/spawn.c` (execve), `user/lib/spawn.c` (all but the start), `user/include/posixfds.h` if rlimits go in, a new posixtest file | FK3, FL1b | posixtest `exec`: pid, parent's wait, kill and `/proc/<pid>/stat` the same before and after; threads gone; close-on-exec closed; handlers reset, mask kept; the fork's charge back; a failed exec returns; `/proc/self/exe` exec'd from a forked child; utest: a native starter (the shell's way) waits on a POSIX program that execs | 1 | **Opus** |
-| **FL4. Notices and `vfork`'s wait** | the child-to-parent notices (exec'd, group, session) on the signal channel, read by the parent's signal thread; `vfork`'s parent waiting for exec or exit | `abi/idl/signal.idl` and its header, `user/posix/sys/sigthread.c`, `user/posix/sys/proc.c`, user/posix/sys/fork.c's wait | FL1b | posixtest: `vfork` then `_exit`, then `execve`, the parent not running until then; a child's `setpgid(0, 0)` seen by the parent's `kill(-pgid)`; junk notices ignored | 1 | **Opus** |
+| **FL4. Notices and `vfork`'s wait** | the child-to-parent notices (exec'd, group, session) on the signal channel, read by the parent's signal thread; `vfork`'s parent waiting for exec or exit; built, see "FL4 notes" | `abi/idl/signal.idl` and its header, `user/posix/sys/sigthread.c`, `user/posix/sys/proc.c`, user/posix/sys/fork.c's wait | FL1b | posixtest: `vfork` then `_exit`, then `execve`, the parent not running until then; a child's `setpgid(0, 0)` seen by the parent's `kill(-pgid)`; junk notices ignored | 1 | **Opus** |
 | **FC1. base's fork tests** | section 4's tests off the disabled list, run, PASS; their findings | ports/chromium's test list (0007-disable-failing-tests.patch), cr-test.sh's `base` expectations | FL1a to FL4, CB2 | cr-test.sh `base` | 1 | Sonnet 5.5 |
 | **FR1. Kernel review** | FK1 to FK3: findings first ([CR-REVIEW-KERNEL](CR-REVIEW-KERNEL.md)'s way), High and Medium fixed with a test each; hostile tests: a clone storm from 8 threads at the job's limit, replace racing kill and clone | the files its fixes need | FK1 to FK3 merged | its own; full ktest 4 and 8; soak 4 | 1.5 | **Opus** |
 | **FR2. libc review** | FL1a to FL4: what a child holds that it shouldn't (every handle and role), what a hostile child can make its parent do (notices), stale values, locks | the files its fixes need | FL1a to FL4 merged | its own; posixtest; utest | 1.5 | **Opus** |
@@ -1042,6 +1042,69 @@ runs both):
   children exec `/bin/sh` in place, but `sh -c "exit 0"`, `"exit 1"` and
   `"kill -9 $$"` need a shell's builtin `exit` and its `$$`, and the stub
   looks `exit` up as a program (127) and refuses `$` (2) until M13.5.
+
+### FL4 notes
+
+What FR2, FC1 and SGR start from (`abi/idl/signal.idl`'s events to the
+client, `user/posix/sys/proc.c`'s notices and vfork wait; posixtest fork's
+`vfork`, `groups` and `junk` cases, `user/posix/test/forknote.c`):
+
+- **The notices** are `signal` events from the program (the server end) to
+  its starter (the client end): `exec` (a vfork child's only), `group
+  (pgid)` (its own `setpgid`, when the group changes) and `session` (its
+  `setsid`; nothing claimed: a session is its leader's pid). The child
+  sends each after proc.c's lock is given up, waiting up to a second for
+  room; once one has waited that long, the rest are dropped at once (a
+  starter that doesn't read them: the native shell, whose end keeps them,
+  a few bytes each, until the program has ended).
+- **The parent** marks each child's end `CHANNEL_NO_HANDLES |
+  CHANNEL_BYTE_BOUND` (an end not ours alone keeps no mark) and binds it
+  to the signal thread's port beside its `SIG_TERMINATED` (the child's key
+  with `KEY_NOTICE`, persistent, readable), so `CHILD_MAX` is half the
+  port's bindings now (2,048). The signal thread reads 16 a turn, then
+  `port_again`. Every read takes the writer's pid (`CHANNEL_READ_PID`):
+  one written by any process but the child (its end handed on) is
+  dropped; so is one that breaks the format (the generated
+  `signal_event_dispatch`: too short, a txid, bytes over, an unknown
+  ordinal, `send` the wrong way); a group is taken only if it is the
+  child's own pid or a group of the child's session we know (ours, or
+  another child's: a group of the child's own children we can't see is
+  dropped). A message over 64 bytes ends our listening to that child (its
+  binding gone; what it queued stays charged to the job, at most about
+  `CHANNEL_BOUND_BYTES`, until it is reaped). A lying child can change only
+  which of our group signals and group waits reach it.
+- **Order.** A look at the groups reads what each child has queued first
+  (16 per child per look): `kill` and `waitpid` of a group, `getpgid` and
+  `getsid` of a child, `setpgid`, `lx_group_exists` (`tcsetpgrp`,
+  posix_spawn's `POSIX_SPAWN_SETPGROUP`) and `/proc/<pid>`. A notice sent
+  before anything else the child does that we can see is never missed:
+  its write is in our end when its call returns. Every read is made with
+  proc.c's lock held (a read never waits), so notices apply in the order
+  sent whoever reads them.
+- **vfork** is `fork_core`, then `lx_vforked` in the child and
+  `lx_vfork_wait` in the parent: asleep on proc.c's `gen` until the child
+  is dead (or reaped already) or its exec notice is in. The notice goes in
+  spawn.c's `exec_handover` after the streams are drained (the last thing
+  before the replace) and, for a `/data` program (not exec'd in place),
+  once it is started (`lx_child_wait`). A failed `execve` sends nothing.
+  A signal for the waiting thread interrupts its wait once (the latch);
+  it waits again and the handler runs when vfork returns, as on Linux; a
+  default that ends the process still does at once.
+- **Not done** (FR2's and SGR's to weigh): `setpgid` of a child that has
+  exec'd is not `EACCES` (only a vfork child says it has exec'd; telling
+  every exec would fill the native shell's end); the parent's `setpgid` of
+  a child isn't told to the child (its `getpgrp` keeps the old group:
+  notices go child to parent only); a child can't join a sibling's group,
+  nor go back to ours once it has left it (its libc knows only its own and
+  its children's groups: `EPERM` where Linux allows it; a POSIX shell's job
+  control, M13.5, needs this); `clone` with `CLONE_VFORK` and without
+  `CLONE_VM` is still `EINVAL` (`lx_clone`); two threads of a child calling
+  `setpgid` at once may send their notices in the other order.
+- **For FC1**: base's tests that start a child with `new_process_group`
+  (`setpgid(0, 0)` in the child) and kill or wait for its group now see
+  the group.
+- **libc-test**: `functional/vfork` stays on the list (a limit): the
+  shell's builtin `exit` and `$$` are M13.5's.
 
 ## 6. Questions for the owner
 
