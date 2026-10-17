@@ -75,7 +75,12 @@ MUSL_CHECKED := $(MUSL_OUT)/overrides.ok
 # start and the delivery of a signal to its handler (a call boundary in
 # libc, user/posix/sys/sig.h), and C++ exceptions unwind through them.
 # .eh_frame costs a program about a tenth of its code's size (posixtest:
-# 58 KiB more on 576 KiB of code, a file 0.5% bigger).
+# 58 KiB more on 576 KiB of code, a file 0.5% bigger). The code is
+# position-independent (-fPIE, as the layer's and libjam's in libc.a and
+# the link drivers' default): a program is still static and non-PIE, at
+# 0x400000 or wherever its link says (--jamos-image-base, a port's
+# `image-base`: Chromium's programs above 4 GiB), and code that addresses
+# its data in 32 bits could not be linked there.
 MUSL_INC    := -I$(POSIX)/musl/arch/x86_64 -I$(MUSL)/arch/x86_64 -I$(MUSL)/arch/generic \
                -I$(MUSL_OUT)/internal -I$(MUSL)/src/include -I$(MUSL)/src/internal \
                -I$(MUSL_OUT)/include -I$(MUSL)/include
@@ -83,7 +88,7 @@ MUSL_CFLAGS := -std=c99 -nostdinc -ffreestanding -fexcess-precision=standard -fr
                -fno-strict-aliasing -Wa,--noexecstack -D_XOPEN_SOURCE=700 $(MUSL_INC) \
                -O2 -pipe -fomit-frame-pointer -fasynchronous-unwind-tables \
                -ffunction-sections -fdata-sections -fno-stack-protector \
-               -fno-tree-loop-distribute-patterns -fno-PIC -fno-pie -m64 -march=x86-64 \
+               -fno-tree-loop-distribute-patterns -fPIE -m64 -march=x86-64 \
                -mcmodel=small -Wno-pointer-to-int-cast -Werror=implicit-function-declaration \
                -Werror=implicit-int -Werror=pointer-sign -Werror=pointer-arith \
                -Werror=int-conversion -Werror=incompatible-pointer-types \
@@ -96,7 +101,7 @@ MUSL_CFLAGS := -std=c99 -nostdinc -ffreestanding -fexcess-precision=standard -fr
 # libjam's (<jamos/libjam.h>). Every handler has the six arguments of a
 # Linux call and uses what its call has: -Wno-unused-parameter.
 POSIX_CFLAGS := -std=gnu17 -O2 -g -Wall -Wextra -Werror -Wvla -Wno-unused-parameter \
-                -ffreestanding -fno-stack-protector -fno-stack-check -fno-PIC -fno-pie \
+                -ffreestanding -fno-stack-protector -fno-stack-check -fPIE \
                 -fno-omit-frame-pointer -fasynchronous-unwind-tables -m64 -march=x86-64 \
                 -mcmodel=small -ffunction-sections -fdata-sections -D_GNU_SOURCE \
                 -nostdinc -isystem $(SYSROOT)/include -I$(POSIX)/include -Iuser/include \
@@ -145,7 +150,7 @@ LIBJAM_GC_FROM := $(filter-out $(LIBJAM_GC_SKIP),$(filter \
 LIBJAM_GC_OBJS := $(patsubst $(UOBJ)/%,$(POSIX_OUT)/libjam/%,$(LIBJAM_GC_FROM))
 LIBJAM_IN_LIBC := $(filter-out $(LIBJAM_GC_FROM),$(LIBJAM_OBJS)) $(LIBJAM_GC_OBJS)
 LIBJAM_GC_CFLAGS := $(USER_CFLAGS) -fasynchronous-unwind-tables -ffunction-sections \
-                    -fdata-sections
+                    -fdata-sections -fPIE
 $(POSIX_OUT)/libjam/%.c.o: %.c $(FLAGDIR)/libjam-gc | $(UINC) $(SYSCALLS_OK) $(IDL_OK) $(WL_OK)
 	@mkdir -p $(dir $@)
 	$(CC) $(LIBJAM_GC_CFLAGS) -c $< -o $@
@@ -273,12 +278,18 @@ POSIXTEST_SRCS := $(wildcard $(POSIX)/test/*.c)
 POSIX_PROG_CFLAGS := -std=gnu17 -O2 -g -Wall -Wextra -Werror -Wvla -D_GNU_SOURCE \
                      -I$(POSIX)/include -Iuser/include -I$(BUILD)/uinc -Idrivers/include
 POSIXTEST_CFLAGS  := $(POSIX_PROG_CFLAGS) -include $(JL_NAMES_H)
+# posixtest sits where Chromium's programs do, at 4 GiB (ports/chromium's
+# image-base), so its every run starts, forks, execs and walks its stack
+# and /proc/self/maps above 4 GiB, and its mem section finds the low
+# 4 GiB empty (Chromium's zero segment); the layer's other programs stay
+# at 0x400000.
+POSIXTEST_IMAGE   := --jamos-image-base=0x100000000
 # jamos-cc compiles and links in one command, so these programs have no -MMD
 # files: the headers they take from outside their own directory are listed
 # (the sysroot's, libjam's, the kernel's copies and the IDL's).
 POSIX_PROG_HDRS   := $(SYSROOT_HDRS) $(UINC) \
                      $(wildcard user/include/*.h drivers/include/*.h drivers/include/*/*.h)
-FLAGS_posixtest   = $(TOOLID) $(POSIXTEST_CFLAGS)
+FLAGS_posixtest   = $(TOOLID) $(POSIXTEST_CFLAGS) $(POSIXTEST_IMAGE)
 FLAGS_posix-progs = $(TOOLID) $(POSIX_PROG_CFLAGS)
 $(foreach s,posixtest posix-progs,$(eval $(call FLAG_STAMP,$(s),FLAGS_$(s))))
 $(POSIXTEST): $(POSIXTEST_SRCS) $(wildcard $(POSIX)/test/*.h) $(POSIX)/test/wants \
@@ -286,7 +297,7 @@ $(POSIXTEST): $(POSIXTEST_SRCS) $(wildcard $(POSIX)/test/*.h) $(POSIX)/test/want
               $(POSIX_PROG_HDRS) | $(SYSCALLS_OK) $(IDL_OK)
 	@mkdir -p $(dir $@)
 	JAMOS_SYSROOT=$(SYSROOT) CROSS=$(CROSS) tools/jamos-cc $(POSIXTEST_CFLAGS) \
-	    --jamos-wants=$(POSIX)/test/wants $(POSIXTEST_SRCS) -o $@
+	    --jamos-wants=$(POSIX)/test/wants $(POSIXTEST_IMAGE) $(POSIXTEST_SRCS) -o $@
 $(POSIXTEST).bootfs: $(POSIXTEST) tools/checkwants.py
 	$(STRIP) --strip-debug $< -o $@
 	python3 tools/checkwants.py $(POSIX)/test=$@

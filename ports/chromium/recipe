@@ -29,6 +29,12 @@ place       package
 style       custom
 toolchain   clang rust
 tree        kept
+# The programs are linked at 4 GiB, not 0x400000 (docs/CR-PLAN.md, MH): the
+# low 4 GiB stays empty (the kernel places mappings top down), so
+# PartitionAlloc's zero segment, [64 KiB, 4 GiB) reserved by address, is
+# made, and a pointer cut to 32 bits faults. Chromium's code and libc.a's
+# are position-independent; the link is still static and non-PIE.
+image-base  0x100000000
 needs       llvm-runtimes
 # Wayland's (Chromium's own copy of libwayland links libffi), and what
 # Chromium takes from the system on Linux: the keyboard's (pkg-config) and

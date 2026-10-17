@@ -65,6 +65,17 @@ build() {
         echo "chromium: GN only ($kept/build.conf says stop=gen)"
         exit 3
     fi
+    # A program's link takes the sysroot's libraries, crt files and posix.ld
+    # through the port's wrapper (its image-base) and tools/jamos-clang,
+    # none of which ninja sees: when any of them changed since the last
+    # build, the targets' programs go, so ninja links them again.
+    links=$(cat "$CC" "$top/tools/jamos-clang" "$JAMOS_SYSROOT"/lib/posix.ld \
+                "$JAMOS_SYSROOT"/lib/*.a "$JAMOS_SYSROOT"/lib/*.o | sha256sum | cut -c1-16)
+    if [ "$(cat "$out/links.sum" 2> /dev/null)" != "$links" ]; then
+        # shellcheck disable=SC2086 # the targets are words
+        for t in $targets; do rm -f "$out/$t"; done
+        echo "$links" > "$out/links.sum"
+    fi
     ulimit -n 4096 2> /dev/null || true   # the big links open many files
     # shellcheck disable=SC2086 # the targets are words
     ninja -C "$out" -j "$jobs" -k "$keep" $targets

@@ -5,7 +5,9 @@
 # libunwind, libc++abi and libc++, which the first's builtins could serve.
 # CMake never links a test program (there is nothing to link one with
 # yet: these are the runtimes), so its checks are compiles only, and the
-# answers a compile can't give are given here.
+# answers a compile can't give are given here. The code is position-
+# independent, as libc.a's: a program links anywhere (Chromium's above
+# 4 GiB, its recipe's image-base), static and non-PIE either way.
 cmake_common() {
     cmake -G Ninja -S "$srcdir/runtimes" -B "$1" \
         -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" \
@@ -19,7 +21,7 @@ cmake_common() {
         -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
         -DCMAKE_FIND_ROOT_PATH="$JAMOS_SYSROOT" -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
         -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY \
-        -DCMAKE_POSITION_INDEPENDENT_CODE=OFF \
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
         -DLLVM_DEFAULT_TARGET_TRIPLE=x86_64-unknown-linux-musl \
         -DLLVM_ENABLE_PER_TARGET_RUNTIME_DIR=OFF \
         -DLLVM_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_DOCS=OFF \

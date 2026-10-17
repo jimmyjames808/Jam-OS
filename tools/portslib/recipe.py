@@ -57,8 +57,15 @@ KEYS = {
     "subpackage": ("many", 2, None), "multicall": ("many", 2, None),
     "tool": ("many", 1, 1), "host-of": ("one", 1, 1), "data": ("many", 2, 2),
     "cpe": ("one", 1, 1), "fixed": ("many", 2, 2), "not-affected": ("many", 2, None),
-    "toolchain": ("one", 1, 2), "tree": ("one", 1, 1),
+    "toolchain": ("one", 1, 2), "tree": ("one", 1, 1), "image-base": ("one", 1, 1),
 }
+# `image-base <address>`: the port's programs are linked there (the
+# drivers' --jamos-image-base, posix.ld's __jamos_image_base) instead of at
+# 0x400000: hex, a page's address, from 4 GiB to below 64 TiB (the user
+# half's lower half: what is left above it for mappings). Chromium's
+# programs sit above 4 GiB, so the low 4 GiB is empty for PartitionAlloc's
+# zero segment (docs/CR-PLAN.md, MH).
+IMAGE_BASE_LO, IMAGE_BASE_HI = 1 << 32, 1 << 46
 # `tree kept`: the port's unpacked source, its build's output and its tools
 # stay between builds (kept.py; docs/CR-PLAN.md section 14), for a port too
 # big to build afresh each time (Chromium). Style custom, `source` lines.
@@ -153,6 +160,12 @@ class Recipe:
     def kept(self):
         """True for `tree kept` (kept.py)."""
         return self.get("tree") == "kept"
+
+    @property
+    def image_base(self):
+        """The `image-base` line's address (text, as the drivers take it), or
+        None: 0x400000."""
+        return self.get("image-base") or None
 
     @property
     def rust(self):
@@ -423,6 +436,15 @@ def _lint_style(r):
                      % r.path)
         elif r.name != RUNTIMES and RUNTIMES not in [d for d, _ in r.deps("needs")]:
             p.append("%s: a clang port links LLVM's runtimes: 'needs %s'" % (r.path, RUNTIMES))
+    base = r.image_base
+    if base is not None:
+        ok = re.fullmatch(r"0x[0-9a-f]+000", base) is not None
+        if not ok or not IMAGE_BASE_LO <= int(base, 16) < IMAGE_BASE_HI:
+            p.append("%s: image-base takes a page's address in hex, from 0x100000000 to below"
+                     " 0x400000000000 (lower case)" % r.path)
+        elif r.place == "host":
+            p.append("%s: a host port's programs are the build machine's: no image-base"
+                     % r.path)
     return p
 
 

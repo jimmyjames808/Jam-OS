@@ -12,8 +12,10 @@
  *   - V8's and PartitionAlloc's patterns (mempat.c);
  *   - mmap's address hint, as Linux takes one: a free range is where the
  *     mapping goes (an unaligned hint rounded down; above 4 GiB, near the
- *     top of the user range, Chromium's zero segment when the program
- *     isn't there); one over a mapping (libc's or the program's), past
+ *     top of the user range; Chromium's zero segment, 64 KiB to 4 GiB,
+ *     which must be free: posixtest is linked at 4 GiB, as Chromium's
+ *     programs are, and placement is top down); one over a mapping
+ *     (libc's or the program's), past
  *     the user range or wrapping is a mapping elsewhere;
  *     MAP_FIXED_NOREPLACE where something is is EEXIST, where nothing is
  *     exactly there;
@@ -294,8 +296,8 @@ extern char __ehdr_start[];   /* the program's first page (posix.ld) */
  * libc's, or the program itself), past the user range or wrapping goes
  * elsewhere, and MAP_FIXED_NOREPLACE there is EEXIST. Above 4 GiB, near
  * the top of the user range, and Chromium's zero segment (64 KiB to
- * 4 GiB, PartitionAlloc's: free in a program linked above 4 GiB, over the
- * program here). */
+ * 4 GiB, PartitionAlloc's: all free in a program linked above 4 GiB, as
+ * posixtest is; over the program in one linked at 0x400000). */
 static void check_hints(void)
 {
     char *r = mr_reserve(64 * PG);   /* room known to be free once given back */
@@ -333,10 +335,16 @@ static void check_hints(void)
     hint_elsewhere(~0ul - PG + 1, 2 * PG);   /* wrapping */
     hint_free_at(top - 48 * GIB, 16 * PG);   /* above the stack (STACK_TOP, libjam's spawn.c) */
     hint_free_at((4 * GIB) + 64 * KIB, 16 * PG);
-    if (image < 4 * GIB)
+    if (image < 4 * GIB) {
         hint_elsewhere(64 * KIB, 4 * GIB - 64 * KIB);   /* over the program */
-    else
-        hint_free_at(64 * KIB, 4 * GIB - 64 * KIB);
+        return;
+    }
+    /* Linked above 4 GiB (posix.mk), as Chromium's programs are: nothing
+     * is placed below it, so PartitionAlloc's zero segment is made. */
+    char *z = hinted(64 * KIB, 4 * GIB - 64 * KIB, PROT_NONE);
+    CHECK(z == (char *)(64 * KIB));
+    if (z != MAP_FAILED)
+        CHECK(munmap(z, 4 * GIB - 64 * KIB) == 0);
 }
 
 void pt_mem_reserve(void)
