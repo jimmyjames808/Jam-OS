@@ -796,6 +796,7 @@ static const struct {
     { "extfs_wmap", t_extfs_wmap },
     { "extfs_wback", t_extfs_wback },
     { "extfs_restart_wback", t_extfs_restart_wback },
+    { "extfs_wpress", t_extfs_wpress },
     { "extfs_posix", t_extfs_posix },
     { "extfs_watch_rows", t_extfs_watch_rows },
     { "extfs_watch_moves", t_extfs_watch_moves },
