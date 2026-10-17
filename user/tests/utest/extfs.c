@@ -551,6 +551,18 @@ bool t_extfs_views(void)
     CHECK_ST(xsymlink(r.fs, "etc", "/e"), OK);
     CHECK_ST(xsymlink(r.fs, ".", "/dot"), OK);
     CHECK_ST(xsymlink(r.fs, "../etc/ssh", "/usr/k"), OK);
+    CHECK_ST(xsymlink(r.fs, "/abs/target", "/etc/out"), OK);
+
+    /* A view that hides part of etc (the SSH server's, :rk): the walk goes
+     * into etc, and a hidden name there gives nothing away, not whether it
+     * is there, nor what it is, nor a link's target (the review's R4). */
+    CHECK_ST(fs_view_until(r.fs, dl(), FS_VIEW_READ_ONLY | FS_VIEW_HIDE_ETC, &ch), OK);
+    CHECK(view_of(&r, ch, &v));
+    CHECK(file_is(&v, "/e/ssh/key", "k"));
+    CHECK_ST(t_stat(&v, "/e/allow/x", NULL, NULL, NULL), ERR_ACCESS_DENIED);   /* not NOT_DIR */
+    CHECK_ST(t_stat(&v, "/e/none/x", NULL, NULL, NULL), ERR_ACCESS_DENIED);    /* not NOT_FOUND */
+    CHECK_ST(xresolve(v.fs, "/e/out/y", 0, &kind, &used, next), ERR_ACCESS_DENIED);
+    jam_handle_close(v.fs);
 
     /* A program's view: etc hidden and guarded. */
     CHECK_ST(fs_view_until(r.fs, dl(), FS_VIEW_NO_ETC | FS_VIEW_GUARD_ETC, &ch), OK);
