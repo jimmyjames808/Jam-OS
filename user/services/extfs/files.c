@@ -34,8 +34,7 @@ static struct {
     bool     armed;
     uint32_t gen;
 } fh[XF_MAX_FILES];
-static uint32_t held;
-_Static_assert(XF_MAX_FILES <= 32, "held is a word");
+static uint64_t held[(XF_MAX_FILES + 63) / 64];   /* held back by the unread bound */
 
 static unsigned slot_of(const struct xf_file *f)
 {
@@ -289,7 +288,7 @@ const struct file_ops xf_file_ops = {
 
 static void close_channel(unsigned i)
 {
-    held &= ~(1u << i);
+    held[i / 64] &= ~(1ull << (i % 64));
     if (fh[i].ch != HANDLE_INVALID) {
         if (fh[i].armed)
             (void)jam_port_unbind(vol.port, fh[i].ch, XF_KEY_FILE(i, fh[i].gen));
@@ -449,7 +448,7 @@ void files_event(uint64_t key)
         return;
     fh[slot].armed = false;
     if (file_unread_full(fh[slot].ch)) {
-        held |= 1u << slot;
+        held[slot / 64] |= 1ull << (slot % 64);
         idl_hold(&vol.held);
         return;
     }
@@ -465,13 +464,13 @@ void files_unheld(void)
 {
     for (unsigned i = 0; i < XF_MAX_FILES; i++) {
         struct xf_file *f = &kept->files[i];
-        if (!(held & (1u << i)))
+        if (!(held[i / 64] >> (i % 64) & 1))
             continue;
         if (f->used && file_unread_full(fh[i].ch)) {
             idl_hold(&vol.held);
             continue;
         }
-        held &= ~(1u << i);
+        held[i / 64] &= ~(1ull << (i % 64));
         if (f->used && arm(f) != OK)
             close_file(f);
     }

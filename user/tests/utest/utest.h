@@ -380,6 +380,7 @@ bool t_extfs_writers(void);
 bool t_extfs_views(void);
 bool t_extfs_error(void);
 bool t_extfs_flush(void);   /* a disk with a cache: block.sync where the journal needs it */
+bool t_extfs_many(void);    /* 200 files open and 100 views at once */
 bool t_extfs_restart_steps(void);
 bool t_extfs_restart_handles(void);
 bool t_extfs_restart_bad(void);

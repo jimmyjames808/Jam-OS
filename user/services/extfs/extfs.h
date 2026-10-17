@@ -46,8 +46,15 @@
 #include "ext/ext_mkfs.h"
 #include "ext/ext_names.h"
 
-#define XF_MAX_FILES   32          /* open files at once */
-#define XF_VIEWS       32          /* views and subviews served at once */
+/* Open files, views and mapped files at once, the whole volume's: on a
+ * drive boot one extfs serves /data, /jam and init's /tmp, /usr, /var,
+ * /home and /pkg views of it, and every program's views of those, so these
+ * are the system's (docs/M13.6-REVIEW.md's R3; 32 open files was too few
+ * for 64 threads' temporary files). Each costs handles here and with the
+ * keeper (keeper.c's asserts), and a file 64 KiB of buffer while open:
+ * volumes' ext_limits give the job room for all of them. */
+#define XF_MAX_FILES   256         /* open files at once */
+#define XF_VIEWS       128         /* views and subviews served at once */
 #define XF_FILE_BUF    (64u << 10) /* each open file's transfer buffer, bytes */
 #define XF_ROOT_MAX    1024u       /* a subview's root's place, bytes with its NUL */
 #define XF_LINKS_MAX   40u         /* links one path may follow (POSIX's SYMLOOP_MAX) */
@@ -56,7 +63,7 @@
 #define XF_FEATURES    (FS_FEAT_LINKS | FS_FEAT_MODES | FS_FEAT_CASE | FS_FEAT_BIG | \
                         FS_FEAT_MULTI_WRITER)
 #define XF_DEFER_MAX   64u         /* orphans and truncations left for after an answer */
-#define XF_MAX_MAPS    64u         /* mapped files at once (file.map's VMOs: pager.c) */
+#define XF_MAX_MAPS    256u        /* mapped files at once (file.map's VMOs: pager.c) */
 
 /* A mapped file's key: a sequence number and its slot of maps[] (pager.c). */
 #define XF_MAP_KEY(seq, i) ((uint64_t)(seq) << 8 | (uint64_t)(i))
@@ -81,6 +88,7 @@ _Static_assert(XF_MAX_MAPS <= 256, "a slot fits a key's low byte");
 #define XF_CHAN_OWN        3u
 #define XF_CHAN_FILE(s, g) (1u << 30 | ((uint32_t)(g) & 0xffffu) << 8 | (uint32_t)(s))
 #define XF_CHAN_VIEW(s, g) (2u << 30 | ((uint32_t)(g) & 0xffffu) << 8 | (uint32_t)(s))
+_Static_assert(XF_MAX_FILES <= 256 && XF_VIEWS <= 256, "a slot fits a channel id's low byte");
 
 /* The steps of a start, timed for a restart's log line (adopt.c). */
 enum xf_at { XF_AT_MAIN, XF_AT_DISK, XF_AT_STATE, XF_AT_MOUNT, XF_AT_HANDLES, XF_AT_COUNT };
@@ -118,7 +126,7 @@ extern struct xf_vol vol;
 /* ---- the state (state.c) --------------------------------------------------------- */
 
 #define XF_STATE_KIND   0x73667865u   /* "exfs": svcstate's kind */
-#define XF_STATE_LAYOUT 2u            /* bump on any change to struct xf_state or the
+#define XF_STATE_LAYOUT 3u            /* bump on any change to struct xf_state or the
                                        * requests its slots replay */
 /* A slot's request area: the request (fs.rename's two paths), then from
  * XF_SLOT_DATA its data: the bounce buffer a write's bytes are copied

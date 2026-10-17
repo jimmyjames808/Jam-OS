@@ -39,9 +39,9 @@
 protocol keepch 80
 
 # Slots a keeper holds for one service.
-const MAX_SLOTS     256
+const MAX_SLOTS     1024
 # Handles a keeper holds for one service, all slots together.
-const MAX_HANDLES   256
+const MAX_HANDLES   1024
 # Handles in one slot.
 const SLOT_HANDLES  4
 # Handles in one restore (a channel message's most).

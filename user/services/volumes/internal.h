@@ -169,6 +169,8 @@ extern bool       quiet;
  * threads, 1 MiB queued: devmgr's for a driver), the spare's too. */
 extern const struct sup_limit fat_limits[];
 extern const unsigned         fat_nlimits;
+extern const struct sup_limit ext_limits[];   /* an extfs's (more files, views, maps) */
+extern const unsigned         ext_nlimits;
 
 void say(bool report_it, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 bool in_bootfs(const char *path);

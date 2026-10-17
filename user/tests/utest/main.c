@@ -766,6 +766,7 @@ static const struct {
     { "extfs_views", t_extfs_views },
     { "extfs_error", t_extfs_error },
     { "extfs_flush", t_extfs_flush },
+    { "extfs_many", t_extfs_many },
     { "extfs_restart_steps", t_extfs_restart_steps },
     { "extfs_restart_handles", t_extfs_restart_handles },
     { "extfs_restart_bad", t_extfs_restart_bad },

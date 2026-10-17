@@ -14,7 +14,8 @@
 #   basic    files and directories of every size made by mke2fs read by Jam
 #            OS (hashes the host's), and made by Jam OS (copied, replaced,
 #            renamed, removed, 300 files removed with `rm -r`, 100 synced
-#            files); a second boot finds it all; debugfs reads what Jam OS
+#            files, 200 files held open at once by `exttest open`); a second
+#            boot finds it all; debugfs reads what Jam OS
 #            wrote (hashes the host's) and e2fsck -fn calls the volume clean.
 #   links    symbolic links (relative, to a directory, chains, dangling, a
 #            loop, one whose target is too long to sit in the inode) and
@@ -304,6 +305,8 @@ case_basic() {
         g mk2 mkdir /jam/many2
         g dt1 disktest /jam/many2 write 100 8
         g dt2 disktest /jam/many2 check
+        g mk3 mkdir /jam/opens
+        g op1 exttest open /jam/opens 200
         g sum3 sha256sum /jam/w2/moved.bin /jam/w2/b/c/b1.bin /jam/w/s4097 /jam/w/t.txt
         g df2 df
         g_end
@@ -317,6 +320,8 @@ case_basic() {
     refused ls3
     status dt1 0
     want 1 "disktest: check /jam/many2: files=100 whole=100 damaged=0 missing=0 prefix=100" "$run"
+    status op1 0   # 200 files open at once on /jam: extfs's tables and volumes' limits (review R3)
+    want 1 "exttest: open /jam/opens: 200 files open at once" "$run"
     want 1 "^first line" "$run"
     want 1 "^second line" "$run"
     want 1 "^$sb  /jam/w2/moved.bin" "$run"

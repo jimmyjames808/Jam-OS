@@ -84,8 +84,10 @@ status_t fs_spawn(struct vol *b)
     unsigned n = 0;
     handle_t job = HANDLE_INVALID, proc = HANDLE_INVALID;
     status_t st = jam_job_create(startup_handle(SR_JOB), 0, &job);
-    for (unsigned i = 0; st == OK && i < fat_nlimits; i++)
-        st = jam_job_set_limit(job, fat_limits[i].kind, fat_limits[i].value);
+    const struct sup_limit *lim = b->ext ? ext_limits : fat_limits;
+    unsigned nlim = b->ext ? ext_nlimits : fat_nlimits;
+    for (unsigned i = 0; st == OK && i < nlim; i++)
+        st = jam_job_set_limit(job, lim[i].kind, lim[i].value);
     if (st == OK)
         st = fs_handles(b, x, xr, &n);
     if (st == OK)
