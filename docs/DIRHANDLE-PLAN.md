@@ -14,7 +14,9 @@ works), a directory made again at the same path counts as the one that
 was removed, a renamed open directory's descriptor follows the old name,
 and `struct path` (4,120 bytes) sits on stacks beside a second 4 KiB
 buffer (CCS's clone-child finding). The owner: "fix everything". This
-plan is the design. Nothing here is built.
+plan is the design. Built so far: the protocol and the keeper's room
+(track DP, [its notes](#dp-notes)); no service serves a directory
+channel yet.
 
 **In one paragraph.** A directory becomes a channel of the `fs` protocol
 whose paths start at that directory: a new `fs.opendir` gives one, every
@@ -597,7 +599,7 @@ numbers).
 | Track | What | Files | Gate | Tests | Size | Model |
 |---|---|---|---|---|---|---|
 | **DL0. libc: a path's reference** | 4.2's mechanics with no change of behaviour: `struct path`'s `at` (always NULL yet) and `path_done` at every user; `path_get`'s base joined in place (no `base[PATH_BYTES]`); dir.c `id_of`'s buffers on the heap | `user/posix/sys/files.h`, `user/posix/sys/path.c` and every `struct path` user: `user/posix/sys/dir.c`, `user/posix/sys/file.c`, `user/posix/sys/meta.c`, `user/posix/sys/fobj.c`, `user/posix/sys/procfs.c` | none (CBF6 is in); not beside IL2, PR, FF's libc part or LH (same files) | posixtest's default sections and `files`; `tools/shell-tests/posix-files.txt`, posix-fork; shell scripts basic, cmds, commands, files; init run | 0.5 | Sonnet 5.5 |
-| **DP. The protocol and the keeper's room** | 2.2 and 2.6's keeper: `fs.opendir`, `rename_at`, `link_at`, `FEAT_DIRS` and the path rule in `fs.idl`; `keepch`'s `MAX_HANDLES` 2048; the keepers' job limits checked and raised | `abi/idl/fs.idl`, `abi/idl/keepch.idl`, the generated headers, `user/lib/keep.c` (its count), the keepers' limits (volumes', init's: *unsure* where), `user/tests/utest/keep.c` (a service past 1,024 handles) | IP merged (`fs.idl`); not beside RL or FF if they edit `fs.idl` | `make check` (genidl); utest `keep`; init run; shell scripts basic, cmds, commands, files and kdump save (an IDL changed) | 0.5 | **Opus** |
+| **DP. The protocol and the keeper's room** (built: [DP notes](#dp-notes)) | 2.2 and 2.6's keeper: `fs.opendir`, `rename_at`, `link_at`, `FEAT_DIRS` and the path rule in `fs.idl`; `keepch`'s `MAX_HANDLES` 2048; the keepers' job limits checked and raised | `abi/idl/fs.idl`, `abi/idl/keepch.idl`, the generated headers, `user/lib/keep.c` (its count), the keepers' limits (volumes', init's: *unsure* where), `user/tests/utest/keep.c` (a service past 1,024 handles) | IP merged (`fs.idl`); not beside RL or FF if they edit `fs.idl` | `make check` (genidl); utest `keep`; init run; shell scripts basic, cmds, commands, files and kdump save (an IDL changed) | 0.5 | **Opus** |
 | **DE0. extfs: the region** | 3.2's first half, no change of behaviour: the walk and the views' checks on a region, `<fsview.h>`'s region questions, readdir's filter and subview roots on it; `phys` kept for `fs.resolve` | `user/services/extfs/walk.c`, `user/services/extfs/fsops.c`, `user/services/extfs/views.c`, `user/services/extfs/extfs.h`, `user/lib/fsview.c` and `user/include/fsview.h` (functions added) | WE2, IE2, RL and FF merged (the queue's order); never beside another extfs track | utest `extfs` (its views and links cases unchanged); `tools/extfs-svc-test.sh`; `tools/layout-test.sh` drive; init run | 1 | **Opus** |
 | **DE1. extfs: directory channels** | 2.1 to 2.4 and 3.1: `opendir`, the table (records, keeper slots, `XF_MADE_*`, port keys and channel ids, the per-process share), the walk from a directory and its `..`, `""`, the epoch and the cut-off, the dispatch's flags, `fs.resolve`'s place by climbing, `rename_at` and `link_at` with the reach check, `view`/`subview`/`watch` refused | a new user/services/extfs/dirs.c, `user/services/extfs/walk.c`, `user/services/extfs/fsops.c`, `user/services/extfs/views.c` (`views_lexical`), `user/services/extfs/request.c`, `user/services/extfs/main.c`, `user/services/extfs/extfs.h`, a new utest file user/tests/utest/extfs_dirs.c, `tools/shell-tests/extfs-svc.txt` (its count) | DE0 and DP merged | utest `extfs_dirs`: 26 levels of 255-byte names made, listed and removed through channels (no path over 300 bytes sent), a 4,095-byte relative path, `..` up to the view's root and `ERR_LINK_OUT` above it, links inside and out; each view flag through a channel (read-only, the guards, `HIDE_KEYS`, `NO_ETC`: `readdir("..")` at the root without `etc`); a channel opened from a channel keeps the narrower view; a subview's channel cut off when its directory moves above the root, a `HIDE_KEYS` one when moved into `etc/ssh`; `rename_at`/`link_at` (another directory, one the view doesn't reach refused, a removed one); 256 channels and the 257th `ERR_NO_RESOURCES`, 64 from one process; `tools/extfs-svc-test.sh`; init run | 1.5 | **Opus** |
 | **DE2. extfs: removal and restarts** | 3.3 and 2.5: a held directory removed (orphan, `..` remembered, `ERR_NOT_FOUND` rules), replaced by a rename, renamed; orphan directories across a restart and at a mount; the records in the state (`XF_STATE_LAYOUT` bumped), adopt, a fresh start closing the channels; test powers that kill extfs between a `rmdir` of a held directory and its answer | user/services/extfs/dirs.c, `user/services/extfs/fsops.c`, `user/services/extfs/files.c` (`files_held` with the directories), `user/services/extfs/request.c` (`defer_drop`), `user/services/extfs/state.c`, `user/services/extfs/adopt.c`, `user/services/extfs/keeper.c`, `user/services/extfs/test.c`, `user/services/extfs/extfs.h`, `user/tests/utest/extfs_restart.c`, user/tests/utest/extfs_dirs.c | DE1 merged; beside DL1 | utest `extfs_dirs`' removal cases (made again at the same name: the channel stays on the removed one; `..` from a removed one and from one whose parent went too; a rename over a held empty directory), `extfs_restart` (killed at each point with channels open, deep ones too: the same directories after; a held removed directory across a restart; a fresh start: the channels closed); `tools/extfs-svc-test.sh`; `tools/extfs-test.sh` basic (e2fsck after a deep tree and held removed directories); `tools/layout-test.sh` drive; init run | 1 | **Opus** |
@@ -616,6 +618,73 @@ The critical path is extfs's queue; DE0 to DE2 after IE2 is the
 recommended place (inotify clears 165 tests and this plan one, and DE1's
 cut-off shares IE2's reach rule), RL and FF before or after them as the
 main session likes.
+
+### DP notes
+
+Built (2026-10-18): `fs.opendir` (method 18), `fs.rename_at` (19) and
+`fs.link_at` (20), the numbers 2.2 named (nothing had taken them),
+`FS_FEAT_DIRS` 32 (`FS_FEAT_MASK` 63), the header's path rule and its
+restart paragraph, and `view`, `subview` and `watch` saying
+`ERR_NOT_SUPPORTED` on a directory channel; `keepch`'s `MAX_HANDLES`
+2048; utest `keep_room` and `fs_no_dirs`
+([TESTING](TESTING.md#the-fs-and-file-protocols-unix-calls-m136s-u5)). Every
+`fs` server answers the three with the generated `ERR_NOT_SUPPORTED`
+(fat, bootfs, ramfs unchanged; extfs too, until DE1). `FS_REQ_MAX` grew
+from 8,206 to 8,214 bytes (`rename_at`'s id): the services' request
+slots (`REQ_CAP_FS` in extfs's and fat's state.c) follow it and their
+asserts hold.
+
+**Decided in the contract text** (2.2 left these open):
+- `rename_at`'s and `link_at`'s `to` follows the header's rule like
+  every path: one that starts with `/` is walked from the view's root,
+  `to_dir` checked all the same. No special case in the walk; libc never
+  sends one (2.4).
+- Q2's cut-off lasts while the directory lies out of reach: a channel
+  whose directory is moved back works again. That grants nothing (a path
+  from the view's root names it then), needs no flag in the state, and a
+  successor's climb at each channel's first request (3.2) finds the same
+  answer.
+- `opendir`'s flags: `FS_READ` and `FS_NOFOLLOW`, any other
+  `ERR_INVALID_ARGS`; without `FS_NOFOLLOW` a link as the last name is
+  followed (as `open`).
+- A removed directory's channel, in 3.3's words: getattr, sync and
+  statfs on `""`, a walk through `..`, `ERR_NOT_FOUND` to the rest
+  (readdir, other names, creations).
+
+**The keepers and the jobs (checked).** The keepers are volumes' (one
+`struct keeper` in each mount's `sup_kept`, `MAX_VOLS` 32: fat's and
+extfs's) and init's (the mixer's); devmgr keeps nothing for its drivers.
+`struct keeper` doesn't grow (`MAX_SLOTS` stays 1024, 4 handles a slot).
+volumes' job is made by init (`start_volumes`) with no limits of its
+own, so what its keepers hold is charged up to the root job's limits
+(`userboot_root_job`: at most 16,384 handle units and 64 MiB of message
+bytes, less on a small machine); init's own job is the root job. A full
+extfs's 1,216 kept handles are as many again in volumes' table as in
+extfs's. A restore of 2,048 handles is at most 34 messages of 61 to 64
+handles on the new keep channel (`CHANNEL_MAX_QUEUED` 1024), about
+2.1 MiB of volumes' message bytes until the successor reads them.
+extfs's own job (`ext_limits`: 2,048 handles, 4 MiB queued) holds its
+1,216 client handles and its own few dozen; fat's (`fat_limits`, 256)
+doesn't change (Q3). Nothing needed raising but `MAX_HANDLES`.
+
+**For DE1.**
+- `user/lib/fsview.c` knows none of 18 to 20: `fs_view_check`'s switch
+  and `hidden_request`'s table pass a method they don't list unchecked
+  (harmless while no server has them). Add them: `opendir`'s path judged
+  as a read (the hiding flags, as readdir's), `rename_at`'s and
+  `link_at`'s `from` as rename's and link's (`FS_VIEW_READ_ONLY`, the
+  guards); their `to` starts at `to_dir`, which the lexical check can't
+  place, so extfs's region check judges it (3.2).
+- `user/services/extfs/keeper.c`'s handle assert: add the directory
+  channels (and IE2's watchers); `KEEP_MAX_HANDLES` is 2048.
+- The generated names: `struct fs_ops`' `.opendir`, `.rename_at`,
+  `.link_at`; the client's `fs_opendir`, `fs_rename_at`, `fs_link_at`
+  (and `_until`, `_within`, `_send`, `_result`).
+
+**For DL1.** `FS_FEAT_DIRS` in statfs's features says `opendir` works
+(path.c masks features with `FS_FEAT_MASK`, now 63, so the bit reaches
+libc). A server without it answers all three `ERR_NOT_SUPPORTED`: keep
+the text description there.
 
 ## 8. Tests
 

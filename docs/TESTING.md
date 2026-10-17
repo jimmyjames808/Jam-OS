@@ -1786,6 +1786,8 @@ fat and the mixer carry on from a dead instance's state
   service stopping after a bound and saying messages are left
   (`keep_drain_bounded`), the keeper's refusals of
   other handle types, malformed messages and too many slots or handles,
+  the room extfs needs (`keep_room`: 928 slots holding 1,216 handles,
+  past the 1,024 a keeper held before, kept and restored whole),
   a successor's of a malformed restore), `svcstate_*` (a fresh, an adopted and a refused state:
   every header check and a corrupted one set up empty; the slots, the
   commit word and the four cases a successor finds; the `replied` mark;
@@ -1891,6 +1893,7 @@ fat and the boot image answer the calls M13.6 added to `fs` and `file`
 | `fat_attrs_read_only` | a read-only volume: no write bits in getattr, setattr and file.setattr `ERR_ACCESS_DENIED`, statfs says read-only |
 | `fat_attr_views` | a read-only view (changes refused, no write bits in getattr), a guarded view (every new call that changes `etc` refused, by any spelling, a root at `etc` refused unless read-only) and a key-hiding view (every new call that names `etc/ssh`) |
 | `fs_attr_ns` | libos's wrappers through the namespace: on a fat mount and on `/boot` (modes of the boot image, `ERR_NOT_SUPPORTED`, `file_open_mode`, `file_getattr`/`file_setattr`, `fs_statfs_kind`, readdir's type) |
+| `fs_no_dirs` | the directory channels' methods ([DIRHANDLE-PLAN](DIRHANDLE-PLAN.md#2-the-protocol)) on the servers that have none: `fs.opendir` (no handle given), `rename_at` and `link_at` answer `ERR_NOT_SUPPORTED` from fat, a read-only fat view that hides the keys, the boot image and bin/ramfs, and none says `FS_FEAT_DIRS` |
 
 ## File watching (INOTIFY-PLAN)
 
