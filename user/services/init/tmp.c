@@ -36,9 +36,12 @@
  * init's own namespace (fs.statfs: there and read-write), and /tmp and
  * /pkg are mounted from the best source when that isn't what they are now
  * (ns_mount replaces the old mount). A memory /tmp that a better one
- * replaces is ended (files open in it see their channel close, its
- * mappings their pager go); one that ends by itself is made again, empty,
- * at most RAM_STARTS times a boot. The loop is told (KEY_MOUNTS:
+ * replaces is let go, not ended: the followers are sent the new /tmp, but
+ * a program started before the change keeps the namespace it was given,
+ * and its /tmp must not vanish under it (a test's mkstemp failed so); the
+ * service ends by itself when the last holder closes its channel. One
+ * that ends by itself while it is /tmp is made again, empty, at most
+ * RAM_STARTS times a boot. The loop is told (KEY_MOUNTS:
  * tmp_changed) to update the followers, as for jammounts.c's views. The
  * thread is the only one that touches the service's handles. */
 #include <extfssvc.h>
@@ -216,12 +219,13 @@ static bool ram_alive(void)
     return tm.ram_proc && jam_object_wait_one(tm.ram_proc, SIG_TERMINATED, 0, &seen) != OK;
 }
 
-/* The memory /tmp's service ended (killed if it still runs), its handles closed. */
-static void ram_stop(void)
+/* The memory /tmp's handles closed; with `end`, its service ended (killed
+ * if it still runs), else left to end when its last client goes. */
+static void ram_stop(bool end)
 {
     if (tm.ram_proc) {
         (void)jam_port_unbind(tm.port, tm.ram_proc, KEY_TMP);
-        if (tm.ram_job)
+        if (end && tm.ram_job)
             jam_job_kill(tm.ram_job);
         jam_handle_close(tm.ram_proc);
     }
@@ -254,7 +258,7 @@ static status_t ram_start(handle_t *client, uint64_t *size, char *pnote, size_t 
 {
     if (tm.ram_starts >= RAM_STARTS)
         return ERR_NO_RESOURCES;
-    ram_stop();   /* a dead one's handles */
+    ram_stop(true);   /* a dead one's handles */
     struct sys_public_info si;
     bool have_si = jam_sys_public_info(&si) == OK;
     *size = RAM_MAX;
@@ -298,7 +302,7 @@ static status_t ram_start(handle_t *client, uint64_t *size, char *pnote, size_t 
     if (st == OK)
         st = jam_port_bind(tm.port, tm.ram_proc, KEY_TMP, SIG_TERMINATED, PORT_BIND_ONCE);
     if (st != OK) {
-        ram_stop();
+        ram_stop(true);
         jam_handle_close(mine);
         return st;
     }
@@ -358,11 +362,11 @@ static void pass_tmp(enum src want)
     if (st != OK) {
         say_later(LINE_TMP, "init: /tmp can't be mounted (%s)", status_str(st));
         if (want == SRC_RAM)
-            ram_stop();
+            ram_stop(true);
         return;
     }
     if (want != SRC_RAM && tm.ram_proc)
-        ram_stop();   /* the memory one is replaced: it goes */
+        ram_stop(false);   /* the memory one is replaced: let go, it ends with its last client */
     tm.cur = want;
     tm.used_gen = sgen;
     if (want == SRC_RAM)
