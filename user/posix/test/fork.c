@@ -724,11 +724,11 @@ static int small_fn(void *arg)
     KID((uintptr_t)&st > small_lo && (uintptr_t)&st < small_hi);   /* fn on the stack given */
     KID(stat("/", &st) == 0 && S_ISDIR(st.st_mode));
     KID(lstat("/proc/self/exe", &st) == 0);
-    KID(access("/tmp", W_OK) == 0);
+    KID(access("/data", W_OK) == 0);   /* /data: the fds case's too (the init run has no /tmp to write) */
     int fd = open("/proc/self/stat", O_RDONLY | O_CLOEXEC);
     KID(fd >= 0 && read(fd, buf, sizeof(buf)) > 0 && close(fd) == 0);
     KID(mkdir(small_dir, 0700) == 0 && rmdir(small_dir) == 0);
-    KID(chdir("/tmp") == 0 && getcwd(buf, sizeof(buf)) && !strcmp(buf, "/tmp"));
+    KID(chdir("/data") == 0 && getcwd(buf, sizeof(buf)) && !strcmp(buf, "/data"));
     KID(readlink("/proc/self/exe", buf, sizeof(buf)) > 0);
     pid_t g = fork();   /* the grandchild goes on from the copy of the stack for calls */
     if (g == 0)
@@ -742,7 +742,7 @@ static int small_fn(void *arg)
 static void fork_small(void)
 {
     map_report();
-    snprintf(small_dir, sizeof(small_dir), "/tmp/pxclone-%d", (int)getpid());
+    snprintf(small_dir, sizeof(small_dir), "/data/pxclone-%d", (int)getpid());
     char *guard = mmap(NULL, PG + SMALL, RW, ANON, -1, 0);
     CHECK(guard != MAP_FAILED && mprotect(guard, PG, PROT_NONE) == 0);
     if (guard == MAP_FAILED)
