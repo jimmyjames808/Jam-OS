@@ -5,10 +5,13 @@
  *     (execute refused), madvise(MADV_DONTNEED) reading zero after, and
  *     the arguments Linux refuses refused the same way; MADV_DONTNEED on
  *     a MAP_SHARED mapping (a memfd's, an anonymous one) keeps its data;
- *   - mincore (none, all and some of a mapping's pages resident, the
- *     arguments Linux refuses), MADV_REMOVE over shared memory reading
- *     zero after for every holder, and pkey_alloc, pkey_free and
- *     pkey_mprotect without protection keys (ENOSPC, EINVAL);
+ *   - mincore (none, all and some of a mapping's pages resident, each
+ *     page told on its own: one in the middle, PROT_NONE, given back, a
+ *     memfd's pages, a range longer than one kernel call; the
+ *     arguments Linux refuses, EFAULT for vec), MADV_REMOVE over shared
+ *     memory reading zero after for every holder, and pkey_alloc,
+ *     pkey_free and pkey_mprotect without protection keys (ENOSPC,
+ *     EINVAL);
  *   - MAP_FIXED in one step: a thread reads four pages without pause
  *     while they are mapped over again and again (a moment with nothing
  *     there would kill the program), and a MAP_FIXED whose range holds a
@@ -260,10 +263,8 @@ static int resident_pages(void *p, size_t n)
 /* mincore: a mapping with no page touched reads as none, all touched as
  * all, none again after madvise(MADV_DONTNEED); the length rounds up, a
  * length of 0 is fine, an unaligned start is EINVAL, and an unmapped
- * range ENOMEM (with what came before it filled in). Between all and
- * none the kernel counts a mapping's present pages without saying which:
- * the count over the whole mapping is right (docs/CR-PLAN.md, "CBF2b
- * notes"). */
+ * range ENOMEM (with what came before it filled in). Each page is told
+ * on its own (the kernel's vmar_resident, docs/CR-PLAN.md "MC notes"). */
 static void check_mincore(void)
 {
     char *p = mmap(NULL, 8 * PG, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -273,8 +274,8 @@ static void check_mincore(void)
     CHECK(resident_pages(p, 8) == 0);
     for (unsigned i = 0; i < 3; i++)
         p[i * PG] = 1;
-    int some = resident_pages(p, 8);
-    CHECK(some >= 3 && some < 8);   /* the count of the mapping's present pages */
+    CHECK(resident_pages(p, 8) == 3);
+    CHECK(resident_pages(p, 3) == 3 && resident_pages(p + 3 * PG, 5) == 0);
     for (unsigned i = 0; i < 8; i++)
         p[i * PG] = 1;
     CHECK(resident_pages(p, 8) == 8);
@@ -287,7 +288,7 @@ static void check_mincore(void)
     CHECK(mincore(p + 1, PG, vec) == -1 && errno == EINVAL);
     CHECK(madvise(p, 8 * PG, MADV_DONTNEED) == 0 && resident_pages(p, 8) == 0);
     p[PG] = 1;
-    CHECK(resident_pages(p, 8) >= 1);
+    CHECK(resident_pages(p, 8) == 1 && resident_pages(p + PG, 1) == 1);
     /* a range running off the end of its mapping */
     for (unsigned i = 0; i < 8; i++)
         p[i * PG] = 1;
@@ -301,6 +302,76 @@ static void check_mincore(void)
     CHECK(munmap(p, 4 * PG) == 0);
     errno = 0;
     CHECK(mincore(p, PG, vec) == -1 && errno == ENOMEM);
+}
+
+/* mincore page by page, as Chromium's tests ask (PartitionAlloc's
+ * CheckPageInCore, the heap profiler's residency): one page in the middle
+ * of a mapping touched is the only one in memory; a page made PROT_NONE
+ * keeps its memory (Linux's answer), one given back by MADV_DONTNEED
+ * doesn't; a memfd's pages (all committed as it grows) are in memory in
+ * a mapping that never touched them; a range longer than one kernel call
+ * (4096 pages) is told whole; vec NULL, read-only or past the user range
+ * is EFAULT (an unmapped range's ENOMEM first). */
+static void check_mincore_pages(void)
+{
+    char *p = mmap(NULL, 8 * PG, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(p != MAP_FAILED);
+    if (p == MAP_FAILED)
+        return;
+    unsigned char vec[8];
+    p[5 * PG] = 1;
+    memset(vec, 0xff, sizeof(vec));
+    CHECK(mincore(p + 5 * PG, PG, vec) == 0 && vec[0] == 1);   /* CheckPageInCore */
+    CHECK(mincore(p, PG, vec) == 0 && vec[0] == 0);
+    CHECK(mincore(p, 8 * PG, vec) == 0);
+    for (unsigned i = 0; i < 8; i++)
+        CHECK(vec[i] == (i == 5));
+    p[2 * PG] = 1;
+    p[3 * PG] = 1;
+    CHECK(mprotect(p + 2 * PG, PG, PROT_NONE) == 0);
+    CHECK(madvise(p + 3 * PG, PG, MADV_DONTNEED) == 0);
+    CHECK(mincore(p, 8 * PG, vec) == 0);
+    CHECK(vec[2] == 1 && vec[3] == 0 && vec[5] == 1 && vec[4] == 0);
+    errno = 0;
+    CHECK(mincore(p, PG, NULL) == -1 && errno == EFAULT);
+    errno = 0;
+    CHECK(mincore(p, PG, (unsigned char *)-PG) == -1 && errno == EFAULT);
+    errno = 0;
+    CHECK(mincore(NULL, PG, vec) == -1 && errno == ENOMEM);   /* page 0: never mapped */
+    unsigned char *ro = mmap(NULL, PG, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(ro != MAP_FAILED);
+    errno = 0;
+    CHECK(mincore(p, PG, ro) == -1 && errno == EFAULT);
+    CHECK(munmap(ro, PG) == 0 && munmap(p, 8 * PG) == 0);
+    errno = 0;
+    CHECK(mincore(p, PG, NULL) == -1 && errno == ENOMEM);   /* the hole is found first */
+
+    /* A memfd's pages are the memfd's, all of them in memory from the
+     * moment it grows (a kept VMO, memfd.c): in memory in a new mapping
+     * that never touched them. */
+    int fd = memfd_create("mincore", 0);
+    CHECK(fd >= 0 && ftruncate(fd, 4 * PG) == 0 && pwrite(fd, "x", 1, 2 * PG) == 1);
+    char *s = mmap(NULL, 4 * PG, PROT_READ, MAP_SHARED, fd, 0);
+    CHECK(s != MAP_FAILED);
+    CHECK(mincore(s, 4 * PG, vec) == 0 && vec[0] == 1 && vec[1] == 1 && vec[2] == 1 &&
+          vec[3] == 1);
+    CHECK(munmap(s, 4 * PG) == 0 && close(fd) == 0);
+
+    /* Longer than one kernel call: 5000 pages, three touched, one past
+     * the first call's 4096. */
+    size_t n = 5000;
+    char *big = mmap(NULL, n * PG, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    unsigned char *bv = malloc(n);
+    CHECK(big != MAP_FAILED && bv);
+    big[0] = big[4095 * PG] = big[4999 * PG] = 1;
+    memset(bv, 0xff, n);
+    CHECK(mincore(big, n * PG, bv) == 0);
+    size_t in = 0;
+    for (size_t i = 0; i < n; i++)
+        in += bv[i];
+    CHECK(in == 3 && bv[0] == 1 && bv[4095] == 1 && bv[4999] == 1);
+    free(bv);
+    CHECK(munmap(big, n * PG) == 0);
 }
 
 /* MADV_REMOVE over shared memory frees its pages for every holder: they
@@ -387,6 +458,7 @@ void pt_mem(char **argv __attribute__((unused)))
     check_mmap();
     check_dontneed_shared();
     check_mincore();
+    check_mincore_pages();
     check_madv_remove();
     check_pkey();
     check_refusals();
