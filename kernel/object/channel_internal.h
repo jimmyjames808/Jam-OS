@@ -37,6 +37,8 @@ struct chan_msg {
     uint32_t         nhandles;  /* khandles carried */
     struct job      *job;       /* the sender's job, charged `charge` bytes (a reference) */
     uint64_t         charge;    /* bytes charged to job */
+    uint32_t         pid;       /* the writer's process's pid; 0: a kernel thread's
+                                 * (channel_read's CHANNEL_READ_PID) */
     bool             slot;      /* in a slot (CHAN_SLOT_SIZE bytes): only ever handed to a
                                  * waiting reader, never queued, never charged */
 };

@@ -60,9 +60,10 @@ status_t sys_channel_write_from(struct handle_table *t, handle_t h, const struct
 status_t sys_channel_write_rights_from(struct handle_table *t, handle_t h,
                                        const struct chan_bytes *b, const handle_t *handles,
                                        const rights_t *rights, uint32_t nhandles);
+/* writer_pid: channel_read_into's (NULL: not wanted). */
 status_t sys_channel_read_into(struct handle_table *t, handle_t h, const struct chan_bytes *b,
                                uint32_t *actual_bytes, handle_t *handles, uint32_t handles_cap,
-                               uint32_t *actual_handles);
+                               uint32_t *actual_handles, uint32_t *writer_pid);
 status_t sys_channel_call_from(struct handle_table *t, handle_t h, const struct chan_bytes *w,
                                const handle_t *wh, uint32_t whn, const struct chan_bytes *r,
                                uint32_t *ractual, handle_t *rh, uint32_t rhcap,

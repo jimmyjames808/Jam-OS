@@ -154,24 +154,29 @@ int64_t sysc_channel_withdraw(handle_t h)
 int64_t sysc_channel_read(const struct channel_read_args *a)
 {
     SYSC_TABLE(t);
-    if (a->reserved || no_buffer(a->rd_bytes, a->rd_cap) || no_buffer(a->rd_handles, a->rd_hcap))
+    bool want_pid = a->rd_flags & CHANNEL_READ_PID;
+    if ((a->rd_flags & ~CHANNEL_READ_PID) || (want_pid && !a->rd_hactual) ||
+        no_buffer(a->rd_bytes, a->rd_cap) || no_buffer(a->rd_handles, a->rd_hcap))
         return ERR_INVALID_ARGS;
     uint32_t bcap = a->rd_cap < CHANNEL_MAX_BYTES ? a->rd_cap : CHANNEL_MAX_BYTES;
     uint32_t hcap = a->rd_hcap < CHANNEL_MAX_HANDLES ? a->rd_hcap : CHANNEL_MAX_HANDLES;
     struct chan_bytes b = chan_ubytes(a->rd_bytes, bcap);
     handle_t hs[CHANNEL_MAX_HANDLES];
-    uint32_t nb = 0, nh = 0;
-    status_t st = sys_channel_read_into(t, a->h, &b, &nb, hs, hcap, &nh);
+    uint32_t nb = 0, nh = 0, pid = 0;
+    status_t st = sys_channel_read_into(t, a->h, &b, &nb, hs, hcap, &nh, want_pid ? &pid : NULL);
+    /* The sizes, then the writer's pid after the handles' count: one copy
+     * when the caller keeps the three in a row. */
+    const struct out_word w[3] = { { a->rd_actual, nb }, { a->rd_hactual, nh },
+                                   { want_pid ? a->rd_hactual + 4 : 0, pid } };
     if (st == OK) {
         /* The bytes are in place already: the length goes last, so a
          * reader that finds it set finds the whole message (svcstate). */
-        if (copy_out(a->rd_handles, hs, nh * sizeof(handle_t)) != OK ||
-            put_sizes(a->rd_actual, nb, a->rd_hactual, nh) != OK) {
+        if (copy_out(a->rd_handles, hs, nh * sizeof(handle_t)) != OK || put_words(w, 3) != OK) {
             close_all(t, hs, nh);   /* the message is gone; its handles must not leak */
             st = ERR_INVALID_ARGS;
         }
     } else if (st == ERR_BUFFER_TOO_SMALL) {
-        if (put_sizes(a->rd_actual, nb, a->rd_hactual, nh) != OK)
+        if (put_words(w, 3) != OK)
             st = ERR_INVALID_ARGS;   /* the message stays queued */
     }
     return st;

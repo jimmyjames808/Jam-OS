@@ -110,7 +110,11 @@
 # ERR_PEER_CLOSED if nothing is queued and the peer is gone.
 # ERR_BUFFER_TOO_SMALL (the sizes are still written) leaves the message
 # queued. A fault writing the buffers loses the message, its handles
-# closed (ERR_INVALID_ARGS).
+# closed (ERR_INVALID_ARGS). rd_flags CHANNEL_READ_PID also writes the pid
+# of the process that wrote the message (0: a kernel thread) after the
+# handles' count (rd_hactual + 4; ERR_INVALID_ARGS without rd_hactual):
+# every message carries its writer's, stamped as it is written. Any other
+# bit: ERR_INVALID_ARGS.
 22  channel_read      status    @channel_read_args
 # channel_call (struct channel_call_args): the request, its first 4 bytes
 # replaced by a txid of the kernel's (CHANNEL_TXID_KERNEL set, the rest a
