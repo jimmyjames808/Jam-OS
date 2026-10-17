@@ -17,13 +17,16 @@
  * program started through init's /svc/exec is given (CR-REVIEW-POSIX Q1);
  * `from`, `from-out` and `inherit` too: a caller's directory and
  * environment kept for a child that isn't raised (docs/CR-PLAN.md,
- * "SX"). */
+ * "SX"); and `narrow`, `narrowed` and `raised`: a child given less than
+ * its starter has no image of their program, so what it starts through
+ * /svc/exec is raised (docs/CR-PLAN.md, "TS"). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <jamos/libjam.h>
+#include <jamos/spawn.h>
 #include <spawn.h>
 #include <string.h>
 #include <sys/auxv.h>
@@ -447,6 +450,49 @@ static int child_from_out(int argc, char **argv)
     return n == l + 1 && !strncmp(out, argv[4], l) && out[l] == '\n' ? 0 : 98;
 }
 
+/* --child-launch narrow <path> [args...]: a caller started through
+ * /svc/exec (utest's exec_starter) starts itself again from its image
+ * with less than its namespace (posix_spawnattr_setgrants_np: /data,
+ * /boot and /svc/exec alone), as `narrowed`, which starts path with
+ * args. Its exit code, or 85 and up if it couldn't. */
+static int child_narrow(int argc, char **argv)
+{
+    static const char *const grants[] = { "/data", "/boot", "/svc/exec", NULL };
+    posix_spawnattr_t at;
+    pid_t pid;
+    int status;
+    if (argc < 4 || posix_spawnattr_init(&at) || posix_spawnattr_setgrants_np(&at, grants))
+        return 85;
+    argv[2] = "narrowed";
+    int e = posix_spawn(&pid, "/proc/self/exe", NULL, &at, argv, environ);
+    posix_spawnattr_destroy(&at);
+    if (e)
+        return 86;
+    if (waitpid(pid, &status, 0) != pid)
+        return 87;
+    return WIFEXITED(status) ? WEXITSTATUS(status) : 88;
+}
+
+/* --child-launch narrowed <path> [args...]: child_narrow's child, given
+ * less than its starter, so given no image of their program, which would
+ * make it count as its starter at /svc/exec (docs/CR-PLAN.md, "TS"); it
+ * starts path with args (through /svc/exec: raised, its caller not
+ * known). Their exit code, or 80 and up. */
+static int child_narrowed(int argc, char **argv)
+{
+    pid_t pid;
+    int status;
+    if (argc < 4)
+        return 80;
+    if (startup_handle(SR_SELF_IMAGE))
+        return 81;
+    if (posix_spawn(&pid, argv[3], NULL, NULL, argv + 3, environ))
+        return 82;
+    if (waitpid(pid, &status, 0) != pid)
+        return 83;
+    return WIFEXITED(status) ? WEXITSTATUS(status) : 84;
+}
+
 int pt_child_launch(int argc, char **argv)
 {
     if (argc >= 3 && !strcmp(argv[2], "args"))
@@ -465,5 +511,11 @@ int pt_child_launch(int argc, char **argv)
         return child_from(argc, argv);
     if (argc >= 3 && !strcmp(argv[2], "from-out"))
         return child_from_out(argc, argv);
+    if (argc >= 3 && !strcmp(argv[2], "narrow"))
+        return child_narrow(argc, argv);
+    if (argc >= 3 && !strcmp(argv[2], "narrowed"))
+        return child_narrowed(argc, argv);
+    if (argc >= 3 && !strcmp(argv[2], "raised"))
+        return argc < 4 ? 10 : sealed_common(argv[3]);
     return 2;
 }

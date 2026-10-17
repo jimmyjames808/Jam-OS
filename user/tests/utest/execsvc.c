@@ -60,8 +60,10 @@
  * it starts pxio (on /data too, its list /tmp alone: not raised), which
  * can't see /data and so starts in "/"; exectest (/data read-only) starts
  * posixtest, which asks for far more: raised, AT_SECURE, HOME without
- * exectest's TMPDIR, in "/"; and a forged image (posixtest's bytes in a
- * VMO never sealed) counts for nothing: raised.
+ * exectest's TMPDIR, in "/"; a forged image (posixtest's bytes in a
+ * VMO never sealed) counts for nothing: raised; and a child posixtest
+ * gives less than its namespace has no image, so the posixtest it
+ * starts is raised.
  *
  * t_exec_no_leak: 40 programs sealed and dropped and 12 started and
  * waited for on one opener (past PROGRAMS_PER_OPENER and PROGRAMS_MAX:
@@ -691,6 +693,13 @@ bool t_exec_starter(void)
     const char *bare[] = { "sealed-bare", PT };
     CHECK(pt_run_args(2, bare, NULL, fake, &code));
     CHECK_EQ(code, 0);
+    /* posixtest starts itself again with less than its namespace
+     * (posix_spawnattr_setgrants_np): that child gets no image, so the
+     * posixtest it starts counts as nobody's: raised (docs/CR-PLAN.md,
+     * "TS"). With the image it would count as posixtest's own. */
+    const char *narrow[] = { "narrow", PT, "--child-launch", "raised", PT };
+    CHECK(pt_run_args(5, narrow, NULL, HANDLE_INVALID, &code));
+    CHECK_EQ(code, 0);   /* else launch.c's child_narrowed (80s) or sealed_common (10s) */
     return true;
 }
 

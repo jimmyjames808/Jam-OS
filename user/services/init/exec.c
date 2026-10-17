@@ -381,10 +381,11 @@ static const struct exec_ops open_ops = { .open = op_open };
  * is the approved one. Both start a program with exactly its list, and
  * nothing else hands out a sealed program but a program's own start of
  * itself (libjam's spawn gives a child the VMO it runs from), whose child
- * gets its namespace (posix_spawn's NS_ALL, fork's copy) unless the
- * program asks for less (posix_spawnattr_setgrants_np). So a caller holding
- * P's image is P, or a child of P's with as much as P chose to give it
- * (`svc exec` included). Powers are the exception: a root can't be passed
+ * gets its namespace (posix_spawn's NS_ALL, fork's copy); a child the
+ * program gives less (posix_spawnattr_setgrants_np) gets no image (libc's
+ * spawn.c: spawn_args.no_image), so it is raised here. So a caller
+ * holding P's image is P, or a child of P's with all P has. Powers are
+ * the exception: a root can't be passed
  * on (dp_root_rights: no RIGHT_TRANSFER), so no fork or posix_spawn child
  * of a program holds one, and init can't see whether the caller is the
  * program's first process, which does: a child whose list asks for a

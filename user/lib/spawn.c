@@ -652,7 +652,7 @@ static status_t plan_layout(const struct spawn_args *a, const struct image *img,
     if (n > STARTUP_ARGS_MAX / 8 || l->bytes + (n + 2) * 8 > STARTUP_ARGS_MAX || need > room)
         return ERR_OUT_OF_RANGE;
     room -= need;
-    l->image = room ? image_rights(a, img) : 0;
+    l->image = room && !a->no_image ? image_rights(a, img) : 0;
     room -= l->image ? 1 : 0;
     l->exe = NULL;
     if (l->image && !a->handover && !a->before_start && a->path[0] == '/' &&
