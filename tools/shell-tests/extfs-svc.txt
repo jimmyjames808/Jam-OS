@@ -2,7 +2,7 @@
 # utest's extfs cases, each extfs over a RAM disk it formats (files, links,
 # the permission bits, many writers, views and subviews, a damaged block,
 # a disk whose calls time out, restarts at each step of a request, the warm spare, mapped files with a
-# pager and across restarts, writable shared mappings, posixtest's links section). The disks they leave
+# pager and across restarts, writable shared mappings and their write-back, posixtest's links section). The disks they leave
 # are saved in /data/extfs-e2fsck for Linux's e2fsck (tools/extfs-svc-test.sh).
 #   tools/extfs-svc-test.sh <outdir>
 # As in cmds.txt, a marker built from $T (x) never appears in the typed
@@ -17,7 +17,7 @@ wait st-x=0
 wait {prompt}
 send utest only extfs; echo st-$T=$?
 wait 1200 passed
-seen utest: 21 passed
+seen utest: 23 passed
 wait st-x=0
 wait {prompt}
 send sync; echo st-$T=$?

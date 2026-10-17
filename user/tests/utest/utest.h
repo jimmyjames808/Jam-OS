@@ -403,6 +403,12 @@ bool t_extfs_map(void);
  * process's mode is wmap-store. */
 bool t_extfs_wmap(void);
 int  wmap_child(int argc, char **argv);
+/* extfs_wback.c: mapped files' stores written back (WRITEMAP's WE2): by
+ * msync, fsync, fs.sync, age and an orderly stop, over holes and unwritten
+ * extents, a full volume's error, a fresh start's keys. */
+bool t_extfs_wback(void);
+/* extfs_restart.c: a write-back ended at each step of WE2's 2.6. */
+bool t_extfs_restart_wback(void);
 /* extfs_posix.c: posixtest's links section on an extfs volume (libc, U6). */
 bool t_extfs_posix(void);
 bool t_view_keys_names(void);

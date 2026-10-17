@@ -527,6 +527,140 @@ bool t_extfs_restart_pager(void)
     return ramdisk_destroy(&test_disk) && ok;
 }
 
+/* ---- mapped files' stores written back ------------------------------------------------ */
+
+#define WB_PAGES 4u   /* the written-back file's pages */
+
+static uint8_t wb_want[WB_PAGES * PAGE_SIZE];
+
+/* No page of the pager is dirty. */
+static bool wb_clean(handle_t pager)
+{
+    static uint8_t page[PAGE_SIZE];
+    struct pager_run run = { .len = PAGE_SIZE };
+    return jam_pager_dirty(pager, 0, PAGER_DIRTY_OLDEST | PAGER_DIRTY_PEEK, &run, page) ==
+           ERR_NOT_FOUND;
+}
+
+/* A page of seed's pattern stored at page p of mapping m, and in the model. */
+static void wb_store(uint8_t *m, uint32_t p, uint32_t seed)
+{
+    fill(seed);
+    memcpy(m + p * PAGE_SIZE, buf, PAGE_SIZE);
+    memcpy(wb_want + p * PAGE_SIZE, buf, PAGE_SIZE);
+}
+
+/* The supervisor has seen n instances end by a test power (one may end
+ * just after its answer). */
+static bool wb_deaths(unsigned n)
+{
+    uint64_t end = dl();
+    while (__atomic_load_n(&sv.tests, __ATOMIC_ACQUIRE) < n && now() < end)
+        jam_sleep_until(now() + 10 * NS_PER_MS);
+    CHECK_EQ(__atomic_load_n(&sv.tests, __ATOMIC_ACQUIRE), n);
+    return true;
+}
+
+/* Right after a write-back was answered: no page dirty, and extfs's read
+ * (the disk's bytes, nothing laid over them) the model. */
+static bool wb_on_disk(struct tfile *f, handle_t pager, const char *what)
+{
+    static uint8_t got[WB_PAGES * PAGE_SIZE];
+    uint32_t done = 0;
+    if (!wb_clean(pager))
+        FAIL("%s: a page still dirty", what);
+    CHECK_ST(t_read(f, 0, got, sizeof(got), &done), OK);
+    CHECK_EQ(done, sizeof(got));
+    if (memcmp(got, wb_want, sizeof(got)))
+        FAIL("%s: the disk doesn't hold the stores", what);
+    return true;
+}
+
+/* A write-back ended at each step of WRITEMAP's 2.6 (wback.c's test
+ * points, counted from each instance's start; a write-back of one run
+ * passes four: begun, its data written, committed, answered), the msync
+ * or fsync waiting on it answered OK by the successor, the data on the
+ * disk right after:
+ *   0  wback:1  begun, nothing written: dirty again, written again;
+ *   1  wback:6  (the retry's four, then) the data written over the file's
+ *               own block, no commit: written again;
+ *   2  wback:7  committed, no WRITTEN: replayed, dirty again, written
+ *               again, then answered;
+ *   3  wback:8  answered, then ended: nothing left;
+ *   4  wback:2  the data written into a hole's new blocks, no commit: they
+ *               are free in the committed bitmaps, taken again;
+ *   5  wback:7  a file.sync's write-back committed, not answered: the
+ *               request runs again from its slot, its write-back with it. */
+bool t_extfs_restart_wback(void)
+{
+    static struct ramdisk test_disk;
+    static const char *const dies[] = {
+        "die=wback:1", "die=wback:6", "die=wback:7", "die=wback:8", "die=wback:2", "die=wback:7",
+    };
+    handle_t root = startup_handle(SR_RESOURCE), pager = HANDLE_INVALID, a = HANDLE_INVALID;
+    handle_t h = HANDLE_INVALID, self = startup_handle(SR_SELF_VMAR);
+    struct tfile f, g;
+    uint64_t size = 0, addr = 0, total = 0, before = 0, after = 0;
+    uint32_t done = 0;
+    if (!root || jam_pager_create(root, 4096, FAT_CALL_NS, 0, &pager) != OK) {
+        printf("utest: extfs_restart_wback: no pager power (RIGHT_ROOT_PAGER): skipped\n");
+        return true;
+    }
+    if (!ramdisk_create(&test_disk, DISK_SECTORS) || !sup_begin(&test_disk, dies, 6, NULL, pager))
+        return false;
+    CHECK_ST(t_open(&sv.r, "/w.bin", FS_READ | FS_WRITE | FS_CREATE, &f), OK);
+    for (uint32_t p = 0; p < WB_PAGES; p++) {
+        fill(20 + p);
+        memcpy(wb_want + p * PAGE_SIZE, buf, PAGE_SIZE);
+        CHECK_ST(t_write(&f, p * PAGE_SIZE, buf, PAGE_SIZE, &done), OK);
+    }
+    CHECK_ST(file_map_until(f.ch, dl(), FILE_MAP_WRITE, &a, &size), OK);
+    CHECK_ST(jam_vmar_map(self, a, 0, sizeof(wb_want), VMAR_READ | VMAR_WRITE, &addr), OK);
+    uint8_t *m = (uint8_t *)(uintptr_t)addr;
+    for (uint32_t p = 0; p < WB_PAGES; p++) {
+        wb_store(m, p, 30 + p);
+        CHECK(!wb_clean(pager));
+        CHECK_ST(jam_vmo_sync(a, 0, sizeof(wb_want), VMO_SYNC_WAIT), OK);
+        if (!wb_deaths(p + 1) || !wb_on_disk(&f, pager, "an msync's write-back ended"))
+            return false;
+    }
+
+    /* A hole: page 1 of /h.bin has no block until its write-back. */
+    CHECK_ST(t_open(&sv.r, "/h.bin", FS_READ | FS_WRITE | FS_CREATE, &g), OK);
+    CHECK_ST(file_truncate_until(g.ch, dl(), 3 * PAGE_SIZE), OK);
+    CHECK_ST(t_free(&sv.r, &total, &before), OK);
+    CHECK_ST(file_map_until(g.ch, dl(), FILE_MAP_WRITE, &h, &size), OK);
+    CHECK_ST(jam_vmar_map(self, h, 0, 3 * PAGE_SIZE, VMAR_READ | VMAR_WRITE, &addr), OK);
+    uint8_t *hm = (uint8_t *)(uintptr_t)addr;
+    fill(40);
+    memcpy(hm + PAGE_SIZE, buf, PAGE_SIZE);
+    CHECK_ST(jam_vmo_sync(h, 0, 3 * PAGE_SIZE, VMO_SYNC_WAIT), OK);
+    if (!wb_deaths(5))
+        return false;
+    CHECK(wb_clean(pager));
+    static uint8_t got[PAGE_SIZE];
+    CHECK_ST(t_read(&g, PAGE_SIZE, got, PAGE_SIZE, &done), OK);
+    CHECK(done == PAGE_SIZE && !memcmp(got, buf, PAGE_SIZE));
+    CHECK_ST(t_free(&sv.r, &total, &after), OK);
+    CHECK(before - after >= PAGE_SIZE && before - after < 2 * PAGE_SIZE);   /* taken once */
+    t_close(&g);
+
+    /* A file.sync ended after its write-back's commit. */
+    wb_store(m, 2, 50);
+    CHECK(!wb_clean(pager));
+    CHECK_ST(file_sync_until(f.ch, dl()), OK);
+    if (!wb_deaths(6) || !wb_on_disk(&f, pager, "a file.sync's write-back ended"))
+        return false;
+    t_close(&f);
+    CHECK_ST(jam_vmar_unmap(self, (uint64_t)(uintptr_t)m, sizeof(wb_want)), OK);
+    CHECK_ST(jam_vmar_unmap(self, (uint64_t)(uintptr_t)hm, 3 * PAGE_SIZE), OK);
+    CHECK_ST(jam_handle_close(a), OK);
+    CHECK_ST(jam_handle_close(h), OK);
+    bool ok = sup_stop() && extfs_save(&test_disk, "restart-wback");
+    CHECK_ST(jam_handle_close(pager), OK);
+    return ramdisk_destroy(&test_disk) && ok;
+}
+
 /* ---- the warm spare ---------------------------------------------------------------- */
 
 /* A spare: bin/extfs with nothing but SR_STANDBY, in a job of its own. */
