@@ -28,6 +28,7 @@ enum pfile {
     PF_OSTYPE,     /* /proc/sys/kernel/ostype */
     PF_KVERSION,   /* /proc/sys/kernel/version */
     PF_HOSTNAME,   /* /proc/sys/kernel/hostname */
+    PF_SMAPS_ROLLUP,   /* /proc/<pid>/smaps_rollup */
 };
 
 /* File f's text now, malloc'd (*text, *len; the caller frees). pid names

@@ -10,8 +10,9 @@
  *                         directory for our own pid and for a child's (any
  *                         other pid is ENOENT: a process sees only itself
  *                         and its children here); a child's has maps, stat,
- *                         statm and status, no exe or fd
- *   /proc/cpuinfo, meminfo, stat, /proc/<pid>/maps, stat, statm, status
+ *                         statm, status and smaps_rollup, no exe or fd
+ *   /proc/cpuinfo, meminfo, stat, /proc/<pid>/maps, stat, statm, status,
+ *                         smaps_rollup
  *                         regular files of Linux's text (procinfo.c and
  *                         cpuinfo.c make it: "PRC notes" in CR-PLAN.md says
  *                         from what), read only, size 0 as Linux's. A read
@@ -28,7 +29,8 @@
  *                         pages' permissions
  *   /proc/self/task       a directory of our threads by id (the first,
  *                         then those clone made), each a directory with
- *                         maps, stat, statm, status, cmdline and mem; the
+ *                         maps, stat, statm, status, smaps_rollup, cmdline
+ *                         and mem; the
  *                         thread's id is also a directory of /proc, not
  *                         listed, as Linux's (a process's id wins when
  *                         one number is both)
@@ -130,6 +132,7 @@ enum node {
     N_OSTYPE,     /* /proc/sys/kernel/ostype */
     N_KVERSION,   /* /proc/sys/kernel/version */
     N_HOSTNAME,   /* /proc/sys/kernel/hostname */
+    N_SMAPS_ROLLUP,   /* /proc/<pid>/smaps_rollup */
 };
 
 /* Where a generated file lives. */
@@ -146,6 +149,7 @@ pfiles[] = {
     { N_OSRELEASE, PF_OSRELEASE, "osrelease", IN_KERNEL },
     { N_OSTYPE, PF_OSTYPE, "ostype", IN_KERNEL }, { N_KVERSION, PF_KVERSION, "version", IN_KERNEL },
     { N_HOSTNAME, PF_HOSTNAME, "hostname", IN_KERNEL },
+    { N_SMAPS_ROLLUP, PF_SMAPS_ROLLUP, "smaps_rollup", IN_PID },
 };
 #define PFILES (sizeof(pfiles) / sizeof(pfiles[0]))
 
@@ -163,6 +167,7 @@ static const struct { enum node node; uint8_t type; const char *name; unsigned w
     { N_STAT, DT_REG, "stat", WHO_ALL }, { N_STATM, DT_REG, "statm", WHO_ALL },
     { N_STATUS, DT_REG, "status", WHO_ALL }, { N_CMDLINE, DT_REG, "cmdline", WHO_SELF | WHO_TASK },
     { N_MEM, DT_REG, "mem", WHO_SELF | WHO_TASK },
+    { N_SMAPS_ROLLUP, DT_REG, "smaps_rollup", WHO_ALL },
 };
 #define PID_NAMES  (sizeof(pid_names) / sizeof(pid_names[0]))
 #define KIDS_LISTED 256      /* children /proc lists (their files open all the same) */

@@ -9,7 +9,8 @@
  *   - a child started with a hand-over message (a pipe as descriptor 1,
  *     the null device as 0, nothing at 2): it writes through 1 to us,
  *     reads the end of the file at once from 0, and 2 is EBADF;
- *   - the clocks, a sleep, getrandom and uname;
+ *   - the clocks, a sleep, getrandom and uname; the DMI files and a mount's
+ *     /sys/dev/block files (base's SysInfo and DriveInfo);
  *   - dynamic loading as a static program has it: dlopen() fails with
  *     dlerror()'s message, dlsym() finds nothing, dlclose() refuses;
  *   - the program's constructors ran before main, the layer's first. */
@@ -24,6 +25,8 @@
 #include <string.h>
 #include <sys/auxv.h>
 #include <sys/random.h>
+#include <sys/stat.h>
+#include <sys/statfs.h>
 #include <sys/utsname.h>
 #include <time.h>
 #include <unistd.h>
@@ -179,6 +182,46 @@ static void check_time(void)
     CHECK(localtime_r(&t, &tm) != NULL);
 }
 
+/* The files base's GetFileDriveInfo reads for the drive of a file on mount
+ * (CBF6): /sys/dev/block/<major>:<minor>/ for the file's st_dev, split as
+ * <linux/kdev_t.h> does (the major above the low 8 bits). removable and
+ * queue/rotational say "0" or "1"; size is the volume's 512-byte sectors,
+ * as statfs counts the volume; they stat as sysfs attributes (4096 bytes,
+ * read only) and nothing else is there. */
+static void check_drive_info(const char *mount)
+{
+    struct stat st;
+    struct statfs sf;
+    CHECK(stat(mount, &st) == 0 && statfs(mount, &sf) == 0 && st.st_dev != 0);
+    static const char *const leaves[] = { "removable", "queue/rotational", "size" };
+    for (unsigned i = 0; i < 3; i++) {
+        char path[96], text[32] = { 0 };
+        snprintf(path, sizeof(path), "/sys/dev/block/%u:%u/%s", (unsigned)(st.st_dev >> 8),
+                 (unsigned)(st.st_dev & 0xff), leaves[i]);
+        int fd = open(path, O_RDONLY);
+        ssize_t n = fd >= 0 ? read(fd, text, sizeof(text) - 1) : -1;
+        CHECK(n > 1 && text[n - 1] == '\n');
+        struct stat as;
+        CHECK(fd >= 0 && fstat(fd, &as) == 0 && S_ISREG(as.st_mode) && as.st_size == 4096 &&
+              (as.st_mode & 0777) == 0444);
+        CHECK(stat(path, &as) == 0 && as.st_size == 4096);
+        if (i < 2) {
+            CHECK(!strcmp(text, "0\n") || !strcmp(text, "1\n"));
+        } else {
+            long long sectors = atoll(text), want = (long long)sf.f_blocks * (long long)sf.f_frsize / 512;
+            CHECK(sectors > 0 && sectors >= want && sectors - want < 8);
+        }
+        if (fd >= 0)
+            close(fd);
+        errno = 0;
+        CHECK(open(path, O_WRONLY) == -1 && errno == EROFS);
+    }
+    errno = 0;
+    CHECK(open("/sys/dev/block/0:250/size", O_RDONLY) == -1 && errno == ENOENT);
+    errno = 0;
+    CHECK(open("/sys/dev/block/0:01/size", O_RDONLY) == -1 && errno == ENOENT);
+}
+
 static void check_machine(void)
 {
     unsigned char x[64], y[64];
@@ -207,6 +250,10 @@ static void check_machine(void)
     }
     errno = 0;
     CHECK(open("/sys/devices/virtual/dmi/id/sys_vendor", O_WRONLY) == -1 && errno == EROFS);
+    check_drive_info("/boot");
+    struct stat dst;
+    if (stat("/data", &dst) == 0)
+        check_drive_info("/data");
     CHECK(sysconf(_SC_NPROCESSORS_ONLN) >= 1);
     CHECK(sysconf(_SC_PAGESIZE) == 4096);
 }

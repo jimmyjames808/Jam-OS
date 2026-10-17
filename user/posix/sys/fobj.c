@@ -99,13 +99,16 @@ static struct fobj *find_locked(const char *m, uint64_t id, bool append)
 }
 
 /* fresh (one reference) entered, or dropped for the file's object if
- * there is one already that may do as much. */
+ * there is one already that may do as much: one that can write when
+ * fresh can, and read when fresh can (an open to write only is all a
+ * file of mode 0200 allows: file.c open_file). */
 static void settle(struct fobj *fresh, struct fobj **out)
 {
     lock_take(&objs_lock);
     struct fobj *o = find_locked(fresh->mount, fresh->id, fresh->append);
-    bool share = o && ((o->jf.flags & FS_WRITE) || (o->lent && (o->lent_flags & FS_WRITE)) ||
-                       !(fresh->jf.flags & FS_WRITE));
+    uint32_t has = o ? (o->jf.flags | (o->lent ? o->lent_flags : 0)) & (FS_READ | FS_WRITE) : 0;
+    uint32_t wants = fresh->jf.flags & (FS_READ | FS_WRITE);
+    bool share = o && (has & wants) == wants;
     if (share) {
         o->refs++;
     } else {

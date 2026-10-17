@@ -1,6 +1,7 @@
 /* posixtest's files section, part two: a directory of 10,000 files
- * listed, telldir and seekdir, the current directory, the *at calls,
- * what stat and statvfs say, and MAP_PRIVATE of a file. The answers are
+ * listed, telldir and seekdir, the current directory (also removed under
+ * us), the *at calls, 255-byte names nested by descriptors, what stat and
+ * statvfs say, and MAP_PRIVATE of a file. The answers are
  * Linux's (files.c says how they were written) but where M13's plan
  * chose otherwise: ".." stops at a FAT mount's root (docs/M13-PLAN.md
  * section 3), so chdir("/data/..") stays in /data there; above an ext
@@ -177,6 +178,17 @@ static void current_dir(void)
     close(fd);
     CHECK(chdir("d") == 0 && getcwd(cwd, sizeof(cwd)) && !strcmp(cwd, PT_DIR "/d"));
     CHECK(chdir("../.") == 0 && getcwd(cwd, sizeof(cwd)) && !strcmp(cwd, PT_DIR));
+    /* The directory removed while we are in it: getcwd(2) ENOENT (base's
+     * MakeAbsoluteFilePathNoResolveSymbolicLinks), and nothing is made in it.
+     * (Linux's chdir("..") still leads out of it; ours is a path as text, so
+     * only an absolute chdir does.) */
+    CHECK(mkdir("gone", 0755) == 0 && chdir("gone") == 0 && getcwd(cwd, sizeof(cwd)));
+    CHECK(rmdir(PT_DIR "/gone") == 0);
+    errno = 0;
+    CHECK(getcwd(cwd, sizeof(cwd)) == NULL && errno == ENOENT);
+    errno = 0;
+    CHECK(open("x", O_WRONLY | O_CREAT, 0644) == -1 && errno == ENOENT);
+    CHECK(chdir(PT_DIR) == 0 && getcwd(cwd, sizeof(cwd)) && !strcmp(cwd, PT_DIR));
     errno = 0;
     CHECK(getcwd(cwd, 3) == NULL && errno == ERANGE);   /* getcwd(3) ERANGE */
     /* ".." above a mount's root: an ext volume's is "/" (links.c); FAT's /data stayed in /data */
@@ -257,6 +269,79 @@ static void at_calls(void)
     if (ep >= 0)
         close(ep);
     close(dfd);
+}
+
+/* Names of NAME_MAX bytes, one inside another through directory descriptors
+ * (the start of base's DeleteDeep: 26 levels, deleted from the top). A
+ * name of 255 bytes is made, opened, listed and removed, and 256 is
+ * ENAMETOOLONG; the tree goes down as far as a path the layer keeps and the
+ * fs protocol carries (4095 bytes: PATH_BYTES, FS_PATH_LEN) holds, 15 levels
+ * of 256 bytes under PT_DIR/deep, and the next level is ENAMETOOLONG where
+ * Linux goes on (a directory description here is a path; DeleteDeep's 26
+ * levels need directory handles in the fs protocol). Removed bottom up. */
+static void deep_names(void)
+{
+    enum { LEVELS = 24 };
+    char name[258];
+    memset(name, 'a', 255);
+    name[255] = '\0';
+    CHECK(mkdir(PT_DIR "/deep", 0755) == 0);
+    int fds[LEVELS + 1];
+    fds[0] = open(PT_DIR "/deep", O_RDONLY | O_DIRECTORY);
+    int levels = 0;
+    while (levels < LEVELS && fds[levels] >= 0) {
+        if (mkdirat(fds[levels], name, 0755))
+            break;
+        int next = openat(fds[levels], name, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        CHECK(next >= 0);
+        fds[++levels] = next;
+    }
+    int why = errno;
+    CHECK(levels >= 14 && levels < LEVELS && why == ENAMETOOLONG);   /* 13 + 256 * 15 is 3853 */
+    CHECK(fds[levels] >= 0);
+    if (fds[levels] >= 0) {
+        struct stat st;
+        int f = openat(fds[levels], "file.txt", O_WRONLY | O_CREAT | O_EXCL, 0644);
+        CHECK(f >= 0 && write(f, "deep", 4) == 4);
+        if (f >= 0)
+            close(f);
+        CHECK(fstatat(fds[levels], "file.txt", &st, 0) == 0 && st.st_size == 4);
+        if (pt_data_ext())   /* base's tree has a link at the bottom too */
+            CHECK(symlinkat("..", fds[levels], "up") == 0);
+        DIR *d = fdopendir(dup(fds[levels]));
+        bool listed = false;
+        struct dirent *e;
+        while (d && (e = readdir(d)) != NULL)
+            listed |= !strcmp(e->d_name, "file.txt");
+        CHECK(d && listed);
+        if (d)
+            closedir(d);
+        CHECK(unlinkat(fds[levels], "file.txt", 0) == 0);
+        if (pt_data_ext())
+            CHECK(unlinkat(fds[levels], "up", 0) == 0);
+    }
+    for (int i = levels; i > 0; i--) {   /* each directory is removed through its parent's */
+        if (fds[i] >= 0)
+            close(fds[i]);
+        CHECK(unlinkat(fds[i - 1], name, AT_REMOVEDIR) == 0);
+    }
+    if (fds[0] >= 0)
+        close(fds[0]);
+    CHECK(rmdir(PT_DIR "/deep") == 0);
+    /* The longest name, and one more. */
+    int dfd = open(PT_DIR, O_RDONLY | O_DIRECTORY);
+    CHECK(dfd >= 0 && mkdirat(dfd, name, 0755) == 0);
+    struct stat st;
+    CHECK(fstatat(dfd, name, &st, 0) == 0 && S_ISDIR(st.st_mode));
+    CHECK(unlinkat(dfd, name, AT_REMOVEDIR) == 0);
+    name[255] = 'a';
+    name[256] = '\0';
+    errno = 0;
+    CHECK(mkdirat(dfd, name, 0755) == -1 && errno == ENAMETOOLONG);
+    errno = 0;
+    CHECK(openat(dfd, name, O_RDONLY) == -1 && errno == ENAMETOOLONG);
+    if (dfd >= 0)
+        close(dfd);
 }
 
 #define SF_BIG 150000   /* more than sendfile's 64 KiB at a time */
@@ -422,6 +507,7 @@ void pt_files2(void)
     many_files(FEW);
     current_dir();
     at_calls();
+    deep_names();
     sendfile_calls();
     stats();
     map_private();

@@ -66,6 +66,15 @@ static uint32_t fs_access(uint32_t s)
     return f;
 }
 
+/* Does an open of a file with status flags s, refused with errno r, have a
+ * second try with the write alone? The file's mode may allow only that (0200:
+ * open(2) lets its owner open it O_WRONLY), which the one open's reading
+ * too (fs_access) asked past. The refusal comes before any truncation. */
+static bool write_alone_may(uint32_t s, long r)
+{
+    return r == -EACCES && (s & FD_ACCMODE) == O_WRONLY;
+}
+
 /* errno for a service's answer about f (EROFS needs its mount). */
 static long file_err(const struct file *f, status_t st)
 {
@@ -396,6 +405,10 @@ static long reopen(const struct file *f, uint32_t s, handle_t *ch, handle_t *buf
     while (!r) {
         status_t st = fobj_open_settled(p, ff, ch, buf);
         r = st == OK ? 0 : path_err(p, st);   /* ERR_BUSY: another child holds it to write */
+        if (write_alone_may(s, r)) {   /* a file of mode 0200 */
+            st = fobj_open_settled(p, ff & ~(uint32_t)FS_READ, ch, buf);
+            r = st == OK ? 0 : path_err(p, st);
+        }
         if (!path_again(p, &r))
             break;
     }
@@ -606,6 +619,8 @@ static long open_file(struct path *p, long flags, uint32_t mode, struct fd_desc 
 {
     struct fobj *o;
     long r = fobj_open(p, open_fs_flags(flags), mode, &o);
+    if (write_alone_may((uint32_t)flags, r))
+        r = fobj_open(p, open_fs_flags(flags) & ~(uint32_t)FS_READ, mode, &o);
     bool rdonly_create = (flags & (O_ACCMODE | O_CREAT | O_EXCL | O_TRUNC)) == (O_RDONLY | O_CREAT);
     if ((r == -EROFS || r == -EACCES) && rdonly_create) {   /* there already, read-only? */
         r = fobj_open(p, FS_READ | (flags & O_NOFOLLOW ? FS_NOFOLLOW : 0), mode, &o);

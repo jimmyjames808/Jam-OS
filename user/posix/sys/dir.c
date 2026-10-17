@@ -606,10 +606,14 @@ long lx_fchdir(long fd, long b, long c, long d, long e, long f)
 
 long lx_getcwd(long buf, long size, long c, long d, long e, long f)
 {
-    char cwd[PATH_BYTES];
+    if (path_cwd_removed())
+        return -ENOENT;   /* a directory removed under us: Linux's getcwd says so */
+    char *cwd = malloc(PATH_BYTES);
+    if (!cwd)
+        return -ENOMEM;
     path_cwd(cwd);
     size_t n = strlen(cwd) + 1;
-    if ((size_t)size < n)
-        return -ERANGE;
-    return uc_put((void *)(uintptr_t)buf, cwd, n) ? -EFAULT : (long)n;
+    long r = (size_t)size < n ? -ERANGE : uc_put((void *)(uintptr_t)buf, cwd, n) ? -EFAULT : (long)n;
+    free(cwd);
+    return r;
 }

@@ -16,21 +16,46 @@
  *
  *   /sys/devices/virtual/dmi/id/sys_vendor, product_name
  *
+ * and the three files base's GetFileDriveInfo reads for a file's drive,
+ * one set for each mount (st_dev is the mount's place in the namespace
+ * counting from 1, so its device number is 0:<place>; path.c mount_dev),
+ * likewise only if there is no /sys mount:
+ *
+ *   /sys/dev/block/0:<n>/removable          "0": the layer is not told a drive's kind
+ *   /sys/dev/block/0:<n>/queue/rotational   "0": ... and every one is flash here
+ *   /sys/dev/block/0:<n>/size               the volume's 512-byte sectors (fs.statfs's total)
+ *
  * There is no localtime: TZ is always set (the start adds it). The files
- * are fixed text, read only (opening one to write, or creating one, is
- * EROFS); a description's priv is the file's entry in `files`, its offset
- * the description's (under its lock, fd.h). /etc stats as a directory;
- * listing it is not built. */
+ * are fixed text (the size's is made at the open), read only (opening one
+ * to write, or creating one, is EROFS); a description's priv is the file's
+ * entry in `files`, or a copy made for it (`dynamic`: freed at its close),
+ * its offset the description's (under its lock, fd.h). /etc stats as a
+ * directory; listing it is not built. */
+#include <stdio.h>
+#include <stdlib.h>
 #include <errno.h>
 #include <fcntl.h>
-#include "kinds.h"
+#include <fs_idl.h>
+#include <string.h>
+#include "files.h"
 
-#define ETC_DIR "/etc/"
-#define SYS_DIR "/sys/"
+#define ETC_DIR  "/etc/"
+#define SYS_DIR   "/sys/"
+#define BLOCK_DIR "/sys/dev/block/"
+#define SECTOR    512u    /* sysfs's size is counted in these, whatever the device's */
+#define SYSFS_ATTR_SIZE 4096   /* st_size of a sysfs attribute (its text is shorter) */
 
 struct etc_file {
     const char *path;   /* absolute, under /etc or /sys */
     const char *text;
+};
+
+/* An etc_file made for one open: a block device's file (BLOCK_DIR). */
+struct dynamic {
+    struct etc_file f;   /* first: free() takes &f */
+    uint64_t        ino;
+    char            path[64];
+    char            text[24];
 };
 
 static const struct etc_file files[] = {
@@ -71,10 +96,85 @@ static const struct etc_file *file_at(const char *abs)
     return NULL;
 }
 
+/* ---- a mount's block device (BLOCK_DIR) ------------------------------------- */
+
+enum block_leaf { BL_REMOVABLE, BL_ROTATIONAL, BL_SIZE };
+
+/* Is abs BLOCK_DIR "<major>:<minor>/<leaf>" for the device of a mount of
+ * ours? Its place in the namespace (counting from 1) and the leaf. The
+ * device number is the old encoding <linux/kdev_t.h> has and base reads
+ * st_dev with: the major above the low 8 bits. */
+static bool block_parse(const char *abs, unsigned *place, enum block_leaf *leaf)
+{
+    if (strncmp(abs, BLOCK_DIR, sizeof(BLOCK_DIR) - 1))
+        return false;
+    const char *s = abs + sizeof(BLOCK_DIR) - 1;
+    unsigned long dev[2];
+    for (int i = 0; i < 2; i++) {
+        char *end;
+        if (*s < '0' || *s > '9' || (*s == '0' && s[1] >= '0' && s[1] <= '9'))
+            return false;
+        dev[i] = strtoul(s, &end, 10);
+        if (end - s > 4 || *end != (i ? '/' : ':'))
+            return false;
+        s = end + 1;
+    }
+    unsigned long n = dev[0] << 8 | dev[1];
+    char m[NS_NAME_MAX];
+    if (dev[1] > 255 || !n || n > NS_MAX_MOUNTS || !ns_mount_at((unsigned)n - 1, m))
+        return false;
+    if (!strcmp(s, "removable"))
+        *leaf = BL_REMOVABLE;
+    else if (!strcmp(s, "queue/rotational"))
+        *leaf = BL_ROTATIONAL;
+    else if (!strcmp(s, "size"))
+        *leaf = BL_SIZE;
+    else
+        return false;
+    *place = (unsigned)n;
+    return true;
+}
+
+/* A block file's text into out: false if the mount can't tell. */
+static bool block_text(unsigned place, enum block_leaf leaf, char out[24])
+{
+    if (leaf != BL_SIZE) {
+        memcpy(out, "0\n", 3);   /* the layer isn't told what a drive is */
+        return true;
+    }
+    char m[NS_NAME_MAX];
+    handle_t fs;
+    if (!ns_mount_at(place - 1, m) || ns_channel(m, &fs) != OK)
+        return false;
+    uint64_t total, free_bytes;
+    uint8_t ro, label[16];
+    uint32_t magic, name_max, features;
+    status_t st = fs_statfs_within(fs, FILE_TIMEOUT, &total, &free_bytes, &ro, label, &magic,
+                                   &name_max, &features);
+    jam_handle_close(fs);
+    if (st != OK)
+        return false;
+    snprintf(out, 24, "%llu\n", (unsigned long long)(total / SECTOR));
+    return true;
+}
+
+static uint64_t block_ino(unsigned place, enum block_leaf leaf)
+{
+    return 0x10000 + (uint64_t)place * 4 + leaf;
+}
+
+/* Is f one of `files` (and not made for an open)? */
+static bool is_static(const struct etc_file *f)
+{
+    return (uintptr_t)f >= (uintptr_t)files && (uintptr_t)f < (uintptr_t)(files + sizeof(files) / sizeof(files[0]));
+}
+
 bool etc_path(const char *abs)
 {
+    unsigned place;
+    enum block_leaf leaf;
     if (!strncmp(abs, SYS_DIR, sizeof(SYS_DIR) - 1))
-        return file_at(abs) && !mounted("/sys");
+        return (file_at(abs) || block_parse(abs, &place, &leaf)) && !mounted("/sys");
     return (!strcmp(abs, "/etc") || !strncmp(abs, ETC_DIR, sizeof(ETC_DIR) - 1)) &&
            !mounted("/etc");
 }
@@ -116,8 +216,13 @@ static void stat_of(const struct etc_file *f, struct stat *st)
 {
     st->st_mode = S_IFREG | 0444;
     st->st_nlink = 1;
-    st->st_size = (off_t)strlen(f->text);
-    st->st_ino = (ino_t)(f - files) + 1;
+    if (is_static(f)) {
+        st->st_size = (off_t)strlen(f->text);
+        st->st_ino = (ino_t)(f - files) + 1;
+    } else {
+        st->st_size = SYSFS_ATTR_SIZE;
+        st->st_ino = (ino_t)((const struct dynamic *)f)->ino;
+    }
     st->st_blksize = 4096;
 }
 
@@ -146,6 +251,14 @@ static long etc_give(struct fd_desc *d, struct fd_given *out)
     return 0;
 }
 
+/* A copy made for an open (block_file) goes with its description. */
+static void etc_close(struct fd_desc *d)
+{
+    const struct etc_file *f = file_of(d);
+    if (!is_static(f))
+        free((void *)f);
+}
+
 const struct fd_ops etc_ops = {
     .name = "/etc file",
     .read = etc_read,
@@ -153,15 +266,41 @@ const struct fd_ops etc_ops = {
     .stat = etc_fstat,
     /* .ready, .arm: none (always ready to read) */
     .give = etc_give,
+    .close = etc_close,
 };
 
-/* The file at abs for an open with flags: 0 and *out, or -errno. */
+/* The copy of a block device's file for one open, its text made now: NULL
+ * and *err if the mount can't say. */
+static const struct etc_file *block_file(const char *abs, unsigned place, enum block_leaf leaf,
+                                         long *err)
+{
+    struct dynamic *c = calloc(1, sizeof(*c));
+    if (!c) {
+        *err = -ENOMEM;
+        return NULL;
+    }
+    if (!block_text(place, leaf, c->text)) {
+        free(c);
+        *err = -EIO;
+        return NULL;
+    }
+    snprintf(c->path, sizeof(c->path), "%s", abs);
+    c->f = (struct etc_file){ .path = c->path, .text = c->text };
+    c->ino = block_ino(place, leaf);
+    return &c->f;
+}
+
+/* The file at abs for an open with flags: 0 and *out (a copy to free with
+ * its description unless it is one of `files`), or -errno. */
 static long etc_lookup(const char *abs, int flags, const struct etc_file **out)
 {
+    unsigned place = 0;
+    enum block_leaf leaf = BL_SIZE;
     const struct etc_file *f = file_at(abs);
-    if (!f && !strcmp(abs, "/etc"))
+    bool block = !f && block_parse(abs, &place, &leaf);
+    if (!f && !block && !strcmp(abs, "/etc"))
         return (flags & FD_ACCMODE) != O_RDONLY ? -EISDIR : -ENOTSUP;   /* no listing */
-    if (!f)
+    if (!f && !block)
         return (flags & O_CREAT) ? -EROFS : -ENOENT;
     if ((flags & O_CREAT) && (flags & O_EXCL))
         return -EEXIST;
@@ -169,6 +308,9 @@ static long etc_lookup(const char *abs, int flags, const struct etc_file **out)
         return -EROFS;
     if (flags & O_DIRECTORY)
         return -ENOTDIR;
+    long err = 0;
+    if (block && !(f = block_file(abs, place, leaf, &err)))
+        return err;
     *out = f;
     return 0;
 }
@@ -182,7 +324,12 @@ long etc_open(const char *abs, int flags)
     if (r)
         return r;
     struct fd_desc *d = fd_new(&etc_ops, (uint32_t)flags & OPEN_STATUS, (void *)f);
-    return d ? fd_install(d, 0, flags & O_CLOEXEC) : -ENOMEM;
+    if (!d) {
+        if (!is_static(f))
+            free((void *)f);
+        return -ENOMEM;
+    }
+    return fd_install(d, 0, flags & O_CLOEXEC);
 }
 
 long etc_adopt(const struct posixfds_fd *rec, const void *data, const handle_t *hs,
@@ -193,6 +340,8 @@ long etc_adopt(const struct posixfds_fd *rec, const void *data, const handle_t *
     if (r)
         return r;
     *out = fd_new(&etc_ops, rec->status, (void *)f);
+    if (!*out && !is_static(f))
+        free((void *)f);
     return *out ? 0 : -ENOMEM;
 }
 
@@ -206,6 +355,13 @@ long etc_stat(const char *abs, struct stat *st)
         return 0;
     }
     const struct etc_file *f = file_at(abs);
+    unsigned place;
+    enum block_leaf leaf;
+    if (!f && block_parse(abs, &place, &leaf)) {   /* no text needed: sysfs says 4096 */
+        const struct dynamic b = { .f = { .path = abs, .text = "" }, .ino = block_ino(place, leaf) };
+        stat_of(&b.f, st);
+        return 0;
+    }
     if (!f)
         return -ENOENT;
     stat_of(f, st);
