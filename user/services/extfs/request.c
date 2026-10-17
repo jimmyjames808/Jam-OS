@@ -54,6 +54,8 @@ static struct {
     bool     final;     /* its commit is being written: on_commit records it */
     uint64_t seq;
     unsigned slot;
+    uint32_t tid;       /* the journal's next id when it began ... */
+    uint64_t writes;    /* ... and the disk's writes */
 } op;
 
 /* ---- transactions ------------------------------------------------------------------ */
@@ -351,7 +353,8 @@ static void begin(uint64_t seq, unsigned slot)
     struct xf_slot *x = &kept->slot[slot & 1];
     __atomic_store_n(&x->has_tid, 0u, __ATOMIC_RELEASE);
     x->seq = seq;
-    op = (typeof(op)){ .running = true, .seq = seq, .slot = slot };
+    op = (typeof(op)){ .running = true, .seq = seq, .slot = slot, .tid = vol.jnl.tid,
+                       .writes = disk_writes() };
     if (writable() && tx_begin() != OK)
         printf("extfs %s: a transaction couldn't begin\n", vol.name);
 }
@@ -375,6 +378,11 @@ static uint32_t commit(unsigned slot, uint32_t rn, uint32_t ro_before, handle_t 
             tx_abort();
         else if (kept->slot[slot & 1].has_tid)
             test_die(XF_DIE_JOURNAL);
+        /* An answered request is on the medium: a commit flushed its data
+         * and itself; one that wrote and committed nothing flushes here (a
+         * disk with a cache, disk.c). */
+        if (st == OK && vol.jnl.tid == op.tid && disk_writes() != op.writes)
+            st = disk_flush();
     } else {
         tx_abort();
     }
@@ -435,7 +443,24 @@ void serve_slot(const struct xf_chan *c, unsigned slot)
     }
 }
 
+/* The mount read the log (ext_jnl's on_end): a slot whose id is `end` or
+ * later never committed. Forgotten now, before the mount writes the next
+ * id past it: an instance that died after this mount and before the
+ * request ran again would otherwise leave its successor counting it
+ * committed (an id before that mount's end) and answering it from the
+ * slot, its changes nowhere on the disk. */
+static void on_end(void *ctx, uint32_t end)
+{
+    (void)ctx;
+    for (unsigned i = 0; i < 2; i++) {
+        struct xf_slot *x = &kept->slot[i];
+        if (__atomic_load_n(&x->has_tid, __ATOMIC_ACQUIRE) && !ext_jnl_after(end, x->tid))
+            __atomic_store_n(&x->has_tid, 0u, __ATOMIC_RELEASE);
+    }
+}
+
 void request_init(void)
 {
     vol.jnl.on_commit = on_commit;
+    vol.jnl.on_end = on_end;
 }

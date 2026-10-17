@@ -355,6 +355,8 @@ static status_t write_tx(struct ext_fs *fs, struct ext_jnl *j, uint32_t *out_hea
     }
     if (st == OK && !(j->flags & EXT_JNL_ONE_WRITE))
         st = flush(fs, j, &o);   /* every copy on the disk before the commit block */
+    if (st == OK && !(j->flags & EXT_JNL_ONE_WRITE))
+        st = ext_flush(&fs->dev);   /* ... on the medium, with the file data before them */
     if (st == OK)
         st = write_commit(fs, j, &o);
     *out_head = o.at;
@@ -382,9 +384,17 @@ status_t ext_jnl_commit(struct ext_fs *fs)
         return st;
     if (j->on_commit && st == OK)
         j->on_commit(j->ctx, j->tid);
+    /* On a device with a cache: the file data on the medium before a log
+     * whose commit points at it (in one write with its copies, only the
+     * digest keeps the commit block from counting alone) ... */
+    if (st == OK && (j->flags & EXT_JNL_ONE_WRITE))
+        st = ext_flush(&fs->dev);
     uint32_t head;
     if (st == OK)
         st = write_tx(fs, j, &head);
+    /* ... and the commit block before anything goes home or is answered */
+    if (st == OK)
+        st = ext_flush(&fs->dev);
     if (st != OK)
         return ext_damaged(fs, "journal: commit write failed", fs->sb.journal_inum, 0);
     jnl_committed(fs, j, head);

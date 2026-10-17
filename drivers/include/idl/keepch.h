@@ -58,9 +58,9 @@
 
 /* Constants (the .idl's `const` lines). */
 /* Slots a keeper holds for one service. */
-#define KEEPCH_MAX_SLOTS 256u
+#define KEEPCH_MAX_SLOTS 1024u
 /* Handles a keeper holds for one service, all slots together. */
-#define KEEPCH_MAX_HANDLES 256u
+#define KEEPCH_MAX_HANDLES 1024u
 /* Handles in one slot. */
 #define KEEPCH_SLOT_HANDLES 4u
 /* Handles in one restore (a channel message's most). */

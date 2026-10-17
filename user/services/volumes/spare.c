@@ -83,6 +83,20 @@ const struct sup_limit fat_limits[] = {
 };
 const unsigned fat_nlimits = sizeof(fat_limits) / sizeof(fat_limits[0]);
 
+/* An extfs's (supervise.c): the system's volume on a drive boot (/data and
+ * /jam, and init's /tmp, /usr and /pkg views of it), so room for every
+ * open file, view and mapped file it may serve (<extfs.h>'s XF_MAX_FILES,
+ * XF_VIEWS, XF_MAX_MAPS: a channel and a 64 KiB buffer each file, a
+ * channel each view, a VMO each map), its 2 MiB cache, a journal's region
+ * of up to 8 MiB and its 1 MiB state. 64 MiB at most, taken as used. */
+const struct sup_limit ext_limits[] = {
+    { JOB_LIMIT_PAGES, 16384 },
+    { JOB_LIMIT_HANDLES, 2048 },
+    { JOB_LIMIT_THREADS, 16 },
+    { JOB_LIMIT_MSG_BYTES, 4u << 20 },
+};
+const unsigned ext_nlimits = sizeof(ext_limits) / sizeof(ext_limits[0]);
+
 static struct sup_spare spare;   /* the warm spare fat */
 
 /* The mounts' pagers: made from pager_root (RIGHT_ROOT_PAGER alone), each

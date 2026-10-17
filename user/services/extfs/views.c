@@ -19,8 +19,7 @@
 #include "extfs.h"
 
 static handle_t view_ch[XF_VIEWS];
-static uint32_t held;
-_Static_assert(XF_VIEWS <= 32, "held is a word");
+static uint64_t held[(XF_VIEWS + 63) / 64];   /* held back by the unread bound */
 
 void views_whole(struct xf_ctx *c)
 {
@@ -60,7 +59,7 @@ void views_drop(uint32_t i)
     if (i >= XF_VIEWS)
         return;
     kept->views[i].used = false;
-    held &= ~(1u << i);
+    held[i / 64] &= ~(1ull << (i % 64));
     close_channel(i);
 }
 
@@ -169,7 +168,7 @@ void views_event(uint64_t key)
     if (!views_chan(i, kept->views[i].gen & 0xffffu, &c))
         return;
     if (fs_unread_full(c.ch)) {
-        held |= 1u << i;
+        held[i / 64] |= 1ull << (i % 64);
         idl_hold(&vol.held);
         return;
     }
@@ -184,13 +183,13 @@ void views_event(uint64_t key)
 void views_unheld(void)
 {
     for (unsigned i = 0; i < XF_VIEWS; i++) {
-        if (!(held & (1u << i)))
+        if (!(held[i / 64] >> (i % 64) & 1))
             continue;
         if (fs_unread_full(view_ch[i])) {
             idl_hold(&vol.held);
             continue;
         }
-        held &= ~(1u << i);
+        held[i / 64] &= ~(1ull << (i % 64));
         if (arm(i) != OK)
             views_drop(i);
     }

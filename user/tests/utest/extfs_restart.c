@@ -100,7 +100,13 @@ static status_t start(struct sup *s, const char *ended)
                             .extra = x, .nextra = nx, .extra_rights = xr };
     st = spawn(&a, &s->r.proc);
     s->instance++;
-    return st == OK ? keeper_restore(&s->keeper) : st;
+    if (st != OK)
+        return st;
+    /* An instance a test power ends at its first write (die=write:1, in its
+     * mount) may be gone before the keeper writes to it: the supervisor
+     * sees it end and starts the next, as for any other death. */
+    st = keeper_restore(&s->keeper);
+    return st == ERR_PEER_CLOSED ? OK : st;
 }
 
 static bool reap(struct sup *s, struct process_info *info)
@@ -404,6 +410,31 @@ bool t_extfs_restart_bad(void)
     if (!sup_start(&test_disk, kills, 2, NULL))
         return false;
     CHECK_ST(t_mkdir(&sv.r, "/k"), OK);   /* ended twice at its third write */
+    CHECK_EQ(sv.tests, 2u);
+    CHECK_ST(t_stat(&sv.r, "/k", NULL, &is_dir, NULL), OK);
+    CHECK(is_dir);
+    return sup_stop() && ramdisk_destroy(&test_disk);
+}
+
+/* ---- a request in progress at two deaths in a row ---------------------------------- */
+
+/* The first instance ends with a request's log written and its commit block
+ * not (its third write: the superblock's needs_recovery, the tail, the log);
+ * its successor ends at its first write, the replayed log marked empty with
+ * the next id, before the request runs again. The third must run it again,
+ * not answer it from the slot as done: it was never committed
+ * (docs/M13.6-REVIEW.md's R2). */
+bool t_extfs_restart_twice(void)
+{
+    static const char *const dies[] = { "die=write:3", "die=write:1" };
+    static struct ramdisk test_disk;
+    bool is_dir = false;
+    if (!ramdisk_create(&test_disk, DISK_SECTORS) || !sup_start(&test_disk, NULL, 0, NULL))
+        return false;
+    CHECK_ST(t_mkdir(&sv.r, "/a"), OK);   /* formatted, then closed clean */
+    if (!sup_stop() || !sup_start(&test_disk, dies, 2, NULL))
+        return false;
+    CHECK_ST(t_mkdir(&sv.r, "/k"), OK);
     CHECK_EQ(sv.tests, 2u);
     CHECK_ST(t_stat(&sv.r, "/k", NULL, &is_dir, NULL), OK);
     CHECK(is_dir);

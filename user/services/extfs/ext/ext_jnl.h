@@ -21,6 +21,14 @@
  *     (below), but a cut that lands the commit block without one of its
  *     copies is one Linux replays partly (it skips a copy whose checksum
  *     fails, and can't see some stale ones at all).
+ *   - A device with a volatile cache (struct ext_dev's flush: a USB
+ *     stick) lands its writes in any order until a flush, so the journal
+ *     flushes where its order needs it: before the commit block (the file
+ *     data and the copies first), after it (before anything goes home, and
+ *     before the request is answered: an answered request is on the
+ *     medium), before the tail moves past what was written home, and
+ *     before a replayed log is marked empty. A device without one (FUA,
+ *     drv/nvme) has no flush and costs nothing more.
  *   - The commit block carries a digest of its transaction (a Jam OS
  *     addition in h_chksum[1] to [3], words checksum v3 leaves unused and
  *     Linux never reads; its commit checksum covers them), checked by the
@@ -70,7 +78,11 @@
  *     id just before its commit is written (on_commit). After a mount,
  *     ext_jnl_committed says whether that id reached the disk: if so the
  *     request's effects are there (send its answer), if not none of them
- *     are (run it again).
+ *     are (run it again). That answer holds for the first mount after the
+ *     commit only: the mount gives later ids past an id the log never
+ *     committed, so a mount after it would take the id for one before its
+ *     end. on_end tells the caller that first id before the mount writes
+ *     anything, and a slot holding it or a later one forgets its id then.
  *
  * Who calls what:
  *   - The service (U4): ext_jnl_init, ext_jnl_mount, then per request
@@ -127,7 +139,14 @@ struct ext_jnl {
     uint32_t tail_every;             /* commits between tail moves */
     uint32_t tail_blocks;            /* log blocks since the tail that move it */
     void   (*on_commit)(void *ctx, uint32_t tid);   /* just before a commit is written */
-    void    *ctx;                    /* on_commit's first argument */
+    /* At the mount, once the log is read: `end` is the first id that was
+     * not committed (ext_jnl_committed's answer for every id before the
+     * mount). Called before anything is written, because the next ids go
+     * past it (a replayed log is marked empty with the id after end): a
+     * request slot holding end must be forgotten now, or a mount after
+     * this one would count it committed. */
+    void   (*on_end)(void *ctx, uint32_t end);
+    void    *ctx;                    /* on_commit's and on_end's first argument */
     uint64_t commit_sec;             /* the time commit blocks carry (informational) */
     uint32_t commit_nsec;
 

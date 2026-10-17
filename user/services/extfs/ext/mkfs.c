@@ -655,7 +655,11 @@ status_t ext_mkfs(const struct ext_dev *dev, const struct ext_mkfs *p, void *mem
     for (uint32_t g = 1; g < m.fs.groups && st == OK; g++)
         if (sb_blocks(&m, g))
             st = write_super(&m, &sb, g);
+    /* The first 4 KiB last, on a device with a cache too: a format cut
+     * short must leave them blank. */
+    if (st == OK)
+        st = ext_flush(dev);
     if (st == OK)
         st = write_super(&m, &sb, 0);
-    return st;
+    return st == OK ? ext_flush(dev) : st;
 }
