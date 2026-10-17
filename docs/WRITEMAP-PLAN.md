@@ -941,6 +941,14 @@ user/posix/test/mmap.c; tools/posix-mmap-test.sh case `wshared`):
   and its stores are never written to the disk (the pages stay dirty and
   held; at the dirty limit a writer waits out the answer time and is
   killed).
+- **Runs.** Batch 18093001: init, kt4 (4 CPUs), basic, cmds, files,
+  filesfat, kd-save, mm-mmap, mm-big, mm-pull, mm-coher, mm-spawn,
+  sh-pxfiles, sh-pxfork PASS; sh-commands (a `popup_show` pixel in
+  utest) and sh-posix (`pxio seq 3000 > /data/pxf1` took 115 s on the
+  loaded PC, the script waited 60) failed once and PASSed on rerun, batch
+  18095239; mm-wshared and mm-wsext FAILED as expected without WE2, every
+  step before the last passing (the ext boot ends at `msync` over stored
+  pages: `-1 (I/O error), 60000 ms`; the FAT boot passed whole).
 - **Runlist.** `tools/posix-mmap-test.sh`'s default cases gain `wshared`;
   the prepush list needs `mm-wshared  MMAP_CASES=wshared
   tools/posix-mmap-test.sh build/t/mm-wshared`. Two runs of the script
