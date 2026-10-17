@@ -690,6 +690,29 @@ static void raise_pipe(struct sig_thread *t)
     (void)sig_send_thread(t->tid, &si);   /* we are listed */
 }
 
+/* Out of a quiet stretch: a raise that came inside comes again now. */
+static void quiet_end(struct sig_thread *t)
+{
+    bool out = !__atomic_sub_fetch(&t->quiet, 1, __ATOMIC_RELAXED);
+    __atomic_signal_fence(__ATOMIC_SEQ_CST);   /* out of it before raise_again is read */
+    if (out && raise_again)
+        raise_self();
+}
+
+struct sig_thread *sig_quiet_begin(void)
+{
+    struct sig_thread *t = self();
+    if (t)
+        __atomic_add_fetch(&t->quiet, 1, __ATOMIC_RELAXED);
+    return t;
+}
+
+void sig_quiet_end(struct sig_thread *t)
+{
+    if (t)
+        quiet_end(t);
+}
+
 long sig_call(const struct sig_frame *f)
 {
     struct sig_thread *t = self();
@@ -701,10 +724,7 @@ long sig_call(const struct sig_frame *f)
     if (f->kind & SIG_CALL_QUIET) {
         __atomic_add_fetch(&t->quiet, 1, __ATOMIC_RELAXED);
         r = call(f);
-        bool out = !__atomic_sub_fetch(&t->quiet, 1, __ATOMIC_RELAXED);
-        __atomic_signal_fence(__ATOMIC_SEQ_CST);   /* out of it before raise_again is read */
-        if (out && raise_again)
-            raise_self();
+        quiet_end(t);
         return r == -LX_EINTR_FINAL ? -EINTR : r;
     }
     uint32_t handled = t->handled, norestart = t->norestart;

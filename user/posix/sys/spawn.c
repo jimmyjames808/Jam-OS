@@ -498,7 +498,10 @@ static int spawn_child(const struct jam_spawn_req *r, bool exec, int *res)
 
 int __jam_posix_spawn(int *pid, const struct jam_spawn_req *r)
 {
-    return spawn_child(r, false, pid);
+    struct sig_thread *q = sig_quiet_begin();   /* the layer's own: no handler runs inside */
+    int e = spawn_child(r, false, pid);
+    sig_quiet_end(q);
+    return e;
 }
 
 /* The caller's NULL-ended array of strings v (NULL: none) can be read,

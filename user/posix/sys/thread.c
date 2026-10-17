@@ -161,8 +161,20 @@ static int clone_err(status_t st)
     return st == ERR_NO_RESOURCES || st == ERR_NO_MEMORY ? -EAGAIN : (int)lx_err(st);
 }
 
+static int clone_thread(int (*fn)(void *), void *stack, int flags, void *arg, int *ptid,
+                        void *tls, int *ctid);
+
 int __jam_clone(int (*fn)(void *), void *stack, int flags, void *arg, int *ptid, void *tls,
                 int *ctid)
+{
+    struct sig_thread *q = sig_quiet_begin();   /* the layer's own: no handler runs inside */
+    int r = clone_thread(fn, stack, flags, arg, ptid, tls, ctid);
+    sig_quiet_end(q);
+    return r;
+}
+
+static int clone_thread(int (*fn)(void *), void *stack, int flags, void *arg, int *ptid,
+                        void *tls, int *ctid)
 {
     if ((flags & (CLONE_VM | CLONE_THREAD)) != (CLONE_VM | CLONE_THREAD))
         return -ENOSYS;   /* not a thread: __clone sends a process to fork.c */

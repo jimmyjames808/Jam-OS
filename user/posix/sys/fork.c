@@ -244,7 +244,9 @@ int __jam_clone_process(int (*fn)(void *), void *stack, int flags, void *arg, in
     if ((flags & ~(CLONE_PROC_OK & ~CLONE_CHILD_CLEARTID)) || !stack)
         return (int)refused(flags, -EINVAL);
     struct how how = { (flags & CLONE_CHILD_SETTID) ? ctid : NULL, NULL };
+    struct sig_thread *q = sig_quiet_begin();   /* the layer's own: no handler runs inside */
     long r = fork_core(&how);
+    sig_quiet_end(q);   /* the child too: its record is the copy */
     if (r > 0 && (flags & CLONE_PARENT_SETTID))
         *ptid = (int)r;
     if (r)

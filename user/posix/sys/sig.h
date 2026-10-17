@@ -214,6 +214,16 @@ bool sig_raise_begin(const uint64_t *regs, struct sig_info *si, struct sig_act_i
 /* After a raise's handler: the thread's mask is `mask` (its ucontext's),
  * and the next signal due is taken as sig_raise_begin takes one (true). */
 bool sig_raise_next(uint64_t mask, struct sig_info *si, struct sig_act_io *act, uint64_t *was);
+/* A layer entry musl calls directly, not through __jam_syscall (posix_spawn,
+ * clone, the resolver, ttyname_r), is a quiet stretch between these: the
+ * thread is inside the layer there and may hold its locks (posix_spawn
+ * the table of children's: a SIGCHLD handler's waitpid would wait for
+ * ever), so a raise runs no handler inside and comes again once out, as
+ * for a quiet call. begin returns the caller's record (NULL: none) for
+ * end. */
+struct sig_thread;
+struct sig_thread *sig_quiet_begin(void);
+void sig_quiet_end(struct sig_thread *t);
 /* Raise the calling (listed) thread again: the raise comes at its next
  * interrupt in its own code (sigfault.c: a raise that came on a handler's
  * way out, once that has resumed the thread). */
