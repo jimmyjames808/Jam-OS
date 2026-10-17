@@ -16,10 +16,10 @@
  * So each wait is longer than the driver holds a request it can't get
  * done, and a call whose wait still runs out ends the service:
  *   - a channel that answers in order (queue depth 1: usb-storage) gets
- *     BLOCKCALL_WAIT a try: its longest command, a WRITE(10), is given up
- *     on after 25 s (5 s for the command block, 10 s for the data, 10 s for
- *     the status: drivers/usb-storage), the device reset, the call
- *     answered ERR_TIMED_OUT;
+ *     BLOCKCALL_WAIT a try: its longest commands, a WRITE(10) and a
+ *     SYNCHRONIZE CACHE, are given up on after 25 s (drivers/usb-storage/
+ *     scsi.c has the sums), the device reset, the call answered
+ *     ERR_TIMED_OUT;
  *   - one that doesn't (drv/nvme) gets BLOCKCALL_WAIT_DEEP: a command gets
  *     30 s, an Abort 5 s more, then the controller is reset; a write is
  *     answered then, a read sent once more and given as long again: 70 s
@@ -32,13 +32,13 @@
  *     drv/nvme's drain rule: block.idl). A flush moves no data: it just
  *     fails.
  *
- * A call that times out is tried again. usb-storage gives a SCSI command
- * 10 s; a stick that takes longer (a big SYNCHRONIZE CACHE, or QEMU's
- * stick behind a busy host: docs/CR-PLAN.md's "The disk can fail a shard")
- * is reset and the call answered ERR_TIMED_OUT, the device ready for the
- * next command; our own wait running out leaves the request queued at the
- * driver. Either way the next try may well go through, where the journal
- * used to turn the volume read-only for the rest of the boot.
+ * A call that times out is tried again. usb-storage gives a SCSI command's
+ * phase 5 to 20 s; a stick that takes longer (a big SYNCHRONIZE CACHE, or
+ * QEMU's stick behind a busy host: docs/CR-PLAN.md's "The disk can fail a
+ * shard") is reset and the call answered ERR_TIMED_OUT, the device ready
+ * for the next command; our own wait running out leaves the request
+ * queued at the driver. Either way the next try may well go through, where
+ * the journal used to turn the volume read-only for the rest of the boot.
  *   - A flush is tried again on any channel: it moves no data, and a
  *     second one covers what the first did.
  *   - A read or a write only on a channel that answers in order: the try
@@ -52,13 +52,15 @@
  * Nothing else is sent meanwhile (one call at a time), so the journal's
  * order holds: what must follow a flush waits for a try that went through.
  * Bounds: BLOCKCALL_TRIES tries within BLOCKCALL_BUDGET of the first one's
- * start, with pauses that double. usb-storage gives up on a device after
- * three commands in a row went unanswered (MAX_SILENT: its channels close,
- * the disk is gone, devmgr starts a fresh driver), and three of its
- * timeouts with their pauses take 31.5 s: the budget covers them. A client
- * waits 60 s for an answer (FS_CALL_TIMEOUT, the pager's page requests
- * too), so an episode leaves the rest of its request 20 s. The count
- * bounds a driver that answers ERR_TIMED_OUT at once (7.5 s of pauses).
+ * start, with pauses that double. A flush the stick doesn't finish in
+ * usb-storage's 20 s gets two whole tries (20 + 0.5 + 20 s) and what is
+ * left for a third; a write whose data the stick doesn't take in 10 s,
+ * three (31.5 s). usb-storage gives up on a device after three commands
+ * in a row went unanswered (MAX_SILENT: its channels close, the disk is
+ * gone, devmgr starts a fresh driver). A client waits 60 s for an answer
+ * (FS_CALL_TIMEOUT, the pager's page requests too), so an episode leaves
+ * the rest of its request 15 s. The count bounds a driver that answers
+ * ERR_TIMED_OUT at once (7.5 s of pauses).
  * Spent, the call fails as before, so a dead disk never holds writers
  * longer. One line per episode that went through; the caller logs a
  * failure (blockcall_tried says how many tries it had). */
@@ -69,7 +71,7 @@
 #define BLOCKCALL_WAIT      (30 * NS_PER_S)    /* one try, on a channel that answers in order */
 #define BLOCKCALL_WAIT_DEEP (90 * NS_PER_S)    /* one call, on one that doesn't */
 #define BLOCKCALL_TRIES     5                  /* tries of a call that times out, the first too */
-#define BLOCKCALL_BUDGET    (40 * NS_PER_S)    /* ... all of them, from the first one's start */
+#define BLOCKCALL_BUDGET    (45 * NS_PER_S)    /* ... all of them, from the first one's start */
 #define BLOCKCALL_PAUSE     (500 * NS_PER_MS)  /* before the second try, doubled before each after */
 #define BLOCKCALL_QUICK     (3 * NS_PER_S)     /* a test's every wait, and half its budget */
 
