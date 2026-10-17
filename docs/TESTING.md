@@ -1126,7 +1126,7 @@ would have failed on.
 | `posix-files.txt` | posixtest's files-many section (too long for the `init` run): 10,000 files made in one directory of the stick's `/data`, listed (each name once, `.` and `..`, telldir and seekdir), removed; about 2.5 minutes | `QEMU_TIMEOUT=600` |
 | `posix-run.txt` | posixtest's default sections run from the shell (`run posixtest`): descriptor 0 is the terminal, not the null device, and `/svc` holds only what posixtest's list asks for (net, net-listen, dns, exec, unix); the epoll check opens the null device itself (and the two `/svc` checks skip with a printed reason in a namespace with no `/svc`), so it ends PASS and `exited with code 0` | `QEMU_TIMEOUT=900` |
 | `posix-scm.txt` | posixtest's scm section (`run posixtest scm`): socketpairs carrying descriptors (`SCM_RIGHTS`): every kind passed and used on the other side, the read-only twin and seals, 64, 128 and 253 descriptors, too little room (`MSG_CTRUNC`, no handle kept), `SOCK_SEQPACKET`, `shutdown`, Mojo's pattern with a child (its "OK" carries the child's pid in `SCM_CREDENTIALS`), the 10,000-round fuzz; and base's socket tests ([CR-PLAN](CR-PLAN.md#cbf2a-notes-2026-10-17), CBF2a, scmcred.c): `SO_PASSCRED` (`SCM_CREDENTIALS` before 16 descriptors in base's room, none at the end, `MSG_CTRUNC`, a seqpacket's empty message, a stream and `MSG_PEEK`, a sender's own credentials taken and another pid's `EPERM`), `shutdown` waking a blocked read (the end), a 750 ms poll and an `epoll_wait` (at once) and a send waiting for room (`EPIPE`), `FIONREAD` leaving the room (a writer filled to `EAGAIN` stays there; one read makes room for one); also in the `init` run | |
-| `posix-procinfo.txt` | posixtest's procfs and procinfo sections (`run posixtest procfs procinfo`) and utest's `process_maps`, `sys_public_info` and `posix_ids` (`utest only <name>`) from the shell: the files of libc's `/proc` that Chromium's base reads (`/proc/self/stat`, `status`, `statm`, `maps`, `/proc/cpuinfo`, `meminfo`, `/proc/stat`, and a child's stat and status from live through zombie to reaped) against proc(5) and what the process really does, and the kernel calls under them (`process_get_maps`, the free-memory figure, a process's creation time and name, its page-fault count): [CR-PLAN](CR-PLAN.md#prc-notes), "PRC notes". CBF4's cases ([CR-PLAN](CR-PLAN.md#cbf4-notes-2026-10-17), "CBF4 notes") are in the same section: stat's page faults, `[stack]` in `maps` and the unmap check made robust (a marker in each page, since malloc may take the hole), `/proc/self/cmdline` and the process title written over it in a child (as base's `setproctitle` does, with no environment from the starter, with one, with a `TZ`), `/proc/self/task` and a thread's own stat, status, statm, maps and cmdline (also as `/proc/<tid>/...`), `/proc/self/mem` (read only; EIO at the edge of a mapping), `/proc/version` and `/proc/sys/kernel/{osrelease,ostype,version,hostname}` against `uname`, meminfo's buffers and caches under MemTotal, and `dladdr` for the program's own image; and CBF6's `/proc/self/smaps_rollup` ([CR-PLAN](CR-PLAN.md#cbf6-notes-2026-10-17), "CBF6 notes": the pseudo-mapping's line, `Rss` = `Pss`, the kinds of page adding up to them, a private and a shared mapping touched moving `Private_Dirty` and `Shared_Dirty`; it is in the directory listings too); also in the `init` run | |
+| `posix-procinfo.txt` | posixtest's procfs and procinfo sections (`run posixtest procfs procinfo`) and utest's `process_maps`, `sys_public_info` and `posix_ids` (`utest only <name>`) from the shell: the files of libc's `/proc` that Chromium's base reads (`/proc/self/stat`, `status`, `statm`, `maps`, `/proc/cpuinfo`, `meminfo`, `/proc/stat`, and a child's stat and status from live through zombie to reaped) against proc(5) and what the process really does, and the kernel calls under them (`process_get_maps`, the free-memory figure, a process's creation time and name, its page-fault count): [CR-PLAN](CR-PLAN.md#prc-notes), "PRC notes". CBF4's cases ([CR-PLAN](CR-PLAN.md#cbf4-notes-2026-10-17), "CBF4 notes") are in the same section: stat's page faults, `[stack]` in `maps` and the unmap check made robust (a marker in each page, since malloc may take the hole), `/proc/self/cmdline` and the process title written over it in a child (as base's `setproctitle` does, with no environment from the starter, with one, with a `TZ`), `/proc/self/task` and a thread's own stat, status, statm, maps and cmdline (also as `/proc/<tid>/...`), `/proc/self/mem` (read only; EIO at the edge of a mapping), `/proc/version` and `/proc/sys/kernel/{osrelease,ostype,version,hostname}` against `uname`, meminfo's buffers and caches under MemTotal, and `dladdr` for the program's own image; and CBF6's `/proc/self/smaps_rollup` ([CR-PLAN](CR-PLAN.md#cbf6-notes-2026-10-17), "CBF6 notes": the pseudo-mapping's line, `Rss` = `Pss`, the kinds of page adding up to them, a private and a shared mapping touched moving `Private_Dirty` and `Shared_Dirty`; it is in the directory listings too); and IL2's ([INOTIFY-PLAN](INOTIFY-PLAN.md#il2-notes)): `/proc/sys/fs/inotify/{max_user_watches,max_user_instances,max_queued_events}` and the limits they say ([File watching](#file-watching-inotify-plan)), and an inotify descriptor's `/proc/self/fd` link `anon_inode:inotify`; also in the `init` run | |
 | `posix-execinfo.txt` | posixtest's execinfo section (`run posixtest execinfo`) from the shell: `backtrace()` from nested functions, a second thread, a signal handler and a `qsort` comparator, and the lines of `backtrace_symbols` and `backtrace_symbols_fd` ([CR-PLAN](CR-PLAN.md#bt-notes), "BT notes"); also in the `init` run | |
 | `posix-fault.txt` | posixtest's fault section (`run posixtest fault`) from the shell: a thread's own faults as Linux's signals with their siginfo and ucontext, the flags and masks, V8's and Chromium's patterns, children that must end, each by the fault's own signal; the alternate stack and `SA_ONSTACK` (stack overflow reaching a handler on it, the move to the interrupted stack, `sigaltstack`'s report and errors, `sysconf(_SC_MINSIGSTKSZ)` the smallest stack) ([SIGNALS-PLAN](SIGNALS-PLAN.md#1-faults-on-the-faulting-thread), SG3 and SG4); and the kernel's line for its first two children, one with no handler and one with SIGBUS handled and SIGSEGV default, the same `killed: page fault at rip ..., address 10`; also in the `init` run | |
 | `posix-fork.txt` | posixtest's fork section (`run posixtest fork`) from the shell: `fork`, `vfork` and both `clone` forms, each case in a job of its own that ends empty (returns twice, ids, memory separate and `MAP_SHARED` shared, `malloc` and atfork in a threaded parent's child, the two-VMO invariant, a 1 TiB reservation with its time and charge line, `ENOMEM`, `SIGCHLD`, `kill`, `SIGKILL`, pending, timers, a fault handler on the alternate stack; and FL2's: every descriptor kind used from both sides, `/proc/self/fd` exact, Chromium's child sequence, a pseudo-terminal, the table of mappings in a child; and FL4's: `vfork`'s wait for the child's exit or exec, a child's `setpgid` and `setsid` seen by the parent, junk notices dropped: the fork section's paragraph below; [FORK-PLAN](FORK-PLAN.md#fl1b-notes), FL1b, FL2 and FL4); then the exec section (`run posixtest fork exec`: `execve` in place from a forked child, with its line for the fork's copy given back; the exec section's paragraph below; [FORK-PLAN](FORK-PLAN.md#fl3-notes), FL3) and `utest only exec_native,posixfds` (a native starter waits on a POSIX program that execs; the hand-over's tests); also in the `init` run | |
@@ -1965,6 +1965,25 @@ Linux's `e2fsck`). The second process is utest's `xwatch-*` mode.
 | `extfs_watch_order` | the close rule (2.3), with extfs kept busy by a 64 KiB write sent ahead so the close folds into its file's packet: a write and close, then an `add`: the close made before the add makes no event, the next write and close exactly one `IN_CLOSE_WRITE`; a close, then a write on another file: the close's `IN_CLOSE_WRITE` before the write's `IN_MODIFY`; three rounds each |
 | `extfs_watch_limits` | the bell rung by the first event and not again until taken; the queue's bound (76 records of 214 bytes, then one `IN_Q_OVERFLOW` with id 0, the rest dropped; events again once taken); 8 watcher channels for this process and the ninth `ERR_NO_RESOURCES` (fs.watch's writer pid, kept in svcstate's slot), a second process's taken, one closed and made again at once (its close reaped first) |
 
+IL2's cases ([INOTIFY-PLAN](INOTIFY-PLAN.md#il2-notes)) are in three
+other posixtest sections, which `posix-procinfo.txt` and `posix-fork.txt`
+run: the `procfs` section checks `/proc/sys/fs/inotify` (its two
+directories listed, `..` right, `max_user_watches`, `max_user_instances`
+and `max_queued_events` read only with their text `N\n`, `ENOENT` and
+`ENOTDIR` for names that aren't there, the three numbers the services'
+limits give: 1,024 watches on a channel, 8 channels from a process, 512
+records of an 18-byte name in 16 KiB); the limits are then used: inotify
+descriptors made until `EMFILE` come to `max_user_instances` (a dup is not
+another), and quiet watches of distinct paths (libc's trees, the boot
+image's programs, one `/proc/self/fd/N` per descriptor the table has room
+for) until `ENOSPC` come to `max_user_watches`, where a removed watch makes
+room; and an inotify descriptor's `/proc/self/fd` link is
+`anon_inode:inotify` (no brackets, as Linux; its reopening `ENXIO`). The
+`fork` section's `fds` case has the parent's inotify descriptor absent in
+the child (which makes one of its own, and the parent's still works), and
+its `exec` section's `inotify` case an inotify descriptor and an epoll set
+without `FD_CLOEXEC` gone after `execve`.
+
 ## The IOMMU
 
 The IOMMU ([ARCHITECTURE.md](../ARCHITECTURE.md#the-iommu),
@@ -2462,8 +2481,9 @@ child's counter a copy), `/dev/null`, `/etc/passwd` and a file at the
 parent's offset (each side's own after), a file the child writes on an ext
 `/data` (`EBUSY` on FAT), a directory listed, an unconnected `AF_UNIX`
 socket, and with `/svc/unix` a named connection and its accepted end both
-ways; an epoll set, a netstack socket (with `/svc/net`) and a listener
-absent (`EBADF`). `/proc/self/fd` lists exactly what the child kept; it
+ways; an epoll set, an inotify descriptor (the child makes one of its own,
+the parent's still working after), a netstack socket (with `/svc/net`) and
+a listener absent (`EBADF`). `/proc/self/fd` lists exactly what the child kept; it
 then closes every descriptor above 2 by `/proc/self/fd`, letting go of at
 least their handles (the charge counts VMO objects, so freed memory adds);
 16 more forks leave the parent within 4 units of where one did. `chromium`:
@@ -2535,6 +2555,15 @@ removes it and execs; the new image's directory is that one, gone
 (`getcwd` `ENOENT`, an `open` with `O_CREAT` there `ENOENT`), as Linux's
 (it started in `/` before: [FORK-REVIEW-LIBC](FORK-REVIEW-LIBC.md),
 finding 2).
+
+`inotify` (IL2): the case process itself, holding an inotify descriptor
+(with a watch) and an epoll set made without `FD_CLOEXEC` and a pipe end
+(no fork between: a forked child has none to lose), execs itself; the new
+image has the two kinds `EBADF` and the pipe end working, `/proc/self/fd`
+exactly the case's others (1 and 2 left out: the kernel log a starter
+without a pipe gave is not kept by an `execve`), and makes an inotify
+descriptor of its own
+([INOTIFY-PLAN](INOTIFY-PLAN.md#il2-notes)).
 
 posixtest's launch section (the `init` run; `posixtest launch`): what
 Chromium's launcher needs of `posix_spawn` ([CR-PLAN](CR-PLAN.md#cs1-notes),

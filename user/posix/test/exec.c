@@ -35,6 +35,12 @@
  *     dup2 of the output pipe to 1 and 2 and of the IPC socketpair end to 3,
  *     every other descriptor closed by reading /proc/self/fd, execve; the
  *     new image has exactly those descriptors, writes to 1 and talks on 3.
+ *   inotify: an inotify descriptor and an epoll set made without
+ *     FD_CLOEXEC are gone after an execve of the process that holds them
+ *     (not a forked child: it has none), as an epoll set is (Q3,
+ *     docs/INOTIFY-PLAN.md); a pipe end made the same way is kept, and the
+ *     new image has exactly the descriptors it should and makes an
+ *     inotify descriptor of its own.
  *   clone: gtest's threadsafe death test's child: clone(fn, two pages,
  *     SIGCHLD), whose fn closes, changes directory and execs this program
  *     by its path; the new image's parent is the case, its directory the
@@ -56,7 +62,9 @@
 #include <sched.h>
 #include <signal.h>
 #include <string.h>
+#include <sys/epoll.h>
 #include <sys/eventfd.h>
+#include <sys/inotify.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -266,6 +274,33 @@ static int run_fds(char **argv)
     RUN(write(1, "hello from the new image", 24) == 24);
     char buf[16];
     RUN(send(3, "ipc", 3, 0) == 3 && recv(3, buf, sizeof(buf), 0) == 3 && !memcmp(buf, "ack", 3));
+    return run_end();
+}
+
+/* inotify: 20 (inotify) and 22 (epoll) gone though not close-on-exec, 21
+ * (a pipe end) kept, the listing argv[4]'s bitmap (the case's own, less
+ * those two and 1 and 2), and an inotify descriptor of its own working. */
+static int run_inotify(char **argv)
+{
+    uint64_t got[FDW];
+    char buf[16];
+    errno = 0;
+    RUN(fcntl(20, F_GETFD) == -1 && errno == EBADF);
+    errno = 0;
+    RUN(fcntl(22, F_GETFD) == -1 && errno == EBADF);
+    RUN(fcntl(21, F_GETFD) == 0);
+    RUN(fd_bits(got) && strlen(argv[4]) == FDW * 16);
+    for (unsigned i = 0; i < FDW && strlen(argv[4]) == FDW * 16; i++) {
+        char word[17] = { 0 };
+        memcpy(word, argv[4] + i * 16, 16);
+        /* 1 and 2 left out: the kernel log, where a starter gave no pipe,
+         * is not kept by an execve (it has no give). */
+        RUN((got[i] & (i ? ~0ull : ~6ull)) == strtoull(word, NULL, 16));
+    }
+    int in = inotify_init1(IN_NONBLOCK);
+    RUN(in >= 0 && inotify_add_watch(in, "/etc", IN_CREATE) > 0);
+    errno = 0;
+    RUN(read(in, buf, sizeof(buf)) == -1 && errno == EAGAIN);
     return run_end();
 }
 
@@ -520,6 +555,30 @@ static void exec_cloexec(void)
     close(b[0]);
     close(s[0]);
     close_ours(ready, go);
+}
+
+/* inotify: this process holds the descriptors and execs itself, with no
+ * fork between (a forked child has no inotify descriptor to lose), so its
+ * exit code is the new image's. */
+static void exec_inotify(void)
+{
+    int p[2];
+    CHECK(pipe2(p, 0) == 0);
+    move_to(p[0], 21, false);
+    close(p[1]);
+    int in = inotify_init1(0);
+    CHECK(in >= 0 && inotify_add_watch(in, "/etc", IN_ALL_EVENTS) > 0);
+    move_to(in, 20, false);
+    move_to(epoll_create1(0), 22, false);
+    uint64_t bits[FDW];
+    CHECK(fd_bits(bits) && (bits[0] >> 20 & 7) == 7);
+    bits[0] &= ~((1ull << 20) | (1ull << 22) | 6ull);   /* ... and 1 and 2, see run_inotify */
+    char words[FDW * 16 + 1];   /* the other descriptors, 16 hex digits a word */
+    for (unsigned i = 0; i < FDW; i++)
+        snprintf(words + i * 16, 17, "%016llx", (unsigned long long)bits[i]);
+    char *const args[] = { "posixtest", "--child-exec", "run", "inotify", words, NULL };
+    execv(SELF_EXE, args);
+    CHECK(!"the case's own execve");
 }
 
 static void exec_signals(void)
@@ -795,6 +854,7 @@ static const struct {
     { "same", exec_same },       { "threads", exec_threads }, { "cloexec", exec_cloexec },
     { "signals", exec_signals }, { "charge", exec_charge },   { "fail", exec_fail },
     { "chromium", exec_chromium }, { "clone", exec_clone },   { "gone", exec_gone },
+    { "inotify", exec_inotify },
 };
 #define NCASES (sizeof(cases) / sizeof(cases[0]))
 
@@ -821,6 +881,8 @@ int pt_child_exec(int argc, char **argv)
             return run_gone();
         if (!strcmp(mode, "native") && argc >= 5)
             return run_native(argv);
+        if (!strcmp(mode, "inotify") && argc >= 5)
+            return run_inotify(argv);
         return 3;
     }
     if (!strcmp(what, "native")) {   /* utest's: exec at once */

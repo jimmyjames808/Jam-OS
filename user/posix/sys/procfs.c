@@ -36,6 +36,8 @@
  *                         one number is both)
  *   /proc/version, /proc/sys/kernel/osrelease, ostype, version, hostname
  *                         what uname says (misc.c's fields)
+ *   /proc/sys/fs/inotify/max_user_watches, max_user_instances,
+ *                         max_queued_events: inotify.c's limits (kinds.h)
  *   /proc/self/exe        a link to the program's file: readlink gives its
  *                         path, open opens that file for reading (ETXTBSY
  *                         for writing, as Linux), stat stats it;
@@ -46,7 +48,8 @@
  *   /proc/self/fd/N       a link to what descriptor N is: a file's or a
  *                         directory's path, /dev/... for the devices,
  *                         /etc/... for libc's files, /memfd:NAME (deleted),
- *                         pipe:[I], socket:[I] or anon_inode:[KIND] (I: the
+ *                         pipe:[I], socket:[I], anon_inode:[KIND] or
+ *                         anon_inode:inotify (I: the
  *                         description's serial). open makes a new
  *                         description of the same thing (a path opened again;
  *                         a memfd's object with the access asked, so
@@ -119,6 +122,8 @@ enum node {
     N_TASK,       /* /proc/self/task/<tid>, /proc/<tid>: a thread's directory */
     N_SYSDIR,     /* /proc/sys */
     N_SYSKERNEL,  /* /proc/sys/kernel */
+    N_SYSFS,      /* /proc/sys/fs */
+    N_SYSINOTIFY, /* /proc/sys/fs/inotify */
     N_MAPS,       /* /proc/<pid>/maps (and the files below it) */
     N_STAT,       /* /proc/<pid>/stat */
     N_STATM,      /* /proc/<pid>/statm */
@@ -134,10 +139,13 @@ enum node {
     N_KVERSION,   /* /proc/sys/kernel/version */
     N_HOSTNAME,   /* /proc/sys/kernel/hostname */
     N_SMAPS_ROLLUP,   /* /proc/<pid>/smaps_rollup */
+    N_INO_WATCHES,    /* /proc/sys/fs/inotify/max_user_watches */
+    N_INO_INSTANCES,  /* /proc/sys/fs/inotify/max_user_instances */
+    N_INO_QUEUED,     /* /proc/sys/fs/inotify/max_queued_events */
 };
 
 /* Where a generated file lives. */
-enum where { IN_PID, IN_ROOT, IN_KERNEL };
+enum where { IN_PID, IN_ROOT, IN_KERNEL, IN_INOTIFY };
 
 /* The generated files: which text each is, its name and where it lives. */
 static const struct { enum node node; enum pfile file; const char *name; enum where where; }
@@ -151,6 +159,9 @@ pfiles[] = {
     { N_OSTYPE, PF_OSTYPE, "ostype", IN_KERNEL }, { N_KVERSION, PF_KVERSION, "version", IN_KERNEL },
     { N_HOSTNAME, PF_HOSTNAME, "hostname", IN_KERNEL },
     { N_SMAPS_ROLLUP, PF_SMAPS_ROLLUP, "smaps_rollup", IN_PID },
+    { N_INO_WATCHES, PF_INO_WATCHES, "max_user_watches", IN_INOTIFY },
+    { N_INO_INSTANCES, PF_INO_INSTANCES, "max_user_instances", IN_INOTIFY },
+    { N_INO_QUEUED, PF_INO_QUEUED, "max_queued_events", IN_INOTIFY },
 };
 #define PFILES (sizeof(pfiles) / sizeof(pfiles[0]))
 
@@ -486,19 +497,32 @@ static enum node pid_name(unsigned who, const char *n, size_t l)
 }
 
 /* The name n (length l) is one of /proc's own, not a process's: /proc/sys
- * and its kernel directory, or a file. s, *at: the rest of the path. */
+ * and its directories (kernel, fs/inotify), or a file. s, *at: the rest of
+ * the path. */
 static long lookup_system(const char *s, size_t *at, const char *n, size_t l, struct at *out)
 {
     if (l == 3 && !memcmp(n, "sys", 3)) {
         out->node = N_SYSDIR;
         if (!(l = next_name(s, at, &n)))
             return 0;
-        if (l != 6 || memcmp(n, "kernel", 6))
+        if (l == 6 && !memcmp(n, "kernel", 6)) {
+            out->node = N_SYSKERNEL;
+            if (!(l = next_name(s, at, &n)))
+                return 0;
+            out->node = find_file(IN_KERNEL, n, l);
+        } else if (l == 2 && !memcmp(n, "fs", 2)) {
+            out->node = N_SYSFS;
+            if (!(l = next_name(s, at, &n)))
+                return 0;
+            if (l != 7 || memcmp(n, "inotify", 7))
+                return -ENOENT;
+            out->node = N_SYSINOTIFY;
+            if (!(l = next_name(s, at, &n)))
+                return 0;
+            out->node = find_file(IN_INOTIFY, n, l);
+        } else {
             return -ENOENT;
-        out->node = N_SYSKERNEL;
-        if (!(l = next_name(s, at, &n)))
-            return 0;
-        out->node = find_file(IN_KERNEL, n, l);
+        }
     } else {
         out->node = find_file(IN_ROOT, n, l);
     }
@@ -631,6 +655,8 @@ static void link_of(struct fd_desc *d, char out[PATH_BYTES])
         snprintf(out, PATH_BYTES, "pipe:[%llu]", (unsigned long long)d->serial);
     else if (d->ops == &sockp_ops || !strcmp(kind, "socket"))
         snprintf(out, PATH_BYTES, "socket:[%llu]", (unsigned long long)d->serial);
+    else if (d->ops == &inotify_ops)
+        snprintf(out, PATH_BYTES, "anon_inode:inotify");   /* Linux's one without brackets */
     else
         snprintf(out, PATH_BYTES, "anon_inode:[%s]", !strcmp(kind, "epoll") ? "eventpoll" : kind);
 }
@@ -651,7 +677,8 @@ static uint64_t ino_of(enum node node, int id)
 static bool is_dir(enum node node)
 {
     return node == N_ROOT || node == N_SELF || node == N_FDDIR || node == N_TASKDIR ||
-           node == N_TASK || node == N_SYSDIR || node == N_SYSKERNEL;
+           node == N_TASK || node == N_SYSDIR || node == N_SYSKERNEL || node == N_SYSFS ||
+           node == N_SYSINOTIFY;
 }
 
 static void node_stat(enum node node, int id, struct stat *st)
@@ -661,6 +688,7 @@ static void node_stat(enum node node, int id, struct stat *st)
                       : is_file(node) ? S_IFREG | (node == N_MEM ? 0400 : 0444) : S_IFLNK | 0777;
     st->st_nlink = dir ? 2 : 1;
     st->st_uid = st->st_gid = node == N_ROOT || node == N_SYSDIR || node == N_SYSKERNEL ||
+                              node == N_SYSFS || node == N_SYSINOTIFY ||
                               node >= N_CPUINFO ? 0 : ONE_USER;
     st->st_ino = ino_of(node, id);
     st->st_blksize = 4096;
@@ -765,6 +793,9 @@ static long open_file(const struct at *a, const struct path *p, long flags)
                 snprintf(st->path, sizeof(st->path), PROC_DIR "/%s", pfiles[i].name);
             else if (pfiles[i].where == IN_KERNEL)
                 snprintf(st->path, sizeof(st->path), PROC_DIR "/sys/kernel/%s", pfiles[i].name);
+            else if (pfiles[i].where == IN_INOTIFY)
+                snprintf(st->path, sizeof(st->path), PROC_DIR "/sys/fs/inotify/%s",
+                         pfiles[i].name);
             else if (a->tid)
                 snprintf(st->path, sizeof(st->path), PROC_DIR "/%d/task/%u/%s", (int)a->pid,
                          (unsigned)a->tid, pfiles[i].name);
@@ -926,11 +957,11 @@ static int root_entry(int64_t k, struct pentry *e)
     return 1;
 }
 
-/* /proc/sys/kernel's entry k: its files. */
-static int kernel_entry(int64_t k, struct pentry *e)
+/* The entry k of a /proc/sys directory (where: its files): its file. */
+static int sys_entry(enum where where, int64_t k, struct pentry *e)
 {
     for (unsigned i = 0; i < PFILES; i++)
-        if (pfiles[i].where == IN_KERNEL && !k--) {
+        if (pfiles[i].where == where && !k--) {
             entry(e, pfiles[i].name, ino_of(pfiles[i].node, 0), DT_REG);
             return 1;
         }
@@ -972,7 +1003,9 @@ static uint64_t dir_up(enum node node, int32_t pid)
     case N_TASK:      return ino_of(N_TASKDIR, pid);
     case N_SYSDIR:    return ino_of(N_ROOT, 0);
     case N_SYSKERNEL: return ino_of(N_SYSDIR, 0);
-    default:          return ino_of(N_SELF, pid);   /* fd */
+    case N_SYSFS:     return ino_of(N_SYSDIR, 0);
+    case N_SYSINOTIFY: return ino_of(N_SYSFS, 0);
+    default:         return ino_of(N_SELF, pid);   /* fd */
     }
 }
 
@@ -993,11 +1026,17 @@ static int entry_at(enum node node, int32_t pid, uint32_t tid, int64_t pos, stru
     case N_FDDIR:      return fd_entry(pos, e);
     case N_ROOT:       return root_entry(pos - 2, e);
     case N_SYSDIR:
+        if (pos > 3)
+            return 0;
+        entry(e, pos == 2 ? "kernel" : "fs", ino_of(pos == 2 ? N_SYSKERNEL : N_SYSFS, 0), DT_DIR);
+        return 1;
+    case N_SYSKERNEL:  return sys_entry(IN_KERNEL, pos - 2, e);
+    case N_SYSFS:
         if (pos != 2)
             return 0;
-        entry(e, "kernel", ino_of(N_SYSKERNEL, 0), DT_DIR);
+        entry(e, "inotify", ino_of(N_SYSINOTIFY, 0), DT_DIR);
         return 1;
-    case N_SYSKERNEL:  return kernel_entry(pos - 2, e);
+    case N_SYSINOTIFY: return sys_entry(IN_INOTIFY, pos - 2, e);
     case N_TASKDIR:    return task_entry(pos - 2, e);
     default:
         return pid_entry(tid ? WHO_TASK : pid == lx_pid() ? WHO_SELF : WHO_KID, pid, tid,
