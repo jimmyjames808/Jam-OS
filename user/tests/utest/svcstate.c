@@ -176,12 +176,15 @@ static bool answered(handle_t cli, uint32_t txid, uint32_t value)
 }
 
 /* A request through the slots, and what a successor finds after a death
- * at each step: taken (re-run it from the slot), committed (send, then
- * reply), sent (reply), set up with nothing read (idle); the two slots
- * alternating across successors; a request too big or too short. */
+ * at each step: taken (re-run it from the slot, its writer's pid kept),
+ * committed (send, then reply), sent (reply), set up with nothing read
+ * (idle); the two slots alternating across successors; a request too big
+ * or too short. */
 bool t_svcstate_slots(void)
 {
     uint64_t before = handles_used();
+    struct process_info pi;
+    CHECK_ST(jam_process_get_info(startup_handle(SR_SELF_PROCESS), &pi), OK);
     handle_t state, svc, srv, cli;
     CHECK(new_state(&state, &svc));
     CHECK_ST(jam_channel_create(&srv, &cli), OK);
@@ -193,9 +196,10 @@ bool t_svcstate_slots(void)
     CHECK(ask(cli, 7, 0xa, 40));
     CHECK_ST(svcstate_take(&s, 3, srv, &slot), OK);
     CHECK(slot == 1 && s.h->slot[1].seq == 1 && s.h->slot[1].channel == 3);
+    CHECK(pi.pid && svcstate_pid(&s, 1) == pi.pid);   /* the writer: this process */
     CHECK(reopen(&s, svc, SVCSTATE_ADOPTED));
     CHECK_EQ(svcstate_pending(&s, &found), SVCSTATE_RERUN);
-    CHECK(found == 1 && holds(&s, 1, 7, 0xa, 40));
+    CHECK(found == 1 && holds(&s, 1, 7, 0xa, 40) && svcstate_pid(&s, 1) == pi.pid);
     CHECK(commit(&s, 1, 7, 0xaa));
     CHECK(reopen(&s, svc, SVCSTATE_ADOPTED));
     CHECK_EQ(svcstate_pending(&s, &found), SVCSTATE_RESEND);

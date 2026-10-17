@@ -66,7 +66,7 @@
 #define SVCSTATE_ADDR      0x0000600000000000ull   /* where a service maps its state VMO */
 #define SVCSTATE_MAX_SIZE  (64ull << 20)           /* the most it reserves there */
 #define SVCSTATE_MAGIC     0x4554415453435653ull   /* "SVCSTATE" */
-#define SVCSTATE_VERSION   2                       /* struct svcstate_header's layout */
+#define SVCSTATE_VERSION   3                       /* struct svcstate_header's layout */
 #define SVCSTATE_BINDING   32                      /* bytes naming what a state belongs to */
 #define SVCSTATE_REQ_MAX   (128u << 10)            /* largest request or reply area, bytes */
 #define SVCSTATE_SLOT_HANDLES 4                    /* handles a request may carry */
@@ -81,6 +81,9 @@ struct svcstate_slot {
     uint64_t seq;         /* the request's number (1, 2, ...); 0: never used; slot = seq & 1 */
     uint32_t len;         /* request bytes, written by the kernel's read; 0: none taken */
     uint32_t nhandles;    /* handles the request carried (gone with a dead instance) */
+    uint32_t pid;         /* the process that wrote it (CHANNEL_READ_PID: the kernel
+                           * writes it with the two before it); 0: not asked */
+    uint32_t spare;       /* 0 */
     uint32_t channel;     /* which channel it was read from: the service's own key */
     uint32_t phase;       /* SVCSTATE_RUN or SVCSTATE_SENT */
     uint32_t reply_len;   /* reply bytes in the reply area, set at the commit */
@@ -191,7 +194,8 @@ void    *svcstate_user(const struct svcstate *s);
  * than req_cap or carries more than SVCSTATE_SLOT_HANDLES handles, and is
  * still queued: the caller throws it away). ERR_INVALID_ARGS: a message
  * under 4 bytes (no txid), thrown away. The request's handles, if any,
- * are in s->handles. */
+ * are in s->handles. The kernel says which process wrote it
+ * (svcstate_pid). */
 status_t svcstate_take(struct svcstate *s, uint32_t key, handle_t ch, unsigned *slot);
 /* svcstate_take in two halves, around a read of the caller's own (a
  * protocol's generated <proto>_take_slot, <idl/common.h>): set up the next
@@ -202,6 +206,14 @@ status_t svcstate_take(struct svcstate *s, uint32_t key, handle_t ch, unsigned *
  * that got none stays set up for the next prepare. */
 void     svcstate_prepare(struct svcstate *s, uint32_t key, unsigned *slot, struct idl_slot *out);
 bool     svcstate_taken(struct svcstate *s, unsigned slot);
+/* The read between them for a service that wants the writer's pid, which a
+ * generated take never asks for (and a reply sent in the same call can't:
+ * channel_reply_wait has no such flag): channel_read's status, the message
+ * as a generated take leaves it (then idl_taken, and svcstate_taken). */
+status_t svcstate_read(struct svcstate *s, unsigned slot, handle_t ch);
+/* The process that wrote the request in slot (0: not known: read without
+ * asking, or the kernel's own message). */
+uint32_t svcstate_pid(const struct svcstate *s, unsigned slot);
 /* Slot `slot` as <idl/common.h> describes one (for a protocol's
  * <proto>_run_slot): its request, length, handles and reply area. */
 void     svcstate_slot(struct svcstate *s, unsigned slot, struct idl_slot *out);
