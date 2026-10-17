@@ -62,6 +62,14 @@ static lock_t          shm_lock;
 static struct shm_name shm[SHM_MAX];
 static const uint8_t   zeros[ZERO_CHUNK];
 
+void shm_forked(struct lx_fork_io *io)
+{
+    shm_lock = (lock_t){ 0 };
+    for (unsigned i = 0; i < SHM_MAX; i++)
+        if (shm[i].name[0] && !memobj_forked_name(io, shm[i].m))
+            shm[i] = (struct shm_name){ 0 };   /* its object is the parent's alone here */
+}
+
 static const struct node *node_of(struct fd_desc *d)
 {
     return d->priv;

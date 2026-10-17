@@ -57,19 +57,31 @@
  * or vfork skips musl's handlers and locks (as on Linux), not ours.
  *
  * Not on the list, so possibly held for ever in a child if another thread
- * had one at the clone: each descriptor kind's own locks (FL2's: each
- * kind's fork step makes them the child's), and those of modules whose
- * state the child drops (thread.c's, sigtimer.c's: made fresh with it).
+ * had one at the clone: each description's lock and those of the kinds'
+ * shared state (fd.c's walk and each kind's fork hook make them fresh in
+ * the child), and those of modules whose state the child drops (thread.c's,
+ * sigtimer.c's, and the `forgets` below: made fresh with it).
  *
- * What a child can't use until FL2 (section 1.6): its descriptors (each
- * description's handles are the parent's: a call on one fails, EBADF or
- * the like), handles in libc's table of mappings (munmap still unmaps, but
- * madvise's decommit, a MAP_FIXED over libc's own private memory, an
- * mprotect adding write to a file's pages and the break's lowering fail),
- * the cached service channels (/svc/dns, /svc/unix, /svc/exec), sockets
- * and epoll sets. Memory, the namespace (libjam's, passed), ids, waits,
- * signals, threads, malloc and _exit work. */
+ * The descriptors and the table of mappings (section 1.6, FL2). After the
+ * clone, its locks still held, the parent's give walks the descriptor table
+ * (fd.c) and the table of mappings (maptable.c), and writes the handles the
+ * child's copies need on the child's startup channel, after libjam's
+ * message (<posixfork.h>: each under a key naming what it is for); the
+ * child walks its copies the same way and takes them. A description keeps
+ * everything else it had (the offset, the status flags, FD_CLOEXEC on its
+ * slots) but what the parent had read off a channel; netstack sockets and
+ * epoll sets are absent there (fd.h's ops->fork has each kind's rule).
+ * Entries mapped as copies get vmar_clone's children (prepare tells libjam
+ * which VMOs: the table is whole only under mem_lock), shared ones a
+ * duplicate. The child keeps no handle it wasn't given a use for (the
+ * stream's leftovers are closed), and drops, unclosed, what holds the
+ * parent's (a socket's list, the per-thread ports of poll and the socket
+ * waits, the pseudo-terminals' table). libjam's per-connection buffers
+ * (a file's transfer buffer, a socket's ring) are mapped VMAR_CLONE_NONE,
+ * so a fork never copies them nor write-protects a server's pages. */
 #include <errno.h>
+#include <forkmsg.h>
+#include <posixfork.h>
 #include <sched.h>
 #include <sys/resource.h>
 #include "layer.h"
@@ -80,11 +92,15 @@
  * (the low byte: always SIGCHLD here) and the tid words. */
 #define CLONE_PROC_OK (0xff | CLONE_PARENT_SETTID | CLONE_CHILD_SETTID | CLONE_CHILD_CLEARTID)
 
+#define PASSABLE (RIGHT_DUPLICATE | RIGHT_TRANSFER)   /* a handle a child may be given */
+
 /* How the child goes on (the hooks' context: on the forking thread's
  * stack, so at the same address in the child's copy). */
 struct how {
     int *set_tid;     /* CLONE_CHILD_SETTID: the child's tid stored here in the child */
     int *clear_tid;   /* CLONE_CHILD_CLEARTID: the child's tid word */
+    struct jam_fork_args *args;   /* fork_core's: prepare names the VMOs vmar_clone copies */
+    bool no_room;     /* prepare couldn't list them: the fork fails (ENOMEM) */
 };
 
 /* The modules whose locks fork holds across the clone, in the order taken
@@ -94,14 +110,159 @@ static void (*const steps[])(int) = {
 };
 #define NSTEPS (sizeof(steps) / sizeof(steps[0]))
 
-/* sigtimer.c's: weak, since a program that never sets a timer links none. */
+/* sigtimer.c's: weak, since a program that never sets a timer links none;
+ * the same for the modules whose state a child drops (layer.h). */
 extern __typeof__(sig_timer_forked) sig_timer_forked __attribute__((weak));
+extern __typeof__(sock_forked) sock_forked __attribute__((weak));
+extern __typeof__(epoll_forked) epoll_forked __attribute__((weak));
+extern __typeof__(poll_forked) poll_forked __attribute__((weak));
+extern __typeof__(sockwait_forked) sockwait_forked __attribute__((weak));
+extern __typeof__(pty_forked) pty_forked __attribute__((weak));
+extern __typeof__(procfs_forked) procfs_forked __attribute__((weak));
+extern __typeof__(enosys_forked) enosys_forked __attribute__((weak));
+
+static void (*const forgets[])(void) = {
+    sock_forked, epoll_forked, poll_forked, sockwait_forked, pty_forked, procfs_forked,
+    enosys_forked,
+};
+#define NFORGETS (sizeof(forgets) / sizeof(forgets[0]))
+
+/* Forks made: the last one's number (layer.h's lx_fork_gen). Changed with
+ * every lock held, before the clone, so the child's copy has it too. */
+static uint32_t gens;
+
+/* ---- the stream of handles (<posixfork.h>) ----------------------------------------- */
+
+struct lx_fork_io {
+    bool     child;
+    uint32_t gen;
+    handle_t ch;                  /* the child's startup channel: our end, or the child's */
+    status_t st;                  /* the parent: its first failure (nothing more is sent) */
+    uint32_t at;                  /* the child: the next of m's handles to look at */
+    uint32_t prev;                /* the child: the last key read */
+    bool     last;                /* the child: the last message has been read */
+    struct posixfork_msg m;       /* the message being written, or the one read */
+    handle_t hs[POSIXFORK_MAX];
+};
+
+bool lx_fork_child(const struct lx_fork_io *io)
+{
+    return io->child;
+}
+
+uint32_t lx_fork_gen(const struct lx_fork_io *io)
+{
+    return io->gen;
+}
+
+/* The parent: the message so far sent (its handles moved whatever the
+ * status), marked the last if last. */
+static void flush(struct lx_fork_io *io, bool last)
+{
+    io->m.flags = last ? POSIXFORK_LAST : 0;
+    if (io->st == OK)
+        io->st = jam_channel_write(io->ch, &io->m, sizeof(io->m), io->hs, io->m.nhandles);
+    else
+        for (uint32_t i = 0; i < io->m.nhandles; i++)
+            jam_handle_close(io->hs[i]);
+    io->m.nhandles = 0;
+}
+
+void lx_fork_put(struct lx_fork_io *io, uint32_t key, handle_t h)
+{
+    if (!h)
+        return;
+    if (io->st != OK) {
+        jam_handle_close(h);
+        return;
+    }
+    io->m.keys[io->m.nhandles] = key;
+    io->hs[io->m.nhandles++] = h;
+    if (io->m.nhandles == POSIXFORK_MAX)
+        flush(io, false);
+}
+
+void lx_fork_dup(struct lx_fork_io *io, uint32_t key, handle_t h)
+{
+    struct handle_info hi;
+    handle_t d;
+    if (h && io->st == OK && jam_handle_info(h, &hi) == OK && (hi.rights & PASSABLE) == PASSABLE &&
+        jam_handle_duplicate(h, RIGHT_SAME, &d) == OK)
+        lx_fork_put(io, key, d);
+}
+
+/* The child: the next message, checked (keys growing from the last one);
+ * a malformed one ends the child, as libjam's does (<forkmsg.h>). */
+static void next_message(struct lx_fork_io *io)
+{
+    uint32_t nbytes = 0, nh = 0;
+    struct channel_read_args r = {
+        .h = io->ch, .rd_cap = sizeof(io->m), .rd_bytes = (uint64_t)(uintptr_t)&io->m,
+        .rd_actual = (uint64_t)(uintptr_t)&nbytes, .rd_handles = (uint64_t)(uintptr_t)io->hs,
+        .rd_hcap = POSIXFORK_MAX, .rd_hactual = (uint64_t)(uintptr_t)&nh,
+    };
+    io->at = 0;
+    status_t st = jam_channel_read(&r);
+    if (st != OK)
+        nh = 0;
+    bool ok = st == OK && nbytes == sizeof(io->m) && !io->m.txid &&
+              io->m.magic == POSIXFORK_MAGIC && io->m.version == POSIXFORK_VERSION &&
+              io->m.nhandles == nh && !(io->m.flags & ~POSIXFORK_LAST);
+    for (uint32_t i = 0; ok && i < nh; i++) {
+        ok = io->m.keys[i] > io->prev;
+        io->prev = io->m.keys[i];
+    }
+    if (ok) {
+        io->last = io->m.flags & POSIXFORK_LAST;
+        return;
+    }
+    for (uint32_t i = 0; i < nh; i++)
+        jam_handle_close(io->hs[i]);
+    static const char line[] = "posix: a forked child given no usable descriptors message\n";
+    jam_debug_write(line, sizeof(line) - 1);
+    jam_process_exit(FORK_BAD_MESSAGE);
+}
+
+handle_t lx_fork_take(struct lx_fork_io *io, uint32_t key)
+{
+    for (;;) {
+        while (io->at < io->m.nhandles && io->m.keys[io->at] < key)
+            jam_handle_close(io->hs[io->at++]);   /* nothing here asked for it */
+        if (io->at < io->m.nhandles)
+            return io->m.keys[io->at] == key ? io->hs[io->at++] : HANDLE_INVALID;
+        if (io->last)
+            return HANDLE_INVALID;
+        next_message(io);
+    }
+}
+
+/* ---- libjam's hooks ------------------------------------------------------------------ */
 
 static void prepare(void *ctx)
 {
-    (void)ctx;
+    struct how *how = ctx;
     for (unsigned i = 0; i < NSTEPS; i++)
         steps[i](LX_FORK_TAKE);
+    gens++;
+    const handle_t *vmos = NULL;
+    handle_t *children = NULL;
+    uint32_t n = 0;
+    how->no_room = !mem_fork_clones(&vmos, &children, &n);
+    how->args->vmos = vmos;   /* libjam reads them after this hook (<os.h>) */
+    how->args->children = children;
+    how->args->n = n;
+}
+
+static status_t give(void *ctx, handle_t to, handle_t proc)
+{
+    const struct how *how = ctx;
+    (void)proc;
+    struct lx_fork_io io = { .gen = gens, .ch = to, .st = how->no_room ? ERR_NO_MEMORY : OK,
+                             .m = { .magic = POSIXFORK_MAGIC, .version = POSIXFORK_VERSION } };
+    fd_fork_walk(&io);
+    mem_fork_walk(&io);   /* every child of a copied VMO moved or closed, whatever happened */
+    flush(&io, true);
+    return io.st == ERR_SHOULD_WAIT ? ERR_NO_RESOURCES : io.st;   /* the channel's queue full */
 }
 
 static void parent(void *ctx, status_t st)
@@ -115,13 +276,19 @@ static void parent(void *ctx, status_t st)
 static void child(void *ctx, handle_t from)
 {
     const struct how *how = ctx;
-    (void)from;   /* FL2: the descriptors' messages come on it */
     lx_start_forked();
     uint32_t tid = 0;
     (void)kp_thread_tid(startup_handle(SR_SELF_THREAD), &tid);
     thread_forked(tid);
     for (unsigned i = 0; i < NSTEPS; i++)
         steps[i](LX_FORK_CHILD);
+    for (unsigned i = 0; i < NFORGETS; i++)
+        if (forgets[i])
+            forgets[i]();
+    struct lx_fork_io io = { .child = true, .gen = gens, .ch = from };
+    fd_fork_walk(&io);
+    mem_fork_walk(&io);
+    (void)lx_fork_take(&io, UINT32_MAX);   /* the rest read, and closed */
     if (sig_timer_forked)
         sig_timer_forked();
     if (how->clear_tid)
@@ -129,10 +296,12 @@ static void child(void *ctx, handle_t from)
     if (how->set_tid)
         *how->set_tid = (int)tid;
     sig_thread_forked();
+    sig_tty_attached();   /* the terminal is the child's own now: listened to */
 }
 
-/* give: FL2's (the descriptors and the table of mappings' handles). */
-static const struct jam_fork_libc hooks = { .prepare = prepare, .parent = parent, .child = child };
+static const struct jam_fork_libc hooks = {
+    .prepare = prepare, .give = give, .parent = parent, .child = child,
+};
 
 static uint64_t thread_pointer(void)
 {
@@ -159,6 +328,7 @@ static long fork_core(struct how *how)
     jam_fork_set_libc(&hooks);   /* the same each time */
     handle_t sig = HANDLE_INVALID;
     struct jam_fork_args a = { .fs_base = thread_pointer(), .signals = &sig, .ctx = how };
+    how->args = &a;   /* prepare fills in the VMOs */
     int64_t r = jam_fork(&a);
     if (r == 0)
         return 0;
@@ -203,8 +373,9 @@ long lx_clone(long flags, long stack, long ptid, long ctid, long tls, long f)
         return refused(flags, -ENOSYS);
     if ((flags & ~(long)CLONE_PROC_OK) || stack)
         return refused(flags, -EINVAL);
-    struct how how = { (flags & CLONE_CHILD_SETTID) ? (int *)(uintptr_t)ctid : NULL,
-                       (flags & CLONE_CHILD_CLEARTID) ? (int *)(uintptr_t)ctid : NULL };
+    int *word = (int *)(uintptr_t)ctid;
+    struct how how = { .set_tid = (flags & CLONE_CHILD_SETTID) ? word : NULL,
+                       .clear_tid = (flags & CLONE_CHILD_CLEARTID) ? word : NULL };
     long r = fork_core(&how);
     if (r > 0 && (flags & CLONE_PARENT_SETTID))
         *(int *)(uintptr_t)ptid = (int)r;
@@ -243,7 +414,7 @@ int __jam_clone_process(int (*fn)(void *), void *stack, int flags, void *arg, in
         return (int)refused(flags, -ENOSYS);
     if ((flags & ~(CLONE_PROC_OK & ~CLONE_CHILD_CLEARTID)) || !stack)
         return (int)refused(flags, -EINVAL);
-    struct how how = { (flags & CLONE_CHILD_SETTID) ? ctid : NULL, NULL };
+    struct how how = { .set_tid = (flags & CLONE_CHILD_SETTID) ? ctid : NULL };
     struct sig_thread *q = sig_quiet_begin();   /* the layer's own: no handler runs inside */
     long r = fork_core(&how);
     sig_quiet_end(q);   /* the child too: its record is the copy */

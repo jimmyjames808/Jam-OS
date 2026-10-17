@@ -205,6 +205,26 @@ static void master_free(struct master *m)
     free(m);
 }
 
+/* fork (docs/FORK-PLAN.md section 1.6): the bytes as a socketpair end's,
+ * so the child reads and writes the terminal as we do; the size and the
+ * slave's number are ours (our table and a session's control channel
+ * aren't passed, as a spawned child gets the bytes alone). */
+static bool master_fork(struct fd_desc *d, struct fd_fork *f)
+{
+    struct master *m = master_of(d);
+    if (fd_fork_child(f))
+        m->sctl = HANDLE_INVALID;   /* the parent's */
+    return fd_fork_inner(f, m->bytes);
+}
+
+/* The child's table is empty: its consoles are the parent's. */
+void pty_forked(void)
+{
+    pty_lock = (lock_t){ 0 };
+    for (unsigned i = 0; i < PTY_MAX; i++)
+        ptys[i] = (struct pty){ .gen = ptys[i].gen };
+}
+
 static void master_close(struct fd_desc *d)
 {
     master_free(master_of(d));
@@ -213,7 +233,7 @@ static void master_close(struct fd_desc *d)
 static const struct fd_ops master_ops = {
     .name = "pty master", .read = master_read, .write = master_write, .stat = master_stat,
     .ioctl = master_ioctl, .setfl = master_setfl, .ready = master_ready, .arm = master_arm,
-    .give = master_give, .close = master_close,
+    .give = master_give, .fork = master_fork, .close = master_close,
 };
 
 /* A master descriptor over channel end ch for m (both consumed, its

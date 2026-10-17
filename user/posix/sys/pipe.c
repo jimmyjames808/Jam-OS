@@ -340,6 +340,27 @@ static long pipe_give(struct fd_desc *d, struct fd_given *out)
     return r;
 }
 
+bool pipe_end_fork(struct pipe_end *p, struct fd_fork *f)
+{
+    if (!fd_fork_child(f)) {
+        fd_fork_dup(f, 0, pipe_ch(p));
+        return true;
+    }
+    p->ch = fd_fork_take(f, 0);
+    pipe_set_leftover(p, 0, 0);   /* the buffer is the child's copy: kept for its reads */
+    p->pid = 0;                   /* the leftover's writer, with it */
+    p->sleepers = NULL;           /* the parent's other threads, not here */
+    return p->ch != HANDLE_INVALID;
+}
+
+/* fork (docs/FORK-PLAN.md section 1.6): a duplicate of the end, so parent
+ * and child read and write the one channel, as Linux's share one pipe;
+ * the leftover stays ours. */
+static bool pipe_fork(struct fd_desc *d, struct fd_fork *f)
+{
+    return pipe_end_fork(end_of(d), f);
+}
+
 /* poll's hooks (ready.h): a leftover is readable whatever the channel
  * says (read without the lock: ready takes none, and a stale answer is
  * one the next look corrects, since the leftover comes only off the
@@ -370,6 +391,7 @@ const struct fd_ops pipe_ops = {
     .ready = pipe_ready,
     .arm = pipe_arm,
     .give = pipe_give,
+    .fork = pipe_fork,
     .close = pipe_close,
 };
 

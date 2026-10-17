@@ -61,6 +61,7 @@ struct stat;
 #define FD_AT_OFFSET  (-1)              /* ops->read/write's pos: at the description's offset */
 
 struct fd_desc;
+struct fd_fork;
 
 /* What a description gives a child (fd_give, ops->give): a hand-over
  * record's contents (<posixfds.h>). The handles are new ones (a
@@ -146,6 +147,23 @@ struct fd_ops {
      * never gets (the descriptor is left out, as FD_CLOEXEC would). [the
      * same] */
     long (*give)(struct fd_desc *d, struct fd_given *out);
+    /* fork (docs/FORK-PLAN.md section 1.6): what a forked child's copy of
+     * d needs. In the parent (fd_fork_child false) it puts the handles
+     * the copy needs (fd_fork_put, fd_fork_dup); in the child, on the
+     * copy, it takes them by the same subs (fd_fork_take) and makes the
+     * copy the child's: the parent's handles in it replaced or forgotten,
+     * never closed (they were the parent's), what the parent's side has
+     * taken off a channel (a pipe's leftover) dropped, so nothing is read
+     * twice. Both run with fork's locks held, the child's before any other
+     * thread is there: neither allocates, frees or takes a lock (d's own
+     * is made fresh by fd.c), and the child's half decides only from the
+     * copy, so both halves put and take alike. Returns whether the child
+     * keeps d (the parent's answer is ignored); one it doesn't keep is
+     * left out of its table, its memory left in the child's heap
+     * (nothing may free there until fork returns, and its close could
+     * touch what isn't the child's: a ring's addresses). [kept as it is:
+     * a kind that holds no handle] */
+    bool (*fork)(struct fd_desc *d, struct fd_fork *f);
     /* The last reference went: release the kind's state (its handles, its
      * memory). d itself is freed by fd.c. [nothing] */
     void (*close)(struct fd_desc *d);
@@ -162,6 +180,16 @@ struct fd_desc {
     lock_t    lock;     /* the offset and the kind's per-call state (above) */
     int64_t   offset;   /* a file's or directory's position; lock */
     uint64_t  serial;   /* never 0, never given twice: poll's cache key (ready.h) */
+    uint32_t  fork_gen; /* the last fork whose walk met it (fd_fork_first); written by
+                         * fork alone, with the table's lock held */
+};
+
+/* What a kind's fork hook works with (fd.c makes it): the stream, and
+ * which description's handles these are. */
+struct fd_fork {
+    struct lx_fork_io *io;
+    uint32_t           item;   /* <posixfork.h>'s: the description's lowest descriptor */
+    uint32_t           sub0;   /* added to each sub: 8 inside fd_fork_inner */
 };
 
 /* d's last reference is going: take it out of every epoll set, before
@@ -225,6 +253,35 @@ long            fd_next(long from, struct fd_desc **d, bool *cloexec);
 /* What a child gets for descriptor fd (ops->give): 0 and *out, or -EBADF,
  * or the kind's -ENOTSUP (leave it out). */
 long            fd_give(long fd, struct fd_given *out);
+
+/* ---- fork (FL2) ------------------------------------------------------------------
+ * For the kinds' fork hooks (ops->fork above). Subs are 0 .. 7. */
+
+/* Which side runs: true in the child. */
+bool            fd_fork_child(const struct fd_fork *f);
+/* Parent: h (consumed), or a duplicate of h if it may be passed, as sub.
+ * Child: what came as sub, or HANDLE_INVALID. */
+void            fd_fork_put(struct fd_fork *f, unsigned sub, handle_t h);
+void            fd_fork_dup(struct fd_fork *f, unsigned sub, handle_t h);
+handle_t        fd_fork_take(struct fd_fork *f, unsigned sub);
+/* Is this fork's walk meeting an object for the first time (*gen not yet
+ * this fork's)? It is marked met. The same answer on both sides: an object
+ * several descriptions share (a memfd's memory, a file's open) has its
+ * step once, at its first description's. */
+bool            fd_fork_first(const struct fd_fork *f, uint32_t *gen);
+/* A description held inside d's state (a connection's socketpair end, a
+ * pseudo-terminal master's bytes): its own fork hook, under d's item with
+ * subs from 8; in the child its lock fresh and its one reference d's.
+ * Whether the child keeps it. */
+bool            fd_fork_inner(struct fd_fork *f, struct fd_desc *in);
+/* The hook of a kind a child never gets (a netstack socket, an epoll set:
+ * docs/FORK-PLAN.md section 1.6): absent in the child. */
+bool            fd_fork_absent(struct fd_desc *d, struct fd_fork *f);
+/* The walk's step for d met at item (fd_fork_walk's, and the terminal's:
+ * tty.c): its hook the first time this fork meets it; whether the child
+ * keeps it. In the child d's references start again from 0 at its first
+ * meeting: each holder that keeps it adds its own. */
+bool            fd_fork_met(struct lx_fork_io *io, struct fd_desc *d, uint32_t item);
 /* Close a fd_given's handles and free its data. */
 void            fd_given_drop(struct fd_given *g);
 

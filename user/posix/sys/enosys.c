@@ -56,6 +56,13 @@ static bool full_said;          /* the "table full" line has been written */
 static unsigned nlines;         /* lines written since the process began */
 static char last_line[LINE_BYTES];
 
+/* A forked child: the lock fresh; the table kept, so the child doesn't
+ * say again what its parent (the same program) said. */
+void enosys_forked(void)
+{
+    log_lock = (lock_t){ 0 };
+}
+
 /* A line being made. */
 struct line {
     char   b[LINE_BYTES];

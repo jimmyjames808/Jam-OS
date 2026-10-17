@@ -61,6 +61,7 @@ struct memobj {
     uint64_t vmo_size;        /* the VMO's (whole pages); never shrinks */
     unsigned seals;           /* F_SEAL_* */
     char     name[NAME_LEN];  /* memfd_create's name, or the shm name */
+    uint32_t fork_gen;        /* the last fork whose walk met it (memfd_fork) */
 };
 
 /* What a child is handed (the hand-over's data for POSIXFDS_MEMFD). */
@@ -320,6 +321,40 @@ static long memfd_give(struct fd_desc *d, struct fd_given *out)
     return 0;
 }
 
+/* fork (docs/FORK-PLAN.md section 1.6): the child's object gets a
+ * duplicate of the VMO, all our handle's rights (its size and seals are
+ * its copy of ours, then its own, as a spawned child's), at the first
+ * description the walk meets on it; its references are counted again,
+ * one for each description kept and each name (shm_forked). The pages
+ * are shared, as Linux's memfd is one file. */
+static bool memfd_fork(struct fd_desc *d, struct fd_fork *f)
+{
+    struct memobj *m = obj_of(d);
+    bool first = fd_fork_first(f, &m->fork_gen);
+    if (!fd_fork_child(f)) {
+        if (first)
+            fd_fork_dup(f, 0, m->vmo);
+        return true;
+    }
+    if (first) {
+        m->vmo = fd_fork_take(f, 0);
+        m->lock = (lock_t){ 0 };
+        m->refs = 0;
+    }
+    if (!m->vmo)
+        return false;
+    m->refs++;
+    return true;
+}
+
+bool memobj_forked_name(struct lx_fork_io *io, struct memobj *m)
+{
+    if (m->fork_gen != lx_fork_gen(io) || !m->vmo)
+        return false;   /* no descriptor of the child's is on it: no handle came */
+    m->refs++;
+    return true;
+}
+
 const struct fd_ops memfd_ops = {
     .name = "memfd",
     .read = memfd_read,
@@ -329,6 +364,7 @@ const struct fd_ops memfd_ops = {
     .truncate = memfd_truncate,
     /* .ready, .arm: none (always ready, as the access mode allows) */
     .give = memfd_give,
+    .fork = memfd_fork,
     .close = memfd_close,
 };
 

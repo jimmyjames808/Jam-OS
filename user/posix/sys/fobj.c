@@ -73,8 +73,8 @@ static status_t jf_map(handle_t ch, handle_t buf, uint32_t ff, bool ask, struct 
     if (st == OK && (!vsz || vsz > BUF_MAX || (vsz & 4095)))
         st = ERR_IO;
     if (st == OK)
-        st = jam_vmar_map(lx_self_vmar(), buf, 0, vsz,
-                          VMAR_READ | (ff & FS_WRITE ? VMAR_WRITE : 0), &addr);
+        st = jam_vmar_map(lx_self_vmar(), buf, 0, vsz,   /* a connection's: never forked */
+                          VMAR_READ | (ff & FS_WRITE ? VMAR_WRITE : 0) | VMAR_CLONE_NONE, &addr);
     if (st == OK) {
         jf->buf = (uint8_t *)(uintptr_t)addr;
         jf->buf_size = (uint32_t)vsz;
@@ -298,6 +298,32 @@ status_t fobj_back_locked(struct fobj *o, const char *path)
     o->size = size;   /* what the child wrote counts: an append goes after it */
     o->lent = false;
     return OK;
+}
+
+void fobj_fork(struct fd_fork *f, struct fobj *o)
+{
+    if (fd_fork_first(f, &o->fork_gen)) {
+        o->lock = (lock_t){ 0 };
+        o->refs = 0;
+        if (o->jf.ch) {   /* lent as to a spawned child, so opened again at the next use */
+            o->lent = true;
+            o->lent_flags = o->jf.flags | (o->append ? FS_APPEND : 0);
+            o->lent_end = o->size;
+        }
+        o->jf = (struct jfile){ 0 };   /* its buffer isn't mapped here: VMAR_CLONE_NONE */
+    }
+    o->refs++;
+}
+
+void fobj_forked(struct lx_fork_io *io)
+{
+    objs_lock = (lock_t){ 0 };
+    uint32_t gen = lx_fork_gen(io);
+    for (struct fobj **pp = &objs; *pp;)
+        if ((*pp)->fork_gen != gen)
+            *pp = (*pp)->next;   /* a call of the parent's held it: left in the heap */
+        else
+            pp = &(*pp)->next;
 }
 
 void fobj_put(struct fobj *o)

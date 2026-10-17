@@ -18,6 +18,10 @@ void     memobj_unref(struct memobj *m);
 long     memobj_truncate(struct memobj *m, uint64_t size);
 /* The file's size. */
 uint64_t memobj_size(struct memobj *m);
+/* fork's walk in the child: a /dev/shm name on m (dev.c's shm_forked)
+ * kept, with its reference counted again, if a descriptor the child kept
+ * brought m's handle; false: the name goes. */
+bool     memobj_forked_name(struct lx_fork_io *io, struct memobj *m);
 /* A description's private state on m (its own reference to m): the priv
  * of a memfd_ops description. NULL if out of memory. */
 void    *memfd_priv_new(struct memobj *m);

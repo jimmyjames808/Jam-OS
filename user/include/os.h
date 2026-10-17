@@ -268,7 +268,9 @@ struct jam_fork_args {
      * handles to, at most VMAR_CLONE_MAX; children[i] gets the one made
      * for vmos[i]. They are ours: the C library's give moves them to the
      * child and zeroes their entries, and whatever is left non-zero after
-     * jam_fork is ours to close. A clone that fails leaves them all 0. */
+     * jam_fork is ours to close. A clone that fails leaves them all 0.
+     * They are read after the C library's prepare, which may set them
+     * (the POSIX layer's table of mappings is whole only under its lock). */
     const handle_t *vmos;
     handle_t       *children;
     uint32_t        n;

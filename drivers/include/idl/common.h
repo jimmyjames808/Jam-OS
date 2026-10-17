@@ -72,6 +72,7 @@
 #define IDL_ID_DEVMGR         0x005au   /* abi/idl/devmgr.idl */
 #define IDL_ID_DEVMGRCTL      0x005bu   /* abi/idl/devmgr.idl */
 #define IDL_ID_CRASHER        0x005cu   /* abi/idl/crasher.idl */
+#define IDL_ID_POSIXFORK      0x4b46u   /* user/include/posixfork.h: POSIXFORK_MAGIC "JPFK" (a forked child's handles) */
 #define IDL_ID_FORK           0x4b52u   /* user/include/forkmsg.h: FORK_MAGIC "FORK" (a forked child's roles) */
 #define IDL_ID_STANDBY        0x4d4fu   /* user/include/roles.h: STANDBY_MAGIC "PROM" (promotion) */
 #define IDL_ID_STARTUP        0x534du   /* kernel/include/jam/startup.h: STARTUP_MAGIC "JAMS" */

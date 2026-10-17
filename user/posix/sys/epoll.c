@@ -187,9 +187,20 @@ static void epoll_close(struct fd_desc *d)
     free(ep);
 }
 
+/* A set is a port of ours, which two processes can't share meaningfully:
+ * absent in a forked child (docs/FORK-PLAN.md section 1.6), which holds
+ * no set at all. */
 static const struct fd_ops epoll_ops = {
-    .name = "epoll", .arm = epoll_arm, .give = epoll_give, .close = epoll_close,
+    .name = "epoll", .arm = epoll_arm, .give = epoll_give, .fork = fd_fork_absent,
+    .close = epoll_close,
 };
+
+void epoll_forked(void)
+{
+    sets_lock = (lock_t){ 0 };
+    sets = NULL;
+    __atomic_store_n(&items_live, 0, __ATOMIC_RELAXED);
+}
 
 bool epoll_is(const struct fd_desc *d)
 {

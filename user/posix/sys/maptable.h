@@ -52,3 +52,12 @@ void             mt_insert(const struct mt_entry *e);
 bool             mt_vmo_shared(unsigned i);
 /* Remove entry i; its VMO's handle is closed if no other entry has it. */
 void             mt_remove(unsigned i);
+
+/* fork (docs/FORK-PLAN.md section 1.6; maptable.c says how). In the
+ * parent before the clone: the lists made, and the VMOs mapped as copies
+ * (each once) and the room for their children given for vmar_clone, n of
+ * them; false if the room couldn't be made. After the clone, both sides:
+ * the parent puts the children and duplicates of the shared VMOs, the
+ * child takes them and gives each entry its own. */
+bool             mt_fork_prepare(const handle_t **vmos, handle_t **children, uint32_t *n);
+void             mt_fork_walk(struct lx_fork_io *io);

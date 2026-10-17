@@ -17,10 +17,8 @@ functional/tls_init_dlopen skip: needs dlopen, and Jam OS has no dynamic linking
 regression/tls_get_new-dtv skip: needs dlopen, and Jam OS has no dynamic linking (M14.5)
 
 # ---- fork: a forked child's descriptors and exec (docs/FORK-PLAN.md) ---------------------------
-functional/fcntl pending: its forked children test the parent's record lock on its file, which needs a forked child's descriptors (FORK-PLAN's FL2) and locks told apart by process
-functional/vfork pending: its child execs /bin/sh, which needs a forked child's descriptors and exec (FORK-PLAN's FL2, FL3)
-regression/daemon-failure pending: its child dup2s a pipe, which needs a forked child's descriptors (FORK-PLAN's FL2)
-regression/fflush-exit pending: its child dups a file, which needs a forked child's descriptors (FORK-PLAN's FL2)
+functional/fcntl limit: its forked children must see the parent's record lock (F_SETLK EAGAIN, F_GETLK naming the parent), but record locks are granted and never kept (dup.c: no file service keeps locks, and no lock service exists to keep them between processes)
+functional/vfork pending: its child execs /bin/sh -c (exit codes, kill $$), which needs exec in a forked child (FORK-PLAN's FL3) and a POSIX shell (M13.5)
 
 # ---- SysV IPC: not provided ---------------------------------------------------------------
 functional/ipc_msg enosys: msgget and msgctl are ENOSYS (SysV IPC is not built)

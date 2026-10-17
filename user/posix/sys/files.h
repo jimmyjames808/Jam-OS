@@ -194,6 +194,7 @@ struct fobj {
                                       * shared only by descriptions with O_APPEND */
     bool         attrs;              /* its mount keeps modes (FS_FEAT_MODES): fstat is
                                       * file.getattr's */
+    uint32_t     fork_gen;           /* the last fork whose walk met it (fobj_fork) */
 };
 
 /* The object for an open of p with ff (FS_READ, FS_WRITE, FS_CREATE,
@@ -217,6 +218,15 @@ void fobj_lend_locked(struct fobj *o);
  * holds the file after the wait for its close). Every use of o->jf
  * calls it first. */
 status_t fobj_back_locked(struct fobj *o, const char *path);
+/* fork's walk in the child (docs/FORK-PLAN.md section 1.6). fobj_fork: o,
+ * which a file description the child keeps holds, counted again from its
+ * first description (one reference each), its lock fresh and its open
+ * lent (forgotten, never closed: the parent's), so its next use opens the
+ * file again (fobj_back_locked). fobj_forked, after the descriptors: the
+ * objects no description of the child's holds leave the list, unclosed;
+ * objs_lock fresh. */
+void     fobj_fork(struct fd_fork *f, struct fobj *o);
+void     fobj_forked(struct lx_fork_io *io);
 /* fs.open of p with ff, tried again for a while if the service answers
  * ERR_BUSY (our own close, or an ended child's, may not have reached it
  * yet): OK and *ch, *buf, or the last answer. */
