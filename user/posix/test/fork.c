@@ -40,8 +40,9 @@
  *     CLONE_FS, raw and by clone(), as a copy of the directory and umask
  *     (the child's chdir and umask its own); a fork from a thread that
  *     isn't the first (the child's id its pid); clone(fn, stack, SIGCHLD,
- *     arg) ending with fn's value; vfork (its wait: forknote.c's vfork
- *     case).
+ *     arg) ending with fn's value, and one whose fn aborts ending with
+ *     SIGABRT (its tid its own); bad tid pointers not stored, the clone
+ *     going on; vfork (its wait: forknote.c's vfork case).
  *   small: clone(fn, two pages, SIGCHLD), as gtest's death tests make it
  *     (the parent unmaps the pages at once): fn's frames on those pages,
  *     the calls that take a path (stat, lstat, access, open, mkdir and
@@ -654,6 +655,13 @@ static void fork_signals(void)
 
 static int clone_magic;
 
+static _Noreturn int abort_fn(void *arg)
+{
+    (void)arg;
+    KID(gettid() == getpid() && syscall(SYS_gettid) == getpid());
+    abort();
+}
+
 static int clone_fn(void *arg)
 {
     KID(arg == &clone_magic && clone_magic == 0x5a5a);
@@ -774,7 +782,24 @@ static void fork_clone(void)
     errno = 0;
     CHECK(clone(clone_fn, stk + (64 << 10), CLONE_VM | SIGCHLD, &clone_magic) == -1 &&
           errno == ENOSYS);
+    /* clone()'s child aborts: SIGABRT, its tid in musl's record its own
+     * (the pid), not its parent's thread's (FR2's finding 10). */
+    pid = clone(abort_fn, stk + (64 << 10), SIGCHLD, NULL);
+    CHECK(pid > 0);
+    if (pid > 0) {
+        int st = reap(pid);
+        CHECK(WIFSIGNALED(st) && WTERMSIG(st) == SIGABRT && !rep->line);
+    }
     free(stk);
+    /* Bad tid pointers: no store, and the clone goes on, as Linux's
+     * put_user (FR2's finding 9). */
+    r = syscall(SYS_clone, SIGCHLD | CLONE_PARENT_SETTID | CLONE_CHILD_SETTID, 0, (void *)8,
+                (void *)8, 0);
+    if (r == 0)
+        kid_end(5);
+    CHECK(r > 0);
+    if (r > 0)
+        reaped((pid_t)r, 5);
 
     pid = do_vfork();
     CHECK(pid > 0);

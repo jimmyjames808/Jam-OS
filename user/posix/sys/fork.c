@@ -318,8 +318,8 @@ static void child(void *ctx, handle_t from)
         sig_timer_forked();
     if (how->clear_tid)
         (void)kp_set_tid_word((uint32_t *)how->clear_tid);
-    if (how->set_tid)
-        *how->set_tid = (int)lx_pid();   /* the child's first thread's id is its pid */
+    if (how->set_tid)   /* the child's first thread's id, its pid; a bad pointer: no store */
+        (void)uc_put_int((long)(uintptr_t)how->set_tid, (int)lx_pid());
     sig_thread_forked();
     sig_tty_attached();   /* the terminal is the child's own now: listened to */
 }
@@ -407,7 +407,7 @@ long lx_clone(long flags, long stack, long ptid, long ctid, long tls, long f)
                        .clear_tid = (flags & CLONE_CHILD_CLEARTID) ? word : NULL };
     long r = fork_core(&how);
     if (r > 0 && (flags & CLONE_PARENT_SETTID))
-        *(int *)(uintptr_t)ptid = (int)r;
+        (void)uc_put_int(ptid, (int)r);   /* a bad pointer: no store, as Linux's put_user */
     return r;
 }
 
@@ -474,7 +474,7 @@ int __jam_clone_process(int (*fn)(void *), void *stack, int flags, void *arg, in
     struct clone_call c = { .how = { .set_tid = (flags & CLONE_CHILD_SETTID) ? ctid : NULL } };
     lx_call_stack_run(clone_core, &c);   /* a clone child's own clone: off fn's stack */
     if (c.r > 0 && (flags & CLONE_PARENT_SETTID))
-        *ptid = (int)c.r;
+        (void)uc_put_int((long)(uintptr_t)ptid, (int)c.r);   /* bad: no store, as Linux */
     if (c.r)
         return (int)c.r;
     lx_call_stack_need(true);   /* fn's calls, from a stack that may be tiny */

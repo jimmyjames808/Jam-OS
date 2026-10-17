@@ -147,8 +147,8 @@ static _Noreturn void clone_entry(struct clone_start *s)
         jam_thread_exit();
     }
     self_tid = (uint32_t)tid + TID_BIAS;   /* never the first thread */
-    if (c.set_tid)
-        *c.set_tid = (int)self_tid;
+    if (c.set_tid)   /* a bad pointer: no store, as Linux's put_user */
+        (void)uc_put_int((long)(uintptr_t)c.set_tid, (int)self_tid);
     lx_call_stack_adopt(c.call_lo, true);
     sig_thread_begin(lx_self_thread(), self_tid, c.sigmask);
     __atomic_store_n(c.listed, 1, __ATOMIC_RELEASE);
@@ -233,7 +233,7 @@ static void clone_thread(void *p)
         return;
     }
     if (flags & CLONE_PARENT_SETTID)
-        *a->ptid = (int)tid;
+        (void)uc_put_int((long)(uintptr_t)a->ptid, (int)tid);   /* bad: no store, as Linux */
     volatile int listed = 0;
     uintptr_t call_lo = a->stack_size >= LX_CALL_STACK ? 0 : lx_call_stack_map();
     struct clone_start s = { a->fn, a->arg, flags & CLONE_CHILD_CLEARTID ? a->ctid : NULL,
