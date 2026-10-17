@@ -135,6 +135,9 @@ lx_call lx_stat, lx_lstat, lx_newfstatat, lx_statfs, lx_fstatfs, lx_access, lx_f
 lx_call lx_pipe, lx_pipe2, lx_socketpair, lx_dup, lx_dup2, lx_dup3, lx_fcntl, lx_flock,
         lx_memfd_create, lx_eventfd, lx_eventfd2;
 
+/* File watching (inotify.c). */
+lx_call lx_inotify_init, lx_inotify_init1, lx_inotify_add_watch, lx_inotify_rm_watch;
+
 /* The one user (user.c). */
 lx_call lx_getuid, lx_geteuid, lx_getgid, lx_getegid, lx_getresuid, lx_getresgid, lx_setuid,
         lx_setgid, lx_setreuid, lx_setregid, lx_setresuid, lx_setresgid, lx_setfsuid,

@@ -399,7 +399,8 @@ watch an `IN_IGNORED` added to the buffer. An unknown `wd`: `EINVAL`.
   queued returns 0 at once** (Linux would wait): a bell rung for an event
   an earlier take already took makes `poll` say readable and `FIONREAD`
   say 0, and Chromium's reader then reads 0 bytes and must go back to
-  `poll` (1.1). `pread`: `ESPIPE`; `write`: `EINVAL`; `lseek`: `ESPIPE`.
+  `poll` (1.1). `pread`: `ESPIPE`; `write`: `EBADF` (the descriptor is
+  `O_RDONLY`, as Linux's); `lseek`: `ESPIPE`.
 - **`poll`, `epoll`, `select`**: the arm is the bell; the kind's `ready`
   is "the buffer isn't empty". No change to `user/posix/sys/epoll.c` or
   poll.
@@ -434,6 +435,10 @@ process (`EMFILE` past that, as Linux's per-user limit answers).
 - Quiet watches in libc's trees and on the boot image (Linux's `/proc`
   is quiet too).
 - A restart costs an `IN_Q_OVERFLOW` (2.8).
+- A read of 0 bytes is 0 even with records held (Linux: `EINVAL`).
+- Two mounts' records come mount by mount in a take, not interleaved in
+  time; a mount going is seen at the next take, by a blocked `read`
+  within a second, not by `poll` or `epoll` alone ([IL1 notes](#il1-notes)).
 
 ## 4. The kernel
 
@@ -471,7 +476,7 @@ after it (`pager.c`, `main.c`, `fsops.c`, `test.c`, `extfs.h`),
 | **IP. The protocol and the library** (built: [IP notes](#ip-notes)) | 2.4 and the service-independent half of 2.2, 2.5 and 2.7: `fs.watch`, the `fswatch` protocol, and a library every service uses: the watcher channels, the inode index, the queues with the merge and overflow rules, ids with generations, the bell, the per-process cap, the `take` encoding, the state records' layout; utest `port_order` | `abi/idl/fs.idl` (method 17 and its comment), a new abi/idl/fswatch.idl and its line in `abi/idl/ids.txt`, the generated headers, a new user/lib/fswatch.c and user/include/fswatch.h, new utest files user/tests/utest/fswatch.c (a fake service in-process) and user/tests/utest/port_order.c | none: new files, and `fs.idl` has no other editor (a missing method is `ERR_NOT_SUPPORTED` in every other `fs` server, so fat, bootfs and ramfs build unchanged) | utest `fswatch_` (merge, one overflow then drops, `take`'s room and `more`, ids not given again, the bell rung once per empty to not empty, a removed watch's events dropped and `IN_IGNORED` last, the caps), `port_order`; `make check` (genidl's check); init run; shell scripts basic, cmds, commands, files and kdump save (an IDL changed) | 1 | **Opus** |
 | **IE1. extfs: events and order** | 2.1 to 2.3 on extfs: `fs.watch`, `add` walked in the view (`IN_ONLYDIR`, `IN_DONT_FOLLOW`, the mask flags, the read bit), every row of 2.2's table at its request, the open files' directory and name in memory, `IN_DELETE_SELF` when an orphan goes, cookies, the close-first rule; a restart ends every watch in this track | a new user/services/extfs/watch.c, `user/services/extfs/fsops.c`, `user/services/extfs/files.c`, `user/services/extfs/main.c` (the rule), `user/services/extfs/request.c`, `user/services/extfs/extfs.h`, a new utest file user/tests/utest/extfs_watch.c, `tools/shell-tests/extfs-svc.txt` (its line) | IP and WE1 merged; never beside WE2 (same files): before or after it | utest `extfs_watch`: each row of 2.2 with its exact events and order; a change through one view seen through another view of the volume; a move across directories with one cookie; the order case (write and close, add, write and close: exactly one `IN_CLOSE_WRITE`); `IN_ONESHOT`, `IN_EXCL_UNLINK`, `IN_MASK_CREATE`; `tools/extfs-svc-test.sh`; init run | 1 | **Opus** |
 | **IE2. extfs: rights and restarts** | 2.6 and 2.8: the hidden-name filter, the reach check at a rename (Q2), watches and watcher records in the state VMO, keeper slots for each channel and its bell, the successor's adopt (watches back, `IN_Q_OVERFLOW` queued and the bell rung on each), a fresh start closing them, test powers that kill extfs between a change and its event; volumes' handle limits for extfs's job | user/services/extfs/watch.c, `user/services/extfs/views.c`, `user/services/extfs/walk.c` (the reach), `user/services/extfs/state.c`, `user/services/extfs/keeper.c`, `user/services/extfs/adopt.c`, `user/services/extfs/test.c`, `user/services/extfs/extfs.h`, volumes' extfs limits (a line), a new utest file user/tests/utest/extfs_restart_watch.c | IE1 merged | utest `extfs_watch`'s view cases (a hidden name never in an event, an add on one refused, a subview's watch ending when its directory moves above the root, a `HIDE_KEYS` watcher's watch ending when its directory moves into `etc/ssh`), `extfs_restart_watch` (killed at each point: the watches back, the overflow first, new events after; a fresh start: the channel closed); `tools/extfs-svc-test.sh`; `tools/layout-test.sh` drive; init run | 1 | **Opus** |
-| **IL1. libc: the descriptor** | 3.1 to 3.4 and 3.6 | a new user/posix/sys/inotify.c, `user/posix/sys/kinds.h` (its ops), `user/posix/sys/calls.def` (the four calls), `user/posix/sys/enosysnames.c` (the two names out), a new posixtest file user/posix/test/inotify.c (section `inotify`) and tools/shell-tests' new posix-inotify.txt | IP merged to start, CBF6 merged (the call tables); IE1 merged before its last run (events on ext); beside IE2 | posixtest `inotify` on ext `/data` and on `/tmp`: the records (padding, `len`, alignment), `FIONREAD`, a short read `EINVAL`, a 0-byte read, `O_NONBLOCK`'s `EAGAIN`, a blocking read woken, `poll`, `epoll` and `select` with another thread changing files, Chromium's reader loop copied (poll, `FIONREAD`, read) over 1,000 changes, quiet watches on "/", `/etc`, `/proc` and the boot image, `IN_ONLYDIR`, `IN_MASK_ADD`, `rm_watch`'s `IN_IGNORED`, `wd`s not reused; shell scripts basic, cmds, commands, files; init run | 1 | **Opus** |
+| **IL1. libc: the descriptor** (built: [IL1 notes](#il1-notes)) | 3.1 to 3.4 and 3.6 | a new user/posix/sys/inotify.c, `user/posix/sys/kinds.h` (its ops), `user/posix/sys/calls.def` (the four calls), `user/posix/sys/enosysnames.c` (the two names out), a new posixtest file user/posix/test/inotify.c (section `inotify`) and tools/shell-tests' new posix-inotify.txt | IP merged to start, CBF6 merged (the call tables); IE1 merged before its last run (events on ext); beside IE2 | posixtest `inotify` on ext `/data` and on `/tmp`: the records (padding, `len`, alignment), `FIONREAD`, a short read `EINVAL`, a 0-byte read, `O_NONBLOCK`'s `EAGAIN`, a blocking read woken, `poll`, `epoll` and `select` with another thread changing files, Chromium's reader loop copied (poll, `FIONREAD`, read) over 1,000 changes, quiet watches on "/", `/etc`, `/proc` and the boot image, `IN_ONLYDIR`, `IN_MASK_ADD`, `rm_watch`'s `IN_IGNORED`, `wd`s not reused; shell scripts basic, cmds, commands, files; init run | 1 | **Opus** |
 | **IL2. libc: limits, fork, exec** | 3.4's tests, 3.5, `/proc/self/fd`'s name | `user/posix/sys/procfs.c` (`/proc/sys/fs/inotify`), user/posix/sys/inotify.c (the fork and give steps if IL1 left them), posixtest's `user/posix/test/procfs.c` and `user/posix/test/forkfd.c` (an inotify case each), the TESTING rows | IL1 and CBF6 merged | posixtest `procfs` (the three files), `fork` (absent in the child), `exec` (gone after `execve`); `tools/shell-tests/posix-fork.txt`; init run | 0.5 | Sonnet 5.5 |
 | **IF. fat** (only with Q1's (A)) | 2.9 on fat with the library: keys, its rows of 2.2, the order rule in its loop, its state and keeper | `user/services/fat/` (a new watch.c, fsops.c, its loop, state, keeper, adopt), a new utest file user/tests/utest/fat_watch.c | IE2 merged (the pattern); DRO2 merged (fat's restart paths) | utest `fat_watch`, `fat_restart` unchanged; posixtest `inotify` with `JAMOS_DATA_FS=fat` | 1 | **Opus** |
 | **IC. Chromium's tests** | the 165 run: `FilePathWatcher*` off `tools/cr/base_unittests.skip` (what still fails listed with its reason), the stage relinked (`tools/cr/build.sh start base_unittests test_child_process`) | `tools/cr/base_unittests.skip`, `docs/CR-PLAN.md`'s rows | IE2, IL1 and IL2 merged; no other agent running `base` | `CR_BASE_ONLY='FilePathWatcher*' tools/cr-test.sh <out> base` with `TMPDIR` on ext `/data`, and once on `/tmp` (`CR_BASE_ENV=`) | 0.5 | Sonnet 5.5 |
@@ -565,6 +570,59 @@ of a channel that closed are libc's own. `remove` of an id that isn't a
 watch answers OK: `EINVAL` for a `wd` libc doesn't hold is libc's.
 `FSWATCH_IN_*` equal Linux's `IN_*` (static asserts against musl's
 header are cheap).
+
+### IL1 notes
+
+Built (2026-10-18): user/posix/sys/inotify.c (the kind, `inotify_ops` in
+kinds.h), the four calls in calls.def and calls.h, posixtest's `inotify`
+section (user/posix/test/inotify.c, and its `--child-inotify` mode) and
+tools/shell-tests/posix-inotify.txt
+([TESTING](TESTING.md#file-watching-inotify-plan)). The section runs
+against fake services posixtest mounts in its own namespace (one keeping
+watches with `<fswatch.h>`, one read-only and one writable without them),
+since no real service serves `fs.watch` before IE1.
+
+**What changed from the plan.**
+- The bell has two bits: the services' `FSWATCH_BELL`, and libc's own
+  `INO_HELD` (bit 25), up while the buffer holds records no read took.
+  Both are the arm's readable bits: a `poll` in one thread can't sleep
+  through records another thread's take left in the buffer, and a read
+  that empties the buffer clears `INO_HELD` without clearing a ring of
+  the services'. The kind's `ready` says the same as `INO_HELD`.
+- A read of 0 bytes is 0 at once even with records held (Linux:
+  `EINVAL`): an event coming between Chromium's `FIONREAD` of 0 and its
+  read of 0 bytes must not end its reader. `write` is `EBADF` (3.3).
+- enosysnames.c is unchanged: it is musl's whole table of names, for the
+  log (eventfd's and epoll's are there too), not the calls left `ENOSYS`.
+- A channel that closed (the mount went, or a successor closed it) is
+  seen at the next take (a read, `FIONREAD`), by an add or a removal on
+  it, and by a blocked read, which looks every second; `poll` and `epoll`
+  wait on the bell alone and see it only at their next wake. Its wds get
+  `IN_UNMOUNT` and `IN_IGNORED`, and the next add on the mount asks
+  `fs.watch` again (posixtest checks both).
+- A take goes channel by channel, so two mounts' records are not
+  interleaved in time (no service knows another's order).
+- A removed wd waits for its `IN_IGNORED`; one lost to an overflow keeps
+  the wd held until its id comes back from an add with `existed` 0 (then
+  libc makes the `IN_IGNORED` and gives a new wd).
+- Limits for now: 8,192 wds per descriptor and 32 mounts' channels
+  (one no watch uses is reused), `ENOSPC` past them; `fs.watch`'s
+  `ERR_NO_RESOURCES` is `ENOSPC` too.
+
+**For IL2.** fork's and exec's steps are done (`fd_fork_absent`, no
+`give`), and posixtest checks a forked child and a spawned one without
+`FD_CLOEXEC`; IL2's cases go in forkfd.c and exec.c as planned.
+`/proc/self/fd/N` still names the kind as procfs names any. The 3.5
+limits are IL2's (`INO_WATCHES` is the per-descriptor cap now).
+
+**For IE1 and the run on ext.** posixtest's `real_events` runs on `/data`
+and `/tmp` as soon as their service answers `fs.watch`: Chromium's mask
+on a new directory, then a create, a write and close, a rename, a
+`chmod`, an `unlink` and the directory's removal, expected in that order
+(other records between them allowed), the rename's two halves with one
+non-zero cookie. Until then the section prints `no watches from its
+service yet` for each and goes on. After IE1 merges: `posix-inotify.txt`
+and the init run on ext.
 
 ## 6. Tests
 
