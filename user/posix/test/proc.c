@@ -30,6 +30,7 @@
 #include <fcntl.h>
 #include <jamos/libjam.h>
 #include <posixfds.h>
+#include <signal.h>
 #include <spawn.h>
 #include <string.h>
 #include <sys/resource.h>
@@ -87,6 +88,27 @@ static void spin_cpu_ms(long ms)
         continue;
 }
 
+static volatile sig_atomic_t terms;
+
+static void on_term(int sig)
+{
+    (void)sig;
+    terms++;
+}
+
+/* SIGTERM's handler set, "r" on descriptor fd, then a wait of up to 10 s
+ * for the signal: 9 once it came, 1 if it didn't (mmap.c's spawn-data:
+ * the signal forwarded by the forked child that execve'd us). */
+static int child_term(int fd)
+{
+    struct sigaction sa = { .sa_handler = on_term };
+    if (sigaction(SIGTERM, &sa, NULL) || write(fd, "r", 1) != 1)
+        return 2;
+    for (int i = 0; i < 1000 && !terms; i++)
+        nap_ms(10);
+    return terms ? 9 : 1;
+}
+
 /* The spawner a test kills mid-spawn: children forever, each reaped. */
 static _Noreturn int child_spawner(void)
 {
@@ -135,6 +157,8 @@ int pt_child_proc(int argc, char **argv)
         spin_cpu_ms(atol(argv[3]));
         return 0;
     }
+    if (!strcmp(what, "term") && argc > 3)
+        return child_term(atoi(argv[3]));
     return 100;
 }
 

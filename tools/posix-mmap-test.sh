@@ -24,7 +24,8 @@
 #             a file open for writing): FAILS without it.
 #   spawn     a copy of posixtest on /data: posix_spawn of it is EACCES
 #             while it isn't allowed; then `allow`ed, it runs (init's
-#             /svc/exec seals and starts it) and exits 7.
+#             /svc/exec seals and starts it) and exits 7; a forked child's
+#             execve of it gets our pipe and our SIGTERM (forwarded): exit 9.
 # The image's /data is ext (extfs serves it, its pager behind every mapping
 # there, docs/M13.6-PLAN.md's U10); the second sticks are FAT. MMAP_DATA=ext
 # makes it an ext volume Linux's mke2fs made instead (tools/ext-stick.sh), which
@@ -153,6 +154,8 @@ case_spawn() {
     want spawn 1 "allow: /data/pt-prog may run" "$run"
     # The allowed run: sealed and started by init's /svc/exec, it exits 7.
     want spawn 1 "posixtest: spawn-data: /data/pt-prog: started, exited 7" "$run"
+    # A forked child's execve of it: our SIGTERM forwarded, its exit 9 the child's.
+    want spawn 1 "posixtest: spawn-data: /data/pt-prog fork-exec: wait status 0x900" "$run"
     want spawn 1 "^a-s=0" "$run"
     never spawn "init: exec: .* didn't start" "$run"
     no_errors spawn

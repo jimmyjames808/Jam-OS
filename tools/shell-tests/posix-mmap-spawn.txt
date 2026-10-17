@@ -4,7 +4,8 @@
 # /svc/exec seals and starts it, and it exits 7; started so again, and from
 # the shell, its self-image section passes (its /proc/self/exe is its path,
 # and a spawn of /proc/self/exe runs from its own image: docs/CR-PLAN.md,
-# "CL2 notes").
+# "CL2 notes"); a forked child's execve of it (spawn, wait, exit) passes our
+# pipe on and forwards our SIGTERM to it (exit 9: CR-PLAN, "CCS").
 # QEMU_INPUT=this file, command line "shell".
 wait 120 Jam OS shell
 wait {prompt}
@@ -26,6 +27,7 @@ wait {prompt}
 send posixtest spawn-data /data/pt-prog allowed; echo a-$T=$?
 wait 60 posixtest: spawn-data: /data/pt-prog:
 wait 60 posixtest: spawn-data: /data/pt-prog self-image: PASS
+wait 60 posixtest: spawn-data: /data/pt-prog fork-exec: wait status 0x900
 wait 30 a-s=0
 wait {prompt}
 send run /data/pt-prog self-image /data/pt-prog; echo si-$T=$?
