@@ -37,6 +37,12 @@
  * the path is there and never fires. A writable mount whose service has no
  * watches (fat: the owner's Q1) is EOPNOTSUPP.
  *
+ * **Limits** (kinds.h, and the three files of /proc/sys/fs/inotify say the
+ * same): a descriptor holds INOTIFY_MAX_WATCHES watches (ENOSPC past
+ * that, as a service's refusal is) and a process INOTIFY_MAX_INSTANCES
+ * descriptors (EMFILE at inotify_init). Linux's are a user's, not a
+ * descriptor's or a process's.
+ *
  * **Locks.** The description's lock guards everything here but the bell
  * and is held across a service call, as a file's is, never across the
  * bell's wait.
@@ -52,11 +58,11 @@
 #include <sys/inotify.h>
 #include <sys/ioctl.h>
 #include "files.h"
+#include "kinds.h"
 
 #define INO_HELD      (1u << 25)        /* the bell's other bit: libc holds records */
 #define INO_BUF_MAX   65536u            /* the most bytes of records a take fills to */
 #define INO_CHANS     32u               /* mounts watched through (replaced ones too) */
-#define INO_WATCHES   8192u             /* wds held at once */
 #define INO_QUIET     0xffu             /* a quiet watch's channel */
 #define INO_LOOK_NS   NS_PER_S          /* a blocked read looks for closed channels this often */
 #define INO_ALL_BITS  (IN_ALL_EVENTS | IN_UNMOUNT | IN_Q_OVERFLOW | IN_IGNORED | IN_ONLYDIR | \
@@ -193,13 +199,14 @@ static struct ino_watch *by_path(struct ino *n, const char *path)
     return NULL;
 }
 
-/* Room for one more watch: 0, or -ENOSPC (the most), -ENOMEM. */
+/* Room for one more watch: 0, or -ENOSPC (the most: max_user_watches),
+ * -ENOMEM. Held wds count, a removed one's until its IN_IGNORED. */
 static long watch_room_locked(struct ino *n)
 {
+    if (n->nw >= INOTIFY_MAX_WATCHES)
+        return -ENOSPC;
     if (n->nw < n->room)
         return 0;
-    if (n->nw >= INO_WATCHES)
-        return -ENOSPC;
     uint32_t room = n->room ? n->room * 2 : 16;
     struct ino_watch *w = realloc(n->w, room * sizeof(*w));
     if (!w)
@@ -462,10 +469,36 @@ const struct fd_ops inotify_ops = {
 
 /* ---- the calls ------------------------------------------------------------------- */
 
+/* The inotify descriptions this process holds, up to INOTIFY_MAX_INSTANCES
+ * (a dup shares its description). Counted from the descriptor table, not
+ * a counter, which a forked child would inherit with no descriptors:
+ * threads racing in inotify_init1 may pass the limit by a few, and the
+ * services' own (8 channels from a process on a volume) hold anyway. */
+static unsigned instances(void)
+{
+    struct fd_desc *seen[INOTIFY_MAX_INSTANCES], *d;
+    unsigned n = 0;
+    bool cloexec;
+    for (long fd = fd_next(0, &d, &cloexec); fd >= 0; fd = fd_next(fd + 1, &d, &cloexec)) {
+        bool keep = d->ops == &inotify_ops && n < INOTIFY_MAX_INSTANCES;
+        for (unsigned i = 0; i < n && keep; i++)
+            keep = seen[i] != d;
+        if (keep)
+            seen[n++] = d;
+        else
+            fd_put(d);
+    }
+    for (unsigned i = 0; i < n; i++)
+        fd_put(seen[i]);
+    return n;
+}
+
 long lx_inotify_init1(long flags, long b, long c, long d, long e, long f)
 {
     if (flags & ~(long)(IN_NONBLOCK | IN_CLOEXEC))
         return -EINVAL;
+    if (instances() >= INOTIFY_MAX_INSTANCES)
+        return -EMFILE;   /* max_user_instances */
     struct ino *n = calloc(1, sizeof(*n));
     if (!n || jam_event_create(&n->bell) != OK) {
         free(n);
