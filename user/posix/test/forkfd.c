@@ -642,12 +642,16 @@ void pt_fork_maps(void)
         KID(job_handles() == h);   /* the VMO still mapped at c + 2 pages */
         /* Its handle, once, and its VMO: the child's own copy of ours. */
         KID(munmap(c + 2 * PG, PG) == 0 && job_handles() == h - 2);
-        long cur = syscall(SYS_brk, 0), at = (cur + (long)PG - 1) & -(long)PG, up = at + 2 * (long)PG;
+        /* The break: pages 16 MiB above it, far from where musl's malloc
+         * grows it a page at a time (another thread of ours may, at any
+         * moment), written, then the break lowered to them and raised
+         * again. Not put back: we end next. */
+        long cur = syscall(SYS_brk, 0), at = ((cur + (long)PG - 1) & -(long)PG) + (16l << 20);
+        long up = at + 2 * (long)PG;
         KID(cur > 0 && syscall(SYS_brk, up) == up);
         memset((void *)at, 0x77, 2 * PG);
         KID(syscall(SYS_brk, at) == at && syscall(SYS_brk, up) == up);
         KID(((volatile uint8_t *)at)[0] == 0);   /* decommitted by the lowering */
-        KID(syscall(SYS_brk, cur) == cur);
         kid_step(1);
         kid_end();
     }

@@ -898,7 +898,9 @@ section, cases `fds`, `chromium`, `ttys`, `maps` in `forkfd.c`):
   says so). The children go to the child; shared ones (`MAP_SHARED`, and a
   file's private read-only pages, now mapped `VMAR_CLONE_SHARE`
   explicitly) a duplicate. The break's own handle is a duplicate of the
-  child's VMO at its start. JIT entries go as FL1b made them.
+  child's entry on the break's VMO, found in prepare by the VMO's koid
+  (not by address: musl's malloc maps a guard page `MAP_FIXED` over the
+  break's first page, a VMO of its own). JIT entries go as FL1b made them.
 - **Mapped `VMAR_CLONE_NONE`** (a connection's buffer, never copied, and
   no server's pages write-protected by a fork): fobj.c's and libjam's
   (fs.c) file transfer buffers, socket rings (libjam's net.c, sockgive.c),

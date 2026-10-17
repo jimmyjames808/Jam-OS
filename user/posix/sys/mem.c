@@ -236,25 +236,41 @@ void mem_fork(int step)
             i++;
 }
 
+/* The table's handle to the break's VMO at the last fork, or 0: an entry
+ * inside the break that maps it (the reservation's first page may be
+ * another's: musl's malloc maps a guard page there, MAP_FIXED). */
+static handle_t fork_brk;
+
 bool mem_fork_clones(const handle_t **vmos, handle_t **children, uint32_t *n)
 {
+    struct handle_info b, e;
+    const struct mt_entry *t = mt_entries();
+    fork_brk = HANDLE_INVALID;
+    bool brk = brk_base && jam_handle_info(brk_vmo, &b) == OK;
+    for (unsigned i = brk ? mt_first_after(brk_base) : mt_count();
+         i < mt_count() && t[i].base < brk_base + BRK_SIZE && !fork_brk; i++)
+        if (t[i].vmo && jam_handle_info(t[i].vmo, &e) == OK && e.koid == b.koid)
+            fork_brk = t[i].vmo;
     return mt_fork_prepare(vmos, children, n);
 }
 
 /* After the clone (layer.h): the table's handles (maptable.c), then, in
  * the child, the break's own handle to its VMO, a duplicate of the
- * child's (none if the break's start isn't mapped as it was: lowering it
- * then decommits nothing). */
+ * child's entry's (none if the break's VMO isn't mapped any more: lowering
+ * it then decommits nothing). */
 void mem_fork_walk(struct lx_fork_io *io)
 {
+    bool child = lx_fork_child(io);
+    unsigned b = mt_count();
+    for (unsigned i = 0; child && fork_brk && i < mt_count() && b == mt_count(); i++)
+        if (mt_entries()[i].vmo == fork_brk)
+            b = i;   /* the walk keeps entries in place */
     mt_fork_walk(io);
-    if (!lx_fork_child(io) || !brk_base)
+    if (!child)
         return;
-    unsigned i = mt_first_after(brk_base);
-    const struct mt_entry *e = i < mt_count() ? &mt_entries()[i] : NULL;
     brk_vmo = HANDLE_INVALID;
-    if (e && e->base <= brk_base && e->vmo && !(e->kind & (MT_SHARED | MT_PAGER_PRIVATE | MT_JIT)))
-        (void)jam_handle_duplicate(e->vmo, RIGHT_SAME, &brk_vmo);
+    if (b < mt_count() && mt_entries()[b].vmo)
+        (void)jam_handle_duplicate(mt_entries()[b].vmo, RIGHT_SAME, &brk_vmo);
 }
 
 /* -errno for a mapping whose VMO couldn't be made: a length past what a
