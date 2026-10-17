@@ -320,8 +320,11 @@ def parse_boot(lines, items, res, hung_last):
             # The program got to gtest's summary: the test's own result line
             # was lost (a kernel log line cut into it). Code 0 means it passed;
             # otherwise leave it without a result, so a later round runs it alone.
+            # A skipped test is told apart by gtest's list at the end ("[  SKIPPED ]
+            # <name>", the name alone on its line): BM1 found one counted OK.
             if code == 0:
-                res.status[cur] = "OK"
+                skipped = any(re.search(r"\[\s+SKIPPED\s+\] " + re.escape(cur) + r"\s*$", l) for l in seg)
+                res.status[cur] = "SKIPPED" if skipped else "OK"
                 res.text[cur] = buf
         elif cur is not None:
             res.status[cur] = "CRASH"
