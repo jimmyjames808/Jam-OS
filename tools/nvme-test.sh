@@ -138,8 +138,9 @@
 #            a file on it): the serial's end typed wrong (nothing written),
 #            then right: the data partition is ext at /jam, read-write,
 #            without the old file, /tmp a view of it; a file written; then
-#            `disk format ... data fat`: FAT32 at /nvmeN, read-only, /tmp in
-#            memory again. On the host: the ESP as it was, the data partition
+#            `disk format ... data fat`: FAT32 at /nvmeN, read-only, /tmp on
+#            the stick's /data (memory on a FAT one). On the host: the ESP as
+#            it was, the data partition
 #            a clean FAT volume (tools/fatcheck.py), every traced Write
 #            inside the data partition
 #   checker  no QEMU: tools/nvme-trace-check.py on made-up traces (a clean
@@ -1097,8 +1098,11 @@ s8_format() {
     s6_boot "$dir" "nvme-$c-2" "$dir/nvme-$c-2.in" "$jam $win" || ok=0
     s2_want "$dir/nvme-$c-2.log" "volumes: nvme[01]: its data partition is formatted again, as the owner confirmed: /jam stops first" \
         "volumes: nvme[01]'s data partition is formatted: /nvme[0-9] \(FAT\), read-only" || ok=0
-    # /tmp went back to memory when /jam went
-    [ "$(grep -ac "init: /tmp: in memory" "$dir/nvme-$c-2.log")" -ge 2 ] || { echo "nvme-$c: FAIL: /tmp didn't go to memory"; ok=0; }
+    # /tmp left /jam/tmp when /jam went: for the stick's /data/tmp (memory on a FAT stick, DB1)
+    tmp_away="a view of /data/tmp"
+    [ "$(python3 tools/mkimage.py --data-fs build/jamos.img)" = fat ] && tmp_away="in memory"
+    sed -n '\|init: /tmp: a view of /jam/tmp|,$p' "$dir/nvme-$c-2.log" | grep -aq "init: /tmp: $tmp_away" ||
+        { echo "nvme-$c: FAIL: /tmp didn't go to the stick's /data (memory on FAT)"; ok=0; }
     [ "$(sha256 "$win" | cut -d' ' -f1)" = "$win_before" ] || { echo "nvme-$c: FAIL: the Windows-like image changed"; ok=0; }
     [ "$(dd if="$jam" bs=1M skip=1 count=512 2> /dev/null | sha256 | cut -d' ' -f1)" = "$esp_before" ] ||
         { echo "nvme-$c: FAIL: the ESP changed"; ok=0; }
