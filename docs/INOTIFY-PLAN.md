@@ -411,15 +411,22 @@ watch an `IN_IGNORED` added to the buffer. An unknown `wd`: `EINVAL`.
 As an `epoll` set ([FORK-PLAN 1.6](FORK-PLAN.md#16-handles-and-descriptors)):
 absent in a forked child, and not given to a spawned child or across
 `execve` (give: `-ENOTSUP`, as `FD_CLOEXEC` would). Chromium's children
-close it or never had it.
+close it or never had it. Tests: posixtest `inotify` (a forked child and
+a spawned one), `fork`'s `fds` and `exec`'s `inotify` ([IL2
+notes](#il2-notes)).
 
 ### 3.5 Limits
 
-`/proc/sys/fs/inotify/max_user_watches` 4096, `max_user_instances` 128,
-`max_queued_events` 512 (a 16 KiB queue of short records; *unsure*: no
-program read is known but Chromium's of the first). Chromium's
-per-watcher limit is then 256. At most 128 inotify descriptors per
-process (`EMFILE` past that, as Linux's per-user limit answers).
+What the services allow is the bound (2.5: 1,024 watches on a channel, 8
+channels from a process on a volume, a 16 KiB queue per channel), so the
+files say that and libc keeps to it ([IL2 notes](#il2-notes)):
+`/proc/sys/fs/inotify/max_user_watches` 1024, `max_user_instances` 8,
+`max_queued_events` 512 (16 KiB of records, each 14 bytes and its name:
+512 of an 18-byte name, 60 of the longest; no program read is known but
+Chromium's of the first). A descriptor holds at most 1,024 watches
+(`ENOSPC` past that, as a service's refusal is) and a process at most 8
+descriptors (`EMFILE` at `inotify_init`, as Linux's per-user limit
+answers). Chromium's per-watcher limit is then 64.
 
 ### 3.6 Where it differs from Linux
 
@@ -429,6 +436,10 @@ process (`EMFILE` past that, as Linux's per-user limit answers).
 - A watch ends when its inode leaves the watcher's view (Q2).
 - `read` of 0 bytes doesn't wait (3.3).
 - Absent after `fork`, closed at `exec` (Q3).
+- The limits are the services' (3.5): a descriptor's watches and a
+  process's descriptors, not a user's (two processes can hold 1,024
+  watches each, up to a volume's 4,096). `max_queued_events` is the
+  records a queue's bytes hold, for an 18-byte name.
 - The same inode watched through two different mounts of one volume
   (`/data/x` and `/jam/x` on a drive boot) gets two `wd`s: libc can't
   tell the two views are one volume.
@@ -477,7 +488,7 @@ after it (`pager.c`, `main.c`, `fsops.c`, `test.c`, `extfs.h`),
 | **IE1. extfs: events and order** | 2.1 to 2.3 on extfs: `fs.watch`, `add` walked in the view (`IN_ONLYDIR`, `IN_DONT_FOLLOW`, the mask flags, the read bit), every row of 2.2's table at its request, the open files' directory and name in memory, `IN_DELETE_SELF` when an orphan goes, cookies, the close-first rule; a restart ends every watch in this track | a new user/services/extfs/watch.c, `user/services/extfs/fsops.c`, `user/services/extfs/files.c`, `user/services/extfs/main.c` (the rule), `user/services/extfs/request.c`, `user/services/extfs/extfs.h`, a new utest file user/tests/utest/extfs_watch.c, `tools/shell-tests/extfs-svc.txt` (its line) | IP and WE1 merged; never beside WE2 (same files): before or after it | utest `extfs_watch`: each row of 2.2 with its exact events and order; a change through one view seen through another view of the volume; a move across directories with one cookie; the order case (write and close, add, write and close: exactly one `IN_CLOSE_WRITE`); `IN_ONESHOT`, `IN_EXCL_UNLINK`, `IN_MASK_CREATE`; `tools/extfs-svc-test.sh`; init run | 1 | **Opus** |
 | **IE2. extfs: rights and restarts** | 2.6 and 2.8: the hidden-name filter, the reach check at a rename (Q2), watches and watcher records in the state VMO, keeper slots for each channel and its bell, the successor's adopt (watches back, `IN_Q_OVERFLOW` queued and the bell rung on each), a fresh start closing them, test powers that kill extfs between a change and its event; volumes' handle limits for extfs's job | user/services/extfs/watch.c, `user/services/extfs/views.c`, `user/services/extfs/walk.c` (the reach), `user/services/extfs/state.c`, `user/services/extfs/keeper.c`, `user/services/extfs/adopt.c`, `user/services/extfs/test.c`, `user/services/extfs/extfs.h`, volumes' extfs limits (a line), a new utest file user/tests/utest/extfs_restart_watch.c | IE1 merged | utest `extfs_watch`'s view cases (a hidden name never in an event, an add on one refused, a subview's watch ending when its directory moves above the root, a `HIDE_KEYS` watcher's watch ending when its directory moves into `etc/ssh`), `extfs_restart_watch` (killed at each point: the watches back, the overflow first, new events after; a fresh start: the channel closed); `tools/extfs-svc-test.sh`; `tools/layout-test.sh` drive; init run | 1 | **Opus** |
 | **IL1. libc: the descriptor** (built: [IL1 notes](#il1-notes)) | 3.1 to 3.4 and 3.6 | a new user/posix/sys/inotify.c, `user/posix/sys/kinds.h` (its ops), `user/posix/sys/calls.def` (the four calls), `user/posix/sys/enosysnames.c` (the two names out), a new posixtest file user/posix/test/inotify.c (section `inotify`) and tools/shell-tests' new posix-inotify.txt | IP merged to start, CBF6 merged (the call tables); IE1 merged before its last run (events on ext); beside IE2 | posixtest `inotify` on ext `/data` and on `/tmp`: the records (padding, `len`, alignment), `FIONREAD`, a short read `EINVAL`, a 0-byte read, `O_NONBLOCK`'s `EAGAIN`, a blocking read woken, `poll`, `epoll` and `select` with another thread changing files, Chromium's reader loop copied (poll, `FIONREAD`, read) over 1,000 changes, quiet watches on "/", `/etc`, `/proc` and the boot image, `IN_ONLYDIR`, `IN_MASK_ADD`, `rm_watch`'s `IN_IGNORED`, `wd`s not reused; shell scripts basic, cmds, commands, files; init run | 1 | **Opus** |
-| **IL2. libc: limits, fork, exec** | 3.4's tests, 3.5, `/proc/self/fd`'s name | `user/posix/sys/procfs.c` (`/proc/sys/fs/inotify`), user/posix/sys/inotify.c (the fork and give steps if IL1 left them), posixtest's `user/posix/test/procfs.c` and `user/posix/test/forkfd.c` (an inotify case each), the TESTING rows | IL1 and CBF6 merged | posixtest `procfs` (the three files), `fork` (absent in the child), `exec` (gone after `execve`); `tools/shell-tests/posix-fork.txt`; init run | 0.5 | Sonnet 5.5 |
+| **IL2. libc: limits, fork, exec** (built: [IL2 notes](#il2-notes)) | 3.4's tests, 3.5, `/proc/self/fd`'s name | `user/posix/sys/procfs.c` (`/proc/sys/fs/inotify`), user/posix/sys/inotify.c (the fork and give steps if IL1 left them), posixtest's `user/posix/test/procfs.c` and `user/posix/test/forkfd.c` (an inotify case each), the TESTING rows | IL1 and CBF6 merged | posixtest `procfs` (the three files), `fork` (absent in the child), `exec` (gone after `execve`); `tools/shell-tests/posix-fork.txt`; init run | 0.5 | Sonnet 5.5 |
 | **IF. fat** (only with Q1's (A)) | 2.9 on fat with the library: keys, its rows of 2.2, the order rule in its loop, its state and keeper | `user/services/fat/` (a new watch.c, fsops.c, its loop, state, keeper, adopt), a new utest file user/tests/utest/fat_watch.c | IE2 merged (the pattern); DRO2 merged (fat's restart paths) | utest `fat_watch`, `fat_restart` unchanged; posixtest `inotify` with `JAMOS_DATA_FS=fat` | 1 | **Opus** |
 | **IC. Chromium's tests** | the 165 run: `FilePathWatcher*` off `tools/cr/base_unittests.skip` (what still fails listed with its reason), the stage relinked (`tools/cr/build.sh start base_unittests test_child_process`) | `tools/cr/base_unittests.skip`, `docs/CR-PLAN.md`'s rows | IE2, IL1 and IL2 merged; no other agent running `base` | `CR_BASE_ONLY='FilePathWatcher*' tools/cr-test.sh <out> base` with `TMPDIR` on ext `/data`, and once on `/tmp` (`CR_BASE_ENV=`) | 0.5 | Sonnet 5.5 |
 | **IR. Independent review and fix** | everything above, findings first (a new docs/INOTIFY-REVIEW.md), then High and Medium fixed with a test each: can an event reach a watcher who can't list its name, can a watch outlive its reach, can a service be made to hold unbounded memory, is a wake ever lost, is a close ever reported after the next request's events, can a `wd` be reused while Chromium holds it | the files its fixes need | IC | its own; hostile: a watcher that never reads (one overflow, the service's memory flat), 8 channels from one process and the ninth refused, renames moving directories in and out of a subview while it watches, a rename storm with extfs killed every 200 ms, 8 threads closing and renaming while another reads; full init run; the extfs and posix scripts | 1.5 | **Opus** |
@@ -623,6 +634,58 @@ on a new directory, then a create, a write and close, a rename, a
 non-zero cookie. Until then the section prints `no watches from its
 service yet` for each and goes on. After IE1 merges: `posix-inotify.txt`
 and the init run on ext.
+
+### IL2 notes
+
+Built (2026-10-18): the limits, `/proc/sys/fs/inotify`, the descriptor's
+`/proc/self/fd` name and the fork and exec cases.
+
+**The limits** are three macros in user/posix/sys/kinds.h that
+inotify.c enforces and procinfo.c prints, so the code and the files can't
+differ: `INOTIFY_MAX_WATCHES` 1024, `INOTIFY_MAX_INSTANCES` 8,
+`INOTIFY_MAX_QUEUED` 512. They are the numbers true of the services as IP
+built them (user/include/fswatch.h: 1,024 watches on a channel,
+`FSW_PER_PROCESS` 8 channels from a process on a volume;
+fswatch.idl: a 16 KiB queue of 14-byte records and names), not 3.5's first
+guesses (4096, 128, 512): a limit above the services' would be a number a
+program reads and then can't use. posixtest's `procfs` ties the three
+files to those constants, so a change there says so.
+- `inotify_init` counts the process's inotify descriptions by walking the
+  descriptor table (a dup shares one) and is `EMFILE` at 8, not by a
+  counter, which a forked child would inherit. Threads racing in it can
+  pass the limit by a few; the services' 8 channels hold anyway.
+- A descriptor's watches (`wd`s held, a removed one's until its
+  `IN_IGNORED`) are `ENOSPC` at 1,024; this replaces IL1's 8,192. The
+  limit is per descriptor, as the services' is per channel, not per user
+  as Linux's: Chromium has one descriptor per process, so for it they are
+  the same, and its per-watcher limit (1024 / 16) is 64. If IC finds a
+  `FilePathWatcher` test that needs more, `FSW_PER_CHANNEL` and
+  `FSW_WATCHES` (and `INOTIFY_MAX_WATCHES`) are the three to raise
+  together.
+- `max_queued_events` is the one number that is a guess in kind: the
+  queue is 16,384 bytes, not a count, and 512 is that over the 32 bytes of
+  a record with an 18-byte name (60 of the longest, 1,170 of none); the
+  comment in kinds.h says so.
+- `/proc/sys/fs` and `/proc/sys/fs/inotify` are directories of procfs.c
+  (read only, 0555, root); `/proc/sys/fs` lists only `inotify`.
+- `/proc/self/fd/N` of an inotify descriptor is `anon_inode:inotify`, with
+  no brackets (Linux names this kind so, the others `[eventfd]`,
+  `[eventpoll]`); reopening it is `ENXIO` as for the other anonymous kinds.
+
+**Tests.** posixtest `procfs` (the files and directories; descriptors
+made until `EMFILE`; quiet watches of up to ~1,000 `/proc/self/fd/N`
+paths and the boot image's programs until `ENOSPC`, a removed one making
+room; the link name; the `ENXIO`), `fork`'s `fds` (the parent's inotify
+descriptor absent in the child, which makes its own; the parent's works
+after) and `exec`'s `inotify` (the case process, holding an inotify
+descriptor and an epoll set without `FD_CLOEXEC`, execs itself: both are
+`EBADF` in the new image, a pipe end is kept, `/proc/self/fd` is exact
+but for 1 and 2: where the starter gave no stdout pipe they are the kernel
+log's kind, which has no `give`, so an `execve` of a spawned program drops
+them: FL3's, left as it is).
+IL1 had already tested a forked and a spawned child. The exec case holds
+the descriptor in the case process itself because a forked child has none
+to lose.
 
 ## 6. Tests
 

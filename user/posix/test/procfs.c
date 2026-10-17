@@ -7,7 +7,12 @@
  *     files are ENOENT for every call, and nothing can be made there;
  *   - /proc/self/fd: its listing against the table, descriptors opened
  *     and closed between two getdents calls, a seek back; readlink of each
- *     kind of descriptor;
+ *     kind of descriptor (an inotify one is `anon_inode:inotify`);
+ *   - /proc/sys/fs/inotify (INOTIFY-PLAN 3.5): the directories and the
+ *     three files (max_user_watches, max_user_instances, max_queued_events:
+ *     read only, the numbers the services allow), the Nth inotify
+ *     descriptor past max_user_instances EMFILE (a dup is not another), the
+ *     Nth watch past max_user_watches ENOSPC (a removed one makes room);
  *   - reopening /proc/self/fd/N: a file (a description of its own), a
  *     memfd read-only (no write, no writable shared map, no seal: and in
  *     a child, neither a map nor a reopen gets write back), a pipe end, a
@@ -29,11 +34,13 @@
 #include <elf.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <fswatch.h>
 #include <jamos/libjam.h>
 #include <spawn.h>
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
+#include <sys/inotify.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -307,6 +314,8 @@ static void check_fd_links(void)
     CHECK(link_is(s[0], "socket:[", true) && link_is(s[1], "socket:[", true));
     CHECK(link_is(ev, "anon_inode:[eventfd]", false));
     CHECK(link_is(ep, "anon_inode:[eventpoll]", false));
+    int in = inotify_init1(0);
+    CHECK(in >= 0 && link_is(in, "anon_inode:inotify", false));   /* Linux's, no brackets */
     CHECK(link_is(m, "/memfd:ptproc (deleted)", false));
     CHECK(link_is(null, "/dev/null", false) && link_is(pw, "/etc/passwd", false));
     char path[32], buf[8];
@@ -318,10 +327,230 @@ static void check_fd_links(void)
     fd_path(path, pw);
     errno = 0;
     CHECK(readlink(path, buf, sizeof(buf)) == -1 && errno == ENOENT);   /* closed: gone */
-    int fds[] = { f, dir, p[0], p[1], s[0], s[1], ev, ep, m, null };
+    int fds[] = { f, dir, p[0], p[1], s[0], s[1], ev, ep, in, m, null };
     for (unsigned i = 0; i < sizeof(fds) / sizeof(fds[0]); i++)
         if (fds[i] >= 0)
             close(fds[i]);
+}
+
+/* ---- /proc/sys/fs/inotify --------------------------------------------------------------- */
+
+/* The number in /proc/sys/fs/inotify/<name> ("N\n"), or -1. */
+static long ino_limit(const char *name)
+{
+    char path[64], buf[32];
+    snprintf(path, sizeof(path), "/proc/sys/fs/inotify/%s", name);
+    int fd = open(path, O_RDONLY);
+    ssize_t n = fd >= 0 ? read(fd, buf, sizeof(buf) - 1) : -1;
+    if (fd >= 0)
+        close(fd);
+    if (n < 2)
+        return -1;
+    buf[n] = '\0';
+    char *end;
+    long v = strtol(buf, &end, 10);
+    return end == buf + n - 1 && *end == '\n' && v > 0 ? v : -1;
+}
+
+/* Does directory dir list exactly want (a NULL-ended list, any order, "."
+ * and ".." aside)? */
+static bool lists_only(const char *dir, const char *const *want)
+{
+    DIR *d = opendir(dir);
+    if (!d)
+        return false;
+    unsigned n = 0, seen = 0, total = 0;
+    while (want[n])
+        n++;
+    for (struct dirent *e; (e = readdir(d));) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, ".."))
+            continue;
+        total++;
+        for (unsigned i = 0; i < n; i++)
+            if (!strcmp(e->d_name, want[i]))
+                seen |= 1u << i;
+    }
+    closedir(d);
+    return total == n && seen == (1u << n) - 1;
+}
+
+/* The inode directory dir lists for its "..", or 0. */
+static ino_t dotdot_ino(const char *dir)
+{
+    DIR *d = opendir(dir);
+    ino_t ino = 0;
+    for (struct dirent *e; d && (e = readdir(d));)
+        if (!strcmp(e->d_name, ".."))
+            ino = e->d_ino;
+    if (d)
+        closedir(d);
+    return ino;
+}
+
+/* The three files and their directories as /proc's others are. */
+static void check_inotify_files(void)
+{
+    static const char *const names[] = { "max_user_watches", "max_user_instances",
+                                         "max_queued_events", NULL };
+    static const char *const sys_list[] = { "kernel", "fs", NULL };
+    static const char *const fs_list[] = { "inotify", NULL };
+    CHECK(lists_only("/proc/sys", sys_list) && lists_only("/proc/sys/fs", fs_list));
+    CHECK(lists_only("/proc/sys/fs/inotify", names));
+    struct stat st, up;
+    const char *const dirs[] = { "/proc/sys/fs", "/proc/sys/fs/inotify" };
+    const char *const parents[] = { "/proc/sys", "/proc/sys/fs" };
+    for (unsigned i = 0; i < 2; i++) {
+        CHECK(stat(dirs[i], &st) == 0 && S_ISDIR(st.st_mode) && st.st_uid == 0 &&
+              (st.st_mode & 0777) == 0555);
+        CHECK(stat(parents[i], &up) == 0 && dotdot_ino(dirs[i]) == up.st_ino);
+    }
+    for (unsigned i = 0; names[i]; i++) {
+        char path[64];
+        snprintf(path, sizeof(path), "/proc/sys/fs/inotify/%s", names[i]);
+        CHECK(stat(path, &st) == 0 && S_ISREG(st.st_mode) && st.st_uid == 0 &&
+              (st.st_mode & 0777) == 0444 && st.st_size == 0);
+        CHECK(ino_limit(names[i]) > 0);
+        errno = 0;
+        CHECK(open(path, O_WRONLY) == -1 && errno == EACCES);
+        strcat(path, "/x");
+        errno = 0;
+        CHECK(stat(path, &st) == -1 && errno == ENOTDIR);
+    }
+    errno = 0;
+    CHECK(stat("/proc/sys/fs/nosuch", &st) == -1 && errno == ENOENT);
+    errno = 0;
+    CHECK(stat("/proc/sys/fs/inotify/nosuch", &st) == -1 && errno == ENOENT);
+    /* What the services allow (user/include/fswatch.h, fswatch.idl): a
+     * descriptor's watches on a channel, a process's channels on a volume,
+     * and a queue of 16 KiB of records of an 18-byte name. */
+    CHECK(ino_limit("max_user_watches") == FSW_PER_CHANNEL);
+    CHECK(ino_limit("max_user_instances") == FSW_PER_PROCESS);
+    CHECK(ino_limit("max_queued_events") == FSWATCH_QUEUE_BYTES / (FSWATCH_RECORD_FIXED + 18));
+}
+
+/* Descriptors past max_user_instances are EMFILE, and a dup is not another. */
+static void check_inotify_instances(long limit)
+{
+    enum { SLOTS = 64 };
+    int fds[SLOTS], dups[SLOTS], n = 0, err = 0;
+    CHECK(limit > 0 && limit < SLOTS);
+    for (; n < SLOTS; n++) {
+        fds[n] = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+        if (fds[n] < 0) {
+            err = errno;
+            break;
+        }
+    }
+    CHECK(n == limit && err == EMFILE);
+    errno = 0;
+    CHECK(inotify_init() == -1 && errno == EMFILE);
+    while (n > 0 && n > limit - 1)
+        close(fds[--n]);   /* one place free */
+    int nd = 0;
+    for (int i = 0; i < n; i++)
+        dups[nd++] = fcntl(fds[i], F_DUPFD_CLOEXEC, 3);
+    int last = inotify_init();   /* the dups are the same descriptions */
+    CHECK(last >= 0);
+    errno = 0;
+    CHECK(inotify_init() == -1 && errno == EMFILE);
+    if (last >= 0)
+        close(last);
+    for (int i = 0; i < nd; i++)
+        if (dups[i] >= 0)
+            close(dups[i]);
+    for (int i = 0; i < n; i++)
+        close(fds[i]);
+    int again = inotify_init();   /* all closed: room again */
+    CHECK(again >= 0);
+    if (again >= 0)
+        close(again);
+}
+
+#define LIM_PATHS  1500
+#define LIM_LEN    64
+static char lim_path[LIM_PATHS][LIM_LEN];
+static unsigned lim_n;
+
+static void lim_add(const char *dir, const char *name)
+{
+    if (lim_n < LIM_PATHS && snprintf(lim_path[lim_n], LIM_LEN, "%s%s", dir, name) < LIM_LEN)
+        lim_n++;
+}
+
+/* A descriptor's watches past max_user_watches are ENOSPC, and a removed
+ * one makes room. Quiet watches (nothing changes under them) of distinct
+ * paths: libc's trees, the boot image's programs and one /proc/self/fd/N
+ * for each of as many descriptors as the table has room for. */
+static void check_inotify_watches(long limit)
+{
+    int in = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+    int null = open("/dev/null", O_RDONLY | O_CLOEXEC);
+    CHECK(in >= 0 && null >= 0);
+    static const char *const fixed[] = { "/", "/etc", "/dev", "/boot", "/boot/bin", "/proc",
+                                         "/proc/self", "/proc/self/fd", "/proc/self/task",
+                                         "/proc/sys", "/proc/sys/kernel", "/proc/sys/fs",
+                                         "/proc/sys/fs/inotify" };
+    lim_n = 0;
+    for (unsigned i = 0; i < sizeof(fixed) / sizeof(fixed[0]); i++)
+        lim_add("", fixed[i]);
+    DIR *d = opendir("/boot/bin");
+    for (struct dirent *e; d && (e = readdir(d));)
+        if (e->d_name[0] != '.')
+            lim_add("/boot/bin/", e->d_name);
+    if (d)
+        closedir(d);
+    int kept[LIM_PATHS], nk = 0;
+    for (int fd; lim_n < LIM_PATHS && (fd = fcntl(null, F_DUPFD_CLOEXEC, 3)) >= 0;) {
+        char num[16];
+        snprintf(num, sizeof(num), "%d", fd);
+        lim_add("/proc/self/fd/", num);
+        kept[nk++] = fd;
+    }
+    unsigned ok = 0;
+    int err = 0, first = -1;
+    for (; ok < lim_n && in >= 0; ok++) {
+        int wd = inotify_add_watch(in, lim_path[ok], IN_ATTRIB | IN_DONT_FOLLOW);
+        if (wd < 0) {
+            err = errno;
+            break;
+        }
+        if (first < 0)
+            first = wd;
+    }
+    if (lim_n <= (unsigned)limit) {
+        printf("posixtest: procfs: only %u paths to watch here, max_user_watches is %ld: "
+               "its ENOSPC is left unchecked\n", lim_n, limit);
+        CHECK(ok == lim_n);
+    } else {
+        if (ok != (unsigned)limit || err != ENOSPC)
+            printf("posixtest: procfs: %u watches, then errno %d (max_user_watches %ld)\n", ok, err,
+                   limit);
+        CHECK(ok == (unsigned)limit && err == ENOSPC);
+        char buf[512];
+        CHECK(inotify_rm_watch(in, first) == 0);
+        while (read(in, buf, sizeof(buf)) > 0)
+            ;
+        CHECK(inotify_add_watch(in, lim_path[ok], IN_ATTRIB | IN_DONT_FOLLOW) > 0);
+        errno = 0;
+        CHECK(ok + 1 >= lim_n ||
+              (inotify_add_watch(in, lim_path[ok + 1], IN_ATTRIB | IN_DONT_FOLLOW) == -1 &&
+               errno == ENOSPC));
+    }
+    for (int i = 0; i < nk; i++)
+        close(kept[i]);
+    close(null);
+    if (in >= 0)
+        close(in);
+}
+
+static void check_inotify_limits(void)
+{
+    check_inotify_files();
+    long watches = ino_limit("max_user_watches"), instances = ino_limit("max_user_instances");
+    if (instances > 0)
+        check_inotify_instances(instances);
+    if (watches > 0)
+        check_inotify_watches(watches);
 }
 
 /* ---- reopening -------------------------------------------------------------------------- */
@@ -399,6 +628,12 @@ static void check_reopen(void)
     fd_path(path, ev);
     errno = 0;
     CHECK(open(path, O_RDWR) == -1 && errno == ENXIO);
+    int in = inotify_init();
+    fd_path(path, in);
+    errno = 0;
+    CHECK(in >= 0 && open(path, O_RDONLY) == -1 && errno == ENXIO);
+    if (in >= 0)
+        close(in);
     int null = open("/dev/null", O_WRONLY);
     fd_path(path, null);
     int n2 = open(path, O_RDWR | O_CLOEXEC);
@@ -648,6 +883,7 @@ void pt_procfs(char **argv __attribute__((unused)))
     check_fd_listing();
     check_fd_between();
     check_fd_links();
+    check_inotify_limits();
     check_reopen();
     check_children();
     check_self_spawn(EXE);

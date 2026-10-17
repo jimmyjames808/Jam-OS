@@ -17,7 +17,9 @@
  *     the child on an ext /data (EBUSY on FAT: one writer), a directory
  *     listed, an unconnected AF_UNIX socket, a named socket's connection
  *     and its accepted end both ways (with /svc/unix); absent: an epoll
- *     set, a netstack socket (with /svc/net) and a listener.
+ *     set, an inotify descriptor (the child makes one of its own at its
+ *     number; the parent's still works after), a netstack socket (with
+ *     /svc/net) and a listener.
  *     /proc/self/fd lists exactly what the child kept. Then the child
  *     closes every descriptor above 2 by /proc/self/fd: the job lets go of
  *     at least the handles those descriptors came with (the charge counts
@@ -49,6 +51,7 @@
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
+#include <sys/inotify.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
@@ -279,7 +282,7 @@ static int recv_fd(int sock)
 
 struct fds {
     int pl[2], pc[2], ss[2], sq[2], mf, mf2, ef, dn, ep, fl, fw, dd, us;
-    int ee, net;               /* absent in the child (-1: not made) */
+    int ee, in, net;           /* absent in the child (-1: not made) */
     int ul, uc, ua;            /* a named socket's listener, connection, accepted end (-1) */
     bool ext;                  /* /data is ext: the child may write fw */
     unsigned handles;          /* what the child's copies of these hold (closed at its step 3) */
@@ -334,7 +337,9 @@ static void fds_make(struct fds *f)
     f->dd = open("/data", O_RDONLY | O_DIRECTORY);
     f->us = socket(AF_UNIX, SOCK_STREAM, 0);
     f->ee = epoll_create1(EPOLL_CLOEXEC);
-    CHECK(f->fw >= 0 && f->dd >= 0 && f->us >= 0 && f->ee >= 0);
+    f->in = inotify_init1(IN_NONBLOCK);   /* no FD_CLOEXEC: absent all the same */
+    CHECK(f->fw >= 0 && f->dd >= 0 && f->us >= 0 && f->ee >= 0 && f->in >= 0);
+    CHECK(inotify_add_watch(f->in, "/etc", IN_ALL_EVENTS) > 0);
     f->net = socket(AF_INET, SOCK_STREAM, 0);   /* with /svc/net only */
     if (f->net < 0)
         printf("posixtest: fork: fds: no netstack socket here (errno %d): left out\n", errno);
@@ -381,6 +386,14 @@ static void fds_kid(struct fds *f)
     KID(getsockname(f->us, (struct sockaddr *)&sa, &sl) == 0 && sa.sun_family == AF_UNIX);
     errno = 0;
     KID(fcntl(f->ee, F_GETFD) == -1 && errno == EBADF);   /* absent */
+    errno = 0;
+    KID(fcntl(f->in, F_GETFD) == -1 && errno == EBADF);   /* inotify: absent too (Q3) */
+    errno = 0;
+    KID(read(f->in, buf, sizeof(buf)) == -1 && errno == EBADF);
+    int own = inotify_init1(IN_NONBLOCK);   /* the child's own (the parent's number is free) */
+    KID(own >= 0 && inotify_add_watch(own, "/etc", IN_CREATE) > 0);
+    KID(read(own, buf, sizeof(buf)) == -1 && errno == EAGAIN);
+    close(own);
     if (f->net >= 0)
         KID(fcntl(f->net, F_GETFD) == -1);
     if (f->ua >= 0) {
@@ -453,6 +466,11 @@ void pt_fork_fds(void)
     par_go(4);
     reap0(pid);
     CHECK(pread(f.fw, buf, 1, 9) == 1 && buf[0] == (f.ext ? 'W' : 'j'));
+    CHECK(fcntl(f.in, F_GETFD) == 0);   /* ours still: a watch of it still works */
+    CHECK(inotify_add_watch(f.in, "/etc", IN_ALL_EVENTS) > 0);
+    CHECK(inotify_add_watch(f.in, "/dev", IN_CREATE) > 0);
+    errno = 0;
+    CHECK(read(f.in, buf, sizeof(buf)) == -1 && errno == EAGAIN);
     /* Nothing of a fork stays with us: every handle made for a child goes
      * to it or is closed. The charge moves with our memory too, so the test
      * is that 16 more forks (each child gone at once) leave us within a
@@ -471,6 +489,7 @@ void pt_fork_fds(void)
     CHECK(h[1] <= h[0] + 4);
     close(f.fl);
     close(f.fw);
+    close(f.in);
     pt_files_end();
 }
 
