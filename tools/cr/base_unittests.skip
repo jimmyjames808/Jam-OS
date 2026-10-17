@@ -18,325 +18,30 @@
 # The list is for an ext /data (CB2b, 2026-10-16: the 44 file-system tests that
 # only a FAT /data fails are in base_unittests.fat.skip, which base-run.py adds
 # when the stick's /data is FAT).
+#
+# Shrunk 2026-10-17 (CB-RM) from CR_BASE_ALL=1 CR_BASE_LISTED=1 runs of base_unittests
+# relinked against main 0fa8eea5 (fork, EFAULT, CBF2a/2b/4, ext limits): what
+# passed came off, 596 listed became 259 (docs/CR-PLAN.md, "CB-RM"). The run's
+# death tests use gtest's fast style (base-run.py --death-style): base's own
+# threadsafe style execve()s the program in the clone child, which waits for FL3.
 
-[posix] death tests: gtest makes the test's child with fork() (fast style: syscall 57, ENOSYS, seen with TEST_TMPDIR set) or clone(SIGCHLD) (threadsafe style: gtest-death-test.cc:1329; __jam_clone refuses a process clone with -ENOSYS and no log line), CaptureStderr() has already redirected stderr, so the abort that follows is silent
-All/Base64Test.Overflow/0
-All/Base64Test.Overflow/1
-AlternateTestParams/PartitionAllocDeathTest.AcquireAfterQuarantined/0
-AlternateTestParams/PartitionAllocDeathTest.AcquireAfterQuarantined/1
-AlternateTestParams/PartitionAllocDeathTest.CheckTriggered/0
-AlternateTestParams/PartitionAllocDeathTest.CheckTriggered/1
-AlternateTestParams/PartitionAllocDeathTest.DirectMapGuardPages/0
-AlternateTestParams/PartitionAllocDeathTest.DirectMapGuardPages/1
-AlternateTestParams/PartitionAllocDeathTest.ImmediateDoubleFree/0
-AlternateTestParams/PartitionAllocDeathTest.ImmediateDoubleFree/1
-AlternateTestParams/PartitionAllocDeathTest.ImmediateDoubleFree2ndSlot/0
-AlternateTestParams/PartitionAllocDeathTest.ImmediateDoubleFree2ndSlot/1
-AlternateTestParams/PartitionAllocDeathTest.IntendedLeakCannotCoexistWithBRP/0
-AlternateTestParams/PartitionAllocDeathTest.IntendedLeakCannotCoexistWithBRP/1
-AlternateTestParams/PartitionAllocDeathTest.IntendedLeakCannotCoexistWithThreadCache/0
-AlternateTestParams/PartitionAllocDeathTest.IntendedLeakCannotCoexistWithThreadCache/1
-AlternateTestParams/PartitionAllocDeathTest.LargeAllocs/0
-AlternateTestParams/PartitionAllocDeathTest.LargeAllocs/1
-AlternateTestParams/PartitionAllocDeathTest.NumAllocatedSlotsDoubleFree/0
-AlternateTestParams/PartitionAllocDeathTest.NumAllocatedSlotsDoubleFree/1
-AlternateTestParams/PartitionAllocDeathTest.RepeatedAllocReturnNullDirect/0
-AlternateTestParams/PartitionAllocDeathTest.RepeatedAllocReturnNullDirect/1
-AlternateTestParams/PartitionAllocDeathTest.RepeatedReallocReturnNullDirect/0
-AlternateTestParams/PartitionAllocDeathTest.RepeatedReallocReturnNullDirect/1
-AlternateTestParams/PartitionAllocTest.CrashOnUnknownPointer/0
-AlternateTestParams/PartitionAllocTest.CrashOnUnknownPointer/1
-AlternateTestParams/PartitionAllocTest.ExtraExtrasNullfyOffByOneDetection/0
-AlternateTestParams/PartitionAllocTest.ExtraExtrasNullfyOffByOneDetection/1
-AutoSpanificationIncrementTest.PostIncrementEmptySpan
-AutoSpanificationIncrementTest.PreIncrementEmptySpan
-BarrierCallbackTest.ErrorToCallCallbackWithZeroCallbacks
-BarrierClosureTest.ChecksIfCalledForZeroClosures
-BaseThreadLocalStorageDeathTest.VerifyDeathIfAllocationFails
-BaseThreadLocalStorageDeathTest.VerifyDeathIfFreeFails
-BaseThreadLocalStorageDeathTest.VerifyDeathIfStoringTLSDataFails
-BaseThreadLocalStorageDeathTest.VerifyDeathIfTLSSetupFails
-BaseThreadLocalStorageDeathTest.VerifyDeathIfTLSTeardownFails
-BindDeathTest.NullCallback
-BindDeathTest.NullCallbackWithoutBoundArgs
-BindUnretainedDanglingDeathTest.UnretainedDanglingPtr
-BindUnretainedDanglingDeathTest.UnretainedRefDanglingPtr
-BindUnretainedDanglingDeathTest.UnretainedRefWithManualUnretainedDanglingPtr
-BindUnretainedDanglingDeathTest.UnretainedWeakReceiverDangling
-ByteSizeDeathTest.AddByteSizeDeltaMin
-ByteSizeDeathTest.AddByteSizeDeltaNegative
-ByteSizeDeathTest.AddByteSizeDeltaPositive
-ByteSizeDeathTest.AddByteSizePositive
-ByteSizeDeathTest.ConstructionDeltaOutOfRange
-ByteSizeDeathTest.ConstructionFromUnsigned
-ByteSizeDeathTest.ConstructionOtherUnitOutOfRange
-ByteSizeDeathTest.DivideInvert
-ByteSizeDeathTest.MultiplyInvert
-ByteSizeDeathTest.SubtractByteSizeDeltaMin
-ByteSizeDeathTest.SubtractByteSizeDeltaNegative
-ByteSizeDeathTest.SubtractByteSizeDeltaPositive
-ByteSizeDeathTest.SubtractByteSizeMax
-ByteSizeDeltaDeathTest.Abs
-ByteSizeDeltaDeathTest.AddByteSizeDeltaMax
-ByteSizeDeltaDeathTest.AddByteSizeDeltaNegative
-ByteSizeDeltaDeathTest.AddByteSizeDeltaPositive
-ByteSizeDeltaDeathTest.ConstructionOtherUnitOutOfRange
-ByteSizeDeltaDeathTest.DivideInvert
-ByteSizeDeltaDeathTest.Magnitude
-ByteSizeDeltaDeathTest.MultiplyInvert
-ByteSizeDeltaDeathTest.MultiplyNegative
-ByteSizeDeltaDeathTest.MultiplyPositive
-ByteSizeDeltaDeathTest.SubtractByteSizeDeltaNegative
-ByteSizeDeltaDeathTest.SubtractByteSizeDeltaPositive
-ByteSizeDeltaDeathTest.UnaryMinus
-ByteSizeTest.SubtractByteSizePositive
-CStringViewDeathTest.FrontBackChecked
-CStringViewDeathTest.IndexChecked
-CStringViewDeathTest.IterateBoundsChecked
-CStringViewDeathTest.RemovePrefixChecked
-CStringViewDeathTest.SubstrBoundsChecked
-CallbackDeathTest.RunNullCallbackChecks
-CallbackHelpersTest.SplitOnceCallback_FirstCallback
-CallbackHelpersTest.SplitOnceCallback_SecondCallback
-CallbackHelpersTest.SplitSplitOnceCallback_FirstSplit
-CallbackHelpersTest.SplitSplitOnceCallback_SecondSplit
-CheckDeathTest.Basics
-CheckDeathTest.CheckDerefOfConstNullPointer
-CheckDeathTest.CheckDerefOfNullPointer
-CheckDeathTest.CheckFailuresAreNoreturn
-CheckDeathTest.CheckNotFatalUntil
-CheckDeathTest.CheckOp
-CheckDeathTest.CheckOpNotFatalUntil
-CheckDeathTest.CheckOpPointers
-CheckDeathTest.CheckOpStrings
-CheckDeathTest.CorrectSystemErrorUsed
-CheckDeathTest.DumpWillBeCheck
-CheckDeathTest.DumpWillBeNotReachedNoreturn
-CheckDeathTest.NotReached
-CheckDeathTest.NotReachedNotFatalUntil
-CheckDeathTest.OstreamVsToString
-CheckDeathTest.PCheck
-CheckDerefTest.FunctionCallDeath
-CheckDerefTest.RawPointerDeath
-CheckDerefTest.SmartPointerDeath
-CheckExitCodeAfterSignalHandlerDeathTest.CheckSIGFPE
-CheckExitCodeAfterSignalHandlerDeathTest.CheckSIGILL
-CheckExitCodeAfterSignalHandlerDeathTest.CheckSIGSEGV
-CheckExitCodeAfterSignalHandlerDeathTest.CheckSIGSEGVNonCanonicalAddress
-CheckedContiguousIteratorDeathTest.OutOfBounds
-CheckedObserverListTest.CheckedObserver
-CheckedObserverListTest.MultiObserver
-ClampTest.Death
-CompilerHardeningDeathTest.ArrayOutOfBounds
-CompilerHardeningDeathTest.Return
-CompilerHardeningDeathTest.ReturnJumpTable
-Debugger.CrashAtBreakpoint
-EnumSetDeathTest.CrashesOnOutOfRange
-EnumSetDeathTest.EnumWithNegatives
-EnumSetDeathTest.EnumWithOnlyNegatives
-EnumSetDeathTest.FromRangeCrashesOnBadInputs
-EnumSetDeathTest.PutCrashesOnOutOfRange
-EnumSetDeathTest.PutRangeCrashesOnBadInputs
-EnumSetDeathTest.VariadicConstructorCrashesOnOutOfRange
-ExpectedDeathTest.UseAfterMove
-ExpectedVoidTest.DeathTests
-FeatureListTest.RuntimeMutability_EarlyAccess
-FeatureListTest.RuntimeMutability_EnableRuntimeMutability_AfterEarlyAccess
-FeatureListTest.RuntimeMutability_EnableRuntimeMutability_AfterInit
-FeatureListTest.RuntimeMutability_EnableRuntimeMutability_MultipleCalls
-FeatureListTest.RuntimeMutableFeatureUpdate_IncompleteExecution_DeathTest
-FeatureListTest.RuntimeMutableFeatureUpdate_PostMutationBeforeUpdateState_DeathTest
-FeatureListTest.RuntimeMutableFeatureUpdate_UpdateStateBeforePreMutation_DeathTest
-FileErrorOrDeathTest.ConstValue
-FileErrorOrDeathTest.Error
-FileErrorOrDeathTest.Value
-FlatMap.AtFunction
-GmockCallbackSupportTest.RunOnceCallbackMultipleTimesCrashes
-GmockCallbackSupportTest.RunOnceClosureValueMultipleCall
-HardeningTest.ConstructPoolOffsetFromStackPointerCrashing
-HardeningTest.OffHeapPointerCrashing
-HardeningTest.PartialCorruption
-HeapArrayDeathTest.BadIndex
-HeapArrayDeathTest.CopyFrom
-HeapArrayDeathTest.CopyPrefixFrom
-HeapArrayDeathTest.TakeFirstWithOverSize
-HistogramDeathTest.BadRangesTest
-IDMapTest.RemovedValueHandling
-LibcppHardeningTest.Assertions
-LinkedListDeathTest.ChecksOnInsertAfterWhenInList
-LinkedListDeathTest.ChecksOnInsertBeforeWhenInList
-MemoryConsumerRegistryTest.MemoryConsumerRegistration_CheckUnregister_Fail
-MemoryConsumerTraitsTest.ActiveConsumerWithPassiveTraitsFails
-MemoryLimitTest.NegativePercentDeathTest
-MultiMemoryConsumerTest.DuplicateInterventionsCheck
-My/FlatTreeTest/0.EraseEndDeath
-My/FlatTreeTest/1.EraseEndDeath
-My/PAFlatTreeTest/0.EraseEndDeath
-My/PAFlatTreeTest/1.EraseEndDeath
-ObserverListThreadSafeDeathTest.CrossThreadRemovalRestricted
-OptionalRefDeathTest.ArrowOnEmpty
-OptionalRefDeathTest.StarOnEmpty
-OptionalRefDeathTest.ValueOnEmpty
-OptionalTest.DereferencingNoValueCrashes
-OutOfMemoryDeathTest.AlignedAlloc
-OutOfMemoryDeathTest.Calloc
-OutOfMemoryDeathTest.Malloc
-OutOfMemoryDeathTest.New
-OutOfMemoryDeathTest.NewArray
-OutOfMemoryDeathTest.Posix_memalign
-OutOfMemoryDeathTest.Realloc
-OutOfMemoryDeathTest.SecurityAlignedAlloc
-OutOfMemoryDeathTest.SecurityCalloc
-OutOfMemoryDeathTest.SecurityMalloc
-OutOfMemoryDeathTest.SecurityNew
-OutOfMemoryDeathTest.SecurityNewArray
-OutOfMemoryDeathTest.SecurityRealloc
-PAFlatMap.AtFunction
-PASpanTest.CopyFrom
-PASpanTest.CopyFromNonoverlapping
-PASpanTest.CopyPrefixFrom
-PASpanTest.Indexing
-PASpanTest.OutOfBoundsDeath
-PASpanTest.ReinterpretSpan
-PASpanTest.SplitAt
-PASpanTest.TakeFirst
-PASpanTest.TakeFirstElem
-PartitionAddressSpaceTest.ZeroSegmentInaccessibleBegin
-PartitionAddressSpaceTest.ZeroSegmentInaccessibleEnd
-PartitionAllocAddressPoolManagerTest.TooLargePool
-PathServiceTest.CheckedGetFailure
-PersistentHistogramAllocatorTest.FileReadonlyRecovery
-PersistentMemoryAllocatorTest.DelayedAllocationTest
-PlatformSharedMemoryRegionTest.CreateReadOnlyRegionDeathTest
-PlatformSharedMemoryRegionTest.DuplicateWritableRegionDeathTest
-PlatformSharedMemoryRegionTest.ReadOnlyRegionConvertToReadOnlyDeathTest
-PlatformSharedMemoryRegionTest.ReadOnlyRegionConvertToUnsafeDeathTest
-PlatformSharedMemoryRegionTest.UnsafeRegionConvertToReadOnlyDeathTest
-PlatformSharedMemoryRegionTest.UnsafeRegionConvertToUnsafeDeathTest
-ProtectedMemoryDeathTest.AccessWithoutInitialization
-ProtectedMemoryDeathTest.FailsIfDefinedOutsideOfProtectMemoryRegion
-ProtobufHardeningTest.RepeatedFieldOutOfBounds
-ProtobufHardeningTest.RepeatedPtrFieldOutOfBounds
-RawPtrTest.NullArrowDereference
-RawPtrTest.NullStarDereference
-RawRefDeathTest.ArrowAfterMove
-RawRefDeathTest.CopyAssignAfterMove
-RawRefDeathTest.CopyAssignAfterMoveUpCast
-RawRefDeathTest.CopyConstructAfterMove
-RawRefDeathTest.CopyConstructAfterMoveUpCast
-RawRefDeathTest.DerefAfterMove
-RawRefDeathTest.EqualsAfterMove
-RawRefDeathTest.FromPtrWithNullptr
-RawRefDeathTest.GreaterThanAfterMove
-RawRefDeathTest.GreaterThanOrEqualAfterMove
-RawRefDeathTest.LessThanAfterMove
-RawRefDeathTest.LessThanOrEqualAfterMove
-RawRefDeathTest.MoveAssignAfterMove
-RawRefDeathTest.MoveAssignAfterMoveUpCast
-RawRefDeathTest.MoveConstructAfterMove
-RawRefDeathTest.MoveConstructAfterMoveUpCast
-RawRefDeathTest.NotEqualsAfterMove
-RawRefDeathTest.SwapAfterMove
-ReadOnlySharedMemoryRegionTest.ConvertedToReadOnlyRegionProducedMappingWriteDeathTest
-ReadOnlySharedMemoryRegionTest.InitiallyReadOnlyRegionProducedMappingWriteDeathTest
-ReallocProtectedIteratorDeathTest.ReallocDuringIterationCrashesAtDestruction
-ReallocProtectedIteratorDeathTest.StringReallocCrashes
-RefCountedOverflowTest.NonThreadSafeStartFromOne
-RefCountedOverflowTest.NonThreadSafeStartFromZero
-RefCountedOverflowTest.ThreadSafeStartFromOne
-RefCountedOverflowTest.ThreadSafeStartFromZero
-RunLoopDeathTest.MustRegisterBeforeInstantiating
-SafeNumerics.SignedIntegerMath
-SafeNumerics.UnsignedIntegerMath
-SafeRefDeathTest.ArrowOperatorCrashIfBadPointer
-SafeRefDeathTest.StarOperatorCrashIfBadPointer
-SafeRefTest.InvalidAfterMoveAssignment
-SafeRefTest.InvalidAfterMoveConstruction
-SafeRefTest.InvalidAfterMoveConversionAssignment
-SafeRefTest.InvalidAfterMoveConversionConstruction
-SampleVectorTest.BucketIndexDeath
-ScopedFD.ScopedFDCrashesOnCloseFailure
-ScopedFDOwnershipTrackingTest.CrashOnUnownedClose
-ScopedFDOwnershipTrackingTest.NoDoubleOwnership
-ScopedGenericTest.Receive
-ScopedThreadPriorityDeathTest.NoRealTime
-SequenceBoundDeathTest.AsyncCallIntArgNoWithArgsShouldCheck
-SequenceBoundDeathTest.AsyncCallIntReturnNoThenShouldCheck
+[posix] death tests that still fail with gtest's fast style (the harness default: the child is a fork, FL1b and FL2; 275 of the 281 CB2 listed pass that way). StackDumpSignalHandlerIsMallocFree: the forked child dies of SIGSEGV but its stack trace never reaches the captured stderr (the child's stderr is a file reopened by path at its first use, FL2; why the handler writes nothing is not found). The other four set the threadsafe style themselves: gtest's clone child runs execve on a two-page stack, and the layer's execve (path_get has 4 KiB buffers) overflows it, so the child dies of "page fault at rip <__jl_path_get>" and prints no "Check failed": FL3 (docs/CR-PLAN.md, "CB-RM"). With CR_BASE_DEATH=threadsafe (base's own default) 145 of the 281 fail that way and 125 pass only because their matcher accepts any death
 SequenceCheckerTest.MoveOffSequenceBanned
-SequencedTaskRunnerCurrentDefaultHandleDeathTest.OverrideWithNull
-SingleThreadTaskRunnerCurrentDefaultHandleTest.DeathOnImplicitOverride
-SingleThreadTaskRunnerCurrentDefaultHandleTest.DeathOnSTTCDOverOverride
-SingleThreadTaskRunnerCurrentDefaultHandleTest.OverrideWithNull
-SingleThreadTaskRunnerMainThreadDefaultHandleTest.Basic
-SpanTest.CheckedSpanCrashes
-SpanTest.CheckedSpanDisallowsWraparound
-SpanTest.CopyFrom
-SpanTest.CopyFromNonoverlapping
-SpanTest.CopyPrefixFrom
-SpanTest.Indexing
-SpanTest.OutOfBoundsDeath
-SpanTest.ReinterpretSpan
-SpanTest.SplitAt
-SpanTest.TakeFirst
-SpanTest.TakeFirstElem
 StackTraceDeathTest.StackDumpSignalHandlerIsMallocFree
-StructuredSharedMemoryDeathTest.DuplicateRegion
-SupportsUserDataTest.ReentrantSetUserDataDuringRemoval
-TaskEnvironmentTest.ParallelExecutionFenceNonMainThreadDeath
-TaskEnvironmentTest.SingleThreadTaskRunnerGetMainThreadDefault
-TestFutureDeathTest.GetShouldCheckIfTimeoutHappens
-TestFutureDeathTest.TakeShouldCheckIfTimeoutHappens
-TestFutureWithoutTaskEnvironmentDeathTest.WaitShouldDcheckWithoutTaskEnvironment
-TestLauncherTools.TruncateSnippetFocusedMatchesFatalMessagesTest
-TestMockTimeTaskRunnerTest.DefaultUnbound
 ThreadCheckerTest.MoveOffThreadBanned
-TimeBase.AddSubInfinities
-ToArrayDeathTest.DynamicExtentSizeMismatch
-TokenType.TokenFromNullUnguessableToken
-ValuesTest.HardenTests
-ValuesTest.ListBackWhenEmpty
-ValuesTest.ListFrontWhenEmpty
 WeakPtrDeathTest.ArrowOperatorChecksOnBadDereference
 WeakPtrDeathTest.StarOperatorChecksOnBadDereference
-WeakValueTableTest.CallableReturnsPointerWithMultipleRefs
-WeakValueTableTest.DestroyNonEmptyTable
-WeakValueTableTest.MismatchedKey
-
-[posix] the layer's getrlimit/prlimit64 stores into the user's pointer without a fault check: base's CheckMemoryReadOnly passes a read-only page (protected_memory) and CHECKs for EFAULT (Linux's answer); here the page fault kills the process
-BackupRefPtrTest.Advance
-BackupRefPtrTest.AdvanceAcrossPools
-BackupRefPtrTest.Basic
-BackupRefPtrTest.Bind
-BackupRefPtrTest.DanglingPtrAssignment
-BackupRefPtrTest.DanglingPtrComparison
-BackupRefPtrTest.DanglingPtrCopyContructor
-BackupRefPtrTest.DirectMapReallocReuseWithAliveRawPtr
-BackupRefPtrTest.EndPointer
-BackupRefPtrTest.GetDeltaElems
-BackupRefPtrTest.IndexOperator
-BackupRefPtrTest.NormalBucketReallocReuseWithAliveRawPtr
-BackupRefPtrTest.QuarantineHook
-BackupRefPtrTest.QuarantinedBytes
-BackupRefPtrTest.RawPtrDeleteWithoutExtractAsDangling
-BackupRefPtrTest.RawPtrExtractAsDangling
-BackupRefPtrTest.RawPtrMayDangle
-BackupRefPtrTest.RawPtrNotDangling
-BackupRefPtrTest.SameSlotAssignmentWhenDangling
-BackupRefPtrTest.SpatialAlgoCompat
-BackupRefPtrTest.WorksWithOptional
-BackupRefPtrTest.WorksWithVariant
-BackupRefPtrTest.ZeroSized
-CPUDeathTest.VerifyModifyingCPUInstanceNoAllocationCrashes
-ProtectedMemoryDeathTest.AccessWithoutWriteAccessCrashes
-ProtectedMemoryTest.ExplicitInitializationWithExplicitValue
-ProtectedMemoryTest.ExplicitLazyInitializationWithExplicitValue
-ProtectedMemoryTest.VerifyExplicitInitializationWithDefaultValue
-ProtectedMemoryTest.VerifySetValue
 
 [posix] inotify_init and inotify_init1 (syscalls 253 and 294) are ENOSYS: no file watching
 FilePathWatcher*
 
-[launch] base::LaunchProcess and the multi-process test children start with fork (syscall 57, ENOSYS): FORK-PLAN's fork or CB5's launcher patch (docs/CR-PLAN.md section 5)
+[launch] base::LaunchProcess and the multi-process test children: fork works (FL1b, FL2) but the forked child's execvp fails (it prints "LaunchProcess: failed to execvp:" and exits 127; no kernel line and no ENOSYS line, the errno is not logged): execve in a forked child is FL3's. 15 of these pass anyway, vacuously (the test never reads the child's exit status, or looks before the child has failed: ProcessUtilTest.SpawnChild, ProcessTest.Terminate, ...), and stay listed so FL3's CR_BASE_ALL=1 rerun checks them for real. SharedMemorySwitchTest.PassViaSwitch, HistogramSharedMemoryTest.PassSharedMemoryRegion_Enabled and FieldTrialListTest.PassFieldTrialSharedMemoryOnCommandLine passed in CB2b the same way (exit_code stays 0 until a wait sets it) and fail now that the fork is real (docs/CR-PLAN.md, "CB-RM")
+All/HistogramSharedMemoryTest.PassSharedMemoryRegion_Enabled/0
+All/SharedMemorySwitchTest.PassViaSwitch/0
+All/SharedMemorySwitchTest.PassViaSwitch/1
+All/SharedMemorySwitchTest.PassViaSwitch/2
+All/SharedMemorySwitchTest.PassViaSwitch/3
+FieldTrialListTest.PassFieldTrialSharedMemoryOnCommandLine
 FileLockingTest.LockAndUnlockExclusive
 FileLockingTest.LockAndUnlockShared
 FileLockingTest.UnlockOnCloseExclusive
@@ -384,44 +89,20 @@ RustCommandLineTest.SpawnsSubprocessWithNewCommandLine
 SystemMetricsTest.MeasureChildCpuUsage
 UnitTestLauncherDelegateTester.RunMockTests
 
-[posix] mincore (syscall 27) was ENOSYS. CBF2b answers it from the kernel's count of present pages in each mapping: exact for a mapping with all or none of its pages present, a guess between (which pages: the first ones), so a PartitionAlloc purge test that asks about one page of a part-resident mapping can still fail: CR-PLAN, "CBF2b notes". Rerun with CR_BASE_ALL=1 to see which pass now
-AlternateTestParams/PartitionAllocTest.Purge/0
-AlternateTestParams/PartitionAllocTest.Purge/1
-AlternateTestParams/PartitionAllocTest.PurgeDiscardableDoubleTruncateFreeList/0
-AlternateTestParams/PartitionAllocTest.PurgeDiscardableDoubleTruncateFreeList/1
-AlternateTestParams/PartitionAllocTest.PurgeDiscardableFirstPage/0
-AlternateTestParams/PartitionAllocTest.PurgeDiscardableFirstPage/1
-AlternateTestParams/PartitionAllocTest.PurgeDiscardableManyPages/0
-AlternateTestParams/PartitionAllocTest.PurgeDiscardableManyPages/1
+[posix] mincore (CBF2b) answers from the kernel's count of present pages in each mapping: exact for a mapping with all or none of its pages present, a guess between (the first resident pages of the mapping), so a test that asks about one page of a part-resident mapping fails (CheckPageInCore says false for a page that is there; the heap profiler's resident_total reads 0). 12 of the 21 pass (the other Purge* tests, ProcessMemoryDumpTest.CountResidentBytes*). Needs the per-page kernel query: CR-PLAN, "CBF2b notes", decision 1
 AlternateTestParams/PartitionAllocTest.PurgeDiscardableNonPageSizedAlloc/0
 AlternateTestParams/PartitionAllocTest.PurgeDiscardableNonPageSizedAlloc/1
 AlternateTestParams/PartitionAllocTest.PurgeDiscardableNonPageSizedAllocOnSlotBoundary/0
 AlternateTestParams/PartitionAllocTest.PurgeDiscardableNonPageSizedAllocOnSlotBoundary/1
 AlternateTestParams/PartitionAllocTest.PurgeDiscardableSecondPage/0
 AlternateTestParams/PartitionAllocTest.PurgeDiscardableSecondPage/1
-AlternateTestParams/PartitionAllocTest.PurgeDiscardableSmallSlotsWithTruncate/0
-AlternateTestParams/PartitionAllocTest.PurgeDiscardableSmallSlotsWithTruncate/1
 AlternateTestParams/PartitionAllocTest.PurgeDiscardableWithFreeListStraightening/0
 AlternateTestParams/PartitionAllocTest.PurgeDiscardableWithFreeListStraightening/1
-ProcessMemoryDumpTest.CountResidentBytes
-ProcessMemoryDumpTest.CountResidentBytesInSharedMemory
 SamplingHeapProfilerTest.GetSamplesWithResidency
 
-[proc] a /proc file the test reads is missing or incomplete. CBF4 built what they read (cmdline, <tid>/stat and task/, stat's minflt, [stack] in maps, meminfo's buffers and caches, dladdr for the ModuleCache ones): the CB3 gate's CR_BASE_ALL=1 rerun takes them off (docs/CR-PLAN.md, "CBF4 notes"). ModuleCacheTest.CheckAgainstProcMaps stays: it wants two modules and a static program has one
+[proc] ModuleCacheTest.CheckAgainstProcMaps wants two modules (this one and ld-linux.so) and a static program has one: by design. SmapsRollupTest.ReadAndParse needs /proc/self/smaps_rollup, which CBF4 did not build; the test skipped itself while uname said 0.1.0 and runs since CBF2b's 5.10.0-jamos (the program aborts on an empty optional). The other 13 /proc tests pass (CBF4)
 ModuleCacheTest.CheckAgainstProcMaps
-ModuleCacheTest.GetDebugBasename
-ModuleCacheTest.LookupCodeAddresses
-ModuleCacheTest.ModulesList
-ModuleCacheTest.NativeModuleOverAuxiliaryModuleProvider
-PlatformThreadMetricsTest.GetCumulativeCPUUsage_CurrentThread
-PlatformThreadMetricsTest.GetCumulativeCPUUsage_OtherThread
-ProcMapsTest.ReadProcMaps
-ProcessMetricsTestLinux.GetCumulativeCPUUsagePerThread
-ProcessMetricsTestLinux.GetPageFaultCounts
-SetProcTitleLinuxTest.Empty
-SetProcTitleLinuxTest.Long
-SetProcTitleLinuxTest.Simple
-SystemMetrics2Test.GetSystemMemoryInfo
+SmapsRollupTest.ReadAndParse
 
 [posix] dlopen() of a library fails (a static program: musl's stub, logged as `dlopen <library>`)
 ElfReaderTestWithCurrentImage.ReadElfBuildId
@@ -431,33 +112,13 @@ NativeLibraryTest.LoadLibrary
 [toolchain] the program carries no GNU build-id note: Chromium's link asks for one (--build-id=fast, after the driver's =none) but user/posix/posix.ld discards `.note.*` (CBF2b: the fix is a PT_NOTE and a section line in posix.ld, which changes every port's sysroot: CR-PLAN, "CBF2b notes")
 ElfReaderTestWithCurrentElfImage.ReadElfBuildId
 
-[jit] mprotect/mmap of anonymous memory with PROT_EXEC is refused without the JIT right (W^X by design, docs/CR-PLAN.md section 12); the null buffer then faults
+[jit] mprotect/mmap of anonymous memory with PROT_EXEC is refused without the JIT right (W^X by design, docs/CR-PLAN.md section 12); the null buffer then faults (DecommitAndZero and InaccessiblePages pass)
 PartitionAllocPageAllocatorTest.AllocInaccessibleWillJitLater
 PartitionAllocPageAllocatorTest.AllocReadWriteExecute
-PartitionAllocPageAllocatorTest.DecommitAndZero
-PartitionAllocPageAllocatorTest.InaccessiblePages
 PartitionAllocPageAllocatorTest.ReadExecutePages
 
-[posix] SO_PASSCRED / SCM_CREDENTIALS: UnixDomainSocket::EnableReceiveProcessId failed; CBF2a has it (RecvPid and RecvPidDisconnectedSocket should pass now; RecvPidWithMaxDescriptors sends the socket over itself, which the kernel's cycle rule refuses: ETOOMANYREFS, stays)
-UnixDomainSocketTest.RecvPid
+[posix] RecvPidWithMaxDescriptors sends the socket over itself 16 times; the kernel's cycle rule refuses a channel end into its own channel (ETOOMANYREFS, CU1), where Linux keeps it in flight (CBF2a: RecvPid and RecvPidDisconnectedSocket pass)
 UnixDomainSocketTest.RecvPidWithMaxDescriptors
-UnixDomianSocketTest.RecvPidDisconnectedSocket
-
-[posix] sendfile (syscall 40) was ENOSYS: CBF2b has it (the first and the socket test should pass now; SeqFile also reads /proc/meminfo and /proc/self/cmdline, CBF4's)
-FileUtilTest.CopyFileContentsWithSendfile
-FileUtilTest.CopyFileContentsWithSendfileSeqFile
-FileUtilTest.CopyFileContentsWithSendfileSocket
-
-[posix] a thread blocked in recv() on a socket pair was not woken by shutdown() from another thread: the test hung; CBF2a: shutdown wakes its sleepers, so both should pass now
-CancelableSyncSocketTest.ShutdownCancelsReceive
-SyncSocketTest.DisconnectTest
-
-[posix] uname/sysfs: the kernel version read as 0.1.0 and there was no DMI hardware information; CBF2b: uname's release is 5.10.0-jamos and /sys/devices/virtual/dmi/id/{sys_vendor,product_name} are served, so both should pass now
-SysInfoTest.GetHardwareInfo
-SysInfoTest.KernelVersionNumber
-
-[posix] sockets: a non-blocking send on a socket pair gave the wrong count (FIONREAD took a message off the channel, freeing room); CBF2a: FIONREAD leaves it queued, so it should pass now
-SyncSocketTest.NonBlockingWriteTest
 
 [posix] mkfifo/mknod answer EPERM (lx_mknodat, meta.c: the layer has no named pipes and fs.idl no mknod; a symbolic link and every other call these tests make work on ext)
 FileUtilTest.CopyDirectoryExclFileOverFifo
@@ -480,9 +141,6 @@ DriveInfoTest.GetFileDriveInfo
 [musl] fdopen(-1, "w") returns a FILE (musl does not check the descriptor), and the test expects null: the same on Alpine, a test to leave out on any musl build
 FileUtilTest.FileToFILE
 
-[fs] extfs: with 64 threads each creating, writing, closing and reading back a temporary file, 2 of 2,048 reads of a just-written file fail (in /data/cr/tmp and in /tmp, which is a view of /data/tmp); likely cause XF_MAX_FILES, 32 open files at once (extfs.h; files.c answers ERR_NO_RESOURCES when no slot is free), not proved
-FileUtilMultiThreadedTest.MultiThreadedTempFiles
-
 [fs] a writable shared mapping of a /data file (MemoryMappedFile READ_WRITE, extend, truncate) fails on ext too (WE1: extfs's write-back is not built); the null pointer or bad object the test then uses faults
 FilePersistentMemoryAllocatorTest.AcceptableTest
 FilePersistentMemoryAllocatorTest.ExtendTest
@@ -493,9 +151,6 @@ PersistentHistogramAllocatorTest.CreateWithFile
 PersistentHistogramAllocatorTest.MovePersistentFile
 PersistentMemoryAllocatorTest.TruncateTest
 
-[posix] a purged discardable shared-memory page did not read back as zeros: base purges with madvise(MADV_REMOVE), which the layer refused; CBF2b zeroes the range for every holder, so it should pass now
-DiscardableSharedMemoryTest.ZeroFilledPagesAfterPurge
-
-[toolchain] PartitionAlloc reserves the low 4 GiB (a PROT_NONE zero segment, from 64 KiB, its own constant: nothing is read from the OS) as one mapping, and the program's image sits at 0x400000 in the way, so it keeps the 64 KiB it assumes (the layer also ignores an mmap address hint: CR-PLAN, "CBF2b notes")
+[toolchain] PartitionAlloc reserves the low 4 GiB (a PROT_NONE zero segment, from 64 KiB, its own constant: nothing is read from the OS) as one mapping, and the program's image sits at 0x400000 in the way, so it keeps the 64 KiB it assumes (the layer also ignores an mmap address hint: CR-PLAN, "CBF2b notes"). ZeroSegmentInaccessibleEnd reads the segment's last byte and expects to die: nothing is reserved there ("failed to die"; the Begin test passes)
 PartitionAddressSpaceTest.ZeroSegment
-
+PartitionAddressSpaceTest.ZeroSegmentInaccessibleEnd

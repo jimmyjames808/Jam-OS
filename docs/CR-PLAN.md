@@ -1311,6 +1311,171 @@ should clear (the CB3-gate rerun checks; the list's comments say so):
   `waiters` counts likewise (only the forking thread goes on, and it is in
   neither).
 
+#### CB-RM (2026-10-17)
+
+Track CB-RM (branch `cb-rm`): `base_unittests` measured again after the layer
+fixes of the last two days (CBF1's EFAULT, CBF2a's sockets, CBF2b's calls,
+CBF4's `/proc`, FL1b's `fork`, FL2's descriptors, R3's ext limits), main at
+0fa8eea5. The two programs were relinked first (`tools/cr/build.sh start
+base_unittests test_child_process` after removing them from the kept tree:
+116 s; the stage's `base_unittests` 76,946,736 bytes, was 76,890,904). The six
+shards on an ext `/data` with the new list **all PASS** (batch 17170310):
+
+| `/data` | pass | self-skip | on the skip list |
+|---------|-----:|----------:|-----------------:|
+| ext, CB2b (2026-10-16) | 8,321 | 39 | 596 |
+| ext, CB-RM, death tests in gtest's fast style | 8,660 | 36 | 260 |
+
+Per shard (of 8,956 tests): 1,227 + 3 + 8 of 1,238; 1,465 + 0 + 11 of 1,476;
+1,943 + 4 + 68 of 2,015; 1,404 + 9 + 142 of 1,555; 1,326 + 16 + 7 of 1,349;
+1,295 + 4 + 24 of 1,323 (pass + self-skip + listed). **343 tests came off
+the list and 7 went on** (below): 596 became 260 (95 named tests and the 165
+of `FilePathWatcher*`). The pass count is not CB2b's like for like: 275 of
+those 343 are death tests, which the run now makes in the fast style (below).
+The numbers came from `CR_BASE_ALL=1 CR_BASE_LISTED=1` runs of the suites
+that hold a listed test (batches 17160914 and 17162403, base's default style
+and the fast one), the six plain shards before and after the list changed
+(17160914, 17164338, 17170310), and a probe of `execve` in a forked child
+(17172112).
+
+Per group of the list, before and after (the list's groups, CB2 finding in
+brackets):
+
+| Group (CB2 finding) | Listed before | Listed now | What decided it |
+|---------------------|--------------:|-----------:|-----------------|
+| Death tests (1) | 281 | 5 (+1 moved) | 275 pass with the fast style. Left: 4 that set the threadsafe style themselves, and the stack-trace one (below) |
+| EFAULT (2) | 29 | 0 | CBF1: 26 pass at once, the 3 death ones with the fast style |
+| `inotify` (3) | 165 | 165 | `inotify_init` is still `ENOSYS` (`enosysnames.c`); not run, a minute each |
+| Launching (5) | 46 | 52 | `execve` in a forked child fails (below); 6 tests that passed by accident in CB2b fail now |
+| `mincore` (3) | 21 | 9 | CBF2b: 12 pass; the 8 `PartitionAllocTest.Purge*` and the heap profiler's residency test still guess |
+| `/proc` (6) | 14 | 2 | CBF4: 13 pass; `ModuleCacheTest.CheckAgainstProcMaps` is by design; `SmapsRollupTest.ReadAndParse` is new |
+| `sendfile`, `uname`, discardable zeros (3) | 3 + 2 + 1 | 0 | CBF2b (`pkey_alloc` was in the death tests: the 22 `PartitionAllocDeathTest` set-ups pass) |
+| Socket options, `shutdown`, non-blocking send (3) | 3 + 2 + 1 | 1 + 0 + 0 | CBF2a; `RecvPidWithMaxDescriptors` stays (the kernel's cycle rule) |
+| ext limits (CB2b) | 1 | 0 | R3: `MultiThreadedTempFiles` passes (64 threads, 2,048 files) |
+| Executable memory (7) | 5 | 3 | `DecommitAndZero` and `InaccessiblePages` pass; the other three need the JIT right |
+| `dlopen`, build-id, musl, `ZeroSegment` (8, 9, 10) | 3, 1, 1, 1 | 3, 1, 1, 2 | unchanged; `ZeroSegmentInaccessibleEnd` joins `ZeroSegment` (nothing is reserved at the low segment) |
+| File calls and sysfs (CB2b) | 4 + 1 + 1 + 1 + 1 | the same | `mkfifo`, `O_WRONLY` on mode 0200, the 256-byte path, `getcwd` after `rmdir`, `/sys/dev/block`: no fix has merged |
+| Writable shared mapping (4) | 8 | 8 | WE1 is not built |
+
+**The death tests: fast style, and what the threadsafe style needs.** base
+sets gtest's death test style to `threadsafe` (`base/test/test_suite.cc:712`),
+and a command-line `--gtest_death_test_style=fast` overrides that. In
+`threadsafe` gtest makes the child with `clone(fn, stack, SIGCHLD)` on a
+**two-page stack** it maps itself (`gtest-death-test.cc:1309`), and the child
+runs `execve` of the same program. With base's style (the old list, batch
+17160914) 145 of the 281 fail ("died but not with expected error": no `Check
+failed` text) and 136 pass, **125 of them only because their matcher accepts
+any death**: in all of those the kernel log has `user: process
+"base_unittests" killed: page fault at rip 265e63e, address 227bd8`, the
+same rip every time. Symbolized (llvm-symbolizer on the unstripped program):
+`__jl_path_get` at `path.c:188`, the `call` of `uc_strnlen` itself: a push,
+so the stack pointer has gone below the pages the child was given. The layer
+runs on the caller's stack and `path_get`'s frame alone is 4,120 bytes
+(`char base[PATH_BYTES]`; its callers hold a `struct path` beside it), so
+`execve` in a clone child dies on its first path. Not FL3's code but FL3's
+reach: **exec in place will walk the same `path_get` from the same two-page
+stack** (and so will any layer call that takes a path). Options for
+whoever fixes it (not decided here): the child's `__jam_clone_process` runs
+`fn` on a layer-owned stack of some 64 KiB, or the layer's path buffers move
+off the stack. The run therefore makes death tests in the fast style
+(`base-run.py --death-style`, default `fast`; `CR_BASE_DEATH=threadsafe` in
+`cr-test.sh`), which needs only `fork`: 275 of the 281 pass for real (the
+child dies of its `CHECK` and prints it). Left, all listed:
+`SequenceCheckerTest.MoveOffSequenceBanned`, `ThreadCheckerTest.MoveOffThreadBanned`,
+`WeakPtrDeathTest.ArrowOperatorChecksOnBadDereference` and
+`...StarOperatorChecksOnBadDereference` set the threadsafe style in their own
+body, so they hit the stack; and `StackTraceDeathTest.StackDumpSignalHandlerIsMallocFree`:
+the forked child dies of SIGSEGV but the in-process stack trace never reaches
+its captured stderr (a file the child reopens by path at its first use, FL2;
+cause not found). The fast style is a deviation from Chromium's default, kept
+until the threadsafe one can run: flip the default back when FL3 and the stack
+land, and rerun.
+
+**Launching (FL3): confirmed to fail, and how.** `fork` works (FL1b, FL2): the
+tests get a child. Its `execvp` fails: base's child prints `LaunchProcess:
+failed to execvp:` and the program's path, and exits 127 (`SharedMemorySwitchTest`,
+`ProcessTest.WaitForExit`, `ProcessUtilTest.LaunchProcess`, `FileLockingTest`,
+...; 27 fail, 3 crash, `ProcessMetricsTest.GetChildOpenFdCount` hangs). No
+kernel line, no ENOSYS line. The errno came from a probe: gtest's threadsafe
+death test with `--gtest_death_test_use_fork` makes its child with `fork`
+(a normal stack) and prints its `execv` error: **`execv(/data/cr/out/jamos/base_unittests, ...)
+failed: Permission denied`**, `EACCES`, 94 times in the 17 `CheckDeathTest`
+tests of batch 17172112 (the fork itself was fine). init's exec service says
+every refusal in the log ("no approval for it", ...) and its log has none, so
+the call fails before init refuses: in `file_program` (`spawn.c`),
+`svc_get(SVC_EXEC)` null in the child (`-EACCES`, "not ours to ask"), or the
+child's `file_open` of the program denied. Not told apart here; FL3 will meet
+it first. 15 of the 46 launching tests pass anyway, because they never read
+the child's exit status or look before it has failed
+(`ProcessUtilTest.SpawnChild`, `ProcessTest.Terminate`, ...): they stay
+listed so that FL3's `CR_BASE_ALL=1` rerun checks them for real. Six tests
+that CB2b counted as passing were passing the same way (`exit_code` stays 0
+until a wait sets it) and fail now that the child is real:
+`SharedMemorySwitchTest.PassViaSwitch` (4), `HistogramSharedMemoryTest.PassSharedMemoryRegion_Enabled/0`
+and `FieldTrialListTest.PassFieldTrialSharedMemoryOnCommandLine`; they went on
+the list. Others may still pass this way.
+
+**Other findings.**
+- **`uname` turned a test on.** `SmapsRollupTest.ReadAndParse` skipped itself
+  while the release read 0.1.0 (it gates on the kernel version) and runs now
+  that it reads 5.10.0-jamos; `/proc/self/smaps_rollup` is one of the files
+  CBF4 left, so it aborts on an empty optional. It joined the list. The
+  self-skips went from 39 to 36.
+- **`mincore`**: as CBF2b said, exact only for a mapping with all or none of its
+  pages present. The nine left ask about one page of a part-resident
+  mapping (`CheckPageInCore` false for a page that is there; the sampling
+  profiler's `resident_total` reads 0). The per-page kernel query is still
+  the open owner question.
+- **`ZeroSegmentInaccessibleBegin` passes**, `...End` does not ("failed to
+  die": the segment is not reserved as the test expects).
+- **The disk can fail a shard.** Under a loaded PC (12 to 14 of this track's
+  QEMUs and FL3's) 8 of 61 boots logged `volumes: can't open /data's block
+  channel for the spare (ERR_TIMED_OUT)` every 3 s from 3.2 s, and 3 of those
+  (the listing boot of one shard, and the first boot of two others) went on
+  to `extfs /data: a flush of the disk's cache failed: ERR_TIMED_OUT` and
+  `journal: commit write failed ...: the volume is read-only from now on`.
+  A program that makes a temporary file then crashes in every test (gtest's
+  `CaptureStream`: `Failed to create tmp file`; 33 crashes in two shards, which
+  made the first fast-style numbers look worse than they were). The warm
+  spare is `volumes`' (it starts a spare `bin/fat` at 1.2 s); the disk is the
+  stick behind a loaded QEMU, as in CB2b's "a transient disk error", but
+  here the volume stays read-only for the rest of the boot, and the first
+  timeout is at boot, not under a test. For the `volumes` track to look at.
+  `base-run.py` now says so in the summary ("WARNING: /data went read-only in
+  round(s) ...") instead of leaving it to the failures.
+
+**Harness changes** (`tools/cr`, `tools/cr-test.sh`): `CR_BASE_LISTED=1` (only
+the suites with a test named on the skip list, not `FilePathWatcher*`'s
+wildcard; with `CR_BASE_ALL=1` the way to measure a list), `CR_BASE_DEATH`
+(`fast` default, `threadsafe`), the read-only warning, and the list itself
+(header text per group; `ZeroSegmentInaccessibleEnd` moved under `ZeroSegment`).
+
+**What stands between here and the CB3 gate** (a clean rerun except
+`fork`/`LaunchProcess` and the by-design skips). The 260 listed tests, by
+who clears them:
+- **FL3** (exec in place), with the stack: 52 launching tests, the 4
+  threadsafe death tests, and then base's own death test style back on (the
+  whole of the 281 run for real again). Include the EACCES above and the clone
+  child's two-page stack in its brief; `vfork` and `functional/vfork`
+  follow it.
+- **A fix track not yet launched** for what no merged work covers, none
+  big: file calls (`mkfifo` 4, `O_WRONLY` on mode 0200, the 256-byte path
+  limit, `getcwd` after `rmdir`: 7), `/sys/dev/block` (1), `smaps_rollup` (1),
+  the stack-trace death test (1), exact `mincore` (9, the kernel query).
+- **Owner decisions** that were already open: honour `mmap`'s address hint and
+  link Chromium's programs above 4 GiB (`ZeroSegment` 2), `--build-id` in
+  `posix.ld` (1), the kernel's cycle rule for a socket sent over itself
+  (`RecvPidWithMaxDescriptors`, 1).
+- **WE1** (writable shared mappings of files, 8) and **CBF3** (`inotify`, the
+  165 `FilePathWatcher*` tests; unmeasured, `inotify_init` is `ENOSYS`):
+  Chromium falls back where it can't watch (net's DNS config reads
+  `getaddrinfo` instead), so whether the gate wants them is the owner's
+  reading of its wording. The 260 add up: FL3 56, the fix track 19, owner
+  decisions 4, WE1 8, `inotify` 165, by design 8.
+- **By design, stay listed**: `dlopen` (3: a static program), `ModuleCacheTest.CheckAgainstProcMaps`
+  (1: one module), `FileUtilTest.FileToFILE` (1: musl's `fdopen`), executable
+  memory without the JIT right (3).
+
 ### 2. The address space: huge sparse reservations (the top risk)
 
 **What Chromium does** ([CR-RESEARCH section 6](CR-RESEARCH.md#6-v8s-jit)):
