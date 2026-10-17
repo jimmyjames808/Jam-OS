@@ -105,7 +105,8 @@ struct xf_vol {
     uint64_t    sectors;      /* ... and its blocks */
     uint32_t    max_sectors;  /* the most one block call moves */
     bool        read_only;    /* block.info said so */
-    bool        ram;          /* the disk is a VMO (EXTFS_SR_RAM): no block channel */
+    bool        in_order;     /* ... and a queue depth of 1: answers in order (disk.c's retries) */
+    bool        ram;        /* the disk is a VMO (EXTFS_SR_RAM): no block channel */
     bool        may_format;   /* EXTFS_ARG_FORMAT */
     bool        fua;          /* EXTFS_ARG_FUA: an answered write is on the medium */
     bool        unflushed;    /* written since the last block.sync (no fua) */
@@ -474,3 +475,4 @@ void     test_die(enum xf_die point);
 void     test_crash(const char *path, uint32_t len);
 bool     test_fixed_time(void);
 bool     test_lazy_tail(void);
+bool     test_quick_retry(void);

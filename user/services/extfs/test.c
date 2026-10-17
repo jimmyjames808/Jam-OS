@@ -24,13 +24,18 @@
  *   tail-lazy         the journal's tail moves every 64 commits only (not
  *                     every few blocks: EXT_JNL_TAIL_BLOCKS), the way the
  *                     steps of utest's extfs_restart_steps were counted:
- *                     a start then replays a long log, and its writes count. */
+ *                     a start then replays a long log, and its writes count;
+ *   quick-retry       a block call that timed out is tried again after
+ *                     1 ms, doubling, not disk.c's RETRY_PAUSE (the tries
+ *                     and the budget as they are): utest's extfs_timeout
+ *                     cases don't wait out the pauses. */
 #include "extfs.h"
 
 #define DIE_PREFIX   "die="
 #define CRASH_PREFIX "crash-on="
 #define FIXED_TIME   "fixed-time"
 #define LAZY_TAIL    "tail-lazy"
+#define QUICK_RETRY  "quick-retry"
 
 static const char *const point_names[XF_DIE_COUNT] = {
     [XF_DIE_WRITE] = "write", [XF_DIE_JOURNAL] = "journal", [XF_DIE_COMMIT] = "commit",
@@ -44,6 +49,7 @@ static struct {
     const char *crash;
     bool        fixed;
     bool        lazy_tail;
+    bool        quick_retry;
 } t = { .point = -1 };
 
 bool test_fixed_time(void)
@@ -54,6 +60,11 @@ bool test_fixed_time(void)
 bool test_lazy_tail(void)
 {
     return t.lazy_tail;
+}
+
+bool test_quick_retry(void)
+{
+    return t.quick_retry;
 }
 
 static bool die_word(const char *w)
@@ -82,6 +93,10 @@ bool test_word(const char *w)
     }
     if (!strcmp(w, LAZY_TAIL)) {
         t.lazy_tail = true;
+        return true;
+    }
+    if (!strcmp(w, QUICK_RETRY)) {
+        t.quick_retry = true;
         return true;
     }
     if (!strncmp(w, DIE_PREFIX, strlen(DIE_PREFIX)))

@@ -69,7 +69,8 @@
 
 #define SPARE_NAME   "fat-spare"
 #define SPARE_BOOT   (1 * NS_PER_S)      /* the first spare, after the first service's start */
-#define BLOCK_RETRY  (1 * NS_PER_S)      /* /data's channel in advance couldn't be opened */
+#define BLOCK_RETRY  (1 * NS_PER_S)      /* /data's channel in advance couldn't be opened: */
+#define BLOCK_RETRY_MAX (32 * NS_PER_S)  /* ... the pause, doubled each time up to this */
 #define MAX_X        8                   /* handles a fat is given */
 
 /* The limits devmgr gives every driver's job (16 MiB, 256 handles, 16
@@ -105,11 +106,24 @@ static handle_t pager_root;
 static uint64_t pager_pages = PAGER_PAGES_DEFAULT;
 static handle_t pagers[MAX_VOLS];
 
-/* /data's `block` channel, opened for the spare in advance. */
+/* /data's `block` channel, opened for the spare in advance.
+ *
+ * The open is a call to the disk's driver, and usb-storage serves one
+ * request at a time: a SCSI command that takes long (a stick's cache flush,
+ * up to its 10 s) holds every open behind it, and the call gives up after
+ * CALL_WAIT. That is a symptom, not a fault of the open's: nothing waits
+ * for it (the task does), and the driver answers each open it was left
+ * with once it gets to it, a channel the kernel drops with the late reply.
+ * So the tries back off, BLOCK_RETRY doubling to BLOCK_RETRY_MAX, and a run
+ * of failures is said once, when it starts, and once more when an open
+ * goes through: a stalled stick isn't sent an open every 3 s, nor the log
+ * a line each time (docs/CR-PLAN.md's "The disk can fail a shard"). */
 static struct {
     handle_t block;       /* 0: none */
     uint32_t block_for;   /* ... for this service (vols index + 1) */
     uint64_t block_try;   /* the next try to open it (uptime ns) */
+    uint64_t pause;       /* the pause after the last failed try; 0: none failed */
+    uint32_t failed;      /* tries failed in a row */
     bool     opening;     /* prepare_main is at it */
 } adv;
 
@@ -180,12 +194,26 @@ static void prepare_main(void *arg)
     }
     if (st != OK) {
         if (st != ERR_PEER_CLOSED || !stopping) {
-            adv.block_try = now() + BLOCK_RETRY;
-            say(false, "volumes: can't open /data's block channel for the spare (%s)",
-                status_str(st));
+            adv.pause = adv.pause ? adv.pause * 2 : BLOCK_RETRY;
+            if (adv.pause > BLOCK_RETRY_MAX)
+                adv.pause = BLOCK_RETRY_MAX;
+            adv.block_try = now() + adv.pause;
+            if (adv.failed++)
+                return;
+            if (st == ERR_TIMED_OUT)   /* the driver is in a long command: no fault */
+                say(false, "volumes: the disk's driver is slow to open /data's block channel "
+                    "for the spare (ERR_TIMED_OUT): trying again, less and less often");
+            else
+                say(false, "volumes: can't open /data's block channel for the spare (%s): "
+                    "trying again, less and less often", status_str(st));
         }
         return;
     }
+    if (adv.failed)
+        say(false, "volumes: /data's block channel for the spare is open, at try %u",
+            adv.failed + 1);
+    adv.failed = 0;
+    adv.pause = 0;
     adv.block = h;
     adv.block_for = (uint32_t)(b - vols) + 1;
 }

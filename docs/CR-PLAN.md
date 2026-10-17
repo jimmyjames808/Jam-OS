@@ -1443,6 +1443,17 @@ the list. Others may still pass this way.
   timeout is at boot, not under a test. For the `volumes` track to look at.
   `base-run.py` now says so in the summary ("WARNING: /data went read-only in
   round(s) ...") instead of leaving it to the failures.
+  **Fixed by DRO:** the logs show one SYNCHRONIZE CACHE, sent just after the
+  mount, waiting 10 s for its status (QEMU's flush of the image on the loaded
+  host); usb-storage then reset the transport and answered `ERR_TIMED_OUT`,
+  and the spare's opens were only queued behind that command (usb-storage
+  serves one request at a time). extfs now tries a block call that times out
+  again (`user/services/extfs/disk.c`: a flush on any channel, a read or a
+  write where answers come in order; 5 tries within 40 s, pauses from 0.5 s
+  doubling, one line per episode), so the volume goes read-only only for a
+  real failure or a disk that stays silent; volumes' spare backs off its opens
+  (1 s doubling to 32 s) and says a run of failures once (utest
+  `extfs_timeout`, `extfs_timeout_spent`).
 
 **Harness changes** (`tools/cr`, `tools/cr-test.sh`): `CR_BASE_LISTED=1` (only
 the suites with a test named on the skip list, not `FilePathWatcher*`'s

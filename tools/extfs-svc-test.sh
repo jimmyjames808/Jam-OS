@@ -20,6 +20,13 @@ ok=0
 QEMU_TIMEOUT=${QEMU_TIMEOUT:-1500} QEMU_SAVE="$out/extfs-svc.after.img" \
     QEMU_INPUT=tools/shell-tests/extfs-svc.txt tools/qemu-test.sh "$out" extfs-svc shell || ok=1
 grep -E "utest: (extfs|[0-9]+ passed)|FAILED" "$out/extfs-svc.log" | head -40
+# extfs_timeout's and extfs_timeout_spent's lines: a flush that timed out
+# went through when tried again; one that never did failed as it always has.
+for want in "a flush of the disk's cache timed out; try 3 went through" \
+            "a flush of the disk's cache failed: ERR_TIMED_OUT (5 tries in"; do
+    grep -qF "$want" "$out/extfs-svc.log" ||
+        { echo "extfs-svc-test: extfs never said \"$want\""; ok=1; }
+done
 n=0
 for f in $(data_ls "$out/extfs-svc.after.img" extfs-e2fsck); do
     name=$(basename "$f" .sparse)

@@ -54,6 +54,22 @@ static status_t range(const struct ramdisk *rd, uint64_t lba, uint32_t count, ui
     return OK;
 }
 
+/* Is this request of `kind` one ramdisk_time_out asked to time out? It is
+ * counted then. */
+static bool times_out(struct ramdisk *rd, uint32_t kind)
+{
+    if (!(__atomic_load_n(&rd->to_kinds, __ATOMIC_RELAXED) & kind))
+        return false;
+    uint32_t left = __atomic_load_n(&rd->to_left, __ATOMIC_RELAXED);
+    while (left && !__atomic_compare_exchange_n(&rd->to_left, &left, left - 1, false,
+                                                __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+        ;
+    if (!left)
+        return false;
+    __atomic_add_fetch(&rd->timeouts, 1, __ATOMIC_RELAXED);
+    return true;
+}
+
 static status_t op_read(void *ctx, struct idl_txn txn, uint64_t lba, uint32_t count,
                         uint32_t offset)
 {
@@ -62,6 +78,11 @@ static status_t op_read(void *ctx, struct idl_txn txn, uint64_t lba, uint32_t co
     status_t st = range(rd, lba, count, offset);
     if (st != OK)
         return st;
+    if (times_out(rd, RAMDISK_READ)) {
+        memcpy(rd->buf + offset, rd->mem + lba * RAMDISK_SECTOR,
+               (size_t)(count / 2) * RAMDISK_SECTOR);
+        return ERR_TIMED_OUT;
+    }
     memcpy(rd->buf + offset, rd->mem + lba * RAMDISK_SECTOR, (size_t)count * RAMDISK_SECTOR);
     __atomic_add_fetch(&rd->reads, 1, __ATOMIC_RELAXED);
     return OK;
@@ -81,6 +102,11 @@ static status_t op_write(void *ctx, struct idl_txn txn, uint64_t lba, uint32_t c
     if (__atomic_load_n(&rd->fail_writes, __ATOMIC_RELAXED) ||
         (limit && __atomic_load_n(&rd->writes, __ATOMIC_RELAXED) >= limit))
         return ERR_IO;
+    if (times_out(rd, RAMDISK_WRITE)) {   /* landed in part: a retry must write it all */
+        memcpy(rd->mem + lba * RAMDISK_SECTOR, rd->buf + offset,
+               (size_t)(count / 2) * RAMDISK_SECTOR);
+        return ERR_TIMED_OUT;
+    }
     memcpy(rd->mem + lba * RAMDISK_SECTOR, rd->buf + offset, (size_t)count * RAMDISK_SECTOR);
     __atomic_add_fetch(&rd->writes, 1, __ATOMIC_RELAXED);
     void (*fn)(struct ramdisk *, uint64_t, uint32_t) =
@@ -94,6 +120,8 @@ static status_t op_sync(void *ctx, struct idl_txn txn)
 {
     (void)txn;
     struct ramdisk *rd = ctx;
+    if (times_out(rd, RAMDISK_SYNC))
+        return ERR_TIMED_OUT;
     __atomic_add_fetch(&rd->syncs, 1, __ATOMIC_RELAXED);
     return OK;
 }
@@ -211,4 +239,16 @@ void ramdisk_on_write(struct ramdisk *rd,
 void ramdisk_pull_after(struct ramdisk *rd, uint32_t requests)
 {
     __atomic_store_n(&rd->pull_after, requests, __ATOMIC_RELAXED);
+}
+
+void ramdisk_time_out(struct ramdisk *rd, uint32_t kinds, uint32_t n)
+{
+    __atomic_store_n(&rd->to_left, 0, __ATOMIC_RELAXED);   /* no request takes half of it */
+    __atomic_store_n(&rd->to_kinds, kinds, __ATOMIC_RELAXED);
+    __atomic_store_n(&rd->to_left, n, __ATOMIC_RELAXED);
+}
+
+uint32_t ramdisk_timeouts(const struct ramdisk *rd)
+{
+    return __atomic_load_n(&rd->timeouts, __ATOMIC_RELAXED);
 }
