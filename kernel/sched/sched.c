@@ -343,6 +343,25 @@ uint32_t sched_cpu_load(uint32_t cpu)
     return load_of(cpu);
 }
 
+void sched_cpu_queued(uint32_t cpu, char *buf, size_t cap)
+{
+    struct runqueue *rq = &rqs[cpu];
+    size_t n = 0;
+    buf[0] = '\0';
+    uint64_t f = spin_lock_irqsave(&rq->lock);
+    uint64_t now = cpu_ticks(cpus[cpu]);
+    for (int p = PRIO_MAX; p >= 0 && n + 1 < cap; p--) {
+        struct list_node *q = &rq->queues[p];
+        for (struct list_node *e = q->next; e != q && n + 1 < cap; e = e->next) {
+            struct thread *t = container_of(e, struct thread, rq_node);
+            int w = ksnprintf(buf + n, cap - n, "%s\"%s\" prio %d waited %lu tick(s)",
+                              n ? ", " : "", t->name, p, (unsigned long)(now - t->ready_since));
+            n = w < 0 ? cap - 1 : n + (size_t)w < cap ? n + (size_t)w : cap - 1;
+        }
+    }
+    spin_unlock_irqrestore(&rq->lock, f);
+}
+
 uint32_t sched_pick_cpu_fake(const cpumask_t *cand, const int16_t *sibling,
                              const uint8_t *type, const uint32_t *load, uint32_t last,
                              bool order)

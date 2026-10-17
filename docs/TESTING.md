@@ -14,7 +14,7 @@ that a bug fix comes with a test is in
 | User regression | `tools/init-test.sh build/test/init` (the init run: utest, usbtest, then posixtest, the POSIX layer's test, in three boots at once: ~45 s on the PC, [below](#the-init-run-in-parts)); before a push also `tools/qemu-test.sh build/test init init`, the same run in one boot (~130 s) | every change to syscalls, libos, services, drivers |
 | Shell scripts | [below](#shell-scripts) | shell, console, input |
 | Area scripts | [below](#area-scripts) | the area you touched |
-| Soak | `JAMOS_TIER=push tools/soak-test.sh build/test`, again with `QEMU_SMP=8` (about 3 minutes each) | **before a push or a milestone sign-off only** (not in an agent's or a fix round's tests): after a change to a kernel test, a service or a driver, and anything that keeps state from one run to the next |
+| Soak | `JAMOS_TIER=push tools/soak-test.sh build/test`, again with `QEMU_SMP=8` (about 15 minutes at 4 CPUs and 10 at 8 on the PC) | **before a push or a milestone sign-off only** (not in an agent's or a fix round's tests): after a change to a kernel test, a service or a driver, and anything that keeps state from one run to the next |
 | libc-test (all) | `tools/libc-test.sh` ([below](#shell-scripts)) | before a push or a sign-off only; an agent runs it only for the libc or POSIX layer it changed, and then only the tests of that part |
 | 2-minute soak | `soak 2` in the shell ([below](#soak)) | on the PC, before a push, when the full soak is more than the change needs |
 | Sign-off | the boot menu's All tests, then `soak 10` in the shell with a second stick mounted read-write and pulled and replugged during the run | milestone sign-off only, on the PC |
@@ -1685,8 +1685,10 @@ quick tiers:
   read or its reply-and-wait: each request still queued or wholly in its
   buffer), `handoff_*` (a higher-priority thread queued meanwhile runs
   first, a waker that doesn't block queues its wakee, a ping-pong pair
-  shares one slice), `preempt_resched_*` (a reschedule pending at the
-  last unlock still happens, and waits for interrupts to be on),
+  shares one slice; live, a wake that found a thread of the system's own
+  queued on the test's CPU checks no hand-off and names it),
+  `preempt_resched_*` (a reschedule pending at the last unlock still
+  happens, and waits for interrupts to be on),
   `lockdep_*` (the checker's fast path: an empty top slot seen by an
   interrupt handler, a release out of order, the switch with locks
   held); that the checker still refuses a bad order, a lock taken twice,

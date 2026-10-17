@@ -38,7 +38,9 @@ static bool answer(void)
             sh_say("y\n");
             return true;
         }
-        if (k == 'n' || k == 'N' || k == '\r' || k == '\n' || k < 0 || sh_interrupted()) {
+        /* Ctrl+C is 3 (not sh_interrupted(): it would take the keys
+         * typed after this one off to the next command line). */
+        if (k == 'n' || k == 'N' || k == '\r' || k == '\n' || k < 0 || k == 3) {
             sh_say("n\n");
             return false;
         }

@@ -241,16 +241,30 @@ bool t_session_opens(void)
            utest_cur, OPENS, (unsigned long)((t1 - t0) / NS_PER_MS), OPENS,
            (unsigned long)((now() - t1) / NS_PER_MS));
     CHECK(sess_all_gone());
+    /* Every slot is free again: SESSIONS_MAX at once. The processes being
+     * gone doesn't mean init has seen each end yet (it frees the slot
+     * then; a soak's load delays it), so a refusal for want of a slot is
+     * retried within the step, as in the loop. */
     struct sess s[SESSION_SESSIONS_MAX];
     memset(s, 0, sizeof(s));
-    bool ok = true;
-    for (unsigned i = 0; ok && i < SESSION_SESSIONS_MAX; i++)
-        ok = sess_open_st(80, 24, "", "", &s[i]) == OK;
+    status_t st = OK;
+    unsigned opened = 0;
+    uint64_t until = now() + (uint64_t)STEP_MS * NS_PER_MS;
+    while (opened < SESSION_SESSIONS_MAX) {
+        st = sess_open_st(80, 24, "", "", &s[opened]);
+        if (st == OK)
+            opened++;
+        else if (st != ERR_NO_RESOURCES || now() >= until)
+            break;
+        else
+            (void)jam_sleep_until(now() + 2 * NS_PER_MS);
+    }
     for (unsigned i = 0; i < SESSION_SESSIONS_MAX; i++)
         sess_close(&s[i]);
+    bool ok = opened == SESSION_SESSIONS_MAX;
     if (!ok)
-        printf("utest: %s: %u sessions didn't open after the loop\n", utest_cur,
-               SESSION_SESSIONS_MAX);
+        printf("utest: %s: after the loop %u of %u sessions opened at once, then %s\n",
+               utest_cur, opened, SESSION_SESSIONS_MAX, status_str(st));
     return sess_all_gone() && ok;
 }
 
