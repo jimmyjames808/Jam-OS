@@ -37,7 +37,9 @@
  *                             posix_spawn of a copy of posixtest on /data:
  *                             runs (and exits 7) once `allow`ed, else
  *                             EACCES; allowed, its self-image section
- *                             passes too (procfs.c)
+ *                             passes too (procfs.c), and a forked
+ *                             child's execve of it gets our pipe and our
+ *                             SIGTERM, forwarded (proc.c's term: exit 9)
  * and the child mode --child-mmap-pull <path>: maps the file, says it is
  * ready, waits for a line on descriptor 0 (the stick is pulled meanwhile),
  * then copies from the mapping through a pipe (EIO, and it lives) and
@@ -47,6 +49,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <jamos/libjam.h>
+#include <signal.h>
 #include <spawn.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -457,6 +460,30 @@ void pt_spawn_data(char **argv)
           WEXITSTATUS(status) == 0);
     printf("posixtest: spawn-data: %s self-image: %s\n", path,
            r ? strerror(r) : WIFEXITED(status) && !WEXITSTATUS(status) ? "PASS" : "FAIL");
+    /* A forked child's execve of it (spawn, wait, exit: init starts it):
+     * the pipe it says it is ready on is the program's, and our SIGTERM
+     * to the forked child is forwarded to it by the child's signal thread,
+     * whose wait ends with the program's code. */
+    int p[2];
+    char fd[12];
+    CHECK(pipe(p) == 0);
+    snprintf(fd, sizeof(fd), "%d", p[1]);
+    char *const term[] = { "pt-prog", "--child-proc", "term", fd, NULL };
+    pid = fork();
+    if (pid == 0) {
+        close(p[0]);
+        execv(path, term);
+        _exit(98);
+    }
+    close(p[1]);
+    char c = 0;
+    CHECK(pid > 0 && read(p[0], &c, 1) == 1 && c == 'r');
+    CHECK(pid > 0 && kill(pid, SIGTERM) == 0);
+    status = -1;
+    CHECK(pid > 0 && waitpid(pid, &status, 0) == pid && WIFEXITED(status) &&
+          WEXITSTATUS(status) == 9);
+    close(p[0]);
+    printf("posixtest: spawn-data: %s fork-exec: wait status %#x\n", path, status);
 }
 
 int pt_child_mmap_pull(int argc, char **argv)

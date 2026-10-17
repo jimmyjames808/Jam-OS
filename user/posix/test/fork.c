@@ -38,6 +38,11 @@
  *     CLONE_CHILD_SETTID, and its refusals (CLONE_VM alone, a new stack, an
  *     unknown flag); clone(fn, stack, SIGCHLD, arg) ending with fn's value;
  *     vfork (its wait: forknote.c's vfork case).
+ *   small: clone(fn, two pages, SIGCHLD), as gtest's death tests make it
+ *     (the parent unmaps the pages at once): fn's frames on those pages,
+ *     the calls that take a path (stat, lstat, access, open, mkdir and
+ *     rmdir, chdir and getcwd, readlink) working there, a fork and a clone
+ *     of its own reaped, and fn's value its exit code.
  * Then forkfd.c's cases (FL2) and forknote.c's (FL4: vfork, groups, junk). */
 #include <stdio.h>
 #include <stdlib.h>
@@ -690,6 +695,69 @@ static void fork_clone(void)
         reaped(pid, 6);
 }
 
+/* ---- small: clone's child on two pages ---------------------------------------------- */
+
+/* gtest's death tests give clone's child two pages they map (and unmap in
+ * the parent at once); the layer's own frames for a path are bigger than
+ * that, so its calls run on a stack of its own there (fork.c), and fn's
+ * on the one given, as on Linux. A guard page below the two makes running
+ * over them a fault, not a write over whatever was mapped there. */
+#define SMALL (2 * PG)
+
+static uintptr_t small_lo, small_hi;   /* the stack given */
+static char small_dir[64];
+
+static int small_inner(void *arg)
+{
+    struct stat st;
+    (void)arg;
+    KID((uintptr_t)&st > small_lo && (uintptr_t)&st < small_hi);
+    KID(stat("/proc/self/exe", &st) == 0);
+    return 4;
+}
+
+static int small_fn(void *arg)
+{
+    struct stat st;
+    char buf[64];
+    int status = 0;
+    KID(arg == &clone_magic);
+    KID((uintptr_t)&st > small_lo && (uintptr_t)&st < small_hi);   /* fn on the stack given */
+    KID(stat("/", &st) == 0 && S_ISDIR(st.st_mode));
+    KID(lstat("/proc/self/exe", &st) == 0);
+    KID(access("/data", W_OK) == 0);   /* /data: the fds case's too (the init run has no /tmp to write) */
+    int fd = open("/proc/self/stat", O_RDONLY | O_CLOEXEC);
+    KID(fd >= 0 && read(fd, buf, sizeof(buf)) > 0 && close(fd) == 0);
+    KID(mkdir(small_dir, 0700) == 0 && rmdir(small_dir) == 0);
+    KID(chdir("/data") == 0 && getcwd(buf, sizeof(buf)) && !strcmp(buf, "/data"));
+    KID(readlink("/proc/self/exe", buf, sizeof(buf)) > 0);
+    pid_t g = fork();   /* the grandchild goes on from the copy of the stack for calls */
+    if (g == 0)
+        _exit(stat("/", &st) == 0 ? 3 : 1);
+    KID(g > 0 && waitpid(g, &status, 0) == g && WIFEXITED(status) && WEXITSTATUS(status) == 3);
+    g = clone(small_inner, (char *)small_hi - 64, SIGCHLD, NULL);   /* this stack's copy */
+    KID(g > 0 && waitpid(g, &status, 0) == g && WIFEXITED(status) && WEXITSTATUS(status) == 4);
+    return rep->line ? 1 : 8;
+}
+
+static void fork_small(void)
+{
+    map_report();
+    snprintf(small_dir, sizeof(small_dir), "/data/pxclone-%d", (int)getpid());
+    char *guard = mmap(NULL, PG + SMALL, RW, ANON, -1, 0);
+    CHECK(guard != MAP_FAILED && mprotect(guard, PG, PROT_NONE) == 0);
+    if (guard == MAP_FAILED)
+        return;
+    small_lo = (uintptr_t)guard + PG;
+    small_hi = small_lo + SMALL;
+    clone_magic = 0x5a5a;
+    pid_t pid = clone(small_fn, (char *)small_hi - 64, SIGCHLD, &clone_magic);
+    CHECK(pid > 0);
+    CHECK(munmap(guard, PG + SMALL) == 0);   /* as gtest: the child has its copy */
+    if (pid > 0)
+        reaped(pid, 8);
+}
+
 /* ---- the section ------------------------------------------------------------------ */
 
 static const struct {
@@ -700,7 +768,7 @@ static const struct {
     { "twice", fork_twice, 0 },     { "threads", fork_threads, 0 },
     { "torn", fork_torn, 0 },       { "huge", fork_huge, 0 },
     { "nomem", fork_nomem, JOB_PAGES }, { "signals", fork_signals, 0 },
-    { "clone", fork_clone, 0 },
+    { "clone", fork_clone, 0 },     { "small", fork_small, 0 },
     /* forkfd.c's (FL2): the descriptors and the table of mappings */
     { "fds", pt_fork_fds, 0 },      { "chromium", pt_fork_chromium, 0 },
     { "ttys", pt_fork_ttys, 0 },    { "maps", pt_fork_maps, 0 },

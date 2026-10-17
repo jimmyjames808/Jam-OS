@@ -35,6 +35,10 @@
  *     dup2 of the output pipe to 1 and 2 and of the IPC socketpair end to 3,
  *     every other descriptor closed by reading /proc/self/fd, execve; the
  *     new image has exactly those descriptors, writes to 1 and talks on 3.
+ *   clone: gtest's threadsafe death test's child: clone(fn, two pages,
+ *     SIGCHLD), whose fn closes, changes directory and execs this program
+ *     by its path; the new image's parent is the case, its directory the
+ *     one fn changed to, and the case's waitpid sees it end with 0.
  *
  * "posixtest --child-exec native" is utest's (exec_native: a native
  * starter, the shell's way, waits on a POSIX program that execs). */
@@ -220,6 +224,16 @@ static int run_wait(void)
 {
     RUN(say(READY, 'r'));
     RUN(byte_from(GO) == 'g');
+    return run_end();
+}
+
+/* clone: made by a clone child on two pages (exec_clone): the case
+ * (argv[4]) its parent, the directory its child changed to its own. */
+static int run_clone(char **argv)
+{
+    char cwd[16];
+    RUN(getppid() == (pid_t)atoi(argv[4]));
+    RUN(getcwd(cwd, sizeof(cwd)) && !strcmp(cwd, "/"));
     return run_end();
 }
 
@@ -696,13 +710,57 @@ static void exec_chromium(void)
     close(other[1]);
 }
 
+/* gtest's threadsafe death test's child (gtest-death-test.cc,
+ * ExecDeathTestSpawnChild and ExecDeathTestChildMain): clone on two pages
+ * mapped for it (unmapped in the parent at once; here with a guard page
+ * below), and there a close, a chdir and an execv of this program by its
+ * path. */
+struct clone_exec {
+    const char *path;
+    char *const *argv;
+    int close_fd;
+};
+
+static int clone_exec_child(void *p)
+{
+    const struct clone_exec *a = p;
+    if (close(a->close_fd) != 0 || chdir("/") != 0)
+        return 92;
+    execv(a->path, a->argv);
+    return 93;
+}
+
+static void exec_clone(void)
+{
+    char path[256], pid[16];
+    ssize_t n = readlink(SELF_EXE, path, sizeof(path) - 1);
+    CHECK(n > 0);
+    int p[2];
+    CHECK(pipe2(p, O_CLOEXEC) == 0);
+    char *guard = mmap(NULL, 3 * PG, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(guard != MAP_FAILED && mprotect(guard, PG, PROT_NONE) == 0);   /* a fault, not a write below */
+    if (n <= 0 || guard == MAP_FAILED)
+        return;
+    path[n] = 0;
+    snprintf(pid, sizeof(pid), "%d", (int)getpid());
+    char *const args[] = { "posixtest", "--child-exec", "run", "clone", pid, NULL };
+    struct clone_exec a = { path, args, p[0] };
+    pid_t kid = clone(clone_exec_child, guard + 3 * PG - 64, SIGCHLD, &a);
+    CHECK(kid > 0);
+    CHECK(munmap(guard, 3 * PG) == 0);
+    close(p[1]);
+    if (kid > 0)
+        reaped0(kid);
+    close(p[0]);
+}
+
 static const struct {
     const char *name;
     void (*run)(void);
 } cases[] = {
     { "same", exec_same },       { "threads", exec_threads }, { "cloexec", exec_cloexec },
     { "signals", exec_signals }, { "charge", exec_charge },   { "fail", exec_fail },
-    { "chromium", exec_chromium },
+    { "chromium", exec_chromium }, { "clone", exec_clone },
 };
 #define NCASES (sizeof(cases) / sizeof(cases[0]))
 
@@ -723,6 +781,8 @@ int pt_child_exec(int argc, char **argv)
             return run_wait();
         if (!strcmp(mode, "fds") && argc >= 5)
             return run_fds(argv);
+        if (!strcmp(mode, "clone") && argc >= 5)
+            return run_clone(argv);
         if (!strcmp(mode, "native") && argc >= 5)
             return run_native(argv);
         return 3;

@@ -1595,6 +1595,121 @@ who clears them:
   (1: one module), `FileUtilTest.FileToFILE` (1: musl's `fdopen`), executable
   memory without the JIT right (3).
 
+#### CCS (2026-10-17)
+
+Track CCS (branch `ccs-clone-stack`): the clone child's stack, base's own
+(threadsafe) death test style again, and the launching tests after FL3, on
+main f1c4ba6a. `base_unittests` and `test_child_process` were relinked three
+times (the stack; `svc exec` in the list; the forwarding fix), each in about
+two minutes.
+
+**The clone child's stack.** musl's `clone()` without `CLONE_VM` ran fn on
+the stack its caller gave, and the layer runs a call on its caller's stack,
+so a two-page stack (gtest's) died at its first path. On Linux the kernel
+runs a call on a stack of its own; the layer now does the same for that one
+thread (`fork.c`): the child maps 64 KiB over a guard page, and calls.c's
+boundary moves each call fn makes onto it (`lx_call_on_stack`: one test of
+a global per call, `false` in every other process), as do the child's exit
+and a clone of its own. fn's frames stay on the stack it was given, where
+Linux has them (posixtest checks a local's address). The thread is told by
+a thread-local top: a thread the child makes later, and the signal thread
+(told by its stack, it has no thread pointer), make their calls where they
+are; so does a handler on its sigaltstack (a call it interrupted may have
+frames on the stack for calls). The size: GCC's `-fcallgraph-info=su` over
+the layer and libjam gives ~29 KiB for the deepest call made of direct calls
+(`lx_mkdir` through `path_libc_stat`, `stat_at`, `path_get`: 4 KiB frames each),
+16 to 25 KiB for most calls that take a path, 1.9 KiB for the boundary's
+delivery; calls through a descriptor kind's table are not followed. 64 KiB
+is about twice the deepest. Tests: posixtest's fork `small` case and exec
+`clone` case (TESTING.md); without the stack (a guard page below the two
+pages) the child faults in `stat_at` (`meta.c:97`), batch 17200451.
+
+Other places the layer runs on a small stack it was given (listed, not
+fixed):
+1. A handler on its sigaltstack: musl's `SIGSTKSZ` is 8 KiB, and one call
+   that takes a path needs 16 to 25 KiB of it.
+2. A thread with a small stack: `pthread_attr_setstacksize` takes down to
+   musl's `PTHREAD_STACK_MIN`, 2 KiB (musl's default, 128 KiB, is fine).
+3. The fault and raise entries (`sigentry.S`, `sigfault.c`) build the
+   handler's context on the interrupted stack, as Linux builds its frame,
+   but the layer's C around it is bigger than Linux's frame: a signal
+   raised in a clone child's own code runs that on its two pages.
+4. musl's own ways into the layer that aren't calls (`__jam_posix_spawn`,
+   `__jam_resolve`, `__jam_ttyname`, `__jam_dladdr`,
+   `__jam_unmapself_prepare`) run on their caller's stack, a clone child's
+   too (a `posix_spawn` there).
+The boundary's switch could serve the first two later (a stack for calls
+per thread); moving the 4 KiB path buffers off the stack would shrink every
+one (CBF6's files).
+
+**Launching after FL3.** With the stack, the threadsafe children got as far
+as `execv` and failed as the forked ones did (CB-RM): `EACCES`. The cause
+was the program's list: `ports/chromium/wants/base_unittests` had no `svc
+exec`, so `file_program` (`spawn.c`) answered "not ours to ask" before init
+was asked, for every program on `/data` (`base_unittests` itself and
+`test_child_process`). The list is in the ELF file, so the programs were
+linked again. Then 38 of the 52 launching tests and the four that set the
+threadsafe style passed for real (batch 17202701). One more layer bug
+showed: a forked child's `execve` of a `/data` program is spawn, wait,
+exit, and its signal thread forwards every signal to the program through
+`lx_child_signal`, which `malloc`ed; that thread has no thread pointer, so
+Chromium's PartitionAlloc faulted there (`FreeInUnknownRoot`, address 0x28,
+thread "signals", in `SystemMetricsTest.MeasureChildCpuUsage`). One child
+now takes a slot on the stack (`proc.c`); posix-mmap-test's `spawn` case
+checks the forwarding (a forked child's `execve` of `/data/pt-prog`, our
+`SIGTERM` to it, its exit 9).
+
+**What is left of the two groups (20), by cause** (the skip list's groups):
+- Q1 (A) of CR-REVIEW-POSIX (CR2F): a `/svc/exec` child gets `/` for its
+  directory and `AT_SECURE` (the crt drops `TMPDIR`): `CurrentDirectory`, and
+  the four signal-file tests, whose child looks for a relative name in `/`
+  and runs to the test's timeout (5). Q1's option C would mend them.
+- A thread's id is never the pid (3: base's tid cache, `ForkWithFlags`).
+- `fcntl` record locks are each process's own (7 `FileLockingTest`).
+- `clone` with `CLONE_FS` is refused (1, `LaunchProcess`'s one case).
+- A handler run at a call's boundary gets zeroed registers in its
+  ucontext (1, `LoggingTest.CheckCausesDistinctBreakpoints`: `abort()`'s
+  `REG_RIP` is 0; signal.c's `run_handler`).
+- Another process's `/proc/<pid>/fd` and `/stat` (2; `MeasureChildCpuUsage`
+  also watches the waiting forked child, not the program it runs).
+- **The stack-trace death test (1): cause found.** The test puts in a
+  `malloc` that crashes and raises `SIGSEGV`; base's handler is
+  async-signal-safe, but its `BeingDebugged()` opens `/proc/self/status`, and
+  the layer's `open` allocates from the program's `malloc` (fd.c's `calloc` of
+  the description; procfs's buffers), so the handler dies at that open
+  and prints nothing, in either style. Linux's calls never touch the
+  program's heap. The fix is the layer's own heap (musl's internal
+  `__libc_malloc` family under the layer's ~200 allocations in some 30
+  files, libjam's objects in libc too, and no free of what a musl helper
+  allocated): it would also make the layer's calls safe in a handler that
+  interrupted the program's `malloc` (a crash inside PartitionAlloc with its
+  lock held, then the handler's `open`, would wait for ever) and keep the
+  signal thread off the program's heap for good. A track of its own; not
+  done here.
+
+**Numbers.** `--death-style` is `threadsafe` again by default (`CR_BASE_DEATH=fast`
+for the old way). The list went from 260 to 223 (95 named and the 165
+`FilePathWatcher*` became 58 and 165). The six shards on an ext `/data` with
+the new list in base's own style **all PASS** (batch 17210913):
+
+| `/data` | pass | self-skip | on the skip list |
+|---------|-----:|----------:|-----------------:|
+| ext, CB-RM, death tests in gtest's fast style | 8,660 | 36 | 260 |
+| ext, CCS, death tests in base's threadsafe style | 8,697 | 36 | 223 |
+
+Per shard (of 8,956): 1,232 + 3 + 3 of 1,238; 1,466 + 0 + 10 of 1,476;
+1,960 + 3 + 52 of 2,015; 1,405 + 9 + 141 of 1,555; 1,328 + 17 + 4 of 1,349;
+1,306 + 4 + 13 of 1,323 (pass + self-skip + listed). All 281 death tests CB2
+listed now run as base makes them, each child a new `base_unittests` started
+by init: a shard takes 5 to 8.5 minutes (CB-RM's fast style: 4 to 11 with
+the PC busier). The listed numbers came from `CR_BASE_ALL=1 CR_BASE_LISTED=1`
+runs in the threadsafe style before the list changed (batches 17200816,
+17201643, 17202701, 17205730: the stack alone, then the list's `svc exec`, then
+the forwarding fix).
+
+**Harness changes**: `base-run.py --death-style` and `cr-test.sh`'s
+`CR_BASE_DEATH` default to `threadsafe`; the skip list's groups as above.
+
 ### 2. The address space: huge sparse reservations (the top risk)
 
 **What Chromium does** ([CR-RESEARCH section 6](CR-RESEARCH.md#6-v8s-jit)):
