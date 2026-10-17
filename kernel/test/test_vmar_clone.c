@@ -50,6 +50,11 @@
  *       a vmo_write, a store's fault, a decommit and a resize waiting for
  *       a frozen VMO each end at a cancel with ERR_CANCELED and change
  *       nothing (finding 2).
+ *   vmar_clone_hostile_storm
+ *       eight threads fork one address space at once in a job with room
+ *       for a clone and a half, while a writer stores A then B: each
+ *       clone whole and untorn or refused with nothing left, the job
+ *       back to the page and nothing frozen afterwards.
  *
  * Faults go through the real page-fault path: the test thread enters an
  * address space and copies to and from its user addresses, as a system
@@ -920,4 +925,116 @@ KTEST(vmar_clone_frozen_cancel)
         aspace_unref(x.as);
         put(x.v);
     }
+}
+
+/* Hostile: eight threads fork one address space at once, in a job a clone
+ * and a half from its limit, while a writer stores a counter to VMO A and
+ * then to VMO B through it. Every clone is whole and untorn, or refused
+ * with nothing left; the job is back to the page afterwards and nothing
+ * stays frozen. */
+enum { HS_THREADS = 8, HS_PAGES = 16, HS_ROUNDS = 150 };
+
+struct hs_ctx {
+    struct job    *j;
+    struct aspace *src;
+    struct vmo    *a, *b;
+    bool           stop;                         /* atomic */
+    uint64_t       ok, refused, ahead, stores;   /* atomic */
+};
+
+#define HS_A BASE
+#define HS_B (BASE + 64 * PG)
+
+static void hs_cloner(void *arg)
+{
+    struct hs_ctx *s = arg;
+    for (unsigned i = 0; i < HS_ROUNDS; i++) {
+        struct aspace *dst;
+        status_t st = aspace_create_charged(s->j, &dst);
+        if (st != OK) {
+            KT_EQ(st, ERR_NO_MEMORY);
+            __atomic_add_fetch(&s->refused, 1, __ATOMIC_RELAXED);
+            continue;
+        }
+        struct vmo *c = NULL;
+        st = clone1(s->src, dst, s->a, &c);
+        if (st == OK) {
+            KT_EQ(aspace_check(dst), 2);
+            /* The child's B is never ahead of its A (the writer stores A
+             * first); its reads draw on the reserve, never the job. */
+            uint64_t x = uword(dst, HS_A), y = uword(dst, HS_B);
+            if (x != y && x != y + 1)
+                ktest_fail("vmar_clone_hostile_storm: A %lu, B %lu: torn", x, y);
+            __atomic_add_fetch(&s->ahead, x != y, __ATOMIC_RELAXED);
+            KT_EQ(word(c, 0), x);
+            put(c);
+            __atomic_add_fetch(&s->ok, 1, __ATOMIC_RELAXED);
+        } else {
+            KT_EQ(st, ERR_NO_MEMORY);
+            KT_ASSERT(!c);
+            KT_EQ(aspace_check(dst), 0);
+            __atomic_add_fetch(&s->refused, 1, __ATOMIC_RELAXED);
+        }
+        aspace_unref(dst);
+    }
+}
+
+static void hs_writer(void *arg)
+{
+    struct hs_ctx *s = arg;
+    enter(s->src, NULL);
+    for (uint64_t v = 1; !__atomic_load_n(&s->stop, __ATOMIC_ACQUIRE); v++) {
+        if (copy_to_user(HS_A, &v, 8) != OK || copy_to_user(HS_B, &v, 8) != OK)
+            ktest_fail("vmar_clone_hostile_storm: a store failed");
+        __atomic_store_n(&s->stores, v, __ATOMIC_RELAXED);
+    }
+    enter(NULL, s->src);
+}
+
+KTEST(vmar_clone_hostile_storm)
+{
+    struct hs_ctx *s = kzalloc(sizeof(*s));
+    KT_ASSERT(s);
+    s->j = kt_fresh_job();
+    KT_EQ(vmo_create_for(s->j, HS_PAGES * PG, 0, &s->a), OK);
+    KT_EQ(vmo_create_for(s->j, PG, 0, &s->b), OK);
+    s->src = new_as(s->j);
+    map_at(s->src, s->a, 0, HS_PAGES, HS_A, RW | CAN_RW);
+    map_at(s->src, s->b, 0, 1, HS_B, RW | CAN_RW);
+    for (uint64_t i = 0; i < HS_PAGES; i++)
+        KT_EQ(uput(s->src, HS_A + i * PG, 0), OK);
+    KT_EQ(uput(s->src, HS_B, 0), OK);
+    uint64_t base = job_used(s->j, JOB_LIMIT_PAGES);
+    /* One clone: its PML4, the two children's 17 pages and their tables,
+     * a page of mapping structs and the reserve (3 tables): about 26
+     * pages. Room for one and a half. */
+    KT_EQ(job_set_limit(s->j, JOB_LIMIT_PAGES, base + 40), OK);
+    struct thread *w = thread_create("kt-hs-writer", hs_writer, s, PRIO_DEFAULT);
+    struct thread *t[HS_THREADS];
+    for (unsigned k = 0; k < HS_THREADS; k++) {
+        cpumask_t m;
+        cpumask_one(&m, k % cpu_count);
+        t[k] = thread_create_on("kt-hs-cloner", hs_cloner, s, PRIO_DEFAULT, &m);
+    }
+    for (unsigned k = 0; k < HS_THREADS; k++)
+        thread_join(t[k]);
+    __atomic_store_n(&s->stop, true, __ATOMIC_RELEASE);
+    thread_join(w);
+    KT_EQ(job_set_limit(s->j, JOB_LIMIT_PAGES, JOB_NO_LIMIT), OK);
+    kprintf("vmar_clone_hostile_storm: %lu clones, %lu refused, %lu caught between A and B, "
+            "%lu stores\n", s->ok, s->refused, s->ahead, s->stores);
+    KT_ASSERT(s->ok > 0);
+    KT_ASSERT(s->refused > 0);
+    KT_EQ(job_used(s->j, JOB_LIMIT_PAGES), base);   /* every clone and refusal gave all back */
+    KT_EQ(aspace_check(s->src), 2);
+    /* Nothing stays frozen: a write and a resize go straight through. */
+    stamp(s->a, 0, 0x5eed);
+    KT_EQ(vmo_set_size(s->b, 2 * PG), OK);
+    KT_EQ(uword(s->src, HS_A), 0x5eed);
+    aspace_unref(s->src);
+    put(s->a);
+    put(s->b);
+    kt_job_is_empty(s->j);
+    job_unref(s->j);
+    kfree(s);
 }
