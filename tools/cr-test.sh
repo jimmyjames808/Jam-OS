@@ -27,7 +27,7 @@
 #           (ports/cr-rust-hello/test)
 #   base    base_unittests (track CB2, CR-b) from the kept tree's stage
 #           (~/cr/ports/chromium/stage: tools/cr/build.sh start first), on a
-#           stick with a 640 MiB /data (tools/cr/base-stick.py: no package,
+#           stick with a 6 GiB /data, a sparse file (tools/cr/base-stick.py: no package,
 #           the format holds no file over 64 MiB), run suite by suite with
 #           the ENOSYS log on (tools/cr/base-run.py); the tests in
 #           tools/cr/base_unittests.skip are not run. CR_BASE_SHARD=i/n,
@@ -202,7 +202,7 @@ case_base() {
         echo "FAIL (no build/host/jamext, see $dir/jamext.out)" > "$dir/result"
         return
     fi
-    if ! python3 tools/cr/base-stick.py --data-mib "${CR_BASE_DATA_MIB:-640}" "$image" "$stick" \
+    if ! python3 tools/cr/base-stick.py --data-mib "${CR_BASE_DATA_MIB:-6144}" "$image" "$stick" \
          "$stage" "$srcdir" "$srcdir/out/jamos" > "$dir/stick.out" 2>&1; then
         cat "$dir/stick.out"
         echo "FAIL (the stick, see $dir/stick.out)" > "$dir/result"

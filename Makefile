@@ -803,6 +803,7 @@ check: all
 	python3 tools/ports.py vectors
 	python3 tools/ports-server.py --self-test
 	CROSS=$(CROSS) python3 tools/cr/syscall-scan.py --selftest
+	python3 tools/cr/sparsecopy.py --selftest
 	@for d in $$(cd third_party && ls -d */ | tr -d /); do \
 	    case " $(THIRD_PARTY_NOTICED) " in *" $$d "*) ;; \
 	    *) echo "licences: third_party/$$d has no notice in the boot image (LICENCES in the Makefile, or a port's recipe)"; exit 1;; esac; \

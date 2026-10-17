@@ -5,10 +5,14 @@ tools/cr-test.sh's `base` case calls it).
     base-stick.py [--data-mib N] <image> <stick> <stage> <source> <out>
 
 <image> is the boot image (build/jamos.img). <stick> is written: a copy of
-it with its data partition grown to N MiB (default 640; the image's 64 MiB
-holds no 77 MB program) and formatted again, as tools/bigprog-test.sh
-makes its stick, and then laid out the way base_unittests finds its
-files. <stage> is the ports builder's output for chromium
+it with its data partition grown to N MiB (default 6144; the image's 64 MiB
+holds no 77 MB program, and DriveInfoTest wants a volume of 5.12 GB or more:
+sysfs counts 512-byte sectors, base reads the number as bytes) and formatted
+again, as tools/bigprog-test.sh makes its stick, and then laid out the way
+base_unittests finds its files. The stick is a sparse file: its apparent
+size is the image's 256 MiB and N MiB, what is written to it (the image's
+ESP, the volume's tables, the files, some 120 MB) is all that takes room
+on the disk, and it must be copied sparsely (tools/cr/sparsecopy.py). <stage> is the ports builder's output for chromium
 (~/cr/ports/chromium/stage), <source> the Chromium source tree and <out>
 its out/jamos.
 
@@ -47,7 +51,9 @@ import subprocess
 import sys
 import tempfile
 
-TOP = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import sparsecopy
+
+TOP =os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 PAGE = 4096
 # From <dataprog.h> (and tools/portslib/pagetable.py, whose make() stops at
 # 64 MiB): the table's 64-byte header and a SHA-256 for each page.
@@ -125,11 +131,19 @@ def make_stick(image, stick, mib, fs):
         raise Error("%s: no data partition" % image)
     at = at.stdout.strip()   # "256M"
     start = int(at.rstrip("M"))
-    shutil.copyfile(image, stick)
-    with open(stick, "r+b") as f:
-        f.truncate((start + mib) << 20)
+    # Only what comes before /data is copied (the image's own /data is made
+    # again), and as a sparse file: /data is mostly never written (6 GiB for
+    # DriveInfoTest), and a copy that wrote all of it would cost the PC's
+    # disk that much for every boot (tools/cr/base-run.py copies the stick
+    # the same way).
+    sparsecopy.copy(image, stick, start << 20)
     subprocess.run([sys.executable, os.path.join(TOP, "tools", "mbr-grow.py"), stick,
                     str((start + mib) * 2048)], check=True, stdout=subprocess.DEVNULL)
+    with open(stick, "r+b") as f:
+        # An ext volume is made on a file that ends where /data starts (the
+        # grow wiped a MiB past it): jamext then extends it and knows the
+        # new blocks read zeros, so mkfs writes no zeros of its own.
+        f.truncate((start if fs == "ext" else start + mib) << 20)
     if fs == "ext":
         # 2T: more than any MBR partition holds; jamext cuts it to the partition's
         # (tools/stick-data.sh's mkfs).
@@ -144,7 +158,7 @@ def make_stick(image, stick, mib, fs):
 
 def main(argv):
     ap = argparse.ArgumentParser(prog="base-stick.py", description=__doc__.split("\n\n")[0])
-    ap.add_argument("--data-mib", type=int, default=640)
+    ap.add_argument("--data-mib", type=int, default=6144)
     ap.add_argument("image")
     ap.add_argument("stick")
     ap.add_argument("stage")

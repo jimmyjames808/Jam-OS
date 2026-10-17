@@ -126,7 +126,15 @@ if sys.argv[1:2] == ["--gpt"] and len(sys.argv) == 4:
                 chunk = src.read(min(left, 4 * MIB))
                 if not chunk:
                     sys.exit(f"mkimage: {stick} ends inside a partition")
-                dst.write(chunk)
+                # `out` is a sparse file (Disk.save): chunks of zeros stay holes,
+                # as a base_unittests stick's 6 GiB of /data (tools/cr/base-stick.py)
+                # must not be written out for every NVMe boot.
+                for i in range(0, len(chunk), 1 << 16):
+                    block = chunk[i:i + (1 << 16)]
+                    if block.count(0) != len(block):
+                        dst.write(block)
+                    else:
+                        dst.seek(len(block), 1)
                 left -= len(chunk)
     sys.exit(0)
 

@@ -38,12 +38,13 @@ import fnmatch
 import hashlib
 import os
 import re
-import shutil
 import signal
 import subprocess
 import sys
 import time
 import zlib
+
+import sparsecopy
 
 TOP = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ANSI = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]")
@@ -85,7 +86,7 @@ class Boot:
     def run(self):
         a = self.args
         img = self.img = os.path.join(self.dir, name_img(self.qname))
-        shutil.copyfile(a.stick, img)
+        sparsecopy.copy(a.stick, img)   # 6 GiB of /data, almost all holes: a plain copy would write it all
         env = dict(os.environ, QEMU_IMAGE=img, QEMU_INPUT=self.script,
                    QEMU_TIMEOUT=str(self.timeout), QEMU_MEM=a.mem)
         self.saved = os.path.join(self.dir, self.qname + "-saved.img")
