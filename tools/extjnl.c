@@ -797,6 +797,12 @@ static void check_revoke_overflow(struct storm *s)
 
 void check_journal(struct img *fixtures, const char *listdir, const char *images)
 {
+    /* The region for a log of 2^31 blocks is counted in 64 bits: it once
+     * wrapped to a live set of 16 slots, which a writer then filled and
+     * looped in (the review's R5; such a log isn't written: jnl_disk.c). */
+    size_t huge = ext_jnl_mem_size(4096, 0x80000001u, 16);
+    if (huge < (size_t)1 << 33)
+        fail("a journal of 2^31 blocks asks for a region of %zu bytes", huge);
     for (unsigned f = 0; f < 2; f++) {
         static struct storm s;
         static const struct storm_cfg plain[2] = {

@@ -18,11 +18,12 @@
  *     the journal may hold anything (from the mount to the clean close). */
 #include "jnl_int.h"
 
-/* The live set's slots for a log of `blocks`: a power of two, twice it. */
+/* The live set's slots for a log of `blocks` (at most JNL_LOG_MAX): a power
+ * of two, twice it. */
 static uint32_t live_slots(uint32_t blocks)
 {
     uint32_t n = 16;
-    while (n < 2 * blocks && n < (1u << 30))
+    while (n < 2ull * blocks && n < (1u << 30))
         n <<= 1;
     return n;
 }

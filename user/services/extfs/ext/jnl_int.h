@@ -5,6 +5,10 @@
 #include "ext_int.h"
 #include "ext_jnl.h"
 
+/* The longest log mounted for writing (2 GiB of 4 KiB blocks; Linux's are
+ * 1 GiB at most): the live set is twice the log, 2^30 slots at most. */
+#define JNL_LOG_MAX (1u << 29)
+
 /* ---- jnl_disk.c: the journal's blocks ------------------------------------------------- */
 
 /* Map the journal's inode into j->runs and read and check its superblock
