@@ -36,10 +36,13 @@
  * between the two leaves a GONE the successor gets again
  * (PAGER_NEXT_AGAIN) for a key it doesn't know. A map of the file before
  * the GONE is answered makes the VMO again under the same key, which takes
- * the GONE over (the kernel withdraws it). A request for a key the state
- * doesn't know (a VMO a request that ran again made, or one of an instance
- * whose state was given up on) is answered with a detach: its mappers fail
- * as for a pulled stick.
+ * the GONE over (the kernel withdraws it). A page or write-back request for
+ * a file's key the state doesn't know (a VMO of an instance whose state was
+ * given up on: a fresh start's) gets a slot from the inode the key names
+ * (maps_key: its number and generation, a file with a name, else it is
+ * gone: a fresh start's mount dropped the orphans) and is served; any other
+ * key the state doesn't know (one to run whose request ran again, a file
+ * gone) is answered with a detach: its mappers fail as for a pulled stick.
  *
  * A mapped file keeps its inode. A slot holds its inode as an open does
  * (files_held): unlinked, or renamed over, while it is mapped, the inode
@@ -59,8 +62,8 @@
  * state or on the disk, so it needs no slot, no transaction and no commit:
  * a successor asks again. A VMO holds at most the file's first
  * VMO_SMALL_MAX_SIZE bytes (a pager VMO's limit). A dirty page is never
- * asked for: the kernel keeps it until it is written back (WE2's, not yet
- * here: a PAGER_REQ_WRITEBACK is left to its deadline).
+ * asked for: the kernel keeps it until it is written back (wback.c, which
+ * serves PAGER_REQ_WRITEBACK).
  *
  * Requests are served one per turn of main.c's loop (the pager's binding
  * is ONCE, made again after each), and before each fs request
@@ -107,8 +110,10 @@
  * change (maps_wrote, maps_resized; maps_changed after a failure); then
  * the commit, then the answer. (a) extfs is one thread and serves page
  * requests only between requests (pager_event, pager_reap), each one read
- * and supplied in one turn (as a write-back will be: begin, data, commit,
- * written): so no page is supplied, and none written back, between the
+ * and supplied in one turn, as a write-back is (begin, data, commit,
+ * written: wback.c; file.sync and fs.sync write back inside their own
+ * requests, which change no file): so no page is supplied, and none
+ * written back, between the
  * change and the answer, and none read before the change lands after it.
  * A page present after the answer was read after the change, or took it:
  * a client that saw the answer and then reads the mapping sees the
@@ -157,8 +162,10 @@ static const uint8_t zeros[PAGE_SIZE];             /* a last page's tail */
 static bool unknown_said;     /* a request for a key the state doesn't know was logged */
 static bool arm_said;         /* the pager couldn't be waited on: logged */
 static bool peek_said;        /* a read couldn't see its mappings' stores: logged */
-static bool writeback_said;   /* a write-back request was left: logged */
 static bool moved;            /* the running request changed a mapped file (maps_settle) */
+static bool again_done;       /* PAGER_NEXT_AGAIN made (maps_again) ... */
+static bool again_has;        /* ... and the request it gave not served yet: */
+static struct pager_request again_first;
 
 static uint64_t page_up(uint64_t n)
 {
@@ -516,6 +523,54 @@ static void cut(unsigned i)
     forget(i);
 }
 
+void maps_detach(uint64_t key)
+{
+    detach(key);
+}
+
+int maps_slot_of(uint64_t key)
+{
+    return slot_of(key);
+}
+
+/* ---- keys from the inode (a fresh start's) ------------------------------------------------ */
+
+static bool from_key_said;    /* a slot was made from a key: logged */
+
+status_t maps_key(uint64_t key, struct ext_inode *in, int *slot)
+{
+    int s = slot_of(key);
+    *slot = s;
+    if (s >= 0)
+        return inode_of((unsigned)s, in);
+    if (!(key & XF_SHARED_BIT))
+        return ERR_NOT_FOUND;
+    /* A file with a name: an orphan the empty state didn't hold was
+     * dropped at the mount, so an inode without one is gone (or freed and
+     * being taken again). */
+    uint32_t ino = (uint32_t)(key >> 32) & XF_SHARED_INO_MAX, igen = (uint32_t)key;
+    status_t st = ext_iget(&vol.fs, ino, 0, in);
+    if (st == OK && (in->d.generation != igen || (in->d.mode & EXT_S_IFMT) != EXT_S_IFREG))
+        st = ERR_NOT_FOUND;
+    if (st == ERR_OUT_OF_RANGE || st == ERR_INVALID_ARGS)
+        st = ERR_NOT_FOUND;
+    int i = st == OK ? free_slot() : -1;
+    if (i < 0)
+        return st;   /* (OK with no slot: served without one, its inode not held) */
+    memset(&mh[i], 0, sizeof(mh[i]));
+    mh[i].size = vmo_size(ext_isize(in));
+    kept->maps[i] = (struct xf_map){
+        .used = true, .kind = FILE_MAP_READ, .written = true, .ino = ino, .igen = igen, .key = key,
+    };
+    *slot = i;
+    if (!from_key_said)
+        printf("extfs %s: mapped files an instance before made, served from their inodes\n",
+               vol.name);
+    from_key_said = true;
+    (void)jam_pager_op(vol.pager, key, PAGER_OP_SET_SIZE, mh[i].size, 0, 0);
+    return OK;
+}
+
 /* ---- one cache: a mapped file that changes (the header's) ----------------------------- */
 
 /* A pager op slot i's mappers need to see the file as it is now
@@ -740,8 +795,11 @@ static void read_failed(const struct pager_request *r, uint64_t at, status_t st,
 /* A read request: its range, as far as the file goes, supplied. */
 static void read_request(const struct pager_request *r)
 {
-    int s = slot_of(r->key);
-    if (s < 0) {
+    int s = -1;
+    uint32_t ro = vol.fs.ro;
+    struct ext_inode in;
+    status_t st = maps_key(r->key, &in, &s);
+    if (s < 0 && (st == OK || st == ERR_NOT_FOUND)) {
         if (!unknown_said)
             printf("extfs %s: page requests for mapped files it doesn't know: detached\n",
                    vol.name);
@@ -749,14 +807,11 @@ static void read_request(const struct pager_request *r)
         detach(r->key);
         return;
     }
-    unsigned i = (unsigned)s;
-    uint32_t ro = vol.fs.ro;
-    struct ext_inode in;
-    status_t st = inode_of(i, &in);
     if (st != OK) {
         read_failed(r, r->offset, st, ro);
         return;
     }
+    unsigned i = (unsigned)s;
     /* Clipped to the file and to the VMO: a request queued before a
      * shrink may ask past either. */
     uint64_t vs = vmo_size(ext_isize(&in)), off = r->offset, len = r->len ? r->len : PAGE_SIZE;
@@ -814,10 +869,14 @@ static void gone(uint64_t key)
 }
 
 /* One request, if one is queued: true if one was served. */
-static bool serve(uint32_t flags)
+static bool serve(void)
 {
-    struct pager_request r;
-    status_t st = jam_pager_next(vol.pager, flags, &r);
+    struct pager_request r = again_first;
+    status_t st = OK;
+    if (again_has)
+        again_has = false;
+    else
+        st = jam_pager_next(vol.pager, 0, &r);
     if (st != OK) {
         if (st != ERR_SHOULD_WAIT)
             printf("extfs %s: can't read the pager's requests: %s\n", vol.name,
@@ -829,10 +888,7 @@ static bool serve(uint32_t flags)
     } else if (r.kind == PAGER_REQ_READ) {
         read_request(&r);
     } else if (r.kind == PAGER_REQ_WRITEBACK) {
-        if (!writeback_said)   /* (WE2's: until then it ends at its deadline) */
-            printf("extfs %s: mapped files' write-back requests left: not served yet\n",
-                   vol.name);
-        writeback_said = true;
+        wback_request(&r);
     } else {
         printf("extfs %s: a page request of a kind it doesn't know (%u)\n", vol.name, r.kind);
     }
@@ -850,27 +906,41 @@ static void arm(void)
     arm_said |= st != OK;
 }
 
+void maps_again(void)
+{
+    if (!vol.pager || again_done)
+        return;
+    again_done = true;
+    status_t st = jam_pager_next(vol.pager, PAGER_NEXT_AGAIN, &again_first);
+    again_has = st == OK;
+    if (st != OK && st != ERR_SHOULD_WAIT)
+        printf("extfs %s: can't read the pager's requests: %s\n", vol.name, status_str(st));
+}
+
 void pager_start(void)
 {
     if (!vol.pager)
         return;
     sizes_again();
+    wback_start();
     arm();
-    /* What the instance before took and never answered, queued again
-     * (and the first of the queue served). */
-    (void)serve(PAGER_NEXT_AGAIN);
+    /* What the instance before took and never answered, queued again (if
+     * a request run again from its slot hasn't yet), and the first of the
+     * queue served. */
+    maps_again();
+    (void)serve();
 }
 
 void pager_event(void)
 {
     if (!vol.pager)
         return;
-    (void)serve(0);
+    (void)serve();
     arm();   /* fires at once if more is queued */
 }
 
 void pager_reap(void)
 {
-    for (unsigned n = 0; vol.pager && n < REAP_MAX && serve(0); n++)
+    for (unsigned n = 0; vol.pager && n < REAP_MAX && serve(); n++)
         ;
 }

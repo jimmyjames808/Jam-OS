@@ -309,8 +309,10 @@ static status_t op_rename(void *ctx, const char *from, uint32_t from_len, const 
 static status_t op_sync(void *ctx)
 {
     (void)ctx;
-    return disk_flush();   /* every answered request is committed already; a failed one's
-                            * data too, on a disk with a cache */
+    status_t st = wback_all();   /* mapped files' stores, every one made before the call */
+    status_t fl = disk_flush();  /* every answered request is committed already; a failed
+                                  * one's data too, on a disk with a cache */
+    return st != OK ? st : fl;
 }
 
 static status_t op_statfs(void *ctx, uint64_t *out_total, uint64_t *out_free,
@@ -504,11 +506,13 @@ bool ctl_stopping(void)
     return stopping;
 }
 
-/* fsctl.stop: every file closed, what was left done, the journal closed
- * (the volume clean on the disk). */
+/* fsctl.stop: mapped files' stores written back (for a few seconds at
+ * most), every file closed, what was left done, the journal closed (the
+ * volume clean on the disk). */
 static status_t ctl_stop(void *ctx)
 {
     (void)ctx;
+    wback_stop();
     files_close_all();
     defer_run();
     stopping = true;
