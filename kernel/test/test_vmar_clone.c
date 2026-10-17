@@ -46,6 +46,10 @@
  *       child's creation, meanwhile waits for the copy, so the child's
  *       bytes never change after it returned (docs/FORK-REVIEW-KERNEL.md,
  *       finding 1).
+ *   vmar_clone_frozen_cancel
+ *       a vmo_write, a store's fault, a decommit and a resize waiting for
+ *       a frozen VMO each end at a cancel with ERR_CANCELED and change
+ *       nothing (finding 2).
  *
  * Faults go through the real page-fault path: the test thread enters an
  * address space and copies to and from its user addresses, as a system
@@ -852,5 +856,68 @@ KTEST(vmar_clone_write_in_flight)
         put(wf->v);
         kfree(wf);
         wf = NULL;
+    }
+}
+
+/* Finding 2: the waits for a freeze end at a cancel, as a kill or a
+ * replace cancels the threads it ends. */
+struct fc_ctx {
+    struct vmo    *v;
+    struct aspace *as;
+    int            what;   /* 0 vmo_write, 1 a store's fault, 2 decommit, 3 resize */
+    int            done;   /* atomic */
+    status_t       st;
+};
+
+static void fc_waiter(void *arg)
+{
+    struct fc_ctx *x = arg;
+    uint64_t w = 7;
+    switch (x->what) {
+    case 0:
+        x->st = vmo_write(x->v, 0, &w, 8);
+        break;
+    case 1:
+        x->st = uput(x->as, BASE, w);
+        break;
+    case 2:
+        x->st = vmo_decommit(x->v, 0, PG);
+        break;
+    default:
+        x->st = vmo_set_size(x->v, 2 * PG);
+        break;
+    }
+    __atomic_store_n(&x->done, 1, __ATOMIC_RELEASE);
+}
+
+KTEST(vmar_clone_frozen_cancel)
+{
+    static const char *const what[] = { "vmo_write", "a store's fault", "decommit", "resize" };
+    for (int k = 0; k < 4; k++) {
+        struct fc_ctx x = { .v = mk(1), .as = new_as(NULL), .what = k };
+        stamp(x.v, 0, 1);
+        map_at(x.as, x.v, 0, 1, BASE, RW | CAN_RW);   /* no entry yet: a store faults */
+        struct vmo *c;
+        KT_EQ(vmo_clone_begin(NULL, x.v, &c), OK);   /* frozen until vmo_clone_end */
+        struct thread *t = thread_create("kt-frozen", fc_waiter, &x, PRIO_DEFAULT);
+        thread_sleep_ms(10);
+        bool waited = !__atomic_load_n(&x.done, __ATOMIC_ACQUIRE);
+        thread_cancel(t);
+        uint64_t end = uptime_ns() + kt_patience_ms(500) * NS_PER_MS;
+        while (!__atomic_load_n(&x.done, __ATOMIC_ACQUIRE) && uptime_ns() < end)
+            thread_sleep_ms(1);
+        bool ended = __atomic_load_n(&x.done, __ATOMIC_ACQUIRE);
+        vmo_clone_end(x.v);   /* lets one that ignored the cancel go on */
+        thread_join(t);
+        kprintf("vmar_clone_frozen_cancel: %s %s at the cancel (%s)\n", what[k],
+                ended ? "ended" : "went on waiting", status_str(x.st));
+        KT_ASSERT(waited);
+        KT_ASSERT(ended);
+        KT_EQ(x.st, ERR_CANCELED);
+        KT_EQ(word(x.v, 0), 1);   /* nothing changed */
+        KT_EQ(vmo_size(x.v), PG);
+        put(c);
+        aspace_unref(x.as);
+        put(x.v);
     }
 }

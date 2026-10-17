@@ -26,9 +26,12 @@
  * by a mutex ("vmo resize") above everything else but a region lock; a
  * copy-on-write child's creation holds it throughout. A fault (region
  * lock held), a writer or a resize (resize held) may wait for a creation
- * or a clone to lower `protecting` (cow_wait); neither takes a region
+ * or a clone to lower `protecting` (cow_wait; a kill ends that wait, so
+ * a process is never held up by another's freeze); neither takes a region
  * lock other than the clone's own source's, nor "vmo resize" while it
- * keeps anyone waiting but the creation's own. Two VMO locks nest only in
+ * keeps anyone waiting but the creation's own. A freeze itself waits only
+ * for the vmo_write copies under way (freeze_drain_locked), which hold no
+ * lock. Two VMO locks nest only in
  * those: the parent's, then the new child's (spin_lock_nested), which
  * nobody else can reach yet.
  *
@@ -481,14 +484,18 @@ static struct waitqueue protect_wq = {
 };
 
 /* A creation or a clone is sharing v's pages: wait for it to end (the
- * file header's "protecting"). No lock held. */
-static void cow_wait(struct vmo *v)
+ * file header's "protecting"). No lock held. ERR_CANCELED if the thread
+ * is killed (or its process replaced) meanwhile: someone else's freeze
+ * never holds up a kill. */
+static status_t cow_wait(struct vmo *v)
 {
     __atomic_add_fetch(&vmo_cow_waits, 1, __ATOMIC_RELAXED);
+    status_t st = OK;
     uint64_t f = vlock(v);
-    while (v->protecting)
-        waitqueue_wait(&protect_wq, &v->base.lock, &f);
+    while (v->protecting && st == OK)
+        st = waitqueue_wait_cancellable(&protect_wq, &v->base.lock, &f, DEADLINE_NEVER);
     vunlock(v, f);
+    return st;
 }
 
 /* With the lock held, `protecting` just raised: wait for the vmo_write
@@ -879,7 +886,9 @@ static status_t get_page(struct vmo *v, uint64_t idx, enum get_mode mode, struct
         if (priv && v->protecting) {   /* for a write: frozen meanwhile */
             vunlock(v, f);
             fresh_drop(&fr);
-            cow_wait(v);
+            status_t st = cow_wait(v);
+            if (st != OK)
+                return st;
             continue;
         }
         /* Each OK below comes in this hold, with v not frozen: a
@@ -1628,14 +1637,15 @@ status_t vmo_set_size(struct vmo *v, uint64_t size)
         return st;
     }
     uint64_t f = vlock(v);
-    while (v->protecting)   /* frozen while a clone shares its pages (a creation holds resize) */
-        waitqueue_wait(&protect_wq, &v->base.lock, &f);
+    /* Frozen while a clone shares its pages (a creation holds resize);
+     * a kill ends the wait (cow_wait's rule). */
+    while (v->protecting && st == OK)
+        st = waitqueue_wait_cancellable(&protect_wq, &v->base.lock, &f, DEADLINE_NEVER);
     uint64_t first = size >> PAGE_SHIFT, end = v->size >> PAGE_SHIFT;
-    if (first < end && ranges_overlap_locked(v, first, end)) {
+    if (st == OK && first < end && ranges_overlap_locked(v, first, end))
         st = ERR_BAD_STATE;
-    } else {
+    else if (st == OK)
         __atomic_store_n(&v->size, size, __ATOMIC_RELAXED);
-    }
     vunlock(v, f);
     if (st == OK && first < end) {
         shrink_pages(v, first, end);
@@ -1697,7 +1707,8 @@ static status_t decommit_pages(struct vmo *v, uint64_t offset, uint64_t len, boo
         if (v->protecting) {   /* a decommit changes the bytes: frozen meanwhile */
             vunlock(v, f);
             tlb_gather_finish(&g);   /* what it took so far goes first */
-            cow_wait(v);
+            if ((st = cow_wait(v)) != OK)
+                break;
             continue;
         }
         uint64_t stop = v->size >> PAGE_SHIFT;   /* a racing shrink took the rest */
@@ -1935,7 +1946,9 @@ status_t vmo_fault_map(struct vmo *v, uint64_t idx, struct aspace *as, uint64_t 
         if (write && v->protecting) {   /* frozen while a creation or a clone shares its pages */
             vunlock(v, f);
             fresh_drop(&fr);
-            cow_wait(v);
+            status_t st = cow_wait(v);
+            if (st != OK)
+                return st;   /* ERR_CANCELED: the fault path ends the thread */
             continue;
         }
         /* Nothing is mapped writable while frozen, so a later write faults
