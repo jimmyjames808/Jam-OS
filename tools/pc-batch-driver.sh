@@ -28,7 +28,8 @@
 # .rc and .log (and .try1.* for the first try of a run run again), and their
 # output directories (but disk images) in out/<name>/, copied there as each
 # run ends so that a later run of the checkout can't overwrite them before
-# the Mac collects them. The driver holds an flock on lock for as long as it
+# the Mac collects them. A run run again keeps the first try's copy as
+# out/<name>/<dir>.try1: the second try runs in the same directory. The driver holds an flock on lock for as long as it
 # (or a run of it, or a run's governor) lives: started, no done and a free
 # lock means the PC lost the batch (a reboot), and `pull` writes gone.
 set -u
@@ -64,6 +65,18 @@ run_one() {   # run_one <name> <try>: one try of a run
     mv "$r.rc.new" "$r.rc"
 }
 
+# keep_try1 <name>: the first try's copy of the run's output directories
+# (out/<name>/<dir>) aside as <dir>.try1: the second try's copy, made the
+# same way, replaces <dir> and would take the first try's files with it.
+keep_try1() {
+    local a
+    while IFS= read -r a; do
+        [ -n "$a" ] && [ -d "out/$1/$a" ] || continue
+        rm -rf "out/$1/$a.try1"
+        cp -a "out/$1/$a" "out/$1/$a.try1"
+    done < "runs/$1.outs"
+}
+
 launch() {   # launch <name> <try>: in the background once a job is free
     [ -z "$pids" ] || sleep "$stagger"
     while [ "$(jobs -rp | wc -l | tr -d ' ')" -ge "$jobs" ]; do sleep 1; done
@@ -91,6 +104,7 @@ run() {
         for n in $(names); do
             { [ "$(cat "runs/$n.rc")" = 0 ] || [ -f "runs/$n.try1.rc" ]; } && continue
             for f in log rc t0 t1; do mv "runs/$n.$f" "runs/$n.try1.$f"; done
+            keep_try1 "$n"
             launch "$n" 2
         done
         wait

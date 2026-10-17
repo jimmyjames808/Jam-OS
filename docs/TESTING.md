@@ -78,7 +78,11 @@ failure lines, its log (`build/batch/<id>/<name>.log`: remote-test's lines
 and the command's) and its output directory. `report [<id>]` prints the
 table again, `cancel [<id>]` stops a batch; `<id>` left out is the newest.
 `start --rerun-failed` runs a failure once more: "rerun-PASS" if it passes
-then (the known flaky tests, [Known noise](#known-noise)). A line is `<name>
+then (the known flaky tests, [Known noise](#known-noise)). The second try
+writes into the same output directories, so the first try's are kept
+aside as `<dir>.try1` (`build/t/kt4` -> `build/t/kt4.try1`, no disk
+images) and the table names them next to the first try's log
+(`build/batch/<id>/<name>.try1.log`). A line is `<name>
 <command...>`, shell words; `VAR=value` words before the command (with or
 without `env`) are its environment. `tools/pc-batch.sh <runlist>` does it
 all in the foreground (a terminal). If the PC doesn't answer, the batch
@@ -120,7 +124,9 @@ they copy every run's output directory back to where the runlist named it
 and print the same table. Collecting again (or a week later: the PC keeps
 a batch 7 days) prints the table without asking the PC. `wait` exits 3 if
 the PC never answered during the call (the batch goes on there; call it
-later). `--rerun-failed` reruns on the PC. `cancel` stops every process
+later). `--rerun-failed` reruns on the PC (the first try's output
+directories are copied aside on the PC before the rerun and come back as
+`<dir>.try1`). `cancel` stops every process
 of the batch on the PC: TERM to the driver and its runs, whose
 `remote-slots.py` governors end their commands and whatever still carries
 their claim (as for any cancelled run: "A claim lives and dies with the
