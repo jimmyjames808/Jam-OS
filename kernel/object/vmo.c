@@ -233,7 +233,12 @@
  *     mapping), decommit and size change waits for it to fall to 0
  *     (cow_wait, on one queue for all VMOs: protect_end wakes it), and a
  *     fault installs nothing writable meanwhile, so a later write faults and
- *     waits too. So a change a clone (below) or creation doesn't see is one
+ *     waits too. A vmo_write copies its bytes after it got its page and let
+ *     the lock go (GET_WRITE); the copies under way are counted
+ *     (`inflight`), and a freeze waits for them right after raising
+ *     `protecting` (freeze_drain_locked), so none lands in a page shared
+ *     afterwards: the child's bytes never change once its copy returned.
+ *     So a change a clone (below) or creation doesn't see is one
  *     that waited, and everything ordered after it waited as well: a clone
  *     of many VMOs is never torn.
  *   - A separation under the lock: the copy (made with the lock dropped,
@@ -360,6 +365,10 @@ struct vmo {
     /* Child creations sharing this VMO's pages whose shootdown of its
      * writable entries hasn't finished (lock): a separation waits. */
     uint32_t         protecting;
+    /* vmo_write copies into pages they got (GET_WRITE) that haven't
+     * finished (lock): a freeze waits for them (the file header's
+     * "protecting"). */
+    uint32_t         inflight;
     /* A verified pager VMO's table (<jam/vmo_verify.h>), owned: set once,
      * under the lock, by vmo_seal_verified (a release store; lockless
      * readers load it with acquire), never changed after. */
@@ -463,9 +472,10 @@ void page_share_drop(struct page *p)
  * and the benchmark; relaxed). */
 uint64_t vmo_cow_copies, vmo_cow_waits;
 
-/* Everyone waiting for some VMO's `protecting` to fall to 0: few and
- * brief (a creation or a clone), so one queue, and each waiter looks at
- * its own VMO again when woken. */
+/* Everyone waiting for some VMO's `protecting` to fall to 0 (and the
+ * freezes waiting for its `inflight` to): few and brief (a creation or a
+ * clone; a copy of at most a page), so one queue, and each waiter looks
+ * at its own VMO again when woken. */
 static struct waitqueue protect_wq = {
     SPINLOCK_INIT("vmo protecting"), LIST_INIT(protect_wq.waiters)
 };
@@ -479,6 +489,26 @@ static void cow_wait(struct vmo *v)
     while (v->protecting)
         waitqueue_wait(&protect_wq, &v->base.lock, &f);
     vunlock(v, f);
+}
+
+/* With the lock held, `protecting` just raised: wait for the vmo_write
+ * copies that got their page before (`inflight`) to finish, so none lands
+ * in a page shared from here on. They copy from a kernel buffer and hold
+ * nothing while they do: the wait is short and waits for nothing else. */
+static void freeze_drain_locked(struct vmo *v, uint64_t *f)
+{
+    while (v->inflight)
+        waitqueue_wait(&protect_wq, &v->base.lock, f);
+}
+
+/* A GET_WRITE page's copy is done: let a freeze that waits for it go on. */
+static void write_done(struct vmo *v)
+{
+    uint64_t f = vlock(v);
+    bool wake = --v->inflight == 0 && v->protecting;
+    vunlock(v, f);
+    if (wake)
+        waitqueue_wake_all(&protect_wq);
 }
 
 /* One creation or clone sharing v's pages is done with them: lower
@@ -750,6 +780,8 @@ enum get_mode {
     GET_PEEK,      /* nothing: an absent page is *out = NULL */
     GET_COMMIT,    /* committed (a shared page will do) */
     GET_PRIVATE,   /* committed and this table's alone: a shared page is separated */
+    GET_WRITE,     /* as GET_PRIVATE, for bytes copied in once the lock is dropped:
+                      counted in `inflight` until write_done */
 };
 
 /* A page made with no lock held for one slot, and what it holds: a copy of
@@ -836,6 +868,7 @@ static status_t source_fill(struct vmo *v, uint64_t idx, struct fresh *fr)
 static status_t get_page(struct vmo *v, uint64_t idx, enum get_mode mode, struct page **out)
 {
     struct fresh fr = { 0 };
+    bool priv = mode == GET_PRIVATE || mode == GET_WRITE;
     for (;;) {
         uint64_t f = vlock(v);
         if (idx >= v->size >> PAGE_SHIFT) {
@@ -843,16 +876,19 @@ static status_t get_page(struct vmo *v, uint64_t idx, enum get_mode mode, struct
             fresh_drop(&fr);
             return ERR_OUT_OF_RANGE;
         }
-        if (mode == GET_PRIVATE && v->protecting) {   /* for a write: frozen meanwhile */
+        if (priv && v->protecting) {   /* for a write: frozen meanwhile */
             vunlock(v, f);
             fresh_drop(&fr);
             cow_wait(v);
             continue;
         }
+        /* Each OK below comes in this hold, with v not frozen: a
+         * GET_WRITE counts itself in `inflight` before the lock goes. */
         uint64_t *s = slot_locked(v, idx, false);
         struct page *p = s && *s ? pa_page(*s) : NULL;
-        if (p && (mode != GET_PRIVATE || !page_shared(v, p))) {
+        if (p && (!priv || !page_shared(v, p))) {
             page_get(p);
+            v->inflight += mode == GET_WRITE;
             vunlock(v, f);
             fresh_drop(&fr);   /* another CPU committed or separated it first */
             *out = p;
@@ -864,6 +900,7 @@ static status_t get_page(struct vmo *v, uint64_t idx, enum get_mode mode, struct
             struct page *mine = fr.page;
             cow_replace_locked(v, idx, s, &fr, &g);
             page_get(mine);   /* the table's reference plus the caller's */
+            v->inflight += mode == GET_WRITE;
             vunlock(v, f);
             tlb_gather_finish(&g);
             fresh_drop(&fr);
@@ -892,6 +929,7 @@ static status_t get_page(struct vmo *v, uint64_t idx, enum get_mode mode, struct
             *s = page_to_phys(fr.page);
             v->committed++;
             page_get(fr.page);   /* the table's reference plus the caller's */
+            v->inflight += mode == GET_WRITE;
             vunlock(v, f);
             *out = fr.page;
             return OK;
@@ -1228,12 +1266,13 @@ static status_t write_bytes(struct vmo *v, uint64_t offset, const void *buf, uin
         uint64_t in = offset & (PAGE_SIZE - 1);
         uint64_t n = PAGE_SIZE - in < len ? PAGE_SIZE - in : len;
         struct page *p;
-        status_t st = get_page(v, offset >> PAGE_SHIFT, GET_PRIVATE, &p);
+        status_t st = get_page(v, offset >> PAGE_SHIFT, GET_WRITE, &p);
         if (st != OK)
             return st;
         DBG_HOOK(DBG_VMO_WRITE_COPY, v);
         memcpy((char *)page_to_virt(p) + in, src, n);
         page_put(p);
+        write_done(v);
         src += n;
         offset += n;
         len -= n;
@@ -2074,6 +2113,7 @@ static status_t share_pages(struct vmo *p, struct vmo *c, uint64_t offp)
     if (end > p->size >> PAGE_SHIFT)
         end = p->size >> PAGE_SHIFT;   /* past it the child's pages are zero */
     p->protecting++;
+    freeze_drain_locked(p, &f);
     vunlock(p, f);
     struct tlb_gather g;
     tlb_gather_init(&g);
@@ -2202,6 +2242,7 @@ status_t vmo_clone_begin(struct job *job, struct vmo *v, struct vmo **out)
         return ERR_NOT_SUPPORTED;
     uint64_t f = vlock(v);
     v->protecting++;   /* from here on v's bytes and size wait for vmo_clone_end */
+    freeze_drain_locked(v, &f);
     uint64_t size = v->size, win = v->win;
     vunlock(v, f);
     struct vmo *c;

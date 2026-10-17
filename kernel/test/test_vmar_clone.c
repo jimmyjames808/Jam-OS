@@ -41,6 +41,11 @@
  *       so (process_clone_begin), its table's generations random after;
  *       the children's handles have a fresh VMO's rights; the rights and
  *       types asked for; every refusal gives the reserved slots back.
+ *   vmar_clone_write_in_flight
+ *       a vmo_write stopped between its page and its copy: a clone, or a
+ *       child's creation, meanwhile waits for the copy, so the child's
+ *       bytes never change after it returned (docs/FORK-REVIEW-KERNEL.md,
+ *       finding 1).
  *
  * Faults go through the real page-fault path: the test thread enters an
  * address space and copies to and from its user addresses, as a system
@@ -49,6 +54,7 @@
 #include <jam/abi.h>
 #include <jam/aspace.h>
 #include <jam/aspace_vmo.h>
+#include <jam/dbghook.h>
 #include <jam/handle.h>
 #include <jam/irq.h>
 #include <jam/kprintf.h>
@@ -754,4 +760,97 @@ KTEST(vmar_clone_sys)
     handle_table_destroy(&t);
     kt_job_is_empty(j);
     job_unref(j);
+}
+
+/* ---- FR1 (docs/FORK-REVIEW-KERNEL.md) ------------------------------------------- */
+
+/* Finding 1: a vmo_write that took its page before a freeze copies its
+ * bytes after it. The writer stops between the two (DBG_VMO_WRITE_COPY)
+ * while a clone, or a child's creation, runs. */
+struct wf_ctx {
+    struct vmo    *v, *c;
+    struct aspace *src, *dst;
+    int            how;         /* 0: aspace_clone, 1: vmo_create_child */
+    int            in_copy, go, done;   /* atomic */
+    status_t       write_st, copy_st;
+    uint64_t       at_return;   /* the child's word as its copy returned */
+};
+
+static struct wf_ctx *wf;
+
+static void wf_hook(void *arg)
+{
+    if (arg != wf->v || __atomic_exchange_n(&wf->in_copy, 1, __ATOMIC_ACQ_REL))
+        return;   /* another VMO's write, or the second time */
+    uint64_t end = uptime_ns() + kt_patience_ms(2000) * NS_PER_MS;
+    while (!__atomic_load_n(&wf->go, __ATOMIC_ACQUIRE) && uptime_ns() < end)
+        thread_sleep_ms(1);
+}
+
+static void wf_writer(void *arg)
+{
+    (void)arg;
+    uint64_t w = 2;
+    wf->write_st = vmo_write(wf->v, 0, &w, 8);
+}
+
+static void wf_copier(void *arg)
+{
+    (void)arg;
+    if (wf->how == 0) {
+        wf->dst = new_as(NULL);
+        wf->copy_st = clone1(wf->src, wf->dst, wf->v, &wf->c);
+    } else {
+        wf->copy_st = vmo_create_child(NULL, wf->v, VMO_CHILD_SNAPSHOT, 0, PG, &wf->c);
+    }
+    if (wf->copy_st == OK)
+        wf->at_return = word(wf->c, 0);
+    __atomic_store_n(&wf->done, 1, __ATOMIC_RELEASE);
+}
+
+KTEST(vmar_clone_write_in_flight)
+{
+    for (int how = 0; how < 2; how++) {
+        wf = kzalloc(sizeof(*wf));
+        KT_ASSERT(wf);
+        wf->how = how;
+        wf->v = mk(1);
+        stamp(wf->v, 0, 1);
+        wf->src = new_as(NULL);
+        map_at(wf->src, wf->v, 0, 1, BASE, RW | CAN_RW);
+        __atomic_store_n(&dbg_hooks[DBG_VMO_WRITE_COPY], wf_hook, __ATOMIC_RELEASE);
+        struct thread *w = thread_create("kt-wf-writer", wf_writer, NULL, PRIO_DEFAULT);
+        uint64_t end = uptime_ns() + kt_patience_ms(1000) * NS_PER_MS;
+        while (!__atomic_load_n(&wf->in_copy, __ATOMIC_ACQUIRE) && uptime_ns() < end)
+            thread_sleep_ms(1);
+        KT_ASSERT(__atomic_load_n(&wf->in_copy, __ATOMIC_ACQUIRE));
+        struct thread *c = thread_create("kt-wf-copier", wf_copier, NULL, PRIO_DEFAULT);
+        /* Without waiting for the write the copy is done in microseconds;
+         * with it, it waits for the go. */
+        end = uptime_ns() + 20 * NS_PER_MS;
+        while (!__atomic_load_n(&wf->done, __ATOMIC_ACQUIRE) && uptime_ns() < end)
+            thread_sleep_ms(1);
+        bool early = __atomic_load_n(&wf->done, __ATOMIC_ACQUIRE);
+        __atomic_store_n(&wf->go, 1, __ATOMIC_RELEASE);
+        thread_join(w);
+        thread_join(c);
+        __atomic_store_n(&dbg_hooks[DBG_VMO_WRITE_COPY], NULL, __ATOMIC_RELEASE);
+        KT_EQ(wf->write_st, OK);
+        KT_EQ(wf->copy_st, OK);
+        uint64_t now = word(wf->c, 0);
+        kprintf("vmar_clone_write_in_flight: %s %s the write, the child %lu then %lu\n",
+                how ? "a child's creation" : "a clone", early ? "passed" : "waited for",
+                wf->at_return, now);
+        /* The child's bytes never change after its copy returned. */
+        KT_EQ(now, wf->at_return);
+        KT_EQ(word(wf->v, 0), 2);
+        KT_EQ(uword(wf->src, BASE), 2);
+        put(wf->c);
+        if (wf->dst)
+            aspace_unref(wf->dst);
+        aspace_unref(wf->src);
+        put(wf->v);
+        kfree(wf);
+        wf = NULL;
+    }
 }
