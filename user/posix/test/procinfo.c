@@ -28,7 +28,11 @@
  *     from the starter), /proc/self/task and a thread's own stat, status,
  *     statm, maps and cmdline (also as /proc/<tid>/...), /proc/self/mem (read
  *     only), /proc/version and sys/kernel/... against uname, meminfo's
- *     buffers and caches, dladdr for the program's image. */
+ *     buffers and caches, dladdr for the program's image;
+ *   - CBF6's: /proc/self/smaps_rollup (base's SmapsRollupTest): the
+ *     pseudo-mapping's line, Rss = Pss, the kinds of page adding up, a
+ *     private and a shared mapping touched moving Private_Dirty and
+ *     Shared_Dirty. */
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
@@ -717,10 +721,10 @@ static void check_kinds(void)
                  !strcmp(e->d_name, "statm") + !strcmp(e->d_name, "status") +
                  !strcmp(e->d_name, "exe") + !strcmp(e->d_name, "fd") +
                  !strcmp(e->d_name, "cmdline") + !strcmp(e->d_name, "mem") +
-                 !strcmp(e->d_name, "task");
+                 !strcmp(e->d_name, "task") + !strcmp(e->d_name, "smaps_rollup");
     if (d)
         closedir(d);
-    CHECK(found == 9);
+    CHECK(found == 10);
 }
 
 /* What Linux has that we don't is still ENOENT: user namespaces (base's
@@ -979,7 +983,7 @@ static void check_child(bool kill_it)
     t = slurp(path);
     CHECK(t && strlen(t) > 6);
     free(t);
-    /* Its directory has these four and not our own exe and fd; /proc lists it. */
+    /* Its directory has these five and not our own exe and fd; /proc lists it. */
     snprintf(path, sizeof(path), "/proc/%d", (int)pid);
     int found = 0;
     DIR *d = opendir(path);
@@ -987,10 +991,11 @@ static void check_child(bool kill_it)
     while (d && (e = readdir(d)))
         found += !strcmp(e->d_name, "maps") + !strcmp(e->d_name, "stat") +
                  !strcmp(e->d_name, "statm") + !strcmp(e->d_name, "status") +
+                 !strcmp(e->d_name, "smaps_rollup") +
                  100 * (!strcmp(e->d_name, "exe") + !strcmp(e->d_name, "fd"));
     if (d)
         closedir(d);
-    CHECK(found == 4);
+    CHECK(found == 5);
     CHECK(listed_in_proc(pid));
     struct stat st;
     snprintf(path, sizeof(path), "/proc/%d/exe", (int)pid);
@@ -1367,6 +1372,7 @@ static void check_tasks(void)
     snprintf(dir, sizeof(dir), "/proc/self/task/%d", me);
     CHECK(stat(dir, &st) == 0 && S_ISDIR(st.st_mode));
     CHECK(lists(dir, "stat") && lists(dir, "statm") && lists(dir, "status") && lists(dir, "maps"));
+    CHECK(lists(dir, "smaps_rollup"));
     CHECK(lists(dir, "cmdline") && lists(dir, "mem") && !lists(dir, "exe") && !lists(dir, "fd") && !lists(dir, "task"));
     snprintf(path, sizeof(path), "%s/exe", dir);
     errno = 0;
@@ -1565,12 +1571,81 @@ int pt_child_block(void)
     return 5;
 }
 
+/* The kB of the field of smaps_rollup's text called key (without the
+ * colon), -1 if it has none. */
+static long long rollup_kb(const char *t, const char *key)
+{
+    size_t kl = strlen(key);
+    const char *p = t;
+    while (p && *p) {
+        char name[100];
+        unsigned long long v;
+        if (sscanf(p, "%99s %llu kB", name, &v) == 2 && strlen(name) == kl + 1 &&
+            !strncmp(name, key, kl) && name[kl] == ':')
+            return (long long)v;
+        p = strchr(p, '\n');
+        p = p ? p + 1 : NULL;
+    }
+    return -1;
+}
+
+/* smaps_rollup (CBF6; base's SmapsRollupTest reads it in one 4096-byte read
+ * and parses each line as "key: N kB"): the pseudo-mapping's line, Rss
+ * and Pss the pages present, the kinds of page adding up to them, the
+ * figures moving with a private and a shared mapping that are touched. */
+static void check_smaps_rollup(void)
+{
+    char *t = slurp("/proc/self/smaps_rollup"), *st = slurp("/proc/self/status");
+    CHECK(t && st && strlen(t) < 4096);
+    if (!t || !st) {
+        free(t);
+        free(st);
+        return;
+    }
+    unsigned long long lo, hi, off;
+    char perms[8], dev[16];
+    int n = 0;
+    CHECK(sscanf(t, "%llx-%llx %7s %llx %15s %*u %n", &lo, &hi, perms, &off, dev, &n) >= 5 &&
+          lo < hi && !strcmp(perms, "---p") && off == 0 && !strcmp(dev, "00:00"));
+    const char *eol = strchr(t, '\n');
+    CHECK(eol && eol - t >= 40 && !strncmp(eol - 8, "[rollup]", 8));
+    long long rss = rollup_kb(t, "Rss"), pss = rollup_kb(t, "Pss");
+    long long sc = rollup_kb(t, "Shared_Clean"), sd = rollup_kb(t, "Shared_Dirty");
+    long long pc = rollup_kb(t, "Private_Clean"), pd = rollup_kb(t, "Private_Dirty");
+    CHECK(rss > 0 && pss == rss && pd > 0 && rollup_kb(t, "Referenced") == rss);
+    CHECK(sc >= 0 && sd >= 0 && pc >= 0 && sc + sd + pc + pd == rss);
+    CHECK(rollup_kb(t, "Pss_Anon") + rollup_kb(t, "Pss_File") + rollup_kb(t, "Pss_Shmem") == pss);
+    CHECK(rollup_kb(t, "Pss_Dirty") == sd + pd && rollup_kb(t, "Anonymous") == rollup_kb(t, "Pss_Anon"));
+    CHECK(rollup_kb(t, "Swap") == 0 && rollup_kb(t, "SwapPss") == 0 && rollup_kb(t, "Locked") == 0);
+    long long vm = status_num(st, "VmRSS");
+    CHECK(rss + 512 >= vm && rss <= vm + 512);
+    free(t);
+    free(st);
+
+    /* 1 MiB each, touched: private memory is private and dirty, shared memory is shared. */
+    size_t len = 1u << 20;
+    char *priv = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    char *shr = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    CHECK(priv != MAP_FAILED && shr != MAP_FAILED);
+    if (priv == MAP_FAILED || shr == MAP_FAILED)
+        return;
+    for (size_t i = 0; i < len; i += 4096)
+        priv[i] = shr[i] = 1;
+    t = slurp("/proc/self/smaps_rollup");
+    CHECK(t && rollup_kb(t, "Private_Dirty") >= pd + 1000 && rollup_kb(t, "Shared_Dirty") >= sd + 1000);
+    CHECK(t && rollup_kb(t, "Rss") >= rss + 2000 && rollup_kb(t, "Pss_Shmem") >= 1000);
+    free(t);
+    munmap(priv, len);
+    munmap(shr, len);
+}
+
 void pt_procinfo(char **argv __attribute__((unused)))
 {
     check_stat();
     check_start_time();
     check_status();
     check_statm();
+    check_smaps_rollup();
     check_maps();
     check_passes();
     check_kinds();

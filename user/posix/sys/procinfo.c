@@ -1,7 +1,7 @@
 /* The text of /proc's generated files (docs/CR-PLAN.md "PRC notes"), in
  * Linux's formats and field order (proc(5)), made when a file is read:
  *
- *   /proc/<pid>/stat, statm, status, maps   for our own pid and for each
+ *   /proc/<pid>/stat, statm, status, maps, smaps_rollup   for our own pid and for each
  *                         child of ours not yet reaped; stat, status, statm
  *                         and maps of one of our threads too
  *                         (/proc/<pid>/task/<tid>/..., or /proc/<tid>/...)
@@ -49,6 +49,10 @@
  * for files mapped with mmap; the offset only where the VMO is a file (an
  * image, a file's own pages). Anonymous memory and shared memory are not
  * told apart by name (all are blank).
+ * smaps_rollup: Rss and Pss are the pages present (no page is known to be
+ * shared with another process, so Pss is Rss); a page is dirty if its
+ * mapping can be written and shared if the mapping is MAP_SHARED (no
+ * per-page bits); the rest 0 (put_smaps_rollup).
  * meminfo: MemTotal and MemFree are the allocator's (free pages exclude
  * the kernel heap's cached objects); MemAvailable is MemFree (no page cache
  * is kept apart: files are the pager's pages, counted in no field). Buffers,
@@ -121,6 +125,9 @@ void sb_put(struct sb *b, const char *fmt, ...)
 struct acc {
     uint64_t size;                           /* VmSize: bytes mapped */
     uint64_t rss, rss_anon, rss_file, rss_shmem;   /* pages present */
+    uint64_t private_dirty, private_clean, shared_dirty, shared_clean;   /* pages present, by kind
+                                                                          * of mapping (smaps_rollup) */
+    uint64_t first, last;                    /* the lowest mapping's start, the highest's end */
     uint64_t exe, data, stk;                 /* VmExe, VmData, VmStk: bytes */
     uint64_t text_lo, text_hi;               /* the image's executable mappings */
     bool     self;                           /* ours: libc's table and our image apply */
@@ -162,6 +169,15 @@ static void take(struct acc *a, const struct map_info *m)
     bool stack = a->self && !img && a->stack_addr >= m->base && a->stack_addr - m->base < m->len;
     a->size += m->len;
     a->rss += m->resident;
+    if (!a->last || m->base < a->first)
+        a->first = m->base;
+    if (m->base + m->len > a->last)
+        a->last = m->base + m->len;
+    bool dirty = m->perms & VMAR_WRITE;   /* the pages may have been written: no per-page bit */
+    if (shared)
+        *(dirty ? &a->shared_dirty : &a->shared_clean) += m->resident;
+    else
+        *(dirty ? &a->private_dirty : &a->private_clean) += m->resident;
     if (shared)
         a->rss_shmem += m->resident;
     else if (file)
@@ -413,6 +429,36 @@ static void put_statm(struct sb *b, const struct view *v)
            (unsigned long long)(a->exe / PAGE), (unsigned long long)((a->data + a->stk) / PAGE));
 }
 
+/* smaps_rollup: the sums smaps would give over every mapping, one pseudo-
+ * mapping of the whole range first. Linux counts the pages by who else maps
+ * them and whether each was written; we know neither, so a page counts whole
+ * (Pss is Rss), is dirty if its mapping can be written and shared if it is
+ * MAP_SHARED. Nothing is swapped, locked, lazily freed or huge. */
+static void put_smaps_rollup(struct sb *b, const struct view *v)
+{
+    const struct acc *a = &v->a;
+    char head[96];
+    int n = snprintf(head, sizeof(head), "%08llx-%08llx ---p 00000000 00:00 0",
+                     (unsigned long long)a->first, (unsigned long long)a->last);
+    sb_put(b, "%s%*s[rollup]\n", head, n < NAME_COL ? NAME_COL - n : 1, " ");
+    const struct { const char *name; uint64_t pages; } fields[] = {
+        { "Rss", a->rss }, { "Pss", a->rss },
+        { "Pss_Dirty", a->private_dirty + a->shared_dirty },
+        { "Pss_Anon", a->rss_anon }, { "Pss_File", a->rss_file }, { "Pss_Shmem", a->rss_shmem },
+        { "Shared_Clean", a->shared_clean }, { "Shared_Dirty", a->shared_dirty },
+        { "Private_Clean", a->private_clean }, { "Private_Dirty", a->private_dirty },
+        { "Referenced", a->rss }, { "Anonymous", a->rss_anon }, { "LazyFree", 0 },
+        { "AnonHugePages", 0 }, { "ShmemPmdMapped", 0 }, { "FilePmdMapped", 0 },
+        { "Shared_Hugetlb", 0 }, { "Private_Hugetlb", 0 }, { "Swap", 0 }, { "SwapPss", 0 },
+        { "Locked", 0 },
+    };
+    for (unsigned i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
+        char key[24];
+        snprintf(key, sizeof(key), "%s:", fields[i].name);
+        sb_put(b, "%-15s %8llu kB\n", key, (unsigned long long)(fields[i].pages * (PAGE / 1024)));
+    }
+}
+
 /* ---- the system ----------------------------------------------------------------------- */
 
 static void put_meminfo(struct sb *b)
@@ -555,7 +601,7 @@ long procinfo_text(enum pfile f, int32_t pid, uint32_t tid, char **text, size_t 
 {
     struct sb b = { 0 };
     struct view *v = NULL;
-    if (f == PF_STAT || f == PF_STATM || f == PF_STATUS || f == PF_MAPS) {
+    if (f == PF_STAT || f == PF_STATM || f == PF_STATUS || f == PF_MAPS || f == PF_SMAPS_ROLLUP) {
         v = malloc(sizeof(*v));
         if (!v)
             return -ENOMEM;
@@ -571,6 +617,7 @@ long procinfo_text(enum pfile f, int32_t pid, uint32_t tid, char **text, size_t 
     case PF_STATM:   put_statm(&b, v); break;
     case PF_STATUS:  put_status(&b, v); break;
     case PF_MAPS:    break;   /* the walk wrote it */
+    case PF_SMAPS_ROLLUP: put_smaps_rollup(&b, v); break;
     case PF_CMDLINE: put_cmdline(&b); break;
     case PF_CPUINFO: cpuinfo_text(&b); break;
     case PF_MEMINFO: put_meminfo(&b); break;
