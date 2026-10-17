@@ -1,8 +1,8 @@
 /* utest: init's sealer, /svc/exec (init's exec.c; abi/idl/exec.idl). The
- * boot image's exectest, execwide, pxtest, posixtest and wantsession are copied to
- * /data and approved here as `allow` approves (a line in /data/etc/allow,
- * a page table in /data/etc/allow.d: <dataprog.h>); exec_cleanup puts
- * /data back. Skipped without /svc/exec or /data.
+ * boot image's exectest, execwide, pxtest, posixtest, pxio and wantsession
+ * are copied to /data and approved here as `allow` approves (a line in
+ * /data/etc/allow, a page table in /data/etc/allow.d: <dataprog.h>);
+ * exec_cleanup puts /data back. Skipped without /svc/exec or /data.
  *
  * t_exec_sealed_runs: an approved program is sealed and runs, with exactly
  * its own approval: exectest (narrow) and execwide (wide) started from
@@ -42,8 +42,26 @@
  * and not given on, the directory and its duplicate gone, its current
  * directory "/", /proc/self/exe the sealed path, AT_SECURE (no TMPDIR, no
  * secure_getenv), the umask and the pipe kept (posixtest's `--child-launch
- * sealed` checks). And with no hand-over of ours, it is still AT_SECURE,
- * 0 to 2 on /dev/null. utest's job holds as many handles after.
+ * sealed` checks). utest is a boot-image program, which has no image to
+ * send: every child of its is raised. And with no hand-over of ours, it is
+ * still AT_SECURE, 0 to 2 on /dev/null. utest's job holds as many handles
+ * after.
+ *
+ * t_exec_within: the rule for a raised child (dp_wants_within: a list
+ * within another, read within write, a mount within every mount's, a
+ * service and a power the same) and the mounts a list gives
+ * (dp_wants_mounts), which init's exec.c uses.
+ *
+ * t_exec_starter: a caller's directory and environment (docs/CR-PLAN.md,
+ * "SX"; the owner's D2), with posixtest on /data as the caller,
+ * which sends its own image as libc does: in /data/ce-dir with TMPDIR set
+ * it forks and execs itself (Chromium's launcher: spawn, wait, exit), and
+ * the child, not raised, is in /data/ce-dir, with TMPDIR and AT_SECURE 0;
+ * it starts pxio (on /data too, its list /tmp alone: not raised), which
+ * can't see /data and so starts in "/"; exectest (/data read-only) starts
+ * posixtest, which asks for far more: raised, AT_SECURE, HOME without
+ * exectest's TMPDIR, in "/"; and a forged image (posixtest's bytes in a
+ * VMO never sealed) counts for nothing: raised.
  *
  * t_exec_no_leak: 40 programs sealed and dropped and 12 started and
  * waited for on one opener (past PROGRAMS_PER_OPENER and PROGRAMS_MAX:
@@ -67,6 +85,8 @@
 #define WIDE     "/data/ce-wide"
 #define PX       "/data/ce-px"
 #define PT       "/data/ce-pt"            /* posixtest: what a POSIX child is handed */
+#define PXIO     "/data/ce-pxio"          /* pxio: a POSIX child with less than posixtest */
+#define CE_DIR   "/data/ce-dir"           /* a caller's current directory */
 #define SESS     "/data/ce-sess"
 #define UNALLOW  "/data/ce-unallowed"
 #define PX_CUE   "/data/ce-cue-never"     /* pxtest waits for it: never made */
@@ -198,7 +218,15 @@ static bool setup(void)
     CHECK(place("bin/execwide", WIDE, true));
     CHECK(place("bin/pxtest", PX, true));
     CHECK(place("bin/posixtest", PT, true));
+    CHECK(place("bin/pxio", PXIO, true));
     CHECK(place("bin/wantsession", SESS, true));
+    st = fs_mkdir(CE_DIR);
+    CHECK(st == OK || st == ERR_ALREADY_EXISTS);
+    /* posixtest's own fork and exec, and its posix_spawn, want the
+     * execute bit on a mount with modes (fat takes it and ignores it). */
+    const struct fs_attr_set x = { .mask = FS_ATTR_MODE, .mode = 0755 };
+    CHECK_ST(fs_setattr(PT, 0, &x), OK);
+    CHECK_ST(fs_setattr(PXIO, 0, &x), OK);
     CHECK(place("bin/exectest", UNALLOW, false));
     /* The old approvals, then ours (a path's last line is its approval). */
     size_t n = allow_before_len + strlen(allow_text);
@@ -219,7 +247,7 @@ static bool ex_run(const char *path, int argc, const char *const *argv, int64_t 
 {
     handle_t proc, job, sig;
     int step;
-    status_t st = exectest_start(path, argc, argv, &proc, &job, &sig, &step);
+    status_t st = exectest_start(path, argc, argv, NULL, &proc, &job, &sig, &step);
     if (st != OK)
         FAIL("%s: step %d: %s", path, step, status_str(st));
     struct process_info info;
@@ -313,7 +341,7 @@ bool t_exec_sealed_runs(void)
     const char *wait_cue[] = { "pxtest", "touch", PX_CUE };
     handle_t proc, job, sig;
     int step;
-    CHECK_ST(exectest_start(PX, 3, wait_cue, &proc, &job, &sig, &step), OK);
+    CHECK_ST(exectest_start(PX, 3, wait_cue, NULL, &proc, &job, &sig, &step), OK);
     struct handle_info hi;
     CHECK_ST(jam_handle_info(proc, &hi), OK);
     CHECK(!(hi.rights & RIGHT_WRITE));
@@ -381,12 +409,13 @@ bool t_exec_refused(void)
     CHECK_ST(open_path(NARROW, &prog), OK);
     CHECK_ST(jam_handle_duplicate(startup_handle(SR_JOB), RIGHT_SAME, &job), OK);
     CHECK_ST(jam_channel_create(&sig, &s2), OK);
-    CHECK_ST(exec_prog_start_within(prog, WAIT, 1, no_nul, 1, job, s2, &proc, &cjob),
+    CHECK_ST(exec_prog_start_within(prog, WAIT, 1, no_nul, 1, job, s2, NULL, 0, &proc, &cjob),
              ERR_INVALID_ARGS);
     CHECK_ST(jam_handle_duplicate(startup_handle(SR_JOB), RIGHT_SAME, &job), OK);
     CHECK_ST(jam_channel_create(&a, &b), OK);
     /* The channel was closed after that one try. */
-    CHECK_ST(exec_prog_start_within(prog, WAIT, 1, two, 4, job, b, &proc, &cjob), ERR_PEER_CLOSED);
+    CHECK_ST(exec_prog_start_within(prog, WAIT, 1, two, 4, job, b, NULL, 0, &proc, &cjob),
+             ERR_PEER_CLOSED);
     jam_handle_close(prog);
     jam_handle_close(a);
     jam_handle_close(sig);
@@ -401,8 +430,8 @@ bool t_exec_refused(void)
             CHECK_ST(jam_handle_duplicate(startup_handle(SR_JOB), bad[i].no_write ?
                                           RIGHTS_BASIC | RIGHT_READ : RIGHT_SAME, &job), OK);
         CHECK_ST(jam_channel_create(&a, &b), OK);
-        CHECK_ST(exec_prog_start_within(prog, WAIT, bad[i].argc, two, sizeof(two), job, b, &proc,
-                                        &cjob), ERR_INVALID_ARGS);
+        CHECK_ST(exec_prog_start_within(prog, WAIT, bad[i].argc, two, sizeof(two), job, b, NULL,
+                                        0, &proc, &cjob), ERR_INVALID_ARGS);
         jam_handle_close(prog);
         jam_handle_close(a);
     }
@@ -482,19 +511,26 @@ bool t_exec_no_leak(void)
     CHECK_ST(write_soon(WIDE, b, n), OK);
     return true;
 }
-/* posixtest (on /data as PT) started through /svc/exec as
- * `posixtest --child-launch <mode> PT` with HOME and TMPDIR in its
- * environment, the hand-over ho written on our end first (NULL: none):
- * its exit code into *code (-1: killed). */
-static bool pt_run(const char *mode, const struct posixfds_out *ho, int64_t *code)
+/* posixtest (on /data as PT) started through /svc/exec as `posixtest
+ * --child-launch <args>` (argc of them) with HOME and TMPDIR in its
+ * environment, the hand-over ho written on our end first (NULL: none) and
+ * image as our own program (HANDLE_INVALID: none; consumed): its exit
+ * code into *code (-1: killed). */
+static bool pt_run_args(int argc, const char *const *args, const struct posixfds_out *ho,
+                        handle_t image, int64_t *code)
 {
-    const char *const strs[] = { "posixtest", "--child-launch", mode, PT,
-                                 "HOME=/data", "TMPDIR=/data/etc" };
-    enum { ARGC = 4 };
-    uint8_t strings[256];
+    const char *strs[16] = { "posixtest", "--child-launch" };
+    unsigned ns = 2;
+    for (int i = 0; i < argc && ns < 14; i++)
+        strs[ns++] = args[i];
+    const uint16_t nargs = (uint16_t)ns;
+    strs[ns++] = "HOME=/data";
+    strs[ns++] = "TMPDIR=/data/etc";
+    uint8_t strings[512];
     uint32_t len = 0;
-    for (unsigned i = 0; i < sizeof(strs) / sizeof(strs[0]); i++) {
+    for (unsigned i = 0; i < ns; i++) {
         size_t l = strlen(strs[i]) + 1;
+        CHECK(len + l <= sizeof(strings));
         memcpy(strings + len, strs[i], l);
         len += (uint32_t)l;
     }
@@ -515,7 +551,8 @@ static bool pt_run(const char *mode, const struct posixfds_out *ho, int64_t *cod
     jam_handle_close(mine);   /* written: init reads it all at the start */
     CHECK_ST(jam_handle_duplicate(startup_handle(SR_JOB), RIGHT_SAME, &job), OK);
     CHECK_ST(jam_channel_create(&sig, &sig_theirs), OK);
-    st = exec_prog_start_within(prog, WAIT, ARGC, strings, len, job, sig_theirs, &proc, &cjob);
+    st = exec_prog_start_within(prog, WAIT, nargs, strings, len, job, sig_theirs, &image,
+                                image ? 1 : 0, &proc, &cjob);
     jam_handle_close(prog);
     if (st != OK)
         jam_handle_close(sig);
@@ -530,6 +567,13 @@ static bool pt_run(const char *mode, const struct posixfds_out *ho, int64_t *cod
     CHECK_ST(st, OK);
     *code = info.killed ? -1 : info.exit_code;
     return true;
+}
+
+/* `posixtest --child-launch <mode> PT`, as pt_run_args. */
+static bool pt_run(const char *mode, const struct posixfds_out *ho, int64_t *code)
+{
+    const char *args[] = { mode, PT };
+    return pt_run_args(2, args, ho, HANDLE_INVALID, code);
 }
 
 bool t_exec_handover(void)
@@ -570,6 +614,86 @@ bool t_exec_handover(void)
     return true;
 }
 
+bool t_exec_within(void)
+{
+    static struct wants w, of;
+    static const struct { const char *w, *of; bool within; } cases[] = {
+        { "", "", true },
+        { "svc exec\n", "", false },
+        { "posix\nmount /data rw\nsvc exec\n", "svc exec\nmount /data rw\nposix\n", true },
+        { "mount /data r\n", "mount /data rw\n", true },        /* read within write */
+        { "mount /data rw\n", "mount /data r\n", false },
+        { "mount /data rw pkg\n", "mount /data rw\n", false },  /* the packages' prefix */
+        { "mount /data rw\n", "mount /data rw pkg\n", true },
+        { "mount /data r\n", "mount * r\n", true },             /* every mount */
+        { "mount /data rw\n", "mount * r\n", false },
+        { "mount * r\n", "mount /data rw\n", false },
+        { "mount /usb* r\n", "mount * rw\n", true },
+        { "mount * r\n", "mount /usb* rw\n", false },
+        { "mount /usb* r\n", "mount /usb* r\n", true },
+        { "mount /boot r\n", "mount /usb* rw\n", false },
+        { "posix\n", "mount * rw\n", true },                    /* /tmp, a mount */
+        { "posix\n", "mount /data rw\n", false },
+        { "svc net\n", "svc net listen\n", true },              /* listen gives net */
+        { "svc net listen\n", "svc net\n", false },
+        { "svc dns\n", "svc net\n", false },
+        { "right sysinfo\n", "right klog\nright sysinfo\n", true },
+        { "right jit\n", "right sysinfo\n", false },
+        { "right klog\n", "mount * rw\n", false },
+    };
+    for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        CHECK_ST(wants_parse(cases[i].w, strlen(cases[i].w), &w), OK);
+        CHECK_ST(wants_parse(cases[i].of, strlen(cases[i].of), &of), OK);
+        if (dp_wants_within(&w, &of) != cases[i].within)
+            FAIL("\"%s\" within \"%s\" should be %s", cases[i].w, cases[i].of,
+                 cases[i].within ? "true" : "false");
+    }
+    const char *list = "posix\nmount /data r\nmount /usb* r\nsvc exec\n";
+    CHECK_ST(wants_parse(list, strlen(list), &w), OK);
+    CHECK(dp_wants_mounts(&w, "/data") && dp_wants_mounts(&w, "/tmp"));
+    CHECK(dp_wants_mounts(&w, "/usb1") && !dp_wants_mounts(&w, "/boot"));
+    CHECK(!dp_wants_mounts(&w, "/svc") && !dp_wants_mounts(&w, "/dat"));
+    CHECK(!dp_wants_mounts(&w, "/data2"));
+    CHECK_ST(wants_parse("mount * r\n", 10, &w), OK);
+    CHECK(dp_wants_mounts(&w, "/boot"));
+    return true;
+}
+
+bool t_exec_starter(void)
+{
+    CHECK(setup());
+    if (skipped)
+        return true;
+    int64_t code = -2;
+    /* posixtest in CE_DIR, TMPDIR set, forks and execs itself: the same
+     * list, so not raised. */
+    const char *same[] = { "from", CE_DIR, PT, "--child-launch", "inherit", CE_DIR };
+    CHECK(pt_run_args(6, same, NULL, HANDLE_INVALID, &code));
+    CHECK_EQ(code, 0);   /* else launch.c's child_inherit (30s) or child_from (90s) */
+    /* posixtest starts pxio, whose list (/tmp alone) is within its own:
+     * not raised, but /data isn't in pxio's namespace: in "/". */
+    const char *less[] = { "from-out", CE_DIR, "pxio: cwd=/", PXIO, "cwd" };
+    CHECK(pt_run_args(5, less, NULL, HANDLE_INVALID, &code));
+    CHECK_EQ(code, 0);   /* else child_from_out's 95s */
+    /* exectest (/data read-only and exec, sending its own image) starts
+     * posixtest, whose list asks for far more: raised. */
+    const char *more[] = { "exectest", "launch", PT, "--child-launch", "sealed-bare", PT };
+    CHECK(ex_run(NARROW, 6, more, &code));
+    CHECK_EQ(code, 0);   /* else launch.c's sealed_common (10s) */
+    /* A forged image: posixtest's bytes, its list and all, in a VMO of
+     * ours that was never sealed. Not known: raised. */
+    const uint8_t *b;
+    uint64_t n;
+    handle_t fake;
+    CHECK(boot_bytes("bin/posixtest", &b, &n));
+    CHECK_ST(jam_vmo_create(n, 0, &fake), OK);
+    CHECK_ST(jam_vmo_write(fake, 0, b, n), OK);
+    const char *bare[] = { "sealed-bare", PT };
+    CHECK(pt_run_args(2, bare, NULL, fake, &code));
+    CHECK_EQ(code, 0);
+    return true;
+}
+
 /* /data as utest found it: ours unmounted, volumes' watch closed. */
 static void data_back(void)
 {
@@ -585,7 +709,7 @@ bool t_exec_cleanup(void)
         data_back();
         return true;
     }
-    const char *files[] = { NARROW, WIDE, PX, PT, SESS, UNALLOW, EXT_PROBE_FILE };
+    const char *files[] = { NARROW, WIDE, PX, PT, PXIO, SESS, UNALLOW, EXT_PROBE_FILE, CE_DIR };
     for (unsigned i = 0; i < sizeof(files) / sizeof(files[0]); i++)
         (void)fs_unlink(files[i]);
     for (unsigned i = 0; i < ntables; i++) {

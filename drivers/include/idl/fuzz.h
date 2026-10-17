@@ -1246,7 +1246,7 @@ static const struct idl_fuzz_msg idl_fz_exec_msgs[] = {
 };
 
 /* ---- exec_prog ---- */
-static status_t idl_fz_exec_prog_start(void *ctx, uint16_t argc, const uint8_t *strings, uint32_t strings_len, handle_t job, handle_t signals, handle_t *out_proc, handle_t *out_job)
+static status_t idl_fz_exec_prog_start(void *ctx, uint16_t argc, const uint8_t *strings, uint32_t strings_len, handle_t job, handle_t signals, const handle_t *image, uint32_t image_len, handle_t *out_proc, handle_t *out_job)
 {
     (void)ctx;
     (void)argc;
@@ -1254,12 +1254,16 @@ static status_t idl_fz_exec_prog_start(void *ctx, uint16_t argc, const uint8_t *
     (void)strings_len;
     (void)job;
     (void)signals;
+    (void)image;
+    (void)image_len;
     (void)out_proc;
     (void)out_job;
     if (job != HANDLE_INVALID)
         drv_handle_close(job);
     if (signals != HANDLE_INVALID)
         drv_handle_close(signals);
+    if (image)
+        idl_close_all(image, image_len);
     if (!idl_fuzz_full)
         return ERR_IO;
     if (drv_event_create(out_proc) != OK)
@@ -1277,7 +1281,7 @@ static uint32_t idl_fz_exec_prog_serve(const void *q, uint32_t n, const handle_t
     return exec_prog_dispatch_h(HANDLE_INVALID, &idl_fz_exec_prog_ops, NULL, q, n, hs, nh, r, rhs, rhn);
 }
 static const struct idl_fuzz_msg idl_fz_exec_prog_msgs[] = {
-    { 0x00300001u, 10u, 0, 2, 0, 0, { 0, 0 }, 1, { { 1, 0, 12288 } } },
+    { 0x00300001u, 10u, 0, 2, 1, IDL_OBJ_VMO, { 0, 0 }, 1, { { 1, 0, 12288 } } },
 };
 
 /* ---- file ---- */

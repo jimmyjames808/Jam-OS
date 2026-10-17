@@ -1245,6 +1245,8 @@ static const struct {
     { "exec_refused", t_exec_refused },
     { "exec_changed", t_exec_changed },
     { "exec_handover", t_exec_handover },
+    { "exec_within", t_exec_within },
+    { "exec_starter", t_exec_starter },
     { "exec_no_leak", t_exec_no_leak },
     { "exec_cleanup", t_exec_cleanup },
     { "unix_names", t_unix_names },

@@ -14,7 +14,10 @@
  *     room past 2 MiB (finding 4's wrap), a path without its NUL, ...: the
  *     child starts with argc 0 and says so in the log, never crashes.
  * Child modes `sealed` and `sealed-bare` are utest's (execsvc.c): what a
- * program started through init's /svc/exec is given (CR-REVIEW-POSIX Q1). */
+ * program started through init's /svc/exec is given (CR-REVIEW-POSIX Q1);
+ * `from`, `from-out` and `inherit` too: a caller's directory and
+ * environment kept for a child that isn't raised (docs/CR-PLAN.md,
+ * "SX"). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <dirent.h>
@@ -368,6 +371,82 @@ static int child_sealed_bare(int argc, char **argv)
     return fd_is(0, S_IFCHR) && fd_is(1, S_IFCHR) && fd_is(2, S_IFCHR) ? 0 : 21;
 }
 
+/* --child-launch inherit <dir>: started through /svc/exec by a caller in
+ * dir whose approval gives all this program's does (its own: `from`
+ * below), so not raised (init's exec.c, "who is raised"): AT_SECURE 0,
+ * TMPDIR as the caller set it (dir) and HOME for secure_getenv too, and
+ * dir for its current directory. */
+static int child_inherit(int argc, char **argv)
+{
+    char buf[256];
+    if (argc < 4)
+        return 30;
+    if (getauxval(AT_SECURE) != 0)
+        return 31;
+    const char *tmp = getenv("TMPDIR");
+    if (!tmp || strcmp(tmp, argv[3]))
+        return 32;
+    if (!secure_getenv("HOME"))
+        return 33;
+    if (!getcwd(buf, sizeof(buf)) || strcmp(buf, argv[3]))
+        return 34;
+    return 0;
+}
+
+/* --child-launch from <dir> <path> [args...]: a caller started through
+ * /svc/exec (utest's exec_starter) goes to dir, sets TMPDIR to it and
+ * starts path with args as Chromium's launcher does: fork, then execv in
+ * the child (a program on /data: spawn, wait, exit through /svc/exec,
+ * with our image). Its exit code, or 90 and up if it couldn't. */
+static int child_from(int argc, char **argv)
+{
+    if (argc < 5 || chdir(argv[3]) || setenv("TMPDIR", argv[3], 1))
+        return 90;
+    pid_t pid = fork();
+    if (pid < 0)
+        return 91;
+    if (pid == 0) {
+        execv(argv[4], argv + 4);
+        _exit(92);
+    }
+    int status;
+    if (waitpid(pid, &status, 0) != pid)
+        return 93;
+    return WIFEXITED(status) ? WEXITSTATUS(status) : 94;
+}
+
+/* --child-launch from-out <dir> <line> <path> [args...]: the same with
+ * posix_spawn, the child's descriptor 1 a pipe to us: 0 if it exits 0
+ * having written exactly line and a newline (pxio's `cwd`), else 95 and
+ * up. */
+static int child_from_out(int argc, char **argv)
+{
+    int p[2];
+    pid_t pid;
+    posix_spawn_file_actions_t fa;
+    if (argc < 6 || chdir(argv[3]) || setenv("TMPDIR", argv[3], 1) || pipe(p))
+        return 95;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_adddup2(&fa, p[1], 1);
+    int e = posix_spawn(&pid, argv[5], &fa, NULL, argv + 5, environ);
+    posix_spawn_file_actions_destroy(&fa);
+    close(p[1]);
+    if (e)
+        return 96;
+    char out[512];
+    size_t n = 0;
+    ssize_t got;
+    while (n < sizeof(out) - 1 && (got = read(p[0], out + n, sizeof(out) - 1 - n)) > 0)
+        n += (size_t)got;
+    close(p[0]);
+    out[n] = '\0';
+    int status;
+    if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status) || WEXITSTATUS(status))
+        return 97;
+    size_t l = strlen(argv[4]);
+    return n == l + 1 && !strncmp(out, argv[4], l) && out[l] == '\n' ? 0 : 98;
+}
+
 int pt_child_launch(int argc, char **argv)
 {
     if (argc >= 3 && !strcmp(argv[2], "args"))
@@ -380,5 +459,11 @@ int pt_child_launch(int argc, char **argv)
         return child_sealed(argc, argv);
     if (argc >= 3 && !strcmp(argv[2], "sealed-bare"))
         return child_sealed_bare(argc, argv);
+    if (argc >= 3 && !strcmp(argv[2], "inherit"))
+        return child_inherit(argc, argv);
+    if (argc >= 3 && !strcmp(argv[2], "from"))
+        return child_from(argc, argv);
+    if (argc >= 3 && !strcmp(argv[2], "from-out"))
+        return child_from_out(argc, argv);
     return 2;
 }

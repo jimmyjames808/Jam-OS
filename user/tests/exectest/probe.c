@@ -57,10 +57,11 @@ static int probe(void)
 
 static int launch(int argc, char **argv)
 {
+    static const char *const env[] = EXT_ENV;
     handle_t proc, job, sig;
     int step;
-    status_t st = exectest_start(argv[2], argc - 2, (const char *const *)argv + 2, &proc, &job,
-                                 &sig, &step);
+    status_t st = exectest_start(argv[2], argc - 2, (const char *const *)argv + 2, env, &proc,
+                                 &job, &sig, &step);
     if (st != OK) {
         printf("exectest: %s: step %d: %s\n", argv[2], step, status_str(st));
         return EXT_LAUNCH_ERR + step;

@@ -5,8 +5,9 @@
 #include <os.h>
 #include "exectest.h"
 
-status_t exectest_start(const char *path, int argc, const char *const *argv, handle_t *proc,
-                        handle_t *job, handle_t *sig, int *step)
+status_t exectest_start(const char *path, int argc, const char *const *argv,
+                        const char *const *envp, handle_t *proc, handle_t *job, handle_t *sig,
+                        int *step)
 {
     static uint8_t strings[EXEC_STRINGS_BYTES];   /* one start at a time per program */
     handle_t svc = HANDLE_INVALID, file, buf, mine = HANDLE_INVALID, theirs, prog = HANDLE_INVALID;
@@ -33,13 +34,17 @@ status_t exectest_start(const char *path, int argc, const char *const *argv, han
         *step = 3;
         st = exec_open(svc, path, (uint32_t)strlen(path), file, theirs, &prog, &posix, wants, &wl);
     }
-    for (int i = 0; st == OK && i < argc; i++) {
-        size_t l = strlen(argv[i]) + 1;
+    int nenv = 0;
+    while (envp && envp[nenv])
+        nenv++;
+    for (int i = 0; st == OK && i < argc + nenv; i++) {
+        const char *s = i < argc ? argv[i] : envp[i - argc];
+        size_t l = strlen(s) + 1;
         *step = 5;
         if (l > sizeof(strings) - len)
             st = ERR_OUT_OF_RANGE;
         else
-            memcpy(strings + len, argv[i], l);
+            memcpy(strings + len, s, l);
         len += (uint32_t)l;
     }
     if (st == OK)
@@ -47,9 +52,17 @@ status_t exectest_start(const char *path, int argc, const char *const *argv, han
     if (st == OK)
         st = jam_channel_create(sig, &sig_theirs);
     if (st == OK) {
+        /* Our own program, as libc sends it (none for a boot-image
+         * program, utest): init reads our approval from it. */
+        handle_t image = HANDLE_INVALID;
+        if (startup_handle(SR_SELF_IMAGE) &&
+            jam_handle_duplicate(startup_handle(SR_SELF_IMAGE),
+                                 RIGHT_READ | RIGHT_EXEC | RIGHT_TRANSFER, &image) != OK)
+            image = HANDLE_INVALID;
         *step = 4;
-        st = exec_prog_start(prog, (uint16_t)argc, strings, len, ours_job, sig_theirs, proc, job);
-        ours_job = sig_theirs = HANDLE_INVALID;   /* init's now */
+        st = exec_prog_start(prog, (uint16_t)argc, strings, len, ours_job, sig_theirs, &image,
+                             image ? 1 : 0, proc, job);
+        ours_job = sig_theirs = HANDLE_INVALID;   /* init's now, and image */
         if (st != OK)
             jam_handle_close(*sig);
     }

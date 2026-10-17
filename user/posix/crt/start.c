@@ -28,7 +28,8 @@
  *      user/posix/posix.ld maps, so musl's __init_tls finds PT_TLS),
  *      AT_ENTRY, the user and group ids (the one user's, 1000),
  *      AT_SECURE: 1 if the hand-over says so (POSIXFDS_SECURE: init's
- *      /svc/exec, for a program another program started), else 0, and
+ *      /svc/exec, for a program whose list asks for more than its
+ *      starter's approval gives), else 0, and
  *      AT_MINSIGSTKSZ, so that sysconf(_SC_MINSIGSTKSZ), which adds 1 KiB
  *      to it, says sigaltstack's smallest stack (sig_alt_min: from
  *      CPUID's XSAVE size, read once and kept). Such

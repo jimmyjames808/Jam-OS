@@ -556,7 +556,7 @@ struct exec_prog_start_rep {
 
 /* exec_prog_start_until and _within: idl_t is a deadline, or with idl_within a
  * timeout from when the call starts (the kernel's clock). */
-static inline status_t exec_prog_start_call(handle_t ch, bool idl_within, uint64_t idl_t, uint16_t argc, const uint8_t *strings, uint32_t strings_len, handle_t job, handle_t signals, handle_t *out_proc, handle_t *out_job)
+static inline status_t exec_prog_start_call(handle_t ch, bool idl_within, uint64_t idl_t, uint16_t argc, const uint8_t *strings, uint32_t strings_len, handle_t job, handle_t signals, const handle_t *image, uint32_t image_len, handle_t *out_proc, handle_t *out_job)
 {
     uint8_t *idl_b0 = (uint8_t *)drv_malloc(IDL_ROUND8(12300) + 8);
     if (!idl_b0) {
@@ -564,6 +564,8 @@ static inline status_t exec_prog_start_call(handle_t ch, bool idl_within, uint64
             drv_handle_close(job);
         if (signals != HANDLE_INVALID)
             drv_handle_close(signals);
+        if (image)
+            idl_close_all(image, image_len);
         return ERR_NO_MEMORY;
     }
     uint8_t *idl_b1 = idl_b0 + IDL_ROUND8(12300);
@@ -575,14 +577,18 @@ static inline status_t exec_prog_start_call(handle_t ch, bool idl_within, uint64
     idl_q->txid = 0;
     idl_q->ordinal = EXEC_PROG_START;
     idl_q->argc = argc;
+    if (idl_st == OK && (image_len > 1 || (image_len && !image)))
+        idl_st = ERR_INVALID_ARGS;
     if (idl_st == OK && !idl_put(idl_b0, &idl_qn, strings, strings_len, 12288, 1))
         idl_st = ERR_INVALID_ARGS;
     handle_t idl_rh[2];
-    handle_t idl_wh[2];
+    handle_t idl_wh[3];
     uint32_t idl_wn = 0;
     if (idl_st == OK) {
         idl_wh[idl_wn++] = job;
         idl_wh[idl_wn++] = signals;
+        for (uint32_t idl_i = 0; idl_i < image_len; idl_i++)
+            idl_wh[idl_wn++] = image[idl_i];
         idl_st = idl_call_h(ch, idl_b0, idl_qn, idl_wh, idl_wn, idl_b1, 8, &idl_got[0], idl_rh, 2, &idl_got[1],
                             idl_within, idl_t);
     } else {   /* never sent: the handles are still ours */
@@ -590,6 +596,8 @@ static inline status_t exec_prog_start_call(handle_t ch, bool idl_within, uint64
             drv_handle_close(job);
         if (signals != HANDLE_INVALID)
             drv_handle_close(signals);
+        if (image)
+            idl_close_all(image, image_len);
     }
     if (idl_st != OK)
         idl_got[1] = 0;   /* handles arrive only with OK */
@@ -625,6 +633,16 @@ static inline status_t exec_prog_start_call(handle_t ch, bool idl_within, uint64
  * program, an 8 MiB stack; then whatever the caller wrote on its end of
  * open's `handover`, message for message (at most 128). `job` and
  * `signals` are init's whatever the answer.
+ *
+ * `image` is the caller's own program, if it has one: its SR_SELF_IMAGE
+ * (a duplicate with RIGHT_READ and RIGHT_EXEC at least). It tells init the
+ * list the caller was approved with, so that a child whose list asks for
+ * nothing beyond it starts as Linux starts a program that isn't set-user-ID:
+ * AT_SECURE 0, its environment whole and, for a POSIX program, the caller's
+ * current directory when its own namespace has it (init's exec.c says how
+ * and why). Without one, or one init can't read as an approved program's,
+ * the child is marked AT_SECURE and starts in "/", as every child did
+ * before. Read and closed by init.
  * proc  the child's process: RIGHT_WAIT, RIGHT_INSPECT, RIGHT_DUPLICATE
  * and RIGHT_TRANSFER (its end and its exit code; no RIGHT_WRITE,
  * which would make threads in it)
@@ -638,17 +656,17 @@ static inline status_t exec_prog_start_call(handle_t ch, bool idl_within, uint64
  * than 128 hand-over messages; ERR_ACCESS_DENIED: a page the start reads
  * (the program headers, a writable segment) isn't the approved one;
  * spawn's own errors (ERR_NO_MEMORY, ERR_NO_RESOURCES: the job's limits). */
-static inline status_t exec_prog_start_until(handle_t ch, uint64_t deadline_ns, uint16_t argc, const uint8_t *strings, uint32_t strings_len, handle_t job, handle_t signals, handle_t *out_proc, handle_t *out_job)
+static inline status_t exec_prog_start_until(handle_t ch, uint64_t deadline_ns, uint16_t argc, const uint8_t *strings, uint32_t strings_len, handle_t job, handle_t signals, const handle_t *image, uint32_t image_len, handle_t *out_proc, handle_t *out_job)
 {
-    return exec_prog_start_call(ch, false, deadline_ns, argc, strings, strings_len, job, signals, out_proc, out_job);
+    return exec_prog_start_call(ch, false, deadline_ns, argc, strings, strings_len, job, signals, image, image_len, out_proc, out_job);
 }
-static inline status_t exec_prog_start_within(handle_t ch, uint64_t timeout_ns, uint16_t argc, const uint8_t *strings, uint32_t strings_len, handle_t job, handle_t signals, handle_t *out_proc, handle_t *out_job)
+static inline status_t exec_prog_start_within(handle_t ch, uint64_t timeout_ns, uint16_t argc, const uint8_t *strings, uint32_t strings_len, handle_t job, handle_t signals, const handle_t *image, uint32_t image_len, handle_t *out_proc, handle_t *out_job)
 {
-    return exec_prog_start_call(ch, true, timeout_ns, argc, strings, strings_len, job, signals, out_proc, out_job);
+    return exec_prog_start_call(ch, true, timeout_ns, argc, strings, strings_len, job, signals, image, image_len, out_proc, out_job);
 }
-static inline status_t exec_prog_start(handle_t ch, uint16_t argc, const uint8_t *strings, uint32_t strings_len, handle_t job, handle_t signals, handle_t *out_proc, handle_t *out_job)
+static inline status_t exec_prog_start(handle_t ch, uint16_t argc, const uint8_t *strings, uint32_t strings_len, handle_t job, handle_t signals, const handle_t *image, uint32_t image_len, handle_t *out_proc, handle_t *out_job)
 {
-    return exec_prog_start_call(ch, false, DEADLINE_NEVER, argc, strings, strings_len, job, signals, out_proc, out_job);
+    return exec_prog_start_call(ch, false, DEADLINE_NEVER, argc, strings, strings_len, job, signals, image, image_len, out_proc, out_job);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -656,7 +674,7 @@ static inline status_t exec_prog_start(handle_t ch, uint16_t argc, const uint8_t
 /* exec_prog_start without waiting: the request, with the caller's txid (not 0).
  * The handles it is given are gone whatever the status (sent, or closed).
  * The reply comes on ch: idl_reply_read, then exec_prog_start_result. */
-static inline status_t exec_prog_start_send(handle_t ch, uint32_t idl_txid, uint16_t argc, const uint8_t *strings, uint32_t strings_len, handle_t job, handle_t signals)
+static inline status_t exec_prog_start_send(handle_t ch, uint32_t idl_txid, uint16_t argc, const uint8_t *strings, uint32_t strings_len, handle_t job, handle_t signals, const handle_t *image, uint32_t image_len)
 {
     uint8_t *idl_b0 = (uint8_t *)drv_malloc(12300);
     if (!idl_b0) {
@@ -664,6 +682,8 @@ static inline status_t exec_prog_start_send(handle_t ch, uint32_t idl_txid, uint
             drv_handle_close(job);
         if (signals != HANDLE_INVALID)
             drv_handle_close(signals);
+        if (image)
+            idl_close_all(image, image_len);
         return ERR_NO_MEMORY;
     }
     struct exec_prog_start_req *idl_q = (struct exec_prog_start_req *)idl_b0;
@@ -672,19 +692,25 @@ static inline status_t exec_prog_start_send(handle_t ch, uint32_t idl_txid, uint
     idl_q->txid = idl_txid;
     idl_q->ordinal = EXEC_PROG_START;
     idl_q->argc = argc;
+    if (idl_st == OK && (image_len > 1 || (image_len && !image)))
+        idl_st = ERR_INVALID_ARGS;
     if (idl_st == OK && !idl_put(idl_b0, &idl_qn, strings, strings_len, 12288, 1))
         idl_st = ERR_INVALID_ARGS;
-    handle_t idl_wh[2];
+    handle_t idl_wh[3];
     uint32_t idl_wn = 0;
     if (idl_st == OK) {
         idl_wh[idl_wn++] = job;
         idl_wh[idl_wn++] = signals;
+        for (uint32_t idl_i = 0; idl_i < image_len; idl_i++)
+            idl_wh[idl_wn++] = image[idl_i];
         idl_st = drv_channel_write(ch, idl_b0, idl_qn, idl_wh, idl_wn);
     } else {   /* never sent: the handles are still ours */
         if (job != HANDLE_INVALID)
             drv_handle_close(job);
         if (signals != HANDLE_INVALID)
             drv_handle_close(signals);
+        if (image)
+            idl_close_all(image, image_len);
     }
     drv_free(idl_b0);
     return idl_st;
@@ -722,7 +748,7 @@ static inline status_t exec_prog_start_result(const void *idl_rep, struct idl_ms
  * also gets the request's txn, and may return IDL_LATER and answer it
  * with exec_prog_reply_<method> (now, or later from anywhere). */
 struct exec_prog_ops {
-    status_t (*start)(void *ctx, uint16_t argc, const uint8_t *strings, uint32_t strings_len, handle_t job, handle_t signals, handle_t *out_proc, handle_t *out_job);
+    status_t (*start)(void *ctx, uint16_t argc, const uint8_t *strings, uint32_t strings_len, handle_t job, handle_t signals, const handle_t *image, uint32_t image_len, handle_t *out_proc, handle_t *out_job);
 };
 
 /* Answer the exec_prog.start request kept in txn: idl_st and, if it is OK, the
@@ -792,7 +818,7 @@ static inline uint32_t exec_prog_dispatch_h(handle_t ch, const struct exec_prog_
             idl_st = ERR_INVALID_ARGS;
         if (idl_st == OK && idl_o != n)
             idl_st = ERR_INVALID_ARGS;
-        if (idl_st == OK && idl_nh != 2)
+        if (idl_st == OK && (idl_nh < 2 || idl_nh - 2 > 1))
             idl_st = ERR_INVALID_ARGS;
         if (idl_st != OK) {
             idl_close_all(idl_hs, idl_nh);
@@ -803,7 +829,12 @@ static inline uint32_t exec_prog_dispatch_h(handle_t ch, const struct exec_prog_
             idl_h->status = ERR_NOT_SUPPORTED;
             return sizeof(*idl_h);
         }
-        idl_st = ops->start(ctx, idl_q->argc, (const uint8_t *)idl_p0, idl_l0, idl_hs[0], idl_hs[1], &out_proc, &out_job);
+        if (!(idl_handles_are(idl_hs + 2, idl_nh - 2, IDL_OBJ_VMO))) {
+            idl_close_all(idl_hs, idl_nh);
+            idl_h->status = ERR_WRONG_TYPE;
+            return sizeof(*idl_h);
+        }
+        idl_st = ops->start(ctx, idl_q->argc, (const uint8_t *)idl_p0, idl_l0, idl_hs[0], idl_hs[1], idl_hs + 2, idl_nh - 2, &out_proc, &out_job);
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status == OK && !(out_proc != HANDLE_INVALID && out_job != HANDLE_INVALID))
             idl_h->status = ERR_INTERNAL;   /* a handle result left unset */
