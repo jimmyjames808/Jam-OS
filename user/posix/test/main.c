@@ -49,6 +49,7 @@ static const struct {
     { "jit", pt_jit },
     { "mmap-big", pt_mmap_big },
     { "mmap-coherent", pt_mmap_coherent },
+    { "mmap-wshared", pt_mmap_wshared },
     { "mmap-tmp", pt_mmap_tmp },
     { "spawn-data", pt_spawn_data },
     { "loopback", pt_loopback },
@@ -58,11 +59,13 @@ static const struct {
     { "fork", pt_fork },
     { "exec", pt_exec },
     { "efault", pt_efault },
+    { "inotify", pt_inotify },
 };
 
 /* The sections run only when named (long ones). */
 static const char *const asked_only[] = { "files-many", "sockets", "session", "mmap-big",
-                                          "mmap-coherent", "mmap-tmp", "spawn-data", "loopback",
+                                          "mmap-coherent", "mmap-wshared", "mmap-tmp",
+                                          "spawn-data", "loopback",
                                           "self-image", "links" };
 
 static bool by_default(const char *name)
@@ -146,6 +149,8 @@ int main(int argc, char **argv)
         return pt_child_efault(argc, argv);
     if (argc >= 2 && !strcmp(argv[1], "--child-exec"))
         return pt_child_exec(argc, argv);
+    if (argc >= 2 && !strcmp(argv[1], "--child-inotify"))
+        return pt_child_inotify(argc, argv);
     setvbuf(stdout, NULL, _IOLBF, 0);   /* each line out as it is made */
     unsigned n = sizeof(sections) / sizeof(sections[0]);
     for (unsigned i = 0; i < n; i++) {

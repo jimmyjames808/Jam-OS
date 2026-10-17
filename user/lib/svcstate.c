@@ -16,8 +16,11 @@
 #include <os.h>
 #include <svcstate.h>
 
-_Static_assert(sizeof(struct svcstate_slot) == 40, "no padding in a slot");
-_Static_assert(sizeof(struct svcstate_header) == 176, "no padding in the header");
+_Static_assert(sizeof(struct svcstate_slot) == 48, "no padding in a slot");
+_Static_assert(sizeof(struct svcstate_header) == 192, "no padding in the header");
+_Static_assert(offsetof(struct svcstate_slot, nhandles) == offsetof(struct svcstate_slot, len) + 4 &&
+               offsetof(struct svcstate_slot, pid) == offsetof(struct svcstate_slot, len) + 8,
+               "the kernel writes the length, the handles' count and the pid in a row");
 _Static_assert(sizeof(struct svcstate_header) <= PAGE_SIZE, "the header fits its page");
 
 static uint64_t page_up(uint64_t n)
@@ -254,6 +257,8 @@ static void set_up_slot(struct svcstate_slot *sl, uint64_t seq, uint32_t key)
     __atomic_store_n(&sl->len, 0, __ATOMIC_RELEASE);
     __atomic_store_n(&sl->replied, 0, __ATOMIC_RELEASE);
     sl->nhandles = 0;
+    sl->pid = 0;
+    sl->spare = 0;
     sl->phase = SVCSTATE_RUN;
     sl->reply_len = 0;
     sl->runs = 0;
@@ -293,12 +298,30 @@ bool svcstate_taken(struct svcstate *s, unsigned slot)
     return true;
 }
 
+status_t svcstate_read(struct svcstate *s, unsigned slot, handle_t ch)
+{
+    struct svcstate_slot *sl = &s->h->slot[slot & 1];
+    struct channel_read_args a = {
+        .h = ch, .rd_cap = s->h->req_cap,
+        .rd_bytes = (uint64_t)(uintptr_t)svcstate_request(s, slot, NULL),
+        .rd_handles = (uint64_t)(uintptr_t)s->handles, .rd_hcap = SVCSTATE_SLOT_HANDLES,
+        .rd_flags = CHANNEL_READ_PID, .rd_actual = (uint64_t)(uintptr_t)&sl->len,
+        .rd_hactual = (uint64_t)(uintptr_t)&sl->nhandles,   /* the pid lands just after */
+    };
+    return jam_channel_read(&a);
+}
+
+uint32_t svcstate_pid(const struct svcstate *s, unsigned slot)
+{
+    return s->h->slot[slot & 1].pid;
+}
+
 status_t svcstate_take(struct svcstate *s, uint32_t key, handle_t ch, unsigned *slot)
 {
     unsigned i;
     struct idl_slot is;
     svcstate_prepare(s, key, &i, &is);
-    status_t st = drv_channel_read(ch, is.q, is.qcap, is.n, is.hs, is.hcap, is.nh);
+    status_t st = svcstate_read(s, i, ch);
     if (st == OK && *is.n < 4) {
         for (unsigned j = 0; j < *is.nh; j++)
             jam_handle_close(s->handles[j]);

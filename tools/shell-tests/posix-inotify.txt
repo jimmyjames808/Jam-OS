@@ -1,0 +1,16 @@
+# libc's inotify descriptor from the shell (INOTIFY-PLAN.md, IL1):
+# posixtest's inotify section (fake file services of its own mounted in its
+# namespace; quiet watches on "/", libc's trees and /boot; /data's events
+# once extfs keeps watches, IE1; a forked and a spawned child). Also in
+# the init run; this is the section alone, from the shell's namespace, and
+# shows the reader loop's rounds and what /data said.
+#   QEMU_INPUT=tools/shell-tests/posix-inotify.txt tools/qemu-test.sh <dir> posix-inotify shell
+wait 120 Jam OS shell
+wait {prompt}
+send run posixtest inotify
+wait 120 posixtest: inotify: ok
+wait 20 posixtest: PASS
+wait 20 run: bin/posixtest exited with code 0
+wait {prompt}
+send reboot -f
+wait reboot: resetting

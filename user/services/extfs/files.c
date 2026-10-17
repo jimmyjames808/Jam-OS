@@ -23,7 +23,14 @@
  * The tables are in the state (kept->files); each slot's channel and
  * buffer, handles, are here by the same index, and with the keeper. The
  * buffer is never mapped here: data goes between it and the request's
- * bounce buffer in its slot with vmo_read and vmo_write. */
+ * bounce buffer in its slot with vmo_read and vmo_write.
+ *
+ * Watches (watch.c): an open file's events (IN_ACCESS, IN_MODIFY,
+ * IN_ATTRIB, its close) go to its inode's watches and to those of the
+ * directory it was opened in, with the name it was opened by, which a
+ * rename of that name moves (Linux's dentry). Those two are this
+ * instance's memory only: after a restart a file opened before it makes
+ * no events in a directory. */
 #include "extfs.h"
 
 #define CLIENT_BUF_RIGHTS (RIGHT_READ | RIGHT_WRITE | RIGHT_MAP | RIGHT_TRANSFER)
@@ -38,9 +45,66 @@ static struct {
 } fh[XF_MAX_FILES];
 static uint64_t held[(XF_MAX_FILES + 63) / 64];   /* held back by the unread bound */
 
+/* Where each open file was opened: the directory (ino 0: none now, its
+ * name renamed over) and the name. */
+static struct {
+    struct fsw_key dir;
+    bool           unlinked;   /* the name was unlinked since */
+    uint8_t        len;
+    char           name[EXT_NAME_MAX];
+} at[XF_MAX_FILES];
+_Static_assert(EXT_NAME_MAX <= 255, "a name's length fits at[].len");
+
 static unsigned slot_of(const struct xf_file *f)
 {
     return (unsigned)(f - kept->files);
+}
+
+/* An event of open file i: to its directory's watches with its name, then
+ * its inode's. */
+static void file_ev(unsigned i, uint32_t mask)
+{
+    if (!watching() || !mask)
+        return;
+    const struct xf_file *f = &kept->files[i];
+    const struct fsw_key self = { .ino = f->ino, .gen = f->igen };
+    ev(at[i].dir.ino ? &at[i].dir : NULL, at[i].name, at[i].len, &self, mask,
+       at[i].unlinked ? FSW_EV_UNLINKED : 0, 0);
+}
+
+/* Is open file i (still) named `name` in dir? */
+static bool named(unsigned i, const struct fsw_key *dir, const struct ext_name *name)
+{
+    return kept->files[i].used && !at[i].unlinked && at[i].dir.ino == dir->ino &&
+           at[i].dir.gen == dir->gen && at[i].len == name->len &&
+           !memcmp(at[i].name, name->s, name->len);
+}
+
+static void name_to(unsigned i, const struct fsw_key *dir, const struct ext_name *name)
+{
+    at[i].dir = *dir;
+    at[i].len = (uint8_t)name->len;
+    memcpy(at[i].name, name->s, name->len);
+}
+
+void files_renamed(const struct fsw_key *from_dir, const struct ext_name *from,
+                   const struct fsw_key *to_dir, const struct ext_name *to, bool exchange)
+{
+    for (unsigned i = 0; i < XF_MAX_FILES; i++) {
+        if (named(i, from_dir, from))
+            name_to(i, to_dir, to);
+        else if (named(i, to_dir, to) && exchange)
+            name_to(i, from_dir, from);
+        else if (named(i, to_dir, to))
+            at[i].dir = (struct fsw_key){ 0 };   /* renamed over: in no directory now */
+    }
+}
+
+void files_unlinked(const struct fsw_key *dir, const struct ext_name *name)
+{
+    for (unsigned i = 0; i < XF_MAX_FILES; i++)
+        if (named(i, dir, name))
+            at[i].unlinked = true;
 }
 
 bool files_has(uint32_t ino)
@@ -158,6 +222,8 @@ static status_t op_read(void *ctx, uint64_t offset, uint32_t length, uint32_t *o
         st = jam_vmo_write(fh[slot_of(f)].vmo, 0, bounce, got);
     if (st != OK)
         return st;
+    if (got)
+        file_ev(slot_of(f), FSWATCH_IN_ACCESS);   /* a read of nothing makes none (Linux) */
     *out_actual = (uint32_t)got;
     return OK;
 }
@@ -200,6 +266,8 @@ static status_t op_write(void *ctx, uint64_t offset, uint32_t length, uint32_t *
         maps_changed(in.ino, offset, offset + length, ext_isize(&in));
     if (st != OK)
         return st;
+    if (n)
+        file_ev(slot_of(f), FSWATCH_IN_MODIFY);   /* nothing written: no event (Linux) */
     *out_actual = (uint32_t)n;
     return OK;
 }
@@ -211,7 +279,11 @@ static status_t op_truncate(void *ctx, uint64_t size)
         return ERR_ACCESS_DENIED;
     struct ext_inode in;
     status_t st = inode_of(f, &in);
-    return st == OK ? files_truncate(&in, size) : st;
+    if (st == OK)
+        st = files_truncate(&in, size);
+    if (st == OK)
+        file_ev(slot_of(f), FSWATCH_IN_MODIFY);   /* any size, the same one too */
+    return st;
 }
 
 static status_t op_stat(void *ctx, uint64_t *out_size, uint8_t *out_is_dir, uint64_t *out_mtime,
@@ -272,7 +344,11 @@ static status_t op_setattr(void *ctx, uint32_t mask, uint32_t mode, uint32_t uid
         return ERR_ACCESS_DENIED;   /* its view may not change it */
     struct ext_inode in;
     status_t st = inode_of(f, &in);
-    return st == OK ? attr_set(&in, mask, mode, uid, gid, atime_ns, mtime_ns) : st;
+    if (st == OK)
+        st = attr_set(&in, mask, mode, uid, gid, atime_ns, mtime_ns);
+    if (st == OK)
+        file_ev(slot_of(f), ev_attr_mask(mask));
+    return st;
 }
 
 static status_t op_map(void *ctx, uint32_t flags, handle_t *out_vmo, uint64_t *out_size)
@@ -351,6 +427,8 @@ void files_drop_unknown(void)
 static void close_file(struct xf_file *f)
 {
     uint32_t ino = f->ino;
+    file_ev(slot_of(f), f->flags & (FS_WRITE | FS_APPEND) ? FSWATCH_IN_CLOSE_WRITE
+                                                          : FSWATCH_IN_CLOSE_NOWRITE);
     files_release(slot_of(f));
     if (files_has(ino))
         return;
@@ -407,7 +485,8 @@ static status_t attach(struct xf_file *f, handle_t *out_ch, handle_t *out_vmo)
 }
 
 status_t files_open(const struct ext_inode *in, uint32_t flags, bool nochange,
-                    handle_t *out_ch, handle_t *out_vmo, uint64_t *out_size)
+                    const struct xf_walk *w, handle_t *out_ch, handle_t *out_vmo,
+                    uint64_t *out_size)
 {
     struct xf_file *f = NULL;
     for (unsigned i = 0; i < XF_MAX_FILES && !f; i++)
@@ -430,6 +509,12 @@ status_t files_open(const struct ext_inode *in, uint32_t flags, bool nochange,
         return st;
     }
     op_made(XF_MADE_FILE, i);
+    at[i].unlinked = false;
+    at[i].dir = (struct fsw_key){ 0 };
+    if (w->has_name) {
+        const struct fsw_key dir = xf_key(&w->dir);
+        name_to(i, &dir, &w->name);
+    }
     *out_size = ext_isize(in);
     return OK;
 }
@@ -474,12 +559,64 @@ void files_event(uint64_t key)
         idl_hold(&vol.held);
         return;
     }
+    /* Another file's close made before this request: first. Not before
+     * this file's own close (nothing queued): closes keep the port's order. */
+    if (watching() && jam_object_wait_one(fh[slot].ch, SIG_READABLE, 0, NULL) == OK)
+        order_closes();
     const struct xf_chan c = chan_of(f);
     status_t st = serve_one(&c);
     if (st == OK || st == ERR_SHOULD_WAIT)
         st = arm(f);
     if (st != OK)
         close_file(f);
+}
+
+/* The order rule's (main.c): the file of key, if its client closed it. */
+static struct xf_file *closed_file(uint64_t key)
+{
+    unsigned slot = XF_KEY_SLOT(key);
+    if (slot >= XF_MAX_FILES)
+        return NULL;
+    struct xf_file *f = &kept->files[slot];
+    if (!f->used || f->gen != XF_KEY_GEN(key) || fh[slot].ch == HANDLE_INVALID ||
+        jam_object_wait_one(fh[slot].ch, SIG_PEER_CLOSED, 0, NULL) != OK)
+        return NULL;
+    return f;
+}
+
+bool files_closed(uint64_t key)
+{
+    return closed_file(key) != NULL;
+}
+
+/* What closed file f's client left queued (sent before the close), then
+ * its close. */
+static void close_now(struct xf_file *f)
+{
+    unsigned i = slot_of(f);
+    fh[i].armed = false;   /* its binding fired: the packet is the caller's */
+    held[i / 64] &= ~(1ull << (i % 64));
+    const struct xf_chan c = chan_of(f);
+    while (!vol.disk_gone && serve_one(&c) == OK)
+        ;
+    close_file(f);
+}
+
+void files_close_now(uint64_t key)
+{
+    struct xf_file *f = closed_file(key);
+    if (f)
+        close_now(f);
+}
+
+void files_held_closes(void)
+{
+    for (unsigned i = 0; i < XF_MAX_FILES; i++) {
+        struct xf_file *f = &kept->files[i];
+        if ((held[i / 64] >> (i % 64) & 1) && f->used && fh[i].ch != HANDLE_INVALID &&
+            jam_object_wait_one(fh[i].ch, SIG_PEER_CLOSED, 0, NULL) == OK)
+            close_now(f);
+    }
 }
 
 void files_unheld(void)

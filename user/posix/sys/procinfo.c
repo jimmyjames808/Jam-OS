@@ -74,6 +74,7 @@
 #include <time.h>
 #include "calls.h"
 #include "files.h"
+#include "kinds.h"
 #include "proc.h"
 #include "procinfo.h"
 #include "sig.h"
@@ -595,6 +596,14 @@ static void put_uname(struct sb *b, enum pfile f)
     }
 }
 
+/* /proc/sys/fs/inotify's files: a limit and a line end (kinds.h). */
+static void put_inotify(struct sb *b, enum pfile f)
+{
+    sb_put(b, "%u\n", f == PF_INO_WATCHES    ? INOTIFY_MAX_WATCHES
+                      : f == PF_INO_INSTANCES ? INOTIFY_MAX_INSTANCES
+                                              : INOTIFY_MAX_QUEUED);
+}
+
 /* ---- the entry ------------------------------------------------------------------------- */
 
 long procinfo_text(enum pfile f, int32_t pid, uint32_t tid, char **text, size_t *len)
@@ -624,6 +633,9 @@ long procinfo_text(enum pfile f, int32_t pid, uint32_t tid, char **text, size_t 
     case PF_SYSSTAT: put_sysstat(&b); break;
     case PF_VERSION: case PF_OSRELEASE: case PF_OSTYPE: case PF_KVERSION: case PF_HOSTNAME:
         put_uname(&b, f);
+        break;
+    case PF_INO_WATCHES: case PF_INO_INSTANCES: case PF_INO_QUEUED:
+        put_inotify(&b, f);
         break;
     case PF_MEM:     break;   /* not text: procfs.c reads the memory */
     }

@@ -40,12 +40,13 @@
  * process: scm's fuzz between two processes), fork.c (fork, vfork and
  * clone without CLONE_VM, each case in a job of its own; forkfd.c's and
  * forknote.c's cases too: descriptors, vfork's wait, a child's notices), exec.c (execve
- * in place from a forked child, each case in a job of its own) and
+ * in place from a forked child, each case in a job of its own), inotify.c
+ * (the inotify descriptor against fake file services of its own) and
  * rawcalls.c, rawfutex.c and rawlog.c (the raw Linux calls Chromium makes, and the
  * ENOSYS log: the log's hooks are the layer's calls.h, a second look inside).
  * start.c, mem.c, memres.c (the job's counts), clock.c, fds.c, poll.c,
  * proc.c, tty.c, fileskid.c, wayland.c, jit.c, procfs.c, unix.c, peer.c,
- * fork.c and fault.c (a VMO shrunk under its mapping) are
+ * fork.c, fault.c (a VMO shrunk under its mapping) and inotify.c are
  * the ones that include libjam (<jamos/libjam.h>: children started with a hand-over, a mapping libc
  * didn't make, the calls the clocks are checked against; fileskid.c
  * through the layer's fd.h); mem.c, rawcalls.c, rawfutex.c and rawlog.c include Linux's call
@@ -104,6 +105,7 @@ void pt_mmap(char **argv);
 /* Only when asked for (mmap.c): tools/posix-mmap-test.sh's cases. */
 void pt_mmap_big(char **argv);
 void pt_mmap_coherent(char **argv);
+void pt_mmap_wshared(char **argv);
 /* ... and tools/layout-test.sh's: the mmap section in /tmp, which must have a pager. */
 void pt_mmap_tmp(char **argv);
 void pt_spawn_data(char **argv);
@@ -118,6 +120,7 @@ void pt_unix(char **argv);         /* named AF_UNIX sockets through /svc/unix (u
 void pt_peer(char **argv);         /* a hostile peer in another process (peer.c) */
 void pt_fork(char **argv);         /* fork, vfork and clone without CLONE_VM (fork.c) */
 void pt_exec(char **argv);         /* execve in place (exec.c) */
+void pt_inotify(char **argv);      /* inotify against fake services, and the real ones (inotify.c) */
 /* The signal section's second half (sigproc.c): between processes. */
 void pt_sigproc(void);
 /* The mem section's second half (memres.c): big sparse reservations. */
@@ -173,6 +176,9 @@ int  pt_child_efault(int argc, char **argv);  /* exits, or EFAULT then a real fa
 /* exec.c: a case in a job of its own, a new image's checks, or utest's
  * program that execs at once. */
 int  pt_child_exec(int argc, char **argv);
+/* inotify.c: a spawned child, which must not have the inotify descriptor
+ * its parent names. */
+int  pt_child_inotify(int argc, char **argv);
 
 /* Pages charged to our job now (job_get_info; start.c). */
 uint64_t pt_job_pages(void);

@@ -58,6 +58,10 @@
  *     the same, 16 joined and 16 detached ones leaving no mapping behind;
  *     a handler at a small thread's call's boundary making them too. And
  *     a call's cost (the line `a call takes N ns; ...`).
+ *   alloc: two threads in malloc while we vfork 40 children and clone 40
+ *     more, each allocating (an execve that fails, then malloc): every one
+ *     ends with 0 (vfork and clone take malloc's lock across the clone,
+ *     as fork does: FR2's finding 1).
  * Then forkfd.c's cases (FL2) and forknote.c's (FL4: vfork, groups, junk). */
 #include <stdio.h>
 #include <stdlib.h>
@@ -1156,6 +1160,89 @@ static void fork_stacks(void)
     }
 }
 
+/* ---- alloc: vfork's and clone's children allocate beside threads in malloc ------- */
+
+/* musl's fork holds malloc's lock across the clone; vfork and clone don't
+ * (upstream's way), yet their child's calls into the layer allocate,
+ * execve's first of all: a child cloned while one of these threads held the
+ * lock waited for it for ever, and a vfork parent for that child
+ * (docs/FORK-REVIEW-LIBC.md, finding 1). */
+#define ALLOCERS 2    /* threads in malloc */
+#define ROUNDS   40   /* vforks, then as many clones */
+
+static volatile int alloc_stop;
+
+static void *allocer(void *arg)
+{
+    (void)arg;
+    for (unsigned n = 1; !alloc_stop; n++) {
+        volatile char *p = malloc(16 + (n % 64) * 24);
+        if (p)
+            *p = 1;
+        free((void *)p);
+    }
+    return NULL;
+}
+
+/* A child's calls that allocate: an execve of nothing (it fails once the
+ * layer has allocated for it), then malloc itself. */
+static int alloc_kid(void)
+{
+    char *const args[] = { "nothing", NULL };
+    int r = execv("/data/pxalloc-nothing-here", args);
+    void *p = malloc(4096);
+    int code = r == -1 && p ? 0 : 1;
+    free(p);
+    return code;
+}
+
+/* vfork alone in its function: nothing of ours lives across it. */
+__attribute__((noinline)) static pid_t alloc_vfork(void)
+{
+    pid_t pid = vfork();
+    if (pid == 0)
+        _exit(alloc_kid());
+    return pid;
+}
+
+static int alloc_clone_fn(void *arg)
+{
+    (void)arg;
+    return alloc_kid();
+}
+
+static void fork_alloc(void)
+{
+    pthread_t t[ALLOCERS];
+    unsigned made = 0, ended = 0;
+    for (unsigned i = 0; i < ALLOCERS; i++)
+        made += pthread_create(&t[made], NULL, allocer, NULL) == 0;
+    char *stk = malloc(64 << 10);
+    CHECK(made == ALLOCERS && stk);
+    for (unsigned i = 0; i < ROUNDS; i++) {
+        pid_t pid = alloc_vfork();
+        CHECK(pid > 0);
+        if (pid > 0) {
+            reaped(pid, 0);
+            ended++;
+        }
+    }
+    for (unsigned i = 0; stk && i < ROUNDS; i++) {
+        pid_t pid = clone(alloc_clone_fn, stk + (64 << 10), SIGCHLD, NULL);
+        CHECK(pid > 0);
+        if (pid > 0) {
+            reaped(pid, 0);
+            ended++;
+        }
+    }
+    alloc_stop = 1;
+    for (unsigned i = 0; i < made; i++)
+        pthread_join(t[i], NULL);
+    free(stk);
+    printf("posixtest: fork: alloc: %u vfork and clone children allocated beside %u threads "
+           "in malloc\n", ended, made);
+}
+
 /* ---- the section ------------------------------------------------------------------ */
 
 static const struct {
@@ -1167,7 +1254,7 @@ static const struct {
     { "torn", fork_torn, 0 },       { "huge", fork_huge, 0 },
     { "nomem", fork_nomem, JOB_PAGES }, { "signals", fork_signals, 0 },
     { "clone", fork_clone, 0 },     { "small", fork_small, 0 },
-    { "stacks", fork_stacks, 0 },
+    { "stacks", fork_stacks, 0 },    { "alloc", fork_alloc, 0 },
     /* forkfd.c's (FL2): the descriptors and the table of mappings */
     { "fds", pt_fork_fds, 0 },      { "chromium", pt_fork_chromium, 0 },
     { "ttys", pt_fork_ttys, 0 },    { "maps", pt_fork_maps, 0 },

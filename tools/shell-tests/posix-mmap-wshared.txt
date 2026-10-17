@@ -1,0 +1,18 @@
+# posixtest mmap-wshared (tools/posix-mmap-test.sh, case wshared): writable
+# shared mappings of a file on /data, an ext volume (a store seen by read,
+# pread, a second mapping and a child; write and stores on one page;
+# mprotect adding write; truncate's tails; msync, the last step: MS_SYNC
+# waits for extfs's write-back). The case's second boot, on an image with
+# a FAT /data, is posix-mmap-wshared-fat.txt.
+# QEMU_INPUT=this file, command line "shell". As in cmds.txt, the text
+# waited for is built from $T, so it never appears in the typed line.
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send T=w
+wait {prompt}
+send posixtest mmap-wshared; echo ws-$T=$?
+wait 400 ws-w=
+wait {prompt}
+send reboot -f
+wait reboot: resetting

@@ -160,6 +160,12 @@ LX(memfd_create)
 LX(eventfd)
 LX(eventfd2)
 
+/* inotify: inotify.c */
+LX(inotify_init)
+LX(inotify_init1)
+LX(inotify_add_watch)
+LX(inotify_rm_watch)
+
 /* the one user: user.c */
 LX(getuid)
 LX(geteuid)

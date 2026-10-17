@@ -29,6 +29,9 @@ enum pfile {
     PF_KVERSION,   /* /proc/sys/kernel/version */
     PF_HOSTNAME,   /* /proc/sys/kernel/hostname */
     PF_SMAPS_ROLLUP,   /* /proc/<pid>/smaps_rollup */
+    PF_INO_WATCHES,    /* /proc/sys/fs/inotify/max_user_watches */
+    PF_INO_INSTANCES,  /* /proc/sys/fs/inotify/max_user_instances */
+    PF_INO_QUEUED,     /* /proc/sys/fs/inotify/max_queued_events */
 };
 
 /* File f's text now, malloc'd (*text, *len; the caller frees). pid names
