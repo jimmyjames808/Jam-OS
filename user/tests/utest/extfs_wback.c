@@ -43,10 +43,12 @@ struct wf {
 static struct fatrun r;
 static struct ramdisk rd;
 static handle_t pager;
-static struct wf fm = { .path = "/m.bin" }, ff = { .path = "/f.bin" }, fh = { .path = "/h.bin" },
-                 fu = { .path = "/u.bin" }, fo = { .path = "/s.bin" }, fy = { .path = "/y.bin" },
-                 fn = { .path = "/n.bin" };
+/* (named at the start: no initializer, so in .bss, not .data: ktest's
+ * quota case spawns utest in a 256 KiB job) */
+static struct wf fm, ff, fh, fu, fo, fy, fn;
 static struct wf *const all[] = { &fm, &ff, &fh, &fu, &fo, &fy, &fn };
+static const char *const names[] = { "/m.bin", "/f.bin", "/h.bin", "/u.bin", "/s.bin", "/y.bin",
+                                     "/n.bin" };
 
 static uint64_t dl(void)
 {
@@ -291,7 +293,7 @@ static bool aged_and_fresh(void)
 /* 4: a full volume. */
 static bool full(void)
 {
-    static const uint8_t zeros[FILL];
+    static uint8_t zeros[FILL];
     struct tfile f;
     uint32_t done = 0;
     if (!wr(&fn, 3 * PAGE_SIZE, 100, 17))   /* pages 0 to 2 a hole */
@@ -320,6 +322,10 @@ bool t_extfs_wback(void)
     static const char *const unwritten[] = { "unwritten-grow" };
     handle_t root = startup_handle(SR_RESOURCE);
     pager = HANDLE_INVALID;
+    for (unsigned i = 0; i < sizeof(all) / sizeof(all[0]); i++) {
+        memset(all[i], 0, sizeof(*all[i]));
+        all[i]->path = names[i];
+    }
     if (!root || jam_pager_create(root, 4096, FAT_CALL_NS, 0, &pager) != OK) {
         printf("utest: extfs_wback: no pager power (RIGHT_ROOT_PAGER): skipped\n");
         return true;
