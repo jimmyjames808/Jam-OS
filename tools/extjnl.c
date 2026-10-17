@@ -25,7 +25,11 @@
  * Storms on both writable fixtures, with the commit block in its own
  * write and with one write per transaction (torn writes landing any of
  * their blocks), and on journals shrunk so the log wraps and the tail
- * moves under every kind of cut.
+ * moves under every kind of cut; and on a device with a volatile cache (a
+ * USB stick's: a commit counts once the flush after its commit block
+ * returned, and of what was written since the last flush any part may be
+ * on the medium after the cut), where the journal's flushes are all that
+ * keeps its order.
  *
  * Then: every log block a storm left that begins with jbd2's magic is a
  * real header (copies that begin with it are escaped); damaged log blocks
@@ -53,15 +57,20 @@
  * their cuts replay many transactions; the last two have the library's own
  * tail (every few blocks), whose cuts replay one or two. */
 static const struct storm_cfg storms[] = {
-    { "jam4k", 0, 0, true, 0, 0, 24, 0x5101, 0, UINT32_MAX },
-    { "jam4k-onewrite", 0, EXT_JNL_ONE_WRITE, true, 0, 0, 24, 0x5102, 0, UINT32_MAX },
-    { "jam4k-wrap", 0, 0, true, 48, 4, 40, 0x5103, 0, UINT32_MAX },
-    { "linux1k", 1, 0, true, 0, 0, 24, 0x5104, 0, UINT32_MAX },
-    { "linux1k-wrap-onewrite", 1, EXT_JNL_ONE_WRITE, true, 64, 0, 30, 0x5105, 0, UINT32_MAX },
-    { "names4k", 0, 0, true, 0, 0, 100, 0x5106, 4096, UINT32_MAX },
-    { "names1k-onewrite", 0, EXT_JNL_ONE_WRITE, true, 0, 4, 100, 0x5107, 1024, UINT32_MAX },
-    { "jam4k-tail", 0, 0, true, 0, 0, 24, 0x5108, 0, 0 },
-    { "linux1k-tail-onewrite", 1, EXT_JNL_ONE_WRITE, true, 0, 0, 24, 0x5109, 0, 0 },
+    { "jam4k", 0, 0, true, 0, 0, 24, 0x5101, 0, UINT32_MAX, false },
+    { "jam4k-onewrite", 0, EXT_JNL_ONE_WRITE, true, 0, 0, 24, 0x5102, 0, UINT32_MAX, false },
+    { "jam4k-wrap", 0, 0, true, 48, 4, 40, 0x5103, 0, UINT32_MAX, false },
+    { "linux1k", 1, 0, true, 0, 0, 24, 0x5104, 0, UINT32_MAX, false },
+    { "linux1k-wrap-onewrite", 1, EXT_JNL_ONE_WRITE, true, 64, 0, 30, 0x5105, 0, UINT32_MAX, false },
+    { "names4k", 0, 0, true, 0, 0, 100, 0x5106, 4096, UINT32_MAX, false },
+    { "names1k-onewrite", 0, EXT_JNL_ONE_WRITE, true, 0, 4, 100, 0x5107, 1024, UINT32_MAX, false },
+    { "jam4k-tail", 0, 0, true, 0, 0, 24, 0x5108, 0, 0, false },
+    { "linux1k-tail-onewrite", 1, EXT_JNL_ONE_WRITE, true, 0, 0, 24, 0x5109, 0, 0, false },
+    /* A device with a volatile cache (a USB stick): what reaches the
+     * medium is only what was flushed, and any of the rest. */
+    { "jam4k-cache", 0, 0, true, 0, 0, 24, 0x510a, 0, 0, true },
+    { "linux1k-cache-onewrite", 1, EXT_JNL_ONE_WRITE, true, 0, 0, 24, 0x510b, 0, 0, true },
+    { "jam4k-wrap-cache", 0, 0, true, 48, 4, 40, 0x510c, 0, UINT32_MAX, true },
 };
 
 /* What one cut run left. */
@@ -94,6 +103,12 @@ static void cut_run(struct storm *s, uint64_t n, struct cut *c)
         c->in_checkpoint = r.why_stop != OK && r.attempted && r.last_tid != r.j.tid;
         memcpy(c->landed, r.landed, sizeof(c->landed));
         memcpy(c->has_landed, r.has_landed, sizeof(c->has_landed));
+        /* With a cache, a data write that returned may not be on the
+         * medium: what is there after the cut is what a replay must keep. */
+        for (uint32_t i = 0; s->cd.cache && s->cd.dead && i < s->nobj; i++)
+            if (c->has_landed[i])
+                c->landed[i] = block_hash(s->cd.bytes + s->objs[i].blk * s->cd.block_size,
+                                          s->cd.block_size);
     }
     run_free(&r);
     s->cd.cut_at = 0;
@@ -785,12 +800,12 @@ void check_journal(struct img *fixtures, const char *listdir, const char *images
     for (unsigned f = 0; f < 2; f++) {
         static struct storm s;
         static const struct storm_cfg plain[2] = {
-            { "jam4k-plain", 0, 0, false, 0, 0, 1, 1, 0, 0 },
-            { "linux1k-plain", 1, 0, false, 0, 0, 1, 1, 0, 0 },
+            { "jam4k-plain", 0, 0, false, 0, 0, 1, 1, 0, 0, false },
+            { "linux1k-plain", 1, 0, false, 0, 0, 1, 1, 0, 0, false },
         };
         static const struct storm_cfg small[2] = {
-            { "jam4k-small", 0, 0, false, 48, 0, 1, 1, 0, 0 },
-            { "linux1k-small", 1, 0, false, 64, 0, 1, 1, 0, 0 },
+            { "jam4k-small", 0, 0, false, 48, 0, 1, 1, 0, 0, false },
+            { "linux1k-small", 1, 0, false, 64, 0, 1, 1, 0, 0, false },
         };
         where = plain[f].name;
         storm_make(&s, &plain[f], &fixtures[f]);

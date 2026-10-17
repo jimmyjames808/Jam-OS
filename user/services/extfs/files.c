@@ -223,7 +223,8 @@ static status_t op_stat(void *ctx, uint64_t *out_size, uint8_t *out_is_dir, uint
 static status_t op_sync(void *ctx)
 {
     (void)ctx;
-    return OK;   /* every answered write is committed already */
+    return disk_flush();   /* every answered write is committed already; a failed one's
+                            * bytes too, on a disk with a cache */
 }
 
 static status_t op_getattr(void *ctx, uint32_t *out_mode, uint32_t *out_nlink, uint32_t *out_uid,

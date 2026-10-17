@@ -309,7 +309,8 @@ static status_t op_rename(void *ctx, const char *from, uint32_t from_len, const 
 static status_t op_sync(void *ctx)
 {
     (void)ctx;
-    return OK;   /* every answered request is committed already */
+    return disk_flush();   /* every answered request is committed already; a failed one's
+                            * data too, on a disk with a cache */
 }
 
 static status_t op_statfs(void *ctx, uint64_t *out_total, uint64_t *out_free,

@@ -21,6 +21,14 @@
  *     (below), but a cut that lands the commit block without one of its
  *     copies is one Linux replays partly (it skips a copy whose checksum
  *     fails, and can't see some stale ones at all).
+ *   - A device with a volatile cache (struct ext_dev's flush: a USB
+ *     stick) lands its writes in any order until a flush, so the journal
+ *     flushes where its order needs it: before the commit block (the file
+ *     data and the copies first), after it (before anything goes home, and
+ *     before the request is answered: an answered request is on the
+ *     medium), before the tail moves past what was written home, and
+ *     before a replayed log is marked empty. A device without one (FUA,
+ *     drv/nvme) has no flush and costs nothing more.
  *   - The commit block carries a digest of its transaction (a Jam OS
  *     addition in h_chksum[1] to [3], words checksum v3 leaves unused and
  *     Linux never reads; its commit checksum covers them), checked by the

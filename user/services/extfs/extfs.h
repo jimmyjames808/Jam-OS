@@ -99,6 +99,8 @@ struct xf_vol {
     bool        read_only;    /* block.info said so */
     bool        ram;          /* the disk is a VMO (EXTFS_SR_RAM): no block channel */
     bool        may_format;   /* EXTFS_ARG_FORMAT */
+    bool        fua;          /* EXTFS_ARG_FUA: an answered write is on the medium */
+    bool        unflushed;    /* written since the last block.sync (no fua) */
     bool        disk_gone;    /* a block call saw ERR_PEER_CLOSED */
     handle_t    keep, serve, own, ctl, pager;
     struct idl_held held;     /* channels held back by the unread bound (fat's rule) */
@@ -211,6 +213,10 @@ status_t disk_open_ram(handle_t vmo, struct ext_dev *dev);
 status_t disk_is_blank(bool *out);
 /* Device writes so far (test.c's write point counts them). */
 uint64_t disk_writes(void);
+/* Every write so far on the medium: a block.sync if the disk has a cache
+ * (no EXTFS_ARG_FUA) and anything was written since the last one; OK at
+ * once otherwise. The journal calls it through the device's flush. */
+status_t disk_flush(void);
 
 /* ---- request.c ---------------------------------------------------------------- */
 

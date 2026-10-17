@@ -96,12 +96,17 @@ status_t fs_spawn(struct vol *b)
          * instance how that one ended. */
         char mount[16];
         snprintf(mount, sizeof(mount), "%s", fs_mount_path(b));
-        const char *argv[4] = { b->name, mount };
+        const char *argv[5] = { b->name, mount };
         int argc = 2;
         if (fs_format_arg(b))
             argv[argc++] = fs_format_arg(b);
         if (fs_end_arg(b))   /* "killed", "crashed" or none */
             argv[argc++] = fs_end_arg(b);
+        /* drv/nvme's writes are FUA; without the word extfs flushes the
+         * disk's cache where its journal needs it (a USB stick's) */
+        const struct disk *d = disk_of(b);
+        if (b->ext && d && d->bus == DISKS_BUS_NVME)
+            argv[argc++] = EXTFS_ARG_FUA;
         struct spawn_args a = {
             .path = b->path, .name = b->name, .argc = argc, .argv = argv, .job = job,
             .extra = x, .nextra = n, .extra_rights = xr,

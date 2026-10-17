@@ -55,14 +55,28 @@
  * inside [0, bytes), in multiples of 1024 bytes at multiples of 1024 (the
  * superblock's 1024 bytes at 1024 first, then whole blocks of the
  * volume), and writes only whole blocks, and only from ext_sync. A write
- * that returned OK is on the medium (FUA). */
+ * that returned OK is on the medium (FUA), unless the device has a
+ * `flush`: then it may sit in the device's volatile cache, and reach the
+ * medium in any order, until a flush returns. The journal flushes where
+ * its order needs it (ext_jnl.h: before a commit block, after it, before
+ * the tail moves past what was written home). */
 struct ext_dev {
     void    *ctx;                    /* read's and write's first argument */
     uint64_t bytes;                  /* the volume's size */
     status_t (*read)(void *ctx, uint64_t off, uint32_t len, void *buf);
     /* NULL: the volume is only read */
     status_t (*write)(void *ctx, uint64_t off, uint32_t len, const void *buf);
+    /* NULL: every write is on the medium when it returns (FUA); else every
+     * write returned so far is on the medium when this returns OK (a USB
+     * stick's SYNCHRONIZE CACHE) */
+    status_t (*flush)(void *ctx);
 };
+
+/* The device's flush (OK at once without one). */
+static inline status_t ext_flush(const struct ext_dev *dev)
+{
+    return dev->flush ? dev->flush(dev->ctx) : OK;
+}
 
 /* ---- the cache ------------------------------------------------------------------------- */
 

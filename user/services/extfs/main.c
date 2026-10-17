@@ -334,6 +334,8 @@ static void words(int argc, char **argv)
     for (int i = 2; i < argc; i++) {
         if (!strcmp(argv[i], EXTFS_ARG_FORMAT))
             vol.may_format = true;
+        else if (!strcmp(argv[i], EXTFS_ARG_FUA))
+            vol.fua = true;
         else if (!strcmp(argv[i], EXTFS_ARG_KILLED) || !strcmp(argv[i], EXTFS_ARG_CRASHED))
             vol.ended = argv[i];
         else if (!test_word(argv[i]))

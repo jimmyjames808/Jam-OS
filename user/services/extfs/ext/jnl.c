@@ -131,13 +131,17 @@ static status_t refuse(struct ext_fs *fs, status_t st)
 }
 
 /* After a replay: the journal marked empty, the next id past the one the
- * scan stopped at. Written only once every copy is home (the device's
- * writes are on the medium when they return). */
+ * scan stopped at. Written only once every copy is home (flushed first:
+ * on a device with a cache the log must not be forgotten before what it
+ * wrote home is on the medium). */
 static status_t mark_empty(struct ext_fs *fs, struct ext_jnl *j, uint32_t next)
 {
+    status_t st = ext_flush(&fs->dev);
+    if (st != OK)
+        return st;
     j->sb.start = 0;
     j->sb.sequence = jbd2_be32(next);
-    status_t st = jnl_sb_write(fs, j);
+    st = jnl_sb_write(fs, j);
     j->tail = 0;
     if (j->live)
         jnl_live_clear(j);
@@ -284,12 +288,16 @@ static status_t set_tail(struct ext_fs *fs, struct ext_jnl *j, uint32_t pos, uin
     return OK;
 }
 
-/* Move the tail to `clean` (every transaction before it is home). */
+/* Move the tail to `clean` (every transaction before it is home). On a
+ * device with a cache, what the checkpoints wrote home is flushed first:
+ * a tail that reached the medium before them would leave a cut nothing to
+ * replay them from. */
 static status_t move_tail(struct ext_fs *fs, struct ext_jnl *j)
 {
     if (!j->tail || (j->tail == j->clean && j->tail_tid == j->clean_tid))
         return OK;
-    return set_tail(fs, j, j->clean, j->clean_tid);
+    status_t st = ext_flush(&fs->dev);
+    return st == OK ? set_tail(fs, j, j->clean, j->clean_tid) : st;
 }
 
 /* Log blocks free for the next transaction (one is kept between the head
@@ -359,5 +367,7 @@ status_t ext_jnl_close(struct ext_fs *fs)
         return st;
     fs->sb.feature_incompat &= ~(uint32_t)EXT_INCOMPAT_RECOVER;
     st = ext_super_write(fs);
-    return st == OK ? ext_sync(fs) : st;
+    if (st == OK)
+        st = ext_sync(fs);
+    return st == OK ? ext_flush(&fs->dev) : st;
 }

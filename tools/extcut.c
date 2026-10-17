@@ -6,7 +6,10 @@
  *     ones, or with `reorder` any of them, as a drive may write a long
  *     write's sectors in any order) and fails, and every write after it
  *     fails without landing. A reset puts back only the kibibytes that
- *     changed, so thousands of runs on one fixture stay cheap;
+ *     changed, so thousands of runs on one fixture stay cheap. With
+ *     `cache` it is a USB stick's: a write sits in a volatile cache until
+ *     a flush, and at the cut each block written since the last flush
+ *     lands or not, whatever the order it was written in;
  *   - the storm: requests made from a seed, each a transaction of real
  *     metadata changes on the fixture (an inode's times and mode, two
  *     directory entries exchanged, the superblock's write time) and of
@@ -30,7 +33,8 @@ void cut_init(struct cutdev *cd, const struct img *m)
     cd->bytes = malloc(m->size);
     cd->touched = malloc((m->size / CUT_UNIT + 1) * sizeof(uint32_t));
     cd->mark = calloc(m->size / CUT_UNIT + 1, 1);
-    if (!cd->base || !cd->bytes || !cd->touched || !cd->mark)
+    cd->pmark = calloc(m->size / CUT_UNIT + 1, 1);   /* blocks are at least a unit */
+    if (!cd->base || !cd->bytes || !cd->touched || !cd->mark || !cd->pmark)
         fail("out of memory");
     memcpy(cd->base, m->bytes, m->size);
     memcpy(cd->bytes, m->bytes, m->size);
@@ -43,10 +47,23 @@ void cut_free(struct cutdev *cd)
     free(cd->bytes);
     free(cd->touched);
     free(cd->mark);
+    free(cd->pmark);
+    free(cd->pend);
+    free(cd->pold);
+}
+
+/* Every block written since the last flush is on the medium now. */
+static void forget_pending(struct cutdev *cd)
+{
+    for (uint64_t i = 0; i < cd->npend; i++)
+        cd->pmark[cd->pend[i]] = 0;
+    cd->npend = 0;
 }
 
 void cut_reset(struct cutdev *cd)
 {
+    forget_pending(cd);
+    cd->flushes = 0;
     for (uint64_t i = 0; i < cd->ntouched; i++) {
         uint64_t k = cd->touched[i];
         memcpy(cd->bytes + k * CUT_UNIT, cd->base + k * CUT_UNIT, CUT_UNIT);
@@ -128,6 +145,50 @@ static void count_commits(struct cutdev *cd, uint64_t off, uint32_t len, const u
     }
 }
 
+/* `cache`: blocks [off, off + len) are about to be written: each not yet
+ * written since the last flush is noted with what the medium holds. */
+static void note_pending(struct cutdev *cd, uint64_t off, uint32_t len)
+{
+    uint32_t bs = cd->block_size;
+    for (uint64_t b = off / bs; b < (off + len) / bs; b++) {
+        if (!cd->cache || cd->pmark[b])
+            continue;
+        if (cd->npend == cd->cappend) {
+            cd->cappend = cd->cappend ? 2 * cd->cappend : 256;
+            cd->pend = realloc(cd->pend, cd->cappend * sizeof(uint64_t));
+            cd->pold = realloc(cd->pold, cd->cappend * bs);
+            if (!cd->pend || !cd->pold)
+                fail("out of memory");
+        }
+        cd->pmark[b] = 1;
+        cd->pend[cd->npend] = b;
+        memcpy(cd->pold + cd->npend * bs, cd->bytes + b * bs, bs);
+        cd->npend++;
+    }
+}
+
+/* `cache`, the power gone: each block written since the last flush is on
+ * the medium as last written, or as it was before (the cache never wrote
+ * it back). */
+static void lose_pending(struct cutdev *cd)
+{
+    uint32_t bs = cd->block_size;
+    for (uint64_t i = 0; i < cd->npend; i++)
+        if (below(2))
+            put(cd, cd->pend[i] * bs, cd->pold + i * bs, bs);
+    forget_pending(cd);
+}
+
+static status_t cut_flush(void *ctx)
+{
+    struct cutdev *cd = ctx;
+    if (cd->dead)
+        return ERR_IO;
+    forget_pending(cd);
+    cd->flushes++;
+    return OK;
+}
+
 static status_t cut_write(void *ctx, uint64_t off, uint32_t len, const void *buf)
 {
     struct cutdev *cd = ctx;
@@ -140,6 +201,7 @@ static status_t cut_write(void *ctx, uint64_t off, uint32_t len, const void *buf
         return ERR_IO;
     uint32_t n = len / bs;
     if (!cd->cut_at || cd->units + n <= cd->cut_at) {
+        note_pending(cd, off, len);
         put(cd, off, buf, len);
         cd->units += n;
         count_commits(cd, off, len, buf);
@@ -156,8 +218,12 @@ static status_t cut_write(void *ctx, uint64_t off, uint32_t len, const void *buf
         order[i] = order[pick];
         order[pick] = t;
     }
-    for (uint32_t i = 0; i < k; i++)
+    for (uint32_t i = 0; i < k; i++) {
+        note_pending(cd, off + (uint64_t)order[i] * bs, bs);
         put(cd, off + (uint64_t)order[i] * bs, (const uint8_t *)buf + (size_t)order[i] * bs, bs);
+    }
+    if (cd->cache)
+        lose_pending(cd);
     cd->units = cd->cut_at;
     cd->dead = true;
     return ERR_IO;
@@ -165,7 +231,8 @@ static status_t cut_write(void *ctx, uint64_t off, uint32_t len, const void *buf
 
 struct ext_dev cut_dev(struct cutdev *cd)
 {
-    return (struct ext_dev){ .ctx = cd, .bytes = cd->size, .read = cut_read, .write = cut_write };
+    return (struct ext_dev){ .ctx = cd, .bytes = cd->size, .read = cut_read, .write = cut_write,
+                             .flush = cd->cache ? cut_flush : NULL };
 }
 
 /* ---- blocks' contents --------------------------------------------------------------------- */
@@ -422,6 +489,7 @@ void storm_make(struct storm *s, const struct storm_cfg *cfg, const struct img *
         return;
     }
     cut_init(&s->cd, m);
+    s->cd.cache = cfg->cache;
     struct ext_fs fs;
     struct ext_dev dev = cut_dev(&s->cd);
     uint8_t *cache = malloc(CACHE_BYTES);

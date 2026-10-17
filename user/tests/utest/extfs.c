@@ -686,3 +686,37 @@ bool t_extfs_error(void)
     CHECK(fat_stop(&r));
     return ramdisk_destroy(&xd);
 }
+
+/* ---- a disk with a cache (docs/M13.6-REVIEW.md's R1) ---------------------------- */
+
+/* Without EXTFS_ARG_FUA the disk's writes may sit in its cache (a USB
+ * stick's), so the journal's order and every answer need block.sync: a
+ * request that writes is flushed before its commit block and after it, an
+ * fs.sync flushes what was written home since, and a second one, with
+ * nothing new, sends nothing. With the word (drv/nvme's FUA writes) nothing
+ * is ever flushed. */
+bool t_extfs_flush(void)
+{
+    static struct ramdisk xd;
+    struct fatrun r;
+    CHECK(ramdisk_create(&xd, EXT_DISK_SECTORS));
+    CHECK(extfs_start(&r, &xd, false, NULL, 0));
+    uint32_t syncs = ramdisk_syncs(&xd);
+    CHECK_ST(t_mkdir(&r, "/d"), OK);
+    CHECK(ramdisk_syncs(&xd) >= syncs + 2);   /* the commit block's two */
+    CHECK(put_file(&r, "/d/a", "cached"));
+    CHECK_ST(t_sync(&r), OK);
+    syncs = ramdisk_syncs(&xd);
+    CHECK_ST(t_sync(&r), OK);
+    CHECK_EQ(ramdisk_syncs(&xd), syncs);   /* nothing written since: nothing sent */
+    CHECK(fat_stop(&r));
+    const char *fua = EXTFS_ARG_FUA;
+    CHECK(extfs_start(&r, &xd, false, &fua, 1));
+    syncs = ramdisk_syncs(&xd);
+    CHECK(put_file(&r, "/d/b", "fua"));
+    CHECK_ST(t_sync(&r), OK);
+    CHECK_EQ(ramdisk_syncs(&xd), syncs);
+    CHECK(file_is(&r, "/d/a", "cached") && file_is(&r, "/d/b", "fua"));
+    CHECK(fat_stop(&r));
+    return ramdisk_destroy(&xd);
+}
