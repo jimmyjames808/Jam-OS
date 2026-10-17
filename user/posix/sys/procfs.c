@@ -94,6 +94,7 @@
 #include "memfd.h"
 #include "proc.h"
 #include "procinfo.h"
+#include "sig.h"
 #include "threads.h"
 
 #define PROC_DIR  "/proc"
@@ -412,7 +413,11 @@ int __jam_dladdr(const void *addr, const char **file, void **base)
         in = ph[i].p_type == PT_LOAD && a >= ph[i].p_vaddr && a - ph[i].p_vaddr < ph[i].p_memsz;
     if (!in)
         return 0;
+    /* The layer's own, under exe_lock: no handler runs inside (one that
+     * calls dladdr would wait for the lock for ever). */
+    struct sig_thread *q = sig_quiet_begin();
     const char *path = proc_exe();
+    sig_quiet_end(q);
     *file = path ? path : argv0 ? argv0 : "";
     *base = (void *)(uintptr_t)eh;
     return 1;

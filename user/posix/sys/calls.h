@@ -35,12 +35,17 @@ typedef long lx_call(long a, long b, long c, long d, long e, long f);
 #define SIG_CALL_PIPE      4u   /* EPIPE raises SIGPIPE on the calling thread */
 
 /* One call through the boundary: the handler and Linux's six arguments,
- * and for a cancellation point the thread's cancel flag (musl's). */
+ * for a cancellation point the thread's cancel flag (musl's), and where
+ * its caller is: what a handler run at its boundary gets for registers
+ * (signal.c's call_regs), as Linux's gets the system call's. */
 struct sig_frame {
     lx_call      *fn;
     unsigned      kind;     /* SIG_CALL_* */
     volatile int *cancel;   /* a cancellation point's flag, or NULL */
     long          a[6];
+    uintptr_t     rip;      /* where the call returns to in its caller (musl's) */
+    uintptr_t     rsp;      /* the caller's RSP once it has returned */
+    uintptr_t     rbp;      /* the caller's RBP */
 };
 
 /* Run f's call as a call boundary: the handlers due before it run, then

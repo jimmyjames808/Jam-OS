@@ -149,10 +149,11 @@ __jam_sig_stack_call:
  * a fork copied (the kernel's frame is the parent's thread's): resumed
  * here instead, in user mode, as Linux's sigreturn would: the vector
  * state, RFLAGS' arithmetic bits and DF, every register, RSP, and a jump
- * to RIP through resume_rip (one thread only: the forking one, alone in
- * its child, ever has such frames). A raise from the first instruction to
- * the resume finds RIP in [__jam_sig_resume, __jam_sig_resume_end): the
- * thread is still on its way out though t->in says not. */
+ * to RIP through resume_rip, RBX through resume_rbx (one thread only: the
+ * forking one, alone in its child, ever has such frames). A raise from
+ * the first instruction to the resume finds RIP in [__jam_sig_resume,
+ * __jam_sig_resume_end): the thread is still on its way out though t->in
+ * says not. */
 #define EXC_RESUME  1        /* <jam/abi.h>'s */
 #define F_XSAVE_SZ  40       /* struct exc_frame's xsave_size */
 #define F_RFLAGS    184
@@ -190,6 +191,10 @@ __jam_sig_resume:
     xrstor64 (%rsi)           /* every component the area's header has */
 4:  mov F_RIP(%rbx), %rax
     mov %rax, resume_rip(%rip)
+    /* RBX last, from a word of ours: once RSP is the frame's, a raise
+     * writes its frame below RSP's red zone, where this frame lies. */
+    mov F_RBX(%rbx), %rax
+    mov %rax, resume_rbx(%rip)
     mov F_RFLAGS(%rbx), %rax
     and $USER_FLAGS, %rax
     push %rax
@@ -209,7 +214,7 @@ __jam_sig_resume:
     mov F_RAX(%rbx), %rax
     mov F_RCX(%rbx), %rcx
     mov F_RSP(%rbx), %rsp
-    mov F_RBX(%rbx), %rbx
+    mov resume_rbx(%rip), %rbx
     jmp *resume_rip(%rip)
 __jam_sig_resume_end:
     .cfi_endproc
@@ -218,6 +223,8 @@ __jam_sig_resume_end:
     .bss
     .p2align 3
 resume_rip:
+    .zero 8
+resume_rbx:
     .zero 8
     .text
 
