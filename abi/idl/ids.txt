@@ -54,8 +54,10 @@
 46      session_ctl     abi/idl/session.idl
 47      exec            abi/idl/exec.idl
 48      exec_prog       abi/idl/exec.idl
+49      fswatch         abi/idl/fswatch.idl
 50      audio_stream    abi/idl/audio.idl
 51      hda_stream      abi/idl/hda.idl
+52      fswatch_bell    abi/idl/fswatch.idl
 53      unix            abi/idl/unix.idl
 # 60 to 69: the network's (M12 track P3)
 60      net_socket      abi/idl/net.idl

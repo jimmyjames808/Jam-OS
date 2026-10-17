@@ -1,0 +1,117 @@
+# fswatch: file watching on one view of a mounted filesystem, the channel
+# fs.watch returned (docs/INOTIFY-PLAN.md; libc's inotify descriptor). A
+# watch is on an inode, not a path: a change to it through any view of the
+# volume, by any process, queues an event on each channel watching it, in
+# the order the service made the changes. The events are Linux's
+# (inotify(7)): a directory's watches get its entries' events with the
+# entry's name, an inode's own watches get its events without one. The
+# service keeps a queue for each channel (records of FSWATCH_QUEUE_BYTES
+# at most: past that one IN_Q_OVERFLOW, and later events are dropped until
+# a take makes room), drops an event equal to the last one queued (same
+# id, mask, cookie and name), and rings the channel's bell when its queue
+# gets a first event. Format: see tools/genidl.py.
+#
+# The bell (fswatch_bell, below). The service only sets FSWATCH_BELL, when
+# an empty queue gets an event; the client clears it before its takes,
+# never after (a ring between a take and the clear would be lost), and
+# takes until `more` is 0 or sets the bell again itself. One event may be
+# the bell of several watcher channels: libc's one descriptor over every
+# mount it watches.
+#
+# Restart: the service's restart is not seen: its keeper holds this
+# channel and its bell, the watches are in its state, and the request in
+# progress is finished exactly once (an `add` run again finds its watch, a
+# `remove` finds none and answers OK). The events queued then are lost:
+# the queue starts again with IN_Q_OVERFLOW, and the bell is rung.
+# ERR_PEER_CLOSED: the mount went (fs.idl says when), or the successor
+# couldn't carry on from the dead one's state and started fresh: every
+# watch on the channel is gone (libc reads IN_UNMOUNT, then IN_IGNORED for
+# each).
+
+protocol fswatch 49 kept
+
+# The bell's user signal (an event's bit, SIG_USER_ALL).
+const BELL            1 << 24
+# take's records: each RECORD_FIXED bytes of u32 id, u32 mask, u32 cookie,
+# u16 len (little-endian, packed), then `len` bytes of name (UTF-8, no
+# NUL), the next record right after. The most a take answers, and the
+# most a channel's queue holds (records' bytes).
+const RECORD_FIXED    14
+const TAKE_BYTES      8192
+const QUEUE_BYTES     16384
+# Linux's IN_* bits (<sys/inotify.h>), as `add`'s mask and the records'
+# masks carry them. Events:
+const IN_ACCESS       0x1
+const IN_MODIFY       0x2
+const IN_ATTRIB       0x4
+const IN_CLOSE_WRITE  0x8
+const IN_CLOSE_NOWRITE 0x10
+const IN_OPEN         0x20
+const IN_MOVED_FROM   0x40
+const IN_MOVED_TO     0x80
+const IN_CREATE       0x100
+const IN_DELETE       0x200
+const IN_DELETE_SELF  0x400
+const IN_MOVE_SELF    0x800
+const IN_ALL_EVENTS   0xfff
+# ... sent whatever the mask says (IN_UNMOUNT is libc's own: the channel
+# closing) ...
+const IN_UNMOUNT      0x2000
+const IN_Q_OVERFLOW   0x4000
+const IN_IGNORED      0x8000
+# ... add's flags ...
+const IN_ONLYDIR      0x1000000
+const IN_DONT_FOLLOW  0x2000000
+const IN_EXCL_UNLINK  0x4000000
+const IN_MASK_CREATE  0x10000000
+const IN_MASK_ADD     0x20000000
+const IN_ONESHOT      0x80000000
+# ... and a record's: its subject is a directory.
+const IN_ISDIR        0x40000000
+
+# Watch `path`, walked in the channel's view as fs.getattr walks it (links
+# inside followed, the last one too unless IN_DONT_FOLLOW; ERR_LINK_OUT for
+# one leading out; a hidden path ERR_ACCESS_DENIED). `mask`: IN_* events
+# and add's flags: IN_ONLYDIR (ERR_NOT_DIR if not a directory),
+# IN_DONT_FOLLOW, IN_MASK_ADD (add to a watch's mask, not replace it),
+# IN_MASK_CREATE (ERR_ALREADY_EXISTS if this channel watches the inode),
+# IN_ONESHOT (the watch ends after its first event), IN_EXCL_UNLINK (no
+# events from an unlinked file still open). `id`: the watch, never 0, the
+# same for the same inode on this channel (`existed` 1: its mask was
+# replaced, or added to). An id carries a count, so an ended watch's id
+# comes back only after a million more watches in its place: a client
+# that still holds an id an add answers with `existed` 0 forgets the old
+# watch.
+# ERR_ACCESS_DENIED: no read permission (Linux's rule); ERR_NO_SPACE: a
+# limit of watches (the volume's or the channel's); ERR_INVALID_ARGS: no
+# IN_* bit at all in `mask` (other bits are ignored), or IN_MASK_ADD with
+# IN_MASK_CREATE (Linux's EINVAL).
+1  add     (str[<=4095] path, u32 mask) -> (u32 id, u8 existed)
+# End watch `id`: its queued events are dropped and IN_IGNORED queued for
+# it. An id that is not a watch of this channel now (it ended, or never
+# was): OK, nothing done.
+2  remove  (u32 id) -> ()
+# Take queued events: as many whole records as fit in `room` bytes (at
+# most TAKE_BYTES are answered), in the order they came. IN_Q_OVERFLOW's
+# record has id 0. `more`: records are left. ERR_BUFFER_TOO_SMALL: the
+# first record doesn't fit (nothing taken).
+3  take    (u32 room) -> (u8 more, u8[<=8192] events)
+
+# fswatch_bell: the bell, a watcher channel's first message. Until the
+# service holds it the channel speaks this protocol: anything else first,
+# or a bell refused (not an event, or without RIGHT_SIGNAL), closes the
+# channel.
+#
+# Reconnect: the bell is taken once, by one instance of the service. One
+# that died after reading it and before its keeper held it leaves its
+# successor no bell for the channel: the successor closes the channel at
+# its next message (ERR_PEER_CLOSED at the client's next call, as when the
+# mount goes), and the client asks fs.watch again.
+
+protocol fswatch_bell 52
+
+# The bell: an event, with RIGHT_SIGNAL and RIGHT_TRANSFER only (the
+# service may ring it and give it to its keeper, nothing more), whose
+# FSWATCH_BELL the service sets when the channel's queue gets a first
+# event.
+1  give  (handle<event> bell) event

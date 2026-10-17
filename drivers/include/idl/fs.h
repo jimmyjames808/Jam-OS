@@ -65,6 +65,7 @@
 #define FS_LINK             0x0010000eu
 #define FS_RESOLVE          0x0010000fu
 #define FS_SUBVIEW          0x00100010u
+#define FS_WATCH            0x00100011u
 
 /* Constants (the .idl's `const` lines). */
 /* fs.unlink's flags: remove a directory (empty), not a file (unlinkat's
@@ -288,6 +289,14 @@ struct fs_subview_req {
     uint32_t flags;
 } __attribute__((packed));
 struct fs_subview_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
+struct fs_watch_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct fs_watch_rep {
     uint32_t txid;
     int32_t  status;
 } __attribute__((packed));
@@ -1186,6 +1195,55 @@ static inline status_t fs_subview(handle_t ch, const char *path, uint32_t path_l
     return fs_subview_call(ch, false, DEADLINE_NEVER, path, path_len, flags, out_fs);
 }
 
+/* fs_watch_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t fs_watch_call(handle_t ch, bool idl_within, uint64_t idl_t, handle_t *out_watcher)
+{
+    struct fs_watch_req idl_q;
+    struct fs_watch_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = FS_WATCH;
+    handle_t idl_rh[1];
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_got[0],
+                               idl_rh, 1, &idl_got[1], idl_within, idl_t);
+    uint32_t idl_rhn = idl_st == OK ? idl_got[1] : 0;   /* handles arrive only with OK */
+    idl_n = idl_got[0];
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && idl_rhn != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK)
+        idl_close_all(idl_rh, idl_rhn);
+    if (idl_st == OK) {
+        if (out_watcher)
+            *out_watcher = idl_rh[0];
+        else
+            drv_handle_close(idl_rh[0]);
+    }
+    return idl_st;
+}
+/* A watcher channel on this view, for file watching (abi/idl/fswatch.idl:
+ * libc's inotify descriptor asks each mount for one). Its first message is
+ * the bell (fswatch_bell.give), then fswatch's requests. It keeps this
+ * channel's view (its flags and root, a copy: this channel may close
+ * first) and judges every watch and event by it. ERR_NO_RESOURCES: the
+ * volume's watcher channels are all in use, or the caller's process has
+ * its share. fat and the boot image: ERR_NOT_SUPPORTED. */
+static inline status_t fs_watch_until(handle_t ch, uint64_t deadline_ns, handle_t *out_watcher)
+{
+    return fs_watch_call(ch, false, deadline_ns, out_watcher);
+}
+static inline status_t fs_watch_within(handle_t ch, uint64_t timeout_ns, handle_t *out_watcher)
+{
+    return fs_watch_call(ch, true, timeout_ns, out_watcher);
+}
+static inline status_t fs_watch(handle_t ch, handle_t *out_watcher)
+{
+    return fs_watch_call(ch, false, DEADLINE_NEVER, out_watcher);
+}
+
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
 
 /* fs_open without waiting: the request, with the caller's txid (not 0).
@@ -1941,6 +1999,39 @@ static inline status_t fs_subview_result(const void *idl_rep, struct idl_msg *id
     return OK;
 }
 
+/* fs_watch without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then fs_watch_result. */
+static inline status_t fs_watch_send(handle_t ch, uint32_t idl_txid)
+{
+    struct fs_watch_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = FS_WATCH;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to fs_watch_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t fs_watch_result(const void *idl_rep, struct idl_msg *idl_m, handle_t *out_watcher)
+{
+    const struct fs_watch_rep *idl_r = (const struct fs_watch_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    if (out_watcher)
+        *out_watcher = idl_m->hs[0];
+    else
+        drv_handle_close(idl_m->hs[0]);
+    idl_m->nh = 0;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -1964,6 +2055,7 @@ struct fs_ops {
     status_t (*link)(void *ctx, const char *from, uint32_t from_len, const char *to, uint32_t to_len);
     status_t (*resolve)(void *ctx, const char *path, uint32_t path_len, uint32_t flags, uint8_t *out_kind, uint16_t *out_used, char *out_next, uint32_t *out_next_len);
     status_t (*subview)(void *ctx, const char *path, uint32_t path_len, uint32_t flags, handle_t *out_fs);
+    status_t (*watch)(void *ctx, handle_t *out_watcher);
 };
 
 /* Answer the fs.open request kept in txn: idl_st and, if it is OK, the
@@ -2327,6 +2419,27 @@ static inline status_t fs_reply_subview(struct idl_txn idl_txn, status_t idl_st,
     }
     status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, idl_st == OK ? idl_hs : NULL, idl_st == OK ? 1 : 0);
     return idl_ws;
+}
+
+/* Answer the fs.watch request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t fs_reply_watch(struct idl_txn idl_txn, status_t idl_st, handle_t watcher)
+{
+    struct fs_watch_rep idl_r;
+    handle_t idl_hs[1] = { watcher };
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(watcher != HANDLE_INVALID))
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK) {
+        if (idl_hs[0] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[0]);
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    }
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 1);
 }
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
@@ -2843,6 +2956,29 @@ static inline uint32_t fs_dispatch_on(handle_t ch, const struct fs_ops *ops, voi
             return sizeof(*idl_h);
         }
         rhs[0] = out_fs;
+        *rhn = 1;
+        return sizeof(*idl_r);
+    }
+    case FS_WATCH: {
+        const struct fs_watch_req *idl_q = (const struct fs_watch_req *)req;
+        struct fs_watch_rep *idl_r = (struct fs_watch_rep *)rep;
+        handle_t out_watcher = HANDLE_INVALID;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->watch) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->watch(ctx, &out_watcher);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && !(out_watcher != HANDLE_INVALID))
+            idl_h->status = ERR_INTERNAL;   /* a handle result left unset */
+        if (idl_h->status != OK) {
+            if (out_watcher != HANDLE_INVALID)
+                drv_handle_close(out_watcher);
+            return sizeof(*idl_h);
+        }
+        rhs[0] = out_watcher;
         *rhn = 1;
         return sizeof(*idl_r);
     }

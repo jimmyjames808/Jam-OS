@@ -221,3 +221,11 @@ const RESOLVE_ABOVE    2
 # channel keeps this channel's own flags too. ERR_NOT_DIR: not a
 # directory. fat and the boot image: ERR_NOT_SUPPORTED.
 16 subview  (str[<=4095] path, u32 flags) -> (handle fs)
+# A watcher channel on this view, for file watching (abi/idl/fswatch.idl:
+# libc's inotify descriptor asks each mount for one). Its first message is
+# the bell (fswatch_bell.give), then fswatch's requests. It keeps this
+# channel's view (its flags and root, a copy: this channel may close
+# first) and judges every watch and event by it. ERR_NO_RESOURCES: the
+# volume's watcher channels are all in use, or the caller's process has
+# its share. fat and the boot image: ERR_NOT_SUPPORTED.
+17 watch  () -> (handle watcher)
