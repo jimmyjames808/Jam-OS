@@ -2444,7 +2444,13 @@ unmaps them at once): fn's frames on those pages, the calls that take a
 path (`stat`, `lstat`, `access`, `open`, `mkdir` and `rmdir`, `chdir` and
 `getcwd`, `readlink`) working there on the layer's own stack for calls, a
 `fork` and a `clone` of its own reaped, fn's value its exit code
-([CR-PLAN](CR-PLAN.md#ccs-2026-10-17), "CCS"). The descriptors and the table of
+([CR-PLAN](CR-PLAN.md#ccs-2026-10-17), "CCS"). `alloc`: two threads in
+`malloc` while the case vforks 40 children and clones 40 more, each of
+which allocates (an `execve` of nothing, then `malloc`): every one ends
+with 0 (the line `alloc: 80 vfork and clone children allocated beside 2
+threads in malloc`; without malloc's lock across vfork and clone a child
+waited for it for ever: [FORK-REVIEW-LIBC](FORK-REVIEW-LIBC.md), finding
+1). The descriptors and the table of
 mappings (`forkfd.c`; [FORK-PLAN](FORK-PLAN.md#fl2-notes), "FL2 notes"):
 `fds`: every kind made by the parent and used from both sides in the
 child: pipe ends (the parent's 90 leftover bytes read once, by the parent:
@@ -2524,6 +2530,11 @@ SIGCHLD)` (a guard page below them; the parent unmaps them at once), whose
 fn closes a descriptor, changes to `/` and `execv`s posixtest by its path;
 the new image's parent is the case and its directory `/`, and the case's
 `waitpid` sees exit 0 ([CR-PLAN](CR-PLAN.md#ccs-2026-10-17), "CCS").
+`gone`: the forked child makes a directory on `/data`, goes into it,
+removes it and execs; the new image's directory is that one, gone
+(`getcwd` `ENOENT`, an `open` with `O_CREAT` there `ENOENT`), as Linux's
+(it started in `/` before: [FORK-REVIEW-LIBC](FORK-REVIEW-LIBC.md),
+finding 2).
 
 posixtest's launch section (the `init` run; `posixtest launch`): what
 Chromium's launcher needs of `posix_spawn` ([CR-PLAN](CR-PLAN.md#cs1-notes),
