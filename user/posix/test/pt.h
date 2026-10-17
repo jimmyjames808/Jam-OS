@@ -154,6 +154,11 @@ int  pt_child_peer(int argc, char **argv);
 int  pt_child_links(void);
 int  pt_child_fault(int argc, char **argv);   /* ends by a fault (fault.c says which) */
 int  pt_child_fork(int argc, char **argv);    /* one of fork.c's cases, in a job of its own */
+/* forkfd.c: fork.c's cases for a forked child's descriptors and mappings (FL2). */
+void pt_fork_fds(void);
+void pt_fork_chromium(void);
+void pt_fork_ttys(void);
+void pt_fork_maps(void);
 int  pt_child_efault(int argc, char **argv);  /* exits, or EFAULT then a real fault (efault.c) */
 
 /* Pages charged to our job now (job_get_info; start.c). */

@@ -39,6 +39,7 @@
 #include <fcntl.h>
 #include <idl/console.h>
 #include <ldisc.h>
+#include <posixfork.h>
 #include <signal.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -402,6 +403,43 @@ static long tty_give(struct fd_desc *d, struct fd_given *out)
     return 0;   /* no data: what we read and didn't take stays ours */
 }
 
+/* fork (docs/FORK-PLAN.md section 1.6): as a spawned child's, duplicates
+ * of both channels; what we read and didn't take stays ours. */
+static bool tty_fork(struct fd_desc *d, struct fd_fork *f)
+{
+    struct tty *t = d->priv;
+    if (!fd_fork_child(f)) {
+        fd_fork_dup(f, 0, t->ch);
+        fd_fork_dup(f, 1, t->data);
+        return true;
+    }
+    t->ch = fd_fork_take(f, 0);
+    t->data = fd_fork_take(f, 1);
+    t->have = t->at = 0;
+    if (t->ch && t->data)
+        return true;
+    if (t->ch)
+        jam_handle_close(t->ch);   /* the child's own: the other one didn't come */
+    if (t->data)
+        jam_handle_close(t->data);
+    t->ch = t->data = HANDLE_INVALID;
+    return false;
+}
+
+void tty_fork_ctty(struct lx_fork_io *io)
+{
+    if (lx_fork_child(io))
+        ctty_lock = (lock_t){ 0 };
+    struct fd_desc *d = ctty;   /* the parent's: set once, read as fork's walk was */
+    if (!d)
+        return;
+    bool keep = fd_fork_met(io, d, POSIXFORK_CTTY);
+    if (lx_fork_child(io) && keep)
+        d->refs++;   /* ctty's own reference */
+    else if (lx_fork_child(io))
+        ctty = NULL;
+}
+
 static void tty_close(struct fd_desc *d)
 {
     struct tty *t = d->priv;
@@ -412,7 +450,7 @@ static void tty_close(struct fd_desc *d)
 
 static const struct fd_ops tty_ops = {
     .name = "tty", .read = tty_read, .write = tty_write, .stat = tty_stat, .ioctl = tty_ioctl,
-    .ready = tty_ready, .arm = tty_arm, .give = tty_give, .close = tty_close,
+    .ready = tty_ready, .arm = tty_arm, .give = tty_give, .fork = tty_fork, .close = tty_close,
 };
 
 /* ---- making one ---------------------------------------------------------------------------- */

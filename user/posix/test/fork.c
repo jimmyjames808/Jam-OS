@@ -700,6 +700,9 @@ static const struct {
     { "torn", fork_torn, 0 },       { "huge", fork_huge, 0 },
     { "nomem", fork_nomem, JOB_PAGES }, { "signals", fork_signals, 0 },
     { "clone", fork_clone, 0 },
+    /* forkfd.c's (FL2): the descriptors and the table of mappings */
+    { "fds", pt_fork_fds, 0 },      { "chromium", pt_fork_chromium, 0 },
+    { "ttys", pt_fork_ttys, 0 },    { "maps", pt_fork_maps, 0 },
 };
 #define NCASES (sizeof(cases) / sizeof(cases[0]))
 

@@ -184,7 +184,8 @@ static status_t rings_take(struct sock *s, const struct sock_given *g, const han
     uint64_t va = 0, len = sockring_bytes(g->tx_size, g->rx_size);
     if (!sockring_size_ok(g->tx_size) || !sockring_size_ok(g->rx_size))
         return ERR_INVALID_ARGS;
-    status_t st = jam_vmar_map(lx_self_vmar(), hs[1], 0, len, VMAR_READ | VMAR_WRITE, &va);
+    status_t st = jam_vmar_map(lx_self_vmar(), hs[1], 0, len,   /* a connection's: never forked */
+                               VMAR_READ | VMAR_WRITE | VMAR_CLONE_NONE, &va);
     if (st != OK)
         return st;
     s->ns = (struct net_sock){ .ch = hs[0], .port = g->port, .ring = hs[1], .to_stack = hs[2],

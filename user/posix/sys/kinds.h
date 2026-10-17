@@ -89,6 +89,12 @@ long dev_stat(const char *abs, struct stat *st);
 /* unlink of a /dev path (a /dev/shm name: shm_unlink); -errno. */
 long dev_unlink(const char *abs);
 
+/* fork's walk, in the child (fd.c's fd_fork_walk, after the descriptors):
+ * /dev/shm's names kept for the objects the child got with a descriptor
+ * (their memory's handle came then), the rest dropped unclosed: a name
+ * holds no handle of its own to pass. shm_lock fresh. */
+void shm_forked(struct lx_fork_io *io);
+
 /* Is abs /etc or under it, and libc's (the namespace has no /etc mount)? */
 bool etc_path(const char *abs);
 /* open and stat of an /etc path, as dev_open and dev_stat. Every file is

@@ -33,8 +33,8 @@ static status_t map_buffer(struct jfile *f, bool writable)
     if (st == OK && (!size || size > BUF_MAX || (size & (PAGE_SIZE - 1))))
         st = ERR_INTERNAL;
     if (st == OK)
-        st = jam_vmar_map(startup_handle(SR_SELF_VMAR), f->buf_vmo, 0, size,
-                          VMAR_READ | (writable ? VMAR_WRITE : 0), &addr);
+        st = jam_vmar_map(startup_handle(SR_SELF_VMAR), f->buf_vmo, 0, size,   /* never forked */
+                          VMAR_READ | (writable ? VMAR_WRITE : 0) | VMAR_CLONE_NONE, &addr);
     if (st != OK)
         return st;
     f->buf = (uint8_t *)(uintptr_t)addr;

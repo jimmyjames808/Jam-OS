@@ -458,11 +458,29 @@ static void kind_close(struct fd_desc *d)
     free(f);
 }
 
+/* fork (docs/FORK-PLAN.md section 1.6): nothing is passed, so a fork
+ * costs no file service a call. The child's copy of the file's open is
+ * lent (fobj_fork): its first use opens the path again, and the
+ * description goes on from its offset, its own from then on (M13 Q5's A,
+ * as a spawned child's). On a mount with one writer (fat) an open that
+ * may write is EBUSY there while we hold ours. A file that came over a
+ * socket has no path to open again: left out. */
+static bool kind_fork(struct fd_desc *d, struct fd_fork *f)
+{
+    struct file *fl = d->priv;
+    if (!fd_fork_child(f) || !fl->o)
+        return true;   /* O_PATH: the path alone */
+    if (!fl->path)
+        return false;
+    fobj_fork(f, fl->o);
+    return true;
+}
+
 static const struct fd_ops file_ops = {
     .name = "file", .read = kind_read, .write = kind_write, .write_at = kind_write_at,
     .seek = kind_seek,
     .stat = kind_stat, .ioctl = kind_ioctl, .sync = kind_sync, .truncate = kind_truncate,
-    .path = kind_path, .give = kind_give, .close = kind_close,
+    .path = kind_path, .give = kind_give, .fork = kind_fork, .close = kind_close,
 };
 
 /* A description for the open o (its reference consumed) of path abs. */

@@ -184,6 +184,25 @@ static long efd_arm(struct fd_desc *d, uint32_t interest, struct fd_wait *out)
     return 0;
 }
 
+/* fork (docs/FORK-PLAN.md section 1.6): as a spawned child's, the child's
+ * counter is its own, its copy of ours at the clone, on a new event the
+ * parent makes for it (none: the descriptor is left out of the child). */
+static bool efd_fork(struct fd_desc *d, struct fd_fork *f)
+{
+    struct efd *e = efd_of(d);
+    if (!fd_fork_child(f)) {
+        handle_t ev;
+        if (jam_event_create(&ev) == OK)
+            fd_fork_put(f, 0, ev);
+        return true;
+    }
+    e->ev = fd_fork_take(f, 0);
+    if (!e->ev)
+        return false;
+    signal_locked(e);
+    return true;
+}
+
 const struct fd_ops eventfd_ops = {
     .name = "eventfd",
     .read = efd_read,
@@ -191,6 +210,7 @@ const struct fd_ops eventfd_ops = {
     .stat = efd_stat,
     .arm = efd_arm,
     .give = efd_give,
+    .fork = efd_fork,
     .close = efd_close,
 };
 

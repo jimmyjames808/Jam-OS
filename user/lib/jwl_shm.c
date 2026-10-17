@@ -62,8 +62,8 @@ status_t jwl_pool_create(struct jwl_client *c, uint64_t size, struct jwl_pool **
     uint64_t addr = 0;
     status_t st = jam_vmo_create(size, VMO_KEEP_PAGES, &p->vmo);
     if (st == OK) {
-        st = jam_vmar_map(startup_handle(SR_SELF_VMAR), p->vmo, 0, size, VMAR_READ | VMAR_WRITE,
-                          &addr);
+        st = jam_vmar_map(startup_handle(SR_SELF_VMAR), p->vmo, 0, size,   /* never forked */
+                          VMAR_READ | VMAR_WRITE | VMAR_CLONE_NONE, &addr);
         if (st != OK)
             jam_handle_close(p->vmo);
     }
@@ -93,8 +93,8 @@ status_t jwl_pool_grow(struct jwl_pool *p, uint64_t size)
     status_t st = jam_vmo_set_size(p->vmo, size);
     uint64_t addr = 0;
     if (st == OK)
-        st = jam_vmar_map(startup_handle(SR_SELF_VMAR), p->vmo, 0, size, VMAR_READ | VMAR_WRITE,
-                          &addr);
+        st = jam_vmar_map(startup_handle(SR_SELF_VMAR), p->vmo, 0, size,   /* never forked */
+                          VMAR_READ | VMAR_WRITE | VMAR_CLONE_NONE, &addr);
     if (st != OK)
         return st;   /* the VMO may have grown: harmless, the old mapping still works */
     (void)jam_vmar_unmap(startup_handle(SR_SELF_VMAR), (uint64_t)(uintptr_t)p->data, p->size);

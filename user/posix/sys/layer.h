@@ -81,6 +81,46 @@ void rlimit_fork(int step);   /* rlimit.c: the limits */
 void lx_start_forked(void);
 void thread_forked(uint32_t tid);
 
+/* The handles a fork moves to the child (fork.c; <posixfork.h>, FL2): in
+ * the parent, after the clone with every lock above held, each module's
+ * give puts its handles, each under a key (POSIXFORK_KEY), the keys
+ * growing; in the child, after the steps above, the same walk takes them
+ * by the same keys. gen is this fork's number, the same on both sides and
+ * greater than every earlier fork's: a module marks with it what its walk
+ * has met (an object several descriptions share is passed once). */
+struct lx_fork_io;
+bool     lx_fork_child(const struct lx_fork_io *io);
+uint32_t lx_fork_gen(const struct lx_fork_io *io);
+/* Parent: h (consumed; HANDLE_INVALID puts nothing) under key. */
+void     lx_fork_put(struct lx_fork_io *io, uint32_t key, handle_t h);
+/* Parent: a duplicate of h under key, if h may be passed (RIGHT_DUPLICATE
+ * and RIGHT_TRANSFER: docs/FORK-PLAN.md section 1.6); else nothing. */
+void     lx_fork_dup(struct lx_fork_io *io, uint32_t key, handle_t h);
+/* Child: the handle put under key, now the child's, or HANDLE_INVALID if
+ * none came. */
+handle_t lx_fork_take(struct lx_fork_io *io, uint32_t key);
+/* The walks: fd.c's (every description, the terminal, /dev/shm's names,
+ * libc's files), mem.c's (the table of mappings and the break). */
+void     fd_fork_walk(struct lx_fork_io *io);
+void     mem_fork_walk(struct lx_fork_io *io);
+/* The table of mappings' VMOs mapped as copies, which vmar_clone gives
+ * children of (mem.c; fork.c's prepare asks, mem_lock held), the room
+ * their children go in, and how many: false if the room couldn't be made
+ * (the fork fails then, ENOMEM). */
+bool     mem_fork_clones(const handle_t **vmos, handle_t **children, uint32_t *n);
+/* Child-only steps of modules whose state holds the parent's handles but
+ * whose locks fork doesn't take (each made fresh, the state dropped
+ * unclosed): socket.c's streams and poll's idle event, epoll.c's sets,
+ * poll.c's and sockwait.c's per-thread ports, pty.c's table, procfs.c's
+ * and enosys.c's locks. fork.c calls the ones linked. */
+void     sock_forked(void);
+void     epoll_forked(void);
+void     poll_forked(void);
+void     sockwait_forked(void);
+void     pty_forked(void);
+void     procfs_forked(void);
+void     enosys_forked(void);
+
 /* ---- the kernel's calls for POSIX (kposix.c) ------------------------------
  * Small thread ids, a thread's tid word, CPU time and the figures any
  * process may read (docs/M13-PLAN.md, "The new and changed interfaces").

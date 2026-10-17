@@ -80,6 +80,7 @@
 90      devmgr          abi/idl/devmgr.idl
 91      devmgrctl       abi/idl/devmgr.idl
 92      crasher         abi/idl/crasher.idl
+0x4b46  posixfork       user/include/posixfork.h        # POSIXFORK_MAGIC "JPFK" (a forked child's handles)
 0x4b52  fork            user/include/forkmsg.h          # FORK_MAGIC "FORK" (a forked child's roles)
 0x4d4f  standby         user/include/roles.h            # STANDBY_MAGIC "PROM" (promotion)
 0x534d  startup         kernel/include/jam/startup.h    # STARTUP_MAGIC "JAMS"

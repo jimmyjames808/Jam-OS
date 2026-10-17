@@ -60,6 +60,11 @@ void pipe_set_leftover(struct pipe_end *p, uint32_t at, uint32_t have);
 /* What a child gets for the end (fd.h's give): a duplicate of the channel
  * end, the leftover moved to it as the record's data, as kind. */
 long pipe_give_end(struct fd_desc *d, uint16_t kind, struct fd_given *out);
+/* fork's hook for the end (fd.h's ops->fork): the parent puts a duplicate
+ * of its channel end; the child takes it, its leftover emptied (those
+ * bytes are the parent's description's to read). Whether the child keeps
+ * it. */
+bool pipe_end_fork(struct pipe_end *p, struct fd_fork *f);
 /* The shared hooks: fstat as mode, poll's arm, and the end's last close
  * (its channel end and its buffer; a socketpair end's descriptors are
  * sockpair.c's to close first). */

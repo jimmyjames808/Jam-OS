@@ -38,7 +38,7 @@ status_t mixer_open(handle_t svc, const char *name, uint64_t deadline, struct mi
         st = ERR_BAD_STATE;
     if (st == OK)
         st = jam_vmar_map(startup_handle(SR_SELF_VMAR), o.vmo, 0, ring_bytes(&o),
-                          VMAR_READ | VMAR_WRITE, &va);
+                          VMAR_READ | VMAR_WRITE | VMAR_CLONE_NONE, &va);   /* never forked */
     if (st == OK) {
         o.hdr = (struct mixer_ring *)(uintptr_t)va;
         o.data = (int16_t *)(uintptr_t)(va + MIXER_RING_HDR);

@@ -213,8 +213,7 @@ void mem_forget(uint64_t addr, uint64_t len)
  * is gone (the kernel leaves a writable JIT mapping out of a clone, and
  * the child holds no handle to the VMO: docs/FORK-PLAN.md section 1.10),
  * so its entries go, their handles forgotten, not closed (the parent's).
- * The other entries' handles are the parent's until FL2 gives them the
- * clone's children. */
+ * The other entries get handles of the child's own in mem_fork_walk. */
 void mem_fork(int step)
 {
     if (step == LX_FORK_TAKE) {
@@ -235,6 +234,27 @@ void mem_fork(int step)
             mt_remove(i);
         else
             i++;
+}
+
+bool mem_fork_clones(const handle_t **vmos, handle_t **children, uint32_t *n)
+{
+    return mt_fork_prepare(vmos, children, n);
+}
+
+/* After the clone (layer.h): the table's handles (maptable.c), then, in
+ * the child, the break's own handle to its VMO, a duplicate of the
+ * child's (none if the break's start isn't mapped as it was: lowering it
+ * then decommits nothing). */
+void mem_fork_walk(struct lx_fork_io *io)
+{
+    mt_fork_walk(io);
+    if (!lx_fork_child(io) || !brk_base)
+        return;
+    unsigned i = mt_first_after(brk_base);
+    const struct mt_entry *e = i < mt_count() ? &mt_entries()[i] : NULL;
+    brk_vmo = HANDLE_INVALID;
+    if (e && e->base <= brk_base && e->vmo && !(e->kind & (MT_SHARED | MT_PAGER_PRIVATE | MT_JIT)))
+        (void)jam_handle_duplicate(e->vmo, RIGHT_SAME, &brk_vmo);
 }
 
 /* -errno for a mapping whose VMO couldn't be made: a length past what a
@@ -540,13 +560,16 @@ long lx_mmap(long addr, long len, long prot, long flags, long fd, long off)
     uint64_t size = page_round((uint64_t)len), at = (uint64_t)addr;
     bool fixed = flags & (MAP_FIXED | MAP_FIXED_NOREPLACE);
     struct map_src src = { HANDLE_INVALID, 0, mt_kind(flags) };
-    if (src.kind & MT_SHARED)
-        perms |= VMAR_CLONE_SHARE;   /* a forked child shares it (docs/FORK-PLAN.md 1.6) */
     if (!(flags & MAP_ANONYMOUS)) {   /* outside mem_lock: reading a file may malloc */
         r = file_source(fd, off, size, prot, flags, &src);
         if (r)
             return r;
     }
+    /* A forked child shares MAP_SHARED memory, and a file's own pages
+     * (which nothing writes through), rather than copy them
+     * (docs/FORK-PLAN.md 1.6; maptable.c's lists count on it). */
+    if (src.kind & (MT_SHARED | MT_PAGER_PRIVATE))
+        perms |= VMAR_CLONE_SHARE;
     lock_take(&mem_lock);
     if (!fixed || !table_overlaps(at, size)) {
         r = map_new(&at, size, perms, fixed, flags & MAP_POPULATE, &src);

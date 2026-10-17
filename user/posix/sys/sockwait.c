@@ -18,6 +18,17 @@ static pthread_once_t    port_once = PTHREAD_ONCE_INIT;
 static pthread_key_t     port_key;    /* closes a thread's port at its exit */
 static bool              port_key_ok;
 
+/* A forked child (docs/FORK-PLAN.md section 1.6): the forking thread's
+ * port was the parent's, forgotten (its key's value too, so its exit
+ * closes nothing of the child's). */
+void sockwait_forked(void)
+{
+    if (port_key_ok)
+        (void)pthread_setspecific(port_key, NULL);
+    wait_port = HANDLE_INVALID;
+    last_key = 0;
+}
+
 static void port_free(void *p)
 {
     jam_handle_close((handle_t)(uintptr_t)p);

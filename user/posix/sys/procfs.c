@@ -155,6 +155,13 @@ static int    exe_state;   /* exe_lock: 0 not looked for, 1 found (exe_path), -1
 static char  *exe_path;    /* exe_lock: absolute, malloc'd; never changed once set */
 static char  *argv0;       /* argv[0] as the program started: the constructor's copy */
 
+/* A forked child: the lock fresh (the answer, if found, is the same
+ * program's). */
+void procfs_forked(void)
+{
+    exe_lock = (lock_t){ 0 };
+}
+
 /* Boot-image programs by path, as posix_spawn runs them: /boot itself,
  * and /bin and /usr/bin, its bin and usr/bin. */
 static const struct { const char *path; const char *name; } boot_dirs[] = {

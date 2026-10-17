@@ -145,6 +145,23 @@ static long usock_give(struct fd_desc *d, struct fd_given *out)
     return c && f == &unixpair_framing ? unixpair_give(d, c, out) : -ENOTSUP;
 }
 
+/* fork (docs/FORK-PLAN.md section 1.6): an unconnected socket is the
+ * child's as it is; a named socket's connection goes as the socketpair
+ * end it holds (both sides on the one channel); a service socket's
+ * connection (one process's, as posix_spawn has it), a listener, and a
+ * socket half way there (a connect or bind in a thread the child hasn't)
+ * are absent. */
+static bool usock_fork(struct fd_desc *d, struct fd_fork *f)
+{
+    struct usock *u = d->priv;
+    uint32_t s = state_of(u);
+    if (s == US_NEW)
+        return true;
+    if (s == US_CONNECTED && u->f == &unixpair_framing)
+        return fd_fork_inner(f, u->conn);
+    return false;
+}
+
 static void usock_close(struct fd_desc *d)
 {
     struct usock *u = d->priv;
@@ -163,6 +180,7 @@ const struct fd_ops usock_ops = {
     .ready = usock_ready,
     .arm = usock_arm,
     .give = usock_give,
+    .fork = usock_fork,
     .close = usock_close,
 };
 

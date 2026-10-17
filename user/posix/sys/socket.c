@@ -352,8 +352,18 @@ const struct fd_ops sock_ops = {
     .ready = sock_ready,
     .arm = sock_arm,
     .give = sock_give,
+    .fork = fd_fork_absent,   /* its rings can't be shared: docs/FORK-PLAN.md section 1.6 */
     .close = sock_close,
 };
+
+/* A forked child holds none of our sockets (each is absent there), so the
+ * drain at its exit has nothing to do, and the idle event was ours. */
+void sock_forked(void)
+{
+    streams_lock = (lock_t){ 0 };
+    streams = NULL;
+    idle_event = HANDLE_INVALID;
+}
 
 /* ---- the drain at exit ------------------------------------------------------------------- */
 

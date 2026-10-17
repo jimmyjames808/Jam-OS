@@ -267,9 +267,8 @@ __attribute__((constructor(102))) static void sig_start(void)
  * parent's. A new port and thread (the stack is free: no thread of the
  * child runs on it), listening to the child's own SR_SIGNALS, whose
  * client end the parent keeps in its table of children. The terminal is
- * a descriptor, the child's only once FL2 gives descriptors their fork
- * step: until then it isn't listened to (sig_tty_attached binds it at
- * its next attach). */
+ * bound once fork.c says it is the child's (sig_tty_attached, after the
+ * descriptors' walk). */
 void sig_thread_forked(void)
 {
     port = channel = HANDLE_INVALID;

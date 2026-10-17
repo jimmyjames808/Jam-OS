@@ -22,6 +22,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <posixfork.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/resource.h>
@@ -162,9 +163,8 @@ void fd_free(long fd)
     lock_give(&table_lock);
 }
 
-/* The table whole across fork's clone (layer.h). The child's copy of each
- * description holds the parent's handles until FL2 gives each kind its
- * fork step (docs/FORK-PLAN.md section 1.6). */
+/* The table whole across fork's clone (layer.h); fd_fork_walk below gives
+ * the child's copy its own handles. */
 void fd_fork(int step)
 {
     if (step == LX_FORK_TAKE)
@@ -173,6 +173,108 @@ void fd_fork(int step)
         lock_give(&table_lock);
     else
         table_lock = (lock_t){ 0 };
+}
+
+/* ---- fork's walk (docs/FORK-PLAN.md section 1.6, FL2) -------------------------------
+ * Every description in the table, at its lowest descriptor, then the
+ * process's terminal, the same on both sides: in the parent (the table's
+ * lock held since before the clone) each kind's hook puts its handles; in
+ * the child each takes them, and the copy keeps what its kind keeps (a
+ * netstack socket's and an epoll set's descriptors, and any whose handles
+ * didn't come, are left out). The child counts each kept description's
+ * references again: a slot's each, and the terminal's (the parent's calls
+ * in progress and its signal thread's aren't in the child). A slot an open
+ * had reserved in another thread is free there. */
+
+bool fd_fork_child(const struct fd_fork *f)
+{
+    return lx_fork_child(f->io);
+}
+
+static uint32_t key_of(const struct fd_fork *f, unsigned sub)
+{
+    return POSIXFORK_KEY(POSIXFORK_FD, f->item, f->sub0 + sub);
+}
+
+void fd_fork_put(struct fd_fork *f, unsigned sub, handle_t h)
+{
+    lx_fork_put(f->io, key_of(f, sub), h);
+}
+
+void fd_fork_dup(struct fd_fork *f, unsigned sub, handle_t h)
+{
+    lx_fork_dup(f->io, key_of(f, sub), h);
+}
+
+handle_t fd_fork_take(struct fd_fork *f, unsigned sub)
+{
+    return lx_fork_take(f->io, key_of(f, sub));
+}
+
+bool fd_fork_first(const struct fd_fork *f, uint32_t *gen)
+{
+    uint32_t g = lx_fork_gen(f->io);
+    if (*gen == g)
+        return false;
+    *gen = g;
+    return true;
+}
+
+/* d's hook (its lock made fresh first in the child): whether it is kept. */
+static bool hook(struct fd_desc *d, struct fd_fork *f)
+{
+    if (fd_fork_child(f))
+        d->lock = (lock_t){ 0 };
+    return d->ops->fork ? d->ops->fork(d, f) : true;
+}
+
+bool fd_fork_inner(struct fd_fork *f, struct fd_desc *in)
+{
+    struct fd_fork g = { f->io, f->item, 8 };
+    in->fork_gen = lx_fork_gen(f->io);
+    bool keep = hook(in, &g);
+    if (fd_fork_child(f))
+        in->refs = 1;
+    return keep;
+}
+
+bool fd_fork_absent(struct fd_desc *d, struct fd_fork *f)
+{
+    return false;
+}
+
+bool fd_fork_met(struct lx_fork_io *io, struct fd_desc *d, uint32_t item)
+{
+    struct fd_fork f = { io, item, 0 };
+    if (!fd_fork_first(&f, &d->fork_gen))
+        return d->refs > 0;   /* the child's: met before, kept with its first holder's */
+    if (fd_fork_child(&f))
+        d->refs = 0;
+    return hook(d, &f);
+}
+
+void fd_fork_walk(struct lx_fork_io *io)
+{
+    bool child = lx_fork_child(io);
+    for (uint32_t fd = 0; fd < FD_MAX; fd++) {
+        struct fd_desc *d = slots[fd];
+        if (d == RESERVED && child)
+            slots[fd] = NULL;
+        if (!d || d == RESERVED)
+            continue;
+        bool keep = fd_fork_met(io, d, fd);
+        if (child && keep) {
+            d->refs++;
+        } else if (child) {
+            slots[fd] = NULL;
+            cloexec[fd] = false;
+        }
+    }
+    tty_fork_ctty(io);
+    if (child) {
+        shm_forked(io);
+        fobj_forked(io);
+    }
 }
 
 long fd_install(struct fd_desc *d, long min, bool cloexec_on)

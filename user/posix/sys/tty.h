@@ -33,6 +33,11 @@ fd_adopt_fn tty_adopt;
 /* The process's terminal: the first terminal descriptor it got (the one
  * /dev/tty names), with a reference the caller fd_puts, or NULL. */
 struct fd_desc *tty_controlling(void);
+/* fork's walk (fd.c's fd_fork_walk, after the table): the process's
+ * terminal met as POSIXFORK_CTTY (passed here if no descriptor holds it);
+ * in the child its lock fresh, and the terminal the child's own, or none
+ * if its handles didn't come. */
+void tty_fork_ctty(struct lx_fork_io *io);
 
 /* ---- SIGWINCH's and ISIG's source, for the signal thread (B4) ----------------------
  * The console tells a terminal's client of a resize (the `tty` protocol's

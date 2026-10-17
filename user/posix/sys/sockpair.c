@@ -768,6 +768,25 @@ static long sp_give(struct fd_desc *d, struct fd_given *out)
     return r;
 }
 
+/* fork (docs/FORK-PLAN.md section 1.6): the end as a pipe's (both sides
+ * on the one channel); in the child the kept message and the descriptors
+ * that came with the leftover are dropped with it, their handles
+ * forgotten (the parent's), and the send lock fresh. */
+static bool sp_fork(struct fd_desc *d, struct fd_fork *f)
+{
+    struct pipe_end *p = pipe_end_of(d);
+    if (fd_fork_child(f)) {
+        p->send_lock = (lock_t){ 0 };
+        set_kept(p, false);
+        if (p->fds) {   /* as fds_drop leaves it, with nothing closed */
+            p->fds->n = 0;
+            p->fds->next = p->fds->parts = 0;
+            p->fds->ready = p->fds->lost = false;
+        }
+    }
+    return pipe_end_fork(p, f);
+}
+
 /* poll: the leftover (a kept message), or a shut end (every call answers
  * at once); the channel's signals for the rest (pipe_arm). */
 static uint32_t sp_ready(struct fd_desc *d, uint32_t interest)
@@ -798,6 +817,7 @@ const struct fd_ops sockp_ops = {
     .ready = sp_ready,
     .arm = pipe_arm,
     .give = sp_give,
+    .fork = sp_fork,
     .close = sp_close,
 };
 

@@ -129,8 +129,8 @@ status_t net_sock_attach(struct net_sock *s, handle_t ch, uint16_t port, const h
     uint64_t va = 0, len = sockring_bytes(tx, rx);
     status_t st = sockring_size_ok(tx) && sockring_size_ok(rx) ? OK : ERR_BAD_STATE;
     if (st == OK)
-        st = jam_vmar_map(startup_handle(SR_SELF_VMAR), s->ring, 0, len, VMAR_READ | VMAR_WRITE,
-                          &va);
+        st = jam_vmar_map(startup_handle(SR_SELF_VMAR), s->ring, 0, len,   /* never forked */
+                          VMAR_READ | VMAR_WRITE | VMAR_CLONE_NONE, &va);
     if (st == OK) {
         s->map = (uint8_t *)(uintptr_t)va;
         s->map_len = len;

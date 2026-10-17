@@ -84,6 +84,16 @@ static void set_free(void *p)
     self_set = NULL;
 }
 
+/* A forked child (docs/FORK-PLAN.md section 1.6): the forking thread's
+ * set (its port, its bindings) was the parent's, forgotten and left in
+ * the heap; its next call makes one. */
+void poll_forked(void)
+{
+    if (key_ok)
+        (void)pthread_setspecific(set_key, NULL);
+    self_set = NULL;
+}
+
 static void key_make(void)
 {
     key_ok = pthread_key_create(&set_key, set_free) == 0;
