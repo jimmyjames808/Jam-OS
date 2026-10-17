@@ -957,6 +957,9 @@ handles may then see one an earlier test would have made first, as
 `jwlc_setup` does when it runs before the `jwl_` tests); `only` takes a
 comma-separated list of prefixes, and `utest except <prefixes>` runs every
 other test (both say `utest: running <n> of <m> tests` in the RESULTS box).
+A count after the prefixes (`utest only xdg_errors 40`) runs the selection
+that many times over, one after the other, for a test that fails once in a
+hundred; <n> is then the selection's size times the count.
 `ktest` from the shell runs "live" next to the rest of user space: checks
 on system-wide counts are not made, and tests that need the machine to
 themselves are skipped (`KT_SKIP_LIVE`, in `kernel/include/jam/ktest.h`);
