@@ -462,6 +462,9 @@ void     test_die(enum fat_die point);
 void     test_crash(const char *path);
 /* fixed-time: get_fattime gives 2026-01-01 00:00:00 only. */
 bool     test_fixed_time(void);
+/* quick-retry and quick-wait: <blockcall.h>'s pauses and waits made short. */
+bool     test_quick_retry(void);
+bool     test_quick_wait(void);
 
 /* ---- undo.c ----------------------------------------------------------------------- */
 

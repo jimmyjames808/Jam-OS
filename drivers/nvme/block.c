@@ -29,6 +29,17 @@
  * refused. Each is answered by its txid when its last command completes,
  * with the first failure: answers come in completion order.
  *
+ * An answer, whatever it says, means the device is done with the
+ * request's part of the buffer, so the client may fill it again: a
+ * command is over when it completes (ERR_TIMED_OUT: an Abort ended it),
+ * or when a reset found the controller stopped (CSTS.RDY 0), or once bus
+ * mastering is off (a controller that didn't stop, the driver's end:
+ * ctrl.c). How long that can take: a command gets IO_TIMEOUT (30 s), an
+ * Abort ABORT_TIMEOUT (5 s) more, then the reset; a write or a flush is
+ * answered then, a read sent once more and given as long again. A client
+ * that gives up before the answer must leave the buffer alone
+ * (<blockcall.h>).
+ *
  * The fence: a request whose client has gone is dropped, never started
  * (client_gone, before anything is sent): a write too. A channel whose
  * client has gone (blk_gone) is read no more; its requests not yet sent

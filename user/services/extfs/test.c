@@ -28,7 +28,10 @@
  *   quick-retry       a block call that timed out is tried again after
  *                     1 ms, doubling, not disk.c's RETRY_PAUSE (the tries
  *                     and the budget as they are): utest's extfs_timeout
- *                     cases don't wait out the pauses. */
+ *                     cases don't wait out the pauses;
+ *   quick-wait        a block call's every wait is BLOCKCALL_QUICK (3 s),
+ *                     not the 30 or 90 s of <blockcall.h>: utest's
+ *                     extfs_late cases hold a request past it. */
 #include "extfs.h"
 
 #define DIE_PREFIX   "die="
@@ -36,6 +39,7 @@
 #define FIXED_TIME   "fixed-time"
 #define LAZY_TAIL    "tail-lazy"
 #define QUICK_RETRY  "quick-retry"
+#define QUICK_WAIT   "quick-wait"
 
 static const char *const point_names[XF_DIE_COUNT] = {
     [XF_DIE_WRITE] = "write", [XF_DIE_JOURNAL] = "journal", [XF_DIE_COMMIT] = "commit",
@@ -50,6 +54,7 @@ static struct {
     bool        fixed;
     bool        lazy_tail;
     bool        quick_retry;
+    bool        quick_wait;
 } t = { .point = -1 };
 
 bool test_fixed_time(void)
@@ -65,6 +70,11 @@ bool test_lazy_tail(void)
 bool test_quick_retry(void)
 {
     return t.quick_retry;
+}
+
+bool test_quick_wait(void)
+{
+    return t.quick_wait;
 }
 
 static bool die_word(const char *w)
@@ -97,6 +107,10 @@ bool test_word(const char *w)
     }
     if (!strcmp(w, QUICK_RETRY)) {
         t.quick_retry = true;
+        return true;
+    }
+    if (!strcmp(w, QUICK_WAIT)) {
+        t.quick_wait = true;
         return true;
     }
     if (!strncmp(w, DIE_PREFIX, strlen(DIE_PREFIX)))

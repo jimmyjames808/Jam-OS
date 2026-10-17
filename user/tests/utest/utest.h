@@ -386,6 +386,8 @@ bool t_extfs_error(void);
 bool t_extfs_flush(void);   /* a disk with a cache: block.sync where the journal needs it */
 bool t_extfs_timeout(void);         /* block calls that time out are tried again */
 bool t_extfs_timeout_spent(void);   /* ... and past their tries go read-only as before */
+bool t_extfs_late(void);            /* a read held past the wait at depth 32 ends extfs */
+bool t_extfs_late_in_order(void);   /* ... at depth 1 it is tried again, or ends it */
 bool t_extfs_many(void);    /* 200 files open and 100 views at once */
 bool t_extfs_restart_steps(void);
 bool t_extfs_restart_handles(void);
@@ -473,6 +475,9 @@ bool t_fat_format_off(void);
 bool t_fat_dirty_volume(void);
 bool t_fat_disk_gone(void);
 bool t_fat_gone_mounting(void);
+bool t_fat_timeout(void);         /* block calls that time out tried again (blockcall) */
+bool t_fat_timeout_spent(void);   /* ... and past their tries failed as before */
+bool t_fat_late(void);            /* a read held past the wait at depth 32 ends fat */
 bool t_fat_dir_linear(void);
 bool t_fat_dir_cursors(void);
 bool t_fat_cache(void);

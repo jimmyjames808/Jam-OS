@@ -432,6 +432,21 @@ status_t ctrl_start(struct nvme *c, handle_t bar)
 
 /* ---- running ---------------------------------------------------------------------------- */
 
+/* Bus mastering off: a command the controller still holds can move no
+ * data from here on (only the next driver turns it on again, once it has
+ * disabled the controller). Before any such command is answered, so its
+ * buffer is free when its client hears of it. */
+static void bus_master_off(struct nvme *c, const char *why)
+{
+    if (!c->bus_master)
+        return;
+    status_t st = drv_dma_bus_master(c->dma, 0);
+    if (st == OK)
+        c->bus_master = false;
+    if (why)
+        drv_log("%s: bus mastering off (%s): %s", c->name, why, status_str(st));
+}
+
 status_t ctrl_reset(struct nvme *c, const char *why)
 {
     uint64_t now = drv_clock_ns();
@@ -447,7 +462,13 @@ status_t ctrl_reset(struct nvme *c, const char *why)
     }
     c->io.live = c->admin.live = false;
     status_t st = disable(c);
-    queue_fail_all(c);   /* reads back on the wait list, once */
+    if (st == OK && (c->test & NVME_TEST_NOSTOP)) {
+        drv_log("%s: test: the controller taken as not stopped", c->name);
+        st = ERR_TIMED_OUT;
+    }
+    if (st != OK)   /* it may still be running what is out */
+        bus_master_off(c, "the controller didn't stop");
+    queue_fail_all(c);   /* reads back on the wait list, once; the rest answered */
     queue_reset(&c->admin);
     queue_reset(&c->io);
     if (st == OK)
@@ -506,7 +527,8 @@ status_t ctrl_health(struct nvme *c, struct nvme_health *h)
     return st;
 }
 
-/* Commands in flight get DRAIN_WAIT to finish; the rest are failed. */
+/* Commands in flight get DRAIN_WAIT to finish (answered as they do); the
+ * rest are failed by ctrl_stop once nothing can move their data. */
 static void drain(struct nvme *c)
 {
     uint64_t deadline = drv_clock_ns() + DRAIN_WAIT;
@@ -515,7 +537,6 @@ static void drain(struct nvme *c)
             break;
         drv_sleep_until(drv_clock_ns() + POLL_STEP);
     }
-    io_end_all(c, ERR_PEER_CLOSED);
 }
 
 /* The normal shutdown notification: the drive saves its state. */
@@ -540,8 +561,6 @@ void ctrl_stop(struct nvme *c)
 {
     if (c->io.live)
         drain(c);
-    else
-        io_end_all(c, ERR_PEER_CLOSED);
     if (c->io.live && !c->gone) {
         struct admin_args q = { .cdw10 = NVME_IO_QID };
         if (ctrl_admin_wait(c, ADMIN_DELETE_SQ, &q, NULL) == OK)
@@ -551,8 +570,8 @@ void ctrl_stop(struct nvme *c)
     if (c->admin.live)
         shutdown(c);
     c->admin.live = false;
-    if (c->bus_master && drv_dma_bus_master(c->dma, 0) == OK)
-        c->bus_master = false;
+    bus_master_off(c, c->io.busy ? "commands still out at the end" : NULL);
+    io_end_all(c, ERR_PEER_CLOSED);   /* only now: nothing of theirs can still move */
     queue_destroy(c, &c->io);
     queue_destroy(c, &c->admin);
     buffers_free(c);

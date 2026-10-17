@@ -209,6 +209,9 @@ struct nvme {
  * slow drive (block.c): a client that leaves then has reads out, which
  * the drain rule waits for (utest's nvme_fence). */
 #define NVME_TEST_SLOW     (1u << 4)
+/* The test word's reset takes the controller as not stopped (as one whose
+ * CSTS.RDY stays 1): bus mastering off before what was out is answered. */
+#define NVME_TEST_NOSTOP   (1u << 5)
 
 /* What an nvme_io asks: IO_READ (0, so a request made with no kind is a
  * read), IO_WRITE (with FUA: answered means on the medium), IO_FLUSH. */
@@ -371,11 +374,14 @@ status_t ctrl_admin_send(struct nvme *c, enum admin_op op, const struct admin_ar
  * timeouts. ERR_PEER_CLOSED: gone; ERR_IO: reset failed or too many. */
 status_t ctrl_poll(struct nvme *c);
 /* Disable, set the queues up again, enable, the I/O pair again; reads in
- * flight resubmitted (writes failed). ERR_IO: RESETS_MAX in RESET_WINDOW,
- * or it failed. */
+ * flight resubmitted (writes failed). A controller that doesn't stop
+ * (CSTS.RDY stays 1) has bus mastering turned off before anything is
+ * failed. ERR_IO: RESETS_MAX in RESET_WINDOW, or it failed. */
 status_t ctrl_reset(struct nvme *c, const char *why);
-/* The end: requests failed, the I/O queues deleted, the normal shutdown
- * notification waited for, bus mastering off, everything unpinned. */
+/* The end: commands in flight given DRAIN_WAIT, the I/O queues deleted,
+ * the normal shutdown notification waited for, bus mastering off, and
+ * only then the requests left failed (ERR_PEER_CLOSED); everything
+ * unpinned. */
 void     ctrl_stop(struct nvme *c);
 /* The SMART / health log (02h; NVMe 1.4, Figure 194): what `disk smart`
  * shows, and the witness that nothing was written ("host write commands"

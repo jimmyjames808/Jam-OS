@@ -11,6 +11,10 @@
  *   abort     the first read is past its deadline at once: an Abort is
  *             sent for it (whatever it answers, the round must come out
  *             right: a read the abort ended is read once more)
+ *   nostop    reset, and the reset takes the controller as not stopped
+ *             (CSTS.RDY still 1): bus mastering goes off before the
+ *             reads out are answered, and the driver ends (exit 3; devmgr
+ *             starts it again, and it does the same)
  *   slow      block.c: a channel's answers come BLK_SLOW_STEP apart
  *   on        nothing: no test word (devmgr binds drv/nvme on every boot
  *             now; the tests that want only the driver give this one)
@@ -49,6 +53,7 @@ uint32_t selftest_words(const struct driver_start *s)
         { "loop", NVME_TEST_SELFTEST | NVME_TEST_LOOP },
         { "reset", NVME_TEST_SELFTEST | NVME_TEST_RESET },
         { "abort", NVME_TEST_SELFTEST | NVME_TEST_ABORT },
+        { "nostop", NVME_TEST_SELFTEST | NVME_TEST_RESET | NVME_TEST_NOSTOP },
         { "slow", NVME_TEST_SLOW },   /* block.c's: no test reads of its own */
         { "on", 0 },                  /* no test word: just the driver */
     };
@@ -180,8 +185,10 @@ bool selftest_start(struct nvme *c)
         drv_log("%s: selftest: no admin slot for the abort", c->name);
     if (c->test & NVME_TEST_RESET) {
         drv_log("%s: selftest: a reset with %u command(s) out", c->name, c->io.busy);
-        if (ctrl_reset(c, "the test word") != OK)
+        if (ctrl_reset(c, "the test word") != OK) {
+            c->failed = ERR_IO;   /* the loop ends, as after its own reset failed */
             return false;
+        }
     }
     return true;
 }

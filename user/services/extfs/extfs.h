@@ -502,3 +502,4 @@ void     test_crash(const char *path, uint32_t len);
 bool     test_fixed_time(void);
 bool     test_lazy_tail(void);
 bool     test_quick_retry(void);
+bool     test_quick_wait(void);

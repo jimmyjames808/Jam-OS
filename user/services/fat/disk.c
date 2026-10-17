@@ -9,11 +9,16 @@
  * Reads go through the write-through block cache (cache.c), and every
  * write is copied into it once it is on the disk.
  *
- * Every block call has a time limit (BLOCK_WAIT, longer than usb-storage's
- * own command timeouts; given to the kernel as a timeout, so no clock read
- * first), so a disk that stops answering fails the request with ERR_IO
- * instead of hanging fat. A call that finds the channel closed
- * (the stick was pulled) sets vol.disk_gone; main.c then winds fat down.
+ * Every block call has a time limit, longer than the driver holds a
+ * request it can't get done, and one that times out is tried again: a
+ * flush on any channel, a read or a write only on one that answers in
+ * order (usb-storage); <blockcall.h> has the rules, the same as extfs's.
+ * Spent, the call fails as it always has, so a disk that stops answering
+ * fails the request with ERR_IO instead of hanging fat. A read or a write
+ * that got no answer at all ends fat, since the driver may still move
+ * data through the buffer (volumes starts it again on a new channel). A
+ * call that finds the channel closed (the stick was pulled) sets
+ * vol.disk_gone; main.c then winds fat down.
  *
  * A read-only channel: disk_write answers "write protected" without
  * sending anything (the `fs` methods refuse writes before FatFs is even
@@ -61,36 +66,51 @@
  * start by the next fat. */
 #include <ff.h>
 
+#include <blockcall.h>
 #include <diskio.h>
 #include <idl/block.h>
 #include <wallclock.h>
 #include "fat.h"
 
-#define BLOCK_WAIT (30 * NS_PER_S)   /* one block call; usb-storage gives up after 10 s */
+#define BLOCK_WAIT BLOCKCALL_WAIT   /* block.info and map_buffer */
 
 /* A format's boot sector, kept back until disk_commit_boot. */
 static uint8_t boot[FAT_SECTOR];
 static bool    boot_holding;   /* writes of sector 0 go into boot[] */
 static bool    boot_held;      /* boot[] holds one */
 
-/* A failed block call: remember a vanished disk, log the rest. */
-static status_t failed(const char *what, uint64_t lba, uint32_t count, status_t st)
+static struct blockcall bc;   /* the channel, as blockcall() takes it */
+
+/* One block call through the buffer's start, tried again while it times
+ * out; a failure logged, a vanished disk remembered. */
+static status_t call(enum blockcall_op op, uint64_t lba, uint32_t count)
 {
+    struct blockcall_tries t;
+    char buf[48];
+    bc.quick_pause = test_quick_retry();
+    bc.quick_wait = test_quick_wait();
+    status_t st = blockcall(&bc, op, lba, count, &t);
+    if (st == OK)
+        return OK;
     if (st == ERR_PEER_CLOSED) {
         vol.disk_gone = true;
         return st;
     }
-    printf("fat %s: %s of %u sectors at %lu failed: %s\n", vol.name, what, count,
-           (unsigned long)lba, status_str(st));
+    if (op == BLOCKCALL_SYNC)
+        printf("fat %s: a flush of the disk's cache failed: %s%s\n", vol.name, status_str(st),
+               blockcall_tried(&t, buf, sizeof(buf)));
+    else
+        printf("fat %s: %s of %u sectors at %lu failed: %s%s\n", vol.name, blockcall_name(op),
+               count, (unsigned long)lba, status_str(st), blockcall_tried(&t, buf, sizeof(buf)));
     return st;
 }
 
 status_t disk_block_write(uint64_t sector, uint32_t count)
 {
     kept->disk.unflushed = true;
-    status_t st = block_write_within(vol.block, BLOCK_WAIT, sector, count, 0);
+    status_t st = call(BLOCKCALL_WRITE, sector, count);
     if (st != OK)
-        return failed("write", sector, count, st);
+        return st;
     cache_wrote(sector, count, vol.bbuf);   /* as written: the dirty bit patched */
     return OK;
 }
@@ -98,9 +118,10 @@ status_t disk_block_write(uint64_t sector, uint32_t count)
 status_t disk_open(handle_t block)
 {
     uint32_t bs = 0, size = 0;
+    uint16_t depth = 0;
     uint8_t ro = 0;
     handle_t vmo = HANDLE_INVALID;
-    status_t st = block_info_within(block, BLOCK_WAIT, &bs, &vol.blocks, &ro, NULL, NULL, NULL);
+    status_t st = block_info_within(block, BLOCK_WAIT, &bs, &vol.blocks, &ro, NULL, &depth, NULL);
     if (st == OK && bs != FAT_SECTOR) {
         printf("fat %s: %u-byte sectors are not supported (only %u)\n", vol.name, bs, FAT_SECTOR);
         return ERR_NOT_SUPPORTED;
@@ -126,6 +147,7 @@ status_t disk_open(handle_t block)
     vol.bbuf = (uint8_t *)(uintptr_t)addr;
     vol.bbuf_size = size;
     vol.read_only = ro != 0;
+    bc = (struct blockcall){ .ch = block, .svc = "fat", .name = vol.name, .in_order = depth == 1 };
     return OK;
 }
 
@@ -134,18 +156,18 @@ status_t disk_flush(void)
     status_t st = disk_release();
     if (st != OK || !kept->disk.unflushed)
         return st;
-    st = block_sync_within(vol.block, BLOCK_WAIT);
+    st = call(BLOCKCALL_SYNC, 0, 0);
     if (st != OK)
-        return failed("sync", 0, 0, st);
+        return st;
     kept->disk.unflushed = false;
     return OK;
 }
 
 status_t disk_is_blank(bool *out)
 {
-    status_t st = block_read_within(vol.block, BLOCK_WAIT, 0, 1, 0);
+    status_t st = call(BLOCKCALL_READ, 0, 1);
     if (st != OK)
-        return failed("read", 0, 1, st);
+        return st;
     *out = !(vol.bbuf[510] == 0x55 && vol.bbuf[511] == 0xaa);
     return OK;
 }
@@ -192,9 +214,9 @@ status_t disk_commit_boot(const char *label)
             continue;
         memcpy(vol.bbuf, boot, FAT_SECTOR);
         kept->disk.unflushed = true;
-        st = block_write_within(vol.block, BLOCK_WAIT, sector, 1, 0);
+        st = call(BLOCKCALL_WRITE, sector, 1);
         if (st != OK)
-            return failed("write", sector, 1, st);
+            return st;
         cache_wrote(sector, 1, vol.bbuf);
     }
     return disk_flush();
@@ -238,14 +260,14 @@ static status_t mark(bool clean)
     if (clean)
         d->clean_on_disk = true;
     for (unsigned i = 0; i < d->nfats; i++) {
-        status_t st = block_read_within(vol.block, BLOCK_WAIT, d->fat0[i], 1, 0);
+        status_t st = call(BLOCKCALL_READ, d->fat0[i], 1);
         if (st != OK)
-            return failed("read", d->fat0[i], 1, st);
+            return st;
         patch(vol.bbuf, clean);
         d->unflushed = true;
-        st = block_write_within(vol.block, BLOCK_WAIT, d->fat0[i], 1, 0);
+        st = call(BLOCKCALL_WRITE, d->fat0[i], 1);
         if (st != OK)
-            return failed("write", d->fat0[i], 1, st);
+            return st;
         cache_wrote(d->fat0[i], 1, vol.bbuf);
     }
     d->clean_on_disk = clean;
@@ -268,11 +290,8 @@ void disk_watch(void)
     d->nfats = kept->fs.n_fats == 2 ? 2 : 1;
     d->fat0[0] = kept->fs.fatbase;
     d->fat0[1] = kept->fs.fatbase + kept->fs.fsize;
-    status_t st = block_read_within(vol.block, BLOCK_WAIT, d->fat0[0], 1, 0);
-    if (st != OK) {
-        (void)failed("read", d->fat0[0], 1, st);   /* logged; the flag stays unknown */
-        return;
-    }
+    if (call(BLOCKCALL_READ, d->fat0[0], 1) != OK)
+        return;   /* logged; the flag stays unknown */
     d->clean_on_disk = (vol.bbuf[d->clean_off] & d->clean_mask) != 0;
     if (!d->clean_on_disk)
         printf("fat %s: the volume is dirty (not shut down cleanly): mounted anyway, there is "
@@ -322,9 +341,9 @@ DSTATUS disk_status(BYTE pdrv)
 
 status_t disk_block_read(uint64_t sector, uint32_t count)
 {
-    status_t st = block_read_within(vol.block, BLOCK_WAIT, sector, count, 0);
+    status_t st = call(BLOCKCALL_READ, sector, count);
     if (st != OK)
-        return failed("read", sector, count, st);
+        return st;
     hold_overlay(sector, count, vol.bbuf);   /* held sectors are newer than the disk's */
     return OK;
 }

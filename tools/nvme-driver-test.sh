@@ -21,6 +21,10 @@
 #   kill     nvmetest=loop (the ends read again and again): `kill nvme`
 #            mid-read; devmgr restarts it, which disables the controller
 #            the dead one left running and reads the same digests
+#   nostop   nvmetest=nostop: the reset with the reads out takes the
+#            controller as not stopped (CSTS.RDY still 1): bus mastering
+#            goes off before the reads are answered (ended unfinished),
+#            and the driver gives up (its restarts do the same: no digests)
 # Every case: QEMU traces every admin and I/O command
 # (pci_nvme_admin_cmd, pci_nvme_io_cmd) and the case fails on any command
 # but the read-only list (admin 00 01 02 04 05 06 08 09, I/O 02 Read), or
@@ -34,7 +38,7 @@
 set -eu
 out=$1
 shift
-cases=${*:-init iommu ns reset abort kill}
+cases=${*:-init iommu ns reset abort kill nostop}
 mkdir -p "$out"
 
 # The script a shell case types: wait for the test reads (twice: the
@@ -44,7 +48,12 @@ script() {
     {
         echo "wait 120 Jam OS shell"
         echo "wait {prompt}"
-        echo "seen 90 selftest: both ends read and hashed"
+        if [ "$1" = nostop ]; then
+            echo "seen 90 bus mastering off (the controller didn't stop)"
+            echo "seen 30 request(s) ended unfinished"
+        else
+            echo "seen 90 selftest: both ends read and hashed"
+        fi
         if [ "$1" = kill ]; then
             echo "send sleep 1; kill nvme"
             echo "wait shell: killed process"
@@ -81,6 +90,7 @@ run() {
     reset) words="nvmetest=reset" ;;
     abort) words="nvmetest=abort" ;;
     kill) words="nvmetest=loop" ;;
+    nostop) words="nvmetest=nostop" ;;
     esac
     [ $mode = shell ] && input=$(script "$c")
     QEMU_IOMMU=$iommu QEMU_INPUT=$input QEMU_TIMEOUT=${QEMU_TIMEOUT:-200} \
@@ -100,12 +110,14 @@ check() {
     [ $c != ns ] || img="$out/$c-disk2.img"
     first=$(head -c 1048576 "$img" | sha256sum | cut -d' ' -f1)
     last=$(tail -c 1048576 "$img" | sha256sum | cut -d' ' -f1)
-    grep -q "selftest: first 1048576 bytes (lba 0) sha256 $first" "$log" ||
-        echo "no right digest of the first MiB ($first)"
-    grep -q "selftest: last 1048576 bytes (lba [0-9]*) sha256 $last" "$log" ||
-        echo "no right digest of the last MiB ($last)"
-    ! grep -E "nvme .*(FAILED|sha256)" "$log" | tr -d '\r' | grep -vE "sha256 ($first|$last)$" | grep . ||
-        echo "(lines above: a failure or a wrong digest)"
+    if [ $c != nostop ]; then   # nostop reads nothing to the end, and fails on purpose
+        grep -q "selftest: first 1048576 bytes (lba 0) sha256 $first" "$log" ||
+            echo "no right digest of the first MiB ($first)"
+        grep -q "selftest: last 1048576 bytes (lba [0-9]*) sha256 $last" "$log" ||
+            echo "no right digest of the last MiB ($last)"
+        ! grep -E "nvme .*(FAILED|sha256)" "$log" | tr -d '\r' | grep -vE "sha256 ($first|$last)$" |
+            grep . || echo "(lines above: a failure or a wrong digest)"
+    fi
     adm=$(grep -c "pci_nvme_admin_cmd" "$tr" 2>/dev/null || true)
     [ "${adm:-0}" -gt 0 ] || echo "no admin command traced (QEMU's trace events?)"
     bad=$(grep -oE "pci_nvme_admin_cmd .* opc 0x[0-9a-f]+" "$tr" 2>/dev/null |
@@ -131,6 +143,13 @@ check() {
         [ "$n" -ge 2 ] || echo "the restarted driver didn't read the same ($n digest line(s))"
         awk '/restarted \(restart 1 since boot\)/ { r = 1 } r && /the controller was enabled/ { f = 1 }
              END { exit !f }' "$log" || echo "the restarted driver didn't find the controller enabled" ;;
+    nostop)
+        grep -q "test: the controller taken as not stopped" "$log" || echo "no reset taken as stuck"
+        # The first driver's lines: bus mastering off, then the reads answered.
+        awk '/bus mastering off \(the controller didn.t stop\): OK/ && !b { b = NR }
+             /request\(s\) ended unfinished/ && !e { e = NR }
+             END { exit !(b && e && b < e) }' "$log" ||
+            echo "the reads out were answered before bus mastering was off" ;;
     esac
     [ $c != iommu ] || ! grep -q "vtd: fault" "$log" || echo "an IOMMU fault"
 }

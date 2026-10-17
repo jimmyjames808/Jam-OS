@@ -17,7 +17,7 @@ wait st-x=0
 wait {prompt}
 send utest only extfs; echo st-$T=$?
 wait 1200 passed
-seen utest: 19 passed
+seen utest: 21 passed
 wait st-x=0
 wait {prompt}
 send sync; echo st-$T=$?

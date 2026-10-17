@@ -16,12 +16,19 @@
  *   fixed-time        every timestamp fat writes (and the volume's serial
  *                     number, which a format makes from the time) is
  *                     2026-01-01 00:00:00, so two runs of one script leave
- *                     disks that are the same byte for byte. */
+ *                     disks that are the same byte for byte;
+ *   quick-retry       a block call that timed out is tried again after
+ *                     1 ms, doubling, not <blockcall.h>'s pauses (the tries
+ *                     and the budget as they are);
+ *   quick-wait        a block call's every wait is BLOCKCALL_QUICK (3 s):
+ *                     utest's fat_timeout and fat_late cases. */
 #include "fat.h"
 
 #define DIE_PREFIX   "die="
 #define CRASH_PREFIX "crash-on="
 #define FIXED_TIME   "fixed-time"
+#define QUICK_RETRY  "quick-retry"
+#define QUICK_WAIT   "quick-wait"
 
 static const char *const point_names[FAT_DIE_COUNT] = {
     [FAT_DIE_HELD] = "held", [FAT_DIE_COMMIT] = "commit", [FAT_DIE_SEND] = "send",
@@ -35,11 +42,23 @@ static struct {
     uint32_t    reached;  /* times it was reached so far */
     const char *crash;    /* crash-on's name, or NULL */
     bool        fixed;    /* fixed-time */
+    bool        quick_retry;
+    bool        quick_wait;
 } t = { .point = -1 };
 
 bool test_fixed_time(void)
 {
     return t.fixed;
+}
+
+bool test_quick_retry(void)
+{
+    return t.quick_retry;
+}
+
+bool test_quick_wait(void)
+{
+    return t.quick_wait;
 }
 
 static bool die_word(const char *w)
@@ -64,6 +83,14 @@ bool test_word(const char *w)
 {
     if (!strcmp(w, FIXED_TIME)) {
         t.fixed = true;
+        return true;
+    }
+    if (!strcmp(w, QUICK_RETRY)) {
+        t.quick_retry = true;
+        return true;
+    }
+    if (!strcmp(w, QUICK_WAIT)) {
+        t.quick_wait = true;
         return true;
     }
     if (!strncmp(w, DIE_PREFIX, strlen(DIE_PREFIX)))

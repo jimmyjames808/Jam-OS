@@ -1453,7 +1453,16 @@ the list. Others may still pass this way.
   doubling, one line per episode), so the volume goes read-only only for a
   real failure or a disk that stays silent; volumes' spare backs off its opens
   (1 s doubling to 32 s) and says a run of failures once (utest
-  `extfs_timeout`, `extfs_timeout_spent`).
+  `extfs_timeout`, `extfs_timeout_spent`). **DRO2** finished it: the rules
+  moved to `<blockcall.h>` (libos), which fat uses too (utest `fat_timeout`,
+  `fat_timeout_spent`); usb-storage gives a SYNCHRONIZE CACHE 20 s, and the
+  tries 45 s (`drivers/usb-storage/scsi.c` has the sums); a call waits 90 s on
+  drv/nvme, longer than it holds a command (its 30 s, an Abort, a reset, a
+  read sent once more), and a read or a write that gets no answer at all
+  ends the service (exit 1, a restart on a new channel) instead of reusing a
+  buffer the driver may still write (`extfs_late`, `fat_late`); drv/nvme
+  answers what was out only once bus mastering is off when the controller
+  doesn't stop or the driver ends (`nvme-driver-test.sh nostop`).
 
 **Harness changes** (`tools/cr`, `tools/cr-test.sh`): `CR_BASE_LISTED=1` (only
 the suites with a test named on the skip list, not `FilePathWatcher*`'s

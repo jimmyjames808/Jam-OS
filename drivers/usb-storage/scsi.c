@@ -9,9 +9,28 @@
  * reset, a new medium) is tried once more too. Anything else is an error,
  * mapped from the sense key.
  *
- * Timeouts: 10 s for a write or a cache flush, 5 s otherwise. The small
- * commands keep their data in the bulk buffer's tail, so READ and WRITE
- * data at its start is not disturbed by a REQUEST SENSE in between. */
+ * Timeouts, each phase's (bot.c): 5 s for a read and the small commands,
+ * 10 s for a write's data and again for its status, 20 s for the status
+ * of a SYNCHRONIZE CACHE, which moves no data: the whole flush is that
+ * wait. Linux gives a flush 60 s; a stick that takes more than a few
+ * seconds is rare, but one reset in the middle of a long flush may lose
+ * what its cache held, so it gets twice a write's. How the limits sit
+ * with the filesystem services' (<blockcall.h>):
+ *   - one command at its longest: its command block (STEP_MS, 5 s at most;
+ *     milliseconds on a stick that answers) and then a WRITE(10)'s 10 +
+ *     10 s or a SYNCHRONIZE CACHE's 20 s: 25 s, inside a client's 30 s
+ *     wait for a try (BLOCKCALL_WAIT), so the device's timeout is answered
+ *     before the client gives up on its own;
+ *   - a flush that times out and is tried again: two whole tries and the
+ *     pause between them, 20 + 0.5 + 20 s, inside the 45 s a client gives
+ *     all its tries (BLOCKCALL_BUDGET); they are two commands without an
+ *     answer, one short of MAX_SILENT (3, main.c: the driver gives up), so
+ *     a third that goes through finds the stick still served;
+ *   - a client waits 60 s for a request (FS_CALL_TIMEOUT): such an
+ *     episode leaves it 15 s.
+ * The small commands keep their data in the bulk buffer's tail, so READ
+ * and WRITE data at its start is not disturbed by a REQUEST SENSE in
+ * between. */
 #include "storage.h"
 
 #define OP_TEST_UNIT_READY 0x00
@@ -31,6 +50,7 @@
 
 #define READ_MS   5000u
 #define WRITE_MS  10000u
+#define SYNC_MS   20000u
 #define READY_NS  (10 * NS_PER_S)   /* how long a medium may take to become ready */
 
 /* Where the small commands' data goes: after the CBW and CSW. */
@@ -228,7 +248,7 @@ status_t scsi_sync(struct disk *k)
 {
     if (k->no_sync || !k->block_size)
         return k->gone ? ERR_PEER_CLOSED : OK;
-    struct bot_cmd c = { .cdb = { OP_SYNC_CACHE }, .cdb_len = 10, .timeout_ms = WRITE_MS };
+    struct bot_cmd c = { .cdb = { OP_SYNC_CACHE }, .cdb_len = 10, .timeout_ms = SYNC_MS };
     uint32_t moved = 0;
     status_t st = run(k, &c, &moved, true);
     if (st == ERR_NOT_SUPPORTED) {

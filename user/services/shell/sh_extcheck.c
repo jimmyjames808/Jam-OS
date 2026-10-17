@@ -42,6 +42,8 @@ static status_t dev_read(void *ctx, uint64_t off, uint32_t len, void *out)
 {
     struct dev *d = ctx;
     uint8_t *p = out;
+    if (d->failed)
+        return ERR_IO;   /* a read that timed out may still land in the buffer (<blockcall.h>) */
     uint32_t per = d->buf_size / d->sector;
     if (per > d->max_sectors)
         per = d->max_sectors;
