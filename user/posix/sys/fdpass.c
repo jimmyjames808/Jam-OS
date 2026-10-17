@@ -8,9 +8,11 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <string.h>
+#include "calls.h"
 #include "fdpass.h"
 #include "files.h"
 #include "kinds.h"
+#include "proc.h"
 
 #define READS(r)  (((r) & RIGHT_READ) != 0)
 #define WRITES(r) (((r) & RIGHT_WRITE) != 0)
@@ -350,6 +352,21 @@ long fdpass_adopt(const struct posixfds_fd *rec, const void *data, const handle_
 
 /* ---- SCM_RIGHTS ------------------------------------------------------------------------- */
 
+/* A sender's SCM_CREDENTIALS block: its own pid, uid and gid are taken
+ * (and change nothing: the receiver gets the kernel's stamp of the
+ * writer, sockpair.c), any other EPERM, as Linux answers a process
+ * without CAP_SYS_ADMIN; a block of the wrong size EINVAL. */
+static long creds_check(const struct cmsghdr *c)
+{
+    struct ucred u;
+    if (c->cmsg_len != CMSG_LEN(sizeof(u)))
+        return -EINVAL;
+    memcpy(&u, CMSG_DATA(c), sizeof(u));
+    bool ours = u.pid == lx_pid() && u.uid == (uid_t)lx_getuid(0, 0, 0, 0, 0, 0) &&
+                u.gid == (gid_t)lx_getgid(0, 0, 0, 0, 0, 0);
+    return ours ? 0 : -EPERM;
+}
+
 long fdpass_cmsg_fds(const struct msghdr *m, int *fds, unsigned max)
 {
     if (!m->msg_controllen)
@@ -361,8 +378,14 @@ long fdpass_cmsg_fds(const struct msghdr *m, int *fds, unsigned max)
         size_t at = (size_t)((uint8_t *)c - (uint8_t *)m->msg_control);
         if (c->cmsg_len < CMSG_LEN(0) || c->cmsg_len > m->msg_controllen - at)
             return -EINVAL;   /* a block past the control data's end */
+        if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_CREDENTIALS) {
+            long r = creds_check(c);
+            if (r)
+                return r;
+            continue;
+        }
         if (c->cmsg_level != SOL_SOCKET || c->cmsg_type != SCM_RIGHTS)
-            return -EINVAL;   /* credentials and the rest: not built */
+            return -EINVAL;   /* the rest: not built */
         size_t k = (c->cmsg_len - CMSG_LEN(0)) / sizeof(int);
         if (k > max - n)
             return -EINVAL;

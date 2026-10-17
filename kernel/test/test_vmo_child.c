@@ -923,8 +923,12 @@ KTEST(vmo_child_many_writers)
  * writer ever reads back anything but its own last write (a write through
  * an entry the creation hadn't shot down yet, landing in a page the
  * writer's own side had copied already, would be lost: the creation's
- * `protecting` wait is what stops it). At least CR_CHILDREN children, and
- * on until every writer has finished CR_SWEEPS sweeps. */
+ * `protecting` wait is what stops it). At least CR_CHILDREN children back
+ * to back, and on until every writer has finished CR_SWEEPS sweeps, one a
+ * millisecond: a writer whose CPU is shared (a live machine, a busy host)
+ * would otherwise race creation after creation, every page of every sweep
+ * copied again, and could take minutes over its sweeps (2026-10-17: over
+ * 60 s in a soak on a loaded PC, 1.2 million children in another). */
 enum { CR_PAGES = 256, CR_MAX_WRITERS = 7, CR_CHILDREN = 150, CR_SWEEPS = 20 };
 
 struct cr_writer {
@@ -1013,6 +1017,8 @@ KTEST(vmo_child_creation_races_writers)
             uint64_t d = __atomic_load_n(&w[k].done, __ATOMIC_ACQUIRE);
             least = d < least ? d : least;
         }
+        if (i + 1 >= CR_CHILDREN && least < CR_SWEEPS)
+            thread_sleep_ms(1);
     }
     __atomic_store_n(&stop, true, __ATOMIC_RELEASE);
     for (unsigned k = 0; k < n; k++) {

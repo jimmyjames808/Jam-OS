@@ -22,7 +22,9 @@
  *     the listener closes;
  *   - a child given /svc/unix by name holds one opener of its own
  *     (docs/CR-REVIEW-POSIX.md, Q2): binds through five opens of it stop
- *     at LISTENERS_PER_OPENER, and a closed one makes room again. */
+ *     at LISTENERS_PER_OPENER, and a closed one makes room again;
+ *   - SO_PASSCRED: a listener's on the connections it accepts, a
+ *     connector's set before connect, SCM_CREDENTIALS both ways. */
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,6 +42,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include "ptfiles.h"
+#include "ptscm.h"
 
 #define SELF          "/boot/bin/posixtest"
 #define SOCK          PT_DIR "/sock"
@@ -478,6 +481,40 @@ static void abstract(void)
     CHECK(connect_to(&other, olen) == -1 && errno == ECONNREFUSED);
 }
 
+/* SO_PASSCRED on named sockets (svcsock.c, sockpair.c): a listener's
+ * goes to the connection it accepts, a connector's set before connect to
+ * its connection; each side's recvmsg then says the writer (here, us);
+ * getsockopt answers on a named socket as on a socketpair end. */
+static void passcred(void)
+{
+    struct sockaddr_un a;
+    socklen_t len = abstract_addr(&a, "posixtest-cred");
+    int on = 1, v = -1;
+    socklen_t vl = sizeof(v);
+    int l = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    CHECK(l >= 0 && setsockopt(l, SOL_SOCKET, SO_PASSCRED, &on, sizeof(on)) == 0);
+    CHECK(l >= 0 && bind(l, (const struct sockaddr *)&a, len) == 0 && listen(l, 4) == 0);
+    int c = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    CHECK(c >= 0 && setsockopt(c, SOL_SOCKET, SO_PASSCRED, &on, sizeof(on)) == 0);
+    CHECK(c >= 0 && connect(c, (const struct sockaddr *)&a, len) == 0);
+    CHECK(getsockopt(c, SOL_SOCKET, SO_PASSCRED, &v, &vl) == 0 && v == 1);
+    v = -1;
+    CHECK(getsockopt(c, SOL_SOCKET, SO_TYPE, &v, &vl) == 0 && v == SOCK_STREAM);
+    int s = l >= 0 ? accept(l, NULL, NULL) : -1;
+    v = -1;
+    CHECK(s >= 0 && getsockopt(s, SOL_SOCKET, SO_PASSCRED, &v, &vl) == 0 && v == 1);
+    char b[4];
+    CHECK(write(c, "a", 1) == 1 && write(s, "b", 1) == 1);
+    struct scm_cred g = scm_recv_cred(s, b, sizeof(b), 0, SCM_CRED_ROOM);
+    CHECK(g.n == 1 && b[0] == 'a' && g.pid == getpid() && g.uid == getuid());
+    g = scm_recv_cred(c, b, sizeof(b), 0, SCM_CRED_ROOM);
+    CHECK(g.n == 1 && b[0] == 'b' && g.pid == getpid() && g.gid == getgid());
+    int all[] = { s, c, l };
+    for (unsigned i = 0; i < 3; i++)
+        if (all[i] >= 0)
+            close(all[i]);
+}
+
 /* A child given /svc/unix by name binds LISTENERS_PER_OPENER at most,
  * however often it opens /svc/unix (child_own). */
 static void own_opener(void)
@@ -510,6 +547,7 @@ void pt_unix(char **argv)
     long_path();
     views();
     abstract();
+    passcred();
     own_opener();
     pt_files_end();
 }

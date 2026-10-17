@@ -166,8 +166,12 @@ void scm_mojo(void)
     CHECK(big && send_all(s[0], big, BIG, &m2, 1));
     free(big);
     char ok[2] = { 0 };
-    struct scm_got g = { .n = 0 };
-    CHECK(recv_some(s[0], ok, 2, &g) == 2 && !memcmp(ok, "OK", 2));
+    int on = 1;   /* the answer's writer, as the kernel stamped it: the child */
+    CHECK(setsockopt(s[0], SOL_SOCKET, SO_PASSCRED, &on, sizeof(on)) == 0);
+    struct pollfd pf = { s[0], POLLIN, 0 };
+    CHECK(poll(&pf, 1, WAIT_MS) == 1);
+    struct scm_cred c = scm_recv_cred(s[0], ok, 2, MSG_DONTWAIT, SCM_CRED_ROOM);
+    CHECK(c.n == 2 && !memcmp(ok, "OK", 2) && c.pid == pid && c.pid != getpid());
     char buf[8];
     CHECK(read(p[0], buf, sizeof(buf)) == 5 && !memcmp(buf, "pipe!", 5));
     CHECK(read(q[0], buf, sizeof(buf)) == 5 && !memcmp(buf, "sock!", 5));

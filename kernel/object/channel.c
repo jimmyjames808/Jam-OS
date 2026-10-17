@@ -179,6 +179,8 @@ static status_t msg_make(const struct chan_bytes *b, uint32_t txid, const struct
     }
     m->nbytes = nbytes;
     m->nhandles = nhandles;
+    struct process *writer = process_current();
+    m->pid = writer ? process_pid(writer) : 0;
     /* No lock is held: a copy from user memory may fault and sleep. Its
      * status is the caller's answer: ERR_INVALID_ARGS for a bad pointer,
      * ERR_IO for a mapped file's page its pager couldn't give (the copy's
@@ -219,6 +221,7 @@ status_t chan_msg_unslot(struct chan_msg *m, struct chan_msg **out)
         return st;
     q->nbytes = m->nbytes;
     q->nhandles = m->nhandles;
+    q->pid = m->pid;
     /* The handles and the bytes are one run after the header. */
     PATH_COUNT(PATH_KCOPY);
     PATH_ADD(PATH_KCOPY_B, m->nbytes);
@@ -439,27 +442,31 @@ static status_t take_first_locked(struct channel *ch, uint32_t bytes_cap, uint32
 
 status_t channel_read_into(struct channel *ch, const struct chan_bytes *b, uint32_t *actual_bytes,
                            struct khandle *handles, uint32_t handles_cap,
-                           uint32_t *actual_handles)
+                           uint32_t *actual_handles, uint32_t *writer_pid)
 {
     uint32_t bytes_cap = b->len;
     if ((bytes_cap && !b->user && !b->addr) || (handles_cap && !handles))
         return ERR_INVALID_ARGS;
     struct chan_msg *m = NULL;
-    uint32_t nb = 0, nh = 0;
+    uint32_t nb = 0, nh = 0, pid = 0;
     status_t st = OK;
     bool was_full = false;
     uint64_t f = spin_lock_irqsave(&ch->base.lock);
-    if (ch->closed)
+    if (ch->closed) {
         st = ERR_BAD_STATE;
-    else if (list_empty(&ch->queue))
+    } else if (list_empty(&ch->queue)) {
         st = ch->peer_closed ? ERR_PEER_CLOSED : ERR_SHOULD_WAIT;
-    else
+    } else {
+        pid = list_first(&ch->queue, struct chan_msg, node)->pid;
         st = take_first_locked(ch, bytes_cap, handles_cap, &m, &nb, &nh, &was_full);
+    }
     spin_unlock_irqrestore(&ch->base.lock, f);
     if (actual_bytes)
         *actual_bytes = nb;
     if (actual_handles)
         *actual_handles = nh;
+    if (writer_pid)
+        *writer_pid = pid;
     if (was_full)
         refresh_writable(ch);
     if (m)
@@ -474,7 +481,7 @@ status_t channel_read(struct channel *ch, void *bytes, uint32_t bytes_cap, uint3
                       struct khandle *handles, uint32_t handles_cap, uint32_t *actual_handles)
 {
     struct chan_bytes b = chan_kbytes(bytes, bytes_cap);
-    return channel_read_into(ch, &b, actual_bytes, handles, handles_cap, actual_handles);
+    return channel_read_into(ch, &b, actual_bytes, handles, handles_cap, actual_handles, NULL);
 }
 
 /* channel_read_wait's state through its wait. */

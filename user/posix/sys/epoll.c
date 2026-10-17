@@ -140,6 +140,23 @@ void epoll_forget(struct fd_desc *d)
     lock_give(&sets_lock);
 }
 
+/* ready_wake_all's half: a set with a waiter counted is woken, and its
+ * waiters look again (a waiter counts itself under the set's lock after
+ * its look, so one not counted yet looks after the change). */
+void epoll_wake_all(void)
+{
+    if (!__atomic_load_n(&items_live, __ATOMIC_ACQUIRE))
+        return;   /* no item anywhere: nothing a change could be waited on in */
+    lock_take(&sets_lock);
+    for (struct epoll *ep = sets; ep; ep = ep->next) {
+        lock_take(&ep->lock);
+        if (ep->waiters)
+            (void)netwait_wake(ep->w);   /* fails only for memory: as ctl's wake */
+        lock_give(&ep->lock);
+    }
+    lock_give(&sets_lock);
+}
+
 /* ---- the epoll kind -------------------------------------------------------------------- */
 
 static long epoll_arm(struct fd_desc *d, uint32_t interest, struct fd_wait *out)

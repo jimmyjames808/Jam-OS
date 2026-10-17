@@ -20,7 +20,8 @@
 #   JAMOS_TIER  push or kernel, or it refuses to run: the soak is the
 #               pre-push pass's and kernel changes' (docs/TESTING.md, the tiers)
 #
-# About 3 minutes at 4 CPUs on a quiet Mac; slower next to other QEMUs.
+# About 15 minutes at 4 CPUs and 10 at 8 on the PC (2026-10-17); slower
+# next to other QEMUs.
 # Usage: tools/soak-test.sh <outdir> [name]; exit 0 on PASS. The name
 # (default soak<CPUs>: soak4, soak8) names QEMU's serial and monitor
 # sockets (build/.qemu-<name>.*), so the soaks at 4 and at 8 CPUs can run
@@ -50,7 +51,7 @@ mcopy -i "$s2@@1M" "$tmp/second.txt" "$tmp/noise.bin" ::/
 sed -e "s/@LOOPS@/$loops/" -e "s/@SEED@/$seed/" -e "s/@LOAD@/$load/" tools/shell-tests/soak-plug.txt > "$script"
 
 ok=1
-if ! QEMU_TIMEOUT=${QEMU_TIMEOUT:-1500} QEMU_INPUT="$script" \
+if ! QEMU_TIMEOUT=${QEMU_TIMEOUT:-2100} QEMU_INPUT="$script" \
      QEMU_USB="-blockdev driver=file,node-name=s2file,filename=$s2 -blockdev driver=raw,node-name=s2img,file=s2file" \
      tools/qemu-test.sh "$out" "$name" shell; then
     echo "$name: the shell script FAILED (see $out/$name.log)"

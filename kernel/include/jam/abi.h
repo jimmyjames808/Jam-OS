@@ -565,10 +565,20 @@ struct channel_read_args {
     uint64_t rd_bytes;         /* user address: rd_cap bytes */
     uint64_t rd_handles;       /* user address: rd_hcap handle_t */
     uint32_t rd_hcap;          /* entries in the handles buffer */
-    uint32_t reserved;         /* 0 */
+    uint32_t rd_flags;         /* CHANNEL_READ_*, or 0 */
     uint64_t rd_actual;        /* user address of a uint32_t, or 0 */
-    uint64_t rd_hactual;       /* user address of a uint32_t, or 0 */
+    uint64_t rd_hactual;       /* user address of a uint32_t, or 0; with
+                                * CHANNEL_READ_PID of two (never 0) */
 };
+
+/* channel_read's rd_flags. CHANNEL_READ_PID: the pid of the process that
+ * wrote the message (process_info.pid; 0 for one the kernel wrote) goes
+ * into the uint32_t after the handles' count, rd_hactual + 4, with the
+ * sizes (with ERR_BUFFER_TOO_SMALL too: the queued message's writer). The
+ * kernel stamps every message with its writer as it is written, so a
+ * reader learns who sent it without trusting the bytes (the POSIX
+ * layer's SCM_CREDENTIALS). */
+#define CHANNEL_READ_PID (1u << 0)
 
 struct channel_call_args {
     handle_t h;                /* the channel endpoint to call on */

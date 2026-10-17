@@ -25,8 +25,10 @@
  * SO_PRIORITY, SO_TIMESTAMP, TCP_CORK, TCP_QUICKACK, TCP_DEFER_ACCEPT,
  * TCP_USER_TIMEOUT, TCP_MAXSEG, IP_TOS, IP_TTL, IP_MTU_DISCOVER. Any other
  * option, or another level, is ENOPROTOOPT; a value out of range EINVAL
- * (a time's microseconds EDOM). A socketpair end answers SO_TYPE,
- * SO_DOMAIN, SO_PROTOCOL and SO_ERROR, and takes the buffer sizes. */
+ * (a time's microseconds EDOM). An AF_UNIX socket (a socketpair end, a
+ * named or service socket) answers SO_TYPE, SO_DOMAIN, SO_PROTOCOL and
+ * SO_ERROR, takes the buffer sizes, and keeps SO_PASSCRED (sockpair.c's
+ * SCM_CREDENTIALS). */
 #include <errno.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -34,6 +36,7 @@
 #include <sys/time.h>
 #include "kinds.h"
 #include "sock.h"
+#include "svcsock.h"
 
 #define INT_SZ ((socklen_t)sizeof(int))
 
@@ -197,6 +200,27 @@ static long set_on_sock(struct fd_desc *d, struct sock *s, long level, long name
     return r;
 }
 
+/* An AF_UNIX socket's: a socketpair end's (pair) or a named or service
+ * socket's (svcsock.c). */
+static long set_on_unix(struct fd_desc *d, bool pair, long level, long name, long val, long len)
+{
+    if (level != SOL_SOCKET)
+        return -ENOPROTOOPT;
+    if (name == SO_SNDBUF || name == SO_RCVBUF)
+        return 0;   /* a channel's room is the kernel's bound */
+    if (name != SO_PASSCRED)
+        return -ENOPROTOOPT;
+    int v;
+    long r = int_in(val, len, &v);
+    if (r)
+        return r;
+    if (pair)
+        sockp_set_passcred(d, v != 0);
+    else
+        (void)usock_passcred(d, v != 0);
+    return 0;
+}
+
 long lx_setsockopt(long fd, long level, long name, long val, long len, long f)
 {
     struct fd_desc *d = fd_get(fd);
@@ -205,8 +229,8 @@ long lx_setsockopt(long fd, long level, long name, long val, long len, long f)
     long r = -ENOTSOCK;
     if (sock_of(d))
         r = set_on_sock(d, d->priv, level, name, val, len);
-    else if (d->ops == &sockp_ops)
-        r = level == SOL_SOCKET && (name == SO_SNDBUF || name == SO_RCVBUF) ? 0 : -ENOPROTOOPT;
+    else if (d->ops == &sockp_ops || d->ops == &usock_ops)
+        r = set_on_unix(d, d->ops == &sockp_ops, level, name, val, len);
     fd_put(d);
     return r;
 }
@@ -313,17 +337,19 @@ static long get_on_sock(struct fd_desc *d, struct sock *s, long level, long name
     return r;
 }
 
-static long get_on_pair(struct fd_desc *d, long level, long name, long val, long lenp)
+/* An AF_UNIX socket's, as set_on_unix. */
+static long get_on_unix(struct fd_desc *d, bool pair, long level, long name, long val, long lenp)
 {
     if (level != SOL_SOCKET)
         return -ENOPROTOOPT;
     switch (name) {
-    case SO_TYPE:     return int_out(val, lenp, sockp_type(d));
+    case SO_TYPE:     return int_out(val, lenp, pair ? sockp_type(d) : SOCK_STREAM);
     case SO_DOMAIN:   return int_out(val, lenp, AF_UNIX);
     case SO_PROTOCOL:
     case SO_ERROR:    return int_out(val, lenp, 0);
     case SO_SNDBUF:
     case SO_RCVBUF:   return int_out(val, lenp, (int)CHANNEL_MAX_BYTES);
+    case SO_PASSCRED: return int_out(val, lenp, pair ? sockp_passcred(d) : usock_passcred(d, -1));
     }
     return -ENOPROTOOPT;
 }
@@ -336,8 +362,8 @@ long lx_getsockopt(long fd, long level, long name, long val, long lenp, long f)
     long r = -ENOTSOCK;
     if (sock_of(d))
         r = get_on_sock(d, d->priv, level, name, val, lenp);
-    else if (d->ops == &sockp_ops)
-        r = get_on_pair(d, level, name, val, lenp);
+    else if (d->ops == &sockp_ops || d->ops == &usock_ops)
+        r = get_on_unix(d, d->ops == &sockp_ops, level, name, val, lenp);
     fd_put(d);
     return r;
 }

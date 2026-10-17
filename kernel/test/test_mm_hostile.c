@@ -304,8 +304,9 @@ KTEST(aspace_hostile_protect_storm)
     KT_EQ(job_used(j, JOB_LIMIT_PAGES), 1 + aspace_pt_pages(ps_as) + structs_pages((uint64_t)n));
     /* (At 4 CPUs the decommitter, never sleeping, preempts whoever holds
      * the region lock, and the protectors queue behind it: a few thousand
-     * in the 2 s; at 8, a hundred thousand.) */
-    KT_IDLE_ASSERT(protects > 500);
+     * in the 2 s, down to 461 in a soak on a loaded PC (2026-10-17); at 8,
+     * a hundred thousand.) The check is that they get through at all. */
+    KT_IDLE_ASSERT(protects > 50);
 
     KT_EQ(aspace_unmap(ps_as, USER_BASE, USER_TOP - USER_BASE), OK);
     KT_EQ(aspace_mapping_count(ps_as), 0);

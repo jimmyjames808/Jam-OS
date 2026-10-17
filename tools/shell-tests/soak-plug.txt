@@ -38,7 +38,8 @@ monitor device_add usb-storage,id=stick,bus=xhci.0,port=1,drive=usbstick
 wait 120 init: /data mounted
 
 # ---- the end ---------------------------------------------------------------------------------
-wait 900 SOAK RESULTS
+# At 4 CPUs on a busy PC the rest takes 830-910 s (2026-10-17: 628 tests a loop, 753 utests a run).
+wait 1500 SOAK RESULTS
 wait soak: PASSED after
 wait shell: soak: PASSED
 wait {prompt}

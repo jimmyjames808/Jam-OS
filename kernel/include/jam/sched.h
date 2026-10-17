@@ -364,6 +364,9 @@ extern bool sched_affine_pair;
 #ifndef JAM_NO_KTESTS
 /* Tests: CPU cpu's load as placement reads it (queued + running). */
 uint32_t sched_cpu_load(uint32_t cpu);
+/* Tests: the threads queued on cpu now, highest priority first (name,
+ * priority, ticks waited), into buf ("" when none). */
+void sched_cpu_queued(uint32_t cpu, char *buf, size_t cap);
 /* Tests: run the placement rule on a made-up topology (arrays indexed by
  * CPU, MAX_CPUS long; sibling -1 = none, type = enum core_type). */
 uint32_t sched_pick_cpu_fake(const cpumask_t *cand, const int16_t *sibling,

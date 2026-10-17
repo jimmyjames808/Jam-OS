@@ -8,7 +8,10 @@
  *
  * Whether a wake really is handed over depends on nothing else being
  * queued on the CPU then, so the counts of offers are checked on an idle
- * machine only; the order in which threads run holds under load too. */
+ * machine only, and on a live one only when nothing of its own was queued
+ * there at the wake (cpu_was_shared); the order in which threads run holds
+ * under load too. */
+#include <jam/kprintf.h>
 #include <jam/ktest.h>
 #include <jam/percpu.h>
 #include <jam/sched.h>
@@ -65,6 +68,46 @@ static uint32_t test_cpu(void)
     return kt_pin_self(cpu_count > 1 ? 1 : 0);
 }
 
+/* A live machine (the shell's ktest, the soak's last loop) runs threads of
+ * its own, and one may be waiting on the test's CPU when a wake meant to
+ * be handed over comes: the hand-off is then refused, as it must be (one
+ * is made only while nothing else is queued there). load_before and
+ * load_after are sched_cpu_load(cpu) just before and just after that wake,
+ * with interrupts off: more than the waker (and the wakee, when it was
+ * queued) means another thread was waiting. Then the checks that need the
+ * hand-off are not made (as on a busy machine), and the log names what
+ * waited. Refused while nothing else waited is a failure. */
+static bool cpu_was_shared(uint32_t cpu, uint32_t load_before, uint32_t load_after,
+                           bool handed)
+{
+    if (handed || (load_before <= 1 && load_after <= 2))
+        return false;
+    if (ktest_busy)
+        return true;   /* the load's threads: not checked there anyway */
+    char q[192];
+    sched_cpu_queued(cpu, q, sizeof(q));
+    kprintf("handoff: another thread waited on cpu %u at the wake (load %u, then %u): %s\n", cpu,
+            load_before, load_after, q[0] ? q : "none now");
+    return true;
+}
+
+/* An idle-machine check of a round whose CPU was shared (cpu_was_shared):
+ * counted as not made. */
+#define HO_IDLE_ASSERT(shared, cond)                                             \
+    do {                                                                         \
+        if (shared)                                                              \
+            ktest_idle_relaxed++;                                                \
+        else                                                                     \
+            KT_IDLE_ASSERT(cond);                                                \
+    } while (0)
+#define HO_IDLE_EQ(shared, a, b)                                                 \
+    do {                                                                         \
+        if (shared)                                                              \
+            ktest_idle_relaxed++;                                                \
+        else                                                                     \
+            KT_IDLE_EQ(a, b);                                                    \
+    } while (0)
+
 /* The waker hands its CPU to s, then wakes h, of a higher priority, onto
  * the same CPU's queue, then blocks: h runs first, s after it. */
 KTEST(handoff_higher_priority_queued_runs_first)
@@ -80,16 +123,20 @@ KTEST(handoff_higher_priority_queued_runs_first)
     uint64_t f = spin_lock_irqsave(&ho_lock);
     s[0].go = s[1].go = true;
     thread_set_handoff(true);
+    uint32_t before = sched_cpu_load(cpu);
     thread_wake_sync(s[0].t);   /* handed this CPU */
+    uint32_t after = sched_cpu_load(cpu);
+    bool handed = !__atomic_load_n(&s[0].t->rq_node.next, __ATOMIC_RELAXED);
     thread_set_handoff(false);
     thread_wake(s[1].t);        /* queued here, and it outranks s[0] */
     wait_ran(s, 2, &f);         /* the block that would run s[0] */
     spin_unlock_irqrestore(&ho_lock, f);
     sched_handoff_done();
+    bool shared = cpu_was_shared(cpu, before, after, handed);
 
     KT_EQ(s[1].ran, 1);
     KT_EQ(s[0].ran, 2);
-    KT_IDLE_EQ(s[0].t->handoff_offers - offers, 1);   /* it was handed the CPU... */
+    HO_IDLE_EQ(shared, s[0].t->handoff_offers - offers, 1);   /* it was handed the CPU... */
     KT_EQ(s[0].t->handoffs - taken, 0);                /* ...and queued behind h */
     thread_join(s[0].t);
     thread_join(s[1].t);
@@ -111,22 +158,26 @@ KTEST(handoff_waker_not_blocking_queues_wakee)
         thread_set_handoff(true);
         uint64_t f = spin_lock_irqsave(&ho_lock);
         s.go = true;
+        uint32_t before = sched_cpu_load(cpu);
         thread_wake_sync(s.t);
+        uint32_t after = sched_cpu_load(cpu);
+        bool handed = !__atomic_load_n(&s.t->rq_node.next, __ATOMIC_RELAXED);
         spin_unlock_irqrestore(&ho_lock, f);
         thread_set_handoff(false);
-        KT_IDLE_ASSERT(!__atomic_load_n(&s.t->rq_node.next, __ATOMIC_RELAXED));   /* handed */
+        bool shared = cpu_was_shared(cpu, before, after, handed);
+        HO_IDLE_ASSERT(shared, handed);
         if (yield) {
             thread_yield();   /* a schedule() that doesn't take it: it queues it first */
             f = spin_lock_irqsave(&ho_lock);
-            KT_IDLE_EQ(s.ran, 1);   /* it ran before we did again */
+            HO_IDLE_EQ(shared, s.ran, 1);   /* it ran before we did again */
             spin_unlock_irqrestore(&ho_lock, f);
         }
         sched_handoff_done();   /* queued now, if nothing took it yet */
         f = spin_lock_irqsave(&ho_lock);
-        KT_IDLE_ASSERT(yield || !s.ran);   /* not run: we never blocked */
+        HO_IDLE_ASSERT(shared, yield || !s.ran);   /* not run: we never blocked */
         wait_ran(&s, 1, &f);
         spin_unlock_irqrestore(&ho_lock, f);
-        KT_IDLE_EQ(s.t->handoff_offers - offers, 1);
+        HO_IDLE_EQ(shared, s.t->handoff_offers - offers, 1);
         KT_EQ(s.t->handoffs - taken, 0);
         thread_join(s.t);
     }
