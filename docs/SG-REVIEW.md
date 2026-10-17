@@ -92,6 +92,32 @@ target's own entry.
   `user_trap_return`; #DB from ring 3 is moved off its IST stack before
   `user_fault` runs; double fault and machine check panic as before.
 
+## The hostile ktests (`ktest=upcall_hostile`)
+
+- `upcall_hostile_frames`: a program edits every frame it is given at
+  random and resumes it, 10,000 frames over as many processes as die on
+  the way. Most get random registers, RFLAGS (TF in some) and vector state,
+  RSP anywhere in some, and RIP at a landing that compares what it got with
+  the frame: all 16 registers, RFLAGS as `USER_RFLAGS_OK` lets through,
+  xmm0. One in 23 gets a bad cookie, size, XSAVE size, XSAVE header or
+  MXCSR, a RIP anywhere or about `USER_TOP`, random header and registers,
+  or is resumed from a random or a shifted address. Beside it a witness
+  process's 4 threads fault on every vector (the next test's program);
+  each side looks for the other's patterns in every frame it gets. At 4
+  CPUs: 10,000 frames in 372 processes (371 killed), 9,427 landed exactly,
+  43 addresses refused, the witness 6.6 million faults; no leak, no
+  mismatch, no panic (8 CPUs: 393 processes, 9,393 landed).
+- `upcall_hostile_vectors`: 8 threads, two to a CPU, each faulting on
+  vectors 0, 1 (int1 and TF), 3, 6, 12, 13 (hlt, a non-canonical address),
+  14 (nothing there, read-only code), 16 and 19, 20,000 rounds, while 4
+  kernel threads raise them at random (a raise may land between an x87
+  error and the wait that takes it, or with TF just set): every fault's
+  vector the one expected, every frame its own thread's registers, xmm15
+  and cookie.
+- `upcall_hostile_window_flood`: 40,000 raises from 4 kernel threads at a
+  thread spinning in its window: one latch, at most one CPU interrupt, none
+  entered; after `EXC_LEAVE` exactly one, in the thread's own code.
+
 ## libc, briefly
 
 The window holds: from the entry to `EXC_LEAVE` only the frame, the stack
