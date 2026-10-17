@@ -166,6 +166,9 @@ void path_fill_stat(const struct path *p, const struct path_info *i, struct stat
  * absolute clean path, already checked to be a directory). */
 void path_cwd(char out[PATH_BYTES]);
 void path_cwd_set(const char *abs);
+/* Has the current directory been removed since we went there (the service
+ * says it is not there; Linux's getcwd is ENOENT then)? */
+bool path_cwd_removed(void);
 
 /* ---- fobj.c: a file's one open in this process -------------------------------- */
 

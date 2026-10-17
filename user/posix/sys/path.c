@@ -633,6 +633,22 @@ void path_cwd(char out[PATH_BYTES])
     lock_give(&cwd_lock);
 }
 
+bool path_cwd_removed(void)
+{
+    struct { char text[PATH_BYTES]; struct path p; } *w = malloc(sizeof(*w));
+    if (!w)
+        return false;
+    path_cwd(w->text);
+    bool gone = false;
+    if (!path_set(w->text, &w->p) && w->p.where == PATH_MOUNT && path_libc(&w->p) == LIBC_NONE) {
+        struct path_info i;
+        long r = path_info(&w->p, &i);
+        gone = r == -ENOENT || r == -ENOTDIR;   /* a service that's slow or refuses doesn't count */
+    }
+    free(w);
+    return gone;
+}
+
 void path_cwd_set(const char *abs)
 {
     lock_take(&cwd_lock);

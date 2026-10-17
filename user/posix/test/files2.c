@@ -1,6 +1,7 @@
 /* posixtest's files section, part two: a directory of 10,000 files
- * listed, telldir and seekdir, the current directory, the *at calls,
- * what stat and statvfs say, and MAP_PRIVATE of a file. The answers are
+ * listed, telldir and seekdir, the current directory (also removed under
+ * us), the *at calls, 255-byte names nested by descriptors, what stat and
+ * statvfs say, and MAP_PRIVATE of a file. The answers are
  * Linux's (files.c says how they were written) but where M13's plan
  * chose otherwise: ".." stops at a FAT mount's root (docs/M13-PLAN.md
  * section 3), so chdir("/data/..") stays in /data there; above an ext
@@ -177,6 +178,17 @@ static void current_dir(void)
     close(fd);
     CHECK(chdir("d") == 0 && getcwd(cwd, sizeof(cwd)) && !strcmp(cwd, PT_DIR "/d"));
     CHECK(chdir("../.") == 0 && getcwd(cwd, sizeof(cwd)) && !strcmp(cwd, PT_DIR));
+    /* The directory removed while we are in it: getcwd(2) ENOENT (base's
+     * MakeAbsoluteFilePathNoResolveSymbolicLinks), and nothing is made in it.
+     * (Linux's chdir("..") still leads out of it; ours is a path as text, so
+     * only an absolute chdir does.) */
+    CHECK(mkdir("gone", 0755) == 0 && chdir("gone") == 0 && getcwd(cwd, sizeof(cwd)));
+    CHECK(rmdir(PT_DIR "/gone") == 0);
+    errno = 0;
+    CHECK(getcwd(cwd, sizeof(cwd)) == NULL && errno == ENOENT);
+    errno = 0;
+    CHECK(open("x", O_WRONLY | O_CREAT, 0644) == -1 && errno == ENOENT);
+    CHECK(chdir(PT_DIR) == 0 && getcwd(cwd, sizeof(cwd)) && !strcmp(cwd, PT_DIR));
     errno = 0;
     CHECK(getcwd(cwd, 3) == NULL && errno == ERANGE);   /* getcwd(3) ERANGE */
     /* ".." above a mount's root: an ext volume's is "/" (links.c); FAT's /data stayed in /data */
