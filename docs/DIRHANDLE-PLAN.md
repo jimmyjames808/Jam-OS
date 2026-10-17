@@ -499,6 +499,13 @@ the inode in it.
 
 ## 6. Questions for the owner
 
+**Decided 2026-10-18** (the owner delegated these decisions): Q1 (A) a
+handle reaches its view, `..` up to the view's root; Q2 (A) a directory
+moved out of its channel's view is cut off (`ENOENT`), as the inotify
+plan's Q2; Q3 (A) FAT later, text descriptions there; Q4 (A)
+`POSIXFDS_VERSION` 3 with the current directory's channel (static
+programs relinked once, as after FL3).
+
 Decided here as technical (by the reasons above unless the owner says
 otherwise): directories as `fs` channels, not a new protocol; paths with
 `/` from the view's root on every channel (whole paths stay); the second
