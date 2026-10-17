@@ -29,12 +29,15 @@ static status_t put_file_st(const struct fatrun *r, const char *path, const char
     return st;
 }
 
-/* fat ended by itself with `code`, the session's channels closed. */
+/* fat ended by itself with `code`, the session's channels closed. The RAM
+ * disk's session first: a request fat left queued on the channel counts
+ * against fat's job until the server's end is closed. */
 static bool fat_ended(struct fatrun *r, int code)
 {
+    CHECK(ramdisk_join(r->rd));
     CHECK(fat_wait(r, code));
     CHECK_ST(jam_handle_close(r->fs), OK);
-    return ramdisk_join(r->rd);
+    return true;
 }
 
 /* usb-storage answers ERR_TIMED_OUT when the stick's command ran out of

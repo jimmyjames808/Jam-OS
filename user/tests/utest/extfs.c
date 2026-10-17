@@ -845,12 +845,15 @@ bool t_extfs_timeout_spent(void)
     return ramdisk_destroy(&xd);
 }
 
-/* extfs ended by itself with `code`, the session's channels closed. */
+/* extfs ended by itself with `code`, the session's channels closed. The
+ * RAM disk's session first: a try extfs left queued on the channel counts
+ * against extfs's job until the server's end is closed. */
 static bool extfs_ended(struct fatrun *r, int code)
 {
+    CHECK(ramdisk_join(r->rd));
     CHECK(fat_wait(r, code));
     CHECK_ST(jam_handle_close(r->fs), OK);
-    return ramdisk_join(r->rd);
+    return true;
 }
 
 /* drv/nvme answers in completion order (queue depth 32) and may hold a
