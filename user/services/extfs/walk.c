@@ -86,6 +86,26 @@ static bool hidden_dir(const struct xf_ctx *c, const struct xf_walk *w)
     return (c->flags & FS_VIEW_NO_ETC) && fs_view_hides(c->flags, w->phys, true);
 }
 
+/* Does the view hide the name comp (clen bytes) in the directory w has
+ * reached (w->phys)? For what a walk goes through or follows: a view that
+ * hides part of etc (the SSH server's) lets the walk into etc, and a
+ * hidden name there must give nothing away, not whether it is there, nor
+ * what it is (ERR_NOT_DIR), nor a link's target (fs.resolve's answer). */
+static bool name_hidden(const struct xf_ctx *c, const struct xf_walk *w, const char *comp,
+                        uint32_t clen)
+{
+    static char place[FS_PATH_LEN + 1];
+    if (!(c->flags & FS_VIEW_NO_ETC) || w->phys_len + 1 + clen > FS_PATH_LEN)
+        return (c->flags & FS_VIEW_NO_ETC) != 0;   /* too long to judge: hidden */
+    uint32_t n = w->phys_len;
+    memcpy(place, w->phys, n);
+    if (n)
+        place[n++] = '/';
+    memcpy(place + n, comp, clen);
+    place[n + clen] = '\0';
+    return fs_view_hides(c->flags, place, false);
+}
+
 /* ERR_LINK_OUT: where the path goes on is head (hlen bytes; NULL: none)
  * joined with what is left of it (r, rlen). */
 static status_t link_out(struct xf_walk *w, uint8_t kind, uint32_t used, const char *head,
@@ -200,7 +220,7 @@ status_t walk(const struct xf_ctx *c, const char *path, uint32_t len, uint32_t f
         st = ext_lookup(fs, &cur, &w->name, &e);
         if (st == ERR_NOT_FOUND) {
             if (!last)
-                return ERR_NOT_FOUND;
+                return name_hidden(c, w, comp, clen) ? ERR_ACCESS_DENIED : ERR_NOT_FOUND;
             w->found = false;
             return phys_push(w, comp, clen);
         }
@@ -212,6 +232,8 @@ status_t walk(const struct xf_ctx *c, const char *path, uint32_t len, uint32_t f
                                        : st;
         w->found = true;
         if (is_link(&w->in) && (!last || trailing || !(flags & W_NOFOLLOW))) {
+            if (name_hidden(c, w, comp, clen))
+                return ERR_ACCESS_DENIED;   /* its target is the view's to hide too */
             if (++links > XF_LINKS_MAX)
                 return ERR_LINK_LOOP;   /* a loop: ELOOP */
             size_t tlen = 0;
@@ -252,7 +274,7 @@ status_t walk(const struct xf_ctx *c, const char *path, uint32_t len, uint32_t f
             continue;
         }
         if (!last || trailing)
-            return ERR_NOT_DIR;
+            return name_hidden(c, w, comp, clen) ? ERR_ACCESS_DENIED : ERR_NOT_DIR;
         return phys_push(w, comp, clen);
     }
 }

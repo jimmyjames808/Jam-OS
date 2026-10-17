@@ -18,11 +18,12 @@
  *     the journal may hold anything (from the mount to the clean close). */
 #include "jnl_int.h"
 
-/* The live set's slots for a log of `blocks`: a power of two, twice it. */
+/* The live set's slots for a log of `blocks` (at most JNL_LOG_MAX): a power
+ * of two, twice it. */
 static uint32_t live_slots(uint32_t blocks)
 {
     uint32_t n = 16;
-    while (n < 2 * blocks && n < (1u << 30))
+    while (n < 2ull * blocks && n < (1u << 30))
         n <<= 1;
     return n;
 }
@@ -131,13 +132,17 @@ static status_t refuse(struct ext_fs *fs, status_t st)
 }
 
 /* After a replay: the journal marked empty, the next id past the one the
- * scan stopped at. Written only once every copy is home (the device's
- * writes are on the medium when they return). */
+ * scan stopped at. Written only once every copy is home (flushed first:
+ * on a device with a cache the log must not be forgotten before what it
+ * wrote home is on the medium). */
 static status_t mark_empty(struct ext_fs *fs, struct ext_jnl *j, uint32_t next)
 {
+    status_t st = ext_flush(&fs->dev);
+    if (st != OK)
+        return st;
     j->sb.start = 0;
     j->sb.sequence = jbd2_be32(next);
-    status_t st = jnl_sb_write(fs, j);
+    st = jnl_sb_write(fs, j);
     j->tail = 0;
     if (j->live)
         jnl_live_clear(j);
@@ -198,6 +203,8 @@ static status_t replay(struct ext_fs *fs, struct ext_jnl *j)
         return ERR_NOT_SUPPORTED;
     }
     status_t st = jnl_replay(fs, j);
+    if (st == OK && j->on_end)
+        j->on_end(j->ctx, j->mount_end);   /* before the next id passes it */
     return st == OK ? mark_empty(fs, j, j->mount_end + 1) : st;
 }
 
@@ -246,6 +253,8 @@ status_t ext_jnl_mount(struct ext_fs *fs, struct ext_jnl *j, const struct ext_de
         st = remount(fs, j, dev, mem, mem_size, flags);
         if (st != OK)
             return st;   /* what was replayed is damaged: as ext_mount says */
+    } else if (j->on_end) {
+        j->on_end(j->ctx, j->mount_end);
     }
     /* The journal is empty now: nothing is left to recover. */
     fs->needs_recovery = false;
@@ -284,12 +293,16 @@ static status_t set_tail(struct ext_fs *fs, struct ext_jnl *j, uint32_t pos, uin
     return OK;
 }
 
-/* Move the tail to `clean` (every transaction before it is home). */
+/* Move the tail to `clean` (every transaction before it is home). On a
+ * device with a cache, what the checkpoints wrote home is flushed first:
+ * a tail that reached the medium before them would leave a cut nothing to
+ * replay them from. */
 static status_t move_tail(struct ext_fs *fs, struct ext_jnl *j)
 {
     if (!j->tail || (j->tail == j->clean && j->tail_tid == j->clean_tid))
         return OK;
-    return set_tail(fs, j, j->clean, j->clean_tid);
+    status_t st = ext_flush(&fs->dev);
+    return st == OK ? set_tail(fs, j, j->clean, j->clean_tid) : st;
 }
 
 /* Log blocks free for the next transaction (one is kept between the head
@@ -359,5 +372,7 @@ status_t ext_jnl_close(struct ext_fs *fs)
         return st;
     fs->sb.feature_incompat &= ~(uint32_t)EXT_INCOMPAT_RECOVER;
     st = ext_super_write(fs);
-    return st == OK ? ext_sync(fs) : st;
+    if (st == OK)
+        st = ext_sync(fs);
+    return st == OK ? ext_flush(&fs->dev) : st;
 }

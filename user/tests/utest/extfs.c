@@ -551,6 +551,18 @@ bool t_extfs_views(void)
     CHECK_ST(xsymlink(r.fs, "etc", "/e"), OK);
     CHECK_ST(xsymlink(r.fs, ".", "/dot"), OK);
     CHECK_ST(xsymlink(r.fs, "../etc/ssh", "/usr/k"), OK);
+    CHECK_ST(xsymlink(r.fs, "/abs/target", "/etc/out"), OK);
+
+    /* A view that hides part of etc (the SSH server's, :rk): the walk goes
+     * into etc, and a hidden name there gives nothing away, not whether it
+     * is there, nor what it is, nor a link's target (the review's R4). */
+    CHECK_ST(fs_view_until(r.fs, dl(), FS_VIEW_READ_ONLY | FS_VIEW_HIDE_ETC, &ch), OK);
+    CHECK(view_of(&r, ch, &v));
+    CHECK(file_is(&v, "/e/ssh/key", "k"));
+    CHECK_ST(t_stat(&v, "/e/allow/x", NULL, NULL, NULL), ERR_ACCESS_DENIED);   /* not NOT_DIR */
+    CHECK_ST(t_stat(&v, "/e/none/x", NULL, NULL, NULL), ERR_ACCESS_DENIED);    /* not NOT_FOUND */
+    CHECK_ST(xresolve(v.fs, "/e/out/y", 0, &kind, &used, next), ERR_ACCESS_DENIED);
+    jam_handle_close(v.fs);
 
     /* A program's view: etc hidden and guarded. */
     CHECK_ST(fs_view_until(r.fs, dl(), FS_VIEW_NO_ETC | FS_VIEW_GUARD_ETC, &ch), OK);
@@ -683,6 +695,83 @@ bool t_extfs_error(void)
     CHECK_ST(fs_statfs_until(r.fs, dl(), &total, &fr, &ro, label, &magic, &nmax, &feat), OK);
     CHECK(ro);
     CHECK_ST(t_stat(&r, "/bad", NULL, NULL, NULL), OK);
+    CHECK(fat_stop(&r));
+    return ramdisk_destroy(&xd);
+}
+
+/* ---- a disk with a cache (docs/M13.6-REVIEW.md's R1) ---------------------------- */
+
+/* Without EXTFS_ARG_FUA the disk's writes may sit in its cache (a USB
+ * stick's), so the journal's order and every answer need block.sync: a
+ * request that writes is flushed before its commit block and after it, an
+ * fs.sync flushes what was written home since, and a second one, with
+ * nothing new, sends nothing. With the word (drv/nvme's FUA writes) nothing
+ * is ever flushed. */
+bool t_extfs_flush(void)
+{
+    static struct ramdisk xd;
+    struct fatrun r;
+    CHECK(ramdisk_create(&xd, EXT_DISK_SECTORS));
+    CHECK(extfs_start(&r, &xd, false, NULL, 0));
+    uint32_t syncs = ramdisk_syncs(&xd);
+    CHECK_ST(t_mkdir(&r, "/d"), OK);
+    CHECK(ramdisk_syncs(&xd) >= syncs + 2);   /* the commit block's two */
+    CHECK(put_file(&r, "/d/a", "cached"));
+    CHECK_ST(t_sync(&r), OK);
+    syncs = ramdisk_syncs(&xd);
+    CHECK_ST(t_sync(&r), OK);
+    CHECK_EQ(ramdisk_syncs(&xd), syncs);   /* nothing written since: nothing sent */
+    CHECK(fat_stop(&r));
+    const char *fua = EXTFS_ARG_FUA;
+    CHECK(extfs_start(&r, &xd, false, &fua, 1));
+    syncs = ramdisk_syncs(&xd);
+    CHECK(put_file(&r, "/d/b", "fua"));
+    CHECK_ST(t_sync(&r), OK);
+    CHECK_EQ(ramdisk_syncs(&xd), syncs);
+    CHECK(file_is(&r, "/d/a", "cached") && file_is(&r, "/d/b", "fua"));
+    CHECK(fat_stop(&r));
+    return ramdisk_destroy(&xd);
+}
+
+/* ---- many at once (docs/M13.6-REVIEW.md's R3) ------------------------------------ */
+
+#define MANY_FILES 200u
+#define MANY_VIEWS 100u
+
+/* 200 files open at once and 100 views, all usable together: one extfs
+ * serves the whole system's volume on a drive boot (32 of each was the
+ * limit, and 64 threads' temporary files ran out). */
+bool t_extfs_many(void)
+{
+    static struct ramdisk xd;
+    static struct tfile f[MANY_FILES];
+    static handle_t v[MANY_VIEWS];
+    struct fatrun r;
+    char p[32], got[32];
+    uint32_t done = 0;
+    CHECK(ramdisk_create(&xd, EXT_DISK_SECTORS));
+    CHECK(extfs_start(&r, &xd, false, NULL, 0));
+    CHECK_ST(t_mkdir(&r, "/m"), OK);
+    for (unsigned i = 0; i < MANY_FILES; i++) {
+        snprintf(p, sizeof(p), "/m/f%03u", i);
+        CHECK_ST(t_open(&r, p, FS_READ | FS_WRITE | FS_CREATE, &f[i]), OK);
+        CHECK_ST(t_write(&f[i], 0, p, L(p), &done), OK);
+    }
+    for (unsigned i = 0; i < MANY_VIEWS; i++)
+        CHECK_ST(fs_view_until(r.fs, dl(), FS_VIEW_READ_ONLY, &v[i]), OK);
+    for (unsigned i = 0; i < MANY_FILES; i++) {
+        snprintf(p, sizeof(p), "/m/f%03u", i);
+        CHECK_ST(t_read(&f[i], 0, got, L(p), &done), OK);
+        CHECK(done == L(p) && !memcmp(got, p, done));
+    }
+    for (unsigned i = 0; i < MANY_VIEWS; i += MANY_VIEWS - 1) {
+        struct fatrun w = { .fs = v[i] };
+        CHECK(file_is(&w, "/m/f199", "/m/f199"));
+    }
+    for (unsigned i = 0; i < MANY_FILES; i++)
+        t_close(&f[i]);
+    for (unsigned i = 0; i < MANY_VIEWS; i++)
+        CHECK_ST(jam_handle_close(v[i]), OK);
     CHECK(fat_stop(&r));
     return ramdisk_destroy(&xd);
 }

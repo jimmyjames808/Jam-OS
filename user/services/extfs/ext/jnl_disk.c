@@ -189,6 +189,10 @@ static status_t check_sb(struct ext_fs *fs, struct ext_jnl *j, uint32_t blocks)
         first >= maxlen || maxlen - first < JNL_MIN_LOG || (start && (start < first ||
                                                                        start >= maxlen)))
         return ext_damaged(fs, "journal: superblock", ino, 0);
+    if (maxlen > JNL_LOG_MAX) {   /* the live set (jnl.c) holds twice the log */
+        fs->why = "journal: longer than this library keeps track of";
+        return ERR_NOT_SUPPORTED;
+    }
     uint32_t incompat = jbd2_be32(sb->feature_incompat);
     if ((jbd2_be32(sb->feature_compat) & ~COMPAT_KNOWN) || (incompat & ~INCOMPAT_KNOWN) ||
         sb->feature_ro_compat) {

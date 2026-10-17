@@ -5,10 +5,13 @@
  * (data, then the log, then its commit block, then the blocks home) is
  * the order the calls are made in.
  *
- * An answered write is on the medium: drv/nvme writes with FUA (M12.7).
- * usb-storage doesn't, which is one reason an ext volume on a stick is
- * served read-only (the plan's Q2 and Q9); a writable one there would need
- * a block.sync after each commit.
+ * An answered write is on the medium only where the disk says so: drv/nvme
+ * writes with FUA (M12.7), and volumes starts extfs on an NVMe drive with
+ * EXTFS_ARG_FUA. Anywhere else (a USB stick: usb-storage's writes land in
+ * the stick's cache, in any order) the device has a flush, block.sync
+ * (SCSI SYNCHRONIZE CACHE), which the journal calls where its order needs
+ * it and request.c before an answer; it is sent only when something was
+ * written since the last one, so it costs nothing on a quiet volume.
  *
  * The library reads in multiples of 1 KiB at multiples of 1 KiB and
  * writes whole blocks. A channel whose blocks are bigger than that (a 4 KiB
@@ -89,6 +92,7 @@ static status_t dev_write(void *ctx, uint64_t off, uint32_t len, const void *buf
         if (lba >= vol.sectors || count > vol.sectors - lba)
             return ERR_OUT_OF_RANGE;
         memcpy(vol.bbuf, in, (size_t)count * sec);
+        vol.unflushed = true;   /* a write that fails may still have landed some */
         status_t st = block_write_within(vol.block, BLOCK_WAIT, lba, count, 0);
         if (st != OK)
             return failed("write", lba, count, st);
@@ -104,6 +108,29 @@ static status_t dev_write(void *ctx, uint64_t off, uint32_t len, const void *buf
 uint64_t disk_writes(void)
 {
     return writes;
+}
+
+status_t disk_flush(void)
+{
+    if (vol.fua || vol.ram || !vol.unflushed)
+        return OK;
+    status_t st = block_sync_within(vol.block, BLOCK_WAIT);
+    if (st == ERR_PEER_CLOSED)
+        vol.disk_gone = true;
+    if (st == ERR_PEER_CLOSED)
+        return st;
+    if (st != OK) {
+        printf("extfs %s: a flush of the disk's cache failed: %s\n", vol.name, status_str(st));
+        return ERR_IO;
+    }
+    vol.unflushed = false;
+    return OK;
+}
+
+static status_t dev_flush(void *ctx)
+{
+    (void)ctx;
+    return disk_flush();
 }
 
 status_t disk_open(handle_t block, struct ext_dev *dev)
@@ -139,7 +166,7 @@ status_t disk_open(handle_t block, struct ext_dev *dev)
     vol.read_only = ro != 0;
     *dev = (struct ext_dev){
         .ctx = NULL, .bytes = vol.sectors * bs, .read = dev_read,
-        .write = ro ? NULL : dev_write,
+        .write = ro ? NULL : dev_write, .flush = ro || vol.fua ? NULL : dev_flush,
     };
     return OK;
 }

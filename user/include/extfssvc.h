@@ -47,7 +47,13 @@
  * above; extfs doesn't know it was one.
  *
  * argv[1], if given, names the instance in its log lines ("/jam"). The
- * words after it may be, in any order: EXTFS_ARG_FORMAT; for an instance
+ * words after it may be, in any order: EXTFS_ARG_FORMAT; EXTFS_ARG_FUA,
+ * the disk's answered writes are on the medium (drv/nvme's FUA writes):
+ * without it extfs takes the disk to have a volatile cache (a USB stick)
+ * and sends block.sync where the journal's order needs it (before and
+ * after each commit block, before the tail moves) and before answering a
+ * request that wrote, so an answered request is on the medium either way;
+ * for an instance
  * that replaces one that ended, EXTFS_ARG_KILLED (a deliberate kill) or
  * EXTFS_ARG_CRASHED (any other end): only a crash counts against the
  * request in progress (a request in progress at two crashes is answered
@@ -82,5 +88,6 @@
 #define EXTFS_ARG_FORMAT     "format-if-blank"
 #define EXTFS_ARG_KILLED     "killed"
 #define EXTFS_ARG_CRASHED    "crashed"
+#define EXTFS_ARG_FUA        "fua"
 #define EXTFS_EXIT_NO_VOLUME 2
 #define EXTFS_EXIT_TEST      3

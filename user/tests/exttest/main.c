@@ -17,6 +17,11 @@
  *                                new name, the prefix and the old name; a
  *                                copy that can't be made (a path over 255
  *                                bytes) is said and the rest go on.
+ *   exttest open <dir> <count>   <count> files (at most 1024) made in the
+ *                                directory and held open all at once, each
+ *                                written and read back while the rest are
+ *                                open (an extfs's open files and its job's
+ *                                limits: docs/M13.6-REVIEW.md's R3).
  *
  *   exttest big <path> <MiB>     writes <MiB> MiB of the pattern below into
  *                                the file (made, or emptied), 1 MiB a write,
@@ -480,6 +485,43 @@ static int cmd_copy(const char *dir, const char *prefix)
     return 0;
 }
 
+/* n files made in dir and all held open at once, each written its own name
+ * and read back while every other is open too; then closed. */
+#define OPEN_MAX 1024u
+static struct jfile opened[OPEN_MAX];
+
+static int cmd_open(const char *dir, uint64_t n)
+{
+    unsigned i = 0;
+    status_t st = OK;
+    char path[FS_PATH_MAX], got[FS_PATH_MAX];
+    for (; st == OK && i < n; i++) {
+        size_t done = 0;
+        snprintf(path, sizeof(path), "%s/o%04u", dir, i);
+        st = file_open(path, FS_READ | FS_WRITE | FS_CREATE | FS_TRUNCATE, &opened[i]);
+        if (st == OK)
+            st = file_write(&opened[i], 0, path, strlen(path), &done);
+        if (st != OK)
+            printf("exttest: open %s: file %u: %s\n", dir, i + 1, status_str(st));
+    }
+    unsigned held = st == OK ? i : i - 1;
+    for (unsigned k = 0; st == OK && k < held; k++) {
+        size_t done = 0;
+        snprintf(path, sizeof(path), "%s/o%04u", dir, k);
+        st = file_read(&opened[k], 0, got, strlen(path), &done);
+        if (st == OK && (done != strlen(path) || memcmp(got, path, done)))
+            st = ERR_IO;
+        if (st != OK)
+            printf("exttest: open %s: file %u read back: %s\n", dir, k + 1, status_str(st));
+    }
+    for (unsigned k = 0; k < held; k++)
+        file_close(&opened[k]);
+    if (st != OK)
+        return 1;
+    printf("exttest: open %s: %u files open at once\n", dir, held);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     uint64_t mib = 0;
@@ -494,7 +536,10 @@ int main(int argc, char **argv)
         return cmd_digest(argv[2]);
     if (argc == 4 && !strcmp(argv[1], "copy"))
         return cmd_copy(argv[2], argv[3]);
+    if (argc == 4 && !strcmp(argv[1], "open") && number(argv[3], &mib) && mib &&
+        mib <= OPEN_MAX)
+        return cmd_open(argv[2], mib);
     printf("usage: exttest big <path> <MiB> | sparse <path> | sums <dir> | digest <dir> | "
-           "copy <dir> <prefix>\n");
+           "copy <dir> <prefix> | open <dir> <count>\n");
     return 2;
 }

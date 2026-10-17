@@ -32,6 +32,16 @@ struct cutdev {
     uint64_t commits_alone;  /* writes into the journal that were one commit block alone */
     uint64_t commits_with;   /* ... and that held a commit block and other blocks */
     bool     die_on_commit;  /* the device dies after the first commit block lands */
+    /* `cache`: a device with a volatile write cache (a USB stick's). A
+     * write is only in the cache until a flush returns; at the cut each
+     * block written since the last flush is on the medium or not, at
+     * random (the cache wrote it back, or the power went first). */
+    bool     cache;
+    uint8_t  *pmark;         /* one byte per block: written since the last flush */
+    uint64_t *pend;          /* those blocks ... */
+    uint8_t  *pold;          /* ... and what the medium held in each before (block_size each) */
+    uint64_t npend, cappend;
+    uint64_t flushes;        /* flushes since the reset */
 };
 
 /* A device over a copy of m's bytes; m is not changed. */
@@ -107,6 +117,7 @@ struct storm_cfg {
                                * volume mkfs made with blocks of this size */
     uint32_t tail_blocks;     /* 0: the default; UINT32_MAX: the tail never moves for blocks
                                * (the log holds up to tail_every commits) */
+    bool     cache;           /* the device has a volatile write cache (struct cutdev's) */
 };
 
 /* One mount's state while a storm runs on it. */
