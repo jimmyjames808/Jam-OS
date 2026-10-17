@@ -279,9 +279,7 @@ static void child(void *ctx, handle_t from)
 {
     const struct how *how = ctx;
     lx_start_forked();
-    uint32_t tid = 0;
-    (void)kp_thread_tid(startup_handle(SR_SELF_THREAD), &tid);
-    thread_forked(tid);
+    thread_forked();
     for (unsigned i = 0; i < NSTEPS; i++)
         steps[i](LX_FORK_CHILD);
     for (unsigned i = 0; i < NFORGETS; i++)
@@ -296,7 +294,7 @@ static void child(void *ctx, handle_t from)
     if (how->clear_tid)
         (void)kp_set_tid_word((uint32_t *)how->clear_tid);
     if (how->set_tid)
-        *how->set_tid = (int)tid;
+        *how->set_tid = (int)lx_pid();   /* the child's first thread's id is its pid */
     sig_thread_forked();
     sig_tty_attached();   /* the terminal is the child's own now: listened to */
 }

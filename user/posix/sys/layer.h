@@ -77,9 +77,11 @@ void mem_fork(int step);      /* mem.c: libc's table of mappings and the break; 
 void rlimit_fork(int step);   /* rlimit.c: the limits */
 /* In the child only, first: start.c's own process and address space
  * handles become the child's (startup_handle's, which libjam has made
- * the child's), and thread.c's table holds this thread alone, id tid. */
+ * the child's), and thread.c's table holds this thread alone, whose id
+ * is the child's pid (Linux's: the first thread's) once proc.c's step
+ * has it. */
 void lx_start_forked(void);
-void thread_forked(uint32_t tid);
+void thread_forked(void);
 
 /* The handles a fork moves to the child (fork.c; <posixfork.h>, FL2): in
  * the parent, after the clone with every lock above held, each module's
