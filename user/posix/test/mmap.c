@@ -6,7 +6,8 @@
  *   - MAP_SHARED read-only: the file's bytes, zero past its end in the
  *     last page, kept after the descriptor is closed; with PROT_WRITE
  *     refused (EACCES on a descriptor that can't write, ENODEV on one
- *     that can: the pager never writes pages back);
+ *     that can where the pager writes nothing back: fat; on ext it maps,
+ *     and mmap-wshared checks it);
  *   - MAP_PRIVATE read-only, then mprotect adding write: our writes,
  *     never the file's (read and the shared mapping see the file);
  *   - MAP_PRIVATE writable: charged in full at mmap, its writes the
@@ -30,6 +31,22 @@
  *                             untouched one following the file (needs fat
  *                             to keep mappings coherent with writes: until
  *                             then the shared mapping is ENODEV)
+ *   mmap-wshared [dir]        writable shared mappings (docs/WRITEMAP-PLAN.md
+ *                             section 3) in dir (default /data). On ext: a
+ *                             store seen by pread, read, a second mapping and a
+ *                             child (its mapping and its own descriptor);
+ *                             write and stores on one page both kept; a file
+ *                             grown by write seen; mprotect adding write on
+ *                             an O_RDWR mapping (EACCES on O_RDONLY, and
+ *                             after the descriptor's close still works);
+ *                             a private writable mapping never the file's;
+ *                             truncate's and a write's tails and gaps zero;
+ *                             msync MS_ASYNC and MS_SYNC return 0 (the
+ *                             last: MS_SYNC waits for the pager's write-back
+ *                             of what was stored). On fat (/usb0): ENODEV
+ *                             with PROT_WRITE, EACCES on a read-only
+ *                             descriptor, a read-only mapping of an
+ *                             O_RDWR one whose mprotect is EACCES
  *   mmap-tmp                  the mmap section in /tmp instead of /data,
  *                             its pager required (init's /tmp, a volume's
  *                             view or the memory one: tools/layout-test.sh)
@@ -54,6 +71,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -67,6 +85,8 @@
 #define MF_BIGSZ  (4ul << 20)
 #define MF_COH    "/data/pt-mmap-coh.bin"
 #define SETTLE_MS 3000                  /* how long an unlink waits out EBUSY */
+#define EXT4_MAGIC 0xef53               /* statfs f_type of ext2, 3 and 4 */
+#define FAT_MAGIC  0x4d44               /* and of fat */
 
 static char mf_path[64] = "/data/pt-mmap.bin", mf_big[64] = "/data/pt-mmap-big.bin";
 
@@ -139,8 +159,18 @@ static bool has_pager(const char *path)
     return true;
 }
 
+/* Is path on an ext volume (statfs's type)? Its shared mappings write. */
+static bool on_ext(const char *path)
+{
+    struct statfs sf;
+    return statfs(path, &sf) == 0 && sf.f_type == EXT4_MAGIC;
+}
+
 /* MAP_SHARED with PROT_WRITE, before anything maps the file (a mapping
- * holds it in fat, which then refuses an open for writing). */
+ * holds it in fat, which then refuses an open for writing): EACCES on a
+ * descriptor that can't write; on one that can, ENODEV where the pager
+ * writes nothing back (fat), else a mapping (ext: mmap-wshared checks
+ * what it does). */
 static void shared_write_refused(void)
 {
     int rw = open(MF_PATH, O_RDWR), ro = open(MF_PATH, O_RDONLY);
@@ -149,8 +179,14 @@ static void shared_write_refused(void)
     CHECK(mmap(NULL, MF_MAP, PROT_READ | PROT_WRITE, MAP_SHARED, ro, 0) == MAP_FAILED &&
           errno == EACCES);
     errno = 0;
-    CHECK(mmap(NULL, MF_MAP, PROT_READ | PROT_WRITE, MAP_SHARED, rw, 0) == MAP_FAILED &&
-          errno == ENODEV);
+    void *m = mmap(NULL, MF_MAP, PROT_READ | PROT_WRITE, MAP_SHARED, rw, 0);
+    if (on_ext(MF_PATH)) {
+        CHECK(m != MAP_FAILED);
+        if (m != MAP_FAILED)
+            CHECK(munmap(m, MF_MAP) == 0);
+    } else {
+        CHECK(m == MAP_FAILED && errno == ENODEV);
+    }
     close(rw);
     close(ro);
 }
@@ -419,6 +455,321 @@ void pt_mmap_coherent(char **argv)
     CHECK(munmap(s, 3 * PG) == 0 && munmap(p, 3 * PG) == 0);
     close(fd);
     CHECK(unlink_settled(MF_COH) == 0);
+}
+
+/* ---- mmap-wshared: writable shared mappings ------------------------------------ */
+
+#define WS_SIZE (3 * PG + 100)   /* the mmap section's file: three pages and a bit */
+#define WS_MAP  (4 * PG)
+
+static char ws_path[64];
+
+/* The byte at off through pread on fd (-1: not there). */
+static int byte_at(int fd, uint64_t off)
+{
+    uint8_t b = 0;
+    return pread(fd, &b, 1, (off_t)off) == 1 ? b : -1;
+}
+
+/* A step's line: ok if no check failed since before. */
+static void ws_step(const char *what, int before)
+{
+    printf("posixtest: mmap-wshared: %s: %s\n", what, pt_failures() == before ? "ok" : "FAILED");
+}
+
+/* A store seen by pread, read, a second mapping, a second writable one
+ * and a child (through the mapping it has from the fork, and its own
+ * descriptor and mapping); s the writable mapping of rw, ro a read-only
+ * descriptor of the file. */
+static void ws_stores(int rw, int ro, uint8_t *s)
+{
+    int before = pt_failures();
+    uint8_t b = 0;
+    s[PG + 10] = 0x5a;
+    CHECK(byte_at(rw, PG + 10) == 0x5a);
+    CHECK(lseek(ro, PG + 10, SEEK_SET) == (off_t)(PG + 10) && read(ro, &b, 1) == 1 && b == 0x5a);
+    uint8_t *t = mmap(NULL, WS_MAP, PROT_READ, MAP_SHARED, ro, 0);   /* a read-only descriptor's */
+    CHECK(t != MAP_FAILED);
+    uint8_t *u = mmap(NULL, PG, PROT_READ | PROT_WRITE, MAP_SHARED, rw, 0);   /* page 0 again */
+    CHECK(u != MAP_FAILED);
+    if (t == MAP_FAILED || u == MAP_FAILED)
+        return;
+    CHECK(t[PG + 10] == 0x5a);   /* a store before the mapping was made */
+    s[PG + 11] = 0x5b;           /* and one after */
+    CHECK(t[PG + 11] == 0x5b);
+    u[0x30] = 0x6c;
+    CHECK(s[0x30] == 0x6c && t[0x30] == 0x6c && byte_at(rw, 0x30) == 0x6c);
+    pid_t pid = fork();
+    if (pid == 0) {
+        bool ok = s[PG + 10] == 0x5a && t[PG + 11] == 0x5b && byte_at(rw, PG + 10) == 0x5a;
+        s[3 * PG + 0x40] = 0xc1;                           /* a store through the inherited mapping */
+        int fd = open(ws_path, O_RDWR);
+        ok = ok && fd >= 0 && pwrite(fd, "CH", 2, 3 * PG + 8) == 2;   /* and a write */
+        uint8_t *c = fd >= 0 ? mmap(NULL, PG, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 3 * PG)
+                             : MAP_FAILED;                /* and a mapping of its own */
+        ok = ok && c != MAP_FAILED && c[8] == 'C';
+        if (ok)
+            c[20] = 0xc2;
+        _exit(ok ? 0 : 1);
+    }
+    int status = -1;
+    CHECK(pid > 0 && waitpid(pid, &status, 0) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    CHECK(s[3 * PG + 0x40] == 0xc1 && byte_at(rw, 3 * PG + 0x40) == 0xc1);
+    CHECK(!memcmp(s + 3 * PG + 8, "CH", 2) && byte_at(ro, 3 * PG + 9) == 'H');
+    CHECK(s[3 * PG + 20] == 0xc2 && t[3 * PG + 20] == 0xc2 && byte_at(ro, 3 * PG + 20) == 0xc2);
+    CHECK(munmap(u, PG) == 0 && munmap(t, WS_MAP) == 0);
+    ws_step("a store seen by pread, read, a second mapping and a child", before);
+}
+
+/* write and stores on one page both kept, in either order; a file grown
+ * by write seen by the mapping, its gap zero. */
+static void ws_write_and_store(int rw, uint8_t *s)
+{
+    int before = pt_failures();
+    uint8_t r[2] = { 0 };
+    CHECK(pwrite(rw, "WR", 2, 2 * PG + 100) == 2);   /* a write, then a store on its page */
+    s[2 * PG + 500] = 0x77;
+    s[2 * PG + 600] = 0x78;                          /* a store, then a write on its page */
+    CHECK(pwrite(rw, "ab", 2, 2 * PG + 700) == 2);
+    CHECK(!memcmp(s + 2 * PG + 100, "WR", 2) && s[2 * PG + 500] == 0x77 &&
+          s[2 * PG + 600] == 0x78 && !memcmp(s + 2 * PG + 700, "ab", 2));
+    CHECK(pread(rw, r, 2, 2 * PG + 100) == 2 && !memcmp(r, "WR", 2));
+    CHECK(byte_at(rw, 2 * PG + 500) == 0x77 && byte_at(rw, 2 * PG + 600) == 0x78);
+    CHECK(pread(rw, r, 2, 2 * PG + 700) == 2 && !memcmp(r, "ab", 2));
+    CHECK(same(s + 2 * PG, 2 * PG, 100) && same(s + 2 * PG + 102, 2 * PG + 102, 398) &&
+          same(s + 2 * PG + 501, 2 * PG + 501, 99) && same(s + 2 * PG + 602, 2 * PG + 602, 98) &&
+          same(s + 2 * PG + 702, 2 * PG + 702, PG - 702));   /* the rest as it was */
+    CHECK(pwrite(rw, "EXT", 3, WS_SIZE + 200) == 3);   /* the file grows inside its last page */
+    CHECK(!memcmp(s + WS_SIZE + 200, "EXT", 3) && zero(s + WS_SIZE, 200));
+    struct stat st;
+    CHECK(fstat(rw, &st) == 0 && st.st_size == WS_SIZE + 203);
+    ws_step("write and stores on one page both kept; growth by write", before);
+}
+
+/* mprotect adding write: on an O_RDWR mapping (a PROT_READ or PROT_NONE
+ * one, even after the descriptor is closed), EACCES on an O_RDONLY one;
+ * MAP_PRIVATE never the file's. */
+static void ws_mprotect(int rw, int ro, const uint8_t *s)
+{
+    int before = pt_failures();
+    uint8_t *m = mmap(NULL, 2 * PG, PROT_READ, MAP_SHARED, rw, 0);
+    CHECK(m != MAP_FAILED);
+    if (m != MAP_FAILED) {
+        CHECK(mprotect(m, PG, PROT_READ | PROT_WRITE) == 0);
+        m[0x100] = 0xd1;
+        CHECK(byte_at(rw, 0x100) == 0xd1 && s[0x100] == 0xd1);
+        CHECK(mprotect(m + PG, PG, PROT_READ | PROT_WRITE) == 0);
+        CHECK(munmap(m, 2 * PG) == 0);
+    }
+    int fd = open(ws_path, O_RDWR);
+    CHECK(fd >= 0);
+    m = fd >= 0 ? mmap(NULL, PG, PROT_READ, MAP_SHARED, fd, 0) : MAP_FAILED;
+    close(fd);   /* Linux decides at mmap: the mapping may be written to still */
+    CHECK(m != MAP_FAILED);
+    if (m != MAP_FAILED) {
+        CHECK(mprotect(m, PG, PROT_READ | PROT_WRITE) == 0);
+        m[0x101] = 0xd2;
+        CHECK(byte_at(rw, 0x101) == 0xd2 && s[0x101] == 0xd2);
+        CHECK(munmap(m, PG) == 0);
+    }
+    m = mmap(NULL, PG, PROT_NONE, MAP_SHARED, rw, 0);
+    CHECK(m != MAP_FAILED);
+    if (m != MAP_FAILED) {
+        CHECK(mprotect(m, PG, PROT_READ | PROT_WRITE) == 0);
+        m[0x102] = 0xd3;
+        CHECK(byte_at(rw, 0x102) == 0xd3 && s[0x102] == 0xd3);
+        CHECK(mprotect(m, PG, PROT_READ) == 0 && m[0x102] == 0xd3);   /* and taken away again */
+        CHECK(munmap(m, PG) == 0);
+    }
+    errno = 0;
+    CHECK(mmap(NULL, PG, PROT_READ | PROT_WRITE, MAP_SHARED, ro, 0) == MAP_FAILED && errno == EACCES);
+    m = mmap(NULL, PG, PROT_READ, MAP_SHARED, ro, 0);
+    CHECK(m != MAP_FAILED);
+    if (m != MAP_FAILED) {
+        errno = 0;
+        CHECK(mprotect(m, PG, PROT_READ | PROT_WRITE) == -1 && errno == EACCES);
+        CHECK(munmap(m, PG) == 0);
+    }
+    m = mmap(NULL, PG, PROT_READ | PROT_WRITE, MAP_PRIVATE, rw, 0);   /* a private copy's writes */
+    CHECK(m != MAP_FAILED);
+    if (m != MAP_FAILED) {
+        m[0x200] = 0xee;
+        CHECK(m[0x200] == 0xee && byte_at(rw, 0x200) == pat(0x200) && s[0x200] == pat(0x200));
+        CHECK(munmap(m, PG) == 0);
+    }
+    ws_step("mprotect adding write", before);
+}
+
+/* Truncate's and a write's tails: what lies past the end of the file in
+ * its last page reads zero once the file grows over it, and so does what
+ * was cut off. The file is WS_MAP long at the end. */
+static void ws_tails(int rw, uint8_t *s)
+{
+    int before = pt_failures();
+    s[PG + 200] = 0x55;
+    s[2 * PG + 7] = 0x56;
+    s[3 * PG + 40] = 0x57;
+    CHECK(ftruncate(rw, PG + 50) == 0);   /* cut short, then grown again */
+    CHECK(ftruncate(rw, WS_MAP) == 0);
+    CHECK(zero(s + PG + 50, WS_MAP - PG - 50));
+    CHECK(byte_at(rw, PG + 200) == 0 && byte_at(rw, 2 * PG + 7) == 0 && byte_at(rw, 3 * PG + 40) == 0);
+    CHECK(s[PG + 10] == 0x5a && byte_at(rw, PG + 10) == 0x5a);   /* the front kept */
+    CHECK(ftruncate(rw, WS_SIZE) == 0);   /* a store past the end, then growth by truncate */
+    s[WS_SIZE + 50] = 0x99;
+    CHECK(ftruncate(rw, WS_MAP) == 0);
+    CHECK(zero(s + WS_SIZE, WS_MAP - WS_SIZE) && byte_at(rw, WS_SIZE + 50) == 0);
+    CHECK(ftruncate(rw, WS_SIZE) == 0);   /* ... and by a write that leaves a gap */
+    s[WS_SIZE + 60] = 0x98;
+    CHECK(pwrite(rw, "Z", 1, WS_SIZE + 300) == 1);
+    CHECK(zero(s + WS_SIZE, 300) && s[WS_SIZE + 300] == 'Z');
+    CHECK(byte_at(rw, WS_SIZE + 60) == 0 && byte_at(rw, WS_SIZE + 300) == 'Z');
+    CHECK(ftruncate(rw, WS_MAP) == 0);
+    ws_step("truncate's tail and a write's gap are zero", before);
+}
+
+/* msync where nothing is dirty (a file written only through write()
+ * before it was mapped, and not stored to): 0 at once for both flags, a
+ * part of the mapping and over a hole ENOMEM. */
+static void ws_msync_clean(const char *dir)
+{
+    int before = pt_failures();
+    char path[64];
+    snprintf(path, sizeof(path), "%s/pt-wmap-clean.bin", dir);
+    CHECK(put_file(path, WS_SIZE));
+    int rw = open(path, O_RDWR);
+    uint8_t *m = rw >= 0 ? mmap(NULL, WS_MAP, PROT_READ | PROT_WRITE, MAP_SHARED, rw, 0)
+                         : MAP_FAILED;
+    CHECK(m != MAP_FAILED);
+    if (m != MAP_FAILED) {
+        CHECK(msync(m, WS_MAP, MS_ASYNC) == 0 && msync(m, WS_MAP, MS_SYNC) == 0);
+        CHECK(msync(m, WS_MAP, MS_SYNC | MS_INVALIDATE) == 0 && msync(m + PG, PG, MS_SYNC) == 0);
+        CHECK(msync(m, 0, MS_SYNC) == 0);
+        CHECK(munmap(m + PG, PG) == 0);
+        errno = 0;
+        CHECK(msync(m, WS_MAP, MS_SYNC) == -1 && errno == ENOMEM);
+        CHECK(msync(m + 2 * PG, 2 * PG, MS_ASYNC) == 0);
+        CHECK(munmap(m, PG) == 0 && munmap(m + 2 * PG, 2 * PG) == 0);
+    }
+    close(rw);
+    CHECK(unlink_settled(path) == 0);
+    ws_step("msync where nothing is dirty", before);
+}
+
+/* msync over the stores made: MS_ASYNC asks, MS_SYNC returns once the
+ * pager has written them (the file's pager, extfs: WE2's write-back; until
+ * then it waits out the pager's answer time and EIO is the answer). */
+static void ws_msync(int rw, int ro, uint8_t *s)
+{
+    int before = pt_failures();
+    for (unsigned p = 0; p < 4; p++)
+        s[p * PG + 0x300] = (uint8_t)(0xe0 + p);
+    CHECK(msync(s, WS_MAP, MS_ASYNC) == 0);
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    int r = msync(s, WS_MAP, MS_SYNC);
+    int e = errno;
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    printf("posixtest: mmap-wshared: msync MS_SYNC over four dirty pages: %d (%s), %ld ms\n", r,
+           r ? strerror(e) : "written", (long)(t1.tv_sec - t0.tv_sec) * 1000 +
+           (t1.tv_nsec - t0.tv_nsec) / 1000000);
+    CHECK(r == 0);
+    CHECK(msync(s, WS_MAP, MS_SYNC | MS_INVALIDATE) == 0);   /* nothing left to write */
+    s[PG + 0x310] = 0xf1;
+    CHECK(msync(s + PG, PG, MS_SYNC) == 0);                  /* a part of the mapping */
+    s[2 * PG + 0x310] = 0xf2;
+    uint8_t *t = mmap(NULL, PG, PROT_READ, MAP_SHARED, ro, 2 * PG);
+    CHECK(t != MAP_FAILED);
+    if (t != MAP_FAILED) {   /* the file's pages, whichever mapping wrote them */
+        CHECK(msync(t, PG, MS_SYNC) == 0);
+        CHECK(munmap(t, PG) == 0);
+    }
+    uint8_t *h = mmap(NULL, 3 * PG, PROT_READ | PROT_WRITE, MAP_SHARED, rw, 0);
+    CHECK(h != MAP_FAILED);
+    if (h != MAP_FAILED) {   /* a hole: ENOMEM, after the mapped parts */
+        h[0x320] = 0xf3;
+        h[2 * PG + 0x320] = 0xf4;
+        CHECK(munmap(h + PG, PG) == 0);
+        errno = 0;
+        CHECK(msync(h, 3 * PG, MS_SYNC) == -1 && errno == ENOMEM);
+        CHECK(msync(h + 2 * PG, PG, MS_SYNC) == 0);
+        CHECK(munmap(h, PG) == 0 && munmap(h + 2 * PG, PG) == 0);
+    }
+    CHECK(byte_at(rw, 0x320) == 0xf3 && byte_at(rw, 2 * PG + 0x320) == 0xf4);
+    ws_step("msync", before);
+}
+
+/* On ext (dir): the steps above. */
+static void ws_ext(const char *dir)
+{
+    snprintf(ws_path, sizeof(ws_path), "%s/pt-wmap.bin", dir);
+    CHECK(put_file(ws_path, WS_SIZE));
+    int rw = open(ws_path, O_RDWR), ro = open(ws_path, O_RDONLY);
+    CHECK(rw >= 0 && ro >= 0);
+    uint8_t *s = rw >= 0 ? mmap(NULL, WS_MAP, PROT_READ | PROT_WRITE, MAP_SHARED, rw, 0)
+                         : MAP_FAILED;
+    CHECK(s != MAP_FAILED);
+    if (ro < 0 || s == MAP_FAILED)
+        return;
+    CHECK(same(s, 0, WS_SIZE) && zero(s + WS_SIZE, WS_MAP - WS_SIZE));
+    ws_stores(rw, ro, s);
+    ws_write_and_store(rw, s);
+    ws_mprotect(rw, ro, s);
+    ws_tails(rw, s);
+    ws_msync_clean(dir);
+    ws_msync(rw, ro, s);   /* last: it waits for the write-back */
+    CHECK(munmap(s, WS_MAP) == 0);
+    close(rw);
+    close(ro);
+    CHECK(unlink_settled(ws_path) == 0);
+}
+
+/* On fat (dir): no writable shared mapping (ENODEV, EACCES on a
+ * read-only descriptor), but an O_RDWR descriptor's read-only one, which
+ * mprotect can't make writable, sees writes. */
+static void ws_fat(const char *dir)
+{
+    int before = pt_failures();
+    snprintf(ws_path, sizeof(ws_path), "%s/pt-wmap.bin", dir);
+    CHECK(put_file(ws_path, WS_SIZE));
+    int rw = open(ws_path, O_RDWR), ro = open(ws_path, O_RDONLY);
+    CHECK(rw >= 0 && ro >= 0);
+    errno = 0;
+    CHECK(mmap(NULL, WS_MAP, PROT_READ | PROT_WRITE, MAP_SHARED, ro, 0) == MAP_FAILED &&
+          errno == EACCES);
+    errno = 0;
+    CHECK(mmap(NULL, WS_MAP, PROT_READ | PROT_WRITE, MAP_SHARED, rw, 0) == MAP_FAILED &&
+          errno == ENODEV);
+    uint8_t *m = mmap(NULL, WS_MAP, PROT_READ, MAP_SHARED, rw, 0);
+    CHECK(m != MAP_FAILED);
+    if (m != MAP_FAILED) {
+        CHECK(same(m, 0, WS_SIZE));
+        errno = 0;
+        CHECK(mprotect(m, PG, PROT_READ | PROT_WRITE) == -1 && errno == EACCES);
+        CHECK(pwrite(rw, "FAT", 3, 20) == 3 && !memcmp(m + 20, "FAT", 3));
+        CHECK(msync(m, WS_MAP, MS_SYNC) == 0 && msync(m, WS_MAP, MS_ASYNC) == 0);
+        CHECK(munmap(m, WS_MAP) == 0);
+    }
+    close(rw);
+    close(ro);
+    CHECK(unlink_settled(ws_path) == 0);
+    ws_step("fat: ENODEV, EACCES, a read-only mapping", before);
+}
+
+void pt_mmap_wshared(char **argv)
+{
+    const char *dir = "/data";
+    for (int i = 1; argv[i]; i++)
+        if (!strcmp(argv[i], "mmap-wshared") && argv[i + 1] && argv[i + 1][0] == '/')
+            dir = argv[i + 1];
+    struct statfs sf;
+    CHECK(statfs(dir, &sf) == 0);
+    printf("posixtest: mmap-wshared: %s is %s\n", dir, sf.f_type == EXT4_MAGIC ? "ext" : "not ext");
+    if (sf.f_type == EXT4_MAGIC) {
+        ws_ext(dir);
+    } else {
+        CHECK(sf.f_type == FAT_MAGIC);
+        ws_fat(dir);
+    }
 }
 
 void pt_spawn_data(char **argv)

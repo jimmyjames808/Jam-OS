@@ -1,0 +1,23 @@
+# posixtest mmap-wshared (tools/posix-mmap-test.sh, case wshared, which
+# makes stick a with a FAT volume): writable shared mappings of a file on
+# the FAT stick (ENODEV and EACCES as before), then on /data (ext: a
+# store seen by read, pread, a second mapping and a child, write and
+# stores on one page, mprotect adding write, truncate's tails, msync).
+# The stick comes in as /usb0 before posixtest starts (a program's
+# namespace is the shell's as it is then).
+# QEMU_INPUT=this file, command line "shell", the drive aimg.
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send T=w
+wait {prompt}
+monitor device_add usb-storage,id=sa,bus=xhci.0,port=2,drive=aimg
+wait 60 init: /usb0 mounted
+send posixtest mmap-wshared /usb0; echo wsf-$T=$?
+wait 120 wsf-w=
+wait {prompt}
+send posixtest mmap-wshared; echo ws-$T=$?
+wait 400 ws-w=
+wait {prompt}
+send reboot -f
+wait reboot: resetting
