@@ -6,6 +6,9 @@
 #     failed): PASS, FAIL with its failure line and log, rerun-PASS for a run
 #     that fails once (--rerun-failed), the queue time, VAR=value words with
 #     and without `env`, every run with JAMOS_REMOTE_NOSYNC=1 after one --prepare;
+#   - with --rerun-failed the first try's output directories are still there
+#     after the second try, as <dir>.try1 (here, and detached: back from the
+#     PC, no disk images), and the table names them;
 #   - report gives the same; `run` of a runlist that passes exits 0;
 #   - bad runlists (a name twice, a missing script, no command, nothing) are
 #     refused (exit 2) and leave no batch;
@@ -97,6 +100,37 @@ echo "$out" | grep -q "first try: exit 1 in [0-9]* s, $PC_BATCH_DIR/$id/flaky.tr
 out2=$($B report "$id")
 [ $? = 1 ] && [ "$out2" = "$out" ] || fail "report differs from wait's table"
 [ "$($B report > /dev/null; echo $?)" = 1 ] || fail "report with no id isn't the newest batch"
+
+# ---- --rerun-failed keeps the first try's output directories ----
+# A checkout of its own: the stand-in runs the commands where it is, and they write build/t/<run>.
+mkdir -p "$tmp/co3/tools" "$tmp/co3/build/t/flaky3.try1"
+cp tools/pc-batch.sh tools/pc-batch-driver.sh "$tmp/co3/tools/"
+echo old > "$tmp/co3/build/t/flaky3.try1/old"   # an earlier batch's
+cat > "$tmp/co3/list" <<EOF
+ok3     sh -c 'mkdir -p build/t/ok3 && echo fine > build/t/ok3/f' build/t/ok3
+flaky3  sh -c 'mkdir -p build/t/flaky3; if [ -f $tmp/flaky3 ]; then echo second > build/t/flaky3/f; exit 0; fi; touch $tmp/flaky3; echo first > build/t/flaky3/f; echo panic > build/t/flaky3/panic.log; echo "flaky3: PANIC"; exit 1' build/t/flaky3/
+fails3  sh -c 'mkdir -p build/t/fails3; echo try >> build/t/fails3/f; echo "fails3: FAILED"; exit 1' build/t/fails3
+EOF
+out=$(cd "$tmp/co3" && PC_BATCH_DIR= tools/pc-batch.sh run --rerun-failed list)
+rc=$?
+id3=$(echo "$out" | sed -n 's/^batch \([^:]*\):.*/\1/p')
+[ $rc = 1 ] || fail "rerun outputs: exit $rc: $out"
+row ok3 PASS 2
+row flaky3 rerun-PASS 2
+row fails3 FAIL 2
+c3=$tmp/co3/build
+[ "$(cat "$c3/t/flaky3.try1/f" 2> /dev/null)" = first ] && [ "$(cat "$c3/t/flaky3.try1/panic.log" 2> /dev/null)" = panic ] ||
+    fail "rerun: the first try's files are gone from build/t/flaky3.try1"
+[ ! -e "$c3/t/flaky3.try1/old" ] || fail "rerun: an earlier batch's file is still in build/t/flaky3.try1"
+[ "$(cat "$c3/t/flaky3/f")" = second ] || fail "rerun: the second try's file isn't in build/t/flaky3"
+[ "$(wc -l < "$c3/t/fails3.try1/f" 2> /dev/null | tr -d ' ')" = 1 ] && [ "$(wc -l < "$c3/t/fails3/f" | tr -d ' ')" = 2 ] ||
+    fail "rerun: build/t/fails3.try1 isn't the first try's alone"
+[ ! -e "$c3/t/ok3.try1" ] || fail "rerun: a run that passed first has a .try1"
+echo "$out" | grep -q "first try: exit 1 in [0-9]* s, build/batch/$id3/flaky3.try1.log; out build/t/flaky3.try1\$" ||
+    fail "rerun: the table doesn't name flaky3's first try: $out"
+echo "$out" | grep -q "^      first try: log build/batch/$id3/fails3.try1.log; out build/t/fails3.try1\$" ||
+    fail "rerun: the table doesn't name fails3's first try: $out"
+echo "$out" | grep -q "ok3.*try1" && fail "rerun: ok3 in the table has a first try: $out"
 
 # ---- run: everything passes ----
 printf 'a true\nb sh -c "exit 0"\n' > "$tmp/list2"
@@ -286,13 +320,14 @@ upto() {   # upto <seconds> <test...>: until the test holds
 # and a second checkout's at the same time: each gets its own runs and outputs.
 cat > "$tmp/co/list" <<EOF
 ok     true
-bad    sh -c 'echo "bad: FAILED (on the PC)"; exit 1'
-flaky  sh -c 'f=$tmp/dflaky; [ -f \$f ] && exit 0; touch \$f; echo "flaky: TIMEOUT"; exit 1'
+bad    sh -c 'echo "bad: FAILED (on the PC)"; mkdir -p build/t/bad; echo try >> build/t/bad/f; exit 1' build/t/bad
+flaky  sh -c 'f=$tmp/dflaky; mkdir -p build/t/flaky; [ -f \$f ] && { echo second > build/t/flaky/f; exit 0; }; touch \$f; echo first > build/t/flaky/f; echo disk > build/t/flaky/x.img; echo "flaky: TIMEOUT"; exit 1' build/t/flaky
 out    sh -c 'mkdir -p build/t/out && echo one > build/t/out/f && echo disk > build/t/out/x.img' build/t/out/
 tier   sh -c 'test "\$JAMOS_TIER" = push'
 EOF
 printf '%s\n' "out2 sh -c 'mkdir -p build/t/out && echo two > build/t/out/f' build/t/out" > "$tmp/co2/list"
 : > "$tmp/ssh.log"
+mkdir -p "$tmp/co/build/t/flaky.try1" && echo old > "$tmp/co/build/t/flaky.try1/old"   # an earlier batch's
 out=$(JAMOS_TIER=push D co start --detach --rerun-failed list)
 id=$(bidof "$out")
 out2=$(D co2 start --detach list)
@@ -319,6 +354,17 @@ echo "$out" | grep -q "| bad: FAILED (on the PC)" || fail "detached: bad's failu
 echo "$out" | grep -q "log build/batch/$id/pc/runs/bad.log" || fail "detached: bad's log: $out"
 [ "$(cat "$tmp/co/build/t/out/f" 2> /dev/null)" = one ] || fail "detached: build/t/out didn't come back"
 [ ! -e "$tmp/co/build/t/out/x.img" ] || fail "detached: a disk image came back"
+# --rerun-failed on the PC: the first try's output directories came back as <dir>.try1.
+[ "$(cat "$tmp/co/build/t/flaky.try1/f" 2> /dev/null)" = first ] || fail "detached: build/t/flaky.try1 (the first try's) didn't come back"
+[ "$(cat "$tmp/co/build/t/flaky/f" 2> /dev/null)" = second ] || fail "detached: build/t/flaky isn't the second try's"
+[ ! -e "$tmp/co/build/t/flaky.try1/x.img" ] && [ ! -e "$tmp/co/build/t/flaky/x.img" ] || fail "detached: flaky's disk image came back"
+[ ! -e "$tmp/co/build/t/flaky.try1/old" ] || fail "detached: an earlier batch's file is in build/t/flaky.try1"
+[ "$(wc -l < "$tmp/co/build/t/bad.try1/f" 2> /dev/null | tr -d ' ')" = 1 ] && [ "$(wc -l < "$tmp/co/build/t/bad/f" | tr -d ' ')" = 2 ] ||
+    fail "detached: build/t/bad.try1 isn't the first try's alone"
+echo "$out" | grep -q "first try: exit 1 in [0-9]* s, build/batch/$id/pc/runs/flaky.try1.log; out build/t/flaky.try1\$" ||
+    fail "detached: the table doesn't name flaky's first try: $out"
+echo "$out" | grep -q "^      first try: log build/batch/$id/pc/runs/bad.try1.log; out build/t/bad.try1\$" ||
+    fail "detached: the table doesn't name bad's first try: $out"
 [ "$(cat "$tmp/co2/build/t/out/f" 2> /dev/null)" = "" ] || fail "co2's output before its wait"
 [ "$(D co2 wait "$id2" > /dev/null; echo $?)" = 0 ] || fail "co2's batch"
 [ "$(cat "$tmp/co2/build/t/out/f" 2> /dev/null)" = two ] && [ "$(cat "$tmp/co/build/t/out/f")" = one ] ||

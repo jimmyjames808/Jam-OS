@@ -573,8 +573,8 @@ passed. The findings below are the list's groups, most tests first.
 
 - **How the programs get onto the test disk.** The package format holds no
   file over 64 MiB (PO13), so nothing is packaged: `tools/cr/base-stick.py`
-  copies the image, grows its `/data` to 640 MiB (as `tools/bigprog-test.sh`
-  does) and writes `/data/cr/out/jamos/base_unittests` and
+  copies the image, grows its `/data` to 6 GiB (640 MiB until CBF6's
+  `DriveInfoTest` wanted more; see CBF6 notes, "The stick is 6 GiB") and writes `/data/cr/out/jamos/base_unittests` and
   `test_child_process` (from `~/cr/ports/chromium/stage`, built by
   `tools/cr/build.sh`; the recipe lists `test_child_process` now), their
   approval lines in `/data/etc/allow` and their page tables in
@@ -1321,7 +1321,7 @@ items, each a posixtest case that does what the base test does. Which
 |-----|---------------------------------|------|
 | `O_WRONLY` on a file of mode 0200 | `FileUtilTest.ChangeFilePermissionsAndWrite` | nothing |
 | `getcwd` of a removed directory | `FileUtilTest.MakeAbsoluteFilePathNoResolveSymbolicLinks` | `chdir("..")` out of a removed directory (Linux's works, ours is a path as text) |
-| `/sys/dev/block/<major>:<minor>/{removable,queue/rotational,size}` | `DriveInfoTest.GetFileDriveInfo` | the test wants `size` of at least 10,000,000, and sysfs counts 512-byte sectors (base reads it as bytes): the file's volume must be 5.12 GB or more, which the 640 MiB stick of `tools/cr/base-stick.py` is not |
+| `/sys/dev/block/<major>:<minor>/{removable,queue/rotational,size}` | `DriveInfoTest.GetFileDriveInfo` | the test wants `size` of at least 10,000,000, and sysfs counts 512-byte sectors (base reads it as bytes): the file's volume must be 5.12 GB or more; the stick's `/data` is 6 GiB now (item below), off the skip list once the stick had it ("The stick is 6 GiB", below) |
 | `/proc/<pid>/smaps_rollup` | `SmapsRollupTest.ReadAndParse` | nothing |
 | (the 256-byte path) | `FileUtilTest.DeleteDeep` | **not a 256-byte limit; stopped on a design question, below** |
 
@@ -1409,6 +1409,28 @@ items, each a posixtest case that does what the base test does. Which
   256-byte one `ENAMETOOLONG`, 15 levels through descriptors with a file
   and a link at the bottom, the 16th `ENAMETOOLONG`, all removed from the
   bottom through the parents' descriptors.
+- **The stick is 6 GiB (tooling, 2026-10-18).** `DriveInfoTest` needs a
+  volume of 5.12 GB or more (`size` is in sectors and base reads bytes), so
+  `tools/cr/base-stick.py` makes `/data` 6,144 MiB (`CR_BASE_DATA_MIB`,
+  was 640) and the stick is a sparse file: 6.25 GiB apparent, 117 MiB on the
+  disk of the PC (measured: `du` 119,368 KiB; `e2fsck -fn` of its ext volume
+  exits 0). What keeps it sparse: the image is copied up to where `/data`
+  starts only, through `tools/cr/sparsecopy.py` (holes and 64 KiB blocks of
+  zeros stay holes; selftest in `make check`); an ext volume is made on a
+  file that ends where `/data` starts, so `jamext mkfs` extends it, knows
+  the new blocks read zeros and writes none of its own (a FAT one is
+  `mformat`ted at full size: its two tables, 12 MB); `base-run.py` copies the
+  stick for every boot with `sparsecopy` too (Python's `shutil.copyfile`
+  wrote the whole 6 GiB: 6,553,604 KiB measured, 4 to 9 s each time);
+  `tools/qemu-test.sh`'s `cp` keeps the holes (GNU cp, measured 116 MiB); and
+  `tools/mkimage.py --gpt` (`QEMU_BOOT_NVME=1`) now leaves 64 KiB blocks of
+  zeros as holes in the drive it makes (it wrote out the whole partition).
+  A base run's disk use on the PC stays at some 120 to 240 MB for each boot
+  (the stick, its copies, the saved one), as with 640 MiB. Off the skip
+  list: `FileUtilTest.ChangeFilePermissionsAndWrite`,
+  `MakeAbsoluteFilePathNoResolveSymbolicLinks`, `SmapsRollupTest.ReadAndParse`
+  and `DriveInfoTest.GetFileDriveInfo`. Not run: the PC's stage still has
+  CCS's `base_unittests`; the next measurement relinks it from main first.
 
 #### CB-RM (2026-10-17)
 

@@ -35,7 +35,10 @@
 #
 # Exit status (wait, report, run): 0 every run passed (or passed when run
 # again), 1 one failed, 124 not finished yet, 2 a usage error.
-# --rerun-failed: a failed run runs once more and passes as "rerun-PASS".
+# --rerun-failed: a failed run runs once more and passes as "rerun-PASS". The
+# second try writes into the same output directories, so the first try's are
+# copied aside before it starts, as <dir>.try1 (build/t/kt4 -> build/t/kt4.try1,
+# no disk images), and the table names them.
 # The PC: JAMOS_REMOTE (jamos-pc), and only there (JAMOS_REMOTE_ONLY=1); if it
 # doesn't answer, the batch (and a run that finds it gone, before it ran
 # anything) tries again once after a minute. The runs start PC_BATCH_STAGGER
@@ -79,6 +82,14 @@ split() {
     done
     [ $# -gt 0 ] || return 1
     cmdv=("$@")
+}
+
+# outv: a run's output directories, its arguments under build/ (as remote-test brings them back).
+outs_of() {
+    local a
+    outv=()
+    split "$(cat "$d/$1.cmd")"
+    for a in "${cmdv[@]}"; do case $a in build/?*) outv+=("${a%/}") ;; esac; done
 }
 
 # The names in a batch, in the runlist's order.
@@ -145,6 +156,12 @@ collect() {
                 mkdir -p "$a" && cp -Rp "$d/pc/out/$n/$a/." "$a/"
             elif [ -f "$rd/$n.rc" ]; then
                 echo "pc-batch: nothing came back for $a" >&2
+            fi
+            # The first try's, kept by the driver before the second try: only
+            # what it kept, not an older batch's.
+            if [ -d "$d/pc/out/$n/$a.try1" ]; then
+                rm -rf "$a.try1"
+                mkdir -p "$a.try1" && cp -Rp "$d/pc/out/$n/$a.try1/." "$a.try1/"
             fi
         done < "$rd/$n.outs"
     done
@@ -239,6 +256,19 @@ run_one() {   # run_one <name>: one run, its log, time and exit status
     mv "$d/$n.rc.new" "$d/$n.rc"
 }
 
+# keep_try1 <name>: a run's output directories, as the first try left them here
+# (remote-test brought them back), copied to <dir>.try1 before the second try
+# writes into them (and brings its own back over them).
+keep_try1() {
+    local a
+    outs_of "$1"
+    for a in ${outv[@]+"${outv[@]}"}; do
+        [ -d "$a" ] || continue
+        rm -rf "$a.try1"
+        cp -Rp "$a" "$a.try1"
+    done
+}
+
 launch() {   # launch <name>: run_one in the background once a job is free; adds to pids
     [ -z "$pids" ] || sleep "${PC_BATCH_STAGGER:-0.3}"
     while [ "$(jobs -rp | wc -l | tr -d ' ')" -ge "${PC_BATCH_JOBS:-32}" ]; do sleep 1; done
@@ -296,6 +326,7 @@ drive() {
             for n in $(names); do
                 [ "$(cat "$d/$n.rc")" = 0 ] && continue
                 for f in log rc t0 t1; do mv "$d/$n.$f" "$d/$n.try1.$f"; done
+                keep_try1 "$n"
                 launch "$n"
             done
             [ -z "$pids" ] || wait $pids
@@ -308,15 +339,21 @@ drive() {
 
 # result <name>: res= (PASS FAIL rerun-PASS RUNNING QUEUED NOT-RUN LOST CANCELLED) secs= queued= note=
 result() {
-    local n=$1 rc t0 t1
-    res= secs= queued= note=
+    local n=$1 rc t0 t1 a
+    res= secs= queued= note= try1outs=
+    if [ -f "$rd/$n.try1.rc" ]; then   # the first try's output directories that are here
+        outs_of "$n"
+        for a in ${outv[@]+"${outv[@]}"}; do
+            [ -d "$a.try1" ] && try1outs="$try1outs $a.try1"
+        done
+    fi
     if [ -f "$rd/$n.rc" ]; then
         rc=$(cat "$rd/$n.rc")
         t0=$(cat "$rd/$n.t0") t1=$(cat "$rd/$n.t1")
         secs=$((t1 - t0))
         if [ "$rc" = 0 ]; then
             res=PASS
-            [ -f "$rd/$n.try1.rc" ] && res=rerun-PASS note="first try: exit $(cat "$rd/$n.try1.rc") in $(($(cat "$rd/$n.try1.t1") - $(cat "$rd/$n.try1.t0"))) s, $rd/$n.try1.log"
+            [ -f "$rd/$n.try1.rc" ] && res=rerun-PASS note="first try: exit $(cat "$rd/$n.try1.rc") in $(($(cat "$rd/$n.try1.t1") - $(cat "$rd/$n.try1.t0"))) s, $rd/$n.try1.log${try1outs:+; out$try1outs}"
         else
             res=FAIL note="exit $rc"
             [ "$rc" = 3 ] && note="exit 3: the PC didn't answer"
@@ -415,10 +452,11 @@ report() {
         case $res in
         FAIL)
             outs=
-            split "$(cat "$d/$n.cmd")"
-            for a in "${cmdv[@]}"; do case $a in build/?*) outs="$outs ${a%/}" ;; esac; done
+            outs_of "$n"
+            for a in ${outv[@]+"${outv[@]}"}; do outs="$outs $a"; done
             echo "      $note; log $rd/$n.log${outs:+; out$outs}"
-            why "$rd/$n.log" ;;
+            why "$rd/$n.log"
+            [ -f "$rd/$n.try1.rc" ] && echo "      first try: log $rd/$n.try1.log${try1outs:+; out$try1outs}" ;;
         rerun-PASS)
             echo "      $note"
             why "$rd/$n.try1.log" ;;
