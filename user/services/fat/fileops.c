@@ -443,6 +443,8 @@ static bool written(uint32_t o)
 static status_t op_map(void *ctx, uint32_t flags, handle_t *out_vmo, uint64_t *out_size)
 {
     struct fat_file *h = ctx;
+    if (flags == FILE_MAP_WRITE)
+        return ERR_NOT_SUPPORTED;   /* fat's mappings are read-only (docs/WRITEMAP-PLAN.md) */
     if (flags != FILE_MAP_READ && flags != FILE_MAP_EXEC)
         return ERR_INVALID_ARGS;
     if (!(h->flags & FS_READ))
