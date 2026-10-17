@@ -22,26 +22,35 @@
 # Shrunk 2026-10-17 (CB-RM) from CR_BASE_ALL=1 CR_BASE_LISTED=1 runs of base_unittests
 # relinked against main 0fa8eea5 (fork, EFAULT, CBF2a/2b/4, ext limits): what
 # passed came off, 596 listed became 259 (docs/CR-PLAN.md, "CB-RM"). The run's
-# death tests use gtest's fast style (base-run.py --death-style): base's own
-# threadsafe style execve()s the program in the clone child, which waits for FL3.
+# death tests used gtest's fast style then.
+#
+# Shrunk again 2026-10-17 (CCS) from CR_BASE_ALL=1 CR_BASE_LISTED=1 runs in base's
+# own threadsafe death test style (base-run.py's default again): the clone
+# child's calls run on a stack of the layer's own, base_unittests asks for
+# `svc exec` (it starts itself and test_child_process, programs on /data), FL3's
+# exec, and a forwarded signal that allocates nothing. 38 launching tests and the
+# four that set the threadsafe style came off; what is left of the two groups
+# went into the groups below by cause (docs/CR-PLAN.md, "CCS").
 
-[posix] death tests that still fail with gtest's fast style (the harness default: the child is a fork, FL1b and FL2; 275 of the 281 CB2 listed pass that way). StackDumpSignalHandlerIsMallocFree: the forked child dies of SIGSEGV but its stack trace never reaches the captured stderr (the child's stderr is a file reopened by path at its first use, FL2; why the handler writes nothing is not found). The other four set the threadsafe style themselves: gtest's clone child runs execve on a two-page stack, and the layer's execve (path_get has 4 KiB buffers) overflows it, so the child dies of "page fault at rip <__jl_path_get>" and prints no "Check failed": FL3 (docs/CR-PLAN.md, "CB-RM"). With CR_BASE_DEATH=threadsafe (base's own default) 145 of the 281 fail that way and 125 pass only because their matcher accepts any death
-SequenceCheckerTest.MoveOffSequenceBanned
+[posix] the layer's calls allocate from the program's own malloc (fd.c's calloc of a description at every open, procfs's buffers, ...), which Linux's calls never touch. StackDumpSignalHandlerIsMallocFree puts in a malloc that crashes, then raises SIGSEGV: base's handler is async-signal-safe, but its BeingDebugged() opens /proc/self/status, the open's calloc crashes, and the handler prints nothing (either death style). Needs the layer's own heap (docs/CR-PLAN.md, "CCS")
 StackTraceDeathTest.StackDumpSignalHandlerIsMallocFree
-ThreadCheckerTest.MoveOffThreadBanned
-WeakPtrDeathTest.ArrowOperatorChecksOnBadDereference
-WeakPtrDeathTest.StarOperatorChecksOnBadDereference
 
 [posix] inotify_init and inotify_init1 (syscalls 253 and 294) are ENOSYS: no file watching
 FilePathWatcher*
 
-[launch] base::LaunchProcess and the multi-process test children: fork works (FL1b, FL2) but the forked child's execvp fails (it prints "LaunchProcess: failed to execvp:" and exits 127; no kernel line and no ENOSYS line, the errno is not logged): execve in a forked child is FL3's. 15 of these pass anyway, vacuously (the test never reads the child's exit status, or looks before the child has failed: ProcessUtilTest.SpawnChild, ProcessTest.Terminate, ...), and stay listed so FL3's CR_BASE_ALL=1 rerun checks them for real. SharedMemorySwitchTest.PassViaSwitch, HistogramSharedMemoryTest.PassSharedMemoryRegion_Enabled and FieldTrialListTest.PassFieldTrialSharedMemoryOnCommandLine passed in CB2b the same way (exit_code stays 0 until a wait sets it) and fail now that the fork is real (docs/CR-PLAN.md, "CB-RM")
-All/HistogramSharedMemoryTest.PassSharedMemoryRegion_Enabled/0
-All/SharedMemorySwitchTest.PassViaSwitch/0
-All/SharedMemorySwitchTest.PassViaSwitch/1
-All/SharedMemorySwitchTest.PassViaSwitch/2
-All/SharedMemorySwitchTest.PassViaSwitch/3
-FieldTrialListTest.PassFieldTrialSharedMemoryOnCommandLine
+[launch] a program on /data started through init's /svc/exec (a forked child's execve of base_unittests: spawn, wait, exit) gets the hand-over init writes it (CR2F, CR-REVIEW-POSIX Q1 decided A): its directory is /, not its caller's, and it is AT_SECURE, so the crt drops TMPDIR from its environment. CurrentDirectory's child finds itself in / ("/tmp vs. /"); the signal-file tests' child looks for its file (a name relative to the directory) in / and never finds it, so it runs to the test's timeout (KillSlowChild; GetTerminationStatus*: still running). Q1's option C (the directory given as a channel) would mend it (docs/CR-PLAN.md, "CCS")
+ProcessUtilTest.CurrentDirectory
+ProcessUtilTest.GetTerminationStatusCrash
+ProcessUtilTest.GetTerminationStatusSigKill
+ProcessUtilTest.GetTerminationStatusSigTerm
+ProcessUtilTest.KillSlowChild
+
+[posix] a thread's id is never its process's pid here, the first thread's included (a decision: docs/CR-PLAN.md, "CCS"). base's tid cache takes the thread whose tid is the pid for the main thread and refreshes only that one after a fork, so a forked child's main thread keeps its parent's tid (PlatformThreadTidCacheTest); ForkWithFlags' child checks that getpid() is the tid CLONE_CHILD_SETTID stored
+ForkWithFlagsTest.UpdatesPidCache
+PlatformThreadTidCacheTest.MainThreadFirst
+PlatformThreadTidCacheTest.MainThreadSecond
+
+[posix] fcntl's record locks are each process's own: no keeper holds them across processes (libc-test's fcntl too), so the child's lock is granted while the parent holds the file's
 FileLockingTest.LockAndUnlockExclusive
 FileLockingTest.LockAndUnlockShared
 FileLockingTest.UnlockOnCloseExclusive
@@ -49,45 +58,16 @@ FileLockingTest.UnlockOnCloseShared
 FileLockingTest.UnlockOnExitExclusive
 FileLockingTest.UnlockOnExitShared
 FileLockingTest.UnlockOnTerminate
-ForkWithFlagsTest.UpdatesPidCache
-LaunchTest.GetAppOutputWithInvalidExecutableShouldFail
-LoggingTest.CheckCausesDistinctBreakpoints
-PlatformThreadTidCacheTest.MainThreadFirst
-PlatformThreadTidCacheTest.MainThreadSecond
-ProcessGTestOutputTest.FoundTestCaseNotEnforced
-ProcessGTestOutputTest.RunMockTests
-ProcessMetricsTest.GetChildOpenFdCount
-ProcessTest.ChildProcessIsRunning
-ProcessTest.Create
-ProcessTest.CreationTimeOtherProcess
-ProcessTest.Duplicate
-ProcessTest.Move
-ProcessTest.Terminate
-ProcessTest.TerminateCurrentProcessImmediatelyWithNonZeroExitCode
-ProcessTest.TerminateCurrentProcessImmediatelyWithZeroExitCode
-ProcessTest.TerminateProcessForBadMessage
-ProcessTest.WaitForExit
-ProcessTest.WaitForExitWithNegativeTimeout
-ProcessTest.WaitForExitWithTimeout
-ProcessUtilTest.CurrentDirectory
-ProcessUtilTest.EnsureTerminationGracefulExit
-ProcessUtilTest.EnsureTerminationUndying
-ProcessUtilTest.FDRemapping
-ProcessUtilTest.FDRemappingIncludesStdio
-ProcessUtilTest.GetAppOutput
-ProcessUtilTest.GetAppOutputWithExitCode
-ProcessUtilTest.GetParentProcessId2
-ProcessUtilTest.GetTerminationStatusCrash
-ProcessUtilTest.GetTerminationStatusSigKill
-ProcessUtilTest.GetTerminationStatusSigTerm
-ProcessUtilTest.InvalidCurrentDirectory
-ProcessUtilTest.KillSlowChild
+
+[posix] clone of a process sharing our directory and umask (CLONE_FS without CLONE_VM) is refused, EINVAL ("clone flags 529" in the ENOSYS log): LaunchProcess's case with clone_flags CLONE_FS fails, its others pass. Copying instead of sharing would pass it (the child execs at once); not decided (docs/CR-PLAN.md, "CCS")
 ProcessUtilTest.LaunchProcess
-ProcessUtilTest.PreExecHook
-ProcessUtilTest.SpawnChild
-RustCommandLineTest.SpawnsSubprocessWithNewCommandLine
+
+[posix] a handler run at a call's boundary (a raise: abort(), a kill of ourselves) gets zeros for the registers in its ucontext (signal.c's run_handler), where Linux gives those of the call: the CHECK's abort() handler reads REG_RIP 0 and sends it as the crash address
+LoggingTest.CheckCausesDistinctBreakpoints
+
+[proc] another process's /proc/<pid>/fd and /proc/<pid>/stat are ENOSYS (the ENOSYS log: "path /proc/38/fd", "path /proc/30/stat"). MeasureChildCpuUsage would fail even with them: its busy child is a forked child's execve of base_unittests, so the pid it watches waits while the program runs as another (spawn, wait, exit)
+ProcessMetricsTest.GetChildOpenFdCount
 SystemMetricsTest.MeasureChildCpuUsage
-UnitTestLauncherDelegateTester.RunMockTests
 
 [posix] mincore (CBF2b) answers from the kernel's count of present pages in each mapping: exact for a mapping with all or none of its pages present, a guess between (the first resident pages of the mapping), so a test that asks about one page of a part-resident mapping fails (CheckPageInCore says false for a page that is there; the heap profiler's resident_total reads 0). 12 of the 21 pass (the other Purge* tests, ProcessMemoryDumpTest.CountResidentBytes*). Needs the per-page kernel query: CR-PLAN, "CBF2b notes", decision 1
 AlternateTestParams/PartitionAllocTest.PurgeDiscardableNonPageSizedAlloc/0

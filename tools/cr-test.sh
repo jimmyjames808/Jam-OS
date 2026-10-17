@@ -33,8 +33,8 @@
 #           tools/cr/base_unittests.skip are not run. CR_BASE_SHARD=i/n,
 #           CR_BASE_ALL=1, CR_BASE_LISTED=1 (only the suites with a test on
 #           the list; with CR_BASE_ALL=1 the way to re-measure it),
-#           CR_BASE_DEATH=threadsafe (death tests the way base sets them: the
-#           child execve()s the program; the default is fast: fork only),
+#           CR_BASE_DEATH=fast (death tests in a fork only; the default is
+#           threadsafe, the way base sets them: the child execve()s the program),
 #           CR_BASE_ONLY=<glob>, CR_BASE_ENV="NAME=value ..."
 #           (default TMPDIR and TEST_TMPDIR=/data/cr/tmp; CR_BASE_ENV= empty
 #           leaves both unset and the programs use init's /tmp); the stick's
@@ -218,7 +218,7 @@ case_base() {
     for e in ${CR_BASE_ENV-TMPDIR=/data/cr/tmp TEST_TMPDIR=/data/cr/tmp}; do extra="$extra --env $e"; done
     # shellcheck disable=SC2086
     if python3 tools/cr/base-run.py --shard "${CR_BASE_SHARD:-0/1}" --mem "${QEMU_MEM:-4G}" \
-       --death-style "${CR_BASE_DEATH:-fast}" ${CR_BASE_ALL:+--all} ${CR_BASE_LISTED:+--listed} ${CR_BASE_ONLY:+--only "$CR_BASE_ONLY"} ${CR_BASE_ARGS:+--args " $CR_BASE_ARGS"} $extra \
+       --death-style "${CR_BASE_DEATH:-threadsafe}" ${CR_BASE_ALL:+--all} ${CR_BASE_LISTED:+--listed} ${CR_BASE_ONLY:+--only "$CR_BASE_ONLY"} ${CR_BASE_ARGS:+--args " $CR_BASE_ARGS"} $extra \
        "$dir/run" "$stick" > "$dir/base-run.out" 2>&1; then
         echo PASS > "$dir/result"
     else

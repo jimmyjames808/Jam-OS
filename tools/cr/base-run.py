@@ -350,10 +350,10 @@ def main(argv):
                     help="only the suites with a test named on the skip list (not a wildcard "
                     "pattern's: FilePathWatcher* waits out a minute a test); with --all, to re-measure the list")
     ap.add_argument("--args", default="", help="more arguments for base_unittests, e.g. ' --v=1' (a space first)")
-    ap.add_argument("--death-style", default="fast", choices=("fast", "threadsafe"),
-                    help="gtest's death test style. base's own default is threadsafe: the child execve()s the "
-                    "program again, which a clone child on gtest's two-page stack can't do here yet "
-                    "(docs/CR-PLAN.md, CB-RM); fast forks and runs the statement")
+    ap.add_argument("--death-style", default="threadsafe", choices=("fast", "threadsafe"),
+                    help="gtest's death test style: threadsafe, base's own default (a clone child on two "
+                    "pages execve()s the program again: docs/CR-PLAN.md, CCS), or fast (a fork runs the "
+                    "statement)")
     ap.add_argument("outdir")
     ap.add_argument("stick")
     args = ap.parse_args(argv)
