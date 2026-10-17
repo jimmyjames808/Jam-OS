@@ -58,6 +58,7 @@ int64_t sysc_vmo_create_child(handle_t vmo, uint32_t flags, uint64_t offset, uin
                               uint64_t out);
 int64_t sysc_vmo_make_jit(handle_t vmo, handle_t root, uint64_t out);
 int64_t sysc_vmar_clone(handle_t dst, uint64_t vmos, uint64_t children, uint32_t n, uint32_t flags);
+int64_t sysc_vmar_resident(handle_t vmar, uint64_t addr, uint64_t len, uint64_t out);
 int64_t sysc_process_create(handle_t job, uint64_t name, uint64_t name_len, uint32_t flags,
                             uint64_t proc_out, uint64_t vmar_out);
 int64_t sysc_process_start(handle_t proc, handle_t thread, uint64_t entry, uint64_t stack,

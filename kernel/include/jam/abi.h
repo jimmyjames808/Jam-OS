@@ -291,6 +291,11 @@ struct port_packet {
  * have mappings. */
 #define VMAR_CLONE_MAX VMAR_MAX_MAPPINGS
 
+/* vmar_resident: the most pages one call answers for (a longer len is
+ * ERR_OUT_OF_RANGE): a page of bytes, 16 MiB of address space, the chunk
+ * Linux's mincore takes at a time. */
+#define VMAR_RESIDENT_MAX 4096u
+
 /* process_get_maps: one mapping of a process's address space (/proc's
  * maps, stat and status are made from these). */
 struct map_info {

@@ -200,6 +200,13 @@ int64_t sysc_vmar_protect(handle_t vmar, uint64_t addr, uint64_t len, uint32_t f
     return sys_vmar_protect(t, vmar, addr, len, flags);
 }
 
+/* mincore's kernel half (abi/syscalls.def): built in the next commit. */
+int64_t sysc_vmar_resident(handle_t vmar, uint64_t addr, uint64_t len, uint64_t out)
+{
+    (void)vmar, (void)addr, (void)len, (void)out;
+    return ERR_NOT_SUPPORTED;
+}
+
 /* The address space's clone (docs/FORK-PLAN.md section 1.1; abi/syscalls.def
  * has the contract). The children's slots are reserved and their values
  * written out before the copy, so nothing can fail after it. */

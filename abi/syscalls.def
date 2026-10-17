@@ -366,6 +366,33 @@
 # so a handle value of the caller's left in the copy is almost always
 # ERR_BAD_HANDLE there.
 65  vmar_clone        status    handle_t dst, const handle_t *vmos, handle_t *children, uint32_t n, uint32_t flags
+# vmar_resident: mincore's kernel half (docs/CR-PLAN.md, "MC notes"). One
+# byte for each page of [addr, addr + len) of the caller's own address
+# space, from addr on, into out: 1 if the page's memory is there, else 0.
+# A page is there when the VMO mapped at it holds it: committed (a
+# copy-on-write page shared with a clone or a child counts in each that
+# holds it), any page of a contiguous or physical VMO, a pager VMO's page
+# in its cache (clean, dirty or writing); not a page never touched,
+# decommitted, evicted, or past the VMO's size. The mapping's permissions
+# don't matter (memory mapped with none keeps its pages). A pager VMO's
+# cache is told only through a mapping that may write it (its maximum has
+# write: a writable pager VMO mapped through a handle with RIGHT_WRITE):
+# through any other, every page of a pager VMO below its size reads 1,
+# and so does every page of a pager VMO's child that would come from the
+# pager VMO (its window) and that the child doesn't hold itself, so no
+# program learns what others read of a file it can't write (Linux's rule
+# since 5.0). Returns how many pages from addr on are mapped, each with
+# its byte: fewer than len's pages when the page after them has no
+# mapping (0: addr has none). addr and len page-aligned, len > 0
+# (ERR_INVALID_ARGS); at most VMAR_RESIDENT_MAX pages, inside the user
+# range (ERR_OUT_OF_RANGE). Needs RIGHT_READ on vmar, which must be the
+# caller's own address space (ERR_ACCESS_DENIED for another's, such as a
+# parent's handle of its child's). ERR_INVALID_ARGS if out can't be
+# written (bytes before the failure may have been). One look under the
+# address space's region lock (a map, unmap or fault there waits), each
+# VMO's table read a leaf (512 pages) at a time under its lock, the bytes
+# copied out after with no lock held: the answer may be a moment old.
+66  vmar_resident     i64       handle_t vmar, uint64_t addr, uint64_t len, uint8_t *out
 
 # processes, threads, jobs --------------------------------------------------
 # process_start moves `arg0` (a handle in the caller's table, usually the
