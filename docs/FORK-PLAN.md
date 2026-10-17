@@ -910,8 +910,8 @@ section, cases `fds`, `chromium`, `ttys`, `maps` in `forkfd.c`):
   their `waiters` counts with them), poll.c's and sockwait.c's per-thread
   ports (their keys' values too), poll.c's list of sleeping sets and its
   wake count, a pipe or socketpair end's sleepers (CBF2a's: the parent's
-  other threads) and its leftover's writer pid, pty.c's table; fresh locks: fobj.c's (objects no kept description holds leave the
-  list), dev.c's (a `/dev/shm` name stays only for an object a kept
+  other threads) and its leftover's writer pid, pty.c's table; fresh
+  locks: fobj.c's (objects no kept description holds leave the list), dev.c's (a `/dev/shm` name stays only for an object a kept
   descriptor brought), procfs.c's, enosys.c's (its table kept: the child
   doesn't say again what the parent said), tty.c's. The cached service
   channels (`/svc/dns`, `/svc/unix`, `/svc/exec`) are all libjam's
