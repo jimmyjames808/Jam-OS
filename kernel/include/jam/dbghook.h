@@ -45,6 +45,9 @@ enum {
     DBG_PAGER_EVICT,       /* pager_cache.c evict, the oldest clean page popped off the list,
                               before its VMO is locked to take it out; no lock held (arg:
                               the page) */
+    DBG_PROCESS_INFO,      /* process.c process_get_info, the snapshot taken under the
+                              process lock, before the CPU time is added; no lock held
+                              (arg: the process) */
     DBG_N
 };
 

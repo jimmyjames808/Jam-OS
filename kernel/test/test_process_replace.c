@@ -38,6 +38,10 @@
  *       a kill at a different moment each round of a replace that must
  *       end other threads: the process dies killed, both images go and
  *       the job is empty.
+ *   replace_info_one_snapshot
+ *       the process dies right after process_get_info's snapshot: the
+ *       faults it reports are those of the address space the snapshot
+ *       saw (docs/FORK-REVIEW-KERNEL.md, finding 3).
  *
  * Real processes run small programs assembled here (rp_blob): the old
  * image at O_CODE, the new one at N_CODE (the same code VMO mapped twice),
@@ -49,6 +53,7 @@
 #include <jam/aspace.h>
 #include <jam/aspace_vmo.h>
 #include <jam/channel.h>
+#include <jam/dbghook.h>
 #include <jam/event.h>
 #include <jam/handle.h>
 #include <jam/kprintf.h>
@@ -1069,4 +1074,46 @@ KTEST(replace_racing_kill)
         rp_end(&r);
     }
     kprintf("ktest replace_racing_kill: the new image ran in %u of %u rounds\n", ran, ROUNDS);
+}
+
+/* ---- FR1 (docs/FORK-REVIEW-KERNEL.md) ------------------------------------------ */
+
+/* Finding 3: the process ends right after process_get_info's snapshot
+ * (DBG_PROCESS_INFO, no lock held): the faults it reports are still those
+ * of the address space the snapshot saw, not of none. */
+static struct process *pi_proc;
+static int pi_fired;   /* atomic */
+
+static void pi_hook(void *arg)
+{
+    if (arg != pi_proc || __atomic_exchange_n(&pi_fired, 1, __ATOMIC_ACQ_REL))
+        return;
+    process_kill(pi_proc, PROCESS_KILLED_CODE, true);
+    KT_EQ(object_wait_one(process_kobject(pi_proc), SIG_TERMINATED,
+                          uptime_ns() + kt_patience_ms(10000) * NS_PER_MS, NULL),
+          OK);
+}
+
+KTEST(replace_info_one_snapshot)
+{
+    struct rp r;
+    rp_new(&r, "rp-new");
+    rp_start(&r);
+    struct process_info before = info_of(r.p);
+    KT_ASSERT(before.faults > 0);   /* its main thread touched its code, stack and data */
+    pi_proc = r.p;
+    __atomic_store_n(&pi_fired, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&dbg_hooks[DBG_PROCESS_INFO], pi_hook, __ATOMIC_RELEASE);
+    struct process_info during = info_of(r.p);
+    __atomic_store_n(&dbg_hooks[DBG_PROCESS_INFO], NULL, __ATOMIC_RELEASE);
+    pi_proc = NULL;
+    kprintf("ktest replace_info_one_snapshot: faults %lu before, %lu in the snapshot of a "
+            "process that ended after it\n", before.faults, during.faults);
+    KT_ASSERT(__atomic_load_n(&pi_fired, __ATOMIC_ACQUIRE));
+    KT_EQ(during.state, PROCESS_RUNNING);
+    KT_ASSERT(during.faults >= before.faults);
+    struct process_info after = info_of(r.p);
+    KT_EQ(after.state, PROCESS_DEAD);
+    KT_EQ(after.faults, 0);
+    rp_end(&r);
 }
