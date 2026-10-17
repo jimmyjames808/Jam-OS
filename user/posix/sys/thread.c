@@ -274,6 +274,55 @@ long thread_apply(long tid, thread_op *op, void *arg)
     return st == OK ? 0 : lx_err(st);
 }
 
+unsigned thread_tids(uint32_t *out, unsigned from, unsigned cap)
+{
+    uint32_t f = first_tid();
+    unsigned n = 0;
+    lock_take(&threads_lock);
+    if (f) {
+        if (n >= from && n - from < cap)
+            out[n - from] = f;
+        n++;
+    }
+    for (unsigned i = 0; i < nthreads; i++) {
+        if (n >= from && n - from < cap)
+            out[n - from] = threads[i].tid;
+        n++;
+    }
+    lock_give(&threads_lock);
+    return n;
+}
+
+bool thread_tid_exists(uint32_t tid)
+{
+    uint32_t f = first_tid();
+    bool found = tid && tid == f;
+    lock_take(&threads_lock);
+    for (unsigned i = 0; i < nthreads && !found; i++)
+        found = threads[i].tid == tid;
+    lock_give(&threads_lock);
+    return found;
+}
+
+long thread_cpu_ns(uint32_t tid, uint64_t *ns)
+{
+    uint32_t f = first_tid();
+    handle_t h = HANDLE_INVALID;
+    status_t st = OK;
+    lock_take(&threads_lock);
+    for (unsigned i = 0; i < nthreads && h == HANDLE_INVALID; i++)
+        if (threads[i].tid == tid)
+            h = threads[i].handle;
+    if (h == HANDLE_INVALID && f && tid == f)
+        h = startup_handle(SR_SELF_THREAD);
+    if (h != HANDLE_INVALID)
+        st = kp_cpu_ns(HANDLE_INVALID, h, ns);
+    lock_give(&threads_lock);
+    if (h == HANDLE_INVALID)
+        return -ESRCH;
+    return st == OK ? 0 : lx_err(st);
+}
+
 /* musl asks the kernel to wake a dead owner's robust mutexes; the answer
  * of a kernel without them is ENOSYS, and musl goes on (it walks the list
  * itself when a thread exits). */

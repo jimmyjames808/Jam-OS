@@ -14,3 +14,14 @@ typedef status_t thread_op(handle_t thread, void *arg);
  * thread.c's). 0, -ESRCH if there is no such thread, or the errno of the
  * status op returned. */
 long thread_apply(long tid, thread_op *op, void *arg);
+
+/* The ids of this process's threads (/proc/<pid>/task): the first thread's,
+ * then those clone made. Up to cap of them, from the from'th, into out;
+ * how many there are in all. */
+unsigned thread_tids(uint32_t *out, unsigned from, unsigned cap);
+/* Is tid exactly the id of one of our threads (a process's own id is not
+ * its first thread's here, as it is for thread_apply)? */
+bool thread_tid_exists(uint32_t tid);
+/* The CPU time (ns) the thread with exactly this id has used, into *ns.
+ * 0, or -ESRCH if it is no thread of ours. */
+long thread_cpu_ns(uint32_t tid, uint64_t *ns);

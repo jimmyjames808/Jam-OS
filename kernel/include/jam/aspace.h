@@ -131,6 +131,9 @@ uint32_t aspace_get_maps(struct aspace *as, uint64_t from, struct map_info *out,
  * adding it; a mapping that only reads or writes one doesn't count.
  * Lock-free. */
 bool     aspace_maps_jit(struct aspace *as);
+/* aspace_fault calls on as so far (every one, resolved or not): atomic,
+ * lock-free. process_info.faults. */
+uint64_t aspace_fault_count(struct aspace *as);
 
 /* Resolve a fault at addr for `access` (ASPACE_READ/WRITE/EXEC): commit
  * the VMO page if needed and install the page-table entry. OK: retry the
