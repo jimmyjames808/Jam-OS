@@ -179,8 +179,8 @@ static inline status_t fswatch_add_call(handle_t ch, bool idl_within, uint64_t i
  * watch.
  * ERR_ACCESS_DENIED: no read permission (Linux's rule); ERR_NO_SPACE: a
  * limit of watches (the volume's or the channel's); ERR_INVALID_ARGS: no
- * event in `mask`, a bit that is not IN_*'s, or IN_MASK_ADD with
- * IN_MASK_CREATE. */
+ * IN_* bit at all in `mask` (other bits are ignored), or IN_MASK_ADD with
+ * IN_MASK_CREATE (Linux's EINVAL). */
 static inline status_t fswatch_add_until(handle_t ch, uint64_t deadline_ns, const char *path, uint32_t path_len, uint32_t mask, uint32_t *out_id, uint8_t *out_existed)
 {
     return fswatch_add_call(ch, false, deadline_ns, path, path_len, mask, out_id, out_existed);

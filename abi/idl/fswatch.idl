@@ -84,8 +84,8 @@ const IN_ISDIR        0x40000000
 # watch.
 # ERR_ACCESS_DENIED: no read permission (Linux's rule); ERR_NO_SPACE: a
 # limit of watches (the volume's or the channel's); ERR_INVALID_ARGS: no
-# event in `mask`, a bit that is not IN_*'s, or IN_MASK_ADD with
-# IN_MASK_CREATE.
+# IN_* bit at all in `mask` (other bits are ignored), or IN_MASK_ADD with
+# IN_MASK_CREATE (Linux's EINVAL).
 1  add     (str[<=4095] path, u32 mask) -> (u32 id, u8 existed)
 # End watch `id`: its queued events are dropped and IN_IGNORED queued for
 # it. An id that is not a watch of this channel now (it ended, or never
