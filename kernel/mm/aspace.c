@@ -9,8 +9,8 @@
  * fault path's lookup is O(log n) however many there are (MAX_MAPPINGS at
  * most). Each mapping also keeps its `gap`, the free bytes just below it
  * (down to the mapping before, or to USER_BASE), and the tree keeps the
- * largest gap of each subtree, so first-fit placement goes straight down
- * to the lowest gap that fits: O(log n) too. A change keeps the gaps
+ * largest gap of each subtree, so placement (top_fit: top down) goes straight
+ * down to the highest gap that fits: O(log n) too. A change keeps the gaps
  * right: every mapping whose base or predecessor's end moved has its gap
  * fixed (gap_fix), which updates the summaries above it.
  *
@@ -873,29 +873,36 @@ static void map_unlink(struct aspace *as, struct mapping *m)
     gap_fix(as, n);
 }
 
-/* Region lock held: the lowest address from USER_BASE up with len free
- * bytes (*base), and the mapping that will be right before it (*prev, NULL
- * for none). ERR_NO_RESOURCES if no gap is that big. The gaps the tree
- * keeps lead the way down: a subtree whose largest gap is too small is
- * never entered, so this is O(log n). */
-static status_t first_fit(const struct aspace *as, uint64_t len, uint64_t *base,
-                          struct mapping **prev)
+/* Region lock held: the top len bytes of the highest gap that holds them
+ * (*base), and the mapping that will be right before it (*prev, NULL for
+ * none). ERR_NO_RESOURCES if no gap is that big. Top down, as Linux places
+ * mmap: the low addresses stay free for what asks for them by address (a
+ * program linked high leaves the low 4 GiB empty, as Chromium's zero
+ * segment wants). The space above the last mapping comes first; then the
+ * gaps the tree keeps lead the way down: a subtree whose largest gap is
+ * too small is never entered, so this is O(log n). */
+static status_t top_fit(const struct aspace *as, uint64_t len, uint64_t *base,
+                        struct mapping **prev)
 {
-    struct mapping *at = NULL;   /* the lowest mapping with a gap of len below it */
+    struct mapping *last = map_of(avl_last(&as->maps));
+    if (USER_TOP - (last ? mend(last) : USER_BASE) >= len) {
+        *base = USER_TOP - len;
+        *prev = last;
+        return OK;
+    }
+    struct mapping *at = NULL;   /* the highest mapping with a gap of len below it */
     for (const struct avl_node *n = as->maps.root; n && !at;) {
-        if (max_gap_of(n->left) >= len)
-            n = n->left;
+        if (max_gap_of(n->right) >= len)
+            n = n->right;
         else if (map_of(n)->gap >= len)
             at = map_of(n);
         else
-            n = max_gap_of(n->right) >= len ? n->right : NULL;
+            n = max_gap_of(n->left) >= len ? n->left : NULL;
     }
-    struct mapping *p = at ? prev_of(at) : map_of(avl_last(&as->maps));
-    uint64_t b = p ? mend(p) : USER_BASE;
-    if (!at && USER_TOP - b < len)
-        return ERR_NO_RESOURCES;   /* not after the last one either */
-    *base = b;
-    *prev = p;
+    if (!at)
+        return ERR_NO_RESOURCES;
+    *base = at->base - len;
+    *prev = prev_of(at);
     return OK;
 }
 
@@ -1501,7 +1508,7 @@ static void cut_locked(struct aspace *as, struct mapping *first, uint64_t addr, 
 }
 
 /* Region lock held: put m (not in the tree yet) at *addr (ASPACE_FIXED) or
- * the first gap that fits, fill it if it is kept, and merge it with its
+ * the highest gap that fits, fill it if it is kept, and merge it with its
  * neighbours. *addr: where it went. m may be freed by then (merged). */
 static status_t map_place_locked(struct aspace *as, struct mapping *m, unsigned flags,
                                  uint64_t *addr)
@@ -1515,7 +1522,7 @@ static status_t map_place_locked(struct aspace *as, struct mapping *m, unsigned 
         else
             prev = floor_of(as, m->base);
     } else {
-        st = first_fit(as, m->len, &m->base, &prev);
+        st = top_fit(as, m->len, &m->base, &prev);
     }
     if (st == OK && !overlap_room(as, m->vmo, vfirst(m), vend(m), 0, 0, VMAR_MAX_OVERLAP))
         st = ERR_NO_RESOURCES;

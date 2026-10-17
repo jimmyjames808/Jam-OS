@@ -320,8 +320,11 @@ Every driver and service is a userspace process from the start.
   a handle with both rights; a duplicate without write maps execute-only
   (the argument is at the top of `kernel/mm/aspace.c`). An address space's mappings are a balanced tree by
   address that also keeps the largest free gap of each subtree, so a
-  fault's lookup and a first-fit placement are O(log n), up to
-  `VMAR_MAX_MAPPINGS` (65,536). Neighbouring mappings of one VMO at
+  fault's lookup and a placement are O(log n), up to
+  `VMAR_MAX_MAPPINGS` (65,536). A mapping without `VMAR_FIXED` goes top
+  down, as Linux places mmap: at the top of the highest gap that holds it,
+  so the low addresses stay free for what asks for them (a program linked
+  above 4 GiB leaves the low 4 GiB empty: Chromium's, MH). Neighbouring mappings of one VMO at
   contiguous offsets with the same permissions and maximum merge after
   every map, replace and protect (kept mappings never do), so committing
   and decommitting pieces of a big reservation leaves its mapping count

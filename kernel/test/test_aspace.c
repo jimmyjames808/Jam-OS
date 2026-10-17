@@ -109,32 +109,36 @@ KTEST(aspace_map_args)
     a = USER_TOP - PG;
     KT_EQ(aspace_map(as, v, 0, PG, R | ASPACE_FIXED, &a), OK);
     KT_EQ(a, USER_TOP - PG);
-    /* First fit starts at USER_BASE, then packs. */
+    a = USER_BASE;
+    KT_EQ(aspace_map(as, v, 0, PG, R | ASPACE_FIXED, &a), OK);
+    KT_EQ(a, USER_BASE);
+    /* Placement is top down: right below the highest mapping, then packs. */
     uint64_t b1, b2, b3, b4;
     KT_EQ(aspace_map(as, v, 0, 2 * PG, R, &b1), OK);
-    KT_EQ(b1, USER_BASE);
+    KT_EQ(b1, USER_TOP - 3 * PG);
     KT_EQ(aspace_map(as, v, 0, 3 * PG, RW, &b2), OK);
-    KT_EQ(b2, USER_BASE + 2 * PG);
+    KT_EQ(b2, b1 - 3 * PG);
     /* FIXED overlapping anything is refused, adjacent is fine. */
     b3 = b2 + 2 * PG;
     KT_EQ(aspace_map(as, v, 0, PG, R | ASPACE_FIXED, &b3), ERR_ALREADY_BOUND);
-    b3 = b1 - PG;
+    b3 = USER_BASE - PG;
     KT_EQ(aspace_map(as, v, 0, PG, R | ASPACE_FIXED, &b3), ERR_INVALID_ARGS);   /* page 0 */
-    b3 = b2 + 3 * PG + 4 * PG;
+    b3 = b2 - 4 * PG - PG;
     KT_EQ(aspace_map(as, v, 0, PG, R | ASPACE_FIXED, &b3), OK);
-    /* A 4-page hole after b2: a 5-page first fit skips it, 4 fits it. */
+    /* A 4-page hole below b2: a 5-page placement skips it, 4 fits it. */
     KT_EQ(aspace_map(as, v, 0, 5 * PG, R, &b4), OK);
-    KT_EQ(b4, b3 + PG);
+    KT_EQ(b4, b3 - 5 * PG);
     uint64_t b5;
     KT_EQ(aspace_map(as, v, 0, 4 * PG, R, &b5), OK);
-    KT_EQ(b5, b2 + 3 * PG);
+    KT_EQ(b5, b2 - 4 * PG);
     /* A no-access mapping (guard) is allowed. */
     uint64_t g;
     KT_EQ(aspace_map(as, v, 0, PG, 0, &g), OK);
+    KT_EQ(g, b4 - PG);
     KT_EQ(aspace_fault(as, g, ASPACE_READ), ERR_ACCESS_DENIED);
 
-    KT_EQ(aspace_mapping_count(as), 7);
-    KT_EQ(vmo_kobject(v)->refs, 8);   /* every mapping holds one */
+    KT_EQ(aspace_mapping_count(as), 8);
+    KT_EQ(vmo_kobject(v)->refs, 9);   /* every mapping holds one */
     aspace_unref(as);                 /* unmaps everything */
     KT_EQ(vmo_kobject(v)->refs, 1);
     put(v);
@@ -1016,7 +1020,7 @@ KTEST(vmar_sys_rights)
     /* Full handle: RW works; the kernel-only CAN bits and junk are refused. */
     uint64_t a = 0;
     KT_EQ(sys_vmar_map(&t, vh, h, 0, 2 * PG, RW, &a), OK);
-    KT_EQ(a, USER_BASE);
+    KT_EQ(a, USER_TOP - 2 * PG);   /* top down */
     uint64_t b = 0;
     KT_EQ(sys_vmar_map(&t, vh, h, 0, PG, R | ASPACE_CAN_EXEC, &b), ERR_INVALID_ARGS);
     KT_EQ(sys_vmar_map(&t, vh, h, 0, PG, R | (1u << 20), &b), ERR_INVALID_ARGS);

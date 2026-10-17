@@ -18,7 +18,7 @@
 /* Never together with ASPACE_WRITE, but on a JIT VMO's mapping (vmo_make_jit;
  * aspace.c's header has the argument). */
 #define ASPACE_EXEC  (1u << 2)
-#define ASPACE_FIXED (1u << 3)   /* map at *addr exactly (else first fit) */
+#define ASPACE_FIXED (1u << 3)   /* map at *addr exactly (else the top of the highest gap that fits) */
 /* aspace_map only: a VMO_KEEP_PAGES VMO, read-only, every entry filled at
  * map time and kept for the mapping's life (see VMAR_KEPT_ONLY in
  * <jam/abi.h>). */

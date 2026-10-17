@@ -19,7 +19,7 @@
  *       job's charges are exactly right (aspace_check).
  *   aspace_hostile_overlap_decommit
  *       CR1 finding 1: one address space holds VMAR_MAX_OVERLAP mappings
- *       over a page of one VMO and no more (first fit, fixed, a range; a
+ *       over a page of one VMO and no more (placed, fixed, a range; a
  *       replace in place of one fits); at the cap over 512 pages, all
  *       written, a child's write-protects come in batches within
  *       VMO_BATCH_BUDGET and the decommit in one. Then 64 address spaces
@@ -339,7 +339,7 @@ static uint64_t batch_cost(void)
     return __atomic_load_n(&vmo_batch_cost_most, __ATOMIC_RELAXED);
 }
 
-/* n mappings of v's pages [0, pages) in as by first fit, every page
+/* n mappings of v's pages [0, pages) in as, placed, every page
  * touched (written if rw); *last: the last one's address. */
 static void ov_map(struct aspace *as, struct vmo *v, uint64_t pages, unsigned n, bool rw,
                    uint64_t *last)
@@ -361,7 +361,7 @@ KTEST(aspace_hostile_overlap_decommit)
     KT_EQ(vmo_create(512 * PG, 0, &v), OK);
 
     /* One address space holds VMAR_MAX_OVERLAP mappings of page 0 and no
-     * more, by first fit, fixed or a range over it. A replace of one by
+     * more, placed, fixed or a range over it. A replace of one by
      * the same page fits (the one it unmaps doesn't count), page 1 fits,
      * and page 0 again once one is gone. */
     uint64_t first = 0, a = 0, b = 0;
@@ -372,13 +372,13 @@ KTEST(aspace_hostile_overlap_decommit)
     b = 1ull << 40;
     KT_EQ(aspace_map(as, v, 0, PG, R | ASPACE_CAN_READ | FIX, &b), ERR_NO_RESOURCES);
     KT_EQ(aspace_map(as, v, PG, PG, R | ASPACE_CAN_READ | FIX, &b), OK);
-    b = first + PG;
+    b = first - PG;   /* the second, right below (top down) */
     KT_EQ(aspace_map(as, v, 0, PG, R | ASPACE_CAN_READ | REPL, &b), OK);
     KT_EQ(aspace_check(as), VMAR_MAX_OVERLAP + 1);
     KT_EQ(aspace_unmap(as, first, PG), OK);
     b = 0;
     KT_EQ(aspace_map(as, v, 0, PG, R | ASPACE_CAN_READ, &b), OK);
-    KT_EQ(b, first);   /* the lowest hole */
+    KT_EQ(b, first);   /* the highest hole */
     batches_reset();
     KT_EQ(vmo_decommit(v, 0, PG), OK);
     uint64_t one_us = batch_us();

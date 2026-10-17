@@ -4,7 +4,7 @@
  *   aspace_merge_shapes
  *       neighbours of one VMO at contiguous offsets with the same
  *       permissions and maximum become one mapping after a map (fixed or
- *       first fit), a replace and a protect; a different VMO, offset,
+ *       placed), a replace and a protect; a different VMO, offset,
  *       maximum, or a kept mapping, never; a protect in the middle splits
  *       and the opposite protect merges it whole again; a decommit across
  *       a merged boundary clears the entries on both sides (the merged
@@ -27,10 +27,10 @@
  *   aspace_replace_big
  *       VMAR_REPLACE inside a 1 GiB reservation with the same VMO and
  *       offsets leaves one mapping; with another VMO three, and back.
- *   aspace_first_fit_holes
- *       first fit among 2,048 mappings with random holes punched in them
- *       lands where a scan of the pages says (the tree's gaps lead the
- *       way), and keeps doing so as the holes fill.
+ *   aspace_top_fit_holes
+ *       top-down placement among 2,048 mappings with random holes punched
+ *       in them lands where a scan of the pages says (the tree's gaps lead
+ *       the way), and keeps doing so as the holes fill.
  *   aspace_fault_time_flat
  *       a fault (and a fixed map and unmap) costs about the same with
  *       60,000 mappings below it as with 64: timed, with a generous bound,
@@ -279,29 +279,30 @@ KTEST(aspace_cap_65536)
     struct job *j = kt_fresh_job();
     struct aspace *as;
     KT_EQ(aspace_create_charged(j, &as), OK);
-    struct vmo *v = new_vmo(SPREAD_PAGES + 1, 0), *w = new_vmo(3, 0);
-    /* Two neighbours that don't merge (other permissions), high up:
+    struct vmo *v = new_vmo(SPREAD_PAGES + 3, 0), *w = new_vmo(3, 0);
+    /* Two neighbours that don't merge (other permissions), low down:
      * P = w[0,1) R, Q = w[1,3) RW, both may be read-write. */
     uint64_t y = 1ull << 44;
     map_at(as, w, 0, 1, R | CANRW, y, OK);
     map_at(as, w, 1, 2, RW | CANRW, y + PG, OK);
-    /* The rest by first fit, each a page of v (spread): none merge. */
+    /* The rest placed (top down), each a page of v (spread): none merge.
+     * The last, lowest, maps a page with two that nothing maps below it. */
     uint64_t a = 0, last = 0, lastp = 0;
     for (uint32_t i = 2; i < VMAR_MAX_MAPPINGS; i++) {
-        lastp = spread(i);
+        lastp = i + 1 < VMAR_MAX_MAPPINGS ? spread(i) : SPREAD_PAGES + 2;
         KT_EQ(aspace_map(as, v, lastp * PG, PG, R | CANRW, &a), OK);
         last = a;
     }
-    KT_EQ(last, USER_BASE + (VMAR_MAX_MAPPINGS - 3) * PG);
+    KT_EQ(last, USER_TOP - (VMAR_MAX_MAPPINGS - 2) * PG);
     KT_EQ(aspace_mapping_count(as), VMAR_MAX_MAPPINGS);
     KT_EQ(job_used(j, JOB_LIMIT_PAGES), 1 + VMAR_MAX_MAPPINGS / ASPACE_MAPPINGS_PER_PAGE);
 
     /* One more is refused; so is a split, by protect or unmap. */
     KT_EQ(aspace_map(as, v, 0, PG, R | CANRW, &a), ERR_NO_RESOURCES);
     KT_EQ(aspace_protect(as, y + 2 * PG, PG, 0), ERR_NO_RESOURCES);
-    map_at(as, v, lastp + 1, 2, R | CANRW, last + PG, OK);   /* after last's page: merges */
+    map_at(as, v, lastp - 2, 2, R | CANRW, last - 2 * PG, OK);   /* below last's page: merges */
     KT_EQ(aspace_mapping_count(as), VMAR_MAX_MAPPINGS);
-    KT_EQ(aspace_unmap(as, last + PG, PG), ERR_NO_RESOURCES);   /* a hole in [last, +3) */
+    KT_EQ(aspace_unmap(as, last - PG, PG), ERR_NO_RESOURCES);   /* a hole in [last - 2, +3) */
     KT_EQ(aspace_mapping_count(as), VMAR_MAX_MAPPINGS);
     /* A protect that splits Q and merges its first page into P: no more
      * mappings than before, so it fits at the cap. */
@@ -313,13 +314,13 @@ KTEST(aspace_cap_65536)
           1 + aspace_pt_pages(as) + VMAR_MAX_MAPPINGS / ASPACE_MAPPINGS_PER_PAGE);
 
     /* 30,000 at once, then all. */
-    KT_EQ(aspace_unmap(as, USER_BASE + 1000 * PG, 30000 * PG), OK);
+    KT_EQ(aspace_unmap(as, USER_TOP - 31000 * PG, 30000 * PG), OK);
     KT_EQ(aspace_mapping_count(as), VMAR_MAX_MAPPINGS - 30000);
-    KT_EQ(aspace_fault(as, USER_BASE + 1000 * PG, ASPACE_READ), ERR_NOT_FOUND);
-    KT_EQ(aspace_fault(as, USER_BASE + 31000 * PG, ASPACE_READ), OK);
+    KT_EQ(aspace_fault(as, USER_TOP - 1001 * PG, ASPACE_READ), ERR_NOT_FOUND);
+    KT_EQ(aspace_fault(as, USER_TOP - 31001 * PG, ASPACE_READ), OK);
     refs_are(v, 1 + VMAR_MAX_MAPPINGS - 30000 - 2);
-    KT_EQ(aspace_map(as, v, 0, PG, R | CANRW, &a), OK);   /* room again: the lowest hole */
-    KT_EQ(a, USER_BASE + 1000 * PG);
+    KT_EQ(aspace_map(as, v, 0, PG, R | CANRW, &a), OK);   /* room again: the highest hole */
+    KT_EQ(a, USER_TOP - 1001 * PG);
     KT_EQ(aspace_unmap(as, USER_BASE, USER_TOP - USER_BASE), OK);
     KT_EQ(aspace_mapping_count(as), 0);
     refs_are(v, 1);
@@ -403,12 +404,13 @@ KTEST(aspace_replace_big)
     put(w);
 }
 
-/* ---- first fit ---------------------------------------------------------------- */
+/* ---- top-down placement ------------------------------------------------------ */
 
 #define FIT_PAGES 2048u
 
-/* The lowest page index from which n pages are free (pages past the
- * window are free). */
+/* The lowest page index from which n pages are free, page i being the
+ * (i + 1)-th below USER_TOP (pages past the window are free). Placement
+ * takes the top n pages of the highest gap that fits: these. */
 static unsigned fit_expect(const uint8_t *used, unsigned n)
 {
     for (unsigned i = 0;; i++) {
@@ -421,7 +423,7 @@ static unsigned fit_expect(const uint8_t *used, unsigned n)
     }
 }
 
-KTEST(aspace_first_fit_holes)
+KTEST(aspace_top_fit_holes)
 {
     struct aspace *as;
     KT_EQ(aspace_create(&as), OK);
@@ -431,7 +433,7 @@ KTEST(aspace_first_fit_holes)
     uint64_t rng = 0xf17;
     /* Every page its own mapping (pages of v spread: none merge). */
     for (unsigned i = 0; i < FIT_PAGES; i++) {
-        map_at(as, v, spread(i), 1, R, USER_BASE + i * PG, OK);
+        map_at(as, v, spread(i), 1, R, USER_TOP - (i + 1) * PG, OK);
         used[i] = 1;
     }
     for (unsigned h = 0; h < 300; h++) {
@@ -444,14 +446,14 @@ KTEST(aspace_first_fit_holes)
             any |= used[i];
             used[i] = 0;
         }
-        KT_EQ(aspace_unmap(as, USER_BASE + p * PG, n * PG), any ? OK : ERR_NOT_FOUND);
+        KT_EQ(aspace_unmap(as, USER_TOP - (p + n) * PG, n * PG), any ? OK : ERR_NOT_FOUND);
     }
     for (unsigned t = 0; t < 600; t++) {
         unsigned n = 1 + (unsigned)(kt_rng(&rng) % 10);
         unsigned want = fit_expect(used, n);
         uint64_t a = 0;
         KT_EQ(aspace_map(as, w, 16 * t * PG, n * PG, R, &a), OK);   /* pages of its own */
-        KT_EQ(a, USER_BASE + want * PG);
+        KT_EQ(a, USER_TOP - (want + n) * PG);   /* the top of the highest gap */
         if (want + n > FIT_PAGES || t % 2) {
             KT_EQ(aspace_unmap(as, a, n * PG), OK);   /* keep the window's model whole */
             continue;
