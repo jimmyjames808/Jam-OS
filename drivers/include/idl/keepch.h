@@ -59,8 +59,10 @@
 /* Constants (the .idl's `const` lines). */
 /* Slots a keeper holds for one service. */
 #define KEEPCH_MAX_SLOTS 1024u
-/* Handles a keeper holds for one service, all slots together. */
-#define KEEPCH_MAX_HANDLES 1024u
+/* Handles a keeper holds for one service, all slots together: room for
+ * extfs's open files, views, maps, watchers and directory channels (about
+ * 1,216 at most; user/services/extfs/keeper.c's asserts). */
+#define KEEPCH_MAX_HANDLES 2048u
 /* Handles in one slot. */
 #define KEEPCH_SLOT_HANDLES 4u
 /* Handles in one restore (a channel message's most). */

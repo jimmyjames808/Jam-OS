@@ -40,8 +40,10 @@ protocol keepch 80
 
 # Slots a keeper holds for one service.
 const MAX_SLOTS     1024
-# Handles a keeper holds for one service, all slots together.
-const MAX_HANDLES   1024
+# Handles a keeper holds for one service, all slots together: room for
+# extfs's open files, views, maps, watchers and directory channels (about
+# 1,216 at most; user/services/extfs/keeper.c's asserts).
+const MAX_HANDLES   2048
 # Handles in one slot.
 const SLOT_HANDLES  4
 # Handles in one restore (a channel message's most).

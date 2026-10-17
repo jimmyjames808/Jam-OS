@@ -185,6 +185,7 @@ bool t_keep_put_drop_restore(void);
 bool t_keep_restore_batches(void);
 bool t_keep_unknown_slots(void);
 bool t_keep_refusals(void);
+bool t_keep_room(void);
 bool t_keep_drain_bounded(void);
 bool t_keep_restore_refusals(void);
 
@@ -388,6 +389,9 @@ bool t_fat_attrs(void);
 bool t_fat_attrs_read_only(void);
 bool t_fat_attr_views(void);
 bool t_fs_attr_ns(void);
+/* ... and fs.opendir, rename_at, link_at: ERR_NOT_SUPPORTED from fat, its
+ * views, the boot image and ramfs. */
+bool t_fs_no_dirs(void);
 /* extfs.c, extfs_restart.c: the extfs service (bin/extfs) over a RAM disk. */
 bool t_extfs_basic(void);
 bool t_extfs_links(void);
