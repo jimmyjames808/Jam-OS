@@ -685,7 +685,9 @@ log's kind, which has no `give`, so an `execve` of a spawned program drops
 them: FL3's, left as it is).
 IL1 had already tested a forked and a spawned child. The exec case holds
 the descriptor in the case process itself because a forked child has none
-to lose.
+to lose. Batch 18103638: init, kt4, the shell scripts basic, cmds,
+commands and files, kd-save, posix-procinfo, posix-fork, posix-execinfo
+and posix-inotify, 11 of 11.
 
 ## 6. Tests
 
