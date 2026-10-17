@@ -321,3 +321,12 @@ the windows' layout (`display.layout`), the terminals' font
 (`terminal.font`), and the network's keys
 ([NETWORK.md](NETWORK.md#settings);
 [ARCHITECTURE.md](../ARCHITECTURE.md#time-and-settings)).
+
+`files.writeback` is how many seconds (1 to 600; 10 if it isn't set) a
+program's store into a file it mapped to write may wait before the ext
+filesystem writes it to the disk by itself (`msync`, `fsync`, `sync` and
+a clean shutdown write it at once). A crash of the program or of the
+filesystem loses nothing; a power cut loses at most that many seconds of
+such stores. Each ext volume reads it from its own `etc/settings` (the
+system's `/data/etc/settings`) when it is mounted: a change counts from
+the next boot.

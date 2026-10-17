@@ -28,8 +28,8 @@
  * names, links followed inside the view, `..`, the permission bits, what
  * a view hides judged where a path resolves; fsops.c the `fs` methods;
  * files.c the open files and the `file` methods; views.c views and
- * subviews; pager.c mapped files and the mount's pager; test.c the test
- * powers. */
+ * subviews; pager.c mapped files and the mount's pager; wback.c their
+ * stores written back; test.c the test powers. */
 #pragma once
 
 #include <stdbool.h>
@@ -136,7 +136,7 @@ extern struct xf_vol vol;
 /* ---- the state (state.c) --------------------------------------------------------- */
 
 #define XF_STATE_KIND   0x73667865u   /* "exfs": svcstate's kind */
-#define XF_STATE_LAYOUT 3u            /* bump on any change to struct xf_state or the
+#define XF_STATE_LAYOUT 4u            /* bump on any change to struct xf_state or the
                                        * requests its slots replay */
 /* A slot's request area: the request (fs.rename's two paths), then from
  * XF_SLOT_DATA its data: the bounce buffer a write's bytes are copied
@@ -174,6 +174,8 @@ struct xf_map {
                                * (adopt.c makes that answer again) */
     uint32_t ino;             /* the file: its inode ... */
     uint32_t igen;            /* ... and that inode's generation */
+    status_t error;           /* shared: the first write-back error since the file's last
+                               * file.sync (ERR_IO, ERR_NO_SPACE), or OK (wback.c) */
     uint64_t key;             /* its VMO's key: XF_SHARED_KEY, or XF_MAP_KEY(seq, its slot) */
 };
 
@@ -450,6 +452,15 @@ status_t maps_peek(uint32_t ino, uint64_t off, uint8_t *data, uint64_t n);
 void     maps_settle(bool done);
 /* A map the running request made goes (its reply failed). */
 void     maps_unmake(uint32_t i);
+/* The slot of key's VMO, or -1. */
+int      maps_slot_of(uint64_t key);
+/* The inode of key's VMO's file now, and its slot (*slot), made from the
+ * key if the state doesn't know it (a fresh start's: the inode the key
+ * names, if it has a name; *slot -1 if no slot is free). ERR_NOT_FOUND
+ * with *slot -1: no such file (gone, or a key to run). */
+status_t maps_key(uint64_t key, struct ext_inode *in, int *slot);
+/* key's VMO cut off for good (its mappers fail as for a pulled stick). */
+void     maps_detach(uint64_t key);
 /* A successor's: the keeper's handle of slot i; the table checked; its
  * handles made to agree with the open files; a map's reply made again. */
 bool     maps_take(uint32_t i, const handle_t *hs, unsigned n);
@@ -457,6 +468,11 @@ const char *maps_check(void);
 void     maps_adopt(void);
 void     maps_drop_unknown(void);
 status_t maps_remake(uint32_t i, handle_t *out);
+/* What the instance before took and never answered queued again, its
+ * writing pages dirty again (PAGER_NEXT_AGAIN), once: at pager_start, or
+ * before, by a write-back in a request adopt.c runs again (a file.sync
+ * whose write-back a death cut off must find those pages dirty). */
+void     maps_again(void);
 /* After the start: the pager waited on, and what the instance before
  * took and never answered served. */
 void     pager_start(void);
@@ -464,6 +480,26 @@ void     pager_start(void);
 void     pager_event(void);
 /* What is queued, served (before each fs request). */
 void     pager_reap(void);
+
+/* ---- wback.c ----------------------------------------------------------------- */
+
+/* pager_start's: the age setting read (files.writeback, the volume's own
+ * etc/settings). */
+void     wback_start(void);
+/* A PAGER_REQ_WRITEBACK: the dirty pages of its range written back. */
+void     wback_request(const struct pager_request *r);
+/* When the age check is next due (DEADLINE_NEVER: never), and the check
+ * itself, run if due (main.c's loop: at most once a second, idle or not). */
+uint64_t wback_due(void);
+void     wback_tick(void);
+/* file.sync: inode ino's shared VMO written back whole; the error kept for
+ * the file since its last file.sync (taken), else OK. */
+status_t wback_file(uint32_t ino, uint32_t igen);
+/* fs.sync: every page dirty now, of every VMO of the pager, written back:
+ * the first error, else OK. */
+status_t wback_all(void);
+/* An orderly stop: as wback_all, for a few seconds at most. */
+void     wback_stop(void);
 
 /* ---- keeper.c ---------------------------------------------------------------- */
 
@@ -494,6 +530,8 @@ enum xf_die {
     XF_DIE_ANSWERED,          /* answered: its reply waits for the next system call */
     XF_DIE_MAP,               /* a file.map made its VMO, not answered */
     XF_DIE_SUPPLY,            /* a page request read, its pages not supplied */
+    XF_DIE_WBACK,             /* a write-back's step: a run begun, its data written, the
+                               * batch committed, a run answered (wback.c) */
     XF_DIE_COUNT,
 };
 bool     test_word(const char *w);
@@ -503,3 +541,7 @@ bool     test_fixed_time(void);
 bool     test_lazy_tail(void);
 bool     test_quick_retry(void);
 bool     test_quick_wait(void);
+/* A file grown from old to size bytes (files.c's truncate): with the
+ * unwritten-grow power, the new blocks allocated as unwritten extents (as
+ * fallocate would), else nothing. */
+status_t test_unwritten(struct ext_inode *in, uint64_t old, uint64_t size);

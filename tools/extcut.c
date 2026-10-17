@@ -405,7 +405,8 @@ static void random_op(struct storm *s, struct request *q)
 {
     static const uint16_t modes[] = { 0600, 0644, 0755, 0700, 0640, 04755 };
     uint32_t pick = (uint32_t)below(6);
-    if ((pick == 4 && has_op(q, OP_CUT)) || (pick == 5 && has_op(q, OP_APPEND)))
+    if ((pick == 4 && has_op(q, OP_CUT)) ||
+        (pick == 5 && (has_op(q, OP_APPEND) || has_op(q, OP_WBACK))))
         pick = 0;
     switch (pick) {
     case 4:
@@ -474,6 +475,12 @@ static void special_ops(struct storm *s, struct request *q, uint32_t at)
         break;
     case 18:
         add_op(q, OP_META, d, 0x8888);
+        break;
+    case 20:  /* write-backs (extfs's wback.c): new data into holes and unwritten
+               * extents in one transaction with the file's times */
+    case 21:
+    case 23:
+        add_op(q, OP_WBACK, s->o_file + at % s->n_file, 0x9990 + at);
         break;
     default:
         break;
@@ -655,16 +662,64 @@ static status_t write_block(struct storm *s, struct run *r, uint32_t obj, uint8_
     return OK;
 }
 
+/* extfs's write-back of a mapped file's runs (user/services/extfs/wback.c)
+ * in one transaction. The file is first grown by four blocks, the first
+ * two a hole and the rest an unwritten extent as fallocate leaves (one
+ * block of it if the volume gives one), its size 100 bytes short of their
+ * end; then the runs, inside the size, never past it: a whole block into
+ * the hole (a new block), one into the unwritten extent (made written), and
+ * the last block's bytes up to the size; then the times, as the write-back
+ * sets them. All its data goes to blocks the committed bitmaps call free,
+ * so a cut before the commit leaves the file as it was. */
+static status_t wback_file(struct ext_fs *fs, struct ext_inode *in, uint64_t value)
+{
+    static uint8_t buf[4096];
+    uint32_t bs = fs->block_size, n = 0;
+    uint64_t at = (ext_isize(in) + bs - 1) / bs, blk = 0;   /* the first block past the end */
+    uint64_t size = (at + 4) * bs - 100;
+    bool done = false;
+    size_t w = 0;
+    status_t st = ext_truncate(fs, in, size, &done);
+    if (st == OK)
+        st = ext_balloc(fs, 0, 2, &blk, &n);
+    struct ext_run r = { .pblk = blk, .len = n, .kind = EXT_RUN_UNWRITTEN };
+    if (st == OK)
+        st = ext_extent_insert(fs, in, (uint32_t)at + 2, &r);
+    if (st == OK)
+        st = ext_iblocks_add(fs, in, n);
+    if (st == OK)
+        st = ext_iput(fs, in);
+    storm_pattern(buf, bs, value);
+    if (st == OK)
+        st = ext_write(fs, in, at * bs, buf, bs, &w);
+    if (st == OK)
+        st = ext_write(fs, in, (at + 2) * bs, buf, bs, &w);
+    if (st == OK)
+        st = ext_write(fs, in, (at + 3) * bs, buf, bs - 100, &w);
+    if (st == OK && ext_isize(in) != size)
+        fail("a write-back changed the file's size");
+    struct ext_time t = { .sec = 1800000000 + (int64_t)(value & 0xffff), .nsec = 0 };
+    if (st == OK) {
+        ext_itime_set(in, EXT_MTIME, &t);
+        ext_itime_set(in, EXT_CTIME, &t);
+        st = ext_iput(fs, in);
+    }
+    return st;
+}
+
 /* U2a's writers on a file: value's low 16 bits of bytes appended (its
  * high bits the pattern), or the file cut to half its size in whole blocks
  * (all of the cut in this transaction: no step between leaves blocks past
- * the size, and no byte inside the old size changes before the commit). */
+ * the size, and no byte inside the old size changes before the commit), or
+ * a write-back. */
 static status_t change_file(struct ext_fs *fs, uint32_t ino, uint8_t kind, uint64_t value)
 {
     struct ext_inode in;
     status_t st = ext_iget(fs, ino, 0, &in);
     if (st != OK)
         return st;
+    if (kind == OP_WBACK)
+        return wback_file(fs, &in, value);
     uint64_t size = ext_isize(&in);
     if (kind == OP_APPEND) {
         static uint8_t buf[3 * 4096];
@@ -704,6 +759,7 @@ static status_t do_op(struct storm *s, struct run *r, const struct op *o, bool s
         return ext_jnl_freed(&r->fs, s->objs[o->obj].blk, 1);
     case OP_APPEND:
     case OP_CUT:
+    case OP_WBACK:
         return change_file(&r->fs, s->objs[o->obj].ino, o->kind, o->value);
     case OP_STEP:
         st = ext_jnl_step(&r->fs, (uint32_t)o->value);

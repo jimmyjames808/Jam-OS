@@ -75,6 +75,12 @@ bool extfs_start_pager(struct fatrun *r, struct ramdisk *rd, handle_t pager)
     return start(r, rd, false, NULL, 0, pager);
 }
 
+bool extfs_start_pager_words(struct fatrun *r, struct ramdisk *rd, handle_t pager,
+                             const char *const *extra, unsigned n)
+{
+    return start(r, rd, false, extra, n, pager);
+}
+
 /* Saved sparse (the stick's /data is small): "jamspars", a u64 of the
  * disk's size, then each 4 KiB block that isn't all zeros as a u64 offset
  * and its bytes (tools/extfs-svc-test.sh makes the image again). */

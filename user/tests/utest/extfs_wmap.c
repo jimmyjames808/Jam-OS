@@ -11,8 +11,8 @@
  * same VMO. FILE_MAP_WRITE is refused without FS_WRITE or FS_READ, through
  * a read-only view and on a file mapped to run (its open for writing is);
  * FILE_MAP_EXEC is refused while a writable map lives, and allowed once
- * it has gone. Nothing is written back yet (WE2): the disk has only the
- * writes, and e2fsck finds it whole. */
+ * it has gone. The stores are written back at the stop (WE2's
+ * extfs_wback tests that), and e2fsck finds the disk whole. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
 #include <check.h>
@@ -273,7 +273,9 @@ static bool found_again(void)
     CHECK_ST(jam_vmar_unmap(startup_handle(SR_SELF_VMAR), addr, 2 * PAGE_SIZE), OK);
     CHECK_ST(jam_handle_close(v), OK);
     t_close(&f);
-    CHECK_ST(t_sync(&r), OK);   /* extfs's next request: a GONE would be served first */
+    /* extfs's next request: a GONE would be served first (fs.stat: fs.sync
+     * would write the stores back, and the clean VMO go) */
+    CHECK_ST(t_stat(&r, "/u.bin", NULL, NULL, NULL), OK);
     CHECK_ST(t_open(&r, "/u.bin", FS_READ, &f), OK);
     CHECK_ST(file_map_until(f.ch, deadline(), FILE_MAP_READ, &v, &size), OK);
     CHECK_EQ(size, model.size);

@@ -17,6 +17,11 @@
  *                                 slot), not committed;
  *                       supply    a page request read from the disk, its
  *                                 pages not supplied;
+ *                       wback     a step of a write-back (wback.c): a run
+ *                                 begun (its pages writing, nothing
+ *                                 written), its data written (no commit),
+ *                                 the batch committed (no PAGER_OP_WRITTEN
+ *                                 yet), a run answered;
  *   crash-on=<name>   a request on a path whose last name is <name>
  *                     crashes extfs (an invalid instruction): the bad
  *                     request of the restart rule, every time it runs;
@@ -31,7 +36,11 @@
  *                     cases don't wait out the pauses;
  *   quick-wait        a block call's every wait is BLOCKCALL_QUICK (3 s),
  *                     not the 30 or 90 s of <blockcall.h>: utest's
- *                     extfs_late cases hold a request past it. */
+ *                     extfs_late cases hold a request past it;
+ *   unwritten-grow    a truncate that grows a file allocates its new
+ *                     blocks as unwritten extents (reading as zeros), as
+ *                     fallocate would (extfs has none): utest's
+ *                     extfs_wback stores into one. */
 #include "extfs.h"
 
 #define DIE_PREFIX   "die="
@@ -40,10 +49,12 @@
 #define LAZY_TAIL    "tail-lazy"
 #define QUICK_RETRY  "quick-retry"
 #define QUICK_WAIT   "quick-wait"
+#define UNWRITTEN    "unwritten-grow"
 
 static const char *const point_names[XF_DIE_COUNT] = {
     [XF_DIE_WRITE] = "write", [XF_DIE_JOURNAL] = "journal", [XF_DIE_COMMIT] = "commit",
     [XF_DIE_ANSWERED] = "answered", [XF_DIE_MAP] = "map", [XF_DIE_SUPPLY] = "supply",
+    [XF_DIE_WBACK] = "wback",
 };
 
 static struct {
@@ -55,6 +66,7 @@ static struct {
     bool        lazy_tail;
     bool        quick_retry;
     bool        quick_wait;
+    bool        unwritten;
 } t = { .point = -1 };
 
 bool test_fixed_time(void)
@@ -113,6 +125,10 @@ bool test_word(const char *w)
         t.quick_wait = true;
         return true;
     }
+    if (!strcmp(w, UNWRITTEN)) {
+        t.unwritten = true;
+        return true;
+    }
     if (!strncmp(w, DIE_PREFIX, strlen(DIE_PREFIX)))
         return die_word(w + strlen(DIE_PREFIX));
     if (!strncmp(w, CRASH_PREFIX, strlen(CRASH_PREFIX)) && w[strlen(CRASH_PREFIX)]) {
@@ -142,4 +158,26 @@ void test_crash(const char *path, uint32_t len)
         return;
     printf("extfs %s: test: crashing on %s\n", vol.name, t.crash);
     __builtin_trap();
+}
+
+status_t test_unwritten(struct ext_inode *in, uint64_t old, uint64_t size)
+{
+    struct ext_fs *fs = &vol.fs;
+    if (!t.unwritten)
+        return OK;
+    uint32_t bs = fs->block_size;
+    uint64_t lblk = (old + bs - 1) / bs, end = (size + bs - 1) / bs;
+    status_t st = OK;
+    while (st == OK && lblk < end) {
+        uint64_t blk = 0;
+        uint32_t n = 0;
+        st = ext_balloc(fs, 0, (uint32_t)(end - lblk < 64 ? end - lblk : 64), &blk, &n);
+        struct ext_run r = { .pblk = blk, .len = n, .kind = EXT_RUN_UNWRITTEN };
+        if (st == OK)
+            st = ext_extent_insert(fs, in, (uint32_t)lblk, &r);
+        if (st == OK)
+            st = ext_iblocks_add(fs, in, n);
+        lblk += n;
+    }
+    return st == OK ? ext_iput(fs, in) : st;
 }

@@ -245,9 +245,10 @@ static void own_unheld(void)
     }
 }
 
-/* After a second with nothing to do, the journal's tail moves past what
- * is home, so the next start replays nothing. Once per run of commits: a
- * tail with nothing to move doesn't count them down. */
+/* After a second with no packet, the journal's tail moves past what is
+ * home, so the next start replays nothing. Once per run of commits: a
+ * tail with nothing to move doesn't count them down. Mapped files' age
+ * check (wback.c) wakes the loop too, without counting as a packet. */
 static uint32_t idle_seen = UINT32_MAX;   /* the commits counted at the last idle */
 
 static bool idle_due(void)
@@ -275,6 +276,7 @@ static status_t run(handle_t serve, handle_t ctl)
     if (st == OK)
         st = arm_own();
     bool fs_held = false;
+    uint64_t quiet = now();   /* the last packet */
     while (st == OK && !vol.disk_gone && !ctl_stopping()) {
         struct port_packet pkt;
         if (idl_held_due(&vol.held)) {
@@ -290,15 +292,19 @@ static status_t run(handle_t serve, handle_t ctl)
             views_unheld();
             files_unheld();
         }
-        uint64_t deadline = idle_due() ? now() + IDLE_NS : DEADLINE_NEVER;
+        wback_tick();   /* when due: at most once a second, busy or not */
+        uint64_t idle_at = idle_due() ? quiet + IDLE_NS : DEADLINE_NEVER;
+        uint64_t deadline = wback_due() < idle_at ? wback_due() : idle_at;
         st = xf_wait(idl_held_deadline(&vol.held, deadline), &pkt);
         if (st == ERR_TIMED_OUT) {
-            idle();
+            if (now() >= idle_at)
+                idle();
             st = OK;
             continue;
         }
         if (st != OK)
             break;
+        quiet = now();
         if (pkt.key == XF_KEY_CTL) {
             while (!ctl_stopping() && !vol.disk_gone && serve_one(&fc) == OK)
                 ;
@@ -382,6 +388,8 @@ int main(int argc, char **argv)
     pager_start();
     st = run(serve, vol.ctl);
     reply_flush();
+    if (!vol.disk_gone)
+        wback_stop();   /* (done already after an fsctl.stop) */
     files_close_all();
     defer_run();
     if (vol.disk_gone) {

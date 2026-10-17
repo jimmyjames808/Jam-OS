@@ -90,6 +90,9 @@ enum op_kind {
     OP_STEP,             /* ext_jnl_step(value) */
     OP_APPEND,           /* value's bytes (1 to 3 blocks' worth) written at the file's end */
     OP_CUT,              /* the file truncated to half its size, in whole blocks */
+    OP_WBACK,            /* extfs's write-back of a mapped file (wback.c): the file grown by a
+                          * hole and an unwritten extent, runs written into them inside the
+                          * size (never past it), the times set; value's pattern */
 };
 
 struct op {

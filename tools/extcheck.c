@@ -45,7 +45,9 @@
  *     pinned;
  *   - the journal (tools/extjnl.c, on tools/extcut.c's cut device): storms
  *     of transactions cut after every block they write, each recovered
- *     whole; the journal's rules one at a time. */
+ *     whole (among them extfs's write-back of a mapped file: runs into a
+ *     hole and an unwritten extent in one transaction, OP_WBACK); the
+ *     journal's rules one at a time. */
 #include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>

@@ -96,6 +96,8 @@ static status_t set_size(struct ext_inode *in, uint64_t size)
     status_t st;
     if (size >= old) {   /* growing: a hole after the old end, no blocks */
         st = size > old ? ext_truncate(fs, in, size, &done) : OK;
+        if (st == OK && size > old)
+            st = test_unwritten(in, old, size);
         return st == OK ? stamp(in) : st;
     }
     /* Shrinking: on the orphan list from the first step to the last, so a
@@ -230,9 +232,12 @@ static status_t op_stat(void *ctx, uint64_t *out_size, uint8_t *out_is_dir, uint
 
 static status_t op_sync(void *ctx)
 {
-    (void)ctx;
-    return disk_flush();   /* every answered write is committed already; a failed one's
-                            * bytes too, on a disk with a cache */
+    struct xf_file *f = ctx;
+    status_t st = wback_file(f->ino, f->igen);   /* its mappings' stores, and the error
+                                                  * kept for it since its last sync */
+    status_t fl = disk_flush();   /* every answered write is committed already; a failed
+                                   * one's bytes too, on a disk with a cache */
+    return st != OK ? st : fl;
 }
 
 static status_t op_getattr(void *ctx, uint32_t *out_mode, uint32_t *out_nlink, uint32_t *out_uid,
