@@ -3,21 +3,26 @@
  *
  * fs: one mounted filesystem, as a filesystem service serves it (fat for
  * /data and /esp, the bootfs server for /boot, extfs for a Unix volume).
- * libos's namespace sends a path here with the mount point stripped:
- * "/logs/boot-0001.txt" for /data/logs/boot-0001.txt. Paths are '/'-separated UTF-8 of at most 4095
- * bytes (str: the generated server refuses a longer one, or one that isn't
- * UTF-8 or holds a NUL, with ERR_INVALID_ARGS); "." and ".." are resolved
- * by the server and never leave the mount. Errors are ERR_* (the server
+ * A path that starts with '/' is walked from the view's root (libos sends
+ * the path after the mount point: "/logs/boot-0001.txt" for
+ * /data/logs/boot-0001.txt); any other from the channel's directory: an
+ * fs.opendir channel's (a "directory channel"), the view's root on every
+ * other channel. "" is that directory itself. Paths are '/'-separated UTF-8
+ * of at most 4095 bytes (str: the generated server refuses a longer one, or
+ * one that isn't UTF-8 or holds a NUL, with ERR_INVALID_ARGS); "." and ".."
+ * are resolved by the server, and ".." climbs to the view's root and never
+ * above it (ERR_LINK_OUT, below), from a directory channel too. Errors are ERR_* (the server
  * maps its own codes): ERR_NOT_FOUND (nothing there), ERR_ALREADY_EXISTS,
  * ERR_NOT_DIR (a directory was needed, or a name on the way is a file),
  * ERR_IS_DIR (a file was needed), ERR_NOT_EMPTY, ERR_NAME_TOO_LONG (a name
  * past what the filesystem holds: fat, 255 UTF-16 units), ERR_BUSY (an open
  * file in the way), ERR_NO_SPACE (full), ERR_ACCESS_DENIED (read-only),
  * ERR_INVALID_ARGS (a name the filesystem can't hold, a bad flag),
- * ERR_NO_RESOURCES (too many open files or views), ERR_IO,
+ * ERR_NO_RESOURCES (too many open files, views, watchers or directory
+ * channels), ERR_IO,
  * ERR_NOT_SUPPORTED (the filesystem has no such thing: fat and the boot
- * image have no links, no directory-rooted views and no exchange; each
- * method says), ERR_LINK_OUT (a filesystem with symbolic links: the path
+ * image have no links, no directory-rooted views, no exchange and no
+ * directory channels; each method says), ERR_LINK_OUT (a filesystem with symbolic links: the path
  * leads through a link the service does not follow, or above the view's
  * root; the method changed nothing, and `resolve` says where the path
  * goes on), ERR_LINK_LOOP (more than 40 symbolic links in one walk: a loop).
@@ -34,7 +39,10 @@
  * back fresh), or /boot's server (which keeps no state) ended. Whoever gave
  * the mount gives the new channel when there is one (init sends its
  * followers' namespaces the change, libos's ns_update), and every file
- * opened through the old one is closed.
+ * opened through the old one is closed. A restart is not seen on a view's
+ * or a directory channel either (the keeper holds them as it holds open
+ * files); a successor that starts fresh (the state given up) closes them
+ * with the open files, and their holders see ERR_PEER_CLOSED.
  *
  * Protocol `fs` (id 16). Client: fs_<method>(ch, args..., &results...)
  * (and fs_<method>_until with a deadline, _within with a timeout), or
@@ -66,6 +74,9 @@
 #define FS_RESOLVE          0x0010000fu
 #define FS_SUBVIEW          0x00100010u
 #define FS_WATCH            0x00100011u
+#define FS_OPENDIR          0x00100012u
+#define FS_RENAME_AT        0x00100013u
+#define FS_LINK_AT          0x00100014u
 
 /* Constants (the .idl's `const` lines). */
 /* fs.unlink's flags: remove a directory (empty), not a file (unlinkat's
@@ -114,7 +125,8 @@
 #define FS_FEAT_CASE 4u
 #define FS_FEAT_BIG 8u
 #define FS_FEAT_MULTI_WRITER 16u
-#define FS_FEAT_MASK 31u
+#define FS_FEAT_DIRS 32u
+#define FS_FEAT_MASK 63u
 /* resolve's `kind`. */
 #define FS_RESOLVE_INSIDE 0u
 #define FS_RESOLVE_ABSOLUTE 1u
@@ -300,8 +312,38 @@ struct fs_watch_rep {
     uint32_t txid;
     int32_t  status;
 } __attribute__((packed));
+struct fs_opendir_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t flags;
+} __attribute__((packed));
+struct fs_opendir_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint64_t id;
+    uint64_t volume;
+} __attribute__((packed));
+struct fs_rename_at_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint64_t to_dir;
+    uint32_t flags;
+} __attribute__((packed));
+struct fs_rename_at_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
+struct fs_link_at_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint64_t to_dir;
+} __attribute__((packed));
+struct fs_link_at_rep {
+    uint32_t txid;
+    int32_t  status;
+} __attribute__((packed));
 
-#define FS_REQ_MAX 8206u   /* bytes: the biggest request */
+#define FS_REQ_MAX 8214u   /* bytes: the biggest request */
 #define FS_REP_MAX 8208u   /* bytes: the biggest reply */
 #define FS_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
 #define FS_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
@@ -366,8 +408,8 @@ static inline status_t fs_open_call(handle_t ch, bool idl_within, uint64_t idl_t
  * too), FS_NOFOLLOW 128 (a symbolic link as the last name is not followed:
  * opening it is an error, ERR_INVALID_ARGS; fat and the boot image have no
  * links, so it changes nothing there), FS_DIRECTORY 256 (the path must be a
- * directory, ERR_NOT_DIR if it is not; a directory can't be opened yet, so
- * it is ERR_IS_DIR) (<os.h>). `mode` is the permission bits (07777) of a
+ * directory, ERR_NOT_DIR if it is not; a directory is opened with
+ * fs.opendir, not here, so it is ERR_IS_DIR) (<os.h>). `mode` is the permission bits (07777) of a
  * file FS_CREATE makes, the caller's umask applied already; services that
  * keep no modes (fat, the boot image) ignore it. `file` speaks the file
  * protocol; `buffer` is the VMO its reads and writes go through; `size` is
@@ -708,7 +750,8 @@ static inline status_t fs_statfs_call(handle_t ch, bool idl_within, uint64_t idl
  * `link`, `resolve` and the rest of the methods below are real, and libc
  * sends paths uncleaned), FEAT_MODES modes, owners and times are stored,
  * FEAT_CASE names are case-sensitive, FEAT_BIG a file may pass 4 GiB,
- * FEAT_MULTI_WRITER a file may be open for writing more than once. fat
+ * FEAT_MULTI_WRITER a file may be open for writing more than once,
+ * FEAT_DIRS directory channels work (fs.opendir, rename_at, link_at). fat
  * and the boot image have none of them. */
 static inline status_t fs_statfs_until(handle_t ch, uint64_t deadline_ns, uint64_t *out_total, uint64_t *out_free, uint8_t *out_read_only, uint8_t out_label[16], uint32_t *out_magic, uint32_t *out_name_max, uint32_t *out_features)
 {
@@ -767,7 +810,8 @@ static inline status_t fs_view_call(handle_t ch, bool idl_within, uint64_t idl_t
  * (as GUARD_ETC, for the top-level `pkg`: the packages) (<fsview.h>). The new
  * channel keeps this channel's own flags too, so a view is never wider
  * than the channel it came from. ERR_INVALID_ARGS: an unknown flag;
- * ERR_NO_RESOURCES: the service serves as many channels as it can. */
+ * ERR_NO_RESOURCES: the service serves as many channels as it can. On a
+ * directory channel: ERR_NOT_SUPPORTED (ask the mount's channel). */
 static inline status_t fs_view_until(handle_t ch, uint64_t deadline_ns, uint32_t flags, handle_t *out_fs)
 {
     return fs_view_call(ch, false, deadline_ns, flags, out_fs);
@@ -1181,7 +1225,8 @@ static inline status_t fs_subview_call(handle_t ch, bool idl_within, uint64_t id
  * directory is the root, so ".." stops there and nothing above it can be
  * named (a mount of /jam/usr as /usr). flags are view's, and the new
  * channel keeps this channel's own flags too. ERR_NOT_DIR: not a
- * directory. fat and the boot image: ERR_NOT_SUPPORTED. */
+ * directory. fat and the boot image, and a directory channel:
+ * ERR_NOT_SUPPORTED. */
 static inline status_t fs_subview_until(handle_t ch, uint64_t deadline_ns, const char *path, uint32_t path_len, uint32_t flags, handle_t *out_fs)
 {
     return fs_subview_call(ch, false, deadline_ns, path, path_len, flags, out_fs);
@@ -1230,7 +1275,8 @@ static inline status_t fs_watch_call(handle_t ch, bool idl_within, uint64_t idl_
  * channel's view (its flags and root, a copy: this channel may close
  * first) and judges every watch and event by it. ERR_NO_RESOURCES: the
  * volume's watcher channels are all in use, or the caller's process has
- * its share. fat and the boot image: ERR_NOT_SUPPORTED. */
+ * its share. fat and the boot image, and a directory channel:
+ * ERR_NOT_SUPPORTED. */
 static inline status_t fs_watch_until(handle_t ch, uint64_t deadline_ns, handle_t *out_watcher)
 {
     return fs_watch_call(ch, false, deadline_ns, out_watcher);
@@ -1242,6 +1288,198 @@ static inline status_t fs_watch_within(handle_t ch, uint64_t timeout_ns, handle_
 static inline status_t fs_watch(handle_t ch, handle_t *out_watcher)
 {
     return fs_watch_call(ch, false, DEADLINE_NEVER, out_watcher);
+}
+
+/* fs_opendir_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t fs_opendir_call(handle_t ch, bool idl_within, uint64_t idl_t, const char *path, uint32_t path_len, uint32_t flags, handle_t *out_dir, uint64_t *out_id, uint64_t *out_volume)
+{
+    uint8_t *idl_b0 = (uint8_t *)drv_malloc(IDL_ROUND8(4109) + 24);
+    if (!idl_b0)
+        return ERR_NO_MEMORY;
+    uint8_t *idl_b1 = idl_b0 + IDL_ROUND8(4109);
+    struct fs_opendir_req *idl_q = (struct fs_opendir_req *)idl_b0;
+    const struct fs_opendir_rep *idl_r = (const struct fs_opendir_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = FS_OPENDIR;
+    idl_q->flags = flags;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, path, path_len, 4095, 1) ||
+                             !idl_str_ok(path, path_len)))
+        idl_st = ERR_INVALID_ARGS;
+    handle_t idl_rh[1];
+    if (idl_st == OK)
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 24, &idl_got[0], idl_rh, 1, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st != OK)
+        idl_got[1] = 0;   /* handles arrive only with OK */
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
+    if (idl_st == OK && idl_got[1] != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK)
+        idl_close_all(idl_rh, idl_got[1]);
+    if (idl_st == OK) {
+        if (out_dir)
+            *out_dir = idl_rh[0];
+        else
+            drv_handle_close(idl_rh[0]);
+    }
+    if (idl_st == OK && out_id)
+        *out_id = idl_r->id;
+    if (idl_st == OK && out_volume)
+        *out_volume = idl_r->volume;
+    (void)idl_o;
+    drv_free(idl_b0);
+    return idl_st;
+}
+/* A directory channel for the directory at `path` (ERR_NOT_DIR: not a
+ * directory; a symbolic link as the last name is followed, as open's): an
+ * fs channel whose paths start at that directory (the header's rule), so
+ * a call names a place by one relative path however deep the directory
+ * lies. Every method works on it but view, subview and watch
+ * (ERR_NOT_SUPPORTED). It keeps this channel's view (its flags and root, a
+ * copy: this channel may close first), judged where each path resolves,
+ * so a directory channel never reaches more than a path through its mount
+ * could: ".." climbs to the view's root and stops there, a channel opened
+ * from a directory channel keeps that one's view, and one given to another
+ * process (a fork, spawn, SCM_RIGHTS) gives that view's reach. flags:
+ * FS_READ 1 (the read bit is asked, as an open to read asks it; without
+ * it the walk's search bits only: O_PATH, chdir; readdir asks it again at
+ * each batch), FS_NOFOLLOW 128 (a symbolic link as the last name is an
+ * error, ERR_INVALID_ARGS); any other: ERR_INVALID_ARGS. `id` is the
+ * directory's, as getattr gives it. `volume` names the volume: the same
+ * through every view of it and every directory channel on it, another for
+ * any other volume (ext: its UUID folded to 64 bits), so a caller knows
+ * whether two directory channels can meet in one rename_at or link_at.
+ * The directory is held while the channel lives:
+ * renamed (it or a directory above it), the channel follows it;
+ * removed, it stays (an orphan) and the channel answers getattr, sync
+ * and statfs on "" and a walk through ".." (the parent it had;
+ * ERR_NOT_FOUND if that went too), ERR_NOT_FOUND to the rest (readdir,
+ * any other name, a creation);
+ * moved (by someone with a wider view) to a place this channel's view
+ * can't reach (above a subview's root, into a hidden etc/ssh), the
+ * channel is cut off: ERR_NOT_FOUND to every request while it lies
+ * there (found at the first request after the move), as a watch
+ * whose file leaves the view ends (fswatch.idl).
+ * Closing the channel lets the directory go. ERR_NO_RESOURCES: the
+ * volume's directory channels are all in use, or the caller's process
+ * (the request's writer) has its share. fat and the boot image:
+ * ERR_NOT_SUPPORTED (statfs says FEAT_DIRS where it works). */
+static inline status_t fs_opendir_until(handle_t ch, uint64_t deadline_ns, const char *path, uint32_t path_len, uint32_t flags, handle_t *out_dir, uint64_t *out_id, uint64_t *out_volume)
+{
+    return fs_opendir_call(ch, false, deadline_ns, path, path_len, flags, out_dir, out_id, out_volume);
+}
+static inline status_t fs_opendir_within(handle_t ch, uint64_t timeout_ns, const char *path, uint32_t path_len, uint32_t flags, handle_t *out_dir, uint64_t *out_id, uint64_t *out_volume)
+{
+    return fs_opendir_call(ch, true, timeout_ns, path, path_len, flags, out_dir, out_id, out_volume);
+}
+static inline status_t fs_opendir(handle_t ch, const char *path, uint32_t path_len, uint32_t flags, handle_t *out_dir, uint64_t *out_id, uint64_t *out_volume)
+{
+    return fs_opendir_call(ch, false, DEADLINE_NEVER, path, path_len, flags, out_dir, out_id, out_volume);
+}
+
+/* fs_rename_at_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t fs_rename_at_call(handle_t ch, bool idl_within, uint64_t idl_t, const char *from, uint32_t from_len, uint64_t to_dir, const char *to, uint32_t to_len, uint32_t flags)
+{
+    uint8_t *idl_b0 = (uint8_t *)drv_malloc(IDL_ROUND8(8214) + 8);
+    if (!idl_b0)
+        return ERR_NO_MEMORY;
+    uint8_t *idl_b1 = idl_b0 + IDL_ROUND8(8214);
+    struct fs_rename_at_req *idl_q = (struct fs_rename_at_req *)idl_b0;
+    const struct fs_rename_at_rep *idl_r = (const struct fs_rename_at_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = FS_RENAME_AT;
+    idl_q->to_dir = to_dir;
+    idl_q->flags = flags;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, from, from_len, 4095, 1) ||
+                             !idl_str_ok(from, from_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, to, to_len, 4095, 1) ||
+                             !idl_str_ok(to, to_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK)
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 8, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
+    (void)idl_o;
+    drv_free(idl_b0);
+    return idl_st;
+}
+/* rename and link with `to` walked from another directory than `from`:
+ * `to_dir`, that directory's id (opendir's `id`), names it, since a kept
+ * protocol's request carries no handle. It must be a directory of this
+ * volume that this channel's view reaches, judged as if walked from the
+ * view's root (ERR_NOT_FOUND if the view doesn't reach it, it was
+ * removed, or it isn't a directory), so an id grants nothing a path from
+ * the view's root couldn't name. `from` is walked from this channel's
+ * directory and `to` from `to_dir`, each by the header's rule (a path that
+ * starts with '/' from the view's root, `to_dir` checked all the same).
+ * flags and errors as rename's (rename_at) and link's (link_at). fat and
+ * the boot image: ERR_NOT_SUPPORTED. */
+static inline status_t fs_rename_at_until(handle_t ch, uint64_t deadline_ns, const char *from, uint32_t from_len, uint64_t to_dir, const char *to, uint32_t to_len, uint32_t flags)
+{
+    return fs_rename_at_call(ch, false, deadline_ns, from, from_len, to_dir, to, to_len, flags);
+}
+static inline status_t fs_rename_at_within(handle_t ch, uint64_t timeout_ns, const char *from, uint32_t from_len, uint64_t to_dir, const char *to, uint32_t to_len, uint32_t flags)
+{
+    return fs_rename_at_call(ch, true, timeout_ns, from, from_len, to_dir, to, to_len, flags);
+}
+static inline status_t fs_rename_at(handle_t ch, const char *from, uint32_t from_len, uint64_t to_dir, const char *to, uint32_t to_len, uint32_t flags)
+{
+    return fs_rename_at_call(ch, false, DEADLINE_NEVER, from, from_len, to_dir, to, to_len, flags);
+}
+
+/* fs_link_at_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t fs_link_at_call(handle_t ch, bool idl_within, uint64_t idl_t, const char *from, uint32_t from_len, uint64_t to_dir, const char *to, uint32_t to_len)
+{
+    uint8_t *idl_b0 = (uint8_t *)drv_malloc(IDL_ROUND8(8210) + 8);
+    if (!idl_b0)
+        return ERR_NO_MEMORY;
+    uint8_t *idl_b1 = idl_b0 + IDL_ROUND8(8210);
+    struct fs_link_at_req *idl_q = (struct fs_link_at_req *)idl_b0;
+    const struct fs_link_at_rep *idl_r = (const struct fs_link_at_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = FS_LINK_AT;
+    idl_q->to_dir = to_dir;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, from, from_len, 4095, 1) ||
+                             !idl_str_ok(from, from_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, to, to_len, 4095, 1) ||
+                             !idl_str_ok(to, to_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK)
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 8, &idl_got[0], NULL, 0, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
+    (void)idl_o;
+    drv_free(idl_b0);
+    return idl_st;
+}
+static inline status_t fs_link_at_until(handle_t ch, uint64_t deadline_ns, const char *from, uint32_t from_len, uint64_t to_dir, const char *to, uint32_t to_len)
+{
+    return fs_link_at_call(ch, false, deadline_ns, from, from_len, to_dir, to, to_len);
+}
+static inline status_t fs_link_at_within(handle_t ch, uint64_t timeout_ns, const char *from, uint32_t from_len, uint64_t to_dir, const char *to, uint32_t to_len)
+{
+    return fs_link_at_call(ch, true, timeout_ns, from, from_len, to_dir, to, to_len);
+}
+static inline status_t fs_link_at(handle_t ch, const char *from, uint32_t from_len, uint64_t to_dir, const char *to, uint32_t to_len)
+{
+    return fs_link_at_call(ch, false, DEADLINE_NEVER, from, from_len, to_dir, to, to_len);
 }
 
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
@@ -2032,6 +2270,146 @@ static inline status_t fs_watch_result(const void *idl_rep, struct idl_msg *idl_
     return OK;
 }
 
+/* fs_opendir without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then fs_opendir_result. */
+static inline status_t fs_opendir_send(handle_t ch, uint32_t idl_txid, const char *path, uint32_t path_len, uint32_t flags)
+{
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    uint8_t *idl_b0 = (uint8_t *)drv_malloc(4109);
+    if (!idl_b0)
+        return ERR_NO_MEMORY;
+    struct fs_opendir_req *idl_q = (struct fs_opendir_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = FS_OPENDIR;
+    idl_q->flags = flags;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, path, path_len, 4095, 1) ||
+                             !idl_str_ok(path, path_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    drv_free(idl_b0);
+    return idl_st;
+}
+
+/* The status and results of a reply to fs_opendir_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t fs_opendir_result(const void *idl_rep, struct idl_msg *idl_m, handle_t *out_dir, uint64_t *out_id, uint64_t *out_volume)
+{
+    const struct fs_opendir_rep *idl_r = (const struct fs_opendir_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    if (out_dir)
+        *out_dir = idl_m->hs[0];
+    else
+        drv_handle_close(idl_m->hs[0]);
+    idl_m->nh = 0;
+    if (out_id)
+        *out_id = idl_r->id;
+    if (out_volume)
+        *out_volume = idl_r->volume;
+    return OK;
+}
+
+/* fs_rename_at without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then fs_rename_at_result. */
+static inline status_t fs_rename_at_send(handle_t ch, uint32_t idl_txid, const char *from, uint32_t from_len, uint64_t to_dir, const char *to, uint32_t to_len, uint32_t flags)
+{
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    uint8_t *idl_b0 = (uint8_t *)drv_malloc(8214);
+    if (!idl_b0)
+        return ERR_NO_MEMORY;
+    struct fs_rename_at_req *idl_q = (struct fs_rename_at_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = FS_RENAME_AT;
+    idl_q->to_dir = to_dir;
+    idl_q->flags = flags;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, from, from_len, 4095, 1) ||
+                             !idl_str_ok(from, from_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, to, to_len, 4095, 1) ||
+                             !idl_str_ok(to, to_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    drv_free(idl_b0);
+    return idl_st;
+}
+
+/* The status and results of a reply to fs_rename_at_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t fs_rename_at_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct fs_rename_at_rep *idl_r = (const struct fs_rename_at_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
+/* fs_link_at without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then fs_link_at_result. */
+static inline status_t fs_link_at_send(handle_t ch, uint32_t idl_txid, const char *from, uint32_t from_len, uint64_t to_dir, const char *to, uint32_t to_len)
+{
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    uint8_t *idl_b0 = (uint8_t *)drv_malloc(8210);
+    if (!idl_b0)
+        return ERR_NO_MEMORY;
+    struct fs_link_at_req *idl_q = (struct fs_link_at_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = FS_LINK_AT;
+    idl_q->to_dir = to_dir;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, from, from_len, 4095, 1) ||
+                             !idl_str_ok(from, from_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK && (!idl_put(idl_b0, &idl_qn, to, to_len, 4095, 1) ||
+                             !idl_str_ok(to, to_len)))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    drv_free(idl_b0);
+    return idl_st;
+}
+
+/* The status and results of a reply to fs_link_at_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t fs_link_at_result(const void *idl_rep, struct idl_msg *idl_m)
+{
+    const struct fs_link_at_rep *idl_r = (const struct fs_link_at_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    (void)idl_r;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -2056,6 +2434,9 @@ struct fs_ops {
     status_t (*resolve)(void *ctx, const char *path, uint32_t path_len, uint32_t flags, uint8_t *out_kind, uint16_t *out_used, char *out_next, uint32_t *out_next_len);
     status_t (*subview)(void *ctx, const char *path, uint32_t path_len, uint32_t flags, handle_t *out_fs);
     status_t (*watch)(void *ctx, handle_t *out_watcher);
+    status_t (*opendir)(void *ctx, const char *path, uint32_t path_len, uint32_t flags, handle_t *out_dir, uint64_t *out_id, uint64_t *out_volume);
+    status_t (*rename_at)(void *ctx, const char *from, uint32_t from_len, uint64_t to_dir, const char *to, uint32_t to_len, uint32_t flags);
+    status_t (*link_at)(void *ctx, const char *from, uint32_t from_len, uint64_t to_dir, const char *to, uint32_t to_len);
 };
 
 /* Answer the fs.open request kept in txn: idl_st and, if it is OK, the
@@ -2440,6 +2821,70 @@ static inline status_t fs_reply_watch(struct idl_txn idl_txn, status_t idl_st, h
         return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
     }
     return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), idl_hs, 1);
+}
+
+/* Answer the fs.opendir request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t fs_reply_opendir(struct idl_txn idl_txn, status_t idl_st, handle_t dir, uint64_t id, uint64_t volume)
+{
+    handle_t idl_hs[1] = { dir };
+    _Alignas(8) uint8_t idl_b0[24];
+    struct fs_opendir_rep *idl_r = (struct fs_opendir_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && !(dir != HANDLE_INVALID))
+        idl_st = ERR_INTERNAL;
+    idl_r->id = id;
+    idl_r->volume = volume;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        if (idl_hs[0] != HANDLE_INVALID)
+            drv_handle_close(idl_hs[0]);
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, idl_st == OK ? idl_hs : NULL, idl_st == OK ? 1 : 0);
+    return idl_ws;
+}
+
+/* Answer the fs.rename_at request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t fs_reply_rename_at(struct idl_txn idl_txn, status_t idl_st)
+{
+    _Alignas(8) uint8_t idl_b0[8];
+    struct fs_rename_at_rep *idl_r = (struct fs_rename_at_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
+}
+
+/* Answer the fs.link_at request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t fs_reply_link_at(struct idl_txn idl_txn, status_t idl_st)
+{
+    _Alignas(8) uint8_t idl_b0[8];
+    struct fs_link_at_rep *idl_r = (struct fs_link_at_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        idl_rn = sizeof(struct idl_rep_hdr);
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, NULL, 0);
+    return idl_ws;
 }
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
@@ -2980,6 +3425,107 @@ static inline uint32_t fs_dispatch_on(handle_t ch, const struct fs_ops *ops, voi
         }
         rhs[0] = out_watcher;
         *rhn = 1;
+        return sizeof(*idl_r);
+    }
+    case FS_OPENDIR: {
+        const struct fs_opendir_req *idl_q = (const struct fs_opendir_req *)req;
+        struct fs_opendir_rep *idl_r = (struct fs_opendir_rep *)rep;
+        handle_t out_dir = HANDLE_INVALID;
+        uint64_t out_id = 0;
+        uint64_t out_volume = 0;
+        uint32_t idl_o = sizeof(*idl_q);
+        status_t idl_st = n < sizeof(*idl_q) ? ERR_INVALID_ARGS : OK;
+        const void *idl_p0 = NULL;
+        uint32_t idl_l0 = 0;
+        if (idl_st == OK && !idl_get(req, n, &idl_o, 4095, 1, &idl_p0, &idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_o != n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st != OK)
+            return sizeof(*idl_h);
+        if (!ops->opendir) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        idl_st = ops->opendir(ctx, (const char *)idl_p0, idl_l0, idl_q->flags, &out_dir, &out_id, &out_volume);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && !(out_dir != HANDLE_INVALID))
+            idl_h->status = ERR_INTERNAL;   /* a handle result left unset */
+        if (idl_h->status != OK) {
+            if (out_dir != HANDLE_INVALID)
+                drv_handle_close(out_dir);
+            return sizeof(*idl_h);
+        }
+        rhs[0] = out_dir;
+        *rhn = 1;
+        idl_r->id = out_id;
+        idl_r->volume = out_volume;
+        return sizeof(*idl_r);
+    }
+    case FS_RENAME_AT: {
+        const struct fs_rename_at_req *idl_q = (const struct fs_rename_at_req *)req;
+        struct fs_rename_at_rep *idl_r = (struct fs_rename_at_rep *)rep;
+        (void)idl_r;
+        uint32_t idl_o = sizeof(*idl_q);
+        status_t idl_st = n < sizeof(*idl_q) ? ERR_INVALID_ARGS : OK;
+        const void *idl_p0 = NULL;
+        uint32_t idl_l0 = 0;
+        const void *idl_p1 = NULL;
+        uint32_t idl_l1 = 0;
+        if (idl_st == OK && !idl_get(req, n, &idl_o, 4095, 1, &idl_p0, &idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_get(req, n, &idl_o, 4095, 1, &idl_p1, &idl_l1))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_str_ok((const char *)idl_p1, idl_l1))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_o != n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st != OK)
+            return sizeof(*idl_h);
+        if (!ops->rename_at) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        idl_st = ops->rename_at(ctx, (const char *)idl_p0, idl_l0, idl_q->to_dir, (const char *)idl_p1, idl_l1, idl_q->flags);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        return sizeof(*idl_r);
+    }
+    case FS_LINK_AT: {
+        const struct fs_link_at_req *idl_q = (const struct fs_link_at_req *)req;
+        struct fs_link_at_rep *idl_r = (struct fs_link_at_rep *)rep;
+        (void)idl_r;
+        uint32_t idl_o = sizeof(*idl_q);
+        status_t idl_st = n < sizeof(*idl_q) ? ERR_INVALID_ARGS : OK;
+        const void *idl_p0 = NULL;
+        uint32_t idl_l0 = 0;
+        const void *idl_p1 = NULL;
+        uint32_t idl_l1 = 0;
+        if (idl_st == OK && !idl_get(req, n, &idl_o, 4095, 1, &idl_p0, &idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_str_ok((const char *)idl_p0, idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_get(req, n, &idl_o, 4095, 1, &idl_p1, &idl_l1))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_str_ok((const char *)idl_p1, idl_l1))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_o != n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st != OK)
+            return sizeof(*idl_h);
+        if (!ops->link_at) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        idl_st = ops->link_at(ctx, (const char *)idl_p0, idl_l0, idl_q->to_dir, (const char *)idl_p1, idl_l1);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
         return sizeof(*idl_r);
     }
     }

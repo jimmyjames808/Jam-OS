@@ -1,20 +1,25 @@
 # fs: one mounted filesystem, as a filesystem service serves it (fat for
 # /data and /esp, the bootfs server for /boot, extfs for a Unix volume).
-# libos's namespace sends a path here with the mount point stripped:
-# "/logs/boot-0001.txt" for /data/logs/boot-0001.txt. Paths are '/'-separated UTF-8 of at most 4095
-# bytes (str: the generated server refuses a longer one, or one that isn't
-# UTF-8 or holds a NUL, with ERR_INVALID_ARGS); "." and ".." are resolved
-# by the server and never leave the mount. Errors are ERR_* (the server
+# A path that starts with '/' is walked from the view's root (libos sends
+# the path after the mount point: "/logs/boot-0001.txt" for
+# /data/logs/boot-0001.txt); any other from the channel's directory: an
+# fs.opendir channel's (a "directory channel"), the view's root on every
+# other channel. "" is that directory itself. Paths are '/'-separated UTF-8
+# of at most 4095 bytes (str: the generated server refuses a longer one, or
+# one that isn't UTF-8 or holds a NUL, with ERR_INVALID_ARGS); "." and ".."
+# are resolved by the server, and ".." climbs to the view's root and never
+# above it (ERR_LINK_OUT, below), from a directory channel too. Errors are ERR_* (the server
 # maps its own codes): ERR_NOT_FOUND (nothing there), ERR_ALREADY_EXISTS,
 # ERR_NOT_DIR (a directory was needed, or a name on the way is a file),
 # ERR_IS_DIR (a file was needed), ERR_NOT_EMPTY, ERR_NAME_TOO_LONG (a name
 # past what the filesystem holds: fat, 255 UTF-16 units), ERR_BUSY (an open
 # file in the way), ERR_NO_SPACE (full), ERR_ACCESS_DENIED (read-only),
 # ERR_INVALID_ARGS (a name the filesystem can't hold, a bad flag),
-# ERR_NO_RESOURCES (too many open files or views), ERR_IO,
+# ERR_NO_RESOURCES (too many open files, views, watchers or directory
+# channels), ERR_IO,
 # ERR_NOT_SUPPORTED (the filesystem has no such thing: fat and the boot
-# image have no links, no directory-rooted views and no exchange; each
-# method says), ERR_LINK_OUT (a filesystem with symbolic links: the path
+# image have no links, no directory-rooted views, no exchange and no
+# directory channels; each method says), ERR_LINK_OUT (a filesystem with symbolic links: the path
 # leads through a link the service does not follow, or above the view's
 # root; the method changed nothing, and `resolve` says where the path
 # goes on), ERR_LINK_LOOP (more than 40 symbolic links in one walk: a loop).
@@ -31,7 +36,10 @@
 # back fresh), or /boot's server (which keeps no state) ended. Whoever gave
 # the mount gives the new channel when there is one (init sends its
 # followers' namespaces the change, libos's ns_update), and every file
-# opened through the old one is closed.
+# opened through the old one is closed. A restart is not seen on a view's
+# or a directory channel either (the keeper holds them as it holds open
+# files); a successor that starts fresh (the state given up) closes them
+# with the open files, and their holders see ERR_PEER_CLOSED.
 
 protocol fs 16 kept
 
@@ -81,7 +89,8 @@ const FEAT_MODES      2
 const FEAT_CASE       4
 const FEAT_BIG        8
 const FEAT_MULTI_WRITER 16
-const FEAT_MASK       31
+const FEAT_DIRS       32
+const FEAT_MASK       63
 # resolve's `kind`.
 const RESOLVE_INSIDE   0
 const RESOLVE_ABSOLUTE 1
@@ -93,8 +102,8 @@ const RESOLVE_ABOVE    2
 # too), FS_NOFOLLOW 128 (a symbolic link as the last name is not followed:
 # opening it is an error, ERR_INVALID_ARGS; fat and the boot image have no
 # links, so it changes nothing there), FS_DIRECTORY 256 (the path must be a
-# directory, ERR_NOT_DIR if it is not; a directory can't be opened yet, so
-# it is ERR_IS_DIR) (<os.h>). `mode` is the permission bits (07777) of a
+# directory, ERR_NOT_DIR if it is not; a directory is opened with
+# fs.opendir, not here, so it is ERR_IS_DIR) (<os.h>). `mode` is the permission bits (07777) of a
 # file FS_CREATE makes, the caller's umask applied already; services that
 # keep no modes (fat, the boot image) ignore it. `file` speaks the file
 # protocol; `buffer` is the VMO its reads and writes go through; `size` is
@@ -142,7 +151,8 @@ const RESOLVE_ABOVE    2
 # `link`, `resolve` and the rest of the methods below are real, and libc
 # sends paths uncleaned), FEAT_MODES modes, owners and times are stored,
 # FEAT_CASE names are case-sensitive, FEAT_BIG a file may pass 4 GiB,
-# FEAT_MULTI_WRITER a file may be open for writing more than once. fat
+# FEAT_MULTI_WRITER a file may be open for writing more than once,
+# FEAT_DIRS directory channels work (fs.opendir, rename_at, link_at). fat
 # and the boot image have none of them.
 8  statfs  () -> (u64 total, u64 free, u8 read_only, u8[16] label, u32 magic, u32 name_max, u32 features)
 # A narrower channel onto this filesystem (a "view"), for a program that
@@ -159,7 +169,8 @@ const RESOLVE_ABOVE    2
 # (as GUARD_ETC, for the top-level `pkg`: the packages) (<fsview.h>). The new
 # channel keeps this channel's own flags too, so a view is never wider
 # than the channel it came from. ERR_INVALID_ARGS: an unknown flag;
-# ERR_NO_RESOURCES: the service serves as many channels as it can.
+# ERR_NO_RESOURCES: the service serves as many channels as it can. On a
+# directory channel: ERR_NOT_SUPPORTED (ask the mount's channel).
 9  view  (u32 flags) -> (handle fs)
 # The attributes of `path`, as POSIX's stat has them: `mode` (st_mode, the
 # kind and the permission bits: FS_MODE_*), `nlink`, `uid` and `gid`,
@@ -219,7 +230,8 @@ const RESOLVE_ABOVE    2
 # directory is the root, so ".." stops there and nothing above it can be
 # named (a mount of /jam/usr as /usr). flags are view's, and the new
 # channel keeps this channel's own flags too. ERR_NOT_DIR: not a
-# directory. fat and the boot image: ERR_NOT_SUPPORTED.
+# directory. fat and the boot image, and a directory channel:
+# ERR_NOT_SUPPORTED.
 16 subview  (str[<=4095] path, u32 flags) -> (handle fs)
 # A watcher channel on this view, for file watching (abi/idl/fswatch.idl:
 # libc's inotify descriptor asks each mount for one). Its first message is
@@ -227,5 +239,54 @@ const RESOLVE_ABOVE    2
 # channel's view (its flags and root, a copy: this channel may close
 # first) and judges every watch and event by it. ERR_NO_RESOURCES: the
 # volume's watcher channels are all in use, or the caller's process has
-# its share. fat and the boot image: ERR_NOT_SUPPORTED.
+# its share. fat and the boot image, and a directory channel:
+# ERR_NOT_SUPPORTED.
 17 watch  () -> (handle watcher)
+# A directory channel for the directory at `path` (ERR_NOT_DIR: not a
+# directory; a symbolic link as the last name is followed, as open's): an
+# fs channel whose paths start at that directory (the header's rule), so
+# a call names a place by one relative path however deep the directory
+# lies. Every method works on it but view, subview and watch
+# (ERR_NOT_SUPPORTED). It keeps this channel's view (its flags and root, a
+# copy: this channel may close first), judged where each path resolves,
+# so a directory channel never reaches more than a path through its mount
+# could: ".." climbs to the view's root and stops there, a channel opened
+# from a directory channel keeps that one's view, and one given to another
+# process (a fork, spawn, SCM_RIGHTS) gives that view's reach. flags:
+# FS_READ 1 (the read bit is asked, as an open to read asks it; without
+# it the walk's search bits only: O_PATH, chdir; readdir asks it again at
+# each batch), FS_NOFOLLOW 128 (a symbolic link as the last name is an
+# error, ERR_INVALID_ARGS); any other: ERR_INVALID_ARGS. `id` is the
+# directory's, as getattr gives it. `volume` names the volume: the same
+# through every view of it and every directory channel on it, another for
+# any other volume (ext: its UUID folded to 64 bits), so a caller knows
+# whether two directory channels can meet in one rename_at or link_at.
+# The directory is held while the channel lives:
+#   renamed (it or a directory above it), the channel follows it;
+#   removed, it stays (an orphan) and the channel answers getattr, sync
+#     and statfs on "" and a walk through ".." (the parent it had;
+#     ERR_NOT_FOUND if that went too), ERR_NOT_FOUND to the rest (readdir,
+#     any other name, a creation);
+#   moved (by someone with a wider view) to a place this channel's view
+#     can't reach (above a subview's root, into a hidden etc/ssh), the
+#     channel is cut off: ERR_NOT_FOUND to every request while it lies
+#     there (found at the first request after the move), as a watch
+#     whose file leaves the view ends (fswatch.idl).
+# Closing the channel lets the directory go. ERR_NO_RESOURCES: the
+# volume's directory channels are all in use, or the caller's process
+# (the request's writer) has its share. fat and the boot image:
+# ERR_NOT_SUPPORTED (statfs says FEAT_DIRS where it works).
+18 opendir  (str[<=4095] path, u32 flags) -> (handle dir, u64 id, u64 volume)
+# rename and link with `to` walked from another directory than `from`:
+# `to_dir`, that directory's id (opendir's `id`), names it, since a kept
+# protocol's request carries no handle. It must be a directory of this
+# volume that this channel's view reaches, judged as if walked from the
+# view's root (ERR_NOT_FOUND if the view doesn't reach it, it was
+# removed, or it isn't a directory), so an id grants nothing a path from
+# the view's root couldn't name. `from` is walked from this channel's
+# directory and `to` from `to_dir`, each by the header's rule (a path that
+# starts with '/' from the view's root, `to_dir` checked all the same).
+# flags and errors as rename's (rename_at) and link's (link_at). fat and
+# the boot image: ERR_NOT_SUPPORTED.
+19 rename_at  (str[<=4095] from, u64 to_dir, str[<=4095] to, u32 flags) -> ()
+20 link_at  (str[<=4095] from, u64 to_dir, str[<=4095] to) -> ()

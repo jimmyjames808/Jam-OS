@@ -535,3 +535,52 @@ bool t_fs_attr_ns(void)
     CHECK_ST(ns_unmount(G), OK);
     return fat_stop(&r) && ramdisk_destroy(&disk) && ok;
 }
+
+/* ---- directory channels: servers without them --------------------------------------- */
+
+/* fs.opendir, rename_at and link_at on a server without them: the
+ * generated dispatch's ERR_NOT_SUPPORTED, no handle given, and statfs
+ * without FS_FEAT_DIRS. */
+static bool no_dirs(handle_t ch)
+{
+    handle_t dir = HANDLE_INVALID;
+    uint64_t id = 7, volume = 7, deadline = now() + FAT_CALL_NS;
+    uint32_t features = 0;
+    CHECK_ST(fs_opendir_until(ch, deadline, "", 0, FS_READ, &dir, &id, &volume),
+             ERR_NOT_SUPPORTED);
+    CHECK(dir == HANDLE_INVALID);
+    CHECK_ST(fs_opendir_until(ch, deadline, "/d", 2, 0, &dir, &id, &volume), ERR_NOT_SUPPORTED);
+    CHECK(dir == HANDLE_INVALID);
+    CHECK_ST(fs_rename_at_until(ch, deadline, "a", 1, 2, "b", 1, 0), ERR_NOT_SUPPORTED);
+    CHECK_ST(fs_link_at_until(ch, deadline, "a", 1, 2, "b", 1), ERR_NOT_SUPPORTED);
+    CHECK_ST(kind_of(ch, NULL, NULL, &features, NULL), OK);
+    CHECK(!(features & FS_FEAT_DIRS));
+    return true;
+}
+
+/* fat, a fat view (the shared view code passes the methods on), the boot
+ * image and the tests' ramfs: no directory channels, whatever is asked. */
+bool t_fs_no_dirs(void)
+{
+    struct fatrun r;
+    struct ram ram;
+    handle_t v = HANDLE_INVALID, ch = HANDLE_INVALID;
+    if (!ramdisk_create(&disk, 16 * MIB_SECTORS) || !fat_start(&r, &disk, false))
+        return false;
+    bool ok = view_of(&r, FS_VIEW_READ_ONLY | FS_VIEW_HIDE_KEYS, &v) && no_dirs(r.fs) &&
+              no_dirs(v);
+    if (v != HANDLE_INVALID)
+        jam_handle_close(v);
+    ok = fat_stop(&r) && ramdisk_destroy(&disk) && ok;
+    if (ns_channel("/boot", &ch) == OK) {
+        ok = no_dirs(ch) && ok;
+        jam_handle_close(ch);
+    } else {
+        printf("utest: %s: no /boot in our namespace: its part skipped\n", utest_cur);
+    }
+    CHECK(ram_start("/nd", &ram));
+    CHECK_ST(ns_channel("/nd", &ch), OK);
+    ok = no_dirs(ch) && ok;
+    jam_handle_close(ch);
+    return ram_stop("/nd", &ram) && ok;
+}

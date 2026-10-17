@@ -55,7 +55,7 @@
 #include <os.h>
 
 #define KEEP_MAX_SLOTS    KEEPCH_MAX_SLOTS      /* slots a keeper holds for one service (1024) */
-#define KEEP_MAX_HANDLES  KEEPCH_MAX_HANDLES    /* handles a keeper holds for one service, all slots (1024) */
+#define KEEP_MAX_HANDLES  KEEPCH_MAX_HANDLES    /* handles a keeper holds for one service, all slots (2048) */
 #define KEEP_SLOT_HANDLES KEEPCH_SLOT_HANDLES   /* handles in one slot (4) */
 #define KEEP_BATCH        KEEPCH_BATCH          /* handles in one restore event (64) */
 

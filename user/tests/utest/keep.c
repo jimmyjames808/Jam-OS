@@ -5,7 +5,8 @@
  * restores them to a fake successor, which takes the slots its state
  * knows. Also: restores come in batches of whole slots of at most 64
  * handles, the keeper refuses what it must not hold (kinds, counts, caps,
- * malformed messages), and a successor refuses a malformed restore. Every
+ * malformed messages), holds and restores what extfs needs (past 1,024
+ * handles), and a successor refuses a malformed restore. Every
  * test ends with this job holding exactly the handles it started with. */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
@@ -472,6 +473,41 @@ bool t_keep_refusals(void)
     jam_handle_close(svc);
     CHECK(ok);
     CHECK(keep_caps());
+    CHECK_EQ(handles_used(), before);
+    return true;
+}
+
+/* The room extfs needs with its watchers and directory channels (<extfs.h>,
+ * keepch.idl's MAX_HANDLES): 928 slots holding 1,216 handles, past the
+ * 1,024 a keeper held before. 288 slots of 2 (an open file's channel and
+ * VMO, a watcher's channel and bell) and 640 of 1 (views, maps, directory
+ * channels): all kept, then restored whole to a successor. */
+#define ROOM_PAIRS  288u
+#define ROOM_ONES   640u
+#define ROOM_SLOTS  (ROOM_PAIRS + ROOM_ONES)
+#define ROOM_HANDLES (2 * ROOM_PAIRS + ROOM_ONES)
+
+bool t_keep_room(void)
+{
+    uint64_t before = handles_used();
+    keeper_init(&k);
+    handle_t svc, svc2;
+    CHECK_ST(keeper_attach(&k, &svc), OK);
+    for (uint32_t i = 0; i < ROOM_SLOTS; i++)
+        CHECK(put_event(svc, 7000 + i, i < ROOM_PAIRS ? 2 : 1));
+    CHECK(k.nslots == ROOM_SLOTS && k.nhandles == ROOM_HANDLES && !k.refused);
+    CHECK(ROOM_HANDLES > 1024 && ROOM_HANDLES <= KEEP_MAX_HANDLES);
+    CHECK_ST(keeper_attach(&k, &svc2), OK);
+    CHECK_ST(keeper_restore(&k), OK);
+    unsigned count = 0;
+    struct keep_restored got;
+    CHECK_ST(keep_restore(svc2, SOON, keep_all, &count, &got), OK);
+    CHECK(count == ROOM_SLOTS && got.slots == ROOM_SLOTS && got.taken == ROOM_SLOTS);
+    CHECK_EQ(got.handles, ROOM_HANDLES);
+    CHECK(k.nslots == ROOM_SLOTS && k.nhandles == ROOM_HANDLES);   /* still the keeper's */
+    keeper_release(&k);
+    jam_handle_close(svc);
+    jam_handle_close(svc2);
     CHECK_EQ(handles_used(), before);
     return true;
 }
