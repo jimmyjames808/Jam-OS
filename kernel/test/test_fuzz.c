@@ -62,14 +62,18 @@ static void fz_finish(struct process *p, struct job *j, uint64_t live_ch, uint64
     KT_EQ(info.threads, 0);
     kobject_unref(process_kobject(p));
     /* Its processes in a job of its own (the pool's child job) die with it;
-     * whatever is still being given back settles within a moment. */
+     * whatever is still being given back settles within a moment. Live,
+     * the system-wide counts move with everything else running and are
+     * not checked (KT_GLOBAL_EQ): waiting for them to come back would
+     * only wait out the bound (2 s, a minute under load: most of the
+     * soak's slowest tests), so only the job's own are waited for there. */
     job_kill(j, NULL);
     uint64_t end = uptime_ns() + kt_patience_ms(2000) * NS_PER_MS;
     struct port_stats ps;
     for (;;) {
         port_get_stats(&ps);
-        bool settled = channel_live_count() == live_ch && ps.ports == live_ports &&
-                       ps.bindings == live_bindings;
+        bool settled = ktest_live || (channel_live_count() == live_ch &&
+                                      ps.ports == live_ports && ps.bindings == live_bindings);
         for (uint32_t k = 1; k < JOB_LIMIT_COUNT; k++)
             settled &= job_used(j, k) == 0;
         if (settled || uptime_ns() >= end)
