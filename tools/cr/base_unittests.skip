@@ -80,9 +80,8 @@ AlternateTestParams/PartitionAllocTest.PurgeDiscardableWithFreeListStraightening
 AlternateTestParams/PartitionAllocTest.PurgeDiscardableWithFreeListStraightening/1
 SamplingHeapProfilerTest.GetSamplesWithResidency
 
-[proc] ModuleCacheTest.CheckAgainstProcMaps wants two modules (this one and ld-linux.so) and a static program has one: by design. SmapsRollupTest.ReadAndParse needs /proc/self/smaps_rollup, which CBF4 did not build; the test skipped itself while uname said 0.1.0 and runs since CBF2b's 5.10.0-jamos (the program aborts on an empty optional). The other 13 /proc tests pass (CBF4)
+[proc] ModuleCacheTest.CheckAgainstProcMaps wants two modules (this one and ld-linux.so) and a static program has one: by design. The other /proc tests pass (CBF4; smaps_rollup CBF6)
 ModuleCacheTest.CheckAgainstProcMaps
-SmapsRollupTest.ReadAndParse
 
 [posix] dlopen() of a library fails (a static program: musl's stub, logged as `dlopen <library>`)
 ElfReaderTestWithCurrentImage.ReadElfBuildId
@@ -106,17 +105,8 @@ FileUtilTest.CopyDirectoryWithNonRegularFiles
 FileUtilTest.ReadFileToStringWithNamedPipe
 FileUtilTest.TestNonBlockingFileReadLinux
 
-[posix] an open for writing only asks the fs service for read access too (file.c fs_access: "the one open serves every description"), so a file with mode 0200 can't be opened O_WRONLY (EACCES; Linux's owner may)
-FileUtilTest.ChangeFilePermissionsAndWrite
-
-[posix] libos limits a path to FS_PATH_MAX, 256 bytes (os.h, ns_resolve in ns.c: ERR_NAME_TOO_LONG), not the fs protocol's 4,095 (FS_PATH_LEN) or the layer's PATH_BYTES 4096: mkdirat of a 255-byte name (NAME_MAX) under a 50-byte directory fails
+[posix] not a 256-byte limit (CBF6): the test builds 26 levels of 255-byte names through directory descriptors (6.6 KB deep) and a directory description here is its path as text, so mkdirat at the 16th level is ENAMETOOLONG (the layer's PATH_BYTES 4096). Needs directory handles: a design, being planned as docs/DIRHANDLE-PLAN.md
 FileUtilTest.DeleteDeep
-
-[posix] the working directory is a path kept as text (dir.c lx_getcwd): after it is deleted getcwd still answers, Linux's says ENOENT
-FileUtilTest.MakeAbsoluteFilePathNoResolveSymbolicLinks
-
-[posix] no sysfs block-device information (DriveInfo reads has_seek_penalty, is_removable and the size from /sys/dev/block)
-DriveInfoTest.GetFileDriveInfo
 
 [musl] fdopen(-1, "w") returns a FILE (musl does not check the descriptor), and the test expects null: the same on Alpine, a test to leave out on any musl build
 FileUtilTest.FileToFILE
