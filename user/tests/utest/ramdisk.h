@@ -35,6 +35,9 @@ struct ramdisk {
     uint32_t reads;         /* requests served, by kind */
     uint32_t writes;
     uint32_t syncs;
+    uint32_t to_kinds;      /* ramdisk_time_out's: the kinds that time out ... */
+    uint32_t to_left;       /* ... and how many more of them */
+    uint32_t timeouts;      /* requests answered ERR_TIMED_OUT so far */
     /* Called on the serving thread after each write has landed in mem
      * (NULL: none; ramdisk_on_write sets it): a test watching the disk
      * change write by write, as a death between two of them would leave it. */
@@ -65,3 +68,12 @@ void     ramdisk_on_write(struct ramdisk *rd,
 /* Every later session ends from the server's side once it has answered
  * `requests` requests (0: never), as a stick pulled at that moment. */
 void     ramdisk_pull_after(struct ramdisk *rd, uint32_t requests);
+/* The next n requests of the kinds in `kinds` (RAMDISK_READ, _WRITE,
+ * _SYNC) answer ERR_TIMED_OUT, as usb-storage does when the stick's
+ * command ran out of its time (drivers/usb-storage/scsi.c): a read or a
+ * write has moved its first half, a sync has done nothing. 0: none. */
+#define RAMDISK_READ  1u
+#define RAMDISK_WRITE 2u
+#define RAMDISK_SYNC  4u
+void     ramdisk_time_out(struct ramdisk *rd, uint32_t kinds, uint32_t n);
+uint32_t ramdisk_timeouts(const struct ramdisk *rd);   /* answered so, in all */

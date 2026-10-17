@@ -1,7 +1,7 @@
 # The extfs service (bin/extfs, docs/M13.6-PLAN.md's U4) from the shell:
 # utest's extfs cases, each extfs over a RAM disk it formats (files, links,
 # the permission bits, many writers, views and subviews, a damaged block,
-# restarts at each step of a request, the warm spare, mapped files with a
+# a disk whose calls time out, restarts at each step of a request, the warm spare, mapped files with a
 # pager and across restarts, posixtest's links section). The disks they leave
 # are saved in /data/extfs-e2fsck for Linux's e2fsck (tools/extfs-svc-test.sh).
 #   tools/extfs-svc-test.sh <outdir>
@@ -17,7 +17,7 @@ wait st-x=0
 wait {prompt}
 send utest only extfs; echo st-$T=$?
 wait 1200 passed
-seen utest: 16 passed
+seen utest: 18 passed
 wait st-x=0
 wait {prompt}
 send sync; echo st-$T=$?

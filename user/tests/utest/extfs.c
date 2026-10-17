@@ -733,6 +733,118 @@ bool t_extfs_flush(void)
     return ramdisk_destroy(&xd);
 }
 
+/* ---- a disk that times out (DRO) ------------------------------------------------- */
+
+static const char *const quick_retry = "quick-retry";   /* extfs/test.c: no long pauses */
+
+static bool writable_now(const struct fatrun *r, bool want)
+{
+    uint64_t total, fr;
+    uint8_t ro = 0, label[16];
+    uint32_t magic, nmax, feat;
+    CHECK_ST(fs_statfs_until(r->fs, dl(), &total, &fr, &ro, label, &magic, &nmax, &feat), OK);
+    CHECK_EQ(!ro, want);
+    return true;
+}
+
+/* extfs ended as a crash ends it: no orderly stop, so its next start
+ * replays the journal. */
+static bool kill_extfs(struct fatrun *r)
+{
+    struct process_info info;
+    jam_job_kill(r->job);
+    CHECK_ST(spawn_wait(r->proc, FAT_CALL_NS, &info), OK);
+    CHECK_ST(jam_handle_close(r->proc), OK);
+    CHECK_ST(jam_handle_close(r->ctl), OK);
+    CHECK_ST(jam_handle_close(r->job), OK);
+    CHECK_ST(jam_handle_close(r->fs), OK);
+    return ramdisk_join(r->rd);
+}
+
+/* usb-storage answers ERR_TIMED_OUT when the stick's command ran out of
+ * its time (a SYNCHRONIZE CACHE behind a busy host: docs/CR-PLAN.md's "The
+ * disk can fail a shard"), and extfs tries the call again (disk.c), the
+ * journal's order kept: two flushes that time out; a write that times out
+ * having landed half its blocks; four of either in a big write; the volume
+ * writable throughout. Then extfs killed (its journal replayed at the next
+ * start, whose reads time out too) finds it all, writes on, and leaves a
+ * disk e2fsck calls clean. */
+bool t_extfs_timeout(void)
+{
+    static struct ramdisk xd;
+    struct fatrun r;
+    struct tfile f;
+    uint32_t done = 0;
+    for (uint32_t i = 0; i < sizeof(big); i++)
+        big[i] = (uint8_t)(i * 7 + i / 4096);
+    CHECK(ramdisk_create(&xd, EXT_DISK_SECTORS));
+    CHECK(extfs_start(&r, &xd, false, &quick_retry, 1));
+    CHECK_ST(t_mkdir(&r, "/t"), OK);
+    ramdisk_time_out(&xd, RAMDISK_SYNC, 2);
+    CHECK(put_file(&r, "/t/a", "two flushes timed out"));
+    CHECK_EQ(ramdisk_timeouts(&xd), 2);
+    ramdisk_time_out(&xd, RAMDISK_WRITE, 1);
+    CHECK(put_file(&r, "/t/b", "a write timed out, half of it landed"));
+    CHECK_EQ(ramdisk_timeouts(&xd), 3);
+    ramdisk_time_out(&xd, RAMDISK_WRITE | RAMDISK_SYNC, 4);   /* one call's 4: its 5th try */
+    CHECK_ST(t_open(&r, "/t/big", FS_WRITE | FS_CREATE, &f), OK);
+    CHECK_ST(t_write(&f, 0, big, sizeof(big), &done), OK);
+    t_close(&f);
+    CHECK_EQ(done, sizeof(big));
+    CHECK_ST(t_sync(&r), OK);
+    CHECK_EQ(ramdisk_timeouts(&xd), 7);
+    CHECK(writable_now(&r, true));
+    CHECK(kill_extfs(&r));
+    ramdisk_time_out(&xd, RAMDISK_READ, 3);
+    CHECK(extfs_start(&r, &xd, false, &quick_retry, 1));
+    CHECK(file_is(&r, "/t/a", "two flushes timed out"));
+    CHECK_EQ(ramdisk_timeouts(&xd), 10);
+    CHECK(file_is(&r, "/t/b", "a write timed out, half of it landed"));
+    CHECK_ST(t_open(&r, "/t/big", FS_READ, &f), OK);
+    CHECK_EQ(f.size, sizeof(big));
+    CHECK_ST(t_read(&f, 0, back, sizeof(back), &done), OK);
+    t_close(&f);
+    CHECK_EQ(done, sizeof(back));
+    CHECK(!memcmp(back, big, sizeof(big)));
+    CHECK(writable_now(&r, true));
+    CHECK_ST(t_mkdir(&r, "/t/after"), OK);
+    CHECK(fat_stop(&r));
+    CHECK(extfs_save(&xd, "extfs_timeout"));
+    return ramdisk_destroy(&xd);
+}
+
+/* Past its tries a call that times out fails as before: a flush that
+ * never goes through turns the volume read-only (disk.c's "a flush of the
+ * disk's cache failed: ERR_TIMED_OUT (5 tries ...", then the journal's
+ * "commit write failed": tools/extfs-svc-test.sh looks for both), and
+ * nothing that had to wait for it was sent: the request's commit block
+ * isn't on the disk. Started again (a disk's failure records no error
+ * state), the volume is writable, holds what came before and not the
+ * failed request's directory, and is clean. */
+bool t_extfs_timeout_spent(void)
+{
+    static struct ramdisk xd;
+    struct fatrun r;
+    CHECK(ramdisk_create(&xd, EXT_DISK_SECTORS));
+    CHECK(extfs_start(&r, &xd, false, &quick_retry, 1));
+    CHECK_ST(t_mkdir(&r, "/t"), OK);
+    CHECK(put_file(&r, "/t/a", "before"));
+    ramdisk_time_out(&xd, RAMDISK_SYNC, 1000);
+    CHECK(t_mkdir(&r, "/t/lost") != OK);
+    CHECK_EQ(ramdisk_timeouts(&xd), 5);   /* disk.c's RETRY_TRIES, then no more */
+    ramdisk_time_out(&xd, 0, 0);
+    CHECK(writable_now(&r, false));
+    CHECK_ST(t_mkdir(&r, "/t/q"), ERR_ACCESS_DENIED);
+    CHECK(fat_stop(&r));
+    CHECK(extfs_start(&r, &xd, false, NULL, 0));
+    CHECK(writable_now(&r, true));
+    CHECK(file_is(&r, "/t/a", "before"));
+    CHECK_ST(t_stat(&r, "/t/lost", NULL, NULL, NULL), ERR_NOT_FOUND);
+    CHECK(fat_stop(&r));
+    CHECK(extfs_save(&xd, "extfs_timeout_spent"));
+    return ramdisk_destroy(&xd);
+}
+
 /* ---- many at once (docs/M13.6-REVIEW.md's R3) ------------------------------------ */
 
 #define MANY_FILES 200u
