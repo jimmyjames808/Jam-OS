@@ -19,6 +19,8 @@
  *   - modes, owners and times stored: chmod (all twelve bits), fchmod,
  *     access by them, chown to the one user (and -1) only, utimensat and
  *     futimens with nanoseconds, UTIME_OMIT; the umask on every create;
+ *     a file of mode 0200 opened for writing only (and refused for reading),
+ *     also given to a child;
  *   - renameat2's RENAME_EXCHANGE and RENAME_NOREPLACE;
  *   - unlink of an open file (still read through its descriptor);
  *   - a writable O_APPEND descriptor given to a child while we write it
@@ -238,6 +240,60 @@ static void attrs(void)
     CHECK(mknod(LX "/t/node", S_IFIFO | 0644, 0) == -1 && errno == EPERM);
 }
 
+/* A file of mode 0200: its owner may open it for writing only (open(2); base's
+ * ChangeFilePermissionsAndWrite writes such a file), not to read it. The
+ * layer's one open of a file (fobj.c) reads too, unless the mode says
+ * no, so the open that asks for both is refused and the write alone is tried. */
+static void write_only(void)
+{
+    char buf[8] = { 0 };
+    CHECK(put(LX "/t/wo", "old data"));
+    CHECK(chmod(LX "/t/wo", 0200) == 0);
+    CHECK(access(LX "/t/wo", W_OK) == 0 && access(LX "/t/wo", R_OK) == -1 && errno == EACCES);
+    int fd = open(LX "/t/wo", O_WRONLY | O_CREAT | O_TRUNC, 0666);   /* base's WriteFile */
+    CHECK(fd >= 0 && write(fd, "new", 3) == 3);
+    CHECK(fd >= 0 && read(fd, buf, 1) == -1 && errno == EBADF);
+    int fd2 = open(LX "/t/wo", O_WRONLY);   /* a second description of it */
+    CHECK(fd2 >= 0 && pwrite(fd2, "N", 1, 0) == 1);
+    CHECK(open(LX "/t/wo", O_RDONLY) == -1 && errno == EACCES);
+    CHECK(open(LX "/t/wo", O_RDWR) == -1 && errno == EACCES);
+    int fd3 = open(LX "/t/wo", O_WRONLY | O_APPEND);   /* the service appends on ext */
+    CHECK(fd3 >= 0);
+    if (fd3 >= 0)
+        close(fd3);
+    /* Read permission given while the write-only open is there: the description
+     * made then reads with a service open of its own. */
+    CHECK(chmod(LX "/t/wo", 0600) == 0);
+    int rd = open(LX "/t/wo", O_RDONLY);
+    CHECK(rd >= 0 && read(rd, buf, 8) == 3 && !memcmp(buf, "New", 3));
+    if (rd >= 0)
+        close(rd);
+    CHECK(chmod(LX "/t/wo", 0200) == 0);
+
+    /* Given to a child, which opens the file again as the description had it. */
+    posix_spawn_file_actions_t fa;
+    pid_t pid = -1;
+    int status = -1;
+    char *av[] = { "posixtest", "--child-links", NULL };
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_adddup2(&fa, fd2, 1);
+    CHECK(fd2 >= 0 && lseek(fd2, 3, SEEK_SET) == 3);
+    CHECK(posix_spawn(&pid, "/bin/posixtest", &fa, NULL, av, environ) == 0);
+    posix_spawn_file_actions_destroy(&fa);
+    CHECK(pid > 0 && waitpid(pid, &status, 0) == pid && WIFEXITED(status) &&
+          WEXITSTATUS(status) == 0);   /* it writes "B" at our offset */
+    if (fd >= 0)
+        close(fd);
+    if (fd2 >= 0)
+        close(fd2);
+    CHECK(chmod(LX "/t/wo", 0600) == 0 && holds(LX "/t/wo", "NewB"));
+
+    /* No mode at all: refused, and not truncated. */
+    CHECK(chmod(LX "/t/wo", 0) == 0);
+    CHECK(open(LX "/t/wo", O_WRONLY | O_TRUNC) == -1 && errno == EACCES);
+    CHECK(chmod(LX "/t/wo", 0600) == 0 && holds(LX "/t/wo", "NewB"));
+}
+
 static void renames(void)
 {
     CHECK(put(LX "/t/e1", "one") && put(LX "/t/sub/e2", "two"));
@@ -317,6 +373,7 @@ void pt_links(char **argv)
     outward();
     hard_links();
     attrs();
+    write_only();
     renames();
     open_files();
 }
