@@ -45,6 +45,11 @@
  *                  the default) or bitmap (the 8x16 font); init passes
  *                  it to each terminal's console, and to the running ones
  *                  when /data comes
+ *   files.writeback seconds a store into a file mapped to write may wait
+ *                  before extfs writes it back by itself, 1 to 600
+ *                  (default 10: <jam/abi.h>'s PAGER_WRITEBACK_AGE_NS);
+ *                  each extfs reads its own volume's etc/settings at its
+ *                  start (user/services/extfs/wback.c)
  * The shell's vol, music and date -z write them, and init the layout;
  * init reads them when /data is mounted.
  *

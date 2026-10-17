@@ -569,7 +569,7 @@ Each about one agent-hour; WE2 about one and a half.
 | **WK2. Write-back** | 1.3: `PAGER_REQ_WRITEBACK` (made by the background count; `vmo_sync`'s and the throttle's come in WK3), `PAGER_DIRTY_BEGIN` (protect within the batch budget, one shootdown, then the copy), `PAGER_DIRTY_OLDEST`, `PAGER_OP_WRITTEN` and what a request needs (the stamps), the error kept (Q1), `PAGER_NEXT_AGAIN` turning writing pages dirty; built, see "WK2 notes" | WK1's kernel files, kernel/test/test_pager_dirty.c | WK1 merged | ktests: begin protects in every mapping (several address spaces, `VMAR_MAX_OVERLAP` mappings of one page), a store after begin dirties again and is never lost (8 threads storing counters while a pager thread loops begin, copy, written: the last image holds every thread's last count), written with a re-dirtied page leaves it dirty, a death (AGAIN) between begin and written, `vmo_batch_cost_most` within `VMO_BATCH_BUDGET`; full ktest 4 and 8 | 1 | **Opus** |
 | **WK3. Waiting** | 1.4 and 1.5: the dirty limit, a store's wait in `aspace_fault` and in user copies (no region lock, the deadline in all, cancellable), the throttle's request, `vmo_sync` and its requests; the failure table; built, see "WK3 notes" | WK1's kernel files, `kernel/mm/aspace.c` (the fault's wait), `kernel/abi/sysc_vm.c` (`vmo_sync`), kernel/test/test_pager_dirty.c | WK2 merged | ktests: a writer at the limit waits and goes on when the pager writes; a pager that never answers: the writer is killed at the deadline with the line, a copy returns `ERR_IO`, a reader of another VMO of the same pager is never held up; `vmo_sync` answered exactly (a store before it, written by a write-back that began before it, keeps it waiting); `vmo_sync` failing on a close; a kill ends every wait; full ktest 4 and 8; soak 2 | 1 | **Opus** |
 | **WE1. extfs: the map and one cache** | 2.1 and 2.2: `MAP_WRITE`, every shared VMO writable, keys from the inode, `FIND`, the sizes of a found VMO, rights reduced for `MAP_READ`; `pager_write` in `write` and truncate (the tails), `PEEK` in `read`; Q7 both ways; the ordering argument in pager.c's header; built, see "WE1 notes" | `user/services/extfs/pager.c`, `user/services/extfs/files.c`, `user/services/extfs/fsops.c`, `user/services/extfs/extfs.h`, `user/services/extfs/adopt.c` (the slots' lookups), `abi/idl/file.idl` (`MAP_WRITE`, the comments) and its generated header, a new utest file user/tests/utest/extfs_wmap.c | WK1 merged; U9 merged (it works in extfs); no other track in extfs | utest `extfs_wmap`: a store seen by `read`, by a second mapping and a second process; `write` and a store on one page both kept; truncate shrink and grow with the tails zero; a map after the first mapper unmapped (its pages still dirty) finds the same VMO; `MAP_WRITE` refused without `FS_WRITE`, through a read-only view and on a file mapped to run; `MAP_EXEC` refused while a writable map lives; `extfs_map` and `extfs_restart_pager` unchanged; init run | 1 | **Opus** |
-| **WE2. extfs: write-back** | 2.3 to 2.7: serving `PAGER_REQ_WRITEBACK`, a transaction a batch of runs, the size clip, holes and unwritten extents in ordered mode, the times, the age check, `file.sync` and `fs.sync`, the orderly stop, errors kept per slot, a fresh start's keys; test powers `die=wback:<n>`; extcheck's cut storm gains a write-back step | `user/services/extfs/pager.c` (or a new user/services/extfs/wback.c beside it), `user/services/extfs/main.c` (the age check), `user/services/extfs/fsops.c` (sync), `user/services/extfs/test.c`, `user/services/extfs/extfs.h`, `tools/extcheck.c` (the storm's new step), new utest files for `extfs_wback` and `extfs_restart_wback` | WE1, WK3 merged | utest `extfs_wback` (stores written by `msync`, by `fsync`, by age; a store over a hole and in an unwritten extent; a full volume's error at the next sync), `extfs_restart_wback` (a death at every step of 2.6, the data right after each); `tools/extfs-svc-test.sh` (every disk `e2fsck -fn` clean); extcheck's cut storm (`make check`); init run | 1.5 | **Opus** |
+| **WE2. extfs: write-back** | 2.3 to 2.7: serving `PAGER_REQ_WRITEBACK`, a transaction a batch of runs, the size clip, holes and unwritten extents in ordered mode, the times, the age check, `file.sync` and `fs.sync`, the orderly stop, errors kept per slot, a fresh start's keys; test powers `die=wback:<n>`; extcheck's cut storm gains a write-back step; built, see "WE2 notes" | `user/services/extfs/pager.c` (or a new user/services/extfs/wback.c beside it), `user/services/extfs/main.c` (the age check), `user/services/extfs/fsops.c` (sync), `user/services/extfs/test.c`, `user/services/extfs/extfs.h`, `tools/extcheck.c` (the storm's new step), new utest files for `extfs_wback` and `extfs_restart_wback` | WE1, WK3 merged | utest `extfs_wback` (stores written by `msync`, by `fsync`, by age; a store over a hole and in an unwritten extent; a full volume's error at the next sync), `extfs_restart_wback` (a death at every step of 2.6, the data right after each); `tools/extfs-svc-test.sh` (every disk `e2fsck -fn` clean); extcheck's cut storm (`make check`); init run | 1.5 | **Opus** |
 | **WL1. libc** | section 3 | `user/posix/sys/file.c` (`map_file`), `user/posix/sys/mem.c` (`lx_msync`, the share flag), `user/posix/sys/files.h`, posixtest's `user/posix/test/mmap.c` (a new section `mmap-wshared`), tools/shell-tests' new posix-mmap-wshared.txt and its case in `tools/posix-mmap-test.sh` | WE1 and WK3 merged (beside WE2: different files); after or before FL2 (both edit `mem.c`: one after the other) | posixtest `mmap-wshared` on ext (`MMAP_DATA=ext`): a store seen by `read` and `pread`, by a second mapping, by a child; `write` and stores on one page both kept; `mprotect` adding write on an `O_RDWR` mapping, `EACCES` on `O_RDONLY`; `msync` `MS_SYNC` and `MS_ASYNC` return 0; truncate's tail zero; on FAT `ENODEV` and `EACCES` as today; the `mmap` and `coherent` cases on FAT and ext unchanged; shell scripts basic, cmds, commands, files | 1 | Sonnet 5.5 |
 | **WT1. The end-to-end tests** | the scripts below, and Chromium's tests through CB2's harness | `tools/pager-test.sh` (new cases), pagertest (`user/tests/pagertest/`, a new mode that stores records with sequence numbers and checksums), `tools/cr-test.sh`'s `base` filter list (a line) | WE2 and WL1 merged; CB2 merged and `/tmp` on ext (U7b or U11a) for the Chromium case | pager-test.sh `wmsync`: records stored and `msync`ed, `kill extfs-jam`, read back through `read` and a new mapping; again with no `msync` (the successor writes them); again across a reboot (`msync`ed records there). `wcut`: QEMU stopped dead during a store-and-`msync` storm, booted again: every acknowledged record whole, Linux's `e2fsck -fn` clean. `wpress`: a mapping twice the budget stored through (the writer throttled, done, every page right) while another program reads another file at speed; then with extfs held by a test power (`hang=wback`): the writer killed at the deadline with the line, the reader, the shell and `/jam` fine. cr-test.sh `base` with `MemoryMappedFileTest.*`, `FilePersistentMemoryAllocatorTest.*` and `PersistentHistogramAllocatorTest.*` (*unsure* of the exact suite names: CB2's list says) | 1 | Sonnet 5.5 |
 | **WR. Independent review and fix** | everything above, findings first (a new docs/WRITEMAP-REVIEW.md), then High and Medium fixed with a test each: can a store be lost (begin's protect against the copy, the request's stamps, AGAIN), can a writer or the kernel wait forever, can a dirty page be evicted, does a view's refusal hold for every way to a writable handle, is an acknowledged `msync` safe across every death | the files its fixes need | WK1 to WT1 merged | its own; hostile: 8 writers on one file from two processes with fork and a pager killed every 200 ms; full ktest 4 and 8; soak 4 | 1.5 | **Opus** |
@@ -860,6 +860,83 @@ the design and the ordering argument):
   mapping to have come from `FILE_MAP_WRITE` (on an `O_RDWR`
   descriptor); asking for it for every shared mapping of an `O_RDWR`
   file makes the file `written` (not runnable) while that VMO lives.
+
+### WE2 notes
+
+What WL1, WT1 and WR start from (utest `extfs_wback`, `extfs_restart_wback`;
+the design in `user/services/extfs/wback.c`'s header):
+
+- **The batch.** A write-back is a transaction of its own (`tx_begin`,
+  `tx_commit`), no request slot: each run begun (`pager_dirty` with
+  BEGIN, into a 1 MiB buffer of wback.c's own), written with `ext_write`
+  up to the file's size (clipped, so the size never moves), the inode's
+  `mtime` and `ctime` set; up to 32 runs while the journal has 64 blocks
+  of room; then the commit, a flush if nothing was committed but data
+  was written in place, and one `PAGER_OP_WRITTEN` over each run's exact
+  pages. extfs ends every batch before the next begins and before it
+  reads another request, so WK3's hazard can't arise: no WRITTEN covers a
+  page another write-back began. A batch is never left open across a
+  request.
+- **When.** A `PAGER_REQ_WRITEBACK`: its range (served from `pager.c`'s
+  `serve`, one per turn, 16 at most in `pager_reap`). By age:
+  `wback_tick` from `main.c`'s loop, at most once a second whether a
+  request is waiting or not, `OLDEST | BEGIN` with the setting, 4 runs
+  (4 MiB) a check at most, the next check when the oldest dirty page
+  will be due (a whole window if none is dirty). `file.sync`: the file's
+  VMO from 0 to its size, 1 MiB a call, then the slot's kept error.
+  `fs.sync`: `OLDEST | BEGIN` with the age at least the time since the
+  call began (a page dirtied after it is younger, so a writer that never
+  stops can't keep it going). The orderly stop (`fsctl.stop`, and
+  `main.c` after the loop on a writable volume): the same as `fs.sync`
+  for 3 s at most (volumes waits 5 s for the stop's answer), then a log
+  line.
+- **The setting** is `files.writeback` (seconds, 1 to 600, default 10:
+  `PAGER_WRITEBACK_AGE_NS`), in USING.md and `<settings.h>`. extfs can't
+  open its own files, so it reads its volume's own `etc/settings` with the
+  ext library once at its start (the system volume's is
+  `/data/etc/settings`). *Not done:* a change while extfs runs is seen at
+  its next start, not at once (the plan said "and on a settings change";
+  nothing tells a file service a setting changed; IE1's events could).
+- **Errors** (Q1's A). A run a full volume cut short: WRITTEN OK over the
+  pages written, `ERR_NO_SPACE` over the rest. A disk error, a failed
+  commit or a volume that can't be written: the batch given up, every
+  run's WRITTEN `ERR_IO` (begun all the same, so the pages don't pin the
+  dirty limit). The slot keeps the first error since the file's last
+  `file.sync` (`struct xf_map`'s `error`, in old padding; the state's
+  layout is 4); `file.sync` returns it once; `fs.sync` returns the first
+  error its own write-backs met. **One cache has a gap here:** a page
+  whose write-back failed is clean, so `read` (which lays only dirty and
+  writing pages over the disk's bytes) gives the disk's bytes while the
+  mapping still shows the store until the page is evicted (Linux's page
+  cache shows the store to both).
+- **Deaths.** `die=wback:<n>` counts four steps a run: begun, its data
+  written, the batch committed, the run answered. Found and fixed while
+  testing: adopt.c runs a request in progress again from its slot
+  *before* `pager_start`, so a `file.sync` cut mid write-back would have
+  found its pages still writing (BEGIN skips them) and answered OK with
+  the data not on the disk. `PAGER_NEXT_AGAIN` is now made at the first
+  need (`maps_again`, from every sync path and from `pager_start`); the
+  request it gives is kept and served first.
+- **A fresh start's keys** (`maps_key`): a page or write-back request for
+  a file's key the state doesn't know gets a slot from the inode the key
+  names if that inode is a regular file with a name (the fresh mount
+  dropped every orphan the empty state didn't hold, so one without a name
+  is gone), `written` set; else the key is detached. No free slot: a
+  write-back is served without one (no inode held, no error kept), a page
+  request detached. *Left:* after a fresh start a `read` of a file whose
+  slotless VMO holds stores not yet written back sees the disk's bytes
+  until a request or the age check makes its slot (at most the window).
+- **For WL1:** `msync` with `MS_SYNC` is `vmo_sync` with the wait (an
+  acknowledged one is committed); `fsync` and `fdatasync` are
+  `file.sync`, which now writes the file's mapped stores back and returns
+  `ERR_IO` or `ERR_NO_SPACE` once (map them to `EIO`, `ENOSPC`); `sync`
+  and `syncfs` are `fs.sync`.
+- **For WT1:** `extfs_wback` leaves stores dirty and kills extfs (no
+  orderly stop): stores made with no extfs running dirty their present
+  pages in the kernel alone, and the successor writes them. A test that
+  needs "a GONE served first" must not use `fs.sync` as its barrier any
+  more (it writes the stores back and the clean VMO goes): `extfs_wmap`
+  uses `fs.stat`.
 
 ## 6. Tests
 
