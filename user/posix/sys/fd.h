@@ -253,12 +253,14 @@ long   fd_iov_total(const struct iovec *iov, int iovcnt);
 /* Copy n bytes into iov's buffers (the caller's) from src, skipping the
  * first `skip` bytes of iov; and out of them into dst. They stop at iov's
  * end. 0, or -EFAULT (a buffer the caller can't write or read: some bytes
- * may have been copied). */
+ * may have been copied), or -EIO (a mapped file's page its pager failed:
+ * ucopy.h). */
 long   fd_iov_scatter(const struct iovec *iov, int iovcnt, size_t skip, const void *src,
                       size_t n);
 long   fd_iov_gather(const struct iovec *iov, int iovcnt, size_t skip, void *dst, size_t n);
 /* Can n bytes of iov's buffers from byte skip on be read (or written:
- * write; uc_readable, uc_writable): 0, or -EFAULT. A write's and a send's
+ * write; uc_readable, uc_writable): 0, or -EFAULT (-EIO: a mapped file's
+ * page its pager failed, which write() returns as it is). A write's and a send's
  * bytes are checked so before any goes: kinds hand a single buffer to the
  * kernel as it is (a pipe's message), and Linux's EFAULT for a buffer
  * that can't be read is how Chromium and the sanitizers ask whether

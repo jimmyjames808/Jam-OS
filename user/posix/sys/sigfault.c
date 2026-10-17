@@ -61,6 +61,7 @@
 #include <signal.h>
 #include <string.h>
 #include <ucontext.h>
+#include "calls.h"
 #include "proc.h"
 #include "sig.h"
 
@@ -365,6 +366,86 @@ static bool runs_on_interrupted(const struct exc_frame *f, const struct sig_act_
 
 #define RUN_BYTES ((sizeof(struct fault_run) + 63) & ~(size_t)63)
 
+/* A handler's way in and out: from EXC_LEAVE to the handler, and from its
+ * return to the thread's resume (or the next handler), the thread is in
+ * the layer, on the way out setting the mask the handler left and looking
+ * for the next signal due, then resuming the frame. A raise that comes
+ * there runs no handler: the registers it found are the
+ * layer's, not where the thread goes on (V8's profiler would take a
+ * sample in the layer; Chromium's stack copier would copy the wrong
+ * stack), and the signal it brings may have come after the last look for
+ * one, so it could wait for ever on a thread that makes no calls. It
+ * notes `again` and goes on at once; the way out then takes the signal
+ * on the frame it resumes. __jam_sig_resume (sigentry.S) clears `in` and
+ * looks at `again` before its system call; a raise inside it, after that
+ * look, also has the thread raised again, which comes once the frame is
+ * resumed (at its next interrupt). The thread's own, read by its own
+ * raise entry. */
+struct sig_tail {
+    volatile uint8_t in;      /* on a handler's way in or out */
+    volatile uint8_t again;   /* a raise came there */
+};
+_Static_assert(offsetof(struct sig_tail, in) == 0 && offsetof(struct sig_tail, again) == 1,
+               "sigentry.S's offsets");
+static __thread struct sig_tail tail;
+
+long __jam_sig_resume(struct exc_frame *f, struct sig_tail *t, long outer, long here);
+extern const char __jam_sig_resume_end[];
+
+/* Forks this process's memory has been through (sig_fault_forked, in the
+ * child): a handler that was running when its thread forked returns, in
+ * the child, to a frame the kernel made for the parent's thread, which
+ * exception_done refuses; such a frame is resumed in user mode. */
+static unsigned forks;
+
+void sig_fault_forked(void)
+{
+    forks++;
+}
+
+/* A raise that found the thread on a handler's way out (in the window). */
+static bool raised_on_way_out(const struct exc_frame *f)
+{
+    bool resuming = f->rip >= (uintptr_t)__jam_sig_resume &&
+                    f->rip < (uintptr_t)__jam_sig_resume_end;
+    if (sig_on_signal_thread() || (!tail.in && !resuming))
+        return false;
+    tail.again = 1;
+    if (resuming)
+        sig_raise_later();
+    return true;
+}
+
+static volatile uint64_t way_out_ticks;   /* posixtest's wait (calls.h) */
+
+void lx_sig_test_way_out(uint64_t ticks)
+{
+    way_out_ticks = ticks;
+}
+
+/* posixtest's wait on the way out, after the last look for a signal. */
+static void way_out_wait(void)
+{
+    uint64_t ticks = way_out_ticks;
+    for (uint64_t t0 = __builtin_ia32_rdtsc(); ticks && __builtin_ia32_rdtsc() - t0 < ticks;)
+        __builtin_ia32_pause();
+}
+
+/* The way out's last step: f resumed, the thread's `in` as it was before
+ * this handler (outer: a fault in a way out goes back into it), by the
+ * kernel unless the process forked since f was made (made_at: `forks`
+ * then). Returns only if a raise came on the way out: its signal is to be
+ * taken first. */
+static void way_out(struct exc_frame *f, uint8_t outer, unsigned made_at, int sig)
+{
+    way_out_wait();
+    if (__jam_sig_resume(f, &tail, outer, made_at != forks) > 0) {
+        tail.again = 0;
+        return;
+    }
+    jam_process_exit(LX_EXIT_SIGNAL + sig);   /* never: only a frame it can't read returns */
+}
+
 _Noreturn void sig_fault(struct exc_frame *f)
 {
     if (uc_fault(f))   /* a checked copy's bad pointer: on with -EFAULT (ucopy.c) */
@@ -374,6 +455,8 @@ _Noreturn void sig_fault(struct exc_frame *f)
         unhandled(f, SIGSEGV);
     struct fault_run run = { .f = f };
     if (f->kind == EXC_RAISED) {
+        if (raised_on_way_out(f))
+            resume(f, SIGSEGV);   /* the way out takes its signal */
         if (!sig_raise_begin((const uint64_t *)(void *)frame_regs(f), &run.si, &run.act, &run.was))
             resume(f, SIGSEGV);   /* nothing to run here: on at once */
     } else {
@@ -401,13 +484,17 @@ _Noreturn void sig_fault(struct exc_frame *f)
     __jam_sig_moved(copy, r, (void *)lo);
 }
 
+/* The handler, the program's code: off the way in and out (struct
+ * sig_tail) just for it, so a raise during it runs a handler of its own. */
 static void call_handler(void *arg)
 {
     struct handler_args *h = arg;
+    tail.in = 0;
     if (h->act->flags & SA_SIGINFO)
         ((void (*)(int, siginfo_t *, void *))h->act->handler)(h->sig, &h->ctx->info, &h->ctx->uc);
     else
         ((void (*)(int))h->act->handler)(h->sig);
+    tail.in = 1;
 }
 
 /* The rest of a fault or a raise whose signal a handler takes: what it is
@@ -422,6 +509,8 @@ _Noreturn void sig_fault_run(struct fault_run *r)
     fp = (uint8_t *)(((uintptr_t)fp + 63) & ~(uintptr_t)63);   /* XSAVE's alignment */
     greg_t *g = ctx.uc.uc_mcontext.gregs;
     bool left = false;
+    uint8_t outer = tail.in;   /* 1 only for a fault on a way out (the layer's own) */
+    unsigned made_at = forks;
     for (;;) {
         memset(&ctx, 0, sizeof(ctx));
         ctx.uc.uc_flags = UC_SIGCONTEXT_SS | fp_copy(fp, f);
@@ -440,6 +529,9 @@ _Noreturn void sig_fault_run(struct fault_run *r)
         memcpy(&ctx.uc.uc_sigmask, &r->was, sizeof(r->was));
         sig_fill_siginfo(&r->si, &ctx.info);
 
+        /* On the way in from EXC_LEAVE to the handler, and out after it
+         * (struct sig_tail; call_handler clears `in` for the handler). */
+        tail.in = 1;
         if (!left)
             (void)jam_exception_done(f, EXC_LEAVE);
         left = true;
@@ -449,18 +541,23 @@ _Noreturn void sig_fault_run(struct fault_run *r)
         else
             call_handler(&h);
 
-        /* Back from the handler: on as its ucontext says (fpregs as Linux's
-         * sigreturn takes it: wherever the handler left it pointing). */
+        /* Back from the handler, on the way out: on as its ucontext says
+         * (fpregs as Linux's sigreturn takes it: wherever the handler left
+         * it pointing). A raise that came on the way in or out is taken
+         * below by its pending bit. */
+        tail.again = 0;
         memcpy(frame_regs(f), g, SIG_REGS * sizeof(greg_t));
         if (ctx.uc.uc_mcontext.fpregs)
             memcpy(f->xsave, ctx.uc.uc_mcontext.fpregs, f->xsave_size);
         uint64_t mask;
         memcpy(&mask, &ctx.uc.uc_sigmask, sizeof(mask));
         if (f->kind != EXC_RAISED) {
-            sig_fault_end(mask);
-            resume(f, r->si.signo);
+            for (;;) {   /* what a raise on the way out brought: delivered here too */
+                sig_fault_end(mask);
+                way_out(f, outer, made_at, r->si.signo);
+            }
         }
-        if (!sig_raise_next(mask, &r->si, &r->act, &r->was))
-            resume(f, SIGSEGV);
+        while (!sig_raise_next(mask, &r->si, &r->act, &r->was))
+            way_out(f, outer, made_at, SIGSEGV);
     }
 }

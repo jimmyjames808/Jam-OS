@@ -506,8 +506,8 @@ void sig_thread_end(void)
             i++;
     t->next = spare;   /* unlisted: nobody else can reach it */
     spare = t;
+    mine = NULL;   /* before a new thread can take t: a raise from here on finds none */
     give();
-    mine = NULL;
     /* A raise latched before it was unlisted may still come: with no
      * exception stack its frame goes below RSP, where it can't be written
      * once musl has unmapped the stack (and the thread-local storage with
@@ -690,6 +690,29 @@ static void raise_pipe(struct sig_thread *t)
     (void)sig_send_thread(t->tid, &si);   /* we are listed */
 }
 
+/* Out of a quiet stretch: a raise that came inside comes again now. */
+static void quiet_end(struct sig_thread *t)
+{
+    bool out = !__atomic_sub_fetch(&t->quiet, 1, __ATOMIC_RELAXED);
+    __atomic_signal_fence(__ATOMIC_SEQ_CST);   /* out of it before raise_again is read */
+    if (out && raise_again)
+        raise_self();
+}
+
+struct sig_thread *sig_quiet_begin(void)
+{
+    struct sig_thread *t = self();
+    if (t)
+        __atomic_add_fetch(&t->quiet, 1, __ATOMIC_RELAXED);
+    return t;
+}
+
+void sig_quiet_end(struct sig_thread *t)
+{
+    if (t)
+        quiet_end(t);
+}
+
 long sig_call(const struct sig_frame *f)
 {
     struct sig_thread *t = self();
@@ -701,10 +724,7 @@ long sig_call(const struct sig_frame *f)
     if (f->kind & SIG_CALL_QUIET) {
         __atomic_add_fetch(&t->quiet, 1, __ATOMIC_RELAXED);
         r = call(f);
-        bool out = !__atomic_sub_fetch(&t->quiet, 1, __ATOMIC_RELAXED);
-        __atomic_signal_fence(__ATOMIC_SEQ_CST);   /* out of it before raise_again is read */
-        if (out && raise_again)
-            raise_self();
+        quiet_end(t);
         return r == -LX_EINTR_FINAL ? -EINTR : r;
     }
     uint32_t handled = t->handled, norestart = t->norestart;
@@ -943,6 +963,7 @@ void sig_fork(int step)
     sig_entry_need(SIG_ENTRY_HANDLERS, fault_handled_locked());
     give();
     sig_alt_reapply();   /* the thread's sigaltstack is in the copy, not its kernel stack */
+    sig_fault_forked();  /* a handler it forked in returns to the parent's frame */
 }
 
 /* ---- faults (sigfault.c) ------------------------------------------------------------ */
@@ -994,6 +1015,11 @@ static void raise_self(void)
     struct sig_thread *t = mine_now();
     if (t)
         (void)jam_thread_raise(t->handle);
+}
+
+void sig_raise_later(void)
+{
+    raise_self();
 }
 
 /* The next signal due on t taken for its handler, as sig_raise_begin says:

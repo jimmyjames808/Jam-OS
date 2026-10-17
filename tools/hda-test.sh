@@ -105,7 +105,9 @@ counts="$counts $(echo "$trace" | tail -3 | head -1)"
 # and at least one mute (the DAC's output amp).
 [ "$pinctl" -ge 3 ] && [ "$mutes" -ge 3 ] || { echo "hda-shell: too few path SETs ($counts)"; ok=0; }
 
-QEMU_TIMEOUT=${QEMU_TIMEOUT:-150} QEMU_EXTRA="$devs" \
+# The whole init run in one boot: qemu-test.sh's own cap for it (300 s), not
+# 150 s, which the run outgrew with the signal cases (as usb-test did).
+QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_EXTRA="$devs" \
     tools/qemu-test.sh "$out" hda-init init > "$out/hda-init.out" 2>&1 || true
 log="$out/hda-init.log"
 n=$(grep -c "\[hda\] stopped: controller back in reset (client closed)" "$log" || true)

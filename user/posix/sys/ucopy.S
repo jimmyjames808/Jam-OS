@@ -3,10 +3,12 @@
  * which puts its address and its fixup's in the exception table
  * (uc_table .. uc_table_end) that uc_fault (ucopy.c) searches. No routine
  * pushes anything or moves RSP, so at any marked instruction RSP is at the
- * return address, and the one fixup, fail, returns -EFAULT to the caller.
- * Only the marked instructions: a fault on our own side of a copy (a bug
- * in the layer) is still SIGSEGV. */
+ * return address, and the one fixup, fail, returns -EFAULT to the caller
+ * (uc_fail_io, -EIO, for a page whose pager failed). Only the marked
+ * instructions: a fault on our own side of a copy (a bug in the layer) is
+ * still SIGSEGV. */
 
+#define EIO    5
 #define EFAULT 14
 #define PAGE   4096
 
@@ -135,6 +137,19 @@ fail:
     ret
     .cfi_endproc
     .size fail, . - fail
+
+/* The fixup uc_fault picks instead for a file's page whose pager failed:
+ * -EIO to the routine's caller (any line's: no routine moves RSP). */
+    .globl uc_fail_io
+    .hidden uc_fail_io
+    .type uc_fail_io, @function
+    .p2align 4
+uc_fail_io:
+    .cfi_startproc
+    mov $-EIO, %rax
+    ret
+    .cfi_endproc
+    .size uc_fail_io, . - uc_fail_io
 
     .section .rodata.uc_table, "a"
     .globl uc_table_end

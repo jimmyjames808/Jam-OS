@@ -488,8 +488,9 @@ long fd_iov_scatter(const struct iovec *iov, int iovcnt, size_t skip, const void
             continue;
         }
         size_t k = iov[i].iov_len - skip < n ? iov[i].iov_len - skip : n;
-        if (uc_put((uint8_t *)iov[i].iov_base + skip, p, k))
-            return -EFAULT;
+        long e = uc_put((uint8_t *)iov[i].iov_base + skip, p, k);
+        if (e)
+            return e;
         p += k;
         n -= k;
         skip = 0;
@@ -506,8 +507,9 @@ long fd_iov_gather(const struct iovec *iov, int iovcnt, size_t skip, void *dst, 
             continue;
         }
         size_t k = iov[i].iov_len - skip < n ? iov[i].iov_len - skip : n;
-        if (uc_get(p, (const uint8_t *)iov[i].iov_base + skip, k))
-            return -EFAULT;
+        long e = uc_get(p, (const uint8_t *)iov[i].iov_base + skip, k);
+        if (e)
+            return e;
         p += k;
         n -= k;
         skip = 0;
@@ -524,8 +526,9 @@ long fd_iov_check(const struct iovec *iov, int iovcnt, size_t skip, size_t n, bo
         }
         uint8_t *b = (uint8_t *)iov[i].iov_base + skip;
         size_t k = iov[i].iov_len - skip < n ? iov[i].iov_len - skip : n;
-        if (write ? uc_writable(b, k) : uc_readable(b, k))
-            return -EFAULT;
+        long e = write ? uc_writable(b, k) : uc_readable(b, k);
+        if (e)
+            return e;
         n -= k;
         skip = 0;
     }
@@ -571,7 +574,7 @@ static long rw(long fd, const struct iovec *iov, long iovcnt, int64_t pos, unsig
     if (!d)
         return -EBADF;
     bool write = how & RW_WRITE;
-    long r = fd_iov_total(iov, (int)(iovcnt > INT_MAX ? -1 : iovcnt));
+    long r = fd_iov_total(iov, (int)(iovcnt > INT_MAX ? -1 : iovcnt)), bad;
     if (!(how & RW_AT))
         pos = FD_AT_OFFSET;
     if (r >= 0 && !(write ? fd_can_write(d) : fd_can_read(d)))
@@ -580,8 +583,9 @@ static long rw(long fd, const struct iovec *iov, long iovcnt, int64_t pos, unsig
         r = -ESPIPE;   /* pread(2): checked before the offset */
     else if (r >= 0 && (how & RW_AT) && pos < 0)
         r = -EINVAL;
-    else if (r > 0 && write && fd_iov_check(iov, (int)iovcnt, 0, (size_t)r, false))
-        r = -EFAULT;   /* the bytes to write, before any of them goes */
+    else if (r > 0 && write && (bad = fd_iov_check(iov, (int)iovcnt, 0, (size_t)r, false)))
+        r = bad;   /* the bytes to write, before any of them goes: EFAULT, or EIO (a
+                      mapped file's page its pager failed: the stick is gone) */
     else if (r >= 0 && write && (how & RW_NOAPPEND) && d->ops->write_at)
         r = d->ops->write_at(d, iov, (int)iovcnt, pos);
     else if (r >= 0 && write)

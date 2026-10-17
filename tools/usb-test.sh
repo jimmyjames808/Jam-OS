@@ -44,7 +44,9 @@ send sendkey b
 expect usbtest: unplug the hub now
 send device_del hub1
 EOF
-QEMU_TIMEOUT=${QEMU_TIMEOUT:-150} QEMU_MONITOR="$mon" \
+# The whole init run in one boot (about 150 s on the PC with usbtest's
+# hot-plug waits): qemu-test.sh's own cap for it, not 150 s.
+QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_MONITOR="$mon" \
 QEMU_USB="-device usb-hub,id=hub1,bus=xhci.0,port=2,port-power=on \
 -device usb-mouse,bus=xhci.0,port=3 \
 -device usb-kbd,bus=xhci.0,port=4 -device usb-ccid,bus=xhci.0,port=2.2 -device $kbd" \

@@ -841,6 +841,17 @@ section, `tools/shell-tests/posix-fork.txt`; jittest's fork):
   `CLONE_CHILD_CLEARTID` asks (musl's fork and `clone()` set their own);
   vfork runs no atfork handlers; the ended threads' records are reused,
   never freed.
+- **Found after the merge** (triage TB, 2026-10-17): `RLIMIT_NPROC` is
+  honoured (`EAGAIN` while this process and its children not yet reaped
+  are at the soft limit: libc-test's
+  `regression/pthread_atfork-errno-clobber`); a handler that forks on a
+  raise's or a fault's frame returns, in the child, to a frame the kernel
+  made for the parent's thread, which `exception_done` refuses, so the
+  child resumes it in user mode (sigfault.c's `forks`, sigentry.S's
+  `__jam_sig_resume`; libc-test's `regression/raise-race` lost children
+  so, now and then). libc-test's `functional/fcntl` is listed until FL2:
+  its forked children test the parent's record lock through the parent's
+  descriptor.
 
 ## 6. Questions for the owner
 

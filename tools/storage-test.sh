@@ -50,14 +50,18 @@ expect usbtest: unplug the second disk now
 sleep 0.3
 send device_del disk2
 EOF
-QEMU_TIMEOUT=${QEMU_TIMEOUT:-400} QEMU_MONITOR="$mon" \
+# The whole init run in one boot behind the throttled disks: usbtest's
+# slow-disk checks end near 230 s, and posixtest is slow under TCG (its
+# signal section's sampler rounds take about 3.5 ms, not 10 us: 35 s), so
+# the run needs more than the kernel's default 300 s (init_timeout).
+QEMU_TIMEOUT=${QEMU_TIMEOUT:-500} QEMU_MONITOR="$mon" \
 QEMU_USB="-device usb-hub,id=hub1,bus=xhci.0,port=2 \
 -drive if=none,id=disk2img,format=raw,file=$disk,throttling.bps-read=262144 \
 -device usb-storage,id=disk2,bus=xhci.0,port=2.1,drive=disk2img,serial=jamos-disk2 \
 -drive if=none,id=slowimg,format=raw,file=$slow,throttling.bps-read=4096 \
 -device usb-storage,id=slow,bus=xhci.0,port=2.2,drive=slowimg,serial=jamos-slow \
 -device usb-mouse,bus=xhci.0,port=3" \
-    tools/qemu-test.sh "$out" "$name" init || true
+    tools/qemu-test.sh "$out" "$name" init init_timeout=450 || true
 log="$out/$name.log"
 ok=1
 grep -q "usbtest: 22 passed, 6 skipped" "$log" || ok=0

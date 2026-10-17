@@ -11,12 +11,23 @@
 #include <netdb.h>
 #include <string.h>
 #include "layer.h"
+#include "sig.h"
 
 #include <dns.h>
 
 #define RESOLVE_WAIT (15 * NS_PER_S)   /* past the resolver's own 10 s */
 
+static int resolve(const char *name, unsigned char (*addrs)[4], int max);
+
 int __jam_resolve(const char *name, unsigned char (*addrs)[4], int max)
+{
+    struct sig_thread *q = sig_quiet_begin();   /* the layer's own: no handler runs inside */
+    int r = resolve(name, addrs, max);
+    sig_quiet_end(q);
+    return r;
+}
+
+static int resolve(const char *name, unsigned char (*addrs)[4], int max)
 {
     struct dns_answer a;
     status_t st = dns_lookup(name, now() + RESOLVE_WAIT, &a);

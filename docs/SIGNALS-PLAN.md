@@ -221,11 +221,11 @@ What SG5 settled, or added (for SG6 and the review SGR):
   in a call), so these cost up to 10 ms, not a lost signal. Layer entry
   points musl calls directly rather than through `__jam_syscall`
   (`__jam_clone`, `__jam_posix_spawn`, `__jam_resolve`,
-  `__jam_ttyname`) are not marked: a raise there runs the handler inside
+  `__jam_ttyname`) were not marked: a raise there ran the handler inside
   them, so a handler that calls back into the layer for a lock they hold
-  would wait for ever. Linux's rule (only async-signal-safe calls in a
-  handler) keeps V8's and Chromium's handlers clear of them; SGR to judge
-  whether to mark them.
+  waited for ever (waitpid in a SIGCHLD handler during posix_spawn:
+  B4's own case hung so). Since triage TB they and `__jam_clone_process`
+  are quiet stretches (`sig_quiet_begin`, `sig_quiet_end`).
 - **A thread's end**: `sig_thread_end` drops the kernel's exception stack
   if the thread had one, so a raise latched before it was unlisted is
   dropped (its frame can't be written below an unmapped stack) instead of
@@ -246,6 +246,53 @@ What SG5 settled, or added (for SG6 and the review SGR):
   `sysconf(_SC_MINSIGSTKSZ)` is exactly sigaltstack's smallest stack
   (4,968 bytes with AVX). The XSAVE size now takes two CPUIDs (leaves 1
   and 0xD; a CPU with XSAVE has leaf 0xD), once per program.
+
+What the triage after SG5 found (TB, 2026-10-17; for SGR):
+
+- **A raise on a handler's way in or out.** From `EXC_LEAVE` to the
+  handler, and from its return to the resume, the thread is in the layer
+  with nothing marking it: a raise there (the sampler's next SIGPROF,
+  sent the moment the last was handled) ran the handler with the layer's
+  registers, and could leave the process killed for a bad vector state.
+  posixtest's sampler case failed so once under a slow stick
+  (`signal.c`: a run not in the loop). Now sigfault.c's `struct sig_tail`
+  marks the run (`in`), `call_handler` clears it for the handler alone, a
+  raise that finds it set notes `again` and goes on at once, and the way
+  out takes the signal on the frame it resumes. The resume is sigentry.S's
+  `__jam_sig_resume`: it clears the mark and looks at `again` before its
+  system call; a raise inside it also raises the thread again, which
+  comes once the frame is resumed (at the next interrupt, as a raise
+  inside a quiet call does). posixtest widens the window with a test hook
+  (calls.h's `lx_sig_test_way_out`) and sends 200 the sampler's way.
+- **A handler that forks** on a raise's or a fault's frame: in the child
+  the frame is the parent's thread's, which `exception_done` refuses ("a
+  frame that isn't this thread's"); a frame made before the process's
+  last fork is resumed by `__jam_sig_resume` in user mode (XRSTOR, the
+  registers, a jump through memory). libc-test's `regression/raise-race`
+  lost children so, now and then; posixtest forks in a raised handler.
+- **The posix-signal hang** (300 s after the sampler line, once) has two
+  causes, both seen again under TCG (posix-signal with `QEMU_ACCEL=tcg`,
+  the storage run). The layer's: a SIGCHLD raised inside posix_spawn
+  (an entry musl calls directly, not marked) while it held the table of
+  children's lock ran B4's SIGCHLD handler there, whose waitpid then
+  waited for that lock for ever; those entries are quiet stretches now
+  (above). The tests': three waits were `while (!flag) pause();`
+  (signal.c's taker, sigproc.c's counting child, tty.c's child), and a
+  signal that comes between the look and pause() runs its handler there,
+  so pause() sleeps for good (Linux has the same race); each now waits in
+  sigsuspend with its signal blocked outside it, as pty.c's wait_hup does.
+- **An ending thread** cleared its thread-local record pointer only after
+  putting the record on the spare list and giving `sig_lock`: a thread
+  started in between could take it while a raise to the ending one read
+  it. Cleared under the lock now.
+- **Cost**: SG5's signal section takes about 5 s more than before it,
+  mostly 400 raises to threads in quiet calls, each waiting for a tick;
+  `tools/usb-test.sh` (the whole init run in one boot, 146 of its 150 s
+  before SG5) now has the init run's own 300 s cap, and
+  `tools/storage-test.sh` (the same under TCG, where the sampler's rounds
+  take about 3.5 ms) gives the init run 450 s (`init_timeout`). TCG raises
+  no SIMD exception (#XM) at all, so posixtest's fault section skips that
+  case there (CPUID's brand string says QEMU's TCG CPU).
 
 ## Where things stand
 
