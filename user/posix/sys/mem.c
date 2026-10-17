@@ -53,6 +53,12 @@
  * the table has nothing is a plain fixed map (ENOMEM over anything else),
  * and MAP_FIXED_NOREPLACE over anything is EEXIST.
  *
+ * An address without MAP_FIXED is a hint, taken as Linux takes one
+ * (rounded down to its page): the mapping goes there when the whole range
+ * is free and in the user range, else where the kernel places it (the
+ * highest gap that fits). PartitionAlloc's pools, V8's ranges and
+ * Chromium's zero segment ask for theirs this way and check the answer.
+ *
  * JIT memory (docs/CR-PLAN.md section 12): mmap with MAP_JIT (private
  * anonymous only, else EINVAL) in a program holding RIGHT_ROOT_JIT (its
  * list's `right jit`, approved) maps a JIT VMO (vmo_make_jit), the one
@@ -313,8 +319,10 @@ struct map_src {
     uint32_t kind;
 };
 
-/* src's VMO (or a new one) mapped for len bytes with perms (at *addr
- * exactly if fixed), entered in the table. src->vmo is consumed. */
+/* src's VMO (or a new one) mapped for len bytes with perms, entered in
+ * the table: at *addr exactly if fixed; else at the hint *addr (0: none)
+ * if all of [*addr, *addr + len) is free and in the user range, or where
+ * the kernel places it. src->vmo is consumed. */
 static long map_new(uint64_t *addr, uint64_t len, uint32_t perms, bool fixed, bool populate,
                     const struct map_src *src)
 {
@@ -327,8 +335,18 @@ static long map_new(uint64_t *addr, uint64_t len, uint32_t perms, bool fixed, bo
     long r = vmo ? 0 : fresh_vmo(len, src->kind, &vmo);
     if (r)
         return r;
-    status_t st = jam_vmar_map(lx_self_vmar(), vmo, src->vmo_off, len,
-                               perms | (fixed ? VMAR_FIXED : 0), addr);
+    /* The hint as Linux takes one: tried as a fixed map, which the kernel
+     * refuses over anything mapped (ERR_ALREADY_BOUND) or outside the user
+     * range; libc's own mappings are never tried. */
+    uint64_t hint = fixed ? 0 : *addr & ~(PAGE - 1);
+    status_t st = ERR_ALREADY_BOUND;
+    if (hint && hint <= UINT64_MAX - len && !table_overlaps(hint, len)) {
+        *addr = hint;
+        st = jam_vmar_map(lx_self_vmar(), vmo, src->vmo_off, len, perms | VMAR_FIXED, addr);
+    }
+    if (st != OK)
+        st = jam_vmar_map(lx_self_vmar(), vmo, src->vmo_off, len,
+                          perms | (fixed ? VMAR_FIXED : 0), addr);
     if (st != OK) {
         jam_handle_close(vmo);
         return st == ERR_ALREADY_BOUND || st == ERR_NO_RESOURCES ? -ENOMEM : lx_err(st);
