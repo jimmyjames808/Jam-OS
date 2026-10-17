@@ -56,15 +56,19 @@ struct sig_frame {
  * with EINTR (musl's cancellation acts on it). */
 long sig_call(const struct sig_frame *f);
 
-/* A clone child's calls (fork.c). musl's clone() runs the child on a
- * stack its caller gave, which may be far too small for the layer (gtest's
- * death tests give two pages), so that thread makes its calls on a stack
- * of the layer's own, as Linux's kernel makes a call on a stack of its
- * own. lx_call_stack_set: this process has one (calls.c's one test per
- * call, false in every other process); lx_call_on_stack(f): sig_call(f),
- * on that stack when the calling thread is the child's and is off it. */
+/* A clone child's calls (callstack.c, fork.c). musl's clone() runs the
+ * child on a stack its caller gave, which may be far too small for the
+ * layer (gtest's death tests give two pages), so that thread makes its
+ * calls on a stack of the layer's own, as Linux's kernel makes a call on
+ * a stack of its own. lx_call_stack_set: this process has one (calls.c's
+ * one test per call, false in every other process); lx_call_on_stack(f):
+ * sig_call(f), on that stack when the calling thread is the child's and
+ * is off it; lx_call_stack_run(fn, arg): fn(arg) the same way;
+ * lx_call_stack_need: the calling thread (the child's) gets the stack. */
 extern bool lx_call_stack_set;
 long lx_call_on_stack(const struct sig_frame *f);
+void lx_call_stack_run(void (*fn)(void *), void *arg);
+void lx_call_stack_need(bool always);
 
 /* Memory (mem.c): mappings and the break. */
 lx_call lx_mmap, lx_munmap, lx_mprotect, lx_madvise, lx_mremap, lx_brk, lx_mlock, lx_munlock,
