@@ -5,7 +5,8 @@
  * has memory of its own, so an ordinary call returns in both; the layer's
  * lx_vfork (user/posix/sys/fork.c) is fork's core, where the parent will
  * wait for the child's exec or exit (FL4). Like upstream's, it runs no
- * pthread_atfork handlers and takes none of musl's locks. */
+ * pthread_atfork handlers; of musl's locks the layer takes malloc's alone
+ * (fork.c: the child's execve allocates there). */
 #include <unistd.h>
 #include "syscall.h"
 

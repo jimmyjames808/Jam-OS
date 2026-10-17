@@ -53,8 +53,14 @@
  * lock, and signal.c keeps an ended thread's record for the next thread
  * rather than freeing it (a thread ends holding musl's thread list lock,
  * which a fork takes after malloc's). libjam holds none of its own locks
- * across the clone and allocates nothing in the parent's fork. A raw clone
- * or vfork skips musl's handlers and locks (as on Linux), not ours.
+ * across the clone and allocates nothing in the parent's fork. vfork and
+ * clone skip musl's handlers and locks (as on Linux), not ours, but for
+ * malloc's, which they take first, as musl's fork does: their child's calls
+ * into the layer allocate (execve's first of all), where Linux's allocate
+ * nothing in the process, so a child cloned while another thread held it
+ * would wait for it for ever (docs/FORK-REVIEW-LIBC.md, finding 1). A raw
+ * SYS_fork or _Fork takes none: it can't be told from musl's fork, which
+ * holds it already.
  *
  * Not on the list, so possibly held for ever in a child if another thread
  * had one at the clone: each description's lock and those of the kinds'
@@ -103,7 +109,13 @@ struct how {
     int *clear_tid;   /* CLONE_CHILD_CLEARTID: the child's tid word */
     struct jam_fork_args *args;   /* fork_core's: prepare names the VMOs vmar_clone copies */
     bool no_room;     /* prepare couldn't list them: the fork fails (ENOMEM) */
+    bool by_musl;     /* SYS_fork: musl's fork holds malloc's lock across it already */
 };
+
+/* musl's (its malloc's glue, hidden there; the layer is in the same
+ * libc.a): who < 0 takes malloc's lock, 0 gives it back, > 0 makes it
+ * fresh in a child. */
+void __malloc_atfork(int who);
 
 /* The modules whose locks fork holds across the clone, in the order taken
  * (the comment above). */
@@ -243,6 +255,8 @@ handle_t lx_fork_take(struct lx_fork_io *io, uint32_t key)
 static void prepare(void *ctx)
 {
     struct how *how = ctx;
+    if (!how->by_musl)
+        __malloc_atfork(-1);   /* first, as in musl's fork: vfork and clone */
     for (unsigned i = 0; i < NSTEPS; i++)
         steps[i](LX_FORK_TAKE);
     gens++;
@@ -269,15 +283,19 @@ static status_t give(void *ctx, handle_t to, handle_t proc)
 
 static void parent(void *ctx, status_t st)
 {
-    (void)ctx;
+    const struct how *how = ctx;
     (void)st;
     for (unsigned i = NSTEPS; i-- > 0;)
         steps[i](LX_FORK_GIVE);
+    if (!how->by_musl)
+        __malloc_atfork(0);
 }
 
 static void child(void *ctx, handle_t from)
 {
     const struct how *how = ctx;
+    if (!how->by_musl)
+        __malloc_atfork(1);
     lx_start_forked();
     uint32_t tid = 0;
     (void)kp_thread_tid(startup_handle(SR_SELF_THREAD), &tid);
@@ -351,7 +369,7 @@ static long fork_core(struct how *how)
 
 long lx_fork(long a, long b, long c, long d, long e, long f)
 {
-    struct how how = { 0 };
+    struct how how = { .by_musl = true };
     return fork_core(&how);
 }
 

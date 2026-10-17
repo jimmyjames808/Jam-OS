@@ -2394,7 +2394,13 @@ unmaps them at once): fn's frames on those pages, the calls that take a
 path (`stat`, `lstat`, `access`, `open`, `mkdir` and `rmdir`, `chdir` and
 `getcwd`, `readlink`) working there on the layer's own stack for calls, a
 `fork` and a `clone` of its own reaped, fn's value its exit code
-([CR-PLAN](CR-PLAN.md#ccs-2026-10-17), "CCS"). The descriptors and the table of
+([CR-PLAN](CR-PLAN.md#ccs-2026-10-17), "CCS"). `alloc`: two threads in
+`malloc` while the case vforks 40 children and clones 40 more, each of
+which allocates (an `execve` of nothing, then `malloc`): every one ends
+with 0 (the line `alloc: 80 vfork and clone children allocated beside 2
+threads in malloc`; without malloc's lock across vfork and clone a child
+waited for it for ever: [FORK-REVIEW-LIBC](FORK-REVIEW-LIBC.md), finding
+1). The descriptors and the table of
 mappings (`forkfd.c`; [FORK-PLAN](FORK-PLAN.md#fl2-notes), "FL2 notes"):
 `fds`: every kind made by the parent and used from both sides in the
 child: pipe ends (the parent's 90 leftover bytes read once, by the parent:
