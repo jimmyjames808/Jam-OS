@@ -344,13 +344,18 @@ static long signal_one(handle_t h, bool session, bool job, int signo, int code, 
 
 long lx_child_signal(int32_t pid, int32_t pgid, int signo, int code, int32_t value)
 {
-    unsigned n = 0, matched = 0, room = 0;
-    struct { handle_t h; bool session, job; } *to = NULL;
+    /* One child (pid > 0, at most one matches) needs no malloc: the signal
+     * thread forwards that way (sigthread.c's arrived), and it has no
+     * thread pointer for a program's own malloc to use (Chromium's
+     * PartitionAlloc faulted there). */
+    unsigned n = 0, matched = 0, room = 1;
+    struct target { handle_t h; bool session, job; } one, *to = &one;
     lock_take(&lock);
-    while (nkids > room) {   /* room for each, allocated without the lock (fork.c says why) */
+    while (pid <= 0 && nkids > room) {   /* room for each, allocated without the lock (fork.c says why) */
         room = nkids;
         lock_give(&lock);
-        free(to);
+        if (to != &one)
+            free(to);
         to = malloc(sizeof(*to) * room);
         if (!to)
             return -ENOMEM;
@@ -375,7 +380,8 @@ long lx_child_signal(int32_t pid, int32_t pgid, int signo, int code, int32_t val
         if (e && !r)
             r = e;
     }
-    free(to);
+    if (to != &one)
+        free(to);
     return r ? r : (long)matched;
 }
 
