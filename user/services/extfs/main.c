@@ -263,6 +263,44 @@ static void idle(void)
     idle_seen = vol.jnl.since_tail;
 }
 
+/* The order rule (docs/INOTIFY-PLAN.md 2.3): a client's close comes to the
+ * port as a packet queued by the close itself, but a request it sends next
+ * on another channel may be served first (its channel's packet was queued
+ * earlier, or the close folded into an earlier packet of the file's, which
+ * keeps that packet's signals: utest port_order). While anything is
+ * watched, before a file's request or a watcher's (the fs ones reap every
+ * closed file already: files_reap), every packet on the port is taken and
+ * kept in order, the closed files among them, judged by their channels'
+ * own signals, are handled first, and the loop serves the rest after. */
+#define ORDER_ROOM (XF_MAX_FILES + XF_VIEWS + FSW_CHANNELS + 8)   /* every binding at once */
+static struct port_packet order_q[ORDER_ROOM];
+static struct fsw_order   order = { .q = order_q, .cap = ORDER_ROOM };
+
+static bool a_close(void *ctx, const struct port_packet *p)
+{
+    (void)ctx;
+    return (p->key & XF_KEY_FILE_BIT) && files_closed(p->key);
+}
+
+void order_closes(void)
+{
+    struct port_packet p;
+    (void)fsw_order_drain(&order, vol.port);
+    while (fsw_order_pick(&order, a_close, NULL, &p))
+        files_close_now(p.key);
+    files_held_closes();
+}
+
+/* The next packet: one kept by the order rule first (the answer waiting
+ * goes out on its own then), else the port's. */
+static status_t next_packet(uint64_t deadline, struct port_packet *pkt)
+{
+    if (!order.n)
+        return xf_wait(deadline, pkt);
+    reply_flush();
+    return fsw_order_next(&order, vol.port, 0, pkt);
+}
+
 static status_t run(handle_t serve, handle_t ctl)
 {
     struct xf_chan fs = { .ch = serve, .id = XF_CHAN_FS, .proto = XF_PROTO_FS };
@@ -291,11 +329,12 @@ static status_t run(handle_t serve, handle_t ctl)
             own_unheld();
             views_unheld();
             files_unheld();
+            watch_unheld();
         }
         wback_tick();   /* when due: at most once a second, busy or not */
         uint64_t idle_at = idle_due() ? quiet + IDLE_NS : DEADLINE_NEVER;
         uint64_t deadline = wback_due() < idle_at ? wback_due() : idle_at;
-        st = xf_wait(idl_held_deadline(&vol.held, deadline), &pkt);
+        st = next_packet(idl_held_deadline(&vol.held, deadline), &pkt);
         if (st == ERR_TIMED_OUT) {
             if (now() >= idle_at)
                 idle();
@@ -318,6 +357,8 @@ static status_t run(handle_t serve, handle_t ctl)
             files_event(pkt.key);
         } else if (pkt.key & XF_KEY_VIEW_BIT) {
             views_event(pkt.key);
+        } else if (pkt.key & XF_KEY_WATCH_BIT) {
+            watch_event(pkt.key);
         } else if (pkt.key == XF_KEY_FS) {
             if (fs_unread_full(serve)) {
                 fs_held = true;
@@ -367,6 +408,7 @@ int main(int argc, char **argv)
     vol.keep = startup_handle(SR_KEEP);
     vol.pager = startup_handle(EXTFS_SR_PAGER);   /* none: nothing is mapped (a test's extfs) */
     vol.at[XF_AT_MAIN] = now();
+    watch_start();
     status_t st = jam_port_create(&vol.port);
     if (st == OK)
         st = block != HANDLE_INVALID ? disk_open(block, &dev) : disk_open_ram(ram, &dev);

@@ -7,11 +7,49 @@
  * view hides where the path resolves); then each method checks what it
  * changes: the volume writable, the view allowing the change where the
  * path resolves (walk_may_change), the directory's write and search bits
- * for a name added or removed, the file's bits for an open. */
+ * for a name added or removed, the file's bits for an open.
+ *
+ * A method that changed something says so to the watches (watch.c's ev,
+ * held until the commit) in the order of docs/INOTIFY-PLAN.md's 2.2,
+ * which is Linux's: the directory's event, then the inode's own, except
+ * that a new link's IN_ATTRIB and an unlink's come before the name's
+ * IN_CREATE or IN_DELETE (fsnotify_link, vfs_unlink). */
 #include "extfs.h"
 
 /* The two walks a method may need (rename and link take two paths). */
 static struct xf_walk wa, wb;
+
+static bool is_dir(const struct ext_inode *in);
+
+/* An event of what walk w named: to its directory's watches with its name
+ * (if the path ended in one), then to in's own (NULL: none). */
+static void ev_walk(const struct xf_walk *w, const struct ext_inode *in, uint32_t mask)
+{
+    if (!watching() || !mask)
+        return;
+    const struct fsw_key dir = xf_key(&w->dir), self = in ? xf_key(in) : (struct fsw_key){ 0 };
+    uint32_t flags = in && is_dir(in) ? FSW_EV_DIR : 0;
+    ev(w->has_name ? &dir : NULL, w->name.s, w->name.len, in ? &self : NULL, mask, flags, 0);
+}
+
+/* An event of inode in alone (its own watches). */
+static void ev_inode(const struct ext_inode *in, uint32_t mask, uint32_t flags)
+{
+    if (!watching())
+        return;
+    const struct fsw_key self = xf_key(in);
+    ev(NULL, NULL, 0, &self, mask, flags, 0);
+}
+
+/* An event in directory dir about its entry `name` alone. */
+static void ev_name(const struct ext_inode *dir, const struct ext_name *name, uint32_t mask,
+                    bool isdir, uint32_t cookie)
+{
+    if (!watching())
+        return;
+    const struct fsw_key d = xf_key(dir);
+    ev(&d, name->s, name->len, NULL, mask, isdir ? FSW_EV_DIR : 0, cookie);
+}
 
 static void attrs_new(struct ext_attrs *a, uint16_t mode)
 {
@@ -65,6 +103,7 @@ static status_t op_open(void *ctx, const char *path, uint32_t path_len, uint32_t
     if (walk_hidden(c, w, false))
         return ERR_ACCESS_DENIED;
     struct ext_inode in;
+    bool truncated = false;
     if (!w->found) {
         if (!(flags & FS_CREATE))
             return ERR_NOT_FOUND;
@@ -78,6 +117,7 @@ static status_t op_open(void *ctx, const char *path, uint32_t path_len, uint32_t
         st = ext_create(&vol.fs, &w->dir, &w->name, &a, &in);
         if (st != OK)
             return st;
+        ev_name(&w->dir, &w->name, FSWATCH_IN_CREATE, false, 0);
     } else {
         in = w->in;
         uint32_t kind = in.d.mode & EXT_S_IFMT;
@@ -104,9 +144,16 @@ static status_t op_open(void *ctx, const char *path, uint32_t path_len, uint32_t
             if (st != OK)
                 return st;
         }
+        truncated = flags & FS_TRUNCATE;   /* an empty file too: Linux truncates it all the same */
     }
     bool nochange = !writable() || !walk_may_change(c, w);
-    return files_open(&in, flags, nochange, out_file, out_buffer, out_size);
+    st = files_open(&in, flags, nochange, w, out_file, out_buffer, out_size);
+    if (st != OK)
+        return st;
+    ev_walk(w, &in, FSWATCH_IN_OPEN);   /* the open, then its truncation (Linux's vfs_open) */
+    if (truncated)
+        ev_walk(w, &in, FSWATCH_IN_MODIFY);
+    return OK;
 }
 
 static status_t op_stat(void *ctx, const char *path, uint32_t path_len, uint64_t *out_size,
@@ -234,7 +281,10 @@ static status_t op_mkdir(void *ctx, const char *path, uint32_t path_len, uint32_
     struct ext_attrs a;
     struct ext_inode in;
     attrs_new(&a, (uint16_t)(EXT_S_IFDIR | (mode & 07777u)));
-    return ext_create(&vol.fs, &w->dir, &w->name, &a, &in);
+    st = ext_create(&vol.fs, &w->dir, &w->name, &a, &in);
+    if (st == OK)
+        ev_name(&w->dir, &w->name, FSWATCH_IN_CREATE, true, 0);
+    return st;
 }
 
 static status_t op_unlink(void *ctx, const char *path, uint32_t path_len, uint32_t flags)
@@ -258,9 +308,46 @@ static status_t op_unlink(void *ctx, const char *path, uint32_t path_len, uint32
     uint32_t orphan = 0;
     st = ext_unlink(&vol.fs, &w->dir, &w->name, (flags & FS_UNLINK_DIR) ? EXT_UNLINK_DIR : 0,
                     &now, &orphan);
-    if (st == OK && orphan)
-        defer_drop(orphan);   /* on the orphan list: dropped after the answer, unless open */
-    return st;
+    if (st != OK)
+        return st;
+    if (orphan)
+        defer_drop(orphan);   /* on the orphan list: dropped after the answer, unless open;
+                               * its watches' IN_DELETE_SELF then (defer_run) */
+    /* A file's link count: IN_ATTRIB first (vfs_unlink); a directory has none. */
+    bool dir = is_dir(&w->in);
+    if (!dir)
+        ev_inode(&w->in, FSWATCH_IN_ATTRIB, 0);
+    ev_name(&w->dir, &w->name, FSWATCH_IN_DELETE, dir, 0);
+    const struct fsw_key d = xf_key(&w->dir);
+    files_unlinked(&d, &w->name);
+    return OK;
+}
+
+/* A rename done (wa from, wb to): Linux's fsnotify_move, once, or twice
+ * for an exchange (each name's move with a cookie of its own): the old
+ * directory's IN_MOVED_FROM, the new one's IN_MOVED_TO, a replaced
+ * inode's IN_ATTRIB (its link count; its IN_DELETE_SELF when it goes,
+ * defer_run), the moved inode's IN_MOVE_SELF. The open files' names move
+ * with it. */
+static void renamed(bool exchange)
+{
+    const struct fsw_key from_dir = xf_key(&wa.dir), to_dir = xf_key(&wb.dir);
+    files_renamed(&from_dir, &wa.name, &to_dir, &wb.name, exchange);
+    if (!watching())
+        return;
+    bool src_dir = is_dir(&wa.in), dst_dir = wb.found && is_dir(&wb.in);
+    uint32_t cookie = ev_cookie();
+    ev_name(&wa.dir, &wa.name, FSWATCH_IN_MOVED_FROM, src_dir, cookie);
+    ev_name(&wb.dir, &wb.name, FSWATCH_IN_MOVED_TO, src_dir, cookie);
+    if (wb.found && !exchange)
+        ev_inode(&wb.in, FSWATCH_IN_ATTRIB, dst_dir ? FSW_EV_DIR : 0);
+    ev_inode(&wa.in, FSWATCH_IN_MOVE_SELF, 0);   /* never IN_ISDIR (inotify) */
+    if (!exchange)
+        return;
+    cookie = ev_cookie();
+    ev_name(&wb.dir, &wb.name, FSWATCH_IN_MOVED_FROM, dst_dir, cookie);
+    ev_name(&wa.dir, &wa.name, FSWATCH_IN_MOVED_TO, dst_dir, cookie);
+    ev_inode(&wb.in, FSWATCH_IN_MOVE_SELF, 0);
 }
 
 static status_t op_rename(void *ctx, const char *from, uint32_t from_len, const char *to,
@@ -301,9 +388,14 @@ static status_t op_rename(void *ctx, const char *from, uint32_t from_len, const 
     time_now(&r.now);
     uint32_t orphan = 0;
     st = ext_rename(&vol.fs, &r, &orphan);
-    if (st == OK && orphan)
+    if (st != OK)
+        return st;
+    if (orphan)
         defer_drop(orphan);
-    return st;
+    if (wb.found && wb.in.ino == wa.in.ino)
+        return OK;   /* a name onto another name of the same inode: nothing done, no event */
+    renamed(flags & FS_RENAME_EXCHANGE);
+    return OK;
 }
 
 static status_t op_sync(void *ctx)
@@ -375,7 +467,10 @@ static status_t op_setattr(void *ctx, const char *path, uint32_t path_len, uint3
         return st;
     if (!walk_may_change(ctx, w))
         return ERR_ACCESS_DENIED;
-    return attr_set(&w->in, mask, mode, uid, gid, atime_ns, mtime_ns);
+    st = attr_set(&w->in, mask, mode, uid, gid, atime_ns, mtime_ns);
+    if (st == OK)
+        ev_walk(w, &w->in, ev_attr_mask(mask));
+    return st;
 }
 
 static status_t op_symlink(void *ctx, const char *target, uint32_t target_len, const char *path,
@@ -401,7 +496,10 @@ static status_t op_symlink(void *ctx, const char *target, uint32_t target_len, c
     struct ext_inode in;
     attrs_new(&a, (uint16_t)(EXT_S_IFLNK | 0777u));
     const struct ext_name t = { .s = target, .len = target_len };
-    return ext_symlink(&vol.fs, &w->dir, &w->name, &t, &a, &in);
+    st = ext_symlink(&vol.fs, &w->dir, &w->name, &t, &a, &in);
+    if (st == OK)
+        ev_name(&w->dir, &w->name, FSWATCH_IN_CREATE, false, 0);
+    return st;
 }
 
 static status_t op_readlink(void *ctx, const char *path, uint32_t path_len, char *out_target,
@@ -446,7 +544,12 @@ static status_t op_link(void *ctx, const char *from, uint32_t from_len, const ch
         return st;
     struct ext_time now;
     time_now(&now);
-    return ext_link(&vol.fs, &wb.dir, &wb.name, &wa.in, &now);
+    st = ext_link(&vol.fs, &wb.dir, &wb.name, &wa.in, &now);
+    if (st != OK)
+        return st;
+    ev_inode(&wa.in, FSWATCH_IN_ATTRIB, 0);   /* its link count first (fsnotify_link) */
+    ev_name(&wb.dir, &wb.name, FSWATCH_IN_CREATE, false, 0);
+    return OK;
 }
 
 static status_t op_resolve(void *ctx, const char *path, uint32_t path_len, uint32_t flags,
@@ -490,11 +593,19 @@ static status_t op_subview(void *ctx, const char *path, uint32_t path_len, uint3
     return views_sub(c, w, flags, out_fs);
 }
 
+/* A watcher channel through this view (watch.c): a read-only volume's
+ * too, whose watches stay quiet. */
+static status_t op_watch(void *ctx, handle_t *out_watcher)
+{
+    return watch_new(ctx, out_watcher);
+}
+
 const struct fs_ops xf_fs_ops = {
     .open = op_open, .stat = op_stat, .readdir = op_readdir, .mkdir = op_mkdir,
     .unlink = op_unlink, .rename = op_rename, .sync = op_sync, .statfs = op_statfs,
     .getattr = op_getattr, .setattr = op_setattr, .symlink = op_symlink,
     .readlink = op_readlink, .link = op_link, .resolve = op_resolve, .subview = op_subview,
+    .watch = op_watch,
 };
 
 /* ---- fsctl -------------------------------------------------------------------------- */

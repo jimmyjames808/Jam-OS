@@ -423,6 +423,15 @@ bool t_extfs_wback(void);
 bool t_extfs_restart_wback(void);
 /* extfs_posix.c: posixtest's links section on an extfs volume (libc, U6). */
 bool t_extfs_posix(void);
+/* extfs_watch.c: file watching on extfs (INOTIFY-PLAN's IE1): 2.2's rows,
+ * moves, views and a second process, the close rule, the queue's bound
+ * and the caps; the second process's modes are xwatch-*. */
+bool t_extfs_watch_rows(void);
+bool t_extfs_watch_moves(void);
+bool t_extfs_watch_views(void);
+bool t_extfs_watch_order(void);
+bool t_extfs_watch_limits(void);
+int  extfs_watch_child(int argc, char **argv);
 bool t_view_keys_names(void);
 bool t_fat_view_keys(void);
 bool t_view_pkg_names(void);

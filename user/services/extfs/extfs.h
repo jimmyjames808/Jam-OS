@@ -29,7 +29,8 @@
  * a view hides judged where a path resolves; fsops.c the `fs` methods;
  * files.c the open files and the `file` methods; views.c views and
  * subviews; pager.c mapped files and the mount's pager; wback.c their
- * stores written back; test.c the test powers. */
+ * stores written back; watch.c file watching (fs.watch's channels and
+ * the events, docs/INOTIFY-PLAN.md); test.c the test powers. */
 #pragma once
 
 #include <stdbool.h>
@@ -37,6 +38,7 @@
 #include <extfssvc.h>
 #include <fs_idl.h>
 #include <fsview.h>
+#include <fswatch.h>
 #include <idl/fsctl.h>
 #include <os.h>
 #include <svcstate.h>
@@ -89,15 +91,19 @@ _Static_assert(XF_MAX_MAPS <= 256, "a slot fits a key's low byte");
 #define XF_KEY_FILE(s, g)  (XF_KEY_FILE_BIT | (uint64_t)(g) << 16 | (uint64_t)(s))
 #define XF_KEY_VIEW_BIT    (1ull << 61)
 #define XF_KEY_VIEW(s, g)  (XF_KEY_VIEW_BIT | (uint64_t)(g) << 16 | (uint64_t)(s))
+#define XF_KEY_WATCH_BIT   (1ull << 60)   /* a watcher channel: its number is the library's */
+#define XF_KEY_WATCH(s, g) (XF_KEY_WATCH_BIT | (uint64_t)(g) << 16 | (uint64_t)(s))
 #define XF_KEY_SLOT(k)     ((unsigned)((k) & 0xffff))
 #define XF_KEY_GEN(k)      ((uint32_t)((k) >> 16 & 0xffffffffu))
 
-#define XF_CHAN_FS         1u
-#define XF_CHAN_CTL        2u
-#define XF_CHAN_OWN        3u
-#define XF_CHAN_FILE(s, g) (1u << 30 | ((uint32_t)(g) & 0xffffu) << 8 | (uint32_t)(s))
-#define XF_CHAN_VIEW(s, g) (2u << 30 | ((uint32_t)(g) & 0xffffu) << 8 | (uint32_t)(s))
-_Static_assert(XF_MAX_FILES <= 256 && XF_VIEWS <= 256, "a slot fits a channel id's low byte");
+#define XF_CHAN_FS          1u
+#define XF_CHAN_CTL         2u
+#define XF_CHAN_OWN         3u
+#define XF_CHAN_FILE(s, g)  (1u << 30 | ((uint32_t)(g) & 0xffffu) << 8 | (uint32_t)(s))
+#define XF_CHAN_VIEW(s, g)  (2u << 30 | ((uint32_t)(g) & 0xffffu) << 8 | (uint32_t)(s))
+#define XF_CHAN_WATCH(s, g) (3u << 30 | ((uint32_t)(g) & 0xffffu) << 8 | (uint32_t)(s))
+_Static_assert(XF_MAX_FILES <= 256 && XF_VIEWS <= 256 && FSW_CHANNELS <= 256,
+               "a slot fits a channel id's low byte");
 
 /* The steps of a start, timed for a restart's log line (adopt.c). */
 enum xf_at { XF_AT_MAIN, XF_AT_DISK, XF_AT_STATE, XF_AT_MOUNT, XF_AT_HANDLES, XF_AT_COUNT };
@@ -245,7 +251,7 @@ status_t disk_flush(void);
 
 /* ---- request.c ---------------------------------------------------------------- */
 
-enum xf_proto { XF_PROTO_FS, XF_PROTO_FILE, XF_PROTO_CTL };
+enum xf_proto { XF_PROTO_FS, XF_PROTO_FILE, XF_PROTO_CTL, XF_PROTO_WATCH };
 
 /* The context of an fs request: the channel's view (the mount's own
  * channels: the whole volume, no flags). */
@@ -263,6 +269,7 @@ struct xf_chan {
     enum xf_proto   proto;
     struct xf_ctx   ctx;      /* XF_PROTO_FS */
     struct xf_file *file;     /* XF_PROTO_FILE */
+    void           *watch;    /* XF_PROTO_WATCH: watch.c's record of the channel */
 };
 
 status_t serve_one(const struct xf_chan *c);
@@ -279,6 +286,9 @@ bool     op_data_in(void);
 void     op_data_copied(void);
 /* The running request made slot `index` (XF_MADE_*). */
 void     op_made(uint32_t kind, uint32_t index);
+/* The process that wrote the running request (fs requests only: the
+ * kernel's CHANNEL_READ_PID, kept in its slot; 0 for the others). */
+uint32_t op_pid(void);
 
 /* The volume may be changed: mounted writable, its journal open. */
 bool     writable(void);
@@ -371,9 +381,25 @@ bool     ctl_stopping(void);
 
 extern const struct file_ops xf_file_ops;  /* ctx: the file's struct xf_file */
 
-/* Open inode in (checked by fsops.c) with FS_* flags: a new slot. */
+/* Open inode in (checked by fsops.c) with FS_* flags: a new slot. w: the
+ * walk that reached it (its directory and name, for the file's events). */
 status_t files_open(const struct ext_inode *in, uint32_t flags, bool nochange,
-                    handle_t *out_ch, handle_t *out_vmo, uint64_t *out_size);
+                    const struct xf_walk *w, handle_t *out_ch, handle_t *out_vmo,
+                    uint64_t *out_size);
+/* A rename (fsops.c, done): the open files named `from` in from_dir are
+ * named `to` in to_dir now; those named `to` were renamed over (no
+ * directory now), or with exchange are named `from`. */
+void     files_renamed(const struct fsw_key *from_dir, const struct ext_name *from,
+                       const struct fsw_key *to_dir, const struct ext_name *to, bool exchange);
+/* An unlink of `name` in dir: the open files named so are unlinked (their
+ * events stay out of the directory's IN_EXCL_UNLINK watches). */
+void     files_unlinked(const struct fsw_key *dir, const struct ext_name *name);
+/* The order rule (main.c): is the file of port key `key` closed by its
+ * client? Its leftover requests and its close, now. Every held file's
+ * (the unread bound: its close made no packet) too. */
+bool     files_closed(uint64_t key);
+void     files_close_now(uint64_t key);
+void     files_held_closes(void);
 /* Set in's size: shrinking is a first step here, with the inode on the
  * orphan list, the rest after the answer (defer_trunc); its times. */
 status_t files_truncate(struct ext_inode *in, uint64_t size);
@@ -501,6 +527,46 @@ status_t wback_all(void);
 /* An orderly stop: as wback_all, for a few seconds at most. */
 void     wback_stop(void);
 
+/* ---- watch.c ----------------------------------------------------------------- */
+
+/* An inode as watches name it: its number and generation. */
+static inline struct fsw_key xf_key(const struct ext_inode *in)
+{
+    return (struct fsw_key){ .ino = in->ino, .gen = in->d.generation };
+}
+
+/* The start: nothing watched (this track: a restart ends every watch,
+ * the watcher channels dying with the instance). */
+void     watch_start(void);
+/* Is anything watched on the volume? (A change's one test.) */
+bool     watching(void);
+/* fs.watch through the view c: a watcher channel, its client end *out. */
+status_t watch_new(const struct xf_ctx *c, handle_t *out);
+/* A watcher channel's binding fired: its bell taken, or one request served. */
+void     watch_event(uint64_t key);
+void     watch_unheld(void);
+extern const struct fswatch_ops xf_watch_ops;   /* ctx: the channel's record */
+
+/* An event (docs/INOTIFY-PLAN.md 2.2): to directory dir's watches about
+ * its entry `name` (len bytes; dir NULL: none), then to inode self's own
+ * (NULL: none), mask the same for both; flags FSW_EV_*; cookie a move's
+ * (dir alone). Inside a request it waits for the request's commit
+ * (ev_settle): a change given up makes none. */
+void     ev(const struct fsw_key *dir, const char *name, uint32_t len, const struct fsw_key *self,
+            uint32_t mask, uint32_t flags, uint32_t cookie);
+/* Inode self goes (its last name and its last open: defer_run): its
+ * watches' IN_DELETE_SELF and IN_IGNORED. */
+void     ev_gone(const struct fsw_key *self);
+/* The next move's cookie. */
+uint32_t ev_cookie(void);
+/* The event of a setattr of `mask` (FS_ATTR_*), as Linux's
+ * fsnotify_change makes it: 0 for none. */
+uint32_t ev_attr_mask(uint32_t mask);
+/* request.c: a request begins; it ended (done: committed): its events
+ * queued, else dropped. */
+void     ev_begin(void);
+void     ev_settle(bool done);
+
 /* ---- keeper.c ---------------------------------------------------------------- */
 
 #define XF_KEEP_FILE(i) ((uint32_t)(i))
@@ -518,6 +584,9 @@ void     kept_drop(uint32_t slot);
 status_t adopt(bool adopted, bool *no_volume);
 /* main.c's: mount the volume (formatting a blank one if asked). */
 status_t mount(bool *no_volume);
+/* main.c's order rule (docs/INOTIFY-PLAN.md 2.3): every close already made
+ * handled now, before the request about to be served. */
+void     order_closes(void);
 /* The orphans the state doesn't hold open, dropped (at a mount). */
 void     recover_orphans(void);
 
