@@ -35,9 +35,13 @@
  *     child on its sigaltstack (the exception entry and the kernel's
  *     exception stack set again).
  *   clone: syscall(SYS_clone, SIGCHLD, ...) with CLONE_PARENT_SETTID and
- *     CLONE_CHILD_SETTID, and its refusals (CLONE_VM alone, a new stack, an
- *     unknown flag); clone(fn, stack, SIGCHLD, arg) ending with fn's value;
- *     vfork (its wait: forknote.c's vfork case).
+ *     CLONE_CHILD_SETTID (the child's word its pid: its first thread's id),
+ *     and its refusals (CLONE_VM alone, a new stack, an unknown flag);
+ *     CLONE_FS, raw and by clone(), as a copy of the directory and umask
+ *     (the child's chdir and umask its own); a fork from a thread that
+ *     isn't the first (the child's id its pid); clone(fn, stack, SIGCHLD,
+ *     arg) ending with fn's value; vfork (its wait: forknote.c's vfork
+ *     case).
  *   small: clone(fn, two pages, SIGCHLD), as gtest's death tests make it
  *     (the parent unmaps the pages at once): fn's frames on those pages,
  *     the calls that take a path (stat, lstat, access, open, mkdir and
@@ -653,6 +657,69 @@ __attribute__((noinline)) static pid_t do_vfork(void)
 static void fork_clone(void)
 {
     map_report();
+/* CLONE_FS without CLONE_VM (base's LaunchProcess passes it for a child
+ * that execs at once) is a copy of our directory and umask, not a share
+ * (fork.c, lx_clone): the child starts in ours with ours, and what it
+ * changes stays its own. By the raw call and by clone(), whose
+ * CLONE_CHILD_SETTID word holds the child's pid in the child. */
+static pid_t fs_ctid;
+
+static int clone_fs_fn(void *arg)
+{
+    char buf[64];
+    KID(arg == &clone_magic);
+    KID(fs_ctid == getpid() && syscall(SYS_gettid) == getpid());
+    KID(getcwd(buf, sizeof(buf)) && !strcmp(buf, "/data"));
+    KID(umask(022) == 027 && chdir("/") == 0);
+    return rep->line ? 1 : 7;
+}
+
+static void clone_fs(void)
+{
+    char was[64], buf[64];
+    CHECK(getcwd(was, sizeof(was)) != NULL);
+    mode_t m = umask(027);
+    CHECK(chdir("/data") == 0);
+    long r = syscall(SYS_clone, SIGCHLD | CLONE_FS, 0, 0, 0, 0);
+    if (r == 0) {
+        KID(getcwd(buf, sizeof(buf)) && !strcmp(buf, "/data"));
+        KID(umask(022) == 027 && chdir("/") == 0);
+        kid_end(6);
+    }
+    CHECK(r > 0);
+    if (r > 0)
+        reaped((pid_t)r, 6);
+    char *stk = malloc(64 << 10);
+    CHECK(stk);
+    pid_t pid = stk ? clone(clone_fs_fn, stk + (64 << 10), SIGCHLD | CLONE_FS | CLONE_CHILD_SETTID,
+                            &clone_magic, NULL, NULL, &fs_ctid)
+                    : -1;
+    CHECK(pid > 0 && fs_ctid == 0);   /* the word is the child's copy's */
+    if (pid > 0)
+        reaped(pid, 7);
+    free(stk);
+    CHECK(getcwd(buf, sizeof(buf)) && !strcmp(buf, "/data"));   /* theirs, not ours */
+    CHECK(umask(m) == 027);
+    CHECK(chdir(was) == 0);
+}
+
+/* A fork from a thread that isn't the first: the child's one thread is
+ * the forking one, and its id the child's pid (Linux's). */
+static void *fork_in_thread(void *arg)
+{
+    (void)arg;
+    CHECK(syscall(SYS_gettid) != getpid());
+    pid_t pid = fork();
+    if (pid == 0) {
+        KID(syscall(SYS_gettid) == getpid() && gettid() == getpid());
+        kid_end(4);
+    }
+    CHECK(pid > 0);
+    if (pid > 0)
+        reaped(pid, 4);
+    return NULL;
+}
+
     pid_t self = getpid();
     rep->v[0] = self;
     int ptid = 0, ctid = 0;
@@ -672,12 +739,16 @@ static void fork_clone(void)
     CHECK(stk);
     if (!stk)
         return;
+        KID(ctid == getpid());   /* the child's first thread's id is its pid (ForkWithFlags) */
     errno = 0;
     CHECK(syscall(SYS_clone, SIGCHLD, stk + (64 << 10), 0, 0, 0) == -1 && errno == EINVAL);
     errno = 0;
     CHECK(syscall(SYS_clone, SIGCHLD | CLONE_NEWNS, 0, 0, 0, 0) == -1 && errno == EINVAL);
 
     clone_magic = 0x5a5a;
+    clone_fs();
+    pthread_t t;
+    CHECK(pthread_create(&t, NULL, fork_in_thread, NULL) == 0 && pthread_join(t, NULL) == 0);
     pid_t pptid = 0;
     pid_t pid = clone(clone_fn, stk + (64 << 10), SIGCHLD | CLONE_PARENT_SETTID, &clone_magic,
                       &pptid);

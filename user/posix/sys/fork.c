@@ -91,8 +91,15 @@
 #include "sig.h"
 
 /* What the clone flags Linux's raw call may carry here: the exit signal
- * (the low byte: always SIGCHLD here) and the tid words. */
-#define CLONE_PROC_OK (0xff | CLONE_PARENT_SETTID | CLONE_CHILD_SETTID | CLONE_CHILD_CLEARTID)
+ * (the low byte: always SIGCHLD here), the tid words, and CLONE_FS.
+ * CLONE_FS is taken as a copy, where Linux shares: the child starts with
+ * our current directory, root and umask, as any forked child does, but a
+ * chdir, chroot or umask after the clone, in it or in us, is the other's
+ * no more (Linux's would be). A share would need a directory both
+ * processes hold and change; base's LaunchProcess, its one user, passes it
+ * for a child that execs at once, which a copy serves (the owner's D10). */
+#define CLONE_PROC_OK                                                                    \
+    (0xff | CLONE_PARENT_SETTID | CLONE_CHILD_SETTID | CLONE_CHILD_CLEARTID | CLONE_FS)
 
 #define PASSABLE (RIGHT_DUPLICATE | RIGHT_TRANSFER)   /* a handle a child may be given */
 
