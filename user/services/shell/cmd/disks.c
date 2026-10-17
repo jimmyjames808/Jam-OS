@@ -446,7 +446,9 @@ static bool ask(const char *question, char *buf, size_t cap)
             buf[n] = '\0';
             return true;
         }
-        if (k < 0 || k == 3 || sh_interrupted()) {
+        /* Not sh_interrupted(): it would take the keys typed after this
+         * one off to the next command line (the rest of a pasted answer). */
+        if (k < 0 || k == 3) {
             sh_say("\n");
             return false;
         }
