@@ -20,7 +20,7 @@
  * Arguments: `pci=<bus>:<dev>.<fn>` (devmgr's: the name in the log),
  * `ro` (devmgr's on a `diskro` boot: the drive is read-only whatever its
  * table says), and the test words `nvmetest=selftest[,loop][,reset]
- * [,abort][,slow]` (selftest.c).
+ * [,abort][,nostop][,slow]` (selftest.c).
  *
  * Start (ctrl.c): the controller disabled before bus mastering, the admin
  * queue, enabled, identify (the controller; the first usable namespace),

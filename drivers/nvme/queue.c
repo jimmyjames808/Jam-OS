@@ -268,6 +268,7 @@ static void io_cmd_done(struct nvme *c, struct nvme_io *io, uint16_t status, boo
 
 void io_end_all(struct nvme *c, status_t st)
 {
+    uint32_t ended = 0;
     for (uint32_t i = 0; i < c->io.depth; i++) {
         struct nvme_slot *s = &c->io.slots[i];
         if (!s->busy)
@@ -280,6 +281,7 @@ void io_end_all(struct nvme *c, status_t st)
             if (io->waiting)
                 wait_remove(c, io);
             io_finish(c, io);
+            ended++;
         }
     }
     struct nvme_io *io;
@@ -287,7 +289,10 @@ void io_end_all(struct nvme *c, status_t st)
         wait_remove(c, io);
         io->st = io->st == OK ? st : io->st;
         io_finish(c, io);
+        ended++;
     }
+    if (ended)
+        drv_log("%s: %u request(s) ended unfinished: %s", c->name, ended, status_str(st));
 }
 
 /* ---- completions ------------------------------------------------------------------------ */
