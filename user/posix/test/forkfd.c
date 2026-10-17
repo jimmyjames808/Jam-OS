@@ -20,14 +20,15 @@
  *     set, a netstack socket (with /svc/net) and a listener.
  *     /proc/self/fd lists exactly what the child kept. Then the child
  *     closes every descriptor above 2 by /proc/self/fd: the job lets go of
- *     exactly the handles those descriptors came with, and after the child
- *     the parent holds what it held before the fork, not a handle more.
- *   chromium: Chromium's child sequence (content's ZygoteForkDelegate and
- *     base::LaunchProcess on Linux): close-on-exec descriptors everywhere,
- *     dup2 of the output pipe to 1 and 2 and of the IPC socketpair end to
- *     3, every other descriptor closed by reading /proc/self/fd, then only
- *     0 to 3 left, working, and the job holding no handle of what was
- *     closed.
+ *     at least the handles those descriptors came with (the charge counts
+ *     VMO objects too, so memory a close frees adds to it), and 16 more
+ *     forks leave the parent within a few units of where one left it (a
+ *     handle kept per fork would be 15).
+ *   chromium: Chromium's child sequence (base::LaunchProcess on Linux):
+ *     close-on-exec descriptors everywhere, dup2 of the output pipe to 1
+ *     and 2 and of the IPC socketpair end to 3, every other descriptor
+ *     closed by reading /proc/self/fd, then only 0 to 3 left, working, and
+ *     the closed ones' handles gone.
  *   ttys: a pseudo-terminal's master and slave in a child (both ways, the
  *     slave a terminal there), still the parent's after the child closed
  *     its copies; the terminal at 0 too when there is one.
@@ -375,18 +376,20 @@ static void fds_kid(struct fds *f)
     long n = syscall(SYS_getdents64, f->dd, d, sizeof(d));
     KID(n > 0);
     KID(fcntl(f->us, F_GETFD) == 0);
-    int type = 0;
-    socklen_t tl = sizeof(type);
-    KID(getsockopt(f->us, SOL_SOCKET, SO_TYPE, &type, &tl) == 0 && type == SOCK_STREAM);
+    struct sockaddr_un sa;
+    socklen_t sl = sizeof(sa);
+    KID(getsockname(f->us, (struct sockaddr *)&sa, &sl) == 0 && sa.sun_family == AF_UNIX);
     errno = 0;
     KID(fcntl(f->ee, F_GETFD) == -1 && errno == EBADF);   /* absent */
     if (f->net >= 0)
         KID(fcntl(f->net, F_GETFD) == -1);
     if (f->ua >= 0) {
         KID(fcntl(f->ul, F_GETFD) == -1);   /* a listener: absent */
-        KID(write(f->uc, "u-kid", 5) == 5 && read_is(f->uc, "u-par"));
+        KID(write(f->uc, "u-kid", 5) == 5);
     }
-    kid_step(2);   /* the parent reads what we wrote */
+    kid_step(2);   /* the parent reads what we wrote, and answers */
+    if (f->ua >= 0)
+        KID(read_is(f->uc, "u-par"));
 
     uint64_t want[FDW] = { 0 }, got[FDW];
     const int kept[] = { 0, 1, 2, f->pl[0], f->pl[1], f->pc[0], f->pc[1], f->ss[0], f->ss[1],
@@ -395,10 +398,11 @@ static void fds_kid(struct fds *f)
     for (unsigned i = 0; i < sizeof(kept) / sizeof(kept[0]); i++)
         bit_set(want, kept[i]);
     KID(fd_list(got) && !memcmp(got, want, sizeof(got)));
+    kid_step(3);   /* the parent counts the job's handles */
     uint64_t keep[FDW] = { 0x7 };
     close_listed(keep);
     KID(fd_list(got) && got[0] == 0x7);
-    kid_step(3);   /* the parent counts again */
+    kid_step(4);   /* and again */
     kid_end();
 }
 
@@ -408,20 +412,13 @@ void pt_fork_fds(void)
     if (!map_kr() || !pt_files_start())
         return;
     fds_make(&f);
-    pid_t warm = fork();   /* what a first fork makes once (its room) is made before the count */
-    if (warm == 0)
-        _exit(0);
-    reap0(warm);
-    uint64_t h0 = job_handles();
     pid_t pid = fork();
     if (pid == 0)
         fds_kid(&f);
     CHECK(pid > 0);
     if (pid < 0)
         return;
-    uint64_t h1 = 0;
-    if (par_wait(1))
-        h1 = job_handles();
+    par_wait(1);
     par_go(1);
     char buf[16];
     if (par_wait(2)) {
@@ -441,21 +438,37 @@ void pt_fork_fds(void)
             CHECK(read_is(f.ua, "u-kid") && write(f.ua, "u-par", 5) == 5);
     }
     par_go(2);
-    if (par_wait(3)) {
-        uint64_t h3 = job_handles();
-        CHECK(h1 - h3 == f.handles);
-        if (h1 - h3 != f.handles)
-            printf("posixtest: fork: fds: the child's descriptors held %llu handles, not %u\n",
-                   (unsigned long long)(h1 - h3), f.handles);
-    }
+    uint64_t h2 = par_wait(3) ? job_handles() : 0;
     par_go(3);
+    if (par_wait(4) && h2) {
+        /* At least the handles the child's descriptors came with went with
+         * them (the charge counts VMO objects too, so memory its closes
+         * freed adds to the drop). */
+        int64_t went = (int64_t)(h2 - job_handles());
+        if (went < (int64_t)f.handles)
+            printf("posixtest: fork: fds: the child's closes let go of %lld handles, under %u\n",
+                   (long long)went, f.handles);
+        CHECK(went >= (int64_t)f.handles);
+    }
+    par_go(4);
     reap0(pid);
-    uint64_t h4 = job_handles();
-    CHECK(h4 == h0);
-    if (h4 != h0)
-        printf("posixtest: fork: fds: we hold %llu handles after the child, %llu before\n",
-               (unsigned long long)h4, (unsigned long long)h0);
     CHECK(pread(f.fw, buf, 1, 9) == 1 && buf[0] == (f.ext ? 'W' : 'j'));
+    /* Nothing of a fork stays with us: every handle made for a child goes
+     * to it or is closed. The charge moves with our memory too, so the test
+     * is that 16 more forks (each child gone at once) leave us within a
+     * few units of where one left us: a handle kept per fork is 15. */
+    uint64_t h[2] = { 0 };
+    for (int i = 0; i < 17; i++) {
+        pid_t k = fork();
+        if (k == 0)
+            _exit(0);
+        reap0(k);
+        h[i > 0] = job_handles();
+    }
+    if (h[1] > h[0] + 4)
+        printf("posixtest: fork: fds: 16 forks left us %llu handles more\n",
+               (unsigned long long)(h[1] - h[0]));
+    CHECK(h[1] <= h[0] + 4);
     close(f.fl);
     close(f.fw);
     pt_files_end();
@@ -474,8 +487,9 @@ static void chromium_kid(void)
     kid_step(1);   /* the parent has closed its copies of the child's ends */
     KID(dup2(OUT_W, 1) == 1 && dup2(OUT_W, 2) == 2 && dup2(IPC_K, 3) == 3);
     KID(fcntl(1, F_GETFD) == 0 && fcntl(3, F_GETFD) == 0);   /* dup2 clears FD_CLOEXEC */
-    uint64_t h1 = job_handles();
     uint64_t keep[FDW] = { 0xf }, got[FDW];
+    KID(fd_list(got));   /* the listing's memory made once, before the count */
+    uint64_t h1 = job_handles();
     close_listed(keep);
     KID(fd_list(got) && got[0] == 0xf);
     for (unsigned i = 1; i < FDW; i++)
@@ -483,7 +497,7 @@ static void chromium_kid(void)
     /* What went with them: out's read end, the parent's IPC end, the two
      * pipes and the memfd; out's write end and ours of the pair live on as
      * 1, 2 and 3, and /dev/null holds nothing. */
-    KID(h1 - job_handles() == 1 + 1 + 4 + 1);
+    KID((int64_t)(h1 - job_handles()) >= 1 + 1 + 4 + 1);   /* and memory freed: fds says why */
     char buf[16];
     KID(write(1, "hello from the child", 20) == 20);
     KID(send(3, "ipc", 3, 0) == 3 && recv(3, buf, sizeof(buf), 0) == 3 && !memcmp(buf, "ack", 3));
@@ -626,7 +640,8 @@ void pt_fork_maps(void)
         uint64_t h = job_handles();
         KID(munmap(c + PG, PG) == 0 && munmap(c, PG) == 0);
         KID(job_handles() == h);   /* the VMO still mapped at c + 2 pages */
-        KID(munmap(c + 2 * PG, PG) == 0 && job_handles() == h - 1);   /* its handle, once */
+        /* Its handle, once, and its VMO: the child's own copy of ours. */
+        KID(munmap(c + 2 * PG, PG) == 0 && job_handles() == h - 2);
         long cur = syscall(SYS_brk, 0), at = (cur + (long)PG - 1) & -(long)PG, up = at + 2 * (long)PG;
         KID(cur > 0 && syscall(SYS_brk, up) == up);
         memset((void *)at, 0x77, 2 * PG);

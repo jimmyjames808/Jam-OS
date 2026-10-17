@@ -1117,7 +1117,7 @@ would have failed on.
 | `posix-procinfo.txt` | posixtest's procfs and procinfo sections (`run posixtest procfs procinfo`) and utest's `process_maps`, `sys_public_info` and `posix_ids` (`utest only <name>`) from the shell: the files of libc's `/proc` that Chromium's base reads (`/proc/self/stat`, `status`, `statm`, `maps`, `/proc/cpuinfo`, `meminfo`, `/proc/stat`, and a child's stat and status from live through zombie to reaped) against proc(5) and what the process really does, and the kernel calls under them (`process_get_maps`, the free-memory figure, a process's creation time and name): [CR-PLAN](CR-PLAN.md#prc-notes), "PRC notes"; also in the `init` run | |
 | `posix-execinfo.txt` | posixtest's execinfo section (`run posixtest execinfo`) from the shell: `backtrace()` from nested functions, a second thread, a signal handler and a `qsort` comparator, and the lines of `backtrace_symbols` and `backtrace_symbols_fd` ([CR-PLAN](CR-PLAN.md#bt-notes), "BT notes"); also in the `init` run | |
 | `posix-fault.txt` | posixtest's fault section (`run posixtest fault`) from the shell: a thread's own faults as Linux's signals with their siginfo and ucontext, the flags and masks, V8's and Chromium's patterns, children that must end, each by the fault's own signal; the alternate stack and `SA_ONSTACK` (stack overflow reaching a handler on it, the move to the interrupted stack, `sigaltstack`'s report and errors, `sysconf(_SC_MINSIGSTKSZ)` the smallest stack) ([SIGNALS-PLAN](SIGNALS-PLAN.md#1-faults-on-the-faulting-thread), SG3 and SG4); and the kernel's line for its first two children, one with no handler and one with SIGBUS handled and SIGSEGV default, the same `killed: page fault at rip ..., address 10`; also in the `init` run | |
-| `posix-fork.txt` | posixtest's fork section (`run posixtest fork`) from the shell: `fork`, `vfork` and both `clone` forms, each case in a job of its own that ends empty (returns twice, ids, memory separate and `MAP_SHARED` shared, `malloc` and atfork in a threaded parent's child, the two-VMO invariant, a 1 TiB reservation with its time and charge line, `ENOMEM`, `SIGCHLD`, `kill`, `SIGKILL`, pending, timers, a fault handler on the alternate stack: the fork section's paragraph below; [FORK-PLAN](FORK-PLAN.md#fl1b-notes), FL1b); also in the `init` run | |
+| `posix-fork.txt` | posixtest's fork section (`run posixtest fork`) from the shell: `fork`, `vfork` and both `clone` forms, each case in a job of its own that ends empty (returns twice, ids, memory separate and `MAP_SHARED` shared, `malloc` and atfork in a threaded parent's child, the two-VMO invariant, a 1 TiB reservation with its time and charge line, `ENOMEM`, `SIGCHLD`, `kill`, `SIGKILL`, pending, timers, a fault handler on the alternate stack; and FL2's: every descriptor kind used from both sides, `/proc/self/fd` exact, Chromium's child sequence, a pseudo-terminal, the table of mappings in a child: the fork section's paragraph below; [FORK-PLAN](FORK-PLAN.md#fl1b-notes), FL1b and FL2); also in the `init` run | |
 | `posix-efault.txt` | posixtest's efault section (`run posixtest efault`) from the shell: every call the layer answers into or reads from a program's memory, given a read-only page, a `PROT_NONE` page, an unmapped address, NULL and a non-canonical address, is -1 with `EFAULT` and the process goes on ([CR-PLAN](CR-PLAN.md#cbf1-notes-2026-10-16), "CBF1 notes": the checked copies); with SIGSEGV and SIGBUS handled the handlers never run; a child with no handler gets `EFAULT`, then ends by a real fault with the kernel's `killed: page fault at rip ...` line; also in the `init` run | |
 | `posix-signal.txt` | posixtest's signal section (`run posixtest signal`) from the shell: signals in one process and between processes (B4), and a thread busy in a loop that makes no calls raised for its handler: V8's profiler's SIGPROF (a line with how many of 20 came within 1 ms and the slowest), 10,000 from a sampler thread (a line with the time each), 200 with the layer's way out from a handler made long by a test hook (every run with the loop's registers), a handler that forks on a raised thread (the child goes back to the loop), threads making quiet and plain calls, Chromium's SIGURG stack copier, SIGINT ([SIGNALS-PLAN](SIGNALS-PLAN.md#2-signals-to-a-chosen-thread), SG5); also in the `init` run | |
 | `posix-unix.txt` | posixtest's unix section (`run posixtest unix`) against shell mode's broker, bin/unix (`/svc/unix`, [CR-PLAN](CR-PLAN.md#cu2-notes), "CU2 notes"): named `AF_UNIX` sockets, a listener and two connectors, bytes and a descriptor over a connection, the backlog, a socket file removed and a stale one, a 108-byte path's `getsockname` (CR-REVIEW-POSIX finding 5), a child without `/data` refused and one with `/data` read-only let in, abstract names, a child given `/svc/unix` by name binding 32 listeners at most however often it opens it (its opener is its own: CR-REVIEW-POSIX Q2; here it shares posixtest's own); then `ps` shows `unix`; also in the `init` run (where init starts the broker before the programs) | |
@@ -2312,9 +2312,8 @@ posixtest's fork section (the `init` run; `posixtest fork`;
 `CLONE_VM` ([FORK-PLAN](FORK-PLAN.md#fl1b-notes), "FL1b notes"). Each case
 is a child of posixtest's (`--child-fork <case>`) in a job of its own that
 must end with nothing left in it. A forked child reports through a
-`MAP_SHARED` page and its exit code (its descriptors are the parent's
-until FL2; a failed check there also writes `posixtest: fork: a child
-FAILED line N` to the kernel log). `twice`: 0 in the child, its pid in the
+`MAP_SHARED` page and its exit code (a failed check there also writes
+`posixtest: fork: a child FAILED line N` to the kernel log). `twice`: 0 in the child, its pid in the
 parent; `getpid`, `getppid`, the group and session, `getpgid` and
 `/proc/<pid>/stat`'s parent from the parent, the child's own table empty
 (`ECHILD`); data, bss, heap, stack and a private mapping separate both ways
@@ -2341,7 +2340,33 @@ exception entry and kernel exception stack set again). `clone`: the raw
 call with `CLONE_PARENT_SETTID` and `CLONE_CHILD_SETTID`, its refusals
 (`CLONE_VM` alone `ENOSYS`, a new stack and an unknown flag `EINVAL`);
 `clone(fn, stack, SIGCHLD | CLONE_PARENT_SETTID, arg)` ending with fn's
-value; `vfork` (a fork until FL4).
+value; `vfork` (a fork until FL4). The descriptors and the table of
+mappings (`forkfd.c`; [FORK-PLAN](FORK-PLAN.md#fl2-notes), "FL2 notes"):
+`fds`: every kind made by the parent and used from both sides in the
+child: pipe ends (the parent's 90 leftover bytes read once, by the parent:
+the child's first read is the next message), close-on-exec ones present,
+socketpair ends both ways and a memfd sent back over one, a
+`SOCK_SEQPACKET` end whose peeked message stays the parent's, a memfd and
+its dup (pages shared, the child's size its own), an eventfd (the
+child's counter a copy), `/dev/null`, `/etc/passwd` and a file at the
+parent's offset (each side's own after), a file the child writes on an ext
+`/data` (`EBUSY` on FAT), a directory listed, an unconnected `AF_UNIX`
+socket, and with `/svc/unix` a named connection and its accepted end both
+ways; an epoll set, a netstack socket (with `/svc/net`) and a listener
+absent (`EBADF`). `/proc/self/fd` lists exactly what the child kept; it
+then closes every descriptor above 2 by `/proc/self/fd`, letting go of at
+least their handles (the charge counts VMO objects, so freed memory adds);
+16 more forks leave the parent within 4 units of where one did. `chromium`:
+Chromium's child sequence: close-on-exec descriptors, `dup2` of the output
+pipe to 1 and 2 and of the IPC socketpair end to 3, every other descriptor
+closed by `/proc/self/fd`; only 0 to 3 left, each working. `ttys`: a
+pseudo-terminal's master and slave both ways in a child (the slave a
+terminal with its `/dev/pts/N` name), still the parent's after the child
+closes its copies. `maps`: in a child, `MADV_DONTNEED` and a `MAP_FIXED`
+over private memory decommit there only, `mprotect` adds write to a file's
+private read-only pages, a lowered break decommits, a memfd's `MAP_SHARED`
+page is shared, and a mapping cut in three lets go of its handle and its
+VMO at the last piece.
 
 posixtest's launch section (the `init` run; `posixtest launch`): what
 Chromium's launcher needs of `posix_spawn` ([CR-PLAN](CR-PLAN.md#cs1-notes),

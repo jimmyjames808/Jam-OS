@@ -3,8 +3,10 @@
 # ends empty: returns twice, ids, memory separate and MAP_SHARED shared,
 # malloc and atfork in a threaded parent's child, the two-VMO invariant,
 # a 1 TiB reservation, ENOMEM, the signals (SIGCHLD, kill, SIGKILL,
-# pending, timers, a fault handler), both clone forms and vfork. Also in
-# the init run; this is the section alone, with its 1 TiB line.
+# pending, timers, a fault handler), both clone forms and vfork; and FL2's
+# cases: every descriptor kind from both sides, /proc/self/fd exact,
+# Chromium's child sequence, a pty, the table of mappings. Also in the
+# init run; this is the section alone, with its 1 TiB line.
 #   QEMU_INPUT=tools/shell-tests/posix-fork.txt tools/qemu-test.sh <dir> posix-fork shell
 wait 120 Jam OS shell
 wait {prompt}
