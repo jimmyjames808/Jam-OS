@@ -1,0 +1,17 @@
+# The FAT half of posixtest mmap-wshared (tools/posix-mmap-test.sh, case
+# wshared, whose second boot is an image with a FAT /data): a shared
+# mapping with PROT_WRITE is ENODEV (EACCES on a read-only descriptor), an
+# O_RDWR descriptor's PROT_READ one is read-only (mprotect adding write
+# EACCES); the mmap and mmap-coherent sections as they have always been
+# on FAT.
+# QEMU_INPUT=this file, command line "shell".
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send T=f
+wait {prompt}
+send posixtest mmap mmap-coherent mmap-wshared; echo wf-$T=$?
+wait 400 wf-f=
+wait {prompt}
+send reboot -f
+wait reboot: resetting

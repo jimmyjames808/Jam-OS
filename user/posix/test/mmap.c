@@ -43,10 +43,10 @@
  *                             truncate's and a write's tails and gaps zero;
  *                             msync MS_ASYNC and MS_SYNC return 0 (the
  *                             last: MS_SYNC waits for the pager's write-back
- *                             of what was stored). On fat (/usb0): ENODEV
- *                             with PROT_WRITE, EACCES on a read-only
- *                             descriptor, a read-only mapping of an
- *                             O_RDWR one whose mprotect is EACCES
+ *                             of what was stored). On fat (a FAT /data):
+ *                             ENODEV with PROT_WRITE, EACCES on a
+ *                             read-only descriptor, a read-only mapping
+ *                             of an O_RDWR one whose mprotect is EACCES
  *   mmap-tmp                  the mmap section in /tmp instead of /data,
  *                             its pager required (init's /tmp, a volume's
  *                             view or the memory one: tools/layout-test.sh)
@@ -730,7 +730,11 @@ static void ws_fat(const char *dir)
 {
     int before = pt_failures();
     snprintf(ws_path, sizeof(ws_path), "%s/pt-wmap.bin", dir);
-    CHECK(put_file(ws_path, WS_SIZE));
+    if (!put_file(ws_path, WS_SIZE)) {
+        printf("posixtest: mmap-wshared: %s can't be written: %s\n", ws_path, strerror(errno));
+        CHECK(!"no file to test on");
+        return;
+    }
     int rw = open(ws_path, O_RDWR), ro = open(ws_path, O_RDONLY);
     CHECK(rw >= 0 && ro >= 0);
     errno = 0;

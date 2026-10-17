@@ -29,9 +29,11 @@
 #             mapping (EACCES on O_RDONLY); truncate's tail and a write's
 #             gap zero; msync MS_ASYNC and MS_SYNC return 0 (MS_SYNC over
 #             stored pages waits for extfs's write-back: WE2's; until then
-#             it ends EIO after the pager's answer time). Then on a FAT
-#             stick (/usb0): ENODEV with PROT_WRITE, EACCES on a read-only
-#             descriptor, a read-only mapping of an O_RDWR one.
+#             it ends EIO after the pager's answer time). A second boot,
+#             on a twin of the image with a FAT /data (tools/datafs.sh):
+#             the same section there (ENODEV with PROT_WRITE, EACCES on a
+#             read-only descriptor, a read-only mapping of an O_RDWR one)
+#             and the mmap and mmap-coherent sections as they were.
 #   spawn     a copy of posixtest on /data: posix_spawn of it is EACCES
 #             while it isn't allowed; then `allow`ed, it runs (init's
 #             /svc/exec seals and starts it) and exits 7; a forked child's
@@ -156,10 +158,9 @@ case_coherent() {
 }
 
 case_wshared() {
-    stick="$out/$name-wshared-a.img"
-    make_stick "$stick" 64 w.bin 1 23
-    run_case wshared tools/shell-tests/posix-mmap-wshared.txt "$stick"
+    fat_image=$image
     if [ "$(python3 tools/mkimage.py --data-fs "$image")" = ext ]; then
+        run_case wshared tools/shell-tests/posix-mmap-wshared.txt
         want wshared 1 "posixtest: mmap-wshared: /data is ext" "$run"
         want wshared 1 "posixtest: mmap-wshared: a store seen by pread, read, a second mapping and a child: ok" "$run"
         want wshared 1 "posixtest: mmap-wshared: write and stores on one page both kept; growth by write: ok" "$run"
@@ -167,20 +168,30 @@ case_wshared() {
         want wshared 1 "posixtest: mmap-wshared: truncate's tail and a write's gap are zero: ok" "$run"
         want wshared 1 "posixtest: mmap-wshared: msync where nothing is dirty: ok" "$run"
         want wshared 1 "posixtest: mmap-wshared: msync: ok" "$run"
+        want wshared 1 "posixtest: mmap-wshared: ok" "$run"
+        want wshared 1 "^ws-w=0" "$run"
         grep -a "posixtest: mmap-wshared: msync MS_SYNC" "$run" || true   # its time, for the report
-        fats=1
-    else   # a FAT /data: both runs are the FAT one
-        want wshared 1 "posixtest: mmap-wshared: /data is not ext" "$run"
-        fats=2
+        never wshared "killed: page fault" "$run"
+        no_errors wshared
+        # The second boot: a twin of the image with a FAT /data.
+        . tools/datafs.sh
+        fat_image="$out/$name-wshared-fat.img"
+        data_fat_image "$fat_image" ||
+            { echo "$name: wshared: no FAT boot image"; ok=0; return; }
     fi
-    want wshared 1 "posixtest: mmap-wshared: /usb0 is not ext" "$run"
-    want wshared $fats "posixtest: mmap-wshared: fat: ENODEV, EACCES, a read-only mapping: ok" "$run"
-    want wshared 2 "posixtest: mmap-wshared: ok" "$run"
-    want wshared 1 "^ws-w=0" "$run"
-    want wshared 1 "^wsf-w=0" "$run"
-    never wshared "killed: page fault" "$run"
-    no_errors wshared
-    rm -f "$stick" "$stick".*
+    saved=$image
+    image=$fat_image
+    run_case wshfat tools/shell-tests/posix-mmap-wshared-fat.txt
+    image=$saved
+    want wshfat 1 "posixtest: mmap-wshared: /data is not ext" "$run"
+    want wshfat 1 "posixtest: mmap-wshared: fat: ENODEV, EACCES, a read-only mapping: ok" "$run"
+    want wshfat 1 "posixtest: mmap: ok" "$run"
+    want wshfat 1 "posixtest: mmap-coherent: ok" "$run"
+    want wshfat 1 "posixtest: mmap-wshared: ok" "$run"
+    want wshfat 1 "^wf-f=0" "$run"
+    never wshfat "killed: page fault" "$run"
+    no_errors wshfat
+    [ "$fat_image" = "$image" ] || rm -f "$fat_image"
 }
 
 case_spawn() {

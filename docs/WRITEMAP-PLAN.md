@@ -570,7 +570,7 @@ Each about one agent-hour; WE2 about one and a half.
 | **WK3. Waiting** | 1.4 and 1.5: the dirty limit, a store's wait in `aspace_fault` and in user copies (no region lock, the deadline in all, cancellable), the throttle's request, `vmo_sync` and its requests; the failure table; built, see "WK3 notes" | WK1's kernel files, `kernel/mm/aspace.c` (the fault's wait), `kernel/abi/sysc_vm.c` (`vmo_sync`), kernel/test/test_pager_dirty.c | WK2 merged | ktests: a writer at the limit waits and goes on when the pager writes; a pager that never answers: the writer is killed at the deadline with the line, a copy returns `ERR_IO`, a reader of another VMO of the same pager is never held up; `vmo_sync` answered exactly (a store before it, written by a write-back that began before it, keeps it waiting); `vmo_sync` failing on a close; a kill ends every wait; full ktest 4 and 8; soak 2 | 1 | **Opus** |
 | **WE1. extfs: the map and one cache** | 2.1 and 2.2: `MAP_WRITE`, every shared VMO writable, keys from the inode, `FIND`, the sizes of a found VMO, rights reduced for `MAP_READ`; `pager_write` in `write` and truncate (the tails), `PEEK` in `read`; Q7 both ways; the ordering argument in pager.c's header; built, see "WE1 notes" | `user/services/extfs/pager.c`, `user/services/extfs/files.c`, `user/services/extfs/fsops.c`, `user/services/extfs/extfs.h`, `user/services/extfs/adopt.c` (the slots' lookups), `abi/idl/file.idl` (`MAP_WRITE`, the comments) and its generated header, a new utest file user/tests/utest/extfs_wmap.c | WK1 merged; U9 merged (it works in extfs); no other track in extfs | utest `extfs_wmap`: a store seen by `read`, by a second mapping and a second process; `write` and a store on one page both kept; truncate shrink and grow with the tails zero; a map after the first mapper unmapped (its pages still dirty) finds the same VMO; `MAP_WRITE` refused without `FS_WRITE`, through a read-only view and on a file mapped to run; `MAP_EXEC` refused while a writable map lives; `extfs_map` and `extfs_restart_pager` unchanged; init run | 1 | **Opus** |
 | **WE2. extfs: write-back** | 2.3 to 2.7: serving `PAGER_REQ_WRITEBACK`, a transaction a batch of runs, the size clip, holes and unwritten extents in ordered mode, the times, the age check, `file.sync` and `fs.sync`, the orderly stop, errors kept per slot, a fresh start's keys; test powers `die=wback:<n>`; extcheck's cut storm gains a write-back step | `user/services/extfs/pager.c` (or a new user/services/extfs/wback.c beside it), `user/services/extfs/main.c` (the age check), `user/services/extfs/fsops.c` (sync), `user/services/extfs/test.c`, `user/services/extfs/extfs.h`, `tools/extcheck.c` (the storm's new step), new utest files for `extfs_wback` and `extfs_restart_wback` | WE1, WK3 merged | utest `extfs_wback` (stores written by `msync`, by `fsync`, by age; a store over a hole and in an unwritten extent; a full volume's error at the next sync), `extfs_restart_wback` (a death at every step of 2.6, the data right after each); `tools/extfs-svc-test.sh` (every disk `e2fsck -fn` clean); extcheck's cut storm (`make check`); init run | 1.5 | **Opus** |
-| **WL1. libc** | section 3 | `user/posix/sys/file.c` (`map_file`), `user/posix/sys/mem.c` (`lx_msync`, the share flag), `user/posix/sys/files.h`, posixtest's `user/posix/test/mmap.c` (a new section `mmap-wshared`), tools/shell-tests' new posix-mmap-wshared.txt and its case in `tools/posix-mmap-test.sh` | WE1 and WK3 merged (beside WE2: different files); after or before FL2 (both edit `mem.c`: one after the other) | posixtest `mmap-wshared` on ext (`MMAP_DATA=ext`): a store seen by `read` and `pread`, by a second mapping, by a child; `write` and stores on one page both kept; `mprotect` adding write on an `O_RDWR` mapping, `EACCES` on `O_RDONLY`; `msync` `MS_SYNC` and `MS_ASYNC` return 0; truncate's tail zero; on FAT `ENODEV` and `EACCES` as today; the `mmap` and `coherent` cases on FAT and ext unchanged; shell scripts basic, cmds, commands, files | 1 | Sonnet 5.5 |
+| **WL1. libc** | section 3; built, see "WL1 notes" | `user/posix/sys/file.c` (`map_file`), `user/posix/sys/mem.c` (`lx_msync`, the share flag), `user/posix/sys/files.h`, posixtest's `user/posix/test/mmap.c` (a new section `mmap-wshared`), tools/shell-tests' new posix-mmap-wshared.txt and its case in `tools/posix-mmap-test.sh` | WE1 and WK3 merged (beside WE2: different files); after or before FL2 (both edit `mem.c`: one after the other) | posixtest `mmap-wshared` on ext (`MMAP_DATA=ext`): a store seen by `read` and `pread`, by a second mapping, by a child; `write` and stores on one page both kept; `mprotect` adding write on an `O_RDWR` mapping, `EACCES` on `O_RDONLY`; `msync` `MS_SYNC` and `MS_ASYNC` return 0; truncate's tail zero; on FAT `ENODEV` and `EACCES` as today; the `mmap` and `coherent` cases on FAT and ext unchanged; shell scripts basic, cmds, commands, files | 1 | Sonnet 5.5 |
 | **WT1. The end-to-end tests** | the scripts below, and Chromium's tests through CB2's harness | `tools/pager-test.sh` (new cases), pagertest (`user/tests/pagertest/`, a new mode that stores records with sequence numbers and checksums), `tools/cr-test.sh`'s `base` filter list (a line) | WE2 and WL1 merged; CB2 merged and `/tmp` on ext (U7b or U11a) for the Chromium case | pager-test.sh `wmsync`: records stored and `msync`ed, `kill extfs-jam`, read back through `read` and a new mapping; again with no `msync` (the successor writes them); again across a reboot (`msync`ed records there). `wcut`: QEMU stopped dead during a store-and-`msync` storm, booted again: every acknowledged record whole, Linux's `e2fsck -fn` clean. `wpress`: a mapping twice the budget stored through (the writer throttled, done, every page right) while another program reads another file at speed; then with extfs held by a test power (`hang=wback`): the writer killed at the deadline with the line, the reader, the shell and `/jam` fine. cr-test.sh `base` with `MemoryMappedFileTest.*`, `FilePersistentMemoryAllocatorTest.*` and `PersistentHistogramAllocatorTest.*` (*unsure* of the exact suite names: CB2's list says) | 1 | Sonnet 5.5 |
 | **WR. Independent review and fix** | everything above, findings first (a new docs/WRITEMAP-REVIEW.md), then High and Medium fixed with a test each: can a store be lost (begin's protect against the copy, the request's stamps, AGAIN), can a writer or the kernel wait forever, can a dirty page be evicted, does a view's refusal hold for every way to a writable handle, is an acknowledged `msync` safe across every death | the files its fixes need | WK1 to WT1 merged | its own; hostile: 8 writers on one file from two processes with fork and a pager killed every 200 ms; full ktest 4 and 8; soak 4 | 1.5 | **Opus** |
 | **WJ. The join** | ARCHITECTURE (Memory: writable pager VMOs and the hold; Storage: write-back), M12.5-PLAN's and M13-PLAN's lines that say pager pages are always clean, TESTING (the new cases and ktests), ROADMAP, CR-PLAN, HISTORY; this plan deleted when HISTORY covers it | the docs | WR | `make check` | 0.5 | Sonnet 5.5 |
@@ -860,6 +860,92 @@ the design and the ordering argument):
   mapping to have come from `FILE_MAP_WRITE` (on an `O_RDWR`
   descriptor); asking for it for every shared mapping of an `O_RDWR`
   file makes the file `written` (not runnable) while that VMO lives.
+
+### WL1 notes
+
+What WE2's msync cases, WT1 and WR start from (posixtest `mmap-wshared` in
+user/posix/test/mmap.c; tools/posix-mmap-test.sh case `wshared`):
+
+- **WE1's open question, settled: every `MAP_SHARED` of a descriptor open
+  for writing asks `FILE_MAP_WRITE`, whatever `PROT_WRITE` says**
+  (file.c's `map_file`; section 3 as written). Why: Linux decides at
+  `mmap` whether a shared mapping may ever be written (`VM_MAYWRITE`, from
+  the descriptor's mode then), and `mprotect` adding write is allowed
+  after the descriptor's close; the handle's right to write is fixed by
+  what the service gave, so the choice has to be made at `mmap`. The
+  price is Linux's own: its mapping keeps the file open for writing, so
+  the file can't be run (`ETXTBSY`) while any mapping of it lives, a
+  `PROT_READ` one too; here extfs marks the file `written` while its
+  shared VMO lives (Q7). Kept narrow: only an `O_RDWR` `MAP_SHARED` pays
+  it (a read-only descriptor, `MAP_PRIVATE`, a memfd, a file on fat or
+  anywhere without a writable pager ask `FILE_MAP_READ` as before), and
+  only for as long as the VMO lives. Without `PROT_WRITE` any refusal
+  (`ERR_NOT_SUPPORTED`, `ERR_ACCESS_DENIED`, `ERR_BUSY`) falls back to
+  `FILE_MAP_READ`, today's read-only mapping, whose `mprotect` adding
+  write is `EACCES`; with `PROT_WRITE` the refusal is the answer
+  (`ENODEV` fat, `ETXTBSY`, `EACCES` or `EROFS`). Rejected: asking only
+  with `PROT_WRITE` (an `mprotect` Linux allows would be `EACCES`), and
+  getting the writable VMO at `mprotect` (the descriptor may be closed by
+  then; keeping the open for it holds the file for writing just the same,
+  and costs state in every table entry). The check order is Linux's:
+  `PROT_WRITE` on a descriptor that can't write is `EACCES` before the
+  service is asked. libc calls the generated `file_map_within` itself
+  (`fs_map_file` in libos still takes `FILE_MAP_READ` and `EXEC` alone).
+- **`mprotect`** needed no change: the kernel allows write on a mapping
+  whose VMO handle has `RIGHT_WRITE` (the `FILE_MAP_WRITE` one) and
+  answers `ERR_ACCESS_DENIED`, so `EACCES`, for a `FILE_MAP_READ` one.
+- **`msync`** (mem.c's `sync_shared`): `vmo_sync` over each `MAP_SHARED`
+  table entry in the range, `VMO_SYNC_WAIT` for `MS_SYNC`, none for
+  `MS_ASYNC`; the first error ends it, and an unmapped part of the range
+  is `ENOMEM` after the mapped parts were synced (an error from them
+  comes first, as Linux's). One entry at a time with `mem_lock` dropped
+  for the call and the VMO's handle duplicated for it: an `MS_SYNC` can
+  wait the pager's whole answer time, and the other threads' `mmap`,
+  `munmap` and `malloc` must not wait with it. A private mapping and
+  anonymous memory are never asked (Linux's `msync` syncs `VM_SHARED`
+  alone); a shared memfd or anonymous mapping costs a call the kernel
+  answers `OK` to. Errors: `ERR_IO`, `ERR_TIMED_OUT`, `ERR_PEER_CLOSED`
+  are `EIO`, `ERR_NO_SPACE` (WK3's one more) `ENOSPC`, as `fsync`'s;
+  `ERR_OUT_OF_RANGE` (a mapping reaching past a shrunk file) is clipped
+  at the VMO's size and asked again, and what is left is no error;
+  `ERR_ACCESS_DENIED` and `ERR_WRONG_TYPE` (no right to read the VMO) are
+  `0`. `MS_INVALIDATE` is accepted and does nothing: every mapping of a
+  file is the one VMO.
+- **The tests.** `mmap-wshared` (asked for by name; not in a bare
+  `posixtest` run until WE2 is in, because its last step waits): on ext, a
+  store seen by `pread`, `read`, a second mapping from a read-only
+  descriptor, a second writable one, and a forked child (through its
+  inherited mapping, and through its own descriptor and mapping, its
+  stores and `pwrite` seen by the parent); `write` and stores on one page
+  kept in either order; a file grown by `write` seen through the mapping,
+  the gap zero; `mprotect` adding write on an `O_RDWR` `PROT_READ` mapping,
+  after the descriptor's close and on a `PROT_NONE` one, `EACCES` on
+  `O_RDONLY` (also `mmap` with `PROT_WRITE`); `MAP_PRIVATE` writes never
+  the file's; a store past the end of the last page, and a cut then
+  regrown file, zero after growth by `ftruncate` and by a gap-leaving
+  `write`; `msync` on a file nothing was stored to (both flags, a part,
+  a hole `ENOMEM`), then over stored pages. On fat: `ENODEV` with
+  `PROT_WRITE`, `EACCES` on a read-only descriptor, an `O_RDWR`
+  descriptor's `PROT_READ` mapping with `mprotect` `EACCES`, a `write`
+  seen through it. The `mmap` section's `shared_write_refused` now expects
+  a mapping on ext (`statfs`' type) and `ENODEV` elsewhere. The case boots
+  twice: the image (ext `/data`: `mmap-wshared`), then a twin with a FAT
+  `/data` (`data_fat_image`: `mmap`, `mmap-coherent`, `mmap-wshared`). A
+  second stick can't do the FAT half: it mounts read-only, and a POSIX
+  program's view of it stays so after the shell's `mount -w`.
+- **Waits for WE2.** `MS_SYNC` over stored pages on ext: until extfs
+  serves `PAGER_REQ_WRITEBACK` it ends `EIO` after the pager's 60 s
+  (`mmap-wshared`'s `msync` step, the last, fails alone, and its summary
+  line says how long it took). **Merge WL1 with or after WE2**: with WL1
+  alone a shared writable mapping on ext succeeds where it was `ENODEV`,
+  and its stores are never written to the disk (the pages stay dirty and
+  held; at the dirty limit a writer waits out the answer time and is
+  killed).
+- **Runlist.** `tools/posix-mmap-test.sh`'s default cases gain `wshared`;
+  the prepush list needs `mm-wshared  MMAP_CASES=wshared
+  tools/posix-mmap-test.sh build/t/mm-wshared`. Two runs of the script
+  that differ only in `MMAP_DATA` need a second argument (their name), or
+  their serial sockets clash and one boot's monitor never answers.
 
 ## 6. Tests
 
