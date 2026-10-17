@@ -65,10 +65,19 @@
 #define XF_DEFER_MAX   64u         /* orphans and truncations left for after an answer */
 #define XF_MAX_MAPS    256u        /* mapped files at once (file.map's VMOs: pager.c) */
 
-/* A mapped file's key: a sequence number and its slot of maps[] (pager.c). */
+/* The key of a VMO mapped to run: a sequence number and its slot of
+ * maps[] (pager.c). The sequence stays below 2^55 (nanoseconds since
+ * boot, over a year), so the top bit is clear. */
 #define XF_MAP_KEY(seq, i) ((uint64_t)(seq) << 8 | (uint64_t)(i))
 #define XF_MAP_SLOT(key)   ((unsigned)((key) & 0xff))
 _Static_assert(XF_MAX_MAPS <= 256, "a slot fits a key's low byte");
+/* The key of a file's shared VMO: the file's, its inode's number and
+ * generation under the top bit, so the kernel's keys are the index of
+ * the live ones (pager.c). An inode number past XF_SHARED_INO_MAX has
+ * none (a volume of 2^31 inodes). */
+#define XF_SHARED_BIT          (1ull << 63)
+#define XF_SHARED_INO_MAX      0x7fffffffu
+#define XF_SHARED_KEY(ino, ig) (XF_SHARED_BIT | (uint64_t)(ino) << 32 | (uint64_t)(ig))
 
 /* Port keys and channel ids: fat's (fat.h), the same scheme. */
 #define XF_KEY_FS          1ull
@@ -159,9 +168,13 @@ struct xf_view {
 struct xf_map {
     bool     used;
     uint8_t  kind;            /* FILE_MAP_READ (the file's shared VMO) or FILE_MAP_EXEC */
+    bool     written;         /* shared: handed out writable since it was made (until its
+                               * GONE: the file isn't mapped to run, Q7) */
+    bool     made_write;      /* shared: the last map that answered with it was FILE_MAP_WRITE
+                               * (adopt.c makes that answer again) */
     uint32_t ino;             /* the file: its inode ... */
     uint32_t igen;            /* ... and that inode's generation */
-    uint64_t key;             /* its VMO's key: XF_MAP_KEY(seq, its slot) */
+    uint64_t key;             /* its VMO's key: XF_SHARED_KEY, or XF_MAP_KEY(seq, its slot) */
 };
 
 /* What a slot's request did to the journal: set before its commit
@@ -177,9 +190,10 @@ struct xf_slot {
 
 /* The slot of files[], views[] or maps[] the request numbered `seq` made,
  * which its reply hands out (adopt.c makes the client's end again if the
- * reply never went out, and drops it if the request runs again). A map
- * that shared a slot made before (XF_MADE_MAP_SHARED) is remade but never
- * dropped: other mappers have it. */
+ * reply never went out, and drops it if the request runs again). A map to
+ * run is XF_MADE_MAP; one of a file's shared VMO (XF_MADE_MAP_SHARED) is
+ * remade but never dropped: other mappers may have it, the request run
+ * again finds it by the file's key, and its slot goes at its GONE. */
 #define XF_MADE_FILE       1u
 #define XF_MADE_VIEW       2u
 #define XF_MADE_MAP        3u
@@ -407,18 +421,30 @@ void     views_whole(struct xf_ctx *c);
 /* ---- pager.c ----------------------------------------------------------------- */
 
 /* file.map of inode ino (its generation igen, fsize bytes long) with
- * flags FILE_MAP_READ or FILE_MAP_EXEC (files.c checked them, the open's
- * read right and, to run, that nobody writes it): a VMO into *out.
+ * flags FILE_MAP_READ, FILE_MAP_WRITE or FILE_MAP_EXEC (files.c checked
+ * them: the open's rights, and Q7's rule): a VMO into *out.
  * ERR_NOT_SUPPORTED with no pager; ERR_NO_RESOURCES: XF_MAX_MAPS. */
 status_t maps_make(uint32_t ino, uint32_t igen, uint32_t flags, uint64_t fsize, handle_t *out);
-/* Is inode ino mapped (a slot names it)? ... mapped to run? */
+/* Is inode ino mapped (a slot names it)? ... mapped to run? ... is its
+ * shared VMO one handed out writable that still lives? */
 bool     maps_has(uint32_t ino);
 bool     maps_exec(uint32_t ino);
+bool     maps_written(uint32_t ino);
 /* Its last fs.open closed: its shared VMO is its mappers' alone now. */
 void     maps_let_go(uint32_t ino);
-/* Inode ino changed, inside the request that changed it: bytes [lo, hi)
- * written (or cut: lo == hi), its size now `size`. Its mappings see it. */
+/* Inode ino changed, inside the request that changed it, before its
+ * commit (pager.c's "The ordering"); its mappings see it. A write of n
+ * bytes of `data` at off, its size old before and `size` now ... */
+void     maps_wrote(uint32_t ino, uint64_t off, const void *data, uint64_t n, uint64_t old,
+                    uint64_t size);
+/* ... its size set from old to `size` (a truncate) ... */
+void     maps_resized(uint32_t ino, uint64_t old, uint64_t size);
+/* ... or a write or truncate that failed: bytes [lo, hi) may have
+ * changed on the disk, its size now `size`. */
 void     maps_changed(uint32_t ino, uint64_t lo, uint64_t hi, uint64_t size);
+/* A read of inode ino: the n bytes at off that came from the disk, with
+ * its mappings' stores the disk hasn't yet laid over them. */
+status_t maps_peek(uint32_t ino, uint64_t off, uint8_t *data, uint64_t n);
 /* The running request ended: done, its change committed; not, given up
  * (the mapped files' sizes set again from their inodes). */
 void     maps_settle(bool done);
