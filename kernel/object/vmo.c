@@ -1842,18 +1842,26 @@ static status_t fault_fill(struct vmo *v, uint64_t idx, bool src, struct fresh *
 /* With the lock held: a store to page p (present) of v, a writable pager
  * VMO. A clean page becomes dirty, and v's first dirty page takes the
  * hold: a reference of v's own (the caller has one, so v lives), kept
- * until none is left (hold_end). True if the pager has one more dirty page
- * (the caller then kicks its write-back, with no lock held). */
-static bool store_locked(struct vmo *v, struct page *p)
+ * until none is left (hold_end). *added: the pager has one more dirty page
+ * (the caller then kicks its write-back, with no lock held).
+ * ERR_NO_RESOURCES: p is clean and the pager is at its dirty limit;
+ * nothing changed (the store waits: vmo_pager_throttle). */
+static status_t store_locked(struct vmo *v, struct page *p, bool *added)
 {
-    if (!pager_page_state_vlocked(v->pv, p)) {
+    *added = !pager_page_state_vlocked(v->pv, p);
+    status_t st = pager_page_store_vlocked(v->pv, p);
+    if (st != OK) {
+        *added = false;
+        return st;
+    }
+    if (*added) {
         v->dirty++;
         if (!v->held) {
             v->held = true;
             kobject_ref(&v->base);
         }
     }
-    return pager_page_store_vlocked(v->pv, p);
+    return OK;
 }
 
 /* No lock held, a reference of the caller's: if v's dirty and writing
@@ -1900,10 +1908,14 @@ status_t vmo_fault_map(struct vmo *v, uint64_t idx, struct aspace *as, uint64_t 
         if (p && v->pwritable) {
             /* Writable only while dirty: a store to a clean or writing
              * page makes it dirty here (the file header's "Writable pager
-             * VMOs"). (The dirty limit's wait, WRITEMAP's 1.4, goes
-             * before it: a store waits as a read waits for its page.) */
-            if (write)
-                kick = store_locked(v, p);
+             * VMOs"), unless the pager is at its dirty limit: then the
+             * store waits for a write-back, as a read waits for its page
+             * (aspace_fault, without the region lock). */
+            if (write && store_locked(v, p, &kick) != OK) {
+                vunlock(v, f);
+                fresh_drop(&fr);
+                return ERR_NO_RESOURCES;
+            }
             if (!(pager_page_state_vlocked(v->pv, p) & PAGER_PAGE_DIRTY))
                 may &= ~ASPACE_WRITE;
         }
@@ -2369,8 +2381,8 @@ void vmo_pager_written(struct vmo *v, uint64_t first, uint64_t end, status_t st,
                 v->dirty--;   /* clean: its entries are read-only already */
             ended[(i - idx) / 64] |= 1ull << ((i - idx) % 64);
         }
-        if (st != OK)
-            v->pwb_error = st;   /* (the latest, as Linux keeps one per file) */
+        if (st != OK && v->pwb_error == OK)
+            v->pwb_error = st;   /* the first since vmo_sync last reported one */
         pager_written_vlocked(v->pv, v, idx, stop, ended, st, dead);
         vunlock(v, f);
         idx = stop;
@@ -2436,26 +2448,98 @@ status_t vmo_pager_writeback(struct vmo *v, uint64_t first, uint64_t end, struct
     return st;
 }
 
-status_t vmo_pager_writeback_bg(struct vmo *v, uint64_t idx, struct pager_req *r)
+status_t vmo_pager_writeback_bg(struct vmo *v, uint64_t idx, bool writing, struct pager_req *r,
+                                bool caller)
 {
     uint64_t need[PAGER_WB_WORDS], begin[PAGER_WB_WORDS];
     const uint64_t max = PAGER_WB_WORDS * 64;
+    /* Dirty pages not being written back (BEGIN's), or any dirty or writing
+     * one (PEEK's). */
+    uint32_t sel = writing ? PAGER_DIRTY_PEEK : PAGER_DIRTY_BEGIN;
     uint64_t f = vlock(v);
     status_t st = v->pdetached ? ERR_PEER_CLOSED : OK;
     uint64_t end = v->size >> PAGE_SHIFT, first = idx;
-    if (st == OK && (idx >= end || !run_page_locked(v, idx, PAGER_DIRTY_BEGIN)))
+    if (st == OK && (idx >= end || !run_page_locked(v, idx, sel)))
         st = ERR_NOT_FOUND;
     if (st == OK) {
-        while (first > 0 && idx - first + 1 < max &&
-               run_page_locked(v, first - 1, PAGER_DIRTY_BEGIN))
+        while (first > 0 && idx - first + 1 < max && run_page_locked(v, first - 1, sel))
             first--;
         uint64_t stop = idx + 1;
-        while (stop < end && stop - first < max && run_page_locked(v, stop, PAGER_DIRTY_BEGIN))
+        while (stop < end && stop - first < max && run_page_locked(v, stop, sel))
             stop++;
         (void)wb_needs_locked(v, first, stop, need, begin);
-        st = pager_wb_queue_vlocked(v->pv, r, first, stop, need, begin, false, true);
+        st = pager_wb_queue_vlocked(v->pv, r, first, stop, need, begin, caller, true);
     }
     vunlock(v, f);
+    return st;
+}
+
+status_t vmo_pager_throttle(struct vmo *v, uint64_t *until, struct pager_req **out)
+{
+    *out = NULL;
+    if (!v->pwritable)
+        return ERR_NOT_SUPPORTED;
+    return pager_throttle(v->pv, until, out);
+}
+
+/* vmo_pager_sync's step: a write-back request for pages [first, end) of v
+ * (one chunk), waited for if `wait`. OK also if nothing there needs
+ * writing back, or the chunk is past the size now (a shrink: its stores
+ * went with the file's end); the request's own failure otherwise. */
+static status_t sync_chunk(struct vmo *v, uint64_t first, uint64_t end, bool wait)
+{
+    uint64_t pages = vmo_size(v) >> PAGE_SHIFT;
+    if (end > pages)
+        end = pages;
+    if (first >= end)
+        return OK;
+    struct pager_req *r;
+    status_t st = vmo_pager_writeback(v, first, end, &r);
+    if (st == ERR_OUT_OF_RANGE)
+        return OK;   /* (shrunk since the look above) */
+    if (st != OK || !r)
+        return st;
+    if (wait)
+        st = pager_req_wait(r);
+    pager_req_put(r);
+    return st;
+}
+
+status_t vmo_pager_sync(struct vmo *v, uint64_t offset, uint64_t len, uint32_t flags)
+{
+    if (flags & ~VMO_SYNC_WAIT)
+        return ERR_INVALID_ARGS;
+    if (!v->pwritable)
+        return OK;
+    bool wait = flags & VMO_SYNC_WAIT;
+    uint64_t f = vlock(v);
+    status_t st = offset > v->size || len > v->size - offset ? ERR_OUT_OF_RANGE
+                : v->pdetached                             ? ERR_PEER_CLOSED
+                                                           : OK;
+    bool any = v->dirty != 0;
+    vunlock(v, f);
+    if (st != OK)
+        return st;
+    /* One request a chunk, each made only once the one before it is done
+     * (with `wait`): each needs the pages dirty or writing when it is
+     * made, so a store made before this call is written by a write-back
+     * that began after it, whichever chunk it is in. Without `wait` the
+     * requests are only queued; one the job can't pay for is left to the
+     * pager's own write-back by age, and the call still succeeds. */
+    const uint64_t chunk = PAGER_WB_WORDS * 64;
+    uint64_t first = offset >> PAGE_SHIFT;
+    uint64_t end = (offset + len + PAGE_SIZE - 1) >> PAGE_SHIFT;
+    for (uint64_t i = first; any && i < end && st == OK; i += chunk)
+        st = sync_chunk(v, i, end - i > chunk ? i + chunk : end, wait);
+    if (!wait)
+        return st == ERR_PEER_CLOSED || st == ERR_CANCELED ? st : OK;
+    if (st == OK || st == ERR_IO || st == ERR_NO_SPACE) {
+        /* Reported once: the kept error is taken whenever one is
+         * reported (the requests' errors are kept as well). */
+        status_t kept = vmo_pager_take_error(v);
+        if (kept != OK)
+            st = kept;
+    }
     return st;
 }
 

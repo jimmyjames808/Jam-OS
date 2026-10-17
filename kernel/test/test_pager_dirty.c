@@ -1,8 +1,9 @@
-/* Writable pager VMOs (docs/WRITEMAP-PLAN.md, tracks WK1 and WK2;
- * <jam/pager.h>'s "Writable pager VMOs" and "Write-back", vmo.c's): the
- * page states, the write fault, the lists and counts, the hold,
- * PAGER_VMO_FIND and the GONE takeover, pager_dirty's look, pager_write,
- * the clone mode, and write-back.
+/* Writable pager VMOs (docs/WRITEMAP-PLAN.md, tracks WK1, WK2 and WK3;
+ * <jam/pager.h>'s "Writable pager VMOs", "Write-back" and "The dirty
+ * limit", vmo.c's): the page states, the write fault, the lists and
+ * counts, the hold, PAGER_VMO_FIND and the GONE takeover, pager_dirty's
+ * look, pager_write, the clone mode, write-back, the dirty limit's waits
+ * and vmo_sync.
  *
  *   pager_dirty_store_marks
  *       a read installs a clean page read-only in a writable mapping; a
@@ -88,6 +89,35 @@
  *       OLDEST: the run around the oldest dirty page whatever its VMO, its
  *       age, a minimum age, BEGIN one run after another, how far back a
  *       run reaches.
+ *   pager_dirty_limit_waits
+ *       at the dirty limit a store to a clean page (a fault, a user copy)
+ *       waits without the region lock, joining the background request
+ *       (no second one); a load, a store to a dirty page and one to a
+ *       page being written back don't; a begin doesn't end the wait, the
+ *       pager's WRITTEN does, and the stores go on.
+ *   pager_dirty_limit_deadline
+ *       a store at the limit with no request to join (the background one
+ *       past its deadline) makes its own and goes on when it is answered;
+ *       a pager that serves reads but never writes back: a kernel fault
+ *       ends ERR_TIMED_OUT, a user copy ERR_IO, vmo_sync ERR_TIMED_OUT, a
+ *       ring-3 store kills its thread ("the file's pager didn't answer"),
+ *       each after the answer time and not before, while a reader of
+ *       another VMO of the pager faults its pages in at once (evicting).
+ *   pager_dirty_limit_kill
+ *       a kill ends every wait at the limit: a kernel fault, a user copy
+ *       and vmo_sync end ERR_CANCELED, a ring-3 thread dies without a
+ *       fault of its own; nothing dirtied.
+ *   pager_dirty_sync
+ *       vmo_sync: refusals, OK at once with nothing dirty or for another
+ *       VMO; exact (a store made before it but after a write-back began
+ *       keeps it waiting past that write-back's end, a store made after it
+ *       doesn't); an error reported once, by the waiting call only (one
+ *       kept from a write-back by age too); without the wait the request
+ *       is only made; a range of two chunks asks for one at a time.
+ *   pager_dirty_closed
+ *       a detach fails a waiting vmo_sync ERR_PEER_CLOSED (a later one at
+ *       once); the pager's close fails a store waiting at the limit
+ *       ERR_PEER_CLOSED.
  *
  * The pager is the test itself (supplying before the faults that need the
  * pages) or a kernel thread serving requests (struct kpager). Each test
@@ -98,6 +128,7 @@
 #include <jam/dbghook.h>
 #include <jam/handle.h>
 #include <jam/irq.h>
+#include <jam/klog.h>
 #include <jam/kprintf.h>
 #include <jam/ktest.h>
 #include <jam/mm.h>
@@ -485,35 +516,37 @@ KTEST(pager_dirty_never_evicted)
     struct aspace *as;
     KT_EQ(aspace_create(&as), OK);
     uint64_t a = map(as, v, 16, RW);
+    const uint64_t d = pager_dirty_limit(pg);   /* 2: as many as may be dirty */
+    KT_EQ(d, PAGER_WRITABLE_MIN_PAGES / 4);
     KT_EQ(supply(pg, 3, 0, 8), OK);
-    for (uint64_t i = 0; i < 4; i++)
+    for (uint64_t i = 0; i < d; i++)
         KT_EQ(uput(as, a + i * PG, 100 + i), OK);
-    KT_EQ(pager_dirty_pages(pg), 4);
+    KT_EQ(pager_dirty_pages(pg), d);
     KT_EQ(pager_resident(pg), 8);
 
     /* Each supply past the budget evicts the oldest clean page, never a
-     * dirty one: pages 4.. go, 0..3 stay mapped and dirty. */
+     * dirty one: pages d.. go, 0..d - 1 stay mapped and dirty. */
     for (uint64_t i = 8; i < 16; i++)
         KT_EQ(supply(pg, 3, i, 1), OK);
     KT_EQ(pager_resident(pg), 8);
-    for (uint64_t i = 0; i < 4; i++) {
+    for (uint64_t i = 0; i < d; i++) {
         KT_EQ(vmo_pager_page_state(v, i), DIRTY);
         KT_ASSERT(pte_w(as, a + i * PG));
         KT_EQ(uword(as, a + i * PG), 100 + i);
     }
-    for (uint64_t i = 4; i < 12; i++)
+    for (uint64_t i = d; i < d + 8; i++)
         KT_EQ(vmo_page_phys(v, i * PG), 0);
-    for (uint64_t i = 12; i < 16; i++)
+    for (uint64_t i = d + 8; i < 16; i++)
         KT_ASSERT(vmo_page_phys(v, i * PG));
 
     /* An invalidation drops the clean pages only (dirty ones are newer
      * than the disk). */
     KT_EQ(pager_op(pg, 3, PAGER_OP_INVALIDATE, 0, 16 * PG, 0), OK);
     for (uint64_t i = 0; i < 16; i++)
-        KT_EQ(vmo_page_phys(v, i * PG) != 0, i < 4);
-    KT_EQ(pager_resident(pg), 4);
-    KT_EQ(pager_dirty_pages(pg), 4);
-    for (uint64_t i = 0; i < 4; i++)
+        KT_EQ(vmo_page_phys(v, i * PG) != 0, i < d);
+    KT_EQ(pager_resident(pg), d);
+    KT_EQ(pager_dirty_pages(pg), d);
+    for (uint64_t i = 0; i < d; i++)
         KT_EQ(uword(as, a + i * PG), 100 + i);
     no_clean_writable(as, v, a, 16);
 
@@ -623,7 +656,7 @@ KTEST(pager_dirty_evict_storm)
                uptime_ns() < deadline)
             thread_yield();
         KT_EQ(vword(v, page * PG + 8), val);
-        if (r % 6 == 5) {   /* dirty pages pile up: drop them all, then grow back */
+        if (r % 2 == 1) {   /* at the dirty limit (2): drop them all, then grow back */
             KT_EQ(pager_op(pg, 4, PAGER_OP_SET_SIZE, 0, 0, 0), OK);
             KT_EQ(vmo_pager_dirty_count(v), 0);
             KT_EQ(pager_op(pg, 4, PAGER_OP_SET_SIZE, PAGES * PG, 0, 0), OK);
@@ -1768,6 +1801,517 @@ KTEST(pager_dirty_oldest)
     put(v1);
     put(v2);
     pg_close(pg);
+    kt_job_is_empty(j);
+    job_unref(j);
+}
+
+/* ---- the dirty limit and vmo_sync (WK3) ------------------------------------------ */
+
+#define SHORT (1000 * NS_PER_MS)   /* the deadline test's answer time */
+
+extern uint64_t user_faults;   /* uentry.c: user threads killed for a fault */
+
+/* An address space for ring-3 threads (uprog at U_CODE, its data at
+ * U_DATA) with `file` mapped read-write at U_FILE, `pages` long. */
+struct uspace {
+    struct aspace *as;
+    struct vmo    *code, *data;
+    uint64_t       pages;
+};
+
+static void us_new(struct uspace *u, struct vmo *file, uint64_t pages)
+{
+    KT_EQ(aspace_create(&u->as), OK);
+    KT_EQ(vmo_create(PG, 0, &u->code), OK);
+    KT_EQ(vmo_write(u->code, 0, uprog, sizeof(uprog)), OK);
+    KT_EQ(vmo_create(PG, 0, &u->data), OK);
+    uint64_t at = U_CODE;
+    KT_EQ(aspace_map(u->as, u->code, 0, PG, ASPACE_READ | ASPACE_EXEC | ASPACE_FIXED, &at), OK);
+    at = U_DATA;
+    KT_EQ(aspace_map(u->as, u->data, 0, PG, RW | ASPACE_FIXED, &at), OK);
+    at = U_FILE;
+    KT_EQ(aspace_map(u->as, file, 0, pages * PG, RW | ASPACE_FIXED, &at), OK);
+    u->pages = pages;
+}
+
+static void us_free(struct uspace *u)
+{
+    KT_EQ(aspace_unmap(u->as, U_FILE, u->pages * PG), OK);
+    aspace_unref(u->as);   /* (a ring-3 thread's reaper drops its own later) */
+    put(u->code);
+    put(u->data);
+}
+
+/* A ring-3 thread of u storing U_DATA's word to U_FILE's page `page`. */
+static struct thread *ustore(struct uspace *u, struct ut *t, uint64_t page, const char *name)
+{
+    *t = (struct ut){ .as = u->as, .load = U_DATA, .store = U_FILE + page * PG };
+    return thread_create(name, ut_main, t, PRIO_DEFAULT);
+}
+
+/* A kernel thread in a user copy (a store into as at va), or in vmo_sync
+ * over [0, len) of v. */
+struct kw {
+    struct aspace *as;
+    uint64_t       va;
+    struct vmo    *v;
+    uint64_t       len;
+    uint32_t       flags;
+    status_t       st;   /* ERR_INTERNAL until it returns */
+    struct thread *t;
+};
+
+#define KW_WORD 0xc0b1c0b1ull   /* what a copy stores */
+
+static void kc_main(void *arg)
+{
+    struct kw *k = arg;
+    __atomic_store_n(&k->st, uput(k->as, k->va, KW_WORD), __ATOMIC_RELEASE);
+}
+
+static void ks_main(void *arg)
+{
+    struct kw *k = arg;
+    __atomic_store_n(&k->st, vmo_pager_sync(k->v, 0, k->len, k->flags), __ATOMIC_RELEASE);
+}
+
+static void kc_start(struct kw *k, struct aspace *as, uint64_t va)
+{
+    *k = (struct kw){ .as = as, .va = va, .st = ERR_INTERNAL };
+    k->t = thread_create("wk-copy", kc_main, k, PRIO_DEFAULT);
+}
+
+static void ks_start(struct kw *k, struct vmo *v, uint64_t len, uint32_t flags)
+{
+    *k = (struct kw){ .v = v, .len = len, .flags = flags, .st = ERR_INTERNAL };
+    k->t = thread_create("wk-sync", ks_main, k, PRIO_DEFAULT);
+}
+
+static bool kw_waiting(struct kw *k)
+{
+    return __atomic_load_n(&k->st, __ATOMIC_ACQUIRE) == ERR_INTERNAL;
+}
+
+static status_t kw_end(struct kw *k)
+{
+    thread_join(k->t);
+    return k->st;
+}
+
+static bool has(const char *s, size_t n, const char *needle)
+{
+    size_t m = strlen(needle);
+    for (size_t i = 0; i + m <= n; i++)
+        if (!memcmp(s + i, needle, m))
+            return true;
+    return false;
+}
+
+/* Did the log say, since position `from`, on one line, that thread `name`
+ * was killed for `why` (test_pager.c's check)? */
+static bool killed_for(uint64_t from, const char *name, const char *why)
+{
+    enum { CAP = 256 * 1024 };
+    char *buf = kmalloc(CAP);
+    KT_ASSERT(buf);
+    char quoted[40];
+    ksnprintf(quoted, sizeof(quoted), "killed thread \"%s\"", name);
+    uint64_t deadline = uptime_ns() + kt_patience_ms(2000) * NS_PER_MS;
+    bool found = false;
+    while (!found && uptime_ns() < deadline) {
+        uint64_t first, pos = klog_head() - from > CAP ? klog_head() - CAP : from;
+        size_t n = klog_read_at(pos, buf, CAP, &first);
+        for (size_t i = 0; i < n && !found;) {
+            size_t e = i;
+            while (e < n && buf[e] != '\n')
+                e++;
+            found = has(buf + i, e - i, quoted) && has(buf + i, e - i, why);
+            i = e + 1;
+        }
+        if (!found)
+            thread_sleep_ms(5);
+    }
+    kfree(buf);
+    return found;
+}
+
+static uint64_t waits_held(void)
+{
+    return __atomic_load_n(&aspace_pager_waits_held, __ATOMIC_RELAXED);
+}
+
+KTEST(pager_dirty_limit_waits)
+{
+    struct job *j = kt_fresh_job();
+    struct pager *pg = pg_new(j, 64);
+    const uint64_t lim = pager_dirty_limit(pg);
+    KT_EQ(lim, 16);
+    struct vmo *v = wvmo(pg, 40, 32), *other;
+    KT_EQ(supply(pg, 40, 0, 32), OK);
+    struct aspace *as;
+    KT_EQ(aspace_create(&as), OK);
+    KT_EQ(vmo_create(PG, 0, &other), OK);
+    uint64_t a = map(as, v, 32, RW);
+    uint64_t *buf = kzalloc(32 * PG);
+    KT_ASSERT(buf);
+    uint64_t held0 = waits_held();
+    struct pager_run run;
+    struct pager_request q;
+
+    /* Up to the limit nothing waits; past half of it came the background
+     * request, for the oldest run. */
+    for (uint64_t p = 0; p < lim; p++)
+        KT_EQ(uput(as, a + p * PG, p), OK);
+    KT_EQ(pager_dirty_pages(pg), lim);
+    next(pg, &q);
+    KT_EQ(q.kind, PAGER_REQ_WRITEBACK);
+    KT_EQ(q.offset, 0);
+    KT_EQ(q.len, (lim / 2 + 1) * PG);
+
+    /* At it, a load and a store to a dirty page go on. */
+    KT_EQ(uword(as, a + 20 * PG), word(40, 20));
+    KT_EQ(uput(as, a + 3 * PG, 33), OK);
+
+    /* A store to a clean page waits (a fault, a user copy) without the
+     * region lock, on the background request: no second one is made. */
+    struct kf k;
+    struct kw c;
+    kf_start(&k, as, a + 20 * PG, ASPACE_WRITE);
+    kc_start(&c, as, a + 21 * PG + 8);
+    thread_sleep_ms(10);
+    KT_ASSERT(kf_waiting(&k) && kw_waiting(&c));
+    uint64_t b = map(as, other, 1, RW);   /* the region lock is free */
+    KT_EQ(aspace_unmap(as, b, PG), OK);
+    none_queued(pg);
+    KT_EQ(vmo_pager_page_state(v, 20), 0);
+    KT_EQ(vmo_pager_page_state(v, 21), 0);
+    KT_EQ(pager_dirty_pages(pg), lim);
+
+    /* Begun: writing pages still count, so they wait on. A store to a
+     * page being written back doesn't wait (it is counted already). */
+    KT_EQ(begin(pg, 40, q.offset, q.len, buf, &run), OK);
+    KT_EQ(run.len, q.len);
+    KT_EQ(buf[3 * PG / 8], 33);
+    KT_EQ(uput(as, a + PG, 11), OK);
+    KT_EQ(vmo_pager_page_state(v, 1), DIRTY | PAGER_PAGE_WRITING);
+    thread_sleep_ms(10);
+    KT_ASSERT(kf_waiting(&k) && kw_waiting(&c));
+
+    /* Written: the count falls, and both stores go on. */
+    KT_EQ(written(pg, 40, q.offset, q.len, OK), OK);
+    KT_EQ(kf_end(&k), OK);
+    KT_EQ(kw_end(&c), OK);
+    KT_EQ(vmo_pager_page_state(v, 20), DIRTY);
+    KT_ASSERT(pte_w(as, a + 20 * PG));
+    KT_EQ(vword(v, 21 * PG + 8), KW_WORD);
+    KT_EQ(pager_dirty_pages(pg), lim - q.len / PG + 1 + 2);   /* page 1 again, 20, 21 */
+    KT_GLOBAL_EQ(waits_held(), held0);
+
+    no_clean_writable(as, v, a, 32);
+    kfree(buf);
+    KT_EQ(aspace_unmap(as, a, 32 * PG), OK);
+    aspace_unref(as);
+    put(other);
+    put(v);
+    pg_close(pg);
+    kt_job_is_empty(j);
+    job_unref(j);
+}
+
+KTEST(pager_dirty_limit_deadline)
+{
+    struct job *j = kt_fresh_job();
+    struct pager *pg;
+    KT_EQ(pager_create(j, 64, SHORT, &pg), OK);
+    const uint64_t lim = pager_dirty_limit(pg);
+    struct vmo *v = wvmo(pg, 44, 32), *w;
+    KT_EQ(pager_create_vmo(pg, 45, 64 * PG, &w), OK);
+    KT_EQ(supply(pg, 44, 0, 32), OK);
+    struct uspace u;
+    us_new(&u, v, 32);
+    uint64_t a2 = map(u.as, w, 64, ASPACE_READ);
+    uint64_t *buf = kzalloc(lim * PG);
+    KT_ASSERT(buf);
+    uint64_t held0 = waits_held(), log0 = klog_head();
+    uint64_t faults0 = __atomic_load_n(&user_faults, __ATOMIC_RELAXED);
+    struct pager_run run;
+    struct pager_request q;
+
+    /* The background request goes past its deadline unanswered: a store
+     * at the limit has none to join, makes its own (the run around the
+     * oldest dirty page) and goes on once that is answered. */
+    for (uint64_t p = 0; p < lim; p++)
+        KT_EQ(uput(u.as, U_FILE + p * PG, p), OK);
+    next(pg, &q);
+    KT_EQ(q.offset, 0);
+    KT_EQ(q.len, (lim / 2 + 1) * PG);
+    thread_sleep_ms(SHORT / NS_PER_MS + 50);
+    struct kf k;
+    kf_start(&k, u.as, U_FILE + 20 * PG, ASPACE_WRITE);
+    next(pg, &q);
+    KT_EQ(q.kind, PAGER_REQ_WRITEBACK);
+    KT_EQ(q.key, 44);
+    KT_EQ(q.offset, 0);
+    KT_EQ(q.len, lim * PG);
+    KT_ASSERT(kf_waiting(&k));
+    KT_EQ(begin(pg, 44, 0, lim * PG, buf, &run), OK);
+    KT_EQ(written(pg, 44, 0, lim * PG, OK), OK);
+    KT_EQ(kf_end(&k), OK);
+    KT_EQ(pager_dirty_pages(pg), 1);
+
+    /* A pager that serves reads and never writes back. At the limit again
+     * a kernel fault, a user copy, vmo_sync and a ring-3 store wait. */
+    for (uint64_t p = 0; p < lim - 1; p++)
+        KT_EQ(uput(u.as, U_FILE + p * PG, p), OK);
+    KT_EQ(pager_dirty_pages(pg), lim);
+    struct kpager kp;
+    kp_start(&kp, pg);
+    struct kw c, s;
+    struct ut t3;
+    uint64_t t0 = uptime_ns();
+    kf_start(&k, u.as, U_FILE + 21 * PG, ASPACE_WRITE);
+    kc_start(&c, u.as, U_FILE + 22 * PG);
+    ks_start(&s, v, 32 * PG, VMO_SYNC_WAIT);
+    struct thread *t = ustore(&u, &t3, 23, "wk3-late");
+
+    /* A reader of another of its VMOs is never held up: each supply finds
+     * a clean page to evict, long before the writers' time is up. */
+    for (uint64_t i = 0; i < 64; i++)
+        KT_EQ(uword(u.as, a2 + i * PG), word(45, i));
+    KT_ASSERT(kf_waiting(&k) && kw_waiting(&c) && kw_waiting(&s));
+
+    /* At the answer time and not before: the fault ERR_TIMED_OUT, the
+     * copy ERR_IO, vmo_sync ERR_TIMED_OUT, the ring-3 thread killed. */
+    KT_EQ(kf_end(&k), ERR_TIMED_OUT);
+    KT_ASSERT(uptime_ns() - t0 >= SHORT);
+    KT_EQ(kw_end(&c), ERR_IO);
+    KT_EQ(kw_end(&s), ERR_TIMED_OUT);
+    thread_join(t);
+    KT_ASSERT(killed_for(log0, "wk3-late", "page fault: the file's pager didn't answer"));
+    KT_GLOBAL_EQ(__atomic_load_n(&user_faults, __ATOMIC_RELAXED), faults0 + 1);
+    for (uint64_t p = 21; p < 24; p++)
+        KT_EQ(vmo_pager_page_state(v, p), 0);
+    KT_EQ(pager_dirty_pages(pg), lim);
+    KT_GLOBAL_EQ(waits_held(), held0);
+    kp_stop(&kp);
+
+    kfree(buf);
+    KT_EQ(aspace_unmap(u.as, a2, 64 * PG), OK);
+    us_free(&u);
+    put(w);
+    put(v);
+    pg_close(pg);
+    kt_job_is_empty(j);
+    job_unref(j);
+}
+
+KTEST(pager_dirty_limit_kill)
+{
+    struct job *j = kt_fresh_job();
+    struct pager *pg = pg_new(j, 64);
+    const uint64_t lim = pager_dirty_limit(pg);
+    struct vmo *v = wvmo(pg, 46, 32);
+    KT_EQ(supply(pg, 46, 0, 32), OK);
+    struct uspace u;
+    us_new(&u, v, 32);
+    uint64_t held0 = waits_held();
+    uint64_t faults0 = __atomic_load_n(&user_faults, __ATOMIC_RELAXED);
+    for (uint64_t p = 0; p < lim; p++)
+        KT_EQ(uput(u.as, U_FILE + p * PG, p), OK);
+
+    /* Every wait at the limit, and vmo_sync's: only a kill can end them
+     * (the answer time is ten minutes). */
+    struct kf k;
+    struct kw c, s;
+    struct ut t3;
+    kf_start(&k, u.as, U_FILE + 20 * PG, ASPACE_WRITE);
+    kc_start(&c, u.as, U_FILE + 21 * PG);
+    ks_start(&s, v, 32 * PG, VMO_SYNC_WAIT);
+    struct thread *t = ustore(&u, &t3, 22, "wk3-kill");
+    thread_sleep_ms(10);
+    KT_ASSERT(kf_waiting(&k) && kw_waiting(&c) && kw_waiting(&s));
+    thread_cancel(k.t);
+    KT_EQ(kf_end(&k), ERR_CANCELED);
+    thread_cancel(c.t);
+    KT_EQ(kw_end(&c), ERR_CANCELED);
+    thread_cancel(s.t);
+    KT_EQ(kw_end(&s), ERR_CANCELED);
+    thread_cancel(t);
+    thread_join(t);   /* killed, not for a fault of its own */
+    KT_GLOBAL_EQ(__atomic_load_n(&user_faults, __ATOMIC_RELAXED), faults0);
+    for (uint64_t p = 20; p < 23; p++)
+        KT_EQ(vmo_pager_page_state(v, p), 0);
+    KT_EQ(pager_dirty_pages(pg), lim);
+    KT_GLOBAL_EQ(waits_held(), held0);
+
+    us_free(&u);
+    put(v);
+    pg_close(pg);
+    kt_job_is_empty(j);
+    job_unref(j);
+}
+
+KTEST(pager_dirty_sync)
+{
+    struct job *j = kt_fresh_job();
+    struct pager *pg = pg_new(j, 1024);   /* (a 2 MiB VMO: two chunks) */
+    struct vmo *v = wvmo(pg, 41, 512), *anon;
+    KT_EQ(vmo_create(PG, 0, &anon), OK);
+    KT_EQ(supply(pg, 41, 0, 8), OK);
+    KT_EQ(supply(pg, 41, 300, 1), OK);
+    struct aspace *as;
+    KT_EQ(aspace_create(&as), OK);
+    uint64_t a = map(as, v, 512, RW);
+    uint64_t *buf = kzalloc(8 * PG);
+    KT_ASSERT(buf);
+    struct pager_run run;
+    struct pager_request q;
+    struct kw s;
+
+    /* Refusals; OK at once with nothing dirty (no request), and for a VMO
+     * that isn't a writable pager VMO. */
+    KT_EQ(vmo_pager_sync(v, 0, PG, 2), ERR_INVALID_ARGS);
+    KT_EQ(vmo_pager_sync(v, 0, 513 * PG, 0), ERR_OUT_OF_RANGE);
+    KT_EQ(vmo_pager_sync(v, 512 * PG, 1, 0), ERR_OUT_OF_RANGE);
+    KT_EQ(vmo_pager_sync(v, 0, 512 * PG, VMO_SYNC_WAIT), OK);
+    KT_EQ(vmo_pager_sync(v, 0, 0, VMO_SYNC_WAIT), OK);
+    KT_EQ(vmo_pager_sync(anon, 0, PG, VMO_SYNC_WAIT), OK);
+    none_queued(pg);
+
+    /* Exact: page 1's write-back began after its first store, and it was
+     * stored to again; page 2 is dirty. The sync needs both written by
+     * write-backs that begin after it: the end of page 1's first one
+     * doesn't do (the request goes back to the pager). */
+    KT_EQ(uput(as, a + PG, 1), OK);
+    KT_EQ(begin(pg, 41, PG, PG, buf, &run), OK);
+    KT_EQ(run.len, PG);
+    KT_EQ(uput(as, a + PG, 2), OK);
+    KT_EQ(uput(as, a + 2 * PG, 3), OK);
+    ks_start(&s, v, 8 * PG, VMO_SYNC_WAIT);
+    next(pg, &q);
+    KT_EQ(q.kind, PAGER_REQ_WRITEBACK);
+    KT_EQ(q.offset, 0);
+    KT_EQ(q.len, 8 * PG);
+    KT_EQ(uput(as, a + 3 * PG, 4), OK);   /* after it: not needed */
+    KT_EQ(written(pg, 41, PG, PG, OK), OK);
+    KT_EQ(vmo_pager_page_state(v, 1), DIRTY);
+    thread_sleep_ms(10);
+    KT_ASSERT(kw_waiting(&s));
+    next(pg, &q);   /* asked again */
+    KT_EQ(q.offset, 0);
+    KT_EQ(q.len, 8 * PG);
+    /* Pages 1 and 2 begun and written: done, though page 3 (stored to
+     * after it) is still dirty. */
+    KT_EQ(begin(pg, 41, PG, 2 * PG, buf, &run), OK);
+    KT_EQ(run.offset, PG);
+    KT_EQ(run.len, 2 * PG);
+    KT_EQ(buf[0], 2);
+    KT_EQ(written(pg, 41, PG, 2 * PG, OK), OK);
+    KT_EQ(kw_end(&s), OK);
+    KT_EQ(vmo_pager_page_state(v, 3), DIRTY);
+
+    /* A write-back's error: the sync waiting on it reports it, once. */
+    ks_start(&s, v, 8 * PG, VMO_SYNC_WAIT);
+    next(pg, &q);
+    KT_EQ(begin(pg, 41, 0, 8 * PG, buf, &run), OK);
+    KT_EQ(run.offset, 3 * PG);
+    KT_EQ(written(pg, 41, 0, 8 * PG, ERR_IO), OK);
+    KT_EQ(kw_end(&s), ERR_IO);
+    KT_EQ(vmo_pager_page_state(v, 3), 0);
+    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, VMO_SYNC_WAIT), OK);
+
+    /* One kept from a write-back by age: reported by the next sync that
+     * waits, with nothing dirty (not by one that doesn't). */
+    KT_EQ(uput(as, a + 4 * PG, 5), OK);
+    KT_EQ(begin(pg, 41, 4 * PG, PG, buf, &run), OK);
+    KT_EQ(written(pg, 41, 4 * PG, PG, ERR_NO_SPACE), OK);
+    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, 0), OK);
+    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, VMO_SYNC_WAIT), ERR_NO_SPACE);
+    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, VMO_SYNC_WAIT), OK);
+    none_queued(pg);
+
+    /* Without the wait: the request is made, and answered later. */
+    KT_EQ(uput(as, a + 5 * PG, 6), OK);
+    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, 0), OK);
+    next(pg, &q);
+    KT_EQ(q.offset, 0);
+    KT_EQ(q.len, 8 * PG);
+    KT_EQ(begin(pg, 41, 0, 8 * PG, buf, &run), OK);
+    KT_EQ(written(pg, 41, 0, 8 * PG, OK), OK);
+    KT_EQ(vmo_pager_dirty_count(v), 0);
+    none_queued(pg);
+
+    /* Two chunks: the second's request is made once the first is
+     * answered. */
+    KT_EQ(uput(as, a + 7 * PG, 8), OK);
+    KT_EQ(uput(as, a + 300 * PG, 9), OK);
+    ks_start(&s, v, 512 * PG, VMO_SYNC_WAIT);
+    next(pg, &q);
+    KT_EQ(q.offset, 0);
+    KT_EQ(q.len, 256 * PG);
+    none_queued(pg);
+    KT_EQ(begin(pg, 41, 7 * PG, PG, buf, &run), OK);
+    KT_EQ(written(pg, 41, 7 * PG, PG, OK), OK);
+    next(pg, &q);
+    KT_EQ(q.offset, 256 * PG);
+    KT_EQ(q.len, 256 * PG);
+    KT_ASSERT(kw_waiting(&s));
+    KT_EQ(begin(pg, 41, 300 * PG, PG, buf, &run), OK);
+    KT_EQ(written(pg, 41, 300 * PG, PG, OK), OK);
+    KT_EQ(kw_end(&s), OK);
+    KT_EQ(vmo_pager_dirty_count(v), 0);
+
+    kfree(buf);
+    KT_EQ(aspace_unmap(as, a, 512 * PG), OK);
+    aspace_unref(as);
+    put(anon);
+    put(v);
+    pg_close(pg);
+    kt_job_is_empty(j);
+    job_unref(j);
+}
+
+KTEST(pager_dirty_closed)
+{
+    struct job *j = kt_fresh_job();
+    struct pager *pg = pg_new(j, 64);
+    const uint64_t lim = pager_dirty_limit(pg);
+    struct vmo *v = wvmo(pg, 47, 4), *w = wvmo(pg, 48, 32);
+    KT_EQ(supply(pg, 47, 0, 4), OK);
+    KT_EQ(supply(pg, 48, 0, 32), OK);
+    struct aspace *as;
+    KT_EQ(aspace_create(&as), OK);
+    uint64_t a = map(as, v, 4, RW), b = map(as, w, 32, RW);
+    struct pager_request q;
+    struct kw s;
+    struct kf k;
+
+    /* A detach fails a waiting sync, and a later one at once. */
+    KT_EQ(uput(as, a, 1), OK);
+    ks_start(&s, v, 4 * PG, VMO_SYNC_WAIT);
+    next(pg, &q);
+    KT_EQ(q.key, 47);
+    KT_EQ(pager_op(pg, 47, PAGER_OP_DETACH, 0, 0, 0), OK);
+    KT_EQ(kw_end(&s), ERR_PEER_CLOSED);
+    KT_EQ(vmo_pager_sync(v, 0, 4 * PG, VMO_SYNC_WAIT), ERR_PEER_CLOSED);
+    KT_EQ(vmo_pager_dirty_count(v), 0);
+
+    /* The pager's close fails a store waiting at the limit at once: the
+     * file's pager is gone. */
+    for (uint64_t p = 0; p < lim; p++)
+        KT_EQ(uput(as, b + p * PG, p), OK);
+    kf_start(&k, as, b + 20 * PG, ASPACE_WRITE);
+    thread_sleep_ms(10);
+    KT_ASSERT(kf_waiting(&k));
+    pg_close(pg);
+    KT_EQ(kf_end(&k), ERR_PEER_CLOSED);
+    KT_EQ(vmo_pager_dirty_count(w), 0);
+
+    KT_EQ(aspace_unmap(as, a, 4 * PG), OK);
+    KT_EQ(aspace_unmap(as, b, 32 * PG), OK);
+    aspace_unref(as);
+    put(v);
+    put(w);
     kt_job_is_empty(j);
     job_unref(j);
 }

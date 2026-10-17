@@ -7,6 +7,7 @@
  * VMO commits are charged to the job of the process that created it. */
 #include <jam/aspace.h>
 #include <jam/mm.h>
+#include <jam/pager.h>
 #include <jam/process.h>
 #include <jam/sys.h>
 #include <jam/syscall_impl.h>
@@ -131,11 +132,17 @@ int64_t sysc_vmo_decommit(handle_t h, uint64_t offset, uint64_t len)
     return sys_vmo_decommit(t, h, offset, len);
 }
 
-/* Writable pager VMOs' msync (docs/WRITEMAP-PLAN.md): built with WK3. */
+/* Writable pager VMOs' msync (docs/WRITEMAP-PLAN.md, vmo_pager_sync). */
 int64_t sysc_vmo_sync(handle_t vmo, uint64_t offset, uint64_t len, uint32_t flags)
 {
-    (void)vmo, (void)offset, (void)len, (void)flags;
-    return ERR_NOT_SUPPORTED;
+    SYSC_TABLE(t);
+    struct vmo *v;
+    status_t st = get_vmo(t, vmo, RIGHT_READ, &v);
+    if (st != OK)
+        return st;
+    st = vmo_pager_sync(v, offset, len, flags);   /* (may wait: no lock held) */
+    kobject_unref(vmo_kobject(v));
+    return st;
 }
 
 int64_t sysc_vmo_create_child(handle_t h, uint32_t flags, uint64_t offset, uint64_t size,

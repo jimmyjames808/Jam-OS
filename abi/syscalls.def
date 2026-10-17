@@ -225,14 +225,18 @@
 # PAGER_VMO_WRITABLE, 161), ask its pager to write back the dirty pages of
 # [offset, offset + len) (a PAGER_REQ_WRITEBACK for each MiB of the range
 # that holds a dirty or writing page) and, with VMO_SYNC_WAIT, wait until
-# every store made to the range before the call is written (the pager's
-# answer time for each request at most): libc's msync. OK at once for any
-# other VMO, and for a range with nothing dirty. The VMO keeps the first
-# write-back error since the last vmo_sync and returns it once: ERR_IO, or
-# ERR_NO_SPACE for a full volume. ERR_TIMED_OUT: the pager didn't answer
-# in time; ERR_PEER_CLOSED: the VMO was cut off its pager; ERR_CANCELED:
-# the thread was killed; ERR_OUT_OF_RANGE: past the size;
-# ERR_INVALID_ARGS: any other flag. RIGHT_READ on vmo.
+# every store made to the range before the call is written (one request
+# at a time, the pager's answer time for each at most): libc's msync.
+# Without VMO_SYNC_WAIT the requests are only made (a request the
+# caller's job can't pay for is left to the pager's write-back by age)
+# and the call is OK unless the VMO was cut off. OK at once for any other
+# VMO, and for a range with nothing dirty. The VMO keeps the first
+# write-back error since the last vmo_sync with VMO_SYNC_WAIT, which
+# returns it once: ERR_IO, or ERR_NO_SPACE for a full volume.
+# ERR_TIMED_OUT: the pager didn't answer in time; ERR_PEER_CLOSED: the VMO
+# was cut off its pager; ERR_CANCELED: the thread was killed;
+# ERR_OUT_OF_RANGE: past the size; ERR_INVALID_ARGS: any other flag.
+# RIGHT_READ on vmo.
 50  vmo_sync          status    handle_t vmo, uint64_t offset, uint64_t len, uint32_t flags
 # vmo_make_exec: *out gets vmo's handle again with RIGHT_EXEC and without
 # RIGHT_WRITE, so its code can be mapped executable; vmo's handle is gone

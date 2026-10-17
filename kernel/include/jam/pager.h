@@ -53,8 +53,21 @@
  * given to the pager again when a PAGER_OP_WRITTEN leaves it needing
  * pages nobody is writing back. The kernel makes one when a pager's dirty
  * and writing pages pass half its dirty limit (the background request:
- * its oldest dirty run, one at a time); vmo_sync's and a store's at the
- * limit come with WRITEMAP's WK3, on vmo_pager_writeback.
+ * its oldest dirty run, one at a time), for a store at the limit, and for
+ * vmo_sync (vmo_pager_sync: one per chunk of its range).
+ *
+ * The dirty limit (WRITEMAP's 1.4): a pager's VMOs hold at most a quarter
+ * of its budget dirty or writing, so three quarters always stay for clean
+ * pages and a reader of another file never waits for a writer. A store
+ * that would make a clean page dirty at the limit doesn't (vmo_fault_map's
+ * ERR_NO_RESOURCES); aspace_fault drops the region lock and waits as a
+ * read waits for its page: on the request for the pager's oldest run
+ * (vmo_pager_throttle: joined, or made), cancellable, then looks again,
+ * at most the pager's answer time in all from its first wait. Then the
+ * store fails ERR_TIMED_OUT (a fault: "the file's pager didn't answer"; a
+ * user copy: ERR_IO); a pager closed or a VMO cut off ends it at once
+ * (ERR_PEER_CLOSED). How the request itself ended doesn't matter: a
+ * store waits on it only for the count to fall.
  *
  * The page cache: a pager's VMOs hold at most its budget of pages
  * (max_pages) at once. A clean page may be dropped at any time: the kernel
@@ -86,7 +99,8 @@
  * in the cache (24 message bytes); a request is charged to the job of the
  * thread that made it, as message bytes, until it is answered (a
  * write-back request a little more: two bits a page, and its error; the
- * background one is charged to the pager's job). */
+ * background one is charged to the pager's job, the throttle's and
+ * vmo_sync's to the storer's and the caller's). */
 #pragma once
 
 #include <stdbool.h>
@@ -270,6 +284,9 @@ uint64_t pager_resident(struct pager *pg);
  * supplied didn't match its hash: <jam/vmo_verify.h>). No spinlock held,
  * nor any lock the pager's progress needs. */
 status_t pager_req_wait(struct pager_req *r);
+/* pager_req_wait, giving up at `until` (uptime ns) too: ERR_TIMED_OUT then,
+ * with r left as it is (its deadline isn't the caller's). */
+status_t pager_req_wait_until(struct pager_req *r, uint64_t until);
 /* Drop the caller's reference to r (pager_req_wait's, or one from
  * vmo_page_request). */
 void pager_req_put(struct pager_req *r);
@@ -311,8 +328,9 @@ void vmo_pager_unbegin(struct vmo *v, uint64_t first, uint64_t end);
  * ends if no dirty page is left. Interrupts on, no spinlock held. */
 void vmo_pager_written(struct vmo *v, uint64_t first, uint64_t end, status_t st,
                        struct list_node *dead);
-/* The error a write-back of v ended with since the last call (OK if none),
- * which is then forgotten: reported once (WRITEMAP's Q1; vmo_sync's, WK3). */
+/* The first error a write-back of v ended with since the last call (OK if
+ * none), which is then forgotten: reported once (WRITEMAP's Q1; by
+ * vmo_pager_sync). */
 status_t vmo_pager_take_error(struct vmo *v);
 /* A write-back request for pages [first, end) of writable pager VMO v (at
  * most PAGER_SUPPLY_MAX bytes, else ERR_OUT_OF_RANGE, as past the size)
@@ -321,15 +339,40 @@ status_t vmo_pager_take_error(struct vmo *v);
  * (pager_req_wait, then pager_req_put), or NULL if no page there needs
  * writing. ERR_PEER_CLOSED: detached, or gone from its pager;
  * ERR_NO_MEMORY: the job can't pay for it; ERR_NOT_SUPPORTED: v isn't a
- * writable pager VMO. vmo_sync's (WK3) and the tests'. Thread context, no
- * spinlock held. */
+ * writable pager VMO. vmo_pager_sync's step, and the tests'. Thread
+ * context, no spinlock held. */
 status_t vmo_pager_writeback(struct vmo *v, uint64_t first, uint64_t end, struct pager_req **out);
-/* The background request: r (made by pager_wb_alloc) for the run of dirty
- * pages not being written back around page idx of v, queued as its
- * pager's one (no caller reference). ERR_NOT_FOUND: idx isn't such a page
- * any more; ERR_ALREADY_EXISTS: the pager has one; ERR_PEER_CLOSED. r is
- * the caller's to free unless OK. */
-status_t vmo_pager_writeback_bg(struct vmo *v, uint64_t idx, struct pager_req *r);
+/* The request for the pager's oldest run: r (a write-back request, never
+ * queued) for the run of dirty pages not being written back around page
+ * idx of v (with `writing`: of pages dirty or writing), queued as its
+ * pager's one, with a reference for the caller if `caller` (the
+ * throttle's; the background one has none). ERR_NOT_FOUND: idx isn't
+ * such a page any more; ERR_ALREADY_EXISTS: the pager has one;
+ * ERR_PEER_CLOSED. r is the caller's to free unless OK. */
+status_t vmo_pager_writeback_bg(struct vmo *v, uint64_t idx, bool writing, struct pager_req *r,
+                                bool caller);
+/* A store to a clean page of writable pager VMO v found its pager at the
+ * dirty limit: *out gets a reference to the request to wait on (the
+ * pager's for its oldest run, joined or made now and charged to the
+ * current thread's job), or NULL if the pager is under the limit now (look
+ * again). *until is the store's time: 0 before its first wait, which sets
+ * it to the pager's answer time from now. ERR_TIMED_OUT: *until has
+ * passed; ERR_PEER_CLOSED: the pager is closed or v cut off;
+ * ERR_NO_MEMORY: the job can't pay for a request; ERR_NOT_SUPPORTED: v
+ * isn't writable. Thread context, no lock held. */
+status_t vmo_pager_throttle(struct vmo *v, uint64_t *until, struct pager_req **out);
+/* vmo_sync (abi/syscalls.def 50) on v: for a writable pager VMO, a
+ * write-back request for each chunk (PAGER_SUPPLY_MAX) of [offset, offset +
+ * len) holding a page dirty or writing, charged to the current thread's
+ * job; with VMO_SYNC_WAIT each made once the one before is answered and
+ * waited for (its answer time at most), then the kept error reported
+ * (vmo_pager_take_error). OK at once for any other VMO. Without the wait
+ * a request the job can't pay for is not made, and the call is OK.
+ * ERR_INVALID_ARGS: a flag but VMO_SYNC_WAIT; ERR_OUT_OF_RANGE: past the
+ * size; ERR_PEER_CLOSED: v is cut off; ERR_IO or ERR_NO_SPACE: a
+ * write-back failed; ERR_TIMED_OUT, ERR_CANCELED: as pager_req_wait.
+ * Thread context, no lock held. */
+status_t vmo_pager_sync(struct vmo *v, uint64_t offset, uint64_t len, uint32_t flags);
 /* VMO lock held (by vmo.c, around pager_written_vlocked): is page idx
  * writing? */
 bool vmo_pager_writing_locked(struct vmo *v, uint64_t idx);
@@ -417,8 +460,10 @@ unsigned pager_page_state_vlocked(struct pager_vmo *pv, const struct page *p);
 uint64_t pager_page_dirtied_vlocked(struct pager_vmo *pv, const struct page *p);
 /* A store to page p (present) of pv's VMO, a writable one: clean becomes
  * dirty (off the cache's list onto the pager's dirty list, oldest first:
- * never evicted; true), writing becomes writing and dirty. */
-bool pager_page_store_vlocked(struct pager_vmo *pv, struct page *p);
+ * never evicted), writing becomes writing and dirty. ERR_NO_RESOURCES if
+ * p is clean and the pager is at its dirty limit: nothing changes, and
+ * the store waits (vmo_pager_throttle). */
+status_t pager_page_store_vlocked(struct pager_vmo *pv, struct page *p);
 /* Page p of pv's VMO (a writable one): its write-back begins (dirty, not
  * writing: writing now); ends (writing: true if clean now, false if
  * dirty again); won't end (writing: dirty again). The cache's moves. */
@@ -457,6 +502,8 @@ status_t pager_wb_queue_vlocked(struct pager_vmo *pv, struct pager_req *r, uint6
  * one. No lock held (a region lock may be: spinlocks and allocations
  * only). */
 void pager_writeback_kick(struct pager_vmo *pv);
+/* vmo_pager_throttle's work for pv's VMO (its contract). */
+status_t pager_throttle(struct pager_vmo *pv, uint64_t *until, struct pager_req **out);
 /* pv's key (fixed). */
 uint64_t pager_vmo_key(const struct pager_vmo *pv);
 /* A spare request for pv's next join, charged to the current thread's job
