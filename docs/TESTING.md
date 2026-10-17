@@ -2480,6 +2480,11 @@ SIGCHLD)` (a guard page below them; the parent unmaps them at once), whose
 fn closes a descriptor, changes to `/` and `execv`s posixtest by its path;
 the new image's parent is the case and its directory `/`, and the case's
 `waitpid` sees exit 0 ([CR-PLAN](CR-PLAN.md#ccs-2026-10-17), "CCS").
+`gone`: the forked child makes a directory on `/data`, goes into it,
+removes it and execs; the new image's directory is that one, gone
+(`getcwd` `ENOENT`, an `open` with `O_CREAT` there `ENOENT`), as Linux's
+(it started in `/` before: [FORK-REVIEW-LIBC](FORK-REVIEW-LIBC.md),
+finding 2).
 
 posixtest's launch section (the `init` run; `posixtest launch`): what
 Chromium's launcher needs of `posix_spawn` ([CR-PLAN](CR-PLAN.md#cs1-notes),

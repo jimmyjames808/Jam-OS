@@ -39,6 +39,9 @@
  *     SIGCHLD), whose fn closes, changes directory and execs this program
  *     by its path; the new image's parent is the case, its directory the
  *     one fn changed to, and the case's waitpid sees it end with 0.
+ *   gone: a forked child removes the directory it is in and execs; the
+ *     new image's directory is that one, gone (getcwd ENOENT, nothing
+ *     made there), as Linux's (FR2's finding 2).
  *
  * "posixtest --child-exec native" is utest's (exec_native: a native
  * starter, the shell's way, waits on a POSIX program that execs). */
@@ -56,6 +59,7 @@
 #include <sys/eventfd.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include "pt.h"
@@ -234,6 +238,18 @@ static int run_clone(char **argv)
     char cwd[16];
     RUN(getppid() == (pid_t)atoi(argv[4]));
     RUN(getcwd(cwd, sizeof(cwd)) && !strcmp(cwd, "/"));
+    return run_end();
+}
+
+/* gone: made by a forked child whose directory was removed before it
+ * exec'd (exec_gone): the directory is still ours, and gone, as on Linux. */
+static int run_gone(void)
+{
+    char cwd[PATH_MAX];
+    errno = 0;
+    RUN(getcwd(cwd, sizeof(cwd)) == NULL && errno == ENOENT);
+    errno = 0;
+    RUN(open("made-here", O_WRONLY | O_CREAT, 0644) == -1 && errno == ENOENT);
     return run_end();
 }
 
@@ -754,13 +770,31 @@ static void exec_clone(void)
     close(p[0]);
 }
 
+/* gone: a forked child makes a directory, goes in, removes it and execs
+ * (docs/FORK-REVIEW-LIBC.md, finding 2: the new image started in "/",
+ * our_cwd's fallback once getcwd said ENOENT). */
+static void exec_gone(void)
+{
+    char dir[64];
+    snprintf(dir, sizeof(dir), "/data/pxgone-%d", (int)getpid());
+    pid_t kid = fork();
+    CHECK(kid >= 0);
+    if (kid == 0) {
+        if (mkdir(dir, 0700) != 0 || chdir(dir) != 0 || rmdir(dir) != 0)
+            _exit(92);
+        exec_run(NULL, NULL, "gone", NULL, NULL);
+    }
+    if (kid > 0)
+        reaped0(kid);
+}
+
 static const struct {
     const char *name;
     void (*run)(void);
 } cases[] = {
     { "same", exec_same },       { "threads", exec_threads }, { "cloexec", exec_cloexec },
     { "signals", exec_signals }, { "charge", exec_charge },   { "fail", exec_fail },
-    { "chromium", exec_chromium }, { "clone", exec_clone },
+    { "chromium", exec_chromium }, { "clone", exec_clone },   { "gone", exec_gone },
 };
 #define NCASES (sizeof(cases) / sizeof(cases[0]))
 
@@ -783,6 +817,8 @@ int pt_child_exec(int argc, char **argv)
             return run_fds(argv);
         if (!strcmp(mode, "clone") && argc >= 5)
             return run_clone(argv);
+        if (!strcmp(mode, "gone"))
+            return run_gone();
         if (!strcmp(mode, "native") && argc >= 5)
             return run_native(argv);
         return 3;

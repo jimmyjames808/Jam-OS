@@ -29,6 +29,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "files.h"
 #include "spawn.h"
 
 long spawn_absolute(const char *path, const char *dir, char *out)
@@ -54,18 +55,15 @@ long spawn_absolute(const char *path, const char *dir, char *out)
     return st == OK ? 0 : -EINVAL;
 }
 
-/* Our current directory into cwd: getcwd's, else the hand-over's, else
- * "/". */
+/* Our current directory into cwd, as the layer keeps it: removed or not
+ * (getcwd says ENOENT then), the child starts there and finds it gone, as
+ * Linux's child inherits a removed directory, and a relative program path
+ * names nothing, never a file of some other directory
+ * (docs/FORK-REVIEW-LIBC.md, finding 2). */
 static void our_cwd(char *cwd)
 {
-    if (getcwd(cwd, PATH_MAX) && cwd[0] == '/')
-        return;
-    const char *ho;
-    if (lx_handover(&ho)) {
-        snprintf(cwd, PATH_MAX, "%s", ho);
-        return;
-    }
-    strcpy(cwd, "/");
+    _Static_assert(PATH_MAX == PATH_BYTES, "spawnfd's cwd holds path_cwd's");
+    path_cwd(cwd);
 }
 
 long spawnfd_begin(struct spawnfd **out)
