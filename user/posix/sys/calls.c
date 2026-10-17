@@ -81,7 +81,7 @@ static long dispatch(long n, const long *args, volatile int *cancel)
     }
     struct sig_frame f = { calls[n], kind_of(n, args[1], args[2], args[3]), cancel,
                            { args[0], args[1], args[2], args[3], args[4], args[5] } };
-    return sig_call(&f);
+    return lx_call_stack_set ? lx_call_on_stack(&f) : sig_call(&f);
 }
 
 long __jam_syscall(long n, long a, long b, long c, long d, long e, long f)
