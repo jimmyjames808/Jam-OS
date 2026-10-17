@@ -17,14 +17,18 @@
  * What the address space allows: never write with execute, and no
  * execute on anonymous memory (EACCES), but in JIT memory (below). A descriptor's
  * mapping is file.c's file_map (files.h): a file on a pager's mount
- * (fat) on its own pages, the file's VMO itself for MAP_SHARED (read
- * only) and for a read-only MAP_PRIVATE, a copy-on-write child of it for
- * a writable MAP_PRIVATE; a file elsewhere, or a memfd, as a copy or the
- * memfd's own VMO. Each is then mapped and kept in the table as an
- * anonymous one is; a read-only private mapping on a file's own pages is
- * marked (MT_PAGER_PRIVATE), and an mprotect that adds write to it puts
- * a child in its place first (the file's VMO is never writable).
- * msync has nothing to write (lx_msync says why). mremap is ENOSYS
+ * (ext, fat) on its own pages, the file's VMO itself for MAP_SHARED
+ * (writable, on ext, when the descriptor is: a store is the file's, and
+ * msync asks the pager to write it back) and for a read-only
+ * MAP_PRIVATE, a copy-on-write child of it for a writable MAP_PRIVATE; a
+ * file elsewhere, or a memfd, as a copy or the memfd's own VMO. Each is
+ * then mapped and kept in the table as an anonymous one is; a read-only
+ * private mapping on a file's own pages is marked (MT_PAGER_PRIVATE),
+ * and an mprotect that adds write to it puts a child in its place first
+ * (a private mapping never writes the file's VMO). An mprotect adding
+ * write to a shared one is the kernel's to allow: the VMO's handle has
+ * the right to write only when the service gave it so (EACCES if not).
+ * msync is vmo_sync on each shared mapping (lx_msync). mremap is ENOSYS
  * (musl's realloc copies); mlock and its kin succeed (nothing is paged
  * out).
  *
@@ -545,12 +549,98 @@ static bool covered_locked(uint64_t addr, uint64_t end)
     return !next_hole(&addr, end, &hole_end);
 }
 
-/* msync: nothing to write. A shared mapping of a file is read-only (the
- * pager never writes pages back: mmap refuses PROT_WRITE with it), a
- * memfd's pages are its file, and a private mapping's writes are never
- * the file's; what a program wrote with write() is on its medium already
- * (fat writes through). So only Linux's checks: the flags, the address,
- * and the range mapped (ENOMEM: here, libc's own mappings). */
+/* msync's errno for vmo_sync's answer: EIO for a write-back that failed
+ * (ERR_IO), a pager that didn't answer in time (ERR_TIMED_OUT) or one
+ * that is gone (ERR_PEER_CLOSED), ENOSPC for a full volume, as fsync says
+ * it. A VMO that isn't a pager's (a memfd's) has nothing to write
+ * (ERR_ACCESS_DENIED and ERR_WRONG_TYPE: no right to read it, which no
+ * file's has), and a range past a file that was cut short has none left
+ * (ERR_OUT_OF_RANGE, once sync_part has clipped it): all 0. */
+static long sync_err(status_t st)
+{
+    switch (st) {
+    case OK:
+    case ERR_ACCESS_DENIED:
+    case ERR_WRONG_TYPE:
+    case ERR_OUT_OF_RANGE:
+        return 0;
+    case ERR_IO:
+    case ERR_TIMED_OUT:
+    case ERR_PEER_CLOSED:
+        return -EIO;
+    default:
+        return lx_err(st);
+    }
+}
+
+/* vmo_sync over [off, off + len) of vmo. A mapping can reach past a file
+ * that was cut shorter (the kernel says ERR_OUT_OF_RANGE, which for the
+ * VMO's size alone is no error): the range is clipped to the size and
+ * asked again. */
+static long sync_part(handle_t vmo, uint64_t off, uint64_t len, uint32_t flags)
+{
+    status_t st = jam_vmo_sync(vmo, off, len, flags);
+    uint64_t size = 0;
+    if (st == ERR_OUT_OF_RANGE && jam_vmo_get_size(vmo, &size) == OK) {
+        if (off >= size)
+            return 0;
+        st = jam_vmo_sync(vmo, off, size - off < len ? size - off : len, flags);
+    }
+    return sync_err(st);
+}
+
+/* Each MAP_SHARED mapping in [addr, end) asked to write its dirty pages
+ * (vmo_sync, with the wait for MS_SYNC): the first error ends it. One
+ * mapping at a time, with a duplicate of its VMO, and mem_lock dropped
+ * for the call: it can wait for the disk, and the other threads' mmap,
+ * munmap and malloc must not wait with it. The next mapping is looked for
+ * from the end of the one done, so a mapping gone meanwhile is simply not
+ * found. */
+static long sync_shared(uint64_t addr, uint64_t end, uint32_t flags)
+{
+    for (uint64_t at = addr; at < end;) {
+        handle_t vmo = HANDLE_INVALID;
+        uint64_t off = 0, len = 0;
+        lock_take(&mem_lock);
+        const struct mt_entry *t = mt_entries();
+        unsigned i = mt_first_after(at);
+        while (i < mt_count() && t[i].base < end && !(t[i].kind & MT_SHARED))
+            i++;
+        if (i < mt_count() && t[i].base < end) {
+            uint64_t s = t[i].base > at ? t[i].base : at;
+            uint64_t f = t[i].base + t[i].len < end ? t[i].base + t[i].len : end;
+            off = t[i].vmo_off + (s - t[i].base);
+            len = f - s;
+            at = f;
+            status_t st = jam_handle_duplicate(t[i].vmo, RIGHT_SAME, &vmo);
+            if (st != OK) {
+                lock_give(&mem_lock);
+                return lx_err(st);
+            }
+        } else {
+            at = end;   /* no more */
+        }
+        lock_give(&mem_lock);
+        if (!vmo)
+            break;
+        long r = sync_part(vmo, off, len, flags);
+        jam_handle_close(vmo);
+        if (r)
+            return r;
+    }
+    return 0;
+}
+
+/* msync: a file's writes through a shared mapping are asked of its
+ * pager (sync_shared: MS_SYNC returns once they are written, MS_ASYNC
+ * once they are asked for), the kernel answering OK at once for a VMO
+ * with none: a memfd, anonymous shared memory, a file whose service
+ * keeps nothing dirty. A private mapping's writes are never the file's,
+ * and what a program wrote with write() is the service's (fsync's).
+ * Then Linux's checks: the flags, the address, and the range mapped
+ * (ENOMEM: here, libc's own mappings; the mapped parts are synced
+ * anyway, and an error from them comes first, as Linux's). MS_INVALIDATE
+ * has nothing to do: every mapping of a file is the one VMO. */
 long lx_msync(long addr, long len, long flags, long d, long e, long f)
 {
     uint64_t size = page_round((uint64_t)len);
@@ -563,7 +653,9 @@ long lx_msync(long addr, long len, long flags, long d, long e, long f)
     lock_take(&mem_lock);
     bool whole = covered_locked((uint64_t)addr, (uint64_t)addr + size);
     lock_give(&mem_lock);
-    return whole ? 0 : -ENOMEM;
+    long r = size ? sync_shared((uint64_t)addr, (uint64_t)addr + size,
+                                (flags & MS_SYNC) ? VMO_SYNC_WAIT : 0) : 0;
+    return r ? r : whole ? 0 : -ENOMEM;
 }
 
 long lx_mmap(long addr, long len, long prot, long flags, long fd, long off)
