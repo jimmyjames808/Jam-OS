@@ -179,13 +179,14 @@ static void unwatch(struct fsw *w, uint32_t slot)
 }
 
 /* End the watch in slot: IN_IGNORED queued for it (after `first`, if not 0
- * and asked for), then freed. */
+ * and asked for), then freed. `first` (IN_DELETE_SELF, IN_MOVE_SELF) never
+ * carries IN_ISDIR: Linux's inotify masks it off those two. */
 static void end_watch(struct fsw *w, uint32_t slot, uint32_t first)
 {
     const struct fsw_watch_rec *r = &w->t->w[slot];
     uint32_t c = r->chan - 1;
     if (first & r->mask)
-        queue(w, c, r->id, first | (r->flags & FSW_W_DIR ? FSWATCH_IN_ISDIR : 0), 0, NULL, 0);
+        queue(w, c, r->id, first, 0, NULL, 0);
     queue(w, c, r->id, FSWATCH_IN_IGNORED, 0, NULL, 0);
     unwatch(w, slot);
 }
