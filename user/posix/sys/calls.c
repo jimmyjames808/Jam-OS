@@ -74,25 +74,30 @@ static unsigned kind_of(long n, long b, long c, long d)
     return 0;
 }
 
-/* The call through the boundary; cancel: a cancellation point's flag. */
-static long dispatch(long n, const long *args, volatile int *cancel)
+/* The call through the boundary; cancel: a cancellation point's flag;
+ * frame: the entry's frame address (its saved RBP, then its return
+ * address, then the caller's RSP after the return). */
+static long dispatch(long n, const long *args, volatile int *cancel, const uintptr_t *frame)
 {
     if (n < 0 || (unsigned long)n >= sizeof(calls) / sizeof(calls[0]) || !calls[n]) {
         lx_enosys_call(n);   /* the log, when the program turned it on */
         return -ENOSYS;
     }
     struct sig_frame f = { calls[n], kind_of(n, args[1], args[2], args[3]), cancel,
-                           { args[0], args[1], args[2], args[3], args[4], args[5] } };
+                           { args[0], args[1], args[2], args[3], args[4], args[5] },
+                           frame[1], (uintptr_t)(frame + 2), frame[0] };
     return lx_call_stack_set ? lx_call_on_stack(&f) : sig_call(&f);
 }
 
+/* musl's ways in. __builtin_frame_address gives each a frame pointer, so
+ * its caller's place is read from its frame (dispatch). */
 long __jam_syscall(long n, long a, long b, long c, long d, long e, long f)
 {
     const long args[6] = { a, b, c, d, e, f };
-    return dispatch(n, args, 0);
+    return dispatch(n, args, 0, __builtin_frame_address(0));
 }
 
 long __jam_syscall_cp(const struct jam_cp_call *c)
 {
-    return dispatch(c->nr, c->a, c->cancel);
+    return dispatch(c->nr, c->a, c->cancel, __builtin_frame_address(0));
 }

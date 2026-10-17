@@ -32,9 +32,13 @@
  *     200 each to a thread making only quiet calls (mmap, munmap) and to
  *     one making plain calls too, all handled; tgkill(SIGURG) whose handler copies the stack from the ucontext's
  *     RSP and wakes the sender on a futex (Chromium's StackCopierSignal),
- *     on the interrupted stack; SIGINT from kill and from a timer. */
+ *     on the interrupted stack; SIGINT from kill and from a timer;
+ *   - a handler run at a call's boundary (tgkill of itself) gets the
+ *     call's registers: RIP in the program, RSP above the handler's
+ *     frames, the arguments, the result. */
 #include <stdint.h>
 #include <stdio.h>
+#include <dlfcn.h>
 #include <errno.h>
 #include <poll.h>
 #include <pthread.h>
@@ -851,6 +855,40 @@ static void check_busy_sigint(void)
     block(SIGINT, SIG_UNBLOCK);
 }
 
+/* A handler run at a call's boundary (a signal the thread sent itself)
+ * gets the call's registers, as Linux's on a system call's return: RIP
+ * in the program, RSP on the stack above the handler's frames, the
+ * arguments and the result (docs/SG-REVIEW.md, finding 2; they were 0). */
+static volatile uintptr_t b_rip, b_rsp, b_rdi, b_rsi, b_rdx, b_rax, b_frame;
+
+static void on_boundary(int sig, siginfo_t *si, void *ctx)
+{
+    (void)sig;
+    (void)si;
+    const ucontext_t *uc = ctx;
+    b_rip = (uintptr_t)uc->uc_mcontext.gregs[REG_RIP];
+    b_rsp = (uintptr_t)uc->uc_mcontext.gregs[REG_RSP];
+    b_rdi = (uintptr_t)uc->uc_mcontext.gregs[REG_RDI];
+    b_rsi = (uintptr_t)uc->uc_mcontext.gregs[REG_RSI];
+    b_rdx = (uintptr_t)uc->uc_mcontext.gregs[REG_RDX];
+    b_rax = (uintptr_t)uc->uc_mcontext.gregs[REG_RAX];
+    b_frame = (uintptr_t)__builtin_frame_address(0);
+}
+
+static void check_boundary_regs(void)
+{
+    struct sigaction sa = { .sa_sigaction = on_boundary, .sa_flags = SA_SIGINFO };
+    CHECK(sigaction(SIGUSR1, &sa, NULL) == 0);
+    pid_t pid = getpid(), tid = gettid();
+    CHECK(syscall(SYS_tgkill, pid, tid, SIGUSR1) == 0);
+    uintptr_t here = (uintptr_t)__builtin_frame_address(0);
+    CHECK(b_rdi == (uintptr_t)pid && b_rsi == (uintptr_t)tid && b_rdx == SIGUSR1 && b_rax == 0);
+    Dl_info di;
+    CHECK(b_rip && dladdr((void *)b_rip, &di) != 0);
+    CHECK(b_rsp > b_frame && b_rsp < here);
+    deflt(SIGUSR1);
+}
+
 void pt_signal(char **argv)
 {
     (void)argv;
@@ -869,5 +907,6 @@ void pt_signal(char **argv)
     check_busy_calls();
     check_busy_stack_copy();
     check_busy_sigint();
+    check_boundary_regs();
     pt_sigproc();
 }

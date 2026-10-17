@@ -593,10 +593,43 @@ static void call_handler(void *arg)
         ((void (*)(int))c->act->handler)(c->si->signo);
 }
 
+/* A call's boundary, for the handlers run there: the call, and RAX (its
+ * result once it has returned; 0 before it). */
+struct call_at {
+    const struct sig_frame *f;
+    long                    rax;
+};
+
+/* The registers of a handler run at a call's boundary, as Linux gives a
+ * handler run on a system call's return: RIP where the call returns to,
+ * RSP and RBP as its caller has them, the arguments in RDI, RSI, RDX,
+ * R10, R8 and R9, the result in RAX, and RCX and R11 as `syscall` leaves
+ * them (RIP and RFLAGS). RBX and R12 to R15 are 0: musl's way in is C, and
+ * an unwinder finds them on the stack (docs/SG-REVIEW.md, design question 2). */
+static void call_regs(const struct call_at *at, uint64_t *regs)
+{
+    const struct sig_frame *f = at->f;
+    uint64_t flags = __builtin_ia32_readeflags_u64();
+    memset(regs, 0, SIG_REGS * sizeof(*regs));
+    regs[REG_RDI] = (uint64_t)f->a[0];
+    regs[REG_RSI] = (uint64_t)f->a[1];
+    regs[REG_RDX] = (uint64_t)f->a[2];
+    regs[REG_R10] = (uint64_t)f->a[3];
+    regs[REG_R8] = (uint64_t)f->a[4];
+    regs[REG_R9] = (uint64_t)f->a[5];
+    regs[REG_RAX] = (uint64_t)at->rax;
+    regs[REG_RCX] = f->rip;
+    regs[REG_R11] = flags;
+    regs[REG_RBP] = f->rbp;
+    regs[REG_RSP] = f->rsp;
+    regs[REG_RIP] = f->rip;
+    regs[REG_EFL] = flags;
+}
+
 /* With SA_ONSTACK on the thread's alternate stack, if it has one and isn't
  * on it (sigaltstack inside says SS_ONSTACK, as for a fault's handler).
  * The ucontext's registers are regs (REG_R8 .. REG_EFL: what a raise
- * inside the call found), else 0. */
+ * inside the call found, or the call's own), else 0. */
 static void run_handler(const struct sig_act *act, const struct sig_info *si, uint64_t was,
                         const uint64_t *regs)
 {
@@ -620,8 +653,9 @@ static void run_handler(const struct sig_act *act, const struct sig_info *si, ui
 }
 
 /* Deliver one signal due on t (its own thread): 1 if one was taken (its
- * handler run, or its default done), 0 if none was due. */
-static int deliver_one(struct sig_thread *t)
+ * handler run, or its default done), 0 if none was due. at: the call's
+ * boundary it is delivered at, or NULL. */
+static int deliver_one(struct sig_thread *t, const struct call_at *at)
 {
     take();
     uint64_t can = (t->pending | shared) & ~t->blocked;
@@ -648,12 +682,14 @@ static int deliver_one(struct sig_thread *t)
     t->handled++;
     if (!(act.flags & SA_RESTART))
         t->norestart++;
-    uint64_t kept[SIG_REGS];
-    bool regs = t->kept_ok;
-    if (regs)
-        memcpy(kept, t->kept, sizeof(kept));
+    uint64_t regs[SIG_REGS];
+    bool have = t->kept_ok;
+    if (have)
+        memcpy(regs, t->kept, sizeof(regs));
+    else if (at)
+        call_regs(at, regs);
     t->kept_ok = false;   /* one handler's */
-    run_handler(&act, &si, was, regs ? kept : NULL);
+    run_handler(&act, &si, was, have || at ? regs : NULL);
     take();
     set_blocked_locked(t, was);
     give();
@@ -661,19 +697,19 @@ static int deliver_one(struct sig_thread *t)
 }
 
 /* Deliver what is due on t, a bounded number of signals at a time. */
-static void deliver(struct sig_thread *t)
+static void deliver(struct sig_thread *t, const struct call_at *at)
 {
-    for (unsigned n = 0; n < DELIVER_MAX && deliver_one(t); n++)
+    for (unsigned n = 0; n < DELIVER_MAX && deliver_one(t, at); n++)
         ;
 }
 
 /* Into a call: count it, then deliver what came before it. */
-static void enter(struct sig_thread *t)
+static void enter(struct sig_thread *t, const struct call_at *at)
 {
     __atomic_add_fetch(&t->calls, 1, __ATOMIC_SEQ_CST);
     for (unsigned n = 0; n < DELIVER_MAX && due(t); n++) {
         __atomic_sub_fetch(&t->calls, 1, __ATOMIC_SEQ_CST);
-        deliver(t);
+        deliver(t, at);
         __atomic_add_fetch(&t->calls, 1, __ATOMIC_SEQ_CST);
     }
 }
@@ -731,7 +767,8 @@ long sig_call(const struct sig_frame *f)
     volatile int *outer = t->cancel;
     t->cancel = f->cancel;
     for (unsigned spurious = 0;;) {
-        enter(t);
+        struct call_at at = { f, 0 };
+        enter(t, &at);
         r = f->cancel && *f->cancel ? -EINTR : call(f);
         __atomic_sub_fetch(&t->calls, 1, __ATOMIC_SEQ_CST);
         bool final = r == -LX_EINTR_FINAL;   /* a socket's timed wait: never restarted */
@@ -739,8 +776,9 @@ long sig_call(const struct sig_frame *f)
             r = -EINTR;
         if (r == -EPIPE && (f->kind & SIG_CALL_PIPE))
             raise_pipe(t);
+        at.rax = r;
         if (due(t))
-            deliver(t);
+            deliver(t, &at);
         if (r != -EINTR || (f->cancel && *f->cancel))
             break;
         if (t->handled == handled) {
@@ -886,7 +924,7 @@ void sig_deliver_self(void)
 {
     struct sig_thread *t = self();
     if (t)
-        deliver(t);
+        deliver(t, NULL);
 }
 
 void sig_wait_mask(const uint64_t *mask, uint64_t *old)
@@ -1025,7 +1063,7 @@ void sig_fault_end(uint64_t mask)
     set_blocked_locked(t, mask);
     give();
     if (due(t))
-        deliver(t);
+        deliver(t, NULL);
 }
 
 /* ---- raises (sigfault.c) ------------------------------------------------------------ */
