@@ -264,13 +264,20 @@ struct file_mapping {
  * mappings coherent); MAP_PRIVATE writable maps a copy-on-write child of
  * it (vmo_create_child, AT_LEAST_ON_WRITE: a page is the file's until
  * first touched, then the mapping's own), charged in full now. MAP_SHARED
- * with PROT_WRITE is ENODEV (EACCES if fd can't write): the pager never
- * writes pages back. A file with no pager (its service has none, or fat
- * refuses one open for writing) is mapped MAP_PRIVATE as a copy read now
- * (a new VMO of len bytes holding the file from off, zero past its end),
- * MAP_SHARED ENODEV. A memfd: MAP_PRIVATE a copy, MAP_SHARED its own VMO
- * (B2's memfd_vmo) at off. 0, or -EBADF, -EACCES (not open for reading),
- * -ENODEV (no mapping for its kind), -ENOMEM, -EIO. */
+ * of an fd open for writing asks the service for the file's writable VMO
+ * (file.map, FILE_MAP_WRITE: ext) whatever PROT says, so mprotect can add
+ * write later as Linux allows (a stored page is the file's, seen by read
+ * and every mapping, written back by msync, fsync or in time); the
+ * service refusing it (fat: no pages written back) is ENODEV with
+ * PROT_WRITE and, without, a read-only mapping that mprotect can't make
+ * writable (EACCES); a file mapped to run is ETXTBSY. MAP_SHARED with
+ * PROT_WRITE on an fd that can't write is EACCES, checked first. A file
+ * with no pager (its service has none, or fat refuses one open for
+ * writing) is mapped MAP_PRIVATE as a copy read now (a new VMO of len
+ * bytes holding the file from off, zero past its end), MAP_SHARED ENODEV.
+ * A memfd: MAP_PRIVATE a copy, MAP_SHARED its own VMO (B2's memfd_vmo) at
+ * off. 0, or -EBADF, -EACCES (not open for reading), -ENODEV (no mapping
+ * for its kind), -ETXTBSY, -ENOMEM, -EIO. */
 long file_map(long fd, int64_t off, uint64_t len, uint32_t how, struct file_mapping *out);
 
 /* ---- libc's own trees: /dev, /etc and /proc ------------------------------------

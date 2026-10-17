@@ -813,11 +813,16 @@ static long map_copy(struct fd_desc *d, int64_t off, uint64_t len, handle_t *out
     return r;
 }
 
-/* The file's own pages: its one shared VMO from the service (file.map,
- * FILE_MAP_READ: read and map only) into *out. ERR_NOT_SUPPORTED: the
- * mount's service has no pager; ERR_BUSY: fat maps no file open for
- * writing (ours may be) until it keeps mappings coherent with writes. */
-static status_t file_pages(const struct file *f, handle_t *out)
+/* The file's own pages: its one shared VMO from the service (file.map)
+ * into *out. flags FILE_MAP_READ: read and map only; FILE_MAP_WRITE (ext
+ * only, a file open for writing): the same VMO, which may be mapped
+ * writable too. ERR_NOT_SUPPORTED: the mount's service has no pager (for
+ * FILE_MAP_WRITE: none that writes pages back: fat); ERR_ACCESS_DENIED
+ * (FILE_MAP_WRITE): the file or its volume can't be written through a
+ * mapping; ERR_BUSY: fat maps no file open for writing (ours may be)
+ * until it keeps mappings coherent with writes, and ext maps no file
+ * writable that is mapped to run. */
+static status_t file_pages(const struct file *f, uint32_t flags, handle_t *out)
 {
     uint64_t size = 0;
     lock_take(&f->o->lock);
@@ -825,7 +830,7 @@ static status_t file_pages(const struct file *f, handle_t *out)
     if (st == OK && !f->o->jf.ch)
         st = ERR_IO;   /* the open was lost */
     if (st == OK)
-        st = fs_map_file(&f->o->jf, FILE_MAP_READ, out, &size);
+        st = file_map_within(f->o->jf.ch, FILE_TIMEOUT, flags, out, &size);
     lock_give(&f->o->lock);
     return st;
 }
@@ -834,16 +839,38 @@ static status_t file_pages(const struct file *f, handle_t *out)
  * has them, else MAP_PRIVATE's copy. A shared mapping is the file's VMO
  * itself; a private read-only one too (out->pager_ro: mem.c puts a child
  * in its place if mprotect adds write); a private writable one a
- * copy-on-write child of it, charged in full now. */
+ * copy-on-write child of it, charged in full now.
+ *
+ * MAP_SHARED of a descriptor open for writing asks for the writable VMO
+ * (FILE_MAP_WRITE) whatever PROT_WRITE says, as Linux decides at mmap
+ * whether the mapping may ever be writable (VM_MAYWRITE: the descriptor's
+ * mode then, not its mode at a later mprotect, which may be after the
+ * close). Linux's price is ours: a file mapped so can't be run while the
+ * mapping lives (its struct file holds the write access; here the shared
+ * VMO, which extfs marks written: ETXTBSY to a run). Only an O_RDWR
+ * MAP_SHARED pays it; a read-only descriptor, MAP_PRIVATE and a file with
+ * no writable pager (fat) ask for FILE_MAP_READ as before. Without
+ * PROT_WRITE a refusal of the writable VMO falls back to the read-only
+ * one (mprotect adding write is then EACCES, as for a read-only
+ * descriptor); with it the refusal is the answer: ENODEV (fat), ETXTBSY,
+ * EACCES. */
 static long map_file(struct fd_desc *d, int64_t off, uint64_t len, uint32_t how,
                      struct file_mapping *out)
 {
     const struct file *f = d->priv;
     bool shared = how & FMAP_SHARED, write = how & FMAP_WRITE;
-    if (shared && write)   /* the pager never writes pages back: no writable shared mapping */
-        return fd_can_write(d) ? -ENODEV : -EACCES;
+    if (shared && write && !fd_can_write(d))   /* Linux checks this before anything else */
+        return -EACCES;
     handle_t pages = HANDLE_INVALID;
-    status_t st = file_pages(f, &pages);
+    status_t st = ERR_NOT_SUPPORTED;
+    if (shared && fd_can_write(d)) {
+        st = file_pages(f, FILE_MAP_WRITE, &pages);
+        bool refused = st == ERR_NOT_SUPPORTED || st == ERR_ACCESS_DENIED || st == ERR_BUSY;
+        if (st != OK && (write || !refused))
+            return st == ERR_NOT_SUPPORTED ? -ENODEV : st == ERR_BUSY ? -ETXTBSY : file_err(f, st);
+    }
+    if (st != OK)   /* not asked for, or refused to a mapping that doesn't write */
+        st = file_pages(f, FILE_MAP_READ, &pages);
     if (st == ERR_NOT_SUPPORTED || st == ERR_BUSY)
         return shared ? -ENODEV : map_copy(d, off, len, &out->vmo);
     if (st != OK)
