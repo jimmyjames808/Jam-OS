@@ -245,6 +245,7 @@ static status_t one_run(uint64_t key, uint32_t flags, struct pager_run *run, uin
         return st;
     batch_begin();
     test_die(XF_DIE_WBACK);   /* begun, nothing written */
+    test_hang(XF_DIE_WBACK);
     struct wb_run *r = &runs[nruns++];
     *r = (struct wb_run){
         .key = flags & PAGER_DIRTY_OLDEST ? run->key : key, .off = run->offset, .len = run->len,
