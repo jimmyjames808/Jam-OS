@@ -93,12 +93,16 @@ static void set_free(void *p)
 
 /* A forked child (docs/FORK-PLAN.md section 1.6): the forking thread's
  * set (its port, its bindings) was the parent's, forgotten and left in
- * the heap; its next call makes one. */
+ * the heap; its next call makes one. The sleeping sets are the parent's
+ * other threads': none here. */
 void poll_forked(void)
 {
     if (key_ok)
         (void)pthread_setspecific(set_key, NULL);
     self_set = NULL;
+    sleepers_lock = (lock_t){ 0 };
+    sleepers = NULL;   /* the parent's threads' sets: none sleeps here */
+    __atomic_store_n(&wakes, 0, __ATOMIC_RELAXED);
 }
 
 static void key_make(void)

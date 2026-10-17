@@ -348,6 +348,8 @@ bool pipe_end_fork(struct pipe_end *p, struct fd_fork *f)
     }
     p->ch = fd_fork_take(f, 0);
     pipe_set_leftover(p, 0, 0);   /* the buffer is the child's copy: kept for its reads */
+    p->pid = 0;                   /* the leftover's writer, with it */
+    p->sleepers = NULL;           /* the parent's other threads, not here */
     return p->ch != HANDLE_INVALID;
 }
 
