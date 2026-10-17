@@ -13,6 +13,8 @@
  * not), but for the kinds kind_of names: memory and futex wakes see no
  * delivery (the plan's rule: musl's malloc and unlock paths), the waits
  * Linux never restarts return EINTR, and a write's EPIPE raises SIGPIPE.
+ * A clone child's thread goes through it on a stack of the layer's own
+ * (calls.h: lx_call_on_stack, fork.c).
  *
  * This is the only file of the layer that sees Linux's numbers
  * (<sys/syscall.h>): their names clash with Jam OS's own. */
