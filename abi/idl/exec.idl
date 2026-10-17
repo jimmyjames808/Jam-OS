@@ -92,6 +92,16 @@ protocol exec_prog 48
 # program, an 8 MiB stack; then whatever the caller wrote on its end of
 # open's `handover`, message for message (at most 128). `job` and
 # `signals` are init's whatever the answer.
+#
+# `image` is the caller's own program, if it has one: its SR_SELF_IMAGE
+# (a duplicate with RIGHT_READ and RIGHT_EXEC at least). It tells init the
+# list the caller was approved with, so that a child whose list asks for
+# nothing beyond it starts as Linux starts a program that isn't set-user-ID:
+# AT_SECURE 0, its environment whole and, for a POSIX program, the caller's
+# current directory when its own namespace has it (init's exec.c says how
+# and why). Without one, or one init can't read as an approved program's,
+# the child is marked AT_SECURE and starts in "/", as every child did
+# before. Read and closed by init.
 #   proc  the child's process: RIGHT_WAIT, RIGHT_INSPECT, RIGHT_DUPLICATE
 #         and RIGHT_TRANSFER (its end and its exit code; no RIGHT_WRITE,
 #         which would make threads in it)
@@ -105,4 +115,4 @@ protocol exec_prog 48
 #   than 128 hand-over messages; ERR_ACCESS_DENIED: a page the start reads
 #   (the program headers, a writable segment) isn't the approved one;
 #   spawn's own errors (ERR_NO_MEMORY, ERR_NO_RESOURCES: the job's limits).
-1  start  (u16 argc, u8[<=12288] strings, handle job, handle signals) -> (handle proc, handle job)
+1  start  (u16 argc, u8[<=12288] strings, handle job, handle signals, handle<vmo>[<=1] image) -> (handle proc, handle job)

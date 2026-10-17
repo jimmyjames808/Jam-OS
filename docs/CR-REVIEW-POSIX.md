@@ -152,7 +152,11 @@ on `/dev/null` if closed) and, as glibc does for a set-user-ID program,
 the crt leaves glibc's unsecure variables out of the environment
 (`TMPDIR`, `TZDIR`, `LOCPATH`, `LD_*`, `NLSPATH`, `HOSTALIASES`,
 `RES_OPTIONS`, ...). `FONTCONFIG_FILE` is kept: glibc keeps it, and fonts
-may need it (G2-PLAN section 10). **(C), names as objects, is later**: a
+may need it (G2-PLAN section 10). **Changed by SX (2026-10-18, D2)**: the
+caller sends its own program's sealed image with `exec_prog.start`, so init
+knows the approval it runs; a child whose list asks for nothing beyond it
+is not marked and starts in the caller's directory when its own namespace
+has it (CR-PLAN, "SX"). **(C), names as objects, is later**: a
 `/svc/exec` child that must inherit a working directory or give a
 redirected file on to its own children (a `make`) needs it; until then
 such a child starts at `/` and its files can't be given on (`ENOTSUP`).

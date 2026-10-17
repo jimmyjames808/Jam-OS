@@ -6,7 +6,8 @@
  * from one with less, and checks it got exactly its own approval.
  *   <prog> probe                   exits with what it was given: EXT_* bits
  *   <prog> launch <path> [args]    starts <path> through /svc/exec with
- *                                  args, waits for it, exits with its code
+ *                                  args and EXT_ENV for its environment,
+ *                                  waits for it, exits with its code
  *                                  (EXT_LAUNCH_ERR + the step that failed:
  *                                  it couldn't) */
 #pragma once
@@ -32,14 +33,19 @@
 
 #define EXT_LAUNCH_ERR 1000   /* launch's codes: this plus the step */
 #define EXT_PROBE_FILE "/data/exectest.probe"   /* probe's try at a new file */
+/* launch's environment for its child: a POSIX child started AT_SECURE has
+ * HOME and not TMPDIR (posixtest's `--child-launch sealed-bare`). */
+#define EXT_ENV { "HOME=/data", "TMPDIR=/data", NULL }
 
 /* A child through /svc/exec (client.c): the program at path (absolute,
  * cleaned, opened here FS_READ through our own namespace) sealed, then
- * started with argv (argc strings; no environment) in a job inside ours.
- * *proc, *job and *sig (our end of its signal channel) on OK. A refusal's
- * status as /svc/exec gave it; *step says which call (1 the service, 2 the
- * file, 3 exec.open, 4 exec_prog.start, 5 anything else). */
-status_t exectest_start(const char *path, int argc, const char *const *argv, handle_t *proc,
-                        handle_t *job, handle_t *sig, int *step);
+ * started with argv (argc strings) and envp (NULL-terminated; NULL: none)
+ * in a job inside ours, our own program (SR_SELF_IMAGE) given as libc
+ * gives it. *proc, *job and *sig (our end of its signal channel) on OK. A
+ * refusal's status as /svc/exec gave it; *step says which call (1 the
+ * service, 2 the file, 3 exec.open, 4 exec_prog.start, 5 anything else). */
+status_t exectest_start(const char *path, int argc, const char *const *argv,
+                        const char *const *envp, handle_t *proc, handle_t *job, handle_t *sig,
+                        int *step);
 /* The program a probe ran as: its bits (main.c's). */
 int      exectest_main(int argc, char **argv);

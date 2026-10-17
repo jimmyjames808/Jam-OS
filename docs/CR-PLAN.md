@@ -1685,7 +1685,8 @@ checks the forwarding (a forked child's `execve` of `/data/pt-prog`, our
 - Q1 (A) of CR-REVIEW-POSIX (CR2F): a `/svc/exec` child gets `/` for its
   directory and `AT_SECURE` (the crt drops `TMPDIR`): `CurrentDirectory`, and
   the four signal-file tests, whose child looks for a relative name in `/`
-  and runs to the test's timeout (5). Q1's option C would mend them.
+  and runs to the test's timeout (5). Q1's option C would mend them; SX
+  (below: D2) does, for a child that isn't raised.
 - A thread's id is never the pid (3: base's tid cache, `ForkWithFlags`).
 - `fcntl` record locks are each process's own (7 `FileLockingTest`).
 - `clone` with `CLONE_FS` is refused (1, `LaunchProcess`'s one case).
@@ -1731,6 +1732,101 @@ the forwarding fix).
 
 **Harness changes**: `base-run.py --death-style` and `cr-test.sh`'s
 `CR_BASE_DEATH` default to `threadsafe`; the skip list's groups as above.
+
+#### SX (2026-10-18)
+
+Track SX (branch `sx-exec-env`): the owner's decision D2 (made for him,
+his to override). A child started through `/svc/exec` starts in its
+caller's directory, and is `AT_SECURE` only when it is **raised**: when its
+list asks for more than its caller's approval gives. Before, every child
+was `AT_SECURE` and started in `/` (Q1's answer A,
+[CR-REVIEW-POSIX](CR-REVIEW-POSIX.md)): init couldn't tell which program
+called.
+
+**Why the five failed.** All five are `ProcessUtilTest` children that
+base starts as Chromium's launcher does: fork, `chdir` to
+`options.current_directory` in the child, `execve` of `base_unittests`
+(a `/data` program: spawn, wait, exit through `/svc/exec`). The four
+signal-file tests (`GetTerminationStatusCrash`, `...SigKill`,
+`...SigTerm`, `KillSlowChild`) hand the child a file name relative to the
+directory (`GetSignalFilePath` is the bare name on Linux): the child
+started in `/`, never found its file and ran to the test's timeout.
+`CurrentDirectory`'s child compares `GetTempDir()` with its current
+directory: it was in `/`, and `TMPDIR` was gone too (the crt drops it for
+`AT_SECURE`), so `/tmp` against `/`; both had to be fixed.
+
+**How init decides** (user/services/init/exec.c, "who is raised", where
+the reasoning is written out):
+- `exec_prog.start` takes the caller's own program, its `SR_SELF_IMAGE`
+  (a new optional handle; libc's `start_sealed` sends it, as exectest's
+  client does). init counts it only if it is a VMO whose handle has
+  `RIGHT_EXEC` and that a pager supplies (`handle_info`'s
+  `related_koid`): only `vmo_make_exec_verified` makes one, which only init
+  and the shell may call, each for a program the owner approved, every
+  page checked by the kernel. The list read from it (`dp_wants_vmo`) is
+  that approval's.
+- The child is raised unless every grant of its list is within that list
+  (`dp_wants_within`, `<dataprog.h>`): the same service; a mount at the
+  same point (or within `*`, or `/usb*`) and as much (read within write,
+  write within write-with-packages). A child that asks for a power (`right
+  ...`) is always raised: a root is never passed on, so no fork or
+  `posix_spawn` child holds one, and init can't see whether its caller is
+  the program's first process.
+- Not known is raised: no image (a boot-image program, utest, a native
+  caller that sends none), an image that isn't sealed (a plain or JIT VMO,
+  a copy; the shell's whole-read first run after `allow`, an anonymous VMO,
+  too), one that doesn't read. Old static programs that send no image keep
+  the old behaviour until relinked.
+- What the child is given is its own approval either way (the owner's
+  CE1 rule): this decides only the mark and the directory.
+
+**The directory.** The hand-over's `cwd` (text the caller wrote) becomes
+the child's when the child isn't raised, the path's mount is one its list
+gives (`dp_wants_mounts`), it isn't under the mount's top-level `etc` (no
+list's view has it), and init's namespace has a directory there; else `/`
+with a log line (`init: exec: <path>: its caller's directory <dir> isn't
+in its namespace: it starts in /`). A raised child starts in `/` whatever
+its caller says (`init: exec: <path> is raised (AT_SECURE): ...`), since a
+path is text and proves nothing about what the caller can reach. When
+directory handles land (docs/DIRHANDLE-PLAN.md, being written) the caller
+gives an open directory instead; `child_dir` is where that goes, and a
+raised child may then be given its caller's directory too.
+
+**Security.** A raised program still gets none of its caller's unsecure
+variables (`TMPDIR`, `LD_*`, `NLSPATH`, ...: the crt drops them) and
+starts in `/`. A child that is not raised asks for nothing its caller's
+approval doesn't give, so whatever its environment and directory steer it
+to do, its caller could do itself; and a directory its caller could see
+and it shouldn't is not in its own namespace, so it starts in `/`. The
+trust is in the program, not the process: a caller holding program P's
+image counts as having P's list, which is what the shell and `/svc/exec`
+give P; a child P makes of itself gets P's namespace too (`posix_spawn`'s
+`NS_ALL`, fork's copy) unless P asks for less with
+`posix_spawnattr_setgrants_np` and gives that narrower child `svc exec`:
+then the narrower child still counts as P (a question for the owner,
+below). What musl does with `AT_SECURE`: `secure_getenv` and `issetugid`,
+no `NLSPATH`, `MUSL_LOCPATH` or TZ file but `/etc/localtime`, 0 to 2 on
+`/dev/null` if closed; base reads `TMPDIR` with plain `getenv`, so only the
+crt's dropping mattered to it.
+
+**Tests**: utest `exec_within` (the rule) and `exec_starter`: posixtest on
+`/data` (`--child-launch from`) in `/data/ce-dir` with `TMPDIR` set forks
+and execs itself, and the child (`inherit`) is there, with `TMPDIR` and
+`AT_SECURE` 0 (it fails before SX: `AT_SECURE` 1); posixtest starts pxio
+(`from-out`: its list `/tmp` alone, not raised) and pxio's `cwd` is `/`,
+`/data` not being in its namespace; exectest (`/data` read-only) starts
+posixtest, raised (`sealed-bare`: `AT_SECURE`, `HOME` without exectest's
+`TMPDIR`, `/`); posixtest's bytes in a VMO never sealed, sent as the
+image, count for nothing (raised). `exec_handover` is unchanged: utest has
+no image.
+
+**Left for the owner**: (1) should a narrower child of P's
+(`posix_spawnattr_setgrants_np`) lose the image, or keep it without
+`RIGHT_TRANSFER`, so that it can't vouch as P? Nothing in the tree makes
+one with `svc exec` today. (2) A raised child starts in `/`; Linux keeps a
+set-user-ID program's directory (the caller could reach it). Until
+directory handles, the text can't show that. The five tests come off the
+skip list's `[launch]` group once a base run shows them passing.
 
 ### 2. The address space: huge sparse reservations (the top risk)
 
@@ -2871,7 +2967,9 @@ of its own.
   duplicates of them, the cwd `/`, the program's path the sealed one, and
   `POSIXFDS_SECURE`, which the crt makes `AT_SECURE` 1 (glibc's unsecure
   variables left out of the environment; musl's own checks). Every child
-  is marked: init can't tell which program calls. A POSIX child gets a
+  is marked: init can't tell which program calls (since SX, the caller's
+  image tells it: only a raised child is marked and starts in `/`, the
+  others get the caller's directory, "SX" above). A POSIX child gets a
   hand-over even when its caller wrote none (0 to 2 then `/dev/null`); a
   malformed one refuses the start. Later (option C): names as objects, a
   directory channel for the cwd, so a `make` started this way can inherit

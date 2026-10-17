@@ -376,8 +376,17 @@ static status_t start_sealed(const struct jam_spawn_req *r, const struct program
             jam_handle_close(ours_job);
         return st;
     }
+    /* Our own program, if we run one from a VMO: init reads our approval's
+     * list from it, and a child that asks for nothing beyond ours starts
+     * with our directory and without AT_SECURE (init's exec.c, "who is
+     * raised"). None: it is AT_SECURE, in "/". */
+    handle_t image = HANDLE_INVALID;
+    if (startup_handle(SR_SELF_IMAGE) &&
+        jam_handle_duplicate(startup_handle(SR_SELF_IMAGE),
+                             RIGHT_READ | RIGHT_EXEC | RIGHT_TRANSFER, &image) != OK)
+        image = HANDLE_INVALID;
     st = exec_prog_start(p->sealed, (uint16_t)count(r->argv), strings, len, ours_job, theirs,
-                         proc, job);   /* ours_job and theirs are init's now */
+                         &image, image ? 1 : 0, proc, job);   /* ours_job, theirs, image: init's */
     free(strings);
     if (st != OK)
         jam_handle_close(*sigch);

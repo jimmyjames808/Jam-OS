@@ -820,6 +820,8 @@ bool t_exec_wider_than_parent(void);
 bool t_exec_refused(void);
 bool t_exec_changed(void);
 bool t_exec_handover(void);
+bool t_exec_within(void);
+bool t_exec_starter(void);
 bool t_exec_no_leak(void);
 bool t_exec_cleanup(void);
 /* unixsvc.c: the named socket broker, /svc/unix (bin/unix). */

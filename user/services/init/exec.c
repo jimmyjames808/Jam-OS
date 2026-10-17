@@ -34,8 +34,10 @@
  *          is read from the sealed VMO with vmo_read and refused if it asks
  *          for what no program from /data may have. The answer is an
  *          exec_prog channel: the sealed program, waiting.
- *   start  on that channel: the job, argv and environment, the signal end;
- *          the child is made and started (above), the channel closed.
+ *   start  on that channel: the job, argv and environment, the signal end
+ *          and the caller's own program (its image, if it has one: whether
+ *          the child is raised, "who is raised" below); the child is made
+ *          and started (above), the channel closed.
  * From the seal on, the kernel checks every page of the program against
  * the approval as it is fetched (at the start, or whenever the program
  * touches it), so only the bytes the owner approved ever run: a file
@@ -96,6 +98,7 @@ struct prog {
     uint64_t     expires;     /* uptime ns: dropped then, unstarted */
     int          opener;      /* the opener that sealed it, while that one is open; -1 */
     bool         done;        /* its start was answered: free it */
+    bool         raised;      /* its list asks for more than its caller's (raised()) */
     char        *path;        /* its path (malloc'd) */
     struct wants w;           /* its list, read from the sealed VMO */
 };
@@ -351,6 +354,57 @@ static const struct exec_ops open_ops = { .open = op_open };
 
 /* ---- the hand-over ------------------------------------------------------------------- */
 
+/* ---- who is raised ------------------------------------------------------------------
+ * A child is raised when its list asks for more than its caller's
+ * approval gives: a service, a mount (or more of one) or a power that
+ * isn't the caller's too (dp_wants_within). That is Linux's set-user-ID
+ * case, and it is marked as Linux marks it: AT_SECURE 1 (the crt leaves
+ * glibc's unsecure variables, TMPDIR among them, out of its environment,
+ * and musl's secure_getenv says NULL), and it starts in "/" (the hand-over,
+ * below). A child that asks for nothing beyond its caller's gives the
+ * caller nothing it hasn't got: whatever its environment and its directory
+ * steer it to do, the caller could do itself. So it starts as any program
+ * does: AT_SECURE 0, its environment whole, the caller's directory
+ * (docs/CR-PLAN.md, "SX": the owner's D2). What the child is given
+ * is its own approval either way (the owner's rule, above): this decides
+ * only the mark and the directory.
+ *
+ * How init knows the caller's. An opener is anyone's, and a namespace is a
+ * program's own table of handles (a view's limits are its file service's,
+ * not something init can read off a channel), so init can't check what a
+ * caller holds. It checks what the caller was approved with: start's
+ * `image` is the caller's SR_SELF_IMAGE, and a VMO that a pager supplies
+ * (handle_info's related_koid) through a handle with RIGHT_EXEC was sealed
+ * by vmo_make_exec_verified, which only init and the shell may call
+ * (RIGHT_ROOT_VMEX), each for a program the owner approved, every page
+ * checked by the kernel as it arrives: the list read from it (dp_wants_vmo)
+ * is the approved one. Both start a program with exactly its list, and
+ * nothing else hands out a sealed program but a program's own start of
+ * itself (libjam's spawn gives a child the VMO it runs from), whose child
+ * gets its namespace (posix_spawn's NS_ALL, fork's copy) unless the
+ * program asks for less (posix_spawnattr_setgrants_np). So a caller holding
+ * P's image is P, or a child of P's with as much as P chose to give it
+ * (`svc exec` included). Powers are the exception: a root can't be passed
+ * on (dp_root_rights: no RIGHT_TRANSFER), so no fork or posix_spawn child
+ * of a program holds one, and init can't see whether the caller is the
+ * program's first process, which does: a child whose list asks for a
+ * power is raised whoever calls. Anything else is not known, and not
+ * known is raised: no image (a boot-image program, a native caller that
+ * sends none), a VMO that isn't sealed (a JIT VMO, a copy, a plain VMO
+ * with a list of its own), one that doesn't read. */
+static bool raised(const struct prog *p, const handle_t *image, uint32_t n)
+{
+    static struct wants caller;   /* the worker's */
+    struct handle_info hi;
+    uint64_t size;
+    const rights_t need = RIGHT_READ | RIGHT_EXEC;
+    if (p->w.rights || n != 1 || jam_handle_info(image[0], &hi) != OK || hi.type != OBJ_VMO ||
+        (hi.rights & need) != need || !hi.related_koid ||
+        jam_vmo_get_size(image[0], &size) != OK || dp_wants_vmo(image[0], size, &caller) != OK)
+        return true;
+    return !dp_wants_within(&p->w, &caller);
+}
+
 /* What the child gets of the caller's hand-over (docs/CR-REVIEW-POSIX.md,
  * finding 1, the owner's answer A to its Q1). The child's namespace is its
  * own approval's and may reach what the caller's can't, so the child must
@@ -361,17 +415,16 @@ static const struct exec_ops open_ops = { .open = op_open };
  *     use it, not give it on (ENOTSUP), as a file received with SCM_RIGHTS;
  *   - a directory (a path and nothing else) is left out, and so is a
  *     duplicate of one;
- *   - the current directory is "/", the program's path the one sealed;
- *   - it is marked AT_SECURE (POSIXFDS_SECURE): argv and the environment
- *     are the caller's too. init can't tell which program calls (an opener
- *     is anyone's), so every child is marked, the same approval as its
- *     caller's or not.
+ *   - the current directory is the caller's or "/" (child_dir), the
+ *     program's path the one sealed;
+ *   - a raised child (above) is marked AT_SECURE (POSIXFDS_SECURE): argv
+ *     and the environment are the caller's.
  * The other kinds are objects the caller holds and gives (pipes, sockets,
  * terminals, memfds, /dev and libc's /etc by their fixed names), kept as
  * they are, and so is the state (the umask, the signal masks, the ids). A
  * POSIX program gets a hand-over even when the caller wrote none (no
- * descriptors: musl's AT_SECURE start opens 0 to 2 on /dev/null), for the
- * mark; any other program gets the caller's rewritten, or nothing. A
+ * descriptors: a raised one's musl start opens 0 to 2 on /dev/null), for
+ * the mark; any other program gets the caller's rewritten, or nothing. A
  * malformed hand-over refuses the start. Names as objects (a directory
  * channel for the current directory) are later: the plan's option C. */
 
@@ -428,13 +481,59 @@ static void drop_kept(void *ctx)
     r->n = r->used = 0;
 }
 
+/* The child's current directory, given its caller's (cwd: the hand-over's,
+ * text the caller wrote). The caller's when the child isn't raised, the
+ * text is an absolute path (taken cleaned: no ".", ".." or "//"), its
+ * first name is a mount the child's list gives (dp_wants_mounts), its
+ * second isn't the top-level `etc` that no list's view has, and init's own
+ * namespace has a directory there; else "/", with a line in the log. The
+ * child resolves it in its own namespace, as every path it uses, so a
+ * directory its caller could see and it shouldn't is one it can't open
+ * there either: the check spares it a directory it can't use. A raised
+ * child starts in "/" whatever its caller says: a path is text, which
+ * proves nothing about what the caller can reach, and a raised child
+ * steered by it would make and change files where its caller can't.
+ * Directory handles (docs/DIRHANDLE-PLAN.md) will carry the directory as
+ * an open one the caller holds, which a raised child may be given too:
+ * that replaces the text here. */
+static const char *child_dir(const struct prog *p, const char *cwd)
+{
+    static char clean[POSIXFDS_PATH_MAX], dir[POSIXFDS_PATH_MAX];   /* the worker's */
+    if (!strcmp(cwd, "/"))
+        return "/";
+    if (p->raised) {
+        printf("init: exec: %s is raised (AT_SECURE): it starts in /, not its caller's %s\n",
+               p->path, cwd);
+        return "/";
+    }
+    size_t len = strlen(cwd), first = 0;
+    bool is_dir = false;
+    bool ok = cwd[0] == '/' && fs_path_clean(cwd, (uint32_t)len, clean) == OK && clean[0];
+    while (ok && clean[first] && clean[first] != '/')
+        first++;   /* the mount's name */
+    if (ok && first + 2 <= NS_NAME_MAX) {
+        const char *rest = clean + first + (clean[first] == '/');   /* inside the mount */
+        bool etc = !strncmp(rest, "etc", 3) && (!rest[3] || rest[3] == '/');
+        char point[NS_NAME_MAX] = "/";
+        memcpy(point + 1, clean, first);
+        point[first + 1] = '\0';
+        snprintf(dir, sizeof(dir), "/%s", clean);   /* fits: clean is shorter than cwd */
+        if (!etc && dp_wants_mounts(&p->w, point) && fs_stat(dir, NULL, &is_dir, NULL) == OK &&
+            is_dir)
+            return dir;
+    }
+    printf("init: exec: %s: its caller's directory %s isn't in its namespace: it starts in /\n",
+           p->path, cwd);
+    return "/";
+}
+
 /* spawn's before_start: the child's hand-over (above) onto its startup
  * channel. ctx: the program, its `handover` our end of the caller's. */
 static status_t relay(handle_t startup, void *ctx)
 {
     const struct prog *p = ctx;
     static struct rewrite r;               /* the worker's */
-    static char cwd[POSIXFDS_PATH_MAX];    /* the caller's: not given */
+    static char cwd[POSIXFDS_PATH_MAX];    /* the caller's, as it wrote it */
     struct posixfds_state state = { .umask = 022 };   /* none written: libc's own */
     memset(&r, 0, sizeof(r));
     const struct posixfds_sink sink = { .ctx = &r, .fd = keep_fd, .reset = drop_kept };
@@ -447,7 +546,8 @@ static status_t relay(handle_t startup, void *ctx)
         return st;   /* what it carried is closed */
     }
     const struct posixfds_out out = {
-        .state = state, .cwd = "/", .fds = kept, .nfds = r.n, .exe = p->path, .secure = true,
+        .state = state, .cwd = child_dir(p, st == OK ? cwd : "/"), .fds = kept, .nfds = r.n,
+        .exe = p->path, .secure = p->raised,
     };
     return posixfds_write(startup, &out);   /* the handles go whatever happens */
 }
@@ -517,12 +617,16 @@ static status_t start_child(struct prog *p, const char **argv, int argc, const c
 }
 
 static status_t op_start(void *ctx, uint16_t argc, const uint8_t *strings, uint32_t strings_len,
-                         handle_t job, handle_t signals, handle_t *out_proc, handle_t *out_job)
+                         handle_t job, handle_t signals, const handle_t *image, uint32_t image_len,
+                         handle_t *out_proc, handle_t *out_job)
 {
     struct prog *p = &progs[*(const int *)ctx];
     static const char *argv[STRINGS_MAX + 1], *envp[STRINGS_MAX + 1];   /* the worker's */
     handle_t proc = HANDLE_INVALID, sub = HANDLE_INVALID;
     p->done = true;   /* one start, whatever comes of it */
+    p->raised = raised(p, image, image_len);
+    for (uint32_t i = 0; i < image_len; i++)
+        jam_handle_close(image[i]);
     status_t st = kind_ok(job, OBJ_JOB, RIGHT_WRITE) && kind_ok(signals, OBJ_CHANNEL, 0) &&
                   split_strings(argc, strings, strings_len, argv, envp) ? OK : ERR_INVALID_ARGS;
     if (st == OK) {
