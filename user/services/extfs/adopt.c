@@ -265,7 +265,7 @@ static void unmake(unsigned slot)
     else if (m->kind == XF_MADE_VIEW && m->index < XF_VIEWS)
         kept->views[m->index].used = false;
     else if (m->kind == XF_MADE_MAP && m->index < XF_MAX_MAPS)
-        kept->maps[m->index].used = false;    /* its VMO's GONE finds a key nobody knows */
+        kept->maps[m->index].used = false;    /* to run: its VMO's GONE finds a key nobody knows */
 }
 
 status_t adopt(bool adopted, bool *no_volume)

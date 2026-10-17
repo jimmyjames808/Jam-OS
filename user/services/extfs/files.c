@@ -15,8 +15,10 @@
  * close or unmap drops it (defer_drop). A successor keeps the orphans its
  * state holds open or mapped (adopt.c).
  *
- * file.map is pager.c's; here are its checks and the changes its mappings
- * must see (a write's bytes and a truncate's size: maps_changed).
+ * file.map is pager.c's; here are its checks, the changes its mappings
+ * must see (a write's bytes, maps_wrote; a truncate's size, maps_resized)
+ * and what a read must see of them (their stores, maps_peek): one cache,
+ * pager.c's header.
  *
  * The tables are in the state (kept->files); each slot's channel and
  * buffer, handles, are here by the same index, and with the keeper. The
@@ -123,12 +125,13 @@ status_t files_truncate(struct ext_inode *in, uint64_t size)
     if (size > ext_max_size(&vol.fs))
         return ERR_OUT_OF_RANGE;
     status_t st = set_size(in, size);
-    /* Its mappings: the new size, and the last page (zeros past the end
-     * now, or the old end's page grown). A failure's too: the last
-     * block's tail may be zero on the disk already, and the size goes
-     * back (maps_settle). */
-    maps_changed(in->ino, size < old ? size : old, size < old ? old : size,
-                 st == OK ? size : old);
+    /* Its mappings: the last page's tail past the end zero, and the new
+     * size. A failure's pages dropped: the last block's tail may be zero
+     * on the disk already, and the size goes back (maps_settle). */
+    if (st == OK)
+        maps_resized(in->ino, old, size);
+    else
+        maps_changed(in->ino, size < old ? size : old, size < old ? old : size, old);
     return st;
 }
 
@@ -147,6 +150,8 @@ static status_t op_read(void *ctx, uint64_t offset, uint32_t length, uint32_t *o
     uint8_t *bounce = op_bounce();
     if (st == OK && length)
         st = ext_read(&vol.fs, &in, offset, bounce, length, &got);
+    if (st == OK && got)
+        st = maps_peek(in.ino, offset, bounce, got);   /* its mappings' stores over the disk's */
     if (st == OK && got)
         st = jam_vmo_write(fh[slot_of(f)].vmo, 0, bounce, got);
     if (st != OK)
@@ -174,8 +179,9 @@ static status_t op_write(void *ctx, uint64_t offset, uint32_t length, uint32_t *
     st = inode_of(f, &in);
     if (st != OK)
         return st;
+    uint64_t old = ext_isize(&in);
     if (f->flags & FS_APPEND)
-        offset = ext_isize(&in);
+        offset = old;
     size_t n = 0;
     if (length)
         st = ext_write(&vol.fs, &in, offset, bounce, length, &n);
@@ -183,10 +189,13 @@ static status_t op_write(void *ctx, uint64_t offset, uint32_t length, uint32_t *
         st = OK;   /* what was written stays: a short write */
     if (st == OK && length)
         st = stamp(&in);
-    /* Its mappings see the bytes, and a failed write's too: what ext wrote
-     * over the file's own blocks is on the disk whatever the answer. */
-    if (length)
-        maps_changed(in.ino, offset, offset + (st == OK ? n : length), ext_isize(&in));
+    /* Its mappings see the bytes (before the commit: pager.c's "The
+     * ordering"). A failed write's pages are dropped: what ext wrote over
+     * the file's own blocks is on the disk whatever the answer. */
+    if (length && st == OK)
+        maps_wrote(in.ino, offset, bounce, n, old, ext_isize(&in));
+    else if (length)
+        maps_changed(in.ino, offset, offset + length, ext_isize(&in));
     if (st != OK)
         return st;
     *out_actual = (uint32_t)n;
@@ -264,12 +273,20 @@ static status_t op_setattr(void *ctx, uint32_t mask, uint32_t mode, uint32_t uid
 static status_t op_map(void *ctx, uint32_t flags, handle_t *out_vmo, uint64_t *out_size)
 {
     struct xf_file *f = ctx;
-    if (flags != FILE_MAP_READ && flags != FILE_MAP_EXEC)
+    if (flags != FILE_MAP_READ && flags != FILE_MAP_WRITE && flags != FILE_MAP_EXEC)
         return ERR_INVALID_ARGS;
     if (!(f->flags & FS_READ))
         return ERR_ACCESS_DENIED;
-    if (flags == FILE_MAP_EXEC && files_writing(f->ino))
-        return ERR_BUSY;   /* a program's bytes don't change while it runs (Q7) */
+    /* To write: an open that may write, as its view judged it, on a
+     * volume that still takes writes. */
+    if (flags == FILE_MAP_WRITE && (!(f->flags & FS_WRITE) || f->nochange || !writable()))
+        return ERR_ACCESS_DENIED;
+    /* A program's bytes don't change while it runs, and a file whose pages
+     * may hold stores the disk hasn't is never run (Q7, both ways). */
+    if (flags == FILE_MAP_WRITE && maps_exec(f->ino))
+        return ERR_BUSY;
+    if (flags == FILE_MAP_EXEC && (files_writing(f->ino) || maps_written(f->ino)))
+        return ERR_BUSY;
     struct ext_inode in;
     status_t st = inode_of(f, &in);
     if (st == OK)

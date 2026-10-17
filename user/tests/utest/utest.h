@@ -396,6 +396,11 @@ bool t_extfs_restart_pager(void);
 /* extfs_map.c: extfs as a pager (U10): mapped files kept right while they
  * change, programs' files guarded, unlinked mapped files kept. */
 bool t_extfs_map(void);
+/* extfs_wmap.c: writable shared mappings on extfs (WRITEMAP's WE1): one
+ * VMO per file and one cache with read, write and truncate; the second
+ * process's mode is wmap-store. */
+bool t_extfs_wmap(void);
+int  wmap_child(int argc, char **argv);
 /* extfs_posix.c: posixtest's links section on an extfs volume (libc, U6). */
 bool t_extfs_posix(void);
 bool t_view_keys_names(void);
