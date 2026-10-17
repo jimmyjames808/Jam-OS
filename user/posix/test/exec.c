@@ -712,8 +712,9 @@ static void exec_chromium(void)
 
 /* gtest's threadsafe death test's child (gtest-death-test.cc,
  * ExecDeathTestSpawnChild and ExecDeathTestChildMain): clone on two pages
- * mapped for it (unmapped in the parent at once), and there a close, a
- * chdir and an execv of this program by its path. */
+ * mapped for it (unmapped in the parent at once; here with a guard page
+ * below), and there a close, a chdir and an execv of this program by its
+ * path. */
 struct clone_exec {
     const char *path;
     char *const *argv;
@@ -736,17 +737,17 @@ static void exec_clone(void)
     CHECK(n > 0);
     int p[2];
     CHECK(pipe2(p, O_CLOEXEC) == 0);
-    char *stack = mmap(NULL, 2 * PG, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    CHECK(stack != MAP_FAILED);
-    if (n <= 0 || stack == MAP_FAILED)
+    char *guard = mmap(NULL, 3 * PG, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(guard != MAP_FAILED && mprotect(guard, PG, PROT_NONE) == 0);   /* a fault, not a write below */
+    if (n <= 0 || guard == MAP_FAILED)
         return;
     path[n] = 0;
     snprintf(pid, sizeof(pid), "%d", (int)getpid());
     char *const args[] = { "posixtest", "--child-exec", "run", "clone", pid, NULL };
     struct clone_exec a = { path, args, p[0] };
-    pid_t kid = clone(clone_exec_child, stack + 2 * PG - 64, SIGCHLD, &a);
+    pid_t kid = clone(clone_exec_child, guard + 3 * PG - 64, SIGCHLD, &a);
     CHECK(kid > 0);
-    CHECK(munmap(stack, 2 * PG) == 0);
+    CHECK(munmap(guard, 3 * PG) == 0);
     close(p[1]);
     if (kid > 0)
         reaped0(kid);

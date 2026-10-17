@@ -699,7 +699,8 @@ static void fork_clone(void)
 /* gtest's death tests give clone's child two pages they map (and unmap in
  * the parent at once); the layer's own frames for a path are bigger than
  * that, so its calls run on a stack of its own there (fork.c), and fn's
- * on the one given, as on Linux. */
+ * on the one given, as on Linux. A guard page below the two makes running
+ * over them a fault, not a write over whatever was mapped there. */
 #define SMALL (2 * PG)
 
 static uintptr_t small_lo, small_hi;   /* the stack given */
@@ -742,16 +743,16 @@ static void fork_small(void)
 {
     map_report();
     snprintf(small_dir, sizeof(small_dir), "/tmp/pxclone-%d", (int)getpid());
-    char *stk = mmap(NULL, SMALL, RW, ANON, -1, 0);
-    CHECK(stk != MAP_FAILED);
-    if (stk == MAP_FAILED)
+    char *guard = mmap(NULL, PG + SMALL, RW, ANON, -1, 0);
+    CHECK(guard != MAP_FAILED && mprotect(guard, PG, PROT_NONE) == 0);
+    if (guard == MAP_FAILED)
         return;
-    small_lo = (uintptr_t)stk;
+    small_lo = (uintptr_t)guard + PG;
     small_hi = small_lo + SMALL;
     clone_magic = 0x5a5a;
-    pid_t pid = clone(small_fn, stk + SMALL - 64, SIGCHLD, &clone_magic);
+    pid_t pid = clone(small_fn, (char *)small_hi - 64, SIGCHLD, &clone_magic);
     CHECK(pid > 0);
-    CHECK(munmap(stk, SMALL) == 0);   /* as gtest: the child has its copy */
+    CHECK(munmap(guard, PG + SMALL) == 0);   /* as gtest: the child has its copy */
     if (pid > 0)
         reaped(pid, 8);
 }
