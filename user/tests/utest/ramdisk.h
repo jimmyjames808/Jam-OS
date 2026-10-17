@@ -38,6 +38,9 @@ struct ramdisk {
     uint32_t to_kinds;      /* ramdisk_time_out's: the kinds that time out ... */
     uint32_t to_left;       /* ... and how many more of them */
     uint32_t timeouts;      /* requests answered ERR_TIMED_OUT so far */
+    uint16_t depth;         /* block.info's queue_depth (0: 1) */
+    uint8_t  hold;          /* ramdisk_hold_read's: 0 none, 1 till the next request, 2 till gone */
+    uint32_t late;          /* held reads that landed late */
     /* Called on the serving thread after each write has landed in mem
      * (NULL: none; ramdisk_on_write sets it): a test watching the disk
      * change write by write, as a death between two of them would leave it. */
@@ -77,3 +80,19 @@ void     ramdisk_pull_after(struct ramdisk *rd, uint32_t requests);
 #define RAMDISK_SYNC  4u
 void     ramdisk_time_out(struct ramdisk *rd, uint32_t kinds, uint32_t n);
 uint32_t ramdisk_timeouts(const struct ramdisk *rd);   /* answered so, in all */
+/* What block.info says of the queue (1 by default, usb-storage's; 32 is
+ * drv/nvme's, whose answers come in completion order). The server still
+ * answers one request at a time. */
+void     ramdisk_depth(struct ramdisk *rd, uint16_t depth);
+/* The next read is held unanswered, as a drive holds a command it can't
+ * get done, until the client sends another request (or, until_gone, until
+ * it leaves; RAMDISK_HOLD_MAX at most). Then it lands late, as the
+ * device's transfer would: its blocks in the buffer are RAMDISK_LATE
+ * bytes, over whatever the client put there meanwhile; and it is answered
+ * (the kernel drops an answer whose caller gave up). */
+#define RAMDISK_LATE     0xe5u
+#define RAMDISK_HOLD_MAX (30 * NS_PER_S)
+void     ramdisk_hold_read(struct ramdisk *rd, bool until_gone);
+uint32_t ramdisk_late(const struct ramdisk *rd);      /* held reads landed so far */
+/* Is any sector of the disk all RAMDISK_LATE bytes (a late read written)? */
+bool     ramdisk_has_late(const struct ramdisk *rd);

@@ -40,6 +40,8 @@ bool fat_start_plain(struct fatrun *r, struct ramdisk *rd, bool read_only);
 /* fat_start's, writable, handed a copy of pager (FAT_SR_PAGER, with the
  * rights volumes gives): it serves file.map. */
 bool fat_start_pager(struct fatrun *r, struct ramdisk *rd, handle_t pager);
+/* fat_start's, writable, with test words (fat/test.c: at most 4). */
+bool fat_start_words(struct fatrun *r, struct ramdisk *rd, const char *const *words, unsigned n);
 /* fat must end by itself with exit code `code` within FAT_CALL_NS and
  * leave its job empty. */
 bool fat_wait(struct fatrun *r, int code);

@@ -845,6 +845,92 @@ bool t_extfs_timeout_spent(void)
     return ramdisk_destroy(&xd);
 }
 
+/* extfs ended by itself with `code`, the session's channels closed. */
+static bool extfs_ended(struct fatrun *r, int code)
+{
+    CHECK(fat_wait(r, code));
+    CHECK_ST(jam_handle_close(r->fs), OK);
+    return ramdisk_join(r->rd);
+}
+
+/* drv/nvme answers in completion order (queue depth 32) and may hold a
+ * command it can't get done past a client's wait (its timeout, an Abort,
+ * a reset): a read extfs gave up on could land in the buffer later, over
+ * the next call's blocks, which a write would then put on the disk. Here
+ * the RAM disk at depth 32 holds a read past extfs's wait (quick-wait:
+ * 3 s) and lands it when the next request comes or extfs leaves. extfs
+ * must end at once (exit 1, for a restart on a new channel: <blockcall.h>)
+ * with nothing sent after it, so the late bytes are on no sector; the next
+ * start finds the volume as it was, writes on, and leaves it clean. */
+bool t_extfs_late(void)
+{
+    static const char *const words[] = { "quick-retry", "quick-wait" };
+    static struct ramdisk xd;
+    struct fatrun r;
+    CHECK(ramdisk_create(&xd, EXT_DISK_SECTORS));
+    ramdisk_depth(&xd, 32);
+    CHECK(extfs_start(&r, &xd, false, words, 2));
+    CHECK_ST(t_mkdir(&r, "/t"), OK);
+    CHECK(put_file(&r, "/t/a", "before the late read"));
+    CHECK(fat_stop(&r));
+    CHECK(extfs_start(&r, &xd, false, words, 2));   /* nothing of /t cached */
+    uint32_t writes = ramdisk_writes(&xd);
+    ramdisk_hold_read(&xd, false);
+    CHECK(t_stat(&r, "/t/a", NULL, NULL, NULL) != OK);
+    CHECK(t_mkdir(&r, "/t/after") != OK);
+    CHECK(extfs_ended(&r, 1));
+    CHECK_EQ(ramdisk_late(&xd), 1);
+    CHECK_EQ(ramdisk_writes(&xd), writes);
+    CHECK(!ramdisk_has_late(&xd));
+    CHECK(extfs_start(&r, &xd, false, NULL, 0));
+    CHECK(file_is(&r, "/t/a", "before the late read"));
+    CHECK(put_file(&r, "/t/b", "after it"));
+    CHECK(fat_stop(&r));
+    CHECK(!ramdisk_has_late(&xd));
+    CHECK(extfs_save(&xd, "extfs_late"));
+    return ramdisk_destroy(&xd);
+}
+
+/* The same at queue depth 1 (usb-storage, which answers in order). A read
+ * held past the wait is tried again, and the retry's answer, which comes
+ * after the late landing, means the buffer is extfs's again: the read
+ * goes through ("timed out; try 2 went through") and extfs carries on.
+ * One held until extfs leaves gets no answer within the budget: extfs
+ * ends as above. */
+bool t_extfs_late_in_order(void)
+{
+    static const char *const words[] = { "quick-retry", "quick-wait" };
+    static struct ramdisk xd;
+    struct fatrun r;
+    CHECK(ramdisk_create(&xd, EXT_DISK_SECTORS));
+    CHECK(extfs_start(&r, &xd, false, words, 2));
+    CHECK_ST(t_mkdir(&r, "/t"), OK);
+    CHECK(put_file(&r, "/t/a", "read late, then again"));
+    CHECK(put_file(&r, "/t/b", "never answered"));
+    CHECK(fat_stop(&r));
+    CHECK(extfs_start(&r, &xd, false, words, 2));
+    ramdisk_hold_read(&xd, false);
+    CHECK(file_is(&r, "/t/a", "read late, then again"));
+    CHECK_EQ(ramdisk_late(&xd), 1);
+    CHECK(put_file(&r, "/t/c", "written after"));
+    CHECK(fat_stop(&r));
+    CHECK(!ramdisk_has_late(&xd));
+    CHECK(extfs_start(&r, &xd, false, words, 2));
+    uint32_t writes = ramdisk_writes(&xd);
+    ramdisk_hold_read(&xd, true);
+    CHECK(t_stat(&r, "/t/b", NULL, NULL, NULL) != OK);
+    CHECK(extfs_ended(&r, 1));
+    CHECK_EQ(ramdisk_late(&xd), 2);
+    CHECK_EQ(ramdisk_writes(&xd), writes);
+    CHECK(!ramdisk_has_late(&xd));
+    CHECK(extfs_start(&r, &xd, false, NULL, 0));
+    CHECK(file_is(&r, "/t/b", "never answered"));
+    CHECK(file_is(&r, "/t/c", "written after"));
+    CHECK(fat_stop(&r));
+    CHECK(extfs_save(&xd, "extfs_late_in_order"));
+    return ramdisk_destroy(&xd);
+}
+
 /* ---- many at once (docs/M13.6-REVIEW.md's R3) ------------------------------------ */
 
 #define MANY_FILES 200u

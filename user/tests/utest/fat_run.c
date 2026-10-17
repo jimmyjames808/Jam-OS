@@ -20,18 +20,22 @@ static uint32_t len_of(const char *s)
     return (uint32_t)strlen(s);
 }
 
-/* pager: a copy handed to fat (FAT_SR_PAGER, as volumes hands it), or 0. */
+/* pager: a copy handed to fat (FAT_SR_PAGER, as volumes hands it), or 0;
+ * extra: test words (fat/test.c) after the format flag (n of them). */
 static bool start(struct fatrun *r, struct ramdisk *rd, bool read_only, bool format,
-                  handle_t pager)
+                  handle_t pager, const char *const *extra, unsigned n)
 {
     handle_t block, serve, ctl;
     *r = (struct fatrun){ .rd = rd };
+    CHECK(n <= 4 && (format || !n));
     if (!ramdisk_serve(rd, read_only, &block))
         return false;
     CHECK_ST(jam_channel_create(&r->fs, &serve), OK);
     CHECK_ST(jam_channel_create(&r->ctl, &ctl), OK);
     CHECK_ST(new_job(&r->job), OK);
-    const char *argv[] = { "fat", "utest", FAT_ARG_FORMAT };
+    const char *argv[7] = { "fat", "utest", FAT_ARG_FORMAT };
+    for (unsigned i = 0; i < n; i++)
+        argv[3 + i] = extra[i];
     struct spawn_handle x[4] = { { FAT_SR_BLOCK, block }, { FAT_SR_SERVE, serve },
                                  { FAT_SR_CTL, ctl } };
     rights_t xr[4] = { RIGHT_SAME, RIGHT_SAME, RIGHT_SAME, RIGHT_READ | RIGHT_WRITE | RIGHT_WAIT };
@@ -41,7 +45,7 @@ static bool start(struct fatrun *r, struct ramdisk *rd, bool read_only, bool for
         x[nx++].role = FAT_SR_PAGER;
     }
     struct spawn_args a = {
-        .path = "bin/fat", .argc = format ? 3 : 2, .argv = argv, .job = r->job, .extra = x,
+        .path = "bin/fat", .argc = format ? 3 + n : 2, .argv = argv, .job = r->job, .extra = x,
         .nextra = nx, .extra_rights = xr,
     };
     CHECK_ST(spawn(&a, &r->proc), OK);
@@ -50,17 +54,22 @@ static bool start(struct fatrun *r, struct ramdisk *rd, bool read_only, bool for
 
 bool fat_start(struct fatrun *r, struct ramdisk *rd, bool read_only)
 {
-    return start(r, rd, read_only, true, HANDLE_INVALID);
+    return start(r, rd, read_only, true, HANDLE_INVALID, NULL, 0);
 }
 
 bool fat_start_plain(struct fatrun *r, struct ramdisk *rd, bool read_only)
 {
-    return start(r, rd, read_only, false, HANDLE_INVALID);
+    return start(r, rd, read_only, false, HANDLE_INVALID, NULL, 0);
 }
 
 bool fat_start_pager(struct fatrun *r, struct ramdisk *rd, handle_t pager)
 {
-    return start(r, rd, false, true, pager);
+    return start(r, rd, false, true, pager, NULL, 0);
+}
+
+bool fat_start_words(struct fatrun *r, struct ramdisk *rd, const char *const *words, unsigned n)
+{
+    return start(r, rd, false, true, HANDLE_INVALID, words, n);
 }
 
 bool fat_wait(struct fatrun *r, int code)

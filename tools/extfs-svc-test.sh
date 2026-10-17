@@ -22,8 +22,12 @@ QEMU_TIMEOUT=${QEMU_TIMEOUT:-1500} QEMU_SAVE="$out/extfs-svc.after.img" \
 grep -E "utest: (extfs|[0-9]+ passed)|FAILED" "$out/extfs-svc.log" | head -40
 # extfs_timeout's and extfs_timeout_spent's lines: a flush that timed out
 # went through when tried again; one that never did failed as it always has.
+# extfs_late's: a read the disk held past the wait ended extfs; a read held
+# on an in-order disk went through when tried again.
 for want in "a flush of the disk's cache timed out; try 3 went through" \
-            "a flush of the disk's cache failed: ERR_TIMED_OUT (5 tries in"; do
+            "a flush of the disk's cache failed: ERR_TIMED_OUT (5 tries in" \
+            "got no answer: the disk may still move its data through the buffer" \
+            "timed out; try 2 went through"; do
     grep -qF "$want" "$out/extfs-svc.log" ||
         { echo "extfs-svc-test: extfs never said \"$want\""; ok=1; }
 done

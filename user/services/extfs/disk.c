@@ -20,8 +20,11 @@
  * volume of 1 KiB blocks on 4 KiB sectors, which Linux's mkfs never makes)
  * is refused.
  *
- * Every call has a time limit (BLOCKCALL_WAIT), so a disk that stops
- * answering fails the request with ERR_IO instead of hanging extfs; a call
+ * Every call has a time limit, longer than the driver holds a request it
+ * can't get done (<blockcall.h>), so a disk that stops answering fails the
+ * request with ERR_IO instead of hanging extfs; a read or a write that got
+ * no answer at all ends extfs, since the driver may still move data
+ * through the buffer (volumes starts it again on a new channel); a call
  * that finds the channel closed sets vol.disk_gone, and main.c winds extfs
  * down.
  *
@@ -46,6 +49,7 @@ static status_t call(enum blockcall_op op, uint64_t lba, uint32_t count,
                      struct blockcall_tries *t)
 {
     bc.quick_pause = test_quick_retry();
+    bc.quick_wait = test_quick_wait();
     return blockcall(&bc, op, lba, count, t);
 }
 

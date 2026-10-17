@@ -21,7 +21,8 @@ static status_t op_info(void *ctx, uint32_t *out_block_size, uint64_t *out_block
     *out_blocks = rd->blocks;
     *out_read_only = rd->read_only;
     *out_max_blocks = RAMDISK_BUF / RAMDISK_SECTOR;
-    *out_queue_depth = 1;
+    uint16_t depth = __atomic_load_n(&rd->depth, __ATOMIC_RELAXED);
+    *out_queue_depth = depth ? depth : 1;
     *out_buffer_max = RAMDISK_BUF;
     return OK;
 }
@@ -70,6 +71,16 @@ static bool times_out(struct ramdisk *rd, uint32_t kind)
     return true;
 }
 
+/* A read ramdisk_hold_read asked for: unanswered until the client sends
+ * more or leaves; then its blocks land in the buffer late. */
+static void hold(struct ramdisk *rd, uint8_t how, uint32_t offset, uint32_t count)
+{
+    signals_t want = how == 2 ? SIG_PEER_CLOSED : SIG_READABLE | SIG_PEER_CLOSED;
+    (void)jam_object_wait_one(rd->ch, want, now() + RAMDISK_HOLD_MAX, NULL);
+    memset(rd->buf + offset, RAMDISK_LATE, (size_t)count * RAMDISK_SECTOR);
+    __atomic_add_fetch(&rd->late, 1, __ATOMIC_RELAXED);
+}
+
 static status_t op_read(void *ctx, struct idl_txn txn, uint64_t lba, uint32_t count,
                         uint32_t offset)
 {
@@ -78,6 +89,11 @@ static status_t op_read(void *ctx, struct idl_txn txn, uint64_t lba, uint32_t co
     status_t st = range(rd, lba, count, offset);
     if (st != OK)
         return st;
+    uint8_t how = __atomic_exchange_n(&rd->hold, 0, __ATOMIC_RELAXED);
+    if (how) {
+        hold(rd, how, offset, count);
+        return OK;
+    }
     if (times_out(rd, RAMDISK_READ)) {
         memcpy(rd->buf + offset, rd->mem + lba * RAMDISK_SECTOR,
                (size_t)(count / 2) * RAMDISK_SECTOR);
@@ -251,4 +267,32 @@ void ramdisk_time_out(struct ramdisk *rd, uint32_t kinds, uint32_t n)
 uint32_t ramdisk_timeouts(const struct ramdisk *rd)
 {
     return __atomic_load_n(&rd->timeouts, __ATOMIC_RELAXED);
+}
+
+void ramdisk_depth(struct ramdisk *rd, uint16_t depth)
+{
+    __atomic_store_n(&rd->depth, depth, __ATOMIC_RELAXED);
+}
+
+void ramdisk_hold_read(struct ramdisk *rd, bool until_gone)
+{
+    __atomic_store_n(&rd->hold, until_gone ? 2 : 1, __ATOMIC_RELAXED);
+}
+
+uint32_t ramdisk_late(const struct ramdisk *rd)
+{
+    return __atomic_load_n(&rd->late, __ATOMIC_RELAXED);
+}
+
+bool ramdisk_has_late(const struct ramdisk *rd)
+{
+    for (uint64_t s = 0; s < rd->blocks; s++) {
+        const uint8_t *p = rd->mem + s * RAMDISK_SECTOR;
+        uint32_t i = 0;
+        while (i < RAMDISK_SECTOR && p[i] == RAMDISK_LATE)
+            i++;
+        if (i == RAMDISK_SECTOR)
+            return true;
+    }
+    return false;
 }
