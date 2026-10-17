@@ -1002,6 +1002,8 @@ ones off; the programs need relinking against the new libc first.
   `madvise`): they need which pages, a kernel query (below). The heap
   profiler's residency test: unknown until it runs. The bytes of `vec` are
   stored without a checked copy: CBF1's EFAULT work should cover them.
+  (MC replaced the guess with the kernel's answer per page: [MC
+  notes](#mc-notes-2026-10-18).)
 - **`pkey_alloc`, `pkey_free`, `pkey_mprotect`** (330, 331, 329). Jam OS has
   no protection keys, so the answers are Linux's on a machine without them:
   `pkey_alloc` EINVAL for flags or an unknown access right, else ENOSPC;
@@ -1093,7 +1095,8 @@ ones off; the programs need relinking against the new libc first.
   needs a kernel query for which pages of a range are present (a
   `vmar` call filling one byte a page, over the walk `process_get_maps`
   already does); without it the 18 purge tests and any caller of one page
-  stay a guess. (2) Honour `mmap`'s free address hint. (3) A high image base
+  stay a guess (built: [MC notes](#mc-notes-2026-10-18)). (2) Honour
+  `mmap`'s free address hint. (3) A high image base
   for Chromium's programs (ZeroSegment, and a null-page hardening that is
   worth having anyway). (4) `/proc/sys/kernel/osrelease` and
   `/proc/version` to say what `uname` says (done: [CBF4 notes](#cbf4-notes-2026-10-17)).
@@ -1546,7 +1549,7 @@ the list. Others may still pass this way.
   pages present. The nine left ask about one page of a part-resident
   mapping (`CheckPageInCore` false for a page that is there; the sampling
   profiler's `resident_total` reads 0). The per-page kernel query is still
-  the open owner question.
+  the open owner question (built since: [MC notes](#mc-notes-2026-10-18)).
 - **`ZeroSegmentInaccessibleBegin` passes**, `...End` does not ("failed to
   die": the segment is not reserved as the test expects).
 - **The disk can fail a shard.** Under a loaded PC (12 to 14 of this track's
@@ -1731,6 +1734,61 @@ the forwarding fix).
 
 **Harness changes**: `base-run.py --death-style` and `cr-test.sh`'s
 `CR_BASE_DEATH` default to `threadsafe`; the skip list's groups as above.
+
+#### MC notes (2026-10-18)
+
+Track MC (branch `mc-mincore`): exact `mincore`, the owner's decision D7 (a
+read-only kernel query of which pages of the caller's own mappings are
+there).
+
+- **The call: `vmar_resident` (66)** (`abi/syscalls.def` has the contract).
+  One byte per page of `[addr, addr + len)` of the caller's own address
+  space, 1 when the VMO mapped at the page holds it: committed (a page
+  shared copy-on-write counts in every table holding it, so a fork's child
+  and its parent both have it), any page of a contiguous or physical VMO,
+  a pager VMO's page in its cache whatever its state (clean, dirty,
+  writing); 0 for a page never touched, decommitted, evicted, or past the
+  VMO's size. The mapping's protection doesn't matter: `PROT_NONE` memory
+  keeps its pages, as Linux reports them. It returns how many pages from
+  `addr` are mapped (fewer: a hole right after them; 0: none at `addr`), at
+  most `VMAR_RESIDENT_MAX` (4096, a page of bytes: Linux's chunk) a call;
+  `RIGHT_READ` on the vmar, which must be the caller's own
+  (`ERR_ACCESS_DENIED` for a parent's handle of its child's: no process
+  learns which pages another touched). The ABI stamp changes.
+- **Pager VMOs and Linux's side-channel rule.** Since Linux 5.0 `mincore`
+  tells the page cache's state only for a file the caller could open for
+  writing, and says every page is resident for any other mapping of a file,
+  because a repeatable look at another program's reads of a shared file
+  (a library, a font) is a side channel. The kernel keeps the same rule: a
+  pager VMO's cache is told only through a mapping whose maximum may write
+  it (a writable pager VMO through a handle with `RIGHT_WRITE`); through
+  any other its pages below the size read 1, and so do a pager VMO's
+  child's window pages it doesn't hold itself (they would come from the
+  pager VMO; a `MAP_PRIVATE` mapping of a file). A private file mapping of
+  a file the program may write therefore reads 1 where Linux would tell the
+  cache: the child can't know its creator's rights on the file.
+- **The work.** `aspace_resident` looks once under the region lock and
+  `vmo_resident` reads each VMO's table a leaf (or a run of missing
+  tables) per lock hold, as decommit does, into a kernel buffer the call
+  copies out with no lock held. A 256 GiB reservation with three pages
+  touched is swept in 16 ms (16,384 calls).
+- **libc.** `lx_mincore` (`user/posix/sys/mem.c`) asks a chunk at a time,
+  the kernel writing `vec`: `EINVAL` for an unaligned start, `ENOMEM` past
+  the user range or at an unmapped page (the bytes before it written),
+  `EFAULT` for `vec` (at once past Linux's `TASK_SIZE_MAX`, else when the
+  copy fails, after a hole's `ENOMEM`), `EAGAIN` if the kernel can't get
+  its buffer. A memfd's pages all read 1: they are committed as it grows
+  (a kept VMO, `memfd.c`), where Linux's shmem counts the written ones.
+- **Tests.** ktests `vmar_resident_*` (anonymous, holes, copy-on-write,
+  pager, the sparse sweep, the handle layer's refusals, a fuzz against the
+  VMOs' tables) and posixtest mem's `check_mincore_pages` (one page in the
+  middle, as `CheckPageInCore` asks; fails with the old guess).
+- **Should clear** (`base_unittests` not run here): the nine listed for
+  `mincore`, `AlternateTestParams/PartitionAllocTest.PurgeDiscardable*`
+  (`NonPageSizedAlloc`, `NonPageSizedAllocOnSlotBoundary`, `SecondPage`,
+  `WithFreeListStraightening`, each `/0` and `/1`) and
+  `SamplingHeapProfilerTest.GetSamplesWithResidency`. They stay on the skip
+  list until a base run shows them passing.
 
 ### 2. The address space: huge sparse reservations (the top risk)
 
