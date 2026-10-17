@@ -202,6 +202,8 @@ static status_t replay(struct ext_fs *fs, struct ext_jnl *j)
         return ERR_NOT_SUPPORTED;
     }
     status_t st = jnl_replay(fs, j);
+    if (st == OK && j->on_end)
+        j->on_end(j->ctx, j->mount_end);   /* before the next id passes it */
     return st == OK ? mark_empty(fs, j, j->mount_end + 1) : st;
 }
 
@@ -250,6 +252,8 @@ status_t ext_jnl_mount(struct ext_fs *fs, struct ext_jnl *j, const struct ext_de
         st = remount(fs, j, dev, mem, mem_size, flags);
         if (st != OK)
             return st;   /* what was replayed is damaged: as ext_mount says */
+    } else if (j->on_end) {
+        j->on_end(j->ctx, j->mount_end);
     }
     /* The journal is empty now: nothing is left to recover. */
     fs->needs_recovery = false;

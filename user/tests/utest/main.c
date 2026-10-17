@@ -769,6 +769,7 @@ static const struct {
     { "extfs_restart_steps", t_extfs_restart_steps },
     { "extfs_restart_handles", t_extfs_restart_handles },
     { "extfs_restart_bad", t_extfs_restart_bad },
+    { "extfs_restart_twice", t_extfs_restart_twice },
     { "extfs_spare", t_extfs_spare },
     { "extfs_map", t_extfs_map },
     { "extfs_restart_pager", t_extfs_restart_pager },

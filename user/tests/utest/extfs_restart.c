@@ -410,6 +410,31 @@ bool t_extfs_restart_bad(void)
     return sup_stop() && ramdisk_destroy(&test_disk);
 }
 
+/* ---- a request in progress at two deaths in a row ---------------------------------- */
+
+/* The first instance ends with a request's log written and its commit block
+ * not (its third write: the superblock's needs_recovery, the tail, the log);
+ * its successor ends at its first write, the replayed log marked empty with
+ * the next id, before the request runs again. The third must run it again,
+ * not answer it from the slot as done: it was never committed
+ * (docs/M13.6-REVIEW.md's R2). */
+bool t_extfs_restart_twice(void)
+{
+    static const char *const dies[] = { "die=write:3", "die=write:1" };
+    static struct ramdisk test_disk;
+    bool is_dir = false;
+    if (!ramdisk_create(&test_disk, DISK_SECTORS) || !sup_start(&test_disk, NULL, 0, NULL))
+        return false;
+    CHECK_ST(t_mkdir(&sv.r, "/a"), OK);   /* formatted, then closed clean */
+    if (!sup_stop() || !sup_start(&test_disk, dies, 2, NULL))
+        return false;
+    CHECK_ST(t_mkdir(&sv.r, "/k"), OK);
+    CHECK_EQ(sv.tests, 2u);
+    CHECK_ST(t_stat(&sv.r, "/k", NULL, &is_dir, NULL), OK);
+    CHECK(is_dir);
+    return sup_stop() && ramdisk_destroy(&test_disk);
+}
+
 /* ---- mapped files ------------------------------------------------------------------- */
 
 #define MAP_CHUNKS 3u          /* the mapped file: 48 pages */

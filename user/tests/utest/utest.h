@@ -383,6 +383,7 @@ bool t_extfs_flush(void);   /* a disk with a cache: block.sync where the journal
 bool t_extfs_restart_steps(void);
 bool t_extfs_restart_handles(void);
 bool t_extfs_restart_bad(void);
+bool t_extfs_restart_twice(void);   /* in progress at two deaths: run again, not answered */
 bool t_extfs_spare(void);
 bool t_extfs_restart_pager(void);
 /* extfs_map.c: extfs as a pager (U10): mapped files kept right while they
