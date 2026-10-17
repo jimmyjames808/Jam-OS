@@ -657,10 +657,10 @@ read with, so `FSW_PER_PROCESS` counts real processes.
   give it an open and a close. A path that doesn't end in a name (`.`,
   `..`, a view's root) gives the inode's own event only, no directory
   event (Linux's dentry has a parent there).
-- *A removed watch's queued events* are dropped by the library's
+- *A removed watch's queued events* were dropped by the library's
   `fsw_remove` (IP's choice); Linux leaves them in the queue before
-  `IN_IGNORED`. Chromium skips events of a `wd` it no longer holds, so
-  this is kept; IR may weigh it.
+  `IN_IGNORED`. The main session's call: Linux's way; IE2 changed the
+  library (its events stay, `IN_IGNORED` after them).
 - *The close rule's own order*: before a file's request the rule runs only
   when that channel has a message queued; a packet that is the file's own
   close is handled in the port's order (running the rule there handled a

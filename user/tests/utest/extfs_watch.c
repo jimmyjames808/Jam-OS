@@ -546,8 +546,9 @@ bool t_extfs_watch_views(void)
     CHECK_ST(fswatch_remove_until(s.ch, dl(), idIN), OK);
     CHECK_ST(fswatch_remove_until(s.ch, dl(), idIN), OK);   /* gone already: OK, nothing */
     t_close(&f);
-    /* (the removed watch's queued events go with it: the library's rule) */
-    EXPECT(&s, "IN_ONESHOT and a remove", { idH, IN(MODIFY), "" }, { idH, IN(IGNORED), "" },
+    /* (the removed watch's queued events stay, before its IN_IGNORED: Linux's) */
+    EXPECT(&s, "IN_ONESHOT and a remove", { idIN, IN(OPEN), "h" }, { idIN, IN(MODIFY), "h" },
+           { idH, IN(MODIFY), "" }, { idH, IN(IGNORED), "" }, { idIN, IN(MODIFY), "h" },
            { idIN, IN(IGNORED), "" });
 
     /* IN_MASK_ADD adds to a watch's mask; an add without it replaces it. */

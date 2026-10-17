@@ -245,14 +245,18 @@ bool t_fswatch_protocol(void)
     CHECK(len == FSWATCH_RECORD_FIXED + 1 && more);
     CHECK(!rung(bell));   /* the queue never went empty */
 
-    /* remove: the watch's queued events dropped, IN_IGNORED last. */
+    /* remove: the watch's queued events kept (Linux's), IN_IGNORED last;
+     * nothing of it after that. */
     fsw_self_event(&w, &K_F, IN(CLOSE_WRITE), 0);
     fsw_event(&w, &K_D, "f", 1, &K_F, IN(ATTRIB), 0);   /* only /d asked for it */
     CHECK_ST(c_remove(&s, client, idf), OK);
+    fsw_self_event(&w, &K_F, IN(CLOSE_WRITE), 0);
     CHECK_ST(c_take(&s, client, FSWATCH_TAKE_BYTES, &more, out, &len), OK);
-    CHECK_EQ(decode(out, len, r, 8), 2);
-    CHECK(is(&r[0], idd, IN(ATTRIB), "f"));
-    CHECK(is(&r[1], idf, IN(IGNORED), ""));
+    CHECK_EQ(decode(out, len, r, 8), 4);
+    CHECK(is(&r[0], idf, IN(MODIFY), ""));   /* the one a too small room left */
+    CHECK(is(&r[1], idf, IN(CLOSE_WRITE), ""));
+    CHECK(is(&r[2], idd, IN(ATTRIB), "f"));
+    CHECK(is(&r[3], idf, IN(IGNORED), ""));
     CHECK_ST(c_remove(&s, client, idf), OK);   /* gone: nothing done */
     CHECK_ST(c_remove(&s, client, 0), OK);
     CHECK_ST(c_take(&s, client, FSWATCH_TAKE_BYTES, &more, out, &len), OK);

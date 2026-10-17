@@ -210,9 +210,9 @@ static inline status_t fswatch_remove_call(handle_t ch, bool idl_within, uint64_
         idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
     return idl_st;
 }
-/* End watch `id`: its queued events are dropped and IN_IGNORED queued for
- * it. An id that is not a watch of this channel now (it ended, or never
- * was): OK, nothing done. */
+/* End watch `id`: IN_IGNORED queued for it, after its events queued
+ * already (they stay, as Linux's do). An id that is not a watch of this
+ * channel now (it ended, or never was): OK, nothing done. */
 static inline status_t fswatch_remove_until(handle_t ch, uint64_t deadline_ns, uint32_t id)
 {
     return fswatch_remove_call(ch, false, deadline_ns, id);
