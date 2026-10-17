@@ -100,7 +100,13 @@ static status_t start(struct sup *s, const char *ended)
                             .extra = x, .nextra = nx, .extra_rights = xr };
     st = spawn(&a, &s->r.proc);
     s->instance++;
-    return st == OK ? keeper_restore(&s->keeper) : st;
+    if (st != OK)
+        return st;
+    /* An instance a test power ends at its first write (die=write:1, in its
+     * mount) may be gone before the keeper writes to it: the supervisor
+     * sees it end and starts the next, as for any other death. */
+    st = keeper_restore(&s->keeper);
+    return st == ERR_PEER_CLOSED ? OK : st;
 }
 
 static bool reap(struct sup *s, struct process_info *info)
