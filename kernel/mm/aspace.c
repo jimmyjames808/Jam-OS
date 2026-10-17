@@ -2128,6 +2128,31 @@ static status_t fault_wait(struct aspace *as, struct vmo *v, uint64_t idx)
     return st;
 }
 
+/* The region lock is held and a store to a clean page of v (a writable
+ * pager VMO, through a mapping) found its pager at the dirty limit: drop
+ * the region lock and wait for the write-back of the pager's oldest run
+ * (<jam/pager.h>'s "The dirty limit"). *until: when the store's time is up
+ * (0 before its first wait). OK: look again (from find). The region lock
+ * is not held on return. */
+static status_t store_wait(struct aspace *as, struct vmo *v, uint64_t *until)
+{
+    kobject_ref(vmo_kobject(v));   /* (fault_wait's reason) */
+    mutex_unlock(&as->lock);
+    struct pager_req *r = NULL;
+    status_t st = vmo_pager_throttle(v, until, &r);   /* ERR_TIMED_OUT once the time is up */
+    if (r) {
+        wait_held_check();
+        st = pager_req_wait_until(r, *until);   /* cancellable */
+        pager_req_put(r);
+        /* However the request ended (written, failed, cut off, past its
+         * own deadline), the count may have fallen: look again. */
+        if (st != ERR_CANCELED)
+            st = OK;
+    }
+    kobject_unref(vmo_kobject(v));
+    return st;
+}
+
 status_t aspace_fault(struct aspace *as, uint64_t addr, unsigned access)
 {
     if (addr < USER_BASE || addr >= USER_TOP)
@@ -2136,6 +2161,7 @@ status_t aspace_fault(struct aspace *as, uint64_t addr, unsigned access)
     if (!need)
         need = ASPACE_READ;
     __atomic_add_fetch(&as->faults, 1, __ATOMIC_RELAXED);
+    uint64_t until = 0;   /* a store at the dirty limit: when its time is up */
     for (unsigned rounds = 0;;) {
         mutex_lock(&as->lock);
         struct mapping *m = find(as, addr);
@@ -2151,6 +2177,16 @@ status_t aspace_fault(struct aspace *as, uint64_t addr, unsigned access)
             st = pt_prepare(as, va);
             if (st == OK)
                 st = vmo_fault_map(m->vmo, idx, as, va, m->flags, (need & ASPACE_WRITE) != 0);
+        }
+        if (st == ERR_NO_RESOURCES) {
+            /* A store at its pager's dirty limit: wait for a write-back
+             * without the region lock, then start again from find. Bounded
+             * by time, not rounds: the pager's answer time in all, which
+             * the throttle checks at every look. */
+            st = store_wait(as, m->vmo, &until);
+            if (st != OK)
+                return st;
+            continue;
         }
         if (st != ERR_SHOULD_WAIT) {
             mutex_unlock(&as->lock);

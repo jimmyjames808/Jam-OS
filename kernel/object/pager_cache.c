@@ -209,11 +209,15 @@ uint64_t pager_cache_dirtied_vlocked(const struct page *p)
     return ((const struct pager_rec *)p->private)->dirtied;
 }
 
-bool pager_cache_store_vlocked(struct pager_cache *c, struct page *p)
+status_t pager_cache_store_vlocked(struct pager_cache *c, struct page *p, uint64_t limit)
 {
     struct pager_rec *rec = (struct pager_rec *)p->private;
     uint64_t f = cache_lock(c);
     bool was_clean = !rec->state;
+    if (was_clean && c->ndirty >= limit) {
+        cache_unlock(c, f);
+        return ERR_NO_RESOURCES;   /* the store waits for a write-back (pager.c) */
+    }
     if (was_clean) {
         if (p->node.next)
             list_del(&p->node);   /* off the clean list: its count goes with it */
@@ -225,7 +229,7 @@ bool pager_cache_store_vlocked(struct pager_cache *c, struct page *p)
     }
     rec->state |= PAGER_PAGE_DIRTY;   /* (a writing page stays on `writing`) */
     cache_unlock(c, f);
-    return was_clean;
+    return OK;
 }
 
 void pager_cache_begin_vlocked(struct pager_cache *c, struct page *p)

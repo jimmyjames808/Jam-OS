@@ -68,11 +68,15 @@
  * that answered it sees it again (a page that was being written when it
  * was made, and stored to since).
  *
- * The background request (`bg`): when a store takes a pager's dirty and
- * writing pages past half its dirty limit, the run of dirty pages around
- * its oldest one (pager_writeback_kick), one at a time per pager, charged
- * to the pager's job. Nobody waits on it, so it ends at its deadline when
- * the next kick or pager_next meets it.
+ * The request for the oldest run (`bg`), one at a time per pager: when a
+ * store takes a pager's dirty and writing pages past half its dirty limit,
+ * the run of dirty pages around its oldest one (pager_writeback_kick, the
+ * background request, charged to the pager's job). A store at the limit
+ * (pager_throttle, the throttle) joins it and waits, or makes it if there
+ * is none (charged to the storer's job; around the first page being
+ * written back if none is dirty, so its end is that write-back's). One
+ * nobody waits on ends at its deadline when the next kick, throttle or
+ * pager_next meets it.
  *
  * Budget: the pages of a pager's VMOs are its page cache (`cache`,
  * pager_cache.c): at most max_pages of them, the oldest evicted first. */
@@ -271,19 +275,29 @@ static void sync_readable_locked(struct pager *pg)
 
 status_t pager_req_wait(struct pager_req *r)
 {
+    return pager_req_wait_until(r, DEADLINE_NEVER);
+}
+
+status_t pager_req_wait_until(struct pager_req *r, uint64_t until)
+{
     struct pager *pg = r->pg;
     struct list_node dead;
     list_init(&dead);
     status_t st = OK;
     uint64_t f = plock(pg);
     while (!r->done) {
-        if (uptime_ns() >= r->deadline) {
+        uint64_t now = uptime_ns();
+        if (now >= r->deadline) {
             finish_locked(r, ERR_TIMED_OUT, &dead);
             sync_readable_locked(pg);
             break;
         }
-        if (waitqueue_wait_cancellable(&r->wq, &pg->base.lock, &f, r->deadline) != OK &&
-            !r->done) {
+        if (now >= until) {
+            st = ERR_TIMED_OUT;   /* the caller's time, not r's: r stays */
+            break;
+        }
+        uint64_t d = r->deadline < until ? r->deadline : until;
+        if (waitqueue_wait_cancellable(&r->wq, &pg->base.lock, &f, d) != OK && !r->done) {
             st = ERR_CANCELED;
             break;
         }
@@ -390,9 +404,9 @@ uint64_t pager_page_dirtied_vlocked(struct pager_vmo *pv, const struct page *p)
     return pager_cache_dirtied_vlocked(p);
 }
 
-bool pager_page_store_vlocked(struct pager_vmo *pv, struct page *p)
+status_t pager_page_store_vlocked(struct pager_vmo *pv, struct page *p)
 {
-    return pager_cache_store_vlocked(&pv->pg->cache, p);
+    return pager_cache_store_vlocked(&pv->pg->cache, p, pager_dirty_limit(pv->pg));
 }
 
 void pager_page_begin_vlocked(struct pager_vmo *pv, struct page *p)
@@ -529,34 +543,96 @@ uint64_t pager_dirty_limit(const struct pager *pg)
     return pg->cache.max_pages / 4;
 }
 
-/* No lock held: past half the dirty limit, pg's background request for its
- * oldest dirty run, unless it has one (or one past its deadline: that one
- * fails, nobody waiting on it to end it). */
-static void kick(struct pager *pg)
+/* No lock held: has pg its one request for the oldest run (`bg`)? One past
+ * its deadline fails first (nobody may be waiting on it to end it). OK:
+ * none; ERR_ALREADY_EXISTS: there is one, and with `join` the caller gets
+ * a reference to it; ERR_PEER_CLOSED: pg is closed, or pv (if not NULL)
+ * cut off. */
+static status_t oldest_req(struct pager *pg, struct pager_vmo *pv, struct pager_req **join)
 {
-    if (pager_cache_ndirty(&pg->cache) <= pager_dirty_limit(pg) / 2)
-        return;
     struct list_node dead;
     list_init(&dead);
     uint64_t f = plock(pg);
     if (pg->bg && uptime_ns() >= pg->bg->deadline)
         finish_locked(pg->bg, ERR_TIMED_OUT, &dead);
-    bool busy = pg->bg || pg->closed;
+    status_t st = pg->closed || (pv && pv->state != PV_LINKED) ? ERR_PEER_CLOSED
+                : pg->bg                                         ? ERR_ALREADY_EXISTS
+                                                                 : OK;
+    if (st == ERR_ALREADY_EXISTS && join) {
+        pg->bg->refs++;
+        *join = pg->bg;
+    }
     sync_readable_locked(pg);
     punlock(pg, f);
     reap(&dead);
-    struct pager_req *r;
-    if (busy || req_new(pg, 0, pg->job, PAGER_REQ_WRITEBACK, &r) != OK)
-        return;   /* (no memory: the next store tries again) */
+    return st;
+}
+
+/* No lock held: queue r (a write-back request, never queued) as pg's one
+ * request for the oldest run: the run of dirty pages around its oldest
+ * dirty page, or with `writing`, if none is dirty, the run of dirty and
+ * writing pages around the first being written back; with a reference for
+ * the caller if `caller`. ERR_NOT_FOUND: none (or it moved on meanwhile);
+ * ERR_ALREADY_EXISTS: pg has one; ERR_PEER_CLOSED: its VMO is cut off. r
+ * is the caller's to free unless OK. */
+static status_t queue_oldest(struct pager *pg, struct pager_req *r, bool writing, bool caller)
+{
     struct vmo *v;
     uint64_t idx, dirtied;
-    status_t st = ERR_NOT_FOUND;
-    if (pager_cache_first(&pg->cache, false, &v, &idx, &dirtied)) {
-        st = vmo_pager_writeback_bg(v, idx, r);
-        kobject_unref(vmo_kobject(v));   /* (the last if written back meanwhile: no lock held) */
+    bool w = false;
+    if (!pager_cache_first(&pg->cache, false, &v, &idx, &dirtied)) {
+        if (!writing || !pager_cache_first(&pg->cache, true, &v, &idx, &dirtied))
+            return ERR_NOT_FOUND;
+        w = true;
     }
-    if (st != OK)
+    status_t st = vmo_pager_writeback_bg(v, idx, w, r, caller);
+    kobject_unref(vmo_kobject(v));   /* (the last if written back meanwhile: no lock held) */
+    return st;
+}
+
+/* No lock held: past half the dirty limit, pg's background request for its
+ * oldest dirty run, unless it has one. */
+static void kick(struct pager *pg)
+{
+    if (pager_cache_ndirty(&pg->cache) <= pager_dirty_limit(pg) / 2)
+        return;
+    struct pager_req *r;
+    if (oldest_req(pg, NULL, NULL) != OK || req_new(pg, 0, pg->job, PAGER_REQ_WRITEBACK, &r) != OK)
+        return;   /* (one there, closed, or no memory: the next store tries again) */
+    if (queue_oldest(pg, r, false, false) != OK)
         pager_req_free(r);   /* (written back meanwhile, or another store made it) */
+}
+
+/* How many times pager_throttle looks for the oldest run while its pages
+ * move on under it, before it lets the store look again. */
+#define THROTTLE_TRIES 4
+
+status_t pager_throttle(struct pager_vmo *pv, uint64_t *until, struct pager_req **out)
+{
+    struct pager *pg = pv->pg;
+    *out = NULL;
+    if (!*until)
+        *until = uptime_ns() + pg->answer_ns;
+    for (unsigned tries = 0; tries < THROTTLE_TRIES; tries++) {
+        if (uptime_ns() >= *until)
+            return ERR_TIMED_OUT;
+        if (pager_cache_ndirty(&pg->cache) < pager_dirty_limit(pg))
+            return OK;   /* under it now: the store looks again */
+        status_t st = oldest_req(pg, pv, out);
+        if (st != OK)
+            return st == ERR_ALREADY_EXISTS ? OK : st;   /* (joined) */
+        struct pager_req *r;
+        st = req_new(pg, 0, job_current(), PAGER_REQ_WRITEBACK, &r);
+        if (st != OK)
+            return st;
+        st = queue_oldest(pg, r, true, true);
+        if (st == OK) {
+            *out = r;
+            return OK;
+        }
+        pager_req_free(r);   /* (written back meanwhile, or another store made one) */
+    }
+    return OK;
 }
 
 void pager_writeback_kick(struct pager_vmo *pv)

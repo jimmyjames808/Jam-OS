@@ -44,7 +44,11 @@
  * budget too; the one exception is a page of a VMO being destroyed, which
  * no evictor can reach (it goes with its VMO a moment later). `ndirty`
  * counts the pages on `dirty` and `writing`, `nwriting` those on
- * `writing`.
+ * `writing`. A store makes a clean page dirty only while `ndirty` is under
+ * the pager's dirty limit (a quarter of the budget), checked and counted
+ * in one hold of this lock, so stores to two VMOs can't pass it together:
+ * three quarters of the budget always stay for clean pages, and a supply
+ * always finds one to evict (a popped page aside).
  *
  * Age (`dirtied`, the order of `dirty`): when a clean page's first store
  * made it dirty; for a page stored to while it was being written back,
@@ -122,9 +126,11 @@ uint64_t pager_cache_dirtied_vlocked(const struct page *p);
 
 /* The VMO lock held, p in its table: a store. Clean: dirty now, onto the
  * dirty list's tail stamped with the time (off the cache's list, or, if an
- * evictor popped it, counted again); true (one more dirty page). Writing:
- * writing and dirty, where it is. Dirty: nothing. */
-bool pager_cache_store_vlocked(struct pager_cache *c, struct page *p);
+ * evictor popped it, counted again), unless c has `limit` pages dirty or
+ * writing already: then ERR_NO_RESOURCES and nothing changes (the store
+ * waits, the dirty limit of <jam/pager.h>). Writing: writing and dirty,
+ * where it is. Dirty: nothing. OK but at the limit. */
+status_t pager_cache_store_vlocked(struct pager_cache *c, struct page *p, uint64_t limit);
 
 /* The VMO lock held, p dirty and not writing: its write-back begins
  * (writing now, onto `writing`). */

@@ -146,7 +146,10 @@ uint64_t aspace_fault_count(struct aspace *as);
  * couldn't read it), ERR_PEER_CLOSED (the pager is gone: detached or
  * closed), ERR_TIMED_OUT (it didn't answer), ERR_BAD_STATE (a verified
  * VMO's page that didn't match its hash: <jam/vmo_verify.h>), ERR_CANCELED
- * (the thread was killed; thread_interrupt doesn't end the wait).
+ * (the thread was killed; thread_interrupt doesn't end the wait). A store
+ * to a clean page of a writable pager VMO whose pager is at its dirty
+ * limit waits the same way for a write-back (<jam/pager.h>), the pager's
+ * answer time in all: ERR_TIMED_OUT, ERR_PEER_CLOSED, ERR_CANCELED.
  * May sleep (region lock): call with interrupts on and no spinlock held. */
 status_t aspace_fault(struct aspace *as, uint64_t addr, unsigned access);
 

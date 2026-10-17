@@ -128,7 +128,10 @@ void     vmo_umap_remove(struct vmo *v, struct vmo_umap *u);
  * couldn't be committed or copied, ERR_SHOULD_WAIT if idx is an absent
  * page of a pager VMO (or one that a child of a pager VMO takes from it,
  * absent there): nothing is installed or asked for, and aspace_fault asks
- * the pager (vmo_page_request) and waits without the region lock. */
+ * the pager (vmo_page_request) and waits without the region lock.
+ * ERR_NO_RESOURCES if `write` found a clean page of a writable pager VMO
+ * whose pager is at its dirty limit: nothing changed, and aspace_fault
+ * waits for a write-back (vmo_pager_throttle) without the region lock. */
 status_t vmo_fault_map(struct vmo *v, uint64_t idx, struct aspace *as, uint64_t va,
                        unsigned perms, bool write);
 /* After a pager's answer: is page idx of v there now (in v, or for a
