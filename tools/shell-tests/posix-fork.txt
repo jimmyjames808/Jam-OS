@@ -5,16 +5,28 @@
 # a 1 TiB reservation, ENOMEM, the signals (SIGCHLD, kill, SIGKILL,
 # pending, timers, a fault handler), both clone forms and vfork; and FL2's
 # cases: every descriptor kind from both sides, /proc/self/fd exact,
-# Chromium's child sequence, a pty, the table of mappings. Also in the
-# init run; this is the section alone, with its 1 TiB line.
+# Chromium's child sequence, a pty, the table of mappings. Then FL3's exec
+# section (execve in place from a forked child: ids, threads,
+# close-on-exec, signals, the fork's charge back with its line, failures,
+# Chromium's sequence through the exec) and utest's exec_native (a native
+# starter waits on a POSIX program that execs) with the hand-over's
+# posixfds_ tests. Also in the init run; this is the sections alone, with
+# their 1 TiB and charge lines.
 #   QEMU_INPUT=tools/shell-tests/posix-fork.txt tools/qemu-test.sh <dir> posix-fork shell
 wait 120 Jam OS shell
 wait {prompt}
-send run posixtest fork
+send T=x
+wait {prompt}
+send run posixtest fork exec
 wait 60 re:posixtest: fork: a 1 TiB reservation with 1024 pages forked in [0-9]+ us
 wait 120 posixtest: fork: ok
+wait 120 re:posixtest: exec: the fork's copy of 8192 pages back at the exec: [0-9]+ pages
+wait 120 posixtest: exec: ok
 wait 20 posixtest: PASS
 wait 20 run: bin/posixtest exited with code 0
+wait {prompt}
+send utest only exec_native,posixfds; echo ux-$T-$?
+wait 120 ux-x-0
 wait {prompt}
 send reboot -f
 wait reboot: resetting

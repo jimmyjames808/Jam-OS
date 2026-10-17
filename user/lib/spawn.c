@@ -32,6 +32,14 @@
  * child's. What the child allocates itself (its heap, its own VMOs) is the
  * child's.
  *
+ * spawn_replace (exec in place, docs/FORK-PLAN.md section 2) builds the
+ * program the same way, in a new process of our own job with no thread,
+ * then writes the startup message (its SR_SELF_PROCESS and SR_SELF_THREAD
+ * ours), the namespace's first message and the caller's before_start
+ * last, and asks process_replace to make that address space ours, with
+ * the calling thread starting at the program's entry. Everything that can
+ * fail comes before the replace, so a failure leaves us as we were.
+ *
  * The kernel re-checks everything that matters (W^X, rights, ranges); the
  * checks here only keep this code from reading outside the file. Nothing
  * here uses malloc, so spawning doesn't grow the caller's heap. */
@@ -306,6 +314,14 @@ static status_t make_args(const struct spawn_args *a, uint32_t envc, uint64_t by
     return OK;
 }
 
+/* How the program starts: in a new process of its own (spawn), or as this
+ * process's new image (spawn_replace: thread is the calling thread's
+ * handle, 0 for our SR_SELF_THREAD's). */
+struct how {
+    bool     replace;
+    handle_t thread;
+};
+
 /* The child while spawn() makes it: every handle here is ours to close
  * (HANDLE_INVALID: none, or handed over). */
 struct child {
@@ -418,14 +434,16 @@ static uint64_t stack_bytes(const struct spawn_args *a)
     return a->stack_size > SPAWN_STACK_MAX ? 0 : up(a->stack_size);
 }
 
-/* The program into c's address space, its stack and its thread. */
+/* The program into c's address space, its stack and its thread (none for
+ * a replace: process_replace takes a process without one, and the
+ * calling thread goes on in it). */
 static status_t load_child(const struct spawn_args *a, const struct image *img, const char *name,
-                           struct child *c)
+                           const struct how *how, struct child *c)
 {
     status_t st = load_elf(c->vmar, img, &c->entry);
     if (st == OK)
         st = make_stack(c->vmar, stack_bytes(a), &c->stack);
-    if (st == OK)
+    if (st == OK && !how->replace)
         st = jam_thread_create(c->proc, name, name_len(name), 0, &c->thread);
     return st;
 }
@@ -447,16 +465,23 @@ static rights_t image_rights(const struct spawn_args *a, const struct image *img
 /* The handles, with their roles into m: duplicates of ours, the vmar
  * itself (we don't keep it), its end of the namespace channel, its
  * strings' VMO (read only: it copies them), its own program (image: the
- * rights, 0 for none), then the extras. st: whether
+ * rights, 0 for none), then the extras. A replace's process and thread
+ * are ours (the process made here is used up). st: whether
  * the steps so far worked; after a failure only the extras are gathered
  * (to be closed). Returns st, or the failure of a duplicate. */
 static status_t gather_handles(const struct spawn_args *a, struct child *c, rights_t image,
-                               struct startup_msg *m, struct handout *out, status_t st)
+                               const struct how *how, struct startup_msg *m, struct handout *out,
+                               status_t st)
 {
+    handle_t proc = c->proc, thread = c->thread;
+    if (how->replace) {
+        proc = startup_handle(SR_SELF_PROCESS);
+        thread = how->thread ? how->thread : startup_handle(SR_SELF_THREAD);
+    }
     /* The child's own job goes without RIGHT_MANAGE (JOB_RIGHTS_OWN): the
      * limits we set on it are ours to change, not the child's. */
     const struct { uint32_t role; handle_t h; rights_t rights; } dup[] = {
-        { SR_SELF_PROCESS, c->proc, RIGHT_SAME }, { SR_SELF_THREAD, c->thread, RIGHT_SAME },
+        { SR_SELF_PROCESS, proc, RIGHT_SAME }, { SR_SELF_THREAD, thread, RIGHT_SAME },
         { SR_JOB, a->job, JOB_RIGHTS_OWN }, { SR_BOOTFS, startup_handle(SR_BOOTFS), RIGHT_SAME },
     };
     for (unsigned i = 0; st == OK && i < sizeof(dup) / sizeof(dup[0]); i++) {
@@ -522,9 +547,12 @@ static status_t write_handover(handle_t ch, const struct spawn_args *a)
  * then the hand-over (consumed whatever happens) and what a's
  * before_start writes, then the thread starts with the other end. A write
  * or a start takes the handles it was given whatever its status (sent, or
- * closed). */
-static status_t start_child(const struct spawn_args *a, struct child *c, const uint8_t *msg,
-                            size_t len, struct handout *hs)
+ * closed). A replace sends the namespace's first message (*nso, consumed)
+ * before before_start, as nothing of ours is left to send it after, and
+ * then returns only if process_replace failed (the other end still ours). */
+static status_t start_child(const struct spawn_args *a, const struct how *how, struct child *c,
+                            const uint8_t *msg, size_t len, struct handout *hs,
+                            struct ns_out **nso)
 {
     const struct posixfds_out *handover = a->handover;
     status_t st = jam_channel_create(&c->ch[0], &c->ch[1]);
@@ -536,8 +564,16 @@ static status_t start_child(const struct spawn_args *a, struct child *c, const u
         st = write_handover(c->ch[0], a);
     else if (handover)
         posixfds_discard(handover);
+    if (how->replace && *nso && st == OK) {
+        /* Its end went in the startup message, before anything was queued
+         * on it (as spawn's does, the channel's other rule). */
+        st = ns_send_prepared(c->ns[0], NS_MOUNT, *nso);
+        *nso = NULL;
+    }
     if (st == OK && a->before_start)
         st = a->before_start(c->ch[0], a->before_start_ctx);
+    if (st == OK && how->replace)
+        return jam_process_replace(c->proc, c->entry, c->stack, c->ch[1], 0);
     if (st == OK) {
         st = jam_process_start(c->proc, c->thread, c->entry, c->stack, c->ch[1], 0);
         c->ch[1] = HANDLE_INVALID;   /* the child's now, or closed */
@@ -547,16 +583,17 @@ static status_t start_child(const struct spawn_args *a, struct child *c, const u
 
 /* From the new process c->proc to its running thread, then its first ns
  * message (nso, made ahead: consumed). The extras are consumed. image:
- * its SR_SELF_IMAGE's rights (0: none). */
-static status_t make_child(const struct spawn_args *a, const struct image *img, const char *name,
-                           rights_t image, uint8_t *msg, size_t len, struct child *c,
-                           struct ns_out *nso)
+ * its SR_SELF_IMAGE's rights (0: none). A replace returns only if it
+ * failed. */
+static status_t make_child(const struct spawn_args *a, const struct how *how,
+                           const struct image *img, const char *name, rights_t image,
+                           uint8_t *msg, size_t len, struct child *c, struct ns_out *nso)
 {
-    status_t st = load_child(a, img, name, c);
+    status_t st = load_child(a, img, name, how, c);
     struct handout hs = { .n = 0 };
-    st = gather_handles(a, c, image, (struct startup_msg *)msg, &hs, st);
+    st = gather_handles(a, c, image, how, (struct startup_msg *)msg, &hs, st);
     if (st == OK)
-        st = start_child(a, c, msg, len, &hs);
+        st = start_child(a, how, c, msg, len, &hs, &nso);
     else
         posixfds_discard(a->handover);
     /* A message that never reached the child dies with ch[1], handles and
@@ -626,7 +663,9 @@ static status_t plan_layout(const struct spawn_args *a, const struct image *img,
     return OK;
 }
 
-status_t spawn(const struct spawn_args *a, handle_t *proc_out)
+/* spawn and spawn_replace: the program built, then started as how says.
+ * *proc_out: the started process (a replace returns only if it failed). */
+static status_t build(const struct spawn_args *a, const struct how *how, handle_t *proc_out)
 {
     struct image img;
     struct layout lay = { 0 };
@@ -646,7 +685,7 @@ status_t spawn(const struct spawn_args *a, handle_t *proc_out)
         st = ns_prepare(a->ns, &nso);
     if (st == OK && a->ns)
         st = jam_channel_create(&c.ns[0], &c.ns[1]);
-    if (st == OK && a->ns && a->ns_out && a->ns_back_out)
+    if (st == OK && a->ns && a->ns_out && a->ns_back_out && !how->replace)
         st = jam_handle_duplicate(c.ns[1], RIGHT_READ, &c.ns_back);
     if (st == OK)
         st = jam_process_create(a->job, name, name_len(name), 0, &c.proc, &c.vmar);
@@ -658,7 +697,7 @@ status_t spawn(const struct spawn_args *a, handle_t *proc_out)
             ns_prepared_drop(nso);
         return st;
     }
-    st = make_child(a, &img, name, lay.image, msg, len, &c, nso);
+    st = make_child(a, how, &img, name, lay.image, msg, len, &c, nso);
     release_image(&img);
     if (st == OK && a->ns_out) {
         *a->ns_out = c.ns[0];
@@ -675,6 +714,20 @@ status_t spawn(const struct spawn_args *a, handle_t *proc_out)
     }
     *proc_out = c.proc;
     return OK;
+}
+
+status_t spawn(const struct spawn_args *a, handle_t *proc_out)
+{
+    const struct how how = { false, HANDLE_INVALID };
+    return build(a, &how, proc_out);
+}
+
+status_t spawn_replace(const struct spawn_args *a, handle_t thread)
+{
+    const struct how how = { true, thread };
+    handle_t never;
+    status_t st = build(a, &how, &never);
+    return st == OK ? ERR_BAD_STATE : st;   /* OK can't come back: the replace doesn't return */
 }
 
 status_t spawn_wait(handle_t proc, uint64_t timeout_ns, struct process_info *info)

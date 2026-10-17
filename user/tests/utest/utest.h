@@ -112,6 +112,8 @@ bool t_crashres_wire(void);
 bool t_klog_lines(void);
 /* chanpid.c: channel_read's CHANNEL_READ_PID, the writer's pid of each message. */
 bool t_chan_writer_pid(void);
+/* posixexec.c: a POSIX program that execs in place, seen from a native starter. */
+bool t_exec_native(void);
 
 /* audio.c: <audio.h>'s conversions and resampler, <wav.h>'s parser. */
 bool t_audio_formats(void);

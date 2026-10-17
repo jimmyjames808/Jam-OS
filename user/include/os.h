@@ -222,6 +222,20 @@ struct spawn_args {
  * bytes and 8 a string), or a stack bigger than SPAWN_STACK_MAX. A
  * hand-over refused by posixfds_write fails the spawn with its error. */
 status_t spawn(const struct spawn_args *a, handle_t *proc);
+/* Exec in place (docs/FORK-PLAN.md section 2): the program a names, built
+ * as spawn builds it in a new process with no thread in a->job (which
+ * must be the job this process is in), becomes this process's image
+ * (process_replace): our other threads end, our address space and every
+ * handle we hold go, and the calling thread starts the program, our pid,
+ * process object and job kept. Its startup message is spawn's but for
+ * SR_SELF_PROCESS, a duplicate of ours, and SR_SELF_THREAD, of `thread`
+ * (the calling thread's handle; 0: our SR_SELF_THREAD, the first
+ * thread's); its namespace's first message goes before a->before_start,
+ * which comes last (the POSIX hand-over may be written there, once
+ * nothing else can fail). a->ns_out and a->ns_back_out are not used.
+ * Returns only if it failed, with nothing of ours changed but the extras
+ * and the hand-over's handles, consumed as spawn consumes them. */
+status_t spawn_replace(const struct spawn_args *a, handle_t thread);
 /* Drivers: the startup role that hands a driver process a handle with
  * driver role `r` (DR_* in <jam/driver.h>). user/lib/driver_crt.c turns
  * these into the driver's struct driver_start. */

@@ -907,6 +907,29 @@ void sig_spawn_masks(uint64_t *blocked, uint64_t *ignored)
     *ignored = sig_ignored_set();
 }
 
+uint64_t sig_exec_pending(void)
+{
+    struct sig_thread *me = me_or_nobody();
+    take();
+    uint64_t p = me->pending | shared, ign = 0;
+    for (struct sig_thread *t = threads; t; t = t->next)
+        p |= t->routed;   /* the process's, routed to a thread that is going */
+    for (int s = 1; s <= SIG_MAX; s++)
+        if (acts[s].handler == (uintptr_t)SIG_IGN)
+            ign |= SIG_BIT(s);
+    give();
+    return p & ~ign & ~SIG_NEVER_MASKED;
+}
+
+void sig_start_pending(uint64_t pending)
+{
+    for (int s = 1; s <= SIG_MAX; s++)
+        if (pending & SIG_BIT(s) && !(SIG_NEVER_MASKED & SIG_BIT(s))) {
+            struct sig_info si = { .signo = s, .code = SI_USER };
+            sig_send_process(&si);
+        }
+}
+
 void sig_start_state(uint64_t ignored)
 {
     take();

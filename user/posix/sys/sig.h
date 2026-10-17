@@ -153,6 +153,28 @@ void     sig_fill_siginfo(const struct sig_info *si, void *out);
 /* The start: the hand-over's ignored signals, and the exception entry set
  * for the checked copies (SIG_ENTRY_COPY) (sigthread.c's start). */
 void     sig_start_state(uint64_t ignored);
+/* Then the hand-over's pending signals (an exec in place kept them): each
+ * sent to the process as kill sends it (SI_USER), once the first thread is
+ * listed with its mask: pending if blocked, else delivered at once (its
+ * default action: the handlers are the new program's). */
+void     sig_start_pending(uint64_t pending);
+
+/* ---- exec in place (spawn.c, docs/FORK-PLAN.md section 2) --------------------------- */
+
+/* The signals execve hands the new image as pending (Linux keeps them): the
+ * calling thread's and the process's, those routed to our other threads
+ * (which end) included, less the ignored ones. After sig_thread_hold. */
+uint64_t sig_exec_pending(void);
+/* execve, before it reads what is pending: the signal thread takes nothing
+ * more (the starter's channel, the children's ends, the terminal, the
+ * timers) until sig_thread_release, so nothing it took is lost between that
+ * read and the replace, and what comes later waits on the starter's
+ * channel for the new image (which gets the channel). Waits for a packet
+ * it is acting on. release: after an exec that failed; the thread goes on
+ * once every hold is released (two threads' execs: the one that loses the
+ * replace releases only its own). Not from the signal thread. sigthread.c. */
+void     sig_thread_hold(void);
+void     sig_thread_release(void);
 
 /* ---- fork (fork.c) ------------------------------------------------------------------ */
 

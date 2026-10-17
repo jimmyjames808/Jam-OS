@@ -56,6 +56,7 @@ static const struct {
     { "execinfo", pt_execinfo },
     { "fault", pt_fault },
     { "fork", pt_fork },
+    { "exec", pt_exec },
     { "efault", pt_efault },
 };
 
@@ -141,6 +142,8 @@ int main(int argc, char **argv)
         return pt_child_fork(argc, argv);
     if (argc >= 2 && !strcmp(argv[1], "--child-efault"))
         return pt_child_efault(argc, argv);
+    if (argc >= 2 && !strcmp(argv[1], "--child-exec"))
+        return pt_child_exec(argc, argv);
     setvbuf(stdout, NULL, _IOLBF, 0);   /* each line out as it is made */
     unsigned n = sizeof(sections) / sizeof(sections[0]);
     for (unsigned i = 0; i < n; i++) {
