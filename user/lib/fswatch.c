@@ -238,8 +238,10 @@ bool fsw_adopt(struct fsw *w, struct fsw_table *t)
     for (uint32_t s = 0; s < FSW_WATCHES; s++)
         if (t->w[s].chan)
             index_add(w, s);
+    /* A channel with its bell may have had events queued: they died. One
+     * without has served no request, so it had none. */
     for (uint32_t c = 0; c < FSW_CHANNELS; c++)
-        if (t->chans[c].live)
+        if (t->chans[c].live && t->chans[c].belled)
             overflow(&w->chans[c]);   /* no bell yet: rung by fsw_chan_handles */
     return true;
 }
@@ -328,6 +330,11 @@ void fsw_chan_close(struct fsw *w, uint32_t c)
             unwatch(w, s);
     struct fsw_chan *q = &w->chans[c];
     drop_all(q);
+    /* Ended by the service (its client still there): the bell rung, so a
+     * client waiting on it alone (poll) wakes to find the channel closed. */
+    if (q->bell != HANDLE_INVALID &&
+        (q->ch == HANDLE_INVALID || jam_object_wait_one(q->ch, SIG_PEER_CLOSED, 0, NULL) != OK))
+        ring(q);
     if (q->ch != HANDLE_INVALID)
         jam_handle_close(q->ch);
     if (q->bell != HANDLE_INVALID)

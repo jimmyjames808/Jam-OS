@@ -9,13 +9,15 @@
  *
  *   1. the state is checked: the volume's UUID is the one it was made for,
  *      every open file's inode is there with its generation, every view's
- *      flags and root in range;
+ *      flags and root in range (the watches' table was taken over before
+ *      the mount, state.c: one that fails its own checks starts empty, and
+ *      its watcher channels close, the rest carrying on);
  *   2. the request in progress (svcstate's cases): not committed in its
  *      slot, but its transaction id recorded and committed in the journal
  *      (ext_jnl_committed): it is done, and its slot is committed now with
  *      the reply it holds. Not committed in the journal: the slot it made
- *      (an fs.open's file, an fs.view's view) is forgotten, and it runs
- *      again (step 5);
+ *      (an fs.open's file, an fs.view's view, an fs.watch's watcher
+ *      channel) is forgotten, and it runs again (step 5);
  *   3. the keeper's handles taken back (keep_restore), each only if the
  *      state knows its slot;
  *   4. the orphans dropped but those the state holds open;
@@ -25,11 +27,17 @@
  *      out. A request in progress at two crashes (not deliberate kills) is
  *      answered ERR_IO and dropped;
  *   6. every kept channel waited on again; a file whose handles didn't
- *      come back is closed; the restart logged.
+ *      come back is closed, so is a watcher channel (or one whose bell
+ *      didn't: the dead instance read the give and died before keeping
+ *      it); the restart logged. Each watcher's queue starts with
+ *      IN_Q_OVERFLOW, its bell rung: the dead queue, and any change the
+ *      successor finished from its slot without running it again, went
+ *      unreported.
  *
  * A state that fails a check is given up on: the views are kept if their
- * table checks out, every open file is closed (its client sees
- * ERR_PEER_CLOSED), and the request in progress is answered ERR_IO. */
+ * table checks out, every open file and watcher channel is closed (its
+ * client sees ERR_PEER_CLOSED; a watcher's bell is rung first, so a poll
+ * wakes to see it), and the request in progress is answered ERR_IO. */
 #include <keep.h>
 #include "extfs.h"
 
@@ -43,7 +51,7 @@ struct found {
     bool        fresh, keep_views, restored;
     const char *why;
     const char *request;
-    unsigned    files, views;
+    unsigned    files, views, watchers;
 };
 
 static bool crashed(void)
@@ -89,7 +97,7 @@ void recover_orphans(void)
 /* ---- the kept handles --------------------------------------------------------------- */
 
 struct taking {
-    bool files, views;
+    bool files, views, watches;
 };
 
 static bool take(void *ctx, uint32_t slot, const handle_t *hs, unsigned n)
@@ -97,6 +105,12 @@ static bool take(void *ctx, uint32_t slot, const handle_t *hs, unsigned n)
     const struct taking *t = ctx;
     if (slot < XF_KEEP_VIEW(0))
         return t->files && files_take(slot, hs, n);
+    if (slot >= XF_KEEP_WATCH(0)) {
+        if (t->watches)
+            return watch_take(slot - XF_KEEP_WATCH(0), hs, n);
+        watch_refused(hs, n);
+        return false;
+    }
     if (slot >= XF_KEEP_MAP(0))
         return t->files && maps_take(slot - XF_KEEP_MAP(0), hs, n);
     return t->views && views_take(slot - XF_KEEP_VIEW(0), hs, n);
@@ -132,6 +146,8 @@ static bool chan_of(unsigned slot, struct xf_chan *c)
         return files_chan(i, gen, c);
     if (kind == 2)
         return views_chan(i, gen, c);
+    if (kind == 3)
+        return watch_chan(i, gen, c);
     return false;   /* fsctl's: the dead instance's own channel */
 }
 
@@ -159,9 +175,10 @@ static const char *reply_again(const struct xf_chan *c, unsigned slot)
         return "answered";
     }
     handle_t hs[2];
-    status_t st = m->kind == XF_MADE_FILE ? files_remake(m->index, &hs[0], &hs[1])
-                  : m->kind == XF_MADE_VIEW ? views_remake(m->index, &hs[0])
-                                            : maps_remake(m->index, &hs[0]);
+    status_t st = m->kind == XF_MADE_FILE    ? files_remake(m->index, &hs[0], &hs[1])
+                  : m->kind == XF_MADE_VIEW  ? views_remake(m->index, &hs[0])
+                  : m->kind == XF_MADE_WATCH ? watch_remake(m->index, &hs[0])
+                                             : maps_remake(m->index, &hs[0]);
     if (st != OK) {
         answer_status(c, slot, st);
         return "its handles couldn't be made again: answered with the error";
@@ -216,16 +233,16 @@ static void say(const struct found *f)
                  (unsigned long)((vol.at[XF_AT_MOUNT] - kill) / NS_PER_US));
     const struct ext_jnl *j = &vol.jnl;
     if (f->fresh) {
-        printf("extfs %s: restart (%s, adoption %lu): starting fresh (%s): open files closed%s; "
+        printf("extfs %s: restart (%s, adoption %lu): starting fresh (%s): open files and watchers closed%s; "
                "journal: %u transaction(s) replayed%s\n", vol.name, vol.ended ? vol.ended : "?",
                (unsigned long)state_slots()->h->adopted, f->why,
                f->keep_views ? ", views kept" : ", views closed", (unsigned)j->replayed, since);
         return;
     }
-    printf("extfs %s: restart (%s, adoption %lu): %u file(s), %u view(s); request in "
-           "progress: %s; journal: %u transaction(s) replayed%s\n", vol.name,
+    printf("extfs %s: restart (%s, adoption %lu): %u file(s), %u view(s), %u watcher(s); "
+           "request in progress: %s; journal: %u transaction(s) replayed%s\n", vol.name,
            vol.ended ? vol.ended : "?", (unsigned long)state_slots()->h->adopted, f->files,
-           f->views, f->request, (unsigned)j->replayed, since);
+           f->views, f->watchers, f->request, (unsigned)j->replayed, since);
 }
 
 static status_t start_fresh(struct found *f)
@@ -266,6 +283,8 @@ static void unmake(unsigned slot)
         kept->views[m->index].used = false;
     else if (m->kind == XF_MADE_MAP && m->index < XF_MAX_MAPS)
         kept->maps[m->index].used = false;    /* to run: its VMO's GONE finds a key nobody knows */
+    else if (m->kind == XF_MADE_WATCH && m->index < FSW_CHANNELS)
+        watch_unmake(m->index);               /* the keeper's copy is refused, so dropped */
 }
 
 status_t adopt(bool adopted, bool *no_volume)
@@ -291,10 +310,11 @@ status_t adopt(bool adopted, bool *no_volume)
     f.keep_views = !f.why;
     if (!f.why && (!kept->mounted || memcmp(kept->uuid, vol.fs.sb.uuid, sizeof(kept->uuid))))
         f.why = "a state of another volume";
-    if (!f.why && (kept->made.kind > XF_MADE_MAP_SHARED ||
-                   kept->made.index >= (kept->made.kind == XF_MADE_FILE ? XF_MAX_FILES
-                                        : kept->made.kind == XF_MADE_VIEW ? XF_VIEWS
-                                                                          : XF_MAX_MAPS)))
+    if (!f.why && (kept->made.kind > XF_MADE_WATCH ||
+                   kept->made.index >= (kept->made.kind == XF_MADE_FILE    ? XF_MAX_FILES
+                                        : kept->made.kind == XF_MADE_VIEW  ? XF_VIEWS
+                                        : kept->made.kind == XF_MADE_WATCH ? FSW_CHANNELS
+                                                                           : XF_MAX_MAPS)))
         f.why = "the request's slot out of range";
     if (!f.why)
         f.why = files_check();
@@ -308,7 +328,7 @@ status_t adopt(bool adopted, bool *no_volume)
         else
             unmake(f.slot);
     }
-    if (!restore(&f, (struct taking){ .files = true, .views = true })) {
+    if (!restore(&f, (struct taking){ .files = true, .views = true, .watches = true })) {
         f.why = "the keeper's restore failed";
         return start_fresh(&f);
     }
@@ -318,6 +338,7 @@ status_t adopt(bool adopted, bool *no_volume)
     reply_flush();
     f.files = files_adopt();
     f.views = views_adopt();
+    f.watchers = watch_adopt();
     maps_adopt();   /* after files_adopt, whose closes let go of shared VMOs */
     say(&f);
     return OK;

@@ -21,9 +21,23 @@
  * isn't on the disk. A close's events and an inode's going (defer_run,
  * after the answer) come outside requests, at once.
  *
- * The table is this instance's memory: a restart ends every watch (the
- * watcher channels die with the instance, and the client's end says so).
- * IE2 keeps it in the state VMO and the channels with the keeper. */
+ * **Restarts** (2.8). The library's table, each channel's view (its flags
+ * and root in the table's record, the root's place here) and each watched
+ * file's directory are in the state VMO (struct xf_watches); each channel
+ * is with the keeper from its fs.watch on (slot XF_KEEP_WATCH: the channel
+ * alone), and with its bell once given (the two). A successor takes the
+ * table over before its mount (watch_adopt_table), the handles back from
+ * the keeper (watch_take), and waits on every channel again (watch_adopt):
+ * each watcher's queue starts with IN_Q_OVERFLOW, its bell rung, and its
+ * watches carry on. A channel whose bell the keeper doesn't hold (a bell
+ * without RIGHT_DUPLICATE, which a keeper can't hold, or a death between
+ * the give and its put) is closed then: its client sees the mount's
+ * watches end (libc's IN_UNMOUNT and IN_IGNORED) and asks again. A fresh
+ * start (the state given up) closes every channel the same way, and so
+ * does the service's end (watch_stop), each bell rung first. The queued
+ * events are the instance's memory, as are the open files' directories
+ * and names (files.c): after a restart a file opened before it makes no
+ * events in its directory's watch. */
 #include "extfs.h"
 
 _Static_assert(FSWATCH_REQ_MAX <= FS_REQ_MAX && FSWATCH_REP_MAX <= FS_REP_MAX,
@@ -31,15 +45,12 @@ _Static_assert(FSWATCH_REQ_MAX <= FS_REQ_MAX && FSWATCH_REP_MAX <= FS_REP_MAX,
 
 #define EV_HELD 8u   /* events one request makes at most (a rename's exchange: 6) */
 
-static struct fsw_table table;
-static struct fsw       w;
+static struct fsw w;   /* over kept->watch.table */
 
 /* A watcher channel's part here, by the library's number. */
 static struct wchan {
-    uint32_t      gen;              /* its port key's, bumped at each fs.watch */
     bool          armed;
-    struct xf_ctx ctx;              /* the view it came from (root -> root below) */
-    char          root[XF_ROOT_MAX];
+    struct xf_ctx ctx;              /* the view it came from (its root's place: the state's) */
 } wc[FSW_CHANNELS];
 static uint32_t held_bits;          /* held back by the unread bound */
 _Static_assert(FSW_CHANNELS <= 32, "held_bits has a bit for each");
@@ -56,14 +67,9 @@ static struct held {
 static unsigned nheld;
 static bool     holding;            /* a request is running: events wait */
 
-void watch_start(void)
-{
-    fsw_init(&w, &table);
-}
-
 bool watching(void)
 {
-    return fsw_watching(&w);
+    return w.t && fsw_watching(&w);
 }
 
 /* ---- events ------------------------------------------------------------------- */
@@ -100,7 +106,7 @@ static void put(const struct held *e)
 void ev(const struct fsw_key *dir, const char *name, uint32_t len, const struct fsw_key *self,
         uint32_t mask, uint32_t flags, uint32_t cookie)
 {
-    if (!fsw_watching(&w) || len > EXT_NAME_MAX)
+    if (!watching() || len > EXT_NAME_MAX)
         return;
     struct held e = { .has_dir = dir != NULL, .has_self = self != NULL, .mask = mask,
                       .flags = flags, .cookie = cookie, .len = dir ? len : 0 };
@@ -115,7 +121,7 @@ void ev(const struct fsw_key *dir, const char *name, uint32_t len, const struct 
 
 void ev_gone(const struct fsw_key *self)
 {
-    if (!fsw_watching(&w))
+    if (!watching())
         return;
     const struct held e = { .gone = true, .self = *self };
     put(&e);
@@ -123,7 +129,7 @@ void ev_gone(const struct fsw_key *self)
 
 uint32_t ev_cookie(void)
 {
-    return fsw_watching(&w) ? fsw_cookie(&w) : 0;
+    return watching() ? fsw_cookie(&w) : 0;
 }
 
 uint32_t ev_attr_mask(uint32_t mask)
@@ -160,28 +166,58 @@ static unsigned index_of(const struct wchan *c)
     return (unsigned)(c - wc);
 }
 
+static uint32_t gen_of(unsigned i)
+{
+    return kept->watch.views[i].gen;
+}
+
 static status_t arm(unsigned i)
 {
-    status_t st = jam_port_bind(vol.port, w.chans[i].ch, XF_KEY_WATCH(i, wc[i].gen),
+    status_t st = jam_port_bind(vol.port, w.chans[i].ch, XF_KEY_WATCH(i, gen_of(i)),
                                 SIG_READABLE | SIG_PEER_CLOSED, PORT_BIND_ONCE);
     wc[i].armed = st == OK;
     return st;
 }
 
-/* Channel i ends: its watches, its queue, its handles (its client sees the
- * close: libc's IN_UNMOUNT and IN_IGNORED). */
+/* Channel i ends: its watches, its queue, its handles here and with the
+ * keeper (its client sees the close: libc's IN_UNMOUNT and IN_IGNORED; the
+ * library rings its bell first if the client is still there). */
 static void end(unsigned i)
 {
     if (wc[i].armed && w.chans[i].ch != HANDLE_INVALID)
-        (void)jam_port_unbind(vol.port, w.chans[i].ch, XF_KEY_WATCH(i, wc[i].gen));
+        (void)jam_port_unbind(vol.port, w.chans[i].ch, XF_KEY_WATCH(i, gen_of(i)));
     wc[i].armed = false;
     held_bits &= ~(1u << i);
     fsw_chan_close(&w, i);
+    kept_drop(XF_KEEP_WATCH(i));
 }
 
 static bool live(unsigned i)
 {
-    return i < FSW_CHANNELS && w.t->chans[i].live;
+    return w.t && i < FSW_CHANNELS && w.t->chans[i].live;
+}
+
+/* Channel i's view, from the state: the walks of its adds. */
+static void ctx_of(unsigned i)
+{
+    const struct fsw_chan_rec *r = &w.t->chans[i];
+    const struct xf_wview *v = &kept->watch.views[i];
+    wc[i].ctx = (struct xf_ctx){
+        .flags = r->view, .root_ino = (uint32_t)r->root, .root_igen = r->root_gen,
+        .root = v->root, .root_len = v->root_len, .view = v->view,
+    };
+}
+
+/* Channel i's bell given: kept with the channel (one slot), if the keeper
+ * can hold it (a keeper takes only what it can duplicate and hand on). If
+ * not, the slot keeps the channel alone, and a restart closes it. */
+static void keep_bell(unsigned i)
+{
+    const rights_t need = RIGHT_DUPLICATE | RIGHT_TRANSFER;
+    const handle_t hs[2] = { w.chans[i].ch, w.chans[i].bell };
+    struct handle_info info;
+    if (jam_handle_info(hs[1], &info) == OK && (info.rights & need) == need)
+        (void)kept_put(XF_KEEP_WATCH(i), hs, 2);
 }
 
 /* Every watcher channel its client has closed, ended now: a close made
@@ -221,20 +257,23 @@ status_t watch_new(const struct xf_ctx *c, handle_t *out)
     }
     if (st != OK)
         return st;
-    struct wchan *k = &wc[i];
-    k->gen++;
-    k->armed = false;
-    memcpy(k->root, c->root, c->root_len);
-    k->root[c->root_len] = '\0';
-    k->ctx = *c;
-    k->ctx.root = k->root;
-    k->ctx.view = c->view < 0 ? -1 : 0;   /* a view's root is checked by its generation */
-    st = arm(i);
+    struct xf_wview *v = &kept->watch.views[i];
+    v->gen++;
+    v->view = c->view < 0 ? -1 : 0;   /* a view's root is checked by its generation */
+    v->root_len = c->root_len;
+    memcpy(v->root, c->root, c->root_len);
+    v->root[c->root_len] = '\0';
+    ctx_of(i);
+    wc[i].armed = false;
+    st = kept_put(XF_KEEP_WATCH(i), &w.chans[i].ch, 1);
+    if (st == OK)
+        st = arm(i);
     if (st != OK) {
-        fsw_chan_close(&w, i);
+        end(i);
         jam_handle_close(client);
         return st;
     }
+    op_made(XF_MADE_WATCH, i);
     *out = client;
     return OK;
 }
@@ -242,12 +281,14 @@ status_t watch_new(const struct xf_ctx *c, handle_t *out)
 void watch_event(uint64_t key)
 {
     unsigned i = XF_KEY_SLOT(key);
-    if (!live(i) || wc[i].gen != XF_KEY_GEN(key))
+    if (!live(i) || gen_of(i) != XF_KEY_GEN(key))
         return;
     wc[i].armed = false;
     status_t st;
     if (!fsw_belled(&w, i)) {
         st = fsw_chan_bell(&w, i);   /* the first message: anything else ends it */
+        if (st == OK)
+            keep_bell(i);
         if (st == OK || st == ERR_SHOULD_WAIT)
             st = arm(i);
         if (st != OK)
@@ -260,7 +301,7 @@ void watch_event(uint64_t key)
         return;
     }
     order_closes();   /* a close made before this request was sent: first */
-    const struct xf_chan c = { .ch = w.chans[i].ch, .id = XF_CHAN_WATCH(i, wc[i].gen),
+    const struct xf_chan c = { .ch = w.chans[i].ch, .id = XF_CHAN_WATCH(i, gen_of(i)),
                                .proto = XF_PROTO_WATCH, .watch = &wc[i] };
     st = serve_one(&c);
     if (st == OK || st == ERR_SHOULD_WAIT)
@@ -282,6 +323,125 @@ void watch_unheld(void)
         if (live(i) && arm(i) != OK)
             end(i);
     }
+}
+
+/* ---- starts, restarts and the end (2.8) ---------------------------------------- */
+
+void watch_reset(void)
+{
+    for (unsigned i = 0; i < FSW_CHANNELS; i++)
+        if (live(i))
+            end(i);   /* a fresh start after the keeper's handles came back */
+    memset(&kept->watch, 0, sizeof(kept->watch));
+    fsw_init(&w, &kept->watch.table);
+    memset(wc, 0, sizeof(wc));
+    held_bits = 0;
+}
+
+/* The dead instance's record of channel i: its view in range. */
+static bool view_ok(unsigned i)
+{
+    const struct fsw_chan_rec *r = &kept->watch.table.chans[i];
+    const struct xf_wview *v = &kept->watch.views[i];
+    return !(r->view & ~FS_VIEW_FLAGS) && r->root && r->root <= UINT32_MAX &&
+           v->root_len < XF_ROOT_MAX && strnlen(v->root, v->root_len) == v->root_len &&
+           (v->view == -1 || v->view == 0);
+}
+
+void watch_adopt_table(void)
+{
+    struct xf_watches *k = &kept->watch;
+    bool ok = fsw_adopt(&w, &k->table);
+    for (unsigned i = 0; ok && i < FSW_CHANNELS; i++)
+        ok = !k->table.chans[i].live || view_ok(i);
+    if (!ok) {
+        printf("extfs %s: the watches couldn't be taken over: their channels close\n", vol.name);
+        memset(k, 0, sizeof(*k));
+        fsw_init(&w, &k->table);
+    }
+    memset(wc, 0, sizeof(wc));
+    held_bits = 0;
+    for (unsigned i = 0; i < FSW_CHANNELS; i++)
+        if (live(i))
+            ctx_of(i);
+}
+
+void watch_refused(const handle_t *hs, unsigned n)
+{
+    if (n == 2)
+        (void)jam_event_signal(hs[1], 0, FSWATCH_BELL);   /* a poll wakes to see it closed */
+}
+
+bool watch_take(uint32_t i, const handle_t *hs, unsigned n)
+{
+    if (!live(i) || w.chans[i].ch != HANDLE_INVALID || n != (w.t->chans[i].belled ? 2u : 1u)) {
+        watch_refused(hs, n);
+        return false;
+    }
+    fsw_chan_handles(&w, i, hs[0], n == 2 ? hs[1] : HANDLE_INVALID);   /* the overflow rings */
+    return true;
+}
+
+unsigned watch_adopt(void)
+{
+    unsigned n = 0;
+    for (unsigned i = 0; i < FSW_CHANNELS; i++) {
+        if (!live(i))
+            continue;
+        if (w.chans[i].ch == HANDLE_INVALID || arm(i) != OK)
+            end(i);   /* its handles (or its bell) didn't come back */
+        else
+            n++;
+    }
+    return n;
+}
+
+bool watch_chan(uint32_t i, uint32_t gen16, struct xf_chan *out)
+{
+    if (!live(i) || w.chans[i].ch == HANDLE_INVALID || (gen_of(i) & 0xffffu) != gen16)
+        return false;
+    *out = (struct xf_chan){ .ch = w.chans[i].ch, .id = XF_CHAN_WATCH(i, gen_of(i)),
+                             .proto = XF_PROTO_WATCH, .watch = &wc[i] };
+    return true;
+}
+
+status_t watch_remake(uint32_t i, handle_t *out)
+{
+    handle_t mine = HANDLE_INVALID, client = HANDLE_INVALID;
+    if (!live(i))
+        return ERR_IO;   /* its record didn't come through */
+    /* The end the dead instance kept has no client: the reply that held
+     * the other died unsent. The channel never had its bell. */
+    handle_t bell = w.chans[i].bell;
+    if (w.chans[i].ch != HANDLE_INVALID)
+        jam_handle_close(w.chans[i].ch);
+    fsw_chan_handles(&w, i, HANDLE_INVALID, bell);
+    status_t st = jam_channel_create(&mine, &client);
+    if (st == OK) {
+        fsw_chan_handles(&w, i, mine, bell);
+        st = kept_put(XF_KEEP_WATCH(i), &mine, 1);
+    }
+    if (st != OK) {
+        if (client != HANDLE_INVALID)
+            jam_handle_close(client);
+        end(i);
+        return st;
+    }
+    *out = client;
+    return OK;
+}
+
+void watch_unmake(uint32_t i)
+{
+    if (live(i))
+        end(i);
+}
+
+void watch_stop(void)
+{
+    for (unsigned i = 0; i < FSW_CHANNELS; i++)
+        if (live(i))
+            end(i);
 }
 
 /* ---- the fswatch methods (abi/idl/fswatch.idl) --------------------------------- */

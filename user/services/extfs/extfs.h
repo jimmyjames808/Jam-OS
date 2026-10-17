@@ -16,8 +16,10 @@
  * replay, then the orphan list). What the state VMO keeps is small: the
  * request slots and each one's transaction id, the open files (inode
  * number and generation, flags), the views (flags, the root's inode and
- * place), the mapped files (inode, kind, key). The block cache and the
- * directory hash are rebuilt.
+ * place), the mapped files (inode, kind, key), the watches (watch.c's
+ * table: the watcher channels and their views, the watched inodes). The
+ * block cache, the directory hash and the watchers' queued events are
+ * not kept (a successor's queues start with IN_Q_OVERFLOW).
  *
  * Files: main.c the startup, the mount (and the format), the event loop;
  * disk.c the ext library's device over `block`; state.c the state VMO;
@@ -142,7 +144,7 @@ extern struct xf_vol vol;
 /* ---- the state (state.c) --------------------------------------------------------- */
 
 #define XF_STATE_KIND   0x73667865u   /* "exfs": svcstate's kind */
-#define XF_STATE_LAYOUT 4u            /* bump on any change to struct xf_state or the
+#define XF_STATE_LAYOUT 5u            /* bump on any change to struct xf_state or the
                                        * requests its slots replay */
 /* A slot's request area: the request (fs.rename's two paths), then from
  * XF_SLOT_DATA its data: the bounce buffer a write's bytes are copied
@@ -206,10 +208,33 @@ struct xf_slot {
 #define XF_MADE_VIEW       2u
 #define XF_MADE_MAP        3u
 #define XF_MADE_MAP_SHARED 4u
+#define XF_MADE_WATCH      5u   /* fs.watch's watcher channel (the library's number) */
 struct xf_made {
     uint64_t seq;
     uint32_t kind;
     uint32_t index;
+};
+
+/* A watcher channel's view (watch.c), beside the library's record of it
+ * (struct fsw_chan_rec: the view's flags and root inode): the rest of the
+ * struct xf_ctx its adds are walked in. */
+struct xf_wview {
+    uint32_t gen;             /* bumped at each fs.watch of the slot: its port key */
+    int32_t  view;            /* -1: the mount's own channel (the root's generation not
+                               * checked), else 0 */
+    uint32_t root_len;        /* the root's place from the volume's root */
+    char     root[XF_ROOT_MAX];
+};
+
+/* File watching's part (watch.c, <fswatch.h>): the library's table (the
+ * watcher channels' records and the watches), each channel's view, and
+ * each watched file's directory (inode and generation; 0 for a
+ * directory's watch), where the reach check (docs/INOTIFY-PLAN.md 2.6)
+ * places it. */
+struct xf_watches {
+    struct fsw_table table;
+    struct xf_wview  views[FSW_CHANNELS];
+    uint32_t         dir[FSW_WATCHES][2];
 };
 
 struct xf_state {
@@ -222,6 +247,7 @@ struct xf_state {
     uint64_t        data_seq[2];   /* slot i's data holds request data_seq[i]'s bytes */
     struct xf_map   maps[XF_MAX_MAPS];
     uint64_t        map_seq;       /* the last key's sequence number (pager.c) */
+    struct xf_watches watch;       /* watch.c's */
 };
 
 extern struct xf_state *kept;
@@ -535,9 +561,32 @@ static inline struct fsw_key xf_key(const struct ext_inode *in)
     return (struct fsw_key){ .ino = in->ino, .gen = in->d.generation };
 }
 
-/* The start: nothing watched (this track: a restart ends every watch,
- * the watcher channels dying with the instance). */
-void     watch_start(void);
+/* The state set up empty (state.c's reset): every watcher channel this
+ * instance holds ended first, its bell rung (the client's IN_UNMOUNT and
+ * IN_IGNORED), then nothing watched. */
+void     watch_reset(void);
+/* A successor, before its mount: the dead instance's watches taken over,
+ * each channel's queue starting with IN_Q_OVERFLOW; a part that fails its
+ * checks: set up empty (the keeper's channels are refused, so they close). */
+void     watch_adopt_table(void);
+/* adopt.c's take of the keeper's slot XF_KEEP_WATCH(i): the channel (and
+ * its bell, if given) back, or false if the state doesn't know it. */
+bool     watch_take(uint32_t i, const handle_t *hs, unsigned n);
+/* A slot of a watcher channel the state doesn't know (a fresh start's):
+ * its bell rung before the keeper's restore closes it. */
+void     watch_refused(const handle_t *hs, unsigned n);
+/* After the restore: every kept channel waited on again, one whose
+ * handles didn't come back ended. How many are served. */
+unsigned watch_adopt(void);
+/* Watcher channel i, generation gen16 (a slot's XF_CHAN_WATCH), as adopt.c
+ * finishes its request. */
+bool     watch_chan(uint32_t i, uint32_t gen16, struct xf_chan *out);
+/* fs.watch's reply that died unsent: the client's end made again. */
+status_t watch_remake(uint32_t i, handle_t *out);
+/* fs.watch not committed (it runs again): the channel it made forgotten. */
+void     watch_unmake(uint32_t i);
+/* The service stops for good: every watcher channel ended, its bell rung. */
+void     watch_stop(void);
 /* Is anything watched on the volume? (A change's one test.) */
 bool     watching(void);
 /* fs.watch through the view c: a watcher channel, its client end *out. */
@@ -572,7 +621,8 @@ void     ev_settle(bool done);
 #define XF_KEEP_FILE(i) ((uint32_t)(i))
 #define XF_KEEP_VIEW(i) ((uint32_t)(XF_MAX_FILES + (i)))
 #define XF_KEEP_MAP(i)  ((uint32_t)(XF_MAX_FILES + XF_VIEWS + (i)))
-#define XF_KEEP_SLOTS   (XF_MAX_FILES + XF_VIEWS + XF_MAX_MAPS)
+#define XF_KEEP_WATCH(i) ((uint32_t)(XF_MAX_FILES + XF_VIEWS + XF_MAX_MAPS + (i)))
+#define XF_KEEP_SLOTS   (XF_MAX_FILES + XF_VIEWS + XF_MAX_MAPS + FSW_CHANNELS)
 
 status_t kept_put(uint32_t slot, const handle_t *hs, unsigned n);
 void     kept_drop(uint32_t slot);

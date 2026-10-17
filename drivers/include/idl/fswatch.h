@@ -735,8 +735,10 @@ struct fswatch_bell_give_msg {   /* an event: txid 0 */
 
 /* ---- events (one way, txid 0, never answered) -------------------------- */
 
-/* The bell: an event, with RIGHT_SIGNAL and RIGHT_TRANSFER only (the
- * service may ring it and give it to its keeper, nothing more), whose
+/* The bell: an event, with RIGHT_SIGNAL, RIGHT_TRANSFER and RIGHT_DUPLICATE
+ * only (the service may ring it and give it to its keeper, which takes
+ * only what it can duplicate, nothing more; a bell without RIGHT_DUPLICATE
+ * still rings, but its channel closes at the service's restart), whose
  * FSWATCH_BELL the service sets when the channel's queue gets a first
  * event. */
 /* The event fswatch_bell.give, to the server: written on ch, never answered.

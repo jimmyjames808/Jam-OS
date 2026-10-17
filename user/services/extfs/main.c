@@ -408,7 +408,6 @@ int main(int argc, char **argv)
     vol.keep = startup_handle(SR_KEEP);
     vol.pager = startup_handle(EXTFS_SR_PAGER);   /* none: nothing is mapped (a test's extfs) */
     vol.at[XF_AT_MAIN] = now();
-    watch_start();
     status_t st = jam_port_create(&vol.port);
     if (st == OK)
         st = block != HANDLE_INVALID ? disk_open(block, &dev) : disk_open_ram(ram, &dev);
@@ -434,6 +433,8 @@ int main(int argc, char **argv)
         wback_stop();   /* (done already after an fsctl.stop) */
     files_close_all();
     defer_run();
+    if (st == OK || vol.disk_gone)
+        watch_stop();   /* served to the end: the watchers told now (their bells rung) */
     if (vol.disk_gone) {
         printf("extfs %s: the disk is gone: stopping\n", vol.name);
         return 0;

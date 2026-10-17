@@ -4,7 +4,8 @@
  * keeps the descriptor:
  *
  *   - the **bell**: an event made at inotify_init. Every watcher channel
- *     gets a duplicate (RIGHT_SIGNAL | RIGHT_TRANSFER) as its first message
+ *     gets a duplicate (RIGHT_SIGNAL | RIGHT_TRANSFER | RIGHT_DUPLICATE: the
+ *     service's keeper holds it across a restart) as its first message
  *     (fswatch_bell.give), and the service sets FSWATCH_BELL when its queue
  *     for the channel gets a first event. libc sets INO_HELD, a second user
  *     bit, while it holds records no read has taken. The two are the kind's
@@ -555,7 +556,8 @@ static long chan_locked(struct ino *n, const struct path *p, handle_t fs, uint64
         return -ENOSPC;   /* the service's watcher channels: Linux's answer for a limit */
     if (st != OK)
         return path_err_read(p, st);
-    st = jam_handle_duplicate(n->bell, RIGHT_SIGNAL | RIGHT_TRANSFER, &give);
+    /* RIGHT_DUPLICATE: so the service's keeper can hold it across a restart. */
+    st = jam_handle_duplicate(n->bell, RIGHT_SIGNAL | RIGHT_TRANSFER | RIGHT_DUPLICATE, &give);
     if (st == OK)
         st = fswatch_bell_give(ch, give);
     if (st != OK) {

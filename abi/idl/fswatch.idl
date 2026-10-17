@@ -110,8 +110,10 @@ const IN_ISDIR        0x40000000
 
 protocol fswatch_bell 52
 
-# The bell: an event, with RIGHT_SIGNAL and RIGHT_TRANSFER only (the
-# service may ring it and give it to its keeper, nothing more), whose
+# The bell: an event, with RIGHT_SIGNAL, RIGHT_TRANSFER and RIGHT_DUPLICATE
+# only (the service may ring it and give it to its keeper, which takes
+# only what it can duplicate, nothing more; a bell without RIGHT_DUPLICATE
+# still rings, but its channel closes at the service's restart), whose
 # FSWATCH_BELL the service sets when the channel's queue gets a first
 # event.
 1  give  (handle<event> bell) event

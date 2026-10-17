@@ -59,17 +59,24 @@ status_t state_open(bool *adopted)
     *adopted = how == SVCSTATE_ADOPTED;
     if (st == OK && !*adopted)
         state_reset(false);
+    else if (st == OK)
+        watch_adopt_table();   /* before the mount, whose orphans may be watched */
     return st;
 }
+
+_Static_assert(offsetof(struct xf_state, watch) + sizeof(struct xf_watches) ==
+               sizeof(struct xf_state), "watch.c's part is the state's last");
 
 void state_reset(bool keep_views)
 {
     size_t views = offsetof(struct xf_state, views), after = views + sizeof(kept->views);
+    size_t watch = offsetof(struct xf_state, watch);
     uint8_t *p = (uint8_t *)kept;
     memset(p, 0, views);
-    memset(p + after, 0, sizeof(*kept) - after);
+    memset(p + after, 0, watch - after);
     if (!keep_views)
         memset(kept->views, 0, sizeof(kept->views));
+    watch_reset();   /* its own part: the channels it still holds ended first */
 }
 
 struct svcstate *state_slots(void)

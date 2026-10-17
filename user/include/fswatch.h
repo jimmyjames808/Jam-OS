@@ -141,7 +141,8 @@ struct fsw {
 /* Set w up over table t, empty (t's memory is cleared). */
 void     fsw_init(struct fsw *w, struct fsw_table *t);
 /* A successor: set w up over the dead instance's table t. Every live
- * channel's queue starts with IN_Q_OVERFLOW; its handles are
+ * channel's queue that had its bell starts with IN_Q_OVERFLOW (one
+ * without served no request: nothing was lost); its handles are
  * HANDLE_INVALID until the service gives them back (fsw_chan_handles), or
  * ends it (fsw_chan_close). False: t is of another version or broken, and
  * w is set up empty over it (the service closes every watcher channel it
@@ -178,7 +179,9 @@ static inline bool fsw_belled(const struct fsw *w, uint32_t c)
     return w->chans[c].bell != HANDLE_INVALID;
 }
 /* End channel c: its watches, its queue and its handles (the service frees
- * what it keeps for it first: keep[]). */
+ * what it keeps for it first: keep[]). A channel its client hasn't closed
+ * has its bell rung first, so a client waiting on the bell alone (poll)
+ * wakes to find it closed. */
 void     fsw_chan_close(struct fsw *w, uint32_t c);
 
 /* ---- Requests (fswatch.idl), channel c's ------------------------------------- */

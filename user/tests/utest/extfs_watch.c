@@ -81,14 +81,21 @@ static uint32_t L(const char *s)
     return (uint32_t)strlen(s);
 }
 
-static bool watcher(handle_t fs, struct wat *x)
+/* A watcher channel whose bell has these rights (libc's: the three of
+ * watcher's; one without RIGHT_DUPLICATE can't be kept across a restart). */
+static bool watcher_with(handle_t fs, struct wat *x, rights_t rights)
 {
     handle_t give;
     CHECK_ST(fs_watch_until(fs, dl(), &x->ch), OK);
     CHECK_ST(jam_event_create(&x->bell), OK);
-    CHECK_ST(jam_handle_duplicate(x->bell, RIGHT_SIGNAL | RIGHT_TRANSFER, &give), OK);
+    CHECK_ST(jam_handle_duplicate(x->bell, rights, &give), OK);
     CHECK_ST(fswatch_bell_give(x->ch, give), OK);
     return true;
+}
+
+static bool watcher(handle_t fs, struct wat *x)
+{
+    return watcher_with(fs, x, RIGHT_SIGNAL | RIGHT_TRANSFER | RIGHT_DUPLICATE);
 }
 
 static void unwatcher(struct wat *x)
@@ -693,4 +700,87 @@ bool t_extfs_watch_limits(void)
 
     unwatcher(&a);
     return stop("watch-limits");
+}
+
+/* ---- restarts (2.8) ------------------------------------------------------------ */
+
+/* x's channel is closed: a take answers ERR_PEER_CLOSED (once the keeper
+ * dropped its copy: the supervisor takes what extfs sends it every 50 ms). */
+static bool closed(const struct wat *x)
+{
+    uint8_t more = 0;
+    uint32_t n = 0;
+    return fswatch_take_until(x->ch, dl(), FSWATCH_TAKE_BYTES, &more, takebuf, &n) ==
+           ERR_PEER_CLOSED;
+}
+
+/* extfs ended by its test powers (utest's restart supervisor, extfs_restart.c)
+ * with watches on: instance 0 after a change is in the journal and before
+ * its event, instance 1 with an fs.watch committed and not answered,
+ * instance 2 after an answer, its successor handed a new state (a fresh
+ * start). The comments count each instance's requests for its power. */
+bool t_extfs_restart_watch(void)
+{
+    static const char *const dies[] = { "die=journal:3", "die=commit:5", "die=answered:6" };
+    struct wat a, b, c, o;
+    uint32_t id = 0, idB = 0;
+    uint8_t existed = 0;
+    CHECK(ramdisk_create(&xd, EXT_DISK_SECTORS));
+    CHECK(extfs_sup_start(&xd, dies, 3));
+    struct fatrun *s = extfs_sup_run();
+
+    /* Instance 0: a watches /d and /d/s; o (a bell without RIGHT_DUPLICATE)
+     * watches /d. The mkdir of /d/x ends it, answered by its successor. */
+    CHECK_ST(t_mkdir(s, "/d"), OK);     /* journal 1 */
+    CHECK_ST(t_mkdir(s, "/d/s"), OK);   /* journal 2 */
+    CHECK(watcher(s->fs, &a) && watcher_with(s->fs, &o, RIGHT_SIGNAL | RIGHT_TRANSFER));
+    CHECK((idD = add(&a, "/d", ALL)) && (idS = add(&a, "/d/s", ALL)) && add(&o, "/d", ALL));
+    CHECK_ST(t_mkdir(s, "/d/x"), OK);   /* journal 3: ended */
+    CHECK_EQ(extfs_sup_ended(), 1u);
+
+    /* Instance 1: a's watches back, its queue starting with the overflow
+     * (x's IN_CREATE died with instance 0), its bell rung; then events as
+     * before. o's channel closed: its bell couldn't be kept. */
+    CHECK(rung(&a));
+    EXPECT(&a, "after a death between a change and its event", { 0, IN(Q_OVERFLOW), "" }); /* 1 */
+    CHECK_ST(add_st(&a, "/d", ALL, &id, &existed), OK);   /* 2 */
+    CHECK(id == idD && existed == 1);
+    CHECK_ST(t_mkdir(s, "/d/y"), OK);   /* 3 */
+    EXPECT(&a, "a watch carried on", { idD, IN(CREATE) | IN(ISDIR), "y" });   /* 4 */
+    CHECK(closed(&o));
+
+    /* fs.watch committed, not answered (5: instance 1 ended): its successor
+     * makes the client's end again. It had no bell, so no overflow. */
+    CHECK(watcher(s->fs, &b));
+    CHECK_EQ(extfs_sup_ended(), 2u);
+    CHECK((idB = add(&b, "/d/s", ALL)));   /* instance 2: 1 */
+    NOTHING(&b, "a remade channel");       /* 2 */
+    CHECK_ST(t_mkdir(s, "/d/s/z"), OK);    /* 3 */
+    EXPECT(&b, "a remade channel's watch", { idB, IN(CREATE) | IN(ISDIR), "z" });   /* 4 */
+    EXPECT(&a, "a after a second restart", { 0, IN(Q_OVERFLOW), "" },
+           { idS, IN(CREATE) | IN(ISDIR), "z" });   /* 5 */
+
+    /* A fresh start (6: instance 2 ended after answering; the next has a
+     * new state): every watcher channel closed, its bell rung first. */
+    extfs_sup_fresh();
+    CHECK_ST(t_stat(s, "/d", NULL, NULL, NULL), OK);   /* 6 */
+    CHECK_ST(t_stat(s, "/d", NULL, NULL, NULL), OK);   /* instance 3's */
+    CHECK_EQ(extfs_sup_ended(), 3u);
+    CHECK(rung(&a) && rung(&b));
+    CHECK(closed(&a) && closed(&b));
+
+    /* The fresh instance's watches, no overflow; the mount going (extfs
+     * stopped) closes them, the bell rung. */
+    CHECK(watcher(s->fs, &c));
+    CHECK((id = add(&c, "/d", ALL)));
+    CHECK_ST(t_mkdir(s, "/d/w"), OK);
+    EXPECT(&c, "a fresh instance's watch", { id, IN(CREATE) | IN(ISDIR), "w" });
+    CHECK(extfs_sup_stop());
+    CHECK(rung(&c) && closed(&c));
+    unwatcher(&a);
+    unwatcher(&b);
+    unwatcher(&c);
+    unwatcher(&o);
+    CHECK(extfs_save(&xd, "restart-watch"));
+    return ramdisk_destroy(&xd);
 }
