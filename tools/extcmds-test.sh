@@ -43,8 +43,14 @@ mformat -i "$esp" -T $((128 * 2048)) -F -v JAMOS-ESP :: || { echo "extcmds: FAIL
 python3 tools/mkgpt.py "$jam" --layout jamos --size 1G --fill "1=$esp" --fill "2=$ext" > /dev/null ||
     { echo "extcmds: FAIL: mkgpt"; exit 1; }
 rm -f "$esp"
+# The stick's /data FAT (the default image's is ext): `disk check /data` is
+# the checker's answer for a volume that isn't ext.
+. tools/datafs.sh
+stick="$out/fat-stick.img"
+data_fat_image "$stick" || { echo "extcmds: FAIL: no FAT stick"; exit 1; }
 ok=1
-QEMU_TIMEOUT=${QEMU_TIMEOUT:-420} QEMU_NVME="$jam" QEMU_INPUT=${EXTCMDS_INPUT:-tools/shell-tests/extcmds.txt} \
+QEMU_TIMEOUT=${QEMU_TIMEOUT:-420} QEMU_IMAGE="$stick" QEMU_NVME="$jam" \
+    QEMU_INPUT=${EXTCMDS_INPUT:-tools/shell-tests/extcmds.txt} \
     tools/qemu-test.sh "$out" extcmds shell > "$out/qemu.out" 2>&1 ||
     { echo "extcmds: FAIL: the run failed (see $out/qemu.out)"; grep -a "serial-feed: .*no '" "$out/qemu.out" || true; ok=0; }
 # the volume on the host: partition 2 of the drive, its journal replayed, then clean
@@ -67,7 +73,7 @@ $jx --part 2 get "$jam" /t/c "$out/c.txt" 2> /dev/null && [ "$(wc -l < "$out/c.t
 $jx --part 2 get "$jam" /docs/hello.txt "$out/hello.txt" 2> /dev/null &&
     cmp -s "$out/hello.txt" "$out/tree/docs/hello.txt" || { echo "extcmds: FAIL: docs/hello.txt changed"; ok=0; }
 if [ $ok = 1 ]; then
-    rm -rf "$out/tree" "$out/data.out" "$ext" "$jam"
+    rm -rf "$out/tree" "$out/data.out" "$ext" "$jam" "$stick"
     echo "extcmds: PASS"
 else
     echo "extcmds: FAIL (see $out)"

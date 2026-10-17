@@ -3,11 +3,18 @@
 # ring: eight rounds of the klog gap test put about 550 KiB of filler into
 # the log, then `kill console`; the new console says what it drew, and the
 # shell comes back on it.
+# The filler overflows COM1's 64 KiB transmit ring (kernel/dev/serial.c drops
+# what doesn't fit: the text is still in the log and on the screen), and the
+# shell's answer and prompt come at once after it, while the ring is still
+# full: they are on the screen but cut from the serial line, so a wait for
+# the prompt here waited for nothing (the PC under load, where QEMU drains
+# the ring slowly). The echo comes after the ring has drained.
 # Run: QEMU_INPUT=tools/shell-tests/console-restart.txt tools/qemu-test.sh build/test console-restart shell
 wait 120 Jam OS shell
 wait {prompt}
-send ktest console_klog_read_after_gap loops=8
-wait 120 {prompt}
+send ktest console_klog_read_after_gap loops=8; sleep 5; echo ok-$?-flood
+wait 120 ok-0-flood
+wait {prompt}
 send kill console
 wait 30 of the last 256 KiB (of
 wait 30 Jam OS shell

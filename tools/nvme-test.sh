@@ -117,8 +117,8 @@
 #            /tmp; files go in and come back through both names;
 #            `disks` says (ext); then `install` over the drive (its data
 #            partition held writable for init and let go: /jam and its
-#            views gone and back, /tmp in memory and /pkg on the stick's
-#            /data meanwhile, none on a FAT one); afterwards
+#            views gone and back, /tmp and /pkg on the stick's /data
+#            meanwhile, memory and none on a FAT one); afterwards
 #            e2fsck finds the volume clean (its journal replayed first) with
 #            the files in it, the ESP holds the build, and the Windows-like
 #            image is unchanged
@@ -862,9 +862,15 @@ s5_jam() {
     [ "$(grep -ac "init: /pkg: a view of /jam/pkg" "$log")" -ge 2 ] &&
         grep -aqE "init: (/pkg: a view of /data/pkg|no /pkg: /data/pkg can't be a view)" "$log" ||
         { echo "nvme-$c: FAIL: /pkg didn't follow /jam away and back"; ok=0; }
-    # /tmp went to memory while the installer held /jam, and came back to /jam/tmp, not emptied again
-    [ "$(grep -ac "init: /tmp: a view of /jam/tmp" "$log")" -ge 2 ] && [ "$(grep -ac "emptied:" "$log")" -eq 1 ] ||
-        { echo "nvme-$c: FAIL: /tmp didn't come back to /jam/tmp once, emptied once"; ok=0; }
+    # /tmp followed /jam too: to the stick's /data/tmp while the installer held /jam (to memory
+    # on a FAT stick, DB1), and back to /jam/tmp, which is emptied only the first time (a
+    # volume's /tmp is emptied once a boot)
+    tmp_away="a view of /data/tmp"
+    [ "$(python3 tools/mkimage.py --data-fs build/jamos.img)" = fat ] && tmp_away="in memory"
+    [ "$(grep -ac "init: /tmp: a view of /jam/tmp" "$log")" -ge 2 ] &&
+        [ "$(grep -ac "init: /tmp: a view of /jam/tmp (emptied:" "$log")" -eq 1 ] &&
+        sed -n '\|init: /tmp: a view of /jam/tmp|,$p' "$log" | grep -aq "init: /tmp: $tmp_away" ||
+        { echo "nvme-$c: FAIL: /tmp didn't go to the stick's /data (memory on FAT) and back to /jam/tmp, emptied once"; ok=0; }
     s2_want "$log" "volumes: nvme[0-9]+ partition 1 -> bin/fat at /nvme[0-9]+, read-only" || ok=0
     grep -aqE "extfs-jam.*(crashed|killed)|giving up|did not end cleanly" "$log" &&
         { echo "nvme-$c: FAIL: a service crashed or was given up on"; ok=0; }

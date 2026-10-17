@@ -35,7 +35,7 @@
  *                  (ERR_ACCESS_DENIED) and changes nothing
  *   storage_range  requests outside the partition or the buffer are
  *                  refused (ERR_OUT_OF_RANGE), also ones that would wrap
- *   storage_write  the FAT32 data partition opened read-write: on a QEMU
+ *   storage_write  the data partition (FAT32 or ext) opened read-write: on a QEMU
  *                  disk its last 64 KiB are overwritten with a pattern,
  *                  read back and restored; on a real stick one block is
  *                  written back unchanged (nothing on it is altered)
@@ -738,6 +738,15 @@ static int part_of_type(const struct drive *v, uint8_t type, uint8_t type2)
     return -1;
 }
 
+/* The data partition: FAT32's (type 0C or 0B), or ext's (83), which the
+ * stick's /data is by default. The checks below work on its blocks, not on
+ * the volume in it. */
+static int data_part(const struct drive *v)
+{
+    int e = part_of_type(v, 0x0c, 0x0b);
+    return e >= 0 ? e : part_of_type(v, 0x83, 0x83);
+}
+
 /* ---- the checks on a drive --------------------------------------------------------------- */
 
 /* The EFI System Partition, read-only: its boot sector is FAT32's, and
@@ -817,9 +826,9 @@ static void pattern(uint8_t *b, uint32_t seed)
  * back as it was. */
 static bool check_write(const struct drive *v, struct pch *p, struct pch *ro)
 {
-    int e = part_of_type(v, 0x0c, 0x0b);
+    int e = data_part(v);
     if (e < 0 || v->parts[e].blocks < BUF_SIZE / v->bs) {
-        printf("usbtest: %s: no FAT32 data partition: skipped\n", cur);
+        printf("usbtest: %s: no data partition: skipped\n", cur);
         skipped++;
         return true;
     }
@@ -1087,9 +1096,9 @@ static bool fence(const struct drive *v, int e, const struct pch *rw)
 static bool t_storage_fence(void)
 {
     const struct drive *v = &boot_drive;
-    int e = part_of_type(v, 0x0c, 0x0b);
+    int e = data_part(v);
     if (!v->qemu || e < 0 || v->parts[e].blocks < BUF_SIZE / v->bs) {
-        printf("usbtest: %s: no QEMU disk with a FAT32 data partition: skipped\n", cur);
+        printf("usbtest: %s: no QEMU disk with a data partition: skipped\n", cur);
         skipped++;
         return true;
     }

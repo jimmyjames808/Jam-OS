@@ -3,9 +3,15 @@
 # results with its expected-failures list. tools/libc-test.sh runs this and
 # reads the log; "libc-test: DONE ok" is the pass. The next line is
 # replaced by tools/libc-test.sh when it is given tests to run.
+# A few tests write in /tmp. It starts in memory, and when an ext /data comes
+# init makes it a view of /data/tmp and ends the memory one: a program started
+# before then keeps the old /tmp in its namespace and finds it gone (mkstemp
+# ENOENT). So the run starts once /tmp has settled: the /pkg line comes in
+# the same turn as /tmp's (a FAT /data keeps /tmp in memory and has no /pkg).
 wait 120 Jam OS shell
 wait {prompt}
 seen 60 init: /data mounted
+seen 60 re:init: (/pkg: a view of|no /pkg)
 send libc-test
 wait 1200 libc-test: DONE
 wait {prompt}
