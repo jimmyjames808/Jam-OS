@@ -792,11 +792,11 @@ ext run, with CB2's full list, the pass count was 8,278 and 640 stayed listed.
   | Layer | Tests | Cause (seen = in the log or the code) | Fix track |
   |-------|-------|----------------------------------------|-----------|
   | extfs | `FileUtilMultiThreadedTest.MultiThreadedTempFiles` | 64 threads each make, write, close and read back a temporary file. Seen: `CreateAndOpenTemporaryStream` returns null (file_util_unittest.cc:5363, then a null dereference: SEGV) or, another run, `ReadFileToString` of a just-written file fails (:5381), 2 of 2,048 times, in `/data/cr/tmp` and in `/tmp` alike. Likely: `XF_MAX_FILES` is 32 (extfs.h): `files_open` answers `ERR_NO_RESOURCES` (files.c:395) when no slot is free, and the layer turns that into `EAGAIN` (errno.c:29); the test holds up to 64 open at once. Not proved (no errno is logged). Chromium opens far more than 32 files at once (profile databases, caches, packs): raise it, and look at `XF_MAX_MAPS` (64 mapped files) with it; each open file has a 64 KiB buffer (`XF_FILE_BUF`) | extfs (U9 / the ext review) |
-  | libc: libos paths | `FileUtilTest.DeleteDeep` | `mkdirat(dirfd, <255-byte name>)` says "Filename too long": libos limits a path to `FS_PATH_MAX`, 256 bytes (os.h:379, `ns_resolve` ns.c:351 and every `rel[FS_PATH_MAX]`), though the fs protocol carries 4,095 (`FS_PATH_LEN`) and the layer's own `PATH_BYTES` is 4096. os.h says libos's limit "goes up to it when nothing shares it any more". Any path past 255 bytes fails, not only this test's | POSIX layer / libos |
-  | libc: file calls | `FileUtilTest.ChangeFilePermissionsAndWrite` | an `O_WRONLY` open asks the service for read access too (`fs_access`, file.c:56: "the one open serves every description"), so a file with mode 0200 gives EACCES; Linux opens it for its owner | POSIX layer |
+  | libc: libos paths | `FileUtilTest.DeleteDeep` | `mkdirat(dirfd, <255-byte name>)` says "Filename too long": libos limits a path to `FS_PATH_MAX`, 256 bytes (os.h:379, `ns_resolve` ns.c:351 and every `rel[FS_PATH_MAX]`), though the fs protocol carries 4,095 (`FS_PATH_LEN`) and the layer's own `PATH_BYTES` is 4096. os.h says libos's limit "goes up to it when nothing shares it any more". Any path past 255 bytes fails, not only this test's. **CBF6 found otherwise:** the layer never goes through `ns_resolve` for a mount's paths, and a 255-byte name under a 50-byte directory works on ext; the test builds 26 levels of 255-byte names through directory descriptors (6.6 KB of path), and a directory description here is a path as text, so it stops at 15 levels, the layer's `PATH_BYTES` (see CBF6 notes) | POSIX layer + fs protocol: directory handles (a design) |
+  | libc: file calls | `FileUtilTest.ChangeFilePermissionsAndWrite` | an `O_WRONLY` open asks the service for read access too (`fs_access`, file.c:56: "the one open serves every description"), so a file with mode 0200 gives EACCES; Linux opens it for its owner | POSIX layer (CBF6: fixed) |
   | libc: file calls | `CopyDirectoryExclFileOverFifo`, `CopyDirectoryWithNonRegularFiles`, `ReadFileToStringWithNamedPipe`, `TestNonBlockingFileReadLinux` | `mkfifo` is `mknod`, and `lx_mknodat` answers `EPERM` (meta.c:537, "mknod is EPERM"): no named pipes; fs.idl has no `mknod` (extfs can hold the inode). Only tests need it | POSIX layer + fs.idl (a named-pipe design) |
-  | libc: file calls | `MakeAbsoluteFilePathNoResolveSymbolicLinks` | the working directory is a path as text (dir.c `lx_getcwd`): after the test removes it, `getcwd` still answers; Linux gives `ENOENT` | POSIX layer (small) |
-  | libc: sysfs | `DriveInfoTest.GetFileDriveInfo` | `has_seek_penalty`, `is_removable` and the size come from `/sys/dev/block/<major:minor>`; none of it exists, so the calls give `nullopt` | POSIX layer (with uname/sysfs, CBF2b) |
+  | libc: file calls | `MakeAbsoluteFilePathNoResolveSymbolicLinks` | the working directory is a path as text (dir.c `lx_getcwd`): after the test removes it, `getcwd` still answers; Linux gives `ENOENT` | POSIX layer (small; CBF6: fixed) |
+  | libc: sysfs | `DriveInfoTest.GetFileDriveInfo` | `has_seek_penalty`, `is_removable` and the size come from `/sys/dev/block/<major:minor>`; none of it exists, so the calls give `nullopt` | POSIX layer (with uname/sysfs, CBF2b; CBF6: the files are there) |
   | musl | `FileUtilTest.FileToFILE` | `fdopen(-1, "w")` returns a `FILE` (musl does not look at the descriptor), the test expects null. Alpine's build fails it the same | none; leave it out |
   | mmap (WE1) | `MemoryMappedFileTest.WriteableFile`, `ExtendableFile`; `FilePersistentMemoryAllocatorTest.AcceptableTest`, `ExtendTest`; `PersistentHistogramAllocatorTest.CreateSpareFile`, `CreateWithFile`, `MovePersistentFile`; `PersistentMemoryAllocatorTest.TruncateTest` (8) | `MemoryMappedFile::Initialize` with `READ_WRITE` fails on ext too (expected: WK2 and WE1, extfs's write-back, are not built); `CreateWithFile` and `MovePersistentFile` then dereference the failed object (SEGV at 0x8) | WE1 |
 
@@ -1310,6 +1310,103 @@ should clear (the CB3-gate rerun checks; the list's comments say so):
   the parent's threads), and poll.c's list of sleeping sets and epoll's
   `waiters` counts likewise (only the forking thread goes on, and it is in
   neither).
+
+#### CBF6 notes (2026-10-17)
+
+Track CBF6 (branch `cbf6-file-calls`): five of CB-RM's small POSIX-layer
+items, each a posixtest case that does what the base test does. Which
+`base_unittests.skip` entries each should clear:
+
+| Fix | Skip-list tests it should clear | Left |
+|-----|---------------------------------|------|
+| `O_WRONLY` on a file of mode 0200 | `FileUtilTest.ChangeFilePermissionsAndWrite` | nothing |
+| `getcwd` of a removed directory | `FileUtilTest.MakeAbsoluteFilePathNoResolveSymbolicLinks` | `chdir("..")` out of a removed directory (Linux's works, ours is a path as text) |
+| `/sys/dev/block/<major>:<minor>/{removable,queue/rotational,size}` | `DriveInfoTest.GetFileDriveInfo` | the test wants `size` of at least 10,000,000, and sysfs counts 512-byte sectors (base reads it as bytes): the file's volume must be 5.12 GB or more, which the 640 MiB stick of `tools/cr/base-stick.py` is not |
+| `/proc/<pid>/smaps_rollup` | `SmapsRollupTest.ReadAndParse` | nothing |
+| (the 256-byte path) | `FileUtilTest.DeleteDeep` | **not a 256-byte limit; stopped on a design question, below** |
+
+- **`O_WRONLY` asked for reading too.** The layer's one open of a file
+  serves every description of it, so a write-only open asked the service
+  for `FS_READ | FS_WRITE`, and extfs refused a file whose mode has no
+  read bit. `open_file` now tries again with the write alone when the
+  open is `O_WRONLY` and the answer is `EACCES` (the refusal comes before
+  `O_TRUNC` truncates anything, and a mode of 0 still fails the second
+  try); `kind_give`'s reopen for a child likewise. Objects shared by path
+  (`fobj.c settle`) were shared by anything that could write; they are
+  shared now only when they can do what the description wants, read and
+  write, so a read opened after `chmod` is not given a write-only open.
+  Test: the links section's `write_only` (ext, mode 0200: `O_WRONLY |
+  O_CREAT | O_TRUNC` as base's `WriteFile`, a second description, a read
+  refused as `EBADF`, `O_RDONLY` and `O_RDWR` `EACCES`, `O_APPEND`, a read
+  after `chmod 0600`, a child given the description, mode 0 refused and
+  the file not truncated).
+- **`getcwd` of a removed directory.** The working directory is a path as
+  text; `lx_getcwd` now asks the service whether it is still there
+  (`path_cwd_removed`: a mount's directory that answers "not found") and
+  says `ENOENT` if not, before `ERANGE` as Linux does. A service that is
+  slow or refuses leaves the answer as it was. One call to the service per
+  `getcwd` on a mount (none in `/`, `/svc`, `/proc`, `/dev`, `/etc`). Not
+  as Linux: a directory made again at the same path is "there" (Linux's
+  stays the removed one), and `chdir("..")` out of a removed directory
+  fails (ENOENT; the path as text walks through the removed name). The
+  function's 4 KiB buffer is on the heap now. Test: `files2.c
+  current_dir`.
+- **`/sys/dev/block`.** `st_dev` is the mount's place in the namespace
+  (path.c `mount_dev`, 1 on), read by base with `<linux/kdev_t.h>`'s
+  macros as major 0, minor n. etc.c serves, for the n of each mount of the
+  namespace and when there is no `/sys` mount, `removable` and
+  `queue/rotational` ("0": the layer is not told what kind of drive a
+  volume is, and none it can be on rotates or is pulled out in a way it
+  knows) and `size` (the volume's bytes from `fs.statfs`, in 512-byte
+  sectors, asked at the open). They stat as sysfs attributes (mode 0444,
+  size 4096) and are read only. The directories themselves are not
+  listed. Test: the start section's `check_drive_info` for `/boot` and
+  `/data`.
+- **`/proc/<pid>/smaps_rollup`.** procinfo.c's walk of the mappings now
+  also sums the pages by kind of mapping. Rss, Referenced and Pss are the
+  pages present (nothing says a page is shared with another process, so a
+  page counts whole); Pss_Anon, Pss_File and Pss_Shmem and Anonymous are
+  the splits `status` already has; a page is dirty if its mapping can be
+  written (there is no per-page bit) and shared if the mapping is
+  `MAP_SHARED`: Private_Dirty, Private_Clean, Shared_Dirty and
+  Shared_Clean add up to Rss, Pss_Dirty is the two dirty ones; the rest
+  is 0. The first line is the pseudo-mapping `lo-hi ---p 00000000 00:00 0
+  [rollup]` over the lowest start and the highest end; the text is well
+  under one page, which base reads in one `read`. It is in the listing of
+  `/proc/<pid>` (ours and a child's) and of a thread's directory. Test:
+  procinfo.c's `check_smaps_rollup`.
+- **`DeleteDeep` is not the 256-byte limit CB-RM took it for; stopped on a
+  design question.** The layer takes a mount's paths whole to the
+  service (`fs_*_within` with the path from `path_rel`), never through
+  libos's `ns_resolve`, so libos's `FS_PATH_MAX` of 256 is not on this
+  path (it is on `fs_readdir` of `/` and `/svc`, the spawn's `fs_stat` of
+  a program's name and `fs_path_clean`, none of which the test uses), and a
+  255-byte name under a 50-byte directory is made on ext. The test
+  (base/files/file_util_unittest.cc:1766) makes 26 levels of 255-byte
+  names, each through `mkdirat` and `openat` on the level above's
+  descriptor, a link `up` and a file at the bottom, then
+  `DeletePathRecursively` (`fstatat`, `openat(O_NOFOLLOW)`, `fdopendir`
+  and `unlinkat` on descriptors, file_util_posix.cc:313-369): a tree 6.6 KB
+  deep that Linux walks by descriptor and no path string names. Here a
+  directory description is its absolute path as text (files.h `struct
+  path`, `PATH_BYTES` 4096, the same as Linux's `PATH_MAX`), and the fs
+  protocol takes 4,095 bytes (`str[<=4095]`), so `mkdirat` at the 16th
+  level is `ENAMETOOLONG` (measured on ext: 15 levels). More bytes would
+  also need extfs's buffers (`rest_buf`, `w->phys`, a subview's root of
+  `XF_ROOT_MAX` 1,024), FAT's `FAT_PATH_MAX` and the layer's `struct path`
+  (4,120 bytes, already on stacks), so raising a constant is the wrong
+  fix. The right one is directory handles: `fs.idl` gets an open that
+  returns a directory (a channel) whose calls (open, stat, mkdir, unlink,
+  rename, readdir, getattr) take names relative to it, extfs walks by
+  inode from it, and a directory description holds the handle beside its
+  path (the path stays for `fchdir`, `getcwd` and the mount lookup, cut
+  short where it would be too long). FAT could serve a handle only to
+  the depth FatFs's own path buffer allows. That is a protocol and
+  extfs change, the owner's call. Test (what does work): `files2.c
+  deep_names`: a 255-byte name made, opened, listed and removed, a
+  256-byte one `ENAMETOOLONG`, 15 levels through descriptors with a file
+  and a link at the bottom, the 16th `ENAMETOOLONG`, all removed from the
+  bottom through the parents' descriptors.
 
 #### CB-RM (2026-10-17)
 
