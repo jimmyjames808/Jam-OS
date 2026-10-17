@@ -179,12 +179,13 @@ KTEST(aspace_merge_shapes)
     KT_EQ(aspace_fault(as, b + 5 * PG, ASPACE_READ), OK);
     KT_EQ(pte_pa(as, b + 5 * PG), vmo_page_phys(v, 5 * PG));
 
-    /* First fit puts a continuation right after its neighbour: merged. */
+    /* Placement (top down) puts the pages before a mapping's right below
+     * it: merged. */
     KT_EQ(aspace_unmap(as, USER_BASE, USER_TOP - USER_BASE), OK);
     uint64_t a1 = 0, a2 = 0;
-    KT_EQ(aspace_map(as, v, 0, 4 * PG, R | CANRW, &a1), OK);
     KT_EQ(aspace_map(as, v, 4 * PG, 4 * PG, R | CANRW, &a2), OK);
-    KT_EQ(a2, a1 + 4 * PG);
+    KT_EQ(aspace_map(as, v, 0, 4 * PG, R | CANRW, &a1), OK);
+    KT_EQ(a1, a2 - 4 * PG);
     KT_EQ(aspace_mapping_count(as), 1);
 
     /* Kept mappings never merge, not even after a protect to the same. */
