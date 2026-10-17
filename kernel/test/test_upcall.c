@@ -108,6 +108,17 @@ extern uint64_t user_faults;   /* uentry.c: user threads killed for a fault */
 #define D_TSC0      0x858   /* upc_rbench: the TSC before its raise */
 #define D_STOP      0x860   /* upc_rstorm: stop */
 #define D_RCOUNTS   0x880   /* upc_rstorm: each thread's raises taken (8) */
+#define D_RNG       0x900   /* upc_hrand: its random state (xorshift64) */
+#define D_HWANT     0x908   /* upc_hrand: frames to give RESUME, then exit 0 */
+#define D_HFRAMES   0x910   /* upc_hrand: frames given so far */
+#define D_HLEAK     0x918   /* upc_hrand: words of a witness's pattern seen in its frames */
+#define D_HBAD      0x920   /* upc_hrand: resumes whose registers weren't the frame's */
+#define D_HREFUSED  0x928   /* upc_hrand: RESUMEs that came back (an unreadable frame) */
+#define D_HLANDED   0x930   /* upc_hrand: resumes that landed and were checked */
+#define D_EXPFL     0x938   /* upc_hrand: RFLAGS the landing must see */
+#define D_EXPX0     0x940   /* upc_hrand: xmm0's low half the landing must see */
+#define D_VFAULTS   0x948   /* upc_vspin: faults taken with the vector expected */
+#define D_EXPECT    0x980   /* upc_hrand: the 16 registers the landing must see */
 #define D_SAMPLES   0x1000  /* upc_bench: each timed round's TSC cycles */
 #define SAMPLES_MAX ((DATA_PAGES * PG - D_SAMPLES) / 8)
 
@@ -116,15 +127,25 @@ extern uint64_t user_faults;   /* uentry.c: user threads killed for a fault */
 /* The frame's offsets the programs use (abi.h's struct exc_frame). */
 #define F_SIZE     0
 #define F_KIND     4
+#define F_VECTOR   8
 #define F_COOKIE   32
 #define F_XSIZE    40
+#define F_R8       48
 #define F_R12      80
+#define F_R13      88
+#define F_R14      96
+#define F_R15      104
 #define F_RBX      136
 #define F_RSP      168
 #define F_RIP      176
 #define F_RFLAGS   184
 #define F_X        192
 _Static_assert(offsetof(struct exc_frame, kind) == F_KIND &&
+                   offsetof(struct exc_frame, vector) == F_VECTOR &&
+                   offsetof(struct exc_frame, r8) == F_R8 &&
+                   offsetof(struct exc_frame, r13) == F_R13 &&
+                   offsetof(struct exc_frame, r14) == F_R14 &&
+                   offsetof(struct exc_frame, r15) == F_R15 &&
                    offsetof(struct exc_frame, cookie) == F_COOKIE &&
                    offsetof(struct exc_frame, xsave_size) == F_XSIZE &&
                    offsetof(struct exc_frame, r12) == F_R12 &&
@@ -148,8 +169,11 @@ _Static_assert(offsetof(struct exc_frame, kind) == F_KIND &&
 #define H_UNHANDLED 3
 #define U_TOP       0x00007fffffffe000
 #define K_RAISED    2
+#define U_FLAGS_OK  0x240dd5
+#define H_SP        0x1001ffc0   /* upc_hrand's stack, put back at each round */
 _Static_assert(H_RESUME == EXC_RESUME && H_LEAVE == EXC_LEAVE && H_UNHANDLED == EXC_UNHANDLED &&
-                   U_TOP == USER_TOP && K_RAISED == EXC_RAISED,
+                   U_TOP == USER_TOP && K_RAISED == EXC_RAISED && U_FLAGS_OK == USER_RFLAGS_OK &&
+                   H_SP == U_STACK_TOP - 64,
                "the programs' constants");
 
 #define S_(x) #x
@@ -177,7 +201,10 @@ __asm__(
     DSET(d_estack, D_ESTACK) DSET(d_esize, D_ESIZE) DSET(d_esret, D_ESRET)
     DSET(d_rcount, D_RCOUNT) DSET(d_rkind, D_RKIND) DSET(d_rtsc, D_RTSC) DSET(d_loops, D_LOOPS)
     DSET(d_hself, D_HSELF) DSET(d_hnosig, D_HNOSIG) DSET(d_tsc0, D_TSC0) DSET(d_stop, D_STOP)
-    DSET(d_rcounts, D_RCOUNTS)
+    DSET(d_rcounts, D_RCOUNTS) DSET(d_rng, D_RNG) DSET(d_hwant, D_HWANT)
+    DSET(d_hframes, D_HFRAMES) DSET(d_hleak, D_HLEAK) DSET(d_hbad, D_HBAD)
+    DSET(d_hrefused, D_HREFUSED) DSET(d_hlanded, D_HLANDED) DSET(d_expfl, D_EXPFL)
+    DSET(d_expx0, D_EXPX0) DSET(d_vfaults, D_VFAULTS) DSET(d_expect, D_EXPECT)
     ".set u_more, " S(U_MORE) "\n"
     ".set u_hole, " S(U_HOLE) "\n"
     "upc_blob:\n"
@@ -844,6 +871,341 @@ __asm__(
     "    movl $" S(SYS_thread_exit) ", %eax\n"
     "    syscall\n"
     "    ud2\n"
+
+    /* ---- hostile: every vector from many threads, raised meanwhile ----- */
+    "upc_ventry:\n"                     /* r12 = the thread's index, r14 its pattern */
+    "    cmpq " S(F_R12) "(%rdi), %r12\n"
+    "    jne 1f\n"
+    "    cmpq " S(F_R14) "(%rdi), %r14\n"
+    "    jne 1f\n"
+    "    cmpq " S(F_X) " + " S(X_XMM) " + 240(%rdi), %r14\n"   /* xmm15 */
+    "    jne 1f\n"
+    "    leaq d_cookies(,%r12,8), %rcx\n"
+    "    movq " S(F_COOKIE) "(%rdi), %rax\n"
+    "    cmpq $0, (%rcx)\n"
+    "    jne 3f\n"
+    "    movq %rax, (%rcx)\n"
+    "3:  cmpq %rax, (%rcx)\n"
+    "    jne 1f\n"
+    "    cmpl $" S(K_RAISED) ", " S(F_KIND) "(%rdi)\n"
+    "    je 4f\n"
+    "    movl " S(F_VECTOR) "(%rdi), %eax\n"   /* a fault: the vector r13 said */
+    "    cmpq " S(F_R13) "(%rdi), %rax\n"
+    "    jne 1f\n"
+    "    lock incq d_vfaults\n"
+    "    movq " S(F_R15) "(%rdi), %rax\n"     /* past it by r15's bytes */
+    "    addq %rax, " S(F_RIP) "(%rdi)\n"
+    "    andq $-257, " S(F_RFLAGS) "(%rdi)\n" /* a single step's TF off */
+    "    jmp 2f\n"
+    "4:  lock incq d_rcount\n"
+    "    jmp 2f\n"
+    "1:  lock incq d_bad\n"
+    "2:  movl $" S(H_RESUME) ", %esi\n"
+    "    movl $" S(SYS_exception_done) ", %eax\n"
+    "    syscall\n"
+    "    lock incq d_bad\n"
+    "    ud2\n"
+    "upc_vspin:\n"                      /* rdi = the thread's index; D_ROUNDS or D_STOP */
+    "    movq %rdi, %r12\n"
+    "    movl $1, d_noentry\n"
+    "    call upc_setup\n"
+    "    leaq upc_ventry(%rip), %rdi\n"
+    "    movl $" S(SYS_exception_entry_set) ", %eax\n"
+    "    syscall\n"
+    "    leaq 1(%r12), %r14\n"
+    "    movabsq $0x0101010101010101, %rax\n"
+    "    imulq %rax, %r14\n"
+    "    movq %r14, %xmm15\n"
+    "    movq d_rounds, %rbx\n"
+    "    lock incq d_ready\n"
+    "upc_vloop:\n"                      /* each: r13 the vector, r15 the bytes to skip */
+    "    movl $6, %r13d\n"
+    "    movl $2, %r15d\n"
+    "    ud2\n"
+    "    xorl %ecx, %ecx\n"
+    "    xorl %r13d, %r13d\n"
+    "    divl %ecx\n"
+    "    movl $3, %r13d\n"
+    "    xorl %r15d, %r15d\n"
+    "    int3\n"
+    "    movl $1, %r13d\n"
+    "    .byte 0xf1\n"                  /* int1 */
+    "    movl $13, %r13d\n"
+    "    movl $1, %r15d\n"
+    "    hlt\n"
+    "    movl $14, %r13d\n"
+    "    movl $8, %r15d\n"
+    "    movq u_hole, %rax\n"
+    "    movl $6, %r15d\n"
+    "    movb %al, upc_vspin(%rip)\n"   /* the code is read-only */
+    "    movabsq $0x8000000000000000, %rax\n"
+    "    movl $13, %r13d\n"
+    "    movl $3, %r15d\n"
+    "    movq (%rax), %rax\n"           /* non-canonical */
+    "    movabsq $0x8000000000000000, %rbp\n"
+    "    movl $12, %r13d\n"
+    "    movl $4, %r15d\n"
+    "    movq 0(%rbp), %rax\n"          /* non-canonical through RBP: the stack's */
+    "    fninit\n"
+    "    fldcw d_fcw_in\n"
+    "    fldz\n"
+    "    fld1\n"
+    "    fdiv %st(1), %st\n"            /* 1/0, zero divide unmasked: pending */
+    "    movl $16, %r13d\n"
+    "    movl $1, %r15d\n"
+    "    fwait\n"
+    "    fninit\n"
+    "    ldmxcsr d_mxcsr_xm\n"
+    "    movss d_one, %xmm1\n"
+    "    xorps %xmm2, %xmm2\n"
+    "    movl $19, %r13d\n"
+    "    movl $4, %r15d\n"
+    "    divss %xmm2, %xmm1\n"          /* (TCG raises none: then nothing comes) */
+    "    pushq $0x1f80\n"
+    "    ldmxcsr (%rsp)\n"
+    "    popq %rax\n"
+    "    movl $1, %r13d\n"
+    "    xorl %r15d, %r15d\n"
+    "    pushfq\n"
+    "    orq $0x100, (%rsp)\n"
+    "    popfq\n"
+    "    nop\n"                         /* single-stepped: vector 1 after it */
+    "    decq %rbx\n"
+    "    jz 1f\n"
+    "    cmpq $0, d_stop\n"
+    "    je upc_vloop\n"
+    "1:  movl $1, %eax\n"
+    "    lock xaddq %rax, d_finished\n"
+    "    incq %rax\n"
+    "    cmpq d_threads, %rax\n"
+    "    jne 2f\n"
+    "    xorl %edi, %edi\n"
+    "    jmp upc_exit\n"
+    "2:  movl $" S(SYS_thread_exit) ", %eax\n"
+    "    syscall\n"
+    "    ud2\n"
+
+    /* ---- hostile: random frames given to RESUME ------------------------ */
+    "upc_hrnd:\n"                       /* rax = the next random word (xorshift); rdx */
+    "    movq d_rng, %rax\n"
+    "    movq %rax, %rdx\n"
+    "    shlq $13, %rdx\n"
+    "    xorq %rdx, %rax\n"
+    "    movq %rax, %rdx\n"
+    "    shrq $7, %rdx\n"
+    "    xorq %rdx, %rax\n"
+    "    movq %rax, %rdx\n"
+    "    shlq $17, %rdx\n"
+    "    xorq %rdx, %rax\n"
+    "    movq %rax, d_rng\n"
+    "    ret\n"
+    "upc_hexp:\n"                       /* what the landing must find: rbx's frame */
+    "    xorl %ecx, %ecx\n"
+    "1:  movq " S(F_R8) "(%rbx,%rcx,8), %rax\n"
+    "    movq %rax, d_expect(,%rcx,8)\n"
+    "    incl %ecx\n"
+    "    cmpl $16, %ecx\n"
+    "    jb 1b\n"
+    "    movq " S(F_RFLAGS) "(%rbx), %rax\n"
+    "    andq $" S(U_FLAGS_OK) ", %rax\n"
+    "    orq $0x202, %rax\n"
+    "    movq %rax, d_expfl\n"
+    "    movq " S(F_X) " + " S(X_XMM) "(%rbx), %rax\n"
+    "    movq %rax, d_expx0\n"
+    "    ret\n"
+    "upc_hrand:\n"
+    "    movl $1, d_noentry\n"
+    "    call upc_setup\n"
+    "    leaq upc_hentry(%rip), %rdi\n"
+    "    movl $" S(SYS_exception_entry_set) ", %eax\n"
+    "    syscall\n"
+    "upc_hloop:\n"
+    "    movl $" S(H_SP) ", %esp\n"
+    "    cld\n"
+    "    ud2\n"
+    "    jmp upc_hloop\n"
+    "upc_hland:\n"                      /* a resumed frame: is it exactly what it said? */
+    "    movq %r8, d_aregs + 0\n"
+    "    movq %r9, d_aregs + 8\n"
+    "    movq %r10, d_aregs + 16\n"
+    "    movq %r11, d_aregs + 24\n"
+    "    movq %r12, d_aregs + 32\n"
+    "    movq %r13, d_aregs + 40\n"
+    "    movq %r14, d_aregs + 48\n"
+    "    movq %r15, d_aregs + 56\n"
+    "    movq %rdi, d_aregs + 64\n"
+    "    movq %rsi, d_aregs + 72\n"
+    "    movq %rbp, d_aregs + 80\n"
+    "    movq %rbx, d_aregs + 88\n"
+    "    movq %rdx, d_aregs + 96\n"
+    "    movq %rax, d_aregs + 104\n"
+    "    movq %rcx, d_aregs + 112\n"
+    "    movq %rsp, d_aregs + 120\n"
+    "    movl $" S(H_SP) ", %esp\n"
+    "    pushfq\n"
+    "    popq d_aflags\n"
+    "    cld\n"
+    "    movq %xmm0, %rax\n"
+    "    cmpq d_expx0, %rax\n"
+    "    jne 2f\n"
+    "    movq d_aflags, %rax\n"
+    "    cmpq d_expfl, %rax\n"
+    "    jne 2f\n"
+    "    xorl %ecx, %ecx\n"
+    "1:  movq d_aregs(,%rcx,8), %rax\n"
+    "    cmpq d_expect(,%rcx,8), %rax\n"
+    "    jne 2f\n"
+    "    incl %ecx\n"
+    "    cmpl $16, %ecx\n"
+    "    jb 1b\n"
+    "    incq d_hlanded\n"
+    "    jmp upc_hloop\n"
+    "2:  incq d_hbad\n"
+    "    jmp upc_hloop\n"
+    "upc_hentry:\n"                     /* rdi = the frame */
+    "    movq %rdi, %rbx\n"
+    "    movq d_hframes, %rax\n"
+    "    cmpq d_hwant, %rax\n"
+    "    jb 1f\n"
+    "    xorl %edi, %edi\n"
+    "    jmp upc_exit\n"
+    "1:  incq d_hframes\n"
+    "    movl " S(F_SIZE) "(%rbx), %ecx\n"   /* a witness's pattern anywhere in it? */
+    "    shrl $3, %ecx\n"
+    "    xorl %esi, %esi\n"
+    "    movabsq $0x0101010101010101, %r9\n"
+    "2:  movq (%rbx,%rsi,8), %rax\n"
+    "    movzbl %al, %edx\n"
+    "    leal -1(%rdx), %r8d\n"
+    "    cmpl $8, %r8d\n"
+    "    jae 3f\n"
+    "    movq %r9, %r8\n"
+    "    imulq %rdx, %r8\n"
+    "    cmpq %r8, %rax\n"
+    "    jne 3f\n"
+    "    incq d_hleak\n"
+    "3:  incl %esi\n"
+    "    cmpl %ecx, %esi\n"
+    "    jb 2b\n"
+    "    leaq upc_hland(%rip), %rax\n"
+    "    movq %rax, " S(F_RIP) "(%rbx)\n"
+    "    xorl %r15d, %r15d\n"           /* 1: single-stepped too */
+    "    call upc_hrnd\n"
+    "    movq %rax, %r12\n"
+    "    movzbl %al, %eax\n"
+    "    cmpl $16, %eax\n"
+    "    jae 4f\n"                      /* 16 .. 255: random registers, runs on */
+    "    cmpl $11, %eax\n"
+    "    jb upc_hbad\n"                 /* 0 .. 10: a frame meant to be refused */
+    "    movl $1, %r15d\n"             /* 11 .. 15: random, and TF */
+    "4:  xorl %r13d, %r13d\n"
+    "5:  call upc_hrnd\n"
+    "    movq %rax, " S(F_R8) "(%rbx,%r13,8)\n"
+    "    incl %r13d\n"
+    "    cmpl $15, %r13d\n"            /* r8 .. rcx, not rsp */
+    "    jb 5b\n"
+    "    testl %r15d, %r15d\n"
+    "    jnz 6f\n"
+    "    btq $8, %r12\n"
+    "    jnc 6f\n"
+    "    call upc_hrnd\n"
+    "    movq %rax, " S(F_RSP) "(%rbx)\n"   /* anywhere: the landing sets its own */
+    "6:  call upc_hrnd\n"
+    "    andq $-257, %rax\n"
+    "    movq %rax, " S(F_RFLAGS) "(%rbx)\n"
+    "    xorl %r13d, %r13d\n"
+    "7:  call upc_hrnd\n"
+    "    movq %rax, " S(F_X) "(%rbx,%r13,8)\n"
+    "    incl %r13d\n"
+    "    cmpl $52, %r13d\n"            /* x87 and SSE: 416 bytes */
+    "    jb 7b\n"
+    "    call upc_hrnd\n"
+    "    andl $0xffbf, %eax\n"
+    "    movl %eax, " S(F_X) " + " S(X_MXCSR) "(%rbx)\n"
+    "    cmpq $0, d_avx\n"
+    "    je 9f\n"
+    "    movq d_avxoff, %r13\n"
+    "    leaq " S(F_X) "(%rbx,%r13), %r13\n"
+    "    xorl %r14d, %r14d\n"
+    "8:  call upc_hrnd\n"
+    "    movq %rax, (%r13,%r14,8)\n"
+    "    incl %r14d\n"
+    "    cmpl $32, %r14d\n"            /* AVX's upper halves: 256 bytes */
+    "    jb 8b\n"
+    "9:  call upc_hexp\n"
+    "    testl %r15d, %r15d\n"
+    "    jz upc_hgo\n"
+    "    orq $0x100, " S(F_RFLAGS) "(%rbx)\n"
+    "upc_hgo:\n"                        /* RESUME rbx's frame: never back */
+    "    movq %rbx, %rdi\n"
+    "    movl $" S(H_RESUME) ", %esi\n"
+    "    movl $" S(SYS_exception_done) ", %eax\n"
+    "    syscall\n"
+    "    movl $97, %edi\n"
+    "    jmp upc_exit\n"
+    "upc_hbad:\n"                       /* eax = 0 .. 10 */
+    "    movl %eax, %r13d\n"
+    "    call upc_hexp\n"
+    "    call upc_hrnd\n"
+    "    cmpl $0, %r13d\n"
+    "    jne 1f\n"
+    "    orq $1, %rax\n"
+    "    xorq %rax, " S(F_COOKIE) "(%rbx)\n"
+    "    jmp upc_hgo\n"
+    "1:  cmpl $1, %r13d\n"
+    "    jne 1f\n"
+    "    movl %eax, " S(F_X) " + " S(X_MXCSR) "(%rbx)\n"
+    "    jmp upc_hgo\n"
+    "1:  cmpl $2, %r13d\n"
+    "    jne 1f\n"
+    "    movq %rax, " S(F_X) " + " S(X_BV) "(%rbx)\n"
+    "    jmp upc_hgo\n"
+    "1:  cmpl $3, %r13d\n"
+    "    jne 1f\n"
+    "    movq %rax, %rcx\n"
+    "    shrq $8, %rcx\n"
+    "    andl $31, %ecx\n"
+    "    orb $1, %al\n"
+    "    movb %al, " S(F_X) " + " S(X_COMP) "(%rbx,%rcx)\n"   /* XCOMP_BV, reserved */
+    "    jmp upc_hgo\n"
+    "1:  cmpl $4, %r13d\n"
+    "    jne 1f\n"
+    "    movl %eax, " S(F_SIZE) "(%rbx)\n"
+    "    jmp upc_hgo\n"
+    "1:  cmpl $5, %r13d\n"
+    "    jne 1f\n"
+    "    movl %eax, " S(F_XSIZE) "(%rbx)\n"
+    "    jmp upc_hgo\n"
+    "1:  cmpl $6, %r13d\n"
+    "    jne 1f\n"
+    "    movq %rax, " S(F_RIP) "(%rbx)\n"   /* anywhere */
+    "    jmp upc_hgo\n"
+    "1:  cmpl $7, %r13d\n"
+    "    jne 1f\n"
+    "    movzbl %al, %eax\n"
+    "    movabsq $(" S(U_TOP) " - 128), %rcx\n"
+    "    addq %rcx, %rax\n"
+    "    movq %rax, " S(F_RIP) "(%rbx)\n"   /* around the user range's top */
+    "    jmp upc_hgo\n"
+    "1:  cmpl $9, %r13d\n"
+    "    ja 2f\n"
+    "    je 3f\n"
+    "    movq %rax, %rdi\n"                 /* 8: a frame anywhere */
+    "    jmp 4f\n"
+    "3:  andl $7, %eax\n"
+    "    leaq 8(%rbx,%rax,8), %rdi\n"      /* 9: the frame a few words on */
+    "4:  movl $" S(H_RESUME) ", %esi\n"
+    "    movl $" S(SYS_exception_done) ", %eax\n"
+    "    syscall\n"
+    "    incq d_hrefused\n"                 /* back: refused, so on with the real one */
+    "    jmp upc_hgo\n"
+    "2:  xorl %r13d, %r13d\n"              /* 10: the header and registers random */
+    "5:  call upc_hrnd\n"
+    "    movq %rax, (%rbx,%r13,8)\n"
+    "    incl %r13d\n"
+    "    cmpl $24, %r13d\n"
+    "    jb 5b\n"
+    "    jmp upc_hgo\n"
     "upc_blob_end:\n"
     ".popsection\n");
 
@@ -866,7 +1228,7 @@ __asm__(
     X(upc_rspin) X(upc_rspin_loop) X(upc_rspin_end) X(upc_rwait) X(upc_rwait_end)        \
     X(upc_rcall) X(upc_rcall_ret) X(upc_rcall_end) X(upc_rself) X(upc_rself_ret)         \
     X(upc_rself_end) X(upc_rleave_ret) X(upc_rleave_end) X(upc_rbadsp)                   \
-    X(upc_rstorm) X(upc_rbspin) X(upc_rbench)
+    X(upc_rstorm) X(upc_rbspin) X(upc_rbench) X(upc_vspin) X(upc_hrand)
 #define DECLARE(l) extern const uint8_t l[];
 LABELS(DECLARE)
 
@@ -2260,6 +2622,206 @@ KTEST(upcall_raise_storm)
     KT_ASSERT(taken >= STORM_BURSTS * STORM_THREADS);
     KT_GLOBAL_ASSERT(taken <= latched);
     KT_GLOBAL_ASSERT(kicked <= latched);
+    upc_end(&u);
+}
+
+/* ---- hostile (track SGR: docs/SG-REVIEW.md) ---------------------------------------- */
+
+/* Start n threads of prog in u, thread i with RDI = i on its own two
+ * pages of stack, two to a CPU past CPU 0 where there are CPUs to spare. */
+static void start_threads(struct upc *u, const uint8_t *prog, unsigned n)
+{
+    uint32_t spare = cpu_count > 1 ? cpu_count - 1 : 0;
+    upc_start_on(u, prog, 0, spare ? 1 : -1);
+    for (unsigned i = 1; i < n; i++) {
+        char name[8];
+        ksnprintf(name, sizeof(name), "t%u", i);
+        KT_EQ(uthread_create(u->p, name, &u->u[i]), OK);
+        u->nu++;
+        cpumask_t m;
+        if (spare)
+            cpumask_one(&m, 1 + (i / 2) % spare);
+        KT_EQ(uthread_start(u->u[i], AT(prog), U_STACK_TOP - i * 2 * PG, i, 0, 0,
+                            spare ? &m : NULL),
+              OK);
+    }
+}
+
+/* Kernel threads raising a process's threads at random until told to stop. */
+struct crossing {
+    struct upc *u;
+    uint32_t    stop;   /* atomic */
+    uint64_t    sent;   /* raises that were OK (atomic) */
+};
+
+static void cross_raiser(void *arg)
+{
+    struct crossing *c = arg;
+    uint64_t x = rdtsc() | 1;
+    for (unsigned n = 1; !__atomic_load_n(&c->stop, __ATOMIC_ACQUIRE); n++) {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        if (uthread_raise(c->u->u[x % c->u->nu]) == OK)
+            __atomic_add_fetch(&c->sent, 1, __ATOMIC_RELAXED);
+        if (!(n % 16))
+            thread_sleep_ms(1);
+    }
+}
+
+#define VSPIN_THREADS 8
+#define VSPIN_ROUNDS  20000  /* 12 faults a round: about a second, so raises cross them */
+#define CROSS_RAISERS 4
+
+/* Faults on every vector user code can raise here (0; 1 by int1 and by
+ * TF; 3; 6; 12; 13 by hlt and by a non-canonical address; 14 on nothing
+ * and on read-only code; 16; 19 where the CPU raises it) from 8 threads at
+ * once, two to a CPU, while 4 kernel threads raise them at random: every
+ * fault's frame has the vector its thread expected, every frame (a
+ * fault's or a raise's, which may come between an x87 error and the wait
+ * that takes it, or with TF just set) has its own thread's registers and
+ * cookie, and every thread finishes. */
+KTEST(upcall_hostile_vectors)
+{
+    struct upc u;
+    upc_new(&u, "upc-vspin");
+    set(&u, D_ROUNDS, VSPIN_ROUNDS);
+    set(&u, D_THREADS, VSPIN_THREADS);
+    start_threads(&u, upc_vspin, VSPIN_THREADS);
+    KT_ASSERT(wait_word(&u, D_READY, VSPIN_THREADS));
+    struct crossing c = { .u = &u };
+    struct thread *raisers[CROSS_RAISERS];
+    for (unsigned r = 0; r < CROSS_RAISERS; r++)
+        raisers[r] = thread_create("upc-crosser", cross_raiser, &c, PRIO_DEFAULT);
+    uint64_t t0 = uptime_ns();
+    exited(&u, 0);
+    __atomic_store_n(&c.stop, 1, __ATOMIC_RELEASE);
+    for (unsigned r = 0; r < CROSS_RAISERS; r++)
+        thread_join(raisers[r]);
+    kprintf("ktest upcall_hostile_vectors: %lu faults, %lu raises taken of %lu sent, in %lu ms\n",
+            (unsigned long)get(&u, D_VFAULTS), (unsigned long)get(&u, D_RCOUNT),
+            (unsigned long)c.sent, (unsigned long)((uptime_ns() - t0) / NS_PER_MS));
+    KT_EQ(get(&u, D_BAD), 0);
+    KT_EQ(get(&u, D_FINISHED), VSPIN_THREADS);
+    KT_ASSERT(get(&u, D_RCOUNT) > 0);
+    /* 10 a round at least (#MF and #XM may not come under TCG) */
+    KT_ASSERT(get(&u, D_VFAULTS) >= 10ull * VSPIN_THREADS * VSPIN_ROUNDS);
+    for (unsigned i = 0; i < VSPIN_THREADS; i++)
+        for (unsigned k = 0; k < i; k++)
+            KT_ASSERT(get(&u, D_COOKIES + k * 8) != get(&u, D_COOKIES + i * 8));
+    upc_end(&u);
+}
+
+#define HOSTILE_FRAMES  10000
+#define WITNESS_THREADS 4
+
+/* 10,000 random frames given to RESUME (SIGNALS-PLAN section 5, SGR). A
+ * program edits each frame it is given at random and resumes it: most
+ * get random registers, RFLAGS and vector state (some TF, some RSP
+ * anywhere) and RIP at a landing that checks it got exactly the frame's
+ * registers, RFLAGS as USER_RFLAGS_OK lets them through, and xmm0; one in
+ * 23 gets a bad cookie, size, XSAVE header or MXCSR, a RIP anywhere or
+ * about the user range's top, or is resumed from a wrong address. Each
+ * process dies with the kernel's line or runs on (a refused address comes
+ * back and the frame goes on); the next one carries on the count.
+ * Meanwhile a witness process's 4 threads fault on every vector with
+ * their own patterns: neither ever sees the other's in a frame or a
+ * register, and the kernel never panics. */
+KTEST(upcall_hostile_frames)
+{
+    struct upc w;
+    upc_new(&w, "upc-witness");
+    set(&w, D_ROUNDS, 1ull << 40);
+    set(&w, D_THREADS, WITNESS_THREADS);
+    start_threads(&w, upc_vspin, WITNESS_THREADS);
+    KT_ASSERT(wait_word(&w, D_READY, WITNESS_THREADS));
+    uint64_t frames = 0, leaks = 0, bad = 0, refused = 0, landed = 0, procs = 0, kills = 0;
+    uint64_t seed = rdtsc();
+    while (frames < HOSTILE_FRAMES) {
+        struct upc r;
+        upc_new(&r, "upc-hrand");
+        seed = seed * 6364136223846793005ull + 1442695040888963407ull;
+        set(&r, D_RNG, seed | 1);
+        set(&r, D_HWANT, HOSTILE_FRAMES - frames);
+        upc_start_on(&r, upc_hrand, 0, cpu_count > 1 ? 1 : -1);   /* beside the witness */
+        struct process_info info = upc_wait(&r);
+        uint64_t f = get(&r, D_HFRAMES);
+        if (!info.killed)   /* the end: it gave all it was asked for */
+            KT_ASSERT(info.exit_code == 0 && frames + f >= HOSTILE_FRAMES);
+        kills += info.killed;
+        frames += f;
+        leaks += get(&r, D_HLEAK);
+        bad += get(&r, D_HBAD);
+        refused += get(&r, D_HREFUSED);
+        landed += get(&r, D_HLANDED);
+        procs++;
+        upc_end(&r);
+    }
+    set(&w, D_STOP, 1);
+    struct process_info wi = upc_wait(&w);
+    kprintf("ktest upcall_hostile_frames: %lu frames in %lu processes (%lu killed), %lu landed, "
+            "%lu refused; the witness took %lu faults\n",
+            (unsigned long)frames, (unsigned long)procs, (unsigned long)kills,
+            (unsigned long)landed, (unsigned long)refused, (unsigned long)get(&w, D_VFAULTS));
+    KT_ASSERT(!wi.killed && wi.exit_code == 0);
+    KT_EQ(get(&w, D_BAD), 0);
+    KT_EQ(leaks, 0);
+    KT_EQ(bad, 0);
+    KT_ASSERT(landed > frames / 2);
+    upc_end(&w);
+}
+
+#define FLOOD_RAISERS 4
+#define FLOOD_EACH    10000
+
+struct flood {
+    struct upc *u;
+    uint32_t    refused;   /* atomic */
+};
+
+static void flood_raiser(void *arg)
+{
+    struct flood *f = arg;
+    for (unsigned i = 0; i < FLOOD_EACH; i++)
+        if (uthread_raise(f->u->u[0]) != OK)
+            __atomic_add_fetch(&f->refused, 1, __ATOMIC_RELAXED);
+}
+
+/* A raise flood at a thread in its window: 40,000 raises from 4 kernel
+ * threads while it spins in its entry are one latch and at most one CPU
+ * interrupt, and none enters there; after EXC_LEAVE exactly one comes,
+ * in the thread's own code after the call. */
+KTEST(upcall_hostile_window_flood)
+{
+    struct upc u;
+    upc_new(&u, "upc-wflood");
+    set(&u, D_FAULTER, AT(f_ud2));
+    set(&u, D_ACTION, AT(act_winspin));
+    upc_start(&u, upc_generic);
+    KT_ASSERT(wait_word(&u, D_READY, 1));
+    uint64_t latched0 = __atomic_load_n(&raise_latched, __ATOMIC_RELAXED);
+    uint64_t kicked0 = __atomic_load_n(&raise_kicked, __ATOMIC_RELAXED);
+    struct flood fl = { .u = &u };
+    struct thread *raisers[FLOOD_RAISERS];
+    for (unsigned r = 0; r < FLOOD_RAISERS; r++)
+        raisers[r] = thread_create("upc-flooder", flood_raiser, &fl, PRIO_DEFAULT + 2);
+    for (unsigned r = 0; r < FLOOD_RAISERS; r++)
+        thread_join(raisers[r]);
+    thread_sleep_ms(20);   /* ticks come meanwhile */
+    uint64_t latched = __atomic_load_n(&raise_latched, __ATOMIC_RELAXED) - latched0;
+    uint64_t kicked = __atomic_load_n(&raise_kicked, __ATOMIC_RELAXED) - kicked0;
+    KT_EQ(get(&u, D_RCOUNT), 0);
+    KT_EQ(get(&u, D_COUNT), 1);
+    set(&u, D_GO, 1);
+    exited(&u, 0);
+    KT_EQ(fl.refused, 0);
+    KT_GLOBAL_EQ(latched, 1);
+    KT_GLOBAL_ASSERT(kicked <= 1);
+    KT_EQ((int64_t)get(&u, D_RET), OK);
+    KT_EQ(get(&u, D_RCOUNT), 1);
+    KT_EQ(get(&u, D_COUNT), 2);
+    KT_EQ(get(&u, D_RKIND), EXC_RAISED);
+    KT_ASSERT(rip_in(&u, upc_rleave_ret, upc_rwait_end));
     upc_end(&u);
 }
 
