@@ -44,7 +44,8 @@ nothing.
   `/proc`, `/sys`) and on read-only mounts that can't change (the boot
   image): a watch there is accepted and never fires ("quiet", 3.2).
 - **No sharing across `fork` or `exec`** (Q3).
-- **FAT later** (Q1, recommended): fat refuses watches until track IF.
+- **FAT later** (Q1, answered (B)): fat refuses watches; track IF waits
+  until a FAT `/data` needs them.
 
 ## Where it starts
 
@@ -221,40 +222,41 @@ close's first or coalesced earlier) without a kernel change.
 
 ### 2.4 The protocol
 
-`fs` gains one method; the watcher channel has a protocol of its own (a
-new file abi/idl/fswatch.idl, a free id from `abi/idl/ids.txt`: 49 is free
-today), `kept` as `file` is. A sketch (IP writes the real text in
-genidl's form):
+Built (IP): `fs` gains method 17, and the watcher channel has a file of
+its own, abi/idl/fswatch.idl (the real text is there):
 
 ```
 # fs.idl
-# A watcher channel on this view (abi/idl/fswatch.idl). `bell`: an event
-# (RIGHT_SIGNAL | RIGHT_TRANSFER only) whose user signal FSWATCH_BELL the
-# service sets when the channel's queue stops being empty. The channel keeps
-# this channel's view (flags and root). ERR_NO_RESOURCES: the volume's
-# watcher channels are all in use, or the caller's process has its share.
-# A service without watches: ERR_NOT_SUPPORTED (the generated default).
-17 watch  (handle bell) -> (handle watcher)
+17 watch  () -> (handle watcher)
 
 # fswatch.idl
 protocol fswatch 49 kept
-const BELL (1 << 24)           # the bell's user signal
-# Watch `path` (walked in the view as fs.getattr walks it: links inside
-# followed, ERR_LINK_OUT for one leading out, hidden paths refused).
-# `mask`: Linux's IN_* bits, flags too (IN_ONLYDIR, IN_DONT_FOLLOW,
-# IN_MASK_ADD, IN_MASK_CREATE, IN_ONESHOT, IN_EXCL_UNLINK). `id`: the
-# watch on this channel, the same for the same inode (`existed` 1: its mask
-# replaced, or added to with IN_MASK_ADD). ERR_ALREADY_EXISTS:
-# IN_MASK_CREATE on a watched inode. ERR_NOT_DIR: IN_ONLYDIR on a file.
-# ERR_ACCESS_DENIED: no read permission. ERR_NO_SPACE: the watch limit.
+const BELL 1 << 24             # the bell's user signal
 1  add     (str[<=4095] path, u32 mask) -> (u32 id, u8 existed)
-# End watch `id`: its queued events dropped, IN_IGNORED queued for it.
 2  remove  (u32 id) -> ()
-# Up to `room` bytes of queued events (records: u32 id, u32 mask,
-# u32 cookie, u16 len, then len bytes of name, no NUL; id 0 with
-# IN_Q_OVERFLOW). `more`: events are left.
 3  take    (u32 room) -> (u8 more, u8[<=8192] events)
+
+protocol fswatch_bell 52
+1  give  (handle<event> bell) event
 ```
+
+**The bell is not an argument of `fs.watch`** (this plan's first sketch
+had `watch (handle bell)`): `fs` is `kept`, and genidl refuses a handle in
+a kept protocol's request, since a successor runs the request in progress
+again from its slot and the dead instance's handles died with it. Nor can
+the service make the bell and hand it back: libc's descriptor waits on one
+handle (a kind's arm, `user/posix/sys/ready.h`) over every mount it
+watches. So libc sends its bell as the watcher channel's first message,
+an event of a protocol of its own (`fswatch_bell.give`, not kept: it is
+taken once); until the service holds it, anything else first closes the
+channel. A service that died after reading it and before its keeper held
+it has no bell: its successor closes the channel at its next message, and
+libc asks `fs.watch` again. The rest of the IDL is the sketch's: `IN_*`
+bits as constants (`FSWATCH_IN_*`), the records' layout
+(`FSWATCH_RECORD_FIXED`), `FSWATCH_TAKE_BYTES` and `FSWATCH_QUEUE_BYTES`;
+`take` answers `ERR_BUFFER_TOO_SMALL` when its first record doesn't fit
+`room`; the client clears the bell before it takes, never after, and
+takes until `more` is 0.
 
 An `id` carries a generation (its slot and a count), so an id is never
 given again while libc might still hold the old one's events. Watch
@@ -497,6 +499,13 @@ other after).
 
 ## 7. Questions for the owner
 
+**Answered (owner, 2026-10-17), all three as recommended:** Q1 (B), FAT
+watches later: no track IF, fat answers `fs.watch` `ERR_NOT_SUPPORTED`,
+and libc refuses a watch on a writable FAT mount (`EOPNOTSUPP`). Q2 (A),
+a watch whose inode leaves the watcher's view ends (`IN_MOVE_SELF` if
+asked, then `IN_IGNORED`). Q3 (A), the descriptor as `epoll`'s: absent in
+a forked child, closed at `exec`, not given to a spawned child.
+
 Decided here as technical (by the reasons above unless the owner says
 otherwise): events made by the services, one watcher channel per view,
 watches on inodes, the bell, libc's cyclic `wd`s, quiet watches where
@@ -516,7 +525,7 @@ with an overflow, a 0-byte `read` that doesn't wait, no kernel change.
 *Recommendation: (B).* Drive boot first and ports by need: Chromium's
 tests run on ext, and a drive boot's `/home`, `/tmp` and `/jam` are ext.
 A FAT `/data` matters only for Chromium run from a stick with its profile
-there; IF is ready to run when that comes.
+there; IF is ready to run when that comes. **Answered: (B).**
 
 ### Q2. A watch whose inode leaves the watcher's view
 
@@ -535,6 +544,7 @@ its subview's root, or into a hidden `etc/ssh`.
 directory or a watched file to another directory, and only for watches
 through narrower views; Chromium adds its watches again after any move
 on the path anyway. Whose: the owner's (what a view promises).
+**Answered: (A).**
 
 ### Q3. The descriptor across `fork` and `exec`
 
@@ -548,4 +558,4 @@ on the path anyway. Whose: the owner's (what a view promises).
 
 *Recommendation: (A).* Chromium's children close it, and (B)'s split
 tables are a worse difference than a missing descriptor, which fails
-visibly (`EBADF`).
+visibly (`EBADF`). **Answered: (A).**
