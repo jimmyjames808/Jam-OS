@@ -99,7 +99,9 @@ status_t vmo_set_job(struct vmo *v, struct job *job);
  * ERR_CANCELED if the thread is killed), so call it with no lock held. */
 status_t vmo_read(struct vmo *v, uint64_t offset, void *buf, uint64_t len);
 /* Commits pages as needed. ERR_BAD_STATE if v is sealed (vmo_seal), as
- * for vmo_set_size, vmo_commit and vmo_decommit. */
+ * for vmo_set_size, vmo_commit and vmo_decommit. It waits while a clone
+ * or a child's creation shares v's pages, and so do vmo_set_size and
+ * vmo_decommit: ERR_CANCELED if the thread is killed meanwhile. */
 status_t vmo_write(struct vmo *v, uint64_t offset, const void *buf, uint64_t len);
 uint64_t vmo_size(struct vmo *v);
 /* Seal v for good (vmo_make_exec): from now on its bytes and size can't

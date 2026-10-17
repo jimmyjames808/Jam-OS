@@ -38,6 +38,15 @@
  *       a kill at a different moment each round of a replace that must
  *       end other threads: the process dies killed, both images go and
  *       the job is empty.
+ *   replace_info_one_snapshot
+ *       the process dies right after process_get_info's snapshot: the
+ *       faults it reports are those of the address space the snapshot
+ *       saw (docs/FORK-REVIEW-KERNEL.md, finding 3).
+ *   replace_racing_clone
+ *       while the process replaces itself, kernel threads clone its
+ *       address space, try to fill its image through vmar_clone's claim
+ *       and read its info; a kill every other round: every clone whole,
+ *       every try refused, the job empty after each round.
  *
  * Real processes run small programs assembled here (rp_blob): the old
  * image at O_CODE, the new one at N_CODE (the same code VMO mapped twice),
@@ -49,6 +58,7 @@
 #include <jam/aspace.h>
 #include <jam/aspace_vmo.h>
 #include <jam/channel.h>
+#include <jam/dbghook.h>
 #include <jam/event.h>
 #include <jam/handle.h>
 #include <jam/kprintf.h>
@@ -1069,4 +1079,152 @@ KTEST(replace_racing_kill)
         rp_end(&r);
     }
     kprintf("ktest replace_racing_kill: the new image ran in %u of %u rounds\n", ran, ROUNDS);
+}
+
+/* ---- FR1 (docs/FORK-REVIEW-KERNEL.md) ------------------------------------------ */
+
+/* Finding 3: the process ends right after process_get_info's snapshot
+ * (DBG_PROCESS_INFO, no lock held): the faults it reports are still those
+ * of the address space the snapshot saw, not of none. */
+static struct process *pi_proc;
+static int pi_fired;   /* atomic */
+
+static void pi_hook(void *arg)
+{
+    if (arg != pi_proc || __atomic_exchange_n(&pi_fired, 1, __ATOMIC_ACQ_REL))
+        return;
+    process_kill(pi_proc, PROCESS_KILLED_CODE, true);
+    KT_EQ(object_wait_one(process_kobject(pi_proc), SIG_TERMINATED,
+                          uptime_ns() + kt_patience_ms(10000) * NS_PER_MS, NULL),
+          OK);
+}
+
+KTEST(replace_info_one_snapshot)
+{
+    struct rp r;
+    rp_new(&r, "rp-new");
+    rp_start(&r);
+    struct process_info before = info_of(r.p);
+    KT_ASSERT(before.faults > 0);   /* its main thread touched its code, stack and data */
+    pi_proc = r.p;
+    __atomic_store_n(&pi_fired, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&dbg_hooks[DBG_PROCESS_INFO], pi_hook, __ATOMIC_RELEASE);
+    struct process_info during = info_of(r.p);
+    __atomic_store_n(&dbg_hooks[DBG_PROCESS_INFO], NULL, __ATOMIC_RELEASE);
+    pi_proc = NULL;
+    kprintf("ktest replace_info_one_snapshot: faults %lu before, %lu in the snapshot of a "
+            "process that ended after it\n", before.faults, during.faults);
+    KT_ASSERT(__atomic_load_n(&pi_fired, __ATOMIC_ACQUIRE));
+    KT_EQ(during.state, PROCESS_RUNNING);
+    KT_ASSERT(during.faults >= before.faults);
+    struct process_info after = info_of(r.p);
+    KT_EQ(after.state, PROCESS_DEAD);
+    KT_EQ(after.faults, 0);
+    rp_end(&r);
+}
+
+/* Hostile: while the process replaces itself, kernel threads clone its
+ * address space (old or new) into fresh ones, try to fill its image
+ * (vmar_clone's claim on the destination against the replace's) and read
+ * its info; every other round a kill comes at a different moment. */
+struct rc_ctx {
+    struct rp     *r;
+    struct aspace *empty;   /* a source for the tries at the image */
+    bool           stop;    /* atomic */
+    uint64_t       clones, into, infos;
+};
+
+static void rc_cloner(void *arg)
+{
+    struct rc_ctx *c = arg;
+    while (!__atomic_load_n(&c->stop, __ATOMIC_ACQUIRE)) {
+        struct aspace *src = process_aspace(c->r->p);
+        if (!src) {   /* dead */
+            thread_sleep_ms(1);
+            continue;
+        }
+        struct aspace *dst;
+        KT_EQ(aspace_create_charged(c->r->j, &dst), OK);
+        KT_EQ(aspace_clone(src, dst, NULL, 0), OK);
+        KT_ASSERT(aspace_check(dst) >= 0);
+        aspace_unref(dst);
+        aspace_unref(src);
+        c->clones++;
+    }
+}
+
+static void rc_into(void *arg)
+{
+    struct rc_ctx *c = arg;
+    while (!__atomic_load_n(&c->stop, __ATOMIC_ACQUIRE)) {
+        struct aspace *das;
+        status_t st = process_clone_begin(c->r->n, &das);
+        if (st == OK) {
+            /* The image is mapped there: never empty. */
+            KT_EQ(aspace_clone(c->empty, das, NULL, 0), ERR_BAD_STATE);
+            process_clone_end(c->r->n, das, false);
+        } else {
+            KT_EQ(st, ERR_BAD_STATE);   /* claimed by the replace, or gone with the kill */
+        }
+        c->into++;
+    }
+}
+
+static void rc_info(void *arg)
+{
+    struct rc_ctx *c = arg;
+    while (!__atomic_load_n(&c->stop, __ATOMIC_ACQUIRE)) {
+        struct process_info i = info_of(c->r->p);
+        KT_ASSERT(i.state == PROCESS_RUNNING || i.state >= PROCESS_DYING);
+        c->infos++;
+    }
+}
+
+KTEST(replace_racing_clone)
+{
+    enum { ROUNDS = 20 };
+    unsigned ran = 0;
+    uint64_t clones = 0, into = 0, infos = 0;
+    for (unsigned round = 0; round < ROUNDS; round++) {
+        struct rp r;
+        rp_new(&r, "rp-new");
+        rp_start(&r);
+        rp_thread(&r, h_spin, (int)other_cpu(round));
+        rp_thread(&r, h_futex, -1);
+        wait_word(r.odata, OD_READY, 1);
+        struct rc_ctx c = { .r = &r };
+        KT_EQ(aspace_create(&c.empty), OK);
+        struct thread *t[3] = {
+            thread_create("kt-rc-clone", rc_cloner, &c, PRIO_DEFAULT),
+            thread_create("kt-rc-into", rc_into, &c, PRIO_DEFAULT),
+            thread_create("kt-rc-info", rc_info, &c, PRIO_DEFAULT),
+        };
+        thread_sleep_ms(1);
+        rp_replace(&r, r.hn, AT_N(n_main), N_STACK_TOP, HANDLE_INVALID, 0);
+        if (round & 1) {
+            uint64_t until = uptime_ns() + round * 500000ull;   /* 0.5 .. 9.5 ms */
+            while (uptime_ns() < until)
+                __asm__ volatile("pause");
+            process_kill(r.p, PROCESS_KILLED_CODE, true);
+            KT_ASSERT(rp_dead(r.p).killed);
+            ran += vget(r.ndata, ND_UP) == DONE;
+        } else {
+            rp_new_up(r.ndata);   /* the clones go on, of the new image now */
+            thread_sleep_ms(2);
+            rp_finish(&r, r.ndata, 0);
+            ran++;
+        }
+        __atomic_store_n(&c.stop, true, __ATOMIC_RELEASE);
+        for (unsigned i = 0; i < 3; i++)
+            thread_join(t[i]);
+        clones += c.clones;
+        into += c.into;
+        infos += c.infos;
+        KT_ASSERT(info_of(r.n).state >= PROCESS_DYING);
+        aspace_unref(c.empty);
+        rp_end(&r);   /* every clone's charges back: the job is empty */
+    }
+    kprintf("ktest replace_racing_clone: the new image ran in %u of %u rounds; %lu clones, "
+            "%lu tries at the image, %lu infos meanwhile\n", ran, ROUNDS, clones, into, infos);
+    KT_ASSERT(clones > 0 && into > 0 && infos > 0);
 }

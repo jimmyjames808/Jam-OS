@@ -337,7 +337,10 @@ void process_get_info(struct process *p, struct process_info *out)
     out->exit_code = p->exit_code;
     out->killed = p->killed;
     out->threads = p->nthreads;
-    out->flags = p->as && aspace_maps_jit(p->as) ? PROCESS_FLAG_JIT : 0;   /* lock-free read */
+    /* p->as only under the lock: a replace or the teardown drops it (the
+     * flags and count themselves are lock-free reads). */
+    out->flags = p->as && aspace_maps_jit(p->as) ? PROCESS_FLAG_JIT : 0;
+    out->faults = p->as ? aspace_fault_count(p->as) : 0;
     if (p->faulted) {
         out->flags |= PROCESS_FLAG_FAULT;
         out->fault_vector = p->fault_vector;
@@ -345,11 +348,11 @@ void process_get_info(struct process *p, struct process_info *out)
     }
     copy_name(out->name, sizeof(out->name), p->name);
     punlock(p, f);
+    DBG_HOOK(DBG_PROCESS_INFO, p);
     out->koid = p->base.koid;
     out->pid = p->pid;
     out->start_ns = p->start_ns;
     out->cpu_ns = tsc_to_ns(process_cpu_tsc(p));
-    out->faults = p->as ? aspace_fault_count(p->as) : 0;   /* lock-free read, as aspace_maps_jit's */
 }
 
 uint64_t process_cpu_tsc(struct process *p)

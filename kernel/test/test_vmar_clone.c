@@ -41,6 +41,20 @@
  *       so (process_clone_begin), its table's generations random after;
  *       the children's handles have a fresh VMO's rights; the rights and
  *       types asked for; every refusal gives the reserved slots back.
+ *   vmar_clone_write_in_flight
+ *       a vmo_write stopped between its page and its copy: a clone, or a
+ *       child's creation, meanwhile waits for the copy, so the child's
+ *       bytes never change after it returned (docs/FORK-REVIEW-KERNEL.md,
+ *       finding 1).
+ *   vmar_clone_frozen_cancel
+ *       a vmo_write, a store's fault, a decommit and a resize waiting for
+ *       a frozen VMO each end at a cancel with ERR_CANCELED and change
+ *       nothing (finding 2).
+ *   vmar_clone_hostile_storm
+ *       eight threads fork one address space at once in a job with room
+ *       for a clone and a half, while a writer stores A then B: each
+ *       clone whole and untorn or refused with nothing left, the job
+ *       back to the page and nothing frozen afterwards.
  *
  * Faults go through the real page-fault path: the test thread enters an
  * address space and copies to and from its user addresses, as a system
@@ -49,6 +63,7 @@
 #include <jam/abi.h>
 #include <jam/aspace.h>
 #include <jam/aspace_vmo.h>
+#include <jam/dbghook.h>
 #include <jam/handle.h>
 #include <jam/irq.h>
 #include <jam/kprintf.h>
@@ -754,4 +769,272 @@ KTEST(vmar_clone_sys)
     handle_table_destroy(&t);
     kt_job_is_empty(j);
     job_unref(j);
+}
+
+/* ---- FR1 (docs/FORK-REVIEW-KERNEL.md) ------------------------------------------- */
+
+/* Finding 1: a vmo_write that took its page before a freeze copies its
+ * bytes after it. The writer stops between the two (DBG_VMO_WRITE_COPY)
+ * while a clone, or a child's creation, runs. */
+struct wf_ctx {
+    struct vmo    *v, *c;
+    struct aspace *src, *dst;
+    int            how;         /* 0: aspace_clone, 1: vmo_create_child */
+    int            in_copy, go, done;   /* atomic */
+    status_t       write_st, copy_st;
+    uint64_t       at_return;   /* the child's word as its copy returned */
+};
+
+static struct wf_ctx *wf;
+
+static void wf_hook(void *arg)
+{
+    if (arg != wf->v || __atomic_exchange_n(&wf->in_copy, 1, __ATOMIC_ACQ_REL))
+        return;   /* another VMO's write, or the second time */
+    uint64_t end = uptime_ns() + kt_patience_ms(2000) * NS_PER_MS;
+    while (!__atomic_load_n(&wf->go, __ATOMIC_ACQUIRE) && uptime_ns() < end)
+        thread_sleep_ms(1);
+}
+
+static void wf_writer(void *arg)
+{
+    (void)arg;
+    uint64_t w = 2;
+    wf->write_st = vmo_write(wf->v, 0, &w, 8);
+}
+
+static void wf_copier(void *arg)
+{
+    (void)arg;
+    if (wf->how == 0) {
+        wf->dst = new_as(NULL);
+        wf->copy_st = clone1(wf->src, wf->dst, wf->v, &wf->c);
+    } else {
+        wf->copy_st = vmo_create_child(NULL, wf->v, VMO_CHILD_SNAPSHOT, 0, PG, &wf->c);
+    }
+    if (wf->copy_st == OK)
+        wf->at_return = word(wf->c, 0);
+    __atomic_store_n(&wf->done, 1, __ATOMIC_RELEASE);
+}
+
+KTEST(vmar_clone_write_in_flight)
+{
+    for (int how = 0; how < 2; how++) {
+        wf = kzalloc(sizeof(*wf));
+        KT_ASSERT(wf);
+        wf->how = how;
+        wf->v = mk(1);
+        stamp(wf->v, 0, 1);
+        wf->src = new_as(NULL);
+        map_at(wf->src, wf->v, 0, 1, BASE, RW | CAN_RW);
+        __atomic_store_n(&dbg_hooks[DBG_VMO_WRITE_COPY], wf_hook, __ATOMIC_RELEASE);
+        struct thread *w = thread_create("kt-wf-writer", wf_writer, NULL, PRIO_DEFAULT);
+        uint64_t end = uptime_ns() + kt_patience_ms(1000) * NS_PER_MS;
+        while (!__atomic_load_n(&wf->in_copy, __ATOMIC_ACQUIRE) && uptime_ns() < end)
+            thread_sleep_ms(1);
+        KT_ASSERT(__atomic_load_n(&wf->in_copy, __ATOMIC_ACQUIRE));
+        struct thread *c = thread_create("kt-wf-copier", wf_copier, NULL, PRIO_DEFAULT);
+        /* Without waiting for the write the copy is done in microseconds;
+         * with it, it waits for the go. */
+        end = uptime_ns() + 20 * NS_PER_MS;
+        while (!__atomic_load_n(&wf->done, __ATOMIC_ACQUIRE) && uptime_ns() < end)
+            thread_sleep_ms(1);
+        bool early = __atomic_load_n(&wf->done, __ATOMIC_ACQUIRE);
+        __atomic_store_n(&wf->go, 1, __ATOMIC_RELEASE);
+        thread_join(w);
+        thread_join(c);
+        __atomic_store_n(&dbg_hooks[DBG_VMO_WRITE_COPY], NULL, __ATOMIC_RELEASE);
+        KT_EQ(wf->write_st, OK);
+        KT_EQ(wf->copy_st, OK);
+        uint64_t now = word(wf->c, 0);
+        kprintf("vmar_clone_write_in_flight: %s %s the write, the child %lu then %lu\n",
+                how ? "a child's creation" : "a clone", early ? "passed" : "waited for",
+                wf->at_return, now);
+        /* The child's bytes never change after its copy returned. */
+        KT_EQ(now, wf->at_return);
+        KT_EQ(word(wf->v, 0), 2);
+        KT_EQ(uword(wf->src, BASE), 2);
+        put(wf->c);
+        if (wf->dst)
+            aspace_unref(wf->dst);
+        aspace_unref(wf->src);
+        put(wf->v);
+        kfree(wf);
+        wf = NULL;
+    }
+}
+
+/* Finding 2: the waits for a freeze end at a cancel, as a kill or a
+ * replace cancels the threads it ends. */
+struct fc_ctx {
+    struct vmo    *v;
+    struct aspace *as;
+    int            what;   /* 0 vmo_write, 1 a store's fault, 2 decommit, 3 resize */
+    int            done;   /* atomic */
+    status_t       st;
+};
+
+static void fc_waiter(void *arg)
+{
+    struct fc_ctx *x = arg;
+    uint64_t w = 7;
+    switch (x->what) {
+    case 0:
+        x->st = vmo_write(x->v, 0, &w, 8);
+        break;
+    case 1:
+        x->st = uput(x->as, BASE, w);
+        break;
+    case 2:
+        x->st = vmo_decommit(x->v, 0, PG);
+        break;
+    default:
+        x->st = vmo_set_size(x->v, 2 * PG);
+        break;
+    }
+    __atomic_store_n(&x->done, 1, __ATOMIC_RELEASE);
+}
+
+KTEST(vmar_clone_frozen_cancel)
+{
+    static const char *const what[] = { "vmo_write", "a store's fault", "decommit", "resize" };
+    for (int k = 0; k < 4; k++) {
+        struct fc_ctx x = { .v = mk(1), .as = new_as(NULL), .what = k };
+        stamp(x.v, 0, 1);
+        map_at(x.as, x.v, 0, 1, BASE, RW | CAN_RW);   /* no entry yet: a store faults */
+        struct vmo *c;
+        KT_EQ(vmo_clone_begin(NULL, x.v, &c), OK);   /* frozen until vmo_clone_end */
+        struct thread *t = thread_create("kt-frozen", fc_waiter, &x, PRIO_DEFAULT);
+        thread_sleep_ms(10);
+        bool waited = !__atomic_load_n(&x.done, __ATOMIC_ACQUIRE);
+        thread_cancel(t);
+        uint64_t end = uptime_ns() + kt_patience_ms(500) * NS_PER_MS;
+        while (!__atomic_load_n(&x.done, __ATOMIC_ACQUIRE) && uptime_ns() < end)
+            thread_sleep_ms(1);
+        bool ended = __atomic_load_n(&x.done, __ATOMIC_ACQUIRE);
+        vmo_clone_end(x.v);   /* lets one that ignored the cancel go on */
+        thread_join(t);
+        kprintf("vmar_clone_frozen_cancel: %s %s at the cancel (%s)\n", what[k],
+                ended ? "ended" : "went on waiting", status_str(x.st));
+        KT_ASSERT(waited);
+        KT_ASSERT(ended);
+        KT_EQ(x.st, ERR_CANCELED);
+        KT_EQ(word(x.v, 0), 1);   /* nothing changed */
+        KT_EQ(vmo_size(x.v), PG);
+        put(c);
+        aspace_unref(x.as);
+        put(x.v);
+    }
+}
+
+/* Hostile: eight threads fork one address space at once, in a job a clone
+ * and a half from its limit, while a writer stores a counter to VMO A and
+ * then to VMO B through it. Every clone is whole and untorn, or refused
+ * with nothing left; the job is back to the page afterwards and nothing
+ * stays frozen. */
+enum { HS_THREADS = 8, HS_PAGES = 16, HS_ROUNDS = 150 };
+
+struct hs_ctx {
+    struct job    *j;
+    struct aspace *src;
+    struct vmo    *a, *b;
+    bool           stop;                         /* atomic */
+    uint64_t       ok, refused, ahead, stores;   /* atomic */
+};
+
+#define HS_A BASE
+#define HS_B (BASE + 64 * PG)
+
+static void hs_cloner(void *arg)
+{
+    struct hs_ctx *s = arg;
+    for (unsigned i = 0; i < HS_ROUNDS; i++) {
+        struct aspace *dst;
+        status_t st = aspace_create_charged(s->j, &dst);
+        if (st != OK) {
+            KT_EQ(st, ERR_NO_MEMORY);
+            __atomic_add_fetch(&s->refused, 1, __ATOMIC_RELAXED);
+            continue;
+        }
+        struct vmo *c = NULL;
+        st = clone1(s->src, dst, s->a, &c);
+        if (st == OK) {
+            KT_EQ(aspace_check(dst), 2);
+            /* The child's B is never ahead of its A (the writer stores A
+             * first); its reads draw on the reserve, never the job. */
+            uint64_t x = uword(dst, HS_A), y = uword(dst, HS_B);
+            if (x != y && x != y + 1)
+                ktest_fail("vmar_clone_hostile_storm: A %lu, B %lu: torn", x, y);
+            __atomic_add_fetch(&s->ahead, x != y, __ATOMIC_RELAXED);
+            KT_EQ(word(c, 0), x);
+            put(c);
+            __atomic_add_fetch(&s->ok, 1, __ATOMIC_RELAXED);
+        } else {
+            KT_EQ(st, ERR_NO_MEMORY);
+            KT_ASSERT(!c);
+            KT_EQ(aspace_check(dst), 0);
+            __atomic_add_fetch(&s->refused, 1, __ATOMIC_RELAXED);
+        }
+        aspace_unref(dst);
+    }
+}
+
+static void hs_writer(void *arg)
+{
+    struct hs_ctx *s = arg;
+    enter(s->src, NULL);
+    for (uint64_t v = 1; !__atomic_load_n(&s->stop, __ATOMIC_ACQUIRE); v++) {
+        if (copy_to_user(HS_A, &v, 8) != OK || copy_to_user(HS_B, &v, 8) != OK)
+            ktest_fail("vmar_clone_hostile_storm: a store failed");
+        __atomic_store_n(&s->stores, v, __ATOMIC_RELAXED);
+    }
+    enter(NULL, s->src);
+}
+
+KTEST(vmar_clone_hostile_storm)
+{
+    struct hs_ctx *s = kzalloc(sizeof(*s));
+    KT_ASSERT(s);
+    s->j = kt_fresh_job();
+    KT_EQ(vmo_create_for(s->j, HS_PAGES * PG, 0, &s->a), OK);
+    KT_EQ(vmo_create_for(s->j, PG, 0, &s->b), OK);
+    s->src = new_as(s->j);
+    map_at(s->src, s->a, 0, HS_PAGES, HS_A, RW | CAN_RW);
+    map_at(s->src, s->b, 0, 1, HS_B, RW | CAN_RW);
+    for (uint64_t i = 0; i < HS_PAGES; i++)
+        KT_EQ(uput(s->src, HS_A + i * PG, 0), OK);
+    KT_EQ(uput(s->src, HS_B, 0), OK);
+    uint64_t base = job_used(s->j, JOB_LIMIT_PAGES);
+    /* One clone: its PML4, the two children's 17 pages and their tables,
+     * a page of mapping structs and the reserve (3 tables): about 26
+     * pages. Room for one and a half. */
+    KT_EQ(job_set_limit(s->j, JOB_LIMIT_PAGES, base + 40), OK);
+    struct thread *w = thread_create("kt-hs-writer", hs_writer, s, PRIO_DEFAULT);
+    struct thread *t[HS_THREADS];
+    for (unsigned k = 0; k < HS_THREADS; k++) {
+        cpumask_t m;
+        cpumask_one(&m, k % cpu_count);
+        t[k] = thread_create_on("kt-hs-cloner", hs_cloner, s, PRIO_DEFAULT, &m);
+    }
+    for (unsigned k = 0; k < HS_THREADS; k++)
+        thread_join(t[k]);
+    __atomic_store_n(&s->stop, true, __ATOMIC_RELEASE);
+    thread_join(w);
+    KT_EQ(job_set_limit(s->j, JOB_LIMIT_PAGES, JOB_NO_LIMIT), OK);
+    kprintf("vmar_clone_hostile_storm: %lu clones, %lu refused, %lu caught between A and B, "
+            "%lu stores\n", s->ok, s->refused, s->ahead, s->stores);
+    KT_ASSERT(s->ok > 0);
+    KT_ASSERT(s->refused > 0);
+    KT_EQ(job_used(s->j, JOB_LIMIT_PAGES), base);   /* every clone and refusal gave all back */
+    KT_EQ(aspace_check(s->src), 2);
+    /* Nothing stays frozen: a write and a resize go straight through. */
+    stamp(s->a, 0, 0x5eed);
+    KT_EQ(vmo_set_size(s->b, 2 * PG), OK);
+    KT_EQ(uword(s->src, HS_A), 0x5eed);
+    aspace_unref(s->src);
+    put(s->a);
+    put(s->b);
+    kt_job_is_empty(s->j);
+    job_unref(s->j);
+    kfree(s);
 }
