@@ -371,7 +371,7 @@ struct aspace {
      * bumped by every change that must reach TLBs (gather_note). */
     uint64_t          pcid_id;
     uint64_t          tlb_gen;
-    uint64_t          faults;     /* aspace_fault calls (atomic, relaxed; for tests) */
+    uint64_t          faults;     /* aspace_fault calls (atomic, relaxed; for tests and process_info) */
     bool              jit;        /* mapped JIT memory to run (aspace_maps_jit; atomic, once) */
 };
 

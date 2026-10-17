@@ -700,6 +700,7 @@ from the failing call.
    `/proc/cpuinfo`. `/proc/self/maps` is there but lacks what the tests look
    for (the stack's line, the program's own mappings: `ProcMapsTest`,
    `ModuleCacheTest` 5, `PlatformSharedMemoryRegionTest.MappingProtectionSetCorrectly`).
+   What each of the 14 really needed, and what CBF4 built: [CBF4 notes](#cbf4-notes-2026-10-17).
 7. **Executable memory, CJ1: `PartitionAllocPageAllocatorTest` (5).**
    `mprotect(PROT_EXEC)` of anonymous memory is refused without the JIT
    right (W^X, by design: section 12); the tests then use a null buffer.
@@ -1036,7 +1037,7 @@ ones off; the programs need relinking against the new libc first.
   ENOSYS); the suffix says it is not a Linux. `sysname` stays `JamOS` (shell
   scripts match `uname -s`); Jam OS's own version is in `version`. The
   `/proc` files that say the same (`sys/kernel/osrelease`, `version`) are
-  CBF4's to make agree (`LX_RELEASE`, misc.c). `SysInfo::GetHardwareInfo`
+  made to agree by CBF4 (`LX_RELEASE`, misc.c). `SysInfo::GetHardwareInfo`
   reads `/sys/devices/virtual/dmi/id/sys_vendor` and `product_name` and wants
   both non-empty: etc.c serves them like `/etc`'s files (read only, `JamOS`
   and `JamOS machine`: Jam OS can't tell the machine's real maker and model)
@@ -1094,7 +1095,149 @@ ones off; the programs need relinking against the new libc first.
   stay a guess. (2) Honour `mmap`'s free address hint. (3) A high image base
   for Chromium's programs (ZeroSegment, and a null-page hardening that is
   worth having anyway). (4) `/proc/sys/kernel/osrelease` and
-  `/proc/version` to say what `uname` says.
+  `/proc/version` to say what `uname` says (done: [CBF4 notes](#cbf4-notes-2026-10-17)).
+
+#### CBF4 notes (2026-10-17)
+
+Track CBF4 (branch `cbf4-proc`): the `/proc` files `base_unittests` still
+found missing or wrong (CB2's finding 6), the files `uname` also says, and
+posixtest's `procinfo` section made robust. Read CB2's log of what the tests
+name against the tests' own source (the Chromium tree on the PC) rather than
+the ENOENT log alone: **five of the 14 are not about a file** (the four
+`ModuleCacheTest`s want `dladdr`, the fifth two modules).
+`/proc/self/stat`, `meminfo`, `cpuinfo` and `maps` were built by PRC after
+that log; what the tests then still lacked is below, per test. Not run here
+(`base_unittests` is the CB3 gate's); posixtest's `procfs` and `procinfo`
+sections have a case for each file, run on the PC (the `init` run and
+`posix-procinfo.txt`: [TESTING](TESTING.md)).
+
+**Which skip-list tests each change should clear** (take them off
+`tools/cr/base_unittests.skip` after the gate's `CR_BASE_ALL=1` run; the
+programs need relinking against this libc first):
+
+| Change | Tests |
+|--------|-------|
+| `/proc/self/cmdline` and the strings' run | `SetProcTitleLinuxTest.Simple`, `.Empty`, `.Long`; with CBF2b's `sendfile`, `FileUtilTest.CopyFileContentsWithSendfileSeqFile` |
+| `/proc/<tid>/stat` and `/proc/<pid>/task` | `PlatformThreadMetricsTest.GetCumulativeCPUUsage_CurrentThread`, `.GetCumulativeCPUUsage_OtherThread`; `ProcessMetricsTestLinux.GetCumulativeCPUUsagePerThread` |
+| `minflt` in stat (the kernel's fault count) | `ProcessMetricsTestLinux.GetPageFaultCounts` |
+| `[stack]` in `maps` | `ProcMapsTest.ReadProcMaps` |
+| `meminfo`'s buffers, caches and splits | `SystemMetrics2Test.GetSystemMemoryInfo` |
+| `dladdr` of the program's image (not `/proc`) | `ModuleCacheTest.GetDebugBasename`, `.LookupCodeAddresses`, `.ModulesList`, `.NativeModuleOverAuxiliaryModuleProvider` |
+
+`ModuleCacheTest.CheckAgainstProcMaps` **stays**: it wants two modules ("this
+module and ld-linux.so") and a static program has one. It moves out of the
+`[proc]` group on the next edit of the list (reason: a static program has no
+ld.so). `PlatformSharedMemoryRegionTest.MappingProtectionSetCorrectly`, which
+finding 6 names, is not on the list: PRC's `maps` already gave it its line.
+
+- **`/proc/self/cmdline`** (also `/proc/<pid>/cmdline` of ours and
+  `/proc/self/task/<tid>/cmdline`): the argument strings, NUL-ended, as
+  Linux reads them from the process. Linux reads the memory, so a program
+  that overwrote it (`setproctitle`) changes the file, by Linux's rule
+  (`get_mm_cmdline`): the run `arg_start..arg_end` while its last byte is
+  NUL, else, once that byte was overwritten, from `arg_start` to the first
+  NUL (included), a page at most. base's `setproctitle` probes this at
+  its first call (`buggy_kernel`: it zeroes the run and sets argv's last byte
+  to `.`; Linux gives back one NUL byte). **The strings are now one run**
+  (`user/posix/crt/start.c`): argv's, then the environment's (and `TZ=` when
+  the starter gave none), each NUL-ended with nothing between, as Linux's
+  kernel puts them on the stack. base's `setproctitle_init` returns without
+  doing anything unless every string begins where the last ended, and
+  `base_unittests` main calls it first thing: whenever the starter gave no
+  `TZ`, the old start put the added one outside the run and all three tests
+  would have failed. The run is on the stack (up to 4 KiB; a VMO above), so
+  the start pays one copy of the strings. A child's `cmdline`: **not built**
+  (libc keeps no copy of the argv it gave a child): `ENOENT`, as before.
+  stat's `arg_start`, `arg_end`, `env_start` and `env_end` are the run's.
+- **Threads** (`/proc/<pid>/task`, `/proc/self/task/<tid>/{stat,statm,status,
+  maps,cmdline,mem}`, and `/proc/<tid>/...` for any thread of ours, not
+  listed, as Linux). The tids are libc's table of threads (`thread.c`: the
+  first thread, then those `clone` made); the layer's signal thread is in
+  `num_threads` but not listed (a Linux program has no such thread). A
+  thread's stat has its own id first, its **own CPU time** (the kernel's
+  `thread_info.cpu_ns`, as `utime`), state `R` for the thread reading and
+  `S` for the others (the kernel doesn't say what a thread waits on), the
+  process's start time, faults and sizes. Its comm is the calling thread's
+  own name if it set one (`prctl(PR_SET_NAME)`, kept per thread), else the
+  program's: another thread's name is its own business. Its signal sets are
+  the calling thread's (the layer keeps no other thread's). status has
+  `Pid` the thread's, `Tgid` ours. **Decision: a number that is a pid and a
+  tid is the process.** pids and tids are separate id spaces
+  (`process_info.pid`, `thread_info.tid`), Linux's is one; `/proc/<n>` is
+  our pid, else a child's, else one of our threads. A thread whose id is a
+  child's pid is shadowed there (and always reachable as
+  `/proc/self/task/<tid>`). (Linux's main thread has the pid for its tid;
+  here the two come from separate id spaces.)
+- **`minflt`** (stat field 10) is the address space's count of page faults:
+  **one kernel change**, `process_info.faults` (`kernel/include/jam/abi.h`,
+  96 to 104 bytes), the existing `aspace_fault_count` that the tests used
+  (every fault the handler is asked about, resolved or not). Kernel and
+  libc build together; `abi_check.c` has the offset. `cminflt`, `majflt`
+  and `cmajflt` stay 0 (the pager's waits are not told apart). A thread's
+  file has the process's count.
+- **`[stack]`** in `maps`: the mapping that holds an address on the main
+  thread's stack, taken in a constructor (`procfs.c`: constructors run on
+  the main thread). Only that one is named; thread stacks (musl's mmaps)
+  stay blank, as Linux's. `VmStk` is its size and `VmData` leaves it out,
+  `statm`'s data field is both (Linux's). The program's data and bss lines
+  already carried the executable's path (PRC); a posixtest case now says so.
+- **`meminfo`**: `Buffers`, `Cached`, `Active`, `Inactive`, `Active(anon)`,
+  `Inactive(anon)`, `Active(file)`, `Inactive(file)` and `AnonPages` were 0;
+  base's `GetSystemMemoryInfo` wants the first six non-zero and each under
+  `MemTotal` (`SystemMetrics2Test`). Jam OS has no source (a page cache per
+  pager, counted in no figure a program can read), so they are **fractions of
+  the memory in use** (MemTotal - MemFree): Buffers 1/64, Cached 1/8 (half
+  active), the rest anonymous (3/4 active). They add up with MemFree to
+  MemTotal. A plausible constant, not a measurement; `MemAvailable` stays
+  `MemFree`.
+- **`/proc/self/mem`** (also `/proc/self/task/<tid>/mem`): read only, size 0,
+  mode 0400. `pread` at an address reads the program's memory there through the
+  checked copy (`ucopy.h`), a page at a time; the first page it can't read
+  (unmapped, no access, not an address of ours) ends the read, and `EIO` if it
+  is the first, as Linux's. **Never writable**: opening it for writing is
+  `EACCES`, because on Linux a write through it passes the pages' permissions
+  and Jam OS's W^X is not to be passed by the layer. A child's `mem`: not built.
+  `SEEK_END` is `EINVAL`. (Chromium's stack trace code opens it to read
+  memory safely.)
+- **`/proc/self/ns/user` stays ENOENT.** PRC's reason holds: Linux has no such
+  file without user namespaces, and the sandbox code's "are unprivileged user
+  namespaces supported" check (`PathExists("/proc/self/ns/user")`, in
+  `ProcessUtilTest.CloneFlags` too) then says no, which is true. `/proc/self/ns`
+  is not made either. Ask again only with a namespace design.
+- **`/proc/version`, `/proc/sys/kernel/{osrelease,ostype,version,hostname}`**
+  and `/proc/sys`, `/proc/sys/kernel` as directories: what `uname` says (misc.c
+  gave its fields a function, `lx_uname_fields`, so the two cannot disagree):
+  `5.10.0-jamos` (`LX_RELEASE`), `JamOS`, `#1 JamOS <version>`, the host name.
+  `/proc/version` is Linux's shape with Jam OS's words: `JamOS version
+  5.10.0-jamos (jamos@<host>) #1 JamOS <version>`. Anything else under
+  `/proc/sys` is ENOENT. Owned by uid 0, mode 0444 (directories 0555).
+- **`dladdr`** (musl's static stub says no to every address): our override
+  (`user/posix/musl/src/ldso/dladdr.c`, `OVERRIDES`; `posix.mk` no longer builds
+  upstream's) answers for the program's own image, the one module a static
+  program has: `dli_fbase` its ELF header (which `posix.ld` maps), `dli_fname`
+  the path `/proc/self/exe` gives (else argv[0]), no symbol (`dli_sname` and
+  `dli_saddr` null); 0 for any other address. Chromium's `ModuleCache` finds
+  its module this way (four tests above), and `StackTrace` can name the
+  program in a trace. Not `/proc`, but the same tests; named here so the files
+  are in one place.
+- **posixtest's `procinfo` (the old line 526)**: after `munmap` of the
+  16-page test mapping the section looked for lines of the pieces' exact
+  shapes. Reading `maps` allocates (the text, the layer's own buffers; musl
+  maps any allocation over 7 KiB), and an earlier section in the same process
+  can leave malloc needing a new mapping, which lands in the hole and can have
+  a piece's shape. Now: the section reads `maps` into a static buffer of its
+  own, and every page of the mapping holds a marker; a line of an old
+  shape counts as the old mapping only if its page still holds the marker (a
+  mapping nobody can read counts). A fresh mapping never has it.
+- **Left as before** (each shows in the ENOSYS log if something asks):
+  `smaps`, `smaps_rollup`, `limits`, `environ`, `auxv`, `io`, `uptime`,
+  `loadavg`, `vmstat`, `diskstats`, `comm`, `thread-self`, `ns/`, `cwd`,
+  `/proc/sys/vm` and the rest of `/proc/sys`, other processes' files.
+- **Edits outside /proc**: the kernel's `process_info.faults`
+  (abi.h, abi_check.c, process.c, a declaration moved to aspace.h); the start
+  (`user/posix/crt/start.c`); `thread.c` (`thread_tids`, `thread_tid_exists`,
+  `thread_cpu_ns`); `misc.c` (`lx_uname_fields`); `glue.h`, `OVERRIDES`,
+  `posix.mk` and the new `dladdr.c` for the override; utest's `posix_ids`.
 
 ### 2. The address space: huge sparse reservations (the top risk)
 
@@ -1221,8 +1364,9 @@ dies with the reason, nothing else does).
     from process_get_info, process_get_maps (the address space's
     mappings), the figures any process may read and CPUID. Fields Jam OS
     has no meaning for hold Linux's neutral value.
-  - Everything else under `/proc` (`/proc/sys/...`, `smaps`, `cmdline`,
-    `/proc/self/ns/user`, ...): **ENOENT, never a half-filled file.**
+  - Everything else under `/proc` (`smaps`, `/proc/self/ns/user`, ...;
+    `cmdline`, `task/`, `mem`, `/proc/sys/kernel/...` and `/proc/version`
+    came with CBF4): **ENOENT, never a half-filled file.**
     Chromium's callers of these fail soft (the namespace check reads
     "no user namespaces"); the ENOSYS and ENOENT log (below) shows any
     that doesn't.
@@ -2413,7 +2557,8 @@ procinfo.c and cpuinfo.c (the text).
     asked.
 - **What is real, and from where.**
   - A process: `process_get_info` (state, live threads, CPU time, pid, and
-    new in PRC `start_ns`, the uptime at `process_create`, and `name`);
+    new in PRC `start_ns`, the uptime at `process_create`, and `name`, and
+    in CBF4 `faults`, the address space's page-fault count);
     our process group, session and parent from the hand-over; a child's
     from libc's table of children (proc.c: `lx_child_facts`).
   - The address space: **the one kernel call PRC adds, `process_get_maps`
@@ -2476,8 +2621,9 @@ procinfo.c and cpuinfo.c (the text).
   buffers its read allocates (musl maps any allocation over 7 KiB): as on
   Linux.
 - **Not built** (each shows up in the ENOENT log if something wants it):
-  `smaps` and `smaps_rollup`, `cmdline`, `task/`, `limits`, `oom_score_adj`,
+  `smaps` and `smaps_rollup`, `limits`, `oom_score_adj`,
   `auxv`, `io`, `uptime`, `loadavg`, `diskstats`, other pids' files.
+  (`cmdline`, `task/`, `mem` and a thread's files came with CBF4.)
 - **Tests**: posixtest's `procinfo` section (in the `init` run; also
   tools/shell-tests/posix-procinfo.txt from the shell): the files against
   proc(5) and what the process really does (threads made and ended,

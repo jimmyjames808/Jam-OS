@@ -349,6 +349,7 @@ void process_get_info(struct process *p, struct process_info *out)
     out->pid = p->pid;
     out->start_ns = p->start_ns;
     out->cpu_ns = tsc_to_ns(process_cpu_tsc(p));
+    out->faults = p->as ? aspace_fault_count(p->as) : 0;   /* lock-free read, as aspace_maps_jit's */
 }
 
 uint64_t process_cpu_tsc(struct process *p)

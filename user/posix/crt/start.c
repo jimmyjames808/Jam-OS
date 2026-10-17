@@ -16,7 +16,13 @@
  *      the program: __libc_start_main never returns), or for a big argv
  *      and environment in a VMO of its own: argc, argv, NULL,
  *      the environment (with TZ added from the system's zone if the
- *      starter gave none), NULL, and the auxiliary vector: AT_PAGESZ,
+ *      starter gave none), NULL, and the auxiliary vector. The strings
+ *      the pointers name are copied into one run, as Linux's kernel
+ *      lays them on the stack: argv's, then the environment's (and TZ's),
+ *      each NUL-ended with nothing between. Chromium's setproctitle
+ *      refuses to start unless each string begins where the last ended,
+ *      and /proc/self/cmdline reads the run back (lx_arg_area). The
+ *      auxiliary vector: AT_PAGESZ,
  *      AT_RANDOM (16 bytes from the kernel's generator), AT_HWCAP,
  *      AT_PHDR/AT_PHENT/AT_PHNUM (the program headers, which
  *      user/posix/posix.ld maps, so musl's __init_tls finds PT_TLS),
@@ -39,11 +45,13 @@
  * posixfds_read use none either). */
 #include <elf.h>
 #include <string.h>
+#include "procinfo.h"
 #include "sig.h"
 #include "start.h"
 
 #define AUX_MAX     16                  /* auxv pairs, AT_NULL's included */
 #define BLOCK_STACK 512                 /* the block's longs on the stack; more: a VMO */
+#define STRS_STACK  4096                /* the strings' bytes on the stack; more: a VMO */
 #define ONE_USER    1000                /* the one user's uid and gid (M13 Q7) */
 #define SIGFRAME_SLACK 1024             /* what musl's sysconf adds to AT_MINSIGSTKSZ */
 
@@ -61,6 +69,14 @@ static bool ho_given;
 static bool ho_secure;                   /* the hand-over says AT_SECURE */
 static uint8_t at_random[16];
 static char tz_env[80] = "TZ=";
+static const char *strs_arg, *strs_arg_end, *strs_env_end;   /* the strings' run (lx_arg_area) */
+
+void lx_arg_area(const char **arg_start, const char **arg_end, const char **env_end)
+{
+    *arg_start = strs_arg;
+    *arg_end = strs_arg_end;
+    *env_end = strs_env_end;
+}
 
 handle_t lx_self_process(void)
 {
@@ -201,6 +217,15 @@ static unsigned fill_aux(long *aux)
     return (unsigned)(sizeof(pairs) / sizeof(pairs[0])) * 2;
 }
 
+/* The string src copied to *at, which moves past it: the copy's address. */
+static char *put_str(char **at, const char *src)
+{
+    size_t n = strlen(src) + 1;
+    char *p = memcpy(*at, src, n);
+    *at += n;
+    return p;
+}
+
 /* Room for a block of n longs too big for the stack (a big argv or
  * environment: libjam's SR_ARGS): a VMO of its own, mapped for good. */
 static long *big_block(size_t n)
@@ -232,21 +257,37 @@ _Noreturn void __jam_start(unsigned ch, int (*main)(), void (*init)(void), void 
     size_t envc = 0;
     while (envp[envc])
         envc++;
+    bool add_tz = !has_tz(envp);
+    if (add_tz)
+        tz_posix(tz_env + 3, sizeof(tz_env) - 3);
+    size_t bytes = add_tz ? strlen(tz_env) + 1 : 0;
+    for (int i = 0; i < argc; i++)
+        bytes += strlen(argv[i]) + 1;
+    for (size_t i = 0; i < envc; i++)
+        if (!ho_secure || !unsecure(envp[i]))
+            bytes += strlen(envp[i]) + 1;
+    char strs_small[STRS_STACK];
+    char *strs = bytes <= sizeof(strs_small) ? strs_small
+                                              : (char *)big_block((bytes + sizeof(long) - 1) /
+                                                                  sizeof(long));
     long small[BLOCK_STACK];
     long *block = small;
     size_t n = 0, need = 1 + (size_t)argc + 1 + envc + 1 + 1 + 2 * AUX_MAX;
     if (need > BLOCK_STACK)
         block = big_block(need);
     block[n++] = argc;
-    for (int i = 0; i <= argc; i++)   /* argv and its NULL */
-        block[n++] = (long)(uintptr_t)argv[i];
+    char *at = strs;
+    for (int i = 0; i < argc; i++)
+        block[n++] = (long)(uintptr_t)put_str(&at, argv[i]);
+    block[n++] = 0;   /* argv's NULL */
+    strs_arg = strs;
+    strs_arg_end = at;
     for (size_t i = 0; i < envc; i++)
         if (!ho_secure || !unsecure(envp[i]))
-            block[n++] = (long)(uintptr_t)envp[i];
-    if (!has_tz(envp)) {
-        tz_posix(tz_env + 3, sizeof(tz_env) - 3);
-        block[n++] = (long)(uintptr_t)tz_env;
-    }
+            block[n++] = (long)(uintptr_t)put_str(&at, envp[i]);
+    if (add_tz)
+        block[n++] = (long)(uintptr_t)put_str(&at, tz_env);
+    strs_env_end = at;
     block[n++] = 0;
     n += fill_aux(&block[n]);
     __libc_start_main(main, argc, (char **)&block[1], init, fini, NULL);

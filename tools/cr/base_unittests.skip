@@ -407,7 +407,7 @@ ProcessMemoryDumpTest.CountResidentBytes
 ProcessMemoryDumpTest.CountResidentBytesInSharedMemory
 SamplingHeapProfilerTest.GetSamplesWithResidency
 
-[proc] a /proc file the test reads is missing or incomplete (the ENOSYS log names the paths: self/cmdline, self/stat, self/maps content, <tid>/stat, task/, cpuinfo, meminfo, self/ns/user)
+[proc] a /proc file the test reads is missing or incomplete. CBF4 built what they read (cmdline, <tid>/stat and task/, stat's minflt, [stack] in maps, meminfo's buffers and caches, dladdr for the ModuleCache ones): the CB3 gate's CR_BASE_ALL=1 rerun takes them off (docs/CR-PLAN.md, "CBF4 notes"). ModuleCacheTest.CheckAgainstProcMaps stays: it wants two modules and a static program has one
 ModuleCacheTest.CheckAgainstProcMaps
 ModuleCacheTest.GetDebugBasename
 ModuleCacheTest.LookupCodeAddresses

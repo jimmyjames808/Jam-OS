@@ -16,6 +16,7 @@
 #include <sys/sysinfo.h>
 #include <sys/utsname.h>
 #include "layer.h"
+#include "procinfo.h"
 #include "threads.h"
 
 #define SYSNAME       "JamOS"   /* one word: scripts match `uname -s` */
@@ -42,20 +43,27 @@ static void copy_field(char *dst, size_t cap, const char *src)
  * this is not a Linux; Jam OS's own version is uname's `version`. */
 #define LX_RELEASE    "5.10.0-jamos"
 
+/* uname's answer, which /proc's version and sys/kernel files (procfs.c)
+ * give too, so that they cannot disagree. */
+void lx_uname_fields(struct utsname *u)
+{
+    struct kp_public pub;
+    char version[sizeof(u->version)];
+    snprintf(version, sizeof(version), "#1 JamOS %s",
+             kp_public_info(&pub) == OK && pub.version[0] ? pub.version : "unknown");
+    memset(u, 0, sizeof(*u));
+    copy_field(u->sysname, sizeof(u->sysname), SYSNAME);
+    copy_field(u->nodename, sizeof(u->nodename), NODENAME);
+    copy_field(u->release, sizeof(u->release), LX_RELEASE);
+    copy_field(u->version, sizeof(u->version), version);
+    copy_field(u->machine, sizeof(u->machine), MACHINE);
+    copy_field(u->domainname, sizeof(u->domainname), "(none)");
+}
+
 long lx_uname(long out, long b, long c, long d, long e, long f)
 {
     struct utsname u;
-    struct kp_public pub;
-    char version[sizeof(u.version)];
-    snprintf(version, sizeof(version), "#1 JamOS %s",
-             kp_public_info(&pub) == OK && pub.version[0] ? pub.version : "unknown");
-    memset(&u, 0, sizeof(u));
-    copy_field(u.sysname, sizeof(u.sysname), SYSNAME);
-    copy_field(u.nodename, sizeof(u.nodename), NODENAME);
-    copy_field(u.release, sizeof(u.release), LX_RELEASE);
-    copy_field(u.version, sizeof(u.version), version);
-    copy_field(u.machine, sizeof(u.machine), MACHINE);
-    copy_field(u.domainname, sizeof(u.domainname), "(none)");
+    lx_uname_fields(&u);
     return uc_put((void *)(uintptr_t)out, &u, sizeof(u));
 }
 

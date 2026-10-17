@@ -57,6 +57,12 @@ int __jam_ttyname(int fd, char *name, unsigned long size);
  * program tried to load; nothing if the log is off. */
 void __jam_enosys_dlopen(const char *file);
 
+/* dladdr's override: is addr in the program's own image (a static program's
+ * one module)? 1, and the image's base (its ELF header) into *base and the
+ * path of its file into *file (the same as /proc/self/exe's, else argv[0]);
+ * else 0. procfs.c. */
+int __jam_dladdr(const void *addr, const char **file, void **base);
+
 /* crt1's start: read the startup message on the channel ch (a handle_t),
  * build Linux's start block (argc, argv, envp, auxv) and run main through
  * musl's __libc_start_main with init and fini, as musl's own crt1 does

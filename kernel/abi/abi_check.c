@@ -51,13 +51,14 @@ _Static_assert(sizeof(struct pci_dev_info) == 176 && offsetof(struct pci_dev_inf
                    offsetof(struct pci_dev_info, bar) == 24,
                "pci_dev_info layout");
 _Static_assert(sizeof(struct job_info) == 88, "job_info layout");
-_Static_assert(sizeof(struct process_info) == 96 && offsetof(struct process_info, pid) == 20 &&
+_Static_assert(sizeof(struct process_info) == 104 && offsetof(struct process_info, pid) == 20 &&
                    offsetof(struct process_info, cpu_ns) == 32 &&
                    offsetof(struct process_info, mappings) == 40 &&
                    offsetof(struct process_info, start_ns) == 48 &&
                    offsetof(struct process_info, name) == 56 &&
                    offsetof(struct process_info, fault_vector) == 88 &&
                    offsetof(struct process_info, fault_status) == 92 &&
+                   offsetof(struct process_info, faults) == 96 &&
                    sizeof(((struct process_info *)0)->name) == PROCESS_NAME_MAX + 1,
                "process_info layout");
 _Static_assert(sizeof(struct map_info) == 48 && offsetof(struct map_info, resident) == 32 &&

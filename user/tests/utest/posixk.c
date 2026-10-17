@@ -40,6 +40,25 @@ bool t_posix_ids(void)
     struct process_info pi;
     CHECK_ST(jam_process_get_info(proc, &pi), OK);
     CHECK(pi.pid > 0 && pi.pid < IDS_MAX);
+    /* Page faults (libc's /proc stat minflt): some by now, and the pages of a mapped VMO
+     * touched for the first time add one each; the count never falls. */
+    CHECK(pi.faults > 0);
+    {
+        handle_t vmo, self_vmar = startup_handle(SR_SELF_VMAR);
+        uint64_t addr = 0, len = 64 * 4096;
+        struct process_info f0, f1;
+        CHECK_ST(jam_vmo_create(len, 0, &vmo), OK);
+        CHECK_ST(jam_vmar_map(self_vmar, vmo, 0, len, VMAR_READ | VMAR_WRITE, &addr), OK);
+        CHECK_ST(jam_process_get_info(proc, &f0), OK);
+        for (uint64_t i = 0; i < len; i += 4096)
+            *(volatile uint8_t *)(uintptr_t)(addr + i) = 1;
+        CHECK_ST(jam_process_get_info(proc, &f1), OK);
+        CHECK(f1.faults >= f0.faults + 32);
+        CHECK_ST(jam_vmar_unmap(self_vmar, addr, len), OK);
+        CHECK_ST(jam_handle_close(vmo), OK);
+        CHECK_ST(jam_process_get_info(proc, &f0), OK);
+        CHECK(f0.faults >= f1.faults);
+    }
     struct thread_info ti = info_of_thread(self);
     CHECK(ti.tid > 0 && ti.tid < IDS_MAX);
     CHECK_EQ(ti.pid, pi.pid);

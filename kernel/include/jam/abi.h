@@ -368,6 +368,9 @@ struct process_info {
     char     name[32];    /* the name it was created with (PROCESS_NAME_MAX), NUL-terminated */
     uint32_t fault_vector;   /* with PROCESS_FLAG_FAULT: the fault's exception vector */
     int32_t  fault_status;   /* with PROCESS_FLAG_FAULT: a page fault's status, else 0 */
+    uint64_t faults;      /* page faults its address space has taken so far (every one the
+                             fault handler was asked about; 0 once it is torn down): libc's
+                             /proc/<pid>/stat minflt */
 };
 /* process_info.flags and proc_stat.flags: its address space has mapped a
  * JIT VMO (vmo_make_jit) executable since it was made (a map or a protect

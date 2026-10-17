@@ -2,8 +2,11 @@
  * Linux's formats and field order (proc(5)), made when a file is read:
  *
  *   /proc/<pid>/stat, statm, status, maps   for our own pid and for each
- *                         child of ours not yet reaped
- *   /proc/meminfo, /proc/stat   the system's
+ *                         child of ours not yet reaped; stat, status, statm
+ *                         and maps of one of our threads too
+ *                         (/proc/<pid>/task/<tid>/..., or /proc/<tid>/...)
+ *   /proc/<pid>/cmdline   ours (the argument strings, start.c's run)
+ *   /proc/meminfo, /proc/stat, /proc/version, /proc/sys/kernel/...   the system's
  *   /proc/cpuinfo         cpuinfo.c
  *
  * Where the figures come from. A process: process_get_info (state, live
@@ -18,28 +21,42 @@
  * memory), the wall clock and the uptime (btime).
  *
  * Neutral values, where Jam OS has nothing to say (Linux's "none" for each):
- * stat: tty 0 and tpgid -1, flags PF_RANDOMIZE, all fault counts 0, stime 0
- * (the kernel keeps one CPU time: utime has all of it), cutime the CPU time
+ * stat: tty 0 and tpgid -1, flags PF_RANDOMIZE, minflt the address space's
+ * page faults (the kernel counts them: process_info.faults, a thread's file
+ * has the process's), cminflt, majflt and cmajflt 0, stime 0
+ * (the kernel keeps one CPU time: utime has all of it; a thread's utime is
+ * its own), cutime the CPU time
  * of the children we reaped, cstime 0, priority 20, nice 0, itrealvalue 0,
  * rsslim unlimited, startstack 0, the stack pointers 0, signal masks (ours
- * only; a child's are 0), wchan 0, exit_signal 17, processor 0, rt_priority
- * 0, policy 0, the data, brk, argument and environment addresses 0, and the
- * exit code of a zombie as wait would give it. A child's stat has no
- * startcode or endcode, and its comm is the name it was created with.
+ * only; a child's are 0; a thread's are the calling thread's), wchan 0,
+ * exit_signal 17, processor 0, rt_priority
+ * 0, policy 0, start_data, end_data and start_brk 0, and the
+ * exit code of a zombie as wait would give it. Ours has the argument and
+ * environment addresses (start.c's run of strings). A child's stat has no
+ * startcode or endcode, and its comm is the name it was created with. A
+ * thread's: its id first, state R for the thread reading and S for the
+ * others (the kernel doesn't say which wait), the process's start time, and
+ * the program's name (the calling thread's own, if it set one: other
+ * threads' names are theirs alone).
  * status: no tracer, uid and gid 1000, no groups, no capabilities, no
- * seccomp, VmLck, VmPin, VmLib, VmStk (the main stack isn't told apart from
- * other mappings: it is in VmData) and VmSwap 0, VmPTE 0, VmPeak and VmHWM
+ * seccomp, VmLck, VmPin, VmLib and VmSwap 0, VmStk the main stack's mapping
+ * (the one holding procfs.c's constructor's address; VmData leaves it out),
+ * VmPTE 0, VmPeak and VmHWM
  * the largest VmSize and VmRSS this process has seen read here (a child's:
  * its current ones), all CPUs allowed, no context switches counted.
  * maps: device 00:00 and inode 0 on every line; the name of an image's
- * lines (ours only) and [heap]; no [stack], [vdso] or names for files
- * mapped with mmap; the offset only where the VMO is a file (an image, a
- * file's own pages). Anonymous memory and shared memory are not told apart
- * by name (all are blank).
+ * lines (ours only), [heap] and [stack] (the main one); no [vdso] or names
+ * for files mapped with mmap; the offset only where the VMO is a file (an
+ * image, a file's own pages). Anonymous memory and shared memory are not
+ * told apart by name (all are blank).
  * meminfo: MemTotal and MemFree are the allocator's (free pages exclude
  * the kernel heap's cached objects); MemAvailable is MemFree (no page cache
- * is kept apart: files are the pager's pages, counted in no field); the
- * other fields 0 (swap, buffers, caches, huge pages), Hugepagesize 2048.
+ * is kept apart: files are the pager's pages, counted in no field). Buffers,
+ * Cached and the active and inactive figures have no source, and a program
+ * (base's memory metrics) wants them non-zero and under MemTotal: they are
+ * fractions of the memory in use (Buffers 1/64, Cached 1/8 split evenly
+ * between active and inactive file, the rest anonymous, 3/4 active). The
+ * other fields 0 (swap, huge pages), Hugepagesize 2048.
  * stat (system): the CPU times 0 (cpu_stat is root's), btime real, processes
  * our pid, procs_running 1, the rest 0. */
 #include <stdarg.h>
@@ -48,12 +65,15 @@
 #include <elf.h>
 #include <errno.h>
 #include <string.h>
+#include <sys/prctl.h>
+#include <sys/utsname.h>
 #include <time.h>
 #include "calls.h"
 #include "files.h"
 #include "proc.h"
 #include "procinfo.h"
 #include "sig.h"
+#include "threads.h"
 
 #define PAGE      4096ull
 #define TICK_NS   10000000ull   /* USER_HZ is 100: sysconf(_SC_CLK_TCK) */
@@ -101,9 +121,10 @@ void sb_put(struct sb *b, const char *fmt, ...)
 struct acc {
     uint64_t size;                           /* VmSize: bytes mapped */
     uint64_t rss, rss_anon, rss_file, rss_shmem;   /* pages present */
-    uint64_t exe, data;                      /* VmExe, VmData: bytes */
+    uint64_t exe, data, stk;                 /* VmExe, VmData, VmStk: bytes */
     uint64_t text_lo, text_hi;               /* the image's executable mappings */
     bool     self;                           /* ours: libc's table and our image apply */
+    uintptr_t stack_addr;                    /* ours: an address on the main stack, or 0 */
     const char *image_name;                  /* our image's path, or NULL */
     struct sb *lines;                        /* maps: where its lines go, or NULL */
     uint64_t lo[PH_MAX], hi[PH_MAX];         /* our image's segments, page-rounded */
@@ -138,6 +159,7 @@ static void take(struct acc *a, const struct map_info *m)
     bool shared = kind != MEM_UNKNOWN && (kind & MEM_SHARED);
     bool file = img || (kind != MEM_UNKNOWN && (kind & MEM_FILE));
     bool heap = kind != MEM_UNKNOWN && (kind & MEM_BRK);
+    bool stack = a->self && !img && a->stack_addr >= m->base && a->stack_addr - m->base < m->len;
     a->size += m->len;
     a->rss += m->resident;
     if (shared)
@@ -146,7 +168,9 @@ static void take(struct acc *a, const struct map_info *m)
         a->rss_file += m->resident;
     else
         a->rss_anon += m->resident;
-    if ((m->perms & VMAR_WRITE) && !shared)
+    if (stack)
+        a->stk += m->len;
+    else if ((m->perms & VMAR_WRITE) && !shared)
         a->data += m->len;
     if (img && (m->perms & VMAR_EXEC)) {
         a->exe += m->len;
@@ -157,7 +181,7 @@ static void take(struct acc *a, const struct map_info *m)
     }
     if (!a->lines)
         return;
-    const char *name = heap ? "[heap]" : img ? a->image_name : NULL;
+    const char *name = heap ? "[heap]" : stack ? "[stack]" : img ? a->image_name : NULL;
     bool offset = img || (kind != MEM_UNKNOWN && (kind & MEM_FILE));   /* a file's */
     char head[96];
     int n = snprintf(head, sizeof(head), "%08llx-%08llx %c%c%c%c %08llx 00:00 0",
@@ -200,9 +224,11 @@ static long walk_maps(int32_t pid, struct acc *a)
 
 struct view {
     int32_t             pid, ppid, pgid, sid;
-    bool                self, zombie;
-    struct process_info info;
+    uint32_t            tid;       /* one of our threads: its id, else 0 (the process) */
+    bool                self, zombie, running;   /* running: the process or the calling thread */
+    struct process_info info;      /* a thread's file: cpu_ns is the thread's own */
     char                comm[COMM_MAX + 1];
+    const char         *arg_start, *arg_end, *env_end;   /* the strings' run (ours only) */
     uint64_t            kids_ns;   /* CPU time of the children we reaped (ours only) */
     uint64_t            sig_pnd, sig_blk, sig_ign, sig_cgt;   /* signal sets (ours only) */
     struct acc          a;
@@ -218,16 +244,26 @@ static void raise_to(uint64_t *peak, uint64_t v)
         ;
 }
 
-/* pid's facts and its mappings' sums; lines (maps) gets the text of maps.
- * 0, or -errno. */
-static long view_of(int32_t pid, struct sb *lines, struct view *v)
+/* pid's facts (and thread tid's, if not 0: one of ours) and its mappings'
+ * sums; lines (maps) gets the text of maps. 0, or -errno. */
+static long view_of(int32_t pid, uint32_t tid, struct sb *lines, struct view *v)
 {
     memset(v, 0, sizeof(*v));
     v->pid = pid;
+    v->tid = tid;
     v->self = pid == lx_pid();
     if (v->self) {
         if (jam_process_get_info(lx_self_process(), &v->info) != OK)
             return -ESRCH;
+        v->running = true;
+        if (tid) {   /* a thread: its own CPU time, and it is the one running if it is us */
+            uint64_t ns;
+            if (thread_cpu_ns(tid, &ns))
+                return -ESRCH;
+            v->info.cpu_ns = ns;
+            v->running = tid == (uint32_t)lx_gettid(0, 0, 0, 0, 0, 0);
+        }
+        lx_arg_area(&v->arg_start, &v->arg_end, &v->env_end);
         v->ppid = (int32_t)lx_getppid(0, 0, 0, 0, 0, 0);
         v->pgid = lx_pgid();
         v->sid = lx_sid();
@@ -242,6 +278,9 @@ static long view_of(int32_t pid, struct sb *lines, struct view *v)
         }
         const char *name = program_invocation_short_name;
         snprintf(v->comm, sizeof(v->comm), "%s", name && *name ? name : v->info.name);
+        char mine[COMM_MAX + 1];   /* the calling thread's own name, if it set one */
+        if (tid && v->running && lx_prctl(PR_GET_NAME, (long)(uintptr_t)mine, 0, 0, 0, 0) == 0)
+            snprintf(v->comm, sizeof(v->comm), "%s", mine);
     } else {
         struct lx_child_facts f;
         long r = lx_child_facts(pid, &f);
@@ -260,6 +299,7 @@ static long view_of(int32_t pid, struct sb *lines, struct view *v)
     v->a.lines = lines;
     if (v->self) {
         image_segments(&v->a);
+        v->a.stack_addr = proc_stack_addr();
         if (lines)
             v->a.image_name = proc_exe();
     }
@@ -280,7 +320,7 @@ static uint64_t peak_of(uint64_t *peak, uint64_t now_value, bool self)
 
 static char state_of(const struct view *v)
 {
-    return v->zombie ? 'Z' : v->self ? 'R' : 'S';
+    return v->zombie ? 'Z' : v->running ? 'R' : 'S';
 }
 
 static const char *state_name(char c)
@@ -294,18 +334,22 @@ static void put_stat(struct sb *b, const struct view *v)
     int exit_code = !v->zombie ? 0 : v->info.killed ? 9 : (int)(v->info.exit_code & 0xff) << 8;
     sb_put(b,
            "%d (%s) %c %d %d %d 0 -1 %u "          /* pid comm state ppid pgrp session tty tpgid flags */
-           "0 0 0 0 %llu 0 %llu 0 "                /* minflt cminflt majflt cmajflt utime stime cutime cstime */
+           "%llu 0 0 0 %llu 0 %llu 0 "             /* minflt cminflt majflt cmajflt utime stime cutime cstime */
            "20 0 %u 0 %llu %llu %llu "             /* priority nice threads itrealvalue start vsize rss */
            "18446744073709551615 %llu %llu 0 0 0 " /* rsslim startcode endcode startstack kstkesp kstkeip */
            "%llu %llu %llu %llu 0 0 0 "            /* signal blocked sigignore sigcatch wchan nswap cnswap */
            "17 0 0 0 0 0 0 "                       /* exit_signal processor rt_priority policy blkio guest cguest */
-           "0 0 0 0 0 0 0 %d\n",                   /* start_data end_data start_brk arg_start..env_end exit_code */
-           v->pid, v->comm, state_of(v), v->ppid, v->pgid, v->sid, PF_RANDOMIZE, utime, cutime,
+           "0 0 0 %llu %llu %llu %llu %d\n",       /* start_data end_data start_brk arg_start arg_end env_start env_end exit_code */
+           v->tid ? (int)v->tid : v->pid, v->comm, state_of(v), v->ppid, v->pgid, v->sid,
+           PF_RANDOMIZE, (unsigned long long)v->info.faults, utime, cutime,
            v->info.threads, (unsigned long long)(v->info.start_ns / TICK_NS),
            (unsigned long long)v->a.size, (unsigned long long)v->a.rss,
            (unsigned long long)v->a.text_lo, (unsigned long long)v->a.text_hi,
            (unsigned long long)v->sig_pnd, (unsigned long long)v->sig_blk,
-           (unsigned long long)v->sig_ign, (unsigned long long)v->sig_cgt, exit_code);
+           (unsigned long long)v->sig_ign, (unsigned long long)v->sig_cgt,
+           (unsigned long long)(uintptr_t)v->arg_start, (unsigned long long)(uintptr_t)v->arg_end,
+           (unsigned long long)(uintptr_t)v->arg_end, (unsigned long long)(uintptr_t)v->env_end,
+           exit_code);
 }
 
 /* A mask of cpus bits in Linux's form: 32-bit groups, the top one without
@@ -328,11 +372,11 @@ static void put_status(struct sb *b, const struct view *v)
     char st = state_of(v);
     sb_put(b, "Name:\t%s\nUmask:\t%04o\nState:\t%c (%s)\n", v->comm, v->self ? lx_umask_now() : 022,
            st, state_name(st));
-    sb_put(b, "Tgid:\t%d\nNgid:\t0\nPid:\t%d\nPPid:\t%d\nTracerPid:\t0\n", v->pid, v->pid, v->ppid);
+    int id = v->tid ? (int)v->tid : v->pid;   /* a thread's Pid is its own id, its Tgid ours */
+    sb_put(b, "Tgid:\t%d\nNgid:\t0\nPid:\t%d\nPPid:\t%d\nTracerPid:\t0\n", v->pid, id, v->ppid);
     sb_put(b, "Uid:\t%d\t%d\t%d\t%d\nGid:\t%d\t%d\t%d\t%d\nFDSize:\t64\nGroups:\t\n", ONE_USER,
            ONE_USER, ONE_USER, ONE_USER, ONE_USER, ONE_USER, ONE_USER, ONE_USER);
-    sb_put(b, "NStgid:\t%d\nNSpid:\t%d\nNSpgid:\t%d\nNSsid:\t%d\n", v->pid, v->pid, v->pgid,
-           v->sid);
+    sb_put(b, "NStgid:\t%d\nNSpid:\t%d\nNSpgid:\t%d\nNSsid:\t%d\n", v->pid, id, v->pgid, v->sid);
     sb_put(b, "VmPeak:\t%8llu kB\nVmSize:\t%8llu kB\nVmLck:\t%8u kB\nVmPin:\t%8u kB\n",
            (unsigned long long)peak_of(&peak_size, a->size, v->self) >> 10,
            (unsigned long long)a->size >> 10, 0u, 0u);
@@ -340,9 +384,9 @@ static void put_status(struct sb *b, const struct view *v)
            (unsigned long long)peak_of(&peak_rss, a->rss, v->self) * (PAGE >> 10),
            (unsigned long long)a->rss * (PAGE >> 10), (unsigned long long)a->rss_anon * (PAGE >> 10),
            (unsigned long long)a->rss_file * (PAGE >> 10));
-    sb_put(b, "RssShmem:\t%8llu kB\nVmData:\t%8llu kB\nVmStk:\t%8u kB\nVmExe:\t%8llu kB\n",
+    sb_put(b, "RssShmem:\t%8llu kB\nVmData:\t%8llu kB\nVmStk:\t%8llu kB\nVmExe:\t%8llu kB\n",
            (unsigned long long)a->rss_shmem * (PAGE >> 10), (unsigned long long)a->data >> 10,
-           0u, (unsigned long long)a->exe >> 10);
+           (unsigned long long)a->stk >> 10, (unsigned long long)a->exe >> 10);
     sb_put(b, "VmLib:\t%8u kB\nVmPTE:\t%8u kB\nVmSwap:\t%8u kB\nHugetlbPages:\t%8u kB\n", 0u, 0u,
            0u, 0u);
     sb_put(b, "CoreDumping:\t0\nTHP_enabled:\t0\nThreads:\t%u\nSigQ:\t0/63756\n",
@@ -366,7 +410,7 @@ static void put_statm(struct sb *b, const struct view *v)
     const struct acc *a = &v->a;
     sb_put(b, "%llu %llu %llu %llu 0 %llu 0\n", (unsigned long long)(a->size / PAGE),
            (unsigned long long)a->rss, (unsigned long long)(a->rss_file + a->rss_shmem),
-           (unsigned long long)(a->exe / PAGE), (unsigned long long)(a->data / PAGE));
+           (unsigned long long)(a->exe / PAGE), (unsigned long long)((a->data + a->stk) / PAGE));
 }
 
 /* ---- the system ----------------------------------------------------------------------- */
@@ -379,15 +423,25 @@ static void put_meminfo(struct sb *b)
         total = pub.pages * (pub.page_size >> 10);
         free_kb = pub.free_pages * (pub.page_size >> 10);
     }
-    enum { ZERO, TOTAL, FREE, HALF, VMALLOC, HUGE_SIZE };
+    /* The memory in use, split as the header says (no source: fractions of
+     * it, so each is non-zero and under MemTotal, as base's metrics want). */
+    unsigned long long used = total > free_kb ? total - free_kb : 0;
+    unsigned long long buffers = used / 64, cached = used / 8;
+    unsigned long long anon = used - buffers - cached;
+    unsigned long long act_anon = anon * 3 / 4, inact_anon = anon - act_anon;
+    unsigned long long act_file = cached / 2, inact_file = cached - act_file;
+    enum { ZERO, TOTAL, FREE, HALF, VMALLOC, HUGE_SIZE, BUFFERS, CACHED, ACTIVE, INACTIVE,
+           ACT_ANON, INACT_ANON, ACT_FILE, INACT_FILE, ANON };
     /* Linux's lines in its order; the figures we have, 0 for the rest. */
     static const struct { const char *key; int kind; } rows[] = {
-        { "MemTotal", TOTAL }, { "MemFree", FREE }, { "MemAvailable", FREE }, { "Buffers", ZERO },
-        { "Cached", ZERO }, { "SwapCached", ZERO }, { "Active", ZERO }, { "Inactive", ZERO },
-        { "Active(anon)", ZERO }, { "Inactive(anon)", ZERO }, { "Active(file)", ZERO },
-        { "Inactive(file)", ZERO }, { "Unevictable", ZERO }, { "Mlocked", ZERO },
+        { "MemTotal", TOTAL }, { "MemFree", FREE }, { "MemAvailable", FREE },
+        { "Buffers", BUFFERS }, { "Cached", CACHED }, { "SwapCached", ZERO },
+        { "Active", ACTIVE }, { "Inactive", INACTIVE },
+        { "Active(anon)", ACT_ANON }, { "Inactive(anon)", INACT_ANON },
+        { "Active(file)", ACT_FILE }, { "Inactive(file)", INACT_FILE },
+        { "Unevictable", ZERO }, { "Mlocked", ZERO },
         { "SwapTotal", ZERO }, { "SwapFree", ZERO }, { "Dirty", ZERO }, { "Writeback", ZERO },
-        { "AnonPages", ZERO }, { "Mapped", ZERO }, { "Shmem", ZERO }, { "KReclaimable", ZERO },
+        { "AnonPages", ANON }, { "Mapped", ZERO }, { "Shmem", ZERO }, { "KReclaimable", ZERO },
         { "Slab", ZERO }, { "SReclaimable", ZERO }, { "SUnreclaim", ZERO },
         { "KernelStack", ZERO }, { "PageTables", ZERO }, { "NFS_Unstable", ZERO },
         { "Bounce", ZERO }, { "WritebackTmp", ZERO }, { "CommitLimit", HALF },
@@ -405,7 +459,12 @@ static void put_meminfo(struct sb *b)
         int kind = rows[i].kind;
         unsigned long long v = kind == TOTAL ? total : kind == FREE ? free_kb :
                                kind == HALF ? total / 2 : kind == VMALLOC ? 34359738367ull :
-                               kind == HUGE_SIZE ? 2048 : 0;
+                               kind == HUGE_SIZE ? 2048 : kind == BUFFERS ? buffers :
+                               kind == CACHED ? cached : kind == ACTIVE ? act_anon + act_file :
+                               kind == INACTIVE ? inact_anon + inact_file :
+                               kind == ACT_ANON ? act_anon : kind == INACT_ANON ? inact_anon :
+                               kind == ACT_FILE ? act_file : kind == INACT_FILE ? inact_file :
+                               kind == ANON ? anon : 0;
         if (kind < 0)   /* a count of pages: no unit */
             sb_put(b, "%-16s%8llu\n", key, v);
         else
@@ -428,9 +487,71 @@ static void put_sysstat(struct sb *b)
               "softirq 0 0 0 0 0 0 0 0 0 0 0\n", btime < 0 ? 0 : btime, lx_pid());
 }
 
+/* Raw bytes (a NUL among them) onto b. */
+static void sb_bytes(struct sb *b, const void *p, size_t n)
+{
+    if (b->bad)
+        return;
+    if (b->cap - b->len < n + 1) {
+        size_t cap = b->cap ? b->cap : 4096;
+        while (cap - b->len < n + 1)
+            cap *= 2;
+        char *q = realloc(b->p, cap);
+        if (!q) {
+            b->bad = true;
+            return;
+        }
+        b->p = q;
+        b->cap = cap;
+    }
+    memcpy(b->p + b->len, p, n);
+    b->len += n;
+}
+
+/* ---- cmdline, version and sys/kernel ---------------------------------------------------- */
+
+/* /proc/self/cmdline as Linux's kernel reads it from the process: the
+ * argument strings, NUL-ended one after the other (start.c's run). A
+ * program that overwrote the run's last byte has changed its title
+ * (setproctitle): the text is then the run from its start to the first
+ * NUL (that included), a page at most, which is what Linux's does
+ * (get_mm_proctitle). */
+static void put_cmdline(struct sb *b)
+{
+    const char *as, *ae, *ee;
+    lx_arg_area(&as, &ae, &ee);
+    if (!as || ae <= as)
+        return;
+    if (ae[-1]) {
+        size_t room = (size_t)(ee - as) < PAGE ? (size_t)(ee - as) : PAGE;
+        size_t l = strnlen(as, room);
+        sb_bytes(b, as, l < room ? l + 1 : l);
+    } else {
+        sb_bytes(b, as, (size_t)(ae - as));
+    }
+}
+
+/* One of uname's fields, and a line end. */
+static void put_uname(struct sb *b, enum pfile f)
+{
+    struct utsname u;
+    lx_uname_fields(&u);
+    switch (f) {
+    case PF_VERSION:   /* Linux's shape: "<name> version <release> (<who>) <version>" */
+        sb_put(b, "%s version %s (%s@%s) %s\n", u.sysname, u.release, "jamos", u.nodename,
+               u.version);
+        break;
+    case PF_OSRELEASE: sb_put(b, "%s\n", u.release); break;
+    case PF_OSTYPE:    sb_put(b, "%s\n", u.sysname); break;
+    case PF_KVERSION:  sb_put(b, "%s\n", u.version); break;
+    case PF_HOSTNAME:  sb_put(b, "%s\n", u.nodename); break;
+    default:           break;
+    }
+}
+
 /* ---- the entry ------------------------------------------------------------------------- */
 
-long procinfo_text(enum pfile f, int32_t pid, char **text, size_t *len)
+long procinfo_text(enum pfile f, int32_t pid, uint32_t tid, char **text, size_t *len)
 {
     struct sb b = { 0 };
     struct view *v = NULL;
@@ -438,7 +559,7 @@ long procinfo_text(enum pfile f, int32_t pid, char **text, size_t *len)
         v = malloc(sizeof(*v));
         if (!v)
             return -ENOMEM;
-        long r = view_of(pid, f == PF_MAPS ? &b : NULL, v);
+        long r = view_of(pid, tid, f == PF_MAPS ? &b : NULL, v);
         if (r) {
             free(v);
             free(b.p);
@@ -450,9 +571,14 @@ long procinfo_text(enum pfile f, int32_t pid, char **text, size_t *len)
     case PF_STATM:   put_statm(&b, v); break;
     case PF_STATUS:  put_status(&b, v); break;
     case PF_MAPS:    break;   /* the walk wrote it */
+    case PF_CMDLINE: put_cmdline(&b); break;
     case PF_CPUINFO: cpuinfo_text(&b); break;
     case PF_MEMINFO: put_meminfo(&b); break;
     case PF_SYSSTAT: put_sysstat(&b); break;
+    case PF_VERSION: case PF_OSRELEASE: case PF_OSTYPE: case PF_KVERSION: case PF_HOSTNAME:
+        put_uname(&b, f);
+        break;
+    case PF_MEM:     break;   /* not text: procfs.c reads the memory */
     }
     free(v);
     if (b.bad) {

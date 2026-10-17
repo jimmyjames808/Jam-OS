@@ -93,6 +93,8 @@ int main(int argc, char **argv)
         return pt_child_poll();
     if (argc >= 2 && !strcmp(argv[1], "--child-proc"))
         return pt_child_proc(argc, argv);
+    if (argc >= 2 && !strcmp(argv[1], "--child-procinfo"))
+        return pt_child_procinfo(argc, argv);
     if (argc >= 2 && !strcmp(argv[1], "--child-tty"))
         return pt_child_tty();
     if (argc >= 2 && !strcmp(argv[1], "--child-tty-handover"))

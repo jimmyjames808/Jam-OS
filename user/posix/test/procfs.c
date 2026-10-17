@@ -149,8 +149,9 @@ static bool listed(const char *dir, const char *name)
 static void check_missing(void)
 {
     static const char *const gone[] = {
-        "/proc/uptime", "/proc/self/smaps", "/proc/self/task", "/proc/self/cwd",
-        "/proc/self/ns/user", "/proc/sys/kernel/osrelease", "/proc/self/fd/01", "/proc/self/fd/x", "/proc/self/exe2",
+        "/proc/uptime", "/proc/self/smaps", "/proc/self/task/0", "/proc/self/cwd",
+        "/proc/self/ns/user", "/proc/sys/kernel/nosuch", "/proc/sys/vm", "/proc/self/fd/01",
+        "/proc/self/fd/x", "/proc/self/exe2",
     };
     char buf[64];
     struct stat st;
@@ -167,7 +168,13 @@ static void check_missing(void)
     errno = 0;
     CHECK(fopen("/proc/self/smaps", "r") == NULL && errno == ENOENT);
     char other[32];
-    snprintf(other, sizeof(other), "/proc/%d", (int)getpid() + 1);   /* only we are here */
+    int n = (int)getpid() + 1;   /* only we are here: a number that is nobody's of ours (a thread's counts) */
+    for (;; n++) {
+        snprintf(other, sizeof(other), "/proc/self/task/%d", n);
+        if (stat(other, &st) == -1)
+            break;
+    }
+    snprintf(other, sizeof(other), "/proc/%d", n);
     errno = 0;
     CHECK(stat(other, &st) == -1 && errno == ENOENT);
     errno = 0;
@@ -196,6 +203,8 @@ static void check_self(void)
     CHECK(readlink("/proc", buf, sizeof(buf)) == -1 && errno == EINVAL);
     CHECK(listed("/proc", "self") && listed("/proc", want) && listed("/proc", ".."));
     CHECK(listed("/proc/self", "exe") && listed("/proc/self", "fd") && !listed("/proc/self", "x"));
+    CHECK(listed("/proc/self", "task") && listed("/proc/self", "cmdline") && listed("/proc/self", "mem"));
+    CHECK(!listed("/proc/self", "ns"));   /* no user namespaces (base's check of ns/user says so) */
     errno = 0;
     CHECK(open("/proc/self", O_WRONLY) == -1 && errno == EISDIR);
 }

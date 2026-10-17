@@ -46,14 +46,16 @@ MUSL_SRCS := $(filter-out $(addsuffix .c,$(subst /x86_64/,/,$(basename $(MUSL_AR
 MUSL_SRCS := $(sort $(filter-out $(addprefix $(MUSL)/,$(MUSL_OVR_UP)),$(MUSL_SRCS)))
 # Of src/ldso, only what a static program has: dl_iterate_phdr (its one
 # module, the program's headers from AT_PHDR), by which libunwind finds
-# the unwind tables (tools/jamos-clang++'s C++ exceptions), and dladdr's
-# stub (no symbols to name: 0), which libunwind's function names call.
+# the unwind tables (tools/jamos-clang++'s C++ exceptions), and dladdr (our
+# override: the program's own image, no symbols to name), which libunwind's
+# function names call.
 # And the rest of what musl's static libc.a has of it: dlopen() that fails
 # ("Dynamic loading not supported"), dlsym() that finds nothing, dlclose(),
 # dlinfo() and dlerror(), so a program that may load a library (Chromium's
 # base) links and gets an error at run time, as a static Linux program does.
-# (dlopen.c is our override, which also names the library in the ENOSYS log.)
-MUSL_SRCS += $(MUSL)/src/ldso/dl_iterate_phdr.c $(MUSL)/src/ldso/dladdr.c \
+# (dlopen.c and dladdr.c are our overrides; dlopen's also names the library
+# in the ENOSYS log.)
+MUSL_SRCS += $(MUSL)/src/ldso/dl_iterate_phdr.c \
              $(MUSL)/src/ldso/__dlsym.c \
              $(MUSL)/src/ldso/x86_64/dlsym.s $(MUSL)/src/ldso/dlclose.c \
              $(MUSL)/src/ldso/dlinfo.c $(MUSL)/src/ldso/dlerror.c

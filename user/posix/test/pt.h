@@ -132,6 +132,7 @@ int  pt_child_handover(void);
 int  pt_child_devetc(void);
 int  pt_child_poll(void);
 int  pt_child_proc(int argc, char **argv);
+int  pt_child_procinfo(int argc, char **argv);   /* the process title, as base's setproctitle does it */
 int  pt_child_tty(void);
 int  pt_child_tty_handover(void);
 int  pt_child_tty_sig(void);
