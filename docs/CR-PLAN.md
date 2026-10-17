@@ -1732,6 +1732,68 @@ the forwarding fix).
 **Harness changes**: `base-run.py --death-style` and `cr-test.sh`'s
 `CR_BASE_DEATH` default to `threadsafe`; the skip list's groups as above.
 
+#### BM1 (2026-10-18)
+
+Track BM1 (branch `bm1-measure`): `base_unittests` measured on main as it
+stood after CCS, CBF6, FL4, WK3, WE1, DRO2 and TL (d0fc314c), a checkpoint
+before the CB3 gate. Nothing in the layer or the programs changed. The two
+programs were relinked first (`base_unittests` and `test_child_process`
+removed from the kept tree's `out/jamos`, then `tools/cr/build.sh start
+base_unittests test_child_process`: 202 s; the stage's `base_unittests` is
+76,956,088 bytes, CCS's was 76,947,456). The six shards on an ext `/data`,
+in base's own (threadsafe) death style, **all PASS** (batch 18090349, 698 s
+for all six, each shard 407 to 696 s on a PC the other tracks were using):
+
+| `/data` | pass | self-skip | on the skip list |
+|---------|-----:|----------:|-----------------:|
+| ext, CCS (2026-10-17) | 8,697 | 36 | 223 |
+| ext, BM1 | 8,700 | 37 | 219 |
+
+Per shard (of 8,956): 1,232 + 3 + 3 of 1,238; 1,468 + 0 + 8 of 1,476;
+1,959 + 4 + 52 of 2,015; 1,406 + 9 + 140 of 1,555; 1,329 + 17 + 3 of 1,349;
+1,306 + 4 + 13 of 1,323 (pass + self-skip + listed). Compared test by test
+with CCS's six shards (both runs' `results.txt`): **no regression**. The
+only differences are the four that CBF6 and TL took off the list, which now
+pass for real (`SmapsRollupTest.ReadAndParse`,
+`FileUtilTest.ChangeFilePermissionsAndWrite`,
+`FileUtilTest.MakeAbsoluteFilePathNoResolveSymbolicLinks` and
+`DriveInfoTest.GetFileDriveInfo`, on the 6 GiB stick), and one result CCS's
+parser got wrong: `SchedulerLoopQuarantineTest/0.ScopedOptOut` is a
+deterministic skip (the typed test skips the cases that are not thread
+bound, `/0` and `/1`), but in CCS's log a kernel line (`extfs /data: mapped
+file ... gone`) fell in the middle of its `[  SKIPPED ]` line and the test
+was counted OK. CCS's true count was 8,696 pass / 37 self-skip. Fixed in
+`base-run.py`: a test whose result line is lost is taken from gtest's list
+of skipped tests at the end. The ENOSYS log is CCS's (`dlopen`, ioctl
+`0x80086601`, another process's `/proc/<pid>/stat` and `task/0/status`,
+`/proc/self/ns/user`: all in the listed groups). No panic and no "killed"
+line in any shard's kernel log.
+
+**The 6 GiB sparse stick (TL), first boots.** Every boot started, mounted
+`/data` (`init: /data mounted`) and ran its tests. A one-suite run
+(`DriveInfoTest`, batch 18092250) sampled the images as it went: the stick
+`base-stick.img` is 6,400 MiB apparent (the 6,144 MiB `/data` and the boot
+parts) and **117 MiB on disk**; each boot's copies (the listing boot's and
+the run's stick and image) 120 to 121 MiB on disk; a run holds at most
+five such files, and none after it ends. The PC's used disk was 35 MiB more
+after the run than before (the outputs). Six shards at once hold some
+3.5 GB at the most, where a 6 GiB write per boot would have held many times
+that.
+
+**What came off the list: nothing more.** The listed suites run in full with
+`CR_BASE_ALL=1 CR_BASE_LISTED=1` (batch 18091719, 311 s, six shards of 3 to 6
+suites): the 54 named tests all still fail (50) or crash (4), each for its
+group's cause (`FilePathWatcher*`, 165 tests, is not run: `inotify_init` is
+`ENOSYS`). The 8 writable-mapping tests (`MemoryMappedFileTest.WriteableFile`
+and the like) still fail at the mapping itself: WE1 is the file service's
+side, libc's side (WL1) has not merged. The list stays 219: 165 `inotify`
+and 54 named, by group: launching 5, thread id 3, record locks 7, `CLONE_FS`
+1, handler registers 1, other processes' `/proc` 2, `mincore` 9,
+`CheckAgainstProcMaps` 1, `dlopen` 3, build-id 1, PROT_EXEC 3, a socket
+sent over itself 1, `mkfifo` 4, the 256-byte path 1, `fdopen(-1)` 1,
+writable mappings 8, `ZeroSegment` 2, and the stack-trace death test (the
+layer's own heap) 1.
+
 ### 2. The address space: huge sparse reservations (the top risk)
 
 **What Chromium does** ([CR-RESEARCH section 6](CR-RESEARCH.md#6-v8s-jit)):
