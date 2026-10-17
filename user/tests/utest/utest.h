@@ -112,6 +112,18 @@ bool t_crashres_wire(void);
 bool t_klog_lines(void);
 /* chanpid.c: channel_read's CHANNEL_READ_PID, the writer's pid of each message. */
 bool t_chan_writer_pid(void);
+/* port_order.c: a channel's close is on its port before a request written
+ * after it on another channel (file watching's close-first rule). */
+bool t_port_order(void);
+/* fswatch.c: file watching's library (<fswatch.h>) in a fake service. */
+bool t_fswatch_protocol(void);
+bool t_fswatch_bell(void);
+bool t_fswatch_queue(void);
+bool t_fswatch_ids(void);
+bool t_fswatch_caps(void);
+bool t_fswatch_rules(void);
+bool t_fswatch_adopt(void);
+bool t_fswatch_order(void);
 /* posixexec.c: a POSIX program that execs in place, seen from a native starter. */
 bool t_exec_native(void);
 
