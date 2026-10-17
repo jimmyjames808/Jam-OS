@@ -242,8 +242,8 @@ the same bytes twice is harmless).
 pager VMO, makes the write-back requests of section 1.3 for the range and,
 with `VMO_SYNC_WAIT`, waits for each (the answer time each, at most);
 `OK` at once for any other VMO or a range with nothing dirty. The VMO
-keeps the first write-back error since the last `vmo_sync` and returns it
-(`ERR_IO`), once.
+keeps the first write-back error since the last `vmo_sync` with the wait,
+and that call returns it (`ERR_IO`, `ERR_NO_SPACE`), once.
 
 | Call | What happens | Promise |
 |---|---|---|
@@ -567,7 +567,7 @@ Each about one agent-hour; WE2 about one and a half.
 |---|---|---|---|---|---|---|
 | **WK1. Writable pager VMOs** | first commit "WK1 ABI:" (every call, flag, op and request kind of 1.12 with its contract text, the stubs `ERR_NOT_SUPPORTED`), so WE1 and WL1 can start; then 1.1, 1.2 (the states, the write fault, clean pages read-only, the lists and counts; `PAGER_DIRTY_BEGIN` left to WK2), `pager_dirty`'s `PEEK`, `pager_write`, the hold (1.8), `FIND` and the GONE takeover, 1.7's rules for shrink, invalidate and detach, FK1's clone-mode override; built, see "WK1 notes" | `kernel/object/vmo.c` (the pager-VMO paths, `vmo_fault_map`, `vmo_umap_add`), `kernel/object/pager.c`, `kernel/object/pager_cache.c` and its header, `kernel/mm/aspace.c` (`clone_mode` only), `kernel/abi/pager_sys.c` and `kernel/abi/sysc_pager.c`, `<jam/pager.h>`, `<jam/abi.h>` and `abi/syscalls.def` (their lines), `kernel/abi/abi_check.c`, a new ktest file kernel/test/test_pager_dirty.c | FK2 merged (vmo.c and aspace.c); beside FK3 and SG1/SG2 | ktests with a kernel-thread pager: a read fault on a writable mapping installs read-only, a store dirties, eviction never takes a dirty page, `PEEK`, `pager_write` on present pages only, the hold (GONE only after clean), `FIND` and the takeover, shrink, invalidate and detach with dirty pages, a fork (once FK2's clone is in) shares the VMO and its clean pages stay read-only; full ktest 4 and 8 | 1 | **Opus** |
 | **WK2. Write-back** | 1.3: `PAGER_REQ_WRITEBACK` (made by the background count; `vmo_sync`'s and the throttle's come in WK3), `PAGER_DIRTY_BEGIN` (protect within the batch budget, one shootdown, then the copy), `PAGER_DIRTY_OLDEST`, `PAGER_OP_WRITTEN` and what a request needs (the stamps), the error kept (Q1), `PAGER_NEXT_AGAIN` turning writing pages dirty; built, see "WK2 notes" | WK1's kernel files, kernel/test/test_pager_dirty.c | WK1 merged | ktests: begin protects in every mapping (several address spaces, `VMAR_MAX_OVERLAP` mappings of one page), a store after begin dirties again and is never lost (8 threads storing counters while a pager thread loops begin, copy, written: the last image holds every thread's last count), written with a re-dirtied page leaves it dirty, a death (AGAIN) between begin and written, `vmo_batch_cost_most` within `VMO_BATCH_BUDGET`; full ktest 4 and 8 | 1 | **Opus** |
-| **WK3. Waiting** | 1.4 and 1.5: the dirty limit, a store's wait in `aspace_fault` and in user copies (no region lock, the deadline in all, cancellable), the throttle's request, `vmo_sync` and its requests; the failure table | WK1's kernel files, `kernel/mm/aspace.c` (the fault's wait), `kernel/abi/sysc_vm.c` (`vmo_sync`), kernel/test/test_pager_dirty.c | WK2 merged | ktests: a writer at the limit waits and goes on when the pager writes; a pager that never answers: the writer is killed at the deadline with the line, a copy returns `ERR_IO`, a reader of another VMO of the same pager is never held up; `vmo_sync` answered exactly (a store before it, written by a write-back that began before it, keeps it waiting); `vmo_sync` failing on a close; a kill ends every wait; full ktest 4 and 8; soak 2 | 1 | **Opus** |
+| **WK3. Waiting** | 1.4 and 1.5: the dirty limit, a store's wait in `aspace_fault` and in user copies (no region lock, the deadline in all, cancellable), the throttle's request, `vmo_sync` and its requests; the failure table; built, see "WK3 notes" | WK1's kernel files, `kernel/mm/aspace.c` (the fault's wait), `kernel/abi/sysc_vm.c` (`vmo_sync`), kernel/test/test_pager_dirty.c | WK2 merged | ktests: a writer at the limit waits and goes on when the pager writes; a pager that never answers: the writer is killed at the deadline with the line, a copy returns `ERR_IO`, a reader of another VMO of the same pager is never held up; `vmo_sync` answered exactly (a store before it, written by a write-back that began before it, keeps it waiting); `vmo_sync` failing on a close; a kill ends every wait; full ktest 4 and 8; soak 2 | 1 | **Opus** |
 | **WE1. extfs: the map and one cache** | 2.1 and 2.2: `MAP_WRITE`, every shared VMO writable, keys from the inode, `FIND`, the sizes of a found VMO, rights reduced for `MAP_READ`; `pager_write` in `write` and truncate (the tails), `PEEK` in `read`; Q7 both ways; the ordering argument in pager.c's header | `user/services/extfs/pager.c`, `user/services/extfs/files.c`, `user/services/extfs/fsops.c`, `user/services/extfs/extfs.h`, `user/services/extfs/adopt.c` (the slots' lookups), `abi/idl/file.idl` (`MAP_WRITE`, the comments) and its generated header, a new utest file user/tests/utest/extfs_wmap.c | WK1 merged; U9 merged (it works in extfs); no other track in extfs | utest `extfs_wmap`: a store seen by `read`, by a second mapping and a second process; `write` and a store on one page both kept; truncate shrink and grow with the tails zero; a map after the first mapper unmapped (its pages still dirty) finds the same VMO; `MAP_WRITE` refused without `FS_WRITE`, through a read-only view and on a file mapped to run; `MAP_EXEC` refused while a writable map lives; `extfs_map` and `extfs_restart_pager` unchanged; init run | 1 | **Opus** |
 | **WE2. extfs: write-back** | 2.3 to 2.7: serving `PAGER_REQ_WRITEBACK`, a transaction a batch of runs, the size clip, holes and unwritten extents in ordered mode, the times, the age check, `file.sync` and `fs.sync`, the orderly stop, errors kept per slot, a fresh start's keys; test powers `die=wback:<n>`; extcheck's cut storm gains a write-back step | `user/services/extfs/pager.c` (or a new user/services/extfs/wback.c beside it), `user/services/extfs/main.c` (the age check), `user/services/extfs/fsops.c` (sync), `user/services/extfs/test.c`, `user/services/extfs/extfs.h`, `tools/extcheck.c` (the storm's new step), new utest files for `extfs_wback` and `extfs_restart_wback` | WE1, WK3 merged | utest `extfs_wback` (stores written by `msync`, by `fsync`, by age; a store over a hole and in an unwritten extent; a full volume's error at the next sync), `extfs_restart_wback` (a death at every step of 2.6, the data right after each); `tools/extfs-svc-test.sh` (every disk `e2fsck -fn` clean); extcheck's cut storm (`make check`); init run | 1.5 | **Opus** |
 | **WL1. libc** | section 3 | `user/posix/sys/file.c` (`map_file`), `user/posix/sys/mem.c` (`lx_msync`, the share flag), `user/posix/sys/files.h`, posixtest's `user/posix/test/mmap.c` (a new section `mmap-wshared`), tools/shell-tests' new posix-mmap-wshared.txt and its case in `tools/posix-mmap-test.sh` | WE1 and WK3 merged (beside WE2: different files); after or before FL2 (both edit `mem.c`: one after the other) | posixtest `mmap-wshared` on ext (`MMAP_DATA=ext`): a store seen by `read` and `pread`, by a second mapping, by a child; `write` and stores on one page both kept; `mprotect` adding write on an `O_RDWR` mapping, `EACCES` on `O_RDONLY`; `msync` `MS_SYNC` and `MS_ASYNC` return 0; truncate's tail zero; on FAT `ENODEV` and `EACCES` as today; the `mmap` and `coherent` cases on FAT and ext unchanged; shell scripts basic, cmds, commands, files | 1 | Sonnet 5.5 |
@@ -745,6 +745,65 @@ test's write-back half):
   with a WRITTEN over the run; a successor's first `pager_next` with
   AGAIN makes the old writing pages dirty and gives the old requests
   back.
+
+### WK3 notes
+
+What WE2, WL1 and WR start from (ktests `pager_dirty_limit_waits` to
+`pager_dirty_closed` in kernel/test/test_pager_dirty.c; the contract
+commit "WK3 ABI:"):
+
+- **The limit** is checked where the count is kept: a store makes a
+  clean page dirty only while the cache's `ndirty` is under
+  `pager_dirty_limit` (a quarter of the budget), in one hold of the
+  cache's lock, so stores to two VMOs can't pass it together. A store to
+  a dirty or writing page never waits (it adds nothing). At the limit
+  `store_locked` changes nothing and `vmo_fault_map` answers
+  `ERR_NO_RESOURCES` (kernel-internal: `aspace_fault` never returns it).
+- **The wait** (`store_wait` in aspace.c, beside `fault_wait`): the
+  region lock dropped, `vmo_pager_throttle` (pager.c's `pager_throttle`)
+  gives the request to wait on: the pager's one request for its oldest
+  run (`bg`), joined, or made if there is none (charged to the storer's
+  job; one past its deadline fails first). With no dirty page left (all
+  being written back) it is made around the first writing page, so its
+  end is that write-back's end. The wait is `pager_req_wait_until`
+  (cancellable; gives up at the store's own time without failing the
+  request for its other waiters). However the request ends (written, an
+  error, its own deadline, another VMO's detach), the store looks again
+  from `find`; only the store's time (the pager's answer time from its
+  first wait, checked at every look), a kill, or a closed pager or
+  detached VMO end it. These waits don't count against `FAULT_ROUNDS`
+  (they are bounded by time). The failure table of 1.4 holds as written:
+  uentry.c's existing mapping turns `ERR_TIMED_OUT` into "page fault: the
+  file's pager didn't answer" and every pager failure of a copy into
+  `ERR_IO`.
+- **`vmo_sync`** is `vmo_pager_sync` (vmo.c) behind `sysc_vmo_sync`:
+  flags, then OK for any VMO not a writable pager VMO, then the range
+  (`ERR_OUT_OF_RANGE`) and a detach (`ERR_PEER_CLOSED`, even with nothing
+  dirty); a chunk (256 pages) at a time through `vmo_pager_writeback`,
+  each made only once the one before it is answered (so each needs what
+  was dirty when it was made: exact for every store before the call),
+  none if the VMO has no dirty page. With the wait, the kept error is
+  taken after the last chunk (and after a chunk that failed `ERR_IO` or
+  `ERR_NO_SPACE`): it is now the first since the last report, as the
+  contract said (WK2 kept the latest). Without the wait the requests are
+  only queued, a chunk the job can't pay for ends the asking (the age
+  write-back gets the rest), the kept error stays for a waiting call, and
+  the answer is OK unless the VMO was cut off: the "WK3 ABI:" commit
+  says so in the contract.
+- **For WE2:** a request for the oldest run made at the limit can name
+  pages that are all being written back already; a pager that serves one
+  request at a time (begin, write, commit, WRITTEN, then the next) finds
+  it answered before it reads it. A pager with write-backs in flight at
+  once must not answer a request with a WRITTEN over pages another of its
+  write-backs began and hasn't finished: WRITTEN ends whatever is writing
+  in its range.
+- **For WL1:** section 3's `msync` holds, with one more error to map:
+  `ERR_NO_SPACE` (a write-back that met a full volume). A mapping reaching
+  past a shrunk file's end makes the call `ERR_OUT_OF_RANGE`: clip the
+  range at the VMO's size first.
+- **Left:** `pager-test`'s `wpress` (a hung pager under memory pressure)
+  is WT1's; the store's wait isn't made interruptible (a signal doesn't
+  end it, as a read's doesn't).
 
 ## 6. Tests
 
