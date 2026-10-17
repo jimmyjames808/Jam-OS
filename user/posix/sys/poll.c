@@ -67,9 +67,16 @@ struct pollset {
     uint16_t             map[POLL_FDS_MAX];       /* pollfd -> its item, or NO_ITEM */
     struct netwait_ready out[NETWAIT_MAX];        /* a look's reports */
     struct pollfd        fds[POLL_FDS_MAX];       /* select's, as pollfds (poll_scratch) */
+    struct pollset      *sleep_prev, *sleep_next; /* in sleepers: sleepers_lock */
 };
 
 static __thread struct pollset *self_set;
+
+/* The sets whose threads may sleep now (wait_ready), for poll_wake_all,
+ * and how many wakes it has made (atomic). */
+static lock_t          sleepers_lock;
+static struct pollset *sleepers;
+static uint32_t        wakes;
 static pthread_once_t key_once = PTHREAD_ONCE_INIT;
 static pthread_key_t  set_key;
 static bool           key_ok;
@@ -255,8 +262,8 @@ static long look(struct pollset *ps, struct pollfd *fds, uint32_t n)
         ps->items[k].got = ps->items[k].always;
     uint32_t nr = 0;
     status_t st = netwait_wait(ps->w, 0, ps->out, NETWAIT_MAX, &nr);
-    if (st != OK && st != ERR_TIMED_OUT)
-        return lx_err(st);
+    if (st != OK && st != ERR_TIMED_OUT && st != ERR_CANCELED)
+        return lx_err(st);   /* ERR_CANCELED: poll_wake_all's wake, nothing ready */
     for (uint32_t r = 0; st == OK && r < nr; r++) {
         struct place *pl = ps->out[r].user;
         if (!pl->serial)
@@ -281,18 +288,65 @@ static long look(struct pollset *ps, struct pollfd *fds, uint32_t n)
     return count;
 }
 
+/* The set in sleepers (on) or out of it. */
+static void sleeper_list(struct pollset *ps, bool on)
+{
+    lock_take(&sleepers_lock);
+    if (on) {
+        ps->sleep_prev = NULL;
+        ps->sleep_next = sleepers;
+        if (sleepers)
+            sleepers->sleep_prev = ps;
+        sleepers = ps;
+    } else {
+        if (ps->sleep_prev)
+            ps->sleep_prev->sleep_next = ps->sleep_next;
+        else
+            sleepers = ps->sleep_next;
+        if (ps->sleep_next)
+            ps->sleep_next->sleep_prev = ps->sleep_prev;
+    }
+    lock_give(&sleepers_lock);
+}
+
+void poll_wake_all(void)
+{
+    __atomic_add_fetch(&wakes, 1, __ATOMIC_SEQ_CST);
+    lock_take(&sleepers_lock);
+    for (struct pollset *ps = sleepers; ps; ps = ps->sleep_next)
+        (void)netwait_wake(ps->w);   /* fails only for memory: it then sleeps to its deadline */
+    lock_give(&sleepers_lock);
+}
+
+/* Look, and sleep until a packet or the deadline, until something is
+ * ready. Before its first sleep the set is listed for poll_wake_all; a
+ * wake that went by between the first look and the listing (the count
+ * moved) makes it look again, so none is lost and no other sleep pays a
+ * second look. */
 static long wait_ready(struct pollset *ps, struct pollfd *fds, uint32_t n, uint64_t deadline)
 {
+    uint32_t seen = __atomic_load_n(&wakes, __ATOMIC_SEQ_CST);
+    bool listed = false;
+    long r;
     for (;;) {   /* each turn looks, then sleeps until a packet or the deadline */
-        long count = look(ps, fds, n);
-        if (count)
-            return count;
-        if (deadline != DEADLINE_NEVER && now() >= deadline)
-            return 0;
+        r = look(ps, fds, n);
+        if (r || (deadline != DEADLINE_NEVER && now() >= deadline))
+            break;
+        if (!listed) {
+            sleeper_list(ps, true);
+            listed = true;
+            if (__atomic_load_n(&wakes, __ATOMIC_SEQ_CST) != seen)
+                continue;
+        }
         status_t st = netwait_block(ps->w, deadline);
-        if (st != OK && st != ERR_TIMED_OUT)
-            return lx_err(st);   /* ERR_INTERRUPTED: EINTR */
+        if (st != OK && st != ERR_TIMED_OUT) {
+            r = lx_err(st);   /* ERR_INTERRUPTED: EINTR */
+            break;
+        }
     }
+    if (listed)
+        sleeper_list(ps, false);
+    return r;
 }
 
 /* Age the places, then let go of the call's descriptions: a socket's

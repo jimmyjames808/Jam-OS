@@ -81,18 +81,20 @@ long pipe_wait(handle_t ch, signals_t sig)
 }
 
 status_t pipe_read_msg(handle_t ch, void *buf, uint32_t cap, uint32_t *got, handle_t *hs,
-                       uint32_t *nh)
+                       uint32_t *nh, uint32_t *pid)
 {
-    *got = 0;
-    *nh = 0;
+    uint32_t sizes[3] = { 0 };   /* the bytes, the handles, the writer: in a row */
     struct channel_read_args a = {
         .h = ch, .rd_cap = cap, .rd_bytes = (uint64_t)(uintptr_t)buf,
         .rd_handles = (uint64_t)(uintptr_t)hs, .rd_hcap = CHANNEL_MAX_HANDLES,
-        .rd_actual = (uint64_t)(uintptr_t)got, .rd_hactual = (uint64_t)(uintptr_t)nh,
+        .rd_flags = pid ? CHANNEL_READ_PID : 0,
+        .rd_actual = (uint64_t)(uintptr_t)&sizes[0], .rd_hactual = (uint64_t)(uintptr_t)&sizes[1],
     };
     status_t st = jam_channel_read(&a);
-    if (st != OK)
-        *nh = 0;
+    *got = sizes[0];
+    *nh = st == OK ? sizes[1] : 0;
+    if (pid)
+        *pid = sizes[2];
     return st;
 }
 
@@ -102,7 +104,7 @@ static status_t read_msg(handle_t ch, void *buf, uint32_t cap, uint32_t *got)
 {
     handle_t hs[CHANNEL_MAX_HANDLES];
     uint32_t nh;
-    status_t st = pipe_read_msg(ch, buf, cap, got, hs, &nh);
+    status_t st = pipe_read_msg(ch, buf, cap, got, hs, &nh, NULL);
     for (uint32_t i = 0; i < nh; i++)
         jam_handle_close(hs[i]);
     return st;

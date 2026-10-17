@@ -713,6 +713,7 @@ static const struct {
     { "logd_crash_result", t_logd_crash_result },
     { "splashch_wire", t_splashch_wire },
     { "crashres_wire", t_crashres_wire },
+    { "chan_writer_pid", t_chan_writer_pid },
     { "klog_lines", t_klog_lines },
     { "fat_format", t_fat_format },
     { "fat_files", t_fat_files },

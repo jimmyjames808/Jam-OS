@@ -656,7 +656,8 @@ from the failing call.
    `RecvPid*`), a non-blocking `Send` on a socket pair returns a wrong
    count (`SyncSocketTest.NonBlockingWriteTest`), and two tests wait for a
    blocked receiver that `shutdown()` should wake (`SyncSocketTest.DisconnectTest`,
-   `CancelableSyncSocketTest.ShutdownCancelsReceive`: hang, cause ?).
+   `CancelableSyncSocketTest.ShutdownCancelsReceive`: hang). The causes and
+   their fixes: [CBF2a notes](#cbf2a-notes-2026-10-17).
    `uname`: the release reads `0.1.0`, so `SysInfo::KernelVersionNumber` is
    below every Linux feature gate (`SysInfoTest.KernelVersionNumber`), and
    there is no DMI hardware information (`GetHardwareInfo`). Shared memory:
@@ -1095,6 +1096,77 @@ ones off; the programs need relinking against the new libc first.
   for Chromium's programs (ZeroSegment, and a null-page hardening that is
   worth having anyway). (4) `/proc/sys/kernel/osrelease` and
   `/proc/version` to say what `uname` says.
+
+#### CBF2a notes (2026-10-17)
+
+Track CBF2a (branch `cbf2a-sockets`): the socket findings of CB2's item 3
+and CB2b, each a posixtest case that does what base does (the `scm`
+section's `scmcred.c`, its Mojo child, and the `unix` section), no
+Chromium needed. Which entries of `tools/cr/base_unittests.skip` each fix
+should clear (the CB3-gate rerun checks; the list's comments say so):
+
+| Fix | Skip-list tests it should clear | Left |
+|-----|---------------------------------|------|
+| `SO_PASSCRED` and `SCM_CREDENTIALS` | `UnixDomainSocketTest.RecvPid`, `UnixDomianSocketTest.RecvPidDisconnectedSocket` | `RecvPidWithMaxDescriptors` sends the socket over itself 16 times; the kernel's cycle rule refuses a channel end into its own channel (`ETOOMANYREFS`, CU1), where Linux keeps it in flight. Stays listed with that reason |
+| `shutdown` wakes what sleeps on the end | `SyncSocketTest.DisconnectTest`, `CancelableSyncSocketTest.ShutdownCancelsReceive` (both hung). Not listed but mended: `ShutdownCancelsReceiveWithTimeout`, which CB2b saw fail once under load: its poll ran to its own 750 ms timeout, a race with the test's 750 ms wait for it; the poll now ends at the shutdown | nothing |
+| `FIONREAD` leaves the channel's room | `SyncSocketTest.NonBlockingWriteTest` | nothing |
+
+- **`SO_PASSCRED` needs a true pid, so the kernel stamps it.** A message
+  on a channel says nothing of its writer, and the receiver can't ask the
+  sender (another process, which can't see the receiver's option and
+  could write any pid into its bytes). So every channel message now
+  carries the pid of the process that wrote it, set as it is written (0
+  for a kernel thread's), and `channel_read`'s `rd_flags` (the struct's old
+  reserved word: no size change) asks for it with `CHANNEL_READ_PID`,
+  written after the handles' count (`rd_hactual + 4`; utest
+  `chan_writer_pid`). A socketpair end always asks; `recvmsg` with
+  `SO_PASSCRED` on gives `SCM_CREDENTIALS` with the pid of the process that
+  wrote the bytes it took, and the uid and gid `getuid` and `getgid` say
+  (1000: one user), before any `SCM_RIGHTS` block, as Linux orders them.
+  None at the end of the stream (base's `RecvPidDisconnectedSocket` wants
+  pid -1 there); an empty seqpacket message and `MSG_PEEK` have them;
+  too little room is `MSG_CTRUNC` with nothing written (Linux writes what
+  fits of the block); `MSG_WAITALL` stops where the writer changes, as
+  Linux's does. A sender's own `SCM_CREDENTIALS` block is taken and changes
+  nothing, anyone else's pid `EPERM` (fdpass.c). Named sockets: `setsockopt`
+  and `getsockopt` answered `ENOTSOCK` on them; they now answer as a
+  socketpair end does, and `SO_PASSCRED` set before connect reaches the
+  connection, a listener's each connection it accepts (Linux inherits it
+  so). The posixtest Mojo child's "OK" says the child's pid.
+- **The hangs: shutdown closed the channel the sleepers waited on.**
+  `shutdown(SHUT_RDWR)` swaps the end's channel for a dead one and closes
+  the old; a thread asleep in a read or a write of that end waits on the
+  old channel (`object_wait_one`), which nothing signals once its handle is
+  closed (the kernel's wait rule), so `DisconnectTest`'s worker and
+  `ShutdownCancelsReceive`'s thread slept on. Now a thread lists itself on
+  the end while it sleeps (sockpair.c `sp_sleep`), and shutdown interrupts
+  each (`thread_interrupt`): it wakes, sees the end shut, and reads the end
+  (0) or gets `EPIPE`. An interrupt that comes after the sleeper's wait
+  ended on its own is latched for its next wait (the kernel's rule), so
+  the sleeper takes it with a short wait of its own. poll, select and
+  epoll_wait asleep with the end in their sets were in the same spot:
+  `ready_wake_all` wakes every one of the process's (poll's sets list
+  themselves before they sleep, epoll's count their waiters) and each looks
+  again, where the shut end is ready. Shutdown is rare, so waking every
+  waiter once costs nothing that matters.
+- **`FIONREAD` freed a message's room.** It read the next message off the
+  channel into the leftover to count it, so a writer that had filled the
+  channel to `EAGAIN` could write one more after the reader's `FIONREAD`:
+  `NonBlockingWriteTest` fills it, counts, and expects the next send to
+  fail. The send's own count was right (the bytes taken, or `EAGAIN`). Now
+  `FIONREAD` reads the next message's size with no room (`ERR_BUFFER_TOO_SMALL`
+  leaves it queued); a message with descriptors is still read into the
+  leftover, as a read would. It still counts one message, where Linux's
+  counts every byte queued on a stream (a later kernel count of an end's
+  queued bytes could give that).
+- **Not done**: `SO_PEERCRED` (no need found; a socketpair's would be its
+  maker's, which a hand-over would have to carry). A leftover handed to a
+  child (`posix_spawn`) keeps its bytes but not its writer's pid (0 there).
+- **For FL2 (fork's descriptors)**: a forked child's copy of a socketpair
+  end must start with no sleepers (`pipe_end.sleepers` NULL: they were
+  the parent's threads), and poll.c's list of sleeping sets and epoll's
+  `waiters` counts likewise (only the forking thread goes on, and it is in
+  neither).
 
 ### 2. The address space: huge sparse reservations (the top risk)
 

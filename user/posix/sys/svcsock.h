@@ -83,6 +83,11 @@ long usock_listen(struct fd_desc *d, long backlog);
 long usock_accept(struct fd_desc *d, long addr, long lenp, long flags);
 long usock_shutdown(struct fd_desc *d, int how);
 long usock_name(struct fd_desc *d, long addr, long lenp, bool peer);
+/* SO_PASSCRED on d (sockopt.c's): on 0 or 1 sets it, -1 only asks; the
+ * flag. A named connection's recvmsg then gets SCM_CREDENTIALS (its
+ * socketpair end's: sockpair.c), set before connect or after, and a
+ * listener's goes to each connection it accepts, as Linux's does. */
+bool usock_passcred(struct fd_desc *d, int on);
 
 /* ---- named sockets: socket files and abstract names (unixsock.c) ----------------------
  *
@@ -126,8 +131,9 @@ void ulisten_close(struct ulisten *l);
  * NULL with *r its errno. */
 void *unamed_connect(const struct unix_name *n, long *r);
 /* accept's new descriptor on the channel end ch (consumed) with accept4's
- * flags: the descriptor, or -errno. */
-long unix_accepted(handle_t ch, long flags);
+ * flags, SO_PASSCRED on if passcred (the listener's): the descriptor, or
+ * -errno. */
+long unix_accepted(handle_t ch, long flags, bool passcred);
 /* A connection's give (posix_spawn, SCM_RIGHTS: a socketpair end's) and
  * shutdown (a socketpair end's). */
 long unixpair_give(struct fd_desc *d, void *conn, struct fd_given *out);

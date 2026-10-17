@@ -126,10 +126,13 @@ status_t channel_write_from(struct channel *ch, const struct chan_bytes *b,
  * and the read fails with ERR_INVALID_ARGS (a bad buffer never leaks a
  * handle). The bytes are written before the read returns, so a thread
  * killed inside it never loses a message it took: it acts on the kill
- * only on its way back to ring 3. */
+ * only on its way back to ring 3. writer_pid (NULL: not wanted) gets the
+ * pid of the process that wrote the message read (with
+ * ERR_BUFFER_TOO_SMALL, the one left queued; 0 for a kernel thread's, or
+ * when nothing was queued). */
 status_t channel_read_into(struct channel *ch, const struct chan_bytes *b, uint32_t *actual_bytes,
                            struct khandle *handles, uint32_t handles_cap,
-                           uint32_t *actual_handles);
+                           uint32_t *actual_handles, uint32_t *writer_pid);
 
 /* One channel_call_with: the request, room for the reply, and the results. */
 struct chan_call {

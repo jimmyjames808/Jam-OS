@@ -438,7 +438,7 @@ PartitionAllocPageAllocatorTest.DecommitAndZero
 PartitionAllocPageAllocatorTest.InaccessiblePages
 PartitionAllocPageAllocatorTest.ReadExecutePages
 
-[posix] SO_PASSCRED / SCM_CREDENTIALS: UnixDomainSocket::EnableReceiveProcessId fails
+[posix] SO_PASSCRED / SCM_CREDENTIALS: UnixDomainSocket::EnableReceiveProcessId failed; CBF2a has it (RecvPid and RecvPidDisconnectedSocket should pass now; RecvPidWithMaxDescriptors sends the socket over itself, which the kernel's cycle rule refuses: ETOOMANYREFS, stays)
 UnixDomainSocketTest.RecvPid
 UnixDomainSocketTest.RecvPidWithMaxDescriptors
 UnixDomianSocketTest.RecvPidDisconnectedSocket
@@ -448,7 +448,7 @@ FileUtilTest.CopyFileContentsWithSendfile
 FileUtilTest.CopyFileContentsWithSendfileSeqFile
 FileUtilTest.CopyFileContentsWithSendfileSocket
 
-[posix] a thread blocked in recv() on a socket pair is not woken by shutdown() from another thread (or the test's own wait never returns): the test hangs
+[posix] a thread blocked in recv() on a socket pair was not woken by shutdown() from another thread: the test hung; CBF2a: shutdown wakes its sleepers, so both should pass now
 CancelableSyncSocketTest.ShutdownCancelsReceive
 SyncSocketTest.DisconnectTest
 
@@ -456,7 +456,7 @@ SyncSocketTest.DisconnectTest
 SysInfoTest.GetHardwareInfo
 SysInfoTest.KernelVersionNumber
 
-[posix] sockets: a non-blocking send on a socket pair gives the wrong count
+[posix] sockets: a non-blocking send on a socket pair gave the wrong count (FIONREAD took a message off the channel, freeing room); CBF2a: FIONREAD leaves it queued, so it should pass now
 SyncSocketTest.NonBlockingWriteTest
 
 [posix] mkfifo/mknod answer EPERM (lx_mknodat, meta.c: the layer has no named pipes and fs.idl no mknod; a symbolic link and every other call these tests make work on ext)

@@ -18,7 +18,10 @@
  *     SHUT_WR alone EOPNOTSUPP;
  *   - MSG_DONTWAIT on a full channel with descriptors (EAGAIN, no handle
  *     kept), a peer gone (EPIPE);
- *   - scmkid.c: Mojo's pattern between two processes, and the fuzz loop. */
+ *   - scmcred.c: SO_PASSCRED, shutdown waking what sleeps on the end, and
+ *     FIONREAD leaving the channel's room alone (base's socket tests);
+ *   - scmkid.c: Mojo's pattern between two processes (the child's pid in
+ *     SCM_CREDENTIALS), and the fuzz loop. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -415,6 +418,9 @@ void pt_scm(char **argv __attribute__((unused)))
     check_seqpacket();
     check_shutdown();
     check_full_gone();
+    scm_cred();
+    scm_wake();
+    scm_fionread();
     scm_mojo();
     scm_fuzz();
 }

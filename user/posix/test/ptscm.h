@@ -1,10 +1,12 @@
-/* The scm section's shared helpers (scm.c) and its second file
- * (scmkid.c: Mojo's pattern between two processes, the fuzz loop). */
+/* The scm section's shared helpers (scm.c), its second file (scmkid.c:
+ * Mojo's pattern between two processes, the fuzz loop) and its third
+ * (scmcred.c: SO_PASSCRED, shutdown's wakes, FIONREAD). */
 #pragma once
 
 #include <stdbool.h>
 #include <stdint.h>
 #include <jamos/libjam.h>
+#include <sys/socket.h>
 #include <sys/types.h>
 
 #define SCM_ROOM_MAX 256   /* descriptors one helper call sends or takes at most */
@@ -35,6 +37,28 @@ void     scm_close_got(struct scm_got *g);
 /* scmkid.c */
 void scm_mojo(void);
 void scm_fuzz(void);
+
+/* scmcred.c: what base's socket tests ask beyond the descriptors */
+void scm_cred(void);
+void scm_wake(void);
+void scm_fionread(void);
+/* base's control room (UnixDomainSocket::RecvMsgWithFlags): 16
+ * descriptors and a ucred. */
+#define SCM_CRED_ROOM (CMSG_SPACE(16 * sizeof(int)) + CMSG_SPACE(sizeof(struct ucred)))
+/* What a recvmsg gave with `room` bytes of control (SCM_CRED_ROOM at
+ * most): the bytes (or -1, errno set), SCM_CREDENTIALS's fields (pid -1:
+ * none came), the descriptors that came (closed), msg_flags and
+ * msg_controllen. */
+struct scm_cred {
+    ssize_t  n;
+    pid_t    pid;
+    uid_t    uid;
+    gid_t    gid;
+    unsigned nfds;
+    int      flags;
+    size_t   controllen;
+};
+struct scm_cred scm_recv_cred(int s, void *b, size_t n, int flags, size_t room);
 
 /* The fuzz's makings (scmkid.c), which the peer section (peer.c) shares.
  * The generator: a 64-bit LCG, its state scm_seed (set it to repeat a

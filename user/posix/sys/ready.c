@@ -111,3 +111,9 @@ void ready_mask_restore(const void *mask, uint64_t old, long r)
     if (mask)
         sig_wait_unmask(old, r);
 }
+
+void ready_wake_all(void)
+{
+    poll_wake_all();
+    epoll_wake_all();
+}

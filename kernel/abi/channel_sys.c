@@ -202,7 +202,7 @@ int64_t sys_channel_withdraw(struct handle_table *t, handle_t h)
 
 status_t sys_channel_read_into(struct handle_table *t, handle_t h, const struct chan_bytes *b,
                                uint32_t *actual_bytes, handle_t *handles, uint32_t handles_cap,
-                               uint32_t *actual_handles)
+                               uint32_t *actual_handles, uint32_t *writer_pid)
 {
     if (handles_cap && !handles)
         return ERR_INVALID_ARGS;
@@ -219,7 +219,7 @@ status_t sys_channel_read_into(struct handle_table *t, handle_t h, const struct 
      * the caller has room for them), reserve the rest and try again. The
      * message stays queued until its handles are guaranteed a slot. */
     for (;;) {
-        st = channel_read_into(ch, b, &nb, khs, nrsv, &nh);
+        st = channel_read_into(ch, b, &nb, khs, nrsv, &nh, writer_pid);
         if (st != ERR_BUFFER_TOO_SMALL || nb > b->len || nh > cap || nh <= nrsv)
             break;
         st = handle_reserve(t, nh - nrsv, &rsv[nrsv]);
@@ -241,7 +241,8 @@ status_t sys_channel_read(struct handle_table *t, handle_t h, void *bytes, uint3
                           uint32_t *actual_handles)
 {
     struct chan_bytes b = chan_kbytes(bytes, bytes_cap);
-    return sys_channel_read_into(t, h, &b, actual_bytes, handles, handles_cap, actual_handles);
+    return sys_channel_read_into(t, h, &b, actual_bytes, handles, handles_cap, actual_handles,
+                                 NULL);
 }
 
 status_t sys_channel_call_from(struct handle_table *t, handle_t h, const struct chan_bytes *w,
