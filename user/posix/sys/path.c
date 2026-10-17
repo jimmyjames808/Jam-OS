@@ -640,7 +640,12 @@ bool path_cwd_removed(void)
         return false;
     path_cwd(w->text);
     bool gone = false;
-    if (!path_set(w->text, &w->p) && w->p.where == PATH_MOUNT && path_libc(&w->p) == LIBC_NONE) {
+    char m[NS_NAME_MAX];
+    /* Only a mount of ours can say: a program started without the mount its
+     * directory is on (the shell's cd, then a program that has no /data)
+     * keeps the name. */
+    if (!path_set(w->text, &w->p) && w->p.where == PATH_MOUNT && path_libc(&w->p) == LIBC_NONE &&
+        mount_name(&w->p, m) && path_is_mount(m)) {
         struct path_info i;
         long r = path_info(&w->p, &i);
         gone = r == -ENOENT || r == -ENOTDIR;   /* a service that's slow or refuses doesn't count */

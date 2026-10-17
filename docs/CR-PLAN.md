@@ -1344,7 +1344,9 @@ items, each a posixtest case that does what the base test does. Which
   text; `lx_getcwd` now asks the service whether it is still there
   (`path_cwd_removed`: a mount's directory that answers "not found") and
   says `ENOENT` if not, before `ERANGE` as Linux does. A service that is
-  slow or refuses leaves the answer as it was. One call to the service per
+  slow or refuses leaves the answer as it was, and so does a program whose
+  namespace lacks the mount (the shell's `cd /data`, then `pxio`, which
+  has no `/data`: sh-posix caught that). One call to the service per
   `getcwd` on a mount (none in `/`, `/svc`, `/proc`, `/dev`, `/etc`). Not
   as Linux: a directory made again at the same path is "there" (Linux's
   stays the removed one), and `chdir("..")` out of a removed directory
