@@ -62,6 +62,16 @@ uint64_t lx_children_cpu_ns(void);
  * signal to it), or 0. */
 int32_t lx_exec_child(void);
 
+/* vfork (docs/FORK-PLAN.md section 3): in the child, we are a vfork child
+ * (lx_vforked), and our exec is told to the parent (lx_exec_notice: the
+ * last thing before an exec in place, or once execve's program is started
+ * when it isn't in place; nothing if we aren't one, or have told it); in
+ * the parent, wait until the child pid has exec'd or ended
+ * (lx_vfork_wait; the signals that come meanwhile wait for its return). */
+void    lx_vforked(void);
+void    lx_exec_notice(void);
+void    lx_vfork_wait(int32_t pid);
+
 /* What /proc says of a child (procfs.c, procinfo.c): its process group and
  * session, whether its end was noticed (a zombie until reaped), and its
  * process_info now. 0, or -ESRCH: not a child of ours (or reaped). */
@@ -86,5 +96,6 @@ unsigned lx_child_pids(int32_t *out, unsigned cap);
  * How many matched (0: none, kill's ESRCH), or -errno. */
 long    lx_child_signal(int32_t pid, int32_t pgid, int signo, int code, int32_t value);
 /* A packet from the signal thread's port with a child's key (below
- * SIG_KEY_OURS): that child's end noticed, the waits woken, SIGCHLD. */
+ * SIG_KEY_OURS): that child's end noticed, the waits woken, SIGCHLD; or
+ * its notices (signal.idl's events to the client) read. */
 void    lx_child_packet(const struct port_packet *pkt);

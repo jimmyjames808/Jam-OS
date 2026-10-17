@@ -4,7 +4,10 @@
  *   - the starter's signal channel (SR_SIGNALS, the `signal` protocol):
  *     kill and sigqueue from the parent, the native shell's Ctrl+C;
  *   - the children's ends (proc.c binds each child to this port; their
- *     packets go to lx_child_packet, which calls sig_child_ended: SIGCHLD);
+ *     packets go to lx_child_packet, which calls sig_child_ended: SIGCHLD),
+ *     and their notices to us on their signal channels (signal.idl's
+ *     events to the client: a vfork child's exec, a child's own group and
+ *     session; lx_child_packet reads them too);
  *   - the process's terminal's events (tty.h): a resize is SIGWINCH, ISIG's
  *     keys with no shell below are SIGINT and SIGQUIT; and its hang-up
  *     (the console let go of it: the terminal's window closed, a session's

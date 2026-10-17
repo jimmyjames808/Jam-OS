@@ -5,7 +5,9 @@
 # a 1 TiB reservation, ENOMEM, the signals (SIGCHLD, kill, SIGKILL,
 # pending, timers, a fault handler), both clone forms and vfork; and FL2's
 # cases: every descriptor kind from both sides, /proc/self/fd exact,
-# Chromium's child sequence, a pty, the table of mappings. Then FL3's exec
+# Chromium's child sequence, a pty, the table of mappings; and FL4's:
+# vfork's wait for the child's exit or exec, a child's setpgid and setsid
+# seen by the parent, junk notices dropped. Then FL3's exec
 # section (execve in place from a forked child: ids, threads,
 # close-on-exec, signals, the fork's charge back with its line, failures,
 # Chromium's sequence through the exec) and utest's exec_native (a native

@@ -37,7 +37,8 @@
  *   clone: syscall(SYS_clone, SIGCHLD, ...) with CLONE_PARENT_SETTID and
  *     CLONE_CHILD_SETTID, and its refusals (CLONE_VM alone, a new stack, an
  *     unknown flag); clone(fn, stack, SIGCHLD, arg) ending with fn's value;
- *     vfork (a fork until FL4 gives the parent its wait). */
+ *     vfork (its wait: forknote.c's vfork case).
+ * Then forkfd.c's cases (FL2) and forknote.c's (FL4: vfork, groups, junk). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -703,6 +704,9 @@ static const struct {
     /* forkfd.c's (FL2): the descriptors and the table of mappings */
     { "fds", pt_fork_fds, 0 },      { "chromium", pt_fork_chromium, 0 },
     { "ttys", pt_fork_ttys, 0 },    { "maps", pt_fork_maps, 0 },
+    /* forknote.c's (FL4): vfork's wait and a child's notices */
+    { "vfork", pt_fork_vfork, 0 },  { "groups", pt_fork_groups, 0 },
+    { "junk", pt_fork_junk, 0 },
 };
 #define NCASES (sizeof(cases) / sizeof(cases[0]))
 

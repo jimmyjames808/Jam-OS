@@ -505,10 +505,10 @@ static status_t exec_handover(handle_t startup, void *ctx)
     x->ho->cwd = x->t->cwd;
     x->ho->exe = x->exe[0] ? x->exe : NULL;
     status_t st = posixfds_write(startup, x->ho);   /* its handles consumed */
-    /* FL4: the "I have exec'd" notice to a vfork parent goes here, the
-     * last thing before the replace. */
-    if (st == OK)
+    if (st == OK) {
         sock_exit_drain();
+        lx_exec_notice();   /* a vfork parent goes on: nothing but the replace is left */
+    }
     return st;
 }
 
