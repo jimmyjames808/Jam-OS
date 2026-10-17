@@ -35,9 +35,10 @@
  *       address space not the caller's own (a parent's handle of its
  *       child's) refused; the caller's own answered.
  *   vmar_resident_fuzz
- *       random mappings of plain VMOs and a child over a window with holes,
- *       random touches, writes, decommits and protects, and random ranges
- *       asked: every count and byte as the VMOs' tables say. */
+ *       four fixed seeds: random mappings of plain VMOs and a child over a
+ *       window with holes, random touches, writes, decommits and protects,
+ *       and random ranges asked: every count and byte as the VMOs' tables
+ *       say. */
 #include <jam/abi.h>
 #include <jam/aspace.h>
 #include <jam/aspace_vmo.h>
@@ -418,12 +419,13 @@ static bool fz_expect(const struct fz_map *m, unsigned n, uint64_t p, uint8_t *w
     return false;
 }
 
-KTEST(vmar_resident_fuzz)
+/* One layout and 300 rounds from seed s (a failure names it). */
+static void fuzz_one(uint64_t s)
 {
     struct job *j = kt_fresh_job();
     struct aspace *as;
     KT_EQ(aspace_create_charged(j, &as), OK);
-    uint64_t seed = 0x6d696e636f7265ull ^ uptime_ns();
+    uint64_t seed = s;
     struct vmo *v[VMOS];
     for (unsigned i = 0; i < VMOS - 1; i++)
         v[i] = vmo_of(64, 0);
@@ -476,12 +478,14 @@ KTEST(vmar_resident_fuzz)
         uint64_t want_n = 0;
         uint8_t want;
         while (want_n < len && fz_expect(m, n, first + want_n, &want)) {
-            KT_EQ(b[want_n], want);
+            if (b[want_n] != want)
+                ktest_fail("seed %lx round %u: page %lu of the window reads %u, not %u", s,
+                           round, first + want_n, b[want_n], want);
             want_n++;
         }
-        KT_EQ(got, want_n);
-        if (got < len)
-            KT_EQ(b[got], 0xee);
+        if (got != want_n || (got < len && b[got] != 0xee))
+            ktest_fail("seed %lx round %u: %lu pages from window page %lu, not %lu", s, round,
+                       got, first, want_n);
     }
 
     aspace_unref(as);
@@ -489,4 +493,10 @@ KTEST(vmar_resident_fuzz)
         put(v[i]);
     kt_job_is_empty(j);
     job_unref(j);
+}
+
+KTEST(vmar_resident_fuzz)
+{
+    for (uint64_t s = 1; s <= 4; s++)
+        fuzz_one(0x6d696e636f7265ull * s);
 }
