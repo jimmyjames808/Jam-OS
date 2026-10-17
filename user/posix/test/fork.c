@@ -47,12 +47,24 @@
  *     the calls that take a path (stat, lstat, access, open, mkdir and
  *     rmdir, chdir and getcwd, readlink) working there, a fork and a clone
  *     of its own reaped, and fn's value its exit code.
+ *   stacks: the layer's stack for calls on small stacks (callstack.c),
+ *     each small stack over a guard page, in children: a handler with
+ *     SA_ONSTACK on an 8 KiB sigaltstack (SIGSTKSZ) making path calls
+ *     (stat, open, unlink, mkdir, rmdir under a deep path, and
+ *     /proc/self/status), from a raise and from a fault in its own code,
+ *     sigaltstack inside saying SS_ONSTACK, and a second SA_ONSTACK
+ *     handler raised in its call running without touching its frames;
+ *     threads on 16 KiB, PTHREAD_STACK_MIN and a stack of our own doing
+ *     the same, 16 joined and 16 detached ones leaving no mapping behind;
+ *     a handler at a small thread's call's boundary making them too. And
+ *     a call's cost (the line `a call takes N ns; ...`).
  * Then forkfd.c's cases (FL2) and forknote.c's (FL4: vfork, groups, junk). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <jamos/libjam.h>
+#include <limits.h>
 #include <pthread.h>
 #include <sched.h>
 #include <setjmp.h>
@@ -645,18 +657,6 @@ static int clone_fn(void *arg)
     return rep->line ? 1 : 9;
 }
 
-/* vfork alone in its function: nothing of ours lives across it. */
-__attribute__((noinline)) static pid_t do_vfork(void)
-{
-    pid_t pid = vfork();
-    if (pid == 0)
-        _exit(6);
-    return pid;
-}
-
-static void fork_clone(void)
-{
-    map_report();
 /* CLONE_FS without CLONE_VM (base's LaunchProcess passes it for a child
  * that execs at once) is a copy of our directory and umask, not a share
  * (fork.c, lx_clone): the child starts in ours with ours, and what it
@@ -720,6 +720,18 @@ static void *fork_in_thread(void *arg)
     return NULL;
 }
 
+/* vfork alone in its function: nothing of ours lives across it. */
+__attribute__((noinline)) static pid_t do_vfork(void)
+{
+    pid_t pid = vfork();
+    if (pid == 0)
+        _exit(6);
+    return pid;
+}
+
+static void fork_clone(void)
+{
+    map_report();
     pid_t self = getpid();
     rep->v[0] = self;
     int ptid = 0, ctid = 0;
@@ -727,28 +739,28 @@ static void *fork_in_thread(void *arg)
                      &ctid, 0);
     if (r == 0) {
         KID(ctid == syscall(SYS_gettid) && ctid > 0);
+        KID(ctid == getpid());   /* the child's first thread's id is its pid (ForkWithFlags) */
         KID(getppid() == self);
         kid_end(5);
     }
     CHECK(r > 0 && ptid == r && ctid == 0);
     if (r > 0)
         reaped((pid_t)r, 5);
+    clone_fs();
+    pthread_t t;
+    CHECK(pthread_create(&t, NULL, fork_in_thread, NULL) == 0 && pthread_join(t, NULL) == 0);
     errno = 0;
     CHECK(syscall(SYS_clone, CLONE_VM | SIGCHLD, 0, 0, 0, 0) == -1 && errno == ENOSYS);
     char *stk = malloc(64 << 10);
     CHECK(stk);
     if (!stk)
         return;
-        KID(ctid == getpid());   /* the child's first thread's id is its pid (ForkWithFlags) */
     errno = 0;
     CHECK(syscall(SYS_clone, SIGCHLD, stk + (64 << 10), 0, 0, 0) == -1 && errno == EINVAL);
     errno = 0;
     CHECK(syscall(SYS_clone, SIGCHLD | CLONE_NEWNS, 0, 0, 0, 0) == -1 && errno == EINVAL);
 
     clone_magic = 0x5a5a;
-    clone_fs();
-    pthread_t t;
-    CHECK(pthread_create(&t, NULL, fork_in_thread, NULL) == 0 && pthread_join(t, NULL) == 0);
     pid_t pptid = 0;
     pid_t pid = clone(clone_fn, stk + (64 << 10), SIGCHLD | CLONE_PARENT_SETTID, &clone_magic,
                       &pptid);
@@ -829,6 +841,321 @@ static void fork_small(void)
         reaped(pid, 8);
 }
 
+/* ---- stacks: the layer's stack for calls on small stacks ------------------------------ */
+
+/* A layer call that takes a path needs 16 to 29 KiB of stack, musl's
+ * SIGSTKSZ is 8 KiB and a pthread's stack may be 2 KiB, so such a thread
+ * makes its calls on a stack of the layer's own (callstack.c). Each small
+ * stack here has a guard page below it, so running over it is a fault
+ * that ends the child, not a write over the heap; each test runs in a
+ * child of the case's. */
+#define DEEP_PART  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+#define ALT_SMALL  8192u                /* SIGSTKSZ */
+#define TINY       (16u << 10)
+#define NTHREADS   16
+#define CALLS      20000
+
+/* /data/pxstk-<pid>/ and four long names, and a file's and a directory's
+ * names in it: made by the case (a 2 KiB thread has no room for buffers
+ * of its own). */
+static char deep[512], deep_f[516], deep_d[516];
+
+/* stat, open with O_CREAT, unlink, mkdir and rmdir under the deep path
+ * (make; else stat, lstat and access, for threads at once), and
+ * Chromium's crash path's open of /proc/self/status: 0, or the step that
+ * failed. */
+static int deep_calls(bool make)
+{
+    struct stat st;
+    if (stat(deep, &st) || !S_ISDIR(st.st_mode))
+        return 1;
+    if (!make) {
+        if (lstat(deep, &st) || access(deep, X_OK) || stat(deep_f, &st) != -1)
+            return 5;
+    } else {
+        int fd = open(deep_f, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+        if (fd < 0 || close(fd) || unlink(deep_f))
+            return 2;
+        if (mkdir(deep_d, 0700) || rmdir(deep_d))
+            return 3;
+    }
+    int fd = open("/proc/self/status", O_RDONLY | O_CLOEXEC);
+    if (fd < 0 || close(fd))
+        return 4;
+    return 0;
+}
+
+static uintptr_t alt_lo, alt_hi;
+static volatile int alt_r = -1, inner_r = -1, inner_flags;
+static volatile char *trap;
+
+/* SIGUSR2, raised by SIGUSR1's handler (on the alternate stack) inside its
+ * raise's call, which runs on the stack for calls: it runs where it is, not
+ * at the alternate stack's top over SIGUSR1's frames, and counts as on the
+ * alternate stack. */
+static void on_inner(int sig, siginfo_t *si, void *ucv)
+{
+    (void)sig;
+    (void)si;
+    inner_flags = ((ucontext_t *)ucv)->uc_stack.ss_flags;
+    inner_r = deep_calls(true);
+}
+
+static void on_alt_usr1(int sig)
+{
+    char canary[512];
+    stack_t now;
+    (void)sig;
+    memset(canary, 0x5a, sizeof(canary));
+    int r = (uintptr_t)canary > alt_lo && (uintptr_t)canary < alt_hi ? 0 : 10;
+    if (!r && (sigaltstack(NULL, &now) || !(now.ss_flags & SS_ONSTACK)))
+        r = 11;   /* the call ran on the stack for calls, but we are on the alternate stack */
+    if (!r)
+        r = deep_calls(true);
+    if (!r && raise(SIGUSR2))
+        r = 12;
+    for (unsigned i = 0; !r && i < sizeof(canary); i++)
+        if (canary[i] != 0x5a)
+            r = 13;
+    alt_r = r;
+}
+
+/* Chromium's crash path: a fault in its own code, the handler on the
+ * alternate stack opening /proc/self/status; then the page is made
+ * writable and the write goes on. */
+static void on_alt_segv(int sig, siginfo_t *si, void *uc)
+{
+    (void)sig;
+    (void)uc;
+    int r = si->si_addr == (void *)trap ? 0 : 20;
+    if (!r)
+        r = deep_calls(true);
+    alt_r = r;
+    mprotect((void *)trap, PG, RW);
+}
+
+/* SIGSTKSZ, or the least sigaltstack takes if that is more (the CPU's
+ * vector state), in pages. */
+static size_t alt_small(void)
+{
+    long min = sysconf(_SC_MINSIGSTKSZ);
+    return min > 0 && (size_t)min > ALT_SMALL ? ((size_t)min + PG - 1) & ~(PG - 1) : ALT_SMALL;
+}
+
+static void kid_alt(void)
+{
+    size_t size = alt_small();
+    char *g = mmap(NULL, PG + size, RW, ANON, -1, 0);
+    KID(g != MAP_FAILED && mprotect(g, PG, PROT_NONE) == 0);
+    alt_lo = (uintptr_t)g + PG;
+    alt_hi = alt_lo + size;
+    stack_t ss = { .ss_sp = (void *)alt_lo, .ss_size = size };
+    KID(sigaltstack(&ss, NULL) == 0);
+    struct sigaction usr1 = { .sa_handler = on_alt_usr1, .sa_flags = SA_ONSTACK };
+    struct sigaction usr2 = { .sa_sigaction = on_inner, .sa_flags = SA_ONSTACK | SA_SIGINFO };
+    struct sigaction segv = { .sa_sigaction = on_alt_segv, .sa_flags = SA_ONSTACK | SA_SIGINFO };
+    sigemptyset(&usr1.sa_mask);
+    sigemptyset(&usr2.sa_mask);
+    sigemptyset(&segv.sa_mask);
+    KID(sigaction(SIGUSR1, &usr1, NULL) == 0 && sigaction(SIGUSR2, &usr2, NULL) == 0 &&
+        sigaction(SIGSEGV, &segv, NULL) == 0);
+    KID(raise(SIGUSR1) == 0);
+    KID(alt_r == 0 && inner_r == 0 && (inner_flags & SS_ONSTACK));
+    rep->v[0] = alt_r;
+    rep->v[1] = inner_r;
+    alt_r = -1;
+    trap = mmap(NULL, PG, PROT_NONE, ANON, -1, 0);
+    KID(trap != MAP_FAILED);
+    *trap = 7;
+    KID(alt_r == 0 && *trap == 7);
+    rep->v[2] = alt_r;
+    stack_t now;
+    KID(sigaltstack(NULL, &now) == 0 && !(now.ss_flags & SS_ONSTACK));   /* off it again */
+    kid_end(3);
+}
+
+struct tiny_run {
+    uintptr_t lo, hi;   /* the stack given (pthread_attr_setstack), or 0 */
+    int r;
+    uint64_t ns;        /* a call's time on it, if asked (nonzero) */
+    bool look;          /* only calls that make nothing (threads at once on one path) */
+};
+
+static volatile int tiny_ended, tiny_handled;
+
+static void on_tiny_usr1(int sig)
+{
+    (void)sig;
+    tiny_handled = deep_calls(true) == 0;   /* at a call's boundary, on the stack for calls */
+}
+
+/* A call's time, the least of five rounds of CALLS getppid. */
+static uint64_t call_ns(void)
+{
+    uint64_t best = UINT64_MAX;
+    for (int k = 0; k < 5; k++) {
+        uint64_t t = now();
+        for (int i = 0; i < CALLS; i++)
+            (void)getppid();
+        t = (now() - t) / CALLS;
+        best = t < best ? t : best;
+    }
+    return best;
+}
+
+static void *tiny_thread(void *arg)
+{
+    struct tiny_run *t = arg;
+    char here;
+    t->r = deep_calls(!t->look);
+    if (!t->r && t->lo && !((uintptr_t)&here > t->lo && (uintptr_t)&here < t->hi))
+        t->r = 30;   /* its own frames on the stack it was given */
+    if (t->ns)
+        t->ns = call_ns();
+    __atomic_add_fetch(&tiny_ended, 1, __ATOMIC_RELEASE);
+    return NULL;
+}
+
+/* The bytes /proc/self/maps lists. */
+static uint64_t mapped(void)
+{
+    FILE *f = fopen("/proc/self/maps", "re");
+    char line[512];
+    unsigned long long a, b;
+    uint64_t sum = 0;
+    while (f && fgets(line, sizeof(line), f))
+        if (sscanf(line, "%llx-%llx", &a, &b) == 2)
+            sum += b - a;
+    if (f)
+        fclose(f);
+    return sum;
+}
+
+/* One thread on attr's stack (size bytes, or the one given): its result. */
+static int tiny_one(pthread_attr_t *a, struct tiny_run *t)
+{
+    pthread_t th;
+    if (pthread_create(&th, a, tiny_thread, t) || pthread_join(th, NULL))
+        return 40;
+    return t->r;
+}
+
+static void kid_tiny(void)
+{
+    pthread_attr_t a;
+    struct tiny_run t = { 0 };
+    KID(pthread_attr_init(&a) == 0 && pthread_attr_setstacksize(&a, TINY) == 0);
+    KID(tiny_one(&a, &t) == 0);
+    KID(pthread_attr_setstacksize(&a, PTHREAD_STACK_MIN) == 0);
+    t = (struct tiny_run){ 0 };
+    KID(tiny_one(&a, &t) == 0);
+    char *g = mmap(NULL, PG + TINY, RW, ANON, -1, 0);   /* one of ours, a guard below */
+    KID(g != MAP_FAILED && mprotect(g, PG, PROT_NONE) == 0);
+    t = (struct tiny_run){ .lo = (uintptr_t)g + PG, .hi = (uintptr_t)g + PG + TINY };
+    KID(pthread_attr_setstack(&a, g + PG, TINY) == 0 && tiny_one(&a, &t) == 0);
+    munmap(g, PG + TINY);
+    KID(pthread_attr_setstacksize(&a, TINY) == 0);
+    /* Each thread's stack for calls is unmapped at its end, a joined
+     * one's and a detached one's. */
+    static struct tiny_run runs[2 * NTHREADS];
+    pthread_t th[NTHREADS];
+    for (int i = 0; i < 2 * NTHREADS; i++)
+        runs[i].look = true;   /* all at once on one path */
+    uint64_t before = mapped();
+    tiny_ended = 0;
+    for (int i = 0; i < NTHREADS; i++)
+        KID(pthread_create(&th[i], &a, tiny_thread, &runs[i]) == 0);
+    for (int i = 0; i < NTHREADS; i++)
+        KID(pthread_join(th[i], NULL) == 0 && runs[i].r == 0);
+    KID(pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED) == 0);
+    for (int i = 0; i < NTHREADS; i++)
+        KID(pthread_create(&th[i], &a, tiny_thread, &runs[NTHREADS + i]) == 0);
+    uint64_t end = now() + KID_NS, after;
+    while (((after = mapped()) > before + (256u << 10) || tiny_ended < 2 * NTHREADS) &&
+           now() < end)
+        usleep(10000);
+    KID(tiny_ended == 2 * NTHREADS && after <= before + (256u << 10));
+    rep->v[3] = (int64_t)after - (int64_t)before;
+    for (int i = 0; i < 2 * NTHREADS; i++)
+        KID(runs[i].r == 0);
+    pthread_attr_destroy(&a);
+    kid_end(2);
+}
+
+/* A small thread's own raise: the handler runs at that call's boundary,
+ * on the stack for calls, and makes its own calls there. */
+static void *tiny_raiser(void *arg)
+{
+    tiny_handled = 0;
+    *(int *)arg = raise(SIGUSR1) == 0 && tiny_handled;
+    return NULL;
+}
+
+static void fork_stacks(void)
+{
+    map_report();
+    snprintf(deep, sizeof(deep), "/data/pxstk-%d", (int)getpid());
+    size_t l = strlen(deep);
+    CHECK(mkdir(deep, 0700) == 0);
+    for (int i = 0; i < 4; i++) {
+        snprintf(deep + l, sizeof(deep) - l, "/%c" DEEP_PART, 'a' + i);
+        l = strlen(deep);
+        CHECK(mkdir(deep, 0700) == 0);
+    }
+    snprintf(deep_f, sizeof(deep_f), "%s/f", deep);
+    snprintf(deep_d, sizeof(deep_d), "%s/d", deep);
+    uint64_t plain = call_ns();   /* no thread here has a stack for calls yet */
+
+    pid_t pid = fork();
+    if (pid == 0)
+        kid_alt();
+    CHECK(pid > 0);
+    if (pid > 0)
+        reaped(pid, 3);
+    pid = fork();
+    if (pid == 0)
+        kid_tiny();
+    CHECK(pid > 0);
+    if (pid > 0)
+        reaped(pid, 2);
+
+    /* Here: a handler at a call's boundary on a small thread. */
+    struct sigaction sa = { .sa_handler = on_tiny_usr1 };
+    sigemptyset(&sa.sa_mask);
+    CHECK(sigaction(SIGUSR1, &sa, NULL) == 0);
+    pthread_attr_t a;
+    pthread_t th;
+    int handled = 0;
+    CHECK(pthread_attr_init(&a) == 0 && pthread_attr_setstacksize(&a, TINY) == 0);
+    CHECK(pthread_create(&th, &a, tiny_raiser, &handled) == 0 && pthread_join(th, NULL) == 0);
+    CHECK(handled == 1);
+    /* The cost: on a small thread (every call moved), here once a thread
+     * of ours has a stack for calls, and here with a small alternate
+     * stack of our own (only a handler's calls move). */
+    struct tiny_run t = { .ns = 1 };
+    CHECK(tiny_one(&a, &t) == 0);
+    pthread_attr_destroy(&a);
+    uint64_t other = call_ns();
+    char *alt = malloc(alt_small());
+    stack_t ss = { .ss_sp = alt, .ss_size = alt_small() };
+    CHECK(alt && sigaltstack(&ss, NULL) == 0);
+    uint64_t alt_ns = call_ns();
+    ss.ss_flags = SS_DISABLE;
+    CHECK(sigaltstack(&ss, NULL) == 0);
+    free(alt);
+    printf("posixtest: fork: a call takes %llu ns; %llu ns once a thread has a stack for calls, "
+           "%llu ns with a small sigaltstack, %llu ns on a 16 KiB thread\n",
+           (unsigned long long)plain, (unsigned long long)other, (unsigned long long)alt_ns,
+           (unsigned long long)t.ns);
+
+    for (int i = 0; i < 5; i++) {   /* the deep path, from its last part */
+        CHECK(rmdir(deep) == 0);
+        char *s = strrchr(deep, '/');
+        if (s)
+            *s = 0;
+    }
+}
+
 /* ---- the section ------------------------------------------------------------------ */
 
 static const struct {
@@ -840,6 +1167,7 @@ static const struct {
     { "torn", fork_torn, 0 },       { "huge", fork_huge, 0 },
     { "nomem", fork_nomem, JOB_PAGES }, { "signals", fork_signals, 0 },
     { "clone", fork_clone, 0 },     { "small", fork_small, 0 },
+    { "stacks", fork_stacks, 0 },
     /* forkfd.c's (FL2): the descriptors and the table of mappings */
     { "fds", pt_fork_fds, 0 },      { "chromium", pt_fork_chromium, 0 },
     { "ttys", pt_fork_ttys, 0 },    { "maps", pt_fork_maps, 0 },

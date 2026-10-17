@@ -225,11 +225,16 @@ int sig_fault_signal(uint32_t vector, int32_t status)
 /* ---- the alternate stack ------------------------------------------------------------ */
 
 /* The calling thread's sigaltstack: this thread's own, so no lock; a new
- * thread's is zero (none). The kernel has the same range. */
+ * thread's is zero (none). The kernel has the same range, but for ktop:
+ * while a call a handler made here runs on the layer's stack for calls
+ * (sig_alt_call), the kernel's range ends below what the handler uses. */
 static __thread struct {
     uintptr_t base;
     size_t    size;
+    uintptr_t ktop;   /* the kernel's range's top: base + size, or lower (cut) */
 } alt;
+
+#define CUT_ROOM 1024u   /* below sig_alt_call's frame: its own calls' and their red zones */
 
 /* sp is on the stack: above its base, at most its top (Linux's on_sig_stack
  * and the kernel's own test). */
@@ -238,11 +243,19 @@ static bool on_alt(uintptr_t sp)
     return alt.size && sp > alt.base && sp - alt.base <= alt.size;
 }
 
+/* A call a handler made on the stack is running on the stack for calls:
+ * the thread is on its alternate stack, as on Linux, whose call would
+ * run on the kernel's stack from it. */
+static bool alt_cut(void)
+{
+    return alt.size && alt.ktop != alt.base + alt.size;
+}
+
 int sig_alt_state(uintptr_t sp, uintptr_t *base, size_t *size)
 {
     *base = alt.base;
     *size = alt.size;
-    return !alt.size ? SS_DISABLE : on_alt(sp) ? SS_ONSTACK : 0;
+    return !alt.size ? SS_DISABLE : on_alt(sp) || alt_cut() ? SS_ONSTACK : 0;
 }
 
 long sig_alt_set(uintptr_t base, size_t size)
@@ -253,13 +266,44 @@ long sig_alt_set(uintptr_t base, size_t size)
         return -EFAULT;
     alt.base = base;
     alt.size = size;
+    alt.ktop = base + size;
     return 0;
 }
 
 void sig_alt_reapply(void)
 {
     if (alt.size)
-        (void)jam_thread_exception_stack(alt.base, alt.size);
+        (void)jam_thread_exception_stack(alt.base, alt.ktop - alt.base);
+}
+
+/* The kernel's range made [alt.base, top) (top within the stack). */
+static bool alt_kernel_top(uintptr_t top)
+{
+    if (jam_thread_exception_stack(alt.base, top - alt.base) != OK)
+        return false;
+    alt.ktop = top;
+    return true;
+}
+
+bool sig_alt_from(uintptr_t sp)
+{
+    if (on_alt(sp))
+        return true;
+    /* Off it with the range still cut: a handler left a call on the
+     * stack for calls by siglongjmp. Nothing of it is in use any more. */
+    if (alt_cut())
+        (void)alt_kernel_top(alt.base + alt.size);
+    return false;
+}
+
+void sig_alt_call(void (*fn)(void *), void *arg, void *top)
+{
+    uintptr_t was = alt.ktop;
+    uintptr_t cut = ((uintptr_t)__builtin_frame_address(0) - CUT_ROOM) & ~(uintptr_t)15;
+    bool cutting = cut > alt.base && cut < was && alt_kernel_top(cut);
+    __jam_sig_stack_call(fn, arg, top);
+    if (cutting)
+        (void)alt_kernel_top(was);
 }
 
 /* The bytes of vector state the kernel saves in a frame: the XSAVE area
@@ -296,10 +340,12 @@ size_t sig_alt_min(void)
 
 void sig_run_onstack(void (*fn)(void *), void *arg)
 {
-    if (!alt.size || on_alt((uintptr_t)__builtin_frame_address(0))) {
-        fn(arg);
+    uintptr_t sp = (uintptr_t)__builtin_frame_address(0);
+    if (!alt.size || on_alt(sp) || alt_cut()) {
+        fn(arg);   /* on it (perhaps by a call moved from it): where it is */
         return;
     }
+    lx_call_stack_hold(sp);   /* the frames of a call it may leave on the stack for calls */
     __jam_sig_stack_call(fn, arg, (void *)((alt.base + alt.size) & ~(uintptr_t)15));
 }
 
@@ -535,6 +581,7 @@ _Noreturn void sig_fault_run(struct fault_run *r)
         if (!left)
             (void)jam_exception_done(f, EXC_LEAVE);
         left = true;
+        lx_call_stack_hold(f->rsp);   /* what was interrupted there, if on the stack for calls */
         struct handler_args h = { &r->act, r->si.signo, &ctx };
         if (r->act.flags & SA_ONSTACK)
             sig_run_onstack(call_handler, &h);   /* where it is unless it moved off the stack */

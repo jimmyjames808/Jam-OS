@@ -56,19 +56,42 @@ struct sig_frame {
  * with EINTR (musl's cancellation acts on it). */
 long sig_call(const struct sig_frame *f);
 
-/* A clone child's calls (callstack.c, fork.c). musl's clone() runs the
- * child on a stack its caller gave, which may be far too small for the
- * layer (gtest's death tests give two pages), so that thread makes its
- * calls on a stack of the layer's own, as Linux's kernel makes a call on
- * a stack of its own. lx_call_stack_set: this process has one (calls.c's
- * one test per call, false in every other process); lx_call_on_stack(f):
- * sig_call(f), on that stack when the calling thread is the child's and
- * is off it; lx_call_stack_run(fn, arg): fn(arg) the same way;
- * lx_call_stack_need: the calling thread (the child's) gets the stack. */
+/* The layer's stack for calls (callstack.c): a thread whose own stack, or
+ * alternate signal stack, is under LX_CALL_STACK makes its calls on a
+ * stack of the layer's own, as Linux's kernel makes a call on a stack of
+ * its own (a call that takes a path needs 16 to 29 KiB). */
+#define LX_CALL_STACK (64u << 10)
+/* Some thread of this process has one: calls.c's one test per call. */
 extern bool lx_call_stack_set;
+/* sig_call(f), where lx_call_stack_run puts it. */
 long lx_call_on_stack(const struct sig_frame *f);
+/* fn(arg) where a call of the calling thread runs: on its stack for
+ * calls when it has one and is off it (below what is in use there), else
+ * here. musl's direct ways into the layer use it too. */
 void lx_call_stack_run(void (*fn)(void *), void *arg);
+/* A stack for a new thread, mapped by its creator: its lowest usable
+ * byte, or 0 if there was no memory for it (the thread's calls then run
+ * on its own stack). Unmapped again if the thread never starts. */
+uintptr_t lx_call_stack_map(void);
+void      lx_call_stack_unmap(uintptr_t lo);
+/* The calling thread takes the stack at lo (0: none) as its own; always:
+ * its own stack is small, so every call moves there (else only those a
+ * handler makes on the alternate stack). */
+void lx_call_stack_adopt(uintptr_t lo, bool always);
+/* The calling thread gets one if it has none (sigaltstack, clone()'s
+ * child); always as above, added to what it had. */
 void lx_call_stack_need(bool always);
+/* The calling thread leaves its stack for calls at sp (the interrupted
+ * RSP, or the leaving function's frame) for its alternate stack, to run
+ * a handler there: a call moved from that stack starts below sp, its red
+ * zone and a small frame. Nothing if sp isn't on it. */
+void lx_call_stack_hold(uintptr_t sp);
+/* The calling thread's stack unmapped, from off it (a detached thread's
+ * end, __unmapself's first half). */
+void lx_call_stack_free(void);
+/* The calling thread ends, its stack for calls unmapped, perhaps from on
+ * it (lx_exit). */
+_Noreturn void lx_call_stack_exit(void);
 
 /* Memory (mem.c): mappings and the break. */
 lx_call lx_mmap, lx_munmap, lx_mprotect, lx_madvise, lx_mremap, lx_brk, lx_mlock, lx_munlock,

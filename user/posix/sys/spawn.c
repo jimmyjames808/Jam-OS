@@ -640,11 +640,24 @@ static int spawn_child(const struct jam_spawn_req *r, bool exec, int *res)
 int __jam_posix_spawn(int *pid, const struct jam_spawn_req *r)
 {
     struct sig_thread *q = sig_quiet_begin();   /* the layer's own: no handler runs inside */
-    int e = spawn_child(r, false, pid);
+    lx_call_stack_run(spawn_on, &c);   /* a call of ours: where calls run (a small stack's) */
     sig_quiet_end(q);
-    return e;
+    return c.e;
+struct spawn_call {
+    int *pid;
+    const struct jam_spawn_req *r;
+    int e;
+};
+
+static void spawn_on(void *p)
+{
+    struct spawn_call *c = p;
+    c->e = spawn_child(c->r, false, c->pid);
 }
 
+}
+
+    struct spawn_call c = { pid, r, 0 };
 /* The caller's NULL-ended array of strings v (NULL: none) can be read,
  * each string to its NUL: 0, or -EFAULT. */
 static long strings_readable(char *const *v)

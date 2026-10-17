@@ -83,6 +83,7 @@ struct clone_start {
     int   *set_tid;     /* CLONE_CHILD_SETTID's word, or NULL */
     uint64_t sigmask;   /* the creator's signal mask: the new thread's */
     volatile int *listed;   /* set to 1 once the thread is on the signal list (or never will be) */
+    uintptr_t call_lo;  /* its stack for calls (callstack.c), or 0 */
 };
 
 int __jam_set_thread_area(void *tp)
@@ -148,6 +149,7 @@ static _Noreturn void clone_entry(struct clone_start *s)
     self_tid = (uint32_t)tid + TID_BIAS;   /* never the first thread */
     if (c.set_tid)
         *c.set_tid = (int)self_tid;
+    lx_call_stack_adopt(c.call_lo, true);
     sig_thread_begin(lx_self_thread(), self_tid, c.sigmask);
     __atomic_store_n(c.listed, 1, __ATOMIC_RELEASE);
     int r = c.fn(c.arg);
@@ -175,29 +177,51 @@ static int clone_err(status_t st)
     return st == ERR_NO_RESOURCES || st == ERR_NO_MEMORY ? -EAGAIN : (int)lx_err(st);
 }
 
-static int clone_thread(int (*fn)(void *), void *stack, int flags, void *arg, int *ptid,
-                        void *tls, int *ctid);
+/* __jam_clone's arguments, and its result. */
+struct clone_args {
+    int (*fn)(void *);
+    void *stack;
+    int flags;
+    void *arg;
+    int *ptid;
+    void *tls;
+    int *ctid;
+    unsigned long stack_size;
+    int r;
+};
+
+static void clone_thread(void *p);
 
 int __jam_clone(int (*fn)(void *), void *stack, int flags, void *arg, int *ptid, void *tls,
-                int *ctid)
+                int *ctid, unsigned long stack_size)
 {
+    struct clone_args a = { fn, stack, flags, arg, ptid, tls, ctid, stack_size, 0 };
     struct sig_thread *q = sig_quiet_begin();   /* the layer's own: no handler runs inside */
-    int r = clone_thread(fn, stack, flags, arg, ptid, tls, ctid);
+    lx_call_stack_run(clone_thread, &a);   /* a small thread's pthread_create: off its stack */
     sig_quiet_end(q);
-    return r;
+    return a.r;
 }
 
-static int clone_thread(int (*fn)(void *), void *stack, int flags, void *arg, int *ptid,
-                        void *tls, int *ctid)
+/* A thread whose stack is under LX_CALL_STACK (or of a size musl couldn't
+ * say) gets a stack for calls (callstack.c), mapped here and taken by the
+ * thread in clone_entry: musl's PTHREAD_STACK_MIN is 2 KiB, and a call
+ * that takes a path needs 16 to 29 KiB. */
+static void clone_thread(void *p)
 {
+    struct clone_args *a = p;
+    int flags = a->flags;
+    a->r = -ENOSYS;   /* not a thread: __clone sends a process to fork.c */
     if ((flags & (CLONE_VM | CLONE_THREAD)) != (CLONE_VM | CLONE_THREAD))
-        return -ENOSYS;   /* not a thread: __clone sends a process to fork.c */
+        return;
+    a->r = -EINVAL;
     if (flags & ~(CLONE_OK | 0xff))   /* the low byte: the exit signal, unused */
-        return -EINVAL;
+        return;
     handle_t h;
     status_t st = jam_thread_create(lx_self_process(), "pthread", 7, 0, &h);
-    if (st != OK)
-        return clone_err(st);
+    if (st != OK) {
+        a->r = clone_err(st);
+        return;
+    }
     uint32_t tid = 0;
     st = kp_thread_tid(h, &tid);
     tid += TID_BIAS;
@@ -205,29 +229,58 @@ static int clone_thread(int (*fn)(void *), void *stack, int flags, void *arg, in
         st = ERR_NO_RESOURCES;
     if (st != OK) {
         jam_handle_close(h);
-        return clone_err(st);
+        a->r = clone_err(st);
+        return;
     }
     if (flags & CLONE_PARENT_SETTID)
-        *ptid = (int)tid;
+        *a->ptid = (int)tid;
     volatile int listed = 0;
-    struct clone_start s = { fn, arg, flags & CLONE_CHILD_CLEARTID ? ctid : NULL,
-                             flags & CLONE_CHILD_SETTID ? ctid : NULL, sig_mask_self(), &listed };
-    st = start_on(h, stack, &s, flags & CLONE_SETTLS ? tls : NULL);
+    uintptr_t call_lo = a->stack_size >= LX_CALL_STACK ? 0 : lx_call_stack_map();
+    struct clone_start s = { a->fn, a->arg, flags & CLONE_CHILD_CLEARTID ? a->ctid : NULL,
+                             flags & CLONE_CHILD_SETTID ? a->ctid : NULL, sig_mask_self(),
+                             &listed, call_lo };
+    st = start_on(h, a->stack, &s, flags & CLONE_SETTLS ? a->tls : NULL);
     if (st != OK) {
+        lx_call_stack_unmap(call_lo);
         jam_handle_close(table_take(tid));
-        return clone_err(st);
+        a->r = clone_err(st);
+        return;
     }
     while (!__atomic_load_n(&listed, __ATOMIC_ACQUIRE))
         jam_thread_yield();
-    return (int)tid;
+    a->r = (int)tid;
+}
+
+struct unmapself {
+    void *base;
+    unsigned long size;
+};
+
+static void unmapself_prepare(void *p)
+{
+    struct unmapself *u = p;
+    sig_thread_end();
+    forget_self();
+    mem_forget((uint64_t)(uintptr_t)u->base, u->size);
 }
 
 unsigned __jam_unmapself_prepare(void *base, unsigned long size)
 {
-    sig_thread_end();
-    forget_self();
-    mem_forget((uint64_t)(uintptr_t)base, size);
+    struct unmapself u = { base, size };
+    lx_call_stack_run(unmapself_prepare, &u);
+    lx_call_stack_free();   /* back on the thread's own stack, which __unmapself unmaps next */
     return lx_self_vmar();
+}
+
+/* The first thread's kernel tid (its handle is the startup message's,
+ * which is not in the table), once asked for; 0 if the kernel did not
+ * say. */
+static uint32_t first_ktid(void)
+{
+    uint32_t t = __atomic_load_n(&first_k, __ATOMIC_ACQUIRE);
+    if (!t && kp_thread_tid(startup_handle(SR_SELF_THREAD), &t) == OK)
+        __atomic_store_n(&first_k, t, __ATOMIC_RELEASE);
+    return t;
 }
 
 /* A forked child (fork.c): the forking thread is its first and only
@@ -266,17 +319,6 @@ long thread_apply(long tid, thread_op *op, void *arg)
     handle_t h = HANDLE_INVALID;
     status_t st = OK;
     lock_take(&threads_lock);
-/* The first thread's kernel tid (its handle is the startup message's,
- * which is not in the table), once asked for; 0 if the kernel did not
- * say. */
-static uint32_t first_ktid(void)
-{
-    uint32_t t = __atomic_load_n(&first_k, __ATOMIC_ACQUIRE);
-    if (!t && kp_thread_tid(startup_handle(SR_SELF_THREAD), &t) == OK)
-        __atomic_store_n(&first_k, t, __ATOMIC_RELEASE);
-    return t;
-}
-
     uint32_t want = tid ? (uint32_t)tid : self_tid;
     for (unsigned i = 0; i < nthreads && h == HANDLE_INVALID; i++)
         if (threads[i].tid == want)
@@ -370,7 +412,7 @@ long lx_exit(long code, long b, long c, long d, long e, long f)
 {
     sig_thread_end();
     forget_self();
-    jam_thread_exit();
+    lx_call_stack_exit();   /* its stack for calls too, if it has one */
 }
 
 long lx_exit_group(long code, long b, long c, long d, long e, long f)

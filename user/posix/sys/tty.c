@@ -585,12 +585,26 @@ uint64_t tty_take_signals(struct fd_desc *d)
 /* ttyname_r's override (user/posix/musl/src/unistd/ttyname_r.c). */
 static int ttyname_of(int fd, char *name, unsigned long size);
 
+struct ttyname_call {
+    int fd;
+    char *name;
+    unsigned long size;
+    int r;
+};
+
+static void ttyname_on(void *p)
+{
+    struct ttyname_call *c = p;
+    c->r = ttyname_of(c->fd, c->name, c->size);
+}
+
 int __jam_ttyname(int fd, char *name, unsigned long size)
 {
+    struct ttyname_call c = { fd, name, size, 0 };
     struct sig_thread *q = sig_quiet_begin();   /* the layer's own: no handler runs inside */
-    int r = ttyname_of(fd, name, size);
+    lx_call_stack_run(ttyname_on, &c);   /* a call of ours: where calls run (a small stack's) */
     sig_quiet_end(q);
-    return r;
+    return c.r;
 }
 
 static int ttyname_of(int fd, char *name, unsigned long size)
