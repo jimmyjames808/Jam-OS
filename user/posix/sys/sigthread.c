@@ -12,8 +12,10 @@
  *     once, as Linux's hang-up of a controlling terminal;
  *   - the timers (sigtimer.c): SIGALRM and the POSIX timers' signals.
  * Each signal is sent to the process (signal.c's sig_send_process: its
- * default action at once, or routed to a thread). While execve waits for
- * the program that replaced us, every signal goes on to it instead.
+ * default action at once, or routed to a thread). While execve of a /data
+ * program waits for it (spawn.c: that program isn't exec'd in place),
+ * every signal goes on to it instead; an exec in place holds the thread
+ * (sig_thread_hold) and the new image takes the channel.
  *
  * The thread is libjam's (thread_spawn): no thread-local storage, so it
  * never makes a call through musl, never runs a handler, and the call
@@ -40,6 +42,11 @@ static uint8_t stack[STACK_SIZE] __attribute__((aligned(16)));
 static handle_t port;                    /* made at the start, never closed */
 static handle_t channel;                 /* SR_SIGNALS, or 0 */
 static struct fd_desc *tty;              /* the terminal listened to (a reference kept) */
+/* execve's holds (sig_thread_hold): the thread acts on a packet only with
+ * `gate` held and `held` 0; while any exec holds it, it waits on `held`
+ * (a futex: the holds not yet released). */
+static lock_t   gate;
+static uint32_t held;
 
 _Noreturn static void fail(const char *what, status_t st);
 
@@ -210,9 +217,33 @@ static void loop(void *arg)
     (void)arg;
     for (;;) {
         struct port_packet p;
-        if (jam_port_wait(port, DEADLINE_NEVER, &p) == OK)
-            on_packet(&p);
+        if (jam_port_wait(port, DEADLINE_NEVER, &p) != OK)
+            continue;
+        lock_take(&gate);
+        for (uint32_t h; (h = __atomic_load_n(&held, __ATOMIC_ACQUIRE)) != 0;) {
+            lock_give(&gate);
+            (void)jam_futex_wait(&held, h, DEADLINE_NEVER, 0);
+            lock_take(&gate);
+        }
+        on_packet(&p);
+        lock_give(&gate);
     }
+}
+
+void sig_thread_hold(void)
+{
+    lock_take(&gate);   /* a packet being acted on is done once we have it */
+    __atomic_add_fetch(&held, 1, __ATOMIC_ACQ_REL);
+    lock_give(&gate);
+}
+
+void sig_thread_release(void)
+{
+    lock_take(&gate);
+    uint32_t left = __atomic_sub_fetch(&held, 1, __ATOMIC_ACQ_REL);
+    lock_give(&gate);
+    if (!left)
+        (void)jam_futex_wake(&held, 1, 0);
 }
 
 /* "posix: signals: <what> (<status>)" in the log and the end: a process
@@ -251,7 +282,8 @@ static void start_listening(bool tty_too)
 
 /* After the descriptor table (fd.c's start, 101), before the program's
  * constructors: the main thread listed with the hand-over's mask, the
- * ignored signals, the port and the thread. */
+ * ignored signals, what an exec in place left pending, the port and the
+ * thread. */
 __attribute__((constructor(102))) static void sig_start(void)
 {
     const char *cwd;
@@ -259,6 +291,8 @@ __attribute__((constructor(102))) static void sig_start(void)
     sig_start_state(ho ? ho->sigignore : 0);
     sig_thread_begin(startup_handle(SR_SELF_THREAD), (uint32_t)lx_gettid(0, 0, 0, 0, 0, 0),
                      ho ? ho->sigmask : 0);
+    if (ho && ho->sigpending)
+        sig_start_pending(ho->sigpending);
     start_listening(true);
 }
 
@@ -273,5 +307,7 @@ void sig_thread_forked(void)
 {
     port = channel = HANDLE_INVALID;
     tty = NULL;   /* its reference was the parent's to keep */
+    gate = (lock_t){ 0 };   /* another thread's execve may have held it */
+    held = 0;
     start_listening(false);
 }

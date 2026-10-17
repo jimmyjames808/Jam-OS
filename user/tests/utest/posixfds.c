@@ -234,7 +234,8 @@ bool t_posixfds_round_trip(void)
     struct posixfds_out out = {
         .state = { .umask = 027, .ppid = 12, .pgid = 12, .sid = 3,
                    .sigmask = POSIXFDS_SIG(2) | POSIXFDS_SIG(64),
-                   .sigignore = POSIXFDS_SIG(13) },
+                   .sigignore = POSIXFDS_SIG(13),
+                   .sigpending = POSIXFDS_SIG(15) | POSIXFDS_SIG(40) },
         .cwd = "/data/home", .fds = d, .nfds = POSIXFDS_KIND_COUNT - 1,
     };
     CHECK_ST(posixfds_write(a, &out), OK);

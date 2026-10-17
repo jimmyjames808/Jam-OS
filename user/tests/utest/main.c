@@ -620,6 +620,7 @@ static const struct {
     { "posixfds_writer_refuses", t_posixfds_writer_refuses },
     { "posixfds_spawn_child", t_posixfds_spawn_child },
     { "spawn_stack_size", t_spawn_stack_size },
+    { "exec_native", t_exec_native },
     { "wants_posix", t_wants_posix },
     { "crash_kills_only_the_child", t_crash_kills_only_the_child },
     { "wx", t_wx },

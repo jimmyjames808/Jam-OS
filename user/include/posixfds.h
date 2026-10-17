@@ -8,8 +8,9 @@
  *     duplicate of each, or for a file a fresh open) and the kind's data
  *     (a directory's path, a /dev node's name, ...);
  *   - the process's state that exec keeps: the current directory, the
- *     umask, the blocked and the ignored signals, the parent's pid, the
- *     process group and the session;
+ *     umask, the blocked and the ignored signals (and, from an exec in
+ *     place, the pending ones), the parent's pid, the process group and
+ *     the session;
  *   - the program's path, when the starter names one: what libc's
  *     /proc/self/exe reads (docs/CR-PLAN.md section 3). The starter's
  *     word, as argv is: it chose the program;
@@ -46,7 +47,7 @@
 #include <os.h>
 
 #define POSIXFDS_MAGIC    0x5853504au   /* "JPSX" */
-#define POSIXFDS_VERSION  1
+#define POSIXFDS_VERSION  2             /* 2: the state's sigpending (FL3) */
 #define POSIXFDS_LAST     1u            /* posixfds_msg.flags: the last message */
 #define POSIXFDS_SECURE   2u            /* ... the first only: start as AT_SECURE (above) */
 #define POSIXFDS_MSG_MAX  CHANNEL_MAX_BYTES   /* bytes of one message */
@@ -112,6 +113,8 @@ struct posixfds_state {
     uint32_t sid;           /* the session; below POSIXFDS_PID_MAX */
     uint64_t sigmask;       /* blocked signals (POSIXFDS_SIG); never POSIXFDS_SIG_NEVER */
     uint64_t sigignore;     /* ignored signals; never POSIXFDS_SIG_NEVER */
+    uint64_t sigpending;    /* signals pending at an exec in place (execve keeps them, as
+                             * Linux does); 0 for a new process; never POSIXFDS_SIG_NEVER */
 };
 
 /* A message: this header, then (in the first message only) cwd_len bytes

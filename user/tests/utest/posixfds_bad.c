@@ -55,7 +55,7 @@ static bool breaks(unsigned which, unsigned *nmsg)
     switch (which) {
     case 0:  h0->txid = 1; break;
     case 1:  h0->magic ^= 1; break;
-    case 2:  h1->version = 2; break;
+    case 2:  h1->version = POSIXFDS_VERSION + 1; break;
     case 3:  h1->flags |= 2; break;
     case 4:  h0->seq = 1; break;
     case 5:  h1->seq = 2; break;
@@ -106,6 +106,8 @@ static bool breaks(unsigned which, unsigned *nmsg)
         break;
     case 46: h0->exe_len = 2; break;                      /* a program's path that isn't there */
     case 47: h1->exe_len = 2; break;                      /* a path past the first */
+    case 48: h0->state.sigpending |= POSIXFDS_SIG(9); break;
+    case 49: h0->version = 1; break;                      /* the format before FL3's */
     default:
         return false;
     }
@@ -154,7 +156,7 @@ bool t_posixfds_malformed(void)
         if (which == 22 && col.resets != 1)
             FAIL("break 22: the first message's descriptors were not reset");
     }
-    CHECK_EQ(tried, 47u);
+    CHECK_EQ(tried, 49u);
 
     /* A sink that refuses: its error, everything closed. */
     CHECK_ST(good(), OK);

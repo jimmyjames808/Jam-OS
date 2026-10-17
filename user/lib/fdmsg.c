@@ -18,8 +18,8 @@
 #include <posixfds.h>
 #include "fork.h"
 
-_Static_assert(sizeof(struct posixfds_state) == 32, "posixfds_state has no padding");
-_Static_assert(sizeof(struct posixfds_msg) == 64, "posixfds_msg has no padding");
+_Static_assert(sizeof(struct posixfds_state) == 40, "posixfds_state has no padding");
+_Static_assert(sizeof(struct posixfds_msg) == 72, "posixfds_msg has no padding");
 _Static_assert(sizeof(struct posixfds_fd) == 24, "posixfds_fd has no padding");
 _Static_assert(POSIXFDS_MSG_MAX <= CHANNEL_MAX_BYTES, "a message fits a channel message");
 
@@ -90,12 +90,14 @@ static bool state_ok(const struct posixfds_state *s)
 {
     return s->umask <= POSIXFDS_UMASK && s->ppid < POSIXFDS_PID_MAX &&
            s->pgid < POSIXFDS_PID_MAX && s->sid < POSIXFDS_PID_MAX &&
-           !(s->sigmask & POSIXFDS_SIG_NEVER) && !(s->sigignore & POSIXFDS_SIG_NEVER);
+           !(s->sigmask & POSIXFDS_SIG_NEVER) && !(s->sigignore & POSIXFDS_SIG_NEVER) &&
+           !(s->sigpending & POSIXFDS_SIG_NEVER);
 }
 
 static bool state_zero(const struct posixfds_state *s)
 {
-    return !s->umask && !s->ppid && !s->pgid && !s->sid && !s->sigmask && !s->sigignore;
+    return !s->umask && !s->ppid && !s->pgid && !s->sid && !s->sigmask && !s->sigignore &&
+           !s->sigpending;
 }
 
 /* A DUP record's data: the number of a descriptor already in the

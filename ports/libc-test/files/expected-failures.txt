@@ -18,7 +18,6 @@ regression/tls_get_new-dtv skip: needs dlopen, and Jam OS has no dynamic linking
 
 # ---- fork: a forked child's descriptors and exec (docs/FORK-PLAN.md) ---------------------------
 functional/fcntl limit: its forked children must see the parent's record lock (F_SETLK EAGAIN, F_GETLK naming the parent), but record locks are granted and never kept (dup.c: no file service keeps locks, and no lock service exists to keep them between processes)
-functional/vfork pending: its child execs /bin/sh -c (exit codes, kill $$), which needs exec in a forked child (FORK-PLAN's FL3) and a POSIX shell (M13.5)
 
 # ---- SysV IPC: not provided ---------------------------------------------------------------
 functional/ipc_msg enosys: msgget and msgctl are ENOSYS (SysV IPC is not built)
@@ -29,6 +28,7 @@ functional/ipc_shm enosys: shmget and shmctl are ENOSYS (SysV IPC is not built)
 functional/popen limit: its second command is a shell script (read; test; kill); /bin/sh is a stub until M13.5; its first needs echo (sbase)
 functional/wordexp limit: wordexp runs /bin/sh, which is a stub until M13.5
 regression/execle-env limit: runs sh -c with a test ([), and /bin/sh is a stub until M13.5
+functional/vfork limit: vfork and _exit pass, and its children exec /bin/sh in place (FORK-PLAN's FL3), but sh -c "exit 0", "exit 1" and "kill -9 $$" need a shell's builtin exit and its $$, and /bin/sh is a stub until M13.5 (exit is looked up as a program: 127; $ is refused: 2)
 
 # ---- waiting for other tracks -----------------------------------------------------------------
 

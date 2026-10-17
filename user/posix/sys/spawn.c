@@ -37,7 +37,24 @@
  * never started dies with its last handle, ours) or a child with the
  * whole hand-over: spawn writes all of it before process_start.
  *
- * execve is spawn, wait, exit (question 4's answer): the program starts
+ * execve is in place (docs/FORK-PLAN.md section 2, track FL3): steps 1
+ * and 3 (no file actions), then libjam's spawn_replace builds the program
+ * in a new process of our job, as step 5 would, and the hand-over is
+ * made last, once nothing but the replace can fail (exec_handover): the
+ * signal thread held, every descriptor without FD_CLOEXEC exported, the
+ * state exec keeps (our parent, group and session, our umask, our mask,
+ * the ignored signals and the pending ones), the same SR_SIGNALS (a
+ * duplicate of ours: the parent's kill reaches the new program through
+ * it). Then process_replace: our other threads end, our memory, every
+ * handle and so every close-on-exec descriptor go, and this thread runs
+ * the program, with our pid, our parent's wait and /proc/<pid> unchanged.
+ * Handlers are the new program's (none: the default), as POSIX says. A
+ * failure before the replace returns its errno with the process as it
+ * was (the build happens before anything of ours is touched).
+ *
+ * A program on a file system is sealed and started by init (/svc/exec),
+ * which the caller may not do itself (the owner's rule), so its execve is
+ * still spawn, wait, exit (question 4's first answer): the program starts
  * as our child with our descriptors, our mask and ignored signals, our
  * parent, group and session; we close our descriptors (they are the new
  * program's now), wait for it (the signal track forwards every signal to
@@ -54,6 +71,7 @@
 #include "proc.h"
 #include "sig.h"
 #include "spawn.h"
+#include "threads.h"
 
 #define CHILD_STACK  (8ull << 20)   /* a POSIX child's stack: Linux's usual 8 MiB */
 #define SIG_NEVER    ((1ull << (SIGKILL - 1)) | (1ull << (SIGSTOP - 1)))
@@ -451,12 +469,124 @@ static int launch(const struct jam_spawn_req *r, bool exec, struct spawnfd *t,
     return 0;
 }
 
+/* ---- exec in place --------------------------------------------------------------------- */
+
+/* An exec in place while spawn_replace builds its program: what the
+ * hand-over is made from, and how far it got. */
+struct exec_job {
+    const struct jam_spawn_req *r;
+    struct spawnfd             *t;
+    struct posixfds_out        *ho;
+    char                       *exe;    /* PATH_MAX bytes: the program's path, as spawn names it */
+    bool                        held;   /* the signal thread is held (ours to release) */
+    long                        err;    /* the hand-over's own failure (-errno), or 0 */
+};
+
+/* spawn_replace's before_start: the program is built and its startup
+ * message written, so nothing is left but the replace. The signal thread
+ * is held (what has come is in signal.c's sets now, and the rest waits on
+ * the channel the new image gets); every descriptor without FD_CLOEXEC
+ * exported; the state exec keeps, pending signals and all; then our
+ * streams drained as an exit drains them (netstack drops what it hasn't
+ * taken when their handles close: a close-on-exec socket's sent bytes
+ * would be lost). */
+static status_t exec_handover(handle_t startup, void *ctx)
+{
+    struct exec_job *x = ctx;
+    sig_thread_hold();
+    x->held = true;
+    long e = spawnfd_export(x->t, x->ho);
+    if (e) {
+        x->err = e;
+        return ERR_BAD_STATE;   /* x->err says what */
+    }
+    (void)child_state(x->r, true, &x->ho->state);   /* exec's: it can't fail */
+    x->ho->state.sigpending = sig_exec_pending();
+    x->ho->cwd = x->t->cwd;
+    x->ho->exe = x->exe[0] ? x->exe : NULL;
+    status_t st = posixfds_write(startup, x->ho);   /* its handles consumed */
+    /* FL4: the "I have exec'd" notice to a vfork parent goes here, the
+     * last thing before the replace. */
+    if (st == OK)
+        sock_exit_drain();
+    return st;
+}
+
+/* The program's path as the new image's /proc/self/exe, as spawn names
+ * it for a child (libjam's write_handover): an absolute name as it is, a
+ * boot-image one as /boot/<name>; none for an image with no path. */
+static void exec_exe(const struct program *p, char *exe)
+{
+    exe[0] = '\0';
+    if (p->name[0] == '/')
+        snprintf(exe, PATH_MAX, "%s", p->name);
+    else if (!p->vmo)
+        snprintf(exe, PATH_MAX, "/boot/%s", p->name);
+}
+
+static status_t dup_thread(handle_t thread, void *out)
+{
+    return jam_handle_duplicate(thread, RIGHT_SAME, out);
+}
+
+/* execve of p (found, not sealed) in place: built by spawn_replace in a
+ * new process of our job with our namespace, an 8 MiB stack and a
+ * duplicate of our SR_SIGNALS; the hand-over written by exec_handover;
+ * then the replace. Returns only if it failed: -errno, nothing of ours
+ * changed, but for a failure while the hand-over was written (no memory
+ * for its messages, or another thread's exec replacing us first), when a
+ * socket or a pipe's leftover it moved stays the hand-over's. */
+static long exec_replace(const struct jam_spawn_req *r, struct spawnfd *t,
+                         const struct program *p, struct posixfds_out *ho)
+{
+    static const char *const no_env[] = { NULL };
+    handle_t thread = HANDLE_INVALID, sig = HANDLE_INVALID, ours = startup_handle(SR_SIGNALS);
+    char *exe = malloc(PATH_MAX);
+    long e = exe ? thread_apply(0, dup_thread, &thread) : -ENOMEM;
+    if (!e && ours)
+        e = lx_err(jam_handle_duplicate(ours, RIGHT_SAME, &sig));
+    if (e) {
+        free(exe);
+        if (thread)
+            jam_handle_close(thread);
+        return e;
+    }
+    exec_exe(p, exe);
+    struct spawn_handle x = { SR_SIGNALS, sig };
+    struct exec_job j = { r, t, ho, exe, false, 0 };
+    struct spawn_args a = {
+        .path = p->name,
+        .vmo = p->vmo,
+        .size = p->size,
+        .argc = count(r->argv),
+        .argv = (const char *const *)r->argv,
+        .job = startup_handle(SR_JOB),
+        .envp = r->envp ? (const char *const *)r->envp : no_env,
+        .ns = NS_ALL,
+        .stack_size = CHILD_STACK,
+        .extra = &x,
+        .nextra = sig ? 1 : 0,
+        .before_start = exec_handover,
+        .before_start_ctx = &j,
+    };
+    status_t st = spawn_replace(&a, thread);   /* returns only if it failed */
+    if (j.held)
+        sig_thread_release();
+    jam_handle_close(thread);
+    free(exe);
+    return j.err ? j.err : -spawn_errno(st);
+}
+
+/* ---- the calls ------------------------------------------------------------------------- */
+
 /* The spawn itself: the table, the program, then launch; the child into
  * the table of children. The program is found before the table is
  * exported: exporting moves things out of ours (a socket, a pipe's
  * leftover bytes, a writable file's open), so a spawn that fails for want
  * of its program (every PATH directory execvp tries before the right one)
- * must fail before it. */
+ * must fail before it. An execve of a program that can run in place
+ * (exec_replace) returns from here only if it failed; one from a file
+ * system goes on as a spawn (the file's comment). */
 static int spawn_child(const struct jam_spawn_req *r, bool exec, int *res)
 {
     if (r->flags & (POSIX_SPAWN_SETSCHEDPARAM | POSIX_SPAWN_SETSCHEDULER))
@@ -470,7 +600,9 @@ static int spawn_child(const struct jam_spawn_req *r, bool exec, int *res)
         e = spawnfd_apply(t, r->ops, r->nops);
     if (!e)
         e = r->path ? find_program(r, t->cwd, &prog) : -EFAULT;
-    if (!e)
+    if (!e && exec && !prog.sealed)
+        e = exec_replace(r, t, &prog, &ho);   /* back only if it failed */
+    else if (!e)
         e = spawnfd_export(t, &ho);
     int ec = (int)-e;
     struct started c = { 0, HANDLE_INVALID, HANDLE_INVALID, HANDLE_INVALID };
@@ -534,11 +666,12 @@ long lx_execve(long path, long argv, long envp, long d, long e, long f)
         .envp = (char *const *)(uintptr_t)envp,
     };
     int pid;
-    int ec = spawn_child(&r, true, &pid);
+    int ec = spawn_child(&r, true, &pid);   /* in place: back only if it failed */
     if (ec)
         return -ec;
-    /* Our descriptors are the new program's now: we keep none open (a
-     * pipe's end held here would hide its end of file). */
+    /* A program from a file system, started as our child: our descriptors
+     * are its now, and we keep none open (a pipe's end held here would
+     * hide its end of file). */
     struct fd_desc *dsc;
     bool cloexec;
     for (long fd = fd_next(0, &dsc, &cloexec); fd >= 0; fd = fd_next(fd + 1, &dsc, &cloexec)) {
