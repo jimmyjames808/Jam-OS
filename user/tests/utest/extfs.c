@@ -874,14 +874,15 @@ bool t_extfs_late(void)
     CHECK(put_file(&r, "/t/a", "before the late read"));
     CHECK(fat_stop(&r));
     CHECK(extfs_start(&r, &xd, false, words, 2));   /* nothing of /t cached */
+    CHECK_ST(t_stat(&r, "/", NULL, NULL, NULL), OK);   /* mounted: the next read is a request's */
     uint32_t writes = ramdisk_writes(&xd);
     ramdisk_hold_read(&xd, false);
     CHECK(t_stat(&r, "/t/a", NULL, NULL, NULL) != OK);
-    CHECK(t_mkdir(&r, "/t/after") != OK);
+    (void)t_mkdir(&r, "/t/after");   /* the next writes through the buffer, if extfs went on */
+    CHECK(!ramdisk_has_late(&xd));
     CHECK(extfs_ended(&r, 1));
     CHECK_EQ(ramdisk_late(&xd), 1);
     CHECK_EQ(ramdisk_writes(&xd), writes);
-    CHECK(!ramdisk_has_late(&xd));
     CHECK(extfs_start(&r, &xd, false, NULL, 0));
     CHECK(file_is(&r, "/t/a", "before the late read"));
     CHECK(put_file(&r, "/t/b", "after it"));
@@ -909,6 +910,7 @@ bool t_extfs_late_in_order(void)
     CHECK(put_file(&r, "/t/b", "never answered"));
     CHECK(fat_stop(&r));
     CHECK(extfs_start(&r, &xd, false, words, 2));
+    CHECK_ST(t_stat(&r, "/", NULL, NULL, NULL), OK);
     ramdisk_hold_read(&xd, false);
     CHECK(file_is(&r, "/t/a", "read late, then again"));
     CHECK_EQ(ramdisk_late(&xd), 1);
@@ -916,6 +918,7 @@ bool t_extfs_late_in_order(void)
     CHECK(fat_stop(&r));
     CHECK(!ramdisk_has_late(&xd));
     CHECK(extfs_start(&r, &xd, false, words, 2));
+    CHECK_ST(t_stat(&r, "/", NULL, NULL, NULL), OK);
     uint32_t writes = ramdisk_writes(&xd);
     ramdisk_hold_read(&xd, true);
     CHECK(t_stat(&r, "/t/b", NULL, NULL, NULL) != OK);

@@ -15,6 +15,20 @@
 static struct ramdisk disk;
 static const char *const quick[] = { "quick-retry", "quick-wait" };
 
+/* put_file's steps, the first failure returned (no CHECK: fat may be
+ * gone). */
+static status_t put_file_st(const struct fatrun *r, const char *path, const char *text)
+{
+    struct tfile f;
+    uint32_t done = 0;
+    status_t st = t_open(r, path, FS_WRITE | FS_CREATE | FS_TRUNCATE, &f);
+    if (st != OK)
+        return st;
+    st = t_write(&f, 0, text, (uint32_t)strlen(text), &done);
+    t_close(&f);
+    return st;
+}
+
 /* fat ended by itself with `code`, the session's channels closed. */
 static bool fat_ended(struct fatrun *r, int code)
 {
@@ -104,14 +118,15 @@ bool t_fat_late(void)
     CHECK(put_file(&r, "/t/a", "before the late read"));
     CHECK(fat_stop(&r));
     CHECK(fat_start_words(&r, &disk, quick, 2));   /* nothing of /t cached */
+    CHECK_ST(t_stat(&r, "/t", NULL, NULL, NULL), OK);   /* mounted: the next read is /t's */
     uint32_t writes = ramdisk_writes(&disk);
     ramdisk_hold_read(&disk, false);
     CHECK(t_stat(&r, "/t/a", NULL, NULL, NULL) != OK);
-    CHECK(t_mkdir(&r, "/t/after") != OK);
+    (void)put_file_st(&r, "/after", "the next writes through the buffer, if fat went on");
+    CHECK(!ramdisk_has_late(&disk));
     CHECK(fat_ended(&r, 1));
     CHECK_EQ(ramdisk_late(&disk), 1);
     CHECK_EQ(ramdisk_writes(&disk), writes);
-    CHECK(!ramdisk_has_late(&disk));
     CHECK(fat_start(&r, &disk, false));
     CHECK(file_is(&r, "/t/a", "before the late read"));
     CHECK(put_file(&r, "/t/b", "after it"));
