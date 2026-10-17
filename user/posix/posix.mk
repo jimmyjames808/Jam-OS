@@ -340,6 +340,12 @@ posix-check: $(MUSL_LIB) $(SYSROOT_LIBS)
 	    -o $(BUILD)/posix-link-test
 	@! $(CROSS)nm $(BUILD)/posix-link-test | grep -E ' __jl_lx_(execve|setsockopt|timer_create)$$' || \
 	    { echo "posix-check: a program that calls write links handlers it never calls"; exit 1; }
+	@$(CROSS)readelf -n $(BUILD)/posix-link-test | grep -q 'NT_GNU_BUILD_ID' || \
+	    { echo "posix-check: a program tools/jamos-cc links has no GNU build-id note"; exit 1; }
+	JAMOS_SYSROOT=$(SYSROOT) CROSS=$(CROSS) tools/jamos-cc -O2 tools/posix-link-test.c \
+	    -o $(BUILD)/posix-link-test2
+	@cmp -s $(BUILD)/posix-link-test $(BUILD)/posix-link-test2 || \
+	    { echo "posix-check: two links of one program differ (the build-id must be its contents' hash)"; exit 1; }
 check: posix-check
 
 -include $(MUSL_OBJS:.o=.d) $(MUSL_OVR_OBJS:.o=.d) $(POSIX_OBJS:.o=.d) $(POSIX_GLIBC_OBJS:.o=.d) \

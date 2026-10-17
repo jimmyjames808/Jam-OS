@@ -14,7 +14,8 @@
 # unused sections dropped, plus the program's list (<wants.h>) as its ELF
 # note: by default the one word `posix` (a POSIX program: the shell gives
 # it descriptors and an 8 MiB stack). --jamos-wants=FILE takes the list's
-# text from FILE instead.
+# text from FILE instead. The program has a GNU build-id note (ld's
+# --build-id: SHA-1 of its contents, 20 bytes).
 #
 # Environment: JAMOS_SYSROOT (default: build/sysroot beside this script),
 # CROSS (default x86_64-elf-), as the Makefile's.
@@ -82,6 +83,6 @@ size=$(wc -c < "$tmp/wants.txt" | tr -d ' ')
 # shellcheck disable=SC2086
 "$cc" $compile_flags -static -nostdlib \
     -Wl,-T,"$sysroot/lib/posix.ld" -Wl,--gc-sections -Wl,-z,max-page-size=0x1000 \
-    -Wl,-z,noexecstack -Wl,--eh-frame-hdr \
+    -Wl,-z,noexecstack -Wl,--eh-frame-hdr -Wl,--build-id \
     "$sysroot/lib/crt1.o" "$sysroot/lib/crti.o" "$@" "$tmp/wants.o" \
     -L"$sysroot/lib" -lc "$libgcc" "$sysroot/lib/crtn.o"

@@ -22,6 +22,9 @@
 # libunwind, libc.a (musl, the call layer, libjam), compiler-rt's builtins,
 # crtend.o, crtn.o. .eh_frame and .eh_frame_hdr are kept (posix.ld's
 # PT_GNU_EH_FRAME), which is how libunwind finds a frame's unwind table.
+# The program has a GNU build-id note (lld's --build-id: a 64-bit hash of
+# its contents; a later --build-id=... of the caller's wins: Chromium's
+# =fast is the same).
 # The runtimes (libc++, libc++abi, libunwind, the builtins, crtbegin and
 # crtend) are ports/llvm-runtimes' library files, in a port's sysroot when
 # its recipe `needs llvm-runtimes`; the UAPI headers are ports/linux-uapi's.
@@ -139,7 +142,7 @@ size=$(wc -c < "$tmp/wants.txt" | tr -d ' ')
 # shellcheck disable=SC2086
 "$clang" $compile_flags -fuse-ld=lld -static -nostdlib \
     -Wl,-T,"$lib/posix.ld" -Wl,--gc-sections -Wl,-z,max-page-size=0x1000 \
-    -Wl,-z,noexecstack -Wl,--eh-frame-hdr -Wl,--build-id=none \
+    -Wl,-z,noexecstack -Wl,--eh-frame-hdr -Wl,--build-id \
     "$lib/crt1.o" "$lib/crti.o" "$lib/clang_rt.crtbegin.o" "$@" "$tmp/wants.o" \
     -L"$lib" $cxxlibs -lunwind -lc "$lib/libclang_rt.builtins.a" \
     "$lib/clang_rt.crtend.o" "$lib/crtn.o"

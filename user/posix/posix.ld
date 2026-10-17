@@ -26,7 +26,11 @@
  * Each segment starts on its own page, so every page is read+execute,
  * read-only or read+write, never writable and executable (W^X). The
  * program's list (<wants.h>, .jamos.wants) sits in the read-only segment
- * under a PT_NOTE, as in user/linker.ld. Sections are kept or dropped by
+ * under a PT_NOTE, as in user/linker.ld, and the GNU build-id note the
+ * link drivers ask for (--build-id: a hash of the program's contents, so
+ * the same input links to the same bytes; crash reports and Chromium's
+ * ElfReader key a program by it) after it under one of its own, which a
+ * reader of the list skips (another name). Sections are kept or dropped by
  * --gc-sections from _start; the ones nothing refers to that must stay
  * are KEEP. */
 OUTPUT_FORMAT(elf64-x86-64)
@@ -39,6 +43,7 @@ PHDRS
     data   PT_LOAD FLAGS(6);                 /* R W */
     tls    PT_TLS FLAGS(4);                  /* the TLS image, inside data */
     wants  PT_NOTE FLAGS(4);                 /* the program's list */
+    buildid PT_NOTE FLAGS(4);                /* the GNU build-id note */
     eh     PT_GNU_EH_FRAME FLAGS(4);         /* .eh_frame_hdr, inside rodata */
 }
 
@@ -55,6 +60,7 @@ SECTIONS
     . = ALIGN(4096);
     .rodata : { *(.rodata .rodata.*) } :rodata
     .jamos.wants : { KEEP(*(.jamos.wants)) } :rodata :wants
+    .note.gnu.build-id : { KEEP(*(.note.gnu.build-id)) } :rodata :buildid
     .eh_frame_hdr : { *(.eh_frame_hdr) } :rodata :eh
     .eh_frame : { KEEP(*(.eh_frame)) } :rodata
     .gcc_except_table : { *(.gcc_except_table .gcc_except_table.*) } :rodata
