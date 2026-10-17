@@ -346,11 +346,19 @@ def main(argv):
     ap.add_argument("--mem", default="4G")
     ap.add_argument("--env", action="append", default=["JAMOS_ENOSYS_LOG=1"])
     ap.add_argument("--only", help="only suites matching this glob (several: separated by spaces or commas)")
+    ap.add_argument("--listed", action="store_true",
+                    help="only the suites with a test named on the skip list (not a wildcard "
+                    "pattern's: FilePathWatcher* waits out a minute a test); with --all, to re-measure the list")
     ap.add_argument("--args", default="", help="more arguments for base_unittests, e.g. ' --v=1' (a space first)")
+    ap.add_argument("--death-style", default="fast", choices=("fast", "threadsafe"),
+                    help="gtest's death test style. base's own default is threadsafe: the child execve()s the "
+                    "program again, which a clone child on gtest's two-page stack can't do here yet "
+                    "(docs/CR-PLAN.md, CB-RM); fast forks and runs the statement")
     ap.add_argument("outdir")
     ap.add_argument("stick")
     args = ap.parse_args(argv)
     os.makedirs(args.outdir, exist_ok=True)
+    args.args = " --gtest_death_test_style=%s%s" % (args.death_style, args.args)
     si, sn = (int(x) for x in args.shard.split("/"))
     # QEMU's sockets and logs are named after the run (build/.qemu-<tag>-<boot>.ser,
     # in the checkout all of a batch's runs share): a name of this output directory's own.
@@ -377,6 +385,9 @@ def main(argv):
     if args.only:
         globs = args.only.replace(",", " ").split()
         mine = [s for s in mine if any(fnmatch.fnmatchcase(s, g) for g in globs)]
+    if args.listed:
+        named = {p.split(".", 1)[0] for p, _, _ in skips if not any(c in p for c in "*?[")}
+        mine = [s for s in mine if s in named]
 
     def skipped(full):
         for pat, layer, reason in skips:
@@ -401,6 +412,7 @@ def main(argv):
     # only its own few, so a suite of crashers costs a round or two.
     pending = [s for s in mine if unrun(s)]
     rounds = 0
+    read_only = []   # rounds in which the stick's /data went read-only (a disk timeout)
     while pending and rounds < args.rounds:
         rounds += 1
         items = []
@@ -421,6 +433,10 @@ def main(argv):
         script += FOOTER
         b = Boot(args, "run%d" % rounds, script, 6 * 3600)
         lines = b.run()
+        if any("the volume is read-only from now on" in ln for ln in lines):
+            # extfs gave up after a disk timeout (seen under a loaded PC, CB-RM):
+            # a program that makes a file then fails in every test of the boot.
+            read_only.append(rounds)
         before = len(res.status)
         crashed, hung = parse_boot(lines, items, res, None)
         print("base-run: round %d: %d programs, %d crashed, %s, %d new results" %
@@ -463,6 +479,10 @@ def main(argv):
     lines.append("base-run: " + ", ".join("%d %s" % (n, k) for k, n in sorted(counts.items())))
     lines.append("base-run: %d new failures, %d known failures, %d missing, %d rounds" %
                  (len(new), len(known), len(missing), rounds))
+    if read_only:
+        lines.append("base-run: WARNING: /data went read-only in round(s) %s (a disk timeout, not the "
+                     "tests'): failures that need a new file are that; run the shard again" %
+                     ", ".join(str(r) for r in read_only))
     for s, note in sorted(res.suite_note.items()):
         lines.append("base-run: suite %s: %s" % (s, note))
     for t in new[:60]:
