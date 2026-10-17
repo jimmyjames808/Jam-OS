@@ -675,17 +675,6 @@ $(BUILD)/bigprog/bigprog: $(UOBJ)/user/lib/crt0.S.o $(call prog_objs,bigprog) \
 	$(LD) $(USER_LDFLAGS) -s $(UOBJ)/user/lib/crt0.S.o $(call prog_objs,bigprog) \
 	    $(BUILD)/bigprog/table.o $(UOBJ)/libos.a $(LIBGCC) -o $@
 
-# The same table in a POSIX program (tools/bigpkg.c, built by
-# jamos-cc with the list `posix` and `mount /jam rw`): tools/pkg-test.sh's big
-# package, installed by `pkg` onto /jam and run from there. Generated when a
-# test asks for it (`make build/bigpkg/bigpkg`), never in bootfs or the tree.
-$(BUILD)/bigpkg/bigpkg: tools/bigpkg.c $(BUILD)/bigprog/table.o tools/jamos-cc \
-                        $(SYSROOT_LIBS) $(SYSROOT_HDRS)
-	@mkdir -p $(dir $@)
-	printf 'posix\nmount /jam rw\nmount /pkg r\nsvc exec\n' > $(BUILD)/bigpkg/list
-	JAMOS_SYSROOT=$(SYSROOT) CROSS=$(CROSS) tools/jamos-cc -O2 -Wall -Werror \
-	    --jamos-wants=$(BUILD)/bigpkg/list -o $@ $< $(BUILD)/bigprog/table.o
-
 # ---- drivers (ARCHITECTURE.md "The migration rule") -------------------------
 # A driver sees nothing but <jam/driver.h> (+ <jam/abi.h>, <jam/status.h>,
 # <jam/task.h>, libos's cooperative tasks, <jam/netframe.h>, pure
@@ -1181,6 +1170,20 @@ clean:
 
 # POSIX on musl: musl, the call layer, the sysroot, posixtest (its own file).
 include user/posix/posix.mk
+
+# The same table in a POSIX program (tools/bigpkg.c, built by
+# jamos-cc with the list `posix` and `mount /jam rw`): tools/pkg-test.sh's big
+# package, installed by `pkg` onto /jam and run from there. Generated when a
+# test asks for it (`make build/bigpkg/bigpkg`), never in bootfs or the tree.
+# Below posix.mk's include: SYSROOT_LIBS and SYSROOT_HDRS are `:=` there, and a
+# rule's prerequisites expand when it is read (above it they were empty, so a
+# libc change never relinked it).
+$(BUILD)/bigpkg/bigpkg: tools/bigpkg.c $(BUILD)/bigprog/table.o tools/jamos-cc \
+                        $(SYSROOT_LIBS) $(SYSROOT_HDRS)
+	@mkdir -p $(dir $@)
+	printf 'posix\nmount /jam rw\nmount /pkg r\nsvc exec\n' > $(BUILD)/bigpkg/list
+	JAMOS_SYSROOT=$(SYSROOT) CROSS=$(CROSS) tools/jamos-cc -O2 -Wall -Werror \
+	    --jamos-wants=$(BUILD)/bigpkg/list -o $@ $< $(BUILD)/bigprog/table.o
 
 # The ports in the boot image (ports/, docs/M13.7-PLAN.md): every recipe
 # with `place boot` (sbase, Lua, libc-test) is built by tools/ports.py with
