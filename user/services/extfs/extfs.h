@@ -115,7 +115,7 @@ struct xf_vol {
     uint32_t    max_sectors;  /* the most one block call moves */
     bool        read_only;    /* block.info said so */
     bool        in_order;     /* ... and a queue depth of 1: answers in order (disk.c's retries) */
-    bool        ram;        /* the disk is a VMO (EXTFS_SR_RAM): no block channel */
+    bool        ram;          /* the disk is a VMO (EXTFS_SR_RAM): no block channel */
     bool        may_format;   /* EXTFS_ARG_FORMAT */
     bool        fua;          /* EXTFS_ARG_FUA: an answered write is on the medium */
     bool        unflushed;    /* written since the last block.sync (no fua) */
