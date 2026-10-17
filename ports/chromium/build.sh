@@ -15,8 +15,10 @@
 # sysroot, the link driver and pkg-config, all in the kept tree (their
 # paths stay the same from build to build, so the commands do).
 # $kept/build.conf, if there,
-# can say `targets=...` (the ninja targets, default base_unittests and
-# headless_shell), `keep=N` (ninja goes on past N failures: -k) or
+# can say `targets=...` (the ninja targets, default base_unittests,
+# test_child_process, which base_unittests starts, and headless_shell:
+# each named so a stale link of it is redone, below), `keep=N` (ninja goes
+# on past N failures: -k) or
 # `stop=gen` (GN only, then stop).
 build() {
     top=$portdir/../..
@@ -41,7 +43,7 @@ build() {
     export GOPROXY=off GOTOOLCHAIN=local GOTELEMETRY=off GOFLAGS=-mod=mod \
         GOCACHE=$kept/go/cache GOPATH=$kept/go/path
 
-    targets="base_unittests headless_shell"
+    targets="base_unittests test_child_process headless_shell"
     stop=
     keep=1
     # shellcheck disable=SC1091
@@ -67,15 +69,17 @@ build() {
     fi
     # A program's link takes the sysroot's libraries, crt files and posix.ld
     # through the port's wrapper (its image-base) and tools/jamos-clang,
-    # none of which ninja sees: when any of them changed since the last
-    # build, the targets' programs go, so ninja links them again.
+    # none of which ninja sees: a target's program linked with others
+    # than these (its <target>.links says which, as a hash) goes, so ninja
+    # links it again.
     links=$(cat "$CC" "$top/tools/jamos-clang" "$JAMOS_SYSROOT"/lib/posix.ld \
                 "$JAMOS_SYSROOT"/lib/*.a "$JAMOS_SYSROOT"/lib/*.o | sha256sum | cut -c1-16)
-    if [ "$(cat "$out/links.sum" 2> /dev/null)" != "$links" ]; then
-        # shellcheck disable=SC2086 # the targets are words
-        for t in $targets; do rm -f "$out/$t"; done
-        echo "$links" > "$out/links.sum"
-    fi
+    for t in $targets; do
+        if [ "$(cat "$out/$t.links" 2> /dev/null)" != "$links" ]; then
+            rm -f "$out/$t"
+            echo "$links" > "$out/$t.links"
+        fi
+    done
     ulimit -n 4096 2> /dev/null || true   # the big links open many files
     # shellcheck disable=SC2086 # the targets are words
     ninja -C "$out" -j "$jobs" -k "$keep" $targets

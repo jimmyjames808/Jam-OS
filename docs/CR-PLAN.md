@@ -297,8 +297,10 @@ design above:
   link to it) compile with `--target=x86_64-unknown-linux-musl`
   (`__linux__` defined), `-nostdinc` and the sysroot's headers before
   clang's own (libc++'s `include/c++/v1` first for C++), `-D__jamos__=1`,
-  `-fno-pie`; link with lld (`-fuse-ld=lld -static -nostdlib`, posix.ld,
-  `--gc-sections`, `--eh-frame-hdr`, `--build-id=none`): crt1, crti,
+  `-fPIE` (`-fno-pie` until MH); link with lld (`-fuse-ld=lld -static
+  -nostdlib`, `--defsym=__jamos_image_base=` 0x400000 or
+  `--jamos-image-base`'s, posix.ld, `--gc-sections`, `--eh-frame-hdr`,
+  `--build-id`, `=none` until MH): crt1, crti,
   crtbegin, the objects, the program's list note, `-lc++ -lc++abi` (C++),
   `-lunwind -lc`, the builtins, crtend, crtn. `-shared`, `-pie` and
   `-static-pie` are refused; `-fPIC` objects are taken (they link into
@@ -1053,7 +1055,7 @@ ones off; the programs need relinking against the new libc first.
   the memory is not freed there but reads as Linux's does; private memory is
   EINVAL, a range nothing maps ENOMEM, a mapping whose handle can't write
   EACCES. Clears `DiscardableSharedMemoryTest.ZeroFilledPagesAfterPurge`.
-- **`PartitionAddressSpaceTest.ZeroSegment`: not a layer answer.** Nothing
+- **`PartitionAddressSpaceTest.ZeroSegment`: not a layer answer** (done since by [MH](#mh-2026-10-18): the hint, top-down placement, the programs at 4 GiB). Nothing
   is read from the OS: `GetZeroSegmentSizeFromOS` is a constant (0x10000, a
   TODO for a larger `mmap_min_addr`), and `InitZeroSegment` reserves
   `[0x10000, 4 GiB)` as one PROT_NONE mmap at that address, keeping the
@@ -1069,7 +1071,7 @@ ones off; the programs need relinking against the new libc first.
   above 4 GiB (a base address for `posix.ld` that the link driver can set;
   that the kernel's loader takes an ET_EXEC there is untested) or the test
   skipped.
-- **`--build-id`: not done.** The driver (`tools/jamos-clang`) passes
+- **`--build-id`: not done** (done since by [MH](#mh-2026-10-18), as below). The driver (`tools/jamos-clang`) passes
   `-Wl,--build-id=none` before Chromium's own flags, and Chromium's
   `build/config/compiler/BUILD.gn` (line 1085) adds `-Wl,--build-id=fast`
   after, so the flag is not what is missing: `user/posix/posix.ld` ends with
