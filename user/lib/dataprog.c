@@ -411,6 +411,63 @@ const char *dp_wants_refused(const struct wants *w)
     return NULL;
 }
 
+/* A mount grant g ("/data:w", "*:r", "/usb*:r", "/data:wp"): its point's
+ * length and its mode, 0 read, 1 write, 2 write with the packages'
+ * prefix. false for anything else (a service, "/svc/<name>"). */
+static bool mount_grant(const char *g, size_t *point_len, int *mode)
+{
+    const char *colon = strchr(g, ':');
+    if (!colon || !strncmp(g, "/svc/", 5))
+        return false;
+    *point_len = (size_t)(colon - g);
+    *mode = !strcmp(colon + 1, "r") ? 0 : !strcmp(colon + 1, "w") ? 1 :
+            !strcmp(colon + 1, "wp") ? 2 : -1;
+    return *mode >= 0;
+}
+
+/* Does a grant's point (len bytes) take in the mount point mp (mp_len
+ * bytes)? "*" every one, "/usb*" every one whose name starts "/usb" (and
+ * "/usb*" itself), anything else that point alone. */
+static bool point_takes(const char *point, size_t len, const char *mp, size_t mp_len)
+{
+    if (len == 1 && point[0] == '*')
+        return true;
+    if (len && point[len - 1] == '*')
+        return mp_len >= len - 1 && !strncmp(mp, point, len - 1);
+    return len == mp_len && !strncmp(point, mp, len);
+}
+
+bool dp_wants_within(const struct wants *w, const struct wants *of)
+{
+    if (w->rights & ~of->rights)
+        return false;
+    for (unsigned i = 0; i < w->n; i++) {
+        size_t wl, ol;
+        int wm, om;
+        bool mount = mount_grant(w->grant[i], &wl, &wm), found = false;
+        for (unsigned k = 0; k < of->n && !found; k++) {
+            if (!mount)
+                found = !strcmp(w->grant[i], of->grant[k]);
+            else if (mount_grant(of->grant[k], &ol, &om))
+                found = om >= wm && point_takes(of->grant[k], ol, w->grant[i], wl);
+        }
+        if (!found)
+            return false;
+    }
+    return true;
+}
+
+bool dp_wants_mounts(const struct wants *w, const char *point)
+{
+    for (unsigned i = 0; i < w->n; i++) {
+        size_t l;
+        int m;
+        if (mount_grant(w->grant[i], &l, &m) && point_takes(w->grant[i], l, point, strlen(point)))
+            return true;
+    }
+    return false;
+}
+
 rights_t dp_root_rights(uint32_t want)
 {
     rights_t r = RIGHT_DUPLICATE | RIGHT_WAIT | RIGHT_INSPECT;

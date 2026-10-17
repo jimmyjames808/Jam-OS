@@ -147,6 +147,15 @@ status_t    dp_table_read(const char *hash_hex, uint64_t size, handle_t *table);
 /* The first thing w asks for that no program from /data may have, or NULL
  * (dataprog.c says why each): "right debug", or a service's name. */
 const char *dp_wants_refused(const struct wants *w);
+/* Does w ask for nothing beyond what of gives? Every power of w's is
+ * one of of's; every service is one of of's; every mount is one of of's
+ * at the same point (or every mount, "*", or every stick's, "/usb*", that
+ * takes it in) and as much (read-only within writable, writable within
+ * the packages' prefix writable too). What isn't one of these (an
+ * unknown form) is beyond: false. */
+bool        dp_wants_within(const struct wants *w, const struct wants *of);
+/* Does w's list give a mount at point (a mount point: "/data", "/tmp")? */
+bool        dp_wants_mounts(const struct wants *w, const char *point);
 /* The root resource's rights for a list's WANT_RIGHT_* (w->rights): what
  * the program's copy gets. Never RIGHT_TRANSFER: it can narrow its copy
  * (RIGHT_DUPLICATE), never pass it on. */
