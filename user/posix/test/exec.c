@@ -44,6 +44,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <jamos/libjam.h>
+#include <poll.h>
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
@@ -52,7 +53,6 @@
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
-#include <poll.h>
 #include <unistd.h>
 #include "pt.h"
 

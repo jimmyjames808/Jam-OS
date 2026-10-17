@@ -503,7 +503,7 @@ FK2, FK3 and FL1b are about two (their halves can't be tested apart).
 | **FK3. Exec in place** | `process_replace` (section 2); built, see "FK3 notes" | `kernel/object/process.c`, `kernel/sched/thread.c` (the other threads' end), `kernel/object/handle.c` (all but one closed), `kernel/mm/aspace.c` (the swap), `kernel/abi/sysc_proc.c`, syscalls.def, abi.h, a new ktest file | FK2 (the same files) | ktests: other threads in a wait, a futex, a channel call, a fault waiting for a pager all gone; every handle closed but one; the parent's handle, pid, waits and port bindings unchanged; the old address space's charges back; each refusal; two threads replacing at once; a replace racing a kill; full ktest 4 and 8; soak 2 | 2 | **Opus** |
 | **FL1b. POSIX `fork`** | `lx_fork`, `clone` without `CLONE_VM` (both forms), `vfork` as fork with the parent's wait (Q3's A; the wait itself needs FL4), the layer's locks, signals in the child (1.7), ids and the table of children (1.8), JIT entries removed; built, see "FL1b notes" | a new user/posix/sys/fork.c, `user/posix/sys/calls.def`, the vfork and clone overrides, `user/posix/sys/sigthread.c`, `user/posix/sys/signal.c`, `user/posix/sys/proc.c`, a new posixtest section (fork) | FL1a | posixtest `fork`: returns twice, memory separate (heap, stack, data, `mmap`), `MAP_SHARED` anonymous shared, malloc and atfork in a threaded parent's child, the two-VMO invariant from a threaded parent, a 1 TiB reservation forked within a bound, `ENOMEM` in a job that can't pay, ids, `waitpid`, `SIGCHLD`, `kill`, `SIGKILL`, pending cleared, timers gone, both `clone` forms, `jittest` forking (the child's JIT range faults, it isn't marked) | 2 | **Opus** |
 | **FL2. Descriptors and mappings at fork** | each kind's fork step (1.6's table), the table of mappings' handles, `VMAR_CLONE_SHARE` from `mmap`, `VMAR_CLONE_NONE` on every connection buffer, the cached service channels; built, see "FL2 notes" | `user/posix/sys/fd.h` and each kind's file (pipe, sockpair, memfd, eventfd, dev, etc, svcsock, file, dir, tty, pty, socket, epoll), `user/posix/sys/mem.c`, `user/posix/sys/maptable.c`, `user/posix/sys/resolve.c`, `user/posix/sys/unixsock.c`, libjam's buffer mappings, a new posixtest file | FL1b | posixtest `fork` descriptors: every kind used from both sides after a fork, leftovers read once, close-on-exec ones present until exec, absent kinds absent, `/proc/self/fd` exact, Chromium's child sequence (dup2s, close by `/proc/self/fd`) run in a child; no handle left over | 1.5 | **Opus** |
-| **FL3. libc's exec in place** | `execve` by build-then-replace (section 2); (a) kept for `/data` programs; rlimits in the hand-over if needed | `user/posix/sys/spawn.c` (execve), `user/lib/spawn.c` (all but the start), `user/include/posixfds.h` if rlimits go in, a new posixtest file | FK3, FL1b | posixtest `exec`: pid, parent's wait, kill and `/proc/<pid>/stat` the same before and after; threads gone; close-on-exec closed; handlers reset, mask kept; the fork's charge back; a failed exec returns; `/proc/self/exe` exec'd from a forked child; utest: a native starter (the shell's way) waits on a POSIX program that execs | 1 | **Opus** |
+| **FL3. libc's exec in place** | `execve` by build-then-replace (section 2); (a) kept for `/data` programs; rlimits in the hand-over if needed; built, see "FL3 notes" | `user/posix/sys/spawn.c` (execve), `user/lib/spawn.c` (all but the start), `user/include/posixfds.h` if rlimits go in, a new posixtest file | FK3, FL1b | posixtest `exec`: pid, parent's wait, kill and `/proc/<pid>/stat` the same before and after; threads gone; close-on-exec closed; handlers reset, mask kept; the fork's charge back; a failed exec returns; `/proc/self/exe` exec'd from a forked child; utest: a native starter (the shell's way) waits on a POSIX program that execs | 1 | **Opus** |
 | **FL4. Notices and `vfork`'s wait** | the child-to-parent notices (exec'd, group, session) on the signal channel, read by the parent's signal thread; `vfork`'s parent waiting for exec or exit | `abi/idl/signal.idl` and its header, `user/posix/sys/sigthread.c`, `user/posix/sys/proc.c`, user/posix/sys/fork.c's wait | FL1b | posixtest: `vfork` then `_exit`, then `execve`, the parent not running until then; a child's `setpgid(0, 0)` seen by the parent's `kill(-pgid)`; junk notices ignored | 1 | **Opus** |
 | **FC1. base's fork tests** | section 4's tests off the disabled list, run, PASS; their findings | ports/chromium's test list (0007-disable-failing-tests.patch), cr-test.sh's `base` expectations | FL1a to FL4, CB2 | cr-test.sh `base` | 1 | Sonnet 5.5 |
 | **FR1. Kernel review** | FK1 to FK3: findings first ([CR-REVIEW-KERNEL](CR-REVIEW-KERNEL.md)'s way), High and Medium fixed with a test each; hostile tests: a clone storm from 8 threads at the job's limit, replace racing kill and clone | the files its fixes need | FK1 to FK3 merged | its own; full ktest 4 and 8; soak 4 | 1.5 | **Opus** |
@@ -947,6 +947,101 @@ section, cases `fds`, `chromium`, `ttys`, `maps` in `forkfd.c`):
   socketpair whose sends of descriptors come in parts can interleave parts
   between parent and child reading the one channel (Linux keeps a message
   whole).
+
+### FL3 notes
+
+What FL4, CB5 and FR1 start from (libjam's `spawn_replace` in
+`user/lib/spawn.c`, declared in os.h; `user/posix/sys/spawn.c`'s
+`exec_replace` and `exec_handover`; sigthread.c's hold; posixtest's exec
+section, `exec.c`; utest `exec_native`; `tools/shell-tests/posix-fork.txt`
+runs both):
+
+- **The build.** `spawn_replace(a, thread)` is spawn with the start
+  replaced: the program loaded into a new process of our own job with no
+  thread (process_replace's terms), its stack, the startup message with
+  our own `SR_SELF_PROCESS` and the calling thread's `SR_SELF_THREAD`
+  (duplicates; `thread` 0 means `SR_SELF_THREAD`, the first thread), the
+  namespace's first message sent before the replace (its end already in
+  the startup message, so nothing is queued on an end that is sent), then
+  the caller's `before_start` last, then `process_replace(proc, entry,
+  stack, the startup channel's child end, 0)`. Everything that can fail
+  comes first, so execve returns with nothing changed for no program
+  (`ENOENT`), a file that isn't one (`ENOEXEC`), argv past 2 MiB (`E2BIG`),
+  no memory, a job that isn't ours (`process_replace`'s `ERR_BAD_STATE`).
+- **POSIX's execve** finds the program as posix_spawn does (PATH, the
+  self-image for `/proc/self/exe`, a boot-image name), then `spawn_replace`
+  with our namespace (`NS_ALL`), an 8 MiB stack, a duplicate of our
+  `SR_SIGNALS` as the one extra, and `exec_handover` as `before_start`: the
+  signal thread held, the descriptor table exported (`FD_CLOEXEC` ones left
+  out, so they close with every other handle at the replace), the state
+  exec keeps (parent, group, session, umask, the calling thread's mask,
+  the ignored signals and the pending ones), the program's path as spawn
+  names it (`/proc/self/exe`'s), the hand-over written, then our streams
+  drained as an exit drains them. The parent's side needs nothing: the
+  same process handle, pid, signal channel and table entry.
+- **Pending signals** (Linux keeps them across exec): the calling thread's,
+  the process's and those routed to our other threads (which end), less
+  the ignored ones, go in the hand-over's new `posixfds_state.sigpending`
+  (`POSIXFDS_VERSION` 2). The new image sends each to itself at its start
+  (`sig_start_pending`) once its first thread is listed with the kept mask:
+  pending if blocked, else its default action at once (the handlers are
+  the new program's: none). Each comes as `SI_USER` with no sender, and a
+  real-time signal queued twice comes once.
+- **The hold** (`sig_thread_hold` and `sig_thread_release`): the signal
+  thread acts on a port packet only with `gate` held and waits while
+  `held` (a count) isn't 0. Held before the pending read, it can't take a
+  signal that would then be lost, and whatever comes after waits on the
+  starter's channel, which the new image's signal thread drains at its
+  start (the same channel: a duplicate of the end). A failed exec releases
+  its hold; two threads exec'ing at once each hold and the one that loses
+  the replace releases only its own. The exec'ing thread holds no lock of
+  the layer while it takes `gate`. A failure after the hold (the
+  hand-over's write: no memory, or another thread's replace first) has no
+  test.
+- **Not passed on** (Linux keeps these; posix_spawn's child doesn't get
+  them either): the old image's children (their handles close with the
+  rest: `wait` in the new image is `ECHILD` for them, they run on in the
+  job, and no `SIGCHLD` comes for them); `alarm` and the interval timers;
+  descriptors of a kind no child gets (netstack listeners, epoll sets,
+  Wayland connections, the log at 1 and 2 of a program started with no
+  hand-over); `SR_STDOUT`, `SR_CONSOLE` and `SR_RESOURCE` (a POSIX image
+  takes its descriptors from the hand-over; Q4's JIT-only handle, once
+  CJ2 gives it a startup role, goes in exec's extras as it goes in fork's
+  `dup_roles`); the thread's name (the process's changes, as Linux's comm).
+- **rlimits** stay out of the hand-over (my call): the new image starts
+  with the defaults. Chromium's `maximize_rlimits` raises soft limits to
+  the hard ones before its exec, and our defaults have `RLIMIT_NOFILE`'s
+  soft at its hard already; a lowered limit not surviving exec is the only
+  difference, which nothing here needs.
+- **A program from `/data`** is still (a): spawn, wait, exit, with every
+  signal forwarded (`lx_exec_child`).
+- **For FL4**: the vfork parent's "I have exec'd" notice goes in
+  `exec_handover` where its comment says, the last thing before the
+  replace, on our `SR_SIGNALS` (the child's server end writes to the
+  parent's client end, the parent's signal thread reads it). After it,
+  only a lost race with another thread's replace can fail, and the
+  process is replaced anyway. The new image's signal thread must not take
+  a notice meant for the parent: notices go child to parent only.
+- **For CB5**: base's launcher sequence (fork, `dup2`s, close by
+  `/proc/self/fd`, `execve` of `/proc/self/exe`) runs in posixtest's
+  `chromium` case. Static programs carry their libc: base_unittests and
+  every static POSIX program (ports' packages too) must be linked again
+  to exec in place, and because the hand-over is version 2 a program
+  linked before FL3 refuses a new starter's hand-over (it starts with no
+  descriptors) until it is.
+- **For FR1**: the kernel side is FK3's; libc relies on `arg0` keeping its
+  value (the new image's `rdi`), on `proc` having to be in the caller's
+  job (`SR_JOB` is the job a program runs in), and on a failed replace
+  leaving `arg0` in the table (closed by spawn's clean-up).
+- **Measured** (the PC, KVM): the fork's copy of 8,192 pages came back at
+  the exec: 8,287 pages before the fork, 16,594 with the child, 8,405
+  after its exec (the new posixtest image 118 pages).
+- **libc-test**: `functional/spawn` and
+  `regression/pthread_atfork-errno-clobber` pass; `functional/vfork` moves
+  to the POSIX shell's list (limit): vfork and `_exit` pass and its
+  children exec `/bin/sh` in place, but `sh -c "exit 0"`, `"exit 1"` and
+  `"kill -9 $$"` need a shell's builtin `exit` and its `$$`, and the stub
+  looks `exit` up as a program (127) and refuses `$` (2) until M13.5.
 
 ## 6. Questions for the owner
 
