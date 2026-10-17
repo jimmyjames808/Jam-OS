@@ -129,8 +129,10 @@ long fdpass_adopt(const struct posixfds_fd *rec, const void *data, const handle_
 /* ---- SCM_RIGHTS --------------------------------------------------------------------------- */
 
 /* The descriptors in m's control data (every SCM_RIGHTS block, in order)
- * into fds, at most max: how many; -EINVAL for a block of another kind
- * (SCM_CREDENTIALS, ...), a malformed one, or more than max. */
+ * into fds, at most max: how many; -EINVAL for a block of another kind, a
+ * malformed one, or more than max. An SCM_CREDENTIALS block is the
+ * sender's own pid, uid and gid (taken, and nothing changes: receivers get
+ * the kernel's stamp of the writer) or -EPERM. */
 long     fdpass_cmsg_fds(const struct msghdr *m, int *fds, unsigned max);
 /* How many descriptors one SCM_RIGHTS block in m's control room holds. */
 unsigned fdpass_cmsg_room(const struct msghdr *m);

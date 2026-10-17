@@ -11,7 +11,8 @@
 #define PIPE_SIZE    CHANNEL_MAX_BYTES   /* the most one message (and one atomic write) holds */
 #define PIPE_ATOMIC  4096                /* PIPE_BUF, as musl's <limits.h> */
 
-struct sp_fds;   /* sockpair.c's: descriptors on their way, or come with the leftover */
+struct sp_fds;       /* sockpair.c's: descriptors on their way, or come with the leftover */
+struct sp_sleeper;   /* sockpair.c's: a thread asleep in a read or write of the end */
 
 struct pipe_end {
     handle_t ch;        /* the channel end; atomic (a socketpair end's shutdown swaps it
@@ -27,6 +28,10 @@ struct pipe_end {
     bool           kept;        /* seq: buf holds the next message (MSG_PEEK left it);
                                  * atomic */
     bool           shut;        /* shutdown(SHUT_RDWR) done; atomic */
+    bool           passcred;    /* SO_PASSCRED: SCM_CREDENTIALS with what is read; atomic */
+    uint32_t       pid;         /* the leftover's writer (the kernel's stamp) */
+    struct sp_sleeper *sleepers;   /* the threads asleep in its reads and writes, for
+                                    * shutdown to wake */
 };
 
 static inline struct pipe_end *pipe_end_of(struct fd_desc *d)
@@ -48,9 +53,10 @@ struct pipe_end *pipe_end_new(handle_t ch, const void *leftover, size_t len);
 long pipe_wait(handle_t ch, signals_t sig);
 /* channel_read of the next message into buf (cap bytes): its size in
  * *got, its handles into hs (CHANNEL_MAX_HANDLES of room), how many in
- * *nh. */
+ * *nh, and its writer's pid in *pid (NULL: not asked; channel_read's
+ * CHANNEL_READ_PID). */
 status_t pipe_read_msg(handle_t ch, void *buf, uint32_t cap, uint32_t *got, handle_t *hs,
-                       uint32_t *nh);
+                       uint32_t *nh, uint32_t *pid);
 /* The leftover's buffer, made if it wasn't: false when out of memory. */
 bool pipe_buf(struct pipe_end *p);
 /* Up to n leftover bytes into iov: how many. */

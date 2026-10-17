@@ -17,7 +17,9 @@
  * netwait_block, which returns once a packet is queued and takes none.
  * Bytes come into libc's keeping only off a channel; if they came after
  * the set's look, the channel's rise queued a packet, so the sleep
- * returns at once and the next round sees them.
+ * returns at once and the next round sees them. The one change with no
+ * such rise, a socketpair end's shutdown (its arm's channel closed),
+ * wakes every waiter itself (ready_wake_all).
  *
  * **What a kind must keep to.** ready makes no system call and takes no
  * lock (it runs under epoll's lock, from any thread). arm gives the
@@ -66,6 +68,15 @@ long     ready_arm(struct fd_desc *d, uint32_t interest, struct fd_wait *out);
 /* A deadline (ns of uptime) for a timeout of ms milliseconds, negative:
  * none (DEADLINE_NEVER). */
 uint64_t ready_deadline_ms(long ms);
+/* Wake every poll, select and epoll_wait of this process asleep now, so
+ * each looks again ("Why no wake is lost" above): for a kind whose own
+ * readiness rose with no signal on what its arm gave (a socketpair end's
+ * shutdown closes the channel the sets wait on). A waiter lists itself
+ * before the look that decides it sleeps, so one woken late still sees
+ * the change. Its halves: poll.c's sets asleep, epoll.c's with waiters. */
+void     ready_wake_all(void);
+void     poll_wake_all(void);
+void     epoll_wake_all(void);
 
 /* The epoll kind (epoll.c): its description holds a struct epoll. */
 bool     epoll_is(const struct fd_desc *d);

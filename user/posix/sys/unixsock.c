@@ -289,7 +289,7 @@ void *unamed_connect(const struct unix_name *n, long *r)
     return conn;
 }
 
-long unix_accepted(handle_t ch, long flags)
+long unix_accepted(handle_t ch, long flags, bool passcred)
 {
     struct pipe_end *p = pipe_end_new(ch, NULL, 0);
     struct fd_desc *d = p ? sockp_desc_new(p, O_RDWR | (flags & SOCK_NONBLOCK ? O_NONBLOCK : 0),
@@ -297,6 +297,7 @@ long unix_accepted(handle_t ch, long flags)
                           : NULL;
     if (!d)
         return -ENOMEM;
+    sockp_set_passcred(d, passcred);
     return fd_install(d, 0, flags & SOCK_CLOEXEC);
 }
 

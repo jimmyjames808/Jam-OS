@@ -42,6 +42,8 @@ struct usock {
     const struct svcsock_framing *f;        /* US_CONNECTED: the row's framing */
     void *conn;                             /* US_CONNECTED: the framing's state */
     struct ulisten *l;                      /* US_BOUND, US_LISTENING: the listener */
+    bool passcred;                          /* SO_PASSCRED: its named connection's, and
+                                             * each one it accepts (Linux's); atomic */
 };
 
 static uint32_t state_of(const struct usock *u)
@@ -57,6 +59,21 @@ static void *conn_of(struct fd_desc *d, const struct svcsock_framing **f)
         return NULL;
     *f = u->f;
     return u->conn;
+}
+
+bool usock_passcred(struct fd_desc *d, int on)
+{
+    struct usock *u = d->priv;
+    if (on < 0)
+        return __atomic_load_n(&u->passcred, __ATOMIC_RELAXED);
+    __atomic_store_n(&u->passcred, on != 0, __ATOMIC_RELAXED);
+    lock_take(&d->lock);   /* connect sets a new connection's under it */
+    const struct svcsock_framing *f;
+    void *c = conn_of(d, &f);
+    if (c && f == &unixpair_framing)
+        sockp_set_passcred(c, on != 0);
+    lock_give(&d->lock);
+    return on != 0;
 }
 
 /* ---- the bytes ---------------------------------------------------------------------------- */
@@ -255,6 +272,8 @@ long usock_connect(struct fd_desc *d, long addr, long len)
     if (conn) {
         u->f = row ? row->framing : &unixpair_framing;
         u->conn = conn;
+        if (!row && __atomic_load_n(&u->passcred, __ATOMIC_RELAXED))
+            sockp_set_passcred(conn, true);   /* set before connect */
     }
     __atomic_store_n(&u->state, conn ? US_CONNECTED : US_NEW, __ATOMIC_RELEASE);
     lock_give(&d->lock);
@@ -310,7 +329,7 @@ long usock_accept(struct fd_desc *d, long addr, long lenp, long flags)
     handle_t ch;
     long r = ulisten_accept(l, fd_status(d) & O_NONBLOCK, &ch);
     if (!r)
-        r = unix_accepted(ch, flags);
+        r = unix_accepted(ch, flags, usock_passcred(d, -1));
     if (r >= 0 && addr)
         (void)unix_name_out(NULL, addr, lenp);   /* the connector has no name */
     return r;

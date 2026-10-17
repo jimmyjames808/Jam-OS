@@ -64,10 +64,15 @@ struct msghdr;
 long sockp_sendmsg(struct fd_desc *d, const struct msghdr *m, int flags);
 long sockp_recvmsg(struct fd_desc *d, struct msghdr *m, int flags);
 /* shutdown (sockconn.c's): SHUT_RDWR closes the end for every descriptor
- * of the description; SHUT_RD and SHUT_WR alone are EOPNOTSUPP. */
+ * of the description, and wakes every thread asleep on it (a read, a
+ * write, poll, epoll_wait); SHUT_RD and SHUT_WR alone are EOPNOTSUPP. */
 long sockp_shutdown(struct fd_desc *d, int how);
 /* SOCK_STREAM or SOCK_SEQPACKET (getsockopt's SO_TYPE). */
 int  sockp_type(struct fd_desc *d);
+/* SO_PASSCRED (sockopt.c's): with it on, every recvmsg that takes a
+ * message's bytes gets SCM_CREDENTIALS, its writer's. */
+void sockp_set_passcred(struct fd_desc *d, bool on);
+bool sockp_passcred(struct fd_desc *d);
 
 /* No hand-over (docs/M13-PLAN.md section 5; dev.c): 0 is /dev/null; 1 and
  * 2 share one description, a pipe end on the SR_STDOUT channel if the
