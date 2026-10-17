@@ -202,6 +202,11 @@ status_t sys_vmar_unmap(struct handle_table *t, handle_t vmar, uint64_t addr,
  * didn't carry. */
 status_t sys_vmar_protect(struct handle_table *t, handle_t vmar, uint64_t addr, uint64_t len,
                           uint32_t flags);
+/* vmar_resident (abi/syscalls.def; aspace_resident) into out, a kernel
+ * buffer of at least len / PAGE_SIZE bytes: the pages mapped from addr,
+ * or an error. RIGHT_READ, and vmar must be self's (ERR_ACCESS_DENIED). */
+int64_t sys_vmar_resident(struct handle_table *t, struct aspace *self, handle_t vmar,
+                          uint64_t addr, uint64_t len, uint8_t *out);
 /* vmar_clone (abi/syscalls.def; aspace_clone): src, the caller's address
  * space, copied into process dst's (RIGHT_WRITE on dst). vmos[0..n) need
  * RIGHT_READ | RIGHT_DUPLICATE (a child is a new way to reach a VMO's
