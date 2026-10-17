@@ -1130,6 +1130,7 @@ would have failed on.
 | `posix-execinfo.txt` | posixtest's execinfo section (`run posixtest execinfo`) from the shell: `backtrace()` from nested functions, a second thread, a signal handler and a `qsort` comparator, and the lines of `backtrace_symbols` and `backtrace_symbols_fd` ([CR-PLAN](CR-PLAN.md#bt-notes), "BT notes"); also in the `init` run | |
 | `posix-fault.txt` | posixtest's fault section (`run posixtest fault`) from the shell: a thread's own faults as Linux's signals with their siginfo and ucontext, the flags and masks, V8's and Chromium's patterns, children that must end, each by the fault's own signal; the alternate stack and `SA_ONSTACK` (stack overflow reaching a handler on it, the move to the interrupted stack, `sigaltstack`'s report and errors, `sysconf(_SC_MINSIGSTKSZ)` the smallest stack) ([SIGNALS-PLAN](SIGNALS-PLAN.md#1-faults-on-the-faulting-thread), SG3 and SG4); and the kernel's line for its first two children, one with no handler and one with SIGBUS handled and SIGSEGV default, the same `killed: page fault at rip ..., address 10`; also in the `init` run | |
 | `posix-fork.txt` | posixtest's fork section (`run posixtest fork`) from the shell: `fork`, `vfork` and both `clone` forms, each case in a job of its own that ends empty (returns twice, ids, memory separate and `MAP_SHARED` shared, `malloc` and atfork in a threaded parent's child, the two-VMO invariant, a 1 TiB reservation with its time and charge line, `ENOMEM`, `SIGCHLD`, `kill`, `SIGKILL`, pending, timers, a fault handler on the alternate stack; and FL2's: every descriptor kind used from both sides, `/proc/self/fd` exact, Chromium's child sequence, a pseudo-terminal, the table of mappings in a child; and FL4's: `vfork`'s wait for the child's exit or exec, a child's `setpgid` and `setsid` seen by the parent, junk notices dropped: the fork section's paragraph below; [FORK-PLAN](FORK-PLAN.md#fl1b-notes), FL1b, FL2 and FL4); then the exec section (`run posixtest fork exec`: `execve` in place from a forked child, with its line for the fork's copy given back; the exec section's paragraph below; [FORK-PLAN](FORK-PLAN.md#fl3-notes), FL3) and `utest only exec_native,posixfds` (a native starter waits on a POSIX program that execs; the hand-over's tests); also in the `init` run | |
+| `posix-inotify.txt` | posixtest's inotify section (`run posixtest inotify`) from the shell: libc's inotify descriptor against fake file services in posixtest's namespace, quiet watches, `/data` and `/tmp` from the shell's namespace ([File watching](#file-watching-inotify-plan) says what it checks); also in the `init` run | |
 | `posix-efault.txt` | posixtest's efault section (`run posixtest efault`) from the shell: every call the layer answers into or reads from a program's memory, given a read-only page, a `PROT_NONE` page, an unmapped address, NULL and a non-canonical address, is -1 with `EFAULT` and the process goes on ([CR-PLAN](CR-PLAN.md#cbf1-notes-2026-10-16), "CBF1 notes": the checked copies); with SIGSEGV and SIGBUS handled the handlers never run; a child with no handler gets `EFAULT`, then ends by a real fault with the kernel's `killed: page fault at rip ...` line; also in the `init` run | |
 | `posix-signal.txt` | posixtest's signal section (`run posixtest signal`) from the shell: signals in one process and between processes (B4), and a thread busy in a loop that makes no calls raised for its handler: V8's profiler's SIGPROF (a line with how many of 20 came within 1 ms and the slowest), 10,000 from a sampler thread (a line with the time each), 200 with the layer's way out from a handler made long by a test hook (every run with the loop's registers), a handler that forks on a raised thread (the child goes back to the loop), threads making quiet and plain calls, Chromium's SIGURG stack copier, SIGINT ([SIGNALS-PLAN](SIGNALS-PLAN.md#2-signals-to-a-chosen-thread), SG5); a handler at a call's boundary with the call's registers ([SG-REVIEW](SG-REVIEW.md) finding 2); also in the `init` run | |
 | `posix-unix.txt` | posixtest's unix section (`run posixtest unix`) against shell mode's broker, bin/unix (`/svc/unix`, [CR-PLAN](CR-PLAN.md#cu2-notes), "CU2 notes"): named `AF_UNIX` sockets, a listener and two connectors, bytes and a descriptor over a connection, the backlog, a socket file removed and a stale one, a 108-byte path's `getsockname` (CR-REVIEW-POSIX finding 5), a child without `/data` refused and one with `/data` read-only let in, abstract names, a child given `/svc/unix` by name binding 32 listeners at most however often it opens it (its opener is its own: CR-REVIEW-POSIX Q2; here it shares posixtest's own), `SO_PASSCRED` on a named connection (a listener's to the one it accepts, a connector's set before connect: `SCM_CREDENTIALS` both ways, CBF2a); then `ps` shows `unix`; also in the `init` run (where init starts the broker before the programs) | |
@@ -1914,6 +1915,40 @@ channels). The generated servers of `fswatch` and `fswatch_bell` are in
 | `fswatch_rules` | only watches that asked; `IN_ISDIR`; the directory's record before the inode's own; `IN_EXCL_UNLINK`; `IN_ONESHOT` (the event, `IN_IGNORED`, then nothing); an inode gone (`IN_DELETE_SELF` where asked, `IN_IGNORED` for every watch); a watch the service ends (`IN_MOVE_SELF`, `IN_IGNORED`); cookies never 0; the service's hidden-name filter for a channel whose view has flags |
 | `fswatch_adopt` | a successor over the dead instance's table: the watches found again by inode with their ids, the queue starting with `IN_Q_OVERFLOW`, rung once the bell is back, `add` and `remove` run again; a table of another version, a watch of a dead channel, a wrong count or a wrong slot refused (set up empty) |
 | `fswatch_order` | `struct fsw_order`: packets taken off a port kept in order (at most its room, the rest left on the port), one picked out ahead of the others, then the port's own |
+
+posixtest's inotify section (the `init` run; `posixtest inotify`;
+`posix-inotify.txt` alone; [INOTIFY-PLAN](INOTIFY-PLAN.md#il1-notes)'s
+IL1): libc's descriptor (user/posix/sys/inotify.c) against three fake
+file services posixtest mounts in its own namespace, each channel served
+by a thread of its own: `/ifake` keeps its watches with `<fswatch.h>` as
+a service does and the test says what changed, `/ifakero` is read-only
+without watches and `/ifakefat` writable without them. It checks
+`inotify_init1`'s flags (`EINVAL`, `FD_CLOEXEC`, `O_NONBLOCK`), `write`
+`EBADF`, `lseek` and `pread` `ESPIPE`; `inotify_add_watch`'s errors as
+Linux checks them (masks with no `IN_*` bit or both `IN_MASK_*`, another
+kind of descriptor `EINVAL`, `EBADF`, `ENOENT`, `EFAULT`, `ENOTDIR` with
+`IN_ONLYDIR`, `EEXIST` with `IN_MASK_CREATE`); the records (a directory's
+with the name NUL-padded to 16 bytes, then the file's own), `FIONREAD`, a
+read too small for the first record `EINVAL`, 0 bytes read at once,
+whole records only, `EAGAIN`; `poll`, `epoll`, `select` and a blocking
+read each woken by another thread's change; `IN_MASK_ADD` and a replaced
+mask; Chromium's reader loop (`poll`, `FIONREAD`, a read of that size)
+over 1,000 changes, its rounds on the line `posixtest: inotify: the
+reader loop: ...`; the service's overflow (`IN_Q_OVERFLOW`, wd -1, after
+what fitted); an id back from an add with `existed` 0 (the old wd's
+`IN_IGNORED`, a new wd); `inotify_rm_watch`'s `IN_IGNORED`, then
+`EINVAL`; a new wd for each add after a removal; quiet watches ("/",
+`/etc`, `/proc`, `/proc/self`, `/dev`, `/boot`, a read-only mount without
+watches; `ENOENT`, `ENOTDIR`) that never fire, their `IN_IGNORED` at
+once; `EOPNOTSUPP` on a writable mount without watches (fat, Q1); the
+service closing the channel (`IN_UNMOUNT` and `IN_IGNORED` for each wd,
+to a blocked read within about a second; `fs.watch` asked again). Then
+the real `/data` and `/tmp`: `no watches from its service yet` on a line
+until extfs keeps watches (IE1), then a directory's events in Chromium's
+mask (a create, a write's close, a rename's two halves with one cookie,
+`chmod`, `unlink`, the directory's own removal); a writable fat mount
+must say `EOPNOTSUPP`. Last, a forked child and a spawned one
+(`--child-inotify`) without the descriptor (Q3).
 
 ## The IOMMU
 

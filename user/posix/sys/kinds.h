@@ -8,6 +8,7 @@
  *   dev.c      the /dev nodes and /dev/shm's names
  *   memfd.c    memfd_create's and shm_open's memory files (kept VMOs)
  *   eventfd.c  eventfd's counter and its event
+ *   inotify.c  inotify's watches (the file services keep them) and its bell
  *   etc.c      libc's own /etc files
  *   svcsock.c  AF_UNIX stream sockets: connected to a service socket
  *              (/svc/wayland), each with its framing (wlsock.c's JWL2),
@@ -34,6 +35,7 @@ extern const struct fd_ops sockp_ops;     /* a socketpair end */
 extern const struct fd_ops dev_ops;       /* /dev/null, /dev/zero, ... */
 extern const struct fd_ops memfd_ops;     /* memfd_create, shm_open */
 extern const struct fd_ops eventfd_ops;   /* eventfd */
+extern const struct fd_ops inotify_ops;   /* inotify_init1 */
 extern const struct fd_ops etc_ops;       /* a file of libc's /etc */
 extern const struct fd_ops usock_ops;     /* an AF_UNIX stream socket (svcsock.c) */
 
