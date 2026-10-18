@@ -42,6 +42,10 @@
  *   extfs_watch_deep    (IR's 3) a watch its client made too deep for the
  *                       reach check to place ends when its tree leaves
  *                       the subview, as any out of reach
+ *   extfs_watch_cost    (IR's 4) 256 watches 1,000 directories down in a
+ *                       subview: renames elsewhere cost what they cost
+ *                       with none, and one out of the subview reads their
+ *                       shared path once, every watch kept
  *   extfs_restart_watch (IE2, 2.8) extfs ended by its test powers between a
  *                       change and its event, at an fs.watch committed and
  *                       not answered, before a fresh start: watches back
@@ -945,6 +949,63 @@ bool t_extfs_watch_deep(void)
     unwatcher(&s);
     jam_handle_close(sub);
     return stop("watch-deep");
+}
+
+/* ns that rounds renames of /x/f to /x/g and back take. */
+static uint64_t renames_ns(unsigned rounds)
+{
+    uint64_t t0 = now();
+    for (unsigned i = 0; i < rounds; i++)
+        if (t_rename(&r, "/x/f", "/x/g") != OK || t_rename(&r, "/x/g", "/x/f") != OK)
+            return UINT64_MAX;
+    return now() - t0;
+}
+
+/* The reach check's cost: 256 watches some 1,000 directories down in a
+ * subview. Renames elsewhere on the volume must cost what they cost with
+ * no watch (the subview's channel isn't looked at), and one out of the
+ * subview the 256 watches' shared path once, not 256 times (the watches
+ * all stay: none was under what moved). */
+bool t_extfs_watch_cost(void)
+{
+    struct wat s;
+    handle_t sub;
+    char path[40];
+    const unsigned many = 256, rounds = 4;
+    CHECK(start_at(DEEP_SECTORS));
+    CHECK_ST(t_mkdir(&r, "/h"), OK);
+    CHECK_ST(t_mkdir(&r, "/h/t"), OK);
+    CHECK_ST(t_mkdir(&r, "/h/s"), OK);
+    CHECK_ST(t_mkdir(&r, "/x"), OK);
+    CHECK(put_file(&r, "/x/f", "f"));
+    for (unsigned i = 0; i < many; i++) {
+        snprintf(path, sizeof(path), "/h/t/b%03u", i);
+        CHECK_ST(t_mkdir(&r, path), OK);
+    }
+    CHECK_ST(fs_subview_until(r.fs, dl(), "/h", 2, 0, &sub), OK);
+    CHECK(watcher(sub, &s));
+    uint64_t base = renames_ns(rounds);
+    for (unsigned i = 0; i < many; i++) {
+        snprintf(path, sizeof(path), "/t/b%03u", i);
+        CHECK(add(&s, path, ALL));
+    }
+    for (int i = 0; i < 31; i++)   /* the b's: 3 + 31 * 32 below the volume's root */
+        CHECK(deepen("/h", "t"));
+    uint64_t with = renames_ns(rounds);
+    printf("utest: %s: %u renames elsewhere: %lu us with no watch, %lu us with %u deep ones\n",
+           utest_cur, 2 * rounds, (unsigned long)(base / NS_PER_US),
+           (unsigned long)(with / NS_PER_US), many);
+    CHECK(base != UINT64_MAX && with <= 3 * base + 50 * NS_PER_MS);
+    uint64_t t0 = now();
+    CHECK_ST(t_rename(&r, "/h/s", "/s2"), OK);
+    uint64_t out = now() - t0;
+    printf("utest: %s: a directory moved out of the subview: %lu us\n", utest_cur,
+           (unsigned long)(out / NS_PER_US));
+    CHECK(out <= base + 50 * NS_PER_MS);
+    NOTHING(&s, "none of the deep watches was under what moved");
+    unwatcher(&s);
+    jam_handle_close(sub);
+    return stop("watch-cost");
 }
 
 /* ---- restarts (2.8) ------------------------------------------------------------ */
