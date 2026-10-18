@@ -1391,6 +1391,59 @@ static status_t idl_fz_file_setattr(void *ctx, uint32_t mask, uint32_t mode, uin
         return ERR_IO;
     return OK;
 }
+static status_t idl_fz_file_lock(void *ctx, uint8_t type, uint8_t flags, uint64_t start, uint64_t end, uint64_t owner, uint8_t *out_result, handle_t *out_wake, uint32_t *out_wake_len)
+{
+    (void)ctx;
+    (void)type;
+    (void)flags;
+    (void)start;
+    (void)end;
+    (void)owner;
+    (void)out_result;
+    (void)out_wake;
+    (void)out_wake_len;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    *out_result = (uint8_t)0x5a5a5a5a5a5a5a5aull;
+    for (*out_wake_len = 0; *out_wake_len < 1; (*out_wake_len)++)
+        if (drv_event_create(&out_wake[*out_wake_len]) != OK)
+            return ERR_NO_MEMORY;   /* the dispatch closes them */
+    return OK;
+}
+static status_t idl_fz_file_getlock(void *ctx, uint8_t type, uint8_t flags, uint64_t start, uint64_t end, uint64_t owner, uint8_t *out_held, uint64_t *out_held_start, uint64_t *out_held_end, uint32_t *out_pid)
+{
+    (void)ctx;
+    (void)type;
+    (void)flags;
+    (void)start;
+    (void)end;
+    (void)owner;
+    (void)out_held;
+    (void)out_held_start;
+    (void)out_held_end;
+    (void)out_pid;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    *out_held = (uint8_t)0x5a5a5a5a5a5a5a5aull;
+    *out_held_start = (uint64_t)0x5a5a5a5a5a5a5a5aull;
+    *out_held_end = (uint64_t)0x5a5a5a5a5a5a5a5aull;
+    *out_pid = (uint32_t)0x5a5a5a5a5a5a5a5aull;
+    return OK;
+}
+static status_t idl_fz_file_lockowner(void *ctx, uint64_t *out_owner, handle_t *out_token, uint32_t *out_token_len)
+{
+    (void)ctx;
+    (void)out_owner;
+    (void)out_token;
+    (void)out_token_len;
+    if (!idl_fuzz_full)
+        return ERR_IO;
+    *out_owner = (uint64_t)0x5a5a5a5a5a5a5a5aull;
+    for (*out_token_len = 0; *out_token_len < 1; (*out_token_len)++)
+        if (drv_event_create(&out_token[*out_token_len]) != OK)
+            return ERR_NO_MEMORY;   /* the dispatch closes them */
+    return OK;
+}
 static const struct file_ops idl_fz_file_ops = {
     .read = idl_fz_file_read,
     .write = idl_fz_file_write,
@@ -1400,6 +1453,9 @@ static const struct file_ops idl_fz_file_ops = {
     .map = idl_fz_file_map,
     .getattr = idl_fz_file_getattr,
     .setattr = idl_fz_file_setattr,
+    .lock = idl_fz_file_lock,
+    .getlock = idl_fz_file_getlock,
+    .lockowner = idl_fz_file_lockowner,
 };
 static uint32_t idl_fz_file_serve(const void *q, uint32_t n, const handle_t *hs,
                                 uint32_t nh, void *r, handle_t *rhs, uint32_t *rhn)
@@ -1416,6 +1472,9 @@ static const struct idl_fuzz_msg idl_fz_file_msgs[] = {
     { 0x00110006u, 12u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x00110007u, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x00110008u, 40u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x00110009u, 34u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x0011000au, 34u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x0011000bu, 8u, 0, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
 };
 
 /* ---- fs ---- */
@@ -5562,7 +5621,7 @@ static const struct idl_fuzz_proto idl_fuzz_protos[] __attribute__((unused)) = {
     { "edu", 2, EDU_REQ_MAX, EDU_REP_MAX, EDU_REP_HANDLES, idl_fz_edu_serve, NULL, idl_fz_edu_msgs, 4 },
     { "exec", 47, EXEC_REQ_MAX, EXEC_REP_MAX, EXEC_REP_HANDLES, idl_fz_exec_serve, NULL, idl_fz_exec_msgs, 1 },
     { "exec_prog", 48, EXEC_PROG_REQ_MAX, EXEC_PROG_REP_MAX, EXEC_PROG_REP_HANDLES, idl_fz_exec_prog_serve, NULL, idl_fz_exec_prog_msgs, 1 },
-    { "file", 17, FILE_REQ_MAX, FILE_REP_MAX, FILE_REP_HANDLES, idl_fz_file_serve, NULL, idl_fz_file_msgs, 8 },
+    { "file", 17, FILE_REQ_MAX, FILE_REP_MAX, FILE_REP_HANDLES, idl_fz_file_serve, NULL, idl_fz_file_msgs, 11 },
     { "fs", 16, FS_REQ_MAX, FS_REP_MAX, FS_REP_HANDLES, idl_fz_fs_serve, NULL, idl_fz_fs_msgs, 20 },
     { "fsctl", 20, FSCTL_REQ_MAX, FSCTL_REP_MAX, FSCTL_REP_HANDLES, idl_fz_fsctl_serve, NULL, idl_fz_fsctl_msgs, 2 },
     { "fswatch", 49, FSWATCH_REQ_MAX, FSWATCH_REP_MAX, FSWATCH_REP_HANDLES, idl_fz_fswatch_serve, NULL, idl_fz_fswatch_msgs, 3 },

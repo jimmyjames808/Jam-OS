@@ -11,8 +11,8 @@
  * Restart: fat's restart is not seen: volumes' keeper holds this channel
  * and the buffer VMO across fat's death, the successor carries on with
  * the file as the last answered request left it (an answered write is
- * never lost, synced or not), and the request in progress is finished
- * exactly once. ERR_PEER_CLOSED: the mount went (fs.idl says when), or a
+ * never lost, synced or not; extfs's record locks are kept the same way),
+ * and the request in progress is finished exactly once. ERR_PEER_CLOSED: the mount went (fs.idl says when), or a
  * successor couldn't carry on from the dead one's state and started
  * fresh (said in the log); the file is closed, and is opened again
  * through the mount's `fs` channel.
@@ -38,6 +38,9 @@
 #define FILE_MAP              0x00110006u
 #define FILE_GETATTR          0x00110007u
 #define FILE_SETATTR          0x00110008u
+#define FILE_LOCK             0x00110009u
+#define FILE_GETLOCK          0x0011000au
+#define FILE_LOCKOWNER        0x0011000bu
 
 /* Constants (the .idl's `const` lines). */
 /* file.map's flags: the file's one shared VMO, to read (read and map
@@ -46,6 +49,24 @@
 #define FILE_MAP_READ 1u
 #define FILE_MAP_EXEC 2u
 #define FILE_MAP_WRITE 4u
+/* Record locks (lock, getlock): a lock's type, ... */
+#define FILE_LOCK_UNLOCK 0u
+#define FILE_LOCK_READ 1u
+#define FILE_LOCK_WRITE 2u
+/* ... its owner's kind, in `flags`' low bits (LOCK_KINDS) ... */
+#define FILE_LOCK_POSIX 0u
+#define FILE_LOCK_OFD 1u
+#define FILE_LOCK_FLOCK 2u
+#define FILE_LOCK_KINDS 3u
+/* ... F_SETLKW's ask (lock only) ... */
+#define FILE_LOCK_WAIT 4u
+/* ... the last byte a lock may cover (Linux's OFFSET_MAX: a lock to it
+ * covers the file however far it grows) ... */
+#define FILE_LOCK_EOF 0x7fffffffffffffffull
+/* ... and lock's answers. */
+#define FILE_LOCK_GRANTED 0u
+#define FILE_LOCK_CONFLICT 1u
+#define FILE_LOCK_DEADLOCK 2u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct file_read_req {
@@ -140,6 +161,46 @@ struct file_setattr_req {
 struct file_setattr_rep {
     uint32_t txid;
     int32_t  status;
+} __attribute__((packed));
+struct file_lock_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint8_t type;
+    uint8_t flags;
+    uint64_t start;
+    uint64_t end;
+    uint64_t owner;
+} __attribute__((packed));
+struct file_lock_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint8_t result;
+} __attribute__((packed));
+struct file_getlock_req {
+    uint32_t txid;
+    uint32_t ordinal;
+    uint8_t type;
+    uint8_t flags;
+    uint64_t start;
+    uint64_t end;
+    uint64_t owner;
+} __attribute__((packed));
+struct file_getlock_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint8_t held;
+    uint64_t held_start;
+    uint64_t held_end;
+    uint32_t pid;
+} __attribute__((packed));
+struct file_lockowner_req {
+    uint32_t txid;
+    uint32_t ordinal;
+} __attribute__((packed));
+struct file_lockowner_rep {
+    uint32_t txid;
+    int32_t  status;
+    uint64_t owner;
 } __attribute__((packed));
 
 #define FILE_REQ_MAX 40u   /* bytes: the biggest request */
@@ -474,6 +535,213 @@ static inline status_t file_setattr(handle_t ch, uint32_t mask, uint32_t mode, u
     return file_setattr_call(ch, false, DEADLINE_NEVER, mask, mode, uid, gid, atime_ns, mtime_ns);
 }
 
+/* file_lock_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t file_lock_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t type, uint8_t flags, uint64_t start, uint64_t end, uint64_t owner, uint8_t *out_result, handle_t out_wake[1], uint32_t *out_wake_len)
+{
+    _Alignas(8) uint8_t idl_b0[34];
+    _Alignas(8) uint8_t idl_b1[9];
+    struct file_lock_req *idl_q = (struct file_lock_req *)idl_b0;
+    const struct file_lock_rep *idl_r = (const struct file_lock_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = FILE_LOCK;
+    idl_q->type = type;
+    idl_q->flags = flags;
+    idl_q->start = start;
+    idl_q->end = end;
+    idl_q->owner = owner;
+    handle_t idl_rh[1];
+    if (idl_st == OK)
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 9, &idl_got[0], idl_rh, 1, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st != OK)
+        idl_got[1] = 0;   /* handles arrive only with OK */
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
+    if (idl_st == OK && idl_got[1] > 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK)
+        idl_close_all(idl_rh, idl_got[1]);
+    if (idl_st == OK) {
+        uint32_t idl_hn = idl_got[1];
+        if (out_wake) {
+            for (uint32_t idl_i = 0; idl_i < idl_hn; idl_i++)
+                out_wake[idl_i] = idl_rh[idl_i];
+        } else {
+            idl_close_all(idl_rh, idl_hn);
+        }
+        if (out_wake_len)
+            *out_wake_len = idl_hn;
+    }
+    if (idl_st == OK && out_result)
+        *out_result = idl_r->result;
+    (void)idl_o;
+    return idl_st;
+}
+/* Record locks, Linux's fcntl and flock locks, kept by the service for the
+ * file itself (its every open, by any process, meets them). A lock covers
+ * bytes start to end, both included (start <= end <= LOCK_EOF), is a read
+ * (shared) or a write (exclusive) lock, and has an owner, of the kind in
+ * `flags` (LOCK_KINDS):
+ * LOCK_POSIX  fcntl's F_SETLK: the process that wrote the request (the
+ * kernel's pid; `owner` is ignored). Its locks on the file go when a
+ * file channel one of them was set through closes (the process ended
+ * or closed that open), and with an unlock (libc unlocks the whole
+ * file at every close of it: Linux's rule, any close drops them);
+ * LOCK_OFD  an open file description's (F_OFD_SETLK): `owner` is
+ * lockowner's. Its locks go when every handle of the owner's token is
+ * closed: the description's last close, in whichever process;
+ * LOCK_FLOCK  flock's: the same owners, always the whole file (0 to
+ * LOCK_EOF), in a space of their own: a flock lock and an fcntl lock
+ * never conflict, as on Linux.
+ * POSIX and OFD locks share one space: a lock conflicts with another
+ * owner's lock over any byte of it when either is a write lock. An owner's
+ * own locks never conflict: a new one replaces them where it overlaps
+ * them (split, joined to its neighbours of its type), as POSIX says.
+ * Locks need the file open: LOCK_READ for reading (FS_READ), LOCK_WRITE
+ * for writing (FS_WRITE) (else ERR_ACCESS_DENIED), a flock either way.
+ * ERR_INVALID_ARGS: a type, kind, flag or range that isn't one;
+ * ERR_NO_RESOURCES: the volume's locks, owners or waits are all in use
+ * (ENOLCK); ERR_NOT_FOUND: an owner the service doesn't know (its token was
+ * closed); ERR_NOT_SUPPORTED: a service that keeps no locks (fat, the boot
+ * image). The locks outlive the service's restarts (the header's rule:
+ * its state keeps them, its keeper the owners' tokens).
+ *
+ * Take, change or drop a lock: type LOCK_READ, LOCK_WRITE, or LOCK_UNLOCK
+ * (the owner's locks on those bytes go; none there is no error). `result`:
+ * LOCK_GRANTED, done; LOCK_CONFLICT, another owner's lock is in the way and
+ * nothing changed. With LOCK_WAIT (F_SETLKW, flock without LOCK_NB) a
+ * conflict also gives `wake`: a channel end whose peer the service closes
+ * when a lock on the file goes or shrinks (or the service ends). The caller
+ * waits for its SIG_PEER_CLOSED, closes it and asks again (no `wake`: it
+ * waits a moment). Until then the service counts the caller as waiting for
+ * the lock's owner, and a POSIX lock that would wait for an owner that
+ * waits, through others, for the caller is LOCK_DEADLOCK (EDEADLK, Linux's
+ * check), nothing changed. A reply that died with the service comes again
+ * without its `wake`. */
+static inline status_t file_lock_until(handle_t ch, uint64_t deadline_ns, uint8_t type, uint8_t flags, uint64_t start, uint64_t end, uint64_t owner, uint8_t *out_result, handle_t out_wake[1], uint32_t *out_wake_len)
+{
+    return file_lock_call(ch, false, deadline_ns, type, flags, start, end, owner, out_result, out_wake, out_wake_len);
+}
+static inline status_t file_lock_within(handle_t ch, uint64_t timeout_ns, uint8_t type, uint8_t flags, uint64_t start, uint64_t end, uint64_t owner, uint8_t *out_result, handle_t out_wake[1], uint32_t *out_wake_len)
+{
+    return file_lock_call(ch, true, timeout_ns, type, flags, start, end, owner, out_result, out_wake, out_wake_len);
+}
+static inline status_t file_lock(handle_t ch, uint8_t type, uint8_t flags, uint64_t start, uint64_t end, uint64_t owner, uint8_t *out_result, handle_t out_wake[1], uint32_t *out_wake_len)
+{
+    return file_lock_call(ch, false, DEADLINE_NEVER, type, flags, start, end, owner, out_result, out_wake, out_wake_len);
+}
+
+/* file_getlock_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t file_getlock_call(handle_t ch, bool idl_within, uint64_t idl_t, uint8_t type, uint8_t flags, uint64_t start, uint64_t end, uint64_t owner, uint8_t *out_held, uint64_t *out_held_start, uint64_t *out_held_end, uint32_t *out_pid)
+{
+    struct file_getlock_req idl_q;
+    struct file_getlock_rep idl_r;
+    uint32_t idl_n = 0;
+    idl_q.txid = 0;
+    idl_q.ordinal = FILE_GETLOCK;
+    idl_q.type = type;
+    idl_q.flags = flags;
+    idl_q.start = start;
+    idl_q.end = end;
+    idl_q.owner = owner;
+    status_t idl_st = idl_call(ch, &idl_q, sizeof(idl_q), &idl_r, sizeof(idl_r), &idl_n, NULL, 0,
+                               NULL, idl_within, idl_t);
+    if (idl_st == OK)
+        idl_st = idl_rep_status(&idl_r, idl_n, sizeof(idl_r));
+    if (idl_st == OK && out_held)
+        *out_held = idl_r.held;
+    if (idl_st == OK && out_held_start)
+        *out_held_start = idl_r.held_start;
+    if (idl_st == OK && out_held_end)
+        *out_held_end = idl_r.held_end;
+    if (idl_st == OK && out_pid)
+        *out_pid = idl_r.pid;
+    return idl_st;
+}
+/* The first lock in the way of a lock of `type` (LOCK_READ, LOCK_WRITE) on
+ * start..end for the owner in `flags` (F_GETLK): its type (LOCK_UNLOCK:
+ * none, the rest 0), its bytes and its owner's pid (a POSIX lock's; 0 for
+ * an OFD or flock owner's, which Linux reports as -1). Changes nothing. */
+static inline status_t file_getlock_until(handle_t ch, uint64_t deadline_ns, uint8_t type, uint8_t flags, uint64_t start, uint64_t end, uint64_t owner, uint8_t *out_held, uint64_t *out_held_start, uint64_t *out_held_end, uint32_t *out_pid)
+{
+    return file_getlock_call(ch, false, deadline_ns, type, flags, start, end, owner, out_held, out_held_start, out_held_end, out_pid);
+}
+static inline status_t file_getlock_within(handle_t ch, uint64_t timeout_ns, uint8_t type, uint8_t flags, uint64_t start, uint64_t end, uint64_t owner, uint8_t *out_held, uint64_t *out_held_start, uint64_t *out_held_end, uint32_t *out_pid)
+{
+    return file_getlock_call(ch, true, timeout_ns, type, flags, start, end, owner, out_held, out_held_start, out_held_end, out_pid);
+}
+static inline status_t file_getlock(handle_t ch, uint8_t type, uint8_t flags, uint64_t start, uint64_t end, uint64_t owner, uint8_t *out_held, uint64_t *out_held_start, uint64_t *out_held_end, uint32_t *out_pid)
+{
+    return file_getlock_call(ch, false, DEADLINE_NEVER, type, flags, start, end, owner, out_held, out_held_start, out_held_end, out_pid);
+}
+
+/* file_lockowner_until and _within: idl_t is a deadline, or with idl_within a
+ * timeout from when the call starts (the kernel's clock). */
+static inline status_t file_lockowner_call(handle_t ch, bool idl_within, uint64_t idl_t, uint64_t *out_owner, handle_t out_token[1], uint32_t *out_token_len)
+{
+    _Alignas(8) uint8_t idl_b0[8];
+    _Alignas(8) uint8_t idl_b1[16];
+    struct file_lockowner_req *idl_q = (struct file_lockowner_req *)idl_b0;
+    const struct file_lockowner_rep *idl_r = (const struct file_lockowner_rep *)idl_b1;
+    uint32_t idl_qn = sizeof(*idl_q), idl_o = sizeof(*idl_r);
+    uint32_t idl_got[2] = { 0, 0 };   /* bytes, handles: in a row, one copy-out */
+    status_t idl_st = OK;
+    idl_q->txid = 0;
+    idl_q->ordinal = FILE_LOCKOWNER;
+    handle_t idl_rh[1];
+    if (idl_st == OK)
+        idl_st = idl_call(ch, idl_b0, idl_qn, idl_b1, 16, &idl_got[0], idl_rh, 1, &idl_got[1],
+                          idl_within, idl_t);
+    if (idl_st != OK)
+        idl_got[1] = 0;   /* handles arrive only with OK */
+    if (idl_st == OK)
+        idl_st = idl_rep_status(idl_b1, idl_got[0], sizeof(*idl_r));
+    if (idl_st == OK && idl_got[1] > 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK)
+        idl_close_all(idl_rh, idl_got[1]);
+    if (idl_st == OK) {
+        uint32_t idl_hn = idl_got[1];
+        if (out_token) {
+            for (uint32_t idl_i = 0; idl_i < idl_hn; idl_i++)
+                out_token[idl_i] = idl_rh[idl_i];
+        } else {
+            idl_close_all(idl_rh, idl_hn);
+        }
+        if (out_token_len)
+            *out_token_len = idl_hn;
+    }
+    if (idl_st == OK && out_owner)
+        *out_owner = idl_r->owner;
+    (void)idl_o;
+    return idl_st;
+}
+/* A new owner for an open file description's locks (LOCK_OFD, LOCK_FLOCK):
+ * `owner` names it in lock and getlock (a random number: one process can't
+ * guess another's), and it lasts while any handle of `token` is open
+ * (nothing is ever written to or read from it). libc makes one for a
+ * description at its first such lock and gives a forked child a duplicate,
+ * so the description's last close, in whichever process, ends its locks.
+ * A reply that died with the service comes again without its token (the
+ * owner it made goes): ask again. */
+static inline status_t file_lockowner_until(handle_t ch, uint64_t deadline_ns, uint64_t *out_owner, handle_t out_token[1], uint32_t *out_token_len)
+{
+    return file_lockowner_call(ch, false, deadline_ns, out_owner, out_token, out_token_len);
+}
+static inline status_t file_lockowner_within(handle_t ch, uint64_t timeout_ns, uint64_t *out_owner, handle_t out_token[1], uint32_t *out_token_len)
+{
+    return file_lockowner_call(ch, true, timeout_ns, out_owner, out_token, out_token_len);
+}
+static inline status_t file_lockowner(handle_t ch, uint64_t *out_owner, handle_t out_token[1], uint32_t *out_token_len)
+{
+    return file_lockowner_call(ch, false, DEADLINE_NEVER, out_owner, out_token, out_token_len);
+}
+
 /* ---- client, asynchronous (tools/genidl.py) --------------------------- */
 
 /* file_read without waiting: the request, with the caller's txid (not 0).
@@ -768,6 +1036,141 @@ static inline status_t file_setattr_result(const void *idl_rep, struct idl_msg *
     return OK;
 }
 
+/* file_lock without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then file_lock_result. */
+static inline status_t file_lock_send(handle_t ch, uint32_t idl_txid, uint8_t type, uint8_t flags, uint64_t start, uint64_t end, uint64_t owner)
+{
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    _Alignas(8) uint8_t idl_b0[34];
+    struct file_lock_req *idl_q = (struct file_lock_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = FILE_LOCK;
+    idl_q->type = type;
+    idl_q->flags = flags;
+    idl_q->start = start;
+    idl_q->end = end;
+    idl_q->owner = owner;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
+}
+
+/* The status and results of a reply to file_lock_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t file_lock_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t *out_result, handle_t out_wake[1], uint32_t *out_wake_len)
+{
+    const struct file_lock_rep *idl_r = (const struct file_lock_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh > 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    if (out_wake) {
+        for (uint32_t idl_i = 0; idl_i < idl_m->nh; idl_i++)
+            out_wake[idl_i] = idl_m->hs[idl_i];
+    } else {
+        idl_close_all(idl_m->hs, idl_m->nh);
+    }
+    if (out_wake_len)
+        *out_wake_len = idl_m->nh;
+    idl_m->nh = 0;
+    if (out_result)
+        *out_result = idl_r->result;
+    return OK;
+}
+
+/* file_getlock without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then file_getlock_result. */
+static inline status_t file_getlock_send(handle_t ch, uint32_t idl_txid, uint8_t type, uint8_t flags, uint64_t start, uint64_t end, uint64_t owner)
+{
+    struct file_getlock_req idl_q;
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    idl_q.txid = idl_txid;
+    idl_q.ordinal = FILE_GETLOCK;
+    idl_q.type = type;
+    idl_q.flags = flags;
+    idl_q.start = start;
+    idl_q.end = end;
+    idl_q.owner = owner;
+    return drv_channel_write(ch, &idl_q, sizeof(idl_q), NULL, 0);
+}
+
+/* The status and results of a reply to file_getlock_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t file_getlock_result(const void *idl_rep, struct idl_msg *idl_m, uint8_t *out_held, uint64_t *out_held_start, uint64_t *out_held_end, uint32_t *out_pid)
+{
+    const struct file_getlock_rep *idl_r = (const struct file_getlock_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh != 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    idl_m->nh = 0;
+    if (out_held)
+        *out_held = idl_r->held;
+    if (out_held_start)
+        *out_held_start = idl_r->held_start;
+    if (out_held_end)
+        *out_held_end = idl_r->held_end;
+    if (out_pid)
+        *out_pid = idl_r->pid;
+    return OK;
+}
+
+/* file_lockowner without waiting: the request, with the caller's txid (not 0).
+ * The reply comes on ch: idl_reply_read, then file_lockowner_result. */
+static inline status_t file_lockowner_send(handle_t ch, uint32_t idl_txid)
+{
+    if (!idl_txid)
+        return ERR_INVALID_ARGS;
+    _Alignas(8) uint8_t idl_b0[8];
+    struct file_lockowner_req *idl_q = (struct file_lockowner_req *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = idl_txid;
+    idl_q->ordinal = FILE_LOCKOWNER;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
+}
+
+/* The status and results of a reply to file_lockowner_send (read with
+ * idl_reply_read). The reply's handles are taken in every case: moved to
+ * the results, or closed (on a failure, or for a NULL result). */
+static inline status_t file_lockowner_result(const void *idl_rep, struct idl_msg *idl_m, uint64_t *out_owner, handle_t out_token[1], uint32_t *out_token_len)
+{
+    const struct file_lockowner_rep *idl_r = (const struct file_lockowner_rep *)idl_rep;
+    status_t idl_st = idl_rep_status(idl_rep, idl_m->n, sizeof(*idl_r));
+    if (idl_st == OK && idl_m->nh > 1)
+        idl_st = ERR_INTERNAL;
+    if (idl_st != OK) {
+        idl_msg_drop(idl_m);
+        return idl_st;
+    }
+    if (out_token) {
+        for (uint32_t idl_i = 0; idl_i < idl_m->nh; idl_i++)
+            out_token[idl_i] = idl_m->hs[idl_i];
+    } else {
+        idl_close_all(idl_m->hs, idl_m->nh);
+    }
+    if (out_token_len)
+        *out_token_len = idl_m->nh;
+    idl_m->nh = 0;
+    if (out_owner)
+        *out_owner = idl_r->owner;
+    return OK;
+}
+
 /* ---- server ---------------------------------------------------------- */
 
 /* Handlers: return OK and fill the results, or an ERR_* for the client.
@@ -783,6 +1186,9 @@ struct file_ops {
     status_t (*map)(void *ctx, uint32_t flags, handle_t *out_vmo, uint64_t *out_size);
     status_t (*getattr)(void *ctx, uint32_t *out_mode, uint32_t *out_nlink, uint32_t *out_uid, uint32_t *out_gid, uint64_t *out_size, uint64_t *out_blocks, uint64_t *out_id, int64_t *out_atime_ns, int64_t *out_mtime_ns, int64_t *out_ctime_ns);
     status_t (*setattr)(void *ctx, uint32_t mask, uint32_t mode, uint32_t uid, uint32_t gid, int64_t atime_ns, int64_t mtime_ns);
+    status_t (*lock)(void *ctx, uint8_t type, uint8_t flags, uint64_t start, uint64_t end, uint64_t owner, uint8_t *out_result, handle_t *out_wake, uint32_t *out_wake_len);
+    status_t (*getlock)(void *ctx, uint8_t type, uint8_t flags, uint64_t start, uint64_t end, uint64_t owner, uint8_t *out_held, uint64_t *out_held_start, uint64_t *out_held_end, uint32_t *out_pid);
+    status_t (*lockowner)(void *ctx, uint64_t *out_owner, handle_t *out_token, uint32_t *out_token_len);
 };
 
 /* Answer the file.read request kept in txn: idl_st and, if it is OK, the
@@ -929,6 +1335,87 @@ static inline status_t file_reply_setattr(struct idl_txn idl_txn, status_t idl_s
     if (idl_st != OK)
         return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
     return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the file.lock request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID, or a handle list past its N. Returns the write's status
+ * (idl_reply_write). */
+static inline status_t file_reply_lock(struct idl_txn idl_txn, status_t idl_st, uint8_t result, const handle_t *wake, uint32_t wake_len)
+{
+    handle_t idl_hs[1];
+    uint32_t idl_hn = 0;
+    _Alignas(8) uint8_t idl_b0[9];
+    struct file_lock_rep *idl_r = (struct file_lock_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && (wake_len > 1 || (wake_len && !wake) ||
+                         !idl_handles_set(wake, wake_len)))
+        idl_st = ERR_INTERNAL;
+    idl_r->result = result;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        if (wake)
+            idl_close_all(wake, wake_len);
+        idl_rn = sizeof(struct idl_rep_hdr);
+    } else {
+        for (uint32_t idl_i = 0; idl_i < wake_len; idl_i++)
+            idl_hs[idl_hn++] = wake[idl_i];
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, idl_hs, idl_hn);
+    return idl_ws;
+}
+
+/* Answer the file.getlock request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID. Returns the write's status (idl_reply_write). */
+static inline status_t file_reply_getlock(struct idl_txn idl_txn, status_t idl_st, uint8_t held, uint64_t held_start, uint64_t held_end, uint32_t pid)
+{
+    struct file_getlock_rep idl_r;
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    idl_r.status = idl_st;
+    if (idl_st != OK)
+        return idl_reply_write(idl_txn, &idl_r, sizeof(struct idl_rep_hdr), NULL, 0);
+    idl_r.held = held;
+    idl_r.held_start = held_start;
+    idl_r.held_end = held_end;
+    idl_r.pid = pid;
+    return idl_reply_write(idl_txn, &idl_r, sizeof(idl_r), NULL, 0);
+}
+
+/* Answer the file.lockowner request kept in txn: idl_st and, if it is OK, the
+ * results (handles are moved in every case: sent, or closed). A positive
+ * status is ERR_INTERNAL, and so is OK with a handle result left
+ * HANDLE_INVALID, or a handle list past its N. Returns the write's status
+ * (idl_reply_write). */
+static inline status_t file_reply_lockowner(struct idl_txn idl_txn, status_t idl_st, uint64_t owner, const handle_t *token, uint32_t token_len)
+{
+    handle_t idl_hs[1];
+    uint32_t idl_hn = 0;
+    _Alignas(8) uint8_t idl_b0[16];
+    struct file_lockowner_rep *idl_r = (struct file_lockowner_rep *)idl_b0;
+    uint32_t idl_rn = sizeof(*idl_r);
+    if (idl_st > 0)
+        idl_st = ERR_INTERNAL;
+    if (idl_st == OK && (token_len > 1 || (token_len && !token) ||
+                         !idl_handles_set(token, token_len)))
+        idl_st = ERR_INTERNAL;
+    idl_r->owner = owner;
+    idl_r->status = idl_st;
+    if (idl_st != OK) {
+        if (token)
+            idl_close_all(token, token_len);
+        idl_rn = sizeof(struct idl_rep_hdr);
+    } else {
+        for (uint32_t idl_i = 0; idl_i < token_len; idl_i++)
+            idl_hs[idl_hn++] = token[idl_i];
+    }
+    status_t idl_ws = idl_reply_write(idl_txn, idl_b0, idl_rn, idl_hs, idl_hn);
+    return idl_ws;
 }
 
 /* Decode the request of n bytes at req, which came on ch, call its handler,
@@ -1115,6 +1602,77 @@ static inline uint32_t file_dispatch_on(handle_t ch, const struct file_ops *ops,
         idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
         if (idl_h->status != OK)
             return sizeof(*idl_h);
+        return sizeof(*idl_r);
+    }
+    case FILE_LOCK: {
+        const struct file_lock_req *idl_q = (const struct file_lock_req *)req;
+        struct file_lock_rep *idl_r = (struct file_lock_rep *)rep;
+        uint8_t out_result = 0;
+        handle_t *out_wake = rhs + 0;
+        uint32_t out_wake_len = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->lock) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->lock(ctx, idl_q->type, idl_q->flags, idl_q->start, idl_q->end, idl_q->owner, &out_result, out_wake, &out_wake_len);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && !(out_wake_len <= 1 && idl_handles_set(out_wake, out_wake_len)))
+            idl_h->status = ERR_INTERNAL;   /* a handle result left unset */
+        if (idl_h->status != OK) {
+            idl_close_all(out_wake, out_wake_len < 1 ? out_wake_len : 1);
+            return sizeof(*idl_h);
+        }
+        *rhn = out_wake_len;
+        idl_r->result = out_result;
+        return sizeof(*idl_r);
+    }
+    case FILE_GETLOCK: {
+        const struct file_getlock_req *idl_q = (const struct file_getlock_req *)req;
+        struct file_getlock_rep *idl_r = (struct file_getlock_rep *)rep;
+        uint8_t out_held = 0;
+        uint64_t out_held_start = 0;
+        uint64_t out_held_end = 0;
+        uint32_t out_pid = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->getlock) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->getlock(ctx, idl_q->type, idl_q->flags, idl_q->start, idl_q->end, idl_q->owner, &out_held, &out_held_start, &out_held_end, &out_pid);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status != OK)
+            return sizeof(*idl_h);
+        idl_r->held = out_held;
+        idl_r->held_start = out_held_start;
+        idl_r->held_end = out_held_end;
+        idl_r->pid = out_pid;
+        return sizeof(*idl_r);
+    }
+    case FILE_LOCKOWNER: {
+        const struct file_lockowner_req *idl_q = (const struct file_lockowner_req *)req;
+        struct file_lockowner_rep *idl_r = (struct file_lockowner_rep *)rep;
+        uint64_t out_owner = 0;
+        handle_t *out_token = rhs + 0;
+        uint32_t out_token_len = 0;
+        if (n != sizeof(*idl_q))
+            return sizeof(*idl_h);
+        if (!ops->lockowner) {
+            idl_h->status = ERR_NOT_SUPPORTED;
+            return sizeof(*idl_h);
+        }
+        status_t idl_st = ops->lockowner(ctx, &out_owner, out_token, &out_token_len);
+        idl_h->status = idl_st > 0 ? ERR_INTERNAL : idl_st;
+        if (idl_h->status == OK && !(out_token_len <= 1 && idl_handles_set(out_token, out_token_len)))
+            idl_h->status = ERR_INTERNAL;   /* a handle result left unset */
+        if (idl_h->status != OK) {
+            idl_close_all(out_token, out_token_len < 1 ? out_token_len : 1);
+            return sizeof(*idl_h);
+        }
+        *rhn = out_token_len;
+        idl_r->owner = out_owner;
         return sizeof(*idl_r);
     }
     }
