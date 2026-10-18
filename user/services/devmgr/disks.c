@@ -170,7 +170,7 @@ void disks_events(struct binding *b)
         if (ours && n == sizeof(*r) && r->status == OK && nh == 1) {
             b->disk_txid = 0;
             if (vol)
-                told(disks_attach(vol, disk_id(b), disk_bus(b), hs[0]));   /* hs[0] goes */
+                told(disks_attach(vol, disk_id(b), disk_bus(b), DISKS_UNIT_NONE, hs[0]));   /* hs[0] goes */
             else
                 jam_handle_close(hs[0]);
             continue;

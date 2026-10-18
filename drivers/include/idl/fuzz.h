@@ -5220,11 +5220,12 @@ static const struct idl_fuzz_msg idl_fz_volesp_msgs[] = {
 };
 
 /* ---- disks ---- */
-static void idl_fz_disks_attach(void *ctx, uint32_t id, uint8_t bus, handle_t storage)
+static void idl_fz_disks_attach(void *ctx, uint32_t id, uint8_t bus, uint8_t unit, handle_t storage)
 {
     (void)ctx;
     (void)id;
     (void)bus;
+    (void)unit;
     (void)storage;
     if (storage != HANDLE_INVALID)
         drv_handle_close(storage);
@@ -5244,7 +5245,7 @@ static uint32_t idl_fz_disks_serve(const void *q, uint32_t n, const handle_t *hs
     return disks_dispatch_h(HANDLE_INVALID, &idl_fz_disks_ops, NULL, q, n, hs, nh, r, rhs, rhn);
 }
 static const struct idl_fuzz_msg idl_fz_disks_msgs[] = {
-    { 0x00480001u, 13u, 1, 1, 0, 0, { IDL_OBJ_CHANNEL }, 0, { { 0, 0, 0 } } },
+    { 0x00480001u, 14u, 1, 1, 0, 0, { IDL_OBJ_CHANNEL }, 0, { { 0, 0, 0 } } },
     { 0x00480002u, 12u, 1, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
 };
 

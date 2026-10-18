@@ -152,14 +152,22 @@ protocol disks 72
 const BUS_USB 1
 const BUS_NVME 2
 
+# attach's `unit` when the bus doesn't fix the disk's number.
+const UNIT_NONE 255
+
 # A disk is there: its driver runs. `storage` is a channel of volumes'
 # own (devmgr asked the driver's DR_SERVE for it: svc.connect). `id` names
 # the disk while the device is there (USB: usb-bus's device id; a later
 # bus picks ids in its own range, never with the top bit, which test
 # disks use). A driver started again after a crash is announced again
 # with the same id. ERR_PEER_CLOSED on `storage` alone means the driver
-# ended, not that the device went.
-1  attach  (u32 id, u8 bus, handle<channel> storage) event
+# ended, not that the device went. `unit` is the number the disk is called
+# by on its bus (nvme<unit>) when the bus fixes it: an NVMe drive's place,
+# from 0, among the machine's NVMe functions in PCI order (bus, device,
+# function), so a drive keeps its name on every boot whichever driver
+# answers first. UNIT_NONE: volumes takes the lowest free number (a
+# stick's, in the order sticks come).
+1  attach  (u32 id, u8 bus, u8 unit, handle<channel> storage) event
 # The device is gone (unplugged, or its bus driver ended): the disk will
 # not come back under this id.
 2  gone  (u32 id) event
