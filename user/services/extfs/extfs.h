@@ -44,9 +44,9 @@
 #include <fs_idl.h>
 #include <fsview.h>
 #include <fswatch.h>
-#include <rlock.h>
 #include <idl/fsctl.h>
 #include <os.h>
+#include <rlock.h>
 #include <svcstate.h>
 #include "ext/ext.h"
 #include "ext/ext_alloc.h"
@@ -151,7 +151,7 @@ extern struct xf_vol vol;
 /* ---- the state (state.c) --------------------------------------------------------- */
 
 #define XF_STATE_KIND   0x73667865u   /* "exfs": svcstate's kind */
-#define XF_STATE_LAYOUT 7u            /* bump on any change to struct xf_state or the
+#define XF_STATE_LAYOUT 8u            /* bump on any change to struct xf_state or the
                                        * requests its slots replay */
 /* A slot's request area: the request (fs.rename's two paths), then from
  * XF_SLOT_DATA its data: the bounce buffer a write's bytes are copied

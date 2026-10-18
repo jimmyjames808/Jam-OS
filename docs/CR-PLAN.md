@@ -4421,7 +4421,7 @@ every lock and kept none (`dup.c`), so `F_SETLK` never said `EAGAIN` and
   close's packet is served (the order a kill and the next request reach
   the port in doesn't matter).
 - **Restarts (my call): locks survive.** The table and the owners'
-  numbers are in extfs's state (`struct xf_locks`, layout 7), each token
+  numbers are in extfs's state (`struct xf_locks`, layout 8), each token
   with the keeper (`XF_KEEP_LOCK`); a successor checks the table
   (`rl_check`; one that fails is a fresh start, which closes every open
   file, so no holder loses a lock without its file's `ERR_PEER_CLOSED`),
@@ -4469,7 +4469,7 @@ every lock and kept none (`dup.c`), so `F_SETLK` never said `EAGAIN` and
   the spawned child's case (lock, unlock, close, exit, terminate, shared
   and exclusive): they come off the skip list after the next relink and
   base run (not run here: CB5 holds `~/cr`).
-- **For the merge**: extfs's state layout 7 (WR2 took 6), the dispatch line
+- **For the merge**: extfs's state layout 8 (WR2 and IR took 6 and 7), the dispatch line
   for `XF_KEY_LOCK_BIT` in `main.c`, `files.c`'s `xf_file_ops` and
   `close_file` lines, request.c's `take` (file requests read with the
   pid), `adopt.c`'s keeper slots and check.
