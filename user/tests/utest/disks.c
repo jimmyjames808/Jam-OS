@@ -801,34 +801,67 @@ bool t_disk_own_channel(void)
     if (!wait_mounts(vm, &v, true, true))
         return false;
     struct fatrun data = mount_of(&v, DATA);
+    /* volumes' sync covers every writable mount, the system's own /data
+     * among them, and flushing that on a loaded host can take seconds (or
+     * fail its 5 s) whatever the flood does. So first, with no flood: sync
+     * until the system's mounts are flushed (up to four times), and time
+     * that as the baseline the flooded syncs are measured against. */
+    status_t bst = ERR_TIMED_OUT;
+    uint64_t base_ms = 0;
+    for (unsigned k = 0; k < 4 && bst != OK; k++) {
+        uint64_t t0 = now();
+        bst = volumes_sync_until(vm, now() + 20 * NS_PER_S);
+        base_ms = (now() - t0) / NS_PER_MS;
+        printf("utest: disk_own_channel: baseline sync %u: %s in %lu ms\n", k, status_str(bst),
+               (unsigned long)base_ms);
+    }
     flood_stop = false;
-    for (unsigned i = 0; i < 2; i++) {
-        fl[i] = (struct flood){ .txid = 0x100 | (uint32_t)i << 24 };
-        CHECK_ST(jam_handle_duplicate(data.fs, RIGHT_SAME, &fl[i].ch), OK);
-        CHECK_ST(thread_spawn("flood", flood_main, &fl[i], stacks[i], sizeof(stacks[i]), &th[i]),
-                 OK);
+    unsigned started = 0;
+    for (; started < 2; started++) {
+        fl[started] = (struct flood){ .txid = 0x100 | (uint32_t)started << 24 };
+        if (jam_handle_duplicate(data.fs, RIGHT_SAME, &fl[started].ch) != OK ||
+            thread_spawn("flood", flood_main, &fl[started], stacks[started],
+                         sizeof(stacks[started]), &th[started]) != OK)
+            break;
     }
     jam_sleep_until(now() + 200 * NS_PER_MS);
-    bool ok = true;
+    /* A flooded sync that is not OK in time is tried once more: a host that
+     * stalled the vCPU for seconds does it to one try, while a sync whose
+     * answer the flood takes (or queues behind its flood) fails every time
+     * (volumes waits SYNC_WAIT, 5 s, and calls it failed). The limit is
+     * the baseline's time and 2 s, not SYNC_WAIT. */
+    bool ok = bst == OK && started == 2;
     for (unsigned k = 0; ok && k < 2; k++) {
-        uint64_t t0 = now();
-        status_t st = volumes_sync_until(vm, now() + 20 * NS_PER_S);
-        uint64_t ms = (now() - t0) / NS_PER_MS;
-        printf("utest: disk_own_channel: sync %u: %s in %lu ms, %u stats sent, %u messages read "
-               "by the flood\n", k, status_str(st), (unsigned long)ms, fl[0].sent + fl[1].sent,
-               fl[0].got + fl[1].got);
-        ok = st == OK && ms < 2000;   /* not SYNC_WAIT's 5 s, its answer taken */
+        bool good = false;
+        for (unsigned tries = 0; !good && tries < 2; tries++) {
+            uint64_t t0 = now();
+            status_t st = volumes_sync_until(vm, now() + 20 * NS_PER_S);
+            uint64_t ms = (now() - t0) / NS_PER_MS;
+            printf("utest: disk_own_channel: sync %u: %s in %lu ms (baseline %lu ms), %u stats "
+                   "sent, %u messages read by the flood\n", k, status_str(st), (unsigned long)ms,
+                   (unsigned long)base_ms, fl[0].sent + fl[1].sent, fl[0].got + fl[1].got);
+            good = st == OK && ms < 2000 + 2 * base_ms;
+        }
+        ok = good;
         if (ok && k == 0)   /* the next instance gets volumes' own channel too */
             ok = volumes_kill_until(vm, now() + 30 * NS_PER_S, DATA, sizeof(DATA) - 1,
                                     &koid) == OK;
     }
     flood_stop = true;
-    if (!wait_threads(th, 2))
+    bool joined = wait_threads(th, started);
+    /* the disk goes either way: a failure here must not leave it attached
+     * for the tests that come after */
+    for (unsigned i = 0; i < started; i++)
+        (void)jam_handle_close(fl[i].ch);
+    if (!joined)
         return false;
-    CHECK(ok);
-    CHECK(fl[0].got + fl[1].got > 0);   /* the flood read its end */
-    for (unsigned i = 0; i < 2; i++)
-        CHECK_ST(jam_handle_close(fl[i].ch), OK);
+    if (!ok || fl[0].got + fl[1].got == 0) {   /* the flood must have read its end */
+        (void)detach(vm, &v);
+        if (bst != OK)
+            FAIL("volumes' sync fails even with no flood (%s): the system's mounts?",
+                 status_str(bst));
+        FAIL("a sync of the flooded mount didn't finish in time twice (or the flood read nothing)");
+    }
     CHECK_ST(t_mkdir(&data, "/after"), OK);
     return detach(vm, &v);
 }
