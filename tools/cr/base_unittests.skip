@@ -88,9 +88,6 @@ ElfReaderTestWithCurrentImage.ReadElfBuildId
 ImmediateCrashTest.ExpectedOpcodeSequence
 NativeLibraryTest.LoadLibrary
 
-[toolchain] the program carries no GNU build-id note: Chromium's link asks for one (--build-id=fast, after the driver's =none) but user/posix/posix.ld discards `.note.*` (CBF2b: the fix is a PT_NOTE and a section line in posix.ld, which changes every port's sysroot: CR-PLAN, "CBF2b notes")
-ElfReaderTestWithCurrentElfImage.ReadElfBuildId
-
 [jit] mprotect/mmap of anonymous memory with PROT_EXEC is refused without the JIT right (W^X by design, docs/CR-PLAN.md section 12); the null buffer then faults (DecommitAndZero and InaccessiblePages pass)
 PartitionAllocPageAllocatorTest.AllocInaccessibleWillJitLater
 PartitionAllocPageAllocatorTest.AllocReadWriteExecute
@@ -121,6 +118,6 @@ PersistentHistogramAllocatorTest.CreateWithFile
 PersistentHistogramAllocatorTest.MovePersistentFile
 PersistentMemoryAllocatorTest.TruncateTest
 
-[toolchain] PartitionAlloc reserves the low 4 GiB (a PROT_NONE zero segment, from 64 KiB, its own constant: nothing is read from the OS) as one mapping, and the program's image sits at 0x400000 in the way, so it keeps the 64 KiB it assumes (the layer also ignores an mmap address hint: CR-PLAN, "CBF2b notes"). ZeroSegmentInaccessibleEnd reads the segment's last byte and expects to die: nothing is reserved there ("failed to die"; the Begin test passes)
+[toolchain] PartitionAlloc reserves [64 KiB, 4,097 MiB) (a PROT_NONE zero segment, USER_SPACE_ZERO_SEGMENT_SIZE_MB) by its address as one mapping, and the program's image sits at 0x400000 in the way, so it keeps the 64 KiB it assumes. MH made the hint taken and placement top down (nothing else low), but the programs stay at 0x400000 until they are static PIEs: linked at 1 TiB, headless_shell's calls to BoringSSL's undefined weak functions can't reach 0 (CR-PLAN, "MH"). ZeroSegmentInaccessibleEnd reads the segment's last byte and expects to die: nothing is reserved there ("failed to die"; the Begin test passes; End passed with base_unittests linked at 4 GiB)
 PartitionAddressSpaceTest.ZeroSegment
 PartitionAddressSpaceTest.ZeroSegmentInaccessibleEnd

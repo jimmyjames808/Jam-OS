@@ -10,6 +10,15 @@
  *     nothing until touched; MADV_DONTNEED and MAP_FIXED PROT_NONE give
  *     the pages back; MAP_FIXED pieces inside it make no VMO;
  *   - V8's and PartitionAlloc's patterns (mempat.c);
+ *   - mmap's address hint, as Linux takes one: a free range is where the
+ *     mapping goes (an unaligned hint rounded down; above 4 GiB, near the
+ *     top of the user range; Chromium's zero segment, 64 KiB to 4,097 MiB,
+ *     which must be free: posixtest is linked at 1 TiB, as Chromium's
+ *     programs are, and placement is top down); one over a mapping
+ *     (libc's or the program's), past
+ *     the user range or wrapping is a mapping elsewhere;
+ *     MAP_FIXED_NOREPLACE where something is is EEXIST, where nothing is
+ *     exactly there;
  *   - the edges: MAP_FIXED_NOREPLACE inside a reservation, MAP_FIXED at
  *     its first and last pages, across two of libc's mappings, and
  *     reaching past its end; mprotect past its end;
@@ -245,8 +254,113 @@ static void check_reserve_limits(void)
     CHECK(mr_reserve(1ul << 47) == MAP_FAILED && errno == ENOMEM);
 }
 
+/* mmap of len bytes at a without MAP_FIXED: the hint. */
+static char *hinted(uint64_t a, uint64_t len, int prot)
+{
+    return mmap((void *)a, len, prot, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+}
+
+/* A hint at a that nothing holds (MAP_FIXED_NOREPLACE finds it free, and
+ * gives it back) is where the mapping goes; a that something holds is
+ * skipped (the address space's layout is not this test's). */
+static void hint_free_at(uint64_t a, uint64_t len)
+{
+    char *p = mmap((void *)a, len, PROT_NONE,
+                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED_NOREPLACE, -1, 0);
+    if (p == MAP_FAILED)
+        return;
+    CHECK(p == (char *)a && munmap(p, len) == 0);
+    p = hinted(a, len, PROT_READ | PROT_WRITE);
+    CHECK(p == (char *)a);
+    if (p != MAP_FAILED) {
+        p[len - 1] = 6;
+        CHECK(p[len - 1] == 6 && munmap(p, len) == 0);
+    }
+}
+
+/* A hint that can't be taken: a mapping elsewhere, never a refusal. */
+static void hint_elsewhere(uint64_t a, uint64_t len)
+{
+    char *p = hinted(a, len, PROT_READ | PROT_WRITE);
+    CHECK(p != MAP_FAILED && p != (char *)a);
+    if (p != MAP_FAILED) {
+        p[0] = 7;
+        CHECK(p[0] == 7 && munmap(p, len) == 0);
+    }
+}
+
+extern char __ehdr_start[];   /* the program's first page (posix.ld) */
+
+/* The end of PartitionAlloc's zero segment: Chromium 155's
+ * USER_SPACE_ZERO_SEGMENT_SIZE_MB, 4,097 MiB, from 64 KiB. */
+#define ZERO_END (4097 * MIB)
+
+/* mmap's address hint (Linux's rule): a free one is where the mapping
+ * goes, unaligned ones rounded down to their page; one over a mapping (of
+ * libc's, or the program itself), past the user range or wrapping goes
+ * elsewhere, and MAP_FIXED_NOREPLACE there is EEXIST. Above 4 GiB, near
+ * the top of the user range, and Chromium's zero segment (64 KiB to
+ * ZERO_END: all free in a program linked above it, as posixtest is; over
+ * the program in one linked at 0x400000). */
+static void check_hints(void)
+{
+    char *r = mr_reserve(64 * PG);   /* room known to be free once given back */
+    CHECK(r != MAP_FAILED);
+    if (r == MAP_FAILED)
+        return;
+    CHECK(munmap(r + 8 * PG, 16 * PG) == 0);
+    char *p = hinted((uint64_t)r + 8 * PG, 16 * PG, PROT_READ | PROT_WRITE);
+    CHECK(p == r + 8 * PG);   /* the hole, exactly */
+    if (p != MAP_FAILED)
+        CHECK(munmap(p, 16 * PG) == 0);
+    p = hinted((uint64_t)r + 8 * PG + 123, 4 * PG, PROT_READ | PROT_WRITE);
+    CHECK(p == r + 8 * PG);   /* rounded down to its page */
+    if (p != MAP_FAILED)
+        CHECK(munmap(p, 4 * PG) == 0);
+    hint_elsewhere((uint64_t)r + 4 * PG, 8 * PG);   /* half over the reservation */
+    hint_elsewhere((uint64_t)r, PG);
+    errno = 0;
+    CHECK(mmap(r, PG, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0) ==
+              MAP_FAILED && errno == EEXIST);
+    p = mmap(r + 8 * PG, PG, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1,
+             0);
+    CHECK(p == r + 8 * PG);   /* NOREPLACE where nothing is: exactly there */
+    CHECK(munmap(r, 64 * PG) == 0);
+
+    uint64_t image = (uint64_t)__ehdr_start;   /* not libc's: the kernel says it's taken */
+    hint_elsewhere(image, PG);
+    errno = 0;
+    CHECK(mmap(__ehdr_start, PG, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE,
+               -1, 0) == MAP_FAILED && errno == EEXIST);
+    uint64_t top = 0x00007fffffffe000ul;   /* the user range's end (the kernel's USER_TOP) */
+    hint_elsewhere(top, PG);
+    hint_elsewhere(top - PG, 2 * PG);      /* reaching past it */
+    hint_elsewhere(0xffff800000000000ul, PG);
+    hint_elsewhere(~0ul - PG + 1, 2 * PG);   /* wrapping */
+    hint_free_at(top - 48 * GIB, 16 * PG);   /* above the stack (STACK_TOP, libjam's spawn.c) */
+    hint_free_at(ZERO_END + 64 * KIB, 16 * PG);
+    if (image < ZERO_END) {
+        hint_elsewhere(64 * KIB, ZERO_END - 64 * KIB);   /* over the program */
+        return;
+    }
+    /* Linked at 1 TiB (posix.mk), as Chromium's programs are: nothing is
+     * placed below it (placement is top down: first fit from the user
+     * range's first page put the first mappings at 0x1000), so the first
+     * pages are free and PartitionAlloc's zero segment is made. */
+    char *low = mmap((void *)PG, 64 * KIB - PG, PROT_NONE,
+                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED_NOREPLACE, -1, 0);
+    CHECK(low == (char *)PG);
+    if (low != MAP_FAILED)
+        CHECK(munmap(low, 64 * KIB - PG) == 0);
+    char *z = hinted(64 * KIB, ZERO_END - 64 * KIB, PROT_NONE);
+    CHECK(z == (char *)(64 * KIB));
+    if (z != MAP_FAILED)
+        CHECK(munmap(z, ZERO_END - 64 * KIB) == 0);
+}
+
 void pt_mem_reserve(void)
 {
+    check_hints();
     check_reserve_limits();
     check_drop_gives_back();
     check_reserve_cheap();

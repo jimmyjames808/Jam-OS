@@ -12,7 +12,10 @@
 # headers (for C++ libc++'s include/c++/v1 first, then musl's, Jam OS's
 # extensions, the Linux UAPI headers when the sysroot has them) and then
 # clang's own (stdarg.h's builtins, the intrinsics), musl's order. Code is
-# not position-independent: Jam OS runs ET_EXEC programs only.
+# position-independent (-fPIE, as libc.a's), though Jam OS runs ET_EXEC
+# programs only: --jamos-image-base=ADDR (hex, a page's address) links a
+# program there instead of at 0x400000 (posix.ld's __jamos_image_base; a
+# port's `image-base` line; posixtest is at 1 TiB).
 #
 # A link is static, non-PIE and whole-program, by lld through
 # user/posix/posix.ld (the sysroot's copy), with unused sections dropped:
@@ -22,6 +25,9 @@
 # libunwind, libc.a (musl, the call layer, libjam), compiler-rt's builtins,
 # crtend.o, crtn.o. .eh_frame and .eh_frame_hdr are kept (posix.ld's
 # PT_GNU_EH_FRAME), which is how libunwind finds a frame's unwind table.
+# The program has a GNU build-id note (lld's --build-id: a 64-bit hash of
+# its contents; a later --build-id=... of the caller's wins: Chromium's
+# =fast is the same).
 # The runtimes (libc++, libc++abi, libunwind, the builtins, crtbegin and
 # crtend) are ports/llvm-runtimes' library files, in a port's sysroot when
 # its recipe `needs llvm-runtimes`; the UAPI headers are ports/linux-uapi's.
@@ -67,6 +73,7 @@ fi
 # Sort the arguments: our own option out, and whether this links.
 link=1
 wants=
+base=0x400000
 for a in "$@"; do
     case $a in
     -c|-S|-E|-M|-MM|-fsyntax-only) link=0 ;;
@@ -84,16 +91,22 @@ while [ $i -lt $n ]; do
     i=$((i + 1))
     case $a in
     --jamos-wants=*) wants=${a#--jamos-wants=} ;;
+    --jamos-image-base=*) base=${a#--jamos-image-base=} ;;
     *) set -- "$@" "$a" ;;
     esac
 done
+case $base in
+0x*000) ;;
+*)  echo "jamos-clang: --jamos-image-base=$base: want a page's address in hex (0x...000)" >&2
+    exit 1 ;;
+esac
 
 target="--target=x86_64-unknown-linux-musl"
 inc="-nostdinc -isystem $sysroot/include -isystem $res"
 if [ $cxx = 1 ]; then
     inc="-nostdinc -isystem $sysroot/include/c++/v1 -isystem $sysroot/include -isystem $res"
 fi
-compile_flags="$target $inc -D__jamos__=1 -fno-pie -fno-pic"
+compile_flags="$target $inc -D__jamos__=1 -fPIE"
 if [ $link = 0 ]; then
     # shellcheck disable=SC2086 # the flags are words on purpose
     exec "$clang" $compile_flags "$@"
@@ -137,9 +150,11 @@ size=$(wc -c < "$tmp/wants.txt" | tr -d ' ')
 # Not exec: the trap removes the note's files once the link is done.
 # lld finds an archive's members whatever the order on the line.
 # shellcheck disable=SC2086
-"$clang" $compile_flags -fuse-ld=lld -static -nostdlib \
+# The image base is defined before posix.ld is read, so the script's
+# DEFINED(__jamos_image_base) sees it at once.
+"$clang" $compile_flags -fuse-ld=lld -static -nostdlib -Wl,--defsym=__jamos_image_base="$base" \
     -Wl,-T,"$lib/posix.ld" -Wl,--gc-sections -Wl,-z,max-page-size=0x1000 \
-    -Wl,-z,noexecstack -Wl,--eh-frame-hdr -Wl,--build-id=none \
+    -Wl,-z,noexecstack -Wl,--eh-frame-hdr -Wl,--build-id \
     "$lib/crt1.o" "$lib/crti.o" "$lib/clang_rt.crtbegin.o" "$@" "$tmp/wants.o" \
     -L"$lib" $cxxlibs -lunwind -lc "$lib/libclang_rt.builtins.a" \
     "$lib/clang_rt.crtend.o" "$lib/crtn.o"

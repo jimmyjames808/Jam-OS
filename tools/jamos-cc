@@ -14,7 +14,11 @@
 # unused sections dropped, plus the program's list (<wants.h>) as its ELF
 # note: by default the one word `posix` (a POSIX program: the shell gives
 # it descriptors and an 8 MiB stack). --jamos-wants=FILE takes the list's
-# text from FILE instead.
+# text from FILE instead. The program has a GNU build-id note (ld's
+# --build-id: SHA-1 of its contents, 20 bytes). Code is position-
+# independent (-fPIE), so --jamos-image-base=ADDR (hex, a page's address)
+# can link a program anywhere instead of at 0x400000 (posix.ld's
+# __jamos_image_base); the link is static and non-PIE either way.
 #
 # Environment: JAMOS_SYSROOT (default: build/sysroot beside this script),
 # CROSS (default x86_64-elf-), as the Makefile's.
@@ -34,6 +38,7 @@ fi
 # Sort the arguments: our own option out, and whether this links.
 link=1
 wants=
+base=0x400000
 for a in "$@"; do
     case $a in
     -c|-S|-E|-M|-MM) link=0 ;;
@@ -47,11 +52,17 @@ while [ $i -lt $n ]; do
     i=$((i + 1))
     case $a in
     --jamos-wants=*) wants=${a#--jamos-wants=} ;;
+    --jamos-image-base=*) base=${a#--jamos-image-base=} ;;
     *) set -- "$@" "$a" ;;
     esac
 done
+case $base in
+0x*000) ;;
+*)  echo "jamos-cc: --jamos-image-base=$base: want a page's address in hex (0x...000)" >&2
+    exit 1 ;;
+esac
 
-compile_flags="-nostdinc -isystem $sysroot/include -isystem $gccinc -D__jamos__=1 -fno-pie"
+compile_flags="-nostdinc -isystem $sysroot/include -isystem $gccinc -D__jamos__=1 -fPIE"
 if [ $link = 0 ]; then
     # shellcheck disable=SC2086 # the flags are words on purpose
     exec "$cc" $compile_flags "$@"
@@ -80,8 +91,8 @@ size=$(wc -c < "$tmp/wants.txt" | tr -d ' ')
 
 # Not exec: the trap removes the note's files once the link is done.
 # shellcheck disable=SC2086
-"$cc" $compile_flags -static -nostdlib \
+"$cc" $compile_flags -static -nostdlib -Wl,--defsym=__jamos_image_base="$base" \
     -Wl,-T,"$sysroot/lib/posix.ld" -Wl,--gc-sections -Wl,-z,max-page-size=0x1000 \
-    -Wl,-z,noexecstack -Wl,--eh-frame-hdr \
+    -Wl,-z,noexecstack -Wl,--eh-frame-hdr -Wl,--build-id \
     "$sysroot/lib/crt1.o" "$sysroot/lib/crti.o" "$@" "$tmp/wants.o" \
     -L"$sysroot/lib" -lc "$libgcc" "$sysroot/lib/crtn.o"

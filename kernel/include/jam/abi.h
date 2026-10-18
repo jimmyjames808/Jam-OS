@@ -225,7 +225,7 @@ struct port_packet {
  * abi/syscalls.def) through a handle with both RIGHT_WRITE and RIGHT_EXEC:
  * W^X holds for every other mapping (ERR_INVALID_ARGS for W+X). */
 #define VMAR_EXEC  (1u << 2)
-#define VMAR_FIXED (1u << 3)   /* map at *addr exactly (else first fit) */
+#define VMAR_FIXED (1u << 3)   /* map at *addr exactly (else the top of the highest gap that fits) */
 /* vmar_map only: map a VMO_KEEP_PAGES VMO (ERR_NOT_SUPPORTED for any other
  * VMO) read-only (VMAR_READ, maybe VMAR_FIXED; ERR_INVALID_ARGS for any
  * other permission), with every page-table entry filled before the call

@@ -3,6 +3,8 @@
  *   - this run's own auxiliary vector (the page size, the program headers
  *     with PT_TLS among them, 16 random bytes, the ids, AT_SECURE 0) and
  *     the TZ the start added (the starter gave none);
+ *   - the program's notes, as mapped: one GNU build-id and one JamOS
+ *     list, each in a PT_NOTE of its own (user/posix/posix.ld);
  *   - a child started with libjam's spawn, given an argv and an
  *     environment with an empty string, spaces, '=' and a long string:
  *     it gets them exactly (and keeps the TZ it was given);
@@ -157,6 +159,42 @@ static void check_aux(char **argv)
     CHECK(getenv("TZ") && getenv("TZ")[0]);   /* added: init gives none */
 }
 
+/* The notes of the program's PT_NOTE segments (mapped, as Chromium's
+ * ElfReader reads them): one GNU build-id (NT_GNU_BUILD_ID, the link
+ * driver's --build-id: 20 bytes from ld, 8 from lld) that isn't all zero,
+ * and one JamOS list, in a segment of its own. */
+static void check_build_id(void)
+{
+    const Elf64_Phdr *ph = (const Elf64_Phdr *)getauxval(AT_PHDR);
+    unsigned long n = getauxval(AT_PHNUM);
+    unsigned ids = 0, lists = 0, idsz = 0, nonzero = 0;
+    for (unsigned long i = 0; ph && i < n; i++) {
+        if (ph[i].p_type != PT_NOTE)
+            continue;
+        const unsigned char *at = (const unsigned char *)ph[i].p_vaddr;
+        const unsigned char *end = at + ph[i].p_memsz;
+        unsigned seg_ids = 0, seg_lists = 0;
+        while (end - at >= (long)sizeof(Elf64_Nhdr)) {
+            const Elf64_Nhdr *nh = (const Elf64_Nhdr *)at;
+            const char *name = (const char *)(nh + 1);
+            const unsigned char *desc = (const unsigned char *)name + ((nh->n_namesz + 3) & ~3u);
+            if (nh->n_type == NT_GNU_BUILD_ID && nh->n_namesz == 4 && !memcmp(name, "GNU", 4)) {
+                seg_ids++;
+                idsz = nh->n_descsz;
+                for (unsigned j = 0; j < nh->n_descsz; j++)
+                    nonzero |= desc[j];
+            }
+            seg_lists += nh->n_type == 1 && nh->n_namesz == 6 && !memcmp(name, "JamOS", 6);
+            at = desc + ((nh->n_descsz + 3) & ~3u);
+        }
+        CHECK(!(seg_ids && seg_lists));
+        ids += seg_ids;
+        lists += seg_lists;
+    }
+    CHECK(ids == 1 && (idsz == 20 || idsz == 8) && nonzero);
+    CHECK(lists == 1);
+}
+
 static void check_time(void)
 {
     struct timespec a, b, real;
@@ -284,6 +322,7 @@ void pt_start(char **argv)
 {
     CHECK(ctor_ran == 1);
     check_aux(argv);
+    check_build_id();
     check_time();
     check_machine();
     check_dl();

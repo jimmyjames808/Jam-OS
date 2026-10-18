@@ -196,13 +196,17 @@ def cc_wrapper(r, top, sysroot, work, driver="jamos-cc"):
                                                   _q("--jamos-wants=" + os.path.abspath(
                                                       r.port_file(wants)))))
     jamos_cc = os.path.join(top, "tools", driver)
+    base = ""
+    if r.image_base:   # every link of the port's: its programs there (recipe.py)
+        base = "    set -- %s \"$@\"\n" % _q("--jamos-image-base=" + r.image_base)
     clang = ""
     if driver != "jamos-cc":
         clang = "JAMOS_CLANG=%s; export JAMOS_CLANG\n" % _q(clang_dir(top))
     return """#!/bin/sh
 # The compiler of port %(name)s (tools/portslib/toolchain.py): %(driver)s
 # against the port's own sysroot, debug paths made relative, and on a
-# link the program's list chosen by the output's name.
+# link the program's list chosen by the output's name (and the recipe's
+# image-base, if it has one).
 JAMOS_SYSROOT=%(sysroot)s; export JAMOS_SYSROOT
 CROSS=%(cross)s; export CROSS
 %(clang)s# -pthread (Meson's threads dependency adds it): the threads are in musl's
@@ -229,14 +233,14 @@ if [ $link = 1 ]; then
 %(cases)s
     *) ;;
     esac
-fi
+%(base)sfi
 map=-ffile-prefix-map=%(work)s=/usr/src/%(name)s
 if [ -n "$wants" ]; then
     exec %(cc)s "$map" "$wants" "$@"
 fi
 exec %(cc)s "$map" "$@"
 """ % {"name": r.name, "sysroot": _q(sysroot), "cross": _q(cross()), "cases": "\n".join(cases),
-       "work": _q(work), "cc": _q(jamos_cc), "driver": driver, "clang": clang}
+       "work": _q(work), "cc": _q(jamos_cc), "driver": driver, "clang": clang, "base": base}
 
 
 def make_bin(r, top, base, sysroot, work):
