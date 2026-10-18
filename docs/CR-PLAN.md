@@ -410,7 +410,9 @@ stubs) and lists 13 sites in `headless_shell`: 12 in Crashpad's client
 `ports.py package --from` refused the build, as the package format held
 no file over 64 MiB (PO13 raised it to 1 GiB, 2 GiB a package: not yet
 tried on this build's stage); `test_child_process` is in the recipe since
-CB2, `chrome_crashpad_handler` is not yet (CB3 adds it with its run).
+CB2, `chrome_crashpad_handler` is not yet (CB3's runs did not need it:
+the log of `headless_shell --single-process` has no crash-reporting line;
+whether a multi-process run starts one is CB5's to see).
 
 The last round's link errors and their fixes (CB1b): base's `close()`
 wrapper found libc's with `dlsym(RTLD_NEXT)` (patch 0910: the linker's
@@ -2251,6 +2253,142 @@ local page, one stop at a time.
   worked without a change. CB3's HTTPS page and cr-test.sh's `headless`
   case are still to do.
 
+#### CB3 notes (2026-10-18)
+
+Track CB3 (`headless_shell`, CR-c1): one process drawing a screenshot of a
+page on `/data` and of a page over HTTPS. It was reached by hand on
+2026-10-18, one stop at a time (the owner wanted to see it before the rest
+of the gate: tracks TD, HS and HS2, then the main session's own fixes and
+runs on the hardware); CB3's part is this record and cr-test.sh's
+`headless` case, which runs it again whenever the layer changes.
+
+The run: `headless_shell --no-sandbox --single-process --no-zygote
+--headless --disable-gpu --js-flags=--jitless`, then `--dump-dom` (the DOM
+on the program's standard output) or `--window-size=800,600
+--screenshot=<file>`; `TMPDIR` and `HOME` at `/data/cr/tmp`,
+`FONTCONFIG_FILE` at a fonts.conf (one `<dir>` line and a `<cachedir>`)
+beside Inter, the only font staged. The program's list is
+`ports/chromium/wants/headless_shell` (`posix`, `svc net`, `svc dns`,
+`mount /data rw`); beside it in `/data/cr/out/jamos` three paks:
+`headless_lib_data.pak`, `headless_lib_strings.pak` and
+`headless_command_resources.pak`. No GN argument changed: CB1's
+`files/args.gn` build is the one that runs (the recipe's comment names the
+flags). The sandbox, `fork` (no zygote) and the JIT stay off until CB5 and
+CR-e.
+
+**The stops, in the order they came** (all but the last two found in QEMU
+on the PC; none needed a Chromium patch):
+
+1. **A hang at start-up.** The first smoke runs (`--dump-dom` of a `data:`
+   URL) sat at 0 CPU with two threads for 250 s and printed nothing (hs3
+   ran the stage's older link: a relink leaves the new program in the
+   kept tree's `out/jamos`, not in the stage, which is why the `headless`
+   and `shell-wl` cases read it from there; hs4, the fresh link, hung the
+   same way). TD's thread listing (74473307) found the wait: Chromium's sandbox libc interceptor
+   looks up `localtime` with `dlsym(RTLD_NEXT)`, a static program has no
+   other module, the miss is logged from inside a `pthread_once`, and the
+   log's time stamp calls the interceptor's `localtime_r` again: the main
+   thread waits for itself ([TD notes](#td-notes-2026-10-18)). Fixed in the
+   layer, 4d756b99: an override of musl's `src/ldso/__dlsym.c` answers
+   `RTLD_NEXT` for `localtime`, `localtime_r` and their 64 names with
+   libc's own; posixtest's `start` checks it.
+2. **`shutdown(SHUT_RD)` on a socketpair** (HS stop 1, 1a1b6b07): the
+   sandbox host's `SOCK_SEQPACKET` pair needs half-close; the end part and
+   the wake-ups are in [HS notes](#hs-notes-2026-10-18).
+3. **V8's code range** (HS stop 2): `--js-flags=--jitless`, the mode until
+   CR-e; **`headless_command_resources.pak`** (HS stop 3, 64e1924e):
+   without it `--dump-dom` printed nothing and exited 0. HS's merge
+   (dddfb00f) printed `<html><head></head><body>Hello from Jam OS</body></html>`.
+4. **The shell's 240-character line** (HS2 stop 1, f4a213fc): a
+   `--screenshot` of a local page failed with `net::ERR_FILE_NOT_FOUND`
+   because the typed `run` line was 261 characters and the shell kept 240,
+   so the URL was cut to a file that isn't there (and the `; echo` after
+   it was lost). Not a layer gap. The scripts keep a program and a URL in
+   shell variables; the `headless` case now refuses a script with a `send`
+   line over 240. The shell should flag a cut line (beep or a message)
+   instead of dropping the rest silently: a small queued fix.
+5. **The screenshot** (HS2, merged 43923620): an 800x600 PNG of a local
+   page, every box and colour exact, Inter text through fontconfig, in
+   1.9 s; the software compositor, the shared memory for raster and the
+   PNG write needed no change ([HS2 notes](#hs2-notes-2026-10-18)). Six
+   harder pages followed the same day (layout, text, SVG and canvas, a
+   page built by JS, advanced CSS: 3D transforms, `clip-path`, blend modes,
+   backdrop blur; a landing-page mock): all exit 0 in 2 to 3 s;
+   `WebGL` says "not available" under `--disable-gpu`.
+6. **A page by name** (e504d6f4): the same interceptor's `getaddrinfo`
+   asks `dlsym(RTLD_NEXT, "getaddrinfo")` for the real one, got nothing
+   ("Cannot find getaddrinfo with dlsym") and every name failed with
+   `ERR_NAME_NOT_RESOLVED`: a page loaded only with `--host-resolver-rules`,
+   which skips the resolver. musl's `getaddrinfo` is now an override
+   (upstream's code as `__getaddrinfo`, `getaddrinfo` a weak alias so a
+   program's own definition still wins) and the same `__dlsym.c` hands it
+   out. Checked in QEMU the same day: `http://www.jam:8000/page.html` by
+   name through netpeer's DNS and relay, its picture from `mac.jam`.
+7. **On the hardware** (the PC from its installed drive, a shell over
+   ssh, the program fetched into `/data/cr` and approved by the owner):
+   `--dump-dom http://example.com` and a `--screenshot` of
+   `https://example.com` worked, TLS and Chromium's built-in root store
+   with no certificate files on Jam OS (names then went through
+   `--host-resolver-rules`: stop 6 was not yet in), and Google, Wikipedia,
+   GitHub, Apple, the BBC, Hacker News and YouTube drew (1280x900,
+   `--timeout=20000`); the screenshot is taken at the load event (about
+   5 s on YouTube). Non-Latin text is tofu (Inter only is
+   staged: a font set is a later track). Not yet repeated on the hardware
+   with stop 6 in.
+
+**Findings that stay open.**
+
+- **WebAssembly is off under `--jitless`** (V8 has no Wasm without its
+  compilers): CR-e (the JIT) brings it.
+- **WebGL is off** with `--disable-gpu`: a software GL (SwiftShader) is a
+  small track of its own.
+- **`content_shell` ignores `--proxy-server`**, `headless_shell` honours it
+  (found browsing the open internet from QEMU, 10-18: a CONNECT proxy on
+  the test host through netpeer's relay carried YouTube's home page and a
+  search, both rendered; for `content_shell` the way was QEMU's own NAT
+  with an untagged image). Google's search shows a reCAPTCHA to the
+  `HeadlessChrome` user agent: left as it is. `--virtual-time-budget`
+  never ends on YouTube (the page is never idle): use `--timeout`.
+- The `NETLINK` socket (`address_tracker_linux`) fails with EAFNOSUPPORT in
+  every run: a log line, and the pages load. `landlock_create_ruleset`
+  ENOSYS is logged at start-up and is as harmless.
+
+**The test: cr-test.sh's `headless` case** (TESTING.md). The program, its
+three paks, Inter and a fonts.conf go on a 2 GiB stick
+(`tools/cr/base-stick.py`'s lists, as `shell-wl` does) and one boot runs
+`tools/cr/headless.txt`: the page `tools/cr/headless.html` (a red box, a
+picture, a heading, and a script that writes a line into the page: `js ok
+42, picture 320x160`, so the DOM shows that V8's interpreter ran and the
+picture arrived) three times, each with `--dump-dom` (into a file) and
+`--screenshot`:
+
+- **(a)** `file:///data/cr/out/jamos/page.html`, the picture beside it;
+- **(b)** `http://www.jam:8000/page-http.html` by name through netpeer's
+  DNS and `--tcp-relay` to `tools/cr/headless-server.py` on the test host,
+  its picture from `http://mac.jam:8000/pic.svg` (a second name);
+- **(c)** `https://www.jam:8443/page-https.html` from the same server over
+  TLS with a certificate `openssl` made when the case started (an EC
+  key, `www.jam` and `mac.jam` as its names, two days), trusted by this
+  run only: `--ignore-certificate-errors-spki-list=<the base64 SHA-256 of
+  its public key>`, not the blanket `--ignore-certificate-errors`; the
+  picture from `https://mac.jam:8443/`. A last run of (c) without the flag
+  must fail: `Page load failed: net::ERR_CERT_AUTHORITY_INVALID`, nothing
+  dumped, and the server sees the handshake fail, which shows that the
+  flag is what let the others through and that Chromium on Jam OS
+  verifies the chain.
+
+`tools/cr/headless-check.py` then reads what the guest wrote (out of the
+saved stick, by `jamext`) with the serial log and the servers' logs: each
+run's exit status, the DOM's title and script line, each PNG's size and
+the colour at six points (the box, the picture, its circle, the ground)
+and that the heading and the picture's own text have white pixels, and
+what each server saw: `GET /page-http.html` for `www.jam:8000` and
+`GET /pic.svg` for `mac.jam:8000` (twice each: the dump and the shot, from
+a `HeadlessChrome`), the same on 8443 over TLS 1.3, and the one failed
+handshake of the refused run. The three PNGs came out byte for byte the
+same (15,069 bytes). A run takes some 2.2 s on the PC; the case about
+a minute with the stick.
+
 #### CB4 notes (2026-10-18)
 
 Track CB4 (`content_shell` on the desktop): one stop, then everything the
@@ -2968,7 +3106,7 @@ a renderer per site). Three pieces, all general:
 - **TLS**: BoringSSL with Chromium's compiled-in root store: nothing from
   Jam OS. **Netlink**: `socket(AF_NETLINK)` is EAFNOSUPPORT; Chromium's
   network change notifier then assumes one connection that never changes
-  (*unsure*: CB3 checks it doesn't loop).
+  (CB3 checked: one log line a run, no retry loop).
 
 ### 9. Wayland
 
@@ -3452,7 +3590,7 @@ ports, recipes, tests, netstack's caps, the audio API and the docs.
 | **CN1. netstack's caps** | section 8: the new caps, netstack's memory measured at them; built, see "CN1 notes" | `user/include/net.h`, `user/services/netstack/stack.h` and lwIP's options file if pools must grow, BENCH.md's line | nothing | utest: 256 sockets from one opener, the 257th refused; 512 in all; 1,024 TCP connections to the test host; `tools/net-test.sh` unchanged | Sonnet 5.5 |
 | **CB1. The Chromium build** | section 14 and 15: ports/chromium (the recipe, Alpine's patches, our toolchain patch, args for `base_unittests` and `headless_shell`), the builder's kept tree and `package --from` in tools/ports.py, the persistent tree on WSL behind its lock; builds `base_unittests` and `headless_shell`; reports disk, peak memory and time | ports/chromium (new), tools/ports.py (the two options), tools/cr/ (the build wrapper, new) | CT1, CT2; the main session's CPU-weighted slots in `tools/remote-test.sh` | the build finishes; the syscall scan passes (or lists each site); `make check` (the recipe's lint) | **Opus** (the build glue decides much) |
 | **CB2. `base_unittests` (CR-b)** | cr-test.sh's `base` case; the run with the ENOSYS log on; every failure triaged to a layer (a finding for its track) or fixed in the recipe's test list with a reason | cr-test.sh's case, ports/chromium's test list | CB1, CL1 (stage 1 at least), CL3, CP1 | cr-test.sh `base` | Sonnet 5.5 |
-| **CB3. `headless_shell` (CR-c1)** | the single-process headless screenshot of a local page and an HTTPS page; the findings | cr-test.sh's `headless` case, the recipe's args | CB2; CL1 stage 2 (V8's cage); M13's F1b (the `.pak` maps) | cr-test.sh `headless` | Sonnet 5.5 |
+| **CB3. `headless_shell` (CR-c1)** | the single-process headless screenshot of a local page and an HTTPS page; the findings; built 2026-10-18, see "CB3 notes" | cr-test.sh's `headless` case, the recipe's args | CB2; CL1 stage 2 (V8's cage); M13's F1b (the `.pak` maps) | cr-test.sh `headless` | Sonnet 5.5 |
 | **CB4. `content_shell` on Wayland (CR-c2)** | `content_shell --single-process` on the desktop; keys, mouse, wheel, a `<select>` list; screenshots; built 2026-10-18, see "CB4 notes" | cr-test.sh's `shell-wl` case | CB3; G2's GS1, GC1b, GT (GC3 for the list), GP2 | cr-test.sh `shell-wl` | Sonnet 5.5 |
 | **CB5. Multi-process (CR-c3)** | Chromium's own launcher, unpatched, on libc's `fork` and `exec` in place ([FORK-PLAN](FORK-PLAN.md)); `--no-zygote --no-sandbox`, every process type started and talking over Mojo; a renderer killed | cr-test.sh's `multi` case | CB4; CU1, CS1, CL2, CN1; M12.5's PX; FORK-PLAN's FK1 to FK3 and FL1a to FL4 | cr-test.sh `multi` | **Opus** (processes cross) |
 | **CB6. `chrome` (CR-d)** | the `chrome` target, its args, its package (programs, paks, licences, initial preferences: Q4), the profile on `/jam`, the singleton on CU2; `pkg install chromium` | ports/chromium (the target's lines), cr-test.sh's `chrome` case | CB5; GC2, GC3, CU2, CA1 (sound), M13.6 (its tracks in section 16), M13.7's `pkg` and PO13 | cr-test.sh `chrome`; the PC check | Sonnet 5.5 |

@@ -13,7 +13,10 @@
 # (Linux x86_64: Chromium's tools are Linux binaries).
 #
 # CB1 builds base_unittests and headless_shell (files/args.gn); CB2 runs
-# the first, CB3 the second; CB4 adds content_shell, on the desktop
+# the first, CB3 the second (cr-test.sh's `headless` case runs it as
+# `--no-sandbox --single-process --no-zygote --headless --disable-gpu
+# --js-flags=--jitless`, with the three headless_*.pak beside it); CB4 adds
+# content_shell, on the desktop
 # (Ozone's Wayland). The programs' lists are wants/<name>: each program
 # needs its `program` line below, as the link takes a program's list from
 # there (one linked without it asks only for `posix`, so it starts with
