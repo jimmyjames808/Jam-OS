@@ -231,7 +231,7 @@ static unsigned desc_kind(struct fd_desc *d)
         return FDPASS_CHANNEL;
     if (d->ops == &memfd_ops)
         return FDPASS_MEMFD;
-    if (d->ops == &dev_ops || d->ops == &etc_ops)
+    if (d->ops == &dev_ops || d->ops == &etc_ops || proc_file_path(d))
         return FDPASS_NODE;
     if (dir_is(d))
         return FDPASS_DIR;
@@ -248,7 +248,8 @@ static unsigned record_kind(uint32_t kind)
     case POSIXFDS_MEMFD:     return FDPASS_MEMFD;
     case POSIXFDS_FILE:      return FDPASS_FILE;
     case POSIXFDS_DEV:
-    case POSIXFDS_ETC:       return FDPASS_NODE;
+    case POSIXFDS_ETC:
+    case POSIXFDS_PROC:      return FDPASS_NODE;
     case POSIXFDS_DIR:       return FDPASS_DIR;
     }
     return 0;
@@ -262,7 +263,9 @@ static long give_one(struct fd_desc *d, const struct fdpass_policy *p, struct fd
     memset(out, 0, sizeof(*out));
     if (!(k & p->kinds))
         return -EINVAL;
-    long r = k == FDPASS_CHANNEL ? pipe_pass(d, out) : d->ops->give(d, out);
+    long r = k == FDPASS_CHANNEL        ? pipe_pass(d, out)
+             : proc_file_path(d) != NULL ? proc_give(d, out)   /* no .give: never a child's */
+                                         : d->ops->give(d, out);
     if (r || k != FDPASS_MEMFD || p->memfd_rights == RIGHT_SAME)
         return r;
     struct handle_info hi;
@@ -334,7 +337,8 @@ static bool record_ok(const struct posixfds_fd *rec, const void *data)
     case POSIXFDS_SEQPACKET: return rec->data_len == 0;
     case POSIXFDS_DEV:
     case POSIXFDS_ETC:
-    case POSIXFDS_DIR:       return string_ok(data, rec->data_len);
+    case POSIXFDS_DIR:
+    case POSIXFDS_PROC:      return string_ok(data, rec->data_len);
     }
     return true;   /* a memfd's data and a file's: their adopters check or ignore it */
 }

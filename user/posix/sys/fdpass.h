@@ -37,8 +37,13 @@
  * cross, as fd_give makes it for a child: a memfd with its size, seals,
  * name and offset (memfd.c: its VMO without RIGHT_WRITE once write-
  * sealed, or for a read-only description); a file as a fresh open of the
- * same file at the description's offset (a writable one lends ours,
- * fobj.c); a /dev node or one of libc's /etc files by its name; a
+ * same file at the description's offset (a writable one on fat lends
+ * ours, fobj.c; one unlinked while open has no path to open, so ours
+ * goes, moved: file.c's give_ours); a /dev node or one of libc's /etc files by its name; one of
+ * libc's /proc files by its path, the pid in it (POSIXFDS_PROC: the
+ * receiver opens its own /proc's file there, so a process's own statm
+ * and status, which Chromium's browser gives each renderer, read live; a
+ * process the receiver can't see is ENOENT at the receipt); a
  * directory by its path, opened again in the receiver's namespace at its
  * getdents position (a directory is only a path here until directory
  * handles: docs/DIRHANDLE-PLAN.md; the receiver gets nothing its own

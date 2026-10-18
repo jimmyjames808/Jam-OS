@@ -518,6 +518,7 @@ fd_adopt_fn *const fd_adopters[POSIXFDS_KIND_COUNT] = {
     [POSIXFDS_TTY] = tty_adopt,
     [POSIXFDS_DUP] = dup_adopt,
     [POSIXFDS_SEQPACKET] = seqp_adopt,
+    [POSIXFDS_PROC] = proc_adopt,
 };
 
 /* "posix: descriptor <n> (<kind>) left out: <why>\n" in the log. */

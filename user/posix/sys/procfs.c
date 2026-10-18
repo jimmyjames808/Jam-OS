@@ -801,16 +801,12 @@ static long open_dir(enum node node, int32_t pid, uint32_t tid, long flags)
                         status, flags & O_CLOEXEC);
 }
 
-/* A generated file: no writing (Linux's EACCES), no directory. */
-static long open_file(const struct at *a, const struct path *p, long flags)
+/* A generated file's state for a (its text not made yet), or NULL. */
+static struct pfile_state *file_state(const struct at *a)
 {
-    if (p->must_dir || (flags & O_DIRECTORY))
-        return -ENOTDIR;
-    if ((flags & O_ACCMODE) != O_RDONLY || (flags & O_TRUNC))
-        return -EACCES;
     struct pfile_state *st = jam_calloc(1, sizeof(*st));
     if (!st)
-        return -ENOMEM;
+        return NULL;
     for (unsigned i = 0; i < PFILES; i++)
         if (pfiles[i].node == a->node) {
             st->file = pfiles[i].file;
@@ -830,8 +826,56 @@ static long open_file(const struct at *a, const struct path *p, long flags)
         }
     st->pid = a->pid;
     st->tid = a->tid;
+    return st;
+}
+
+/* A generated file: no writing (Linux's EACCES), no directory. */
+static long open_file(const struct at *a, const struct path *p, long flags)
+{
+    if (p->must_dir || (flags & O_DIRECTORY))
+        return -ENOTDIR;
+    if ((flags & O_ACCMODE) != O_RDONLY || (flags & O_TRUNC))
+        return -EACCES;
+    struct pfile_state *st = file_state(a);
+    if (!st)
+        return -ENOMEM;
     uint32_t status = O_RDONLY | ((uint32_t)flags & (O_NONBLOCK | O_PATH));
     return kind_install(&pfile_ops, st, status, flags & O_CLOEXEC);   /* closes st if it fails */
+}
+
+long proc_give(struct fd_desc *d, struct fd_given *out)
+{
+    if (d->ops != &pfile_ops)
+        return -EINVAL;
+    char *data = jam_strdup(((const struct pfile_state *)d->priv)->path);
+    if (!data)
+        return -ENOMEM;
+    *out = (struct fd_given){
+        .kind = POSIXFDS_PROC, .status = fd_status(d) & POSIXFDS_STATUS,
+        .data = data, .data_len = (uint32_t)strlen(data) + 1,
+    };
+    return 0;
+}
+
+long proc_adopt(const struct posixfds_fd *rec, const void *data, const handle_t *hs,
+                struct fd_desc **out)
+{
+    struct path p;
+    struct at a;
+    if (path_set(data, &p) || !proc_path(p.abs))   /* data: a string (the reader's check) */
+        return -EINVAL;
+    long r = lookup(p.abs, &a);   /* our /proc's answer: another's pid is ENOENT here */
+    if (r)
+        return r;
+    if (!is_file(a.node))
+        return -EINVAL;
+    struct pfile_state *st = file_state(&a);
+    if (!st)
+        return -ENOMEM;
+    *out = fd_new(&pfile_ops, O_RDONLY | (rec->status & O_NONBLOCK), st);
+    if (!*out)
+        jam_free(st);
+    return *out ? 0 : -ENOMEM;
 }
 
 static long open_exe(const struct path *p, long flags)
