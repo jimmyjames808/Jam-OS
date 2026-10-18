@@ -17,9 +17,11 @@
  * request slots and each one's transaction id, the open files (inode
  * number and generation, flags), the views (flags, the root's inode and
  * place), the mapped files (inode, kind, key), the watches (watch.c's
- * table: the watcher channels and their views, the watched inodes). The
- * block cache, the directory hash and the watchers' queued events are
- * not kept (a successor's queues start with IN_Q_OVERFLOW).
+ * table: the watcher channels and their views, the watched inodes), the
+ * record locks (locks.c's table and lock owners). The block cache, the
+ * directory hash, the watchers' queued events and the locks' waits are
+ * not kept (a successor's queues start with IN_Q_OVERFLOW; a waiter asks
+ * again).
  *
  * Files: main.c the startup, the mount (and the format), the event loop;
  * disk.c the ext library's device over `block`; state.c the state VMO;
@@ -32,7 +34,8 @@
  * files.c the open files and the `file` methods; views.c views and
  * subviews; pager.c mapped files and the mount's pager; wback.c their
  * stores written back; watch.c file watching (fs.watch's channels and
- * the events, docs/INOTIFY-PLAN.md); test.c the test powers. */
+ * the events, docs/INOTIFY-PLAN.md); locks.c record locks (file.lock,
+ * <rlock.h>); test.c the test powers. */
 #pragma once
 
 #include <stdbool.h>
@@ -41,6 +44,7 @@
 #include <fs_idl.h>
 #include <fsview.h>
 #include <fswatch.h>
+#include <rlock.h>
 #include <idl/fsctl.h>
 #include <os.h>
 #include <svcstate.h>
@@ -68,6 +72,7 @@
                         FS_FEAT_MULTI_WRITER)
 #define XF_DEFER_MAX   64u         /* orphans and truncations left for after an answer */
 #define XF_MAX_MAPS    256u        /* mapped files at once (file.map's VMOs: pager.c) */
+#define XF_LOCK_OWNERS 64u         /* lockowner's owners at once (locks.c: OFD and flock) */
 
 /* The key of a VMO mapped to run: a sequence number and its slot of
  * maps[] (pager.c). The sequence stays below 2^55 (nanoseconds since
@@ -95,6 +100,8 @@ _Static_assert(XF_MAX_MAPS <= 256, "a slot fits a key's low byte");
 #define XF_KEY_VIEW(s, g)  (XF_KEY_VIEW_BIT | (uint64_t)(g) << 16 | (uint64_t)(s))
 #define XF_KEY_WATCH_BIT   (1ull << 60)   /* a watcher channel: its number is the library's */
 #define XF_KEY_WATCH(s, g) (XF_KEY_WATCH_BIT | (uint64_t)(g) << 16 | (uint64_t)(s))
+#define XF_KEY_LOCK_BIT    (1ull << 59)   /* a lock owner's token (locks.c): its slot */
+#define XF_KEY_LOCK(i)     (XF_KEY_LOCK_BIT | (uint64_t)(i))
 #define XF_KEY_SLOT(k)     ((unsigned)((k) & 0xffff))
 #define XF_KEY_GEN(k)      ((uint32_t)((k) >> 16 & 0xffffffffu))
 
@@ -144,7 +151,7 @@ extern struct xf_vol vol;
 /* ---- the state (state.c) --------------------------------------------------------- */
 
 #define XF_STATE_KIND   0x73667865u   /* "exfs": svcstate's kind */
-#define XF_STATE_LAYOUT 5u            /* bump on any change to struct xf_state or the
+#define XF_STATE_LAYOUT 7u            /* bump on any change to struct xf_state or the
                                        * requests its slots replay */
 /* A slot's request area: the request (fs.rename's two paths), then from
  * XF_SLOT_DATA its data: the bounce buffer a write's bytes are copied
@@ -237,6 +244,13 @@ struct xf_watches {
     uint32_t         dir[FSW_WATCHES][2];
 };
 
+/* Record locks' part (locks.c): the table (<rlock.h>: changed by one
+ * store) and each lockowner's number (0: the slot is free). */
+struct xf_locks {
+    struct rl_table table;
+    uint64_t        owners[XF_LOCK_OWNERS];
+};
+
 struct xf_state {
     uint8_t         uuid[16];      /* the volume's: a state is for one volume */
     bool            mounted;       /* a volume was served from it */
@@ -247,6 +261,7 @@ struct xf_state {
     uint64_t        data_seq[2];   /* slot i's data holds request data_seq[i]'s bytes */
     struct xf_map   maps[XF_MAX_MAPS];
     uint64_t        map_seq;       /* the last key's sequence number (pager.c) */
+    struct xf_locks locks;         /* locks.c's */
     struct xf_watches watch;       /* watch.c's */
 };
 
@@ -312,7 +327,7 @@ bool     op_data_in(void);
 void     op_data_copied(void);
 /* The running request made slot `index` (XF_MADE_*). */
 void     op_made(uint32_t kind, uint32_t index);
-/* The process that wrote the running request (fs requests only: the
+/* The process that wrote the running request (fs and file requests: the
  * kernel's CHANNEL_READ_PID, kept in its slot; 0 for the others). */
 uint32_t op_pid(void);
 
@@ -448,6 +463,10 @@ status_t files_remake(uint32_t i, handle_t *out_ch, handle_t *out_vmo);
 bool     files_chan(uint32_t i, uint32_t gen16, struct xf_chan *out);
 /* An adopted table, checked against the volume: NULL, or why not. */
 const char *files_check(void);
+/* Open file f as a lock's `via` (locks.c): its slot and generation; and
+ * is the open a via names gone (closed here, or its client's end closed)? */
+uint32_t files_via(const struct xf_file *f);
+bool     files_via_gone(uint32_t via);
 
 /* ---- views.c ----------------------------------------------------------------- */
 
@@ -620,13 +639,41 @@ uint32_t ev_attr_mask(uint32_t mask);
 void     ev_begin(void);
 void     ev_settle(bool done);
 
+/* ---- locks.c ----------------------------------------------------------------- */
+
+/* file.lock, file.getlock, file.lockowner (xf_file_ops'; ctx: the file). */
+status_t locks_op_lock(void *ctx, uint8_t type, uint8_t flags, uint64_t start, uint64_t end,
+                       uint64_t owner, uint8_t *out_result, handle_t *out_wake,
+                       uint32_t *out_wake_len);
+status_t locks_op_getlock(void *ctx, uint8_t type, uint8_t flags, uint64_t start, uint64_t end,
+                          uint64_t owner, uint8_t *out_held, uint64_t *out_held_start,
+                          uint64_t *out_held_end, uint32_t *out_pid);
+status_t locks_op_lockowner(void *ctx, uint64_t *out_owner, handle_t *out_token,
+                            uint32_t *out_token_len);
+/* Open file f closes (files.c, before its slot goes): the POSIX locks set
+ * through it go, each such process's on the file. */
+void     locks_closed(const struct xf_file *f);
+/* A lock owner's token's binding fired: its last handle closed, so its
+ * locks go. */
+void     locks_event(uint64_t key);
+/* The state set up empty (state.c's reset): the tokens and waits this
+ * instance holds closed. */
+void     locks_reset(void);
+/* A successor's: the table checked (NULL, or what is wrong), the keeper's
+ * token of owner i back, and, after files_adopt, the owners whose token
+ * didn't come back or closed dropped and the rest waited on; how many. */
+const char *locks_check(void);
+bool     locks_take(uint32_t i, const handle_t *hs, unsigned n);
+unsigned locks_adopt(void);
+
 /* ---- keeper.c ---------------------------------------------------------------- */
 
 #define XF_KEEP_FILE(i) ((uint32_t)(i))
 #define XF_KEEP_VIEW(i) ((uint32_t)(XF_MAX_FILES + (i)))
 #define XF_KEEP_MAP(i)  ((uint32_t)(XF_MAX_FILES + XF_VIEWS + (i)))
 #define XF_KEEP_WATCH(i) ((uint32_t)(XF_MAX_FILES + XF_VIEWS + XF_MAX_MAPS + (i)))
-#define XF_KEEP_SLOTS   (XF_MAX_FILES + XF_VIEWS + XF_MAX_MAPS + FSW_CHANNELS)
+#define XF_KEEP_LOCK(i) ((uint32_t)(XF_MAX_FILES + XF_VIEWS + XF_MAX_MAPS + FSW_CHANNELS + (i)))
+#define XF_KEEP_SLOTS   (XF_MAX_FILES + XF_VIEWS + XF_MAX_MAPS + FSW_CHANNELS + XF_LOCK_OWNERS)
 
 status_t kept_put(uint32_t slot, const handle_t *hs, unsigned n);
 void     kept_drop(uint32_t slot);

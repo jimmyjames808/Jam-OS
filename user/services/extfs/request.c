@@ -292,15 +292,14 @@ uint32_t op_pid(void)
 
 static status_t take(const struct xf_chan *c, unsigned slot, const struct idl_slot *is)
 {
-    if (c->proto == XF_PROTO_FILE)
-        return file_take_slot(c->ch, is, &reply);
     if (c->proto == XF_PROTO_CTL)
         return fsctl_take_slot(c->ch, is, &reply);
     if (c->proto == XF_PROTO_WATCH)
         return fswatch_take_slot(c->ch, is, &reply);
-    /* fs: read keeping the writer's pid (fs.watch's per-process share), which
-     * a read that sends the waiting reply can't ask for: that reply on its
-     * own first, if one waits (seldom: the port's wait sent it). */
+    /* fs and file: read keeping the writer's pid (fs.watch's per-process
+     * share, a POSIX lock's owner: locks.c), which a read that sends the
+     * waiting reply can't ask for: that reply on its own first, if one
+     * waits (seldom: the port's wait sent it). */
     reply_flush();
     return idl_taken(c->ch, is, svcstate_read(state_slots(), slot, c->ch));
 }
