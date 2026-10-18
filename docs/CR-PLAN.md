@@ -1693,7 +1693,9 @@ checks the forwarding (a forked child's `execve` of `/data/pt-prog`, our
   and runs to the test's timeout (5). Q1's option C would mend them; SX
   (below: D2) does, for a child that isn't raised.
 - A thread's id is never the pid (3: base's tid cache, `ForkWithFlags`).
-- `fcntl` record locks are each process's own (7 `FileLockingTest`).
+- `fcntl` record locks are each process's own (7 `FileLockingTest`; kept
+  by the file service since RL: [RL notes](#rl-notes), off the list after
+  a relink).
 - `clone` with `CLONE_FS` is refused (1, `LaunchProcess`'s one case).
 - A handler run at a call's boundary gets zeroed registers in its
   ucontext (1, `LoggingTest.CheckCausesDistinctBreakpoints`: `abort()`'s
@@ -3455,6 +3457,7 @@ ports, recipes, tests, netstack's caps, the audio API and the docs.
 | **CB3. `headless_shell` (CR-c1)** | the single-process headless screenshot of a local page and an HTTPS page; the findings | cr-test.sh's `headless` case, the recipe's args | CB2; CL1 stage 2 (V8's cage); M13's F1b (the `.pak` maps) | cr-test.sh `headless` | Sonnet 5.5 |
 | **CB4. `content_shell` on Wayland (CR-c2)** | `content_shell --single-process` on the desktop; keys, mouse, wheel, a `<select>` list; screenshots; built 2026-10-18, see "CB4 notes" | cr-test.sh's `shell-wl` case | CB3; G2's GS1, GC1b, GT (GC3 for the list), GP2 | cr-test.sh `shell-wl` | Sonnet 5.5 |
 | **CB5. Multi-process (CR-c3)** | Chromium's own launcher, unpatched, on libc's `fork` and `exec` in place ([FORK-PLAN](FORK-PLAN.md)); `--no-zygote --no-sandbox`, every process type started and talking over Mojo; a renderer killed | cr-test.sh's `multi` case | CB4; CU1, CS1, CL2, CN1; M12.5's PX; FORK-PLAN's FK1 to FK3 and FL1a to FL4 | cr-test.sh `multi` | **Opus** (processes cross) |
+| **RL. Record locks across processes** (D9; built 2026-10-18: [RL notes](#rl-notes)) | `fcntl`'s, `F_OFD_` and `flock` locks kept by the file service per inode (`file.lock`, `getlock`, `lockowner`), so SQLite and leveldb in Chrome's processes meet each other's; `EDEADLK`; released at close and at a process's death; kept across extfs's restarts | `abi/idl/file.idl` (its own commit), `user/include/rlock.h` and `user/lib/rlock.c` (new), `user/services/extfs/locks.c` (new) and its lines in extfs's `main.c`, `files.c`, `adopt.c`, `request.c`, `state.c`, `keeper.c`, `extfs.h`; libc's `reclock.c` (new) and its lines in `dup.c`, `fd.c`, `file.c`, `files.h`, `kinds.h` | IE2 (extfs's queue) | posixtest `locks`; utest `extfs_locks`, `extfs_restart_locks`, `fs_no_locks`; `tools/extfs-svc-test.sh`; base's `FileLockingTest` (7) after a relink | **Opus** |
 | **CB6. `chrome` (CR-d)** | the `chrome` target, its args, its package (programs, paks, licences, initial preferences: Q4), the profile on `/jam`, the singleton on CU2; `pkg install chromium` | ports/chromium (the target's lines), cr-test.sh's `chrome` case | CB5; GC2, GC3, CU2, CA1 (sound), M13.6 (its tracks in section 16), M13.7's `pkg` and PO13 | cr-test.sh `chrome`; the PC check | Sonnet 5.5 |
 | **PO13. The package area on `/jam`** (built: [M13.7's PO13 notes](M13.7-PLAN.md#po13-notes)) | M13.7's prefix on `/jam` (after M13.6), the guard on it, big packages (a 250 MB program: staged files on `/jam`, init's hashing in steps) | M13.7's files named in its plan's PO5 and PO6 notes (the prefix constant, the guard's line for extfs) | M13.7's PO5 and PO6; M13.6's U4 and U8 | tools/pkg-test.sh (PO8, to come) with a big package on an ext test disk | Sonnet 5.5 |
 | **CA1. Sound** | section 11: libjam's audio output API and Chromium's back end patch | `<audio.h>` (a header of its own), user/lib/audio.c and audio_flow.c, ports/chromium's audio patch | CB4 (a browser to test it with); the API part at once (**done 2026-10-15**, see "CA1 notes") | utest: a stream's frames reach the mixer (`tools/mixer-test.sh`'s way); cr-test.sh `chrome` playing a WebM's sound into the mixer's capture | Sonnet 5.5 |
@@ -4360,6 +4363,116 @@ over the card and measured netstack's memory at them. No change to
   other counts are meaningless); a program's ring pages are charged to
   netstack's job, not the program's (`ps` shows the program at 320 KiB
   holding 512 connections).
+
+## RL notes
+
+Track RL, record locks across processes (2026-10-18; the main session's
+D9, for CB6: Chrome's profile databases are SQLite and leveldb, which lock
+files with `fcntl` across the browser's processes). Before it libc granted
+every lock and kept none (`dup.c`), so `F_SETLK` never said `EAGAIN` and
+`F_GETLK` always `F_UNLCK`: the 7 `FileLockingTest` tests on the skip list.
+
+- **The protocol** (`abi/idl/file.idl`, its own commit; the ABI stamp
+  moves): three methods on an open file, not on `fs` (a lock is on an
+  open, and the file channel is what the service closes it with):
+  `lock` (take, change or drop a lock; with `FILE_LOCK_WAIT` a conflict
+  also gives a wake channel), `getlock` (`F_GETLK`: the first lock in the
+  way, its bytes and its holder's pid) and `lockowner` (an owner for an
+  open file description's locks, and its token).
+- **The table** (`<rlock.h>`, `user/lib/rlock.c`, a library so fat could
+  take it later): Linux's rules: a write lock conflicts with any other
+  owner's lock over a byte, reads don't; an owner's new lock replaces its
+  own where they overlap (split, joined to its neighbours of its type);
+  POSIX and OFD locks share one space, flock's has its own; `EDEADLK` by
+  Linux's ten-step walk of the waits (POSIX owners only, as Linux). 256
+  locks on a volume (`RL_LOCKS`), 64 owners (`XF_LOCK_OWNERS`), 64 waits;
+  past them `ENOLCK`. A change is built in the table's spare copy and made
+  current by one store, so a service killed in the middle leaves its
+  successor the table before or after the change; a request run again
+  sets what it set (no change).
+- **The owners.** A POSIX (`fcntl`) lock's owner is the process that wrote
+  the request (the kernel's `CHANNEL_READ_PID`: no pid is sent, so no
+  process can speak for another; extfs now reads file requests with the
+  pid, as it did fs requests: one more system call only when a reply
+  waits, which the port's wait has usually sent). Each lock remembers the
+  open it was set through; when that open's channel closes (the process
+  closed its last description of the file, or died and the kernel closed
+  it) every POSIX lock of that process on the file goes. libc adds
+  Linux's close rule: any `close()` (and `dup2` over a descriptor) of a
+  file the process holds fcntl locks on unlocks the whole file
+  (`lock_closing`, from `fd.c`), even through another description. An
+  OFD or flock lock's owner is a `lockowner`: a random 64-bit number and a
+  token, a channel whose peer the description keeps; `fork` gives the
+  child's copy a duplicate (file.c's fork hook), so the locks go when the
+  last copy closes, in whichever process (Linux's rule for a
+  description).
+- **Waiting.** `F_SETLKW` and a `flock` without `LOCK_NB` ask with
+  `FILE_LOCK_WAIT`; a conflict gives a wake channel whose peer the service
+  closes when a lock on the file is cut or changes type (or the service
+  ends). libc waits for its `SIG_PEER_CLOSED` (an interruptible wait:
+  `EINTR`, restarted under `SA_RESTART` by signal.c's rule) and asks
+  again; without a wake (none free, or a reply sent again after a
+  restart) it asks again after 10 ms, and after a second whatever comes.
+  The service counts the caller as waiting until it asks again; a waiter
+  that gave up closed its end, and its record is swept before the next
+  deadlock check, so an interrupted wait makes no false `EDEADLK`.
+- **A dead holder** never holds anyone up: a lock found in the way whose
+  open's channel or owner's token is closed already goes first, before the
+  close's packet is served (the order a kill and the next request reach
+  the port in doesn't matter).
+- **Restarts (my call): locks survive.** The table and the owners'
+  numbers are in extfs's state (`struct xf_locks`, layout 7), each token
+  with the keeper (`XF_KEEP_LOCK`); a successor checks the table
+  (`rl_check`; one that fails is a fresh start, which closes every open
+  file, so no holder loses a lock without its file's `ERR_PEER_CLOSED`),
+  takes the tokens back, and drops the owners whose token didn't come back
+  or closed while no instance ran; a POSIX lock goes with its open as
+  before. The waits are the instance's memory: their wake channels close
+  with it, and the waiters ask the successor again. Why not `ENOLCK`
+  after a restart: SQLite and leveldb treat a lost lock as corruption
+  risk, and the state already keeps every open file; the table is 20 KiB.
+- **fat and the boot image (my call): the old rule**, granted and never
+  kept, `F_GETLK` `F_UNLCK`: their services answer `ERR_NOT_SUPPORTED`
+  (utest `fs_no_locks`) and libc doesn't ask a mount with one writer a
+  file (`fobj.c`'s `multi`). Not `ENOLCK`: SQLite on a fat `/data` would
+  then fail to open its databases, where today it works; and fat lets one
+  process at a time write a file, so two writers never meet there (a
+  reader beside a writer still sees no lock). fat with real locks is a
+  small track whenever it matters (the table library is ready).
+- **Not kept** (Linux would keep them): locks across `execve` (the
+  hand-over opens each file afresh, and the old opens close), and a
+  description handed to a child by `posix_spawn` or `SCM_RIGHTS` (an open
+  of its own, with none of the description's OFD or flock locks). Neither
+  is something SQLite, leveldb or base's tests do.
+- **libc-test `functional/fcntl` stays listed** (run alone: still
+  `XFAIL`, status 1), most likely for another cause, read from the code
+  rather than traced: its file is `tmpfile()`'s, unlinked at once, and a
+  forked child opens a file again by its path at its first use (FL2),
+  which fails for an unlinked file, so the child's `fcntl` would be
+  `ENOENT`, not `EAGAIN`. The reason in `expected-failures.txt` says so
+  now. A forked child's use of an unlinked file it inherited is FL2's
+  limit (reads and writes too), not the locks'.
+- **Tests**: posixtest's `locks` section (in the `init` run;
+  `tools/shell-tests/posix-locks.txt` alone): between processes, conflicts
+  and `F_GETLK`'s pid, a split and a join seen by the other process,
+  `F_SETLKW` and `flock` woken 201 ms into a 200 ms hold, `EDEADLK` for
+  whichever process closes the circle, an `EINTR` wait forgotten, the
+  close rule (another open's close, a dup's), `SIGKILL`, fork's rules,
+  OFD locks, SQLite's PENDING/RESERVED/SHARED pattern, and base's
+  `FileLockingTest` pattern (a `posix_spawn`ed `/proc/self/exe` child
+  locks; its exit and its `SIGKILL` let go); on a fat `/data` the old
+  rule. utest `extfs_locks` (the rules, rights, a full table and a split
+  refused there with nothing changed, the owners' limit), and
+  `extfs_restart_locks` (a lock request and a `lockowner` ended at their
+  commit; every lock and owner carried on; a fresh start); both in
+  `tools/extfs-svc-test.sh`. The 7 `FileLockingTest` tests check exactly
+  the spawned child's case (lock, unlock, close, exit, terminate, shared
+  and exclusive): they come off the skip list after the next relink and
+  base run (not run here: CB5 holds `~/cr`).
+- **For the merge**: extfs's state layout 7 (WR2 took 6), the dispatch line
+  for `XF_KEY_LOCK_BIT` in `main.c`, `files.c`'s `xf_file_ops` and
+  `close_file` lines, request.c's `take` (file requests read with the
+  pid), `adopt.c`'s keeper slots and check.
 
 ## Later
 
