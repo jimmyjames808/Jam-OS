@@ -305,6 +305,23 @@ static void check_dl(void)
     CHECK(dlerror() == NULL);   /* read once */
     CHECK(dlsym(RTLD_NEXT, "close") == NULL && dlerror() != NULL);
     CHECK(dlsym(RTLD_DEFAULT, "close") == NULL);
+    /* A libc wrapper's question (Chromium's sandbox interceptor): RTLD_NEXT
+     * answers libc's own localtime and localtime_r, which agree with ours;
+     * RTLD_DEFAULT still finds nothing. */
+    struct tm *(*next_localtime)(const time_t *) =
+        (struct tm *(*)(const time_t *))dlsym(RTLD_NEXT, "localtime");
+    struct tm *(*next_localtime_r)(const time_t *, struct tm *) =
+        (struct tm *(*)(const time_t *, struct tm *))dlsym(RTLD_NEXT, "localtime_r");
+    CHECK(next_localtime && next_localtime_r);
+    CHECK(dlsym(RTLD_NEXT, "localtime64") && dlsym(RTLD_NEXT, "localtime64_r"));
+    CHECK(dlsym(RTLD_DEFAULT, "localtime") == NULL);
+    time_t when = 1000000000;
+    struct tm mine, theirs;
+    CHECK(localtime_r(&when, &mine) && next_localtime_r(&when, &theirs));
+    CHECK(mine.tm_year == theirs.tm_year && mine.tm_hour == theirs.tm_hour &&
+          mine.tm_min == theirs.tm_min);
+    struct tm *one = next_localtime(&when);
+    CHECK(one && one->tm_year == mine.tm_year && one->tm_mday == mine.tm_mday);
     CHECK(dlclose((void *)8) != 0 && dlerror() != NULL);
 }
 

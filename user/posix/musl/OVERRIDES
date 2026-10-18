@@ -49,5 +49,7 @@ src/network/res_msend.c c14dc4baca3608efb40b0ab15de53018ac057fd22ad47b8b309b56a7
 src/thread/__syscall_cp.c 9bf39f2e3d932dcee04e145bc7fce93f2f6908d08f3a0512a20d642450c437c2 user/posix/musl/src/thread/__syscall_cp.c
 # dlopen: fails as upstream's static stub does, and names the library in the ENOSYS log (user/posix/sys/enosys.c).
 src/ldso/dlopen.c 71d2136173da73e3853c51cc477194befc7bc6072e2e227f4b8ec9c86d50217c user/posix/musl/src/ldso/dlopen.c
+# dlsym(RTLD_NEXT, ...) answers libc's own localtime and localtime_r (Chromium's sandbox libc interceptor: its start-up waited for itself otherwise).
+src/ldso/__dlsym.c 95ef9a37da276c4bcc467fd4e784dd3dbe1ccd012cba2a080e3a81fbdc221629 user/posix/musl/src/ldso/__dlsym.c
 # dladdr: a static program has one module, its own image; the layer says whether addr is in it and what it is called (procfs.c), and Chromium's ModuleCache gets its base and path.
 src/ldso/dladdr.c 2f4f4ca861c87963620919e4f4304ea7e47770a9ebe5e7aa4d8d323a44044581 user/posix/musl/src/ldso/dladdr.c

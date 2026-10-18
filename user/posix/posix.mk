@@ -53,10 +53,10 @@ MUSL_SRCS := $(sort $(filter-out $(addprefix $(MUSL)/,$(MUSL_OVR_UP)),$(MUSL_SRC
 # ("Dynamic loading not supported"), dlsym() that finds nothing, dlclose(),
 # dlinfo() and dlerror(), so a program that may load a library (Chromium's
 # base) links and gets an error at run time, as a static Linux program does.
-# (dlopen.c and dladdr.c are our overrides; dlopen's also names the library
-# in the ENOSYS log.)
+# (dlopen.c, dladdr.c and __dlsym.c are our overrides; dlopen's also names the
+# library in the ENOSYS log, __dlsym's answers RTLD_NEXT for libc's localtime
+# and localtime_r.)
 MUSL_SRCS += $(MUSL)/src/ldso/dl_iterate_phdr.c \
-             $(MUSL)/src/ldso/__dlsym.c \
              $(MUSL)/src/ldso/x86_64/dlsym.s $(MUSL)/src/ldso/dlclose.c \
              $(MUSL)/src/ldso/dlinfo.c $(MUSL)/src/ldso/dlerror.c
 MUSL_OBJS := $(patsubst $(MUSL)/%,$(MUSL_OUT)/obj/%.o,$(MUSL_SRCS))
