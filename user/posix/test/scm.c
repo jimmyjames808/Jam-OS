@@ -4,8 +4,9 @@
  *   - every kind that crosses, passed and used on the other side: a pipe
  *     end written, a memfd mapped and written (the sender sees it), a file
  *     read at the sender's offset, /dev/zero read, a socketpair end and a
- *     SOCK_SEQPACKET end talked through; the kinds that don't (an eventfd,
- *     an epoll set, a directory) refused with EINVAL;
+ *     SOCK_SEQPACKET end talked through, a directory (by its path: CB5) a
+ *     start for fstatat and fsync'd; the kinds that don't (an eventfd, an
+ *     epoll set) refused with EINVAL;
  *   - a memfd's read-only twin passed on stays read-only (no write, no
  *     writable mapping, no writable reopen), and a write-sealed memfd's
  *     seals arrive and hold;
@@ -38,6 +39,7 @@
 #include <sys/eventfd.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include "../sys/maptable.h"
 #include "pt.h"
@@ -187,9 +189,19 @@ static void check_kinds(const int *s)
     close(r);
     errno = 0;   /* the kernel's cycle rule: an end into its own channel (Linux allows it) */
     CHECK(scm_send(s[0], "x", 1, &s[0], 1, 0) == -1 && errno == ETOOMANYREFS);
-    int ev = eventfd(0, 0), ep = epoll_create1(0), dir = open("/boot", O_RDONLY | O_DIRECTORY);
-    int refused[] = { ev, ep, dir };
-    for (unsigned i = 0; i < 3; i++) {
+    /* A directory, by its path (until directory handles): a directory there, a start for
+     * the *at calls, fsync'd (Chromium's storage service syncs a leveldb directory so). */
+    int dir = open("/boot", O_RDONLY | O_DIRECTORY);
+    r = pass_one(s, dir);
+    struct stat st;
+    CHECK(r >= 0 && fstat(r, &st) == 0 && S_ISDIR(st.st_mode));
+    CHECK(r >= 0 && fstatat(r, "bin", &st, 0) == 0 && S_ISDIR(st.st_mode));
+    CHECK(r >= 0 && fsync(r) == 0);
+    close(r);
+    close(dir);
+    int ev = eventfd(0, 0), ep = epoll_create1(0);
+    int refused[] = { ev, ep };
+    for (unsigned i = 0; i < 2; i++) {
         errno = 0;
         CHECK(refused[i] >= 0 && scm_send(s[0], "x", 1, &refused[i], 1, 0) == -1 &&
               errno == EINVAL);
