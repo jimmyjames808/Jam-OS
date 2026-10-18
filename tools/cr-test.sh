@@ -55,6 +55,19 @@
 #           console line; then tools/cr/shell-wl-check.py looks at the
 #           screenshots (<outdir>/shell-wl/run/shell-wl-*.png) where the page
 #           drew; 1280x800 only (the clicks are at pixel positions)
+#   multi   content_shell (track CB5) with every process type its own
+#           (--no-zygote --no-sandbox: Chromium's launcher forks and execs
+#           /proc/self/exe for the GPU process, the network and storage
+#           services and the renderers), the same stick and server as
+#           shell-wl (6 GiB of QEMU memory: CR_MULTI_MEM); it loads
+#           tools/cr/multi.html by name, tools/cr/multi.txt lists the
+#           processes (the browser and at least four children), kills the
+#           renderer the way chrome://kill does (it sends itself SIGTERM),
+#           reloads with the toolbar's Refresh (a renderer again, the tab's
+#           session storage says visit 2) and closes the window (exit 0, no
+#           process left); tools/cr/multi-check.py checks the screenshots
+#           (<outdir>/multi/run/multi-{page,killed,reload}.png) and the log;
+#           about 2 minutes
 #
 # The toolchain is fetched first if it isn't there (tools/cr/toolchain.sh:
 # clang, cmake, and for `rust` Rust; gperf, which Chromium's build needs, is
@@ -248,7 +261,7 @@ case_base() {
 # http.server here) as page.html, and QEMU booted from the stick with a USB
 # keyboard and mouse, <script> fed to the shell (the log and screenshots in
 # <dir>/run/<name>.*). Returns qemu-test.sh's status, or 2 with <dir>/result
-# written when a piece is missing. The shell-wl case.
+# written when a piece is missing. The shell-wl and multi cases.
 shell_run() {
     dir=$1
     cr=${CR_DIR:-$HOME/cr}
@@ -318,13 +331,42 @@ case_shell_wl() {
     sed 's/^/cr-test: /' "$dir/check.out"
 }
 
+case_multi() {
+    dir=$out/multi
+    rm -rf "$dir"
+    mkdir -p "$dir"
+    # CR_MULTI_ARGS: one more argument for content_shell ("--v=1"), on its run
+    # line; a script with `ps -t <pid>` lines (a hang's threads) gets them
+    # named in <dir>/threads.txt.
+    sed "s|@ARGS@|${CR_MULTI_ARGS:---v=0}|" tools/cr/multi.txt > "$dir/multi.txt"
+    shell_run "$dir" tools/cr/multi.html "$dir/multi.txt" multi "${CR_MULTI_MEM:-6G}" 600
+    qrc=$?
+    [ $qrc = 2 ] && [ -f "$dir/result" ] && return
+    grep -a -o 'cb5: [^"]*' "$dir/run/multi.log" 2> /dev/null | uniq | sed 's/^/cr-test: page said: /'
+    if grep -a -q "threads: process" "$dir/run/multi.log" 2> /dev/null; then
+        python3 tools/symbolize-threads.py "$dir/run/multi.log" "$srcdir/out/jamos/content_shell" \
+            > "$dir/threads.txt" 2>&1
+    fi
+    if [ $qrc -ne 0 ]; then
+        echo "FAIL (the script: $(grep 'serial-feed: .*: no ' "$dir/qemu.out" | tail -1 | sed 's/^serial-feed: //'), see $dir/run/)" > "$dir/result"
+        return
+    fi
+    if python3 tools/cr/multi-check.py "$dir/run" > "$dir/check.out" 2>&1; then
+        echo PASS > "$dir/result"
+    else
+        echo "FAIL (the checks, see $dir/check.out)" > "$dir/result"
+    fi
+    sed 's/^/cr-test: /' "$dir/check.out"
+}
+
 for c in "$@"; do
     case $c in
     hello) case_hello ;;
     rust) case_rust ;;
     base) case_base ;;
     shell-wl) case_shell_wl ;;
-    *) echo "cr-test: no case $c (hello, rust, base, shell-wl)" >&2
+    multi) case_multi ;;
+    *) echo "cr-test: no case $c (hello, rust, base, shell-wl, multi)" >&2
        mkdir -p "$out/$c"
        echo "FAIL (no such case)" > "$out/$c/result" ;;
     esac
