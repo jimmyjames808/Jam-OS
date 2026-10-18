@@ -1,0 +1,25 @@
+# The layer's own heap (docs/CR-PLAN.md, LH; user/posix/sys/heap.c), its
+# three cases one by one: bin/heaptest, a program with a malloc of its own
+# that calls into the layer with its lock held (own), and runs a SIGUSR1
+# handler's open and read of /proc/self/status while inside it (handler);
+# then posixtest's fork case `heap` (children made every way, fork, _Fork,
+# a raw SYS_fork, vfork and clone, beside two threads in the layer's
+# heap, each allocating there). posixtest's mem and fork sections run them
+# too (the init run).
+#   QEMU_INPUT=tools/shell-tests/posix-heap.txt tools/qemu-test.sh <dir> posix-heap shell
+wait 120 Jam OS shell
+wait {prompt}
+send T=x
+wait {prompt}
+send run heaptest own
+wait 60 heaptest: own: PASS
+wait {prompt}
+send run heaptest handler
+wait 60 heaptest: handler: PASS
+wait {prompt}
+send run posixtest --child-fork heap; echo hp-$T-$?
+wait 90 posixtest: fork: heap: 150 children
+wait 30 hp-x-0
+wait {prompt}
+send reboot -f
+wait reboot: resetting

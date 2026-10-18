@@ -48,7 +48,7 @@ static uint64_t serials;   /* the last description's serial: atomic */
 
 struct fd_desc *fd_new(const struct fd_ops *ops, uint32_t status, void *priv)
 {
-    struct fd_desc *d = calloc(1, sizeof(*d));
+    struct fd_desc *d = jam_calloc(1, sizeof(*d));
     if (!d)
         return NULL;
     d->ops = ops;
@@ -76,7 +76,7 @@ void fd_put(struct fd_desc *d)
         epoll_forget(d);
     if (d->ops->close)
         d->ops->close(d);
-    free(d);
+    jam_free(d);
 }
 
 uint32_t fd_status(const struct fd_desc *d)
@@ -384,7 +384,7 @@ void fd_given_drop(struct fd_given *g)
 {
     for (uint32_t i = 0; i < g->nhandles; i++)
         jam_handle_close(g->handles[i]);
-    free(g->data);
+    jam_free(g->data);
     memset(g, 0, sizeof(*g));
 }
 
@@ -643,7 +643,7 @@ long fd_iov_in(const struct iovec *uiov, long iovcnt, struct iovec fast[FD_IOV_F
     *out = fast;
     if (iovcnt < 0 || iovcnt > IOV_MAX)
         return -EINVAL;
-    if (iovcnt > FD_IOV_FAST && !(*out = malloc((size_t)iovcnt * sizeof(**out)))) {
+    if (iovcnt > FD_IOV_FAST && !(*out = jam_malloc((size_t)iovcnt * sizeof(**out)))) {
         *out = fast;
         return -ENOMEM;
     }
@@ -658,7 +658,7 @@ long fd_iov_in(const struct iovec *uiov, long iovcnt, struct iovec fast[FD_IOV_F
 void fd_iov_done(struct iovec *iov, struct iovec fast[FD_IOV_FAST])
 {
     if (iov != fast)
-        free(iov);
+        jam_free(iov);
 }
 
 /* ---- the calls that route to a kind ------------------------------------------ */
@@ -816,7 +816,7 @@ long lx_sendfile(long out_fd, long in_fd, long offp, long count, long e, long f)
         r = -EBADF;
     else if (!in->ops->read || !in->ops->seek || !out->ops->write)
         r = -EINVAL;
-    else if (!(buf = malloc(SENDFILE_CHUNK)))
+    else if (!(buf = jam_malloc(SENDFILE_CHUNK)))
         r = -ENOMEM;
     int64_t pos = 0;
     if (!r && offp) {
@@ -862,7 +862,7 @@ long lx_sendfile(long out_fd, long in_fd, long offp, long count, long e, long f)
         if (!r)
             r = (long)done;
     }
-    free(buf);
+    jam_free(buf);
     if (in)
         fd_put(in);
     if (out)

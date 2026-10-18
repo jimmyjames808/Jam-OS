@@ -66,8 +66,8 @@ struct fd_fork;
 /* What a description gives a child (fd_give, ops->give): a hand-over
  * record's contents (<posixfds.h>). The handles are new ones (a
  * duplicate, or for a file a fresh open), the caller's to send or close;
- * data is malloc'd (or NULL), the caller's to free. fd_given_drop does
- * both. */
+ * data is from the layer's heap (or NULL), the caller's to jam_free.
+ * fd_given_drop does both. */
 struct fd_given {
     uint16_t kind;                              /* POSIXFDS_* */
     uint32_t status;                            /* the description's O_* status flags */

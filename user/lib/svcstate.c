@@ -428,7 +428,7 @@ static status_t build_promotion(const struct standby_args *a, uint8_t **out, uin
         size += strlen(a->envp[i]) + 1;
     if (size > STANDBY_MAX_BYTES)
         return ERR_OUT_OF_RANGE;
-    uint8_t *buf = calloc(1, size);
+    uint8_t *buf = jam_calloc(1, size);
     if (!buf)
         return ERR_NO_MEMORY;
     struct standby_msg *m = (struct standby_msg *)buf;
@@ -472,7 +472,7 @@ status_t standby_promote(handle_t ch, const struct standby_args *a)
         st = jam_channel_write_rights(ch, buf, len, hs, rs, n);
         sent = n;
     }
-    free(buf);
+    jam_free(buf);
     for (unsigned i = sent; i < a->n; i++)
         jam_handle_close(a->hs[i].h);
     return st;

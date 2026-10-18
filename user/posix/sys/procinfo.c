@@ -109,7 +109,7 @@ void sb_put(struct sb *b, const char *fmt, ...)
             size_t cap = b->cap ? b->cap * 2 : 4096;
             while (cap - b->len <= (size_t)n)
                 cap *= 2;
-            char *q = realloc(b->p, cap);
+            char *q = jam_realloc(b->p, cap);
             if (!q)
                 b->bad = true;
             else {
@@ -215,7 +215,7 @@ static void take(struct acc *a, const struct map_info *m)
 /* Walk the mappings of pid (ours, or a child's) into a. 0, or -errno. */
 static long walk_maps(int32_t pid, struct acc *a)
 {
-    struct map_info *buf = malloc(MAP_INFO_MAX * sizeof(*buf));
+    struct map_info *buf = jam_malloc(MAP_INFO_MAX * sizeof(*buf));
     if (!buf)
         return -ENOMEM;
     long r = 0;
@@ -233,7 +233,7 @@ static long walk_maps(int32_t pid, struct acc *a)
             break;
         from = buf[n - 1].base + buf[n - 1].len;
     }
-    free(buf);
+    jam_free(buf);
     return r;
 }
 
@@ -543,7 +543,7 @@ static void sb_bytes(struct sb *b, const void *p, size_t n)
         size_t cap = b->cap ? b->cap : 4096;
         while (cap - b->len < n + 1)
             cap *= 2;
-        char *q = realloc(b->p, cap);
+        char *q = jam_realloc(b->p, cap);
         if (!q) {
             b->bad = true;
             return;
@@ -611,13 +611,13 @@ long procinfo_text(enum pfile f, int32_t pid, uint32_t tid, char **text, size_t 
     struct sb b = { 0 };
     struct view *v = NULL;
     if (f == PF_STAT || f == PF_STATM || f == PF_STATUS || f == PF_MAPS || f == PF_SMAPS_ROLLUP) {
-        v = malloc(sizeof(*v));
+        v = jam_malloc(sizeof(*v));
         if (!v)
             return -ENOMEM;
         long r = view_of(pid, tid, f == PF_MAPS ? &b : NULL, v);
         if (r) {
-            free(v);
-            free(b.p);
+            jam_free(v);
+            jam_free(b.p);
             return r;
         }
     }
@@ -639,13 +639,13 @@ long procinfo_text(enum pfile f, int32_t pid, uint32_t tid, char **text, size_t 
         break;
     case PF_MEM:     break;   /* not text: procfs.c reads the memory */
     }
-    free(v);
+    jam_free(v);
     if (b.bad) {
-        free(b.p);
+        jam_free(b.p);
         return -ENOMEM;
     }
     if (!b.p) {   /* a zombie's maps: no mappings, no text */
-        b.p = malloc(1);
+        b.p = jam_malloc(1);
         if (!b.p)
             return -ENOMEM;
     }

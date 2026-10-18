@@ -387,7 +387,7 @@ $(eval $(call PROG_FLAGS,mono,$(MONO_OBJS) $(UOBJ)/user/lib/updsig.c.o $(UOBJ)/u
 # program's sources are its *.c and one level of subdirectories
 # (user/services/shell/cmd/*.c).
 LIBFUN_DIR  := user/apps/fun
-POSIX_TESTS := user/tests/jittest
+POSIX_TESTS := user/tests/jittest user/tests/heaptest
 USER_DIRS   := $(filter-out $(LIBFUN_DIR) $(POSIX_TESTS),$(patsubst %/,%,$(sort $(dir \
                    $(wildcard user/services/*/*.c user/apps/*/*.c user/tests/*/*.c)))))
 USER_PROGS  := $(notdir $(USER_DIRS))

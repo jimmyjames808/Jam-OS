@@ -62,7 +62,7 @@ void jwlc_clip_bound(struct jwl_client *c)
 static void text_unref(struct jwlc_text *t)
 {
     if (t && !--t->refs)
-        free(t);
+        jam_free(t);
 }
 
 /* Our source goes, and its text with the last transfer writing it. */
@@ -138,7 +138,7 @@ static void paste_end(struct jwl_client *c, status_t status)
         k->pasted_len = k->got;
         size = (uint32_t)k->got;
     } else {
-        free(k->buf);
+        jam_free(k->buf);
     }
     k->buf = NULL;
     k->got = k->cap = 0;
@@ -164,7 +164,7 @@ void jwlc_clip_free(struct jwl_client *c)
     drop_source(c, false);
     sends_free(c);
     paste_end(c, ERR_PEER_CLOSED);
-    free(c->clip.pasted);
+    jam_free(c->clip.pasted);
     c->clip.pasted = NULL;
 }
 
@@ -182,7 +182,7 @@ status_t jwl_clip_copy(struct jwl_client *c, const char *text, size_t n)
         return ERR_OUT_OF_RANGE;
     if (!c->seat.input_serial)
         return ERR_BAD_STATE;
-    struct jwlc_text *copy = malloc(sizeof(*copy) + (n ? n : 1));
+    struct jwlc_text *copy = jam_malloc(sizeof(*copy) + (n ? n : 1));
     if (!copy)
         return ERR_NO_MEMORY;
     copy->refs = 1;
@@ -201,7 +201,7 @@ status_t jwl_clip_copy(struct jwl_client *c, const char *text, size_t n)
     if (st == OK)
         st = jwl_conn_flush(c->conn);
     if (st != OK) {
-        free(copy);
+        jam_free(copy);
         return st;   /* the connection's: seen at the next dispatch */
     }
     c->clip.source = id;
@@ -431,7 +431,7 @@ status_t jwl_clip_paste(struct jwl_client *c)
     status_t st = start_receive(c, &rx);
     if (st != OK)
         return st;
-    free(c->clip.pasted);
+    jam_free(c->clip.pasted);
     c->clip.pasted = NULL;
     c->clip.pasted_len = 0;
     c->clip.rx = rx;
@@ -447,12 +447,12 @@ static bool room(struct jwlc_clip *k)
     size_t cap = k->cap ? k->cap * 2 : JWL_CLIP_CHUNK * 2;
     if (cap > JWL_CLIP_MAX + JWL_CLIP_CHUNK + 1)
         cap = JWL_CLIP_MAX + JWL_CLIP_CHUNK + 1;   /* the most it can hold before refusing */
-    char *b = malloc(cap);
+    char *b = jam_malloc(cap);
     if (!b)
         return false;
     if (k->got)
         memcpy(b, k->buf, k->got);
-    free(k->buf);
+    jam_free(k->buf);
     k->buf = b;
     k->cap = cap;
     return true;

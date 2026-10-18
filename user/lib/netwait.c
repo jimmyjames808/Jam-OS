@@ -255,12 +255,12 @@ status_t netwait_create(uint32_t max_entries, struct netwait **out)
 {
     if (!max_entries || max_entries > NETWAIT_MAX)
         return ERR_INVALID_ARGS;
-    struct netwait *w = calloc(1, sizeof(*w) + max_entries * sizeof(struct entry));
-    uint32_t *fifo = calloc(max_entries, sizeof(uint32_t));
+    struct netwait *w = jam_calloc(1, sizeof(*w) + max_entries * sizeof(struct entry));
+    uint32_t *fifo = jam_calloc(max_entries, sizeof(uint32_t));
     status_t st = w && fifo ? jam_port_create(&w->port) : ERR_NO_MEMORY;
     if (st != OK) {
-        free(fifo);
-        free(w);
+        jam_free(fifo);
+        jam_free(w);
         return st;
     }
     w->max = max_entries;
@@ -278,8 +278,8 @@ void netwait_destroy(struct netwait *w)
     for (uint32_t i = 0; i < w->max; i++)
         sock_disarm(&w->e[i]);
     jam_handle_close(w->port);   /* takes every binding with it */
-    free(w->fifo);
-    free(w);
+    jam_free(w->fifo);
+    jam_free(w);
 }
 
 /* A free slot, or ERR_NO_RESOURCES. */

@@ -89,7 +89,7 @@ static long fetch(const struct dir *x, struct dir *w, uint32_t cookie)
         r = path_fs(&p, &fs);
     if (r)
         return r;
-    if (!w->batch && !(w->batch = malloc(FS_READDIR_BYTES))) {
+    if (!w->batch && !(w->batch = jam_malloc(FS_READDIR_BYTES))) {
         jam_handle_close(fs);
         return -ENOMEM;
     }
@@ -219,7 +219,7 @@ static long dir_getdents(struct fd_desc *d, void *buf, size_t len)
 {
     if (fd_status(d) & O_PATH)
         return -EBADF;   /* an O_PATH descriptor names the directory and reads nothing */
-    struct entry *e = malloc(sizeof(*e));
+    struct entry *e = jam_malloc(sizeof(*e));
     if (!e)
         return -ENOMEM;
     lock_take(&d->lock);
@@ -239,7 +239,7 @@ static long dir_getdents(struct fd_desc *d, void *buf, size_t len)
         d->offset = e->next;
     }
     lock_give(&d->lock);
-    free(e);
+    jam_free(e);
     return r < 0 && !used ? r : (long)used;
 }
 
@@ -304,7 +304,7 @@ static const char *dir_path(struct fd_desc *d)
 static long dir_give(struct fd_desc *d, struct fd_given *out)
 {
     const struct dir *x = d->priv;
-    char *data = strdup(x->path);
+    char *data = jam_strdup(x->path);
     if (!data)
         return -ENOMEM;
     lock_take(&d->lock);
@@ -320,9 +320,9 @@ static long dir_give(struct fd_desc *d, struct fd_given *out)
 static void dir_close(struct fd_desc *d)
 {
     struct dir *x = d->priv;
-    free(x->batch);
-    free(x->path);
-    free(x);
+    jam_free(x->batch);
+    jam_free(x->path);
+    jam_free(x);
 }
 
 static const struct fd_ops dir_ops = {
@@ -333,13 +333,13 @@ static const struct fd_ops dir_ops = {
 
 long dir_new(const struct path *p, uint32_t status, struct fd_desc **out)
 {
-    struct dir *x = calloc(1, sizeof(*x));
-    char *path = strdup(p->abs);
+    struct dir *x = jam_calloc(1, sizeof(*x));
+    char *path = jam_strdup(p->abs);
     /* read-only, with O_PATH kept: such a description lists nothing (dir_getdents) */
     struct fd_desc *d = x && path ? fd_new(&dir_ops, (status & ~FD_ACCMODE) | O_RDONLY, x) : NULL;
     if (!d) {
-        free(path);
-        free(x);
+        jam_free(path);
+        jam_free(x);
         return -ENOMEM;
     }
     x->path = path;
@@ -530,7 +530,7 @@ long lx_renameat2(long olddirfd, long oldpath, long newdirfd, long newpath, long
     if ((flags & ~(long)(RENAME_NOREPLACE | RENAME_EXCHANGE)) ||
         (flags & (RENAME_NOREPLACE | RENAME_EXCHANGE)) == (RENAME_NOREPLACE | RENAME_EXCHANGE))
         return -EINVAL;   /* RENAME_WHITEOUT: none here */
-    struct path *two = malloc(2 * sizeof(*two));
+    struct path *two = jam_malloc(2 * sizeof(*two));
     if (!two)
         return -ENOMEM;
     long r = path_get(olddirfd, (const char *)(uintptr_t)oldpath, &two[0]);
@@ -545,7 +545,7 @@ long lx_renameat2(long olddirfd, long oldpath, long newdirfd, long newpath, long
                   : flags & RENAME_NOREPLACE ? 0 : FS_RENAME_REPLACE;
     if (!r)
         r = rename_paths(&two[0], &two[1], ff);
-    free(two);
+    jam_free(two);
     return r;
 }
 
@@ -608,12 +608,12 @@ long lx_getcwd(long buf, long size, long c, long d, long e, long f)
 {
     if (path_cwd_removed())
         return -ENOENT;   /* a directory removed under us: Linux's getcwd says so */
-    char *cwd = malloc(PATH_BYTES);
+    char *cwd = jam_malloc(PATH_BYTES);
     if (!cwd)
         return -ENOMEM;
     path_cwd(cwd);
     size_t n = strlen(cwd) + 1;
     long r = (size_t)size < n ? -ERANGE : uc_put((void *)(uintptr_t)buf, cwd, n) ? -EFAULT : (long)n;
-    free(cwd);
+    jam_free(cwd);
     return r;
 }

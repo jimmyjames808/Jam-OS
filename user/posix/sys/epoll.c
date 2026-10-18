@@ -184,7 +184,7 @@ static void epoll_close(struct fd_desc *d)
         if (ep->items[i].d)
             item_drop(ep, &ep->items[i]);
     netwait_destroy(ep->w);
-    free(ep);
+    jam_free(ep);
 }
 
 /* A set is a port of ours, which two processes can't share meaningfully:
@@ -211,15 +211,15 @@ long lx_epoll_create1(long flags, long b, long c, long d, long e, long f)
 {
     if (flags & ~(long)EPOLL_CLOEXEC)
         return -EINVAL;
-    struct epoll *ep = calloc(1, sizeof(*ep));
+    struct epoll *ep = jam_calloc(1, sizeof(*ep));
     if (!ep || netwait_create(NETWAIT_MAX, &ep->w) != OK) {
-        free(ep);
+        jam_free(ep);
         return -ENOMEM;
     }
     struct fd_desc *desc = fd_new(&epoll_ops, O_RDWR, ep);
     if (!desc) {
         netwait_destroy(ep->w);
-        free(ep);
+        jam_free(ep);
         return -ENOMEM;
     }
     lock_take(&sets_lock);

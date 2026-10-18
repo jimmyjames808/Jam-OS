@@ -75,7 +75,7 @@ static status_t copy_vmo(handle_t vmo, uint64_t size, handle_t *out)
 {
     enum { CHUNK = 16384 };
     handle_t copy = HANDLE_INVALID;
-    uint8_t *buf = malloc(CHUNK);
+    uint8_t *buf = jam_malloc(CHUNK);
     status_t st = buf ? jam_vmo_create(size, VMO_KEEP_PAGES, &copy) : ERR_NO_MEMORY;
     for (uint64_t at = 0; st == OK && at < size; at += CHUNK) {
         uint64_t k = size - at < CHUNK ? size - at : CHUNK;
@@ -83,7 +83,7 @@ static status_t copy_vmo(handle_t vmo, uint64_t size, handle_t *out)
         if (st == OK)
             st = jam_vmo_write(copy, at, buf, k);
     }
-    free(buf);
+    jam_free(buf);
     jam_handle_close(vmo);
     if (st != OK && copy)
         jam_handle_close(copy);

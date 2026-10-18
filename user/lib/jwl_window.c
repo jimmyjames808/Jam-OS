@@ -175,7 +175,7 @@ status_t jwl_window_create(struct jwl_client *c, const struct jwl_window_config 
     if (cfg->width < 1 || cfg->height < 1 || cfg->width > JWL_SIZE_MAX ||
         cfg->height > JWL_SIZE_MAX)
         return ERR_INVALID_ARGS;
-    struct jwl_window *w = calloc(1, sizeof(*w));
+    struct jwl_window *w = jam_calloc(1, sizeof(*w));
     if (!w)
         return ERR_NO_MEMORY;
     w->c = c;
@@ -239,7 +239,7 @@ void jwl_window_destroy(struct jwl_window *w)
             *pw = w->next;
             break;
         }
-    free(w);
+    jam_free(w);
 }
 
 void jwlc_windows_lost(struct jwl_client *c)

@@ -59,10 +59,10 @@ static void signal_locked(struct efd *e)
 /* A new eventfd's state: NULL and *err (-errno) if it can't be made. */
 static struct efd *efd_new(uint64_t value, bool semaphore, long *err)
 {
-    struct efd *e = calloc(1, sizeof(*e));
+    struct efd *e = jam_calloc(1, sizeof(*e));
     status_t st = e ? jam_event_create(&e->ev) : ERR_NO_MEMORY;
     if (st != OK) {
-        free(e);
+        jam_free(e);
         *err = lx_err(st);
         return NULL;
     }
@@ -147,7 +147,7 @@ static void efd_close(struct fd_desc *d)
 {
     struct efd *e = efd_of(d);
     jam_handle_close(e->ev);
-    free(e);
+    jam_free(e);
 }
 
 static long efd_give(struct fd_desc *d, struct fd_given *out)
@@ -163,7 +163,7 @@ static long efd_give(struct fd_desc *d, struct fd_given *out)
         return r;
     status_t st = jam_handle_duplicate(e->ev, RIGHT_SAME, &out->handles[0]);
     if (st != OK) {
-        free(data);
+        jam_free(data);
         return lx_err(st);
     }
     out->kind = POSIXFDS_EVENTFD;

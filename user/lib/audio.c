@@ -134,8 +134,8 @@ int audio_rs_init(struct audio_rs *rs, unsigned in_rate, unsigned out_rate, unsi
     if (taps > AUDIO_RS_TAPS_MAX)
         taps = AUDIO_RS_TAPS_MAX;
     rs->taps = taps;
-    rs->coef = malloc((size_t)(rs->P + 1) * taps * sizeof(float));
-    rs->hist = malloc((size_t)2 * 2 * taps * sizeof(float));
+    rs->coef = jam_malloc((size_t)(rs->P + 1) * taps * sizeof(float));
+    rs->hist = jam_malloc((size_t)2 * 2 * taps * sizeof(float));
     if (!rs->coef || !rs->hist) {
         audio_rs_free(rs);
         return ERR_NO_MEMORY;
@@ -171,8 +171,8 @@ void audio_rs_reset(struct audio_rs *rs)
 
 void audio_rs_free(struct audio_rs *rs)
 {
-    free(rs->coef);
-    free(rs->hist);
+    jam_free(rs->coef);
+    jam_free(rs->hist);
     rs->coef = rs->hist = NULL;
 }
 

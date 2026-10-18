@@ -87,7 +87,7 @@ static int run_child(const char *mode, const int *want, const int *at, unsigned 
     handle_t proc;
     status_t st = spawn(&a, &proc);   /* the hand-over's handles are spawn's, whatever happens */
     for (unsigned i = 0; i < nfds; i++)
-        free(g[i].data);
+        jam_free(g[i].data);   /* fd_give's: the layer's heap (heap.c) */
     close(out[1]);
     CHECK(st == OK);
     if (st != OK) {

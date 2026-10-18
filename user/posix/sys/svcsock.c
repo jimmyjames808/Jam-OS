@@ -186,7 +186,7 @@ static void usock_close(struct fd_desc *d)
         u->f->close(u->conn);
     if (state_of(u) == US_BOUND || state_of(u) == US_LISTENING)
         ulisten_close(u->l);
-    free(u);
+    jam_free(u);
 }
 
 const struct fd_ops usock_ops = {
@@ -220,7 +220,7 @@ long usock_new(long type, long proto)
         return -ESOCKTNOSUPPORT;   /* datagrams and SOCK_SEQPACKET: not built */
     if (proto && proto != PF_UNIX)
         return -EPROTONOSUPPORT;
-    struct usock *u = calloc(1, sizeof(*u));
+    struct usock *u = jam_calloc(1, sizeof(*u));
     if (!u)
         return -ENOMEM;
     return kind_install(&usock_ops, u, O_RDWR | (type & SOCK_NONBLOCK ? O_NONBLOCK : 0),

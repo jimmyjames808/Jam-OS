@@ -42,9 +42,9 @@ static long wav_read(struct play_src *s, int16_t *out, size_t frames)
     if (w->bits == 16) {
         /* Straight into out: the file's samples are what out holds. */
     } else if (v->cap < frames) {
-        free(v->raw);
+        jam_free(v->raw);
         v->cap = 0;
-        if (!(v->raw = malloc(frames * w->frame_bytes)))
+        if (!(v->raw = jam_malloc(frames * w->frame_bytes)))
             return ERR_NO_MEMORY;
         v->cap = frames;
     }
@@ -74,22 +74,22 @@ static long wav_read(struct play_src *s, int16_t *out, size_t frames)
 static void wav_close(struct play_src *s)
 {
     struct wav_src *v = s->state;
-    free(v->raw);
-    free(v);
+    jam_free(v->raw);
+    jam_free(v);
 }
 
 static const struct play_src_ops wav_ops = { wav_read, wav_close };
 
 static status_t wav_open(struct play_src *s, uint64_t size, const char **why)
 {
-    struct wav_src *v = calloc(1, sizeof(*v));
+    struct wav_src *v = jam_calloc(1, sizeof(*v));
     if (!v) {
         *why = "out of memory";
         return ERR_NO_MEMORY;
     }
     status_t st = wav_parse(&v->w, read_file, s->f, size, why);
     if (st != OK) {
-        free(v);
+        jam_free(v);
         return st;
     }
     s->rate = v->w.rate;
@@ -113,7 +113,7 @@ static long mp3_src_read(struct play_src *s, int16_t *out, size_t frames)
 static void mp3_src_close(struct play_src *s)
 {
     mp3_close(s->state);
-    free(s->state);
+    jam_free(s->state);
 }
 
 static const struct play_src_ops mp3_ops = { mp3_src_read, mp3_src_close };
@@ -121,14 +121,14 @@ static const struct play_src_ops mp3_ops = { mp3_src_read, mp3_src_close };
 /* ERR_WRONG_TYPE: not MPEG audio either. */
 static status_t mp3_src_open(struct play_src *s, uint64_t size, const char **why)
 {
-    struct mp3 *m = malloc(sizeof(*m));
+    struct mp3 *m = jam_malloc(sizeof(*m));
     if (!m) {
         *why = "out of memory";
         return ERR_NO_MEMORY;
     }
     status_t st = mp3_open(m, read_file, s->f, size, why);
     if (st != OK) {
-        free(m);
+        jam_free(m);
         return st;
     }
     const struct mp3_info *i = &m->info;

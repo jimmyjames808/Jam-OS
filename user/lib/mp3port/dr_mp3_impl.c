@@ -11,17 +11,22 @@
  * - 16-bit output (DR_MP3_FLOAT_OUTPUT not set): the synthesis filter's
  *   floats are rounded and saturated to 16 bits inside the decoder.
  * - Layer I and II are kept (DR_MP3_ONLY_MP3 not set): they cost a few KiB.
- * - Jam OS has no C library: memcpy, memmove, memset, malloc and free are
- *   libos's (<os.h>, through this directory's string.h and stdlib.h).
- *   libos has no realloc: mp3.c passes allocation callbacks without one,
- *   and dr_mp3 then grows its buffer with malloc, a copy and free; the
- *   default callbacks' realloc (never used) fails.
+ * - Jam OS has no C library: memcpy, memmove and memset are libos's
+ *   (<os.h>, through this directory's string.h and stdlib.h), and its
+ *   allocations libjam's own (jam_malloc and jam_free: in a POSIX program
+ *   the call layer's heap, never the program's malloc). libjam has no
+ *   realloc: mp3.c passes allocation callbacks without one, and dr_mp3
+ *   then grows its buffer with malloc, a copy and free; the default
+ *   callbacks (never used) are jam_malloc and jam_free too, and their
+ *   realloc fails.
  * - Its asserts are off (as in a release build). */
 #include <os.h>
 
 #define DR_MP3_NO_STDIO
 #define DRMP3_ASSERT(expression) ((void)0)
+#define DRMP3_MALLOC(sz)         jam_malloc(sz)
 #define DRMP3_REALLOC(p, sz)     ((void)(p), (void)(sz), (void *)0)
+#define DRMP3_FREE(p)            jam_free(p)
 
 #define DR_MP3_IMPLEMENTATION
 #include "dr_mp3.h"

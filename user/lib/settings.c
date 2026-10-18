@@ -169,13 +169,13 @@ static status_t read_all(const char *path, char **out, size_t *n)
     size_t got = 0;
     if (st == OK && size > SETTINGS_MAX)
         st = ERR_OUT_OF_RANGE;
-    if (st == OK && !(buf = malloc((size_t)size + 1)))
+    if (st == OK && !(buf = jam_malloc((size_t)size + 1)))
         st = ERR_NO_MEMORY;
     if (st == OK)
         st = file_read(&f, 0, buf, (size_t)size, &got);
     file_close(&f);
     if (st != OK) {
-        free(buf);
+        jam_free(buf);
         return st;
     }
     buf[got] = '\0';
@@ -205,7 +205,7 @@ status_t settings_get(const char *file, const char *key, char *out, size_t cap)
         return st;
     char v[SETTINGS_VALUE_MAX];
     st = settings_lookup(text, n, key, v, sizeof(v)) ? OK : ERR_NOT_FOUND;
-    free(text);
+    jam_free(text);
     if (st == OK && strlen(v) >= cap)
         st = ERR_BUFFER_TOO_SMALL;
     if (st == OK)
@@ -271,22 +271,22 @@ status_t settings_set(const char *file, const char *key, const char *value)
     if (st == ERR_NOT_FOUND)
         st = OK;   /* no file yet: settings_write makes it */
     if (st != OK) {
-        free(text);
+        jam_free(text);
         return st;
     }
     char have[SETTINGS_VALUE_MAX];
     if (text && settings_lookup(text, n, key, have, sizeof(have)) && !strcmp(have, value)) {
-        free(text);
+        jam_free(text);
         return OK;   /* already so */
     }
     size_t cap = n + SETTINGS_KEY_MAX + SETTINGS_VALUE_MAX + 8, out_n = 0;
-    char *out = malloc(cap);
+    char *out = jam_malloc(cap);
     st = out ? settings_edit(text ? text : "", n, key, value, out, cap, &out_n) : ERR_NO_MEMORY;
     if (st == OK && out_n > SETTINGS_MAX)
         st = ERR_OUT_OF_RANGE;
     if (st == OK)
         st = settings_write(file, out, out_n);
-    free(out);
-    free(text);
+    jam_free(out);
+    jam_free(text);
     return st;
 }

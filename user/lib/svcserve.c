@@ -31,16 +31,16 @@ static status_t serve(handle_t ch, uint8_t *q, uint8_t *r, svc_dispatch_fn dispa
 status_t svc_serve_request(handle_t ch, svc_dispatch_fn dispatch,
                            status_t (*connect)(void *, handle_t *), void *ctx)
 {
-    uint64_t *qbuf = malloc(MSG_MAX), *rbuf = malloc(MSG_MAX);   /* 8-byte aligned */
+    uint64_t *qbuf = jam_malloc(MSG_MAX), *rbuf = jam_malloc(MSG_MAX);   /* 8-byte aligned */
     if (!qbuf || !rbuf) {
-        free(qbuf);
-        free(rbuf);
+        jam_free(qbuf);
+        jam_free(rbuf);
         return ERR_NO_MEMORY;
     }
     uint8_t *q = (uint8_t *)qbuf, *r = (uint8_t *)rbuf;
     status_t st = serve(ch, q, r, dispatch, connect, ctx);
-    free(qbuf);
-    free(rbuf);
+    jam_free(qbuf);
+    jam_free(rbuf);
     return st;
 }
 

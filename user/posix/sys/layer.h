@@ -6,9 +6,11 @@
  *
  * Handlers return Linux's way: a value, or -errno; lx_err gives a
  * status's errno. They run in whatever thread made the call, so shared
- * state has a lock_t of its own (each file says which). mem.c and
- * maptable.c never call malloc: musl's malloc calls mmap and brk, which
- * are theirs. */
+ * state has a lock_t of its own (each file says which). The layer never
+ * calls the program's malloc (nor musl's: tools/checklayerheap.py): it
+ * allocates from its own heap (heap.c), jam_malloc and the rest. mem.c
+ * and maptable.c allocate nothing: musl's malloc calls mmap and brk,
+ * which are theirs. */
 #pragma once
 
 #include <stdbool.h>
@@ -20,6 +22,15 @@
 
 /* -errno for a status (errno.c): the default meaning of each ERR_*. */
 long lx_err(status_t st);
+
+/* The layer's heap (heap.c, which gives its rules): jam_malloc, jam_calloc
+ * and jam_free (<os.h>), realloc's (a block moved keeps its first n
+ * bytes; NULL leaves p as it was) and strdup's. */
+void *jam_realloc(void *p, size_t n);
+char *jam_strdup(const char *s);
+/* The thread pointer of the thread holding the heap's lock, 1 for a holder
+ * that has none to read, 0 while it is free (sig_fault_begin's). */
+uintptr_t heap_holder(void);
 
 /* The process's own handles from the startup message (start.c reads
  * them before main and before any handler runs). */
@@ -64,8 +75,8 @@ const char *lx_handover_exe(void);
  * LX_FORK_CHILD, in the child before fork returns 0 there: the lock made
  * fresh, and what the child can't use dropped without closing anything
  * (those handles were the parent's). None of them allocates or frees
- * memory (musl's fork holds malloc's lock across the call). proc.h and
- * sig.h have proc.c's and signal.c's. */
+ * memory (fork holds the layer heap's lock across the call: heap_fork,
+ * taken last). proc.h and sig.h have proc.c's and signal.c's. */
 #define LX_FORK_TAKE  0
 #define LX_FORK_GIVE  1
 #define LX_FORK_CHILD 2
@@ -75,6 +86,7 @@ void fd_fork(int step);       /* fd.c: the descriptor table (its descriptors are
 void mem_fork(int step);      /* mem.c: libc's table of mappings and the break; the child's
                                * JIT entries removed (its JIT memory isn't in it) */
 void rlimit_fork(int step);   /* rlimit.c: the limits */
+void heap_fork(int step);     /* heap.c: the layer's heap (after sig_fork's, for every way in) */
 /* In the child only, first: start.c's own process and address space
  * handles become the child's (startup_handle's, which libjam has made
  * the child's), and thread.c's table holds this thread alone, whose id

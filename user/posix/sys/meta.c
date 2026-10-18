@@ -268,14 +268,14 @@ static long change_path(struct path *p, const struct change *c)
 static long change_at(long dirfd, const char *pathname, long flags, const struct change *c)
 {
     enum { BY_PATH = 1 };
-    struct path *p = malloc(sizeof(*p));
+    struct path *p = jam_malloc(sizeof(*p));
     if (!p)
         return -ENOMEM;
     long r;
     if ((flags & AT_EMPTY_PATH) && pathname && !uc_strnlen(pathname, 1) && dirfd != AT_FDCWD) {
         struct fd_desc *d = fd_get(dirfd);
         if (!d) {
-            free(p);
+            jam_free(p);
             return -EBADF;
         }
         long done = c->owner_ok ? file_setattr_fd(d, c->mask, c->mode, c->uid, c->gid,
@@ -292,18 +292,18 @@ static long change_at(long dirfd, const char *pathname, long flags, const struct
         if (r == BY_PATH)
             r = change_path(p, c);
     } else if ((flags & AT_EMPTY_PATH) && pathname && !*pathname) {   /* the current directory */
-        char *cwd = malloc(PATH_BYTES);
+        char *cwd = jam_malloc(PATH_BYTES);
         r = cwd ? 0 : -ENOMEM;
         if (cwd)
             path_cwd(cwd);
         if (!r && !(r = path_set(cwd, p)))
             r = change_path(p, c);
-        free(cwd);
+        jam_free(cwd);
     } else if (!(r = path_get(dirfd, pathname, p))) {
         p->nofollow = (flags & AT_SYMLINK_NOFOLLOW) != 0;
         r = change_path(p, c);
     }
-    free(p);
+    jam_free(p);
     return r;
 }
 
@@ -482,7 +482,7 @@ long lx_linkat(long olddirfd, long oldpath, long newdirfd, long newpath, long fl
         long r = stat_at(olddirfd, from, AT_EMPTY_PATH, &p, &st);
         return r ? r : cant_make_at(newdirfd, (const char *)(uintptr_t)newpath);
     }
-    struct path *two = malloc(2 * sizeof(*two));
+    struct path *two = jam_malloc(2 * sizeof(*two));
     if (!two)
         return -ENOMEM;
     long r = path_get(olddirfd, from, &two[0]);
@@ -492,7 +492,7 @@ long lx_linkat(long olddirfd, long oldpath, long newdirfd, long newpath, long fl
         two[0].nofollow = !(flags & AT_SYMLINK_FOLLOW);   /* Linux's linkat follows no link */
         r = link_paths(&two[0], &two[1]);
     }
-    free(two);
+    jam_free(two);
     return r;
 }
 
@@ -570,7 +570,7 @@ static long readlink_path(struct path *p, char *buf, size_t size)
     long r = path_fs(p, &fs);
     if (r)
         return r;
-    char *target = malloc(PATH_BYTES);
+    char *target = jam_malloc(PATH_BYTES);
     uint32_t len, n = 0;
     const char *rel = path_rel(p, &len);
     status_t s = target ? fs_readlink_within(fs, FILE_TIMEOUT, rel, len, target, &n) : ERR_NO_MEMORY;
@@ -582,7 +582,7 @@ static long readlink_path(struct path *p, char *buf, size_t size)
     } else {
         r = path_err_read(p, s);   /* ERR_INVALID_ARGS: not a link, EINVAL */
     }
-    free(target);
+    jam_free(target);
     return r;
 }
 

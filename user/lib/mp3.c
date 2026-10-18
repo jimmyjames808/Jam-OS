@@ -65,7 +65,7 @@ static uint32_t be32(const uint8_t *p)
 
 status_t mp3_sniff(mp3_read_fn read, void *ctx, uint64_t file_size, struct mp3_sniffed *s)
 {
-    uint8_t *buf = malloc(SNIFF_BYTES);
+    uint8_t *buf = jam_malloc(SNIFF_BYTES);
     if (!buf)
         return ERR_NO_MEMORY;
     memset(s, 0, sizeof(*s));
@@ -141,7 +141,7 @@ status_t mp3_sniff(mp3_read_fn read, void *ctx, uint64_t file_size, struct mp3_s
         break;
     }
 out:
-    free(buf);
+    jam_free(buf);
     return st;
 }
 
@@ -184,13 +184,13 @@ static drmp3_bool32 on_tell(void *ud, drmp3_int64 *cursor)
 static void *on_malloc(size_t n, void *ud)
 {
     (void)ud;
-    return malloc(n);
+    return jam_malloc(n);
 }
 
 static void on_free(void *p, void *ud)
 {
     (void)ud;
-    free(p);
+    jam_free(p);
 }
 
 status_t mp3_open(struct mp3 *m, mp3_read_fn read, void *ctx, uint64_t file_size,
@@ -212,7 +212,7 @@ status_t mp3_open(struct mp3 *m, mp3_read_fn read, void *ctx, uint64_t file_size
      * check that the frame ends where the data does: the last frame is
      * lost (an LAME file with an ID3v1 tag played 26 ms short). */
     m->size = s.end;
-    drmp3 *d = malloc(sizeof(*d));
+    drmp3 *d = jam_malloc(sizeof(*d));
     if (!d) {
         *why = "out of memory";
         return ERR_NO_MEMORY;
@@ -220,7 +220,7 @@ status_t mp3_open(struct mp3 *m, mp3_read_fn read, void *ctx, uint64_t file_size
     /* No realloc: dr_mp3 grows its buffer with malloc, a copy and free. */
     drmp3_allocation_callbacks cb = { NULL, on_malloc, NULL, on_free };
     if (!drmp3_init(d, on_read, on_seek, on_tell, NULL, m, &cb)) {
-        free(d);
+        jam_free(d);
         st = m->err;
         *why = st != OK ? "can't read it" : "no MPEG audio frame it can decode";
         return st != OK ? st : ERR_NOT_SUPPORTED;
@@ -265,7 +265,7 @@ void mp3_close(struct mp3 *m)
 {
     if (m->dec) {
         drmp3_uninit(m->dec);
-        free(m->dec);
+        jam_free(m->dec);
         m->dec = NULL;
     }
 }

@@ -397,7 +397,7 @@ static const char *kind_path(struct fd_desc *d)
  * mount with many writers appends there too), as two handles. */
 static long reopen(const struct file *f, uint32_t s, handle_t *ch, handle_t *buf)
 {
-    struct path *p = malloc(sizeof(*p));
+    struct path *p = jam_malloc(sizeof(*p));
     if (!p)
         return -ENOMEM;
     uint32_t ff = fs_access(s) | ((s & O_APPEND) && f->o->multi ? FS_APPEND : 0);
@@ -412,7 +412,7 @@ static long reopen(const struct file *f, uint32_t s, handle_t *ch, handle_t *buf
         if (!path_again(p, &r))
             break;
     }
-    free(p);
+    jam_free(p);
     return r;
 }
 
@@ -440,7 +440,7 @@ static long kind_give(struct fd_desc *d, struct fd_given *out)
     uint32_t s = fd_status(d);
     if (!f->o || !f->path)
         return -ENOTSUP;   /* O_PATH, or a file we were given without its path */
-    char *data = strdup(f->path);
+    char *data = jam_strdup(f->path);
     if (!data)
         return -ENOMEM;
     lock_take(&d->lock);
@@ -456,7 +456,7 @@ static long kind_give(struct fd_desc *d, struct fd_given *out)
     };
     long r = reopen(f, s, &out->handles[0], &out->handles[1]);
     if (r) {
-        free(data);
+        jam_free(data);
         memset(out, 0, sizeof(*out));
     }
     return r;
@@ -467,8 +467,8 @@ static void kind_close(struct fd_desc *d)
     struct file *f = d->priv;
     if (f->o)
         fobj_put(f->o);
-    free(f->path);
-    free(f);
+    jam_free(f->path);
+    jam_free(f);
 }
 
 /* fork (docs/FORK-PLAN.md section 1.6): nothing is passed, so a fork
@@ -499,14 +499,14 @@ static const struct fd_ops file_ops = {
 /* A description for the open o (its reference consumed) of path abs. */
 static long file_new(struct fobj *o, const char *abs, uint32_t status, struct fd_desc **out)
 {
-    struct file *f = calloc(1, sizeof(*f));
-    char *path = abs ? strdup(abs) : NULL;
+    struct file *f = jam_calloc(1, sizeof(*f));
+    char *path = abs ? jam_strdup(abs) : NULL;
     struct fd_desc *d = f && (path || !abs) ? fd_new(&file_ops, status, f) : NULL;
     if (!d) {
         if (o)
             fobj_put(o);
-        free(path);
-        free(f);
+        jam_free(path);
+        jam_free(f);
         return -ENOMEM;
     }
     f->o = o;
@@ -772,7 +772,7 @@ static long fill_from_vmo(handle_t from, uint64_t size, uint64_t off, uint64_t l
 {
     enum { CHUNK = 65536 };
     uint64_t n = off < size ? (size - off < len ? size - off : len) : 0;
-    uint8_t *buf = n ? malloc(CHUNK) : NULL;
+    uint8_t *buf = n ? jam_malloc(CHUNK) : NULL;
     if (n && !buf)
         return -ENOMEM;
     status_t st = OK;
@@ -782,7 +782,7 @@ static long fill_from_vmo(handle_t from, uint64_t size, uint64_t off, uint64_t l
         if (st == OK)
             st = jam_vmo_write(vmo, at, buf, k);
     }
-    free(buf);
+    jam_free(buf);
     return lx_err(st);
 }
 

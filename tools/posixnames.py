@@ -13,8 +13,11 @@ the list from the objects themselves, so nothing is maintained by hand:
     posixnames.py <nm> <map out> <header out> <object>...
 
 Every global symbol an object defines is renamed but those already
-reserved (`__*`: the entry points musl's overrides call, __jam_*) and the
-public extensions a program calls (`jamos_*`, <jamos/*.h>). The header
+reserved (`__*`: the entry points musl's overrides call, __jam_*), the
+public extensions a program calls (`jamos_*`, <jamos/*.h>), and libjam's
+names (`jam_*`, <os.h>), which libjam's own objects in libc.a call by
+those names: the layer defines libjam's allocator there, jam_malloc and
+the rest (user/posix/sys/heap.c). The header
 gives the same renames as #defines, for the one test that reaches into the
 layer (posixtest's fileskid.c, through fd.h). Both files are written only
 when their contents change, so a build that changes no name redoes no
@@ -26,7 +29,7 @@ PREFIX = '__jl_'
 
 
 def kept(name):
-    return name.startswith('__') or name.startswith('jamos_')
+    return name.startswith('__') or name.startswith('jamos_') or name.startswith('jam_')
 
 
 def defined_globals(nm, objs):

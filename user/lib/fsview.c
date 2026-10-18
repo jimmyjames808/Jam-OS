@@ -339,7 +339,7 @@ status_t fs_view_serve_one(handle_t ch, uint32_t flags, const struct fs_ops *ops
                            status_t (*add)(void *host, handle_t ch, uint32_t flags), void *host)
 {
     /* Off the stack: an fs request and reply are 16 KiB together. */
-    uint8_t *q = malloc(IDL_ROUND8(FS_REQ_MAX) + FS_REP_MAX);
+    uint8_t *q = jam_malloc(IDL_ROUND8(FS_REQ_MAX) + FS_REP_MAX);
     if (!q)
         return ERR_NO_MEMORY;
     uint8_t *r = q + IDL_ROUND8(FS_REQ_MAX);
@@ -349,13 +349,13 @@ status_t fs_view_serve_one(handle_t ch, uint32_t flags, const struct fs_ops *ops
     if (st == ERR_BUFFER_TOO_SMALL)
         st = idl_drain(ch, n, nh);
     if (st != OK) {
-        free(q);
+        jam_free(q);
         return st;
     }
     if (nh) {
         idl_close_all(hs, nh);
         idl_reply_status(ch, q, n, ERR_INVALID_ARGS);
-        free(q);
+        jam_free(q);
         return OK;
     }
     const struct fs_view_server v = {
@@ -368,6 +368,6 @@ status_t fs_view_serve_one(handle_t ch, uint32_t flags, const struct fs_ops *ops
         idl_close_all(rhs, rhn);   /* no reply: never sent */
     else   /* the reply's handles are gone whatever the write's status */
         (void)drv_channel_write(ch, r, rn, rhs, rhn);
-    free(q);
+    jam_free(q);
     return OK;
 }

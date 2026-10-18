@@ -4,14 +4,17 @@
  * object of libjam (--whole-archive, --fatal-warnings), so the link fails
  * if libjam needs a C library function this file doesn't have (add it
  * here, and only a standard name: musl must have it too) or defines one
- * itself (it would clash with musl's). Nothing here ever runs: each
- * function only returns. */
+ * itself (it would clash with musl's). Besides those, libjam's allocator
+ * (jam_malloc, jam_calloc, jam_free: <os.h>), which a POSIX program gets
+ * from the call layer's heap: libjam never calls malloc, calloc or free,
+ * and the link fails if it does. Nothing here ever runs: each function
+ * only returns. */
 #include <stdarg.h>
 #include <stddef.h>
 
-void  *malloc(size_t n);
-void  *calloc(size_t n, size_t size);
-void   free(void *p);
+void  *jam_malloc(size_t n);
+void  *jam_calloc(size_t n, size_t size);
+void   jam_free(void *p);
 void  *memcpy(void *restrict dst, const void *restrict src, size_t n);
 void  *memmove(void *dst, const void *src, size_t n);
 void  *memset(void *dst, int c, size_t n);
@@ -28,19 +31,19 @@ int    snprintf(char *buf, size_t size, const char *fmt, ...);
 int    vsnprintf(char *buf, size_t size, const char *fmt, va_list ap);
 void   _start(void);
 
-void *malloc(size_t n)
+void *jam_malloc(size_t n)
 {
     (void)n;
     return NULL;
 }
 
-void *calloc(size_t n, size_t size)
+void *jam_calloc(size_t n, size_t size)
 {
     (void)n, (void)size;
     return NULL;
 }
 
-void free(void *p)
+void jam_free(void *p)
 {
     (void)p;
 }

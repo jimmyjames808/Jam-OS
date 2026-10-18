@@ -121,6 +121,17 @@ void *malloc(size_t n);         /* 16-byte aligned; NULL when out of memory */
 void *calloc(size_t n, size_t size);
 void  free(void *p);
 
+/* libjam's own allocations: every libjam file allocates with these, never
+ * with malloc. In a native program they are the heap's above (heap.c). In
+ * a POSIX program they are the call layer's heap (user/posix/sys/heap.c),
+ * never the program's malloc: that may be the program's own, which may
+ * hold its lock while it calls into the layer, and a signal handler's
+ * calls may come while the program is inside it. A block from one is
+ * freed by jam_free, never free. */
+void *jam_malloc(size_t n);
+void *jam_calloc(size_t n, size_t size);
+void  jam_free(void *p);
+
 /* bootfs: read files from the SR_BOOTFS VMO ----------------------------------- */
 
 struct bootfs_view {

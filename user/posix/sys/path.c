@@ -268,14 +268,14 @@ long path_follow(struct path *p)
 {
     if (!p->links || p->where != PATH_MOUNT)
         return -EIO;   /* only a mount with links leads out */
-    char *buf = malloc(2 * PATH_BYTES);
+    char *buf = jam_malloc(2 * PATH_BYTES);
     if (!buf)
         return -ENOMEM;
     uint8_t kind = 0;
     long r = ask_resolve(p, &kind, buf);
     if (!r)
         r = go_on(p, kind, buf, buf + PATH_BYTES);
-    free(buf);
+    jam_free(buf);
     return r;
 }
 
@@ -283,7 +283,7 @@ long path_place(struct path *p)
 {
     if (!p->links || p->where != PATH_MOUNT)
         return 0;
-    char *buf = malloc(2 * PATH_BYTES);
+    char *buf = jam_malloc(2 * PATH_BYTES);
     if (!buf)
         return -ENOMEM;
     long r = 0;
@@ -295,7 +295,7 @@ long path_place(struct path *p)
         if (!r && kind == FS_RESOLVE_INSIDE)
             break;
     }
-    free(buf);
+    jam_free(buf);
     return r;
 }
 
@@ -545,7 +545,7 @@ unsigned path_perm(uint32_t mode, uint32_t uid)
 
 long path_program(const char *abs, char *out)
 {
-    struct path *p = malloc(sizeof(*p));
+    struct path *p = jam_malloc(sizeof(*p));
     struct path_info i;
     if (!p)
         return -ENOMEM;
@@ -559,7 +559,7 @@ long path_program(const char *abs, char *out)
     }
     if (!r)
         memcpy(out, p->abs, strlen(p->abs) + 1);
-    free(p);
+    jam_free(p);
     return r;
 }
 
@@ -635,7 +635,7 @@ void path_cwd(char out[PATH_BYTES])
 
 bool path_cwd_removed(void)
 {
-    struct { char text[PATH_BYTES]; struct path p; } *w = malloc(sizeof(*w));
+    struct { char text[PATH_BYTES]; struct path p; } *w = jam_malloc(sizeof(*w));
     if (!w)
         return false;
     path_cwd(w->text);
@@ -650,7 +650,7 @@ bool path_cwd_removed(void)
         long r = path_info(&w->p, &i);
         gone = r == -ENOENT || r == -ENOTDIR;   /* a service that's slow or refuses doesn't count */
     }
-    free(w);
+    jam_free(w);
     return gone;
 }
 

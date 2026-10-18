@@ -73,7 +73,7 @@ static status_t read_whole(const char *path, size_t max, uint8_t **out, size_t *
     st = file_stat(&f, &size, NULL);
     if (st == OK && size > max)
         st = ERR_OUT_OF_RANGE;
-    uint8_t *buf = st == OK ? malloc(size ? size : 1) : NULL;
+    uint8_t *buf = st == OK ? jam_malloc(size ? size : 1) : NULL;
     if (st == OK && !buf)
         st = ERR_NO_MEMORY;
     size_t done = 0;
@@ -81,7 +81,7 @@ static status_t read_whole(const char *path, size_t max, uint8_t **out, size_t *
         st = file_read(&f, 0, buf, size, &done);
     file_close(&f);
     if (st != OK) {
-        free(buf);
+        jam_free(buf);
         return st;
     }
     *out = buf;
@@ -97,7 +97,7 @@ status_t ssh_keys_in_file(const char *path, unsigned *count)
     if (st != OK)
         return st;
     *count = ssh_count_keys((const char *)buf, n);
-    free(buf);
+    jam_free(buf);
     return OK;
 }
 

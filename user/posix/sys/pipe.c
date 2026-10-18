@@ -57,9 +57,9 @@ static struct pipe_end *end_of(struct fd_desc *d)
 
 struct pipe_end *pipe_end_new(handle_t ch, const void *leftover, size_t len)
 {
-    struct pipe_end *p = len <= PIPE_SIZE ? calloc(1, sizeof(*p)) : NULL;
-    if (p && len && !(p->buf = malloc(PIPE_SIZE))) {
-        free(p);
+    struct pipe_end *p = len <= PIPE_SIZE ? jam_calloc(1, sizeof(*p)) : NULL;
+    if (p && len && !(p->buf = jam_malloc(PIPE_SIZE))) {
+        jam_free(p);
         p = NULL;
     }
     if (!p) {
@@ -112,7 +112,7 @@ static status_t read_msg(handle_t ch, void *buf, uint32_t cap, uint32_t *got)
 
 bool pipe_buf(struct pipe_end *p)
 {
-    return p->buf || (p->buf = malloc(PIPE_SIZE));
+    return p->buf || (p->buf = jam_malloc(PIPE_SIZE));
 }
 
 void pipe_set_leftover(struct pipe_end *p, uint32_t at, uint32_t have)
@@ -215,7 +215,7 @@ static long pipe_write(struct fd_desc *d, const struct iovec *iov, int iovcnt, i
     if (n <= 0)
         return n;
     uint8_t *gather = NULL;
-    if (iovcnt > 1 && !(gather = malloc(n < PIPE_SIZE ? (size_t)n : PIPE_SIZE)))
+    if (iovcnt > 1 && !(gather = jam_malloc(n < PIPE_SIZE ? (size_t)n : PIPE_SIZE)))
         return -ENOMEM;
     size_t done = 0;
     long r = 0;
@@ -230,7 +230,7 @@ static long pipe_write(struct fd_desc *d, const struct iovec *iov, int iovcnt, i
         if (!r)
             done += len;
     }
-    free(gather);
+    jam_free(gather);
     return done ? (long)done : r;
 }
 
@@ -282,8 +282,8 @@ static long pipe_ioctl(struct fd_desc *d, unsigned long req, long arg)
 void pipe_end_free(struct pipe_end *p)
 {
     jam_handle_close(pipe_ch(p));
-    free(p->buf);
-    free(p);
+    jam_free(p->buf);
+    jam_free(p);
 }
 
 static void pipe_close(struct fd_desc *d)
@@ -299,7 +299,7 @@ long pipe_give_end(struct fd_desc *d, uint16_t kind, struct fd_given *out)
     void *data = r ? NULL : kind_data(p->buf + p->at, left, &r);
     status_t st = r ? OK : jam_handle_duplicate(pipe_ch(p), RIGHT_SAME, &out->handles[0]);
     if (!r && st != OK) {
-        free(data);
+        jam_free(data);
         r = lx_err(st);
     }
     if (!r) {

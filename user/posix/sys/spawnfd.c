@@ -39,7 +39,7 @@ long spawn_absolute(const char *path, const char *dir, char *out)
         return -ENOENT;
     if (lp == PATH_MAX || ld + 1 + lp >= PATH_MAX)
         return -ENAMETOOLONG;
-    char *joined = malloc(ld + 1 + lp + 1);
+    char *joined = jam_malloc(ld + 1 + lp + 1);
     if (!joined)
         return -ENOMEM;
     size_t n = 0;
@@ -51,7 +51,7 @@ long spawn_absolute(const char *path, const char *dir, char *out)
     memcpy(joined + n, path, lp + 1);
     out[0] = '/';   /* fs_path_clean gives the names without the leading '/' */
     status_t st = fs_path_clean(joined, (uint32_t)(n + lp), out + 1);
-    free(joined);
+    jam_free(joined);
     return st == OK ? 0 : -EINVAL;
 }
 
@@ -68,7 +68,7 @@ static void our_cwd(char *cwd)
 
 long spawnfd_begin(struct spawnfd **out)
 {
-    struct spawnfd *t = malloc(sizeof(*t));
+    struct spawnfd *t = jam_malloc(sizeof(*t));
     if (!t)
         return -ENOMEM;
     t->nslots = t->nexported = 0;
@@ -131,14 +131,14 @@ static long act_open(struct spawnfd *t, const struct jam_spawn_op *op)
 {
     if (op->fd < 0 || op->fd >= FD_MAX)
         return -EBADF;
-    char *abs = malloc(PATH_MAX);
+    char *abs = jam_malloc(PATH_MAX);
     long e = abs ? spawn_absolute(op->path, t->cwd, abs) : -ENOMEM;
     int fd = -1;
     if (!e) {
         fd = open(abs, op->oflag | O_CLOEXEC, (mode_t)op->mode);
         e = fd < 0 ? -errno : 0;
     }
-    free(abs);
+    jam_free(abs);
     if (e)
         return e;
     struct fd_desc *d = fd_get(fd);
@@ -150,7 +150,7 @@ static long act_open(struct spawnfd *t, const struct jam_spawn_op *op)
 
 static long act_chdir(struct spawnfd *t, const struct jam_spawn_op *op)
 {
-    char *abs = malloc(PATH_MAX);
+    char *abs = jam_malloc(PATH_MAX);
     long e = abs ? spawn_absolute(op->path, t->cwd, abs) : -ENOMEM;
     bool dir = false;
     status_t st = e ? OK : fs_stat(abs, NULL, &dir, NULL);
@@ -160,7 +160,7 @@ static long act_chdir(struct spawnfd *t, const struct jam_spawn_op *op)
         e = -ENOTDIR;
     if (!e)
         strcpy(t->cwd, abs);
-    free(abs);
+    jam_free(abs);
     return e;
 }
 
@@ -229,7 +229,7 @@ static int32_t exported_as(struct spawnfd *t, const struct fd_desc *d)
  * first: the child shares it, as dup2 made it here. 0 or -ENOMEM. */
 static long dup_of(struct fd_given *g, int32_t first)
 {
-    uint32_t *data = malloc(sizeof(*data));
+    uint32_t *data = jam_malloc(sizeof(*data));
     if (!data)
         return -ENOMEM;
     *data = (uint32_t)first;
@@ -269,9 +269,9 @@ static long export_one(struct spawnfd *t, const struct spawnfd_slot *s)
 long spawnfd_export(struct spawnfd *t, struct posixfds_out *ho)
 {
     unsigned n = t->nslots ? t->nslots : 1;
-    t->desc = calloc(n, sizeof(*t->desc));
-    t->given = calloc(n, sizeof(*t->given));
-    t->from = calloc(n, sizeof(*t->from));
+    t->desc = jam_calloc(n, sizeof(*t->desc));
+    t->given = jam_calloc(n, sizeof(*t->given));
+    t->from = jam_calloc(n, sizeof(*t->from));
     long e = t->desc && t->given && t->from ? 0 : -ENOMEM;
     for (unsigned i = 0; !e && i < t->nslots; i++) {
         if (t->slot[i].cloexec)
@@ -296,11 +296,11 @@ void spawnfd_end(struct spawnfd *t, struct posixfds_out *ho)
     if (!t)
         return;
     for (unsigned i = 0; t->given && i < t->nexported; i++)
-        free(t->given[i].data);   /* the handles went with the hand-over */
-    free(t->desc);
-    free(t->given);
-    free(t->from);
+        jam_free(t->given[i].data);   /* the handles went with the hand-over */
+    jam_free(t->desc);
+    jam_free(t->given);
+    jam_free(t->from);
     for (unsigned i = 0; i < t->nslots; i++)
         fd_put(t->slot[i].desc);
-    free(t);
+    jam_free(t);
 }

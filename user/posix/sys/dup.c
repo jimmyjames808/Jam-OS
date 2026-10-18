@@ -45,7 +45,7 @@ long kind_install(const struct fd_ops *ops, void *priv, uint32_t status, bool cl
 
 void *kind_data(const void *src, size_t n, long *err)
 {
-    void *p = n ? malloc(n) : NULL;
+    void *p = n ? jam_malloc(n) : NULL;
     if (n && !p)
         *err = -ENOMEM;
     if (p)

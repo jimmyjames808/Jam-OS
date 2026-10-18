@@ -463,7 +463,7 @@ static long wl_recvmsg(struct fd_desc *d, void *conn, struct msghdr *m, int flag
 
 static void *wl_open(handle_t ch)
 {
-    struct wlconn *c = calloc(1, sizeof(*c));
+    struct wlconn *c = jam_calloc(1, sizeof(*c));
     if (!c) {
         jam_handle_close(ch);
         return NULL;
@@ -496,7 +496,7 @@ static void wl_close(void *conn)
     close_all(c->out_h, c->out_nh);
     close_all(c->in_h, c->in_nh);
     jam_handle_close(c->ch);
-    free(c);
+    jam_free(c);
 }
 
 const struct svcsock_framing wlsock_framing = {

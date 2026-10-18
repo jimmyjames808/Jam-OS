@@ -97,13 +97,13 @@ status_t drv_thread_start(const char *name, void (*fn)(void *), void *arg)
 {
     if (!fn)
         return ERR_INVALID_ARGS;
-    void *stack = malloc(THREAD_STACK);
+    void *stack = jam_malloc(THREAD_STACK);
     if (!stack)
         return ERR_NO_MEMORY;
     handle_t t;
     status_t st = thread_spawn(name ? name : "driver", fn, arg, stack, THREAD_STACK, &t);
     if (st != OK) {
-        free(stack);
+        jam_free(stack);
         return st;
     }
     jam_handle_close(t);
@@ -112,12 +112,12 @@ status_t drv_thread_start(const char *name, void (*fn)(void *), void *arg)
 
 void *drv_malloc(size_t n)
 {
-    return malloc(n);
+    return jam_malloc(n);
 }
 
 void drv_free(void *p)
 {
-    free(p);
+    jam_free(p);
 }
 
 int drv_vsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
