@@ -437,7 +437,15 @@ static const char *type_name(enum core_type t)
     }
 }
 
-bool smp_report(uint64_t window_ms, bool sleep)
+/* Every CPU's ticks over one window of window_ms: the counts, and how long
+ * the window really was (a sleeping thread may wake late on a busy machine,
+ * so the counts are judged against the window it got). */
+struct tick_window {
+    uint64_t n[MAX_CPUS];
+    uint64_t measured_us, expect;
+};
+
+static void tick_window_run(uint64_t window_ms, bool sleep, struct tick_window *w)
 {
     /* Snapshot every count before printing anything: printing is slow on
      * a big framebuffer, and a CPU read after N printed lines would get a
@@ -446,31 +454,69 @@ bool smp_report(uint64_t window_ms, bool sleep)
     for (uint32_t i = 0; i < cpu_count; i++)
         before[i] = cpu_ticks(cpus[i]);
     uint64_t t0 = rdtsc();
+    /* Boot word "timerstall": the boot CPU takes no interrupt for 600 ms
+     * of the first window, as a host that does not run it would (so the
+     * window is off, and smp_report measures again). */
+    static bool stall_done;
+    uint64_t rest_us = window_ms * 1000;
+    if (!sleep && !stall_done && rest_us > 600 * 1000 && cmdline_has("timerstall")) {
+        stall_done = true;
+        uint64_t f = irq_save();
+        udelay(600 * 1000);
+        irq_restore(f);
+        rest_us -= 600 * 1000;
+    }
     if (sleep)
         thread_sleep_ms(window_ms);
     else
-        udelay(window_ms * 1000);
+        udelay(rest_us);
     for (uint32_t i = 0; i < cpu_count; i++)
         after[i] = cpu_ticks(cpus[i]);
-    uint64_t measured_us = (rdtsc() - t0) / (tsc_hz / 1000000);
+    w->measured_us = (rdtsc() - t0) / (tsc_hz / 1000000);
+    w->expect = TICK_HZ * w->measured_us / 1000000;
+    for (uint32_t i = 0; i < cpu_count; i++)
+        w->n[i] = after[i] - before[i];
+}
 
-    /* A sleeping thread may wake late on a busy machine: judge the counts
-     * against the window it really got. */
-    uint64_t expect = TICK_HZ * measured_us / 1000000;
-    /* Under a hypervisor (CPUID.1:ECX bit 31) a vCPU the host doesn't run
-     * for a while loses ticks: allow down to half there, never more than
-     * +10% anywhere (a loaded test machine failed the run on this). */
+/* Is CPU i's count in the window right? Under a hypervisor (CPUID.1:ECX
+ * bit 31) a vCPU the host doesn't run for a while loses ticks: allow down
+ * to half there, never more than +10% anywhere (a loaded test machine
+ * failed the run on this). */
+static bool tick_count_ok(const struct tick_window *w, uint32_t i, bool hypervisor)
+{
+    uint64_t slack_low = hypervisor ? w->expect / 2 : w->expect / 10;
+    return w->n[i] + slack_low >= w->expect && w->n[i] <= w->expect + w->expect / 10;
+}
+
+bool smp_report(uint64_t window_ms, bool sleep)
+{
     uint32_t a, b, cx, d;
     cpuid(1, 0, &a, &b, &cx, &d);
-    uint64_t slack_low = (cx >> 31) & 1 ? expect / 2 : expect / 10;
-    uint32_t p = 0, e = 0, bad = 0;
+    bool hypervisor = (cx >> 31) & 1;
+    /* Even half is not enough when the host does not run a vCPU for most of
+     * a second (a PC with a dozen QEMUs on it, a boot at that moment): such
+     * a stall is over in the next window, while a timer that is wrong is
+     * wrong in every window. So under a hypervisor a window with a CPU off
+     * is measured again, twice at most, and the last one is the verdict. */
+    static struct tick_window w;
+    uint32_t bad = 0, window = 0;
+    do {
+        window++;
+        tick_window_run(window_ms, sleep, &w);
+        bad = 0;
+        for (uint32_t i = 0; i < cpu_count; i++)
+            bad += !tick_count_ok(&w, i, hypervisor);
+        if (bad && hypervisor && window < 3)
+            report("timer: window %u: %u CPU(s) off, %lu.%03lu ms (the host did not run them?): "
+                   "measuring again", window, bad, w.measured_us / 1000, w.measured_us % 1000);
+    } while (bad && hypervisor && window < 3);
+    uint64_t measured_us = w.measured_us, expect = w.expect;
+    uint32_t p = 0, e = 0;
     bool smt = false;
     for (uint32_t i = 0; i < cpu_count; i++) {
         struct cpu *c = cpus[i];
-        uint64_t n = after[i] - before[i];
-        bool ok = n + slack_low >= expect && n <= expect + expect / 10;
-        if (!ok)
-            bad++;
+        uint64_t n = w.n[i];
+        bool ok = tick_count_ok(&w, i, hypervisor);
         p += c->type == CORE_PERFORMANCE;
         e += c->type == CORE_EFFICIENCY;
         for (uint32_t j = 0; j < i; j++)
@@ -484,9 +530,10 @@ bool smp_report(uint64_t window_ms, bool sleep)
                 smt ? "ON" : "off");
     else
         report("topology: %u CPUs, SMT %s", cpu_count, smt ? "on" : "off");
-    report("timer: %s at %u Hz, expected ~%lu ticks per CPU in %lu.%03lu ms: %s",
+    report("timer: %s at %u Hz, expected ~%lu ticks per CPU in %lu.%03lu ms: %s%s",
             lapic_timer_mode(), TICK_HZ, expect, measured_us / 1000, measured_us % 1000,
-            bad ? "MISMATCH" : "all ok");
+            bad ? "MISMATCH" : "all ok",
+            window == 2 ? " (window 2)" : window == 3 ? " (window 3)" : "");   /* the line is cut at ~118 */
     if (listed_count > cpu_count) {
         report("smp: %u of %u CPUs did not start (the boot log names them)",
                listed_count - cpu_count, listed_count);
