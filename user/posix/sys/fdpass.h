@@ -37,8 +37,19 @@
  * cross, as fd_give makes it for a child: a memfd with its size, seals,
  * name and offset (memfd.c: its VMO without RIGHT_WRITE once write-
  * sealed, or for a read-only description); a file as a fresh open of the
- * same file at the description's offset (a writable one lends ours,
- * fobj.c); a /dev node or one of libc's /etc files by its name; a pipe or
+ * same file at the description's offset (a writable one on fat lends
+ * ours, fobj.c; one unlinked while open has no path to open, so ours
+ * goes, moved: file.c's give_ours); a /dev node or one of libc's /etc files by its name; one of
+ * libc's /proc files by its path, the pid in it (POSIXFDS_PROC: the
+ * receiver opens its own /proc's file there, so a process's own statm
+ * and status, which Chromium's browser gives each renderer, read live; a
+ * process the receiver can't see is ENOENT at the receipt); a
+ * directory by its path, opened again in the receiver's namespace at its
+ * getdents position (a directory is only a path here until directory
+ * handles: docs/DIRHANDLE-PLAN.md; the receiver gets nothing its own
+ * namespace doesn't already name, and a path it lacks is ENOENT at the
+ * receipt; Chromium's storage service fsyncs a leveldb directory the
+ * browser opens for it); a pipe or
  * socketpair end as above (its leftover stays here). What arrives is made
  * by the hand-over's adopters (fd.c's fd_adopters), after this file's
  * checks: the kind among the policy's, the handles of the kind's object
@@ -47,8 +58,7 @@
  * of the file would reopen that name with our rights), so the file
  * arrives without one and can't be given on (fd_give: ENOTSUP). Kinds
  * that never cross a socket: network sockets and listeners (their ring
- * can't be shared: M13's answer B), directories (a path again),
- * terminals, eventfds (the counter is each process's own: eventfd.c),
+ * can't be shared: M13's answer B), terminals, eventfds (the counter is each process's own: eventfd.c),
  * epoll sets: EINVAL, logged once a process.
  *
  * The SCM_RIGHTS helpers at the end read and write the control data of a
@@ -65,6 +75,7 @@
 #define FDPASS_CHANNEL  (1u << 1)        /* pipe ends and socketpair ends: a channel end */
 #define FDPASS_FILE     (1u << 2)        /* files: a fresh open (records only) */
 #define FDPASS_NODE     (1u << 3)        /* /dev nodes, libc's /etc files: a name (records only) */
+#define FDPASS_DIR      (1u << 4)        /* directories: a path (records only) */
 #define FDPASS_COPY_MAX (1u << 20)       /* bytes of a VMO without RIGHT_DUPLICATE copied in */
 #define FDPASS_MAX      253              /* descriptors in one sendmsg (Linux's SCM_MAX_FD) */
 

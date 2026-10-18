@@ -164,18 +164,20 @@ long fdpass_to_desc(handle_t h, unsigned kinds, struct fd_desc **out)
 
 /* ---- a call's worth ------------------------------------------------------------------- */
 
-/* "posix: sendmsg: a descriptor of kind <kind> can't cross this socket"
- * in the log, once a process: a program whose send fails is told why (an
+/* "posix: sendmsg: a descriptor of kind <kind> [<its path>] can't cross
+ * this socket" in the log, once a process: a program whose send fails is
+ * told why, and which descriptor it was where its kind has a path (an
  * old Wayland client making its pool from a file is told at once, not
  * shown a black window). */
-static void say_refused(const struct fd_desc *d)
+static void say_refused(struct fd_desc *d)
 {
     if (__atomic_exchange_n(&said_refused, true, __ATOMIC_RELAXED))
         return;
-    char line[96];
+    char line[192];
+    const char *path = d->ops->path ? d->ops->path(d) : proc_file_path(d);   /* which one */
     int n = snprintf(line, sizeof(line),
-                     "posix: sendmsg: a descriptor of kind %s can't cross this socket\n",
-                     d->ops->name);
+                     "posix: sendmsg: a descriptor of kind %s%s%.80s can't cross this socket\n",
+                     d->ops->name, path ? " " : "", path ? path : "");
     if (n > 0)
         (void)jam_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
 }
@@ -229,8 +231,10 @@ static unsigned desc_kind(struct fd_desc *d)
         return FDPASS_CHANNEL;
     if (d->ops == &memfd_ops)
         return FDPASS_MEMFD;
-    if (d->ops == &dev_ops || d->ops == &etc_ops)
+    if (d->ops == &dev_ops || d->ops == &etc_ops || proc_file_path(d))
         return FDPASS_NODE;
+    if (dir_is(d))
+        return FDPASS_DIR;
     return file_desc_is(d) ? FDPASS_FILE : 0;
 }
 
@@ -244,7 +248,9 @@ static unsigned record_kind(uint32_t kind)
     case POSIXFDS_MEMFD:     return FDPASS_MEMFD;
     case POSIXFDS_FILE:      return FDPASS_FILE;
     case POSIXFDS_DEV:
-    case POSIXFDS_ETC:       return FDPASS_NODE;
+    case POSIXFDS_ETC:
+    case POSIXFDS_PROC:      return FDPASS_NODE;
+    case POSIXFDS_DIR:       return FDPASS_DIR;
     }
     return 0;
 }
@@ -257,7 +263,9 @@ static long give_one(struct fd_desc *d, const struct fdpass_policy *p, struct fd
     memset(out, 0, sizeof(*out));
     if (!(k & p->kinds))
         return -EINVAL;
-    long r = k == FDPASS_CHANNEL ? pipe_pass(d, out) : d->ops->give(d, out);
+    long r = k == FDPASS_CHANNEL        ? pipe_pass(d, out)
+             : proc_file_path(d) != NULL ? proc_give(d, out)   /* no .give: never a child's */
+                                         : d->ops->give(d, out);
     if (r || k != FDPASS_MEMFD || p->memfd_rights == RIGHT_SAME)
         return r;
     struct handle_info hi;
@@ -321,13 +329,16 @@ static bool record_ok(const struct posixfds_fd *rec, const void *data)
 {
     if ((rec->status & ~POSIXFDS_STATUS) ||
         (rec->status & POSIXFDS_O_ACCMODE) == POSIXFDS_O_ACCMODE ||
-        rec->data_len > POSIXFDS_DATA_MAX || (rec->offset && rec->kind != POSIXFDS_FILE))
+        rec->data_len > POSIXFDS_DATA_MAX ||
+        (rec->offset && rec->kind != POSIXFDS_FILE && rec->kind != POSIXFDS_DIR))
         return false;
     switch (rec->kind) {
     case POSIXFDS_PIPE:
     case POSIXFDS_SEQPACKET: return rec->data_len == 0;
     case POSIXFDS_DEV:
-    case POSIXFDS_ETC:       return string_ok(data, rec->data_len);
+    case POSIXFDS_ETC:
+    case POSIXFDS_DIR:
+    case POSIXFDS_PROC:      return string_ok(data, rec->data_len);
     }
     return true;   /* a memfd's data and a file's: their adopters check or ignore it */
 }

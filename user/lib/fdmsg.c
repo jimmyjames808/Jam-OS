@@ -46,6 +46,7 @@ static const struct {
     [POSIXFDS_EVENTFD] = { 1, DATA_ANY, false, { OBJ_EVENT } },
     [POSIXFDS_DUP] = { 0, DATA_FD, false, { 0 } },
     [POSIXFDS_SEQPACKET] = { 1, DATA_ANY, false, { OBJ_CHANNEL } },
+    [POSIXFDS_PROC] = { 0, DATA_PATH, false, { 0 } },
 };
 
 static lock_t   buf_lock;                              /* guards everything below */

@@ -33,7 +33,14 @@
  *                         and mem; the
  *                         thread's id is also a directory of /proc, not
  *                         listed, as Linux's (a process's id wins when
- *                         one number is both)
+ *                         one number is both); its link count is 2 and
+ *                         one for each thread, as Linux's (Chromium's
+ *                         "single-threaded?" test reads it)
+ *   a /proc directory's descriptor
+ *                         a start for the *at calls, as the path it stands
+ *                         for: fstatat(open("/proc"), "self/task/<tid>/")
+ *                         is ENOENT once that thread has ended (Chromium's
+ *                         sandbox set-up waits for that, sandboxed or not)
  *   /proc/version, /proc/sys/kernel/osrelease, ostype, version, hostname
  *                         what uname says (misc.c's fields)
  *   /proc/sys/fs/inotify/max_user_watches, max_user_instances,
@@ -701,6 +708,10 @@ static void node_stat(enum node node, int id, struct stat *st)
     st->st_mode = dir ? S_IFDIR | (node == N_FDDIR ? 0500 : 0555)
                       : is_file(node) ? S_IFREG | (node == N_MEM ? 0400 : 0444) : S_IFLNK | 0777;
     st->st_nlink = dir ? 2 : 1;
+    if (node == N_TASKDIR) {   /* Linux's: 2 and a link for each thread's directory */
+        uint32_t t;
+        st->st_nlink += thread_tids(&t, 0, 0);
+    }
     st->st_uid = st->st_gid = node == N_ROOT || node == N_SYSDIR || node == N_SYSKERNEL ||
                               node == N_SYSFS || node == N_SYSINOTIFY ||
                               node >= N_CPUINFO ? 0 : ONE_USER;
@@ -790,16 +801,12 @@ static long open_dir(enum node node, int32_t pid, uint32_t tid, long flags)
                         status, flags & O_CLOEXEC);
 }
 
-/* A generated file: no writing (Linux's EACCES), no directory. */
-static long open_file(const struct at *a, const struct path *p, long flags)
+/* A generated file's state for a (its text not made yet), or NULL. */
+static struct pfile_state *file_state(const struct at *a)
 {
-    if (p->must_dir || (flags & O_DIRECTORY))
-        return -ENOTDIR;
-    if ((flags & O_ACCMODE) != O_RDONLY || (flags & O_TRUNC))
-        return -EACCES;
     struct pfile_state *st = jam_calloc(1, sizeof(*st));
     if (!st)
-        return -ENOMEM;
+        return NULL;
     for (unsigned i = 0; i < PFILES; i++)
         if (pfiles[i].node == a->node) {
             st->file = pfiles[i].file;
@@ -819,8 +826,56 @@ static long open_file(const struct at *a, const struct path *p, long flags)
         }
     st->pid = a->pid;
     st->tid = a->tid;
+    return st;
+}
+
+/* A generated file: no writing (Linux's EACCES), no directory. */
+static long open_file(const struct at *a, const struct path *p, long flags)
+{
+    if (p->must_dir || (flags & O_DIRECTORY))
+        return -ENOTDIR;
+    if ((flags & O_ACCMODE) != O_RDONLY || (flags & O_TRUNC))
+        return -EACCES;
+    struct pfile_state *st = file_state(a);
+    if (!st)
+        return -ENOMEM;
     uint32_t status = O_RDONLY | ((uint32_t)flags & (O_NONBLOCK | O_PATH));
     return kind_install(&pfile_ops, st, status, flags & O_CLOEXEC);   /* closes st if it fails */
+}
+
+long proc_give(struct fd_desc *d, struct fd_given *out)
+{
+    if (d->ops != &pfile_ops)
+        return -EINVAL;
+    char *data = jam_strdup(((const struct pfile_state *)d->priv)->path);
+    if (!data)
+        return -ENOMEM;
+    *out = (struct fd_given){
+        .kind = POSIXFDS_PROC, .status = fd_status(d) & POSIXFDS_STATUS,
+        .data = data, .data_len = (uint32_t)strlen(data) + 1,
+    };
+    return 0;
+}
+
+long proc_adopt(const struct posixfds_fd *rec, const void *data, const handle_t *hs,
+                struct fd_desc **out)
+{
+    struct path p;
+    struct at a;
+    if (path_set(data, &p) || !proc_path(p.abs))   /* data: a string (the reader's check) */
+        return -EINVAL;
+    long r = lookup(p.abs, &a);   /* our /proc's answer: another's pid is ENOENT here */
+    if (r)
+        return r;
+    if (!is_file(a.node))
+        return -EINVAL;
+    struct pfile_state *st = file_state(&a);
+    if (!st)
+        return -ENOMEM;
+    *out = fd_new(&pfile_ops, O_RDONLY | (rec->status & O_NONBLOCK), st);
+    if (!*out)
+        jam_free(st);
+    return *out ? 0 : -ENOMEM;
 }
 
 static long open_exe(const struct path *p, long flags)
@@ -1131,9 +1186,30 @@ static long pd_stat(struct fd_desc *d, struct stat *st)
     return 0;
 }
 
+bool proc_dir_base(struct fd_desc *d, char base[PATH_BYTES])
+{
+    if (d->ops != &procdir_ops)
+        return false;
+    int pid = (int)pid_of(d);
+    switch (node_of(d)) {
+    case N_ROOT:       snprintf(base, PATH_BYTES, PROC_DIR); break;
+    case N_SELF:       snprintf(base, PATH_BYTES, PROC_DIR "/%d", pid); break;
+    case N_FDDIR:      snprintf(base, PATH_BYTES, PROC_DIR "/%d/fd", pid); break;
+    case N_TASKDIR:    snprintf(base, PATH_BYTES, PROC_DIR "/%d/task", pid); break;
+    case N_TASK:       snprintf(base, PATH_BYTES, PROC_DIR "/%d/task/%u", pid, (unsigned)tid_of(d)); break;
+    case N_SYSDIR:     snprintf(base, PATH_BYTES, PROC_DIR "/sys"); break;
+    case N_SYSKERNEL:  snprintf(base, PATH_BYTES, PROC_DIR "/sys/kernel"); break;
+    case N_SYSFS:      snprintf(base, PATH_BYTES, PROC_DIR "/sys/fs"); break;
+    case N_SYSINOTIFY: snprintf(base, PATH_BYTES, PROC_DIR "/sys/fs/inotify"); break;
+    default:           return false;
+    }
+    return true;
+}
+
 /* No .give: a child left out of the hand-over gets none (its own /proc is
- * its own, and a directory record would name a mount). No .path: the *at
- * calls and fchdir take mount directories only. */
+ * its own, and a directory record would name a mount). No .path: fchdir
+ * takes mount directories only; the *at calls start from a /proc
+ * directory by the path it stands for (proc_dir_base). */
 static const struct fd_ops procdir_ops = {
     .name = "/proc directory", .read = pd_read, .seek = pd_seek, .stat = pd_stat,
     .getdents = pd_getdents,
@@ -1144,6 +1220,11 @@ static const struct fd_ops procdir_ops = {
 static struct pfile_state *pf_of(struct fd_desc *d)
 {
     return d->priv;
+}
+
+const char *proc_file_path(struct fd_desc *d)
+{
+    return d->ops == &pfile_ops ? pf_of(d)->path : NULL;
 }
 
 /* Make the text again (or the first time): outside d's lock, since it asks

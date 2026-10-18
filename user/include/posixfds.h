@@ -102,6 +102,10 @@ enum posixfds_kind {
                                * (flags, offset, handles), as dup2 makes it; status 0 */
     POSIXFDS_SEQPACKET = 13,  /* a SOCK_SEQPACKET socketpair end: a channel end; data: any
                                * (the message a peek kept, whole) */
+    POSIXFDS_PROC = 14,       /* one of libc's /proc files; no handles; data: its path
+                               * ("/proc/<pid>/statm"), a string, opened again by the
+                               * receiver, whose /proc it names (sent over socketpairs
+                               * only: a child's hand-over leaves /proc files out) */
     POSIXFDS_KIND_COUNT,
 };
 

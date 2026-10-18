@@ -4,8 +4,10 @@
  * **Mojo's pattern** (scm_mojo and the child, posixtest --child-scm): a
  * non-blocking socketpair, one end the child's descriptor 3 (posix_spawn's
  * adddup2, as Chromium names it on the command line). The parent sends
- * one byte with five descriptors (a pipe's write end, a memfd, a file at
- * offset 1, /dev/zero, a socketpair end), then 3 MB with a memfd on the
+ * one byte with six descriptors (a pipe's write end, a memfd, a file at
+ * offset 1, /dev/zero, a socketpair end, and the child's own
+ * /proc/<pid>/statm opened by the parent, as Chromium's browser gives each
+ * renderer: the child's link names it, it reads), then 3 MB with a memfd on the
  * first byte, each with MSG_DONTWAIT | MSG_NOSIGNAL, partial writes and
  * EAGAIN met by poll; the child uses each descriptor (writes the pipe and
  * the socketpair, writes into the memfd's mapping, reads the file and
@@ -83,6 +85,24 @@ static ssize_t recv_some(int s, void *b, size_t n, struct scm_got *g)
 }
 
 /* The child's use of the five: 0 if each did what it should. */
+/* The sixth: the parent's open of /proc/<our pid>/statm (Chromium's browser
+ * gives each renderer its own so): ours, read live. */
+static int use_proc(int f)
+{
+    char want[48], link[64], text[128], path[32];
+    snprintf(want, sizeof(want), "/proc/%d/statm", (int)getpid());
+    snprintf(path, sizeof(path), "/proc/self/fd/%d", f);
+    ssize_t n = readlink(path, link, sizeof(link) - 1);
+    if (n != (ssize_t)strlen(want) || memcmp(link, want, (size_t)n))
+        return 1;
+    unsigned long size = 0;
+    n = pread(f, text, sizeof(text) - 1, 0);
+    if (n <= 0)
+        return 2;
+    text[n] = '\0';
+    return sscanf(text, "%lu", &size) == 1 && size > 0 ? 0 : 3;
+}
+
 static int use_five(const int *f)
 {
     char buf[8];
@@ -105,11 +125,14 @@ int pt_child_scm(void)
     const int s = 3;
     struct scm_got g = { .n = 0 };
     char k = 0;
-    if (recv_some(s, &k, 1, &g) != 1 || k != 'K' || g.n != 5 || g.flags)
+    if (recv_some(s, &k, 1, &g) != 1 || k != 'K' || g.n != 6 || g.flags)
         return 10;
     int bad = use_five(g.fds);
     if (bad)
         return 20 + bad;
+    bad = use_proc(g.fds[5]);
+    if (bad)
+        return 60 + bad;
     scm_close_got(&g);
     uint8_t *b = malloc(65536);
     size_t got = 0;
@@ -158,8 +181,13 @@ void scm_mojo(void)
     CHECK(m2 >= 0 && write(m2, "big", 3) == 3);
     int f = open(SELF, O_RDONLY | O_CLOEXEC), z = open("/dev/zero", O_RDONLY | O_CLOEXEC);
     CHECK(f >= 0 && lseek(f, 1, SEEK_SET) == 1 && z >= 0);
-    const int five[] = { p[1], m, f, z, q[1] };
-    CHECK(send_all(s[0], (const uint8_t *)"K", 1, five, 5));
+    char statm[32];   /* the child's own, opened here: Chromium's browser and renderer */
+    snprintf(statm, sizeof(statm), "/proc/%d/statm", (int)pid);
+    int sm = open(statm, O_RDONLY | O_CLOEXEC);
+    CHECK(sm >= 0);
+    const int six[] = { p[1], m, f, z, q[1], sm };
+    CHECK(send_all(s[0], (const uint8_t *)"K", 1, six, 6));
+    close(sm);
     uint8_t *big = malloc(BIG);
     for (size_t i = 0; big && i < BIG; i++)
         big[i] = pattern(i);

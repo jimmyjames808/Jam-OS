@@ -72,6 +72,19 @@
 #           the DOM dumps, the PNGs (size, colours at a few pixels) and what
 #           the servers saw (tools/cr/headless-server.py's logs); needs
 #           openssl and an ext /data; <outdir>/headless/ has them all
+#   multi   content_shell (track CB5) with every process type its own
+#           (--no-zygote --no-sandbox: Chromium's launcher forks and execs
+#           /proc/self/exe for the GPU process, the network and storage
+#           services and the renderers), the same stick and server as
+#           shell-wl (6 GiB of QEMU memory: CR_MULTI_MEM); it loads
+#           tools/cr/multi.html by name, tools/cr/multi.txt lists the
+#           processes (the browser and at least four children), kills the
+#           renderer the way chrome://kill does (it sends itself SIGTERM),
+#           reloads with the toolbar's Refresh (a renderer again, the tab's
+#           session storage says visit 2) and closes the window (exit 0, no
+#           process left); tools/cr/multi-check.py checks the screenshots
+#           (<outdir>/multi/run/multi-{page,killed,reload}.png) and the log;
+#           about 2 minutes
 #
 # The toolchain is fetched first if it isn't there (tools/cr/toolchain.sh:
 # clang, cmake, and for `rust` Rust; gperf, which Chromium's build needs, is
@@ -258,24 +271,28 @@ case_base() {
     rm -f "$stick"
 }
 
-case_shell_wl() {
-    dir=$out/shell-wl
-    rm -rf "$dir"
-    mkdir -p "$dir"
+# shell_run <dir> <page> <script> <name> <QEMU's memory> <seconds>:
+# content_shell (the kept tree's out/jamos program: a relink, tools/cr/build.sh
+# start content_shell, leaves it there) with its pak and Inter on a 2 GiB
+# stick, <page> served by name (www.jam:8000, netpeer's DNS and relay to an
+# http.server here) as page.html, and QEMU booted from the stick with a USB
+# keyboard and mouse, <script> fed to the shell (the log and screenshots in
+# <dir>/run/<name>.*). Returns qemu-test.sh's status, or 2 with <dir>/result
+# written when a piece is missing. The shell-wl and multi cases.
+shell_run() {
+    dir=$1
     cr=${CR_DIR:-$HOME/cr}
     version=$(awk '$1 == "version" { print $2 }' ports/chromium/recipe)
     srcdir=$cr/$version/src/chromium-$version
-    # The kept tree's own out/jamos: a relink (tools/cr/build.sh start
-    # content_shell) leaves the program there, not in the stage.
     for f in "$srcdir/out/jamos/content_shell" "$srcdir/out/jamos/content_shell.pak"; do
-        [ -f "$f" ] || { echo "FAIL (no $f: tools/cr/build.sh start content_shell builds it)" > "$dir/result"; return; }
+        [ -f "$f" ] || { echo "FAIL (no $f: tools/cr/build.sh start content_shell builds it)" > "$dir/result"; return 2; }
     done
     image=${PORTS_TEST_IMAGE:-build/jamos.img}
-    [ -f "$image" ] || { echo "FAIL (no $image: make image first)" > "$dir/result"; return; }
+    [ -f "$image" ] || { echo "FAIL (no $image: make image first)" > "$dir/result"; return 2; }
     if [ "$(python3 tools/mkimage.py --data-fs "$image")" = ext ] &&
        ! make -s build/host/jamext > "$dir/jamext.out" 2>&1; then
         echo "FAIL (no build/host/jamext, see $dir/jamext.out)" > "$dir/result"
-        return
+        return 2
     fi
     # Inter and a fontconfig file naming it, beside the program; the page
     # in a directory of its own, served by name (www.jam, netpeer's DNS).
@@ -284,7 +301,7 @@ case_shell_wl() {
     printf '%s\n' '<?xml version="1.0"?>' '<!DOCTYPE fontconfig SYSTEM "fonts.dtd">' \
         '<fontconfig><dir>/data/cr/out/jamos/fonts</dir><cachedir>/data/cr/tmp/fccache</cachedir></fontconfig>' \
         > "$dir/add/out/jamos/fonts/fonts.conf"
-    cp tools/cr/shell-wl.html "$dir/web/page.html"
+    cp "$2" "$dir/web/page.html"
     stick=$dir/shell-stick.img
     if ! python3 tools/cr/base-stick.py --data-mib 2048 --programs content_shell \
          --program-dir "$srcdir/out/jamos" --out-files content_shell.pak --source-files "" \
@@ -292,20 +309,30 @@ case_shell_wl() {
          > "$dir/stick.out" 2>&1; then
         cat "$dir/stick.out"
         echo "FAIL (the stick, see $dir/stick.out)" > "$dir/result"
-        return
+        return 2
     fi
     sed 's/^/cr-test: /' "$dir/stick.out"
     # shellcheck disable=SC2046 # one word, the port
-    set -- $(python3 tools/netpeer.py --free-ports 1)
-    python3 -m http.server "$1" --bind 127.0.0.1 --directory "$dir/web" > "$dir/http.log" 2>&1 &
+    set -- "$@" $(python3 tools/netpeer.py --free-ports 1)
+    python3 -m http.server "$7" --bind 127.0.0.1 --directory "$dir/web" > "$dir/http.log" 2>&1 &
     hpid=$!
-    QEMU_IMAGE=$stick QEMU_INPUT=tools/cr/shell-wl.txt QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} \
-        QEMU_MEM=${QEMU_MEM:-4G} QEMU_NET=1 QEMU_NET_PEER="--tcp-relay 8000:$1" \
+    QEMU_IMAGE=$stick QEMU_INPUT=$3 QEMU_TIMEOUT=${QEMU_TIMEOUT:-$6} \
+        QEMU_MEM=${QEMU_MEM:-$5} QEMU_NET=1 QEMU_NET_PEER="--tcp-relay 8000:$7" \
         QEMU_USB="-device usb-kbd,bus=xhci.0,port=2 -device usb-mouse,bus=xhci.0,port=3" \
-        tools/qemu-test.sh "$dir/run" shell-wl shell > "$dir/qemu.out" 2>&1
+        tools/qemu-test.sh "$dir/run" "$4" shell > "$dir/qemu.out" 2>&1
     qrc=$?
     kill "$hpid" 2> /dev/null
     rm -f "$stick"
+    return $qrc
+}
+
+case_shell_wl() {
+    dir=$out/shell-wl
+    rm -rf "$dir"
+    mkdir -p "$dir"
+    shell_run "$dir" tools/cr/shell-wl.html tools/cr/shell-wl.txt shell-wl 4G 300
+    qrc=$?
+    [ $qrc = 2 ] && [ -f "$dir/result" ] && return
     # what the page said (of the text box's lines, one a key, the last)
     grep -a -o 'cb4: [^"]*' "$dir/run/shell-wl.log" 2> /dev/null | uniq |
         awk '!/^cb4: input / || /Hello Jam$/' | sed 's/^/cr-test: page said: /'
@@ -430,6 +457,34 @@ case_headless() {
     sed 's/^/cr-test: /' "$dir/check.out"
 }
 
+case_multi() {
+    dir=$out/multi
+    rm -rf "$dir"
+    mkdir -p "$dir"
+    # CR_MULTI_ARGS: one more argument for content_shell ("--v=1"), on its run
+    # line; a script with `ps -t <pid>` lines (a hang's threads) gets them
+    # named in <dir>/threads.txt.
+    sed "s|@ARGS@|${CR_MULTI_ARGS:---v=0}|" tools/cr/multi.txt > "$dir/multi.txt"
+    shell_run "$dir" tools/cr/multi.html "$dir/multi.txt" multi "${CR_MULTI_MEM:-6G}" 600
+    qrc=$?
+    [ $qrc = 2 ] && [ -f "$dir/result" ] && return
+    grep -a -o 'cb5: [^"]*' "$dir/run/multi.log" 2> /dev/null | uniq | sed 's/^/cr-test: page said: /'
+    if grep -a -q "threads: process" "$dir/run/multi.log" 2> /dev/null; then
+        python3 tools/symbolize-threads.py "$dir/run/multi.log" "$srcdir/out/jamos/content_shell" \
+            > "$dir/threads.txt" 2>&1
+    fi
+    if [ $qrc -ne 0 ]; then
+        echo "FAIL (the script: $(grep 'serial-feed: .*: no ' "$dir/qemu.out" | tail -1 | sed 's/^serial-feed: //'), see $dir/run/)" > "$dir/result"
+        return
+    fi
+    if python3 tools/cr/multi-check.py "$dir/run" > "$dir/check.out" 2>&1; then
+        echo PASS > "$dir/result"
+    else
+        echo "FAIL (the checks, see $dir/check.out)" > "$dir/result"
+    fi
+    sed 's/^/cr-test: /' "$dir/check.out"
+}
+
 for c in "$@"; do
     case $c in
     hello) case_hello ;;
@@ -437,7 +492,8 @@ for c in "$@"; do
     base) case_base ;;
     shell-wl) case_shell_wl ;;
     headless) case_headless ;;
-    *) echo "cr-test: no case $c (hello, rust, base, shell-wl, headless)" >&2
+    multi) case_multi ;;
+    *) echo "cr-test: no case $c (hello, rust, base, shell-wl, headless, multi)" >&2
        mkdir -p "$out/$c"
        echo "FAIL (no such case)" > "$out/$c/result" ;;
     esac

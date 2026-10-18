@@ -334,6 +334,22 @@ long proc_readlink(const struct path *p, char *buf, size_t size);
 const char *proc_exe(void);
 /* Is abs (clean) /proc/self/exe, or /proc/<our pid>/exe? */
 bool proc_is_exe(const char *abs);
+/* The path a /proc directory's descriptor stands for ("/proc/<pid>/task"),
+ * where the *at calls given it start (path.c): true and base written, or
+ * false if d is no /proc directory. A name under it is looked up afresh
+ * each time, as a path. */
+bool proc_dir_base(struct fd_desc *d, char base[PATH_BYTES]);
+/* A /proc file's path as it was opened ("/proc/<pid>/stat"), or NULL if
+ * d is no /proc file (for log lines). */
+const char *proc_file_path(struct fd_desc *d);
+/* A /proc file as a socketpair's record (POSIXFDS_PROC: its path, the pid
+ * in it, so the receiver opens the same process's file where its own /proc
+ * has it: Chromium's browser gives each renderer its own statm and status);
+ * -EINVAL for any other kind. A child's hand-over leaves /proc files out
+ * (no .give). proc_adopt is the kind's adopter: our /proc's file at that
+ * path, read only, or -errno (ENOENT for a process ours doesn't show). */
+long proc_give(struct fd_desc *d, struct fd_given *out);
+fd_adopt_fn proc_adopt;
 
 /* ---- dir.c ------------------------------------------------------------------------ */
 

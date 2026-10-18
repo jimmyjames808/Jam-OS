@@ -24,6 +24,13 @@
 #         lets ninja go on past N failures (to see many at once); targets
 #         replace base_unittests, test_child_process, headless_shell and content_shell
 #         (ports/chromium/build.sh reads them from ~/cr/<version>/build.conf).
+#         A target linked against an older libc is linked again, and every
+#         run that builds installs out/jamos's programs into the stage
+#         (~/cr/ports/chromium/stage/lib/chromium, stripped: what cr-test.sh's
+#         base case runs), so a relink refreshes it; the summary's "stage:"
+#         lines say each program's build id and whether it is linked against
+#         this run's libc (the stage's file times are the port's fixed
+#         epoch, not the link's: they never tell).
 # status  whether a build runs, its run, its time so far, ninja's last
 #         progress line, the peak memory so far; at the end its result,
 #         time, peak memory and disk
@@ -109,9 +116,34 @@ run() {
             END { if (n) printf "ninja: %d steps in %d min of wall time, %d min of steps\n", n, (max - min) / 60000, s / 60000 }' \
             "$kept"/src/*/out/jamos/.ninja_log 2> /dev/null
         echo "disk: $(du -sh "$kept/src" 2> /dev/null | cut -f1) source and output ($(du -sh "$kept"/src/*/out 2> /dev/null | cut -f1) of it the output), the toolchains $(du -sh "${JAMOS_TOOLCHAINS:-$HOME/.cache/jamos/toolchains}" 2> /dev/null | cut -f1)"
+        [ $rc = 0 ] && stage_lines
     } > "$run/summary.txt"
     cat "$run/summary.txt"
     exit $rc
+}
+
+# The stage's programs after a run that built (every run installs out/jamos's
+# programs there, stripped, so a relink refreshes it), one line each: its
+# build id (the same as out/jamos's program's; the stage's file times are
+# the port's fixed epoch, never the link's, so they can't tell) and whether
+# this run linked it against its libc (out/jamos/<program>.links against
+# links.now, ports/chromium/build.sh's): one that wasn't among the targets
+# keeps an older link.
+stage_lines() {
+    local out p f id now readelf
+    out=$(ls -1d "$kept"/src/*/out/jamos 2> /dev/null | head -1)
+    readelf=$("$here/tools/cr/toolchain.sh" --dir clang 2> /dev/null)/bin/llvm-readelf
+    now=$(cat "$out/links.now" 2> /dev/null)
+    for p in base_unittests test_child_process headless_shell content_shell; do
+        f=$ports/chromium/stage/lib/chromium/$p
+        [ -f "$f" ] || continue
+        id=$("$readelf" -n "$f" 2> /dev/null | awk '/Build ID:/ { print $NF }')
+        if [ -n "$now" ] && [ "$(cat "$out/$p.links" 2> /dev/null)" = "$now" ]; then
+            echo "stage: $p, build id ${id:-?}: linked against this run's libc"
+        else
+            echo "stage: $p, build id ${id:-?}: an OLDER link (not a target: tools/cr/build.sh start $p)"
+        fi
+    done
 }
 
 # sample <run>: every 5 s, the build's processes' memory (its session's:

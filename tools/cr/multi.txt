@@ -1,0 +1,79 @@
+# cr-test.sh's multi script (docs/CR-PLAN.md, track CB5): content_shell
+# with every process type its own (--no-zygote --no-sandbox: Chromium's
+# launcher forks and execs /proc/self/exe for the GPU process, the network
+# and storage services and the renderers) loads tools/cr/multi.html by name
+# (netpeer's DNS and relay to the case's http.server). The page says
+# "cb5: loaded <w>x<h> visit <n>" as a console line, which the browser
+# logs on its stderr (the shell's terminal, mirrored to the serial port).
+#
+# content_shell runs in the background (&), so the shell can list the
+# processes; its window takes the focus when it opens, so the script
+# clicks the terminal (the left half, at 1280x800) before typing there
+# and the window before typing there. The renderer is killed the way
+# Chromium's own debug URL does it: chrome://kill typed in the address bar
+# (the renderer sends itself SIGTERM); the browser sees it go, and the
+# toolbar's Refresh starts a renderer again, whose page says visit 2 (the
+# tab's session storage, kept by the storage service). Super+Q closes the
+# window; content_shell exits 0 (`jobs` says "done (exit 0)") and no
+# process of it is left (the last `ps`).
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send export TMPDIR=/data/cr/tmp HOME=/data/cr/tmp FONTCONFIG_FILE=/data/cr/out/jamos/fonts/fonts.conf JAMOS_ENOSYS_LOG=1
+wait {prompt}
+send H=/data/cr/out/jamos/content_shell; U=http://www.jam:8000/page.html; X='@ARGS@'
+wait {prompt}
+send run $H --no-sandbox --no-zygote --disable-gpu --js-flags=--jitless --enable-logging=stderr $X $U &
+wait 180 cb5: loaded 623x695 visit 1
+sleep 2
+shot multi-page
+# the processes: the browser and its children (GPU, network, storage, renderer)
+pointer 300 400
+monitor mouse_button 1
+monitor mouse_button 0
+sleep 1
+send ps
+seen 20 re:\d+ +\d+ +\d+ +\w+ +[0-9:.]+ +[0-9.]+ \w+ +content_shell\r\n( +\d+ [^\r]*  content_shell\r\n){4}
+wait {prompt}
+# chrome://kill in the address bar: the renderer kills itself (SIGTERM)
+pointer 1100 68
+monitor mouse_button 1
+monitor mouse_button 0
+sleep 1
+monitor sendkey ctrl-a
+sleep 1
+type chrome://kill\r
+wait 30 Intentionally terminating current process
+sleep 5
+shot multi-killed
+# Refresh: a renderer again, the page again
+pointer 833 68
+monitor mouse_button 1
+monitor mouse_button 0
+wait 120 cb5: loaded 623x695 visit 2
+sleep 2
+shot multi-reload
+pointer 300 400
+monitor mouse_button 1
+monitor mouse_button 0
+sleep 1
+send ps
+wait {prompt}
+# Super+Q on the window: content_shell ends, and every process of it
+pointer 1000 600
+monitor mouse_button 1
+monitor mouse_button 0
+sleep 1
+monitor sendkey meta_l-q
+sleep 25
+pointer 300 400
+monitor mouse_button 1
+monitor mouse_button 0
+sleep 1
+send jobs
+wait 30 re:\[1\] +\d+ +done \(exit 0\) +content_shell
+wait {prompt}
+send ps
+wait {prompt}
+send reboot -f
+wait 60 reboot: resetting

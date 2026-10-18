@@ -178,6 +178,8 @@ static long base_of(long dirfd, char base[PATH_BYTES])
     if (dir_is(d)) {
         memcpy(base, d->ops->path(d), strlen(d->ops->path(d)) + 1);
         r = 0;
+    } else if (proc_dir_base(d, base)) {
+        r = 0;
     }
     fd_put(d);
     return r;

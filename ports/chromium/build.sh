@@ -74,6 +74,9 @@ build() {
     # links it again.
     links=$(cat "$CC" "$top/tools/jamos-clang" "$JAMOS_SYSROOT"/lib/posix.ld \
                 "$JAMOS_SYSROOT"/lib/*.a "$JAMOS_SYSROOT"/lib/*.o | sha256sum | cut -c1-16)
+    # This build's, for tools/cr/build.sh's summary: a program whose
+    # <target>.links differs was linked by an earlier build (not a target).
+    echo "$links" > "$out/links.now"
     for t in $targets; do
         if [ "$(cat "$out/$t.links" 2> /dev/null)" != "$links" ]; then
             rm -f "$out/$t"

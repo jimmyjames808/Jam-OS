@@ -2453,6 +2453,108 @@ Chromium.
   tools/cr/shell-wl.html, the script tools/cr/shell-wl.txt and
   tools/cr/shell-wl-check.py on the three screenshots. About 80 s.
 
+#### CB5 notes (2026-10-19)
+
+Track CB5 (multi-process `content_shell`): Chromium's own launcher,
+unpatched, with `--no-zygote --no-sandbox --disable-gpu
+--js-flags=--jitless`, no `--single-process`. Five stops, each a gap in
+the layer; no Chromium patch, no kernel change.
+
+- **Stop 1: the GPU process died at start.** `sandbox/linux/services/
+  thread_helpers.cc:57 Check failed: ENOENT == errno: Not a directory`
+  (signal 6), from `GpuInit::InitializeAndStartSandbox`: the sandbox's
+  set-up runs with `--no-sandbox` too, stops the watchdog thread and
+  waits, with `fstatat(proc_fd, "self/task/<tid>/")` on an `open("/proc")`,
+  for the thread's directory to go. path.c took only a mount's directory as
+  the start of an `*at` call (ENOTDIR for /proc's). Fixed (da623b1d): a
+  /proc directory's descriptor stands for its path (procfs.c's
+  `proc_dir_base`), and /proc/self/task's link count is 2 and one a thread,
+  as Linux's (`IsSingleThreaded` reads it). The browser counted the GPU
+  process's death a minute late: the crash handler's in-process
+  symbolising of a 340 MB program.
+- **Stop 2: a utility process never connected** ("Terminating current
+  process after 15 seconds with no connection"), and the log said `posix:
+  sendmsg: a descriptor of kind directory can't cross this socket`: the
+  storage service's leveldb fsyncs its directories through the browser,
+  which opens them and sends the descriptor over Mojo; the refused send
+  broke the channel. Fixed (2d67cc9a): a directory crosses a socketpair by
+  its path and getdents position, opened again in the receiver's namespace,
+  as the hand-over gives one to a child (until directory handles:
+  DIRHANDLE-PLAN). The refusal's log line now names the descriptor's path.
+- **Stop 3: the renderer said nothing.** The window and toolbar drew (the
+  GPU process's software compositor, its buffers to the browser and on to
+  the Wayland compositor) but the page area stayed empty and the browser
+  logged "renderer unresponsive": `sendmsg: a descriptor of kind /proc file
+  /proc/36/statm can't cross`. The browser opens each renderer's
+  /proc/<pid>/statm and status and sends them to it (blink's
+  `MemoryUsageMonitorLinux`). Fixed (19f00760, ABI stamp: hand-over kind 14
+  `POSIXFDS_PROC`; 7edf206e): a /proc file crosses by its path, the pid in
+  it, and the receiver opens its own /proc's file there (the renderer's own,
+  read live). A child's hand-over still leaves /proc files out, so the
+  format's version stays 2.
+- **Stop 4: the renderer waited for its fonts forever.** The title came
+  ("Jam OS page") but the main thread sat in a sync Mojo call,
+  `FontDataServiceProxy::MatchFamilyName` (and with
+  `--disable-features=FontDataServiceLinux`, the older font service's), the
+  browser idle. A scratch trace of every socketpair send and receive
+  (JAMOS_SP_TRACE, not committed) showed one send from the browser to each
+  renderer failing with ENOENT, and the browser never writing to that
+  renderer again (Mojo takes a failed sendmsg for a broken channel): the
+  swap file the browser gives each renderer (`ProvideSwapFileForRenderer`:
+  `base::File` with `FLAG_DELETE_ON_CLOSE`, unlinked right after its open)
+  had no path to open again, and a file's give on extfs opens its path.
+  Fixed (b6f09dea): a give whose path is gone moves our own open (channel
+  and buffer) to the receiver when its access is no wider than the
+  description's, as fat's one writer is lent to a child; the sender's open
+  is lent for good (its own later use of the file is an error: Chromium
+  closes it at the send).
+- **The page draws** (build/t/m10, batch 19062854; staged to the main
+  session): the browser, the GPU process (software output), the network
+  service, the storage service and two renderers (a spare one), six
+  processes, `ps` showing each forked child in a job of its own under the
+  browser's (FJ1); the page by name through the network service, Inter text,
+  its console line logged by the browser.
+- **Kill and reload.** content_shell has no "Aw, Snap!" (that is chrome's
+  sad tab, CB6): a killed renderer leaves its view blank. Nothing outside
+  the browser can kill a grandchild here (the shell's `kill` takes its own
+  jobs and init's services; there is no kill by pid), so the test kills it
+  the way Chromium's own debug URL does: `chrome://kill` typed in the
+  address bar makes the renderer `kill(getpid(), SIGTERM)`. The browser
+  reaps it (waitpid: killed by SIGTERM), its view goes blank, and Refresh
+  starts a renderer again (fork and exec in place) whose page says visit 2
+  (the tab's session storage, kept by the storage service).
+- **Quitting.** Super+Q closes the window; the browser stops its children
+  (some exit at once, the rest within about ten seconds) and exits 0, no
+  process of it left. The shell's notice of a background program's end
+  comes at its next prompt.
+- **The stage** (owner's item for this track): a relink did refresh it
+  already (every run that builds installs out/jamos's programs into
+  ~/cr/ports/chromium/stage, stripped), but the stage's file times are the
+  port's fixed epoch, so a look at them said nothing changed. The run's
+  summary (`tools/cr/build.sh status|wait`) now gives each stage program's
+  build id and whether it is linked against that run's libc (a9576ac9).
+- Logged and not needed: `landlock_create_ruleset` ENOSYS, the f2fs
+  `F2FS_IOC_GET_FEATURES` ioctl (0x8004f50c) ENOTTY from sqlite or leveldb,
+  /proc/<child>/task (the browser setting its children's priorities; a
+  child's directory has no task), `/proc/sys/kernel/yama/ptrace_scope`.
+- **The test**: cr-test.sh's `multi` case (TESTING.md): the shell-wl
+  stick and server (cr-test.sh's `shell_run`, shared now), the page
+  tools/cr/multi.html, the script tools/cr/multi.txt (the processes listed,
+  chrome://kill, Refresh, Super+Q, `ps` after) and
+  tools/cr/multi-check.py on three screenshots and the log. About 2
+  minutes, 6 GiB of QEMU memory.
+- **Runs** (programs relinked against this branch's libc, run
+  20261019-064751: all four stage programs "linked against this run's
+  libc"): batch 19070239, 16 runs: make check, the init run, ktest at 4,
+  basic, cmds, commands, kdump save, posix scm, procinfo, fork, execinfo,
+  signal, cr-test shell-wl and multi PASS; files and posix-files FAIL on a
+  boot race, not this track's: posix-files typed `posixtest files-many`
+  before init had mounted /data (PASS alone, 19070749), and files.txt
+  line 234 waits for "init: /tmp: in memory", which an ext /data mounted
+  before init's /tmp thread first looks never prints (init goes straight
+  to the view of /data/tmp): it failed twice under load, then PASS twice
+  alone (19071309).
+
 #### IC (2026-10-18)
 
 Track IC (branch `ic-inotify-base`, [INOTIFY-PLAN](INOTIFY-PLAN.md#ic-notes)):
@@ -3595,7 +3697,7 @@ ports, recipes, tests, netstack's caps, the audio API and the docs.
 | **CB2. `base_unittests` (CR-b)** | cr-test.sh's `base` case; the run with the ENOSYS log on; every failure triaged to a layer (a finding for its track) or fixed in the recipe's test list with a reason | cr-test.sh's case, ports/chromium's test list | CB1, CL1 (stage 1 at least), CL3, CP1 | cr-test.sh `base` | Sonnet 5.5 |
 | **CB3. `headless_shell` (CR-c1)** | the single-process headless screenshot of a local page and an HTTPS page; the findings; built 2026-10-18, see "CB3 notes" | cr-test.sh's `headless` case, the recipe's args | CB2; CL1 stage 2 (V8's cage); M13's F1b (the `.pak` maps) | cr-test.sh `headless` | Sonnet 5.5 |
 | **CB4. `content_shell` on Wayland (CR-c2)** | `content_shell --single-process` on the desktop; keys, mouse, wheel, a `<select>` list; screenshots; built 2026-10-18, see "CB4 notes" | cr-test.sh's `shell-wl` case | CB3; G2's GS1, GC1b, GT (GC3 for the list), GP2 | cr-test.sh `shell-wl` | Sonnet 5.5 |
-| **CB5. Multi-process (CR-c3)** | Chromium's own launcher, unpatched, on libc's `fork` and `exec` in place ([FORK-PLAN](FORK-PLAN.md)); `--no-zygote --no-sandbox`, every process type started and talking over Mojo; a renderer killed | cr-test.sh's `multi` case | CB4; CU1, CS1, CL2, CN1; M12.5's PX; FORK-PLAN's FK1 to FK3 and FL1a to FL4 | cr-test.sh `multi` | **Opus** (processes cross) |
+| **CB5. Multi-process (CR-c3)** (built 2026-10-19, see "CB5 notes") | Chromium's own launcher, unpatched, on libc's `fork` and `exec` in place ([FORK-PLAN](FORK-PLAN.md)); `--no-zygote --no-sandbox`, every process type started and talking over Mojo; a renderer killed | cr-test.sh's `multi` case | CB4; CU1, CS1, CL2, CN1; M12.5's PX; FORK-PLAN's FK1 to FK3 and FL1a to FL4 | cr-test.sh `multi` | **Opus** (processes cross) |
 | **RL. Record locks across processes** (D9; built 2026-10-18: [RL notes](#rl-notes)) | `fcntl`'s, `F_OFD_` and `flock` locks kept by the file service per inode (`file.lock`, `getlock`, `lockowner`), so SQLite and leveldb in Chrome's processes meet each other's; `EDEADLK`; released at close and at a process's death; kept across extfs's restarts | `abi/idl/file.idl` (its own commit), `user/include/rlock.h` and `user/lib/rlock.c` (new), `user/services/extfs/locks.c` (new) and its lines in extfs's `main.c`, `files.c`, `adopt.c`, `request.c`, `state.c`, `keeper.c`, `extfs.h`; libc's `reclock.c` (new) and its lines in `dup.c`, `fd.c`, `file.c`, `files.h`, `kinds.h` | IE2 (extfs's queue) | posixtest `locks`; utest `extfs_locks`, `extfs_restart_locks`, `fs_no_locks`; `tools/extfs-svc-test.sh`; base's `FileLockingTest` (7) after a relink | **Opus** |
 | **CB6. `chrome` (CR-d)** | the `chrome` target, its args, its package (programs, paks, licences, initial preferences: Q4), the profile on `/jam`, the singleton on CU2; `pkg install chromium` | ports/chromium (the target's lines), cr-test.sh's `chrome` case | CB5; GC2, GC3, CU2, CA1 (sound), M13.6 (its tracks in section 16), M13.7's `pkg` and PO13 | cr-test.sh `chrome`; the PC check | Sonnet 5.5 |
 | **PO13. The package area on `/jam`** (built: [M13.7's PO13 notes](M13.7-PLAN.md#po13-notes)) | M13.7's prefix on `/jam` (after M13.6), the guard on it, big packages (a 250 MB program: staged files on `/jam`, init's hashing in steps) | M13.7's files named in its plan's PO5 and PO6 notes (the prefix constant, the guard's line for extfs) | M13.7's PO5 and PO6; M13.6's U4 and U8 | tools/pkg-test.sh (PO8, to come) with a big package on an ext test disk | Sonnet 5.5 |

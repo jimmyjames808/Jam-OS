@@ -154,7 +154,7 @@ enum {
 /* What crosses a socketpair: every kind the hand-over passes but the
  * ones fdpass.h names, a memfd with all its description's rights. */
 static const struct fdpass_policy sp_policy = {
-    .kinds = FDPASS_MEMFD | FDPASS_CHANNEL | FDPASS_FILE | FDPASS_NODE,
+    .kinds = FDPASS_MEMFD | FDPASS_CHANNEL | FDPASS_FILE | FDPASS_NODE | FDPASS_DIR,
     .memfd_rights = RIGHT_SAME,
 };
 

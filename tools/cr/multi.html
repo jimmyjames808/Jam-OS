@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<!-- cr-test.sh's multi page (docs/CR-PLAN.md, CB5): content_shell, every
+     process type its own, loads it by name and says, as a console line
+     that the browser logs, "cb5: loaded <width>x<height> visit <n>": n
+     counts the loads in this tab's session storage (the storage service's,
+     a process of its own), so the load after a renderer was killed and the
+     page reloaded says visit 2. The places are fixed (the test looks at
+     them): the red box at (40, 40) 320x140 on a dark teal ground. -->
+<html><head><meta charset="utf-8"><title>Jam OS page</title>
+<style>
+body { margin: 0; background: #0f4c5c; font-family: Inter, sans-serif; color: #fff }
+#box { position: fixed; left: 40px; top: 40px; width: 320px; height: 140px; background: #e94560 }
+#said { position: fixed; left: 40px; top: 200px; font-size: 20px; color: #f5d76e }
+</style></head>
+<body>
+<div id="box"></div>
+<div id="said">Hello from Jam OS</div>
+<script>
+addEventListener("load", function () {
+    var n = 1;
+    try {
+        n = Number(sessionStorage.getItem("visits") || 0) + 1;
+        sessionStorage.setItem("visits", String(n));
+    } catch (e) {
+        n = "?";
+    }
+    var what = "loaded " + innerWidth + "x" + innerHeight + " visit " + n;
+    console.log("cb5: " + what);
+    document.getElementById("said").textContent = what;
+});
+</script>
+</body></html>
