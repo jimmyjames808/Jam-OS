@@ -241,24 +241,28 @@ case_base() {
     rm -f "$stick"
 }
 
-case_shell_wl() {
-    dir=$out/shell-wl
-    rm -rf "$dir"
-    mkdir -p "$dir"
+# shell_run <dir> <page> <script> <name> <QEMU's memory> <seconds>:
+# content_shell (the kept tree's out/jamos program: a relink, tools/cr/build.sh
+# start content_shell, leaves it there) with its pak and Inter on a 2 GiB
+# stick, <page> served by name (www.jam:8000, netpeer's DNS and relay to an
+# http.server here) as page.html, and QEMU booted from the stick with a USB
+# keyboard and mouse, <script> fed to the shell (the log and screenshots in
+# <dir>/run/<name>.*). Returns qemu-test.sh's status, or 2 with <dir>/result
+# written when a piece is missing. The shell-wl case.
+shell_run() {
+    dir=$1
     cr=${CR_DIR:-$HOME/cr}
     version=$(awk '$1 == "version" { print $2 }' ports/chromium/recipe)
     srcdir=$cr/$version/src/chromium-$version
-    # The kept tree's own out/jamos: a relink (tools/cr/build.sh start
-    # content_shell) leaves the program there, not in the stage.
     for f in "$srcdir/out/jamos/content_shell" "$srcdir/out/jamos/content_shell.pak"; do
-        [ -f "$f" ] || { echo "FAIL (no $f: tools/cr/build.sh start content_shell builds it)" > "$dir/result"; return; }
+        [ -f "$f" ] || { echo "FAIL (no $f: tools/cr/build.sh start content_shell builds it)" > "$dir/result"; return 2; }
     done
     image=${PORTS_TEST_IMAGE:-build/jamos.img}
-    [ -f "$image" ] || { echo "FAIL (no $image: make image first)" > "$dir/result"; return; }
+    [ -f "$image" ] || { echo "FAIL (no $image: make image first)" > "$dir/result"; return 2; }
     if [ "$(python3 tools/mkimage.py --data-fs "$image")" = ext ] &&
        ! make -s build/host/jamext > "$dir/jamext.out" 2>&1; then
         echo "FAIL (no build/host/jamext, see $dir/jamext.out)" > "$dir/result"
-        return
+        return 2
     fi
     # Inter and a fontconfig file naming it, beside the program; the page
     # in a directory of its own, served by name (www.jam, netpeer's DNS).
@@ -267,7 +271,7 @@ case_shell_wl() {
     printf '%s\n' '<?xml version="1.0"?>' '<!DOCTYPE fontconfig SYSTEM "fonts.dtd">' \
         '<fontconfig><dir>/data/cr/out/jamos/fonts</dir><cachedir>/data/cr/tmp/fccache</cachedir></fontconfig>' \
         > "$dir/add/out/jamos/fonts/fonts.conf"
-    cp tools/cr/shell-wl.html "$dir/web/page.html"
+    cp "$2" "$dir/web/page.html"
     stick=$dir/shell-stick.img
     if ! python3 tools/cr/base-stick.py --data-mib 2048 --programs content_shell \
          --program-dir "$srcdir/out/jamos" --out-files content_shell.pak --source-files "" \
@@ -275,20 +279,30 @@ case_shell_wl() {
          > "$dir/stick.out" 2>&1; then
         cat "$dir/stick.out"
         echo "FAIL (the stick, see $dir/stick.out)" > "$dir/result"
-        return
+        return 2
     fi
     sed 's/^/cr-test: /' "$dir/stick.out"
     # shellcheck disable=SC2046 # one word, the port
-    set -- $(python3 tools/netpeer.py --free-ports 1)
-    python3 -m http.server "$1" --bind 127.0.0.1 --directory "$dir/web" > "$dir/http.log" 2>&1 &
+    set -- "$@" $(python3 tools/netpeer.py --free-ports 1)
+    python3 -m http.server "$7" --bind 127.0.0.1 --directory "$dir/web" > "$dir/http.log" 2>&1 &
     hpid=$!
-    QEMU_IMAGE=$stick QEMU_INPUT=tools/cr/shell-wl.txt QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} \
-        QEMU_MEM=${QEMU_MEM:-4G} QEMU_NET=1 QEMU_NET_PEER="--tcp-relay 8000:$1" \
+    QEMU_IMAGE=$stick QEMU_INPUT=$3 QEMU_TIMEOUT=${QEMU_TIMEOUT:-$6} \
+        QEMU_MEM=${QEMU_MEM:-$5} QEMU_NET=1 QEMU_NET_PEER="--tcp-relay 8000:$7" \
         QEMU_USB="-device usb-kbd,bus=xhci.0,port=2 -device usb-mouse,bus=xhci.0,port=3" \
-        tools/qemu-test.sh "$dir/run" shell-wl shell > "$dir/qemu.out" 2>&1
+        tools/qemu-test.sh "$dir/run" "$4" shell > "$dir/qemu.out" 2>&1
     qrc=$?
     kill "$hpid" 2> /dev/null
     rm -f "$stick"
+    return $qrc
+}
+
+case_shell_wl() {
+    dir=$out/shell-wl
+    rm -rf "$dir"
+    mkdir -p "$dir"
+    shell_run "$dir" tools/cr/shell-wl.html tools/cr/shell-wl.txt shell-wl 4G 300
+    qrc=$?
+    [ $qrc = 2 ] && [ -f "$dir/result" ] && return
     # what the page said (of the text box's lines, one a key, the last)
     grep -a -o 'cb4: [^"]*' "$dir/run/shell-wl.log" 2> /dev/null | uniq |
         awk '!/^cb4: input / || /Hello Jam$/' | sed 's/^/cr-test: page said: /'
