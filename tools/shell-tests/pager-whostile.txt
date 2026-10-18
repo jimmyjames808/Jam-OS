@@ -4,11 +4,12 @@
 # boot's log and the disk it leaves). `pagertest rec swarm` (rec.c's header)
 # maps /jam/rh.bin writable, forks, and stores 512 records of 5000 bytes
 # with four threads in each process, each writer msyncing every 4 of its
-# records, in the background; meanwhile `storm` copies src.bin to dst.bin on
-# /jam and kills extfs-jam five times a second. Every msync must say OK and
-# every record be whole through the mapping, then by read and by a new
-# mapping; then QEMU quits (no stop of the volume, no sync) and the host
-# finds every record whole on the disk: all were acknowledged.
+# records, 100 rounds (round r with salt 41 + r), while a thread of its own
+# kills extfs-jam every 200 ms (initctl.kill, as storm does). Every msync
+# must say OK and every record be whole through the mapping with the last
+# round's salt (140), then by read and by a new mapping; then QEMU quits
+# (no stop of the volume, no sync) and the host finds every record whole on
+# the disk: all were acknowledged.
 # As in cmds.txt, a marker built from $T (h) never appears in the typed
 # line, only when the command before it ran.
 wait 120 Jam OS shell
@@ -21,14 +22,10 @@ seen 60 init: /jam mounted
 send pagertest rec make /jam/rh.bin 512 5000; echo h0-$T=$?
 wait 60 h0-h=0
 wait {prompt}
-send pagertest rec swarm /jam/rh.bin 512 41 4 5000 &
+send pagertest rec swarm /jam/rh.bin 512 41 4 5000 100 extfs-jam 200; echo sw-$T=$?
+wait 900 sw-h=0
 wait {prompt}
-seen 60 pagertest: rec: swarm /jam/rh.bin: 8 writers in 2 processes
-send storm /jam/src.bin /jam/dst.bin 5 extfs-jam; echo st-$T=$?
-wait 900 st-h=0
-wait {prompt}
-seen 900 pagertest: rec: swarm /jam/rh.bin: 512 whole of 512
-send pagertest rec check /jam/rh.bin 512 41 512 5000; echo h1-$T=$?
+send pagertest rec check /jam/rh.bin 512 140 512 5000; echo h1-$T=$?
 wait 120 pagertest: rec: check /jam/rh.bin: PASS
 wait h1-h=0
 wait {prompt}

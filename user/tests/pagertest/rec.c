@@ -29,25 +29,29 @@
  *       the file's size is right and the first <acked> records are whole,
  *       none foreign, seen by read and then by a new mapping; the others
  *       may be whole, zero or torn.
- *   pagertest rec swarm <path> <records> <salt> <batch> <rsz>
+ *   pagertest rec swarm <path> <records> <salt> <batch> <rsz> <rounds> [<service> <ms>]
  *       eight writers on one mapping of the file (docs/WRITEMAP-REVIEW.md's
  *       hostile test): it is mapped writable, then the process forks, and
  *       each process stores with four threads, writer w the records w,
  *       w + 8, ... (pages shared between writers: a record crosses them),
  *       the child through the mapping it inherited (an msync through a
- *       handle of its own: the same VMO). Each writer's msync (vmo_sync
- *       with the wait) covers its records since its last one, every
- *       <batch> of its records and after its last, and must be OK: what
- *       its pager's deaths do is the test's (tools/pager-test.sh's
- *       whostile kills it five times a second meanwhile). Then every
- *       record must be whole through the mapping: "pagertest: rec: swarm
- *       <path>: <k> whole of <records>: PASS".
+ *       handle of its own: the same VMO), <rounds> times over, round r
+ *       with the salt <salt> + r. Each writer's msync (vmo_sync with the
+ *       wait) covers its records since its last one, every <batch> of its
+ *       records and at the end of each round, and must be OK. With a
+ *       service, a thread of the parent's kills it every <ms> ms
+ *       meanwhile (initctl.kill, as `storm` does: then one call on the
+ *       file's mount, so each successor answers once), until both
+ *       processes' writers are done. Then every record must be whole
+ *       through the mapping with the last round's salt: "pagertest: rec:
+ *       swarm <path>: <k> whole of <records> ...: PASS".
  *
  * Exit codes: 0 done and right; 1 a record wrong; 2 the file could not be
  * made, opened or mapped (or the fork failed); 3 the cue never came; 4 an
  * msync or a store's system call failed (or the forked writers' process
  * ended badly). */
 #include <fs_idl.h>
+#include <idl/initctl.h>
 #include <os.h>
 #include "pagertest.h"
 
@@ -364,41 +368,75 @@ struct swarmer {
 };
 
 static struct {
-    uint8_t *data;   /* the mapping the stores go through */
-    handle_t vmo;    /* a handle of this process's to its VMO, for the msyncs */
-    uint64_t n, salt, batch, len;
-    uint32_t rsz;
+    const char *path;
+    uint8_t    *data;   /* the mapping the stores go through */
+    handle_t    vmo;    /* a handle of this process's to its VMO, for the msyncs */
+    uint64_t    n, salt, batch, len, rounds;
+    uint32_t    rsz;
 } sw;
 static struct swarmer swr[SWARM_THREADS];
-static uint8_t sw_stack[SWARM_THREADS][32768] __attribute__((aligned(16)));
+static uint8_t sw_stack[SWARM_THREADS + 1][32768] __attribute__((aligned(16)));
 static uint8_t sw_rec[SWARM_THREADS][SWARM_REC_MAX];
 
 static void swarm_writer(void *arg)
 {
     struct swarmer *s = arg;
     uint8_t *rec = sw_rec[s - swr];
-    uint64_t from = s->id;   /* the first record not yet msynced */
-    for (uint64_t i = s->id; i < sw.n; i += SWARM_WRITERS) {
-        record(rec, sw.rsz, i, sw.salt);
-        memcpy(sw.data + i * sw.rsz, rec, sw.rsz);
-        s->stored++;
-        if (s->stored % sw.batch && i + SWARM_WRITERS < sw.n)
-            continue;
-        uint64_t lo = (from * sw.rsz) & ~(uint64_t)(PAGE_SIZE - 1), hi = up((i + 1) * sw.rsz);
-        if (hi > sw.len)
-            hi = sw.len;
-        uint64_t t = now();
-        status_t st = jam_vmo_sync(sw.vmo, lo, hi - lo, VMO_SYNC_WAIT);
-        t = now() - t;
-        s->slow = t > s->slow ? t : s->slow;
-        s->syncs++;
+    for (uint64_t round = 0; round < sw.rounds; round++) {
+        uint64_t from = s->id, k = 0;   /* the first record not yet msynced; this round's */
+        for (uint64_t i = s->id; i < sw.n; i += SWARM_WRITERS) {
+            record(rec, sw.rsz, i, sw.salt + round);
+            memcpy(sw.data + i * sw.rsz, rec, sw.rsz);
+            s->stored++;
+            if (++k % sw.batch && i + SWARM_WRITERS < sw.n)
+                continue;
+            uint64_t lo = (from * sw.rsz) & ~(uint64_t)(PAGE_SIZE - 1), hi = up((i + 1) * sw.rsz);
+            if (hi > sw.len)
+                hi = sw.len;
+            uint64_t t = now();
+            status_t st = jam_vmo_sync(sw.vmo, lo, hi - lo, VMO_SYNC_WAIT);
+            t = now() - t;
+            s->slow = t > s->slow ? t : s->slow;
+            s->syncs++;
+            if (st != OK) {
+                s->st = st;
+                s->at = i;
+                return;
+            }
+            s->acked = s->stored;
+            from = i + SWARM_WRITERS;
+        }
+    }
+}
+
+/* The parent's killer: the service killed every `period` until `stop`. */
+static struct {
+    handle_t    ctl;     /* init's control channel */
+    const char *name;
+    uint64_t    period;
+    bool        stop;    /* (atomic) */
+    uint64_t    kills, worst, total;   /* kill to the successor's first answer, ns */
+    status_t    st;      /* a kill that failed, or OK */
+} sk;
+
+static void swarm_killer(void *arg)
+{
+    (void)arg;
+    while (!__atomic_load_n(&sk.stop, __ATOMIC_ACQUIRE)) {
+        uint64_t t0 = now(), koid = 0;
+        status_t st = initctl_kill_until(sk.ctl, t0 + 20 * NS_PER_S, sk.name,
+                                         (uint32_t)strlen(sk.name), &koid);
         if (st != OK) {
-            s->st = st;
-            s->at = i;
+            sk.st = st;
             return;
         }
-        s->acked = s->stored;
-        from = i + SWARM_WRITERS;
+        (void)fs_stat(sw.path, NULL, NULL, NULL);   /* the successor answers once */
+        uint64_t took = now() - t0;
+        sk.kills++;
+        sk.total += took;
+        sk.worst = took > sk.worst ? took : sk.worst;
+        if (now() < t0 + sk.period)
+            jam_sleep_until(t0 + sk.period);
     }
 }
 
@@ -435,7 +473,42 @@ static int swarm_run(unsigned base)
     return rc;
 }
 
-static int rec_swarm(const char *path, uint64_t n, uint64_t salt, uint64_t batch, uint32_t rsz)
+/* With sk.name: the killer thread started (in the parent, after the fork). */
+static bool killer_start(handle_t *th)
+{
+    sk.ctl = svc_get(SVC_INIT);
+    if (!sk.ctl) {
+        printf("pagertest: rec: swarm: no init control channel to kill %s with\n", sk.name);
+        return false;
+    }
+    if (thread_spawn("swarm-kill", swarm_killer, NULL, sw_stack[SWARM_THREADS],
+                     sizeof(sw_stack[SWARM_THREADS]), th) != OK) {
+        printf("pagertest: rec: swarm: no killer thread\n");
+        return false;
+    }
+    return true;
+}
+
+/* The killer stopped: OK if every kill was made. */
+static bool killer_stop(handle_t th)
+{
+    signals_t seen;
+    __atomic_store_n(&sk.stop, true, __ATOMIC_RELEASE);
+    (void)jam_object_wait_one(th, SIG_TERMINATED, DEADLINE_NEVER, &seen);
+    jam_handle_close(th);
+    if (sk.st != OK) {
+        printf("pagertest: rec: swarm: a kill of %s failed: %s\n", sk.name, status_str(sk.st));
+        return false;
+    }
+    printf("pagertest: rec: swarm: %lu kills of %s, kill to first answer mean %lu ms, worst %lu "
+           "ms\n", (unsigned long)sk.kills, sk.name,
+           (unsigned long)(sk.kills ? sk.total / sk.kills / NS_PER_MS : 0),
+           (unsigned long)(sk.worst / NS_PER_MS));
+    return true;
+}
+
+static int rec_swarm(const char *path, uint64_t n, uint64_t salt, uint64_t batch, uint32_t rsz,
+                     uint64_t rounds, const char *kill, uint64_t period_ms)
 {
     struct wmap w;
     status_t st = wmap_open(path, &w);
@@ -450,6 +523,7 @@ static int rec_swarm(const char *path, uint64_t n, uint64_t salt, uint64_t batch
         return 2;
     }
     (void)crc32((const uint8_t *)"", 0);   /* its table made before the threads */
+    sw.path = path;
     sw.data = w.data;
     sw.vmo = w.vmo;
     sw.n = n;
@@ -457,8 +531,13 @@ static int rec_swarm(const char *path, uint64_t n, uint64_t salt, uint64_t batch
     sw.batch = batch;
     sw.rsz = rsz;
     sw.len = w.len;
+    sw.rounds = rounds;
+    sk.name = kill;
+    sk.period = period_ms * NS_PER_MS;
     printf("pagertest: rec: swarm %s: %u writers in 2 processes, %lu records of %u bytes, "
-           "msync every %lu\n", path, SWARM_WRITERS, (unsigned long)n, rsz, (unsigned long)batch);
+           "%lu rounds, msync every %lu%s%s\n", path, SWARM_WRITERS, (unsigned long)n, rsz,
+           (unsigned long)rounds, (unsigned long)batch, kill ? ", killing " : "",
+           kill ? kill : "");
     uint64_t t0 = now();
     int64_t kid = jam_fork(NULL);
     if (kid < 0) {
@@ -480,7 +559,8 @@ static int rec_swarm(const char *path, uint64_t n, uint64_t salt, uint64_t batch
         wmap_close(&own);
         return rc;
     }
-    int rc = swarm_run(0);
+    handle_t killer = HANDLE_INVALID;
+    int rc = kill && !killer_start(&killer) ? 2 : swarm_run(0);
     struct process_info info;
     st = spawn_wait((handle_t)kid, SWARM_WAIT, &info);
     if (st != OK || info.killed || info.exit_code) {
@@ -489,13 +569,16 @@ static int rec_swarm(const char *path, uint64_t n, uint64_t salt, uint64_t batch
         rc = rc ? rc : 4;
     }
     jam_handle_close((handle_t)kid);
+    if (killer && !killer_stop(killer))
+        rc = rc ? rc : 2;
     if (rc == 0) {
         unsigned kinds[R_KINDS];
         uint64_t bad;
-        count_mapped(w.data, n, salt, rsz, kinds, &bad);
+        count_mapped(w.data, n, salt + rounds - 1, rsz, kinds, &bad);
         bool ok = kinds[R_WHOLE] == n;
-        printf("pagertest: rec: swarm %s: %u whole of %lu in %lu ms: %s\n", path, kinds[R_WHOLE],
-               (unsigned long)n, (unsigned long)((now() - t0) / NS_PER_MS), ok ? "PASS" : "FAIL");
+        printf("pagertest: rec: swarm %s: %u whole of %lu (salt %lu) in %lu ms: %s\n", path,
+               kinds[R_WHOLE], (unsigned long)n, (unsigned long)(salt + rounds - 1),
+               (unsigned long)((now() - t0) / NS_PER_MS), ok ? "PASS" : "FAIL");
         rc = ok ? 0 : 1;
     }
     wmap_close(&w);
@@ -518,13 +601,16 @@ int pagertest_rec(int argc, char **argv)
         number(argv[4], &acked) && acked <= n && number(argv[5], &rsz) && rsz >= 32 &&
         rsz <= REC_MAX)
         return rec_check(argv[1], n, salt, acked, (uint32_t)rsz);
-    if (argc == 6 && !strcmp(argv[0], "swarm") && number(argv[2], &n) && number(argv[3], &salt) &&
-        number(argv[4], &batch) && batch >= 1 && number(argv[5], &rsz) && rsz >= 32 &&
-        rsz <= SWARM_REC_MAX)
-        return rec_swarm(argv[1], n, salt, batch, (uint32_t)rsz);
+    uint64_t rounds = 0, ms = 0;
+    if ((argc == 7 || argc == 9) && !strcmp(argv[0], "swarm") && number(argv[2], &n) &&
+        number(argv[3], &salt) && number(argv[4], &batch) && batch >= 1 &&
+        number(argv[5], &rsz) && rsz >= 32 && rsz <= SWARM_REC_MAX && number(argv[6], &rounds) &&
+        rounds >= 1 && (argc == 7 || (number(argv[8], &ms) && ms >= 1)))
+        return rec_swarm(argv[1], n, salt, batch, (uint32_t)rsz, rounds,
+                         argc == 9 ? argv[7] : NULL, ms);
     printf("usage: pagertest rec make <path> <records> <rsz> | "
            "put <path> <records> <salt> msync|nosync <batch> <rsz> [cue] | "
            "check <path> <records> <salt> <acked> <rsz> | "
-           "swarm <path> <records> <salt> <batch> <rsz>\n");
+           "swarm <path> <records> <salt> <batch> <rsz> <rounds> [<service> <ms>]\n");
     return 64;
 }
