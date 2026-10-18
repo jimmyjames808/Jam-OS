@@ -571,7 +571,7 @@ Each about one agent-hour; WE2 about one and a half.
 | **WE1. extfs: the map and one cache** | 2.1 and 2.2: `MAP_WRITE`, every shared VMO writable, keys from the inode, `FIND`, the sizes of a found VMO, rights reduced for `MAP_READ`; `pager_write` in `write` and truncate (the tails), `PEEK` in `read`; Q7 both ways; the ordering argument in pager.c's header; built, see "WE1 notes" | `user/services/extfs/pager.c`, `user/services/extfs/files.c`, `user/services/extfs/fsops.c`, `user/services/extfs/extfs.h`, `user/services/extfs/adopt.c` (the slots' lookups), `abi/idl/file.idl` (`MAP_WRITE`, the comments) and its generated header, a new utest file user/tests/utest/extfs_wmap.c | WK1 merged; U9 merged (it works in extfs); no other track in extfs | utest `extfs_wmap`: a store seen by `read`, by a second mapping and a second process; `write` and a store on one page both kept; truncate shrink and grow with the tails zero; a map after the first mapper unmapped (its pages still dirty) finds the same VMO; `MAP_WRITE` refused without `FS_WRITE`, through a read-only view and on a file mapped to run; `MAP_EXEC` refused while a writable map lives; `extfs_map` and `extfs_restart_pager` unchanged; init run | 1 | **Opus** |
 | **WE2. extfs: write-back** | 2.3 to 2.7: serving `PAGER_REQ_WRITEBACK`, a transaction a batch of runs, the size clip, holes and unwritten extents in ordered mode, the times, the age check, `file.sync` and `fs.sync`, the orderly stop, errors kept per slot, a fresh start's keys; test powers `die=wback:<n>`; extcheck's cut storm gains a write-back step; built, see "WE2 notes" | `user/services/extfs/pager.c` (or a new user/services/extfs/wback.c beside it), `user/services/extfs/main.c` (the age check), `user/services/extfs/fsops.c` (sync), `user/services/extfs/test.c`, `user/services/extfs/extfs.h`, `tools/extcheck.c` (the storm's new step), new utest files for `extfs_wback` and `extfs_restart_wback` | WE1, WK3 merged | utest `extfs_wback` (stores written by `msync`, by `fsync`, by age; a store over a hole and in an unwritten extent; a full volume's error at the next sync), `extfs_restart_wback` (a death at every step of 2.6, the data right after each); `tools/extfs-svc-test.sh` (every disk `e2fsck -fn` clean); extcheck's cut storm (`make check`); init run | 1.5 | **Opus** |
 | **WL1. libc** | section 3; built, see "WL1 notes" | `user/posix/sys/file.c` (`map_file`), `user/posix/sys/mem.c` (`lx_msync`, the share flag), `user/posix/sys/files.h`, posixtest's `user/posix/test/mmap.c` (a new section `mmap-wshared`), tools/shell-tests' new posix-mmap-wshared.txt and its case in `tools/posix-mmap-test.sh` | WE1 and WK3 merged (beside WE2: different files); after or before FL2 (both edit `mem.c`: one after the other) | posixtest `mmap-wshared` on ext (`MMAP_DATA=ext`): a store seen by `read` and `pread`, by a second mapping, by a child; `write` and stores on one page both kept; `mprotect` adding write on an `O_RDWR` mapping, `EACCES` on `O_RDONLY`; `msync` `MS_SYNC` and `MS_ASYNC` return 0; truncate's tail zero; on FAT `ENODEV` and `EACCES` as today; the `mmap` and `coherent` cases on FAT and ext unchanged; shell scripts basic, cmds, commands, files | 1 | Sonnet 5.5 |
-| **WT1. The end-to-end tests** | the scripts below, and Chromium's tests through CB2's harness | `tools/pager-test.sh` (new cases), pagertest (`user/tests/pagertest/`, a new mode that stores records with sequence numbers and checksums), `tools/cr-test.sh`'s `base` filter list (a line) | WE2 and WL1 merged; CB2 merged and `/tmp` on ext (U7b or U11a) for the Chromium case | pager-test.sh `wmsync`: records stored and `msync`ed, `kill extfs-jam`, read back through `read` and a new mapping; again with no `msync` (the successor writes them); again across a reboot (`msync`ed records there). `wcut`: QEMU stopped dead during a store-and-`msync` storm, booted again: every acknowledged record whole, Linux's `e2fsck -fn` clean. `wpress`: a mapping twice the budget stored through (the writer throttled, done, every page right) while another program reads another file at speed; then with extfs held by a test power (`hang=wback`): the writer killed at the deadline with the line, the reader, the shell and `/jam` fine. cr-test.sh `base` with `MemoryMappedFileTest.*`, `FilePersistentMemoryAllocatorTest.*` and `PersistentHistogramAllocatorTest.*` (*unsure* of the exact suite names: CB2's list says) | 1 | Sonnet 5.5 |
+| **WT1. The end-to-end tests** | the scripts below, and Chromium's tests through CB2's harness | `tools/pager-test.sh` (new cases), pagertest (`user/tests/pagertest/`, a new mode that stores records with sequence numbers and checksums), `tools/cr-test.sh`'s `base` filter list (a line) | WE2 and WL1 merged; CB2 merged and `/tmp` on ext (U7b or U11a) for the Chromium case | pager-test.sh `wmsync`: records stored and `msync`ed, `kill extfs-jam`, read back through `read` and a new mapping; again with no `msync` (the successor writes them); again across a reboot (`msync`ed records there). `wcut`: QEMU stopped dead during a store-and-`msync` storm, booted again: every acknowledged record whole, Linux's `e2fsck -fn` clean. `wpress`: a mapping twice the budget stored through (the writer throttled, done, every page right) while another program reads another file at speed; then with extfs held by a test power (`hang=wback`): the writer killed at the deadline with the line, the reader, the shell and `/jam` fine. cr-test.sh `base` with `MemoryMappedFileTest.*`, `FilePersistentMemoryAllocatorTest.*` and `PersistentHistogramAllocatorTest.*` (*unsure* of the exact suite names: CB2's list says); built, see "WT1 notes" (the held `wpress` is utest `extfs_wpress`; the 8 writable-mapping tests of `base` pass and are off the skip list, on the stage's programs, not relinked by the track) | 1 | Sonnet 5.5 |
 | **WR. Independent review and fix** | everything above, findings first (a new docs/WRITEMAP-REVIEW.md), then High and Medium fixed with a test each: can a store be lost (begin's protect against the copy, the request's stamps, AGAIN), can a writer or the kernel wait forever, can a dirty page be evicted, does a view's refusal hold for every way to a writable handle, is an acknowledged `msync` safe across every death | the files its fixes need | WK1 to WT1 merged | its own; hostile: 8 writers on one file from two processes with fork and a pager killed every 200 ms; full ktest 4 and 8; soak 4 | 1.5 | **Opus** |
 | **WJ. The join** | ARCHITECTURE (Memory: writable pager VMOs and the hold; Storage: write-back), M12.5-PLAN's and M13-PLAN's lines that say pager pages are always clean, TESTING (the new cases and ktests), ROADMAP, CR-PLAN, HISTORY; this plan deleted when HISTORY covers it | the docs | WR | `make check` | 0.5 | Sonnet 5.5 |
 
@@ -1032,6 +1032,144 @@ user/posix/test/mmap.c; tools/posix-mmap-test.sh case `wshared`):
   that differ only in `MMAP_DATA` need a second argument (their name), or
   their serial sockets clash and one boot's monitor never answers.
 
+### WT1 notes
+
+What WR starts from (`pagertest rec` in user/tests/pagertest/rec.c,
+`tools/pagerrec.py`, `tools/pager-test.sh`'s `wmsync`, `wcut` and `wpress`,
+`tools/shell-tests/pager-w*.txt`, utest `extfs_wpress`, posixtest
+`spawn-wmap`):
+
+- **`pagertest rec`**: records of `rsz` bytes (5000 in `wmsync` and `wcut`,
+  so a record crosses pages; 4096 in `wpress`) that say who they are: a tag,
+  the record's number, the run's salt, a body from a mixer run on the two,
+  and a CRC-32. `rec make` cuts the file to `n * rsz` zeros; `rec put`
+  maps it `FILE_MAP_WRITE` (the native call, `file_map_within`), stores
+  record after record, and with `msync` calls `vmo_sync` with the wait
+  every `batch` records and prints `acked <k>` when it returns OK (the
+  first k records are safe); with a cue file it holds the mapping after
+  the last store and then looks at every record again through it; `rec
+  check` judges the file by `file_read` and by a new mapping: the size, the
+  first `acked` records whole, none foreign (a byte that is neither the
+  record's nor zero); the others may be whole, zero or torn. Records are
+  never stored twice in a run, so a cut tears only the record being
+  stored, which nobody was told was safe. `tools/pagerrec.py` is the same
+  judgement on the host, over the file as `debugfs cat` reads it out of the
+  volume (Linux's view of the disk), and makes the same records (checked
+  byte for byte against the C: five numbers, one with a 4099-byte record).
+- **`wmsync`** (one drive, two boots, `jam_drive`'s 64 MiB volume): A, 200
+  records msynced every 10 while `kill extfs-jam` runs with the writer
+  holding its mapping: the successor serves the file whole by read and by a
+  new mapping, and the writer's own mapping shows the same after the
+  cue; B, 200 records never msynced, extfs killed with all of them dirty:
+  read and a new mapping show every record at once, and 16 s later (the age
+  write-back: the writer is gone, the VMO kept by its dirty pages) they
+  are on the disk; C, 200 records msynced and then QEMU's monitor `quit` (no
+  stop of the volume, no `sync`). Then Linux's `e2fsck -fy` of a copy of
+  the disk exits 0 and `debugfs` holds all three files whole, boot 2 finds
+  them whole by read and by a mapping, and `e2fsck -fn` after is clean.
+  PASS the first time it ran.
+- **`wcut`**: QEMU `kill -9` at `WCUT_POINTS` (default `3 8 20 45 90 160`
+  Writes into the storm) of 2000 records stored with an `msync` every 4,
+  the drive throttled to 30 Writes a second (extfs-test.sh's cut case's
+  trace and kill, copied: `find_qemu`, `nwrites`, `boot_cut`; it uses 2 a
+  second for its first ten points, which a boot that first makes a file
+  can't live with: the first run of this case waited out 120 s at every
+  early point). Boot k checks the file cut by boot k - 1 (Jam OS recovers
+  the volume at the mount; `acked` from that boot's log) by read and by a
+  mapping, makes its own file and storms. After each cut Linux replays the
+  journal of a copy (`e2fsck -fy` exits 0) and every acknowledged record is
+  whole there. First complete run: 6 cuts of 6 points, acked 4, 4, 8, 20,
+  44 and 76 records, the disk holding 4 to 76 whole records and, at the
+  last point, one torn record beyond the acknowledged ones (a write-back
+  cut in the middle: the case wants nothing worse than that); `e2fsck -fn`
+  clean at the end.
+- **`wpress`** (`QEMU_MEM=512M`: the pager's budget 32 MiB, so 8 MiB may be
+  dirty): `w.bin`, 64 MiB (twice the budget), stored through three times in
+  a row with no `msync` (salts 21, 22, 23) while `pagertest hash` reads a
+  48 MiB file on the same volume twenty times through a mapping. Each
+  sweep takes 460 to 660 ms (the slowest single store 4 to 10 ms, one
+  write-back's wait: unthrottled it would be some 20 ms, and the limit
+  forbids it by construction); the writer finishes, every page is right by
+  read, by a mapping and on the disk, the reader's hashes are the host's,
+  its slowest pass 430 ms, nothing is killed. *What it does not show*: that
+  the writer waited (the kernel keeps no count a program can read; the
+  evidence is the time and the limit).
+- **The hung half is a utest, `extfs_wpress`** (it runs in the init run;
+  "skipped" where the shell starts utest, which has no pager power): a test
+  power reaches only whoever starts extfs, and in a shell boot that is
+  volumes, so the plan's `wpress` with `hang=wback` is a utest that starts
+  two extfs over RAM disks with pagers made by utest. The power is
+  `hang=wback:<n>` (extfs/test.c; a line in wback.c): the n-th run a
+  write-back begins, extfs sleeps until it is killed, its pages still
+  writing. One extfs has it and a pager of 256 pages answering within 5 s;
+  `pagertest rec put` stores 2 MiB (512 records of 4096 bytes, twice the
+  budget) with no `msync`: it is throttled at the 64-page limit and killed
+  5.0 s later with the kernel's line `page fault: the file's pager didn't
+  answer` (the process info says a fault killed it); at the same time
+  `pagertest hash` of a file on the second extfs ends 0 (80 ms), that
+  file is whole after (`rec check`), and utest, the other extfs and the
+  disk it leaves (saved for `e2fsck`) go on. `extfs-svc.txt` now expects 29
+  passed (the case says skipped there).
+- **`spawn-wmap`** (posixtest, run by `posix-mmap-test.sh`'s `spawn` case
+  after the allowed run of the copy of posixtest on `/data`): `posix_spawn`
+  and a forked child's `execve` of a file with an `O_RDWR` `MAP_SHARED`
+  mapping alive (`PROT_READ`; the descriptor open, then closed) are
+  `ETXTBSY`; after `munmap` the file runs again at once (26 ms: extfs hears
+  of the VMO's end by its request; the test retries for 15 s).
+- **Runs.** Batch 18113132 (first try; the PC overloaded, 22 runs): init,
+  kt4, cmds, files, mm-wshared, mm-spawn, pg-plumb, -map, -budget, -kill,
+  -exec, -write, -pull, -jam, -jstorm, -wmsync and -wpress PASS (init has
+  `extfs_wpress`: the writer killed after 5,003 ms with the kernel's line,
+  the reader 80 ms); basic and kd-save rerun-PASS (load watchdog); its
+  wcut (the 2 a second throttle) and a-extfs (the old count) were cancelled
+  and run again: batch 18125637 pg-wcut PASS (6 of 6 cuts); a-extfs
+  `extfs_watch_order` failed once and batch 18125955 a-extfs PASS (29
+  passed); sh-commands failed on the 150 s cap in 18113132 (twice) and
+  18125637 and PASSes with `QEMU_TIMEOUT=300` (18125955, 152 s).
+  Batches 18102418 and 18111516 were the first and a diagnostic run
+  (mm-spawn and wpress PASS with `spawn-wmap`).
+- **For WR**: the case that would catch a lost acknowledged `msync` is
+  `wcut` (raise `WCUT_POINTS` and the record count for a longer storm;
+  each point costs two boots' worth, one); `wmsync`'s B is the only run
+  that has the successor write stores by age after a kill; `wpress` cannot
+  tell that the writer waited. `tools/pagerrec.py` and `pagertest rec`
+  take the record size and salt as arguments, so a run with fork and a
+  pager killed every 200 ms is a script away.
+- **A real bug found**: none in extfs, the pager or libc. Three things the
+  runs showed that are not WT1's: `sh-commands` (the `commands` shell
+  script) needs 152 s on a quiet PC because its `utest` takes 135 s (784
+  tests), and `qemu-test.sh` gives a shell run 150 s unless `QEMU_TIMEOUT`
+  says more: it failed on the cap three times and passed with
+  `QEMU_TIMEOUT=300`; the line wants a timeout (main's pre-push list has
+  none). `extfs_watch_order` (IE1's) failed once under load at line 178
+  ("a close before another file's write") and passed on the rerun. The
+  first batch's `basic` and `kd-save` hit the load watchdog ("a CPU
+  stopped taking timer interrupts for 5 s", "a lock stayed taken") on the
+  overloaded PC and passed on rerun.
+- **Chromium's tests (`base`): all 8 pass; they are off the skip list.**
+  The four suites (`MemoryMappedFileTest`, `FilePersistentMemoryAllocatorTest`,
+  `PersistentHistogramAllocatorTest`, `PersistentMemoryAllocatorTest`; 35
+  tests) on an ext `/data`, once with `CR_BASE_ALL=1` (the listed tests run:
+  batch 18130245, 35 OK) and once on the shortened list (batch 18130446, 35
+  OK, 53 and 93 s), in one runlist line: `cr-wmap  CR_BASE_ONLY="MemoryMappedFileTest
+  FilePersistentMemoryAllocatorTest PersistentHistogramAllocatorTest
+  PersistentMemoryAllocatorTest" tools/cr-test.sh build/t/cr-wmap base`
+  (`CR_BASE_ONLY` takes suite names, not `Suite.*`). The 8
+  (`FilePersistentMemoryAllocatorTest.AcceptableTest` and `.ExtendTest`,
+  `MemoryMappedFileTest.ExtendableFile` and `.WriteableFile`,
+  `PersistentHistogramAllocatorTest.CreateSpareFile`, `.CreateWithFile` and
+  `.MovePersistentFile`, `PersistentMemoryAllocatorTest.TruncateTest`) are
+  off tools/cr/base_unittests.skip (219 to 211) and on
+  base_unittests.fat.skip (a FAT `/data` has no writable shared mapping;
+  not measured there). *The programs were not relinked by this track*: the
+  stage's `base_unittests` (76,956,088 bytes, linked 10:06 that day, four
+  minutes after WL1 merged at 10:02, so by all signs with its libc) was
+  used as it stood. `tools/cr/build.sh start base_unittests
+  test_child_process` relinks nothing (ninja does not see the sysroot's
+  libc), BM1's way (removing the two programs from the kept tree's
+  `out/jamos` first) was refused to the track by the permission check, and
+  no other way was tried.
+
 ## 6. Tests
 
 | What | Where |
@@ -1042,7 +1180,9 @@ user/posix/test/mmap.c; tools/posix-mmap-test.sh case `wshared`):
 | Shared-write coherence through libc | posixtest `mmap-wshared` (`tools/posix-mmap-test.sh`, `MMAP_DATA=ext`) |
 | `msync`, then extfs killed, then read back | `tools/pager-test.sh` `wmsync` |
 | A crash mid-write-back, then `e2fsck` clean | `tools/pager-test.sh` `wcut` |
-| Eviction and the limit under memory pressure, a hung pager | `tools/pager-test.sh` `wpress` |
+| Eviction and the limit under memory pressure | `tools/pager-test.sh` `wpress` |
+| A hung pager: the writer killed at the deadline, others fine | utest `extfs_wpress` (the `hang=wback` power; init run) |
+| A file with a writable mapping can't be run | posixtest `spawn-wmap` (`tools/posix-mmap-test.sh`, `spawn`) |
 | Chromium's `MemoryMappedFile` and persistent allocator tests | `tools/cr-test.sh` `base` (CB2's harness) |
 | FAT unchanged | posixtest `mmap` on FAT; `tools/pager-test.sh` fat cases |
 

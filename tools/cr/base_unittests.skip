@@ -111,16 +111,6 @@ FileUtilTest.DeleteDeep
 [musl] fdopen(-1, "w") returns a FILE (musl does not check the descriptor), and the test expects null: the same on Alpine, a test to leave out on any musl build
 FileUtilTest.FileToFILE
 
-[fs] a writable shared mapping of a /data file (MemoryMappedFile READ_WRITE, extend, truncate) fails on ext too (WE1: extfs's write-back is not built); the null pointer or bad object the test then uses faults
-FilePersistentMemoryAllocatorTest.AcceptableTest
-FilePersistentMemoryAllocatorTest.ExtendTest
-MemoryMappedFileTest.ExtendableFile
-MemoryMappedFileTest.WriteableFile
-PersistentHistogramAllocatorTest.CreateSpareFile
-PersistentHistogramAllocatorTest.CreateWithFile
-PersistentHistogramAllocatorTest.MovePersistentFile
-PersistentMemoryAllocatorTest.TruncateTest
-
 [toolchain] PartitionAlloc reserves the low 4 GiB (a PROT_NONE zero segment, from 64 KiB, its own constant: nothing is read from the OS) as one mapping, and the program's image sits at 0x400000 in the way, so it keeps the 64 KiB it assumes (the layer also ignores an mmap address hint: CR-PLAN, "CBF2b notes"). ZeroSegmentInaccessibleEnd reads the segment's last byte and expects to die: nothing is reserved there ("failed to die"; the Begin test passes)
 PartitionAddressSpaceTest.ZeroSegment
 PartitionAddressSpaceTest.ZeroSegmentInaccessibleEnd
