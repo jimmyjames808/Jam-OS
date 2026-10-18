@@ -133,10 +133,11 @@ int64_t sysc_vmo_decommit(handle_t h, uint64_t offset, uint64_t len)
 }
 
 /* Writable pager VMOs' msync (docs/WRITEMAP-PLAN.md, vmo_pager_sync). */
-int64_t sysc_vmo_sync(handle_t vmo, uint64_t offset, uint64_t len, uint32_t flags)
+int64_t sysc_vmo_sync(handle_t vmo, uint64_t offset, uint64_t len, uint32_t flags, uint64_t wb_seq)
 {
     SYSC_TABLE(t);
     struct vmo *v;
+    (void)wb_seq;   /* (the sample comes in WR2's next commit: errors once per VMO till then) */
     status_t st = get_vmo(t, vmo, RIGHT_READ, &v);
     if (st != OK)
         return st;

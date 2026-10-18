@@ -230,14 +230,25 @@
 # Without VMO_SYNC_WAIT the requests are only made (a request the
 # caller's job can't pay for is left to the pager's write-back by age)
 # and the call is OK unless the VMO was cut off. OK at once for any other
-# VMO, and for a range with nothing dirty. The VMO keeps the first
-# write-back error since the last vmo_sync with VMO_SYNC_WAIT, which
-# returns it once: ERR_IO, or ERR_NO_SPACE for a full volume.
-# ERR_TIMED_OUT: the pager didn't answer in time; ERR_PEER_CLOSED: the VMO
-# was cut off its pager; ERR_CANCELED: the thread was killed;
-# ERR_OUT_OF_RANGE: past the size; ERR_INVALID_ARGS: any other flag.
+# VMO, and for a range with nothing dirty. Write-back errors (ERR_IO, or
+# ERR_NO_SPACE for a full volume) are reported once to each mapper, as
+# Linux's errseq does: the VMO keeps its first error and a count that
+# moves with each error after one was reported, and *wb_seq is the
+# caller's sample of the count (libc keeps one per mapping). With
+# VMO_SYNC_WAIT the call returns the kept error if the count moved past
+# *wb_seq, and sets *wb_seq to the count. VMO_SYNC_SAMPLE (alone; no
+# request, the range not looked at) sets *wb_seq for a new mapping: the
+# count, or the one before it while its error has been reported to
+# nobody (a mapping made after an error nobody saw still gets it, as
+# Linux's open after a failed write-back does); 0 for any other VMO.
+# wb_seq NULL: a sample taken by the call itself (the error only if
+# nobody saw it yet). ERR_TIMED_OUT: the pager didn't answer in time;
+# ERR_PEER_CLOSED: the VMO was cut off its pager; ERR_CANCELED: the
+# thread was killed (*wb_seq unchanged by these three); ERR_OUT_OF_RANGE:
+# past the size; ERR_INVALID_ARGS: any other flag, VMO_SYNC_SAMPLE with
+# another flag or with wb_seq NULL, or wb_seq not readable and writable.
 # RIGHT_READ on vmo.
-50  vmo_sync          status    handle_t vmo, uint64_t offset, uint64_t len, uint32_t flags
+50  vmo_sync          status    handle_t vmo, uint64_t offset, uint64_t len, uint32_t flags, uint32_t *wb_seq
 # vmo_make_exec: *out gets vmo's handle again with RIGHT_EXEC and without
 # RIGHT_WRITE, so its code can be mapped executable; vmo's handle is gone
 # whatever the status (closed on any error, as a send's handles). Needs

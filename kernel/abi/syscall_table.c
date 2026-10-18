@@ -167,7 +167,8 @@ static int64_t call_port_wait(const struct syscall_frame *f)
 
 static int64_t call_vmo_sync(const struct syscall_frame *f)
 {
-    return sysc_vmo_sync((handle_t)f->args[0], f->args[1], f->args[2], (uint32_t)f->args[3]);
+    return sysc_vmo_sync((handle_t)f->args[0], f->args[1], f->args[2], (uint32_t)f->args[3],
+                         f->args[4]);
 }
 
 static int64_t call_vmo_read(const struct syscall_frame *f)

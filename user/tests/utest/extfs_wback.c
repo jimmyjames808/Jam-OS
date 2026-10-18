@@ -134,7 +134,7 @@ static bool clean(void)
 
 static status_t msync(struct wf *w)
 {
-    return jam_vmo_sync(w->vmo, 0, w->len, VMO_SYNC_WAIT);
+    return jam_vmo_sync(w->vmo, 0, w->len, VMO_SYNC_WAIT, NULL);
 }
 
 static status_t fsync(struct wf *w)

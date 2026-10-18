@@ -252,7 +252,7 @@ static int rec_put(const char *path, uint64_t n, uint64_t salt, bool sync, uint6
         if (took > slow)
             slow = took;
         if (sync && ((i + 1) % batch == 0 || i + 1 == n)) {
-            st = jam_vmo_sync(w.vmo, 0, w.len, VMO_SYNC_WAIT);
+            st = jam_vmo_sync(w.vmo, 0, w.len, VMO_SYNC_WAIT, NULL);
             if (st != OK) {
                 printf("pagertest: rec: msync after record %lu: %s\n", (unsigned long)i,
                        status_str(st));
@@ -394,7 +394,7 @@ static void swarm_writer(void *arg)
             if (hi > sw.len)
                 hi = sw.len;
             uint64_t t = now();
-            status_t st = jam_vmo_sync(sw.vmo, lo, hi - lo, VMO_SYNC_WAIT);
+            status_t st = jam_vmo_sync(sw.vmo, lo, hi - lo, VMO_SYNC_WAIT, NULL);
             t = now() - t;
             s->slow = t > s->slow ? t : s->slow;
             s->syncs++;

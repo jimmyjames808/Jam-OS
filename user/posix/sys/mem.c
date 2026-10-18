@@ -597,12 +597,12 @@ static long sync_err(status_t st)
  * asked again. */
 static long sync_part(handle_t vmo, uint64_t off, uint64_t len, uint32_t flags)
 {
-    status_t st = jam_vmo_sync(vmo, off, len, flags);
+    status_t st = jam_vmo_sync(vmo, off, len, flags, NULL);
     uint64_t size = 0;
     if (st == ERR_OUT_OF_RANGE && jam_vmo_get_size(vmo, &size) == OK) {
         if (off >= size)
             return 0;
-        st = jam_vmo_sync(vmo, off, size - off < len ? size - off : len, flags);
+        st = jam_vmo_sync(vmo, off, size - off < len ? size - off : len, flags, NULL);
     }
     return sync_err(st);
 }

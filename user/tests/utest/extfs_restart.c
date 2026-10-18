@@ -658,7 +658,7 @@ bool t_extfs_restart_wback(void)
     for (uint32_t p = 0; p < WB_PAGES; p++) {
         wb_store(m, p, 30 + p);
         CHECK(!wb_clean(pager));
-        CHECK_ST(jam_vmo_sync(a, 0, sizeof(wb_want), VMO_SYNC_WAIT), OK);
+        CHECK_ST(jam_vmo_sync(a, 0, sizeof(wb_want), VMO_SYNC_WAIT, NULL), OK);
         if (!wb_deaths(p + 1) || !wb_on_disk(&f, pager, "an msync's write-back ended"))
             return false;
     }
@@ -672,7 +672,7 @@ bool t_extfs_restart_wback(void)
     uint8_t *hm = (uint8_t *)(uintptr_t)addr;
     fill(40);
     memcpy(hm + PAGE_SIZE, buf, PAGE_SIZE);
-    CHECK_ST(jam_vmo_sync(h, 0, 3 * PAGE_SIZE, VMO_SYNC_WAIT), OK);
+    CHECK_ST(jam_vmo_sync(h, 0, 3 * PAGE_SIZE, VMO_SYNC_WAIT, NULL), OK);
     if (!wb_deaths(5))
         return false;
     CHECK(wb_clean(pager));
