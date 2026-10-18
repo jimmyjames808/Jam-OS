@@ -304,8 +304,10 @@ long fd_replace(long fd, struct fd_desc *d, bool cloexec_on)
         fd_put(d);
         return -EBUSY;
     }
-    if (old)
-        fd_put(old);   /* outside the lock: its close may call its service */
+    if (old) {
+        lock_closing(old);   /* a close of its file: the fcntl locks' rule */
+        fd_put(old);         /* outside the lock: its close may call its service */
+    }
     return fd;
 }
 
@@ -321,6 +323,7 @@ long fd_close(long fd)
     lock_give(&table_lock);
     if (!d)
         return -EBADF;
+    lock_closing(d);   /* the process's fcntl locks on the file go (reclock.c) */
     fd_put(d);
     return 0;
 }

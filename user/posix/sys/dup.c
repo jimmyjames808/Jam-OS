@@ -13,17 +13,14 @@
  *                              Linux does; O_DIRECT and O_NOATIME too).
  *                              O_ASYNC is EINVAL: no SIGIO is ever sent
  *   F_GETLK, F_SETLK, F_SETLKW and the F_OFD_ ones
- *                              accepted, never enforced (one user, and
- *                              no file server keeps locks): a lock is
- *                              always granted, F_GETLK says F_UNLCK. The
- *                              lock's type and the access mode are
- *                              checked as Linux checks them
+ *                              record locks, kept by the file's service
+ *                              across processes (reclock.c)
  *   F_GETOWN, F_SETOWN and the _EX ones
  *                              no owner is kept (nothing signals one)
  *   F_GETPIPE_SZ, F_SETPIPE_SZ a pipe holds 64 KiB a message; the size
  *                              never changes
  *   F_ADD_SEALS, F_GET_SEALS   a memfd's (memfd.c)
- * Anything else is EINVAL. flock's locks are as fcntl's: checked and granted. */
+ * Anything else is EINVAL. flock's locks are reclock.c's too. */
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/file.h>
@@ -83,35 +80,14 @@ long lx_dup3(long old, long new, long flags, long d, long e, long f)
     return dup_to(old, new, flags & O_CLOEXEC);
 }
 
-/* The record locks: checked, granted, never kept. arg is the caller's
- * struct flock. */
-static long flock_cmd(struct fd_desc *d, long cmd, long arg)
-{
-    struct flock l;
-    if (uc_get(&l, (const void *)(uintptr_t)arg, sizeof(l)))
-        return -EFAULT;
-    if (l.l_whence != SEEK_SET && l.l_whence != SEEK_CUR && l.l_whence != SEEK_END)
-        return -EINVAL;
-    if (l.l_type != F_RDLCK && l.l_type != F_WRLCK && l.l_type != F_UNLCK)
-        return -EINVAL;
-    if (cmd == F_GETLK || cmd == F_OFD_GETLK) {
-        l.l_type = F_UNLCK;   /* nobody else holds one */
-        return uc_put((void *)(uintptr_t)arg, &l, sizeof(l));
-    }
-    if ((l.l_type == F_RDLCK && !fd_can_read(d)) || (l.l_type == F_WRLCK && !fd_can_write(d)))
-        return -EBADF;
-    return 0;
-}
-
-/* flock: as fcntl's locks, checked and granted, never kept. */
 long lx_flock(long fd, long op, long c, long d, long e, long f)
 {
     struct fd_desc *desc = fd_get(fd);
     if (!desc)
         return -EBADF;
+    long r = lock_flock(desc, op);
     fd_put(desc);
-    long how = op & ~(long)LOCK_NB;
-    return how == LOCK_SH || how == LOCK_EX || how == LOCK_UN ? 0 : -EINVAL;
+    return r;
 }
 
 static long setfl(struct fd_desc *d, long arg)
@@ -142,7 +118,7 @@ static long desc_cmd(struct fd_desc *d, long cmd, long arg)
     case F_SETLKW:
     case F_OFD_GETLK:
     case F_OFD_SETLK:
-    case F_OFD_SETLKW:  return flock_cmd(d, cmd, arg);
+    case F_OFD_SETLKW:  return lock_fcntl(d, cmd, arg);
     case F_GETOWN:      return 0;
     case F_SETOWN:      return 0;
     case F_GETOWN_EX:   return uc_put((void *)(uintptr_t)arg, &own, sizeof(own));

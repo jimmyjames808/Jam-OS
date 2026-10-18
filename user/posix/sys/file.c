@@ -51,6 +51,10 @@ struct file {
     bool         given;      /* given to a child on a mount with many writers, at the end of the
                               * file (given_end), and not used since: follow_given_locked */
     uint64_t     given_end;
+    uint64_t     lock_owner; /* the description's lock owner, for OFD and flock locks (0: none
+                              * yet), and its token, shared with forked children: reclock.c;
+                              * d->lock */
+    handle_t     lock_token;
 };
 
 static const struct fd_ops file_ops;
@@ -465,6 +469,8 @@ static long kind_give(struct fd_desc *d, struct fd_given *out)
 static void kind_close(struct fd_desc *d)
 {
     struct file *f = d->priv;
+    if (f->lock_token)
+        jam_handle_close(f->lock_token);   /* its last in every process: its locks go */
     if (f->o)
         fobj_put(f->o);
     jam_free(f->path);
@@ -477,14 +483,23 @@ static void kind_close(struct fd_desc *d)
  * description goes on from its offset, its own from then on (M13 Q5's A,
  * as a spawned child's). On a mount with one writer (fat) an open that
  * may write is EBUSY there while we hold ours. A file that came over a
- * socket has no path to open again: left out. */
+ * socket has no path to open again: left out. The description's lock
+ * owner (OFD and flock locks) is shared: the child's copy holds a
+ * duplicate of its token, so the locks last until the last copy closes. */
 static bool kind_fork(struct fd_desc *d, struct fd_fork *f)
 {
     struct file *fl = d->priv;
+    if (fl->lock_token && !fd_fork_child(f))
+        fd_fork_dup(f, 0, fl->lock_token);
+    else if (fl->lock_token)
+        fl->lock_token = fd_fork_take(f, 0);
     if (!fd_fork_child(f) || !fl->o)
         return true;   /* O_PATH: the path alone */
-    if (!fl->path)
+    if (!fl->path) {
+        if (fl->lock_token)
+            jam_handle_close(fl->lock_token);   /* left out: its share of the owner too */
         return false;
+    }
     fobj_fork(f, fl->o);
     return true;
 }
@@ -536,6 +551,16 @@ long file_setattr_fd(struct fd_desc *d, uint32_t mask, uint32_t mode, uint32_t u
         return f->path && !path_set(f->path, &p) && path_read_only(&p) ? -EROFS : -EPERM;
     }
     return st == OK ? 0 : file_err(f, st);
+}
+
+long file_lockref(struct fd_desc *d, struct file_lockref *out)
+{
+    struct file *f = d->priv;
+    if (d->ops != &file_ops || !f->o)
+        return -ENOTSUP;
+    *out = (struct file_lockref){ .o = f->o, .path = f->path, .owner = &f->lock_owner,
+                                  .token = &f->lock_token };
+    return 0;
 }
 
 long file_adopt_fd(const struct posixfds_fd *rec, const void *data, const handle_t *hs,

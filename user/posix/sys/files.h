@@ -246,6 +246,22 @@ bool file_desc_is(const struct fd_desc *d);
  * open (another kind, O_PATH, a mount that keeps nothing). */
 long file_setattr_fd(struct fd_desc *d, uint32_t mask, uint32_t mode, uint32_t uid, uint32_t gid,
                      int64_t atime_ns, int64_t mtime_ns);
+/* The record locks' way to a file's description (reclock.c): its open
+ * here, its path, and the description's lock owner and token (OFD and
+ * flock locks; 0 until the first such lock), which d->lock guards. 0, or
+ * -ENOTSUP: not a file with an open (another kind, O_PATH). */
+struct file_lockref {
+    struct fobj *o;
+    const char  *path;
+    uint64_t    *owner;
+    handle_t    *token;
+};
+long file_lockref(struct fd_desc *d, struct file_lockref *out);
+/* The record locks' close rule (reclock.c; fd.c's close and dup2 call it
+ * for the description a descriptor let go of): the process's fcntl locks
+ * on d's file dropped, if it holds any (Linux's: any close of the file
+ * drops them). */
+void lock_closing(struct fd_desc *d);
 /* mmap of a descriptor (mem.c): what to map. */
 #define FMAP_SHARED (1u << 0)   /* MAP_SHARED (else MAP_PRIVATE) */
 #define FMAP_WRITE  (1u << 1)   /* PROT_WRITE asked for */
