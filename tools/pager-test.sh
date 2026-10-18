@@ -103,12 +103,21 @@
 #          the pager's deadline by an extfs held with the hang=wback test
 #          power is utest's extfs_wpress: a test power reaches only whoever
 #          starts extfs.)
+#   whostile eight writers on one file from two processes while extfs-jam is
+#          killed five times a second (pager-whostile.txt; WR's hostile test,
+#          docs/WRITEMAP-REVIEW.md): `pagertest rec swarm` forks and stores
+#          512 records with four threads in each process, every writer
+#          msyncing every 4 of its records, while `storm` copies another file
+#          and kills extfs-jam: every msync OK, every record whole by the
+#          mapping, by read and by a new mapping, the copy MATCHes; then
+#          QEMU's monitor quit, Linux's e2fsck -fy of a copy of the disk
+#          exits 0 and debugfs finds every record whole.
 # QEMU_SMP and QEMU_MEM pass through (budget sets its own QEMU_MEM).
 # Usage: tools/pager-test.sh <outdir> [name]; exit 0 on PASS.
 set -eu
 . tools/datafs.sh
 out=$1 name=${2:-pager}
-cases=${PAGER_CASES:-plumb map budget kill exec write pull jam jstorm xexec wmsync wcut wpress}
+cases=${PAGER_CASES:-plumb map budget kill exec write pull jam jstorm xexec wmsync wcut wpress whostile}
 mkdir -p "$out"
 ok=1
 
@@ -847,6 +856,36 @@ case_wpress() {
     rm -f "$drive" "$drive".*
 }
 
+# The hostile case: the boot ends with the monitor's quit, so the exit
+# status of the run says nothing and its log is looked at instead.
+case_whostile() {
+    ext_tools whostile || return
+    jam_drive whostile 256 src.bin:96:41 || { ok=0; return; }
+    QEMU_TIMEOUT=${QEMU_TIMEOUT:-1200} QEMU_INPUT=tools/shell-tests/pager-whostile.txt \
+        QEMU_NVME="$drive" tools/qemu-test.sh "$out" "$name-whostile" shell \
+        > "$out/$name-whostile.out" 2>&1 || true
+    run="$out/$name-whostile.log"
+    for m in h0 st h1; do
+        want whostile 1 "^$m-h=0" "$run"
+    done
+    want whostile 8 "pagertest: rec: swarm writer [0-7]: 64 records, 64 acked, " "$run"
+    want whostile 1 "pagertest: rec: swarm /jam/rh.bin: 512 whole of 512 in [0-9]+ ms: PASS" "$run"
+    want whostile 1 "pagertest: rec: check /jam/rh.bin: PASS" "$run"
+    want whostile 1 "\[shell\] storm: 5 kills/s: .*; MATCH" "$run"
+    n=$(count "extfs /jam: restart \(killed" "$run")
+    [ "$n" -ge 10 ] || { echo "$name: whostile: $n restarts of extfs /jam carried on, wanted 10 or more"; ok=0; }
+    never whostile "extfs /jam: restart .*starting fresh|giving up" "$run"
+    no_page_errors whostile
+    # Linux's view of the disk the quit left: its journal replayed on a copy.
+    vol="$out/$name-whostile-cut.img"
+    jam_volume "$drive" 256 "$vol"
+    st=0
+    e2fsck -fy "$vol" > "$out/$name-whostile-cut.fsck" 2>&1 || st=$?
+    [ $st = 0 ] || { echo "$name: whostile: e2fsck -fy of the disk exits $st (see $out/$name-whostile-cut.fsck)"; ok=0; }
+    rec_disk whostile "$vol" rh.bin 512 41 5000 512
+    rm -f "$vol" "$drive" "$drive".*
+}
+
 for c in $cases; do
     case $c in
     plumb) case_plumb ;;
@@ -862,6 +901,7 @@ for c in $cases; do
     wmsync) case_wmsync ;;
     wcut) case_wcut ;;
     wpress) case_wpress ;;
+    whostile) case_whostile ;;
     *) echo "$name: no case called $c"; ok=0 ;;
     esac
 done
