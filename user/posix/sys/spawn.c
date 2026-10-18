@@ -160,7 +160,8 @@ static long program(const char *abs, struct program *p);
  * (SR_SELF_IMAGE: libjam's spawn gives it to every program started from a
  * VMO, a /data program's included): no file read and no approval asked
  * again, and the same pages mapped, fetched and checked once for all of
- * them; the child gets the image too, and our path as its own. Without an
+ * them; the child gets the image too (unless it is given less than our
+ * namespace: start), and our path as its own. Without an
  * image it is a boot-image program (its file, by its name) or, if it is
  * on a file system, that file as any other (/svc/exec checks its approval
  * now). A program whose file can't be named and that has no image:
@@ -425,6 +426,11 @@ static status_t start(const struct jam_spawn_req *r, const struct program *p,
         .handover = ho,
         .extra = &x,
         .nextra = 1,
+        /* A child given less than ours gets no image of our program: with
+         * it, it would count as us at /svc/exec, our approval's list
+         * as its own (init's exec.c, "who is raised"). Without, it is
+         * raised there, and its /proc/self/exe is its file's. */
+        .no_image = r->grants != NULL,
     };
     st = spawn(&a, proc);
     if (st != OK)
@@ -637,12 +643,25 @@ static int spawn_child(const struct jam_spawn_req *r, bool exec, int *res)
     return 0;
 }
 
+struct spawn_call {
+    int *pid;
+    const struct jam_spawn_req *r;
+    int e;
+};
+
+static void spawn_on(void *p)
+{
+    struct spawn_call *c = p;
+    c->e = spawn_child(c->r, false, c->pid);
+}
+
 int __jam_posix_spawn(int *pid, const struct jam_spawn_req *r)
 {
+    struct spawn_call c = { pid, r, 0 };
     struct sig_thread *q = sig_quiet_begin();   /* the layer's own: no handler runs inside */
-    int e = spawn_child(r, false, pid);
+    lx_call_stack_run(spawn_on, &c);   /* a call of ours: where calls run (a small stack's) */
     sig_quiet_end(q);
-    return e;
+    return c.e;
 }
 
 /* The caller's NULL-ended array of strings v (NULL: none) can be read,

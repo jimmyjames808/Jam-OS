@@ -1134,7 +1134,7 @@ would have failed on.
 | `posix-efault.txt` | posixtest's efault section (`run posixtest efault`) from the shell: every call the layer answers into or reads from a program's memory, given a read-only page, a `PROT_NONE` page, an unmapped address, NULL and a non-canonical address, is -1 with `EFAULT` and the process goes on ([CR-PLAN](CR-PLAN.md#cbf1-notes-2026-10-16), "CBF1 notes": the checked copies); with SIGSEGV and SIGBUS handled the handlers never run; a child with no handler gets `EFAULT`, then ends by a real fault with the kernel's `killed: page fault at rip ...` line; also in the `init` run | |
 | `posix-signal.txt` | posixtest's signal section (`run posixtest signal`) from the shell: signals in one process and between processes (B4), and a thread busy in a loop that makes no calls raised for its handler: V8's profiler's SIGPROF (a line with how many of 20 came within 1 ms and the slowest), 10,000 from a sampler thread (a line with the time each), 200 with the layer's way out from a handler made long by a test hook (every run with the loop's registers), a handler that forks on a raised thread (the child goes back to the loop), threads making quiet and plain calls, Chromium's SIGURG stack copier, SIGINT ([SIGNALS-PLAN](SIGNALS-PLAN.md#2-signals-to-a-chosen-thread), SG5); a handler at a call's boundary with the call's registers ([SG-REVIEW](SG-REVIEW.md) finding 2); also in the `init` run | |
 | `posix-unix.txt` | posixtest's unix section (`run posixtest unix`) against shell mode's broker, bin/unix (`/svc/unix`, [CR-PLAN](CR-PLAN.md#cu2-notes), "CU2 notes"): named `AF_UNIX` sockets, a listener and two connectors, bytes and a descriptor over a connection, the backlog, a socket file removed and a stale one, a 108-byte path's `getsockname` (CR-REVIEW-POSIX finding 5), a child without `/data` refused and one with `/data` read-only let in, abstract names, a child given `/svc/unix` by name binding 32 listeners at most however often it opens it (its opener is its own: CR-REVIEW-POSIX Q2; here it shares posixtest's own), `SO_PASSCRED` on a named connection (a listener's to the one it accepts, a connector's set before connect: `SCM_CREDENTIALS` both ways, CBF2a); then `ps` shows `unix`; also in the `init` run (where init starts the broker before the programs) | |
-| `posix-raw.txt` | posixtest's raw section (`run posixtest raw`) with `JAMOS_ENOSYS_LOG=1` exported: the raw Linux calls Chromium makes (`prctl`, `setpriority`, affinity, the scheduling policies, futex bitset waits) and the ENOSYS log (an unknown call, option, ioctl or path named once per process in the kernel log: `enosys: posixtest: syscall 163 (acct)`); the section counts the log's lines itself and starts children with and without the variable | `QEMU_TIMEOUT=300` |
+| `posix-raw.txt` | posixtest's raw section (`run posixtest raw`) with `JAMOS_ENOSYS_LOG=1` exported: the raw Linux calls Chromium makes (`gettid`: the first thread's the pid, another's no pid, each reached by `tgkill`; `prctl`, `setpriority`, affinity, the scheduling policies, futex bitset waits) and the ENOSYS log (an unknown call, option, ioctl or path named once per process in the kernel log: `enosys: posixtest: syscall 163 (acct)`); the section counts the log's lines itself and starts children with and without the variable | `QEMU_TIMEOUT=300` |
 | `posix-mem.txt` | posixtest's mem section alone (`posixtest mem`): mmap and its kin, brk, malloc, the big sparse reservations; and, from CBF2b ([CR-PLAN](CR-PLAN.md#cbf2b-notes-2026-10-16)): `mincore` (none, all and some of a mapping's pages resident, `EINVAL` for an unaligned start, `ENOMEM` for an unmapped range with what came before it filled in; exact per page since MC ([CR-PLAN](CR-PLAN.md#mc-notes-2026-10-18), the kernel's `vmar_resident`): one page in the middle of a mapping touched is the only one in memory (PartitionAlloc's `CheckPageInCore`), a page made `PROT_NONE` keeps its memory and one given back by `MADV_DONTNEED` doesn't, a memfd's pages are in memory in a mapping that never touched them, 5000 pages over two kernel calls, `EFAULT` for a `NULL`, read-only or out-of-range `vec` and the unmapped range's `ENOMEM` first), `MADV_REMOVE` over a memfd's and an anonymous shared mapping (zero for every holder, `EINVAL` for private memory, `ENOMEM` for an unmapped range) and `pkey_alloc`, `pkey_free` and `pkey_mprotect` without protection keys (`ENOSPC`, `EINVAL`); the files section (`posixtest files`, also in `posix-run.txt`) has `sendfile` (offsets, the offset pointer, a count cut at the end, to a socket and a pipe, a pipe or socket as input `EINVAL`) and `open(dir, O_PATH | O_DIRECTORY)`, the start section the release `uname` reports (5.10.x), the two DMI files and CBF6's `/sys/dev/block/<major>:<minor>/{removable,queue/rotational,size}` of `/boot` and `/data` (found from `st_dev`, read only, sysfs's 4096-byte size); all also in the `init` run | |
 | `posix-loop.txt` | posixtest's socket and loopback sections (`run posixtest socket loopback`) from the shell: netstack runs with no card and no address, and loopback needs neither | `QEMU_TIMEOUT=300` |
 | `posix-net.txt` | posixtest's socket and sockets sections (`run posixtest socket sockets`) against the network peer: run by `tools/posix-net-test.sh`, which sets the address and starts the peer's servers | `QEMU_NET=1` (the script) |
@@ -2455,10 +2455,29 @@ inherited); `SIGKILL`; a signal pending in us and not in the child;
 `setitimer` and a POSIX timer gone in the child and ours kept; a `SIGSEGV`
 handler with `SA_ONSTACK` run in the child on its alternate stack (its
 exception entry and kernel exception stack set again). `clone`: the raw
-call with `CLONE_PARENT_SETTID` and `CLONE_CHILD_SETTID`, its refusals
+call with `CLONE_PARENT_SETTID` and `CLONE_CHILD_SETTID` (the child's
+word its pid: its first thread's id), its refusals
 (`CLONE_VM` alone `ENOSYS`, a new stack and an unknown flag `EINVAL`);
+`CLONE_FS` by the raw call and by `clone()` as a copy of the directory
+and umask (the child's `chdir` and `umask` its own; D10); a `fork` from a
+thread that isn't the first (the child's `gettid` its pid; D1);
 `clone(fn, stack, SIGCHLD | CLONE_PARENT_SETTID, arg)` ending with fn's
-value; `vfork` (its wait: `vfork` below). `small`: `clone(fn, two pages,
+value, and one whose fn aborts ending with `SIGABRT`; both tid words at
+address 8 not stored and the clone going on (as Linux's `put_user`;
+[FORK-REVIEW-LIBC](FORK-REVIEW-LIBC.md), findings 9 and 10);
+`vfork` (its wait: `vfork` below). `stacks`: the layer's stack for calls
+on small stacks ([CR-PLAN](CR-PLAN.md#ts-2026-10-18), "TS"), each small
+stack over a guard page, in children: an `SA_ONSTACK` handler on an 8 KiB
+`sigaltstack` making path calls (`stat`, `open` with `O_CREAT`, `unlink`,
+`mkdir`, `rmdir` under a deep path, and `/proc/self/status`), from a raise
+and from a fault in its own code, `sigaltstack` inside saying
+`SS_ONSTACK`, and a second `SA_ONSTACK` handler raised inside one of its
+calls leaving its frames whole; threads on 16 KiB, `PTHREAD_STACK_MIN` and
+a stack of our own doing the same; 16 joined and 16 detached small threads
+leaving no mapping behind; a handler at a small thread's call's boundary
+making them too; and the line `a call takes N ns; N ns once a thread has a
+stack for calls, N ns with a small sigaltstack, N ns on a 16 KiB thread`.
+`small`: `clone(fn, two pages,
 SIGCHLD)` as gtest's death tests make it (a guard page below; the parent
 unmaps them at once): fn's frames on those pages, the calls that take a
 path (`stat`, `lstat`, `access`, `open`, `mkdir` and `rmdir`, `chdir` and
@@ -2524,12 +2543,13 @@ posixtest's exec section (the `init` run; `posixtest exec`;
 child execs `/proc/self/exe` (`--child-exec run <mode>`), whose checks
 report by its exit code (a failed one also writes `posixtest: exec: FAILED
 exec.c line N` to the kernel log). `same`: `getpid` and `getppid` in the new
-image are the forked child's, and `/proc/<pid>/stat`'s pid, parent, group,
+image are the forked child's (`gettid` the pid), and `/proc/<pid>/stat`'s pid, parent, group,
 session and start time read by the parent are the same before and after;
 the parent's `kill` reaches the new image's handler, and its `SIGTERM` ends
 it (`WTERMSIG`). `threads`: a thread other than the first execs; the first
 (joining it) and three more (spinning in its own code, in a condition wait,
-in a pipe read) are gone: `/proc/self/task` has one entry and the kernel
+in a pipe read) are gone: `/proc/self/task` has one entry, the pid, which
+`gettid` says too (the thread that exec'd is the first now), and the kernel
 counts two threads (the new image and its signal thread). `cloexec`: a
 pipe's write end, an eventfd and `/dev/null` with `FD_CLOEXEC` are `EBADF`
 in the new image, the pipe's reader seeing its end of file while the image

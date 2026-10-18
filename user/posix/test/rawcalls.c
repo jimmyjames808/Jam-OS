@@ -3,8 +3,10 @@
  * or failing the way Chromium tolerates, and the ENOSYS log for the ones
  * that are not there (rawlog.c, which runs first).
  *
- *   - gettid: a thread's id differs from the others', is the one tgkill
- *     takes, and stays the same;
+ *   - gettid: the first thread's id is the pid, another's differs from
+ *     it and from the parent's pid, each is the one tgkill takes (a
+ *     SIGUSR2 to each runs on that thread) and /proc/self/task names,
+ *     and stays the same;
  *   - getrandom: bytes that differ, zero length, the flags;
  *   - sched_getaffinity and sched_setaffinity: every CPU in the mask, a
  *     mask that names no CPU refused, a thread of ours and one that is
@@ -98,17 +100,48 @@ static void helper_end(struct helper *h)
 
 /* ---- gettid, getrandom ------------------------------------------------------------- */
 
+static volatile long usr2_tid;   /* gettid in the last SIGUSR2's handler */
+
+static void on_usr2(int sig)
+{
+    (void)sig;
+    usr2_tid = syscall(SYS_gettid);
+}
+
+/* The thread with id tid ran SIGUSR2's handler within a few seconds. */
+static bool usr2_ran_on(long tid)
+{
+    for (int i = 0; i < 2000 && usr2_tid != tid; i++)
+        usleep(1000);
+    return usr2_tid == tid;
+}
+
 static void check_tid(void)
 {
     long me = syscall(SYS_gettid);
     CHECK(me > 0);
     CHECK(syscall(SYS_gettid) == me);
+    CHECK(me == getpid());   /* the first thread's id is the pid, as on Linux */
     struct helper h;
     helper_start(&h);
     CHECK(h.tid > 0 && h.tid != me);
+    CHECK(h.tid != getpid() && h.tid != getppid());   /* another thread's is no pid */
     /* The id is the one the signal calls take: a thread of ours, by the pid. */
     CHECK(syscall(SYS_tgkill, getpid(), me, 0) == 0);
     CHECK(syscall(SYS_tgkill, getpid(), h.tid, 0) == 0);
+    struct sigaction sa = { .sa_handler = on_usr2, .sa_flags = SA_RESTART }, old;
+    sigemptyset(&sa.sa_mask);
+    CHECK(sigaction(SIGUSR2, &sa, &old) == 0);
+    usr2_tid = 0;
+    CHECK(syscall(SYS_tgkill, getpid(), getpid(), SIGUSR2) == 0 && usr2_ran_on(me));
+    usr2_tid = 0;
+    CHECK(syscall(SYS_tgkill, getpid(), h.tid, SIGUSR2) == 0 && usr2_ran_on(h.tid));
+    CHECK(sigaction(SIGUSR2, &old, NULL) == 0);
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/self/task/%d", (int)getpid());
+    CHECK(access(path, F_OK) == 0);
+    snprintf(path, sizeof(path), "/proc/self/task/%ld", h.tid);
+    CHECK(access(path, F_OK) == 0);
     helper_end(&h);
 }
 

@@ -1663,7 +1663,7 @@ fixed):
    `__jam_resolve`, `__jam_ttyname`, `__jam_dladdr`,
    `__jam_unmapself_prepare`) run on their caller's stack, a clone child's
    too (a `posix_spawn` there).
-The boundary's switch could serve the first two later (a stack for calls
+(TS made 1, 2 and 4 so: "TS" below.) The boundary's switch could serve the first two later (a stack for calls
 per thread); moving the 4 KiB path buffers off the stack would shrink every
 one (CBF6's files).
 
@@ -1826,7 +1826,8 @@ no image.
 **Left for the owner**: (1) should a narrower child of P's
 (`posix_spawnattr_setgrants_np`) lose the image, or keep it without
 `RIGHT_TRANSFER`, so that it can't vouch as P? Nothing in the tree makes
-one with `svc exec` today. (2) A raised child starts in `/`; Linux keeps a
+one with `svc exec` today. (Decided: no image; TS built it, "TS" below.)
+(2) A raised child starts in `/`; Linux keeps a
 set-user-ID program's directory (the caller could reach it). Until
 directory handles, the text can't show that. The five tests come off the
 skip list's `[launch]` group once a base run shows them passing.
@@ -1947,6 +1948,75 @@ there).
   `WithFreeListStraightening`, each `/0` and `/1`) and
   `SamplingHeapProfilerTest.GetSamplesWithResidency`. They stay on the skip
   list until a base run shows them passing.
+
+#### TS (2026-10-18)
+
+Track TS (branch `ts-threads`): four decided libc changes (the owner's D1
+and D10, SGR's design question 1 answered (a), SX's question 1), and
+FR2's findings 9 and 10.
+
+**The main thread's tid is the pid (D1).** The kernel hands out pids and
+tids from two spaces, each 1 .. `IDS_MAX` - 1, so a kernel tid may be a
+live pid, ours included. thread.c now gives Linux's ids: the first
+thread's is the pid (in a forked child its forking thread's, and after an
+exec in place the thread that exec'd), every other thread's its kernel
+tid plus `IDS_MAX` (2^22): unique, never a pid, within musl's 30 bits
+(below 2^23). Only thread.c sees kernel tids; every user of a tid
+(`tgkill`/`tkill`, `/proc/self/task` and `/proc/<tid>`, the `sched_*` and
+priority calls, `SIGEV_THREAD_ID`, the signal list, socketpair sleepers,
+the tid words) goes through it or `gettid`. A forked child's
+`CLONE_CHILD_SETTID` word is its pid (`ForkWithFlags`). Robust lists stay
+`ENOSYS` (musl walks them itself); no ptrace. Another process's view of
+our threads (D12's `/proc/<pid>/task`, later) must map the same way.
+
+**`CLONE_FS` for a process child (D10)** is a copy, not a share: the
+child starts with our directory, root and umask (fork's), and a later
+change on either side is its own (fork.c's `CLONE_PROC_OK` says why).
+
+**A stack for calls on small stacks (SGR (a)).** CCS's stack for
+clone()'s child is every small stack's (callstack.c): a pthread whose
+stack is under 64 KiB (musl's clone.c passes pthread_create's size; an
+unknown size counts as small) gets 64 KiB over a guard page at creation
+and makes every call there; a thread given a sigaltstack under 64 KiB
+gets one there, and a handler's calls on its alternate stack move to it.
+While such a call runs, the kernel's exception stack is cut to below the
+handler's frames (sigfault.c's `sig_alt_call`): the kernel puts a raise's
+or a fault's frame at the top of the range when RSP is outside it, which
+would be over them. The thread counts as on its alternate stack until the
+call is back (`sigaltstack`'s `SS_ONSTACK` and `EPERM`; a nested
+`SA_ONSTACK` handler runs where it is). A handler run on the alternate
+stack from a call's boundary, or from a fault or raise while on the stack
+for calls, leaves frames there: a call it makes starts below them
+(`lx_call_stack_hold`). musl's direct entries (`__jam_posix_spawn`,
+`__jam_resolve`, `__jam_ttyname`, `__jam_dladdr`'s lookup,
+`__jam_unmapself_prepare`, `__jam_clone`) run where calls run. The stack
+goes at the thread's end (`lx_exit` unmaps it from on it, registers only
+after the unmap; a detached thread's `__unmapself` half from off it).
+**Cost** (posixtest fork's `stacks` line, 4 CPUs under KVM, `getppid`):
+22 ns a call in a process where no thread has one (CCS's one global
+load), 24 ns once one has (a thread with its own big stack), 24 ns with
+a small sigaltstack (calls from the thread's own stack), 25 ns on a
+16 KiB thread (every call moved). Left as CCS listed it: the fault and
+raise entries' own C on a small interrupted stack (SGR finding 7).
+
+**A narrowed child gets no image (SX's question 1).** libjam's
+`spawn_args.no_image`; libc's spawn sets it for a `posix_spawn` child
+with `posix_spawnattr_setgrants_np`'s list, which is then raised at
+`/svc/exec` (its caller not known) and finds `/proc/self/exe` by its file.
+utest `exec_starter`'s last step checks it (launch.c's `narrow`).
+
+**FR2's findings 9 and 10.** The tid words of a clone go through
+`uc_put_int`: a bad pointer is no store and the clone goes on, as Linux's
+unchecked `put_user` (FR2's coordinator asked for `EFAULT`; Linux doesn't
+fail the clone). A `clone()` child's musl tid is not stale: musl 1.2.6's
+`clone()` runs the child through `clone_start` and `__post_Fork`, which
+sets it from `set_tid_address` (the child's pid since D1); posixtest's
+`clone` case checks an aborting child ends with `SIGABRT`.
+
+**Base tests that should clear** (a relink; the skip list's groups):
+`ForkWithFlagsTest.UpdatesPidCache`,
+`PlatformThreadTidCacheTest.MainThreadFirst` and `.MainThreadSecond`
+(thread id), `ProcessUtilTest.LaunchProcess` (`CLONE_FS`).
 
 ### 2. The address space: huge sparse reservations (the top risk)
 

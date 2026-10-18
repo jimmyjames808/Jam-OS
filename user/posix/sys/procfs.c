@@ -408,6 +408,11 @@ const char *proc_exe(void)
     return path;
 }
 
+static void exe_on(void *path)
+{
+    *(const char **)path = proc_exe();
+}
+
 /* dladdr's override (user/posix/musl/src/ldso/dladdr.c): a static program's
  * one module is its image. */
 int __jam_dladdr(const void *addr, const char **file, void **base)
@@ -425,9 +430,11 @@ int __jam_dladdr(const void *addr, const char **file, void **base)
     if (!in)
         return 0;
     /* The layer's own, under exe_lock: no handler runs inside (one that
-     * calls dladdr would wait for the lock for ever). */
+     * calls dladdr would wait for the lock for ever); where calls run (the
+     * first looks up files: a small stack's runs on the stack for calls). */
+    const char *path = NULL;
     struct sig_thread *q = sig_quiet_begin();
-    const char *path = proc_exe();
+    lx_call_stack_run(exe_on, &path);
     sig_quiet_end(q);
     *file = path ? path : argv0 ? argv0 : "";
     *base = (void *)(uintptr_t)eh;

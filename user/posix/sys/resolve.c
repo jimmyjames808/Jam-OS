@@ -19,12 +19,25 @@
 
 static int resolve(const char *name, unsigned char (*addrs)[4], int max);
 
+struct resolve_call {
+    const char *name;
+    unsigned char (*addrs)[4];
+    int max, r;
+};
+
+static void resolve_on(void *p)
+{
+    struct resolve_call *c = p;
+    c->r = resolve(c->name, c->addrs, c->max);
+}
+
 int __jam_resolve(const char *name, unsigned char (*addrs)[4], int max)
 {
+    struct resolve_call c = { name, addrs, max, 0 };
     struct sig_thread *q = sig_quiet_begin();   /* the layer's own: no handler runs inside */
-    int r = resolve(name, addrs, max);
+    lx_call_stack_run(resolve_on, &c);   /* a call of ours: where calls run (a small stack's) */
     sig_quiet_end(q);
-    return r;
+    return c.r;
 }
 
 static int resolve(const char *name, unsigned char (*addrs)[4], int max)

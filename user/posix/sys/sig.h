@@ -268,7 +268,7 @@ int sig_fault_signal(uint32_t vector, int32_t status);
 
 /* The calling thread's, as sigaltstack says it for the stack pointer sp:
  * the return is SS_DISABLE (none: *base and *size 0), SS_ONSTACK (sp is on
- * it) or 0. */
+ * it, or a call made from it runs on the stack for calls) or 0. */
 int  sig_alt_state(uintptr_t sp, uintptr_t *base, size_t *size);
 /* Set it to [base, base + size), or remove it (size 0). The kernel's
  * range is set first. 0, or -EFAULT (the kernel refused the range). The
@@ -279,8 +279,19 @@ long sig_alt_set(uintptr_t base, size_t size);
  * with (never less than MINSIGSTKSZ). Depends on the CPU's vector state. */
 size_t sig_alt_min(void);
 /* fn(arg) as a handler with SA_ONSTACK runs: on the calling thread's
- * alternate stack unless there is none or it is on it already. */
+ * alternate stack unless there is none or it is on it already (a call
+ * moved from it, below, counts as on it). */
 void sig_run_onstack(void (*fn)(void *), void *arg);
+/* sp is on the calling thread's alternate stack: a handler's call
+ * (callstack.c). Off it, with the kernel's range still cut by a call
+ * below that a handler left by siglongjmp: the range made whole. */
+bool sig_alt_from(uintptr_t sp);
+/* fn(arg) on top (the layer's stack for calls) for a handler on the
+ * alternate stack, the kernel's exception stack cut to below this frame
+ * meanwhile: a frame the kernel makes during the call (a raise, a fault)
+ * goes below what the handler uses, not over it at the stack's top, and
+ * the thread counts as on its alternate stack (sig_alt_state). */
+void sig_alt_call(void (*fn)(void *), void *arg, void *top);
 /* The calling thread's kernel exception stack set again from the record,
  * for a thread that has the record's memory and not the kernel's state (a
  * forked child's). */

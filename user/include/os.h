@@ -201,6 +201,11 @@ struct spawn_args {
      * hand-over another program wrote: init's /svc/exec (exec.c). */
     status_t                 (*before_start)(handle_t startup, void *ctx);
     void                      *before_start_ctx;
+    /* true: no SELF_IMAGE, even for a program from a VMO that could have
+     * one. For a child given less than our namespace: its image would let
+     * it present itself to init's /svc/exec as the program we run, with
+     * that program's approval (init's exec.c, "who is raised"). */
+    bool                       no_image;
 };
 
 #define SPAWN_STACK_DEFAULT (128ull << 10)   /* a native program's */
@@ -213,7 +218,8 @@ struct spawn_args {
  * ARGS (argv and the environment when they don't fit the message's 2 KiB
  * or 128 strings, and the program's path for one given SELF_IMAGE and no
  * hand-over: <roles.h>), SELF_IMAGE (a program from a->vmo at offset 0
- * that can run: its own VMO, <roles.h>; when the extras leave room) and
+ * that can run: its own VMO, <roles.h>; when the extras leave room and
+ * a->no_image isn't set) and
  * the extras, which are consumed whatever happens (and so are the
  * hand-over's, whose program's path spawn fills in when it has none).
  * *proc gets the process handle. ERR_OUT_OF_RANGE: too many extras

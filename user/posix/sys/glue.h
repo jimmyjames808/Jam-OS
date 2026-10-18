@@ -28,11 +28,13 @@ int __jam_set_thread_area(void *tp);
 /* __clone, threads only: a new thread of this process running fn(arg) on
  * stack, with the thread pointer tls, its id stored at *ptid before it
  * runs (CLONE_PARENT_SETTID) and ctid as its tid word (CLONE_CHILD_CLEARTID:
- * 0 is stored there and woken once it is gone). The new thread's id, or
- * -errno: -ENOSYS for anything but a thread of this process (CLONE_VM and
- * CLONE_THREAD). thread.c. */
+ * 0 is stored there and woken once it is gone). stack_size: the bytes
+ * below stack the thread may use (pthread_create's), 0 if not known; a
+ * small one gets the thread the layer's stack for calls. The new
+ * thread's id, or -errno: -ENOSYS for anything but a thread of this
+ * process (CLONE_VM and CLONE_THREAD). thread.c. */
 int __jam_clone(int (*fn)(void *), void *stack, int flags, void *arg, int *ptid, void *tls,
-                int *ctid);
+                int *ctid, unsigned long stack_size);
 
 /* __clone, a process (no CLONE_VM): a fork whose child runs fn(arg) on
  * stack and ends with its value (musl's clone(), gtest's death tests);

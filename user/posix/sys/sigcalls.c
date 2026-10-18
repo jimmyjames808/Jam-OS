@@ -89,8 +89,10 @@ long lx_rt_sigpending(long set, long size, long c, long d, long e, long f)
  * EPERM, a flag other than SS_DISABLE (SS_ONSTACK is taken as "on")
  * EINVAL, a size under the smallest a fault's frame fits (never under
  * MINSIGSTKSZ) ENOMEM; the old one is written only if the call succeeds.
- * Whether we are on it is this call's own stack pointer: the layer runs
- * on the caller's stack. */
+ * Whether we are on it is this call's own stack pointer, or a call of a
+ * handler there moved to the stack for calls (sig_alt_state). A stack
+ * under LX_CALL_STACK gets the thread a stack for calls (callstack.c):
+ * a handler's calls take more than a SIGSTKSZ. */
 long lx_sigaltstack(long ss, long old, long c, long d, long e, long f)
 {
     stack_t want;   /* the caller's, read once */
@@ -112,6 +114,8 @@ long lx_sigaltstack(long ss, long old, long c, long d, long e, long f)
             if (in->ss_size < sig_alt_min())
                 return -ENOMEM;
             r = sig_alt_set((uintptr_t)in->ss_sp, in->ss_size);
+            if (!r && in->ss_size < LX_CALL_STACK)
+                lx_call_stack_need(false);
         }
         if (r)
             return r;

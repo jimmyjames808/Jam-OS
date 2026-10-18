@@ -10,13 +10,15 @@
  *
  *   same: the pid, getppid, and /proc/<pid>/stat's pid, parent, group,
  *     session and start time read by the parent are the same before and
- *     after the exec; the parent's kill reaches the new image's handler and
- *     its SIGTERM ends it, which the parent's waitpid sees.
+ *     after the exec, and gettid is the pid; the parent's kill reaches the
+ *     new image's handler and its SIGTERM ends it, which the parent's
+ *     waitpid sees.
  *   threads: a thread that isn't the first execs; the first (joining it)
  *     and three others (one spinning in its own code, one in a condition
  *     wait, one in a pipe read) are gone: /proc/self/task has one entry,
- *     the kernel counts the new image's two threads (it and its signal
- *     thread).
+ *     the pid, which is gettid's too (the thread that exec'd is the first
+ *     now, as on Linux), and the kernel counts the new image's two threads
+ *     (it and its signal thread).
  *   cloexec: descriptors with FD_CLOEXEC (a pipe's write end, an eventfd,
  *     /dev/null) are closed, the pipe's reader seeing its end of file while
  *     the new image lives; those without (a pipe, a memfd, a socketpair
@@ -157,6 +159,7 @@ static void handle(int sig, void (*fn)(int))
 static int run_same(char **argv)
 {
     RUN(getpid() == atoi(argv[4]) && getppid() == atoi(argv[5]));
+    RUN(gettid() == getpid());
     handle(SIGUSR1, on_usr1);
     RUN(say(READY, 'r'));
     uint64_t end = now() + (uint64_t)WAIT_MS * NS_PER_MS;
@@ -176,10 +179,14 @@ static int run_same(char **argv)
 static int run_threads(void)
 {
     int n = 0;
+    RUN(gettid() == getpid());   /* the thread that exec'd is the first now: its id the pid */
     DIR *d = opendir("/proc/self/task");
     RUN(d);
     for (struct dirent *e; d && (e = readdir(d));)
-        n += e->d_name[0] != '.';
+        if (e->d_name[0] != '.') {
+            n++;
+            RUN(atoi(e->d_name) == getpid());
+        }
     if (d)
         closedir(d);
     RUN(n == 1);

@@ -97,8 +97,15 @@
 #include "sig.h"
 
 /* What the clone flags Linux's raw call may carry here: the exit signal
- * (the low byte: always SIGCHLD here) and the tid words. */
-#define CLONE_PROC_OK (0xff | CLONE_PARENT_SETTID | CLONE_CHILD_SETTID | CLONE_CHILD_CLEARTID)
+ * (the low byte: always SIGCHLD here), the tid words, and CLONE_FS.
+ * CLONE_FS is taken as a copy, where Linux shares: the child starts with
+ * our current directory, root and umask, as any forked child does, but a
+ * chdir, chroot or umask after the clone, in it or in us, is the other's
+ * no more (Linux's would be). A share would need a directory both
+ * processes hold and change; base's LaunchProcess, its one user, passes it
+ * for a child that execs at once, which a copy serves (the owner's D10). */
+#define CLONE_PROC_OK                                                                    \
+    (0xff | CLONE_PARENT_SETTID | CLONE_CHILD_SETTID | CLONE_CHILD_CLEARTID | CLONE_FS)
 
 #define PASSABLE (RIGHT_DUPLICATE | RIGHT_TRANSFER)   /* a handle a child may be given */
 
@@ -297,9 +304,7 @@ static void child(void *ctx, handle_t from)
     if (!how->by_musl)
         __malloc_atfork(1);
     lx_start_forked();
-    uint32_t tid = 0;
-    (void)kp_thread_tid(startup_handle(SR_SELF_THREAD), &tid);
-    thread_forked(tid);
+    thread_forked();
     for (unsigned i = 0; i < NSTEPS; i++)
         steps[i](LX_FORK_CHILD);
     for (unsigned i = 0; i < NFORGETS; i++)
@@ -313,8 +318,8 @@ static void child(void *ctx, handle_t from)
         sig_timer_forked();
     if (how->clear_tid)
         (void)kp_set_tid_word((uint32_t *)how->clear_tid);
-    if (how->set_tid)
-        *how->set_tid = (int)tid;
+    if (how->set_tid)   /* the child's first thread's id, its pid; a bad pointer: no store */
+        (void)uc_put_int((long)(uintptr_t)how->set_tid, (int)lx_pid());
     sig_thread_forked();
     sig_tty_attached();   /* the terminal is the child's own now: listened to */
 }
@@ -402,7 +407,7 @@ long lx_clone(long flags, long stack, long ptid, long ctid, long tls, long f)
                        .clear_tid = (flags & CLONE_CHILD_CLEARTID) ? word : NULL };
     long r = fork_core(&how);
     if (r > 0 && (flags & CLONE_PARENT_SETTID))
-        *(int *)(uintptr_t)ptid = (int)r;
+        (void)uc_put_int(ptid, (int)r);   /* a bad pointer: no store, as Linux's put_user */
     return r;
 }
 
@@ -410,76 +415,11 @@ long lx_clone(long flags, long stack, long ptid, long ctid, long tls, long f)
 
 /* fn runs on the stack it was given, as on Linux, and that stack may be
  * tiny: gtest's death tests give two pages (gtest-death-test.cc), and the
- * child's first calls (chdir, execve) take a path. The layer runs a call
- * on its caller's stack, and its frames are not Linux's few bytes: one
- * path's are some 4 KiB each, the deepest call made only of direct calls
- * ~29 KiB (lx_mkdir, by GCC's -fcallgraph-info, 2026-10-17; most path
- * calls 16 to 25 KiB), and the handlers a call's boundary runs come on top.
- * So in the child each call fn makes runs on a stack the layer maps there,
- * CALL_STACK bytes over a guard page (about twice that deepest call),
- * as Linux's kernel runs a call on a stack of its own: fn's frames, and
- * what a handler raised in fn's own code does outside a call, stay where
- * Linux has them. The thread is told by a thread-local top, which every
- * thread the child makes later has 0 for. */
-#define CALL_STACK  (64u << 10)
-#define CALL_GUARD  4096u
-
-bool lx_call_stack_set;              /* calls.h: the test each call makes */
-static uintptr_t call_stack_lo;      /* the stack's lowest usable byte */
-static __thread uintptr_t call_top;  /* its top, on the thread it is for */
-
-void __jam_sig_stack_call(void (*fn)(void *), void *arg, void *top);   /* sigentry.S */
-
-/* fn(arg) on the stack for calls when the calling thread has it and is
- * off it, and isn't on its sigaltstack either (a handler running there
- * may have come from a call whose frames are still on it: it runs in
- * place, as on any thread); else here. The signal thread has no thread
- * pointer to read ours by: it is told by its stack. */
-static void on_call_stack(void (*fn)(void *), void *arg)
-{
-    uintptr_t sp = (uintptr_t)__builtin_frame_address(0), base;
-    size_t size;
-    if (!lx_call_stack_set || sig_on_signal_thread() || !call_top ||
-        (sp >= call_stack_lo && sp <= call_top) || sig_alt_state(sp, &base, &size) == SS_ONSTACK)
-        fn(arg);
-    else
-        __jam_sig_stack_call(fn, arg, (void *)call_top);
-}
-
-/* The child's stack for calls, mapped and set (the child of a clone made
- * in a clone child has its parent's, at the same place). None if there's
- * no memory for it: fn's calls run on its own stack then. */
-static void call_stack_map(void)
-{
-    if (call_top)
-        return;
-    long b = lx_mmap(0, CALL_STACK + CALL_GUARD, PROT_READ | PROT_WRITE,
-                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (b < 0)
-        return;
-    (void)lx_mprotect(b, CALL_GUARD, PROT_NONE, 0, 0, 0);
-    call_stack_lo = (uintptr_t)b + CALL_GUARD;
-    call_top = call_stack_lo + CALL_STACK;
-    lx_call_stack_set = true;
-}
-
-struct moved {
-    const struct sig_frame *f;
-    long r;
-};
-
-static void moved_call(void *p)
-{
-    struct moved *m = p;
-    m->r = sig_call(m->f);
-}
-
-long lx_call_on_stack(const struct sig_frame *f)
-{
-    struct moved m = { f, 0 };
-    on_call_stack(moved_call, &m);
-    return m.r;
-}
+ * child's first calls (chdir, execve) take a path. So the child's thread
+ * makes every call on the layer's stack for calls (callstack.c), mapped
+ * there (the child of a clone made in a clone child has its parent's, at
+ * the same place); fn's frames, and what a handler raised in fn's own
+ * code does outside a call, stay where Linux has them. */
 
 static void exit_with(void *code)
 {
@@ -490,7 +430,7 @@ static void exit_with(void *code)
  * makes SYS_exit, the last thread's end), off fn's stack too. */
 static _Noreturn void clone_end(int code)
 {
-    on_call_stack(exit_with, &code);
+    lx_call_stack_run(exit_with, &code);
     __builtin_unreachable();
 }
 
@@ -532,11 +472,11 @@ int __jam_clone_process(int (*fn)(void *), void *stack, int flags, void *arg, in
     if ((flags & ~(CLONE_PROC_OK & ~CLONE_CHILD_CLEARTID)) || !stack)
         return (int)refused(flags, -EINVAL);
     struct clone_call c = { .how = { .set_tid = (flags & CLONE_CHILD_SETTID) ? ctid : NULL } };
-    on_call_stack(clone_core, &c);   /* a clone child's own clone: off fn's stack */
+    lx_call_stack_run(clone_core, &c);   /* a clone child's own clone: off fn's stack */
     if (c.r > 0 && (flags & CLONE_PARENT_SETTID))
-        *ptid = (int)c.r;
+        (void)uc_put_int((long)(uintptr_t)ptid, (int)c.r);   /* bad: no store, as Linux */
     if (c.r)
         return (int)c.r;
-    call_stack_map();
+    lx_call_stack_need(true);   /* fn's calls, from a stack that may be tiny */
     run_on(stack, fn, arg);
 }
