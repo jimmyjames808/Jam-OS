@@ -52,6 +52,9 @@
  *     made there), as Linux's (FR2's finding 2).
  *   secure: a case started AT_SECURE (as a raised program is) execs
  *     itself: the new image is AT_SECURE too (FJ1, FR2's finding 4).
+ *   spawnsecure: the same case posix_spawns itself instead: the child is
+ *     AT_SECURE too (a raised program's non-sealed child, as Linux's fork
+ *     and exec keep it while euid != uid).
  *   log: a case whose 1 and 2 are the kernel log (no stdout channel, no
  *     terminal) execs itself: the new image's 1 and 2 are still the log,
  *     one description, and write (FJ1).
@@ -69,6 +72,7 @@
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
+#include <spawn.h>
 #include <string.h>
 #include <sys/auxv.h>
 #include <sys/epoll.h>
@@ -630,6 +634,23 @@ static void exec_secure(void)
     CHECK(!"the case's own execve");
 }
 
+/* spawnsecure: this process started AT_SECURE (as for `secure`) and
+ * posix_spawns itself: the child is AT_SECURE too (it runs `run secure`:
+ * both checks, and exits 0 only if they hold). */
+static void exec_spawnsecure(void)
+{
+    CHECK(getauxval(AT_SECURE) == 1);
+    char *const args[] = { "posixtest", "--child-exec", "run", "secure", NULL };
+    pid_t pid = 0;
+    int e = posix_spawn(&pid, SELF_EXE, NULL, NULL, args, environ);
+    CHECK(e == 0);
+    if (e == 0) {
+        int status = 0;
+        CHECK(waitpid(pid, &status, 0) == pid);
+        CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    }
+}
+
 /* log: this process's 1 and 2 are the kernel log (run_case's spawn gives
  * it no stdout channel and no terminal) and it execs itself: the new
  * image has them still (FJ1; IL2 found them dropped). */
@@ -916,6 +937,7 @@ static const struct {
     { "signals", exec_signals }, { "charge", exec_charge },   { "fail", exec_fail },
     { "chromium", exec_chromium }, { "clone", exec_clone },   { "gone", exec_gone },
     { "inotify", exec_inotify }, { "secure", exec_secure }, { "log", exec_log },
+    { "spawnsecure", exec_spawnsecure },
 };
 #define NCASES (sizeof(cases) / sizeof(cases[0]))
 
@@ -990,12 +1012,13 @@ static void run_case(unsigned i)
         return;
     }
     const char *const argv[] = { "posixtest", "--child-exec", "case", cases[i].name, NULL };
-    /* "secure" starts as a raised program does: a hand-over marked
-     * AT_SECURE (and no descriptors: musl's secure start opens 0 to 2). */
+    /* "secure" and "spawnsecure" start as a raised program does: a hand-over
+     * marked AT_SECURE (and no descriptors: musl's secure start opens 0 to 2). */
     static const struct posixfds_out secure = { .cwd = "/", .secure = true };
     struct spawn_args a = { .path = "bin/posixtest", .argc = 4, .argv = argv, .job = job,
                             .ns = NS_ALL,
-                            .handover = !strcmp(cases[i].name, "secure") ? &secure : NULL };
+                            .handover = !strcmp(cases[i].name, "secure") ||
+                                        !strcmp(cases[i].name, "spawnsecure") ? &secure : NULL };
     status_t st = spawn(&a, &proc);
     CHECK(st == OK);
     struct process_info info = { 0 };

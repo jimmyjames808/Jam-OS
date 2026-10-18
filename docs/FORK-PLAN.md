@@ -1163,7 +1163,7 @@ questions 1, 2 and 4 and IL2's finding; [FORK-REVIEW-LIBC](FORK-REVIEW-LIBC.md))
   started AT_SECURE; a forked copy keeps it): a raised program's
   `execve` of itself, or of anything in place, starts the new image
   raised, as Linux keeps AT_SECURE while euid != uid. posix_spawn's
-  children are as before (open question below).
+  children were as before until SF (below).
 - **The kernel log handed on.** `log_ops` (descriptors 1 and 2 of a
   program with no stdout channel and no terminal: one started by init
   or by libjam's spawn) has a `give` now: `/dev`'s kind
@@ -1187,7 +1187,17 @@ questions 1, 2 and 4 and IL2's finding; [FORK-REVIEW-LIBC](FORK-REVIEW-LIBC.md))
   should posix_spawn by a raised program also start its (non-sealed)
   child AT_SECURE, as Linux's fork and exec would? My recommendation:
   yes, the same line in `launch`'s hand-over; not done (FJ1's call was
-  exec in place).
+  exec in place; SF did it, 2026-10-18).
+
+### SF notes (2026-10-18)
+
+- **posix_spawn by a raised program.** `launch` (user/posix/sys/spawn.c)
+  sets the hand-over's `secure` from `lx_handover_secure()` for a
+  non-sealed child, as `exec_handover` does for an exec in place. A sealed
+  one (a boot-image program init starts) is init's to say, from its
+  grants. posixtest exec case `spawnsecure`: a case started AT_SECURE
+  posix_spawns itself and the child's `getauxval(AT_SECURE)` and
+  `issetugid` are 1.
 
 ## 6. Questions for the owner
 

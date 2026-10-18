@@ -2630,6 +2630,8 @@ on since FJ1), and makes an inotify descriptor of its own
 started with a hand-over marked AT_SECURE (as init's `/svc/exec` marks a
 raised program) execs itself: the new image's `getauxval(AT_SECURE)` and
 `issetugid` are 1 ([FORK-REVIEW-LIBC](FORK-REVIEW-LIBC.md), finding 4).
+`spawnsecure` (SF): the same case posix_spawns `/proc/self/exe` instead: the
+child (a non-sealed program) is AT_SECURE and `issetugid` too, and exits 0.
 `log` (FJ1): a case whose 1 and 2 are the kernel log (no stdout channel,
 no terminal) execs itself: in the new image both are still the log
 (`fstat` mode 0222), write-only, one description (`O_NONBLOCK` set
