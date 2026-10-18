@@ -198,4 +198,17 @@ one call on the mount, as `storm` does). Every `msync` must say OK and
 every record end whole by the mapping, by `read` and by a new mapping; then
 QEMU's monitor quit with no stop and no sync, and Linux's `e2fsck -fy` of
 a copy of the disk exits 0 and debugfs finds all 512 records whole with the
-last round's salt (every one was acknowledged).
+last round's salt (every one was acknowledged). On the PC (batch
+18210155): 12,800 msyncs in 11.2 s, every one OK (the slowest 34 ms), 56
+kills (kill to first answer 34 ms mean, 53 ms worst), every record whole
+by the mapping, by `read`, by a new mapping and on Linux's copy.
+
+**Runs** (the PC): batch 18201924, 32 runs: PC `make check`, the full init
+run, ktest at 4 and 8 CPUs, soak 4, `extfs-svc-test.sh`, every
+`pager-test.sh` case (fat's seven, `jam`, `jstorm`, `xexec`, `wmsync`,
+`wcut`, `wpress`), `posix-mmap-test.sh`'s `wshared`, `mmap`, `coherent`,
+`spawn`, `big` and `pull`, `extfs-test.sh basic`, the shell scripts basic,
+cmds, commands and files, and kdump save: all PASS but `whostile`, whose
+`pagertest` lacked the `svc init` want (fixed: cc9c379a; batch 18210155
+PASS). The fixes' tests were not run with their fixes taken out (the PC
+was wanted back): each test's check is the finding's symptom as written.
