@@ -35,7 +35,8 @@
 #           the list; with CR_BASE_ALL=1 the way to re-measure it),
 #           CR_BASE_DEATH=fast (death tests in a fork only; the default is
 #           threadsafe, the way base sets them: the child execve()s the program),
-#           CR_BASE_ONLY=<glob>, CR_BASE_ENV="NAME=value ..."
+#           CR_BASE_ONLY=<glob>, CR_BASE_TIMEOUT=<seconds a suite may run;
+#           240 by default>, CR_BASE_ENV="NAME=value ..."
 #           (default TMPDIR and TEST_TMPDIR=/data/cr/tmp; CR_BASE_ENV= empty
 #           leaves both unset and the programs use init's /tmp); the stick's
 #           /data is the image's: ext, or FAT when JAMOS_DATA_FS=fat made the
@@ -218,7 +219,7 @@ case_base() {
     for e in ${CR_BASE_ENV-TMPDIR=/data/cr/tmp TEST_TMPDIR=/data/cr/tmp}; do extra="$extra --env $e"; done
     # shellcheck disable=SC2086
     if python3 tools/cr/base-run.py --shard "${CR_BASE_SHARD:-0/1}" --mem "${QEMU_MEM:-4G}" \
-       --death-style "${CR_BASE_DEATH:-threadsafe}" ${CR_BASE_ALL:+--all} ${CR_BASE_LISTED:+--listed} ${CR_BASE_ONLY:+--only "$CR_BASE_ONLY"} ${CR_BASE_ARGS:+--args " $CR_BASE_ARGS"} $extra \
+       --death-style "${CR_BASE_DEATH:-threadsafe}" ${CR_BASE_ALL:+--all} ${CR_BASE_LISTED:+--listed} ${CR_BASE_ONLY:+--only "$CR_BASE_ONLY"} ${CR_BASE_ARGS:+--args " $CR_BASE_ARGS"} ${CR_BASE_TIMEOUT:+--suite-timeout "$CR_BASE_TIMEOUT"} $extra \
        "$dir/run" "$stick" > "$dir/base-run.out" 2>&1; then
         echo PASS > "$dir/result"
     else
