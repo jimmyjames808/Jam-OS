@@ -178,6 +178,23 @@ static bool on_disk(const struct wf *w)
     return true;
 }
 
+/* One cache: the file as extfs reads it is what our mapping shows (its
+ * stores, written back or not, failed or not). */
+static bool read_as_mapped(const struct wf *w)
+{
+    static uint8_t got[WF_MAX];
+    struct tfile f;
+    uint32_t done = 0;
+    CHECK_ST(t_open(&r, w->path, FS_READ, &f), OK);
+    status_t st = t_read(&f, 0, got, (uint32_t)w->size, &done);
+    t_close(&f);
+    CHECK_ST(st, OK);
+    CHECK_EQ(done, w->size);
+    if (memcmp(got, w->m, w->size))
+        FAIL("%s: a read doesn't show what its mapping shows", w->path);
+    return true;
+}
+
 /* Killed: no orderly stop, nothing written back. */
 static bool kill_extfs(void)
 {
@@ -310,11 +327,16 @@ static bool full(void)
     store(&fn, 3 * PAGE_SIZE, 50, 18);     /* over its own block: written */
     CHECK_ST(msync(&fn), ERR_NO_SPACE);
     CHECK(clean());   /* given up: the pages clean, Q1's answer */
+    /* ... but a read shows the store the mapping shows, until the page is
+     * evicted (the disk's bytes then, for both: an instance with no pager
+     * reads the disk alone after this). */
+    if (!read_as_mapped(&fn))
+        return false;
     CHECK_ST(fsync(&fn), ERR_NO_SPACE);
     CHECK_ST(fsync(&fn), OK);   /* once */
     CHECK_ST(msync(&fn), OK);
     CHECK_ST(t_unlink(&r, "/big"), OK);
-    return on_disk(&fn);
+    return true;
 }
 
 bool t_extfs_wback(void)
@@ -339,7 +361,8 @@ bool t_extfs_wback(void)
     ok = ok && extfs_start_pager(&r, &rd, pager) && aged_and_fresh() && fat_stop(&r);
     ok = ok && extfs_start(&r, &rd, false, NULL, 0) && on_disk(&fm) &&
          t_stat(&r, fy.path, NULL, NULL, NULL) == ERR_NOT_FOUND && fat_stop(&r);
-    ok = ok && extfs_start_pager(&r, &rd, pager) && full() && fat_stop(&r) &&
+    ok = ok && extfs_start_pager(&r, &rd, pager) && full() && fat_stop(&r);
+    ok = ok && extfs_start(&r, &rd, false, NULL, 0) && on_disk(&fn) && fat_stop(&r) &&
          extfs_save(&rd, "wback");
     handle_t self = startup_handle(SR_SELF_VMAR);
     for (unsigned i = 0; i < sizeof(all) / sizeof(all[0]); i++) {

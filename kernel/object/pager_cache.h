@@ -58,6 +58,14 @@
  * its age from before, made no younger than the head of `dirty`, where it
  * goes back.
  *
+ * Kept: a page whose write-back failed is clean (Q1's answer: it doesn't
+ * pin the dirty limit, and may be evicted like any clean page), but its
+ * bytes are the store's, not the disk's, so it is marked kept until it
+ * leaves its table or is stored to again: pager_dirty's PEEK copies it
+ * with the dirty ones, so a filesystem's read shows what every mapping
+ * shows (one cache) until the page is evicted. A kept page is counted as
+ * a clean one; its state (pager_cache_state_vlocked) is 0.
+ *
  * Lock: "pager cache" (`lock`), taken under "vmo" (publishing and taking a
  * page out) and alone (reserving, evicting), never the other way round: an
  * evictor drops it before it takes the VMO lock, holding a VMO reference
@@ -119,9 +127,11 @@ void pager_cache_add_vlocked(struct pager_cache *c, struct page *p, struct pager
  * already) and its record is freed. */
 void pager_cache_remove_vlocked(struct pager_cache *c, struct page *p);
 
-/* The VMO lock held, p in its table: its state (PAGER_PAGE_*, 0: clean)
- * and its age (uptime ns: "Age" above). */
+/* The VMO lock held, p in its table: its state (PAGER_PAGE_*, 0: clean),
+ * whether it is kept ("Kept" above), and its age (uptime ns: "Age"
+ * above). */
 unsigned pager_cache_state_vlocked(const struct page *p);
+bool     pager_cache_kept_vlocked(const struct page *p);
 uint64_t pager_cache_dirtied_vlocked(const struct page *p);
 
 /* The VMO lock held, p in its table: a store. Clean: dirty now, onto the
@@ -135,10 +145,11 @@ status_t pager_cache_store_vlocked(struct pager_cache *c, struct page *p, uint64
 /* The VMO lock held, p dirty and not writing: its write-back begins
  * (writing now, onto `writing`). */
 void pager_cache_begin_vlocked(struct pager_cache *c, struct page *p);
-/* The VMO lock held, p writing: its write-back ended. Clean (onto the
- * clean list, newest: true), or, stored to since, dirty (onto `dirty`'s
- * tail, its age counted from now: false). */
-bool pager_cache_written_vlocked(struct pager_cache *c, struct page *p);
+/* The VMO lock held, p writing: its write-back ended (`failed`: with an
+ * error). Clean (onto the clean list, newest, kept if `failed`: true),
+ * or, stored to since, dirty (onto `dirty`'s tail, its age counted from
+ * now: false). */
+bool pager_cache_written_vlocked(struct pager_cache *c, struct page *p, bool failed);
 /* The VMO lock held, p writing: its write-back won't end (the pager died,
  * or the copy out failed): dirty again, at `dirty`'s head. */
 void pager_cache_unbegin_vlocked(struct pager_cache *c, struct page *p);

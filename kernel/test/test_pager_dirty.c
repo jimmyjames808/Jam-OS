@@ -71,6 +71,11 @@
  *       dirty (and writable); BEGIN skips writing pages; an error leaves
  *       the pages clean and is reported once (ERR_IO, ERR_NO_SPACE);
  *       refusals; clean again, the hold goes and the GONE comes.
+ *   pager_dirty_failed_kept
+ *       a write-back that fails leaves its pages clean but kept: PEEK
+ *       copies them with their stores (a filesystem's read shows what the
+ *       mappings show), flags 0 and BEGIN don't; a store makes one dirty
+ *       and its write-back the disk's again; an invalidation drops one.
  *   pager_dirty_again
  *       a pager dies between begin and written: AGAIN makes the writing
  *       pages dirty and gives the request again, unanswered until the
@@ -1481,6 +1486,85 @@ KTEST(pager_dirty_written)
     kfree(buf);
     aspace_unref(as);
     put(ro);
+    pg_close(pg);
+    kt_job_is_empty(j);
+    job_unref(j);
+}
+
+KTEST(pager_dirty_failed_kept)
+{
+    struct job *j = kt_fresh_job();
+    struct pager *pg = pg_new(j, 64);
+    struct vmo *v = wvmo(pg, 34, 4);
+    struct aspace *as;
+    KT_EQ(aspace_create(&as), OK);
+    uint64_t a = map(as, v, 4, RW);
+    KT_EQ(supply(pg, 34, 0, 4), OK);
+    KT_EQ(uput(as, a + PG + 8, 40), OK);
+    KT_EQ(uput(as, a + 2 * PG + 8, 41), OK);
+    uint64_t *buf = kzalloc(4 * PG);
+    KT_ASSERT(buf);
+    struct pager_run run;
+
+    /* The write-back fails: clean (nothing dirty, the hold gone), the
+     * error kept once. */
+    KT_EQ(begin(pg, 34, 0, 4 * PG, buf, &run), OK);
+    KT_EQ(run.offset, PG);
+    KT_EQ(run.len, 2 * PG);
+    KT_EQ(written(pg, 34, PG, 2 * PG, ERR_IO), OK);
+    KT_EQ(vmo_pager_page_state(v, 1), 0);
+    KT_EQ(vmo_pager_page_state(v, 2), 0);
+    KT_EQ(pager_dirty_pages(pg), 0);
+    KT_EQ(vmo_pager_dirty_count(v), 0);
+    KT_EQ(vmo_pager_take_error(v), ERR_IO);
+    KT_ASSERT(!pte_w(as, a + PG) && !pte_w(as, a + 2 * PG));
+
+    /* But kept: PEEK copies both, their stores in them; flags 0 (dirty)
+     * and BEGIN take neither. */
+    memset(buf, 0, 4 * PG);
+    KT_EQ(peek(pg, 34, PAGER_DIRTY_PEEK, 0, 4 * PG, buf, &run), OK);
+    KT_EQ(run.offset, PG);
+    KT_EQ(run.len, 2 * PG);
+    KT_EQ(buf[PG / 8], word(34, 1));
+    KT_EQ(buf[PG / 8 + 1], 40);
+    KT_EQ(buf[2 * PG / 8 + 1], 41);
+    KT_EQ(peek(pg, 34, 0, 0, 4 * PG, buf, &run), OK);
+    KT_EQ(run.len, 0);
+    KT_EQ(begin(pg, 34, 0, 4 * PG, buf, &run), OK);
+    KT_EQ(run.len, 0);
+
+    /* A store makes page 1 dirty (kept no more); its write-back, done,
+     * makes it the disk's again: PEEK leaves it out. */
+    KT_EQ(uput(as, a + PG + 16, 42), OK);
+    KT_EQ(vmo_pager_page_state(v, 1), DIRTY);
+    KT_EQ(begin(pg, 34, 0, 4 * PG, buf, &run), OK);
+    KT_EQ(run.offset, PG);
+    KT_EQ(run.len, PG);
+    KT_EQ(written(pg, 34, PG, PG, OK), OK);
+    KT_EQ(vmo_pager_page_state(v, 1), 0);
+    memset(buf, 0, 4 * PG);
+    KT_EQ(peek(pg, 34, PAGER_DIRTY_PEEK, 0, 4 * PG, buf, &run), OK);
+    KT_EQ(run.offset, 2 * PG);
+    KT_EQ(run.len, PG);
+    KT_EQ(buf[2 * PG / 8 + 1], 41);
+
+    /* An invalidation drops the kept page as any clean one: the next touch
+     * fetches the disk's bytes, and nothing is left to PEEK. */
+    KT_EQ(pager_op(pg, 34, PAGER_OP_INVALIDATE, 2 * PG, PG, 0), OK);
+    KT_EQ(peek(pg, 34, PAGER_DIRTY_PEEK, 0, 4 * PG, buf, &run), OK);
+    KT_EQ(run.len, 0);
+    KT_EQ(pager_dirty_pages(pg), 0);
+
+    KT_EQ(aspace_unmap(as, a, 4 * PG), OK);
+    put(v);
+    struct pager_request q;
+    next(pg, &q);
+    KT_EQ(q.kind, PAGER_REQ_GONE);
+    KT_EQ(q.key, 34);
+    KT_EQ(pager_op(pg, 34, PAGER_OP_DETACH, 0, 0, 0), OK);
+
+    kfree(buf);
+    aspace_unref(as);
     pg_close(pg);
     kt_job_is_empty(j);
     job_unref(j);

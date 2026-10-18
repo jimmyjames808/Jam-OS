@@ -414,9 +414,15 @@ void pager_page_begin_vlocked(struct pager_vmo *pv, struct page *p)
     pager_cache_begin_vlocked(&pv->pg->cache, p);
 }
 
-bool pager_page_written_vlocked(struct pager_vmo *pv, struct page *p)
+bool pager_page_written_vlocked(struct pager_vmo *pv, struct page *p, bool failed)
 {
-    return pager_cache_written_vlocked(&pv->pg->cache, p);
+    return pager_cache_written_vlocked(&pv->pg->cache, p, failed);
+}
+
+bool pager_page_kept_vlocked(struct pager_vmo *pv, const struct page *p)
+{
+    (void)pv;
+    return pager_cache_kept_vlocked(p);
 }
 
 void pager_page_unbegin_vlocked(struct pager_vmo *pv, struct page *p)
