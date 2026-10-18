@@ -36,6 +36,24 @@ send ps | grep serialin && echo ok-$T-ps1
 wait ok-x-ps1
 send ps | grep nosuchprocess || echo ok-$T-ps2
 wait ok-x-ps2
+# ps -t: where a process's threads wait (the kernel's "threads" listing, in
+# the log). The shell's own thread waits in debug_command (113) for the
+# listing itself: an object, kernel frames, a user backtrace.
+send ps -t shell
+wait threads: process
+wait "shell": 1 thread
+wait : blocked for
+wait waits for object
+wait in system call 113
+wait user rip
+wait kernel #0
+wait user #0
+send ps -t nosuchprocess || echo ok-$T-pst1
+wait threads: no process nosuchprocess
+wait ok-x-pst1
+send ps -t || echo ok-$T-pst2
+wait usage: ps -t <pid|name>
+wait ok-x-pst2
 send top -n 2 -d 0.5
 wait top - up
 wait CPU%    CPU TIME

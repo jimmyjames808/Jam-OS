@@ -2,7 +2,10 @@
  * indented by job, and "[jit]" after the name of one that has mapped JIT
  * memory to run (PROCESS_FLAG_JIT: memory it may write and run, its list's `right
  * jit`, docs/CR-PLAN.md section 12); -k the kernel's own listing, into the
- * kernel log. */
+ * kernel log; -t <pid|name> where that process's threads wait (the
+ * kernel's "threads" listing, into the kernel log too: each thread's state,
+ * what it waits for, its kernel frames and a user backtrace, which
+ * tools/symbolize-threads.py names on the host). */
 #include "sh.h"
 
 static const char *state_name(uint32_t s)
@@ -11,11 +14,32 @@ static const char *state_name(uint32_t s)
     return s < 4 ? names[s] : "?";
 }
 
+static bool digits(const char *s)
+{
+    if (!*s)
+        return false;
+    for (; *s; s++)
+        if (*s < '0' || *s > '9')
+            return false;
+    return true;
+}
+
 SH_CMD(ps)
 {
     if (argc > 1 && !strcmp(argv[1], "-k")) {
         sh_kcmd("ps");
         return 0;
+    }
+    if (argc > 1 && !strcmp(argv[1], "-t")) {
+        char cmd[64];
+        if (argc < 3 || argc > 4 || !argv[2][0] || strchr(argv[2], ' ') ||
+            (argc == 4 && !digits(argv[3])) ||
+            snprintf(cmd, sizeof(cmd), "threads %s%s%s", argv[2], argc == 4 ? " " : "",
+                     argc == 4 ? argv[3] : "") >= (int)sizeof(cmd)) {
+            sh_tty("usage: ps -t <pid|name> [stack words to scan, 1..4096]\n");
+            return 2;
+        }
+        return sh_kcmd(cmd) < 0;
     }
     struct proc_stat *p = calloc(SH_MAX_PROCS, sizeof(*p));
     if (!p)
