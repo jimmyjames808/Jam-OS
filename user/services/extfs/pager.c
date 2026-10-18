@@ -40,7 +40,9 @@
  * a file's key the state doesn't know (a VMO of an instance whose state was
  * given up on: a fresh start's) gets a slot from the inode the key names
  * (maps_key: its number and generation, a file with a name, else it is
- * gone: a fresh start's mount dropped the orphans) and is served; any other
+ * gone: a fresh start's mount dropped the orphans) and is served, and a
+ * write, a truncate or a map to run of a file with no slot asks the kernel
+ * for such a VMO first (find_lost), so none of them misses it; any other
  * key the state doesn't know (one to run whose request ran again, a file
  * gone) is answered with a detach: its mappers fail as for a pulled stick.
  *
@@ -217,8 +219,11 @@ bool maps_exec(uint32_t ino)
     return false;
 }
 
+static void find_lost(uint32_t ino);
+
 bool maps_written(uint32_t ino)
 {
+    find_lost(ino);   /* (a VMO an instance before made may be writable) */
     for (unsigned i = 0; i < XF_MAX_MAPS; i++)
         if (shared(i, ino) && kept->maps[i].written)
             return true;
@@ -571,6 +576,51 @@ status_t maps_key(uint64_t key, struct ext_inode *in, int *slot)
     return OK;
 }
 
+/* A file's shared VMO that lives with no slot (made by an instance before
+ * this one, which started without its state) is found by a map or by a
+ * request of its own; until then a write, a truncate and the run check
+ * would miss it: a write's bytes wouldn't reach its pages (and a dirty
+ * page's next write-back would put older bytes back over the answered
+ * write), a truncate wouldn't zero its tail, and the file would be run
+ * while it may be written. So they ask for it first, and it gets a slot
+ * here (written: it may have been handed out writable), its size as the
+ * kernel has it. One PAGER_VMO_FIND for a file with no slot: a lookup,
+ * cheap beside the write. */
+static void find_lost(uint32_t ino)
+{
+    if (!vol.pager || ino > XF_SHARED_INO_MAX)
+        return;
+    for (unsigned i = 0; i < XF_MAX_MAPS; i++)
+        if (shared(i, ino))
+            return;
+    struct ext_inode in;
+    if (ext_iget(&vol.fs, ino, EXT_IGET_UNLINKED, &in) != OK)
+        return;
+    uint64_t key = XF_SHARED_KEY(ino, in.d.generation), size = 0;
+    handle_t v = HANDLE_INVALID;
+    if (jam_pager_create_vmo(vol.pager, key, 0, PAGER_VMO_FIND, &v) != OK)
+        return;   /* none: the usual answer */
+    status_t st = jam_vmo_get_size(v, &size);
+    jam_handle_close(v);
+    int i = st == OK ? free_slot() : -1;
+    if (i < 0) {   /* nowhere to keep it: cut off rather than let it put old bytes back */
+        printf("extfs %s: mapped file %lx an instance before made: no slot for it: cut off\n",
+               vol.name, (unsigned long)key);
+        detach(key);
+        return;
+    }
+    memset(&mh[i], 0, sizeof(mh[i]));
+    mh[i].size = size;
+    kept->maps[i] = (struct xf_map){
+        .used = true, .kind = FILE_MAP_READ, .written = true, .ino = ino,
+        .igen = in.d.generation, .key = key,
+    };
+    if (!from_key_said)
+        printf("extfs %s: mapped files an instance before made, served from their inodes\n",
+               vol.name);
+    from_key_said = true;
+}
+
 /* ---- one cache: a mapped file that changes (the header's) ----------------------------- */
 
 /* A pager op slot i's mappers need to see the file as it is now
@@ -637,6 +687,7 @@ static bool resize(unsigned i, uint64_t size)
 void maps_wrote(uint32_t ino, uint64_t off, const void *data, uint64_t n, uint64_t old,
                 uint64_t size)
 {
+    find_lost(ino);
     for (unsigned i = 0; i < XF_MAX_MAPS; i++) {
         if (!shared(i, ino))
             continue;   /* (one to run is never written while it lives: ERR_BUSY) */
@@ -647,6 +698,7 @@ void maps_wrote(uint32_t ino, uint64_t off, const void *data, uint64_t n, uint64
 
 void maps_resized(uint32_t ino, uint64_t old, uint64_t size)
 {
+    find_lost(ino);
     for (unsigned i = 0; i < XF_MAX_MAPS; i++) {
         if (!shared(i, ino))
             continue;
@@ -660,6 +712,7 @@ void maps_changed(uint32_t ino, uint64_t lo, uint64_t hi, uint64_t size)
     uint64_t vs = vmo_size(size);
     uint64_t first = lo & ~(uint64_t)(PAGE_SIZE - 1);
     uint64_t end = page_up(hi) < vs ? page_up(hi) : vs;
+    find_lost(ino);
     for (unsigned i = 0; i < XF_MAX_MAPS; i++) {
         if (!shared(i, ino))
             continue;
