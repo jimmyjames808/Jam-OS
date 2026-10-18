@@ -796,8 +796,9 @@ struct pager_request {
 
 /* pager_dirty's flags: PAGER_DIRTY_BEGIN, the run's write-back begins
  * (its pages become writing, write-protected in every mapping before
- * their bytes are copied); PAGER_DIRTY_PEEK, dirty and writing pages are
- * copied and nothing changes; PAGER_DIRTY_OLDEST, the run around the
+ * their bytes are copied); PAGER_DIRTY_PEEK, dirty and writing pages, and
+ * clean ones whose write-back failed (until evicted), are copied and
+ * nothing changes; PAGER_DIRTY_OLDEST, the run around the
  * pager's oldest dirty page, whatever its VMO (key and the range's start
  * are ignored; the length is the most the run may be). */
 #define PAGER_DIRTY_BEGIN  (1u << 0)
