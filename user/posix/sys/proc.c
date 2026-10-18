@@ -45,6 +45,16 @@
  * that lies can only change which of our group signals and group waits
  * reach it.
  *
+ * Kill (FJ1). A signal is one `send` on the child's channel, written once:
+ * kill never waits for a child that doesn't read (stuck, slow, or its
+ * signal thread held by an exec). When its queue is full a standard
+ * signal is owed instead, once, as Linux's pending set holds it (its bit
+ * in the child's entry), and the child's end is watched for room (a third
+ * binding, KEY_OWED, PORT_BIND_ONCE): the signal thread then writes what
+ * is owed, lowest first; a real-time signal is EAGAIN, as Linux's
+ * sigqueue past its limit. SIGKILL needs no room: its process's kill, or
+ * its job's.
+ *
  * vfork's wait (section 3, Q3 (A)): vfork is fork, and the parent's call
  * returns once its child has exec'd (the child's exec notice, sent the
  * last thing before the replace, or once its execve's program is started
@@ -74,17 +84,24 @@
 #include "proc.h"
 #include "sig.h"
 
-#define CHILD_MAX      (PORT_MAX_BINDINGS / 2)   /* children alive or unreaped at once: two
-                                                  * bindings each, its end and its notices */
+#define OWN_BINDINGS   64                        /* the signal thread's own on its port: the
+                                                  * starter's channel, the terminal's two,
+                                                  * the timers' (sigtimer.c's 33) */
+#define CHILD_MAX      ((PORT_MAX_BINDINGS - OWN_BINDINGS) / 3)   /* children alive or
+                                                  * unreaped at once: three bindings each,
+                                                  * its end, its notices and, while it is
+                                                  * owed signals, its end's room */
 #define ONE_USER       1000                      /* the one user's uid (M13 Q7) */
 #define KEY_NOTICE     (1ull << 62)              /* | a child's key: its notices' binding */
+#define KEY_OWED       (1ull << 61)              /* | a child's key: room for what it is owed */
+#define SIG_RT_FIRST   32                        /* real-time signals queue; those below don't */
 #define NOTICE_TURN    16                        /* notices read from one child at a time */
 #define NOTICE_BYTES   64                        /* a notice and some junk; bigger: deaf */
 #define NOTICE_WAIT_NS NS_PER_S                  /* how long our notice waits for room */
 
 struct child {
     uint64_t key;     /* its port bindings' key: a serial, never 0, never reused, below
-                       * KEY_NOTICE */
+                       * KEY_OWED */
     handle_t proc;    /* its process handle; ours until it is reaped */
     handle_t sigch;   /* our end of its signal channel (`signal`), or 0; a session's
                        * session_ctl */
@@ -98,6 +115,11 @@ struct child {
     bool     session; /* one of init's sessions (sigch is its session_ctl) */
     bool     execed;  /* its exec notice came (a vfork child's) */
     bool     deaf;    /* it sent what is no notice: its notices aren't read any more */
+    bool     owing;   /* its end's room is watched (KEY_OWED, PORT_BIND_ONCE) */
+    uint32_t owed;    /* standard signals its full queue couldn't take (bit n: signal n),
+                       * each once, sent when it has room (pay_locked) */
+    uint32_t owed_queued;              /* of them, sigqueue's (SI_QUEUE) */
+    int32_t  owed_value[SIG_RT_FIRST]; /* by signal: sigqueue's value */
 };
 
 static lock_t       lock;
@@ -348,6 +370,8 @@ static void reap_locked(unsigned i)
 {
     if (hears(&kids[i]))   /* gone with the handle anyway, unless a kill holds a duplicate */
         (void)jam_port_unbind(sig_port(), kids[i].sigch, kids[i].key | KEY_NOTICE);
+    if (kids[i].owing)
+        (void)jam_port_unbind(sig_port(), kids[i].sigch, kids[i].key | KEY_OWED);
     jam_handle_close(kids[i].proc);
     jam_handle_close(kids[i].sigch);
     if (kids[i].job)
@@ -483,15 +507,79 @@ static void give_heard(bool news)
         wake_sleepers();
 }
 
+/* ---- signals owed ------------------------------------------------------------------ */
+
+/* Watch c's end for room (or its end), once: a packet with KEY_OWED.
+ * lock held. */
+static bool watch_room_locked(struct child *c)
+{
+    c->owing = jam_port_bind(sig_port(), c->sigch, c->key | KEY_OWED,
+                             SIG_WRITABLE | SIG_PEER_CLOSED, PORT_BIND_ONCE) == OK;
+    return c->owing;   /* fires at once if there is room already */
+}
+
+/* The standard signal signo that the child with key couldn't take, its
+ * queue full: owed, as Linux's pending set keeps a standard signal once
+ * (one owed already is the same one, its first code and value kept), and
+ * sent by pay_locked when its end has room. kill never waits for a child
+ * (FJ1; the 1 s wait before it held a group's kill a second per stuck
+ * child, and the signal thread's forwarding with it). 0, or -EAGAIN if
+ * its end can't be watched (the signal is lost then). A child that has
+ * ended or been reaped is owed nothing: 0, as a kill of a zombie is. */
+static long owe(uint64_t key, int signo, int code, int32_t value)
+{
+    long e = 0;
+    uint32_t bit = 1u << signo;
+    lock_take(&lock);
+    for (unsigned i = 0; i < nkids; i++) {
+        struct child *c = &kids[i];
+        if (c->key != key || c->dead)
+            continue;
+        if (!(c->owed & bit)) {
+            c->owed |= bit;
+            c->owed_queued = code == SI_QUEUE ? c->owed_queued | bit : c->owed_queued & ~bit;
+            c->owed_value[signo] = value;
+        }
+        if (!c->owing && !watch_room_locked(c)) {
+            c->owed &= ~bit;
+            e = -EAGAIN;
+        }
+        break;
+    }
+    lock_give(&lock);
+    return e;
+}
+
+/* c's end has room, or the child has ended: what it is owed, lowest
+ * signal first, each written once (a channel write: no wait), until the
+ * queue is full again, when its room is watched again. lock held. */
+static void pay_locked(struct child *c)
+{
+    c->owing = false;
+    for (int s = 1; s < SIG_RT_FIRST && c->owed; s++) {
+        uint32_t bit = 1u << s;
+        if (!(c->owed & bit))
+            continue;
+        long e = c->dead ? 0
+                         : sig_channel_send(c->sigch, s, c->owed_queued & bit ? SI_QUEUE : SI_USER,
+                                            c->owed_value[s]);
+        if (e == -EAGAIN && watch_room_locked(c))
+            return;   /* full again: the rest when it has room */
+        c->owed &= ~bit;   /* sent, or it can't be (gone, or nothing to watch): dropped */
+    }
+}
+
 void lx_child_packet(const struct port_packet *pkt)
 {
     bool news = false;
     lock_take(&lock);
     for (unsigned i = 0; i < nkids; i++) {
         struct child *c = &kids[i];
-        if (c->key != (pkt->key & ~KEY_NOTICE))
+        if (c->key != (pkt->key & ~(KEY_NOTICE | KEY_OWED)))
             continue;
-        if (!(pkt->key & KEY_NOTICE)) {
+        if (pkt->key & KEY_OWED) {
+            pay_locked(c);
+        } else if (!(pkt->key & KEY_NOTICE)) {
             if (!c->dead)
                 ended(i);
         } else if (hear_locked(c, &news)) {   /* the rest on another turn: others' come first */
@@ -551,10 +639,13 @@ void lx_vfork_wait(int32_t pid)
     }
 }
 
-/* A signal to one child through h (a duplicate, closed here): its
- * session_ctl, its signal channel, or for SIGKILL its process or its job
- * (job: h is one). */
-static long signal_one(handle_t h, bool session, bool job, int signo, int code, int32_t value)
+/* A signal to one child (its key) through h (a duplicate, closed here):
+ * its session_ctl, its signal channel, or for SIGKILL its process or its
+ * job (job: h is one). A full signal channel never makes us wait: a
+ * standard signal is owed (owe), a real-time one EAGAIN, as Linux's
+ * sigqueue past the queued signals' limit. */
+static long signal_one(uint64_t key, handle_t h, bool session, bool job, int signo, int code,
+                       int32_t value)
 {
     long e;
     if (job) {
@@ -563,8 +654,12 @@ static long signal_one(handle_t h, bool session, bool job, int signo, int code, 
         status_t st = session_ctl_signal(h, (uint8_t)signo);
         e = st == ERR_NOT_SUPPORTED || st == ERR_BAD_STATE || st == ERR_PEER_CLOSED ? 0
                                                                                     : lx_err(st);
+    } else if (signo == SIGKILL) {
+        e = lx_err(jam_process_kill(h));
     } else {
-        e = signo == SIGKILL ? lx_err(jam_process_kill(h)) : sig_channel_send(h, signo, code, value);
+        e = sig_channel_send(h, signo, code, value);
+        if (e == -EAGAIN && signo < SIG_RT_FIRST)
+            e = owe(key, signo, code, value);
     }
     jam_handle_close(h);
     return e;
@@ -577,7 +672,7 @@ long lx_child_signal(int32_t pid, int32_t pgid, int signo, int code, int32_t val
      * thread pointer for a program's own malloc to use (Chromium's
      * PartitionAlloc faulted there). */
     unsigned n = 0, matched = 0, room = 1;
-    struct target { handle_t h; bool session, job; } one, *to = &one;
+    struct target { uint64_t key; handle_t h; bool session, job; } one, *to = &one;
     lock_take(&lock);
     while (pid <= 0 && nkids > room) {   /* room for each, allocated without the lock (fork.c says why) */
         room = nkids;
@@ -599,6 +694,7 @@ long lx_child_signal(int32_t pid, int32_t pgid, int signo, int code, int32_t val
         matched++;
         bool kill = signo == SIGKILL && !c->session;
         handle_t h = kill ? (c->job ? c->job : c->proc) : c->sigch;
+        to[n].key = c->key;
         to[n].session = c->session;
         to[n].job = kill && c->job;
         if (!c->dead && signo && h && jam_handle_duplicate(h, RIGHT_SAME, &to[n].h) == OK)
@@ -607,7 +703,7 @@ long lx_child_signal(int32_t pid, int32_t pgid, int signo, int code, int32_t val
     give_heard(news);
     long r = 0;
     for (unsigned i = 0; i < n; i++) {
-        long e = signal_one(to[i].h, to[i].session, to[i].job, signo, code, value);
+        long e = signal_one(to[i].key, to[i].h, to[i].session, to[i].job, signo, code, value);
         if (e && !r)
             r = e;
     }

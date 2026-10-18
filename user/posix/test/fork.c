@@ -37,6 +37,12 @@
  *   kill: SIGKILL to a child that spawned a program and forked a child
  *     of its own ends all three (the child's own job, FJ1): their pipe's
  *     end of file comes at once.
+ *   flood: a child that doesn't read its signal channel (its signal
+ *     thread held): kill of SIGRTMIN until its queue is full, then EAGAIN
+ *     at once; SIGUSR1 1,100 times and a SIGUSR2 on the full queue, each
+ *     0 at once (owed, FJ1); the whole flood well under 2 s. Let go, the
+ *     child runs one SIGUSR1 handler, one SIGUSR2's and one per queued
+ *     SIGRTMIN.
  *   clone: syscall(SYS_clone, SIGCHLD, ...) with CLONE_PARENT_SETTID and
  *     CLONE_CHILD_SETTID (the child's word its pid: its first thread's id),
  *     and its refusals (CLONE_VM alone, a new stack, an unknown flag);
@@ -715,6 +721,93 @@ static void fork_kill(void)
     printf("posixtest: fork: kill: the child's own children %s in %llu ms\n",
            gone ? "gone" : "NOT gone", (unsigned long long)((now() - t0) / NS_PER_MS));
     close(p[0]);
+}
+
+/* ---- flood ------------------------------------------------------------------------ */
+
+#define FLOOD 1100   /* kills of each kind: more than a channel queues (1,024) */
+
+/* The layer's (sigthread.c): an exec's hold on the signal thread, here a
+ * child's way to stop reading its signal channel, as a stuck one would. */
+void sig_thread_hold(void);
+void sig_thread_release(void);
+
+static volatile sig_atomic_t rts;
+
+static void on_rt(int sig)
+{
+    (void)sig;
+    rts++;
+}
+
+/* kill never waits for a child that doesn't read (FJ1): the child holds
+ * its signal thread, so its queue fills; SIGRTMIN until it is full, then
+ * EAGAIN at once for the rest; SIGUSR1 FLOOD times and a SIGUSR2 on the
+ * full queue, each 0 at once, owed once. Let go, the child (all three
+ * blocked) has every queued SIGRTMIN, one SIGUSR1 and the SIGUSR2 (owed
+ * last, so sent last), and unblocked runs the handlers that many times. */
+static void fork_flood(void)
+{
+    map_report();
+    handle(SIGUSR1, on_usr1);
+    handle(SIGUSR2, on_usr2);
+    handle(SIGRTMIN, on_rt);
+    sigset_t three;
+    sigemptyset(&three);
+    sigaddset(&three, SIGUSR1);
+    sigaddset(&three, SIGUSR2);
+    sigaddset(&three, SIGRTMIN);
+    rep->v[0] = rep->v[1] = rep->go = 0;
+    pid_t pid = fork();
+    if (pid == 0) {
+        KID(sigprocmask(SIG_BLOCK, &three, NULL) == 0);
+        usr1s = usr2s = rts = 0;
+        sig_thread_hold();
+        rep->v[0] = 1;
+        uint64_t end = now() + KID_NS;
+        while (!rep->go && now() < end)
+            sched_yield();
+        sig_thread_release();
+        sigset_t p;
+        sigemptyset(&p);
+        while (now() < end + KID_NS && sigpending(&p) == 0 && !sigismember(&p, SIGUSR2))
+            usleep(1000);
+        KID(sigismember(&p, SIGUSR1) && sigismember(&p, SIGUSR2) && sigismember(&p, SIGRTMIN));
+        KID(sigprocmask(SIG_UNBLOCK, &three, NULL) == 0);
+        end = now() + KID_NS;
+        while ((rts < rep->v[1] || !usr1s || !usr2s) && now() < end)
+            sched_yield();
+        KID(usr1s == 1 && usr2s == 1 && rts == rep->v[1]);
+        kid_end(0);
+    }
+    CHECK(pid > 0 && until_set(&rep->v[0], KID_NS));
+    if (pid <= 0)
+        return;
+    uint64_t t0 = now();
+    int queued = 0, again = 0, owed_fails = 0;
+    for (int i = 0; i < FLOOD; i++) {
+        errno = 0;
+        if (kill(pid, SIGRTMIN) == 0)
+            queued++;
+        else if (errno == EAGAIN)
+            again++;
+    }
+    for (int i = 0; i < FLOOD; i++)
+        owed_fails += kill(pid, SIGUSR1) != 0;
+    owed_fails += kill(pid, SIGUSR2) != 0;
+    uint64_t ms = (now() - t0) / NS_PER_MS;
+    printf("posixtest: fork: flood: %d SIGRTMIN queued, %d EAGAIN, %d SIGUSR1 and a SIGUSR2 "
+           "on the full queue (%d failed), in %llu ms\n", queued, again, FLOOD, owed_fails,
+           (unsigned long long)ms);
+    CHECK(queued > 0 && queued < FLOOD && again == FLOOD - queued);
+    CHECK(owed_fails == 0);
+    CHECK(ms < 2000);   /* no wait for room: before FJ1 each EAGAIN took a second */
+    rep->v[1] = queued;
+    rep->go = 1;
+    reaped(pid, 0);
+    handle(SIGUSR1, SIG_DFL);
+    handle(SIGUSR2, SIG_DFL);
+    handle(SIGRTMIN, SIG_DFL);
 }
 
 /* ---- clone ------------------------------------------------------------------------ */
@@ -1435,7 +1528,7 @@ static const struct {
     { "twice", fork_twice, 0 },     { "threads", fork_threads, 0 },
     { "torn", fork_torn, 0 },       { "huge", fork_huge, 0 },
     { "nomem", fork_nomem, JOB_PAGES }, { "signals", fork_signals, 0 },
-    { "kill", fork_kill, 0 },
+    { "kill", fork_kill, 0 },       { "flood", fork_flood, 0 },
     { "clone", fork_clone, 0 },     { "small", fork_small, 0 },
     { "stacks", fork_stacks, 0 },    { "alloc", fork_alloc, 0 },
     { "heap", fork_heap, 0 },

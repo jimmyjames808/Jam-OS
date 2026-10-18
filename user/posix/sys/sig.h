@@ -311,8 +311,10 @@ handle_t sig_port(void);
 /* The calling thread is the signal thread (it has no thread-local storage:
  * the call boundary leaves it alone). */
 bool     sig_on_signal_thread(void);
-/* Write `send` on a child's signal channel ch, waiting up to a second for
- * room: 0, or -errno. A channel whose program has ended is 0 (it is gone). */
+/* Write `send` on a child's signal channel ch, once, never waiting for
+ * room: 0, -EAGAIN when its queue is full (proc.c owes the child a
+ * standard signal then and refuses a real-time one), or -errno. A channel
+ * whose program has ended is 0 (it is gone). */
 long     sig_channel_send(handle_t ch, int signo, int code, int32_t value);
 /* A timer's binding: the kernel timer h fires a packet the signal thread
  * hands to sigtimer.c (sig_timer_fired). */

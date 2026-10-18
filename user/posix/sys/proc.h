@@ -93,12 +93,15 @@ unsigned lx_child_pids(int32_t *out, unsigned cap);
 /* Signal our children: pid > 0, that one; else those in group pgid (> 0),
  * or all of them (pgid 0). SIGKILL is the child's job_kill when it has a
  * job in the table (a forked child, a program from /data), else
- * process_kill; any other signal a
- * `send` on the child's channel with code (si_code) and value; 0 checks
- * only. A child that has ended but isn't reaped matches and gets nothing.
+ * process_kill; any other signal a `send` on the child's channel with
+ * code (si_code) and value, never waiting: a full queue owes the child a
+ * standard signal (sent once it has room) and is -EAGAIN for a real-time
+ * one; 0 checks only. A child that has ended but isn't reaped matches and
+ * gets nothing.
  * How many matched (0: none, kill's ESRCH), or -errno. */
 long    lx_child_signal(int32_t pid, int32_t pgid, int signo, int code, int32_t value);
 /* A packet from the signal thread's port with a child's key (below
- * SIG_KEY_OURS): that child's end noticed, the waits woken, SIGCHLD; or
+ * SIG_KEY_OURS): that child's end noticed, the waits woken, SIGCHLD; its
+ * end's room, for the signals it is owed; or
  * its notices (signal.idl's events to the client) read. */
 void    lx_child_packet(const struct port_packet *pkt);

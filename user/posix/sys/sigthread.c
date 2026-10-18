@@ -38,7 +38,6 @@
 #define KEY_WAKE     (SIG_KEY_OURS | 3)          /* look for a terminal again */
 #define KEY_HUP      (SIG_KEY_OURS | 4)          /* the terminal has hung up */
 #define KEY_TIMER    (SIG_KEY_OURS | (1ull << 32))   /* | the timer's index */
-#define SEND_WAIT_NS NS_PER_S                    /* how long a send waits for room */
 #define RETRY_NS     (10 * NS_PER_MS)            /* a channel we couldn't read, read again */
 
 static uint8_t stack[STACK_SIZE] __attribute__((aligned(16)));
@@ -69,20 +68,10 @@ handle_t sig_port(void)
 long sig_channel_send(handle_t ch, int signo, int code, int32_t value)
 {
     uint8_t c = code == SI_USER ? SIGNAL_CODE_USER : SIGNAL_CODE_QUEUE;
-    uint64_t deadline = now() + SEND_WAIT_NS;
-    for (;;) {
-        status_t st = signal_send(ch, (uint8_t)signo, c, value);
-        if (st == OK || st == ERR_PEER_CLOSED)
-            return 0;   /* sent, or the program has ended: nothing to signal */
-        if (st != ERR_SHOULD_WAIT)
-            return lx_err(st);
-        signals_t seen;
-        st = jam_object_wait_one(ch, SIG_WRITABLE | SIG_PEER_CLOSED, deadline, &seen);
-        if (st == ERR_TIMED_OUT)
-            return -EAGAIN;   /* the program is stuck: its queue stays full */
-        if (st != OK && st != ERR_INTERRUPTED)
-            return lx_err(st);
-    }
+    status_t st = signal_send(ch, (uint8_t)signo, c, value);
+    if (st == OK || st == ERR_PEER_CLOSED)
+        return 0;   /* sent, or the program has ended: nothing to signal */
+    return st == ERR_SHOULD_WAIT ? -EAGAIN : lx_err(st);   /* its queue is full */
 }
 
 /* ---- a signal comes in ------------------------------------------------------------- */
