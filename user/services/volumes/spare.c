@@ -86,10 +86,11 @@ const unsigned fat_nlimits = sizeof(fat_limits) / sizeof(fat_limits[0]);
 
 /* An extfs's (supervise.c): the system's volume on a drive boot (/data and
  * /jam, and init's /tmp, /usr and /pkg views of it), so room for every
- * open file, view and mapped file it may serve (<extfs.h>'s XF_MAX_FILES,
- * XF_VIEWS, XF_MAX_MAPS: a channel and a 64 KiB buffer each file, a
- * channel each view, a VMO each map), its 2 MiB cache, a journal's region
- * of up to 8 MiB and its 1 MiB state. 64 MiB at most, taken as used. */
+ * open file, view, mapped file and watcher it may serve (<extfs.h>'s
+ * XF_MAX_FILES, XF_VIEWS, XF_MAX_MAPS, FSW_CHANNELS: a channel and a 64 KiB
+ * buffer each file, a channel each view, a VMO each map, a channel, a bell
+ * and up to 16 KiB of events each watcher), its 2 MiB cache, a journal's
+ * region of up to 8 MiB and its 1 MiB state. 64 MiB at most, taken as used. */
 const struct sup_limit ext_limits[] = {
     { JOB_LIMIT_PAGES, 16384 },
     { JOB_LIMIT_HANDLES, 2048 },
