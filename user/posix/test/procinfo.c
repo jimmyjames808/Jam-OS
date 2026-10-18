@@ -1282,6 +1282,24 @@ static void *ask_loop(void *arg)
     return NULL;
 }
 
+/* Four threads at once on pid, which has want descriptors open. */
+static void ask_together(pid_t pid, int want)
+{
+    struct ask as[4];
+    pthread_t th[4];
+    int started = 0;
+    for (int i = 0; i < 4; i++) {
+        as[i] = (struct ask){ .pid = pid, .want = want };
+        if (pthread_create(&th[i], NULL, ask_loop, &as[i]) == 0)
+            started++;
+    }
+    CHECK(started == 4);
+    for (int i = 0; i < started; i++) {
+        pthread_join(th[i], NULL);
+        CHECK(as[i].bad == 0);
+    }
+}
+
 static void check_child_fds(void)
 {
     int wr = -1, rd = -1;
@@ -1295,20 +1313,8 @@ static void check_child_fds(void)
 
     bool got[FDS_TOP];
     char small[32];   /* room for one entry: its 19 bytes and a short name */
-    struct ask as[4];
-    pthread_t th[4];
-    int started = 0;
     int want = list_kid_fds(pid, got);
-    for (int i = 0; i < 4; i++) {
-        as[i] = (struct ask){ .pid = pid, .want = want };
-        if (pthread_create(&th[i], NULL, ask_loop, &as[i]) == 0)
-            started++;
-    }
-    CHECK(started == 4);
-    for (int i = 0; i < started; i++) {
-        pthread_join(th[i], NULL);
-        CHECK(as[i].bad == 0);
-    }
+    ask_together(pid, want);
 
     /* A listing taken one entry a call still sees every descriptor once: the
      * position is the descriptor's number, so each call goes on from where
@@ -1382,8 +1388,11 @@ void pt_child_fds_exec(const char *path)
     close(p[0]);
     close(q[1]);
     CHECK(pid > 0);
-    if (pid > 0)
+    if (pid > 0) {
+        bool got[FDS_TOP];
         fds_cycle(pid, p[1], q[0], false);
+        ask_together(pid, list_kid_fds(pid, got));   /* the relay keeps nothing between questions */
+    }
     close(p[1]);   /* the program ends (5), and the stub with it */
     int status = -1;
     CHECK(pid > 0 && waitpid(pid, &status, 0) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 5);
@@ -1409,6 +1418,9 @@ static void check_others(void)
     snprintf(path, sizeof(path), "/proc/%d/stat", (int)getppid());
     errno = 0;
     CHECK(is_our_tid((int)getppid()) || (stat(path, &st) == -1 && errno == ENOENT));   /* our parent's */
+    snprintf(path, sizeof(path), "/proc/%d/fd", (int)getppid());   /* and its descriptors */
+    errno = 0;
+    CHECK(is_our_tid((int)getppid()) || (open(path, O_RDONLY | O_DIRECTORY) == -1 && errno == ENOENT));
     errno = 0;
     CHECK(stat("/proc/0/stat", &st) == -1 && errno == ENOENT);
     errno = 0;

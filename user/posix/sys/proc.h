@@ -90,7 +90,8 @@ long    lx_child_maps(int32_t pid, uint64_t from, struct map_info *out, uint32_t
  * (bit n % 8 of bits[n / 8] is descriptor n; none for a child that has
  * ended), or -ESRCH (not a child of ours, or reaped), -EACCES (nothing to
  * ask it on: init's session, a program without the signal protocol),
- * -EAGAIN (it isn't reading its channel), -EIO (no answer in 5 s). Waits.
+ * -EAGAIN (it isn't reading its channel), -EIO (no answer in 3 s: a program
+ * linked before the question existed never answers). Waits.
  * lx_child_fds_check says at once whether it could ask: 0, -ESRCH or
  * -EACCES. */
 long    lx_child_fds(int32_t pid, uint8_t bits[POSIXFDS_FD_MAX / 8]);
