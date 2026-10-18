@@ -849,23 +849,27 @@ static void real_mounts(void)
     static const char *const mounts[] = { "/data", "/tmp" };
     for (unsigned i = 0; i < sizeof(mounts) / sizeof(mounts[0]); i++) {
         struct statfs s;
-        if (statfs(mounts[i], &s) != 0)
+        if (statfs(mounts[i], &s) != 0) {
+            printf("posixtest: inotify: %s: no statfs (%s): skipped\n", mounts[i], strerror(errno));
             continue;
+        }
         int fd = inotify_init1(IN_CLOEXEC);
         int wd = inotify_add_watch(fd, mounts[i], CR_MASK);
         bool fat = s.f_type == FAT_MAGIC && !(s.f_flags & ST_RDONLY);
         close(fd);
-        if (fat)
+        if (fat) {
             CHECK(wd == -1 && errno == EOPNOTSUPP);
-        else if (wd < 0 && errno == EOPNOTSUPP)
+            printf("posixtest: inotify: %s: fat, refused (EOPNOTSUPP)\n", mounts[i]);
+        } else if (wd < 0 && errno == EOPNOTSUPP) {
             printf("posixtest: inotify: %s (%#lx): no watches from its service yet\n", mounts[i],
                    (unsigned long)s.f_type);
-        else if (!(s.f_flags & ST_RDONLY) && wd > 0) {
+        } else if (!(s.f_flags & ST_RDONLY) && wd > 0) {
             real_events(mounts[i]);
             racy_cost(mounts[i]);
-        }
-        else
+        } else {
             CHECK(wd > 0);   /* read-only: quiet */
+            printf("posixtest: inotify: %s: read-only, a quiet watch\n", mounts[i]);
+        }
     }
 }
 
