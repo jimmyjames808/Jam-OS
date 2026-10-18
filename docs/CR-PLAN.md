@@ -2386,8 +2386,9 @@ what each server saw: `GET /page-http.html` for `www.jam:8000` and
 `GET /pic.svg` for `mac.jam:8000` (twice each: the dump and the shot, from
 a `HeadlessChrome`), the same on 8443 over TLS 1.3, and the one failed
 handshake of the refused run. The three PNGs came out byte for byte the
-same (15,069 bytes). A run takes some 2.2 s on the PC; the case about
-a minute with the stick.
+same (15,069 bytes). A headless run takes some 2.2 s in the guest; the
+case about 25 s once the PC gives it its slot (batch 18220809: three runs
+of it and the full init run, all PASS).
 
 #### CB4 notes (2026-10-18)
 

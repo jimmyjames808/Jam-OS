@@ -14,8 +14,9 @@ tools/cr/headless.html, with its picture beside it (local) or from a second
 name (http, https). Checked:
 
     the exit status of each run (the log's `rcN-<status>`: 0 for the pages,
-        whatever it was for the refused one), and no complaint of the
-        sandbox's libc interceptor (dlsym for localtime or getaddrinfo)
+        whatever it was for the refused one), no complaint of the
+        sandbox's libc interceptor (dlsym for localtime or getaddrinfo), and
+        the shell's `host` answers for the two names
     each DOM: the page's title and the line its script wrote, which says the
         script ran and the picture arrived with its size (320x160)
     each PNG: 800x600, and the colours at the box, the picture, the circle
@@ -147,6 +148,10 @@ def main(argv):
     # dlsym(RTLD_NEXT): the layer answers, so neither complaint is logged
     report("dlsym" not in term and "Cannot find getaddrinfo" not in term,
            "the log has no dlsym complaint (localtime, getaddrinfo)")
+    # the shell's `host` before the by-name runs: netpeer's DNS answered both names
+    for name in ("www.jam", "mac.jam"):
+        report(re.search(r"^%s has address [0-9.]+" % re.escape(name), term, re.M),
+               "the guest's DNS answered %s" % name)
     m = re.search(r"^rc7-(\d+)", term, re.M)
     report(m, "run 7 (no trust flag) ended: status %s" % (m.group(1) if m else "missing"))
     m = re.search(r"Page load failed: (net::ERR_CERT_[A-Z_]+)", term)
