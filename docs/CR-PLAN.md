@@ -2121,12 +2121,20 @@ musl's internal allocator: in a program that keeps musl's `malloc`,
 still wait. Blocks up to 16 KiB come from size classes (16-byte steps to
 64, then four to each doubling) cut from 64 KiB runs of one arena, a 1 GiB
 VMO of address space mapped at the first allocation, pages committed on
-touch (libos's heap's way); freed blocks go on their class's list and runs
-are never given back. A bigger block (or any, once the arena is full) is a
-VMO of its own, unmapped by its free. No VMO handle is kept (a forked
-child's copy is a VMO it has no handle to), so nothing decommits. Neither
+touch (libos's heap's way); freed blocks go on their class's list and a
+class's runs stay its own. A bigger block is a span of whole runs, given
+back by its free to a list of free spans (by address, merged with free
+neighbours). So the heap is one mapping, made once: the first build gave
+each big block a VMO of its own, and posixtest's scm and peer cases, which
+count the job's handles across calls, saw one more (a socket's lazily
+allocated buffer: batch 18145113, both tries; init too, through peer).
+Only once the arena is full is a block a VMO of its own. No VMO handle is
+kept (a forked child's copy is a VMO it has no handle to), so nothing
+decommits: pages a big block touched stay committed for the next. Neither
 is in libc's table of mappings, so the program's `munmap` never reaches
-them. In a native program the `jam_` names are libos's heap (`heap.c`'s
+them. A host harness (scratch: heap.c with stub headers, 400,000 random
+`jam_malloc`, `jam_calloc`, `jam_realloc` and `jam_free` of 0 bytes to 8
+MiB under AddressSanitizer, every block's bytes checked) passed. In a native program the `jam_` names are libos's heap (`heap.c`'s
 aliases). Every allocation of the layer and of libjam was converted (312
 calls in 53 files, and the layer's six `strdup`s), with dr_mp3's default
 allocators; posixtest's one free of a layer block (`fileskid.c`) too.
