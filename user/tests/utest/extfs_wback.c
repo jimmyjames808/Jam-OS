@@ -14,9 +14,14 @@
  *      msync is answered OK, and that of a file unlinked under its mapping
  *      (an orphan the fresh mount dropped) ERR_PEER_CLOSED;
  *   4. a full volume: a store over a hole is ERR_NO_SPACE at the next
- *      msync and at the next fsync, once each, and a read shows it as the
- *      mapping does (the page kept, docs/WRITEMAP-REVIEW.md's finding 1);
- *      a store over the file's own block in the same msync is written;
+ *      msync and at the next fsync, and a read shows it as the mapping
+ *      does (the page kept, docs/WRITEMAP-REVIEW.md's finding 1); a store
+ *      over the file's own block in the same msync is written. The error
+ *      once to each mapper and each open (WR2's errseq): our mapping and
+ *      a child process's each hear of it once, a mapping made after they
+ *      did doesn't; two opens held across it and one made before any
+ *      open heard of it each hear of it once, one made after doesn't; an
+ *      error met by an fsync's write-back reaches the mappers too;
  *   5. VMOs a fresh instance doesn't know of yet (lost()): a write and a
  *      truncate reach their pages, a map to run is refused.
  * The disk is saved for Linux's e2fsck (tools/extfs-svc-test.sh). */
@@ -146,6 +151,102 @@ static status_t fsync(struct wf *w)
     st = file_sync_until(f.ch, dl());
     t_close(&f);
     return st;
+}
+
+/* msync of w's mapping as a mapper with its own write-back error sample
+ * (libc's per mapping: WR2's errseq). */
+static status_t msync_as(struct wf *w, uint32_t *seq)
+{
+    return jam_vmo_sync(w->vmo, 0, w->len, VMO_SYNC_WAIT, seq);
+}
+
+/* Another process mapping a file: utest's wback-map child, which samples
+ * the VMO sent in the first message and syncs it whole for each message
+ * after, answering each with the status (wback_child). */
+#define WM_SAMPLE 1u
+#define WM_SYNC   2u
+
+struct wm {
+    handle_t ch, job, proc;
+};
+
+static status_t wm_ask(struct wm *c, uint32_t what, handle_t vmo)
+{
+    status_t st = jam_channel_write(c->ch, &what, sizeof(what), vmo ? &vmo : NULL, vmo ? 1 : 0);
+    signals_t seen = 0;
+    if (st == OK)
+        st = jam_object_wait_one(c->ch, SIG_READABLE | SIG_PEER_CLOSED, dl(), &seen);
+    status_t ans = ERR_INTERNAL;
+    uint32_t nb = 0;
+    struct channel_read_args a = {
+        .h = c->ch, .rd_cap = sizeof(ans), .rd_bytes = (uint64_t)(uintptr_t)&ans,
+        .rd_actual = (uint64_t)(uintptr_t)&nb,
+    };
+    if (st == OK)
+        st = jam_channel_read(&a);
+    return st != OK ? st : nb == sizeof(ans) ? ans : ERR_INTERNAL;
+}
+
+static bool wm_start(struct wm *c, struct wf *w)
+{
+    handle_t mine = HANDLE_INVALID, theirs = HANDLE_INVALID, vmo = HANDLE_INVALID;
+    *c = (struct wm){ 0 };
+    CHECK_ST(new_job(&c->job), OK);
+    CHECK_ST(jam_channel_create(&mine, &theirs), OK);
+    CHECK_ST(child("wback-map", NULL, c->job, theirs, &c->proc), OK);
+    c->ch = mine;
+    CHECK_ST(jam_handle_duplicate(w->vmo, RIGHT_SAME, &vmo), OK);
+    CHECK_ST(wm_ask(c, WM_SAMPLE, vmo), OK);
+    return true;
+}
+
+static bool wm_stop(struct wm *c)
+{
+    struct process_info info;
+    CHECK_ST(jam_handle_close(c->ch), OK);   /* it ends at the peer's close */
+    CHECK_ST(spawn_wait(c->proc, 20 * NS_PER_S, &info), OK);
+    CHECK_EQ(info.exit_code, 0);
+    CHECK_ST(jam_handle_close(c->proc), OK);
+    CHECK_ST(jam_handle_close(c->job), OK);
+    return true;
+}
+
+int wback_child(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+    handle_t ch = startup_handle(SR_USER), vmo = HANDLE_INVALID;
+    uint32_t seq = 0;
+    uint64_t size = 0;
+    for (;;) {
+        uint32_t what = 0, nb = 0, nh = 0;
+        handle_t h = HANDLE_INVALID;
+        struct channel_read_args a = {
+            .h = ch, .rd_cap = sizeof(what), .rd_bytes = (uint64_t)(uintptr_t)&what,
+            .rd_actual = (uint64_t)(uintptr_t)&nb, .rd_handles = (uint64_t)(uintptr_t)&h,
+            .rd_hcap = 1, .rd_hactual = (uint64_t)(uintptr_t)&nh,
+        };
+        status_t st = jam_channel_read(&a);
+        if (st == ERR_SHOULD_WAIT) {
+            signals_t seen;
+            if (jam_object_wait_one(ch, SIG_READABLE | SIG_PEER_CLOSED, DEADLINE_NEVER, &seen))
+                return 2;
+            continue;
+        }
+        if (st == ERR_PEER_CLOSED)
+            return 0;
+        if (st != OK || nb != sizeof(what))
+            return 3;
+        if (nh)
+            vmo = h;
+        status_t ans = ERR_INVALID_ARGS;
+        if (what == WM_SAMPLE && (ans = jam_vmo_get_size(vmo, &size)) == OK)
+            ans = jam_vmo_sync(vmo, 0, 0, VMO_SYNC_SAMPLE, &seq);
+        else if (what == WM_SYNC)
+            ans = jam_vmo_sync(vmo, 0, size, VMO_SYNC_WAIT, &seq);
+        if (jam_channel_write(ch, &ans, sizeof(ans), NULL, 0) != OK)
+            return 4;
+    }
 }
 
 static int64_t mtime_of(const char *path)
@@ -326,9 +427,17 @@ static bool full(void)
     CHECK_ST(st, ERR_NO_SPACE);
     if (!wmap(&fn))
         return false;
+    /* Two mappers sample the VMO's errors: our mapping (a) and a child
+     * process's (b). */
+    struct wm b;
+    uint32_t sa = 7, sc = 7;
+    CHECK_ST(jam_vmo_sync(fn.vmo, 0, 0, VMO_SYNC_SAMPLE, &sa), OK);
+    if (!wm_start(&b, &fn))
+        return false;
     put(&fn, PAGE_SIZE, 100, 18, false);   /* over the hole: no block for it */
     store(&fn, 3 * PAGE_SIZE, 50, 18);     /* over its own block: written */
-    CHECK_ST(msync(&fn), ERR_NO_SPACE);
+    CHECK_ST(msync_as(&fn, &sa), ERR_NO_SPACE);
+    CHECK_ST(msync_as(&fn, &sa), OK);   /* once */
     CHECK(clean());   /* given up: the pages clean, Q1's answer */
     /* ... but a read shows the store the mapping shows, until the page is
      * evicted (the disk's bytes then, for both: an instance with no pager
@@ -336,17 +445,51 @@ static bool full(void)
     if (!read_as_mapped(&fn))
         return false;
     /* Mapped again while the VMO lives (extfs let go of its handle at the
-     * open's close): the error stays for the next fsync. */
+     * open's close): the error stays for the opens' next fsync. This
+     * mapping (c), made after a heard of the error, doesn't hear of it;
+     * b, which mapped before, does, once. */
     handle_t again = HANDLE_INVALID;
     uint64_t size = 0;
     CHECK_ST(t_open(&r, fn.path, FS_READ | FS_WRITE, &f), OK);
     st = file_map_until(f.ch, dl(), FILE_MAP_WRITE, &again, &size);
     t_close(&f);
     CHECK_ST(st, OK);
+    CHECK_ST(jam_vmo_sync(again, 0, 0, VMO_SYNC_SAMPLE, &sc), OK);
+    CHECK_ST(jam_vmo_sync(again, 0, fn.len, VMO_SYNC_WAIT, &sc), OK);
     CHECK_ST(jam_handle_close(again), OK);
-    CHECK_ST(fsync(&fn), ERR_NO_SPACE);
-    CHECK_ST(fsync(&fn), OK);   /* once */
+    CHECK_ST(wm_ask(&b, WM_SYNC, HANDLE_INVALID), ERR_NO_SPACE);
+    CHECK_ST(wm_ask(&b, WM_SYNC, HANDLE_INVALID), OK);
+    CHECK_ST(msync(&fn), OK);   /* (no sample: heard of already) */
+    /* Opens: two made now, before any open heard of the error, hear of it
+     * once each (Linux's open after a failed write-back); one made after
+     * the first heard doesn't. */
+    struct tfile o1, o2;
+    CHECK_ST(t_open(&r, fn.path, FS_READ | FS_WRITE, &o1), OK);
+    CHECK_ST(t_open(&r, fn.path, FS_READ | FS_WRITE, &o2), OK);
+    CHECK_ST(file_sync_until(o1.ch, dl()), ERR_NO_SPACE);
+    CHECK_ST(file_sync_until(o1.ch, dl()), OK);
+    CHECK_ST(fsync(&fn), OK);
+    CHECK_ST(file_sync_until(o2.ch, dl()), ERR_NO_SPACE);
+    CHECK_ST(file_sync_until(o2.ch, dl()), OK);
+    /* An error met by o1's fsync (a store over another page of the hole):
+     * o1 and o2, open across it, hear of it once each, a new open doesn't;
+     * the mappers a and b hear of it too, once. */
+    put(&fn, 2 * PAGE_SIZE, 100, 19, false);
+    CHECK_ST(file_sync_until(o1.ch, dl()), ERR_NO_SPACE);
+    CHECK_ST(file_sync_until(o1.ch, dl()), OK);
+    CHECK_ST(file_sync_until(o2.ch, dl()), ERR_NO_SPACE);
+    CHECK_ST(file_sync_until(o2.ch, dl()), OK);
+    CHECK_ST(fsync(&fn), OK);
+    CHECK(clean());
+    CHECK_ST(msync_as(&fn, &sa), ERR_NO_SPACE);
+    CHECK_ST(msync_as(&fn, &sa), OK);
+    CHECK_ST(wm_ask(&b, WM_SYNC, HANDLE_INVALID), ERR_NO_SPACE);
+    CHECK_ST(wm_ask(&b, WM_SYNC, HANDLE_INVALID), OK);
     CHECK_ST(msync(&fn), OK);
+    t_close(&o1);
+    t_close(&o2);
+    if (!wm_stop(&b))
+        return false;
     CHECK_ST(t_unlink(&r, "/big"), OK);
     return true;
 }

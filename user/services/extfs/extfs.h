@@ -144,7 +144,7 @@ extern struct xf_vol vol;
 /* ---- the state (state.c) --------------------------------------------------------- */
 
 #define XF_STATE_KIND   0x73667865u   /* "exfs": svcstate's kind */
-#define XF_STATE_LAYOUT 5u            /* bump on any change to struct xf_state or the
+#define XF_STATE_LAYOUT 6u            /* bump on any change to struct xf_state or the
                                        * requests its slots replay */
 /* A slot's request area: the request (fs.rename's two paths), then from
  * XF_SLOT_DATA its data: the bounce buffer a write's bytes are copied
@@ -159,6 +159,8 @@ struct xf_file {
     uint32_t ino;             /* the file: its inode ... */
     uint32_t igen;            /* ... and that inode's generation */
     bool     nochange;        /* its view may not change it (file.setattr refused) */
+    uint32_t wb_seq;          /* the file's last write-back error it heard of (an xf_map's
+                               * error_seq: wback_sample at the open, wback_file) */
 };
 
 /* One view (fs.view, fs.subview; its channel is views.c's). */
@@ -182,8 +184,11 @@ struct xf_map {
                                * (adopt.c makes that answer again) */
     uint32_t ino;             /* the file: its inode ... */
     uint32_t igen;            /* ... and that inode's generation */
-    status_t error;           /* shared: the first write-back error since the file's last
-                               * file.sync (ERR_IO, ERR_NO_SPACE), or OK (wback.c) */
+    status_t error;           /* shared: the first write-back error (ERR_IO, ERR_NO_SPACE)
+                               * since an open's file.sync last heard of one, or OK ... */
+    uint32_t error_seq;       /* ... its number (xf_state's err_seq; 0: none), which each
+                               * open's file.sync reports once (wback.c: Linux's errseq) */
+    bool     error_seen;      /* ... and an open has heard of it */
     uint64_t key;             /* its VMO's key: XF_SHARED_KEY, or XF_MAP_KEY(seq, its slot) */
 };
 
@@ -247,6 +252,7 @@ struct xf_state {
     uint64_t        data_seq[2];   /* slot i's data holds request data_seq[i]'s bytes */
     struct xf_map   maps[XF_MAX_MAPS];
     uint64_t        map_seq;       /* the last key's sequence number (pager.c) */
+    uint32_t        err_seq;       /* the last write-back error's number (wback.c) */
     struct xf_watches watch;       /* watch.c's */
 };
 
@@ -544,9 +550,15 @@ void     wback_request(const struct pager_request *r);
  * itself, run if due (main.c's loop: at most once a second, idle or not). */
 uint64_t wback_due(void);
 void     wback_tick(void);
-/* file.sync: inode ino's shared VMO written back whole; the error kept for
- * the file since its last file.sync (taken), else OK. */
-status_t wback_file(uint32_t ino, uint32_t igen);
+/* file.sync of an open whose sample is *since: inode ino's shared VMO
+ * written back whole; the error the file keeps if it came after *since
+ * (reported once to each open, Linux's errseq: *since then catches up),
+ * else OK. */
+status_t wback_file(uint32_t ino, uint32_t igen, uint32_t *since);
+/* A new open's sample of inode ino's write-back errors: the last error's
+ * number, or 0 while no open has heard of it (the new open does) or the
+ * file has none kept. */
+uint32_t wback_sample(uint32_t ino, uint32_t igen);
 /* fs.sync: every page dirty now, of every VMO of the pager, written back:
  * the first error, else OK. */
 status_t wback_all(void);

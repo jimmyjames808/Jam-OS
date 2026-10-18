@@ -529,6 +529,7 @@ int child_main(int argc, char **argv)
     if (!strncmp(m, "kept-", 5))  return kept_child(argc, argv);
     if (!strncmp(m, "cow-", 4))   return vmochild_child(argc, argv);
     if (!strncmp(m, "wmap-", 5))  return wmap_child(argc, argv);
+    if (!strncmp(m, "wback-", 6)) return wback_child(argc, argv);
     if (!strncmp(m, "xwatch-", 7)) return extfs_watch_child(argc, argv);
     if (!strncmp(m, "jit-", 4))   return jit_child(argc, argv);
     if (!strncmp(m, "fork-", 5))  return fork_child_mode(argc, argv);
