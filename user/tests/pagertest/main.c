@@ -55,7 +55,8 @@
 #include <wants.h>
 #include "pagertest.h"
 
-JAM_WANTS("mount * rw\n");
+JAM_WANTS("mount * rw\n"
+          "svc init\n");   /* rec swarm kills the pager it tests (initctl.kill) */
 
 #define STEP      (64u << 10)   /* hashed at a time */
 #define CUE_WAIT  (120 * NS_PER_S)
