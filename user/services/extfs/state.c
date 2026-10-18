@@ -76,6 +76,7 @@ void state_reset(bool keep_views)
     memset(p + after, 0, watch - after);
     if (!keep_views)
         memset(kept->views, 0, sizeof(kept->views));
+    locks_reset();   /* the lock owners' tokens and the waits this instance holds */
     watch_reset();   /* its own part: the channels it still holds ended first */
 }
 

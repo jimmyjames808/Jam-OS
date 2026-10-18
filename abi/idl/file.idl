@@ -8,8 +8,8 @@
 # Restart: fat's restart is not seen: volumes' keeper holds this channel
 # and the buffer VMO across fat's death, the successor carries on with
 # the file as the last answered request left it (an answered write is
-# never lost, synced or not), and the request in progress is finished
-# exactly once. ERR_PEER_CLOSED: the mount went (fs.idl says when), or a
+# never lost, synced or not; extfs's record locks are kept the same way),
+# and the request in progress is finished exactly once. ERR_PEER_CLOSED: the mount went (fs.idl says when), or a
 # successor couldn't carry on from the dead one's state and started
 # fresh (said in the log); the file is closed, and is opened again
 # through the mount's `fs` channel.
@@ -22,6 +22,24 @@ protocol file 17 kept
 const MAP_READ  1
 const MAP_EXEC  2
 const MAP_WRITE 4
+# Record locks (lock, getlock): a lock's type, ...
+const LOCK_UNLOCK 0
+const LOCK_READ   1
+const LOCK_WRITE  2
+# ... its owner's kind, in `flags`' low bits (LOCK_KINDS) ...
+const LOCK_POSIX  0
+const LOCK_OFD    1
+const LOCK_FLOCK  2
+const LOCK_KINDS  3
+# ... F_SETLKW's ask (lock only) ...
+const LOCK_WAIT   4
+# ... the last byte a lock may cover (Linux's OFFSET_MAX: a lock to it
+# covers the file however far it grows) ...
+const LOCK_EOF    0x7fffffffffffffff
+# ... and lock's answers.
+const LOCK_GRANTED  0
+const LOCK_CONFLICT 1
+const LOCK_DEADLOCK 2
 
 # Read up to `length` bytes (<= the buffer's size) at `offset` into the
 # buffer; `actual` < length only at the end of the file.
@@ -63,3 +81,59 @@ const MAP_WRITE 4
 # errors. Allowed on a file opened for reading only. fat changes nothing;
 # the boot image is read-only: ERR_ACCESS_DENIED.
 8  setattr  (u32 mask, u32 mode, u32 uid, u32 gid, i64 atime_ns, i64 mtime_ns) -> ()
+# Record locks, Linux's fcntl and flock locks, kept by the service for the
+# file itself (its every open, by any process, meets them). A lock covers
+# bytes start to end, both included (start <= end <= LOCK_EOF), is a read
+# (shared) or a write (exclusive) lock, and has an owner, of the kind in
+# `flags` (LOCK_KINDS):
+#   LOCK_POSIX  fcntl's F_SETLK: the process that wrote the request (the
+#       kernel's pid; `owner` is ignored). Its locks on the file go when a
+#       file channel one of them was set through closes (the process ended
+#       or closed that open), and with an unlock (libc unlocks the whole
+#       file at every close of it: Linux's rule, any close drops them);
+#   LOCK_OFD  an open file description's (F_OFD_SETLK): `owner` is
+#       lockowner's. Its locks go when every handle of the owner's token is
+#       closed: the description's last close, in whichever process;
+#   LOCK_FLOCK  flock's: the same owners, always the whole file (0 to
+#       LOCK_EOF), in a space of their own: a flock lock and an fcntl lock
+#       never conflict, as on Linux.
+# POSIX and OFD locks share one space: a lock conflicts with another
+# owner's lock over any byte of it when either is a write lock. An owner's
+# own locks never conflict: a new one replaces them where it overlaps
+# them (split, joined to its neighbours of its type), as POSIX says.
+# Locks need the file open: LOCK_READ for reading (FS_READ), LOCK_WRITE
+# for writing (FS_WRITE) (else ERR_ACCESS_DENIED), a flock either way.
+# ERR_INVALID_ARGS: a type, kind, flag or range that isn't one;
+# ERR_NO_RESOURCES: the volume's locks, owners or waits are all in use
+# (ENOLCK); ERR_NOT_FOUND: an owner the service doesn't know (its token was
+# closed); ERR_NOT_SUPPORTED: a service that keeps no locks (fat, the boot
+# image). The locks outlive the service's restarts (the header's rule:
+# its state keeps them, its keeper the owners' tokens).
+#
+# Take, change or drop a lock: type LOCK_READ, LOCK_WRITE, or LOCK_UNLOCK
+# (the owner's locks on those bytes go; none there is no error). `result`:
+# LOCK_GRANTED, done; LOCK_CONFLICT, another owner's lock is in the way and
+# nothing changed. With LOCK_WAIT (F_SETLKW, flock without LOCK_NB) a
+# conflict also gives `wake`: a channel end whose peer the service closes
+# when a lock on the file goes or shrinks (or the service ends). The caller
+# waits for its SIG_PEER_CLOSED, closes it and asks again (no `wake`: it
+# waits a moment). Until then the service counts the caller as waiting for
+# the lock's owner, and a POSIX lock that would wait for an owner that
+# waits, through others, for the caller is LOCK_DEADLOCK (EDEADLK, Linux's
+# check), nothing changed. A reply that died with the service comes again
+# without its `wake`.
+9  lock  (u8 type, u8 flags, u64 start, u64 end, u64 owner) -> (u8 result, handle[<=1] wake)
+# The first lock in the way of a lock of `type` (LOCK_READ, LOCK_WRITE) on
+# start..end for the owner in `flags` (F_GETLK): its type (LOCK_UNLOCK:
+# none, the rest 0), its bytes and its owner's pid (a POSIX lock's; 0 for
+# an OFD or flock owner's, which Linux reports as -1). Changes nothing.
+10 getlock  (u8 type, u8 flags, u64 start, u64 end, u64 owner) -> (u8 held, u64 held_start, u64 held_end, u32 pid)
+# A new owner for an open file description's locks (LOCK_OFD, LOCK_FLOCK):
+# `owner` names it in lock and getlock (a random number: one process can't
+# guess another's), and it lasts while any handle of `token` is open
+# (nothing is ever written to or read from it). libc makes one for a
+# description at its first such lock and gives a forked child a duplicate,
+# so the description's last close, in whichever process, ends its locks.
+# A reply that died with the service comes again without its token (the
+# owner it made goes): ask again.
+11 lockowner  () -> (u64 owner, handle[<=1] token)

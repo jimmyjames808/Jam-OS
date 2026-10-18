@@ -17,7 +17,7 @@ functional/tls_init_dlopen skip: needs dlopen, and Jam OS has no dynamic linking
 regression/tls_get_new-dtv skip: needs dlopen, and Jam OS has no dynamic linking (M14.5)
 
 # ---- fork: a forked child's descriptors and exec (docs/FORK-PLAN.md) ---------------------------
-functional/fcntl limit: its forked children must see the parent's record lock (F_SETLK EAGAIN, F_GETLK naming the parent), but record locks are granted and never kept (dup.c: no file service keeps locks, and no lock service exists to keep them between processes)
+functional/fcntl limit: its forked children must see the parent's record lock (F_SETLK EAGAIN, F_GETLK naming the parent) on a tmpfile(), unlinked at once; the file service keeps locks across processes now (CR-PLAN's RL notes), but a forked child opens an inherited file again by its path at its first use (FL2), which an unlinked file no longer has
 
 # ---- SysV IPC: not provided ---------------------------------------------------------------
 functional/ipc_msg enosys: msgget and msgctl are ENOSYS (SysV IPC is not built)

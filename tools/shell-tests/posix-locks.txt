@@ -1,0 +1,22 @@
+# Record locks between processes from the shell (CR-PLAN.md "RL notes"):
+# posixtest's locks section (fcntl's, OFD and flock locks kept by extfs
+# per file: conflicts and F_GETLK's pid, split and joined locks, F_SETLKW
+# and flock woken, EDEADLK, a signal's EINTR, the close rule, SIGKILL,
+# fork's rules, SQLite's pattern, a posix_spawn'd child) and utest's
+# extfs_locks, extfs_restart_locks and fs_no_locks. Also in the init run;
+# this is the section alone, from the shell, with its timing line.
+#   QEMU_INPUT=tools/shell-tests/posix-locks.txt tools/qemu-test.sh <dir> posix-locks shell
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send run posixtest locks
+wait 120 posixtest: locks: ok
+wait 20 posixtest: PASS
+wait 20 run: bin/posixtest exited with code 0
+wait {prompt}
+send utest only extfs_locks,extfs_restart_locks,fs_no_locks
+wait 300 passed
+seen utest: 3 passed
+wait {prompt}
+send reboot -f
+wait reboot: resetting

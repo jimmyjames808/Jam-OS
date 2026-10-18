@@ -3,7 +3,7 @@
 # the permission bits, many writers, views and subviews, a damaged block,
 # a disk whose calls time out, restarts at each step of a request, the warm spare, mapped files with a
 # pager and across restarts, writable shared mappings and their write-back, posixtest's links section,
-# file watching's events, order and limits). The disks they leave
+# file watching's events, order and limits, record locks and across restarts). The disks they leave
 # are saved in /data/extfs-e2fsck for Linux's e2fsck (tools/extfs-svc-test.sh).
 #   tools/extfs-svc-test.sh <outdir>
 # As in cmds.txt, a marker built from $T (x) never appears in the typed
@@ -18,7 +18,7 @@ wait st-x=0
 wait {prompt}
 send utest only extfs; echo st-$T=$?
 wait 1200 passed
-seen utest: 35 passed
+seen utest: 37 passed
 wait st-x=0
 wait {prompt}
 send sync; echo st-$T=$?

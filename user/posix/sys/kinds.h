@@ -137,6 +137,13 @@ long memfd_from_vmo(handle_t vmo, uint32_t status, struct fd_desc **out);
 long memfd_add_seals(struct fd_desc *d, unsigned seals);
 long memfd_get_seals(struct fd_desc *d);
 
+/* ---- record locks (reclock.c) ----------------------------------------------- */
+
+/* fcntl's lock commands (F_GETLK, F_SETLK, F_SETLKW and the F_OFD_ ones)
+ * on d, arg the caller's struct flock; and flock's op (LOCK_*). */
+long lock_fcntl(struct fd_desc *d, long cmd, long arg);
+long lock_flock(struct fd_desc *d, long op);
+
 /* ---- for the kinds' files ------------------------------------------------- */
 
 /* The status flags an open of a /dev or /etc path keeps from its flags. */

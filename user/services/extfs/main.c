@@ -359,6 +359,8 @@ static status_t run(handle_t serve, handle_t ctl)
             views_event(pkt.key);
         } else if (pkt.key & XF_KEY_WATCH_BIT) {
             watch_event(pkt.key);
+        } else if (pkt.key & XF_KEY_LOCK_BIT) {
+            locks_event(pkt.key);
         } else if (pkt.key == XF_KEY_FS) {
             if (fs_unread_full(serve)) {
                 fs_held = true;

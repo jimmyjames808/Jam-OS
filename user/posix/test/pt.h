@@ -124,6 +124,7 @@ void pt_peer(char **argv);         /* a hostile peer in another process (peer.c)
 void pt_fork(char **argv);         /* fork, vfork and clone without CLONE_VM (fork.c) */
 void pt_exec(char **argv);         /* execve in place (exec.c) */
 void pt_inotify(char **argv);      /* inotify against fake services, and the real ones (inotify.c) */
+void pt_locks(char **argv);        /* record locks between processes (locks.c) */
 /* The signal section's second half (sigproc.c): between processes. */
 void pt_sigproc(void);
 /* The mem section's second half (memres.c): big sparse reservations. */
@@ -161,6 +162,7 @@ int  pt_child_wl(int argc, char **argv);
 int  pt_child_scm(void);
 int  pt_child_unix(int argc, char **argv);
 int  pt_child_peer(int argc, char **argv);
+int  pt_child_locks(int argc, char **argv);   /* locks a file, waits for stdin's end (locks.c) */
 int  pt_child_links(void);
 int  pt_child_fault(int argc, char **argv);   /* ends by a fault (fault.c says which) */
 int  pt_child_fork(int argc, char **argv);    /* one of fork.c's cases, in a job of its own */

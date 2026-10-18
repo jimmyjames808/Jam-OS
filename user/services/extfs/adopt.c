@@ -97,12 +97,14 @@ void recover_orphans(void)
 /* ---- the kept handles --------------------------------------------------------------- */
 
 struct taking {
-    bool files, views, watches;
+    bool files, views, watches, locks;
 };
 
 static bool take(void *ctx, uint32_t slot, const handle_t *hs, unsigned n)
 {
     const struct taking *t = ctx;
+    if (slot >= XF_KEEP_LOCK(0))
+        return t->locks && locks_take(slot - XF_KEEP_LOCK(0), hs, n);
     if (slot < XF_KEEP_VIEW(0))
         return t->files && files_take(slot, hs, n);
     if (slot >= XF_KEEP_WATCH(0)) {
@@ -320,6 +322,8 @@ status_t adopt(bool adopted, bool *no_volume)
         f.why = files_check();
     if (!f.why)
         f.why = maps_check();
+    if (!f.why)
+        f.why = locks_check();
     if (f.why)
         return start_fresh(&f);
     if (f.k == SVCSTATE_RERUN) {
@@ -328,7 +332,8 @@ status_t adopt(bool adopted, bool *no_volume)
         else
             unmake(f.slot);
     }
-    if (!restore(&f, (struct taking){ .files = true, .views = true, .watches = true })) {
+    if (!restore(&f, (struct taking){ .files = true, .views = true, .watches = true,
+                                       .locks = true })) {
         f.why = "the keeper's restore failed";
         return start_fresh(&f);
     }
@@ -340,6 +345,7 @@ status_t adopt(bool adopted, bool *no_volume)
     watch_moves_again(f.k == SVCSTATE_RESEND && s->h->slot[f.slot].runs < CRASHES_MAX);
     reply_flush();
     f.files = files_adopt();
+    (void)locks_adopt();   /* after files_adopt, whose closes let go of POSIX locks */
     f.views = views_adopt();
     f.watchers = watch_adopt();
     maps_adopt();   /* after files_adopt, whose closes let go of shared VMOs */

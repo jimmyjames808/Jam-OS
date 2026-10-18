@@ -380,6 +380,7 @@ static status_t op_map(void *ctx, uint32_t flags, handle_t *out_vmo, uint64_t *o
 const struct file_ops xf_file_ops = {
     .read = op_read, .write = op_write, .truncate = op_truncate, .stat = op_stat,
     .sync = op_sync, .map = op_map, .getattr = op_getattr, .setattr = op_setattr,
+    .lock = locks_op_lock, .getlock = locks_op_getlock, .lockowner = locks_op_lockowner,
 };
 
 /* ---- open and close ------------------------------------------------------------- */
@@ -429,6 +430,7 @@ static void close_file(struct xf_file *f)
     uint32_t ino = f->ino;
     file_ev(slot_of(f), f->flags & (FS_WRITE | FS_APPEND) ? FSWATCH_IN_CLOSE_WRITE
                                                           : FSWATCH_IN_CLOSE_NOWRITE);
+    locks_closed(f);   /* before the slot goes: a death between leaves the file to close again */
     files_release(slot_of(f));
     if (files_has(ino))
         return;
@@ -704,6 +706,22 @@ status_t files_remake(uint32_t i, handle_t *out_ch, handle_t *out_vmo)
     *out_ch = client;
     *out_vmo = buf;
     return OK;
+}
+
+/* ---- record locks' (locks.c) ------------------------------------------------------ */
+
+uint32_t files_via(const struct xf_file *f)
+{
+    return (f->gen & 0xffffu) << 16 | slot_of(f);
+}
+
+bool files_via_gone(uint32_t via)
+{
+    unsigned i = via & 0xffffu;
+    if (i >= XF_MAX_FILES || !kept->files[i].used || (kept->files[i].gen & 0xffffu) != via >> 16)
+        return true;
+    return fh[i].ch == HANDLE_INVALID ||
+           jam_object_wait_one(fh[i].ch, SIG_PEER_CLOSED, 0, NULL) == OK;
 }
 
 bool files_chan(uint32_t i, uint32_t gen16, struct xf_chan *out)
