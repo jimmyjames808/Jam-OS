@@ -10,7 +10,7 @@
  *                         directory for our own pid and for a child's (any
  *                         other pid is ENOENT: a process sees only itself
  *                         and its children here); a child's has maps, stat,
- *                         statm, status and smaps_rollup, no exe or fd
+ *                         statm, status, smaps_rollup and fd, no exe
  *   /proc/cpuinfo, meminfo, stat, /proc/<pid>/maps, stat, statm, status,
  *                         smaps_rollup
  *                         regular files of Linux's text (procinfo.c and
@@ -45,6 +45,11 @@
  *                         again from its own pages (spawn.c's self-image)
  *   /proc/self/fd         a directory of our open descriptors, listed by
  *                         number as the table is when each getdents runs
+ *   /proc/<pid>/fd        a child's: the numbers of its open descriptors as
+ *                         links (DT_LNK), asked of the child (proc.c's
+ *                         lx_child_fds) on each getdents; a name in it is
+ *                         ENOENT (what each one is isn't asked), a child
+ *                         we can't ask EACCES, a reaped one ESRCH
  *   /proc/self/fd/N       a link to what descriptor N is: a file's or a
  *                         directory's path, /dev/... for the devices,
  *                         /etc/... for libc's files, /memfd:NAME (deleted),
@@ -174,7 +179,7 @@ pfiles[] = {
 
 /* A process directory's entries, after "." and "..", and whose have each. */
 static const struct { enum node node; uint8_t type; const char *name; unsigned who; } pid_names[] = {
-    { N_EXE, DT_LNK, "exe", WHO_SELF }, { N_FDDIR, DT_DIR, "fd", WHO_SELF },
+    { N_EXE, DT_LNK, "exe", WHO_SELF }, { N_FDDIR, DT_DIR, "fd", WHO_SELF | WHO_KID },
     { N_TASKDIR, DT_DIR, "task", WHO_SELF }, { N_MAPS, DT_REG, "maps", WHO_ALL },
     { N_STAT, DT_REG, "stat", WHO_ALL }, { N_STATM, DT_REG, "statm", WHO_ALL },
     { N_STATUS, DT_REG, "status", WHO_ALL }, { N_CMDLINE, DT_REG, "cmdline", WHO_SELF | WHO_TASK },
@@ -587,6 +592,8 @@ static long lookup_name(const char *abs, struct at *out)
     }
     if (out->node != N_FDDIR)
         return -ENOTDIR;
+    if (kid)   /* a child's descriptors are listed, not looked into: what each is isn't asked */
+        return -ENOENT;
     long fd = number(n, l);
     if (fd < 0 || fd >= FD_MAX || !fd_open(fd))
         return -ENOENT;
@@ -891,6 +898,8 @@ long proc_open(const struct path *p, long flags)
         return reopen(a.fd, flags, p->must_dir || (flags & O_DIRECTORY));
     if (is_file(a.node))
         return open_file(&a, p, flags);
+    if (a.node == N_FDDIR && a.pid != lx_pid() && (r = lx_child_fds_check(a.pid)))
+        return r == -ESRCH ? -ENOENT : r;   /* a child we can't ask: Linux's EACCES for another's */
     return open_dir(a.node, a.pid, a.tid, flags);
 }
 
@@ -911,15 +920,25 @@ static uint32_t tid_of(struct fd_desc *d)
     return (uint32_t)((uintptr_t)d->priv >> 32);
 }
 
-/* /proc/self/fd's entry at pos (2 or more): 1 and *e, or 0 at the end. */
-static int fd_entry(int64_t pos, struct pentry *e)
+/* /proc/self/fd's entry at pos (2 or more): 1 and *e, or 0 at the end. A
+ * child's (snap: the bitmap it answered with) is the first descriptor in
+ * it at or past pos - 2. */
+static int fd_entry(int64_t pos, const uint8_t *snap, struct pentry *e)
 {
-    struct fd_desc *d;
-    bool cloexec;
-    long fd = pos - 2 < FD_MAX ? fd_next(pos - 2, &d, &cloexec) : -1;
+    long fd = -1;
+    if (snap) {
+        for (long n = pos - 2; n < FD_MAX && fd < 0; n++)
+            if (snap[n / 8] & (1u << (n % 8)))
+                fd = n;
+    } else {
+        struct fd_desc *d;
+        bool cloexec;
+        fd = pos - 2 < FD_MAX ? fd_next(pos - 2, &d, &cloexec) : -1;
+        if (fd >= 0)
+            fd_put(d);
+    }
     if (fd < 0)
         return 0;
-    fd_put(d);
     snprintf(e->name, NAME_LEN, "%ld", fd);
     e->ino = INO_FD + (uint64_t)fd;
     e->type = DT_LNK;
@@ -1020,8 +1039,10 @@ static uint64_t dir_up(enum node node, int32_t pid)
  * the process directories, N_FDDIR and N_TASKDIR): 1 and *e, or 0 at the
  * end. Listing positions: 0 ".", 1 "..", then 2 + k: entry k of the
  * directory, and for /proc/self/fd the first open descriptor >= k (so one
- * opened or closed between two calls shows or not as the table is then). */
-static int entry_at(enum node node, int32_t pid, uint32_t tid, int64_t pos, struct pentry *e)
+ * opened or closed between two calls shows or not as the table is then).
+ * snap: for a child's N_FDDIR, the bitmap of its descriptors, else NULL. */
+static int entry_at(enum node node, int32_t pid, uint32_t tid, int64_t pos, const uint8_t *snap,
+                    struct pentry *e)
 {
     e->next = pos + 1;
     if (pos < 2) {
@@ -1030,7 +1051,7 @@ static int entry_at(enum node node, int32_t pid, uint32_t tid, int64_t pos, stru
         return 1;
     }
     switch (node) {
-    case N_FDDIR:      return fd_entry(pos, e);
+    case N_FDDIR:      return fd_entry(pos, snap, e);
     case N_ROOT:       return root_entry(pos - 2, e);
     case N_SYSDIR:
         if (pos > 3)
@@ -1061,7 +1082,16 @@ static long pd_getdents(struct fd_desc *d, void *buf, size_t len)
     struct pentry e;
     size_t used = 0;
     long r;
-    while ((r = entry_at(node_of(d), pid_of(d), tid_of(d), pos, &e)) > 0) {
+    /* A child's descriptors: asked once for the whole call. */
+    uint8_t kid_fds[FD_MAX / 8];
+    const uint8_t *snap = NULL;
+    if (node_of(d) == N_FDDIR && pid_of(d) != lx_pid()) {
+        r = lx_child_fds(pid_of(d), kid_fds);
+        if (r < 0)
+            return r;
+        snap = kid_fds;
+    }
+    while ((r = entry_at(node_of(d), pid_of(d), tid_of(d), pos, snap, &e)) > 0) {
         long k = dir_put((uint8_t *)buf + used, len - used, e.name, e.ino, e.type, e.next);
         if (k <= 0) {
             r = used ? 0 : k ? k : -EINVAL;   /* the buffer can't hold the next one */

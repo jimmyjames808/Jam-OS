@@ -96,6 +96,8 @@ void pt_procfs(char **argv);
 /* procinfo.c: the generated files of /proc (stat, status, maps, cpuinfo, ...). */
 void pt_procinfo(char **argv);
 int  pt_child_block(void);   /* its child: says so, waits for stdin to close, exits 5 */
+int  pt_child_fds(void);     /* its other child: reports its descriptors and stat on stdout, opens and closes 40 */
+void pt_child_fds_exec(const char *path);   /* a forked child's execve of the /data program path, its descriptors asked */
 /* Only when asked for (procfs.c): a program's own path and its
  * self-image, from /data (tools/posix-mmap-test.sh, case spawn). */
 void pt_self_image(char **argv);

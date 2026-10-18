@@ -44,6 +44,20 @@
  * that lies can only change which of our group signals and group waits
  * reach it.
  *
+ * Descriptors (/proc/<pid>/fd of a child, procfs.c). Only the child knows
+ * which descriptors it has open, so lx_child_fds asks it: `list_fds` on its
+ * signal channel, and its signal thread answers with `fds`, a bitmap, as a
+ * notice (read like the others, under `lock`, by the signal thread or by
+ * the asker itself). The asker sleeps on `gen` for the answer, at most
+ * FDS_WAIT_NS. Several threads may ask at once: each question has a
+ * number, and a `fdwait` on the asker's stack for the answer to land in.
+ * A child that execve is waiting a /data program for (lx_child_wait) passes
+ * the question on to that program (lx_answer_fds, `fdrelay`) and its answer
+ * back: the pid we hold is the waiting stub's, the descriptors that matter
+ * the program's. A child that never answers (no signal thread) is a
+ * timeout, and what it says is only what it has: a lying child changes
+ * nothing but this listing.
+ *
  * vfork's wait (section 3, Q3 (A)): vfork is fork, and the parent's call
  * returns once its child has exec'd (the child's exec notice, sent the
  * last thing before the replace, or once its execve's program is started
@@ -70,6 +84,7 @@
 #include <signal.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
+#include "fd.h"
 #include "proc.h"
 #include "sig.h"
 
@@ -78,8 +93,10 @@
 #define ONE_USER       1000                      /* the one user's uid (M13 Q7) */
 #define KEY_NOTICE     (1ull << 62)              /* | a child's key: its notices' binding */
 #define NOTICE_TURN    16                        /* notices read from one child at a time */
-#define NOTICE_BYTES   64                        /* a notice and some junk; bigger: deaf */
+#define NOTICE_BYTES   160                       /* a notice (the fds bitmap, 142) and some
+                                                  * junk; bigger: deaf */
 #define NOTICE_WAIT_NS NS_PER_S                  /* how long our notice waits for room */
+#define FDS_WAIT_NS    (5 * NS_PER_S)            /* how long a child has to list its descriptors */
 
 struct child {
     uint64_t key;     /* its port bindings' key: a serial, never 0, never reused, below
@@ -108,6 +125,22 @@ static uint64_t     reaped_cpu_ns;     /* CPU time of the children a wait reaped
 static bool         vforked;           /* we are a vfork child that hasn't exec'd (atomic) */
 static bool         unheard;           /* a notice of ours found no room in a second: our
                                         * starter doesn't read them (atomic) */
+
+/* A question to a child about its descriptors (lx_child_fds), on the
+ * asker's stack until it is answered or given up. */
+struct fdwait {
+    struct fdwait *next;
+    int32_t        pid;
+    uint32_t       seq;                 /* the question's number */
+    bool           got;
+    uint8_t        bits[FD_MAX / 8];    /* the answer (all zero until then) */
+};
+static struct fdwait *fdwaiting;        /* the questions in flight; lock */
+static uint32_t       fdseq;            /* the last question's number, never 0; lock */
+/* The question our starter asked that we passed on to the program execve
+ * waits for (lx_answer_fds): its pid and the numbers of the two questions;
+ * pid 0 when none. */
+static struct { int32_t pid; uint32_t up, down; } fdrelay;   /* lock */
 
 /* ---- our own ids ------------------------------------------------------------------ */
 
@@ -420,8 +453,30 @@ static void on_session(void *ctx)
     c->pgid = c->sid = c->pid;   /* nothing claimed: a session's id is its leader's pid */
 }
 
+/* c's answer to question seq about its descriptors: to the thread that
+ * asked, or, if we passed the question on for our starter (lx_answer_fds),
+ * to our starter. */
+static void on_fds(void *ctx, uint32_t seq, const uint8_t *bits, uint32_t n)
+{
+    struct heard *h = ctx;
+    if (n > sizeof(((struct fdwait *)0)->bits))
+        return;   /* more than there are descriptors: junk */
+    for (struct fdwait *w = fdwaiting; w; w = w->next)
+        if (w->pid == h->c->pid && w->seq == seq && !w->got) {
+            memcpy(w->bits, bits, n);
+            w->got = true;
+            h->news = true;
+        }
+    if (fdrelay.pid == h->c->pid && fdrelay.down == seq) {
+        handle_t up = startup_handle(SR_SIGNALS);
+        fdrelay.pid = 0;
+        if (up)
+            (void)signal_fds(up, fdrelay.up, bits, n);   /* once: no room, and the asker gives up */
+    }
+}
+
 static const struct signal_events notices = {
-    .exec = on_exec, .group = on_group, .session = on_session,
+    .exec = on_exec, .group = on_group, .session = on_session, .fds = on_fds,
 };
 
 /* Read what c has sent on its signal channel, NOTICE_TURN at most, and act
@@ -547,6 +602,112 @@ void lx_vfork_wait(int32_t pid)
             return;
         (void)jam_futex_wait(&gen, g, DEADLINE_NEVER, 0);   /* interrupted: the signal waits */
     }
+}
+
+/* ---- a child's descriptors --------------------------------------------------------- */
+
+long lx_child_fds_check(int32_t pid)
+{
+    lock_take(&lock);
+    const struct child *c = find_locked(pid);
+    long r = !c ? -ESRCH : c->dead || hears(c) ? 0 : -EACCES;
+    lock_give(&lock);
+    return r;
+}
+
+long lx_child_fds(int32_t pid, uint8_t bits[POSIXFDS_FD_MAX / 8])
+{
+    struct fdwait w = { .pid = pid };
+    handle_t h = 0;
+    long r = 0;
+    lock_take(&lock);
+    struct child *c = find_locked(pid);
+    if (!c) {
+        r = -ESRCH;
+    } else if (c->dead) {   /* a zombie has none open */
+        r = 0;
+    } else if (!hears(c) || jam_handle_duplicate(c->sigch, RIGHT_SAME, &h) != OK) {
+        r = -EACCES;   /* no signal protocol to ask on (init's session, a native program) */
+    } else {
+        if (!++fdseq)
+            fdseq++;
+        w.seq = fdseq;
+        w.next = fdwaiting;
+        fdwaiting = &w;
+    }
+    lock_give(&lock);
+    memset(bits, 0, sizeof(w.bits));
+    if (!h)
+        return r;
+    status_t st = signal_list_fds(h, w.seq);
+    jam_handle_close(h);
+    uint64_t deadline = now() + FDS_WAIT_NS;
+    for (;;) {
+        bool news = false;
+        lock_take(&lock);
+        c = find_locked(pid);
+        if (c && st == OK)
+            (void)hear_locked(c, &news);   /* the answer may be in our end already */
+        uint32_t g = __atomic_load_n(&gen, __ATOMIC_ACQUIRE);
+        bool over = w.got || !c || c->dead || st != OK || now() >= deadline;
+        if (over) {
+            for (struct fdwait **p = &fdwaiting; *p; p = &(*p)->next)
+                if (*p == &w) {
+                    *p = w.next;
+                    break;
+                }
+            if (w.got)
+                r = 0;
+            else if (!c)
+                r = -ESRCH;   /* reaped meanwhile (SIGCHLD ignored) */
+            else if (c->dead || st == ERR_PEER_CLOSED)
+                r = 0;        /* it has ended: none open */
+            else if (st == ERR_SHOULD_WAIT)
+                r = -EAGAIN;  /* its queue is full: it isn't reading */
+            else
+                r = st != OK ? lx_err(st) : -EIO;   /* no answer in time */
+        }
+        give_heard(news);
+        if (over)
+            break;
+        (void)jam_futex_wait(&gen, g, deadline, 0);   /* a signal for us waits for the answer */
+    }
+    memcpy(bits, w.bits, sizeof(w.bits));
+    return r;
+}
+
+/* Our starter's question about our descriptors, seq: pass it on to the
+ * program execve waits for (c's signal channel), else false. */
+static bool pass_on(int32_t pid, uint32_t seq)
+{
+    handle_t h = 0;
+    lock_take(&lock);
+    struct child *c = find_locked(pid);
+    bool ok = c && hears(c) && !c->dead && jam_handle_duplicate(c->sigch, RIGHT_SAME, &h) == OK;
+    if (ok) {
+        if (!++fdseq)
+            fdseq++;
+        fdrelay.pid = pid;
+        fdrelay.up = seq;
+        fdrelay.down = fdseq;
+    }
+    uint32_t down = fdseq;
+    lock_give(&lock);
+    if (!ok)
+        return false;
+    status_t st = signal_list_fds(h, down);
+    jam_handle_close(h);
+    return st == OK;
+}
+
+void lx_answer_fds(handle_t ch, uint32_t seq)
+{
+    int32_t kid = lx_exec_child();   /* execve of a /data program: its descriptors are the ones that count */
+    if (kid && pass_on(kid, seq))
+        return;
+    uint8_t bits[POSIXFDS_FD_MAX / 8];
+    unsigned n = fd_bitmap(bits);
+    (void)signal_fds(ch, seq, bits, n);   /* once: a starter that has no room asks again */
 }
 
 /* A signal to one child through h (a duplicate, closed here): its

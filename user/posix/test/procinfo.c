@@ -100,10 +100,11 @@ struct stat_f {
     int   n;
 };
 
-static bool stat_of(const char *path, struct stat_f *s)
+/* Parse text (malloc'd, taken over, changed) as stat's. */
+static bool stat_parse(struct stat_f *s, char *text)
 {
     memset(s, 0, sizeof(*s));
-    s->text = slurp(path);
+    s->text = text;
     if (!s->text)
         return false;
     char *open_p = strchr(s->text, '('), *close_p = strrchr(s->text, ')');
@@ -116,6 +117,11 @@ static bool stat_of(const char *path, struct stat_f *s)
     for (char *t = strtok(close_p + 1, " \n"); t && s->n < 64; t = strtok(NULL, " \n"))
         s->f[s->n++] = t;
     return true;
+}
+
+static bool stat_of(const char *path, struct stat_f *s)
+{
+    return stat_parse(s, slurp(path));
 }
 
 static unsigned long long fnum(const struct stat_f *s, int field)
@@ -898,10 +904,10 @@ static void check_sysstat(void)
 
 /* ---- children ---------------------------------------------------------------------- */
 
-/* posixtest --child-procfs block: say so on descriptor 1, then wait for the
- * pipe on descriptor 0 to close and exit 5. We wait for its word, so it has
- * run (it has pages present and a thread) when we look. */
-static pid_t spawn_blocker(int *wr)
+/* posixtest --child-procfs <mode> (block, fds) as our child with the pipe
+ * on its descriptor 0 (we hold the write end, *wr: close it and the child
+ * ends) and the pipe it speaks on as its descriptor 1 (*rd). */
+static pid_t spawn_child(const char *mode, int *wr, int *rd)
 {
     int p[2], q[2];
     CHECK(pipe(p) == 0 && pipe(q) == 0);
@@ -911,18 +917,29 @@ static pid_t spawn_blocker(int *wr)
     posix_spawn_file_actions_adddup2(&fa, q[1], 1);
     posix_spawn_file_actions_addclose(&fa, p[1]);
     posix_spawn_file_actions_addclose(&fa, q[0]);
-    char *argv[] = { "posixtest", "--child-procfs", "block", NULL };
+    char *argv[] = { "posixtest", "--child-procfs", (char *)mode, NULL };
     pid_t pid = -1;
     int e = posix_spawn(&pid, "/bin/posixtest", &fa, NULL, argv, environ);
     posix_spawn_file_actions_destroy(&fa);
     CHECK(e == 0);
     close(p[0]);
     close(q[1]);
-    char up = 0;
-    CHECK(e != 0 || read(q[0], &up, 1) == 1);   /* it has started */
-    close(q[0]);
     *wr = p[1];
+    *rd = q[0];
     return e == 0 ? pid : -1;
+}
+
+/* posixtest --child-procfs block: say so on descriptor 1, then wait for the
+ * pipe on descriptor 0 to close and exit 5. We wait for its word, so it has
+ * run (it has pages present and a thread) when we look. */
+static pid_t spawn_blocker(int *wr)
+{
+    int rd = -1;
+    pid_t pid = spawn_child("block", wr, &rd);
+    char up = 0;
+    CHECK(pid < 0 || read(rd, &up, 1) == 1);   /* it has started */
+    close(rd);
+    return pid;
 }
 
 static bool listed_in_proc(pid_t pid)
@@ -983,7 +1000,7 @@ static void check_child(bool kill_it)
     t = slurp(path);
     CHECK(t && strlen(t) > 6);
     free(t);
-    /* Its directory has these five and not our own exe and fd; /proc lists it. */
+    /* Its directory has these five and fd, and not our own exe; /proc lists it. */
     snprintf(path, sizeof(path), "/proc/%d", (int)pid);
     int found = 0;
     DIR *d = opendir(path);
@@ -992,18 +1009,17 @@ static void check_child(bool kill_it)
         found += !strcmp(e->d_name, "maps") + !strcmp(e->d_name, "stat") +
                  !strcmp(e->d_name, "statm") + !strcmp(e->d_name, "status") +
                  !strcmp(e->d_name, "smaps_rollup") +
-                 100 * (!strcmp(e->d_name, "exe") + !strcmp(e->d_name, "fd"));
+                 100 * !strcmp(e->d_name, "exe") + 1000 * !strcmp(e->d_name, "fd");
     if (d)
         closedir(d);
-    CHECK(found == 5);
+    CHECK(found == 1005);
     CHECK(listed_in_proc(pid));
     struct stat st;
     snprintf(path, sizeof(path), "/proc/%d/exe", (int)pid);
     errno = 0;
     CHECK(lstat(path, &st) == -1 && errno == ENOENT);
     snprintf(path, sizeof(path), "/proc/%d/fd", (int)pid);
-    errno = 0;
-    CHECK(stat(path, &st) == -1 && errno == ENOENT);
+    CHECK(stat(path, &st) == 0 && S_ISDIR(st.st_mode));
 
     /* It ends, and until we wait it is a zombie with its code. */
     int status = 0;
@@ -1056,6 +1072,324 @@ static void check_child_reaped_file(void)
     CHECK(fd >= 0 && pread(fd, buf, sizeof(buf), 0) == -1 && errno == ESRCH);
     if (fd >= 0)
         close(fd);
+}
+
+/* ---- a child's descriptors and the child's own view ---------------------------------- */
+
+#define FDS_TOP     1024   /* descriptors 0 .. FDS_TOP - 1 (POSIXFDS_FD_MAX) */
+#define FDS_OPENED  40     /* the child opens this many more at an 'o' */
+
+/* The child of check_child_fds (posixtest --child-procfs fds): it reports on
+ * descriptor 1 which descriptors it has open (every one fcntl knows), then
+ * its own stat and statm, as lines ending in ".\n"; then for each byte read
+ * on descriptor 0, 'o' opens FDS_OPENED more, 'c' closes them again, and a
+ * report each time; it ends (5) when descriptor 0 closes. */
+static void child_report(void)
+{
+    char out[8192];
+    size_t n = (size_t)snprintf(out, sizeof(out), "fds:");
+    for (int fd = 0; fd < FDS_TOP; fd++)
+        if (fcntl(fd, F_GETFD) != -1)
+            n += (size_t)snprintf(out + n, sizeof(out) - n, " %d", fd);
+    n += (size_t)snprintf(out + n, sizeof(out) - n, "\n");
+    char *t = slurp("/proc/self/stat");
+    n += (size_t)snprintf(out + n, sizeof(out) - n, "stat: %s", t ? t : "?\n");
+    free(t);
+    t = slurp("/proc/self/statm");
+    n += (size_t)snprintf(out + n, sizeof(out) - n, "statm: %s", t ? t : "?\n");
+    free(t);
+    n += (size_t)snprintf(out + n, sizeof(out) - n, ".\n");
+    for (size_t at = 0; at < n;) {
+        ssize_t w = write(1, out + at, n - at);
+        if (w <= 0)
+            _exit(3);
+        at += (size_t)w;
+    }
+}
+
+int pt_child_fds(void)
+{
+    int held[FDS_OPENED], nheld = 0;
+    child_report();
+    char c;
+    while (read(0, &c, 1) == 1) {
+        if (c == 'o' && !nheld)
+            while (nheld < FDS_OPENED && (held[nheld] = open("/dev/null", O_RDONLY)) >= 0)
+                nheld++;
+        else if (c == 'c')
+            while (nheld)
+                close(held[--nheld]);
+        child_report();
+    }
+    return 5;
+}
+
+/* The child's report from rd, up to its ".\n" line. */
+static bool read_report(int rd, char *buf, size_t cap)
+{
+    size_t n = 0;
+    while (n + 1 < cap) {
+        ssize_t r = read(rd, buf + n, 1);
+        if (r != 1)
+            return false;
+        buf[++n] = '\0';
+        if (n >= 3 && !strcmp(buf + n - 3, "\n.\n"))
+            return true;
+    }
+    return false;
+}
+
+/* The descriptors a report names, into in[]: how many. */
+static int report_fds(const char *rep, bool in[FDS_TOP])
+{
+    memset(in, 0, FDS_TOP * sizeof(bool));
+    const char *p = strstr(rep, "fds:");
+    int n = 0;
+    CHECK(p != NULL);
+    for (p = p ? p + 4 : ""; *p && *p != '\n';) {
+        char *end;
+        long v = strtol(p, &end, 10);
+        if (end == p || v < 0 || v >= FDS_TOP)
+            break;
+        in[v] = true;
+        n++;
+        p = end;
+    }
+    return n;
+}
+
+/* What /proc/<pid>/fd lists, into in[], as names that are numbers and
+ * entries that are links: how many, or -1 (errno set). */
+static int list_kid_fds(pid_t pid, bool in[FDS_TOP])
+{
+    char path[48];
+    snprintf(path, sizeof(path), "/proc/%d/fd", (int)pid);
+    DIR *d = opendir(path);
+    if (!d)
+        return -1;
+    memset(in, 0, FDS_TOP * sizeof(bool));
+    int n = 0;
+    struct dirent *e;
+    errno = 0;
+    while ((e = readdir(d))) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, ".."))
+            continue;
+        char *end;
+        long v = strtol(e->d_name, &end, 10);
+        bool ok = !*end && v >= 0 && v < FDS_TOP && !in[v] && e->d_type == DT_LNK;
+        CHECK(ok);
+        if (ok) {
+            in[v] = true;
+            n++;
+        }
+    }
+    int err = errno;
+    closedir(d);
+    errno = err;
+    return err ? -1 : n;
+}
+
+/* The line of rep that starts with key, with its newline, malloc'd. */
+static char *report_line(const char *rep, const char *key)
+{
+    const char *p = strstr(rep, key);
+    const char *eol = p ? strchr(p, '\n') : NULL;
+    if (!eol)
+        return NULL;
+    size_t kl = strlen(key);
+    char *s = malloc((size_t)(eol - p) - kl + 2);
+    if (s) {
+        memcpy(s, p + kl, (size_t)(eol - p) - kl + 1);
+        s[(size_t)(eol - p) - kl + 1] = '\0';
+    }
+    return s;
+}
+
+static long long diff(unsigned long long a, unsigned long long b)
+{
+    return a > b ? (long long)(a - b) : -(long long)(b - a);
+}
+
+/* Our view of the child's stat and statm against its own (rep): what is
+ * the same is the same, what it has changed since is by a little. */
+static void check_like_its_own(pid_t pid, const char *rep)
+{
+    static const int same[] = { 1, 2, 4, 5, 6, 9, 18, 19, 20, 22, 25, 38, 40, 41 };
+    char path[48];
+    struct stat_f ours, mine;
+    snprintf(path, sizeof(path), "/proc/%d/stat", (int)pid);
+    bool a = stat_of(path, &ours), b = stat_parse(&mine, report_line(rep, "stat: "));
+    CHECK(a && b && ours.n == STAT_FIELDS && mine.n == STAT_FIELDS);
+    if (a && b && ours.n == STAT_FIELDS && mine.n == STAT_FIELDS) {
+        for (unsigned i = 0; i < sizeof(same) / sizeof(same[0]); i++)
+            CHECK(!strcmp(ours.f[same[i] - 1], mine.f[same[i] - 1]));
+        CHECK(!strcmp(mine.f[2], "R") && !strcmp(ours.f[2], "S"));   /* running to itself, asleep to us */
+        CHECK(fnum(&ours, 14) >= fnum(&mine, 14) && fnum(&ours, 10) >= fnum(&mine, 10));
+        CHECK(llabs(diff(fnum(&ours, 23), fnum(&mine, 23))) <= (1 << 20));        /* vsize */
+        CHECK(llabs(diff(fnum(&ours, 24), fnum(&mine, 24))) <= 256);              /* rss, pages */
+    }
+    if (a)
+        stat_free(&ours);
+    if (b)
+        stat_free(&mine);
+    snprintf(path, sizeof(path), "/proc/%d/statm", (int)pid);
+    char *t = slurp(path), *own = report_line(rep, "statm: ");
+    unsigned long long x[7] = { 0 }, y[7] = { 0 };
+    CHECK(t && own &&
+          sscanf(t, "%llu %llu %llu %llu %llu %llu %llu", &x[0], &x[1], &x[2], &x[3], &x[4], &x[5],
+                 &x[6]) == 7 &&
+          sscanf(own, "%llu %llu %llu %llu %llu %llu %llu", &y[0], &y[1], &y[2], &y[3], &y[4], &y[5],
+                 &y[6]) == 7);
+    CHECK(llabs(diff(x[0], y[0])) <= 256 && llabs(diff(x[1], y[1])) <= 256);   /* size, resident */
+    CHECK(x[4] == y[4] && x[6] == y[6]);   /* lib and dirty: 0 on Linux since 2.6 */
+    free(t);
+    free(own);
+}
+
+/* The same count at three moments, as GetChildOpenFdCount reads it: what
+ * the child says it has open, 40 more, and back. The child is on descriptors
+ * wr and rd (check_child_fds); stat says whether to compare its stat and
+ * statm. */
+static void fds_cycle(pid_t pid, int wr, int rd, bool stat)
+{
+    char rep[8192];
+    bool want[FDS_TOP], got[FDS_TOP];
+    CHECK(read_report(rd, rep, sizeof(rep)));
+    int n0 = report_fds(rep, want);
+    CHECK(n0 >= 2 && want[0] && want[1]);   /* at least what it was started with */
+    CHECK(list_kid_fds(pid, got) == n0 && !memcmp(want, got, sizeof(want)));
+    if (stat)
+        check_like_its_own(pid, rep);
+    CHECK(write(wr, "o", 1) == 1 && read_report(rd, rep, sizeof(rep)));
+    CHECK(report_fds(rep, want) == n0 + FDS_OPENED);
+    CHECK(list_kid_fds(pid, got) == n0 + FDS_OPENED && !memcmp(want, got, sizeof(want)));
+    CHECK(write(wr, "c", 1) == 1 && read_report(rd, rep, sizeof(rep)));
+    CHECK(report_fds(rep, want) == n0);
+    CHECK(list_kid_fds(pid, got) == n0 && !memcmp(want, got, sizeof(want)));
+}
+
+/* Four threads asking for the child's descriptors at once, each many
+ * times: the same answer every time (the questions are told apart). */
+struct ask { pid_t pid; int want; int bad; };
+
+static void *ask_loop(void *arg)
+{
+    struct ask *a = arg;
+    bool got[FDS_TOP];
+    for (int i = 0; i < 25; i++)
+        if (list_kid_fds(a->pid, got) != a->want)
+            a->bad++;
+    return NULL;
+}
+
+static void check_child_fds(void)
+{
+    int wr = -1, rd = -1;
+    pid_t pid = spawn_child("fds", &wr, &rd);
+    CHECK(pid > 0);
+    if (pid <= 0)
+        return;
+    char path[48];
+    snprintf(path, sizeof(path), "/proc/%d/fd", (int)pid);
+    fds_cycle(pid, wr, rd, true);
+
+    bool got[FDS_TOP];
+    char small[32];   /* room for one entry: its 19 bytes and a short name */
+    struct ask as[4];
+    pthread_t th[4];
+    int started = 0;
+    int want = list_kid_fds(pid, got);
+    for (int i = 0; i < 4; i++) {
+        as[i] = (struct ask){ .pid = pid, .want = want };
+        if (pthread_create(&th[i], NULL, ask_loop, &as[i]) == 0)
+            started++;
+    }
+    CHECK(started == 4);
+    for (int i = 0; i < started; i++) {
+        pthread_join(th[i], NULL);
+        CHECK(as[i].bad == 0);
+    }
+
+    /* A listing taken one entry a call still sees every descriptor once: the
+     * position is the descriptor's number, so each call goes on from where
+     * the last stopped (and asks the child again). */
+    int dfd0 = open(path, O_RDONLY | O_DIRECTORY), n = 0;
+    CHECK(dfd0 >= 0);
+    for (long r; dfd0 >= 0 && (r = syscall(SYS_getdents64, dfd0, small, sizeof(small))) > 0;) {
+        CHECK(r > 19 && r <= (long)sizeof(small));
+        const char *name = small + 19;   /* linux_dirent64: ino 8, off 8, reclen 2, type 1, name */
+        n += strcmp(name, ".") && strcmp(name, "..");
+    }
+    CHECK(dfd0 >= 0 && n == want);
+    if (dfd0 >= 0)
+        close(dfd0);
+
+    /* A name below it, no: what each descriptor is isn't asked. And it is a directory of
+     * mode 0500 that is ours. */
+    struct stat st;
+    char file[64];
+    snprintf(file, sizeof(file), "%s/0", path);
+    errno = 0;
+    CHECK(stat(file, &st) == -1 && errno == ENOENT);
+    errno = 0;
+    CHECK(open(path, O_WRONLY) == -1 && errno == EISDIR);
+    CHECK(stat(path, &st) == 0 && S_ISDIR(st.st_mode) && (st.st_mode & 0777) == 0500 &&
+          st.st_uid == getuid());
+
+    /* It ends: until we wait it is a zombie with none open; reaped, gone, and a
+     * directory open from before reads ESRCH. */
+    int dfd = open(path, O_RDONLY | O_DIRECTORY);
+    CHECK(dfd >= 0);
+    close(wr);
+    siginfo_t si;
+    memset(&si, 0, sizeof(si));
+    CHECK(waitid(P_PID, (id_t)pid, &si, WEXITED | WNOWAIT) == 0 && si.si_pid == pid);
+    CHECK(list_kid_fds(pid, got) == 0);
+    int status = 0;
+    CHECK(waitpid(pid, &status, 0) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 5);
+    close(rd);
+    errno = 0;
+    CHECK(open(path, O_RDONLY | O_DIRECTORY) == -1 && errno == ENOENT);
+    DIR *old = dfd >= 0 ? fdopendir(dfd) : NULL;
+    errno = 0;
+    CHECK(old && readdir(old) == NULL && errno == ESRCH);
+    if (old)
+        closedir(old);
+}
+
+/* A forked child's execve of the /data program at path, which is
+ * posixtest (tools/posix-mmap-test.sh, case spawn): execve of a /data
+ * program is spawn, wait and exit, and the pid we hold is the waiting
+ * stub's. Its descriptors are still the program's: the question goes on to
+ * it and its answer back. */
+void pt_child_fds_exec(const char *path)
+{
+    int p[2], q[2];
+    CHECK(pipe(p) == 0 && pipe(q) == 0);
+    int before = pt_failures();
+    pid_t pid = fork();
+    if (pid == 0) {
+        dup2(p[0], 0);
+        dup2(q[1], 1);
+        close(p[0]);
+        close(p[1]);
+        close(q[0]);
+        close(q[1]);
+        char *const args[] = { "pt-prog", "--child-procfs", "fds", NULL };
+        execv(path, args);
+        _exit(98);
+    }
+    close(p[0]);
+    close(q[1]);
+    CHECK(pid > 0);
+    if (pid > 0)
+        fds_cycle(pid, p[1], q[0], false);
+    close(p[1]);   /* the program ends (5), and the stub with it */
+    int status = -1;
+    CHECK(pid > 0 && waitpid(pid, &status, 0) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 5);
+    close(q[0]);
+    printf("posixtest: spawn-data: %s fork-exec fds: %s\n", path,
+           pt_failures() == before ? "PASS" : "FAIL");
 }
 
 /* Is n the id of one of our threads (a number /proc does have)? */
@@ -1656,6 +1990,7 @@ void pt_procinfo(char **argv __attribute__((unused)))
     check_child(false);
     check_child(true);
     check_child_reaped_file();
+    check_child_fds();
     check_others();
     check_cmdline();
     check_title();

@@ -2,7 +2,9 @@
  * started before the program's constructors, waiting on one port for
  * everything that sends the process a signal:
  *   - the starter's signal channel (SR_SIGNALS, the `signal` protocol):
- *     kill and sigqueue from the parent, the native shell's Ctrl+C;
+ *     kill and sigqueue from the parent, the native shell's Ctrl+C, and
+ *     the parent's question about our open descriptors (list_fds: its
+ *     /proc/<pid>/fd; proc.c's lx_answer_fds answers it);
  *   - the children's ends (proc.c binds each child to this port; their
  *     packets go to lx_child_packet, which calls sig_child_ended: SIGCHLD),
  *     and their notices to us on their signal channels (signal.idl's
@@ -106,10 +108,16 @@ static void on_send(void *ctx, uint8_t signo, uint8_t code, int32_t value)
     arrived(&si);
 }
 
+/* The starter asks what descriptors we have (its /proc/<pid>/fd). */
+static void on_list_fds(void *ctx, uint32_t seq)
+{
+    lx_answer_fds(channel, seq);
+}
+
 /* Everything queued on the starter's channel. */
 static void take_channel(void)
 {
-    static const struct signal_ops ops = { .send = on_send };
+    static const struct signal_ops ops = { .send = on_send, .list_fds = on_list_fds };
     for (unsigned guard = 0; guard < CHANNEL_MAX_QUEUED; guard++) {
         status_t st = signal_serve_one(channel, &ops, NULL);
         if (st == ERR_SHOULD_WAIT || st == ERR_PEER_CLOSED)

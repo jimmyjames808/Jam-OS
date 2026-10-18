@@ -249,6 +249,11 @@ long            fd_set_cloexec(long fd, bool on);
 /* The first open descriptor >= from: its number, its description (a
  * reference, the caller's) and FD_CLOEXEC; -1 when there are no more. */
 long            fd_next(long from, struct fd_desc **d, bool *cloexec);
+/* The open descriptors as a bitmap (bit n % 8 of out[n / 8] is descriptor
+ * n; FD_MAX / 8 bytes, all written) without a reference on any: for the
+ * signal thread's answer to a starter's /proc/<pid>/fd. The number of
+ * bytes up to the last one with a bit set. */
+unsigned        fd_bitmap(uint8_t out[FD_MAX / 8]);
 
 /* What a child gets for descriptor fd (ops->give): 0 and *out, or -EBADF,
  * or the kind's -ENOTSUP (leave it out). */

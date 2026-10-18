@@ -850,6 +850,8 @@ int pt_child_procfs(int argc, char **argv)
         return child_startup_exe(argv[3]);
     if (argc >= 3 && !strcmp(argv[2], "block"))
         return pt_child_block();   /* procinfo.c's */
+    if (argc >= 3 && !strcmp(argv[2], "fds"))
+        return pt_child_fds();     /* procinfo.c's */
     if (argc >= 3 && !strcmp(argv[2], "twin"))
         return child_twin();
     if (argc >= 3 && !strcmp(argv[2], "exe"))

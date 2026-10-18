@@ -369,6 +369,21 @@ long fd_next(long from, struct fd_desc **d, bool *cloexec_out)
     return r;
 }
 
+unsigned fd_bitmap(uint8_t out[FD_MAX / 8])
+{
+    start_once();
+    memset(out, 0, FD_MAX / 8);
+    lock_take(&table_lock);
+    for (long fd = 0; fd < FD_MAX; fd++)
+        if (slots[fd] && slots[fd] != RESERVED)
+            out[fd / 8] |= (uint8_t)(1u << (fd % 8));
+    lock_give(&table_lock);
+    unsigned n = FD_MAX / 8;
+    while (n && !out[n - 1])
+        n--;
+    return n;
+}
+
 long fd_give(long fd, struct fd_given *out)
 {
     struct fd_desc *d = fd_get(fd);

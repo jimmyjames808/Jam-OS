@@ -839,6 +839,9 @@ void pt_spawn_data(char **argv)
           WEXITSTATUS(status) == 9);
     close(p[0]);
     printf("posixtest: spawn-data: %s fork-exec: wait status %#x\n", path, status);
+    /* The pid we hold is that child's, the waiting stub's; its descriptors
+     * are the program's (procinfo.c). */
+    pt_child_fds_exec(path);
 }
 
 static uint64_t pt_now_ns(void)

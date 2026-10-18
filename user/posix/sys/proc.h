@@ -85,6 +85,22 @@ long    lx_child_facts(int32_t pid, struct lx_child_facts *out);
 bool    lx_child_exists(int32_t pid);
 /* A child's mappings (kp_process_maps): the count, or -ESRCH / -errno. */
 long    lx_child_maps(int32_t pid, uint64_t from, struct map_info *out, uint32_t cap);
+/* A child's open descriptors (procfs.c's /proc/<pid>/fd), asked of the
+ * child on its signal channel (signal.idl's list_fds): 0 and the bitmap
+ * (bit n % 8 of bits[n / 8] is descriptor n; none for a child that has
+ * ended), or -ESRCH (not a child of ours, or reaped), -EACCES (nothing to
+ * ask it on: init's session, a program without the signal protocol),
+ * -EAGAIN (it isn't reading its channel), -EIO (no answer in 5 s). Waits.
+ * lx_child_fds_check says at once whether it could ask: 0, -ESRCH or
+ * -EACCES. */
+long    lx_child_fds(int32_t pid, uint8_t bits[POSIXFDS_FD_MAX / 8]);
+long    lx_child_fds_check(int32_t pid);
+/* Our starter's question seq about our descriptors, read on ch (the signal
+ * thread's): answered there with our bitmap, or passed on to the program
+ * execve waits for, whose answer goes back (the pid our starter holds is
+ * the waiting stub's). */
+void    lx_answer_fds(handle_t ch, uint32_t seq);
+
 /* Our children's pids (those not reaped): up to cap into out, in the order
  * they were made; how many there are in all. */
 unsigned lx_child_pids(int32_t *out, unsigned cap);
