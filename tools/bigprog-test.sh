@@ -77,13 +77,22 @@ fi
 rm -f "$stick"
 run="$out/$name.run.log"
 sed '/jam[^>]*>.* reboot -f/q' "$out/$name.log" > "$run"
+# What the shell printed: the run with its log lines taken out. A log line
+# (the kernel's, a service's) may come anywhere in a line the shell prints,
+# even before the progress line's first step (boot's last lines come while
+# the first read runs), and is whole: taken out, the line's pieces join.
+text="$out/$name.text.log"
+python3 - "$run" "$text" <<'EOF' ||
+import re, sys
+t = open(sys.argv[1], "rb").read()
+open(sys.argv[2], "wb").write(re.sub(rb"\[ *\d+\.\d{6}\] [^\n]*\n", b"", t))
+EOF
+    { echo "$name: can't take the log lines out of $run"; ok=0; }
 # The progress line, both times the whole file was read (the refusal
-# explained from its bytes, and `allow`), each to 100 % (a log line may
-# come between its pieces).
-want 2 "checking /data/big \($((size >> 20)) MiB\): 10%" "$run"
-want 2 "90% 100%" "$run"
+# explained from its bytes, and `allow`), every step to 100 %.
+want 2 "checking /data/big \($((size >> 20)) MiB\): 10% 20% 30% 40% 50% 60% 70% 80% 90% 100%" "$text"
 # The table: one file, named by the program's hash.
-want 1 "$sha" "$run"
+want 1 "$sha" "$text"
 # Its table untouched, it fetched a few of its pages: far fewer than 1 %.
 lazy=$(gone_pages mark-b-lazy0 mark-b-lazy1)
 if [ "$(printf '%s\n' "$lazy" | grep -c .)" -ne 1 ] || [ "$lazy" -gt $((pages / 100)) ]; then
