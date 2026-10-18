@@ -606,6 +606,10 @@ void     ev(const struct fsw_key *dir, const char *name, uint32_t len, const str
 /* Inode self goes (its last name and its last open: defer_run): its
  * watches' IN_DELETE_SELF and IN_IGNORED. */
 void     ev_gone(const struct fsw_key *self);
+/* A rename moved inode `in` into directory `to` (after its IN_MOVE_SELF):
+ * a watch through a narrower view that can no longer reach it, or what is
+ * under it, ends (docs/INOTIFY-PLAN.md Q2). Waits for the commit as ev's. */
+void     watch_moved(const struct ext_inode *in, const struct ext_inode *to);
 /* The next move's cookie. */
 uint32_t ev_cookie(void);
 /* The event of a setattr of `mask` (FS_ATTR_*), as Linux's

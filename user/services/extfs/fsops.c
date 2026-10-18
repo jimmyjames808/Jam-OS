@@ -327,8 +327,9 @@ static status_t op_unlink(void *ctx, const char *path, uint32_t path_len, uint32
  * for an exchange (each name's move with a cookie of its own): the old
  * directory's IN_MOVED_FROM, the new one's IN_MOVED_TO, a replaced
  * inode's IN_ATTRIB (its link count; its IN_DELETE_SELF when it goes,
- * defer_run), the moved inode's IN_MOVE_SELF. The open files' names move
- * with it. */
+ * defer_run), the moved inode's IN_MOVE_SELF, then the reach check (a
+ * watch whose view can no longer reach the inode, or what is under it,
+ * ends: watch.c). The open files' names move with it. */
 static void renamed(bool exchange)
 {
     const struct fsw_key from_dir = xf_key(&wa.dir), to_dir = xf_key(&wb.dir);
@@ -342,12 +343,14 @@ static void renamed(bool exchange)
     if (wb.found && !exchange)
         ev_inode(&wb.in, FSWATCH_IN_ATTRIB, dst_dir ? FSW_EV_DIR : 0);
     ev_inode(&wa.in, FSWATCH_IN_MOVE_SELF, 0);   /* never IN_ISDIR (inotify) */
+    watch_moved(&wa.in, &wb.dir);                /* out of a view's reach: ended */
     if (!exchange)
         return;
     cookie = ev_cookie();
     ev_name(&wb.dir, &wb.name, FSWATCH_IN_MOVED_FROM, dst_dir, cookie);
     ev_name(&wa.dir, &wa.name, FSWATCH_IN_MOVED_TO, dst_dir, cookie);
     ev_inode(&wb.in, FSWATCH_IN_MOVE_SELF, 0);
+    watch_moved(&wb.in, &wa.dir);
 }
 
 static status_t op_rename(void *ctx, const char *from, uint32_t from_len, const char *to,

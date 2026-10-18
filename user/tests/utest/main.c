@@ -802,6 +802,8 @@ static const struct {
     { "extfs_watch_views", t_extfs_watch_views },
     { "extfs_watch_order", t_extfs_watch_order },
     { "extfs_watch_limits", t_extfs_watch_limits },
+    { "extfs_watch_hidden", t_extfs_watch_hidden },
+    { "extfs_watch_reach", t_extfs_watch_reach },
     { "extfs_restart_watch", t_extfs_restart_watch },
     { "view_keys_names", t_view_keys_names },
     { "fat_view_keys", t_fat_view_keys },

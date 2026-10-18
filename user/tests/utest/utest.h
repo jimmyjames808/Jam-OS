@@ -437,6 +437,8 @@ bool t_extfs_watch_moves(void);
 bool t_extfs_watch_views(void);
 bool t_extfs_watch_order(void);
 bool t_extfs_watch_limits(void);
+bool t_extfs_watch_hidden(void);
+bool t_extfs_watch_reach(void);
 bool t_extfs_restart_watch(void);
 int  extfs_watch_child(int argc, char **argv);
 bool t_view_keys_names(void);
