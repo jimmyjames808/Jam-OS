@@ -402,6 +402,7 @@ static status_t wait_reply_locked(struct channel *ch, struct chan_waiter *w, uin
 static status_t wait_reply(struct channel *ch, struct chan_waiter *w, uint64_t deadline_ns)
 {
     struct chan_msg *mine = chan_slot_take();
+    struct wait_note old = thread_wait_note(WAITON_CALL, ch->base.koid, 0);
     uint64_t f = spin_lock_irqsave(&ch->base.lock);
     if (!w->slot && !chan_handed(w)) {
         w->slot = mine;
@@ -417,6 +418,7 @@ static status_t wait_reply(struct channel *ch, struct chan_waiter *w, uint64_t d
     w->slot = NULL;
     if (locked)
         spin_unlock_irqrestore(&ch->base.lock, f);
+    thread_wait_unnote(old);
     chan_slot_keep(mine);
     chan_slot_keep(offered);
     PATH_MARK(PATH_MK_REPLY);

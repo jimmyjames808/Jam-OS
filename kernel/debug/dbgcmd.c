@@ -22,6 +22,13 @@
  *   stress <s>       stress_run(s), 1..600 s: 0 if every check held, else 1
  *   devices          pci_report(): the number of PCI functions
  *   ps               the caller's job tree (processes, jobs, what they use)
+ *   threads <which> [words]
+ *                    where the threads of the process in the caller's tree
+ *                    whose koid (ps's PID) or name is <which> wait: their
+ *                    states, wait notes, user registers, kernel frames and
+ *                    user backtraces, and the code addresses among `words`
+ *                    stack words (64; 1..4096) (threads_report,
+ *                    <jam/threadlook.h>): how many threads, ERR_NOT_FOUND
  *   mem              physical memory: total and free (the result: free MiB)
  *   panic            panic the kernel (a test: the panic screen must show
  *                    over the console, which owns the screen)
@@ -56,6 +63,7 @@
 #include <jam/selftest.h>
 #include <jam/spinlock.h>
 #include <jam/string.h>
+#include <jam/threadlook.h>
 
 #define CMD_MAX 64
 
@@ -139,6 +147,14 @@ status_t dbgcmd_check(const char *cmd, size_t len)
             return ERR_INVALID_ARGS;
         return !k || selftest_crash_known(rest, k) ? OK : ERR_NOT_FOUND;
     }
+    if (is(cmd, n, "threads")) {
+        const char *after;
+        size_t k = word(rest, &after);
+        if (!k)
+            return ERR_INVALID_ARGS;
+        return !*after || (parse_u64(after, &s) && s >= 1 && s <= LOOK_WORDS_MAX)
+                   ? OK : ERR_INVALID_ARGS;
+    }
     if (is(cmd, n, "devices") || is(cmd, n, "ps") || is(cmd, n, "mem") || is(cmd, n, "panic") ||
         is(cmd, n, "memmap") || is(cmd, n, "iommu"))
         return *rest ? ERR_INVALID_ARGS : OK;
@@ -216,6 +232,17 @@ static int64_t exec(const char *cmd, struct job *scope)
         else
             kprintf("ps: no job tree\n");
         return 0;
+    }
+    if (is(cmd, n, "threads")) {
+        char which[CMD_MAX];
+        const char *after;
+        size_t k = word(rest, &after);   /* dbgcmd_check saw both parse */
+        memcpy(which, rest, k);
+        which[k] = '\0';
+        uint64_t words = 0;
+        if (*after)
+            (void)parse_u64(after, &words);
+        return threads_report(scope, which, (uint32_t)words);
     }
     return ERR_NOT_SUPPORTED;
 }

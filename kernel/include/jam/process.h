@@ -122,6 +122,9 @@ struct job *job_root_of(struct job *j);
  * Processes directly in a strict ancestor job of `spare` (may be NULL) are
  * skipped: debug_command's "kill" never reaches the caller's supervisors. */
 struct process *job_find_process(struct job *j, const char *name, struct job *spare);
+/* The live process whose koid is `koid` in j's tree (a reference), or NULL
+ * (debug_command "threads"). */
+struct process *job_find_process_koid(struct job *j, uint64_t koid);
 /* The shell's proc_list: fill out[*n..cap) with j's processes, then its
  * child jobs' (depth first; at most 32 processes and 32 child jobs per job,
  * like job_print_tree). depth is j's depth below the tree's root. */
@@ -156,6 +159,14 @@ uint64_t uthread_process_koid(struct uthread *ut);
 void process_get_info(struct process *p, struct process_info *out);
 /* CPU time of all p's threads so far, in TSC cycles (the shell's ps, top). */
 uint64_t process_cpu_tsc(struct process *p);
+/* debug_command "threads" (<jam/threadlook.h>): each of p's started
+ * threads that hasn't left, looked at by thread_look under p's lock
+ * (which keeps its kernel stack: an exiting thread marks itself gone
+ * under it first), with its thread object's koid, tid and name, into
+ * out[0..cap); returns how many there are (the ones past cap not looked
+ * at). Spinlocks only. */
+struct thread_look;
+uint32_t process_look_threads(struct process *p, struct thread_look *out, uint32_t cap);
 /* The process of the current thread, NULL for kernel threads. */
 struct process *process_current(void);
 /* exception_entry_set's entry (a user address; 0: none), and reading it

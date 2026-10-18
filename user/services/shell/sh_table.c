@@ -61,9 +61,11 @@ static const struct sh_cmd cmds[] = {
     C(lscpu, C_SYSTEM, "lscpu [-e]",
       "the CPU: model, P-cores, E-cores, threads (-e: one line per CPU)"),
     C(free, C_SYSTEM, "free", "memory: total, used, free"),
-    C(ps, C_SYSTEM, "ps [-k]",
+    C(ps, C_SYSTEM, "ps [-k | -t <pid|name> [words]]",
       "processes: id, threads, CPU time, memory of its job, name (indented by job).\n"
-      "  -k: the kernel's own listing (jobs with pages, handles, threads) in the log"),
+      "  -k: the kernel's own listing (jobs with pages, handles, threads) in the log\n"
+      "  -t: where that process's threads wait (state, what on, kernel and user\n"
+      "      frames, code addresses on the stack: 64 words or [words]), in the log"),
     C(top, C_SYSTEM, "top [-d seconds] [-n frames]",
       "live CPU use per CPU and per process, and memory; q or Ctrl+C quits"),
     C(whoami, C_SYSTEM, "whoami", "the user (there is one: jam)"),

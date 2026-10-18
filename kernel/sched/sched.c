@@ -487,6 +487,7 @@ static inline void account_switch(struct cpu *c, struct thread *prev, const stru
     uint64_t now = rdtsc(), last = __atomic_load_n(&c->switch_tsc, __ATOMIC_RELAXED);
     uint64_t d = last && now > last ? now - last : 0;
     COUNTER_ADD(&prev->run_tsc, d);
+    __atomic_store_n(&prev->off_tsc, now, __ATOMIC_RELAXED);   /* the debug listing's */
     if (prev->is_idle)
         COUNTER_ADD(&c->idle_tsc, d);
     __atomic_store_n(&c->switch_tsc, now, __ATOMIC_RELAXED);

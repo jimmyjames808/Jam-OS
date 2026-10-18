@@ -485,7 +485,9 @@ static bool job_above(const struct job *a, const struct job *j)
     return false;
 }
 
-struct process *job_find_process(struct job *j, const char *name, struct job *spare)
+/* job_find_process, by name or (name NULL) by koid. */
+static struct process *find_process(struct job *j, const char *name, uint64_t koid,
+                                    struct job *spare)
 {
     struct kobject *procs[PRINT_MAX];
     struct job *kids[PRINT_MAX];
@@ -510,15 +512,25 @@ struct process *job_find_process(struct job *j, const char *name, struct job *sp
     struct process *found = NULL;
     for (unsigned i = 0; i < np; i++) {
         struct process *p = process_from_kobject(procs[i]);
-        if (!found && !strcmp(process_name(p), name))
+        if (!found && (name ? !strcmp(process_name(p), name) : procs[i]->koid == koid))
             found = p;   /* keeps the reference */
         else
             kobject_unref(procs[i]);
     }
     for (unsigned i = 0; i < nk; i++) {
         if (!found)
-            found = job_find_process(kids[i], name, spare);
+            found = find_process(kids[i], name, koid, spare);
         kobject_unref(&kids[i]->base);
     }
     return found;
+}
+
+struct process *job_find_process(struct job *j, const char *name, struct job *spare)
+{
+    return find_process(j, name, 0, spare);
+}
+
+struct process *job_find_process_koid(struct job *j, uint64_t koid)
+{
+    return find_process(j, NULL, koid, NULL);
 }

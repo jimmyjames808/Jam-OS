@@ -86,6 +86,7 @@
 #include <jam/process.h>
 #include <jam/report.h>
 #include <jam/string.h>
+#include <jam/threadlook.h>
 #include <jam/time.h>
 #include <jam/uentry.h>
 #include <jam/usercopy.h>
@@ -366,6 +367,27 @@ uint64_t process_cpu_tsc(struct process *p)
     }
     punlock(p, f);
     return v;
+}
+
+uint32_t process_look_threads(struct process *p, struct thread_look *out, uint32_t cap)
+{
+    uint32_t n = 0;
+    uint64_t f = plock(p);
+    for (struct list_node *e = p->threads.next; e != &p->threads; e = e->next) {
+        struct uthread *u = container_of(e, struct uthread, node);
+        if (u->state != UT_RUNNING || !u->t)
+            continue;
+        if (n < cap) {
+            struct thread_look *l = &out[n];
+            thread_look(u->t, l);
+            l->koid = u->base.koid;
+            l->tid = u->tid;
+            copy_name(l->name, sizeof(l->name), u->name);
+        }
+        n++;
+    }
+    punlock(p, f);
+    return n;
 }
 
 /* ---- debug output ---------------------------------------------------------- */

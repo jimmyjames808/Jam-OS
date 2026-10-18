@@ -143,6 +143,16 @@ bool     aspace_maps_jit(struct aspace *as);
 /* aspace_fault calls on as so far (every one, resolved or not): atomic,
  * lock-free. process_info.faults. */
 uint64_t aspace_fault_count(struct aspace *as);
+/* The debug listing's look at another process's memory (debug_command
+ * "threads", kernel/debug/threads.c), and nothing else's: the 8-byte word
+ * at va (8-aligned) into *out, if its page is mapped present and user right
+ * now and is ordinary RAM. No fault is taken and nothing waits: the page
+ * table lock (a spinlock) is held for the read alone, which keeps the page
+ * from being freed under it. False: not there (absent, never touched,
+ * evicted, a device's). Any context that may take a spinlock. */
+bool     aspace_peek(struct aspace *as, uint64_t va, uint64_t *out);
+/* The same look: is va's page there and may it run? */
+bool     aspace_peek_exec(struct aspace *as, uint64_t va);
 
 /* Resolve a fault at addr for `access` (ASPACE_READ/WRITE/EXEC): commit
  * the VMO page if needed and install the page-table entry. OK: retry the

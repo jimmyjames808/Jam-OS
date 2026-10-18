@@ -182,6 +182,36 @@ struct thread {
     uint32_t          sleep_depth;
     const void       *sleep_held[MAX_HELD_MUTEXES];
     uint8_t           sleep_cls[MAX_HELD_MUTEXES];
+
+    /* For the debug listing (kernel/debug/threads.c): what it waits for
+     * (thread_wait_note: WAITON_*, an object's koid and a word of the
+     * wait's; written only by the thread itself) and the TSC when it last
+     * left a CPU (account_switch). Read by others without a lock. */
+    uint8_t           wait_on;
+    uint64_t          wait_koid, wait_arg;
+    uint64_t          off_tsc;
+};
+
+/* What a thread waits for, for the debug listing (debug_command
+ * "threads", the shell's ps -t): set by the thread itself around a wait
+ * whose object a person would want named, nothing else reads it. A reader
+ * on another CPU may see two notes mixed for a moment: a hint, never a
+ * fact anything decides by. */
+enum wait_on {
+    WAITON_NONE,
+    WAITON_FUTEX,     /* arg: the word's user address */
+    WAITON_OBJECT,    /* object_wait_one: koid; arg: the signals waited for */
+    WAITON_READ,      /* a channel read: koid (the end read) */
+    WAITON_CALL,      /* a channel call's reply: koid (the end called through) */
+    WAITON_PORT,      /* port_wait: koid */
+    WAITON_PAGER,     /* a page of a pager VMO: koid (the VMO); arg: the page */
+    WAITON_WRITEBACK, /* a write-back of a pager VMO's pages: the same */
+    WAITON_SLEEP,     /* a sleep (its deadline is the wait's) */
+};
+
+struct wait_note {
+    uint8_t  on;
+    uint64_t koid, arg;
 };
 
 /* Create and start a thread. The caller gets a reference: release it with
@@ -284,6 +314,28 @@ void thread_set_priority(struct thread *t, int prio);
 void thread_set_priority_cap(struct thread *t, int cap);
 
 static inline struct thread *current_thread(void) { return percpu_current(); }
+
+/* Note what the current thread is about to wait for (enum wait_on);
+ * returns the note it had, which thread_wait_unnote puts back (a pager
+ * wait inside a futex's word read, say, ends with the futex's note
+ * again). */
+static inline struct wait_note thread_wait_note(uint8_t on, uint64_t koid, uint64_t arg)
+{
+    struct thread *t = current_thread();
+    struct wait_note old = { t->wait_on, t->wait_koid, t->wait_arg };
+    __atomic_store_n(&t->wait_koid, koid, __ATOMIC_RELAXED);
+    __atomic_store_n(&t->wait_arg, arg, __ATOMIC_RELAXED);
+    __atomic_store_n(&t->wait_on, on, __ATOMIC_RELEASE);
+    return old;
+}
+
+static inline void thread_wait_unnote(struct wait_note old)
+{
+    struct thread *t = current_thread();
+    __atomic_store_n(&t->wait_koid, old.koid, __ATOMIC_RELAXED);
+    __atomic_store_n(&t->wait_arg, old.arg, __ATOMIC_RELAXED);
+    __atomic_store_n(&t->wait_on, old.on, __ATOMIC_RELEASE);
+}
 
 void schedule(void);
 /* Make a BLOCKED thread runnable again. */

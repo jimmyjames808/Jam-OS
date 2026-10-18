@@ -108,7 +108,9 @@ static const void *key_space(void)
     return current_thread()->aspace;   /* NULL for the kernel's ring-3 tests: one space */
 }
 
-status_t futex_wait(uint64_t uaddr, uint32_t expected, uint64_t deadline_ns, uint32_t flags)
+/* futex_wait's body. */
+static status_t wait_word(uint64_t uaddr, uint32_t expected, uint64_t deadline_ns,
+                          uint32_t flags)
 {
     status_t st = check_args(uaddr, flags);
     if (st != OK)
@@ -151,6 +153,14 @@ status_t futex_wait(uint64_t uaddr, uint32_t expected, uint64_t deadline_ns, uin
         if (st != OK)
             return waiter_leave(&w) ? OK : thread_interrupt_consume(st);
     }
+}
+
+status_t futex_wait(uint64_t uaddr, uint32_t expected, uint64_t deadline_ns, uint32_t flags)
+{
+    struct wait_note old = thread_wait_note(WAITON_FUTEX, 0, uaddr);   /* the debug listing's */
+    status_t st = wait_word(uaddr, expected, deadline_ns, flags);
+    thread_wait_unnote(old);
+    return st;
 }
 
 /* With b's lock held: wake up to `count` waiters of (as, addr) on b. */

@@ -2103,6 +2103,81 @@ nothing (ninja does not see the sysroot's libc), so the track could not
 make that sure itself: whoever relinks next, `CR_BASE_ONLY` with these four
 suites is a one-minute check.
 
+#### TD notes (2026-10-18)
+
+Track TD (branch `td-threads`): a way to see where a stuck program's
+threads wait, for `headless_shell`'s start-up hang and every later one.
+
+- **The listing.** debug_command `threads <pid|name>` (kernel/debug/threads.c,
+  `<jam/threadlook.h>`), the shell's `ps -t <pid|name>` (ps's PID is the
+  process's koid; a name finds the first process of that name in the
+  caller's tree). Into the kernel log, so a serial log has it too. For each
+  thread: its state and for how long (the TSC when it last left a CPU,
+  `off_tsc`, one store in the scheduler's switch accounting); what it waits
+  for, from a **wait note** the thread itself sets around the waits worth
+  naming (`thread_wait_note`, three stores and three back: a futex's
+  user address, object_wait_one's object and signals, a channel read's or
+  call's end, a port, a pager VMO's page and its write-back, a sleep), with
+  the wait's deadline (`wake_at_ns`, now stored for every wait); a kernel
+  mutex wait (`mutex_since`); the exception entry's window; the system call
+  it is in with its first three arguments, and its user RIP, RSP and RBP
+  from the frame at the top of its kernel stack (a system call's while
+  `in_syscall`, else a trap's from ring 3); its kernel frames while it is
+  off a CPU (switch_context's saved frame, then the frame-pointer chain,
+  every read inside its own stack); a user backtrace by frame pointers (48
+  frames at most); and the words among the 64 above RSP that point at code
+  (`ps -t <pid|name> <words>` looks at up to 4,096: the whole call chain of
+  a thread whose frames keep no records).
+- **Read only, nothing a program can reach.** Only debug_command runs it
+  (`RIGHT_ROOT_DEBUG`); no new system call. Each thread's own fields and
+  stack words are copied under its process's lock, which keeps the stack
+  (an exiting thread marks itself gone under that lock first). The user
+  memory is read a word at a time by `aspace_peek` under the page-table
+  spinlock, with no lock held across two words and no fault or wait: an
+  absent, untouched or evicted page, a device's page or one with a cache
+  mode of its own ends the walk. A frame chain is followed only upward and
+  within 16 MiB, so a hostile chain ends.
+- **Frame pointers.** The kernel, libjam and the POSIX layer keep them;
+  musl's own code is built with `-fomit-frame-pointer` (user/posix/posix.mk
+  MUSL_CFLAGS), so a wait inside musl (its locks, `__wait`, `pthread_once`)
+  leaves RBP, or a record's saved RBP, holding something else: the walk
+  then goes on from the first record in the 256 words above (one whose
+  saved RBP points higher up; such frames are marked "found by a scan", and
+  may now and then be a stale pair), and the stack words that point at code
+  name musl's own frames in between. Chromium is built with frame pointers
+  (`enable_frame_pointers = true` for Linux in build/config/compiler/
+  compiler.gni; out/jamos's args.gn doesn't change it), `symbol_level = 0`:
+  function names from the symbol table, no lines.
+- **On the host.** `tools/symbolize-threads.py <log> <program>` prints a
+  captured listing again with each user frame's function and line from the
+  unstripped program (llvm-symbolizer: Chromium's toolchain's under ~/cr on
+  the PC), each futex address with the global it lies in, and each system
+  call's name from abi/syscalls.def.
+- **`headless_shell`'s start-up hang, found with it** (main 0de63088, the
+  out/jamos link of 13:10): a **recursive `pthread_once` in Chromium's
+  sandbox libc interceptor**, not PartitionAlloc. The main thread waits on
+  the futex at `sandbox::g_libc_localtime_funcs_guard` (value 3: "init
+  running, waiters present") in musl's `__wait`, with the signal thread in
+  its port_wait. The chain, from the walk and a 2,048-word scan: `main` ->
+  `headless::HeadlessShellMain` -> `content::ContentMain` ->
+  `ContentMainRunnerImpl::Initialize` -> `base::i18n::InitializeICU` ->
+  `icu::TimeZone::createDefault` -> `detectHostTimeZone` -> `uprv_timezone`
+  -> `localtime` (the interceptor's override,
+  sandbox/linux/services/libc_interceptor.cc) -> `pthread_once(guard,
+  InitLibcLocaltimeFunctionsImpl)` -> `InitLibcLocaltimeFunctionsImpl`:
+  `dlsym(RTLD_NEXT, "localtime")` finds nothing in a static program, so it
+  logs "Your system is broken: dlsym doesn't work!" -> `LOG(ERROR)` ->
+  `logging::LogMessage::Init` (the line's time stamp) -> `localtime_r` (the
+  interceptor's again) -> `pthread_once` on the same guard, still running
+  -> waits for itself for ever. Nothing was printed because the log line
+  is never finished. A fix (main session's call): give the interceptor
+  libc's functions, as patch 0910 gave base its `close`: the layer's
+  `dlsym(RTLD_NEXT, ...)` answering the four names `localtime`,
+  `localtime_r`, `localtime64`, `localtime64_r` with musl's
+  (`__localtime_r` and a `localtime` on it) is the layer-side way; any
+  other way through `InitLibcLocaltimeFunctionsImpl`'s fallback still logs
+  inside the once.
+
 ### 2. The address space: huge sparse reservations (the top risk)
 
 **What Chromium does** ([CR-RESEARCH section 6](CR-RESEARCH.md#6-v8s-jit)):

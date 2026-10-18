@@ -1,5 +1,5 @@
 /* The kernel's side of the shell: its debug commands (ktest, bench,
- * stress, ps -k, kill, mem, pci, memmap, crash, panic; RIGHT_ROOT_DEBUG on
+ * stress, ps -k, ps -t, kill, mem, pci, memmap, crash, panic; RIGHT_ROOT_DEBUG on
  * the root resource), which print into the kernel log (on the screen while
  * one runs, sh_show_log), and reading that log (RIGHT_ROOT_KLOG). */
 #include "sh.h"
