@@ -20,6 +20,9 @@
  *     says;
  *   - malloc of 1 GiB in 1 MiB pieces, every page written and read back,
  *     then freed, and the job's pages back near where they were;
+ *   - a program with a malloc of its own (bin/heaptest) that calls into
+ *     the layer with its lock held, and a handler's calls made while it
+ *     is inside that malloc: the layer never calls it (LH);
  *   - mlock and its kin: nothing is ever paged out, so they succeed (with
  *     Linux's checks of their arguments);
  *   - reservations (memres.c). */
@@ -27,10 +30,12 @@
 #include <errno.h>
 #include <jamos/libjam.h>
 #include <pthread.h>
+#include <spawn.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/syscall.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include "pt.h"
 
@@ -232,6 +237,25 @@ static void check_malloc(void)
         r = s;
     }
     free(r);
+}
+
+/* A program with a malloc of its own (bin/heaptest, user/tests/heaptest)
+ * whose malloc calls into the layer with its lock held, and runs a
+ * handler's calls while inside it: the layer never calls that malloc (its
+ * heap is its own, user/posix/sys/heap.c), so neither waits for ever. */
+static void check_own_malloc(void)
+{
+    static const char *const modes[] = { "own", "handler" };
+    for (unsigned i = 0; i < 2; i++) {
+        char *av[] = { "heaptest", (char *)modes[i], NULL };
+        pid_t pid = -1;
+        int status = -1;
+        CHECK(posix_spawn(&pid, "/bin/heaptest", NULL, NULL, av, environ) == 0);
+        CHECK(pid > 0 && waitpid(pid, &status, 0) == pid);
+        CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        if (!WIFEXITED(status) || WEXITSTATUS(status))
+            printf("posixtest: mem: heaptest %s: wait status %#x\n", modes[i], status);
+    }
 }
 
 static void check_mlock(void)
@@ -465,6 +489,7 @@ void pt_mem(char **argv __attribute__((unused)))
     check_fixed_one_step();
     check_brk();
     check_malloc();
+    check_own_malloc();
     check_mlock();
     pt_mem_reserve();
 }

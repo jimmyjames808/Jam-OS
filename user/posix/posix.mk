@@ -312,8 +312,10 @@ $(BOOTFS): $(POSIXTEST).bootfs
 # usr/bin/pxio-usr for the shell's PATH lookup past /boot/bin. POSIX test
 # programs elsewhere the same way, from their own directory (the third
 # word): jittest, JIT memory through MAP_JIT (its list says `right jit`,
-# which checkwants allows only under user/tests/ and the ports).
-POSIX_PROGS := sh=bin/sh ls=test/ls pxio=bin/pxio jittest=bin/jittest=user/tests/jittest
+# which checkwants allows only under user/tests/ and the ports), and
+# heaptest, a malloc of its own that the layer must never call (LH).
+POSIX_PROGS := sh=bin/sh ls=test/ls pxio=bin/pxio jittest=bin/jittest=user/tests/jittest \
+               heaptest=bin/heaptest=user/tests/heaptest
 define POSIX_PROG_RULES
 $(BUILD)/user/posix-$(1): $(wildcard $(3)/*.c) $(3)/wants \
                           $(SYSROOT_LIBS) tools/jamos-cc $(FLAGDIR)/posix-progs \

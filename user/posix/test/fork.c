@@ -63,6 +63,10 @@
  *     more, each allocating (an execve that fails, then malloc): every one
  *     ends with 0 (vfork and clone take malloc's lock across the clone,
  *     as fork does: FR2's finding 1).
+ *   heap: two threads in the layer's own heap (jam_malloc) while we make
+ *     30 children each way (fork, _Fork, a raw SYS_fork, vfork, clone),
+ *     each allocating there and opening a file: every one ends with 0
+ *     (every way in takes the heap's lock across the clone: LH).
  * Then forkfd.c's cases (FL2) and forknote.c's (FL4: vfork, groups, junk). */
 #include <stdio.h>
 #include <stdlib.h>
@@ -1268,6 +1272,97 @@ static void fork_alloc(void)
            "in malloc\n", ended, made);
 }
 
+/* ---- heap: every way in holds the layer's heap across the clone ------------------ */
+
+/* The layer allocates from a heap of its own (user/posix/sys/heap.c,
+ * jam_malloc), never from malloc, and fork's prepare takes that heap's
+ * lock for every way in. Two threads allocate from it without pause (its
+ * lock held much of the time) while we make HEAP_ROUNDS children each way:
+ * musl's fork, _Fork, a raw SYS_fork, vfork and clone; each child
+ * allocates from it and opens and reads a file (calls that allocate). A
+ * child cloned while a thread held the lock would wait for it for ever
+ * (the case's time runs out). */
+#define HEAPERS     2
+#define HEAP_ROUNDS 30
+
+static volatile int heap_stop;
+
+static void *heaper(void *arg)
+{
+    (void)arg;
+    for (unsigned n = 1; !heap_stop; n++) {
+        volatile char *p = jam_malloc(16 + (n % 64) * 24);
+        if (p)
+            *p = 1;
+        jam_free((void *)p);
+    }
+    return NULL;
+}
+
+/* The child: the layer's heap and a call that allocates, nothing of
+ * musl's that a stale thread id would trip (a raw SYS_fork's child). */
+static int heap_kid(void)
+{
+    void *p = jam_malloc(100);
+    char buf[64];
+    int fd = open("/proc/self/status", O_RDONLY);
+    int ok = p && fd >= 0 && read(fd, buf, sizeof(buf)) > 0;
+    if (fd >= 0)
+        close(fd);
+    jam_free(p);
+    return ok ? 0 : 1;
+}
+
+__attribute__((noinline)) static pid_t heap_vfork(void)
+{
+    pid_t pid = vfork();
+    if (pid == 0)
+        _exit(heap_kid());
+    return pid;
+}
+
+static int heap_clone_fn(void *arg)
+{
+    (void)arg;
+    return heap_kid();
+}
+
+static void fork_heap(void)
+{
+    pthread_t t[HEAPERS];
+    unsigned made = 0, ended = 0;
+    for (unsigned i = 0; i < HEAPERS; i++)
+        made += pthread_create(&t[made], NULL, heaper, NULL) == 0;
+    char *stk = malloc(64 << 10);
+    CHECK(made == HEAPERS && stk);
+    static const char *const ways[] = { "fork", "_Fork", "SYS_fork", "vfork", "clone" };
+    unsigned per[5] = { 0 };
+    for (unsigned w = 0; w < 5; w++)
+        for (unsigned i = 0; i < HEAP_ROUNDS; i++) {
+            pid_t pid = w == 0 ? fork() : w == 1 ? _Fork() : w == 2 ? (pid_t)syscall(SYS_fork)
+                      : w == 3 ? heap_vfork() : stk ? clone(heap_clone_fn, stk + (64 << 10),
+                                                             SIGCHLD, NULL) : -1;
+            if (pid == 0)
+                _exit(heap_kid());   /* fork, _Fork and SYS_fork's child */
+            CHECK(pid > 0);
+            if (pid > 0) {
+                reaped(pid, 0);
+                per[w]++;
+                ended++;
+            }
+        }
+    heap_stop = 1;
+    for (unsigned i = 0; i < made; i++)
+        pthread_join(t[i], NULL);
+    free(stk);
+    for (unsigned w = 0; w < 5; w++)
+        if (per[w] != HEAP_ROUNDS)
+            printf("posixtest: fork: heap: %u of %u %s children ended\n", per[w], HEAP_ROUNDS,
+                   ways[w]);
+    printf("posixtest: fork: heap: %u children (fork, _Fork, SYS_fork, vfork, clone) used the "
+           "layer's heap beside %u threads in it\n", ended, made);
+}
+
 /* ---- the section ------------------------------------------------------------------ */
 
 static const struct {
@@ -1280,6 +1375,7 @@ static const struct {
     { "nomem", fork_nomem, JOB_PAGES }, { "signals", fork_signals, 0 },
     { "clone", fork_clone, 0 },     { "small", fork_small, 0 },
     { "stacks", fork_stacks, 0 },    { "alloc", fork_alloc, 0 },
+    { "heap", fork_heap, 0 },
     /* forkfd.c's (FL2): the descriptors and the table of mappings */
     { "fds", pt_fork_fds, 0 },      { "chromium", pt_fork_chromium, 0 },
     { "ttys", pt_fork_ttys, 0 },    { "maps", pt_fork_maps, 0 },
