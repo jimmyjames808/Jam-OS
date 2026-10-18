@@ -499,7 +499,7 @@ after it (`pager.c`, `main.c`, `fsops.c`, `test.c`, `extfs.h`),
 | **IL1. libc: the descriptor** (built: [IL1 notes](#il1-notes)) | 3.1 to 3.4 and 3.6 | a new user/posix/sys/inotify.c, `user/posix/sys/kinds.h` (its ops), `user/posix/sys/calls.def` (the four calls), `user/posix/sys/enosysnames.c` (the two names out), a new posixtest file user/posix/test/inotify.c (section `inotify`) and tools/shell-tests' new posix-inotify.txt | IP merged to start, CBF6 merged (the call tables); IE1 merged before its last run (events on ext); beside IE2 | posixtest `inotify` on ext `/data` and on `/tmp`: the records (padding, `len`, alignment), `FIONREAD`, a short read `EINVAL`, a 0-byte read, `O_NONBLOCK`'s `EAGAIN`, a blocking read woken, `poll`, `epoll` and `select` with another thread changing files, Chromium's reader loop copied (poll, `FIONREAD`, read) over 1,000 changes, quiet watches on "/", `/etc`, `/proc` and the boot image, `IN_ONLYDIR`, `IN_MASK_ADD`, `rm_watch`'s `IN_IGNORED`, `wd`s not reused; shell scripts basic, cmds, commands, files; init run | 1 | **Opus** |
 | **IL2. libc: limits, fork, exec** (built: [IL2 notes](#il2-notes)) | 3.4's tests, 3.5, `/proc/self/fd`'s name | `user/posix/sys/procfs.c` (`/proc/sys/fs/inotify`), user/posix/sys/inotify.c (the fork and give steps if IL1 left them), posixtest's `user/posix/test/procfs.c` and `user/posix/test/forkfd.c` (an inotify case each), the TESTING rows | IL1 and CBF6 merged | posixtest `procfs` (the three files), `fork` (absent in the child), `exec` (gone after `execve`); `tools/shell-tests/posix-fork.txt`; init run | 0.5 | Sonnet 5.5 |
 | **IF. fat** (only with Q1's (A)) | 2.9 on fat with the library: keys, its rows of 2.2, the order rule in its loop, its state and keeper | `user/services/fat/` (a new watch.c, fsops.c, its loop, state, keeper, adopt), a new utest file user/tests/utest/fat_watch.c | IE2 merged (the pattern); DRO2 merged (fat's restart paths) | utest `fat_watch`, `fat_restart` unchanged; posixtest `inotify` with `JAMOS_DATA_FS=fat` | 1 | **Opus** |
-| **IC. Chromium's tests** | the 165 run: `FilePathWatcher*` off `tools/cr/base_unittests.skip` (what still fails listed with its reason), the stage relinked (`tools/cr/build.sh start base_unittests test_child_process`) | `tools/cr/base_unittests.skip`, `docs/CR-PLAN.md`'s rows | IE2, IL1 and IL2 merged; no other agent running `base` | `CR_BASE_ONLY='FilePathWatcher*' tools/cr-test.sh <out> base` with `TMPDIR` on ext `/data`, and once on `/tmp` (`CR_BASE_ENV=`) | 0.5 | Sonnet 5.5 |
+| **IC. Chromium's tests** (built: [IC notes](#ic-notes)) | the 165 run: `FilePathWatcher*` off `tools/cr/base_unittests.skip` (what still fails listed with its reason), the stage relinked (`tools/cr/build.sh start base_unittests test_child_process`) | `tools/cr/base_unittests.skip`, `docs/CR-PLAN.md`'s rows | IE2, IL1 and IL2 merged; no other agent running `base` | `CR_BASE_ONLY='FilePathWatcher*' tools/cr-test.sh <out> base` with `TMPDIR` on ext `/data`, and once on `/tmp` (`CR_BASE_ENV=`) | 0.5 | Sonnet 5.5 |
 | **IR. Independent review and fix** | everything above, findings first (a new docs/INOTIFY-REVIEW.md), then High and Medium fixed with a test each: can an event reach a watcher who can't list its name, can a watch outlive its reach, can a service be made to hold unbounded memory, is a wake ever lost, is a close ever reported after the next request's events, can a `wd` be reused while Chromium holds it | the files its fixes need | IC | its own; hostile: a watcher that never reads (one overflow, the service's memory flat), 8 channels from one process and the ninth refused, renames moving directories in and out of a subview while it watches, a rename storm with extfs killed every 200 ms, 8 threads closing and renaming while another reads; full init run; the extfs and posix scripts | 1.5 | **Opus** |
 | **IJ. The join** | ARCHITECTURE (Storage: watches; the POSIX layer: the kind), TESTING's rows, CR-PLAN, ROADMAP, HISTORY; this plan deleted when HISTORY covers it | the docs | IR | `make check` | 0.5 | Sonnet 5.5 |
 
@@ -844,6 +844,36 @@ extfs-svc 31.
   a hidden place keeps the watch: its directory stays the added one);
   watches of a channel whose view's root was removed end only when a
   rename looks at them.
+
+### IC notes
+
+Built (2026-10-18; [CR-PLAN](CR-PLAN.md#ic-2026-10-18) has the numbers):
+`base_unittests` and `test_child_process` relinked, and **all 165
+`FilePathWatcher*` tests pass** on an ext `/data`, with `TMPDIR` on it and
+with it unset (`/tmp` is a view of `/data/tmp`). Nothing failed for a reason
+in libc's `inotify.c` or extfs's `watch.c`, so there is nothing to fix there.
+They are off `tools/cr/base_unittests.skip` and on
+`tools/cr/base_unittests.fat.skip` (a writable FAT mount refuses watches, Q1).
+The whole program, six shards: 8,874 pass, 37 self-skip, 45 listed (BM1:
+8,700 / 37 / 219), no regression.
+
+- *Limits*: none of the tests needs more than IL2's 1,024 watches a
+  descriptor and 8 descriptors a process (the three `InotifyLimitIn*` tests
+  set their own limit), so the three constants stay.
+- *`RacyRecursiveWatch`* takes 208 to 337 s (2,000 make-write-remove cycles,
+  each request a commit on ext `/data`); the same cycle costs the same with
+  and without Chromium's watches (posixtest `inotify` times both), and a
+  `poll` sees another thread's change in some 10 us. The cost is the file
+  service's commit, not the watching. `base-run.py` lets
+  `FilePathWatcherTest` run 1,200 s a suite.
+- *For IR*: the tests never read an `IN_Q_OVERFLOW`, never lose an event and
+  never see a `wd` come back too soon in these runs; they also don't
+  restart extfs or run a second watcher process, so IE2's restart cases and
+  the per-process channel cap are only utest's and posixtest's. posixtest's
+  real-mount lines now print for a mount that is skipped, read-only or fat
+  (one boot of `posix-inotify.txt` printed none for `/data` and `/tmp`
+  while init was still setting up, and passed silently; it did not come
+  back in three more).
 
 ## 6. Tests
 

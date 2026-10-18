@@ -52,6 +52,11 @@ KERNEL = re.compile(r"^\[\s*\d+\.\d+\]")            # a kernel log line: "[    2
 PROGRAM = "/data/cr/out/jamos/base_unittests"
 JAMEXT = os.path.join(TOP, "build", "host", "jamext")
 LINE_MAX = 200                                       # the shell takes 240 characters a line
+# Suites that need longer than --suite-timeout (seconds). FilePathWatcherTest:
+# RacyRecursiveWatch makes 2,000 directories, each with a file made and both
+# removed, and each of those is a commit on the stick's ext /data: 208 to 259 s
+# on a loaded PC, the watch costing nothing (docs/CR-PLAN.md, "IC").
+SLOW_SUITES = {"FilePathWatcherTest": 1200}
 
 
 def read_log(path):
@@ -352,7 +357,7 @@ def main(argv):
     ap.add_argument("--only", help="only suites matching this glob (several: separated by spaces or commas)")
     ap.add_argument("--listed", action="store_true",
                     help="only the suites with a test named on the skip list (not a wildcard "
-                    "pattern's: FilePathWatcher* waits out a minute a test); with --all, to re-measure the list")
+                    "pattern's, which can name hundreds of tests); with --all, to re-measure the list")
     ap.add_argument("--args", default="", help="more arguments for base_unittests, e.g. ' --v=1' (a space first)")
     ap.add_argument("--death-style", default="threadsafe", choices=("fast", "threadsafe"),
                     help="gtest's death test style: threadsafe, base's own default (a clone child on two "
@@ -433,7 +438,7 @@ def main(argv):
                     items.append((len(items), s, ":".join(u[k:k + size])))
         script = header(args.env)
         for i, s, flt in items:
-            script += item_lines(i, flt, args.suite_timeout, args.args)
+            script += item_lines(i, flt, max(args.suite_timeout, SLOW_SUITES.get(s, 0)), args.args)
         script += FOOTER
         b = Boot(args, "run%d" % rounds, script, 6 * 3600)
         lines = b.run()

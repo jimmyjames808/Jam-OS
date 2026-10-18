@@ -35,9 +35,6 @@
 [posix] the layer's calls allocate from the program's own malloc (fd.c's calloc of a description at every open, procfs's buffers, ...), which Linux's calls never touch. StackDumpSignalHandlerIsMallocFree puts in a malloc that crashes, then raises SIGSEGV: base's handler is async-signal-safe, but its BeingDebugged() opens /proc/self/status, the open's calloc crashes, and the handler prints nothing (either death style). Needs the layer's own heap (docs/CR-PLAN.md, "CCS")
 StackTraceDeathTest.StackDumpSignalHandlerIsMallocFree
 
-[posix] inotify_init and inotify_init1 (syscalls 253 and 294) are ENOSYS: no file watching
-FilePathWatcher*
-
 [launch] a program on /data started through init's /svc/exec (a forked child's execve of base_unittests: spawn, wait, exit) gets the hand-over init writes it (CR2F, CR-REVIEW-POSIX Q1 decided A): its directory is /, not its caller's, and it is AT_SECURE, so the crt drops TMPDIR from its environment. CurrentDirectory's child finds itself in / ("/tmp vs. /"); the signal-file tests' child looks for its file (a name relative to the directory) in / and never finds it, so it runs to the test's timeout (KillSlowChild; GetTerminationStatus*: still running). Q1's option C (the directory given as a channel) would mend it (docs/CR-PLAN.md, "CCS")
 ProcessUtilTest.CurrentDirectory
 ProcessUtilTest.GetTerminationStatusCrash

@@ -2178,6 +2178,77 @@ threads wait, for `headless_shell`'s start-up hang and every later one.
   other way through `InitLibcLocaltimeFunctionsImpl`'s fallback still logs
   inside the once.
 
+#### IC (2026-10-18)
+
+Track IC (branch `ic-inotify-base`, [INOTIFY-PLAN](INOTIFY-PLAN.md#ic-notes)):
+the 165 `FilePathWatcher*` tests of `base/files/file_path_watcher_unittest.cc`
+on Jam OS's inotify (IP, IE1, IE2, IL1, IL2 merged).
+
+**The relink.** `tools/cr/build.sh start base_unittests test_child_process`
+through `remote-test.sh` alone relinked both (the per-target `.links` hash
+of 1238f0da: WT1's note that it relinks nothing is out of date): 114 s, the
+programs in `out/jamos` from 11:31 to 14:05 that day (11:31 was before IE2
+merged at 11:45), `base_unittests` 79,192,072 to 79,206,176 bytes,
+`test_child_process` 3,773,440 to 3,783,320; the stage's pair (stripped) is
+76,973,832 and 1,662,976 bytes.
+
+**All 165 pass.** `CR_BASE_ALL=1 CR_BASE_ONLY="FilePathWatcher*"` on an ext
+`/data` (batch 18141141, twice: `TMPDIR` and `TEST_TMPDIR` at `/data/cr/tmp`,
+and with `CR_BASE_ENV=` empty, where `/tmp` is a view of `/data/tmp` once
+init has `/data`, so the same ext volume): 164 tests pass in 45 s of test
+time (76 to 460 ms a test; the slowest 1,570 ms, a `...WithChangeInfoTest`;
+`DirectoryChain` 1,098 ms, `InotifyLimitInUpdateRecursive` 856 ms) and one,
+`FilePathWatcherTest.RacyRecursiveWatch`, ran past the 240 s a suite had. No
+mismatch of events, no missing event, no wrong order, no limit reached (the
+three `InotifyLimitIn*` tests pass with the 1,024 watches a descriptor and 8
+descriptors a process of IL2), no crash, no `ENOSYS` line and no watch line
+in the kernel log. `FilePathWatcher*` is off `tools/cr/base_unittests.skip`.
+
+**`RacyRecursiveWatch`: 208 to 337 s, and the cost is extfs's.** With the
+suite given 2,400 s (`CR_BASE_TIMEOUT`, new) it passes in 259 s (batch
+18142200, `/data/cr/tmp`), 208 s (batch 18143407, `/tmp`) and 337 s in the
+six-shard run (the PC at full load). The test makes 20 directories, each
+with a file written and then both removed, 100 times over on a second
+thread, and the main thread starts a watcher for each round and ends it at
+its first event: 2,000 cycles of four requests on the stick's ext `/data`,
+each request a commit. Posixtest's `inotify` section now times the same
+cycle on `/data`: 63 to 330 ms a cycle by the PC's load, **the same with
+Chromium's watches (a watch added on each new directory, 7 records read per
+cycle) as without** (63.7 and 63.3 ms on a quiet PC; 272 and 223 ms, 329 and
+304 ms under load), and 0.27 ms on the in-memory `/tmp` of a shell boot; a
+`poll` blocked in one thread sees another thread's `mkdir` in 10 to 35 us.
+So the 2,000 cycles are 127 to 540 s of commits on the PC's disk and the
+watching is not in it. `base-run.py` now lets `FilePathWatcherTest` run 1,200
+s (`SLOW_SUITES`); every other suite keeps 240 s (`--suite-timeout`,
+`CR_BASE_TIMEOUT` in `cr-test.sh`).
+
+**The whole program** (batch 18144626, six shards on an ext `/data`, base's
+threadsafe death style, all PASS, 391 to 835 s a shard with the PC loaded;
+the shard with `FilePathWatcherTest` is the slowest):
+
+| `/data` | pass | self-skip | on the skip list |
+|---------|-----:|----------:|-----------------:|
+| ext, BM1 (2026-10-18) | 8,700 | 37 | 219 |
+| ext, IC | 8,874 | 37 | 45 |
+
+Per shard (of 8,956): 1,232 + 3 + 3 of 1,238; 1,468 + 0 + 8 of 1,476;
+2,001 + 4 + 10 of 2,015; 1,532 + 9 + 14 of 1,555; 1,330 + 17 + 2 of 1,349;
+1,311 + 4 + 8 of 1,323 (pass + self-skip + listed). It adds up from BM1's
+without a remainder: 8,700 + 1 (MH, the build-id test) + 8 (WT1, the
+writable mappings) + 165 (this track) = 8,874; listed 219 - 1 - 8 - 165 =
+45; 37 self-skips as before. **No regression**: no new failure and no test
+missing in any shard. The 45 left are BM1's groups less those three:
+launching 5, thread id 3, record locks 7, `CLONE_FS` 1, handler registers 1,
+other processes' `/proc` 2, `mincore` 9, `CheckAgainstProcMaps` 1, `dlopen`
+3, PROT_EXEC 3, a socket sent over itself 1, `mkfifo` 4, the 256-byte path
+1, `fdopen(-1)` 1, `ZeroSegment` 2 and the stack-trace death test 1 (the
+layer's own heap); `base_unittests.skip` gives each with its reason.
+
+**On a FAT `/data`** the 165 are in `tools/cr/base_unittests.fat.skip`: libc
+refuses a watch on a writable FAT mount (`EOPNOTSUPP`, the owner's Q1 (B)),
+so Chromium's watcher never fires there and each test would wait out its
+timeout. Not measured on FAT.
+
 ### 2. The address space: huge sparse reservations (the top risk)
 
 **What Chromium does** ([CR-RESEARCH section 6](CR-RESEARCH.md#6-v8s-jit)):

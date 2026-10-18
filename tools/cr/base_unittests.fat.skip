@@ -60,3 +60,6 @@ PersistentHistogramAllocatorTest.CreateSpareFile
 PersistentHistogramAllocatorTest.CreateWithFile
 PersistentHistogramAllocatorTest.MovePersistentFile
 PersistentMemoryAllocatorTest.TruncateTest
+
+[posix] /data is FAT: libc refuses a watch on a writable FAT mount (inotify_add_watch is EOPNOTSUPP, the owner's Q1 (B) of docs/INOTIFY-PLAN.md: FAT watches later). Chromium's Watch() still returns true, its watcher never fires, and each test waits out its timeout. All 165 pass on ext since IE1/IE2/IL1/IL2 (docs/CR-PLAN.md, "IC"). Not measured on FAT
+FilePathWatcher*
