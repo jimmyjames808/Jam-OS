@@ -1087,6 +1087,7 @@ static const struct {
     { "netsock_iface", t_netsock_iface },
     { "netsock_limits", t_netsock_limits },
     { "netsock_caps", t_netsock_caps },
+    { "netsock_mem", t_netsock_mem },
     { "netloop_udp", t_netloop_udp },
     { "netloop_ping", t_netloop_ping },
     { "netloop_tcp", t_netloop_tcp },

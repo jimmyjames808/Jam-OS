@@ -549,3 +549,12 @@ handle_t netdrv_net_listen_low(void)
 {
     return fk.low;
 }
+
+bool netdrv_job_used(uint64_t *pages, uint64_t *handles)
+{
+    struct job_info ji;
+    CHECK_ST(info_of(fk.job, &ji), OK);
+    *pages = ji.used[JOB_LIMIT_PAGES];
+    *handles = ji.used[JOB_LIMIT_HANDLES];
+    return true;
+}

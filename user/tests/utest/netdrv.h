@@ -36,3 +36,6 @@ handle_t netdrv_net_listen(void);
 handle_t netdrv_net_sys(void);
 /* /svc/net-low's: its openers may listen on ports below 1024 too. */
 handle_t netdrv_net_listen_low(void);
+/* netstack's job now: the pages and the handles in use (the memory
+ * measured at the caps, docs/BENCH.md). */
+bool     netdrv_job_used(uint64_t *pages, uint64_t *handles);

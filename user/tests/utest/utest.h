@@ -639,6 +639,7 @@ bool t_netsock_ping(void);
 bool t_netsock_iface(void);
 bool t_netsock_limits(void);
 bool t_netsock_caps(void);
+bool t_netsock_mem(void);
 /* netloop.c: loopback (127.0.0.0/8) through netstack over the fake driver:
  * UDP, ping, TCP, and frames from the network with a loopback address. */
 bool t_netloop_udp(void);

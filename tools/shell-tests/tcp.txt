@@ -12,7 +12,8 @@
 # port at once, where one without the flag is refused (TIME_WAIT); then it
 # listens on port 5031 and
 # serves the peer's 20 connections at once from one wait set, 256 KiB
-# each way each. The script checks the peer's counts afterwards.
+# each way each; and last the caps, 768 connections held at once by two
+# programs. The script checks the peer's counts afterwards.
 wait 120 Jam OS shell
 seen 60 netstack: link up
 seen 30 netstack: address 10.2.21.5/24
@@ -39,7 +40,46 @@ send run tcptest serve 5031 20 262144
 wait 30 tcptest: listening on port 5031
 wait 300 tcptest: PASS: served 20 connections
 wait {prompt}
+# The caps (netstack's TCP limits): one program holds 512 connections open to
+# the peer's server at once and the 513th is refused; a second holds 256
+# more, the 768 ordinary programs may hold together, and its 257th is
+# refused. `ps` before, with all 768 held, and after says netstack's job
+# memory (docs/BENCH.md), `net stats` its heap; each connection carries 64
+# bytes both ways and is held once more, then closes. Last, 64 connections
+# carry 64 KiB each way each (all their rings used) and `ps` is looked at
+# again.
+send ps
+wait {prompt}
+send run tcptest many 10.2.21.174 5037 512 64 20 1 &
+wait 10 [1]
+wait {prompt}
+seen 180 tcptest: 512 connections open
+send run tcptest many 10.2.21.174 5037 256 64 15 1 &
+wait 10 [2]
+wait {prompt}
+seen 180 tcptest: 256 connections open
 send net stats
+wait {prompt}
+send ps
+wait {prompt}
+seen 240 tcptest: 512 connections carried their bytes
+seen 240 tcptest: 256 connections carried their bytes
+send ps
+wait {prompt}
+seen 240 tcptest: PASS: 256 connections held
+seen 240 tcptest: PASS: 512 connections held
+send ps
+wait {prompt}
+send run tcptest many 10.2.21.174 5038 64 65536 20 0 &
+wait 10 tcptest: in the background
+wait {prompt}
+seen 240 tcptest: 64 connections carried their bytes
+send net stats
+wait {prompt}
+send ps
+wait {prompt}
+seen 240 tcptest: PASS: 64 connections held
+send ps
 wait {prompt}
 send reboot -f
 wait reboot: resetting

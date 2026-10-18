@@ -2850,7 +2850,9 @@ a renderer per site). Three pieces, all general:
   all 256 to **1,024**, each with netstack's memory measured at the new
   caps (its heap, rings and lwIP's pools; BENCH.md gets the figure). The
   totals still bound netstack's memory; one program may take half.
-  General: every program gets the higher caps.
+  General: every program gets the higher caps. Built: ordinary programs
+  together may hold 384 sockets and 768 connections (the rest is the
+  network services' reserve); see the CN1 notes and BENCH.md's figures.
 - **Names**: `getaddrinfo` on worker threads to `/svc/dns` (A records:
   IPv6 is off anyway), through Alpine's `disable-dns_config_service.patch`
   (Fuchsia's stub configuration service), so Chromium's own resolver and
@@ -3339,7 +3341,7 @@ ports, recipes, tests, netstack's caps, the audio API and the docs.
 | **CS1. Launching** | section 5: `addclosefrom_np`, argv and environments in a VMO, `/proc/self/exe` spawns through CL2's image, a child's argv of 64 KiB; built, see "CS1 notes" | `user/posix/sys/spawn.c`, `user/posix/sys/spawnfd.c`, `user/lib/spawn.c` (the VMO), the POSIX start code (`user/posix/crt/`) | CL2's self-image part (or beside it, merged after) | posixtest: a child with 500 arguments and 64 KiB of environment sees them all; `addclosefrom_np` leaves exactly the remapped descriptors (checked through `/proc/self/fd`) | **Opus** |
 | **BT. Stack traces** | libc's `<execinfo.h>` (`backtrace`, `backtrace_symbols`, `backtrace_symbols_fd`) by the program's own unwind tables, so Chromium's and V8's `StackTrace` take their glibc path and Alpine's no-execinfo patch and our 0911 are gone; built, see "BT notes" | `user/posix/glibc/` (new), `user/posix/include/execinfo.h`, `user/posix/posix.mk` (unwind tables in musl, the layer and libjam), posixtest's execinfo section, ports/chromium's patches | nothing | posixtest `execinfo`: nested frames, a thread, a signal handler, qsort's comparator, the lines | Sonnet 5.5 |
 | **CP1. Programs this big** | section 6's limits: `VMO_VERIFIED_MAX` 1 GiB, `PROGRAM_MAX`, `FILE_MAX`; `allow`'s progress line; a 300 MB generated test program; built, see "CP1 notes" | `kernel/include/jam/abi.h` (the constant), `kernel/object/vmo_verify.c` if a size is assumed there, `user/services/shell/sh_allow.c` (the constant and the line), `user/lib/spawn.c` (the constant), a generated test program (new) | M12.5's PX merged (it rewrites `sh_allow.c`) | ktest: a 1 GiB verified table; the shell's allow script with the 300 MB program (allowed, run, a changed page refused); cr-test.sh `hello` with the big program | **Opus** (small) |
-| **CN1. netstack's caps** | section 8: the new caps, netstack's memory measured at them | `user/include/net.h`, `user/services/netstack/stack.h` and lwIP's options file if pools must grow, BENCH.md's line | nothing | utest: 256 sockets from one opener, the 257th refused; 512 in all; 1,024 TCP connections to the test host; `tools/net-test.sh` unchanged | Sonnet 5.5 |
+| **CN1. netstack's caps** | section 8: the new caps, netstack's memory measured at them; built, see "CN1 notes" | `user/include/net.h`, `user/services/netstack/stack.h` and lwIP's options file if pools must grow, BENCH.md's line | nothing | utest: 256 sockets from one opener, the 257th refused; 512 in all; 1,024 TCP connections to the test host; `tools/net-test.sh` unchanged | Sonnet 5.5 |
 | **CB1. The Chromium build** | section 14 and 15: ports/chromium (the recipe, Alpine's patches, our toolchain patch, args for `base_unittests` and `headless_shell`), the builder's kept tree and `package --from` in tools/ports.py, the persistent tree on WSL behind its lock; builds `base_unittests` and `headless_shell`; reports disk, peak memory and time | ports/chromium (new), tools/ports.py (the two options), tools/cr/ (the build wrapper, new) | CT1, CT2; the main session's CPU-weighted slots in `tools/remote-test.sh` | the build finishes; the syscall scan passes (or lists each site); `make check` (the recipe's lint) | **Opus** (the build glue decides much) |
 | **CB2. `base_unittests` (CR-b)** | cr-test.sh's `base` case; the run with the ENOSYS log on; every failure triaged to a layer (a finding for its track) or fixed in the recipe's test list with a reason | cr-test.sh's case, ports/chromium's test list | CB1, CL1 (stage 1 at least), CL3, CP1 | cr-test.sh `base` | Sonnet 5.5 |
 | **CB3. `headless_shell` (CR-c1)** | the single-process headless screenshot of a local page and an HTTPS page; the findings | cr-test.sh's `headless` case, the recipe's args | CB2; CL1 stage 2 (V8's cage); M13's F1b (the `.pak` maps) | cr-test.sh `headless` | Sonnet 5.5 |
@@ -4200,6 +4202,55 @@ Chromium's `StackTrace` takes its glibc path instead of being patched out
   flags off, then the flags back on without a rebuild (the old Makefile):
   `execinfo.c:183` fails both times; with MKF merged the same tree
   rebuilds and passes.
+
+## CN1 notes
+
+Track CN1, netstack's caps (2026-10-18): the caps themselves were raised
+on 2026-10-12 (`85cd9e62`, with loopback in `ac11dafa`; merged "untested in
+QEMU", its memory only computed). This round ran them, tested the caps
+over the card and measured netstack's memory at them. No change to
+`net.h`, `stack.h` or lwIP's options was needed: every pool held.
+
+- **The caps, as built**: sockets an opener 256 (the 257th is
+  `ERR_NO_RESOURCES`), in all 512, ordinary programs together 384;
+  connections an opener 512, in all 1,024, ordinary programs together
+  768 (the rest is `/svc/net-sys`'s reserve, which only the network's own
+  services may ask for: checkwants' `SERVICES_ONLY`); ring bytes 64 MiB an
+  opener, 128 MiB in all, 96 MiB ordinary. Listeners stay 4 an opener, 16
+  in all.
+- **1,024 connections to a host cannot be had by a program**: the most a
+  shell program (or Chromium) can hold, with any number of processes, is
+  the ordinary 768. The test host takes **768** from two programs at once
+  (`tcptest many`, below: 512 from one, the 513th refused, 256 from
+  another, its 257th refused) and the full **1,024** is tested in the
+  utests with a fake host (`netsock_mem`: 512 sockets and 1,024
+  connections open at once through `/svc/net` and `/svc/net-sys`, a
+  1,025th refused; `nettcp_limits` the same with handshakes in flight).
+  *Open question for the owner*: is 768 enough for a browser? (Chromium's
+  socket pool limits, from memory, are 256 sockets in a pool and 6 to a
+  host, so a normal browser needs a few hundred.)
+- **Tests added**: utest `netsock_mem` (netstack's job pages and handles
+  after each stage, closing gives every handle back; `netdrv_job_used` in
+  the harness); `tcptest many <address> <port> <conns> <bytes> <hold s>
+  <full 0|1>` with `tools/tcp-test.sh`'s new part (`5037:64` and
+  `5038:65536` servers on the peer; the peer must count 858 connections
+  right); the existing `netsock_caps`, `netsock_limits` and `nettcp_limits`
+  passed unchanged at the caps. `tools/net-test.sh` is untouched.
+- **Memory**, measured (BENCH.md): netstack's job is 208 KiB idle; 512
+  datagram sockets 6.4 MiB; 512 sockets with 1,024 open idle connections
+  18.8 MiB (3 pages an idle socket, 5 after the first bytes, about 93 KiB
+  with both default rings used); 768 over the card 9.5 MiB idle and 15.5
+  MiB after 64 bytes each way. The ring budget (128 MiB) bounds the rest:
+  about 95 MiB if every connection's rings fill. lwIP's heap in use is 0
+  with them idle.
+- **Findings**: the card's tx ring drops some frames of a 512-connection
+  burst (lwIP sends them again; `net stats` "tx ring full" 600 to 1,100)
+  and 512 connections open in 12 ms of guest time; the peer's TCP
+  (`tools/tcppeer.py`) goes on resending to connections whose program
+  died (a million resends in one failed run: harmless, but the run's
+  other counts are meaningless); a program's ring pages are charged to
+  netstack's job, not the program's (`ps` shows the program at 320 KiB
+  holding 512 connections).
 
 ## Later
 

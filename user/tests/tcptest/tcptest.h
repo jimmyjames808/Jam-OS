@@ -34,6 +34,16 @@
  *       same port without reuse must be refused (ERR_ALREADY_BOUND) and one
  *       with it made at once.
  *
+ *   tcptest many <address> <port> <conns> <bytes> <hold seconds> <full 0|1>
+ *       open <conns> connections to the peer's server at once (the
+ *       caps' test: a program holds 512, ordinary programs together 768),
+ *       with <full> the next open must be refused (ERR_NO_RESOURCES: the
+ *       program is at a cap); say netstack's counts (net stats' heap,
+ *       ring bytes and receive buffers) with them all open, hold them
+ *       <hold seconds> (the shell looks at netstack meanwhile), then on
+ *       every one write <bytes> of stream 0xa1 and shut down, read the
+ *       peer's <bytes> of stream 0xb2 to its end and wait for CLOSED.
+ *
  * Byte i of stream `seed` is (i * 131 + (i >> 8) * 7 + seed) & 0xff, as
  * tools/tcppeer.py makes them. The last line is "tcptest: PASS ..." or
  * "tcptest: FAIL ..."; exit 0 or 1. */
@@ -64,3 +74,7 @@ int tt_relisten(uint16_t port, uint64_t bytes);
 
 /* serve.c */
 int tt_serve(uint16_t port, uint32_t conns, uint64_t bytes);
+
+/* many.c */
+int tt_many(uint32_t addr, uint16_t port, uint32_t conns, uint64_t bytes, uint32_t hold_s,
+            bool full);

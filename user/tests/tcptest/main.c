@@ -160,11 +160,18 @@ int main(int argc, char **argv)
     if (argc == 4 && !strcmp(argv[1], "relisten") && number(argv[2], 65535, &port) &&
         number(argv[3], 1ull << 30, &bytes))
         return tt_relisten((uint16_t)port, bytes);
+    uint64_t conns, full;
+    if (argc == 8 && !strcmp(argv[1], "many") && ipv4_parse(argv[2], &addr, NULL) &&
+        number(argv[3], 65535, &port) && number(argv[4], NET_TCP_MAX, &conns) &&
+        number(argv[5], 1ull << 20, &bytes) && number(argv[6], 600, &hold) &&
+        number(argv[7], 1, &full))
+        return tt_many(addr, (uint16_t)port, (uint32_t)conns, bytes, (uint32_t)hold, full);
     if (argc == 5 && !strcmp(argv[1], "serve") && number(argv[2], 65535, &port) &&
         number(argv[3], 200, &n) && number(argv[4], 1ull << 40, &bytes))
         return tt_serve((uint16_t)port, (uint32_t)n, bytes);
     printf("usage: tcptest send <address> <port> <bytes> [<ring bytes>] | "
            "serve <port> <conns> <bytes> | small <address> <port> <writes> <size> <nagle 0|1> | "
-           "keepalive <address> <port> <seconds> | relisten <port> <bytes>\n");
+           "keepalive <address> <port> <seconds> | relisten <port> <bytes> | "
+           "many <address> <port> <conns> <bytes> <hold seconds> <full 0|1>\n");
     return 2;
 }
