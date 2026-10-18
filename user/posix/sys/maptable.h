@@ -26,6 +26,9 @@ struct mt_entry {
     uint64_t vmo_off;   /* the VMO's offset at base */
     handle_t vmo;       /* the VMO mapped (shared with entries split from this one) */
     uint32_t kind;      /* MT_* bits; kept by the entries split from this one */
+    uint32_t id;        /* the mmap that made it: kept by the entries split from it */
+    uint32_t wb_seq;    /* MT_SHARED: the mmap's sample of its VMO's write-back errors
+                         * (vmo_sync's wb_seq), the same in every entry of one id */
 };
 
 /* A private read-only mapping straight on a file's own pages (mem.c's

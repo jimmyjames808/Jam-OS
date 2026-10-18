@@ -133,15 +133,22 @@ int64_t sysc_vmo_decommit(handle_t h, uint64_t offset, uint64_t len)
 }
 
 /* Writable pager VMOs' msync (docs/WRITEMAP-PLAN.md, vmo_pager_sync). */
-int64_t sysc_vmo_sync(handle_t vmo, uint64_t offset, uint64_t len, uint32_t flags)
+int64_t sysc_vmo_sync(handle_t vmo, uint64_t offset, uint64_t len, uint32_t flags, uint64_t wb_seq)
 {
     SYSC_TABLE(t);
     struct vmo *v;
+    uint32_t seq = 0;   /* the caller's sample of the VMO's write-back errors */
+    if (wb_seq && copy_from_user(&seq, wb_seq, sizeof(seq)) != OK)
+        return ERR_INVALID_ARGS;
     status_t st = get_vmo(t, vmo, RIGHT_READ, &v);
     if (st != OK)
         return st;
-    st = vmo_pager_sync(v, offset, len, flags);   /* (may wait: no lock held) */
+    uint32_t was = seq;
+    st = vmo_pager_sync(v, offset, len, flags, wb_seq ? &seq : NULL);   /* (may wait: no lock held) */
     kobject_unref(vmo_kobject(v));
+    if (wb_seq && (seq != was || (flags & VMO_SYNC_SAMPLE)) &&
+        copy_to_user(wb_seq, &seq, sizeof(seq)) != OK)
+        return ERR_INVALID_ARGS;
     return st;
 }
 

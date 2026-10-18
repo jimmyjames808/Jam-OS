@@ -47,7 +47,7 @@ status_t jam_port_bind(handle_t port, handle_t obj, uint64_t key, signals_t mask
 status_t jam_port_unbind(handle_t port, handle_t obj, uint64_t key);
 status_t jam_port_queue(handle_t port, const struct port_packet *pkt);
 status_t jam_port_wait(handle_t port, uint64_t deadline_ns, struct port_packet *out);
-status_t jam_vmo_sync(handle_t vmo, uint64_t offset, uint64_t len, uint32_t flags);
+status_t jam_vmo_sync(handle_t vmo, uint64_t offset, uint64_t len, uint32_t flags, uint32_t *wb_seq);
 status_t jam_vmo_read(handle_t h, uint64_t offset, void *buf, uint64_t len);
 status_t jam_vmo_write(handle_t h, uint64_t offset, const void *buf, uint64_t len);
 status_t jam_vmo_get_size(handle_t h, uint64_t *size);

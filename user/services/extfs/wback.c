@@ -49,8 +49,9 @@
  * store over a hole, a disk error, a volume that can't be written) is
  * answered WRITTEN with ERR_NO_SPACE or ERR_IO: its pages become clean
  * (readable until evicted; then the disk's bytes come back), the kernel
- * keeps the error for the VMO's next vmo_sync, and the slot keeps it for
- * the file's next file.sync. Of a run cut short by a full volume, the
+ * keeps the error for each mapping's next vmo_sync, and the slot keeps it
+ * for each open's next file.sync (Linux's errseq: each hears of it once,
+ * keep_error). Of a run cut short by a full volume, the
  * pages written are OK. A disk error or a failed commit gives the whole
  * batch up. */
 #include <settings.h>
@@ -168,6 +169,21 @@ static void put_run(struct wb_run *r, const uint8_t *data)
     }
 }
 
+/* A write-back error of m's file, for its opens' file.sync (Linux's
+ * errseq, as the kernel keeps one for the mappers): a new number, past
+ * every open's sample, unless the error kept is one no open heard of yet
+ * (then it is the same error to them: the first kept). The numbers come
+ * from one count for the volume, so a slot made again for the file never
+ * gives an open's sample back. */
+static void keep_error(struct xf_map *m, status_t st)
+{
+    if (m->error_seq && !m->error_seen)
+        return;
+    m->error = st;
+    m->error_seq = ++kept->err_seq ? kept->err_seq : ++kept->err_seq;   /* (never 0) */
+    m->error_seen = false;
+}
+
 /* Run r ended: WRITTEN over its pages, with the batch's error (bst) or
  * its own (the pages a full volume left out), an error kept for its file. */
 static void written(struct wb_run *r, status_t bst)
@@ -189,9 +205,8 @@ static void written(struct wb_run *r, status_t bst)
         return;
     if (first == OK)
         first = st;
-    if (r->slot >= 0 && kept->maps[r->slot].used && kept->maps[r->slot].key == r->key &&
-        kept->maps[r->slot].error == OK)
-        kept->maps[r->slot].error = st;   /* for the file's next file.sync */
+    if (r->slot >= 0 && kept->maps[r->slot].used && kept->maps[r->slot].key == r->key)
+        keep_error(&kept->maps[r->slot], st);   /* for its opens' next file.sync */
     if (!failed_said)
         printf("extfs %s: mapped file %lx: stores at %lu (%lu bytes) not written: %s\n",
                vol.name, (unsigned long)r->key, (unsigned long)(r->off + ok),
@@ -367,7 +382,16 @@ void wback_tick(void)
     next_check = now() + (wait > WB_CHECK_NS ? wait : WB_CHECK_NS);
 }
 
-status_t wback_file(uint32_t ino, uint32_t igen)
+uint32_t wback_sample(uint32_t ino, uint32_t igen)
+{
+    int s = vol.pager && ino <= XF_SHARED_INO_MAX ? maps_slot_of(XF_SHARED_KEY(ino, igen)) : -1;
+    if (s < 0)
+        return 0;   /* no error kept: any to come gets a number past 0 */
+    const struct xf_map *m = &kept->maps[s];
+    return m->error_seen ? m->error_seq : 0;   /* unheard of: this open hears of it too */
+}
+
+status_t wback_file(uint32_t ino, uint32_t igen, uint32_t *since)
 {
     if (!vol.pager || ino > XF_SHARED_INO_MAX)
         return OK;
@@ -383,9 +407,15 @@ status_t wback_file(uint32_t ino, uint32_t igen)
     int s = maps_slot_of(key);
     if (s < 0)
         return first;
-    status_t st = kept->maps[s].error;   /* the first since its last sync, ours with it */
-    kept->maps[s].error = OK;
-    return st;
+    /* Once to each open: the error kept if its number isn't the one this
+     * open heard of last. Ours is among them: an error of this call's
+     * write-back took a new number unless the one kept was unheard of. */
+    struct xf_map *m = &kept->maps[s];
+    if (!m->error_seq || m->error_seq == *since)
+        return OK;
+    *since = m->error_seq;
+    m->error_seen = true;
+    return m->error;
 }
 
 status_t wback_all(void)

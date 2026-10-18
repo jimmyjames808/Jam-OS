@@ -124,6 +124,13 @@
  *       doesn't); an error reported once, by the waiting call only (one
  *       kept from a write-back by age too); without the wait the request
  *       is only made; a range of two chunks asks for one at a time.
+ *   pager_dirty_errseq
+ *       write-back errors once to each mapper (WR2's errseq): samples
+ *       (refusals, 0 with no error and for another VMO); two mappers each
+ *       hear of an error once, at a sync that waits; a mapping made
+ *       before anyone heard hears of it too, one made after doesn't; two
+ *       errors before a look are one; a copied sample hears again; a
+ *       sync whose own write-back fails hears of it.
  *   pager_dirty_closed
  *       a detach fails a waiting vmo_sync ERR_PEER_CLOSED (a later one at
  *       once); the pager's close fails a store waiting at the limit
@@ -1508,7 +1515,7 @@ KTEST(pager_dirty_written)
     KT_EQ(pager_dirty_pages(pg), 1);
     KT_EQ(vmo_pager_dirty_count(v), 1);
     KT_EQ(vword(v, PG + 8), 12);
-    KT_EQ(vmo_pager_take_error(v), OK);
+    KT_EQ(vmo_pager_take_error(v, NULL), OK);
     KT_EQ(written(pg, 32, 0, 4 * PG, OK), OK);   /* no page writing: nothing changes */
     KT_EQ(vmo_pager_page_state(v, 1), DIRTY);
 
@@ -1518,12 +1525,12 @@ KTEST(pager_dirty_written)
     KT_EQ(run.offset, PG);
     KT_EQ(written(pg, 32, PG, PG, ERR_IO), OK);
     KT_EQ(vmo_pager_page_state(v, 1), 0);
-    KT_EQ(vmo_pager_take_error(v), ERR_IO);
-    KT_EQ(vmo_pager_take_error(v), OK);
+    KT_EQ(vmo_pager_take_error(v, NULL), ERR_IO);
+    KT_EQ(vmo_pager_take_error(v, NULL), OK);
     KT_EQ(uput(as, a + 2 * PG, 20), OK);
     KT_EQ(begin(pg, 32, 0, 4 * PG, buf, &run), OK);
     KT_EQ(written(pg, 32, 0, 4 * PG, ERR_NO_SPACE), OK);
-    KT_EQ(vmo_pager_take_error(v), ERR_NO_SPACE);
+    KT_EQ(vmo_pager_take_error(v, NULL), ERR_NO_SPACE);
     KT_EQ(vmo_pager_dirty_count(v), 0);
     KT_EQ(vword(v, 2 * PG), 20);   /* (still here until evicted) */
 
@@ -1579,7 +1586,7 @@ KTEST(pager_dirty_failed_kept)
     KT_EQ(vmo_pager_page_state(v, 2), 0);
     KT_EQ(pager_dirty_pages(pg), 0);
     KT_EQ(vmo_pager_dirty_count(v), 0);
-    KT_EQ(vmo_pager_take_error(v), ERR_IO);
+    KT_EQ(vmo_pager_take_error(v, NULL), ERR_IO);
     KT_ASSERT(!pte_w(as, a + PG) && !pte_w(as, a + 2 * PG));
 
     /* But kept: PEEK copies both, their stores in them; flags 0 (dirty)
@@ -1783,7 +1790,7 @@ KTEST(pager_dirty_requests)
     KT_EQ(written(pg, 35, 2 * PG, PG, ERR_NO_SPACE), OK);
     KT_EQ(pager_req_wait(r), ERR_NO_SPACE);
     pager_req_put(r);
-    KT_EQ(vmo_pager_take_error(v), ERR_NO_SPACE);
+    KT_EQ(vmo_pager_take_error(v, NULL), ERR_NO_SPACE);
 
     /* A shrink: a request's pages past the end are done (dropped), one
      * wholly past it is answered. */
@@ -2004,6 +2011,7 @@ struct kw {
     struct vmo    *v;
     uint64_t       len;
     uint32_t       flags;
+    uint32_t      *since;   /* vmo_sync's sample (NULL: none) */
     status_t       st;   /* ERR_INTERNAL until it returns */
     struct thread *t;
 };
@@ -2019,7 +2027,7 @@ static void kc_main(void *arg)
 static void ks_main(void *arg)
 {
     struct kw *k = arg;
-    __atomic_store_n(&k->st, vmo_pager_sync(k->v, 0, k->len, k->flags), __ATOMIC_RELEASE);
+    __atomic_store_n(&k->st, vmo_pager_sync(k->v, 0, k->len, k->flags, k->since), __ATOMIC_RELEASE);
 }
 
 static void kc_start(struct kw *k, struct aspace *as, uint64_t va)
@@ -2028,10 +2036,16 @@ static void kc_start(struct kw *k, struct aspace *as, uint64_t va)
     k->t = thread_create("wk-copy", kc_main, k, PRIO_DEFAULT);
 }
 
+static void ks_start_since(struct kw *k, struct vmo *v, uint64_t len, uint32_t flags,
+                           uint32_t *since)
+{
+    *k = (struct kw){ .v = v, .len = len, .flags = flags, .since = since, .st = ERR_INTERNAL };
+    k->t = thread_create("wk-sync", ks_main, k, PRIO_DEFAULT);
+}
+
 static void ks_start(struct kw *k, struct vmo *v, uint64_t len, uint32_t flags)
 {
-    *k = (struct kw){ .v = v, .len = len, .flags = flags, .st = ERR_INTERNAL };
-    k->t = thread_create("wk-sync", ks_main, k, PRIO_DEFAULT);
+    ks_start_since(k, v, len, flags, NULL);
 }
 
 static bool kw_waiting(struct kw *k)
@@ -2317,12 +2331,12 @@ KTEST(pager_dirty_sync)
 
     /* Refusals; OK at once with nothing dirty (no request), and for a VMO
      * that isn't a writable pager VMO. */
-    KT_EQ(vmo_pager_sync(v, 0, PG, 2), ERR_INVALID_ARGS);
-    KT_EQ(vmo_pager_sync(v, 0, 513 * PG, 0), ERR_OUT_OF_RANGE);
-    KT_EQ(vmo_pager_sync(v, 512 * PG, 1, 0), ERR_OUT_OF_RANGE);
-    KT_EQ(vmo_pager_sync(v, 0, 512 * PG, VMO_SYNC_WAIT), OK);
-    KT_EQ(vmo_pager_sync(v, 0, 0, VMO_SYNC_WAIT), OK);
-    KT_EQ(vmo_pager_sync(anon, 0, PG, VMO_SYNC_WAIT), OK);
+    KT_EQ(vmo_pager_sync(v, 0, PG, 4, NULL), ERR_INVALID_ARGS);
+    KT_EQ(vmo_pager_sync(v, 0, 513 * PG, 0, NULL), ERR_OUT_OF_RANGE);
+    KT_EQ(vmo_pager_sync(v, 512 * PG, 1, 0, NULL), ERR_OUT_OF_RANGE);
+    KT_EQ(vmo_pager_sync(v, 0, 512 * PG, VMO_SYNC_WAIT, NULL), OK);
+    KT_EQ(vmo_pager_sync(v, 0, 0, VMO_SYNC_WAIT, NULL), OK);
+    KT_EQ(vmo_pager_sync(anon, 0, PG, VMO_SYNC_WAIT, NULL), OK);
     none_queued(pg);
 
     /* Exact: page 1's write-back began after its first store, and it was
@@ -2365,21 +2379,21 @@ KTEST(pager_dirty_sync)
     KT_EQ(written(pg, 41, 0, 8 * PG, ERR_IO), OK);
     KT_EQ(kw_end(&s), ERR_IO);
     KT_EQ(vmo_pager_page_state(v, 3), 0);
-    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, VMO_SYNC_WAIT), OK);
+    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, VMO_SYNC_WAIT, NULL), OK);
 
     /* One kept from a write-back by age: reported by the next sync that
      * waits, with nothing dirty (not by one that doesn't). */
     KT_EQ(uput(as, a + 4 * PG, 5), OK);
     KT_EQ(begin(pg, 41, 4 * PG, PG, buf, &run), OK);
     KT_EQ(written(pg, 41, 4 * PG, PG, ERR_NO_SPACE), OK);
-    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, 0), OK);
-    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, VMO_SYNC_WAIT), ERR_NO_SPACE);
-    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, VMO_SYNC_WAIT), OK);
+    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, 0, NULL), OK);
+    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, VMO_SYNC_WAIT, NULL), ERR_NO_SPACE);
+    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, VMO_SYNC_WAIT, NULL), OK);
     none_queued(pg);
 
     /* Without the wait: the request is made, and answered later. */
     KT_EQ(uput(as, a + 5 * PG, 6), OK);
-    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, 0), OK);
+    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, 0, NULL), OK);
     next(pg, &q);
     KT_EQ(q.offset, 0);
     KT_EQ(q.len, 8 * PG);
@@ -2418,6 +2432,106 @@ KTEST(pager_dirty_sync)
     job_unref(j);
 }
 
+KTEST(pager_dirty_errseq)
+{
+    struct job *j = kt_fresh_job();
+    struct pager *pg = pg_new(j, 64);
+    struct vmo *v = wvmo(pg, 42, 8), *anon;
+    KT_EQ(vmo_create(PG, 0, &anon), OK);
+    KT_EQ(supply(pg, 42, 0, 8), OK);
+    struct aspace *as;
+    KT_EQ(aspace_create(&as), OK);
+    uint64_t a = map(as, v, 8, RW);
+    uint64_t *buf = kzalloc(8 * PG);
+    KT_ASSERT(buf);
+    struct pager_run run;
+    struct pager_request q;
+    struct kw s;
+    uint32_t ma = 7, mb = 7, mc = 7, md = 7, other = 7;   /* four mappers' samples */
+
+    /* Samples: refusals; 0 with no error yet, and for a VMO that isn't a
+     * writable pager VMO. */
+    KT_EQ(vmo_pager_sync(v, 0, 0, VMO_SYNC_SAMPLE, NULL), ERR_INVALID_ARGS);
+    KT_EQ(vmo_pager_sync(v, 0, 0, VMO_SYNC_SAMPLE | VMO_SYNC_WAIT, &ma), ERR_INVALID_ARGS);
+    KT_EQ(ma, 7);
+    KT_EQ(vmo_pager_sync(anon, 0, 0, VMO_SYNC_SAMPLE, &other), OK);
+    KT_EQ(other, 0);
+    KT_EQ(vmo_pager_sync(v, 0, 0, VMO_SYNC_SAMPLE, &ma), OK);
+    KT_EQ(vmo_pager_sync(v, 0, 0, VMO_SYNC_SAMPLE, &mb), OK);
+    KT_EQ(ma, 0);
+    KT_EQ(mb, 0);
+    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, VMO_SYNC_WAIT, &ma), OK);
+    KT_EQ(ma, 0);
+
+    /* A write-back by age fails. Mappers a and b each hear of it once, at
+     * their next sync that waits (not at one that doesn't); c, made
+     * before anyone heard, hears of it too (Linux's open after an error);
+     * d, made after, doesn't. */
+    KT_EQ(uput(as, a, 1), OK);
+    KT_EQ(begin(pg, 42, 0, 8 * PG, buf, &run), OK);
+    KT_EQ(written(pg, 42, 0, 8 * PG, ERR_IO), OK);
+    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, 0, &ma), OK);
+    KT_EQ(ma, 0);
+    KT_EQ(vmo_pager_sync(v, 0, 0, VMO_SYNC_SAMPLE, &mc), OK);
+    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, VMO_SYNC_WAIT, &ma), ERR_IO);
+    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, VMO_SYNC_WAIT, &ma), OK);
+    KT_EQ(vmo_pager_sync(v, 0, 0, VMO_SYNC_SAMPLE, &md), OK);
+    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, VMO_SYNC_WAIT, &md), OK);
+    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, VMO_SYNC_WAIT, &mb), ERR_IO);
+    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, VMO_SYNC_WAIT, &mb), OK);
+    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, VMO_SYNC_WAIT, &mc), ERR_IO);
+    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, VMO_SYNC_WAIT, &mc), OK);
+    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, VMO_SYNC_WAIT, NULL), OK);   /* heard of: not new */
+    KT_ASSERT(ma != 0 && ma == mb && mb == mc && mc == md);
+
+    /* Two errors before anyone looks are one to the mappers (the first
+     * kept); a caller with no sample hears of it if nobody did; a copy of
+     * a sample (a forked child's) hears of it again. */
+    uint32_t copy = ma;
+    KT_EQ(uput(as, a + PG, 2), OK);
+    KT_EQ(begin(pg, 42, 0, 8 * PG, buf, &run), OK);
+    KT_EQ(written(pg, 42, 0, 8 * PG, ERR_NO_SPACE), OK);
+    KT_EQ(uput(as, a + 2 * PG, 3), OK);
+    KT_EQ(begin(pg, 42, 0, 8 * PG, buf, &run), OK);
+    KT_EQ(written(pg, 42, 0, 8 * PG, ERR_IO), OK);
+    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, VMO_SYNC_WAIT, NULL), ERR_NO_SPACE);
+    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, VMO_SYNC_WAIT, NULL), OK);
+    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, VMO_SYNC_WAIT, &ma), ERR_NO_SPACE);
+    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, VMO_SYNC_WAIT, &ma), OK);
+    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, VMO_SYNC_WAIT, &copy), ERR_NO_SPACE);
+    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, VMO_SYNC_WAIT, &mb), ERR_NO_SPACE);
+
+    /* A sync whose own write-back fails hears of it (b's sample is the
+     * count: the error moves it); c and d, two errors behind, hear of the
+     * newest once. */
+    KT_EQ(uput(as, a + 3 * PG, 4), OK);
+    ks_start_since(&s, v, 8 * PG, VMO_SYNC_WAIT, &mb);
+    next(pg, &q);
+    KT_EQ(q.kind, PAGER_REQ_WRITEBACK);
+    KT_EQ(begin(pg, 42, 0, 8 * PG, buf, &run), OK);
+    KT_EQ(run.offset, 3 * PG);
+    KT_EQ(written(pg, 42, 0, 8 * PG, ERR_IO), OK);
+    KT_EQ(kw_end(&s), ERR_IO);
+    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, VMO_SYNC_WAIT, &mb), OK);
+    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, VMO_SYNC_WAIT, &mc), ERR_IO);
+    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, VMO_SYNC_WAIT, &mc), OK);
+    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, VMO_SYNC_WAIT, &md), ERR_IO);
+    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, VMO_SYNC_WAIT, &ma), ERR_IO);
+    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, VMO_SYNC_WAIT, &copy), ERR_IO);
+    KT_EQ(vmo_pager_sync(v, 0, 8 * PG, VMO_SYNC_WAIT, NULL), OK);
+    KT_ASSERT(ma == mb && mb == mc && mc == md && md == copy);
+    none_queued(pg);
+
+    kfree(buf);
+    KT_EQ(aspace_unmap(as, a, 8 * PG), OK);
+    aspace_unref(as);
+    put(anon);
+    put(v);
+    pg_close(pg);
+    kt_job_is_empty(j);
+    job_unref(j);
+}
+
 KTEST(pager_dirty_closed)
 {
     struct job *j = kt_fresh_job();
@@ -2440,7 +2554,7 @@ KTEST(pager_dirty_closed)
     KT_EQ(q.key, 47);
     KT_EQ(pager_op(pg, 47, PAGER_OP_DETACH, 0, 0, 0), OK);
     KT_EQ(kw_end(&s), ERR_PEER_CLOSED);
-    KT_EQ(vmo_pager_sync(v, 0, 4 * PG, VMO_SYNC_WAIT), ERR_PEER_CLOSED);
+    KT_EQ(vmo_pager_sync(v, 0, 4 * PG, VMO_SYNC_WAIT, NULL), ERR_PEER_CLOSED);
     KT_EQ(vmo_pager_dirty_count(v), 0);
 
     /* The pager's close fails a store waiting at the limit at once: the

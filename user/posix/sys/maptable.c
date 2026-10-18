@@ -2,7 +2,7 @@
  * entries, in a VMO of its own mapped on first use (malloc can't hold it:
  * musl's malloc is built on these very mappings). Its size is the kernel's
  * cap on an address space's mappings, so the table is never the limit:
- * VMAR_MAX_MAPPINGS entries of 32 bytes, 2 MiB of address space whose
+ * VMAR_MAX_MAPPINGS entries of 40 bytes, 2.5 MiB of address space whose
  * pages are committed as the table grows. Lookups are binary searches;
  * an insert or a removal moves the entries after it.
  *
@@ -23,7 +23,7 @@
 
 #define MT_MAX VMAR_MAX_MAPPINGS
 
-_Static_assert(sizeof(struct mt_entry) == 32, "no padding in a table entry");
+_Static_assert(sizeof(struct mt_entry) == 40, "no padding in a table entry");
 
 static struct mt_entry *table;   /* MT_MAX entries, or NULL before first use */
 static unsigned count;           /* entries in use */

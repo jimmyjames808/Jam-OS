@@ -421,8 +421,10 @@ bool t_extfs_wmap(void);
 int  wmap_child(int argc, char **argv);
 /* extfs_wback.c: mapped files' stores written back (WRITEMAP's WE2): by
  * msync, fsync, fs.sync, age and an orderly stop, over holes and unwritten
- * extents, a full volume's error, a fresh start's keys. */
+ * extents, a full volume's error (once to each mapper and open), a fresh
+ * start's keys; "utest wback-map" is its other mapping process. */
 bool t_extfs_wback(void);
+int  wback_child(int argc, char **argv);
 /* extfs_restart.c: a write-back ended at each step of WE2's 2.6. */
 bool t_extfs_restart_wback(void);
 /* extfs_wpress.c: an extfs that never answers a write-back (the hang=wback

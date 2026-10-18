@@ -28,7 +28,9 @@
  * (a private mapping never writes the file's VMO). An mprotect adding
  * write to a shared one is the kernel's to allow: the VMO's handle has
  * the right to write only when the service gave it so (EACCES if not).
- * msync is vmo_sync on each shared mapping (lx_msync). mremap is ENOSYS
+ * msync is vmo_sync on each shared mapping (lx_msync), each mapping with
+ * its own sample of the file's write-back errors, so each hears of an
+ * error once (Linux's errseq; a forked child's copy too). mremap is ENOSYS
  * (musl's realloc copies); mlock and its kin succeed (nothing is paged
  * out).
  *
@@ -196,7 +198,7 @@ static long drop_locked(uint64_t addr, uint64_t end, enum drop_how how)
             t[i].len = s - e.base;
             if (f < e.base + e.len) {
                 struct mt_entry tail = { f, e.base + e.len - f, e.vmo_off + (f - e.base), e.vmo,
-                                         e.kind };
+                                         e.kind, e.id, e.wb_seq };
                 mt_insert(&tail);
             }
         }
@@ -311,13 +313,17 @@ static long fresh_vmo(uint64_t len, uint32_t kind, handle_t *out)
 }
 
 /* What a mapping maps: a VMO made for it (vmo HANDLE_INVALID: a new
- * anonymous one) or a descriptor's (file_map), from vmo_off; and the kind
- * the table records for it (maptable.h's MT_*). */
+ * anonymous one) or a descriptor's (file_map), from vmo_off; the kind
+ * the table records for it (maptable.h's MT_*); a shared one's sample of
+ * its VMO's write-back errors (file_source). */
 struct map_src {
     handle_t vmo;
     uint64_t vmo_off;
     uint32_t kind;
+    uint32_t wb_seq;
 };
+
+static uint32_t map_ids;   /* the last mmap's entry id (mem_lock) */
 
 /* src's VMO (or a new one) mapped for len bytes with perms, entered in
  * the table: at *addr exactly if fixed; else at the hint *addr (0: none)
@@ -353,7 +359,7 @@ static long map_new(uint64_t *addr, uint64_t len, uint32_t perms, bool fixed, bo
     }
     if (populate)
         (void)jam_vmo_commit(vmo, src->vmo_off, len);   /* a hint: pages still come on touch */
-    struct mt_entry e = { *addr, len, src->vmo_off, vmo, src->kind };
+    struct mt_entry e = { *addr, len, src->vmo_off, vmo, src->kind, ++map_ids, src->wb_seq };
     mt_insert(&e);
     return 0;
 }
@@ -434,7 +440,7 @@ static long replace_locked(uint64_t addr, uint64_t len, uint32_t perms, bool pop
     (void)drop_locked(addr, addr + len, DROP_REPLACED);   /* the kernel did; room checked */
     if (populate)
         (void)jam_vmo_commit(vmo, src->vmo_off, len);   /* a hint: pages still come on touch */
-    struct mt_entry e = { addr, len, src->vmo_off, vmo, src->kind };
+    struct mt_entry e = { addr, len, src->vmo_off, vmo, src->kind, ++map_ids, src->wb_seq };
     mt_insert(&e);
     return 0;
 }
@@ -503,7 +509,11 @@ static uint32_t mt_kind(long flags)
 
 /* ---- files: a descriptor's mapping, write added over a file's pages, msync ------------ */
 
-/* mmap of descriptor fd (file.c's file_map) as a mapping's source. */
+/* mmap of descriptor fd (file.c's file_map) as a mapping's source. A
+ * shared one samples its VMO's write-back errors now, so its msync
+ * reports each error that comes after (or that nobody heard of yet)
+ * once, whoever else maps the file (vmo_sync's errseq; 0 for a VMO with
+ * no pager writing it back). */
 static long file_source(long fd, long off, uint64_t size, long prot, long flags,
                         struct map_src *out)
 {
@@ -511,10 +521,14 @@ static long file_source(long fd, long off, uint64_t size, long prot, long flags,
     uint32_t how = ((flags & MAP_TYPE) != MAP_PRIVATE ? FMAP_SHARED : 0) |
                    (prot & PROT_WRITE ? FMAP_WRITE : 0);
     long r = file_map(fd, off, size, how, &m);
-    if (!r)
-        *out = (struct map_src){ m.vmo, m.vmo_off,
-                                 mt_kind(flags) | (m.pager_ro ? MT_PAGER_PRIVATE : 0) };
-    return r;
+    if (r)
+        return r;
+    *out = (struct map_src){ m.vmo, m.vmo_off,
+                             mt_kind(flags) | (m.pager_ro ? MT_PAGER_PRIVATE : 0), 0 };
+    if ((out->kind & MT_SHARED) &&
+        jam_vmo_sync(m.vmo, 0, 0, VMO_SYNC_SAMPLE, &out->wb_seq) != OK)
+        out->wb_seq = 0;
+    return 0;
 }
 
 /* The first entry in [addr, end) mapped straight on a file's pages
@@ -541,7 +555,7 @@ static long unshare_locked(uint64_t addr, uint64_t end, uint32_t perms)
         const struct mt_entry *e = &mt_entries()[i];
         uint64_t s = e->base > addr ? e->base : addr;
         uint64_t f = e->base + e->len < end ? e->base + e->len : end;
-        struct map_src child = { HANDLE_INVALID, 0, 0 };
+        struct map_src child = { HANDLE_INVALID, 0, 0, 0 };
         status_t st = jam_vmo_create_child(e->vmo, VMO_CHILD_SNAPSHOT_AT_LEAST_ON_WRITE,
                                            e->vmo_off + (s - e->base), f - s, &child.vmo);
         if (st != OK)
@@ -591,20 +605,33 @@ static long sync_err(status_t st)
     }
 }
 
-/* vmo_sync over [off, off + len) of vmo. A mapping can reach past a file
- * that was cut shorter (the kernel says ERR_OUT_OF_RANGE, which for the
- * VMO's size alone is no error): the range is clipped to the size and
- * asked again. */
-static long sync_part(handle_t vmo, uint64_t off, uint64_t len, uint32_t flags)
+/* vmo_sync over [off, off + len) of vmo, with the mapping's write-back
+ * error sample *seq. A mapping can reach past a file that was cut
+ * shorter (the kernel says ERR_OUT_OF_RANGE, which for the VMO's size
+ * alone is no error): the range is clipped to the size and asked again. */
+static long sync_part(handle_t vmo, uint64_t off, uint64_t len, uint32_t flags, uint32_t *seq)
 {
-    status_t st = jam_vmo_sync(vmo, off, len, flags);
+    status_t st = jam_vmo_sync(vmo, off, len, flags, seq);
     uint64_t size = 0;
     if (st == ERR_OUT_OF_RANGE && jam_vmo_get_size(vmo, &size) == OK) {
         if (off >= size)
             return 0;
-        st = jam_vmo_sync(vmo, off, size - off < len ? size - off : len, flags);
+        st = jam_vmo_sync(vmo, off, size - off < len ? size - off : len, flags, seq);
     }
     return sync_err(st);
+}
+
+/* A write-back error reported to the mmap numbered id (sync_shared): its
+ * sample, in each of its entries, moved up to seq, so it hears of that
+ * error once. An entry gone meanwhile has nothing to move. */
+static void sync_seen(uint32_t id, uint32_t seq)
+{
+    lock_take(&mem_lock);
+    struct mt_entry *t = mt_entries();
+    for (unsigned i = 0; i < mt_count(); i++)
+        if (t[i].id == id && (t[i].kind & MT_SHARED))
+            t[i].wb_seq = seq;
+    lock_give(&mem_lock);
 }
 
 /* Each MAP_SHARED mapping in [addr, end) asked to write its dirty pages
@@ -613,12 +640,15 @@ static long sync_part(handle_t vmo, uint64_t off, uint64_t len, uint32_t flags)
  * for the call: it can wait for the disk, and the other threads' mmap,
  * munmap and malloc must not wait with it. The next mapping is looked for
  * from the end of the one done, so a mapping gone meanwhile is simply not
- * found. */
+ * found. A write-back error is reported once to each mapping (each mmap,
+ * with the parts a munmap split it into): the kernel says so by its
+ * sample, which goes back into the table. */
 static long sync_shared(uint64_t addr, uint64_t end, uint32_t flags)
 {
     for (uint64_t at = addr; at < end;) {
         handle_t vmo = HANDLE_INVALID;
         uint64_t off = 0, len = 0;
+        uint32_t id = 0, seq = 0;
         lock_take(&mem_lock);
         const struct mt_entry *t = mt_entries();
         unsigned i = mt_first_after(at);
@@ -630,6 +660,8 @@ static long sync_shared(uint64_t addr, uint64_t end, uint32_t flags)
             off = t[i].vmo_off + (s - t[i].base);
             len = f - s;
             at = f;
+            id = t[i].id;
+            seq = t[i].wb_seq;
             status_t st = jam_handle_duplicate(t[i].vmo, RIGHT_SAME, &vmo);
             if (st != OK) {
                 lock_give(&mem_lock);
@@ -641,8 +673,11 @@ static long sync_shared(uint64_t addr, uint64_t end, uint32_t flags)
         lock_give(&mem_lock);
         if (!vmo)
             break;
-        long r = sync_part(vmo, off, len, flags);
+        uint32_t was = seq;
+        long r = sync_part(vmo, off, len, flags, &seq);
         jam_handle_close(vmo);
+        if (seq != was)
+            sync_seen(id, seq);
         if (r)
             return r;
     }
@@ -685,7 +720,7 @@ long lx_mmap(long addr, long len, long prot, long flags, long fd, long off)
     (void)vmar_perms(prot, flags & MAP_JIT, &perms);   /* checked above */
     uint64_t size = page_round((uint64_t)len), at = (uint64_t)addr;
     bool fixed = flags & (MAP_FIXED | MAP_FIXED_NOREPLACE);
-    struct map_src src = { HANDLE_INVALID, 0, mt_kind(flags) };
+    struct map_src src = { HANDLE_INVALID, 0, mt_kind(flags), 0 };
     if (!(flags & MAP_ANONYMOUS)) {   /* outside mem_lock: reading a file may malloc */
         r = file_source(fd, off, size, prot, flags, &src);
         if (r)
@@ -948,7 +983,7 @@ long lx_mremap(long a, long b, long c, long d, long e, long f)
 static bool brk_reserve(void)
 {
     uint64_t addr = 0;
-    const struct map_src fresh = { HANDLE_INVALID, 0, 0 };
+    const struct map_src fresh = { HANDLE_INVALID, 0, 0, 0 };
     if (map_new(&addr, BRK_SIZE, VMAR_READ | VMAR_WRITE, false, false, &fresh))
         return false;
     handle_t vmo = mt_entries()[mt_first_after(addr)].vmo;

@@ -822,8 +822,11 @@ struct pager_run {
  * copy of the setting: changing it is the filesystem's. */
 #define PAGER_WRITEBACK_AGE_NS 10000000000ull
 
-/* vmo_sync's flag: wait until the write-back it asks for is done. */
-#define VMO_SYNC_WAIT (1u << 0)
+/* vmo_sync's flags: wait until the write-back it asks for is done; or
+ * only sample the VMO's write-back error count for a new mapping (its
+ * wb_seq; abi/syscalls.def 50). */
+#define VMO_SYNC_WAIT   (1u << 0)
+#define VMO_SYNC_SAMPLE (1u << 1)
 
 /* vmo_make_exec_verified (abi/syscalls.def 59): the largest pager VMO it
  * takes (a program's limit, spawn's from a file: Chromium's static binary
