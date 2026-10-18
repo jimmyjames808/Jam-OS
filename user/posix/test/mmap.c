@@ -56,7 +56,9 @@
  *                             EACCES; allowed, its self-image section
  *                             passes too (procfs.c), and a forked
  *                             child's execve of it gets our pipe and our
- *                             SIGTERM, forwarded (proc.c's term: exit 9)
+ *                             SIGTERM, forwarded (proc.c's term: exit 9);
+ *                             our SIGKILL to such a child ends the
+ *                             program too (the child's own job, FJ1)
  * and the child mode --child-mmap-pull <path>: maps the file, says it is
  * ready, waits for a line on descriptor 0 (the stick is pulled meanwhile),
  * then copies from the mapping through a pipe (EIO, and it lives) and
@@ -66,6 +68,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <jamos/libjam.h>
+#include <poll.h>
 #include <signal.h>
 #include <spawn.h>
 #include <string.h>
@@ -839,6 +842,33 @@ void pt_spawn_data(char **argv)
           WEXITSTATUS(status) == 9);
     close(p[0]);
     printf("posixtest: spawn-data: %s fork-exec: wait status %#x\n", path, status);
+    /* The same, killed: SIGKILL to the forked child is its own job's
+     * job_kill (docs/FORK-PLAN.md, "FJ1 notes"), which takes the program
+     * init started in a job inside it: the pipe's end of file at once,
+     * where the program alone would wait 10 s for a SIGTERM. */
+    CHECK(pipe(p) == 0);
+    snprintf(fd, sizeof(fd), "%d", p[1]);
+    pid = fork();
+    if (pid == 0) {
+        close(p[0]);
+        execv(path, term);
+        _exit(98);
+    }
+    close(p[1]);
+    c = 0;
+    CHECK(pid > 0 && read(p[0], &c, 1) == 1 && c == 'r');
+    CHECK(pid > 0 && kill(pid, SIGKILL) == 0);
+    status = -1;
+    CHECK(pid > 0 && waitpid(pid, &status, 0) == pid && WIFSIGNALED(status) &&
+          WTERMSIG(status) == SIGKILL);
+    struct pollfd pf = { .fd = p[0], .events = POLLIN };
+    uint64_t t0 = now();
+    bool gone = poll(&pf, 1, 5000) == 1 && read(p[0], &c, 1) == 0;
+    CHECK(gone);
+    close(p[0]);
+    printf("posixtest: spawn-data: %s fork-kill: wait status %#x, the program %s in %llu ms\n",
+           path, status, gone ? "gone" : "NOT gone",
+           (unsigned long long)((now() - t0) / NS_PER_MS));
 }
 
 static uint64_t pt_now_ns(void)

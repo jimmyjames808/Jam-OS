@@ -11,7 +11,8 @@
  * Children. posix_spawn and fork put each child here (lx_child_add): its process
  * handle, its signal channel (our end: kill's way to it), pid, group and
  * session (and for a program from /data, which init's /svc/exec starts,
- * its job: that process handle can't kill it, the job can), and a serial number that keys its binding on the signal
+ * its job: that process handle can't kill it, the job can; for a forked
+ * child its own job, fork.c's, so SIGKILL takes what it started too), and a serial number that keys its binding on the signal
  * thread's port (sig.h's sig_port): SIG_TERMINATED, PORT_BIND_ONCE. A
  * session of init's (pty.c's jamos_session_open) is a child too
  * (lx_session_add): its shell's process, which we may wait on and inspect
@@ -87,8 +88,9 @@ struct child {
     handle_t proc;    /* its process handle; ours until it is reaped */
     handle_t sigch;   /* our end of its signal channel (`signal`), or 0; a session's
                        * session_ctl */
-    handle_t job;     /* its job (RIGHT_MANAGE) when its process can't be killed through
-                       * proc (/svc/exec's children), or 0 */
+    handle_t job;     /* its job (RIGHT_MANAGE), SIGKILL's way: when its process can't be
+                       * killed through proc (/svc/exec's children), or the job a forked
+                       * child has of its own; or 0 */
     int32_t  pid;     /* the kernel's pid */
     int32_t  pgid;    /* its process group */
     int32_t  sid;     /* its session */

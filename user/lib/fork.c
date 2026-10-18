@@ -3,8 +3,8 @@
  * on its stack and calls jam_fork_parent, which:
  *
  *   1. makes the child: its startup channel, its SR_NS channel, its
- *      signal channel if asked, the process in our job (SR_JOB) and its
- *      thread;
+ *      signal channel if asked, the process in our job (SR_JOB) or the
+ *      one the caller made for it (a->job), and its thread;
  *   2. writes the fork message (<forkmsg.h>) on the startup channel: the
  *      child's own process, address space and thread, and duplicates of
  *      ours by the list below;
@@ -70,7 +70,7 @@ _Static_assert(offsetof(struct fork_block, rbx) == FORK_B_RBX &&
  * standby, devmgr, audio, the crash log) and SR_USER's, which mean
  * something to our starter and us only. */
 static const uint32_t dup_roles[] = {
-    SR_JOB,          /* the same job: the fork's charge is ours (section 1.9) */
+    SR_JOB,          /* its job (job_of): the fork's charge is ours either way (section 1.9) */
     SR_STDOUT,
     SR_CONSOLE,
     SR_BOOTFS,
@@ -107,6 +107,12 @@ static void name_of(const struct jam_fork_args *a, char name[PROCESS_NAME_MAX + 
     name[l] = '\0';
 }
 
+/* The job the child goes in: the one the caller made for it, or ours. */
+static handle_t job_of(const struct jam_fork_args *a)
+{
+    return a->job ? a->job : startup_handle(SR_JOB);
+}
+
 static status_t make_kid(const struct jam_fork_args *a, struct kid *k)
 {
     char name[PROCESS_NAME_MAX + 1];
@@ -117,8 +123,7 @@ static status_t make_kid(const struct jam_fork_args *a, struct kid *k)
     if (st == OK && a->signals)
         st = jam_channel_create(&k->sig[0], &k->sig[1]);
     if (st == OK)
-        st = jam_process_create(startup_handle(SR_JOB), name, strlen(name), 0, &k->proc,
-                                &k->vmar);
+        st = jam_process_create(job_of(a), name, strlen(name), 0, &k->proc, &k->vmar);
     if (st == OK)
         st = jam_thread_create(k->proc, name, strlen(name), 0, &k->thread);
     return st;
@@ -152,29 +157,30 @@ static void move(struct out *o, uint32_t role, handle_t *h, rights_t rights)
     *h = HANDLE_INVALID;
 }
 
-/* A duplicate of h as the child's role. */
-static status_t dup(struct out *o, uint32_t role, handle_t h)
+/* A duplicate of h as the child's role, with rights (RIGHT_SAME: h's). */
+static status_t dup(struct out *o, uint32_t role, handle_t h, rights_t rights)
 {
     handle_t d;
     status_t st = jam_handle_duplicate(h, RIGHT_SAME, &d);
     if (st == OK)
-        put(o, role, d, RIGHT_SAME);
+        put(o, role, d, rights);
     return st;
 }
 
 /* The fork message on k's startup channel. */
-static status_t write_roles(struct kid *k)
+static status_t write_roles(const struct jam_fork_args *a, struct kid *k)
 {
     struct out o = { .m = { .magic = FORK_MAGIC, .version = FORK_VERSION } };
-    status_t st = dup(&o, SR_SELF_PROCESS, k->proc);
+    status_t st = dup(&o, SR_SELF_PROCESS, k->proc, RIGHT_SAME);
     move(&o, SR_SELF_VMAR, &k->vmar, RIGHT_SAME);
     if (st == OK)
-        st = dup(&o, SR_SELF_THREAD, k->thread);
+        st = dup(&o, SR_SELF_THREAD, k->thread, RIGHT_SAME);
     for (unsigned i = 0; st == OK && i < sizeof(dup_roles) / sizeof(dup_roles[0]); i++) {
-        handle_t h = startup_handle(dup_roles[i]);
+        bool own_job = dup_roles[i] == SR_JOB && a->job;   /* made for it: no RIGHT_MANAGE */
+        handle_t h = dup_roles[i] == SR_JOB ? job_of(a) : startup_handle(dup_roles[i]);
         struct handle_info hi;
         if (h && jam_handle_info(h, &hi) == OK && (hi.rights & PASSABLE) == PASSABLE)
-            st = dup(&o, dup_roles[i], h);
+            st = dup(&o, dup_roles[i], h, own_job ? JOB_RIGHTS_OWN : RIGHT_SAME);
     }
     /* Its SR_NS end goes while nothing is queued on it (a channel end with
      * channels queued can't be sent); the namespace follows the start. */
@@ -220,7 +226,7 @@ int64_t jam_fork_parent(struct fork_block *b, const struct jam_fork_args *a)
     struct ns_out nso;   /* ours, not the heap's: the C library may hold its allocator's lock */
     status_t st = make_kid(a, &k);
     if (st == OK)
-        st = write_roles(&k);
+        st = write_roles(a, &k);
     if (st == OK)
         st = clone(a, libc, &k);
     if (st == OK)

@@ -18,10 +18,11 @@
  *
  * The parent: the child goes in the table of children (lx_child_add, as
  * posix_spawn's children do) with the client end of its new signal
- * channel, so waitpid, SIGCHLD, kill, kill(-pgid) and /proc/<pid> reach it
- * (section 1.8); the call returns its pid. ENOMEM if our job can't pay for
- * the copy (section 1.3), EAGAIN if the table is full (the child is killed
- * then, never seen).
+ * channel and its own job (inside ours: fork_core, FJ1), so waitpid,
+ * SIGCHLD, kill, kill(-pgid) and /proc/<pid> reach it (section 1.8) and
+ * SIGKILL takes everything it started; the call returns its pid. ENOMEM
+ * if our job can't pay for the copy (section 1.3), EAGAIN if the table is
+ * full (the child is killed then, never seen).
  *
  * The child, before the call returns 0 there (section 1.7; libjam has
  * made the startup roles its own): start.c's handles and thread.c's table
@@ -367,30 +368,62 @@ static bool at_nproc_limit(void)
     return lim != RLIM_INFINITY && 1 + (uint64_t)lx_child_pids(NULL, 0) >= lim;
 }
 
-/* fork's core: the child's pid in the parent, 0 in the child, or -errno. */
+/* The child's own job, inside ours (section 1.9, FJ1), in *job: 0, or
+ * -errno. A job nested as deep as jobs go (JOB_MAX_DEPTH), or ours
+ * refusing one, leaves *job 0: the child goes in ours, as before FJ1. */
+static long own_job(handle_t *job)
+{
+    *job = HANDLE_INVALID;
+    status_t st = jam_job_create(startup_handle(SR_JOB), 0, job);
+    if (st == ERR_NO_MEMORY || st == ERR_NO_RESOURCES)
+        return st == ERR_NO_MEMORY ? -ENOMEM : -EAGAIN;
+    if (st != OK)
+        *job = HANDLE_INVALID;
+    return 0;
+}
+
+/* fork's core: the child's pid in the parent, 0 in the child, or -errno.
+ * The child goes in a job of its own (own_job), which the table of
+ * children keeps: kill's SIGKILL is its job_kill, so whatever the child
+ * started goes with it, a program from /data its execve started through
+ * init (in a job inside the child's: spawn.c) as much as its own forks
+ * and spawns, where a process_kill would end the child alone. */
 static long fork_core(struct how *how)
 {
     if (at_nproc_limit())
         return -EAGAIN;
+    handle_t job;
+    long e = own_job(&job);
+    if (e)
+        return e;
     jam_fork_set_libc(&hooks);   /* the same each time */
     handle_t sig = HANDLE_INVALID;
-    struct jam_fork_args a = { .fs_base = thread_pointer(), .signals = &sig, .ctx = how };
+    struct jam_fork_args a = { .fs_base = thread_pointer(), .signals = &sig, .ctx = how,
+                               .job = job };
     how->args = &a;   /* prepare fills in the VMOs */
     int64_t r = jam_fork(&a);
     if (r == 0)
-        return 0;
-    if (r < 0)
+        return 0;   /* the child: job names nothing here */
+    if (r < 0) {
+        if (job)
+            jam_handle_close(job);   /* empty: it goes */
         return r == ERR_NO_MEMORY ? -ENOMEM : r == ERR_NO_RESOURCES ? -EAGAIN : lx_err((status_t)r);
+    }
     handle_t proc = (handle_t)r;
     struct process_info info;
     status_t st = jam_process_get_info(proc, &info);
     if (st != OK) {
-        jam_process_kill(proc);
+        if (job)
+            jam_job_kill(job);
+        else
+            jam_process_kill(proc);
         jam_handle_close(proc);
         jam_handle_close(sig);
+        if (job)
+            jam_handle_close(job);
         return lx_err(st);
     }
-    long e = lx_child_add(proc, sig, HANDLE_INVALID, (int32_t)info.pid, lx_pgid(), lx_sid());
+    e = lx_child_add(proc, sig, job, (int32_t)info.pid, lx_pgid(), lx_sid());
     return e ? e : (long)info.pid;
 }
 

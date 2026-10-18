@@ -34,6 +34,9 @@
  *     timer gone in the child, ours kept; a SIGSEGV handler run in the
  *     child on its sigaltstack (the exception entry and the kernel's
  *     exception stack set again).
+ *   kill: SIGKILL to a child that spawned a program and forked a child
+ *     of its own ends all three (the child's own job, FJ1): their pipe's
+ *     end of file comes at once.
  *   clone: syscall(SYS_clone, SIGCHLD, ...) with CLONE_PARENT_SETTID and
  *     CLONE_CHILD_SETTID (the child's word its pid: its first thread's id),
  *     and its refusals (CLONE_VM alone, a new stack, an unknown flag);
@@ -74,10 +77,12 @@
 #include <fcntl.h>
 #include <jamos/libjam.h>
 #include <limits.h>
+#include <poll.h>
 #include <pthread.h>
 #include <sched.h>
 #include <setjmp.h>
 #include <signal.h>
+#include <spawn.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
@@ -653,6 +658,63 @@ static void fork_signals(void)
     CHECK(sigaltstack(&ss, NULL) == 0);
     free(alt_base);
     munmap(guard, PG);
+}
+
+/* ---- kill ------------------------------------------------------------------------- */
+
+/* The pipe's read end r sees its end of file within ms: every writer
+ * gone. */
+static bool all_gone(int r, int ms)
+{
+    struct pollfd p = { .fd = r, .events = POLLIN };
+    char c;
+    return poll(&p, 1, ms) == 1 && read(r, &c, 1) == 0;
+}
+
+/* A forked child's SIGKILL takes what it started (FJ1: its job's
+ * job_kill): it spawns this program (`--child-proc term`, which says 'r'
+ * on the pipe and then waits 10 s for a SIGTERM) and forks a child that
+ * pauses for ever, both holding the pipe's write end, then pauses itself.
+ * Our SIGKILL: its wait status says so, and the pipe's end of file comes
+ * at once (a process_kill of the child alone left both running). */
+static void fork_kill(void)
+{
+    map_report();
+    int p[2];
+    CHECK(pipe(p) == 0);
+    rep->v[0] = 0;
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(p[0]);
+        char fd[12];
+        snprintf(fd, sizeof(fd), "%d", p[1]);
+        char *const args[] = { "posixtest", "--child-proc", "term", fd, NULL };
+        pid_t spawned = -1;
+        KID(posix_spawn(&spawned, "/boot/bin/posixtest", NULL, NULL, args, environ) == 0);
+        pid_t forked = fork();
+        if (forked == 0)
+            for (;;)
+                pause();
+        KID(forked > 0);
+        rep->v[0] = 1;
+        for (;;)
+            pause();
+    }
+    close(p[1]);
+    CHECK(pid > 0 && until_set(&rep->v[0], KID_NS));
+    char c = 0;
+    CHECK(read(p[0], &c, 1) == 1 && c == 'r');   /* the spawned one runs */
+    CHECK(pid > 0 && kill(pid, SIGKILL) == 0);
+    if (pid > 0) {
+        int st = reap(pid);
+        CHECK(WIFSIGNALED(st) && WTERMSIG(st) == SIGKILL);
+    }
+    uint64_t t0 = now();
+    bool gone = all_gone(p[0], 5000);
+    CHECK(gone);
+    printf("posixtest: fork: kill: the child's own children %s in %llu ms\n",
+           gone ? "gone" : "NOT gone", (unsigned long long)((now() - t0) / NS_PER_MS));
+    close(p[0]);
 }
 
 /* ---- clone ------------------------------------------------------------------------ */
@@ -1373,6 +1435,7 @@ static const struct {
     { "twice", fork_twice, 0 },     { "threads", fork_threads, 0 },
     { "torn", fork_torn, 0 },       { "huge", fork_huge, 0 },
     { "nomem", fork_nomem, JOB_PAGES }, { "signals", fork_signals, 0 },
+    { "kill", fork_kill, 0 },
     { "clone", fork_clone, 0 },     { "small", fork_small, 0 },
     { "stacks", fork_stacks, 0 },    { "alloc", fork_alloc, 0 },
     { "heap", fork_heap, 0 },

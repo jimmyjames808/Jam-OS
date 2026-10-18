@@ -31,10 +31,11 @@ int32_t lx_sid(void);
 
 /* fork's step (layer.h's LX_FORK_*): our ids and the table of children. */
 void    proc_fork(int step);
-/* A child posix_spawn started: proc and sigch (our end of its signal
- * channel, or 0), and job: 0 for a child we made ourselves, or the job of
- * one init's /svc/exec started for us (its process then has no
- * RIGHT_WRITE: SIGKILL kills its job instead); all three moved into the
+/* A child posix_spawn or fork started: proc and sigch (our end of its
+ * signal channel, or 0), and job: 0 for a child we spawned ourselves, the
+ * job of one init's /svc/exec started for us (its process then has no
+ * RIGHT_WRITE), or a forked child's own (fork.c): SIGKILL kills that job
+ * instead of the process; all three moved into the
  * table, closed when the child is reaped. Its pid, process group and
  * session. 0, or -errno (-EAGAIN: the table is full; the child is then
  * killed and the handles closed). */
@@ -90,7 +91,9 @@ long    lx_child_maps(int32_t pid, uint64_t from, struct map_info *out, uint32_t
 unsigned lx_child_pids(int32_t *out, unsigned cap);
 
 /* Signal our children: pid > 0, that one; else those in group pgid (> 0),
- * or all of them (pgid 0). SIGKILL is process_kill; any other signal a
+ * or all of them (pgid 0). SIGKILL is the child's job_kill when it has a
+ * job in the table (a forked child, a program from /data), else
+ * process_kill; any other signal a
  * `send` on the child's channel with code (si_code) and value; 0 checks
  * only. A child that has ended but isn't reaped matches and gets nothing.
  * How many matched (0: none, kill's ESRCH), or -errno. */

@@ -5,7 +5,8 @@
 # the shell, its self-image section passes (its /proc/self/exe is its path,
 # and a spawn of /proc/self/exe runs from its own image: docs/CR-PLAN.md,
 # "CL2 notes"); a forked child's execve of it (spawn, wait, exit) passes our
-# pipe on and forwards our SIGTERM to it (exit 9: CR-PLAN, "CCS"); and
+# pipe on and forwards our SIGTERM to it (exit 9: CR-PLAN, "CCS"), and our
+# SIGKILL to such a child ends the program too (FORK-PLAN, "FJ1 notes"); and
 # `posixtest spawn-wmap` (WRITEMAP-PLAN's WT1): with a writable shared
 # mapping of the file alive (an O_RDWR descriptor's, open and then closed)
 # the file is ETXTBSY to a spawn and to a forked child's execve, and runs
@@ -32,6 +33,7 @@ send posixtest spawn-data /data/pt-prog allowed; echo a-$T=$?
 wait 60 posixtest: spawn-data: /data/pt-prog:
 wait 60 posixtest: spawn-data: /data/pt-prog self-image: PASS
 wait 60 posixtest: spawn-data: /data/pt-prog fork-exec: wait status 0x900
+wait 60 posixtest: spawn-data: /data/pt-prog fork-kill: wait status 0x9, the program gone
 wait 30 a-s=0
 wait {prompt}
 send run /data/pt-prog self-image /data/pt-prog; echo si-$T=$?

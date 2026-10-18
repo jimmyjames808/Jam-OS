@@ -275,12 +275,13 @@ void     lock_give(lock_t *l);
 
 /* fork ----------------------------------------------------------------------------
  * A copy of this process (docs/FORK-PLAN.md section 1; user/lib/fork.c):
- * the same program in a new process in our job (SR_JOB), with our address
+ * the same program in a new process in our job (SR_JOB) or the one the
+ * caller names (jam_fork_args.job), with our address
  * space copied at one instant (vmar_clone: copy-on-write, shared or left
  * out by each mapping's clone mode), and one thread, the calling one,
  * which goes on from the call. The child holds only what libjam and the C
  * library hand it, as duplicates: its own process, address space and
- * thread, our job, our namespace (each entry duplicated), our SR_STDOUT,
+ * thread, its job, our namespace (each entry duplicated), our SR_STDOUT,
  * SR_CONSOLE, SR_BOOTFS and SR_SELF_IMAGE, a new signal channel if asked;
  * never our root (SR_RESOURCE) nor a service's roles. Every other handle
  * value in its copy of our memory names nothing there (its table starts
@@ -311,6 +312,14 @@ struct jam_fork_args {
     handle_t       *signals;
     /* The C library's, passed to each of its hooks. */
     void           *ctx;
+    /* 0: the child goes in our job (SR_JOB) and gets a duplicate of ours.
+     * Else the job it goes in, the caller's (made inside ours, so the
+     * fork's charge is still ours: the POSIX layer gives each forked child
+     * one, whose job_kill is SIGKILL's), and its SR_JOB is a duplicate
+     * with JOB_RIGHTS_OWN, as spawn gives a child its job: the child can
+     * start processes and jobs in it but can't lift its limits or kill
+     * it. Needs RIGHT_DUPLICATE and RIGHT_TRANSFER. */
+    handle_t        job;
 };
 
 /* The C library's part of every fork, set once at its start
