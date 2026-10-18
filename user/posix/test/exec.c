@@ -52,6 +52,9 @@
  *     made there), as Linux's (FR2's finding 2).
  *   secure: a case started AT_SECURE (as a raised program is) execs
  *     itself: the new image is AT_SECURE too (FJ1, FR2's finding 4).
+ *   log: a case whose 1 and 2 are the kernel log (no stdout channel, no
+ *     terminal) execs itself: the new image's 1 and 2 are still the log,
+ *     one description, and write (FJ1).
  *
  * "posixtest --child-exec native" is utest's (exec_native: a native
  * starter, the shell's way, waits on a POSIX program that execs). */
@@ -304,9 +307,7 @@ static int run_inotify(char **argv)
     for (unsigned i = 0; i < FDW && strlen(argv[4]) == FDW * 16; i++) {
         char word[17] = { 0 };
         memcpy(word, argv[4] + i * 16, 16);
-        /* 1 and 2 left out: the kernel log, where a starter gave no pipe,
-         * is not kept by an execve (it has no give). */
-        RUN((got[i] & (i ? ~0ull : ~6ull)) == strtoull(word, NULL, 16));
+        RUN(got[i] == strtoull(word, NULL, 16));   /* 1 and 2 too: the log (FJ1) */
     }
     int in = inotify_init1(IN_NONBLOCK);
     RUN(in >= 0 && inotify_add_watch(in, "/etc", IN_CREATE) > 0);
@@ -321,6 +322,23 @@ static int run_secure(void)
 {
     RUN(getauxval(AT_SECURE) == 1);
     RUN(issetugid() == 1);
+    return run_end();
+}
+
+/* log: made by a case whose 1 and 2 were the kernel log (exec_log): they
+ * still are, one description (a flag set through 1 is 2's), and write. */
+static int run_log(void)
+{
+    struct stat one, two;
+    RUN(fstat(1, &one) == 0 && fstat(2, &two) == 0);
+    RUN(S_ISCHR(one.st_mode) && (one.st_mode & 0777) == 0222);   /* dev.c's log_stat */
+    RUN(S_ISCHR(two.st_mode) && (two.st_mode & 0777) == 0222);
+    RUN((fcntl(1, F_GETFL) & O_ACCMODE) == O_WRONLY);
+    RUN(fcntl(1, F_SETFL, O_NONBLOCK) == 0 && (fcntl(2, F_GETFL) & O_NONBLOCK));
+    static const char out[] = "posixtest: exec: log: the new image's 1 writes\n";
+    static const char err[] = "posixtest: exec: log: the new image's 2 writes\n";
+    RUN(write(1, out, sizeof(out) - 1) == (ssize_t)sizeof(out) - 1);
+    RUN(write(2, err, sizeof(err) - 1) == (ssize_t)sizeof(err) - 1);
     return run_end();
 }
 
@@ -592,7 +610,7 @@ static void exec_inotify(void)
     move_to(epoll_create1(0), 22, false);
     uint64_t bits[FDW];
     CHECK(fd_bits(bits) && (bits[0] >> 20 & 7) == 7);
-    bits[0] &= ~((1ull << 20) | (1ull << 22) | 6ull);   /* ... and 1 and 2, see run_inotify */
+    bits[0] &= ~((1ull << 20) | (1ull << 22));
     char words[FDW * 16 + 1];   /* the other descriptors, 16 hex digits a word */
     for (unsigned i = 0; i < FDW; i++)
         snprintf(words + i * 16, 17, "%016llx", (unsigned long long)bits[i]);
@@ -608,6 +626,18 @@ static void exec_secure(void)
 {
     CHECK(getauxval(AT_SECURE) == 1);
     char *const args[] = { "posixtest", "--child-exec", "run", "secure", NULL };
+    execv(SELF_EXE, args);
+    CHECK(!"the case's own execve");
+}
+
+/* log: this process's 1 and 2 are the kernel log (run_case's spawn gives
+ * it no stdout channel and no terminal) and it execs itself: the new
+ * image has them still (FJ1; IL2 found them dropped). */
+static void exec_log(void)
+{
+    struct stat st;
+    CHECK(fstat(1, &st) == 0 && (st.st_mode & 0777) == 0222);
+    char *const args[] = { "posixtest", "--child-exec", "run", "log", NULL };
     execv(SELF_EXE, args);
     CHECK(!"the case's own execve");
 }
@@ -885,7 +915,7 @@ static const struct {
     { "same", exec_same },       { "threads", exec_threads }, { "cloexec", exec_cloexec },
     { "signals", exec_signals }, { "charge", exec_charge },   { "fail", exec_fail },
     { "chromium", exec_chromium }, { "clone", exec_clone },   { "gone", exec_gone },
-    { "inotify", exec_inotify }, { "secure", exec_secure },
+    { "inotify", exec_inotify }, { "secure", exec_secure }, { "log", exec_log },
 };
 #define NCASES (sizeof(cases) / sizeof(cases[0]))
 
@@ -916,6 +946,8 @@ int pt_child_exec(int argc, char **argv)
             return run_inotify(argv);
         if (!strcmp(mode, "secure"))
             return run_secure();
+        if (!strcmp(mode, "log"))
+            return run_log();
         return 3;
     }
     if (!strcmp(what, "native")) {   /* utest's: exec at once */
