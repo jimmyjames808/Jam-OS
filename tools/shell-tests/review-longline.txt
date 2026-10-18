@@ -5,6 +5,7 @@
 # (user/services/shell/main.c): the shot shows one row, '<' at its left; at
 # Enter the whole line is written once, wrapped, and runs (the shell says
 # the 186-character word, 180 a's, an X and 5 b's, is an unknown command).
+# Then a line over the editor's 240 characters is refused, not run cut.
 wait 120 Jam OS shell
 wait {prompt}
 sleep 1
@@ -20,5 +21,21 @@ send
 wait aaaaaXbbbbb: unknown command
 sleep 0.5
 shot longline-after
+wait {prompt}
+# A line over LINE_MAX (240) is refused whole, never run cut to its first 240
+# characters (SF, 2026-10-18): 300 typed; the `touch` at its start must not
+# run, and the message says how long the line was. One of exactly 240 runs.
+send T=x
+wait {prompt}
+type touch /tmp/cut-$T; echo qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq
+send
+wait line too long: 300 characters, at most 240
+wait {prompt}
+send test -e /tmp/cut-x || echo not-run-$T
+wait not-run-x
+wait {prompt}
+send echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-$T
+wait aaaaaaaaaaaaaaaaaaaaaaaa-x
+wait {prompt}
 send reboot -f
 wait reboot: resetting

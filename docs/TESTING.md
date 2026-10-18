@@ -1231,7 +1231,7 @@ would have failed on.
 | `usbkeys.txt` | typing on a USB keyboard behind a hub; kill hid, the compositor (hid reconnects to the new one), the console, devmgr | use `tools/usbkeys-test.sh` |
 | `review-cad.txt` | a `run` program can't send Ctrl+Alt+Del | |
 | `review-killinit.txt` | the shell refuses to kill init; supervised services come back | |
-| `review-longline.txt` | a line longer than the screen row: kept on its one row, scrolled sideways (`longline`), edited at its end, and run whole | |
+| `review-longline.txt` | a line longer than the screen row: kept on its one row, scrolled sideways (`longline`), edited at its end, and run whole; a line of 300 characters (over the editor's 240) refused with "line too long: 300 characters, at most 240" and nothing run (a `touch` at its start leaves no file), one of exactly 240 run whole | |
 | `review-runshell.txt` | Ctrl+C reaches the outer shell past a second shell | |
 | `review-steal.txt` | a `run` program can't take devmgr's console | the `tools/usbkeys-test.sh` `QEMU_USB` (hub on port 2, `usb-kbd,id=keys` at 2.1, mouse on 3) |
 
