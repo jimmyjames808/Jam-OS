@@ -2223,6 +2223,34 @@ page, one stop at a time, each fixed in the layer or a service.
   ENOSYS, fontconfig's missing default config, `NETLINK` sockets
   unsupported (`address_tracker_linux`). CB3's screenshots are next.
 
+#### HS2 notes (2026-10-18)
+
+Track HS2 (branch `hs2-screenshot`): `headless_shell --screenshot` of a
+local page, one stop at a time.
+
+- **Stop 1: `Page load failed: net::ERR_FILE_NOT_FOUND`, not a layer
+  gap.** The run's log shows `FileURLLoader::Start:
+  file:///data/cr/out/jamos/p`: the typed `run` line was 261 characters
+  and the shell keeps 240 (`SH_LINE_MAX`, [USING](USING.md)), so the
+  URL was cut to a file that isn't there, and the `; echo` after it was
+  lost too. The test's script now puts the program and the URL in shell
+  variables (`H=...`, `U=...`, `run $H ... $U`). No change to the layer.
+- **The screenshot.** `run $H --no-sandbox --single-process --no-zygote
+  --headless --disable-gpu --js-flags=--jitless --window-size=800,600
+  --screenshot=/data/cr/tmp/shot.png file:///data/cr/out/jamos/page.html`
+  (Inter from `third_party/inter` and a one-line `fonts.conf` with its
+  cache in `/data/cr/tmp/fccache`, `FONTCONFIG_FILE` set) printed `10959
+  bytes written to file /data/cr/tmp/shot.png` and exited 0 after 1.9 s
+  (QEMU on the PC, 4 GiB, an ext `/data`). The PNG is 800x600 RGB and
+  drawn right: the page's background `#1e3a5f`, the red box `#e94560`
+  320x140 at (40, 40) and the yellow `#f5d76e` 220x90 at (40, 200), exact
+  to the pixel and colour, and the heading and line of text in Inter
+  below them. fontconfig made its cache directory; nothing else was
+  logged but HS's `landlock_create_ruleset` ENOSYS and `NETLINK`. The
+  software compositor, shared memory for raster and the PNG write all
+  worked without a change. CB3's HTTPS page and cr-test.sh's `headless`
+  case are still to do.
+
 #### IC (2026-10-18)
 
 Track IC (branch `ic-inotify-base`, [INOTIFY-PLAN](INOTIFY-PLAN.md#ic-notes)):
