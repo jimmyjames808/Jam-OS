@@ -61,6 +61,7 @@ static const struct {
     { "exec", pt_exec },
     { "efault", pt_efault },
     { "inotify", pt_inotify },
+    { "locks", pt_locks },
 };
 
 /* The sections run only when named (long ones). */
@@ -138,6 +139,8 @@ int main(int argc, char **argv)
         return pt_child_unix(argc, argv);
     if (argc >= 2 && !strcmp(argv[1], "--child-peer"))
         return pt_child_peer(argc, argv);
+    if (argc >= 2 && !strcmp(argv[1], "--child-locks"))
+        return pt_child_locks(argc, argv);
     if (argc >= 2 && !strcmp(argv[1], "--child-links"))
         return pt_child_links();
     if (argc >= 2 && !strcmp(argv[1], "--child-fault"))
