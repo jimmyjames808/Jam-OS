@@ -26,7 +26,10 @@
  *     line, /proc/self/cmdline and the process title written over it (in a
  *     child, as base's setproctitle does it, with and without an environment
  *     from the starter), /proc/self/task and a thread's own stat, status,
- *     statm, maps and cmdline (also as /proc/<tid>/...), /proc/self/mem (read
+ *     statm, maps and cmdline (also as /proc/<tid>/...; CB5's: the *at calls
+ *     from an open /proc and an open task directory, a thread's directory
+ *     there ENOENT once it ended, the task directory's link count 2 and one
+ *     a thread), /proc/self/mem (read
  *     only), /proc/version and sys/kernel/... against uname, meminfo's
  *     buffers and caches, dladdr for the program's image;
  *   - CBF6's: /proc/self/smaps_rollup (base's SmapsRollupTest): the
@@ -1670,6 +1673,27 @@ static void check_tasks(void)
     stat_free(&s);
     CHECK(nt == (unsigned long long)n1 + hidden);
 
+    /* The *at calls from /proc's own descriptors (Chromium's sandbox set-up: fstatat of
+     * "self/task/<tid>/" from an open /proc while it waits for a stopped thread to go), and
+     * the task directory's link count, 2 and one a thread, which it reads too. */
+    char rel[48];
+    int pfd = open("/proc", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    CHECK(pfd >= 0);
+    CHECK(fstatat(pfd, "self/task/", &st, 0) == 0 && S_ISDIR(st.st_mode) &&
+          st.st_nlink == 2 + (nlink_t)n1);
+    snprintf(rel, sizeof(rel), "self/task/%d/", a[0].tid);
+    CHECK(fstatat(pfd, rel, &st, 0) == 0 && S_ISDIR(st.st_mode));
+    int tfd = openat(pfd, "self/task", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    CHECK(tfd >= 0);
+    snprintf(rel, sizeof(rel), "%d/stat", a[0].tid);
+    CHECK(tfd >= 0 && fstatat(tfd, rel, &st, 0) == 0 && S_ISREG(st.st_mode));
+    int sfd = openat(pfd, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);   /* sandbox's OpenProc */
+    CHECK(sfd >= 0 && faccessat(sfd, "self/exe", F_OK, 0) == 0);
+    errno = 0;
+    CHECK(fstatat(pfd, "self/no-such", &st, 0) == -1 && errno == ENOENT);
+    close(sfd);
+    close(tfd);
+
     /* Each thread has its own stat, status, statm, maps and cmdline; /proc/<tid>/... is the same. */
     int tids[4] = { me, a[0].tid, a[1].tid, a[2].tid };
     for (int i = 0; i < 4; i++) {
@@ -1766,6 +1790,11 @@ static void check_tasks(void)
     snprintf(path, sizeof(path), "/proc/self/task/%d/stat", a[0].tid);
     errno = 0;
     CHECK(stat(path, &st) == -1 && errno == ENOENT);
+    snprintf(rel, sizeof(rel), "self/task/%d/", a[0].tid);
+    errno = 0;
+    CHECK(fstatat(pfd, rel, &st, 0) == -1 && errno == ENOENT);   /* what Chromium waits for */
+    CHECK(fstatat(pfd, "self/task/", &st, 0) == 0 && st.st_nlink == 2 + (nlink_t)n0);
+    close(pfd);
 }
 
 /* ---- /proc/self/mem ------------------------------------------------------------------------ */
