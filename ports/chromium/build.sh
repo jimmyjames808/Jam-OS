@@ -97,8 +97,11 @@ link() {
 install() {
     d=$destdir$prefix/lib/chromium
     mkdir -p "$d"
+    # headless_command_resources.pak: the page --dump-dom, --screenshot and
+    # --print-to-pdf run in, read from beside the program (without it they
+    # print nothing and exit 0)
     for f in base_unittests test_child_process headless_shell headless_lib_data.pak \
-             headless_lib_strings.pak; do
+             headless_lib_strings.pak headless_command_resources.pak; do
         cp "out/jamos/$f" "$d/$f"
     done
 }

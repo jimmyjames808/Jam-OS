@@ -2202,6 +2202,26 @@ page, one stop at a time, each fixed in the layer or a service.
   channel full is owed and goes with the end's next read or send (else the
   peer sees the end at the close). A child given the end starts with
   neither half shut. posixtest scm: `check_half` and scmcred's wakes.
+- **Stop 2: V8's code range.** Next, `V8 process OOM (Failed to reserve
+  virtual memory for CodeRange)` and the crash's breakpoint: V8 with its JIT
+  reserves code memory, which needs `MAP_JIT` and its patch (section 12,
+  CR-e). Not a layer stop: the plan's mode until CR-e is `--jitless`, so
+  the run says `--js-flags=--jitless` (V8 then reserves no code range).
+- **Stop 3: nothing printed, exit 0.** `--dump-dom` runs its commands in a
+  page (`chrome://headless/headless_command.html` and its script) served from
+  `headless_command_resources.pak`, which `EnsureHeadlessCommandResources`
+  loads from beside the program; the port staged only
+  `headless_lib_data.pak` and `headless_lib_strings.pak`, so the page was
+  empty, `executeCommands` threw, and the handler printed nothing and exited
+  0. The port's recipe and install now ship the pak too.
+- **It prints the page.** `run /data/cr/out/jamos/headless_shell
+  --no-sandbox --single-process --no-zygote --headless --disable-gpu
+  --js-flags=--jitless --dump-dom data:text/html,Hello%20from%20Jam%20OS`
+  prints `<html><head></head><body>Hello from Jam OS</body></html>` and
+  exits 0 after 1.5 s (QEMU on the PC, 4 GiB, the program on an ext
+  `/data`). Logged on the way, none fatal: `landlock_create_ruleset`
+  ENOSYS, fontconfig's missing default config, `NETLINK` sockets
+  unsupported (`address_tracker_linux`). CB3's screenshots are next.
 
 #### IC (2026-10-18)
 
