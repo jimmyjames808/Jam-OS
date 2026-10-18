@@ -52,6 +52,7 @@ static const struct {
     { "mmap-wshared", pt_mmap_wshared },
     { "mmap-tmp", pt_mmap_tmp },
     { "spawn-data", pt_spawn_data },
+    { "spawn-wmap", pt_spawn_wmap },
     { "loopback", pt_loopback },
     { "links", pt_links },
     { "execinfo", pt_execinfo },
@@ -65,7 +66,7 @@ static const struct {
 /* The sections run only when named (long ones). */
 static const char *const asked_only[] = { "files-many", "sockets", "session", "mmap-big",
                                           "mmap-coherent", "mmap-wshared", "mmap-tmp",
-                                          "spawn-data", "loopback",
+                                          "spawn-data", "spawn-wmap", "loopback",
                                           "self-image", "links" };
 
 static bool by_default(const char *name)

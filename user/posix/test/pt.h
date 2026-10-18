@@ -109,6 +109,7 @@ void pt_mmap_wshared(char **argv);
 /* ... and tools/layout-test.sh's: the mmap section in /tmp, which must have a pager. */
 void pt_mmap_tmp(char **argv);
 void pt_spawn_data(char **argv);
+void pt_spawn_wmap(char **argv);   /* only when asked for: posix-mmap-test.sh's spawn case (mmap.c) */
 void pt_wayland(char **argv);
 void pt_jit(char **argv);          /* MAP_JIT without the power (jit.c) */
 void pt_links(char **argv);        /* only when asked for: an ext volume at /u6 (links.c) */

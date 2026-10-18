@@ -94,8 +94,9 @@
 #          recovers the volume itself); e2fsck -fy of the cut copy exits 0
 #          and e2fsck -fn at the end is clean.
 #   wpress a mapping twice the budget (QEMU_MEM 512M: budget 32 MiB, w.bin
-#          64 MiB, 8 MiB may be dirty) stored through with no msync while
-#          another program hashes another file six times (pager-wpress.txt):
+#          64 MiB, 8 MiB may be dirty) stored through three times with no
+#          msync while another program hashes another file twenty times
+#          (pager-wpress.txt):
 #          the writer is throttled, finishes, every page is right by read and
 #          by a mapping and on the disk, the reader's hashes are the host's
 #          and no pass takes 20 s, nothing is killed. (The writer killed at
@@ -761,7 +762,9 @@ EOF
         } > "$out/$rn.in"
         boot_cut "$rn" "$out/$rn.in" "$drive" "pagertest: rec: storing" "$delta"
         if [ -z "$cut" ]; then
-            echo "$name: wcut: point $k: the storm ended before $delta Writes (not cut)"
+            echo "$name: wcut: point $k: the storm ended before $delta Writes (not cut); the end of its output and log:"
+            tail -n 4 "$out/$rn.out" | cut -c1-200
+            tr -d '\r' < "$out/$rn.log" | tail -n 10 | cut -c1-200
         else
             cuts=$((cuts + 1))
         fi
@@ -821,13 +824,13 @@ case_wpress() {
     for m in p0 p1 p2; do
         want wpress 1 "^$m-w=0" "$run"
     done
-    want wpress 1 "pagertest: rec: stored 16384 records" "$run"
+    want wpress 3 "pagertest: rec: stored 16384 records" "$run"
     want wpress 1 "pagertest: rec: check /jam/w.bin: PASS" "$run"
     # The reader: its hashes the host's, no pass slow (a store's wait or a
     # request that waited out the pager's answer time would be a minute).
     hashed wpress /jam/other.bin "$sha" 1
-    want wpress 6 "pagertest: pass [1-6] of /jam/other.bin: 50331648 bytes at 0 in [0-9]+ ms: sha256 $sha" "$run"
-    slow=$(sed -n 's/.*pagertest: pass [1-6] of \/jam\/other.bin: .* in \([0-9]*\) ms: .*/\1/p' "$run" |
+    want wpress 20 "pagertest: pass [0-9]+ of /jam/other.bin: 50331648 bytes at 0 in [0-9]+ ms: sha256 $sha" "$run"
+    slow=$(sed -n 's/.*pagertest: pass [0-9]* of \/jam\/other.bin: .* in \([0-9]*\) ms: .*/\1/p' "$run" |
            sort -n | tail -1)
     echo "$name: wpress: $(grep -a 'pagertest: rec: stored' "$run" | tr -d '\r'); the reader's slowest pass ${slow:-none} ms"
     { [ -n "$slow" ] && [ "$slow" -lt 20000 ]; } ||
@@ -836,7 +839,7 @@ case_wpress() {
     no_page_errors wpress
     vol="$out/$name-wpress-disk.img"
     jam_volume "$drive" 256 "$vol"
-    rec_disk wpress "$vol" w.bin 16384 21 4096 16384
+    rec_disk wpress "$vol" w.bin 16384 23 4096 16384
     rm -f "$vol"
     ext_clean wpress "$drive" $((513 << 20)) $((256 << 20)) "after the run"
     rm -f "$drive" "$drive".*

@@ -38,6 +38,10 @@
 #             while it isn't allowed; then `allow`ed, it runs (init's
 #             /svc/exec seals and starts it) and exits 7; a forked child's
 #             execve of it gets our pipe and our SIGTERM (forwarded): exit 9.
+#             Then `posixtest spawn-wmap` (WRITEMAP-PLAN's WT1): with a
+#             writable shared mapping of it alive (an O_RDWR descriptor's,
+#             open and then closed) a spawn and a forked child's execve are
+#             ETXTBSY, and once it is unmapped the program runs again.
 # The image's /data is ext (extfs serves it, its pager behind every mapping
 # there, docs/M13.6-PLAN.md's U10); the second sticks are FAT. MMAP_DATA=ext
 # makes it an ext volume Linux's mke2fs made instead (tools/ext-stick.sh), which
@@ -206,6 +210,14 @@ case_spawn() {
     # A forked child's execve of it: our SIGTERM forwarded, its exit 9 the child's.
     want spawn 1 "posixtest: spawn-data: /data/pt-prog fork-exec: wait status 0x900" "$run"
     want spawn 1 "^a-s=0" "$run"
+    # With a writable shared mapping of the file alive it is ETXTBSY, to a
+    # spawn (the descriptor open, then closed) and a forked child's execve;
+    # unmapped, it runs again.
+    want spawn 1 "posixtest: spawn-wmap: /data/pt-prog mapped, the descriptor open: spawn Text file busy" "$run"
+    want spawn 1 "posixtest: spawn-wmap: a forked child's execve: wait status 0x6100" "$run"
+    want spawn 1 "posixtest: spawn-wmap: the descriptor closed, the mapping alive: spawn Text file busy" "$run"
+    want spawn 1 "posixtest: spawn-wmap: unmapped: spawn ran \(code 7\) after" "$run"
+    want spawn 1 "^wm-s=0" "$run"
     never spawn "init: exec: .* didn't start" "$run"
     no_errors spawn
 }
