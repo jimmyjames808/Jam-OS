@@ -2128,7 +2128,13 @@ neighbours). So the heap is one mapping, made once: the first build gave
 each big block a VMO of its own, and posixtest's scm and peer cases, which
 count the job's handles across calls, saw one more (a socket's lazily
 allocated buffer: batch 18145113, both tries; init too, through peer).
-Only once the arena is full is a block a VMO of its own. No VMO handle is
+Only once the arena is full is a block a VMO of its own. One count moved
+for a reason of the program's own: scm's `counts` case now runs a round
+before its first count, since that round's `malloc` grew posixtest's own
+allocator by one unit for good (seen with counts between each step, batch
+18152308: not the layer's heap, which made no kernel object; most likely
+the break's own handle), which the layer's allocations used to grow at
+start-up. No VMO handle is
 kept (a forked child's copy is a VMO it has no handle to), so nothing
 decommits: pages a big block touched stay committed for the next. Neither
 is in libc's table of mappings, so the program's `munmap` never reaches

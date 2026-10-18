@@ -258,6 +258,12 @@ static void check_many(const int *s, unsigned n)
 
 static void check_counts(const int *s)
 {
+    /* One round first: its malloc grows this program's own allocator,
+     * which keeps one unit more for good (seen at the first round's malloc
+     * of the fds; most likely the break, whose VMO mem.c holds a handle of
+     * its own to). Before the layer had a heap of its own (LH), the
+     * layer's allocations had grown it long before. */
+    check_many(s, 64);
     uint64_t before = scm_job_handles();
     int lowest = scm_lowest_fd();
     check_many(s, 64);
