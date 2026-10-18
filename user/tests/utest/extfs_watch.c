@@ -204,6 +204,48 @@ static bool expect(const struct wat *x, const struct want *want, int n, const ch
     return true;
 }
 
+/* As expect, but want[loose] may stand anywhere before the first other
+ * event of its name: the order of two files' events that no rule ties
+ * together (a write sent ahead to keep extfs busy may, on a loaded
+ * machine, still be served after the next file's). */
+static bool expect_loose(const struct wat *x, const struct want *want, int n, int loose,
+                         const char *what)
+{
+    if (!take_all(x))
+        return false;
+    bool ok = ngot == n;
+    int j = -1;
+    for (int i = 0; ok && i < ngot; i++) {
+        bool same = got[i].len == L(want[loose].name) && !strcmp(got[i].name, want[loose].name);
+        if (same && got[i].id == want[loose].id && got[i].mask == want[loose].mask) {
+            j = i;
+            break;
+        }
+        if (same)
+            ok = false;   /* another of its events came before it */
+    }
+    ok = ok && j >= 0;
+    for (int i = 0, w = 0; ok && i < ngot; i++) {
+        if (i == j)
+            continue;
+        if (w == loose)
+            w++;
+        ok = got[i].id == want[w].id && got[i].mask == want[w].mask &&
+             got[i].len == L(want[w].name) && !strcmp(got[i].name, want[w].name);
+        w++;
+    }
+    if (!ok) {
+        printf("utest: %s: %s: got %d events, want %d (want %d anywhere before its "
+               "name's next):\n", utest_cur, what, ngot, n, loose);
+        say_got();
+        for (int i = 0; i < n; i++)
+            printf("utest:   want %d: id %u mask %#x \"%s\"\n", i, want[i].id, want[i].mask,
+                   want[i].name);
+        FAIL("%s: not the events wanted", what);
+    }
+    return true;
+}
+
 #define EXPECT(x, what, ...)                                                    \
     do {                                                                        \
         const struct want w_[] = { __VA_ARGS__ };                               \
@@ -652,9 +694,14 @@ bool t_extfs_watch_order(void)
         CHECK_ST(t_write(&f2, 0, "x", 1, &done), OK);
         t_close(&f2);
         t_close(&f3);
-        EXPECT(&a, "a close before another file's write", { idO, IN(MODIFY), "f3" },
-               { idO, IN(MODIFY), "f1" }, { idO, IN(CLOSE_WRITE), "f1" }, { idO, IN(MODIFY), "f2" },
-               { idO, IN(CLOSE_WRITE), "f2" }, { idO, IN(CLOSE_WRITE), "f3" });
+        /* The rule's promise is f1's close before f2's write, and f2's
+         * close before f3's; f3's IN_MODIFY (its busy write) may land
+         * anywhere before f3's close. */
+        const struct want w_[] = { { idO, IN(MODIFY), "f3" },      { idO, IN(MODIFY), "f1" },
+                                   { idO, IN(CLOSE_WRITE), "f1" }, { idO, IN(MODIFY), "f2" },
+                                   { idO, IN(CLOSE_WRITE), "f2" }, { idO, IN(CLOSE_WRITE), "f3" } };
+        if (!expect_loose(&a, w_, 6, 0, "a close before another file's write"))
+            return false;
     }
 
     unwatcher(&a);
