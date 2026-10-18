@@ -2472,6 +2472,109 @@ side, not a call; `posix_spawn` isn't async-signal-safe), and glibc's
 `backtrace_symbols` with `malloc` (its caller frees). The arena is 1 GiB of
 address space in every POSIX process that allocates (pages only as used).
 
+#### PR notes (2026-10-18)
+
+Track PR (branch `worktree-agent-a8eaf264df3efe70d`; the main session's D12):
+other processes' `/proc/<pid>/...` for Chromium's browser, which reads its
+children's `stat`, `statm` and `fd` (CB5).
+
+**What was missing.** Less than CCS's list said. PRC and CBF4 already
+answer a *child's* `stat`, `statm`, `status`, `maps` and `smaps_rollup`
+(from the child's process handle: `process_get_info` and
+`process_get_maps`), and the base run's "ENOSYS" lines after those two tests'
+`stat` were the end of each test, after the child was reaped (ENOENT, as it
+should be; the log notes every name `/proc` hasn't). Only `fd` was missing
+(`ProcessMetricsTest.GetChildOpenFdCount`: `GetOpenFdCount()` counts the
+entries of `/proc/<pid>/fd`, its first answer was -1).
+
+**How the layer reaches another process: its children, through what
+`fork` and `posix_spawn` keep.** Each child's process handle (kernel facts:
+state, CPU, threads, memory) and the client end of its signal channel
+(`signal.idl`: kill's way to it, and its notices to us). Nothing wider is
+built, and the answer for any other pid stays ENOENT: a process can reach
+only what it started (the capability model), and the kernel offers no call
+that turns a pid into a handle. **Recommendation for wider reach** (not
+built, nothing needs it; `ps` and `top` ports would): a kernel call that
+lists the processes of a job the caller holds (`job_get_processes`: koids
+and pids) and one that opens one of them for inspection with the job's
+`RIGHT_INSPECT`; `/proc/<pid>` then answers for every process under the
+caller's own job (a grandchild, a sibling it spawned through the same job),
+the facts from the process handle as for a child. The fd listing needs a
+signal channel, so it stays the starter's.
+
+**The descriptor table lives in the child's own layer, so the child is
+asked.** The smallest sound way was a question on the channel the parent
+already holds; a kernel handle listing doesn't answer it (a descriptor is
+not a handle: a file is a channel, a pipe is half of a pair, an epoll set a
+port; the count would be wrong). Two events in `signal.idl` (commit
+d87ed347): `list_fds(seq)` from the starter and `fds(seq, bits)` back, the
+open descriptors as a bitmap (bit n of the string is descriptor n; up to
+128 bytes, trailing zero bytes left out). The child's signal thread
+answers (proc.c's `lx_answer_fds`, over `fd_bitmap`: one lock take, no
+reference on any description). The starter's side is proc.c's
+`lx_child_fds`: it links a `fdwait` on its stack, writes the question, reads
+the child's notices itself (so the answer doesn't wait for its signal
+thread to be scheduled; either may take it, under proc.c's lock) and sleeps
+on `gen` for at most 3 s. Questions have numbers, so threads can ask at
+once, and an old or forged answer matches nothing. `NOTICE_BYTES` went
+from 64 to 160 (the answer is up to 142). procfs.c: `/proc/<pid>/fd` of a
+child opens (EACCES when the child has no signal protocol to ask on: init's
+session, which is a `session_ctl`; ENOENT once reaped) and each `getdents`
+asks once for its whole call (the position is the descriptor's number, as
+for our own). A zombie has none open. Names below it
+(`/proc/<child>/fd/N`: where each descriptor goes) are ENOENT: what a
+descriptor is isn't asked; nothing reads it for another process.
+
+**The stub.** A forked child's `execve` of a program from `/data` is
+still spawn, wait and exit (FORK-PLAN section 2, way (a); FX is the later
+fix), so the pid its parent holds is the waiting stub's, and the stub's
+descriptors (a copy) are not the program's. The stub passes the question on
+to the program over the program's signal channel (it is the program's
+starter), number and all, and an answer from the program that none of
+its own questions waits for goes on to its starter with the same number
+(proc.c's `lx_answer_fds` and `on_fds`), as its signal thread forwards the
+signals. So `GetOpenFdCount()` counts the program's descriptors, which is
+what the test counts. The relay keeps nothing, so any number of questions
+at once go through.
+
+**`MeasureChildCpuUsage` stays on the list** ([launch], with the reason):
+its busy child is the same kind of stub. `/proc/<pid>/stat` is the pid's
+own CPU time, the waiting stub's (about none), and only the program that
+the stub waits for burns. Passing it needs the pid to *be* the program:
+**FX** (FORK-PLAN: init builds the `/data` program in a process the caller
+may only `process_replace` itself with). Faking the figure (the stub's
+`stat` carrying the program's CPU, or the program's facts under the stub's
+pid) would make `ps` lie; my recommendation is FX before CB5's tests of
+`/data` programs as children, and none of Chromium's own children meet this
+(they are `/proc/self/exe`, exec'd in place).
+
+**Programs linked before this change** don't answer `list_fds` (a program's
+signal thread drops what it doesn't know): `getdents` on their
+`/proc/<pid>/fd` ends with EIO after 3 s. Relink (as FL3's hand-over
+version 2 already asks).
+
+**Not built** (ports by need): `/proc/<child>/fd/N` (links), a child's
+`cmdline`, `exe`, `task`, `limits` and `mem`. `GetOpenFdSoftLimit()` reads
+`/proc/<pid>/limits` (of ours too; not built): Chrome's task manager and
+`memory_details_linux.cc` use it, `content_shell` doesn't.
+
+**Tests.** posixtest's procinfo section, `check_child_fds` (a child posixtest
+that reports its descriptors by `fcntl` and its own `/proc/self/stat` and
+`statm` on a pipe): our `/proc/<pid>/fd` is the same set at three moments
+(started, 40 more opened, closed), one entry a `getdents` call, four
+threads asking 25 times each at once, none for a zombie, ESRCH for a
+directory opened before the reap, ENOENT for a name below it, for the
+reaped child and for our parent's; its stat and statm against its own view
+(same pid, name, parent, group, session, threads and start time; `S` to us,
+`R` to itself; sizes within 1 MiB). `check_child` now expects `fd` in the
+child's directory. posixtest's `spawn-data` (tools/posix-mmap-test.sh,
+case `spawn`): a forked child's `execve` of `/data/pt-prog` gets the same
+three-moment cycle, which only passes if the answer is the program's.
+
+#### PR base_unittests
+
+(filled in at the end)
+
 ### 2. The address space: huge sparse reservations (the top risk)
 
 **What Chromium does** ([CR-RESEARCH section 6](CR-RESEARCH.md#6-v8s-jit)):
@@ -3851,8 +3954,9 @@ procinfo.c and cpuinfo.c (the text).
   `/proc/self/fd/N` of one reads `/proc/<pid>/<name>`.
 - **Who is listed.** `/proc` lists `self`, our pid, each child not yet
   reaped (the first 256), and `cpuinfo`, `meminfo`, `stat`. A child's
-  directory has `maps`, `stat`, `statm` and `status` (no `exe` or `fd`); any
-  other pid is ENOENT, as before. A process reading its own `maps` sees the
+  directory has `maps`, `stat`, `statm` and `status` (no `exe`; `fd` came
+  with PR, [PR notes](#pr-notes-2026-10-18)); any other pid is ENOENT, as
+  before. A process reading its own `maps` sees the
   buffers its read allocates (musl maps any allocation over 7 KiB): as on
   Linux.
 - **Not built** (each shows up in the ENOENT log if something wants it):
