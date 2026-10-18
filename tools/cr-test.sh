@@ -396,6 +396,7 @@ case_headless() {
         return
     fi
     sed 's/^/cr-test: /' "$dir/stick.out"
+    rm -rf "$dir/add"
     # the guest's reach: 8000 is the HTTP server, 8443 the HTTPS one (the
     # pages name those ports)
     # shellcheck disable=SC2046 # two words, the ports

@@ -14,7 +14,8 @@ tools/cr/headless.html, with its picture beside it (local) or from a second
 name (http, https). Checked:
 
     the exit status of each run (the log's `rcN-<status>`: 0 for the pages,
-        whatever it was for the refused one)
+        whatever it was for the refused one), and no complaint of the
+        sandbox's libc interceptor (dlsym for localtime or getaddrinfo)
     each DOM: the page's title and the line its script wrote, which says the
         script ran and the picture arrived with its size (320x160)
     each PNG: 800x600, and the colours at the box, the picture, the circle
@@ -142,6 +143,10 @@ def main(argv):
     for n in range(1, 7):
         m = re.search(r"^rc%d-(\d+)" % n, term, re.M)
         report(m and m.group(1) == "0", "run %d exit status %s" % (n, m.group(1) if m else "missing"))
+    # the sandbox's libc interceptor looks up localtime and getaddrinfo with
+    # dlsym(RTLD_NEXT): the layer answers, so neither complaint is logged
+    report("dlsym" not in term and "Cannot find getaddrinfo" not in term,
+           "the log has no dlsym complaint (localtime, getaddrinfo)")
     m = re.search(r"^rc7-(\d+)", term, re.M)
     report(m, "run 7 (no trust flag) ended: status %s" % (m.group(1) if m else "missing"))
     m = re.search(r"Page load failed: (net::ERR_CERT_[A-Z_]+)", term)
