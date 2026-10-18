@@ -5,7 +5,8 @@
  *     end written, a memfd mapped and written (the sender sees it), a file
  *     read at the sender's offset, /dev/zero read, a socketpair end and a
  *     SOCK_SEQPACKET end talked through, a directory (by its path: CB5) a
- *     start for fstatat and fsync'd; the kinds that don't (an eventfd, an
+ *     start for fstatat and fsync'd, a file on /data unlinked while open
+ *     (our own open crosses: CB5); the kinds that don't (an eventfd, an
  *     epoll set) refused with EINVAL;
  *   - a memfd's read-only twin passed on stays read-only (no write, no
  *     writable mapping, no writable reopen), and a write-sealed memfd's
@@ -199,6 +200,18 @@ static void check_kinds(const int *s)
     CHECK(r >= 0 && fsync(r) == 0);
     close(r);
     close(dir);
+    /* A file unlinked while open (base's FLAG_DELETE_ON_CLOSE temp files: Chromium's browser
+     * gives each renderer one for its swap): no path to open again, so our own open crosses. */
+    if (access("/data", W_OK) == 0) {
+        int u = open("/data/pt-scm-gone", O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+        CHECK(u >= 0 && unlink("/data/pt-scm-gone") == 0 && write(u, "gone", 4) == 4);
+        r = pass_one(s, u);
+        CHECK(r >= 0 && pread(r, buf, 4, 0) == 4 && !memcmp(buf, "gone", 4));
+        CHECK(r >= 0 && pwrite(r, "back", 4, 4) == 4 && pread(r, buf, 8, 0) == 8 &&
+              !memcmp(buf, "goneback", 8));
+        close(r);
+        close(u);
+    }
     int ev = eventfd(0, 0), ep = epoll_create1(0);
     int refused[] = { ev, ep };
     for (unsigned i = 0; i < 2; i++) {

@@ -19,7 +19,9 @@
  * fat allows a file one writable open, so for a description that may
  * write the parent lends its own open to the child and takes it back at
  * its next use of the file (fobj.c); a mount with many writers (extfs)
- * just opens it again.
+ * just opens it again. A file unlinked while open has no path to open
+ * again: the child (or a socket's receiver) gets our own open, moved, and
+ * ours is gone (give_ours).
  *
  * On a mount with links the path a file was opened by is kept as it was
  * resolved (the mount's part as written: files.h), and open follows a
@@ -434,6 +436,35 @@ static void lend_locked(struct fd_desc *d, const struct file *f)
     lock_give(&o->lock);
 }
 
+/* A file whose path is gone (unlinked while open: base's FLAG_DELETE_ON_CLOSE
+ * temp files, which Chromium's browser gives each renderer for its swap)
+ * can't be opened again by it, so the receiver gets our own open instead,
+ * as fat's one writer is lent to a child: its channel and buffer, moved,
+ * when our open's access is no wider than the description's. Ours is then
+ * lent for good (our next use tries the path and fails: EIO), and so is
+ * every description here sharing it. -ENOENT if there is no open to give. */
+static long give_ours(struct fd_desc *d, struct file *f, uint32_t s, handle_t *ch, handle_t *buf)
+{
+    struct fobj *o = f->o;
+    long r = -ENOENT;
+    lock_take(&d->lock);
+    lock_take(&o->lock);
+    uint32_t mine = o->jf.flags & (FS_READ | FS_WRITE);
+    if (!o->lent && o->jf.ch && !(mine & ~fs_access(s))) {
+        *ch = o->jf.ch;
+        *buf = o->jf.buf_vmo;
+        o->jf.ch = o->jf.buf_vmo = 0;   /* moved: file_close only unmaps the buffer */
+        o->lent_flags = o->jf.flags;
+        o->lent_end = o->size;
+        file_close(&o->jf);
+        o->lent = true;
+        r = 0;
+    }
+    lock_give(&o->lock);
+    lock_give(&d->lock);
+    return r;
+}
+
 static long kind_give(struct fd_desc *d, struct fd_given *out)
 {
     struct file *f = d->priv;
@@ -455,6 +486,8 @@ static long kind_give(struct fd_desc *d, struct fd_given *out)
         .nhandles = 2, .data = data, .data_len = (uint32_t)strlen(data) + 1,
     };
     long r = reopen(f, s, &out->handles[0], &out->handles[1]);
+    if (r == -ENOENT)   /* the path is gone: our own open, moved */
+        r = give_ours(d, f, s, &out->handles[0], &out->handles[1]);
     if (r) {
         jam_free(data);
         memset(out, 0, sizeof(*out));
