@@ -2176,12 +2176,14 @@ from inside `malloc`, `handler` 5, and the fork case hung; with the heap
 and no `heap_fork` (18143427) the fork case hung too. heaptest costs the
 boot image 0.5 MB (every POSIX program here is about that size).
 
-**headless_shell** (the smoke, `tools/cr/hs-smoke.sh`, scratch): relinked
+**headless_shell** (the main session's scratch smoke, never committed): relinked
 against this libc (`tools/cr/build.sh start headless_shell`, 152 s;
 `jam_malloc` and `heap_fork` are in the program), it **still hangs at
 start-up** exactly as before: 2 threads, 0:00.00 CPU, 544 KiB (its job 136
 pages) at 45 s and at 65 s, no output at `--v=1`. So the layer heap was not
-that hang's cause.
+that hang's cause (TD found it: the sandbox's `localtime` interceptor's
+`dlsym(RTLD_NEXT)` came back NULL and its log re-entered a `pthread_once`;
+fixed on main by 4d756b99).
 
 **Left.** `StackTraceDeathTest` (base_unittests) not run here (IC had
 base): the next relink of base_unittests runs it with this libc. musl's
