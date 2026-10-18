@@ -446,6 +446,7 @@ bool t_extfs_watch_reach(void);
 bool t_extfs_watch_deep(void);
 bool t_extfs_watch_cost(void);
 bool t_extfs_restart_watch(void);
+bool t_extfs_restart_reach(void);
 int  extfs_watch_child(int argc, char **argv);
 bool t_view_keys_names(void);
 bool t_fat_view_keys(void);

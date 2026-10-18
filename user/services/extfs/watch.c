@@ -29,9 +29,11 @@
  * table over before its mount (watch_adopt_table), the handles back from
  * the keeper (watch_take), and waits on every channel again (watch_adopt):
  * each watcher's queue starts with IN_Q_OVERFLOW, its bell rung, and its
- * watches carry on. A channel whose bell the keeper doesn't hold (a bell
- * without RIGHT_DUPLICATE, which a keeper can't hold, or a death between
- * the give and its put) is closed then: its client sees the mount's
+ * watches carry on. A rename's reach check, held for its commit, is in the
+ * state too until it ran: a successor that answers the rename from the
+ * journal runs it (watch_moves_again). A channel whose bell the keeper
+ * doesn't hold (a bell without RIGHT_DUPLICATE, which a keeper can't hold,
+ * or a death between the give and its put) is closed then: its client sees the mount's
  * watches end (libc's IN_UNMOUNT and IN_IGNORED) and asks again. A fresh
  * start (the state given up) closes every channel the same way, and so
  * does the service's end (watch_stop), each bell rung first. The queued
@@ -486,7 +488,30 @@ void watch_moved(const struct ext_inode *in, const struct ext_inode *from,
         return;
     const struct held e = { .moved = true, .self = xf_key(in), .from = xf_key(from),
                             .dir = xf_key(to), .flags = is_dir(in) ? FSW_EV_DIR : 0 };
+    /* Kept in the state too, until the commit's ev_settle: a death between
+     * the journal's commit and it leaves the successor to run it (IR's 1). */
+    struct xf_watches *k = &kept->watch;
+    if (holding && k->nmoves < 2)
+        k->moves[k->nmoves++] = (struct xf_wmove){
+            .x = (uint32_t)e.self.ino, .x_gen = e.self.gen, .from = (uint32_t)e.from.ino,
+            .from_gen = e.from.gen, .to = (uint32_t)e.dir.ino, .to_gen = e.dir.gen,
+            .xdir = is_dir(in),
+        };
     put(&e);
+}
+
+void watch_moves_again(bool committed)
+{
+    struct xf_watches *k = &kept->watch;
+    unsigned n = k->nmoves < 2 ? k->nmoves : 2;
+    for (unsigned i = 0; committed && watching() && i < n; i++) {
+        const struct xf_wmove *m = &k->moves[i];
+        const struct fsw_key x = { .ino = m->x, .gen = m->x_gen };
+        const struct fsw_key from = { .ino = m->from, .gen = m->from_gen };
+        const struct fsw_key to = { .ino = m->to, .gen = m->to_gen };
+        moved(&x, m->xdir != 0, &from, &to);
+    }
+    k->nmoves = 0;
 }
 
 uint32_t ev_cookie(void)
@@ -511,6 +536,8 @@ void ev_begin(void)
 {
     holding = true;
     nheld = 0;
+    if (kept)
+        kept->watch.nmoves = 0;
 }
 
 void ev_settle(bool done)
@@ -519,6 +546,8 @@ void ev_settle(bool done)
     for (unsigned i = 0; done && i < nheld; i++)
         deliver(&held[i]);
     nheld = 0;
+    if (kept)
+        kept->watch.nmoves = 0;   /* run (or given up with the request) */
 }
 
 /* ---- the watcher channels ------------------------------------------------------ */

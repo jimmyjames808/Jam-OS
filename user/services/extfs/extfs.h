@@ -144,7 +144,7 @@ extern struct xf_vol vol;
 /* ---- the state (state.c) --------------------------------------------------------- */
 
 #define XF_STATE_KIND   0x73667865u   /* "exfs": svcstate's kind */
-#define XF_STATE_LAYOUT 5u            /* bump on any change to struct xf_state or the
+#define XF_STATE_LAYOUT 6u           /* bump on any change to struct xf_state or the
                                        * requests its slots replay */
 /* A slot's request area: the request (fs.rename's two paths), then from
  * XF_SLOT_DATA its data: the bounce buffer a write's bytes are copied
@@ -226,15 +226,26 @@ struct xf_wview {
     char     root[XF_ROOT_MAX];
 };
 
+/* A rename's reach check (watch.c's `moved`), held to its request's
+ * commit: inode x (a directory if xdir) moved from directory `from` into
+ * `to` (inode numbers and generations). */
+struct xf_wmove {
+    uint32_t x, x_gen, from, from_gen, to, to_gen;
+    uint32_t xdir;
+};
+
 /* File watching's part (watch.c, <fswatch.h>): the library's table (the
- * watcher channels' records and the watches), each channel's view, and
- * each watched file's directory (inode and generation; 0 for a
- * directory's watch), where the reach check (docs/INOTIFY-PLAN.md 2.6)
- * places it. */
+ * watcher channels' records and the watches), each channel's view, each
+ * watched file's directory (inode and generation; 0 for a directory's
+ * watch), where the reach check (docs/INOTIFY-PLAN.md 2.6) places it, and
+ * the running request's reach checks not yet run: a successor that finds
+ * the request in the journal runs them (watch_moves_again, IR's 1). */
 struct xf_watches {
     struct fsw_table table;
     struct xf_wview  views[FSW_CHANNELS];
     uint32_t         dir[FSW_WATCHES][2];
+    uint32_t         nmoves;
+    struct xf_wmove  moves[2];    /* a rename's one, or an exchange's two */
 };
 
 struct xf_state {
@@ -587,6 +598,11 @@ status_t watch_remake(uint32_t i, handle_t *out);
 void     watch_unmake(uint32_t i);
 /* The service stops for good: every watcher channel ended, its bell rung. */
 void     watch_stop(void);
+/* After the request in progress at a death was finished: if it was in the
+ * journal (answered from its slot, not run again), the reach checks it
+ * held for its commit run now, on the disk as it is; else they are
+ * dropped (it ran again and made its own). */
+void     watch_moves_again(bool committed);
 /* Is anything watched on the volume? (A change's one test.) */
 bool     watching(void);
 /* fs.watch through the view c: a watcher channel, its client end *out. */

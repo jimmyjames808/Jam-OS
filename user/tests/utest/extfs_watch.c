@@ -53,6 +53,8 @@
  *                       channel), a bell the keeper can't hold closing its
  *                       channel, a fresh start and the end closing every
  *                       channel with its bell rung
+ *   extfs_restart_reach (IR's 1) extfs ended between a rename's commit and
+ *                       its events: the successor runs its reach check
  *
  * Each disk is saved for Linux's e2fsck (tools/extfs-svc-test.sh). The
  * second process's mode is xwatch-<what>. */
@@ -1091,5 +1093,37 @@ bool t_extfs_restart_watch(void)
     unwatcher(&c);
     unwatcher(&o);
     CHECK(extfs_save(&xd, "restart-watch"));
+    return ramdisk_destroy(&xd);
+}
+
+/* IR's 1: extfs ended between a rename's commit in the journal and its
+ * events. The successor answers the rename from the journal, and must
+ * still run its reach check: the subview's watch on the directory moved
+ * above its root ends (after the overflow), and hears nothing from there. */
+bool t_extfs_restart_reach(void)
+{
+    static const char *const dies[] = { "die=journal:3" };
+    struct wat s;
+    handle_t sub;
+    CHECK(ramdisk_create(&xd, EXT_DISK_SECTORS));
+    CHECK(extfs_sup_start(&xd, dies, 1));
+    struct fatrun *f = extfs_sup_run();
+    CHECK_ST(t_mkdir(f, "/v"), OK);     /* journal 1 */
+    CHECK_ST(t_mkdir(f, "/v/a"), OK);   /* journal 2 */
+    CHECK_ST(fs_subview_until(f->fs, dl(), "/v", 2, 0, &sub), OK);
+    CHECK(watcher(sub, &s));
+    uint32_t idA = add(&s, "/a", ALL);
+    CHECK(idA);
+    CHECK_ST(t_rename(f, "/v/a", "/a2"), OK);   /* journal 3: ended */
+    CHECK_EQ(extfs_sup_ended(), 1u);
+    CHECK(rung(&s));
+    EXPECT(&s, "a rename's reach check, its instance dead before it",
+           { 0, IN(Q_OVERFLOW), "" }, { idA, IN(IGNORED), "" });
+    CHECK_ST(t_mkdir(f, "/a2/n"), OK);
+    NOTHING(&s, "the directory moved out, after the restart");
+    CHECK(extfs_sup_stop());
+    unwatcher(&s);
+    jam_handle_close(sub);
+    CHECK(extfs_save(&xd, "restart-reach"));
     return ramdisk_destroy(&xd);
 }
