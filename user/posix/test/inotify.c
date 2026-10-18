@@ -745,6 +745,103 @@ static void real_events(const char *m)
     printf("posixtest: inotify: %s: events from its service (%d records)\n", m, k);
 }
 
+static long long now_us(void)
+{
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return t.tv_sec * 1000000LL + t.tv_nsec / 1000;
+}
+
+/* n cycles of what Chromium's RacyRecursiveWatch makes 2,000 of: a
+ * directory made, a file written in it, the file and the directory
+ * removed. With fd >= 0 a watch is added on each new directory, as
+ * Chromium does when it reads the directory's IN_CREATE, and the records
+ * are read after each cycle: 7 (the parent's 2, the directory's 5).
+ * Returns the microseconds the cycles took. */
+static long long racy_cycles(const char *dir, int n, int fd)
+{
+    char sub[96], file[112];
+    int recs = 0;
+    long long t0 = now_us();
+    for (int i = 0; i < n; i++) {
+        snprintf(sub, sizeof(sub), "%s/s%d", dir, i);
+        snprintf(file, sizeof(file), "%s/f", sub);
+        CHECK(mkdir(sub, 0755) == 0);
+        CHECK(fd < 0 || inotify_add_watch(fd, sub, CR_MASK | IN_DELETE_SELF) > 0);
+        int f = open(file, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+        CHECK(f >= 0 && write(f, "content", 7) == 7 && close(f) == 0);
+        CHECK(unlink(file) == 0 && rmdir(sub) == 0);
+        recs += fd >= 0 ? drain(fd) : 0;
+    }
+    long long took = now_us() - t0;
+    CHECK(fd < 0 || recs == 7 * n);
+    return took;
+}
+
+/* A thread that makes a directory after a nap, and says when it was made. */
+struct mk {
+    char      path[96];
+    long long done;
+};
+
+static void *mk_main(void *arg)
+{
+    struct mk *k = arg;
+    nap_ms(30);
+    mkdir(k->path, 0755);
+    k->done = now_us();
+    return NULL;
+}
+
+/* The same cycles on mount m without a watch and with Chromium's, and how
+ * long a `poll` blocked in one thread takes to see a directory another
+ * thread made: what Chromium's RacyRecursiveWatch (100 rounds of 20 cycles,
+ * 208 to 259 s on /data) is made of. A watch must cost a cycle next to
+ * nothing (the cycle's own time is the file service's: a commit each
+ * request) and the wake must be prompt; the bounds are loose, the PC's load
+ * moves the times. */
+static void racy_cost(const char *m)
+{
+    enum { N = 10, WAKES = 5 };
+    char dir[64];
+    snprintf(dir, sizeof(dir), "%s/inotify-r", m);
+    rmdir(dir);
+    CHECK(mkdir(dir, 0755) == 0);
+    long long plain = racy_cycles(dir, N, -1);
+    int fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+    CHECK(fd >= 0 && inotify_add_watch(fd, dir, CR_MASK) > 0);
+    long long watched = racy_cycles(dir, N, fd);
+    close(fd);
+    fd = inotify_init1(IN_CLOEXEC);
+    CHECK(fd >= 0 && inotify_add_watch(fd, dir, CR_MASK) > 0);
+    long long sum = 0, worst = 0;
+    for (int i = 0; i < WAKES; i++) {
+        struct mk k = { .done = 0 };
+        snprintf(k.path, sizeof(k.path), "%s/w%d", dir, i);
+        pthread_t th;
+        CHECK(pthread_create(&th, NULL, mk_main, &k) == 0);
+        struct pollfd pf = { fd, POLLIN, 0 };
+        CHECK(poll(&pf, 1, 5000) == 1);
+        long long woke = now_us();
+        pthread_join(th, NULL);
+        char b[512];
+        CHECK(read(fd, b, sizeof(b)) > 0);
+        long long lag = woke - k.done;
+        sum += lag;
+        worst = lag > worst ? lag : worst;
+        CHECK(rmdir(k.path) == 0);
+        while (poll(&pf, 1, 20) == 1)
+            CHECK(read(fd, b, sizeof(b)) > 0);
+    }
+    close(fd);
+    CHECK(rmdir(dir) == 0);
+    CHECK(watched < 3 * plain + 50000);
+    CHECK(worst < 500000);
+    printf("posixtest: inotify: %s: %d make-write-remove cycles: %lld us each with no watch, %lld with "
+           "watches; a blocked poll woke %lld us after the mkdir returned (worst %lld)\n",
+           m, (int)N, plain / N, watched / N, sum / WAKES, worst);
+}
+
 /* /data and /tmp: events if their services keep watches, else EOPNOTSUPP;
  * a writable fat mount must say EOPNOTSUPP. */
 static void real_mounts(void)
@@ -763,8 +860,10 @@ static void real_mounts(void)
         else if (wd < 0 && errno == EOPNOTSUPP)
             printf("posixtest: inotify: %s (%#lx): no watches from its service yet\n", mounts[i],
                    (unsigned long)s.f_type);
-        else if (!(s.f_flags & ST_RDONLY) && wd > 0)
+        else if (!(s.f_flags & ST_RDONLY) && wd > 0) {
             real_events(mounts[i]);
+            racy_cost(mounts[i]);
+        }
         else
             CHECK(wd > 0);   /* read-only: quiet */
     }
