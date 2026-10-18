@@ -51,15 +51,24 @@ KTEST(wallclock_check_refuses)
     KT_EQ(wallclock_check(&c, 2000), OK);
 }
 
-/* The clock runs with the uptime (QEMU has an RTC, so there is a clock). */
+/* The clock runs with the uptime (QEMU has an RTC, so there is a clock).
+ * init sets the clock from the RTC early in a boot (the soak's run of
+ * this test can fall at that instant), and a set between the two reads
+ * moves it: then the pair is measured again (up to three times). */
 KTEST(wallclock_runs)
 {
     struct wall_clock a, b;
-    if (wallclock_get(&a) == ERR_NOT_FOUND)
-        return;   /* a machine without an RTC that nobody set */
-    thread_sleep_ms(20);
-    KT_EQ(wallclock_get(&b), OK);
-    int64_t clock = b.utc_ns - a.utc_ns, up = (int64_t)(b.uptime_ns - a.uptime_ns);
+    int64_t clock = 0, up = 0;
+    for (int tries = 0; tries < 3; tries++) {
+        if (wallclock_get(&a) == ERR_NOT_FOUND)
+            return;   /* a machine without an RTC that nobody set */
+        thread_sleep_ms(20);
+        KT_EQ(wallclock_get(&b), OK);
+        clock = b.utc_ns - a.utc_ns;
+        up = (int64_t)(b.uptime_ns - a.uptime_ns);
+        if (clock == up)
+            break;
+    }
     KT_EQ(clock, up);
     KT_ASSERT(up >= 20000000);
     KT_ASSERT(a.utc_ns > 946684800ll * 1000000000ll);    /* after 2000 */

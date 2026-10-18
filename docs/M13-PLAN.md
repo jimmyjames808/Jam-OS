@@ -3417,3 +3417,15 @@ Track X2 (tinyssh) as built, with the choices the plan left open.
     shows `etc`. Hiding `/data/etc/ssh` from every view but sshd's is a
     namespace change (R2's question). Done: R2 hid `etc/ssh`, and since
     the owner's answer (2026-10-14) no program's view has `etc` at all.
+- **Typed-ahead input (SF, 2026-10-18).** Input piped into `ssh -tt` fast
+  (a script of lines, or a paste) was cut after about 140 bytes: the
+  session shell kept 128 typed-ahead keys while a command ran and dropped
+  the rest (sh_io.c's `TYPEAHEAD`, now 8,192), and the connection console
+  dropped a key its focus's channel (1,024 messages) could not take. Now
+  the console waits (connin.c: the keys the focus refused are kept, the
+  rest of the master's message stays unread, tried again every 5 ms), so
+  the master backs up and sshd's write waits, and so does the client.
+  tools/sshcheck.py's `typed_ahead` pipes 80 lines (2 KB) in one write and
+  needs all of them run and the last, `exit 3`, to end the session. A
+  Ctrl+C typed behind such a backlog waits for the focus to take the keys
+  before it (a program that stops reading its keys with 1,024 unread).

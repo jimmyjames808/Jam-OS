@@ -464,6 +464,18 @@ def _lint_lists(r):
                                   not os.path.isfile(r.port_file(wants))):
             p.append("%s: program %s: its list %s is not in the port's directory" %
                      (r.path, path, wants))
+    # A list is taken only by a program the recipe names (cc_wrapper picks
+    # wants/<name> for 'program <path>' of that name, or the file a program
+    # line gives): a wants/<name> no program line reaches is never used, so
+    # that program would link with the default list without a word.
+    wdir = r.port_file("wants")
+    used = {w for _, w in r.programs() if w is not None}
+    if os.path.isdir(wdir):
+        for name in sorted(os.listdir(wdir)):
+            if os.path.isfile(os.path.join(wdir, name)) and "wants/" + name not in used:
+                p.append("%s: wants/%s has no 'program' line (a list is used only for a program the"
+                         " recipe names: 'program <path>' of that name, or 'program <path>"
+                         " wants/%s')" % (r.path, name, name))
     for key in ("library", "files"):
         for w in r.lines(key):
             for g in w:

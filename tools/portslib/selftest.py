@@ -145,6 +145,18 @@ def test_lint(tmp, real_ports):
     problems = lint_of(root, "liba", session, {"wants/a": "mount /data r\n"})
     expect(any("no 'posix'" in p for p in problems), "a list without posix taken")
     os.remove(os.path.join(root, "liba", "wants", "a"))
+    # A wants/<name> no program line reaches is never used (cc_wrapper takes
+    # a list only for a program the recipe names): refused; named by a
+    # program of that name, or by another program line's second word, taken.
+    orphan = {"wants/orphan": "posix\nmount /data r\n"}
+    problems = lint_of(root, "liba", good, orphan)
+    expect(any("wants/orphan" in p and "no 'program' line" in p for p in problems),
+           "a wants file no program line names taken: %s" % problems)
+    problems = lint_of(root, "liba", good + "program bin/orphan\n", orphan)
+    expect(not problems, "a wants file named by its program refused: %s" % problems)
+    problems = lint_of(root, "liba", good + "program bin/other wants/orphan\n", orphan)
+    expect(not problems, "a wants file named by a program line's list refused: %s" % problems)
+    os.remove(os.path.join(root, "liba", "wants", "orphan"))
     for text, what in ((session + "multicall bin/a x x\n", "a multicall name twice"),
                        (session + "multicall bin/a a\n", "a multicall name that is the program")):
         problems = lint_of(root, "liba", text)

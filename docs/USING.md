@@ -130,7 +130,9 @@ build)" boots the one before it.
   Its prompt says where it is: `jam:/>` at the start, `jam:/data/music>`
   after a `cd`. `help` lists the everyday commands, `help dev` the
   developer ones (tests, hardware, the kernel), `help <command>` any one.
-- A command line holds up to 240 characters in a terminal of any width.
+- A command line holds up to 240 characters in a terminal of any width;
+  a longer one is refused at Enter ("line too long: N characters, at most
+  240") and nothing runs.
   A line longer than the terminal scrolls sideways on its row to keep the
   cursor in view, with `<` or `>` where text is cut off; Enter shows it
   whole. The arrows, Home and End, Backspace and Delete, Ctrl+A/E/U, Tab

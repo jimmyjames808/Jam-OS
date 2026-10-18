@@ -70,6 +70,30 @@ static uint8_t disk_bus(const struct binding *b)
     return b->kind == BIND_USB ? DISKS_BUS_USB : DISKS_BUS_NVME;
 }
 
+/* A PCI function's place in the bus order: the low bits of its disk id. */
+static uint32_t pci_order(const struct binding *b)
+{
+    return (uint32_t)b->info.bus << 8 | (uint32_t)b->info.dev << 3 | b->info.fn;
+}
+
+/* The disk's number on its bus, for volumes: an NVMe drive's place among
+ * the PCI disks with a driver, in bus, device, function order, so the
+ * name of a drive doesn't depend on which driver answers first (volumes'
+ * `nvme0` is the same drive on every boot); a stick has none. */
+static uint8_t disk_unit(const struct binding *b)
+{
+    if (b->kind == BIND_USB)
+        return DISKS_UNIT_NONE;
+    unsigned n = 0;
+    for (unsigned i = 0; i < ndevs; i++) {
+        const struct binding *o = &devs[i];
+        if (o->kind == BIND_PCI && o->path && disks_pci_driver(o->path) &&
+            pci_order(o) < pci_order(b))
+            n++;
+    }
+    return n < DISKS_UNIT_NONE ? (uint8_t)n : DISKS_UNIT_NONE;
+}
+
 /* The next svc.connect txid. */
 static uint32_t next_txid(void)
 {
@@ -170,7 +194,7 @@ void disks_events(struct binding *b)
         if (ours && n == sizeof(*r) && r->status == OK && nh == 1) {
             b->disk_txid = 0;
             if (vol)
-                told(disks_attach(vol, disk_id(b), disk_bus(b), hs[0]));   /* hs[0] goes */
+                told(disks_attach(vol, disk_id(b), disk_bus(b), disk_unit(b), hs[0]));   /* hs[0] goes */
             else
                 jam_handle_close(hs[0]);
             continue;

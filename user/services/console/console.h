@@ -263,6 +263,9 @@ int  focus_top_tty(void);
  * Ctrl+C to the shell's keys. Typed before anyone listened, it waits for
  * the first. */
 void focus_key(const struct input_key_event *ev);
+/* focus_key, but false (the key NOT taken, to be tried again) when the
+ * focus's key channel is full: the client isn't reading yet. */
+bool focus_key_try(const struct input_key_event *ev);
 /* ev to the newest key channel below focus `below` that a SHELL or ADMIN
  * client opened: false if there is none (or it can't take it). */
 bool focus_to_shell(const struct input_key_event *ev, unsigned below);

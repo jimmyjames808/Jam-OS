@@ -26,18 +26,29 @@ struct disk *disk_named(uint32_t id)
     return NULL;
 }
 
-void disk_number(struct disk *d)
+/* Does another real disk of d's bus have the number n? */
+static bool number_used(const struct disk *d, unsigned n)
 {
-    for (unsigned n = 0;; n++) {
-        bool used = false;
-        for (unsigned i = 0; i < MAX_DISKS && !used; i++)
-            used = &disks[i] != d && disks[i].state != DISK_FREE && !disks[i].test &&
-                   disks[i].bus == d->bus && disks[i].number == n;
-        if (!used) {
+    for (unsigned i = 0; i < MAX_DISKS; i++)
+        if (&disks[i] != d && disks[i].state != DISK_FREE && !disks[i].test &&
+            disks[i].bus == d->bus && disks[i].number == n)
+            return true;
+    return false;
+}
+
+void disk_number(struct disk *d, uint8_t unit)
+{
+    /* The bus fixed it (an NVMe drive's place in the PCI order): the same
+     * name on every boot, whichever driver answered first. */
+    if (unit != DISKS_UNIT_NONE && !number_used(d, unit)) {
+        d->number = unit;
+        return;
+    }
+    for (unsigned n = 0;; n++)
+        if (!number_used(d, n)) {
             d->number = (uint8_t)n;
             return;
         }
-    }
 }
 
 const char *disk_label(const struct disk *d)

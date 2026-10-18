@@ -11,7 +11,8 @@ The first boot: a command (its output and its exit status, `exit 7` from
 the shell's own command too); an interactive session on a pty (the prompt,
 TERM as the client sent it, the window's size and a window change as a
 POSIX program on the terminal sees them, Ctrl+C on `sleep 100`, `exit 7`
-ending it with 7); the host key the client saw against the fingerprint in
+ending it with 7); 80 lines (2 KB) typed ahead in one write into `ssh -tt`,
+every one run and the last, `exit 3`, ending it with 3; the host key the client saw against the fingerprint in
 the guest's log; a key not in authorized_keys, a password attempt (never
 asked: the askpass helper must never run) and another user name, each
 refused; 8 sessions at once and a 9th connection refused; 4 sessions'
@@ -223,6 +224,36 @@ def interactive(s):
     os.close(t.master)
 
 
+def typed_ahead(s):
+    """2 KB of typed lines piped into ssh -tt at once: every one runs (the
+    shell kept 128 typed-ahead keys and dropped the rest, so a script was
+    cut after ~140 bytes; the console dropped the keys its key channel
+    couldn't take). The last line is `exit 3`, so the session ending with
+    3 shows the whole input got to the shell."""
+    n = 80
+    lines = ["echo ahead-%03d-%s" % (i, "x" * 9) for i in range(n)]
+    text = "\n".join(lines) + "\nexit 3\n"
+    check(len(text) > 2000, "the typed-ahead input is over 2 KB (%d bytes)" % len(text))
+    p = subprocess.Popen(s.argv(extra=("-tt",)), stdin=subprocess.PIPE,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        out, _ = p.communicate(text.encode(), timeout=120)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        out, _ = p.communicate()
+    with open(os.path.join(s.a.out, "typed-ahead.out"), "wb") as f:
+        f.write(out)   # what the terminal showed, for a failure to be read
+    shown = plain(out).split("\n")
+    # `echo ahead-NNN-xxxxxxxxx` shows its own line (the typed text, after
+    # the prompt) and then its output alone on a line.
+    ran = [i for i in range(n) if ("ahead-%03d-%s" % (i, "x" * 9)) in shown]
+    missing = [i for i in range(n) if i not in ran]
+    check(not missing, "typed-ahead lines: all %d ran (missing %s)" %
+          (n, ",".join(map(str, missing[:12])) + ("..." if len(missing) > 12 else "")))
+    check(p.returncode == 3, "the last typed-ahead line, `exit 3`, ran: the session ended with %s" %
+          p.returncode)
+
+
 def refusals(s, a):
     rc, _, err = s.run("echo no", key=a.wrong)
     check(rc == 255 and "Permission denied (publickey)" in err,
@@ -376,6 +407,7 @@ def main():
         commands(s)
         fingerprint(a)
         interactive(s)
+        typed_ahead(s)
         refusals(s, a)
         at_once(s, a)
         killed_mid_output(s, a)

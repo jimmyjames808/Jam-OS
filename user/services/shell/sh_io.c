@@ -20,7 +20,13 @@
  * while a program runs; sh_program.c turns them into signals. */
 #include "sh_core.h"
 
-#define TYPEAHEAD 128   /* keys kept for the next line; more are dropped */
+/* Keys kept for the next line while a command runs (8 bytes each: 64 KiB).
+ * The ring is read from the console's key channel as fast as the keys come
+ * (Ctrl+C must be seen), so a line typed ahead has to fit in it: with 128
+ * a script piped into `ssh -tt` lost everything after its first ~140
+ * bytes. More than this are dropped (a 10 KB paste), as a tty's input
+ * buffer drops them. */
+#define TYPEAHEAD 8192
 
 static struct sh_stdio io;   /* out NULL: the screen */
 static bool interrupted;

@@ -461,6 +461,11 @@ static int launch(const struct jam_spawn_req *r, bool exec, struct spawnfd *t,
     ho->cwd = t->cwd;
     if (p->sealed)
         ho->exe = p->name;   /* init passes it on as written; spawn names the others */
+    else
+        ho->secure = lx_handover_secure();   /* a raised program's child is AT_SECURE too, as
+                                              * Linux's fork and exec keep it while euid != uid
+                                              * (the exec in place does the same: exec_handover).
+                                              * A sealed one's is init's to say (its grants). */
     if (p->sealed && r->grants) {   /* its authority is its approval alone: none of ours */
         posixfds_discard(ho);
         return EPERM;

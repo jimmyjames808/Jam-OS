@@ -229,6 +229,9 @@ struct edit {
     unsigned first;                /* the first character shown (> 0: scrolled, '<' shown) */
     int      back;                 /* -1 = the line typed, else the history line shown */
     char     saved[LINE_MAX + 1];  /* the line typed while browsing the history: the prefix */
+    unsigned over;                 /* characters typed or pasted that the full line couldn't take:
+                                    * the line is refused at Enter, not run cut (until it is
+                                    * emptied or replaced) */
 };
 
 /* What the row shows of a line from its character `first` on. */
@@ -324,14 +327,17 @@ static bool browse(struct edit *e, bool up)
     size_t n = strlen(src);
     e->len = e->pos = n < LINE_MAX ? (unsigned)n : LINE_MAX;
     memcpy(e->line, src, e->len);
+    e->over = 0;   /* the whole line is another one */
     return true;
 }
 
 /* A printable character at the cursor; true if the line needs a redraw. */
 static bool insert(struct edit *e, char c)
 {
-    if (e->len >= LINE_MAX)
+    if (e->len >= LINE_MAX) {
+        e->over++;
         return false;
+    }
     memmove(e->line + e->pos + 1, e->line + e->pos, e->len - e->pos);
     e->line[e->pos++] = c;
     e->len++;
@@ -465,8 +471,12 @@ static unsigned marker_keys(struct input_key_event *k, uint64_t gap, enum sh_pas
 static void paste_insert(struct edit *e, const struct input_key_event *k)
 {
     char c = sh_paste_byte(k);
-    if (!c || e->len >= LINE_MAX)
-        return;   /* dropped: not a character the line holds, or the line is full */
+    if (!c)
+        return;   /* not a character the line holds */
+    if (e->len >= LINE_MAX) {
+        e->over++;   /* the line is full */
+        return;
+    }
     memmove(e->line + e->pos + 1, e->line + e->pos, e->len - e->pos);
     e->line[e->pos++] = c;
     e->len++;
@@ -505,7 +515,15 @@ static bool paste_or_keys(struct edit *e, const struct input_key_event *esc)
     return false;
 }
 
-/* Read one line into buf (NUL-terminated). */
+/* A line over LINE_MAX is refused, not run cut to its first LINE_MAX
+ * characters: said (n is how long it was), and nothing runs. */
+static void too_long(size_t n)
+{
+    sh_tty("line too long: %zu characters, at most %d\n", n, LINE_MAX);
+}
+
+/* Read one line into buf (NUL-terminated). A line too long to hold
+ * comes back empty, after the message. */
 static void read_line(char *buf)
 {
     static bool asked;
@@ -541,10 +559,17 @@ static void read_line(char *buf)
             e.line[e.len] = '\0';
             memcpy(buf, e.line, e.len + 1);
             end_line(&e, "");
+            if (e.over) {
+                too_long(e.len + e.over);
+                buf[0] = '\0';
+            }
             sh_flush();
             return;
         }
-        if (edit_key(&e, &ev))
+        bool redraw_it = edit_key(&e, &ev);
+        if (!e.len)
+            e.over = 0;   /* emptied: a new line */
+        if (redraw_it)
             redraw(&e);
         sh_flush();
     }
@@ -573,6 +598,13 @@ static void boot_soak(const char *minutes)
 static void run_first(const char *line)
 {
     char copy[LINE_MAX + 1];
+    if (strlen(line) > LINE_MAX) {
+        set_prompt();
+        echo("%s%s\n", prompt, line);
+        too_long(strlen(line));
+        sh_flush();
+        return;
+    }
     snprintf(copy, sizeof(copy), "%s", line);
     set_prompt();
     echo("%s%s\n", prompt, copy);
@@ -645,6 +677,11 @@ bool sh_one_line(void)
 _Noreturn static void run_command(const char *line)
 {
     char copy[LINE_MAX + 1];
+    if (strlen(line) > LINE_MAX) {
+        too_long(strlen(line));   /* nothing runs; the status is a usage error's */
+        sh_flush();
+        jam_process_exit(2);
+    }
     snprintf(copy, sizeof(copy), "%s", line);
     sh_line(copy);
     sh_flush();

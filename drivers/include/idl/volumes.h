@@ -2111,6 +2111,8 @@ static inline status_t volesp_serve(handle_t ch, const struct volesp_ops *ops, v
 /* Buses (attach's `bus`). */
 #define DISKS_BUS_USB 1u
 #define DISKS_BUS_NVME 2u
+/* attach's `unit` when the bus doesn't fix the disk's number. */
+#define DISKS_UNIT_NONE 255u
 
 /* Messages (packed: no padding bytes ever cross the channel). */
 struct disks_attach_msg {   /* an event: txid 0 */
@@ -2118,6 +2120,7 @@ struct disks_attach_msg {   /* an event: txid 0 */
     uint32_t ordinal;
     uint32_t id;
     uint8_t bus;
+    uint8_t unit;
 } __attribute__((packed));
 struct disks_gone_msg {   /* an event: txid 0 */
     uint32_t txid;
@@ -2125,7 +2128,7 @@ struct disks_gone_msg {   /* an event: txid 0 */
     uint32_t id;
 } __attribute__((packed));
 
-#define DISKS_REQ_MAX 13u   /* bytes: the biggest message to the server */
+#define DISKS_REQ_MAX 14u   /* bytes: the biggest message to the server */
 #define DISKS_REP_MAX 8u   /* bytes: the biggest message to the client */
 #define DISKS_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
 #define DISKS_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
@@ -2144,14 +2147,19 @@ struct disks_gone_msg {   /* an event: txid 0 */
  * bus picks ids in its own range, never with the top bit, which test
  * disks use). A driver started again after a crash is announced again
  * with the same id. ERR_PEER_CLOSED on `storage` alone means the driver
- * ended, not that the device went. */
+ * ended, not that the device went. `unit` is the number the disk is called
+ * by on its bus (nvme<unit>) when the bus fixes it: an NVMe drive's place,
+ * from 0, among the machine's NVMe functions in PCI order (bus, device,
+ * function), so a drive keeps its name on every boot whichever driver
+ * answers first. UNIT_NONE: volumes takes the lowest free number (a
+ * stick's, in the order sticks come). */
 /* The event disks.attach, to the server: written on ch, never answered.
  * ERR_SHOULD_WAIT: the peer's queue is full (its flow control).
  * The handles are gone in every case: sent, closed, or lost with a
  * write that failed (the caller never closes them after this). */
-static inline status_t disks_attach(handle_t ch, uint32_t id, uint8_t bus, handle_t storage)
+static inline status_t disks_attach(handle_t ch, uint32_t id, uint8_t bus, uint8_t unit, handle_t storage)
 {
-    _Alignas(8) uint8_t idl_b0[13];
+    _Alignas(8) uint8_t idl_b0[14];
     struct disks_attach_msg *idl_q = (struct disks_attach_msg *)idl_b0;
     uint32_t idl_qn = sizeof(*idl_q);
     status_t idl_st = OK;
@@ -2159,6 +2167,7 @@ static inline status_t disks_attach(handle_t ch, uint32_t id, uint8_t bus, handl
     idl_q->ordinal = DISKS_ATTACH;
     idl_q->id = id;
     idl_q->bus = bus;
+    idl_q->unit = unit;
     handle_t idl_hs[1];
     uint32_t idl_hn = 0;
     if (idl_st == OK) {
@@ -2198,7 +2207,7 @@ static inline status_t disks_gone(handle_t ch, uint32_t id)
  * handler returns nothing (nothing is answered; a NULL one drops it),
  * owns the handles it is given, and its arrays point into the message. */
 struct disks_ops {
-    void (*attach)(void *ctx, uint32_t id, uint8_t bus, handle_t storage);
+    void (*attach)(void *ctx, uint32_t id, uint8_t bus, uint8_t unit, handle_t storage);
     void (*gone)(void *ctx, uint32_t id);
 };
 
@@ -2225,7 +2234,7 @@ static inline status_t disks_event_in(const struct disks_ops *idl_tab, void *ctx
             idl_close_all(idl_hs, idl_nh);
             return idl_st;
         }
-        idl_tab->attach(ctx, idl_e->id, idl_e->bus, idl_hs[0]);
+        idl_tab->attach(ctx, idl_e->id, idl_e->bus, idl_e->unit, idl_hs[0]);
         return OK;
     }
     case DISKS_GONE: {
