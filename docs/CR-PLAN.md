@@ -2178,6 +2178,51 @@ threads wait, for `headless_shell`'s start-up hang and every later one.
   other way through `InitLibcLocaltimeFunctionsImpl`'s fallback still logs
   inside the once.
 
+#### HS notes (2026-10-18)
+
+Track HS (branch `hs-headless`): `headless_shell --dump-dom` of a `data:`
+page, one stop at a time, each fixed in the layer or a service.
+
+- **Stop 1: socketpair half-close.** After the dlsym fix Chromium got
+  through ICU, `ContentMainRunner` and logging, then
+  content/browser/sandbox_host_linux.cc:41 `PCHECK(0 == shutdown(child_socket_,
+  SHUT_RD))` failed with EOPNOTSUPP and aborted. `SandboxHostLinux::Init`
+  makes a `SOCK_SEQPACKET` pair, shuts the child's end for reading and the
+  browser's for writing. Built in sockpair.c: `SHUT_WR` ends the
+  description's writes (EPIPE) and queues an **end part** (an `sp_hdr` of
+  magic `SP_END` and nothing else, with an event as its one handle, so it
+  is never taken for plain bytes): the peer reads what came before it, then
+  the end for good. `SHUT_RD` reads what was queued, then the end instead
+  of a wait. Sleepers in a read (`SHUT_RD`) or a write (`SHUT_WR`) are
+  woken as `SHUT_RDWR`'s are; poll says readable (and writable after
+  `SHUT_WR`); both halves are a `SHUT_RDWR`. **Gaps:** the peer of a
+  `SHUT_RD` end can still write to it (Linux: EPIPE), and the end reads
+  those bytes: telling the peer needs a signal channels don't have (a
+  kernel change; nothing Chromium does needs it). An end part that finds the
+  channel full is owed and goes with the end's next read or send (else the
+  peer sees the end at the close). A child given the end starts with
+  neither half shut. posixtest scm: `check_half` and scmcred's wakes.
+- **Stop 2: V8's code range.** Next, `V8 process OOM (Failed to reserve
+  virtual memory for CodeRange)` and the crash's breakpoint: V8 with its JIT
+  reserves code memory, which needs `MAP_JIT` and its patch (section 12,
+  CR-e). Not a layer stop: the plan's mode until CR-e is `--jitless`, so
+  the run says `--js-flags=--jitless` (V8 then reserves no code range).
+- **Stop 3: nothing printed, exit 0.** `--dump-dom` runs its commands in a
+  page (`chrome://headless/headless_command.html` and its script) served from
+  `headless_command_resources.pak`, which `EnsureHeadlessCommandResources`
+  loads from beside the program; the port staged only
+  `headless_lib_data.pak` and `headless_lib_strings.pak`, so the page was
+  empty, `executeCommands` threw, and the handler printed nothing and exited
+  0. The port's recipe and install now ship the pak too.
+- **It prints the page.** `run /data/cr/out/jamos/headless_shell
+  --no-sandbox --single-process --no-zygote --headless --disable-gpu
+  --js-flags=--jitless --dump-dom data:text/html,Hello%20from%20Jam%20OS`
+  prints `<html><head></head><body>Hello from Jam OS</body></html>` and
+  exits 0 after 1.5 s (QEMU on the PC, 4 GiB, the program on an ext
+  `/data`). Logged on the way, none fatal: `landlock_create_ruleset`
+  ENOSYS, fontconfig's missing default config, `NETLINK` sockets
+  unsupported (`address_tracker_linux`). CB3's screenshots are next.
+
 #### IC (2026-10-18)
 
 Track IC (branch `ic-inotify-base`, [INOTIFY-PLAN](INOTIFY-PLAN.md#ic-notes)):
@@ -2525,8 +2570,8 @@ translation tables are written in a file of their own for this):
 - **`shutdown(SHUT_RDWR)`** closes the description's channel end (every
   descriptor sharing the description sees it closed, as Linux shuts a
   socket for every descriptor of it); the peer reads end of file, its
-  writes get EPIPE. `SHUT_RD` and `SHUT_WR` alone stay EOPNOTSUPP
-  (half-close needs a channel feature nobody has asked for).
+  writes get EPIPE. `SHUT_RD` and `SHUT_WR` alone were EOPNOTSUPP here;
+  HS built them ("HS notes").
 - `MSG_NOSIGNAL`: no SIGPIPE (already the default without signals asked).
 - **The Wayland socket** (GS1) keeps its own narrow list on the shared
   tables; one translation, two users.

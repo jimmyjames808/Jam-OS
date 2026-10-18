@@ -19,8 +19,8 @@
  *     says it is writable at once;
  *   - socketpair ends through the socket calls: send and recv (and
  *     sendmsg/recvmsg with two pieces), MSG_DONTWAIT's EAGAIN, MSG_WAITALL
- *     across a writer's pieces, MSG_PEEK, the names (AF_UNIX)
- *     and options;
+ *     across a writer's pieces, MSG_PEEK, SHUT_WR (the peer reads the
+ *     end), the names (AF_UNIX) and options;
  *   - names without the resolver: getaddrinfo of a numeric address and of
  *     "localhost" (libc's /etc/hosts), inet_pton and inet_ntop;
  *   - the raw DNS calls (res_query, and getnameinfo's reverse lookup)
@@ -216,8 +216,7 @@ static void pair(void)
     CHECK(pthread_create(&t, NULL, pieces, &sv[1]) == 0);
     CHECK(recv(sv[0], b, 20, MSG_WAITALL) == 20 && !memcmp(b + 15, "abcde", 5));
     CHECK(pthread_join(t, &res) == 0 && res == NULL);
-    errno = 0;
-    CHECK(shutdown(sv[0], SHUT_WR) == -1 && errno == EOPNOTSUPP);
+    CHECK(shutdown(sv[0], SHUT_WR) == 0 && recv(sv[1], b, sizeof(b), 0) == 0);
     pair_names(sv[0]);
     CHECK(close(sv[0]) == 0 && close(sv[1]) == 0);
 }

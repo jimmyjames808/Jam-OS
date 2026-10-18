@@ -2,7 +2,7 @@
  * SOCK_SEQPACKET pairs on a channel (pipe.c makes them; pipe.h has the
  * description's state), carrying descriptors (SCM_RIGHTS) as Mojo's
  * channels need: sendmsg and recvmsg with MSG_DONTWAIT, MSG_PEEK,
- * MSG_WAITALL, MSG_CTRUNC, MSG_CMSG_CLOEXEC, and shutdown(SHUT_RDWR).
+ * MSG_WAITALL, MSG_CTRUNC, MSG_CMSG_CLOEXEC, and shutdown.
  *
  * **Messages.** A message with no handles is plain bytes, as a pipe's:
  * a program that sends no descriptors sends what it always did. A send
@@ -67,8 +67,25 @@
  * a write of the description is listed while it sleeps (sp_sleep) and
  * interrupted (thread_interrupt), and then reads the end or gets EPIPE;
  * one in poll, select or epoll_wait is woken by ready_wake_all and looks
- * again. SHUT_RD and SHUT_WR alone are EOPNOTSUPP: a channel has no
- * half-close.
+ * again. A SHUT_RD and a SHUT_WR, in either order, are a SHUT_RDWR.
+ *
+ * **Half-close** (pipe.h's half): SHUT_WR ends the description's writes
+ * (EPIPE, so SIGPIPE unless MSG_NOSIGNAL) and queues the **end part**, a
+ * header of SP_END and nothing else, with an event for its handle as a
+ * marker's (a message with handles is always a part): the peer reads what
+ * came before it, then the end for good, and poll says readable. The part
+ * needs room: on a full channel it goes with the end's next read or send
+ * (else the peer reads the end when the end closes). SHUT_RD ends the
+ * description's reads once nothing is queued: what came before still
+ * reads, as Linux's, then a read returns the end instead of waiting, and
+ * poll says readable. Its peer half is not built: Linux's peer gets EPIPE
+ * on its writes after a SHUT_RD; here they are queued, and this end reads
+ * them (telling the peer would take a signal the kernel's channels don't
+ * have). Threads asleep in a read (SHUT_RD) or a write (SHUT_WR) of the
+ * description are woken as SHUT_RDWR's are. A child given the end
+ * (posix_spawn, SCM_RIGHTS) starts with neither half shut, and reads on
+ * past a peer's end part this end had read; a forked child's copy keeps
+ * all of it.
  *
  * **SO_PASSCRED**: the kernel stamps every message with its writer's pid
  * (channel_read's CHANNEL_READ_PID), so each recvmsg that takes a
@@ -102,6 +119,7 @@
 #include "threads.h"
 
 #define SP_MAGIC     0x4d43534au     /* "JSCM": a part of a send with descriptors */
+#define SP_END       0x4543534au     /* "JSCE": the end part (the peer's SHUT_WR) */
 #define SP_HDR       24u             /* struct sp_hdr's bytes */
 #define SP_REC_MAX   (32u * 1024)    /* records' bytes in one part; the bytes have the rest */
 #define SP_PARTS_MAX FDPASS_MAX      /* each part has a descriptor at least */
@@ -121,6 +139,17 @@ struct sp_hdr {
     uint32_t reserved;   /* 0 */
 };
 _Static_assert(sizeof(struct sp_hdr) == SP_HDR, "sp_hdr has no padding");
+
+/* The end part: this header alone, with one handle (an event). */
+static const struct sp_hdr end_hdr = { .magic = SP_END };
+
+/* pipe.h's half: what a half-close did to the end. */
+enum {
+    HALF_RD   = 1u << 0,   /* shutdown(SHUT_RD) here */
+    HALF_WR   = 1u << 1,   /* shutdown(SHUT_WR) here */
+    HALF_END  = 1u << 2,   /* the peer's end part was read: reads end */
+    HALF_OWED = 1u << 3,   /* SHUT_WR's end part not sent yet (the channel was full) */
+};
 
 /* What crosses a socketpair: every kind the hand-over passes but the
  * ones fdpass.h names, a memfd with all its description's rights. */
@@ -154,6 +183,22 @@ static bool is_shut(const struct pipe_end *p)
     return __atomic_load_n(&p->shut, __ATOMIC_ACQUIRE);
 }
 
+static unsigned halves(const struct pipe_end *p)
+{
+    return __atomic_load_n(&p->half, __ATOMIC_ACQUIRE);
+}
+
+/* Reads end once nothing is left over (SHUT_RD: nothing queued either). */
+static bool reads_end(const struct pipe_end *p)
+{
+    return is_shut(p) || (halves(p) & (HALF_RD | HALF_END));
+}
+
+static bool writes_end(const struct pipe_end *p)
+{
+    return is_shut(p) || (halves(p) & HALF_WR);
+}
+
 static bool is_kept(const struct pipe_end *p)
 {
     return __atomic_load_n(&p->kept, __ATOMIC_RELAXED);
@@ -182,6 +227,7 @@ static void close_all(const handle_t *hs, uint32_t n)
 struct sp_sleeper {
     struct sp_sleeper *next;
     uint32_t           tid;
+    signals_t          sig;      /* SIG_READABLE: a read; SIG_WRITABLE: a write */
     bool               kicked;   /* a shutdown interrupted it */
 };
 
@@ -193,24 +239,26 @@ static status_t interrupt_op(handle_t thread, void *arg)
 
 /* A shutdown's interrupt that came after the sleeper's wait had ended
  * stays latched for its next wait (the kernel's rule): take it now with a
- * short wait on the shut end's channel, which nothing ever makes
- * readable, so it ends no wait of the program's. */
+ * short wait for SIG_SIGNALED on the end's channel, which a channel never
+ * asserts, so it ends no wait of the program's. */
 static void interrupt_eat(const struct pipe_end *p)
 {
     signals_t seen;
-    (void)jam_object_wait_one(pipe_ch(p), SIG_READABLE, now() + 10 * NS_PER_MS, &seen);
+    (void)jam_object_wait_one(pipe_ch(p), SIG_SIGNALED, now() + 10 * NS_PER_MS, &seen);
 }
 
 /* Wait for sig on d's end, as pipe_wait, listed so that a shutdown by
- * another thread wakes the wait (the channel it waits on is then closed,
- * and nothing else would): 0, or -errno (-EINTR: a signal, or the
- * shutdown; is_shut tells which). A shut end isn't waited on: 0. */
+ * another thread wakes the wait (SHUT_RDWR closes the channel it waits on,
+ * and nothing else would; a half-close changes nothing the channel shows):
+ * 0, or -errno (-EINTR: a signal, or the shutdown; reads_end or writes_end
+ * tells which). An end whose reads (sig SIG_READABLE) or writes end isn't
+ * waited on: 0. */
 static long sp_sleep(struct fd_desc *d, signals_t sig)
 {
     struct pipe_end *p = pipe_end_of(d);
-    struct sp_sleeper me = { .tid = (uint32_t)lx_gettid(0, 0, 0, 0, 0, 0) };
+    struct sp_sleeper me = { .tid = (uint32_t)lx_gettid(0, 0, 0, 0, 0, 0), .sig = sig };
     lock_take(&d->lock);
-    bool shut = is_shut(p);
+    bool shut = sig == SIG_READABLE ? reads_end(p) : writes_end(p);
     handle_t ch = pipe_ch(p);
     if (!shut && me.tid) {   /* a thread whose id isn't known sleeps as before */
         me.next = p->sleepers;
@@ -236,13 +284,29 @@ static long sp_sleep(struct fd_desc *d, signals_t sig)
     return r;
 }
 
-/* The sleepers' waits are on the channel end shutdown just closed:
- * interrupt each (sp_sleep). The description's lock (thread_apply's lock
- * is a leaf under it). */
-static void sleepers_wake_locked(struct pipe_end *p)
+/* The sleepers in sig's waits (0: all), which a shutdown just ended:
+ * interrupt each (sp_sleep), once. The description's lock (thread_apply's
+ * lock is a leaf under it). */
+static void sleepers_wake_locked(struct pipe_end *p, signals_t sig)
 {
     for (struct sp_sleeper *s = p->sleepers; s; s = s->next)
-        s->kicked = thread_apply(s->tid, interrupt_op, NULL) == 0;
+        if ((!sig || s->sig == sig) && !s->kicked)
+            s->kicked = thread_apply(s->tid, interrupt_op, NULL) == 0;
+}
+
+/* SHUT_WR's end part, if still owed: a full channel keeps it owed for the
+ * end's next read or send. No lock: the owed bit is taken atomically. */
+static void end_send(struct pipe_end *p)
+{
+    if (!(halves(p) & HALF_OWED) || is_shut(p) ||
+        !(__atomic_fetch_and(&p->half, (uint8_t)~HALF_OWED, __ATOMIC_ACQ_REL) & HALF_OWED))
+        return;
+    handle_t ev;
+    status_t st = jam_event_create(&ev);
+    if (st == OK)   /* ev goes whatever the status */
+        st = jam_channel_write(pipe_ch(p), &end_hdr, SP_HDR, &ev, 1);
+    if (st != OK && st != ERR_PEER_CLOSED && !is_shut(p))
+        __atomic_fetch_or(&p->half, (uint8_t)HALF_OWED, __ATOMIC_ACQ_REL);
 }
 
 static bool is_passcred(const struct pipe_end *p)
@@ -315,16 +379,20 @@ static bool records_take(struct sp_fds *f, const uint8_t *r, uint32_t len, uint1
 }
 
 /* What a message with handles was. */
-enum part { PART_RAW, PART_MORE, PART_LAST, PART_DROP };
+enum part { PART_RAW, PART_MORE, PART_LAST, PART_DROP, PART_END };
 
 /* p->buf holds a message of got bytes that came with nh handles hs: a
  * part kept (PART_MORE), a send's last (PART_LAST: its bytes from *skip;
  * its descriptors ready, unless they were lost), one dropped
- * (PART_DROP), or no part at all (PART_RAW: plain bytes). The handles
- * are kept or closed. */
+ * (PART_DROP), the peer's end part (PART_END), or no part at all
+ * (PART_RAW: plain bytes). The handles are kept or closed. */
 static enum part take_part(struct pipe_end *p, uint32_t got, handle_t *hs, uint32_t nh,
                            uint32_t *skip)
 {
+    if (got == SP_HDR && nh == 1 && !memcmp(p->buf, &end_hdr, SP_HDR)) {
+        close_all(hs, nh);
+        return PART_END;
+    }
     struct sp_hdr h;
     if (got >= SP_HDR)
         memcpy(&h, p->buf, SP_HDR);
@@ -368,10 +436,12 @@ static enum part take_part(struct pipe_end *p, uint32_t got, handle_t *hs, uint3
 }
 
 /* Read messages into the leftover until one has bytes to deliver (a
- * seqpacket's: any message, empty ones too): 1; 0 at the end; -EAGAIN;
- * -errno. The description's lock held. */
+ * seqpacket's: any message, empty ones too): 1; 0 at the end (the peer's
+ * end part too, for good); -EAGAIN; -errno. The description's lock held. */
 static long fill_locked(struct pipe_end *p)
 {
+    if (halves(p) & HALF_END)
+        return 0;
     if (!pipe_buf(p))
         return -ENOMEM;
     for (;;) {
@@ -383,6 +453,12 @@ static long fill_locked(struct pipe_end *p)
         if (st != OK)
             return st == ERR_SHOULD_WAIT ? -EAGAIN : lx_err(st);
         enum part k = nh ? take_part(p, got, hs, nh, &skip) : PART_RAW;
+        if (k == PART_END) {
+            if (p->fds && p->fds->parts)
+                fds_drop(p->fds);   /* a send the end cut */
+            __atomic_fetch_or(&p->half, (uint8_t)HALF_END, __ATOMIC_ACQ_REL);
+            return 0;
+        }
         if (k == PART_RAW && p->fds && p->fds->parts)
             fds_drop(p->fds);   /* plain bytes after an unfinished send */
         if (k == PART_MORE || k == PART_DROP)
@@ -410,6 +486,8 @@ static long fill_locked(struct pipe_end *p)
  * queued or at the end, or -errno. The description's lock. */
 static long next_bytes_locked(struct pipe_end *p)
 {
+    if (halves(p) & HALF_END)
+        return 0;   /* nothing after the peer's end part is read */
     if (p->seq && !pipe_buf(p))
         return -ENOMEM;   /* an empty message would be kept there */
     for (;;) {
@@ -498,6 +576,8 @@ static long recv_try(struct pipe_end *p, struct rx *x)
         return 0;
     bool have = p->seq ? is_kept(p) : p->at < p->have;
     long r = have ? 1 : fill_locked(p);
+    if (r == -EAGAIN && (halves(p) & HALF_RD))
+        return 0;   /* SHUT_RD: the end once nothing is queued */
     if (r <= 0)
         return r;
     if (x->same && p->pid != x->pid)
@@ -525,6 +605,7 @@ static long recv_try(struct pipe_end *p, struct rx *x)
 static long recv_wait(struct fd_desc *d, struct rx *x, bool nb)
 {
     struct pipe_end *p = pipe_end_of(d);
+    end_send(p);   /* SHUT_WR's end part, if the channel had no room for it */
     for (;;) {
         lock_take(&d->lock);
         long r = recv_try(p, x);
@@ -532,7 +613,7 @@ static long recv_wait(struct fd_desc *d, struct rx *x, bool nb)
         if (r != -EAGAIN || nb)
             return r;
         r = sp_sleep(d, SIG_READABLE);
-        if (r && !is_shut(p))
+        if (r && !reads_end(p))
             return r;   /* -EINTR; a shutdown (or one meanwhile) is seen by the next try */
     }
 }
@@ -665,11 +746,11 @@ static long write_err(const struct pipe_end *p, status_t st)
 static long room(const struct tx *t, bool nb)
 {
     const struct pipe_end *p = pipe_end_of(t->d);
-    if (is_shut(p))
+    if (writes_end(p))
         return -EPIPE;
     if (!nb) {
         long r = sp_sleep(t->d, SIG_WRITABLE);
-        return is_shut(p) ? -EPIPE : r;
+        return writes_end(p) ? -EPIPE : r;
     }
     signals_t seen = 0;
     (void)jam_object_wait_one(pipe_ch(p), SIG_WRITABLE | SIG_PEER_CLOSED, 0, &seen);
@@ -699,9 +780,9 @@ static long send_bytes(struct pipe_end *p, const struct tx *t, size_t from)
     long r = 0;
     while (!r && done < left) {
         uint32_t len = left - done > PIPE_SIZE ? PIPE_SIZE : (uint32_t)(left - done);
-        status_t st = is_shut(p) ? ERR_PEER_CLOSED
-                                 : jam_channel_write(pipe_ch(p), bytes_at(t, from + done, len,
-                                                                          gather), len, NULL, 0);
+        status_t st = writes_end(p) ? ERR_PEER_CLOSED
+                                    : jam_channel_write(pipe_ch(p), bytes_at(t, from + done, len,
+                                                                             gather), len, NULL, 0);
         if (st == OK)
             done += len;
         else if (st != ERR_SHOULD_WAIT || t->nb)
@@ -724,8 +805,8 @@ static long send_record(struct pipe_end *p, const struct tx *t)
     const uint8_t *b = t->total ? bytes_at(t, 0, t->total, gather) : NULL;
     long r;
     for (;;) {
-        status_t st = is_shut(p) ? ERR_PEER_CLOSED
-                                 : jam_channel_write(pipe_ch(p), b, (uint32_t)t->total, NULL, 0);
+        status_t st = writes_end(p) ? ERR_PEER_CLOSED
+                                    : jam_channel_write(pipe_ch(p), b, (uint32_t)t->total, NULL, 0);
         r = st == OK ? (long)t->total : write_err(p, st);
         if (r != -EAGAIN || t->nb || (r = room(t, false)) != 0)
             break;
@@ -810,10 +891,11 @@ static status_t parts_write(struct pipe_end *p, const struct tx *t, struct fd_gi
                 memset(msg + len, 0, *first);   /* as bytes_at: only after the check */
             len += (long)*first;
         }
-        status_t st = is_shut(p) ? ERR_PEER_CLOSED
-                                 : jam_channel_write(pipe_ch(p), msg, (uint32_t)len, hs, nh);
+        bool ended = writes_end(p);
+        status_t st = ended ? ERR_PEER_CLOSED
+                            : jam_channel_write(pipe_ch(p), msg, (uint32_t)len, hs, nh);
         if (st != OK) {
-            if (is_shut(p))
+            if (ended)
                 close_all(hs, nh);   /* never written: ours to close */
             return st;
         }
@@ -873,13 +955,16 @@ long sockp_sendmsg(struct fd_desc *d, const struct msghdr *m, int flags)
                                             (int)(m->msg_iovlen > INT_MAX ? -1 : m->msg_iovlen));
     if (total < 0)
         return total;
-    if (!p->seq && !total)
+    if (!p->seq && !total && !writes_end(p))
         return 0;   /* a stream sends nothing, descriptors with it (Linux drops them too) */
     struct tx t = { .d = d, .iov = m->msg_iov, .iovcnt = (int)m->msg_iovlen,
                     .total = (size_t)total, .nb = nonblocking(d, flags) };
+    end_send(p);   /* SHUT_WR's end part, if the channel had no room for it */
     lock_take(&p->send_lock);
-    long r = n ? send_fds(p, &t, fds, (unsigned)n) : p->seq ? send_record(p, &t)
-                                                          : send_bytes(p, &t, 0);
+    long r = writes_end(p) ? -EPIPE
+             : n           ? send_fds(p, &t, fds, (unsigned)n)
+             : p->seq      ? send_record(p, &t)
+                           : send_bytes(p, &t, 0);
     lock_give(&p->send_lock);
     return r;
 }
@@ -898,13 +983,20 @@ long sockp_shutdown(struct fd_desc *d, int how)
 {
     if (how != SHUT_RD && how != SHUT_WR && how != SHUT_RDWR)
         return -EINVAL;
-    if (how != SHUT_RDWR)
-        return -EOPNOTSUPP;   /* no half-close on a channel */
     struct pipe_end *p = pipe_end_of(d);
+    unsigned want = how == SHUT_RD ? HALF_RD : how == SHUT_WR ? HALF_WR : HALF_RD | HALF_WR;
     long r = 0;
     bool done = false;
     lock_take(&d->lock);
-    if (!is_shut(p)) {
+    unsigned had = halves(p);
+    if (is_shut(p) || !(want & ~had)) {
+        /* done before */
+    } else if (((had | want) & (HALF_RD | HALF_WR)) != (HALF_RD | HALF_WR)) {   /* one half */
+        __atomic_fetch_or(&p->half, (uint8_t)(want == HALF_WR ? HALF_WR | HALF_OWED : want),
+                          __ATOMIC_ACQ_REL);
+        sleepers_wake_locked(p, want == HALF_WR ? SIG_WRITABLE : SIG_READABLE);
+        done = true;
+    } else {   /* both halves: the channel end goes */
         handle_t dead, peer;
         status_t st = jam_channel_create(&dead, &peer);
         r = lx_err(st);
@@ -917,13 +1009,14 @@ long sockp_shutdown(struct fd_desc *d, int how)
             pipe_set_leftover(p, 0, 0);
             set_kept(p, false);
             jam_handle_close(old);   /* the peer reads the end (if this was the last handle) */
-            sleepers_wake_locked(p);
+            sleepers_wake_locked(p, 0);
             done = true;
         }
     }
     lock_give(&d->lock);
+    end_send(p);   /* SHUT_WR's end part, after any send the sleepers' wake ended */
     if (done)
-        ready_wake_all();   /* a poll or epoll_wait asleep on the old end looks again */
+        ready_wake_all();   /* a poll or epoll_wait asleep on the end looks again */
     return r;
 }
 
@@ -995,16 +1088,19 @@ static bool sp_fork(struct fd_desc *d, struct fd_fork *f)
 }
 
 /* poll: the leftover (a kept message), or a shut end (every call answers
- * at once); the channel's signals for the rest (pipe_arm). */
+ * at once; a half-close's half too: reads that end, writes that fail);
+ * the channel's signals for the rest (pipe_arm). */
 static uint32_t sp_ready(struct fd_desc *d, uint32_t interest)
 {
     const struct pipe_end *p = pipe_end_of(d);
     if (is_shut(p))
         return NETWAIT_READ | NETWAIT_WRITE;
+    unsigned h = halves(p);
     bool have = p->seq ? is_kept(p)
                        : __atomic_load_n(&p->at, __ATOMIC_RELAXED) <
                              __atomic_load_n(&p->have, __ATOMIC_RELAXED);
-    return have ? NETWAIT_READ : 0;
+    return (have || (h & (HALF_RD | HALF_END)) ? NETWAIT_READ : 0) |
+           (h & HALF_WR ? NETWAIT_WRITE : 0);
 }
 
 static void sp_close(struct fd_desc *d)

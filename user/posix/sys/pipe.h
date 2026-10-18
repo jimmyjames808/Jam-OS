@@ -28,6 +28,7 @@ struct pipe_end {
     bool           kept;        /* seq: buf holds the next message (MSG_PEEK left it);
                                  * atomic */
     bool           shut;        /* shutdown(SHUT_RDWR) done; atomic */
+    uint8_t        half;        /* a half-close's state (sockpair.c's HALF_*); atomic */
     bool           passcred;    /* SO_PASSCRED: SCM_CREDENTIALS with what is read; atomic */
     uint32_t       pid;         /* the leftover's writer (the kernel's stamp) */
     struct sp_sleeper *sleepers;   /* the threads asleep in its reads and writes, for

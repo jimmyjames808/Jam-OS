@@ -14,8 +14,12 @@
  *     handles as before), MSG_CMSG_CLOEXEC, MSG_PEEK (bytes only), read()
  *     dropping descriptors, a stream's zero-byte send;
  *   - SOCK_SEQPACKET's message boundaries, MSG_TRUNC, EMSGSIZE;
- *   - shutdown(SHUT_RDWR) on either side, poll's hang-up, SHUT_RD and
- *     SHUT_WR alone EOPNOTSUPP;
+ *   - shutdown(SHUT_RDWR) on either side, poll's hang-up; half-closes:
+ *     SHUT_WR's writes EPIPE and the peer reading what came before, then
+ *     the end for good; SHUT_RD reading what was queued, then the end;
+ *     both halves a SHUT_RDWR; SandboxHostLinux's seqpacket pair (one end
+ *     SHUT_RD, the other SHUT_WR, a request with a descriptor still
+ *     crossing); no handle kept;
  *   - MSG_DONTWAIT on a full channel with descriptors (EAGAIN, no handle
  *     kept), a peer gone (EPIPE);
  *   - scmcred.c: SO_PASSCRED, shutdown waking what sleeps on the end, and
@@ -350,10 +354,6 @@ static void check_shutdown(void)
     char b[4];
     CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, s) == 0);
     errno = 0;
-    CHECK(shutdown(s[0], SHUT_RD) == -1 && errno == EOPNOTSUPP);
-    errno = 0;
-    CHECK(shutdown(s[0], SHUT_WR) == -1 && errno == EOPNOTSUPP);
-    errno = 0;
     CHECK(shutdown(s[0], 7) == -1 && errno == EINVAL);
     CHECK(write(s[0], "x", 1) == 1);
     int d = dup(s[0]);
@@ -369,6 +369,63 @@ static void check_shutdown(void)
     close(d);
     close(s[0]);
     close(s[1]);
+}
+
+static bool polls(int fd, short ev)
+{
+    struct pollfd pf = { fd, ev, 0 };
+    return poll(&pf, 1, 0) == 1 && (pf.revents & ev);
+}
+
+static void check_half(void)
+{
+    uint64_t before = scm_job_handles();
+    int s[2];
+    char b[8];
+    /* SHUT_WR: writes EPIPE; the peer reads what came before, then the end for good */
+    CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, s) == 0);
+    CHECK(write(s[0], "ab", 2) == 2 && shutdown(s[0], SHUT_WR) == 0 &&
+          shutdown(s[0], SHUT_WR) == 0);
+    errno = 0;
+    CHECK(send(s[0], "c", 1, MSG_NOSIGNAL) == -1 && errno == EPIPE);
+    errno = 0;
+    CHECK(write(s[0], "c", 1) == -1 && errno == EPIPE);   /* SIGPIPE ignored (pt_scm) */
+    CHECK(polls(s[0], POLLOUT) && polls(s[1], POLLIN));
+    CHECK(read(s[1], b, sizeof(b)) == 2 && !memcmp(b, "ab", 2));
+    CHECK(read(s[1], b, sizeof(b)) == 0 && recv(s[1], b, sizeof(b), MSG_DONTWAIT) == 0);
+    CHECK(polls(s[1], POLLIN));
+    CHECK(write(s[1], "de", 2) == 2 && read(s[0], b, sizeof(b)) == 2);   /* the other way goes */
+    close(s[0]);
+    close(s[1]);
+    /* SHUT_RD: what was queued, then the end instead of a wait; writes go; then SHUT_WR is
+     * a SHUT_RDWR: the peer's writes EPIPE */
+    CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, s) == 0);
+    CHECK(write(s[1], "fg", 2) == 2 && shutdown(s[0], SHUT_RD) == 0 && polls(s[0], POLLIN));
+    CHECK(read(s[0], b, sizeof(b)) == 2 && read(s[0], b, sizeof(b)) == 0);
+    CHECK(write(s[0], "h", 1) == 1 && read(s[1], b, sizeof(b)) == 1 && b[0] == 'h');
+    CHECK(shutdown(s[0], SHUT_WR) == 0);
+    errno = 0;
+    CHECK(send(s[1], "i", 1, MSG_NOSIGNAL) == -1 && errno == EPIPE);
+    CHECK(read(s[1], b, sizeof(b)) == 0);
+    close(s[0]);
+    close(s[1]);
+    /* SandboxHostLinux::Init: the child's end SHUT_RD, the browser's SHUT_WR; a request with
+     * a descriptor still crosses to the browser, whose reads wait for more */
+    CHECK(socketpair(AF_UNIX, SOCK_SEQPACKET, 0, s) == 0);
+    CHECK(shutdown(s[0], SHUT_RD) == 0 && shutdown(s[1], SHUT_WR) == 0);
+    int null = open("/dev/null", O_RDONLY | O_CLOEXEC);
+    struct scm_got g = { .n = 0 };
+    CHECK(scm_send(s[0], "req", 3, &null, 1, 0) == 3 && send(s[0], b, 0, 0) == 0);
+    CHECK(scm_recv(s[1], b, sizeof(b), 4, 0, &g) == 3 && g.n == 1 && !memcmp(b, "req", 3));
+    scm_close_got(&g);
+    CHECK(recv(s[1], b, sizeof(b), MSG_DONTWAIT) == 0);   /* the empty message */
+    errno = 0;
+    CHECK(recv(s[1], b, sizeof(b), MSG_DONTWAIT) == -1 && errno == EAGAIN);
+    CHECK(read(s[0], b, sizeof(b)) == 0);   /* the browser's end part */
+    close(null);
+    close(s[0]);
+    close(s[1]);
+    CHECK(scm_job_handles() == before);
 }
 
 /* ---- full, gone -------------------------------------------------------------------------- */
@@ -423,6 +480,7 @@ void pt_scm(char **argv __attribute__((unused)))
     close(s[1]);
     check_seqpacket();
     check_shutdown();
+    check_half();
     check_full_gone();
     scm_cred();
     scm_wake();
