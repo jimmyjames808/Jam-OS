@@ -301,8 +301,10 @@ makes room.
   (`..` for a directory; a file's kept directory), and one now out of
   its view ends (`IN_MOVE_SELF` if asked, then `IN_IGNORED`).
 - **The bell**: the service holds only `RIGHT_SIGNAL` on the watcher's
-  event: it can ring or silence that watcher, nothing more. A service is
-  trusted for its own files' events as for their contents.
+  event (with `RIGHT_DUPLICATE` and `RIGHT_TRANSFER`, so its keeper can
+  hold it across a restart: IE2): it can ring or silence that watcher,
+  nothing more. A service is trusted for its own files' events as for
+  their contents.
 - **Memory**: a watcher that never reads costs the service its 16 KiB;
   the one `take` reply in flight is charged to the service as any reply.
 
@@ -452,7 +454,11 @@ answers). Chromium's per-watcher limit is then 64.
 - A read of 0 bytes is 0 even with records held (Linux: `EINVAL`).
 - Two mounts' records come mount by mount in a take, not interleaved in
   time; a mount going is seen at the next take, by a blocked `read`
-  within a second, not by `poll` or `epoll` alone ([IL1 notes](#il1-notes)).
+  within a second ([IL1 notes](#il1-notes)), and by `poll` or `epoll`
+  when the service ends the channel itself, which rings its bell first
+  (a restart that can't keep it, a fresh start, the service stopping:
+  [IE2 notes](#ie2-notes)); not when a dead service is given up on (its
+  keeper closes the channel).
 
 ## 4. The kernel
 
@@ -489,7 +495,7 @@ after it (`pager.c`, `main.c`, `fsops.c`, `test.c`, `extfs.h`),
 |---|---|---|---|---|---|---|
 | **IP. The protocol and the library** (built: [IP notes](#ip-notes)) | 2.4 and the service-independent half of 2.2, 2.5 and 2.7: `fs.watch`, the `fswatch` protocol, and a library every service uses: the watcher channels, the inode index, the queues with the merge and overflow rules, ids with generations, the bell, the per-process cap, the `take` encoding, the state records' layout; utest `port_order` | `abi/idl/fs.idl` (method 17 and its comment), a new abi/idl/fswatch.idl and its line in `abi/idl/ids.txt`, the generated headers, a new user/lib/fswatch.c and user/include/fswatch.h, new utest files user/tests/utest/fswatch.c (a fake service in-process) and user/tests/utest/port_order.c | none: new files, and `fs.idl` has no other editor (a missing method is `ERR_NOT_SUPPORTED` in every other `fs` server, so fat, bootfs and ramfs build unchanged) | utest `fswatch_` (merge, one overflow then drops, `take`'s room and `more`, ids not given again, the bell rung once per empty to not empty, a removed watch's events dropped and `IN_IGNORED` last, the caps), `port_order`; `make check` (genidl's check); init run; shell scripts basic, cmds, commands, files and kdump save (an IDL changed) | 1 | **Opus** |
 | **IE1. extfs: events and order** (built: [IE1 notes](#ie1-notes)) | 2.1 to 2.3 on extfs: `fs.watch`, `add` walked in the view (`IN_ONLYDIR`, `IN_DONT_FOLLOW`, the mask flags, the read bit), every row of 2.2's table at its request, the open files' directory and name in memory, `IN_DELETE_SELF` when an orphan goes, cookies, the close-first rule; a restart ends every watch in this track | a new user/services/extfs/watch.c, `user/services/extfs/fsops.c`, `user/services/extfs/files.c`, `user/services/extfs/main.c` (the rule), `user/services/extfs/request.c`, `user/services/extfs/extfs.h`, a new utest file user/tests/utest/extfs_watch.c, `tools/shell-tests/extfs-svc.txt` (its line) | IP and WE1 merged; never beside WE2 (same files): before or after it | utest `extfs_watch`: each row of 2.2 with its exact events and order; a change through one view seen through another view of the volume; a move across directories with one cookie; the order case (write and close, add, write and close: exactly one `IN_CLOSE_WRITE`); `IN_ONESHOT`, `IN_EXCL_UNLINK`, `IN_MASK_CREATE`; `tools/extfs-svc-test.sh`; init run | 1 | **Opus** |
-| **IE2. extfs: rights and restarts** | 2.6 and 2.8: the hidden-name filter, the reach check at a rename (Q2), watches and watcher records in the state VMO, keeper slots for each channel and its bell, the successor's adopt (watches back, `IN_Q_OVERFLOW` queued and the bell rung on each), a fresh start closing them, test powers that kill extfs between a change and its event; volumes' handle limits for extfs's job | user/services/extfs/watch.c, `user/services/extfs/views.c`, `user/services/extfs/walk.c` (the reach), `user/services/extfs/state.c`, `user/services/extfs/keeper.c`, `user/services/extfs/adopt.c`, `user/services/extfs/test.c`, `user/services/extfs/extfs.h`, volumes' extfs limits (a line), a new utest file user/tests/utest/extfs_restart_watch.c | IE1 merged | utest `extfs_watch`'s view cases (a hidden name never in an event, an add on one refused, a subview's watch ending when its directory moves above the root, a `HIDE_KEYS` watcher's watch ending when its directory moves into `etc/ssh`), `extfs_restart_watch` (killed at each point: the watches back, the overflow first, new events after; a fresh start: the channel closed); `tools/extfs-svc-test.sh`; `tools/layout-test.sh` drive; init run | 1 | **Opus** |
+| **IE2. extfs: rights and restarts** (built: [IE2 notes](#ie2-notes)) | 2.6 and 2.8: the hidden-name filter, the reach check at a rename (Q2), watches and watcher records in the state VMO, keeper slots for each channel and its bell, the successor's adopt (watches back, `IN_Q_OVERFLOW` queued and the bell rung on each), a fresh start closing them, test powers that kill extfs between a change and its event; volumes' handle limits for extfs's job | user/services/extfs/watch.c, `user/services/extfs/views.c`, `user/services/extfs/walk.c` (the reach), `user/services/extfs/state.c`, `user/services/extfs/keeper.c`, `user/services/extfs/adopt.c`, `user/services/extfs/test.c`, `user/services/extfs/extfs.h`, volumes' extfs limits (a line), a new utest file user/tests/utest/extfs_restart_watch.c | IE1 merged | utest `extfs_watch`'s view cases (a hidden name never in an event, an add on one refused, a subview's watch ending when its directory moves above the root, a `HIDE_KEYS` watcher's watch ending when its directory moves into `etc/ssh`), `extfs_restart_watch` (killed at each point: the watches back, the overflow first, new events after; a fresh start: the channel closed); `tools/extfs-svc-test.sh`; `tools/layout-test.sh` drive; init run | 1 | **Opus** |
 | **IL1. libc: the descriptor** (built: [IL1 notes](#il1-notes)) | 3.1 to 3.4 and 3.6 | a new user/posix/sys/inotify.c, `user/posix/sys/kinds.h` (its ops), `user/posix/sys/calls.def` (the four calls), `user/posix/sys/enosysnames.c` (the two names out), a new posixtest file user/posix/test/inotify.c (section `inotify`) and tools/shell-tests' new posix-inotify.txt | IP merged to start, CBF6 merged (the call tables); IE1 merged before its last run (events on ext); beside IE2 | posixtest `inotify` on ext `/data` and on `/tmp`: the records (padding, `len`, alignment), `FIONREAD`, a short read `EINVAL`, a 0-byte read, `O_NONBLOCK`'s `EAGAIN`, a blocking read woken, `poll`, `epoll` and `select` with another thread changing files, Chromium's reader loop copied (poll, `FIONREAD`, read) over 1,000 changes, quiet watches on "/", `/etc`, `/proc` and the boot image, `IN_ONLYDIR`, `IN_MASK_ADD`, `rm_watch`'s `IN_IGNORED`, `wd`s not reused; shell scripts basic, cmds, commands, files; init run | 1 | **Opus** |
 | **IL2. libc: limits, fork, exec** (built: [IL2 notes](#il2-notes)) | 3.4's tests, 3.5, `/proc/self/fd`'s name | `user/posix/sys/procfs.c` (`/proc/sys/fs/inotify`), user/posix/sys/inotify.c (the fork and give steps if IL1 left them), posixtest's `user/posix/test/procfs.c` and `user/posix/test/forkfd.c` (an inotify case each), the TESTING rows | IL1 and CBF6 merged | posixtest `procfs` (the three files), `fork` (absent in the child), `exec` (gone after `execve`); `tools/shell-tests/posix-fork.txt`; init run | 0.5 | Sonnet 5.5 |
 | **IF. fat** (only with Q1's (A)) | 2.9 on fat with the library: keys, its rows of 2.2, the order rule in its loop, its state and keeper | `user/services/fat/` (a new watch.c, fsops.c, its loop, state, keeper, adopt), a new utest file user/tests/utest/fat_watch.c | IE2 merged (the pattern); DRO2 merged (fat's restart paths) | utest `fat_watch`, `fat_restart` unchanged; posixtest `inotify` with `JAMOS_DATA_FS=fat` | 1 | **Opus** |
@@ -576,7 +582,7 @@ the ones out of reach with `fsw_end(w, slot, true)`.
 **For IL1 (libc).** One event per inotify descriptor is the bell of
 every watcher channel it opens (one per mount it watches): after
 `fs.watch`, `fswatch_bell_give(watcher, a duplicate with RIGHT_SIGNAL |
-RIGHT_TRANSFER)`, then the adds. Clear `FSWATCH_BELL` before taking,
+RIGHT_TRANSFER)` (IE2 added `RIGHT_DUPLICATE`), then the adds. Clear `FSWATCH_BELL` before taking,
 never after, and take each channel until `more` is 0 (or set the bell
 again). A record's `id` with its channel is libc's `wd`; id 0 is
 `IN_Q_OVERFLOW` (`wd` -1); `IN_UNMOUNT` and `IN_IGNORED` for every watch
@@ -668,10 +674,10 @@ read with, so `FSW_PER_PROCESS` counts real processes.
   give it an open and a close. A path that doesn't end in a name (`.`,
   `..`, a view's root) gives the inode's own event only, no directory
   event (Linux's dentry has a parent there).
-- *A removed watch's queued events* are dropped by the library's
+- *A removed watch's queued events* were dropped by the library's
   `fsw_remove` (IP's choice); Linux leaves them in the queue before
-  `IN_IGNORED`. Chromium skips events of a `wd` it no longer holds, so
-  this is kept; IR may weigh it.
+  `IN_IGNORED`. The main session's call: Linux's way; IE2 changed the
+  library (its events stay, `IN_IGNORED` after them).
 - *The close rule's own order*: before a file's request the rule runs only
   when that channel has a message queued; a packet that is the file's own
   close is handled in the port's order (running the rule there handled a
@@ -759,6 +765,85 @@ the descriptor in the case process itself because a forked child has none
 to lose. Batch 18103638: init, kt4, the shell scripts basic, cmds,
 commands and files, kd-save, posix-procinfo, posix-fork, posix-execinfo
 and posix-inotify, 11 of 11.
+
+### IE2 notes
+
+Built (2026-10-18): extfs's rights and restarts (user/services/extfs/
+watch.c, state.c, adopt.c, keeper.c, extfs.h; one line in fsops.c's
+rename and two in main.c), the library's removed-watch rule
+(user/lib/fswatch.c), libc's bell rights (user/posix/sys/inotify.c, one
+line); utest `extfs_watch_hidden`, `extfs_watch_reach` and
+`extfs_restart_watch` ([TESTING](TESTING.md#file-watching-inotify-plan)),
+extfs-svc 31.
+
+**What it does.**
+- *The hidden-name filter* (the library's `hidden` hook): an event
+  names an entry only if the watcher's view would list it, judged by the
+  views' own rule (`fs_view_hides` with the listing's `stat`) on the
+  entry's place. Only the root's entries, an etc's, and those of etc's
+  `ssh` and `authorized_keys` can be hidden from a view that may watch
+  their directory, so the service knows those directories by inode: the
+  root's entries that `fs_view_in_etc` calls etc (`ETC`, `etc.` too, any
+  kind) and in each the two names, found again after a name in the root
+  or an etc changed (and at the first watch: nothing marks changes while
+  nothing is watched). At most 16 of them.
+- *The reach check* (Q2): a rename queues it after the moved inode's
+  `IN_MOVE_SELF`, and it runs when the request commits, on the disk as
+  it is then. A channel is looked at only if the move may change its
+  reach: a subview's whose root isn't the moved inode or under it, when
+  the new directory isn't under the root; a view with the hiding flags,
+  when the moved inode lands under an etc. Then each of its watches on
+  the moved inode or under it is placed (its directory's `..` chain up
+  to the root, read from each directory's first entries; a file's
+  directory is the state's, set at its add and at each rename of the
+  file) and ends if the subview's root isn't on the chain, or the view
+  hides the place (`fs_view_hides`, not the listing's rule: as the add's
+  walk judges it). The moved inode's own watch gets its `IN_IGNORED`
+  after the rename's `IN_MOVE_SELF`; one under it gets `IN_MOVE_SELF`
+  (if asked) then `IN_IGNORED`. A chain that can't be followed (an error,
+  a directory deeper than 2,048, a file's directory gone) leaves the
+  watch. The places are physical: a subview whose root was renamed keeps
+  its old root's place for its walks (views.c's), the watches judge the
+  new one.
+- *Restarts*: `struct xf_watches` in the state (`XF_STATE_LAYOUT` 5,
+  about 165 KiB of the 1 MiB: the table, each channel's root place and
+  port generation, each watched file's directory); the keeper's slot
+  `XF_KEEP_WATCH(i)` holds the channel from fs.watch on, and the channel
+  and its bell once given. A successor takes the table over before its
+  mount (orphans dropped at the mount may be watched), the handles back
+  in the restore, then arms every channel; `fs.watch` committed and not
+  answered is `XF_MADE_WATCH` (the client's end made again; not
+  committed: the channel forgotten and the request run again). The
+  library's overflow at an adopt is only for a channel that had its bell:
+  one without served no request, and a remade channel must not start
+  with an overflow its client never lost events to.
+- *The bell's rights*: a keeper takes only what it can duplicate, so
+  libc gives `RIGHT_DUPLICATE` too. A bell without it (a program linked
+  before this) still rings; its channel is kept without it and closes at
+  a restart (its client sees the mount's watches end and asks again).
+  Static programs (base_unittests) keep the old rule until relinked.
+- *Closing rings the bell*: the library's `fsw_chan_close` rings a
+  channel's bell when its client hasn't closed it, so a `poll` or `epoll`
+  on the descriptor wakes and the next take finds the channel closed
+  (IL1's open item, a few lines here). A fresh start rings each bell the
+  keeper hands back before refusing it; extfs's end (`watch_stop`, at an
+  exit 0 or the disk gone) ends every channel. A dead service given up
+  on (volumes' keeper_release) still closes channels without a ring.
+- *A removed watch's queued events* stay, before its `IN_IGNORED`
+  (the main session's call; Linux's).
+
+**For IC and IR.**
+- The test supervisor (extfs_restart.c) now takes what extfs sends its
+  keeper every 50 ms, as volumes does; before, drops waited for the next
+  start. Its restart cases all ran with it (extsvc).
+- A fresh start in utest is a new state VMO: an answer that waited for
+  the next system call dies with the old state (no successor resends
+  it), so the test ends that instance at a request on a channel the
+  fresh start closes anyway.
+- Not done: the reach check on `link` (a new name of a watched file in
+  a hidden place keeps the watch: its directory stays the added one);
+  watches of a channel whose view's root was removed end only when a
+  rename looks at them.
 
 ## 6. Tests
 

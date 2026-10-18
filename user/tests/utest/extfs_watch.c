@@ -29,6 +29,23 @@
  *                       again after a take); 8 watcher channels for this
  *                       process and the ninth refused (fs.watch's writer
  *                       pid), a second process's still taken
+ *   extfs_watch_hidden  (IE2) no event names what the watcher's view hides
+ *                       from a listing (etc/ssh, the root's etc and an
+ *                       "ETC"); adds on hidden places refused
+ *   extfs_watch_reach   (IE2, Q2) a watch whose inode a rename takes out of
+ *                       its view's reach ends, with what is under it: a
+ *                       subview's above its root, a file moved out, a
+ *                       view hiding the keys' into etc/ssh, one hiding etc's
+ *                       renamed "Etc." and moved into etc; the subview's
+ *                       root moved and a move into etc that the view still
+ *                       sees leave them
+ *   extfs_restart_watch (IE2, 2.8) extfs ended by its test powers between a
+ *                       change and its event, at an fs.watch committed and
+ *                       not answered, before a fresh start: watches back
+ *                       with IN_Q_OVERFLOW first (none on a remade
+ *                       channel), a bell the keeper can't hold closing its
+ *                       channel, a fresh start and the end closing every
+ *                       channel with its bell rung
  *
  * Each disk is saved for Linux's e2fsck (tools/extfs-svc-test.sh). The
  * second process's mode is xwatch-<what>. */
@@ -81,14 +98,21 @@ static uint32_t L(const char *s)
     return (uint32_t)strlen(s);
 }
 
-static bool watcher(handle_t fs, struct wat *x)
+/* A watcher channel whose bell has these rights (libc's: the three of
+ * watcher's; one without RIGHT_DUPLICATE can't be kept across a restart). */
+static bool watcher_with(handle_t fs, struct wat *x, rights_t rights)
 {
     handle_t give;
     CHECK_ST(fs_watch_until(fs, dl(), &x->ch), OK);
     CHECK_ST(jam_event_create(&x->bell), OK);
-    CHECK_ST(jam_handle_duplicate(x->bell, RIGHT_SIGNAL | RIGHT_TRANSFER, &give), OK);
+    CHECK_ST(jam_handle_duplicate(x->bell, rights, &give), OK);
     CHECK_ST(fswatch_bell_give(x->ch, give), OK);
     return true;
+}
+
+static bool watcher(handle_t fs, struct wat *x)
+{
+    return watcher_with(fs, x, RIGHT_SIGNAL | RIGHT_TRANSFER | RIGHT_DUPLICATE);
 }
 
 static void unwatcher(struct wat *x)
@@ -546,8 +570,9 @@ bool t_extfs_watch_views(void)
     CHECK_ST(fswatch_remove_until(s.ch, dl(), idIN), OK);
     CHECK_ST(fswatch_remove_until(s.ch, dl(), idIN), OK);   /* gone already: OK, nothing */
     t_close(&f);
-    /* (the removed watch's queued events go with it: the library's rule) */
-    EXPECT(&s, "IN_ONESHOT and a remove", { idH, IN(MODIFY), "" }, { idH, IN(IGNORED), "" },
+    /* (the removed watch's queued events stay, before its IN_IGNORED: Linux's) */
+    EXPECT(&s, "IN_ONESHOT and a remove", { idIN, IN(OPEN), "h" }, { idIN, IN(MODIFY), "h" },
+           { idH, IN(MODIFY), "" }, { idH, IN(IGNORED), "" }, { idIN, IN(MODIFY), "h" },
            { idIN, IN(IGNORED), "" });
 
     /* IN_MASK_ADD adds to a watch's mask; an add without it replaces it. */
@@ -692,4 +717,206 @@ bool t_extfs_watch_limits(void)
 
     unwatcher(&a);
     return stop("watch-limits");
+}
+
+/* ---- what a view hides (2.6) --------------------------------------------------- */
+
+bool t_extfs_watch_hidden(void)
+{
+    struct wat k, e, a;
+    handle_t vk, ve;
+    uint32_t id = 0;
+    CHECK(start());
+    CHECK_ST(t_mkdir(&r, "/etc"), OK);
+
+    /* A view hiding the keys (etc/ssh) and one hiding all of etc, watching
+     * the root and etc; the whole volume's watcher on etc. */
+    CHECK_ST(fs_view_until(r.fs, dl(), FS_VIEW_HIDE_KEYS, &vk), OK);
+    CHECK_ST(fs_view_until(r.fs, dl(), FS_VIEW_NO_ETC, &ve), OK);
+    CHECK(watcher(vk, &k) && watcher(ve, &e) && watcher(r.fs, &a));
+    uint32_t kRoot = add(&k, "/", ALL), kEtc = add(&k, "/etc", ALL), eRoot = add(&e, "/", ALL);
+    uint32_t aEtc = add(&a, "/etc", ALL);
+    CHECK(kRoot && kEtc && eRoot && aEtc);
+
+    /* etc/ssh made, a file in etc, etc's mode, a second etc ("ETC" is etc
+     * to the views), a name anyone sees, ssh renamed. */
+    CHECK_ST(t_mkdir(&r, "/etc/ssh"), OK);
+    CHECK(put_file(&r, "/etc/conf", "c"));
+    CHECK_ST(setattr("/etc", FS_ATTR_MODE, 0755), OK);
+    CHECK_ST(t_mkdir(&r, "/ETC"), OK);
+    CHECK_ST(t_mkdir(&r, "/pub"), OK);
+    /* Adds on what a view hides: refused, as any request there. */
+    CHECK_ST(add_st(&k, "/etc/ssh", ALL, &id, NULL), ERR_ACCESS_DENIED);
+    CHECK_ST(add_st(&e, "/etc", ALL, &id, NULL), ERR_ACCESS_DENIED);
+    CHECK_ST(add_st(&e, "/ETC", ALL, &id, NULL), ERR_ACCESS_DENIED);
+    CHECK_ST(add_st(&e, "/etc/conf", ALL, &id, NULL), ERR_ACCESS_DENIED);
+    CHECK_ST(t_rename(&r, "/etc/ssh", "/etc/keys"), OK);
+
+    /* No name the view hides from a listing: ssh for k (its rename's
+     * IN_MOVED_FROM too), etc and ETC in the root for e. */
+    EXPECT(&k, "a view hiding the keys", { kEtc, IN(CREATE), "conf" }, { kEtc, IN(OPEN), "conf" },
+           { kEtc, IN(MODIFY), "conf" }, { kEtc, IN(CLOSE_WRITE), "conf" },
+           { kRoot, IN(ATTRIB) | IN(ISDIR), "etc" }, { kEtc, IN(ATTRIB) | IN(ISDIR), "" },
+           { kRoot, IN(CREATE) | IN(ISDIR), "ETC" }, { kRoot, IN(CREATE) | IN(ISDIR), "pub" },
+           { kEtc, IN(MOVED_TO) | IN(ISDIR), "keys" });
+    EXPECT(&e, "a view hiding etc", { eRoot, IN(CREATE) | IN(ISDIR), "pub" });
+    EXPECT(&a, "the whole volume's", { aEtc, IN(CREATE) | IN(ISDIR), "ssh" },
+           { aEtc, IN(CREATE), "conf" }, { aEtc, IN(OPEN), "conf" }, { aEtc, IN(MODIFY), "conf" },
+           { aEtc, IN(CLOSE_WRITE), "conf" }, { aEtc, IN(ATTRIB) | IN(ISDIR), "" },
+           { aEtc, IN(MOVED_FROM) | IN(ISDIR), "ssh" }, { aEtc, IN(MOVED_TO) | IN(ISDIR), "keys" });
+
+    unwatcher(&k);
+    unwatcher(&e);
+    unwatcher(&a);
+    jam_handle_close(vk);
+    jam_handle_close(ve);
+    return stop("watch-hidden");
+}
+
+/* ---- a watch out of its view's reach (Q2) --------------------------------------- */
+
+bool t_extfs_watch_reach(void)
+{
+    struct wat s, k, e;
+    handle_t sub, vk, ve;
+    CHECK(start());
+    static const char *const dirs[] = { "/v", "/v/a", "/v/a/b", "/v/c", "/etc", "/etc/ssh",
+                                        "/w", "/w/d", "/w/d/e", "/p", "/q" };
+    for (unsigned i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++)
+        CHECK_ST(t_mkdir(&r, dirs[i]), OK);
+    CHECK(put_file(&r, "/v/a/f", "f") && put_file(&r, "/v/g", "g"));
+    CHECK_ST(fs_subview_until(r.fs, dl(), "/v", 2, 0, &sub), OK);
+    CHECK_ST(fs_view_until(r.fs, dl(), FS_VIEW_HIDE_KEYS, &vk), OK);
+    CHECK_ST(fs_view_until(r.fs, dl(), FS_VIEW_NO_ETC, &ve), OK);
+    CHECK(watcher(sub, &s) && watcher(vk, &k) && watcher(ve, &e));
+    uint32_t idA = add(&s, "/a", ALL), idAB = add(&s, "/a/b", ALL), idAF = add(&s, "/a/f", ALL);
+    uint32_t idG = add(&s, "/g", ALL), idC = add(&s, "/c", ALL);
+    uint32_t idKD = add(&k, "/w/d", ALL), idKE = add(&k, "/w/d/e", ALL);
+    uint32_t idP = add(&e, "/p", ALL), idQ = add(&e, "/q", ALL);
+    CHECK(idA && idAB && idAF && idG && idC && idKD && idKE && idP && idQ);
+
+    /* A subview at /v: a directory moved above its root ends its watch
+     * (the rename's IN_MOVE_SELF, then IN_IGNORED) and those under it
+     * (IN_MOVE_SELF, IN_IGNORED); a file moved out, the same; the root
+     * itself moved: its watches carry on. */
+    CHECK_ST(t_rename(&r, "/v/a", "/a2"), OK);
+    EXPECT(&s, "a directory moved above the subview's root", { idA, IN(MOVE_SELF), "" },
+           { idA, IN(IGNORED), "" }, { idAB, IN(MOVE_SELF), "" }, { idAB, IN(IGNORED), "" },
+           { idAF, IN(MOVE_SELF), "" }, { idAF, IN(IGNORED), "" });
+    CHECK_ST(t_rename(&r, "/v/g", "/w/g"), OK);
+    EXPECT(&s, "a file moved out", { idG, IN(MOVE_SELF), "" }, { idG, IN(IGNORED), "" });
+    CHECK_ST(t_rename(&r, "/v", "/vv"), OK);
+    CHECK_ST(t_mkdir(&r, "/vv/c/n"), OK);
+    EXPECT(&s, "the root moved", { idC, IN(CREATE) | IN(ISDIR), "n" });
+
+    /* A view hiding the keys: into etc, still seen; into etc/ssh, ended
+     * with what is under it. */
+    CHECK_ST(t_rename(&r, "/w", "/etc/w"), OK);
+    CHECK_ST(t_mkdir(&r, "/etc/w/d/n"), OK);
+    EXPECT(&k, "moved into etc", { idKD, IN(CREATE) | IN(ISDIR), "n" });
+    CHECK_ST(t_rename(&r, "/etc/w/d", "/etc/ssh/d"), OK);
+    EXPECT(&k, "moved into etc/ssh", { idKD, IN(MOVE_SELF), "" }, { idKD, IN(IGNORED), "" },
+           { idKE, IN(MOVE_SELF), "" }, { idKE, IN(IGNORED), "" });
+
+    /* A view hiding etc: renamed in the root to a name that is etc to the
+     * views ("Etc."), and moved into etc. */
+    CHECK_ST(t_rename(&r, "/p", "/Etc."), OK);
+    CHECK_ST(t_rename(&r, "/q", "/etc/q"), OK);
+    EXPECT(&e, "renamed etc, moved into etc", { idP, IN(MOVE_SELF), "" },
+           { idP, IN(IGNORED), "" }, { idQ, IN(MOVE_SELF), "" }, { idQ, IN(IGNORED), "" });
+    NOTHING(&s, "the subview's after moves elsewhere");
+
+    unwatcher(&s);
+    unwatcher(&k);
+    unwatcher(&e);
+    jam_handle_close(sub);
+    jam_handle_close(vk);
+    jam_handle_close(ve);
+    return stop("watch-reach");
+}
+
+/* ---- restarts (2.8) ------------------------------------------------------------ */
+
+/* x's channel is closed: a take answers ERR_PEER_CLOSED (once the keeper
+ * dropped its copy: the supervisor takes what extfs sends it every 50 ms). */
+static bool closed(const struct wat *x)
+{
+    uint8_t more = 0;
+    uint32_t n = 0;
+    return fswatch_take_until(x->ch, dl(), FSWATCH_TAKE_BYTES, &more, takebuf, &n) ==
+           ERR_PEER_CLOSED;
+}
+
+/* extfs ended by its test powers (utest's restart supervisor, extfs_restart.c)
+ * with watches on: instance 0 after a change is in the journal and before
+ * its event, instance 1 with an fs.watch committed and not answered,
+ * instance 2 with a watcher's take committed and not answered, its
+ * successor handed a new state (a fresh start). The comments count each
+ * instance's requests for its power. */
+bool t_extfs_restart_watch(void)
+{
+    static const char *const dies[] = { "die=journal:3", "die=commit:5", "die=commit:7" };
+    struct wat a, b, c, o;
+    uint32_t id = 0, idB = 0;
+    uint8_t existed = 0;
+    CHECK(ramdisk_create(&xd, EXT_DISK_SECTORS));
+    CHECK(extfs_sup_start(&xd, dies, 3));
+    struct fatrun *s = extfs_sup_run();
+
+    /* Instance 0: a watches /d and /d/s; o (a bell without RIGHT_DUPLICATE)
+     * watches /d. The mkdir of /d/x ends it, answered by its successor. */
+    CHECK_ST(t_mkdir(s, "/d"), OK);     /* journal 1 */
+    CHECK_ST(t_mkdir(s, "/d/s"), OK);   /* journal 2 */
+    CHECK(watcher(s->fs, &a) && watcher_with(s->fs, &o, RIGHT_SIGNAL | RIGHT_TRANSFER));
+    CHECK((idD = add(&a, "/d", ALL)) && (idS = add(&a, "/d/s", ALL)) && add(&o, "/d", ALL));
+    CHECK_ST(t_mkdir(s, "/d/x"), OK);   /* journal 3: ended */
+    CHECK_EQ(extfs_sup_ended(), 1u);
+
+    /* Instance 1: a's watches back, its queue starting with the overflow
+     * (x's IN_CREATE died with instance 0), its bell rung; then events as
+     * before. o's channel closed: its bell couldn't be kept. */
+    CHECK(rung(&a));
+    EXPECT(&a, "after a death between a change and its event", { 0, IN(Q_OVERFLOW), "" }); /* 1 */
+    CHECK_ST(add_st(&a, "/d", ALL, &id, &existed), OK);   /* 2 */
+    CHECK(id == idD && existed == 1);
+    CHECK_ST(t_mkdir(s, "/d/y"), OK);   /* 3 */
+    EXPECT(&a, "a watch carried on", { idD, IN(CREATE) | IN(ISDIR), "y" });   /* 4 */
+    CHECK(closed(&o));
+
+    /* fs.watch committed, not answered (5: instance 1 ended): its successor
+     * makes the client's end again. It had no bell, so no overflow. */
+    CHECK(watcher(s->fs, &b));
+    CHECK_EQ(extfs_sup_ended(), 2u);
+    CHECK((idB = add(&b, "/d/s", ALL)));   /* instance 2: 1 */
+    NOTHING(&b, "a remade channel");       /* 2 */
+    CHECK_ST(t_mkdir(s, "/d/s/z"), OK);    /* 3 */
+    EXPECT(&b, "a remade channel's watch", { idB, IN(CREATE) | IN(ISDIR), "z" });   /* 4 */
+    EXPECT(&a, "a after a second restart", { 0, IN(Q_OVERFLOW), "" },
+           { idS, IN(CREATE) | IN(ISDIR), "z" });   /* 5 */
+
+    /* A fresh start (instance 2 ended at a take of a's, committed, not
+     * answered; the next is handed a new state): every watcher channel
+     * closed (that take's too), its bell rung first. */
+    extfs_sup_fresh();
+    CHECK_ST(t_stat(s, "/d", NULL, NULL, NULL), OK);   /* 6 */
+    CHECK(closed(&a));                                 /* 7: ended */
+    CHECK_ST(t_stat(s, "/d", NULL, NULL, NULL), OK);   /* instance 3's */
+    CHECK_EQ(extfs_sup_ended(), 3u);
+    CHECK(rung(&a) && rung(&b));
+    CHECK(closed(&b));
+
+    /* The fresh instance's watches, no overflow; the mount going (extfs
+     * stopped) closes them, the bell rung. */
+    CHECK(watcher(s->fs, &c));
+    CHECK((id = add(&c, "/d", ALL)));
+    CHECK_ST(t_mkdir(s, "/d/w"), OK);
+    EXPECT(&c, "a fresh instance's watch", { id, IN(CREATE) | IN(ISDIR), "w" });
+    CHECK(extfs_sup_stop());
+    CHECK(rung(&c) && closed(&c));
+    unwatcher(&a);
+    unwatcher(&b);
+    unwatcher(&c);
+    unwatcher(&o);
+    CHECK(extfs_save(&xd, "restart-watch"));
+    return ramdisk_destroy(&xd);
 }

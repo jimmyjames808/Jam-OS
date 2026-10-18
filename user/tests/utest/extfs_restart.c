@@ -50,6 +50,7 @@ struct sup {
     unsigned        tests, crashes;
     bool            bad;
     bool            stop;
+    bool            fresh;    /* the next start gets a new state: it starts fresh */
     handle_t        thread;
     _Alignas(16) uint8_t stack[32 << 10];
 };
@@ -70,7 +71,13 @@ static status_t start(struct sup *s, const char *ended)
     handle_t block, serve, state, keep;
     if (!ramdisk_serve(s->r.rd, false, &block))
         return ERR_INTERNAL;
-    status_t st = jam_handle_duplicate(s->serve, RIGHT_SAME, &serve);
+    status_t st = OK;
+    if (__atomic_exchange_n(&s->fresh, false, __ATOMIC_ACQ_REL)) {
+        jam_handle_close(s->state);
+        st = svcstate_create(EXTFS_STATE_SIZE, &s->state);
+    }
+    if (st == OK)
+        st = jam_handle_duplicate(s->serve, RIGHT_SAME, &serve);
     if (st == OK)
         st = svcstate_give(s->state, &state);
     if (st == OK)
@@ -123,8 +130,13 @@ static void supervise(void *arg)
     struct sup *s = arg;
     while (!__atomic_load_n(&s->stop, __ATOMIC_ACQUIRE)) {
         signals_t seen;
-        if (jam_object_wait_one(s->r.proc, SIG_TERMINATED, now() + SUP_POLL, &seen) != OK)
+        if (jam_object_wait_one(s->r.proc, SIG_TERMINATED, now() + SUP_POLL, &seen) != OK) {
+            /* What the instance sends its keeper taken as it comes, as
+             * volumes takes it: a drop then closes the keeper's copy (a
+             * watcher channel a successor refused closes for its client). */
+            (void)keeper_drain_upto(&s->keeper, 64);
             continue;
+        }
         struct process_info info;
         if (!reap(s, &info)) {
             s->bad = true;
@@ -189,6 +201,32 @@ static bool sup_stop(void)
     CHECK_ST(jam_handle_close(sv.serve), OK);
     CHECK_ST(jam_handle_close(sv.state), OK);
     return ramdisk_join(sv.r.rd);
+}
+
+/* The supervisor for the other files' restart cases (extfstest.h). */
+bool extfs_sup_start(struct ramdisk *rd, const char *const *dies, unsigned n)
+{
+    return sup_start(rd, dies, n, NULL);
+}
+
+bool extfs_sup_stop(void)
+{
+    return sup_stop();
+}
+
+struct fatrun *extfs_sup_run(void)
+{
+    return &sv.r;
+}
+
+unsigned extfs_sup_ended(void)
+{
+    return sv.tests;
+}
+
+void extfs_sup_fresh(void)
+{
+    __atomic_store_n(&sv.fresh, true, __ATOMIC_RELEASE);
 }
 
 /* ---- the script ---------------------------------------------------------------------- */

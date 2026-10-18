@@ -136,25 +136,6 @@ static void queue(struct fsw *w, uint32_t c, uint32_t id, uint32_t mask, uint32_
     append(q, e);
 }
 
-/* Drop channel q's queued events of watch id. */
-static void drop(struct fsw_chan *q, uint32_t id)
-{
-    struct fsw_event **p = &q->head, *prev = NULL;
-    while (*p) {
-        struct fsw_event *e = *p;
-        if (e->id != id) {
-            prev = e;
-            p = &e->next;
-            continue;
-        }
-        *p = e->next;
-        if (q->tail == e)
-            q->tail = prev;
-        q->bytes -= rec_bytes(e->len);
-        free_event(q, e);
-    }
-}
-
 static void drop_all(struct fsw_chan *q)
 {
     while (q->head) {
@@ -257,8 +238,10 @@ bool fsw_adopt(struct fsw *w, struct fsw_table *t)
     for (uint32_t s = 0; s < FSW_WATCHES; s++)
         if (t->w[s].chan)
             index_add(w, s);
+    /* A channel with its bell may have had events queued: they died. One
+     * without has served no request, so it had none. */
     for (uint32_t c = 0; c < FSW_CHANNELS; c++)
-        if (t->chans[c].live)
+        if (t->chans[c].live && t->chans[c].belled)
             overflow(&w->chans[c]);   /* no bell yet: rung by fsw_chan_handles */
     return true;
 }
@@ -347,6 +330,11 @@ void fsw_chan_close(struct fsw *w, uint32_t c)
             unwatch(w, s);
     struct fsw_chan *q = &w->chans[c];
     drop_all(q);
+    /* Ended by the service (its client still there): the bell rung, so a
+     * client waiting on it alone (poll) wakes to find the channel closed. */
+    if (q->bell != HANDLE_INVALID &&
+        (q->ch == HANDLE_INVALID || jam_object_wait_one(q->ch, SIG_PEER_CLOSED, 0, NULL) != OK))
+        ring(q);
     if (q->ch != HANDLE_INVALID)
         jam_handle_close(q->ch);
     if (q->bell != HANDLE_INVALID)
@@ -419,8 +407,7 @@ status_t fsw_remove(struct fsw *w, uint32_t c, uint32_t id)
     const struct fsw_watch_rec *r = &w->t->w[slot];
     if (!id || r->chan != c + 1 || r->id != id)
         return OK;   /* not a watch of c now: ended already (a request run again), or never */
-    drop(&w->chans[c], id);
-    end_watch(w, slot, 0);
+    end_watch(w, slot, 0);   /* its events queued already stay, before IN_IGNORED (Linux's) */
     return OK;
 }
 

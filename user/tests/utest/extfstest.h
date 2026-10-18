@@ -23,5 +23,16 @@ bool extfs_start_pager_words(struct fatrun *r, struct ramdisk *rd, handle_t page
  * Linux's e2fsck on every image): only after extfs has stopped (the journal
  * closed). */
 bool extfs_save(struct ramdisk *rd, const char *name);
+/* extfs_restart.c's supervisor: it plays the spawner (the state VMO, the
+ * keeper, the `fs` channel's server end) and starts extfs over rd again
+ * whenever it ends, instance i with the test power dies[i] (n of them).
+ * Its client's channel is extfs_sup_run()'s; extfs_sup_ended counts the
+ * instances a test power ended; after extfs_sup_fresh the next instance is
+ * handed a new state (it starts fresh, the keeper's handles refused). */
+bool           extfs_sup_start(struct ramdisk *rd, const char *const *dies, unsigned n);
+bool           extfs_sup_stop(void);
+struct fatrun *extfs_sup_run(void);
+unsigned       extfs_sup_ended(void);
+void           extfs_sup_fresh(void);
 /* fs.getattr's mode and link count (flags: FS_NOFOLLOW or 0). */
 status_t xmode(handle_t fs, const char *path, uint32_t flags, uint32_t *mode, uint32_t *nlink);

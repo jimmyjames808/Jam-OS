@@ -87,9 +87,9 @@ const IN_ISDIR        0x40000000
 # IN_* bit at all in `mask` (other bits are ignored), or IN_MASK_ADD with
 # IN_MASK_CREATE (Linux's EINVAL).
 1  add     (str[<=4095] path, u32 mask) -> (u32 id, u8 existed)
-# End watch `id`: its queued events are dropped and IN_IGNORED queued for
-# it. An id that is not a watch of this channel now (it ended, or never
-# was): OK, nothing done.
+# End watch `id`: IN_IGNORED queued for it, after its events queued
+# already (they stay, as Linux's do). An id that is not a watch of this
+# channel now (it ended, or never was): OK, nothing done.
 2  remove  (u32 id) -> ()
 # Take queued events: as many whole records as fit in `room` bytes (at
 # most TAKE_BYTES are answered), in the order they came. IN_Q_OVERFLOW's
@@ -110,8 +110,10 @@ const IN_ISDIR        0x40000000
 
 protocol fswatch_bell 52
 
-# The bell: an event, with RIGHT_SIGNAL and RIGHT_TRANSFER only (the
-# service may ring it and give it to its keeper, nothing more), whose
+# The bell: an event, with RIGHT_SIGNAL, RIGHT_TRANSFER and RIGHT_DUPLICATE
+# only (the service may ring it and give it to its keeper, which takes
+# only what it can duplicate, nothing more; a bell without RIGHT_DUPLICATE
+# still rings, but its channel closes at the service's restart), whose
 # FSWATCH_BELL the service sets when the channel's queue gets a first
 # event.
 1  give  (handle<event> bell) event
