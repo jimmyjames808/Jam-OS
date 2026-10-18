@@ -6,8 +6,8 @@
 # CMake never links a test program (there is nothing to link one with
 # yet: these are the runtimes), so its checks are compiles only, and the
 # answers a compile can't give are given here. The code is position-
-# independent, as libc.a's: a program links anywhere (Chromium's at
-# 1 TiB, its recipe's image-base), static and non-PIE either way.
+# independent, as libc.a's: a program links anywhere (posixtest at
+# 1 TiB), static and non-PIE either way.
 cmake_common() {
     cmake -G Ninja -S "$srcdir/runtimes" -B "$1" \
         -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" \

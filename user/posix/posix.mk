@@ -79,7 +79,7 @@ MUSL_CHECKED := $(MUSL_OUT)/overrides.ok
 # position-independent (-fPIE, as the layer's and libjam's in libc.a and
 # the link drivers' default): a program is still static and non-PIE, at
 # 0x400000 or wherever its link says (--jamos-image-base, a port's
-# `image-base`: Chromium's programs at 1 TiB), and code that addresses
+# `image-base`; posixtest at 1 TiB), and code that addresses
 # its data in 32 bits could not be linked there.
 MUSL_INC    := -I$(POSIX)/musl/arch/x86_64 -I$(MUSL)/arch/x86_64 -I$(MUSL)/arch/generic \
                -I$(MUSL_OUT)/internal -I$(MUSL)/src/include -I$(MUSL)/src/internal \
@@ -278,8 +278,8 @@ POSIXTEST_SRCS := $(wildcard $(POSIX)/test/*.c)
 POSIX_PROG_CFLAGS := -std=gnu17 -O2 -g -Wall -Wextra -Werror -Wvla -D_GNU_SOURCE \
                      -I$(POSIX)/include -Iuser/include -I$(BUILD)/uinc -Idrivers/include
 POSIXTEST_CFLAGS  := $(POSIX_PROG_CFLAGS) -include $(JL_NAMES_H)
-# posixtest sits where Chromium's programs do, at 1 TiB (ports/chromium's
-# image-base), so its every run starts, forks, execs and walks its stack
+# posixtest sits where Chromium's programs are meant to, at 1 TiB
+# (docs/CR-PLAN.md, MH), so its every run starts, forks, execs and walks its stack
 # and /proc/self/maps there, and its mem section finds what is below it
 # empty (Chromium's zero segment); the layer's other programs stay
 # at 0x400000.

@@ -63,7 +63,7 @@ KEYS = {
 # drivers' --jamos-image-base, posix.ld's __jamos_image_base) instead of at
 # 0x400000: hex, a page's address, from 4 GiB to below 64 TiB (the user
 # half's lower half: what is left above it for mappings). Chromium's
-# programs sit at 1 TiB, so the low 4 GiB is empty for PartitionAlloc's
+# programs are meant to sit at 1 TiB, the low 4 GiB empty for PartitionAlloc's
 # zero segment (docs/CR-PLAN.md, MH).
 IMAGE_BASE_LO, IMAGE_BASE_HI = 1 << 32, 1 << 46
 # `tree kept`: the port's unpacked source, its build's output and its tools

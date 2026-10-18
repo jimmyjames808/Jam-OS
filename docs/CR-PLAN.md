@@ -1892,6 +1892,67 @@ sent over itself 1, `mkfifo` 4, the 256-byte path 1, `fdopen(-1)` 1,
 writable mappings 8, `ZeroSegment` 2, and the stack-trace death test (the
 layer's own heap) 1.
 
+#### MH (2026-10-18)
+
+Track MH (branch `mh-mmap-hint`): the owner's decisions D4 (mmap's address
+hint; Chromium's programs above 4 GiB by a link flag) and D5 (`--build-id`).
+
+- **The hint (D4a, `user/posix/sys/mem.c`).** Without `MAP_FIXED`, an
+  address rounded down to its page is tried as a fixed map when no libc
+  mapping overlaps it; the kernel refuses one over anything else or outside
+  the user range, and the mapping then goes where the kernel places it.
+  `MAP_FIXED_NOREPLACE` was already `EEXIST` over anything. posixtest's mem
+  section checks both ways (memres.c).
+- **Placement top down (kernel, `kernel/mm/aspace.c`).** A hint alone could
+  not empty the low 4 GiB: first fit from `USER_BASE` put every process's
+  first mappings at 0x1000 up (MC saw `mincore` find a mapping at 0x1000:
+  that, the layer's and libjam's first maps), and the layer's table alone
+  is 2.5 MiB. `vmar_map` without `VMAR_FIXED` now takes the top of the
+  highest gap that holds the mapping, as Linux places mmap; no ABI change.
+  The ktests that pinned first fit's addresses were mirrored.
+- **A program anywhere.** `posix.ld` starts the image at
+  `__jamos_image_base` when the link defines it (the drivers'
+  `--jamos-image-base=ADDR`, defined before the script is read) and every
+  object a program links is position-independent: libc.a (musl, the layer,
+  libjam's part, crt1) and the drivers' default are `-fPIE`, LLVM's runtimes
+  `CMAKE_POSITION_INDEPENDENT_CODE=ON`. A recipe line `image-base <address>`
+  links all of a port's programs there. posixtest is linked at 1 TiB, so
+  every posixtest run (start, fork, exec in place, backtrace, `/proc`,
+  `dladdr`) is a program above 4 GiB, and its mem section checks that
+  `[0x1000, 4,097 MiB)` is free and that the zero segment's hint is taken.
+- **The zero segment is `[64 KiB, 4,097 MiB)`**, not 4 GiB:
+  PartitionAlloc's `InitZeroSegment` reserves from the end of its
+  well-known regions to `USER_SPACE_ZERO_SEGMENT_SIZE_MB` (4,097) MiB, one
+  `AllocPages` at that address, keeping 64 KiB when it doesn't get it. With
+  `base_unittests` linked at 4 GiB (one run, batch 18105816):
+  `ZeroSegmentInaccessibleEnd` passed, `ZeroSegment` read 65,536 (the
+  image at 4 GiB was inside the 4,097 MiB).
+- **Not done: Chromium at 1 TiB.** Linked there, `headless_shell` fails:
+  BoringSSL calls weak functions nothing defines (`OPENSSL_memory_alloc`,
+  `_free`, guarded by a null check), and a static non-PIE link resolves
+  them to 0, which a call (`R_X86_64_PLT32`, plus or minus 2 GiB) can't
+  reach from 1 TiB. Linux links Chromium as a PIE, at 0, where 0 is near.
+  So the recipe has no `image-base` yet and both `ZeroSegment` tests stay
+  listed. The way: **static PIEs** (lld `-static -pie --no-dynamic-linker`,
+  `posix.ld` keeping `.dynamic` and the relocations, libjam's `spawn.c`
+  loading an `ET_DYN` at a high base, the layer's start applying its
+  `R_X86_64_RELATIVE` relocations before anything else), which would also
+  give the programs ASLR later.
+- **The build-id (D5).** `posix.ld` keeps `.note.gnu.build-id` in its own
+  `PT_NOTE` (after the program's list; the list's readers, `wants.c`,
+  `pkglist.c`, `dataprog.c` and `tools/checkwants.py`, match the JamOS name
+  and skip it), and both drivers pass `--build-id` (ld's SHA-1, lld's 64-bit
+  hash; Chromium's later `=fast` wins). A content hash: posix-check links
+  its test program twice and compares the bytes; the ABI stamp hashes only
+  `abi/` and `posixfds.h`, so it is unchanged.
+  `ElfReaderTestWithCurrentElfImage.ReadElfBuildId` passes and is off the
+  list (218).
+- **Relinking.** `ports/chromium/build.sh` removes a target's program when
+  the link's inputs ninja can't see (the wrapper, `tools/jamos-clang`, the
+  sysroot's libraries, crt files and `posix.ld`) changed since its last
+  link (`<target>.links`), so a libc change relinks without a hand removal;
+  `test_child_process` is a default target.
+
 ### 2. The address space: huge sparse reservations (the top risk)
 
 **What Chromium does** ([CR-RESEARCH section 6](CR-RESEARCH.md#6-v8s-jit)):

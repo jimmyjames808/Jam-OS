@@ -29,13 +29,11 @@ place       package
 style       custom
 toolchain   clang rust
 tree        kept
-# The programs are linked at 1 TiB, not 0x400000 (docs/CR-PLAN.md, MH):
-# what is below stays empty (the kernel places mappings top down), so
-# PartitionAlloc's zero segment, [64 KiB, 4,097 MiB) reserved by address,
-# is made, and a pointer cut to 32 bits faults. (Linux puts Chromium's PIE
-# programs at 0x55..., higher still.) Chromium's code and libc.a's are
-# position-independent; the link is still static and non-PIE.
-image-base  0x10000000000
+# No `image-base` yet (docs/CR-PLAN.md, MH): linked at 1 TiB, headless_shell
+# can't be, as BoringSSL calls weak functions nothing defines
+# (OPENSSL_memory_alloc, _free), which a static non-PIE link puts at 0,
+# beyond a call's 2 GiB from 1 TiB. Linux links Chromium as a PIE (at 0, so
+# 0 is near); the way here is a static PIE the loader places high.
 needs       llvm-runtimes
 # Wayland's (Chromium's own copy of libwayland links libffi), and what
 # Chromium takes from the system on Linux: the keyboard's (pkg-config) and
