@@ -316,9 +316,13 @@ values were the parent's).
 
 ### 1.9 The job
 
-The child goes in the forking process's job (`SR_JOB`), as posix_spawn's
-children do: the shell's kill of a program's job takes everything it
-forked, and the fork's charge is that job's. MB's per-program job gives a
+The child goes in a job of its own inside the forking process's job
+(FJ1; before it, the forking process's job itself, as posix_spawn's
+children do): the shell's kill of a program's job still takes everything
+it forked, and the fork's charge is still that job's (a job's use counts
+in every job above it), while the parent's `SIGKILL` of the child is that
+job's `job_kill`, which takes whatever the child started too, a `/data`
+program its `execve` had init start (section 2) among them. MB's per-program job gives a
 program 16 MiB of queued messages, so a multi-process Chromium shares one
 budget across all its processes (Mojo's socketpairs are
 `CHANNEL_BYTE_BOUND` at 1 MiB each); CB5 measures it. If it is short, the
@@ -434,7 +438,10 @@ the ABI before M14 freezes it. The call:
   it can't be built by the caller: its `execve` stays (a) for now. init
   building it and handing the caller an unstarted process it may only
   replace itself with (FX, later, with M13.5's shell) would end that.
-  Chromium's children are `/proc/self/exe` and never meet this.
+  Chromium's children are `/proc/self/exe` and never meet this. Since
+  FJ1 a forked child's `SIGKILL` takes such a program with it (the
+  child's own job); its group notices and the signals pending at the
+  `execve` still wait for FX.
 
 ## 3. `vfork()`
 
@@ -508,6 +515,7 @@ FK2, FK3 and FL1b are about two (their halves can't be tested apart).
 | **FC1. base's fork tests** | section 4's tests off the disabled list, run, PASS; their findings | ports/chromium's test list (0007-disable-failing-tests.patch), cr-test.sh's `base` expectations | FL1a to FL4, CB2 | cr-test.sh `base` | 1 | Sonnet 5.5 |
 | **FR1. Kernel review** | FK1 to FK3: findings first ([CR-REVIEW-KERNEL](CR-REVIEW-KERNEL.md)'s way), High and Medium fixed with a test each; hostile tests: a clone storm from 8 threads at the job's limit, replace racing kill and clone; **done 2026-10-18** ([FORK-REVIEW-KERNEL.md](FORK-REVIEW-KERNEL.md): 0 High, 3 Medium, 3 Low, 4 notes; the three Mediums fixed: a freeze waits for `vmo_write` copies under way, waits for a freeze end at a kill, `process_get_info` reads `faults` under the lock; two design questions) | the files its fixes need | FK1 to FK3 merged | its own; full ktest 4 and 8; soak 4 | 1.5 | **Opus** |
 | **FR2. libc review** | FL1a to FL4: what a child holds that it shouldn't (every handle and role), what a hostile child can make its parent do (notices), stale values, locks; **done 2026-10-18** ([FORK-REVIEW-LIBC.md](FORK-REVIEW-LIBC.md): 0 High, 3 Medium, 8 Low, 6 notes; two Mediums fixed: vfork and clone take malloc's lock across the clone, a child of a removed directory starts in it; a `/data` program exec'd from a forked child outliving `SIGKILL` is a design question, with three more) | the files its fixes need | FL1a to FL4 merged | its own; posixtest; utest | 1.5 | **Opus** |
+| **FJ1. Jobs and signals for forked children** | FR2's design questions 1, 2 and 4 as decided, and IL2's finding: a job of its own per forked child (`SIGKILL` its `job_kill`), `kill` never waiting (standard signals owed once, real-time `EAGAIN`), AT_SECURE across an exec in place, the kernel log handed on; built, see "FJ1 notes" | `user/posix/sys/fork.c`, `proc.c`, `proc.h`, `sigthread.c`, `sig.h`, `spawn.c`, `dev.c`, `layer.h`, `user/posix/crt/start.c`, `user/lib/fork.c`, `user/include/os.h` | FR2, IL2 merged | posixtest fork `kill`, `flood`; exec `secure`, `log`; spawn-data `fork-kill` | 1 | **Opus** |
 | **FJ. The join** | ARCHITECTURE (Goals' process creation line, Memory's clone, Userland's fork and exec), M13-PLAN's Q4 and Q5 lines, TESTING (the new sections and ktests), ROADMAP, CR-PLAN, HISTORY; this plan deleted when HISTORY covers it | the docs | FR1, FR2 | `make check` | 0.5 | Sonnet 5.5 |
 | **FQ5. Shared offsets** (M13.5's shell, not Chromium's path) | the `file` protocol's clone: a second channel onto one open file with one offset and one writable open; fat's, extfs's and bootfs's servers; fork and spawn give a file through it | `abi/idl/file.idl`, the file servers, `user/posix/sys/file.c` | FL2 | posixtest: `{ a; b; } > f` appends; a forked child's writes to an inherited file | 2 | **Opus** |
 | **FX. `/svc/exec` replaces** (later, with M13.5) | init builds a `/data` program for a caller's `execve` in an unstarted process and gives the caller a handle to it that allows `process_replace` only (a right of its own, never write), so the caller becomes the program without ever running code with its authority (the owner's rule kept) | init's exec service, `abi/idl/exec.idl`, `user/posix/sys/spawn.c` | FL3 | utest `exec_*`; posixtest | 1.5 | **Opus** |
@@ -1108,6 +1116,78 @@ client, `user/posix/sys/proc.c`'s notices and vfork wait; posixtest fork's
   the group.
 - **libc-test**: `functional/vfork` stays on the list (a limit): the
   shell's builtin `exit` and `$$` are M13.5's.
+
+### FJ1 notes
+
+Built 2026-10-18, before CB5 (the main session's calls on FR2's design
+questions 1, 2 and 4 and IL2's finding; [FORK-REVIEW-LIBC](FORK-REVIEW-LIBC.md)):
+
+- **A job per forked child.** `fork_core` makes a job inside ours
+  (`jam_job_create` of `SR_JOB`) and passes it to libjam
+  (`jam_fork_args.job`, new): the child is made in it, and its `SR_JOB`
+  is a duplicate with `JOB_RIGHTS_OWN` (as spawn gives a child its own:
+  it can start processes and jobs in it, not lift its limits nor kill
+  it). The table of children keeps our handle (`RIGHT_MANAGE`), so
+  `kill(pid, SIGKILL)` and a group's `SIGKILL` are its `job_kill`: the
+  child's own spawns and forks die with it, and so does a `/data`
+  program its `execve` started through init (init makes that program's
+  job inside the caller's `SR_JOB`, the child's now). Unlike Linux,
+  where a killed process's children live on as orphans: the price of
+  ending the `/data` program for sure, and what CB5's "Aw, Snap!" test
+  wants of a killed renderer. Exec in place is unchanged
+  (`process_replace` takes a process of the caller's own job, which
+  `spawn_replace` makes in `SR_JOB`: the child's). The charge is ours
+  as before (a job's use counts in every job above it, so MB's 16 MiB
+  of messages per program still covers all its processes). A job nested
+  `JOB_MAX_DEPTH` (32) deep, or an `SR_JOB` that can't make one, leaves
+  the child in ours, as before (`ENOMEM` and `EAGAIN` for a job's
+  memory and handle limits fail the fork). A reaped child's job lives on
+  while anything the child started still runs (its processes hold it);
+  we can't kill them then, as before FJ1.
+- **`kill` never waits.** `sig_channel_send` writes once. A full queue
+  (the child's signal thread stuck, slow, or held by an exec) owes a
+  standard signal: a bit in the child's entry, its first code and value
+  kept (Linux's pending set: one instance), and the child's end is
+  watched for room (a third binding per child, `KEY_OWED`,
+  `PORT_BIND_ONCE`, made only while something is owed); the signal
+  thread then writes what is owed, lowest first, and watches again if
+  the queue fills. A real-time signal is `EAGAIN` at once (Linux's
+  `sigqueue` past `RLIMIT_SIGPENDING`). Before, each `kill` waited up to
+  a second, so a group's kill over N stuck children took N seconds, and
+  the signal thread forwarding to a `/data` program stalled with it.
+  `CHILD_MAX` is a third of the port's bindings less 64 for the thread's
+  own (1,344; FR2's finding 8 too). A bind that fails (the job's message
+  budget) loses what it would have watched for.
+- **AT_SECURE across an exec in place.** `exec_handover` sets the
+  hand-over's `secure` from the crt's `lx_handover_secure` (this image
+  started AT_SECURE; a forked copy keeps it): a raised program's
+  `execve` of itself, or of anything in place, starts the new image
+  raised, as Linux keeps AT_SECURE while euid != uid. posix_spawn's
+  children are as before (open question below).
+- **The kernel log handed on.** `log_ops` (descriptors 1 and 2 of a
+  program with no stdout channel and no terminal: one started by init
+  or by libjam's spawn) has a `give` now: `/dev`'s kind
+  (`POSIXFDS_DEV`) with the name `log`, which no path reaches;
+  `dev_adopt` makes it a write-only log again. So an `execve` in place
+  keeps 1 and 2 (they were dropped: IL2's finding), sharing one
+  description as before, and a posix_spawn child of such a program has
+  them too (it had none). No change to the hand-over's format or the ABI
+  stamp: a C library from before leaves the descriptor out (`ENOENT`, a
+  log line), as it did.
+- **Tests.** posixtest fork `kill` (a spawned and a forked grandchild
+  gone with the child, at once) and `flood` (a child whose signal thread
+  is held: `SIGRTMIN` until full then `EAGAIN`, 1,100 `SIGUSR1` and a
+  `SIGUSR2` owed, all under 2 s; let go, one `SIGUSR1` handler, one
+  `SIGUSR2`, one per queued `SIGRTMIN`); exec `secure` and `log`, and
+  `inotify` now expecting 1 and 2; spawn-data `fork-kill`
+  (`tools/posix-mmap-test.sh`'s `spawn` case: the `/data` program gone
+  with its forked child).
+- **Left.** signal.idl's comment still says a sender waits for room
+  (changing it changes the ABI stamp: with the next IDL change). Open:
+  should posix_spawn by a raised program also start its (non-sealed)
+  child AT_SECURE, as Linux's fork and exec would? My recommendation:
+  yes, the same line in `launch`'s hand-over; not done (FJ1's call was
+  exec in place).
 
 ## 6. Questions for the owner
 

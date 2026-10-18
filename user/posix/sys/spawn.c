@@ -43,7 +43,8 @@
  * made last, once nothing but the replace can fail (exec_handover): the
  * signal thread held, every descriptor without FD_CLOEXEC exported, the
  * state exec keeps (our parent, group and session, our umask, our mask,
- * the ignored signals and the pending ones), the same SR_SIGNALS (a
+ * the ignored signals and the pending ones; AT_SECURE if we started
+ * raised), the same SR_SIGNALS (a
  * duplicate of ours: the parent's kill reaches the new program through
  * it). Then process_replace: our other threads end, our memory, every
  * handle and so every close-on-exec descriptor go, and this thread runs
@@ -519,6 +520,12 @@ static status_t exec_handover(handle_t startup, void *ctx)
     x->ho->state.sigpending = sig_exec_pending();
     x->ho->cwd = x->t->cwd;
     x->ho->exe = x->exe[0] ? x->exe : NULL;
+    /* A raised image's exec starts the new one raised too (FJ1): Linux
+     * keeps AT_SECURE while the raised credentials last (euid != uid), and
+     * nothing here drops them. Fail-safe: the new image's environment is
+     * still the one an untrusted starter gave (less what the first start
+     * dropped), and its TZ file, secure_getenv and locale path stay shut. */
+    x->ho->secure = lx_handover_secure();
     status_t st = posixfds_write(startup, x->ho);   /* its handles consumed */
     if (st == OK) {
         sock_exit_drain();

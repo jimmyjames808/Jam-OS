@@ -170,12 +170,34 @@ static long log_stat(struct fd_desc *d, struct stat *st)
     return 0;
 }
 
-/* The log is no /dev node a child could reopen: a child is given none
- * (no .give), and starts with its own defaults for what it lacks. */
+/* The log is no /dev node a path reaches, but a child is given it as one
+ * (posix_spawn, and an exec in place: FJ1, where a program whose 1 and 2
+ * were the log lost them at its execve): /dev's kind with the name
+ * LOG_NAME, which node_named doesn't know, so only dev_adopt makes it a
+ * log again. A C library from before that leaves the descriptor out
+ * (ENOENT), as it was before. */
+#define LOG_NAME "log"
+
+static long log_give(struct fd_desc *d, struct fd_given *out)
+{
+    long r = 0;
+    void *data = kind_data(LOG_NAME, sizeof(LOG_NAME), &r);
+    if (r)
+        return r;
+    out->kind = POSIXFDS_DEV;
+    out->status = fd_status(d);
+    out->offset = 0;
+    out->nhandles = 0;
+    out->data = data;
+    out->data_len = sizeof(LOG_NAME);
+    return 0;
+}
+
 static const struct fd_ops log_ops = {
     .name = "log",
     .write = log_write,
     .stat = log_stat,
+    .give = log_give,
 };
 
 static const struct node *node_named(const char *name);
@@ -234,6 +256,10 @@ static struct fd_desc *node_desc(const struct node *n, uint32_t status)
 long dev_adopt(const struct posixfds_fd *rec, const void *data, const handle_t *hs,
                struct fd_desc **out)
 {
+    if (!strcmp(data, LOG_NAME)) {   /* the starter's log (log_give): write-only, as ours */
+        *out = fd_new(&log_ops, (rec->status & ~(uint32_t)O_ACCMODE) | O_WRONLY, NULL);
+        return *out ? 0 : -ENOMEM;
+    }
     const struct node *n = node_named(data);   /* a string: posixfds_read checked */
     if (!n)
         return -ENOENT;

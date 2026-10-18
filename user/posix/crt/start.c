@@ -108,6 +108,11 @@ const char *lx_handover_exe(void)
     return ho_given && ho_exe[0] ? ho_exe : startup_exe();
 }
 
+bool lx_handover_secure(void)
+{
+    return ho_secure;
+}
+
 static void sink_exe(void *ctx, const char *path)
 {
     (void)ctx;

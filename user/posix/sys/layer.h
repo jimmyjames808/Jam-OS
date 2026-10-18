@@ -65,6 +65,9 @@ const struct posixfds_state *lx_handover(const char **cwd);
  * startup's SR_ARGS named (startup_exe: a program started from its image
  * with no hand-over), or NULL. */
 const char *lx_handover_exe(void);
+/* This image started as AT_SECURE (the hand-over's POSIXFDS_SECURE: a
+ * raised program, init's /svc/exec's word), as a forked copy of it did. */
+bool        lx_handover_secure(void);
 
 /* ---- fork (fork.c) ----------------------------------------------------------------
  * fork's step in each module whose state a forked child goes on using
