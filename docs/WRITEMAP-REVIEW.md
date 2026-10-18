@@ -104,7 +104,52 @@ Notes (no change needed):
 
 ## Fixes
 
-Filled in as each lands (one commit each, its test with it).
+One commit each, its test with it (the contract text of finding 1 in its
+own commit first, bb351a91: the ABI stamp moves).
+
+- **Finding 1** (eb21ea09): a page whose write-back ends with an error is
+  clean (Q1's A: it doesn't pin the dirty limit, it may be evicted) but
+  *kept* (`REC_KEPT` in its cache record, `pager_cache.h`'s "Kept"):
+  `PAGER_DIRTY_PEEK` copies it with the dirty and writing ones until a
+  store makes it dirty again or it leaves its table (evicted, invalidated,
+  shrunk, detached), so extfs's `read`, which already lays PEEK's pages
+  over the disk's, shows what every mapping shows. Nothing else sees the
+  mark: its state stays 0, flags 0 and BEGIN never take it, the counts and
+  the hold are a clean page's, and the background request's run (any
+  dirty or writing page) has a look of its own (`RUN_COUNTED`). ktest
+  `pager_dirty_failed_kept`; utest `extfs_wback`'s full volume now reads
+  the file as the mapping shows it after the failed `msync` (the disk's
+  bytes are checked by an instance with no pager).
+- **Finding 2** (6174bf4c): `write`, `truncate` (and a failed one's
+  `maps_changed`) and the run check (`maps_written`) of a file with no
+  shared slot ask the kernel for its key's VMO first (`find_lost`: one
+  `PAGER_VMO_FIND`, answered `ERR_NOT_FOUND` at once for a file nobody
+  maps); a VMO an instance before made gets a slot there, `written`, its
+  size as the kernel has it, so the usual one-cache steps reach its pages.
+  No free slot: it is cut off (detached) rather than left to write older
+  bytes back. utest `extfs_wback`'s fifth phase: three files mapped and
+  stored to, extfs killed, an instance with a new state: a map to run is
+  `ERR_BUSY`, a write over a stored page shows in the mapping and both
+  reach the disk, a truncate down and up again zeroes the stores past the
+  cut, there and on the disk. `read` is left as it was (finding 11).
+- **Finding 3** (e6f3ce2f): `pager_create_vmo_flags` takes over a LINKED
+  link whose VMO has no reference left (its destruction under way) as it
+  takes over a GONE one: out of the key table, DETACHED (its requests
+  failed; none has a waiter), freed by that destruction's
+  `pager_vmo_gone`, which sends no GONE for it. A live VMO is still
+  `ERR_ALREADY_EXISTS`. New hook `DBG_PAGER_VMO_DYING` (in `vmo_destroy`,
+  after the pages are freed, before the link is told); ktest
+  `pager_dirty_dying_key` makes the key again from the hook: OK, the new
+  VMO found by FIND, no GONE for the old one, the new one's GONE in turn.
+- **Finding 4** (6c9af029): a map that makes its key again (taking the
+  GONE over in the kernel) drops a GONE of that key that `maps_again` kept
+  for `serve`. No test: it needs two requests in progress at one death (a
+  sync and the map) with the key's GONE queued; extfs's test powers stop
+  one request at a time.
+- **Finding 5** (2f85b7cb): `make_shared` keeps the slot's `error` when it
+  rewrites an existing slot. utest `extfs_wback`'s full volume maps the
+  file again (its VMO alive, extfs's handle let go) between the failed
+  `msync` and the `fsync`, which still says `ERR_NO_SPACE`.
 
 ## Design questions
 
@@ -135,4 +180,22 @@ Filled in as each lands (one commit each, its test with it).
 
 ## Tests
 
-Filled in with the runs.
+**The fixes' tests** (each in its fix's commit): ktests
+`pager_dirty_failed_kept` and `pager_dirty_dying_key`
+(`kernel/test/test_pager_dirty.c`); utest `extfs_wback` (its full volume
+and its new fifth phase; it runs in the init run, where utest has the
+pager power).
+
+**The hostile test** (the plan's WR row): `pagertest rec swarm` and
+`tools/pager-test.sh`'s `whostile` case (`PAGER_CASES=whostile`):
+`/jam/rh.bin`, 512 records of 5000 bytes, mapped writable; the process
+forks; four threads in each process store the records 100 times over
+(writer w the records w, w + 8, ...; round r with salt 41 + r; records
+cross pages, so the writers share pages), the child through the mapping it
+inherited, each writer msyncing its records every 4 of them, while a
+thread of the parent kills `extfs-jam` every 200 ms (initctl.kill, then
+one call on the mount, as `storm` does). Every `msync` must say OK and
+every record end whole by the mapping, by `read` and by a new mapping; then
+QEMU's monitor quit with no stop and no sync, and Linux's `e2fsck -fy` of
+a copy of the disk exits 0 and debugfs finds all 512 records whole with the
+last round's salt (every one was acknowledged).
