@@ -13,13 +13,17 @@
   2. Every block that isn't all zeros lies in the table's blocks (the
      first 2 + 32 and the last 1 + 32) or in one of the two partitions:
      nothing was written in the gaps.
-  3. Any block that starts with utest's pattern (user/tests/utest/
-     nvmewrite.c: "JAMOSW1", a zero, the partition and the block, 32 bits
-     each) is exactly the pattern of that block, at that block of that
-     partition: a write that landed in the wrong place shows. --pattern all:
-     every block nvmew_write writes (each partition's first and last 8
-     blocks and 64 KiB in its middle) holds it; none: none does; some
-     (the default): either.
+  3. Any block that is utest's pattern (user/tests/utest/nvmewrite.c:
+     "JAMOSW1", a zero, the partition and the block, 32 bits each, then
+     bytes made from them) lies at that block of that partition, and the
+     block there that starts with that head is the whole pattern: a write
+     that landed in the wrong place, or a changed one, shows. Another block
+     that starts with "JAMOSW1" is a file's bytes, not utest's: an
+     installed ESP's bootfs.img holds utest, and utest holds the string
+     (a 16-byte-aligned constant with zeros after it, so a build can put
+     it at the start of a block). --pattern all: every block nvmew_write
+     writes (each partition's first and last 8 blocks and 64 KiB in its
+     middle) holds it; none: none does; some (the default): either.
 --before names the image as it was before the run (a drive that wasn't
 blank, erased by `disk prepare`: tools/nvme-test.sh's `erase`): rule 2 is
 then every block that differs from it, not every block that isn't zeros,
@@ -27,8 +31,13 @@ so the old data outside the table and the partitions must be there still.
 --ranges prints the blocks a write may touch, "a-b,c-d,..." (b exclusive),
 for tools/nvme-trace-check.py's --write-ranges, after the checks pass.
 512-byte blocks only (QEMU's drives in the test). Reads only the file.
-Exit 0 if every check passed, 1 naming what didn't."""
+Exit 0 if every check passed, 1 naming what didn't.
+
+    nvme-written.py --selftest
+
+runs rule 3 on small images made in memory (make check)."""
 import argparse
+import io
 import struct
 import sys
 import uuid
@@ -44,9 +53,12 @@ RUN = 8
 MID = (64 << 10) // BS
 
 
+class Failed(Exception):
+    pass
+
+
 def fail(why):
-    print("nvme-written: FAILED: %s" % why)
-    sys.exit(1)
+    raise Failed(why)
 
 
 def header(img, lba, other, blocks):
@@ -133,20 +145,84 @@ def scan(img, size, allowed, parts, before=None):
             if blk[:8] != MAGIC:
                 continue
             part, block = struct.unpack_from("<II", blk, 8)
-            if part > 1 or parts[part][0] + block != lba or blk != pattern(part, block):
-                fail("block %d holds partition %d's block %d's pattern: misplaced or wrong" %
+            whole = part <= 1 and blk == pattern(part, block)
+            home = part <= 1 and parts[part][0] + block == lba
+            if not whole and not home:
+                continue    # a file's bytes (utest's own string in bootfs.img)
+            if not home:
+                fail("block %d holds partition %d's block %d's pattern: misplaced" %
+                     (lba, part, block))
+            if not whole:
+                fail("block %d, partition %d's block %d, starts with its pattern but isn't it" %
                      (lba, part, block))
             found.add((part, block))
     return found
 
 
+def selftest():
+    """Rule 3 on a 3 MiB image with two 1 MiB partitions: a file's bytes
+    that start with the magic and zeros (what bootfs.img put at an
+    installed ESP's block 51573 in one build) pass and aren't counted;
+    the pattern in its place passes; the pattern elsewhere, or changed in
+    its place, fails."""
+    parts = [(2048, 4096), (4096, 6144)]
+    allowed = [(0, 2 + ARRAY_BLOCKS)] + parts
+    size = 6144 * BS
+
+    def run(*blocks):
+        img = bytearray(size)
+        for lba, data in blocks:
+            img[lba * BS:(lba + 1) * BS] = data
+        try:
+            return scan(io.BytesIO(bytes(img)), size, allowed, parts)
+        except Failed as e:
+            return str(e)
+
+    lookalike = MAGIC + bytes(8) + bytes.fromhex("54316f00000000005f316f0000000000")
+    lookalike += b"jamos-nvme".ljust(BS - len(lookalike), b"\0")
+    changed = bytearray(pattern(1, 3))
+    changed[100] ^= 1
+    cases = [
+        ("a file's bytes that start with the magic", run((2048 + 700, lookalike)), set()),
+        ("the same in the other partition", run((4096 + 9, lookalike)), set()),
+        ("the pattern in its place", run((2048, pattern(0, 0)), (4096 + 3, pattern(1, 3))),
+         {(0, 0), (1, 3)}),
+        ("the pattern elsewhere", run((2048 + 700, pattern(0, 0))),
+         "block 2748 holds partition 0's block 0's pattern: misplaced"),
+        ("the pattern in the other partition", run((4096, pattern(0, 0))),
+         "block 4096 holds partition 0's block 0's pattern: misplaced"),
+        ("the pattern changed in its place", run((4096 + 3, bytes(changed))),
+         "block 4099, partition 1's block 3, starts with its pattern but isn't it"),
+    ]
+    bad = [(what, got, want) for what, got, want in cases if got != want]
+    for what, got, want in bad:
+        print("nvme-written: selftest: %s: got %r, want %r" % (what, got, want))
+    if bad:
+        return 1
+    print("nvme-written: selftest: %d cases OK" % len(cases))
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("image")
+    ap.add_argument("image", nargs="?")
     ap.add_argument("--pattern", default="some", choices=["none", "some", "all"])
     ap.add_argument("--ranges", action="store_true")
     ap.add_argument("--before")
+    ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
+    if a.selftest:
+        return selftest()
+    if not a.image:
+        ap.error("an image, or --selftest")
+    try:
+        return check(a)
+    except Failed as e:
+        print("nvme-written: FAILED: %s" % e)
+        return 1
+
+
+def check(a):
     with open(a.image, "rb") as img:
         img.seek(0, 2)
         size = img.tell()

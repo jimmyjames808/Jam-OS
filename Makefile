@@ -765,7 +765,9 @@ $(PT_LIB_OBJ): $(patsubst %,$(BUILD)/udrv/drivers/lib/%.o,$(PT_LIB)) tools/check
 # the Markdown docs still match the tree (tools/checkdocs.py), the
 # RTL8125 listen-only probe has no way to transmit (tools/checknotx.sh),
 # boot/init.cfg's parts add up to its whole run (tools/init-test.sh --check),
-# the NVMe driver writes only a drive it found to be Jam OS's (tools/checknvme.py), and the
+# the NVMe driver writes only a drive it found to be Jam OS's (tools/checknvme.py), the
+# drive checker tells utest's written blocks from a file's bytes that start the same way
+# (tools/nvme-written.py --selftest), and the
 # partition table library keeps to the driver rules and passes
 # tools/gptcheck.c (its cases, mutations and a short fuzz pass), and the
 # ports' recipes pass their lint and the ports builder its self-test
@@ -792,6 +794,7 @@ check: all
 	sh tools/checknotx.sh
 	sh tools/init-test.sh --check
 	python3 tools/checknvme.py
+	python3 tools/nvme-written.py --selftest
 	python3 tools/netpeer.py --selftest
 	python3 tools/pcap-vlan-check.py --selftest
 	python3 tools/serial-feed.py --selftest
