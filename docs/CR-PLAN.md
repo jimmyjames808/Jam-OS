@@ -2103,6 +2103,79 @@ nothing (ninja does not see the sysroot's libc), so the track could not
 make that sure itself: whoever relinks next, `CR_BASE_ONLY` with these four
 suites is a one-minute check.
 
+#### LH (2026-10-18)
+
+Track LH (branch `lh-layer-heap`): the layer's own heap, the High of
+[SG-REVIEW](SG-REVIEW.md) (finding 1) and the last part of
+[FORK-REVIEW-LIBC](FORK-REVIEW-LIBC.md)'s finding 1. The layer
+(`user/posix/sys`) and libjam's objects in libc.a allocated with the
+program's `malloc`: a program whose `malloc` is its own (PartitionAlloc)
+and calls `mmap` with its lock held, or a handler that interrupts it and
+calls `open`, could wait for that lock for ever.
+
+**The heap** (`user/posix/sys/heap.c`): `jam_malloc`, `jam_calloc`,
+`jam_free` (`<os.h>`: libjam's names, kept unrenamed in libc.a by
+`tools/posixnames.py`), `jam_realloc` and `jam_strdup` (`layer.h`). Not
+musl's internal allocator: in a program that keeps musl's `malloc`,
+`__libc_malloc` *is* the program's, so a handler interrupting it would
+still wait. Blocks up to 16 KiB come from size classes (16-byte steps to
+64, then four to each doubling) cut from 64 KiB runs of one arena, a 1 GiB
+VMO of address space mapped at the first allocation, pages committed on
+touch (libos's heap's way); freed blocks go on their class's list and runs
+are never given back. A bigger block (or any, once the arena is full) is a
+VMO of its own, unmapped by its free. No VMO handle is kept (a forked
+child's copy is a VMO it has no handle to), so nothing decommits. Neither
+is in libc's table of mappings, so the program's `munmap` never reaches
+them. In a native program the `jam_` names are libos's heap (`heap.c`'s
+aliases). Every allocation of the layer and of libjam was converted (312
+calls in 53 files, and the layer's six `strdup`s), with dr_mp3's default
+allocators; posixtest's one free of a layer block (`fileskid.c`) too.
+
+**Its rules.** The lock is a leaf (only the kernel's VMO and address-space
+calls under it). It is held only inside a quiet stretch
+(`sig_quiet_begin`): a raise there waits for its end, so no handler runs on
+a thread holding it; a fault there is the kernel's kill (`sig_fault_begin`
+asks `heap_holder`, as for `sig_lock`). fork's prepare takes it last, for
+every way in (musl's `fork`, `_Fork`, a raw `SYS_fork`, `vfork`, both
+clones all reach `fork_core`), gives it back as soon as the clone is made
+(`heap_back`: the parent's walk may allocate), and the child makes it
+fresh before anything else. vfork and clone still take musl's `malloc`
+lock as FR2 made them (for the child's own `malloc`: posixtest's `alloc`).
+
+**Proved by make check**: `tools/checklayerheap.py` reads `libmusl.a`'s
+members and refuses any layer or libjam object (before the renaming) that
+names an allocator function or one of musl's that reaches one through
+other members (it found the six `strdup`s and dr_mp3's defaults; it checks
+itself by finding `strdup` and `fopen`; `__malloc_atfork`, which only
+locks, is allowed). The libjam link test's stub has no `malloc`, `calloc`
+or `free` any more.
+
+**Tests** (TESTING.md: `posix-heap.txt`, posix-mem, posix-fork): bin/heaptest
+(`user/tests/heaptest`), whose own `malloc` takes its lock and then calls
+`mmap`, `munmap`, `open`, `read` and `close` (`own`), and runs a `SIGUSR1`
+handler's `open` and `read` of `/proc/self/status` while busy inside it
+(`handler`); posixtest's mem section runs both. posixtest fork's `heap`: 30
+children each way beside two threads in `jam_malloc`. Without the heap (a
+throwaway build whose `jam_*` called `malloc` and whose `heap_fork` did
+nothing, batch 18143007) all three failed: `own` saw 2105 calls of `malloc`
+from inside `malloc`, `handler` 5, and the fork case hung; with the heap
+and no `heap_fork` (18143427) the fork case hung too. heaptest costs the
+boot image 0.5 MB (every POSIX program here is about that size).
+
+**headless_shell** (the smoke, `tools/cr/hs-smoke.sh`, scratch): relinked
+against this libc (`tools/cr/build.sh start headless_shell`, 152 s;
+`jam_malloc` and `heap_fork` are in the program), it **still hangs at
+start-up** exactly as before: 2 threads, 0:00.00 CPU, 544 KiB (its job 136
+pages) at 45 s and at 65 s, no output at `--v=1`. So the layer heap was not
+that hang's cause.
+
+**Left.** `StackTraceDeathTest` (base_unittests) not run here (IC had
+base): the next relink of base_unittests runs it with this libc. musl's
+`posix_spawn` override still allocates its `ops` with `malloc` (musl's
+side, not a call; `posix_spawn` isn't async-signal-safe), and glibc's
+`backtrace_symbols` with `malloc` (its caller frees). The arena is 1 GiB of
+address space in every POSIX process that allocates (pages only as used).
+
 ### 2. The address space: huge sparse reservations (the top risk)
 
 **What Chromium does** ([CR-RESEARCH section 6](CR-RESEARCH.md#6-v8s-jit)):

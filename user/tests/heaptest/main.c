@@ -18,12 +18,12 @@
  *
  * Ends "heaptest: <mode>: PASS" (exit 0), or with a FAILED line for each
  * check that didn't hold (exit 1). posixtest's mem section runs both. */
+#include <stdint.h>
 #include <stdio.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
-#include <stdint.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
