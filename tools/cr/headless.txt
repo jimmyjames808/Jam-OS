@@ -1,0 +1,67 @@
+# cr-test.sh's headless script (docs/CR-PLAN.md, track CB3): headless_shell,
+# one process, no sandbox, no GPU, V8 without its JIT, on a page of /data, on
+# a page by name over HTTP and on a page by name over HTTPS. Each page is run
+# twice: --dump-dom (into a file here) and --screenshot (800x600 PNG there);
+# the case copies the files out of the saved stick and
+# tools/cr/headless-check.py looks at them with the servers' logs. A last
+# run of the HTTPS page, without the SPKI flag, must be refused.
+#
+# The case fills in @SPKI@ (the test certificate's SPKI hash: the one
+# certificate this run trusts, by --ignore-certificate-errors-spki-list, not
+# the blanket --ignore-certificate-errors). Lines are kept short with
+# variables (the shell cuts a line at 240 characters): H the program, T the
+# scratch directory, U the page, S the trust flag.
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send export TMPDIR=/data/cr/tmp HOME=/data/cr/tmp FONTCONFIG_FILE=/data/cr/out/jamos/fonts/fonts.conf
+wait {prompt}
+send H=/data/cr/out/jamos/headless_shell; T=/data/cr/tmp; S=--ignore-certificate-errors-spki-list=@SPKI@
+wait {prompt}
+
+# (a) the page on /data
+send U=file:///data/cr/out/jamos/page.html
+wait {prompt}
+send run $H --no-sandbox --single-process --no-zygote --headless --disable-gpu --js-flags=--jitless --dump-dom $U > $T/dom-local.html; echo rc1-$?
+wait 240 re:rc1-[0-9]
+wait {prompt}
+send run $H --no-sandbox --single-process --no-zygote --headless --disable-gpu --js-flags=--jitless --window-size=800,600 --screenshot=$T/local.png $U; echo rc2-$?
+wait 240 re:rc2-[0-9]
+wait {prompt}
+
+# (b) a page by name over HTTP, its picture from a second name (the names
+# are netpeer's DNS's: www.jam is a CNAME of mac.jam)
+seen 60 dns: 1 DNS server(s) from netstack
+send host www.jam; host mac.jam; echo h0-"x"
+wait 30 h0-x
+wait {prompt}
+send U=http://www.jam:8000/page-http.html
+wait {prompt}
+send run $H --no-sandbox --single-process --no-zygote --headless --disable-gpu --js-flags=--jitless --dump-dom $U > $T/dom-http.html; echo rc3-$?
+wait 240 re:rc3-[0-9]
+wait {prompt}
+send run $H --no-sandbox --single-process --no-zygote --headless --disable-gpu --js-flags=--jitless --window-size=800,600 --screenshot=$T/http.png $U; echo rc4-$?
+wait 240 re:rc4-[0-9]
+wait {prompt}
+
+# (c) a page by name over HTTPS, the test certificate trusted by its SPKI hash
+send U=https://www.jam:8443/page-https.html
+wait {prompt}
+send run $H --no-sandbox --single-process --no-zygote --headless --disable-gpu --js-flags=--jitless $S --dump-dom $U > $T/dom-https.html; echo rc5-$?
+wait 240 re:rc5-[0-9]
+wait {prompt}
+send run $H --no-sandbox --single-process --no-zygote --headless --disable-gpu --js-flags=--jitless $S --window-size=800,600 --screenshot=$T/https.png $U; echo rc6-$?
+wait 240 re:rc6-[0-9]
+wait {prompt}
+
+# the same page without the trust flag: the certificate is the test's own,
+# so the load must fail
+send run $H --no-sandbox --single-process --no-zygote --headless --disable-gpu --js-flags=--jitless --dump-dom $U > $T/dom-nocert.html; echo rc7-$?
+wait 240 re:rc7-[0-9]
+wait {prompt}
+
+send sync; ls -l $T; echo ls-"x"
+wait 60 ls-x
+wait {prompt}
+send reboot -f
+wait 60 reboot: resetting
