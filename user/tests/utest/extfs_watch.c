@@ -39,6 +39,9 @@
  *                       renamed "Etc." and moved into etc; the subview's
  *                       root moved and a move into etc that the view still
  *                       sees leave them
+ *   extfs_watch_deep    (IR's 3) a watch its client made too deep for the
+ *                       reach check to place ends when its tree leaves
+ *                       the subview, as any out of reach
  *   extfs_restart_watch (IE2, 2.8) extfs ended by its test powers between a
  *                       change and its event, at an fs.watch committed and
  *                       not answered, before a fresh start: watches back
@@ -261,11 +264,16 @@ static bool expect_loose(const struct wat *x, const struct want *want, int n, in
 /* The cases' watch ids. */
 static uint32_t idD, idF, idS, idO, idA, idB, idX, idY, idZ, idSD, idE, idIN, idH;
 
-static bool start(void)
+static bool start_at(uint64_t sectors)
 {
-    CHECK(ramdisk_create(&xd, EXT_DISK_SECTORS));
+    CHECK(ramdisk_create(&xd, sectors));
     CHECK(extfs_start(&r, &xd, false, NULL, 0));
     return true;
+}
+
+static bool start(void)
+{
+    return start_at(EXT_DISK_SECTORS);
 }
 
 static bool stop(const char *name)
@@ -880,6 +888,63 @@ bool t_extfs_watch_reach(void)
     jam_handle_close(vk);
     jam_handle_close(ve);
     return stop("watch-reach");
+}
+
+/* ---- watches deep down (IR's 3 and 4) ---------------------------------------------- */
+
+#define DEEP_SECTORS (64u * MIB_SECTORS)   /* 4,096 inodes (32 MiB has 2,048) */
+
+/* dir/top made 32 directories deeper, every path short: a chain c/a/.../a
+ * of 32 made in dir, top moved to its bottom, the chain renamed top. */
+static bool deepen(const char *dir, const char *top)
+{
+    char chain[100], from[40], into[120];
+    int n = snprintf(chain, sizeof(chain), "%s/c", dir);
+    CHECK_ST(t_mkdir(&r, chain), OK);
+    for (int i = 1; i < 32; i++) {
+        n += snprintf(chain + n, sizeof(chain) - (size_t)n, "/a");
+        CHECK_ST(t_mkdir(&r, chain), OK);
+    }
+    snprintf(from, sizeof(from), "%s/%s", dir, top);
+    snprintf(into, sizeof(into), "%s/%s", chain, top);
+    CHECK_ST(t_rename(&r, from, into), OK);
+    snprintf(chain, sizeof(chain), "%s/c", dir);
+    CHECK_ST(t_rename(&r, chain, from), OK);
+    return true;
+}
+
+/* A subview's client makes its own watch too deep for the reach check to
+ * place (2,048 directories): w watched, then its tree deepened inside the
+ * subview (no move judged). The tree moved above the subview's root must
+ * end the watch all the same, not leave it reporting from outside. */
+bool t_extfs_watch_deep(void)
+{
+    struct wat s;
+    struct tfile f;
+    handle_t sub;
+    uint32_t done = 0;
+    CHECK(start_at(DEEP_SECTORS));
+    CHECK_ST(t_mkdir(&r, "/h"), OK);
+    CHECK_ST(t_mkdir(&r, "/h/t"), OK);
+    CHECK_ST(t_mkdir(&r, "/h/t/w"), OK);
+    CHECK(put_file(&r, "/h/t/w/f", "f"));
+    CHECK_ST(fs_subview_until(r.fs, dl(), "/h", 2, 0, &sub), OK);
+    CHECK(watcher(sub, &s));
+    uint32_t idW = add(&s, "/t/w", ALL);
+    CHECK(idW);
+    CHECK_ST(t_open(&r, "/h/t/w/f", FS_WRITE, &f), OK);
+    CHECK(take_all(&s));   /* f's open */
+    for (int i = 0; i < 64; i++)   /* w: 3 + 64 * 32 below the volume's root */
+        CHECK(deepen("/h", "t"));
+    NOTHING(&s, "w's tree made deeper inside the subview");
+    CHECK_ST(t_rename(&r, "/h/t", "/out"), OK);
+    CHECK_ST(t_write(&f, 0, "x", 1, &done), OK);
+    t_close(&f);
+    EXPECT(&s, "a watch too deep to place, its tree moved out", { idW, IN(MOVE_SELF), "" },
+           { idW, IN(IGNORED), "" });
+    unwatcher(&s);
+    jam_handle_close(sub);
+    return stop("watch-deep");
 }
 
 /* ---- restarts (2.8) ------------------------------------------------------------ */

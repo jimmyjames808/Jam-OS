@@ -182,7 +182,7 @@ static bool hidden(void *ctx, const struct fsw_chan_rec *rec, const struct fsw_k
 
 /* ---- the reach (Q2) --------------------------------------------------------------- */
 
-#define CHAIN_MAX 2048u   /* directories deeper than this: not placed (watches left) */
+#define CHAIN_MAX 2048u   /* directories deeper than this: not placed (a judged watch ends) */
 
 static struct fsw_key chain_to[CHAIN_MAX], chain_root[CHAIN_MAX], chain_w[CHAIN_MAX];
 
@@ -256,7 +256,10 @@ static void dir_now(void *ctx, uint32_t slot)
  * IN_MOVE_SELF if asked (x's own had the rename's), then IN_IGNORED. Only
  * the channels whose reach the move may change look at their watches: a
  * subview's whose root isn't x or under it, when `to` isn't under the
- * root; a hiding view's, when x went under etc. */
+ * root; a hiding view's, when x went under etc. A place that can't be
+ * found (a chain too deep or unreadable, a file's directory gone) counts
+ * as out of reach: a subview's client can build a place too deep to judge
+ * (IR's 3), and a watch it can't judge must not outlive its view. */
 static void moved(const struct fsw_key *x, bool xdir, const struct fsw_key *to)
 {
     const struct fsw_table *t = w.t;
@@ -264,25 +267,25 @@ static void moved(const struct fsw_key *x, bool xdir, const struct fsw_key *to)
         fsw_each(&w, x, dir_now, (void *)to);   /* a file's watches: its directory now */
     uint32_t judge = 0;
     unsigned nto = 0;
-    bool etc_top = false;
+    bool placed = false, etc_top = false;
     for (unsigned c = 0; c < FSW_CHANNELS; c++) {
         const struct fsw_chan_rec *r = &t->chans[c];
         bool sub = r->root != EXT_ROOT_INO, hides = r->view & FS_VIEW_NO_ETC;
         if (!r->live || !r->watches || (!sub && !hides))
             continue;
-        if (!nto) {
+        if (!placed) {
+            placed = true;
             nto = chain_of((uint32_t)to->ino, to->gen, chain_to);
-            if (!nto)
-                return;   /* can't be placed: left as they are */
             if (!special_ok)
                 special_find();
-            etc_top = kind_of(nto == 1 ? x : &chain_to[nto - 2]) == SP_ETC;
+            /* `to` not placed: as if under etc and out of every subview. */
+            etc_top = !nto || kind_of(nto == 1 ? x : &chain_to[nto - 2]) == SP_ETC;
         }
         bool check = hides && etc_top;
         if (sub && !check) {
             const struct fsw_key root = { .ino = r->root, .gen = r->root_gen };
             unsigned nr = chain_of((uint32_t)r->root, r->root_gen, chain_root);
-            check = !in_chain(chain_root, nr, x) && !in_chain(chain_to, nto, &root);
+            check = !in_chain(chain_root, nr, x) && (!nto || !in_chain(chain_to, nto, &root));
         }
         if (check)
             judge |= 1u << c;
@@ -295,11 +298,11 @@ static void moved(const struct fsw_key *x, bool xdir, const struct fsw_key *to)
         bool file = !(r->flags & FSW_W_DIR), self = same_key(&k, x);
         unsigned n = file ? chain_of(kept->watch.dir[s][0], kept->watch.dir[s][1], chain_w)
                           : chain_of((uint32_t)r->ino, r->gen, chain_w);
-        if (!n || (!self && !(xdir && in_chain(chain_w, n, x))))
-            continue;   /* not placed, or not under x */
+        if (n && !self && !(xdir && in_chain(chain_w, n, x)))
+            continue;   /* not under x */
         const struct fsw_chan_rec *cr = &t->chans[r->chan - 1];
         const struct fsw_key root = { .ino = cr->root, .gen = cr->root_gen };
-        bool out = cr->root != EXT_ROOT_INO && !in_chain(chain_w, n, &root);
+        bool out = !n || (cr->root != EXT_ROOT_INO && !in_chain(chain_w, n, &root));
         if (!out && (cr->view & FS_VIEW_NO_ETC)) {
             char place[32];
             place_of(chain_w, n, file ? &k : NULL, place);
