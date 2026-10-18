@@ -233,6 +233,7 @@ static status_t wait_one(struct kobject *obj, signals_t mask, uint64_t deadline_
         .hit = false,
     };
     PATH_MARK(PATH_MK_WAIT_IN);
+    struct wait_note old = thread_wait_note(WAITON_OBJECT, obj->koid, mask);
     uint64_t f = spin_lock_irqsave(&obj->lock);
     status_t st = OK;
     if (!(obj->signals & mask)) {
@@ -254,6 +255,7 @@ static status_t wait_one(struct kobject *obj, signals_t mask, uint64_t deadline_
     if (observed)
         *observed = obj->signals;
     spin_unlock_irqrestore(&obj->lock, f);
+    thread_wait_unnote(old);
     PATH_MARK(PATH_MK_WAIT_OUT);
     return thread_interrupt_consume(st);
 }

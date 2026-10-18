@@ -1188,7 +1188,9 @@ static status_t pager_fetch(struct vmo *v, uint64_t idx)
     if (st == ERR_OUT_OF_RANGE || st == ERR_NO_MEMORY)
         return st;   /* past the size (as for any VMO), or no request */
     if (st == OK && r) {
+        struct wait_note old = thread_wait_note(WAITON_PAGER, v->base.koid, idx);
         st = pager_req_wait(r);
+        thread_wait_unnote(old);
         pager_req_put(r);
     }
     /* A request is answered whole: one failed for its other pages may
@@ -2553,8 +2555,11 @@ static status_t sync_chunk(struct vmo *v, uint64_t first, uint64_t end, bool wai
         return OK;   /* (shrunk since the look above) */
     if (st != OK || !r)
         return st;
-    if (wait)
+    if (wait) {
+        struct wait_note old = thread_wait_note(WAITON_WRITEBACK, v->base.koid, first);
         st = pager_req_wait(r);
+        thread_wait_unnote(old);
+    }
     pager_req_put(r);
     return st;
 }

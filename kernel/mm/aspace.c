@@ -2122,7 +2122,9 @@ static status_t fault_wait(struct aspace *as, struct vmo *v, uint64_t idx)
     mutex_unlock(&as->lock);
     if (st == OK && r) {
         wait_held_check();
+        struct wait_note old = thread_wait_note(WAITON_PAGER, vmo_kobject(v)->koid, idx);
         st = pager_req_wait(r);   /* cancellable, never interruptible: a load can't restart */
+        thread_wait_unnote(old);
         pager_req_put(r);
         if (st == ERR_OUT_OF_RANGE)
             st = ERR_IO;   /* PAGER_OP_FAIL's "past the file's end": it couldn't read it */
@@ -2149,7 +2151,9 @@ static status_t store_wait(struct aspace *as, struct vmo *v, uint64_t *until)
     status_t st = vmo_pager_throttle(v, until, &r);   /* ERR_TIMED_OUT once the time is up */
     if (r) {
         wait_held_check();
+        struct wait_note old = thread_wait_note(WAITON_WRITEBACK, vmo_kobject(v)->koid, 0);
         st = pager_req_wait_until(r, *until);   /* cancellable */
+        thread_wait_unnote(old);
         pager_req_put(r);
         /* However the request ended (written, failed, cut off, past its
          * own deadline), the count may have fallen: look again. */
@@ -2237,6 +2241,44 @@ void aspace_switch(struct aspace *prev, struct aspace *next)
 uint64_t aspace_pml4(struct aspace *as)
 {
     return as ? as->pml4 : vmm_kernel_pml4();
+}
+
+/* ---- the debug listing's look at another process's memory --------------- */
+
+/* pt_lock held: the leaf entry for a user va whose page is mapped present
+ * and user, and is plainly cached RAM (never a device's page, never one
+ * with a cache mode of its own: those the HHDM must not alias); else 0. */
+static uint64_t peek_entry(const struct aspace *as, uint64_t va)
+{
+    if (va < USER_BASE || va >= USER_TOP)
+        return 0;
+    uint64_t *e = pte_find(as, va);
+    uint64_t v = e ? *e : 0;
+    if ((v & (PTE_P | PTE_U)) != (PTE_P | PTE_U) || (v & PTE_CACHE) ||
+        !pmm_range_has_ram(v & PTE_ADDR, PAGE_SIZE))
+        return 0;
+    return v;
+}
+
+bool aspace_peek(struct aspace *as, uint64_t va, uint64_t *out)
+{
+    if (va & 7)
+        return false;
+    uint64_t f = spin_lock_irqsave(&as->pt_lock);
+    uint64_t e = peek_entry(as, va);
+    if (e)   /* under pt_lock: the page can't be freed meanwhile */
+        *out = *(const volatile uint64_t *)((uint8_t *)phys_to_virt(e & PTE_ADDR) +
+                                            (va & (PAGE_SIZE - 1)));
+    spin_unlock_irqrestore(&as->pt_lock, f);
+    return e != 0;
+}
+
+bool aspace_peek_exec(struct aspace *as, uint64_t va)
+{
+    uint64_t f = spin_lock_irqsave(&as->pt_lock);
+    uint64_t e = peek_entry(as, va);
+    spin_unlock_irqrestore(&as->pt_lock, f);
+    return e && !(e & PTE_NX);
 }
 
 /* ---- for tests ---------------------------------------------------------- */

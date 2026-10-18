@@ -122,11 +122,12 @@ static status_t block_prepared(spinlock_t *lock, uint64_t *irqflags, uint64_t de
                                enum wait_kind kind, bool relock)
 {
     struct thread *t = current_thread();
+    /* DEADLINE_NEVER too: the debug listing reads the wait's deadline here. */
+    __atomic_store_n(&t->wake_at_ns, deadline_ns, __ATOMIC_RELAXED);
     if (deadline_ns != DEADLINE_NEVER) {
         /* Preemption is off (see above): this CPU's queue stays ours. */
         uint32_t cpu = this_cpu()->index;
         struct sleepq *q = &sleepqs[cpu];
-        t->wake_at_ns = deadline_ns;
         t->wake_at_tsc = uptime_to_tsc(deadline_ns);
         t->sleep_cpu = cpu;
         uint64_t f = spin_lock_irqsave(&q->lock);
@@ -232,27 +233,32 @@ status_t thread_block_interruptible_unlocked(spinlock_t *lock, uint64_t irqflags
 void thread_sleep_ns(uint64_t ns)
 {
     uint64_t deadline = uptime_ns() + ns;
+    struct wait_note old = thread_wait_note(WAITON_SLEEP, 0, deadline);
     while (uptime_ns() < deadline)
         thread_block(NULL, NULL, deadline);
+    thread_wait_unnote(old);
 }
 
 status_t thread_sleep_cancellable(uint64_t ns)
 {
     uint64_t deadline = uptime_ns() + ns;
-    while (uptime_ns() < deadline)
+    struct wait_note old = thread_wait_note(WAITON_SLEEP, 0, deadline);
+    status_t st = OK;
+    while (st == OK && uptime_ns() < deadline)
         if (thread_block_cancellable(NULL, NULL, deadline) != OK)
-            return ERR_CANCELED;
-    return OK;
+            st = ERR_CANCELED;
+    thread_wait_unnote(old);
+    return st;
 }
 
 status_t thread_sleep_until_interruptible(uint64_t deadline_ns)
 {
-    while (uptime_ns() < deadline_ns) {
-        status_t st = thread_block_interruptible(NULL, NULL, deadline_ns);
-        if (st != OK)
-            return thread_interrupt_consume(st);
-    }
-    return OK;
+    struct wait_note old = thread_wait_note(WAITON_SLEEP, 0, deadline_ns);
+    status_t st = OK;
+    while (st == OK && uptime_ns() < deadline_ns)
+        st = thread_block_interruptible(NULL, NULL, deadline_ns);
+    thread_wait_unnote(old);
+    return st == OK ? OK : thread_interrupt_consume(st);
 }
 
 void thread_cancel(struct thread *t)

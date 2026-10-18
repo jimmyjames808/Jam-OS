@@ -434,10 +434,12 @@ static status_t wait_packet(struct port *p, uint64_t deadline_ns, struct port_pa
             spin_unlock_irqrestore(&p->base.lock, f);
             return ERR_TIMED_OUT;
         }
+        struct wait_note old = thread_wait_note(WAITON_PORT, p->base.koid, 0);
         status_t bs = intr ? waitqueue_wait_interruptible(&p->waiters, &p->base.lock, &f,
                                                           deadline_ns)
                            : waitqueue_wait_cancellable(&p->waiters, &p->base.lock, &f,
                                                         deadline_ns);
+        thread_wait_unnote(old);
         if (bs != OK && list_empty(&p->queue)) {
             spin_unlock_irqrestore(&p->base.lock, f);
             return thread_interrupt_consume(bs);   /* ERR_CANCELED or ERR_INTERRUPTED */

@@ -540,6 +540,7 @@ status_t channel_read_wait(struct channel *ch, struct chan_read *r, uint64_t dea
         .locked = true,
     };
     r->nb = r->nh = 0;
+    struct wait_note old = thread_wait_note(WAITON_READ, ch->base.koid, 0);
     rw.f = spin_lock_irqsave(&ch->base.lock);
     status_t st = read_wait_locked(ch, &rw, r, deadline_ns);
     if (rw.locked && rw.w.node.next)
@@ -547,6 +548,7 @@ status_t channel_read_wait(struct channel *ch, struct chan_read *r, uint64_t dea
     struct chan_msg *offered = rw.w.slot;   /* NULL if a writer took it */
     if (rw.locked)
         spin_unlock_irqrestore(&ch->base.lock, rw.f);
+    thread_wait_unnote(old);
     chan_slot_keep(offered);
     if (rw.was_full)
         refresh_writable(ch);
