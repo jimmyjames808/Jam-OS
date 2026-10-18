@@ -1007,8 +1007,10 @@ static void vmo_destroy(struct kobject *obj)
         ASSERT(!v->held && v->dirty == 0);   /* the hold is a reference: no dirty page here */
         drop_from_locked(v, 0);
         ASSERT(v->committed == 0 && v->tables == 0);
-        if (v->pv)
+        if (v->pv) {
+            DBG_HOOK(DBG_PAGER_VMO_DYING, v);
             pager_vmo_gone(v->pv);   /* PAGER_REQ_GONE, or the link goes */
+        }
         if (v->verify)
             vmo_verify_free(v->verify);
         if (v->src) {
@@ -2338,16 +2340,22 @@ static struct page *ppage_locked(struct vmo *v, uint64_t idx)
     return s && *s ? pa_page(*s) : NULL;
 }
 
+/* run_page_locked's look of our own, beside pager_dirty's flags: dirty or
+ * writing (the pages a write-back request may need). */
+#define RUN_COUNTED (1u << 31)
+
 /* With the lock held: is page idx in the state pager_dirty's `flags` look
- * for (vmo_pager_dirty_run)? */
+ * for (vmo_pager_dirty_run), or RUN_COUNTED's? */
 static bool run_page_locked(struct vmo *v, uint64_t idx, uint32_t flags)
 {
     struct page *p = ppage_locked(v, idx);
     unsigned st = p ? pager_page_state_vlocked(v->pv, p) : 0;
     if (flags & PAGER_DIRTY_BEGIN)
         return st == PAGER_PAGE_DIRTY;   /* one write-back of a page at a time */
-    if (flags & PAGER_DIRTY_PEEK)
+    if (flags & RUN_COUNTED)
         return st != 0;
+    if (flags & PAGER_DIRTY_PEEK)   /* every page the disk may not have: a kept one too */
+        return st != 0 || (p && pager_page_kept_vlocked(v->pv, p));
     return st & PAGER_PAGE_DIRTY;
 }
 
@@ -2389,7 +2397,8 @@ void vmo_pager_dirty_run(struct vmo *v, uint64_t first, uint64_t end, uint64_t a
         page_get(p);
         pages[(*n)++] = p;
         uint64_t d = pager_page_dirtied_vlocked(v->pv, p);
-        oldest = d < oldest ? d : oldest;
+        if (pager_page_state_vlocked(v->pv, p) && d < oldest)
+            oldest = d;   /* (a kept page has no age: it is clean) */
         if (flags & PAGER_DIRTY_BEGIN)
             pager_page_begin_vlocked(v->pv, p);
     }
@@ -2399,7 +2408,7 @@ void vmo_pager_dirty_run(struct vmo *v, uint64_t first, uint64_t end, uint64_t a
     }
     vunlock(v, f);
     tlb_gather_finish(&g);   /* the one shootdown: no stale writable entry once we return */
-    *dirtied = *n ? oldest : 0;
+    *dirtied = !*n ? 0 : oldest != UINT64_MAX ? oldest : uptime_ns();   /* (kept alone: age 0) */
 }
 
 void vmo_pager_unbegin(struct vmo *v, uint64_t first, uint64_t end)
@@ -2433,8 +2442,8 @@ void vmo_pager_written(struct vmo *v, uint64_t first, uint64_t end, status_t st,
             struct page *p = ppage_locked(v, i);
             if (!p || !(pager_page_state_vlocked(v->pv, p) & PAGER_PAGE_WRITING))
                 continue;
-            if (pager_page_written_vlocked(v->pv, p))
-                v->dirty--;   /* clean: its entries are read-only already */
+            if (pager_page_written_vlocked(v->pv, p, st != OK))
+                v->dirty--;   /* clean (kept, after an error): its entries are read-only already */
             ended[(i - idx) / 64] |= 1ull << ((i - idx) % 64);
         }
         if (st != OK && v->pwb_error == OK)
@@ -2510,8 +2519,8 @@ status_t vmo_pager_writeback_bg(struct vmo *v, uint64_t idx, bool writing, struc
     uint64_t need[PAGER_WB_WORDS], begin[PAGER_WB_WORDS];
     const uint64_t max = PAGER_WB_WORDS * 64;
     /* Dirty pages not being written back (BEGIN's), or any dirty or writing
-     * one (PEEK's). */
-    uint32_t sel = writing ? PAGER_DIRTY_PEEK : PAGER_DIRTY_BEGIN;
+     * one. */
+    uint32_t sel = writing ? RUN_COUNTED : PAGER_DIRTY_BEGIN;
     uint64_t f = vlock(v);
     status_t st = v->pdetached ? ERR_PEER_CLOSED : OK;
     uint64_t end = v->size >> PAGE_SHIFT, first = idx;

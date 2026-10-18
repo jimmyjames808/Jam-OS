@@ -872,8 +872,9 @@
 # PAGER_OP_WRITTEN (page-aligned, len >
 # 0; arg OK, ERR_IO or ERR_NO_SPACE): the writing pages of the range end
 # their write-back: clean, or dirty if stored to since; after an error
-# they become clean all the same and the VMO keeps the error for the next
-# vmo_sync. The PAGER_REQ_WRITEBACKs it finishes are answered (with the
+# they become clean all the same (but PAGER_DIRTY_PEEK still copies them
+# until they are evicted or stored to: their bytes aren't the disk's) and
+# the VMO keeps the error for the next vmo_sync. The PAGER_REQ_WRITEBACKs it finishes are answered (with the
 # error, if one of their pages had it); a delivered one it leaves needing
 # pages that nobody is writing back (one stored to while it was being
 # written when the request was made) is given to the pager again.
@@ -881,8 +882,9 @@
 # unknown key; ERR_INVALID_ARGS for any other op or argument. RIGHT_WRITE
 # on the pager.
 164 pager_op          status    handle_t pager, uint64_t key, uint32_t op, uint64_t offset, uint64_t len, int64_t arg
-# pager_dirty: the first run of dirty pages (with PAGER_DIRTY_PEEK, dirty
-# or writing) of key's writable VMO in [run->offset, run->offset +
+# pager_dirty: the first run of dirty pages (with PAGER_DIRTY_PEEK, every
+# page whose bytes the disk may not have: dirty, writing, or clean after a
+# write-back that failed, until it is evicted) of key's writable VMO in [run->offset, run->offset +
 # run->len) (page-aligned, len one page .. PAGER_SUPPLY_MAX: else
 # ERR_INVALID_ARGS / ERR_OUT_OF_RANGE; consecutive pages, cut shorter to
 # bound the kernel's work): its bytes are copied into buf, which stands

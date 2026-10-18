@@ -48,6 +48,8 @@ enum {
     DBG_PROCESS_INFO,      /* process.c process_get_info, the snapshot taken under the
                               process lock, before the CPU time is added; no lock held
                               (arg: the process) */
+    DBG_PAGER_VMO_DYING,   /* vmo.c vmo_destroy, a pager VMO's pages freed, before its link
+                              hears of it (pager_vmo_gone); no lock held (arg: the VMO) */
     DBG_N
 };
 

@@ -14,8 +14,11 @@
  *      msync is answered OK, and that of a file unlinked under its mapping
  *      (an orphan the fresh mount dropped) ERR_PEER_CLOSED;
  *   4. a full volume: a store over a hole is ERR_NO_SPACE at the next
- *      msync and at the next fsync, once each; a store over the file's own
- *      block in the same msync is written.
+ *      msync and at the next fsync, once each, and a read shows it as the
+ *      mapping does (the page kept, docs/WRITEMAP-REVIEW.md's finding 1);
+ *      a store over the file's own block in the same msync is written;
+ *   5. VMOs a fresh instance doesn't know of yet (lost()): a write and a
+ *      truncate reach their pages, a map to run is refused.
  * The disk is saved for Linux's e2fsck (tools/extfs-svc-test.sh). */
 #define CHECK_PROG "utest"
 #define CHECK_CUR  utest_cur
@@ -45,10 +48,10 @@ static struct ramdisk rd;
 static handle_t pager;
 /* (named at the start: no initializer, so in .bss, not .data: ktest's
  * quota case spawns utest in a 256 KiB job) */
-static struct wf fm, ff, fh, fu, fo, fy, fn;
-static struct wf *const all[] = { &fm, &ff, &fh, &fu, &fo, &fy, &fn };
+static struct wf fm, ff, fh, fu, fo, fy, fn, fl, ft, fx;
+static struct wf *const all[] = { &fm, &ff, &fh, &fu, &fo, &fy, &fn, &fl, &ft, &fx };
 static const char *const names[] = { "/m.bin", "/f.bin", "/h.bin", "/u.bin", "/s.bin", "/y.bin",
-                                     "/n.bin" };
+                                     "/n.bin", "/l.bin", "/t.bin", "/x.bin" };
 
 static uint64_t dl(void)
 {
@@ -175,6 +178,23 @@ static bool on_disk(const struct wf *w)
     CHECK_EQ(done, w->size);
     if (memcmp(got, w->want, w->size))
         FAIL("%s: the disk doesn't hold its stores", w->path);
+    return true;
+}
+
+/* One cache: the file as extfs reads it is what our mapping shows (its
+ * stores, written back or not, failed or not). */
+static bool read_as_mapped(const struct wf *w)
+{
+    static uint8_t got[WF_MAX];
+    struct tfile f;
+    uint32_t done = 0;
+    CHECK_ST(t_open(&r, w->path, FS_READ, &f), OK);
+    status_t st = t_read(&f, 0, got, (uint32_t)w->size, &done);
+    t_close(&f);
+    CHECK_ST(st, OK);
+    CHECK_EQ(done, w->size);
+    if (memcmp(got, w->m, w->size))
+        FAIL("%s: a read doesn't show what its mapping shows", w->path);
     return true;
 }
 
@@ -310,11 +330,77 @@ static bool full(void)
     store(&fn, 3 * PAGE_SIZE, 50, 18);     /* over its own block: written */
     CHECK_ST(msync(&fn), ERR_NO_SPACE);
     CHECK(clean());   /* given up: the pages clean, Q1's answer */
+    /* ... but a read shows the store the mapping shows, until the page is
+     * evicted (the disk's bytes then, for both: an instance with no pager
+     * reads the disk alone after this). */
+    if (!read_as_mapped(&fn))
+        return false;
+    /* Mapped again while the VMO lives (extfs let go of its handle at the
+     * open's close): the error stays for the next fsync. */
+    handle_t again = HANDLE_INVALID;
+    uint64_t size = 0;
+    CHECK_ST(t_open(&r, fn.path, FS_READ | FS_WRITE, &f), OK);
+    st = file_map_until(f.ch, dl(), FILE_MAP_WRITE, &again, &size);
+    t_close(&f);
+    CHECK_ST(st, OK);
+    CHECK_ST(jam_handle_close(again), OK);
     CHECK_ST(fsync(&fn), ERR_NO_SPACE);
     CHECK_ST(fsync(&fn), OK);   /* once */
     CHECK_ST(msync(&fn), OK);
     CHECK_ST(t_unlink(&r, "/big"), OK);
-    return on_disk(&fn);
+    return true;
+}
+
+/* 5: VMOs an instance before made, which a fresh instance (no state)
+ * knows of only once something finds them (docs/WRITEMAP-REVIEW.md's
+ * finding 2): a write over a stored page reaches the page (the mapping
+ * shows it, and the write-back writes the store and the write, not the
+ * old bytes over the write); a truncate zeroes the tail past the new end
+ * (zero after a regrow, there and on the disk); a map to run is refused
+ * while such a VMO may be written. files.writeback is 600 s here: nothing
+ * is written back by age meanwhile. */
+static bool lost(void)
+{
+    struct wf *const ws[] = { &fl, &ft, &fx };
+    for (unsigned i = 0; i < 3; i++)
+        if (!wr(ws[i], 0, PAGE_SIZE, 30 + i) || !wr(ws[i], PAGE_SIZE, PAGE_SIZE, 30 + i) ||
+            !wmap(ws[i]))
+            return false;
+    store(&fl, 100, 200, 33);
+    store(&ft, PAGE_SIZE + 500, 1000, 34);
+    store(&fx, 10, 10, 35);
+    if (!kill_extfs() || !extfs_start_pager(&r, &rd, pager))
+        return false;
+
+    struct tfile f;
+    handle_t xv = HANDLE_INVALID;
+    uint64_t size = 0;
+    CHECK_ST(t_open(&r, fx.path, FS_READ, &f), OK);
+    status_t st = file_map_until(f.ch, dl(), FILE_MAP_EXEC, &xv, &size);
+    t_close(&f);
+    if (xv)
+        jam_handle_close(xv);
+    CHECK_ST(st, ERR_BUSY);
+
+    if (!wr(&fl, 1000, 500, 36))
+        return false;
+    if (memcmp(fl.m, fl.want, fl.size))
+        FAIL("%s: its mapping doesn't show a write over a stored page", fl.path);
+
+    CHECK_ST(t_open(&r, ft.path, FS_READ | FS_WRITE, &f), OK);
+    st = file_truncate_until(f.ch, dl(), PAGE_SIZE + 600);
+    if (st == OK)
+        st = file_truncate_until(f.ch, dl(), 2 * PAGE_SIZE);
+    t_close(&f);
+    CHECK_ST(st, OK);
+    memset(ft.want + PAGE_SIZE + 600, 0, PAGE_SIZE - 600);
+    if (memcmp(ft.m, ft.want, ft.size))
+        FAIL("%s: its mapping shows stores past an end it was cut to", ft.path);
+
+    for (unsigned i = 0; i < 3; i++)
+        CHECK_ST(msync(ws[i]), OK);
+    CHECK(clean());
+    return on_disk(&fl) && on_disk(&ft) && on_disk(&fx);
 }
 
 bool t_extfs_wback(void)
@@ -339,7 +425,10 @@ bool t_extfs_wback(void)
     ok = ok && extfs_start_pager(&r, &rd, pager) && aged_and_fresh() && fat_stop(&r);
     ok = ok && extfs_start(&r, &rd, false, NULL, 0) && on_disk(&fm) &&
          t_stat(&r, fy.path, NULL, NULL, NULL) == ERR_NOT_FOUND && fat_stop(&r);
-    ok = ok && extfs_start_pager(&r, &rd, pager) && full() && fat_stop(&r) &&
+    ok = ok && extfs_start_pager(&r, &rd, pager) && full() && fat_stop(&r);
+    ok = ok && extfs_start(&r, &rd, false, NULL, 0) && on_disk(&fn) &&
+         put_file(&r, "/etc/settings", "# utest's\nfiles.writeback = 600\n") && fat_stop(&r);
+    ok = ok && extfs_start_pager(&r, &rd, pager) && lost() && fat_stop(&r) &&
          extfs_save(&rd, "wback");
     handle_t self = startup_handle(SR_SELF_VMAR);
     for (unsigned i = 0; i < sizeof(all) / sizeof(all[0]); i++) {

@@ -19,9 +19,16 @@
 struct pager_rec {
     struct vmo *v;         /* its VMO (no reference: the record goes before the VMO can) */
     uint32_t    idx;       /* its page index there (a pager VMO has fewer than 2^32) */
-    uint32_t    state;     /* PAGER_PAGE_* (0: clean); the VMO lock and the cache's */
+    uint32_t    state;     /* PAGER_PAGE_* (0: clean), or REC_KEPT; the VMO lock and the
+                              cache's */
     uint64_t    dirtied;   /* uptime ns: its age (pager_cache.h's "Age"); 0 while clean */
 };
+
+/* A clean page whose write-back failed (pager_cache.h's "Kept"): on the
+ * clean list, but its bytes aren't the disk's. Never with the others. */
+#define REC_KEPT  4u
+#define REC_DIRTY (PAGER_PAGE_DIRTY | PAGER_PAGE_WRITING)   /* dirty or writing: counted */
+_Static_assert(!(REC_KEPT & REC_DIRTY), "the kept bit is none of the page states");
 _Static_assert(sizeof(struct pager_rec) == PAGER_RECORD_BYTES, "a resident page's cost to its job");
 _Static_assert((VMO_SMALL_MAX_SIZE >> PAGE_SHIFT) <= UINT32_MAX, "a page index fits in idx");
 
@@ -189,7 +196,7 @@ void pager_cache_remove_vlocked(struct pager_cache *c, struct page *p)
     if (p->node.next) {   /* still listed: no evictor has it (none ever has a dirty one) */
         list_del(&p->node);
         c->resident--;
-        if (rec->state)
+        if (rec->state & REC_DIRTY)
             c->ndirty--;
         if (rec->state & PAGER_PAGE_WRITING)
             c->nwriting--;
@@ -201,7 +208,12 @@ void pager_cache_remove_vlocked(struct pager_cache *c, struct page *p)
 
 unsigned pager_cache_state_vlocked(const struct page *p)
 {
-    return ((const struct pager_rec *)p->private)->state;
+    return ((const struct pager_rec *)p->private)->state & REC_DIRTY;
+}
+
+bool pager_cache_kept_vlocked(const struct page *p)
+{
+    return ((const struct pager_rec *)p->private)->state & REC_KEPT;
 }
 
 uint64_t pager_cache_dirtied_vlocked(const struct page *p)
@@ -213,7 +225,7 @@ status_t pager_cache_store_vlocked(struct pager_cache *c, struct page *p, uint64
 {
     struct pager_rec *rec = (struct pager_rec *)p->private;
     uint64_t f = cache_lock(c);
-    bool was_clean = !rec->state;
+    bool was_clean = !(rec->state & REC_DIRTY);
     if (was_clean && c->ndirty >= limit) {
         cache_unlock(c, f);
         return ERR_NO_RESOURCES;   /* the store waits for a write-back (pager.c) */
@@ -226,6 +238,7 @@ status_t pager_cache_store_vlocked(struct pager_cache *c, struct page *p, uint64
         list_add_tail(&c->dirty, &p->node);
         c->ndirty++;
         rec->dirtied = uptime_ns();
+        rec->state = 0;   /* (kept no more: its next write-back writes it) */
     }
     rec->state |= PAGER_PAGE_DIRTY;   /* (a writing page stays on `writing`) */
     cache_unlock(c, f);
@@ -244,7 +257,7 @@ void pager_cache_begin_vlocked(struct pager_cache *c, struct page *p)
     cache_unlock(c, f);
 }
 
-bool pager_cache_written_vlocked(struct pager_cache *c, struct page *p)
+bool pager_cache_written_vlocked(struct pager_cache *c, struct page *p, bool failed)
 {
     struct pager_rec *rec = (struct pager_rec *)p->private;
     ASSERT(rec->state & PAGER_PAGE_WRITING);
@@ -255,7 +268,7 @@ bool pager_cache_written_vlocked(struct pager_cache *c, struct page *p)
     if (clean) {
         list_add_tail(&c->pages, &p->node);
         c->ndirty--;
-        rec->state = 0;
+        rec->state = failed ? REC_KEPT : 0;
         rec->dirtied = 0;
     } else {
         list_add_tail(&c->dirty, &p->node);

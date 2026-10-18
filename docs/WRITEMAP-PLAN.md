@@ -572,7 +572,7 @@ Each about one agent-hour; WE2 about one and a half.
 | **WE2. extfs: write-back** | 2.3 to 2.7: serving `PAGER_REQ_WRITEBACK`, a transaction a batch of runs, the size clip, holes and unwritten extents in ordered mode, the times, the age check, `file.sync` and `fs.sync`, the orderly stop, errors kept per slot, a fresh start's keys; test powers `die=wback:<n>`; extcheck's cut storm gains a write-back step; built, see "WE2 notes" | `user/services/extfs/pager.c` (or a new user/services/extfs/wback.c beside it), `user/services/extfs/main.c` (the age check), `user/services/extfs/fsops.c` (sync), `user/services/extfs/test.c`, `user/services/extfs/extfs.h`, `tools/extcheck.c` (the storm's new step), new utest files for `extfs_wback` and `extfs_restart_wback` | WE1, WK3 merged | utest `extfs_wback` (stores written by `msync`, by `fsync`, by age; a store over a hole and in an unwritten extent; a full volume's error at the next sync), `extfs_restart_wback` (a death at every step of 2.6, the data right after each); `tools/extfs-svc-test.sh` (every disk `e2fsck -fn` clean); extcheck's cut storm (`make check`); init run | 1.5 | **Opus** |
 | **WL1. libc** | section 3; built, see "WL1 notes" | `user/posix/sys/file.c` (`map_file`), `user/posix/sys/mem.c` (`lx_msync`, the share flag), `user/posix/sys/files.h`, posixtest's `user/posix/test/mmap.c` (a new section `mmap-wshared`), tools/shell-tests' new posix-mmap-wshared.txt and its case in `tools/posix-mmap-test.sh` | WE1 and WK3 merged (beside WE2: different files); after or before FL2 (both edit `mem.c`: one after the other) | posixtest `mmap-wshared` on ext (`MMAP_DATA=ext`): a store seen by `read` and `pread`, by a second mapping, by a child; `write` and stores on one page both kept; `mprotect` adding write on an `O_RDWR` mapping, `EACCES` on `O_RDONLY`; `msync` `MS_SYNC` and `MS_ASYNC` return 0; truncate's tail zero; on FAT `ENODEV` and `EACCES` as today; the `mmap` and `coherent` cases on FAT and ext unchanged; shell scripts basic, cmds, commands, files | 1 | Sonnet 5.5 |
 | **WT1. The end-to-end tests** | the scripts below, and Chromium's tests through CB2's harness | `tools/pager-test.sh` (new cases), pagertest (`user/tests/pagertest/`, a new mode that stores records with sequence numbers and checksums), `tools/cr-test.sh`'s `base` filter list (a line) | WE2 and WL1 merged; CB2 merged and `/tmp` on ext (U7b or U11a) for the Chromium case | pager-test.sh `wmsync`: records stored and `msync`ed, `kill extfs-jam`, read back through `read` and a new mapping; again with no `msync` (the successor writes them); again across a reboot (`msync`ed records there). `wcut`: QEMU stopped dead during a store-and-`msync` storm, booted again: every acknowledged record whole, Linux's `e2fsck -fn` clean. `wpress`: a mapping twice the budget stored through (the writer throttled, done, every page right) while another program reads another file at speed; then with extfs held by a test power (`hang=wback`): the writer killed at the deadline with the line, the reader, the shell and `/jam` fine. cr-test.sh `base` with `MemoryMappedFileTest.*`, `FilePersistentMemoryAllocatorTest.*` and `PersistentHistogramAllocatorTest.*` (*unsure* of the exact suite names: CB2's list says); built, see "WT1 notes" (the held `wpress` is utest `extfs_wpress`; the 8 writable-mapping tests of `base` pass and are off the skip list, on the stage's programs, not relinked by the track) | 1 | Sonnet 5.5 |
-| **WR. Independent review and fix** | everything above, findings first (a new docs/WRITEMAP-REVIEW.md), then High and Medium fixed with a test each: can a store be lost (begin's protect against the copy, the request's stamps, AGAIN), can a writer or the kernel wait forever, can a dirty page be evicted, does a view's refusal hold for every way to a writable handle, is an acknowledged `msync` safe across every death | the files its fixes need | WK1 to WT1 merged | its own; hostile: 8 writers on one file from two processes with fork and a pager killed every 200 ms; full ktest 4 and 8; soak 4 | 1.5 | **Opus** |
+| **WR. Independent review and fix** | everything above, findings first (a new docs/WRITEMAP-REVIEW.md), then High and Medium fixed with a test each: can a store be lost (begin's protect against the copy, the request's stamps, AGAIN), can a writer or the kernel wait forever, can a dirty page be evicted, does a view's refusal hold for every way to a writable handle, is an acknowledged `msync` safe across every death; built, see "WR notes" | the files its fixes need | WK1 to WT1 merged | its own; hostile: 8 writers on one file from two processes with fork and a pager killed every 200 ms; full ktest 4 and 8; soak 4 | 1.5 | **Opus** |
 | **WJ. The join** | ARCHITECTURE (Memory: writable pager VMOs and the hold; Storage: write-back), M12.5-PLAN's and M13-PLAN's lines that say pager pages are always clean, TESTING (the new cases and ktests), ROADMAP, CR-PLAN, HISTORY; this plan deleted when HISTORY covers it | the docs | WR | `make check` | 0.5 | Sonnet 5.5 |
 
 **Order.** WK1 as soon as FK2 is merged (both are in `vmo.c` and
@@ -1169,6 +1169,46 @@ What WR starts from (`pagertest rec` in user/tests/pagertest/rec.c,
   libc), BM1's way (removing the two programs from the kept tree's
   `out/jamos` first) was refused to the track by the permission check, and
   no other way was tried.
+
+### WR notes
+
+What WJ starts from ([WRITEMAP-REVIEW.md](WRITEMAP-REVIEW.md): the
+plan's questions answered, the findings, the fixes, the design questions):
+
+- **Found:** 0 High, 3 Medium, 6 Low, 3 notes. The plan's five questions
+  hold (BEGIN's protect, shootdown, then copy; the requests' bits; AGAIN
+  only after the instance before is dead; no dirty page evicted; one way
+  to a writable handle, through a writing open; an acknowledged `msync`
+  safe across the writer's, extfs's and volumes' deaths), but for the
+  findings.
+- **Fixed:** (1) a page whose write-back failed is clean but *kept*:
+  `PAGER_DIRTY_PEEK` still copies it, so `read` shows the store every
+  mapping shows until the page is evicted (WE2's one-cache gap; the
+  contract text in its own commit, the ABI stamp moves); (2) a fresh
+  instance's `write`, `truncate` and run check find a shared VMO an
+  instance before made (`find_lost`) instead of missing it (an answered
+  write could be overwritten by its dirty page's older bytes: WE1's
+  "a slotless VMO counts as written" held only for a map); (3) a create
+  takes over the key of a VMO being destroyed, so a map racing another
+  process's last unmap no longer fails `ERR_ALREADY_EXISTS` (one key per
+  file made the race possible; CB5's processes map the same files);
+  (4) a GONE kept by `maps_again` is dropped when a map remakes its key;
+  (5) a re-map keeps the slot's write-back error for `fsync`.
+- **Left (design questions, the main session's):** a store's deadline
+  counted from its first wait kills a healthy writer behind a busy pager
+  (recommended: from the pager's last progress); a write-back error goes
+  to the first `msync` of any mapper (recommended: errseq later); an
+  orderly stop writes back about 8 s at most (recommended: bounded by
+  progress); FR1's freeze starvation is Medium, not High (a pager VMO is
+  never frozen), recommended FR1's choice (b) before renderers are
+  sandboxed.
+- **The hostile test:** `pager-test.sh`'s `whostile` (`pagertest rec
+  swarm`: eight writers in two processes by fork, 100 rounds over 512
+  records with an `msync` every 4 each, `extfs-jam` killed every 200 ms by
+  the test itself; then a power cut and Linux's look at the disk). Its
+  runlist line: `pg-whostile PAGER_CASES=whostile tools/pager-test.sh
+  build/t/pg-whostile` (the prepush list has no `pg-w*` lines yet: add
+  `wmsync`, `wcut`, `wpress` and `whostile`).
 
 ## 6. Tests
 

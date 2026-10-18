@@ -35,7 +35,7 @@
  *                                           mapping at 0 (read before) and at
  *                                           the half (never read), each timed,
  *                                           or load the byte at the half
- *   pagertest rec make|put|check ...        records stored through a writable
+ *   pagertest rec make|put|check|swarm ...  records stored through a writable
  *                                           shared mapping, msynced or not,
  *                                           and checked by read and by a new
  *                                           mapping (rec.c's header)
@@ -55,7 +55,8 @@
 #include <wants.h>
 #include "pagertest.h"
 
-JAM_WANTS("mount * rw\n");
+JAM_WANTS("mount * rw\n"
+          "svc init\n");   /* rec swarm kills the pager it tests (initctl.kill) */
 
 #define STEP      (64u << 10)   /* hashed at a time */
 #define CUE_WAIT  (120 * NS_PER_S)
@@ -79,7 +80,7 @@ static int usage(void)
 {
     printf("usage: pagertest self | map <path> | read <path> [offset [len [passes]]] | "
            "hash <path> [passes] | xhash <path> | touch <path> <offset> load|copy [cue] | "
-           "write <path> | pull <path> <cue> load|copy | rec make|put|check ...\n");
+           "write <path> | pull <path> <cue> load|copy | rec make|put|check|swarm ...\n");
     return 64;
 }
 

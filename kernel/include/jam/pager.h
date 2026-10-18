@@ -42,7 +42,8 @@
  * the copy faults and makes its page dirty again; PAGER_OP_WRITTEN ends
  * the writing pages of a range (clean, or dirty if stored to since; an
  * error is kept by the VMO until vmo_pager_take_error reports it, and
- * the pages become clean all the same); PAGER_NEXT_AGAIN makes every
+ * the pages become clean all the same, but kept: PEEK still copies them
+ * until they are evicted or stored to); PAGER_NEXT_AGAIN makes every
  * writing page dirty again (a write-back cut off by a death is done
  * again). A write-back request (PAGER_REQ_WRITEBACK) names a range and
  * needs each page dirty or writing when it was made: a page dirty then
@@ -165,7 +166,8 @@ status_t pager_create(struct job *job, uint64_t max_pages, uint64_t answer_ns,
  * ERR_OUT_OF_RANGE) under key, every page absent; the caller gets the only
  * reference. ERR_ALREADY_EXISTS if key names a live VMO; a key whose VMO
  * is gone but whose PAGER_REQ_GONE has no answer yet is taken over (the
- * GONE withdrawn, delivered or not). ERR_BAD_STATE once the pager's last
+ * GONE withdrawn, delivered or not), and so is one whose VMO is being
+ * destroyed (no reference left: no GONE comes for it). ERR_BAD_STATE once the pager's last
  * handle is gone. Thread context. */
 status_t pager_create_vmo(struct pager *pg, uint64_t key, uint64_t size, struct vmo **out);
 /* pager_create_vmo with flags: PAGER_VMO_WRITABLE, a writable one
@@ -226,8 +228,9 @@ status_t pager_op(struct pager *pg, uint64_t key, uint32_t op, uint64_t offset, 
 
 /* pager_dirty: the first run of key's writable VMO's pages in
  * [run->offset, run->offset + run->len) that are dirty (flags 0: stored to
- * since their write-back began, if one did; PEEK: dirty or writing;
- * BEGIN: dirty and not writing), copied to dst at their place in the
+ * since their write-back began, if one did; PEEK: dirty, writing or kept,
+ * every page whose bytes the disk may not have; BEGIN: dirty and not
+ * writing), copied to dst at their place in the
  * range, and *run set to where it is (len 0: none) and the age of its
  * oldest page. PEEK and 0 change nothing. BEGIN begins the run's
  * write-back first: cut to the batch budget, its pages writing and
@@ -466,10 +469,15 @@ uint64_t pager_page_dirtied_vlocked(struct pager_vmo *pv, const struct page *p);
 status_t pager_page_store_vlocked(struct pager_vmo *pv, struct page *p);
 /* Page p of pv's VMO (a writable one): its write-back begins (dirty, not
  * writing: writing now); ends (writing: true if clean now, false if
- * dirty again); won't end (writing: dirty again). The cache's moves. */
+ * dirty again; `failed`: with an error, a clean page kept); won't end
+ * (writing: dirty again). The cache's moves. */
 void pager_page_begin_vlocked(struct pager_vmo *pv, struct page *p);
-bool pager_page_written_vlocked(struct pager_vmo *pv, struct page *p);
+bool pager_page_written_vlocked(struct pager_vmo *pv, struct page *p, bool failed);
 void pager_page_unbegin_vlocked(struct pager_vmo *pv, struct page *p);
+/* Page p (present) of pv's VMO, a writable one: clean, but kept since its
+ * write-back failed (its bytes aren't the disk's: pager_cache.h's "Kept"),
+ * until it is stored to or leaves its table. */
+bool pager_page_kept_vlocked(struct pager_vmo *pv, const struct page *p);
 /* The write-backs of pages [first, end) of pv's VMO began: the requests
  * that needed a later write-back of one now need only its end. */
 void pager_begun_vlocked(struct pager_vmo *pv, uint64_t first, uint64_t end);
