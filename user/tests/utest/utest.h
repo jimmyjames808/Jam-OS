@@ -425,6 +425,10 @@ int  wmap_child(int argc, char **argv);
 bool t_extfs_wback(void);
 /* extfs_restart.c: a write-back ended at each step of WE2's 2.6. */
 bool t_extfs_restart_wback(void);
+/* extfs_wpress.c: an extfs that never answers a write-back (the hang=wback
+ * power): the writer to its mapping is killed at the pager's deadline, a
+ * reader of another volume and utest go on (WRITEMAP's WT1). */
+bool t_extfs_wpress(void);
 /* extfs_posix.c: posixtest's links section on an extfs volume (libc, U6). */
 bool t_extfs_posix(void);
 /* extfs_watch.c: file watching on extfs (INOTIFY-PLAN's IE1 and IE2):

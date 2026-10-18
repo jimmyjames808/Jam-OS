@@ -659,6 +659,9 @@ enum xf_die {
 };
 bool     test_word(const char *w);
 void     test_die(enum xf_die point);
+/* The hang power: extfs stops answering (sleeps until it is killed) the
+ * n-th time it reaches point, as one stuck in its disk would. */
+void     test_hang(enum xf_die point);
 void     test_crash(const char *path, uint32_t len);
 bool     test_fixed_time(void);
 bool     test_lazy_tail(void);

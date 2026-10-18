@@ -2081,6 +2081,28 @@ hint; Chromium's programs above 4 GiB by a link flag) and D5 (`--build-id`).
   link (`<target>.links`), so a libc change relinks without a hand removal;
   `test_child_process` is a default target.
 
+#### WT1 (2026-10-18)
+
+Track WT1 (branch `wt1-wmap-tests`, [WRITEMAP-PLAN](WRITEMAP-PLAN.md#wt1-notes)):
+the eight writable-mapping tests, run with `CR_BASE_ONLY="MemoryMappedFileTest
+FilePersistentMemoryAllocatorTest PersistentHistogramAllocatorTest
+PersistentMemoryAllocatorTest" CR_BASE_ALL=1` (35 tests of the four
+suites) on an ext `/data` with the extfs and libc of main after WE2 and WL1:
+**all 35 pass**, the eight among them (`FilePersistentMemoryAllocatorTest`'s
+`AcceptableTest` and `ExtendTest`, `MemoryMappedFileTest`'s `ExtendableFile`
+and `WriteableFile`, `PersistentHistogramAllocatorTest`'s `CreateSpareFile`,
+`CreateWithFile` and `MovePersistentFile`, `PersistentMemoryAllocatorTest.TruncateTest`).
+They are off `tools/cr/base_unittests.skip` (211 on ext); on a FAT `/data`
+they are in `base_unittests.fat.skip` (no writable shared mapping there; not
+measured on FAT). The programs were the stage's as they stood (76,956,088
+bytes, linked at 10:06 that day, four minutes after WL1 merged at 10:02, so
+by all signs with WL1's libc): the relink that [BM1](#bm1-2026-10-18) did by
+removing the two programs from the kept tree was refused to the track, and
+`tools/cr/build.sh start base_unittests test_child_process` alone relinks
+nothing (ninja does not see the sysroot's libc), so the track could not
+make that sure itself: whoever relinks next, `CR_BASE_ONLY` with these four
+suites is a one-minute check.
+
 ### 2. The address space: huge sparse reservations (the top risk)
 
 **What Chromium does** ([CR-RESEARCH section 6](CR-RESEARCH.md#6-v8s-jit)):

@@ -1,0 +1,38 @@
+# A mapping twice the budget stored through, while another program reads
+# another file at speed (docs/WRITEMAP-PLAN.md's WT1; tools/pager-test.sh's
+# wpress case makes the drive and checks the log and the disk). The case
+# boots with 512 MiB: the mount's pager has a budget of 32 MiB and lets
+# 8 MiB of it be dirty. w.bin is 64 MiB (16384 pages), stored through
+# three times in a row (three salts) with no msync, so most of the stores
+# wait for extfs to write earlier ones back (the writer is throttled, not
+# killed); other.bin is 48 MiB, hashed twenty times in the background
+# through a mapping of its own (every pass asks extfs for pages while it
+# writes). Then every page of w.bin is looked at by read and by a new
+# mapping (the last salt's); the host reads the disk after.
+# As in cmds.txt, a marker built from $T (w) never appears in the typed
+# line, only when the command before it ran.
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send T=w
+wait {prompt}
+seen 60 init: /jam mounted
+
+send pagertest rec make /jam/w.bin 16384 4096; echo p0-$T=$?
+wait 60 p0-w=0
+wait {prompt}
+send pagertest hash /jam/other.bin 20 &
+wait {prompt}
+wait 120 pagertest: pass 1 of /jam/other.bin
+send pagertest rec put /jam/w.bin 16384 21 nosync 1 4096; pagertest rec put /jam/w.bin 16384 22 nosync 1 4096; pagertest rec put /jam/w.bin 16384 23 nosync 1 4096; echo p1-$T=$?
+wait 280 p1-w=0
+seen 280 pagertest: /jam/other.bin: 50331648 bytes: mapped sha256
+wait {prompt}
+send pagertest rec check /jam/w.bin 16384 23 16384 4096; echo p2-$T=$?
+wait 280 pagertest: rec: check /jam/w.bin: PASS
+wait p2-w=0
+wait {prompt}
+send sync
+wait {prompt}
+send reboot -f
+wait reboot: resetting

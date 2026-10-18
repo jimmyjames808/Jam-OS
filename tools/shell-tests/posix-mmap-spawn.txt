@@ -5,7 +5,11 @@
 # the shell, its self-image section passes (its /proc/self/exe is its path,
 # and a spawn of /proc/self/exe runs from its own image: docs/CR-PLAN.md,
 # "CL2 notes"); a forked child's execve of it (spawn, wait, exit) passes our
-# pipe on and forwards our SIGTERM to it (exit 9: CR-PLAN, "CCS").
+# pipe on and forwards our SIGTERM to it (exit 9: CR-PLAN, "CCS"); and
+# `posixtest spawn-wmap` (WRITEMAP-PLAN's WT1): with a writable shared
+# mapping of the file alive (an O_RDWR descriptor's, open and then closed)
+# the file is ETXTBSY to a spawn and to a forked child's execve, and runs
+# again once the mapping is gone.
 # QEMU_INPUT=this file, command line "shell".
 wait 120 Jam OS shell
 wait {prompt}
@@ -33,6 +37,10 @@ wait {prompt}
 send run /data/pt-prog self-image /data/pt-prog; echo si-$T=$?
 wait 60 posixtest: self-image: ok
 wait 30 si-s=0
+wait {prompt}
+send posixtest spawn-wmap /data/pt-prog; echo wm-$T=$?
+wait 90 posixtest: spawn-wmap: ok
+wait 30 wm-s=0
 wait {prompt}
 send reboot -f
 wait reboot: resetting

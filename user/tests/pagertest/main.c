@@ -35,6 +35,10 @@
  *                                           mapping at 0 (read before) and at
  *                                           the half (never read), each timed,
  *                                           or load the byte at the half
+ *   pagertest rec make|put|check ...        records stored through a writable
+ *                                           shared mapping, msynced or not,
+ *                                           and checked by read and by a new
+ *                                           mapping (rec.c's header)
  *
  * Exit codes: 0 done and, where there is something to compare, equal; 1 a
  * mismatch or a failed check; 2 the file could not be mapped; 3 the cue
@@ -75,7 +79,7 @@ static int usage(void)
 {
     printf("usage: pagertest self | map <path> | read <path> [offset [len [passes]]] | "
            "hash <path> [passes] | xhash <path> | touch <path> <offset> load|copy [cue] | "
-           "write <path> | pull <path> <cue> load|copy\n");
+           "write <path> | pull <path> <cue> load|copy | rec make|put|check ...\n");
     return 64;
 }
 
@@ -337,6 +341,8 @@ int main(int argc, char **argv)
         return cmd_touch(argv[2], off, !strcmp(argv[4], "copy"), argc == 6 ? argv[5] : NULL);
     if (!strcmp(cmd, "write") && argc == 3)
         return pagertest_write(argv[2]);
+    if (!strcmp(cmd, "rec") && argc >= 3)
+        return pagertest_rec(argc - 2, argv + 2);
     if (!strcmp(cmd, "pull") && argc == 5 &&
         (!strcmp(argv[4], "load") || !strcmp(argv[4], "copy")))
         return cmd_pull(argv[2], argv[3], !strcmp(argv[4], "copy"));

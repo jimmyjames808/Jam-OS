@@ -108,16 +108,6 @@ FileUtilTest.DeleteDeep
 [musl] fdopen(-1, "w") returns a FILE (musl does not check the descriptor), and the test expects null: the same on Alpine, a test to leave out on any musl build
 FileUtilTest.FileToFILE
 
-[fs] a writable shared mapping of a /data file (MemoryMappedFile READ_WRITE, extend, truncate) fails on ext too (WE1: extfs's write-back is not built); the null pointer or bad object the test then uses faults
-FilePersistentMemoryAllocatorTest.AcceptableTest
-FilePersistentMemoryAllocatorTest.ExtendTest
-MemoryMappedFileTest.ExtendableFile
-MemoryMappedFileTest.WriteableFile
-PersistentHistogramAllocatorTest.CreateSpareFile
-PersistentHistogramAllocatorTest.CreateWithFile
-PersistentHistogramAllocatorTest.MovePersistentFile
-PersistentMemoryAllocatorTest.TruncateTest
-
 [toolchain] PartitionAlloc reserves [64 KiB, 4,097 MiB) (a PROT_NONE zero segment, USER_SPACE_ZERO_SEGMENT_SIZE_MB) by its address as one mapping, and the program's image sits at 0x400000 in the way, so it keeps the 64 KiB it assumes. MH made the hint taken and placement top down (nothing else low), but the programs stay at 0x400000 until they are static PIEs: linked at 1 TiB, headless_shell's calls to BoringSSL's undefined weak functions can't reach 0 (CR-PLAN, "MH"). ZeroSegmentInaccessibleEnd reads the segment's last byte and expects to die: nothing is reserved there ("failed to die"; the Begin test passes; End passed with base_unittests linked at 4 GiB)
 PartitionAddressSpaceTest.ZeroSegment
 PartitionAddressSpaceTest.ZeroSegmentInaccessibleEnd

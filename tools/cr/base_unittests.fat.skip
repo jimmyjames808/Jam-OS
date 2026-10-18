@@ -50,3 +50,13 @@ ImportantFileWriterCleanerTest.StartAddFromOtherThread
 ImportantFileWriterCleanerTest.StartTwice
 ImportantFileWriterTest.FailedWriteWithObserver
 ImportantFileWriterTest.RestoreMissingFileIfNeeded_UsesLatestCandidate
+
+[fs] /data is FAT: no writable shared mapping (a MAP_SHARED of an O_RDWR file is ENODEV: fat has no pager that writes pages back, docs/WRITEMAP-PLAN.md section 3). Pass on ext since WE1/WE2/WL1 (WT1 measured them on ext, 2026-10-18); not measured on FAT
+FilePersistentMemoryAllocatorTest.AcceptableTest
+FilePersistentMemoryAllocatorTest.ExtendTest
+MemoryMappedFileTest.ExtendableFile
+MemoryMappedFileTest.WriteableFile
+PersistentHistogramAllocatorTest.CreateSpareFile
+PersistentHistogramAllocatorTest.CreateWithFile
+PersistentHistogramAllocatorTest.MovePersistentFile
+PersistentMemoryAllocatorTest.TruncateTest

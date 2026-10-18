@@ -841,6 +841,85 @@ void pt_spawn_data(char **argv)
     printf("posixtest: spawn-data: %s fork-exec: wait status %#x\n", path, status);
 }
 
+static uint64_t pt_now_ns(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+/* A spawn of path (pt-prog's "exit 7" section): the errno, or 0 and the
+ * program's exit code in *code. */
+static int spawn_exit7(const char *path, int *code)
+{
+    char *const args[] = { "pt-prog", "--child-proc", "exit", "7", NULL };
+    pid_t pid = 0;
+    int status = 0;
+    int r = posix_spawn(&pid, path, NULL, NULL, args, NULL);
+    if (!r && waitpid(pid, &status, 0) == pid)
+        *code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    return r;
+}
+
+/* spawn-wmap <path> (only when asked for: posix-mmap-test.sh's spawn case,
+ * after the allowed run of the same copy of posixtest at <path>): a file
+ * with a writable shared mapping can't be run (Linux's ETXTBSY: a
+ * descriptor open for writing, or an O_RDWR MAP_SHARED, WRITEMAP-PLAN
+ * section 3), and can again once the mapping and the descriptor are gone.
+ * With the descriptor open and the mapping alive, a spawn, a forked
+ * child's execve; with the mapping alone (the descriptor closed), a spawn;
+ * unmapped, a spawn runs it (extfs learns of the VMO's end by a request,
+ * so a spawn may find it busy for a moment). */
+void pt_spawn_wmap(char **argv)
+{
+    const char *path = NULL;
+    for (int i = 1; argv[i]; i++)
+        if (!strcmp(argv[i], "spawn-wmap") && argv[i + 1])
+            path = argv[i + 1];
+    CHECK(path != NULL);
+    if (!path)
+        return;
+    int code = -1;
+    CHECK(spawn_exit7(path, &code) == 0 && code == 7);   /* runs before the mapping */
+    int fd = open(path, O_RDWR);
+    CHECK(fd >= 0);
+    uint8_t *m = fd >= 0 ? mmap(NULL, PG, PROT_READ, MAP_SHARED, fd, 0) : MAP_FAILED;
+    CHECK(m != MAP_FAILED);   /* PROT_READ: a shared map of an O_RDWR descriptor still asks to write */
+    if (m == MAP_FAILED)
+        return;
+    int r = spawn_exit7(path, &code);
+    printf("posixtest: spawn-wmap: %s mapped, the descriptor open: spawn %s\n", path,
+           r ? strerror(r) : "ran");
+    CHECK(r == ETXTBSY);
+    pid_t pid = fork();
+    if (pid == 0) {
+        char *const args[] = { "pt-prog", "--child-proc", "exit", "7", NULL };
+        execv(path, args);
+        _exit(errno == ETXTBSY ? 97 : 96);
+    }
+    int status = -1;
+    CHECK(pid > 0 && waitpid(pid, &status, 0) == pid && WIFEXITED(status) &&
+          WEXITSTATUS(status) == 97);
+    printf("posixtest: spawn-wmap: a forked child's execve: wait status %#x\n", status);
+    close(fd);
+    r = spawn_exit7(path, &code);
+    printf("posixtest: spawn-wmap: the descriptor closed, the mapping alive: spawn %s\n",
+           r ? strerror(r) : "ran");
+    CHECK(r == ETXTBSY);
+    CHECK(munmap(m, PG) == 0);
+    uint64_t t0 = pt_now_ns();
+    do {
+        r = spawn_exit7(path, &code);
+        if (r != ETXTBSY)
+            break;
+        struct timespec ts = { 0, 100 * 1000 * 1000 };
+        nanosleep(&ts, NULL);
+    } while (pt_now_ns() - t0 < 15ull * 1000000000ull);
+    printf("posixtest: spawn-wmap: unmapped: spawn %s (code %d) after %lu ms\n",
+           r ? strerror(r) : "ran", code, (unsigned long)((pt_now_ns() - t0) / 1000000ull));
+    CHECK(r == 0 && code == 7);
+}
+
 int pt_child_mmap_pull(int argc, char **argv)
 {
     if (argc < 3)

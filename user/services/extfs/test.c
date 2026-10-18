@@ -22,6 +22,11 @@
  *                                 written), its data written (no commit),
  *                                 the batch committed (no PAGER_OP_WRITTEN
  *                                 yet), a run answered;
+ *   hang=<point>:<n>  the same points; the n-th time extfs reaches one it
+ *                     stops answering for good (sleeps until it is killed),
+ *                     with the pages of the run it began still writing:
+ *                     hang=wback:1 is a pager that never answers a
+ *                     write-back (utest's extfs_wpress);
  *   crash-on=<name>   a request on a path whose last name is <name>
  *                     crashes extfs (an invalid instruction): the bad
  *                     request of the restart rule, every time it runs;
@@ -44,6 +49,7 @@
 #include "extfs.h"
 
 #define DIE_PREFIX   "die="
+#define HANG_PREFIX  "hang="
 #define CRASH_PREFIX "crash-on="
 #define FIXED_TIME   "fixed-time"
 #define LAZY_TAIL    "tail-lazy"
@@ -61,13 +67,16 @@ static struct {
     int         point;
     uint32_t    at;
     uint32_t    reached;
+    int         hang_point;
+    uint32_t    hang_at;
+    uint32_t    hang_reached;
     const char *crash;
     bool        fixed;
     bool        lazy_tail;
     bool        quick_retry;
     bool        quick_wait;
     bool        unwritten;
-} t = { .point = -1 };
+} t = { .point = -1, .hang_point = -1 };
 
 bool test_fixed_time(void)
 {
@@ -89,7 +98,8 @@ bool test_quick_wait(void)
     return t.quick_wait;
 }
 
-static bool die_word(const char *w)
+/* "<point>:<n>" of a die= or hang= word. */
+static bool point_word(const char *w, int *point, uint32_t *count)
 {
     for (int p = 0; p < XF_DIE_COUNT; p++) {
         size_t n = strlen(point_names[p]);
@@ -100,8 +110,8 @@ static bool die_word(const char *w)
             at = at * 10 + (uint32_t)(*d - '0');
         if (!at)
             return false;
-        t.point = p;
-        t.at = at;
+        *point = p;
+        *count = at;
         return true;
     }
     return false;
@@ -130,7 +140,9 @@ bool test_word(const char *w)
         return true;
     }
     if (!strncmp(w, DIE_PREFIX, strlen(DIE_PREFIX)))
-        return die_word(w + strlen(DIE_PREFIX));
+        return point_word(w + strlen(DIE_PREFIX), &t.point, &t.at);
+    if (!strncmp(w, HANG_PREFIX, strlen(HANG_PREFIX)))
+        return point_word(w + strlen(HANG_PREFIX), &t.hang_point, &t.hang_at);
     if (!strncmp(w, CRASH_PREFIX, strlen(CRASH_PREFIX)) && w[strlen(CRASH_PREFIX)]) {
         t.crash = w + strlen(CRASH_PREFIX);
         return true;
@@ -144,6 +156,15 @@ void test_die(enum xf_die point)
         return;
     printf("extfs %s: test: ending at %s %u\n", vol.name, point_names[point], t.at);
     jam_process_exit(EXTFS_EXIT_TEST);
+}
+
+void test_hang(enum xf_die point)
+{
+    if ((int)point != t.hang_point || ++t.hang_reached != t.hang_at)
+        return;
+    printf("extfs %s: test: hanging at %s %u\n", vol.name, point_names[point], t.hang_at);
+    for (;;)
+        jam_sleep_until(now() + 3600 * NS_PER_S);
 }
 
 void test_crash(const char *path, uint32_t len)

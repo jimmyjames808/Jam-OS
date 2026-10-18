@@ -72,12 +72,43 @@
 #          it; between the boots the three bytes are changed in the files'
 #          blocks on the image (debugfs's bmap finds them). e2fsck -fn
 #          after each.
+# Writable mappings on extfs (docs/WRITEMAP-PLAN.md's WT1; the same kind of
+# drive as jam's; `pagertest rec` (user/tests/pagertest/rec.c) stores records
+# with sequence numbers and checksums through a shared mapping, and
+# tools/pagerrec.py looks at them on the host, in the file as Linux's debugfs
+# reads it out of the volume):
+#   wmsync records stored and msynced (pager-wmsync.txt): extfs killed while
+#          the writer holds its mapping, the records whole by read and by a
+#          new mapping and by the writer's own; the same with no msync (the
+#          successor writes them by age); then msynced records and QEMU quit
+#          at once (no stop of the volume). A second boot (pager-wmsync2.txt)
+#          finds all three runs whole; on the host Linux's e2fsck -fy of a
+#          copy of the cut disk (it replays the journal) is clean and holds
+#          them too, e2fsck -fn after the second boot is clean.
+#   wcut   QEMU killed (kill -9) at WCUT_POINTS (writes into the storm, the
+#          default six) of a storm of stores and msyncs (2000 records, 4 a
+#          msync, on a throttled drive: extfs-test.sh's cut case's way of
+#          cutting). Each cut file's acknowledged records ("acked N") are
+#          whole when Linux has replayed a copy of the disk's journal, and
+#          again whole by read and by mapping in the next boot (which
+#          recovers the volume itself); e2fsck -fy of the cut copy exits 0
+#          and e2fsck -fn at the end is clean.
+#   wpress a mapping twice the budget (QEMU_MEM 512M: budget 32 MiB, w.bin
+#          64 MiB, 8 MiB may be dirty) stored through three times with no
+#          msync while another program hashes another file twenty times
+#          (pager-wpress.txt):
+#          the writer is throttled, finishes, every page is right by read and
+#          by a mapping and on the disk, the reader's hashes are the host's
+#          and no pass takes 20 s, nothing is killed. (The writer killed at
+#          the pager's deadline by an extfs held with the hang=wback test
+#          power is utest's extfs_wpress: a test power reaches only whoever
+#          starts extfs.)
 # QEMU_SMP and QEMU_MEM pass through (budget sets its own QEMU_MEM).
 # Usage: tools/pager-test.sh <outdir> [name]; exit 0 on PASS.
 set -eu
 . tools/datafs.sh
 out=$1 name=${2:-pager}
-cases=${PAGER_CASES:-plumb map budget kill exec write pull jam jstorm xexec}
+cases=${PAGER_CASES:-plumb map budget kill exec write pull jam jstorm xexec wmsync wcut wpress}
 mkdir -p "$out"
 ok=1
 
@@ -556,6 +587,266 @@ case_jstorm() {
     rm -f "$drive" "$drive".*
 }
 
+# ---- writable mappings (docs/WRITEMAP-PLAN.md's WT1) ----------------------------------------
+
+# jam_volume <drive> <MiB> <dest>: the data partition of a jam_drive (at
+# 513 MiB, <MiB> long) copied out of the image.
+jam_volume() {
+    dd if="$1" of="$3" bs=1M iflag=skip_bytes,count_bytes skip=$((513 << 20)) count=$(($2 << 20)) \
+        status=none
+}
+
+# rec_disk <case> <volume> <file> <records> <salt> <rsz> <acked>: the file as
+# debugfs reads it out of the ext volume, looked at by tools/pagerrec.py
+# (the first <acked> records whole, none foreign).
+rec_disk() {
+    debugfs -R "cat /$3" "$2" > "$2.rec" 2> /dev/null || true
+    if line=$(python3 tools/pagerrec.py "$2.rec" "$4" "$5" "$6" "$7"); then
+        echo "$name: $1: on the disk: $line"
+    else
+        echo "$name: $1: on the disk: $line"
+        ok=0
+    fi
+    rm -f "$2.rec"
+}
+
+# acked_in <log>: the highest "acked N" pagertest rec said in it (0 if none).
+acked_in() {
+    n=$(tr -d '\r' < "$1" | grep -ao "pagertest: rec: acked [0-9]*" | sed 's/.*acked //' |
+        sort -n | tail -1)
+    echo "${n:-0}"
+}
+
+# The cut: extfs-test.sh's cut case's way (kill -9 at the Nth write of the
+# NVMe drive's trace, on a throttled drive). find_qemu <run>: the pid of the
+# QEMU of the run (tools/qemu-test.sh names its monitor socket
+# build/.qemu-<run>.sock): the process with that on its command line whose
+# working directory is this checkout's; empty if it isn't there (yet).
+find_qemu() {
+    here=$(pwd -P)
+    for p in $(pgrep -f "qemu-system-x86_64 .*-monitor unix:build/.qemu-$1.sock" || true); do
+        [ "$(readlink "/proc/$p/cwd" 2> /dev/null)" = "$here" ] && { echo "$p"; return 0; }
+    done
+    return 0
+}
+
+# nwrites <trace>: the Writes QEMU has traced so far.
+nwrites() {
+    n=$(grep -ac "^pci_nvme_write " "$1" 2> /dev/null || true)
+    echo "${n:-0}"
+}
+
+# boot_cut <run> <script> <drive> <marker> <delta>: boot, and kill -9 QEMU
+# when the trace of the drive's commands has <delta> more Writes than it had
+# when the log first showed <marker>. The drive is throttled to 30 Writes a
+# second (QEMU's throttle: tools/qemu-test.sh's QEMU_NVME_THROTTLE: without
+# it five Writes take less time than the poll between two looks at the
+# trace). extfs-test.sh's cut case goes to 2 a second for its first ten
+# points, so that the kill lands on the point's Write; here the boot and the
+# file made before the storm would not get through at 2 (120 s waits), and
+# which Write the kill lands on matters less than that it lands in the
+# storm. Sets `cut` to the Writes traced when the kill was sent, or empty
+# when the run ended first.
+boot_cut() {
+    rn=$1 script=$2 drv=$3 marker=$4 delta=$5
+    cut=
+    thr="x-iops-write=30"
+    QEMU_TIMEOUT=${QEMU_TIMEOUT:-420} QEMU_INPUT="$script" QEMU_NVME="$drv" QEMU_NVME_THROTTLE="$thr" \
+        QEMU_EXTRA="-trace pci_nvme_write -D $out/$rn.trace" \
+        tools/qemu-test.sh "$out" "$rn" shell > "$out/$rn.out" 2>&1 &
+    bpid=$!
+    log="$out/$rn.log" trace="$out/$rn.trace"
+    limit=$(( ${QEMU_TIMEOUT:-420} * 100 ))   # polls of at least 5 ms
+    i=0 base=0 target= qp=
+    while [ $i -lt $limit ] && kill -0 $bpid 2> /dev/null; do
+        [ -n "$qp" ] || qp=$(find_qemu "$rn")
+        if [ -z "$target" ] && grep -aqF -- "$marker" "$log" 2> /dev/null; then
+            base=$(nwrites "$trace")
+            target=$((base + delta))
+        fi
+        if [ -n "$target" ] && [ -n "$qp" ] && [ "$(nwrites "$trace")" -ge "$target" ]; then
+            cut=$(nwrites "$trace")
+            kill -9 "$qp"
+            break
+        fi
+        sleep 0.005
+        i=$((i + 1))
+    done
+    wait $bpid || true
+    [ -z "$cut" ] || echo "$rn: killed (kill -9) at Write $cut of the trace (the storm began at $base)"
+}
+
+# rec_header <marker letter>: the start every script of these cases has.
+rec_header() {
+    cat <<EOF
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send T=$1
+wait {prompt}
+seen 60 init: /jam mounted
+EOF
+}
+
+# The first boot ends with the monitor's quit, so the exit status of the
+# run says nothing and its log is looked at instead.
+case_wmsync() {
+    ext_tools wmsync || return
+    jam_drive wmsync 64 hello.bin:1:5 || { ok=0; return; }
+    QEMU_TIMEOUT=${QEMU_TIMEOUT:-420} QEMU_INPUT=tools/shell-tests/pager-wmsync.txt \
+        QEMU_NVME="$drive" tools/qemu-test.sh "$out" "$name-wmsync" shell \
+        > "$out/$name-wmsync.out" 2>&1 || true
+    run="$out/$name-wmsync.log"
+    for m in a0 ka a1 a2 b0 kb b1 b2 b3 c0 c1; do
+        want wmsync 1 "^$m-m=0" "$run"
+    done
+    for f in ra rb; do
+        want wmsync 1 "pagertest: rec: check /jam/$f.bin: PASS" "$run"
+        want wmsync 1 "pagertest: rec: held mapping of /jam/$f.bin: 200 whole of 200: PASS" "$run"
+    done
+    want wmsync 2 "pagertest: rec: acked 200([^0-9]|$)" "$run"
+    want wmsync 1 "pagertest: rec: put /jam/rc.bin: done" "$run"
+    n=$(count "extfs /jam: restart \(killed" "$run")
+    [ "$n" -ge 2 ] || { echo "$name: wmsync: $n restarts of extfs /jam carried on, wanted 2 or more"; ok=0; }
+    never wmsync "extfs /jam: restart .*starting fresh|giving up" "$run"
+    no_page_errors wmsync
+    # Linux's view of the disk the cut left: its journal replayed on a copy.
+    vol="$out/$name-wmsync-cut.img"
+    jam_volume "$drive" 64 "$vol"
+    st=0
+    e2fsck -fy "$vol" > "$out/$name-wmsync-cut.fsck" 2>&1 || st=$?
+    [ $st = 0 ] || { echo "$name: wmsync: e2fsck -fy of the cut disk exits $st (see $out/$name-wmsync-cut.fsck)"; ok=0; }
+    rec_disk wmsync "$vol" ra.bin 200 11 5000 200
+    rec_disk wmsync "$vol" rb.bin 200 12 5000 200
+    rec_disk wmsync "$vol" rc.bin 200 13 5000 200
+    rm -f "$vol"
+    # The second boot: Jam OS finds the same.
+    jam_run wmsync2
+    for f in ra rb rc; do
+        want wmsync2 1 "pagertest: rec: check /jam/$f.bin: PASS" "$run"
+    done
+    no_page_errors wmsync2
+    ext_clean wmsync "$drive" $((513 << 20)) $((64 << 20)) "after the second boot"
+    rm -f "$drive" "$drive".*
+}
+
+# The storm of stores and msyncs, cut. The script of boot k checks the file
+# the cut of boot k - 1 left (its acked count from that boot's log), then
+# makes and stores its own.
+case_wcut() {
+    ext_tools wcut || return
+    jam_drive wcut 128 hello.bin:1:5 || { ok=0; return; }
+    points=${WCUT_POINTS:-3 8 20 45 90 160}
+    recs=2000 rsz=5000 batch=4
+    k=0 cuts=0 prev_salt= prev_acked=
+    for delta in $points; do
+        k=$((k + 1))
+        salt=$((100 + k))
+        rn="$name-wcut$k"
+        {
+            echo "# generated by tools/pager-test.sh: wcut $k (cut $delta Writes into the storm)"
+            rec_header w
+            if [ $k -gt 1 ]; then
+                cat <<EOF
+send pagertest rec check /jam/c$((k - 1)).bin $recs $prev_salt $prev_acked $rsz; echo ck$k-\$T=\$?
+wait 120 pagertest: rec: check /jam/c$((k - 1)).bin: PASS
+wait ck$k-w=0
+wait {prompt}
+EOF
+            fi
+            cat <<EOF
+send pagertest rec make /jam/c$k.bin $recs $rsz; echo mk$k-\$T=\$?
+wait 120 mk$k-w=0
+wait {prompt}
+send pagertest rec put /jam/c$k.bin $recs $salt msync $batch $rsz; echo st$k-\$T=\$?
+wait 300 st$k-w=
+EOF
+        } > "$out/$rn.in"
+        boot_cut "$rn" "$out/$rn.in" "$drive" "pagertest: rec: storing" "$delta"
+        if [ -z "$cut" ]; then
+            echo "$name: wcut: point $k: the storm ended before $delta Writes (not cut); the end of its output and log:"
+            tail -n 4 "$out/$rn.out" | cut -c1-200
+            tr -d '\r' < "$out/$rn.log" | tail -n 10 | cut -c1-200
+        else
+            cuts=$((cuts + 1))
+        fi
+        if [ $k -gt 1 ]; then
+            want wcut$k 1 "pagertest: rec: check /jam/c$((k - 1)).bin: PASS" "$out/$rn.log"
+        fi
+        acked=$(acked_in "$out/$rn.log")
+        # Linux replays a copy's journal; the acknowledged records are whole.
+        vol="$out/$name-wcut$k.img"
+        jam_volume "$drive" 128 "$vol"
+        st=0
+        e2fsck -fy "$vol" > "$out/$name-wcut$k.fsck" 2>&1 || st=$?
+        [ $st = 0 ] || { echo "$name: wcut: point $k: e2fsck -fy of the cut disk exits $st (see $out/$name-wcut$k.fsck)"; ok=0; }
+        echo "$name: wcut: point $k: cut at write ${cut:-none}, $acked records acked; Linux ($(grep -c 'recovering journal' "$out/$name-wcut$k.fsck") replays)"
+        rec_disk wcut "$vol" "c$k.bin" $recs "$salt" $rsz "$acked"
+        rm -f "$vol"
+        prev_salt=$salt prev_acked=$acked
+    done
+    # The last boot: Jam OS recovers and the last file is whole as acked.
+    rn="$name-wcutlast"
+    {
+        echo "# generated by tools/pager-test.sh: wcut, the last boot (no cut)"
+        rec_header w
+        cat <<EOF
+send pagertest rec check /jam/c$k.bin $recs $prev_salt $prev_acked $rsz; echo ck-\$T=\$?
+wait 120 pagertest: rec: check /jam/c$k.bin: PASS
+wait ck-w=0
+wait {prompt}
+send sync
+wait {prompt}
+send reboot -f
+wait reboot: resetting
+EOF
+    } > "$out/$rn.in"
+    if ! QEMU_TIMEOUT=${QEMU_TIMEOUT:-420} QEMU_INPUT="$out/$rn.in" QEMU_NVME="$drive" \
+         tools/qemu-test.sh "$out" "$rn" shell > "$out/$rn.out" 2>&1; then
+        echo "$name: wcut: the last boot's script FAILED (see $out/$rn.log)"
+        grep "serial-feed: .*no '" "$out/$rn.out" || true
+        ok=0
+    fi
+    echo "$name: wcut: $cuts cuts of $k points"
+    [ "$cuts" -ge $((k * 3 / 4)) ] || { echo "$name: wcut: only $cuts of the $k points were cut"; ok=0; }
+    ext_clean wcut "$drive" $((513 << 20)) $((128 << 20)) "at the end"
+    rm -f "$drive" "$drive".*
+}
+
+case_wpress() {
+    ext_tools wpress || return
+    jam_drive wpress 256 other.bin:48:12 || { ok=0; return; }
+    sha=$(cat "$drive.other.bin.sha")
+    QEMU_MEM=512M jam_run wpress
+    pages=$(sed -n 's/.*volumes: extfs-jam: pager made: \([0-9]*\) pages.*/\1/p' "$run" | head -1)
+    if [ -z "$pages" ] || [ $((pages * 2)) -gt 16384 ]; then
+        echo "$name: wpress: the budget is ${pages:-none} pages: w.bin (16384 pages) is not twice it"
+        ok=0
+    fi
+    for m in p0 p1 p2; do
+        want wpress 1 "^$m-w=0" "$run"
+    done
+    want wpress 3 "pagertest: rec: stored 16384 records" "$run"
+    want wpress 1 "pagertest: rec: check /jam/w.bin: PASS" "$run"
+    # The reader: its hashes the host's, no pass slow (a store's wait or a
+    # request that waited out the pager's answer time would be a minute).
+    hashed wpress /jam/other.bin "$sha" 1
+    want wpress 20 "pagertest: pass [0-9]+ of /jam/other.bin: 50331648 bytes at 0 in [0-9]+ ms: sha256 $sha" "$run"
+    slow=$(sed -n 's/.*pagertest: pass [0-9]* of \/jam\/other.bin: .* in \([0-9]*\) ms: .*/\1/p' "$run" |
+           sort -n | tail -1)
+    echo "$name: wpress: $(grep -a 'pagertest: rec: stored' "$run" | tr -d '\r'); the reader's slowest pass ${slow:-none} ms"
+    { [ -n "$slow" ] && [ "$slow" -lt 20000 ]; } ||
+        { echo "$name: wpress: the reader's slowest pass took ${slow:-no} ms, wanted under 20000"; ok=0; }
+    never wpress 'process ".*" killed|didn.t answer|pager is gone' "$run"
+    no_page_errors wpress
+    vol="$out/$name-wpress-disk.img"
+    jam_volume "$drive" 256 "$vol"
+    rec_disk wpress "$vol" w.bin 16384 23 4096 16384
+    rm -f "$vol"
+    ext_clean wpress "$drive" $((513 << 20)) $((256 << 20)) "after the run"
+    rm -f "$drive" "$drive".*
+}
+
 for c in $cases; do
     case $c in
     plumb) case_plumb ;;
@@ -568,6 +859,9 @@ for c in $cases; do
     jam) case_jam ;;
     jstorm) case_jstorm ;;
     xexec) case_exec x ;;
+    wmsync) case_wmsync ;;
+    wcut) case_wcut ;;
+    wpress) case_wpress ;;
     *) echo "$name: no case called $c"; ok=0 ;;
     esac
 done

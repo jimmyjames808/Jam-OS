@@ -1,0 +1,31 @@
+# The second boot of tools/pager-test.sh's wmsync case (docs/WRITEMAP-PLAN.md's
+# WT1): the same drive after pager-wmsync.txt's QEMU was quit with no stop
+# of the volume. extfs replays its journal at the mount; the three runs of
+# records (ra.bin msynced, rb.bin written by age after its writer's extfs
+# was killed, rc.bin msynced just before the cut) are whole, by read and
+# by a mapping.
+# As in cmds.txt, a marker built from $T (n) never appears in the typed
+# line, only when the command before it ran.
+wait 120 Jam OS shell
+wait {prompt}
+seen 60 init: /data mounted
+send T=n
+wait {prompt}
+seen 60 init: /jam mounted
+
+send pagertest rec check /jam/ra.bin 200 11 200 5000; echo a-$T=$?
+wait 120 pagertest: rec: check /jam/ra.bin: PASS
+wait a-n=0
+wait {prompt}
+send pagertest rec check /jam/rb.bin 200 12 200 5000; echo b-$T=$?
+wait 120 pagertest: rec: check /jam/rb.bin: PASS
+wait b-n=0
+wait {prompt}
+send pagertest rec check /jam/rc.bin 200 13 200 5000; echo c-$T=$?
+wait 120 pagertest: rec: check /jam/rc.bin: PASS
+wait c-n=0
+wait {prompt}
+send sync
+wait {prompt}
+send reboot -f
+wait reboot: resetting
