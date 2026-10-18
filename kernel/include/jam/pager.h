@@ -166,7 +166,8 @@ status_t pager_create(struct job *job, uint64_t max_pages, uint64_t answer_ns,
  * ERR_OUT_OF_RANGE) under key, every page absent; the caller gets the only
  * reference. ERR_ALREADY_EXISTS if key names a live VMO; a key whose VMO
  * is gone but whose PAGER_REQ_GONE has no answer yet is taken over (the
- * GONE withdrawn, delivered or not). ERR_BAD_STATE once the pager's last
+ * GONE withdrawn, delivered or not), and so is one whose VMO is being
+ * destroyed (no reference left: no GONE comes for it). ERR_BAD_STATE once the pager's last
  * handle is gone. Thread context. */
 status_t pager_create_vmo(struct pager *pg, uint64_t key, uint64_t size, struct vmo **out);
 /* pager_create_vmo with flags: PAGER_VMO_WRITABLE, a writable one

@@ -32,6 +32,11 @@
  *       past the end; once none is left the VMO goes and its GONE comes;
  *       a create of that key takes the GONE over (delivered or queued); a
  *       detach drops dirty pages (lost) and ends the hold.
+ *   pager_dirty_dying_key
+ *       a create of a key whose VMO is being destroyed (no reference left,
+ *       its pages freed, its link not yet told: DBG_PAGER_VMO_DYING) takes
+ *       the key over instead of ERR_ALREADY_EXISTS; no GONE comes for the
+ *       old one, the new one serves the key and its GONE comes in turn.
  *   pager_dirty_store_waits
  *       a store to an absent page waits for it like a read (the region
  *       lock free) and dirties it when it arrives; a store cancelled while
@@ -753,6 +758,64 @@ KTEST(pager_dirty_hold_and_find)
 
     aspace_unref(as);
     pg_close(pg);
+    kt_job_is_empty(j);
+    job_unref(j);
+}
+
+/* pager_dirty_dying_key's pager, and what its hook's create got. */
+static struct pager *dying_pg;
+static struct vmo   *dying_new;
+static status_t      dying_found, dying_st;
+
+/* DBG_PAGER_VMO_DYING: our VMO's last reference went and its pages were
+ * freed, its link not told yet: the pager makes its key again (a map
+ * racing another process's last unmap of the file). */
+static void make_while_dying(void *arg)
+{
+    struct vmo *v = arg;
+    if (vmo_pager_koid(v) != pager_kobject(dying_pg)->koid || vmo_pager_key(v) != 35)
+        return;
+    struct vmo *f = NULL;
+    dying_found = pager_create_vmo_flags(dying_pg, 35, 0, PAGER_VMO_FIND, &f);
+    if (dying_found == OK)
+        put(f);   /* (wrong: checked after) */
+    dying_st = pager_create_vmo_flags(dying_pg, 35, 2 * PG, PAGER_VMO_WRITABLE, &dying_new);
+}
+
+KTEST(pager_dirty_dying_key)
+{
+    struct job *j = kt_fresh_job();
+    dying_pg = pg_new(j, 64);
+    struct vmo *v = wvmo(dying_pg, 35, 2);
+    KT_EQ(supply(dying_pg, 35, 0, 2), OK);
+    dying_new = NULL;
+    dying_found = dying_st = ERR_BAD_STATE;
+    __atomic_store_n(&dbg_hooks[DBG_PAGER_VMO_DYING], make_while_dying, __ATOMIC_RELEASE);
+    put(v);   /* the last reference: destroyed here, the hook in the middle */
+    __atomic_store_n(&dbg_hooks[DBG_PAGER_VMO_DYING], NULL, __ATOMIC_RELEASE);
+    KT_EQ(dying_found, ERR_NOT_FOUND);   /* (dying: no reference to be had) */
+    if (dying_st != OK)
+        ktest_fail("a create while the key's VMO was dying: %d (the map would fail)", dying_st);
+    KT_ASSERT(dying_new);
+
+    /* The new VMO has the key; the old one's destruction freed its link
+     * and sent no GONE. */
+    struct vmo *f = NULL;
+    KT_EQ(pager_create_vmo_flags(dying_pg, 35, 0, PAGER_VMO_FIND, &f), OK);
+    KT_ASSERT(f == dying_new);
+    put(f);
+    none_queued(dying_pg);
+    KT_EQ(supply(dying_pg, 35, 0, 2), OK);
+    KT_EQ(vword(dying_new, PG), word(35, 1));
+    put(dying_new);
+    struct pager_request q;
+    next(dying_pg, &q);
+    KT_EQ(q.kind, PAGER_REQ_GONE);
+    KT_EQ(q.key, 35);
+    KT_EQ(pager_op(dying_pg, 35, PAGER_OP_DETACH, 0, 0, 0), OK);
+    none_queued(dying_pg);
+
+    pg_close(dying_pg);
     kt_job_is_empty(j);
     job_unref(j);
 }

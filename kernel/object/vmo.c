@@ -1007,8 +1007,10 @@ static void vmo_destroy(struct kobject *obj)
         ASSERT(!v->held && v->dirty == 0);   /* the hold is a reference: no dirty page here */
         drop_from_locked(v, 0);
         ASSERT(v->committed == 0 && v->tables == 0);
-        if (v->pv)
+        if (v->pv) {
+            DBG_HOOK(DBG_PAGER_VMO_DYING, v);
             pager_vmo_gone(v->pv);   /* PAGER_REQ_GONE, or the link goes */
+        }
         if (v->verify)
             vmo_verify_free(v->verify);
         if (v->src) {

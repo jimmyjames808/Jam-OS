@@ -10,7 +10,8 @@
  *   NEW       made, not linked yet (pager_create_vmo's window);
  *   LINKED    in the key table: its VMO lives, requests are made and
  *             answered;
- *   DETACHED  cut off (PAGER_OP_DETACH, the pager's last handle): out of
+ *   DETACHED  cut off (PAGER_OP_DETACH, the pager's last handle, or its
+ *             key made again while its VMO was being destroyed): out of
  *             the table, every request failed, nothing published again;
  *             the link lives on with its VMO and goes when the VMO does;
  *   GONE      its VMO died while linked: still in the table (the key stays
@@ -906,12 +907,32 @@ status_t pager_create_vmo_flags(struct pager *pg, uint64_t key, uint64_t size, u
         pv_free(pv);
         return st;
     }
+    struct list_node dead;
+    list_init(&dead);
     uint64_t f = plock(pg);
     struct pager_vmo *old = pg->closed ? NULL : find_locked(pg, key);
-    st = pg->closed ? ERR_BAD_STATE : old && old->state == PV_LINKED ? ERR_ALREADY_EXISTS : OK;
-    if (st == OK && old) {   /* GONE, not answered yet: taken over, so a map never waits */
+    /* A LINKED link whose VMO has no reference left is dying: its
+     * destruction frees every page and only then says so (pager_vmo_gone),
+     * and a map meanwhile must not fail (one key per file: a map can race
+     * another process's last unmap). Taken over like a GONE one: cut off
+     * here, freed by that destruction (not linked any more). */
+    struct vmo *alive = NULL;
+    bool dying = false;
+    if (old && old->state == PV_LINKED) {
+        if (kobject_tryref(vmo_kobject(old->v)))
+            alive = old->v;
+        else
+            dying = true;
+    }
+    st = pg->closed ? ERR_BAD_STATE : alive ? ERR_ALREADY_EXISTS : OK;
+    if (st == OK && old) {   /* GONE, not answered yet, or dying: taken over, so a map never waits */
         list_del(&old->knode);
-        unqueue_locked(&old->gone);
+        if (dying) {
+            old->state = PV_DETACHED;
+            fail_all_locked(old, ERR_PEER_CLOSED, &dead);   /* (none has a waiter: each holds the VMO) */
+        } else {
+            unqueue_locked(&old->gone);
+        }
         sync_readable_locked(pg);
     }
     if (st == OK) {
@@ -920,11 +941,14 @@ status_t pager_create_vmo_flags(struct pager *pg, uint64_t key, uint64_t size, u
         list_add_tail(bucket(pg, key), &pv->knode);
     }
     punlock(pg, f);
+    reap(&dead);
+    if (alive)
+        kobject_unref(vmo_kobject(alive));   /* (may be its last: no lock held) */
     if (st != OK) {
         kobject_unref(vmo_kobject(v));   /* a NEW link: its destruction frees pv */
         return st;
     }
-    if (old)
+    if (old && !dying)
         pv_free(old);
     *out = v;
     return OK;
