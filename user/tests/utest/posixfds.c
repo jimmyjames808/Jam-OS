@@ -173,6 +173,7 @@ static status_t test_desc(struct posixfds_desc *d, handle_t *hs, uint64_t *koids
     static const char *const data[POSIXFDS_KIND_COUNT] = {
         [POSIXFDS_FILE] = "/data/f", [POSIXFDS_DIR] = "/data/dir", [POSIXFDS_PIPE] = "left",
         [POSIXFDS_DEV] = "null", [POSIXFDS_ETC] = "/etc/passwd", [POSIXFDS_MEMFD] = "",
+        [POSIXFDS_PROC] = "/proc/self/statm",
     };
     const char *s = data[kind] ? data[kind] : "xyz";
     static uint32_t dup_target;   /* a DUP's data: the descriptor sent just before (fd + 3) */
