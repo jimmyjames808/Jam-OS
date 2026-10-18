@@ -41,6 +41,8 @@ src/process/posix_spawn.c d223cd70ee0bc2c5b8b1004cf9878ff9e4eba8b7f26187b8cda877
 include/spawn.h edec771e83d270d98aab7e8ceebcd9920d719f9148dd226b84a397b28ddba41f user/posix/include/spawn.h
 # ttyname_r: the terminal descriptor's own name (user/posix/sys/tty.c), not /proc's link.
 src/unistd/ttyname_r.c fbb4807e4772630cd50cea943265357e619f258c350e7b88ad27855788bd8fb7 user/posix/musl/src/unistd/ttyname_r.c
+# getaddrinfo: upstream's as __getaddrinfo with a weak getaddrinfo, so dlsym(RTLD_NEXT) can answer it under a program's own getaddrinfo.
+src/network/getaddrinfo.c 9f421f973abe33d86df031722c9411c8cd93d3984e2459dc2b69186cc2223bba user/posix/musl/src/network/getaddrinfo.c
 # Names: /etc/hosts, then the system resolver (/svc/dns through resolve.c), no DNS queries of its own.
 src/network/lookup_name.c dc2444b5626bb0549a1611e35174ac8722d71541000c44c96a303a16e7c43a69 user/posix/musl/src/network/lookup_name.c
 # Raw DNS queries (res_query, res_send, getnameinfo's reverse lookup): fail at once (the resolver takes names only).
@@ -49,7 +51,7 @@ src/network/res_msend.c c14dc4baca3608efb40b0ab15de53018ac057fd22ad47b8b309b56a7
 src/thread/__syscall_cp.c 9bf39f2e3d932dcee04e145bc7fce93f2f6908d08f3a0512a20d642450c437c2 user/posix/musl/src/thread/__syscall_cp.c
 # dlopen: fails as upstream's static stub does, and names the library in the ENOSYS log (user/posix/sys/enosys.c).
 src/ldso/dlopen.c 71d2136173da73e3853c51cc477194befc7bc6072e2e227f4b8ec9c86d50217c user/posix/musl/src/ldso/dlopen.c
-# dlsym(RTLD_NEXT, ...) answers libc's own localtime and localtime_r (Chromium's sandbox libc interceptor: its start-up waited for itself otherwise).
+# dlsym(RTLD_NEXT, ...) answers libc's own localtime, localtime_r and getaddrinfo (Chromium's sandbox libc interceptor: its start-up waited for itself otherwise, and names never resolved).
 src/ldso/__dlsym.c 95ef9a37da276c4bcc467fd4e784dd3dbe1ccd012cba2a080e3a81fbdc221629 user/posix/musl/src/ldso/__dlsym.c
 # dladdr: a static program has one module, its own image; the layer says whether addr is in it and what it is called (procfs.c), and Chromium's ModuleCache gets its base and path.
 src/ldso/dladdr.c 2f4f4ca861c87963620919e4f4304ea7e47770a9ebe5e7aa4d8d323a44044581 user/posix/musl/src/ldso/dladdr.c

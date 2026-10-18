@@ -6,14 +6,20 @@
  * Chromium's sandbox libc interceptor wraps localtime and its kin; given
  * NULL it logs "dlsym doesn't work" from inside a pthread_once, the log's
  * time stamp calls its localtime_r again, and the thread waits for itself
- * (headless_shell's start-up hang, docs/CR-PLAN.md "TD"). RTLD_DEFAULT
- * still finds nothing: the first definition is the program's own. */
+ * (headless_shell's start-up hang, docs/CR-PLAN.md "TD"). It wraps
+ * getaddrinfo too: given NULL, every name lookup failed (a page by name
+ * was ERR_NAME_NOT_RESOLVED; libc's is __getaddrinfo, src/network's
+ * override). RTLD_DEFAULT still finds nothing: the first definition is
+ * the program's own. */
 #include <dlfcn.h>
+#include <netdb.h>
 #include <string.h>
 #include <time.h>
 #include "dynlink.h"
 
 hidden struct tm *__localtime_r(const time_t *restrict, struct tm *restrict);
+int __getaddrinfo(const char *restrict, const char *restrict, const struct addrinfo *restrict,
+                  struct addrinfo **restrict);
 
 static struct tm *libc_localtime(const time_t *t)
 {
@@ -30,6 +36,7 @@ static const struct {
 	{ "localtime_r", (void *)__localtime_r },
 	{ "localtime64", (void *)libc_localtime },
 	{ "localtime64_r", (void *)__localtime_r },
+	{ "getaddrinfo", (void *)__getaddrinfo },
 };
 
 static void *stub_dlsym(void *restrict p, const char *restrict s, void *restrict ra)

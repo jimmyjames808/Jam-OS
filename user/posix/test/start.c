@@ -23,6 +23,8 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <jamos/libjam.h>
+#include <netdb.h>
+#include <netinet/in.h>
 #include <posixfds.h>
 #include <string.h>
 #include <sys/auxv.h>
@@ -322,6 +324,14 @@ static void check_dl(void)
           mine.tm_min == theirs.tm_min);
     struct tm *one = next_localtime(&when);
     CHECK(one && one->tm_year == mine.tm_year && one->tm_mday == mine.tm_mday);
+    /* And getaddrinfo: libc's, which answers a numeric name by itself. */
+    int (*next_gai)(const char *, const char *, const struct addrinfo *, struct addrinfo **) =
+        (int (*)(const char *, const char *, const struct addrinfo *, struct addrinfo **))
+            dlsym(RTLD_NEXT, "getaddrinfo");
+    struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM }, *ai = NULL;
+    CHECK(next_gai && next_gai("127.0.0.1", "80", &hints, &ai) == 0 && ai);
+    CHECK(ai->ai_family == AF_INET && ntohs(((struct sockaddr_in *)ai->ai_addr)->sin_port) == 80);
+    freeaddrinfo(ai);
     CHECK(dlclose((void *)8) != 0 && dlerror() != NULL);
 }
 
