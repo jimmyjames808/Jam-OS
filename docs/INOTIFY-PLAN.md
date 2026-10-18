@@ -305,8 +305,10 @@ makes room.
   hold it across a restart: IE2): it can ring or silence that watcher,
   nothing more. A service is trusted for its own files' events as for
   their contents.
-- **Memory**: a watcher that never reads costs the service its 16 KiB;
-  the one `take` reply in flight is charged to the service as any reply.
+- **Memory**: a watcher that never reads costs the service its 16 KiB
+  of records, each its own allocation, so some 50 KiB of heap for short
+  names ([IR](INOTIFY-REVIEW.md)'s 9); the one `take` reply in flight is
+  charged to the service as any reply.
 
 ### 2.7 Moves and cookies
 
@@ -431,7 +433,10 @@ files say that and libc keeps to it ([IL2 notes](#il2-notes)):
 Chromium's of the first). A descriptor holds at most 1,024 watches
 (`ENOSPC` past that, as a service's refusal is) and a process at most 8
 descriptors (`EMFILE` at `inotify_init`, as Linux's per-user limit
-answers). Chromium's per-watcher limit is then 64.
+answers). Chromium's per-watcher limit is then 64. The 8 channels are a
+volume's, and `/data` and `/tmp` are two mounts of one volume: a
+descriptor watching both takes two, so only four such descriptors fit
+([IR](INOTIFY-REVIEW.md)'s 13; Chromium holds one).
 
 ### 3.6 Where it differs from Linux
 
@@ -500,7 +505,7 @@ after it (`pager.c`, `main.c`, `fsops.c`, `test.c`, `extfs.h`),
 | **IL2. libc: limits, fork, exec** (built: [IL2 notes](#il2-notes)) | 3.4's tests, 3.5, `/proc/self/fd`'s name | `user/posix/sys/procfs.c` (`/proc/sys/fs/inotify`), user/posix/sys/inotify.c (the fork and give steps if IL1 left them), posixtest's `user/posix/test/procfs.c` and `user/posix/test/forkfd.c` (an inotify case each), the TESTING rows | IL1 and CBF6 merged | posixtest `procfs` (the three files), `fork` (absent in the child), `exec` (gone after `execve`); `tools/shell-tests/posix-fork.txt`; init run | 0.5 | Sonnet 5.5 |
 | **IF. fat** (only with Q1's (A)) | 2.9 on fat with the library: keys, its rows of 2.2, the order rule in its loop, its state and keeper | `user/services/fat/` (a new watch.c, fsops.c, its loop, state, keeper, adopt), a new utest file user/tests/utest/fat_watch.c | IE2 merged (the pattern); DRO2 merged (fat's restart paths) | utest `fat_watch`, `fat_restart` unchanged; posixtest `inotify` with `JAMOS_DATA_FS=fat` | 1 | **Opus** |
 | **IC. Chromium's tests** (built: [IC notes](#ic-notes)) | the 165 run: `FilePathWatcher*` off `tools/cr/base_unittests.skip` (what still fails listed with its reason), the stage relinked (`tools/cr/build.sh start base_unittests test_child_process`) | `tools/cr/base_unittests.skip`, `docs/CR-PLAN.md`'s rows | IE2, IL1 and IL2 merged; no other agent running `base` | `CR_BASE_ONLY='FilePathWatcher*' tools/cr-test.sh <out> base` with `TMPDIR` on ext `/data`, and once on `/tmp` (`CR_BASE_ENV=`) | 0.5 | Sonnet 5.5 |
-| **IR. Independent review and fix** | everything above, findings first (a new docs/INOTIFY-REVIEW.md), then High and Medium fixed with a test each: can an event reach a watcher who can't list its name, can a watch outlive its reach, can a service be made to hold unbounded memory, is a wake ever lost, is a close ever reported after the next request's events, can a `wd` be reused while Chromium holds it | the files its fixes need | IC | its own; hostile: a watcher that never reads (one overflow, the service's memory flat), 8 channels from one process and the ninth refused, renames moving directories in and out of a subview while it watches, a rename storm with extfs killed every 200 ms, 8 threads closing and renaming while another reads; full init run; the extfs and posix scripts | 1.5 | **Opus** |
+| **IR. Independent review and fix** (built: [IR notes](#ir-notes)) | everything above, findings first (a new docs/INOTIFY-REVIEW.md), then High and Medium fixed with a test each: can an event reach a watcher who can't list its name, can a watch outlive its reach, can a service be made to hold unbounded memory, is a wake ever lost, is a close ever reported after the next request's events, can a `wd` be reused while Chromium holds it | the files its fixes need | IC | its own; hostile: a watcher that never reads (one overflow, the service's memory flat), 8 channels from one process and the ninth refused, renames moving directories in and out of a subview while it watches, a rename storm with extfs killed every 200 ms, 8 threads closing and renaming while another reads; full init run; the extfs and posix scripts | 1.5 | **Opus** |
 | **IJ. The join** | ARCHITECTURE (Storage: watches; the POSIX layer: the kind), TESTING's rows, CR-PLAN, ROADMAP, HISTORY; this plan deleted when HISTORY covers it | the docs | IR | `make check` | 0.5 | Sonnet 5.5 |
 
 **Order.** IP first (it gates nothing running). Then IE1 (after WE1) and
@@ -874,6 +879,28 @@ The whole program, six shards: 8,874 pass, 37 self-skip, 45 listed (BM1:
   (one boot of `posix-inotify.txt` printed none for `/data` and `/tmp`
   while init was still setting up, and passed silently; it did not come
   back in three more).
+
+### IR notes
+
+Reviewed (2026-10-18) by an agent that wrote none of it:
+[INOTIFY-REVIEW.md](INOTIFY-REVIEW.md) has the findings (0 High, 5
+Medium, 8 Low), the fixes, the design questions and the runs. What
+changed from the notes above:
+
+- *The reach check* (2.6, IE2's): a subview's channel is looked at only
+  when a rename takes something out of its root (the rename's old
+  directory is the root or under it, the new one isn't), a watch walks up
+  only to the moved inode, the root or a directory already found not under
+  it, with 16,384 directory reads a channel a move; a watch it can't place
+  (deeper than 2,048, unreadable, its reads spent) now ends, where IE2 left
+  it on. A rename's check is in the state until its commit ran it: a
+  successor that answers the rename from the journal runs it
+  (`XF_STATE_LAYOUT` 6 on this branch).
+- *libc* (3.3): a removed wd whose `IN_IGNORED` an overflow dropped ends
+  once its channel is taken empty, with an `IN_IGNORED` of libc's.
+- Left as design questions for the main session: the volume's caps shared
+  by every process, and a dead extfs's keeper closing channels without
+  their bells.
 
 ## 6. Tests
 

@@ -3036,6 +3036,23 @@ another for the next cover. The pictures it keeps are capped at 8 MiB.
   stick takes it, is marked in the file as lost.
 - The 4 GiB file limit and the lack of owners/permissions are accepted:
   authority comes from namespaces, not the filesystem.
+- **File watching** ([docs/INOTIFY-PLAN.md](docs/INOTIFY-PLAN.md),
+  reviewed in [docs/INOTIFY-REVIEW.md](docs/INOTIFY-REVIEW.md)): there is
+  no kernel file system, so the service that serves a volume makes the
+  events, the one place every change to it is seen. `fs.watch` gives a
+  watcher channel on the view it was asked through (`abi/idl/fswatch.idl`:
+  `add`, `remove`, `take`; its first message is the client's bell, an
+  event the service rings when the channel's queue gets a first record).
+  extfs keeps the watches by inode (user/lib/fswatch.c, the library any
+  service links), queues Linux's events at each request's commit, handles
+  a close made before a request ahead of it, never names an entry the
+  channel's view hides and ends a watch a rename takes out of its view's
+  reach; the watches outlive a restart in its state, with an
+  `IN_Q_OVERFLOW` for what died. fat and the boot image answer
+  `ERR_NOT_SUPPORTED`. libc's inotify descriptor (user/posix/sys/inotify.c)
+  is one event over every mount it watches, a channel per mount and the
+  records in Linux's form; it is absent after `fork` and closed at
+  `exec`.
 
 ## Time and settings
 

@@ -343,14 +343,14 @@ static void renamed(bool exchange)
     if (wb.found && !exchange)
         ev_inode(&wb.in, FSWATCH_IN_ATTRIB, dst_dir ? FSW_EV_DIR : 0);
     ev_inode(&wa.in, FSWATCH_IN_MOVE_SELF, 0);   /* never IN_ISDIR (inotify) */
-    watch_moved(&wa.in, &wb.dir);                /* out of a view's reach: ended */
+    watch_moved(&wa.in, &wa.dir, &wb.dir);       /* out of a view's reach: ended */
     if (!exchange)
         return;
     cookie = ev_cookie();
     ev_name(&wb.dir, &wb.name, FSWATCH_IN_MOVED_FROM, dst_dir, cookie);
     ev_name(&wa.dir, &wa.name, FSWATCH_IN_MOVED_TO, dst_dir, cookie);
     ev_inode(&wb.in, FSWATCH_IN_MOVE_SELF, 0);
-    watch_moved(&wb.in, &wa.dir);
+    watch_moved(&wb.in, &wb.dir, &wa.dir);
 }
 
 static status_t op_rename(void *ctx, const char *from, uint32_t from_len, const char *to,

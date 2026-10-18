@@ -39,6 +39,13 @@
  *                       renamed "Etc." and moved into etc; the subview's
  *                       root moved and a move into etc that the view still
  *                       sees leave them
+ *   extfs_watch_deep    (IR's 3) a watch its client made too deep for the
+ *                       reach check to place ends when its tree leaves
+ *                       the subview, as any out of reach
+ *   extfs_watch_cost    (IR's 4) 256 watches 1,000 directories down in a
+ *                       subview: renames elsewhere cost what they cost
+ *                       with none, and one out of the subview reads their
+ *                       shared path once, every watch kept
  *   extfs_restart_watch (IE2, 2.8) extfs ended by its test powers between a
  *                       change and its event, at an fs.watch committed and
  *                       not answered, before a fresh start: watches back
@@ -46,6 +53,8 @@
  *                       channel), a bell the keeper can't hold closing its
  *                       channel, a fresh start and the end closing every
  *                       channel with its bell rung
+ *   extfs_restart_reach (IR's 1) extfs ended between a rename's commit and
+ *                       its events: the successor runs its reach check
  *
  * Each disk is saved for Linux's e2fsck (tools/extfs-svc-test.sh). The
  * second process's mode is xwatch-<what>. */
@@ -261,11 +270,16 @@ static bool expect_loose(const struct wat *x, const struct want *want, int n, in
 /* The cases' watch ids. */
 static uint32_t idD, idF, idS, idO, idA, idB, idX, idY, idZ, idSD, idE, idIN, idH;
 
-static bool start(void)
+static bool start_at(uint64_t sectors)
 {
-    CHECK(ramdisk_create(&xd, EXT_DISK_SECTORS));
+    CHECK(ramdisk_create(&xd, sectors));
     CHECK(extfs_start(&r, &xd, false, NULL, 0));
     return true;
+}
+
+static bool start(void)
+{
+    return start_at(EXT_DISK_SECTORS);
 }
 
 static bool stop(const char *name)
@@ -882,6 +896,120 @@ bool t_extfs_watch_reach(void)
     return stop("watch-reach");
 }
 
+/* ---- watches deep down (IR's 3 and 4) ---------------------------------------------- */
+
+#define DEEP_SECTORS (64u * MIB_SECTORS)   /* 4,096 inodes (32 MiB has 2,048) */
+
+/* dir/top made 32 directories deeper, every path short: a chain c/a/.../a
+ * of 32 made in dir, top moved to its bottom, the chain renamed top. */
+static bool deepen(const char *dir, const char *top)
+{
+    char chain[100], from[40], into[120];
+    int n = snprintf(chain, sizeof(chain), "%s/c", dir);
+    CHECK_ST(t_mkdir(&r, chain), OK);
+    for (int i = 1; i < 32; i++) {
+        n += snprintf(chain + n, sizeof(chain) - (size_t)n, "/a");
+        CHECK_ST(t_mkdir(&r, chain), OK);
+    }
+    snprintf(from, sizeof(from), "%s/%s", dir, top);
+    snprintf(into, sizeof(into), "%s/%s", chain, top);
+    CHECK_ST(t_rename(&r, from, into), OK);
+    snprintf(chain, sizeof(chain), "%s/c", dir);
+    CHECK_ST(t_rename(&r, chain, from), OK);
+    return true;
+}
+
+/* A subview's client makes its own watch too deep for the reach check to
+ * place (2,048 directories): w watched, then its tree deepened inside the
+ * subview (no move judged). The tree moved above the subview's root must
+ * end the watch all the same, not leave it reporting from outside. */
+bool t_extfs_watch_deep(void)
+{
+    struct wat s;
+    struct tfile f;
+    handle_t sub;
+    uint32_t done = 0;
+    CHECK(start_at(DEEP_SECTORS));
+    CHECK_ST(t_mkdir(&r, "/h"), OK);
+    CHECK_ST(t_mkdir(&r, "/h/t"), OK);
+    CHECK_ST(t_mkdir(&r, "/h/t/w"), OK);
+    CHECK(put_file(&r, "/h/t/w/f", "f"));
+    CHECK_ST(fs_subview_until(r.fs, dl(), "/h", 2, 0, &sub), OK);
+    CHECK(watcher(sub, &s));
+    uint32_t idW = add(&s, "/t/w", ALL);
+    CHECK(idW);
+    CHECK_ST(t_open(&r, "/h/t/w/f", FS_WRITE, &f), OK);
+    CHECK(take_all(&s));   /* f's open */
+    for (int i = 0; i < 64; i++)   /* w: 3 + 64 * 32 below the volume's root */
+        CHECK(deepen("/h", "t"));
+    NOTHING(&s, "w's tree made deeper inside the subview");
+    CHECK_ST(t_rename(&r, "/h/t", "/out"), OK);
+    CHECK_ST(t_write(&f, 0, "x", 1, &done), OK);
+    t_close(&f);
+    EXPECT(&s, "a watch too deep to place, its tree moved out", { idW, IN(MOVE_SELF), "" },
+           { idW, IN(IGNORED), "" });
+    unwatcher(&s);
+    jam_handle_close(sub);
+    return stop("watch-deep");
+}
+
+/* ns that rounds renames of /x/f to /x/g and back take. */
+static uint64_t renames_ns(unsigned rounds)
+{
+    uint64_t t0 = now();
+    for (unsigned i = 0; i < rounds; i++)
+        if (t_rename(&r, "/x/f", "/x/g") != OK || t_rename(&r, "/x/g", "/x/f") != OK)
+            return UINT64_MAX;
+    return now() - t0;
+}
+
+/* The reach check's cost: 256 watches some 1,000 directories down in a
+ * subview. Renames elsewhere on the volume must cost what they cost with
+ * no watch (the subview's channel isn't looked at), and one out of the
+ * subview the 256 watches' shared path once, not 256 times (the watches
+ * all stay: none was under what moved). */
+bool t_extfs_watch_cost(void)
+{
+    struct wat s;
+    handle_t sub;
+    char path[40];
+    const unsigned many = 256, rounds = 4;
+    CHECK(start_at(DEEP_SECTORS));
+    CHECK_ST(t_mkdir(&r, "/h"), OK);
+    CHECK_ST(t_mkdir(&r, "/h/t"), OK);
+    CHECK_ST(t_mkdir(&r, "/h/s"), OK);
+    CHECK_ST(t_mkdir(&r, "/x"), OK);
+    CHECK(put_file(&r, "/x/f", "f"));
+    for (unsigned i = 0; i < many; i++) {
+        snprintf(path, sizeof(path), "/h/t/b%03u", i);
+        CHECK_ST(t_mkdir(&r, path), OK);
+    }
+    CHECK_ST(fs_subview_until(r.fs, dl(), "/h", 2, 0, &sub), OK);
+    CHECK(watcher(sub, &s));
+    uint64_t base = renames_ns(rounds);
+    for (unsigned i = 0; i < many; i++) {
+        snprintf(path, sizeof(path), "/t/b%03u", i);
+        CHECK(add(&s, path, ALL));
+    }
+    for (int i = 0; i < 31; i++)   /* the b's: 3 + 31 * 32 below the volume's root */
+        CHECK(deepen("/h", "t"));
+    uint64_t with = renames_ns(rounds);
+    printf("utest: %s: %u renames elsewhere: %lu us with no watch, %lu us with %u deep ones\n",
+           utest_cur, 2 * rounds, (unsigned long)(base / NS_PER_US),
+           (unsigned long)(with / NS_PER_US), many);
+    CHECK(base != UINT64_MAX && with <= 3 * base + 50 * NS_PER_MS);
+    uint64_t t0 = now();
+    CHECK_ST(t_rename(&r, "/h/s", "/s2"), OK);
+    uint64_t out = now() - t0;
+    printf("utest: %s: a directory moved out of the subview: %lu us\n", utest_cur,
+           (unsigned long)(out / NS_PER_US));
+    CHECK(out <= base + 50 * NS_PER_MS);
+    NOTHING(&s, "none of the deep watches was under what moved");
+    unwatcher(&s);
+    jam_handle_close(sub);
+    return stop("watch-cost");
+}
+
 /* ---- restarts (2.8) ------------------------------------------------------------ */
 
 /* x's channel is closed: a take answers ERR_PEER_CLOSED (once the keeper
@@ -965,5 +1093,37 @@ bool t_extfs_restart_watch(void)
     unwatcher(&c);
     unwatcher(&o);
     CHECK(extfs_save(&xd, "restart-watch"));
+    return ramdisk_destroy(&xd);
+}
+
+/* IR's 1: extfs ended between a rename's commit in the journal and its
+ * events. The successor answers the rename from the journal, and must
+ * still run its reach check: the subview's watch on the directory moved
+ * above its root ends (after the overflow), and hears nothing from there. */
+bool t_extfs_restart_reach(void)
+{
+    static const char *const dies[] = { "die=journal:3" };
+    struct wat s;
+    handle_t sub;
+    CHECK(ramdisk_create(&xd, EXT_DISK_SECTORS));
+    CHECK(extfs_sup_start(&xd, dies, 1));
+    struct fatrun *f = extfs_sup_run();
+    CHECK_ST(t_mkdir(f, "/v"), OK);     /* journal 1 */
+    CHECK_ST(t_mkdir(f, "/v/a"), OK);   /* journal 2 */
+    CHECK_ST(fs_subview_until(f->fs, dl(), "/v", 2, 0, &sub), OK);
+    CHECK(watcher(sub, &s));
+    uint32_t idA = add(&s, "/a", ALL);
+    CHECK(idA);
+    CHECK_ST(t_rename(f, "/v/a", "/a2"), OK);   /* journal 3: ended */
+    CHECK_EQ(extfs_sup_ended(), 1u);
+    CHECK(rung(&s));
+    EXPECT(&s, "a rename's reach check, its instance dead before it",
+           { 0, IN(Q_OVERFLOW), "" }, { idA, IN(IGNORED), "" });
+    CHECK_ST(t_mkdir(f, "/a2/n"), OK);
+    NOTHING(&s, "the directory moved out, after the restart");
+    CHECK(extfs_sup_stop());
+    unwatcher(&s);
+    jam_handle_close(sub);
+    CHECK(extfs_save(&xd, "restart-reach"));
     return ramdisk_destroy(&xd);
 }

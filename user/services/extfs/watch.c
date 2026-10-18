@@ -29,9 +29,11 @@
  * table over before its mount (watch_adopt_table), the handles back from
  * the keeper (watch_take), and waits on every channel again (watch_adopt):
  * each watcher's queue starts with IN_Q_OVERFLOW, its bell rung, and its
- * watches carry on. A channel whose bell the keeper doesn't hold (a bell
- * without RIGHT_DUPLICATE, which a keeper can't hold, or a death between
- * the give and its put) is closed then: its client sees the mount's
+ * watches carry on. A rename's reach check, held for its commit, is in the
+ * state too until it ran: a successor that answers the rename from the
+ * journal runs it (watch_moves_again). A channel whose bell the keeper
+ * doesn't hold (a bell without RIGHT_DUPLICATE, which a keeper can't hold,
+ * or a death between the give and its put) is closed then: its client sees the mount's
  * watches end (libc's IN_UNMOUNT and IN_IGNORED) and asks again. A fresh
  * start (the state given up) closes every channel the same way, and so
  * does the service's end (watch_stop), each bell rung first. The queued
@@ -59,9 +61,9 @@ _Static_assert(FSW_CHANNELS <= 32, "held_bits has a bit for each");
 /* An event waiting for its request's commit. */
 static struct held {
     bool           gone;            /* ev_gone's */
-    bool           moved;           /* watch_moved's: self moved into dir */
+    bool           moved;           /* watch_moved's: self moved from `from` into dir */
     bool           has_dir, has_self;
-    struct fsw_key dir, self;
+    struct fsw_key dir, self, from;
     uint32_t       mask, flags, cookie;
     uint32_t       len;
     char           name[EXT_NAME_MAX];
@@ -182,17 +184,34 @@ static bool hidden(void *ctx, const struct fsw_chan_rec *rec, const struct fsw_k
 
 /* ---- the reach (Q2) --------------------------------------------------------------- */
 
-#define CHAIN_MAX 2048u   /* directories deeper than this: not placed (watches left) */
+#define CHAIN_MAX  2048u    /* directories deeper than this: not placed (a judged watch ends) */
+#define WALK_STEPS 16384u   /* directories one channel's watches may read in one move's
+                             * check: past it, its watches left to judge end */
+#define NOT_UNDER  4096u    /* directories a check found not under the moved inode (a
+                             * power of two; filled to half) */
 
-static struct fsw_key chain_to[CHAIN_MAX], chain_root[CHAIN_MAX], chain_w[CHAIN_MAX];
+static struct fsw_key chain_to[CHAIN_MAX], chain_from[CHAIN_MAX], chain_w[CHAIN_MAX];
+static uint32_t       not_under[NOT_UNDER];   /* inode numbers; 0: free */
+static unsigned       nnot_under;
 
-/* The directories from (ino, gen) up to the volume's root, the root last,
- * each from its ".." (an entry of its first block): how many, or 0 if it
- * can't be followed (gone, its inode used again, an error, too deep). gen 0:
- * not checked. */
-static unsigned chain_of(uint32_t ino, uint32_t gen, struct fsw_key *out)
+/* Directory in's parent, from its ".." (an entry of its first block): 0 if
+ * not found. */
+static uint32_t parent_of(struct ext_inode *in)
 {
     static struct ext_dentry e;
+    uint64_t pos = 0;
+    uint32_t ino = 0;
+    for (unsigned i = 0; i < 2 && ext_dir_next(&vol.fs, in, &pos, &e) == OK && e.ino; i++)
+        if (e.name_len == 2 && e.name[0] == '.' && e.name[1] == '.')
+            ino = e.ino;
+    return ino;
+}
+
+/* The directories from (ino, gen) up to the volume's root, the root last:
+ * how many, or 0 if it can't be followed (gone, its inode used again, an
+ * error, too deep). gen 0: not checked. */
+static unsigned chain_of(uint32_t ino, uint32_t gen, struct fsw_key *out)
+{
     struct ext_inode in;
     for (unsigned n = 0; n < CHAIN_MAX; n++) {
         if (!ino || ext_iget(&vol.fs, ino, 0, &in) != OK || (gen && in.d.generation != gen) ||
@@ -201,14 +220,79 @@ static unsigned chain_of(uint32_t ino, uint32_t gen, struct fsw_key *out)
         out[n] = xf_key(&in);
         if (ino == EXT_ROOT_INO)
             return n + 1;
-        uint64_t pos = 0;
-        ino = 0;
-        for (unsigned i = 0; i < 2 && ext_dir_next(&vol.fs, &in, &pos, &e) == OK && e.ino; i++)
-            if (e.name_len == 2 && e.name[0] == '.' && e.name[1] == '.')
-                ino = e.ino;
+        ino = parent_of(&in);
         gen = 0;
     }
     return 0;
+}
+
+static uint32_t nu_hash(uint32_t ino)
+{
+    return (ino * 0x9e3779b1u) & (NOT_UNDER - 1);
+}
+
+static bool nu_has(uint32_t ino)
+{
+    for (uint32_t h = nu_hash(ino); not_under[h]; h = (h + 1) & (NOT_UNDER - 1))
+        if (not_under[h] == ino)
+            return true;
+    return false;
+}
+
+/* The first k of chain_w are not under the moved inode. */
+static void nu_add(unsigned k)
+{
+    for (unsigned i = 0; i < k && nnot_under < NOT_UNDER / 2; i++) {
+        uint32_t ino = (uint32_t)chain_w[i].ino, h = nu_hash(ino);
+        while (not_under[h] && not_under[h] != ino)
+            h = (h + 1) & (NOT_UNDER - 1);
+        if (!not_under[h]) {
+            not_under[h] = ino;
+            nnot_under++;
+        }
+    }
+}
+
+enum { AT_NOT, AT_UNDER, AT_UNKNOWN };
+
+/* Where directory (ino, gen) lies against x, a directory just moved into
+ * `to` (chain_to: nto of them): x or under it (AT_UNDER: chain_w holds its
+ * chain up to the volume's root, *n of them: its own part up to x, then
+ * to's), not under it (AT_NOT: its walk up met stop, the volume's root or
+ * a directory found not under x before), or AT_UNKNOWN (gone, unreadable,
+ * deeper than CHAIN_MAX, or the *left reads spent). Every directory it
+ * finds not under x is kept (not_under), so watches sharing a path walk
+ * it once. stop: a subview's root that x left (never under x). */
+static int where(uint32_t ino, uint32_t gen, const struct fsw_key *x, const struct fsw_key *stop,
+                 unsigned nto, unsigned *left, unsigned *n)
+{
+    struct ext_inode in;
+    for (unsigned k = 0;; k++) {
+        if (k && nu_has(ino)) {
+            nu_add(k);
+            return AT_NOT;
+        }
+        if (k == CHAIN_MAX || !*left || !ino)
+            return AT_UNKNOWN;
+        (*left)--;
+        if (ext_iget(&vol.fs, ino, 0, &in) != OK || (gen && in.d.generation != gen) ||
+            !is_dir(&in))
+            return AT_UNKNOWN;
+        chain_w[k] = xf_key(&in);
+        if (same_key(&chain_w[k], x)) {
+            if (!nto || k + 1 + nto > CHAIN_MAX)
+                return AT_UNKNOWN;
+            memcpy(&chain_w[k + 1], chain_to, nto * sizeof(chain_w[0]));
+            *n = k + 1 + nto;
+            return AT_UNDER;
+        }
+        if (ino == EXT_ROOT_INO || (stop && same_key(&chain_w[k], stop))) {
+            nu_add(k + 1);
+            return AT_NOT;
+        }
+        ino = parent_of(&in);
+        gen = 0;
+    }
 }
 
 static bool in_chain(const struct fsw_key *chain, unsigned n, const struct fsw_key *k)
@@ -250,56 +334,82 @@ static void dir_now(void *ctx, uint32_t slot)
     kept->watch.dir[slot][1] = to->gen;
 }
 
-/* Inode x (a directory if xdir) was moved into directory `to`, its watches'
- * IN_MOVE_SELF queued. Every watch of a narrower view (a subview, or the
- * hiding flags) on x or under it that the view can no longer reach ends:
- * IN_MOVE_SELF if asked (x's own had the rename's), then IN_IGNORED. Only
- * the channels whose reach the move may change look at their watches: a
- * subview's whose root isn't x or under it, when `to` isn't under the
- * root; a hiding view's, when x went under etc. */
-static void moved(const struct fsw_key *x, bool xdir, const struct fsw_key *to)
+/* Inode x (a directory if xdir) was moved from directory `from` into `to`,
+ * its watches' IN_MOVE_SELF queued. Every watch of a narrower view (a
+ * subview, or the hiding flags) on x or under it that the view can no
+ * longer reach ends: IN_MOVE_SELF if asked (x's own had the rename's),
+ * then IN_IGNORED. Only the channels whose reach the move may change look
+ * at their watches: a subview's whose root `from` was in or under (so x
+ * was under it) and `to` isn't; a hiding view's, when x went under etc.
+ * Each such watch walks up its ".." chain to x (under it: judged), to that
+ * root or a directory found not under x (left), with WALK_STEPS reads a
+ * channel. A place that can't be found (a chain too deep or unreadable, a
+ * file's directory gone, the channel's reads spent) counts as out of
+ * reach: a subview's client can build a place too deep to judge (IR's 3),
+ * and a watch the check can't judge must not outlive its view. */
+static void moved(const struct fsw_key *x, bool xdir, const struct fsw_key *from,
+                  const struct fsw_key *to)
 {
     const struct fsw_table *t = w.t;
     if (!xdir)
         fsw_each(&w, x, dir_now, (void *)to);   /* a file's watches: its directory now */
-    uint32_t judge = 0;
-    unsigned nto = 0;
-    bool etc_top = false;
+    uint32_t judge = 0, stops = 0;
+    unsigned nto = 0, nfrom = 0, left[FSW_CHANNELS];
+    bool placed = false, etc_top = false;
     for (unsigned c = 0; c < FSW_CHANNELS; c++) {
         const struct fsw_chan_rec *r = &t->chans[c];
         bool sub = r->root != EXT_ROOT_INO, hides = r->view & FS_VIEW_NO_ETC;
         if (!r->live || !r->watches || (!sub && !hides))
             continue;
-        if (!nto) {
+        if (!placed) {
+            placed = true;
             nto = chain_of((uint32_t)to->ino, to->gen, chain_to);
-            if (!nto)
-                return;   /* can't be placed: left as they are */
+            nfrom = chain_of((uint32_t)from->ino, from->gen, chain_from);
             if (!special_ok)
                 special_find();
-            etc_top = kind_of(nto == 1 ? x : &chain_to[nto - 2]) == SP_ETC;
+            /* Not placed: as if x went under etc, and out of every subview. */
+            etc_top = !nto || kind_of(nto == 1 ? x : &chain_to[nto - 2]) == SP_ETC;
         }
-        bool check = hides && etc_top;
-        if (sub && !check) {
-            const struct fsw_key root = { .ino = r->root, .gen = r->root_gen };
-            unsigned nr = chain_of((uint32_t)r->root, r->root_gen, chain_root);
-            check = !in_chain(chain_root, nr, x) && !in_chain(chain_to, nto, &root);
-        }
-        if (check)
+        const struct fsw_key root = { .ino = r->root, .gen = r->root_gen };
+        bool in_root = nfrom && in_chain(chain_from, nfrom, &root);
+        bool left_root = sub && (in_root || !nfrom) && (!nto || !in_chain(chain_to, nto, &root));
+        if (left_root && in_root)
+            stops |= 1u << c;   /* x was under the root: the root isn't under x */
+        if (left_root || (hides && etc_top))
             judge |= 1u << c;
+        left[c] = WALK_STEPS;
+    }
+    if (judge) {
+        memset(not_under, 0, sizeof(not_under));
+        nnot_under = 0;
     }
     for (unsigned s = 0; judge && s < FSW_WATCHES; s++) {
         const struct fsw_watch_rec *r = &t->w[s];
         if (!r->chan || !(judge >> (r->chan - 1) & 1))
             continue;
+        unsigned c = r->chan - 1, n = 0;
         const struct fsw_key k = { .ino = r->ino, .gen = r->gen };
         bool file = !(r->flags & FSW_W_DIR), self = same_key(&k, x);
-        unsigned n = file ? chain_of(kept->watch.dir[s][0], kept->watch.dir[s][1], chain_w)
-                          : chain_of((uint32_t)r->ino, r->gen, chain_w);
-        if (!n || (!self && !(xdir && in_chain(chain_w, n, x))))
-            continue;   /* not placed, or not under x */
-        const struct fsw_chan_rec *cr = &t->chans[r->chan - 1];
+        if (!self && !xdir)
+            continue;   /* nothing is under a file */
+        const struct fsw_chan_rec *cr = &t->chans[c];
         const struct fsw_key root = { .ino = cr->root, .gen = cr->root_gen };
-        bool out = cr->root != EXT_ROOT_INO && !in_chain(chain_w, n, &root);
+        int at = AT_UNKNOWN;
+        if (self && file) {   /* x itself: its directory is `to` */
+            if (nto) {
+                memcpy(chain_w, chain_to, nto * sizeof(chain_w[0]));
+                n = nto;
+                at = AT_UNDER;
+            }
+        } else {
+            at = file ? where(kept->watch.dir[s][0], kept->watch.dir[s][1], x,
+                              stops >> c & 1 ? &root : NULL, nto, &left[c], &n)
+                      : where((uint32_t)r->ino, r->gen, x, stops >> c & 1 ? &root : NULL, nto,
+                              &left[c], &n);
+        }
+        if (at == AT_NOT)
+            continue;
+        bool out = at == AT_UNKNOWN || (cr->root != EXT_ROOT_INO && !in_chain(chain_w, n, &root));
         if (!out && (cr->view & FS_VIEW_NO_ETC)) {
             char place[32];
             place_of(chain_w, n, file ? &k : NULL, place);
@@ -319,7 +429,7 @@ static void deliver(const struct held *e)
         return;
     }
     if (e->moved) {
-        moved(&e->self, e->flags & FSW_EV_DIR, &e->dir);
+        moved(&e->self, e->flags & FSW_EV_DIR, &e->from, &e->dir);
         return;
     }
     if (e->has_dir)
@@ -371,13 +481,37 @@ void ev_gone(const struct fsw_key *self)
     put(&e);
 }
 
-void watch_moved(const struct ext_inode *in, const struct ext_inode *to)
+void watch_moved(const struct ext_inode *in, const struct ext_inode *from,
+                 const struct ext_inode *to)
 {
     if (!watching())
         return;
-    const struct held e = { .moved = true, .self = xf_key(in), .dir = xf_key(to),
-                            .flags = is_dir(in) ? FSW_EV_DIR : 0 };
+    const struct held e = { .moved = true, .self = xf_key(in), .from = xf_key(from),
+                            .dir = xf_key(to), .flags = is_dir(in) ? FSW_EV_DIR : 0 };
+    /* Kept in the state too, until the commit's ev_settle: a death between
+     * the journal's commit and it leaves the successor to run it (IR's 1). */
+    struct xf_watches *k = &kept->watch;
+    if (holding && k->nmoves < 2)
+        k->moves[k->nmoves++] = (struct xf_wmove){
+            .x = (uint32_t)e.self.ino, .x_gen = e.self.gen, .from = (uint32_t)e.from.ino,
+            .from_gen = e.from.gen, .to = (uint32_t)e.dir.ino, .to_gen = e.dir.gen,
+            .xdir = is_dir(in),
+        };
     put(&e);
+}
+
+void watch_moves_again(bool committed)
+{
+    struct xf_watches *k = &kept->watch;
+    unsigned n = k->nmoves < 2 ? k->nmoves : 2;
+    for (unsigned i = 0; committed && watching() && i < n; i++) {
+        const struct xf_wmove *m = &k->moves[i];
+        const struct fsw_key x = { .ino = m->x, .gen = m->x_gen };
+        const struct fsw_key from = { .ino = m->from, .gen = m->from_gen };
+        const struct fsw_key to = { .ino = m->to, .gen = m->to_gen };
+        moved(&x, m->xdir != 0, &from, &to);
+    }
+    k->nmoves = 0;
 }
 
 uint32_t ev_cookie(void)
@@ -402,6 +536,8 @@ void ev_begin(void)
 {
     holding = true;
     nheld = 0;
+    if (kept)
+        kept->watch.nmoves = 0;
 }
 
 void ev_settle(bool done)
@@ -410,6 +546,8 @@ void ev_settle(bool done)
     for (unsigned i = 0; done && i < nheld; i++)
         deliver(&held[i]);
     nheld = 0;
+    if (kept)
+        kept->watch.nmoves = 0;   /* run (or given up with the request) */
 }
 
 /* ---- the watcher channels ------------------------------------------------------ */

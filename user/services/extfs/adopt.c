@@ -335,6 +335,9 @@ status_t adopt(bool adopted, bool *no_volume)
     vol.at[XF_AT_HANDLES] = now();
     recover_orphans();
     f.request = finish(f.k, f.slot);
+    /* A rename in the journal whose reach check (held to its commit) died
+     * with it: run now. Not at two crashes: the check may be what ends them. */
+    watch_moves_again(f.k == SVCSTATE_RESEND && s->h->slot[f.slot].runs < CRASHES_MAX);
     reply_flush();
     f.files = files_adopt();
     f.views = views_adopt();
