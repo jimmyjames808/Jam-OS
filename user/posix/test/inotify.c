@@ -593,6 +593,45 @@ static void overflow(int fd)
     CHECK(k > 1 && evs[k - 2].wd == we && evs[k - 2].mask == IN_CREATE);
 }
 
+/* IR's 2: with the service's queue full, a removal's IN_IGNORED is dropped,
+ * and so are the IN_DELETE_SELF and IN_IGNORED of a watch that ends (whose
+ * removal then finds nothing). Each wd ends once its channel is taken
+ * empty, with an IN_IGNORED of libc's, and is no longer held. */
+static void lost_ignored(int fd)
+{
+    int wf = inotify_add_watch(fd, "/ifake/d/f", IN_ATTRIB);
+    int wg = inotify_add_watch(fd, "/ifake/g", IN_ATTRIB | IN_DELETE_SELF);
+    int we = inotify_add_watch(fd, "/ifake/e", IN_CREATE);
+    CHECK(wf > 0 && wg > 0 && we > 0);
+    for (int i = 0; i < 1100; i++) {
+        char name[16];
+        snprintf(name, sizeof(name), "l%d", i);
+        change(K_E, name, NULL, IN_CREATE);
+    }
+    CHECK(inotify_rm_watch(fd, wf) == 0);   /* its IN_IGNORED: past the queue's room */
+    pthread_mutex_lock(&fk.mu);
+    fsw_gone(fk.w, K_G);                    /* g's two records: dropped too */
+    pthread_mutex_unlock(&fk.mu);
+    CHECK(inotify_rm_watch(fd, wg) == 0);   /* nothing left to remove: OK */
+    int k = drain(fd), over = -1, ignf = -1, igng = -1, others = 0;
+    for (int i = 0; i < k; i++) {
+        if (is(&evs[i], -1, IN_Q_OVERFLOW, ""))
+            over = i;
+        else if (is(&evs[i], wf, IN_IGNORED, ""))
+            ignf = i;
+        else if (is(&evs[i], wg, IN_IGNORED, ""))
+            igng = i;
+        else if (!is(&evs[i], we, IN_CREATE, evs[i].name))
+            others++;
+    }
+    if (over < 0 || ignf < over || igng < over || others)
+        printf("posixtest: inotify: lost_ignored: %d records, the overflow at %d, f's "
+               "IN_IGNORED at %d, g's at %d, %d others\n", k, over, ignf, igng, others);
+    CHECK(k > 500 && over >= 0 && ignf > over && igng > over && !others);
+    CHECK(inotify_rm_watch(fd, wf) == -1 && errno == EINVAL);
+    CHECK(inotify_rm_watch(fd, wg) == -1 && errno == EINVAL);
+}
+
 /* An id we hold back from an add with existed 0: its watch ended unseen
  * (its IN_IGNORED lost to an overflow), so its wd ends here and the add
  * is a new wd. */
@@ -917,6 +956,7 @@ void pt_inotify(char **argv)
     waits(fd, ep);
     reader_loop(fd);
     overflow(fd);
+    lost_ignored(fd);
     reused_id(fd);
     wds_grow(fd);
     quiet(fd);

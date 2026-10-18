@@ -27,7 +27,8 @@
  * until its `more` is 0, so an event queued after a take always rings
  * again. A channel left with records (the buffer full) rings the bell
  * itself. Records are converted as they come: id 0 is IN_Q_OVERFLOW (wd
- * -1), and a wd is forgotten when its IN_IGNORED is converted. A channel
+ * -1), and a wd is forgotten when its IN_IGNORED is converted, or, removed,
+ * when its channel is taken empty without it (an overflow dropped it). A channel
  * that closed (the mount went, or the service's successor started fresh or
  * had no bell for it: fswatch.idl) gives IN_UNMOUNT and IN_IGNORED for each
  * of its wds, and the next add on that mount asks fs.watch again.
@@ -294,6 +295,25 @@ static void convert_locked(struct ino *n, unsigned c, const uint8_t *b, uint32_t
     }
 }
 
+/* Channel c's queue was just taken empty. A wd removed before this take
+ * (the description's lock is held across both) whose IN_IGNORED wasn't in
+ * it lost it: the service dropped it with a full queue, or the watch had
+ * ended already, its own IN_IGNORED dropped, and the removal found
+ * nothing. It ends here, with an IN_IGNORED of ours (as add_done_locked's),
+ * so it no longer counts against the limit (Linux frees a wd at once). */
+static void lost_locked(struct ino *n, unsigned c)
+{
+    for (uint32_t i = 0; i < n->nw;) {
+        struct ino_watch *w = &n->w[i];
+        if (w->chan != c || !w->removed) {
+            i++;
+            continue;
+        }
+        put_locked(n, w->wd, IN_IGNORED, 0, NULL, 0);
+        forget_locked(n, w);
+    }
+}
+
 /* Take what every channel has queued, as far as the buffer goes (the
  * file's header). */
 static void take_locked(struct ino *n)
@@ -319,8 +339,10 @@ static void take_locked(struct ino *n)
                 break;
             }
             convert_locked(n, c, tmp, got);
-            if (!more)
+            if (!more) {
+                lost_locked(n, c);
                 break;
+            }
         }
     }
     jam_free(tmp);
