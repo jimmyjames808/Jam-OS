@@ -1,7 +1,7 @@
 /* Jam OS POSIX programs (musl, user/posix/): static ELF64 at 0x400000, or
  * at __jamos_image_base when the link defines it (the drivers'
- * --jamos-image-base, a port's `image-base`: Chromium's programs sit above
- * 4 GiB; libc.a's code is position-independent, so it links anywhere),
+ * --jamos-image-base, a port's `image-base`: Chromium's programs sit at
+ * 1 TiB; libc.a's code is position-independent, so it links anywhere),
  * user/linker.ld's three segments with what musl needs on top:
  *
  *   - the ELF and program headers at the start of the first segment, so

@@ -12,8 +12,8 @@
  *   - V8's and PartitionAlloc's patterns (mempat.c);
  *   - mmap's address hint, as Linux takes one: a free range is where the
  *     mapping goes (an unaligned hint rounded down; above 4 GiB, near the
- *     top of the user range; Chromium's zero segment, 64 KiB to 4 GiB,
- *     which must be free: posixtest is linked at 4 GiB, as Chromium's
+ *     top of the user range; Chromium's zero segment, 64 KiB to 4,097 MiB,
+ *     which must be free: posixtest is linked at 1 TiB, as Chromium's
  *     programs are, and placement is top down); one over a mapping
  *     (libc's or the program's), past
  *     the user range or wrapping is a mapping elsewhere;
@@ -291,13 +291,17 @@ static void hint_elsewhere(uint64_t a, uint64_t len)
 
 extern char __ehdr_start[];   /* the program's first page (posix.ld) */
 
+/* The end of PartitionAlloc's zero segment: Chromium 155's
+ * USER_SPACE_ZERO_SEGMENT_SIZE_MB, 4,097 MiB, from 64 KiB. */
+#define ZERO_END (4097 * MIB)
+
 /* mmap's address hint (Linux's rule): a free one is where the mapping
  * goes, unaligned ones rounded down to their page; one over a mapping (of
  * libc's, or the program itself), past the user range or wrapping goes
  * elsewhere, and MAP_FIXED_NOREPLACE there is EEXIST. Above 4 GiB, near
  * the top of the user range, and Chromium's zero segment (64 KiB to
- * 4 GiB, PartitionAlloc's: all free in a program linked above 4 GiB, as
- * posixtest is; over the program in one linked at 0x400000). */
+ * ZERO_END: all free in a program linked above it, as posixtest is; over
+ * the program in one linked at 0x400000). */
 static void check_hints(void)
 {
     char *r = mr_reserve(64 * PG);   /* room known to be free once given back */
@@ -334,17 +338,24 @@ static void check_hints(void)
     hint_elsewhere(0xffff800000000000ul, PG);
     hint_elsewhere(~0ul - PG + 1, 2 * PG);   /* wrapping */
     hint_free_at(top - 48 * GIB, 16 * PG);   /* above the stack (STACK_TOP, libjam's spawn.c) */
-    hint_free_at((4 * GIB) + 64 * KIB, 16 * PG);
-    if (image < 4 * GIB) {
-        hint_elsewhere(64 * KIB, 4 * GIB - 64 * KIB);   /* over the program */
+    hint_free_at(ZERO_END + 64 * KIB, 16 * PG);
+    if (image < ZERO_END) {
+        hint_elsewhere(64 * KIB, ZERO_END - 64 * KIB);   /* over the program */
         return;
     }
-    /* Linked above 4 GiB (posix.mk), as Chromium's programs are: nothing
-     * is placed below it, so PartitionAlloc's zero segment is made. */
-    char *z = hinted(64 * KIB, 4 * GIB - 64 * KIB, PROT_NONE);
+    /* Linked at 1 TiB (posix.mk), as Chromium's programs are: nothing is
+     * placed below it (placement is top down: first fit from the user
+     * range's first page put the first mappings at 0x1000), so the first
+     * pages are free and PartitionAlloc's zero segment is made. */
+    char *low = mmap((void *)PG, 64 * KIB - PG, PROT_NONE,
+                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED_NOREPLACE, -1, 0);
+    CHECK(low == (char *)PG);
+    if (low != MAP_FAILED)
+        CHECK(munmap(low, 64 * KIB - PG) == 0);
+    char *z = hinted(64 * KIB, ZERO_END - 64 * KIB, PROT_NONE);
     CHECK(z == (char *)(64 * KIB));
     if (z != MAP_FAILED)
-        CHECK(munmap(z, 4 * GIB - 64 * KIB) == 0);
+        CHECK(munmap(z, ZERO_END - 64 * KIB) == 0);
 }
 
 void pt_mem_reserve(void)

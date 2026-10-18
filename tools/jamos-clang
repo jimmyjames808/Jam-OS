@@ -15,7 +15,7 @@
 # position-independent (-fPIE, as libc.a's), though Jam OS runs ET_EXEC
 # programs only: --jamos-image-base=ADDR (hex, a page's address) links a
 # program there instead of at 0x400000 (posix.ld's __jamos_image_base; a
-# port's `image-base` line: Chromium's programs above 4 GiB).
+# port's `image-base` line: Chromium's programs at 1 TiB).
 #
 # A link is static, non-PIE and whole-program, by lld through
 # user/posix/posix.ld (the sysroot's copy), with unused sections dropped:
