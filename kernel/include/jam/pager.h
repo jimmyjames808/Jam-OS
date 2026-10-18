@@ -41,8 +41,8 @@
  * budget, one shootdown) and only then copies them out, so a store after
  * the copy faults and makes its page dirty again; PAGER_OP_WRITTEN ends
  * the writing pages of a range (clean, or dirty if stored to since; an
- * error is kept by the VMO until vmo_pager_take_error reports it, and
- * the pages become clean all the same, but kept: PEEK still copies them
+ * error is kept by the VMO until vmo_pager_take_error reports it to each
+ * mapper, and the pages become clean all the same, but kept: PEEK still copies them
  * until they are evicted or stored to); PAGER_NEXT_AGAIN makes every
  * writing page dirty again (a write-back cut off by a death is done
  * again). A write-back request (PAGER_REQ_WRITEBACK) names a range and
@@ -331,10 +331,15 @@ void vmo_pager_unbegin(struct vmo *v, uint64_t first, uint64_t end);
  * ends if no dirty page is left. Interrupts on, no spinlock held. */
 void vmo_pager_written(struct vmo *v, uint64_t first, uint64_t end, status_t st,
                        struct list_node *dead);
-/* The first error a write-back of v ended with since the last call (OK if
- * none), which is then forgotten: reported once (WRITEMAP's Q1; by
- * vmo_pager_sync). */
-status_t vmo_pager_take_error(struct vmo *v);
+/* Write-back errors reported once to each mapper (WRITEMAP's Q1, WR2's
+ * errseq; by vmo_pager_sync): the error v keeps if its error count moved
+ * past *since (else OK), *since then set to the count. since NULL: a
+ * sample taken now (vmo_pager_error_sample), so the error only if it
+ * was reported to nobody yet. */
+status_t vmo_pager_take_error(struct vmo *v, uint32_t *since);
+/* A new mapping's sample of v's error count (VMO_SYNC_SAMPLE): the count,
+ * or the one before it while its error was reported to nobody. */
+uint32_t vmo_pager_error_sample(struct vmo *v);
 /* A write-back request for pages [first, end) of writable pager VMO v (at
  * most PAGER_SUPPLY_MAX bytes, else ERR_OUT_OF_RANGE, as past the size)
  * needing every page dirty or writing now (the file header's "Write-back"),
@@ -369,13 +374,17 @@ status_t vmo_pager_throttle(struct vmo *v, uint64_t *until, struct pager_req **o
  * len) holding a page dirty or writing, charged to the current thread's
  * job; with VMO_SYNC_WAIT each made once the one before is answered and
  * waited for (its answer time at most), then the kept error reported
- * (vmo_pager_take_error). OK at once for any other VMO. Without the wait
- * a request the job can't pay for is not made, and the call is OK.
- * ERR_INVALID_ARGS: a flag but VMO_SYNC_WAIT; ERR_OUT_OF_RANGE: past the
- * size; ERR_PEER_CLOSED: v is cut off; ERR_IO or ERR_NO_SPACE: a
- * write-back failed; ERR_TIMED_OUT, ERR_CANCELED: as pager_req_wait.
- * Thread context, no lock held. */
-status_t vmo_pager_sync(struct vmo *v, uint64_t offset, uint64_t len, uint32_t flags);
+ * past the caller's sample *since (vmo_pager_take_error; NULL: none of
+ * its own). VMO_SYNC_SAMPLE alone: *since set for a new mapping
+ * (vmo_pager_error_sample; 0 for any other VMO), nothing asked. OK at
+ * once for any other VMO. Without the wait a request the job can't pay
+ * for is not made, and the call is OK (*since unchanged).
+ * ERR_INVALID_ARGS: another flag, VMO_SYNC_SAMPLE with a flag or with
+ * since NULL; ERR_OUT_OF_RANGE: past the size; ERR_PEER_CLOSED: v is cut
+ * off; ERR_IO or ERR_NO_SPACE: a write-back failed; ERR_TIMED_OUT,
+ * ERR_CANCELED: as pager_req_wait. Thread context, no lock held. */
+status_t vmo_pager_sync(struct vmo *v, uint64_t offset, uint64_t len, uint32_t flags,
+                        uint32_t *since);
 /* VMO lock held (by vmo.c, around pager_written_vlocked): is page idx
  * writing? */
 bool vmo_pager_writing_locked(struct vmo *v, uint64_t idx);

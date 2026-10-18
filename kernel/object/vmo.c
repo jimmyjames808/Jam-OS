@@ -357,7 +357,12 @@ struct vmo {
     bool             pwritable;           /* a writable pager VMO (fixed at creation) */
     bool             held;                /* the hold: a reference of its own while `dirty`; lock */
     uint64_t         dirty;               /* a writable pager VMO's dirty and writing pages; lock */
-    status_t         pwb_error;           /* the error a write-back ended with, until taken; lock */
+    /* Write-back errors, Linux's errseq (vmo_pager_take_error): the first
+     * error since one was last reported, and a count that moves with each
+     * error after a report (0: none yet), which mappers sample; lock. */
+    status_t         pwb_error;
+    uint32_t         pwb_seq;
+    bool             pwb_seen;            /* pwb_seq's error was reported to someone */
     /* A child of a pager VMO (or of such a child): the pager VMO its absent
      * pages [0, win) come from (a reference, fixed at creation), and its
      * page index of this VMO's page 0; else NULL. win is charged whole to
@@ -2446,8 +2451,14 @@ void vmo_pager_written(struct vmo *v, uint64_t first, uint64_t end, status_t st,
                 v->dirty--;   /* clean (kept, after an error): its entries are read-only already */
             ended[(i - idx) / 64] |= 1ull << ((i - idx) % 64);
         }
-        if (st != OK && v->pwb_error == OK)
-            v->pwb_error = st;   /* the first since vmo_sync last reported one */
+        if (st != OK && (!v->pwb_seq || v->pwb_seen)) {
+            /* A new error: the count moves past every sample (never back
+             * to 0). One while the last is still unreported is the same
+             * error to the mappers (the first kept), as Linux's. */
+            v->pwb_seq = v->pwb_seq == UINT32_MAX ? 1 : v->pwb_seq + 1;
+            v->pwb_error = st;
+            v->pwb_seen = false;
+        }
         pager_written_vlocked(v->pv, v, idx, stop, ended, st, dead);
         vunlock(v, f);
         idx = stop;
@@ -2455,11 +2466,33 @@ void vmo_pager_written(struct vmo *v, uint64_t first, uint64_t end, status_t st,
     hold_end(v);
 }
 
-status_t vmo_pager_take_error(struct vmo *v)
+/* With the lock held: a new mapping's sample. The count, or the one
+ * before it while its error was reported to nobody, so that mapping gets
+ * it too (Linux's errseq_sample). */
+static uint32_t wb_sample_locked(const struct vmo *v)
+{
+    return v->pwb_seen || !v->pwb_seq ? v->pwb_seq : v->pwb_seq - 1;
+}
+
+uint32_t vmo_pager_error_sample(struct vmo *v)
 {
     uint64_t f = vlock(v);
-    status_t st = v->pwb_error;
-    v->pwb_error = OK;
+    uint32_t s = wb_sample_locked(v);
+    vunlock(v, f);
+    return s;
+}
+
+status_t vmo_pager_take_error(struct vmo *v, uint32_t *since)
+{
+    uint64_t f = vlock(v);
+    uint32_t s = since ? *since : wb_sample_locked(v);
+    status_t st = OK;
+    if (v->pwb_seq != s) {
+        st = v->pwb_error;   /* (OK for a sample from nowhere when there was none) */
+        v->pwb_seen = v->pwb_seq != 0;
+    }
+    if (since)
+        *since = v->pwb_seq;
     vunlock(v, f);
     return st;
 }
@@ -2573,8 +2606,15 @@ static status_t sync_chunk(struct vmo *v, uint64_t first, uint64_t end, bool wai
     return st;
 }
 
-status_t vmo_pager_sync(struct vmo *v, uint64_t offset, uint64_t len, uint32_t flags)
+status_t vmo_pager_sync(struct vmo *v, uint64_t offset, uint64_t len, uint32_t flags,
+                        uint32_t *since)
 {
+    if (flags & VMO_SYNC_SAMPLE) {
+        if (flags != VMO_SYNC_SAMPLE || !since)
+            return ERR_INVALID_ARGS;
+        *since = v->pwritable ? vmo_pager_error_sample(v) : 0;
+        return OK;
+    }
     if (flags & ~VMO_SYNC_WAIT)
         return ERR_INVALID_ARGS;
     if (!v->pwritable)
@@ -2602,9 +2642,12 @@ status_t vmo_pager_sync(struct vmo *v, uint64_t offset, uint64_t len, uint32_t f
     if (!wait)
         return st == ERR_PEER_CLOSED || st == ERR_CANCELED ? st : OK;
     if (st == OK || st == ERR_IO || st == ERR_NO_SPACE) {
-        /* Reported once: the kept error is taken whenever one is
-         * reported (the requests' errors are kept as well). */
-        status_t kept = vmo_pager_take_error(v);
+        /* Reported once to each mapper: the kept error if the count moved
+         * past the caller's sample, which then catches up. The requests'
+         * errors are counted as well, so one of ours that failed moved it
+         * (a sample equal to the count was taken after a report, and the
+         * next error moves the count). */
+        status_t kept = vmo_pager_take_error(v, since);
         if (kept != OK)
             st = kept;
     }
