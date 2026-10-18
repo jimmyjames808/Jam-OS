@@ -241,6 +241,8 @@ def typed_ahead(s):
     except subprocess.TimeoutExpired:
         p.kill()
         out, _ = p.communicate()
+    with open(os.path.join(s.a.out, "typed-ahead.out"), "wb") as f:
+        f.write(out)   # what the terminal showed, for a failure to be read
     shown = plain(out).split("\n")
     # `echo ahead-NNN-xxxxxxxxx` shows its own line (the typed text, after
     # the prompt) and then its output alone on a line.
