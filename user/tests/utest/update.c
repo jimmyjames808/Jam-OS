@@ -119,7 +119,7 @@ bool t_update_manifest(void)
     /* what the format allows besides */
     CHECK_ST(edited("abcdef0-dirty", "0123456789abcdef0123456789abcdef01234567", &m), OK);
     CHECK_ST(edited("0.0.29-m9", "A.b_c+d-9", &m), OK);
-    CHECK_ST(edited("kernel 10 ", "kernel 33554432 ", &m), OK);   /* UPDATE_FILE_MAX */
+    CHECK_ST(edited("kernel 10 ", "kernel 67108864 ", &m), OK);   /* UPDATE_FILE_MAX */
     CHECK_ST(edited("net vlan21", "net untagged", &m), OK);
     CHECK(!strcmp(m.net, "untagged"));
     CHECK_ST(edited("net vlan21", "net vlan4094", &m), OK);
@@ -240,7 +240,7 @@ bool t_update_manifest_refusals(void)
         { "signature\n", "signature\nx", ERR_INVALID_ARGS },
         { "signature\n", "signatures\n", ERR_INVALID_ARGS },
         { "kernel 10 ", "kernel 0 ", ERR_OUT_OF_RANGE },
-        { "kernel 10 ", "kernel 33554433 ", ERR_OUT_OF_RANGE },
+        { "kernel 10 ", "kernel 67108865 ", ERR_OUT_OF_RANGE },
         { "kernel 10 ", "kernel 9999999999 ", ERR_OUT_OF_RANGE },
         { "kernel 10 ", "kernel 99999999999 ", ERR_INVALID_ARGS },   /* 11 digits */
         { "kernel 10 ", "kernel 010 ", ERR_INVALID_ARGS },

@@ -39,7 +39,12 @@
 #      refused at ROOM with ERR_NO_SPACE ("can't hold three builds"), and
 #      on the Mac every file of its ESP is as it was, no .new or .old.
 # Every frame of run 2 is tagged VLAN 21 (the peer's and the pcap's checks).
-# WRITE_RUNS picks runs (wfail wstop wnet wfull; wnet is runs 2 to 4). With
+# WRITE_RUNS picks runs (wfail wstop wnet wfull; wnet is runs 2 to 4).
+# WRITE_PAD_MIB=<n> (wnet): build B's boot image also holds update-pad.bin,
+# n MiB of random bytes, so B is past the 32 MiB `update` once refused
+# (UPDATE_FILE_MAX is 64 MiB): `WRITE_RUNS=wnet WRITE_PAD_MIB=30` fetches
+# it, stores it in the kexec region, boots it by kexec and from cold, and
+# the booted build's sha256sum of the pad is checked. With
 # QEMU_BOOT_NVME=1 every boot of the stick is a boot of an installed drive
 # (qemu-test.sh makes the stick image Jam OS's GPT layout on NVMe; the ESP
 # is at 1M still, /data after it): `WRITE_RUNS=wstop QEMU_BOOT_NVME=1` is
@@ -87,9 +92,20 @@ EOF
 marker="update-marker: build B written $$"
 printf '%s\n' "$marker" > "$out/wtest-marker.txt"
 printf 'git b0b0b0b\n%s\n' "$(sed -n 's/^\(net .*\)$/\1/p' build/build.txt)" > "$out/wtest-build.txt"
+# WRITE_PAD_MIB=<n>: B's boot image also holds update-pad.bin, n MiB of
+# random bytes (a build past what update once took, 32 MiB; C and the
+# earlier runs are unchanged).
+pad="" padsha=""
+if [ "${WRITE_PAD_MIB:-0}" -gt 0 ]; then
+    python3 -c 'import os, sys; open(sys.argv[1], "wb").write(os.urandom(int(sys.argv[2]) << 20))' \
+        "$out/wtest-pad.bin" "$WRITE_PAD_MIB" || { echo "update-write-test: can't make the pad"; exit 1; }
+    pad="update-pad.bin=$out/wtest-pad.bin"
+    padsha=$(shasum -a 256 "$out/wtest-pad.bin" | cut -d' ' -f1)
+fi
 python3 tools/bootfs-edit.py "$out/testkey/bootfs-key.img" "$out/bootfs-B.img" \
-    "update-marker.txt=$out/wtest-marker.txt" "build.txt=$out/wtest-build.txt" ||
+    "update-marker.txt=$out/wtest-marker.txt" "build.txt=$out/wtest-build.txt" ${pad:+"$pad"} ||
     { echo "update-write-test: can't make build B's boot image"; exit 1; }
+[ -z "$pad" ] || echo "update-write-test: build B's boot image is $(wc -c < "$out/bootfs-B.img") bytes"
 python3 tools/update-server.py --manifest "$out/jamos-B.elf" "$out/bootfs-B.img" --key "$key" \
     > "$out/manifest" || { echo "update-write-test: no manifest"; exit 1; }
 # Build C: A's kernel with a third version string, A's boot image with git c0c0c0c.
@@ -248,6 +264,9 @@ wait {prompt}
 send cat /boot/update-marker.txt
 wait $marker
 wait {prompt}
+EOF
+[ -z "$pad" ] || printf 'send sha256sum /boot/update-pad.bin\nwait 60 %s\nwait {prompt}\n' "$padsha" >> "$out/wnet.txt"
+cat >> "$out/wnet.txt" <<EOF
 send sha256sum /esp/boot/jamos.elf
 wait $sha_a
 wait {prompt}
@@ -300,9 +319,10 @@ wait {prompt}
 send cat /boot/update-marker.txt; echo mk-""\$?
 wait mk-$mk
 wait {prompt}
-send reboot -f
-wait reboot: resetting
 EOF
+    [ -z "$pad" ] || [ $run = wprev ] ||
+        printf 'send sha256sum /boot/update-pad.bin\nwait 60 %s\nwait {prompt}\n' "$padsha" >> "$out/$run.txt"
+    printf 'send reboot -f\nwait reboot: resetting\n' >> "$out/$run.txt"
     QEMU_IMAGE="$out/wtest-2.img" QEMU_BOOT_PREV=$prev QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} \
         QEMU_INPUT="$out/$run.txt" tools/qemu-test.sh "$out" $run shell > "$out/$run.out" 2>&1 ||
         fail "$run: the stick didn't boot build $want from cold (see $out/$run.log)"

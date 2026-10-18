@@ -128,7 +128,7 @@
 #include <sha256.h>
 
 #define UPDATE_MANIFEST_MAX 1024u          /* bytes of a manifest, at most */
-#define UPDATE_FILE_MAX     (32u << 20)    /* bytes of either file: the stored kernel's region */
+#define UPDATE_FILE_MAX     (64u << 20)    /* bytes of either file: within the stored kernel's region */
 #define UPDATE_VERSION_MAX  47u            /* bytes of the version string */
 #define UPDATE_GIT_MAX      47u            /* bytes of the git field (40 hex + "-dirty") */
 #define UPDATE_ABI_LEN      16u            /* digits of an ABI stamp */
