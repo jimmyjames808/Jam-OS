@@ -722,7 +722,7 @@ bool t_comp_sub_hostile(void)
     CHECK(cs_start(&t));
     CHECK(subc_open(&t, &good));   /* connected all along: it must not notice */
     CHECK_ST(ct_roundtrip(&good.c.k), OK);
-    uint64_t base = ct_handles(&t.p);
+    uint64_t base = ct_handles_settled(&t.p, NULL);
     for (unsigned i = 0; i < H_CASES; i++) {
         uint32_t obj, code;
         CHECK(hc_open(&t, &h));

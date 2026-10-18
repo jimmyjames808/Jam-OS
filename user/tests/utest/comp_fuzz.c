@@ -391,7 +391,7 @@ static bool fuzz(struct ct_comp *p, unsigned rounds)
     static struct ct_client good;
     CHECK(ct_open(p, &good));
     CHECK(ct_bind_all(&good));
-    uint64_t base_h = p->job ? ct_handles(p) : 0, base_m = p->job ? ct_msg_bytes(p) : 0;
+    uint64_t base_h = ct_handles_settled(p, NULL), base_m = p->job ? ct_msg_bytes(p) : 0;
     unsigned hung_up = 0;
     for (unsigned r = 0; r < rounds; r++)
         if (!round_of(p, &good, FUZZ_SEED + r, r, &hung_up)) {

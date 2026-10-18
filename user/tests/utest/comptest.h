@@ -37,6 +37,22 @@ bool ct_start_state(struct ct_comp *p, int32_t w, int32_t h, const char *arg, ha
 bool ct_stop(struct ct_comp *p);
 /* The compositor job's handles in use now. */
 uint64_t ct_handles(const struct ct_comp *p);
+/* The compositor job's handles once they have stopped changing: after one
+ * more round trip of the client k (NULL: none; it adds a wl_callback's
+ * events to k's list), the count read every 3 ms until it was the same six
+ * times running (at most 3 s).
+ * What a test compares its end against is taken with this, not with
+ * ct_handles: a client that binds wl_seat and asks for a keyboard is sent
+ * the keymap in a VMO, a duplicate the compositor made for it. The batch
+ * that carries it becomes readable (the client's round trip ends) before
+ * sys_channel_write_from credits the sender's slot, so for tens of us,
+ * more when the compositor is preempted there, the compositor's count is
+ * one too high (23, 25, 24 around the round trip): a base read then was
+ * 25 where it settles at 24, and the test that waited for 25 failed with
+ * "holds 24, want 25". With a keyboard 3 to 8 rounds in 40 showed it next
+ * to the soak's load, without one none in 960. */
+struct ct_client;
+uint64_t ct_handles_settled(const struct ct_comp *p, struct ct_client *k);
 /* Wait (up to CT_WAIT) for the compositor's handles to be back at want. */
 bool ct_handles_back(const struct ct_comp *p, uint64_t want);
 /* The compositor job's message bytes now (what it wrote that nobody has

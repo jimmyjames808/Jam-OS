@@ -38,6 +38,22 @@ uint64_t ct_handles(const struct ct_comp *p)
     return ct_job_used(p->job, JOB_LIMIT_HANDLES);
 }
 
+uint64_t ct_handles_settled(const struct ct_comp *p, struct ct_client *k)
+{
+    if (!p->job)
+        return 0;
+    if (k)   /* the compositor answers this only after it has finished the batch before */
+        (void)ct_roundtrip(k);
+    uint64_t c = ct_handles(p), run = 1, until = now() + 3 * NS_PER_S;
+    while (run < 6 && now() < until) {
+        jam_sleep_until(now() + 3 * NS_PER_MS);
+        uint64_t n = ct_handles(p);
+        run = n == c ? run + 1 : 1;
+        c = n;
+    }
+    return c;
+}
+
 bool ct_handles_back(const struct ct_comp *p, uint64_t want)
 {
     uint64_t until = now() + CT_WAIT;
@@ -498,7 +514,7 @@ bool t_comp_surface(void)
     CHECK(ct_start(&p, 320, 200));
     CHECK(ct_open(&p, &k));
     CHECK(ct_bind_all(&k));
-    uint64_t base = ct_handles(&p);
+    uint64_t base = ct_handles_settled(&p, NULL);
     uint64_t pages0 = ct_job_used(own_job(), JOB_LIMIT_PAGES);
     handle_t vmo;
     uint32_t pool = ct_pool(&k, 65536, &vmo);
