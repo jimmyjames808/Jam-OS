@@ -2251,6 +2251,67 @@ local page, one stop at a time.
   worked without a change. CB3's HTTPS page and cr-test.sh's `headless`
   case are still to do.
 
+#### CB4 notes (2026-10-18)
+
+Track CB4 (`content_shell` on the desktop): one stop, then everything the
+plan asked for worked without a change to the layer, the compositor or
+Chromium.
+
+- **Stop 1: every open under /data said ENOENT.** content_shell aborted
+  250 ms after its start at ui/base/resource/resource_bundle.cc:579
+  (`data_pack->LoadFromPath(path)`: content_shell.pak, beside the
+  program), after base's stack-trace set-up logged "Failed to open file:
+  /data/cr/out/jamos/content_shell: No such file or directory", though
+  `ls` showed both files and headless_shell, started the same way in the
+  same boot, read its paks. A trace in libos's `ns_channel` (taken out
+  again) showed the cause: the program's namespace held one entry, `/tmp`.
+  Its ELF note, which is what the shell grants from, said only `posix`:
+  the port's link wrapper (tools/portslib/toolchain.py, `cc_wrapper`)
+  takes a program's list from `wants/<name>` only for the programs the
+  recipe names with a `program` line, and content_shell had none, so the
+  wants file (and the allow line made from it) never reached the note.
+  Fixed in the port: the recipe names `lib/chromium/content_shell` and its
+  `content_shell.pak`, and ports/chromium/build.sh builds and installs
+  both by default. Relinked, the note lists `svc wayland` and `mount /data
+  rw`, and the program starts.
+- **The window.** `run /data/cr/out/jamos/content_shell --no-sandbox
+  --single-process --no-zygote --disable-gpu --js-flags=--jitless
+  --enable-logging=stderr http://www.jam:8000/page.html` (QEMU on the PC,
+  4 GiB, the desktop at 1280x800) opens a window tiled beside the
+  terminal: content_shell's toolbar (Back, Forward, Refresh, Stop, the
+  address) and the page under it, 623x695, loaded by name through
+  netpeer's DNS, drawn in Inter, in about 5 s. Ozone's Wayland found what
+  it needs (wl_shm, xdg_shell, the seat, the cursor shape); logged and not
+  needed: no DRM render node (software output), no `wp_viewporter`,
+  `zcr_alpha_compositing_v1`, `overlay_prioritizer`, `wp_content_type_v1`
+  or `wp_color_management_surface_v1` in the compositor, `NETLINK`
+  sockets, and devtools' HTTP server refused (`listen` EACCES: the list
+  asks for no listening).
+- **Input.** All of it reached the page as it should: a click lands at
+  the page's own coordinates (screen (800, 200) is the page's (153, 108));
+  text typed while the window has the focus is the page's (the compositor
+  types serial text on the US layout, Shift included); the `<select>`
+  opens its list as a popup under it (GC3), picked by Down, Down, Enter
+  and by a click on a row; the wheel scrolls (QEMU's `mouse_move 0 0 -1`
+  is a notch down: three gave 360 pixels, smoothly); Super+Q closes the
+  window and content_shell exits with status 0. The page says each event
+  as a console line, which content_shell logs on its stderr
+  (`INFO:CONSOLE`): that is what cr-test.sh's script waits for.
+- **The shell's Ctrl+C.** While content_shell's window has the focus, the
+  keys (and a test's serial text) are the window's, so Ctrl+C typed there
+  is the page's, not the shell's, and so is Ctrl+Alt+C (the console's way
+  to the shell's keys works among its own windows only). Super+Q ends
+  content_shell (its window closed, status 0); so does a click on the
+  terminal and Ctrl+C there: the shell's SIGINT, which content_shell
+  leaves at its default ("killed by SIGINT").
+- **The test.** cr-test.sh's `shell-wl` case (TESTING.md): the program
+  from the kept tree's `out/jamos` (a relink leaves it there, not in the
+  stage), a 2 GiB stick made by tools/cr/base-stick.py, which now takes
+  its lists as options (`--programs`, `--program-dir`, `--out-files`,
+  `--source-files`, `--add`; base_unittests' are the defaults), the page
+  tools/cr/shell-wl.html, the script tools/cr/shell-wl.txt and
+  tools/cr/shell-wl-check.py on the three screenshots. About 80 s.
+
 #### IC (2026-10-18)
 
 Track IC (branch `ic-inotify-base`, [INOTIFY-PLAN](INOTIFY-PLAN.md#ic-notes)):
@@ -3277,7 +3338,7 @@ ports, recipes, tests, netstack's caps, the audio API and the docs.
 | **CB1. The Chromium build** | section 14 and 15: ports/chromium (the recipe, Alpine's patches, our toolchain patch, args for `base_unittests` and `headless_shell`), the builder's kept tree and `package --from` in tools/ports.py, the persistent tree on WSL behind its lock; builds `base_unittests` and `headless_shell`; reports disk, peak memory and time | ports/chromium (new), tools/ports.py (the two options), tools/cr/ (the build wrapper, new) | CT1, CT2; the main session's CPU-weighted slots in `tools/remote-test.sh` | the build finishes; the syscall scan passes (or lists each site); `make check` (the recipe's lint) | **Opus** (the build glue decides much) |
 | **CB2. `base_unittests` (CR-b)** | cr-test.sh's `base` case; the run with the ENOSYS log on; every failure triaged to a layer (a finding for its track) or fixed in the recipe's test list with a reason | cr-test.sh's case, ports/chromium's test list | CB1, CL1 (stage 1 at least), CL3, CP1 | cr-test.sh `base` | Sonnet 5.5 |
 | **CB3. `headless_shell` (CR-c1)** | the single-process headless screenshot of a local page and an HTTPS page; the findings | cr-test.sh's `headless` case, the recipe's args | CB2; CL1 stage 2 (V8's cage); M13's F1b (the `.pak` maps) | cr-test.sh `headless` | Sonnet 5.5 |
-| **CB4. `content_shell` on Wayland (CR-c2)** | `content_shell --single-process` on the desktop; keys, mouse, wheel, a `<select>` list; screenshots | cr-test.sh's `shell-wl` case | CB3; G2's GS1, GC1b, GT (GC3 for the list), GP2 | cr-test.sh `shell-wl` | Sonnet 5.5 |
+| **CB4. `content_shell` on Wayland (CR-c2)** | `content_shell --single-process` on the desktop; keys, mouse, wheel, a `<select>` list; screenshots; built 2026-10-18, see "CB4 notes" | cr-test.sh's `shell-wl` case | CB3; G2's GS1, GC1b, GT (GC3 for the list), GP2 | cr-test.sh `shell-wl` | Sonnet 5.5 |
 | **CB5. Multi-process (CR-c3)** | Chromium's own launcher, unpatched, on libc's `fork` and `exec` in place ([FORK-PLAN](FORK-PLAN.md)); `--no-zygote --no-sandbox`, every process type started and talking over Mojo; a renderer killed | cr-test.sh's `multi` case | CB4; CU1, CS1, CL2, CN1; M12.5's PX; FORK-PLAN's FK1 to FK3 and FL1a to FL4 | cr-test.sh `multi` | **Opus** (processes cross) |
 | **CB6. `chrome` (CR-d)** | the `chrome` target, its args, its package (programs, paks, licences, initial preferences: Q4), the profile on `/jam`, the singleton on CU2; `pkg install chromium` | ports/chromium (the target's lines), cr-test.sh's `chrome` case | CB5; GC2, GC3, CU2, CA1 (sound), M13.6 (its tracks in section 16), M13.7's `pkg` and PO13 | cr-test.sh `chrome`; the PC check | Sonnet 5.5 |
 | **PO13. The package area on `/jam`** (built: [M13.7's PO13 notes](M13.7-PLAN.md#po13-notes)) | M13.7's prefix on `/jam` (after M13.6), the guard on it, big packages (a 250 MB program: staged files on `/jam`, init's hashing in steps) | M13.7's files named in its plan's PO5 and PO6 notes (the prefix constant, the guard's line for extfs) | M13.7's PO5 and PO6; M13.6's U4 and U8 | tools/pkg-test.sh (PO8, to come) with a big package on an ext test disk | Sonnet 5.5 |
