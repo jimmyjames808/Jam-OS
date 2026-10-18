@@ -238,12 +238,15 @@ the same bytes twice is harmless).
 
 ### 1.5 `msync`, `fsync`, `munmap`, `close`, exit
 
-`vmo_sync(vmo, offset, len, flags)` (new, `RIGHT_READ`): for a writable
+`vmo_sync(vmo, offset, len, flags, wb_seq)` (new, `RIGHT_READ`; `wb_seq`
+since WR2): for a writable
 pager VMO, makes the write-back requests of section 1.3 for the range and,
 with `VMO_SYNC_WAIT`, waits for each (the answer time each, at most);
 `OK` at once for any other VMO or a range with nothing dirty. The VMO
-keeps the first write-back error since the last `vmo_sync` with the wait,
-and that call returns it (`ERR_IO`, `ERR_NO_SPACE`), once.
+keeps the first write-back error with a count of errors, and a call with
+the wait returns it (`ERR_IO`, `ERR_NO_SPACE`) once to each mapper:
+when the count moved past the mapper's sample (Linux's errseq; built by
+WR2, see "WR2 notes").
 
 | Call | What happens | Promise |
 |---|---|---|
@@ -350,7 +353,7 @@ and SG1 add calls of their own).
 | 164 | `pager_op(..., PAGER_OP_WRITTEN, offset, len, status)` | section 1.3; `ERR_INVALID_ARGS` on a VMO not made writable |
 | 165 | `pager_dirty(handle_t pager, uint64_t key, uint32_t flags, struct pager_run *run, void *buf)` | `run` in: offset, len (page-aligned, at most `PAGER_SUPPLY_MAX`); out: key, offset, len of the run (0: none), age of its oldest page; `buf` stands for the range asked, the run's bytes copied to their place in it; flags `PAGER_DIRTY_BEGIN`, `PAGER_DIRTY_PEEK`, `PAGER_DIRTY_OLDEST`; `RIGHT_WRITE` on the pager |
 | 166 | `pager_write(handle_t pager, uint64_t key, uint64_t offset, const void *buf, uint64_t len)` | section 1.7; `RIGHT_WRITE` on the pager |
-| (VMO group) | `vmo_sync(handle_t vmo, uint64_t offset, uint64_t len, uint32_t flags)` | section 1.5; flag `VMO_SYNC_WAIT`; `RIGHT_READ` |
+| (VMO group) | `vmo_sync(handle_t vmo, uint64_t offset, uint64_t len, uint32_t flags, uint32_t *wb_seq)` | section 1.5; flags `VMO_SYNC_WAIT`, `VMO_SYNC_SAMPLE` (WR2: `wb_seq`, the mapper's sample of the write-back errors); `RIGHT_READ` |
 
 And in `<jam/abi.h>`: `PAGER_REQ_WRITEBACK` (3), `struct pager_run`
 (`key`, `offset`, `len`, `age_ns`), the flags above, and the
@@ -498,7 +501,8 @@ error, a volume turned read-only by an error) does what Q1's answer says.
 With the recommendation: `PAGER_OP_WRITTEN` with the status (the pages
 become clean: readable until evicted, then the disk's bytes come back),
 the slot keeps the error for the file's next `file.sync`, and the kernel
-keeps it for the VMO's next `vmo_sync`.
+keeps it for the VMO's next `vmo_sync` (since WR2: once to each open and
+each mapper).
 
 ## 3. libc
 
@@ -573,6 +577,7 @@ Each about one agent-hour; WE2 about one and a half.
 | **WL1. libc** | section 3; built, see "WL1 notes" | `user/posix/sys/file.c` (`map_file`), `user/posix/sys/mem.c` (`lx_msync`, the share flag), `user/posix/sys/files.h`, posixtest's `user/posix/test/mmap.c` (a new section `mmap-wshared`), tools/shell-tests' new posix-mmap-wshared.txt and its case in `tools/posix-mmap-test.sh` | WE1 and WK3 merged (beside WE2: different files); after or before FL2 (both edit `mem.c`: one after the other) | posixtest `mmap-wshared` on ext (`MMAP_DATA=ext`): a store seen by `read` and `pread`, by a second mapping, by a child; `write` and stores on one page both kept; `mprotect` adding write on an `O_RDWR` mapping, `EACCES` on `O_RDONLY`; `msync` `MS_SYNC` and `MS_ASYNC` return 0; truncate's tail zero; on FAT `ENODEV` and `EACCES` as today; the `mmap` and `coherent` cases on FAT and ext unchanged; shell scripts basic, cmds, commands, files | 1 | Sonnet 5.5 |
 | **WT1. The end-to-end tests** | the scripts below, and Chromium's tests through CB2's harness | `tools/pager-test.sh` (new cases), pagertest (`user/tests/pagertest/`, a new mode that stores records with sequence numbers and checksums), `tools/cr-test.sh`'s `base` filter list (a line) | WE2 and WL1 merged; CB2 merged and `/tmp` on ext (U7b or U11a) for the Chromium case | pager-test.sh `wmsync`: records stored and `msync`ed, `kill extfs-jam`, read back through `read` and a new mapping; again with no `msync` (the successor writes them); again across a reboot (`msync`ed records there). `wcut`: QEMU stopped dead during a store-and-`msync` storm, booted again: every acknowledged record whole, Linux's `e2fsck -fn` clean. `wpress`: a mapping twice the budget stored through (the writer throttled, done, every page right) while another program reads another file at speed; then with extfs held by a test power (`hang=wback`): the writer killed at the deadline with the line, the reader, the shell and `/jam` fine. cr-test.sh `base` with `MemoryMappedFileTest.*`, `FilePersistentMemoryAllocatorTest.*` and `PersistentHistogramAllocatorTest.*` (*unsure* of the exact suite names: CB2's list says); built, see "WT1 notes" (the held `wpress` is utest `extfs_wpress`; the 8 writable-mapping tests of `base` pass and are off the skip list, on the stage's programs, not relinked by the track) | 1 | Sonnet 5.5 |
 | **WR. Independent review and fix** | everything above, findings first (a new docs/WRITEMAP-REVIEW.md), then High and Medium fixed with a test each: can a store be lost (begin's protect against the copy, the request's stamps, AGAIN), can a writer or the kernel wait forever, can a dirty page be evicted, does a view's refusal hold for every way to a writable handle, is an acknowledged `msync` safe across every death; built, see "WR notes" | the files its fixes need | WK1 to WT1 merged | its own; hostile: 8 writers on one file from two processes with fork and a pager killed every 200 ms; full ktest 4 and 8; soak 4 | 1.5 | **Opus** |
+| **WR2. Errors to every mapper** | the review's finding 7 (design question 2): a write-back error reported once to each mapping's `msync` and each open's `fsync`, Linux's errseq (the VMO's and the slot's count, each mapping's and open's sample); built, see "WR2 notes" | `abi/syscalls.def` (`vmo_sync`), `<jam/abi.h>`, `kernel/object/vmo.c`, `kernel/abi/sysc_vm.c`, `<jam/pager.h>`, `user/posix/sys/mem.c` and `maptable.*`, `user/services/extfs/wback.c`, `files.c`, `pager.c`, `extfs.h`, the tests | WR merged | ktest `pager_dirty_errseq`; utest `extfs_wback` (two processes, opens held across); full ktest 4 and 8; the pager cases | 0.5 | **Opus** |
 | **WJ. The join** | ARCHITECTURE (Memory: writable pager VMOs and the hold; Storage: write-back), M12.5-PLAN's and M13-PLAN's lines that say pager pages are always clean, TESTING (the new cases and ktests), ROADMAP, CR-PLAN, HISTORY; this plan deleted when HISTORY covers it | the docs | WR | `make check` | 0.5 | Sonnet 5.5 |
 
 **Order.** WK1 as soon as FK2 is merged (both are in `vmo.c` and
@@ -1197,7 +1202,8 @@ plan's questions answered, the findings, the fixes, the design questions):
 - **Left (design questions, the main session's):** a store's deadline
   counted from its first wait kills a healthy writer behind a busy pager
   (recommended: from the pager's last progress); a write-back error goes
-  to the first `msync` of any mapper (recommended: errseq later); an
+  to the first `msync` of any mapper (recommended: errseq later; built
+  by WR2); an
   orderly stop writes back about 8 s at most (recommended: bounded by
   progress); FR1's freeze starvation is Medium, not High (a pager VMO is
   never frozen), recommended FR1's choice (b) before renderers are
@@ -1209,6 +1215,77 @@ plan's questions answered, the findings, the fixes, the design questions):
   runlist line: `pg-whostile PAGER_CASES=whostile tools/pager-test.sh
   build/t/pg-whostile` (the prepush list has no `pg-w*` lines yet: add
   `wmsync`, `wcut`, `wpress` and `whostile`).
+
+### WR2 notes
+
+The review's finding 7 (design question 2, the main session's answer:
+yes, before CB6's profiles share databases): a write-back error was kept
+once per VMO and once per file, so whichever `msync` (or `fsync`) came
+first took it and another process's said 0 for stores the disk never
+got. Now each is reported once to each mapping and once to each open,
+Linux's errseq, in two places:
+
+- **The kernel** (`msync`): a writable pager VMO keeps its first error
+  with a count (`pwb_error`, `pwb_seq`, `pwb_seen` in vmo.c) that moves
+  with each error after one was reported. `vmo_sync` takes a fifth
+  argument, `uint32_t *wb_seq`, the caller's sample: with
+  `VMO_SYNC_WAIT` the call returns the kept error if the count moved
+  past it and brings it up to the count; the new flag `VMO_SYNC_SAMPLE`
+  (alone, no request) gives a new mapping its sample. The ABI change is
+  its own commit (contract text: the ABI stamp moves; every static
+  program relinks for libc's change anyway). A caller with no sample
+  (NULL) hears of an error only if nobody did yet: the old behaviour,
+  kept for native callers (pagertest, the restart utests).
+- **libc** (`mem.c`): `file_source` samples each shared file mapping at
+  `mmap`; `msync` passes the sample, and the answer moves it in every
+  table entry of that `mmap` (a new `id` per `mmap`, kept by the parts a
+  `munmap` splits it into, so the parts hear of an error once between
+  them). The table entry grows from 32 to 40 bytes (2.5 MiB of address
+  space for the whole table).
+- **extfs** (`fsync`): a shared slot (`xf_map`) keeps the file's error
+  with a number from one count for the volume (`xf_state`'s `err_seq`,
+  so a slot made again for the file never gives an open's sample back)
+  and whether an open heard of it; each open (`xf_file`'s `wb_seq`)
+  samples it at `fs.open` (`wback_sample`), and `file.sync`
+  (`wback_file`) reports it when the number isn't the one the open heard
+  of last. State layout 6 (a track beside this one that changes the
+  state, RL perhaps, takes 7 at its merge).
+
+Decisions (mine; the main session's to override):
+
+- **A mapping or open made after an error** hears of it only if nobody
+  had heard of it yet (Linux's current rule: `errseq_sample` gives 0
+  for an error nobody has seen, so one met with no file open is still
+  reported to the first `fsync` after an open). One made after anyone
+  heard of it doesn't.
+- **`msync` and `fsync` keep separate counts** (the kernel's per VMO,
+  extfs's per file): a process that maps a file and `fsync`s it hears of
+  one error at both, once each. Linux has one sample per open file
+  description for both; here a mapping isn't tied to the open it came
+  from (it may be closed). More reports than Linux, never fewer.
+- **Several errors before anyone looks are one** (the first kept, as
+  before; Linux keeps the last).
+- **A forked child** has a copy of its parent's mapping samples, so both
+  hear of an error (Linux's child shares the open file description: one
+  of them hears). Its descriptors share extfs's open (the same channel),
+  so `fsync` is Linux's: once between them.
+
+Left: an error is kept while the file's slot lives (a slot goes at its
+VMO's GONE: no mapping and nothing dirty), as before; Linux keeps it in
+the inode while cached. A `file.sync` run again by adopt.c after extfs
+died between its report and the reply says 0 the second time (the open
+heard of the error in the state); the old take-once had the same window.
+No posixtest: a POSIX program can't make a write-back fail without
+filling the shared `/data`; libc's part runs in every shared `mmap` and
+`msync` (the `mm-wshared` and pager cases).
+
+Tests: ktest `pager_dirty_errseq` (the kernel's rules, a sample at a
+time); utest `extfs_wback`'s full volume (ours and a child process's
+mapping, `utest wback-map`, each hear of the error once and a mapping
+made after doesn't; two opens made before any open heard each hear once
+and one after doesn't; an error met by an `fsync`'s write-back reaches
+both opens held across it and both mappers once each; finding 5's
+re-map check kept).
 
 ## 6. Tests
 
