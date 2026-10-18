@@ -370,6 +370,15 @@ jam_vmar_clone:
     ret
     .size jam_vmar_clone, . - jam_vmar_clone
 
+    .globl jam_vmar_resident
+    .type jam_vmar_resident, @function
+jam_vmar_resident:
+    mov %rcx, %r10
+    mov $SYS_vmar_resident, %eax
+    syscall
+    ret
+    .size jam_vmar_resident, . - jam_vmar_resident
+
     .globl jam_process_create
     .type jam_process_create, @function
 jam_process_create:

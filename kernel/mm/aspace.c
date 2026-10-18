@@ -2297,6 +2297,26 @@ uint32_t aspace_get_maps(struct aspace *as, uint64_t from, struct map_info *out,
     return n;
 }
 
+uint64_t aspace_resident(struct aspace *as, uint64_t addr, uint64_t pages, uint8_t *out)
+{
+    uint64_t done = 0;
+    mutex_lock(&as->lock);
+    for (struct mapping *m = find(as, addr); m && done < pages; m = next_of(m)) {
+        uint64_t va = addr + done * PAGE_SIZE;
+        if (m->base > va)
+            break;   /* a hole at va */
+        uint64_t n = (mend(m) - va) >> PAGE_SHIFT;
+        if (n > pages - done)
+            n = pages - done;
+        /* A pager VMO's cache only through a mapping that may write it. */
+        bool cache = vmo_pager_writable(m->vmo) && (m->max & ASPACE_WRITE);
+        vmo_resident(m->vmo, (m->vmo_off + (va - m->base)) >> PAGE_SHIFT, n, cache, out + done);
+        done += n;
+    }
+    mutex_unlock(&as->lock);
+    return done;
+}
+
 static bool map_before(const struct avl_node *a, const struct avl_node *b)
 {
     return map_of(a)->base < map_of(b)->base;

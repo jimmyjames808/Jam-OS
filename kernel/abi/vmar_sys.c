@@ -17,6 +17,7 @@
 #include <jam/mm.h>
 #include <jam/process.h>
 #include <jam/sys.h>
+#include <jam/uentry.h>
 #include <jam/vmar.h>
 #include <jam/vmo.h>
 
@@ -115,6 +116,26 @@ status_t sys_vmar_protect(struct handle_table *t, handle_t vmar, uint64_t addr, 
     st = aspace_protect(as, addr, len, flags);   /* ERR_ACCESS_DENIED past the map-time rights */
     kobject_unref(ref);
     return st;
+}
+
+int64_t sys_vmar_resident(struct handle_table *t, struct aspace *self, handle_t vmar,
+                          uint64_t addr, uint64_t len, uint8_t *out)
+{
+    if (!len || ((addr | len) & (PAGE_SIZE - 1)))
+        return ERR_INVALID_ARGS;
+    if (len / PAGE_SIZE > VMAR_RESIDENT_MAX || !user_range_ok(addr, len))
+        return ERR_OUT_OF_RANGE;
+    struct aspace *as;
+    struct kobject *ref;
+    status_t st = vmar_get(t, vmar, RIGHT_READ, &as, &ref);
+    if (st != OK)
+        return st;
+    /* Only the caller's own: a parent's handle of its child's address
+     * space must not tell which of the child's pages it touched. */
+    int64_t n = as == self ? (int64_t)aspace_resident(as, addr, len / PAGE_SIZE, out)
+                           : ERR_ACCESS_DENIED;
+    kobject_unref(ref);
+    return n;
 }
 
 /* The VMOs first (each a reference, in r), then dst held NEW

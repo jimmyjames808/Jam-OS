@@ -138,6 +138,16 @@ status_t vmo_fault_map(struct vmo *v, uint64_t idx, struct aspace *as, uint64_t 
  * child of a pager VMO in the pager VMO, or past its end)? A request is
  * answered whole, so one that failed may still have brought it. */
 bool     vmo_page_ready(struct vmo *v, uint64_t idx);
+/* mincore's look (aspace_resident; abi/syscalls.def's vmar_resident has
+ * the rule): out[i] = 1 if v holds page first + i, i < n, else 0 (past
+ * the size too). A contiguous or physical VMO holds every page below its
+ * size. With `cache` false a pager VMO's cache isn't told: its pages below
+ * the size read 1, and so do the window pages a child of one doesn't hold
+ * itself (they would come from the pager VMO). Committed means in the
+ * table: a page shared copy-on-write is there for each table holding it,
+ * and a pager VMO's clean, dirty and writing pages alike. One leaf table
+ * (or one run of missing tables) per lock hold. */
+void     vmo_resident(struct vmo *v, uint64_t first, uint64_t n, bool cache, uint8_t *out);
 
 /* ---- vmar_clone's copies (aspace.c's clone; vmo.c's "Clones") ----------- */
 

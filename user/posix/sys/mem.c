@@ -814,25 +814,22 @@ long lx_madvise(long addr, long len, long advice, long d, long e, long f)
     return -EINVAL;
 }
 
-#define MINCORE_BATCH 16   /* mappings asked of the kernel at once (on the stack: no malloc here) */
+/* Linux's TASK_SIZE_MAX: a vec reaching past it is mincore's EFAULT before
+ * anything is looked at (its access_ok). */
+#define LINUX_USER_TOP ((1ull << 47) - PAGE)
 
-/* The pages [from, to) of mapping m, whose first vec byte is out. The
- * kernel counts the pages of a mapping that are present in its page tables
- * (m->resident), not which: a mapping with all of its pages present or
- * none is told exactly, and in between the first m->resident pages of the
- * mapping read as resident, so the count over a whole mapping is right
- * and a page's own answer is a guess (docs/CR-PLAN.md, "CBF2b notes"). */
-static void mincore_fill(uint8_t *out, const struct map_info *m, uint64_t from, uint64_t to)
-{
-    uint64_t pages = m->len / PAGE, first = (from - m->base) / PAGE;
-    for (uint64_t k = first; k < first + (to - from) / PAGE; k++)
-        *out++ = m->resident >= pages || k < m->resident;
-}
-
-/* mincore: which pages of the range are in memory. A page is in memory
- * when the process's page tables hold it now, which is what Linux's answer
- * means for private memory (a page never touched, or given back by
- * madvise, is not; PROT_NONE memory has no entries, so it reads as not). */
+/* mincore: which pages of the range are in memory, from the kernel's
+ * vmar_resident a chunk of VMAR_RESIDENT_MAX pages at a time, which the
+ * kernel writes into vec itself (a checked copy: EFAULT, the bytes before
+ * it written, as Linux's). A page is in memory when the VMO mapped there
+ * holds it: touched and not given back (madvise, munmap), whatever its
+ * protection now (PROT_NONE memory keeps its pages, as Linux's does); a
+ * memfd's or other shared memory's page for every holder; a file's page in
+ * its cache only through a mapping that may write the file, and through
+ * any other every page reads as in memory (Linux's rule since 5.0;
+ * abi/syscalls.def). EINVAL for an unaligned start, ENOMEM for a range
+ * past the user range or with an unmapped page (the bytes before it
+ * written), EFAULT for vec, EAGAIN if the kernel had no page to answer in. */
 long lx_mincore(long addr, long len, long vec, long d, long e, long f)
 {
     if (!page_aligned((uint64_t)addr))
@@ -840,24 +837,21 @@ long lx_mincore(long addr, long len, long vec, long d, long e, long f)
     uint64_t size = page_round((uint64_t)len);
     if (len < 0 || (len && !size) || (uint64_t)addr > UINT64_MAX - size)
         return -ENOMEM;
-    uint8_t *out = (uint8_t *)(uintptr_t)vec;
-    if (size && uc_writable(out, size / PAGE))   /* the caller's bytes, before any (ucopy.h) */
+    uint64_t pages = size / PAGE;
+    if ((uint64_t)vec > LINUX_USER_TOP || pages > LINUX_USER_TOP - (uint64_t)vec)
         return -EFAULT;
-    uint64_t pos = (uint64_t)addr, end = pos + size;
-    struct map_info m[MINCORE_BATCH];
-    while (pos < end) {
-        long n = kp_process_maps(lx_self_process(), pos, m, MINCORE_BATCH);
-        if (n < 0)
-            return n;
-        for (long i = 0; i < n && pos < end; i++) {
-            if (m[i].base > pos)
-                return -ENOMEM;   /* a hole at pos: what came before is filled in */
-            uint64_t stop = m[i].base + m[i].len < end ? m[i].base + m[i].len : end;
-            mincore_fill(out + (pos - (uint64_t)addr) / PAGE, &m[i], pos, stop);
-            pos = stop;
-        }
-        if (!n)
-            return -ENOMEM;   /* nothing mapped from pos up */
+    uint8_t *out = (uint8_t *)(uintptr_t)vec;
+    for (uint64_t done = 0; done < pages;) {
+        uint64_t n = pages - done < VMAR_RESIDENT_MAX ? pages - done : VMAR_RESIDENT_MAX;
+        int64_t got = jam_vmar_resident(lx_self_vmar(), (uint64_t)addr + done * PAGE, n * PAGE,
+                                        out + done);
+        if (got == ERR_INVALID_ARGS)
+            return uc_or_fault(-EINVAL, out + done, n, true);   /* the arguments were checked */
+        if (got < 0)
+            return got == ERR_OUT_OF_RANGE ? -ENOMEM : got == ERR_NO_MEMORY ? -EAGAIN : lx_err(got);
+        if ((uint64_t)got < n)
+            return -ENOMEM;   /* a hole after them: what came before is filled in */
+        done += n;
     }
     return 0;
 }

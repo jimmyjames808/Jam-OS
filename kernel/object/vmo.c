@@ -2824,6 +2824,35 @@ uint64_t vmo_page_phys(struct vmo *v, uint64_t offset)
     return pa;
 }
 
+void vmo_resident(struct vmo *v, uint64_t first, uint64_t n, bool cache, uint8_t *out)
+{
+    uint64_t idx = first, end = first + n;
+    while (idx < end) {
+        uint64_t f = vlock(v);
+        uint64_t size = v->size >> PAGE_SHIFT, stop = end < size ? end : size;
+        if (idx >= stop) {
+            vunlock(v, f);
+            break;
+        }
+        if (v->kind != VMO_PAGED || (v->pv && !cache)) {
+            memset(out + (idx - first), 1, stop - idx);   /* all there, or not told */
+            idx = stop;
+        } else {
+            /* One leaf, or the run of missing tables from idx (next). */
+            uint64_t next = stop, win = cache ? 0 : v->win;
+            const uint64_t *leaf = leaf_find_locked(v, idx, &next);
+            uint64_t lim = leaf ? ALIGN_DOWN(idx, LEAF_PAGES) + LEAF_PAGES : next;
+            if (lim > stop)
+                lim = stop;
+            for (; idx < lim; idx++)
+                out[idx - first] = (leaf && leaf[idx % LEAF_PAGES]) || idx < win;
+        }
+        vunlock(v, f);
+    }
+    if (idx < end)
+        memset(out + (idx - first), 0, end - idx);   /* past the size */
+}
+
 /* ---- mapping and pinning ranges ----------------------------------------- */
 
 /* Record r (busy) if it lies inside the VMO. On success it holds a VMO

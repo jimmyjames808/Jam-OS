@@ -249,6 +249,11 @@ static int64_t call_vmar_clone(const struct syscall_frame *f)
                            (uint32_t)f->args[4]);
 }
 
+static int64_t call_vmar_resident(const struct syscall_frame *f)
+{
+    return sysc_vmar_resident((handle_t)f->args[0], f->args[1], f->args[2], f->args[3]);
+}
+
 static int64_t call_process_create(const struct syscall_frame *f)
 {
     return sysc_process_create((handle_t)f->args[0], f->args[1], f->args[2], (uint32_t)f->args[3],
@@ -662,6 +667,7 @@ static const syscall_fn syscall_table[SYSCALL_COUNT] = {
     [SYS_vmo_create_child] = call_vmo_create_child,
     [SYS_vmo_make_jit] = call_vmo_make_jit,
     [SYS_vmar_clone] = call_vmar_clone,
+    [SYS_vmar_resident] = call_vmar_resident,
     [SYS_process_create] = call_process_create,
     [SYS_process_start] = call_process_start,
     [SYS_process_kill] = call_process_kill,

@@ -126,6 +126,15 @@ uint32_t aspace_mapping_count(struct aspace *as);
  * entries without the region lock) may make a count a moment old. */
 struct map_info;
 uint32_t aspace_get_maps(struct aspace *as, uint64_t from, struct map_info *out, uint32_t cap);
+/* mincore's look (vmar_resident, abi/syscalls.def): for the pages of
+ * [addr, addr + pages * PAGE_SIZE) from addr on, out[i] = 1 if the VMO
+ * mapped there holds the page (vmo_resident; a pager VMO's cache told
+ * only through a mapping whose maximum may write it), else 0. Returns how
+ * many pages from addr are mapped (fewer than `pages`: a hole after them;
+ * 0: none at addr), out filled that far. One view under the region lock
+ * (may sleep), each VMO's table read a leaf at a time under its lock; the
+ * caller keeps `pages` small (VMAR_RESIDENT_MAX) and copies out after. */
+uint64_t aspace_resident(struct aspace *as, uint64_t addr, uint64_t pages, uint8_t *out);
 /* Whether as has mapped a JIT VMO executable since it was made
  * (PROCESS_FLAG_JIT): aspace_map with ASPACE_EXEC, or aspace_protect
  * adding it; a mapping that only reads or writes one doesn't count.

@@ -200,6 +200,25 @@ int64_t sysc_vmar_protect(handle_t vmar, uint64_t addr, uint64_t len, uint32_t f
     return sys_vmar_protect(t, vmar, addr, len, flags);
 }
 
+/* mincore's kernel half (abi/syscalls.def). The bytes are made in a
+ * kernel buffer under the address space's locks and copied out after,
+ * with none held: the copy may fault in the same address space. */
+int64_t sysc_vmar_resident(handle_t vmar, uint64_t addr, uint64_t len, uint64_t out)
+{
+    SYSC_TABLE(t);
+    uint8_t *buf = kmalloc(VMAR_RESIDENT_MAX);
+    if (!buf)
+        return ERR_NO_MEMORY;
+    struct aspace *self = process_aspace(process_current());
+    int64_t n = self ? sys_vmar_resident(t, self, vmar, addr, len, buf) : ERR_BAD_STATE;
+    if (self)
+        aspace_unref(self);
+    if (n > 0 && copy_out(out, buf, (size_t)n) != OK)
+        n = ERR_INVALID_ARGS;
+    kfree(buf);
+    return n;
+}
+
 /* The address space's clone (docs/FORK-PLAN.md section 1.1; abi/syscalls.def
  * has the contract). The children's slots are reserved and their values
  * written out before the copy, so nothing can fail after it. */

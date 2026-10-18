@@ -63,6 +63,7 @@ status_t jam_vmar_protect(handle_t vmar, uint64_t addr, uint64_t len, uint32_t f
 status_t jam_vmo_create_child(handle_t vmo, uint32_t flags, uint64_t offset, uint64_t size, handle_t *out);
 status_t jam_vmo_make_jit(handle_t vmo, handle_t root, handle_t *out);
 status_t jam_vmar_clone(handle_t dst, const handle_t *vmos, handle_t *children, uint32_t n, uint32_t flags);
+int64_t jam_vmar_resident(handle_t vmar, uint64_t addr, uint64_t len, uint8_t *out);
 status_t jam_process_create(handle_t job, const char *name, uint64_t name_len, uint32_t flags, handle_t *proc_out, handle_t *vmar_out);
 status_t jam_process_start(handle_t proc, handle_t thread, uint64_t entry, uint64_t stack, handle_t arg0, uint64_t arg1);
 status_t jam_process_kill(handle_t proc);

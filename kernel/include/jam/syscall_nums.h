@@ -46,6 +46,7 @@
 #define SYS_vmo_create_child     63
 #define SYS_vmo_make_jit         64
 #define SYS_vmar_clone           65
+#define SYS_vmar_resident        66
 #define SYS_process_create       70
 #define SYS_process_start        71
 #define SYS_process_kill         72
