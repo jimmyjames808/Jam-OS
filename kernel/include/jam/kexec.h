@@ -36,12 +36,13 @@
  * 10.5, the kernel file 5.4) and 36.7 MiB on 2026-10-12 (the kernel 10.4
  * with its 8.5 MiB of bss, bootfs 19.6, the kernel file 6.5 with its debug
  * info), past kexec_region_has_room's three quarters of 48. The kernel
- * file has had no debug info since (the Makefile: about 1.7 MiB), and 128
+ * file has had no debug info since (the Makefile: about 2 MiB), and 128
  * MiB holds the biggest bootfs `update` takes (UPDATE_FILE_MAX, 64 MiB)
- * with today's kernel (about 13 MiB: 10.4 with its bss, 1.7 the kernel file
- * again, 0.6 tables and stack) inside those three quarters (96 MiB): the
- * boot image's limit is `update`'s, not this region's. ktest
- * kexec_region_has_room says when it gets tight. */
+ * with today's kernel (everything but the bootfs: about 14.6 MiB on
+ * 2026-10-18; a 58.7 MiB bootfs stored 73.2 MiB, so 64 MiB takes about 79)
+ * inside those three quarters (96 MiB): the boot image's limit is
+ * `update`'s, not this region's. ktest kexec_region_has_room says when it
+ * gets tight. */
 #define KEXEC_DEFAULT_MIB 128
 #define KEXEC_KERNEL_MODULE "jamos.elf"   /* the pristine kernel: a module path's suffix */
 /* A crash loop halts on its panic screen instead of jumping again: a
