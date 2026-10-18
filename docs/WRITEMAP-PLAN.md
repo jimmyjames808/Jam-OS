@@ -1170,6 +1170,46 @@ What WR starts from (`pagertest rec` in user/tests/pagertest/rec.c,
   `out/jamos` first) was refused to the track by the permission check, and
   no other way was tried.
 
+### WR notes
+
+What WJ starts from ([WRITEMAP-REVIEW.md](WRITEMAP-REVIEW.md): the
+plan's questions answered, the findings, the fixes, the design questions):
+
+- **Found:** 0 High, 3 Medium, 6 Low, 3 notes. The plan's five questions
+  hold (BEGIN's protect, shootdown, then copy; the requests' bits; AGAIN
+  only after the instance before is dead; no dirty page evicted; one way
+  to a writable handle, through a writing open; an acknowledged `msync`
+  safe across the writer's, extfs's and volumes' deaths), but for the
+  findings.
+- **Fixed:** (1) a page whose write-back failed is clean but *kept*:
+  `PAGER_DIRTY_PEEK` still copies it, so `read` shows the store every
+  mapping shows until the page is evicted (WE2's one-cache gap; the
+  contract text in its own commit, the ABI stamp moves); (2) a fresh
+  instance's `write`, `truncate` and run check find a shared VMO an
+  instance before made (`find_lost`) instead of missing it (an answered
+  write could be overwritten by its dirty page's older bytes: WE1's
+  "a slotless VMO counts as written" held only for a map); (3) a create
+  takes over the key of a VMO being destroyed, so a map racing another
+  process's last unmap no longer fails `ERR_ALREADY_EXISTS` (one key per
+  file made the race possible; CB5's processes map the same files);
+  (4) a GONE kept by `maps_again` is dropped when a map remakes its key;
+  (5) a re-map keeps the slot's write-back error for `fsync`.
+- **Left (design questions, the main session's):** a store's deadline
+  counted from its first wait kills a healthy writer behind a busy pager
+  (recommended: from the pager's last progress); a write-back error goes
+  to the first `msync` of any mapper (recommended: errseq later); an
+  orderly stop writes back about 8 s at most (recommended: bounded by
+  progress); FR1's freeze starvation is Medium, not High (a pager VMO is
+  never frozen), recommended FR1's choice (b) before renderers are
+  sandboxed.
+- **The hostile test:** `pager-test.sh`'s `whostile` (`pagertest rec
+  swarm`: eight writers in two processes by fork, 100 rounds over 512
+  records with an `msync` every 4 each, `extfs-jam` killed every 200 ms by
+  the test itself; then a power cut and Linux's look at the disk). Its
+  runlist line: `pg-whostile PAGER_CASES=whostile tools/pager-test.sh
+  build/t/pg-whostile` (the prepush list has no `pg-w*` lines yet: add
+  `wmsync`, `wcut`, `wpress` and `whostile`).
+
 ## 6. Tests
 
 | What | Where |
