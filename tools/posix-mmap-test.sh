@@ -209,6 +209,8 @@ case_spawn() {
     want spawn 1 "posixtest: spawn-data: /data/pt-prog: started, exited 7" "$run"
     # A forked child's execve of it: our SIGTERM forwarded, its exit 9 the child's.
     want spawn 1 "posixtest: spawn-data: /data/pt-prog fork-exec: wait status 0x900" "$run"
+    # Its descriptors, asked of the waiting child, are the program's (PR).
+    want spawn 1 "posixtest: spawn-data: /data/pt-prog fork-exec fds: PASS" "$run"
     want spawn 1 "^a-s=0" "$run"
     # With a writable shared mapping of the file alive it is ETXTBSY, to a
     # spawn (the descriptor open, then closed) and a forked child's execve;

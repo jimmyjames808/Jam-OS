@@ -62,8 +62,7 @@ ProcessUtilTest.LaunchProcess
 [posix] a handler run at a call's boundary (a raise: abort(), a kill of ourselves) gets zeros for the registers in its ucontext (signal.c's run_handler), where Linux gives those of the call: the CHECK's abort() handler reads REG_RIP 0 and sends it as the crash address
 LoggingTest.CheckCausesDistinctBreakpoints
 
-[proc] another process's /proc/<pid>/fd and /proc/<pid>/stat are ENOSYS (the ENOSYS log: "path /proc/38/fd", "path /proc/30/stat"). MeasureChildCpuUsage would fail even with them: its busy child is a forked child's execve of base_unittests, so the pid it watches waits while the program runs as another (spawn, wait, exit)
-ProcessMetricsTest.GetChildOpenFdCount
+[launch] a forked child's execve of a program on /data is spawn, wait and exit (FORK-PLAN section 2, way (a); FX ends it by exec in place): the pid the test watches is the waiting stub's, so /proc/<pid>/stat is the stub's CPU time (about none), not the busy program's. Its /proc/<pid>/fd is asked of the program since PR (GetChildOpenFdCount passes)
 SystemMetricsTest.MeasureChildCpuUsage
 
 [posix] mincore (CBF2b) answers from the kernel's count of present pages in each mapping: exact for a mapping with all or none of its pages present, a guess between (the first resident pages of the mapping), so a test that asks about one page of a part-resident mapping fails (CheckPageInCore says false for a page that is there; the heap profiler's resident_total reads 0). 12 of the 21 pass (the other Purge* tests, ProcessMemoryDumpTest.CountResidentBytes*). Needs the per-page kernel query: CR-PLAN, "CBF2b notes", decision 1
