@@ -104,7 +104,7 @@ OK, GONE, RANGE, BAD = 0, 1, 2, 3
 CHUNK_MAX = 1400
 REQ = struct.Struct("<IBBBBIIHH")           # 20 bytes
 REP = struct.Struct("<IBBBBIIIHH")          # 24 bytes, then the data
-FILE_MAX = 32 << 20                         # <update.h> UPDATE_FILE_MAX
+FILE_MAX = 64 << 20                        # <update.h> UPDATE_FILE_MAX
 MENU_MAX = 64 << 10                         # <update.h> UPDATE_MENU_MAX
 MANIFEST_MAX = 1024
 FORMAT_MIN = FORMAT_MAX = 2                 # the manifest formats made here (<update.h>)
