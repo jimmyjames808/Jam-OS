@@ -116,6 +116,56 @@ Notes (no change needed):
 
 ## Fixes
 
+Each its own commit with a test that fails without it; every new test
+was run on the sources before the fixes (the tests kept, the fixes taken
+out) and failed there, as the last column says.
+
+| # | The fix | Its test | Without the fix |
+|---|---|---|---|
+| 1 | The rename's held reach checks are in the state as well (`struct xf_watches`' `moves`, `XF_STATE_LAYOUT` 6), cleared by the commit's `ev_settle`; after `finish`, adopt.c's `watch_moves_again` runs them when the request was answered from the journal (`SVCSTATE_RESEND`), and drops them when it ran again (it made its own) or crashed twice (the check may be what crashes). | utest `extfs_restart_reach` | the subview's watcher read `IN_Q_OVERFLOW` and nothing else: the watch stayed on |
+| 2 | libc: once a take empties a channel (`more` 0), every wd removed before that take (the description's lock is held across both) that its `IN_IGNORED` didn't end ends with an `IN_IGNORED` of libc's (`lost_locked`). A watch that ended unseen and is never removed still holds its wd until its id comes back; Chromium removes the watches it stops using. | posixtest inotify `lost_ignored` | 917 records, the overflow last, no `IN_IGNORED` for either wd |
+| 3 | A judged watch the check can't place counts as out of reach and ends; a target directory that can't be placed judges every narrower channel. | utest `extfs_watch_deep` | the watcher read `IN_MODIFY` and `IN_CLOSE_WRITE` of `f` from outside its view |
+| 4 | fsops.c's rename passes the old directory to `watch_moved`. A subview's channel is judged only when the old directory is its root or under it and the new one isn't; each watch walks up from its directory (`where`) to the moved inode (judged, its chain the walk's part and the target's), the channel's root or a directory found not under the moved inode in this check (kept in a 4,096-entry set: shared paths are read once); 16,384 reads a channel, past which its watches still to judge end (as 3). The per-channel root chains are gone. | utest `extfs_watch_cost` | 8 renames elsewhere took 11.1 s with the 256 deep watches against 0.43 ms without |
+
+With the fixes: 8 unrelated renames 0.27 to 0.41 ms with and without the
+watches, a directory moved out of the subview 6 to 8 ms (the deep path
+read once); `extfs_watch_deep`'s 2,100 requests in 0.2 s (the init run).
+
+Not fixed (Low, said why in the table): 6 to 13.
+
 ## Design questions
 
+1. **The volume's caps are every process's (finding 5).** One process
+   with four descriptors holds all of a volume's 4,096 watches; four
+   processes hold its 32 channels. Recommendation: a watch cap per process
+   in the library, 1,024 across its channels on a volume (Linux's
+   `max_user_watches` is a user's across all its descriptors, so this is
+   nearer it than today's per-descriptor count, and `/proc` can say the
+   same number), and the volume's 4,096 raised to 8,192 (the state has
+   the room: a watch is 24 bytes plus 8 for its directory). Four processes
+   could still fill a volume; a cap per job (a sandbox's renderers share
+   one) would close that, later.
+2. **A dead service given up on rings no bell (finding 7).** IE2 rings
+   every bell extfs ends itself; when volumes gives up a crashing extfs,
+   its keeper closes the kept channels and nobody rings. Recommendation:
+   a keeper slot flag "signal handle 1 with these bits when you drop it"
+   (`abi/idl/keepch.idl`'s `put`, a small change the keeper honours in `keeper_release` and
+   at a refused restore), which extfs sets for `XF_KEEP_WATCH` slots with
+   `FSWATCH_BELL`; until then a blocked `read` sees it within a second and
+   `poll` at its next wake.
+
 ## Tests
+
+New: utest `extfs_watch_deep`, `extfs_watch_cost`, `extfs_restart_reach`
+(`user/tests/utest/extfs_watch.c`, in the init run and `extfs-svc`: 35
+cases), posixtest inotify's `lost_ignored`.
+
+| Batch | Runs | Result |
+|---|---|---|
+| 18215338 (the fixes) | PC `make check`; the full init run (`tools/init-test.sh`); `tools/extfs-svc-test.sh` (35 passed, every disk e2fsck clean); `posix-inotify.txt`; `tools/layout-test.sh drive` | 5 of 5 PASS |
+| 18222237, 18222314 (the fixes taken out, the tests kept) | `extfs_watch_deep`, `extfs_watch_cost`, `extfs_restart_reach`, posixtest inotify, each alone | each FAILED as the table above says |
+
+No kernel change, so no ktest. The plan's other hostile runs (a rename
+storm with extfs killed every 200 ms, 8 threads closing and renaming
+while another reads, protocol abuse against extfs itself rather than
+the library's fake) were not written: see the report's open items.
