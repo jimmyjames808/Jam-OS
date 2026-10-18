@@ -772,7 +772,7 @@ bool t_xdg_decoration_bad(void)
     struct vt t;
     CHECK(ct_start(&p, W, H));
     CHECK(vc_open(&p, &good, 6));   /* connected all along: it must not notice */
-    uint64_t base = ct_handles(&p);
+    uint64_t base = ct_handles_settled(&p, &good.k);
     for (unsigned i = 0; i < NDECO_BAD; i++) {
         unsigned named;
         CHECK(vc_open(&p, &x, 1));

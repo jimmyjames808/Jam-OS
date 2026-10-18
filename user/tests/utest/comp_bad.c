@@ -93,7 +93,7 @@ struct held {
 
 static struct held held_now(const struct ct_comp *p)
 {
-    return p->job ? (struct held){ ct_handles(p), ct_msg_bytes(p) } : (struct held){ 0, 0 };
+    return p->job ? (struct held){ ct_handles_settled(p, NULL), ct_msg_bytes(p) } : (struct held){ 0, 0 };
 }
 
 static bool held_back(const struct ct_comp *p, struct held base)
@@ -554,7 +554,7 @@ bool t_comp_connections(void)
     CHECK(ct_start(&p, 320, 200));
     CHECK(ct_open(&p, &good));
     CHECK(ct_bind_all(&good));
-    uint64_t base = ct_handles(&p), msg = ct_msg_bytes(&p);
+    uint64_t base = ct_handles_settled(&p, NULL), msg = ct_msg_bytes(&p);
     for (unsigned i = 0; i < 62; i++)
         CHECK_ST(svc_connect_within(p.svc, CT_WAIT, &ch[i]), OK);
     CHECK(ct_open(&p, &k));   /* the 64th, with good */

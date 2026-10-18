@@ -690,7 +690,7 @@ bool t_xdg_errors(void)
     struct ct_comp p;
     CHECK(ct_start(&p, W, H));
     CHECK(xc_open(&p, &good));   /* connected all along: it must not notice */
-    uint64_t base = ct_handles(&p);
+    uint64_t base = ct_handles_settled(&p, &good.k);
     for (unsigned i = 0; i < NBAD; i++) {
         struct bad b = { 0 };
         CHECK(xc_open(&p, &x));

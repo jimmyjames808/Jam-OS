@@ -1402,8 +1402,20 @@ int main(int argc, char **argv)
      * split them with these two, and a selection says how many of the
      * table's tests it runs, in the RESULTS box, so the parts can be
      * checked to add up to the whole. */
-    const char *only = argc == 3 && !strcmp(argv[1], "only") ? argv[2] : NULL;
-    const char *except = argc == 3 && !strcmp(argv[1], "except") ? argv[2] : NULL;
+    const bool sel = (argc == 3 || argc == 4) && (!strcmp(argv[1], "only") ||
+                                                   !strcmp(argv[1], "except"));
+    const char *only = sel && !strcmp(argv[1], "only") ? argv[2] : NULL;
+    const char *except = sel && !only ? argv[2] : NULL;
+    /* A fourth word is a count: the selection runs that many times over
+     * (a test that fails once in a hundred is hunted with it). */
+    unsigned rounds = 1;
+    if (sel && argc == 4) {
+        rounds = 0;
+        for (const char *c = argv[3]; *c >= '0' && *c <= '9' && rounds < 100000; c++)
+            rounds = rounds * 10 + (unsigned)(*c - '0');
+        if (!rounds)
+            rounds = 1;
+    }
     utest_only = only;
     if (argc >= 2 && !only && !except)
         return child_main(argc, argv);
@@ -1415,22 +1427,25 @@ int main(int argc, char **argv)
     if (only || except) {
         for (unsigned i = 0; i < ntests; i++)
             n += only ? named(tests[i].name, only) : !named(tests[i].name, except);
-        len = snprintf(line, sizeof(line), "utest: running %u of %u tests (%s)", n, ntests,
-                       only ? "only" : "except");
+        len = snprintf(line, sizeof(line), "utest: running %u of %u tests (%s)", n * rounds,
+                       ntests, only ? "only" : "except");
         jam_debug_report(line, (uint64_t)len);
         n = 0;
     }
-    for (unsigned i = 0; i < ntests; i++) {
-        if ((only && !named(tests[i].name, only)) || (except && named(tests[i].name, except)))
-            continue;
-        n++;
-        utest_cur = tests[i].name;
-        uint64_t t0 = now();
-        if (tests[i].fn()) {
-            passed++;
-            printf("utest: %s ok (%lu ms)\n", utest_cur, (unsigned long)((now() - t0) / NS_PER_MS));
-        } else if (nfailed < sizeof(failed) / sizeof(failed[0])) {
-            failed[nfailed++] = i;
+    for (unsigned round = 0; round < rounds; round++) {
+        for (unsigned i = 0; i < ntests; i++) {
+            if ((only && !named(tests[i].name, only)) || (except && named(tests[i].name, except)))
+                continue;
+            n++;
+            utest_cur = tests[i].name;
+            uint64_t t0 = now();
+            if (tests[i].fn()) {
+                passed++;
+                printf("utest: %s ok (%lu ms)\n", utest_cur,
+                       (unsigned long)((now() - t0) / NS_PER_MS));
+            } else if (nfailed < sizeof(failed) / sizeof(failed[0])) {
+                failed[nfailed++] = i;
+            }
         }
     }
     /* The names of the failed tests, in the RESULTS box: a run's printed lines (the "FAILED at

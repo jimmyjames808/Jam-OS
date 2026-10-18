@@ -454,8 +454,14 @@ KTEST(vmo_big_child)
 /* A child of a sparse reservation (V8's cage: a page in each GiB of a TiB)
  * walks only the tables that exist: one look past a run of missing leaves,
  * as decommit does, not a lock hold per 2 MiB under each mid table (512 K
- * of them here: CR1 finding 5). Timed, on an idle machine only. */
-KTEST(vmo_big_child_sparse)
+ * of them here: CR1 finding 5). Timed, on an idle machine only: the best
+ * of up to SPARSE_TRIES, because a host that does not run the vCPU for a
+ * few ms (a PC with a dozen QEMUs on it) makes any one try slow, while the
+ * regression is slow in every try (18 ms; the quickest try here is ~1-2).
+ * stall_us: a host stall made up (a busy wait inside the first try's timing),
+ * to show that the retry is what saves a stalled run; 0: none. */
+#define SPARSE_TRIES 10
+static void child_sparse(uint64_t stall_us)
 {
     struct vmo *p;
     KT_EQ(vmo_create(TIB, 0, &p), OK);
@@ -463,10 +469,24 @@ KTEST(vmo_big_child_sparse)
         KT_EQ(poke(p, g * (GIB / PG), 0x5000 + g), OK);
     struct job *j = kt_fresh_job();
     struct vmo *c;
-    uint64_t t0 = uptime_ns();
-    KT_EQ(vmo_create_child(j, p, SNAP, 0, TIB, &c), OK);
-    uint64_t ns = uptime_ns() - t0;
-    kprintf("vmo_big: a 1 TiB child of a page in each GiB made in %lu us\n", (uint64_t)(ns / NS_PER_US));
+    uint64_t ns = ~0ull, slowest = 0;
+    unsigned tries = 0;
+    for (;;) {
+        uint64_t t0 = uptime_ns();
+        if (!tries && stall_us)
+            udelay(stall_us);
+        KT_EQ(vmo_create_child(j, p, SNAP, 0, TIB, &c), OK);
+        uint64_t took = uptime_ns() - t0;
+        tries++;
+        slowest = took > slowest ? took : slowest;
+        ns = took < ns ? took : ns;
+        if (ns < 8 * NS_PER_MS || tries == SPARSE_TRIES)
+            break;
+        put(c);   /* too slow: again, from nothing */
+        kt_job_is_empty(j);
+    }
+    kprintf("vmo_big: a 1 TiB child of a page in each GiB made in %lu us (best of %u, slowest %lu us)\n",
+            (uint64_t)(ns / NS_PER_US), tries, (uint64_t)(slowest / NS_PER_US));
     KT_EQ(vmo_committed(c), (TIB / GIB) * PG);
     /* each GiB's page, mid and leaf; the top table and uppers 0 and 1 */
     KT_EQ(pages_of(j), 3 * (TIB / GIB) + 3);
@@ -477,10 +497,24 @@ KTEST(vmo_big_child_sparse)
     /* 2,048 lock holds and the child's 3,075 tables and pages: 2 ms on the
      * PC's QEMU; a hold per 2 MiB, half a million more: 18 ms there. */
     KT_IDLE_ASSERT(ns < 8 * NS_PER_MS);
+    if (stall_us >= 8000)
+        KT_ASSERT(tries >= 2);   /* the stalled try was given up on, not counted */
     put(c);
     kt_job_is_empty(j);
     job_unref(j);
     put(p);
+}
+
+KTEST(vmo_big_child_sparse)
+{
+    child_sparse(0);
+}
+
+/* The same with the host stalling the first try for 12 ms, as a loaded PC
+ * does now and then: the test must pass by trying again. */
+KTEST(vmo_big_child_sparse_survives_a_stall)
+{
+    child_sparse(12000);
 }
 
 /* ---- the kinds that stay within 64 GiB ----------------------------------- */

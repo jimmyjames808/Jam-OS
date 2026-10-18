@@ -165,12 +165,17 @@ struct iw_late {
     bool           stop;      /* the hog may go (RELEASE) */
     status_t       first, second;
     bool           latched;   /* the interrupt was still there after the first wait */
+    uint64_t       looked_ns; /* when the waiter looked, after its first wait */
+    uint64_t       hog_ns;    /* when the hog first ran */
+    unsigned       waiter_cpu, hog_cpu;
 };
 
 static void late_waiter(void *arg)
 {
     struct iw_late *x = arg;
     x->first = wait_kind(x->w, x->k, x->deadline);
+    x->looked_ns = uptime_ns();
+    x->waiter_cpu = kt_cur_cpu();
     x->latched = thread_interrupt_pending(current_thread());
     x->second = wait_kind(x->w, x->k, uptime_ns() + 5 * NS_PER_S);
 }
@@ -178,6 +183,8 @@ static void late_waiter(void *arg)
 static void late_hog(void *arg)
 {
     struct iw_late *x = arg;
+    x->hog_ns = uptime_ns();
+    x->hog_cpu = kt_cur_cpu();
     while (!__atomic_load_n(&x->stop, __ATOMIC_ACQUIRE))
         __asm__ volatile("pause");
 }
@@ -185,33 +192,112 @@ static void late_hog(void *arg)
 /* A wait whose deadline passed while it slept, interrupted before it got
  * its CPU back (a hog of a higher priority holds it), ends with its
  * timeout, and the interrupt waits, latched, for the next wait: the
- * deadline is the wait's own end, as a met condition is. */
-KTEST(intr_deadline_comes_first)
+ * deadline is the wait's own end, as a met condition is.
+ *
+ * Two things in the set-up are the machine's to give, and a host that does
+ * not run the vCPUs (a PC with a dozen QEMUs on it, or the soak's load on
+ * top) takes them away:
+ *   - the waiter must be blocked and the hog made before the deadline
+ *     passes (20 ms; else the waiter just times out with nothing left to
+ *     race), and
+ *   - this thread must send the interrupt while the hog still holds the
+ *     waiter's CPU (else the waiter, starved for a second, is boosted past
+ *     the hog and looks before the interrupt is there).
+ * The test checks both of its own set-up (the hog made before the
+ * deadline; the waiter looked after the interrupt was sent) and, if either
+ * failed, does the kind again with twice the lead, up to 640 ms. The
+ * kernel's behaviour is checked only on an attempt whose set-up held: the
+ * waiter looked after the interrupt was sent, and must find it latched.
+ * The three threads run above every worker of the soak's load (8 to 24):
+ * with them at the default priority the load kept this thread off its CPU
+ * for ~2 s at a time, the starvation boost then gave the waiter its turn
+ * first, and it looked before the interrupt was there (about one wait
+ * kind in six in `ktest=intr_deadline load`).
+ * stall_us: a stall made up (a busy wait between the waiter's block and the
+ * hog's making, in each kind's first try), to show that the retry is what
+ * saves a stalled run; 0: none. */
+#define IW_ME_PRIO     28   /* the interrupter: above the hog */
+#define IW_HOG_PRIO    26   /* above the waiter, which the hog must hold off */
+#define IW_WAITER_PRIO 25   /* all three above every worker of the soak's load (8 to 24) */
+#define IW_ATTEMPTS  12   /* tries a kind may take (the lead doubles to 640 ms) */
+static void deadline_first(uint64_t stall_us)
 {
     if (cpu_count < 2)
         return;   /* the waiter and its hog need a CPU of their own */
+    unsigned again = 0;
     struct iw w;
     iw_make(&w);
     cpumask_t m;
-    cpumask_one(&m, kt_cur_cpu() == 0 ? 1 : 0);
+    const unsigned want_cpu = kt_cur_cpu() == 0 ? 1 : 0;
+    cpumask_one(&m, want_cpu);
+    /* This thread above the hog, the hog above everything the soak's load
+     * runs (its workers are at 8 to 24): the load can't keep the thread
+     * that sends the interrupt off its CPU for the seconds it takes the
+     * starvation boost to give it a turn. */
+    thread_set_priority(current_thread(), IW_ME_PRIO);
     for (unsigned k = 0; k < W_KINDS; k++) {
-        struct iw_late x = { .w = &w, .k = k, .deadline = uptime_ns() + 20 * NS_PER_MS };
-        struct thread *t = thread_create_on("kt-intr-late", late_waiter, &x, PRIO_DEFAULT, &m);
-        while (thread_state(t) != T_BLOCKED && uptime_ns() < x.deadline)
-            thread_sleep_ms(1);   /* in its wait */
-        struct thread *hog = thread_create_on("kt-intr-hog", late_hog, &x, PRIO_DEFAULT + 4, &m);
-        while (uptime_ns() < x.deadline + 2 * NS_PER_MS)
-            thread_sleep_ms(1);
-        KT_IDLE_EQ(thread_state(t), T_READY);   /* woken at its deadline, not run */
-        thread_interrupt(t);
-        __atomic_store_n(&x.stop, true, __ATOMIC_RELEASE);
-        thread_join(hog);
-        thread_join(t);
-        KT_EQ(x.first, timed_out(k));
-        KT_ASSERT(x.latched);
-        KT_EQ(x.second, ERR_INTERRUPTED);
+        bool good = false;
+        uint64_t lead = 20 * NS_PER_MS;
+        for (unsigned attempt = 0; !good && attempt < IW_ATTEMPTS;
+             attempt++, lead = lead < 640 * NS_PER_MS ? lead * 2 : lead) {
+            struct iw_late x = { .w = &w, .k = k, .deadline = uptime_ns() + lead };
+            struct thread *t = thread_create_on("kt-intr-late", late_waiter, &x, IW_WAITER_PRIO, &m);
+            while (thread_state(t) != T_BLOCKED && uptime_ns() < x.deadline)
+                thread_sleep_ms(1);   /* in its wait */
+            bool blocked = thread_state(t) == T_BLOCKED;
+            if (stall_us && lead == 20 * NS_PER_MS)
+                udelay(stall_us);
+            struct thread *hog = thread_create_on("kt-intr-hog", late_hog, &x, IW_HOG_PRIO, &m);
+            bool raced = blocked && uptime_ns() < x.deadline;   /* the hog was there before the deadline */
+            while (raced && uptime_ns() < x.deadline + 2 * NS_PER_MS)
+                thread_sleep_ms(1);
+            enum thread_state before = thread_state(t);
+            thread_interrupt(t);
+            uint64_t sent_ns = uptime_ns();
+            __atomic_store_n(&x.stop, true, __ATOMIC_RELEASE);
+            while (!raced && thread_state(t) != T_DEAD) {
+                thread_interrupt(t);   /* it may be in its second wait already: until it ends */
+                thread_sleep_ms(1);
+            }
+            thread_join(hog);
+            thread_join(t);
+            good = raced && x.looked_ns > sent_ns;
+            if (good) {
+                KT_IDLE_EQ(before, T_READY);   /* woken at its deadline, not run */
+                KT_EQ(x.first, timed_out(k));
+                KT_ASSERT(x.latched);
+                KT_EQ(x.second, ERR_INTERRUPTED);
+            } else {
+                again++;
+                kprintf("intr_deadline: kind %u: %s with a lead of %lu ms: again (cpu %u wanted; "
+                        "waiter on %u looked %ld us, hog on %u ran %ld us, the interrupt went %ld us "
+                        "after the deadline)\n", k,
+                        raced ? "the waiter was past its wait before the interrupt was sent"
+                              : "the set-up took longer",
+                        (unsigned long)(lead / NS_PER_MS), want_cpu,
+                        x.waiter_cpu, (long)(((int64_t)x.looked_ns - (int64_t)x.deadline) / 1000),
+                        x.hog_cpu, (long)(((int64_t)x.hog_ns - (int64_t)x.deadline) / 1000),
+                        (long)(((int64_t)sent_ns - (int64_t)x.deadline) / 1000));
+            }
+        }
+        KT_ASSERT(good);
     }
+    thread_set_priority(current_thread(), PRIO_DEFAULT);
+    if (stall_us >= 20000)
+        KT_ASSERT(again >= W_KINDS);   /* every kind's first try was spoilt, and redone */
     iw_drop(&w);
+}
+
+KTEST(intr_deadline_comes_first)
+{
+    deadline_first(0);
+}
+
+/* The same with the set-up stalled for 30 ms in each kind's first try, as a
+ * loaded PC does now and then: the test must pass by doing the kind again. */
+KTEST(intr_deadline_survives_a_stall)
+{
+    deadline_first(30000);
 }
 
 /* ---- the storm ------------------------------------------------------------------ */

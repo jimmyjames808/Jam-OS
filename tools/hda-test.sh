@@ -105,23 +105,34 @@ counts="$counts $(echo "$trace" | tail -3 | head -1)"
 # and at least one mute (the DAC's output amp).
 [ "$pinctl" -ge 3 ] && [ "$mutes" -ge 3 ] || { echo "hda-shell: too few path SETs ($counts)"; ok=0; }
 
-# The whole init run in one boot: qemu-test.sh's own cap for it (300 s), not
-# 150 s, which the run outgrew with the signal cases (as usb-test did).
-QEMU_TIMEOUT=${QEMU_TIMEOUT:-300} QEMU_EXTRA="$devs" \
-    tools/qemu-test.sh "$out" hda-init init > "$out/hda-init.out" 2>&1 || true
+# The whole init run, in its parts (tools/init-test.sh: a boot for each part,
+# all at once, about 50 s), each boot with these devices. One boot of the
+# whole run took 140-170 s on the PC, and a loaded PC stretched that past
+# the 300 s cap (a cap does not make a run faster; shorter boots do).
+# Every part ends as the whole run did: devmgr stops each driver, and each
+# hda must end cleanly with the root job clean.
+QEMU_EXTRA="$devs" tools/init-test.sh "$out" hda-init > "$out/hda-init.out" 2>&1 || true
+nparts=0
+for plog in "$out"/hda-init-[0-9]*.log; do
+    [ -f "$plog" ] || continue
+    nparts=$((nparts + 1))
+    pn=$(basename "$plog" .log)
+    n=$(grep -c "\[hda\] stopped: controller back in reset (client closed)" "$plog" || true)
+    [ "$n" = 2 ] || { echo "$pn: $n clean stop(s), want 2"; ok=0; }
+    if grep -E "drv/hda (did not end cleanly|crashed|was killed)|process \"hda\" killed" "$plog"; then
+        echo "$pn: the hda driver did not end cleanly"
+        ok=0
+    fi
+    grep -q "root job afterwards: .*(clean)" "$plog" || { echo "$pn: init's root job not clean"; ok=0; }
+done
+[ "$nparts" -ge 1 ] || { echo "hda-init: no part ran"; ok=0; }
 log="$out/hda-init.log"
-n=$(grep -c "\[hda\] stopped: controller back in reset (client closed)" "$log" || true)
-[ "$n" = 2 ] || { echo "hda-init: $n clean stop(s), want 2"; ok=0; }
-if grep -E "drv/hda (did not end cleanly|crashed|was killed)|process \"hda\" killed" "$log"; then
-    echo "hda-init: the hda driver did not end cleanly"
-    ok=0
-fi
-grep -q "root job afterwards: .*(clean)" "$log" || { echo "hda-init: init's root job not clean"; ok=0; }
-if grep -q "run complete: no problems" "$log"; then
-    echo "hda-init: run complete: no problems"
+if grep -q "run complete: no problems" "$log" 2> /dev/null; then
+    echo "hda-init: run complete: no problems ($nparts parts)"
 else
     echo "hda-init: the run had problems:"
-    grep "devmgr: .* did not end cleanly" "$log" | head -3
+    grep "devmgr: .* did not end cleanly" "$out"/hda-init-[0-9]*.log 2> /dev/null | head -3
+    tail -5 "$out/hda-init.out"
     ok=0
 fi
 
