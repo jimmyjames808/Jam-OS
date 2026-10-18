@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """The test stick for base_unittests (docs/CR-PLAN.md, track CB2;
-tools/cr-test.sh's `base` case calls it).
+tools/cr-test.sh's `base` case calls it), and with other lists for
+content_shell (track CB4, the `shell-wl` case).
 
-    base-stick.py [--data-mib N] <image> <stick> <stage> <source> <out>
+    base-stick.py [--data-mib N] [--programs a,b] [--program-dir DIR]
+                  [--out-files a,b] [--source-files a,b] [--add DIR]
+                  <image> <stick> <stage> <source> <out>
 
 <image> is the boot image (build/jamos.img). <stick> is written: a copy of
 it with its data partition grown to N MiB (default 6144; the image's 64 MiB
@@ -39,6 +42,14 @@ The files:
     /data/cr/tmp/                       TMPDIR for the run (no /tmp yet)
     /data/etc/allow                     the programs' approval lines
     /data/etc/allow.d/<sha-256>         and their page tables
+
+The lists are base_unittests' unless the options say others (cr-test.sh's
+`shell-wl` case: content_shell, its pak and its fonts): --programs, the
+programs (from <stage>/lib/chromium, or from --program-dir, e.g. <out>
+itself, where a relink leaves them), each approved by its
+ports/chromium/wants list; --out-files and --source-files, what goes under
+/data/cr/out/jamos and /data/cr ("" for none); --add DIR, a tree put under
+/data/cr as it is (fonts, a fonts.conf).
 
 Runs on the build host (Python 3.12 there; mtools). Prints one line."""
 import argparse
@@ -159,12 +170,20 @@ def make_stick(image, stick, mib, fs):
 def main(argv):
     ap = argparse.ArgumentParser(prog="base-stick.py", description=__doc__.split("\n\n")[0])
     ap.add_argument("--data-mib", type=int, default=6144)
+    ap.add_argument("--programs", default=",".join(PROGRAMS))
+    ap.add_argument("--program-dir")
+    ap.add_argument("--out-files", default=",".join(FROM_OUT))
+    ap.add_argument("--source-files", default=",".join(FROM_SOURCE))
+    ap.add_argument("--add")
     ap.add_argument("image")
     ap.add_argument("stick")
     ap.add_argument("stage")
     ap.add_argument("source")
     ap.add_argument("out")
     args = ap.parse_args(argv)
+    programs, from_out, from_source = (
+        [w for w in a.split(",") if w] for a in (args.programs, args.out_files, args.source_files))
+    program_dir = args.program_dir or os.path.join(args.stage, "lib", "chromium")
     pre = load_preinstall()
     work = tempfile.mkdtemp(prefix="base-stick.")
     try:
@@ -180,8 +199,8 @@ def main(argv):
         os.makedirs(os.path.join(cr, "tmp"))
         open(os.path.join(cr, "tmp", ".keep"), "w").close()
         allow = []
-        for name in PROGRAMS:
-            src = os.path.join(args.stage, "lib", "chromium", name)
+        for name in programs:
+            src = os.path.join(program_dir, name)
             if not os.path.isfile(src):
                 raise Error("%s: not built (tools/cr/build.sh start)" % src)
             dst = os.path.join(cr, "out", "jamos", name)
@@ -195,10 +214,10 @@ def main(argv):
             allow.append("%s\t/data/cr/out/jamos/%s\t%s" % (digest, name, pre.wants_text(lines)))
         with open(os.path.join(etc, "allow"), "w") as f:
             f.write(pre.ALLOW_HEAD + "".join(a + "\n" for a in allow))
-        for rel in FROM_SOURCE + FROM_OUT:
-            top = args.out if rel in FROM_OUT else args.source
+        for rel in from_source + from_out:
+            top = args.out if rel in from_out else args.source
             src = os.path.join(top, rel)
-            dst = os.path.join(cr, "out", "jamos", rel) if rel in FROM_OUT else os.path.join(cr, rel)
+            dst = os.path.join(cr, "out", "jamos", rel) if rel in from_out else os.path.join(cr, rel)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             if os.path.isdir(src):
                 shutil.copytree(src, dst, symlinks=False, ignore_dangling_symlinks=True)
@@ -206,6 +225,8 @@ def main(argv):
                 shutil.copyfile(src, dst)
             else:
                 raise Error("%s: missing" % src)
+        if args.add:
+            shutil.copytree(args.add, cr, dirs_exist_ok=True)
         part = make_stick(args.image, args.stick, args.data_mib, fs)
         if fs == "ext":
             # one import of the tree (jamext makes the directories; a program's
