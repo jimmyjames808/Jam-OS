@@ -79,11 +79,16 @@ static bool is_shell_chord(const struct input_key_event *ev)
            (ev->usage == U_C || ev->codepoint == 'c' || ev->codepoint == 3);
 }
 
+/* The last send_below met a full channel (the key was dropped), and the
+ * last focus_key's key did: focus_key_try tells its caller. */
+static bool last_full, key_refused;
+
 /* The key to the newest key channel below `from` with a level <= max
  * (dropping the ones whose client is gone on the way; ttys are passed
  * over). *at: its index; false if none took it. */
 static bool send_below(const struct input_key_event *ev, unsigned from, uint8_t max, unsigned *at)
 {
+    last_full = false;
     for (unsigned i = from; i-- > 0;) {
         if (focus_level[i] > max || focus_tty[i] >= 0)
             continue;
@@ -93,6 +98,7 @@ static bool send_below(const struct input_key_event *ev, unsigned from, uint8_t 
             continue;
         }
         *at = i;
+        last_full = st == ERR_SHOULD_WAIT;
         return st == OK;   /* else full (the client isn't reading): dropped */
     }
     return false;
@@ -107,7 +113,9 @@ bool focus_to_shell(const struct input_key_event *ev, unsigned below)
 static void send_key(const struct input_key_event *ev)
 {
     unsigned at = 0;
-    if (!send_below(ev, nfocus, L_PROGRAM, &at) && !nfocus) {
+    bool took = send_below(ev, nfocus, L_PROGRAM, &at);
+    key_refused = last_full;
+    if (!took && !nfocus) {
         if (npending < PENDING_KEYS)
             pending[npending++] = *ev;
         return;
@@ -133,6 +141,13 @@ void focus_key(const struct input_key_event *ev)
         ttys_key((unsigned)tty, ev);
     else
         send_key(ev);
+}
+
+bool focus_key_try(const struct input_key_event *ev)
+{
+    key_refused = false;
+    focus_key(ev);
+    return !key_refused;
 }
 
 status_t focus_push(handle_t h, struct client *c, int tty)

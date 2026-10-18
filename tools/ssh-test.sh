@@ -9,7 +9,9 @@
 #   ssh        the first boot (tools/shell-tests/ssh.txt): init makes the host
 #              key and starts sshd; sshcheck.py logs in for a command and
 #              its exit status, an interactive session (TERM, the size, a
-#              window change, Ctrl+C, `exit 7`), checks the host key the
+#              window change, Ctrl+C, `exit 7`), 80 typed lines (2 KB)
+#              piped into `ssh -tt` at once, every one run (typed-ahead
+#              input is waited for, never cut), checks the host key the
 #              client saw against the log, has a wrong key, a password and
 #              another user refused, 8 sessions at once and a 9th refused, 4
 #              sessions' output at once, a session killed mid-output, then

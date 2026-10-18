@@ -18,8 +18,14 @@
  *     write, so an ESC that has waited ESC_GAP_NS alone is the Escape key.
  *
  * A key the focus can't take (its channel is full: the client isn't
- * reading) is dropped, as in the window; so a paste of more than the
- * channel's 1024 keys in one burst loses its tail.
+ * reading yet) is not dropped: the connection waits. The keys it refused
+ * are kept (retry), the rest of the message is left unread in inbuf, and
+ * the master isn't read again until the focus has taken them (tried every
+ * RETRY_NS: a timer, as the output side's), so the remote terminal's
+ * writes back up behind a client that is busy and nothing typed ahead is
+ * lost (a script piped into `ssh -tt`: sshd's write to the master waits,
+ * and so does the ssh client). The window's keys are dropped when the
+ * channel is full, as before.
  *
  * While a tty client (console.open_tty) has the focus the bytes are not
  * keys: they go to its line discipline as they came (tty.c), paste
@@ -33,6 +39,8 @@
 #define IN_NS      (20 * NS_PER_MS)     /* ... or this long */
 #define ESC_GAP_NS (50 * NS_PER_MS)     /* a lone ESC this old is the Escape key */
 #define U_ESC      0x29                 /* HID usage: Escape */
+#define RETRY_NS   (5 * NS_PER_MS)      /* a full key channel is tried again this often */
+#define RETRY_KEYS 16                   /* keys one byte (or a marker) can leave behind */
 
 static handle_t master;
 static uint8_t *inbuf;                  /* one message: CHANNEL_MAX_BYTES */
@@ -42,6 +50,11 @@ static uint8_t held[6];                 /* bytes that may be the start of a mark
 static unsigned nheld;
 static bool more;                       /* the turn's budget ended with messages left */
 static uint64_t esc_at;                 /* when a lone ESC becomes the Escape key (0: none) */
+static struct input_key_event retry[RETRY_KEYS];   /* keys the focus refused, oldest first */
+static unsigned nretry;
+static unsigned pend_at, pend_n;        /* inbuf[pend_at, pend_n): bytes of the last message not typed yet */
+static bool blocked;                    /* the focus's key channel was full: tried again at retry_at */
+static uint64_t retry_at;
 
 bool conn_in_init(handle_t m)
 {
@@ -53,7 +66,10 @@ bool conn_in_init(handle_t m)
 static void type(uint16_t usage, uint32_t cp)
 {
     struct input_key_event ev = { usage, INPUT_KEY_DOWN, 0, cp };
-    focus_key(&ev);
+    if (!nretry && focus_key_try(&ev))
+        return;
+    if (nretry < RETRY_KEYS)   /* behind the ones refused before it: in order */
+        retry[nretry++] = ev;
 }
 
 /* A byte through termkeys (the paste markers are dealt with before). */
@@ -116,14 +132,49 @@ static void in_byte(uint8_t b)
  * marker): the Escape key if nothing comes. */
 static void arm_escape(void)
 {
-    esc_at = nheld || tk.esc == 1 ? now() + ESC_GAP_NS : 0;
+    /* Not while the rest of a message waits for the focus: the bytes after
+     * an ESC may be in it. */
+    esc_at = !blocked && (nheld || tk.esc == 1) ? now() + ESC_GAP_NS : 0;
+}
+
+/* The keys the focus refused, then the rest of the last message, typed
+ * until the focus's channel is full again: false (and the keys, and the
+ * bytes, are kept). */
+static bool type_pending(void)
+{
+    for (;;) {
+        unsigned i = 0;
+        while (i < nretry && focus_key_try(&retry[i]))
+            i++;
+        if (i) {
+            memmove(retry, retry + i, (nretry - i) * sizeof(retry[0]));
+            nretry -= i;
+        }
+        if (nretry)
+            return false;
+        if (pend_at >= pend_n)
+            return true;
+        in_byte(inbuf[pend_at++]);
+    }
+}
+
+/* Has the terminal gone (the master's peer closed)? A turn that waits for
+ * the focus doesn't read the master, so it would not see it end. */
+static bool master_gone(void)
+{
+    signals_t seen = 0;
+    return jam_object_wait_one(master, SIG_PEER_CLOSED, now(), &seen) == OK &&
+           (seen & SIG_PEER_CLOSED);
 }
 
 status_t conn_in_take(void)
 {
     uint64_t t0 = now();
     more = false;
-    for (unsigned k = 0; k < IN_MSGS; k++) {
+    blocked = !type_pending();   /* what the last turn left, first */
+    if (blocked && master_gone())
+        return ERR_PEER_CLOSED;
+    for (unsigned k = 0; !blocked && k < IN_MSGS; k++) {
         if (k && now() - t0 > IN_NS) {
             more = true;
             break;
@@ -139,24 +190,29 @@ status_t conn_in_take(void)
         for (uint32_t i = 0; i < nh; i++)
             jam_handle_close(hs[i]);   /* the master carries bytes only */
         int tty = focus_top_tty();
-        if (tty >= 0)
+        if (tty >= 0) {
             ttys_type((unsigned)tty, inbuf, n);   /* a POSIX reader: the bytes as they came */
-        for (uint32_t i = 0; tty < 0 && i < n; i++)
-            in_byte(inbuf[i]);
-        more = k == IN_MSGS - 1;
+        } else {
+            pend_at = 0;
+            pend_n = n;
+            blocked = !type_pending();
+        }
+        more = !blocked && k == IN_MSGS - 1;
     }
+    if (blocked)
+        retry_at = now() + RETRY_NS;
     arm_escape();
     return OK;
 }
 
 uint64_t conn_in_deadline(void)
 {
-    return more ? 0 : esc_at ? esc_at : DEADLINE_NEVER;
+    return more ? 0 : blocked ? retry_at : esc_at ? esc_at : DEADLINE_NEVER;
 }
 
 status_t conn_in_idle(void)
 {
-    if (more)
+    if (more || (blocked && now() >= retry_at))
         return conn_in_take();
     if (esc_at && now() >= esc_at) {
         release_held();
