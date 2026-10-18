@@ -2571,9 +2571,14 @@ child's directory. posixtest's `spawn-data` (tools/posix-mmap-test.sh,
 case `spawn`): a forked child's `execve` of `/data/pt-prog` gets the same
 three-moment cycle, which only passes if the answer is the program's.
 
-#### PR base_unittests
-
-(filled in at the end)
+**base_unittests** relinked against this libc (the stage's two programs
+replaced by the relink's, out/jamos: a relink does not refresh the stage).
+`*MetricsTest*` with `CR_BASE_ALL=1` (the five suites, 20 tests): 19 pass,
+`SystemMetricsTest.MeasureChildCpuUsage` fails as listed;
+`ProcessMetricsTest.GetChildOpenFdCount` passes (it failed before with
+`GetOpenFdCount()` = -1, `path /proc/28/fd`). `*Process*` (nine suites,
+ProcessUtilTest and ProcessTest among them, 66 tests): 60 pass, 6 on the
+skip list, 0 failures. `GetChildOpenFdCount` came off the skip list.
 
 ### 2. The address space: huge sparse reservations (the top risk)
 
