@@ -305,8 +305,16 @@ static status_t shared_vmo(uint64_t key, uint64_t fsize, handle_t *v, bool *foun
 {
     status_t st = jam_pager_create_vmo(vol.pager, key, 0, PAGER_VMO_FIND, v);
     *found = st == OK;
-    if (st == ERR_NOT_FOUND)
-        return jam_pager_create_vmo(vol.pager, key, vmo_size(fsize), PAGER_VMO_WRITABLE, v);
+    if (st == ERR_NOT_FOUND) {
+        st = jam_pager_create_vmo(vol.pager, key, vmo_size(fsize), PAGER_VMO_WRITABLE, v);
+        /* The make took over the key's GONE, if one was queued: one that
+         * maps_again kept for serve (a map run again by adopt.c between
+         * the two) is withdrawn too, or serving it would cut the new VMO
+         * off. */
+        if (st == OK && again_has && again_first.kind == PAGER_REQ_GONE && again_first.key == key)
+            again_has = false;
+        return st;
+    }
     if (st == OK) {
         st = jam_pager_op(vol.pager, key, PAGER_OP_SET_SIZE, vmo_size(fsize), 0, 0);
         if (st != OK) {
