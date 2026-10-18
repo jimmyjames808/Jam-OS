@@ -17,7 +17,10 @@
  *     CancelableSyncSocketTest.ShutdownCancelsReceive), poll's 750 ms
  *     wait returns at once with POLLIN and FIONREAD 0
  *     (ShutdownCancelsReceiveWithTimeout), so does epoll_wait, and a send
- *     waiting for room gets EPIPE;
+ *     waiting for room gets EPIPE; half-closes the same: a read woken by
+ *     its end's SHUT_RD, one on the peer by SHUT_WR's end part, a send
+ *     waiting for room by SHUT_WR (its end part then owed, sent by the
+ *     end's next read);
  *   - FIONREAD frees no room: a non-blocking writer that filled the
  *     channel to EAGAIN still gets EAGAIN after the reader's FIONREAD, and
  *     a read of one message makes room for one (SyncSocketTest.
@@ -246,16 +249,16 @@ static void *sleep_on(void *arg)
     return NULL;
 }
 
-/* z asleep on its end, then the end shut down from here: false if it
+/* z asleep on its end, then fd shut down (how) from here: false if it
  * didn't come back within JOIN_S seconds (it is left to the process's
  * end). */
-static bool shut_under(struct sleeper *z)
+static bool shut_under(struct sleeper *z, int fd, int how)
 {
     z->r = -3;
     if (pthread_create(&z->t, NULL, sleep_on, z))
         return false;
     ms_sleep(SETTLE_MS);   /* most likely asleep by now; either order must work */
-    CHECK(shutdown(z->s, SHUT_RDWR) == 0);
+    CHECK(shutdown(fd, how) == 0);
     struct timespec until;
     clock_gettime(CLOCK_REALTIME, &until);
     until.tv_sec += JOIN_S;
@@ -269,25 +272,26 @@ static bool shut_under(struct sleeper *z)
 void scm_wake(void)
 {
     /* one each, kept: a sleeper never woken still writes into its own */
-    static struct sleeper rd, pl, ep, sd;
+    static struct sleeper rd, pl, ep, sd, hr, hw, hs;
+    static char drain[65536];
     int s[2];
     /* DisconnectTest and ShutdownCancelsReceive: the reader's own end shut */
     CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, s) == 0);
     rd = (struct sleeper){ .s = s[0], .how = BY_READ };
-    CHECK(shut_under(&rd) && rd.r == 0);
+    CHECK(shut_under(&rd, rd.s, SHUT_RDWR) && rd.r == 0);
     close(s[0]);
     close(s[1]);
     /* ShutdownCancelsReceiveWithTimeout: poll ends at once, nothing to read */
     CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, s) == 0);
     pl = (struct sleeper){ .s = s[1], .how = BY_POLL };
-    CHECK(shut_under(&pl) && pl.r == 1 && (pl.revents & POLLIN) && pl.peek == 0 &&
+    CHECK(shut_under(&pl, pl.s, SHUT_RDWR) && pl.r == 1 && (pl.revents & POLLIN) && pl.peek == 0 &&
           pl.ms < WAKE_MS - SETTLE_MS);
     close(s[0]);
     close(s[1]);
     /* epoll_wait the same */
     CHECK(socketpair(AF_UNIX, SOCK_SEQPACKET, 0, s) == 0);
     ep = (struct sleeper){ .s = s[0], .how = BY_EPOLL };
-    CHECK(shut_under(&ep) && ep.r == 1 && (ep.revents & EPOLLIN) && ep.ms < WAKE_MS - SETTLE_MS);
+    CHECK(shut_under(&ep, ep.s, SHUT_RDWR) && ep.r == 1 && (ep.revents & EPOLLIN) && ep.ms < WAKE_MS - SETTLE_MS);
     close(s[0]);
     close(s[1]);
     /* a send waiting for room: EPIPE */
@@ -298,7 +302,37 @@ void scm_wake(void)
             break;
     free(chunk);
     sd = (struct sleeper){ .s = s[0], .how = BY_SEND };
-    CHECK(shut_under(&sd) && sd.r == -1 && sd.err == EPIPE);
+    CHECK(shut_under(&sd, sd.s, SHUT_RDWR) && sd.r == -1 && sd.err == EPIPE);
+    close(s[0]);
+    close(s[1]);
+    /* half-closes: a read woken by its own end's SHUT_RD, one on the peer by SHUT_WR's end
+     * part */
+    CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, s) == 0);
+    hr = (struct sleeper){ .s = s[0], .how = BY_READ };
+    CHECK(shut_under(&hr, s[0], SHUT_RD) && hr.r == 0);
+    close(s[0]);
+    close(s[1]);
+    CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, s) == 0);
+    hw = (struct sleeper){ .s = s[1], .how = BY_READ };
+    CHECK(shut_under(&hw, s[0], SHUT_WR) && hw.r == 0);
+    close(s[0]);
+    close(s[1]);
+    /* a send waiting for room, woken by SHUT_WR: EPIPE; the end part found no room, so the
+     * end's next read sends it */
+    CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, s) == 0);
+    for (int i = 0; i < 1024; i++)
+        if (send(s[0], drain, sizeof(drain), MSG_DONTWAIT | MSG_NOSIGNAL) <= 0)
+            break;
+    hs = (struct sleeper){ .s = s[0], .how = BY_SEND };
+    CHECK(shut_under(&hs, s[0], SHUT_WR) && hs.r == -1 && hs.err == EPIPE);
+    long n;
+    do
+        n = recv(s[1], drain, sizeof(drain), MSG_DONTWAIT);
+    while (n > 0);
+    CHECK(n == -1 && errno == EAGAIN);
+    errno = 0;
+    CHECK(recv(s[0], drain, 1, MSG_DONTWAIT) == -1 && errno == EAGAIN);
+    CHECK(recv(s[1], drain, 1, MSG_DONTWAIT) == 0);
     close(s[0]);
     close(s[1]);
 }

@@ -2178,6 +2178,31 @@ threads wait, for `headless_shell`'s start-up hang and every later one.
   other way through `InitLibcLocaltimeFunctionsImpl`'s fallback still logs
   inside the once.
 
+#### HS notes (2026-10-18)
+
+Track HS (branch `hs-headless`): `headless_shell --dump-dom` of a `data:`
+page, one stop at a time, each fixed in the layer or a service.
+
+- **Stop 1: socketpair half-close.** After the dlsym fix Chromium got
+  through ICU, `ContentMainRunner` and logging, then
+  content/browser/sandbox_host_linux.cc:41 `PCHECK(0 == shutdown(child_socket_,
+  SHUT_RD))` failed with EOPNOTSUPP and aborted. `SandboxHostLinux::Init`
+  makes a `SOCK_SEQPACKET` pair, shuts the child's end for reading and the
+  browser's for writing. Built in sockpair.c: `SHUT_WR` ends the
+  description's writes (EPIPE) and queues an **end part** (an `sp_hdr` of
+  magic `SP_END` and nothing else, with an event as its one handle, so it
+  is never taken for plain bytes): the peer reads what came before it, then
+  the end for good. `SHUT_RD` reads what was queued, then the end instead
+  of a wait. Sleepers in a read (`SHUT_RD`) or a write (`SHUT_WR`) are
+  woken as `SHUT_RDWR`'s are; poll says readable (and writable after
+  `SHUT_WR`); both halves are a `SHUT_RDWR`. **Gaps:** the peer of a
+  `SHUT_RD` end can still write to it (Linux: EPIPE), and the end reads
+  those bytes: telling the peer needs a signal channels don't have (a
+  kernel change; nothing Chromium does needs it). An end part that finds the
+  channel full is owed and goes with the end's next read or send (else the
+  peer sees the end at the close). A child given the end starts with
+  neither half shut. posixtest scm: `check_half` and scmcred's wakes.
+
 #### IC (2026-10-18)
 
 Track IC (branch `ic-inotify-base`, [INOTIFY-PLAN](INOTIFY-PLAN.md#ic-notes)):
@@ -2436,8 +2461,8 @@ translation tables are written in a file of their own for this):
 - **`shutdown(SHUT_RDWR)`** closes the description's channel end (every
   descriptor sharing the description sees it closed, as Linux shuts a
   socket for every descriptor of it); the peer reads end of file, its
-  writes get EPIPE. `SHUT_RD` and `SHUT_WR` alone stay EOPNOTSUPP
-  (half-close needs a channel feature nobody has asked for).
+  writes get EPIPE. `SHUT_RD` and `SHUT_WR` alone were EOPNOTSUPP here;
+  HS built them ("HS notes").
 - `MSG_NOSIGNAL`: no SIGPIPE (already the default without signals asked).
 - **The Wayland socket** (GS1) keeps its own narrow list on the shared
   tables; one translation, two users.
