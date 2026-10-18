@@ -36,6 +36,8 @@
 #define SIGNAL_EXEC             0x002c0002u
 #define SIGNAL_GROUP            0x002c0003u
 #define SIGNAL_SESSION          0x002c0004u
+#define SIGNAL_LIST_FDS         0x002c0005u
+#define SIGNAL_FDS              0x002c0006u
 
 /* Constants (the .idl's `const` lines). */
 /* How a signal was sent: by kill (or the shell's Ctrl+C, a terminal's
@@ -64,9 +66,19 @@ struct signal_session_msg {   /* an event: txid 0 */
     uint32_t txid;
     uint32_t ordinal;
 } __attribute__((packed));
+struct signal_list_fds_msg {   /* an event: txid 0 */
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t seq;
+} __attribute__((packed));
+struct signal_fds_msg {   /* an event: txid 0 */
+    uint32_t txid;
+    uint32_t ordinal;
+    uint32_t seq;
+} __attribute__((packed));
 
 #define SIGNAL_REQ_MAX 14u   /* bytes: the biggest message to the server */
-#define SIGNAL_REP_MAX 12u   /* bytes: the biggest message to the client */
+#define SIGNAL_REP_MAX 142u   /* bytes: the biggest message to the client */
 #define SIGNAL_REQ_HANDLES IDL_READ_HANDLES   /* handles: read with each message to the server */
 #define SIGNAL_REP_HANDLES IDL_REP_HANDLES   /* handles: room in a dispatch's rhs */
 #define SIGNAL_UNREAD_MSGS IDL_UNREAD_MSGS   /* the unread bound: messages ... */
@@ -97,6 +109,26 @@ static inline status_t signal_send(handle_t ch, uint8_t signo, uint8_t code, int
     idl_q->signo = signo;
     idl_q->code = code;
     idl_q->value = value;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
+}
+
+/* The starter asks for the program's open descriptors (what /proc/<pid>/fd
+ * of a child lists, user/posix/sys/proc.c). `seq` comes back in the answer.
+ * A program with a /data program started for it (execve of one waits for
+ * it) passes the question on to that program and its answer back. */
+/* The event signal.list_fds, to the server: written on ch, never answered.
+ * ERR_SHOULD_WAIT: the peer's queue is full (its flow control). */
+static inline status_t signal_list_fds(handle_t ch, uint32_t seq)
+{
+    _Alignas(8) uint8_t idl_b0[12];
+    struct signal_list_fds_msg *idl_q = (struct signal_list_fds_msg *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = 0;   /* an event */
+    idl_q->ordinal = SIGNAL_LIST_FDS;
+    idl_q->seq = seq;
     if (idl_st == OK)
         idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
     return idl_st;
@@ -155,6 +187,28 @@ static inline status_t signal_session(handle_t ch)
     return idl_st;
 }
 
+/* The answer: the descriptors the program has open, as a bitmap: bit
+ * (n % 8) of byte (n / 8) is descriptor n; the bytes after the last one
+ * with a bit set are left out (none: no descriptor open). Sent once to a
+ * question; a starter that wants it waits for it a while and goes without. */
+/* The event signal.fds, to the client: written on ch, never answered.
+ * ERR_SHOULD_WAIT: the peer's queue is full (its flow control). */
+static inline status_t signal_fds(handle_t ch, uint32_t seq, const uint8_t *bits, uint32_t bits_len)
+{
+    _Alignas(8) uint8_t idl_b0[142];
+    struct signal_fds_msg *idl_q = (struct signal_fds_msg *)idl_b0;
+    uint32_t idl_qn = sizeof(*idl_q);
+    status_t idl_st = OK;
+    idl_q->txid = 0;   /* an event */
+    idl_q->ordinal = SIGNAL_FDS;
+    idl_q->seq = seq;
+    if (idl_st == OK && !idl_put(idl_b0, &idl_qn, bits, bits_len, 128, 1))
+        idl_st = ERR_INVALID_ARGS;
+    if (idl_st == OK)
+        idl_st = drv_channel_write(ch, idl_b0, idl_qn, NULL, 0);
+    return idl_st;
+}
+
 /* The client's handlers of the events from the server: a NULL one drops
  * its event (handles closed). A handler owns the handles it is given;
  * its arrays point into the message (copy what it keeps). */
@@ -162,6 +216,7 @@ struct signal_events {
     void (*exec)(void *ctx);
     void (*group)(void *ctx, int32_t pgid);
     void (*session)(void *ctx);
+    void (*fds)(void *ctx, uint32_t seq, const uint8_t *bits, uint32_t bits_len);
 };
 
 /* Client: run the event read with idl_reply_read into msg and *m (an
@@ -231,6 +286,27 @@ static inline status_t signal_event_dispatch(const struct signal_events *idl_tab
         idl_tab->session(ctx);
         return OK;
     }
+    case SIGNAL_FDS: {
+        const struct signal_fds_msg *idl_e = (const struct signal_fds_msg *)idl_m;
+        uint32_t idl_o = sizeof(*idl_e);
+        status_t idl_st = idl_n < sizeof(*idl_e) ? ERR_INVALID_ARGS : OK;
+        const void *idl_p0 = NULL;
+        uint32_t idl_l0 = 0;
+        if (idl_st == OK && !idl_get(idl_m, idl_n, &idl_o, 128, 1, &idl_p0, &idl_l0))
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_o != idl_n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_nh != 0)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_tab->fds)
+            idl_st = ERR_NOT_SUPPORTED;
+        if (idl_st != OK) {
+            idl_close_all(idl_hs, idl_nh);
+            return idl_st;
+        }
+        idl_tab->fds(ctx, idl_e->seq, (const uint8_t *)idl_p0, idl_l0);
+        return OK;
+    }
     }
     idl_close_all(idl_hs, idl_nh);
     return ERR_NOT_SUPPORTED;
@@ -266,6 +342,7 @@ static inline status_t signal_read_event(handle_t ch, const struct signal_events
  * owns the handles it is given, and its arrays point into the message. */
 struct signal_ops {
     void (*send)(void *ctx, uint8_t signo, uint8_t code, int32_t value);
+    void (*list_fds)(void *ctx, uint32_t seq);
 };
 
 /* Run the event (txid 0) of n bytes at m with nh handles in hs: OK, or
@@ -290,6 +367,23 @@ static inline status_t signal_event_in(const struct signal_ops *idl_tab, void *c
             return idl_st;
         }
         idl_tab->send(ctx, idl_e->signo, idl_e->code, idl_e->value);
+        return OK;
+    }
+    case SIGNAL_LIST_FDS: {
+        const struct signal_list_fds_msg *idl_e = (const struct signal_list_fds_msg *)idl_m;
+        uint32_t idl_o = sizeof(*idl_e);
+        status_t idl_st = idl_n < sizeof(*idl_e) ? ERR_INVALID_ARGS : OK;
+        if (idl_o != idl_n)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && idl_nh != 0)
+            idl_st = ERR_INVALID_ARGS;
+        if (idl_st == OK && !idl_tab->list_fds)
+            idl_st = ERR_NOT_SUPPORTED;
+        if (idl_st != OK) {
+            idl_close_all(idl_hs, idl_nh);
+            return idl_st;
+        }
+        idl_tab->list_fds(ctx, idl_e->seq);
         return OK;
     }
     }
@@ -322,6 +416,7 @@ static inline uint32_t signal_dispatch_on(handle_t ch, const struct signal_ops *
     idl_h->status = ERR_INVALID_ARGS;
     switch (((const struct idl_req_hdr *)req)->ordinal) {
     case SIGNAL_SEND:
+    case SIGNAL_LIST_FDS:
         return sizeof(*idl_h);   /* an event with a txid */
     }
     idl_h->status = ERR_NOT_SUPPORTED;

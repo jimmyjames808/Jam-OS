@@ -4244,8 +4244,21 @@ static void idl_fz_signal_session(void *ctx)
 {
     (void)ctx;
 }
+static void idl_fz_signal_list_fds(void *ctx, uint32_t seq)
+{
+    (void)ctx;
+    (void)seq;
+}
+static void idl_fz_signal_fds(void *ctx, uint32_t seq, const uint8_t *bits, uint32_t bits_len)
+{
+    (void)ctx;
+    (void)seq;
+    (void)bits;
+    (void)bits_len;
+}
 static const struct signal_ops idl_fz_signal_ops = {
     .send = idl_fz_signal_send,
+    .list_fds = idl_fz_signal_list_fds,
 };
 static uint32_t idl_fz_signal_serve(const void *q, uint32_t n, const handle_t *hs,
                                 uint32_t nh, void *r, handle_t *rhs, uint32_t *rhn)
@@ -4257,6 +4270,7 @@ static const struct signal_events idl_fz_signal_events = {
     .exec = idl_fz_signal_exec,
     .group = idl_fz_signal_group,
     .session = idl_fz_signal_session,
+    .fds = idl_fz_signal_fds,
 };
 static status_t idl_fz_signal_event(const void *m, struct idl_msg *msg)
 {
@@ -4267,6 +4281,8 @@ static const struct idl_fuzz_msg idl_fz_signal_msgs[] = {
     { 0x002c0002u, 8u, 2, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x002c0003u, 12u, 2, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
     { 0x002c0004u, 8u, 2, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x002c0005u, 12u, 1, 0, 0, 0, { 0 }, 0, { { 0, 0, 0 } } },
+    { 0x002c0006u, 12u, 2, 0, 0, 0, { 0 }, 1, { { 1, 0, 128 } } },
 };
 
 /* ---- splashch ---- */
@@ -5578,7 +5594,7 @@ static const struct idl_fuzz_proto idl_fuzz_protos[] __attribute__((unused)) = {
     { "serve", 31, SERVE_REQ_MAX, SERVE_REP_MAX, SERVE_REP_HANDLES, idl_fz_serve_serve, NULL, idl_fz_serve_msgs, 3 },
     { "session", 45, SESSION_REQ_MAX, SESSION_REP_MAX, SESSION_REP_HANDLES, idl_fz_session_serve, NULL, idl_fz_session_msgs, 1 },
     { "session_ctl", 46, SESSION_CTL_REQ_MAX, SESSION_CTL_REP_MAX, SESSION_CTL_REP_HANDLES, idl_fz_session_ctl_serve, idl_fz_session_ctl_event, idl_fz_session_ctl_msgs, 4 },
-    { "signal", 44, SIGNAL_REQ_MAX, SIGNAL_REP_MAX, SIGNAL_REP_HANDLES, idl_fz_signal_serve, idl_fz_signal_event, idl_fz_signal_msgs, 4 },
+    { "signal", 44, SIGNAL_REQ_MAX, SIGNAL_REP_MAX, SIGNAL_REP_HANDLES, idl_fz_signal_serve, idl_fz_signal_event, idl_fz_signal_msgs, 6 },
     { "splashch", 83, SPLASHCH_REQ_MAX, SPLASHCH_REP_MAX, SPLASHCH_REP_HANDLES, idl_fz_splashch_serve, idl_fz_splashch_event, idl_fz_splashch_msgs, 2 },
     { "storage", 14, STORAGE_REQ_MAX, STORAGE_REP_MAX, STORAGE_REP_HANDLES, idl_fz_storage_serve, NULL, idl_fz_storage_msgs, 8 },
     { "svc", 25, SVC_REQ_MAX, SVC_REP_MAX, SVC_REP_HANDLES, idl_fz_svc_serve, NULL, idl_fz_svc_msgs, 1 },

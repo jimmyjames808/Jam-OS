@@ -52,3 +52,14 @@ const CODE_QUEUE 1
 # The program leads a session of its own now (setsid): its session and its
 # process group are its pid.
 4  session  -> () event
+
+# The starter asks for the program's open descriptors (what /proc/<pid>/fd
+# of a child lists, user/posix/sys/proc.c). `seq` comes back in the answer.
+# A program with a /data program started for it (execve of one waits for
+# it) passes the question on to that program and its answer back.
+5  list_fds  (u32 seq) event
+# The answer: the descriptors the program has open, as a bitmap: bit
+# (n % 8) of byte (n / 8) is descriptor n; the bytes after the last one
+# with a bit set are left out (none: no descriptor open). Sent once to a
+# question; a starter that wants it waits for it a while and goes without.
+6  fds       -> (u32 seq, u8[<=128] bits) event
