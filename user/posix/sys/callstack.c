@@ -45,7 +45,6 @@
  * thread, off it). A forked child has its copy (the forking thread's
  * thread-local state and the mapping both). */
 #include <errno.h>
-#include <jam/syscall_nums.h>
 #include <sys/mman.h>
 #include "layer.h"
 #include "sig.h"
@@ -64,6 +63,8 @@ static __thread struct {
 } cs;
 
 void __jam_sig_stack_call(void (*fn)(void *), void *arg, void *top);   /* sigentry.S */
+/* callexit.S: vmar_unmap(vmar, base, size), then thread_exit. */
+_Noreturn void __jam_call_stack_exit(handle_t vmar, uintptr_t base, size_t size);
 
 uintptr_t lx_call_stack_map(void)
 {
@@ -167,13 +168,5 @@ _Noreturn void lx_call_stack_exit(void)
     uintptr_t base = cs.lo - CALL_GUARD;
     mem_forget(base, CALL_STACK + CALL_GUARD);
     /* Perhaps on it: from the unmap to the thread's end, registers only. */
-    __asm__ volatile("syscall\n\t"
-                     "mov %[exit], %%eax\n\t"
-                     "syscall\n\t"
-                     "ud2"
-                     :
-                     : "a"(SYS_vmar_unmap), "D"((uint64_t)lx_self_vmar()), "S"(base),
-                       "d"((uint64_t)(CALL_STACK + CALL_GUARD)), [exit] "i"(SYS_thread_exit)
-                     : "rcx", "r11", "memory");
-    __builtin_unreachable();
+    __jam_call_stack_exit(lx_self_vmar(), base, CALL_STACK + CALL_GUARD);
 }
