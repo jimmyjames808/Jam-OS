@@ -94,8 +94,12 @@ struct signal_fds_msg {   /* an event: txid 0 */
  * `code` is CODE_USER or CODE_QUEUE; `value` is sigqueue's (0 for kill).
  * One way: the sender learns nothing of what the program does with it. A
  * full channel (ERR_SHOULD_WAIT) is the program falling behind: the
- * sender waits for room. A program drops what it can't use (a signal
- * number out of range, SIGKILL, an unknown code) without a word. */
+ * sender never waits for room. A standard signal (1 to 31) it couldn't
+ * write is owed once, as Linux's pending set holds it, and written when
+ * the channel has room (a second one of that number meanwhile is the same
+ * one); a real-time signal is not owed: the sender's sigqueue is EAGAIN. A
+ * program drops what it can't use (a signal number out of range, SIGKILL,
+ * an unknown code) without a word. */
 /* The event signal.send, to the server: written on ch, never answered.
  * ERR_SHOULD_WAIT: the peer's queue is full (its flow control). */
 static inline status_t signal_send(handle_t ch, uint8_t signo, uint8_t code, int32_t value)
