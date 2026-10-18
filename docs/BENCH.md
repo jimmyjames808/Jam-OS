@@ -410,28 +410,62 @@ Reading:
 - `update`'s fetch in `tools/update-net-test.sh` (QEMU, 2 CPUs, after):
   10.2 MB in 0.8 s.
 
-## netstack's memory at the CN1 caps, computed 2026-10-12
+## netstack's memory at the CN1 caps, measured 2026-10-18
 
-**Computed from the build's section sizes (`size build/user/netstack`), not
-measured at the caps**: nothing was run (the PC was in Jam OS). The caps
-([`<net.h>`](../user/include/net.h)): sockets an opener 16 to 256, in all 48
-to 512; TCP connections an opener 64 to 512, in all 256 to 1,024.
+The caps ([`<net.h>`](../user/include/net.h)): sockets an opener 16 to 256,
+in all 48 to 512 (ordinary programs 384); TCP connections an opener 64 to
+512, in all 256 to 1,024 (ordinary programs 768, the rest is the network
+services' reserve). Measured on the PC, in QEMU, as **netstack's job**: the
+pages and handles of its job, which holds its heap, its static memory and
+every socket's rings (it creates and maps them). The numbers are the
+utest `netsock_mem` (job info; the fake driver answers every SYN) and
+`tools/tcp-test.sh` (`ps`'s JOB MEM column and `net stats`, the peer's TCP
+servers, `tcptest many`).
 
-| Static memory of bin/netstack (`.bss`) | before | after |
-|---|---|---|
-| total | 8,626,656 bytes | 9,286,624 bytes (+660,000) |
-| of it: socket slots (`pg`, 513 slots), TCP sockets (`ts`), TCP connections (`conns`) | | 152,488, 90,112, 278,528 |
-| of it: lwIP's TCP pcbs (1,152), UDP pcbs (513) | | 340,999, 24,631 |
-| unchanged: lwIP's heap, receive buffers (1,152), segments | 6 MiB, 1.7 MiB, 0.35 MiB | the same |
+| netstack's job | pages | memory | handles |
+|---|---|---|---|
+| started, no socket | 52 | 208 KiB | 25 |
+| 512 datagram sockets (default rings: 26 MiB of the ring budget) | 1,633 | 6.4 MiB | 2,585 |
+| ... and 1,024 TCP connections open and idle (default rings: 84 MiB of budget) | 4,811 | 18.8 MiB | 7,705 |
+| everything closed again | 52 | 208 KiB | 25 |
 
-The rings are VMOs netstack maps and a program touches: budgets, not
-memory in use. A datagram socket with the default rings is 52 KiB, a TCP
-connection 84 KiB, so 512 sockets are 26 MiB and 1,024 connections 84 MiB
-at most, inside `SOCKRING_TOTAL_BYTES` (128 MiB; an opener 64 MiB, ordinary
-programs together 96 MiB). lwIP's heap stays 6 MiB: connections beyond what
-it holds wait in their tx rings. To measure on the PC: the `netsock_caps`
-and `nettcp_limits` utests at the caps, then `net stats` (heap used) and
-netstack's pages from the job's info.
+| over the card (tcp-test.sh), netstack's job | memory |
+|---|---|
+| no connection | 212 KiB |
+| 768 open and idle (one program 512, another 256: the most ordinary programs may hold) | 9.5 MiB |
+| ... each after 64 bytes each way | 15.5 MiB |
+| 64 connections after 64 KiB each way each | 6.0 MiB |
+| closed again | 212 KiB |
+
+What it says:
+- **The caps cost pages as the rings are used, not the ring budget.** An
+  open idle socket or connection is 3 pages (12 KiB: the ring VMO's header
+  and the first pages netstack touches), the first bytes each way make
+  that 5, and a connection with both default rings used is about 93 KiB
+  (23 pages: 80 KiB of rings and the header). So all 1,024 connections at
+  the caps are **18.8 MiB idle with the sockets** (7,705 handles) and about
+  **95 MiB at most** with every ring full, inside `SOCKRING_TOTAL_BYTES`
+  (128 MiB; 64 MiB an opener, 96 MiB ordinary programs together), which
+  bounds netstack's memory whatever the programs do.
+- **lwIP's pools were big enough.** 1,024 connections open at once (the
+  utest) and 768 over the card (the peer): no refusal but the caps, and
+  lwIP's heap in use is 0 with them idle (98 to 112 KiB with 1,024
+  handshakes in flight) and its receive buffers 0. The statics are as
+  computed on 2026-10-12 from `size build/user/netstack`: `.bss` 9.3 MB
+  (8.6 MB before the caps): 513 socket slots 152,488 bytes, TCP sockets
+  90,112, connections 278,528, lwIP's TCP pcbs (1,152) 340,999 and UDP
+  pcbs (513) 24,631; lwIP's heap 6 MiB, receive buffers 1.7 MiB and
+  segments 0.35 MiB unchanged. Static memory is touched as it is used:
+  the idle job above is 208 KiB, and closing gives the heap's pages back.
+- **Closing gives everything back**: every handle (the utest checks it)
+  and the pages (the table).
+- **Handles**: 5 a socket in netstack (7,680 at all the caps) and 4 in
+  the program (512 connections: 2,048): no limit on a process's handles
+  was met.
+- The over-the-card run is QEMU's e1000e: 512 connections opened and
+  answered in 12 ms of guest time (the peer is on the same host), the
+  card's tx ring dropped some frames of the burst (lwIP sent them
+  again): `net stats` "tx ring full" 600 to 1,100 for the run.
 
 ## Path breakdown (M11.5 stage 0), QEMU 2026-10-02
 
